@@ -1,0 +1,2701 @@
+[
+  {
+    "topic": "Bronchitis",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Bronchitis_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Bronchitis_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Advance Directives",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AdvanceDirectives_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Advance_Directives_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Allergies",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Allergies_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Allergies_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Alzheimer's Disease",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Alzheimers_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Alzheimers_Rus.pdf",
+    "filename": "Alzheimers_Disease_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Barium Enema",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BariumEnema_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BariumEnema_Rus.pdf",
+    "filename": "Barium_Enema_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Anemia",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Anemia_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Anemia_RUS.pdf",
+    "filename": "Anemia_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Angina",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Angina_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Angina_Rus.pdf",
+    "filename": "Angina_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Nitroglycerin",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Nitroglycerin_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Nitroglycerin_Rus.pdf",
+    "filename": "Nitroglycerin_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Heart Cath and Heart Angioplasty",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HeartCathAngioplasty_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HeartCathAngioplasty_RUS.pdf",
+    "filename": "Heart_Cath_and_Heart_Angioplasty_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Animal Bites and Scratches",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AnimalBitesScratches_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AnimalBitesScratches_RUS.pdf",
+    "filename": "Animal_Bites_and_Scratches_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Ankle Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AnkleExercises_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AnkleExercises_RUS.pdf",
+    "filename": "Ankle_Exercises_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Ankle Sprain",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Ankle-Sprain_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Ankle-Sprain_Rus.pdf",
+    "filename": "Ankle_Sprain_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Anthrax: What You Need to Know",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AnthraxFactSheet_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AnthraxFactSheet_RUS.pdf",
+    "filename": "Anthrax_What_You_Need_to_Know_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Appendectomy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Appendectomy_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Appendectomy_RUS.pdf",
+    "filename": "Appendectomy_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Simple Appendectomy for a Child",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Appendectomy_child_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Appendectomy_child_RUS.pdf",
+    "filename": "Simple_Appendectomy_for_a_Child_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Active Range of Motion Exercises: Wrists, Elbows, Forearms, and Shoulders",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveROM-WEFS_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveROM-WEFS_RUS.pdf",
+    "filename": "Active_Range_of_Motion_Exercises_Wrists_Elbows_Forearms_and_Shoulders_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Assisted Arm Range of Motion Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AssistedArmROM_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AssistedArmROM_RUS.pdf",
+    "filename": "Assisted_Arm_Range_of_Motion_Exercises_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Wearing a Shoulder Sling",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/WearingShoulderSling_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/WearingShoulderSling_RUS.pdf",
+    "filename": "Wearing_a_Shoulder_Sling_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "EPS (Electrophysiology Study)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/EPS_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/EPS_RUS.pdf",
+    "filename": "EPS_Electrophysiology_Study_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Electrocardiogram (ECG or EKG)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Electrocardiogram_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Electrocardiogram_Rus.pdf",
+    "filename": "Electrocardiogram_ECG_or_EKG_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Holter Monitor",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HolterMonitor_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HolterMonitor_Rus.pdf",
+    "filename": "Holter_Monitor_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Arthritis",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Arthritis_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Arthritis_RUS.pdf",
+    "filename": "Arthritis_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Asthma",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Asthma_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Asthma_RUS.pdf",
+    "filename": "Asthma_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Nebulizer Treatments",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/NebulizerTreatments_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/NebulizerTreatments_RU.pdf",
+    "filename": "Nebulizer_Treatments_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Peak Flow Meter",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PeakFlowMeter_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PeakFlowMeter_Rus.pdf",
+    "filename": "Peak_Flow_Meter_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Nebulizer Treatments",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/NebulizerTreatments_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Nebulizer_Treatments_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Atrial Fibrillation",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Atrial_Fibrillation_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Atrial_Fibrillation_Rus.pdf",
+    "filename": "Atrial_Fibrillation_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Choosing a Health Care Provider for Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ChoosingDoctorBaby_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ChoosingDoctorBaby_RUS.pdf",
+    "filename": "Choosing_a_Health_Care_Provider_for_Your_Baby_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Back Health and Safety",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BackHealthSafety_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BackHealthSafety_Rus.pdf",
+    "filename": "Back_Health_and_Safety_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Exercises for Your Back",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ExercisesBack_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ExercisesBack_RUS.pdf",
+    "filename": "Exercises_for_Your_Back_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Exercises to Strengthen Your Back",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ExerBack_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ExerBack_RU.pdf",
+    "filename": "Exercises_to_Strengthen_Your_Back_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Low Back Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/LowBackExercises_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/LowBackExercises_RU.pdf",
+    "filename": "Low_Back_Exercises_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Do's and Don'ts with Low Back Pain",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DoDontLowBack_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DoDontLowBack_RU.pdf",
+    "filename": "Dos_and_Donts_with_Low_Back_Pain_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Exercises for Your Back",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ExercisesBack_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Exercises_for_Your_Back_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "ERCP (Endoscopic Retrograde Cholangiopancreatography)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ERCP_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ERCP_Rus.pdf",
+    "filename": "ERCP_Endoscopic_Retrograde_Cholangiopancreatography_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Anthrax: What You Need to Know",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AnthraxFactSheet_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Anthrax_What_You_Need_to_Know_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Biological Emergencies",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Biological_Emergencies_Ru_FINAL.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Biological_Emergencies_Ru_FINAL.pdf",
+    "filename": "Biological_Emergencies_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Bone Marrow Biopsy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BoneMarrowBiopsy_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BoneMarrowBiopsy_Rus.pdf",
+    "filename": "Bone_Marrow_Biopsy_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Breast Biopsy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BreastBiopsy_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BreastBiopsy_RUS.pdf",
+    "filename": "Breast_Biopsy_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Prenatal Care",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PrenatalCare_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PrenatalCare_RUS.pdf",
+    "filename": "Prenatal_Care_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Fasting Blood Sugar Test",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/FastingBloodSugarTest_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/FastingBloodSugarTest_Rus.pdf",
+    "filename": "Fasting_Blood_Sugar_Test_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Avoiding Weight Gain When Quitting Tobacco",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AvoidingWtGainTobacco_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AvoidingWtGainTobacco_RU.pdf",
+    "filename": "Avoiding_Weight_Gain_When_Quitting_Tobacco_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Ways to Manage Your Weight",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/WaysManageWt_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/WaysManageWt_RUS.pdf",
+    "filename": "Ways_to_Manage_Your_Weight_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Bone Scan",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BoneScan_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BoneScan_Rus.pdf",
+    "filename": "Bone_Scan_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Bone Scan",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BoneScan_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Bone_Scan_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Bone Marrow Biopsy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BoneMarrowBiopsy_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Bone_Marrow_Biopsy_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Breast Biopsy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BreastBiopsy_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Breast_Biopsy_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Breast Cancer",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Breast_Cancer_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Breast_Cancer_RUS.pdf",
+    "filename": "Breast_Cancer_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Breast Biopsy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BreastBiopsy_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Breast_Biopsy_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Breastfeeding Basics",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BreastfeedingBasics_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BreastfeedingBasics_RU.pdf",
+    "filename": "Breastfeeding_Basics_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Breastfeeding Problems",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BreastfeedingProblems_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BreastfeedingProblems_RU.pdf",
+    "filename": "Breastfeeding_Problems_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Getting Started Breastfeeding Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Getting_Started_Breastfeeding_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Getting_Started_Breastfeeding_RUS.pdf",
+    "filename": "Getting_Started_Breastfeeding_Your_Baby_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Pumping and Storing Breast Milk",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Pumping_Storing_Breast_Milk_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Pumping_Storing_Breast_Milk_RU.pdf",
+    "filename": "Pumping_and_Storing_Breast_Milk_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Incentive Spirometer",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/IncentiveSpirometer_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/IncentiveSpirometer_Rus.pdf",
+    "filename": "Incentive_Spirometer_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Bronchitis",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Bronchitis_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Bronchitis_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Bullying Information for Parents",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BullyingInfoParents_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BullyingInfoParents_RU.pdf",
+    "filename": "Bullying_Information_for_Parents_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "High Blood Calcium",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HighBloodCalcium_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HighBloodCalcium_Rus.pdf",
+    "filename": "High_Blood_Calcium_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Cancer",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Cancer_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Cancer_Rus.pdf",
+    "filename": "Cancer_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Cancer Chemotherapy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Chemotherapy_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Chemotherapy_RUS.pdf",
+    "filename": "Cancer_Chemotherapy_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Nausea and Vomiting with Cancer Treatment",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/NauseaVomitingCancer_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/NauseaVomitingCancer_RUS.pdf",
+    "filename": "Nausea_and_Vomiting_with_Cancer_Treatment_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Preventing Infections When Your White Blood Cell Count Is Low",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PreventingInfectionsWBC_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PreventingInfectionsWBC_Rus.pdf",
+    "filename": "Preventing_Infections_When_Your_White_Blood_Cell_Count_Is_Low_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Cancer Related Fatigue",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CancerRelatedFatigue_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CancerRelatedFatigue_RUS.pdf",
+    "filename": "Cancer_Related_Fatigue_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Cancer Treatment Side Effects",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CancerTreatmentSideEffects_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CancerTreatmentSideEffects_RUS.pdf",
+    "filename": "Cancer_Treatment_Side_Effects_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Changes in Taste and Smell with Cancer Treatment",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ChangesTasteSmell_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ChangesTasteSmell_RUS.pdf",
+    "filename": "Changes_in_Taste_and_Smell_with_Cancer_Treatment_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Dry Mouth with Cancer Treatment",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DryMouth_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DryMouth_RUS.pdf",
+    "filename": "Dry_Mouth_with_Cancer_Treatment_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Loss of Appetite with Cancer Treatment",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/LossAppetite_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/LossAppetite_RUS.pdf",
+    "filename": "Loss_of_Appetite_with_Cancer_Treatment_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Mouth Care with Cancer Treatment",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/MouthCare_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/MouthCare_RUS.pdf",
+    "filename": "Mouth_Care_with_Cancer_Treatment_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Sore Mouth or Throat with Cancer Treatment",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SoreMouthThroat_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SoreMouthThroat_RUS.pdf",
+    "filename": "Sore_Mouth_or_Throat_with_Cancer_Treatment_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "EPS (Electrophysiology Study)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/EPS_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "EPS_Electrophysiology_Study_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Electrocardiogram (ECG or EKG)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Electrocardiogram_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Electrocardiogram_ECG_or_EKG_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Holter Monitor",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HolterMonitor_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Holter_Monitor_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "LEEP (Loop Electrosurgical Excision Procedure)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/LEEP_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/LEEP_RUS.pdf",
+    "filename": "LEEP_Loop_Electrosurgical_Excision_Procedure_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Female Exam and Pap Smear",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/FemaleExam_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/FemaleExam_Rus.pdf",
+    "filename": "Female_Exam_and_Pap_Smear_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Your Recovery After Cesarean Birth",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Your_Recovery_After_Cesarean_Birth_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Your_Recovery_After_Cesarean_Birth_RUS.pdf",
+    "filename": "Your_Recovery_After_Cesarean_Birth_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Chemical Emergencies",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Chemical_Emergencies_Ru_FINAL.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Chemical_Emergencies_Ru_FINAL.pdf",
+    "filename": "Chemical_Emergencies_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Decontamination",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Decontamination_Rus_FINAL.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Decontamination_Rus_FINAL.pdf",
+    "filename": "Decontamination_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Angina",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Angina_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Angina_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Nitroglycerin",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Nitroglycerin_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Nitroglycerin_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Teething",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Teething_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Teething_Rus.pdf",
+    "filename": "Teething_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Child Safety Checklist",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ChildSafetyChecklist_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ChildSafetyChecklist_RU.pdf",
+    "filename": "Child_Safety_Checklist_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Safety with Car Seats and Booster Seats",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SafetyCarSeats_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SafetyCarSeats_Rus.pdf",
+    "filename": "Safety_with_Car_Seats_and_Booster_Seats_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Know the Signs of Labor",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SignsLabor_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SignsLabor_RUS.pdf",
+    "filename": "Know_the_Signs_of_Labor_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Stages of Labor",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/StagesLabor_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/StagesLabor_RU.pdf",
+    "filename": "Stages_of_Labor_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Your Recovery After Cesarean Birth",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Your_Recovery_After_Cesarean_Birth_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Your_Recovery_After_Cesarean_Birth_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Your Recovery After Vaginal Birth",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/RecoveryVaginalBirth_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/RecoveryVaginalBirth_RU.pdf",
+    "filename": "Your_Recovery_After_Vaginal_Birth_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Vaccines for Young Children",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/VaccinesChildren_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/VaccinesChildren_RU.pdf",
+    "filename": "Vaccines_for_Young_Children_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Cholesterol",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Cholesterol_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Cholesterol_Rus.pdf",
+    "filename": "Cholesterol_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Choosing a Health Care Provider for Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ChoosingDoctorBaby_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Choosing_a_Health_Care_Provider_for_Your_Baby_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Bronchitis",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Bronchitis_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Bronchitis_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Diabetes and Kidney Problems",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabetesKidneyProblems_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabetesKidneyProblems_RU.pdf",
+    "filename": "Diabetes_and_Kidney_Problems_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Kidney Failure",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Kidney_Failure_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Kidney_Failure_RUS.pdf",
+    "filename": "Kidney_Failure_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Male Circumcision",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/MaleCircumcision_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/MaleCircumcision_RUS.pdf",
+    "filename": "Male_Circumcision_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Barium Enema",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BariumEnema_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Barium_Enema_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Colonoscopy Bowel Prep Instructions MiraLAX/Gatorade 1-Day Prep",
+    "href": "https://patiented.uofmhealth.org/Portal/Default/en-US/DownloadImageFile.ashx?objectId=1884&ownerType=0&ownerId=3068",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": null,
+    "status": "no_pdf_found"
+  },
+  {
+    "topic": "Colonoscopy Bowel Prep Instructions MiraLAXÂ®/GatoradeÂ® 2-Day Prep",
+    "href": "https://patiented.uofmhealth.org/Portal/Default/en-US/DownloadImageFile.ashx?objectId=4889&ownerType=0&ownerId=7020",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": null,
+    "status": "no_pdf_found"
+  },
+  {
+    "topic": "Colonoscopy Bowel Prep Instructions: 6-Liter Two-Day PEG/Electrolyte-Generic, NuLYTELY, GoLYTELY, and CoLyte",
+    "href": "https://patiented.uofmhealth.org/Portal/Default/en-US/DownloadImageFile.ashx?objectId=1872&ownerType=0&ownerId=3056",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": null,
+    "status": "no_pdf_found"
+  },
+  {
+    "topic": "Colonoscopy Bowel Prep Instructions: 8-Liter PEG/Electrolyte-Generic, NuLYTELY, GoLYTELY, and CoLyte",
+    "href": "https://patiented.uofmhealth.org/Portal/Default/en-US/DownloadImageFile.ashx?objectId=1875&ownerType=0&ownerId=3059",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": null,
+    "status": "no_pdf_found"
+  },
+  {
+    "topic": "Colonoscopy Bowel Prep Instructions: MoviPrep",
+    "href": "https://patiented.uofmhealth.org/Portal/Default/en-US/DownloadImageFile.ashx?objectId=1887&ownerType=0&ownerId=3071",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": null,
+    "status": "no_pdf_found"
+  },
+  {
+    "topic": "Colonoscopy Bowel Prep Instructions: OsmoPrep",
+    "href": "https://patiented.uofmhealth.org/Portal/Default/en-US/DownloadImageFile.ashx?objectId=1894&ownerType=0&ownerId=3080",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": null,
+    "status": "no_pdf_found"
+  },
+  {
+    "topic": "Colonoscopy Bowel Prep Instructions: SUPREP",
+    "href": "https://patiented.uofmhealth.org/Portal/Default/en-US/DownloadImageFile.ashx?objectId=1936&ownerType=0&ownerId=3131",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": null,
+    "status": "no_pdf_found"
+  },
+  {
+    "topic": "Miralax and Dulcolax Bowel Prep for Colonoscopy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Miralax_Ducolax_Bowel_Prep_Rus_Final.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Miralax_Ducolax_Bowel_Prep_Rus_Final.pdf",
+    "filename": "Miralax_and_Dulcolax_Bowel_Prep_for_Colonoscopy_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Cancer of the Colon and Rectum",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Cancer_Colon_Rectum_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Cancer_Colon_Rectum_RUS.pdf",
+    "filename": "Cancer_of_the_Colon_and_Rectum_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "When Should I Call My Baby's Doctor?",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/WhenCallBabysDoctor_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/WhenCallBabysDoctor_RU.pdf",
+    "filename": "When_Should_I_Call_My_Babys_Doctor_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Types of Brain Injury",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TypesBrainInjury_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TypesBrainInjury_RUS.pdf",
+    "filename": "Types_of_Brain_Injury_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Constipation",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Constipation_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Constipation_RUS.pdf",
+    "filename": "Constipation_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Coronary Artery Bypass Surgery",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CABS_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CABS_RUS.pdf",
+    "filename": "Coronary_Artery_Bypass_Surgery_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Coronary Artery Disease (CAD)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CAD_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CAD_RUS.pdf",
+    "filename": "Coronary_Artery_Disease_CAD_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Heart Cath and Heart Angioplasty",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HeartCathAngioplasty_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Heart_Cath_and_Heart_Angioplasty_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Advance Directives",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AdvanceDirectives_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Advance_Directives_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Types of Dementia",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TypesDementia_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TypesDementia_RUS.pdf",
+    "filename": "Types_of_Dementia_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Feeling Sad",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/FeelingSad_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/FeelingSad_Rus.pdf",
+    "filename": "Feeling_Sad_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Diabetes",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Diabetes_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Diabetes_Rus.pdf",
+    "filename": "Diabetes_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Diabetes and Wound Healing",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabetesWoundHealing_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabetesWoundHealing_RU.pdf",
+    "filename": "Diabetes_and_Wound_Healing_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Fasting Blood Sugar Test",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/FastingBloodSugarTest_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Fasting_Blood_Sugar_Test_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "GTT (Glucose Tolerance Test)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GTT_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GTT_Rus.pdf",
+    "filename": "GTT_Glucose_Tolerance_Test_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "How to Use a Glucose Meter",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GlucoseMeter_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GlucoseMeter_RUS.pdf",
+    "filename": "How_to_Use_a_Glucose_Meter_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Diabetes during Pregnancy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabetesDuringPregnancy_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabetesDuringPregnancy_Rus.pdf",
+    "filename": "Diabetes_during_Pregnancy_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "High Blood Sugar",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HighBloodSugar_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HighBloodSugar_RUS.pdf",
+    "filename": "High_Blood_Sugar_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Drawing Up One Insulin",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DrawingUpOneInsulin_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DrawingUpOneInsulin_Rus.pdf",
+    "filename": "Drawing_Up_One_Insulin_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "How to Use an Insulin Pen",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HowUseInsulinPen_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HowUseInsulinPen_Rus.pdf",
+    "filename": "How_to_Use_an_Insulin_Pen_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Mixing Two Insulins",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/MixingTwoInsulins_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/MixingTwoInsulins_RUS.pdf",
+    "filename": "Mixing_Two_Insulins_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "How to Use a Glucose Meter",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GlucoseMeter_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "How_to_Use_a_Glucose_Meter_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "How to Use a Glucose Meter",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GlucoseMeter_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "How_to_Use_a_Glucose_Meter_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Diabetes and Eye Problems",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabetesEyeProblems_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabetesEyeProblems_RU.pdf",
+    "filename": "Diabetes_and_Eye_Problems_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Diabetic Retinopathy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabeticRetinopathy_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabeticRetinopathy_RUS.pdf",
+    "filename": "Diabetic_Retinopathy_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Diabetes and Kidney Problems",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabetesKidneyProblems_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Diabetes_and_Kidney_Problems_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Diabetes and Nerve Damage",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabetesNerveDamage_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabetesNerveDamage_RU.pdf",
+    "filename": "Diabetes_and_Nerve_Damage_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Ultrasound",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Ultrasound_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Ultrasound_Rus.pdf",
+    "filename": "Ultrasound_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Dialysis",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Dialysis_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Dialysis_RUS.pdf",
+    "filename": "Dialysis_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "EGD (Endogastroduodenoscopy)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/EGD_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/EGD_Rus.pdf",
+    "filename": "EGD_Endogastroduodenoscopy_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Bombing or Explosion Emergencies",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Bombing_Explosions_Ru_FINAL.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Bombing_Explosions_Ru_FINAL.pdf",
+    "filename": "Bombing_or_Explosion_Emergencies_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Chemical Emergencies",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Chemical_Emergencies_Ru_FINAL.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Chemical_Emergencies_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Mass Casualty Patient Self-Assessment Form",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Mass_%20Casualty_Form_Rus_FINAL.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Mass_%20Casualty_Form_Rus_FINAL.pdf",
+    "filename": "Mass_Casualty_Patient_Self-Assessment_Form_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Plan for an Emergency",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Plan_for_an_Emergency_Ru_FINAL.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Plan_for_an_Emergency_Ru_FINAL.pdf",
+    "filename": "Plan_for_an_Emergency_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Power Outages",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Power_Outages_Ru_FINAL.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Power_Outages_Ru_FINAL.pdf",
+    "filename": "Power_Outages_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Preventing Illness during an Emergency",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Preventing_Illness_During_an_Emergency_Ru_FINAL.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Preventing_Illness_During_an_Emergency_Ru_FINAL.pdf",
+    "filename": "Preventing_Illness_during_an_Emergency_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Wearing a Shoulder Sling",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/WearingShoulderSling_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Wearing_a_Shoulder_Sling_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Cancer Treatment Side Effects",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CancerTreatmentSideEffects_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Cancer_Treatment_Side_Effects_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Generic and Brand Name Medicines",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GenericBrandMedicines_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GenericBrandMedicines_RUS.pdf",
+    "filename": "Generic_and_Brand_Name_Medicines_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Giving Naloxone Nasal Spray for Opioid Overdose",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GivingNaloxone_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GivingNaloxone_RUS.pdf",
+    "filename": "Giving_Naloxone_Nasal_Spray_for_Opioid_Overdose_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Dry Mouth with Cancer Treatment",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DryMouth_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Dry_Mouth_with_Cancer_Treatment_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Middle Ear Infection",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/MiddleEarInfection_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/MiddleEarInfection_Rus.pdf",
+    "filename": "Middle_Ear_Infection_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Middle Ear Infection in Children",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/MiddleEarInfectionChildren_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/MiddleEarInfectionChildren_Rus.pdf",
+    "filename": "Middle_Ear_Infection_in_Children_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Advance Directives",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AdvanceDirectives_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Advance_Directives_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "EGD (Endogastroduodenoscopy)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/EGD_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "EGD_Endogastroduodenoscopy_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Upper Endoscopy (EGD) Prep Instructions",
+    "href": "https://patiented.uofmhealth.org/Portal/Default/en-US/DownloadImageFile.ashx?objectId=6750&ownerType=0&ownerId=3137",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": null,
+    "status": "no_pdf_found"
+  },
+  {
+    "topic": "Diabetes and Eye Problems",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabetesEyeProblems_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Diabetes_and_Eye_Problems_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Diabetic Retinopathy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabeticRetinopathy_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Diabetic_Retinopathy_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Facial Strengthening Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/FacialStrengthening_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/FacialStrengthening_RU.pdf",
+    "filename": "Facial_Strengthening_Exercises_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Preventing Falls in the Hospital",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PreventingFalls_Hosp_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PreventingFalls_Hosp_Rus.pdf",
+    "filename": "Preventing_Falls_in_the_Hospital_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Safety Tips to Prevent Falls at Home",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/fall-prevent-home_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/fall-prevent-home_RU.pdf",
+    "filename": "Safety_Tips_to_Prevent_Falls_at_Home_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Cancer Related Fatigue",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CancerRelatedFatigue_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Cancer_Related_Fatigue_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Fetal Movement Count",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/FetalMovementCount_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/FetalMovementCount_RUS.pdf",
+    "filename": "Fetal_Movement_Count_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Prenatal Care",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PrenatalCare_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Prenatal_Care_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Taking a Temperature",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TakingTemp_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TakingTemp_RUS.pdf",
+    "filename": "Taking_a_Temperature_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Active Hand Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveHandExercises_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveHandExercises_RUS.pdf",
+    "filename": "Active_Hand_Exercises_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Assisted Arm Range of Motion Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AssistedArmROM_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Assisted_Arm_Range_of_Motion_Exercises_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Plan for an Emergency",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Plan_for_an_Emergency_Ru_FINAL.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Plan_for_an_Emergency_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Home Care for Pandemic Flu",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HomeCarePandemicFlu_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HomeCarePandemicFlu_Rus.pdf",
+    "filename": "Home_Care_for_Pandemic_Flu_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Influenza",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Influenza_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Influenza_Rus.pdf",
+    "filename": "Influenza_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Pandemic Flu: What It Is and How to Prepare",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PandemicFlu_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PandemicFlu_Rus.pdf",
+    "filename": "Pandemic_Flu_What_It_Is_and_How_to_Prepare_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Bone Fractures",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BoneFractures_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BoneFractures_Rus.pdf",
+    "filename": "Bone_Fractures_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Cast Care",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CastCare_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CastCare_Rus.pdf",
+    "filename": "Cast_Care_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "ERCP (Endoscopic Retrograde Cholangiopancreatography)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ERCP_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "ERCP_Endoscopic_Retrograde_Cholangiopancreatography_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Hand Washing",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HandWashing_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HandWashing_RUS.pdf",
+    "filename": "Hand_Washing_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Active Hand Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveHandExercises_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Active_Hand_Exercises_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Assisted Arm Range of Motion Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AssistedArmROM_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Assisted_Arm_Range_of_Motion_Exercises_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Head Lice",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HeadLice_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HeadLice_Rus.pdf",
+    "filename": "Head_Lice_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Headaches",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Headaches_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Headaches_RUS.pdf",
+    "filename": "Headaches_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Common Sleep Problems",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Common_Sleep_Problems-Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Common_Sleep_Problems-Rus.pdf",
+    "filename": "Common_Sleep_Problems_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Safe Sleep for Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SafeSleep_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SafeSleep_RU.pdf",
+    "filename": "Safe_Sleep_for_Your_Baby_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "What You Can Do to Sleep Better",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/WhatSleepBetter_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/WhatSleepBetter_RU.pdf",
+    "filename": "What_You_Can_Do_to_Sleep_Better_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Hearing Test for Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HearingTestBaby_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HearingTestBaby_Rus.pdf",
+    "filename": "Hearing_Test_for_Your_Baby_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Heart Attack",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HeartAttack_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HeartAttack_RUS.pdf",
+    "filename": "Heart_Attack_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Angiogram",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Angiogram_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Angiogram_Rus.pdf",
+    "filename": "Angiogram_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Echocardiogram",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Echo_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Echo_Rus.pdf",
+    "filename": "Echocardiogram_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Electrocardiogram (ECG or EKG)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Electrocardiogram_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Electrocardiogram_ECG_or_EKG_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Heart Cath and Heart Angioplasty",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HeartCathAngioplasty_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Heart_Cath_and_Heart_Angioplasty_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Stress Echocardiogram",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/StressEcho_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/StressEcho_Rus.pdf",
+    "filename": "Stress_Echocardiogram_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Stress Test of the Heart",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/StressTest_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/StressTest_Rus.pdf",
+    "filename": "Stress_Test_of_the_Heart_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "TEE (Transesophageal Echocardiogram)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TEE_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TEE_Rus.pdf",
+    "filename": "TEE_Transesophageal_Echocardiogram_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Heart Failure",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HeartFailure_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HeartFailure_Rus.pdf",
+    "filename": "Heart_Failure_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Angiogram",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Angiogram_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Angiogram_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Atrial Fibrillation",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Atrial_Fibrillation_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Atrial_Fibrillation_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Chest X-ray",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ChestX-ray_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ChestX-ray_Rus.pdf",
+    "filename": "Chest_X-ray_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Coronary Artery Disease (CAD)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CAD_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Coronary_Artery_Disease_CAD_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "EPS (Electrophysiology Study)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/EPS_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "EPS_Electrophysiology_Study_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Echocardiogram",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Echo_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Echocardiogram_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Electrocardiogram (ECG or EKG)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Electrocardiogram_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Electrocardiogram_ECG_or_EKG_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Heart Cath and Heart Angioplasty",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HeartCathAngioplasty_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Heart_Cath_and_Heart_Angioplasty_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Stress Echocardiogram",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/StressEcho_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Stress_Echocardiogram_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Stress MUGA",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/StressMuga_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/StressMuga_RUS.pdf",
+    "filename": "Stress_MUGA_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Stress Test of the Heart",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/StressTest_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Stress_Test_of_the_Heart_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Coronary Artery Bypass Surgery",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CABS_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Coronary_Artery_Bypass_Surgery_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Pacemaker",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Pacemaker_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Pacemaker_RUS.pdf",
+    "filename": "Pacemaker_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "High Blood Pressure (Hypertension)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HighBP_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HighBP_Rus.pdf",
+    "filename": "High_Blood_Pressure_Hypertension_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "High Blood Pressure in Pregnancy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HighBPPregnancy_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HighBPPregnancy_Rus.pdf",
+    "filename": "High_Blood_Pressure_in_Pregnancy_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Total Hip Replacement",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TotalHipReplacement_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TotalHipReplacement_RUS.pdf",
+    "filename": "Total_Hip_Replacement_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Pregnancy and HIV",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PregnancyHIVTest_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PregnancyHIVTest_RUS.pdf",
+    "filename": "Pregnancy_and_HIV_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Human Papillomavirus (HPV)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HPV_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HPV_Rus.pdf",
+    "filename": "Human_Papillomavirus_HPV_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "High Blood Sugar",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HighBloodSugar_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "High_Blood_Sugar_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Low Blood Sugar",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/LowBloodSugar_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/LowBloodSugar_Rus.pdf",
+    "filename": "Low_Blood_Sugar_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Caring for Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CaringBaby_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CaringBaby_RUS.pdf",
+    "filename": "Caring_for_Your_Baby_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "How to Bathe Your Newborn Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HowBatheNewborn_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HowBatheNewborn_RUS.pdf",
+    "filename": "How_to_Bathe_Your_Newborn_Baby_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Planning Ahead for the Birth of Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PlanningAheadBaby_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PlanningAheadBaby_RUS.pdf",
+    "filename": "Planning_Ahead_for_the_Birth_of_Your_Baby_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Safe Sleep for Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SafeSleep_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Safe_Sleep_for_Your_Baby_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Smoking and Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SmokingandBaby_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SmokingandBaby_RU.pdf",
+    "filename": "Smoking_and_Your_Baby_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Soothe a Crying Baby and Prevent Shaken Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CryingBabySafety_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CryingBabySafety_RU.pdf",
+    "filename": "Soothe_a_Crying_Baby_and_Prevent_Shaken_Baby_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Teething",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Teething_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Teething_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "When Should I Call My Baby's Doctor?",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/WhenCallBabysDoctor_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "When_Should_I_Call_My_Babys_Doctor_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Your New Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/YourNewBaby_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/YourNewBaby_RU.pdf",
+    "filename": "Your_New_Baby_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Teething",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Teething_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Teething_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Your New Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/YourNewBaby_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Your_New_Baby_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Bottle Feeding Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BottleFeeding_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BottleFeeding_RUS.pdf",
+    "filename": "Bottle_Feeding_Your_Baby_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Common Sleep Problems",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Common_Sleep_Problems-Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Common_Sleep_Problems_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Irritable Bowel Syndrome (IBS)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/IBS_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/IBS_RUS.pdf",
+    "filename": "Irritable_Bowel_Syndrome_IBS_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "24-Hour Urine Test",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/24HourUrine_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/24HourUrine_Rus.pdf",
+    "filename": "24-Hour_Urine_Test_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Kidney Failure",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Kidney_Failure_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Kidney_Failure_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "24-Hour Urine Test",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/24HourUrine_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "24-Hour_Urine_Test_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Diabetes and Kidney Problems",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabetesKidneyProblems_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Diabetes_and_Kidney_Problems_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Total Knee Replacement",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TotalKneeReplacement_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TotalKneeReplacement_RUS.pdf",
+    "filename": "Total_Knee_Replacement_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "24-Hour Urine Test",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/24HourUrine_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "24-Hour_Urine_Test_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "GTT (Glucose Tolerance Test)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GTT_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "GTT_Glucose_Tolerance_Test_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Lumbar Puncture",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/LumbarPuncture_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/LumbarPuncture_Rus.pdf",
+    "filename": "Lumbar_Puncture_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Urine Sample -- Female (Clean Catch)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UrineSampleFemale_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UrineSampleFemale_Rus.pdf",
+    "filename": "Urine_Sample_--_Female_Clean_Catch_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Urine Sample -- Male (Clean Catch)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UrineSampleMale_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UrineSampleMale_Rus.pdf",
+    "filename": "Urine_Sample_--_Male_Clean_Catch_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Active Leg Range of Motion",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveLegROM_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveLegROM_RUS.pdf",
+    "filename": "Active_Leg_Range_of_Motion_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Active Leg Range of Motion Exercises: Sitting",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveLegROMSitting_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveLegROMSitting_RUS.pdf",
+    "filename": "Active_Leg_Range_of_Motion_Exercises_Sitting_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Active Leg Range of Motion Exercises: Standing",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveLegROMstanding_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveLegROMstanding_RUS.pdf",
+    "filename": "Active_Leg_Range_of_Motion_Exercises_Standing_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Lung Cancer",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Lung_Cancer_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Lung_Cancer_RUS.pdf",
+    "filename": "Lung_Cancer_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Bronchoscopy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Bronchoscopy_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Bronchoscopy_Rus.pdf",
+    "filename": "Bronchoscopy_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "PFT (Pulmonary Function Test)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PFT_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PFT_Rus.pdf",
+    "filename": "PFT_Pulmonary_Function_Test_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Mammogram",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Mammogram_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Mammogram_Rus.pdf",
+    "filename": "Mammogram_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Throwing Away Used Needles and Syringes",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ThrowingAwaySyringes_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ThrowingAwaySyringes_Rus.pdf",
+    "filename": "Throwing_Away_Used_Needles_and_Syringes_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Generic and Brand Name Medicines",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GenericBrandMedicines_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Generic_and_Brand_Name_Medicines_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Giving Medicine by Injection Under the Skin (Subcutaneous)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GivingMedSubcu_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GivingMedSubcu_Rus.pdf",
+    "filename": "Giving_Medicine_by_Injection_Under_the_Skin_Subcutaneous_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Under the Skin (Subcutaneous) Injection Sites",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SubcuInjectionSites_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SubcuInjectionSites_Rus.pdf",
+    "filename": "Under_the_Skin_Subcutaneous_Injection_Sites_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Using a Medicine Spoon or Dropper",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UsingMedicineSpoonDropper_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UsingMedicineSpoonDropper_RU.pdf",
+    "filename": "Using_a_Medicine_Spoon_or_Dropper_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Lumbar Puncture",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/LumbarPuncture_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Lumbar_Puncture_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Managing Menopause",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Managing_Menopause_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Managing_Menopause_RUS.pdf",
+    "filename": "Managing_Menopause_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Crutch Walking",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CrutchWalking_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CrutchWalking_Rus.pdf",
+    "filename": "Crutch_Walking_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Using a Cane",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UsingCane_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UsingCane_RUS.pdf",
+    "filename": "Using_a_Cane_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Using a Walker",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UsingWalker_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UsingWalker_RUS.pdf",
+    "filename": "Using_a_Walker_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Weight Bearing Using a Walker",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/WeightBearingWalker_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/WeightBearingWalker_RUS.pdf",
+    "filename": "Weight_Bearing_Using_a_Walker_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Feeling Sad",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/FeelingSad_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Feeling_Sad_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Safety with Car Seats and Booster Seats",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SafetyCarSeats_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Safety_with_Car_Seats_and_Booster_Seats_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "MRI (Magnetic Resonance Imaging)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/MRI_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/MRI_RUS.pdf",
+    "filename": "MRI_Magnetic_Resonance_Imaging_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "MRSA (Methicillin Resistant Staphylococcus Aureus)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/MRSA_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/MRSA_RUS.pdf",
+    "filename": "MRSA_Methicillin_Resistant_Staphylococcus_Aureus_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "EEG (Electroencephalogram)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/EEG_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/EEG_Rus.pdf",
+    "filename": "EEG_Electroencephalogram_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Lumbar Puncture",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/LumbarPuncture_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Lumbar_Puncture_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "EMG and Nerve Conduction Tests",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/EMG_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/EMG_Rus.pdf",
+    "filename": "EMG_and_Nerve_Conduction_Tests_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Hearing Test for Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HearingTestBaby_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Hearing_Test_for_Your_Baby_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Bone Scan",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BoneScan_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Bone_Scan_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Stress MUGA",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/StressMuga_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Stress_MUGA_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Thyroid Scan",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ThyroidScan_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ThyroidScan_RUS.pdf",
+    "filename": "Thyroid_Scan_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Giving Naloxone Nasal Spray for Opioid Overdose",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GivingNaloxone_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Giving_Naloxone_Nasal_Spray_for_Opioid_Overdose_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Giving Naloxone Nasal Spray for Opioid Overdose",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GivingNaloxone_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Giving_Naloxone_Nasal_Spray_for_Opioid_Overdose_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Osteoporosis",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Osteoporosis_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Osteoporosis_RU.pdf",
+    "filename": "Osteoporosis_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Pacemaker",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Pacemaker_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Pacemaker_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "About Your Pain",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AboutYourPain_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AboutYourPain_Rus.pdf",
+    "filename": "About_Your_Pain_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "High Blood Calcium",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/HighBloodCalcium_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "High_Blood_Calcium_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Bullying Information for Parents",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BullyingInfoParents_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Bullying_Information_for_Parents_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Safe Sleep for Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SafeSleep_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Safe_Sleep_for_Your_Baby_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Smoking and Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SmokingandBaby_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Smoking_and_Your_Baby_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Soothe a Crying Baby and Prevent Shaken Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CryingBabySafety_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Soothe_a_Crying_Baby_and_Prevent_Shaken_Baby_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Appointment Reminder",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AppointmentReminder_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AppointmentReminder_Rus.pdf",
+    "filename": "Appointment_Reminder_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Preventing Falls in the Hospital",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PreventingFalls_Hosp_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Preventing_Falls_in_the_Hospital_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Blood Vessel Disease",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BloodVesselDisease_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BloodVesselDisease_Rus.pdf",
+    "filename": "Blood_Vessel_Disease_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Pneumonia",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Pneumonia_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Pneumonia_Rus.pdf",
+    "filename": "Pneumonia_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Pneumonia in Children",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PneumoniaChildren_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PneumoniaChildren_Rus.pdf",
+    "filename": "Pneumonia_in_Children_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Your Recovery After Vaginal Birth",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/RecoveryVaginalBirth_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Your_Recovery_After_Vaginal_Birth_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Emotional Changes After Giving Birth",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/EmotionalChangesBirth_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/EmotionalChangesBirth_Rus.pdf",
+    "filename": "Emotional_Changes_After_Giving_Birth_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "A Healthy Pregnancy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AHealthyPregnancy_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AHealthyPregnancy_RUS.pdf",
+    "filename": "A_Healthy_Pregnancy_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Exercising during Pregnancy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Exercising_During_Pregnancy_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Exercising_During_Pregnancy_RU.pdf",
+    "filename": "Exercising_during_Pregnancy_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Nausea and Vomiting during Pregnancy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/NauseaVomitingPregnancy_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/NauseaVomitingPregnancy_RUS.pdf",
+    "filename": "Nausea_and_Vomiting_during_Pregnancy_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "A Healthy Pregnancy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AHealthyPregnancy_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "A_Healthy_Pregnancy_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "A Healthy Pregnancy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AHealthyPregnancy_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "A_Healthy_Pregnancy_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "A Healthy Pregnancy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AHealthyPregnancy_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "A_Healthy_Pregnancy_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Fetal Movement Count",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/FetalMovementCount_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Fetal_Movement_Count_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Prenatal Care",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PrenatalCare_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Prenatal_Care_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Amniocentesis",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Amniocentesis_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Amniocentesis_Rus.pdf",
+    "filename": "Amniocentesis_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Non-Stress Test in Pregnancy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Non-stressTestPregnancy_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Non-stressTestPregnancy_Rus.pdf",
+    "filename": "Non-Stress_Test_in_Pregnancy_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Giving Naloxone Nasal Spray for Opioid Overdose",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GivingNaloxone_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Giving_Naloxone_Nasal_Spray_for_Opioid_Overdose_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Avoiding Weight Gain When Quitting Tobacco",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AvoidingWtGainTobacco_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Avoiding_Weight_Gain_When_Quitting_Tobacco_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Smoking and Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SmokingandBaby_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Smoking_and_Your_Baby_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Decontamination",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Decontamination_Rus_FINAL.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Decontamination_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Nuclear or Radiation Emergencies",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Nuclear_Radiation_Emergencies_Ru_FINAL.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Nuclear_Radiation_Emergencies_Ru_FINAL.pdf",
+    "filename": "Nuclear_or_Radiation_Emergencies_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Nuclear or Radiation Emergencies",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Nuclear_Radiation_Emergencies_Ru_FINAL.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Nuclear_or_Radiation_Emergencies_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Preventing Infections When Your White Blood Cell Count Is Low",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/PreventingInfectionsWBC_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Preventing_Infections_When_Your_White_Blood_Cell_Count_Is_Low_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Radiation Therapy",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/RadiationTherapy_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/RadiationTherapy_Rus.pdf",
+    "filename": "Radiation_Therapy_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Active Hand Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveHandExercises_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Active_Hand_Exercises_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Active Leg Range of Motion",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveLegROM_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Active_Leg_Range_of_Motion_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Active Leg Range of Motion Exercises: Sitting",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveLegROMSitting_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Active_Leg_Range_of_Motion_Exercises_Sitting_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Active Leg Range of Motion Exercises: Standing",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveLegROMstanding_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Active_Leg_Range_of_Motion_Exercises_Standing_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Active Range of Motion Exercises: Wrists, Elbows, Forearms, and Shoulders",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveROM-WEFS_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Active_Range_of_Motion_Exercises_Wrists_Elbows_Forearms_and_Shoulders_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Ankle Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AnkleExercises_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Ankle_Exercises_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Assisted Arm Range of Motion Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AssistedArmROM_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Assisted_Arm_Range_of_Motion_Exercises_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Exercises to Strengthen Your Back",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ExerBack_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Exercises_to_Strengthen_Your_Back_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Exercises to Strengthen Your Shoulder",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ExerShoulder_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ExerShoulder_RU.pdf",
+    "filename": "Exercises_to_Strengthen_Your_Shoulder_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Facial Strengthening Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/FacialStrengthening_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Facial_Strengthening_Exercises_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Low Back Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/LowBackExercises_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Low_Back_Exercises_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Rotator Cuff Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/RotatorCuffExercises_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/RotatorCuffExercises_RU.pdf",
+    "filename": "Rotator_Cuff_Exercises_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Tongue Base Strengthening Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TongueBaseExer_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TongueBaseExer_RU.pdf",
+    "filename": "Tongue_Base_Strengthening_Exercises_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Rotator Cuff Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/RotatorCuffExercises_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Rotator_Cuff_Exercises_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Child Safety Checklist",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ChildSafetyChecklist_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Child_Safety_Checklist_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Seizures",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Seizures_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Seizures_RUS.pdf",
+    "filename": "Seizures_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Sexually Transmitted Infections (STIs)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/STDs_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/STDs_RUS.pdf",
+    "filename": "Sexually_Transmitted_Infections_STIs_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Active Range of Motion Exercises: Wrists, Elbows, Forearms, and Shoulders",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveROM-WEFS_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Active_Range_of_Motion_Exercises_Wrists_Elbows_Forearms_and_Shoulders_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Assisted Arm Range of Motion Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AssistedArmROM_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Assisted_Arm_Range_of_Motion_Exercises_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Exercises to Strengthen Your Shoulder",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ExerShoulder_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Exercises_to_Strengthen_Your_Shoulder_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Wearing a Shoulder Sling",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/WearingShoulderSling_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Wearing_a_Shoulder_Sling_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Skin Cancer",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SkinCancer_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SkinCancer_Rus.pdf",
+    "filename": "Skin_Cancer_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "CPAP (Continuous Positive Airway Pressure)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CPAP_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CPAP_RUS.pdf",
+    "filename": "CPAP_Continuous_Positive_Airway_Pressure_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Common Sleep Problems",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Common_Sleep_Problems-Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Common_Sleep_Problems_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Common Sleep Problems",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Common_Sleep_Problems-Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Common_Sleep_Problems_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "What You Can Do to Sleep Better",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/WhatSleepBetter_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "What_You_Can_Do_to_Sleep_Better_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Smoking and Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SmokingandBaby_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Smoking_and_Your_Baby_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Lowering Sodium in Your Diet",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/LoweringSodium_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/LoweringSodium_RU.pdf",
+    "filename": "Lowering_Sodium_in_Your_Diet_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Sore Throat",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SoreThroat_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SoreThroat_RUS.pdf",
+    "filename": "Sore_Throat_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Ankle Sprain",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Ankle-Sprain_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Ankle_Sprain_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Gastroparesis",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Gastroparesis_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Gastroparesis_RUS.pdf",
+    "filename": "Gastroparesis_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Stroke",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Stroke_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Stroke_Rus.pdf",
+    "filename": "Stroke_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Safe Sleep for Your Baby",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SafeSleep_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Safe_Sleep_for_Your_Baby_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Getting Your Skin Ready for Surgery",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GettingSkinReady_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/GettingSkinReady_RUS.pdf",
+    "filename": "Getting_Your_Skin_Ready_for_Surgery_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Swallowing Problems",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SwallowingProblems_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/SwallowingProblems_RUS.pdf",
+    "filename": "Swallowing_Problems_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Tongue Base Strengthening Exercises",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TongueBaseExer_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Tongue_Base_Strengthening_Exercises_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "About Your Pain",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AboutYourPain_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "About_Your_Pain_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Communication Tool",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CommunicationSheet_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/CommunicationSheet_Rus.pdf",
+    "filename": "Communication_Tool_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Thyroid Scan",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ThyroidScan_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Thyroid_Scan_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Thyroid Scan",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ThyroidScan_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Thyroid_Scan_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Types of Brain Injury",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/TypesBrainInjury_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Types_of_Brain_Injury_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "How to Take Your TB Medicine",
+    "href": "https://www.mass.gov/doc/tb-medicine-instructions-russian/download",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": null,
+    "status": "no_pdf_found"
+  },
+  {
+    "topic": "Keep Taking Your TB Medicine",
+    "href": "https://www.mass.gov/doc/tb-treatment-adherence-russian/download",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": null,
+    "status": "no_pdf_found"
+  },
+  {
+    "topic": "Tuberculosis (TB)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Tuberculosis_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Tuberculosis_RU.pdf",
+    "filename": "Tuberculosis_TB_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "You Can Have TB Infection and Feel Healthy",
+    "href": "https://www.mass.gov/doc/no-tb-symptoms-russian/download",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": null,
+    "status": "no_pdf_found"
+  },
+  {
+    "topic": "You Have TB Infection (A Type of TB)",
+    "href": "https://www.mass.gov/doc/diagnosed-with-tb-infection-russian/download",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": null,
+    "status": "no_pdf_found"
+  },
+  {
+    "topic": "Ulcerative Colitis",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UlcerativeColitis_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UlcerativeColitis_RUS.pdf",
+    "filename": "Ulcerative_Colitis_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "24-Hour Urine Test",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/24HourUrine_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "24-Hour_Urine_Test_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Urine Sample -- Female (Clean Catch)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UrineSampleFemale_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Urine_Sample_--_Female_Clean_Catch_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Urine Sample -- Male (Clean Catch)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UrineSampleMale_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Urine_Sample_--_Male_Clean_Catch_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Urinary Incontinence in Women",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UrinaryIncontinence_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UrinaryIncontinence_RUS.pdf",
+    "filename": "Urinary_Incontinence_in_Women_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "UTI (Urinary Tract Infection)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UTI_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UTI_RUS.pdf",
+    "filename": "UTI_Urinary_Tract_Infection_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Urine Sample -- Female (Clean Catch)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UrineSampleFemale_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Urine_Sample_--_Female_Clean_Catch_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Urine Sample -- Male (Clean Catch)",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/UrineSampleMale_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Urine_Sample_--_Male_Clean_Catch_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "24-Hour Urine Test",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/24HourUrine_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "24-Hour_Urine_Test_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Vaginal Infection",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Vaginal_Infection_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "pdf_url": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Vaginal_Infection_RUS.pdf",
+    "filename": "Vaginal_Infection_RU.pdf",
+    "status": "ok"
+  },
+  {
+    "topic": "Vaginal Infection",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Vaginal_Infection_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Vaginal_Infection_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Angiogram",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/Angiogram_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Angiogram_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Blood Vessel Disease",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BloodVesselDisease_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Blood_Vessel_Disease_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Avoiding Weight Gain When Quitting Tobacco",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/AvoidingWtGainTobacco_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Avoiding_Weight_Gain_When_Quitting_Tobacco_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Ways to Manage Your Weight",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/WaysManageWt_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Ways_to_Manage_Your_Weight_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Female Exam and Pap Smear",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/FemaleExam_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Female_Exam_and_Pap_Smear_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Diabetes and Wound Healing",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/DiabetesWoundHealing_RU.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Diabetes_and_Wound_Healing_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Active Range of Motion Exercises: Wrists, Elbows, Forearms, and Shoulders",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ActiveROM-WEFS_RUS.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Active_Range_of_Motion_Exercises_Wrists_Elbows_Forearms_and_Shoulders_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Barium Enema",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/BariumEnema_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Barium_Enema_RU.pdf",
+    "status": "cached"
+  },
+  {
+    "topic": "Chest X-ray",
+    "href": "https://storage.googleapis.com/healthinfotranslations-pdfdocs/ChestX-ray_Rus.pdf",
+    "source": "Ð ÑÑÑÐºÐ¸Ð¹ (Russian)",
+    "filename": "Chest_X-ray_RU.pdf",
+    "status": "cached"
+  }
+]

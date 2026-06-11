@@ -1,0 +1,190 @@
+﻿Russian	Forbidden_English	Reason
+абсолютный зрительный порог	threshold	generic_single_word_target
+абсолютный порог ощущения	threshold	generic_single_word_target
+абсолютный порог чувствительности	threshold	generic_single_word_target
+абсолютный яркостный порог	threshold	generic_single_word_target
+абстинентный алкогольный синдром	syndrome	generic_single_word_target
+адренолейкодистрофия	ADL	dangerous_mismatch:адренолейкодистрофия->ADL
+адъювантная [дополнительная] терапия	therapy	generic_single_word_target
+аллерготест, аллергическая проба	test	generic_single_word_target
+амилоидоз, амилоидная дистрофия	disease	generic_single_word_target
+анализ желудочного сока	analysis	generic_single_word_target
+анализ использования лекарственных средств	review	generic_single_word_target
+анализ кала на скрытую кровь	test	generic_single_word_target
+анализ кала, кал на исследование	sample	generic_single_word_target
+анализ крови для определения отцовства	test	generic_single_word_target
+анализ крови на холестерин	screening	generic_single_word_target
+анализ крови, гемограмма	count	generic_single_word_target
+анализ методом блоттинга в геле	analysis	generic_single_word_target
+анализ методом электронного микрозонда	analysis	generic_single_word_target
+анализ уровня глюкозы в крови натощак	test	generic_single_word_target
+анкилостомоз, кессонная болезнь	disease	generic_single_word_target
+арифметический тест измерения объёма памяти	test	generic_single_word_target
+ахроматический зрительный порог	threshold	generic_single_word_target
+болезнь Барлова, цинга у детей, детский скорбут	disease	generic_single_word_target
+болезнь Грейвса, диффузный токсический зоб	disease	generic_single_word_target
+болезнь Крейтцфельдта- Якоба (коровье бешенство	disease	generic_single_word_target
+болезнь Паркинсона, дрожательный паралич	disease	generic_single_word_target
+болезнь Такаясу, болезнь отсутствия пульса	disease	generic_single_word_target
+болезнь Ходжкина, злокачественная гранулёма	disease	generic_single_word_target
+болезнь Шагаса, американский трипаносомоз	disease	generic_single_word_target
+велоэргометрия , тредмил тест, ЭКГ с нагрузкой	test	generic_single_word_target
+внутрибольничная инфекция, нозокомиальная инфекция	infection	generic_single_word_target
+воспаление верхних дыхательных путей	infection	generic_single_word_target
+воспаление мочевого пузыря	infection	generic_single_word_target
+гистаминовая двойная проба	test	generic_single_word_target
+гликогеноз V типа, метаболическая миопатия, болезнь МакАрдля	disease	generic_single_word_target
+голодная болезнь, гиперинсулинизм	disease	generic_single_word_target
+дегенеративное заболевание суставов	disease	generic_single_word_target
+дихотический тест для исследования слуха	test	generic_single_word_target
+дыхательная недостаточность (ДН	failure	generic_single_word_target
+жировая дистрофия печени, жировой гепатоз	disease	generic_single_word_target
+заболевание пищевого происхождения	disease	generic_single_word_target
+заболевание, передающееся воздушно-капельным путём	disease	generic_single_word_target
+забор крови, проба крови	sample	generic_single_word_target
+заместительная терапия эстрогенами (ЗГЭ	therapy	generic_single_word_target
+заразная [инфекционная] болезнь	disease	generic_single_word_target
+заразная болезнь, трансмиссивная болезнь	disease	generic_single_word_target
+измерение артериального давления	screening	generic_single_word_target
+изучение сна, исследование сна	study	generic_single_word_target
+интерперсональная [межличностная] психотерапия (ИПТ	therapy	generic_single_word_target
+инфекционный гепатит, гепатит А, болезнь Боткина	disease	generic_single_word_target
+инфекция, передающаяся воздушно-капельным путём	infection	generic_single_word_target
+информация по лечебному процессу	treatment	generic_single_word_target
+исследование методом двойного контрастирования	examination	generic_single_word_target
+исследование органов грудной клетки	examination	generic_single_word_target
+каротиновая желтуха, охродерматоз	disease	generic_single_word_target
+кессонная болезнь, декомпрессионная болезнь	disease	generic_single_word_target
+клинико- анатомическое исследование	study	generic_single_word_target
+клиническое исследование слепым методом	study	generic_single_word_target
+когнитивное расстройство, нарушение познавательных способностей	disorder	generic_single_word_target
+кожная аллергологическая проба	test	generic_single_word_target
+конверсионная терапия, репаративная терапия	therapy	generic_single_word_target
+легионеллёз, «болезнь легионеров», питтсбургская пневмония	disease	generic_single_word_target
+лекарственная терапия закупоренных сосудов сердца	therapy	generic_single_word_target
+лекарственно индуцированное заболевание	disease	generic_single_word_target
+лечебная физкультура (ЛФК	therapy	generic_single_word_target
+лечение долгим сном	therapy	generic_single_word_target
+лечение ультрафиолетовым излучением (УФЛ	therapy	generic_single_word_target
+линейно- регрессионный анализ	analysis	generic_single_word_target
+логопедия, речевая терапия	therapy	generic_single_word_target
+массовое обследование населения	screening	generic_single_word_target
+медицинский осмотр, медосмотр	examination	generic_single_word_target
+медицинско- социальное сопровождение	management	generic_single_word_target
+метод исследования функции печени	test	generic_single_word_target
+множественная личность, расщепление личности	disorder	generic_single_word_target
+модель социального научения в терапии	therapy	generic_single_word_target
+наружная [топическая] терапия	therapy	generic_single_word_target
+нарушение поведения во время сна с быстрыми движениями глаз	disorder	generic_single_word_target
+нарушение свёртываемости крови	failure	generic_single_word_target
+нозокомиальная [внутрибольничная] инфекция	infection	generic_single_word_target
+Обработка; обеззараживание (отходов)/ Лечение	Treatment	generic_single_word_target
+обсессивно- компульсивное расстройство	disorder	generic_single_word_target
+обсессивно- компульсивное расстройство (ОКР	disorder	generic_single_word_target
+обсессивно- компульсивное расстройство личности	disorder	generic_single_word_target
+ожирение сердца, жирное сердце (с массивными отложениями	disease	generic_single_word_target
+оперативное лечение, оперативное вмешательство	treatment	generic_single_word_target
+определение протромбинового времени, проба Квика, протромбиновая проба	test	generic_single_word_target
+определение скорости оседания эритроцитов	test	generic_single_word_target
+осмотр матки и влагалища	examination	generic_single_word_target
+осмотр на выявление колоректального рака	screening	generic_single_word_target
+осмотр на рак	screening	generic_single_word_target
+осмотр на рак молочной железы	screening	generic_single_word_target
+осмотр предстательной железы на рак	screening	generic_single_word_target
+осмотр толстой кишки на рак	screening	generic_single_word_target
+острая кишечная инфекция	infection	generic_single_word_target
+острая сердечная недостаточность	failure	generic_single_word_target
+острое заболевание лёгких у недоношенных детей	disease	generic_single_word_target
+острый ретровирусный синдром	syndrome	generic_single_word_target
+паразитарная [инвазионная] болезнь	disease	generic_single_word_target
+патронаж неблагополучных семей	work	generic_single_word_target
+патронаж, патронажная работа	work	generic_single_word_target
+период инфекционной болезни	disease	generic_single_word_target
+пилотное клиническое исследование	study	generic_single_word_target
+пиротерапия, пирогенная терапия	therapy	generic_single_word_target
+пищевое отравление, пищевая интоксикация	disease	generic_single_word_target
+плановый медицинский осмотр	examination	generic_single_word_target
+поведенческая терапия, бихевиоральная психотерапия	therapy	generic_single_word_target
+пограничное расстройство личности	disorder	generic_single_word_target
+порог болевой чувствительности	threshold	generic_single_word_target
+порог, предел, граница	threshold	generic_single_word_target
+порок трикуспидального клапана сердца	disease	generic_single_word_target
+почечнокаменная болезнь, нефролитиаз	disease	generic_single_word_target
+приобретённый порок сердца	disease	generic_single_word_target
+проба для проверки слуха, проба на остроту слуха	test	generic_single_word_target
+проба Квика, определение протромбинового времени	test	generic_single_word_target
+проба мочи для анализа	sample	generic_single_word_target
+проба на на наличие беременности	test	generic_single_word_target
+проба на остроту зрения, проверка зрения, зрительный тест	test	generic_single_word_target
+проба на совместимость	test	generic_single_word_target
+проба на совместимость донора-реципиента	test	generic_single_word_target
+проба с кипячением	test	generic_single_word_target
+проба с физической нагрузкой	test	generic_single_word_target
+проверка остроты слуха	test	generic_single_word_target
+проточный цитометрический анализ	analysis	generic_single_word_target
+протромбиновая проба, проба Квика	test	generic_single_word_target
+рассмотрение страхового иска	review	generic_single_word_target
+расстройство личности, изменение личности	disorder	generic_single_word_target
+расстройство приёма пищи, нарушение пищевого поведения	disorder	generic_single_word_target
+реакция агрегации тромбоцитов	test	generic_single_word_target
+реакция тромбо- агглютинации	test	generic_single_word_target
+ревматическое заболевание сердца	disease	generic_single_word_target
+рекреационная [оздоровительная] терапия	therapy	generic_single_word_target
+синдром «лицо эльфа», синдром Вильямса	syndrome	generic_single_word_target
+синдром дезорганизации действий	syndrome	generic_single_word_target
+синдром длительного сдавливания	syndrome	generic_single_word_target
+синдром запястного канала, карпальный туннельный синдром	syndrome	generic_single_word_target
+синдром истощения при ВИЧ-инфекции	syndrome	generic_single_word_target
+синдром коровьего бешенства	disease	generic_single_word_target
+синдром Корсакова, алкогольный паралич	syndrome	generic_single_word_target
+синдром полиорганной недостаточности (СПН	failure	generic_single_word_target
+синдром пролапса клапана	syndrome	generic_single_word_target
+синдром радикулопатии (при давлении межпозвоночного диска	syndrome	generic_single_word_target
+синдром Рея (острая печёночная энцефалопатия, белая печёночная болезнь	syndrome	generic_single_word_target
+синдром сонного апноэ	syndrome	generic_single_word_target
+синдром социального осуждения	syndrome	generic_single_word_target
+синдром социальной изоляции	syndrome	generic_single_word_target
+синдром хронической усталости	syndrome	generic_single_word_target
+синюшный ребёнок, цианотичный ребёнок	syndrome	generic_single_word_target
+системная семейная терапия	therapy	generic_single_word_target
+системная терапия, системная антибиотикотерапия	therapy	generic_single_word_target
+скрининг, осмотр, обследование	screening	generic_single_word_target
+смешанная [сочетанная] инфекция	infection	generic_single_word_target
+снятие болевых ощущений	management	generic_single_word_target
+социотерапия, социальная терапия	therapy	generic_single_word_target
+СПИД (синдром приобретённого иммунодефицита	syndrome	generic_single_word_target
+терапия, консервативное лечение	therapy	generic_single_word_target
+тест адгезии тромбоцитов	test	generic_single_word_target
+тест Векслера на уровень интеллектуального развития	test	generic_single_word_target
+тест ингибиции гемагглютинации	test	generic_single_word_target
+тест ингибиции миграции лейкоцитов	test	generic_single_word_target
+тест ингибиции миграции макрофагов	test	generic_single_word_target
+тест на адаптивные способности	test	generic_single_word_target
+тест на выявление способностей	test	generic_single_word_target
+тест на запоминание	test	generic_single_word_target
+тест на объём восприятия	test	generic_single_word_target
+тест на пространственное восприятие	test	generic_single_word_target
+тест на развитие мелкой моторики	test	generic_single_word_target
+тест на самоконтроль	test	generic_single_word_target
+тест на содержание хлорида натрия в потовой жидкости	test	generic_single_word_target
+тест на уровень интеллекта	test	generic_single_word_target
+тест пенообразования амниотической жидкости	test	generic_single_word_target
+тест познавательных способностей	test	generic_single_word_target
+тест профпригодности, тест профессиональной подготовки	test	generic_single_word_target
+тест Роршаха, тест	test	generic_single_word_target
+тест словесных ассоциаций	test	generic_single_word_target
+тест творческих способностей	test	generic_single_word_target
+тест умственных способностей	test	generic_single_word_target
+тест Хант-Миннесота на выявление степени утраты интеллекта в результате мозговой травмы	test	generic_single_word_target
+тест эмоциональной стабильности	test	generic_single_word_target
+тест-доза, пробная доза	test	generic_single_word_target
+тестирование на ВИЧ в домашних условиях	test	generic_single_word_target
+трансвестизм двойной роли	dressing	generic_single_word_target
+тревожный невроз, невроз страха	disorder	generic_single_word_target
+трудотерапия, трудовая терапия	therapy	generic_single_word_target
+Управление (деятельностью программы, организации	Management	generic_single_word_target
+фиброзно-кистозная мастопатия (ФКМ	disease	generic_single_word_target
+холодные ноги (болезнь Рейно	disease	generic_single_word_target
+целиакия (непереносимость глютена	disease	generic_single_word_target
+цепная передача инфекции	infection	generic_single_word_target
+эпитимпанит (хронический отит с поражением височной кости	disease	generic_single_word_target

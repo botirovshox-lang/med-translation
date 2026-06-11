@@ -1,0 +1,27 @@
+# Medical CAT Translator v5.5 + Anthropic
+# Python 3.14+
+
+# Web UI
+streamlit>=1.57.0            # Streamlit web interface
+streamlit-aggrid>=0.4.0      # Excel-like data grid (resize, sort, filter)
+pandas>=2.0.0                # Data handling
+
+# APIs
+anthropic>=0.25.0            # Anthropic Claude API (glossary engine)
+openai>=1.0.0                # OpenAI API (QA, back-check, safety review)
+google-cloud-translate>=3.8.0 # Google Cloud Translation API
+
+# Document processing
+python-docx>=0.8.11          # DOCX import/export
+pdfplumber>=0.10.0           # PDF text extraction
+
+# Web scraping (legacy)
+requests>=2.31.0             # HTTP library
+beautifulsoup4>=4.12.0       # HTML parsing
+lxml>=4.9.0                  # XML parser
+
+# Config
+python-dotenv>=1.0.0         # .env support
+
+# Database
+# (SQLite3 included in Python)

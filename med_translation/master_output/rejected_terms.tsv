@@ -1,0 +1,359 @@
+﻿Russian	English	Issues	Sources
+2 - верхний индекс	gsm	incomplete_target	xlsx_medconsult
+220-230 условных единиц (усл. ед	220-230 relative units (RU	ocr_artifact	xlsx_silicone
+Gm-группа, антигенная детерминанта глобулина	Gm	incomplete_target	baldwin_reference
+абсолютный зрительный порог	threshold	generic_single_word; lost_qualifier:абсолютный	baldwin_reference
+абсолютный порог ощущения	threshold	generic_single_word; lost_qualifier:абсолютный	baldwin_reference
+абсолютный порог чувствительности	threshold	generic_single_word; lost_qualifier:абсолютный	baldwin_reference
+абсолютный яркостный порог	threshold	generic_single_word; lost_qualifier:абсолютный	baldwin_reference
+абстинентный алкогольный синдром	syndrome	generic_single_word	baldwin_reference
+адъювантная [дополнительная] терапия	therapy	generic_single_word	baldwin_reference
+акт признания конфиденциальности информации, полученной в ходе медицинского вмешательства	act	incomplete_target	baldwin_reference
+алиментарная дистрофия, алиментарное истощение, военный [голодный] отёк	war	incomplete_target	baldwin_reference
+аллергия на солнце	sun	incomplete_target	baldwin_reference
+аллерготест, аллергическая проба	test	generic_single_word	baldwin_reference
+альтер-эго, второе «я»	ego	incomplete_target	baldwin_reference
+амблиопия, амблиопичный глаз	eye	incomplete_target	baldwin_reference
+американский лейшманиоз	uta	incomplete_target	baldwin_reference
+амилоидоз, амилоидная дистрофия	disease	generic_single_word	baldwin_reference
+амнион, амниотический мешок, амниотическая оболочка	sac	incomplete_target	baldwin_reference
+ампутационная пила	saw	incomplete_target	baldwin_reference
+анализ желудочного сока	analysis	generic_single_word	baldwin_reference
+анализ использования лекарственных средств	review	generic_single_word	baldwin_reference
+анализ кала на скрытую кровь	test	generic_single_word	baldwin_reference
+анализ кала, кал на исследование	sample	generic_single_word	baldwin_reference
+анализ крови для определения отцовства	test	generic_single_word	baldwin_reference
+анализ крови на холестерин	screening	generic_single_word	baldwin_reference
+анализ крови, гемограмма	count	generic_single_word	baldwin_reference
+анализ методом блоттинга в геле	analysis	generic_single_word	baldwin_reference
+анализ методом электронного микрозонда	analysis	generic_single_word	baldwin_reference
+анализ уровня глюкозы в крови натощак	test	generic_single_word	baldwin_reference
+аневризматический мешок	sac	incomplete_target	baldwin_reference
+анкилостомоз, кессонная болезнь	disease	generic_single_word	baldwin_reference
+арифметический тест измерения объёма памяти	test	generic_single_word	baldwin_reference
+артериальное русло	bed	incomplete_target	baldwin_reference
+ахроматический зрительный порог	threshold	generic_single_word	baldwin_reference
+безопасное сексуальное поведение	sex	incomplete_target	baldwin_reference
+белый болевой флебит	leg	incomplete_target	baldwin_reference
+бескоить, причинять страдание	ail	incomplete_target	baldwin_reference
+бластоциста, зародышевый пузырёк	sac	incomplete_target	baldwin_reference
+боковая поверхность таза и бедра	hip	incomplete_target	baldwin_reference
+болезнь Барлова, цинга у детей, детский скорбут	disease	generic_single_word	baldwin_reference
+болезнь Грейвса, диффузный токсический зоб	disease	generic_single_word	baldwin_reference
+болезнь Крейтцфельдта- Якоба (коровье бешенство	disease	generic_single_word	baldwin_reference
+болезнь Паркинсона, дрожательный паралич	disease	generic_single_word	baldwin_reference
+болезнь Такаясу, болезнь отсутствия пульса	disease	generic_single_word	baldwin_reference
+болезнь Ходжкина, злокачественная гранулёма	disease	generic_single_word	baldwin_reference
+болезнь Шагаса, американский трипаносомоз	disease	generic_single_word	baldwin_reference
+больничная койка	bed	incomplete_target	baldwin_reference
+больной, нездоровый	ill	incomplete_target	baldwin_reference
+бранша зажима/пинцета	jaw	incomplete_target	baldwin_reference
+буфтальм, бычий глаз	eye	incomplete_target	baldwin_reference
+вдохнуть/вдыхать	in	incomplete_target	baldwin_reference
+велоэргометрия , тредмил тест, ЭКГ с нагрузкой	test	generic_single_word	baldwin_reference
+веселящий газ, закись азота	gas	incomplete_target	baldwin_reference
+вкусовой сосочек языка	bud	incomplete_target	baldwin_reference
+внезапное обострение заболевания	up	incomplete_target	baldwin_reference
+внутрибольничная инфекция, нозокомиальная инфекция	infection	generic_single_word	baldwin_reference
+внутривенное введение	iv	incomplete_target	my_medlineplus
+внутривенный катетер	iv	incomplete_target	my_medlineplus
+внутриматочная спираль	iud	incomplete_target	my_medlineplus
+внутриутробный возраст	age	incomplete_target	baldwin_reference
+внутриутробный возраст плода	age	incomplete_target	baldwin_reference
+водопроводная вода	tap	incomplete_target	baldwin_reference
+воздух, атмосфера	air	incomplete_target	baldwin_reference
+воздушный фильтр	air	incomplete_target	baldwin_reference
+возрастной фактор	age	incomplete_target	baldwin_reference
+воспаление верхних дыхательных путей	infection	generic_single_word	baldwin_reference
+воспаление мочевого пузыря	infection	generic_single_word	baldwin_reference
+впитывающая простынь, впитывающая пелёнка	pad	incomplete_target	baldwin_reference
+вправлять (кость	set	incomplete_target	baldwin_reference
+вредный, гибельный	ill	incomplete_target	baldwin_reference
+временный провал памяти	out	incomplete_target	baldwin_reference
+вспомогательное средство	aid	incomplete_target	baldwin_reference
+выделения из уха, отит	ear	incomplete_target	baldwin_reference
+выдохнуть/выдыхать	out	incomplete_target	baldwin_reference
+выпускать жидкость путём пункции	tap	incomplete_target	baldwin_reference
+высыпать (сыпь, прыщи	out	incomplete_target	baldwin_reference
+газовый [гангренозный] абсцесс	gas	incomplete_target	baldwin_reference
+газонаркотическая смесь, ингаляционный анестетик	gas	incomplete_target	baldwin_reference
+гестационный возраст	age	incomplete_target	baldwin_reference
+гистаминовая двойная проба	test	generic_single_word	baldwin_reference
+гликогеноз V типа, метаболическая миопатия, болезнь МакАрдля	disease	generic_single_word	baldwin_reference
+голодная болезнь, гиперинсулинизм	disease	generic_single_word	baldwin_reference
+горячий [термальный] минеральный источник	spa	incomplete_target	baldwin_reference
+ГОСТ 8.417-2002 Единицы физических величин	cPs	incomplete_target	xlsx_medconsult
+грелка (химическая или электрическая	pad	incomplete_target	baldwin_reference
+дегенеративное заболевание суставов	disease	generic_single_word	baldwin_reference
+дежавю, уже виденное	vu	incomplete_target	baldwin_reference
+дихотический тест для исследования слуха	test	generic_single_word	baldwin_reference
+дневное зрение, фотопическое зрение	day	incomplete_target	baldwin_reference
+дурной запах изо рта	bad	incomplete_target	baldwin_reference
+дыхательная недостаточность (ДН	failure	generic_single_word	baldwin_reference
+дыхательная смесь	gas	incomplete_target	baldwin_reference
+дыхательный мешок	bag	incomplete_target	baldwin_reference
+дыхательный объём воздуха	air	incomplete_target	baldwin_reference
+есть, принимать пищу	eat	incomplete_target	baldwin_reference
+жировая дистрофия печени, жировой гепатоз	disease	generic_single_word	baldwin_reference
+жировая клетчатка	fat	incomplete_target	baldwin_reference
+жировой трансплантат	fat	incomplete_target	baldwin_reference
+заболевание пищевого происхождения	disease	generic_single_word	baldwin_reference
+заболевание, передающееся воздушно-капельным путём	disease	generic_single_word	baldwin_reference
+забор крови, проба крови	sample	generic_single_word	baldwin_reference
+зависимость от конопли/марихуаны	pot	incomplete_target	baldwin_reference
+Закон о достойной смерти	Act	incomplete_target	baldwin_reference
+заместительная терапия эстрогенами (ЗГЭ	therapy	generic_single_word	baldwin_reference
+заразная [инфекционная] болезнь	disease	generic_single_word	baldwin_reference
+заразная болезнь, трансмиссивная болезнь	disease	generic_single_word	baldwin_reference
+застенчивый, робкий	shy	incomplete_target	baldwin_reference
+здоровье для всех	all	incomplete_target	baldwin_reference
+измерение артериального давления	screening	generic_single_word	baldwin_reference
+изучение сна, исследование сна	study	generic_single_word	baldwin_reference
+инсулиновая шприц-ручка	pen	incomplete_target	baldwin_reference
+интерперсональная [межличностная] психотерапия (ИПТ	therapy	generic_single_word	baldwin_reference
+инфекционный гепатит, гепатит А, болезнь Боткина	disease	generic_single_word	baldwin_reference
+инфекция, передающаяся воздушно-капельным путём	infection	generic_single_word	baldwin_reference
+информация по лечебному процессу	treatment	generic_single_word	baldwin_reference
+инъекционная наркомания	use	incomplete_target	baldwin_reference
+искусственный глаз	eye	incomplete_target	baldwin_reference
+испытательный стенд	bed	incomplete_target	baldwin_reference
+исследование методом двойного контрастирования	examination	generic_single_word	baldwin_reference
+исследование органов грудной клетки	examination	generic_single_word	baldwin_reference
+кандела, сила света	kd	incomplete_target	xlsx_medconsult
+капиллярное русло	bed	incomplete_target	baldwin_reference
+капсула опухоли или кисты	sac	incomplete_target	baldwin_reference
+каротиновая желтуха, охродерматоз	disease	generic_single_word	baldwin_reference
+картонный парафинированный стаканчик	cup	incomplete_target	baldwin_reference
+кессонная болезнь, декомпрессионная болезнь	disease	generic_single_word	baldwin_reference
+кислородная подушка	bag	incomplete_target	baldwin_reference
+киста с жировым содержимым	oil	incomplete_target	baldwin_reference
+клинико- анатомическое исследование	study	generic_single_word	baldwin_reference
+клиническое исследование слепым методом	study	generic_single_word	baldwin_reference
+когнитивное расстройство, нарушение познавательных способностей	disorder	generic_single_word	baldwin_reference
+кожная аллергологическая проба	test	generic_single_word	baldwin_reference
+колпачок, крышка	cap	incomplete_target	baldwin_reference
+конверсионная терапия, репаративная терапия	therapy	generic_single_word	baldwin_reference
+конец, окончание	end	incomplete_target	baldwin_reference
+контрастное вещество	dye	incomplete_target	baldwin_reference
+костный гвоздь, костный стержень	pin	incomplete_target	baldwin_reference
+кубический сантиметр (см³	cc	incomplete_target	baldwin_reference
+курорт с минеральными водами	spa	incomplete_target	baldwin_reference
+кювета, ванночка	pan	incomplete_target	baldwin_reference
+легионеллёз, «болезнь легионеров», питтсбургская пневмония	disease	generic_single_word	baldwin_reference
+лекарственная терапия закупоренных сосудов сердца	therapy	generic_single_word	baldwin_reference
+лекарственно индуцированное заболевание	disease	generic_single_word	baldwin_reference
+лечебная физкультура (ЛФК	therapy	generic_single_word	baldwin_reference
+лечение долгим сном	therapy	generic_single_word	baldwin_reference
+лечение ультрафиолетовым излучением (УФЛ	therapy	generic_single_word	baldwin_reference
+линейно- регрессионный анализ	analysis	generic_single_word	baldwin_reference
+липоцит, жировая клетка	fat	incomplete_target	baldwin_reference
+логопедия, речевая терапия	therapy	generic_single_word	baldwin_reference
+ложе трансплантата	bed	incomplete_target	baldwin_reference
+Лот; серия (партия	Lot	incomplete_target	vaccine_pdf_WHO
+магнитно-резонансная томография	mri	incomplete_target	my_medlineplus
+массовое обследование населения	screening	generic_single_word	baldwin_reference
+мастикациограф, ортодонтическая лицевая дуга	bow	incomplete_target	baldwin_reference
+медицинская аптечка, аптечка первой медицинской помощи	kit	incomplete_target	baldwin_reference
+медицинская шапочка	cap	incomplete_target	baldwin_reference
+медицинский осмотр, медосмотр	examination	generic_single_word	baldwin_reference
+медицинско- социальное сопровождение	management	generic_single_word	baldwin_reference
+метод исследования функции печени	test	generic_single_word	baldwin_reference
+минеральный источник	spa	incomplete_target	baldwin_reference
+мн. ч. 3000 фунтов/кв. дюйм	psi	incomplete_target	xlsx_medconsult
+множественная личность, расщепление личности	disorder	generic_single_word	baldwin_reference
+модель социального научения в терапии	therapy	generic_single_word	baldwin_reference
+морфологический возраст	age	incomplete_target	baldwin_reference
+мочить, увлажнять	wet	incomplete_target	baldwin_reference
+набор для обследования жертвы насилия	kit	incomplete_target	baldwin_reference
+надевать колпачок, покрывать	cap	incomplete_target	baldwin_reference
+наружная [топическая] терапия	therapy	generic_single_word	baldwin_reference
+наружный слуховой проход	ear	incomplete_target	baldwin_reference
+нарушение поведения во время сна с быстрыми движениями глаз	disorder	generic_single_word	baldwin_reference
+нарушение свёртываемости крови	failure	generic_single_word	baldwin_reference
+невроз военного времени	war	incomplete_target	baldwin_reference
+несовершеннолетний	age	incomplete_target	baldwin_reference|baldwin_strict
+низкий, невысокий	low	incomplete_target	baldwin_reference
+нога (голень до ступни	leg	incomplete_target	baldwin_reference
+нозокомиальная [внутрибольничная] инфекция	infection	generic_single_word	baldwin_reference
+носимый ножной мочеприёмник	bag	incomplete_target	baldwin_reference
+обморок, синкопе	fit	incomplete_target	baldwin_reference
+Обработка; обеззараживание (отходов)/ Лечение	Treatment	generic_single_word	vaccine_pdf_WHO
+обсессивно- компульсивное расстройство	disorder	generic_single_word	baldwin_reference
+обсессивно- компульсивное расстройство (ОКР	disorder	generic_single_word	baldwin_reference
+обсессивно- компульсивное расстройство личности	disorder	generic_single_word	baldwin_reference
+ограничение по возрасту	age	incomplete_target	baldwin_reference
+ожирение сердца, жирное сердце (с массивными отложениями	disease	generic_single_word	baldwin_reference
+оперативная офтальмология	eye	incomplete_target	baldwin_reference
+оперативное лечение, оперативное вмешательство	treatment	generic_single_word	baldwin_reference
+определение протромбинового времени, проба Квика, протромбиновая проба	test	generic_single_word	baldwin_reference
+определение скорости оседания эритроцитов	test	generic_single_word	baldwin_reference
+осмотр матки и влагалища	examination	generic_single_word	baldwin_reference
+осмотр на выявление колоректального рака	screening	generic_single_word	baldwin_reference
+осмотр на рак	screening	generic_single_word	baldwin_reference
+осмотр на рак молочной железы	screening	generic_single_word	baldwin_reference
+осмотр предстательной железы на рак	screening	generic_single_word	baldwin_reference
+осмотр толстой кишки на рак	screening	generic_single_word	baldwin_reference
+острая кишечная инфекция	infection	generic_single_word	baldwin_reference
+острая сердечная недостаточность	failure	generic_single_word	baldwin_reference
+острое заболевание лёгких у недоношенных детей	disease	generic_single_word	baldwin_reference
+остроконечная бородавка	fig	incomplete_target	baldwin_reference
+острый катаральный отит	ear	lost_qualifier:острый; incomplete_target	baldwin_reference
+острый ретровирусный синдром	syndrome	generic_single_word; lost_qualifier:острый	baldwin_reference
+отравление газом	gas	incomplete_target	baldwin_reference
+отравляющее вещество кожно- нарывного действия	gas	incomplete_target	baldwin_reference
+ОФС.1.2.3.0012.15 Определение белка OD280 – оптическая плотность при длине волны 280 нм	protein content by OD280	ocr_artifact	xlsx_medconsult
+падение сатурации	dip	incomplete_target	xlsx_respiratory
+палочка, бактерия	rod	incomplete_target	baldwin_reference
+паразитарная [инвазионная] болезнь	disease	generic_single_word	baldwin_reference
+парафинированный	wax	incomplete_target	baldwin_reference
+патронаж неблагополучных семей	work	generic_single_word	baldwin_reference
+патронаж, патронажная работа	work	generic_single_word	baldwin_reference
+пенсионный возраст	age	incomplete_target	baldwin_reference
+перикард, околосердечная сумка	sac	incomplete_target	baldwin_reference
+период инфекционной болезни	disease	generic_single_word	baldwin_reference
+перорально, внутрь	os	incomplete_target	baldwin_reference
+пилотное клиническое исследование	study	generic_single_word	baldwin_reference
+пиротерапия, пирогенная терапия	therapy	generic_single_word	baldwin_reference
+пищевое отравление, пищевая интоксикация	disease	generic_single_word	baldwin_reference
+плановый медицинский осмотр	examination	generic_single_word	baldwin_reference
+плодные оболочки	sac	incomplete_target	baldwin_reference
+плохо себя вести	up	incomplete_target	baldwin_reference
+поведенческая терапия, бихевиоральная психотерапия	therapy	generic_single_word	baldwin_reference
+повышенное газообразование	gas	incomplete_target	my_medlineplus
+пограничное расстройство личности	disorder	generic_single_word	baldwin_reference
+подкладное судно	pan	incomplete_target	baldwin_reference
+подкладывать что-либо мягкое	pad	incomplete_target	baldwin_reference
+помогать, оказывать помощь	aid	incomplete_target	baldwin_reference
+помощник, ассистент	aid	incomplete_target	baldwin_reference
+порог болевой чувствительности	threshold	generic_single_word	baldwin_reference
+порог, предел, граница	threshold	generic_single_word	baldwin_reference
+порок трикуспидального клапана сердца	disease	generic_single_word	baldwin_reference
+постельный режим	bed	incomplete_target	baldwin_reference
+почечнокаменная болезнь, нефролитиаз	disease	generic_single_word	baldwin_reference
+привычный образ действий	rut	incomplete_target	baldwin_reference
+пригонка, подгонка	fit	incomplete_target	baldwin_reference
+прикроватный мочеприёмник	bag	incomplete_target	baldwin_reference
+применять роторасширитель	gag	incomplete_target	baldwin_reference
+приобретённый порок сердца	disease	generic_single_word; lost_qualifier:приобретённый	baldwin_reference
+проба для проверки слуха, проба на остроту слуха	test	generic_single_word	baldwin_reference
+проба Квика, определение протромбинового времени	test	generic_single_word	baldwin_reference
+проба мочи для анализа	sample	generic_single_word	baldwin_reference
+проба на на наличие беременности	test	generic_single_word	baldwin_reference
+проба на остроту зрения, проверка зрения, зрительный тест	test	generic_single_word	baldwin_reference
+проба на совместимость	test	generic_single_word	baldwin_reference
+проба на совместимость донора-реципиента	test	generic_single_word	baldwin_reference
+проба с кипячением	test	generic_single_word	baldwin_reference
+проба с физической нагрузкой	test	generic_single_word	baldwin_reference
+проверка остроты слуха	test	generic_single_word	baldwin_reference
+проветривать, вентилировать	air	incomplete_target	baldwin_reference
+проволочная пила	saw	incomplete_target	baldwin_reference
+прокладка, подкладка, подушечка	pad	incomplete_target	baldwin_reference
+протез нижней конечности	leg	incomplete_target	baldwin_reference
+проточный цитометрический анализ	analysis	generic_single_word	baldwin_reference
+протромбиновая проба, проба Квика	test	generic_single_word	baldwin_reference
+птичий грипп, H5N1	flu	incomplete_target	baldwin_reference
+рассмотрение страхового иска	review	generic_single_word	baldwin_reference
+расстройство личности, изменение личности	disorder	generic_single_word	baldwin_reference
+расстройство приёма пищи, нарушение пищевого поведения	disorder	generic_single_word	baldwin_reference
+реакция агрегации тромбоцитов	test	generic_single_word	baldwin_reference
+реакция тромбо- агглютинации	test	generic_single_word	baldwin_reference
+ревматическое заболевание сердца	disease	generic_single_word	baldwin_reference
+рекреационная [оздоровительная] терапия	therapy	generic_single_word	baldwin_reference
+рентгеновский луч	ray	incomplete_target	baldwin_reference
+репродуктивный [детородный] возраст	age	incomplete_target	baldwin_reference
+рестрикционная карта	map	incomplete_target	baldwin_reference
+ретенционное слезоточение	eye	incomplete_target	baldwin_reference
+Решение о конце жизни	EoL	incomplete_target	xlsx_respiratory
+рука (исключая кисть	arm	incomplete_target	baldwin_reference
+сахарный диабет 2-го типа	two	incomplete_target	baldwin_reference
+секс в коммерческих целях	sex	incomplete_target	baldwin_reference
+секс по обоюдному согласию	sex	incomplete_target	baldwin_reference
+сексуальная зависимость	sex	incomplete_target	baldwin_reference
+сексуальные отношения	sex	incomplete_target	baldwin_reference
+симптом «уже виденного»	vu	incomplete_target	baldwin_reference
+синдром «лицо эльфа», синдром Вильямса	syndrome	generic_single_word	baldwin_reference
+синдром дезорганизации действий	syndrome	generic_single_word	baldwin_reference
+синдром длительного сдавливания	syndrome	generic_single_word	baldwin_reference
+синдром запястного канала, карпальный туннельный синдром	syndrome	generic_single_word	baldwin_reference
+синдром истощения при ВИЧ-инфекции	syndrome	generic_single_word	baldwin_reference
+синдром коровьего бешенства	disease	generic_single_word	baldwin_reference
+синдром Корсакова, алкогольный паралич	syndrome	generic_single_word	baldwin_reference
+синдром полиорганной недостаточности (СПН	failure	generic_single_word	baldwin_reference
+синдром пролапса клапана	syndrome	generic_single_word	baldwin_reference
+синдром радикулопатии (при давлении межпозвоночного диска	syndrome	generic_single_word	baldwin_reference
+синдром Рея (острая печёночная энцефалопатия, белая печёночная болезнь	syndrome	generic_single_word	baldwin_reference
+синдром сонного апноэ	syndrome	generic_single_word	baldwin_reference
+синдром социального осуждения	syndrome	generic_single_word	baldwin_reference
+синдром социальной изоляции	syndrome	generic_single_word	baldwin_reference
+синдром хронической усталости	syndrome	generic_single_word	baldwin_reference
+синюшный ребёнок, цианотичный ребёнок	syndrome	generic_single_word	baldwin_reference
+системная семейная терапия	therapy	generic_single_word	baldwin_reference
+системная терапия, системная антибиотикотерапия	therapy	generic_single_word	baldwin_reference
+скрининг, осмотр, обследование	screening	generic_single_word	baldwin_reference
+слезоточивый газ	gas	incomplete_target	baldwin_reference
+слуховой аппарат	aid	incomplete_target	baldwin_reference
+смазывать маслом	oil	incomplete_target	baldwin_reference
+смешанная [сочетанная] инфекция	infection	generic_single_word	baldwin_reference
+снятие болевых ощущений	management	generic_single_word	baldwin_reference
+сосудистое русло	bed	incomplete_target	baldwin_reference
+социальный возраст	age	incomplete_target	baldwin_reference
+социотерапия, социальная терапия	therapy	generic_single_word	baldwin_reference
+СПИД (синдром приобретённого иммунодефицита	syndrome	generic_single_word	baldwin_reference
+стоматологический бор	bur	incomplete_target	baldwin_reference
+страдающий бешенством	mad	incomplete_target	baldwin_reference
+сумасшедший, душевнобольной, психически больной	mad	incomplete_target	baldwin_reference
+сухой перикардит	dry	incomplete_target	baldwin_reference
+тазобедренный сустав	hip	incomplete_target	baldwin_reference
+терапия, консервативное лечение	therapy	generic_single_word	baldwin_reference
+термометр для измерения температуры в ухе, ушной термометр	ear	incomplete_target	baldwin_reference
+терять сознание на мгновение	out	incomplete_target	baldwin_reference
+тест адгезии тромбоцитов	test	generic_single_word	baldwin_reference
+тест Векслера на уровень интеллектуального развития	test	generic_single_word	baldwin_reference
+тест ингибиции гемагглютинации	test	generic_single_word	baldwin_reference
+тест ингибиции миграции лейкоцитов	test	generic_single_word	baldwin_reference
+тест ингибиции миграции макрофагов	test	generic_single_word	baldwin_reference
+тест на адаптивные способности	test	generic_single_word	baldwin_reference
+тест на выявление способностей	test	generic_single_word	baldwin_reference
+тест на запоминание	test	generic_single_word	baldwin_reference
+тест на объём восприятия	test	generic_single_word	baldwin_reference
+тест на пространственное восприятие	test	generic_single_word	baldwin_reference
+тест на развитие мелкой моторики	test	generic_single_word	baldwin_reference
+тест на самоконтроль	test	generic_single_word	baldwin_reference
+тест на содержание хлорида натрия в потовой жидкости	test	generic_single_word	baldwin_reference
+тест на уровень интеллекта	test	generic_single_word	baldwin_reference
+тест пенообразования амниотической жидкости	test	generic_single_word	baldwin_reference
+тест познавательных способностей	test	generic_single_word	baldwin_reference
+тест профпригодности, тест профессиональной подготовки	test	generic_single_word	baldwin_reference
+тест Роршаха, тест	test	generic_single_word	baldwin_reference
+тест словесных ассоциаций	test	generic_single_word	baldwin_reference
+тест творческих способностей	test	generic_single_word	baldwin_reference
+тест умственных способностей	test	generic_single_word	baldwin_reference
+тест Хант-Миннесота на выявление степени утраты интеллекта в результате мозговой травмы	test	generic_single_word	baldwin_reference
+тест эмоциональной стабильности	test	generic_single_word	baldwin_reference
+тест-доза, пробная доза	test	generic_single_word	baldwin_reference
+тест-система для тестирования на ВИЧ	kit	incomplete_target	baldwin_reference
+тестирование на ВИЧ в домашних условиях	test	generic_single_word	baldwin_reference
+трансвестизм двойной роли	dressing	generic_single_word	baldwin_reference
+траншейный нефрит	war	incomplete_target	baldwin_reference
+тревожный невроз, невроз страха	disorder	generic_single_word	baldwin_reference
+трепанационное сверло	bur	incomplete_target	baldwin_reference
+тризм (тоническая судорога жевательной мускулатуры	jaw	incomplete_target	baldwin_reference
+трудотерапия, трудовая терапия	therapy	generic_single_word	baldwin_reference
+тяжёлый (о состоянии больного	bad	incomplete_target	baldwin_reference
+угнетение овуляции	of	incomplete_target	baldwin_reference
+Управление (деятельностью программы, организации	Management	generic_single_word	vaccine_pdf_WHO
+фелляция (вид орального секса	sex	incomplete_target	baldwin_reference
+фиброзно-кистозная мастопатия (ФКМ	disease	generic_single_word	baldwin_reference
+физиологический возраст	age	incomplete_target	baldwin_reference
+хлорпикрин, рвотный газ	gas	incomplete_target	baldwin_reference
+холодные ноги (болезнь Рейно	disease	generic_single_word	baldwin_reference
+хромосомная карта	map	incomplete_target	baldwin_reference
+целиакия (непереносимость глютена	disease	generic_single_word	baldwin_reference
+цепная передача инфекции	infection	generic_single_word	baldwin_reference
+цервикальный колпачок	cap	incomplete_target	baldwin_reference
+чувство покалывания	pin	incomplete_target	baldwin_reference
+чувствовать недомогание	ail	incomplete_target	baldwin_reference
+школьный возраст	age	incomplete_target	baldwin_reference
+шум трения плевры	rub	incomplete_target	baldwin_reference
+эпитимпанит (хронический отит с поражением височной кости	disease	generic_single_word; lost_qualifier:хронический	baldwin_reference
+ячеистая структура	net	incomplete_target	baldwin_reference

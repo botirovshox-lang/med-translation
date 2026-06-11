@@ -9,6 +9,9 @@ app_v55.py — Medical CAT Translator v5.5 + Anthropic hybrid
     streamlit run app_v55.py
 """
 import streamlit as st
+
+# Authentication - Password protection
+from auth import check_password, show_logout_button
 import pandas as pd
 import json
 from pathlib import Path
@@ -53,6 +56,12 @@ except ImportError:
 # Инициализация
 init_db()
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PASSWORD PROTECTION - Check authentication before rendering app
+# ─────────────────────────────────────────────────────────────────────────────
+if not check_password():
+    st.stop()  # Stop execution if not authenticated
+
 # Streamlit config
 st.set_page_config(
     page_title=APP_NAME,
@@ -61,6 +70,9 @@ st.set_page_config(
 )
 
 st.title(f"🏥 {APP_NAME} v{APP_VERSION}")
+
+# Show logout button
+show_logout_button()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Sidebar

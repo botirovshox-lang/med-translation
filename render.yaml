@@ -1,10 +1,17 @@
 # Render.com Blueprint — one-click deploy of Medical CAT Translator v5.5
 # Use: render.com → New → Blueprint → connect this repo
+#
+# NOTE on persistence:
+#   Free tier does NOT allow persistent disks. State.json lives in container
+#   memory and is rebuilt from SEED on each cold start (every ~15 min of
+#   inactivity, or after a redeploy).
+#   To keep data across restarts → upgrade plan to "starter" and uncomment
+#   the `disk:` block at the bottom of this file.
 services:
   - type: web
     name: med-translation
     runtime: docker
-    plan: free                   # free tier; upgrade to "starter" ($7/mo) to avoid 15-min sleep
+    plan: free                   # free tier; upgrade to "starter" ($7/mo) to avoid 15-min sleep + enable persistent disk
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
     autoDeploy: true
@@ -17,7 +24,7 @@ services:
         sync: false              # optional — set if you want real Google translation
       - key: ANTHROPIC_API_KEY
         sync: false              # optional
-    disk:
-      name: med-data
-      mountPath: /app/backend/data
-      sizeGB: 1                  # persistent state.json survives restarts
+    # disk:                      # ← uncomment after upgrading to "starter" plan
+    #   name: med-data
+    #   mountPath: /app/backend/data
+    #   sizeGB: 1                # persistent state.json survives restarts

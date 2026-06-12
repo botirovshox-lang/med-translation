@@ -1,0 +1,23 @@
+# Render.com Blueprint — one-click deploy of Medical CAT Translator v5.5
+# Use: render.com → New → Blueprint → connect this repo
+services:
+  - type: web
+    name: med-translation
+    runtime: docker
+    plan: free                   # free tier; upgrade to "starter" ($7/mo) to avoid 15-min sleep
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: APP_PASSWORD
+        sync: false              # set in Render dashboard
+      - key: OPENAI_API_KEY
+        sync: false              # optional — set if you want real GPT translation
+      - key: GOOGLE_TRANSLATE_API_KEY
+        sync: false              # optional — set if you want real Google translation
+      - key: ANTHROPIC_API_KEY
+        sync: false              # optional
+    disk:
+      name: med-data
+      mountPath: /app/backend/data
+      sizeGB: 1                  # persistent state.json survives restarts

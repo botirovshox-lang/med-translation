@@ -1,0 +1,10 @@
+# Medical CAT Translator — FastAPI backend
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.0.0
+python-multipart>=0.0.6
+
+# Optional: import existing modules if available (not required)
+# python-docx>=0.8.11
+# openai>=1.0.0
+# google-cloud-translate>=3.8.0

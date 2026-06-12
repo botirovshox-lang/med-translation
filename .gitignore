@@ -43,3 +43,7 @@ logs/
 # Testing
 .coverage
 htmlcov/
+
+# Backend runtime
+backend/data/state.json
+backend/__pycache__/

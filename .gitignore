@@ -47,3 +47,9 @@ htmlcov/
 # Backend runtime
 backend/data/state.json
 backend/__pycache__/
+
+# Inner med_translation cleanup
+med_translation/_quarantine/
+med_translation/.env
+med_translation/*.json
+med_translation/__pycache__/

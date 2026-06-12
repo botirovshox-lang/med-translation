@@ -1,19 +1,22 @@
 """
-google_translate.py — Google Cloud Translation API обертка
-"""
-from google.cloud import translate_v2
-import os
-from pathlib import Path
+google_translate.py — Google Cloud Translation API wrapper.
 
-# Инициализация Google Translate
-credentials_path = Path(__file__).parent / "med-translation-497314-29baa963ef9b.json"
-os.environ['GOOGLE_APPLICATION_CREDENTIALS'] = str(credentials_path)
+Credentials are picked up from:
+  1) GOOGLE_APPLICATION_CREDENTIALS env var (recommended)
+  2) GOOGLE_TRANSLATE_API_KEY env var (for API-key style auth)
+
+Never hardcode the service-account JSON path here — keep it out of the repo.
+"""
+import os
+import sys
 
 try:
+    from google.cloud import translate_v2
     client = translate_v2.Client()
     GOOGLE_TRANSLATE_AVAILABLE = True
 except Exception as e:
-    print(f"⚠️ Google Translate недоступен: {e}")
+    sys.stderr.write(f"[google_translate] not available: {e}\n")
+    client = None
     GOOGLE_TRANSLATE_AVAILABLE = False
 
 def translate_google(text: str, source_lang: str = 'ru', target_lang: str = 'en') -> str:

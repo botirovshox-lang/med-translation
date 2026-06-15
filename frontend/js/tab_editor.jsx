@@ -16,6 +16,7 @@ function TabEditor({ store, toast }) {
   const PAGE_SIZE = 10;
 
   useEffect(() => { setPage(1); }, [filter, query, riskFilter, project && project.id]);
+  useEffect(() => { setSelId(null); }, [page]);
 
   useEffect(() => {
     if (project && !project.segments.find(s => s.id === selId)) setSelId(project.segments[0] && project.segments[0].id);

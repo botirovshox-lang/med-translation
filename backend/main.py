@@ -310,8 +310,21 @@ def login(req: LoginRequest):
 
 @app.get("/api/seed")
 def get_seed():
-    """Initial data dump for the frontend."""
-    return STATE
+    """Initial data dump — glossary capped at 150 terms for performance; full list via /api/glossary."""
+    return {**STATE, "glossary": STATE["glossary"][:150]}
+
+
+@app.get("/api/glossary")
+def list_glossary(q: str = "", cat: str = "", limit: int = 200, offset: int = 0):
+    """Full glossary with optional search and pagination."""
+    items = STATE["glossary"]
+    if cat and cat != "all":
+        items = [t for t in items if t.get("cat") == cat]
+    if q:
+        ql = q.lower()
+        items = [t for t in items if ql in t.get("src", "").lower() or ql in t.get("tgt", "").lower()]
+    total = len(items)
+    return {"total": total, "items": items[offset:offset + limit]}
 
 
 @app.get("/api/projects")
@@ -390,14 +403,11 @@ async def upload_project(
                         seen_in_row.add(t)
                         raw.append(t)
 
-    # Filter: skip pure numbers, single chars, page headers repeated 3+ times
-    from collections import Counter
-    freq = Counter(raw)
+    # Filter: skip strings that are only digits/spaces/punctuation or too short
     segments_text = [
         t for t in raw
-        if len(t) >= 3
-        and not re.fullmatch(r'[\d\s\-–—.,:;]+', t)
-        and freq[t] <= 5
+        if len(t) >= 2
+        and not re.fullmatch(r'[\d\s\-–—.,:;()\[\]]+', t)
     ]
 
     # Deduplicate adjacent identical lines

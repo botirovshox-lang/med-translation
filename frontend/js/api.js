@@ -25,6 +25,7 @@
     seed:          ()                       => call("GET",    "/seed"),
     login:         (password)               => call("POST",   "/auth/login",                       { password }),
 
+    listGlossary:  (q, cat, limit, offset)  => call("GET",    `/glossary?q=${encodeURIComponent(q||"")}&cat=${encodeURIComponent(cat||"")}&limit=${limit||200}&offset=${offset||0}`),
     listProjects:  ()                       => call("GET",    "/projects"),
     getProject:    (pid)                    => call("GET",    `/projects/${pid}`),
     createProject: (info)                   => call("POST",   "/projects",                          info),

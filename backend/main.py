@@ -287,7 +287,6 @@ class CreateProjectRequest(BaseModel):
 @app.post("/api/projects")
 def create_project(req: CreateProjectRequest):
     new_id = max((p["id"] for p in STATE["projects"]), default=0) + 1
-    # Take 8 sample segments from the first project as template
     sample = STATE["projects"][0]["segments"][:8] if STATE["projects"] else []
     new_project = {
         "id": new_id,
@@ -300,6 +299,92 @@ def create_project(req: CreateProjectRequest):
         "segments": [
             {**s, "id": i + 1, "target": "", "status": "new", "comments": [], "qa": []}
             for i, s in enumerate(sample)
+        ],
+    }
+    STATE["projects"].insert(0, new_project)
+    save_state(STATE)
+    return new_project
+
+
+@app.post("/api/projects/upload")
+async def upload_project(
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    src: str = Form("RU"),
+    tgt: str = Form("EN"),
+):
+    import io, re, html as _html
+    try:
+        from docx import Document
+    except ImportError:
+        raise HTTPException(500, "python-docx not installed")
+
+    content = await file.read()
+    doc = Document(io.BytesIO(content))
+
+    def clean(text):
+        text = _html.unescape(text)
+        text = re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]', '', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    # Collect all non-empty text blocks (paragraphs + table cells)
+    raw = []
+    for p in doc.paragraphs:
+        t = clean(p.text)
+        if t:
+            raw.append(t)
+    for table in doc.tables:
+        for row in table.rows:
+            seen_in_row = set()
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    t = clean(p.text)
+                    if t and t not in seen_in_row:
+                        seen_in_row.add(t)
+                        raw.append(t)
+
+    # Filter: skip pure numbers, single chars, page headers repeated 3+ times
+    from collections import Counter
+    freq = Counter(raw)
+    segments_text = [
+        t for t in raw
+        if len(t) >= 3
+        and not re.fullmatch(r'[\d\s\-–—.,:;]+', t)
+        and freq[t] <= 5
+    ]
+
+    # Deduplicate adjacent identical lines
+    deduped = []
+    prev = None
+    for t in segments_text:
+        if t != prev:
+            deduped.append(t)
+            prev = t
+
+    new_id = max((p["id"] for p in STATE["projects"]), default=0) + 1
+    proj_title = title or file.filename.rsplit(".", 1)[0]
+    new_project = {
+        "id": new_id,
+        "title": proj_title,
+        "titleEn": proj_title,
+        "src": src, "tgt": tgt,
+        "status": "in_progress",
+        "created": datetime.now().strftime("%Y-%m-%d"),
+        "deadline": "",
+        "fileName": file.filename,
+        "segments": [
+            {
+                "id": i + 1,
+                "source": text,
+                "target": "",
+                "status": "new",
+                "comments": [],
+                "qa": [],
+                "tmScore": 0,
+                "wordCount": len(text.split()),
+            }
+            for i, text in enumerate(deduped)
         ],
     }
     STATE["projects"].insert(0, new_project)

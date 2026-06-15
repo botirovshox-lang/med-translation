@@ -29,6 +29,16 @@
     getProject:    (pid)                    => call("GET",    `/projects/${pid}`),
     createProject: (info)                   => call("POST",   "/projects",                          info),
     deleteProject: (pid)                    => call("DELETE", `/projects/${pid}`),
+    uploadProject: async (file, title, src, tgt) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("title", title || "");
+      fd.append("src",   src  || "RU");
+      fd.append("tgt",   tgt  || "EN");
+      const r = await fetch((window.API_BASE || "") + "/api/projects/upload", { method: "POST", body: fd });
+      if (!r.ok) { const t = await r.text().catch(() => ""); throw new Error("Upload failed: " + r.status + " " + t); }
+      return r.json();
+    },
 
     translate:     (pid, sid, engine)       => call("POST",   `/segments/${pid}/${sid}/translate`,  { engine }),
     qa:            (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/qa`),

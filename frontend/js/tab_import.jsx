@@ -3,31 +3,40 @@
    ============================================================ */
 function TabImport({ store, toast }) {
   const [dragging, setDragging] = useState(false);
-  const [file, setFile] = useState(null);
+  const [file, setFile] = useState(null);      // { name, size, raw: File }
   const [title, setTitle] = useState("");
   const [src, setSrc] = useState("RU");
   const [tgt, setTgt] = useState("EN");
   const [creating, setCreating] = useState(false);
+  const [progress, setProgress] = useState("");
   const fileRef = useRef(null);
 
   const pickFile = (f) => {
     if (!f) return;
-    setFile({ name: f.name, size: (f.size / 1024).toFixed(0) + " КБ" });
+    setFile({ name: f.name, size: (f.size / 1024).toFixed(0) + " КБ", raw: f });
     if (!title) setTitle(f.name.replace(/\.[^.]+$/, ""));
   };
   const onDrop = (e) => {
     e.preventDefault(); setDragging(false);
     const f = e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) pickFile(f); else { setFile({ name: "Медицинский_документ.docx", size: "248 КБ" }); }
+    if (f) pickFile(f);
   };
-  const create = () => {
+  const create = async () => {
+    if (!file || !file.raw) { toast.error("Файл не выбран", "Выберите .docx файл"); return; }
     setCreating(true);
-    setTimeout(() => {
+    setProgress("Загружаем файл…");
+    try {
+      const project = await window.API.uploadProject(file.raw, title || file.name.replace(/\.[^.]+$/, ""), src, tgt);
+      setProgress("");
       setCreating(false);
-      const id = store.createProject({ title: title || "Новый проект", src, tgt, fileName: file.name });
-      toast.success("Проект создан", "Документ разобран на сегменты и готов к переводу.");
-      store.openProject(id);
-    }, 1300);
+      store.addProject(project);
+      toast.success("Проект создан", project.segments.length + " сегментов готовы к переводу.");
+      store.openProject(project.id);
+    } catch (e) {
+      setProgress("");
+      setCreating(false);
+      toast.error("Ошибка импорта", e.message || "Не удалось разобрать файл");
+    }
   };
 
   const langOpts = [["RU", "Русский"], ["EN", "Английский"], ["DE", "Немецкий"], ["FR", "Французский"], ["ES", "Испанский"]];
@@ -77,8 +86,8 @@ function TabImport({ store, toast }) {
               React.createElement(Select, { value: tgt, onChange: (e) => setTgt(e.target.value) },
                 langOpts.map(([v, l]) => React.createElement("option", { key: v, value: v }, l))))
           ),
-          React.createElement(Btn, { variant: "primary", icon: creating ? null : "arrowR", disabled: !file || creating, onClick: create },
-            creating ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), "Разбор документа…") : "Создать проект")
+          React.createElement(Btn, { variant: "primary", icon: creating ? null : "arrowR", disabled: !file || !file.raw || creating, onClick: create },
+            creating ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), progress || "Загрузка…") : "Создать проект")
         )
       )
     ),

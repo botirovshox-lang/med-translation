@@ -82,6 +82,7 @@ function useStore() {
     return id;
   };
 
+  const addProject = (project) => setProjects(ps => [project, ...ps.filter(p => p.id !== project.id)]);
   const openProject = (id) => { setActiveId(id); setTab("editor"); };
   const deleteProject = (id) => {
     setProjects(ps => ps.filter(p => p.id !== id));
@@ -107,7 +108,7 @@ function useStore() {
   return {
     projects, glossary, tm, activeId, activeProject, tab,
     exportHistory, team: window.SEED.team, me, apiReady,
-    go: setTab, statusCounts, updateSegment, addComment, createProject, openProject, deleteProject, saveTerm, deleteTerm, deleteTM,
+    go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, openProject, deleteProject, saveTerm, deleteTerm, deleteTM,
     setExportHistory,
   };
 }

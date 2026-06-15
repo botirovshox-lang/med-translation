@@ -109,8 +109,10 @@ window.TabGlossary = TabGlossary;
 function TabTM({ store, toast }) {
   const [query, setQuery] = useState("");
   const [quality, setQuality] = useState("all");
+  const tmQuality = (t) => t.quality || (t.verified === true ? "verified" : t.verified === false ? "draft" : "draft");
   const rows = store.tm.filter(t => {
-    if (quality !== "all" && t.quality !== quality) return false;
+    const q2 = tmQuality(t);
+    if (quality !== "all" && q2 !== quality) return false;
     if (query) { const q = query.toLowerCase(); if (!t.src.toLowerCase().includes(q) && !t.tgt.toLowerCase().includes(q)) return false; }
     return true;
   });
@@ -131,7 +133,7 @@ function TabTM({ store, toast }) {
     React.createElement("div", { className: "grid grid-2" },
       rows.map((t, i) => React.createElement("div", { key: i, className: "card card-pad card-hover", style: { display: "flex", flexDirection: "column", gap: 12 } },
         React.createElement("div", { className: "row between" },
-          t.quality === "verified"
+          tmQuality(t) === "verified"
             ? React.createElement(Badge, { variant: "confirmed", icon: "checkCircle" }, "Проверено")
             : React.createElement(Badge, { variant: "review", icon: "warn" }, "Черновик"),
           React.createElement("span", { className: "dim", style: { fontSize: 12 } }, "Использовано " + t.used + "×")),

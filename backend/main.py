@@ -166,32 +166,70 @@ SEED_PROJECTS = [
     },
 ]
 
-SEED_GLOSSARY = [
-    {"src": "стенокардия", "tgt": "angina", "cat": "Disease", "freq": 142, "conf": "High"},
-    {"src": "инфаркт миокарда", "tgt": "myocardial infarction", "cat": "Disease", "freq": 98, "conf": "High"},
-    {"src": "ишемическая болезнь сердца", "tgt": "coronary artery disease", "cat": "Disease", "freq": 76, "conf": "High"},
-    {"src": "ЭКГ", "tgt": "ECG", "cat": "Procedure", "freq": 210, "conf": "High"},
-    {"src": "артериальное давление", "tgt": "blood pressure", "cat": "Vital", "freq": 322, "conf": "High"},
-    {"src": "фракция выброса", "tgt": "ejection fraction", "cat": "Vital", "freq": 54, "conf": "High"},
-    {"src": "бисопролол", "tgt": "bisoprolol", "cat": "Drug", "freq": 41, "conf": "High"},
-    {"src": "аторвастатин", "tgt": "atorvastatin", "cat": "Drug", "freq": 33, "conf": "High"},
-    {"src": "сахарный диабет 2 типа", "tgt": "type 2 diabetes mellitus", "cat": "Disease", "freq": 58, "conf": "High"},
-    {"src": "одышка", "tgt": "dyspnea", "cat": "Symptom", "freq": 64, "conf": "Medium"},
+def _load_glossary_from_tsv() -> list:
+    """Load real medical glossary from TSV file; fall back to 10 hardcoded terms."""
+    import csv
+    _CAT_MAP = {
+        "diagnosis": "Disease", "anatomy": "Anatomy", "symptom": "Symptom",
+        "medication": "Dosage", "procedure": "Procedure", "other_medical": "Disease",
+        "test": "Lab", "": "Disease",
+    }
+    tsv = ROOT / "med_translation" / "assets" / "glossary" / "approved_glossary_FINAL.tsv"
+    if not tsv.exists():
+        tsv = ROOT / "med_translation" / "data" / "approved_glossary_FINAL.tsv"
+    if not tsv.exists():
+        return []
+    terms, seen = [], set()
+    try:
+        with open(tsv, encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f, delimiter="\t")
+            for row in reader:
+                ru = (row.get("Russian") or "").strip().strip('"')
+                en = (row.get("English") or "").strip().strip('"')
+                if not ru or not en or ru in seen:
+                    continue
+                if len(ru) < 3 or len(en) < 3:
+                    continue
+                # skip strings starting with special chars or digits
+                if not ru[0].isalpha() or not en[0].isalpha():
+                    continue
+                seen.add(ru)
+                cat_raw = (row.get("Category") or "").strip()
+                terms.append({
+                    "src": ru, "tgt": en,
+                    "cat": _CAT_MAP.get(cat_raw, "Disease"),
+                    "freq": 1, "conf": "high", "note": "",
+                })
+    except Exception as e:
+        print(f"[backend] WARN: could not load glossary TSV: {e}", file=sys.stderr)
+    return terms
+
+SEED_GLOSSARY = _load_glossary_from_tsv() or [
+    {"src": "стенокардия", "tgt": "angina", "cat": "Disease", "freq": 142, "conf": "high", "note": ""},
+    {"src": "инфаркт миокарда", "tgt": "myocardial infarction", "cat": "Disease", "freq": 98, "conf": "high", "note": ""},
+    {"src": "ишемическая болезнь сердца", "tgt": "coronary artery disease", "cat": "Disease", "freq": 76, "conf": "high", "note": ""},
+    {"src": "ЭКГ", "tgt": "ECG", "cat": "Procedure", "freq": 210, "conf": "high", "note": ""},
+    {"src": "артериальное давление", "tgt": "blood pressure", "cat": "Anatomy", "freq": 322, "conf": "high", "note": ""},
+    {"src": "фракция выброса", "tgt": "ejection fraction", "cat": "Anatomy", "freq": 54, "conf": "high", "note": ""},
+    {"src": "бисопролол", "tgt": "bisoprolol", "cat": "Dosage", "freq": 41, "conf": "high", "note": ""},
+    {"src": "аторвастатин", "tgt": "atorvastatin", "cat": "Dosage", "freq": 33, "conf": "high", "note": ""},
+    {"src": "сахарный диабет 2 типа", "tgt": "type 2 diabetes mellitus", "cat": "Disease", "freq": 58, "conf": "high", "note": ""},
+    {"src": "одышка", "tgt": "dyspnea", "cat": "Symptom", "freq": 64, "conf": "medium", "note": ""},
 ]
 
 SEED_TM = [
     {"src": "Выписной эпикриз пациента, находившегося на стационарном лечении в кардиологическом отделении.",
      "tgt": "Discharge summary of a patient who received inpatient treatment in the cardiology department.",
-     "lang": "RU→EN", "score": 100, "verified": True, "used": 12, "created": "2026-04-12"},
+     "lang": "RU→EN", "score": 100, "quality": "verified", "used": 12, "created": "2026-04-12"},
     {"src": "Перед началом приёма препарата внимательно прочитайте инструкцию.",
      "tgt": "Read this leaflet carefully before you start taking the medicine.",
-     "lang": "RU→EN", "score": 100, "verified": True, "used": 22, "created": "2026-03-01"},
+     "lang": "RU→EN", "score": 100, "quality": "verified", "used": 22, "created": "2026-03-01"},
     {"src": "Объективно: общее состояние удовлетворительное. Кожные покровы обычной окраски.",
      "tgt": "Objectively: general condition is satisfactory. Skin is of normal colour.",
-     "lang": "RU→EN", "score": 100, "verified": True, "used": 8, "created": "2026-04-18"},
+     "lang": "RU→EN", "score": 100, "quality": "verified", "used": 8, "created": "2026-04-18"},
     {"src": "Артериальное давление 140/90 мм рт. ст., пульс ритмичный.",
      "tgt": "Blood pressure 140/90 mmHg, pulse is regular.",
-     "lang": "RU→EN", "score": 95, "verified": False, "used": 3, "created": "2026-05-22"},
+     "lang": "RU→EN", "score": 95, "quality": "draft", "used": 3, "created": "2026-05-22"},
 ]
 
 SEED_EXPORT_HISTORY = [
@@ -210,7 +248,15 @@ SEED_TEAM = [
 def load_state() -> dict:
     if STATE_FILE.exists():
         try:
-            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            # Migrate: if glossary is tiny seed, upgrade to full loaded glossary
+            if len(state.get("glossary", [])) < 100 and len(SEED_GLOSSARY) >= 100:
+                state["glossary"] = list(SEED_GLOSSARY)
+            # Migrate: fix TM quality field (verified bool → quality string)
+            for t in state.get("tm", []):
+                if "quality" not in t:
+                    t["quality"] = "verified" if t.get("verified") else "draft"
+            return state
         except Exception:
             pass
     return {
@@ -458,7 +504,7 @@ def confirm_segment(pid: int, sid: int):
     if seg.get("target") and not any(t["src"] == seg["source"] for t in STATE["tm"]):
         STATE["tm"].insert(0, {
             "src": seg["source"], "tgt": seg["target"],
-            "lang": "RU→EN", "score": 100, "verified": True,
+            "lang": "RU→EN", "score": 100, "quality": "verified",
             "used": 1, "created": datetime.now().strftime("%Y-%m-%d"),
         })
     save_state(STATE)

@@ -12,6 +12,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onConf
   const dirty = draft !== (seg.target || "");
 
   useEffect(() => { setDraft(seg.target || ""); setInfoPanel(null); setBackResult(null); }, [seg.id]);
+  useEffect(() => { setDraft(seg.target || ""); }, [seg.target]);
 
   const saveDraft = () => {
     store.updateSegment(project.id, seg.id, { target: draft, status: seg.status === "new" ? "translated" : seg.status });

@@ -509,6 +509,13 @@ def save_term(req: TermRequest):
     return {"ok": True}
 
 
+@app.delete("/api/projects/{pid}")
+def delete_project(pid: int):
+    STATE["projects"] = [p for p in STATE["projects"] if p["id"] != pid]
+    save_state(STATE)
+    return {"ok": True}
+
+
 @app.delete("/api/glossary")
 def delete_term(src: str):
     STATE["glossary"] = [t for t in STATE["glossary"] if t["src"] != src]

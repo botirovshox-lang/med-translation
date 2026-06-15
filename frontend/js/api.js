@@ -28,6 +28,7 @@
     listProjects:  ()                       => call("GET",    "/projects"),
     getProject:    (pid)                    => call("GET",    `/projects/${pid}`),
     createProject: (info)                   => call("POST",   "/projects",                          info),
+    deleteProject: (pid)                    => call("DELETE", `/projects/${pid}`),
 
     translate:     (pid, sid, engine)       => call("POST",   `/segments/${pid}/${sid}/translate`,  { engine }),
     qa:            (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/qa`),

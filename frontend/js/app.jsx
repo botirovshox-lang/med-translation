@@ -83,6 +83,11 @@ function useStore() {
   };
 
   const openProject = (id) => { setActiveId(id); setTab("editor"); };
+  const deleteProject = (id) => {
+    setProjects(ps => ps.filter(p => p.id !== id));
+    if (activeId === id) setActiveId(null);
+    window.API.safeCall(() => window.API.deleteProject(id));
+  };
 
   const saveTerm = (term, isNew) => {
     setGlossary(g => isNew ? [term, ...g] : g.map(t => t.src === term.src ? term : t));
@@ -102,7 +107,7 @@ function useStore() {
   return {
     projects, glossary, tm, activeId, activeProject, tab,
     exportHistory, team: window.SEED.team, me, apiReady,
-    go: setTab, statusCounts, updateSegment, addComment, createProject, openProject, saveTerm, deleteTerm, deleteTM,
+    go: setTab, statusCounts, updateSegment, addComment, createProject, openProject, deleteProject, saveTerm, deleteTerm, deleteTM,
     setExportHistory,
   };
 }

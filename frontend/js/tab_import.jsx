@@ -97,32 +97,55 @@ function TabImport({ store, toast }) {
 }
 
 function ProjectCard({ project, store, toast }) {
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const counts = store.statusCounts(project);
   const total = project.segments.length;
   const done = counts.confirmed;
   const pct = total ? Math.round((done / total) * 100) : 0;
   const statusMap = { in_progress: ["badge-review", "В работе"], review: ["badge-qa", "На проверке"], done: ["badge-confirmed", "Завершён"] };
   const [bcls, blab] = statusMap[project.status] || statusMap.in_progress;
-  return React.createElement("div", { className: "card card-pad card-hover", style: { display: "flex", flexDirection: "column", gap: 14 } },
-    React.createElement("div", { className: "row between", style: { alignItems: "flex-start" } },
-      React.createElement("div", { style: { minWidth: 0 } },
-        React.createElement("div", { style: { fontWeight: 700, fontSize: 16, letterSpacing: "-.2px" } }, project.title),
-        React.createElement("div", { className: "dim", style: { fontSize: 13, marginTop: 2 } }, project.titleEn)),
-      React.createElement("span", { className: "badge " + bcls }, blab)
+
+  const handleDelete = () => {
+    store.deleteProject(project.id);
+    toast.warning("Проект удалён", project.title);
+  };
+
+  return React.createElement(React.Fragment, null,
+    React.createElement("div", { className: "card card-pad card-hover", style: { display: "flex", flexDirection: "column", gap: 14 } },
+      React.createElement("div", { className: "row between", style: { alignItems: "flex-start" } },
+        React.createElement("div", { style: { minWidth: 0 } },
+          React.createElement("div", { style: { fontWeight: 700, fontSize: 16, letterSpacing: "-.2px" } }, project.title),
+          React.createElement("div", { className: "dim", style: { fontSize: 13, marginTop: 2 } }, project.titleEn)),
+        React.createElement("span", { className: "badge " + bcls }, blab)
+      ),
+      React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
+        React.createElement(Badge, { icon: "list" }, total + " сегментов"),
+        React.createElement(LangPair, { src: project.src, tgt: project.tgt })
+      ),
+      React.createElement("div", null,
+        React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
+          React.createElement("span", { className: "muted" }, "Подтверждено"),
+          React.createElement("span", { style: { fontWeight: 700 } }, pct + "%")),
+        React.createElement(ProgressBar, { value: pct })
+      ),
+      React.createElement("div", { className: "row between", style: { marginTop: 2 } },
+        React.createElement("div", { className: "row", style: { gap: 8 } },
+          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "edit", onClick: () => store.openProject(project.id) }, "Открыть"),
+          React.createElement(Btn, { variant: "ghost", size: "sm", icon: "download", onClick: () => { store.openProject(project.id); store.go("export"); } }, "Экспорт")
+        ),
+        React.createElement(IconBtn, { icon: "trash", label: "Удалить проект", sm: true, onClick: (e) => { e.stopPropagation(); setConfirmDelete(true); } })
+      )
     ),
-    React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
-      React.createElement(Badge, { icon: "list" }, total + " сегментов"),
-      React.createElement(LangPair, { src: project.src, tgt: project.tgt })
-    ),
-    React.createElement("div", null,
-      React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
-        React.createElement("span", { className: "muted" }, "Подтверждено"),
-        React.createElement("span", { style: { fontWeight: 700 } }, pct + "%")),
-      React.createElement(ProgressBar, { value: pct })
-    ),
-    React.createElement("div", { className: "row", style: { gap: 8, marginTop: 2 } },
-      React.createElement(Btn, { variant: "secondary", size: "sm", icon: "edit", onClick: () => store.openProject(project.id) }, "Открыть"),
-      React.createElement(Btn, { variant: "ghost", size: "sm", icon: "download", onClick: () => { store.openProject(project.id); store.go("export"); } }, "Экспорт")
+    confirmDelete && React.createElement(Modal, {
+      title: "Удалить проект?", icon: "trash", onClose: () => setConfirmDelete(false),
+      footer: React.createElement(React.Fragment, null,
+        React.createElement(Btn, { variant: "ghost", onClick: () => setConfirmDelete(false) }, "Отмена"),
+        React.createElement(Btn, { variant: "danger", icon: "trash", onClick: handleDelete }, "Удалить"))
+    },
+      React.createElement("p", { style: { margin: 0 } },
+        "Проект «", React.createElement("strong", null, project.title), "» будет удалён безвозвратно. ",
+        React.createElement("br", null),
+        React.createElement("span", { className: "dim" }, total + " сегментов · " + done + " подтверждено"))
     )
   );
 }

@@ -52,7 +52,7 @@ function TabGlossary({ store, toast }) {
             React.createElement("th", { style: { width: 120 } }, "Частота", React.createElement(InfoTip, { title: "Частота", body: "Сколько раз термин встречался в проектах." })),
             React.createElement("th", { style: { width: 150 } }, "Достоверность", React.createElement(InfoTip, { title: "Уверенность", body: "High — проверен экспертом, Medium — авто-извлечён, Low — требует проверки." })), React.createElement("th", { style: { width: 96 } }, ""))),
           React.createElement("tbody", null,
-            rows.map((g, i) => { const [cls, lab] = confMeta[g.conf];
+            rows.map((g, i) => { const [cls, lab] = confMeta[(g.conf || "").toLowerCase()] || confMeta.medium;
               return React.createElement("tr", { key: i, onClick: () => setModal(g) },
                 React.createElement("td", { style: { fontWeight: 600 } }, g.src),
                 React.createElement("td", { style: { color: "var(--c-primary)", fontWeight: 500 } }, g.tgt),

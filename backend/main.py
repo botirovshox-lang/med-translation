@@ -60,6 +60,156 @@ db = _safe_import("db")
 pipeline = _safe_import("pipeline")
 google_translate = _safe_import("google_translate")
 tm_mod = _safe_import("tm")
+medical_qa_mod = _safe_import("medical_qa")
+
+# Google Cloud Translation API v2 (с fallback на deep-translator)
+import requests as _requests
+
+def _deep_translate(text: str, src: str, tgt: str) -> str:
+    src = src.lower()[:2]
+    tgt = tgt.lower()[:2]
+    api_key = os.environ.get("GOOGLE_TRANSLATE_API_KEY", "")
+    if api_key:
+        try:
+            resp = _requests.post(
+                "https://translation.googleapis.com/language/translate/v2",
+                params={"key": api_key},
+                json={"q": text, "source": src, "target": tgt, "format": "text"},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            return resp.json()["data"]["translations"][0]["translatedText"]
+        except Exception as _ge:
+            print(f"[backend] Google API key failed ({_ge}), falling back to free tier", file=sys.stderr)
+    # Fallback: deep-translator (без API ключа)
+    from deep_translator import GoogleTranslator as _DTG
+    return _DTG(source=src, target=tgt).translate(text) or ""
+
+_DEEP_TRANSLATE_OK = True
+
+import re as _re
+
+def _term_match(term: str, text: str) -> str | None:
+    """Ищет термин (в любой грамматической форме) в тексте.
+    Возвращает фактически найденную подстроку или None.
+
+    Алгоритм:
+    1. Точное совпадение (быстро).
+    2. Стеминг: первые 75% символов каждого слова термина (мин. 4) +
+       любое кириллическое окончание.  Без внешних зависимостей.
+       "лимфангит"     → стем "лимфанги"  → найдёт "лимфангита", "лимфангите"
+       "первичный очаг" → стемы "первичн", "оча"
+                        → найдёт "первичного очага", "первичному очагу"
+    """
+    lo = text.lower()
+    tl = term.lower()
+    # 1. Точное совпадение
+    idx = lo.find(tl)
+    if idx != -1:
+        return text[idx:idx + len(term)]
+    # 2. Стеминг по словам
+    parts = tl.split()
+    if not parts:
+        return None
+    stems = [_re.escape(w[:max(4, int(len(w) * 0.75))]) + r'[а-яёА-ЯЁ]*' for w in parts]
+    full_pat = r'\s+'.join(stems)
+    m = _re.search(r'(?<![а-яёА-ЯЁa-zA-Z])' + full_pat, text, _re.IGNORECASE)
+    return m.group(0) if m else None
+
+
+def _get_context(text: str):
+    """Возвращает (gloss_hits, tm_hit) для исходного текста.
+
+    gloss_hits — список dict {src, tgt, ..., _form} где _form — фактическая
+                 форма термина найденная в тексте (нужна для замены).
+    tm_hit     — точное совпадение в TM или None.
+    """
+    hits = []
+    for g in STATE.get("glossary", []):
+        src = g.get("src", "")
+        if not src:
+            continue
+        form = _term_match(src, text)
+        if form:
+            hits.append({**g, "_form": form})
+    # Длинные термины первыми: меньше риск перекрытия плейсхолдеров
+    hits.sort(key=lambda x: len(x["src"]), reverse=True)
+    hits = hits[:15]
+    tm_hit = next(
+        (t for t in STATE.get("tm", []) if t.get("src", "").strip().lower() == text.strip().lower()),
+        None,
+    )
+    return hits, tm_hit
+
+
+def _google_with_gloss(text: str, src: str, tgt: str, gloss_hits: list) -> str:
+    """Google Translate с подстановкой глоссарных терминов через плейсхолдеры.
+
+    Заменяем ФАКТИЧЕСКУЮ форму термина (h['_form'], напр. "лимфангита") →
+    плейсхолдер → Google переводит остальное → восстанавливаем целевой термин.
+    """
+    if not gloss_hits:
+        return _deep_translate(text, src, tgt)
+    modified = text
+    placeholders: dict[str, str] = {}
+    for i, h in enumerate(gloss_hits):
+        form = h.get("_form", h["src"])   # реальная форма в тексте
+        ph = f"MCAT{i:03d}X"
+        pattern = _re.compile(_re.escape(form), _re.IGNORECASE)
+        if pattern.search(modified):
+            modified = pattern.sub(ph, modified)
+            placeholders[ph] = h["tgt"]
+    result = _deep_translate(modified, src, tgt)
+    for ph, target in placeholders.items():
+        result = _re.sub(_re.escape(ph), target, result, flags=_re.IGNORECASE)
+    if placeholders:
+        print(f"[backend] Google+glossary: {len(placeholders)} forms replaced "
+              f"{[h.get('_form', h['src']) for h in gloss_hits[:5]]}", file=sys.stderr)
+    return result
+
+
+# Direct OpenAI GPT translation
+def _openai_translate(text: str, src: str, tgt: str,
+                      gloss_hits: list = None, tm_context: dict = None) -> str:
+    """GPT-перевод с инъекцией глоссария (базовые формы — GPT знает склонения)."""
+    import openai
+    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    system = (
+        f"You are a senior medical translator specializing in Russian-to-English biomedical texts. "
+        f"Translate the following text from {src} to {tgt}.\n\n"
+        "STRICT RULES:\n"
+        "1. Return ONLY the translated text — no explanations, no comments, no quotes.\n"
+        "2. Use standard English medical terminology. NEVER transliterate Russian or Latin word forms.\n"
+        "   BAD: 'oxide nitrogena', 'leukocidin', 'cytocinesis' — these are NOT English words.\n"
+        "   GOOD: 'nitric oxide', 'leukocytes', 'cytokines'.\n"
+        "3. NEVER mix languages. Output must be 100% English.\n"
+        "4. NEVER use parenthetical alternatives: NOT 'biologic(al)', NOT 'cell(s)'. Choose ONE correct form.\n"
+        "5. NEVER list multiple synonyms separated by semicolons for the same concept.\n"
+        "6. Preserve all numbers, abbreviations, and punctuation exactly as in the source.\n"
+        "7. Medical abbreviations that are identical in English (e.g. IFN, IL, TNF) may be kept.\n"
+    )
+    if gloss_hits:
+        terms = "\n".join(f"  {h['src']} → {h['tgt']}" for h in gloss_hits)
+        system += f"\nApproved glossary — use these exact translations:\n{terms}\n"
+    if tm_context:
+        system += (
+            f"\nTranslation Memory (similar segment, for reference):\n"
+            f"  Source: {tm_context.get('src', '')}\n"
+            f"  Translation: {tm_context.get('tgt', '')}\n"
+        )
+    if gloss_hits or tm_context:
+        print(f"[backend] GPT+context: {len(gloss_hits or [])} gloss, TM={'yes' if tm_context else 'no'}",
+              file=sys.stderr)
+    resp = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": text},
+        ],
+        max_tokens=1024,
+        temperature=0.1,
+    )
+    return resp.choices[0].message.content.strip()
 
 # ─────────────────────────────────────────────────────────────────────
 # App setup
@@ -82,6 +232,11 @@ STATE_FILE = DATA_DIR / "state.json"
 PASSWORD_HASH = hashlib.sha256(
     os.environ.get("APP_PASSWORD", "medtranslator2026").encode()
 ).hexdigest()
+
+def medical_qa_enabled() -> bool:
+    if medical_qa_mod and hasattr(medical_qa_mod, "enabled_from_env"):
+        return medical_qa_mod.enabled_from_env(os.environ.get("MEDICAL_TRANSLATION_QA_ENABLED", "1"))
+    return os.environ.get("MEDICAL_TRANSLATION_QA_ENABLED", "1").lower() not in {"0", "false", "no", "off"}
 
 # ─────────────────────────────────────────────────────────────────────
 # In-memory store, persisted to JSON
@@ -379,6 +534,11 @@ async def upload_project(
         raise HTTPException(500, "python-docx not installed")
 
     content = await file.read()
+    try:
+        from docx.oxml.ns import qn as _qn
+    except ImportError:
+        raise HTTPException(500, "python-docx not installed")
+
     doc = Document(io.BytesIO(content))
 
     def clean(text):
@@ -387,27 +547,18 @@ async def upload_project(
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
-    # Collect all non-empty text blocks (paragraphs + table cells)
-    raw = []
-    for p in doc.paragraphs:
-        t = clean(p.text)
-        if t:
-            raw.append(t)
-    for table in doc.tables:
-        for row in table.rows:
-            seen_in_row = set()
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    t = clean(p.text)
-                    if t and t not in seen_in_row:
-                        seen_in_row.add(t)
-                        raw.append(t)
+    def para_text(p_elem):
+        return clean("".join(t.text for t in p_elem.iter(_qn("w:t")) if t.text))
 
-    # Filter: skip strings that are only digits/spaces/punctuation or too short
+    # Walk ALL paragraphs in document XML order (catches nested tables, frames, etc.)
+    all_p = doc.element.body.findall(".//" + _qn("w:p"))
+    raw = [para_text(p) for p in all_p]
+
+    # Filter: skip pure digits/spaces/punctuation or very short
     segments_text = [
         t for t in raw
         if len(t) >= 2
-        and not re.fullmatch(r'[\d\s\-–—.,:;()\[\]]+', t)
+        and not re.fullmatch(r'[\d\s\-–—.,:;()\[\]/]+', t)
     ]
 
     # Deduplicate adjacent identical lines
@@ -439,6 +590,9 @@ async def upload_project(
                 "qa": [],
                 "tmScore": 0,
                 "wordCount": len(text.split()),
+                "risk": "high" if len(text.split()) > 30 else "medium" if len(text.split()) > 8 else "low",
+                "route": "GPT_REQUIRED",
+                "tm": None,
             }
             for i, text in enumerate(deduped)
         ],
@@ -451,28 +605,49 @@ async def upload_project(
 # ─── Segment actions ────────────────────────────────────────────────
 class TranslateRequest(BaseModel):
     engine: str  # "google" | "gpt"
+    force: bool = False  # True = пропустить TM-шорткат (ручной перевод)
 
 @app.post("/api/segments/{pid}/{sid}/translate")
 async def translate_segment(pid: int, sid: int, req: TranslateRequest):
     seg = get_segment(pid, sid)
     project = get_project(pid)
+    src_text = seg["source"]
 
-    # Try real translation if module available and API keys configured
+    # Глоссарий + TM контекст
+    gloss_hits, tm_hit = _get_context(src_text)
+
+    # TM точное совпадение → 0 токенов (только для авто/пакетного, не для ручного force-перевода)
+    if not req.force and tm_hit and tm_hit.get("tgt"):
+        seg["target"] = tm_hit["tgt"]
+        seg["status"] = "confirmed"
+        seg["route"] = "EXACT_TM"
+        save_state(STATE)
+        return {"ok": True, "segment": seg, "usedRealApi": False, "source": "TM"}
+
     translation = None
     used_real_api = False
     try:
-        if req.engine == "google" and google_translate and os.environ.get("GOOGLE_TRANSLATE_API_KEY"):
-            translation = google_translate.translate_google(seg["source"], project["src"].lower(), project["tgt"].lower())
+        if req.engine == "google" and _DEEP_TRANSLATE_OK:
+            translation = _google_with_gloss(src_text, project["src"], project["tgt"], gloss_hits)
             used_real_api = True
-        elif req.engine == "gpt" and pipeline and os.environ.get("OPENAI_API_KEY"):
-            # Best-effort: pipeline.translate_segment takes a DB segment; we simulate
-            translation = pipeline.translate_segment(seg, project["src"], project["tgt"]) if hasattr(pipeline, "translate_segment") else None
+        elif req.engine == "gpt" and os.environ.get("OPENAI_API_KEY"):
+            translation = _openai_translate(src_text, project["src"], project["tgt"],
+                                            gloss_hits=gloss_hits, tm_context=tm_hit)
             used_real_api = bool(translation)
+        # GPT fallback: Google когда нет ключа OpenAI
+        if not translation and req.engine == "gpt" and _DEEP_TRANSLATE_OK:
+            translation = _google_with_gloss(src_text, project["src"], project["tgt"], gloss_hits)
+            used_real_api = True
     except Exception as e:
         print(f"[backend] translate fallback ({req.engine}): {e}", file=sys.stderr)
+        if _DEEP_TRANSLATE_OK:
+            try:
+                translation = _google_with_gloss(src_text, project["src"], project["tgt"], gloss_hits)
+                used_real_api = True
+            except Exception:
+                pass
 
     if not translation:
-        # Demo fallback: keep existing target if non-empty, otherwise produce placeholder
         translation = seg.get("target") or f"[{req.engine.upper()} demo translation of segment #{sid}]"
 
     seg["target"] = translation
@@ -521,6 +696,136 @@ def confirm_segment(pid: int, sid: int):
     return {"ok": True, "segment": seg}
 
 
+@app.post("/api/segments/{pid}/{sid}/backcheck")
+async def backcheck_segment(pid: int, sid: int):
+    """Обратный перевод: target (EN) → source lang (RU) через GPT.
+    Fallback на Google если нет ключа OpenAI."""
+    seg = get_segment(pid, sid)
+    project = get_project(pid)
+    target_text = seg.get("target", "").strip()
+    if not target_text:
+        return {"ok": False, "error": "Сегмент ещё не переведён"}
+    try:
+        if os.environ.get("OPENAI_API_KEY"):
+            back = _openai_translate(target_text, project["tgt"], project["src"])
+        else:
+            back = _deep_translate(target_text, project["tgt"], project["src"])
+        return {"ok": True, "back": back}
+    except Exception as e:
+        try:
+            back = _deep_translate(target_text, project["tgt"], project["src"])
+            return {"ok": True, "back": back}
+        except Exception as e2:
+            return {"ok": False, "error": str(e2)}
+
+
+class MedicalQARequest(BaseModel):
+    run_backcheck: bool = True
+
+
+def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True) -> dict:
+    if not medical_qa_mod:
+        raise HTTPException(500, "medical_qa module unavailable")
+
+    seg = get_segment(pid, sid)
+    project = get_project(pid)
+    source_text = seg.get("source", "")
+    target_text = seg.get("target", "").strip()
+    if not target_text:
+        return {"ok": False, "error": "Segment is not translated yet", "segment": seg}
+
+    gloss_hits, tm_hit = _get_context(source_text)
+    back = seg.get("backtranslated_ru", "")
+
+    if run_backcheck and medical_qa_enabled():
+        try:
+            if os.environ.get("OPENAI_API_KEY"):
+                back = _openai_translate(target_text, project["tgt"], project["src"])
+            elif os.environ.get("GOOGLE_TRANSLATE_API_KEY"):
+                back = _deep_translate(target_text, project["tgt"], project["src"])
+        except Exception as e:
+            print(f"[backend] medical QA backcheck skipped: {e}", file=sys.stderr)
+
+    qa_result = medical_qa_mod.run_medical_qa(
+        source_text,
+        target_text,
+        backtranslated_ru=back,
+        glossary_matches=gloss_hits,
+        tm_match=tm_hit,
+        engine_qa="medical_qa_mvp",
+    )
+
+    seg["backtranslated_ru"] = qa_result["literal_backcheck"]["backtranslated_ru"]
+    seg["qa_result"] = qa_result
+    seg["qa_issues"] = qa_result["qa_issues"]
+    seg["qa"] = qa_result["ui_issues"]
+    seg["term_candidates"] = qa_result["term_candidates"]
+    seg["risk_score"] = qa_result["risk_score"]
+    seg["risk_color"] = qa_result["risk_color"]
+    seg["engine_qa"] = qa_result["engine_qa"]
+    seg["medical_qa_enabled"] = medical_qa_enabled()
+
+    if qa_result["risk_color"] == "red":
+        seg["status"] = "review"
+        seg["risk"] = "critical"
+    elif qa_result["risk_color"] == "yellow":
+        seg["status"] = "qa"
+        seg["risk"] = "medium"
+    else:
+        seg["status"] = "qa"
+        seg["risk"] = "low"
+
+    return {"ok": True, "segment": seg, "qa_result": qa_result, "issues": qa_result["qa_issues"]}
+
+
+@app.post("/api/segments/{pid}/{sid}/medical-qa")
+def medical_qa_segment(pid: int, sid: int, req: MedicalQARequest = MedicalQARequest()):
+    result = _segment_medical_qa(pid, sid, run_backcheck=req.run_backcheck)
+    save_state(STATE)
+    return result
+
+
+class MedicalQABatchRequest(BaseModel):
+    limit: int = 50
+    segment_ids: Optional[list] = None
+    run_backcheck: bool = True
+
+
+@app.post("/api/projects/{pid}/medical-qa/batch")
+def batch_medical_qa(pid: int, req: MedicalQABatchRequest = MedicalQABatchRequest()):
+    project = get_project(pid)
+    id_filter = set(req.segment_ids) if req.segment_ids else None
+    candidates = [
+        s for s in project["segments"]
+        if s.get("target", "").strip()
+        and s.get("status") in {"translated", "qa", "review", "confirmed"}
+        and (id_filter is None or s["id"] in id_filter)
+    ]
+    targets = candidates[:req.limit]
+    processed = []
+    errors = []
+    for seg in targets:
+        try:
+            result = _segment_medical_qa(pid, seg["id"], run_backcheck=req.run_backcheck)
+            if result.get("ok"):
+                processed.append(seg["id"])
+            else:
+                errors.append({"id": seg["id"], "error": result.get("error", "unknown")})
+        except Exception as e:
+            errors.append({"id": seg["id"], "error": str(e)})
+            print(f"[backend] medical QA batch error seg#{seg['id']}: {e}", file=sys.stderr)
+
+    save_state(STATE)
+    return {
+        "ok": True,
+        "processed": processed,
+        "count": len(processed),
+        "remaining": max(0, len(candidates) - len(targets)),
+        "errors": errors,
+        "featureEnabled": medical_qa_enabled(),
+    }
+
+
 @app.post("/api/segments/{pid}/{sid}/revert")
 def revert_segment(pid: int, sid: int):
     seg = get_segment(pid, sid)
@@ -559,34 +864,66 @@ def update_segment(pid: int, sid: int, req: UpdateSegmentRequest):
 
 
 class BatchRequest(BaseModel):
-    engine: str  # "google" | "gpt"
+    engine: str                          # "google" | "gpt"
+    limit: int = 50                      # максимум за один вызов
+    segment_ids: Optional[list] = None  # если передан — обрабатывать только эти сегменты
+    force: bool = False                  # True = явный выбор пользователя, пропустить фильтры статуса и риска
 
 @app.post("/api/projects/{pid}/batch")
 async def batch_translate(pid: int, req: BatchRequest):
     project = get_project(pid)
-    targets = [s for s in project["segments"]
-               if s["status"] == "new" and
-               (s["risk"] == "low" if req.engine == "google" else s["risk"] != "low")]
+    id_filter = set(req.segment_ids) if req.segment_ids else None
+    if req.force and id_filter:
+        # Явный выбор — переводим только указанные сегменты, кроме подтверждённых
+        all_targets = [s for s in project["segments"] if s["id"] in id_filter and s["status"] != "confirmed"]
+    else:
+        all_targets = [s for s in project["segments"]
+                       if s["status"] == "new" and
+                       (s["risk"] == "low" if req.engine == "google" else s["risk"] != "low") and
+                       (id_filter is None or s["id"] in id_filter)]
+    remaining_after = max(0, len(all_targets) - req.limit)
+    targets = all_targets[:req.limit]
     translated = []
+    tm_hits_count = 0
+    errors = []
     for seg in targets:
-        # Try real or fallback
         translation = None
+        gloss_hits, tm_hit = _get_context(seg["source"])
+
+        # TM точное совпадение → пропускаем API вызов
+        if tm_hit and tm_hit.get("tgt"):
+            seg["target"] = tm_hit["tgt"]
+            seg["status"] = "confirmed"
+            seg["route"] = "EXACT_TM"
+            translated.append(seg["id"])
+            tm_hits_count += 1
+            continue
+
         try:
-            if req.engine == "google" and google_translate and os.environ.get("GOOGLE_TRANSLATE_API_KEY"):
-                translation = google_translate.translate_google(seg["source"], project["src"].lower(), project["tgt"].lower())
-            elif req.engine == "gpt" and pipeline and os.environ.get("OPENAI_API_KEY"):
-                if hasattr(pipeline, "translate_segment"):
-                    translation = pipeline.translate_segment(seg, project["src"], project["tgt"])
+            if req.engine == "google":
+                translation = _google_with_gloss(seg["source"], project["src"], project["tgt"], gloss_hits)
+            elif req.engine == "gpt" and os.environ.get("OPENAI_API_KEY"):
+                translation = _openai_translate(seg["source"], project["src"], project["tgt"],
+                                                gloss_hits=gloss_hits, tm_context=tm_hit)
+            if not translation and req.engine == "gpt":
+                translation = _google_with_gloss(seg["source"], project["src"], project["tgt"], gloss_hits)
         except Exception as e:
-            print(f"[backend] batch fallback: {e}", file=sys.stderr)
-        if not translation:
-            translation = f"[{req.engine.upper()} batch demo for #{seg['id']}]"
-        seg["target"] = translation
-        seg["status"] = "translated"
-        seg["route"] = "GPT_REQUIRED" if req.engine == "gpt" else "GOOGLE_SAFE"
-        translated.append(seg["id"])
+            errors.append(seg["id"])
+            print(f"[backend] batch error seg#{seg['id']}: {e}", file=sys.stderr)
+        if translation:
+            seg["target"] = translation
+            seg["status"] = "translated"
+            seg["route"] = "GPT_REQUIRED" if req.engine == "gpt" else "GOOGLE_SAFE"
+            translated.append(seg["id"])
     save_state(STATE)
-    return {"ok": True, "translated": translated, "count": len(translated)}
+    return {
+        "ok": True,
+        "translated": translated,
+        "count": len(translated),
+        "remaining": remaining_after,
+        "errors": errors,
+        "tm_hits": tm_hits_count,
+    }
 
 
 @app.post("/api/projects/{pid}/preflight")
@@ -595,15 +932,27 @@ def run_preflight(pid: int):
     segs = project["segments"]
     total = len(segs)
 
-    # Routing breakdown
-    routes = {}
+    # Assign risk + route to every segment that lacks them
     for s in segs:
-        routes[s["route"]] = routes.get(s["route"], 0) + 1
+        if not s.get("risk"):
+            words = len(s["source"].split())
+            s["risk"] = "high" if words > 30 else "medium" if words > 8 else "low"
+        if not s.get("route"):
+            s["route"] = "GOOGLE_SAFE" if s["risk"] == "low" else "GPT_REQUIRED"
+        if s.get("tm") is None:
+            s["tm"] = None
 
-    # Risk breakdown
-    risks = {"low": 0, "medium": 0, "high": 0, "critical": 0}
+    save_state(STATE)
+
+    routes: dict = {}
     for s in segs:
-        risks[s["risk"]] = risks.get(s["risk"], 0) + 1
+        r = s.get("route", "GPT_REQUIRED")
+        routes[r] = routes.get(r, 0) + 1
+
+    risks: dict = {}
+    for s in segs:
+        r = s.get("risk", "medium")
+        risks[r] = risks.get(r, 0) + 1
 
     return {
         "ok": True,
@@ -678,6 +1027,7 @@ def health():
         "ok": True,
         "version": "5.5.0",
         "backendModules": list(_BACKEND_MODULES.keys()),
+        "medicalQaEnabled": medical_qa_enabled(),
         "stateFile": str(STATE_FILE),
         "projects": len(STATE["projects"]),
     }

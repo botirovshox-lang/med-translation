@@ -9,6 +9,8 @@ function useStore() {
   const [activeId, setActiveId] = useState(7);
   const [tab, setTab] = useState("editor");
   const [apiReady, setApiReady] = useState(false);
+  const [segmentFilter, setSegmentFilterState] = useState(null); // Set<id> | null
+  const [gotoSegId, setGotoSegId] = useState(null);
 
   const me = { name: "Вы", initials: "ВЫ", color: "var(--c-primary)" };
   const activeProject = projects.find(p => p.id === activeId) || null;
@@ -84,6 +86,8 @@ function useStore() {
 
   const addProject = (project) => setProjects(ps => [project, ...ps.filter(p => p.id !== project.id)]);
   const openProject = (id) => { setActiveId(id); setTab("editor"); };
+  const replaceProjectSegments = (pid, segments) =>
+    setProjects(ps => ps.map(p => p.id !== pid ? p : { ...p, segments }));
   const deleteProject = (id) => {
     setProjects(ps => ps.filter(p => p.id !== id));
     if (activeId === id) setActiveId(null);
@@ -108,8 +112,16 @@ function useStore() {
   return {
     projects, glossary, tm, activeId, activeProject, tab,
     exportHistory, team: window.SEED.team, me, apiReady,
-    go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, openProject, deleteProject, saveTerm, deleteTerm, deleteTM,
+    segmentFilter, gotoSegId,
+    go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, openProject, deleteProject, replaceProjectSegments, saveTerm, deleteTerm, deleteTM,
     setExportHistory,
+    setSegmentFilter: (ids) => {
+      const f = ids && ids.length ? new Set(ids) : null;
+      window._mcat_sf = f; // synchronous bridge for TabEditor first render
+      setSegmentFilterState(f);
+    },
+    goToSegment: (id) => { window._mcat_sf = null; setSegmentFilterState(null); setGotoSegId(id); setTab("editor"); },
+    clearGotoSeg: () => setGotoSegId(null),
   };
 }
 

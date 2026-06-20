@@ -5,25 +5,57 @@ function TabQA({ store, toast }) {
   const project = store.activeProject;
   if (!project) return React.createElement("div", { className: "page" }, React.createElement(NoProject, { store }));
 
+  const issueText = (it) => {
+    const desc = it.explanation_ru || it.msg || "QA issue";
+    const fragment = it.bad_fragment || it.target_fragment || it.source_fragment || "";
+    const suggestion = it.suggested_fragment || "";
+    return desc + (fragment ? " Фрагмент: " + fragment + "." : "") + (suggestion ? " → " + suggestion : "");
+  };
+  const issueSeverity = (it) => it.severity || it.sev || "medium";
+  const openIssueSegments = project.segments
+    .filter(s => s.status !== "confirmed")
+    .map(s => {
+      const sourceIssues = (s.qa_issues && s.qa_issues.length) ? s.qa_issues : (s.qa || []);
+      return { seg: s, issues: sourceIssues };
+    })
+    .filter(row => row.issues.length > 0);
   const issues = [];
-  project.segments.forEach(s => s.qa.forEach(q => issues.push({ ...q, seg: s.id })));
+  openIssueSegments.forEach(row => {
+    row.issues.forEach(q => issues.push({ ...q, seg: row.seg.id, risk_color: row.seg.risk_color, risk_score: row.seg.risk_score }));
+  });
   const passed = project.segments.filter(s => s.status === "confirmed").length;
   const warnings = project.segments.filter(s => s.status === "qa" || s.status === "review").length;
   const failed = project.segments.filter(s => s.status === "failed").length;
 
+  const structuralTypes = ["negation_shift", "laterality_shift", "upper_lower_shift", "inner_outer_shift", "anatomy_shift", "uncertainty_changed", "diagnosis_symptom_finding_changed"];
+  const numericTypes = ["numeric", "number_unit_dosage_mismatch", "unit_mismatch"];
+  const termTypes = ["terminology", "literal_calque", "glossary_violation", "forbidden_term", "weak_collocation"];
+  const lengthTypes = ["length"];
+
+  const getSegIds = (types) => [...new Set(issues.filter(i => types.includes(i.type)).map(i => i.seg))];
+
+  const goCategory = (segIds) => {
+    store.setSegmentFilter(segIds);
+    store.go("editor");
+  };
+
   const groups = [
-    { icon: "file", title: "Форматирование", n: 5, desc: "Несогласованная капитализация в 5 сегментах.", tip: "Несоответствие регистра, пунктуации, пробелов между оригиналом и переводом." },
-    { icon: "target", title: "Числовые ошибки", n: issues.filter(i => i.type === "numeric").length, desc: "Несоответствие чисел или единиц измерения.", tip: "Несовпадение чисел, дозировок, единиц измерения между оригиналом и переводом (КРИТИЧНО для медицины)." },
-    { icon: "book", title: "Терминология", n: issues.filter(i => i.type === "terminology").length, desc: "Обнаружены нежелательные или нестандартные термины.", tip: "Использованы запрещённые термины или термины не из утверждённого глоссария." },
-    { icon: "list", title: "Длина перевода", n: 2, desc: "Перевод заметно длиннее или короче оригинала.", tip: "Перевод существенно длиннее/короче оригинала (>2×). Может указывать на пропуск или добавление информации." },
+    { icon: "file", title: "Структурные", segIds: getSegIds(structuralTypes), n: getSegIds(structuralTypes).length,
+      desc: "Нарушения отрицания, стороны или ориентации.", tip: "Потеря отрицания, сдвиг лево/право, верх/низ, внутри/снаружи — критические смысловые ошибки." },
+    { icon: "target", title: "Числовые ошибки", segIds: getSegIds(numericTypes), n: issues.filter(i => numericTypes.includes(i.type)).length,
+      desc: "Несоответствие чисел или единиц измерения.", tip: "Несовпадение чисел, дозировок, единиц измерения между оригиналом и переводом (КРИТИЧНО для медицины)." },
+    { icon: "book", title: "Терминология", segIds: getSegIds(termTypes), n: issues.filter(i => termTypes.includes(i.type)).length,
+      desc: "Обнаружены нежелательные или нестандартные термины.", tip: "Использованы запрещённые термины или термины не из утверждённого глоссария." },
+    { icon: "list", title: "Длина перевода", segIds: getSegIds(lengthTypes), n: issues.filter(i => lengthTypes.includes(i.type)).length,
+      desc: "Перевод заметно длиннее или короче оригинала.", tip: "Перевод существенно длиннее/короче оригинала (>3×). Может указывать на пропуск или добавление информации." },
   ];
-  const sevMeta = { critical: ["badge-failed", "Критично", "var(--c-error)"], high: ["badge-qa", "Высокий", "var(--c-warning)"], medium: ["badge-review", "Средний", "#ca8a04"] };
+  const sevMeta = { critical: ["badge-failed", "Критично"], major: ["badge-qa", "Major"], high: ["badge-qa", "Высокий"], medium: ["badge-review", "Средний"], minor: ["badge-soft", "Minor"] };
 
   return React.createElement("div", { className: "page" },
     React.createElement("div", { className: "page-head" },
       React.createElement("h1", null, "Контроль качества",
         React.createElement(InfoTip, { title: "Контроль качества (QA)", body: "6-этапный pipeline QA: локальные проверки (8) → консистентность → адаптивное планирование → проверка чисел → back-check → финальное решение." })),
-      React.createElement("p", { className: "lead" }, "Результаты автоматических проверок: терминология, числа, форматирование и длина перевода.")),
+      React.createElement("p", { className: "lead" }, "Открытые QA-замечания по неподтверждённым сегментам. После подтверждения сегмент исчезает из этого списка.")),
 
     React.createElement("div", { className: "grid grid-3 section" },
       React.createElement(QAStat, { icon: "checkCircle", color: "var(--c-success)", n: passed, label: "Прошли QA" }),
@@ -33,30 +65,60 @@ function TabQA({ store, toast }) {
     React.createElement("div", { className: "section" },
       React.createElement("h2", { className: "section-title" }, "Категории замечаний"),
       React.createElement("div", { className: "grid grid-2" },
-        groups.map((g, i) => React.createElement("div", { key: i, className: "card card-pad row between card-hover" },
-          React.createElement("div", { className: "row", style: { gap: 12 } },
-            React.createElement("span", { style: { width: 40, height: 40, borderRadius: 10, background: "var(--bg-sunken)", color: "var(--c-primary)", display: "grid", placeItems: "center" } },
-              React.createElement(Icon, { name: g.icon, size: 19 })),
-            React.createElement("div", null,
-              React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, g.title, React.createElement(InfoTip, { title: g.title, body: g.tip })),
-              React.createElement("div", { className: "dim", style: { fontSize: 13, maxWidth: 280 } }, g.desc))),
-          React.createElement("span", { className: "badge " + (g.n ? "badge-qa" : "badge-confirmed") }, g.n))))),
+        groups.map((g, i) => {
+          const clickable = g.segIds.length > 0;
+          return React.createElement("div", {
+            key: i,
+            className: "card card-pad row between card-hover",
+            style: clickable ? { cursor: "pointer" } : {},
+            onClick: clickable ? () => goCategory(g.segIds) : undefined,
+            title: clickable ? "Открыть " + g.segIds.length + " сегм. в редакторе" : undefined,
+          },
+            React.createElement("div", { className: "row", style: { gap: 12 } },
+              React.createElement("span", { style: { width: 40, height: 40, borderRadius: 10, background: "var(--bg-sunken)", color: "var(--c-primary)", display: "grid", placeItems: "center" } },
+                React.createElement(Icon, { name: g.icon, size: 19 })),
+              React.createElement("div", null,
+                React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, g.title, React.createElement(InfoTip, { title: g.title, body: g.tip })),
+                React.createElement("div", { className: "dim", style: { fontSize: 13, maxWidth: 280 } }, g.desc))),
+            React.createElement("span", { className: "badge " + (g.n ? "badge-qa" : "badge-confirmed") }, g.n));
+        }))),
 
     React.createElement("div", { className: "section" },
-      React.createElement("h2", { className: "section-title" }, "Детальный список"),
-      issues.length
+      React.createElement("h2", { className: "section-title" }, "QA редактор"),
+      openIssueSegments.length
         ? React.createElement("div", { className: "table-wrap" }, React.createElement("table", { className: "tbl" },
             React.createElement("thead", null, React.createElement("tr", null,
-              React.createElement("th", { style: { width: 120 } }, "Важность"), React.createElement("th", { style: { width: 80 } }, "Сегм."),
-              React.createElement("th", { style: { width: 150 } }, "Тип"), React.createElement("th", null, "Описание"), React.createElement("th", { style: { width: 90 } }, ""))),
-            React.createElement("tbody", null, issues.map((it, i) => { const [cls, lab] = sevMeta[it.sev] || sevMeta.medium;
-              return React.createElement("tr", { key: i, onClick: () => { store.go("editor"); toast.info("Переход к сегменту #" + it.seg); } },
-                React.createElement("td", null, React.createElement("span", { className: "badge " + cls }, lab)),
-                React.createElement("td", { className: "col-id" }, "#" + it.seg),
-                React.createElement("td", { className: "dim" }, it.type),
-                React.createElement("td", { style: { lineHeight: 1.5 } }, it.msg),
-                React.createElement("td", { onClick: (e) => e.stopPropagation() }, React.createElement(Btn, { variant: "secondary", size: "sm", icon: "edit", onClick: () => { store.go("editor"); } }, "Исправить")));
-            })))) 
+              React.createElement("th", { className: "col-id" }, "#"),
+              React.createElement("th", null, "RU Оригинал"),
+              React.createElement("th", null, "GB Перевод"),
+              React.createElement("th", { style: { width: 132 } }, "Статус"),
+              React.createElement("th", { style: { width: 360 } }, "QA комментарий"),
+              React.createElement("th", { style: { width: 96 } }, ""))),
+            React.createElement("tbody", null, openIssueSegments.map(row => {
+              const s = row.seg;
+              const topIssue = row.issues[0] || {};
+              const [cls, lab] = sevMeta[issueSeverity(topIssue)] || sevMeta.medium;
+              return React.createElement("tr", { key: s.id, className: "row-status-" + s.status, style: { cursor: "pointer" }, onClick: () => store.goToSegment(s.id) },
+                React.createElement("td", { className: "col-id" }, s.id),
+                React.createElement("td", { className: "src-cell" }, s.source),
+                React.createElement("td", { className: s.target ? "tgt-cell" : "tgt-cell tgt-empty" }, s.target || "— не переведено —"),
+                React.createElement("td", null, React.createElement(StatusBadge, { status: s.status })),
+                React.createElement("td", { style: { lineHeight: 1.5 } },
+                  React.createElement("div", { className: "row", style: { gap: 8, marginBottom: 6, flexWrap: "wrap" } },
+                    React.createElement("span", { className: "badge " + cls }, lab),
+                    React.createElement("span", { className: "dim", style: { fontSize: 12 } }, row.issues.length + " замеч."))
+                  ,
+                  row.issues.slice(0, 3).map((it, i) => React.createElement("div", { key: i, style: { marginTop: i ? 6 : 0 } },
+                    React.createElement("span", { className: "dim" }, (it.type || "qa") + ": "),
+                    issueText(it)
+                  )),
+                  row.issues.length > 3 && React.createElement("div", { className: "dim", style: { marginTop: 6 } }, "Ещё " + (row.issues.length - 3) + " замеч."))
+                ,
+                React.createElement("td", { onClick: (e) => e.stopPropagation() },
+                  React.createElement(Btn, { variant: "secondary", size: "sm", icon: "edit",
+                    onClick: () => store.goToSegment(s.id)
+                  }, "Исправить")));
+            }))))
         : React.createElement(EmptyState, { icon: "checkCircle", title: "Замечаний не найдено", sub: "Все проверенные сегменты соответствуют требованиям." })
     )
   );

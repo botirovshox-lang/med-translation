@@ -41,13 +41,16 @@
       return r.json();
     },
 
-    translate:     (pid, sid, engine)       => call("POST",   `/segments/${pid}/${sid}/translate`,  { engine }),
+    translate:     (pid, sid, engine, force) => call("POST",   `/segments/${pid}/${sid}/translate`,  { engine, force: !!force }),
+    backcheck:     (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/backcheck`),
+    medicalQA:     (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/medical-qa`,  { run_backcheck: true }),
     qa:            (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/qa`),
     confirm:       (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/confirm`),
     revert:        (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/revert`),
     update:        (pid, sid, patch)        => call("POST",   `/segments/${pid}/${sid}/update`,     patch),
 
-    batch:         (pid, engine)            => call("POST",   `/projects/${pid}/batch`,             { engine }),
+    batch:         (pid, engine, segIds, force) => call("POST",   `/projects/${pid}/batch`,             { engine, segment_ids: segIds || null, force: !!force }),
+    medicalQABatch:(pid, segIds)             => call("POST",   `/projects/${pid}/medical-qa/batch`,   { segment_ids: segIds || null, run_backcheck: true }),
     preflight:     (pid)                    => call("POST",   `/projects/${pid}/preflight`),
     exportProject: (pid, format)            => call("POST",   `/projects/${pid}/export`,            { format }),
 

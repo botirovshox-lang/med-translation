@@ -42,6 +42,7 @@ from pydantic import BaseModel
 
 # Add med_translation to path so we can import existing modules
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "backend"))
 sys.path.insert(0, str(ROOT / "med_translation"))
 
 # Try to import existing modules (graceful fallback if missing deps)

@@ -1,10 +1,12 @@
 /* ============================================================
    Tab: Preflight / Анализ проекта — Cost + Safety Planner
    Localized, with ⓘ tooltips and a transparent cost model.
+   Drill-down: клик на любой блок/строку → редактор с активным фильтром сегментов.
    ============================================================ */
 function TabPreflight({ store, toast }) {
   const project = store.activeProject;
   const [analyzing, setAnalyzing] = useState(false);
+
   if (!project) return React.createElement("div", { className: "page" }, React.createElement(NoProject, { store }));
 
   const segs = project.segments;
@@ -16,10 +18,11 @@ function TabPreflight({ store, toast }) {
   const normMap = {};
   segs.forEach(s => { const n = norm(s.source); (normMap[n] = normMap[n] || []).push(s.id); });
   const uniqueCount = Object.keys(normMap).length;
-  const dupGroups = Object.values(normMap).filter(a => a.length > 1).length;
-  const exactTM = segs.filter(s => s.route === "EXACT_TM").length;
-  const glossCovered = segs.filter(s => store.glossary.some(g => s.source.toLowerCase().includes(g.src.toLowerCase()))).length;
-  const coverage = Math.round(glossCovered / total * 100);
+  const dupGroups = Object.values(normMap).filter(a => a.length > 1);
+  const dupGroupsCount = dupGroups.length;
+  const exactTM = segs.filter(s => s.route === "EXACT_TM");
+  const glossCoveredSegs = segs.filter(s => store.glossary.some(g => s.source.toLowerCase().includes(g.src.toLowerCase())));
+  const coverage = Math.round(glossCoveredSegs.length / total * 100);
   const analysisTime = (total * 0.045 + 0.6).toFixed(1);
 
   // ---- Routing ----
@@ -31,6 +34,8 @@ function TabPreflight({ store, toast }) {
   // ---- Risk ----
   const riskCounts = { low: 0, medium: 0, high: 0, critical: 0 };
   segs.forEach(s => riskCounts[s.risk]++);
+  const byRisk = {};
+  segs.forEach(s => { (byRisk[s.risk] = byRisk[s.risk] || []).push(s); });
 
   // ---- Cost model ----
   const RATE = { t: 0.0009, qa: 0.0006, bc: 0.0005, sf: 0.0003, google: 0.00002 };
@@ -42,7 +47,6 @@ function TabPreflight({ store, toast }) {
     if (s.route === "GOOGLE_SAFE") opt.google = w * RATE.google;
     else if (s.route === "DUPLICATE") { opt.t = w * RATE.t; opt.qa = w * RATE.qa; }
     else if (s.route === "GPT_REQUIRED") { opt.t = w * RATE.t; opt.qa = w * RATE.qa; if (isHi(s)) { opt.bc = w * RATE.bc; opt.sf = w * RATE.sf; } }
-    // EXACT_TM and HUMAN_REVIEW => 0 (no API)
     const sum = (o) => o.t + o.qa + o.bc + o.sf + o.google;
     return { w, baseline, opt, baseSum: sum(baseline), optSum: sum(opt), tokens: Math.round(w * 1.4) };
   };
@@ -66,14 +70,27 @@ function TabPreflight({ store, toast }) {
     setAnalyzing(true);
     let result = null;
     if (window.API) result = await window.API.safeCall(() => window.API.preflight(project.id));
+    if (result && result.ok && window.API) {
+      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
+      if (fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
+    }
     setAnalyzing(false);
     const t = (result && result.analysisTime) || analysisTime;
     toast.success("Анализ завершён", total + " сегментов проанализировано за " + t + " с.");
   };
 
+  // ---- Drill-down: открыть выбранные сегменты в редакторе с активным фильтром ----
+  const openDrill = (title, segList) => {
+    const ids = (segList || []).map(s => s.id);
+    if (!ids.length) return;
+    store.setSegmentFilter(ids);
+    store.go("editor");
+  };
+
   const T = (title, body, code) => React.createElement(InfoTip, { title, body, code });
 
   return React.createElement("div", { className: "page page-wide" },
+
     // ---- Header ----
     React.createElement("div", { className: "row between page-head", style: { alignItems: "flex-end" } },
       React.createElement("div", null,
@@ -92,29 +109,41 @@ function TabPreflight({ store, toast }) {
       React.createElement("h2", { className: "section-title" }, "Статистика"),
       React.createElement("div", { className: "grid grid-3" },
         React.createElement(PfMetric, { icon: "list", label: "Всего сегментов", value: total,
-          tip: ["Всего сегментов", "Общее количество сегментов в проекте после импорта DOCX и сегментации."] }),
+          tip: ["Всего сегментов", "Общее количество сегментов в проекте после импорта DOCX и сегментации."],
+          onClick: () => openDrill("Все сегменты", segs) }),
         React.createElement(PfMetric, { icon: "filter", label: "Уникальных (норм.)", value: uniqueCount,
-          tip: ["Уникальных (нормализованных)", "Количество сегментов с уникальным текстом после нормализации (нижний регистр, удаление пунктуации, тримминг пробелов). Меньше total — значит есть дубликаты."] }),
-        React.createElement(PfMetric, { icon: "copy", label: "Групп дубликатов", value: dupGroups,
-          tip: ["Групп дубликатов", "Количество групп, где 2+ сегментов имеют одинаковый нормализованный текст. Перевод одного representative-сегмента в группе автоматически копируется на все остальные → экономия токенов."] }),
-        React.createElement(PfMetric, { icon: "repeat", label: "Точных TM (99%+)", value: exactTM,
-          tip: ["Точных совпадений TM (99%+)", "Сегменты с совпадением ≥99% в Translation Memory. Перевод подтягивается из TM без вызова GPT → стоимость = $0."] }),
+          tip: ["Уникальных (нормализованных)", "Количество сегментов с уникальным текстом после нормализации."],
+          onClick: () => {
+            const seen = new Set(); const uniq = [];
+            segs.forEach(s => { const n = norm(s.source); if (!seen.has(n)) { seen.add(n); uniq.push(s); } });
+            openDrill("Уникальные сегменты (нормализовано)", uniq);
+          }}),
+        React.createElement(PfMetric, { icon: "copy", label: "Групп дубликатов", value: dupGroupsCount,
+          tip: ["Групп дубликатов", "Группы с 2+ одинаковыми сегментами. Перевод одного копируется на остальные."],
+          onClick: () => {
+            const dupIds = new Set(dupGroups.flat());
+            openDrill("Сегменты-дубликаты (" + dupGroupsCount + " групп)", segs.filter(s => dupIds.has(s.id)));
+          }}),
+        React.createElement(PfMetric, { icon: "repeat", label: "Точных TM (99%+)", value: exactTM.length,
+          tip: ["Точных совпадений TM (99%+)", "Сегменты с совпадением ≥99% в Translation Memory. Стоимость: $0."],
+          onClick: exactTM.length ? () => openDrill("Точные совпадения TM (99%+)", exactTM) : null }),
         React.createElement(PfMetric, { icon: "book", label: "Покрытие глоссарием", value: coverage + "%",
-          tip: ["Покрытие глоссарием", "Процент сегментов, в которых найден хотя бы один термин из утверждённого медицинского глоссария. Высокое покрытие → лучше предсказуемость терминологии."] }),
+          tip: ["Покрытие глоссарием", "Процент сегментов с хотя бы одним термином из глоссария."],
+          onClick: glossCoveredSegs.length ? () => openDrill("Сегменты с терминами глоссария", glossCoveredSegs) : null }),
         React.createElement(PfMetric, { icon: "clock", label: "Время анализа", value: analysisTime + " с",
           tip: ["Время анализа (сек)", "Время локального анализа в секундах. Цель: < 120 с для 2828 сегментов."] }))),
 
     // ---- Routing Summary ----
     React.createElement("div", { className: "section" },
       React.createElement("h2", { className: "section-title" }, "Маршруты обработки",
-        T("Маршруты обработки", "Распределение сегментов по маршрутам перевода. Каждый маршрут оптимизирован под тип контента для минимизации стоимости.")),
+        T("Маршруты обработки", "Распределение сегментов по маршрутам перевода.")),
       React.createElement("div", { className: "table-wrap" },
         React.createElement("table", { className: "tbl" },
           React.createElement("thead", null, React.createElement("tr", null,
             React.createElement("th", null, "Маршрут"), React.createElement("th", { style: { width: 130 } }, "Сегментов"), React.createElement("th", { style: { width: 280 } }, "Доля"))),
           React.createElement("tbody", null,
             routeRows.map(r => { const n = r.segs.length; const pct = Math.round(n / total * 100);
-              return React.createElement("tr", { key: r.route, style: { cursor: "default" } },
+              return React.createElement("tr", { key: r.route, className: "drill-row", onClick: () => openDrill("Маршрут: " + (ROUTE_INFO[r.route] ? ROUTE_INFO[r.route].label : r.route), r.segs) },
                 React.createElement("td", null, React.createElement(RouteLabel, { route: r.route })),
                 React.createElement("td", { className: "tnum", style: { fontWeight: 650 } }, n),
                 React.createElement("td", null, React.createElement("div", { className: "row", style: { gap: 10 } },
@@ -125,14 +154,14 @@ function TabPreflight({ store, toast }) {
     // ---- Risk Summary ----
     React.createElement("div", { className: "section" },
       React.createElement("h2", { className: "section-title" }, "Сводка по рискам",
-        T("Сводка по рискам", "Уровень риска рассчитывается локально по эвристикам: семантическая плотность, медицинские термины, числа/дозировки, анатомия. Влияет на выбор маршрута и QA.")),
+        T("Сводка по рискам", "Уровень риска рассчитывается по эвристикам: семантическая плотность, медицинские термины, числа/дозировки.")),
       React.createElement("div", { className: "table-wrap" },
         React.createElement("table", { className: "tbl" },
           React.createElement("thead", null, React.createElement("tr", null,
             React.createElement("th", null, "Уровень риска"), React.createElement("th", { style: { width: 130 } }, "Сегментов"), React.createElement("th", { style: { width: 280 } }, "Доля"))),
           React.createElement("tbody", null,
             ["critical", "high", "medium", "low"].map(k => { const n = riskCounts[k]; const pct = Math.round(n / total * 100);
-              return React.createElement("tr", { key: k, style: { cursor: "default" } },
+              return React.createElement("tr", { key: k, className: n ? "drill-row" : "", onClick: n ? () => openDrill("Риск: " + RISK_INFO[k].label + " (" + n + " сегментов)", byRisk[k] || []) : null },
                 React.createElement("td", null, React.createElement(RiskLabel, { risk: k })),
                 React.createElement("td", { className: "tnum", style: { fontWeight: 650 } }, n),
                 React.createElement("td", null, React.createElement("div", { className: "row", style: { gap: 10 } },
@@ -143,19 +172,19 @@ function TabPreflight({ store, toast }) {
     // ---- Cost Estimate ----
     React.createElement("div", { className: "section" },
       React.createElement("h2", { className: "section-title" }, "Оценка стоимости (USD)",
-        T("Оценка стоимости (USD)", "Прогноз стоимости API-вызовов на основе токенов. Точность ±15% — реальная стоимость может отличаться.")),
+        T("Оценка стоимости (USD)", "Прогноз стоимости API-вызовов на основе токенов. Точность ±15%.")),
       React.createElement("div", { className: "grid grid-3" },
         React.createElement(PfMetric, { icon: "cpu", label: "Базовая (всё через GPT)", value: m(baseTotal), color: "var(--text-2)",
-          tip: ["Базовая стоимость (всё через GPT)", "Сколько стоило бы перевести ВСЕ сегменты через GPT-4 без оптимизации (translate + QA + back-check + safety)."] }),
+          tip: ["Базовая стоимость (всё через GPT)", "Сколько стоило бы перевести ВСЕ сегменты через GPT-4 без оптимизации."] }),
         React.createElement(PfMetric, { icon: "zap", label: "Оптимизированная", value: m(optTotal), color: "var(--c-purple)",
-          tip: ["Оптимизированная стоимость (с маршрутизацией)", "Прогноз с применением маршрутизации: дубликаты, Google для простых, TM для совпадений, GPT только для сложных."] }),
+          tip: ["Оптимизированная стоимость", "Прогноз с применением маршрутизации: дубликаты, Google для простых, TM для совпадений."] }),
         React.createElement(PfMetric, { icon: "checkCircle", label: "Экономия (" + savePct + "%)", value: m(savings), color: "var(--c-success)",
-          tip: ["Потенциальная экономия", "Сколько сэкономите при использовании оптимизированного маршрута вместо базового. Формула: Baseline − Optimized."] }))),
+          tip: ["Потенциальная экономия", "Baseline − Optimized."] }))),
 
     // ---- Cost Components Breakdown ----
     React.createElement("div", { className: "section" },
       React.createElement("h2", { className: "section-title" }, "Разбивка по компонентам",
-        T("Разбивка по компонентам", "Стоимость по этапам обработки. Видно где можно сэкономить больше всего (часто это Back-check и Safety).")),
+        T("Разбивка по компонентам", "Стоимость по этапам обработки.")),
       React.createElement("div", { className: "table-wrap" },
         React.createElement("table", { className: "tbl" },
           React.createElement("thead", null, React.createElement("tr", null,
@@ -164,20 +193,20 @@ function TabPreflight({ store, toast }) {
           React.createElement("tbody", null,
             [
               ["t", "Перевод", ["Перевод", "Стоимость перевода через GPT-4 (input + output tokens × цена)."]],
-              ["qa", "Проверка качества", ["Проверка качества", "Автоматическая проверка перевода через GPT-4: 8 локальных проверок + консистентность + численные данные."]],
-              ["bc", "Обратная проверка", ["Обратная проверка", "Обратный перевод (target→source) через GPT-4 для проверки смысловой эквивалентности. Запускается только для HIGH/CRITICAL."]],
-              ["sf", "Проверка безопасности", ["Проверка безопасности", "Финальная проверка на запрещённые термины, ошибки в дозировках, медицинскую корректность."]],
-              ["google", "Google Translate", ["Google Translate", "Стоимость Google Translate (бесплатно до 500K символов/мес, далее $20 за 1M символов)."]],
-            ].map(([k, label, tip]) => React.createElement("tr", { key: k, style: { cursor: "default" } },
+              ["qa", "Проверка качества", ["Проверка качества", "Автоматическая проверка перевода через GPT-4."]],
+              ["bc", "Обратная проверка", ["Обратная проверка", "Обратный перевод для проверки смысловой эквивалентности. Только для HIGH/CRITICAL."]],
+              ["sf", "Проверка безопасности", ["Проверка безопасности", "Финальная проверка на ошибки в дозировках, медицинскую корректность."]],
+              ["google", "Google Translate", ["Google Translate", "Бесплатно до 500K символов/мес, далее $20 за 1M символов."]],
+            ].map(([k, label, tip]) => React.createElement("tr", { key: k },
               React.createElement("td", null, React.createElement("span", { style: { fontWeight: 600 } }, label), T(tip[0], tip[1])),
               React.createElement("td", { className: "tnum dim" }, m(compBase[k])),
               React.createElement("td", { className: "tnum" }, m(comp[k])),
-              React.createElement("td", { className: "tnum", style: { color: "var(--c-success)", fontWeight: 600 } }, m(compBase[k] - comp[k])))))))),
+              React.createElement("td", { className: "tnum", style: { color: "var(--c-success)", fontWeight: 600 } }, m(compBase[k] - comp[k]))))))))  ,
 
     // ---- Route Cost Breakdown ----
     React.createElement("div", { className: "section" },
       React.createElement("h2", { className: "section-title" }, "Стоимость по маршрутам",
-        T("Стоимость по маршрутам", "Сколько стоит каждый маршрут в отдельности. Помогает понять основную статью расходов.")),
+        T("Стоимость по маршрутам", "Сколько стоит каждый маршрут в отдельности.")),
       React.createElement("div", { className: "table-wrap" },
         React.createElement("div", { className: "tbl-scroll" },
           React.createElement("table", { className: "tbl" },
@@ -188,7 +217,7 @@ function TabPreflight({ store, toast }) {
               routeRows.map(r => {
                 let segN = r.segs.length, tok = 0, base = 0, opt = 0;
                 r.segs.forEach(s => { const c = segCost(s); tok += c.tokens; base += c.baseSum; opt += c.optSum; });
-                return React.createElement("tr", { key: r.route, style: { cursor: "default" } },
+                return React.createElement("tr", { key: r.route, className: "drill-row", onClick: () => openDrill("Маршрут: " + (ROUTE_INFO[r.route] ? ROUTE_INFO[r.route].label : r.route), r.segs) },
                   React.createElement("td", null, React.createElement(RouteLabel, { route: r.route, withTip: false })),
                   React.createElement("td", { className: "tnum" }, segN),
                   React.createElement("td", { className: "tnum dim" }, tok.toLocaleString("ru-RU")),
@@ -202,51 +231,59 @@ function TabPreflight({ store, toast }) {
       React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 16 } },
         React.createElement("div", null,
           React.createElement("h3", { style: { fontSize: 18, fontWeight: 700 } }, "Оптимизация без токенов",
-            T("Оптимизация без токенов", "Действия, которые НЕ требуют вызовов API: заполнение из TM (точные совпадения) и копирование переводов между дубликатами. Стоимость: $0.")),
+            T("Оптимизация без токенов", "Действия без вызовов API: заполнение из TM и копирование переводов между дубликатами.")),
           React.createElement("p", { className: "muted", style: { marginTop: 6, fontSize: 14 } }, "Сократите количество API-вызовов перед переводом:")),
         React.createElement("div", { className: "grid grid-2" },
           React.createElement(ZeroItem, { icon: "repeat", title: "Точное TM",
             text: "Заполнить из доверенной памяти переводов (0 токенов)",
-            tip: ["Точное TM", "Найти сегменты с совпадением ≥99% в TM и подставить существующий перевод. API не вызывается."] }),
+            tip: ["Точное TM", "Найти сегменты с совпадением ≥99% в TM и подставить существующий перевод."] }),
           React.createElement(ZeroItem, { icon: "copy", title: "Дубликаты",
             text: "Скопировать подтверждённые переводы дубликатам (0 токенов)",
-            tip: ["Дубликаты", "После подтверждения representative-сегмента, его перевод автоматически копируется всем дубликатам в группе."] })),
+            tip: ["Дубликаты", "После подтверждения representative-сегмента, перевод копируется дубликатам."] })),
         React.createElement("div", { className: "row row-wrap", style: { gap: 8 } },
           React.createElement(OptBtn, { icon: "download", label: "Применить точное TM",
-            tip: ["Применить точное TM", "Заполнить сегменты с TM ≥99%. Безопасно: переводы можно изменить вручную после."],
-            onClick: () => toast.success("Точное TM применено", exactTM + " сегментов заполнено из памяти переводов.") }),
+            tip: ["Применить точное TM", "Заполнить сегменты с TM ≥99%."],
+            onClick: () => toast.success("Точное TM применено", exactTM.length + " сегментов заполнено из памяти переводов.") }),
           React.createElement(OptBtn, { icon: "clipboard", label: "Подготовить representatives",
-            tip: ["Подготовить representatives", "Отметить первый сегмент каждой группы дубликатов как 'representative'. Эти сегменты будут переводиться, остальные получат копию."],
-            onClick: () => toast.info("Representatives отмечены", dupGroups + " групп дубликатов подготовлено.") }),
+            tip: ["Подготовить representatives", "Отметить первый сегмент каждой группы дубликатов."],
+            onClick: () => toast.info("Representatives отмечены", dupGroupsCount + " групп дубликатов подготовлено.") }),
           React.createElement(OptBtn, { icon: "repeat", label: "Распространить дубликаты",
-            tip: ["Распространить дубликаты", "Скопировать переводы representatives на все дубликаты в их группах. Запускать после подтверждения representatives."],
+            tip: ["Распространить дубликаты", "Скопировать переводы representatives на все дубликаты."],
             onClick: () => toast.info("Распространение", "Переводы скопированы по группам дубликатов.") }),
           React.createElement(OptBtn, { icon: "list", label: "Показать группы дубликатов",
-            tip: ["Показать группы дубликатов", "Открыть список всех групп дубликатов с возможностью просмотра сегментов в каждой группе."],
-            onClick: () => toast.info("Группы дубликатов", dupGroups + " групп в проекте.") }))),
-    ),
+            tip: ["Показать группы дубликатов", "Открыть список всех групп дубликатов."],
+            onClick: () => {
+              const dupIds = new Set(dupGroups.flat());
+              openDrill("Группы дубликатов (" + dupGroupsCount + " групп)", segs.filter(s => dupIds.has(s.id)));
+            } })))),
 
     // ---- Recommended Batch Order ----
     React.createElement("div", { className: "section" },
       React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 14 } },
         React.createElement("h3", { style: { fontSize: 18, fontWeight: 700 } }, "Рекомендуемый порядок обработки",
-          T("Рекомендуемый порядок обработки", "Оптимальный порядок перевода сегментов: сначала representatives дубликатов, затем GPT_REQUIRED, затем HUMAN_REVIEW. Помогает максимизировать использование кэша и снизить затраты.")),
+          T("Рекомендуемый порядок обработки", "Оптимальный порядок перевода: сначала representatives дубликатов, затем GPT_REQUIRED, затем HUMAN_REVIEW.")),
         React.createElement("p", { className: "muted", style: { fontSize: 14, margin: 0 } }, "Обработайте сегменты в этом порядке для оптимизации затрат:"),
         React.createElement("div", { className: "label", style: { marginTop: 2 } }, "Топ-10 ID сегментов:"),
         React.createElement("div", { className: "row row-wrap", style: { gap: 8 } },
-          top10.map((s, i) => React.createElement("span", { key: s.id, className: "badge badge-soft mono", title: ROUTE_INFO[s.route].label, style: { height: 30, fontSize: 13 } },
+          top10.map((s, i) => React.createElement("span", { key: s.id, className: "badge badge-soft mono", title: ROUTE_INFO[s.route] ? ROUTE_INFO[s.route].label : s.route, style: { height: 30, fontSize: 13, cursor: "pointer" },
+            onClick: () => openDrill("Рекомендуемые сегменты (" + candidates.length + ")", candidates) },
             React.createElement("span", { className: "dim", style: { fontSize: 11 } }, (i + 1) + "."), "#" + s.id))),
         React.createElement("p", { className: "dim", style: { fontSize: 12, margin: 0 } }, "(Показаны первые " + top10.length + " из " + candidates.length + " рекомендуемых)"))
     )
   );
 }
 
-function PfMetric({ icon, label, value, sub, color, tip }) {
-  return React.createElement("div", { className: "card metric" },
+function PfMetric({ icon, label, value, sub, color, tip, onClick }) {
+  return React.createElement("div", {
+    className: "card metric" + (onClick ? " drill-metric" : ""),
+    onClick: onClick || undefined,
+    style: onClick ? { cursor: "pointer" } : null
+  },
     React.createElement("div", { className: "m-label" },
       React.createElement(Icon, { name: icon, size: 16, style: { color: color || "var(--c-primary)" } }),
       label, tip && React.createElement(InfoTip, { title: tip[0], body: tip[1] })),
     React.createElement("div", { className: "m-value", style: color ? { color } : null }, value),
+    onClick && React.createElement("div", { className: "dim", style: { fontSize: 11, marginTop: 4 } }, "Открыть в редакторе →"),
     sub && React.createElement("div", { className: "m-sub" }, sub));
 }
 

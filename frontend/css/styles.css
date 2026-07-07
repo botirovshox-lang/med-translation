@@ -700,3 +700,10 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
   .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
   .page { padding: var(--sp-lg) var(--sp-md) var(--sp-2xl); }
 }
+
+/* ---- Drill-down: clickable metric cards & table rows → editor ---- */
+tr.row-checked td { background: color-mix(in srgb, var(--c-primary) 8%, transparent) !important; }
+.drill-metric { transition: box-shadow .12s, transform .12s; }
+.drill-metric:hover { box-shadow: 0 0 0 2px var(--c-primary); transform: translateY(-1px); }
+.drill-row { cursor: pointer; }
+.drill-row:hover td { background: var(--bg-hover) !important; }

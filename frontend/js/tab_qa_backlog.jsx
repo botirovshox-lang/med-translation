@@ -12,20 +12,25 @@ function TabQA({ store, toast }) {
     return desc + (fragment ? " Фрагмент: " + fragment + "." : "") + (suggestion ? " → " + suggestion : "");
   };
   const issueSeverity = (it) => it.severity || it.sev || "medium";
+  // Сегменты, требующие внимания QA: со статусом qa/review/failed ИЛИ с явными замечаниями.
+  const attentionStatuses = ["qa", "review", "failed"];
   const openIssueSegments = project.segments
-    .filter(s => s.status !== "confirmed")
     .map(s => {
       const sourceIssues = (s.qa_issues && s.qa_issues.length) ? s.qa_issues : (s.qa || []);
       return { seg: s, issues: sourceIssues };
     })
-    .filter(row => row.issues.length > 0);
+    .filter(row => row.seg.status !== "confirmed" &&
+      (attentionStatuses.includes(row.seg.status) || row.issues.length > 0));
   const issues = [];
   openIssueSegments.forEach(row => {
     row.issues.forEach(q => issues.push({ ...q, seg: row.seg.id, risk_color: row.seg.risk_color, risk_score: row.seg.risk_score }));
   });
-  const passed = project.segments.filter(s => s.status === "confirmed").length;
-  const warnings = project.segments.filter(s => s.status === "qa" || s.status === "review").length;
-  const failed = project.segments.filter(s => s.status === "failed").length;
+  const passedSegs = project.segments.filter(s => s.status === "confirmed");
+  const warningSegs = project.segments.filter(s => s.status === "qa" || s.status === "review");
+  const failedSegs = project.segments.filter(s => s.status === "failed");
+  const passed = passedSegs.length;
+  const warnings = warningSegs.length;
+  const failed = failedSegs.length;
 
   const structuralTypes = ["negation_shift", "laterality_shift", "upper_lower_shift", "inner_outer_shift", "anatomy_shift", "uncertainty_changed", "diagnosis_symptom_finding_changed"];
   const numericTypes = ["numeric", "number_unit_dosage_mismatch", "unit_mismatch"];
@@ -36,6 +41,12 @@ function TabQA({ store, toast }) {
 
   const goCategory = (segIds) => {
     store.setSegmentFilter(segIds);
+    store.go("editor");
+  };
+  const goSegs = (segList) => {
+    const ids = segList.map(s => s.id);
+    if (!ids.length) return;
+    store.setSegmentFilter(ids);
     store.go("editor");
   };
 
@@ -50,6 +61,9 @@ function TabQA({ store, toast }) {
       desc: "Перевод заметно длиннее или короче оригинала.", tip: "Перевод существенно длиннее/короче оригинала (>3×). Может указывать на пропуск или добавление информации." },
   ];
   const sevMeta = { critical: ["badge-failed", "Критично"], major: ["badge-qa", "Major"], high: ["badge-qa", "Высокий"], medium: ["badge-review", "Средний"], minor: ["badge-soft", "Minor"] };
+  // Для сегментов без гранулярных замечаний — важность и пояснение по статусу.
+  const statusSev = { failed: "critical", review: "high", qa: "medium" };
+  const statusNote = { failed: "Сегмент не прошёл QA — требуется исправление.", review: "Отправлен на ручную проверку (HUMAN_REVIEW).", qa: "Ожидает проверки QA — детальных замечаний пока нет." };
 
   return React.createElement("div", { className: "page" },
     React.createElement("div", { className: "page-head" },
@@ -58,9 +72,9 @@ function TabQA({ store, toast }) {
       React.createElement("p", { className: "lead" }, "Открытые QA-замечания по неподтверждённым сегментам. После подтверждения сегмент исчезает из этого списка.")),
 
     React.createElement("div", { className: "grid grid-3 section" },
-      React.createElement(QAStat, { icon: "checkCircle", color: "var(--c-success)", n: passed, label: "Прошли QA" }),
-      React.createElement(QAStat, { icon: "warn", color: "var(--c-warning)", n: warnings, label: "Предупреждения" }),
-      React.createElement(QAStat, { icon: "alert", color: "var(--c-error)", n: failed, label: "Ошибки" })),
+      React.createElement(QAStat, { icon: "checkCircle", color: "var(--c-success)", n: passed, label: "Прошли QA", onClick: passed ? () => goSegs(passedSegs) : null }),
+      React.createElement(QAStat, { icon: "warn", color: "var(--c-warning)", n: warnings, label: "Предупреждения", onClick: warnings ? () => goSegs(warningSegs) : null }),
+      React.createElement(QAStat, { icon: "alert", color: "var(--c-error)", n: failed, label: "Ошибки", onClick: failed ? () => goSegs(failedSegs) : null })),
 
     React.createElement("div", { className: "section" },
       React.createElement("h2", { className: "section-title" }, "Категории замечаний"),
@@ -96,8 +110,10 @@ function TabQA({ store, toast }) {
               React.createElement("th", { style: { width: 96 } }, ""))),
             React.createElement("tbody", null, openIssueSegments.map(row => {
               const s = row.seg;
+              const hasIssues = row.issues.length > 0;
               const topIssue = row.issues[0] || {};
-              const [cls, lab] = sevMeta[issueSeverity(topIssue)] || sevMeta.medium;
+              const sev = hasIssues ? issueSeverity(topIssue) : (statusSev[s.status] || "medium");
+              const [cls, lab] = sevMeta[sev] || sevMeta.medium;
               return React.createElement("tr", { key: s.id, className: "row-status-" + s.status, style: { cursor: "pointer" }, onClick: () => store.goToSegment(s.id) },
                 React.createElement("td", { className: "col-id" }, s.id),
                 React.createElement("td", { className: "src-cell" }, s.source),
@@ -106,13 +122,15 @@ function TabQA({ store, toast }) {
                 React.createElement("td", { style: { lineHeight: 1.5 } },
                   React.createElement("div", { className: "row", style: { gap: 8, marginBottom: 6, flexWrap: "wrap" } },
                     React.createElement("span", { className: "badge " + cls }, lab),
-                    React.createElement("span", { className: "dim", style: { fontSize: 12 } }, row.issues.length + " замеч."))
+                    React.createElement("span", { className: "dim", style: { fontSize: 12 } }, hasIssues ? row.issues.length + " замеч." : "статус: " + s.status))
                   ,
-                  row.issues.slice(0, 3).map((it, i) => React.createElement("div", { key: i, style: { marginTop: i ? 6 : 0 } },
-                    React.createElement("span", { className: "dim" }, (it.type || "qa") + ": "),
-                    issueText(it)
-                  )),
-                  row.issues.length > 3 && React.createElement("div", { className: "dim", style: { marginTop: 6 } }, "Ещё " + (row.issues.length - 3) + " замеч."))
+                  hasIssues
+                    ? row.issues.slice(0, 3).map((it, i) => React.createElement("div", { key: i, style: { marginTop: i ? 6 : 0 } },
+                        React.createElement("span", { className: "dim" }, (it.type || "qa") + ": "),
+                        issueText(it)
+                      ))
+                    : React.createElement("div", { className: "dim", style: { fontSize: 13 } }, statusNote[s.status] || "Откройте сегмент для проверки."),
+                  hasIssues && row.issues.length > 3 && React.createElement("div", { className: "dim", style: { marginTop: 6 } }, "Ещё " + (row.issues.length - 3) + " замеч."))
                 ,
                 React.createElement("td", { onClick: (e) => e.stopPropagation() },
                   React.createElement(Btn, { variant: "secondary", size: "sm", icon: "edit",
@@ -123,13 +141,19 @@ function TabQA({ store, toast }) {
     )
   );
 }
-function QAStat({ icon, color, n, label }) {
-  return React.createElement("div", { className: "card card-pad row", style: { gap: 16 } },
+function QAStat({ icon, color, n, label, onClick }) {
+  return React.createElement("div", {
+    className: "card card-pad row" + (onClick ? " card-hover" : ""),
+    style: onClick ? { gap: 16, cursor: "pointer" } : { gap: 16 },
+    onClick: onClick || undefined,
+    title: onClick ? "Открыть " + n + " сегм. в редакторе" : undefined,
+  },
     React.createElement("span", { style: { width: 52, height: 52, borderRadius: 13, background: "var(--bg-sunken)", color, display: "grid", placeItems: "center" } },
       React.createElement(Icon, { name: icon, size: 26 })),
     React.createElement("div", null,
       React.createElement("div", { style: { fontSize: 30, fontWeight: 750, lineHeight: 1, letterSpacing: "-1px" } }, n),
-      React.createElement("div", { className: "muted", style: { fontSize: 14, marginTop: 4 } }, label)));
+      React.createElement("div", { className: "muted", style: { fontSize: 14, marginTop: 4 } }, label),
+      onClick && React.createElement("div", { className: "dim", style: { fontSize: 11, marginTop: 4 } }, "Открыть в редакторе →")));
 }
 window.TabQA = TabQA;
 

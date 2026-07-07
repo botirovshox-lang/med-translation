@@ -30,6 +30,7 @@ import sys
 import json
 import hashlib
 import asyncio
+import threading
 from pathlib import Path
 from typing import Optional, Any
 from datetime import datetime
@@ -66,11 +67,16 @@ medical_qa_mod = _safe_import("medical_qa")
 # Google Cloud Translation API v2 (с fallback на deep-translator)
 import requests as _requests
 
+# Ключ, вернувший 401/403, помечается мёртвым до рестарта — не тратим
+# лишний HTTP-запрос (и не льём ключ в логи) на каждый перевод.
+_GOOGLE_KEY_DEAD = False
+
 def _deep_translate(text: str, src: str, tgt: str) -> str:
+    global _GOOGLE_KEY_DEAD
     src = src.lower()[:2]
     tgt = tgt.lower()[:2]
     api_key = os.environ.get("GOOGLE_TRANSLATE_API_KEY", "")
-    if api_key:
+    if api_key and not _GOOGLE_KEY_DEAD:
         try:
             resp = _requests.post(
                 "https://translation.googleapis.com/language/translate/v2",
@@ -81,7 +87,13 @@ def _deep_translate(text: str, src: str, tgt: str) -> str:
             resp.raise_for_status()
             return resp.json()["data"]["translations"][0]["translatedText"]
         except Exception as _ge:
-            print(f"[backend] Google API key failed ({_ge}), falling back to free tier", file=sys.stderr)
+            msg = str(_ge).replace(api_key, "***KEY***")  # не светим ключ в логах
+            if "401" in msg or "403" in msg:
+                _GOOGLE_KEY_DEAD = True
+                print(f"[backend] Google API key невалиден ({msg}) — отключён до рестарта, "
+                      f"используется бесплатный fallback", file=sys.stderr)
+            else:
+                print(f"[backend] Google API key failed ({msg}), falling back to free tier", file=sys.stderr)
     # Fallback: deep-translator (без API ключа)
     from deep_translator import GoogleTranslator as _DTG
     return _DTG(source=src, target=tgt).translate(text) or ""
@@ -174,7 +186,8 @@ def _openai_translate(text: str, src: str, tgt: str,
                       gloss_hits: list = None, tm_context: dict = None) -> str:
     """GPT-перевод с инъекцией глоссария (базовые формы — GPT знает склонения)."""
     import openai
-    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    # timeout + retries: зависший вызов не должен блокировать поток бесконечно
+    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=2)
     system = (
         f"You are a senior medical translator specializing in Russian-to-English biomedical texts. "
         f"Translate the following text from {src} to {tgt}.\n\n"
@@ -215,7 +228,7 @@ def _openai_translate(text: str, src: str, tgt: str,
 # ─────────────────────────────────────────────────────────────────────
 # App setup
 # ─────────────────────────────────────────────────────────────────────
-app = FastAPI(title="Medical CAT Translator API", version="5.5.0")
+app = FastAPI(title="Medical CAT Translator API", version="5.6.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -401,20 +414,48 @@ SEED_TEAM = [
 ]
 
 
+BACKUP_DIR = DATA_DIR / "backups"
+_SAVE_LOCK = threading.Lock()          # сериализует записи state.json (эндпоинты идут в threadpool)
+_BACKUP_KEEP = 48                      # почасовые бэкапы, ~2 суток
+
+
+def _apply_migrations(state: dict) -> dict:
+    # Migrate: if glossary is tiny seed, upgrade to full loaded glossary
+    if len(state.get("glossary", [])) < 100 and len(SEED_GLOSSARY) >= 100:
+        state["glossary"] = list(SEED_GLOSSARY)
+    # Migrate: fix TM quality field (verified bool → quality string)
+    for t in state.get("tm", []):
+        if "quality" not in t:
+            t["quality"] = "verified" if t.get("verified") else "draft"
+    return state
+
+
 def load_state() -> dict:
-    if STATE_FILE.exists():
+    """Загрузка состояния. Если state.json повреждён — НЕ теряем данные молча:
+    битый файл сохраняется как state.corrupt-*, затем пробуем свежайший бэкап."""
+    candidates = [STATE_FILE] + sorted(BACKUP_DIR.glob("state-*.json"), reverse=True)
+    for path in candidates:
+        if not path.exists():
+            continue
         try:
-            state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-            # Migrate: if glossary is tiny seed, upgrade to full loaded glossary
-            if len(state.get("glossary", [])) < 100 and len(SEED_GLOSSARY) >= 100:
-                state["glossary"] = list(SEED_GLOSSARY)
-            # Migrate: fix TM quality field (verified bool → quality string)
-            for t in state.get("tm", []):
-                if "quality" not in t:
-                    t["quality"] = "verified" if t.get("verified") else "draft"
-            return state
-        except Exception:
-            pass
+            state = json.loads(path.read_text(encoding="utf-8"))
+            if path != STATE_FILE:
+                print(f"[backend] CRITICAL: state.json повреждён — восстановлено из бэкапа {path.name}",
+                      file=sys.stderr)
+            return _apply_migrations(state)
+        except Exception as e:
+            print(f"[backend] ERROR: не удалось прочитать {path.name}: {e}", file=sys.stderr)
+            if path == STATE_FILE:
+                try:
+                    corrupt = STATE_FILE.with_name(
+                        f"state.corrupt-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json")
+                    STATE_FILE.rename(corrupt)
+                    print(f"[backend] повреждённый файл сохранён как {corrupt.name} "
+                          f"(для ручного восстановления)", file=sys.stderr)
+                except Exception:
+                    pass
+    print("[backend] CRITICAL: рабочее состояние не найдено — старт с демо-данными (SEED)",
+          file=sys.stderr)
     return {
         "projects": json.loads(json.dumps(SEED_PROJECTS)),
         "glossary": list(SEED_GLOSSARY),
@@ -424,9 +465,33 @@ def load_state() -> dict:
     }
 
 
-def save_state(state: dict):
+def _hourly_backup(payload: str):
+    """Раз в час откладывает копию состояния в data/backups/ (хранится ~2 суток)."""
     try:
-        STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        BACKUP_DIR.mkdir(exist_ok=True)
+        bak = BACKUP_DIR / f"state-{datetime.now().strftime('%Y%m%d-%H')}.json"
+        if not bak.exists():
+            bak.write_text(payload, encoding="utf-8")
+            for old in sorted(BACKUP_DIR.glob("state-*.json"))[:-_BACKUP_KEEP]:
+                old.unlink()
+    except Exception as e:
+        print(f"[backend] WARN: hourly backup failed: {e}", file=sys.stderr)
+
+
+def save_state(state: dict):
+    """Атомарная запись: tmp-файл + fsync + os.replace под глобальным локом.
+    Раньше файл писался напрямую — параллельные запросы могли оставить битый JSON,
+    а load_state() молча сбрасывал всё на демо-данные (потеря проектов)."""
+    try:
+        with _SAVE_LOCK:
+            payload = json.dumps(state, ensure_ascii=False)
+            tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, STATE_FILE)
+            _hourly_backup(payload)
     except Exception as e:
         print(f"[backend] WARN: could not save state: {e}", file=sys.stderr)
 
@@ -641,15 +706,22 @@ async def translate_segment(pid: int, sid: int, req: TranslateRequest):
             used_real_api = True
     except Exception as e:
         print(f"[backend] translate fallback ({req.engine}): {e}", file=sys.stderr)
-        if _DEEP_TRANSLATE_OK:
-            try:
+        # Кросс-движковый fallback: google↑ → пробуем GPT, gpt↑ → пробуем Google
+        try:
+            if req.engine == "google" and os.environ.get("OPENAI_API_KEY"):
+                translation = _openai_translate(src_text, project["src"], project["tgt"],
+                                                gloss_hits=gloss_hits, tm_context=tm_hit)
+            elif _DEEP_TRANSLATE_OK:
                 translation = _google_with_gloss(src_text, project["src"], project["tgt"], gloss_hits)
-                used_real_api = True
-            except Exception:
-                pass
+            used_real_api = bool(translation)
+        except Exception as e2:
+            print(f"[backend] translate cross-fallback failed: {e2}", file=sys.stderr)
 
     if not translation:
-        translation = seg.get("target") or f"[{req.engine.upper()} demo translation of segment #{sid}]"
+        # Раньше сюда подставлялась заглушка "[GOOGLE demo translation...]" — в медицинском
+        # переводе это недопустимо. Честно сообщаем об ошибке, сегмент не трогаем.
+        raise HTTPException(502, "Перевод недоступен: оба движка вернули ошибку. "
+                                 "Попробуйте ещё раз или проверьте API-ключи.")
 
     seg["target"] = translation
     seg["status"] = "translated"
@@ -880,7 +952,8 @@ async def batch_translate(pid: int, req: BatchRequest):
     else:
         all_targets = [s for s in project["segments"]
                        if s["status"] == "new" and
-                       (s["risk"] == "low" if req.engine == "google" else s["risk"] != "low") and
+                       (s.get("risk", "medium") == "low" if req.engine == "google"
+                        else s.get("risk", "medium") != "low") and
                        (id_filter is None or s["id"] in id_filter)]
     remaining_after = max(0, len(all_targets) - req.limit)
     targets = all_targets[:req.limit]
@@ -965,19 +1038,88 @@ def run_preflight(pid: int):
 
 
 class ExportRequest(BaseModel):
-    format: str  # "docx" | "pdf" | "xlsx"
+    format: str          # "docx" | "xlsx" ("pdf" пока не поддерживается)
+    source: bool = True  # включить колонку с оригиналом
+
+EXPORT_DIR = DATA_DIR / "exports"   # внутри ReadWritePaths systemd-юнита
+
+def _safe_filename(name: str) -> str:
+    return _re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", name).strip() or "project"
+
+def _generate_export(project: dict, fmt: str, include_source: bool = True) -> Path:
+    """Собирает реальный файл экспорта. Раньше экспорт был фиктивным —
+    файл не создавался вовсе, только запись в историю."""
+    EXPORT_DIR.mkdir(exist_ok=True)
+    out = EXPORT_DIR / f"{_safe_filename(project['title'])}.{fmt}"
+    segs = project["segments"]
+    if fmt == "docx":
+        from docx import Document
+        doc = Document()
+        doc.add_heading(project["title"], level=1)
+        doc.add_paragraph(f"{project.get('src','RU')} → {project.get('tgt','EN')} · "
+                          f"сегментов: {len(segs)} · экспорт: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        if include_source:
+            table = doc.add_table(rows=1, cols=3)
+            table.style = "Table Grid"
+            hdr = table.rows[0].cells
+            hdr[0].text, hdr[1].text, hdr[2].text = "#", "Источник", "Перевод"
+            for s in segs:
+                row = table.add_row().cells
+                row[0].text = str(s["id"])
+                row[1].text = s.get("source", "")
+                row[2].text = s.get("target", "")
+        else:
+            for s in segs:
+                if s.get("target"):
+                    doc.add_paragraph(s["target"])
+        doc.save(str(out))
+    elif fmt == "xlsx":
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Segments"
+        ws.append(["#", "Источник", "Перевод", "Статус", "Маршрут", "Риск"])
+        for s in segs:
+            ws.append([s["id"], s.get("source", ""), s.get("target", ""),
+                       s.get("status", ""), s.get("route", ""), s.get("risk", "")])
+        wb.save(str(out))
+    else:
+        raise HTTPException(400, f"Формат {fmt} не поддерживается")
+    return out
 
 @app.post("/api/projects/{pid}/export")
 def export_project(pid: int, req: ExportRequest):
     project = get_project(pid)
-    file_name = f"{project['title']}.{req.format}"
+    fmt = req.format.lower()
+    if fmt not in {"docx", "xlsx"}:
+        return {"ok": False,
+                "error": f"Формат {fmt.upper()} пока не поддерживается — выберите DOCX или Excel."}
+    try:
+        path = _generate_export(project, fmt, include_source=req.source)
+    except ImportError as e:
+        return {"ok": False, "error": f"На сервере нет библиотеки для {fmt.upper()}: {e}"}
+    size_kb = max(1, path.stat().st_size // 1024)
     STATE["exportHistory"].insert(0, {
-        "file": file_name,
+        "file": path.name,
         "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "size": "≈ 80 КБ",
+        "size": f"{size_kb} КБ",
     })
+    STATE["exportHistory"] = STATE["exportHistory"][:50]
     save_state(STATE)
-    return {"ok": True, "file": file_name}
+    return {"ok": True, "file": path.name, "size": f"{size_kb} КБ",
+            "url": f"/api/projects/{pid}/export/download?format={fmt}&source={1 if req.source else 0}"}
+
+@app.get("/api/projects/{pid}/export/download")
+def download_export(pid: int, format: str = "docx", source: bool = True):
+    project = get_project(pid)
+    fmt = format.lower()
+    if fmt not in {"docx", "xlsx"}:
+        raise HTTPException(400, "Поддерживаются только docx и xlsx")
+    path = _generate_export(project, fmt, include_source=source)
+    media = ("application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+             if fmt == "docx"
+             else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    return FileResponse(str(path), media_type=media, filename=path.name)
 
 
 # ─── Glossary ───────────────────────────────────────────────────────
@@ -1026,7 +1168,7 @@ def delete_tm(src: str):
 def health():
     return {
         "ok": True,
-        "version": "5.5.0",
+        "version": "5.6.0",
         "backendModules": list(_BACKEND_MODULES.keys()),
         "medicalQaEnabled": medical_qa_enabled(),
         "stateFile": str(STATE_FILE),

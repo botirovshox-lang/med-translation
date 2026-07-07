@@ -1,5 +1,19 @@
 # ARCHITECTURE - Medical CAT Translator v5.5
 
+> ## ⚠️ ДОКУМЕНТ ЧАСТИЧНО УСТАРЕЛ (актуально на 2026-07-07)
+>
+> Ниже описана **legacy Streamlit-архитектура** (SQLite, app_v55.py). В продакшене
+> с июня 2026 работает другой стек — см. **README.md** и **CLAUDE.md** в корне:
+>
+> - **Backend:** FastAPI (`backend/main.py`) + uvicorn (1 worker), systemd-юнит `medcat`
+> - **Frontend:** React 18 + Babel standalone (`frontend/`), без сборки
+> - **Хранилище:** `backend/data/state.json` (атомарная запись + почасовые бэкапы),
+>   НЕ SQLite
+> - **Из legacy-кода используются только модули:** `medical_qa`, глоссарий TSV,
+>   `tm`, `db`, `pipeline` (импортируются `main.py` через sys.path)
+>
+> Разделы про Streamlit UI, SQLite-таблицы и Railway ниже — историческая справка.
+
 System architecture, design patterns, and component interactions.
 
 ---

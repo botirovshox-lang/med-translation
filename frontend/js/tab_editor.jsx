@@ -80,9 +80,9 @@ function TabEditor({ store, toast }) {
       const src = result.source === "TM" ? " (из TM)" : result.usedRealApi ? "" : " (демо)";
       toast.success("Сегмент переведён", label + " · сегмент #" + seg.id + src);
     } else {
-      const demoTarget = "[" + engine.toUpperCase() + " demo · segment #" + seg.id + "]";
-      store.updateSegment(project.id, seg.id, { status: "translated", route: engine === "gpt" ? "GPT_REQUIRED" : "GOOGLE_SAFE", target: demoTarget });
-      toast.warning("Нет связи с сервером", "Локальная заглушка · сегмент #" + seg.id);
+      // НЕ подставляем демо-заглушку в медицинский перевод: сегмент остаётся как был,
+      // пользователь видит честную ошибку и может повторить попытку.
+      toast.error("Перевод не выполнен", "Сегмент #" + seg.id + " не изменён. Сервер недоступен или движки перевода вернули ошибку — попробуйте ещё раз.");
     }
     clearBusy(seg.id);
   };
@@ -100,8 +100,8 @@ function TabEditor({ store, toast }) {
       if (n === 0) toast.info("Проверка QA завершена", "Сегмент #" + seg.id + " — замечаний не найдено.");
       else toast.warning("QA: " + n + " замечан.", "Сегмент #" + seg.id);
     } else {
-      store.updateSegment(project.id, seg.id, { status: "qa" });
-      toast.info("Проверка QA завершена", "Сегмент #" + seg.id + " — замечаний не найдено.");
+      // Честная ошибка вместо ложного "замечаний не найдено" при недоступном сервере
+      toast.error("QA не выполнен", "Сегмент #" + seg.id + ": сервер недоступен, статус не изменён.");
     }
     clearBusy(seg.id);
   };

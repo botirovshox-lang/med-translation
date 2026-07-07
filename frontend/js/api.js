@@ -52,7 +52,7 @@
     batch:         (pid, engine, segIds, force) => call("POST",   `/projects/${pid}/batch`,             { engine, segment_ids: segIds || null, force: !!force }),
     medicalQABatch:(pid, segIds)             => call("POST",   `/projects/${pid}/medical-qa/batch`,   { segment_ids: segIds || null, run_backcheck: true }),
     preflight:     (pid)                    => call("POST",   `/projects/${pid}/preflight`),
-    exportProject: (pid, format)            => call("POST",   `/projects/${pid}/export`,            { format }),
+    exportProject: (pid, format, source)    => call("POST",   `/projects/${pid}/export`,            { format, source: source !== false }),
 
     saveTerm:      (term, isNew)            => call("POST",   "/glossary",                          { ...term, isNew }),
     deleteTerm:    (src)                    => call("DELETE", `/glossary?src=${encodeURIComponent(src)}`),

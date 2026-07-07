@@ -9,8 +9,13 @@ User=medcat
 Group=medcat
 WorkingDirectory=/opt/med-translation
 EnvironmentFile=/etc/medcat/env
+# Данные должны существовать ДО mount namespacing (ReadWritePaths), иначе сервис не стартует.
+# "+" — выполняется от root независимо от User=.
+ExecStartPre=+/usr/bin/install -d -o medcat -g medcat /opt/med-translation/backend/data
+# ВАЖНО: строго 1 worker — состояние приложения хранится в памяти процесса (state.json).
+# Несколько воркеров = несколько копий состояния, затирающих друг друга.
 ExecStart=/opt/med-translation/.venv/bin/uvicorn backend.main:app \
-    --host 127.0.0.1 --port 8000 --workers 2
+    --host 127.0.0.1 --port 8000 --workers 1
 Restart=always
 RestartSec=3
 StandardOutput=journal

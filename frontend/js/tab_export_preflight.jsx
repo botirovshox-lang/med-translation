@@ -12,18 +12,27 @@ function TabExport({ store, toast }) {
   const doExport = async () => {
     setBusy(true);
     let result = null;
-    if (window.API) result = await window.API.safeCall(() => window.API.exportProject(project.id, fmt));
+    if (window.API) result = await window.API.safeCall(() => window.API.exportProject(project.id, fmt, opts.source));
     setBusy(false);
-    const fileName = (result && result.file) || (project.title + "." + fmt);
-    // Prepend to history locally so user sees it without refresh
-    if (store.setExportHistory) {
-      store.setExportHistory(h => [{ file: fileName, when: new Date().toISOString().slice(0,16).replace("T"," "), size: "≈ 80 КБ" }, ...h]);
+    if (result && result.ok && result.url) {
+      // Реальное скачивание: бэкенд собирает файл и отдаёт по result.url
+      const a = document.createElement("a");
+      a.href = result.url;
+      a.download = result.file || (project.title + "." + fmt);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      if (store.setExportHistory) {
+        store.setExportHistory(h => [{ file: result.file, when: new Date().toISOString().slice(0,16).replace("T"," "), size: result.size || "" }, ...h]);
+      }
+      toast.success("Файл готов", result.file + " — загрузка началась.");
+    } else {
+      toast.error("Экспорт не выполнен", (result && result.error) || "Сервер недоступен или вернул ошибку.");
     }
-    toast.success("Файл готов", fileName + " добавлен в историю экспортов.");
   };
   const formats = [
     ["docx", "DOCX", "Microsoft Word — сохраняет форматирование", "file"],
-    ["pdf", "PDF", "Только для чтения — удобно для проверки", "file"],
+    ["pdf", "PDF", "Пока недоступен — используйте DOCX", "file"],
     ["xlsx", "Excel", "Таблица: оригинал и перевод по столбцам", "columns"],
   ];
 

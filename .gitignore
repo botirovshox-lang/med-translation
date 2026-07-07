@@ -45,7 +45,7 @@ logs/
 htmlcov/
 
 # Backend runtime
-backend/data/state.json
+backend/data/
 backend/__pycache__/
 
 # Inner med_translation cleanup

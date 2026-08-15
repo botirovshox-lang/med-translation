@@ -44,6 +44,7 @@ function TabEditor({ store, toast }) {
     try { return localStorage.getItem(GPT_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
   const [batchPlan, setBatchPlan] = useState(null);        // смета перед запуском GPT-пакета
+  const [retranslate, setRetranslate] = useState(false);   // перегнать заново уже переведённые
   const stopRef = useRef(false);
   const PAGE_SIZE = 10;
 
@@ -217,7 +218,26 @@ function TabEditor({ store, toast }) {
     toast.warning("Подтверждение снято", "Сегмент #" + seg.id + " возвращён в «Переведён».");
   };
 
-  // Собрать список целей пакета. Приоритет: чекбоксы > активный фильтр анализа > всё.
+  // Один и тот же отбор для счётчика на карточке и для самого пакета — иначе цифры расходятся.
+  // Приоритет: чекбоксы > активный фильтр анализа > весь проект.
+  const pickTargets = (engine, segs) => {
+    const hasExplicitCheck = checkedSegs.size > 0;
+    const idSet = hasExplicitCheck ? checkedSegs : (store.segmentFilter || window._mcat_sf || null);
+    // Галочки и режим «заново» — это явный выбор пользователя, фильтры статуса и риска
+    // к нему не применяем. Без выделения «заново» не срабатывает: иначе один клик
+    // перегнал бы весь проект целиком.
+    const explicit = hasExplicitCheck || (retranslate && !!idSet);
+    const targets = explicit
+      ? segs.filter(s => idSet.has(s.id) && s.status !== "confirmed")
+      : segs.filter(s =>
+          s.status === "new" &&
+          (engine === "google" ? s.risk === "low" : s.risk !== "low") &&
+          (!idSet || idSet.has(s.id))
+        );
+    return { targets, explicit, selectionSize: idSet ? idSet.size : 0 };
+  };
+
+  // Собрать список целей пакета по свежим данным с бэкенда.
   const collectBatchTargets = async (engine) => {
     let currentSegs = project.segments;
     if (window.API) {
@@ -227,16 +247,8 @@ function TabEditor({ store, toast }) {
         currentSegs = fresh.segments;
       }
     }
-    const hasExplicitCheck = checkedSegs.size > 0;
-    const idSet = hasExplicitCheck ? checkedSegs : (store.segmentFilter || window._mcat_sf || null);
-    const targets = hasExplicitCheck
-      ? currentSegs.filter(s => checkedSegs.has(s.id) && s.status !== "confirmed")
-      : currentSegs.filter(s =>
-          s.status === "new" &&
-          (engine === "google" ? s.risk === "low" : s.risk !== "low") &&
-          (!idSet || idSet.has(s.id))
-        );
-    return { targets, hasExplicitCheck };
+    const { targets, explicit } = pickTargets(engine, currentSegs);
+    return { targets, hasExplicitCheck: explicit };
   };
 
   // Клик по кнопке пакета: Google — сразу, GPT — сначала смета (это платно).
@@ -419,19 +431,32 @@ function TabEditor({ store, toast }) {
       React.createElement(Expander, { title: "Пакетный перевод", icon: "zap", right: "2 движка", defaultOpen: false },
         React.createElement("div", { className: "grid grid-3" },
           React.createElement(BatchCard, { kind: "google", running: batchRun && batchRun.engine === "google" ? batchRun : null, onRun: () => askRunBatch("google"), onStop: () => { stopRef.current = true; },
-            available: checkedSegs.size > 0
-              ? project.segments.filter(s => checkedSegs.has(s.id) && s.status !== "confirmed").length
-              : project.segments.filter(s => s.status === "new" && s.risk === "low" && (!store.segmentFilter || store.segmentFilter.has(s.id))).length,
+            available: pickTargets("google", project.segments).targets.length,
+            selectionSize: pickTargets("google", project.segments).selectionSize,
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(BatchCard, { kind: "gpt", running: batchRun && batchRun.engine === "gpt" ? batchRun : null, onRun: () => askRunBatch("gpt"), onStop: () => { stopRef.current = true; },
             models: gptModels, model: gptModel, modelInfo: gptModelInfo, onModel: pickGptModel,
-            available: checkedSegs.size > 0
-              ? project.segments.filter(s => checkedSegs.has(s.id) && s.status !== "confirmed").length
-              : project.segments.filter(s => s.status === "new" && s.risk !== "low" && (!store.segmentFilter || store.segmentFilter.has(s.id))).length,
+            available: pickTargets("gpt", project.segments).targets.length,
+            selectionSize: pickTargets("gpt", project.segments).selectionSize,
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(MedicalQACard, { running: batchRun && batchRun.engine === "medical_qa" ? batchRun : null, onRun: runMedicalQABatch,
             available: project.segments.filter(s => s.target && s.target.trim() && ["translated", "qa", "review", "confirmed"].includes(s.status) && (checkedSegs.size > 0 ? checkedSegs.has(s.id) : (!store.segmentFilter || store.segmentFilter.has(s.id)))).length,
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) })
+        ),
+        // Переводить заново уже переведённые. Работает только по явной выборке —
+        // галочки или фильтр из Анализа, — чтобы одним кликом не перегнать весь проект.
+        React.createElement("div", { className: "row between", style: { marginTop: 12, gap: 12, flexWrap: "wrap" } },
+          React.createElement("div", null,
+            React.createElement("div", { style: { fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center" } },
+              "Переводить заново уже переведённые",
+              React.createElement(InfoTip, { title: "Повторный перевод",
+                body: "По умолчанию пакет берёт только сегменты со статусом «Новый». Включите, чтобы перегнать выбранные заново — например, чтобы перевести моделью получше то, что уже переведено. Подтверждённые сегменты не трогаются никогда, точное совпадение с памятью переводов при этом не подставляется. Старый перевод перезаписывается." })),
+            React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+              (store.segmentFilter || window._mcat_sf || checkedSegs.size > 0)
+                ? "Применится к текущей выборке"
+                : "Нужна выборка: галочки или фильтр из Анализа")),
+          React.createElement(Switch, { on: retranslate, label: "Переводить заново",
+            onClick: () => setRetranslate(v => !v) })
         )
       )
     ),
@@ -594,7 +619,7 @@ function LegendDot({ color, label }) {
     React.createElement("span", { style: { width: 10, height: 10, borderRadius: 3, background: color, display: "inline-block" } }), label);
 }
 
-function BatchCard({ kind, running, onRun, onStop, available, filtered, checked, models, model, modelInfo, onModel }) {
+function BatchCard({ kind, running, onRun, onStop, available, selectionSize, filtered, checked, models, model, modelInfo, onModel }) {
   const meta = kind === "google"
     ? { icon: "globe", title: "Google Batch", sub: "Низкорисковые сегменты", note: "Для простых, шаблонных формулировок.", color: "var(--c-warning)", btn: "Запустить Google",
         tipTitle: "Запустить Google batch", tip: "Перевести все GOOGLE_SAFE сегменты через Google Translate. Результат сохраняется как 'google_draft' (не подтверждён)." }
@@ -631,7 +656,10 @@ function BatchCard({ kind, running, onRun, onStop, available, filtered, checked,
             React.createElement(Btn, { variant: "ghost", size: "sm", icon: "x", onClick: onStop }, "Остановить")))
       : React.createElement("div", { className: "row between" },
           React.createElement("span", { className: "dim", style: { fontSize: 12 } },
-            available + " доступно" + (checked > 0 ? " (" + checked + " выбрано)" : filtered ? " (фильтр)" : "")),
+            // При нуле объясняем причину: «0 доступно (фильтр)» не говорит, почему именно ноль
+            available === 0 && selectionSize > 0
+              ? "0 новых из " + selectionSize + " в выборке"
+              : available + " доступно" + (checked > 0 ? " (" + checked + " выбрано)" : filtered ? " (фильтр)" : "")),
           React.createElement(Btn, { variant: "secondary", size: "sm", icon: "zap", onClick: onRun, disabled: !available }, meta.btn))
   );
 }

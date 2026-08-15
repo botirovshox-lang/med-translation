@@ -1018,8 +1018,11 @@ def batch_translate(pid: int, req: BatchRequest):
         translation = None
         gloss_hits, tm_hit = _get_context(seg["source"])
 
-        # TM точное совпадение → пропускаем API вызов
-        if tm_hit and tm_hit.get("tgt"):
+        # TM точное совпадение → пропускаем API вызов.
+        # При force (явный выбор пользователя: галочки или «перевести заново») шорткат
+        # не применяем — иначе «перевести заново выбранной моделью» молча подставляло бы
+        # старый текст из памяти. Так же ведёт себя одиночный перевод сегмента.
+        if not req.force and tm_hit and tm_hit.get("tgt"):
             seg["target"] = tm_hit["tgt"]
             seg["status"] = "confirmed"
             seg["route"] = "EXACT_TM"

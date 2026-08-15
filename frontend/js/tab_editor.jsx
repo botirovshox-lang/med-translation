@@ -1,6 +1,31 @@
 /* ============================================================
    Tab: Segment Editor — the core translation workspace
    ============================================================ */
+
+// Размер порции пакетного перевода. Один запрос ≈ BATCH_CHUNK * EST_SEC_PER_SEG секунд —
+// держим его коротким, чтобы не упираться в proxy_read_timeout и чаще двигать прогресс.
+const BATCH_CHUNK = 10;
+const EST_SEC_PER_SEG = 5;          // замер на проде: 5-6 с на сегмент через GPT
+const GPT_MODEL_LS_KEY = "mcat_gpt_model";
+
+// Ориентировочная смета пакета. Кириллица ≈ 2.2 симв./токен, английский вывод ≈ 3.5,
+// плюс ~500 токенов системного промпта с глоссарием на каждый сегмент. У моделей GPT-5.x
+// в оплачиваемый вывод входят ещё и reasoning-токены — отсюда надбавка.
+function estimateBatch(targets, model) {
+  const chars = targets.reduce((a, s) => a + (s.source || "").length, 0);
+  const tokIn = targets.length * 500 + chars / 2.2;
+  const tokOut = (chars / 3.5) * (model && model.api === "modern" ? 1.8 : 1);
+  const cost = model ? (tokIn / 1e6) * model.in + (tokOut / 1e6) * model.out : null;
+  return { chars, cost, seconds: targets.length * EST_SEC_PER_SEG };
+}
+
+function fmtDuration(sec) {
+  if (sec < 90) return Math.round(sec) + " с";
+  if (sec < 5400) return Math.round(sec / 60) + " мин";
+  const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+  return h + " ч" + (m ? " " + m + " мин" : "");
+}
+
 function TabEditor({ store, toast }) {
   const project = store.activeProject;
   const [filter, setFilter] = useState("all");
@@ -14,7 +39,29 @@ function TabEditor({ store, toast }) {
   const [showFilters, setShowFilters] = useState(false);
   const [page, setPage] = useState(1);
   const [revertTarget, setRevertTarget] = useState(null);
+  const [gptModels, setGptModels] = useState([]);          // каталог с ценами из /api/models
+  const [gptModel, setGptModel] = useState(() => {
+    try { return localStorage.getItem(GPT_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
+  });
+  const [batchPlan, setBatchPlan] = useState(null);        // смета перед запуском GPT-пакета
+  const stopRef = useRef(false);
   const PAGE_SIZE = 10;
+
+  // Каталог моделей грузим один раз; пустой список — значит бэкенд старый или ключа нет
+  useEffect(() => {
+    if (!window.API || !window.API.models) return;
+    window.API.safeCall(() => window.API.models()).then(d => {
+      if (!d || !d.models) return;
+      setGptModels(d.models);
+      setGptModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.default || ""));
+    });
+  }, []);
+
+  const gptModelInfo = gptModels.find(m => m.id === gptModel) || null;
+  const pickGptModel = (id) => {
+    setGptModel(id);
+    try { localStorage.setItem(GPT_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
+  };
 
   useEffect(() => { setPage(1); }, [filter, query, riskFilter, project && project.id, store.segmentFilter]);
   useEffect(() => { setCheckedSegs(new Set()); }, [project && project.id, store.segmentFilter]);
@@ -68,7 +115,7 @@ function TabEditor({ store, toast }) {
     setSegBusy(seg.id, "translate");
     let result = null;
     if (window.API) {
-      result = await window.API.safeCall(() => window.API.translate(project.id, seg.id, engine, force));
+      result = await window.API.safeCall(() => window.API.translate(project.id, seg.id, engine, force, gptModel));
     }
     if (result && result.segment) {
       store.updateSegment(project.id, seg.id, {
@@ -76,7 +123,7 @@ function TabEditor({ store, toast }) {
         status: result.segment.status,
         route: result.segment.route,
       });
-      const label = engine === "gpt" ? "GPT-4o" : "Google Translate";
+      const label = engine === "gpt" ? (gptModelInfo ? gptModelInfo.label : "GPT") : "Google Translate";
       const src = result.source === "TM" ? " (из TM)" : result.usedRealApi ? "" : " (демо)";
       toast.success("Сегмент переведён", label + " · сегмент #" + seg.id + src);
     } else {
@@ -170,9 +217,8 @@ function TabEditor({ store, toast }) {
     toast.warning("Подтверждение снято", "Сегмент #" + seg.id + " возвращён в «Переведён».");
   };
 
-  const runBatch = async (engine) => {
-    if (batchRun) return;  // не запускать второй пакет поверх незавершённого
-    // Получаем свежие статусы с бэкенда без запуска API-апдейтов для каждого сегмента
+  // Собрать список целей пакета. Приоритет: чекбоксы > активный фильтр анализа > всё.
+  const collectBatchTargets = async (engine) => {
     let currentSegs = project.segments;
     if (window.API) {
       const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
@@ -181,7 +227,6 @@ function TabEditor({ store, toast }) {
         currentSegs = fresh.segments;
       }
     }
-    // Приоритет: чекбоксы > активный фильтр анализа > всё
     const hasExplicitCheck = checkedSegs.size > 0;
     const idSet = hasExplicitCheck ? checkedSegs : (store.segmentFilter || window._mcat_sf || null);
     const targets = hasExplicitCheck
@@ -191,39 +236,69 @@ function TabEditor({ store, toast }) {
           (engine === "google" ? s.risk === "low" : s.risk !== "low") &&
           (!idSet || idSet.has(s.id))
         );
+    return { targets, hasExplicitCheck };
+  };
+
+  // Клик по кнопке пакета: Google — сразу, GPT — сначала смета (это платно).
+  const askRunBatch = async (engine) => {
+    if (batchRun) return;  // не запускать второй пакет поверх незавершённого
+    const { targets, hasExplicitCheck } = await collectBatchTargets(engine);
     if (!targets.length) { toast.warning("Нет подходящих сегментов", "Все сегменты уже переведены или не подходят под фильтр."); return; }
-    setBatchRun({ engine, done: 0, total: targets.length });
+    if (engine === "gpt") setBatchPlan({ engine, targets, hasExplicitCheck });
+    else runBatch(engine, targets, hasExplicitCheck);
+  };
 
-    const segIds = targets.map(s => s.id);
-    let result = null;
-    if (window.API) result = await window.API.safeCall(() => window.API.batch(project.id, engine, segIds, hasExplicitCheck));
+  // Пакет идёт порциями по BATCH_CHUNK: один HTTP-запрос живёт минуту-две и не упирается
+  // в таймаут прокси, прогресс двигается по ходу дела, а прерванный пакет не откатывает
+  // уже переведённое — всё сохранено на сервере по завершении каждой порции.
+  const runBatch = async (engine, targets, hasExplicitCheck) => {
+    setBatchPlan(null);
+    stopRef.current = false;
+    const total = targets.length;
+    const ids = targets.map(s => s.id);
+    const engineName = engine === "gpt" ? "GPT" : "Google";
+    let done = 0, errCount = 0, tmCount = 0, failed = false;
+    setBatchRun({ engine, done: 0, total });
 
-    if (result && result.ok) {
-      // Reload segments с бэкенда после перевода — ОДНОЙ заменой массива.
-      // Раньше здесь был forEach со store.updateSegment на каждый сегмент: это
-      // порождало POST /update на все сегменты проекта (тысячи запросов), которые
-      // потом устаревшими значениями затирали переводы, сделанные в эти минуты.
-      const fresh2 = await window.API.safeCall(() => window.API.getProject(project.id));
-      if (!fresh2 || !fresh2.segments) {
-        // Данные сохранены на сервере, но обновить таблицу нечем — не врём про успех
-        setBatchRun(null);
-        toast.warning("Экран не обновлён",
-          "Перевод сохранён на сервере, но свежие сегменты не пришли. Обновите страницу (F5).");
-        return;
-      }
-      store.replaceProjectSegments(project.id, fresh2.segments);
-      setBatchRun({ engine, done: result.count, total: targets.length });
-      const engineName = engine === "gpt" ? "GPT" : "Google";
-      const remainMsg = result.remaining > 0 ? " · ещё " + result.remaining + " осталось" : "";
-      const errMsg = result.errors && result.errors.length ? " · ошибок: " + result.errors.length : "";
-      setTimeout(() => {
-        setBatchRun(null);
-        if (result.count > 0) toast.success("Пакет завершён", result.count + " сегментов переведено через " + engineName + remainMsg + errMsg);
-        else toast.warning("Нет новых переводов", "Все подходящие сегменты уже переведены" + errMsg);
-      }, 400);
+    for (let i = 0; i < ids.length; i += BATCH_CHUNK) {
+      if (stopRef.current) break;
+      const chunk = ids.slice(i, i + BATCH_CHUNK);
+      // Ориентировочный прогресс внутри порции: сервер отвечает только по её завершении,
+      // поэтому между ответами двигаем полосу по оценке времени на сегмент.
+      const base = done, t0 = Date.now();
+      const tick = setInterval(() => {
+        const est = Math.min(chunk.length - 0.5, (Date.now() - t0) / 1000 / EST_SEC_PER_SEG);
+        setBatchRun(b => (b ? { ...b, done: base + est } : b));
+      }, 500);
+      let r = null;
+      if (window.API) r = await window.API.safeCall(() =>
+        window.API.batch(project.id, engine, chunk, hasExplicitCheck, BATCH_CHUNK, gptModel));
+      clearInterval(tick);
+      if (!r || !r.ok) { failed = true; break; }
+      done += r.count;
+      errCount += (r.errors || []).length;
+      tmCount += r.tm_hits || 0;
+      setBatchRun({ engine, done, total });
+      // Подтягиваем переводы в таблицу после каждой порции — строки наливаются по ходу
+      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
+      if (fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
+    }
+
+    const stopped = stopRef.current;
+    stopRef.current = false;
+    setBatchRun(null);
+    const errMsg = errCount ? " · ошибок: " + errCount : "";
+    const tmMsg = tmCount ? " · из TM без " + engineName + ": " + tmCount : "";
+    if (failed) {
+      toast.error("Пакет прерван ошибкой",
+        done + " из " + total + " успело перевестись и сохранено. Проверьте связь и запустите ещё раз." + errMsg);
+    } else if (stopped) {
+      toast.warning("Пакет остановлен", done + " из " + total + " переведено и сохранено." + tmMsg + errMsg);
+    } else if (done > 0) {
+      const modelMsg = engine === "gpt" ? " (" + gptModelInfo.label + ")" : "";
+      toast.success("Пакет завершён", done + " сегментов переведено через " + engineName + modelMsg + tmMsg + errMsg);
     } else {
-      setBatchRun(null);
-      toast.error("Ошибка пакетного перевода", "Не удалось связаться с сервером. Проверьте подключение.");
+      toast.warning("Нет новых переводов", "Все подходящие сегменты уже переведены" + errMsg);
     }
   };
 
@@ -316,12 +391,13 @@ function TabEditor({ store, toast }) {
     React.createElement("div", { className: "editor-main", style: { paddingBottom: 0 } },
       React.createElement(Expander, { title: "Пакетный перевод", icon: "zap", right: "2 движка", defaultOpen: false },
         React.createElement("div", { className: "grid grid-3" },
-          React.createElement(BatchCard, { kind: "google", running: batchRun && batchRun.engine === "google" ? batchRun : null, onRun: () => runBatch("google"),
+          React.createElement(BatchCard, { kind: "google", running: batchRun && batchRun.engine === "google" ? batchRun : null, onRun: () => askRunBatch("google"), onStop: () => { stopRef.current = true; },
             available: checkedSegs.size > 0
               ? project.segments.filter(s => checkedSegs.has(s.id) && s.status !== "confirmed").length
               : project.segments.filter(s => s.status === "new" && s.risk === "low" && (!store.segmentFilter || store.segmentFilter.has(s.id))).length,
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
-          React.createElement(BatchCard, { kind: "gpt", running: batchRun && batchRun.engine === "gpt" ? batchRun : null, onRun: () => runBatch("gpt"),
+          React.createElement(BatchCard, { kind: "gpt", running: batchRun && batchRun.engine === "gpt" ? batchRun : null, onRun: () => askRunBatch("gpt"), onStop: () => { stopRef.current = true; },
+            models: gptModels, model: gptModel, modelInfo: gptModelInfo, onModel: pickGptModel,
             available: checkedSegs.size > 0
               ? project.segments.filter(s => checkedSegs.has(s.id) && s.status !== "confirmed").length
               : project.segments.filter(s => s.status === "new" && s.risk !== "low" && (!store.segmentFilter || store.segmentFilter.has(s.id))).length,
@@ -400,6 +476,35 @@ function TabEditor({ store, toast }) {
       )
     ),
 
+    batchPlan && (() => {
+      const est = estimateBatch(batchPlan.targets, gptModelInfo);
+      return React.createElement(Modal, {
+        title: "Запустить GPT-пакет?", icon: "zap", onClose: () => setBatchPlan(null),
+        footer: React.createElement(React.Fragment, null,
+          React.createElement(Btn, { variant: "ghost", onClick: () => setBatchPlan(null) }, "Отмена"),
+          React.createElement(Btn, { variant: "primary", icon: "zap",
+            onClick: () => runBatch(batchPlan.engine, batchPlan.targets, batchPlan.hasExplicitCheck) }, "Запустить")) },
+        React.createElement("div", { style: { display: "grid", gap: 10, fontSize: 14 } },
+          React.createElement("div", { className: "row between" },
+            React.createElement("span", { className: "muted" }, "Сегментов"),
+            React.createElement("b", null, batchPlan.targets.length)),
+          React.createElement("div", { className: "row between" },
+            React.createElement("span", { className: "muted" }, "Модель"),
+            React.createElement("b", null, gptModelInfo ? gptModelInfo.label : "по умолчанию")),
+          React.createElement("div", { className: "row between" },
+            React.createElement("span", { className: "muted" }, "Примерное время"),
+            React.createElement("b", null, "≈ " + fmtDuration(est.seconds))),
+          est.cost != null && React.createElement("div", { className: "row between" },
+            React.createElement("span", { className: "muted" }, "Примерная стоимость"),
+            React.createElement("b", null, "≈ " + fmtCost(est.cost))),
+          React.createElement("p", { className: "muted", style: { margin: 0, fontSize: 12.5, lineHeight: 1.6 } },
+            "Оценка ориентировочная: считается по объёму текста, фактический расход зависит от ответа модели. " +
+            "Пакет идёт порциями по " + BATCH_CHUNK + " сегментов, переводы сохраняются после каждой порции — " +
+            "остановка не откатывает уже сделанное.")
+        )
+      );
+    })(),
+
     revertTarget && React.createElement(Modal, {
       title: "Снять подтверждение?", icon: "warn", onClose: () => setRevertTarget(null),
       footer: React.createElement(React.Fragment, null,
@@ -462,7 +567,7 @@ function LegendDot({ color, label }) {
     React.createElement("span", { style: { width: 10, height: 10, borderRadius: 3, background: color, display: "inline-block" } }), label);
 }
 
-function BatchCard({ kind, running, onRun, available, filtered, checked }) {
+function BatchCard({ kind, running, onRun, onStop, available, filtered, checked, models, model, modelInfo, onModel }) {
   const meta = kind === "google"
     ? { icon: "globe", title: "Google Batch", sub: "Низкорисковые сегменты", note: "Для простых, шаблонных формулировок.", color: "var(--c-warning)", btn: "Запустить Google",
         tipTitle: "Запустить Google batch", tip: "Перевести все GOOGLE_SAFE сегменты через Google Translate. Результат сохраняется как 'google_draft' (не подтверждён)." }
@@ -477,12 +582,26 @@ function BatchCard({ kind, running, onRun, available, filtered, checked }) {
         React.createElement("div", { className: "dim", style: { fontSize: 12 } }, meta.sub))
     ),
     React.createElement("p", { className: "muted", style: { fontSize: 13, margin: 0 } }, meta.note),
+
+    // Выбор модели — только у GPT-карточки и только если бэкенд отдал каталог
+    kind === "gpt" && models && models.length > 0 && React.createElement("div", null,
+      React.createElement(Select, {
+        value: model || "", disabled: !!running, style: { width: "100%" },
+        onChange: (e) => onModel && onModel(e.target.value),
+      }, models.map(m => React.createElement("option", { key: m.id, value: m.id },
+        m.label + (m.note ? " — " + m.note : "")))),
+      modelInfo && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 5 } },
+        "Цена за 1M токенов: вход " + fmtCost(modelInfo.in) + " · выход " + fmtCost(modelInfo.out))
+    ),
+
     running
       ? React.createElement("div", null,
           React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
             React.createElement("span", { className: "muted" }, "Перевод…"),
-            React.createElement("span", { style: { fontWeight: 700 } }, running.done + "/" + running.total)),
-          React.createElement(ProgressBar, { value: Math.round(running.done / running.total * 100) }))
+            React.createElement("span", { style: { fontWeight: 700 } }, Math.floor(running.done) + "/" + running.total)),
+          React.createElement(ProgressBar, { value: Math.round(running.done / running.total * 100) }),
+          React.createElement("div", { className: "row", style: { justifyContent: "flex-end", marginTop: 8 } },
+            React.createElement(Btn, { variant: "ghost", size: "sm", icon: "x", onClick: onStop }, "Остановить")))
       : React.createElement("div", { className: "row between" },
           React.createElement("span", { className: "dim", style: { fontSize: 12 } },
             available + " доступно" + (checked > 0 ? " (" + checked + " выбрано)" : filtered ? " (фильтр)" : "")),

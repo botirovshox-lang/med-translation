@@ -181,11 +181,38 @@ def _google_with_gloss(text: str, src: str, tgt: str, gloss_hits: list) -> str:
     return result
 
 
+# ─── Каталог моделей OpenAI ──────────────────────────────────────────
+# Цены — USD за 1M токенов, сверено с developers.openai.com/api/docs/pricing 15.08.2026.
+# ЕДИНСТВЕННОЕ место, где правятся модели и цены: добавили модель — добавили строку.
+# "api": "modern" — семейство GPT-5.x: НЕ принимает max_tokens/temperature, нужен
+# max_completion_tokens (проверено вызовами к API 15.08.2026). "classic" — GPT-4.x.
+OPENAI_MODELS = [
+    {"id": "gpt-5.6-sol",   "label": "GPT-5.6 Sol",   "in": 5.00, "out": 30.00, "api": "modern",  "note": "Флагман, максимальное качество"},
+    {"id": "gpt-5.6-terra", "label": "GPT-5.6 Terra", "in": 2.00, "out": 12.00, "api": "modern",  "note": "Баланс качества и цены"},
+    {"id": "gpt-5.6-luna",  "label": "GPT-5.6 Luna",  "in": 0.20, "out": 1.20,  "api": "modern",  "note": "Быстрая и недорогая"},
+    {"id": "gpt-5.5",       "label": "GPT-5.5",       "in": 5.00, "out": 30.00, "api": "modern",  "note": "Предыдущий флагман"},
+    {"id": "gpt-5.4",       "label": "GPT-5.4",       "in": 2.50, "out": 15.00, "api": "modern",  "note": ""},
+    {"id": "gpt-5.4-mini",  "label": "GPT-5.4 mini",  "in": 0.75, "out": 4.50,  "api": "modern",  "note": ""},
+    {"id": "gpt-4.1",       "label": "GPT-4.1",       "in": 2.00, "out": 8.00,  "api": "classic", "note": ""},
+    {"id": "gpt-4o",        "label": "GPT-4o",        "in": 2.50, "out": 10.00, "api": "classic", "note": "По умолчанию"},
+    {"id": "gpt-4o-mini",   "label": "GPT-4o mini",   "in": 0.15, "out": 0.60,  "api": "classic", "note": "Самая дешёвая"},
+]
+DEFAULT_OPENAI_MODEL = "gpt-4o"
+_MODELS_BY_ID = {m["id"]: m for m in OPENAI_MODELS}
+
+
+def _resolve_model(model_id: Optional[str]) -> dict:
+    """Неизвестная/пустая модель → дефолт. Клиент не может подсунуть произвольную строку."""
+    return _MODELS_BY_ID.get(model_id or "") or _MODELS_BY_ID[DEFAULT_OPENAI_MODEL]
+
+
 # Direct OpenAI GPT translation
 def _openai_translate(text: str, src: str, tgt: str,
-                      gloss_hits: list = None, tm_context: dict = None) -> str:
+                      gloss_hits: list = None, tm_context: dict = None,
+                      model: str = None) -> str:
     """GPT-перевод с инъекцией глоссария (базовые формы — GPT знает склонения)."""
     import openai
+    mdl = _resolve_model(model)
     # timeout + retries: зависший вызов не должен блокировать поток бесконечно
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=2)
     system = (
@@ -212,18 +239,21 @@ def _openai_translate(text: str, src: str, tgt: str,
             f"  Translation: {tm_context.get('tgt', '')}\n"
         )
     if gloss_hits or tm_context:
-        print(f"[backend] GPT+context: {len(gloss_hits or [])} gloss, TM={'yes' if tm_context else 'no'}",
-              file=sys.stderr)
+        print(f"[backend] GPT+context: {len(gloss_hits or [])} gloss, TM={'yes' if tm_context else 'no'}"
+              f", model={mdl['id']}", file=sys.stderr)
+    # GPT-5.x отвергает max_tokens/temperature; лимит выставлен с запасом, потому что
+    # у этого семейства в completion_tokens входят ещё и reasoning-токены.
+    extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
+             else {"max_tokens": 1024, "temperature": 0.1})
     resp = client.chat.completions.create(
-        model="gpt-4o",
+        model=mdl["id"],
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": text},
         ],
-        max_tokens=1024,
-        temperature=0.1,
+        **extra,
     )
-    return resp.choices[0].message.content.strip()
+    return (resp.choices[0].message.content or "").strip()
 
 # ─────────────────────────────────────────────────────────────────────
 # App setup
@@ -548,6 +578,17 @@ def list_glossary(q: str = "", cat: str = "", limit: int = 200, offset: int = 0)
     return {"total": total, "items": items[offset:offset + limit]}
 
 
+@app.get("/api/models")
+def list_models():
+    """Каталог GPT-моделей с ценами — для выпадающего списка и оценки стоимости пакета."""
+    return {
+        "models": OPENAI_MODELS,
+        "default": DEFAULT_OPENAI_MODEL,
+        "available": bool(os.environ.get("OPENAI_API_KEY")),
+        "pricesChecked": "2026-08-15",
+    }
+
+
 @app.get("/api/projects")
 def list_projects():
     return [{k: v for k, v in p.items() if k != "segments"} | {"segmentCount": len(p["segments"])} for p in STATE["projects"]]
@@ -672,9 +713,11 @@ async def upload_project(
 class TranslateRequest(BaseModel):
     engine: str  # "google" | "gpt"
     force: bool = False  # True = пропустить TM-шорткат (ручной перевод)
+    model: Optional[str] = None  # id из OPENAI_MODELS; неизвестный → DEFAULT_OPENAI_MODEL
 
 @app.post("/api/segments/{pid}/{sid}/translate")
-async def translate_segment(pid: int, sid: int, req: TranslateRequest):
+def translate_segment(pid: int, sid: int, req: TranslateRequest):
+    # обычный def, а не async: внутри блокирующие вызовы OpenAI/Google (см. batch_translate)
     seg = get_segment(pid, sid)
     project = get_project(pid)
     src_text = seg["source"]
@@ -698,7 +741,8 @@ async def translate_segment(pid: int, sid: int, req: TranslateRequest):
             used_real_api = True
         elif req.engine == "gpt" and os.environ.get("OPENAI_API_KEY"):
             translation = _openai_translate(src_text, project["src"], project["tgt"],
-                                            gloss_hits=gloss_hits, tm_context=tm_hit)
+                                            gloss_hits=gloss_hits, tm_context=tm_hit,
+                                            model=req.model)
             used_real_api = bool(translation)
         # GPT fallback: Google когда нет ключа OpenAI
         if not translation and req.engine == "gpt" and _DEEP_TRANSLATE_OK:
@@ -710,7 +754,8 @@ async def translate_segment(pid: int, sid: int, req: TranslateRequest):
         try:
             if req.engine == "google" and os.environ.get("OPENAI_API_KEY"):
                 translation = _openai_translate(src_text, project["src"], project["tgt"],
-                                                gloss_hits=gloss_hits, tm_context=tm_hit)
+                                                gloss_hits=gloss_hits, tm_context=tm_hit,
+                                                model=req.model)
             elif _DEEP_TRANSLATE_OK:
                 translation = _google_with_gloss(src_text, project["src"], project["tgt"], gloss_hits)
             used_real_api = bool(translation)
@@ -941,6 +986,7 @@ class BatchRequest(BaseModel):
     limit: int = 50                      # максимум за один вызов
     segment_ids: Optional[list] = None  # если передан — обрабатывать только эти сегменты
     force: bool = False                  # True = явный выбор пользователя, пропустить фильтры статуса и риска
+    model: Optional[str] = None          # id из OPENAI_MODELS; неизвестный → DEFAULT_OPENAI_MODEL
 
 @app.post("/api/projects/{pid}/batch")
 def batch_translate(pid: int, req: BatchRequest):
@@ -948,8 +994,10 @@ def batch_translate(pid: int, req: BatchRequest):
     # в async def они вешали единственный event loop uvicorn на всё время пакета —
     # сервер не отвечал даже на GET /api/projects/{pid} сразу после батча.
     project = get_project(pid)
-    id_filter = set(req.segment_ids) if req.segment_ids else None
-    if req.force and id_filter:
+    # is not None, а не truthy: пустой список — это «не выбрано ничего», и переводить
+    # в этом случае надо ноль сегментов, а не весь проект.
+    id_filter = set(req.segment_ids) if req.segment_ids is not None else None
+    if req.force and id_filter is not None:
         # Явный выбор — переводим только указанные сегменты, кроме подтверждённых
         all_targets = [s for s in project["segments"] if s["id"] in id_filter and s["status"] != "confirmed"]
     else:
@@ -958,8 +1006,11 @@ def batch_translate(pid: int, req: BatchRequest):
                        (s.get("risk", "medium") == "low" if req.engine == "google"
                         else s.get("risk", "medium") != "low") and
                        (id_filter is None or s["id"] in id_filter)]
-    remaining_after = max(0, len(all_targets) - req.limit)
-    targets = all_targets[:req.limit]
+    # Потолок на порцию: один HTTP-запрос не должен жить дольше proxy_read_timeout (1800s)
+    # в nginx. При ~5-6 с на сегмент 100 штук — это ~10 минут, с большим запасом.
+    limit = max(1, min(req.limit, 100))
+    remaining_after = max(0, len(all_targets) - limit)
+    targets = all_targets[:limit]
     translated = []
     tm_hits_count = 0
     errors = []
@@ -981,7 +1032,8 @@ def batch_translate(pid: int, req: BatchRequest):
                 translation = _google_with_gloss(seg["source"], project["src"], project["tgt"], gloss_hits)
             elif req.engine == "gpt" and os.environ.get("OPENAI_API_KEY"):
                 translation = _openai_translate(seg["source"], project["src"], project["tgt"],
-                                                gloss_hits=gloss_hits, tm_context=tm_hit)
+                                                gloss_hits=gloss_hits, tm_context=tm_hit,
+                                                model=req.model)
             if not translation and req.engine == "gpt":
                 translation = _google_with_gloss(seg["source"], project["src"], project["tgt"], gloss_hits)
         except Exception as e:
@@ -1000,6 +1052,7 @@ def batch_translate(pid: int, req: BatchRequest):
         "remaining": remaining_after,
         "errors": errors,
         "tm_hits": tm_hits_count,
+        "model": _resolve_model(req.model)["id"] if req.engine == "gpt" else None,
     }
 
 

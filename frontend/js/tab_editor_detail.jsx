@@ -1,7 +1,7 @@
 ﻿/* ============================================================
    Segment detail panel (editor right sidebar)
    ============================================================ */
-function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedicalQA, onConfirm }) {
+function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedicalQA, onConfirm, bcModels, bcModel, onBcModel }) {
   const [tab, setTab] = useState("context");
   const [draft, setDraft] = useState(seg.target || "");
   const [comment, setComment] = useState("");
@@ -38,14 +38,25 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
   const qaResult = seg.qa_result || null;
 
   const toggleInfo = (k) => setInfoPanel(p => p === k ? null : k);
+  const runBack = (model) => {
+    if (!seg.target) { setBackResult("no_target"); return; }
+    setBackResult("loading");
+    window.API && window.API.backcheck(project.id, seg.id, model).then(res => {
+      if (res && res.ok) {
+        setBackResult(res.back);
+        // Подтягиваем оценку в локальный state, чтобы процент сразу встал в строке
+        if (res.backcheck) store.updateSegment(project.id, seg.id, { backcheck: res.backcheck, backtranslated_ru: res.back });
+      } else {
+        setBackResult("Ошибка: " + (res && res.error ? res.error : "нет ответа"));
+      }
+    }).catch(e => setBackResult("Ошибка: " + e.message));
+  };
   const openBack = () => {
     toggleInfo("back");
+    // Уже посчитанный back-check показываем без нового вызова модели
     if (infoPanel !== "back" && backResult == null) {
-      if (!seg.target) { setBackResult("no_target"); return; }
-      setBackResult("loading");
-      window.API && window.API.backcheck(project.id, seg.id).then(res => {
-        setBackResult(res && res.ok ? res.back : ("Ошибка: " + (res && res.error ? res.error : "нет ответа")));
-      }).catch(e => setBackResult("Ошибка: " + e.message));
+      if (seg.backcheck && seg.backcheck.back) { setBackResult(seg.backcheck.back); return; }
+      runBack(bcModel);
     }
   };
 
@@ -133,13 +144,38 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
         : React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, "Точных совпадений в памяти переводов нет.")),
     infoPanel === "back" && React.createElement("div", { className: "tm-pop" },
       React.createElement("span", { className: "label", style: { margin: 0 } }, "Обратный перевод (EN → RU)"),
+
+      // Процент соответствия и почему он такой
+      seg.backcheck && seg.backcheck.score != null && React.createElement("div", {
+        className: "row between", style: { marginBottom: 6, gap: 10, flexWrap: "wrap" } },
+        React.createElement("span", { style: { fontSize: 18, fontWeight: 750,
+          color: seg.backcheck.score >= 95 ? "var(--c-success)"
+            : seg.backcheck.score >= 80 ? "var(--c-warning)" : "var(--c-error)" } },
+          seg.backcheck.score + "% соответствия"),
+        React.createElement("span", { className: "dim", style: { fontSize: 11.5 } },
+          (seg.backcheck.model || "") + (seg.backcheck.at ? " · " + seg.backcheck.at : ""))),
+      seg.backcheck && (seg.backcheck.reasons || []).length > 0 && React.createElement("div", {
+        className: "dim", style: { fontSize: 12, marginBottom: 8, lineHeight: 1.5 } },
+        "Причины: " + seg.backcheck.reasons.join("; ")),
+
       backResult === "loading"
         ? React.createElement("div", { className: "row", style: { gap: 10 } }, React.createElement(Spinner, null), React.createElement("span", { className: "dim", style: { fontSize: 13 } }, "Переводим EN→RU…"))
         : backResult === "no_target"
           ? React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, "Сначала переведите сегмент.")
           : backResult
             ? React.createElement("div", { className: "tmrow", style: { fontSize: 13, lineHeight: 1.5 } }, backResult)
-            : React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, "Нет перевода для проверки.")),
+            : React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, "Нет перевода для проверки."),
+
+      // Выбор модели для штучной перепроверки
+      bcModels && bcModels.length > 0 && React.createElement("div", {
+        className: "row", style: { gap: 8, marginTop: 10, flexWrap: "wrap" } },
+        React.createElement(Select, {
+          value: bcModel || "", disabled: backResult === "loading", style: { flex: 1, minWidth: 150 },
+          onChange: (e) => onBcModel && onBcModel(e.target.value),
+        }, bcModels.map(m => React.createElement("option", { key: m.id, value: m.id }, m.label))),
+        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat",
+          disabled: backResult === "loading" || !seg.target,
+          onClick: () => runBack(bcModel) }, "Проверить заново"))),
 
     React.createElement("div", { className: "divider" }),
 

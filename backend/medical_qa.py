@@ -481,3 +481,218 @@ def run_medical_qa(source_ru, translated_en, backtranslated_ru="", glossary_matc
         "created_at": datetime.utcnow().isoformat() + "Z",
     }
     return result
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Back-check: сравнение оригинала с обратным переводом
+#
+# Принципиальное отличие от deterministic_issues: там сравниваются РАЗНЫЕ языки
+# (RU против EN), здесь — ОДИН И ТОТ ЖЕ язык (оригинал RU против обратного
+# перевода RU). Внутри одного языка проверки на порядок надёжнее: числа обязаны
+# совпадать буквально, отрицания сравнимы напрямую, термины — по основе слова.
+#
+# Строковую похожесть как главную метрику брать нельзя: «лимфаденит» и
+# «аденолимфит» отличаются на любой edit-distance процентов на двадцать, то есть
+# именно тот случай, ради которого всё затевалось, она бы уверенно пропустила.
+# Поэтому непрерывная база (сколько содержательных слов пережило круг) отвечает
+# только за оттенки, а подмены смысла ловятся жёсткими штрафами.
+# ─────────────────────────────────────────────────────────────────────
+
+from collections import Counter as _Counter
+
+BACKCHECK_BANDS = [
+    {"key": "eq100", "min": 100, "max": 100, "label": "100%",   "note": "Дословное совпадение",       "color": "green"},
+    {"key": "b98",   "min": 98,  "max": 99,  "label": "98-99%", "note": "Почти дословно",             "color": "green"},
+    {"key": "b95",   "min": 95,  "max": 97,  "label": "95-97%", "note": "Незначительные расхождения", "color": "green"},
+    {"key": "b90",   "min": 90,  "max": 94,  "label": "90-94%", "note": "Мелкие расхождения",         "color": "yellow"},
+    {"key": "b85",   "min": 85,  "max": 89,  "label": "85-89%", "note": "Заметные расхождения",       "color": "yellow"},
+    {"key": "b80",   "min": 80,  "max": 84,  "label": "80-84%", "note": "Требует просмотра",          "color": "orange"},
+    {"key": "b70",   "min": 70,  "max": 79,  "label": "70-79%", "note": "Смысл поплыл",               "color": "orange"},
+    {"key": "low",   "min": 0,   "max": 69,  "label": "< 70%",  "note": "Смысл разошёлся",            "color": "red"},
+]
+
+# Штрафы вынесены константами: после первого прохода по проекту их и границы
+# полос имеет смысл откалибровать на реальном распределении.
+BACKCHECK_PENALTY = {
+    "number_mismatch": 40,
+    "unit_mismatch": 20,
+    "negation_shift": 40,
+    "pair_shift": 30,
+    "term_lost": 25,
+    "term_lost_cap": 50,
+}
+
+# Кривая калибровки базы. Чистая доля совпавших основ занижает оценку: живой
+# обратный перевод почти всегда перефразирует, и «пациенту назначили» против
+# «больному назначен» давало бы 75% при полностью целом смысле. Корень поднимает
+# такие случаи в район 85-90, оставляя низ шкалы жёстким. Значение подлежит
+# калибровке на реальном распределении после первого полного прохода.
+BACKCHECK_RECALL_CURVE = 0.5
+
+RU_STOPWORDS = {
+    "и", "или", "но", "а", "же", "ли", "не", "нет", "да", "в", "во", "на", "с", "со", "к", "ко",
+    "по", "за", "из", "от", "до", "для", "при", "об", "о", "у", "то", "это", "этот", "эта", "эти",
+    "тот", "та", "те", "как", "что", "чем", "чтобы", "если", "так", "также", "тоже", "уже", "ещё",
+    "еще", "был", "была", "было", "были", "быть", "есть", "их", "его", "её", "ее", "они", "она",
+    "он", "оно", "мы", "вы", "я", "все", "всех", "всего", "может", "можно", "более", "менее",
+    "the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or", "is", "are", "was", "were",
+}
+
+_PAIR_OPPOSITE = {
+    "laterality_left": "laterality_right", "laterality_right": "laterality_left",
+    "inner": "outer", "outer": "inner",
+    "upper": "lower", "lower": "upper",
+}
+_PAIR_BY_NAME = {r["name"]: r for r in PAIR_RULES}
+
+
+def band_of(score):
+    if score is None:
+        return None
+    for b in BACKCHECK_BANDS:
+        if b["min"] <= score <= b["max"]:
+            return b["key"]
+    return "low"
+
+
+def _stems(text):
+    """Грубая нормализация под русскую морфологию: обрезаем слово до основы.
+    Полноценный морфоанализатор здесь не нужен — для сравнения двух русских
+    текстов между собой достаточно совпадения основ."""
+    words = re.findall(r"[а-яёa-z0-9]+", _norm(text))
+    out = []
+    for w in words:
+        if len(w) < 3 or w in RU_STOPWORDS:
+            continue
+        out.append(w[:6] if len(w) > 6 else w)
+    return out
+
+
+def _content_recall(source_ru, back_ru):
+    """Доля содержательных слов оригинала, переживших круг.
+    Именно recall, а не F1: лишние слова в обратном переводе — не ошибка,
+    ошибка — когда из оригинала что-то пропало."""
+    src = _Counter(_stems(source_ru))
+    if not src:
+        return 1.0
+    bak = _Counter(_stems(back_ru))
+    covered = sum(min(cnt, bak.get(w, 0)) for w, cnt in src.items())
+    return covered / sum(src.values())
+
+
+def _term_survived(term, back_stems):
+    ts = _stems(term)
+    return bool(ts) and all(t in back_stems for t in ts)
+
+
+def backcheck_issues(source_ru, back_ru, glossary_matches=None):
+    """Расхождения между оригиналом и обратным переводом."""
+    issues = []
+    source = source_ru or ""
+    back = back_ru or ""
+
+    src_nums = sorted(_extract_numbers(source))
+    back_nums = sorted(_extract_numbers(back))
+    if src_nums != back_nums:
+        issues.append(_make_issue(
+            "backcheck_number_mismatch", "critical",
+            "Числа не пережили обратный перевод: в оригинале {0}, в обратном переводе {1}.".format(
+                src_nums or "—", back_nums or "—"),
+            source_fragment=", ".join(src_nums), target_fragment=", ".join(back_nums),
+            detected_by="backcheck_comparator"))
+
+    src_units = _extract_units(source)
+    back_units = _extract_units(back)
+    if src_units != back_units:
+        issues.append(_make_issue(
+            "backcheck_unit_mismatch", "major",
+            "Единицы измерения разошлись: в оригинале {0}, в обратном переводе {1}.".format(
+                src_units or "—", back_units or "—"),
+            source_fragment=", ".join(src_units), target_fragment=", ".join(back_units),
+            detected_by="backcheck_comparator"))
+
+    if _contains_any(source, NEGATION_RU) != _contains_any(back, NEGATION_RU):
+        issues.append(_make_issue(
+            "backcheck_negation_shift", "critical",
+            "Отрицание изменилось при обратном переводе — утверждение и отрицание "
+            "не должны меняться местами.",
+            detected_by="backcheck_comparator"))
+
+    for rule in PAIR_RULES:
+        if not _contains_any(source, rule["source_terms"]):
+            continue
+        opposite = _PAIR_BY_NAME.get(_PAIR_OPPOSITE.get(rule["name"], ""))
+        if not opposite:
+            continue
+        # Ошибка — не отсутствие слова (это может быть перефразировка),
+        # а именно подмена на противоположное.
+        if _contains_any(back, opposite["source_terms"]) and not _contains_any(back, rule["source_terms"]):
+            issues.append(_make_issue(
+                "backcheck_pair_shift", "critical",
+                "Подмена на противоположное ({0}) при обратном переводе.".format(rule["label"]),
+                source_fragment=rule["label"], detected_by="backcheck_comparator"))
+
+    back_stems = set(_stems(back))
+    lost = []
+    for hit in (glossary_matches or []):
+        term = hit.get("_form") or hit.get("src") or ""
+        if not term or not _has_exact_term(source, term):
+            continue
+        if not _term_survived(term, back_stems):
+            lost.append(term)
+    for term in lost:
+        issues.append(_make_issue(
+            "backcheck_term_lost", "major",
+            "Термин «{0}» не пережил обратный перевод — в обратном тексте его нет. "
+            "Возможна подмена понятия.".format(term),
+            source_fragment=term, detected_by="backcheck_comparator"))
+
+    return issues, lost
+
+
+def run_backcheck(source_ru, back_ru, glossary_matches=None):
+    """Оценка соответствия обратного перевода оригиналу: 0-100 и причины."""
+    if not (back_ru or "").strip():
+        return {"score": None, "band": None, "recall": None, "issues": [],
+                "terms_lost": [], "reasons": ["Обратный перевод не выполнен"]}
+
+    issues, lost = backcheck_issues(source_ru, back_ru, glossary_matches)
+    recall = _content_recall(source_ru, back_ru)
+    score = 100.0 * (recall ** BACKCHECK_RECALL_CURVE)
+
+    penalty = 0
+    term_penalty = 0
+    reasons = []
+    for i in issues:
+        t = i.get("type")
+        if t == "backcheck_number_mismatch":
+            penalty += BACKCHECK_PENALTY["number_mismatch"]
+            reasons.append("расхождение чисел")
+        elif t == "backcheck_unit_mismatch":
+            penalty += BACKCHECK_PENALTY["unit_mismatch"]
+            reasons.append("расхождение единиц")
+        elif t == "backcheck_negation_shift":
+            penalty += BACKCHECK_PENALTY["negation_shift"]
+            reasons.append("инверсия отрицания")
+        elif t == "backcheck_pair_shift":
+            penalty += BACKCHECK_PENALTY["pair_shift"]
+            reasons.append("подмена на противоположное")
+        elif t == "backcheck_term_lost":
+            term_penalty += BACKCHECK_PENALTY["term_lost"]
+    if term_penalty:
+        term_penalty = min(term_penalty, BACKCHECK_PENALTY["term_lost_cap"])
+        penalty += term_penalty
+        reasons.append("потерян термин: " + ", ".join(lost[:3]) + ("…" if len(lost) > 3 else ""))
+
+    score = int(round(max(0.0, min(100.0, score - penalty))))
+    if not reasons and score < 100:
+        reasons.append("часть текста не совпала дословно")
+
+    return {
+        "score": score,
+        "band": band_of(score),
+        "recall": round(recall, 3),
+        "issues": issues,
+        "terms_lost": lost,
+        "reasons": reasons,
+    }

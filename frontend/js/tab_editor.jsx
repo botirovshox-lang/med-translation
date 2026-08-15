@@ -7,6 +7,15 @@
 const BATCH_CHUNK = 10;
 const EST_SEC_PER_SEG = 5;          // замер на проде: 5-6 с на сегмент через GPT
 const GPT_MODEL_LS_KEY = "mcat_gpt_model";
+const BC_MODEL_LS_KEY = "mcat_backcheck_model";
+
+// Цвет полосы соответствия обратного перевода
+function bandColor(color) {
+  return color === "green" ? "var(--c-success)"
+    : color === "yellow" ? "var(--c-warning)"
+    : color === "orange" ? "var(--c-warning)"
+    : "var(--c-error)";
+}
 
 // Ориентировочная смета пакета. Кириллица ≈ 2.2 симв./токен, английский вывод ≈ 3.5,
 // плюс ~500 токенов системного промпта с глоссарием на каждый сегмент. У моделей GPT-5.x
@@ -67,6 +76,10 @@ function TabEditor({ store, toast }) {
   const [batchPlan, setBatchPlan] = useState(null);        // смета перед запуском GPT-пакета
   const [retranslate, setRetranslate] = useState(false);   // перегнать заново уже переведённые
   const [providerPick, setProviderPick] = useState(null);  // Set<ключ группы> | null = по умолчанию
+  const [bcModel, setBcModel] = useState(() => {
+    try { return localStorage.getItem(BC_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
+  });
+  const [bcBands, setBcBands] = useState([]);
   const stopRef = useRef(false);
   const PAGE_SIZE = 10;
 
@@ -77,6 +90,8 @@ function TabEditor({ store, toast }) {
       if (!d || !d.models) return;
       setGptModels(d.models);
       setGptModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.default || ""));
+      setBcModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.backcheckDefault || d.default || ""));
+      if (d.backcheckBands) setBcBands(d.backcheckBands);
     });
   }, []);
 
@@ -88,6 +103,11 @@ function TabEditor({ store, toast }) {
   const pickGptModel = (id) => {
     setGptModel(id);
     try { localStorage.setItem(GPT_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
+  };
+  const bcModelInfo = gptModels.find(m => m.id === bcModel) || null;
+  const pickBcModel = (id) => {
+    setBcModel(id);
+    try { localStorage.setItem(BC_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
   };
 
   useEffect(() => { setPage(1); }, [filter, query, riskFilter, project && project.id, store.segmentFilter]);
@@ -410,6 +430,68 @@ function TabEditor({ store, toast }) {
     }
   };
 
+  // Пакетный back-check. Та же порционная механика, что и у перевода: короткие
+  // запросы, прогресс по ходу, остановка не откатывает уже посчитанное.
+  const runBackcheckBatch = async () => {
+    if (batchRun) return;
+    let currentSegs = project.segments;
+    if (window.API) {
+      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
+      if (fresh && fresh.segments) {
+        store.replaceProjectSegments(project.id, fresh.segments);
+        currentSegs = fresh.segments;
+      }
+    }
+    const idSet = currentIdSet;
+    const targets = currentSegs.filter(s =>
+      (s.target || "").trim() && (!idSet || idSet.has(s.id)));
+    if (!targets.length) {
+      toast.warning("Нечего проверять", "В выборке нет переведённых сегментов.");
+      return;
+    }
+    stopRef.current = false;
+    const ids = targets.map(s => s.id);
+    const total = ids.length;
+    let done = 0, cached = 0, errCount = 0, failed = false;
+    setBatchRun({ engine: "backcheck", done: 0, total });
+
+    for (let i = 0; i < ids.length; i += BATCH_CHUNK) {
+      if (stopRef.current) break;
+      const chunk = ids.slice(i, i + BATCH_CHUNK);
+      const base = done, t0 = Date.now();
+      const tick = setInterval(() => {
+        const est = Math.min(chunk.length - 0.5, (Date.now() - t0) / 1000 / EST_SEC_PER_SEG);
+        setBatchRun(b => (b ? { ...b, done: base + est } : b));
+      }, 500);
+      let r = null;
+      if (window.API) r = await window.API.safeCall(() =>
+        window.API.backcheckBatch(project.id, chunk, BATCH_CHUNK, bcModel));
+      clearInterval(tick);
+      if (!r || !r.ok) { failed = true; break; }
+      // Сегменты из кэша тоже двигают прогресс — иначе полоса стоит на месте
+      done += r.count + (r.skipped_cached || 0);
+      cached += r.skipped_cached || 0;
+      errCount += (r.errors || []).length;
+      setBatchRun({ engine: "backcheck", done, total });
+      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
+      if (fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
+    }
+
+    const stopped = stopRef.current;
+    stopRef.current = false;
+    setBatchRun(null);
+    const cachedMsg = cached ? " · из кэша: " + cached : "";
+    const errMsg = errCount ? " · ошибок: " + errCount : "";
+    if (failed) {
+      toast.error("Back-check прерван", done + " из " + total + " проверено и сохранено." + errMsg);
+    } else if (stopped) {
+      toast.warning("Back-check остановлен", done + " из " + total + " проверено и сохранено." + cachedMsg);
+    } else {
+      toast.success("Back-check завершён",
+        done + " сегментов проверено" + cachedMsg + errMsg + " · разбивка в Анализе");
+    }
+  };
+
   const runMedicalQABatch = async () => {
     let currentSegs = project.segments;
     if (window.API) {
@@ -510,7 +592,16 @@ function TabEditor({ store, toast }) {
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(MedicalQACard, { running: batchRun && batchRun.engine === "medical_qa" ? batchRun : null, onRun: runMedicalQABatch,
             available: project.segments.filter(s => s.target && s.target.trim() && ["translated", "qa", "review", "confirmed"].includes(s.status) && (checkedSegs.size > 0 ? checkedSegs.has(s.id) : (!store.segmentFilter || store.segmentFilter.has(s.id)))).length,
-            checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) })
+            checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
+          React.createElement(BackcheckCard, {
+            running: batchRun && batchRun.engine === "backcheck" ? batchRun : null,
+            onRun: runBackcheckBatch, onStop: () => { stopRef.current = true; },
+            models: gptModels, model: bcModel, modelInfo: bcModelInfo, onModel: pickBcModel,
+            available: project.segments.filter(s => (s.target || "").trim() &&
+              (!currentIdSet || currentIdSet.has(s.id))).length,
+            done: project.segments.filter(s => s.backcheck && s.backcheck.score != null &&
+              (!currentIdSet || currentIdSet.has(s.id))).length,
+            filtered: !!(store.segmentFilter || window._mcat_sf) })
         ),
         // Переводить заново уже переведённые. Работает только по явной выборке —
         // галочки или фильтр из Анализа, — чтобы одним кликом не перегнать весь проект.
@@ -615,7 +706,8 @@ function TabEditor({ store, toast }) {
       React.createElement("div", { className: "editor-side" },
         selected
           ? React.createElement(SegDetail, { key: selected.id, seg: selected, project, store, toast, busy: busy[selected.id],
-              onTranslate: (eng) => doTranslate(selected, eng, true), onQA: () => doQA(selected), onMedicalQA: () => doMedicalQA(selected), onConfirm: (draftTarget) => doConfirm(selected, draftTarget) })
+              onTranslate: (eng) => doTranslate(selected, eng, true), onQA: () => doQA(selected), onMedicalQA: () => doMedicalQA(selected), onConfirm: (draftTarget) => doConfirm(selected, draftTarget),
+              bcModels: gptModels, bcModel: bcModel, onBcModel: pickBcModel })
           : React.createElement(EmptyState, { icon: "edit", title: "Сегмент не выбран", sub: "Выберите строку в таблице." })
       )
     ),
@@ -773,6 +865,42 @@ function BatchCard({ kind, running, onRun, onStop, available, selectionSize, fil
   );
 }
 
+function BackcheckCard({ running, onRun, onStop, available, done, filtered, models, model, modelInfo, onModel }) {
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+    React.createElement("div", { className: "row", style: { gap: 10 } },
+      React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-info)" } },
+        React.createElement(Icon, { name: "repeat", size: 19 })),
+      React.createElement("div", null,
+        React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, "Back-check",
+          React.createElement(InfoTip, { title: "Обратный перевод и оценка соответствия",
+            body: "Переводит готовый перевод обратно на язык оригинала и сравнивает с исходным текстом: числа, единицы, отрицания, лево-право, сохранность терминов. Выдаёт процент соответствия, разбивка по полосам — во вкладке «Анализ». Для обратного перевода нужна самая буквальная модель: умная незаметно чинит ошибки и прячет их от проверки. Повторный запуск считает только то, где перевод менялся." })),
+        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "Контроль качества перевода"))
+    ),
+    React.createElement("p", { className: "muted", style: { fontSize: 13, margin: 0 } },
+      "Проверяет, что смысл пережил перевод."),
+    models && models.length > 0 && React.createElement("div", null,
+      React.createElement(Select, {
+        value: model || "", disabled: !!running, style: { width: "100%" },
+        onChange: (e) => onModel && onModel(e.target.value),
+      }, models.map(m => React.createElement("option", { key: m.id, value: m.id },
+        m.label + (m.note ? " — " + m.note : "")))),
+      modelInfo && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 5 } },
+        "Цена за 1M токенов: вход " + fmtCost(modelInfo.in) + " · выход " + fmtCost(modelInfo.out))),
+    running
+      ? React.createElement("div", null,
+          React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
+            React.createElement("span", { className: "muted" }, "Обратный перевод…"),
+            React.createElement("span", { style: { fontWeight: 700 } }, Math.floor(running.done) + "/" + running.total)),
+          React.createElement(ProgressBar, { value: Math.round(running.done / running.total * 100) }),
+          React.createElement("div", { className: "row", style: { justifyContent: "flex-end", marginTop: 8 } },
+            React.createElement(Btn, { variant: "ghost", size: "sm", icon: "x", onClick: onStop }, "Остановить")))
+      : React.createElement("div", { className: "row between" },
+          React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+            "проверено " + done + " из " + available + (filtered ? " (фильтр)" : "")),
+          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", onClick: onRun, disabled: !available }, "Запустить"))
+  );
+}
+
 function MedicalQACard({ running, onRun, available, filtered, checked }) {
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "row", style: { gap: 10 } },
@@ -827,7 +955,17 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
           ? "Переведено: " + provText
           : "Переведено предположительно через " + provText + " — сегмент переведён до того, как система начала записывать движок точно",
       }, (prov.exact ? "" : "≈ ") + provText)),
-    React.createElement("td", null, React.createElement(TMChip, { score: seg.tmScore })),
+    React.createElement("td", null,
+      React.createElement(TMChip, { score: seg.tmScore }),
+      // Процент соответствия обратного перевода: цифра + причина в подсказке
+      seg.backcheck && seg.backcheck.score != null && React.createElement("div", {
+        style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap",
+                 color: seg.backcheck.score >= 95 ? "var(--c-success)"
+                   : seg.backcheck.score >= 80 ? "var(--c-warning)" : "var(--c-error)" },
+        title: "Соответствие обратного перевода: " + seg.backcheck.score + "%"
+          + ((seg.backcheck.reasons || []).length ? "\n" + seg.backcheck.reasons.join("; ") : "")
+          + "\nОбратный перевод: " + (seg.backcheck.back || ""),
+      }, "↩ " + seg.backcheck.score + "%")),
     React.createElement("td", { onClick: (e) => e.stopPropagation() }, actionCell)
   );
 }

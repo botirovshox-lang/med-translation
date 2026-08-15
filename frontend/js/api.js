@@ -43,7 +43,8 @@
 
     models:        ()                       => call("GET",    "/models"),
     translate:     (pid, sid, engine, force, model) => call("POST", `/segments/${pid}/${sid}/translate`, { engine, force: !!force, model: model || null }),
-    backcheck:     (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/backcheck`),
+    backcheck:     (pid, sid, model)        => call("POST",   `/segments/${pid}/${sid}/backcheck`,  { model: model || null }),
+    backcheckBatch:(pid, segIds, limit, model) => call("POST", `/projects/${pid}/backcheck/batch`,  { segment_ids: segIds || null, limit: limit || 10, model: model || null }),
     medicalQA:     (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/medical-qa`,  { run_backcheck: true }),
     qa:            (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/qa`),
     confirm:       (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/confirm`),

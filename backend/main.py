@@ -206,6 +206,11 @@ _MODELS_BY_ID = {m["id"]: m for m in OPENAI_MODELS}
 PROVIDER_GOOGLE = "google"
 PROVIDER_TM = "tm"
 
+# Для обратного перевода нужна не лучшая модель, а самая буквальная и дешёвая:
+# её задача — зеркалить текст, а не переводить его хорошо. Чем «умнее» модель,
+# тем охотнее она чинит ошибки на лету и прячет их от проверки.
+BACKCHECK_DEFAULT_MODEL = "gpt-5.6-luna"
+
 
 def _resolve_model(model_id: Optional[str]) -> dict:
     """Неизвестная/пустая модель → дефолт. Клиент не может подсунуть произвольную строку."""
@@ -215,13 +220,35 @@ def _resolve_model(model_id: Optional[str]) -> dict:
 # Direct OpenAI GPT translation
 def _openai_translate(text: str, src: str, tgt: str,
                       gloss_hits: list = None, tm_context: dict = None,
-                      model: str = None) -> str:
-    """GPT-перевод с инъекцией глоссария (базовые формы — GPT знает склонения)."""
+                      model: str = None, literal: bool = False) -> str:
+    """GPT-перевод с инъекцией глоссария (базовые формы — GPT знает склонения).
+
+    literal=True — режим для обратного перевода. Обычный промпт тут вреден:
+    сильная модель видит кривой английский, «чинит» его на лету и возвращает
+    правильный русский, маскируя ровно ту ошибку, которую back-check ищет.
+    Поэтому в этом режиме требуем дословности и запрещаем править термины,
+    а глоссарий и TM не подсовываем вовсе — иначе модель подгонит ответ под них."""
     import openai
     mdl = _resolve_model(model)
     # timeout + retries: зависший вызов не должен блокировать поток бесконечно
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=2)
-    system = (
+    if literal:
+        system = (
+            f"Translate the following text from {src} to {tgt} as literally as possible. "
+            "This is a back-translation used for quality control.\n\n"
+            "STRICT RULES:\n"
+            "1. Return ONLY the translation — no explanations, no comments, no quotes.\n"
+            "2. Translate exactly what is written, word for word wherever the language allows.\n"
+            "3. Do NOT correct, improve, normalize or standardise anything. If the text contains\n"
+            "   an odd, wrong or non-existent term, translate it literally and preserve the oddity.\n"
+            "   Your job is to mirror the text, NOT to make it sound correct.\n"
+            "4. Preserve every number, unit and negation exactly.\n"
+            "5. Keep the word order of the original as close as the target language permits.\n"
+        )
+        gloss_hits = None
+        tm_context = None
+    else:
+        system = (
         f"You are a senior medical translator specializing in Russian-to-English biomedical texts. "
         f"Translate the following text from {src} to {tgt}.\n\n"
         "STRICT RULES:\n"
@@ -234,7 +261,7 @@ def _openai_translate(text: str, src: str, tgt: str,
         "5. NEVER list multiple synonyms separated by semicolons for the same concept.\n"
         "6. Preserve all numbers, abbreviations, and punctuation exactly as in the source.\n"
         "7. Medical abbreviations that are identical in English (e.g. IFN, IL, TNF) may be kept.\n"
-    )
+        )
     if gloss_hits:
         terms = "\n".join(f"  {h['src']} → {h['tgt']}" for h in gloss_hits)
         system += f"\nApproved glossary — use these exact translations:\n{terms}\n"
@@ -586,10 +613,13 @@ def list_glossary(q: str = "", cat: str = "", limit: int = 200, offset: int = 0)
 
 @app.get("/api/models")
 def list_models():
-    """Каталог GPT-моделей с ценами — для выпадающего списка и оценки стоимости пакета."""
+    """Каталог GPT-моделей с ценами — для выпадающего списка и оценки стоимости пакета.
+    Полосы back-check отдаются отсюда же, чтобы границы не дублировались на фронтенде."""
     return {
         "models": OPENAI_MODELS,
         "default": DEFAULT_OPENAI_MODEL,
+        "backcheckDefault": BACKCHECK_DEFAULT_MODEL,
+        "backcheckBands": getattr(medical_qa_mod, "BACKCHECK_BANDS", []) if medical_qa_mod else [],
         "available": bool(os.environ.get("OPENAI_API_KEY")),
         "pricesChecked": "2026-08-15",
     }
@@ -831,27 +861,127 @@ def confirm_segment(pid: int, sid: int):
     return {"ok": True, "segment": seg}
 
 
-@app.post("/api/segments/{pid}/{sid}/backcheck")
-async def backcheck_segment(pid: int, sid: int):
-    """Обратный перевод: target (EN) → source lang (RU) через GPT.
-    Fallback на Google если нет ключа OpenAI."""
-    seg = get_segment(pid, sid)
-    project = get_project(pid)
-    target_text = seg.get("target", "").strip()
+def _text_hash(text: str) -> str:
+    return hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None) -> dict:
+    """Обратный перевод сегмента + оценка соответствия оригиналу.
+    Результат кладётся в seg['backcheck'] вместе с хешем перевода — по нему
+    повторный прогон понимает, что пересчитывать нечего."""
+    target_text = (seg.get("target") or "").strip()
     if not target_text:
         return {"ok": False, "error": "Сегмент ещё не переведён"}
+
+    mdl_id = _resolve_model(model or BACKCHECK_DEFAULT_MODEL)["id"]
+    back = ""
     try:
         if os.environ.get("OPENAI_API_KEY"):
-            back = _openai_translate(target_text, project["tgt"], project["src"])
-        else:
+            back = _openai_translate(target_text, project["tgt"], project["src"],
+                                     model=model or BACKCHECK_DEFAULT_MODEL, literal=True)
+        elif _DEEP_TRANSLATE_OK:
             back = _deep_translate(target_text, project["tgt"], project["src"])
-        return {"ok": True, "back": back}
+            mdl_id = PROVIDER_GOOGLE
     except Exception as e:
+        print(f"[backend] backcheck seg#{seg.get('id')}: {e}", file=sys.stderr)
         try:
             back = _deep_translate(target_text, project["tgt"], project["src"])
-            return {"ok": True, "back": back}
+            mdl_id = PROVIDER_GOOGLE
         except Exception as e2:
             return {"ok": False, "error": str(e2)}
+
+    if not (back or "").strip():
+        return {"ok": False, "error": "Обратный перевод не получен"}
+
+    gloss_hits, _tm = _get_context(seg.get("source", ""))
+    res = medical_qa_mod.run_backcheck(seg.get("source", ""), back, gloss_hits) if medical_qa_mod else {}
+
+    seg["backtranslated_ru"] = back
+    seg["backcheck"] = {
+        "score": res.get("score"),
+        "band": res.get("band"),
+        "recall": res.get("recall"),
+        "reasons": res.get("reasons", []),
+        "terms_lost": res.get("terms_lost", []),
+        "back": back,
+        "model": mdl_id,
+        "target_hash": _text_hash(target_text),
+        "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }
+    return {"ok": True, "back": back, "backcheck": seg["backcheck"]}
+
+
+class BackcheckRequest(BaseModel):
+    model: Optional[str] = None
+
+
+@app.post("/api/segments/{pid}/{sid}/backcheck")
+def backcheck_segment(pid: int, sid: int, req: BackcheckRequest = BackcheckRequest()):
+    """Обратный перевод target → язык оригинала + оценка соответствия.
+    Обычный def: внутри блокирующий вызов модели (см. batch_translate)."""
+    seg = get_segment(pid, sid)
+    project = get_project(pid)
+    result = _run_segment_backcheck(seg, project, req.model)
+    if result.get("ok"):
+        save_state(STATE)
+        result["segment"] = seg
+    return result
+
+
+class BackcheckBatchRequest(BaseModel):
+    segment_ids: Optional[list] = None
+    limit: int = 10
+    model: Optional[str] = None
+    skip_cached: bool = True     # не пересчитывать сегменты с неизменившимся переводом
+
+
+@app.post("/api/projects/{pid}/backcheck/batch")
+def backcheck_batch(pid: int, req: BackcheckBatchRequest):
+    """Пакетный back-check. Порционный, как и пакетный перевод: клиент гоняет
+    порции по 10, поэтому один запрос не живёт дольше таймаута прокси."""
+    project = get_project(pid)
+    id_filter = set(req.segment_ids) if req.segment_ids is not None else None
+    mdl_id = _resolve_model(req.model or BACKCHECK_DEFAULT_MODEL)["id"]
+
+    candidates = []
+    skipped_cached = 0
+    for s in project["segments"]:
+        if id_filter is not None and s["id"] not in id_filter:
+            continue
+        if not (s.get("target") or "").strip():
+            continue
+        if req.skip_cached:
+            bc = s.get("backcheck") or {}
+            if bc.get("target_hash") == _text_hash(s["target"]) and bc.get("model") == mdl_id:
+                skipped_cached += 1
+                continue
+        candidates.append(s)
+
+    limit = max(1, min(req.limit, 100))
+    remaining_after = max(0, len(candidates) - limit)
+    targets = candidates[:limit]
+
+    processed, errors = [], []
+    for seg in targets:
+        try:
+            r = _run_segment_backcheck(seg, project, req.model)
+            if r.get("ok"):
+                processed.append(seg["id"])
+            else:
+                errors.append({"id": seg["id"], "error": r.get("error", "unknown")})
+        except Exception as e:
+            errors.append({"id": seg["id"], "error": str(e)})
+            print(f"[backend] backcheck batch seg#{seg['id']}: {e}", file=sys.stderr)
+    save_state(STATE)
+    return {
+        "ok": True,
+        "processed": processed,
+        "count": len(processed),
+        "remaining": remaining_after,
+        "skipped_cached": skipped_cached,
+        "errors": errors,
+        "model": mdl_id,
+    }
 
 
 class MedicalQARequest(BaseModel):

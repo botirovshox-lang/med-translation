@@ -226,6 +226,9 @@ function TabPreflight({ store, toast }) {
                   React.createElement("td", { className: "tnum", style: { color: "var(--c-success)", fontWeight: 600 } }, m(base - opt)));
               })))))),
 
+    // ---- Соответствие обратного перевода ----
+    React.createElement(BackcheckBands, { segments: segs, onDrill: openDrill, T }),
+
     // ---- Zero-Token Optimization ----
     React.createElement("div", { className: "section" },
       React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 16 } },
@@ -302,6 +305,88 @@ function OptBtn({ icon, label, tip, onClick }) {
   return React.createElement("span", { className: "row", style: { gap: 2 } },
     React.createElement(Btn, { variant: "secondary", size: "sm", icon, onClick }, label),
     tip && React.createElement(InfoTip, { title: tip[0], body: tip[1] }));
+}
+
+
+/* ---------- Соответствие обратного перевода: полосы с переходом в редактор ---------- */
+// Границы полос дублировать нельзя — берём их из /api/models, где их задаёт бэкенд.
+// Пока каталог не пришёл, показываем блок по встроенному запасному списку.
+const BC_BANDS_FALLBACK = [
+  { key: "eq100", min: 100, max: 100, label: "100%",   note: "Дословное совпадение",       color: "green" },
+  { key: "b98",   min: 98,  max: 99,  label: "98-99%", note: "Почти дословно",             color: "green" },
+  { key: "b95",   min: 95,  max: 97,  label: "95-97%", note: "Незначительные расхождения", color: "green" },
+  { key: "b90",   min: 90,  max: 94,  label: "90-94%", note: "Мелкие расхождения",         color: "yellow" },
+  { key: "b85",   min: 85,  max: 89,  label: "85-89%", note: "Заметные расхождения",       color: "yellow" },
+  { key: "b80",   min: 80,  max: 84,  label: "80-84%", note: "Требует просмотра",          color: "orange" },
+  { key: "b70",   min: 70,  max: 79,  label: "70-79%", note: "Смысл поплыл",               color: "orange" },
+  { key: "low",   min: 0,   max: 69,  label: "< 70%",  note: "Смысл разошёлся",            color: "red" },
+];
+
+function bcBandColor(color) {
+  return color === "green" ? "var(--c-success)"
+    : color === "yellow" ? "var(--c-warning)"
+    : color === "orange" ? "var(--c-warning)"
+    : "var(--c-error)";
+}
+
+function BackcheckBands({ segments, onDrill, T }) {
+  const [bands, setBands] = useState(BC_BANDS_FALLBACK);
+  useEffect(() => {
+    if (!window.API || !window.API.models) return;
+    window.API.safeCall(() => window.API.models()).then(d => {
+      if (d && d.backcheckBands && d.backcheckBands.length) setBands(d.backcheckBands);
+    });
+  }, []);
+
+  const translated = segments.filter(s => (s.target || "").trim());
+  const checked = translated.filter(s => s.backcheck && s.backcheck.score != null);
+  const termLost = checked.filter(s => (s.backcheck.terms_lost || []).length > 0);
+  const maxCount = Math.max(1, ...bands.map(b =>
+    checked.filter(s => s.backcheck.score >= b.min && s.backcheck.score <= b.max).length));
+
+  return React.createElement("div", { className: "section" },
+    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 14 } },
+      React.createElement("div", { className: "row between", style: { alignItems: "flex-end", flexWrap: "wrap", gap: 10 } },
+        React.createElement("div", null,
+          React.createElement("h3", { style: { fontSize: 18, fontWeight: 700 } }, "Соответствие обратного перевода",
+            T("Соответствие обратного перевода",
+              "Перевод переводится обратно на язык оригинала и сравнивается с исходным текстом: числа, единицы, отрицания, лево-право, сохранность терминов. Процент показывает, сколько смысла пережило круг. Запускается на вкладке «Редактор», карточка Back-check.")),
+          React.createElement("p", { className: "muted", style: { marginTop: 6, fontSize: 14 } },
+            "Проверено " + checked.length + " из " + translated.length + " переведённых сегментов")),
+        checked.length > 0 && React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+          "Средний балл: " +
+          Math.round(checked.reduce((a, s) => a + s.backcheck.score, 0) / checked.length) + "%")
+      ),
+
+      checked.length === 0
+        ? React.createElement(EmptyState, { icon: "repeat", title: "Back-check ещё не запускался",
+            sub: "Запустите его в Редакторе — карточка Back-check в блоке пакетных операций." })
+        : React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
+            bands.map(b => {
+              const list = checked.filter(s => s.backcheck.score >= b.min && s.backcheck.score <= b.max);
+              const pct = Math.round(list.length / maxCount * 100);
+              return React.createElement("div", {
+                key: b.key, className: "row", style: { gap: 10, cursor: list.length ? "pointer" : "default", opacity: list.length ? 1 : 0.45, padding: "3px 0" },
+                onClick: () => list.length && onDrill(b.label, list),
+                title: list.length ? "Открыть эти сегменты в редакторе" : "Нет сегментов в этой полосе" },
+                React.createElement("span", { className: "mono", style: { width: 72, fontSize: 13, fontWeight: 700, color: bcBandColor(b.color) } }, b.label),
+                React.createElement("span", { className: "dim", style: { width: 190, fontSize: 12.5 } }, b.note),
+                React.createElement("div", { style: { flex: 1, height: 10, background: "var(--bg-sunken)", borderRadius: 5, overflow: "hidden" } },
+                  React.createElement("div", { style: { width: pct + "%", height: "100%", background: bcBandColor(b.color) } })),
+                React.createElement("b", { className: "tnum", style: { width: 56, textAlign: "right", fontSize: 13 } }, list.length)
+              );
+            })
+          ),
+
+      termLost.length > 0 && React.createElement("div", {
+        className: "row between", style: { borderTop: "1px solid var(--border)", paddingTop: 10, cursor: "pointer" },
+        onClick: () => onDrill("Потеря термина", termLost),
+        title: "Открыть эти сегменты в редакторе" },
+        React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: "var(--c-error)" } },
+          "Из них с потерей термина"),
+        React.createElement("b", { className: "tnum", style: { fontSize: 13 } }, termLost.length))
+    )
+  );
 }
 
 window.TabPreflight = TabPreflight;

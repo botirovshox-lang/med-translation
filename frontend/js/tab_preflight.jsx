@@ -318,8 +318,10 @@ const BC_BANDS_FALLBACK = [
   { key: "b90",   min: 90,  max: 94,  label: "90-94%", note: "Мелкие расхождения",         color: "yellow" },
   { key: "b85",   min: 85,  max: 89,  label: "85-89%", note: "Заметные расхождения",       color: "yellow" },
   { key: "b80",   min: 80,  max: 84,  label: "80-84%", note: "Требует просмотра",          color: "orange" },
-  { key: "b70",   min: 70,  max: 79,  label: "70-79%", note: "Смысл поплыл",               color: "orange" },
-  { key: "low",   min: 0,   max: 69,  label: "< 70%",  note: "Смысл разошёлся",            color: "red" },
+  { key: "b71",   min: 71,  max: 79,  label: "71-79%", note: "Смысл поплыл",               color: "orange" },
+  { key: "b61",   min: 61,  max: 70,  label: "61-70%", note: "Существенные расхождения",   color: "red" },
+  { key: "b50",   min: 50,  max: 60,  label: "50-60%", note: "Смысл разошёлся",            color: "red" },
+  { key: "low",   min: 0,   max: 49,  label: "< 50%",  note: "Совпадения почти нет",       color: "red" },
 ];
 
 function bcBandColor(color) {

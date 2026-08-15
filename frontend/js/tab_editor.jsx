@@ -6,6 +6,22 @@
 // держим его коротким, чтобы не упираться в proxy_read_timeout и чаще двигать прогресс.
 const BATCH_CHUNK = 10;
 const EST_SEC_PER_SEG = 5;          // замер на проде: 5-6 с на сегмент через GPT
+const CHUNK_RETRIES = 2;            // повторов порции при сбое
+const RETRY_PAUSE_MS = 6000;        // пауза перед повтором — хватает пережить рестарт сервиса
+
+// Порция с повторами: одна неудача не должна убивать двухчасовой прогон.
+// Ровно так пакет и обрывался, когда сервис перезапускали во время работы.
+async function callChunkWithRetry(fn, onRetry) {
+  for (let attempt = 0; attempt <= CHUNK_RETRIES; attempt++) {
+    const r = await window.API.safeCall(fn);
+    if (r && r.ok) return r;
+    if (attempt < CHUNK_RETRIES) {
+      if (onRetry) onRetry(attempt + 1);
+      await new Promise(res => setTimeout(res, RETRY_PAUSE_MS));
+    }
+  }
+  return null;
+}
 const GPT_MODEL_LS_KEY = "mcat_gpt_model";
 const BC_MODEL_LS_KEY = "mcat_backcheck_model";
 
@@ -80,6 +96,7 @@ function TabEditor({ store, toast }) {
     try { return localStorage.getItem(BC_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
   const [bcBands, setBcBands] = useState([]);
+  const [bcJudge, setBcJudge] = useState(false);          // LLM-судья для средней зоны
   const stopRef = useRef(false);
   const PAGE_SIZE = 10;
 
@@ -373,8 +390,9 @@ function TabEditor({ store, toast }) {
         setBatchRun(b => (b ? { ...b, done: base + est } : b));
       }, 500);
       let r = null;
-      if (window.API) r = await window.API.safeCall(() =>
-        window.API.batch(project.id, engine, chunk, hasExplicitCheck, BATCH_CHUNK, gptModel));
+      if (window.API) r = await callChunkWithRetry(
+        () => window.API.batch(project.id, engine, chunk, hasExplicitCheck, BATCH_CHUNK, gptModel),
+        (n) => toast.warning("Сбой связи", "Порция не прошла, повтор " + n + " из " + CHUNK_RETRIES + "…"));
       clearInterval(tick);
       if (!r || !r.ok) { failed = true; break; }
       done += r.count;
@@ -464,8 +482,9 @@ function TabEditor({ store, toast }) {
         setBatchRun(b => (b ? { ...b, done: base + est } : b));
       }, 500);
       let r = null;
-      if (window.API) r = await window.API.safeCall(() =>
-        window.API.backcheckBatch(project.id, chunk, BATCH_CHUNK, bcModel));
+      if (window.API) r = await callChunkWithRetry(
+        () => window.API.backcheckBatch(project.id, chunk, BATCH_CHUNK, bcModel, bcJudge),
+        (n) => toast.warning("Сбой связи", "Порция не прошла, повтор " + n + " из " + CHUNK_RETRIES + "…"));
       clearInterval(tick);
       if (!r || !r.ok) { failed = true; break; }
       // Сегменты из кэша тоже двигают прогресс — иначе полоса стоит на месте
@@ -597,6 +616,7 @@ function TabEditor({ store, toast }) {
             running: batchRun && batchRun.engine === "backcheck" ? batchRun : null,
             onRun: runBackcheckBatch, onStop: () => { stopRef.current = true; },
             models: gptModels, model: bcModel, modelInfo: bcModelInfo, onModel: pickBcModel,
+            judge: bcJudge, onJudge: () => setBcJudge(v => !v),
             available: project.segments.filter(s => (s.target || "").trim() &&
               (!currentIdSet || currentIdSet.has(s.id))).length,
             done: project.segments.filter(s => s.backcheck && s.backcheck.score != null &&
@@ -865,7 +885,7 @@ function BatchCard({ kind, running, onRun, onStop, available, selectionSize, fil
   );
 }
 
-function BackcheckCard({ running, onRun, onStop, available, done, filtered, models, model, modelInfo, onModel }) {
+function BackcheckCard({ running, onRun, onStop, available, done, filtered, models, model, modelInfo, onModel, judge, onJudge }) {
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "row", style: { gap: 10 } },
       React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-info)" } },
@@ -886,6 +906,17 @@ function BackcheckCard({ running, onRun, onStop, available, done, filtered, mode
         m.label + (m.note ? " — " + m.note : "")))),
       modelInfo && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 5 } },
         "Цена за 1M токенов: вход " + fmtCost(modelInfo.in) + " · выход " + fmtCost(modelInfo.out))),
+
+    React.createElement("div", { className: "row between", style: { gap: 10 } },
+      React.createElement("div", null,
+        React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center" } },
+          "Судья для спорных",
+          React.createElement(InfoTip, { title: "LLM-судья средней зоны",
+            body: "Для сегментов, попавших в середину шкалы (50-97%), модель отдельно сравнивает оригинал с обратным переводом и решает, подмена это понятия или просто другая формулировка. Подмена роняет балл, подтверждённая эквивалентность — поднимает. Наверху и внизу шкалы судья не вызывается: там вопрос уже решён проверками, платить за подтверждение очевидного незачем." })),
+        React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
+          judge ? "Спорные сегменты уйдут на разбор" : "Только детерминированные проверки")),
+      React.createElement(Switch, { on: !!judge, label: "Судья", onClick: onJudge })),
+
     running
       ? React.createElement("div", null,
           React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },

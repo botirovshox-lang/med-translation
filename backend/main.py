@@ -26,6 +26,7 @@ Run:
   → open http://localhost:8000
 """
 import os
+import re
 import sys
 import json
 import hashlib
@@ -210,6 +211,87 @@ PROVIDER_TM = "tm"
 # её задача — зеркалить текст, а не переводить его хорошо. Чем «умнее» модель,
 # тем охотнее она чинит ошибки на лету и прячет их от проверки.
 BACKCHECK_DEFAULT_MODEL = "gpt-5.6-luna"
+
+# Семантическая близость оригинала и обратного перевода. Лексическая база не умеет
+# в синонимы: «больному назначен» против «пациенту назначили» — это один смысл и
+# разные основы. Эмбеддинги закрывают ровно этот разрыв.
+EMBED_MODEL = "text-embedding-3-small"
+# Судья вызывается только в средней зоне: наверху и внизу шкалы решение уже принято
+# детерминированными проверками, и платить за подтверждение очевидного незачем.
+JUDGE_ZONE = (50, 97)
+
+
+def _openai_embed(texts: list) -> list:
+    import openai
+    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=60, max_retries=2)
+    resp = client.embeddings.create(model=EMBED_MODEL, input=texts)
+    return [d.embedding for d in resp.data]
+
+
+def _cosine(a: list, b: list) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    return (dot / (na * nb)) if na and nb else 0.0
+
+
+def _semantic_similarity(source_ru: str, back_ru: str):
+    """Косинус между оригиналом и обратным переводом. None — если посчитать не вышло."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        return None
+    try:
+        vecs = _openai_embed([source_ru, back_ru])
+        return _cosine(vecs[0], vecs[1])
+    except Exception as e:
+        print(f"[backend] embed failed: {e}", file=sys.stderr)
+        return None
+
+
+_JUDGE_SYSTEM = (
+    "Ты — медицинский редактор. Тебе дают исходный текст на русском и его ОБРАТНЫЙ перевод "
+    "(текст перевели на английский, затем обратно на русский). Твоя задача — понять, "
+    "сохранился ли медицинский смысл.\n\n"
+    "Считай расхождением: подмену понятия или термина на другое (например «лимфаденит» → "
+    "«аденолимфит» — это разные вещи), изменение числа, дозировки, единицы, отрицания, "
+    "стороны, анатомической локализации, степени уверенности диагноза.\n"
+    "НЕ считай расхождением: синонимы, изменённый порядок слов, стилистические различия, "
+    "разные падежи и формы, если медицинский смысл тот же.\n\n"
+    "Верни ТОЛЬКО JSON без пояснений:\n"
+    '{"same_meaning": true|false, "severity": "none"|"minor"|"major"|"critical", '
+    '"divergences": ["короткое описание расхождения"], "comment": "одно предложение по-русски"}\n'
+    "severity: none — смысл идентичен; minor — стилистика; major — заметное смысловое "
+    "расхождение; critical — подмена понятия, числа, отрицания или стороны."
+)
+
+
+def _openai_judge(source_ru: str, back_ru: str, model: str = None) -> Optional[dict]:
+    """Вердикт модели по паре «оригинал / обратный перевод»."""
+    import json as _json
+    import openai
+    mdl = _resolve_model(model or DEFAULT_OPENAI_MODEL)
+    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
+    extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
+             else {"max_tokens": 500, "temperature": 0})
+    try:
+        resp = client.chat.completions.create(
+            model=mdl["id"],
+            messages=[
+                {"role": "system", "content": _JUDGE_SYSTEM},
+                {"role": "user", "content": "ОРИГИНАЛ:\n" + source_ru + "\n\nОБРАТНЫЙ ПЕРЕВОД:\n" + back_ru},
+            ],
+            **extra,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        # Модель иногда оборачивает JSON в ```json ... ``` — вырезаем тело
+        m = re.search(r"\{.*\}", raw, re.S)
+        if not m:
+            return None
+        verdict = _json.loads(m.group(0))
+        verdict["model"] = mdl["id"]
+        return verdict
+    except Exception as e:
+        print(f"[backend] judge failed: {e}", file=sys.stderr)
+        return None
 
 
 def _resolve_model(model_id: Optional[str]) -> dict:
@@ -865,7 +947,8 @@ def _text_hash(text: str) -> str:
     return hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:16]
 
 
-def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None) -> dict:
+def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None,
+                           use_judge: bool = False, judge_model: Optional[str] = None) -> dict:
     """Обратный перевод сегмента + оценка соответствия оригиналу.
     Результат кладётся в seg['backcheck'] вместе с хешем перевода — по нему
     повторный прогон понимает, что пересчитывать нечего."""
@@ -893,18 +976,33 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
     if not (back or "").strip():
         return {"ok": False, "error": "Обратный перевод не получен"}
 
-    gloss_hits, _tm = _get_context(seg.get("source", ""))
-    res = medical_qa_mod.run_backcheck(seg.get("source", ""), back, gloss_hits) if medical_qa_mod else {}
+    source_text = seg.get("source", "")
+    gloss_hits, _tm = _get_context(source_text)
+    semantic = _semantic_similarity(source_text, back)
+    res = medical_qa_mod.run_backcheck(source_text, back, gloss_hits, semantic=semantic) if medical_qa_mod else {}
+
+    # Судья — только для средней зоны: наверху и внизу шкалы вопрос уже решён
+    judged = False
+    if use_judge and medical_qa_mod and res.get("score") is not None:
+        lo, hi = JUDGE_ZONE
+        if lo <= res["score"] <= hi:
+            verdict = _openai_judge(source_text, back, judge_model)
+            if verdict:
+                res = medical_qa_mod.apply_judge_verdict(res, verdict)
+                judged = True
 
     seg["backtranslated_ru"] = back
     seg["backcheck"] = {
         "score": res.get("score"),
         "band": res.get("band"),
         "recall": res.get("recall"),
+        "semantic": res.get("semantic"),
         "reasons": res.get("reasons", []),
         "terms_lost": res.get("terms_lost", []),
+        "judge": res.get("judge"),
         "back": back,
         "model": mdl_id,
+        "judged": judged,
         "target_hash": _text_hash(target_text),
         "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
@@ -913,6 +1011,8 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
 
 class BackcheckRequest(BaseModel):
     model: Optional[str] = None
+    use_judge: bool = False
+    judge_model: Optional[str] = None
 
 
 @app.post("/api/segments/{pid}/{sid}/backcheck")
@@ -921,7 +1021,7 @@ def backcheck_segment(pid: int, sid: int, req: BackcheckRequest = BackcheckReque
     Обычный def: внутри блокирующий вызов модели (см. batch_translate)."""
     seg = get_segment(pid, sid)
     project = get_project(pid)
-    result = _run_segment_backcheck(seg, project, req.model)
+    result = _run_segment_backcheck(seg, project, req.model, req.use_judge, req.judge_model)
     if result.get("ok"):
         save_state(STATE)
         result["segment"] = seg
@@ -933,6 +1033,8 @@ class BackcheckBatchRequest(BaseModel):
     limit: int = 10
     model: Optional[str] = None
     skip_cached: bool = True     # не пересчитывать сегменты с неизменившимся переводом
+    use_judge: bool = False
+    judge_model: Optional[str] = None
 
 
 @app.post("/api/projects/{pid}/backcheck/batch")
@@ -952,7 +1054,9 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
             continue
         if req.skip_cached:
             bc = s.get("backcheck") or {}
-            if bc.get("target_hash") == _text_hash(s["target"]) and bc.get("model") == mdl_id:
+            # Включили судью после прогона без него — пересчитать надо
+            if (bc.get("target_hash") == _text_hash(s["target"]) and bc.get("model") == mdl_id
+                    and (not req.use_judge or bc.get("judged"))):
                 skipped_cached += 1
                 continue
         candidates.append(s)
@@ -964,7 +1068,7 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
     processed, errors = [], []
     for seg in targets:
         try:
-            r = _run_segment_backcheck(seg, project, req.model)
+            r = _run_segment_backcheck(seg, project, req.model, req.use_judge, req.judge_model)
             if r.get("ok"):
                 processed.append(seg["id"])
             else:

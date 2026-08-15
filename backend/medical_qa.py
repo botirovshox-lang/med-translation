@@ -507,8 +507,10 @@ BACKCHECK_BANDS = [
     {"key": "b90",   "min": 90,  "max": 94,  "label": "90-94%", "note": "Мелкие расхождения",         "color": "yellow"},
     {"key": "b85",   "min": 85,  "max": 89,  "label": "85-89%", "note": "Заметные расхождения",       "color": "yellow"},
     {"key": "b80",   "min": 80,  "max": 84,  "label": "80-84%", "note": "Требует просмотра",          "color": "orange"},
-    {"key": "b70",   "min": 70,  "max": 79,  "label": "70-79%", "note": "Смысл поплыл",               "color": "orange"},
-    {"key": "low",   "min": 0,   "max": 69,  "label": "< 70%",  "note": "Смысл разошёлся",            "color": "red"},
+    {"key": "b71",   "min": 71,  "max": 79,  "label": "71-79%", "note": "Смысл поплыл",               "color": "orange"},
+    {"key": "b61",   "min": 61,  "max": 70,  "label": "61-70%", "note": "Существенные расхождения",   "color": "red"},
+    {"key": "b50",   "min": 50,  "max": 60,  "label": "50-60%", "note": "Смысл разошёлся",            "color": "red"},
+    {"key": "low",   "min": 0,   "max": 49,  "label": "< 50%",  "note": "Совпадения почти нет",       "color": "red"},
 ]
 
 # Штрафы вынесены константами: после первого прохода по проекту их и границы
@@ -528,6 +530,27 @@ BACKCHECK_PENALTY = {
 # такие случаи в район 85-90, оставляя низ шкалы жёстким. Значение подлежит
 # калибровке на реальном распределении после первого полного прохода.
 BACKCHECK_RECALL_CURVE = 0.5
+
+# Роль эмбеддингов ограничена намеренно. Замер на реальных парах (text-embedding-3-small):
+#   синоним  «Больному назначен» / «Пациенту назначили»   cos 0.677
+#   подмена  «лимфаденит» / «аденолимфит»                 cos 0.842
+#   подмена  «левое лёгкое» / «правое лёгкое»             cos 0.809
+#   чужое    «микроскопия мокроты» / «погода хорошая»     cos 0.145
+# То есть опасная подмена термина получает косинус ВЫШЕ, чем безобидная
+# перефразировка: как метрика смысловой близости в средней зоне эмбеддинги здесь
+# бесполезны и даже вредны — они бы подняли балл именно тому случаю, ради которого
+# всё делалось. Поэтому используем их только по краям, где они надёжны:
+#   очень высокий косинус при отсутствии жёстких находок — тексты почти идентичны;
+#   очень низкий — обратный перевод просто про другое.
+# Среднюю зону разбирает LLM-судья, а не эмбеддинги.
+BACKCHECK_SEM_HIGH = 0.95
+BACKCHECK_SEM_ALIEN = 0.50
+BACKCHECK_SEM_HIGH_FLOOR = 0.95   # доля от 100 баллов
+BACKCHECK_SEM_ALIEN_CAP = 0.40
+
+# Потолки и полы, которые ставит вердикт судьи.
+JUDGE_CAP = {"critical": 45, "major": 70, "minor": None, "none": None}
+JUDGE_FLOOR_NONE = 95
 
 RU_STOPWORDS = {
     "и", "или", "но", "а", "же", "ли", "не", "нет", "да", "в", "во", "на", "с", "со", "к", "ко",
@@ -650,15 +673,70 @@ def backcheck_issues(source_ru, back_ru, glossary_matches=None):
     return issues, lost
 
 
-def run_backcheck(source_ru, back_ru, glossary_matches=None):
-    """Оценка соответствия обратного перевода оригиналу: 0-100 и причины."""
+def _hard_issue(issues):
+    hard = {"backcheck_number_mismatch", "backcheck_unit_mismatch",
+            "backcheck_negation_shift", "backcheck_pair_shift", "backcheck_term_lost"}
+    return any(i.get("type") in hard for i in (issues or []))
+
+
+def apply_judge_verdict(result, verdict):
+    """Вердикт судьи корректирует балл: подмена понятия роняет его вниз,
+    подтверждённая эквивалентность — поднимает. Судья не отменяет
+    детерминированные находки, он только двигает итог в их рамках."""
+    if not result or not verdict or result.get("score") is None:
+        return result
+    sev = (verdict.get("severity") or "").lower()
+    if not verdict.get("same_meaning", True) and sev not in ("critical", "major"):
+        sev = "major"
+    cap = JUDGE_CAP.get(sev)
+    score = result["score"]
+    if cap is not None and score > cap:
+        score = cap
+        result["reasons"] = list(result.get("reasons", [])) + [
+            "судья: " + (verdict.get("comment") or "смысл расходится")]
+    elif sev == "none" and score < JUDGE_FLOOR_NONE and not result.get("terms_lost"):
+        # Поднимаем только когда жёстких находок нет: иначе судья затрёт
+        # расхождение чисел или отрицания, которое видно объективно.
+        hard = {"backcheck_number_mismatch", "backcheck_unit_mismatch",
+                "backcheck_negation_shift", "backcheck_pair_shift"}
+        if not any(i.get("type") in hard for i in result.get("issues", [])):
+            score = JUDGE_FLOOR_NONE
+            result["reasons"] = ["судья: смысл эквивалентен, отличается формулировка"]
+    result["score"] = int(score)
+    result["band"] = band_of(result["score"])
+    result["judge"] = {
+        "same_meaning": verdict.get("same_meaning"),
+        "severity": sev,
+        "divergences": verdict.get("divergences", []),
+        "comment": verdict.get("comment", ""),
+        "model": verdict.get("model", ""),
+    }
+    return result
+
+
+def run_backcheck(source_ru, back_ru, glossary_matches=None, semantic=None):
+    """Оценка соответствия обратного перевода оригиналу: 0-100 и причины.
+
+    semantic — косинус эмбеддингов оригинала и обратного перевода, если посчитан.
+    Работает только по краям шкалы (см. комментарий к BACKCHECK_SEM_*): в средней
+    зоне косинус не отличает синонимию от подмены понятия, там решает судья."""
     if not (back_ru or "").strip():
         return {"score": None, "band": None, "recall": None, "issues": [],
                 "terms_lost": [], "reasons": ["Обратный перевод не выполнен"]}
 
     issues, lost = backcheck_issues(source_ru, back_ru, glossary_matches)
     recall = _content_recall(source_ru, back_ru)
-    score = 100.0 * (recall ** BACKCHECK_RECALL_CURVE)
+    base = recall ** BACKCHECK_RECALL_CURVE
+    sem_note = None
+    if semantic is not None and not _hard_issue(issues):
+        # Тексты почти идентичны по смыслу и жёстких находок нет — поднимаем базу
+        if semantic >= BACKCHECK_SEM_HIGH:
+            base = max(base, BACKCHECK_SEM_HIGH_FLOOR)
+        # Обратный перевод просто про другое — этого не спасёт никакая лексика
+        elif semantic < BACKCHECK_SEM_ALIEN:
+            base = min(base, BACKCHECK_SEM_ALIEN_CAP)
+            sem_note = "обратный перевод про другое"
+    score = 100.0 * base
 
     penalty = 0
     term_penalty = 0
@@ -684,6 +762,8 @@ def run_backcheck(source_ru, back_ru, glossary_matches=None):
         penalty += term_penalty
         reasons.append("потерян термин: " + ", ".join(lost[:3]) + ("…" if len(lost) > 3 else ""))
 
+    if sem_note:
+        reasons.append(sem_note)
     score = int(round(max(0.0, min(100.0, score - penalty))))
     if not reasons and score < 100:
         reasons.append("часть текста не совпала дословно")
@@ -692,6 +772,7 @@ def run_backcheck(source_ru, back_ru, glossary_matches=None):
         "score": score,
         "band": band_of(score),
         "recall": round(recall, 3),
+        "semantic": round(semantic, 3) if semantic is not None else None,
         "issues": issues,
         "terms_lost": lost,
         "reasons": reasons,

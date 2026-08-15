@@ -25,6 +25,7 @@ async function callChunkWithRetry(fn, onRetry) {
 const GPT_MODEL_LS_KEY = "mcat_gpt_model";
 const BC_MODEL_LS_KEY = "mcat_backcheck_model";
 const JUDGE_MODEL_LS_KEY = "mcat_judge_model";
+const BC_SKIP_CONFIRMED_LS_KEY = "mcat_bc_skip_confirmed";
 
 // Цвет полосы соответствия обратного перевода
 function bandColor(color) {
@@ -102,6 +103,11 @@ function TabEditor({ store, toast }) {
     try { return localStorage.getItem(JUDGE_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
   const [judgeZone, setJudgeZone] = useState([50, 97]);
+  // По умолчанию выключено: back-check ничего не портит, а проверить подтверждённое
+  // даже полезнее — если ошибка прошла ревью, узнать об этом важнее всего.
+  const [bcSkipConfirmed, setBcSkipConfirmed] = useState(() => {
+    try { return localStorage.getItem(BC_SKIP_CONFIRMED_LS_KEY) === "1"; } catch (e) { return false; }
+  });
   const stopRef = useRef(false);
   const PAGE_SIZE = 10;
 
@@ -133,6 +139,17 @@ function TabEditor({ store, toast }) {
     setBcModel(id);
     try { localStorage.setItem(BC_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
   };
+  const toggleBcSkipConfirmed = () => setBcSkipConfirmed(v => {
+    const next = !v;
+    try { localStorage.setItem(BC_SKIP_CONFIRMED_LS_KEY, next ? "1" : "0"); } catch (e) { /* приватный режим */ }
+    return next;
+  });
+  // Один предикат для счётчика на карточке и для самого прогона — чтобы не разошлись
+  const backcheckable = (s, idSet) =>
+    (s.target || "").trim() &&
+    !(bcSkipConfirmed && s.status === "confirmed") &&
+    (!idSet || idSet.has(s.id));
+
   const judgeModelInfo = gptModels.find(m => m.id === judgeModel) || null;
   const pickJudgeModel = (id) => {
     setJudgeModel(id);
@@ -473,10 +490,11 @@ function TabEditor({ store, toast }) {
       }
     }
     const idSet = currentIdSet;
-    const targets = currentSegs.filter(s =>
-      (s.target || "").trim() && (!idSet || idSet.has(s.id)));
+    const targets = currentSegs.filter(s => backcheckable(s, idSet));
     if (!targets.length) {
-      toast.warning("Нечего проверять", "В выборке нет переведённых сегментов.");
+      toast.warning("Нечего проверять", bcSkipConfirmed
+        ? "В выборке нет переведённых сегментов, кроме подтверждённых, а их вы просили пропускать."
+        : "В выборке нет переведённых сегментов.");
       return;
     }
     stopRef.current = false;
@@ -631,10 +649,12 @@ function TabEditor({ store, toast }) {
             judge: bcJudge, onJudge: () => setBcJudge(v => !v),
             judgeModel: judgeModel, judgeModelInfo: judgeModelInfo, onJudgeModel: pickJudgeModel,
             judgeZone: judgeZone,
-            available: project.segments.filter(s => (s.target || "").trim() &&
-              (!currentIdSet || currentIdSet.has(s.id))).length,
+            available: project.segments.filter(s => backcheckable(s, currentIdSet)).length,
             done: project.segments.filter(s => s.backcheck && s.backcheck.score != null &&
-              (!currentIdSet || currentIdSet.has(s.id))).length,
+              backcheckable(s, currentIdSet)).length,
+            skipConfirmed: bcSkipConfirmed, onSkipConfirmed: toggleBcSkipConfirmed,
+            confirmedCount: project.segments.filter(s => s.status === "confirmed" &&
+              (s.target || "").trim() && (!currentIdSet || currentIdSet.has(s.id))).length,
             filtered: !!(store.segmentFilter || window._mcat_sf) })
         ),
         // Переводить заново уже переведённые. Работает только по явной выборке —
@@ -901,7 +921,8 @@ function BatchCard({ kind, running, onRun, onStop, available, selectionSize, fil
 }
 
 function BackcheckCard({ running, onRun, onStop, available, done, filtered, models, model, modelInfo, onModel,
-                        judge, onJudge, judgeModel, judgeModelInfo, onJudgeModel, judgeZone }) {
+                        judge, onJudge, judgeModel, judgeModelInfo, onJudgeModel, judgeZone,
+                        skipConfirmed, onSkipConfirmed, confirmedCount }) {
   const zone = judgeZone || [50, 97];
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "row", style: { gap: 10 } },
@@ -923,6 +944,19 @@ function BackcheckCard({ running, onRun, onStop, available, done, filtered, mode
         m.label + (m.note ? " — " + m.note : "")))),
       modelInfo && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 5 } },
         "Цена за 1M токенов: вход " + fmtCost(modelInfo.in) + " · выход " + fmtCost(modelInfo.out))),
+
+    React.createElement("div", { className: "row between", style: { gap: 10 } },
+      React.createElement("div", null,
+        React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center" } },
+          "Пропускать подтверждённые",
+          React.createElement(InfoTip, { title: "Подтверждённые сегменты",
+            body: "По умолчанию back-check проверяет всё, у чего есть перевод, включая подтверждённые: он ничего не перезаписывает, только дописывает оценку рядом. Проверить подтверждённое даже полезнее — если ошибка прошла ревью, узнать об этом важнее всего.\n\nВключите, если подтверждённым переводам доверяете и не хотите тратить на них вызовы модели. На пакетный перевод это не влияет: там подтверждённые не трогаются никогда." })),
+        React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
+          confirmedCount
+            ? (skipConfirmed ? "Исключено из проверки: " + confirmedCount : "Проверяются вместе со всеми: " + confirmedCount)
+            : "В выборке нет подтверждённых")),
+      React.createElement(Switch, { on: !!skipConfirmed, label: "Пропускать подтверждённые",
+        onClick: onSkipConfirmed })),
 
     React.createElement("div", { className: "row between", style: { gap: 10 } },
       React.createElement("div", null,

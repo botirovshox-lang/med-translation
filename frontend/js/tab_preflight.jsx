@@ -153,8 +153,9 @@ function TabPreflight({ store, toast }) {
 
     // ---- Risk Summary ----
     React.createElement("div", { className: "section" },
-      React.createElement("h2", { className: "section-title" }, "Сводка по рискам",
-        T("Сводка по рискам", "Уровень риска рассчитывается по эвристикам: семантическая плотность, медицинские термины, числа/дозировки.")),
+      React.createElement("h2", { className: "section-title" }, "Сложность исходных сегментов",
+        T("Сложность исходных сегментов",
+          "Считается по длине исходного текста: до 8 слов — низкая, 9–30 — средняя, больше 30 — высокая. Содержание сегмента при этом не разбирается.\n\nЭто характеристика ОРИГИНАЛА, а не перевода: она определяет, каким движком сегмент переводить, и не меняется от того, что вы перевели его заново.\n\nКачество самого перевода показывает блок «Соответствие обратного перевода» ниже.")),
       React.createElement("div", { className: "table-wrap" },
         React.createElement("table", { className: "tbl" },
           React.createElement("thead", null, React.createElement("tr", null,

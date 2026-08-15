@@ -19,6 +19,27 @@ function estimateBatch(targets, model) {
   return { chars, cost, seconds: targets.length * EST_SEC_PER_SEG };
 }
 
+// Чем сегмент переведён. seg.provider проставляется бэкендом в момент перевода.
+// У сегментов, переведённых до появления поля, его нет — тогда показываем
+// приблизительное значение по маршруту и помечаем его как неточное.
+function providerOf(seg) {
+  if (seg.provider) return { id: seg.provider, exact: true };
+  if (!seg.target || !seg.target.trim()) return null;
+  if (seg.route === "EXACT_TM") return { id: "tm", exact: false };
+  if (seg.route === "GOOGLE_SAFE") return { id: "google", exact: false };
+  if (seg.route === "GPT_REQUIRED") return { id: "gpt", exact: false };
+  return null;
+}
+
+function providerLabel(p, models) {
+  if (!p) return null;
+  if (p.id === "google") return "Google";
+  if (p.id === "tm") return "TM";
+  if (p.id === "gpt") return "GPT";
+  const m = (models || []).find(x => x.id === p.id);
+  return m ? m.label : p.id;
+}
+
 function fmtDuration(sec) {
   if (sec < 90) return Math.round(sec) + " с";
   if (sec < 5400) return Math.round(sec / 60) + " мин";
@@ -227,13 +248,26 @@ function TabEditor({ store, toast }) {
     // к нему не применяем. Без выделения «заново» не срабатывает: иначе один клик
     // перегнал бы весь проект целиком.
     const explicit = hasExplicitCheck || (retranslate && !!idSet);
-    const targets = explicit
-      ? segs.filter(s => idSet.has(s.id) && s.status !== "confirmed")
-      : segs.filter(s =>
-          s.status === "new" &&
-          (engine === "google" ? s.risk === "low" : s.risk !== "low") &&
-          (!idSet || idSet.has(s.id))
-        );
+    let targets;
+    if (explicit) {
+      targets = segs.filter(s => idSet.has(s.id) && s.status !== "confirmed");
+      // «Заново» по выборке из Анализа: не гоняем повторно то, что уже переведено
+      // именно выбранной моделью — платить второй раз за тот же результат незачем.
+      // Явные галочки не трогаем: там пользователь указал сегменты поимённо.
+      if (retranslate && !hasExplicitCheck) {
+        const want = engine === "gpt" ? gptModel : "google";
+        targets = targets.filter(s => {
+          const p = providerOf(s);
+          return !(p && p.exact && p.id === want);
+        });
+      }
+    } else {
+      targets = segs.filter(s =>
+        s.status === "new" &&
+        (engine === "google" ? s.risk === "low" : s.risk !== "low") &&
+        (!idSet || idSet.has(s.id))
+      );
+    }
     return { targets, explicit, selectionSize: idSet ? idSet.size : 0 };
   };
 
@@ -492,7 +526,7 @@ function TabEditor({ store, toast }) {
               React.createElement("tbody", null,
                 paged.map(s => React.createElement(SegRow, {
                   key: s.id, seg: s, selected: s.id === selId, busy: busy[s.id],
-                  checked: checkedSegs.has(s.id),
+                  checked: checkedSegs.has(s.id), models: gptModels,
                   onCheck: (e) => { e.stopPropagation(); setCheckedSegs(prev => { const n = new Set(prev); n.has(s.id) ? n.delete(s.id) : n.add(s.id); return n; }); },
                   onSelect: () => setSelId(s.id),
                   onTranslate: () => doTranslate(s, s.risk === "low" ? "google" : "gpt"),
@@ -549,6 +583,23 @@ function TabEditor({ store, toast }) {
           est.cost != null && React.createElement("div", { className: "row between" },
             React.createElement("span", { className: "muted" }, "Примерная стоимость"),
             React.createElement("b", null, "≈ " + fmtCost(est.cost))),
+
+          // Чем эти сегменты переведены сейчас — чтобы было видно, что именно
+          // перегоняется и не уходит ли на повтор уже сделанное нужной моделью
+          (() => {
+            const by = {};
+            batchPlan.targets.forEach(s => {
+              const l = providerLabel(providerOf(s), gptModels) || "ещё не переведён";
+              by[l] = (by[l] || 0) + 1;
+            });
+            const rows = Object.keys(by).sort((a, b) => by[b] - by[a]);
+            if (rows.length === 1 && rows[0] === "ещё не переведён") return null;
+            return React.createElement("div", { style: { borderTop: "1px solid var(--border)", paddingTop: 10 } },
+              React.createElement("div", { className: "muted", style: { marginBottom: 6 } }, "Сейчас переведено через"),
+              rows.map(l => React.createElement("div", { key: l, className: "row between", style: { fontSize: 13, padding: "2px 0" } },
+                React.createElement("span", null, l),
+                React.createElement("b", null, by[l]))));
+          })(),
           React.createElement("p", { className: "muted", style: { margin: 0, fontSize: 12.5, lineHeight: 1.6 } },
             "Оценка ориентировочная: считается по объёму текста, фактический расход зависит от ответа модели. " +
             "Пакет идёт порциями по " + BATCH_CHUNK + " сегментов, переводы сохраняются после каждой порции — " +
@@ -688,7 +739,9 @@ function MedicalQACard({ running, onRun, available, filtered, checked }) {
   );
 }
 
-function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, onConfirm, onRevert }) {
+function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, onConfirm, onRevert, models }) {
+  const prov = providerOf(seg);
+  const provText = providerLabel(prov, models);
   const revertable = seg.status === "confirmed" || seg.status === "failed";
   const actionCell = busy
     ? React.createElement("div", { style: { display: "grid", placeItems: "center" } }, React.createElement(Spinner, null))
@@ -707,7 +760,15 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
     React.createElement("td", { className: "col-id" }, seg.id),
     React.createElement("td", { className: "src-cell" }, seg.source),
     React.createElement("td", { className: seg.target ? "tgt-cell" : "tgt-cell tgt-empty" }, seg.target || "— не переведено —"),
-    React.createElement("td", null, React.createElement(StatusBadge, { status: seg.status })),
+    React.createElement("td", null,
+      React.createElement(StatusBadge, { status: seg.status }),
+      provText && React.createElement("div", {
+        className: "dim",
+        style: { fontSize: 10.5, marginTop: 3, whiteSpace: "nowrap", opacity: prov.exact ? 0.85 : 0.55 },
+        title: prov.exact
+          ? "Переведено: " + provText
+          : "Переведено предположительно через " + provText + " — сегмент переведён до того, как система начала записывать движок точно",
+      }, (prov.exact ? "" : "≈ ") + provText)),
     React.createElement("td", null, React.createElement(TMChip, { score: seg.tmScore })),
     React.createElement("td", { onClick: (e) => e.stopPropagation() }, actionCell)
   );

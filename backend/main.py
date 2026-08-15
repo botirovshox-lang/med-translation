@@ -200,6 +200,12 @@ OPENAI_MODELS = [
 DEFAULT_OPENAI_MODEL = "gpt-4o"
 _MODELS_BY_ID = {m["id"]: m for m in OPENAI_MODELS}
 
+# seg["provider"] — чем сегмент переведён по факту: id модели OpenAI, либо эти константы.
+# Поле проставляется в момент перевода; у сегментов, переведённых до его появления,
+# его нет, и фронтенд показывает приблизительное значение по seg["route"].
+PROVIDER_GOOGLE = "google"
+PROVIDER_TM = "tm"
+
 
 def _resolve_model(model_id: Optional[str]) -> dict:
     """Неизвестная/пустая модель → дефолт. Клиент не может подсунуть произвольную строку."""
@@ -730,24 +736,30 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
         seg["target"] = tm_hit["tgt"]
         seg["status"] = "confirmed"
         seg["route"] = "EXACT_TM"
+        seg["provider"] = PROVIDER_TM
         save_state(STATE)
         return {"ok": True, "segment": seg, "usedRealApi": False, "source": "TM"}
 
     translation = None
     used_real_api = False
+    used_provider = None   # чем на самом деле переведено — с учётом всех fallback'ов
     try:
         if req.engine == "google" and _DEEP_TRANSLATE_OK:
             translation = _google_with_gloss(src_text, project["src"], project["tgt"], gloss_hits)
             used_real_api = True
+            used_provider = PROVIDER_GOOGLE
         elif req.engine == "gpt" and os.environ.get("OPENAI_API_KEY"):
             translation = _openai_translate(src_text, project["src"], project["tgt"],
                                             gloss_hits=gloss_hits, tm_context=tm_hit,
                                             model=req.model)
             used_real_api = bool(translation)
+            if translation:
+                used_provider = _resolve_model(req.model)["id"]
         # GPT fallback: Google когда нет ключа OpenAI
         if not translation and req.engine == "gpt" and _DEEP_TRANSLATE_OK:
             translation = _google_with_gloss(src_text, project["src"], project["tgt"], gloss_hits)
             used_real_api = True
+            used_provider = PROVIDER_GOOGLE
     except Exception as e:
         print(f"[backend] translate fallback ({req.engine}): {e}", file=sys.stderr)
         # Кросс-движковый fallback: google↑ → пробуем GPT, gpt↑ → пробуем Google
@@ -756,8 +768,12 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
                 translation = _openai_translate(src_text, project["src"], project["tgt"],
                                                 gloss_hits=gloss_hits, tm_context=tm_hit,
                                                 model=req.model)
+                if translation:
+                    used_provider = _resolve_model(req.model)["id"]
             elif _DEEP_TRANSLATE_OK:
                 translation = _google_with_gloss(src_text, project["src"], project["tgt"], gloss_hits)
+                if translation:
+                    used_provider = PROVIDER_GOOGLE
             used_real_api = bool(translation)
         except Exception as e2:
             print(f"[backend] translate cross-fallback failed: {e2}", file=sys.stderr)
@@ -771,6 +787,7 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
     seg["target"] = translation
     seg["status"] = "translated"
     seg["route"] = "GPT_REQUIRED" if req.engine == "gpt" else "GOOGLE_SAFE"
+    seg["provider"] = used_provider or (PROVIDER_GOOGLE if req.engine == "google" else _resolve_model(req.model)["id"])
     save_state(STATE)
     return {"ok": True, "segment": seg, "usedRealApi": used_real_api}
 
@@ -1026,19 +1043,26 @@ def batch_translate(pid: int, req: BatchRequest):
             seg["target"] = tm_hit["tgt"]
             seg["status"] = "confirmed"
             seg["route"] = "EXACT_TM"
+            seg["provider"] = PROVIDER_TM
             translated.append(seg["id"])
             tm_hits_count += 1
             continue
 
+        used_provider = None   # чем на самом деле переведено — с учётом fallback на Google
         try:
             if req.engine == "google":
                 translation = _google_with_gloss(seg["source"], project["src"], project["tgt"], gloss_hits)
+                used_provider = PROVIDER_GOOGLE
             elif req.engine == "gpt" and os.environ.get("OPENAI_API_KEY"):
                 translation = _openai_translate(seg["source"], project["src"], project["tgt"],
                                                 gloss_hits=gloss_hits, tm_context=tm_hit,
                                                 model=req.model)
+                if translation:
+                    used_provider = _resolve_model(req.model)["id"]
             if not translation and req.engine == "gpt":
                 translation = _google_with_gloss(seg["source"], project["src"], project["tgt"], gloss_hits)
+                if translation:
+                    used_provider = PROVIDER_GOOGLE
         except Exception as e:
             errors.append(seg["id"])
             print(f"[backend] batch error seg#{seg['id']}: {e}", file=sys.stderr)
@@ -1046,6 +1070,7 @@ def batch_translate(pid: int, req: BatchRequest):
             seg["target"] = translation
             seg["status"] = "translated"
             seg["route"] = "GPT_REQUIRED" if req.engine == "gpt" else "GOOGLE_SAFE"
+            seg["provider"] = used_provider or (PROVIDER_GOOGLE if req.engine == "google" else _resolve_model(req.model)["id"])
             translated.append(seg["id"])
     save_state(STATE)
     return {

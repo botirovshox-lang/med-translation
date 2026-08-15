@@ -257,7 +257,8 @@ function TabEditor({ store, toast }) {
     const total = targets.length;
     const ids = targets.map(s => s.id);
     const engineName = engine === "gpt" ? "GPT" : "Google";
-    let done = 0, errCount = 0, tmCount = 0, failed = false;
+    let done = 0, errCount = 0, tmCount = 0, failed = false, landed = 0;
+    const translatedIds = [];
     setBatchRun({ engine, done: 0, total });
 
     for (let i = 0; i < ids.length; i += BATCH_CHUNK) {
@@ -278,25 +279,51 @@ function TabEditor({ store, toast }) {
       done += r.count;
       errCount += (r.errors || []).length;
       tmCount += r.tm_hits || 0;
+      translatedIds.push(...(r.translated || []));
       setBatchRun({ engine, done, total });
       // Подтягиваем переводы в таблицу после каждой порции — строки наливаются по ходу
       const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
-      if (fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
+      if (fresh && fresh.segments) {
+        store.replaceProjectSegments(project.id, fresh.segments);
+        // Сверяем: сервер отчитался о переводе — реально ли он приехал в данные?
+        // Расхождение честно показываем вместо зелёного тоста.
+        const byId = new Map(fresh.segments.map(s => [s.id, s]));
+        landed += (r.translated || []).filter(id => {
+          const s = byId.get(id);
+          return s && (s.target || "").trim();
+        }).length;
+      }
     }
 
     const stopped = stopRef.current;
     stopRef.current = false;
     setBatchRun(null);
+
+    // Переведённые сегменты перестают подходить под фильтр «Новые» и молча уходят из
+    // выборки — страница дозаполняется следующими пустыми строками, и выглядит это так,
+    // будто перевод не применился. Поэтому после пакета показываем результат: goToSegment
+    // сбрасывает фильтры и перематывает на страницу с первым переведённым сегментом.
+    const jumped = done > 0 && translatedIds.length > 0 && filter !== "all";
+    if (done > 0) {
+      setCheckedSegs(new Set());
+      if (jumped) store.goToSegment(translatedIds[0]);
+    }
+
     const errMsg = errCount ? " · ошибок: " + errCount : "";
     const tmMsg = tmCount ? " · из TM без " + engineName + ": " + tmCount : "";
+    const jumpMsg = jumped ? " · фильтр сброшен на «Все», чтобы показать переводы" : "";
     if (failed) {
       toast.error("Пакет прерван ошибкой",
         done + " из " + total + " успело перевестись и сохранено. Проверьте связь и запустите ещё раз." + errMsg);
     } else if (stopped) {
       toast.warning("Пакет остановлен", done + " из " + total + " переведено и сохранено." + tmMsg + errMsg);
+    } else if (done > 0 && landed < done) {
+      toast.warning("Переводы могли не отобразиться",
+        done + " сохранено на сервере, но в таблицу подтянулось " + landed + ". Обновите страницу (F5).");
     } else if (done > 0) {
-      const modelMsg = engine === "gpt" ? " (" + gptModelInfo.label + ")" : "";
-      toast.success("Пакет завершён", done + " сегментов переведено через " + engineName + modelMsg + tmMsg + errMsg);
+      const modelMsg = engine === "gpt" && gptModelInfo ? " (" + gptModelInfo.label + ")" : "";
+      toast.success("Пакет завершён",
+        done + " сегментов переведено через " + engineName + modelMsg + tmMsg + errMsg + jumpMsg);
     } else {
       toast.warning("Нет новых переводов", "Все подходящие сегменты уже переведены" + errMsg);
     }

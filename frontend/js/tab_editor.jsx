@@ -66,6 +66,7 @@ function TabEditor({ store, toast }) {
   });
   const [batchPlan, setBatchPlan] = useState(null);        // смета перед запуском GPT-пакета
   const [retranslate, setRetranslate] = useState(false);   // перегнать заново уже переведённые
+  const [providerPick, setProviderPick] = useState(null);  // Set<ключ группы> | null = по умолчанию
   const stopRef = useRef(false);
   const PAGE_SIZE = 10;
 
@@ -78,6 +79,10 @@ function TabEditor({ store, toast }) {
       setGptModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.default || ""));
     });
   }, []);
+
+  // Сменились модель, выборка или сам режим — возвращаем выбор групп к умолчанию
+  useEffect(() => { setProviderPick(null); },
+    [retranslate, gptModel, store.segmentFilter, checkedSegs.size]);
 
   const gptModelInfo = gptModels.find(m => m.id === gptModel) || null;
   const pickGptModel = (id) => {
@@ -239,11 +244,48 @@ function TabEditor({ store, toast }) {
     toast.warning("Подтверждение снято", "Сегмент #" + seg.id + " возвращён в «Переведён».");
   };
 
+  // Приоритет выборки: чекбоксы > активный фильтр анализа > весь проект.
+  const hasExplicitCheck = checkedSegs.size > 0;
+  const currentIdSet = hasExplicitCheck ? checkedSegs : (store.segmentFilter || window._mcat_sf || null);
+
+  // Ключ группировки «чем переведено». У сегментов, переведённых до появления поля
+  // provider, движок известен лишь приблизительно — такие группы идут отдельно (с «≈»),
+  // чтобы неточные данные не смешивались с точными.
+  const providerKey = (seg) => {
+    const p = providerOf(seg);
+    return p ? (p.exact ? p.id : "~" + p.id) : "none";
+  };
+
+  // Сколько сегментов выборки переведено каким движком — для выбора галочками.
+  const providerGroups = (() => {
+    if (!retranslate || !currentIdSet) return [];
+    const by = new Map();
+    project.segments.forEach(s => {
+      if (!currentIdSet.has(s.id) || s.status === "confirmed") return;
+      const p = providerOf(s);
+      const key = providerKey(s);
+      const label = p ? ((p.exact ? "" : "≈ ") + providerLabel(p, gptModels)) : "ещё не переведён";
+      const g = by.get(key) || { key, label, count: 0, exact: !!(p && p.exact) };
+      g.count++;
+      by.set(key, g);
+    });
+    return Array.from(by.values()).sort((a, b) => b.count - a.count);
+  })();
+
+  // По умолчанию отмечено всё, кроме уже переведённого выбранной моделью:
+  // повторно платить за тот же результат смысла нет, но галочку можно вернуть.
+  const pickedProviders = providerPick
+    || new Set(providerGroups.filter(g => g.key !== gptModel).map(g => g.key));
+
+  const toggleProvider = (key) => setProviderPick(prev => {
+    const next = new Set(prev || pickedProviders);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
   // Один и тот же отбор для счётчика на карточке и для самого пакета — иначе цифры расходятся.
-  // Приоритет: чекбоксы > активный фильтр анализа > весь проект.
   const pickTargets = (engine, segs) => {
-    const hasExplicitCheck = checkedSegs.size > 0;
-    const idSet = hasExplicitCheck ? checkedSegs : (store.segmentFilter || window._mcat_sf || null);
+    const idSet = currentIdSet;
     // Галочки и режим «заново» — это явный выбор пользователя, фильтры статуса и риска
     // к нему не применяем. Без выделения «заново» не срабатывает: иначе один клик
     // перегнал бы весь проект целиком.
@@ -251,16 +293,8 @@ function TabEditor({ store, toast }) {
     let targets;
     if (explicit) {
       targets = segs.filter(s => idSet.has(s.id) && s.status !== "confirmed");
-      // «Заново» по выборке из Анализа: не гоняем повторно то, что уже переведено
-      // именно выбранной моделью — платить второй раз за тот же результат незачем.
-      // Явные галочки не трогаем: там пользователь указал сегменты поимённо.
-      if (retranslate && !hasExplicitCheck) {
-        const want = engine === "gpt" ? gptModel : "google";
-        targets = targets.filter(s => {
-          const p = providerOf(s);
-          return !(p && p.exact && p.id === want);
-        });
-      }
+      // В режиме «заново» берём только отмеченные группы «чем переведено»
+      if (retranslate) targets = targets.filter(s => pickedProviders.has(providerKey(s)));
     } else {
       targets = segs.filter(s =>
         s.status === "new" &&
@@ -288,10 +322,11 @@ function TabEditor({ store, toast }) {
   // Клик по кнопке пакета: Google — сразу, GPT — сначала смета (это платно).
   const askRunBatch = async (engine) => {
     if (batchRun) return;  // не запускать второй пакет поверх незавершённого
-    const { targets, hasExplicitCheck } = await collectBatchTargets(engine);
+    // explicitSel, а не hasExplicitCheck: не путать с одноимённой константой выше
+    const { targets, hasExplicitCheck: explicitSel } = await collectBatchTargets(engine);
     if (!targets.length) { toast.warning("Нет подходящих сегментов", "Все сегменты уже переведены или не подходят под фильтр."); return; }
-    if (engine === "gpt") setBatchPlan({ engine, targets, hasExplicitCheck });
-    else runBatch(engine, targets, hasExplicitCheck);
+    if (engine === "gpt") setBatchPlan({ engine, targets, hasExplicitCheck: explicitSel });
+    else runBatch(engine, targets, explicitSel);
   };
 
   // Пакет идёт порциями по BATCH_CHUNK: один HTTP-запрос живёт минуту-две и не упирается
@@ -491,6 +526,29 @@ function TabEditor({ store, toast }) {
                 : "Нужна выборка: галочки или фильтр из Анализа")),
           React.createElement(Switch, { on: retranslate, label: "Переводить заново",
             onClick: () => setRetranslate(v => !v) })
+        ),
+
+        // Что именно перегонять: группы «чем переведено сейчас» с количеством.
+        // По умолчанию снята галочка с того, что уже переведено выбранной моделью.
+        retranslate && currentIdSet && React.createElement("div", {
+          className: "card", style: { padding: "10px 14px", marginTop: 10, background: "var(--bg-sunken)" } },
+          React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, marginBottom: 8 } },
+            "Сейчас переведено через — отметьте, что перевести заново:"),
+          providerGroups.length === 0
+            ? React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+                "В выборке нет сегментов для повторного перевода (все подтверждены).")
+            : providerGroups.map(g => React.createElement("div", {
+                key: g.key, className: "row between", style: { padding: "3px 0" } },
+                React.createElement(Checkbox, {
+                  checked: pickedProviders.has(g.key),
+                  onChange: () => toggleProvider(g.key),
+                }, g.label + (g.exact ? "" : " (определено по маршруту)")),
+                React.createElement("b", { style: { fontSize: 13 } }, g.count))),
+          providerGroups.length > 0 && React.createElement("div", {
+            className: "dim", style: { fontSize: 11.5, marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 } },
+            "Отмечено к переводу: " + providerGroups.filter(g => pickedProviders.has(g.key))
+              .reduce((a, g) => a + g.count, 0) + " из " +
+              providerGroups.reduce((a, g) => a + g.count, 0))
         )
       )
     ),

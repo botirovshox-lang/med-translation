@@ -1,7 +1,7 @@
 ﻿/* ============================================================
    Segment detail panel (editor right sidebar)
    ============================================================ */
-function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedicalQA, onConfirm, bcModels, bcModel, onBcModel }) {
+function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedicalQA, onConfirm, bcModels, bcModel, onBcModel, bcJudge, judgeModel }) {
   const [tab, setTab] = useState("context");
   const [draft, setDraft] = useState(seg.target || "");
   const [comment, setComment] = useState("");
@@ -41,7 +41,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
   const runBack = (model) => {
     if (!seg.target) { setBackResult("no_target"); return; }
     setBackResult("loading");
-    window.API && window.API.backcheck(project.id, seg.id, model).then(res => {
+    window.API && window.API.backcheck(project.id, seg.id, model, bcJudge, judgeModel).then(res => {
       if (res && res.ok) {
         setBackResult(res.back);
         // Подтягиваем оценку в локальный state, чтобы процент сразу встал в строке

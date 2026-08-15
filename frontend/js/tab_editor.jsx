@@ -24,6 +24,7 @@ async function callChunkWithRetry(fn, onRetry) {
 }
 const GPT_MODEL_LS_KEY = "mcat_gpt_model";
 const BC_MODEL_LS_KEY = "mcat_backcheck_model";
+const JUDGE_MODEL_LS_KEY = "mcat_judge_model";
 
 // Цвет полосы соответствия обратного перевода
 function bandColor(color) {
@@ -97,6 +98,10 @@ function TabEditor({ store, toast }) {
   });
   const [bcBands, setBcBands] = useState([]);
   const [bcJudge, setBcJudge] = useState(false);          // LLM-судья для средней зоны
+  const [judgeModel, setJudgeModel] = useState(() => {
+    try { return localStorage.getItem(JUDGE_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
+  });
+  const [judgeZone, setJudgeZone] = useState([50, 97]);
   const stopRef = useRef(false);
   const PAGE_SIZE = 10;
 
@@ -108,7 +113,9 @@ function TabEditor({ store, toast }) {
       setGptModels(d.models);
       setGptModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.default || ""));
       setBcModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.backcheckDefault || d.default || ""));
+      setJudgeModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.judgeDefault || d.default || ""));
       if (d.backcheckBands) setBcBands(d.backcheckBands);
+      if (d.judgeZone) setJudgeZone(d.judgeZone);
     });
   }, []);
 
@@ -125,6 +132,11 @@ function TabEditor({ store, toast }) {
   const pickBcModel = (id) => {
     setBcModel(id);
     try { localStorage.setItem(BC_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
+  };
+  const judgeModelInfo = gptModels.find(m => m.id === judgeModel) || null;
+  const pickJudgeModel = (id) => {
+    setJudgeModel(id);
+    try { localStorage.setItem(JUDGE_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
   };
 
   useEffect(() => { setPage(1); }, [filter, query, riskFilter, project && project.id, store.segmentFilter]);
@@ -483,7 +495,7 @@ function TabEditor({ store, toast }) {
       }, 500);
       let r = null;
       if (window.API) r = await callChunkWithRetry(
-        () => window.API.backcheckBatch(project.id, chunk, BATCH_CHUNK, bcModel, bcJudge),
+        () => window.API.backcheckBatch(project.id, chunk, BATCH_CHUNK, bcModel, bcJudge, judgeModel),
         (n) => toast.warning("Сбой связи", "Порция не прошла, повтор " + n + " из " + CHUNK_RETRIES + "…"));
       clearInterval(tick);
       if (!r || !r.ok) { failed = true; break; }
@@ -617,6 +629,8 @@ function TabEditor({ store, toast }) {
             onRun: runBackcheckBatch, onStop: () => { stopRef.current = true; },
             models: gptModels, model: bcModel, modelInfo: bcModelInfo, onModel: pickBcModel,
             judge: bcJudge, onJudge: () => setBcJudge(v => !v),
+            judgeModel: judgeModel, judgeModelInfo: judgeModelInfo, onJudgeModel: pickJudgeModel,
+            judgeZone: judgeZone,
             available: project.segments.filter(s => (s.target || "").trim() &&
               (!currentIdSet || currentIdSet.has(s.id))).length,
             done: project.segments.filter(s => s.backcheck && s.backcheck.score != null &&
@@ -727,7 +741,8 @@ function TabEditor({ store, toast }) {
         selected
           ? React.createElement(SegDetail, { key: selected.id, seg: selected, project, store, toast, busy: busy[selected.id],
               onTranslate: (eng) => doTranslate(selected, eng, true), onQA: () => doQA(selected), onMedicalQA: () => doMedicalQA(selected), onConfirm: (draftTarget) => doConfirm(selected, draftTarget),
-              bcModels: gptModels, bcModel: bcModel, onBcModel: pickBcModel })
+              bcModels: gptModels, bcModel: bcModel, onBcModel: pickBcModel,
+              bcJudge: bcJudge, judgeModel: judgeModel })
           : React.createElement(EmptyState, { icon: "edit", title: "Сегмент не выбран", sub: "Выберите строку в таблице." })
       )
     ),
@@ -885,7 +900,9 @@ function BatchCard({ kind, running, onRun, onStop, available, selectionSize, fil
   );
 }
 
-function BackcheckCard({ running, onRun, onStop, available, done, filtered, models, model, modelInfo, onModel, judge, onJudge }) {
+function BackcheckCard({ running, onRun, onStop, available, done, filtered, models, model, modelInfo, onModel,
+                        judge, onJudge, judgeModel, judgeModelInfo, onJudgeModel, judgeZone }) {
+  const zone = judgeZone || [50, 97];
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "row", style: { gap: 10 } },
       React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-info)" } },
@@ -912,10 +929,21 @@ function BackcheckCard({ running, onRun, onStop, available, done, filtered, mode
         React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center" } },
           "Судья для спорных",
           React.createElement(InfoTip, { title: "LLM-судья средней зоны",
-            body: "Для сегментов, попавших в середину шкалы (50-97%), модель отдельно сравнивает оригинал с обратным переводом и решает, подмена это понятия или просто другая формулировка. Подмена роняет балл, подтверждённая эквивалентность — поднимает. Наверху и внизу шкалы судья не вызывается: там вопрос уже решён проверками, платить за подтверждение очевидного незачем." })),
+            body: "Для сегментов, попавших в середину шкалы (" + zone[0] + "-" + zone[1] + "%), модель отдельно сравнивает оригинал с обратным переводом и решает, подмена это понятия или просто другая формулировка. Подмена роняет балл, подтверждённая эквивалентность — поднимает. Наверху и внизу шкалы судья не вызывается: там вопрос уже решён проверками, платить за подтверждение очевидного незачем.\n\nУ судьи СВОЯ модель, отдельная от модели обратного перевода, и это намеренно: задачи противоположные. Обратному переводу нужна буквальная модель, которая не чинит ошибки; судье — сильная, способная отличить подмену понятия от синонима." })),
         React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
-          judge ? "Спорные сегменты уйдут на разбор" : "Только детерминированные проверки")),
+          judge ? "Разбирает сегменты в зоне " + zone[0] + "-" + zone[1] + "%" : "Только детерминированные проверки")),
       React.createElement(Switch, { on: !!judge, label: "Судья", onClick: onJudge })),
+
+    // Своя модель судьи: показываем только когда он включён, чтобы не загромождать
+    judge && models && models.length > 0 && React.createElement("div", null,
+      React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginBottom: 4 } }, "Модель судьи"),
+      React.createElement(Select, {
+        value: judgeModel || "", disabled: !!running, style: { width: "100%" },
+        onChange: (e) => onJudgeModel && onJudgeModel(e.target.value),
+      }, models.map(m => React.createElement("option", { key: m.id, value: m.id },
+        m.label + (m.note ? " — " + m.note : "")))),
+      judgeModelInfo && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 5 } },
+        "Цена за 1M токенов: вход " + fmtCost(judgeModelInfo.in) + " · выход " + fmtCost(judgeModelInfo.out))),
 
     running
       ? React.createElement("div", null,

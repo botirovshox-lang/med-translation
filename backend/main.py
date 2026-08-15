@@ -220,6 +220,13 @@ EMBED_MODEL = "text-embedding-3-small"
 # детерминированными проверками, и платить за подтверждение очевидного незачем.
 JUDGE_ZONE = (50, 97)
 
+# У судьи СВОЯ модель, отдельная от модели обратного перевода, и это намеренно:
+# задачи прямо противоположные. Обратному переводу нужна максимально буквальная
+# и тупая модель, которая не чинит ошибки; судье — наоборот, сильная, способная
+# отличить подмену понятия от синонима. Одна модель на обе роли работала бы плохо
+# в одной из них.
+JUDGE_DEFAULT_MODEL = "gpt-5.6-terra"
+
 
 def _openai_embed(texts: list) -> list:
     import openai
@@ -268,7 +275,7 @@ def _openai_judge(source_ru: str, back_ru: str, model: str = None) -> Optional[d
     """Вердикт модели по паре «оригинал / обратный перевод»."""
     import json as _json
     import openai
-    mdl = _resolve_model(model or DEFAULT_OPENAI_MODEL)
+    mdl = _resolve_model(model or JUDGE_DEFAULT_MODEL)
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
     extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
              else {"max_tokens": 500, "temperature": 0})
@@ -701,6 +708,8 @@ def list_models():
         "models": OPENAI_MODELS,
         "default": DEFAULT_OPENAI_MODEL,
         "backcheckDefault": BACKCHECK_DEFAULT_MODEL,
+        "judgeDefault": JUDGE_DEFAULT_MODEL,
+        "judgeZone": list(JUDGE_ZONE),
         "backcheckBands": getattr(medical_qa_mod, "BACKCHECK_BANDS", []) if medical_qa_mod else [],
         "available": bool(os.environ.get("OPENAI_API_KEY")),
         "pricesChecked": "2026-08-15",

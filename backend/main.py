@@ -943,7 +943,10 @@ class BatchRequest(BaseModel):
     force: bool = False                  # True = явный выбор пользователя, пропустить фильтры статуса и риска
 
 @app.post("/api/projects/{pid}/batch")
-async def batch_translate(pid: int, req: BatchRequest):
+def batch_translate(pid: int, req: BatchRequest):
+    # ВАЖНО: обычный def, а не async def. Внутри блокирующие вызовы OpenAI/Google;
+    # в async def они вешали единственный event loop uvicorn на всё время пакета —
+    # сервер не отвечал даже на GET /api/projects/{pid} сразу после батча.
     project = get_project(pid)
     id_filter = set(req.segment_ids) if req.segment_ids else None
     if req.force and id_filter:

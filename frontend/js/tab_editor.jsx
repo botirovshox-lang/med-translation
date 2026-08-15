@@ -171,6 +171,7 @@ function TabEditor({ store, toast }) {
   };
 
   const runBatch = async (engine) => {
+    if (batchRun) return;  // не запускать второй пакет поверх незавершённого
     // Получаем свежие статусы с бэкенда без запуска API-апдейтов для каждого сегмента
     let currentSegs = project.segments;
     if (window.API) {
@@ -198,11 +199,19 @@ function TabEditor({ store, toast }) {
     if (window.API) result = await window.API.safeCall(() => window.API.batch(project.id, engine, segIds, hasExplicitCheck));
 
     if (result && result.ok) {
-      // Reload segments с бэкенда после перевода
+      // Reload segments с бэкенда после перевода — ОДНОЙ заменой массива.
+      // Раньше здесь был forEach со store.updateSegment на каждый сегмент: это
+      // порождало POST /update на все сегменты проекта (тысячи запросов), которые
+      // потом устаревшими значениями затирали переводы, сделанные в эти минуты.
       const fresh2 = await window.API.safeCall(() => window.API.getProject(project.id));
-      if (fresh2 && fresh2.segments) {
-        fresh2.segments.forEach(s => store.updateSegment(project.id, s.id, { target: s.target, status: s.status, route: s.route }));
+      if (!fresh2 || !fresh2.segments) {
+        // Данные сохранены на сервере, но обновить таблицу нечем — не врём про успех
+        setBatchRun(null);
+        toast.warning("Экран не обновлён",
+          "Перевод сохранён на сервере, но свежие сегменты не пришли. Обновите страницу (F5).");
+        return;
       }
+      store.replaceProjectSegments(project.id, fresh2.segments);
       setBatchRun({ engine, done: result.count, total: targets.length });
       const engineName = engine === "gpt" ? "GPT" : "Google";
       const remainMsg = result.remaining > 0 ? " · ещё " + result.remaining + " осталось" : "";

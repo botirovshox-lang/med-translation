@@ -108,6 +108,7 @@ function TabEditor({ store, toast }) {
   const [bcSkipConfirmed, setBcSkipConfirmed] = useState(() => {
     try { return localStorage.getItem(BC_SKIP_CONFIRMED_LS_KEY) === "1"; } catch (e) { return false; }
   });
+  const [bcGroupPick, setBcGroupPick] = useState(null);   // Set<ключ группы> | null = по умолчанию
   const stopRef = useRef(false);
   const PAGE_SIZE = 10;
 
@@ -128,6 +129,8 @@ function TabEditor({ store, toast }) {
   // Сменились модель, выборка или сам режим — возвращаем выбор групп к умолчанию
   useEffect(() => { setProviderPick(null); },
     [retranslate, gptModel, store.segmentFilter, checkedSegs.size]);
+  useEffect(() => { setBcGroupPick(null); },
+    [bcModel, bcJudge, bcSkipConfirmed, store.segmentFilter, checkedSegs.size]);
 
   const gptModelInfo = gptModels.find(m => m.id === gptModel) || null;
   const pickGptModel = (id) => {
@@ -144,8 +147,8 @@ function TabEditor({ store, toast }) {
     try { localStorage.setItem(BC_SKIP_CONFIRMED_LS_KEY, next ? "1" : "0"); } catch (e) { /* приватный режим */ }
     return next;
   });
-  // Один предикат для счётчика на карточке и для самого прогона — чтобы не разошлись
-  const backcheckable = (s, idSet) =>
+  // Кандидаты back-check до отбора по группам «чем уже проверено»
+  const bcCandidate = (s, idSet) =>
     (s.target || "").trim() &&
     !(bcSkipConfirmed && s.status === "confirmed") &&
     (!idSet || idSet.has(s.id));
@@ -349,6 +352,60 @@ function TabEditor({ store, toast }) {
     return next;
   });
 
+  // Ключ группировки «чем уже проверено». stale приходит с бэкенда: перевод
+  // изменился после проверки, значит старая оценка уже не про этот текст.
+  // Судья вне своей зоны не вызывается, поэтому там его отсутствие — не пробел.
+  const bcGroupKey = (s) => {
+    const bc = s.backcheck;
+    if (!bc || bc.score == null) return "none";
+    if (bc.stale) return "stale";
+    if (bcJudge && !bc.judged && bc.score >= judgeZone[0] && bc.score <= judgeZone[1]) return "nojudge";
+    return bc.model || "unknown";
+  };
+
+  const bcGroupLabel = (key) =>
+    key === "none" ? "ещё не проверялся"
+      : key === "stale" ? "перевод изменился после проверки"
+      : key === "nojudge" ? "проверено без судьи"
+      : key === "unknown" ? "проверено (модель неизвестна)"
+      : "проверено: " + (providerLabel({ id: key, exact: true }, gptModels) || key);
+
+  // Сколько сегментов выборки в каком состоянии проверки — для выбора галочками.
+  // Непроверенное и устаревшее идут первыми: ради них back-check и запускают.
+  const bcGroups = (() => {
+    const order = { none: 0, stale: 1, nojudge: 2 };
+    const rank = (k) => (order[k] === undefined ? 3 : order[k]);
+    const by = new Map();
+    project.segments.forEach(s => {
+      if (!bcCandidate(s, currentIdSet)) return;
+      const key = bcGroupKey(s);
+      const g = by.get(key) || { key, label: bcGroupLabel(key), count: 0 };
+      g.count++;
+      by.set(key, g);
+    });
+    return Array.from(by.values()).sort((a, b) => rank(a.key) - rank(b.key) || b.count - a.count);
+  })();
+
+  // По умолчанию отмечено всё, кроме уже проверенного выбранной моделью с тем же
+  // переводом: платить второй раз за тот же результат незачем, но галочку можно вернуть.
+  const pickedBcGroups = bcGroupPick
+    || new Set(bcGroups.filter(g => g.key !== bcModel).map(g => g.key));
+
+  const toggleBcGroup = (key) => setBcGroupPick(prev => {
+    const next = new Set(prev || pickedBcGroups);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
+  // Один предикат для счётчика на карточке и для самого прогона — чтобы не разошлись.
+  // Правило по умолчанию применяем к сегменту, а не к готовому набору групп: перед
+  // прогоном данные перечитываются с бэкенда, и там могут появиться новые группы.
+  const backcheckable = (s, idSet) => {
+    if (!bcCandidate(s, idSet)) return false;
+    const key = bcGroupKey(s);
+    return bcGroupPick ? bcGroupPick.has(key) : key !== bcModel;
+  };
+
   // Один и тот же отбор для счётчика на карточке и для самого пакета — иначе цифры расходятся.
   const pickTargets = (engine, segs) => {
     const idSet = currentIdSet;
@@ -493,14 +550,14 @@ function TabEditor({ store, toast }) {
     const targets = currentSegs.filter(s => backcheckable(s, idSet));
     if (!targets.length) {
       toast.warning("Нечего проверять", bcSkipConfirmed
-        ? "В выборке нет переведённых сегментов, кроме подтверждённых, а их вы просили пропускать."
-        : "В выборке нет переведённых сегментов.");
+        ? "В выборке нет непроверенных сегментов, кроме подтверждённых, а их вы просили пропускать. Отметьте нужные группы в «Что проверять»."
+        : "В выборке нет непроверенных сегментов. Отметьте нужные группы в «Что проверять», чтобы прогнать заново.");
       return;
     }
     stopRef.current = false;
     const ids = targets.map(s => s.id);
     const total = ids.length;
-    let done = 0, cached = 0, errCount = 0, failed = false;
+    let done = 0, errCount = 0, failed = false;
     setBatchRun({ engine: "backcheck", done: 0, total });
 
     for (let i = 0; i < ids.length; i += BATCH_CHUNK) {
@@ -513,13 +570,13 @@ function TabEditor({ store, toast }) {
       }, 500);
       let r = null;
       if (window.API) r = await callChunkWithRetry(
-        () => window.API.backcheckBatch(project.id, chunk, BATCH_CHUNK, bcModel, bcJudge, judgeModel),
+        // skip_cached выключен: состав порции уже отобран галочками «Что проверять»,
+        // иначе сервер вырезал бы из неё как раз то, что попросили перепроверить.
+        () => window.API.backcheckBatch(project.id, chunk, BATCH_CHUNK, bcModel, bcJudge, judgeModel, false),
         (n) => toast.warning("Сбой связи", "Порция не прошла, повтор " + n + " из " + CHUNK_RETRIES + "…"));
       clearInterval(tick);
       if (!r || !r.ok) { failed = true; break; }
-      // Сегменты из кэша тоже двигают прогресс — иначе полоса стоит на месте
-      done += r.count + (r.skipped_cached || 0);
-      cached += r.skipped_cached || 0;
+      done += r.count;
       errCount += (r.errors || []).length;
       setBatchRun({ engine: "backcheck", done, total });
       const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
@@ -529,15 +586,14 @@ function TabEditor({ store, toast }) {
     const stopped = stopRef.current;
     stopRef.current = false;
     setBatchRun(null);
-    const cachedMsg = cached ? " · из кэша: " + cached : "";
     const errMsg = errCount ? " · ошибок: " + errCount : "";
     if (failed) {
       toast.error("Back-check прерван", done + " из " + total + " проверено и сохранено." + errMsg);
     } else if (stopped) {
-      toast.warning("Back-check остановлен", done + " из " + total + " проверено и сохранено." + cachedMsg);
+      toast.warning("Back-check остановлен", done + " из " + total + " проверено и сохранено.");
     } else {
       toast.success("Back-check завершён",
-        done + " сегментов проверено" + cachedMsg + errMsg + " · разбивка в Анализе");
+        done + " сегментов проверено" + errMsg + " · разбивка в Анализе");
     }
   };
 
@@ -650,8 +706,9 @@ function TabEditor({ store, toast }) {
             judgeModel: judgeModel, judgeModelInfo: judgeModelInfo, onJudgeModel: pickJudgeModel,
             judgeZone: judgeZone,
             available: project.segments.filter(s => backcheckable(s, currentIdSet)).length,
-            done: project.segments.filter(s => s.backcheck && s.backcheck.score != null &&
-              backcheckable(s, currentIdSet)).length,
+            done: project.segments.filter(s => bcCandidate(s, currentIdSet) && s.backcheck
+              && s.backcheck.score != null && !s.backcheck.stale).length,
+            groups: bcGroups, pickedGroups: pickedBcGroups, onToggleGroup: toggleBcGroup,
             skipConfirmed: bcSkipConfirmed, onSkipConfirmed: toggleBcSkipConfirmed,
             confirmedCount: project.segments.filter(s => s.status === "confirmed" &&
               (s.target || "").trim() && (!currentIdSet || currentIdSet.has(s.id))).length,
@@ -922,7 +979,8 @@ function BatchCard({ kind, running, onRun, onStop, available, selectionSize, fil
 
 function BackcheckCard({ running, onRun, onStop, available, done, filtered, models, model, modelInfo, onModel,
                         judge, onJudge, judgeModel, judgeModelInfo, onJudgeModel, judgeZone,
-                        skipConfirmed, onSkipConfirmed, confirmedCount }) {
+                        skipConfirmed, onSkipConfirmed, confirmedCount,
+                        groups, pickedGroups, onToggleGroup }) {
   const zone = judgeZone || [50, 97];
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "row", style: { gap: 10 } },
@@ -979,6 +1037,22 @@ function BackcheckCard({ running, onRun, onStop, available, done, filtered, mode
       judgeModelInfo && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 5 } },
         "Цена за 1M токенов: вход " + fmtCost(judgeModelInfo.in) + " · выход " + fmtCost(judgeModelInfo.out))),
 
+    // Что именно проверять: группы «чем уже проверено» с количеством. Одна группа —
+    // выбирать не из чего, не загромождаем карточку.
+    groups && groups.length > 1 && React.createElement("div", {
+      className: "card", style: { padding: "9px 11px", background: "var(--bg-sunken)" } },
+      React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, marginBottom: 6, display: "flex", alignItems: "center" } },
+        "Что проверять",
+        React.createElement(InfoTip, { title: "Повторная проверка",
+          body: "Сегмент, уже проверенный этой же моделью и с тем же переводом, по умолчанию снят с прогона: результат будет тот же, а вызов модели платный. Снимите или верните галочку, чтобы решить самому.\n\nОтдельными группами идут те, у кого проверки ещё не было, и те, чей перевод изменился после проверки, — там старая оценка уже не про этот текст. Если включён судья, сегменты его зоны, проверенные без него, тоже вынесены отдельно." })),
+      groups.map(g => React.createElement("div", {
+        key: g.key, className: "row between", style: { padding: "2px 0" } },
+        React.createElement(Checkbox, {
+          checked: pickedGroups.has(g.key),
+          onChange: () => onToggleGroup(g.key),
+        }, g.label),
+        React.createElement("b", { style: { fontSize: 12.5 } }, g.count)))),
+
     running
       ? React.createElement("div", null,
           React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
@@ -989,7 +1063,7 @@ function BackcheckCard({ running, onRun, onStop, available, done, filtered, mode
             React.createElement(Btn, { variant: "ghost", size: "sm", icon: "x", onClick: onStop }, "Остановить")))
       : React.createElement("div", { className: "row between" },
           React.createElement("span", { className: "dim", style: { fontSize: 12 } },
-            "проверено " + done + " из " + available + (filtered ? " (фильтр)" : "")),
+            "к проверке: " + available + " · уже проверено: " + done + (filtered ? " (фильтр)" : "")),
           React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", onClick: onRun, disabled: !available }, "Запустить"))
   );
 }

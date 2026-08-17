@@ -684,7 +684,8 @@ def login(req: LoginRequest):
 @app.get("/api/seed")
 def get_seed():
     """Initial data dump — glossary capped at 150 terms for performance; full list via /api/glossary."""
-    return {**STATE, "glossary": STATE["glossary"][:150]}
+    return {**STATE, "projects": [_project_for_client(p) for p in STATE["projects"]],
+            "glossary": STATE["glossary"][:150]}
 
 
 @app.get("/api/glossary")
@@ -723,7 +724,7 @@ def list_projects():
 
 @app.get("/api/projects/{pid}")
 def get_project_detail(pid: int):
-    return get_project(pid)
+    return _project_for_client(get_project(pid))
 
 
 class CreateProjectRequest(BaseModel):
@@ -956,6 +957,32 @@ def _text_hash(text: str) -> str:
     return hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:16]
 
 
+def _backcheck_cached(seg: dict, mdl_id: str, use_judge: bool) -> bool:
+    """Сегмент уже проверен именно этим переводом и этой моделью — считать нечего.
+    Судья вне своей зоны не вызывается, поэтому сегмент за её границами полный
+    даже без judged: иначе включённый судья гнал бы весь проект заново."""
+    bc = seg.get("backcheck") or {}
+    if bc.get("target_hash") != _text_hash(seg.get("target") or "") or bc.get("model") != mdl_id:
+        return False
+    if not use_judge or bc.get("judged"):
+        return True
+    lo, hi = JUDGE_ZONE
+    score = bc.get("score")
+    return score is not None and not (lo <= score <= hi)
+
+
+def _project_for_client(project: dict) -> dict:
+    """Копия проекта с производным признаком backcheck.stale — перевод изменился
+    после проверки. Хеш считается тут, браузеру sha1 не пересчитать, а без этого
+    фронтенд не отличит устаревшую оценку от актуальной."""
+    segs = []
+    for s in project["segments"]:
+        bc = s.get("backcheck")
+        stale = bc.get("target_hash") != _text_hash(s.get("target") or "") if bc else False
+        segs.append({**s, "backcheck": {**bc, "stale": stale}} if bc else s)
+    return {**project, "segments": segs}
+
+
 def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None,
                            use_judge: bool = False, judge_model: Optional[str] = None) -> dict:
     """Обратный перевод сегмента + оценка соответствия оригиналу.
@@ -1061,13 +1088,9 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
             continue
         if not (s.get("target") or "").strip():
             continue
-        if req.skip_cached:
-            bc = s.get("backcheck") or {}
-            # Включили судью после прогона без него — пересчитать надо
-            if (bc.get("target_hash") == _text_hash(s["target"]) and bc.get("model") == mdl_id
-                    and (not req.use_judge or bc.get("judged"))):
-                skipped_cached += 1
-                continue
+        if req.skip_cached and _backcheck_cached(s, mdl_id, req.use_judge):
+            skipped_cached += 1
+            continue
         candidates.append(s)
 
     limit = max(1, min(req.limit, 100))

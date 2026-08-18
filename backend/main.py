@@ -1774,7 +1774,13 @@ def _project_for_client(project: dict) -> dict:
     sha1 не пересчитать, а без этого фронтенд не отличит устаревшую оценку от
     актуальной."""
     segs = []
-    for s in project["segments"]:
+    # list(...) и dict(...) — снимок: фоновый прогон правит те же сегменты прямо
+    # сейчас, и без копии итерация может упасть на «dict changed size».
+    for s in list(project["segments"]):
+        try:
+            s = dict(s)
+        except RuntimeError:
+            s = dict(s)          # одна повторная попытка: правка длится микросекунды
         cur = _text_hash(s.get("target") or "")
         out = s
         bc, tc = s.get("backcheck"), s.get("termcheck")
@@ -2804,6 +2810,217 @@ def health(request: Request):
         info["backendModules"] = list(_BACKEND_MODULES.keys())
         info["stateFile"] = str(STATE_FILE)
     return info
+
+
+
+# ─── Фоновые прогоны ─────────────────────────────────────────────────
+# Раньше пакет гонял браузер: закрыл вкладку — прогон оборвался на середине,
+# а оплаченные вызовы для оставшихся сегментов просто не случились. Теперь
+# клиент только ставит задачу, а порции крутит сервер, и страница нужна лишь
+# чтобы смотреть прогресс.
+#
+# Рабочий поток ОДИН и очередь одна: воркер uvicorn тоже один, STATE — общий
+# словарь в памяти. Два параллельных прогона дрались бы за один state.json.
+import queue as _queue
+
+JOB_CHUNKS = {"translate": 10, "backcheck": 10, "termcheck": 10, "medical_qa": 10, "repair": 5}
+JOB_KINDS = set(JOB_CHUNKS)
+JOB_HISTORY = 30                # сколько завершённых прогонов помним
+JOB_CHUNK_RETRIES = 2           # повтор порции при сбое: сеть моргнула — не всё потеряно
+JOB_RETRY_PAUSE = 5             # секунд между попытками
+
+_JOBS: dict = {}                # id -> job
+_JOB_QUEUE = _queue.Queue()
+_JOBS_LOCK = threading.Lock()
+_JOB_WORKER = None
+
+
+def _job_public(job: dict) -> dict:
+    """Наружу отдаём без внутренних полей (список id и флаг остановки)."""
+    return {k: v for k, v in job.items() if k not in ("ids", "stop")}
+
+
+def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
+    """Одна порция. Возвращает счётчики, которые нарастают в прогрессе."""
+    n = len(chunk)
+    if kind == "translate":
+        r = batch_translate(pid, BatchRequest(
+            engine=params.get("engine", "gpt"), segment_ids=chunk, limit=n,
+            force=bool(params.get("force", True)), model=params.get("model")))
+        return {"done": r["count"], "tm_hits": r.get("tm_hits", 0),
+                "duplicates": r.get("duplicates", 0), "errors": len(r.get("errors", []))}
+    if kind == "backcheck":
+        r = backcheck_batch(pid, BackcheckBatchRequest(
+            segment_ids=chunk, limit=n, model=params.get("model"),
+            use_judge=bool(params.get("use_judge")), judge_model=params.get("judge_model"),
+            skip_cached=bool(params.get("skip_cached", False))))
+        return {"done": r["count"], "duplicates": r.get("duplicates", 0),
+                "skipped_cached": r.get("skipped_cached", 0), "errors": len(r.get("errors", []))}
+    if kind == "termcheck":
+        r = termcheck_batch(pid, TermcheckBatchRequest(
+            segment_ids=chunk, limit=n, model=params.get("model"),
+            skip_cached=bool(params.get("skip_cached", False))))
+        return {"done": r["count"], "flagged": r.get("flagged", 0),
+                "duplicates": r.get("duplicates", 0),
+                "skipped_trivial": r.get("skipped_trivial", 0), "errors": len(r.get("errors", []))}
+    if kind == "repair":
+        r = repair_batch(pid, RepairBatchRequest(
+            segment_ids=chunk, limit=n, model=params.get("model"),
+            bc_model=params.get("bc_model"), tc_model=params.get("tc_model"),
+            use_judge=bool(params.get("use_judge")), judge_model=params.get("judge_model"),
+            retry=bool(params.get("retry"))))
+        return {"done": len(r.get("applied", [])) + len(r.get("skipped", [])),
+                "applied": len(r.get("applied", [])), "reverted": len(r.get("skipped", [])),
+                "errors": len(r.get("errors", []))}
+    if kind == "medical_qa":
+        r = batch_medical_qa(pid, MedicalQABatchRequest(segment_ids=chunk, limit=n))
+        return {"done": r.get("count", 0), "errors": len(r.get("errors", []))}
+    raise ValueError("unknown job kind: " + kind)
+
+
+def _job_run(job: dict):
+    kind, pid = job["kind"], job["project"]
+    chunk_size = JOB_CHUNKS[kind]
+    ids = job["ids"]
+    for i in range(0, len(ids), chunk_size):
+        if job["stop"]:
+            job["status"] = "stopped"
+            break
+        chunk = ids[i:i + chunk_size]
+        last_err = None
+        for attempt in range(JOB_CHUNK_RETRIES + 1):
+            try:
+                counters = _job_chunk(kind, pid, chunk, job["params"])
+                # Порция, где не прошло НИЧЕГО, — это не «выполнено»: так выглядит
+                # мёртвый ключ или упавший провайдер. Пакетные эндпоинты глотают
+                # ошибку каждого сегмента по отдельности, и без этой проверки
+                # прогон рапортовал бы «готово» с нулевым результатом.
+                if counters.get("done", 0) == 0 and counters.get("errors", 0) >= len(chunk):
+                    raise RuntimeError("порция целиком завершилась ошибкой — проверьте ключи и связь")
+                for k, v in counters.items():
+                    if k == "done":
+                        job["done"] += v
+                    else:
+                        job["counters"][k] = job["counters"].get(k, 0) + v
+                last_err = None
+                break
+            except HTTPException as e:
+                # 503 (нет ключа) или 404 — повторять бессмысленно
+                last_err = f"{e.status_code}: {e.detail}"
+                break
+            except Exception as e:
+                last_err = str(e)
+                print(f"[backend] job#{job['id']} chunk failed ({attempt + 1}): {e}", file=sys.stderr)
+                if attempt < JOB_CHUNK_RETRIES:
+                    time.sleep(JOB_RETRY_PAUSE)
+        if last_err:
+            job["status"] = "error"
+            job["error"] = last_err
+            break
+    if job["status"] == "running":
+        job["status"] = "done"
+    job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _job_loop():
+    while True:
+        job = _JOB_QUEUE.get()
+        try:
+            if job["stop"]:
+                job["status"] = "stopped"
+                job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                continue
+            job["status"] = "running"
+            job["started"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _job_run(job)
+        except Exception as e:
+            job["status"] = "error"
+            job["error"] = str(e)
+            job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[backend] job#{job.get('id')} crashed: {e}", file=sys.stderr)
+        finally:
+            try:
+                save_state(STATE)
+            except Exception as e:
+                print(f"[backend] job#{job.get('id')} save failed: {e}", file=sys.stderr)
+            _JOB_QUEUE.task_done()
+
+
+def _ensure_job_worker():
+    global _JOB_WORKER
+    if _JOB_WORKER is None or not _JOB_WORKER.is_alive():
+        _JOB_WORKER = threading.Thread(target=_job_loop, name="mcat-jobs", daemon=True)
+        _JOB_WORKER.start()
+
+
+def _trim_jobs():
+    finished = [j for j in _JOBS.values() if j["status"] in ("done", "stopped", "error")]
+    for j in sorted(finished, key=lambda x: x["id"])[:-JOB_HISTORY]:
+        _JOBS.pop(j["id"], None)
+
+
+class JobRequest(BaseModel):
+    kind: str
+    segment_ids: List[int]
+    params: dict = {}
+
+
+@app.post("/api/projects/{pid}/jobs")
+def create_job(pid: int, req: JobRequest):
+    """Поставить прогон в очередь. Клиенту достаточно отдать список сегментов —
+    дальше страница может быть закрыта, сервер доведёт работу до конца."""
+    get_project(pid)                        # 404, если проекта нет
+    if req.kind not in JOB_KINDS:
+        raise HTTPException(400, "Неизвестный тип прогона: " + req.kind)
+    ids = list(dict.fromkeys(req.segment_ids))
+    if not ids:
+        raise HTTPException(400, "Пустой список сегментов")
+    with _JOBS_LOCK:
+        job = {
+            "id": max(_JOBS, default=0) + 1,
+            "kind": req.kind, "project": pid, "status": "queued",
+            "total": len(ids), "done": 0, "counters": {}, "error": None,
+            "params": dict(req.params or {}),
+            "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "started": None, "finished": None,
+            "ids": ids, "stop": False,
+        }
+        _JOBS[job["id"]] = job
+        _trim_jobs()
+    _ensure_job_worker()
+    _JOB_QUEUE.put(job)
+    return {"ok": True, "job": _job_public(job)}
+
+
+@app.get("/api/jobs")
+def list_jobs(project: Optional[int] = None, limit: int = 20):
+    jobs = [j for j in _JOBS.values() if project is None or j["project"] == project]
+    jobs.sort(key=lambda j: j["id"], reverse=True)
+    active = [_job_public(j) for j in jobs if j["status"] in ("queued", "running")]
+    return {"active": active, "jobs": [_job_public(j) for j in jobs[:max(1, min(limit, 100))]]}
+
+
+@app.get("/api/jobs/{jid}")
+def get_job(jid: int):
+    job = _JOBS.get(jid)
+    if not job:
+        raise HTTPException(404, "Прогон не найден")
+    return {"ok": True, "job": _job_public(job)}
+
+
+@app.post("/api/jobs/{jid}/stop")
+def stop_job(jid: int):
+    """Остановка мягкая: текущая порция досчитывается и сохраняется, следующая
+    не начинается. Обрывать порцию на середине значило бы заплатить за вызовы
+    и выбросить их результат."""
+    job = _JOBS.get(jid)
+    if not job:
+        raise HTTPException(404, "Прогон не найден")
+    job["stop"] = True
+    if job["status"] == "queued":
+        job["status"] = "stopped"
+        job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    return {"ok": True, "job": _job_public(job)}
 
 
 # ─────────────────────────────────────────────────────────────────────

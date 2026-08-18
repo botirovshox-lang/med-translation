@@ -230,6 +230,10 @@ function TabPreflight({ store, toast }) {
     // ---- Соответствие обратного перевода ----
     React.createElement(BackcheckBands, { segments: segs, onDrill: openDrill, T }),
 
+    React.createElement(TermcheckSummary, { segments: segs, onDrill: openDrill, T }),
+
+    React.createElement(RepairSummary, { segments: segs, onDrill: openDrill, T }),
+
     // ---- Zero-Token Optimization ----
     React.createElement("div", { className: "section" },
       React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 16 } },
@@ -388,6 +392,162 @@ function BackcheckBands({ segments, onDrill, T }) {
         React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: "var(--c-error)" } },
           "Из них с потерей термина"),
         React.createElement("b", { className: "tnum", style: { fontSize: 13 } }, termLost.length))
+    )
+  );
+}
+
+
+/* ---------- Строка показателя с переходом в редактор ---------- */
+// Клик по строке = «показать эти сегменты»: тот же drill-down, что у полос
+// back-check, чтобы цифра из анализа всегда открывалась списком в редакторе.
+function StatRow({ label, note, count, color, onDrill, bold }) {
+  const clickable = count > 0 && !!onDrill;
+  return React.createElement("div", {
+    className: "row between",
+    style: { gap: 10, padding: "5px 0", cursor: clickable ? "pointer" : "default", opacity: count ? 1 : 0.45 },
+    onClick: clickable ? onDrill : undefined,
+    title: clickable ? "Открыть эти сегменты в редакторе" : "Нет таких сегментов" },
+    React.createElement("div", { className: "row", style: { gap: 8, minWidth: 0 } },
+      React.createElement("span", { style: { fontSize: 13, fontWeight: bold ? 700 : 500, color: color || "var(--text)" } }, label),
+      note && React.createElement("span", { className: "dim", style: { fontSize: 12 } }, note)),
+    React.createElement("b", { className: "tnum", style: { fontSize: 13, color: color || "var(--text)" } }, count));
+}
+
+/* ============================================================
+   Проверка терминологии — сводка по проекту
+   ============================================================ */
+function TermcheckSummary({ segments, onDrill, T }) {
+  const translated = segments.filter(s => (s.target || "").trim());
+  const checked = translated.filter(s => s.termcheck);
+  const fresh = checked.filter(s => !s.termcheck.stale);
+  const stale = checked.filter(s => s.termcheck.stale);
+  const skipped = fresh.filter(s => s.termcheck.model === "skip");
+  const withFindings = fresh.filter(s => (s.termcheck.findings || []).length > 0);
+  const clean = fresh.filter(s => s.termcheck.model !== "skip" && !(s.termcheck.findings || []).length);
+  const bySev = (sev) => withFindings.filter(s => (s.termcheck.findings || []).some(f => f.severity === sev));
+
+  // Самые частые замечания: один и тот же термин обычно тянется по всему документу,
+  // и чинить его выгоднее один раз через глоссарий, а не по сегменту.
+  const byTerm = new Map();
+  withFindings.forEach(s => (s.termcheck.findings || []).forEach(f => {
+    if (f.severity === "minor") return;
+    const key = (f.tgt_term || "").toLowerCase();
+    if (!key) return;
+    const e = byTerm.get(key) || { term: f.tgt_term, suggestion: f.suggestion, segs: [] };
+    if (!e.segs.some(x => x.id === s.id)) e.segs.push(s);
+    byTerm.set(key, e);
+  }));
+  const topTerms = Array.from(byTerm.values()).sort((a, b) => b.segs.length - a.segs.length).slice(0, 6);
+
+  return React.createElement("div", { className: "section" },
+    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+      React.createElement("div", { className: "row between", style: { alignItems: "flex-end", flexWrap: "wrap", gap: 10 } },
+        React.createElement("div", null,
+          React.createElement("h3", { style: { fontSize: 18, fontWeight: 700 } }, "Проверка терминологии",
+            T("Проверка терминологии",
+              "Модель смотрит только на перевод и отвечает, нормальный ли это термин целевого языка: кальки, транслитерации, подмены понятия, склеенные обрывки.\n\nЭто не back-check: тот спрашивает, пережил ли смысл обратный перевод, и на кальке всегда отвечает «да». Запускается в Редакторе, карточка «Проверка терминологии».")),
+          React.createElement("p", { className: "muted", style: { marginTop: 6, fontSize: 14 } },
+            "Проверено " + checked.length + " из " + translated.length + " переведённых сегментов")),
+        withFindings.length > 0 && React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+          "Замечания в " + Math.round(withFindings.length / Math.max(1, fresh.length) * 100) + "% проверенного")),
+
+      checked.length === 0
+        ? React.createElement(EmptyState, { icon: "book", title: "Проверка терминологии ещё не запускалась",
+            sub: "Запустите её в Редакторе — карточка «Проверка терминологии» в блоке пакетных прогонов." })
+        : React.createElement("div", { style: { display: "flex", flexDirection: "column" } },
+            React.createElement(StatRow, { label: "С замечаниями", note: "нужна правка или решение", bold: true,
+              count: withFindings.length, color: "var(--c-warning)",
+              onDrill: () => onDrill("Терминология: есть замечания", withFindings) }),
+            React.createElement(StatRow, { label: "— критично", note: "другое понятие или нечитаемый фрагмент",
+              count: bySev("critical").length, color: "var(--c-error)",
+              onDrill: () => onDrill("Терминология: критичные замечания", bySev("critical")) }),
+            React.createElement(StatRow, { label: "— серьёзно", note: "не термин целевого языка",
+              count: bySev("major").length, color: "var(--c-warning)",
+              onDrill: () => onDrill("Терминология: серьёзные замечания", bySev("major")) }),
+            React.createElement(StatRow, { label: "Без замечаний", count: clean.length, color: "var(--c-success)",
+              onDrill: () => onDrill("Терминология: без замечаний", clean) }),
+            React.createElement(StatRow, { label: "Нечего проверять", note: "числа, обозначения — без вызова модели",
+              count: skipped.length, onDrill: () => onDrill("Терминология: нечего проверять", skipped) }),
+            React.createElement(StatRow, { label: "Проверка устарела", note: "перевод меняли после проверки",
+              count: stale.length, onDrill: () => onDrill("Терминология: устаревшие проверки", stale) }),
+            React.createElement(StatRow, { label: "Ещё не проверялись", count: translated.length - checked.length,
+              onDrill: () => onDrill("Терминология: не проверялись", translated.filter(s => !s.termcheck)) })),
+
+      topTerms.length > 0 && React.createElement("div", { style: { borderTop: "1px solid var(--border)", paddingTop: 10 } },
+        React.createElement("div", { className: "row", style: { fontSize: 12.5, fontWeight: 600, marginBottom: 6 } },
+          "Чаще всего повторяется",
+          T("Повторяющиеся замечания",
+            "Один и тот же неверный термин обычно тянется по всему документу. Выгоднее одобрить правильный вариант в «Глоссарий → Кандидаты» и перевести затронутые сегменты заново, чем чинить каждый по отдельности.")),
+        topTerms.map((t, i) => React.createElement("div", {
+          key: i, className: "row between",
+          style: { padding: "3px 0", cursor: "pointer", fontSize: 13 },
+          onClick: () => onDrill("Термин: " + t.term, t.segs),
+          title: "Открыть сегменты с этим термином" },
+          React.createElement("div", { className: "row", style: { gap: 8, minWidth: 0, flexWrap: "wrap" } },
+            React.createElement("s", { style: { color: "var(--c-error)" } }, t.term),
+            t.suggestion && React.createElement("span", { style: { color: "var(--c-success)", fontWeight: 600 } }, "→ " + t.suggestion)),
+          React.createElement("b", { className: "tnum", style: { fontSize: 13 } }, t.segs.length))))
+    )
+  );
+}
+
+/* ============================================================
+   Автоматический ремонт — сводка по проекту
+   ============================================================ */
+function RepairSummary({ segments, onDrill, T }) {
+  const touched = segments.filter(s => s.repair);
+  const applied = touched.filter(s => s.repair.applied);
+  const reverted = touched.filter(s => !s.repair.applied);
+  const needReview = applied.filter(s => s.status === "review");
+
+  // Насколько ремонт поднял балл back-check — единственный объективный итог
+  const withScores = applied.filter(s => s.repair.before && s.repair.after
+    && s.repair.before.score != null && s.repair.after.score != null);
+  const gain = withScores.length
+    ? Math.round(withScores.reduce((a, s) => a + (s.repair.after.score - s.repair.before.score), 0) / withScores.length)
+    : null;
+
+  // Ждут ремонта: есть свежие находки, но через ремонт этот текст не проходил
+  const REASONS = ["расхождение чисел", "расхождение единиц", "инверсия отрицания",
+                   "подмена на противоположное", "обратный перевод про другое", "потерян термин"];
+  const pending = segments.filter(s => {
+    if (!(s.target || "").trim() || (s.repair && s.repair.tried)) return false;
+    const bc = s.backcheck && !s.backcheck.stale ? s.backcheck : null;
+    const tc = s.termcheck && !s.termcheck.stale ? s.termcheck : null;
+    const bcHit = bc && ((bc.terms_lost || []).length > 0
+      || (bc.reasons || []).some(r => REASONS.some(h => r.indexOf(h) !== -1))
+      || (bc.judge && ["major", "critical"].indexOf(bc.judge.severity) !== -1));
+    const tcHit = tc && (tc.findings || []).some(f => f.severity === "critical" || f.severity === "major");
+    return !!(bcHit || tcHit);
+  });
+
+  return React.createElement("div", { className: "section" },
+    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+      React.createElement("div", { className: "row between", style: { alignItems: "flex-end", flexWrap: "wrap", gap: 10 } },
+        React.createElement("div", null,
+          React.createElement("h3", { style: { fontSize: 18, fontWeight: 700 } }, "Автоматический ремонт",
+            T("Автоматический ремонт",
+              "Переписывает перевод по конкретным находкам back-check и проверки терминологии, затем перепроверяет теми же проверками. Новый текст остаётся, только если оценка не упала.\n\nИсправленные сегменты получают статус «Требует проверки»: автоправка не заверяет сама себя, подтвердить должен человек.")),
+          React.createElement("p", { className: "muted", style: { marginTop: 6, fontSize: 14 } },
+            touched.length ? "Ремонт применялся к " + touched.length + " сегментам" : "Ремонт ещё не запускался")),
+        gain !== null && React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+          "Средний прирост back-check: " + (gain > 0 ? "+" : "") + gain + "%")),
+
+      touched.length === 0 && pending.length === 0
+        ? React.createElement(EmptyState, { icon: "repeat", title: "Чинить пока нечего",
+            sub: "Сначала прогоните back-check или проверку терминологии — ремонт работает по их находкам." })
+        : React.createElement("div", { style: { display: "flex", flexDirection: "column" } },
+            React.createElement(StatRow, { label: "Исправлено", note: "текст заменён, проверка подтвердила улучшение", bold: true,
+              count: applied.length, color: "var(--c-success)",
+              onDrill: () => onDrill("Ремонт: исправлено", applied) }),
+            React.createElement(StatRow, { label: "— ждут подтверждения", note: "статус «Требует проверки»",
+              count: needReview.length, color: "var(--c-warning)",
+              onDrill: () => onDrill("Ремонт: ждут подтверждения", needReview) }),
+            React.createElement(StatRow, { label: "Откачено", note: "вариант модели не улучшил оценку",
+              count: reverted.length, onDrill: () => onDrill("Ремонт: откачено", reverted) }),
+            React.createElement(StatRow, { label: "Ждут ремонта", note: "есть находки, ремонт не запускался",
+              count: pending.length, color: "var(--c-primary)",
+              onDrill: () => onDrill("Ремонт: ждут ремонта", pending) }))
     )
   );
 }

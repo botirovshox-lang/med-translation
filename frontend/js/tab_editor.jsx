@@ -2,26 +2,11 @@
    Tab: Segment Editor — the core translation workspace
    ============================================================ */
 
-// Размер порции пакетного перевода. Один запрос ≈ BATCH_CHUNK * EST_SEC_PER_SEG секунд —
-// держим его коротким, чтобы не упираться в proxy_read_timeout и чаще двигать прогресс.
+// Размер порции пакетного перевода на сервере (JOB_CHUNKS в main.py) — нужен только
+// для сметы и подписей: сами порции крутит фоновый прогон, а не браузер.
 const BATCH_CHUNK = 10;
 const EST_SEC_PER_SEG = 5;          // замер на проде: 5-6 с на сегмент через GPT
-const CHUNK_RETRIES = 2;            // повторов порции при сбое
-const RETRY_PAUSE_MS = 6000;        // пауза перед повтором — хватает пережить рестарт сервиса
 
-// Порция с повторами: одна неудача не должна убивать двухчасовой прогон.
-// Ровно так пакет и обрывался, когда сервис перезапускали во время работы.
-async function callChunkWithRetry(fn, onRetry) {
-  for (let attempt = 0; attempt <= CHUNK_RETRIES; attempt++) {
-    const r = await window.API.safeCall(fn);
-    if (r && r.ok) return r;
-    if (attempt < CHUNK_RETRIES) {
-      if (onRetry) onRetry(attempt + 1);
-      await new Promise(res => setTimeout(res, RETRY_PAUSE_MS));
-    }
-  }
-  return null;
-}
 const GPT_MODEL_LS_KEY = "mcat_gpt_model";
 const BC_MODEL_LS_KEY = "mcat_backcheck_model";
 const JUDGE_MODEL_LS_KEY = "mcat_judge_model";
@@ -29,9 +14,8 @@ const BC_SKIP_CONFIRMED_LS_KEY = "mcat_bc_skip_confirmed";
 const SEARCH_SCOPE_LS_KEY = "mcat_search_scope";
 const TC_MODEL_LS_KEY = "mcat_termcheck_model";
 const RP_MODEL_LS_KEY = "mcat_repair_model";
-// Ремонт — самый дорогой прогон: вызов модели плюс перепроверка на сегмент.
-// Порция меньше, чем у остальных, чтобы запрос укладывался в таймаут прокси.
-const REPAIR_CHUNK = 5;
+const JOB_LABELS = { translate: "Перевод", backcheck: "Back-check", termcheck: "Проверка терминологии",
+                     repair: "Автоматический ремонт", medical_qa: "Medical QA" };
 
 // Цвет полосы соответствия обратного перевода
 function bandColor(color) {
@@ -156,7 +140,9 @@ function TabEditor({ store, toast }) {
   const [height, setHeight] = useState(440);
   const [selId, setSelId] = useState(project ? (project.segments[0] && project.segments[0].id) : null);
   const [busy, setBusy] = useState({});       // {segId: 'translate'|'qa'}
-  const [batchRun, setBatchRun] = useState(null); // {engine, done, total}
+  const [batchRun, setBatchRun] = useState(null); // {engine, done, total} — производное от job
+  const [job, setJob] = useState(null);           // активный серверный прогон
+  const lastJobId = useRef(null);                 // чтобы отчитаться о завершении один раз
   const [checkedSegs, setCheckedSegs] = useState(new Set()); // ручной выбор
   const [showFilters, setShowFilters] = useState(false);
   const [page, setPage] = useState(1);
@@ -192,7 +178,6 @@ function TabEditor({ store, toast }) {
   const [bcGroupPick, setBcGroupPick] = useState(null);   // Set<ключ группы> | null = по умолчанию
   const [tcGroupPick, setTcGroupPick] = useState(null);   // то же для проверки терминологии
   const [rpGroupPick, setRpGroupPick] = useState(null);   // то же для ремонта
-  const stopRef = useRef(false);
   const PAGE_SIZE = 10;
 
   // Каталог моделей грузим один раз; пустой список — значит бэкенд старый или ключа нет
@@ -216,6 +201,50 @@ function TabEditor({ store, toast }) {
     [retranslate, gptModel, store.segmentFilter, checkedSegs.size]);
   useEffect(() => { setBcGroupPick(null); },
     [bcModel, bcJudge, bcSkipConfirmed, store.segmentFilter, checkedSegs.size]);
+  // Опрос прогонов. Идёт работа — раз в 2 с, простой — раз в 15 с: прогон мог
+  // быть запущен из другой вкладки или до перезагрузки страницы.
+  useEffect(() => {
+    if (!window.API || !window.API.listJobs || !project) return;
+    let dead = false;
+    const tick = async () => {
+      const res = await window.API.safeCall(() => window.API.listJobs(project.id));
+      if (dead || !res) return;
+      const active = (res.active || [])[0] || null;
+      setJob(active);
+      if (active) {
+        lastJobId.current = active.id;
+        return;
+      }
+      // Прогон закончился между опросами — отчитываемся и подтягиваем результат
+      const finished = (res.jobs || []).find(j => j.id === lastJobId.current);
+      if (finished && finished.status !== "queued" && finished.status !== "running") {
+        lastJobId.current = null;
+        reportJobResult(finished);
+        const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
+        if (!dead && fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
+      }
+    };
+    tick();
+    const id = setInterval(tick, job ? 2000 : 15000);
+    return () => { dead = true; clearInterval(id); };
+  }, [project && project.id, !!job]);
+
+  // Прогресс в карточках читается из job — форма та же, что была у локального цикла
+  useEffect(() => {
+    setBatchRun(job ? { engine: job.kind, done: job.done, total: job.total } : null);
+  }, [job && job.id, job && job.done, job && job.total, job && job.status]);
+
+  // Пока прогон идёт, подтягиваем свежие сегменты, чтобы результат было видно сразу
+  useEffect(() => {
+    if (!job || job.status !== "running" || !window.API) return;
+    let dead = false;
+    const id = setInterval(async () => {
+      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
+      if (!dead && fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
+    }, 8000);
+    return () => { dead = true; clearInterval(id); };
+  }, [job && job.id, job && job.status]);
+
   useEffect(() => { setTcGroupPick(null); }, [tcModel, store.segmentFilter, checkedSegs.size]);
   useEffect(() => { setRpGroupPick(null); }, [rpModel, store.segmentFilter, checkedSegs.size]);
 
@@ -579,321 +608,103 @@ function TabEditor({ store, toast }) {
     else runBatch(engine, targets, explicitSel);
   };
 
-  // Пакет идёт порциями по BATCH_CHUNK: один HTTP-запрос живёт минуту-две и не упирается
-  // в таймаут прокси, прогресс двигается по ходу дела, а прерванный пакет не откатывает
-  // уже переведённое — всё сохранено на сервере по завершении каждой порции.
-  const runBatch = async (engine, targets, hasExplicitCheck) => {
+  const runBatch = (engine, targets, hasExplicitCheck) => {
     setBatchPlan(null);
-    stopRef.current = false;
-    const total = targets.length;
-    const ids = targets.map(s => s.id);
-    const engineName = engine === "gpt" ? "GPT" : "Google";
-    let done = 0, errCount = 0, tmCount = 0, failed = false, landed = 0;
-    const translatedIds = [];
-    setBatchRun({ engine, done: 0, total });
-
-    for (let i = 0; i < ids.length; i += BATCH_CHUNK) {
-      if (stopRef.current) break;
-      const chunk = ids.slice(i, i + BATCH_CHUNK);
-      // Ориентировочный прогресс внутри порции: сервер отвечает только по её завершении,
-      // поэтому между ответами двигаем полосу по оценке времени на сегмент.
-      const base = done, t0 = Date.now();
-      const tick = setInterval(() => {
-        const est = Math.min(chunk.length - 0.5, (Date.now() - t0) / 1000 / EST_SEC_PER_SEG);
-        setBatchRun(b => (b ? { ...b, done: base + est } : b));
-      }, 500);
-      let r = null;
-      if (window.API) r = await callChunkWithRetry(
-        () => window.API.batch(project.id, engine, chunk, hasExplicitCheck, BATCH_CHUNK, gptModel),
-        (n) => toast.warning("Сбой связи", "Порция не прошла, повтор " + n + " из " + CHUNK_RETRIES + "…"));
-      clearInterval(tick);
-      if (!r || !r.ok) { failed = true; break; }
-      done += r.count;
-      errCount += (r.errors || []).length;
-      tmCount += r.tm_hits || 0;
-      translatedIds.push(...(r.translated || []));
-      setBatchRun({ engine, done, total });
-      // Подтягиваем переводы в таблицу после каждой порции — строки наливаются по ходу
-      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
-      if (fresh && fresh.segments) {
-        store.replaceProjectSegments(project.id, fresh.segments);
-        // Сверяем: сервер отчитался о переводе — реально ли он приехал в данные?
-        // Расхождение честно показываем вместо зелёного тоста.
-        const byId = new Map(fresh.segments.map(s => [s.id, s]));
-        landed += (r.translated || []).filter(id => {
-          const s = byId.get(id);
-          return s && (s.target || "").trim();
-        }).length;
-      }
-    }
-
-    const stopped = stopRef.current;
-    stopRef.current = false;
-    setBatchRun(null);
-
-    // Переведённые сегменты перестают подходить под фильтр «Новые» и молча уходят из
-    // выборки — страница дозаполняется следующими пустыми строками, и выглядит это так,
-    // будто перевод не применился. Поэтому после пакета показываем результат: goToSegment
-    // сбрасывает фильтры и перематывает на страницу с первым переведённым сегментом.
-    const jumped = done > 0 && translatedIds.length > 0 && filter !== "all";
-    if (done > 0) {
-      setCheckedSegs(new Set());
-      if (jumped) store.goToSegment(translatedIds[0]);
-    }
-
-    const errMsg = errCount ? " · ошибок: " + errCount : "";
-    const tmMsg = tmCount ? " · из TM без " + engineName + ": " + tmCount : "";
-    const jumpMsg = jumped ? " · фильтр сброшен на «Все», чтобы показать переводы" : "";
-    if (failed) {
-      toast.error("Пакет прерван ошибкой",
-        done + " из " + total + " успело перевестись и сохранено. Проверьте связь и запустите ещё раз." + errMsg);
-    } else if (stopped) {
-      toast.warning("Пакет остановлен", done + " из " + total + " переведено и сохранено." + tmMsg + errMsg);
-    } else if (done > 0 && landed < done) {
-      toast.warning("Переводы могли не отобразиться",
-        done + " сохранено на сервере, но в таблицу подтянулось " + landed + ". Обновите страницу (F5).");
-    } else if (done > 0) {
-      const modelMsg = engine === "gpt" && gptModelInfo ? " (" + gptModelInfo.label + ")" : "";
-      toast.success("Пакет завершён",
-        done + " сегментов переведено через " + engineName + modelMsg + tmMsg + errMsg + jumpMsg);
-    } else {
-      toast.warning("Нет новых переводов", "Все подходящие сегменты уже переведены" + errMsg);
-    }
+    setCheckedSegs(new Set());
+    startJob("translate", targets,
+      { engine, force: !!hasExplicitCheck, model: engine === "gpt" ? gptModel : null },
+      "Все подходящие сегменты уже переведены.");
   };
 
-  // Пакетный back-check. Та же порционная механика, что и у перевода: короткие
-  // запросы, прогресс по ходу, остановка не откатывает уже посчитанное.
-  const runBackcheckBatch = async () => {
-    if (batchRun) return;
-    let currentSegs = project.segments;
-    if (window.API) {
-      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
-      if (fresh && fresh.segments) {
-        store.replaceProjectSegments(project.id, fresh.segments);
-        currentSegs = fresh.segments;
-      }
-    }
-    const idSet = currentIdSet;
-    const targets = currentSegs.filter(s => backcheckable(s, idSet));
-    if (!targets.length) {
-      toast.warning("Нечего проверять", bcSkipConfirmed
-        ? "В выборке нет непроверенных сегментов, кроме подтверждённых, а их вы просили пропускать. Отметьте нужные группы в «Что проверять»."
-        : "В выборке нет непроверенных сегментов. Отметьте нужные группы в «Что проверять», чтобы прогнать заново.");
-      return;
-    }
-    stopRef.current = false;
-    const ids = targets.map(s => s.id);
-    const total = ids.length;
-    let done = 0, errCount = 0, failed = false;
-    setBatchRun({ engine: "backcheck", done: 0, total });
-
-    for (let i = 0; i < ids.length; i += BATCH_CHUNK) {
-      if (stopRef.current) break;
-      const chunk = ids.slice(i, i + BATCH_CHUNK);
-      const base = done, t0 = Date.now();
-      const tick = setInterval(() => {
-        const est = Math.min(chunk.length - 0.5, (Date.now() - t0) / 1000 / EST_SEC_PER_SEG);
-        setBatchRun(b => (b ? { ...b, done: base + est } : b));
-      }, 500);
-      let r = null;
-      if (window.API) r = await callChunkWithRetry(
-        // skip_cached выключен: состав порции уже отобран галочками «Что проверять»,
-        // иначе сервер вырезал бы из неё как раз то, что попросили перепроверить.
-        () => window.API.backcheckBatch(project.id, chunk, BATCH_CHUNK, bcModel, bcJudge, judgeModel, false),
-        (n) => toast.warning("Сбой связи", "Порция не прошла, повтор " + n + " из " + CHUNK_RETRIES + "…"));
-      clearInterval(tick);
-      if (!r || !r.ok) { failed = true; break; }
-      done += r.count;
-      errCount += (r.errors || []).length;
-      setBatchRun({ engine: "backcheck", done, total });
-      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
-      if (fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
-    }
-
-    const stopped = stopRef.current;
-    stopRef.current = false;
-    setBatchRun(null);
-    const errMsg = errCount ? " · ошибок: " + errCount : "";
-    if (failed) {
-      toast.error("Back-check прерван", done + " из " + total + " проверено и сохранено." + errMsg);
-    } else if (stopped) {
-      toast.warning("Back-check остановлен", done + " из " + total + " проверено и сохранено.");
-    } else {
-      toast.success("Back-check завершён",
-        done + " сегментов проверено" + errMsg + " · разбивка в Анализе");
-    }
+  // ── Прогоны ─────────────────────────────────────────────────────
+  // Порции крутит сервер (см. фоновые прогоны в main.py). Браузер ставит задачу
+  // и опрашивает статус: закрытая вкладка больше не обрывает работу, а вернувшись
+  // на страницу, пользователь видит прогресс с того места, где тот сейчас есть.
+  const startJob = async (kind, targets, params, emptyMsg) => {
+    if (batchRun) { toast.warning("Прогон уже идёт", "Дождитесь окончания или остановите текущий."); return; }
+    if (!targets.length) { toast.warning("Нечего запускать", emptyMsg); return; }
+    if (!window.API) return;
+    const res = await window.API.safeCall(() => window.API.createJob(project.id, kind, targets.map(s => s.id), params));
+    if (!res || !res.ok) { toast.error("Не удалось запустить", "Сервер не принял задачу."); return; }
+    setJob(res.job);
+    toast.info(JOB_LABELS[kind] + ": запущено", targets.length + " сегментов. Можно закрыть вкладку — прогон идёт на сервере.");
   };
 
-  // Пакетная проверка терминологии. Механика та же, что у back-check: порции
-  // по 10, прогресс по ходу, остановка не откатывает уже проверенное.
-  const runTermcheckBatch = async () => {
-    if (batchRun) return;
-    let currentSegs = project.segments;
-    if (window.API) {
-      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
-      if (fresh && fresh.segments) {
-        store.replaceProjectSegments(project.id, fresh.segments);
-        currentSegs = fresh.segments;
-      }
-    }
-    const idSet = currentIdSet;
-    const targets = currentSegs.filter(s => termcheckable(s, idSet));
-    if (!targets.length) {
-      toast.warning("Нечего проверять",
-        "Всё в выборке уже проверено этой моделью. Отметьте нужные группы в «Что проверять», чтобы прогнать заново.");
+  // Итог завершившегося прогона. Отчитываемся по счётчикам, которые вернул сервер:
+  // они те же, что раньше собирал браузер, только считать их теперь некому кроме него.
+  const reportJobResult = (j) => {
+    const c = j.counters || {};
+    const name = JOB_LABELS[j.kind] || j.kind;
+    const errMsg = c.errors ? " · ошибок: " + c.errors : "";
+    const dupMsg = c.duplicates ? " · повторов зачтено без вызова: " + c.duplicates : "";
+    if (j.status === "error") {
+      toast.error(name + ": прогон прерван",
+        j.done + " из " + j.total + " обработано и сохранено. " + (j.error || ""));
       return;
     }
-    stopRef.current = false;
-    const ids = targets.map(s => s.id);
-    const total = ids.length;
-    let done = 0, flagged = 0, errCount = 0, failed = false;
-    setBatchRun({ engine: "termcheck", done: 0, total });
-
-    for (let i = 0; i < ids.length; i += BATCH_CHUNK) {
-      if (stopRef.current) break;
-      const chunk = ids.slice(i, i + BATCH_CHUNK);
-      const base = done, t0 = Date.now();
-      const tick = setInterval(() => {
-        const est = Math.min(chunk.length - 0.5, (Date.now() - t0) / 1000 / EST_SEC_PER_SEG);
-        setBatchRun(b => (b ? { ...b, done: base + est } : b));
-      }, 500);
-      let r = null;
-      if (window.API) r = await callChunkWithRetry(
-        () => window.API.termcheckBatch(project.id, chunk, BATCH_CHUNK, tcModel, false),
-        (n) => toast.warning("Сбой связи", "Порция не прошла, повтор " + n + " из " + CHUNK_RETRIES + "…"));
-      clearInterval(tick);
-      if (!r || !r.ok) { failed = true; break; }
-      done += r.count;
-      flagged += r.flagged || 0;
-      errCount += (r.errors || []).length;
-      setBatchRun({ engine: "termcheck", done, total });
-      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
-      if (fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
+    if (j.status === "stopped") {
+      toast.warning(name + ": остановлено", j.done + " из " + j.total + " обработано и сохранено." + errMsg);
+      return;
     }
-
-    const stopped = stopRef.current;
-    stopRef.current = false;
-    setBatchRun(null);
-    const errMsg = errCount ? " · ошибок: " + errCount : "";
-    if (failed) {
-      toast.error("Проверка прервана", done + " из " + total + " проверено и сохранено." + errMsg);
-    } else if (stopped) {
-      toast.warning("Проверка остановлена", done + " из " + total + " проверено и сохранено.");
-    } else if (flagged) {
-      toast.warning("Проверка терминологии завершена",
-        "Замечания в " + flagged + " из " + done + " сегментов" + errMsg
+    if (j.kind === "translate") {
+      const tmMsg = c.tm_hits ? " · из TM без вызова: " + c.tm_hits : "";
+      toast.success("Перевод завершён", j.done + " сегментов переведено" + tmMsg + dupMsg + errMsg);
+    } else if (j.kind === "termcheck") {
+      const skipMsg = c.skipped_trivial ? " · без вызова модели: " + c.skipped_trivial : "";
+      if (c.flagged) toast.warning("Проверка терминологии завершена",
+        "Замечания в " + c.flagged + " из " + j.done + " сегментов" + dupMsg + skipMsg + errMsg
         + " · предложения замены — в «Глоссарий → Кандидаты»");
+      else toast.success("Проверка терминологии завершена", j.done + " сегментов без замечаний" + dupMsg + skipMsg + errMsg);
+    } else if (j.kind === "repair") {
+      const revMsg = c.reverted ? " · откачено (не стало лучше): " + c.reverted : "";
+      if (c.applied) toast.success("Ремонт завершён",
+        "Исправлено " + c.applied + " сегментов" + revMsg + errMsg + " · статус «Требует проверки», подтвердите вручную");
+      else toast.warning("Ничего не исправлено", "Ни один вариант не улучшил оценку — все откачены." + errMsg);
+    } else if (j.kind === "backcheck") {
+      toast.success("Back-check завершён", j.done + " сегментов проверено" + dupMsg + errMsg + " · разбивка в Анализе");
     } else {
-      toast.success("Проверка терминологии завершена", done + " сегментов без замечаний" + errMsg);
+      toast.success(name + " завершён", j.done + " сегментов обработано" + errMsg);
     }
   };
 
-  // Пакетный ремонт. Порция меньше остальных: на сегмент приходится вызов
-  // модели плюс перепроверка теми проверками, которые ругались.
-  const runRepairBatch = async () => {
-    if (batchRun) return;
-    let currentSegs = project.segments;
-    if (window.API) {
-      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
-      if (fresh && fresh.segments) {
-        store.replaceProjectSegments(project.id, fresh.segments);
-        currentSegs = fresh.segments;
-      }
-    }
-    const idSet = currentIdSet;
-    const targets = currentSegs.filter(s => repairable(s, idSet));
-    if (!targets.length) {
-      toast.warning("Чинить нечего", rpGroups.length
-        ? "Все сегменты с находками уже проходили ремонт. Отметьте нужные группы в «Что чинить», чтобы зайти второй раз."
+  const stopJob = async () => {
+    if (!job || !window.API) return;
+    await window.API.safeCall(() => window.API.stopJob(job.id));
+    toast.info("Остановка", "Текущая порция досчитается и сохранится, следующая не начнётся.");
+  };
+
+  const runBackcheckBatch = () => {
+    // skip_cached выключен: состав уже отобран галочками «Что проверять»,
+    // иначе сервер вырезал бы из порции ровно то, что попросили перепроверить.
+    startJob("backcheck", project.segments.filter(s => backcheckable(s, currentIdSet)),
+      { model: bcModel || null, use_judge: bcJudge, judge_model: judgeModel || null, skip_cached: false },
+      bcSkipConfirmed
+        ? "В выборке нет непроверенных сегментов, кроме подтверждённых, а их вы просили пропускать."
+        : "В выборке нет непроверенных сегментов. Отметьте нужные группы в «Что проверять».");
+  };
+
+  const runTermcheckBatch = () => {
+    startJob("termcheck", project.segments.filter(s => termcheckable(s, currentIdSet)),
+      { model: tcModel || null, skip_cached: false },
+      "Всё в выборке уже проверено этой моделью. Отметьте нужные группы в «Что проверять», чтобы прогнать заново.");
+  };
+
+  const runRepairBatch = () => {
+    startJob("repair", project.segments.filter(s => repairable(s, currentIdSet)),
+      { model: rpModel || null, bc_model: bcModel || null, tc_model: tcModel || null,
+        use_judge: bcJudge, judge_model: judgeModel || null, retry: repairRetry() },
+      rpGroups.length
+        ? "Все сегменты с находками уже проходили ремонт. Отметьте нужные группы в «Что чинить»."
         : "Нет сегментов с проверяемыми находками. Сначала прогоните back-check или проверку терминологии.");
-      return;
-    }
-    stopRef.current = false;
-    const ids = targets.map(s => s.id);
-    const total = ids.length;
-    let done = 0, applied = 0, rejected = 0, errCount = 0, failed = false;
-    setBatchRun({ engine: "repair", done: 0, total });
-
-    for (let i = 0; i < ids.length; i += REPAIR_CHUNK) {
-      if (stopRef.current) break;
-      const chunk = ids.slice(i, i + REPAIR_CHUNK);
-      const base = done, t0 = Date.now();
-      const tick = setInterval(() => {
-        const est = Math.min(chunk.length - 0.5, (Date.now() - t0) / 1000 / (EST_SEC_PER_SEG * 2));
-        setBatchRun(b => (b ? { ...b, done: base + est } : b));
-      }, 500);
-      let r = null;
-      if (window.API) r = await callChunkWithRetry(
-        () => window.API.repairBatch(project.id, chunk, REPAIR_CHUNK, {
-          model: rpModel || null, bc_model: bcModel || null, tc_model: tcModel || null,
-          use_judge: bcJudge, judge_model: judgeModel || null, retry: repairRetry() }),
-        (n) => toast.warning("Сбой связи", "Порция не прошла, повтор " + n + " из " + CHUNK_RETRIES + "…"));
-      clearInterval(tick);
-      if (!r || !r.ok) { failed = true; break; }
-      applied += (r.applied || []).length;
-      rejected += (r.skipped || []).length;
-      done += (r.applied || []).length + (r.skipped || []).length;
-      errCount += (r.errors || []).length;
-      setBatchRun({ engine: "repair", done, total });
-      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
-      if (fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
-    }
-
-    const stopped = stopRef.current;
-    stopRef.current = false;
-    setBatchRun(null);
-    const errMsg = errCount ? " · ошибок: " + errCount : "";
-    const rejMsg = rejected ? " · откачено (не стало лучше): " + rejected : "";
-    if (failed) {
-      toast.error("Ремонт прерван", "Исправлено " + applied + " из " + total + "." + rejMsg + errMsg);
-    } else if (stopped) {
-      toast.warning("Ремонт остановлен", "Исправлено " + applied + " из " + total + "." + rejMsg);
-    } else if (applied) {
-      toast.success("Ремонт завершён",
-        "Исправлено " + applied + " сегментов" + rejMsg + errMsg + " · статус «Требует проверки», подтвердите вручную");
-    } else {
-      toast.warning("Ничего не исправлено",
-        "Ни один вариант не улучшил оценку — все откачены." + errMsg);
-    }
   };
 
-  const runMedicalQABatch = async () => {
-    let currentSegs = project.segments;
-    if (window.API) {
-      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
-      if (fresh && fresh.segments) {
-        store.replaceProjectSegments(project.id, fresh.segments);
-        currentSegs = fresh.segments;
-      }
-    }
-    const idSet = checkedSegs.size > 0 ? checkedSegs
-      : (store.segmentFilter || window._mcat_sf || null);
-    const targets = currentSegs.filter(s =>
+  const runMedicalQABatch = () => {
+    const idSet = currentIdSet;
+    startJob("medical_qa", project.segments.filter(s =>
       s.target && s.target.trim() &&
       ["translated", "qa", "review", "confirmed"].includes(s.status) &&
-      (!idSet || idSet.has(s.id))
-    );
-    if (!targets.length) {
-      toast.warning("Medical QA", "Нет переведённых сегментов для пакетной проверки.");
-      return;
-    }
-    setBatchRun({ engine: "medical_qa", done: 0, total: targets.length });
-    const segIds = idSet ? targets.map(s => s.id) : null;
-    let result = null;
-    if (window.API) result = await window.API.safeCall(() => window.API.medicalQABatch(project.id, segIds));
-    if (result && result.ok) {
-      const fresh2 = await window.API.safeCall(() => window.API.getProject(project.id));
-      if (fresh2 && fresh2.segments) store.replaceProjectSegments(project.id, fresh2.segments);
-      setBatchRun({ engine: "medical_qa", done: result.count, total: targets.length });
-      setTimeout(() => {
-        setBatchRun(null);
-        const errMsg = result.errors && result.errors.length ? " · ошибок: " + result.errors.length : "";
-        toast.success("Medical QA batch завершён", result.count + " сегментов проверено" + errMsg);
-      }, 400);
-    } else {
-      setBatchRun(null);
-      toast.error("Medical QA batch", "Не удалось выполнить пакетную проверку.");
-    }
+      (!idSet || idSet.has(s.id))),
+      {}, "Нет переведённых сегментов для пакетной проверки.");
   };
 
   // Подписи с реальными языками проекта: "Оригинал (RU)" / "Перевод (EN)"
@@ -1063,15 +874,30 @@ function TabEditor({ store, toast }) {
       )
     ),
 
+    // ---- Идущий серверный прогон: виден и после перезагрузки страницы ----
+    job && React.createElement("div", { className: "editor-main", style: { paddingBottom: 0 } },
+      React.createElement("div", { className: "card", style: { padding: "10px 14px", background: "var(--bg-sunken)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } },
+        React.createElement("div", { className: "row", style: { gap: 10, flex: "1 1 320px" } },
+          React.createElement(Spinner, null),
+          React.createElement("div", { style: { flex: 1 } },
+            React.createElement("div", { style: { fontSize: 13, fontWeight: 600 } },
+              (JOB_LABELS[job.kind] || job.kind) + " — " + (job.status === "queued" ? "в очереди" : "идёт на сервере")
+              + ": " + job.done + " из " + job.total),
+            React.createElement(ProgressBar, { value: Math.round(job.done / Math.max(1, job.total) * 100) }),
+            React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 4 } },
+              "Вкладку можно закрыть — прогон продолжится, прогресс подхватится при возвращении"))),
+        React.createElement(Btn, { variant: "ghost", size: "sm", onClick: stopJob }, "Остановить"))
+    ),
+
     // ---- Batch actions ----
     React.createElement("div", { className: "editor-main", style: { paddingBottom: 0 } },
       React.createElement(Expander, { title: "Пакетные прогоны", icon: "zap", right: "перевод · QA · термины · back-check · ремонт", defaultOpen: false },
         React.createElement("div", { className: "grid grid-3" },
-          React.createElement(BatchCard, { kind: "google", running: batchRun && batchRun.engine === "google" ? batchRun : null, onRun: () => askRunBatch("google"), onStop: () => { stopRef.current = true; },
+          React.createElement(BatchCard, { kind: "google", running: batchRun && batchRun.engine === "google" ? batchRun : null, onRun: () => askRunBatch("google"), onStop: stopJob,
             available: pickTargets("google", project.segments).targets.length,
             selectionSize: pickTargets("google", project.segments).selectionSize,
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
-          React.createElement(BatchCard, { kind: "gpt", running: batchRun && batchRun.engine === "gpt" ? batchRun : null, onRun: () => askRunBatch("gpt"), onStop: () => { stopRef.current = true; },
+          React.createElement(BatchCard, { kind: "gpt", running: batchRun && batchRun.engine === "gpt" ? batchRun : null, onRun: () => askRunBatch("gpt"), onStop: stopJob,
             models: gptModels, model: gptModel, modelInfo: gptModelInfo, onModel: pickGptModel,
             available: pickTargets("gpt", project.segments).targets.length,
             selectionSize: pickTargets("gpt", project.segments).selectionSize,
@@ -1081,7 +907,7 @@ function TabEditor({ store, toast }) {
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(TermCheckCard, {
             running: batchRun && batchRun.engine === "termcheck" ? batchRun : null,
-            onRun: runTermcheckBatch, onStop: () => { stopRef.current = true; },
+            onRun: runTermcheckBatch, onStop: stopJob,
             models: gptModels, model: tcModel, modelInfo: gptModels.find(m => m.id === tcModel) || null,
             onModel: pickTcModel,
             available: project.segments.filter(s => termcheckable(s, currentIdSet)).length,
@@ -1091,7 +917,7 @@ function TabEditor({ store, toast }) {
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(RepairCard, {
             running: batchRun && batchRun.engine === "repair" ? batchRun : null,
-            onRun: runRepairBatch, onStop: () => { stopRef.current = true; },
+            onRun: runRepairBatch, onStop: stopJob,
             models: gptModels, model: rpModel, modelInfo: gptModels.find(m => m.id === rpModel) || null,
             onModel: pickRpModel,
             available: project.segments.filter(s => repairable(s, currentIdSet)).length,
@@ -1100,7 +926,7 @@ function TabEditor({ store, toast }) {
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(BackcheckCard, {
             running: batchRun && batchRun.engine === "backcheck" ? batchRun : null,
-            onRun: runBackcheckBatch, onStop: () => { stopRef.current = true; },
+            onRun: runBackcheckBatch, onStop: stopJob,
             models: gptModels, model: bcModel, modelInfo: bcModelInfo, onModel: pickBcModel,
             judge: bcJudge, onJudge: () => setBcJudge(v => !v),
             judgeModel: judgeModel, judgeModelInfo: judgeModelInfo, onJudgeModel: pickJudgeModel,
@@ -1268,8 +1094,8 @@ function TabEditor({ store, toast }) {
           })(),
           React.createElement("p", { className: "muted", style: { margin: 0, fontSize: 12.5, lineHeight: 1.6 } },
             "Оценка ориентировочная: считается по объёму текста, фактический расход зависит от ответа модели. " +
-            "Пакет идёт порциями по " + BATCH_CHUNK + " сегментов, переводы сохраняются после каждой порции — " +
-            "остановка не откатывает уже сделанное.")
+            "Прогон идёт на сервере порциями по " + BATCH_CHUNK + " сегментов, переводы сохраняются после каждой — " +
+            "вкладку можно закрыть, а остановка не откатывает уже сделанное.")
         )
       );
     })(),

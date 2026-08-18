@@ -118,11 +118,68 @@ PAIR_RULES = [
     },
 ]
 
-NEGATION_RU = ["не", "нет", "без", "отрицает", "исключено", "не выявлено"]
-NEGATION_EN = ["no", "not", "without", "denies", "denied", "negative for", "not detected", "not identified"]
+# ─── Реестр правил: предметная область × языковая пара ───────────────
+# Раньше все правила лежали одним списком и молча предполагали медицину и
+# пару RU→EN. В юридическом переводе на немецкий «bay-like → scalloped» —
+# мусор, а «левый → left» просто не сработает: у правил русские ключи.
+#
+# Теперь набор собирается из двух слоёв:
+#   * языконезависимое — числа, единицы, соответствие глоссарию: работает всегда;
+#   * правила пары языков и области — подключаются, только если проект совпал
+#     и по языкам, и по области. Не совпал — проверка молчит, а не врёт.
+#
+# Добавить область или пару языков = добавить запись здесь. Больше нигде.
 
-GLOSSARY_QA_SKIP_SRC = {"сахар", "нос", "отношение", "первичный"}
-GLOSSARY_QA_SKIP_TARGET = {"sugar", "nose", "attitude", "white"}
+PAIRS_ORIENTATION_RU_EN = [r for r in PAIR_RULES if r["issue_type"] == "laterality_shift"]
+PAIRS_ANATOMY_RU_EN = [r for r in PAIR_RULES if r["issue_type"] != "laterality_shift"]
+
+NEGATION_MARKERS = {
+    "RU": ["не", "нет", "без", "отрицает", "исключено", "не выявлено"],
+    "EN": ["no", "not", "without", "denies", "denied", "negative for",
+           "not detected", "not identified"],
+}
+
+# Ключ — (область, язык оригинала, язык перевода)
+DOMAIN_RULES = {
+    ("medical", "RU", "EN"): {
+        "pairs": PAIRS_ORIENTATION_RU_EN + PAIRS_ANATOMY_RU_EN,
+        "style": STYLE_RULES,
+        "skip_src": {"сахар", "нос", "отношение", "первичный"},
+        "skip_tgt": {"sugar", "nose", "attitude", "white"},
+    },
+    ("pharma", "RU", "EN"): {
+        "pairs": PAIRS_ORIENTATION_RU_EN,
+        "style": [],
+        "skip_src": {"сахар", "отношение"},
+        "skip_tgt": {"sugar", "attitude"},
+    },
+    ("technical", "RU", "EN"): {
+        # Лево/право и верх/низ важны в чертежах и инструкциях ровно так же
+        "pairs": PAIRS_ORIENTATION_RU_EN + [r for r in PAIRS_ANATOMY_RU_EN
+                                            if r["issue_type"] == "upper_lower_shift"],
+        "style": [], "skip_src": set(), "skip_tgt": set(),
+    },
+}
+
+# Область без своей записи получает только языконезависимые проверки:
+# лучше молчать, чем выдумывать правила, которых для этой пары никто не писал.
+EMPTY_RULES = {"pairs": [], "style": [], "skip_src": set(), "skip_tgt": set()}
+
+
+def rules_for(domain=None, src_lang="RU", tgt_lang="EN"):
+    key = ((domain or "medical").lower(), (src_lang or "").upper(), (tgt_lang or "").upper())
+    return DOMAIN_RULES.get(key, EMPTY_RULES)
+
+
+def negation_markers(lang):
+    return NEGATION_MARKERS.get((lang or "").upper(), [])
+
+
+NEGATION_RU = NEGATION_MARKERS["RU"]      # исторические имена: на них ссылается legacy-код
+NEGATION_EN = NEGATION_MARKERS["EN"]
+
+GLOSSARY_QA_SKIP_SRC = DOMAIN_RULES[("medical", "RU", "EN")]["skip_src"]
+GLOSSARY_QA_SKIP_TARGET = DOMAIN_RULES[("medical", "RU", "EN")]["skip_tgt"]
 
 
 def enabled_from_env(value):
@@ -154,7 +211,7 @@ def _has_target_variant(text, term):
     return any(_has_exact_term(text, v) for v in _target_variants(term))
 
 
-def _should_validate_glossary_term(src, tgt):
+def _should_validate_glossary_term(src, tgt, skip_src=None, skip_tgt=None):
     src_l = _norm(src)
     variants = [_norm(v) for v in _target_variants(tgt)]
     if src_l in GLOSSARY_QA_SKIP_SRC:
@@ -218,7 +275,8 @@ def build_context_package(source_ru, prev_ru="", next_ru="", glossary_matches=No
             for g in glossary_matches[:20]
         ],
         "tm_examples": [tm_match] if tm_match else [],
-        "forbidden_terms": [{"bad": r["bad"], "preferred": r["preferred"]} for r in STYLE_RULES],
+        "forbidden_terms": [{"bad": r["bad"], "preferred": r["preferred"]}
+                            for r in rules_for(domain, "RU", "EN")["style"]],
         "style_rules": [
             "Back-check checks semantic preservation only.",
             "Medical Style QA must catch literal calques and weak medical collocations.",
@@ -229,7 +287,12 @@ def build_context_package(source_ru, prev_ru="", next_ru="", glossary_matches=No
     }
 
 
-def deterministic_issues(source_ru, translated_en, glossary_matches=None):
+def deterministic_issues(source_ru, translated_en, glossary_matches=None,
+                        domain=None, src_lang="RU", tgt_lang="EN"):
+    """Проверки правилами. Числа, единицы и соответствие глоссарию работают для
+    любой пары языков; правила направлений и стиля — только там, где они описаны
+    для этой области и этой пары (см. DOMAIN_RULES)."""
+    rules = rules_for(domain, src_lang, tgt_lang)
     issues = []
     source = source_ru or ""
     target = translated_en or ""
@@ -256,16 +319,19 @@ def deterministic_issues(source_ru, translated_en, glossary_matches=None):
             source_fragment=", ".join(src_units),
         ))
 
-    src_has_neg = _contains_any(source, NEGATION_RU)
-    tgt_has_neg = _contains_any(target, NEGATION_EN)
-    if src_has_neg != tgt_has_neg:
+    src_neg, tgt_neg = negation_markers(src_lang), negation_markers(tgt_lang)
+    src_has_neg = _contains_any(source, src_neg) if src_neg else None
+    tgt_has_neg = _contains_any(target, tgt_neg) if tgt_neg else None
+    # Нет списка маркеров для языка — молчим: выдуманное «отрицание потерялось»
+    # хуже отсутствующей проверки.
+    if src_neg and tgt_neg and src_has_neg != tgt_has_neg:
         issues.append(_make_issue(
             "negation_shift",
             "critical",
             "Отрицание изменилось или потерялось между источником и переводом.",
         ))
 
-    for rule in PAIR_RULES:
+    for rule in rules["pairs"]:
         if not _contains_any(source, rule["source_terms"]):
             continue
         has_expected = _contains_any(target, rule["target_terms"])
@@ -279,7 +345,7 @@ def deterministic_issues(source_ru, translated_en, glossary_matches=None):
                 target_fragment=", ".join(rule["target_terms"]),
             ))
 
-    for style_rule in STYLE_RULES:
+    for style_rule in rules["style"]:
         bad = style_rule["bad"]
         if bad in target_l:
             issues.append(_make_issue(
@@ -298,7 +364,7 @@ def deterministic_issues(source_ru, translated_en, glossary_matches=None):
         tgt = (g.get("tgt") or g.get("target") or "").strip()
         if not src or not tgt:
             continue
-        if not _should_validate_glossary_term(src, tgt):
+        if not _should_validate_glossary_term(src, tgt, rules["skip_src"], rules["skip_tgt"]):
             continue
         if _has_exact_term(source, src) and not _has_target_variant(target, tgt):
             issues.append(_make_issue(
@@ -320,13 +386,6 @@ def _corrected_translation(translated_en, issues):
         good = issue.get("suggested_fragment") or ""
         if bad and good:
             corrected = re.sub(re.escape(bad), good, corrected, flags=re.IGNORECASE)
-    if "outer contour of the cavity wall" in corrected.lower() and "scalloped" in corrected.lower():
-        corrected = re.sub(
-            r"the inner is uneven,\s*scalloped",
-            "while the inner contour is irregular and scalloped",
-            corrected,
-            flags=re.IGNORECASE,
-        )
     return corrected
 
 
@@ -414,13 +473,17 @@ def _term_candidates(issues, source_ru):
     return candidates
 
 
-def run_medical_qa(source_ru, translated_en, backtranslated_ru="", glossary_matches=None, tm_match=None, engine_qa="deterministic+mvp"):
+def run_medical_qa(source_ru, translated_en, backtranslated_ru="", glossary_matches=None,
+                   tm_match=None, engine_qa="deterministic+mvp", domain=None,
+                   src_lang="RU", tgt_lang="EN"):
     context_package = build_context_package(
         source_ru,
         glossary_matches=glossary_matches or [],
         tm_match=tm_match,
+        domain=domain or "medical",
     )
-    issues = deterministic_issues(source_ru, translated_en, glossary_matches=glossary_matches)
+    issues = deterministic_issues(source_ru, translated_en, glossary_matches=glossary_matches,
+                                  domain=domain, src_lang=src_lang, tgt_lang=tgt_lang)
     semantic_equivalence = not any(i.get("type") in {
         "number_unit_dosage_mismatch",
         "negation_shift",
@@ -608,8 +671,11 @@ def _term_survived(term, back_stems):
     return bool(ts) and all(t in back_stems for t in ts)
 
 
-def backcheck_issues(source_ru, back_ru, glossary_matches=None):
-    """Расхождения между оригиналом и обратным переводом."""
+def backcheck_issues(source_ru, back_ru, glossary_matches=None, domain=None, src_lang="RU"):
+    """Расхождения между оригиналом и обратным переводом.
+
+    Обе стороны здесь на языке ОРИГИНАЛА, поэтому и маркеры отрицания, и правила
+    направлений берутся по src_lang: сравниваем русский с русским."""
     issues = []
     source = source_ru or ""
     back = back_ru or ""
@@ -641,10 +707,12 @@ def backcheck_issues(source_ru, back_ru, glossary_matches=None):
             "не должны меняться местами.",
             detected_by="backcheck_comparator"))
 
-    for rule in PAIR_RULES:
+    pairs = rules_for(domain, src_lang, src_lang)["pairs"] or rules_for(domain, src_lang, "EN")["pairs"]
+    by_name = {r["name"]: r for r in pairs}
+    for rule in pairs:
         if not _contains_any(source, rule["source_terms"]):
             continue
-        opposite = _PAIR_BY_NAME.get(_PAIR_OPPOSITE.get(rule["name"], ""))
+        opposite = by_name.get(_PAIR_OPPOSITE.get(rule["name"], ""))
         if not opposite:
             continue
         # Ошибка — не отсутствие слова (это может быть перефразировка),
@@ -714,7 +782,8 @@ def apply_judge_verdict(result, verdict):
     return result
 
 
-def run_backcheck(source_ru, back_ru, glossary_matches=None, semantic=None, semantic_fn=None):
+def run_backcheck(source_ru, back_ru, glossary_matches=None, semantic=None, semantic_fn=None,
+                  domain=None, src_lang="RU"):
     """Оценка соответствия обратного перевода оригиналу: 0-100 и причины.
 
     semantic    — косинус эмбеддингов оригинала и обратного перевода, если посчитан.
@@ -728,7 +797,7 @@ def run_backcheck(source_ru, back_ru, glossary_matches=None, semantic=None, sema
         return {"score": None, "band": None, "hard": False, "recall": None, "issues": [],
                 "terms_lost": [], "reasons": ["Обратный перевод не выполнен"]}
 
-    issues, lost = backcheck_issues(source_ru, back_ru, glossary_matches)
+    issues, lost = backcheck_issues(source_ru, back_ru, glossary_matches, domain=domain, src_lang=src_lang)
     hard = _hard_issue(issues)
     recall = _content_recall(source_ru, back_ru)
     base = recall ** BACKCHECK_RECALL_CURVE

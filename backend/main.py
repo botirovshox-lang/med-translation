@@ -342,31 +342,45 @@ def _google_with_gloss(text: str, src: str, tgt: str, gloss_hits: list) -> str:
 #   examples    — типичные кальки этой области (можно пусто).
 DOMAINS = [
     {"id": "medical", "label": "Медицина", "en": "medical",
+     "cats": ["Anatomy", "Cardiology", "Disease", "Dosage", "Symptom", "Lab", "Procedure", "Device", "Document"],
+     "extract": "Domain terminology only: diseases, anatomy, procedures, drugs, lab tests, devices.",
      "expert": "medical translator specializing in biomedical and clinical texts",
      "terminology": "standard medical terminology as used in peer-reviewed clinical literature",
      "examples": "BAD: 'oxide nitrogena', 'leukocidin', 'rear cyclitis'. "
                  "GOOD: 'nitric oxide', 'leukocytes', 'posterior cyclitis'."},
     {"id": "pharma", "label": "Фармацевтика", "en": "pharmaceutical",
+     "cats": ["Substance", "Dosage", "Form", "Route", "Regulatory", "Trial", "Document"],
+     "extract": "Domain terminology only: substances, dosage forms, routes, regulatory and trial terms.",
      "expert": "pharmaceutical translator working on drug labels, SmPCs and clinical trial documents",
      "terminology": "standard pharmaceutical and regulatory terminology (INN names, dosage forms, routes)",
      "examples": ""},
     {"id": "legal", "label": "Юриспруденция", "en": "legal",
+     "cats": ["Contract", "Court", "Corporate", "Property", "Obligation", "Party", "Document"],
+     "extract": "Domain terminology only: legal concepts, instruments, procedural and corporate terms.",
      "expert": "legal translator working on contracts, court documents and corporate filings",
      "terminology": "standard legal terminology of the target language, keeping the legal effect intact",
      "examples": ""},
     {"id": "technical", "label": "Техника", "en": "technical",
+     "cats": ["Part", "Material", "Process", "Measurement", "Safety", "Equipment", "Document"],
+     "extract": "Domain terminology only: parts, materials, processes, measurements, equipment.",
      "expert": "technical translator working on engineering documentation and manuals",
      "terminology": "standard engineering terminology and unit conventions",
      "examples": ""},
     {"id": "finance", "label": "Финансы", "en": "financial",
+     "cats": ["Accounting", "Reporting", "Tax", "Instrument", "Metric", "Audit", "Document"],
+     "extract": "Domain terminology only: accounting, reporting, tax and instrument terms.",
      "expert": "financial translator working on reports, statements and audit documents",
      "terminology": "standard accounting and financial terminology",
      "examples": ""},
     {"id": "it", "label": "IT", "en": "software",
+     "cats": ["UI", "API", "Data", "Security", "Infrastructure", "Process", "Document"],
+     "extract": "Domain terminology only: interface, API, data, security and infrastructure terms.",
      "expert": "software localization specialist",
      "terminology": "established terminology of the platform and the target locale",
      "examples": ""},
     {"id": "general", "label": "Общая тематика", "en": "general-purpose",
+     "cats": ["Term", "Name", "Document"],
+     "extract": "Only stable multi-word terms and named entities; skip ordinary vocabulary.",
      "expert": "professional translator",
      "terminology": "standard contemporary usage",
      "examples": ""},
@@ -477,21 +491,26 @@ def _semantic_similarity(source_ru: str, back_ru: str):
         return None
 
 
-_JUDGE_SYSTEM = (
-    "Ты — медицинский редактор. Тебе дают исходный текст на русском и его ОБРАТНЫЙ перевод "
-    "(текст перевели на английский, затем обратно на русский). Твоя задача — понять, "
-    "сохранился ли медицинский смысл.\n\n"
-    "Считай расхождением: подмену понятия или термина на другое (например «лимфаденит» → "
-    "«аденолимфит» — это разные вещи), изменение числа, дозировки, единицы, отрицания, "
-    "стороны, анатомической локализации, степени уверенности диагноза.\n"
-    "НЕ считай расхождением: синонимы, изменённый порядок слов, стилистические различия, "
-    "разные падежи и формы, если медицинский смысл тот же.\n\n"
-    "Верни ТОЛЬКО JSON без пояснений:\n"
-    '{"same_meaning": true|false, "severity": "none"|"minor"|"major"|"critical", '
-    '"divergences": ["короткое описание расхождения"], "comment": "одно предложение по-русски"}\n'
-    "severity: none — смысл идентичен; minor — стилистика; major — заметное смысловое "
-    "расхождение; critical — подмена понятия, числа, отрицания или стороны."
-)
+def _judge_system(domain: dict, src_lang: str) -> str:
+    """Промпт судьи. Раньше он был зашито медицинским и русским: «Ты —
+    медицинский редактор», примеры про лимфаденит, «текст на русском».
+    Для юридического проекта на немецкий это мешало, а не помогало."""
+    return (
+        "Ты — редактор перевода, специализация: " + domain["label"].lower() + ". "
+        "Тебе дают исходный текст (язык: " + src_lang + ") и его ОБРАТНЫЙ перевод "
+        "(текст перевели на другой язык, затем обратно). Твоя задача — понять, "
+        "сохранился ли смысл.\n\n"
+        "Считай расхождением: подмену понятия или термина на другое (даже похожее по "
+        "звучанию — это разные вещи), изменение числа, количества, единицы, отрицания, "
+        "стороны, направления, степени уверенности утверждения.\n"
+        "НЕ считай расхождением: синонимы, изменённый порядок слов, стилистические "
+        "различия, разные грамматические формы, если смысл тот же.\n\n"
+        "Верни ТОЛЬКО JSON без пояснений:\n"
+        '{"same_meaning": true|false, "severity": "none"|"minor"|"major"|"critical", '
+        '"divergences": ["короткое описание расхождения"], "comment": "одно предложение по-русски"}\n'
+        "severity: none — смысл идентичен; minor — стилистика; major — заметное смысловое "
+        "расхождение; critical — подмена понятия, числа, отрицания или стороны."
+    )
 
 
 # ─── Проверка терминологии перевода ──────────────────────────────────
@@ -575,10 +594,12 @@ def _openai_termcheck(source: str, target: str, src_lang: str, tgt_lang: str,
         return None
 
 
-def _openai_judge(source_ru: str, back_ru: str, model: str = None) -> Optional[dict]:
+def _openai_judge(source_ru: str, back_ru: str, model: str = None,
+                  domain_id: Optional[str] = None, src_lang: str = "RU") -> Optional[dict]:
     """Вердикт модели по паре «оригинал / обратный перевод»."""
     import json as _json
     import openai
+    dom = _resolve_domain(domain_id)
     mdl = _resolve_model(model or JUDGE_DEFAULT_MODEL)
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
     extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
@@ -587,7 +608,7 @@ def _openai_judge(source_ru: str, back_ru: str, model: str = None) -> Optional[d
         resp = client.chat.completions.create(
             model=mdl["id"],
             messages=[
-                {"role": "system", "content": _JUDGE_SYSTEM},
+                {"role": "system", "content": _judge_system(dom, src_lang)},
                 {"role": "user", "content": "ОРИГИНАЛ:\n" + source_ru + "\n\nОБРАТНЫЙ ПЕРЕВОД:\n" + back_ru},
             ],
             **extra,
@@ -1802,25 +1823,29 @@ def reject_term_candidate(cid: int):
 
 # Извлечение терминов из подтверждённых сегментов. Платный прогон: вызывается
 # только по кнопке и только по подтверждённым парам.
-_TERM_EXTRACT_SYSTEM = """You extract bilingual medical terminology pairs from confirmed
-translation segments. Return ONLY a JSON array, no prose.
+def _term_extract_system(domain: dict) -> str:
+    """Промпт извлечения терминов. Категории и примеры берутся из области:
+    список «Anatomy|Cardiology|Dosage» в юридическом проекте бессмыслен."""
+    return (
+        "You extract bilingual " + domain["en"] + " terminology pairs from confirmed\n"
+        "translation segments. Return ONLY a JSON array, no prose.\n\n"
+        'Each item: {"src": <term in the source language>, "tgt": <its translation, copied from the\n'
+        'target segment>, "cat": <one of ' + "|".join(domain["cats"]) + '>}\n\n'
+        "RULES:\n"
+        "1. " + domain["extract"] + "\n"
+        "2. Give the source term in dictionary form (nominative singular).\n"
+        "3. The target side MUST be copied from the segment as written, never invented.\n"
+        "4. Skip general vocabulary, numbers, whole sentences, anything longer than 5 words.\n"
+        "5. At most 5 pairs per segment. Return [] if the segment has no terminology.\n"
+    )
 
-Each item: {"src": <term in the source language>, "tgt": <its translation, copied from the
-target segment>, "cat": <Anatomy|Cardiology|Disease|Dosage|Symptom|Lab|Procedure|Device|Document>}
 
-RULES:
-1. Domain terminology only: diseases, anatomy, procedures, drugs, lab tests, devices.
-2. Give the source term in dictionary form (nominative singular).
-3. The target side MUST be copied from the segment as written, never invented.
-4. Skip general vocabulary, numbers, whole sentences, anything longer than 5 words.
-5. At most 5 pairs per segment. Return [] if the segment has no terminology.
-"""
-
-
-def _extract_terms_call(pairs: list, model: Optional[str] = None) -> list:
+def _extract_terms_call(pairs: list, model: Optional[str] = None,
+                        domain_id: Optional[str] = None) -> list:
     """Один вызов модели на пачку сегментов. Возвращает список пар или []."""
     import json as _json
     import openai
+    dom = _resolve_domain(domain_id)
     mdl = _resolve_model(model or DEFAULT_OPENAI_MODEL)
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
     body = "\n\n".join(f"[{i + 1}] SRC: {p[0]}\n    TGT: {p[1]}" for i, p in enumerate(pairs))
@@ -1829,7 +1854,7 @@ def _extract_terms_call(pairs: list, model: Optional[str] = None) -> list:
     try:
         resp = client.chat.completions.create(
             model=mdl["id"],
-            messages=[{"role": "system", "content": _TERM_EXTRACT_SYSTEM},
+            messages=[{"role": "system", "content": _term_extract_system(dom)},
                       {"role": "user", "content": body}],
             **extra,
         )
@@ -1880,7 +1905,8 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
     CHUNK = 10
     for i in range(0, len(segs), CHUNK):
         chunk = segs[i:i + CHUNK]
-        for item in _extract_terms_call([(s["source"], s["target"]) for s in chunk], req.model):
+        for item in _extract_terms_call([(s["source"], s["target"]) for s in chunk],
+                                        req.model, project.get("domain")):
             known = next((g for g in STATE["glossary"]
                           if _norm_key(g.get("src")) == _norm_key(item.get("src"))), None)
             if known and _norm_key(known.get("tgt")) == _norm_key(item.get("tgt")):
@@ -2013,7 +2039,8 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
     # незачем. Решение принимает medical_qa — он и знает состав находок.
     res = (medical_qa_mod.run_backcheck(
         source_text, back, gloss_hits,
-        semantic_fn=lambda: _semantic_similarity(source_text, back)) if medical_qa_mod else {})
+        semantic_fn=lambda: _semantic_similarity(source_text, back),
+        domain=project.get("domain"), src_lang=project.get("src", "RU")) if medical_qa_mod else {})
 
     # Судья — только для средней зоны: наверху и внизу шкалы вопрос уже решён.
     judged, judge_skipped = False, None
@@ -2027,7 +2054,8 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
             # его вердикт ничего не изменит, а вызов стоит денег.
             judge_skipped = "hard"
         else:
-            verdict = _openai_judge(source_text, back, judge_model)
+            verdict = _openai_judge(source_text, back, judge_model,
+                                    project.get("domain"), project.get("src", "RU"))
             if verdict:
                 res = medical_qa_mod.apply_judge_verdict(res, verdict)
                 judged = True
@@ -2641,6 +2669,9 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True) -> dict:
         glossary_matches=gloss_hits,
         tm_match=tm_hit,
         engine_qa="medical_qa_mvp",
+        domain=project.get("domain"),
+        src_lang=project.get("src", "RU"),
+        tgt_lang=project.get("tgt", "EN"),
     )
 
     seg["backtranslated_ru"] = qa_result["literal_backcheck"]["backtranslated_ru"]

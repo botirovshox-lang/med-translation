@@ -1213,6 +1213,21 @@ def _impact_fingerprint(project: dict) -> str:
     return str(_GLOSS_EPOCH[0]) + ":" + hashlib.sha1(body.encode("utf-8")).hexdigest()
 
 
+class SegmentsFetchRequest(BaseModel):
+    ids: List[int]
+
+
+@app.post("/api/projects/{pid}/segments/fetch")
+def fetch_segments(pid: int, req: SegmentsFetchRequest):
+    """Отдать конкретные сегменты. Во время прогона клиенту нужны только те,
+    что изменились: полный проект на 2670 сегментов весит 5 МБ, и тянуть его
+    каждые несколько секунд — это мегабайты трафика и подвисающая таблица."""
+    project = get_project(pid)
+    wanted = set(req.ids[:1000])
+    return {"ok": True, "segments": [_segment_for_client(s) for s in list(project["segments"])
+                                     if s.get("id") in wanted]}
+
+
 @app.get("/api/projects/{pid}/glossary-impact")
 def glossary_impact(pid: int, refresh: bool = False):
     """Сегменты проекта, чей перевод не соответствует ПРОВЕРЕННЫМ записям глоссария.
@@ -1556,14 +1571,25 @@ def _trim_term_queue():
         q.remove(c)
 
 
+_TERM_QUEUE_LOCK = threading.Lock()
+
+
 def _queue_term(kind: str, src: str, tgt: str, **extra) -> Optional[dict]:
     """Кандидат в глоссарий. Повтор той же пары не плодит запись, а поднимает
     hits: по нему видно, какая проблема встречается чаще всего. Отклонённое
-    второй раз не всплывает."""
+    второй раз не всплывает.
+
+    Под локом: сегменты порции считаются параллельно, а очередь одна — без него
+    два потока могли бы завести две записи об одном и том же."""
     src_n, tgt_n = _norm_key(src), _norm_key(tgt)
     if not src_n:
         return None
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    with _TERM_QUEUE_LOCK:
+        return _queue_term_locked(kind, src, tgt, src_n, tgt_n, now, extra)
+
+
+def _queue_term_locked(kind, src, tgt, src_n, tgt_n, now, extra):
     for c in _term_queue():
         if (c.get("kind") == kind and _norm_key(c.get("src")) == src_n
                 and _norm_key(c.get("tgt")) == tgt_n):
@@ -1870,6 +1896,29 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
     return {"ok": True, "scanned": len(segs), "skipped_cached": skipped_cached, "candidates": found}
 
 
+# ─── Параллельные вызовы внутри порции ───────────────────────────────
+# Сегменты порции независимы, а каждый вызов модели — это 3-6 секунд ожидания
+# сети, а не работы процессора. Гнать их по одному значит держать паузу длиной
+# в прогон: 2670 сегментов по 5 с — почти четыре часа. Считаем параллельно.
+#
+# Потолок скромный: слишком агрессивная параллельность упирается в rate limit
+# провайдера, и вместо ускорения получаются 429 и повторы. RUN_WORKERS можно
+# поднять переменной окружения, если лимиты аккаунта позволяют.
+RUN_WORKERS = max(1, min(int(os.environ.get("RUN_WORKERS", "6")), 16))
+
+
+def _run_parallel(items: list, fn):
+    """Выполнить fn для каждого элемента, сохранив порядок результатов.
+    fn обязана ловить свои исключения сама: одна упавшая пара не должна
+    ронять всю порцию."""
+    if RUN_WORKERS <= 1 or len(items) <= 1:
+        return [fn(x) for x in items]
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(RUN_WORKERS, len(items)),
+                            thread_name_prefix="mcat-run") as pool:
+        return list(pool.map(fn, items))
+
+
 # Флаг «текущий прогон просят остановить». Пакетные циклы сверяются с ним
 # после каждого сегмента: раньше остановка ждала конца порции, а это до минуты
 # на переводе и несколько минут на ремонте — пользователь считал кнопку мёртвой.
@@ -1904,32 +1953,28 @@ def _backcheck_cached(seg: dict, mdl_id: str, use_judge: bool) -> bool:
     return score is not None and not (lo <= score <= hi)
 
 
+def _segment_for_client(seg: dict) -> dict:
+    """Сегмент с производными признаками stale/tried. Хеши считаются здесь:
+    браузеру sha1 не пересчитать, а без них он не отличит устаревшую проверку
+    от актуальной."""
+    try:
+        out = dict(seg)
+    except RuntimeError:
+        out = dict(seg)          # правка из фонового потока длится микросекунды
+    cur = _text_hash(out.get("target") or "")
+    bc, tc, rp = out.get("backcheck"), out.get("termcheck"), out.get("repair")
+    if bc:
+        out["backcheck"] = {**bc, "stale": bc.get("target_hash") != cur}
+    if tc:
+        out["termcheck"] = {**tc, "stale": tc.get("target_hash") != cur}
+    if rp:
+        out["repair"] = {**rp, "tried": rp.get("source_hash") == cur}
+    return out
+
+
 def _project_for_client(project: dict) -> dict:
-    """Копия проекта с производным признаком stale у back-check и проверки
-    терминологии: перевод изменился после проверки. Хеш считается тут, браузеру
-    sha1 не пересчитать, а без этого фронтенд не отличит устаревшую оценку от
-    актуальной."""
-    segs = []
-    # list(...) и dict(...) — снимок: фоновый прогон правит те же сегменты прямо
-    # сейчас, и без копии итерация может упасть на «dict changed size».
-    for s in list(project["segments"]):
-        try:
-            s = dict(s)
-        except RuntimeError:
-            s = dict(s)          # одна повторная попытка: правка длится микросекунды
-        cur = _text_hash(s.get("target") or "")
-        out = s
-        bc, tc = s.get("backcheck"), s.get("termcheck")
-        if bc:
-            out = {**out, "backcheck": {**bc, "stale": bc.get("target_hash") != cur}}
-        if tc:
-            out = {**out, "termcheck": {**tc, "stale": tc.get("target_hash") != cur}}
-        rp = s.get("repair")
-        if rp:
-            # tried — этот же текст уже пытались чинить; браузеру sha1 не посчитать
-            out = {**out, "repair": {**rp, "tried": rp.get("source_hash") == cur}}
-        segs.append(out)
-    return {**project, "segments": segs}
+    """Копия проекта с производными признаками у каждого сегмента."""
+    return {**project, "segments": [_segment_for_client(s) for s in list(project["segments"])]}
 
 
 def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None,
@@ -2124,33 +2169,47 @@ def termcheck_batch(pid: int, req: TermcheckBatchRequest):
     targets = candidates[:limit]
 
     processed, errors, flagged = [], [], 0
-    done_pairs: dict = {}
-    duplicates, skipped_trivial = 0, 0
+    groups: dict = {}
+    order: list = []
     for seg in targets:
-        if _job_should_stop():
-            break
         pair = (_norm_key(seg.get("source")), _norm_key(seg.get("target")))
-        if pair in done_pairs:
-            seg["termcheck"] = json.loads(json.dumps(done_pairs[pair]))
-            processed.append(seg["id"])
-            duplicates += 1
-            if seg["termcheck"]["findings"]:
-                flagged += 1
-            continue
+        if pair not in groups:
+            groups[pair] = []
+            order.append(pair)
+        groups[pair].append(seg)
+    duplicates, skipped_trivial = 0, 0
+
+    def _tc_one(pair):
+        seg = groups[pair][0]
+        if _job_should_stop():
+            return {"pair": pair, "skip": True}
         try:
             r = _run_segment_termcheck(seg, project, req.model)
-            if r.get("ok"):
-                processed.append(seg["id"])
-                done_pairs[pair] = seg["termcheck"]
-                if r.get("skipped"):
-                    skipped_trivial += 1
-                if r["termcheck"]["findings"]:
-                    flagged += 1
-            else:
-                errors.append({"id": seg["id"], "error": r.get("error", "unknown")})
+            return {"pair": pair, "ok": bool(r.get("ok")), "error": r.get("error"),
+                    "trivial": bool(r.get("skipped"))}
         except Exception as e:
-            errors.append({"id": seg["id"], "error": str(e)})
             print(f"[backend] termcheck batch seg#{seg['id']}: {e}", file=sys.stderr)
+            return {"pair": pair, "ok": False, "error": str(e)}
+
+    for res in _run_parallel(order, _tc_one):
+        segs = groups[res["pair"]]
+        if res.get("skip"):
+            continue
+        if not res.get("ok"):
+            errors.append({"id": segs[0]["id"], "error": res.get("error", "unknown")})
+            continue
+        lead = segs[0]
+        processed.append(lead["id"])
+        if res.get("trivial"):
+            skipped_trivial += 1
+        if lead["termcheck"]["findings"]:
+            flagged += 1
+        for sg in segs[1:]:
+            sg["termcheck"] = json.loads(json.dumps(lead["termcheck"]))
+            processed.append(sg["id"])
+            duplicates += 1
+            if sg["termcheck"]["findings"]:
+                flagged += 1
     save_state(STATE)
     return {"ok": True, "processed": processed, "count": len(processed),
             "flagged": flagged, "remaining": remaining_after,
@@ -2407,21 +2466,32 @@ def repair_batch(pid: int, req: RepairBatchRequest):
     targets = candidates[:limit]
 
     applied, skipped, errors = [], [], []
-    for seg in targets:
+
+    def _repair_one(seg):
         if _job_should_stop():
-            break
+            return {"seg": seg, "skip": True}
         try:
             r = _run_segment_repair(seg, project, req.model, req.bc_model, req.tc_model,
                                     req.use_judge, req.judge_model)
-            if not r.get("ok"):
-                errors.append({"id": seg["id"], "error": r.get("error", "unknown")})
-            elif r.get("applied"):
-                applied.append(seg["id"])
-            else:
-                skipped.append({"id": seg["id"], "reason": (r.get("repair") or {}).get("reason", "")})
+            return {"seg": seg, "res": r}
         except Exception as e:
-            errors.append({"id": seg["id"], "error": str(e)})
             print(f"[backend] repair batch seg#{seg['id']}: {e}", file=sys.stderr)
+            return {"seg": seg, "error": str(e)}
+
+    for out in _run_parallel(targets, _repair_one):
+        seg = out["seg"]
+        if out.get("skip"):
+            continue
+        if out.get("error"):
+            errors.append({"id": seg["id"], "error": out["error"]})
+            continue
+        r = out["res"]
+        if not r.get("ok"):
+            errors.append({"id": seg["id"], "error": r.get("error", "unknown")})
+        elif r.get("applied"):
+            applied.append(seg["id"])
+        else:
+            skipped.append({"id": seg["id"], "reason": (r.get("repair") or {}).get("reason", "")})
     save_state(STATE)
     return {"ok": True, "applied": applied, "count": len(applied), "skipped": skipped,
             "remaining": remaining_after, "errors": errors,
@@ -2481,29 +2551,42 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
     targets = candidates[:limit]
 
     processed, errors = [], []
-    # Одинаковая пара «оригинал + перевод» даёт одинаковый результат: считаем раз.
-    done_pairs: dict = {}
-    duplicates = 0
+    # Одинаковая пара «оригинал + перевод» даёт одинаковый результат: считаем раз,
+    # а сами уникальные пары проверяем параллельно.
+    groups: dict = {}
+    order: list = []
     for seg in targets:
-        if _job_should_stop():
-            break
         pair = (_norm_key(seg.get("source")), _norm_key(seg.get("target")))
-        if pair in done_pairs:
-            seg["backtranslated_ru"] = done_pairs[pair].get("back", "")
-            seg["backcheck"] = json.loads(json.dumps(done_pairs[pair]))
-            processed.append(seg["id"])
-            duplicates += 1
-            continue
+        if pair not in groups:
+            groups[pair] = []
+            order.append(pair)
+        groups[pair].append(seg)
+    duplicates = 0
+
+    def _bc_one(pair):
+        seg = groups[pair][0]
+        if _job_should_stop():
+            return {"pair": pair, "skip": True}
         try:
             r = _run_segment_backcheck(seg, project, req.model, req.use_judge, req.judge_model)
-            if r.get("ok"):
-                processed.append(seg["id"])
-                done_pairs[pair] = seg["backcheck"]
-            else:
-                errors.append({"id": seg["id"], "error": r.get("error", "unknown")})
+            return {"pair": pair, "ok": bool(r.get("ok")), "error": r.get("error")}
         except Exception as e:
-            errors.append({"id": seg["id"], "error": str(e)})
             print(f"[backend] backcheck batch seg#{seg['id']}: {e}", file=sys.stderr)
+            return {"pair": pair, "ok": False, "error": str(e)}
+
+    for res in _run_parallel(order, _bc_one):
+        segs = groups[res["pair"]]
+        if res.get("skip"):
+            continue
+        if not res.get("ok"):
+            errors.append({"id": segs[0]["id"], "error": res.get("error", "unknown")})
+            continue
+        processed.append(segs[0]["id"])
+        for sg in segs[1:]:
+            sg["backtranslated_ru"] = segs[0].get("backtranslated_ru", "")
+            sg["backcheck"] = json.loads(json.dumps(segs[0]["backcheck"]))
+            processed.append(sg["id"])
+            duplicates += 1
     save_state(STATE)
     return {
         "ok": True,
@@ -2609,18 +2692,25 @@ def batch_medical_qa(pid: int, req: MedicalQABatchRequest = MedicalQABatchReques
     targets = candidates[:req.limit]
     processed = []
     errors = []
-    for seg in targets:
+    def _qa_one(seg):
         if _job_should_stop():
-            break
+            return {"seg": seg, "skip": True}
         try:
-            result = _segment_medical_qa(pid, seg["id"], run_backcheck=req.run_backcheck)
-            if result.get("ok"):
-                processed.append(seg["id"])
-            else:
-                errors.append({"id": seg["id"], "error": result.get("error", "unknown")})
+            return {"seg": seg, "res": _segment_medical_qa(pid, seg["id"], run_backcheck=req.run_backcheck)}
         except Exception as e:
-            errors.append({"id": seg["id"], "error": str(e)})
             print(f"[backend] medical QA batch error seg#{seg['id']}: {e}", file=sys.stderr)
+            return {"seg": seg, "error": str(e)}
+
+    for out in _run_parallel(targets, _qa_one):
+        seg = out["seg"]
+        if out.get("skip"):
+            continue
+        if out.get("error"):
+            errors.append({"id": seg["id"], "error": out["error"]})
+        elif out["res"].get("ok"):
+            processed.append(seg["id"])
+        else:
+            errors.append({"id": seg["id"], "error": out["res"].get("error", "unknown")})
 
     save_state(STATE)
     return {
@@ -2706,20 +2796,22 @@ def batch_translate(pid: int, req: BatchRequest):
     errors = []
     # Повторы внутри порции переводим один раз: в документах один и тот же
     # заголовок встречается десятки раз, и каждый стоил отдельного вызова.
-    done_sources: dict = {}
+    # Группируем ДО вызовов, чтобы уникальные тексты можно было гнать разом.
+    groups: dict = {}
+    order: list = []
     for seg in targets:
+        key = _norm_key(seg["source"])
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(seg)
+
+    def _translate_group(key):
+        """Один вызов на группу одинаковых исходников. Возвращает результат,
+        применяет его основной поток — так мутации STATE остаются в одном месте."""
+        seg = groups[key][0]
         if _job_should_stop():
-            break
-        translation = None
-        dup = done_sources.get(_norm_key(seg["source"]))
-        if dup is not None:
-            seg["target"] = dup["target"]
-            seg["status"] = "translated"
-            seg["route"] = "DUPLICATE"
-            seg["provider"] = dup["provider"]
-            translated.append(seg["id"])
-            dup_hits_count += 1
-            continue
+            return {"key": key, "skip": True}
         gloss_hits, tm_hit = _get_context(seg["source"])
 
         # TM точное совпадение → пропускаем API вызов.
@@ -2727,14 +2819,9 @@ def batch_translate(pid: int, req: BatchRequest):
         # не применяем — иначе «перевести заново выбранной моделью» молча подставляло бы
         # старый текст из памяти. Так же ведёт себя одиночный перевод сегмента.
         if not req.force and tm_hit and tm_hit.get("tgt"):
-            seg["target"] = tm_hit["tgt"]
-            seg["status"] = "confirmed"
-            seg["route"] = "EXACT_TM"
-            seg["provider"] = PROVIDER_TM
-            translated.append(seg["id"])
-            tm_hits_count += 1
-            continue
+            return {"key": key, "tm": True, "text": tm_hit["tgt"]}
 
+        translation = None
         used_provider = None   # чем на самом деле переведено — с учётом fallback на Google
         try:
             if req.engine == "google":
@@ -2752,15 +2839,37 @@ def batch_translate(pid: int, req: BatchRequest):
                 if translation:
                     used_provider = PROVIDER_GOOGLE
         except Exception as e:
-            errors.append(seg["id"])
             print(f"[backend] batch error seg#{seg['id']}: {e}", file=sys.stderr)
-        if translation:
-            seg["target"] = translation
-            seg["status"] = "translated"
-            seg["route"] = "GPT_REQUIRED" if req.engine == "gpt" else "GOOGLE_SAFE"
-            seg["provider"] = used_provider or (PROVIDER_GOOGLE if req.engine == "google" else _resolve_model(req.model)["id"])
-            translated.append(seg["id"])
-            done_sources[_norm_key(seg["source"])] = {"target": translation, "provider": seg["provider"]}
+            return {"key": key, "error": str(e)}
+        if not translation:
+            return {"key": key, "error": "перевод не получен"}
+        return {"key": key, "text": translation,
+                "provider": used_provider or (PROVIDER_GOOGLE if req.engine == "google"
+                                              else _resolve_model(req.model)["id"])}
+
+    for res in _run_parallel(order, _translate_group):
+        segs = groups[res["key"]]
+        if res.get("skip"):
+            continue
+        if res.get("error"):
+            errors.extend(sg["id"] for sg in segs)
+            continue
+        if res.get("tm"):
+            for sg in segs:
+                sg["target"] = res["text"]
+                sg["status"] = "confirmed"
+                sg["route"] = "EXACT_TM"
+                sg["provider"] = PROVIDER_TM
+                translated.append(sg["id"])
+            tm_hits_count += len(segs)
+            continue
+        for i, sg in enumerate(segs):
+            sg["target"] = res["text"]
+            sg["status"] = "translated"
+            sg["provider"] = res["provider"]
+            sg["route"] = ("GPT_REQUIRED" if req.engine == "gpt" else "GOOGLE_SAFE") if i == 0 else "DUPLICATE"
+            translated.append(sg["id"])
+        dup_hits_count += len(segs) - 1
     save_state(STATE)
     return {
         "ok": True,
@@ -3033,6 +3142,7 @@ def _job_run(job: dict):
             job["status"] = "stopped"
             break
         chunk = ids[i:i + chunk_size]
+        job["recent"] = chunk          # клиент подтянет только эти сегменты
         last_err = None
         for attempt in range(JOB_CHUNK_RETRIES + 1):
             try:
@@ -3131,7 +3241,7 @@ def create_job(pid: int, req: JobRequest):
             "params": dict(req.params or {}),
             "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "started": None, "finished": None,
-            "ids": ids, "stop": False,
+            "ids": ids, "stop": False, "recent": [],
         }
         _JOBS[job["id"]] = job
         _trim_jobs()

@@ -311,16 +311,22 @@ function TabEditor({ store, toast }) {
     setBatchRun(job ? { engine: job.kind, done: job.done, total: job.total } : null);
   }, [job && job.id, job && job.done, job && job.total, job && job.status]);
 
-  // Пока прогон идёт, подтягиваем свежие сегменты, чтобы результат было видно сразу
+  // Пока прогон идёт, подтягиваем ТОЛЬКО что он успел посчитать. Раньше сюда
+  // каждые 8 секунд приезжал весь проект — на 2670 сегментах это 5 МБ на запрос
+  // и заметно подвисающая таблица. Теперь сервер называет обработанные id,
+  // и мы забираем именно их.
   useEffect(() => {
-    if (!job || job.status !== "running" || !window.API) return;
+    if (!job || job.status !== "running" || !window.API || !window.API.fetchSegments) return;
     let dead = false;
     const id = setInterval(async () => {
-      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
-      if (!dead && fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
-    }, 8000);
+      const ids = (job.recent || []).slice();
+      if (!ids.length) return;
+      const res = await window.API.safeCall(() => window.API.fetchSegments(project.id, ids));
+      if (dead || !res || !res.segments) return;
+      res.segments.forEach(s => store.updateSegment(project.id, s.id, s));
+    }, 3000);
     return () => { dead = true; clearInterval(id); };
-  }, [job && job.id, job && job.status]);
+  }, [job && job.id, job && job.status, job && (job.recent || []).join(",")]);
 
   // Расхождения с одобренными терминами считает сервер тем же матчером, что и
   // инъекция в промпт. Пересчитываем при смене проекта и после каждого прогона:

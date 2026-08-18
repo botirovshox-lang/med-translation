@@ -714,21 +714,28 @@ def apply_judge_verdict(result, verdict):
     return result
 
 
-def run_backcheck(source_ru, back_ru, glossary_matches=None, semantic=None):
+def run_backcheck(source_ru, back_ru, glossary_matches=None, semantic=None, semantic_fn=None):
     """Оценка соответствия обратного перевода оригиналу: 0-100 и причины.
 
-    semantic — косинус эмбеддингов оригинала и обратного перевода, если посчитан.
+    semantic    — косинус эмбеддингов оригинала и обратного перевода, если посчитан.
+    semantic_fn — ленивый вариант: функция без аргументов, которую зовут ТОЛЬКО
+                  если косинус реально повлияет на результат. При жёсткой находке
+                  (числа, единицы, отрицание, подмена) он игнорируется — значит и
+                  платить за эмбеддинги незачем.
     Работает только по краям шкалы (см. комментарий к BACKCHECK_SEM_*): в средней
     зоне косинус не отличает синонимию от подмены понятия, там решает судья."""
     if not (back_ru or "").strip():
-        return {"score": None, "band": None, "recall": None, "issues": [],
+        return {"score": None, "band": None, "hard": False, "recall": None, "issues": [],
                 "terms_lost": [], "reasons": ["Обратный перевод не выполнен"]}
 
     issues, lost = backcheck_issues(source_ru, back_ru, glossary_matches)
+    hard = _hard_issue(issues)
     recall = _content_recall(source_ru, back_ru)
     base = recall ** BACKCHECK_RECALL_CURVE
     sem_note = None
-    if semantic is not None and not _hard_issue(issues):
+    if semantic is None and semantic_fn is not None and not hard:
+        semantic = semantic_fn()
+    if semantic is not None and not hard:
         # Тексты почти идентичны по смыслу и жёстких находок нет — поднимаем базу
         if semantic >= BACKCHECK_SEM_HIGH:
             base = max(base, BACKCHECK_SEM_HIGH_FLOOR)
@@ -771,6 +778,7 @@ def run_backcheck(source_ru, back_ru, glossary_matches=None, semantic=None):
     return {
         "score": score,
         "band": band_of(score),
+        "hard": hard,
         "recall": round(recall, 3),
         "semantic": round(semantic, 3) if semantic is not None else None,
         "issues": issues,

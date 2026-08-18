@@ -28,6 +28,10 @@ const JUDGE_MODEL_LS_KEY = "mcat_judge_model";
 const BC_SKIP_CONFIRMED_LS_KEY = "mcat_bc_skip_confirmed";
 const SEARCH_SCOPE_LS_KEY = "mcat_search_scope";
 const TC_MODEL_LS_KEY = "mcat_termcheck_model";
+const RP_MODEL_LS_KEY = "mcat_repair_model";
+// Ремонт — самый дорогой прогон: вызов модели плюс перепроверка на сегмент.
+// Порция меньше, чем у остальных, чтобы запрос укладывался в таймаут прокси.
+const REPAIR_CHUNK = 5;
 
 // Цвет полосы соответствия обратного перевода
 function bandColor(color) {
@@ -141,6 +145,9 @@ function TabEditor({ store, toast }) {
   const [tcModel, setTcModel] = useState(() => {
     try { return localStorage.getItem(TC_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
+  const [rpModel, setRpModel] = useState(() => {
+    try { return localStorage.getItem(RP_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
+  });
   const [bcBands, setBcBands] = useState([]);
   const [bcJudge, setBcJudge] = useState(false);          // LLM-судья для средней зоны
   const [judgeModel, setJudgeModel] = useState(() => {
@@ -166,6 +173,7 @@ function TabEditor({ store, toast }) {
       setBcModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.backcheckDefault || d.default || ""));
       setJudgeModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.judgeDefault || d.default || ""));
       setTcModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.termcheckDefault || d.default || ""));
+      setRpModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.repairDefault || d.default || ""));
       if (d.backcheckBands) setBcBands(d.backcheckBands);
       if (d.judgeZone) setJudgeZone(d.judgeZone);
     });
@@ -178,6 +186,11 @@ function TabEditor({ store, toast }) {
     [bcModel, bcJudge, bcSkipConfirmed, store.segmentFilter, checkedSegs.size]);
 
   const gptModelInfo = gptModels.find(m => m.id === gptModel) || null;
+  const pickRpModel = (id) => {
+    setRpModel(id);
+    try { localStorage.setItem(RP_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
+  };
+
   const pickTcModel = (id) => {
     setTcModel(id);
     try { localStorage.setItem(TC_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
@@ -740,6 +753,73 @@ function TabEditor({ store, toast }) {
     }
   };
 
+  // Пакетный ремонт. Порция меньше остальных: на сегмент приходится вызов
+  // модели плюс перепроверка теми проверками, которые ругались.
+  const runRepairBatch = async () => {
+    if (batchRun) return;
+    let currentSegs = project.segments;
+    if (window.API) {
+      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
+      if (fresh && fresh.segments) {
+        store.replaceProjectSegments(project.id, fresh.segments);
+        currentSegs = fresh.segments;
+      }
+    }
+    const idSet = currentIdSet;
+    const targets = currentSegs.filter(s => repairable(s, idSet));
+    if (!targets.length) {
+      toast.warning("Чинить нечего", "Нет сегментов с проверяемыми находками. Сначала прогоните back-check или проверку терминологии.");
+      return;
+    }
+    stopRef.current = false;
+    const ids = targets.map(s => s.id);
+    const total = ids.length;
+    let done = 0, applied = 0, rejected = 0, errCount = 0, failed = false;
+    setBatchRun({ engine: "repair", done: 0, total });
+
+    for (let i = 0; i < ids.length; i += REPAIR_CHUNK) {
+      if (stopRef.current) break;
+      const chunk = ids.slice(i, i + REPAIR_CHUNK);
+      const base = done, t0 = Date.now();
+      const tick = setInterval(() => {
+        const est = Math.min(chunk.length - 0.5, (Date.now() - t0) / 1000 / (EST_SEC_PER_SEG * 2));
+        setBatchRun(b => (b ? { ...b, done: base + est } : b));
+      }, 500);
+      let r = null;
+      if (window.API) r = await callChunkWithRetry(
+        () => window.API.repairBatch(project.id, chunk, REPAIR_CHUNK, {
+          model: rpModel || null, bc_model: bcModel || null, tc_model: tcModel || null,
+          use_judge: bcJudge, judge_model: judgeModel || null }),
+        (n) => toast.warning("Сбой связи", "Порция не прошла, повтор " + n + " из " + CHUNK_RETRIES + "…"));
+      clearInterval(tick);
+      if (!r || !r.ok) { failed = true; break; }
+      applied += (r.applied || []).length;
+      rejected += (r.skipped || []).length;
+      done += (r.applied || []).length + (r.skipped || []).length;
+      errCount += (r.errors || []).length;
+      setBatchRun({ engine: "repair", done, total });
+      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
+      if (fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
+    }
+
+    const stopped = stopRef.current;
+    stopRef.current = false;
+    setBatchRun(null);
+    const errMsg = errCount ? " · ошибок: " + errCount : "";
+    const rejMsg = rejected ? " · откачено (не стало лучше): " + rejected : "";
+    if (failed) {
+      toast.error("Ремонт прерван", "Исправлено " + applied + " из " + total + "." + rejMsg + errMsg);
+    } else if (stopped) {
+      toast.warning("Ремонт остановлен", "Исправлено " + applied + " из " + total + "." + rejMsg);
+    } else if (applied) {
+      toast.success("Ремонт завершён",
+        "Исправлено " + applied + " сегментов" + rejMsg + errMsg + " · статус «Требует проверки», подтвердите вручную");
+    } else {
+      toast.warning("Ничего не исправлено",
+        "Ни один вариант не улучшил оценку — все откачены." + errMsg);
+    }
+  };
+
   const runMedicalQABatch = async () => {
     let currentSegs = project.segments;
     if (window.API) {
@@ -795,6 +875,24 @@ function TabEditor({ store, toast }) {
     if (!(s.target && s.target.trim())) return false;
     if (idSet && !idSet.has(s.id)) return false;
     return !s.termcheck || s.termcheck.stale;
+  };
+
+  // Ремонтировать есть что, если по ТЕКУЩЕМУ переводу есть проверяемые претензии
+  // и этот же текст ещё не пытались чинить. Критерий повторяет серверный
+  // _repairable: иначе кнопка обещала бы работу, которой сервер не найдёт.
+  const REPAIR_REASONS = ["расхождение чисел", "расхождение единиц", "инверсия отрицания",
+                          "подмена на противоположное", "обратный перевод про другое", "потерян термин"];
+  const repairable = (s, idSet) => {
+    if (!(s.target && s.target.trim())) return false;
+    if (idSet && !idSet.has(s.id)) return false;
+    if (s.repair && s.repair.tried) return false;   // этот текст уже пробовали чинить
+    const bc = s.backcheck && !s.backcheck.stale ? s.backcheck : null;
+    const tc = s.termcheck && !s.termcheck.stale ? s.termcheck : null;
+    const bcHit = bc && ((bc.terms_lost || []).length > 0
+      || (bc.reasons || []).some(r => REPAIR_REASONS.some(h => r.indexOf(h) !== -1))
+      || (bc.judge && ["major", "critical"].indexOf(bc.judge.severity) !== -1));
+    const tcHit = tc && (tc.findings || []).some(f => f.severity === "critical" || f.severity === "major");
+    return !!(bcHit || tcHit);
   };
 
   const filterDefs = [
@@ -855,7 +953,7 @@ function TabEditor({ store, toast }) {
 
     // ---- Batch actions ----
     React.createElement("div", { className: "editor-main", style: { paddingBottom: 0 } },
-      React.createElement(Expander, { title: "Пакетный перевод", icon: "zap", right: "2 движка", defaultOpen: false },
+      React.createElement(Expander, { title: "Пакетные прогоны", icon: "zap", right: "перевод · QA · термины · back-check · ремонт", defaultOpen: false },
         React.createElement("div", { className: "grid grid-3" },
           React.createElement(BatchCard, { kind: "google", running: batchRun && batchRun.engine === "google" ? batchRun : null, onRun: () => askRunBatch("google"), onStop: () => { stopRef.current = true; },
             available: pickTargets("google", project.segments).targets.length,
@@ -877,6 +975,14 @@ function TabEditor({ store, toast }) {
             available: project.segments.filter(s => termcheckable(s, currentIdSet)).length,
             flagged: project.segments.filter(s => s.termcheck && !s.termcheck.stale
               && (s.termcheck.findings || []).length).length,
+            checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
+          React.createElement(RepairCard, {
+            running: batchRun && batchRun.engine === "repair" ? batchRun : null,
+            onRun: runRepairBatch, onStop: () => { stopRef.current = true; },
+            models: gptModels, model: rpModel, modelInfo: gptModels.find(m => m.id === rpModel) || null,
+            onModel: pickRpModel,
+            available: project.segments.filter(s => repairable(s, currentIdSet)).length,
+            repaired: project.segments.filter(s => s.repair && s.repair.applied).length,
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(BackcheckCard, {
             running: batchRun && batchRun.engine === "backcheck" ? batchRun : null,
@@ -1002,7 +1108,8 @@ function TabEditor({ store, toast }) {
           ? React.createElement(SegDetail, { key: selected.id, seg: selected, project, store, toast, busy: busy[selected.id],
               onTranslate: (eng) => doTranslate(selected, eng, true), onQA: () => doQA(selected), onMedicalQA: () => doMedicalQA(selected), onConfirm: (draftTarget) => doConfirm(selected, draftTarget),
               bcModels: gptModels, bcModel: bcModel, onBcModel: pickBcModel,
-              bcJudge: bcJudge, judgeModel: judgeModel })
+              bcJudge: bcJudge, judgeModel: judgeModel,
+              tcModel: tcModel, rpModel: rpModel })
           : React.createElement(EmptyState, { icon: "edit", title: "Сегмент не выбран", sub: "Выберите строку в таблице." })
       )
     ),
@@ -1275,6 +1382,37 @@ function BackcheckCard({ running, onRun, onStop, available, done, filtered, mode
   );
 }
 
+function RepairCard({ running, onRun, onStop, available, repaired, filtered, checked, models, model, modelInfo, onModel }) {
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+    React.createElement("div", { className: "row", style: { gap: 10 } },
+      React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-success)" } },
+        React.createElement(Icon, { name: "repeat", size: 19 })),
+      React.createElement("div", null,
+        React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, "Автоматический ремонт",
+          React.createElement(InfoTip, { title: "Автоматический ремонт",
+            body: "Переписывает перевод по КОНКРЕТНЫМ находкам: потерянные термины, расхождения чисел и единиц, инверсия отрицания, вердикт судьи, кальки с предложенной заменой. Не «переведи получше» — модель получает список претензий и правило менять как можно меньше.\n\nПосле правки сегмент перепроверяется теми же проверками, которые ругались. Новый текст остаётся, ТОЛЬКО если оценка не упала и замечаний по терминам не прибавилось; иначе — откат, а вариант модели сохраняется для разбора.\n\nСтатус после ремонта — «Требует проверки», не «Подтверждён»: автоправка не заверяет сама себя. Прежний текст хранится и виден в карточке сегмента.\n\nОдин заход на один текст: пока перевод не изменится, повторно чинить нечего." })),
+        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "После проверок"))
+    ),
+    React.createElement(Select, { value: model || "", onChange: (e) => onModel(e.target.value), style: { fontSize: 13 } },
+      (models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label))),
+    modelInfo && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: -4 } },
+      "$" + modelInfo.in + " / $" + modelInfo.out + " за 1M токенов" + (modelInfo.note ? " · " + modelInfo.note : "")),
+    repaired > 0 && React.createElement("div", { style: { fontSize: 12.5, color: "var(--c-success)", fontWeight: 600 } },
+      "Исправлено: " + repaired),
+    running
+      ? React.createElement("div", null,
+          React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
+            React.createElement("span", { className: "muted" }, "Чиним и перепроверяем…"),
+            React.createElement("span", { style: { fontWeight: 700 } }, Math.round(running.done) + "/" + running.total)),
+          React.createElement(ProgressBar, { value: Math.round(running.done / running.total * 100) }),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop, style: { marginTop: 8 } }, "Остановить"))
+      : React.createElement("div", { className: "row between" },
+          React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+            available + " с находками" + (checked > 0 ? " (отмечено " + checked + ")" : filtered ? " (фильтр)" : "")),
+          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", onClick: onRun, disabled: !available }, "Починить"))
+  );
+}
+
 function TermCheckCard({ running, onRun, onStop, available, flagged, filtered, checked, models, model, modelInfo, onModel }) {
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "row", style: { gap: 10 } },
@@ -1364,6 +1502,12 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
     React.createElement("td", null,
       React.createElement(TMChip, { score: seg.tmScore }),
       // Процент соответствия обратного перевода: цифра + причина в подсказке
+      seg.repair && seg.repair.applied && React.createElement("div", {
+        style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap", color: "var(--c-success)" },
+        title: "Автоматически исправлено " + (seg.repair.at || "")
+          + "\nБыло: " + (seg.repair.from || "")
+          + "\nПричины: " + (seg.repair.issues || []).join("; "),
+      }, "✓ ремонт"),
       seg.termcheck && (seg.termcheck.findings || []).length > 0 && React.createElement("div", {
         style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap",
                  color: seg.termcheck.severity === "critical" ? "var(--c-error)"

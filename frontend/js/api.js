@@ -96,6 +96,8 @@
     exportProject: (pid, format, source)    => call("POST",   `/projects/${pid}/export`,            { format, source: source !== false }),
 
     termcheck:     (pid, sid, model)        => call("POST", `/segments/${pid}/${sid}/termcheck`, { model: model || null }),
+    repair:        (pid, sid, opts)         => call("POST", `/segments/${pid}/${sid}/repair`, opts || {}),
+    repairBatch:   (pid, segIds, limit, opts) => call("POST", `/projects/${pid}/repair/batch`, { segment_ids: segIds || null, limit: limit || 5, ...(opts || {}) }),
     termcheckBatch:(pid, segIds, limit, model, skipCached) => call("POST", `/projects/${pid}/termcheck/batch`, { segment_ids: segIds || null, limit: limit || 10, model: model || null, skip_cached: skipCached !== false }),
 
     /* Подтверждение теперь возвращает {tm, propagate, termCandidates} — см. confirm_segment */

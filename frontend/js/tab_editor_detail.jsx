@@ -1,17 +1,19 @@
 ﻿/* ============================================================
    Segment detail panel (editor right sidebar)
    ============================================================ */
-function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedicalQA, onConfirm, bcModels, bcModel, onBcModel, bcJudge, judgeModel }) {
+function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedicalQA, onConfirm, bcModels, bcModel, onBcModel, bcJudge, judgeModel, tcModel, rpModel }) {
   const [tab, setTab] = useState("context");
   const [draft, setDraft] = useState(seg.target || "");
   const [comment, setComment] = useState("");
   const [infoPanel, setInfoPanel] = useState(null); // 'tm'|'back'|'route'|'risk'|null
   const [backResult, setBackResult] = useState(null); // null|'loading'|string
+  const [termBusy, setTermBusy] = useState(false);
+  const [repairBusy, setRepairBusy] = useState(false);
   const idx = project.segments.findIndex(s => s.id === seg.id) + 1;
   const words = (draft.trim() ? draft.trim().split(/\s+/).length : 0);
   const dirty = draft !== (seg.target || "");
 
-  useEffect(() => { setDraft(seg.target || ""); setInfoPanel(null); setBackResult(null); }, [seg.id]);
+  useEffect(() => { setDraft(seg.target || ""); setInfoPanel(null); setBackResult(null); setTermBusy(false); setRepairBusy(false); }, [seg.id]);
   useEffect(() => { setDraft(seg.target || ""); }, [seg.target, seg.status]);
 
   const saveDraft = () => {
@@ -38,6 +40,63 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
   const qaResult = seg.qa_result || null;
 
   const toggleInfo = (k) => setInfoPanel(p => p === k ? null : k);
+
+  // Проверка терминологии по одному сегменту. Готовый результат показываем без
+  // нового вызова модели — платить второй раз за тот же текст незачем.
+  const openTerms = () => {
+    toggleInfo("terms");
+    if (infoPanel === "terms") return;
+    if (!seg.target || !seg.target.trim()) return;
+    if (seg.termcheck && !seg.termcheck.stale) return;
+    runTerms();
+  };
+  const runTerms = () => {
+    if (termBusy || !window.API) return;
+    setTermBusy(true);
+    window.API.safeCall(() => window.API.termcheck(project.id, seg.id, tcModel)).then(res => {
+      setTermBusy(false);
+      if (!res || !res.ok) { toast.error("Проверка не удалась", "Модель не ответила или нет ключа OpenAI."); return; }
+      store.updateSegment(project.id, seg.id, { termcheck: { ...res.termcheck, stale: false } });
+      const n = (res.termcheck.findings || []).length;
+      if (res.skipped) toast.info("Проверять нечего", res.skipped);
+      else if (n) toast.warning("Замечания по терминам", n + " шт. · предложения замены ушли в «Глоссарий → Кандидаты»");
+      else toast.success("Терминология в порядке", "Замечаний нет.");
+    });
+  };
+
+  // Ремонт одного сегмента: правка по находкам + перепроверка на сервере.
+  const runRepair = () => {
+    if (repairBusy || !window.API) return;
+    setRepairBusy(true);
+    window.API.safeCall(() => window.API.repair(project.id, seg.id, {
+      model: rpModel || null, bc_model: bcModel || null, tc_model: tcModel || null,
+      use_judge: !!bcJudge, judge_model: judgeModel || null })).then(res => {
+      setRepairBusy(false);
+      if (!res || !res.ok) { toast.error("Ремонт не удался", "Модель не ответила или нет ключа OpenAI."); return; }
+      if (!res.applied) {
+        store.updateSegment(project.id, seg.id, { repair: { ...res.repair, tried: true } });
+        toast.warning("Правка откачена", (res.repair && res.repair.reason) || "Не стало лучше — текст оставлен прежним.");
+        return;
+      }
+      window.API.safeCall(() => window.API.getProject(project.id)).then(fresh => {
+        if (fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
+      });
+      toast.success("Сегмент исправлен", "Статус «Требует проверки» — подтвердите вручную.");
+    });
+  };
+
+  // Что именно можно чинить в этом сегменте (критерий тот же, что на сервере)
+  const REPAIR_REASONS = ["расхождение чисел", "расхождение единиц", "инверсия отрицания",
+                          "подмена на противоположное", "обратный перевод про другое", "потерян термин"];
+  const bcFresh = seg.backcheck && !seg.backcheck.stale ? seg.backcheck : null;
+  const tcFresh = seg.termcheck && !seg.termcheck.stale ? seg.termcheck : null;
+  const termFindings = (tcFresh && tcFresh.findings) || [];
+  const hardFindings = termFindings.filter(f => f.severity === "critical" || f.severity === "major");
+  const canRepair = !!seg.target && !(seg.repair && seg.repair.tried) && (
+    hardFindings.length > 0 ||
+    (bcFresh && ((bcFresh.terms_lost || []).length > 0
+      || (bcFresh.reasons || []).some(r => REPAIR_REASONS.some(h => r.indexOf(h) !== -1))
+      || (bcFresh.judge && ["major", "critical"].indexOf(bcFresh.judge.severity) !== -1))));
   const runBack = (model) => {
     if (!seg.target) { setBackResult("no_target"); return; }
     setBackResult("loading");
@@ -116,6 +175,13 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
         React.createElement(Icon, { name: "search", size: 14 }), "Find TM"),
       React.createElement("button", { className: "mini-btn" + (infoPanel === "back" ? " on" : ""), onClick: openBack },
         React.createElement(Icon, { name: "repeat", size: 14 }), "Back check"),
+      React.createElement("button", { className: "mini-btn" + (infoPanel === "terms" ? " on" : ""), onClick: openTerms,
+        title: "Проверка терминологии: нормальные ли термины целевого языка" },
+        React.createElement(Icon, { name: "book", size: 14 }), "Термины",
+        termFindings.length > 0 && React.createElement("span", { className: "mb-val", style: { color: "var(--c-warning)" } }, termFindings.length)),
+      canRepair && React.createElement("button", { className: "mini-btn", onClick: runRepair, disabled: repairBusy,
+        title: "Переписать перевод по найденным замечаниям и перепроверить" },
+        React.createElement(Icon, { name: "repeat", size: 14 }), repairBusy ? "Чиним…" : "Починить"),
       React.createElement("button", { className: "mini-btn" + (infoPanel === "route" ? " on" : ""), onClick: () => toggleInfo("route") },
         React.createElement(Icon, { name: "target", size: 14 }), "Route"),
       React.createElement("button", { className: "mini-btn" + (infoPanel === "risk" ? " on" : ""), onClick: () => toggleInfo("risk") },
@@ -123,6 +189,52 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
       React.createElement("span", { className: "mini-btn readonly", title: "Оценка стоимости перевода" },
         React.createElement(Icon, { name: "zap", size: 14 }), "Est: ", React.createElement("span", { className: "mb-val" }, fmtCost(estCost)))
     ),
+
+    infoPanel === "terms" && React.createElement("div", { className: "tm-pop" },
+      React.createElement("div", { className: "row between" },
+        React.createElement("span", { className: "label", style: { margin: 0 } }, "Терминология перевода"),
+        React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", disabled: termBusy, onClick: runTerms },
+          termBusy ? "Проверяем…" : "Проверить заново")),
+      termBusy && !seg.termcheck
+        ? React.createElement("div", { className: "row", style: { gap: 10 } },
+            React.createElement(Spinner, null),
+            React.createElement("span", { className: "dim", style: { fontSize: 13 } }, "Модель разбирает термины…"))
+        : !seg.termcheck
+          ? React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, "Ещё не проверялось.")
+          : React.createElement("div", { className: "col", style: { gap: 8 } },
+              seg.termcheck.stale && React.createElement("div", { style: { fontSize: 12, color: "var(--c-warning)" } },
+                "Перевод менялся после проверки — данные устарели."),
+              seg.termcheck.note && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } }, seg.termcheck.note),
+              termFindings.length === 0 && !seg.termcheck.note && React.createElement("div", { style: { fontSize: 13, color: "var(--c-success)" } }, "Замечаний нет."),
+              termFindings.map((f, i) => React.createElement("div", { key: i, className: "tmrow", style: { display: "flex", flexDirection: "column", gap: 4 } },
+                React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
+                  React.createElement("span", { className: "badge " + (f.severity === "critical" ? "badge-failed" : f.severity === "major" ? "badge-qa" : "badge-soft") }, f.severity),
+                  React.createElement("s", { style: { color: "var(--c-error)" } }, f.tgt_term),
+                  f.suggestion && React.createElement(React.Fragment, null,
+                    React.createElement(Icon, { name: "chevR", size: 13 }),
+                    React.createElement("b", { style: { color: "var(--c-success)" } }, f.suggestion))),
+                f.why && React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.5 } }, f.why),
+                f.suggestion && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check",
+                  onClick: () => { setDraft(draft.split(f.tgt_term).join(f.suggestion)); toast.info("Подставлено в черновик", "Проверьте и сохраните."); } }, "Заменить в тексте"))),
+              React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
+                (seg.termcheck.model === "skip" ? "без вызова модели" : seg.termcheck.model || "")
+                + (seg.termcheck.at ? " · " + seg.termcheck.at : "")))),
+
+    seg.repair && React.createElement("div", { className: "tm-pop", style: { marginTop: 8 } },
+      React.createElement("span", { className: "label", style: { margin: 0 } },
+        seg.repair.applied ? "Автоматический ремонт применён" : "Автоматический ремонт откачен"),
+      React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.6, marginTop: 4 } },
+        (seg.repair.issues || []).join("; ")),
+      !seg.repair.applied && seg.repair.reason && React.createElement("div", { style: { fontSize: 12.5, color: "var(--c-warning)", marginTop: 4 } },
+        "Причина отката: " + seg.repair.reason),
+      seg.repair.applied && seg.repair.from && React.createElement("div", { style: { marginTop: 6 } },
+        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "Было:"),
+        React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5 } }, seg.repair.from),
+        React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", style: { marginTop: 6 },
+          onClick: () => { setDraft(seg.repair.from); toast.info("Прежний текст в черновике", "Сохраните, чтобы вернуть."); } }, "Вернуть прежний")),
+      !seg.repair.applied && seg.repair.candidate && React.createElement("div", { style: { marginTop: 6 } },
+        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "Вариант модели (отклонён проверкой):"),
+        React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5 } }, seg.repair.candidate))),
 
     infoPanel === "route" && React.createElement("div", { className: "row", style: { gap: 8 } },
       React.createElement("span", { className: "badge badge-translated" }, seg.route),

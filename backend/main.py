@@ -399,6 +399,8 @@ JUDGE_DEFAULT_MODEL = "gpt-5.6-terra"
 # либо начинает придираться к нормальным синонимам. Дефолт перевода (gpt-4o)
 # для этой роли слабоват, поэтому берём ту же модель, что и судья.
 TERMCHECK_DEFAULT_MODEL = os.environ.get("TERMCHECK_MODEL", JUDGE_DEFAULT_MODEL)
+# Ремонт переписывает текст по списку претензий — это работа для сильной модели.
+REPAIR_DEFAULT_MODEL = os.environ.get("REPAIR_MODEL", JUDGE_DEFAULT_MODEL)
 
 
 def _openai_embed(texts: list) -> list:
@@ -415,12 +417,31 @@ def _cosine(a: list, b: list) -> float:
     return (dot / (na * nb)) if na and nb else 0.0
 
 
+# Тексты повторяются: один и тот же оригинал эмбеддится на каждом перепрогоне
+# back-check и в каждом дубле сегмента. Кэш живёт в памяти процесса.
+_EMBED_CACHE: dict = {}
+_EMBED_CACHE_MAX = 4000
+
+
+def _embed_cached(texts: list) -> list:
+    keys = [_text_hash(t) for t in texts]
+    missing = [t for t, k in zip(texts, keys) if k not in _EMBED_CACHE]
+    if missing:
+        uniq = list(dict.fromkeys(missing))
+        for t, vec in zip(uniq, _openai_embed(uniq)):
+            _EMBED_CACHE[_text_hash(t)] = vec
+        if len(_EMBED_CACHE) > _EMBED_CACHE_MAX:
+            for k in list(_EMBED_CACHE)[:len(_EMBED_CACHE) - _EMBED_CACHE_MAX]:
+                _EMBED_CACHE.pop(k, None)
+    return [_EMBED_CACHE[k] for k in keys]
+
+
 def _semantic_similarity(source_ru: str, back_ru: str):
     """Косинус между оригиналом и обратным переводом. None — если посчитать не вышло."""
     if not os.environ.get("OPENAI_API_KEY"):
         return None
     try:
-        vecs = _openai_embed([source_ru, back_ru])
+        vecs = _embed_cached([source_ru, back_ru])
         return _cosine(vecs[0], vecs[1])
     except Exception as e:
         print(f"[backend] embed failed: {e}", file=sys.stderr)
@@ -1125,6 +1146,7 @@ def list_models():
         "default": DEFAULT_OPENAI_MODEL,
         "backcheckDefault": BACKCHECK_DEFAULT_MODEL,
         "termcheckDefault": TERMCHECK_DEFAULT_MODEL,
+        "repairDefault": REPAIR_DEFAULT_MODEL,
         "judgeDefault": JUDGE_DEFAULT_MODEL,
         "judgeZone": list(JUDGE_ZONE),
         "backcheckBands": getattr(medical_qa_mod, "BACKCHECK_BANDS", []) if medical_qa_mod else [],
@@ -1691,9 +1713,19 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
     if req.segment_ids:
         ids = set(req.segment_ids)
         segs = [s for s in segs if s["id"] in ids]
-    segs = segs[:max(1, min(req.limit, 100))]
+    # Пара «оригинал+перевод» не менялась с прошлого извлечения — читать нечего
+    fresh = []
+    skipped_cached = 0
+    for sg in segs:
+        h = _text_hash((sg.get("source") or "") + "||" + (sg.get("target") or ""))
+        if sg.get("extracted_hash") == h:
+            skipped_cached += 1
+            continue
+        sg["_extract_hash"] = h
+        fresh.append(sg)
+    segs = fresh[:max(1, min(req.limit, 100))]
     if not segs:
-        return {"ok": True, "scanned": 0, "candidates": []}
+        return {"ok": True, "scanned": 0, "skipped_cached": skipped_cached, "candidates": []}
     found = []
     CHUNK = 10
     for i in range(0, len(segs), CHUNK):
@@ -1708,8 +1740,10 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
                             project=pid, model=_resolve_model(req.model or DEFAULT_OPENAI_MODEL)["id"])
             if c:
                 found.append(c)
+        for sg in chunk:
+            sg["extracted_hash"] = sg.pop("_extract_hash", None)
     save_state(STATE)
-    return {"ok": True, "scanned": len(segs), "candidates": found}
+    return {"ok": True, "scanned": len(segs), "skipped_cached": skipped_cached, "candidates": found}
 
 
 def _text_hash(text: str) -> str:
@@ -1724,6 +1758,10 @@ def _backcheck_cached(seg: dict, mdl_id: str, use_judge: bool) -> bool:
     if bc.get("target_hash") != _text_hash(seg.get("target") or "") or bc.get("model") != mdl_id:
         return False
     if not use_judge or bc.get("judged"):
+        return True
+    # Судью не звали осознанно (вне зоны или уже есть объективная находка) —
+    # это законченная проверка, а не недоделанная.
+    if bc.get("judge_skipped"):
         return True
     lo, hi = JUDGE_ZONE
     score = bc.get("score")
@@ -1744,6 +1782,10 @@ def _project_for_client(project: dict) -> dict:
             out = {**out, "backcheck": {**bc, "stale": bc.get("target_hash") != cur}}
         if tc:
             out = {**out, "termcheck": {**tc, "stale": tc.get("target_hash") != cur}}
+        rp = s.get("repair")
+        if rp:
+            # tried — этот же текст уже пытались чинить; браузеру sha1 не посчитать
+            out = {**out, "repair": {**rp, "tried": rp.get("source_hash") == cur}}
         segs.append(out)
     return {**project, "segments": segs}
 
@@ -1779,14 +1821,25 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
 
     source_text = seg.get("source", "")
     gloss_hits, _tm = _get_context(source_text)
-    semantic = _semantic_similarity(source_text, back)
-    res = medical_qa_mod.run_backcheck(source_text, back, gloss_hits, semantic=semantic) if medical_qa_mod else {}
+    # semantic_fn, а не готовое число: косинус учитывается только при отсутствии
+    # жёстких находок, и там, где он всё равно не повлияет, платить за эмбеддинги
+    # незачем. Решение принимает medical_qa — он и знает состав находок.
+    res = (medical_qa_mod.run_backcheck(
+        source_text, back, gloss_hits,
+        semantic_fn=lambda: _semantic_similarity(source_text, back)) if medical_qa_mod else {})
 
-    # Судья — только для средней зоны: наверху и внизу шкалы вопрос уже решён
-    judged = False
+    # Судья — только для средней зоны: наверху и внизу шкалы вопрос уже решён.
+    judged, judge_skipped = False, None
     if use_judge and medical_qa_mod and res.get("score") is not None:
         lo, hi = JUDGE_ZONE
-        if lo <= res["score"] <= hi:
+        if not (lo <= res["score"] <= hi):
+            judge_skipped = "zone"
+        elif res.get("hard"):
+            # Объективное расхождение (числа, единицы, отрицание, сторона) уже
+            # найдено детерминированно. Судья такую находку отменить не может —
+            # его вердикт ничего не изменит, а вызов стоит денег.
+            judge_skipped = "hard"
+        else:
             verdict = _openai_judge(source_text, back, judge_model)
             if verdict:
                 res = medical_qa_mod.apply_judge_verdict(res, verdict)
@@ -1804,6 +1857,7 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
         "back": back,
         "model": mdl_id,
         "judged": judged,
+        "judge_skipped": judge_skipped,
         "target_hash": _text_hash(target_text),
         "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
@@ -1813,8 +1867,21 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
 def _termcheck_cached(seg: dict, mdl_id: str) -> bool:
     """Тот же перевод той же моделью уже разобран — платить второй раз незачем."""
     tc = seg.get("termcheck") or {}
-    return (tc.get("target_hash") == _text_hash(seg.get("target") or "")
-            and tc.get("model") == mdl_id)
+    if tc.get("target_hash") != _text_hash(seg.get("target") or ""):
+        return False
+    # Пропущенный как «нечего проверять» не зависит от модели — пересчитывать нечего
+    return tc.get("model") in (mdl_id, "skip")
+
+
+def _termcheck_trivial(source: str, target: str) -> Optional[str]:
+    """Сегменты, где проверять нечего, — без вызова модели.
+    Терминов не бывает там, где нет слов; а совпадение перевода с оригиналом
+    (числа, латинские обозначения, «IFN-γ») — это не терминологическая ошибка."""
+    if not re.search(r"[A-Za-zА-Яа-яЁё]{3}", target or ""):
+        return "в переводе нет слов — только числа или обозначения"
+    if _norm_key(source) == _norm_key(target):
+        return "перевод совпадает с оригиналом — переводить нечего"
+    return None
 
 
 def _run_segment_termcheck(seg: dict, project: dict, model: Optional[str] = None) -> dict:
@@ -1827,6 +1894,14 @@ def _run_segment_termcheck(seg: dict, project: dict, model: Optional[str] = None
     target = (seg.get("target") or "").strip()
     if not target:
         return {"ok": False, "error": "Сегмент ещё не переведён"}
+    trivial = _termcheck_trivial(seg.get("source", ""), target)
+    if trivial:
+        seg["termcheck"] = {"findings": [], "severity": "none", "model": "skip",
+                            "note": trivial,
+                            "domain": _resolve_domain(project.get("domain"))["id"],
+                            "target_hash": _text_hash(target),
+                            "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+        return {"ok": True, "termcheck": seg["termcheck"], "queued": [], "skipped": trivial}
     res = _openai_termcheck(seg.get("source", ""), target,
                             project.get("src", "RU"), project.get("tgt", "EN"),
                             project.get("domain"), model)
@@ -1907,11 +1982,24 @@ def termcheck_batch(pid: int, req: TermcheckBatchRequest):
     targets = candidates[:limit]
 
     processed, errors, flagged = [], [], 0
+    done_pairs: dict = {}
+    duplicates, skipped_trivial = 0, 0
     for seg in targets:
+        pair = (_norm_key(seg.get("source")), _norm_key(seg.get("target")))
+        if pair in done_pairs:
+            seg["termcheck"] = json.loads(json.dumps(done_pairs[pair]))
+            processed.append(seg["id"])
+            duplicates += 1
+            if seg["termcheck"]["findings"]:
+                flagged += 1
+            continue
         try:
             r = _run_segment_termcheck(seg, project, req.model)
             if r.get("ok"):
                 processed.append(seg["id"])
+                done_pairs[pair] = seg["termcheck"]
+                if r.get("skipped"):
+                    skipped_trivial += 1
                 if r["termcheck"]["findings"]:
                     flagged += 1
             else:
@@ -1922,7 +2010,270 @@ def termcheck_batch(pid: int, req: TermcheckBatchRequest):
     save_state(STATE)
     return {"ok": True, "processed": processed, "count": len(processed),
             "flagged": flagged, "remaining": remaining_after,
-            "skipped_cached": skipped_cached, "errors": errors, "model": mdl_id}
+            "skipped_cached": skipped_cached, "duplicates": duplicates,
+            "skipped_trivial": skipped_trivial, "errors": errors, "model": mdl_id}
+
+
+# ─── Автоматический ремонт сегмента ──────────────────────────────────
+# Чинит по КОНКРЕТНЫМ находкам, а не «переведи получше»: список претензий
+# приходит из back-check (числа, единицы, отрицания, потерянные термины,
+# вердикт судьи) и из проверки терминологии (кальки с предложенной заменой).
+#
+# Три предохранителя, без которых цикл начинает угождать метрике:
+#   1. чиним только проверяемые претензии — «часть текста не совпала дословно»
+#      это шум, по нему ремонтировать нечего;
+#   2. после ремонта перепроверяем ТЕМИ ЖЕ проверками и оставляем новый текст,
+#      только если стало лучше, иначе откат;
+#   3. статус после ремонта — review, не confirmed: заверяет человек.
+REPAIR_HARD_REASONS = ("расхождение чисел", "расхождение единиц", "инверсия отрицания",
+                       "подмена на противоположное", "обратный перевод про другое",
+                       "потерян термин")
+
+
+def _repair_findings(seg: dict) -> list:
+    """Претензии к ТЕКУЩЕМУ переводу. Устаревшие проверки (перевод правили
+    после них) игнорируем — чинить по ним нечего."""
+    cur = _text_hash(seg.get("target") or "")
+    items = []
+    bc = seg.get("backcheck") or {}
+    if bc and bc.get("target_hash") == cur:
+        for t in (bc.get("terms_lost") or []):
+            items.append({"kind": "term_lost", "must": t,
+                          "text": "термин «" + t + "» не пережил обратный перевод"})
+        for r in (bc.get("reasons") or []):
+            if any(h in r for h in REPAIR_HARD_REASONS):
+                items.append({"kind": "backcheck", "text": r})
+        j = bc.get("judge") or {}
+        if j.get("severity") in ("major", "critical"):
+            for d in (j.get("divergences") or []):
+                items.append({"kind": "judge", "text": str(d)})
+            if j.get("comment"):
+                items.append({"kind": "judge", "text": j["comment"]})
+    tc = seg.get("termcheck") or {}
+    if tc and tc.get("target_hash") == cur:
+        for f in (tc.get("findings") or []):
+            if f.get("severity") in ("critical", "major"):
+                items.append({"kind": "term", "replace": [f.get("tgt_term", ""), f.get("suggestion", "")],
+                              "text": "«" + f.get("tgt_term", "") + "»"
+                                      + (" → «" + f["suggestion"] + "»" if f.get("suggestion") else "")
+                                      + (" — " + f["why"] if f.get("why") else "")})
+    seen, out = set(), []
+    for i in items:
+        if i["text"] not in seen:
+            seen.add(i["text"])
+            out.append(i)
+    return out
+
+
+def _repair_tried(seg: dict) -> bool:
+    """Этот же текст уже пытались чинить — второй заход по тем же претензиям
+    даёт то же самое и стоит тех же денег."""
+    r = seg.get("repair") or {}
+    return r.get("source_hash") == _text_hash(seg.get("target") or "")
+
+
+def _repairable(seg: dict) -> bool:
+    return bool((seg.get("target") or "").strip()) and bool(_repair_findings(seg)) and not _repair_tried(seg)
+
+
+def _repair_system(dom: dict, src_lang: str, tgt_lang: str) -> str:
+    return (
+        "You are a senior " + dom["expert"] + ". You are given a SOURCE text in " + src_lang
+        + ", its TRANSLATION into " + tgt_lang + ", and a list of ISSUES found by quality control.\n\n"
+        "Fix ONLY the listed issues. This is a repair, not a retranslation.\n"
+        "RULES:\n"
+        "1. Return ONLY the corrected translation — no explanations, no comments, no quotes.\n"
+        "2. Change as little as possible: keep every wording that is not part of an issue.\n"
+        "3. Required replacements must be applied exactly as given.\n"
+        "4. Terms reported as lost MUST be present in the corrected translation.\n"
+        "5. Keep all numbers, units, negations and abbreviations exactly as in the SOURCE.\n"
+        "6. Use " + dom["terminology"] + ". Output must be 100% " + tgt_lang + ".\n"
+        "7. If an issue looks wrong to you, leave that part unchanged rather than inventing something new.\n"
+    )
+
+
+def _openai_repair(seg: dict, project: dict, findings: list, model: Optional[str]) -> Optional[str]:
+    import openai
+    dom = _resolve_domain(project.get("domain"))
+    mdl = _resolve_model(model or REPAIR_DEFAULT_MODEL)
+    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=120, max_retries=1)
+    lines = []
+    for i, f in enumerate(findings, 1):
+        lines.append(str(i) + ". " + f["text"])
+        if f.get("replace") and f["replace"][1]:
+            lines.append('   REQUIRED: replace "' + f["replace"][0] + '" with "' + f["replace"][1] + '"')
+        if f.get("must"):
+            lines.append('   REQUIRED: the translation must convey "' + f["must"] + '"')
+    body = ("SOURCE:\n" + seg.get("source", "") + "\n\nTRANSLATION:\n" + (seg.get("target") or ""))
+    back = ((seg.get("backcheck") or {}).get("back") or "").strip()
+    if back:
+        body += ("\n\nBACK-TRANSLATION of the current translation (for reference — it shows how the "
+                 "translation reads to a reviewer):\n" + back)
+    body += "\n\nISSUES:\n" + "\n".join(lines)
+    extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
+             else {"max_tokens": 1500, "temperature": 0})
+    try:
+        resp = client.chat.completions.create(
+            model=mdl["id"],
+            messages=[{"role": "system", "content": _repair_system(dom, project.get("src", "RU"), project.get("tgt", "EN"))},
+                      {"role": "user", "content": body}],
+            **extra,
+        )
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        print(f"[backend] repair failed seg#{seg.get('id')}: {e}", file=sys.stderr)
+        return None
+
+
+def _repair_scores(seg: dict) -> dict:
+    """Снимок качества сегмента: балл back-check и число серьёзных замечаний
+    по терминам. По нему решаем, стало ли лучше."""
+    bc = seg.get("backcheck") or {}
+    tc = seg.get("termcheck") or {}
+    return {
+        "score": bc.get("score"),
+        "terms": len([f for f in (tc.get("findings") or [])
+                      if f.get("severity") in ("critical", "major")]),
+    }
+
+
+def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
+                        bc_model: Optional[str] = None, tc_model: Optional[str] = None,
+                        use_judge: bool = False, judge_model: Optional[str] = None) -> dict:
+    """Один заход ремонта с обязательной перепроверкой и откатом."""
+    findings = _repair_findings(seg)
+    if not findings:
+        return {"ok": False, "error": "Нет находок, по которым можно чинить"}
+    old_target = seg.get("target") or ""
+    old_hash = _text_hash(old_target)
+    had_bc = any(f["kind"] in ("term_lost", "backcheck", "judge") for f in findings)
+    had_tc = any(f["kind"] == "term" for f in findings)
+    before = _repair_scores(seg)
+    # Проверки старого текста сохраняем целиком: при откате их надо вернуть,
+    # иначе сегмент окажется «непроверенным» и человек заплатит за прогон снова.
+    bc_before = json.loads(json.dumps(seg.get("backcheck"))) if seg.get("backcheck") else None
+    tc_before = json.loads(json.dumps(seg.get("termcheck"))) if seg.get("termcheck") else None
+
+    new_target = _openai_repair(seg, project, findings, model)
+    if not new_target:
+        return {"ok": False, "error": "Модель не вернула исправленный текст"}
+    if _norm_key(new_target) == _norm_key(old_target):
+        seg["repair"] = {"applied": False, "reason": "Модель не нашла, что менять",
+                         "source_hash": old_hash, "model": _resolve_model(model or REPAIR_DEFAULT_MODEL)["id"],
+                         "issues": [f["text"] for f in findings],
+                         "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+        return {"ok": True, "applied": False, "repair": seg["repair"]}
+
+    # Перепроверяем ровно теми проверками, которые ругались. Лишних не гоняем.
+    seg["target"] = new_target
+    if had_bc:
+        _run_segment_backcheck(seg, project, bc_model, use_judge, judge_model)
+    if had_tc:
+        _run_segment_termcheck(seg, project, tc_model)
+    after = _repair_scores(seg)
+
+    better = True
+    why = []
+    if had_bc and before["score"] is not None and after["score"] is not None:
+        if after["score"] < before["score"]:
+            better = False
+            why.append("балл back-check упал " + str(before["score"]) + " → " + str(after["score"]))
+    if had_tc and after["terms"] > before["terms"]:
+        better = False
+        why.append("замечаний по терминам стало больше " + str(before["terms"]) + " → " + str(after["terms"]))
+
+    mdl_id = _resolve_model(model or REPAIR_DEFAULT_MODEL)["id"]
+    if not better:
+        # Откат вместе с проверками: они уже пересчитаны под отвергнутый текст,
+        # возвращаем те, что относились к прежнему переводу
+        seg["target"] = old_target
+        if had_bc:
+            seg["backcheck"] = bc_before if bc_before else seg.pop("backcheck", None)
+        if had_tc:
+            seg["termcheck"] = tc_before if tc_before else seg.pop("termcheck", None)
+        for key in ("backcheck", "termcheck"):
+            if seg.get(key) is None:
+                seg.pop(key, None)
+        seg["repair"] = {"applied": False, "reason": "; ".join(why) or "не стало лучше",
+                         "source_hash": old_hash, "model": mdl_id, "candidate": new_target,
+                         "issues": [f["text"] for f in findings], "before": before, "after": after,
+                         "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+        return {"ok": True, "applied": False, "repair": seg["repair"]}
+
+    seg["prevTarget"] = old_target
+    seg["status"] = "review"          # заверяет человек, автоправка себя не подтверждает
+    seg["provider"] = mdl_id
+    seg["repair"] = {"applied": True, "from": old_target, "source_hash": _text_hash(new_target),
+                     "model": mdl_id, "issues": [f["text"] for f in findings],
+                     "before": before, "after": after,
+                     "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    return {"ok": True, "applied": True, "repair": seg["repair"], "target": new_target}
+
+
+class RepairRequest(BaseModel):
+    model: Optional[str] = None
+    bc_model: Optional[str] = None
+    tc_model: Optional[str] = None
+    use_judge: bool = False
+    judge_model: Optional[str] = None
+
+
+@app.post("/api/segments/{pid}/{sid}/repair")
+def repair_segment(pid: int, sid: int, req: RepairRequest = RepairRequest()):
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(503, "Ремонт требует ключ OpenAI")
+    seg = get_segment(pid, sid)
+    project = get_project(pid)
+    result = _run_segment_repair(seg, project, req.model, req.bc_model, req.tc_model,
+                                 req.use_judge, req.judge_model)
+    if result.get("ok"):
+        save_state(STATE)
+        return result
+    raise HTTPException(502, result.get("error", "Ремонт не удался"))
+
+
+class RepairBatchRequest(BaseModel):
+    segment_ids: Optional[List[int]] = None
+    limit: int = 5
+    model: Optional[str] = None
+    bc_model: Optional[str] = None
+    tc_model: Optional[str] = None
+    use_judge: bool = False
+    judge_model: Optional[str] = None
+
+
+@app.post("/api/projects/{pid}/repair/batch")
+def repair_batch(pid: int, req: RepairBatchRequest):
+    """Порция маленькая (5): на сегмент уходит вызов ремонта плюс перепроверка,
+    это самый дорогой прогон в системе."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(503, "Ремонт требует ключ OpenAI")
+    project = get_project(pid)
+    id_filter = set(req.segment_ids) if req.segment_ids is not None else None
+    candidates = [s for s in project["segments"]
+                  if (id_filter is None or s["id"] in id_filter) and _repairable(s)]
+    limit = max(1, min(req.limit, 30))
+    remaining_after = max(0, len(candidates) - limit)
+    targets = candidates[:limit]
+
+    applied, skipped, errors = [], [], []
+    for seg in targets:
+        try:
+            r = _run_segment_repair(seg, project, req.model, req.bc_model, req.tc_model,
+                                    req.use_judge, req.judge_model)
+            if not r.get("ok"):
+                errors.append({"id": seg["id"], "error": r.get("error", "unknown")})
+            elif r.get("applied"):
+                applied.append(seg["id"])
+            else:
+                skipped.append({"id": seg["id"], "reason": (r.get("repair") or {}).get("reason", "")})
+        except Exception as e:
+            errors.append({"id": seg["id"], "error": str(e)})
+            print(f"[backend] repair batch seg#{seg['id']}: {e}", file=sys.stderr)
+    save_state(STATE)
+    return {"ok": True, "applied": applied, "count": len(applied), "skipped": skipped,
+            "remaining": remaining_after, "errors": errors,
+            "model": _resolve_model(req.model or REPAIR_DEFAULT_MODEL)["id"]}
 
 
 class BackcheckRequest(BaseModel):
@@ -1978,11 +2329,22 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
     targets = candidates[:limit]
 
     processed, errors = [], []
+    # Одинаковая пара «оригинал + перевод» даёт одинаковый результат: считаем раз.
+    done_pairs: dict = {}
+    duplicates = 0
     for seg in targets:
+        pair = (_norm_key(seg.get("source")), _norm_key(seg.get("target")))
+        if pair in done_pairs:
+            seg["backtranslated_ru"] = done_pairs[pair].get("back", "")
+            seg["backcheck"] = json.loads(json.dumps(done_pairs[pair]))
+            processed.append(seg["id"])
+            duplicates += 1
+            continue
         try:
             r = _run_segment_backcheck(seg, project, req.model, req.use_judge, req.judge_model)
             if r.get("ok"):
                 processed.append(seg["id"])
+                done_pairs[pair] = seg["backcheck"]
             else:
                 errors.append({"id": seg["id"], "error": r.get("error", "unknown")})
         except Exception as e:
@@ -1995,6 +2357,7 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
         "count": len(processed),
         "remaining": remaining_after,
         "skipped_cached": skipped_cached,
+        "duplicates": duplicates,
         "errors": errors,
         "model": mdl_id,
     }
@@ -2019,13 +2382,20 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True) -> dict:
     back = seg.get("backtranslated_ru", "")
 
     if run_backcheck and medical_qa_enabled():
-        try:
-            if os.environ.get("OPENAI_API_KEY"):
-                back = _openai_translate(target_text, project["tgt"], project["src"])
-            elif os.environ.get("GOOGLE_TRANSLATE_API_KEY"):
-                back = _deep_translate(target_text, project["tgt"], project["src"])
-        except Exception as e:
-            print(f"[backend] medical QA backcheck skipped: {e}", file=sys.stderr)
+        fresh = seg.get("backcheck") or {}
+        if fresh.get("back") and fresh.get("target_hash") == _text_hash(target_text):
+            # Обратный перевод для этого же текста уже есть — второй раз не платим
+            back = fresh["back"]
+        else:
+            try:
+                if os.environ.get("OPENAI_API_KEY"):
+                    # literal=True обязателен: обычный промпт «чинит» кривой
+                    # английский на лету и прячет ошибку, которую QA ищет
+                    back = _openai_translate(target_text, project["tgt"], project["src"], literal=True)
+                elif os.environ.get("GOOGLE_TRANSLATE_API_KEY"):
+                    back = _deep_translate(target_text, project["tgt"], project["src"])
+            except Exception as e:
+                print(f"[backend] medical QA backcheck skipped: {e}", file=sys.stderr)
 
     qa_result = medical_qa_mod.run_medical_qa(
         source_text,
@@ -2176,9 +2546,22 @@ def batch_translate(pid: int, req: BatchRequest):
     targets = all_targets[:limit]
     translated = []
     tm_hits_count = 0
+    dup_hits_count = 0
     errors = []
+    # Повторы внутри порции переводим один раз: в документах один и тот же
+    # заголовок встречается десятки раз, и каждый стоил отдельного вызова.
+    done_sources: dict = {}
     for seg in targets:
         translation = None
+        dup = done_sources.get(_norm_key(seg["source"]))
+        if dup is not None:
+            seg["target"] = dup["target"]
+            seg["status"] = "translated"
+            seg["route"] = "DUPLICATE"
+            seg["provider"] = dup["provider"]
+            translated.append(seg["id"])
+            dup_hits_count += 1
+            continue
         gloss_hits, tm_hit = _get_context(seg["source"])
 
         # TM точное совпадение → пропускаем API вызов.
@@ -2219,6 +2602,7 @@ def batch_translate(pid: int, req: BatchRequest):
             seg["route"] = "GPT_REQUIRED" if req.engine == "gpt" else "GOOGLE_SAFE"
             seg["provider"] = used_provider or (PROVIDER_GOOGLE if req.engine == "google" else _resolve_model(req.model)["id"])
             translated.append(seg["id"])
+            done_sources[_norm_key(seg["source"])] = {"target": translation, "provider": seg["provider"]}
     save_state(STATE)
     return {
         "ok": True,
@@ -2227,6 +2611,7 @@ def batch_translate(pid: int, req: BatchRequest):
         "remaining": remaining_after,
         "errors": errors,
         "tm_hits": tm_hits_count,
+        "duplicates": dup_hits_count,
         "model": _resolve_model(req.model)["id"] if req.engine == "gpt" else None,
     }
 

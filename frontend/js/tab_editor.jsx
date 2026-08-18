@@ -235,6 +235,9 @@ function TabEditor({ store, toast }) {
   const [rpModel, setRpModel] = useState(() => {
     try { return localStorage.getItem(RP_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
+  const [impact, setImpact] = useState(null);     // сегменты, не соответствующие одобренным терминам
+  const [impactBusy, setImpactBusy] = useState(false);
+  const [impactConfirmed, setImpactConfirmed] = useState(false);  // трогать ли подтверждённые
   const [defModel, setDefModel] = useState("");   // модель перевода по умолчанию (Medical QA берёт её)
   const [bcBands, setBcBands] = useState([]);
   const [bcJudge, setBcJudge] = useState(false);          // LLM-судья для средней зоны
@@ -293,6 +296,7 @@ function TabEditor({ store, toast }) {
       if (finished && finished.status !== "queued" && finished.status !== "running") {
         lastJobId.current = null;
         reportJobResult(finished);
+        loadImpact();
         const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
         if (!dead && fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
       }
@@ -317,6 +321,18 @@ function TabEditor({ store, toast }) {
     }, 8000);
     return () => { dead = true; clearInterval(id); };
   }, [job && job.id, job && job.status]);
+
+  // Расхождения с одобренными терминами считает сервер тем же матчером, что и
+  // инъекция в промпт. Пересчитываем при смене проекта и после каждого прогона:
+  // одобрили термин и перевели заново — счётчик должен упасть сам.
+  const loadImpact = async () => {
+    if (!window.API || !window.API.glossaryImpact || !project) return;
+    setImpactBusy(true);
+    const res = await window.API.safeCall(() => window.API.glossaryImpact(project.id));
+    setImpactBusy(false);
+    if (res && res.ok) setImpact(res);
+  };
+  useEffect(() => { setImpact(null); loadImpact(); }, [project && project.id]);
 
   useEffect(() => { setTcGroupPick(null); }, [tcModel, store.segmentFilter, checkedSegs.size]);
   useEffect(() => { setRpGroupPick(null); }, [rpModel, store.segmentFilter, checkedSegs.size]);
@@ -740,6 +756,17 @@ function TabEditor({ store, toast }) {
     }
   };
 
+  // Переперевод сегментов, где перевод расходится с одобренными терминами.
+  // Это обычный пакетный перевод с force: сегменты уже переведены, и без force
+  // отбор по статусу их бы отбросил.
+  const runImpactRetranslate = () => {
+    if (!impact) return;
+    const ids = new Set(impactConfirmed ? impact.segments : impact.pending);
+    startJob("translate", project.segments.filter(s => ids.has(s.id)),
+      { engine: "gpt", force: true, model: gptModel },
+      "Все переводы уже соответствуют одобренным терминам.");
+  };
+
   const stopJob = async () => {
     if (!job || !window.API || job.stopping) return;
     setJob(j => (j ? { ...j, stopping: true } : j));   // отклик сразу, не дожидаясь опроса
@@ -992,6 +1019,14 @@ function TabEditor({ store, toast }) {
               gptModels.find(m => m.id === defModel) || null),
             available: project.segments.filter(s => s.target && s.target.trim() && ["translated", "qa", "review", "confirmed"].includes(s.status) && (checkedSegs.size > 0 ? checkedSegs.has(s.id) : (!store.segmentFilter || store.segmentFilter.has(s.id)))).length,
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
+          impact && impact.terms.length > 0 && React.createElement(GlossaryImpactCard, {
+            impact, busy: impactBusy, onRefresh: loadImpact,
+            includeConfirmed: impactConfirmed, onIncludeConfirmed: () => setImpactConfirmed(v => !v),
+            onRun: runImpactRetranslate,
+            onDrill: (ids) => { store.setSegmentFilter(ids); setPage(1); },
+            est: estimateRun("translate", project.segments.filter(s =>
+              new Set(impactConfirmed ? impact.segments : impact.pending).has(s.id)), gptModelInfo),
+            running: batchRun && batchRun.engine === "translate" ? batchRun : null }),
           React.createElement(TermCheckCard, {
             running: batchRun && batchRun.engine === "termcheck" ? batchRun : null,
             onRun: runTermcheckBatch, onStop: stopJob,
@@ -1464,6 +1499,54 @@ function RepairCard({ running, onRun, onStop, available, repaired, filtered, che
   );
 }
 
+// Одобрили термин — старые переводы сами не изменились. Здесь видно, сколько
+// сегментов разошлось с глоссарием, и отсюда же их можно переперевести пакетом.
+function GlossaryImpactCard({ impact, busy, onRefresh, onRun, onDrill, includeConfirmed, onIncludeConfirmed, est, running }) {
+  const targets = includeConfirmed ? impact.segments : impact.pending;
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+    React.createElement("div", { className: "row", style: { gap: 10 } },
+      React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-warning)" } },
+        React.createElement(Icon, { name: "book", size: 19 })),
+      React.createElement("div", null,
+        React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, "Соответствие глоссарию",
+          React.createElement(InfoTip, { title: "Расхождения с одобренными терминами",
+            body: "Одобренный термин влияет только на будущие переводы — уже готовые сегменты сами не меняются. Здесь собраны все сегменты проекта, где термин есть в оригинале, а утверждённого варианта в переводе нет.\n\nСчитается только по проверенным записям глоссария: автоимпорт модель вправе игнорировать, требовать соответствия ему нельзя.\n\nКнопка переводит эти сегменты заново — уже с новым термином в промпте. Подтверждённые по умолчанию не трогаются." })),
+        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "После правок глоссария"))
+    ),
+    React.createElement("div", { className: "row between", style: { fontSize: 13, cursor: "pointer" },
+      onClick: () => onDrill(impact.segments) },
+      React.createElement("span", { style: { fontWeight: 600, color: "var(--c-warning)" } }, "Расходятся с глоссарием"),
+      React.createElement("b", null, impact.segments.length)),
+    impact.confirmed.length > 0 && React.createElement("div", { className: "row between", style: { fontSize: 12.5, cursor: "pointer" },
+      onClick: () => onDrill(impact.confirmed) },
+      React.createElement("span", { className: "dim" }, "из них подтверждено"),
+      React.createElement("b", { className: "dim" }, impact.confirmed.length)),
+
+    React.createElement("div", { className: "card", style: { padding: "8px 11px", background: "var(--bg-sunken)" } },
+      impact.terms.slice(0, 4).map((t, i) => React.createElement("div", {
+        key: i, className: "row between", style: { fontSize: 12.5, padding: "2px 0", cursor: "pointer" },
+        onClick: () => onDrill(t.segments), title: "Показать сегменты с этим термином" },
+        React.createElement("span", { style: { minWidth: 0 } },
+          t.src, " → ", React.createElement("b", { style: { color: "var(--c-success)" } }, t.tgt)),
+        React.createElement("b", null, t.segments.length))),
+      impact.terms.length > 4 && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 4 } },
+        "и ещё " + (impact.terms.length - 4) + " терминов")),
+
+    impact.confirmed.length > 0 && React.createElement(Checkbox, {
+      checked: !!includeConfirmed, onChange: onIncludeConfirmed },
+      "Включая подтверждённые (" + impact.confirmed.length + ")"),
+
+    React.createElement(EstLine, { est }),
+    running
+      ? React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "Идёт перевод…")
+      : React.createElement("div", { className: "row between" },
+          React.createElement("button", { className: "linklike", style: { fontSize: 12 }, onClick: onRefresh, disabled: busy },
+            busy ? "Считаем…" : "Пересчитать"),
+          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", onClick: onRun, disabled: !targets.length },
+            "Перевести заново (" + targets.length + ")"))
+  );
+}
+
 function TermCheckCard({ running, onRun, onStop, available, flagged, filtered, checked, models, model, modelInfo, onModel,
                         groups, pickedGroups, onToggleGroup, est }) {
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
@@ -1505,22 +1588,24 @@ function MedicalQACard({ running, onRun, available, filtered, checked, est }) {
       React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-info)" } },
         React.createElement(Icon, { name: "shield", size: 19 })),
       React.createElement("div", null,
-        React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, "Medical QA",
-          React.createElement(InfoTip, { title: "Structured Medical QA", body: "Back-check + semantic comparator + medical style QA + deterministic validators. Result: risk score, issues, suggested correction, term candidates." })),
-        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "After translation"))
+        React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, "Детерминированные проверки",
+          React.createElement(InfoTip, { title: "Детерминированные проверки (Medical QA)",
+            body: "Проверки правилами, без вопросов к модели: совпадение чисел и дозировок, наличие единиц измерения, сохранность отрицания, пары лево/право, внутренний/наружный, верхний/нижний, использование утверждённых терминов глоссария. Даёт risk score.\n\nЧем отличается от back-check: тот сравнивает оригинал с ОБРАТНЫМ переводом и судит о смысле, стоит вызова модели на каждый сегмент и слеп к калькам. Здесь оригинал сравнивается с переводом напрямую по формальным признакам — быстро и без оплаты.\n\nЗапускайте ПОСЛЕ back-check: готовый обратный перевод переиспользуется, и тогда прогон бесплатен целиком. До back-check придётся заказать обратный перевод, и это единственная его платная часть." })),
+        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "Правилами, без вызова модели"))
     ),
-    React.createElement("p", { className: "muted", style: { fontSize: 13, margin: 0 } }, "Runs the full QA chain for translated segments: numbers, negation, inner/outer, forbidden terms, and literal calques."),
+    React.createElement("p", { className: "muted", style: { fontSize: 13, margin: 0 } },
+      "Числа и дозировки, единицы, отрицание, лево/право, соответствие глоссарию."),
     React.createElement(EstLine, { est }),
     running
       ? React.createElement("div", null,
           React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
-            React.createElement("span", { className: "muted" }, "Medical QA..."),
+            React.createElement("span", { className: "muted" }, "Проверяем правилами…"),
             React.createElement("span", { style: { fontWeight: 700 } }, running.done + "/" + running.total)),
           React.createElement(ProgressBar, { value: Math.round(running.done / running.total * 100) }))
       : React.createElement("div", { className: "row between" },
           React.createElement("span", { className: "dim", style: { fontSize: 12 } },
-            available + " available" + (checked > 0 ? " (" + checked + " selected)" : filtered ? " (filter)" : "")),
-          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "shield", onClick: onRun, disabled: !available }, "Run QA"))
+            available + " к проверке" + (checked > 0 ? " (отмечено " + checked + ")" : filtered ? " (фильтр)" : "")),
+          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "shield", onClick: onRun, disabled: !available }, "Проверить"))
   );
 }
 

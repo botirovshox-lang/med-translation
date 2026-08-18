@@ -108,6 +108,8 @@
     /* Подтверждение теперь возвращает {tm, propagate, termCandidates} — см. confirm_segment */
     propagate:     (pid, sid, ids, includeConfirmed) => call("POST", `/segments/${pid}/${sid}/propagate`, { ids: ids || null, include_confirmed: !!includeConfirmed }),
     termQueue:     (status, limit)          => call("GET",    `/term-queue?status=${encodeURIComponent(status || "pending")}&limit=${limit || 200}`),
+    glossaryUsage: (src, limit)             => call("GET",    `/glossary/usage?src=${encodeURIComponent(src)}&limit=${limit || 6}`),
+    glossaryImpact:(pid)                    => call("GET",    `/projects/${pid}/glossary-impact`),
     approveTerm:   (cid, patch)             => call("POST",   `/term-queue/${cid}/approve`,          patch || {}),
     rejectTerm:    (cid)                    => call("POST",   `/term-queue/${cid}/reject`),
     extractTerms:  (pid, segIds, limit, model) => call("POST", `/projects/${pid}/extract-terms`,     { segment_ids: segIds || null, limit: limit || 30, model: model || null }),

@@ -162,6 +162,28 @@ function TabGlossary({ store, toast }) {
   };
   const del = (term) => { store.deleteTerm(term); toast.warning("Термин удалён", term.src); };
 
+  // Клик по самому термину = «покажи, где он используется»: открываем редактор
+  // с фильтром по затронутым сегментам. Совпадения ищет сервер тем же матчером,
+  // что и инъекция в промпт, — иначе список разошёлся бы с реальностью.
+  const openUsage = async (term, e) => {
+    e.stopPropagation();
+    if (!window.API) return;
+    const res = await window.API.safeCall(() => window.API.glossaryUsage(term.src, 1));
+    if (!res || !res.total) {
+      toast.info("Термин не встречается", "«" + term.src + "» не найден ни в одном сегменте проектов.");
+      return;
+    }
+    // Фильтр применяется к активному проекту — открываем тот, где совпадений больше
+    const best = res.projects.slice().sort((a, b) => b.segments.length - a.segments.length)[0];
+    const active = store.activeProject;
+    const pick = (active && res.projects.find(x => x.id === active.id)) || best;
+    if (!active || active.id !== pick.id) store.openProject(pick.id);
+    store.setSegmentFilter(pick.segments);
+    store.go("editor");
+    toast.info("Показаны сегменты с термином", "«" + term.src + "» — " + pick.segments.length
+      + " сегм." + (pick.violating.length ? " · перевод расходится с глоссарием: " + pick.violating.length : ""));
+  };
+
   const confMeta = { high: ["badge-confirmed", "Высокая"], medium: ["badge-review", "Средняя"], low: ["badge-failed", "Низкая"] };
 
   return React.createElement("div", { className: "page page-wide" },
@@ -198,7 +220,10 @@ function TabGlossary({ store, toast }) {
           React.createElement("tbody", null,
             pageRows.map((g, i) => { const [cls, lab] = confMeta[(g.conf || "").toLowerCase()] || confMeta.medium;
               return React.createElement("tr", { key: i, onClick: () => setModal(g) },
-                React.createElement("td", { style: { fontWeight: 600 } }, g.src),
+                React.createElement("td", { style: { fontWeight: 600 } },
+                  React.createElement("button", {
+                    className: "linklike", onClick: (e) => openUsage(g, e),
+                    title: "Показать сегменты, где встречается этот термин" }, g.src)),
                 React.createElement("td", { style: { color: "var(--c-primary)", fontWeight: 500 } }, g.tgt,
                   // auto = массовый автоимпорт: модель получает такую запись подсказкой, а не правилом
                   g.tier === "auto" && React.createElement("span", { className: "dim", style: { fontSize: 11, marginLeft: 8, whiteSpace: "nowrap" },
@@ -229,6 +254,54 @@ function TabGlossary({ store, toast }) {
   );
 }
 
+// Примеры употребления прямо в карточке: без них правка термина делается вслепую.
+// Предпросмотр — механическая замена старого варианта на новый в готовом переводе,
+// поэтому подписан именно как предпросмотр, а не как перевод.
+function TermUsage({ src, oldTgt, newTgt }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    let dead = false;
+    if (!src || !window.API) { setData({ total: 0, examples: [] }); return; }
+    window.API.safeCall(() => window.API.glossaryUsage(src, 4)).then(r => {
+      if (!dead) setData(r || { total: 0, examples: [] });
+    });
+    return () => { dead = true; };
+  }, [src]);
+
+  if (!data) return React.createElement("div", { className: "row", style: { gap: 8 } },
+    React.createElement(Spinner, null),
+    React.createElement("span", { className: "dim", style: { fontSize: 13 } }, "Ищем примеры…"));
+  if (!data.total) return React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } },
+    "В переведённых сегментах этот термин пока не встречается.");
+
+  const replaced = (text) => {
+    if (!oldTgt || !newTgt || oldTgt === newTgt) return null;
+    const i = (text || "").toLowerCase().indexOf(oldTgt.toLowerCase());
+    if (i === -1) return null;
+    return text.slice(0, i) + newTgt + text.slice(i + oldTgt.length);
+  };
+
+  return React.createElement("div", { className: "col", style: { gap: 10 } },
+    React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
+      "Встречается в " + data.total + " сегм."
+      + (data.violatingTotal ? " · перевод расходится с глоссарием: " + data.violatingTotal : "")),
+    data.examples.map((ex, i) => {
+      const preview = replaced(ex.target);
+      return React.createElement("div", { key: i, className: "card", style: { padding: "9px 11px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 4 } },
+        React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
+          "#" + ex.id + " · " + (ex.projectTitle || "проект " + ex.project)),
+        React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5 } }, ex.source),
+        ex.target
+          ? React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5, color: "var(--c-primary)" } }, ex.target)
+          : React.createElement("div", { className: "dim", style: { fontSize: 12.5, fontStyle: "italic" } }, "— не переведено —"),
+        preview && React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5, color: "var(--c-success)" } },
+          "→ " + preview),
+        ex.target && !preview && oldTgt !== newTgt && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+          "прежний вариант «" + oldTgt + "» в этом переводе не найден — сегмент нужно переперевести"));
+    })
+  );
+}
+
 function TermModal({ term, onClose, onSave }) {
   const [src, setSrc] = useState(term ? term.src : "");
   const [tgt, setTgt] = useState(term ? term.tgt : "");
@@ -250,6 +323,9 @@ function TermModal({ term, onClose, onSave }) {
       React.createElement(Select, { value: cat, onChange: (e) => setCat(e.target.value) }, cats.map(c => React.createElement("option", { key: c, value: c }, c)))),
     React.createElement(Field, { label: "Примечание (необязательно)" },
       React.createElement(Textarea, { value: note, onChange: (e) => setNote(e.target.value), placeholder: "Контекст использования, предпочтительные варианты…", style: { minHeight: 70 } })),
+    term && term.src && React.createElement(Field, { label: "Где используется",
+      hint: "Зелёным — как будет выглядеть перевод после замены" },
+      React.createElement(TermUsage, { src: term.src, oldTgt: (term.tgt || ""), newTgt: tgt })),
     React.createElement(Field, { label: "Достоверность" },
       React.createElement("div", { className: "row", style: { gap: 18 } },
         ["high", "medium", "low"].map(c => React.createElement(Radio, { key: c, name: "conf", checked: conf === c, onChange: () => setConf(c) },

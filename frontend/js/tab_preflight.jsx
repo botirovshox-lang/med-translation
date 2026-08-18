@@ -230,6 +230,8 @@ function TabPreflight({ store, toast }) {
     // ---- Соответствие обратного перевода ----
     React.createElement(BackcheckBands, { segments: segs, onDrill: openDrill, T }),
 
+    React.createElement(GlossaryImpact, { project, onDrill: openDrill, T }),
+
     React.createElement(TermcheckSummary, { segments: segs, onDrill: openDrill, T }),
 
     React.createElement(RepairSummary, { segments: segs, onDrill: openDrill, T }),
@@ -411,6 +413,66 @@ function StatRow({ label, note, count, color, onDrill, bold }) {
       React.createElement("span", { style: { fontSize: 13, fontWeight: bold ? 700 : 500, color: color || "var(--text)" } }, label),
       note && React.createElement("span", { className: "dim", style: { fontSize: 12 } }, note)),
     React.createElement("b", { className: "tnum", style: { fontSize: 13, color: color || "var(--text)" } }, count));
+}
+
+/* ============================================================
+   Соответствие одобренным терминам глоссария
+   ============================================================ */
+// Одобрение термина не переписывает готовые переводы. Этот блок показывает,
+// где они разошлись с глоссарием, и открывает такие сегменты в редакторе —
+// сам переперевод запускается там, карточкой «Соответствие глоссарию».
+function GlossaryImpact({ project, onDrill, T }) {
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = () => {
+    if (!window.API || !window.API.glossaryImpact || !project) return;
+    setBusy(true);
+    window.API.safeCall(() => window.API.glossaryImpact(project.id)).then(r => {
+      setBusy(false);
+      if (r && r.ok) setData(r);
+    });
+  };
+  useEffect(() => { setData(null); load(); }, [project && project.id]);
+
+  const segsById = new Map((project ? project.segments : []).map(s => [s.id, s]));
+  const pick = (ids) => (ids || []).map(id => segsById.get(id)).filter(Boolean);
+
+  return React.createElement("div", { className: "section" },
+    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+      React.createElement("div", { className: "row between", style: { alignItems: "flex-end", flexWrap: "wrap", gap: 10 } },
+        React.createElement("div", null,
+          React.createElement("h3", { style: { fontSize: 18, fontWeight: 700 } }, "Соответствие глоссарию",
+            T("Соответствие одобренным терминам",
+              "Сегменты, где термин есть в оригинале, а утверждённого перевода в готовом тексте нет.\n\nОдобрение термина влияет только на будущие переводы — уже сделанные сами не меняются, поэтому после правок глоссария этот список и появляется.\n\nСчитается только по проверенным записям: автоимпорт модель вправе игнорировать.\n\nПереперевести пакетом можно в Редакторе, карточка «Соответствие глоссарию».")),
+          React.createElement("p", { className: "muted", style: { marginTop: 6, fontSize: 14 } },
+            busy ? "Считаем…" : !data ? "—"
+              : data.segments.length ? "Расходятся с глоссарием: " + data.segments.length + " сегм. по " + data.terms.length + " терминам"
+              : "Все переводы соответствуют одобренным терминам")),
+        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", disabled: busy, onClick: load }, "Пересчитать")),
+
+      data && data.terms.length > 0 && React.createElement("div", { style: { display: "flex", flexDirection: "column" } },
+        React.createElement(StatRow, { label: "Всего расхождений", bold: true, count: data.segments.length,
+          color: "var(--c-warning)", onDrill: () => onDrill("Расходятся с глоссарием", pick(data.segments)) }),
+        React.createElement(StatRow, { label: "— не подтверждено", note: "можно переперевести сразу",
+          count: data.pending.length, onDrill: () => onDrill("Расходятся с глоссарием (не подтверждено)", pick(data.pending)) }),
+        React.createElement(StatRow, { label: "— подтверждено", note: "перезапись только по явной команде",
+          count: data.confirmed.length, color: "var(--c-error)",
+          onDrill: () => onDrill("Расходятся с глоссарием (подтверждено)", pick(data.confirmed)) })),
+
+      data && data.terms.length > 0 && React.createElement("div", { style: { borderTop: "1px solid var(--border)", paddingTop: 10 } },
+        React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, marginBottom: 6 } }, "По терминам"),
+        data.terms.slice(0, 10).map((t, i) => React.createElement("div", {
+          key: i, className: "row between", style: { padding: "3px 0", fontSize: 13, cursor: "pointer" },
+          onClick: () => onDrill("Термин: " + t.src, pick(t.segments)),
+          title: "Открыть сегменты с этим термином" },
+          React.createElement("div", { className: "row", style: { gap: 8, minWidth: 0, flexWrap: "wrap" } },
+            React.createElement("span", null, t.src),
+            React.createElement("span", { style: { color: "var(--c-success)", fontWeight: 600 } }, "→ " + t.tgt),
+            t.prevTgt && React.createElement("s", { className: "dim" }, t.prevTgt)),
+          React.createElement("b", { className: "tnum" }, t.segments.length))))
+    )
+  );
 }
 
 /* ============================================================

@@ -127,23 +127,47 @@ def _term_match(term: str, text: str) -> str | None:
     и подсовывал модели "cyclosis" вместо "cyclitis". Медицинские термины
     различаются как раз хвостом (-ит / -оз / -ома), срезать его нельзя.
     """
-    tl = term.lower()
-    # 1. Точное совпадение — обязательно по границам слова. Без этой проверки
-    #    трёхбуквенные записи глоссария лезли внутрь чужих слов: «жалобы» →
-    #    «лоб», «профилактика» → «лак», «диагностики» → «нос», и весь этот мусор
-    #    уходил модели как утверждённая терминология.
-    exact = _re.search(r'(?<![а-яёА-ЯЁa-zA-Z])' + _re.escape(tl) + r'(?![а-яёА-ЯЁa-zA-Z])',
-                       text, _re.IGNORECASE)
-    if exact:
-        return exact.group(0)
-    # 2. Стеминг по словам
+    exact, stem = _term_patterns(term)
+    if exact is None:
+        return None
+    hit = exact.search(text)
+    if hit:
+        return hit.group(0)
+    hit = stem.search(text) if stem is not None else None
+    return hit.group(0) if hit else None
+
+
+_PATTERN_CACHE: dict = {}
+_PATTERN_CACHE_MAX = 20000
+
+
+def _term_patterns(term: str):
+    """Скомпилированные шаблоны термина: точный (по границам слова) и стем-поиск.
+
+    Раньше обе регулярки собирались и компилировались на КАЖДОЕ сравнение.
+    На словаре в 10 000 записей внутренний кэш re переполнялся и компилировал
+    заново — отбор кандидатов для одного сегмента стоил 130 мс вместо единиц."""
+    cached = _PATTERN_CACHE.get(term)
+    if cached is not None:
+        return cached
+    tl = (term or "").lower()
     parts = tl.split()
     if not parts:
-        return None
-    stems = [_re.escape(w[:max(4, int(len(w) * 0.85))]) + r'[а-яёА-ЯЁ]*' for w in parts]
-    full_pat = r'\s+'.join(stems)
-    m = _re.search(r'(?<![а-яёА-ЯЁa-zA-Z])' + full_pat, text, _re.IGNORECASE)
-    return m.group(0) if m else None
+        pair = (None, None)
+    else:
+        # 1. Точное совпадение — обязательно по границам слова. Без этой проверки
+        #    трёхбуквенные записи глоссария лезли внутрь чужих слов: «жалобы» →
+        #    «лоб», «профилактика» → «лак», «диагностики» → «нос».
+        exact = _re.compile(r'(?<![а-яёА-ЯЁa-zA-Z])' + _re.escape(tl) + r'(?![а-яёА-ЯЁa-zA-Z])',
+                            _re.IGNORECASE)
+        # 2. Стеминг по словам
+        stems = [_re.escape(w[:max(4, int(len(w) * 0.85))]) + r'[а-яёА-ЯЁ]*' for w in parts]
+        stem = _re.compile(r'(?<![а-яёА-ЯЁa-zA-Z])' + r'\s+'.join(stems), _re.IGNORECASE)
+        pair = (exact, stem)
+    if len(_PATTERN_CACHE) >= _PATTERN_CACHE_MAX:
+        _PATTERN_CACHE.clear()
+    _PATTERN_CACHE[term] = pair
+    return pair
 
 
 # ─── Уровни доверия глоссария ────────────────────────────────────────
@@ -198,15 +222,14 @@ def _entry_keys(src: str) -> set:
 
 
 def _text_keys(text: str) -> set:
-    """Ключи текста. Берём окна по 4 символа внутри каждого слова, а не только
-    начало: точное совпадение в _term_match умеет попадать и в середину слова."""
+    """Ключи текста — только НАЧАЛА слов. С тех пор как точное совпадение требует
+    границы слова, термин не может начаться в середине чужого слова, и окна по
+    всей длине слова давали лишь лишних кандидатов: на длинном сегменте отбор
+    вырождался в перебор всего глоссария (134 мс против 2 мс на сегмент)."""
     keys = set()
     for w in _re.findall(r"[а-яёa-z0-9]+", (text or "").lower()):
-        # Короткие записи («ЭКГ», «КТ») индексируются целым словом и совпадают
-        # только с начала слова — добавляем короткие префиксы отдельно.
-        keys.update(w[:n] for n in (1, 2, 3) if len(w) >= n)
-        for i in range(max(0, len(w) - 3)):
-            keys.add(w[i:i + 4])
+        # Короткие записи («ЭКГ», «КТ») лежат в корзине целого слова
+        keys.update(w[:n] for n in (1, 2, 3, 4) if len(w) >= n)
     return keys
 
 
@@ -1135,6 +1158,74 @@ def list_glossary(q: str = "", cat: str = "", limit: int = 200, offset: int = 0)
     return {"total": total, "items": items[offset:offset + limit]}
 
 
+@app.get("/api/glossary/usage")
+def glossary_usage(src: str, limit: int = 6):
+    """Где термин реально встречается. Совпадение ищем тем же _term_match, что и
+    инъекция в промпт: иначе список «затронутых сегментов» разошёлся бы с тем,
+    на что глоссарий действительно влияет.
+
+    В `violating` — сегменты, где термин есть в оригинале, перевод уже готов,
+    а утверждённого варианта в нём нет. Именно их имеет смысл переперевести."""
+    entry = next((g for g in STATE["glossary"] if _norm_key(g.get("src")) == _norm_key(src)), None)
+    tgt = (entry or {}).get("tgt", "")
+    projects, examples = [], []
+    for p in STATE["projects"]:
+        ids, violating = [], []
+        for seg in p["segments"]:
+            if not _term_match(src, seg.get("source", "")):
+                continue
+            ids.append(seg["id"])
+            target = (seg.get("target") or "").strip()
+            if target and tgt and not _tgt_has_term(target, tgt):
+                violating.append(seg["id"])
+            if len(examples) < max(1, min(limit, 20)):
+                examples.append({"project": p["id"], "projectTitle": p.get("title", ""),
+                                 "id": seg["id"], "source": seg.get("source", "")[:400],
+                                 "target": target[:400], "status": seg.get("status")})
+        if ids:
+            projects.append({"id": p["id"], "title": p.get("title", ""), "segments": ids,
+                             "violating": violating})
+    return {"ok": True, "term": src, "tgt": tgt, "prevTgt": (entry or {}).get("prevTgt", ""),
+            "total": sum(len(x["segments"]) for x in projects),
+            "violatingTotal": sum(len(x["violating"]) for x in projects),
+            "projects": projects, "examples": examples}
+
+
+@app.get("/api/projects/{pid}/glossary-impact")
+def glossary_impact(pid: int):
+    """Сегменты проекта, чей перевод не соответствует ПРОВЕРЕННЫМ записям глоссария.
+
+    После одобрения термина старые переводы сами не меняются — это и есть список
+    «что переперевести». Считаем только по verified: автоимпорт модель вправе
+    игнорировать, требовать соответствия ему нельзя."""
+    project = get_project(pid)
+    by_term: dict = {}
+    seg_ids, confirmed_ids = set(), set()
+    for seg in project["segments"]:
+        target = (seg.get("target") or "").strip()
+        if not target:
+            continue
+        hits, _tm = _get_context(seg.get("source", ""))
+        for h in hits:
+            if _hit_tier(h) != GLOSSARY_TIER_HARD or not h.get("tgt"):
+                continue
+            if _tgt_has_term(target, h["tgt"]):
+                continue
+            key = h["src"]
+            e = by_term.setdefault(key, {"src": key, "tgt": h["tgt"], "cat": h.get("cat", ""),
+                                         "updated": h.get("updated", ""), "prevTgt": h.get("prevTgt", ""),
+                                         "segments": [], "confirmed": []})
+            e["segments"].append(seg["id"])
+            seg_ids.add(seg["id"])
+            if seg.get("status") == "confirmed":
+                e["confirmed"].append(seg["id"])
+                confirmed_ids.add(seg["id"])
+    terms = sorted(by_term.values(), key=lambda t: len(t["segments"]), reverse=True)
+    return {"ok": True, "terms": terms,
+            "segments": sorted(seg_ids), "confirmed": sorted(confirmed_ids),
+            "pending": sorted(seg_ids - confirmed_ids)}
+
+
 @app.get("/api/models")
 def list_models():
     """Каталог GPT-моделей с ценами — для выпадающего списка и оценки стоимости пакета.
@@ -1627,11 +1718,13 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     existing = next((g for g in STATE["glossary"]
                      if _norm_key(g.get("src")) == _norm_key(src)), None)
     if existing:
-        existing.update({"tgt": tgt, "cat": cat, "conf": "high",
-                         "tier": GLOSSARY_TIER_HARD, "note": "уточнено вручную " + today})
+        existing.update({"tgt": tgt, "cat": cat, "conf": "high", "tier": GLOSSARY_TIER_HARD,
+                         "note": "уточнено вручную " + today, "updated": today,
+                         "prevTgt": existing.get("tgt", "")})
     else:
         STATE["glossary"].insert(0, {"src": src, "tgt": tgt, "cat": cat, "freq": 1,
                                      "conf": "high", "note": "", "tier": GLOSSARY_TIER_HARD,
+                                     "updated": today,
                                      "origin": "confirmed:" + str(cand.get("segment", ""))})
     cand["status"] = "approved"
     cand["tgt"] = tgt

@@ -396,8 +396,9 @@ JUDGE_ZONE = (50, 97)
 # в одной из них.
 JUDGE_DEFAULT_MODEL = "gpt-5.6-terra"
 # Проверке терминологии нужна сильная модель: слабая либо пропускает кальки,
-# либо начинает придираться к нормальным синонимам.
-TERMCHECK_DEFAULT_MODEL = os.environ.get("TERMCHECK_MODEL", DEFAULT_OPENAI_MODEL)
+# либо начинает придираться к нормальным синонимам. Дефолт перевода (gpt-4o)
+# для этой роли слабоват, поэтому берём ту же модель, что и судья.
+TERMCHECK_DEFAULT_MODEL = os.environ.get("TERMCHECK_MODEL", JUDGE_DEFAULT_MODEL)
 
 
 def _openai_embed(texts: list) -> list:

@@ -251,17 +251,21 @@ def _gloss_index() -> dict:
 
 
 def _invalidate_gloss_index():
-    """Любая правка глоссария роняет индекс — соберётся заново при следующем поиске."""
+    """Любая правка глоссария роняет индекс — соберётся заново при следующем поиске.
+    Заодно двигает поколение: отчёт о расхождениях считается от глоссария."""
     global _GLOSS_INDEX
     _GLOSS_INDEX = None
+    _GLOSS_EPOCH[0] += 1
 
 
-def _get_context(text: str):
+def _get_context(text: str, with_tm: bool = True):
     """Возвращает (gloss_hits, tm_hit) для исходного текста.
 
     gloss_hits — список dict {src, tgt, ..., _form} где _form — фактическая
                  форма термина найденная в тексте (нужна для замены).
-    tm_hit     — точное совпадение в TM или None.
+    tm_hit     — точное совпадение в TM или None. with_tm=False пропускает поиск
+                 по памяти переводов: отчёту о расхождениях он не нужен, а это
+                 линейный проход по всей TM на каждый сегмент.
     """
     hits = []
     idx = _gloss_index()
@@ -290,6 +294,8 @@ def _get_context(text: str):
             best[key] = h
     # Длинные термины первыми: меньше риск перекрытия плейсхолдеров
     hits = sorted(best.values(), key=lambda x: len(x["src"]), reverse=True)[:15]
+    if not with_tm:
+        return hits, None
     tm_hit = next(
         (t for t in STATE.get("tm", []) if t.get("src", "").strip().lower() == text.strip().lower()),
         None,
@@ -1191,21 +1197,44 @@ def glossary_usage(src: str, limit: int = 6):
             "projects": projects, "examples": examples}
 
 
+_IMPACT_CACHE: dict = {}          # pid -> (отпечаток, отчёт)
+_GLOSS_EPOCH = [0]                # растёт на каждой правке глоссария
+
+
+def _impact_fingerprint(project: dict) -> str:
+    """Отпечаток входных данных отчёта: переводы сегментов + поколение глоссария.
+
+    Считаем по содержимому, а не по «версии состояния»: любой будущий код,
+    поменявший перевод в обход save_state, иначе получал бы устаревший отчёт,
+    а тихо устаревшая цифра «сколько переперевести» хуже её отсутствия."""
+    parts = [str(s.get("id")) + "|" + (s.get("status") or "") + "|" + (s.get("target") or "")
+             for s in project["segments"]]
+    body = chr(10).join(parts)
+    return str(_GLOSS_EPOCH[0]) + ":" + hashlib.sha1(body.encode("utf-8")).hexdigest()
+
+
 @app.get("/api/projects/{pid}/glossary-impact")
-def glossary_impact(pid: int):
+def glossary_impact(pid: int, refresh: bool = False):
     """Сегменты проекта, чей перевод не соответствует ПРОВЕРЕННЫМ записям глоссария.
 
     После одобрения термина старые переводы сами не меняются — это и есть список
     «что переперевести». Считаем только по verified: автоимпорт модель вправе
     игнорировать, требовать соответствия ему нельзя."""
     project = get_project(pid)
+    # Полный проход по проекту — секунды на тысячах сегментов. Пока состояние
+    # не менялось, отдаём посчитанное: клиент дёргает отчёт при каждом открытии
+    # редактора и после каждого прогона.
+    fp = _impact_fingerprint(project)
+    cached = _IMPACT_CACHE.get(pid)
+    if cached and cached[0] == fp and not refresh:
+        return cached[1]
     by_term: dict = {}
     seg_ids, confirmed_ids = set(), set()
     for seg in project["segments"]:
         target = (seg.get("target") or "").strip()
         if not target:
             continue
-        hits, _tm = _get_context(seg.get("source", ""))
+        hits, _tm = _get_context(seg.get("source", ""), with_tm=False)
         for h in hits:
             if _hit_tier(h) != GLOSSARY_TIER_HARD or not h.get("tgt"):
                 continue
@@ -1221,9 +1250,11 @@ def glossary_impact(pid: int):
                 e["confirmed"].append(seg["id"])
                 confirmed_ids.add(seg["id"])
     terms = sorted(by_term.values(), key=lambda t: len(t["segments"]), reverse=True)
-    return {"ok": True, "terms": terms,
-            "segments": sorted(seg_ids), "confirmed": sorted(confirmed_ids),
-            "pending": sorted(seg_ids - confirmed_ids)}
+    result = {"ok": True, "terms": terms,
+              "segments": sorted(seg_ids), "confirmed": sorted(confirmed_ids),
+              "pending": sorted(seg_ids - confirmed_ids)}
+    _IMPACT_CACHE[pid] = (fp, result)
+    return result
 
 
 @app.get("/api/models")

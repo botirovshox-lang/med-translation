@@ -1746,6 +1746,18 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
     return {"ok": True, "scanned": len(segs), "skipped_cached": skipped_cached, "candidates": found}
 
 
+# Флаг «текущий прогон просят остановить». Пакетные циклы сверяются с ним
+# после каждого сегмента: раньше остановка ждала конца порции, а это до минуты
+# на переводе и несколько минут на ремонте — пользователь считал кнопку мёртвой.
+# Прогон один (см. фоновые прогоны), поэтому хватает одной переменной.
+_ACTIVE_JOB: dict = {}
+
+
+def _job_should_stop() -> bool:
+    job = _ACTIVE_JOB.get("job")
+    return bool(job and job.get("stop"))
+
+
 def _text_hash(text: str) -> str:
     return hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:16]
 
@@ -1991,6 +2003,8 @@ def termcheck_batch(pid: int, req: TermcheckBatchRequest):
     done_pairs: dict = {}
     duplicates, skipped_trivial = 0, 0
     for seg in targets:
+        if _job_should_stop():
+            break
         pair = (_norm_key(seg.get("source")), _norm_key(seg.get("target")))
         if pair in done_pairs:
             seg["termcheck"] = json.loads(json.dumps(done_pairs[pair]))
@@ -2270,6 +2284,8 @@ def repair_batch(pid: int, req: RepairBatchRequest):
 
     applied, skipped, errors = [], [], []
     for seg in targets:
+        if _job_should_stop():
+            break
         try:
             r = _run_segment_repair(seg, project, req.model, req.bc_model, req.tc_model,
                                     req.use_judge, req.judge_model)
@@ -2345,6 +2361,8 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
     done_pairs: dict = {}
     duplicates = 0
     for seg in targets:
+        if _job_should_stop():
+            break
         pair = (_norm_key(seg.get("source")), _norm_key(seg.get("target")))
         if pair in done_pairs:
             seg["backtranslated_ru"] = done_pairs[pair].get("back", "")
@@ -2468,6 +2486,8 @@ def batch_medical_qa(pid: int, req: MedicalQABatchRequest = MedicalQABatchReques
     processed = []
     errors = []
     for seg in targets:
+        if _job_should_stop():
+            break
         try:
             result = _segment_medical_qa(pid, seg["id"], run_backcheck=req.run_backcheck)
             if result.get("ok"):
@@ -2564,6 +2584,8 @@ def batch_translate(pid: int, req: BatchRequest):
     # заголовок встречается десятки раз, и каждый стоил отдельного вызова.
     done_sources: dict = {}
     for seg in targets:
+        if _job_should_stop():
+            break
         translation = None
         dup = done_sources.get(_norm_key(seg["source"]))
         if dup is not None:
@@ -2932,6 +2954,7 @@ def _job_loop():
                 continue
             job["status"] = "running"
             job["started"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _ACTIVE_JOB["job"] = job
             _job_run(job)
         except Exception as e:
             job["status"] = "error"
@@ -2939,6 +2962,7 @@ def _job_loop():
             job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             print(f"[backend] job#{job.get('id')} crashed: {e}", file=sys.stderr)
         finally:
+            _ACTIVE_JOB.pop("job", None)
             try:
                 save_state(STATE)
             except Exception as e:
@@ -3020,6 +3044,10 @@ def stop_job(jid: int):
     if job["status"] == "queued":
         job["status"] = "stopped"
         job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    elif job["status"] == "running":
+        # Промежуточный статус: обработка текущего сегмента доигрывается, но
+        # пользователю сразу видно, что кнопка сработала.
+        job["stopping"] = True
     return {"ok": True, "job": _job_public(job)}
 
 

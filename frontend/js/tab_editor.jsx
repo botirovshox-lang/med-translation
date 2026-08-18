@@ -25,15 +25,86 @@ function bandColor(color) {
     : "var(--c-error)";
 }
 
-// Ориентировочная смета пакета. Кириллица ≈ 2.2 симв./токен, английский вывод ≈ 3.5,
-// плюс ~500 токенов системного промпта с глоссарием на каждый сегмент. У моделей GPT-5.x
-// в оплачиваемый вывод входят ещё и reasoning-токены — отсюда надбавка.
+// ── Смета прогонов ───────────────────────────────────────────────────
+// Кириллица ≈ 2.2 симв./токен, латиница ≈ 3.5. У моделей GPT-5.x в оплачиваемый
+// вывод входят ещё и reasoning-токены — отсюда надбавка ×1.8.
+// Считается по объёму текста: точную цену знает только ответ модели, поэтому
+// везде подписано «ориентировочно». Лучше показать порядок суммы, чем ничего:
+// прогон на 2600 сегментов и прогон на 30 отличаются в сто раз.
+const REASONING_MULT = 1.8;
+const JUDGE_SHARE = 0.3;      // доля сегментов, попадающих в зону судьи (замер на проде)
+const EMBED_PRICE = 0.02;     // $/1M токенов, text-embedding-3-small
+
+function reasoning(model) { return model && model.api === "modern" ? REASONING_MULT : 1; }
+
+function priceOf(model, tokIn, tokOut) {
+  if (!model) return null;
+  return (tokIn / 1e6) * model.in + (tokOut / 1e6) * model.out;
+}
+
+// kind: translate | backcheck | termcheck | repair | medical_qa
+// opts: { judge, judgeModel, secPerSeg }
+function estimateRun(kind, targets, model, opts) {
+  const o = opts || {};
+  const n = targets.length;
+  const srcChars = targets.reduce((a, s) => a + (s.source || "").length, 0);
+  const tgtChars = targets.reduce((a, s) => a + (s.target || "").length, 0);
+  const mult = reasoning(model);
+  let tokIn = 0, tokOut = 0, cost = null, sec = n * EST_SEC_PER_SEG;
+
+  if (kind === "translate") {
+    tokIn = n * 500 + srcChars / 2.2;          // 500 ≈ системный промпт с глоссарием
+    tokOut = (srcChars / 3.5) * mult;
+    cost = priceOf(model, tokIn, tokOut);
+  } else if (kind === "backcheck") {
+    tokIn = n * 200 + tgtChars / 3.5;          // короткий промпт буквального перевода
+    tokOut = (tgtChars / 2.2) * mult;          // обратный перевод на язык оригинала
+    cost = priceOf(model, tokIn, tokOut);
+    // Судья вызывается только в своей зоне и не вызывается при жёсткой находке
+    if (o.judge && o.judgeModel) {
+      const jn = n * JUDGE_SHARE;
+      cost += priceOf(o.judgeModel, jn * 400 + (srcChars * JUDGE_SHARE) / 1.1,
+                      jn * 250 * reasoning(o.judgeModel));
+    }
+    cost += ((srcChars + tgtChars) / 3 / 1e6) * EMBED_PRICE;   // эмбеддинги
+    sec = n * EST_SEC_PER_SEG;
+  } else if (kind === "termcheck") {
+    tokIn = n * 450 + (srcChars + tgtChars) / 3;
+    tokOut = n * 250 * mult;                   // короткий JSON с находками
+    cost = priceOf(model, tokIn, tokOut);
+  } else if (kind === "repair") {
+    // Ремонт = вызов правки + перепроверка теми проверками, что ругались.
+    tokIn = n * 600 + (srcChars + tgtChars * 2) / 3;
+    tokOut = (tgtChars / 3.5) * mult;
+    cost = priceOf(model, tokIn, tokOut);
+    if (o.recheckModel) {
+      cost += priceOf(o.recheckModel, n * 300 + tgtChars / 3.5,
+                      (tgtChars / 2.2) * reasoning(o.recheckModel));
+    }
+    sec = n * EST_SEC_PER_SEG * 2;             // правка + перепроверка
+  } else if (kind === "medical_qa") {
+    tokIn = n * 200 + tgtChars / 3.5;
+    tokOut = (tgtChars / 2.2) * mult;
+    cost = priceOf(model, tokIn, tokOut);
+  }
+  return { cost, seconds: sec, tokIn: Math.round(tokIn), tokOut: Math.round(tokOut), count: n };
+}
+
+// Смета пакетного перевода — та же функция, отдельное имя ради модалки сметы
 function estimateBatch(targets, model) {
-  const chars = targets.reduce((a, s) => a + (s.source || "").length, 0);
-  const tokIn = targets.length * 500 + chars / 2.2;
-  const tokOut = (chars / 3.5) * (model && model.api === "modern" ? 1.8 : 1);
-  const cost = model ? (tokIn / 1e6) * model.in + (tokOut / 1e6) * model.out : null;
-  return { chars, cost, seconds: targets.length * EST_SEC_PER_SEG };
+  const e = estimateRun("translate", targets, model);
+  return { chars: targets.reduce((a, s) => a + (s.source || "").length, 0),
+           cost: e.cost, seconds: e.seconds };
+}
+
+// Строка сметы под кнопкой запуска: одинаковая во всех карточках
+function EstLine({ est }) {
+  if (!est || !est.count) return null;
+  return React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
+    "Ориентировочно: ",
+    React.createElement("b", { style: { color: "var(--text-2)" } },
+      est.cost != null ? fmtCost(est.cost) : "—"),
+    " · " + fmtDuration(est.seconds) + " на " + est.count + " сегм.");
 }
 
 // Чем сегмент переведён. seg.provider проставляется бэкендом в момент перевода.
@@ -164,6 +235,7 @@ function TabEditor({ store, toast }) {
   const [rpModel, setRpModel] = useState(() => {
     try { return localStorage.getItem(RP_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
+  const [defModel, setDefModel] = useState("");   // модель перевода по умолчанию (Medical QA берёт её)
   const [bcBands, setBcBands] = useState([]);
   const [bcJudge, setBcJudge] = useState(false);          // LLM-судья для средней зоны
   const [judgeModel, setJudgeModel] = useState(() => {
@@ -191,6 +263,7 @@ function TabEditor({ store, toast }) {
       setJudgeModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.judgeDefault || d.default || ""));
       setTcModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.termcheckDefault || d.default || ""));
       setRpModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.repairDefault || d.default || ""));
+      setDefModel(d.default || "");
       if (d.backcheckBands) setBcBands(d.backcheckBands);
       if (d.judgeZone) setJudgeZone(d.judgeZone);
     });
@@ -668,9 +741,15 @@ function TabEditor({ store, toast }) {
   };
 
   const stopJob = async () => {
-    if (!job || !window.API) return;
-    await window.API.safeCall(() => window.API.stopJob(job.id));
-    toast.info("Остановка", "Текущая порция досчитается и сохранится, следующая не начнётся.");
+    if (!job || !window.API || job.stopping) return;
+    setJob(j => (j ? { ...j, stopping: true } : j));   // отклик сразу, не дожидаясь опроса
+    const res = await window.API.safeCall(() => window.API.stopJob(job.id));
+    if (!res || !res.ok) {
+      setJob(j => (j ? { ...j, stopping: false } : j));
+      toast.error("Не удалось остановить", "Сервер не ответил — попробуйте ещё раз.");
+      return;
+    }
+    toast.info("Останавливаем", "Текущий сегмент досчитается и сохранится, дальше прогон не пойдёт.");
   };
 
   const runBackcheckBatch = () => {
@@ -881,28 +960,36 @@ function TabEditor({ store, toast }) {
           React.createElement(Spinner, null),
           React.createElement("div", { style: { flex: 1 } },
             React.createElement("div", { style: { fontSize: 13, fontWeight: 600 } },
-              (JOB_LABELS[job.kind] || job.kind) + " — " + (job.status === "queued" ? "в очереди" : "идёт на сервере")
+              (JOB_LABELS[job.kind] || job.kind) + " — "
+              + (job.stopping ? "останавливается" : job.status === "queued" ? "в очереди" : "идёт на сервере")
               + ": " + job.done + " из " + job.total),
             React.createElement(ProgressBar, { value: Math.round(job.done / Math.max(1, job.total) * 100) }),
             React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 4 } },
               "Вкладку можно закрыть — прогон продолжится, прогресс подхватится при возвращении"))),
-        React.createElement(Btn, { variant: "ghost", size: "sm", onClick: stopJob }, "Остановить"))
+        React.createElement(Btn, { variant: "ghost", size: "sm", onClick: stopJob, disabled: !!job.stopping },
+          job.stopping ? "Останавливаем…" : "Остановить"))
     ),
 
     // ---- Batch actions ----
     React.createElement("div", { className: "editor-main", style: { paddingBottom: 0 } },
       React.createElement(Expander, { title: "Пакетные прогоны", icon: "zap", right: "перевод · QA · термины · back-check · ремонт", defaultOpen: false },
         React.createElement("div", { className: "grid grid-3" },
-          React.createElement(BatchCard, { kind: "google", running: batchRun && batchRun.engine === "google" ? batchRun : null, onRun: () => askRunBatch("google"), onStop: stopJob,
+          React.createElement(BatchCard, { kind: "google", est: estimateRun("translate", pickTargets("google", project.segments).targets, null), running: batchRun && batchRun.engine === "google" ? batchRun : null, onRun: () => askRunBatch("google"), onStop: stopJob,
             available: pickTargets("google", project.segments).targets.length,
             selectionSize: pickTargets("google", project.segments).selectionSize,
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
-          React.createElement(BatchCard, { kind: "gpt", running: batchRun && batchRun.engine === "gpt" ? batchRun : null, onRun: () => askRunBatch("gpt"), onStop: stopJob,
+          React.createElement(BatchCard, { kind: "gpt", est: estimateRun("translate", pickTargets("gpt", project.segments).targets, gptModelInfo), running: batchRun && batchRun.engine === "gpt" ? batchRun : null, onRun: () => askRunBatch("gpt"), onStop: stopJob,
             models: gptModels, model: gptModel, modelInfo: gptModelInfo, onModel: pickGptModel,
             available: pickTargets("gpt", project.segments).targets.length,
             selectionSize: pickTargets("gpt", project.segments).selectionSize,
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(MedicalQACard, { running: batchRun && batchRun.engine === "medical_qa" ? batchRun : null, onRun: runMedicalQABatch,
+            // Свежий back-check переиспользуется, такие сегменты в смету не идут
+            est: estimateRun("medical_qa", project.segments.filter(s => s.target && s.target.trim()
+              && ["translated", "qa", "review", "confirmed"].includes(s.status)
+              && (checkedSegs.size > 0 ? checkedSegs.has(s.id) : (!store.segmentFilter || store.segmentFilter.has(s.id)))
+              && !(s.backcheck && !s.backcheck.stale && s.backcheck.back)),
+              gptModels.find(m => m.id === defModel) || null),
             available: project.segments.filter(s => s.target && s.target.trim() && ["translated", "qa", "review", "confirmed"].includes(s.status) && (checkedSegs.size > 0 ? checkedSegs.has(s.id) : (!store.segmentFilter || store.segmentFilter.has(s.id)))).length,
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(TermCheckCard, {
@@ -914,6 +1001,7 @@ function TabEditor({ store, toast }) {
             flagged: project.segments.filter(s => s.termcheck && !s.termcheck.stale
               && (s.termcheck.findings || []).length).length,
             groups: tcGroups, pickedGroups: pickedTcGroups, onToggleGroup: toggleTcGroup,
+            est: estimateRun("termcheck", project.segments.filter(s => termcheckable(s, currentIdSet)), gptModels.find(m => m.id === tcModel) || null),
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(RepairCard, {
             running: batchRun && batchRun.engine === "repair" ? batchRun : null,
@@ -923,6 +1011,8 @@ function TabEditor({ store, toast }) {
             available: project.segments.filter(s => repairable(s, currentIdSet)).length,
             repaired: project.segments.filter(s => s.repair && s.repair.applied).length,
             groups: rpGroups, pickedGroups: pickedRpGroups, onToggleGroup: toggleRpGroup,
+            est: estimateRun("repair", project.segments.filter(s => repairable(s, currentIdSet)),
+              gptModels.find(m => m.id === rpModel) || null, { recheckModel: bcModelInfo }),
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(BackcheckCard, {
             running: batchRun && batchRun.engine === "backcheck" ? batchRun : null,
@@ -931,6 +1021,8 @@ function TabEditor({ store, toast }) {
             judge: bcJudge, onJudge: () => setBcJudge(v => !v),
             judgeModel: judgeModel, judgeModelInfo: judgeModelInfo, onJudgeModel: pickJudgeModel,
             judgeZone: judgeZone,
+            est: estimateRun("backcheck", project.segments.filter(s => backcheckable(s, currentIdSet)), bcModelInfo,
+              { judge: bcJudge, judgeModel: judgeModelInfo }),
             available: project.segments.filter(s => backcheckable(s, currentIdSet)).length,
             done: project.segments.filter(s => bcCandidate(s, currentIdSet) && s.backcheck
               && s.backcheck.score != null && !s.backcheck.stale).length,
@@ -1186,7 +1278,7 @@ function LegendDot({ color, label }) {
     React.createElement("span", { style: { width: 10, height: 10, borderRadius: 3, background: color, display: "inline-block" } }), label);
 }
 
-function BatchCard({ kind, running, onRun, onStop, available, selectionSize, filtered, checked, models, model, modelInfo, onModel }) {
+function BatchCard({ kind, running, onRun, onStop, available, selectionSize, filtered, checked, models, model, modelInfo, onModel, est }) {
   const meta = kind === "google"
     ? { icon: "globe", title: "Google Batch", sub: "Низкорисковые сегменты", note: "Для простых, шаблонных формулировок.", color: "var(--c-warning)", btn: "Запустить Google",
         tipTitle: "Запустить Google batch", tip: "Перевести все GOOGLE_SAFE сегменты через Google Translate. Результат сохраняется как 'google_draft' (не подтверждён)." }
@@ -1213,6 +1305,7 @@ function BatchCard({ kind, running, onRun, onStop, available, selectionSize, fil
         "Цена за 1M токенов: вход " + fmtCost(modelInfo.in) + " · выход " + fmtCost(modelInfo.out))
     ),
 
+    React.createElement(EstLine, { est }),
     running
       ? React.createElement("div", null,
           React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
@@ -1234,7 +1327,7 @@ function BatchCard({ kind, running, onRun, onStop, available, selectionSize, fil
 function BackcheckCard({ running, onRun, onStop, available, done, filtered, models, model, modelInfo, onModel,
                         judge, onJudge, judgeModel, judgeModelInfo, onJudgeModel, judgeZone,
                         skipConfirmed, onSkipConfirmed, confirmedCount,
-                        groups, pickedGroups, onToggleGroup }) {
+                        groups, pickedGroups, onToggleGroup, est }) {
   const zone = judgeZone || [50, 97];
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "row", style: { gap: 10 } },
@@ -1291,6 +1384,8 @@ function BackcheckCard({ running, onRun, onStop, available, done, filtered, mode
       judgeModelInfo && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 5 } },
         "Цена за 1M токенов: вход " + fmtCost(judgeModelInfo.in) + " · выход " + fmtCost(judgeModelInfo.out))),
 
+    React.createElement(EstLine, { est }),
+
     // Что именно проверять: группы «чем уже проверено» с количеством. Одна группа —
     // выбирать не из чего, не загромождаем карточку.
     groups && groups.length > 1 && React.createElement("div", {
@@ -1335,7 +1430,7 @@ function RunGroups({ title, tip, groups, pickedGroups, onToggleGroup }) {
 }
 
 function RepairCard({ running, onRun, onStop, available, repaired, filtered, checked, models, model, modelInfo, onModel,
-                     groups, pickedGroups, onToggleGroup }) {
+                     groups, pickedGroups, onToggleGroup, est }) {
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "row", style: { gap: 10 } },
       React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-success)" } },
@@ -1352,6 +1447,7 @@ function RepairCard({ running, onRun, onStop, available, repaired, filtered, che
       "$" + modelInfo.in + " / $" + modelInfo.out + " за 1M токенов" + (modelInfo.note ? " · " + modelInfo.note : "")),
     repaired > 0 && React.createElement("div", { style: { fontSize: 12.5, color: "var(--c-success)", fontWeight: 600 } },
       "Исправлено: " + repaired),
+    React.createElement(EstLine, { est }),
     React.createElement(RunGroups, { title: "Что чинить", groups, pickedGroups, onToggleGroup,
       tip: "Сегменты, которые уже проходили ремонт на этом же тексте, по умолчанию сняты: те же претензии дадут тот же результат, а вызов модели платный.\n\nОтметьте группу, чтобы зайти второй раз — например, другой моделью или после того, как одобрили термин в глоссарии.\n\n«Текст менялся после прошлого ремонта» — там прошлая попытка уже не про этот текст, такие сегменты отмечены сразу." }),
     running
@@ -1369,7 +1465,7 @@ function RepairCard({ running, onRun, onStop, available, repaired, filtered, che
 }
 
 function TermCheckCard({ running, onRun, onStop, available, flagged, filtered, checked, models, model, modelInfo, onModel,
-                        groups, pickedGroups, onToggleGroup }) {
+                        groups, pickedGroups, onToggleGroup, est }) {
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "row", style: { gap: 10 } },
       React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-purple)" } },
@@ -1386,6 +1482,7 @@ function TermCheckCard({ running, onRun, onStop, available, flagged, filtered, c
       "$" + modelInfo.in + " / $" + modelInfo.out + " за 1M токенов" + (modelInfo.note ? " · " + modelInfo.note : "")),
     flagged > 0 && React.createElement("div", { style: { fontSize: 12.5, color: "var(--c-warning)", fontWeight: 600 } },
       "С замечаниями: " + flagged),
+    React.createElement(EstLine, { est }),
     React.createElement(RunGroups, { title: "Что проверять", groups, pickedGroups, onToggleGroup,
       tip: "Сегмент, уже проверенный этой же моделью с тем же переводом, по умолчанию снят с прогона: результат будет тот же, а вызов платный. Проверенное ДРУГОЙ моделью отмечено — второе мнение имеет смысл.\n\nОтдельно вынесены те, где замечания были, и те, где их не было: после правок обычно перепроверяют именно первые.\n\n«Нечего проверять» — сегменты без слов или с переводом, совпадающим с оригиналом; они и при повторном прогоне уйдут без вызова модели." }),
     running
@@ -1402,7 +1499,7 @@ function TermCheckCard({ running, onRun, onStop, available, flagged, filtered, c
   );
 }
 
-function MedicalQACard({ running, onRun, available, filtered, checked }) {
+function MedicalQACard({ running, onRun, available, filtered, checked, est }) {
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "row", style: { gap: 10 } },
       React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-info)" } },
@@ -1413,6 +1510,7 @@ function MedicalQACard({ running, onRun, available, filtered, checked }) {
         React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "After translation"))
     ),
     React.createElement("p", { className: "muted", style: { fontSize: 13, margin: 0 } }, "Runs the full QA chain for translated segments: numbers, negation, inner/outer, forbidden terms, and literal calques."),
+    React.createElement(EstLine, { est }),
     running
       ? React.createElement("div", null,
           React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },

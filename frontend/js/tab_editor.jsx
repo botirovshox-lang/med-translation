@@ -106,6 +106,36 @@ function markHits(text, q) {
   return out;
 }
 
+// ── Группировка «что уже прогонялось» ────────────────────────────────
+// Чистые функции: по ним карточка считает, что предложить, а прогон — что брать.
+// Ключ проверки терминологии различает «с замечаниями» и «без»: после правок
+// перепрогоняют обычно именно первые.
+function tcGroupKey(s) {
+  const tc = s.termcheck;
+  if (!tc) return "none";
+  if (tc.stale) return "stale";
+  if (tc.model === "skip") return "skip";
+  return ((tc.findings || []).length ? "hit:" : "ok:") + (tc.model || "unknown");
+}
+
+// Отмечено по умолчанию: непроверенное, устаревшее и проверенное ДРУГОЙ моделью
+// (второе мнение имеет смысл). Проверенное текущей моделью и пропущенные — нет.
+function tcGroupDefault(key, model) {
+  if (key === "none" || key === "stale") return true;
+  const i = key.indexOf(":");
+  return i !== -1 && key.slice(i + 1) !== model;
+}
+
+// tried приходит с бэкенда: этот же текст уже проходил через ремонт
+function rpGroupKey(s) {
+  const r = s.repair;
+  if (!r) return "none";
+  if (!r.tried) return "changed";
+  return r.applied ? "applied" : "rejected";
+}
+
+function rpGroupDefault(key) { return key === "none" || key === "changed"; }
+
 function fmtDuration(sec) {
   if (sec < 90) return Math.round(sec) + " с";
   if (sec < 5400) return Math.round(sec / 60) + " мин";
@@ -160,6 +190,8 @@ function TabEditor({ store, toast }) {
     try { return localStorage.getItem(BC_SKIP_CONFIRMED_LS_KEY) === "1"; } catch (e) { return false; }
   });
   const [bcGroupPick, setBcGroupPick] = useState(null);   // Set<ключ группы> | null = по умолчанию
+  const [tcGroupPick, setTcGroupPick] = useState(null);   // то же для проверки терминологии
+  const [rpGroupPick, setRpGroupPick] = useState(null);   // то же для ремонта
   const stopRef = useRef(false);
   const PAGE_SIZE = 10;
 
@@ -184,6 +216,8 @@ function TabEditor({ store, toast }) {
     [retranslate, gptModel, store.segmentFilter, checkedSegs.size]);
   useEffect(() => { setBcGroupPick(null); },
     [bcModel, bcJudge, bcSkipConfirmed, store.segmentFilter, checkedSegs.size]);
+  useEffect(() => { setTcGroupPick(null); }, [tcModel, store.segmentFilter, checkedSegs.size]);
+  useEffect(() => { setRpGroupPick(null); }, [rpModel, store.segmentFilter, checkedSegs.size]);
 
   const gptModelInfo = gptModels.find(m => m.id === gptModel) || null;
   const pickRpModel = (id) => {
@@ -705,7 +739,8 @@ function TabEditor({ store, toast }) {
     const idSet = currentIdSet;
     const targets = currentSegs.filter(s => termcheckable(s, idSet));
     if (!targets.length) {
-      toast.warning("Нечего проверять", "В выборке нет переведённых сегментов без актуальной проверки терминологии.");
+      toast.warning("Нечего проверять",
+        "Всё в выборке уже проверено этой моделью. Отметьте нужные группы в «Что проверять», чтобы прогнать заново.");
       return;
     }
     stopRef.current = false;
@@ -768,7 +803,9 @@ function TabEditor({ store, toast }) {
     const idSet = currentIdSet;
     const targets = currentSegs.filter(s => repairable(s, idSet));
     if (!targets.length) {
-      toast.warning("Чинить нечего", "Нет сегментов с проверяемыми находками. Сначала прогоните back-check или проверку терминологии.");
+      toast.warning("Чинить нечего", rpGroups.length
+        ? "Все сегменты с находками уже проходили ремонт. Отметьте нужные группы в «Что чинить», чтобы зайти второй раз."
+        : "Нет сегментов с проверяемыми находками. Сначала прогоните back-check или проверку терминологии.");
       return;
     }
     stopRef.current = false;
@@ -789,7 +826,7 @@ function TabEditor({ store, toast }) {
       if (window.API) r = await callChunkWithRetry(
         () => window.API.repairBatch(project.id, chunk, REPAIR_CHUNK, {
           model: rpModel || null, bc_model: bcModel || null, tc_model: tcModel || null,
-          use_judge: bcJudge, judge_model: judgeModel || null }),
+          use_judge: bcJudge, judge_model: judgeModel || null, retry: repairRetry() }),
         (n) => toast.warning("Сбой связи", "Порция не прошла, повтор " + n + " из " + CHUNK_RETRIES + "…"));
       clearInterval(tick);
       if (!r || !r.ok) { failed = true; break; }
@@ -869,23 +906,59 @@ function TabEditor({ store, toast }) {
     : scope === "tgt" ? "Поиск по переводу (" + project.tgt + ")…"
     : "Поиск по оригиналу и переводу…";
 
-  // Проверять есть что, если сегмент переведён, а проверки нет или она устарела
-  // (перевод меняли после неё — тот же принцип, что у backcheck.stale).
-  const termcheckable = (s, idSet) => {
-    if (!(s.target && s.target.trim())) return false;
-    if (idSet && !idSet.has(s.id)) return false;
-    return !s.termcheck || s.termcheck.stale;
+  // ── Проверка терминологии: группы «что уже прогонялось» ──────────
+  // Ключ разделяет не только «проверено/нет», но и «с замечаниями/без»:
+  // после правок обычно нужно перепрогнать именно те, где замечания были.
+  const tcCandidate = (s, idSet) => !!(s.target && s.target.trim()) && (!idSet || idSet.has(s.id));
+
+  const tcGroupLabel = (key) => {
+    if (key === "none") return "ещё не проверялся";
+    if (key === "stale") return "перевод изменился после проверки";
+    if (key === "skip") return "нечего проверять (без вызова модели)";
+    const [kind, mdl] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
+    const name = mdl === "unknown" ? "модель неизвестна" : (providerLabel({ id: mdl, exact: true }, gptModels) || mdl);
+    return (kind === "hit" ? "проверено, есть замечания: " : "проверено, замечаний нет: ") + name;
   };
 
-  // Ремонтировать есть что, если по ТЕКУЩЕМУ переводу есть проверяемые претензии
-  // и этот же текст ещё не пытались чинить. Критерий повторяет серверный
-  // _repairable: иначе кнопка обещала бы работу, которой сервер не найдёт.
+  const tcGroups = (() => {
+    const order = { none: 0, stale: 1 };
+    const rank = (k) => (order[k] !== undefined ? order[k] : k.indexOf("hit:") === 0 ? 2 : k === "skip" ? 4 : 3);
+    const by = new Map();
+    project.segments.forEach(s => {
+      if (!tcCandidate(s, currentIdSet)) return;
+      const key = tcGroupKey(s);
+      const g = by.get(key) || { key, label: tcGroupLabel(key), count: 0 };
+      g.count++;
+      by.set(key, g);
+    });
+    return Array.from(by.values()).sort((a, b) => rank(a.key) - rank(b.key) || b.count - a.count);
+  })();
+
+  // По умолчанию отмечено непроверенное и устаревшее. Уже проверенное текущей
+  // моделью и пропущенные сегменты сняты: результат будет тот же, а вызов платный.
+  const tcDefaultPicked = (key) => tcGroupDefault(key, tcModel);
+  const pickedTcGroups = tcGroupPick || new Set(tcGroups.filter(g => tcDefaultPicked(g.key)).map(g => g.key));
+  const toggleTcGroup = (key) => setTcGroupPick(prev => {
+    const next = new Set(prev || pickedTcGroups);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
+  // Один предикат для счётчика на карточке и для самого прогона — чтобы не разошлись
+  const termcheckable = (s, idSet) => {
+    if (!tcCandidate(s, idSet)) return false;
+    const key = tcGroupKey(s);
+    return tcGroupPick ? tcGroupPick.has(key) : tcDefaultPicked(key);
+  };
+
+  // ── Ремонт: кандидаты и группы «что уже чинилось» ────────────────
+  // Критерий кандидата повторяет серверный _repair_findings: иначе кнопка
+  // обещала бы работу, которой сервер не найдёт.
   const REPAIR_REASONS = ["расхождение чисел", "расхождение единиц", "инверсия отрицания",
                           "подмена на противоположное", "обратный перевод про другое", "потерян термин"];
-  const repairable = (s, idSet) => {
+  const rpCandidate = (s, idSet) => {
     if (!(s.target && s.target.trim())) return false;
     if (idSet && !idSet.has(s.id)) return false;
-    if (s.repair && s.repair.tried) return false;   // этот текст уже пробовали чинить
     const bc = s.backcheck && !s.backcheck.stale ? s.backcheck : null;
     const tc = s.termcheck && !s.termcheck.stale ? s.termcheck : null;
     const bcHit = bc && ((bc.terms_lost || []).length > 0
@@ -894,6 +967,45 @@ function TabEditor({ store, toast }) {
     const tcHit = tc && (tc.findings || []).some(f => f.severity === "critical" || f.severity === "major");
     return !!(bcHit || tcHit);
   };
+
+  // tried приходит с бэкенда: этот же текст уже проходил через ремонт
+  const rpGroupLabel = (key) =>
+    key === "none" ? "ремонт не запускался"
+      : key === "changed" ? "текст менялся после прошлого ремонта"
+      : key === "applied" ? "уже чинилось, замечания остались"
+      : "правка была откачена (не стало лучше)";
+
+  const rpGroups = (() => {
+    const order = { none: 0, changed: 1, applied: 2, rejected: 3 };
+    const by = new Map();
+    project.segments.forEach(s => {
+      if (!rpCandidate(s, currentIdSet)) return;
+      const key = rpGroupKey(s);
+      const g = by.get(key) || { key, label: rpGroupLabel(key), count: 0 };
+      g.count++;
+      by.set(key, g);
+    });
+    return Array.from(by.values()).sort((a, b) => order[a.key] - order[b.key]);
+  })();
+
+  // По умолчанию чиним то, что ещё не чинили. Повторный заход по тому же тексту
+  // даст тот же результат, поэтому такие группы сняты — но галочку можно вернуть.
+  const rpDefaultPicked = (key) => rpGroupDefault(key);
+  const pickedRpGroups = rpGroupPick || new Set(rpGroups.filter(g => rpDefaultPicked(g.key)).map(g => g.key));
+  const toggleRpGroup = (key) => setRpGroupPick(prev => {
+    const next = new Set(prev || pickedRpGroups);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
+  const repairable = (s, idSet) => {
+    if (!rpCandidate(s, idSet)) return false;
+    const key = rpGroupKey(s);
+    return rpGroupPick ? rpGroupPick.has(key) : rpDefaultPicked(key);
+  };
+
+  // Отмечены группы уже чинившихся — серверу нужно разрешение на второй заход
+  const repairRetry = () => (pickedRpGroups.has("applied") || pickedRpGroups.has("rejected"));
 
   const filterDefs = [
     ["all", "Все", counts.all], ["new", "Новые", counts.new], ["translated", "Переведено", counts.translated],
@@ -975,6 +1087,7 @@ function TabEditor({ store, toast }) {
             available: project.segments.filter(s => termcheckable(s, currentIdSet)).length,
             flagged: project.segments.filter(s => s.termcheck && !s.termcheck.stale
               && (s.termcheck.findings || []).length).length,
+            groups: tcGroups, pickedGroups: pickedTcGroups, onToggleGroup: toggleTcGroup,
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(RepairCard, {
             running: batchRun && batchRun.engine === "repair" ? batchRun : null,
@@ -983,6 +1096,7 @@ function TabEditor({ store, toast }) {
             onModel: pickRpModel,
             available: project.segments.filter(s => repairable(s, currentIdSet)).length,
             repaired: project.segments.filter(s => s.repair && s.repair.applied).length,
+            groups: rpGroups, pickedGroups: pickedRpGroups, onToggleGroup: toggleRpGroup,
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(BackcheckCard, {
             running: batchRun && batchRun.engine === "backcheck" ? batchRun : null,
@@ -1382,7 +1496,20 @@ function BackcheckCard({ running, onRun, onStop, available, done, filtered, mode
   );
 }
 
-function RepairCard({ running, onRun, onStop, available, repaired, filtered, checked, models, model, modelInfo, onModel }) {
+// Блок «что прогонять»: группы по состоянию прошлых прогонов с количеством.
+// Одна группа — выбирать не из чего, карточку не загромождаем.
+function RunGroups({ title, tip, groups, pickedGroups, onToggleGroup }) {
+  if (!groups || groups.length < 2) return null;
+  return React.createElement("div", { className: "card", style: { padding: "9px 11px", background: "var(--bg-sunken)" } },
+    React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, marginBottom: 6, display: "flex", alignItems: "center" } },
+      title, React.createElement(InfoTip, { title: title, body: tip })),
+    groups.map(g => React.createElement("div", { key: g.key, className: "row between", style: { padding: "2px 0" } },
+      React.createElement(Checkbox, { checked: pickedGroups.has(g.key), onChange: () => onToggleGroup(g.key) }, g.label),
+      React.createElement("b", { style: { fontSize: 12.5 } }, g.count))));
+}
+
+function RepairCard({ running, onRun, onStop, available, repaired, filtered, checked, models, model, modelInfo, onModel,
+                     groups, pickedGroups, onToggleGroup }) {
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "row", style: { gap: 10 } },
       React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-success)" } },
@@ -1399,6 +1526,8 @@ function RepairCard({ running, onRun, onStop, available, repaired, filtered, che
       "$" + modelInfo.in + " / $" + modelInfo.out + " за 1M токенов" + (modelInfo.note ? " · " + modelInfo.note : "")),
     repaired > 0 && React.createElement("div", { style: { fontSize: 12.5, color: "var(--c-success)", fontWeight: 600 } },
       "Исправлено: " + repaired),
+    React.createElement(RunGroups, { title: "Что чинить", groups, pickedGroups, onToggleGroup,
+      tip: "Сегменты, которые уже проходили ремонт на этом же тексте, по умолчанию сняты: те же претензии дадут тот же результат, а вызов модели платный.\n\nОтметьте группу, чтобы зайти второй раз — например, другой моделью или после того, как одобрили термин в глоссарии.\n\n«Текст менялся после прошлого ремонта» — там прошлая попытка уже не про этот текст, такие сегменты отмечены сразу." }),
     running
       ? React.createElement("div", null,
           React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
@@ -1413,7 +1542,8 @@ function RepairCard({ running, onRun, onStop, available, repaired, filtered, che
   );
 }
 
-function TermCheckCard({ running, onRun, onStop, available, flagged, filtered, checked, models, model, modelInfo, onModel }) {
+function TermCheckCard({ running, onRun, onStop, available, flagged, filtered, checked, models, model, modelInfo, onModel,
+                        groups, pickedGroups, onToggleGroup }) {
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "row", style: { gap: 10 } },
       React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-purple)" } },
@@ -1430,6 +1560,8 @@ function TermCheckCard({ running, onRun, onStop, available, flagged, filtered, c
       "$" + modelInfo.in + " / $" + modelInfo.out + " за 1M токенов" + (modelInfo.note ? " · " + modelInfo.note : "")),
     flagged > 0 && React.createElement("div", { style: { fontSize: 12.5, color: "var(--c-warning)", fontWeight: 600 } },
       "С замечаниями: " + flagged),
+    React.createElement(RunGroups, { title: "Что проверять", groups, pickedGroups, onToggleGroup,
+      tip: "Сегмент, уже проверенный этой же моделью с тем же переводом, по умолчанию снят с прогона: результат будет тот же, а вызов платный. Проверенное ДРУГОЙ моделью отмечено — второе мнение имеет смысл.\n\nОтдельно вынесены те, где замечания были, и те, где их не было: после правок обычно перепроверяют именно первые.\n\n«Нечего проверять» — сегменты без слов или с переводом, совпадающим с оригиналом; они и при повторном прогоне уйдут без вызова модели." }),
     running
       ? React.createElement("div", null,
           React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },

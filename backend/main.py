@@ -2072,8 +2072,13 @@ def _repair_tried(seg: dict) -> bool:
     return r.get("source_hash") == _text_hash(seg.get("target") or "")
 
 
-def _repairable(seg: dict) -> bool:
-    return bool((seg.get("target") or "").strip()) and bool(_repair_findings(seg)) and not _repair_tried(seg)
+def _repairable(seg: dict, allow_tried: bool = False) -> bool:
+    """allow_tried — человек сам отметил галочкой уже чинившиеся сегменты.
+    По умолчанию второй заход по тому же тексту не делаем: те же претензии
+    дадут тот же результат за те же деньги."""
+    if not (seg.get("target") or "").strip() or not _repair_findings(seg):
+        return False
+    return allow_tried or not _repair_tried(seg)
 
 
 def _repair_system(dom: dict, src_lang: str, tgt_lang: str) -> str:
@@ -2235,6 +2240,7 @@ def repair_segment(pid: int, sid: int, req: RepairRequest = RepairRequest()):
 class RepairBatchRequest(BaseModel):
     segment_ids: Optional[List[int]] = None
     limit: int = 5
+    retry: bool = False          # чинить и то, что уже пытались чинить
     model: Optional[str] = None
     bc_model: Optional[str] = None
     tc_model: Optional[str] = None
@@ -2251,7 +2257,7 @@ def repair_batch(pid: int, req: RepairBatchRequest):
     project = get_project(pid)
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
     candidates = [s for s in project["segments"]
-                  if (id_filter is None or s["id"] in id_filter) and _repairable(s)]
+                  if (id_filter is None or s["id"] in id_filter) and _repairable(s, req.retry)]
     limit = max(1, min(req.limit, 30))
     remaining_after = max(0, len(candidates) - limit)
     targets = candidates[:limit]

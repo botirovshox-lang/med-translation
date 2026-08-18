@@ -26,6 +26,8 @@ const GPT_MODEL_LS_KEY = "mcat_gpt_model";
 const BC_MODEL_LS_KEY = "mcat_backcheck_model";
 const JUDGE_MODEL_LS_KEY = "mcat_judge_model";
 const BC_SKIP_CONFIRMED_LS_KEY = "mcat_bc_skip_confirmed";
+const SEARCH_SCOPE_LS_KEY = "mcat_search_scope";
+const TC_MODEL_LS_KEY = "mcat_termcheck_model";
 
 // Цвет полосы соответствия обратного перевода
 function bandColor(color) {
@@ -67,6 +69,39 @@ function providerLabel(p, models) {
   return m ? m.label : p.id;
 }
 
+// Поиск по сегментам. Регистр не важен, «ё» и «е» считаются одной буквой:
+// в медицинских текстах они пишутся вперемешку, и точный поиск иначе врёт.
+const SEARCH_SCOPES = ["all", "src", "tgt"];
+function normText(t) { return (t || "").toLowerCase().replace(/ё/g, "е"); }
+
+function segMatches(seg, q, scope) {
+  const needle = normText(q);
+  if (!needle) return true;
+  const inSrc = scope !== "tgt" && normText(seg.source).includes(needle);
+  const inTgt = scope !== "src" && normText(seg.target).includes(needle);
+  return inSrc || inTgt;
+}
+
+// Подсветка совпадений. normText сохраняет длину строки (ё→е и lowercase —
+// один символ в один), поэтому индексы из нормализованной строки годятся для
+// исходной. Если длина всё же разъехалась — отдаём текст без подсветки.
+function markHits(text, q) {
+  const src = text || "";
+  const needle = normText(q);
+  if (!needle) return src;
+  const hay = normText(src);
+  if (hay.length !== src.length || !hay.includes(needle)) return src;
+  const out = [];
+  let i = 0, key = 0;
+  for (let idx = hay.indexOf(needle); idx !== -1; idx = hay.indexOf(needle, i)) {
+    if (idx > i) out.push(src.slice(i, idx));
+    out.push(React.createElement("mark", { key: key++, className: "hl" }, src.slice(idx, idx + needle.length)));
+    i = idx + needle.length;
+  }
+  if (i < src.length) out.push(src.slice(i));
+  return out;
+}
+
 function fmtDuration(sec) {
   if (sec < 90) return Math.round(sec) + " с";
   if (sec < 5400) return Math.round(sec / 60) + " мин";
@@ -78,6 +113,11 @@ function TabEditor({ store, toast }) {
   const project = store.activeProject;
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
+  const [scope, setScope] = useState(() => {              // где искать: везде / оригинал / перевод
+    let v = null;
+    try { v = localStorage.getItem(SEARCH_SCOPE_LS_KEY); } catch (e) { /* приватный режим */ }
+    return SEARCH_SCOPES.indexOf(v) !== -1 ? v : "all";
+  });
   const [riskFilter, setRiskFilter] = useState("all");
   const [height, setHeight] = useState(440);
   const [selId, setSelId] = useState(project ? (project.segments[0] && project.segments[0].id) : null);
@@ -87,6 +127,7 @@ function TabEditor({ store, toast }) {
   const [showFilters, setShowFilters] = useState(false);
   const [page, setPage] = useState(1);
   const [revertTarget, setRevertTarget] = useState(null);
+  const [propagateAsk, setPropagateAsk] = useState(null);  // предложение разослать перевод по повторам
   const [gptModels, setGptModels] = useState([]);          // каталог с ценами из /api/models
   const [gptModel, setGptModel] = useState(() => {
     try { return localStorage.getItem(GPT_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
@@ -96,6 +137,9 @@ function TabEditor({ store, toast }) {
   const [providerPick, setProviderPick] = useState(null);  // Set<ключ группы> | null = по умолчанию
   const [bcModel, setBcModel] = useState(() => {
     try { return localStorage.getItem(BC_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
+  });
+  const [tcModel, setTcModel] = useState(() => {
+    try { return localStorage.getItem(TC_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
   const [bcBands, setBcBands] = useState([]);
   const [bcJudge, setBcJudge] = useState(false);          // LLM-судья для средней зоны
@@ -121,6 +165,7 @@ function TabEditor({ store, toast }) {
       setGptModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.default || ""));
       setBcModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.backcheckDefault || d.default || ""));
       setJudgeModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.judgeDefault || d.default || ""));
+      setTcModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.termcheckDefault || d.default || ""));
       if (d.backcheckBands) setBcBands(d.backcheckBands);
       if (d.judgeZone) setJudgeZone(d.judgeZone);
     });
@@ -133,6 +178,16 @@ function TabEditor({ store, toast }) {
     [bcModel, bcJudge, bcSkipConfirmed, store.segmentFilter, checkedSegs.size]);
 
   const gptModelInfo = gptModels.find(m => m.id === gptModel) || null;
+  const pickTcModel = (id) => {
+    setTcModel(id);
+    try { localStorage.setItem(TC_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
+  };
+
+  const pickScope = (v) => {
+    setScope(v);
+    try { localStorage.setItem(SEARCH_SCOPE_LS_KEY, v); } catch (e) { /* приватный режим — не страшно */ }
+  };
+
   const pickGptModel = (id) => {
     setGptModel(id);
     try { localStorage.setItem(GPT_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
@@ -159,7 +214,7 @@ function TabEditor({ store, toast }) {
     try { localStorage.setItem(JUDGE_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
   };
 
-  useEffect(() => { setPage(1); }, [filter, query, riskFilter, project && project.id, store.segmentFilter]);
+  useEffect(() => { setPage(1); }, [filter, query, scope, riskFilter, project && project.id, store.segmentFilter]);
   useEffect(() => { setCheckedSegs(new Set()); }, [project && project.id, store.segmentFilter]);
   useEffect(() => { setSelId(null); }, [page]);
 
@@ -193,7 +248,7 @@ function TabEditor({ store, toast }) {
     if (activeFilter && !activeFilter.has(s.id)) return false;
     if (filter !== "all" && s.status !== filter) return false;
     if (riskFilter !== "all" && s.risk !== riskFilter) return false;
-    if (query) { const q = query.toLowerCase(); if (!s.source.toLowerCase().includes(q) && !(s.target || "").toLowerCase().includes(q)) return false; }
+    if (query && !segMatches(s, query, scope)) return false;
     return true;
   });
   const selected = project.segments.find(s => s.id === selId);
@@ -292,9 +347,34 @@ function TabEditor({ store, toast }) {
       if (window.API) await window.API.safeCall(() => window.API.update(project.id, seg.id, { target: draftTarget }));
       store.updateSegment(project.id, seg.id, { target: draftTarget });
     }
-    if (window.API) await window.API.safeCall(() => window.API.confirm(project.id, seg.id));
+    const res = window.API ? await window.API.safeCall(() => window.API.confirm(project.id, seg.id)) : null;
     store.updateSegment(project.id, seg.id, { status: "confirmed" });
-    toast.success("Подтверждено", "Сегмент #" + seg.id + " добавлен в память переводов.");
+    // Что именно система выучила — говорим вслух: молчаливое обучение в
+    // медицинском инструменте пугает сильнее, чем отсутствие обучения.
+    const learned = [];
+    if (res && res.tm === "updated") learned.push("память переводов обновлена (прежний вариант заменён)");
+    else if (res && res.tm === "added") learned.push("пара добавлена в память переводов");
+    const cands = (res && res.termCandidates) || [];
+    if (cands.length) learned.push(cands.length + " терминов ждут решения в «Глоссарий → Кандидаты»");
+    toast.success("Подтверждено", "Сегмент #" + seg.id + (learned.length ? ". " + learned.join("; ") + "." : "."));
+    const prop = res && res.propagate;
+    if (prop && (prop.pending.length || prop.confirmed.length)) setPropagateAsk({ seg, prop });
+  };
+
+  // Распространение подтверждённого перевода на сегменты с тем же исходником.
+  // Только по явному согласию: подтверждённые чужой рукой сегменты по умолчанию
+  // не трогаем — так же ведут себя Phrase и Trados.
+  const doPropagate = async (includeConfirmed) => {
+    if (!propagateAsk) return;
+    const { seg } = propagateAsk;
+    const res = window.API ? await window.API.safeCall(() => window.API.propagate(project.id, seg.id, null, includeConfirmed)) : null;
+    setPropagateAsk(null);
+    if (!res || !res.ok) { toast.error("Не удалось разослать перевод", "Сервер не ответил."); return; }
+    (res.changed || []).forEach(id => store.updateSegment(project.id, id, {
+      target: seg.target, status: "translated", provider: "tm", route: "EXACT_TM" }));
+    toast.success("Перевод разослан", res.changed.length + " сегментов обновлено"
+      + (res.skippedConfirmed && res.skippedConfirmed.length
+          ? "; подтверждённых пропущено: " + res.skippedConfirmed.length : "") + ".");
   };
 
   const doRevert = async (seg) => {
@@ -597,6 +677,69 @@ function TabEditor({ store, toast }) {
     }
   };
 
+  // Пакетная проверка терминологии. Механика та же, что у back-check: порции
+  // по 10, прогресс по ходу, остановка не откатывает уже проверенное.
+  const runTermcheckBatch = async () => {
+    if (batchRun) return;
+    let currentSegs = project.segments;
+    if (window.API) {
+      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
+      if (fresh && fresh.segments) {
+        store.replaceProjectSegments(project.id, fresh.segments);
+        currentSegs = fresh.segments;
+      }
+    }
+    const idSet = currentIdSet;
+    const targets = currentSegs.filter(s => termcheckable(s, idSet));
+    if (!targets.length) {
+      toast.warning("Нечего проверять", "В выборке нет переведённых сегментов без актуальной проверки терминологии.");
+      return;
+    }
+    stopRef.current = false;
+    const ids = targets.map(s => s.id);
+    const total = ids.length;
+    let done = 0, flagged = 0, errCount = 0, failed = false;
+    setBatchRun({ engine: "termcheck", done: 0, total });
+
+    for (let i = 0; i < ids.length; i += BATCH_CHUNK) {
+      if (stopRef.current) break;
+      const chunk = ids.slice(i, i + BATCH_CHUNK);
+      const base = done, t0 = Date.now();
+      const tick = setInterval(() => {
+        const est = Math.min(chunk.length - 0.5, (Date.now() - t0) / 1000 / EST_SEC_PER_SEG);
+        setBatchRun(b => (b ? { ...b, done: base + est } : b));
+      }, 500);
+      let r = null;
+      if (window.API) r = await callChunkWithRetry(
+        () => window.API.termcheckBatch(project.id, chunk, BATCH_CHUNK, tcModel, false),
+        (n) => toast.warning("Сбой связи", "Порция не прошла, повтор " + n + " из " + CHUNK_RETRIES + "…"));
+      clearInterval(tick);
+      if (!r || !r.ok) { failed = true; break; }
+      done += r.count;
+      flagged += r.flagged || 0;
+      errCount += (r.errors || []).length;
+      setBatchRun({ engine: "termcheck", done, total });
+      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
+      if (fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
+    }
+
+    const stopped = stopRef.current;
+    stopRef.current = false;
+    setBatchRun(null);
+    const errMsg = errCount ? " · ошибок: " + errCount : "";
+    if (failed) {
+      toast.error("Проверка прервана", done + " из " + total + " проверено и сохранено." + errMsg);
+    } else if (stopped) {
+      toast.warning("Проверка остановлена", done + " из " + total + " проверено и сохранено.");
+    } else if (flagged) {
+      toast.warning("Проверка терминологии завершена",
+        "Замечания в " + flagged + " из " + done + " сегментов" + errMsg
+        + " · предложения замены — в «Глоссарий → Кандидаты»");
+    } else {
+      toast.success("Проверка терминологии завершена", done + " сегментов без замечаний" + errMsg);
+    }
+  };
+
   const runMedicalQABatch = async () => {
     let currentSegs = project.segments;
     if (window.API) {
@@ -636,6 +779,24 @@ function TabEditor({ store, toast }) {
     }
   };
 
+  // Подписи с реальными языками проекта: "Оригинал (RU)" / "Перевод (EN)"
+  const scopeOpts = [
+    ["all", "Везде"],
+    ["src", "Оригинал (" + project.src + ")"],
+    ["tgt", "Перевод (" + project.tgt + ")"],
+  ];
+  const searchPlaceholder = scope === "src" ? "Поиск по оригиналу (" + project.src + ")…"
+    : scope === "tgt" ? "Поиск по переводу (" + project.tgt + ")…"
+    : "Поиск по оригиналу и переводу…";
+
+  // Проверять есть что, если сегмент переведён, а проверки нет или она устарела
+  // (перевод меняли после неё — тот же принцип, что у backcheck.stale).
+  const termcheckable = (s, idSet) => {
+    if (!(s.target && s.target.trim())) return false;
+    if (idSet && !idSet.has(s.id)) return false;
+    return !s.termcheck || s.termcheck.stale;
+  };
+
   const filterDefs = [
     ["all", "Все", counts.all], ["new", "Новые", counts.new], ["translated", "Переведено", counts.translated],
     ["qa", "QA", counts.qa], ["confirmed", "Подтверждено", counts.confirmed], ["failed", "Ошибки", counts.failed],
@@ -662,10 +823,20 @@ function TabEditor({ store, toast }) {
         React.createElement("div", { className: "segmented" },
           filterDefs.map(([v, l, n]) => React.createElement("button", { key: v, className: filter === v ? "on" : "", onClick: () => setFilter(v) },
             l, React.createElement("span", { className: "cnt" }, n)))
+        ),
+        // Поиск: отдельно по оригиналу и отдельно по переводу — искать
+        // английский термин по русскому тексту бессмысленно и наоборот.
+        React.createElement("div", { className: "row", style: { gap: 8, flex: "1 1 380px", justifyContent: "flex-end" } },
+          React.createElement(SearchInput, { value: query, onChange: (e) => setQuery(e.target.value),
+            placeholder: searchPlaceholder }),
+          React.createElement(Select, { value: scope, onChange: (e) => pickScope(e.target.value), style: { width: "auto", flex: "0 0 auto" }, "aria-label": "Где искать" },
+            scopeOpts.map(([v, l]) => React.createElement("option", { key: v, value: v }, l))),
+          query && React.createElement(IconBtn, { icon: "close", label: "Очистить поиск", sm: true, onClick: () => setQuery("") }),
+          query && React.createElement("span", { className: "dim", style: { fontSize: 12, whiteSpace: "nowrap" } },
+            filtered.length ? "найдено: " + filtered.length : "ничего не найдено")
         )
       ),
       showFilters && React.createElement("div", { className: "row row-wrap", style: { gap: 14, padding: "4px 2px" } },
-        React.createElement(SearchInput, { value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Поиск по тексту…" }),
         React.createElement(Select, { value: riskFilter, onChange: (e) => setRiskFilter(e.target.value), style: { width: 200 } },
           [["all", "Любой риск"], ["low", "Низкий риск"], ["medium", "Средний риск"], ["high", "Высокий риск"], ["critical", "Критический риск"]]
             .map(([v, l]) => React.createElement("option", { key: v, value: v }, l)))
@@ -697,6 +868,15 @@ function TabEditor({ store, toast }) {
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(MedicalQACard, { running: batchRun && batchRun.engine === "medical_qa" ? batchRun : null, onRun: runMedicalQABatch,
             available: project.segments.filter(s => s.target && s.target.trim() && ["translated", "qa", "review", "confirmed"].includes(s.status) && (checkedSegs.size > 0 ? checkedSegs.has(s.id) : (!store.segmentFilter || store.segmentFilter.has(s.id)))).length,
+            checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
+          React.createElement(TermCheckCard, {
+            running: batchRun && batchRun.engine === "termcheck" ? batchRun : null,
+            onRun: runTermcheckBatch, onStop: () => { stopRef.current = true; },
+            models: gptModels, model: tcModel, modelInfo: gptModels.find(m => m.id === tcModel) || null,
+            onModel: pickTcModel,
+            available: project.segments.filter(s => termcheckable(s, currentIdSet)).length,
+            flagged: project.segments.filter(s => s.termcheck && !s.termcheck.stale
+              && (s.termcheck.findings || []).length).length,
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(BackcheckCard, {
             running: batchRun && batchRun.engine === "backcheck" ? batchRun : null,
@@ -787,6 +967,7 @@ function TabEditor({ store, toast }) {
                 paged.map(s => React.createElement(SegRow, {
                   key: s.id, seg: s, selected: s.id === selId, busy: busy[s.id],
                   checked: checkedSegs.has(s.id), models: gptModels,
+                  hlSrc: scope !== "tgt" ? query : "", hlTgt: scope !== "src" ? query : "",
                   onCheck: (e) => { e.stopPropagation(); setCheckedSegs(prev => { const n = new Set(prev); n.has(s.id) ? n.delete(s.id) : n.add(s.id); return n; }); },
                   onSelect: () => setSelId(s.id),
                   onTranslate: () => doTranslate(s, s.risk === "low" ? "google" : "gpt"),
@@ -797,7 +978,9 @@ function TabEditor({ store, toast }) {
           )
         ),
         filtered.length === 0 && React.createElement("div", { style: { padding: 20 } },
-          React.createElement(EmptyState, { icon: "filter", title: "Нет сегментов по фильтру", sub: "Измените фильтр статуса или поиск." })),
+          React.createElement(EmptyState, { icon: "filter", title: "Нет сегментов по фильтру",
+            sub: query ? "«" + query + "» не найдено — " + scopeOpts.find(o => o[0] === scope)[1].toLowerCase() + ". Смените область поиска или очистите запрос."
+                       : "Измените фильтр статуса или поиск." })),
         React.createElement("div", { className: "row", style: { gap: 16, marginTop: 12, fontSize: 12, color: "var(--text-3)", flexWrap: "wrap" } },
           React.createElement(LegendDot, { color: "var(--st-new-fg)", label: "Новый" }),
           React.createElement(LegendDot, { color: "var(--c-primary)", label: "Переведён" }),
@@ -869,6 +1052,30 @@ function TabEditor({ store, toast }) {
         )
       );
     })(),
+
+    propagateAsk && React.createElement(Modal, {
+      title: "Такой же исходник есть ещё в проекте", icon: "repeat", onClose: () => setPropagateAsk(null),
+      footer: React.createElement(React.Fragment, null,
+        React.createElement(Btn, { variant: "ghost", onClick: () => setPropagateAsk(null) }, "Не сейчас"),
+        propagateAsk.prop.confirmed.length > 0 && React.createElement(Btn, { variant: "secondary", icon: "alert", onClick: () => doPropagate(true) },
+          "Перезаписать и подтверждённые (" + (propagateAsk.prop.pending.length + propagateAsk.prop.confirmed.length) + ")"),
+        propagateAsk.prop.pending.length > 0 && React.createElement(Btn, { variant: "primary", icon: "repeat", onClick: () => doPropagate(false) },
+          "Применить к " + propagateAsk.prop.pending.length)) },
+      React.createElement("div", { className: "col", style: { gap: 12 } },
+        React.createElement("p", { className: "muted", style: { margin: 0, lineHeight: 1.6 } },
+          "Подтверждённый перевод сегмента ",
+          React.createElement("b", { style: { color: "var(--text)" } }, "#" + propagateAsk.seg.id),
+          " отличается от перевода других сегментов с тем же исходным текстом."),
+        React.createElement("div", { className: "card", style: { padding: "10px 14px", background: "var(--bg-sunken)", fontSize: 13, lineHeight: 1.7 } },
+          propagateAsk.prop.pending.length > 0 && React.createElement("div", null,
+            "Не подтверждено — можно обновить сразу: ",
+            React.createElement("b", null, propagateAsk.prop.pending.map(id => "#" + id).join(", "))),
+          propagateAsk.prop.confirmed.length > 0 && React.createElement("div", { style: { marginTop: 6, color: "var(--c-warning)" } },
+            "Уже подтверждено кем-то — перезапись только по явной команде: ",
+            React.createElement("b", null, propagateAsk.prop.confirmed.map(id => "#" + id).join(", ")))),
+        React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 12.5, lineHeight: 1.6 } },
+          "Обновлённые сегменты получат статус «Переведён», а не «Подтверждён»: заверить перевод должен человек. Прежний текст сохраняется и виден в карточке сегмента."))
+    ),
 
     revertTarget && React.createElement(Modal, {
       title: "Снять подтверждение?", icon: "warn", onClose: () => setRevertTarget(null),
@@ -1068,6 +1275,37 @@ function BackcheckCard({ running, onRun, onStop, available, done, filtered, mode
   );
 }
 
+function TermCheckCard({ running, onRun, onStop, available, flagged, filtered, checked, models, model, modelInfo, onModel }) {
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+    React.createElement("div", { className: "row", style: { gap: 10 } },
+      React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-purple)" } },
+        React.createElement(Icon, { name: "book", size: 19 })),
+      React.createElement("div", null,
+        React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, "Проверка терминологии",
+          React.createElement(InfoTip, { title: "Проверка терминологии",
+            body: "Модель смотрит ТОЛЬКО на перевод и отвечает на вопрос «нормальный ли это термин целевого языка»: кальки, транслитерации, подмены понятия, склеенные обрывки.\n\nЭто не back-check. Back-check спрашивает, пережил ли смысл обратный перевод, и на кальке всегда отвечает «да»: «rear cyclitis» дословно возвращается как «задний циклит» и даёт высокий процент. Такие ошибки видны только прямой проверкой.\n\nТерминология берётся по предметной области проекта, а не по медицине.\n\nНайденные замены попадают в «Глоссарий → Кандидаты»: одобренная пара чинит термин во всех будущих переводах. Повторная проверка считает только то, где перевод менялся." })),
+        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "После перевода"))
+    ),
+    React.createElement(Select, { value: model || "", onChange: (e) => onModel(e.target.value), style: { fontSize: 13 } },
+      (models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label))),
+    modelInfo && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: -4 } },
+      "$" + modelInfo.in + " / $" + modelInfo.out + " за 1M токенов" + (modelInfo.note ? " · " + modelInfo.note : "")),
+    flagged > 0 && React.createElement("div", { style: { fontSize: 12.5, color: "var(--c-warning)", fontWeight: 600 } },
+      "С замечаниями: " + flagged),
+    running
+      ? React.createElement("div", null,
+          React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
+            React.createElement("span", { className: "muted" }, "Проверяем термины…"),
+            React.createElement("span", { style: { fontWeight: 700 } }, Math.round(running.done) + "/" + running.total)),
+          React.createElement(ProgressBar, { value: Math.round(running.done / running.total * 100) }),
+          React.createElement(Btn, { variant: "ghost", size: "sm", icon: "x", onClick: onStop, style: { marginTop: 8 } }, "Остановить"))
+      : React.createElement("div", { className: "row between" },
+          React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+            available + " к проверке" + (checked > 0 ? " (отмечено " + checked + ")" : filtered ? " (фильтр)" : "")),
+          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "book", onClick: onRun, disabled: !available }, "Проверить"))
+  );
+}
+
 function MedicalQACard({ running, onRun, available, filtered, checked }) {
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "row", style: { gap: 10 } },
@@ -1092,7 +1330,7 @@ function MedicalQACard({ running, onRun, available, filtered, checked }) {
   );
 }
 
-function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, onConfirm, onRevert, models }) {
+function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, onConfirm, onRevert, models, hlSrc, hlTgt }) {
   const prov = providerOf(seg);
   const provText = providerLabel(prov, models);
   const revertable = seg.status === "confirmed" || seg.status === "failed";
@@ -1111,8 +1349,9 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
     React.createElement("td", { style: { width: 36, textAlign: "center" }, onClick: (e) => e.stopPropagation() },
       React.createElement("input", { type: "checkbox", checked: !!checked, onChange: onCheck })),
     React.createElement("td", { className: "col-id" }, seg.id),
-    React.createElement("td", { className: "src-cell" }, seg.source),
-    React.createElement("td", { className: seg.target ? "tgt-cell" : "tgt-cell tgt-empty" }, seg.target || "— не переведено —"),
+    React.createElement("td", { className: "src-cell" }, markHits(seg.source, hlSrc)),
+    React.createElement("td", { className: seg.target ? "tgt-cell" : "tgt-cell tgt-empty" },
+      seg.target ? markHits(seg.target, hlTgt) : "— не переведено —"),
     React.createElement("td", null,
       React.createElement(StatusBadge, { status: seg.status }),
       provText && React.createElement("div", {
@@ -1125,6 +1364,14 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
     React.createElement("td", null,
       React.createElement(TMChip, { score: seg.tmScore }),
       // Процент соответствия обратного перевода: цифра + причина в подсказке
+      seg.termcheck && (seg.termcheck.findings || []).length > 0 && React.createElement("div", {
+        style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap",
+                 color: seg.termcheck.severity === "critical" ? "var(--c-error)"
+                   : seg.termcheck.severity === "major" ? "var(--c-warning)" : "var(--text-3)" },
+        title: "Терминология: " + seg.termcheck.findings.map(f =>
+          f.tgt_term + (f.suggestion ? " → " + f.suggestion : "") + (f.why ? " (" + f.why + ")" : "")).join("\n")
+          + (seg.termcheck.stale ? "\n\nПеревод менялся после проверки — данные устарели." : ""),
+      }, (seg.termcheck.stale ? "≈ " : "") + "термин: " + seg.termcheck.findings.length),
       seg.backcheck && seg.backcheck.score != null && React.createElement("div", {
         style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap",
                  color: seg.backcheck.score >= 95 ? "var(--c-success)"

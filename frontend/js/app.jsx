@@ -1,7 +1,7 @@
 /* ============================================================
    App shell — store, auth, header, tab routing
    ============================================================ */
-function useStore() {
+function useStore(authed) {
   const [projects, setProjects] = useState(() => JSON.parse(JSON.stringify(window.SEED.projects)));
   const [glossary, setGlossary] = useState(() => window.SEED.glossary.slice());
   const [tm, setTM] = useState(() => window.SEED.tm.slice());
@@ -15,10 +15,11 @@ function useStore() {
   const me = { name: "Вы", initials: "ВЫ", color: "var(--c-primary)" };
   const activeProject = projects.find(p => p.id === activeId) || null;
 
-  /* Hydrate from backend on mount; fall back to SEED if backend unreachable. */
+  /* Hydrate from backend after login; fall back to SEED if backend unreachable.
+     Ждём именно authed: без токена /api/seed отдаст 401, и в UI остались бы моки. */
   useEffect(() => {
     let cancelled = false;
-    if (window.API) {
+    if (authed && window.API) {
       window.API.seed().then(d => {
         if (cancelled || !d) return;
         if (d.projects) setProjects(d.projects);
@@ -33,7 +34,7 @@ function useStore() {
       });
     }
     return () => { cancelled = true; };
-  }, []);
+  }, [authed]);
 
   const statusCounts = (p) => {
     const out = { all: p.segments.length, new: 0, translated: 0, qa: 0, confirmed: 0, failed: 0, review: 0 };
@@ -156,13 +157,16 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
     setErr("");
     if (!pw.length) { setShake(true); setTimeout(() => setShake(false), 400); return; }
     setBusy(true);
-    let ok = true;
-    if (window.API) {
-      try { await window.API.login(pw); }
-      catch (e2) {
-        if (e2.status === 401) { ok = false; setErr("Неверный пароль"); }
-        // network errors → fall through to local accept
-      }
+    /* Без токена от сервера входа нет: раньше сетевая ошибка пускала внутрь
+       на локальных мок-данных, и это же скрывало отсутствие реальной защиты. */
+    let ok = false;
+    try {
+      await window.API.login(pw);
+      ok = true;
+    } catch (e2) {
+      if (e2.status === 401) setErr("Неверный пароль");
+      else if (e2.status === 429) setErr("Слишком много попыток. Повторите через 15 минут.");
+      else setErr("Сервер недоступен — вход невозможен");
     }
     setBusy(false);
     if (ok) onLogin();
@@ -182,7 +186,7 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
       err && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13, marginTop: 8 } }, err),
       React.createElement("div", { className: "row", style: { gap: 10, marginTop: 20 } },
         React.createElement(Btn, { variant: "primary", type: "submit", icon: "unlock", className: "btn-block", disabled: busy }, busy ? "Проверка..." : "Войти"),
-        React.createElement(Btn, { variant: "secondary", type: "button", icon: "info", onClick: () => alert("По умолчанию: medtranslator2026 (можно поменять через переменную окружения APP_PASSWORD)") }, "Справка")),
+        React.createElement(Btn, { variant: "secondary", type: "button", icon: "info", onClick: () => alert("Пароль выдаёт администратор сервиса (переменная окружения APP_PASSWORD на сервере).") }, "Справка")),
       React.createElement("p", { className: "auth-foot" }, "© 2026 Medical CAT Translator · Конфиденциально")
     )
   );
@@ -259,15 +263,23 @@ function SearchPalette({ store, onClose }) {
 
 /* ---------- Root App ---------- */
 function App() {
-  const [authed, setAuthed] = useState(false);
+  /* Токен в sessionStorage переживает F5, но не закрытие вкладки. */
+  const [authed, setAuthed] = useState(() => !!(window.API && window.API.hasToken()));
   const [theme, toggleTheme] = useTheme();
-  const store = useStore();
+  const store = useStore(authed);
   const toast = useToast();
   const [search, setSearch] = useState(false);
 
   useEffect(() => {
     const h = (e) => { if ((e.metaKey || e.ctrlKey) && e.key === "k") { e.preventDefault(); setSearch(true); } };
     window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
+  }, []);
+
+  /* Любой 401 из api.js (истёк токен, рестарт бэкенда) → обратно на вход. */
+  useEffect(() => {
+    const h = () => setAuthed(false);
+    window.addEventListener("mct-auth-expired", h);
+    return () => window.removeEventListener("mct-auth-expired", h);
   }, []);
 
   if (!authed) return React.createElement(AuthScreen, { onLogin: () => { setAuthed(true); toast.success("Добро пожаловать", "Вы вошли в систему."); }, theme, onToggleTheme: toggleTheme });
@@ -279,7 +291,13 @@ function App() {
   const Active = tabMap[store.tab] || TabEditor;
 
   return React.createElement("div", { className: "app" },
-    React.createElement(Header, { store, theme, onToggleTheme: toggleTheme, onLogout: () => setAuthed(false), onSearch: () => setSearch(true) }),
+    React.createElement(Header, { store, theme, onToggleTheme: toggleTheme,
+      /* Перезагрузка после выхода: иначе документы пациентов остаются в памяти вкладки. */
+      onLogout: () => {
+        const done = () => window.location.reload();
+        if (window.API) window.API.logout().then(done, done); else done();
+      },
+      onSearch: () => setSearch(true) }),
     React.createElement(TabBar, { store }),
     React.createElement("main", { className: "main" }, React.createElement(Active, { store, toast })),
     search && React.createElement(SearchPalette, { store, onClose: () => setSearch(false) })

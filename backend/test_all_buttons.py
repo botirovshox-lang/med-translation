@@ -3,18 +3,25 @@ Smoke test: hits every endpoint that the React UI calls.
 Each test corresponds to a button/action in the design.
 Run while `uvicorn main:app` is up on port 8000.
 """
+import os
 import json
 import sys
 import urllib.request
 import urllib.error
 import urllib.parse
 
-BASE = "http://127.0.0.1:8000/api"
+BASE = os.environ.get("SMOKE_BASE", "http://127.0.0.1:8000").rstrip("/") + "/api"
+# Пароль тот же, что у запущенного сервера. Если APP_PASSWORD не задан, сервер
+# печатает одноразовый пароль в лог при старте — передайте его этому скрипту.
+PASSWORD = os.environ.get("APP_PASSWORD", "")
+TOKEN = ""
 
 def call(method, path, body=None, expect=200):
     url = BASE + path
     data = None
     headers = {}
+    if TOKEN:
+        headers["Authorization"] = "Bearer " + TOKEN
     if body is not None:
         data = json.dumps(body).encode()
         headers["Content-Type"] = "application/json"
@@ -39,13 +46,26 @@ print("=" * 60)
 s, d = call("GET", "/health")
 check("GET /api/health", s == 200 and d.get("ok"), f"modules={d.get('backendModules')}")
 
-# 2. Auth — wrong password
+# 2. Защита: без токена закрытый эндпоинт обязан отдать 401
+s, _ = call("GET", "/seed")
+check("Без токена /api/seed отклонён", s == 401, f"got {s}")
+
+# 3. Auth — wrong password
 s, _ = call("POST", "/auth/login", {"password": "wrong-password-xxx"})
 check("Login screen → wrong password rejected", s == 401)
 
-# 3. Auth — correct password
-s, _ = call("POST", "/auth/login", {"password": "medtranslator2026"})
-check("Login screen → correct password accepted", s == 200)
+# 4. Auth — correct password → токен для остальных запросов
+if not PASSWORD:
+    print("\n  APP_PASSWORD не задан — дальше идти нельзя.")
+    print("  Запустите: APP_PASSWORD=<пароль сервера> python test_all_buttons.py\n")
+    sys.exit(1)
+s, d = call("POST", "/auth/login", {"password": PASSWORD})
+TOKEN = (d or {}).get("token", "")
+check("Login screen → correct password accepted", s == 200 and bool(TOKEN),
+      "токен получен" if TOKEN else f"нет токена, status={s}")
+if not TOKEN:
+    print("\n  Логин не удался — остальные проверки бессмысленны. Проверьте APP_PASSWORD.\n")
+    sys.exit(1)
 
 # 4. Seed (hydrate frontend)
 s, seed = call("GET", "/seed")

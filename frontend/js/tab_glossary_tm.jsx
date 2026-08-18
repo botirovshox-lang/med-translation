@@ -2,8 +2,130 @@
    Tab: Glossary — medical terminology management
    ============================================================ */
 const PAGE_SIZE = 100;
+
+// Поиск с выбором стороны: русский термин или английский перевод.
+// «ё» приравнена к «е» — в медицинских текстах их пишут вперемешку.
+const PAIR_SCOPES = [["all", "Везде"], ["src", "Оригинал (RU)"], ["tgt", "Перевод (EN)"]];
+function pairNorm(t) { return (t || "").toLowerCase().replace(/ё/g, "е"); }
+function pairMatches(row, q, scope) {
+  const needle = pairNorm(q);
+  if (!needle) return true;
+  return (scope !== "tgt" && pairNorm(row.src).includes(needle))
+      || (scope !== "src" && pairNorm(row.tgt).includes(needle));
+}
+function ScopeSelect({ value, onChange }) {
+  return React.createElement(Select, { value, onChange, style: { width: "auto" }, "aria-label": "Где искать" },
+    PAIR_SCOPES.map(([v, l]) => React.createElement("option", { key: v, value: v }, l)));
+}
+
+
+/* ============================================================
+   Очередь кандидатов в глоссарий
+   Сюда попадает всё, чему система научилась сама: расхождения между
+   глоссарием и подтверждённым переводом, короткие подтверждённые сегменты,
+   извлечённые моделью пары. В глоссарий кандидат уходит ТОЛЬКО после
+   одобрения человеком — записи глоссария идут в промпт как правило, и
+   автопополнение закрепляло бы собственные ошибки.
+   ============================================================ */
+const CAND_KIND = {
+  conflict: ["Конфликт с глоссарием", "warn", "var(--c-warning)"],
+  segment:  ["Из подтверждённого сегмента", "checkCircle", "var(--c-success)"],
+  extract:  ["Извлечено моделью", "cpu", "var(--c-primary)"],
+  audit:    ["Проверка терминологии", "book", "var(--c-purple)"],
+};
+
+function TermQueue({ store, toast }) {
+  const [items, setItems] = useState([]);
+  const [counts, setCounts] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [drafts, setDrafts] = useState({});      // {id: предлагаемый перевод}
+  const [busy, setBusy] = useState(null);
+  const [open, setOpen] = useState(true);
+
+  const load = async () => {
+    if (!window.API) { setLoading(false); return; }
+    const res = await window.API.safeCall(() => window.API.termQueue("pending", 200));
+    setItems((res && res.items) || []);
+    setCounts((res && res.counts) || {});
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const approve = async (c) => {
+    const tgt = (drafts[c.id] !== undefined ? drafts[c.id] : c.tgt || "").trim();
+    if (!tgt) { toast.warning("Нужен перевод", "Впишите верный вариант — он станет проверенной записью глоссария."); return; }
+    setBusy(c.id);
+    const res = await window.API.safeCall(() => window.API.approveTerm(c.id, { tgt }));
+    setBusy(null);
+    if (!res || !res.ok) { toast.error("Не удалось одобрить", "Сервер не ответил."); return; }
+    setItems(list => list.filter(x => x.id !== c.id));
+    toast.success(res.replaced ? "Запись глоссария заменена" : "Термин добавлен в глоссарий", c.src + " → " + tgt);
+  };
+
+  const reject = async (c) => {
+    setBusy(c.id);
+    const res = await window.API.safeCall(() => window.API.rejectTerm(c.id));
+    setBusy(null);
+    if (!res || !res.ok) { toast.error("Не удалось отклонить", "Сервер не ответил."); return; }
+    setItems(list => list.filter(x => x.id !== c.id));
+    toast.info("Отклонено", "Этот кандидат больше не всплывёт.");
+  };
+
+  if (loading) return null;
+  if (!items.length && !(counts.pending > 0)) return null;
+
+  return React.createElement("div", { className: "card card-pad", style: { marginBottom: 18 } },
+    React.createElement("div", { className: "row between", style: { cursor: "pointer" }, onClick: () => setOpen(o => !o) },
+      React.createElement("div", { className: "row", style: { gap: 10 } },
+        React.createElement(Icon, { name: open ? "chevD" : "chevR", size: 16 }),
+        React.createElement("h3", { style: { margin: 0, fontSize: 16 } }, "Кандидаты в глоссарий"),
+        React.createElement(Badge, { variant: "review" }, items.length),
+        React.createElement(InfoTip, { title: "Откуда берутся кандидаты",
+          body: "Система учится на подтверждённых сегментах: расхождение с глоссарием, короткий сегмент-термин, извлечение моделью. Ни один кандидат не попадает в глоссарий сам — глоссарий уходит в промпт как правило, и автопополнение закрепляло бы ошибки перевода." })),
+      React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+        "по частоте · одобрено: " + (counts.approved || 0) + " · отклонено: " + (counts.rejected || 0))),
+
+    open && React.createElement("div", { className: "col", style: { gap: 10, marginTop: 14 } },
+      items.map(c => {
+        const [label, icon, color] = CAND_KIND[c.kind] || ["Кандидат", "info", "var(--text-2)"];
+        return React.createElement("div", { key: c.id, className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 8 } },
+          React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+            React.createElement("div", { className: "row", style: { gap: 8 } },
+              React.createElement(Icon, { name: icon, size: 15, style: { color } }),
+              React.createElement("span", { style: { fontSize: 12, color, fontWeight: 600 } }, label),
+              c.hits > 1 && React.createElement(Badge, { variant: "soft" }, "встречалось " + c.hits + "×")),
+            React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+              (c.project ? "проект #" + c.project : "") + (c.segment ? " · сегмент #" + c.segment : ""))),
+
+          React.createElement("div", { className: "row row-wrap", style: { gap: 10, alignItems: "center" } },
+            React.createElement("span", { style: { fontWeight: 600 } }, c.src),
+            React.createElement(Icon, { name: "chevR", size: 14, style: { color: "var(--text-3)" } }),
+            React.createElement(Input, {
+              value: drafts[c.id] !== undefined ? drafts[c.id] : (c.tgt || ""),
+              placeholder: c.kind === "conflict" ? "верный перевод" : "перевод",
+              onChange: (e) => setDrafts(d => ({ ...d, [c.id]: e.target.value })),
+              style: { maxWidth: 320 } }),
+            c.wasTgt && React.createElement("span", { className: "dim", style: { fontSize: 12.5 } },
+              "в глоссарии сейчас: ", React.createElement("s", null, c.wasTgt))),
+
+          c.note && React.createElement("div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.5 } }, c.note),
+
+          c.sampleSrc && React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.6 } },
+            React.createElement("div", null, c.sampleSrc),
+            React.createElement("div", { style: { color: "var(--c-primary)" } }, c.sampleTgt)),
+
+          React.createElement("div", { className: "row", style: { gap: 8 } },
+            React.createElement(Btn, { variant: "primary", size: "sm", icon: "check", disabled: busy === c.id, onClick: () => approve(c) }, "В глоссарий"),
+            React.createElement(Btn, { variant: "ghost", size: "sm", icon: "close", disabled: busy === c.id, onClick: () => reject(c) }, "Отклонить")));
+      }),
+      !items.length && React.createElement("div", { className: "dim", style: { fontSize: 13 } }, "Нерешённых кандидатов нет.")
+    )
+  );
+}
+
 function TabGlossary({ store, toast }) {
   const [query, setQuery] = useState("");
+  const [scope, setScope] = useState("all");
   const [cat, setCat] = useState("all");
   const [sort, setSort] = useState("alpha");
   const [modal, setModal] = useState(null);
@@ -21,12 +143,12 @@ function TabGlossary({ store, toast }) {
   }, []);
 
   // Reset page on filter change
-  useEffect(() => { setPage(0); }, [query, cat, sort]);
+  useEffect(() => { setPage(0); }, [query, scope, cat, sort]);
 
   const cats = ["all", "Anatomy", "Cardiology", "Disease", "Dosage", "Symptom", "Lab", "Procedure", "Device", "Document"];
   let rows = allTerms.filter(g => {
     if (cat !== "all" && g.cat !== cat) return false;
-    if (query) { const q = query.toLowerCase(); if (!g.src.toLowerCase().includes(q) && !g.tgt.toLowerCase().includes(q)) return false; }
+    if (query && !pairMatches(g, query, scope)) return false;
     return true;
   });
   rows = rows.slice().sort((a, b) => sort === "freq" ? (b.freq||0) - (a.freq||0) : a.src.localeCompare(b.src, "ru"));
@@ -48,9 +170,13 @@ function TabGlossary({ store, toast }) {
         React.createElement(InfoTip, { title: "Глоссарий", body: "База утверждённых медицинских терминов с переводами. Используется для инъекции в GPT-промпт и проверки консистентности в QA." })),
       React.createElement("p", { className: "lead" }, "Утверждённая медицинская терминология. Совпадения автоматически подсказываются в редакторе сегментов.")),
 
+    React.createElement(TermQueue, { store, toast }),
+
     React.createElement("div", { className: "row between row-wrap", style: { marginBottom: 16, gap: 12 } },
-      React.createElement(SearchInput, { value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Поиск по глоссарию…" }),
+      React.createElement(SearchInput, { value: query, onChange: (e) => setQuery(e.target.value),
+        placeholder: scope === "src" ? "Поиск по термину (RU)…" : scope === "tgt" ? "Поиск по переводу (EN)…" : "Поиск по глоссарию…" }),
       React.createElement("div", { className: "row", style: { gap: 8 } },
+        React.createElement(ScopeSelect, { value: scope, onChange: (e) => setScope(e.target.value) }),
         React.createElement(Select, { value: cat, onChange: (e) => setCat(e.target.value), style: { width: "auto" } },
           cats.map(c => React.createElement("option", { key: c, value: c }, c === "all" ? "Все категории" : c))),
         React.createElement(Select, { value: sort, onChange: (e) => setSort(e.target.value), style: { width: "auto" } },
@@ -73,7 +199,10 @@ function TabGlossary({ store, toast }) {
             pageRows.map((g, i) => { const [cls, lab] = confMeta[(g.conf || "").toLowerCase()] || confMeta.medium;
               return React.createElement("tr", { key: i, onClick: () => setModal(g) },
                 React.createElement("td", { style: { fontWeight: 600 } }, g.src),
-                React.createElement("td", { style: { color: "var(--c-primary)", fontWeight: 500 } }, g.tgt),
+                React.createElement("td", { style: { color: "var(--c-primary)", fontWeight: 500 } }, g.tgt,
+                  // auto = массовый автоимпорт: модель получает такую запись подсказкой, а не правилом
+                  g.tier === "auto" && React.createElement("span", { className: "dim", style: { fontSize: 11, marginLeft: 8, whiteSpace: "nowrap" },
+                    title: "Автоимпорт, не проверено человеком. В промпт уходит подсказкой, а не жёстким правилом." }, "авто")),
                 React.createElement("td", null, React.createElement(Badge, { variant: "soft" }, g.cat)),
                 React.createElement("td", { className: "tnum dim" }, g.freq + "×"),
                 React.createElement("td", null, React.createElement("span", { className: "badge " + cls }, lab)),
@@ -134,12 +263,13 @@ window.TabGlossary = TabGlossary;
    ============================================================ */
 function TabTM({ store, toast }) {
   const [query, setQuery] = useState("");
+  const [scope, setScope] = useState("all");
   const [quality, setQuality] = useState("all");
   const tmQuality = (t) => t.quality || (t.verified === true ? "verified" : t.verified === false ? "draft" : "draft");
   const rows = store.tm.filter(t => {
     const q2 = tmQuality(t);
     if (quality !== "all" && q2 !== quality) return false;
-    if (query) { const q = query.toLowerCase(); if (!t.src.toLowerCase().includes(q) && !t.tgt.toLowerCase().includes(q)) return false; }
+    if (query && !pairMatches(t, query, scope)) return false;
     return true;
   });
   return React.createElement("div", { className: "page page-wide" },
@@ -148,8 +278,10 @@ function TabTM({ store, toast }) {
         React.createElement(InfoTip, { title: "Память переводов (TM)", body: "База подтверждённых пар (оригинал → перевод). Используется для поиска точных и нечётких совпадений в новых проектах. Экономит токены." })),
       React.createElement("p", { className: "lead" }, "Подтверждённые пары из предыдущих проектов. Точные совпадения подставляются автоматически и не тарифицируются.")),
     React.createElement("div", { className: "row between row-wrap", style: { marginBottom: 18, gap: 12 } },
-      React.createElement(SearchInput, { value: query, onChange: (e) => setQuery(e.target.value), placeholder: "Поиск в памяти переводов…" }),
+      React.createElement(SearchInput, { value: query, onChange: (e) => setQuery(e.target.value),
+        placeholder: scope === "src" ? "Поиск по оригиналу (RU)…" : scope === "tgt" ? "Поиск по переводу (EN)…" : "Поиск в памяти переводов…" }),
       React.createElement("div", { className: "row", style: { gap: 8 } },
+        React.createElement(ScopeSelect, { value: scope, onChange: (e) => setScope(e.target.value) }),
         React.createElement(Select, { value: quality, onChange: (e) => setQuality(e.target.value), style: { width: "auto" } },
           React.createElement("option", { value: "all" }, "Любое качество"),
           React.createElement("option", { value: "verified" }, "Проверенные"),

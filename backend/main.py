@@ -2,9 +2,14 @@
 FastAPI backend for Medical CAT Translator v5.5
 Serves the React design at /, exposes REST API at /api/*
 
+Авторизация: POST /api/auth/login отдаёт токен сессии; его нужно присылать
+в заголовке `Authorization: Bearer <token>` во ВСЕ остальные /api/* запросы.
+Публичны только /api/auth/login, /api/auth/logout и /api/health.
+
 Endpoints:
   GET  /api/seed                          → all initial data (projects, glossary, tm, etc.)
-  POST /api/auth/login                    → password check
+  POST /api/auth/login                    → password check → token
+  POST /api/auth/logout                   → invalidate token
   GET  /api/projects                      → list projects
   POST /api/projects                      → create project (from DOCX or empty)
   GET  /api/projects/{pid}                → project detail
@@ -29,11 +34,14 @@ import os
 import re
 import sys
 import json
+import time
+import hmac
 import hashlib
+import secrets
 import asyncio
 import threading
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, List
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
@@ -109,26 +117,120 @@ def _term_match(term: str, text: str) -> str | None:
 
     Алгоритм:
     1. Точное совпадение (быстро).
-    2. Стеминг: первые 75% символов каждого слова термина (мин. 4) +
+    2. Стеминг: первые 85% символов каждого слова термина (мин. 4) +
        любое кириллическое окончание.  Без внешних зависимостей.
-       "лимфангит"     → стем "лимфанги"  → найдёт "лимфангита", "лимфангите"
-       "первичный очаг" → стемы "первичн", "оча"
+       "лимфангит"     → стем "лимфанг"  → найдёт "лимфангита", "лимфангите"
+       "первичный очаг" → стемы "первичн", "очаг"
                         → найдёт "первичного очага", "первичному очагу"
+
+    Порог именно 85%, а не 75%: на 75% "циклоз" (стем "цикл") ловил "циклит"
+    и подсовывал модели "cyclosis" вместо "cyclitis". Медицинские термины
+    различаются как раз хвостом (-ит / -оз / -ома), срезать его нельзя.
     """
-    lo = text.lower()
     tl = term.lower()
-    # 1. Точное совпадение
-    idx = lo.find(tl)
-    if idx != -1:
-        return text[idx:idx + len(term)]
+    # 1. Точное совпадение — обязательно по границам слова. Без этой проверки
+    #    трёхбуквенные записи глоссария лезли внутрь чужих слов: «жалобы» →
+    #    «лоб», «профилактика» → «лак», «диагностики» → «нос», и весь этот мусор
+    #    уходил модели как утверждённая терминология.
+    exact = _re.search(r'(?<![а-яёА-ЯЁa-zA-Z])' + _re.escape(tl) + r'(?![а-яёА-ЯЁa-zA-Z])',
+                       text, _re.IGNORECASE)
+    if exact:
+        return exact.group(0)
     # 2. Стеминг по словам
     parts = tl.split()
     if not parts:
         return None
-    stems = [_re.escape(w[:max(4, int(len(w) * 0.75))]) + r'[а-яёА-ЯЁ]*' for w in parts]
+    stems = [_re.escape(w[:max(4, int(len(w) * 0.85))]) + r'[а-яёА-ЯЁ]*' for w in parts]
     full_pat = r'\s+'.join(stems)
     m = _re.search(r'(?<![а-яёА-ЯЁa-zA-Z])' + full_pat, text, _re.IGNORECASE)
     return m.group(0) if m else None
+
+
+# ─── Уровни доверия глоссария ────────────────────────────────────────
+# 9132 записи из 10022 пришли массовым автоимпортом (Sources=baldwin_*), и там
+# лежит, например, «задний → rear». Такие записи модель получает как подсказку,
+# а не как приказ: "use these exact translations" на них давало кальки вроде
+# "rear cyclitis". Проверенные (отраслевые списки + одобренное человеком)
+# остаются жёстким правилом. Записи не удаляем — понижаем в правах.
+GLOSSARY_TIER_HARD = "verified"
+GLOSSARY_TIER_SOFT = "auto"
+
+
+def _tier_from_origin(origin: str) -> str:
+    return GLOSSARY_TIER_SOFT if "baldwin" in (origin or "").lower() else GLOSSARY_TIER_HARD
+
+
+def _hit_tier(h: dict) -> str:
+    return h.get("tier") or GLOSSARY_TIER_HARD
+
+
+def _hit_rank(h: dict) -> tuple:
+    """Кого оставить, когда на одну форму претендуют несколько записей:
+    сначала проверенные, потом более длинный (более специфичный) термин, при
+    равенстве — с более коротким переводом. Последнее отсекает обрезанные
+    записи вроде «периферическая → peripheral nervous system», которые тянут
+    в перевод лишнее понятие."""
+    return (1 if _hit_tier(h) == GLOSSARY_TIER_HARD else 0,
+            len(h.get("src", "")), -len(h.get("tgt", "")))
+
+
+# ─── Индекс глоссария ────────────────────────────────────────────────
+# Без него _get_context гонял ~10 000 регулярок на КАЖДЫЙ сегмент: 10-17 секунд
+# чистого CPU, которые прятались за временем ответа модели (и превращали пакет
+# из 2000 сегментов в лишние часы). Теперь по тексту собираются 4-символьные
+# ключи, и полную проверку проходят только записи из совпавших корзин.
+_GLOSS_INDEX = None          # {ключ: [записи глоссария]}
+_GLOSS_INDEX_LOCK = threading.Lock()
+
+
+def _index_key(word: str) -> str:
+    return word[:4]
+
+
+def _entry_keys(src: str) -> set:
+    """Ключи записи — по первому слову термина: именно с него начинается и
+    точное совпадение, и стем-поиск."""
+    first = (src or "").lower().split()
+    if not first:
+        return set()
+    w = first[0]
+    return {_index_key(w)} if len(w) >= 4 else {w}
+
+
+def _text_keys(text: str) -> set:
+    """Ключи текста. Берём окна по 4 символа внутри каждого слова, а не только
+    начало: точное совпадение в _term_match умеет попадать и в середину слова."""
+    keys = set()
+    for w in _re.findall(r"[а-яёa-z0-9]+", (text or "").lower()):
+        # Короткие записи («ЭКГ», «КТ») индексируются целым словом и совпадают
+        # только с начала слова — добавляем короткие префиксы отдельно.
+        keys.update(w[:n] for n in (1, 2, 3) if len(w) >= n)
+        for i in range(max(0, len(w) - 3)):
+            keys.add(w[i:i + 4])
+    return keys
+
+
+def _gloss_index() -> dict:
+    global _GLOSS_INDEX
+    idx = _GLOSS_INDEX
+    if idx is not None:
+        return idx
+    with _GLOSS_INDEX_LOCK:
+        if _GLOSS_INDEX is None:
+            idx = {}
+            for g in STATE.get("glossary", []):
+                for k in _entry_keys(g.get("src", "")):
+                    idx.setdefault(k, []).append(g)
+            _GLOSS_INDEX = idx
+            print(f"[backend] glossary index: {len(idx)} keys / "
+                  f"{len(STATE.get('glossary', []))} terms", file=sys.stderr)
+    return _GLOSS_INDEX
+
+
+def _invalidate_gloss_index():
+    """Любая правка глоссария роняет индекс — соберётся заново при следующем поиске."""
+    global _GLOSS_INDEX
+    _GLOSS_INDEX = None
 
 
 def _get_context(text: str):
@@ -139,16 +241,32 @@ def _get_context(text: str):
     tm_hit     — точное совпадение в TM или None.
     """
     hits = []
-    for g in STATE.get("glossary", []):
+    idx = _gloss_index()
+    keys = _text_keys(text)
+    seen_ids = set()
+    candidates = []
+    for k in keys:
+        for g in idx.get(k, ()):
+            if id(g) not in seen_ids:
+                seen_ids.add(id(g))
+                candidates.append(g)
+    for g in candidates:
         src = g.get("src", "")
         if not src:
             continue
         form = _term_match(src, text)
         if form:
             hits.append({**g, "_form": form})
+    # Одна форма — один перевод. «периферические» ловило сразу три записи
+    # (peripheral / periphery / peripheral nervous system), и модель выбирала
+    # сама. Оставляем лучшую по _hit_rank, остальные отбрасываем.
+    best: dict = {}
+    for h in hits:
+        key = h["_form"].lower()
+        if key not in best or _hit_rank(h) > _hit_rank(best[key]):
+            best[key] = h
     # Длинные термины первыми: меньше риск перекрытия плейсхолдеров
-    hits.sort(key=lambda x: len(x["src"]), reverse=True)
-    hits = hits[:15]
+    hits = sorted(best.values(), key=lambda x: len(x["src"]), reverse=True)[:15]
     tm_hit = next(
         (t for t in STATE.get("tm", []) if t.get("src", "").strip().lower() == text.strip().lower()),
         None,
@@ -162,6 +280,10 @@ def _google_with_gloss(text: str, src: str, tgt: str, gloss_hits: list) -> str:
     Заменяем ФАКТИЧЕСКУЮ форму термина (h['_form'], напр. "лимфангита") →
     плейсхолдер → Google переводит остальное → восстанавливаем целевой термин.
     """
+    # Плейсхолдер — это принуждение: подставленный термин попадёт в перевод
+    # дословно и мимо любой проверки. Так можно только с проверенными записями;
+    # автоимпорт пусть переводит движок — его ошибку хотя бы видно в QA.
+    gloss_hits = [h for h in (gloss_hits or []) if _hit_tier(h) == GLOSSARY_TIER_HARD]
     if not gloss_hits:
         return _deep_translate(text, src, tgt)
     modified = text
@@ -180,6 +302,53 @@ def _google_with_gloss(text: str, src: str, tgt: str, gloss_hits: list) -> str:
         print(f"[backend] Google+glossary: {len(placeholders)} forms replaced "
               f"{[h.get('_form', h['src']) for h in gloss_hits[:5]]}", file=sys.stderr)
     return result
+
+
+# ─── Предметные области ──────────────────────────────────────────────
+# Сервис не привязан к медицине: область — параметр проекта. Это ЕДИНСТВЕННОЕ
+# место, где живёт доменная специфика промптов (перевод и проверка терминов).
+# Добавили направление — добавили строку, больше править нечего.
+#   expert      — кем модель себя считает при переводе;
+#   terminology — что считать эталоном терминологии;
+#   examples    — типичные кальки этой области (можно пусто).
+DOMAINS = [
+    {"id": "medical", "label": "Медицина", "en": "medical",
+     "expert": "medical translator specializing in biomedical and clinical texts",
+     "terminology": "standard medical terminology as used in peer-reviewed clinical literature",
+     "examples": "BAD: 'oxide nitrogena', 'leukocidin', 'rear cyclitis'. "
+                 "GOOD: 'nitric oxide', 'leukocytes', 'posterior cyclitis'."},
+    {"id": "pharma", "label": "Фармацевтика", "en": "pharmaceutical",
+     "expert": "pharmaceutical translator working on drug labels, SmPCs and clinical trial documents",
+     "terminology": "standard pharmaceutical and regulatory terminology (INN names, dosage forms, routes)",
+     "examples": ""},
+    {"id": "legal", "label": "Юриспруденция", "en": "legal",
+     "expert": "legal translator working on contracts, court documents and corporate filings",
+     "terminology": "standard legal terminology of the target language, keeping the legal effect intact",
+     "examples": ""},
+    {"id": "technical", "label": "Техника", "en": "technical",
+     "expert": "technical translator working on engineering documentation and manuals",
+     "terminology": "standard engineering terminology and unit conventions",
+     "examples": ""},
+    {"id": "finance", "label": "Финансы", "en": "financial",
+     "expert": "financial translator working on reports, statements and audit documents",
+     "terminology": "standard accounting and financial terminology",
+     "examples": ""},
+    {"id": "it", "label": "IT", "en": "software",
+     "expert": "software localization specialist",
+     "terminology": "established terminology of the platform and the target locale",
+     "examples": ""},
+    {"id": "general", "label": "Общая тематика", "en": "general-purpose",
+     "expert": "professional translator",
+     "terminology": "standard contemporary usage",
+     "examples": ""},
+]
+DEFAULT_DOMAIN = "medical"      # исторически сервис начинался с медицины
+_DOMAINS_BY_ID = {d["id"]: d for d in DOMAINS}
+
+
+def _resolve_domain(domain_id: Optional[str]) -> dict:
+    """Неизвестная/пустая область → дефолт. У старых проектов поля нет вовсе."""
+    return _DOMAINS_BY_ID.get(domain_id or "") or _DOMAINS_BY_ID[DEFAULT_DOMAIN]
 
 
 # ─── Каталог моделей OpenAI ──────────────────────────────────────────
@@ -226,6 +395,9 @@ JUDGE_ZONE = (50, 97)
 # отличить подмену понятия от синонима. Одна модель на обе роли работала бы плохо
 # в одной из них.
 JUDGE_DEFAULT_MODEL = "gpt-5.6-terra"
+# Проверке терминологии нужна сильная модель: слабая либо пропускает кальки,
+# либо начинает придираться к нормальным синонимам.
+TERMCHECK_DEFAULT_MODEL = os.environ.get("TERMCHECK_MODEL", DEFAULT_OPENAI_MODEL)
 
 
 def _openai_embed(texts: list) -> list:
@@ -271,6 +443,87 @@ _JUDGE_SYSTEM = (
 )
 
 
+# ─── Проверка терминологии перевода ──────────────────────────────────
+# Back-check спрашивает «пережил ли смысл круг» и на кальке всегда отвечает
+# «да»: «rear cyclitis» дословно возвращается как «задний циклит» и совпадает
+# с оригиналом. Здесь задан противоположный вопрос — «нормальный ли это термин
+# целевого языка», и смотрим мы ТОЛЬКО на перевод, оригинал нужен лишь для
+# привязки термина. Область берётся из проекта: медицина ничем не выделена.
+TERMCHECK_SEVERITY = ["critical", "major", "minor"]
+
+
+def _termcheck_system(domain: dict, src_lang: str, tgt_lang: str) -> str:
+    return (
+        "You are a terminology reviewer for " + domain["en"] + " translations from "
+        + src_lang + " into " + tgt_lang + ".\n"
+        "You get SOURCE and TRANSLATION. Judge ONLY the terminology of the TRANSLATION.\n\n"
+        "Flag a term when it is:\n"
+        "  - a calque or word-by-word rendering that is not a real term in " + tgt_lang + ";\n"
+        "  - a transliteration of a source-language or Latin word instead of the accepted term;\n"
+        "  - a different concept than the source term (substitution);\n"
+        "  - garbled, truncated or fused with digits/other words;\n"
+        "  - wrong register for " + domain["en"] + " documents (everyday word instead of the professional term).\n\n"
+        "DO NOT flag: style preferences, synonyms that are both standard, "
+        "British vs American spelling, sentence structure, punctuation, anything in the SOURCE.\n"
+        "Be conservative: if unsure whether a term is standard, do NOT flag it.\n"
+        "The suggestion must be a term actually used in " + tgt_lang + " " + domain["en"]
+        + " literature, never your own invention.\n\n"
+        'Return ONLY JSON, no prose:\n'
+        '{"findings": [{"src_term": "<the matching fragment of SOURCE, or empty>", '
+        '"tgt_term": "<the exact fragment of TRANSLATION that is wrong>", '
+        '"suggestion": "<the correct term>", "severity": "critical|major|minor", '
+        '"why": "<one short sentence in Russian>"}]}\n'
+        "severity: critical — a different concept or an unreadable fragment; "
+        "major — not a real term of the target language; minor — understandable but non-standard.\n"
+        'If the terminology is fine, return {"findings": []}.'
+    )
+
+
+def _openai_termcheck(source: str, target: str, src_lang: str, tgt_lang: str,
+                      domain_id: Optional[str] = None, model: str = None) -> Optional[dict]:
+    """Разбор перевода моделью. None — вызов не удался (сегмент не трогаем)."""
+    import json as _json
+    import openai
+    dom = _resolve_domain(domain_id)
+    mdl = _resolve_model(model or TERMCHECK_DEFAULT_MODEL)
+    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
+    extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
+             else {"max_tokens": 700, "temperature": 0})
+    try:
+        resp = client.chat.completions.create(
+            model=mdl["id"],
+            messages=[
+                {"role": "system", "content": _termcheck_system(dom, src_lang, tgt_lang)},
+                {"role": "user", "content": "SOURCE:\n" + source + "\n\nTRANSLATION:\n" + target},
+            ],
+            **extra,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        m = re.search(r"\{.*\}", raw, re.S)
+        if not m:
+            return None
+        data = _json.loads(m.group(0))
+        out = []
+        for f in (data.get("findings") or []):
+            if not isinstance(f, dict):
+                continue
+            tgt_term = (f.get("tgt_term") or "").strip()
+            if not tgt_term:
+                continue
+            sev = (f.get("severity") or "major").lower()
+            out.append({
+                "src_term": (f.get("src_term") or "").strip(),
+                "tgt_term": tgt_term,
+                "suggestion": (f.get("suggestion") or "").strip(),
+                "severity": sev if sev in TERMCHECK_SEVERITY else "major",
+                "why": (f.get("why") or "").strip(),
+            })
+        return {"findings": out, "model": mdl["id"]}
+    except Exception as e:
+        print(f"[backend] termcheck failed: {e}", file=sys.stderr)
+        return None
+
+
 def _openai_judge(source_ru: str, back_ru: str, model: str = None) -> Optional[dict]:
     """Вердикт модели по паре «оригинал / обратный перевод»."""
     import json as _json
@@ -309,7 +562,8 @@ def _resolve_model(model_id: Optional[str]) -> dict:
 # Direct OpenAI GPT translation
 def _openai_translate(text: str, src: str, tgt: str,
                       gloss_hits: list = None, tm_context: dict = None,
-                      model: str = None, literal: bool = False) -> str:
+                      model: str = None, literal: bool = False,
+                      domain: Optional[str] = None) -> str:
     """GPT-перевод с инъекцией глоссария (базовые формы — GPT знает склонения).
 
     literal=True — режим для обратного перевода. Обычный промпт тут вреден:
@@ -337,23 +591,37 @@ def _openai_translate(text: str, src: str, tgt: str,
         gloss_hits = None
         tm_context = None
     else:
+        dom = _resolve_domain(domain)
         system = (
-        f"You are a senior medical translator specializing in Russian-to-English biomedical texts. "
+        f"You are a senior {dom['expert']}. "
         f"Translate the following text from {src} to {tgt}.\n\n"
         "STRICT RULES:\n"
         "1. Return ONLY the translated text — no explanations, no comments, no quotes.\n"
-        "2. Use standard English medical terminology. NEVER transliterate Russian or Latin word forms.\n"
-        "   BAD: 'oxide nitrogena', 'leukocidin', 'cytocinesis' — these are NOT English words.\n"
-        "   GOOD: 'nitric oxide', 'leukocytes', 'cytokines'.\n"
-        "3. NEVER mix languages. Output must be 100% English.\n"
+        f"2. Use {dom['terminology']}. NEVER transliterate source-language or Latin word forms,\n"
+        f"   and never invent word-by-word calques that are not real terms in {tgt}.\n"
+        + (f"   {dom['examples']}\n" if dom.get("examples") else "") +
+        f"3. NEVER mix languages. Output must be 100% {tgt}.\n"
         "4. NEVER use parenthetical alternatives: NOT 'biologic(al)', NOT 'cell(s)'. Choose ONE correct form.\n"
         "5. NEVER list multiple synonyms separated by semicolons for the same concept.\n"
         "6. Preserve all numbers, abbreviations, and punctuation exactly as in the source.\n"
-        "7. Medical abbreviations that are identical in English (e.g. IFN, IL, TNF) may be kept.\n"
+        f"7. Abbreviations that are identical in {tgt} may be kept as they are.\n"
         )
-    if gloss_hits:
-        terms = "\n".join(f"  {h['src']} → {h['tgt']}" for h in gloss_hits)
+    hard = [h for h in (gloss_hits or []) if _hit_tier(h) == GLOSSARY_TIER_HARD]
+    soft = [h for h in (gloss_hits or []) if _hit_tier(h) == GLOSSARY_TIER_SOFT]
+    if hard:
+        terms = "\n".join(f"  {h['src']} → {h['tgt']}" for h in hard)
         system += f"\nApproved glossary — use these exact translations:\n{terms}\n"
+    if soft:
+        # Автоимпорт — именно подсказка. Приказ "use these exact translations"
+        # на этих записях и рождал "rear cyclitis": модель знает правильный
+        # термин, но послушно берёт то, что ей назвали утверждённым.
+        terms = "\n".join(f"  {h['src']} → {h['tgt']}" for h in soft)
+        system += (
+            "\nUnverified glossary hints (bulk-imported, NOT reviewed — some are wrong):\n"
+            f"{terms}\n"
+            "Use a hint ONLY if it is the standard term in the target language for this context. "
+            "If it is not standard medical usage, IGNORE the hint and use the correct standard term.\n"
+        )
     if tm_context:
         system += (
             f"\nTranslation Memory (similar segment, for reference):\n"
@@ -378,26 +646,147 @@ def _openai_translate(text: str, src: str, tgt: str,
     return (resp.choices[0].message.content or "").strip()
 
 # ─────────────────────────────────────────────────────────────────────
+# Аутентификация
+#
+# Пароль пока один на весь сервис (мультитенантности нет), но каждый вход
+# выдаёт свой токен, и БЕЗ токена не работает ни один /api/* эндпоинт.
+# Токены живут только в памяти процесса: рестарт = всем перелогиниться.
+# ─────────────────────────────────────────────────────────────────────
+_RAW_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
+if not _RAW_PASSWORD:
+    # Зашитого дефолта быть не должно: публичный сервис оказался бы открыт
+    # каждому, кто читал репозиторий. Без пароля в env — одноразовый случайный.
+    _RAW_PASSWORD = secrets.token_urlsafe(9)
+    print(f"[backend] WARN: APP_PASSWORD не задан. Пароль на этот запуск: {_RAW_PASSWORD}",
+          file=sys.stderr)
+PASSWORD_HASH = hashlib.sha256(_RAW_PASSWORD.encode()).hexdigest()
+
+SESSION_TTL = max(300, int(os.environ.get("SESSION_TTL_HOURS", "12")) * 3600)
+LOGIN_MAX_FAILS = 10           # неудачных попыток с одного IP
+LOGIN_FAIL_WINDOW = 15 * 60    # за это окно; потом счётчик обнуляется
+
+_SESSIONS: dict = {}           # token -> expires_at (epoch)
+_LOGIN_FAILS: dict = {}        # ip -> (fail_count, window_started_at)
+_AUTH_LOCK = threading.Lock()
+
+# Единственный список исключений. Всё прочее под /api/ требует токен.
+PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/health"}
+
+
+def _new_session() -> str:
+    token = secrets.token_urlsafe(32)
+    now = time.time()
+    with _AUTH_LOCK:
+        for dead in [t for t, exp in _SESSIONS.items() if exp <= now]:
+            _SESSIONS.pop(dead, None)
+        _SESSIONS[token] = now + SESSION_TTL
+    return token
+
+
+def _session_valid(token: Optional[str]) -> bool:
+    if not token:
+        return False
+    with _AUTH_LOCK:
+        exp = _SESSIONS.get(token)
+        if exp is None:
+            return False
+        if exp <= time.time():
+            _SESSIONS.pop(token, None)
+            return False
+    return True
+
+
+def _drop_session(token: Optional[str]) -> None:
+    if token:
+        with _AUTH_LOCK:
+            _SESSIONS.pop(token, None)
+
+
+def _client_ip(request: Request) -> str:
+    # За nginx реальный адрес приходит в X-Forwarded-For (см. deploy/nginx.conf).
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "?"
+
+
+def _login_blocked(ip: str) -> bool:
+    with _AUTH_LOCK:
+        rec = _LOGIN_FAILS.get(ip)
+        if not rec:
+            return False
+        count, started = rec
+        if time.time() - started > LOGIN_FAIL_WINDOW:
+            _LOGIN_FAILS.pop(ip, None)
+            return False
+        return count >= LOGIN_MAX_FAILS
+
+
+def _note_login_fail(ip: str) -> None:
+    now = time.time()
+    with _AUTH_LOCK:
+        count, started = _LOGIN_FAILS.get(ip, (0, now))
+        if now - started > LOGIN_FAIL_WINDOW:
+            count, started = 0, now
+        _LOGIN_FAILS[ip] = (count + 1, started)
+
+
+def _token_from_request(request: Request) -> Optional[str]:
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip() or None
+    header = request.headers.get("x-auth-token", "").strip()
+    if header:
+        return header
+    # Скачивание файла идёт обычной ссылкой <a href>, заголовок туда не подставить,
+    # поэтому только для этого одного пути токен допускается в query-строке.
+    if request.url.path.endswith("/export/download"):
+        return request.query_params.get("token")
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────
 # App setup
 # ─────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Medical CAT Translator API", version="5.6.0")
 
+
+@app.middleware("http")
+async def require_token(request: Request, call_next):
+    """Одна точка проверки: новый /api/* эндпоинт защищён автоматически."""
+    path = request.url.path
+    if (request.method != "OPTIONS"              # preflight обслуживает CORSMiddleware
+            and path.startswith("/api/")
+            and path not in PUBLIC_API_PATHS
+            and not _session_valid(_token_from_request(request))):
+        return JSONResponse({"ok": False, "error": "Требуется вход в систему"}, status_code=401)
+    return await call_next(request)
+
+
+# CORS добавляется ПОСЛЕ require_token: последняя добавленная мидлварь —
+# внешняя, поэтому preflight и ответы 401 тоже получают CORS-заголовки.
+# Список origin'ов вместо прежнего "*": со звёздочкой и allow_credentials
+# любой сторонний сайт мог дёргать API из браузера пользователя.
+_DEFAULT_ORIGINS = [
+    "https://trasnlateuz.duckdns.org",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+ALLOWED_ORIGINS = [o.strip() for o in os.environ.get(
+    "ALLOWED_ORIGINS", ",".join(_DEFAULT_ORIGINS)).split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Auth-Token"],
 )
 
 FRONTEND_DIR = ROOT / "frontend"
 DATA_DIR = ROOT / "backend" / "data"
 DATA_DIR.mkdir(exist_ok=True)
 STATE_FILE = DATA_DIR / "state.json"
-
-PASSWORD_HASH = hashlib.sha256(
-    os.environ.get("APP_PASSWORD", "medtranslator2026").encode()
-).hexdigest()
 
 def medical_qa_enabled() -> bool:
     if medical_qa_mod and hasattr(medical_qa_mod, "enabled_from_env"):
@@ -516,10 +905,13 @@ def _load_glossary_from_tsv() -> list:
                     continue
                 seen.add(ru)
                 cat_raw = (row.get("Category") or "").strip()
+                origin = (row.get("Sources") or "").strip()
                 terms.append({
                     "src": ru, "tgt": en,
                     "cat": _CAT_MAP.get(cat_raw, "Disease"),
                     "freq": 1, "conf": "high", "note": "",
+                    # tier решает, приказ это для модели или подсказка (см. _tier_from_origin)
+                    "tier": _tier_from_origin(origin), "origin": origin[:60],
                 })
     except Exception as e:
         print(f"[backend] WARN: could not load glossary TSV: {e}", file=sys.stderr)
@@ -579,6 +971,15 @@ def _apply_migrations(state: dict) -> dict:
     for t in state.get("tm", []):
         if "quality" not in t:
             t["quality"] = "verified" if t.get("verified") else "draft"
+    # Migrate: уровни доверия появились позже самого глоссария. Проставляем их
+    # по эталонному TSV; чего в массовом импорте нет — добавлено руками, значит
+    # проверено. Иначе весь автоимпорт так и остался бы приказом для модели.
+    if any("tier" not in t for t in state.get("glossary", [])):
+        tiers = {t["src"]: t.get("tier", GLOSSARY_TIER_HARD) for t in SEED_GLOSSARY}
+        for t in state.get("glossary", []):
+            if "tier" not in t:
+                t["tier"] = tiers.get(t.get("src"), GLOSSARY_TIER_HARD)
+    state.setdefault("termQueue", [])
     return state
 
 
@@ -614,6 +1015,7 @@ def load_state() -> dict:
         "tm": list(SEED_TM),
         "exportHistory": list(SEED_EXPORT_HISTORY),
         "team": list(SEED_TEAM),
+        "termQueue": [],
     }
 
 
@@ -674,11 +1076,21 @@ class LoginRequest(BaseModel):
     password: str
 
 @app.post("/api/auth/login")
-def login(req: LoginRequest):
+def login(req: LoginRequest, request: Request):
+    ip = _client_ip(request)
+    if _login_blocked(ip):
+        raise HTTPException(429, "Слишком много попыток входа. Повторите через 15 минут.")
     given = hashlib.sha256(req.password.encode()).hexdigest()
-    if given == PASSWORD_HASH:
-        return {"ok": True}
-    raise HTTPException(401, "Invalid password")
+    if not hmac.compare_digest(given, PASSWORD_HASH):
+        _note_login_fail(ip)
+        raise HTTPException(401, "Invalid password")
+    return {"ok": True, "token": _new_session(), "expiresIn": SESSION_TTL}
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request):
+    _drop_session(_token_from_request(request))
+    return {"ok": True}
 
 
 @app.get("/api/seed")
@@ -707,8 +1119,11 @@ def list_models():
     Полосы back-check отдаются отсюда же, чтобы границы не дублировались на фронтенде."""
     return {
         "models": OPENAI_MODELS,
+        "domains": [{"id": d["id"], "label": d["label"]} for d in DOMAINS],
+        "domainDefault": DEFAULT_DOMAIN,
         "default": DEFAULT_OPENAI_MODEL,
         "backcheckDefault": BACKCHECK_DEFAULT_MODEL,
+        "termcheckDefault": TERMCHECK_DEFAULT_MODEL,
         "judgeDefault": JUDGE_DEFAULT_MODEL,
         "judgeZone": list(JUDGE_ZONE),
         "backcheckBands": getattr(medical_qa_mod, "BACKCHECK_BANDS", []) if medical_qa_mod else [],
@@ -731,6 +1146,7 @@ class CreateProjectRequest(BaseModel):
     title: str
     src: str = "RU"
     tgt: str = "EN"
+    domain: str = DEFAULT_DOMAIN
     fileName: Optional[str] = None
 
 @app.post("/api/projects")
@@ -742,6 +1158,7 @@ def create_project(req: CreateProjectRequest):
         "title": req.title or "Новый проект",
         "titleEn": req.title or "New Project",
         "src": req.src, "tgt": req.tgt,
+        "domain": _resolve_domain(req.domain)["id"],
         "status": "in_progress",
         "created": datetime.now().strftime("%Y-%m-%d"),
         "deadline": "",
@@ -761,6 +1178,7 @@ async def upload_project(
     title: str = Form(""),
     src: str = Form("RU"),
     tgt: str = Form("EN"),
+    domain: str = Form(DEFAULT_DOMAIN),
 ):
     import io, re, html as _html
     try:
@@ -811,6 +1229,7 @@ async def upload_project(
         "title": proj_title,
         "titleEn": proj_title,
         "src": src, "tgt": tgt,
+        "domain": _resolve_domain(domain)["id"],
         "status": "in_progress",
         "created": datetime.now().strftime("%Y-%m-%d"),
         "deadline": "",
@@ -873,7 +1292,7 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
         elif req.engine == "gpt" and os.environ.get("OPENAI_API_KEY"):
             translation = _openai_translate(src_text, project["src"], project["tgt"],
                                             gloss_hits=gloss_hits, tm_context=tm_hit,
-                                            model=req.model)
+                                            model=req.model, domain=project.get("domain"))
             used_real_api = bool(translation)
             if translation:
                 used_provider = _resolve_model(req.model)["id"]
@@ -889,7 +1308,7 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
             if req.engine == "google" and os.environ.get("OPENAI_API_KEY"):
                 translation = _openai_translate(src_text, project["src"], project["tgt"],
                                                 gloss_hits=gloss_hits, tm_context=tm_hit,
-                                                model=req.model)
+                                                model=req.model, domain=project.get("domain"))
                 if translation:
                     used_provider = _resolve_model(req.model)["id"]
             elif _DEEP_TRANSLATE_OK:
@@ -938,19 +1357,358 @@ def qa_segment(pid: int, sid: int):
     return {"ok": True, "segment": seg, "issues": qa_issues}
 
 
+
+# ─── Что система выучивает из подтверждённого сегмента ───────────────
+# Подтверждение — единственная точка, где появляется достоверная пара
+# «оригинал → перевод». Из неё берём три вещи: обновляем TM, складываем
+# терминологические находки в очередь кандидатов и находим повторы того же
+# исходника. В сам глоссарий автоматически не попадает НИЧЕГО: он инжектится
+# в промпт как правило, и автопополнение закрепляло бы собственные ошибки.
+TERM_QUEUE_MAX = 800
+
+
+def _norm_key(text: str) -> str:
+    return " ".join((text or "").lower().replace("ё", "е").split())
+
+
+def _tm_upsert(source: str, target: str, project: dict = None) -> str:
+    """Пара в TM: обновить существующую запись, а не пропустить её.
+    Раньше дедуп находил старую пару и молча оставлял как есть — исправленный
+    перевод в память не попадал, а прежний, неверный, продолжал автоматически
+    подставляться в новые проекты как EXACT_TM."""
+    key = _norm_key(source)
+    today = datetime.now().strftime("%Y-%m-%d")
+    lang = f"{(project or {}).get('src', 'RU')}→{(project or {}).get('tgt', 'EN')}"
+    for t in STATE["tm"]:
+        if _norm_key(t.get("src")) != key:
+            continue
+        if (t.get("tgt") or "").strip() == (target or "").strip():
+            return "kept"
+        t["prevTgt"] = t.get("tgt", "")
+        t["tgt"] = target
+        t["quality"] = "verified"
+        t["score"] = 100
+        t["updated"] = today
+        return "updated"
+    STATE["tm"].insert(0, {
+        "src": source, "tgt": target, "lang": lang,
+        "score": 100, "quality": "verified", "used": 1, "created": today,
+    })
+    return "added"
+
+
+def _term_queue() -> list:
+    return STATE.setdefault("termQueue", [])
+
+
+def _trim_term_queue():
+    """Очередь не должна расти бесконечно: state.json целиком лежит в памяти.
+    Режем только обработанные — нерешённые кандидаты не теряем никогда."""
+    q = _term_queue()
+    if len(q) <= TERM_QUEUE_MAX:
+        return
+    for c in [c for c in q if c.get("status") != "pending"][TERM_QUEUE_MAX // 4:]:
+        q.remove(c)
+
+
+def _queue_term(kind: str, src: str, tgt: str, **extra) -> Optional[dict]:
+    """Кандидат в глоссарий. Повтор той же пары не плодит запись, а поднимает
+    hits: по нему видно, какая проблема встречается чаще всего. Отклонённое
+    второй раз не всплывает."""
+    src_n, tgt_n = _norm_key(src), _norm_key(tgt)
+    if not src_n:
+        return None
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    for c in _term_queue():
+        if (c.get("kind") == kind and _norm_key(c.get("src")) == src_n
+                and _norm_key(c.get("tgt")) == tgt_n):
+            c["hits"] = c.get("hits", 1) + 1
+            c["at"] = now
+            return c if c.get("status") == "pending" else None
+    cand = {"id": max((c.get("id", 0) for c in _term_queue()), default=0) + 1,
+            "kind": kind, "src": (src or "").strip(), "tgt": (tgt or "").strip(),
+            "status": "pending", "hits": 1, "at": now}
+    cand.update(extra)
+    _term_queue().insert(0, cand)
+    _trim_term_queue()
+    return cand
+
+
+def _tgt_has_term(target: str, term: str) -> bool:
+    """Есть ли глоссарный перевод в готовом переводе. Терпимо к числу и
+    артиклям: сверяем по началам слов, иначе «lymph nodes» не найдёт
+    «lymph node» и очередь захлебнётся ложными конфликтами."""
+    tn, mn = _norm_key(target), _norm_key(term)
+    if not mn:
+        return True
+    if mn in tn:
+        return True
+    words = [w for w in mn.split() if len(w) > 3]
+    if not words:
+        return False
+    tgt_words = tn.replace("(", " ").replace(")", " ").replace(",", " ").split()
+    return all(any(x.startswith(w[:max(4, len(w) - 2)]) for x in tgt_words) for w in words)
+
+
+def _harvest_terms(seg: dict, project: dict) -> list:
+    """Терминологические находки подтверждённого сегмента:
+
+    conflict — глоссарий предлагал перевод, а в подтверждённом тексте его нет.
+               Значит либо запись глоссария врёт (наш случай «задний → rear»),
+               либо переводчик отступил осознанно. Решает человек.
+    segment  — короткий сегмент без финальной точки сам по себе является
+               терминологической парой.
+    """
+    out = []
+    source = seg.get("source", "")
+    target = (seg.get("target") or "").strip()
+    if not target:
+        return out
+    hits, _tm = _get_context(source)
+    for h in hits:
+        if _tgt_has_term(target, h["tgt"]):
+            continue
+        c = _queue_term("conflict", h["src"], "",
+                        wasTgt=h["tgt"], tier=_hit_tier(h), cat=h.get("cat", ""),
+                        project=project["id"], segment=seg["id"],
+                        sampleSrc=source[:240], sampleTgt=target[:240])
+        if c:
+            out.append(c)
+    words = source.strip().split()
+    if 1 <= len(words) <= 4 and not source.strip().endswith((".", "!", "?", ":")) \
+            and len(target.split()) <= 8:
+        term_src = source.strip().strip(" .,;:")
+        term_tgt = target.strip().strip(" .,;:")
+        known = next((g for g in STATE["glossary"]
+                      if _norm_key(g.get("src")) == _norm_key(term_src)), None)
+        if not (known and _norm_key(known.get("tgt")) == _norm_key(term_tgt)):
+            c = _queue_term("segment", term_src, term_tgt,
+                            cat=(known or {}).get("cat", ""),
+                            wasTgt=(known or {}).get("tgt", ""),
+                            project=project["id"], segment=seg["id"])
+            if c:
+                out.append(c)
+    return out
+
+
+def _identical_source_segments(project: dict, seg: dict) -> dict:
+    """Сегменты с тем же исходником и другим переводом. Ключ нормализован:
+    лишний пробел или регистр не должны решать, повтор это или нет."""
+    key = _norm_key(seg.get("source"))
+    target = (seg.get("target") or "").strip()
+    pending, confirmed = [], []
+    for s in project["segments"]:
+        if s["id"] == seg["id"] or _norm_key(s.get("source")) != key:
+            continue
+        if (s.get("target") or "").strip() == target:
+            continue
+        (confirmed if s.get("status") == "confirmed" else pending).append(s["id"])
+    return {"pending": pending, "confirmed": confirmed}
+
+
 @app.post("/api/segments/{pid}/{sid}/confirm")
 def confirm_segment(pid: int, sid: int):
+    """Подтверждение = момент обучения: пара уходит в TM, термины — в очередь
+    кандидатов, повторы исходника возвращаются клиенту предложением.
+    Ничего чужого сами не переписываем: распространение — отдельная команда."""
     seg = get_segment(pid, sid)
+    project = get_project(pid)
     seg["status"] = "confirmed"
-    # Add to TM if not already there
-    if seg.get("target") and not any(t["src"] == seg["source"] for t in STATE["tm"]):
-        STATE["tm"].insert(0, {
-            "src": seg["source"], "tgt": seg["target"],
-            "lang": "RU→EN", "score": 100, "quality": "verified",
-            "used": 1, "created": datetime.now().strftime("%Y-%m-%d"),
-        })
+    tm_action, candidates = None, []
+    if (seg.get("target") or "").strip():
+        tm_action = _tm_upsert(seg["source"], seg["target"], project)
+        candidates = _harvest_terms(seg, project)
+    same = _identical_source_segments(project, seg)
     save_state(STATE)
-    return {"ok": True, "segment": seg}
+    return {"ok": True, "segment": seg, "tm": tm_action, "propagate": same,
+            "termCandidates": [{"id": c["id"], "kind": c["kind"], "src": c["src"],
+                                "tgt": c.get("tgt", ""), "wasTgt": c.get("wasTgt", "")}
+                               for c in candidates]}
+
+
+class PropagateRequest(BaseModel):
+    ids: Optional[List[int]] = None
+    include_confirmed: bool = False
+
+
+@app.post("/api/segments/{pid}/{sid}/propagate")
+def propagate_segment(pid: int, sid: int, req: PropagateRequest = PropagateRequest()):
+    """Разослать подтверждённый перевод в сегменты с идентичным исходником.
+    Только по явной команде и по умолчанию мимо подтверждённых: молча
+    переписать чужую правку — худшее, что может сделать CAT-инструмент.
+    Затронутые сегменты получают статус translated, а не confirmed: подтвердить
+    перевод может только человек, иначе автоподстановка сама себя заверяет."""
+    seg = get_segment(pid, sid)
+    project = get_project(pid)
+    target = (seg.get("target") or "").strip()
+    if not target:
+        raise HTTPException(400, "У сегмента нет перевода")
+    same = _identical_source_segments(project, seg)
+    allowed = set(same["pending"])
+    if req.include_confirmed:
+        allowed |= set(same["confirmed"])
+    if req.ids is not None:
+        allowed &= set(req.ids)
+    changed = []
+    for s in project["segments"]:
+        if s["id"] not in allowed:
+            continue
+        s["prevTarget"] = s.get("target", "")      # ручной откат остаётся возможен
+        s["target"] = target
+        s["status"] = "translated"
+        s["provider"] = PROVIDER_TM
+        s["route"] = "EXACT_TM"
+        s["propagatedFrom"] = seg["id"]
+        changed.append(s["id"])
+    if changed:
+        save_state(STATE)
+    return {"ok": True, "changed": changed,
+            "skippedConfirmed": [] if req.include_confirmed else same["confirmed"]}
+
+
+# ─── Очередь кандидатов в глоссарий ──────────────────────────────────
+@app.get("/api/term-queue")
+def list_term_queue(status: str = "pending", limit: int = 200, offset: int = 0):
+    """Кандидаты, отсортированные по частоте: сверху то, что мешает чаще всего."""
+    items = _term_queue()
+    counts = {}
+    for c in items:
+        st = c.get("status", "pending")
+        counts[st] = counts.get(st, 0) + 1
+    if status and status != "all":
+        items = [c for c in items if c.get("status", "pending") == status]
+    items = sorted(items, key=lambda c: (-c.get("hits", 1), -c.get("id", 0)))
+    return {"total": len(items), "counts": counts, "items": items[offset:offset + limit]}
+
+
+class TermDecision(BaseModel):
+    src: Optional[str] = None
+    tgt: Optional[str] = None
+    cat: Optional[str] = None
+
+
+@app.post("/api/term-queue/{cid}/approve")
+def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
+    """Одобренный кандидат становится проверенной записью глоссария — только
+    такие уходят в промпт жёстким правилом."""
+    cand = next((c for c in _term_queue() if c.get("id") == cid), None)
+    if not cand:
+        raise HTTPException(404, "Кандидат не найден")
+    src = (req.src or cand.get("src") or "").strip()
+    tgt = (req.tgt or cand.get("tgt") or "").strip()
+    if not src or not tgt:
+        raise HTTPException(400, "Нужен и термин, и перевод. У кандидата-конфликта "
+                                 "перевод пуст: впишите верный вариант.")
+    cat = req.cat or cand.get("cat") or "Disease"
+    today = datetime.now().strftime("%Y-%m-%d")
+    existing = next((g for g in STATE["glossary"]
+                     if _norm_key(g.get("src")) == _norm_key(src)), None)
+    if existing:
+        existing.update({"tgt": tgt, "cat": cat, "conf": "high",
+                         "tier": GLOSSARY_TIER_HARD, "note": "уточнено вручную " + today})
+    else:
+        STATE["glossary"].insert(0, {"src": src, "tgt": tgt, "cat": cat, "freq": 1,
+                                     "conf": "high", "note": "", "tier": GLOSSARY_TIER_HARD,
+                                     "origin": "confirmed:" + str(cand.get("segment", ""))})
+    cand["status"] = "approved"
+    cand["tgt"] = tgt
+    _invalidate_gloss_index()
+    save_state(STATE)
+    return {"ok": True, "candidate": cand, "replaced": bool(existing)}
+
+
+@app.post("/api/term-queue/{cid}/reject")
+def reject_term_candidate(cid: int):
+    cand = next((c for c in _term_queue() if c.get("id") == cid), None)
+    if not cand:
+        raise HTTPException(404, "Кандидат не найден")
+    cand["status"] = "rejected"
+    save_state(STATE)
+    return {"ok": True, "candidate": cand}
+
+
+# Извлечение терминов из подтверждённых сегментов. Платный прогон: вызывается
+# только по кнопке и только по подтверждённым парам.
+_TERM_EXTRACT_SYSTEM = """You extract bilingual medical terminology pairs from confirmed
+translation segments. Return ONLY a JSON array, no prose.
+
+Each item: {"src": <term in the source language>, "tgt": <its translation, copied from the
+target segment>, "cat": <Anatomy|Cardiology|Disease|Dosage|Symptom|Lab|Procedure|Device|Document>}
+
+RULES:
+1. Domain terminology only: diseases, anatomy, procedures, drugs, lab tests, devices.
+2. Give the source term in dictionary form (nominative singular).
+3. The target side MUST be copied from the segment as written, never invented.
+4. Skip general vocabulary, numbers, whole sentences, anything longer than 5 words.
+5. At most 5 pairs per segment. Return [] if the segment has no terminology.
+"""
+
+
+def _extract_terms_call(pairs: list, model: Optional[str] = None) -> list:
+    """Один вызов модели на пачку сегментов. Возвращает список пар или []."""
+    import json as _json
+    import openai
+    mdl = _resolve_model(model or DEFAULT_OPENAI_MODEL)
+    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
+    body = "\n\n".join(f"[{i + 1}] SRC: {p[0]}\n    TGT: {p[1]}" for i, p in enumerate(pairs))
+    extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
+             else {"max_tokens": 1500, "temperature": 0})
+    try:
+        resp = client.chat.completions.create(
+            model=mdl["id"],
+            messages=[{"role": "system", "content": _TERM_EXTRACT_SYSTEM},
+                      {"role": "user", "content": body}],
+            **extra,
+        )
+        raw = (resp.choices[0].message.content or "").strip()
+        lo, hi = raw.find("["), raw.rfind("]")
+        if lo == -1 or hi <= lo:
+            return []
+        data = _json.loads(raw[lo:hi + 1])
+        return [d for d in data if isinstance(d, dict) and d.get("src") and d.get("tgt")]
+    except Exception as e:
+        print(f"[backend] term extraction failed: {e}", file=sys.stderr)
+        return []
+
+
+class ExtractTermsRequest(BaseModel):
+    segment_ids: Optional[List[int]] = None
+    limit: int = 30
+    model: Optional[str] = None
+
+
+@app.post("/api/projects/{pid}/extract-terms")
+def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
+    """Достаёт терминологические пары из подтверждённых сегментов проекта.
+    Кладёт их в очередь кандидатов, а не в глоссарий. Обычный def: внутри
+    блокирующие вызовы модели (см. batch_translate)."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(503, "Извлечение терминов требует ключ OpenAI")
+    project = get_project(pid)
+    segs = [s for s in project["segments"]
+            if s.get("status") == "confirmed" and (s.get("target") or "").strip()]
+    if req.segment_ids:
+        ids = set(req.segment_ids)
+        segs = [s for s in segs if s["id"] in ids]
+    segs = segs[:max(1, min(req.limit, 100))]
+    if not segs:
+        return {"ok": True, "scanned": 0, "candidates": []}
+    found = []
+    CHUNK = 10
+    for i in range(0, len(segs), CHUNK):
+        chunk = segs[i:i + CHUNK]
+        for item in _extract_terms_call([(s["source"], s["target"]) for s in chunk], req.model):
+            known = next((g for g in STATE["glossary"]
+                          if _norm_key(g.get("src")) == _norm_key(item.get("src"))), None)
+            if known and _norm_key(known.get("tgt")) == _norm_key(item.get("tgt")):
+                continue      # уже знаем ровно эту пару
+            c = _queue_term("extract", item.get("src", ""), item.get("tgt", ""),
+                            cat=item.get("cat", ""), wasTgt=(known or {}).get("tgt", ""),
+                            project=pid, model=_resolve_model(req.model or DEFAULT_OPENAI_MODEL)["id"])
+            if c:
+                found.append(c)
+    save_state(STATE)
+    return {"ok": True, "scanned": len(segs), "candidates": found}
 
 
 def _text_hash(text: str) -> str:
@@ -972,14 +1730,20 @@ def _backcheck_cached(seg: dict, mdl_id: str, use_judge: bool) -> bool:
 
 
 def _project_for_client(project: dict) -> dict:
-    """Копия проекта с производным признаком backcheck.stale — перевод изменился
-    после проверки. Хеш считается тут, браузеру sha1 не пересчитать, а без этого
-    фронтенд не отличит устаревшую оценку от актуальной."""
+    """Копия проекта с производным признаком stale у back-check и проверки
+    терминологии: перевод изменился после проверки. Хеш считается тут, браузеру
+    sha1 не пересчитать, а без этого фронтенд не отличит устаревшую оценку от
+    актуальной."""
     segs = []
     for s in project["segments"]:
-        bc = s.get("backcheck")
-        stale = bc.get("target_hash") != _text_hash(s.get("target") or "") if bc else False
-        segs.append({**s, "backcheck": {**bc, "stale": stale}} if bc else s)
+        cur = _text_hash(s.get("target") or "")
+        out = s
+        bc, tc = s.get("backcheck"), s.get("termcheck")
+        if bc:
+            out = {**out, "backcheck": {**bc, "stale": bc.get("target_hash") != cur}}
+        if tc:
+            out = {**out, "termcheck": {**tc, "stale": tc.get("target_hash") != cur}}
+        segs.append(out)
     return {**project, "segments": segs}
 
 
@@ -1043,6 +1807,121 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
         "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
     return {"ok": True, "back": back, "backcheck": seg["backcheck"]}
+
+
+def _termcheck_cached(seg: dict, mdl_id: str) -> bool:
+    """Тот же перевод той же моделью уже разобран — платить второй раз незачем."""
+    tc = seg.get("termcheck") or {}
+    return (tc.get("target_hash") == _text_hash(seg.get("target") or "")
+            and tc.get("model") == mdl_id)
+
+
+def _run_segment_termcheck(seg: dict, project: dict, model: Optional[str] = None) -> dict:
+    """Проверка терминологии перевода + кандидаты в глоссарий из находок.
+
+    Находка с предложенной заменой — это готовая пара «термин оригинала →
+    правильный термин», то есть ровно то, что нужно глоссарию. Кладём её в ту
+    же очередь кандидатов, что и расхождения при подтверждении: одно место,
+    где человек принимает терминологические решения."""
+    target = (seg.get("target") or "").strip()
+    if not target:
+        return {"ok": False, "error": "Сегмент ещё не переведён"}
+    res = _openai_termcheck(seg.get("source", ""), target,
+                            project.get("src", "RU"), project.get("tgt", "EN"),
+                            project.get("domain"), model)
+    if res is None:
+        return {"ok": False, "error": "Модель не ответила"}
+    findings = res["findings"]
+    worst = next((sev for sev in TERMCHECK_SEVERITY
+                  if any(f["severity"] == sev for f in findings)), "none")
+    queued = []
+    for f in findings:
+        # В глоссарий просятся только уверенные находки с обеими сторонами пары
+        if f["severity"] in ("critical", "major") and f["src_term"] and f["suggestion"]:
+            c = _queue_term("audit", f["src_term"], f["suggestion"],
+                            wasTgt=f["tgt_term"], project=project["id"], segment=seg["id"],
+                            note=f["why"], model=res["model"],
+                            sampleSrc=seg.get("source", "")[:240], sampleTgt=target[:240])
+            if c:
+                queued.append(c["id"])
+    seg["termcheck"] = {
+        "findings": findings,
+        "severity": worst,
+        "model": res["model"],
+        "domain": _resolve_domain(project.get("domain"))["id"],
+        "target_hash": _text_hash(target),
+        "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }
+    return {"ok": True, "termcheck": seg["termcheck"], "queued": queued}
+
+
+class TermcheckRequest(BaseModel):
+    model: Optional[str] = None
+
+
+@app.post("/api/segments/{pid}/{sid}/termcheck")
+def termcheck_segment(pid: int, sid: int, req: TermcheckRequest = TermcheckRequest()):
+    """Обычный def: внутри блокирующий вызов модели (см. batch_translate)."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(503, "Проверка терминологии требует ключ OpenAI")
+    seg = get_segment(pid, sid)
+    project = get_project(pid)
+    result = _run_segment_termcheck(seg, project, req.model)
+    if result.get("ok"):
+        save_state(STATE)
+        return result
+    raise HTTPException(502, result.get("error", "Проверка не удалась"))
+
+
+class TermcheckBatchRequest(BaseModel):
+    segment_ids: Optional[List[int]] = None
+    limit: int = 10
+    model: Optional[str] = None
+    skip_cached: bool = True
+
+
+@app.post("/api/projects/{pid}/termcheck/batch")
+def termcheck_batch(pid: int, req: TermcheckBatchRequest):
+    """Порционно, как back-check: клиент гоняет порции по 10, чтобы один
+    запрос не жил дольше таймаута прокси."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(503, "Проверка терминологии требует ключ OpenAI")
+    project = get_project(pid)
+    id_filter = set(req.segment_ids) if req.segment_ids is not None else None
+    mdl_id = _resolve_model(req.model or TERMCHECK_DEFAULT_MODEL)["id"]
+
+    candidates, skipped_cached = [], 0
+    for seg in project["segments"]:
+        if id_filter is not None and seg["id"] not in id_filter:
+            continue
+        if not (seg.get("target") or "").strip():
+            continue
+        if req.skip_cached and _termcheck_cached(seg, mdl_id):
+            skipped_cached += 1
+            continue
+        candidates.append(seg)
+
+    limit = max(1, min(req.limit, 100))
+    remaining_after = max(0, len(candidates) - limit)
+    targets = candidates[:limit]
+
+    processed, errors, flagged = [], [], 0
+    for seg in targets:
+        try:
+            r = _run_segment_termcheck(seg, project, req.model)
+            if r.get("ok"):
+                processed.append(seg["id"])
+                if r["termcheck"]["findings"]:
+                    flagged += 1
+            else:
+                errors.append({"id": seg["id"], "error": r.get("error", "unknown")})
+        except Exception as e:
+            errors.append({"id": seg["id"], "error": str(e)})
+            print(f"[backend] termcheck batch seg#{seg['id']}: {e}", file=sys.stderr)
+    save_state(STATE)
+    return {"ok": True, "processed": processed, "count": len(processed),
+            "flagged": flagged, "remaining": remaining_after,
+            "skipped_cached": skipped_cached, "errors": errors, "model": mdl_id}
 
 
 class BackcheckRequest(BaseModel):
@@ -1321,6 +2200,7 @@ def batch_translate(pid: int, req: BatchRequest):
                 used_provider = PROVIDER_GOOGLE
             elif req.engine == "gpt" and os.environ.get("OPENAI_API_KEY"):
                 translation = _openai_translate(seg["source"], project["src"], project["tgt"],
+                                                domain=project.get("domain"),
                                                 gloss_hits=gloss_hits, tm_context=tm_hit,
                                                 model=req.model)
                 if translation:
@@ -1484,10 +2364,13 @@ class TermRequest(BaseModel):
 @app.post("/api/glossary")
 def save_term(req: TermRequest):
     existing = next((t for t in STATE["glossary"] if t["src"] == req.src), None)
+    # Правка руками = проверенная запись: только такие идут в промпт приказом.
     if existing and not req.isNew:
-        existing.update({"tgt": req.tgt, "cat": req.cat, "freq": req.freq, "conf": req.conf})
+        existing.update({"tgt": req.tgt, "cat": req.cat, "freq": req.freq, "conf": req.conf,
+                         "tier": GLOSSARY_TIER_HARD})
     else:
-        STATE["glossary"].insert(0, req.dict(exclude={"isNew"}))
+        STATE["glossary"].insert(0, {**req.dict(exclude={"isNew"}), "tier": GLOSSARY_TIER_HARD})
+    _invalidate_gloss_index()
     save_state(STATE)
     return {"ok": True}
 
@@ -1502,6 +2385,7 @@ def delete_project(pid: int):
 @app.delete("/api/glossary")
 def delete_term(src: str):
     STATE["glossary"] = [t for t in STATE["glossary"] if t["src"] != src]
+    _invalidate_gloss_index()
     save_state(STATE)
     return {"ok": True}
 
@@ -1515,15 +2399,19 @@ def delete_tm(src: str):
 
 
 @app.get("/api/health")
-def health():
-    return {
+def health(request: Request):
+    # Эндпоинт публичный — на него опирается смоук-проверка деплоя.
+    # Пути на диске и список модулей отдаём только вошедшим.
+    info = {
         "ok": True,
         "version": "5.6.0",
-        "backendModules": list(_BACKEND_MODULES.keys()),
         "medicalQaEnabled": medical_qa_enabled(),
-        "stateFile": str(STATE_FILE),
         "projects": len(STATE["projects"]),
     }
+    if _session_valid(_token_from_request(request)):
+        info["backendModules"] = list(_BACKEND_MODULES.keys())
+        info["stateFile"] = str(STATE_FILE)
+    return info
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -7,9 +7,21 @@ function TabImport({ store, toast }) {
   const [title, setTitle] = useState("");
   const [src, setSrc] = useState("RU");
   const [tgt, setTgt] = useState("EN");
+  const [domain, setDomain] = useState("medical");   // область: от неё зависят промпты перевода и проверки
+  const [domains, setDomains] = useState([["medical", "Медицина"]]);
   const [creating, setCreating] = useState(false);
   const [progress, setProgress] = useState("");
   const fileRef = useRef(null);
+
+  // Каталог областей живёт на сервере (DOMAINS в main.py) — хардкодить нельзя
+  useEffect(() => {
+    window.API && window.API.safeCall(() => window.API.models()).then(res => {
+      if (res && res.domains && res.domains.length) {
+        setDomains(res.domains.map(d => [d.id, d.label]));
+        setDomain(res.domainDefault || res.domains[0].id);
+      }
+    });
+  }, []);
 
   const pickFile = (f) => {
     if (!f) return;
@@ -26,7 +38,7 @@ function TabImport({ store, toast }) {
     setCreating(true);
     setProgress("Загружаем файл…");
     try {
-      const project = await window.API.uploadProject(file.raw, title || file.name.replace(/\.[^.]+$/, ""), src, tgt);
+      const project = await window.API.uploadProject(file.raw, title || file.name.replace(/\.[^.]+$/, ""), src, tgt, domain);
       setProgress("");
       setCreating(false);
       store.addProject(project);
@@ -86,6 +98,10 @@ function TabImport({ store, toast }) {
               React.createElement(Select, { value: tgt, onChange: (e) => setTgt(e.target.value) },
                 langOpts.map(([v, l]) => React.createElement("option", { key: v, value: v }, l))))
           ),
+          React.createElement(Field, { label: "Предметная область",
+            hint: "Задаёт терминологию в промптах перевода и проверки. Меняется только для новых проектов." },
+            React.createElement(Select, { value: domain, onChange: (e) => setDomain(e.target.value) },
+              domains.map(([v, l]) => React.createElement("option", { key: v, value: v }, l)))),
           React.createElement(Btn, { variant: "primary", icon: creating ? null : "arrowR", disabled: !file || !file.raw || creating, onClick: create },
             creating ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), progress || "Загрузка…") : "Создать проект")
         )

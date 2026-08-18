@@ -439,6 +439,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .tbl .src-cell { color: var(--text); line-height: 1.5; }
 .tbl .tgt-cell { color: var(--text); line-height: 1.5; }
 .tbl .tgt-empty { color: var(--text-3); font-style: italic; }
+/* подсветка совпадений поиска в таблице сегментов */
+.tbl mark.hl { background: var(--c-warning); color: #16181c; border-radius: 3px; padding: 0 2px; font-weight: 600; }
 /* row status tints (left marker) */
 .row-status-new td:first-child { box-shadow: inset 4px 0 0 var(--st-new-fg); }
 .row-status-translated td:first-child { box-shadow: inset 4px 0 0 var(--c-primary); }

@@ -17,7 +17,7 @@ function TabExport({ store, toast }) {
     if (result && result.ok && result.url) {
       // Реальное скачивание: бэкенд собирает файл и отдаёт по result.url
       const a = document.createElement("a");
-      a.href = result.url;
+      a.href = window.API.downloadUrl(result.url);
       a.download = result.file || (project.title + "." + fmt);
       document.body.appendChild(a);
       a.click();

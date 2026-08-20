@@ -184,6 +184,34 @@ def _tier_from_origin(origin: str) -> str:
     return GLOSSARY_TIER_SOFT if "baldwin" in (origin or "").lower() else GLOSSARY_TIER_HARD
 
 
+# ─── Область действия записи: языковая пара + тематика ───────────────
+# Глоссарий и TM одни на весь сервис, а проекты бывают разные. Запись,
+# одобренная в RU→DE юридическом проекте, не должна лезть в промпт RU→EN
+# медицинского: это ровно тот путь, которым «задний → rear» переезжает из
+# одного текста в другой. У старых записей полей нет — они пришли из
+# медицинского RU→EN импорта, поэтому ОТСУТСТВИЕ поля читается как этот
+# дефолт, а не как «годится везде». Массовую миграцию не делаем: 10 022
+# записи × два поля — лишние сотни килобайт в state.json на каждое сохранение.
+DEFAULT_GLOSS_LANG = "RU→EN"
+DEFAULT_GLOSS_DOMAIN = "medical"
+
+
+def _lang_pair(project: Optional[dict]) -> str:
+    return f"{(project or {}).get('src', 'RU')}→{(project or {}).get('tgt', 'EN')}"
+
+
+def _scope_of(entry: dict) -> tuple:
+    """(языковая пара, тематика) записи глоссария или кандидата."""
+    return (entry.get("lang") or DEFAULT_GLOSS_LANG,
+            entry.get("domain") or DEFAULT_GLOSS_DOMAIN)
+
+
+def _project_scope(project: Optional[dict]) -> tuple:
+    if project is None:
+        return (DEFAULT_GLOSS_LANG, DEFAULT_GLOSS_DOMAIN)
+    return (_lang_pair(project), _resolve_domain(project.get("domain"))["id"])
+
+
 def _hit_tier(h: dict) -> str:
     return h.get("tier") or GLOSSARY_TIER_HARD
 
@@ -247,18 +275,22 @@ def _gloss_index() -> dict:
             _GLOSS_INDEX = idx
             print(f"[backend] glossary index: {len(idx)} keys / "
                   f"{len(STATE.get('glossary', []))} terms", file=sys.stderr)
-    return _GLOSS_INDEX
+        return _GLOSS_INDEX          # локальная ссылка: см. _gloss_by_src
+
+
+_GLOSS_BY_SRC: Optional[dict] = None
 
 
 def _invalidate_gloss_index():
     """Любая правка глоссария роняет индекс — соберётся заново при следующем поиске.
     Заодно двигает поколение: отчёт о расхождениях считается от глоссария."""
-    global _GLOSS_INDEX
+    global _GLOSS_INDEX, _GLOSS_BY_SRC
     _GLOSS_INDEX = None
+    _GLOSS_BY_SRC = None
     _GLOSS_EPOCH[0] += 1
 
 
-def _get_context(text: str, with_tm: bool = True):
+def _get_context(text: str, with_tm: bool = True, project: Optional[dict] = None):
     """Возвращает (gloss_hits, tm_hit) для исходного текста.
 
     gloss_hits — список dict {src, tgt, ..., _form} где _form — фактическая
@@ -277,9 +309,14 @@ def _get_context(text: str, with_tm: bool = True):
             if id(g) not in seen_ids:
                 seen_ids.add(id(g))
                 candidates.append(g)
+    scope = _project_scope(project)
     for g in candidates:
         src = g.get("src", "")
         if not src:
+            continue
+        # Чужая языковая пара или тематика — мимо: в промпт уходят только
+        # записи, заведённые для таких же проектов.
+        if _scope_of(g) != scope:
             continue
         form = _term_match(src, text)
         if form:
@@ -296,8 +333,13 @@ def _get_context(text: str, with_tm: bool = True):
     hits = sorted(best.values(), key=lambda x: len(x["src"]), reverse=True)[:15]
     if not with_tm:
         return hits, None
+    # TM хранит языковую пару с самого начала — и обязана её учитывать: без
+    # этого RU→DE проект получил бы английский перевод как точное совпадение,
+    # да ещё со статусом confirmed.
     tm_hit = next(
-        (t for t in STATE.get("tm", []) if t.get("src", "").strip().lower() == text.strip().lower()),
+        (t for t in STATE.get("tm", [])
+         if t.get("src", "").strip().lower() == text.strip().lower()
+         and (t.get("lang") or DEFAULT_GLOSS_LANG) == scope[0]),
         None,
     )
     return hits, tm_hit
@@ -1173,9 +1215,16 @@ def get_seed():
 
 
 @app.get("/api/glossary")
-def list_glossary(q: str = "", cat: str = "", limit: int = 200, offset: int = 0):
-    """Full glossary with optional search and pagination."""
+def list_glossary(q: str = "", cat: str = "", limit: int = 200, offset: int = 0,
+                  lang: str = "", domain: str = ""):
+    """Full glossary with optional search and pagination.
+    lang/domain сужают выдачу до области проекта — той самой, что уходит
+    в промпт. Без них отдаём всё: вкладка «Глоссарий» листает общий список."""
     items = STATE["glossary"]
+    if lang or domain:
+        items = [t for t in items
+                 if (not lang or _scope_of(t)[0] == lang)
+                 and (not domain or _scope_of(t)[1] == domain)]
     if cat and cat != "all":
         items = [t for t in items if t.get("cat") == cat]
     if q:
@@ -1186,17 +1235,31 @@ def list_glossary(q: str = "", cat: str = "", limit: int = 200, offset: int = 0)
 
 
 @app.get("/api/glossary/usage")
-def glossary_usage(src: str, limit: int = 6):
+def glossary_usage(src: str, limit: int = 6, lang: str = "", domain: str = ""):
     """Где термин реально встречается. Совпадение ищем тем же _term_match, что и
     инъекция в промпт: иначе список «затронутых сегментов» разошёлся бы с тем,
     на что глоссарий действительно влияет.
 
     В `violating` — сегменты, где термин есть в оригинале, перевод уже готов,
     а утверждённого варианта в нём нет. Именно их имеет смысл переперевести."""
-    entry = next((g for g in STATE["glossary"] if _norm_key(g.get("src")) == _norm_key(src)), None)
+    # Без области сюда попадала запись чужой языковой пары, и тогда «нарушением
+    # глоссария» помечался каждый сегмент: искомого перевода там и не могло быть.
+    # Пустые lang/domain читаем как область по умолчанию — так же, как их читает
+    # _scope_of; запасной поиск по имени срабатывает, только если запись одна.
+    want = (lang or DEFAULT_GLOSS_LANG, domain or DEFAULT_GLOSS_DOMAIN)
+    entry = _glossary_entry(src, want)
+    if entry is None and not (lang or domain):
+        same = [g for g in STATE["glossary"] if _norm_key(g.get("src")) == _norm_key(src)]
+        entry = same[0] if len(same) == 1 else None
+        if entry is not None:
+            want = _scope_of(entry)
     tgt = (entry or {}).get("tgt", "")
     projects, examples = [], []
     for p in STATE["projects"]:
+        # Проект чужой области этой записью не управляется: помечать его
+        # сегменты нарушением глоссария — то же враньё, только на уровне отчёта.
+        if entry is not None and _project_scope(p) != want:
+            continue
         ids, violating = [], []
         for seg in p["segments"]:
             if not _term_match(src, seg.get("source", "")):
@@ -1270,7 +1333,7 @@ def glossary_impact(pid: int, refresh: bool = False):
         target = (seg.get("target") or "").strip()
         if not target:
             continue
-        hits, _tm = _get_context(seg.get("source", ""), with_tm=False)
+        hits, _tm = _get_context(seg.get("source", ""), with_tm=False, project=project)
         for h in hits:
             if _hit_tier(h) != GLOSSARY_TIER_HARD or not h.get("tgt"):
                 continue
@@ -1451,7 +1514,7 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
     src_text = seg["source"]
 
     # Глоссарий + TM контекст
-    gloss_hits, tm_hit = _get_context(src_text)
+    gloss_hits, tm_hit = _get_context(src_text, project=project)
 
     # TM точное совпадение → 0 токенов (только для авто/пакетного, не для ручного force-перевода)
     if not req.force and tm_hit and tm_hit.get("tgt"):
@@ -1563,6 +1626,11 @@ def _tm_upsert(source: str, target: str, project: dict = None) -> str:
     for t in STATE["tm"]:
         if _norm_key(t.get("src")) != key:
             continue
+        # Пара языков — часть ключа. Без неё подтверждение RU→DE переписывало
+        # tgt у RU→EN записи, оставляя ей прежний lang: следующий RU→EN проект
+        # получал немецкий текст как EXACT_TM, да ещё со статусом confirmed.
+        if (t.get("lang") or DEFAULT_GLOSS_LANG) != lang:
+            continue
         if (t.get("tgt") or "").strip() == (target or "").strip():
             return "kept"
         t["prevTgt"] = t.get("tgt", "")
@@ -1583,13 +1651,39 @@ def _term_queue() -> list:
 
 
 def _trim_term_queue():
-    """Очередь не должна расти бесконечно: state.json целиком лежит в памяти.
-    Режем только обработанные — нерешённые кандидаты не теряем никогда."""
+    """Очередь не должна расти бесконечно: state.json целиком лежит в памяти
+    и переписывается при каждом сохранении."""
     q = _term_queue()
     if len(q) <= TERM_QUEUE_MAX:
         return
-    for c in [c for c in q if c.get("status") != "pending"][TERM_QUEUE_MAX // 4:]:
+    # Сначала обработанные: своё они уже отыграли. Кроме тех, что принадлежат
+    # ещё откатываемой пачке: без кандидата откат вернёт глоссарий, но потеряет
+    # само решение, и человек его больше не увидит.
+    live = {b.get("id") for b in STATE.get("autoBatches", [])}
+    done = [c for c in q if c.get("status") != "pending" and c.get("autoBatch") not in live]
+    for c in done[TERM_QUEUE_MAX // 4:]:
         q.remove(c)
+    if len(q) <= TERM_QUEUE_MAX:
+        return
+    # Дальше — машинный урожай. На документе в 2670 сегментов коротких пар
+    # тысячи, а pending раньше не подрезался вовсе. Решения, которые может
+    # принять только человек (conflict и всё, что пришло с подтверждённых
+    # сегментов), не трогаем никогда — их больше никто не примет.
+    droppable = [c for c in q if c.get("status", "pending") == "pending"
+                 and c.get("via") == "auto" and c.get("kind") != "conflict"]
+    # Сортируем по возрасту, а не по числу доноров. Кандидат с одним донором —
+    # это ровно тот, кто ждёт второго: выбрасывая их первыми, мы бы вычищали
+    # именно ту популяцию, ради которой существует порог auto_min_segments.
+    # Одиночки уходят раньше многодонорных, но внутри группы — самые старые:
+    # у них было больше всего шансов набрать доноров и они их не набрали.
+    droppable.sort(key=lambda c: (1 if c.get("hits", 1) >= 2 else 0, c.get("id", 0)))
+    over = len(q) - TERM_QUEUE_MAX
+    for c in droppable[:over]:
+        q.remove(c)
+    if over > 0:
+        # Молчаливых потолков не бывает: подрезали — сказали, сколько и чего.
+        print(f"[backend] очередь кандидатов подрезана: снято {min(over, len(droppable))} "
+              f"машинных кандидатов (потолок {TERM_QUEUE_MAX})", file=sys.stderr)
 
 
 _TERM_QUEUE_LOCK = threading.Lock()
@@ -1611,16 +1705,35 @@ def _queue_term(kind: str, src: str, tgt: str, **extra) -> Optional[dict]:
 
 
 def _queue_term_locked(kind, src, tgt, src_n, tgt_n, now, extra):
+    # Область входит в ключ дедупликации: «договор → contract» в RU→EN и
+    # «договор → Vertrag» в RU→DE — разные кандидаты, а не спор двух вариантов.
+    scope = _scope_of(extra)
+    donor = (f"{extra.get('project')}:{extra['segment']}"
+             if extra.get("segment") and extra.get("project") else None)
     for c in _term_queue():
         if (c.get("kind") == kind and _norm_key(c.get("src")) == src_n
-                and _norm_key(c.get("tgt")) == tgt_n):
+                and _norm_key(c.get("tgt")) == tgt_n and _scope_of(c) == scope):
             c["hits"] = c.get("hits", 1) + 1
             c["at"] = now
+            # Список сегментов-доноров, а не только счётчик: автоодобрение
+            # считает согласие НЕЗАВИСИМЫХ сегментов, а hits растёт и от
+            # повторного подтверждения одного и того же — так одна строка
+            # накрутила бы себе доказательства.
+            segs = c.setdefault("segments", _donor_ids(c))
+            if donor and donor not in segs:
+                segs.append(donor)
+            if extra.get("via") == "confirmed":
+                c["via"] = "confirmed"      # подтверждение человеком не понижается
             return c if c.get("status") == "pending" else None
     cand = {"id": max((c.get("id", 0) for c in _term_queue()), default=0) + 1,
             "kind": kind, "src": (src or "").strip(), "tgt": (tgt or "").strip(),
-            "status": "pending", "hits": 1, "at": now}
+            "status": "pending", "hits": 1, "at": now,
+            "segments": [donor] if donor else []}
     cand.update(extra)
+    return _queue_insert(cand)
+
+
+def _queue_insert(cand: dict) -> dict:
     _term_queue().insert(0, cand)
     _trim_term_queue()
     return cand
@@ -1642,45 +1755,129 @@ def _tgt_has_term(target: str, term: str) -> bool:
     return all(any(x.startswith(w[:max(4, len(w) - 2)]) for x in tgt_words) for w in words)
 
 
-def _harvest_terms(seg: dict, project: dict) -> list:
-    """Терминологические находки подтверждённого сегмента:
+def _gloss_by_src() -> dict:
+    """(область, нормализованный термин) → запись. Отдельный индекс от
+    _gloss_index: тот ищет вхождения в тексте, этот — точную запись по термину.
+    Без него каждый короткий чистый сегмент внутри параллельного прогона гнал
+    линейный проход по 10 000 записей."""
+    global _GLOSS_BY_SRC
+    idx = _GLOSS_BY_SRC
+    if idx is not None:
+        return idx
+    with _GLOSS_INDEX_LOCK:
+        if _GLOSS_BY_SRC is None:
+            built: dict = {}
+            for g in STATE.get("glossary", []):
+                built.setdefault((_scope_of(g), _norm_key(g.get("src"))), g)
+            _GLOSS_BY_SRC = built
+        # Возвращаем локальную ссылку: параллельный _invalidate_gloss_index()
+        # обнуляет глобал, и вызывающий получил бы None вместо словаря.
+        return _GLOSS_BY_SRC
 
-    conflict — глоссарий предлагал перевод, а в подтверждённом тексте его нет.
-               Значит либо запись глоссария врёт (наш случай «задний → rear»),
-               либо переводчик отступил осознанно. Решает человек.
+
+def _glossary_entry(src: str, scope: tuple) -> Optional[dict]:
+    """Запись глоссария по термину В ПРЕДЕЛАХ области. Раньше поиск шёл по
+    всему списку, и запись из чужой языковой пары выглядела как «уже есть»."""
+    return _gloss_by_src().get((scope, _norm_key(src)))
+
+
+def _harvest_terms(seg: dict, project: dict, via: str = "confirmed") -> list:
+    """Терминологические находки сегмента:
+
+    conflict — глоссарий предлагал перевод, а в тексте его нет. Значит либо
+               запись глоссария врёт (наш случай «задний → rear»), либо
+               переводчик отступил осознанно. Решает человек.
     segment  — короткий сегмент без финальной точки сам по себе является
                терминологической парой.
+
+    via="confirmed" — сегмент подтвердил человек, это сильнейшее доказательство.
+    via="auto"      — сегмент прошёл back-check и termcheck чисто. Отсюда берём
+                      ТОЛЬКО готовые пары: расхождения с глоссарием всё равно
+                      идут человеку, а на большом проекте их сотни, и очередь
+                      (её pending никогда не подрезается) распухла бы зря.
     """
     out = []
     source = seg.get("source", "")
     target = (seg.get("target") or "").strip()
     if not target:
         return out
-    hits, _tm = _get_context(source)
-    for h in hits:
-        if _tgt_has_term(target, h["tgt"]):
-            continue
-        c = _queue_term("conflict", h["src"], "",
-                        wasTgt=h["tgt"], tier=_hit_tier(h), cat=h.get("cat", ""),
-                        project=project["id"], segment=seg["id"],
-                        sampleSrc=source[:240], sampleTgt=target[:240])
-        if c:
-            out.append(c)
+    scope = _project_scope(project)
+    meta = {"project": project["id"], "segment": seg["id"],
+            "lang": scope[0], "domain": scope[1], "via": via}
+    if via == "confirmed":
+        hits, _tm = _get_context(source, project=project)
+        for h in hits:
+            if _tgt_has_term(target, h["tgt"]):
+                continue
+            c = _queue_term("conflict", h["src"], "",
+                            wasTgt=h["tgt"], tier=_hit_tier(h), cat=h.get("cat", ""),
+                            sampleSrc=source[:240], sampleTgt=target[:240], **meta)
+            if c:
+                out.append(c)
     words = source.strip().split()
     if 1 <= len(words) <= 4 and not source.strip().endswith((".", "!", "?", ":")) \
             and len(target.split()) <= 8:
         term_src = source.strip().strip(" .,;:")
         term_tgt = target.strip().strip(" .,;:")
-        known = next((g for g in STATE["glossary"]
-                      if _norm_key(g.get("src")) == _norm_key(term_src)), None)
-        if not (known and _norm_key(known.get("tgt")) == _norm_key(term_tgt)):
-            c = _queue_term("segment", term_src, term_tgt,
-                            cat=(known or {}).get("cat", ""),
-                            wasTgt=(known or {}).get("tgt", ""),
-                            project=project["id"], segment=seg["id"])
-            if c:
-                out.append(c)
+        # Числа и обозначения («38,5 °C», «IFN-γ») терминами не бывают: пара
+        # без букв — это не словарная запись, а строка документа.
+        if re.search(r"[A-Za-zА-Яа-яЁё]{3}", term_src) and re.search(r"[A-Za-zА-Яа-яЁё]{3}", term_tgt):
+            known = _glossary_entry(term_src, scope)
+            if not (known and _norm_key(known.get("tgt")) == _norm_key(term_tgt)):
+                c = _queue_term("segment", term_src, term_tgt,
+                                cat=(known or {}).get("cat", ""),
+                                wasTgt=(known or {}).get("tgt", ""), **meta)
+                if c:
+                    out.append(c)
     return out
+
+
+def _check_stale(check: Optional[dict], target: str) -> bool:
+    """Та же производная, что уходит клиенту в _segment_for_client: проверка
+    относится к другому тексту, значит её результат уже ничего не значит."""
+    return (check or {}).get("target_hash") != _text_hash(target or "")
+
+
+def _machine_clean(seg: dict, min_score: int) -> Optional[str]:
+    """None, если с сегмента можно собирать терминологию без человека.
+    Иначе — причина отказа (её показываем в разборе автоодобрения).
+
+    Смысл проверки: перевод оценивал не тот прогон, который его делал, и не
+    та модель. Обратный перевод идёт в другую сторону, termcheck смотрит
+    только на целевой текст. Совпали оба — пара заслуживает доверия.
+    """
+    target = (seg.get("target") or "").strip()
+    if not target:
+        return "нет перевода"
+    bc, tc = seg.get("backcheck"), seg.get("termcheck")
+    if not bc or _check_stale(bc, target):
+        return "back-check не делался или устарел"
+    if bc.get("score") is None or bc["score"] < min_score:
+        return f"back-check ниже {min_score}%"
+    if not tc or _check_stale(tc, target):
+        return "termcheck не делался или устарел"
+    if tc.get("model") == "skip":
+        # «Нечего проверять» — это не «проверено и чисто». Иначе сегмент, где
+        # перевод совпал с оригиналом, дарил глоссарию пару вида «X → X».
+        return "termcheck пропущен — проверять было нечего"
+    if tc.get("findings"):
+        return "termcheck нашёл замечания"
+    if (seg.get("repair") or {}).get("applied"):
+        return "текст переписан автоматическим ремонтом"
+    return None
+
+
+def _harvest_if_clean(seg: dict, project: dict) -> list:
+    """Сбор терминологии с машинно-чистого сегмента. Вызывается в конце
+    back-check и termcheck: какой из двух прогонов отработает вторым, тот и
+    увидит обе оценки. Подтверждённые сегменты сюда не попадают — их
+    терминологию собирает confirm_segment с пометкой «подтвердил человек»."""
+    if seg.get("status") == "confirmed":
+        return []
+    pol = _auto_policy(project.get("domain"))
+    if _machine_clean(seg, pol["backcheck_min"]) is not None:
+        return []
+    return _harvest_terms(seg, project, via="auto")
 
 
 def _identical_source_segments(project: dict, seg: dict) -> dict:
@@ -1706,6 +1903,12 @@ def confirm_segment(pid: int, sid: int):
     seg = get_segment(pid, sid)
     project = get_project(pid)
     seg["status"] = "confirmed"
+    # Отметка о человеке нужна именно здесь: статус confirmed ставит и точное
+    # совпадение с TM (route EXACT_TM) — машинно, без чьего-либо решения.
+    # Автоодобрение опирается на «подтвердил человек», и без этой отметки
+    # одна подстановка из памяти сходила бы за подтверждение.
+    seg["confirmedBy"] = "human"
+    seg["confirmedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     tm_action, candidates = None, []
     if (seg.get("target") or "").strip():
         tm_action = _tm_upsert(seg["source"], seg["target"], project)
@@ -1791,17 +1994,21 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     if not src or not tgt:
         raise HTTPException(400, "Нужен и термин, и перевод. У кандидата-конфликта "
                                  "перевод пуст: впишите верный вариант.")
-    cat = req.cat or cand.get("cat") or "Disease"
+    # Категорию берём от кандидата: жёсткий медицинский дефолт в юридическом
+    # проекте помечал договоры как «Disease».
+    cat = req.cat or cand.get("cat") or "Term"
     today = datetime.now().strftime("%Y-%m-%d")
-    existing = next((g for g in STATE["glossary"]
-                     if _norm_key(g.get("src")) == _norm_key(src)), None)
+    scope = _scope_of(cand)
+    existing = _glossary_entry(src, scope)
     if existing:
         existing.update({"tgt": tgt, "cat": cat, "conf": "high", "tier": GLOSSARY_TIER_HARD,
                          "note": "уточнено вручную " + today, "updated": today,
                          "prevTgt": existing.get("tgt", "")})
+        _clear_auto_marks(existing)
     else:
         STATE["glossary"].insert(0, {"src": src, "tgt": tgt, "cat": cat, "freq": 1,
                                      "conf": "high", "note": "", "tier": GLOSSARY_TIER_HARD,
+                                     "lang": scope[0], "domain": scope[1],
                                      "updated": today,
                                      "origin": "confirmed:" + str(cand.get("segment", ""))})
     cand["status"] = "approved"
@@ -1819,6 +2026,370 @@ def reject_term_candidate(cid: int):
     cand["status"] = "rejected"
     save_state(STATE)
     return {"ok": True, "candidate": cand}
+
+
+# ─── Автоодобрение однозначных кандидатов ────────────────────────────
+# Смысл: человеку, далёкому от переводов, не нужно щёлкать сотни карточек.
+# Правила опираются ТОЛЬКО на сигналы, не зависящие от языка и тематики:
+#   1. единственность варианта — у термина ровно один перевод в очереди;
+#   2. согласие независимых сегментов — одна и та же пара пришла из разных мест;
+#   3. оценки ЧУЖИХ прогонов — back-check идёт в обратную сторону, termcheck
+#      смотрит только на целевой текст. Мнение того вызова, который сделал
+#      перевод, доказательством не считается.
+#
+# Ключевое отличие от ручного одобрения: автоматика пишет в tier "auto" —
+# подсказку, которую модель вправе игнорировать. Приказом ("verified") запись
+# становится от человека либо от трёх независимых подтверждений, а в медицине,
+# фарме и юриспруденции — только от человека: там цена приказа выше.
+AUTO_POLICY_VERSION = "v1"
+AUTO_BATCH_HISTORY = 20
+
+AUTO_APPROVE_DEFAULT = {
+    "auto_min_segments": 2,        # независимых машинно-чистых сегментов на подсказку
+    "verified_min_segments": 3,    # ... на приказ
+    "backcheck_min": 90,           # ниже этого сегмент-донор не считается чистым
+    "allow_verified": True,
+    "max_src_words": 3,
+    "max_tgt_words": 6,
+}
+
+AUTO_APPROVE_BY_DOMAIN = {
+    "medical": {"allow_verified": False},
+    "pharma": {"allow_verified": False},
+    "legal": {"allow_verified": False},
+}
+
+
+def _auto_policy(domain_id: Optional[str]) -> dict:
+    pol = dict(AUTO_APPROVE_DEFAULT)
+    pol.update(AUTO_APPROVE_BY_DOMAIN.get(_resolve_domain(domain_id)["id"], {}))
+    return pol
+
+
+def _donor_ids(cand: dict) -> list:
+    """Доноры кандидата как «проект:сегмент». Номера сегментов уникальны только
+    внутри проекта — без префикса сегмент #12 из другого проекта сошёл бы за
+    того же донора и накрутил бы доказательства."""
+    ids = cand.get("segments")
+    if ids:
+        return list(dict.fromkeys(ids))
+    if cand.get("segment") and cand.get("project"):
+        return [f"{cand['project']}:{cand['segment']}"]
+    return []
+
+
+def _auto_context(pending: list, pol: dict) -> dict:
+    """Индексы, собранные ОДИН раз на прогон. Без них разбор 2000 кандидатов
+    гонял бы линейный поиск по 10 000 записей глоссария и по всем сегментам
+    проекта на каждого — единственный воркер вставал бы на секунды."""
+    segs = {(p["id"], s["id"]): s for p in STATE["projects"] for s in p["segments"]}
+    gloss: dict = {}
+    for g in STATE["glossary"]:
+        gloss.setdefault((_scope_of(g), _norm_key(g.get("src"))), g)
+    return {"variants": _auto_variants(pending), "segs": segs, "gloss": gloss, "pol": pol}
+
+
+def _donor_quality(cand: dict, ctx: dict) -> tuple:
+    """(годных доноров, был ли подтверждённый человеком, сколько среди них
+    РАЗНЫХ исходников, причина отказа).
+
+    Донор годится, если сегмент подтвердил человек либо он прошёл back-check и
+    termcheck чисто. Копии чужого решения донорами не считаются вовсе, а число
+    разных исходников отделяет «три независимых сегмента» от «один и тот же
+    заголовок, переведённый трижды»: во втором случае согласие ничего не
+    доказывает, это одна и та же строка."""
+    good, confirmed, why = 0, False, None
+    sources = set()
+    for ref in _donor_ids(cand):
+        try:
+            pid, sid = (int(x) for x in str(ref).split(":", 1))
+        except ValueError:
+            continue
+        seg = ctx["segs"].get((pid, sid))
+        if seg is None:
+            why = why or "сегмент-источник удалён"
+            continue
+        if seg.get("route") == "DUPLICATE" or seg.get("propagatedFrom"):
+            why = why or "перевод скопирован с другого сегмента"
+            continue
+        if seg.get("status") == "confirmed" and seg.get("confirmedBy") == "human":
+            good += 1
+            confirmed = True
+            sources.add(_norm_key(seg.get("source")))
+            continue
+        # Подтверждён, но не человеком (подстановка из TM) — обычный кандидат:
+        # решают проверки, а не статус.
+        reason = _machine_clean(seg, ctx["pol"]["backcheck_min"])
+        if reason is None:
+            good += 1
+            sources.add(_norm_key(seg.get("source")))
+        else:
+            why = why or reason
+    return good, confirmed, len(sources), why
+
+
+def _auto_variants(pending: list) -> dict:
+    """(область, термин) → множество различных переводов среди кандидатов.
+    Два варианта — это и есть определение неоднозначности: такой термин
+    автоматика не трогает вообще."""
+    out: dict = {}
+    for c in pending:
+        tgt = (c.get("tgt") or "").strip()
+        if not tgt:
+            continue
+        out.setdefault((_scope_of(c), _norm_key(c.get("src"))), set()).add(_norm_key(tgt))
+    return out
+
+
+def _auto_verdict(cand: dict, ctx: dict) -> tuple:
+    """(действие, причина). Действие: "verified" | "auto" | "close" | None.
+    "close" — пара уже есть в глоссарии слово в слово: кандидата закрываем,
+    глоссарий не трогаем."""
+    pol = ctx["pol"]
+    src = (cand.get("src") or "").strip()
+    tgt = (cand.get("tgt") or "").strip()
+    if cand.get("kind") == "conflict" or not tgt:
+        return None, "нет готового перевода — решает человек"
+    if not src:
+        return None, "пустой термин"
+    if len(src.split()) > pol["max_src_words"]:
+        return None, "длинный термин — похоже на фразу"
+    if len(tgt.split()) > pol["max_tgt_words"]:
+        return None, "длинный перевод — похоже на фразу"
+    if src.rstrip().endswith((".", "!", "?", ":", ";")):
+        return None, "похоже на предложение, а не термин"
+
+    scope = _scope_of(cand)
+    if len(ctx["variants"].get((scope, _norm_key(src)), set())) > 1:
+        return None, "у термина несколько вариантов перевода"
+
+    known = ctx["gloss"].get((scope, _norm_key(src)))
+    if known:
+        if _norm_key(known.get("tgt")) == _norm_key(tgt):
+            return "close", "уже в глоссарии"
+        if _hit_tier(known) == GLOSSARY_TIER_HARD:
+            return None, "спорит с проверенной записью глоссария"
+        if known.get("autoBatch"):
+            # Записать поверх — значит затереть prevTgt прошлой пачки своим же
+            # значением: та пачка перестанет откатываться, а откат этой вернёт
+            # чужой машинный вариант вместо исходного.
+            return None, "запись занята пачкой #%s — сначала откатите её" % known["autoBatch"]
+        # Запись уровня "auto" (массовый импорт) — как раз то, что автоодобрение
+        # и должно чинить: у нас есть доказательства, у неё их не было.
+
+    good, confirmed, distinct, why = _donor_quality(cand, ctx)
+    if good == 0:
+        return None, why or "сегмент-источник не проходил проверок"
+    if cand.get("kind") == "audit" and good < 2:
+        # Находка termcheck — это мнение модели о собственном переводе.
+        # Одного такого мнения мало даже для подсказки.
+        return None, "находка termcheck встретилась только раз"
+    if not confirmed and good < pol["auto_min_segments"]:
+        return None, "подтверждений: %d, нужно %d" % (good, pol["auto_min_segments"])
+
+    if (pol["allow_verified"] and good >= pol["verified_min_segments"]
+            and distinct >= pol["verified_min_segments"]
+            and good == len(_donor_ids(cand))):
+        return GLOSSARY_TIER_HARD, "%d независимых чистых сегмента" % distinct
+    return GLOSSARY_TIER_SOFT, ("подтвердил человек" if confirmed
+                                else "%d независимых чистых сегмента" % good)
+
+
+def _forget_auto_batch(batch: int):
+    """Пачка выпала из истории — откатить её уже нечем. Снимаем пометки, иначе
+    записи навсегда застревали бы с отказом «сначала откатите пачку #N», а
+    кнопки для этого в интерфейсе уже нет."""
+    for g in STATE.get("glossary", []):
+        if g.get("autoBatch") == batch:
+            _clear_auto_marks(g)
+            for k in ("prevTgt", "prevConf", "prevOrigin"):
+                g.pop(k, None)
+    for c in _term_queue():
+        if c.get("autoBatch") == batch:
+            c.pop("autoBatch", None)
+
+
+def _clear_auto_marks(entry: dict):
+    """Человек тронул запись — она больше не принадлежит пачке автоодобрения.
+    Иначе откат пачки снёс бы или откатил именно то, что человек исправил."""
+    for k in ("autoBatch", "autoCreated", "prevTier", "prevNote"):
+        entry.pop(k, None)
+
+
+def _auto_write(cand: dict, tier: str, batch: int, today: str) -> bool:
+    """Записать пару в глоссарий. True, если существующая запись заменена.
+    Прежние значения сохраняем — на них держится откат пачки."""
+    scope = _scope_of(cand)
+    src, tgt = cand["src"].strip(), cand["tgt"].strip()
+    cat = cand.get("cat") or "Term"
+    existing = _glossary_entry(src, scope)
+    if existing:
+        existing.update({
+            "prevTgt": existing.get("tgt", ""), "prevTier": _hit_tier(existing),
+            "prevNote": existing.get("note", ""), "prevConf": existing.get("conf", ""),
+            "prevOrigin": existing.get("origin", ""),
+            "tgt": tgt, "tier": tier, "cat": existing.get("cat") or cat,
+            "conf": "high" if tier == GLOSSARY_TIER_HARD else "medium",
+            "note": "автоодобрено " + today, "updated": today,
+            "autoBatch": batch, "autoCreated": False,
+            "origin": "auto:" + AUTO_POLICY_VERSION,
+        })
+        return True
+    entry = {
+        "src": src, "tgt": tgt, "cat": cat, "freq": 1,
+        "conf": "high" if tier == GLOSSARY_TIER_HARD else "medium",
+        "note": "автоодобрено " + today, "tier": tier,
+        "lang": scope[0], "domain": scope[1], "updated": today,
+        "autoBatch": batch, "autoCreated": True,
+        "origin": "auto:" + AUTO_POLICY_VERSION,
+    }
+    STATE["glossary"].insert(0, entry)
+    # Индекс по термину живёт всю пачку: без досыпки следующий кандидат той же
+    # пары считал бы, что записи ещё нет. Полная инвалидация тут стоила бы
+    # пересборки 10 000 записей на каждое одобрение.
+    idx = _GLOSS_BY_SRC
+    if idx is not None:
+        idx.setdefault((scope, _norm_key(src)), entry)
+    return False
+
+
+class AutoApproveRequest(BaseModel):
+    dry_run: bool = True
+    project: Optional[int] = None      # смотреть только область этого проекта
+    max_tier: Optional[str] = None     # "auto" — не поднимать до приказа
+    limit: int = 2000
+
+
+@app.post("/api/term-queue/auto-approve")
+def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
+    """Разложить однозначных кандидатов по глоссарию без участия человека.
+
+    dry_run=True (по умолчанию) НИЧЕГО не меняет — возвращает, что попадёт и
+    что отсеяно с причинами. Смотреть до применения, а не после."""
+    project = get_project(req.project) if req.project else None
+    scope = _project_scope(project) if project else None
+    pol = _auto_policy(project.get("domain") if project else None)
+    if req.max_tier == GLOSSARY_TIER_SOFT:
+        pol = {**pol, "allow_verified": False}
+
+    pending = [c for c in _term_queue() if c.get("status", "pending") == "pending"
+               and (scope is None or _scope_of(c) == scope)]
+    ctx = _auto_context(pending, pol)
+
+    considered = pending[:max(1, min(req.limit, 5000))]
+    picked, closed, skipped = [], [], {}
+    taken = set()
+    for cand in considered:
+        action, reason = _auto_verdict(cand, ctx)
+        row = {"id": cand["id"], "kind": cand.get("kind"), "src": cand.get("src"),
+               "tgt": cand.get("tgt"), "lang": _scope_of(cand)[0],
+               "domain": _scope_of(cand)[1], "reason": reason,
+               "hits": cand.get("hits", 1), "donors": len(_donor_ids(cand))}
+        if action in (GLOSSARY_TIER_HARD, GLOSSARY_TIER_SOFT):
+            # Один термин — одна запись за пачку. Иначе два кандидата разных
+            # kind с одной и той же парой писали её дважды, и второй проход
+            # затирал prevTgt собственным значением: запись пережила бы откат.
+            key = (_scope_of(cand), _norm_key(cand.get("src")))
+            if key in taken:
+                closed.append((cand, {**row, "tier": None,
+                                      "reason": "та же пара уже одобрена в этой пачке"}))
+                continue
+            taken.add(key)
+            picked.append((cand, action, {**row, "tier": action}))
+        elif action == "close":
+            closed.append((cand, {**row, "tier": None}))
+        else:
+            bucket = skipped.setdefault(reason, {"reason": reason, "count": 0, "samples": []})
+            bucket["count"] += 1
+            if len(bucket["samples"]) < 3:
+                bucket["samples"].append({"src": row["src"], "tgt": row["tgt"]})
+
+    counts = {
+        "verified": sum(1 for _, t, _ in picked if t == GLOSSARY_TIER_HARD),
+        "auto": sum(1 for _, t, _ in picked if t == GLOSSARY_TIER_SOFT),
+        "closed": len(closed),
+        "skipped": sum(b["count"] for b in skipped.values()),
+        # pending — по рассмотренному срезу: вердикты считаются только по limit,
+        # иначе на большой очереди цифры в панели не сходились бы.
+        "pending": len(considered),
+        "queueTotal": len(pending),
+    }
+    result = {
+        "ok": True, "dryRun": req.dry_run, "batch": None, "counts": counts,
+        "policy": {**pol, "version": AUTO_POLICY_VERSION},
+        "scope": list(scope) if scope else None,
+        "items": [row for _, _, row in picked] + [row for _, row in closed],
+        "skipped": sorted(skipped.values(), key=lambda b: -b["count"]),
+    }
+    if req.dry_run or not (picked or closed):
+        return result
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    batch = STATE.get("autoBatchSeq", 0) + 1
+    STATE["autoBatchSeq"] = batch
+    for cand, tier, row in picked:
+        row["replaced"] = _auto_write(cand, tier, batch, today)
+        cand.update({"status": "approved", "autoBatch": batch, "autoTier": tier,
+                     "autoWrote": True, "autoNote": row["reason"], "decidedAt": today})
+    for cand, row in closed:
+        cand.update({"status": "approved", "autoBatch": batch, "autoWrote": False,
+                     "autoNote": row["reason"], "decidedAt": today})
+    batches = STATE.setdefault("autoBatches", [])
+    batches.insert(0, {"id": batch, "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                       "counts": counts, "scope": list(scope) if scope else None})
+    for gone in batches[AUTO_BATCH_HISTORY:]:
+        _forget_auto_batch(gone["id"])
+    del batches[AUTO_BATCH_HISTORY:]
+    _invalidate_gloss_index()
+    save_state(STATE)
+    result["batch"] = batch
+    return result
+
+
+@app.post("/api/term-queue/auto-approve/{batch}/undo")
+def undo_auto_approve(batch: int):
+    """Откатить пачку целиком: созданные записи убрать, заменённые вернуть,
+    кандидатов — обратно в очередь. Автоматике, которую нельзя отменить одной
+    кнопкой, доверять нельзя."""
+    removed, restored = 0, 0
+    keep = []
+    for g in STATE["glossary"]:
+        if g.get("autoBatch") != batch:
+            keep.append(g)
+            continue
+        if g.get("autoCreated"):
+            removed += 1
+            continue
+        g["tgt"] = g.pop("prevTgt", g.get("tgt"))
+        g["tier"] = g.pop("prevTier", GLOSSARY_TIER_SOFT)
+        g["note"] = g.pop("prevNote", "")
+        g["conf"] = g.pop("prevConf", "")
+        prev_origin = g.pop("prevOrigin", "")
+        if prev_origin:
+            g["origin"] = prev_origin
+        else:
+            g.pop("origin", None)
+        for k in ("autoBatch", "autoCreated"):
+            g.pop(k, None)
+        restored += 1
+        keep.append(g)
+    STATE["glossary"] = keep
+    back = 0
+    for c in _term_queue():
+        if c.get("autoBatch") == batch:
+            c["status"] = "pending"
+            for k in ("autoBatch", "autoTier", "autoWrote", "autoNote", "decidedAt"):
+                c.pop(k, None)
+            back += 1
+    STATE["autoBatches"] = [b for b in STATE.get("autoBatches", []) if b.get("id") != batch]
+    _invalidate_gloss_index()
+    save_state(STATE)
+    return {"ok": True, "removed": removed, "restored": restored, "returned": back}
+
+
+@app.get("/api/term-queue/auto-batches")
+def list_auto_batches():
+    return {"ok": True, "batches": STATE.get("autoBatches", [])}
 
 
 # Извлечение терминов из подтверждённых сегментов. Платный прогон: вызывается
@@ -1907,12 +2478,13 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
         chunk = segs[i:i + CHUNK]
         for item in _extract_terms_call([(s["source"], s["target"]) for s in chunk],
                                         req.model, project.get("domain")):
-            known = next((g for g in STATE["glossary"]
-                          if _norm_key(g.get("src")) == _norm_key(item.get("src"))), None)
+            _sc = _project_scope(project)
+            known = _glossary_entry(item.get("src", ""), _sc)
             if known and _norm_key(known.get("tgt")) == _norm_key(item.get("tgt")):
                 continue      # уже знаем ровно эту пару
             c = _queue_term("extract", item.get("src", ""), item.get("tgt", ""),
                             cat=item.get("cat", ""), wasTgt=(known or {}).get("tgt", ""),
+                            lang=_sc[0], domain=_sc[1], via="auto",
                             project=pid, model=_resolve_model(req.model or DEFAULT_OPENAI_MODEL)["id"])
             if c:
                 found.append(c)
@@ -1988,11 +2560,16 @@ def _segment_for_client(seg: dict) -> dict:
     except RuntimeError:
         out = dict(seg)          # правка из фонового потока длится микросекунды
     cur = _text_hash(out.get("target") or "")
+    # back-check и termcheck кладут хеш ОБРЕЗАННОГО текста, ремонт — сырого.
+    # Сравнивать надо тем же способом, каким писали: иначе перевод с висящим
+    # пробелом показывался бы в UI устаревшим, а _machine_clean считал бы его
+    # свежим и пускал бы в глоссарий.
+    cur_trimmed = _text_hash((out.get("target") or "").strip())
     bc, tc, rp = out.get("backcheck"), out.get("termcheck"), out.get("repair")
     if bc:
-        out["backcheck"] = {**bc, "stale": bc.get("target_hash") != cur}
+        out["backcheck"] = {**bc, "stale": bc.get("target_hash") != cur_trimmed}
     if tc:
-        out["termcheck"] = {**tc, "stale": tc.get("target_hash") != cur}
+        out["termcheck"] = {**tc, "stale": tc.get("target_hash") != cur_trimmed}
     if rp:
         out["repair"] = {**rp, "tried": rp.get("source_hash") == cur}
     return out
@@ -2004,7 +2581,8 @@ def _project_for_client(project: dict) -> dict:
 
 
 def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None,
-                           use_judge: bool = False, judge_model: Optional[str] = None) -> dict:
+                           use_judge: bool = False, judge_model: Optional[str] = None,
+                           harvest: bool = True) -> dict:
     """Обратный перевод сегмента + оценка соответствия оригиналу.
     Результат кладётся в seg['backcheck'] вместе с хешем перевода — по нему
     повторный прогон понимает, что пересчитывать нечего."""
@@ -2033,7 +2611,7 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
         return {"ok": False, "error": "Обратный перевод не получен"}
 
     source_text = seg.get("source", "")
-    gloss_hits, _tm = _get_context(source_text)
+    gloss_hits, _tm = _get_context(source_text, project=project)
     # semantic_fn, а не готовое число: косинус учитывается только при отсутствии
     # жёстких находок, и там, где он всё равно не повлияет, платить за эмбеддинги
     # незачем. Решение принимает medical_qa — он и знает состав находок.
@@ -2076,7 +2654,11 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
         "target_hash": _text_hash(target_text),
         "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
-    return {"ok": True, "back": back, "backcheck": seg["backcheck"]}
+    # Обе оценки на месте — можно собрать терминологию без участия человека.
+    # Порядок прогонов пользователь выбирает сам, поэтому сбор висит на обоих.
+    harvested = _harvest_if_clean(seg, project) if harvest else []
+    return {"ok": True, "back": back, "backcheck": seg["backcheck"],
+            "queued": [c["id"] for c in harvested]}
 
 
 def _termcheck_cached(seg: dict, mdl_id: str) -> bool:
@@ -2099,7 +2681,8 @@ def _termcheck_trivial(source: str, target: str) -> Optional[str]:
     return None
 
 
-def _run_segment_termcheck(seg: dict, project: dict, model: Optional[str] = None) -> dict:
+def _run_segment_termcheck(seg: dict, project: dict, model: Optional[str] = None,
+                           harvest: bool = True) -> dict:
     """Проверка терминологии перевода + кандидаты в глоссарий из находок.
 
     Находка с предложенной заменой — это готовая пара «термин оригинала →
@@ -2129,8 +2712,10 @@ def _run_segment_termcheck(seg: dict, project: dict, model: Optional[str] = None
     for f in findings:
         # В глоссарий просятся только уверенные находки с обеими сторонами пары
         if f["severity"] in ("critical", "major") and f["src_term"] and f["suggestion"]:
+            _sc = _project_scope(project)
             c = _queue_term("audit", f["src_term"], f["suggestion"],
                             wasTgt=f["tgt_term"], project=project["id"], segment=seg["id"],
+                            lang=_sc[0], domain=_sc[1], via="auto",
                             note=f["why"], model=res["model"],
                             sampleSrc=seg.get("source", "")[:240], sampleTgt=target[:240])
             if c:
@@ -2143,6 +2728,8 @@ def _run_segment_termcheck(seg: dict, project: dict, model: Optional[str] = None
         "target_hash": _text_hash(target),
         "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
+    if harvest:
+        queued += [c["id"] for c in _harvest_if_clean(seg, project)]
     return {"ok": True, "termcheck": seg["termcheck"], "queued": queued}
 
 
@@ -2402,10 +2989,13 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
 
     # Перепроверяем ровно теми проверками, которые ругались. Лишних не гоняем.
     seg["target"] = new_target
+    # harvest=False: вердикт «лучше/хуже» ещё не вынесен, и repair.applied не
+    # проставлен. Собирать терминологию с текста, который через две строки
+    # может быть откачен, — значит закрепить в глоссарии отменённую правку.
     if had_bc:
-        _run_segment_backcheck(seg, project, bc_model, use_judge, judge_model)
+        _run_segment_backcheck(seg, project, bc_model, use_judge, judge_model, harvest=False)
     if had_tc:
-        _run_segment_termcheck(seg, project, tc_model)
+        _run_segment_termcheck(seg, project, tc_model, harvest=False)
     after = _repair_scores(seg)
 
     better = True
@@ -2643,7 +3233,7 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True) -> dict:
     if not target_text:
         return {"ok": False, "error": "Segment is not translated yet", "segment": seg}
 
-    gloss_hits, tm_hit = _get_context(source_text)
+    gloss_hits, tm_hit = _get_context(source_text, project=project)
     back = seg.get("backtranslated_ru", "")
 
     if run_backcheck and medical_qa_enabled():
@@ -2843,7 +3433,7 @@ def batch_translate(pid: int, req: BatchRequest):
         seg = groups[key][0]
         if _job_should_stop():
             return {"key": key, "skip": True}
-        gloss_hits, tm_hit = _get_context(seg["source"])
+        gloss_hits, tm_hit = _get_context(seg["source"], project=project)
 
         # TM точное совпадение → пропускаем API вызов.
         # При force (явный выбор пользователя: галочки или «перевести заново») шорткат
@@ -3044,16 +3634,26 @@ class TermRequest(BaseModel):
     freq: int = 0
     conf: str = "Medium"
     isNew: bool = False
+    lang: Optional[str] = None      # языковая пара записи; пусто — дефолтная область
+    domain: Optional[str] = None
 
 @app.post("/api/glossary")
 def save_term(req: TermRequest):
-    existing = next((t for t in STATE["glossary"] if t["src"] == req.src), None)
+    scope = (req.lang or DEFAULT_GLOSS_LANG, req.domain or DEFAULT_GLOSS_DOMAIN)
+    existing = _glossary_entry(req.src, scope)
+    if existing is None and not (req.lang or req.domain):
+        # Клиент не прислал область (правка записи из общего списка) — правим ту
+        # запись, что есть, а не заводим рядом дубль в области по умолчанию.
+        existing = next((g for g in STATE["glossary"]
+                         if _norm_key(g.get("src")) == _norm_key(req.src)), None)
     # Правка руками = проверенная запись: только такие идут в промпт приказом.
     if existing and not req.isNew:
         existing.update({"tgt": req.tgt, "cat": req.cat, "freq": req.freq, "conf": req.conf,
                          "tier": GLOSSARY_TIER_HARD})
+        _clear_auto_marks(existing)
     else:
-        STATE["glossary"].insert(0, {**req.dict(exclude={"isNew"}), "tier": GLOSSARY_TIER_HARD})
+        STATE["glossary"].insert(0, {**req.dict(exclude={"isNew"}), "tier": GLOSSARY_TIER_HARD,
+                                     "lang": scope[0], "domain": scope[1]})
     _invalidate_gloss_index()
     save_state(STATE)
     return {"ok": True}
@@ -3067,8 +3667,24 @@ def delete_project(pid: int):
 
 
 @app.delete("/api/glossary")
-def delete_term(src: str):
-    STATE["glossary"] = [t for t in STATE["glossary"] if t["src"] != src]
+def delete_term(src: str, lang: str = "", domain: str = ""):
+    """Удаление — операция без отмены, поэтому область здесь трактуется строго.
+    Пустые lang/domain означают область по умолчанию (так же читаются записи
+    без полей), а НЕ «любую»: иначе удаление RU→EN термина уносило бы и его
+    RU→DE тёзку из чужого проекта."""
+    want = (lang or DEFAULT_GLOSS_LANG, domain or DEFAULT_GLOSS_DOMAIN)
+    victims = [t for t in STATE["glossary"] if t.get("src") == src and _scope_of(t) == want]
+    if not victims and not (lang or domain):
+        # Область не назвали и в области по умолчанию записи нет. Удаляем по
+        # одному имени, только если претендент ровно один — иначе непонятно,
+        # какой именно, а угадывать в необратимой операции нельзя.
+        same = [t for t in STATE["glossary"] if t.get("src") == src]
+        if len(same) == 1:
+            victims = same
+    if not victims:
+        raise HTTPException(404, "Запись не найдена в этой области")
+    doomed = {id(t) for t in victims}
+    STATE["glossary"] = [t for t in STATE["glossary"] if id(t) not in doomed]
     _invalidate_gloss_index()
     save_state(STATE)
     return {"ok": True}
@@ -3076,8 +3692,21 @@ def delete_term(src: str):
 
 # ─── TM ─────────────────────────────────────────────────────────────
 @app.delete("/api/tm")
-def delete_tm(src: str):
-    STATE["tm"] = [t for t in STATE["tm"] if t["src"] != src]
+def delete_tm(src: str, lang: str = ""):
+    """Как и у глоссария: пустой lang — это пара по умолчанию, а не «любая».
+    _tm_upsert теперь держит по записи на языковую пару, и удаление RU→EN
+    иначе уносило бы RU→DE запись того же исходника."""
+    want = lang or DEFAULT_GLOSS_LANG
+    victims = [t for t in STATE["tm"]
+               if t.get("src") == src and (t.get("lang") or DEFAULT_GLOSS_LANG) == want]
+    if not victims and not lang:
+        same = [t for t in STATE["tm"] if t.get("src") == src]
+        if len(same) == 1:
+            victims = same
+    if not victims:
+        raise HTTPException(404, "Запись памяти переводов не найдена в этой паре языков")
+    doomed = {id(t) for t in victims}
+    STATE["tm"] = [t for t in STATE["tm"] if id(t) not in doomed]
     save_state(STATE)
     return {"ok": True}
 

@@ -34,7 +34,145 @@ const CAND_KIND = {
   audit:    ["Проверка терминологии", "book", "var(--c-purple)"],
 };
 
-function TermQueue({ store, toast }) {
+/* ---------- Автоодобрение однозначных кандидатов ----------
+   Кнопка «Проверить» ничего не меняет: сервер считает вердикты и возвращает,
+   что попадёт и что отсеяно с причинами. Применение — отдельным нажатием,
+   откат пачки — одним. Правила языко- и тематико-независимы, поэтому панель
+   не знает ни про медицину, ни про русский: всё приходит с сервера. */
+function AutoApprovePanel({ store, toast, onDone }) {
+  const project = store.activeProject;
+  const [preview, setPreview] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [softOnly, setSoftOnly] = useState(false);
+  const [batches, setBatches] = useState([]);
+  const [domains, setDomains] = useState([]);
+
+  useEffect(() => {
+    if (!window.API) return;
+    window.API.safeCall(() => window.API.autoBatches()).then(r => setBatches((r && r.batches) || []));
+    window.API.safeCall(() => window.API.models()).then(r => setDomains((r && r.domains) || []));
+  }, []);
+
+  /* Считаем сразу при открытии вкладки: разбор идёт на сервере без вызовов
+     модели, платить не за что, а прятать цифру за лишним кликом незачем. */
+  useEffect(() => {
+    if (!window.API || !store.activeProject) return;
+    let cancelled = false;
+    window.API.safeCall(() => window.API.autoApprove({
+      project: store.activeProject.id, dry_run: true,
+      max_tier: softOnly ? "auto" : null,
+    })).then(res => { if (!cancelled && res && res.ok) setPreview(res); });
+    return () => { cancelled = true; };
+  }, [store.activeProject && store.activeProject.id, softOnly]);
+
+  if (!project) return null;
+  const domLabel = (id) => (domains.find(d => d.id === id) || {}).label || id;
+  const scopeText = project.src + "→" + project.tgt + " · " + domLabel(project.domain || "medical");
+
+  const opts = () => ({ project: project.id, max_tier: softOnly ? "auto" : null });
+
+  const check = async () => {
+    setBusy("check");
+    const res = await window.API.safeCall(() => window.API.autoApprove({ ...opts(), dry_run: true }));
+    setBusy("");
+    if (!res || !res.ok) { toast.error("Не удалось посчитать", "Сервер не ответил."); return; }
+    setPreview(res);
+    if (!res.counts.auto && !res.counts.verified && !res.counts.closed)
+      toast.info("Однозначных нет", "Все кандидаты в этой области требуют решения человека.");
+  };
+
+  const apply = async () => {
+    setBusy("apply");
+    const res = await window.API.safeCall(() => window.API.autoApprove({ ...opts(), dry_run: false }));
+    setBusy("");
+    if (!res || !res.ok) { toast.error("Не удалось одобрить", "Сервер не ответил."); return; }
+    setPreview(null);
+    const n = res.counts.auto + res.counts.verified;
+    // batch приходит null, когда сервер ничего не выбрал: в историю такое не кладём,
+    // иначе «Откатить» уходит на /auto-approve/null/undo и возвращает 422.
+    if (res.batch) setBatches(b => [{ id: res.batch, at: "только что", counts: res.counts }, ...b]);
+    toast.success("Одобрено автоматически: " + n,
+      "Подсказок: " + res.counts.auto + " · приказов: " + res.counts.verified +
+      (res.counts.closed ? " · закрыто как уже известное: " + res.counts.closed : ""));
+    onDone && onDone();
+  };
+
+  const undo = async (batch) => {
+    setBusy("undo");
+    const res = await window.API.safeCall(() => window.API.undoAutoApprove(batch));
+    setBusy("");
+    if (!res || !res.ok) { toast.error("Откат не выполнен", "Сервер не ответил."); return; }
+    setBatches(b => b.filter(x => x.id !== batch));
+    toast.warning("Пачка #" + batch + " откачена",
+      "Удалено: " + res.removed + " · возвращено прежних: " + res.restored +
+      " · кандидатов обратно в очередь: " + res.returned);
+    onDone && onDone();
+  };
+
+  const tierBadge = (tier) => tier === "verified"
+    ? React.createElement(Badge, { variant: "confirmed" }, "приказ")
+    : tier === "auto"
+      ? React.createElement(Badge, { variant: "soft" }, "подсказка")
+      : React.createElement(Badge, { variant: "soft" }, "уже есть");
+
+  const c = preview && preview.counts;
+  return React.createElement("div", { className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 } },
+    React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
+      React.createElement("div", { className: "row", style: { gap: 8 } },
+        React.createElement(Icon, { name: "zap", size: 16, style: { color: "var(--c-primary)" } }),
+        React.createElement("span", { style: { fontWeight: 650, fontSize: 14 } }, "Автоодобрение однозначных"),
+        React.createElement(InfoTip, { title: "Что считается однозначным",
+          body: "Пара попадает в глоссарий сама, только если: у термина ровно один вариант перевода в очереди; та же пара пришла из нескольких независимых сегментов ИЛИ сегмент подтвердил человек; сегменты-доноры прошли back-check и проверку терминологии чисто; пара не спорит с проверенной записью.\n\nПо умолчанию запись уходит уровнем «подсказка» — модель вправе её игнорировать. Приказом («use these exact translations») запись становится от человека или от трёх независимых чистых сегментов, а в медицине, фармацевтике и юриспруденции — только от человека.\n\nПравила не зависят от языка и тематики: считаются согласие источников и оценки других прогонов, а не мнение той модели, что делала перевод." })),
+      React.createElement("span", { className: "dim", style: { fontSize: 12 } }, "область: " + scopeText)),
+
+    React.createElement("div", { className: "row row-wrap", style: { gap: 10, alignItems: "center" } },
+      React.createElement(Btn, { variant: "secondary", size: "sm", icon: "target", disabled: !!busy, onClick: check },
+        busy === "check" ? "Считаем…" : preview ? "Пересчитать" : "Проверить, что попадёт"),
+      preview && (c.auto + c.verified + c.closed > 0) && React.createElement(Btn, {
+        variant: "primary", size: "sm", icon: "check", disabled: !!busy, onClick: apply },
+        busy === "apply" ? "Одобряем…" : "Одобрить " + (c.auto + c.verified)),
+      preview && React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setPreview(null) }, "Скрыть"),
+      React.createElement("div", { className: "spacer" }),
+      React.createElement(Switch, { on: softOnly, label: "Только подсказки", onClick: () => { setSoftOnly(v => !v); setPreview(null); } }),
+      React.createElement("span", { className: "dim", style: { fontSize: 12 } }, "не поднимать до приказа")),
+
+    preview && c.pending === 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.6 } },
+      "Кандидатов в этой области пока нет. Они появляются сами: после back-check и проверки терминологии — с сегментов, прошедших обе проверки чисто; и при подтверждении сегмента вручную."),
+
+    preview && c.pending > 0 && React.createElement("div", { className: "col", style: { gap: 8 } },
+      React.createElement("div", { className: "row row-wrap", style: { gap: 14, fontSize: 12.5 } },
+        React.createElement("span", null, "разобрано: ", React.createElement("strong", null, c.pending),
+          c.queueTotal > c.pending ? " из " + c.queueTotal : ""),
+        React.createElement("span", { style: { color: "var(--c-success)" } }, "подсказкой: ", React.createElement("strong", null, c.auto)),
+        React.createElement("span", { style: { color: "var(--c-primary)" } }, "приказом: ", React.createElement("strong", null, c.verified)),
+        React.createElement("span", { className: "dim" }, "уже в глоссарии: ", React.createElement("strong", null, c.closed)),
+        React.createElement("span", { style: { color: "var(--c-warning)" } }, "останется человеку: ", React.createElement("strong", null, c.skipped))),
+
+      preview.items.length > 0 && React.createElement("div", { className: "col", style: { gap: 4, maxHeight: 260, overflow: "auto" } },
+        preview.items.slice(0, 60).map(it => React.createElement("div", { key: it.id, className: "row row-wrap", style: { gap: 8, fontSize: 13, padding: "3px 0" } },
+          React.createElement("span", { style: { fontWeight: 600 } }, it.src),
+          React.createElement(Icon, { name: "chevR", size: 12, style: { color: "var(--text-3)" } }),
+          React.createElement("span", null, it.tgt),
+          tierBadge(it.tier),
+          React.createElement("span", { className: "dim", style: { fontSize: 12 } }, it.reason))),
+        preview.items.length > 60 && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+          "…и ещё " + (preview.items.length - 60))),
+
+      preview.skipped.length > 0 && React.createElement("div", { className: "col", style: { gap: 3 } },
+        React.createElement("div", { className: "dim", style: { fontSize: 12, fontWeight: 600, marginTop: 4 } }, "Останется человеку — почему:"),
+        preview.skipped.map((b, i) => React.createElement("div", { key: i, className: "dim", style: { fontSize: 12.5 } },
+          b.count + "× " + b.reason +
+          (b.samples.length ? " (напр. " + b.samples.map(s => s.src).join(", ") + ")" : ""))))),
+
+    batches.length > 0 && React.createElement("div", { className: "row row-wrap", style: { gap: 8, alignItems: "center", borderTop: "1px solid var(--border)", paddingTop: 8 } },
+      React.createElement("span", { className: "dim", style: { fontSize: 12 } }, "Последние прогоны:"),
+      batches.slice(0, 3).map(b => React.createElement("span", { key: b.id, className: "row", style: { gap: 4 } },
+        React.createElement(Badge, { variant: "soft" }, "#" + b.id + " · " + ((b.counts || {}).auto + (b.counts || {}).verified || 0) + " зап."),
+        React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", disabled: !!busy, onClick: () => undo(b.id) }, "Откатить"))))
+  );
+}
+
+function TermQueue({ store, toast, version }) {
   const [items, setItems] = useState([]);
   const [counts, setCounts] = useState({});
   const [loading, setLoading] = useState(true);
@@ -49,7 +187,7 @@ function TermQueue({ store, toast }) {
     setCounts((res && res.counts) || {});
     setLoading(false);
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, [version]);
 
   const approve = async (c) => {
     const tgt = (drafts[c.id] !== undefined ? drafts[c.id] : c.tgt || "").trim();
@@ -95,7 +233,11 @@ function TermQueue({ store, toast }) {
               React.createElement("span", { style: { fontSize: 12, color, fontWeight: 600 } }, label),
               c.hits > 1 && React.createElement(Badge, { variant: "soft" }, "встречалось " + c.hits + "×")),
             React.createElement("span", { className: "dim", style: { fontSize: 12 } },
-              (c.project ? "проект #" + c.project : "") + (c.segment ? " · сегмент #" + c.segment : ""))),
+              (c.lang ? c.lang + " · " : "") +
+              (c.project ? "проект #" + c.project : "") +
+              ((c.segments && c.segments.length > 1)
+                ? " · сегментов: " + c.segments.length
+                : (c.segment ? " · сегмент #" + c.segment : "")))),
 
           React.createElement("div", { className: "row row-wrap", style: { gap: 10, alignItems: "center" } },
             React.createElement("span", { style: { fontWeight: 600 } }, c.src),
@@ -132,20 +274,23 @@ function TabGlossary({ store, toast }) {
   const [allTerms, setAllTerms] = useState(store.glossary);
   const [loaded, setLoaded] = useState(false);
   const [page, setPage] = useState(0);
+  // Автоодобрение и откат меняют и очередь, и сам глоссарий — обоим нужен
+  // общий сигнал «перечитай», иначе таблица показывает вчерашний список.
+  const [queueVersion, setQueueVersion] = useState(0);
 
   // Load full glossary from API on mount
   useEffect(() => {
-    if (loaded) return;
     window.API && window.API.safeCall(() => window.API.listGlossary("", "", 10000, 0)).then(res => {
       if (res && res.items) { setAllTerms(res.items); store.glossary = res.items; }
       setLoaded(true);
     });
-  }, []);
+  }, [queueVersion]);
 
   // Reset page on filter change
   useEffect(() => { setPage(0); }, [query, scope, cat, sort]);
 
-  const cats = ["all", "Anatomy", "Cardiology", "Disease", "Dosage", "Symptom", "Lab", "Procedure", "Device", "Document"];
+  const cats = ["all"].concat(
+    Array.from(new Set(allTerms.map(g => g.cat).filter(Boolean))).sort());
   let rows = allTerms.filter(g => {
     if (cat !== "all" && g.cat !== cat) return false;
     if (query && !pairMatches(g, query, scope)) return false;
@@ -168,7 +313,7 @@ function TabGlossary({ store, toast }) {
   const openUsage = async (term, e) => {
     e.stopPropagation();
     if (!window.API) return;
-    const res = await window.API.safeCall(() => window.API.glossaryUsage(term.src, 1));
+    const res = await window.API.safeCall(() => window.API.glossaryUsage(term.src, 1, term.lang, term.domain));
     if (!res || !res.total) {
       toast.info("Термин не встречается", "«" + term.src + "» не найден ни в одном сегменте проектов.");
       return;
@@ -192,7 +337,9 @@ function TabGlossary({ store, toast }) {
         React.createElement(InfoTip, { title: "Глоссарий", body: "База утверждённых медицинских терминов с переводами. Используется для инъекции в GPT-промпт и проверки консистентности в QA." })),
       React.createElement("p", { className: "lead" }, "Утверждённая медицинская терминология. Совпадения автоматически подсказываются в редакторе сегментов.")),
 
-    React.createElement(TermQueue, { store, toast }),
+    React.createElement(AutoApprovePanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
+
+    React.createElement(TermQueue, { store, toast, version: queueVersion }),
 
     React.createElement("div", { className: "row between row-wrap", style: { marginBottom: 16, gap: 12 } },
       React.createElement(SearchInput, { value: query, onChange: (e) => setQuery(e.target.value),
@@ -250,19 +397,24 @@ function TabGlossary({ store, toast }) {
       )
     ),
 
-    modal && React.createElement(TermModal, { term: modal === "add" ? null : modal, onClose: () => setModal(null), onSave: save })
+    modal && React.createElement(TermModal, { term: modal === "add" ? null : modal,
+      scope: store.activeProject
+        ? { lang: store.activeProject.src + "→" + store.activeProject.tgt,
+            domain: store.activeProject.domain || "medical" }
+        : null,
+      onClose: () => setModal(null), onSave: save })
   );
 }
 
 // Примеры употребления прямо в карточке: без них правка термина делается вслепую.
 // Предпросмотр — механическая замена старого варианта на новый в готовом переводе,
 // поэтому подписан именно как предпросмотр, а не как перевод.
-function TermUsage({ src, oldTgt, newTgt }) {
+function TermUsage({ src, oldTgt, newTgt, lang, domain }) {
   const [data, setData] = useState(null);
   useEffect(() => {
     let dead = false;
     if (!src || !window.API) { setData({ total: 0, examples: [] }); return; }
-    window.API.safeCall(() => window.API.glossaryUsage(src, 4)).then(r => {
+    window.API.safeCall(() => window.API.glossaryUsage(src, 4, lang, domain)).then(r => {
       if (!dead) setData(r || { total: 0, examples: [] });
     });
     return () => { dead = true; };
@@ -302,30 +454,43 @@ function TermUsage({ src, oldTgt, newTgt }) {
   );
 }
 
-function TermModal({ term, onClose, onSave }) {
+function TermModal({ term, onClose, onSave, scope }) {
   const [src, setSrc] = useState(term ? term.src : "");
   const [tgt, setTgt] = useState(term ? term.tgt : "");
-  const [cat, setCat] = useState(term ? term.cat : "Disease");
+  const [cat, setCat] = useState(term ? term.cat : "Term");
   const [note, setNote] = useState(term ? term.note : "");
   const [conf, setConf] = useState(term ? term.conf : "high");
-  const cats = ["Anatomy", "Cardiology", "Disease", "Dosage", "Symptom", "Lab", "Vitals", "Regulatory", "Document", "Device"];
+  const cats = ["Term", "Anatomy", "Cardiology", "Disease", "Dosage", "Symptom", "Lab", "Vitals", "Regulatory", "Document", "Device"];
   return React.createElement(Modal, {
     title: term ? "Редактировать термин" : "Новый термин", icon: "book", onClose,
     footer: React.createElement(React.Fragment, null,
       React.createElement(Btn, { variant: "ghost", onClick: onClose }, "Отмена"),
       React.createElement(Btn, { variant: "primary", icon: "check", disabled: !src || !tgt,
-        onClick: () => onSave({ src, tgt, cat, note, conf, freq: term ? term.freq : 1 }, !term) }, "Сохранить"))
+        /* lang/domain протаскиваем от исходной записи: без них сервер не нашёл бы
+           её в своей области и завёл бы рядом дубль, а старый перевод остался бы жить. */
+        /* Новая запись заводится в области открытого проекта, у правки область
+           берётся от самой записи: иначе термин, добавленный в RU→DE проекте,
+           лёг бы в область по умолчанию и не нашёлся бы при переводе. */
+        onClick: () => onSave({ src, tgt, cat, note, conf, freq: term ? term.freq : 1,
+                                lang: term ? term.lang : (scope || {}).lang || null,
+                                domain: term ? term.domain : (scope || {}).domain || null }, !term) }, "Сохранить"))
   },
     React.createElement("div", { className: "grid grid-2" },
       React.createElement(Field, { label: "Термин (русский)" }, React.createElement(Input, { value: src, onChange: (e) => setSrc(e.target.value), placeholder: "напр. стеноз" })),
       React.createElement(Field, { label: "Перевод (английский)" }, React.createElement(Input, { value: tgt, onChange: (e) => setTgt(e.target.value), placeholder: "e.g. stenosis" }))),
+    React.createElement(Field, { label: "Область записи",
+      hint: "Пара языков и тематика, в которых запись видна при переводе" },
+      React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+        (term ? (term.lang || "RU→EN") : ((scope || {}).lang || "RU→EN")) + " · " +
+        (term ? (term.domain || "medical") : ((scope || {}).domain || "medical")))),
     React.createElement(Field, { label: "Категория" },
       React.createElement(Select, { value: cat, onChange: (e) => setCat(e.target.value) }, cats.map(c => React.createElement("option", { key: c, value: c }, c)))),
     React.createElement(Field, { label: "Примечание (необязательно)" },
       React.createElement(Textarea, { value: note, onChange: (e) => setNote(e.target.value), placeholder: "Контекст использования, предпочтительные варианты…", style: { minHeight: 70 } })),
     term && term.src && React.createElement(Field, { label: "Где используется",
       hint: "Зелёным — как будет выглядеть перевод после замены" },
-      React.createElement(TermUsage, { src: term.src, oldTgt: (term.tgt || ""), newTgt: tgt })),
+      React.createElement(TermUsage, { src: term.src, oldTgt: (term.tgt || ""), newTgt: tgt,
+        lang: term.lang, domain: term.domain })),
     React.createElement(Field, { label: "Достоверность" },
       React.createElement("div", { className: "row", style: { gap: 18 } },
         ["high", "medium", "low"].map(c => React.createElement(Radio, { key: c, name: "conf", checked: conf === c, onChange: () => setConf(c) },

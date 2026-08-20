@@ -61,7 +61,8 @@
     /* Для <a href> скачивания: заголовок в ссылку не подставить, токен идёт в query. */
     downloadUrl: (url) => url + (url.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(getToken()),
 
-    listGlossary:  (q, cat, limit, offset)  => call("GET",    `/glossary?q=${encodeURIComponent(q||"")}&cat=${encodeURIComponent(cat||"")}&limit=${limit||200}&offset=${offset||0}`),
+    /* lang/domain сужают выдачу до области проекта — той, что уходит в промпт. */
+    listGlossary:  (q, cat, limit, offset, lang, domain) => call("GET", `/glossary?q=${encodeURIComponent(q||"")}&cat=${encodeURIComponent(cat||"")}&limit=${limit||200}&offset=${offset||0}&lang=${encodeURIComponent(lang||"")}&domain=${encodeURIComponent(domain||"")}`),
     listProjects:  ()                       => call("GET",    "/projects"),
     getProject:    (pid)                    => call("GET",    `/projects/${pid}`),
     createProject: (info)                   => call("POST",   "/projects",                          info),
@@ -109,15 +110,20 @@
     /* Подтверждение теперь возвращает {tm, propagate, termCandidates} — см. confirm_segment */
     propagate:     (pid, sid, ids, includeConfirmed) => call("POST", `/segments/${pid}/${sid}/propagate`, { ids: ids || null, include_confirmed: !!includeConfirmed }),
     termQueue:     (status, limit)          => call("GET",    `/term-queue?status=${encodeURIComponent(status || "pending")}&limit=${limit || 200}`),
-    glossaryUsage: (src, limit)             => call("GET",    `/glossary/usage?src=${encodeURIComponent(src)}&limit=${limit || 6}`),
+    glossaryUsage: (src, limit, lang, domain) => call("GET",  `/glossary/usage?src=${encodeURIComponent(src)}&limit=${limit || 6}&lang=${encodeURIComponent(lang||"")}&domain=${encodeURIComponent(domain||"")}`),
     glossaryImpact:(pid)                    => call("GET",    `/projects/${pid}/glossary-impact`),
     approveTerm:   (cid, patch)             => call("POST",   `/term-queue/${cid}/approve`,          patch || {}),
     rejectTerm:    (cid)                    => call("POST",   `/term-queue/${cid}/reject`),
     extractTerms:  (pid, segIds, limit, model) => call("POST", `/projects/${pid}/extract-terms`,     { segment_ids: segIds || null, limit: limit || 30, model: model || null }),
+    /* Автоодобрение: dry_run по умолчанию — сервер только считает вердикты. */
+    autoApprove:   (opts)                   => call("POST",   "/term-queue/auto-approve",           opts || {}),
+    undoAutoApprove:(batch)                 => call("POST",   `/term-queue/auto-approve/${batch}/undo`),
+    autoBatches:   ()                       => call("GET",    "/term-queue/auto-batches"),
 
     saveTerm:      (term, isNew)            => call("POST",   "/glossary",                          { ...term, isNew }),
-    deleteTerm:    (src)                    => call("DELETE", `/glossary?src=${encodeURIComponent(src)}`),
-    deleteTM:      (src)                    => call("DELETE", `/tm?src=${encodeURIComponent(src)}`),
+    /* Область обязательна: без неё удаление уносит однофамильца из другой пары языков. */
+    deleteTerm:    (src, lang, domain)      => call("DELETE", `/glossary?src=${encodeURIComponent(src)}&lang=${encodeURIComponent(lang||"")}&domain=${encodeURIComponent(domain||"")}`),
+    deleteTM:      (src, lang)              => call("DELETE", `/tm?src=${encodeURIComponent(src)}&lang=${encodeURIComponent(lang||"")}`),
   };
 
   // Best-effort: fail silently in dev if backend down (UI keeps working on mock data).

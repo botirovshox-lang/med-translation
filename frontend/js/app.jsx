@@ -95,19 +95,27 @@ function useStore(authed) {
     window.API.safeCall(() => window.API.deleteProject(id));
   };
 
+  /* Записи с одинаковым src, но разной областью — теперь норма, поэтому
+     локальное обновление сверяет и область: иначе правка RU→EN термина
+     затирала бы в таблице его RU→DE тёзку, а удаление убирало бы обоих. */
+  const sameEntry = (a, b) => a.src === b.src
+    && (a.lang || "RU→EN") === (b.lang || "RU→EN")
+    && (a.domain || "medical") === (b.domain || "medical");
+
   const saveTerm = (term, isNew) => {
-    setGlossary(g => isNew ? [term, ...g] : g.map(t => t.src === term.src ? term : t));
+    setGlossary(g => isNew ? [term, ...g] : g.map(t => sameEntry(t, term) ? term : t));
     if (window.API) window.API.safeCall(() => window.API.saveTerm(term, isNew));
   };
 
   const deleteTerm = (term) => {
-    setGlossary(g => g.filter(t => t.src !== term.src));
-    if (window.API) window.API.safeCall(() => window.API.deleteTerm(term.src));
+    setGlossary(g => g.filter(t => !sameEntry(t, term)));
+    if (window.API) window.API.safeCall(() => window.API.deleteTerm(term.src, term.lang, term.domain));
   };
 
   const deleteTM = (entry) => {
-    setTM(t => t.filter(x => x.src !== entry.src));
-    if (window.API) window.API.safeCall(() => window.API.deleteTM(entry.src));
+    setTM(t => t.filter(x => !(x.src === entry.src
+      && (x.lang || "RU→EN") === (entry.lang || "RU→EN"))));
+    if (window.API) window.API.safeCall(() => window.API.deleteTM(entry.src, entry.lang));
   };
 
   return {

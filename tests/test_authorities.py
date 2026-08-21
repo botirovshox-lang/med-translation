@@ -233,7 +233,31 @@ def boom(url, source):
 A._get_json = boom
 A._CACHE.clear()
 check(A.attested("что-нибудь ещё", "EN", "medical") is None, "недоступный источник молчит")
-check("pubmed" in A._DEAD_UNTIL, "и помечается мёртвым, чтобы не платить таймаутом за каждый термин")
+check("pubmed" in A._DEAD_UNTIL and "wikipedia" in A._DEAD_UNTIL,
+      "перебраны все подходящие источники, каждый помечен мёртвым")
+
+print("\n=== 14b. Упавший источник уступает следующему, а не отключает проверку ===")
+# Ровно боевой случай: у хостера не резолвится NCBI, а Википедия отвечает.
+A._CACHE.clear()
+A._DEAD_UNTIL.clear()
+
+
+def only_wikipedia(url, source):
+    if source == "pubmed":
+        raise OSError("Temporary failure in name resolution")
+    return {"query": {"searchinfo": {"totalhits": 42}}}
+
+
+A._get_json = only_wikipedia
+res = A.attested("posterior uveitis", "EN", "medical")
+check(res and res["source"] == "wikipedia",
+      "медицинский термин проверен Википедией, раз PubMed недоступен")
+check(res and res["ok"], "и ответ получен настоящий, а не «не знаю»")
+check(A.corpus_for("EN", "medical")["id"] == "wikipedia",
+      "интерфейсу тоже показываем тот источник, который реально ответит")
+A._DEAD_UNTIL.clear()
+check(A.corpus_for("EN", "medical")["id"] == "pubmed",
+      "а когда PubMed жив — предпочитаем его: он про медицину")
 A.CORPUS_ENABLED = False
 
 print("\n=== 15. Запросы к источнику разрежены во времени ===")

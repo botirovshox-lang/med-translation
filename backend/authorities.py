@@ -169,14 +169,26 @@ CORPORA = [
 ]
 
 
-def corpus_for(tgt: str, domain: str):
+def corpora_for(tgt: str, domain: str) -> list:
+    """Все подходящие корпуса в порядке предпочтения. Список, а не один:
+    источник может быть недоступен (у хостера сломан DNS, лимит, авария),
+    и тогда работать должен следующий. Один жёстко выбранный корпус означал
+    бы, что падение PubMed молча отключает проверку калек и для Википедии,
+    которая при этом жива."""
+    out = []
     for c in CORPORA:
         if tgt not in c["langs"]:
             continue
         if c["domains"] != "*" and domain not in c["domains"]:
             continue
-        return c
-    return None
+        out.append(c)
+    return out
+
+
+def corpus_for(tgt: str, domain: str):
+    """Корпус, который РЕАЛЬНО ответит: мёртвые пропускаем."""
+    live = [c for c in corpora_for(tgt, domain) if _DEAD_UNTIL.get(c["id"], 0) <= time.time()]
+    return live[0] if live else None
 
 
 _CACHE: dict = {}
@@ -254,47 +266,45 @@ def attested(term: str, tgt: str, domain: str):
     term = (term or "").strip()
     if not CORPUS_ENABLED or not term or len(term) < 3:
         return None
-    corpus = corpus_for((tgt or "").upper(), domain)
-    if not corpus:
-        return None
-    key = (corpus["id"], (tgt or "").upper(), _norm(term))
-    with _CACHE_LOCK:
-        if key in _CACHE:
-            return _CACHE[key]
-        if _DEAD_UNTIL.get(corpus["id"], 0) > time.time():
-            return None
-    try:
-        if corpus["id"] == "pubmed":
-            hits = _pubmed_hits(term)
-        else:
-            hits = _wikipedia_hits(term, LANG_CODES.get((tgt or "").upper(), "en"))
-    except Unreadable as e:
-        # Один непонятный ответ — не повод отключать источник: он жив, просто
-        # эта конкретная выдача нечитаема. Молчим по этому термину и идём дальше.
-        print(f"[authorities] {corpus['id']}: {e}", file=sys.stderr)
-        return None
-    except Exception as e:
+    lang = (tgt or "").upper()
+    for corpus in corpora_for(lang, domain):
+        key = (corpus["id"], lang, _norm(term))
         with _CACHE_LOCK:
-            _DEAD_UNTIL[corpus["id"]] = time.time() + DEAD_FOR
-        print(f"[authorities] {corpus['id']} недоступен ({e}) — "
-              f"корпусная проверка выключена на {DEAD_FOR} c", file=sys.stderr)
-        return None
-    res = {"hits": hits, "source": corpus["id"], "label": corpus["label"],
-           "ok": hits >= MIN_ATTESTED, "absent": hits == 0}
-    with _CACHE_LOCK:
-        if len(_CACHE) >= _CACHE_MAX:
-            _CACHE.clear()
-        _CACHE[key] = res
-    return res
+            if key in _CACHE:
+                return _CACHE[key]
+            if _DEAD_UNTIL.get(corpus["id"], 0) > time.time():
+                continue                      # мёртвый — пробуем следующий
+        try:
+            if corpus["id"] == "pubmed":
+                hits = _pubmed_hits(term)
+            else:
+                hits = _wikipedia_hits(term, LANG_CODES.get(lang, "en"))
+        except Unreadable as e:
+            # Один непонятный ответ — не повод отключать источник: он жив, просто
+            # эта конкретная выдача нечитаема. По этому термину молчим совсем:
+            # спрашивать следующий бессмысленно, вопрос был не в источнике.
+            print(f"[authorities] {corpus['id']}: {e}", file=sys.stderr)
+            return None
+        except Exception as e:
+            with _CACHE_LOCK:
+                _DEAD_UNTIL[corpus["id"]] = time.time() + DEAD_FOR
+            print(f"[authorities] {corpus['id']} недоступен ({e}) — отключён "
+                  f"на {DEAD_FOR} c, пробуем следующий источник", file=sys.stderr)
+            continue
+        res = {"hits": hits, "source": corpus["id"], "label": corpus["label"],
+               "ok": hits >= MIN_ATTESTED, "absent": hits == 0}
+        with _CACHE_LOCK:
+            if len(_CACHE) >= _CACHE_MAX:
+                _CACHE.clear()
+            _CACHE[key] = res
+        return res
+    return None
 
 
 def corpus_available(tgt: str, domain: str) -> bool:
     """Есть ли вообще чем проверять эту пару. Нужно интерфейсу: пользователь
     должен видеть, чем проверялись его термины, а не гадать."""
-    if not CORPUS_ENABLED:
-        return False
-    c = corpus_for((tgt or "").upper(), domain)
-    return bool(c) and _DEAD_UNTIL.get(c["id"], 0) <= time.time()
+    return bool(CORPUS_ENABLED and corpus_for((tgt or "").upper(), domain))
 
 
 def stats() -> dict:

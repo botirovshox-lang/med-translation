@@ -1,0 +1,303 @@
+"""Внешние источники приказов и корпусная проверка терминов.
+
+Зачем это существует
+────────────────────
+Система не может заверять термины собственными переводами: если кандидат
+приходит из машинного перевода, а подтверждают его оценки того же контура,
+получается самоподтверждение — и ошибка закрепляется как правило. Раньше
+единственным выходом из этого круга был человек. Но человек, не знающий
+целевого языка (а именно для таких этот инструмент и делается), судить
+о термине не может.
+
+Значит, право сделать запись приказом должен давать источник ВНЕ контура:
+
+  словарь  — отраслевой справочник, где пара «оригинал → перевод» уже
+             зафиксирована кем-то, кто в этом разбирается. Совпадение с ним
+             и есть приказ: это не мнение модели, это норма.
+  корпус   — тексты целевого языка. Он не говорит «это верный перевод»,
+             он отвечает на другой вопрос: «такой термин в языке вообще
+             существует?». «rear cyclitis» не встречается нигде — и это
+             ловится одним запросом, без всякой модели.
+
+Закон тот же, что у DOMAIN_RULES в medical_qa: НЕТ источника для этой области
+и этой пары языков — МОЛЧИМ. Никогда не «сойдёт английский справочник для
+узбекского перевода»: выдуманное подтверждение хуже отсутствующего.
+
+Сеть тут необязательна. Любая недоступность источника означает «сигнала нет»,
+а не «сигнал отрицательный»: молчащий интернет не должен ни одобрять термины,
+ни блокировать работу.
+"""
+import json
+import os
+import re
+import sys
+import threading
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+# ─── Языки ───────────────────────────────────────────────────────────
+# Коды нужны корпусам (у Википедии домен на язык). Пары в проекте хранятся
+# строкой «RU→EN», отсюда и разбор.
+LANG_CODES = {"RU": "ru", "EN": "en", "DE": "de", "FR": "fr", "ES": "es"}
+
+USER_AGENT = "MedicalCATTranslator/1.0 (terminology verification)"
+NET_TIMEOUT = float(os.environ.get("AUTHORITY_TIMEOUT", "6"))
+# Ниже этого числа вхождений термин считается неподтверждённым, при нуле —
+# отсутствующим в языке. Пороги намеренно низкие: задача корпуса — отсеять
+# кальки, которых нет вовсе, а не ранжировать хорошие термины между собой.
+MIN_ATTESTED = int(os.environ.get("AUTHORITY_MIN_HITS", "5"))
+
+CORPUS_ENABLED = os.environ.get("AUTHORITY_CORPUS", "1").lower() not in {"0", "false", "no", "off"}
+
+
+def target_lang(lang_pair: str) -> str:
+    """«RU→EN» → «EN». Пара может прийти с любым разделителем-стрелкой."""
+    parts = re.split(r"→|->|—>|>", lang_pair or "")
+    return (parts[-1] if parts else "").strip().upper()
+
+
+def source_lang(lang_pair: str) -> str:
+    parts = re.split(r"→|->|—>|>", lang_pair or "")
+    return (parts[0] if parts else "").strip().upper()
+
+
+def _norm(text: str) -> str:
+    return " ".join((text or "").lower().replace("ё", "е").split())
+
+
+# ─── Словари: офлайновые справочники ─────────────────────────────────
+# Формат — TSV с заголовком в комментариях. Так справочник добавляется файлом,
+# без правки кода:
+#
+#   # label: ВОЗ INN — международные непатентованные наименования
+#   # lang: RU→EN
+#   # domains: medical, pharma
+#   аторвастатин	atorvastatin
+#
+# «domains: *» — источник годится для любой области (так устроены IATE и UNTERM),
+# но пара языков обязательна всегда: справочник без указанной пары бесполезен
+# и опасен.
+
+class Dictionary:
+    def __init__(self, ident, label, lang, domains, pairs, path):
+        self.id = ident
+        self.label = label
+        self.lang = lang              # «RU→EN»
+        self.domains = domains        # set | "*"
+        self.pairs = pairs            # {норм. оригинал: {норм. переводы}}
+        self.path = path
+
+    def covers(self, lang: str, domain: str) -> bool:
+        if _norm(self.lang) != _norm(lang):
+            return False
+        return self.domains == "*" or domain in self.domains
+
+    def match(self, src: str, tgt: str) -> bool:
+        return _norm(tgt) in self.pairs.get(_norm(src), ())
+
+    def suggest(self, src: str):
+        """Что справочник предлагает для этого термина — чтобы показать человеку
+        не только «не совпало», но и «а норма вот такая»."""
+        return sorted(self.pairs.get(_norm(src), ()))
+
+
+def _parse_header(line: str, meta: dict):
+    m = re.match(r"#\s*(label|lang|domains)\s*:\s*(.+)$", line.strip(), re.I)
+    if not m:
+        return
+    key, val = m.group(1).lower(), m.group(2).strip()
+    if key == "domains":
+        meta["domains"] = "*" if val.strip() == "*" else {
+            d.strip().lower() for d in val.split(",") if d.strip()}
+    else:
+        meta[key] = val
+
+
+def load_dictionaries(root) -> list:
+    """Прочитать все справочники из каталога. Битый файл пропускаем с шумом
+    в журнал, а не роняем сервис: справочник — данные, а не код."""
+    out = []
+    root = Path(root)
+    if not root.exists():
+        return out
+    for path in sorted(root.glob("*.tsv")):
+        meta, pairs = {}, {}
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                for line in f:
+                    if line.startswith("#"):
+                        _parse_header(line, meta)
+                        continue
+                    if not line.strip():
+                        continue
+                    cols = line.rstrip("\n").split("\t")
+                    if len(cols) < 2:
+                        continue
+                    src, tgt = _norm(cols[0]), _norm(cols[1])
+                    if src and tgt:
+                        pairs.setdefault(src, set()).add(tgt)
+        except Exception as e:
+            print(f"[authorities] справочник {path.name} не прочитан: {e}", file=sys.stderr)
+            continue
+        if not meta.get("lang"):
+            print(f"[authorities] {path.name}: нет строки «# lang: RU→EN» — пропущен, "
+                  f"справочник без языковой пары применять не к чему", file=sys.stderr)
+            continue
+        if not pairs:
+            continue
+        out.append(Dictionary(path.stem, meta.get("label", path.stem), meta["lang"],
+                              meta.get("domains", "*"), pairs, str(path)))
+        print(f"[authorities] {path.stem}: {len(pairs)} терминов, {meta['lang']}, "
+              f"области {meta.get('domains', '*')}", file=sys.stderr)
+    return out
+
+
+# ─── Корпуса: живёт ли термин в целевом языке ────────────────────────
+# Корпус НЕ подтверждает перевод. Он отвечает только на вопрос «такое слово
+# в этом языке употребляют?» — и этого достаточно, чтобы поймать кальку.
+
+CORPORA = [
+    {"id": "pubmed", "label": "PubMed",
+     "domains": {"medical", "pharma"}, "langs": {"EN"}},
+    # Википедия есть на всех наших языках и не привязана к области. Слабее
+    # PubMed, поэтому идёт второй: медицинский термин ищем там, где о медицине
+    # и пишут.
+    {"id": "wikipedia", "label": "Википедия",
+     "domains": "*", "langs": set(LANG_CODES)},
+]
+
+
+def corpus_for(tgt: str, domain: str):
+    for c in CORPORA:
+        if tgt not in c["langs"]:
+            continue
+        if c["domains"] != "*" and domain not in c["domains"]:
+            continue
+        return c
+    return None
+
+
+_CACHE: dict = {}
+_CACHE_LOCK = threading.Lock()
+_CACHE_MAX = 20000
+# Источник, который перестал отвечать, не спрашиваем ещё какое-то время:
+# иначе каждый кандидат из пачки платит своим таймаутом, и разбор очереди
+# из двухсот терминов встаёт на двадцать минут.
+_DEAD_UNTIL: dict = {}
+DEAD_FOR = 300
+
+
+# Минимальный интервал между запросами к источнику. У NCBI без ключа это
+# 3 запроса в секунду, и превышение отвечает 429 — то есть наша параллельность
+# сама себе выключала бы корпусную проверку. Троттлинг дешевле ретраев.
+_MIN_INTERVAL = {"pubmed": 0.34, "wikipedia": 0.1}
+_LAST_CALL: dict = {}
+_RATE_LOCK = threading.Lock()
+
+
+def _throttle(source: str):
+    """Держит частоту запросов к источнику в пределах его лимита.
+
+    Слот занимаем ПОД локом, а спим уже без него: заснув с локом, поток
+    останавливал бы и всех остальных, и параллельность превращалась бы
+    в последовательность с общим ожиданием."""
+    gap = _MIN_INTERVAL.get(source, 0.2)
+    with _RATE_LOCK:
+        slot = max(time.time(), _LAST_CALL.get(source, 0) + gap)
+        _LAST_CALL[source] = slot
+    wait = slot - time.time()
+    if wait > 0:
+        time.sleep(wait)
+
+
+def _get_json(url: str, source: str):
+    _throttle(source)
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=NET_TIMEOUT) as resp:
+        return json.loads(resp.read().decode("utf-8", "replace"))
+
+
+class Unreadable(Exception):
+    """Источник ответил, но не тем, что мы умеем читать. Это «не знаю»,
+    а НЕ «ноль вхождений»: пустой ответ нельзя превращать в вето."""
+
+
+def _pubmed_hits(term: str) -> int:
+    url = ("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+           "?db=pubmed&rettype=count&retmode=json&term="
+           + urllib.parse.quote('"%s"' % term))
+    data = _get_json(url, "pubmed").get("esearchresult", {})
+    if "count" not in data:
+        raise Unreadable("ответ без поля count: " + str(data)[:120])
+    return int(data["count"])
+
+
+def _wikipedia_hits(term: str, code: str) -> int:
+    url = ("https://%s.wikipedia.org/w/api.php?action=query&list=search&format=json"
+           "&srlimit=1&srinfo=totalhits&srsearch=" % code
+           + urllib.parse.quote('"%s"' % term))
+    info = _get_json(url, "wikipedia").get("query", {}).get("searchinfo", {})
+    if "totalhits" not in info:
+        raise Unreadable("ответ без поля totalhits: " + str(info)[:120])
+    return int(info["totalhits"])
+
+
+def attested(term: str, tgt: str, domain: str):
+    """Встречается ли термин в целевом языке.
+
+    Возвращает {"hits", "source", "label", "ok"} либо None, если проверить
+    нечем: источника для этой пары нет, сеть молчит или проверка выключена.
+    None — это «не знаю», и трактовать его как «плохо» нельзя.
+    """
+    term = (term or "").strip()
+    if not CORPUS_ENABLED or not term or len(term) < 3:
+        return None
+    corpus = corpus_for((tgt or "").upper(), domain)
+    if not corpus:
+        return None
+    key = (corpus["id"], (tgt or "").upper(), _norm(term))
+    with _CACHE_LOCK:
+        if key in _CACHE:
+            return _CACHE[key]
+        if _DEAD_UNTIL.get(corpus["id"], 0) > time.time():
+            return None
+    try:
+        if corpus["id"] == "pubmed":
+            hits = _pubmed_hits(term)
+        else:
+            hits = _wikipedia_hits(term, LANG_CODES.get((tgt or "").upper(), "en"))
+    except Unreadable as e:
+        # Один непонятный ответ — не повод отключать источник: он жив, просто
+        # эта конкретная выдача нечитаема. Молчим по этому термину и идём дальше.
+        print(f"[authorities] {corpus['id']}: {e}", file=sys.stderr)
+        return None
+    except Exception as e:
+        with _CACHE_LOCK:
+            _DEAD_UNTIL[corpus["id"]] = time.time() + DEAD_FOR
+        print(f"[authorities] {corpus['id']} недоступен ({e}) — "
+              f"корпусная проверка выключена на {DEAD_FOR} c", file=sys.stderr)
+        return None
+    res = {"hits": hits, "source": corpus["id"], "label": corpus["label"],
+           "ok": hits >= MIN_ATTESTED, "absent": hits == 0}
+    with _CACHE_LOCK:
+        if len(_CACHE) >= _CACHE_MAX:
+            _CACHE.clear()
+        _CACHE[key] = res
+    return res
+
+
+def corpus_available(tgt: str, domain: str) -> bool:
+    """Есть ли вообще чем проверять эту пару. Нужно интерфейсу: пользователь
+    должен видеть, чем проверялись его термины, а не гадать."""
+    if not CORPUS_ENABLED:
+        return False
+    c = corpus_for((tgt or "").upper(), domain)
+    return bool(c) and _DEAD_UNTIL.get(c["id"], 0) <= time.time()
+
+
+def stats() -> dict:
+    with _CACHE_LOCK:
+        return {"cached": len(_CACHE),
+                "dead": [k for k, v in _DEAD_UNTIL.items() if v > time.time()]}

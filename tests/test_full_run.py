@@ -6,6 +6,8 @@ STATE синтетический, save_state замолчан — боевые �
 import os, sys
 os.environ.setdefault("APP_PASSWORD", "test")
 os.environ["OPENAI_API_KEY"] = "test-key"
+# В сеть не ходим: внешний корпус отвечает по-разному в разные дни.
+os.environ["AUTHORITY_CORPUS"] = "0"
 sys.path.insert(0, "backend")
 import main
 
@@ -266,6 +268,68 @@ proj["segments"][0]["backcheck"] = {"score": 95, "target_hash": h, "back": "..."
 after = main.project_analysis(1)
 check(after["clean"] == [1] and before["clean"] == [],
       "прогон back-check меняет отчёт, хотя ни статус, ни перевод не тронуты")
+
+print("\n=== 18. Второй клик: одобрить термины и применить их ===")
+main.repair_batch, main._run_segment_termcheck = _real_repair, _real_tc
+main._openai_repair = lambda *a, **k: "uveitis on the right"
+main._run_segment_termcheck = lambda seg_, *a, **k: seg_.__setitem__(
+    "termcheck", {"findings": [], "model": "t",
+                  "target_hash": main._text_hash((seg_.get("target") or "").strip())})
+proj = build([
+    seg(1, "увеит", "uveitis", status="translated"),
+    seg(2, "увеит", "uveitis", status="translated"),
+    seg(3, "увеит", "uveitis", status="translated"),
+    seg(10, "увеит справа", "eye inflammation on the right", status="translated"),
+], gloss=[])
+for s in proj["segments"][:3]:
+    h = main._text_hash("uveitis")
+    s["source"] = "увеит " + str(s["id"])      # разные исходники → независимость
+    s["backcheck"] = {"score": 95, "target_hash": h, "back": "..."}
+    s["termcheck"] = {"findings": [], "target_hash": h, "model": "t"}
+main.STATE["termQueue"].append(
+    {"id": 1, "kind": "segment", "src": "увеит", "tgt": "uveitis", "status": "pending",
+     "hits": 3, "segments": ["1:1", "1:2", "1:3"], "lang": "RU→EN", "domain": "medical"})
+
+
+# Справочник обязателен для этой проверки, и это не подпорка, а суть механики:
+# в медицине согласие сегментов даёт только ПОДСКАЗКУ, а подсказку модель вправе
+# игнорировать — переписывать по ней готовые переводы нельзя. Приказом термин
+# делает внешний источник, и только после этого ремонт вправе его подставлять.
+class FakeDict:
+    id, label = "test_inn", "Тестовый справочник"
+    pairs = {"увеит": {"uveitis"}}
+
+    def covers(self, lang, domain):
+        return lang == "RU→EN" and domain == "medical"
+
+    def match(self, src, tgt):
+        return (src.strip().lower(), tgt.strip().lower()) == ("увеит", "uveitis")
+
+    def suggest(self, src):
+        return ["uveitis"] if src.strip().lower() == "увеит" else []
+
+
+main._DICTIONARIES = [FakeDict()]
+
+job = {"id": 1, "kind": "apply_terms", "project": 1, "status": "running", "total": 0,
+       "done": 0, "counters": {}, "error": None, "params": {}, "ids": [], "stop": False,
+       "recent": [], "created": "", "started": None, "finished": None}
+main._job_run(job)
+check(job["status"] == "done", "прогон завершился: " + str(job.get("error")))
+check(job["counters"].get("termsApproved") == 1, "термин одобрен и записан в глоссарий")
+check(any(g["src"] == "увеит" for g in main.STATE["glossary"]), "запись появилась")
+check(job["total"] == 1 and job["ids"] == [10],
+      "состав сегментов посчитан ПОСЛЕ одобрения: только разошедшийся, " + str(job["ids"]))
+check(main.STATE["projects"][0]["segments"][3]["target"] == "uveitis on the right",
+      "сегмент починен новым термином")
+check(job["counters"].get("applied") == 1, "и это отражено в счётчиках")
+
+print("\n=== 19. Одобрять нечего — прогон не падает и ничего не чинит ===")
+job2 = dict(job, id=2, status="running", done=0, counters={}, ids=[], total=0)
+main._job_run(job2)
+check(job2["status"] == "done" and job2["counters"].get("termsApproved") == 0,
+      "пустое одобрение — это не ошибка")
+check(job2["total"] == 0, "и чинить после него нечего")
 
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

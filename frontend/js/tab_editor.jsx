@@ -16,7 +16,7 @@ const TC_MODEL_LS_KEY = "mcat_termcheck_model";
 const RP_MODEL_LS_KEY = "mcat_repair_model";
 const JOB_LABELS = { translate: "Перевод", backcheck: "Back-check", termcheck: "Проверка терминологии",
                      repair: "Автоматический ремонт", medical_qa: "Medical QA",
-                     full: "Перевод и проверка" };
+                     full: "Перевод и проверка", apply_terms: "Одобрение и применение" };
 
 // Цвет полосы соответствия обратного перевода
 function bandColor(color) {
@@ -258,6 +258,9 @@ function TabEditor({ store, toast }) {
   // null = все шаги; экономия на Google по умолчанию выключена — качество важнее.
   const [fullSteps, setFullSteps] = useState(null);
   const [fullLowGoogle, setFullLowGoogle] = useState(false);
+  // Разбор автоодобрения (dry_run): что попадёт в глоссарий и чем это
+  // подтверждено. Считает сервер, вызовов модели внутри нет.
+  const [autoPreview, setAutoPreview] = useState(null);
   const PAGE_SIZE = 10;
 
   // Каталог моделей грузим один раз; пустой список — значит бэкенд старый или ключа нет
@@ -302,6 +305,7 @@ function TabEditor({ store, toast }) {
         lastJobId.current = null;
         reportJobResult(finished);
         loadImpact();
+        loadAutoPreview();      // прогон мог родить новых кандидатов
         const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
         if (!dead && fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
       }
@@ -343,7 +347,23 @@ function TabEditor({ store, toast }) {
     setImpactBusy(false);
     if (res && res.ok) setImpact(res);
   };
-  useEffect(() => { setImpact(null); loadImpact(); }, [project && project.id]);
+  // Разбор автоодобрения в режиме «показать»: сервер считает вердикты и
+  // возвращает, что попадёт и чем подтверждено. Ничего не меняет и не стоит
+  // денег, поэтому обновляем вместе с отчётом о глоссарии.
+  // Ответ может идти секунды (до 200 внешних запросов), а пользователь за это
+  // время успевает переключить проект. Без сверки id разбор ЧУЖОГО проекта
+  // лёг бы в карточку, и кнопка «Одобрить» считала бы одно, а применяла другое.
+  const loadAutoPreview = async () => {
+    if (!window.API || !window.API.autoApprove || !project) return;
+    const pid = project.id;
+    const res = await window.API.safeCall(() => window.API.autoApprove({
+      project: pid, dry_run: true }));
+    if (res && res.ok && store.activeProject && store.activeProject.id === pid) {
+      setAutoPreview(res);
+    }
+  };
+  useEffect(() => { setImpact(null); setAutoPreview(null); loadImpact(); loadAutoPreview(); },
+    [project && project.id]);
 
   useEffect(() => { setTcGroupPick(null); }, [tcModel, store.segmentFilter, checkedSegs.size]);
   useEffect(() => { setRpGroupPick(null); }, [rpModel, store.segmentFilter, checkedSegs.size]);
@@ -738,12 +758,27 @@ function TabEditor({ store, toast }) {
     const errMsg = c.errors ? " · ошибок: " + c.errors : "";
     const dupMsg = c.duplicates ? " · повторов зачтено без вызова: " + c.duplicates : "";
     if (j.status === "error") {
+      // У «Одобрить и применить» глоссарий меняется ДО сегментов. Оборвался
+      // ремонт — термины уже записаны, и молчать об этом нельзя: человек должен
+      // знать, что откатывать, если результат его не устроил.
+      const glossNote = (j.kind === "apply_terms" && c.termsApproved)
+        ? " Термины (" + c.termsApproved + ") уже в глоссарии — пачку можно откатить в «Глоссарии»." : "";
       toast.error(name + ": прогон прерван",
-        j.done + " из " + j.total + " обработано и сохранено. " + (j.error || ""));
+        j.done + " из " + j.total + " обработано и сохранено. " + (j.error || "") + glossNote);
       return;
     }
     if (j.status === "stopped") {
       toast.warning(name + ": остановлено", j.done + " из " + j.total + " обработано и сохранено." + errMsg);
+      return;
+    }
+    if (j.kind === "apply_terms") {
+      const t = c.termsApproved || 0;
+      toast.success("Одобрено и применено",
+        t + " терминов в глоссарий (приказом: " + (c.termsVerified || 0) + ")"
+        + " · сегментов исправлено: " + (c.applied || 0)
+        + (c.reverted ? " · откачено: " + c.reverted : "")
+        + (c.skipped_confirmed ? " · подтверждённых не тронуто: " + c.skipped_confirmed : "")
+        + errMsg + " · откатить пачку можно в «Глоссарии»");
       return;
     }
     if (j.kind === "full") {
@@ -1057,6 +1092,25 @@ function TabEditor({ store, toast }) {
     }, "В выбранных сегментах нечего делать.");
   };
 
+  /* ── Второй клик: одобрить термины и применить их к переводу ──────
+     Состав сегментов здесь не выбирается и выбираться не может: пока термины
+     не одобрены, неизвестно, какие сегменты с ними разойдутся. Список считает
+     сервер сразу после одобрения. */
+  const runApplyTerms = async () => {
+    if (batchRun) { toast.warning("Прогон уже идёт", "Дождитесь окончания."); return; }
+    if (!window.API) return;
+    const res = await window.API.safeCall(() => window.API.createJob(project.id, "apply_terms", [], {
+      max_tier: null, term_limit: 2000,
+      rp_model: rpModel, bc_model: bcModel, tc_model: tcModel,
+      use_judge: bcJudge, judge_model: judgeModel || null,
+      include_confirmed: !!impactConfirmed,
+    }));
+    if (!res || !res.ok) { toast.error("Не удалось запустить", "Сервер не принял задачу."); return; }
+    setJob(res.job);
+    toast.info("Одобряем и применяем",
+      "Термины уходят в глоссарий, затем сегменты чинятся по ним. Вкладку можно закрыть.");
+  };
+
   const filterDefs = [
     ["all", "Все", counts.all], ["new", "Новые", counts.new], ["translated", "Переведено", counts.translated],
     ["qa", "QA", counts.qa], ["confirmed", "Подтверждено", counts.confirmed], ["failed", "Ошибки", counts.failed],
@@ -1144,6 +1198,13 @@ function TabEditor({ store, toast }) {
           .filter(Boolean).map(m => m.label),
         lowGoogle: fullLowGoogle, onLowGoogle: () => setFullLowGoogle(v => !v),
         disabled: !!job }),
+      React.createElement(ApplyTermsCard, {
+        running: job && job.kind === "apply_terms" ? job : null,
+        onRun: runApplyTerms, onStop: stopJob, disabled: !!job,
+        preview: autoPreview, sources: autoPreview && autoPreview.sources,
+        includeConfirmed: impactConfirmed,
+        onIncludeConfirmed: () => setImpactConfirmed(v => !v),
+        confirmedCount: impact ? impact.confirmed.length : 0 }),
       React.createElement(Expander, { title: "Отдельные прогоны", icon: "zap", right: "по одному шагу — для точечной работы", defaultOpen: false },
         React.createElement("div", { className: "grid grid-3" },
           React.createElement(BatchCard, { kind: "google", est: estimateRun("translate", pickTargets("google", project.segments).targets, null), running: batchRun && batchRun.engine === "google" ? batchRun : null, onRun: () => askRunBatch("google"), onStop: stopJob,
@@ -1518,6 +1579,72 @@ function FullRunCard({ running, onRun, onStop, steps, picked, onToggle, targets,
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop, style: { marginTop: 8 } }, "Остановить"))
       : React.createElement(Btn, { variant: "primary", icon: "zap", onClick: onRun, disabled: disabled || !anyWork },
           anyWork ? "Перевести и проверить" : "Всё уже сделано"));
+}
+
+/* Второй клик конвейера. Одобряет однозначные термины пачкой и тут же чинит
+   ими сегменты. Состав сегментов не выбирается намеренно: пока термины не
+   одобрены, неизвестно, какие сегменты с ними разойдутся — список считает
+   сервер сразу после одобрения. */
+function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
+                          includeConfirmed, onIncludeConfirmed, confirmedCount }) {
+  const c = preview && preview.counts;
+  const ready = c ? (c.auto || 0) + (c.verified || 0) : 0;
+  const dicts = (sources && sources.dictionaries) || [];
+  const corpus = sources && sources.corpus;
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12, marginBottom: 14, borderLeft: "3px solid var(--c-success)" } },
+
+    React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
+      React.createElement("div", { className: "row", style: { gap: 10 } },
+        React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-success)" } },
+          React.createElement(Icon, { name: "check", size: 19 })),
+        React.createElement("div", null,
+          React.createElement("div", { style: { fontWeight: 650, fontSize: 15, display: "flex", alignItems: "center" } }, "Одобрить и применить",
+            React.createElement(InfoTip, { title: "Что делает эта кнопка",
+              body: "Однозначные термины уходят в глоссарий пачкой, а затем сегменты чинятся по ним: расхождение с утверждённым термином — такая же находка ремонта, как потерянный термин или расхождение чисел.\n\nЧто считается однозначным: у термина ровно один вариант перевода; пара пришла из нескольких независимых сегментов, прошедших back-check и проверку терминов чисто; перевод встречается в текстах целевого языка.\n\nПриказом («use these exact translations») запись становится от человека, от трёх независимых чистых сегментов или от совпадения с отраслевым справочником. В медицине, фармацевтике и юриспруденции согласия сегментов для приказа НЕ хватает — там приказ даёт только человек или справочник.\n\nЛюбую пачку можно откатить целиком в «Глоссарии»." })),
+          React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+            "термины в глоссарий → ремонт по ним → перепроверка"))),
+      React.createElement("span", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 18, color: ready ? "var(--c-success)" : "var(--text-3)" } },
+        ready)),
+
+    // Чем проверялись термины. Покрытие по парам языков очень разное, и разницу
+    // честнее назвать, чем дать пользователю обнаружить её на своих текстах.
+    React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.6 } },
+      "Проверяют: ",
+      dicts.length
+        ? dicts.map(d => d.label + " (" + d.terms + ")").join(" · ")
+        : "справочников для этой пары языков нет",
+      corpus ? " · корпус " + corpus.label : " · корпус недоступен",
+      preview && preview.corpusSkipped
+        ? " · сверх потолка не проверено: " + preview.corpusSkipped : ""),
+
+    // Цифра выше посчитана ДО обращения к корпусу: спрашивать его при каждом
+    // открытии проекта — это минута ожидания на лимитах источника. При нажатии
+    // он отработает, и часть кандидатов может отсеяться как отсутствующие
+    // в целевом языке. Обещать больше, чем сделаем, нельзя.
+    preview && preview.corpusPending && corpus && React.createElement("div",
+      { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
+      "Это верхняя оценка: проверку по " + corpus.label
+      + " прогон сделает при нажатии, и калек в списке станет меньше."),
+
+    c && c.skipped > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
+      "останется человеку: ", React.createElement("b", null, c.skipped),
+      " — разобрать в «Глоссарии»"),
+
+    confirmedCount > 0 && React.createElement(Checkbox, {
+      checked: !!includeConfirmed, onChange: onIncludeConfirmed },
+      "Чинить и подтверждённые (" + confirmedCount + ")"),
+
+    running
+      ? React.createElement("div", null,
+          React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
+            React.createElement("span", { className: "muted" },
+              running.total ? "Применяем к сегментам…" : "Одобряем термины…"),
+            React.createElement("span", { style: { fontWeight: 700 } },
+              Math.round(running.done) + "/" + Math.max(1, running.total))),
+          React.createElement(ProgressBar, { value: Math.round(running.done / Math.max(1, running.total) * 100) }),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop, style: { marginTop: 8 } }, "Остановить"))
+      : React.createElement(Btn, { variant: "primary", icon: "check", onClick: onRun, disabled: disabled || !ready },
+          ready ? "Одобрить " + ready + " и применить" : "Однозначных терминов нет"));
 }
 
 function BatchCard({ kind, running, onRun, onStop, available, selectionSize, filtered, checked, models, model, modelInfo, onModel, est }) {

@@ -7,6 +7,10 @@ STATE подменён, save_state замолчан — реальные дан�
 """
 import os, sys
 os.environ.setdefault("APP_PASSWORD", "test")
+# Тест не ходит в сеть: внешние корпуса отвечают по-разному в разные дни,
+# а проверка обязана давать один и тот же ответ. Их поведение проверяется
+# отдельно, на подменённом источнике.
+os.environ["AUTHORITY_CORPUS"] = "0"
 sys.path.insert(0, "backend")
 import main
 

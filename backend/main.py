@@ -72,6 +72,10 @@ pipeline = _safe_import("pipeline")
 google_translate = _safe_import("google_translate")
 tm_mod = _safe_import("tm")
 medical_qa_mod = _safe_import("medical_qa")
+# Внешние источники приказов: отраслевые справочники и корпуса целевого языка.
+# Без них термин может заверить только человек — а он целевого языка может
+# и не знать. См. шапку authorities.py.
+authorities_mod = _safe_import("authorities")
 
 # Google Cloud Translation API v2 (с fallback на deep-translator)
 import requests as _requests
@@ -2315,8 +2319,11 @@ def reject_term_candidate(cid: int):
 # подсказку, которую модель вправе игнорировать. Приказом ("verified") запись
 # становится от человека либо от трёх независимых подтверждений, а в медицине,
 # фарме и юриспруденции — только от человека: там цена приказа выше.
-AUTO_POLICY_VERSION = "v1"
+AUTO_POLICY_VERSION = "v2"          # v2: внешние справочники и корпус
 AUTO_BATCH_HISTORY = 20
+# Потолок корпусных запросов на один разбор очереди. Каждый — внешний HTTP;
+# 200 штук по шесть секунд таймаута в шесть потоков — это минуты, а не часы.
+AUTO_CORPUS_MAX = int(os.environ.get("AUTO_CORPUS_MAX", "200"))
 
 AUTO_APPROVE_DEFAULT = {
     "auto_min_segments": 2,        # независимых машинно-чистых сегментов на подсказку
@@ -2332,6 +2339,84 @@ AUTO_APPROVE_BY_DOMAIN = {
     "pharma": {"allow_verified": False},
     "legal": {"allow_verified": False},
 }
+
+
+# ─── Внешние источники приказов ──────────────────────────────────────
+# Справочники лежат файлами в data/authorities/*.tsv и подхватываются при
+# старте: добавить источник — значит положить файл, а не править код.
+# Два каталога, и это не дублирование:
+#   authority_data/ — источники, едущие в git вместе с кодом (общие для всех);
+#   data/authorities/ — то, что добавил владелец сервера (в git не хранится,
+#                       как и все данные в data/).
+AUTHORITY_DIRS = [ROOT / "backend" / "authority_data", DATA_DIR / "authorities"]
+_DICTIONARIES: list = []
+
+
+def _load_authorities():
+    global _DICTIONARIES
+    if not authorities_mod:
+        return
+    loaded = []
+    for d in AUTHORITY_DIRS:
+        try:
+            loaded.extend(authorities_mod.load_dictionaries(d))
+        except Exception as e:                               # pragma: no cover
+            print(f"[backend] справочники из {d} не загружены: {e}", file=sys.stderr)
+    _DICTIONARIES = loaded
+
+
+_load_authorities()      # ОБЯЗАТЕЛЬНО при импорте: без этого вызова весь путь
+                         # «приказ от справочника» мёртв, и медицина с фармой
+                         # навсегда остаются без приказов, кроме человеческих.
+
+
+def _authority_match(src: str, tgt: str, scope: tuple) -> Optional[dict]:
+    """Совпадение пары с отраслевым справочником для ЭТОЙ области и пары языков.
+
+    Это и есть приказ без человека: норму зафиксировал тот, кто в предметной
+    области разбирается. Справочник чужой пары языков или чужой области не
+    подходит никогда — выдуманное подтверждение хуже отсутствующего."""
+    for d in _DICTIONARIES:
+        if d.covers(scope[0], scope[1]) and d.match(src, tgt):
+            return {"id": d.id, "label": d.label}
+    return None
+
+
+def _authority_suggests(src: str, scope: tuple) -> list:
+    """Что справочники предлагают для термина — показываем человеку рядом
+    с кандидатом: «не совпало» без «а как правильно» бесполезно."""
+    out = []
+    for d in _DICTIONARIES:
+        if d.covers(scope[0], scope[1]):
+            out.extend(d.suggest(src))
+    return sorted(set(out))
+
+
+def _corpus_check(tgt: str, scope: tuple) -> Optional[dict]:
+    """Живёт ли перевод в целевом языке. None — «проверить нечем», и это
+    НЕ отрицательный ответ: молчащий источник не должен ни одобрять, ни
+    блокировать."""
+    if not authorities_mod:
+        return None
+    try:
+        return authorities_mod.attested(tgt, authorities_mod.target_lang(scope[0]), scope[1])
+    except Exception as e:                                   # pragma: no cover
+        print(f"[backend] корпусная проверка не удалась: {e}", file=sys.stderr)
+        return None
+
+
+def _authority_sources(scope: tuple) -> dict:
+    """Чем в этой области и паре языков вообще есть чем проверять. Нужно
+    интерфейсу: разница в качестве между парами языков должна быть названа,
+    а не обнаружена пользователем на своих текстах."""
+    dicts = [{"id": d.id, "label": d.label, "terms": len(d.pairs)}
+             for d in _DICTIONARIES if d.covers(scope[0], scope[1])]
+    corpus = None
+    if authorities_mod:
+        c = authorities_mod.corpus_for(authorities_mod.target_lang(scope[0]), scope[1])
+        if c and authorities_mod.corpus_available(authorities_mod.target_lang(scope[0]), scope[1]):
+            corpus = {"id": c["id"], "label": c["label"]}
+    return {"dictionaries": dicts, "corpus": corpus}
 
 
 def _auto_policy(domain_id: Optional[str]) -> dict:
@@ -2434,9 +2519,6 @@ def _auto_verdict(cand: dict, ctx: dict) -> tuple:
         return None, "похоже на предложение, а не термин"
 
     scope = _scope_of(cand)
-    if len(ctx["variants"].get((scope, _norm_key(src)), set())) > 1:
-        return None, "у термина несколько вариантов перевода"
-
     known = ctx["gloss"].get((scope, _norm_key(src)))
     if known:
         if _norm_key(known.get("tgt")) == _norm_key(tgt):
@@ -2451,6 +2533,43 @@ def _auto_verdict(cand: dict, ctx: dict) -> tuple:
         # Запись уровня "auto" (массовый импорт) — как раз то, что автоодобрение
         # и должно чинить: у нас есть доказательства, у неё их не было.
 
+    # ── Внешний справочник: приказ без человека ──────────────────────
+    # Совпадение с отраслевым справочником — не мнение системы о собственном
+    # переводе, а зафиксированная норма. Это единственное, что даёт verified
+    # там, где allow_verified выключен (медицина, фарма, юриспруденция):
+    # запрет касается САМООДОБРЕНИЯ, а справочник находится вне контура.
+    # Проверяется РАНЬШЕ спора вариантов: когда у термина два перевода,
+    # справочник как раз и говорит, какой из них норма.
+    auth = _authority_match(src, tgt, scope)
+    if auth:
+        # Справочник может держать несколько норм на один термин. Если под них
+        # подходит сразу два кандидата из очереди — он не разрешает спор, а
+        # участвует в нём: решает человек. Иначе первый по порядку очереди
+        # получал бы приказ, а второй молча закрывался как решённый.
+        rivals = [v for v in ctx["variants"].get((scope, _norm_key(src)), set())
+                  if _authority_match(src, v, scope)]
+        if len(rivals) > 1:
+            return None, "справочник допускает несколько вариантов — решает человек"
+        # Тумблер «только подсказки» — это про ЭТОТ запуск, а не про политику
+        # области: человек попросил ничего не поднимать до приказа, и справочник
+        # не повод его переспрашивать.
+        if pol.get("cap_soft"):
+            return GLOSSARY_TIER_SOFT, ("совпадает со справочником (%s), "
+                                        "но выбран режим «только подсказки»" % auth["label"])
+        return GLOSSARY_TIER_HARD, "совпадает со справочником: " + auth["label"]
+
+    if len(ctx["variants"].get((scope, _norm_key(src)), set())) > 1:
+        return None, "у термина несколько вариантов перевода"
+
+    # ── Корпус целевого языка: вето на кальки ────────────────────────
+    # Корпус не подтверждает перевод, он отвечает на другой вопрос — есть ли
+    # такой термин в языке. Ноль вхождений («rear cyclitis») означает, что мы
+    # изобрели слово, и никакое согласие доноров этого не искупает: они все
+    # сделаны одной и той же моделью с одной и той же кальки.
+    corpus = ctx.get("corpus", {}).get((scope, _norm_key(tgt)))
+    if corpus and corpus.get("absent"):
+        return None, "перевода нет в текстах целевого языка (%s)" % corpus["label"]
+
     good, confirmed, distinct, why = _donor_quality(cand, ctx)
     if good == 0:
         return None, why or "сегмент-источник не проходил проверок"
@@ -2464,7 +2583,16 @@ def _auto_verdict(cand: dict, ctx: dict) -> tuple:
     if (pol["allow_verified"] and good >= pol["verified_min_segments"]
             and distinct >= pol["verified_min_segments"]
             and good == len(_donor_ids(cand))):
-        return GLOSSARY_TIER_HARD, "%d независимых чистых сегмента" % distinct
+        # Корпус доступен, но термин в языке почти не встречается — согласия
+        # доноров мало: приказ не даём, оставляем подсказкой. Обратное неверно —
+        # частотность не делает перевод правильным, поэтому поднять до приказа
+        # она не может, только удержать.
+        if corpus and not corpus.get("ok"):
+            return GLOSSARY_TIER_SOFT, ("%d независимых сегмента, но термин редок в %s (%d)"
+                                        % (distinct, corpus["label"], corpus["hits"]))
+        return GLOSSARY_TIER_HARD, ("%d независимых чистых сегмента" % distinct
+                                    + (" · подтверждён в %s (%d)" % (corpus["label"], corpus["hits"])
+                                       if corpus else ""))
     return GLOSSARY_TIER_SOFT, ("подтвердил человек" if confirmed
                                 else "%d независимых чистых сегмента" % good)
 
@@ -2529,6 +2657,12 @@ def _auto_write(cand: dict, tier: str, batch: int, today: str) -> bool:
 
 class AutoApproveRequest(BaseModel):
     dry_run: bool = True
+    # Корпусная проверка — это внешние HTTP-запросы с лимитом источника
+    # (у PubMed 3 в секунду). В разборе «показать», который дёргается при каждом
+    # открытии проекта, она превращала бы страницу в минутное ожидание. Поэтому
+    # по умолчанию она идёт только при ПРИМЕНЕНИИ, а разбор честно помечается
+    # как «до корпусной проверки». None = решить по dry_run.
+    corpus: Optional[bool] = None
     project: Optional[int] = None      # смотреть только область этого проекта
     max_tier: Optional[str] = None     # "auto" — не поднимать до приказа
     limit: int = 2000
@@ -2544,13 +2678,47 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
     scope = _project_scope(project) if project else None
     pol = _auto_policy(project.get("domain") if project else None)
     if req.max_tier == GLOSSARY_TIER_SOFT:
-        pol = {**pol, "allow_verified": False}
+        # cap_soft отдельно от allow_verified: первое — просьба пользователя
+        # на этот запуск, второе — политика области. Их нельзя смешивать,
+        # иначе справочник (который политику области обходит законно) обходил
+        # бы и явно выбранный режим «только подсказки».
+        pol = {**pol, "allow_verified": False, "cap_soft": True}
 
     pending = [c for c in _term_queue() if c.get("status", "pending") == "pending"
                and (scope is None or _scope_of(c) == scope)]
     ctx = _auto_context(pending, pol)
 
     considered = pending[:max(1, min(req.limit, 5000))]
+
+    # Корпус спрашиваем ТОЛЬКО про тех, кто иначе прошёл бы: это внешний
+    # HTTP-запрос, и гонять его на всю очередь из двух тысяч кандидатов —
+    # значит потратить полчаса на термины, которые всё равно отсеются
+    # по другим причинам. Сначала предварительный вердикт без корпуса,
+    # потом проверка прошедших, потом окончательный вердикт.
+    ctx["corpus"] = {}
+    prelim = [c for c in considered
+              if _auto_verdict(c, ctx)[0] in (GLOSSARY_TIER_HARD, GLOSSARY_TIER_SOFT)]
+    corpus_asked, corpus_capped = 0, 0
+    use_corpus = (not req.dry_run) if req.corpus is None else bool(req.corpus)
+    if prelim and authorities_mod and use_corpus:
+        # Ключ включает ОБЛАСТЬ: очередь общая на сервис, и без неё английский
+        # корпус спрашивали бы про немецкие термины (и наоборот).
+        by_key = {}
+        for c in prelim:
+            if (c.get("tgt") or "").strip():
+                by_key.setdefault((_scope_of(c), _norm_key(c.get("tgt"))),
+                                  (c.get("tgt") or "").strip())
+        want = list(by_key)
+        corpus_capped = max(0, len(want) - AUTO_CORPUS_MAX)
+        want = want[:AUTO_CORPUS_MAX]
+        results = _run_parallel(want, lambda k: (k, _corpus_check(by_key[k], k[0])))
+        ctx["corpus"] = {k: v for k, v in results if v}
+        corpus_asked = len(ctx["corpus"])
+        if corpus_capped:
+            # Молчаливых потолков не бывает: сказали, скольких не проверили.
+            print(f"[backend] корпусная проверка: {corpus_asked} терминов, "
+                  f"{corpus_capped} сверх потолка не проверены", file=sys.stderr)
+
     picked, closed, skipped = [], [], {}
     taken = set()
     for cand in considered:
@@ -2592,6 +2760,16 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
         "ok": True, "dryRun": req.dry_run, "batch": None, "counts": counts,
         "policy": {**pol, "version": AUTO_POLICY_VERSION},
         "scope": list(scope) if scope else None,
+        # Чем проверялись термины. Разница в покрытии между парами языков
+        # огромна, и назвать её честнее, чем дать пользователю обнаружить
+        # её на своих текстах.
+        "sources": _authority_sources(scope) if scope else {"dictionaries": [], "corpus": None},
+        "corpusChecked": corpus_asked,
+        "corpusSkipped": corpus_capped,
+        # Разбор без корпуса — это верхняя оценка: при применении часть
+        # кандидатов может отсеяться как отсутствующие в целевом языке.
+        # Названо явно, чтобы цифра на кнопке не обещала лишнего.
+        "corpusPending": (not use_corpus) and bool(prelim),
         "items": [row for _, _, row in picked] + [row for _, row in closed],
         "skipped": sorted(skipped.values(), key=lambda b: -b["count"]),
     }
@@ -4159,7 +4337,7 @@ def health(request: Request):
 import queue as _queue
 
 JOB_CHUNKS = {"translate": 10, "backcheck": 10, "termcheck": 10, "medical_qa": 10,
-              "repair": 5, "full": 5}
+              "repair": 5, "full": 5, "apply_terms": 5}
 JOB_KINDS = set(JOB_CHUNKS)
 
 # Составной прогон: порция проходит все шаги подряд, порция за порцией. Порядок
@@ -4268,6 +4446,24 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
     n = len(chunk)
     if kind == "full":
         return _job_chunk_full(pid, chunk, params)
+    if kind == "apply_terms":
+        # Ремонт по свежеодобренным терминам. Само одобрение пачки делает
+        # первая порция (см. _job_run: ставится флаг), дальше идёт обычный
+        # ремонт — расхождение с глоссарием у него такая же находка, как
+        # потерянный термин. Отдельного «переперевода» тут нет намеренно:
+        # ремонт меняет минимум слов и откатывается, если стало хуже.
+        r = repair_batch(pid, RepairBatchRequest(
+            segment_ids=chunk, limit=n, model=params.get("rp_model") or params.get("model"),
+            bc_model=params.get("bc_model"), tc_model=params.get("tc_model"),
+            use_judge=bool(params.get("use_judge")), judge_model=params.get("judge_model"),
+            include_confirmed=bool(params.get("include_confirmed")), retry=True))
+        # done = сделанное, а не размер порции: иначе проверка «порция целиком
+        # завершилась ошибкой» никогда не сработает, и мёртвый ключ выглядел бы
+        # как «выполнено, исправлено 0».
+        return {"done": len(r.get("applied", [])) + len(r.get("skipped", [])),
+                "applied": len(r.get("applied", [])),
+                "reverted": len(r.get("skipped", [])), "errors": len(r.get("errors", [])),
+                "skipped_confirmed": len(r.get("skipped_confirmed", []))}
     if kind == "translate":
         r = batch_translate(pid, BatchRequest(
             engine=params.get("engine", "gpt"), segment_ids=chunk, limit=n,
@@ -4309,6 +4505,40 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
 def _job_run(job: dict):
     kind, pid = job["kind"], job["project"]
     chunk_size = JOB_CHUNKS[kind]
+    if kind == "apply_terms":
+        # Одобрение пачки — один шаг, а не порция: оно про глоссарий, а не про
+        # сегменты. Состав сегментов пересчитываем ПОСЛЕ него: до одобрения
+        # неизвестно, какие сегменты разойдутся с новыми терминами, и клиент
+        # физически не может прислать правильный список.
+        if job["stop"]:
+            # Остановили до записи — значит ничего и не записываем. Проверка
+            # обязана стоять ДО одобрения: глоссарий меняется одним куском,
+            # и «остановлено» после него было бы неправдой.
+            job["status"] = "stopped"
+            job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            return
+        try:
+            res = auto_approve_terms(AutoApproveRequest(
+                dry_run=False, project=pid,
+                max_tier=job["params"].get("max_tier"),
+                limit=int(job["params"].get("term_limit", 2000))))
+        except HTTPException as e:
+            job["status"], job["error"] = "error", f"{e.status_code}: {e.detail}"
+            job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            return
+        job["counters"]["termsApproved"] = res["counts"]["verified"] + res["counts"]["auto"]
+        job["counters"]["termsVerified"] = res["counts"]["verified"]
+        job["counters"]["termsClosed"] = res["counts"]["closed"]
+        job["autoBatch"] = res.get("batch")
+        # Чиним ТОЛЬКО то, что разошлось с утверждёнными терминами, а не всё,
+        # где вообще есть находки: человек нажал «применить термины», а не
+        # «перебрать весь проект». Список тот же, что показывает карточка
+        # «Соответствие глоссарию», — расчёт один, чтобы цифры не расходились.
+        imp = glossary_impact(pid, refresh=True)
+        allow_conf = bool(job["params"].get("include_confirmed"))
+        job["ids"] = list(imp["segments"] if allow_conf else imp["pending"])
+        job["total"] = len(job["ids"])
+        save_state(STATE)
     ids = job["ids"]
     for i in range(0, len(ids), chunk_size):
         if job["stop"]:
@@ -4404,7 +4634,9 @@ def create_job(pid: int, req: JobRequest):
     if req.kind not in JOB_KINDS:
         raise HTTPException(400, "Неизвестный тип прогона: " + req.kind)
     ids = list(dict.fromkeys(req.segment_ids))
-    if not ids:
+    # apply_terms сам считает состав после одобрения терминов — до него список
+    # сегментов ещё неизвестен, и требовать его от клиента бессмысленно.
+    if not ids and req.kind != "apply_terms":
         raise HTTPException(400, "Пустой список сегментов")
     with _JOBS_LOCK:
         job = {

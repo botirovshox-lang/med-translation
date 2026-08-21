@@ -15,7 +15,8 @@ const SEARCH_SCOPE_LS_KEY = "mcat_search_scope";
 const TC_MODEL_LS_KEY = "mcat_termcheck_model";
 const RP_MODEL_LS_KEY = "mcat_repair_model";
 const JOB_LABELS = { translate: "Перевод", backcheck: "Back-check", termcheck: "Проверка терминологии",
-                     repair: "Автоматический ремонт", medical_qa: "Medical QA" };
+                     repair: "Автоматический ремонт", medical_qa: "Medical QA",
+                     full: "Перевод и проверка" };
 
 // Цвет полосы соответствия обратного перевода
 function bandColor(color) {
@@ -253,6 +254,10 @@ function TabEditor({ store, toast }) {
   const [bcGroupPick, setBcGroupPick] = useState(null);   // Set<ключ группы> | null = по умолчанию
   const [tcGroupPick, setTcGroupPick] = useState(null);   // то же для проверки терминологии
   const [rpGroupPick, setRpGroupPick] = useState(null);   // то же для ремонта
+  // Составной прогон: какие шаги входят и чем переводить короткие сегменты.
+  // null = все шаги; экономия на Google по умолчанию выключена — качество важнее.
+  const [fullSteps, setFullSteps] = useState(null);
+  const [fullLowGoogle, setFullLowGoogle] = useState(false);
   const PAGE_SIZE = 10;
 
   // Каталог моделей грузим один раз; пустой список — значит бэкенд старый или ключа нет
@@ -741,9 +746,29 @@ function TabEditor({ store, toast }) {
       toast.warning(name + ": остановлено", j.done + " из " + j.total + " обработано и сохранено." + errMsg);
       return;
     }
+    if (j.kind === "full") {
+      // Отчитываемся по шагам: «обработано 2670» ничего не говорит о том,
+      // что именно произошло, а прогон стоил денег на каждом шаге.
+      const part = [
+        c.translate ? "переведено " + c.translate : null,
+        c.backcheck ? "back-check " + c.backcheck : null,
+        c.termcheck ? "термины " + c.termcheck : null,
+        c.medical_qa ? "Medical QA " + c.medical_qa : null,
+        c.applied ? "исправлено " + c.applied : null,
+      ].filter(Boolean).join(" · ") || "нового ничего не потребовалось";
+      const blockedMsg = c.step_skips ? " · шаги пропускались (нет ключа или модуля)" : "";
+      const skipConfMsg = c.skipped_confirmed ? " · подтверждённых не тронуто: " + c.skipped_confirmed : "";
+      toast.success("Перевод и проверка завершены",
+        j.done + " сегментов пройдено · " + part + dupMsg + skipConfMsg + blockedMsg + errMsg
+        + (c.flagged ? " · замечания в " + c.flagged : ""));
+      return;
+    }
     if (j.kind === "translate") {
       const tmMsg = c.tm_hits ? " · из TM без вызова: " + c.tm_hits : "";
-      toast.success("Перевод завершён", j.done + " сегментов переведено" + tmMsg + dupMsg + errMsg);
+      // Пропущенные подтверждённые называем вслух: иначе «переведено 0» выглядит
+      // как поломка, хотя сервер просто не тронул заверенное человеком.
+      const skipMsg = c.skipped_confirmed ? " · пропущено подтверждённых: " + c.skipped_confirmed : "";
+      toast.success("Перевод завершён", j.done + " сегментов переведено" + tmMsg + dupMsg + skipMsg + errMsg);
     } else if (j.kind === "termcheck") {
       const skipMsg = c.skipped_trivial ? " · без вызова модели: " + c.skipped_trivial : "";
       if (c.flagged) toast.warning("Проверка терминологии завершена",
@@ -764,12 +789,13 @@ function TabEditor({ store, toast }) {
 
   // Переперевод сегментов, где перевод расходится с одобренными терминами.
   // Это обычный пакетный перевод с force: сегменты уже переведены, и без force
-  // отбор по статусу их бы отбросил.
+  // отбор по статусу их бы отбросил. include_confirmed передаём отдельно: без
+  // него сервер молча выбрасывал подтверждённые, и галочка ничего не делала.
   const runImpactRetranslate = () => {
     if (!impact) return;
     const ids = new Set(impactConfirmed ? impact.segments : impact.pending);
     startJob("translate", project.segments.filter(s => ids.has(s.id)),
-      { engine: "gpt", force: true, model: gptModel },
+      { engine: "gpt", force: true, model: gptModel, include_confirmed: !!impactConfirmed },
       "Все переводы уже соответствуют одобренным терминам.");
   };
 
@@ -879,6 +905,13 @@ function TabEditor({ store, toast }) {
   // обещала бы работу, которой сервер не найдёт.
   const REPAIR_REASONS = ["расхождение чисел", "расхождение единиц", "инверсия отрицания",
                           "подмена на противоположное", "обратный перевод про другое", "потерян термин"];
+  // Расхождения с глоссарием сервер тоже считает поводом чинить. Берём их из
+  // уже загруженного отчёта о соответствии — он и есть тот же расчёт, только
+  // посчитанный один раз на проект. pending, а не segments: подтверждённые
+  // сегменты автоматика по умолчанию не переписывает.
+  // Обычная переменная, а не useMemo: этот код идёт после раннего return по
+  // отсутствию проекта, и хук здесь сломал бы порядок хуков компонента.
+  const impactRepairIds = new Set((impact && impact.pending) || []);
   const rpCandidate = (s, idSet) => {
     if (!(s.target && s.target.trim())) return false;
     if (idSet && !idSet.has(s.id)) return false;
@@ -888,7 +921,7 @@ function TabEditor({ store, toast }) {
       || (bc.reasons || []).some(r => REPAIR_REASONS.some(h => r.indexOf(h) !== -1))
       || (bc.judge && ["major", "critical"].indexOf(bc.judge.severity) !== -1));
     const tcHit = tc && (tc.findings || []).some(f => f.severity === "critical" || f.severity === "major");
-    return !!(bcHit || tcHit);
+    return !!(bcHit || tcHit || impactRepairIds.has(s.id));
   };
 
   // tried приходит с бэкенда: этот же текст уже проходил через ремонт
@@ -929,6 +962,100 @@ function TabEditor({ store, toast }) {
 
   // Отмечены группы уже чинившихся — серверу нужно разрешение на второй заход
   const repairRetry = () => (pickedRpGroups.has("applied") || pickedRpGroups.has("rejected"));
+
+  /* ── Составной прогон: весь конвейер одной кнопкой ────────────────────
+     Список сегментов у прогона ОДИН, а отбирает под себя каждый шаг сам —
+     теми же предикатами, что и отдельные карточки. Поэтому счётчики здесь
+     и там не разойдутся, а состав по-прежнему выбирается галочками
+     и фильтром: за экономию отвечает отбор, а не отказ от проверок. */
+  const FULL_STEPS = [
+    ["translate", "Перевод", "только те, что ещё не переведены"],
+    ["backcheck", "Back-check", "обратный перевод другой моделью"],
+    ["termcheck", "Термины", "третья модель смотрит только на результат"],
+    ["medical_qa", "Medical QA", "числа, единицы, отрицания — без вызова модели"],
+    ["repair", "Ремонт", "правит по всем находкам, включая глоссарий"],
+  ];
+  const fullScope = project.segments.filter(s => !currentIdSet || currentIdSet.has(s.id));
+  const fullStepTargets = {
+    translate: fullScope.filter(s => s.status === "new"),
+    backcheck: fullScope.filter(s => backcheckable(s, currentIdSet)),
+    termcheck: fullScope.filter(s => termcheckable(s, currentIdSet)),
+    medical_qa: fullScope.filter(s => s.target && s.target.trim()
+      && ["translated", "qa", "review", "confirmed"].includes(s.status)),
+    repair: fullScope.filter(s => repairable(s, currentIdSet)),
+  };
+  const pickedFull = fullSteps || new Set(FULL_STEPS.map(s => s[0]));
+  // Серверу отдаём ОБЪЕДИНЕНИЕ сегментов выбранных шагов, а не всё подряд:
+  // счётчики и смета выше посчитаны по этим же спискам, а они учитывают
+  // галочки «что проверять» и «что чинить». Отправив весь проект, мы бы
+  // молча выбросили этот выбор — и прогон стоил бы кратно дороже сметы.
+  const fullRunIds = (() => {
+    const ids = new Set();
+    FULL_STEPS.forEach(([k]) => {
+      if (pickedFull.has(k)) (fullStepTargets[k] || []).forEach(s => ids.add(s.id));
+    });
+    return project.segments.filter(s => ids.has(s.id));
+  })();
+  const toggleFullStep = (key) => setFullSteps(prev => {
+    const next = new Set(prev || pickedFull);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
+  // Смета — сумма смет по шагам, каждая своей моделью. Показываем до запуска:
+  // составной прогон дороже одиночного, и узнавать об этом постфактум нельзя.
+  const fullEst = (() => {
+    // Сегменты, которые прогон переведёт, в ТОЙ ЖЕ порции пойдут в проверки —
+    // а сейчас они пустые и ни в один список проверок не попадают. Без этой
+    // добавки непереведённый проект показывал бы цену одного перевода, хотя
+    // платить придётся ещё и за все проверки поверх него.
+    const willTranslate = pickedFull.has("translate") ? fullStepTargets.translate : [];
+    const plus = (list) => {
+      const has = new Set(list.map(s => s.id));
+      return list.concat(willTranslate.filter(s => !has.has(s.id)));
+    };
+    const parts = [
+      pickedFull.has("translate") && estimateRun("translate", fullStepTargets.translate, gptModelInfo),
+      pickedFull.has("backcheck") && estimateRun("backcheck", plus(fullStepTargets.backcheck), bcModelInfo,
+        { judge: bcJudge, judgeModel: judgeModelInfo }),
+      pickedFull.has("termcheck") && estimateRun("termcheck", plus(fullStepTargets.termcheck),
+        gptModels.find(m => m.id === tcModel) || null),
+      pickedFull.has("medical_qa") && estimateRun("medical_qa",
+        plus(fullStepTargets.medical_qa.filter(s => !(s.backcheck && !s.backcheck.stale && s.backcheck.back))),
+        gptModels.find(m => m.id === defModel) || null),
+      pickedFull.has("repair") && estimateRun("repair", plus(fullStepTargets.repair),
+        gptModels.find(m => m.id === rpModel) || null, { recheckModel: bcModelInfo }),
+    ].filter(Boolean);
+    // Шаг, у которого есть работа, но нет цены (модель не выбрана или каталог
+    // не загрузился), обнуляет всю смету: «$0.00» под кнопкой, которая сделает
+    // тысячи платных вызовов, — худший вид молчания.
+    const unpriced = parts.some(p => p.count > 0 && p.cost == null);
+    return {
+      cost: unpriced ? null : parts.reduce((a, p) => a + (p.cost || 0), 0),
+      seconds: parts.reduce((a, p) => a + p.seconds, 0),
+      count: fullRunIds.length,
+    };
+  })();
+
+  // Проверка, которую делает та же модель, что переводила, — не независимая,
+  // а на независимости стоит автоодобрение терминов. Молчать об этом нельзя.
+  const sameModelWarn = [bcModel, tcModel].filter(m => m && m === gptModel).length > 0;
+
+  const runFullJob = () => {
+    const steps = FULL_STEPS.map(s => s[0]).filter(k => pickedFull.has(k));
+    if (!steps.length) { toast.warning("Не выбрано ни одного шага", "Отметьте хотя бы один."); return; }
+    startJob("full", fullRunIds, {
+      steps,
+      // auto: движок выбирается по длине сегмента. low_engine=gpt — «всё модели»,
+      // то есть качество; google экономит на коротких строках.
+      engine: "auto", low_engine: fullLowGoogle ? "google" : "gpt",
+      model: gptModel, bc_model: bcModel, tc_model: tcModel,
+      rp_model: rpModel, use_judge: bcJudge, judge_model: judgeModel || null,
+      // Тот же retry, что и у карточки ремонта: карточка выше посчитала
+      // и оценила сегменты по этому же правилу, и разойтись они не должны.
+      retry: repairRetry(),
+    }, "В выбранных сегментах нечего делать.");
+  };
 
   const filterDefs = [
     ["all", "Все", counts.all], ["new", "Новые", counts.new], ["translated", "Переведено", counts.translated],
@@ -1003,9 +1130,21 @@ function TabEditor({ store, toast }) {
           job.stopping ? "Останавливаем…" : "Остановить"))
     ),
 
-    // ---- Batch actions ----
+    // ---- Составной прогон: одна кнопка на весь конвейер ----
     React.createElement("div", { className: "editor-main", style: { paddingBottom: 0 } },
-      React.createElement(Expander, { title: "Пакетные прогоны", icon: "zap", right: "перевод · QA · термины · back-check · ремонт", defaultOpen: false },
+      React.createElement(FullRunCard, {
+        running: job && job.kind === "full" ? job : null,
+        onRun: runFullJob, onStop: stopJob,
+        steps: FULL_STEPS, picked: pickedFull, onToggle: toggleFullStep,
+        targets: fullStepTargets, scopeSize: fullRunIds.length,
+        checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf),
+        est: fullEst, sameModelWarn: sameModelWarn,
+        transModel: (gptModelInfo || {}).label || gptModel,
+        checkModels: [bcModelInfo, gptModels.find(m => m.id === tcModel)]
+          .filter(Boolean).map(m => m.label),
+        lowGoogle: fullLowGoogle, onLowGoogle: () => setFullLowGoogle(v => !v),
+        disabled: !!job }),
+      React.createElement(Expander, { title: "Отдельные прогоны", icon: "zap", right: "по одному шагу — для точечной работы", defaultOpen: false },
         React.createElement("div", { className: "grid grid-3" },
           React.createElement(BatchCard, { kind: "google", est: estimateRun("translate", pickTargets("google", project.segments).targets, null), running: batchRun && batchRun.engine === "google" ? batchRun : null, onRun: () => askRunBatch("google"), onStop: stopJob,
             available: pickTargets("google", project.segments).targets.length,
@@ -1319,6 +1458,68 @@ function LegendDot({ color, label }) {
     React.createElement("span", { style: { width: 10, height: 10, borderRadius: 3, background: color, display: "inline-block" } }), label);
 }
 
+/* Составной прогон. Одна кнопка на весь конвейер, но состав виден до запуска:
+   какие шаги входят, сколько сегментов затронет каждый и во что это обойдётся.
+   Порядок шагов фиксирован на сервере и здесь только показан — Medical QA
+   берёт обратный перевод из back-check, ремонту нужны находки всех остальных. */
+function FullRunCard({ running, onRun, onStop, steps, picked, onToggle, targets, scopeSize,
+                       checked, filtered, est, sameModelWarn, transModel, checkModels,
+                       lowGoogle, onLowGoogle, disabled }) {
+  const anyWork = steps.some(([k]) => picked.has(k) && (targets[k] || []).length > 0);
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 13, marginBottom: 14, borderLeft: "3px solid var(--c-primary)" } },
+
+    React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
+      React.createElement("div", { className: "row", style: { gap: 10 } },
+        React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-primary)" } },
+          React.createElement(Icon, { name: "zap", size: 19 })),
+        React.createElement("div", null,
+          React.createElement("div", { style: { fontWeight: 650, fontSize: 15, display: "flex", alignItems: "center" } }, "Перевести и проверить",
+            React.createElement(InfoTip, { title: "Что делает эта кнопка",
+              body: "Один прогон вместо пяти: перевод → back-check → проверка терминов → Medical QA → ремонт. Порядок фиксирован и важен: Medical QA берёт готовый обратный перевод из back-check и не платит за него второй раз, терминологию в глоссарий собирает та из двух проверок, что отработала второй, а ремонту нужны находки всех предыдущих шагов.\n\nПереводит одна модель, проверяют другие — в этом весь смысл: проверка, сделанная той же моделью, что и перевод, независимой не является.\n\nКаждый шаг отбирает сегменты сам, теми же правилами, что и отдельные карточки: уже переведённое не переводится заново, свежая проверка не оплачивается второй раз. Чтобы сузить прогон, отметьте сегменты галочками или включите фильтр.\n\nПрогон идёт на сервере — вкладку можно закрыть." })),
+          React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+            "переводит " + (transModel || "—")
+            + (checkModels.length ? " · проверяют " + checkModels.join(" и ") : "")))),
+      React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+        "в работу пойдут " + scopeSize + " сегм."
+        + (checked > 0 ? " · по галочкам" : filtered ? " · по фильтру" : ""))),
+
+    sameModelWarn && React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.5, color: "var(--c-warning)", background: "var(--bg-sunken)", padding: "8px 11px", borderRadius: 8 } },
+      "Перевод и проверку делает одна модель. Она не найдёт собственную ошибку — "
+      + "выберите для back-check или терминов другую модель в «Отдельных прогонах»."),
+
+    React.createElement("div", { className: "col", style: { gap: 6 } },
+      steps.map(([key, label, hint]) => {
+        const n = (targets[key] || []).length;
+        const on = picked.has(key);
+        return React.createElement("div", { key: key, className: "row between", style: { gap: 10, fontSize: 13, opacity: on ? 1 : 0.5 } },
+          React.createElement(Checkbox, { checked: on, onChange: () => onToggle(key) },
+            React.createElement("span", null,
+              React.createElement("b", { style: { fontWeight: 600 } }, label),
+              React.createElement("span", { className: "dim", style: { fontSize: 12 } }, " — " + hint))),
+          React.createElement("span", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 600, color: n ? "var(--text-1)" : "var(--text-3)" } },
+            n ? n + " сегм." : "нечего"));
+      })),
+
+    React.createElement("div", { className: "row", style: { gap: 8, alignItems: "center" } },
+      React.createElement(Switch, { on: lowGoogle, label: "Короткие через Google", onClick: onLowGoogle }),
+      React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+        lowGoogle ? "дешевле, но короткие строки переводит не модель" : "всё переводит модель")),
+
+    React.createElement(EstLine, { est }),
+    React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: -6 } },
+      "Смета сверху: проверки посчитаны и по тем сегментам, что будут переведены в этом же прогоне."),
+
+    running
+      ? React.createElement("div", null,
+          React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
+            React.createElement("span", { className: "muted" }, "Идёт полный прогон…"),
+            React.createElement("span", { style: { fontWeight: 700 } }, Math.round(running.done) + "/" + running.total)),
+          React.createElement(ProgressBar, { value: Math.round(running.done / Math.max(1, running.total) * 100) }),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop, style: { marginTop: 8 } }, "Остановить"))
+      : React.createElement(Btn, { variant: "primary", icon: "zap", onClick: onRun, disabled: disabled || !anyWork },
+          anyWork ? "Перевести и проверить" : "Всё уже сделано"));
+}
+
 function BatchCard({ kind, running, onRun, onStop, available, selectionSize, filtered, checked, models, model, modelInfo, onModel, est }) {
   const meta = kind === "google"
     ? { icon: "globe", title: "Google Batch", sub: "Низкорисковые сегменты", note: "Для простых, шаблонных формулировок.", color: "var(--c-warning)", btn: "Запустить Google",
@@ -1479,7 +1680,7 @@ function RepairCard({ running, onRun, onStop, available, repaired, filtered, che
       React.createElement("div", null,
         React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, "Автоматический ремонт",
           React.createElement(InfoTip, { title: "Автоматический ремонт",
-            body: "Переписывает перевод по КОНКРЕТНЫМ находкам: потерянные термины, расхождения чисел и единиц, инверсия отрицания, вердикт судьи, кальки с предложенной заменой. Не «переведи получше» — модель получает список претензий и правило менять как можно меньше.\n\nПосле правки сегмент перепроверяется теми же проверками, которые ругались. Новый текст остаётся, ТОЛЬКО если оценка не упала и замечаний по терминам не прибавилось; иначе — откат, а вариант модели сохраняется для разбора.\n\nСтатус после ремонта — «Требует проверки», не «Подтверждён»: автоправка не заверяет сама себя. Прежний текст хранится и виден в карточке сегмента.\n\nОдин заход на один текст: пока перевод не изменится, повторно чинить нечего." })),
+            body: "Переписывает перевод по КОНКРЕТНЫМ находкам: потерянные термины, расхождения чисел и единиц, инверсия отрицания, вердикт судьи, кальки с предложенной заменой, а также утверждённые термины глоссария, которых в переводе нет. Не «переведи получше» — модель получает список претензий и правило менять как можно меньше.\n\nВсе проверенные записи глоссария для этого сегмента уходят в промпт целиком, даже если нарушений по ним нет: чиня одно, модель не должна выбить утверждённый термин в другом месте.\n\nПосле правки сегмент перепроверяется теми же проверками, которые ругались. Новый текст остаётся, ТОЛЬКО если оценка не упала, замечаний по терминам не прибавилось и утверждённых терминов не нарушено больше прежнего; иначе — откат, а вариант модели сохраняется для разбора.\n\nСтатус после ремонта — «Требует проверки», не «Подтверждён»: автоправка не заверяет сама себя. Прежний текст хранится и виден в карточке сегмента.\n\nОдин заход на один текст: пока перевод не изменится, повторно чинить нечего." })),
         React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "После проверок"))
     ),
     React.createElement(Select, { value: model || "", onChange: (e) => onModel(e.target.value), style: { fontSize: 13 } },
@@ -1516,7 +1717,7 @@ function GlossaryImpactCard({ impact, busy, onRefresh, onRun, onDrill, includeCo
       React.createElement("div", null,
         React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, "Соответствие глоссарию",
           React.createElement(InfoTip, { title: "Расхождения с одобренными терминами",
-            body: "Одобренный термин влияет только на будущие переводы — уже готовые сегменты сами не меняются. Здесь собраны все сегменты проекта, где термин есть в оригинале, а утверждённого варианта в переводе нет.\n\nСчитается только по проверенным записям глоссария: автоимпорт модель вправе игнорировать, требовать соответствия ему нельзя.\n\nКнопка переводит эти сегменты заново — уже с новым термином в промпте. Подтверждённые по умолчанию не трогаются." })),
+            body: "Одобренный термин влияет только на будущие переводы — уже готовые сегменты сами не меняются. Здесь собраны все сегменты проекта, где термин есть в оригинале, а утверждённого варианта в переводе нет.\n\nСчитается только по проверенным записям глоссария: автоимпорт модель вправе игнорировать, требовать соответствия ему нельзя.\n\nКнопка переводит эти сегменты заново — уже с новым термином в промпте. Подтверждённые по умолчанию не трогаются; с галочкой они тоже переводятся заново, прежний текст сохраняется для отката, а статус становится «Требует проверки» — заверить перевод снова может только человек." })),
         React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "После правок глоссария"))
     ),
     React.createElement("div", { className: "row between", style: { fontSize: 13, cursor: "pointer" },

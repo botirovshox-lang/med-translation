@@ -24,7 +24,10 @@ def seg(sid, source, target, status="translated", bc=95, tc_findings=(), repair=
     if not no_tc:
         s["termcheck"] = {"findings": list(tc_findings), "severity": "none", "target_hash": h}
     if repair:
-        s["repair"] = repair
+        # Настоящий ремонт кладёт хеш текста, который он же и написал: по нему
+        # видно, относится запись к нынешнему переводу или он давно заменён.
+        # Без хеша сегмент навсегда считался бы «переписанным ремонтом».
+        s["repair"] = {"source_hash": H(target), **repair}
     return s
 
 

@@ -14,13 +14,18 @@ function TabQA({ store, toast }) {
   const issueSeverity = (it) => it.severity || it.sev || "medium";
   // Сегменты, требующие внимания QA: со статусом qa/review/failed ИЛИ с явными замечаниями.
   const attentionStatuses = ["qa", "review", "failed"];
+  // Подтверждённый сегмент проверка больше не разжалует — но и прятать на нём
+  // серьёзную находку нельзя: раньше она была видна только потому, что QA
+  // молча снимала подтверждение. Показываем такие с пометкой.
+  const hardIssue = (it) => ["critical", "high", "major"].includes(it.severity || it.sev || "");
   const openIssueSegments = project.segments
     .map(s => {
       const sourceIssues = (s.qa_issues && s.qa_issues.length) ? s.qa_issues : (s.qa || []);
       return { seg: s, issues: sourceIssues };
     })
-    .filter(row => row.seg.status !== "confirmed" &&
-      (attentionStatuses.includes(row.seg.status) || row.issues.length > 0));
+    .filter(row => row.seg.status === "confirmed"
+      ? row.issues.some(hardIssue) || row.seg.risk_color === "red"
+      : (attentionStatuses.includes(row.seg.status) || row.issues.length > 0));
   const issues = [];
   openIssueSegments.forEach(row => {
     row.issues.forEach(q => issues.push({ ...q, seg: row.seg.id, risk_color: row.seg.risk_color, risk_score: row.seg.risk_score }));
@@ -69,7 +74,7 @@ function TabQA({ store, toast }) {
     React.createElement("div", { className: "page-head" },
       React.createElement("h1", null, "Контроль качества",
         React.createElement(InfoTip, { title: "Контроль качества (QA)", body: "6-этапный pipeline QA: локальные проверки (8) → консистентность → адаптивное планирование → проверка чисел → back-check → финальное решение." })),
-      React.createElement("p", { className: "lead" }, "Открытые QA-замечания по неподтверждённым сегментам. После подтверждения сегмент исчезает из этого списка.")),
+      React.createElement("p", { className: "lead" }, "Открытые QA-замечания. После подтверждения сегмент исчезает из списка — кроме случая, когда на нём осталась критическая находка: проверка не снимает подтверждение сама, но и молчать о такой находке не должна.")),
 
     React.createElement("div", { className: "grid grid-3 section" },
       React.createElement(QAStat, { icon: "checkCircle", color: "var(--c-success)", n: passed, label: "Прошли QA", onClick: passed ? () => goSegs(passedSegs) : null }),
@@ -118,7 +123,13 @@ function TabQA({ store, toast }) {
                 React.createElement("td", { className: "col-id" }, s.id),
                 React.createElement("td", { className: "src-cell" }, s.source),
                 React.createElement("td", { className: s.target ? "tgt-cell" : "tgt-cell tgt-empty" }, s.target || "— не переведено —"),
-                React.createElement("td", null, React.createElement(StatusBadge, { status: s.status })),
+                React.createElement("td", null,
+                  React.createElement(StatusBadge, { status: s.status }),
+                  // Подтверждённый сегмент попадает в этот список только с
+                  // критической находкой. Без пометки строка читается как
+                  // «почему подтверждённое в списке открытых замечаний?».
+                  s.status === "confirmed" && React.createElement("div", { className: "dim", style: { fontSize: 11, marginTop: 3 } },
+                    "подтверждено, но замечание осталось")),
                 React.createElement("td", { style: { lineHeight: 1.5 } },
                   React.createElement("div", { className: "row", style: { gap: 8, marginBottom: 6, flexWrap: "wrap" } },
                     React.createElement("span", { className: "badge " + cls }, lab),

@@ -3,9 +3,97 @@
    Localized, with ⓘ tooltips and a transparent cost model.
    Drill-down: клик на любой блок/строку → редактор с активным фильтром сегментов.
    ============================================================ */
+/* Итог работы по проекту. Читается сверху вниз как ответ на один вопрос:
+   «что сейчас с переводом». Каждая строка кликается и открывает редактор
+   с этими сегментами — цифра без возможности посмотреть на неё бесполезна. */
+function WorkSummary({ summary, store, toast }) {
+  const s = summary;
+  const go = (ids, label) => {
+    if (!ids || !ids.length) return;
+    store.setSegmentFilter(ids);
+    store.go("editor");
+    toast.info(label, ids.length + " сегментов");
+  };
+  const Row = ({ label, n, hint, ids, color }) =>
+    React.createElement("div", {
+      className: "row between", onClick: ids && ids.length ? () => go(ids, label) : null,
+      style: { padding: "9px 0", borderTop: "1px solid var(--border)", gap: 12,
+               cursor: ids && ids.length ? "pointer" : "default", alignItems: "baseline" } },
+      React.createElement("div", { style: { minWidth: 0 } },
+        React.createElement("span", { style: { fontWeight: 600, color: color || "var(--text-1)" } }, label),
+        hint && React.createElement("span", { className: "dim", style: { fontSize: 12.5 } }, " — " + hint)),
+      React.createElement("b", { style: { fontVariantNumeric: "tabular-nums", color: n ? (color || "var(--text-1)") : "var(--text-3)" } }, n));
+
+  const humanTotal = s.human.termsTotal + s.human.reverted.length + s.human.glossaryConfirmed.length;
+
+  return React.createElement("div", { className: "section" },
+    React.createElement("h2", { className: "section-title" }, "Что сейчас с переводом",
+      React.createElement(InfoTip, { title: "Итог работы",
+        body: "Считается по состоянию проекта, а не по последнему прогону: прогонов может быть несколько, а вопрос один — что сделано и что осталось. Ни одного вызова модели здесь нет, открывать можно свободно.\n\n«Проверено начисто» — сегмент прошёл back-check и проверку терминов, замечаний нет, глоссарий соблюдён. Только такие сегменты система считает готовыми учить терминологии.\n\nЛюбая строка открывает редактор с этими сегментами." })),
+
+    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column" } },
+      React.createElement("div", { className: "row between", style: { paddingBottom: 4 } },
+        React.createElement("span", { className: "dim", style: { fontSize: 12.5 } }, "Всего сегментов"),
+        React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, s.total)),
+      React.createElement(Row, { label: "Проверено начисто", n: s.clean.length, ids: s.clean,
+        color: "var(--c-success)", hint: "обе проверки чисто, глоссарий соблюдён" }),
+      React.createElement(Row, { label: "Исправила машина", n: s.machine.repaired, ids: s.repaired,
+        hint: "статус «требует проверки» — заверяет человек" }),
+      React.createElement(Row, { label: "Ещё не переведено", n: s.todo.untranslated.length,
+        ids: s.todo.untranslated, hint: "запустите «Перевести и проверить»" }),
+      React.createElement(Row, { label: "Переведено, но не проверено", n: s.todo.unchecked.length,
+        ids: s.todo.unchecked, hint: "back-check или проверка терминов не делались" }),
+      // Без этой строки сегменты с замечаниями не попадали никуда: они не «чисто»
+      // и не «не проверено», и экран показывал бы благополучие, которого нет.
+      React.createElement(Row, { label: "С замечаниями проверок", n: s.todo.findings.length,
+        ids: s.todo.findings, hint: "это чинит «Ремонт» внутри прогона" }),
+      React.createElement(Row, { label: "Расходятся с глоссарием", n: s.todo.glossaryPending.length,
+        ids: s.todo.glossaryPending, hint: "утверждённого термина нет в переводе" }),
+      // Корзина «всё остальное»: оценка ниже порога, мелкие замечания. Без неё
+      // такие сегменты не попадали никуда и экран выглядел бы чище, чем есть.
+      React.createElement(Row, { label: "Оценка ниже порога", n: (s.todo.weak || []).length,
+        ids: s.todo.weak, hint: (s.todo.weakWhy || []).slice(0, 2).map(w => w.reason).join(" · ")
+          || "проверки прошли, но чисто не получилось" })),
+
+    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", marginTop: 14 } },
+      React.createElement("div", { className: "row between", style: { paddingBottom: 4 } },
+        React.createElement("span", { style: { fontWeight: 650 } }, "Машина предлагает"),
+        React.createElement("span", { className: "dim", style: { fontSize: 12.5 } }, "одним нажатием")),
+      React.createElement("div", { className: "row between", style: { padding: "9px 0", borderTop: "1px solid var(--border)", cursor: "pointer" },
+        onClick: () => store.go("glossary") },
+        React.createElement("span", null, "Терминов готовы к одобрению",
+          React.createElement("span", { className: "dim", style: { fontSize: 12.5 } }, " — «Глоссарий» → «Автоодобрение однозначных»")),
+        React.createElement("b", { style: { fontVariantNumeric: "tabular-nums", color: s.proposed.terms ? "var(--c-primary)" : "var(--text-3)" } }, s.proposed.terms))),
+
+    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", marginTop: 14 } },
+      React.createElement("div", { className: "row between", style: { paddingBottom: 4 } },
+        React.createElement("span", { style: { fontWeight: 650 } }, "Нужен человек"),
+        React.createElement("b", { style: { fontVariantNumeric: "tabular-nums", color: humanTotal ? "var(--c-warning)" : "var(--c-success)" } }, humanTotal)),
+      React.createElement(Row, { label: "Терминов машина решать не берётся", n: s.human.termsTotal,
+        color: "var(--c-warning)", hint: "спорные варианты и конфликты — в «Глоссарии»" }),
+      React.createElement(Row, { label: "Правка откачена — не стало лучше", n: s.human.reverted.length,
+        ids: s.human.reverted, color: "var(--c-warning)", hint: "модель пробовала починить и не смогла" }),
+      React.createElement(Row, { label: "Подтверждено, но спорит с глоссарием", n: s.human.glossaryConfirmed.length,
+        ids: s.human.glossaryConfirmed, color: "var(--c-warning)", hint: "переписать можно только по явной галочке" }),
+      s.human.terms.length > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.6, paddingTop: 10, borderTop: "1px solid var(--border)" } },
+        "Почему термины остались человеку: ",
+        s.human.terms.slice(0, 4).map(t => t.count + "× " + t.reason).join(" · "))));
+}
+
 function TabPreflight({ store, toast }) {
   const project = store.activeProject;
   const [analyzing, setAnalyzing] = useState(false);
+  // Итог работы: что чисто, что исправила машина, что осталось человеку.
+  // Считает сервер тем же движком, что и сами прогоны, — иначе цифры на экране
+  // разошлись бы с тем, что произойдёт по нажатию кнопки.
+  const [summary, setSummary] = useState(null);
+  useEffect(() => {
+    if (!window.API || !window.API.analysis || !project) return;
+    let dead = false;
+    window.API.safeCall(() => window.API.analysis(project.id))
+      .then(r => { if (!dead && r && r.ok) setSummary(r); });
+    return () => { dead = true; };
+  }, [project && project.id]);
 
   if (!project) return React.createElement("div", { className: "page" }, React.createElement(NoProject, { store }));
 
@@ -103,6 +191,9 @@ function TabPreflight({ store, toast }) {
           analyzing ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), "Анализ…") : "Запустить анализ"),
         T("Запустить анализ", "Анализ только локально, без вызовов API. Результат сохраняется в базу — можно использовать для планирования перевода."))),
     React.createElement("div", { className: "dim", style: { marginTop: -16, marginBottom: 28, fontSize: 13 } }, "Последний анализ: 2 часа назад · " + total + " сегментов · " + analysisTime + " с"),
+
+    // ---- Итог работы: что уже сделано и что осталось ----
+    summary && React.createElement(WorkSummary, { summary, store, toast }),
 
     // ---- Statistics ----
     React.createElement("div", { className: "section" },

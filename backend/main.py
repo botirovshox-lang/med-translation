@@ -107,7 +107,17 @@ def _deep_translate(text: str, src: str, tgt: str) -> str:
     from deep_translator import GoogleTranslator as _DTG
     return _DTG(source=src, target=tgt).translate(text) or ""
 
-_DEEP_TRANSLATE_OK = True
+try:
+    # Проверяем один раз при старте, а не держим константу True: этот флаг
+    # решает, есть ли у нас бесплатный запасной переводчик. Соврав про него,
+    # мы обещаем фолбэк, которого нет, — и вместо честного «нет переводчика»
+    # получаем посегментные ошибки в середине оплаченного прогона.
+    import deep_translator as _deep_translator_probe   # noqa: F401
+    _DEEP_TRANSLATE_OK = True
+except Exception as _e:                                # pragma: no cover
+    _DEEP_TRANSLATE_OK = False
+    print(f"[backend] deep-translator недоступен ({_e}) — бесплатного фолбэка нет",
+          file=sys.stderr)
 
 import re as _re
 
@@ -213,7 +223,11 @@ def _project_scope(project: Optional[dict]) -> tuple:
 
 
 def _hit_tier(h: dict) -> str:
-    return h.get("tier") or GLOSSARY_TIER_HARD
+    """Уровень доверия записи. Отсутствие поля читается как ПОДСКАЗКА, а не
+    приказ: запись неизвестного происхождения не должна принуждать модель и
+    подставляться в перевод плейсхолдером мимо всех проверок. Исторические
+    записи уровень получают миграцией при загрузке состояния."""
+    return h.get("tier") or GLOSSARY_TIER_SOFT
 
 
 def _hit_rank(h: dict) -> tuple:
@@ -343,6 +357,35 @@ def _get_context(text: str, with_tm: bool = True, project: Optional[dict] = None
         None,
     )
     return hits, tm_hit
+
+
+def _replace_target(seg: dict, text: str, provider: str, route: str):
+    """Записать в сегмент новый перевод. Единственное место, где машина имеет
+    право заменить текст, и правило тут одно на всех: если перевод заверял
+    человек, прежний текст сохраняется в prevTarget, статус становится
+    «требует проверки», а отметка «подтвердил человек» снимается — она
+    относилась к тексту, которого больше нет."""
+    if seg.get("status") == "confirmed":
+        seg["prevTarget"] = seg.get("target", "")
+        seg.pop("confirmedBy", None)
+        seg.pop("confirmedAt", None)
+        seg["status"] = "review"
+    else:
+        seg["status"] = "translated"
+    seg["target"] = text
+    seg["provider"] = provider
+    seg["route"] = route
+
+
+def _tm_trusted(t: Optional[dict]) -> bool:
+    """Право подменить перевод МИМО модели есть только у записей, рождённых
+    подтверждением человека в этой системе (`quality: verified`).
+
+    Память переводов — единственное место, где чужая ошибка попадала в перевод,
+    минуя и глоссарий, и все проверки: совпадение отдавалось как есть. Записи
+    неизвестного происхождения (импорт, `draft`) остаются в промпте справкой,
+    а перевод делает модель — и его есть чем проверить."""
+    return bool(t) and (t.get("quality") or "draft") == GLOSSARY_TIER_HARD
 
 
 def _google_with_gloss(text: str, src: str, tgt: str, gloss_hits: list) -> str:
@@ -1093,7 +1136,27 @@ def _apply_migrations(state: dict) -> dict:
         for t in state.get("glossary", []):
             if "tier" not in t:
                 t["tier"] = tiers.get(t.get("src"), GLOSSARY_TIER_HARD)
+    # Migrate: Medical QA раньше писала свою оценку в seg["risk"], где живёт
+    # длина сегмента — а по ней выбирается движок перевода. Возвращаем длину
+    # тем же расчётом, что при импорте: миграция идемпотентна и полей не
+    # добавляет. Трогаем только сегменты, где проверка действительно была
+    # (есть risk_color) или где остался её след — «critical» больше никто
+    # не ставит.
+    for _p in state.get("projects", []):
+        for _s in _p.get("segments", []):
+            if _s.get("risk_color") or _s.get("risk") == "critical":
+                _w = len((_s.get("source") or "").split())
+                _s["risk"] = "high" if _w > 30 else "medium" if _w > 8 else "low"
     state.setdefault("termQueue", [])
+    # Migrate: до появления origTgt одобрение конфликта затирало пустой перевод
+    # решением человека, и дедупликация теряла кандидата — термин возвращался
+    # в очередь неодобренным. Конфликт всегда рождается с пустым tgt, поэтому
+    # прежнюю пару восстанавливаем точно. Правленые пары других видов не
+    # угадываем: там текущий tgt и есть исходный, если человек его не менял.
+    for c in state["termQueue"]:
+        if (c.get("kind") == "conflict" and c.get("status") == "approved"
+                and c.get("tgt") and "origTgt" not in c):
+            c["origTgt"] = ""
     return state
 
 
@@ -1356,6 +1419,124 @@ def glossary_impact(pid: int, refresh: bool = False):
     return result
 
 
+_ANALYSIS_CACHE: dict = {}
+
+
+@app.get("/api/projects/{pid}/analysis")
+def project_analysis(pid: int, refresh: bool = False):
+    """Итог работы по проекту одним экраном: что чисто, что исправила машина,
+    что она предлагает одобрить и что осталось человеку.
+
+    Считается по состоянию, а не по последнему прогону: прогонов может быть
+    несколько, страницу могли перезагрузить, а вопрос у пользователя один —
+    «что сейчас с проектом». Ни одного вызова модели здесь нет — но проход
+    по проекту не бесплатен: на 2670 сегментах это секунды CPU единственного
+    воркера, а экран открывают часто. Поэтому результат кэшируется по
+    отпечатку тех же данных, из которых считается."""
+    project = get_project(pid)
+    q = _term_queue()
+    # Отпечаток обязан включать сами проверки: отчёт о глоссарии считается по
+    # тексту, а этот экран — ещё и по backcheck/termcheck/repair. Прогон
+    # back-check не меняет ни статус, ни перевод, и на отпечатке импакта
+    # экран навсегда показывал бы доперегонные цифры.
+    # Не только хеши текста, но и САМИ оценки: повторный back-check по тому же
+    # тексту другой моделью даёт тот же target_hash и другой балл, и по одним
+    # хешам экран показал бы доперегонные цифры.
+    checks = "".join(
+        "%s:%s|%s:%s|%s:%s;" % (
+            (s.get("backcheck") or {}).get("target_hash", ""),
+            (s.get("backcheck") or {}).get("score", ""),
+            (s.get("termcheck") or {}).get("target_hash", ""),
+            len((s.get("termcheck") or {}).get("findings") or ()),
+            (s.get("repair") or {}).get("source_hash", ""),
+            (s.get("repair") or {}).get("applied", ""))
+        for s in project["segments"])
+    fp = (_impact_fingerprint(project) + "|" + str(len(q)) + "|"
+          + str(sum(1 for c in q if c.get("status", "pending") == "pending"))
+          + "|" + hashlib.sha1(checks.encode("utf-8")).hexdigest())
+    cached = _ANALYSIS_CACHE.get(pid)
+    if cached and cached[0] == fp and not refresh:
+        return cached[1]
+    pol = _auto_policy(project.get("domain"))
+    scope = _project_scope(project)
+    impact = glossary_impact(pid)
+
+    clean, repaired, reverted, untranslated, unchecked = [], [], [], [], []
+    findings, weak = [], []
+    # Расхождения с глоссарием берём из отчёта, а не считаем заново: там тот же
+    # расчёт на весь проект и он кэширован. Вызов _repair_findings с project
+    # гонял бы _get_context на каждый сегмент — 10 секунд CPU единственного
+    # воркера на 2670 сегментах, и это при каждом открытии экрана.
+    gloss_bad = set(impact["segments"])
+    for s in project["segments"]:
+        target = (s.get("target") or "").strip()
+        if not target:
+            untranslated.append(s["id"])
+            continue
+        rp = s.get("repair") or {}
+        open_findings = _repair_findings(s) or (
+            [{"kind": "gloss"}] if s["id"] in gloss_bad else [])
+        if rp.get("applied") and _repair_tried(s):
+            repaired.append(s["id"])
+        elif (rp and not rp.get("applied") and open_findings
+                and _repair_tried(s)):
+            # Модель пробовала починить и не смогла — дальше только человек.
+            # _repair_tried обязателен: запись о неудачной правке могла остаться
+            # от прежнего текста, а к нынешнему уже не относится.
+            reverted.append(s["id"])
+        # Только неподтверждённые: подтверждённые с находками пакетный ремонт
+        # не трогает, и обещать «это починится само» было бы неправдой.
+        if open_findings and s.get("status") != "confirmed":
+            findings.append(s["id"])
+        # Корзины обязаны быть исчерпывающими: сегмент, не попавший ни в одну,
+        # исчезает с экрана, и картина выглядит благополучнее, чем есть.
+        why = _machine_clean(s, pol["backcheck_min"])
+        if why is None:
+            clean.append(s["id"])
+        elif "не делался" in why or "пропущен" in why:
+            unchecked.append(s["id"])
+        elif s["id"] not in findings:
+            weak.append({"id": s["id"], "why": why})
+
+    # Что автоодобрение разложило бы прямо сейчас — тем же движком, что и кнопка,
+    # иначе цифра на экране разошлась бы с тем, что произойдёт по нажатию.
+    pending = [c for c in _term_queue() if c.get("status", "pending") == "pending"
+               and _scope_of(c) == scope]
+    ctx = _auto_context(pending, pol)
+    ready, need_human = 0, {}
+    for cand in pending:
+        action, reason = _auto_verdict(cand, ctx)
+        if action in (GLOSSARY_TIER_HARD, GLOSSARY_TIER_SOFT):
+            ready += 1
+        elif action != "close":
+            need_human[reason] = need_human.get(reason, 0) + 1
+
+    result = {
+        "ok": True,
+        "total": len(project["segments"]),
+        "clean": clean,
+        "repaired": repaired,
+        "machine": {"repaired": len(repaired), "reverted": len(reverted)},
+        "proposed": {"terms": ready},
+        "human": {
+            "terms": sorted(({"reason": k, "count": v} for k, v in need_human.items()),
+                            key=lambda x: -x["count"]),
+            "termsTotal": sum(need_human.values()),
+            "reverted": reverted,
+            "glossaryConfirmed": impact["confirmed"],
+        },
+        "todo": {"untranslated": untranslated, "unchecked": unchecked,
+                 "findings": findings, "glossaryPending": impact["pending"],
+                 "weak": [w["id"] for w in weak],
+                 "weakWhy": sorted(
+                     ({"reason": r, "count": sum(1 for w in weak if w["why"] == r)}
+                      for r in {w["why"] for w in weak}),
+                     key=lambda x: -x["count"])},
+    }
+    _ANALYSIS_CACHE[pid] = (fp, result)
+    return result
+
+
 @app.get("/api/models")
 def list_models():
     """Каталог GPT-моделей с ценами — для выпадающего списка и оценки стоимости пакета.
@@ -1517,11 +1698,12 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
     gloss_hits, tm_hit = _get_context(src_text, project=project)
 
     # TM точное совпадение → 0 токенов (только для авто/пакетного, не для ручного force-перевода)
-    if not req.force and tm_hit and tm_hit.get("tgt"):
-        seg["target"] = tm_hit["tgt"]
-        seg["status"] = "confirmed"
-        seg["route"] = "EXACT_TM"
-        seg["provider"] = PROVIDER_TM
+    # и только для записей, которые завёл человек: см. _tm_trusted.
+    if not req.force and _tm_trusted(tm_hit) and tm_hit.get("tgt"):
+        # НЕ confirmed: одно подтверждение человека на одной строке не заверяет
+        # все будущие строки с тем же исходником. Сегмент проходит проверки,
+        # как всякий машинный перевод, и подтверждает его снова человек.
+        _replace_target(seg, tm_hit["tgt"], PROVIDER_TM, "EXACT_TM")
         save_state(STATE)
         return {"ok": True, "segment": seg, "usedRealApi": False, "source": "TM"}
 
@@ -1569,10 +1751,10 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
         raise HTTPException(502, "Перевод недоступен: оба движка вернули ошибку. "
                                  "Попробуйте ещё раз или проверьте API-ключи.")
 
-    seg["target"] = translation
-    seg["status"] = "translated"
-    seg["route"] = "GPT_REQUIRED" if req.engine == "gpt" else "GOOGLE_SAFE"
-    seg["provider"] = used_provider or (PROVIDER_GOOGLE if req.engine == "google" else _resolve_model(req.model)["id"])
+    _replace_target(seg, translation,
+                    used_provider or (PROVIDER_GOOGLE if req.engine == "google"
+                                      else _resolve_model(req.model)["id"]),
+                    "GPT_REQUIRED" if req.engine == "gpt" else "GOOGLE_SAFE")
     save_state(STATE)
     return {"ok": True, "segment": seg, "usedRealApi": used_real_api}
 
@@ -1661,7 +1843,17 @@ def _trim_term_queue():
     # само решение, и человек его больше не увидит.
     live = {b.get("id") for b in STATE.get("autoBatches", [])}
     done = [c for c in q if c.get("status") != "pending" and c.get("autoBatch") not in live]
-    for c in done[TERM_QUEUE_MAX // 4:]:
+    # Решения человека снимаем последними: решённый кандидат — это память
+    # «про этот термин уже спрашивали». Выбросив её, сбор терминологии заведёт
+    # кандидата заново, и одобренный термин вернётся в очередь неодобренным.
+    # Решения человека сортируем по ДАТЕ РЕШЕНИЯ, а не по месту в очереди:
+    # порядок в очереди — это порядок появления кандидатов, и старый кандидат,
+    # одобренный сегодня, лежит в самом низу. По позиции его выбросило бы
+    # первым — то есть терялась бы память именно о свежих решениях.
+    humans = [c for c in done if _human_decision(c)]
+    machines = [c for c in done if not _human_decision(c)]
+    humans.sort(key=lambda c: c.get("decidedAt") or "", reverse=True)
+    for c in (humans + machines)[TERM_QUEUE_MAX // 4:]:
         q.remove(c)
     if len(q) <= TERM_QUEUE_MAX:
         return
@@ -1704,6 +1896,16 @@ def _queue_term(kind: str, src: str, tgt: str, **extra) -> Optional[dict]:
         return _queue_term_locked(kind, src, tgt, src_n, tgt_n, now, extra)
 
 
+def _cand_pair(c: dict) -> tuple:
+    """Пара, с которой кандидат ПОЯВИЛСЯ, — по ней и идёт дедупликация.
+    Одобрение вписывает в src/tgt решение человека (у конфликта перевод вообще
+    рождается пустым и заполняется только им), и без этой памяти следующий сбор
+    терминологии не узнавал бы решённого кандидата: одобренный термин
+    возвращался в очередь новым, будто его никто не подтверждал."""
+    return (_norm_key(c["origSrc"] if "origSrc" in c else c.get("src")),
+            _norm_key(c["origTgt"] if "origTgt" in c else c.get("tgt")))
+
+
 def _queue_term_locked(kind, src, tgt, src_n, tgt_n, now, extra):
     # Область входит в ключ дедупликации: «договор → contract» в RU→EN и
     # «договор → Vertrag» в RU→DE — разные кандидаты, а не спор двух вариантов.
@@ -1711,8 +1913,8 @@ def _queue_term_locked(kind, src, tgt, src_n, tgt_n, now, extra):
     donor = (f"{extra.get('project')}:{extra['segment']}"
              if extra.get("segment") and extra.get("project") else None)
     for c in _term_queue():
-        if (c.get("kind") == kind and _norm_key(c.get("src")) == src_n
-                and _norm_key(c.get("tgt")) == tgt_n and _scope_of(c) == scope):
+        if (c.get("kind") == kind and _cand_pair(c) == (src_n, tgt_n)
+                and _scope_of(c) == scope):
             c["hits"] = c.get("hits", 1) + 1
             c["at"] = now
             # Список сегментов-доноров, а не только счётчик: автоодобрение
@@ -1862,7 +2064,10 @@ def _machine_clean(seg: dict, min_score: int) -> Optional[str]:
         return "termcheck пропущен — проверять было нечего"
     if tc.get("findings"):
         return "termcheck нашёл замечания"
-    if (seg.get("repair") or {}).get("applied"):
+    # Сверка хеша обязательна: сегмент, который однажды чинили, а потом
+    # перевели заново, к ремонту уже не относится. Без неё он навсегда
+    # оставался бы «переписанным» и никогда не стал бы донором для глоссария.
+    if (seg.get("repair") or {}).get("applied") and _repair_tried(seg):
         return "текст переписан автоматическим ремонтом"
     return None
 
@@ -1903,10 +2108,11 @@ def confirm_segment(pid: int, sid: int):
     seg = get_segment(pid, sid)
     project = get_project(pid)
     seg["status"] = "confirmed"
-    # Отметка о человеке нужна именно здесь: статус confirmed ставит и точное
-    # совпадение с TM (route EXACT_TM) — машинно, без чьего-либо решения.
-    # Автоодобрение опирается на «подтвердил человек», и без этой отметки
-    # одна подстановка из памяти сходила бы за подтверждение.
+    # Отметка о человеке нужна именно здесь: `confirmed` в проекте есть и на
+    # старых сегментах, которые так пометило точное совпадение с TM (сейчас
+    # оно ставит `translated`, см. _replace_target). Автоодобрение опирается
+    # на «подтвердил человек» — без отметки такая подстановка сходила бы
+    # за подтверждение и накручивала бы доказательства сама себе.
     seg["confirmedBy"] = "human"
     seg["confirmedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     tm_action, candidates = None, []
@@ -1948,11 +2154,11 @@ def propagate_segment(pid: int, sid: int, req: PropagateRequest = PropagateReque
     for s in project["segments"]:
         if s["id"] not in allowed:
             continue
+        # Через _replace_target: у подтверждённого сегмента снимается отметка
+        # «подтвердил человек» и статус становится «требует проверки». Иначе
+        # рассылка оставляла бы чужую подпись на подставленном ею тексте.
         s["prevTarget"] = s.get("target", "")      # ручной откат остаётся возможен
-        s["target"] = target
-        s["status"] = "translated"
-        s["provider"] = PROVIDER_TM
-        s["route"] = "EXACT_TM"
+        _replace_target(s, target, PROVIDER_TM, "EXACT_TM")
         s["propagatedFrom"] = seg["id"]
         changed.append(s["id"])
     if changed:
@@ -1980,6 +2186,69 @@ class TermDecision(BaseModel):
     src: Optional[str] = None
     tgt: Optional[str] = None
     cat: Optional[str] = None
+
+
+def _mark_decided(cand: dict, status: str, src: str = None, tgt: str = None, **extra):
+    """Решение по кандидату. Прежнюю пару запоминаем ДО правки: по ней работает
+    дедупликация (см. _cand_pair). Примеры сегментов снимаем — решённый кандидат
+    живёт дальше не как карточка, а как память «этот вопрос уже задавали»."""
+    if src is not None and _norm_key(src) != _norm_key(cand.get("src")):
+        cand.setdefault("origSrc", cand.get("src", ""))
+        cand["src"] = src
+    if tgt is not None and _norm_key(tgt) != _norm_key(cand.get("tgt")):
+        cand.setdefault("origTgt", cand.get("tgt", ""))
+        cand["tgt"] = tgt
+    cand["status"] = status
+    cand["decidedBy"] = "human"
+    cand["decidedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    cand.update(extra)
+    for k in ("sampleSrc", "sampleTgt"):
+        cand.pop(k, None)
+    return cand
+
+
+def _human_decision(c: dict) -> bool:
+    """Решение принял человек, а не автоодобрение. Такие живут в очереди дольше:
+    именно они не дают спросить про уже решённый термин второй раз."""
+    if c.get("decidedBy") == "human":
+        return True
+    return not (c.get("autoBatch") or c.get("autoTier") or "autoWrote" in c)
+
+
+def _close_same_term(decided: dict, scope: tuple) -> list:
+    """Закрыть остальные ОЖИДАЮЩИЕ карточки про тот же термин в той же области.
+    Человек ответил не на карточку, а на вопрос «как переводить этот термин»:
+    оставлять рядом второй вопрос про него же — значит показать после
+    обновления страницы уже решённое как нерешённое."""
+    key = _cand_pair(decided)[0]
+    tgt = _norm_key(decided.get("tgt"))
+    closed = []
+    # Под локом: очередь одна, а прогон на сервере пишет в неё из рабочего
+    # потока. Проход с мутацией без лока мог бы разойтись с _queue_term.
+    with _TERM_QUEUE_LOCK:
+        return _close_same_term_locked(decided, scope, key, tgt, closed)
+
+
+def _close_same_term_locked(decided, scope, key, tgt, closed):
+    for c in _term_queue():
+        if c is decided or c.get("status", "pending") != "pending":
+            continue
+        if _cand_pair(c)[0] != key or _scope_of(c) != scope:
+            continue
+        rival = _norm_key(c.get("tgt"))
+        if rival and rival != tgt:
+            # Карточка с ДРУГИМ переводом — не повтор вопроса, а проигравший
+            # вариант: в глоссарий она не попала, и помечать её «одобрено»
+            # значило бы соврать. Пишем «отклонён» и называем победителя —
+            # если выбор окажется неверным, запись глоссария правится руками.
+            _mark_decided(c, "rejected", decidedWith=decided["id"],
+                          note="не выбран: для термина одобрен вариант «%s»"
+                               % decided.get("tgt", ""))
+        else:
+            _mark_decided(c, "approved", decidedWith=decided["id"],
+                          note="решено вместе с кандидатом #%d" % decided["id"])
+        closed.append(c["id"])
+    return closed
 
 
 @app.post("/api/term-queue/{cid}/approve")
@@ -2011,11 +2280,14 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
                                      "lang": scope[0], "domain": scope[1],
                                      "updated": today,
                                      "origin": "confirmed:" + str(cand.get("segment", ""))})
-    cand["status"] = "approved"
-    cand["tgt"] = tgt
+    # Пара запоминается до правки, остальные карточки про этот же термин
+    # закрываются: иначе одобренный термин всплывал бы снова — и как сосед
+    # по очереди, и как заново созданный кандидат на следующем сборе.
+    _mark_decided(cand, "approved", src=src, tgt=tgt)
+    closed = _close_same_term(cand, scope)
     _invalidate_gloss_index()
     save_state(STATE)
-    return {"ok": True, "candidate": cand, "replaced": bool(existing)}
+    return {"ok": True, "candidate": cand, "replaced": bool(existing), "closed": closed}
 
 
 @app.post("/api/term-queue/{cid}/reject")
@@ -2023,7 +2295,9 @@ def reject_term_candidate(cid: int):
     cand = next((c for c in _term_queue() if c.get("id") == cid), None)
     if not cand:
         raise HTTPException(404, "Кандидат не найден")
-    cand["status"] = "rejected"
+    # Соседей не трогаем: «эта пара неверна» — не то же самое, что «с термином
+    # разобрались». Другой вариант перевода того же термина остаётся вопросом.
+    _mark_decided(cand, "rejected")
     save_state(STATE)
     return {"ok": True, "candidate": cand}
 
@@ -2848,11 +3122,42 @@ REPAIR_HARD_REASONS = ("расхождение чисел", "расхожден�
                        "потерян термин")
 
 
-def _repair_findings(seg: dict) -> list:
+def _gloss_misses(seg: dict, project: Optional[dict]) -> list:
+    """Расхождения с ПРОВЕРЕННЫМИ записями глоссария: термин есть в оригинале,
+    утверждённого варианта в переводе нет.
+
+    Считается ровно так же, как в /glossary-impact, и по тем же `verified`:
+    если ремонт и отчёт о соответствии разойдутся в том, что считать
+    нарушением, они начнут переписывать сегменты друг за другом по кругу.
+    Устаревать тут нечему — сверяется текущий текст с текущим глоссарием."""
+    if project is None:
+        return []
+    target = (seg.get("target") or "").strip()
+    if not target:
+        return []
+    out = []
+    hits, _tm = _get_context(seg.get("source", ""), with_tm=False, project=project)
+    for h in hits:
+        if _hit_tier(h) != GLOSSARY_TIER_HARD or not h.get("tgt"):
+            continue
+        if _tgt_has_term(target, h["tgt"]):
+            continue
+        out.append({"kind": "gloss", "use": h["tgt"], "src": h["src"],
+                    "text": "утверждённый перевод термина «" + h["src"] + "» — «"
+                            + h["tgt"] + "», в переводе его нет"})
+    return out
+
+
+def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     """Претензии к ТЕКУЩЕМУ переводу. Устаревшие проверки (перевод правили
-    после них) игнорируем — чинить по ним нечего."""
+    после них) игнорируем — чинить по ним нечего.
+
+    Соответствие глоссарию входит сюда наравне с проверками: цель ремонта —
+    привести перевод в порядок целиком, а не по одной подсистеме. Без этого
+    ремонт и кнопка «Соответствие глоссарию» чинили сегмент по очереди, каждый
+    затирая работу другого."""
     cur = _text_hash(seg.get("target") or "")
-    items = []
+    items = _gloss_misses(seg, project)
     bc = seg.get("backcheck") or {}
     if bc and bc.get("target_hash") == cur:
         for t in (bc.get("terms_lost") or []):
@@ -2890,11 +3195,11 @@ def _repair_tried(seg: dict) -> bool:
     return r.get("source_hash") == _text_hash(seg.get("target") or "")
 
 
-def _repairable(seg: dict, allow_tried: bool = False) -> bool:
+def _repairable(seg: dict, allow_tried: bool = False, project: Optional[dict] = None) -> bool:
     """allow_tried — человек сам отметил галочкой уже чинившиеся сегменты.
     По умолчанию второй заход по тому же тексту не делаем: те же претензии
     дадут тот же результат за те же деньги."""
-    if not (seg.get("target") or "").strip() or not _repair_findings(seg):
+    if not (seg.get("target") or "").strip() or not _repair_findings(seg, project):
         return False
     return allow_tried or not _repair_tried(seg)
 
@@ -2927,7 +3232,18 @@ def _openai_repair(seg: dict, project: dict, findings: list, model: Optional[str
             lines.append('   REQUIRED: replace "' + f["replace"][0] + '" with "' + f["replace"][1] + '"')
         if f.get("must"):
             lines.append('   REQUIRED: the translation must convey "' + f["must"] + '"')
+        if f.get("use"):
+            lines.append('   REQUIRED: use exactly this approved term: "' + f["use"] + '"')
     body = ("SOURCE:\n" + seg.get("source", "") + "\n\nTRANSLATION:\n" + (seg.get("target") or ""))
+    # Проверенные записи глоссария кладём в промпт ЦЕЛИКОМ, а не только те, что
+    # нарушены: чиня одно, модель свободно переписывала соседний утверждённый
+    # термин — и сегмент возвращался в отчёт о соответствии уже по другой строке.
+    approved = [h for h in _get_context(seg.get("source", ""), with_tm=False, project=project)[0]
+                if _hit_tier(h) == GLOSSARY_TIER_HARD and h.get("tgt")]
+    if approved:
+        body += ("\n\nAPPROVED GLOSSARY for this segment — these exact translations must be "
+                 "present in the corrected text:\n"
+                 + "\n".join("  " + h["src"] + " → " + h["tgt"] for h in approved))
     back = ((seg.get("backcheck") or {}).get("back") or "").strip()
     if back:
         body += ("\n\nBACK-TRANSLATION of the current translation (for reference — it shows how the "
@@ -2948,15 +3264,23 @@ def _openai_repair(seg: dict, project: dict, findings: list, model: Optional[str
         return None
 
 
-def _repair_scores(seg: dict) -> dict:
-    """Снимок качества сегмента: балл back-check и число серьёзных замечаний
-    по терминам. По нему решаем, стало ли лучше."""
+def _repair_scores(seg: dict, project: Optional[dict] = None) -> dict:
+    """Снимок качества сегмента: балл back-check, число серьёзных замечаний
+    по терминам и число нарушенных утверждённых терминов. По нему решаем,
+    стало ли лучше. Глоссарий считается всегда: это единственная из трёх
+    оценок, которая не стоит ни одного вызова модели."""
     bc = seg.get("backcheck") or {}
     tc = seg.get("termcheck") or {}
+    # terms = None, если проверка этого текста не видела: ноль замечаний
+    # у непроверенного текста — не «чисто», а «неизвестно». Сравнение с таким
+    # нулём откатывало бы верную правку из-за унаследованной проблемы.
+    fresh_tc = bool(tc) and not _check_stale(tc, seg.get("target") or "")
     return {
         "score": bc.get("score"),
-        "terms": len([f for f in (tc.get("findings") or [])
-                      if f.get("severity") in ("critical", "major")]),
+        "terms": (len([f for f in (tc.get("findings") or [])
+                       if f.get("severity") in ("critical", "major")])
+                  if fresh_tc else None),
+        "gloss": len(_gloss_misses(seg, project)),
     }
 
 
@@ -2964,14 +3288,19 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
                         bc_model: Optional[str] = None, tc_model: Optional[str] = None,
                         use_judge: bool = False, judge_model: Optional[str] = None) -> dict:
     """Один заход ремонта с обязательной перепроверкой и откатом."""
-    findings = _repair_findings(seg)
+    findings = _repair_findings(seg, project)
     if not findings:
         return {"ok": False, "error": "Нет находок, по которым можно чинить"}
     old_target = seg.get("target") or ""
     old_hash = _text_hash(old_target)
     had_bc = any(f["kind"] in ("term_lost", "backcheck", "judge") for f in findings)
-    had_tc = any(f["kind"] == "term" for f in findings)
-    before = _repair_scores(seg)
+    had_gloss = any(f["kind"] == "gloss" for f in findings)
+    # Правка ради глоссария меняет формулировку, и проверить её обязан кто-то,
+    # кроме самой правки. Termcheck смотрит только на целевой текст и стоит один
+    # вызов — без него подстановка термина принималась бы на веру: сравнивать
+    # было бы нечего, обе оценки остались бы от прежнего текста.
+    had_tc = any(f["kind"] == "term" for f in findings) or had_gloss
+    before = _repair_scores(seg, project)
     # Проверки старого текста сохраняем целиком: при откате их надо вернуть,
     # иначе сегмент окажется «непроверенным» и человек заплатит за прогон снова.
     bc_before = json.loads(json.dumps(seg.get("backcheck"))) if seg.get("backcheck") else None
@@ -2996,7 +3325,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         _run_segment_backcheck(seg, project, bc_model, use_judge, judge_model, harvest=False)
     if had_tc:
         _run_segment_termcheck(seg, project, tc_model, harvest=False)
-    after = _repair_scores(seg)
+    after = _repair_scores(seg, project)
 
     better = True
     why = []
@@ -3004,9 +3333,36 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         if after["score"] < before["score"]:
             better = False
             why.append("балл back-check упал " + str(before["score"]) + " → " + str(after["score"]))
-    if had_tc and after["terms"] > before["terms"]:
+    if had_tc and after["terms"] is None:
+        # Перепроверка не состоялась (вызов упал) — подтвердить правку нечем.
+        # Откат: автоправка не заверяет сама себя, и «проверка не ответила»
+        # это не «проверка сказала, что всё хорошо».
+        better = False
+        why.append("перепроверка терминов не выполнилась")
+    elif had_tc and before["terms"] is not None and after["terms"] > before["terms"]:
         better = False
         why.append("замечаний по терминам стало больше " + str(before["terms"]) + " → " + str(after["terms"]))
+    elif had_tc and before["terms"] is None:
+        # Сравнивать не с чем: до правки termcheck этого текста не видел.
+        # Тогда отвечаем за то, что сделали сами, — откатываем, только если
+        # замечание пришло НА ПОДСТАВЛЕННЫЙ термин. Чужая, унаследованная
+        # проблема не повод выбрасывать верную правку вместе с оплаченной
+        # проверкой; её увидит человек на экране итогов.
+        inserted = {_norm_key(f["use"]) for f in findings if f.get("use")}
+        hit = next((f for f in ((seg.get("termcheck") or {}).get("findings") or [])
+                    if f.get("severity") in ("critical", "major")
+                    and _norm_key(f.get("tgt_term")) in inserted), None)
+        if hit:
+            better = False
+            why.append("подставленный термин «%s» забракован проверкой"
+                       % hit.get("tgt_term", ""))
+    # Глоссарий сверяем независимо от того, из-за него ли чинили: правка одного
+    # места не должна выбивать утверждённый термин в другом. Проверка бесплатна,
+    # поэтому идёт всегда.
+    if after["gloss"] > before["gloss"]:
+        better = False
+        why.append("нарушено утверждённых терминов больше "
+                   + str(before["gloss"]) + " → " + str(after["gloss"]))
 
     mdl_id = _resolve_model(model or REPAIR_DEFAULT_MODEL)["id"]
     if not better:
@@ -3028,6 +3384,11 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
 
     seg["prevTarget"] = old_target
     seg["status"] = "review"          # заверяет человек, автоправка себя не подтверждает
+    # Чинили заверенный перевод — отметка «подтвердил человек» относилась к
+    # прежнему тексту. Оставить её на новом значит соврать и себе (автоодобрение
+    # считает такие сегменты доказательством), и пользователю.
+    seg.pop("confirmedBy", None)
+    seg.pop("confirmedAt", None)
     seg["provider"] = mdl_id
     seg["repair"] = {"applied": True, "from": old_target, "source_hash": _text_hash(new_target),
                      "model": mdl_id, "issues": [f["text"] for f in findings],
@@ -3062,6 +3423,11 @@ class RepairBatchRequest(BaseModel):
     segment_ids: Optional[List[int]] = None
     limit: int = 5
     retry: bool = False          # чинить и то, что уже пытались чинить
+    # Подтверждённые сегменты пакетный ремонт не трогает: он переписывает текст,
+    # а молча переписать заверенный человеком перевод нельзя — то же правило,
+    # что у переперевода по глоссарию. Одиночный ремонт по кнопке на сегменте
+    # остаётся явным выбором и разрешён.
+    include_confirmed: bool = False
     model: Optional[str] = None
     bc_model: Optional[str] = None
     tc_model: Optional[str] = None
@@ -3078,7 +3444,14 @@ def repair_batch(pid: int, req: RepairBatchRequest):
     project = get_project(pid)
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
     candidates = [s for s in project["segments"]
-                  if (id_filter is None or s["id"] in id_filter) and _repairable(s, req.retry)]
+                  if (id_filter is None or s["id"] in id_filter)
+                  and (req.include_confirmed or s.get("status") != "confirmed")
+                  and _repairable(s, req.retry, project)]
+    skipped_confirmed = ([s["id"] for s in project["segments"]
+                          if (id_filter is None or s["id"] in id_filter)
+                          and s.get("status") == "confirmed"
+                          and _repairable(s, req.retry, project)]
+                         if not req.include_confirmed else [])
     limit = max(1, min(req.limit, 30))
     remaining_after = max(0, len(candidates) - limit)
     targets = candidates[:limit]
@@ -3113,6 +3486,9 @@ def repair_batch(pid: int, req: RepairBatchRequest):
     save_state(STATE)
     return {"ok": True, "applied": applied, "count": len(applied), "skipped": skipped,
             "remaining": remaining_after, "errors": errors,
+            # Молчаливых потолков не бывает: подтверждённые, которые есть что чинить,
+            # называем поимённо, а не выбрасываем как будто их не было.
+            "skipped_confirmed": skipped_confirmed,
             "model": _resolve_model(req.model or REPAIR_DEFAULT_MODEL)["id"]}
 
 
@@ -3148,6 +3524,14 @@ class BackcheckBatchRequest(BaseModel):
 def backcheck_batch(pid: int, req: BackcheckBatchRequest):
     """Пакетный back-check. Порционный, как и пакетный перевод: клиент гоняет
     порции по 10, поэтому один запрос не живёт дольше таймаута прокси."""
+    if not os.environ.get("OPENAI_API_KEY") and not _DEEP_TRANSLATE_OK:
+        # 503 отдаём до работы, как это делают termcheck и ремонт: иначе
+        # обратный перевод вырождается в посегментные ошибки, и составной
+        # прогон принимает их за «порция целиком провалилась».
+        # Проверяем ОБА пути: _run_segment_backcheck умеет считать обратный
+        # перевод бесплатным переводчиком, и запрещать пакет там, где одиночный
+        # сегмент работает, — значит развести их в поведении.
+        raise HTTPException(503, "Back-check требует ключ OpenAI или доступный переводчик")
     project = get_project(pid)
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
     mdl_id = _resolve_model(req.model or BACKCHECK_DEFAULT_MODEL)["id"]
@@ -3274,15 +3658,16 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True) -> dict:
     seg["engine_qa"] = qa_result["engine_qa"]
     seg["medical_qa_enabled"] = medical_qa_enabled()
 
-    if qa_result["risk_color"] == "red":
-        seg["status"] = "review"
-        seg["risk"] = "critical"
-    elif qa_result["risk_color"] == "yellow":
-        seg["status"] = "qa"
-        seg["risk"] = "medium"
-    else:
-        seg["status"] = "qa"
-        seg["risk"] = "low"
+    # Статус подтверждённого сегмента проверка НЕ трогает: она не изменила ни
+    # буквы текста, а разжаловать решение человека молча — то же самое, что
+    # переписать его перевод. Находка видна по risk_color и qa_issues, и
+    # подтверждённые с замечаниями показывает вкладка QA.
+    if seg.get("status") != "confirmed":
+        seg["status"] = "review" if qa_result["risk_color"] == "red" else "qa"
+    # seg["risk"] не трогаем. Это длина сегмента, по ней выбирается движок
+    # перевода (low → Google); медицинскую опасность несут risk_score и
+    # risk_color. Раньше проверка перетирала одно другим, и сегмент, чисто
+    # прошедший QA, при следующем переводе уезжал в Google вместо GPT.
 
     return {"ok": True, "segment": seg, "qa_result": qa_result, "issues": qa_result["qa_issues"]}
 
@@ -3382,11 +3767,17 @@ def update_segment(pid: int, sid: int, req: UpdateSegmentRequest):
 
 
 class BatchRequest(BaseModel):
-    engine: str                          # "google" | "gpt"
+    engine: str                          # "google" | "gpt" | "auto"
+    # "auto" — один прогон на весь проект: движок выбирается посегментно по risk
+    # (длине). Без него составная кнопка брала бы только половину сегментов:
+    # отбор для "gpt" отбрасывает короткие, для "google" — длинные, и остаток
+    # молча оставался бы непереведённым.
+    low_engine: str = "gpt"              # чем переводить короткие в режиме auto
     limit: int = 50                      # максимум за один вызов
     segment_ids: Optional[list] = None  # если передан — обрабатывать только эти сегменты
     force: bool = False                  # True = явный выбор пользователя, пропустить фильтры статуса и риска
     model: Optional[str] = None          # id из OPENAI_MODELS; неизвестный → DEFAULT_OPENAI_MODEL
+    include_confirmed: bool = False      # переписывать и подтверждённые (только по явной галочке)
 
 @app.post("/api/projects/{pid}/batch")
 def batch_translate(pid: int, req: BatchRequest):
@@ -3398,14 +3789,23 @@ def batch_translate(pid: int, req: BatchRequest):
     # в этом случае надо ноль сегментов, а не весь проект.
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
     if req.force and id_filter is not None:
-        # Явный выбор — переводим только указанные сегменты, кроме подтверждённых
-        all_targets = [s for s in project["segments"] if s["id"] in id_filter and s["status"] != "confirmed"]
+        # Явный выбор — переводим только указанные сегменты. Подтверждённые
+        # мимо, пока человек не попросил отдельной галочкой: молча переписать
+        # заверенный перевод нельзя. Попросил — переписываем, но с сохранением
+        # прежнего текста и со статусом «требует проверки» (см. ниже).
+        all_targets = [s for s in project["segments"] if s["id"] in id_filter
+                       and (req.include_confirmed or s["status"] != "confirmed")]
+        skipped_confirmed = ([s["id"] for s in project["segments"]
+                              if s["id"] in id_filter and s["status"] == "confirmed"]
+                             if not req.include_confirmed else [])
     else:
         all_targets = [s for s in project["segments"]
                        if s["status"] == "new" and
-                       (s.get("risk", "medium") == "low" if req.engine == "google"
-                        else s.get("risk", "medium") != "low") and
+                       (True if req.engine == "auto" else
+                        (s.get("risk", "medium") == "low" if req.engine == "google"
+                         else s.get("risk", "medium") != "low")) and
                        (id_filter is None or s["id"] in id_filter)]
+        skipped_confirmed = []
     # Потолок на порцию: один HTTP-запрос не должен жить дольше proxy_read_timeout (1800s)
     # в nginx. При ~5-6 с на сегмент 100 штук — это ~10 минут, с большим запасом.
     limit = max(1, min(req.limit, 100))
@@ -3439,23 +3839,29 @@ def batch_translate(pid: int, req: BatchRequest):
         # При force (явный выбор пользователя: галочки или «перевести заново») шорткат
         # не применяем — иначе «перевести заново выбранной моделью» молча подставляло бы
         # старый текст из памяти. Так же ведёт себя одиночный перевод сегмента.
-        if not req.force and tm_hit and tm_hit.get("tgt"):
+        if not req.force and _tm_trusted(tm_hit) and tm_hit.get("tgt"):
             return {"key": key, "tm": True, "text": tm_hit["tgt"]}
 
         translation = None
         used_provider = None   # чем на самом деле переведено — с учётом fallback на Google
+        # В режиме auto движок выбирается по длине сегмента: короткие можно отдать
+        # дешёвому переводчику, длинные — только модели. low_engine="gpt" (по
+        # умолчанию) означает «всё модели», то есть качество вместо экономии.
+        eng = req.engine
+        if eng == "auto":
+            eng = req.low_engine if seg.get("risk", "medium") == "low" else "gpt"
         try:
-            if req.engine == "google":
+            if eng == "google":
                 translation = _google_with_gloss(seg["source"], project["src"], project["tgt"], gloss_hits)
                 used_provider = PROVIDER_GOOGLE
-            elif req.engine == "gpt" and os.environ.get("OPENAI_API_KEY"):
+            elif eng == "gpt" and os.environ.get("OPENAI_API_KEY"):
                 translation = _openai_translate(seg["source"], project["src"], project["tgt"],
                                                 domain=project.get("domain"),
                                                 gloss_hits=gloss_hits, tm_context=tm_hit,
                                                 model=req.model)
                 if translation:
                     used_provider = _resolve_model(req.model)["id"]
-            if not translation and req.engine == "gpt":
+            if not translation and eng == "gpt":
                 translation = _google_with_gloss(seg["source"], project["src"], project["tgt"], gloss_hits)
                 if translation:
                     used_provider = PROVIDER_GOOGLE
@@ -3464,8 +3870,8 @@ def batch_translate(pid: int, req: BatchRequest):
             return {"key": key, "error": str(e)}
         if not translation:
             return {"key": key, "error": "перевод не получен"}
-        return {"key": key, "text": translation,
-                "provider": used_provider or (PROVIDER_GOOGLE if req.engine == "google"
+        return {"key": key, "eng": eng, "text": translation,
+                "provider": used_provider or (PROVIDER_GOOGLE if eng == "google"
                                               else _resolve_model(req.model)["id"])}
 
     for res in _run_parallel(order, _translate_group):
@@ -3478,17 +3884,28 @@ def batch_translate(pid: int, req: BatchRequest):
         if res.get("tm"):
             for sg in segs:
                 sg["target"] = res["text"]
-                sg["status"] = "confirmed"
+                # translated, а не confirmed — см. translate_segment
+                sg["status"] = "translated"
                 sg["route"] = "EXACT_TM"
                 sg["provider"] = PROVIDER_TM
                 translated.append(sg["id"])
             tm_hits_count += len(segs)
             continue
         for i, sg in enumerate(segs):
+            # Переписываем заверенный человеком перевод — сохраняем прежний текст
+            # и снимаем отметку о подтверждении: статус «требует проверки», а не
+            # «подтверждено». Машина не заверяет сама себя, и «подтвердил человек»
+            # не должно оставаться на строке, которой человек не видел.
+            was_confirmed = sg.get("status") == "confirmed"
+            if was_confirmed:
+                sg["prevTarget"] = sg.get("target", "")
+                sg.pop("confirmedBy", None)
+                sg.pop("confirmedAt", None)
             sg["target"] = res["text"]
-            sg["status"] = "translated"
+            sg["status"] = "review" if was_confirmed else "translated"
             sg["provider"] = res["provider"]
-            sg["route"] = ("GPT_REQUIRED" if req.engine == "gpt" else "GOOGLE_SAFE") if i == 0 else "DUPLICATE"
+            sg["route"] = ("GPT_REQUIRED" if res.get("eng", req.engine) == "gpt"
+                           else "GOOGLE_SAFE") if i == 0 else "DUPLICATE"
             translated.append(sg["id"])
         dup_hits_count += len(segs) - 1
     save_state(STATE)
@@ -3500,7 +3917,10 @@ def batch_translate(pid: int, req: BatchRequest):
         "errors": errors,
         "tm_hits": tm_hits_count,
         "duplicates": dup_hits_count,
-        "model": _resolve_model(req.model)["id"] if req.engine == "gpt" else None,
+        # Молчаливых потолков не бывает: сегменты, отсеянные как подтверждённые,
+        # называем поимённо — иначе прогон рапортует «готово» и ничего не делает.
+        "skipped_confirmed": skipped_confirmed,
+        "model": _resolve_model(req.model)["id"] if req.engine in ("gpt", "auto") else None,
     }
 
 
@@ -3738,8 +4158,28 @@ def health(request: Request):
 # словарь в памяти. Два параллельных прогона дрались бы за один state.json.
 import queue as _queue
 
-JOB_CHUNKS = {"translate": 10, "backcheck": 10, "termcheck": 10, "medical_qa": 10, "repair": 5}
+JOB_CHUNKS = {"translate": 10, "backcheck": 10, "termcheck": 10, "medical_qa": 10,
+              "repair": 5, "full": 5}
 JOB_KINDS = set(JOB_CHUNKS)
+
+# Составной прогон: порция проходит все шаги подряд, порция за порцией. Порядок
+# НЕ косметический и менять его нельзя:
+#   перевод    — иначе проверять нечего;
+#   back-check — Medical QA берёт из него готовый обратный перевод и не платит
+#                за него второй раз;
+#   термины    — вторая независимая проверка; та из двух, что отработала второй,
+#                и собирает терминологию с чистых сегментов;
+#   Medical QA — детерминированные правила поверх обеих оценок;
+#   ремонт     — последним: ему нужны находки всех предыдущих.
+FULL_RUN_STEPS = ["translate", "backcheck", "termcheck", "medical_qa", "repair"]
+FULL_STEP_LABELS = {"translate": "перевод", "backcheck": "back-check",
+                    "termcheck": "проверка терминов", "medical_qa": "Medical QA",
+                    "repair": "ремонт"}
+# Откуда шаг берёт свою модель. Подшаги читают её из params["model"], а моделей
+# в составном прогоне несколько: смысл в том, что переводит одна, а проверяют
+# другие — иначе проверка перестаёт быть независимой.
+FULL_STEP_MODEL = {"translate": "model", "backcheck": "bc_model",
+                   "termcheck": "tc_model", "repair": "rp_model"}
 JOB_HISTORY = 30                # сколько завершённых прогонов помним
 JOB_CHUNK_RETRIES = 2           # повтор порции при сбое: сеть моргнула — не всё потеряно
 JOB_RETRY_PAUSE = 5             # секунд между попытками
@@ -3755,15 +4195,88 @@ def _job_public(job: dict) -> dict:
     return {k: v for k, v in job.items() if k not in ("ids", "stop")}
 
 
+def _job_chunk_full(pid: int, chunk: list, params: dict) -> dict:
+    """Порция составного прогона: все шаги подряд, в порядке FULL_RUN_STEPS.
+
+    Шаг, для которого нет ключа или модуля, не роняет прогон — он записывается
+    в blocked и работа идёт дальше: отсутствие ключа OpenAI не повод терять
+    уже сделанный перевод. Но если НИ ОДИН шаг не отработал, порция считается
+    провалившейся: молча рапортовать «выполнено», не сделав ничего, нельзя."""
+    # Порядок берём из FULL_RUN_STEPS, а не из присланного списка: клиент выбирает
+    # СОСТАВ шагов, но не их очерёдность — она несущая (см. комментарий там же).
+    want = set(params.get("steps") or FULL_RUN_STEPS)
+    steps = [s for s in FULL_RUN_STEPS if s in want]
+    out = {"done": len(chunk)}
+    ran, blocked = [], []
+    for st in steps:
+        if _job_should_stop():
+            break
+        # Medical QA сообщает о своей недоступности пятисоткой посегментно, а не
+        # 503 на пакет: без этой проверки отсутствие модуля выглядело бы как
+        # «порция целиком провалилась» и роняло весь прогон.
+        if st == "medical_qa" and not (medical_qa_mod and medical_qa_enabled()):
+            blocked.append("Medical QA: модуль недоступен")
+            continue
+        sub = dict(params)
+        # У каждого шага своя модель: одна переводит, другие проверяют. Подшаги
+        # читают её из params["model"], поэтому подставляем нужную перед вызовом —
+        # иначе back-check пошёл бы той же моделью, что делала перевод, и перестал
+        # быть независимой проверкой.
+        mkey = FULL_STEP_MODEL.get(st)
+        if mkey:
+            # or None, а не «если задано»: незаполненная модель шага означает
+            # «возьми свою по умолчанию», а не «возьми ту, что переводила».
+            # Иначе back-check молча шёл бы моделью переводчика и переставал
+            # быть независимой проверкой — а на ней стоит автоодобрение.
+            sub["model"] = params.get(mkey) or None
+        if st == "translate":
+            # Уже переведённое не переводим заново: составной прогон гоняют
+            # по всему проекту, и force затирал бы готовые переводы.
+            sub["force"] = False
+        if st in ("backcheck", "termcheck"):
+            # Свежую проверку второй раз не оплачиваем — за состав отвечает
+            # отбор сегментов, а не повторный вызов модели.
+            sub["skip_cached"] = True
+        try:
+            r = _job_chunk(st, pid, chunk, sub)
+        except HTTPException as e:
+            if e.status_code == 503:
+                blocked.append("%s: %s" % (FULL_STEP_LABELS[st], e.detail))
+                continue
+            raise
+        if r.get("done", 0) == 0 and r.get("errors", 0) >= len(chunk):
+            raise RuntimeError("порция целиком завершилась ошибкой на шаге «%s»"
+                               % FULL_STEP_LABELS[st])
+        ran.append(st)
+        for k, v in r.items():
+            out[st if k == "done" else k] = out.get(st if k == "done" else k, 0) + v
+    if blocked and not ran:
+        raise RuntimeError("ни один шаг не выполнен — " + "; ".join(blocked))
+    if blocked:
+        # Счётчики прогона суммируются по всем порциям, поэтому это число —
+        # «сколько раз шаг пропускался», а не «сколько шагов». Называем его так
+        # и на экране: три недоступных шага на 534 порциях дают 1602, и подпись
+        # «пропущено шагов: 1602» была бы враньём.
+        out["step_skips"] = len(blocked)
+        print("[backend] составной прогон: пропущены шаги — " + "; ".join(blocked),
+              file=sys.stderr)
+    return out
+
+
 def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
     """Одна порция. Возвращает счётчики, которые нарастают в прогрессе."""
     n = len(chunk)
+    if kind == "full":
+        return _job_chunk_full(pid, chunk, params)
     if kind == "translate":
         r = batch_translate(pid, BatchRequest(
             engine=params.get("engine", "gpt"), segment_ids=chunk, limit=n,
-            force=bool(params.get("force", True)), model=params.get("model")))
+            force=bool(params.get("force", True)), model=params.get("model"),
+            low_engine=params.get("low_engine", "gpt"),
+            include_confirmed=bool(params.get("include_confirmed"))))
         return {"done": r["count"], "tm_hits": r.get("tm_hits", 0),
-                "duplicates": r.get("duplicates", 0), "errors": len(r.get("errors", []))}
+                "duplicates": r.get("duplicates", 0), "errors": len(r.get("errors", [])),
+                "skipped_confirmed": len(r.get("skipped_confirmed", []))}
     if kind == "backcheck":
         r = backcheck_batch(pid, BackcheckBatchRequest(
             segment_ids=chunk, limit=n, model=params.get("model"),

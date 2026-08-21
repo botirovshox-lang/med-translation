@@ -196,8 +196,13 @@ function TermQueue({ store, toast, version }) {
     const res = await window.API.safeCall(() => window.API.approveTerm(c.id, { tgt }));
     setBusy(null);
     if (!res || !res.ok) { toast.error("Не удалось одобрить", "Сервер не ответил."); return; }
-    setItems(list => list.filter(x => x.id !== c.id));
-    toast.success(res.replaced ? "Запись глоссария заменена" : "Термин добавлен в глоссарий", c.src + " → " + tgt);
+    // Сервер закрывает и остальные карточки про этот же термин: человек ответил
+    // на вопрос, а не на карточку. Убираем их сразу, иначе они висят до перезагрузки.
+    const gone = new Set([c.id].concat(res.closed || []));
+    setItems(list => list.filter(x => !gone.has(x.id)));
+    toast.success(res.replaced ? "Запись глоссария заменена" : "Термин добавлен в глоссарий",
+      c.src + " → " + tgt + ((res.closed && res.closed.length)
+        ? " · закрыто карточек про этот же термин: " + res.closed.length : ""));
   };
 
   const reject = async (c) => {

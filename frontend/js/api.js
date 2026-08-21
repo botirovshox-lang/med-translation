@@ -112,6 +112,9 @@
     termQueue:     (status, limit)          => call("GET",    `/term-queue?status=${encodeURIComponent(status || "pending")}&limit=${limit || 200}`),
     glossaryUsage: (src, limit, lang, domain) => call("GET",  `/glossary/usage?src=${encodeURIComponent(src)}&limit=${limit || 6}&lang=${encodeURIComponent(lang||"")}&domain=${encodeURIComponent(domain||"")}`),
     glossaryImpact:(pid)                    => call("GET",    `/projects/${pid}/glossary-impact`),
+    /* Итог по проекту одним экраном: чисто / исправлено машиной / нужен человек.
+       Вызовов модели внутри нет, дёргать можно свободно. */
+    analysis:      (pid)                    => call("GET",    `/projects/${pid}/analysis`),
     approveTerm:   (cid, patch)             => call("POST",   `/term-queue/${cid}/approve`,          patch || {}),
     rejectTerm:    (cid)                    => call("POST",   `/term-queue/${cid}/reject`),
     extractTerms:  (pid, segIds, limit, model) => call("POST", `/projects/${pid}/extract-terms`,     { segment_ids: segIds || null, limit: limit || 30, model: model || null }),

@@ -560,6 +560,7 @@ def _openai_embed(texts: list) -> list:
     import openai
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=60, max_retries=2)
     resp = client.embeddings.create(model=EMBED_MODEL, input=texts)
+    _note_usage("embed", EMBED_MODEL, resp)
     return [d.embedding for d in resp.data]
 
 
@@ -678,6 +679,7 @@ def _openai_termcheck(source: str, target: str, src_lang: str, tgt_lang: str,
             ],
             **extra,
         )
+        _note_usage("termcheck", mdl["id"], resp)
         raw = (resp.choices[0].message.content or "").strip()
         m = re.search(r"\{.*\}", raw, re.S)
         if not m:
@@ -739,6 +741,140 @@ def _openai_judge(source_ru: str, back_ru: str, model: str = None,
 def _resolve_model(model_id: Optional[str]) -> dict:
     """Неизвестная/пустая модель → дефолт. Клиент не может подсунуть произвольную строку."""
     return _MODELS_BY_ID.get(model_id or "") or _MODELS_BY_ID[DEFAULT_OPENAI_MODEL]
+
+
+# ─── Учёт фактического расхода ───────────────────────────────────────────────
+# Смета до прогона считается по объёму текста и обязана ошибаться: сколько
+# модель ответит, знает только сама модель. Беда была не в этом, а в том, что
+# фактический расход НИГДЕ не записывался: поправить смету было не по чему —
+# сравнивать не с чем. Так и жила ошибка termcheck: смета клала 450 выходных
+# токенов на сегмент, а ответ занимал 37.
+#
+# Поэтому usage снимается с КАЖДОГО ответа модели. Это не оценка и не наш
+# пересчёт объёма текста — это то, за что выставит счёт провайдер.
+#
+# Куда писать — одна переменная процесса, а не контекст вызова: прогон
+# в системе один (тот же инвариант, что и один воркер uvicorn), а
+# _run_parallel раздаёт работу в ThreadPoolExecutor, который contextvars
+# не наследует, так что contextvars сюда просто не доедут.
+#
+# Учёт не имеет права ломать работу: всё, что он делает, обёрнуто в try.
+# Перевод, не состоявшийся из-за бухгалтерии, — цена, несоизмеримая
+# с точностью сметы.
+
+# Модели, которые человек не выбирает, но которые стоят денег. В OPENAI_MODELS
+# им не место: оттуда строится выпадающий список, и эмбеддингом никто не
+# переводит. Цена — та же единица измерения, USD за 1M токенов.
+AUX_MODEL_PRICES = {EMBED_MODEL: {"in": 0.02, "out": 0.0}}
+
+RUN_COST_HISTORY = 100          # сколько прогонов помним в state.json
+
+_USAGE_LOCK = threading.Lock()
+_USAGE_SINK: Optional[dict] = None      # счётчик идущего прогона; None — вне прогона
+
+
+def _usage_zero() -> dict:
+    return {"calls": 0, "in": 0, "cached_in": 0, "out": 0, "reasoning": 0,
+            "cost": 0.0, "unpriced": 0, "steps": {}, "models": {}}
+
+
+def _usage_leaf() -> dict:
+    return {"calls": 0, "in": 0, "cached_in": 0, "out": 0, "reasoning": 0,
+            "cost": 0.0, "unpriced": 0}
+
+
+# Расход процесса с момента старта. Прогоны живут в памяти и теряются при
+# рестарте, а одиночные вызовы (перевод сегмента по кнопке) не принадлежат
+# ни одному прогону — но деньги стоят.
+_USAGE_TOTAL: dict = _usage_zero()
+
+
+def _model_price(mid: Optional[str]) -> Optional[dict]:
+    m = _MODELS_BY_ID.get(mid or "")
+    return {"in": m["in"], "out": m["out"]} if m else AUX_MODEL_PRICES.get(mid or "")
+
+
+def _usage_cost(mid: Optional[str], tin: int, tout: int) -> Optional[float]:
+    """None — «цена неизвестна», а не ноль. Считать неизвестное нулём значит
+    показать расход меньше настоящего — ровно то враньё, ради которого учёт
+    и заводится. Такие вызовы считаются отдельно (unpriced).
+
+    Скидка на кэшированный вход не применяется: её цены в каталоге нет,
+    а выдумывать цену нельзя. Значит, цифра завышена ровно на неё — насколько,
+    видно по cached_in рядом."""
+    p = _model_price(mid)
+    if not p:
+        return None
+    return tin / 1e6 * p["in"] + tout / 1e6 * p["out"]
+
+
+def _usage_field(obj, name: str) -> int:
+    """usage приходит объектом SDK, но в разных версиях бывает и словарём."""
+    if obj is None:
+        return 0
+    v = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, 0)
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _usage_part(obj, name: str):
+    if obj is None:
+        return None
+    return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
+
+def _usage_add(bucket: dict, step: str, mid: str, tin: int, cached: int,
+               tout: int, think: int, cost: Optional[float]) -> None:
+    for d in (bucket,
+              bucket["steps"].setdefault(step or "?", _usage_leaf()),
+              bucket["models"].setdefault(mid or "?", _usage_leaf())):
+        d["calls"] += 1
+        d["in"] += tin
+        d["cached_in"] += cached
+        d["out"] += tout
+        d["reasoning"] += think
+        if cost is None:
+            d["unpriced"] += 1
+        else:
+            # Округление на каждом шаге, а не в конце: доли цента в сумме
+            # из тысяч вызовов накапливают мусор в младших разрядах float,
+            # и число перестаёт совпадать само с собой при пересчёте.
+            d["cost"] = round(d["cost"] + cost, 6)
+
+
+def _note_usage(step: str, model_id: str, resp) -> None:
+    """Записать то, что посчитал провайдер, а не то, что мы предполагали."""
+    try:
+        u = getattr(resp, "usage", None) if not isinstance(resp, dict) else resp.get("usage")
+        if u is None:
+            return
+        tin = _usage_field(u, "prompt_tokens")
+        tout = _usage_field(u, "completion_tokens")
+        cached = _usage_field(_usage_part(u, "prompt_tokens_details"), "cached_tokens")
+        think = _usage_field(_usage_part(u, "completion_tokens_details"), "reasoning_tokens")
+        if not (tin or tout):
+            return
+        cost = _usage_cost(model_id, tin, tout)
+        with _USAGE_LOCK:
+            for bucket in (_USAGE_TOTAL, _USAGE_SINK):
+                if bucket is not None:
+                    _usage_add(bucket, step, model_id, tin, cached, tout, think, cost)
+    except Exception as e:
+        print(f"[backend] учёт расхода не сработал ({step}/{model_id}): {e}", file=sys.stderr)
+
+
+def _usage_begin(job: dict) -> None:
+    global _USAGE_SINK
+    with _USAGE_LOCK:
+        _USAGE_SINK = job.setdefault("usage", _usage_zero())
+
+
+def _usage_end(job: dict) -> None:
+    global _USAGE_SINK
+    with _USAGE_LOCK:
+        _USAGE_SINK = None
 
 
 # Direct OpenAI GPT translation
@@ -1501,6 +1637,12 @@ def project_analysis(pid: int, refresh: bool = False):
 
     clean, repaired, reverted, untranslated, unchecked = [], [], [], [], []
     findings, weak = [], []
+    # Подтверждённые с находками — своя корзина. Раньше они растворялись
+    # в «оценка ниже порога» вперемешку с машинными сегментами, и по экрану
+    # нельзя было понять, что это ручные подтверждения, до которых ни один
+    # прогон не дотянется без явного разрешения.
+    confirmed_findings: list = []
+    conf_set: set = set()
     # Расхождения с глоссарием берём из отчёта, а не считаем заново: там тот же
     # расчёт на весь проект и он кэширован. Вызов _repair_findings с project
     # гонял бы _get_context на каждый сегмент — 10 секунд CPU единственного
@@ -1523,9 +1665,14 @@ def project_analysis(pid: int, refresh: bool = False):
             # от прежнего текста, а к нынешнему уже не относится.
             reverted.append(s["id"])
         # Только неподтверждённые: подтверждённые с находками пакетный ремонт
-        # не трогает, и обещать «это починится само» было бы неправдой.
+        # без явного разрешения не трогает, и обещать «это починится само»
+        # было бы неправдой. Они уходят в свою корзину — не потому, что с ними
+        # нечего делать, а потому, что решение принимает человек.
         if open_findings and s.get("status") != "confirmed":
             findings.append(s["id"])
+        elif open_findings:
+            confirmed_findings.append(s["id"])
+            conf_set.add(s["id"])
         # Корзины обязаны быть исчерпывающими: сегмент, не попавший ни в одну,
         # исчезает с экрана, и картина выглядит благополучнее, чем есть.
         why = _machine_clean(s, pol["backcheck_min"])
@@ -1533,7 +1680,7 @@ def project_analysis(pid: int, refresh: bool = False):
             clean.append(s["id"])
         elif "не делался" in why or "пропущен" in why:
             unchecked.append(s["id"])
-        elif s["id"] not in findings:
+        elif s["id"] not in findings and s["id"] not in conf_set:
             weak.append({"id": s["id"], "why": why})
 
     # Что автоодобрение разложило бы прямо сейчас — тем же движком, что и кнопка,
@@ -1562,6 +1709,7 @@ def project_analysis(pid: int, refresh: bool = False):
             "termsTotal": sum(need_human.values()),
             "reverted": reverted,
             "glossaryConfirmed": impact["confirmed"],
+            "confirmedFindings": confirmed_findings,
         },
         "todo": {"untranslated": untranslated, "unchecked": unchecked,
                  "findings": findings, "glossaryPending": impact["pending"],
@@ -3654,7 +3802,13 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     привести перевод в порядок целиком, а не по одной подсистеме. Без этого
     ремонт и кнопка «Соответствие глоссарию» чинили сегмент по очереди, каждый
     затирая работу другого."""
-    cur = _text_hash(seg.get("target") or "")
+    # По ОБРЕЗАННОМУ тексту: back-check и termcheck пишут хеш именно так
+    # (см. _check_stale и соседей). Сравнение с необрезанным означало, что
+    # у перевода с висящим пробелом находок «нет» — сегмент молча выпадал
+    # из ремонта, из корзины «с замечаниями» и из отчёта, а на экране
+    # проверки числились свежими. Хеш ремонта (repair.source_hash) остаётся
+    # сырым: его так же сырым и пишут.
+    cur = _text_hash((seg.get("target") or "").strip())
     items = _gloss_misses(seg, project)
     bc = seg.get("backcheck") or {}
     if bc and bc.get("target_hash") == cur:
@@ -4810,6 +4964,12 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
 
     use_judge = bool(params.get("use_judge"))
     retry = bool(params.get("retry"))
+    # Разрешение чинить заверенное человеком. Разбор ОБЯЗАН его читать: раньше
+    # он отбрасывал подтверждённые безусловно, а прогон брал их по флагу —
+    # смета обещала одно, работа делала другое. Флаг относится только к ремонту
+    # (см. _job_chunk_full): он правит по конкретным находкам и точечно,
+    # а перевод заново перегнал бы сегмент целиком и за полную цену.
+    fix_confirmed = bool(params.get("include_confirmed"))
     note = None
 
     for seg in scope:
@@ -4886,10 +5046,14 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
             # остальные находки читаются из самого сегмента и бесплатны.
             if seg["id"] not in gloss_ids and not _repair_findings(seg, None):
                 skip("чинить нечего — находок нет")
-            elif seg.get("status") == "confirmed":
-                skip("заверено человеком — ремонт таких не берёт")
+            elif seg.get("status") == "confirmed" and not fix_confirmed:
+                skip("заверено человеком — включите «чинить подтверждённые»")
             elif not retry and _repair_tried(seg):
                 skip("этот же текст уже чинили")
+            elif seg.get("status") == "confirmed":
+                # Причина названа отдельно намеренно: цена у этих сегментов та же,
+                # а последствие другое — отметка «подтвердил человек» с них снимется.
+                run("есть находки, подтверждение будет снято", seg)
             else:
                 run("есть находки", seg)
 
@@ -4920,6 +5084,7 @@ class RunPlanRequest(BaseModel):
     rp_model: Optional[str] = None
     use_judge: bool = False
     retry: bool = False
+    include_confirmed: bool = False   # чинить и заверенное человеком (только ремонт)
 
 
 @app.post("/api/projects/{pid}/run-plan")
@@ -5015,6 +5180,13 @@ def _job_chunk_full(pid: int, chunk: list, params: dict) -> dict:
             # Иначе back-check молча шёл бы моделью переводчика и переставал
             # быть независимой проверкой — а на ней стоит автоодобрение.
             sub["model"] = params.get(mkey) or None
+        # Разрешение трогать заверенное человеком относится ТОЛЬКО к ремонту:
+        # он меняет минимум слов по конкретным находкам и откатывается, если
+        # стало хуже. Отдай тот же флаг переводу — и одна галочка «починить
+        # подтверждённые» перегнала бы их заново целиком, по полной цене
+        # и без единой находки в основании. Это и есть точечность: правим
+        # найденное, а не переводим сегмент сначала.
+        sub["include_confirmed"] = bool(params.get("include_confirmed")) if st == "repair" else False
         if st == "translate":
             # Уже переведённое не переводим заново: составной прогон гоняют
             # по всему проекту, и force затирал бы готовые переводы.
@@ -5112,10 +5284,12 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
             segment_ids=chunk, limit=n, model=params.get("model"),
             bc_model=params.get("bc_model"), tc_model=params.get("tc_model"),
             use_judge=bool(params.get("use_judge")), judge_model=params.get("judge_model"),
+            include_confirmed=bool(params.get("include_confirmed")),
             retry=bool(params.get("retry"))))
         return {"done": len(r.get("applied", [])) + len(r.get("skipped", [])),
                 "applied": len(r.get("applied", [])), "reverted": len(r.get("skipped", [])),
-                "errors": len(r.get("errors", [])), "why": _first_error(r)}
+                "errors": len(r.get("errors", [])), "why": _first_error(r),
+                "skipped_confirmed": len(r.get("skipped_confirmed", []))}
     if kind == "medical_qa":
         r = batch_medical_qa(pid, MedicalQABatchRequest(
             segment_ids=chunk, limit=n, bc_model=params.get("bc_model"),

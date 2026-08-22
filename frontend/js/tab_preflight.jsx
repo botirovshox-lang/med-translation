@@ -24,7 +24,13 @@ function WorkSummary({ summary, store, toast }) {
         hint && React.createElement("span", { className: "dim", style: { fontSize: 12.5 } }, " — " + hint)),
       React.createElement("b", { style: { fontVariantNumeric: "tabular-nums", color: n ? (color || "var(--text-1)") : "var(--text-3)" } }, n));
 
-  const humanTotal = s.human.termsTotal + s.human.reverted.length + s.human.glossaryConfirmed.length;
+  // Считаем по РАЗНЫМ сегментам: один и тот же подтверждённый сегмент может
+  // и спорить с глоссарием, и нести находку проверок — сумма длин списков
+  // посчитала бы его дважды и завысила бы работу человека.
+  const humanSegs = new Set([].concat(s.human.reverted || [],
+                                      s.human.glossaryConfirmed || [],
+                                      s.human.confirmedFindings || []));
+  const humanTotal = s.human.termsTotal + humanSegs.size;
 
   return React.createElement("div", { className: "section" },
     React.createElement("h2", { className: "section-title" }, "Что сейчас с переводом",
@@ -75,6 +81,13 @@ function WorkSummary({ summary, store, toast }) {
         ids: s.human.reverted, color: "var(--c-warning)", hint: "модель пробовала починить и не смогла" }),
       React.createElement(Row, { label: "Подтверждено, но спорит с глоссарием", n: s.human.glossaryConfirmed.length,
         ids: s.human.glossaryConfirmed, color: "var(--c-warning)", hint: "переписать можно только по явной галочке" }),
+      // Своя строка, а не «оценка ниже порога»: это заверенные человеком
+      // сегменты, до которых прогон не дотянется без разрешения. В общей куче
+      // они выглядели как машинные и ждали бы вечно.
+      React.createElement(Row, { label: "Подтверждено, но есть находки проверок",
+        n: (s.human.confirmedFindings || []).length, ids: s.human.confirmedFindings,
+        color: "var(--c-warning)",
+        hint: "починит «Ремонт» с галочкой «чинить подтверждённые»" }),
       s.human.terms.length > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.6, paddingTop: 10, borderTop: "1px solid var(--border)" } },
         "Почему термины остались человеку: ",
         s.human.terms.slice(0, 4).map(t => t.count + "× " + t.reason).join(" · "))));

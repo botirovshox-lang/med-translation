@@ -18,6 +18,65 @@ const JOB_LABELS = { translate: "Перевод", backcheck: "Back-check", termc
                      repair: "Автоматический ремонт", medical_qa: "Medical QA",
                      full: "Перевод и проверка", apply_terms: "Одобрение и применение" };
 
+// Короткие имена шагов составного прогона. Одни и те же в таблице состава и
+// в полосе прогресса: разойдись они — человек не свяжет галочку на полосе
+// со строкой, галочками в которой он этот шаг и набирал.
+const FULL_STEP_LABELS = { translate: "Перевод", backcheck: "Back-check", termcheck: "Термины",
+                           repair: "Ремонт", medical_qa: "Medical QA" };
+
+/* ── Снимок состава прогона ───────────────────────────────────────────
+   Счётчики задачи (job.counters) говорят, сколько сегментов шаг УЖЕ прошёл.
+   Сколько ему всего — знает только разбор, а во время прогона он не
+   пересчитывается: воркер на сервере ОДИН, и разбор дрался бы за него с самой
+   работой. Поэтому состав, посчитанный сервером в момент запуска, сохраняем
+   здесь — из него и вычитается сделанное.
+
+   Лежит в localStorage, а не в состоянии компонента: прогон идёт на сервере и
+   переживает и вкладку, и перезагрузку страницы — цифра «осталось» тоже должна.
+   Снимка нет (прогон запущен из другого браузера) — показываем только сделанное
+   и про остаток МОЛЧИМ: выдуманное число хуже отсутствующего. */
+const RUN_SNAP_LS_KEY = "mcat_run_snapshot";
+function readRunSnap() {
+  try { return JSON.parse(localStorage.getItem(RUN_SNAP_LS_KEY) || "null"); }
+  catch (e) { return null; }
+}
+function writeRunSnap(snap) {
+  try { localStorage.setItem(RUN_SNAP_LS_KEY, JSON.stringify(snap)); }
+  catch (e) { /* приватный режим */ }
+}
+
+/* Состояние шагов идущего составного прогона.
+
+   Галочка означает ровно одно: шаг взял всё, что ему отвёл разбор. «Текущего»
+   шага одного на весь прогон не существует и подсвечивать его нельзя: порция
+   (5 сегментов) проходит ВСЕ выбранные шаги по очереди, поэтому пока перевод
+   добирает своё в двадцатой порции, back-check уже отработал по девятнадцати.
+   Точка у шага — «ещё берёт», и это правда для всех незакрытых шагов сразу.
+
+   У ремонта остаток может кончиться раньше плана и наоборот: находки рождают
+   проверки этого же прогона, разбор считал по прежним. Поэтому остаток
+   обрезается нулём, а сделанное показывается как есть. */
+function runStepRows(job, snap) {
+  if (!job || job.kind !== "full") return [];
+  const want = (job.params && job.params.steps) || FULL_STEP_KEYS;
+  // Снимок опознаём по ТРОЙКЕ: номер + проект + время создания. Номера задач
+  // живут в памяти процесса и после рестарта сервиса начинаются с единицы
+  // заново, так что одного номера мало: чужой снимок сел бы на неродной прогон,
+  // и полоса показала бы выдуманное «осталось» — ровно то враньё, которого мы
+  // избегаем, когда снимка нет вовсе.
+  const mine = snap && snap.jobId === job.id
+    && snap.project === job.project && snap.created === job.created;
+  const planned = (mine && snap.steps) || null;
+  const counters = job.counters || {};
+  return FULL_STEP_KEYS.filter(k => want.indexOf(k) !== -1).map(k => {
+    const done = counters[k] || 0;
+    const total = planned && planned[k] != null ? planned[k] : null;
+    return { key: k, label: FULL_STEP_LABELS[k] || k, done: done, total: total,
+             left: total == null ? null : Math.max(0, total - done),
+             complete: total != null && done >= total };
+  });
+}
+
 // Цвет полосы соответствия обратного перевода
 function bandColor(color) {
   return color === "green" ? "var(--c-success)"
@@ -245,6 +304,8 @@ function TabEditor({ store, toast }) {
   const [busy, setBusy] = useState({});       // {segId: 'translate'|'qa'}
   const [batchRun, setBatchRun] = useState(null); // {engine, done, total} — производное от job
   const [job, setJob] = useState(null);           // активный серверный прогон
+  // Состав шагов запущенного прогона: из него полоса прогресса берёт «осталось».
+  const [runSnap, setRunSnap] = useState(readRunSnap);
   const lastJobId = useRef(null);                 // чтобы отчитаться о завершении один раз
   const [checkedSegs, setCheckedSegs] = useState(new Set()); // ручной выбор
   const [showFilters, setShowFilters] = useState(false);
@@ -284,6 +345,12 @@ function TabEditor({ store, toast }) {
   const [bcGroupPick, setBcGroupPick] = useState(null);   // Set<ключ группы> | null = по умолчанию
   const [tcGroupPick, setTcGroupPick] = useState(null);   // то же для проверки терминологии
   const [rpGroupPick, setRpGroupPick] = useState(null);   // то же для ремонта
+  // Чинить ли заверенное человеком. По умолчанию выключено и НАМЕРЕННО
+  // не запоминается: это разрешение на конкретный прогон, а не настройка.
+  // Переключатель живёт в раскрытой строке ремонта, поэтому взведённым
+  // с прошлого раза он был бы не виден — а главная кнопка всё равно снимала бы
+  // отметку «подтвердил человек», в том числе в другом проекте.
+  const [rpFixConfirmed, setRpFixConfirmed] = useState(false);
   // Составной прогон: какие шаги входят. null = все.
   const [fullSteps, setFullSteps] = useState(null);
   // Раскрыта одна строка за раз: развёрнутые все сразу — это снова простыня,
@@ -395,6 +462,10 @@ function TabEditor({ store, toast }) {
   useEffect(() => { setImpact(null); setAutoPreview(null); loadImpact(); loadAutoPreview(); },
     [project && project.id]);
 
+  // Смена проекта гасит разрешение: заверял сегменты человек в ТОМ проекте,
+  // и переносить на новый разрешение их переписать нельзя.
+  useEffect(() => { setRpFixConfirmed(false); }, [project && project.id]);
+
   useEffect(() => { setTcGroupPick(null); }, [tcModel, store.segmentFilter, checkedSegs.size]);
   useEffect(() => { setRpGroupPick(null); }, [rpModel, store.segmentFilter, checkedSegs.size]);
 
@@ -423,6 +494,7 @@ function TabEditor({ store, toast }) {
     setBcModel(id);
     try { localStorage.setItem(BC_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
   };
+  const toggleRpFixConfirmed = () => setRpFixConfirmed(v => !v);
   const toggleBcSkipConfirmed = () => setBcSkipConfirmed(v => {
     const next = !v;
     try { localStorage.setItem(BC_SKIP_CONFIRMED_LS_KEY, next ? "1" : "0"); } catch (e) { /* приватный режим */ }
@@ -502,6 +574,7 @@ function TabEditor({ store, toast }) {
     project && project.id, gptModel, bcModel, tcModel, rpModel, bcJudge,
     fullSteps ? Array.from(fullSteps).sort().join(",") : "*",
     rpGroupPick ? Array.from(rpGroupPick).sort().join(",") : "*",
+    rpFixConfirmed ? "rc" : "",
     scopeFp, planFp,
     job ? job.id + ":" + job.status : "",
   ].join("|");
@@ -524,6 +597,7 @@ function TabEditor({ store, toast }) {
       // Тот же признак, что и у карточки ремонта: отмечены группы уже
       // чинившихся — значит человек просит второй заход.
       retry: !!(rpGroupPick && (rpGroupPick.has("applied") || rpGroupPick.has("rejected"))),
+      include_confirmed: rpFixConfirmed,
     })).then(res => {
       if (!alive) return;
       setPlanBusy(false);
@@ -844,14 +918,17 @@ function TabEditor({ store, toast }) {
   // Порции крутит сервер (см. фоновые прогоны в main.py). Браузер ставит задачу
   // и опрашивает статус: закрытая вкладка больше не обрывает работу, а вернувшись
   // на страницу, пользователь видит прогресс с того места, где тот сейчас есть.
+  // Возвращает поставленную задачу (или null): по её id составной прогон
+  // запоминает состав шагов — без него полосе прогресса неоткуда взять остаток.
   const startJob = async (kind, targets, params, emptyMsg) => {
-    if (batchRun) { toast.warning("Прогон уже идёт", "Дождитесь окончания или остановите текущий."); return; }
-    if (!targets.length) { toast.warning("Нечего запускать", emptyMsg); return; }
-    if (!window.API) return;
+    if (batchRun) { toast.warning("Прогон уже идёт", "Дождитесь окончания или остановите текущий."); return null; }
+    if (!targets.length) { toast.warning("Нечего запускать", emptyMsg); return null; }
+    if (!window.API) return null;
     const res = await window.API.safeCall(() => window.API.createJob(project.id, kind, targets.map(s => s.id), params));
-    if (!res || !res.ok) { toast.error("Не удалось запустить", "Сервер не принял задачу."); return; }
+    if (!res || !res.ok) { toast.error("Не удалось запустить", "Сервер не принял задачу."); return null; }
     setJob(res.job);
     toast.info(JOB_LABELS[kind] + ": запущено", targets.length + " сегментов. Можно закрыть вкладку — прогон идёт на сервере.");
+    return res.job;
   };
 
   // Итог завершившегося прогона. Отчитываемся по счётчикам, которые вернул сервер:
@@ -971,7 +1048,8 @@ function TabEditor({ store, toast }) {
   const runRepairBatch = () => {
     startJob("repair", project.segments.filter(s => repairable(s, currentIdSet)),
       { model: rpModel || null, bc_model: bcModel || null, tc_model: tcModel || null,
-        use_judge: bcJudge, judge_model: judgeModel || null, retry: repairRetry() },
+        use_judge: bcJudge, judge_model: judgeModel || null, retry: repairRetry(),
+        include_confirmed: rpFixConfirmed },
       rpGroups.length
         ? "Все сегменты с находками уже проходили ремонт. Отметьте нужные группы в «Что чинить»."
         : "Нет сегментов с проверяемыми находками. Сначала прогоните back-check или проверку терминологии.");
@@ -1055,18 +1133,36 @@ function TabEditor({ store, toast }) {
   // сегменты автоматика по умолчанию не переписывает.
   // Обычная переменная, а не useMemo: этот код идёт после раннего return по
   // отсутствию проекта, и хук здесь сломал бы порядок хуков компонента.
-  const impactRepairIds = new Set((impact && impact.pending) || []);
-  const rpCandidate = (s, idSet) => {
+  // Два набора расхождений с глоссарием: pending — без подтверждённых,
+  // segments — со всеми. Какой из них в силе, решает галочка ниже; сервер
+  // считает ровно так же (glossary_impact), и разойтись они не должны.
+  const impactPendingIds = new Set((impact && impact.pending) || []);
+  const impactAllIds = new Set((impact && impact.segments) || []);
+  // Есть ли у сегмента находка, по которой ремонту есть что делать.
+  const rpFindingHit = (s, glossIds) => {
     if (!(s.target && s.target.trim())) return false;
-    if (idSet && !idSet.has(s.id)) return false;
     const bc = s.backcheck && !s.backcheck.stale ? s.backcheck : null;
     const tc = s.termcheck && !s.termcheck.stale ? s.termcheck : null;
     const bcHit = bc && ((bc.terms_lost || []).length > 0
       || (bc.reasons || []).some(r => REPAIR_REASONS.some(h => r.indexOf(h) !== -1))
       || (bc.judge && ["major", "critical"].indexOf(bc.judge.severity) !== -1));
     const tcHit = tc && (tc.findings || []).some(f => f.severity === "critical" || f.severity === "major");
-    return !!(bcHit || tcHit || impactRepairIds.has(s.id));
+    return !!(bcHit || tcHit || glossIds.has(s.id));
   };
+  const rpCandidate = (s, idSet) => {
+    if (idSet && !idSet.has(s.id)) return false;
+    // Подтверждённые — только по явной галочке, и ровно по тому же правилу,
+    // что на сервере. Без этой строки счётчик и смета считали работу, которую
+    // прогон молча пропускал (skipped_confirmed), — числа под кнопкой врали.
+    if (s.status === "confirmed" && !rpFixConfirmed) return false;
+    return rpFindingHit(s, rpFixConfirmed ? impactAllIds : impactPendingIds);
+  };
+  // Сколько заверенного человеком ждёт починки — показываем ВСЕГДА, даже при
+  // снятой галочке: иначе о запертой работе можно узнать, только случайно
+  // включив переключатель.
+  const rpConfirmedWaiting = project.segments.filter(s =>
+    s.status === "confirmed" && (!currentIdSet || currentIdSet.has(s.id))
+    && rpFindingHit(s, impactAllIds)).length;
 
   // tried приходит с бэкенда: этот же текст уже проходил через ремонт
   const rpGroupLabel = (key) =>
@@ -1194,7 +1290,7 @@ function TabEditor({ store, toast }) {
 
   const fullRunRows = [
     {
-      key: "translate", label: "Перевод", hint: "только те, что ещё не переведены",
+      key: "translate", label: FULL_STEP_LABELS.translate, hint: "только те, что ещё не переведены",
       modelId: gptModel, onModel: pickGptModel, plan: stepPlan("translate"),
       planEst: planEstOf("translate", gptModelInfo),
       soloEst: estimateRun("translate", transSolo.targets, gptModelInfo),
@@ -1220,7 +1316,7 @@ function TabEditor({ store, toast }) {
           "В выборке нет сегментов для повторного перевода (все подтверждены).")),
     },
     {
-      key: "backcheck", label: "Back-check", hint: "обратный перевод другой моделью",
+      key: "backcheck", label: FULL_STEP_LABELS.backcheck, hint: "обратный перевод другой моделью",
       modelId: bcModel, onModel: pickBcModel, plan: stepPlan("backcheck"),
       planEst: planEstOf("backcheck", bcModelInfo, { judge: bcJudge, judgeModel: judgeModelInfo }),
       soloEst: estimateRun("backcheck", project.segments.filter(s => backcheckable(s, currentIdSet)),
@@ -1251,7 +1347,7 @@ function TabEditor({ store, toast }) {
           "В выборке нечего проверять.")),
     },
     {
-      key: "termcheck", label: "Термины", hint: "третья модель смотрит только на результат",
+      key: "termcheck", label: FULL_STEP_LABELS.termcheck, hint: "третья модель смотрит только на результат",
       modelId: tcModel, onModel: pickTcModel, plan: stepPlan("termcheck"),
       planEst: planEstOf("termcheck", tcModelInfo),
       soloEst: estimateRun("termcheck", project.segments.filter(s => termcheckable(s, currentIdSet)), tcModelInfo),
@@ -1261,7 +1357,7 @@ function TabEditor({ store, toast }) {
         "В выборке нечего проверять."),
     },
     {
-      key: "repair", label: "Ремонт", hint: "правит по всем находкам, включая глоссарий",
+      key: "repair", label: FULL_STEP_LABELS.repair, hint: "правит по всем находкам, включая глоссарий",
       modelId: rpModel, onModel: pickRpModel, plan: stepPlan("repair"),
       planEst: planEstOf("repair", rpModelInfo, { recheckModel: bcModelInfo }),
       soloEst: estimateRun("repair", project.segments.filter(s => repairable(s, currentIdSet)),
@@ -1269,12 +1365,26 @@ function TabEditor({ store, toast }) {
       onSolo: runRepairBatch, onStop: stopJob,
       running: batchRun && batchRun.engine === "repair" ? batchRun : null,
       soloNote: "Правка плюс перепроверка теми же проверками: если оценка упадёт, текст откатится. Один заход на один текст — второй даст то же самое за те же деньги.",
-      options: groupTable("Что чинить — отметьте, если нужен второй заход:",
-        rpGroups, pickedRpGroups, toggleRpGroup,
-        "Нет сегментов с находками. Сначала прогоните back-check или проверку терминов."),
+      options: React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+        React.createElement("div", { className: "row between", style: { gap: 12, flexWrap: "wrap" } },
+          React.createElement("div", { style: { minWidth: 0 } },
+            React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center" } },
+              "Чинить подтверждённые человеком",
+              React.createElement(InfoTip, { title: "Что произойдёт", body: "Ремонт правит только по конкретным находкам и меняет минимум слов — сегмент не переводится заново, и полной цены прогона тут нет. Но прежний текст уйдёт в «прошлый перевод», статус станет «требует проверки», а отметка «подтвердил человек» снимется: она относилась к тексту, которого больше нет.\n\nЕсли после правки оценка не выросла, текст откатывается вместе с прежними проверками.\n\nГалочка действует только на этот шаг. Перевод по ней ничего не перегоняет." })),
+            React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
+              rpConfirmedWaiting
+                ? rpConfirmedWaiting + " заверенных сегментов с находками ждут решения"
+                : "в выборке нет заверенных сегментов с находками")),
+          React.createElement(Switch, { on: rpFixConfirmed, label: "Чинить подтверждённые",
+            onClick: toggleRpFixConfirmed })),
+        rpFixConfirmed && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
+          "С этих сегментов снимется отметка «подтвердил человек» — их придётся заверить заново."),
+        groupTable("Что чинить — отметьте, если нужен второй заход:",
+          rpGroups, pickedRpGroups, toggleRpGroup,
+          "Нет сегментов с находками. Сначала прогоните back-check или проверку терминов.")),
     },
     {
-      key: "medical_qa", label: "Medical QA", hint: "числа и отрицания; обратный перевод берёт у back-check",
+      key: "medical_qa", label: FULL_STEP_LABELS.medical_qa, hint: "числа и отрицания; обратный перевод берёт у back-check",
       modelId: null, onModel: null, plan: stepPlan("medical_qa"),
       modelNote: (bcModelInfo ? bcModelInfo.label : "—") + " · от back-check",
       planEst: planEstOf("medical_qa", bcModelInfo),
@@ -1294,17 +1404,32 @@ function TabEditor({ store, toast }) {
   // что переводила, она правит по собственному пониманию текста.
   const sameModelWarn = [bcModel, tcModel, rpModel].filter(m => m && m === gptModel).length > 0;
 
-  const runFullJob = () => {
+  const runFullJob = async () => {
     const steps = FULL_STEP_KEYS.filter(k => pickedFull.has(k));
     if (!steps.length) { toast.warning("Не выбрано ни одного шага", "Отметьте хотя бы один."); return; }
-    startJob("full", fullRunIds, {
+    // Состав, посчитанный сервером, запоминаем ДО запуска: через секунду
+    // разбор уже не пересчитается (см. readRunSnap), а полоса прогресса
+    // должна говорить не только «сделано», но и «осталось».
+    const planned = {};
+    steps.forEach(k => { planned[k] = (fullStepTargets[k] || []).length; });
+    const started = await startJob("full", fullRunIds, {
       steps,
       model: gptModel, bc_model: bcModel, tc_model: tcModel,
       rp_model: rpModel, use_judge: bcJudge, judge_model: judgeModel || null,
       // Тот же retry, что и у карточки ремонта: карточка выше посчитала
       // и оценила сегменты по этому же правилу, и разойтись они не должны.
       retry: repairRetry(),
+      // Разрешение сервер отдаёт только шагу ремонта (см. _job_chunk_full):
+      // перевод по этой галочке не перегоняет ничего.
+      include_confirmed: rpFixConfirmed,
     }, "В выбранных сегментах нечего делать.");
+    if (!started) return;
+    // Проект и время создания — часть опознания снимка (см. runStepRows):
+    // одного номера мало, они начинаются заново после рестарта сервиса.
+    const snap = { jobId: started.id, project: started.project,
+                   created: started.created, steps: planned };
+    writeRunSnap(snap);
+    setRunSnap(snap);
   };
 
   /* ── Второй клик: одобрить термины и применить их к переводу ──────
@@ -1369,7 +1494,13 @@ function TabEditor({ store, toast }) {
         React.createElement(Select, { value: riskFilter, onChange: (e) => setRiskFilter(e.target.value), style: { width: 200 } },
           [["all", "Любой риск"], ["low", "Низкий риск"], ["medium", "Средний риск"], ["high", "Высокий риск"], ["critical", "Критический риск"]]
             .map(([v, l]) => React.createElement("option", { key: v, value: v }, l)))
-      )
+      ),
+
+      // Идущий прогон: виден и после перезагрузки страницы. Живёт ВНУТРИ
+      // залипающей панели намеренно — таблица длинная, а полоса нужна на
+      // экране всё время, пока идёт работа: на ней и остановка.
+      job && React.createElement(RunStrip, {
+        job: job, steps: runStepRows(job, runSnap), onStop: stopJob })
     ),
 
     // ---- Segment filter banner ----
@@ -1382,51 +1513,42 @@ function TabEditor({ store, toast }) {
       )
     ),
 
-    // ---- Идущий серверный прогон: виден и после перезагрузки страницы ----
-    job && React.createElement("div", { className: "editor-main", style: { paddingBottom: 0 } },
-      React.createElement("div", { className: "card", style: { padding: "10px 14px", background: "var(--bg-sunken)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" } },
-        React.createElement("div", { className: "row", style: { gap: 10, flex: "1 1 320px" } },
-          React.createElement(Spinner, null),
-          React.createElement("div", { style: { flex: 1 } },
-            React.createElement("div", { style: { fontSize: 13, fontWeight: 600 } },
-              (JOB_LABELS[job.kind] || job.kind) + " — "
-              + (job.stopping ? "останавливается" : job.status === "queued" ? "в очереди" : "идёт на сервере")
-              + ": " + job.done + " из " + job.total),
-            React.createElement(ProgressBar, { value: Math.round(job.done / Math.max(1, job.total) * 100) }),
-            React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 4 } },
-              "Вкладку можно закрыть — прогон продолжится, прогресс подхватится при возвращении"))),
-        React.createElement(Btn, { variant: "ghost", size: "sm", onClick: stopJob, disabled: !!job.stopping },
-          job.stopping ? "Останавливаем…" : "Остановить"))
-    ),
-
     // ---- Составной прогон: одна кнопка на весь конвейер ----
+    // Два блока запуска стоят рядом, а не друг под другом во всю ширину:
+    // растянутые на монитор, они читались строчками по две тысячи пикселей,
+    // и до второй кнопки приходилось листать. Узко — не значит меньше: состав
+    // и причины в строках шагов остались целиком.
     React.createElement("div", { className: "editor-main", style: { paddingBottom: 0 } },
-      React.createElement(FullRunCard, {
-        running: job && job.kind === "full" ? job : null,
-        onRun: runFullJob, onStop: stopJob,
-        rows: fullRunRows, picked: pickedFull, onToggle: toggleFullStep,
-        scopeSize: fullRunIds.length,
-        planBusy: planBusy, planReady: !!runPlan,
-        openStep: openStep, onOpenStep: setOpenStep,
-        checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf),
-        est: fullEst, sameModelWarn: sameModelWarn,
-        models: gptModels, disabled: !!job }),
-      React.createElement(ApplyTermsCard, {
-        running: job && job.kind === "apply_terms" ? job : null,
-        onRun: runApplyTerms, onStop: stopJob, disabled: !!job,
-        preview: autoPreview, sources: autoPreview && autoPreview.sources,
-        includeConfirmed: impactConfirmed,
-        onIncludeConfirmed: () => setImpactConfirmed(v => !v),
-        confirmedCount: impact ? impact.confirmed.length : 0 }),
-      impact && impact.terms.length > 0 && React.createElement(GlossaryImpactCard, {
-        impact, busy: impactBusy, onRefresh: loadImpact,
-        includeConfirmed: impactConfirmed, onIncludeConfirmed: () => setImpactConfirmed(v => !v),
-        onRun: runImpactRetranslate,
-        onDrill: (ids) => { store.setSegmentFilter(ids); setPage(1); },
-        est: estimateRun("translate", project.segments.filter(s =>
-          new Set(impactConfirmed ? impact.segments : impact.pending).has(s.id)), gptModelInfo),
-        running: batchRun && batchRun.engine === "translate" && job && job.params && job.params.via === "impact" ? batchRun : null }),
-    ),
+      React.createElement("div", { className: "run-decks" },
+        React.createElement(FullRunCard, {
+          running: job && job.kind === "full" ? job : null,
+          onRun: runFullJob, onStop: stopJob,
+          rows: fullRunRows, picked: pickedFull, onToggle: toggleFullStep,
+          scopeSize: fullRunIds.length,
+          planBusy: planBusy, planReady: !!runPlan,
+          openStep: openStep, onOpenStep: setOpenStep,
+          checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf),
+            est: fullEst, sameModelWarn: sameModelWarn,
+          fixConfirmed: rpFixConfirmed, fixConfirmedCount: rpConfirmedWaiting,
+          models: gptModels, disabled: !!job }),
+        // Вторая колонка: одобрение терминов и то, что из него следует —
+        // расхождения готовых переводов с одобренным. Один сюжет, один столбец.
+        React.createElement("div", { className: "col", style: { gap: "var(--sp-md)" } },
+          React.createElement(ApplyTermsCard, {
+            running: job && job.kind === "apply_terms" ? job : null,
+            onRun: runApplyTerms, onStop: stopJob, disabled: !!job,
+            preview: autoPreview, sources: autoPreview && autoPreview.sources,
+            includeConfirmed: impactConfirmed,
+            onIncludeConfirmed: () => setImpactConfirmed(v => !v),
+            confirmedCount: impact ? impact.confirmed.length : 0 }),
+          impact && impact.terms.length > 0 && React.createElement(GlossaryImpactCard, {
+            impact, busy: impactBusy, onRefresh: loadImpact,
+            includeConfirmed: impactConfirmed, onIncludeConfirmed: () => setImpactConfirmed(v => !v),
+            onRun: runImpactRetranslate,
+            onDrill: (ids) => { store.setSegmentFilter(ids); setPage(1); },
+            est: estimateRun("translate", project.segments.filter(s =>
+              new Set(impactConfirmed ? impact.segments : impact.pending).has(s.id)), gptModelInfo),
+            running: batchRun && batchRun.engine === "translate" && job && job.params && job.params.via === "impact" ? batchRun : null })))),
 
     // ---- Body: table + detail ----
     React.createElement("div", { className: "editor-body" },
@@ -1637,7 +1759,65 @@ function LegendDot({ color, label }) {
    какие шаги входят, сколько сегментов затронет каждый и во что это обойдётся.
    Порядок шагов фиксирован на сервере и здесь только показан — Medical QA
    берёт обратный перевод из back-check, ремонту нужны находки всех остальных. */
-const FULL_RUN_TIP = "Один прогон вместо пяти: перевод → back-check → проверка терминов → ремонт → Medical QA. Порядок фиксирован и важен: терминологию в глоссарий собирает та из двух проверок, что отработала второй; ремонт чинит по находкам обеих; Medical QA идёт последней, чтобы описывать окончательный текст, а не тот, который через шаг перепишут.\n\nПереводит одна модель, проверяют другие — в этом весь смысл: проверка, сделанная той же моделью, что и перевод, независимой не является.\n\nСостав считает сервер и показывает целиком: разверните строку шага, чтобы увидеть, кого он возьмёт и почему пропустит остальных. Готовую проверку он второй раз не оплачивает, а вердикт более сильной модели не даёт перезаписать более слабой — подбирать это галочками вручную больше не нужно.\n\nВ той же строке любой шаг запускается отдельно и по своим галочкам: это способ намеренно перепроверить то, что общий прогон считает сделанным.\n\nЧтобы сузить прогон, отметьте сегменты галочками или включите фильтр. Прогон идёт на сервере — вкладку можно закрыть.";
+/* ── Полоса идущего прогона ────────────────────────────────────────────
+   Одна строка: что идёт, сколько сделано из скольких, чем это остановить —
+   и шаги составного прогона отдельными значками.
+
+   Про шаги здесь говорится ровно то, что известно достоверно. Счётчики
+   приходят с сервера порциями по пять сегментов, поэтому «сделано» у шага —
+   это факт, а не оценка браузера. Галочка означает «шаг взял всё, что ему
+   отвёл разбор», и ничего больше. Подсветить один «текущий» шаг нельзя:
+   каждая порция проходит все выбранные шаги по очереди, так что незакрытые
+   шаги идут одновременно — на разных порциях.
+
+   Остатка нет — значит прогон запущен не из этой вкладки и состав шагов
+   неизвестен. Тогда показываем только сделанное: придумать «осталось»
+   было бы враньём ровно того сорта, ради которого состав считает сервер. */
+function RunStrip({ job, steps, onStop }) {
+  const pct = Math.round(job.done / Math.max(1, job.total) * 100);
+  const phase = job.stopping ? "останавливается"
+    : job.status === "queued" ? "в очереди" : "идёт на сервере";
+  const unknown = steps.length > 0 && steps.every(st => st.total == null);
+  return React.createElement("div", { className: "run-strip" },
+    React.createElement(Spinner, null),
+    React.createElement("div", { className: "rs-main" },
+      React.createElement("div", { className: "rs-title" },
+        React.createElement("span", null, (JOB_LABELS[job.kind] || job.kind) + " — " + phase),
+        React.createElement("span", { className: "rs-num" }, job.done + " из " + job.total),
+        React.createElement("span", { className: "dim", style: { fontWeight: 500, fontSize: 11.5 } },
+          "вкладку можно закрыть — прогон продолжится")),
+      React.createElement(ProgressBar, { value: pct })),
+    React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop, disabled: !!job.stopping },
+      job.stopping ? "Останавливаем…" : "Остановить"),
+
+    steps.length > 0 && React.createElement("div", { className: "run-steps" },
+      steps.map(st => React.createElement("span", {
+        key: st.key,
+        className: "run-step " + (st.complete ? "ok" : "on"),
+        title: st.label + ": " + (
+          // Состава нет — говорим только о сделанном. Сравнивать с total здесь
+          // нельзя: в JS `4 > null` — правда, и подпись соврала бы про разбор.
+          st.total == null ? "сделано " + st.done
+            + " — сколько всего, неизвестно: прогон запущен не из этой вкладки"
+          : st.total === 0 ? "разбор не отвёл ему ни одного сегмента"
+          // Ремонт умеет выйти за план: находки рождают проверки этого же
+          // прогона, а разбор считал по прежним. Так и говорим.
+          : st.done > st.total ? "сделано " + st.done + " — больше, чем было в разборе ("
+              + st.total + "): находки добавили проверки этого же прогона"
+          : st.complete ? "взял все " + st.total + " сегм., которые ему отвёл разбор"
+          : "сделано " + st.done + " из " + st.total + ", осталось " + st.left) },
+        st.complete
+          ? React.createElement(Icon, { name: "check", size: 12, stroke: 3 })
+          : React.createElement("span", { className: "rs-dot" }),
+        st.label,
+        React.createElement("b", null, st.done),
+        !st.complete && st.left != null
+          ? React.createElement("span", { className: "dim" }, "· осталось " + st.left) : null)),
+      unknown && React.createElement("span", { className: "dim", style: { fontSize: 11.5, alignSelf: "center" } },
+        "остаток по шагам не показываем: прогон запущен не из этой вкладки")));
+}
+
+const FULL_RUN_TIP = "Один прогон вместо пяти: перевод → back-check → проверка терминов → ремонт → Medical QA. Порядок фиксирован и важен: терминологию в глоссарий собирает та из двух проверок, что отработала второй; ремонт чинит по находкам обеих; Medical QA идёт последней, чтобы описывать окончательный текст, а не тот, который через шаг перепишут.\n\nПереводит одна модель, проверяют другие — в этом весь смысл: проверка, сделанная той же моделью, что и перевод, независимой не является.\n\nСостав считает сервер и показывает целиком: разверните строку шага, чтобы увидеть, кого он возьмёт и почему пропустит остальных. Готовую проверку он второй раз не оплачивает, а вердикт более сильной модели не даёт перезаписать более слабой — подбирать это галочками вручную больше не нужно. Проверки посчитаны и по тем сегментам, которые будут переведены в этом же прогоне.\n\nВ той же строке любой шаг запускается отдельно и по своим галочкам: это способ намеренно перепроверить то, что общий прогон считает сделанным.\n\nЧтобы сузить прогон, отметьте сегменты галочками или включите фильтр. Прогон идёт на сервере — вкладку можно закрыть.";
 
 /* ── Составной прогон: одна таблица на весь конвейер ───────────────────────
    Шаги, их модели, состав, цена и запуск по отдельности — в одном месте.
@@ -1708,25 +1888,26 @@ function StepRow({ row, on, onToggle, open, onOpen, disabled, models }) {
 
 function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize,
                        checked, filtered, est, sameModelWarn, models, disabled,
-                       openStep, onOpenStep, planBusy, planReady }) {
+                       openStep, onOpenStep, planBusy, planReady,
+                       fixConfirmed, fixConfirmedCount }) {
   const anyWork = rows.some(r => picked.has(r.key) && r.planEst && r.planEst.count > 0);
   const head = (text, right) => React.createElement("div", {
     key: "h-" + text, className: "dim",
     style: { fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em",
              padding: "0 0 6px", textAlign: right ? "right" : "left",
              borderBottom: "1px solid var(--border)" } }, text);
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 13, marginBottom: 14, borderLeft: "3px solid var(--c-primary)" } },
+  return React.createElement("div", { className: "card card-pad-sm", style: { display: "flex", flexDirection: "column", gap: 11, borderLeft: "3px solid var(--c-primary)" } },
 
-    React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
-      React.createElement("div", { className: "row", style: { gap: 10 } },
-        React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-primary)" } },
-          React.createElement(Icon, { name: "zap", size: 19 })),
+    React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+      React.createElement("div", { className: "row", style: { gap: 9 } },
+        React.createElement("span", { style: { width: 30, height: 30, borderRadius: 8, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-primary)", flex: "0 0 30px" } },
+          React.createElement(Icon, { name: "zap", size: 17 })),
         React.createElement("div", null,
-          React.createElement("div", { style: { fontWeight: 650, fontSize: 15, display: "flex", alignItems: "center" } }, "Перевести и проверить",
+          React.createElement("div", { style: { fontWeight: 650, fontSize: 14, display: "flex", alignItems: "center" } }, "Перевести и проверить",
             React.createElement(InfoTip, { title: "Что делает эта кнопка", body: FULL_RUN_TIP })),
-          React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+          React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
             "шаги идут по порядку, у каждого своя модель"))),
-      React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+      React.createElement("span", { className: "dim", style: { fontSize: 11.5 } },
         "в работу пойдут " + scopeSize + " сегм."
         + (checked > 0 ? " · по галочкам" : filtered ? " · по фильтру" : ""))),
 
@@ -1744,17 +1925,31 @@ function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize
     React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: -6 } },
       planBusy ? "Считаем состав…"
         : !planReady ? "Состав прогона не получен от сервера — запуск вслепую не даём."
-        : "Состав и смету посчитал сервер тем же кодом, который потом и работает: "
-          + "что показано, то и произойдёт. Проверки посчитаны и по тем сегментам, "
-          + "что будут переведены в этом же прогоне."),
+        // Полностью это объяснено в подсказке у названия. Здесь коротко:
+        // блок стоит в колонке, и абзац мелким текстом занимал в ней пять строк.
+        : "Состав и смету посчитал сервер тем же кодом, который потом и работает."),
 
+    // Взведённое разрешение трогать заверенное человеком видно У КНОПКИ, а не
+    // только в раскрытой строке ремонта. Иначе последствие — снятые отметки
+    // «подтвердил человек» — наступало бы от нажатия, за которым на экране
+    // ничего об этом не сказано.
+    fixConfirmed && React.createElement("div", {
+      style: { fontSize: 11.5, lineHeight: 1.5, padding: "7px 9px", borderRadius: "var(--r-md)",
+               background: "var(--bg-sunken)", border: "1px solid var(--c-warning)",
+               color: "var(--text-2)" } },
+      React.createElement("b", { style: { color: "var(--c-warning)" } }, "Ремонт возьмёт и подтверждённые"),
+      fixConfirmedCount ? " — " + fixConfirmedCount + " заверенных сегментов с находками; "
+                        : " — в выборке таких сейчас нет; ",
+      "с исправленных снимется отметка «подтвердил человек». Выключается в строке «Ремонт»."),
+
+    // Во время прогона цифры показывает полоса наверху — она залипающая и
+    // видна всегда. Второй прогресс-бар здесь только повторял бы её и уезжал
+    // за край экрана вместе с карточкой.
     running
-      ? React.createElement("div", null,
-          React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
-            React.createElement("span", { className: "muted" }, "Идёт полный прогон…"),
-            React.createElement("span", { style: { fontWeight: 700 } }, Math.round(running.done) + "/" + running.total)),
-          React.createElement(ProgressBar, { value: Math.round(running.done / Math.max(1, running.total) * 100) }),
-          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop, style: { marginTop: 8 } }, "Остановить"))
+      ? React.createElement("div", { className: "row between", style: { gap: 8, flexWrap: "wrap" } },
+          React.createElement("span", { className: "muted", style: { fontSize: 12 } },
+            "Идёт полный прогон — счёт по шагам на полосе наверху"),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop }, "Остановить"))
       : React.createElement(Btn, { variant: "primary", icon: "zap", onClick: onRun,
           disabled: disabled || !anyWork || !planReady },
           !planReady ? "Считаем состав…" : anyWork ? "Перевести и проверить" : "Всё уже сделано"));
@@ -1770,24 +1965,24 @@ function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
   const ready = c ? (c.auto || 0) + (c.verified || 0) : 0;
   const dicts = (sources && sources.dictionaries) || [];
   const corpus = sources && sources.corpus;
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12, marginBottom: 14, borderLeft: "3px solid var(--c-success)" } },
+  return React.createElement("div", { className: "card card-pad-sm", style: { display: "flex", flexDirection: "column", gap: 10, borderLeft: "3px solid var(--c-success)" } },
 
-    React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
-      React.createElement("div", { className: "row", style: { gap: 10 } },
-        React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-success)" } },
-          React.createElement(Icon, { name: "check", size: 19 })),
+    React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+      React.createElement("div", { className: "row", style: { gap: 9 } },
+        React.createElement("span", { style: { width: 30, height: 30, borderRadius: 8, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-success)", flex: "0 0 30px" } },
+          React.createElement(Icon, { name: "check", size: 17 })),
         React.createElement("div", null,
-          React.createElement("div", { style: { fontWeight: 650, fontSize: 15, display: "flex", alignItems: "center" } }, "Одобрить и применить",
+          React.createElement("div", { style: { fontWeight: 650, fontSize: 14, display: "flex", alignItems: "center" } }, "Одобрить и применить",
             React.createElement(InfoTip, { title: "Что делает эта кнопка",
               body: "Однозначные термины уходят в глоссарий пачкой, а затем сегменты чинятся по ним: расхождение с утверждённым термином — такая же находка ремонта, как потерянный термин или расхождение чисел.\n\nЧто считается однозначным: у термина ровно один вариант перевода; пара пришла из нескольких независимых сегментов, прошедших back-check и проверку терминов чисто; перевод встречается в текстах целевого языка.\n\nПриказом («use these exact translations») запись становится от человека, от трёх независимых чистых сегментов или от совпадения с ВЫВЕРЕННЫМ отраслевым справочником. У справочника есть уровень: краудсорсный (например выгрузка Wikidata) приказа в одиночку не даёт — он идёт подтверждающим голосом рядом с согласием сегментов и корпусом целевого языка. В медицине, фармацевтике и юриспруденции ни согласия сегментов, ни краудсорсного справочника для приказа НЕ хватает: там приказ даёт человек или выверенный справочник.\n\nЛюбую пачку можно откатить целиком в «Глоссарии»." })),
-          React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+          React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
             "термины в глоссарий → ремонт по ним → перепроверка"))),
-      React.createElement("span", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 18, color: ready ? "var(--c-success)" : "var(--text-3)" } },
+      React.createElement("span", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 17, color: ready ? "var(--c-success)" : "var(--text-3)" } },
         ready)),
 
     // Чем проверялись термины. Покрытие по парам языков очень разное, и разницу
     // честнее назвать, чем дать пользователю обнаружить её на своих текстах.
-    React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.6 } },
+    React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.55 } },
       "Проверяют: ",
       dicts.length
         ? dicts.map(d => d.label + " (" + d.terms
@@ -1814,15 +2009,13 @@ function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
       checked: !!includeConfirmed, onChange: onIncludeConfirmed },
       "Чинить и подтверждённые (" + confirmedCount + ")"),
 
+    // Счёт — на полосе наверху, здесь только название текущей половины работы:
+    // пока список сегментов не посчитан, идёт запись терминов в глоссарий.
     running
-      ? React.createElement("div", null,
-          React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
-            React.createElement("span", { className: "muted" },
-              running.total ? "Применяем к сегментам…" : "Одобряем термины…"),
-            React.createElement("span", { style: { fontWeight: 700 } },
-              Math.round(running.done) + "/" + Math.max(1, running.total))),
-          React.createElement(ProgressBar, { value: Math.round(running.done / Math.max(1, running.total) * 100) }),
-          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop, style: { marginTop: 8 } }, "Остановить"))
+      ? React.createElement("div", { className: "row between", style: { gap: 8, flexWrap: "wrap" } },
+          React.createElement("span", { className: "muted", style: { fontSize: 12 } },
+            running.total ? "Применяем к сегментам…" : "Одобряем термины…"),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop }, "Остановить"))
       : React.createElement(Btn, { variant: "primary", icon: "check", onClick: onRun, disabled: disabled || !ready },
           ready ? "Одобрить " + ready + " и применить" : "Однозначных терминов нет"));
 }
@@ -1843,7 +2036,7 @@ function RunGroups({ title, tip, groups, pickedGroups, onToggleGroup }) {
 // сегментов разошлось с глоссарием, и отсюда же их можно переперевести пакетом.
 function GlossaryImpactCard({ impact, busy, onRefresh, onRun, onDrill, includeConfirmed, onIncludeConfirmed, est, running }) {
   const targets = includeConfirmed ? impact.segments : impact.pending;
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+  return React.createElement("div", { className: "card card-pad-sm", style: { display: "flex", flexDirection: "column", gap: 10 } },
     React.createElement("div", { className: "row", style: { gap: 10 } },
       React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-warning)" } },
         React.createElement(Icon, { name: "book", size: 19 })),

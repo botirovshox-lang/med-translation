@@ -283,6 +283,7 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible) { outline: non
   box-shadow: var(--shadow-sm);
 }
 .card-pad { padding: var(--sp-lg); }
+.card-pad-sm { padding: 14px 16px; }   /* блоки в узкой колонке: 24px по кругу съедали её треть */
 .card-hover { transition: box-shadow .15s ease, transform .15s ease, border-color .15s ease; }
 .card-hover:hover { box-shadow: var(--shadow-md); border-color: var(--border-strong); }
 
@@ -581,6 +582,47 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
   max-height: calc(100vh - 106px); overflow: auto;
 }
 @media (max-width: 1100px) { .editor-body { grid-template-columns: 1fr; } .editor-side { border-left: none; border-top: 1px solid var(--border); position: static; max-height: none; } }
+
+/* Полоса идущего прогона — последняя строка залипающей панели.
+   Прогон идёт минутами и порциями по пять сегментов; уходить за верхний край
+   при первом же движении таблицы полоса не имеет права — иначе человек листает
+   страницу вверх каждый раз, когда хочет узнать, где работа и как её остановить.
+   Отдельным sticky-элементом её сделать нельзя: два залипающих соседа с top:0
+   наезжают друг на друга, а высота панели фильтров переменная. */
+.run-strip {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 8px 11px; border-radius: var(--r-md);
+  background: var(--bg-sunken); border: 1px solid var(--border);
+}
+.run-strip .rs-main { flex: 1 1 320px; min-width: 220px; }
+.run-strip .rs-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 12.5px; font-weight: 600; margin-bottom: 5px; }
+.run-strip .rs-num { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--text-2); }
+
+/* Шаги составного прогона. Галочка = шаг взял всё, что ему отвёл разбор;
+   точка = ещё берёт. «Текущего» шага одного на прогон не бывает: каждая порция
+   проходит все шаги по очереди, и врать об этом кружком нельзя. */
+.run-steps { display: flex; flex-wrap: wrap; gap: 5px; flex: 1 1 100%; }
+.run-step {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 2px 9px; border-radius: var(--r-pill);
+  font-size: 11.5px; line-height: 1.75; font-variant-numeric: tabular-nums;
+  background: var(--card); border: 1px solid var(--border); color: var(--text-2);
+}
+.run-step b { color: var(--text); font-weight: 650; }
+.run-step.on { border-color: var(--c-primary); }
+.run-step.ok { color: var(--c-success); }
+.run-step.ok b { color: var(--c-success); }
+.run-step .rs-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; background: var(--c-primary); animation: rspulse 1.4s ease-in-out infinite; }
+@keyframes rspulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
+/* Блоки запуска. Во всю ширину монитора они были простынёй: строка на 2000 px
+   не читается, а до второй кнопки приходилось листать. Рядом друг с другом оба
+   видны целиком. */
+.run-decks {
+  display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
+  gap: var(--sp-md); align-items: start; max-width: 1320px;
+}
+@media (max-width: 1180px) { .run-decks { grid-template-columns: minmax(0, 1fr); } }
 
 /* Detail panel internal tabs */
 .minitabs { display: flex; gap: 2px; background: var(--bg-sunken); padding: 3px; border-radius: 9px; }

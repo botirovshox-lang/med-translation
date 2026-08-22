@@ -140,6 +140,24 @@ const storeStub = {
 };
 const toast = { info() {}, warning() {}, error() {}, success() {} };
 
+// Прогон, запущенный из этой же вкладки, оставляет в localStorage состав шагов:
+// сколько сегментов разбор отвёл каждому. Во время прогона разбор больше не
+// считается, и без этого снимка «осталось» взять неоткуда.
+// Опознаётся снимок по тройке «номер + проект + время создания»: номера задач
+// живут в памяти сервера и после его рестарта начинаются с единицы заново.
+store.setItem("mcat_run_snapshot", JSON.stringify({
+  jobId: 77, project: 1, created: "2026-08-23 10:00:00",
+  steps: { translate: 6, backcheck: 20, termcheck: 15 } }));
+
+// Идущий прогон подсовываем опросу задач: полоса собирается из его счётчиков.
+function activeFullJob(id, counters, extra) {
+  return { active: [Object.assign(
+    { id: id, kind: "full", project: 1, created: "2026-08-23 10:00:00",
+      status: "running", done: 25, total: 100,
+      counters: counters, recent: [],
+      params: { steps: ["translate", "backcheck", "termcheck"] } }, extra || {})], jobs: [] };
+}
+
 // ── Считаем строки таблицы так же, как компонент, и рисуем карточку ──
 function walk(node, depth, out) {
   if (node === null || node === undefined || typeof node !== "object") {
@@ -243,6 +261,136 @@ try {
   check(solo3 && Number(solo3[1]) === 5,
         "сегмент с self-проверкой входит в отдельный запуск по умолчанию (" +
         (solo3 ? solo3[1] : "?") + " против 5)");
+
+  console.log("\n=== 6. Ремонт: разрешение трогать заверенное человеком ===");
+  // Галочка живёт в раскрытой строке ремонта. Проверяем, что строка вообще
+  // собирается: сломанный компонент виден только белым экраном в браузере.
+  hookIdx = 0;
+  const el4 = TabEditor({ store: storeStub, toast });
+  const clicks4 = [];
+  (function find(n) {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) return n.forEach(find);
+    const p = n.props || {};
+    if (p.onClick && /Подробнее/.test(p["aria-label"] || "")) clicks4.push(p.onClick);
+    (n.children || []).forEach(find);
+  })(el4);
+  // Индекс 2, а не 3: у раскрытой строки (после шага 5 это back-check) шеврон
+  // подписан «Свернуть» и в этот список не попадает. Что открылась именно нужная
+  // строка, проверяет её собственный маркер «Что чинить» ниже.
+  clicks4[2]();
+  hookIdx = 0;
+  const out4 = [];
+  const el4b = TabEditor({ store: storeStub, toast });
+  walk(el4b, 0, out4);
+  const t4 = out4.join("\n");
+  check(t4.indexOf("Чинить подтверждённые человеком") !== -1,
+        "переключатель «чинить подтверждённые» на месте");
+  check(t4.indexOf("в выборке нет заверенных сегментов с находками") !== -1,
+        "и рядом сказано, сколько заверенного ждёт починки");
+  check(t4.indexOf("Что чинить — отметьте") !== -1,
+        "прежние группы ремонта никуда не делись");
+
+  // Взведённое разрешение обязано быть видно У ГЛАВНОЙ КНОПКИ. Переключатель
+  // живёт в раскрытой строке ремонта — строку сворачивают, а кнопка остаётся
+  // и всё так же снимает отметки «подтвердил человек».
+  let armSwitch = null;
+  (function findSw(n) {
+    if (!n || typeof n !== "object" || armSwitch) return;
+    if (Array.isArray(n)) return n.forEach(findSw);
+    const p = n.props || {};
+    if (p.onClick && p["aria-label"] === "Чинить подтверждённые") { armSwitch = p.onClick; return; }
+    (n.children || []).forEach(findSw);
+  })(el4b);
+  check(!!armSwitch, "переключатель кликабелен");
+  if (armSwitch) armSwitch();
+  hookIdx = 0;
+  const out6 = [];
+  walk(TabEditor({ store: storeStub, toast }), 0, out6);
+  const t6 = out6.join("\n");
+  check(t6.indexOf("Ремонт возьмёт и подтверждённые") !== -1,
+        "взведённое разрешение названо у кнопки «Перевести и проверить»");
+  check(t6.indexOf("снимется отметка «подтвердил человек»") !== -1,
+        "и сказано, что именно произойдёт");
+  if (armSwitch) armSwitch();          // возвращаем как было: дальше идут другие проверки
+  hookIdx = 0;
+  const out6b = [];
+  walk(TabEditor({ store: storeStub, toast }), 0, out6b);
+  check(out6b.join("\n").indexOf("Ремонт возьмёт и подтверждённые") === -1,
+        "выключили — предупреждение ушло");
+
+  console.log("\n=== 7. Полоса прогона: залипает наверху и говорит, где мы ===");
+  // Счётчики задачи приходят порциями и говорят, сколько шаг УЖЕ прошёл.
+  // Перевод свои 6 добрал — ему галочка; back-check сделал 12 из 20; термины
+  // не начинались. Всё это должно читаться, не листая страницу.
+  global.API.listJobs = async () => activeFullJob(77, { translate: 6, backcheck: 12 });
+  hookIdx = 0; effects.length = 0;
+  TabEditor({ store: storeStub, toast });
+  effects.forEach(fn => { try { fn(); } catch (e) {} });
+  for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+  hookIdx = 0;
+  const el7 = TabEditor({ store: storeStub, toast });
+  const out7 = [];
+  walk(el7, 0, out7);
+  const t7 = out7.join("\n");
+  check(t7.indexOf("<div.run-strip>") !== -1, "полоса прогона отрисовалась");
+  check(/Перевод и проверка — идёт на сервере/.test(t7), "названо, что именно идёт");
+  check(t7.indexOf("25 из 100") !== -1, "общий счёт на месте");
+  check(t7.indexOf("<span.run-step ok>") !== -1, "закрытый шаг отмечен галочкой");
+  check(t7.indexOf("осталось 8") !== -1, "у незакрытого шага показан остаток");
+  check(t7.indexOf("осталось 15") !== -1, "и у того, который ещё не начинался");
+  check(t7.indexOf("Остановить") !== -1, "остановка — там же, на полосе");
+
+  // Полоса обязана жить ВНУТРИ залипающей панели: таблица длинная, и уехавшая
+  // за верхний край полоса — это прогон, который не видно и нечем остановить.
+  const findCls = (n, cls) => {
+    if (!n || typeof n !== "object") return null;
+    if (Array.isArray(n)) { for (const c of n) { const r = findCls(c, cls); if (r) return r; } return null; }
+    if ((n.props || {}).className === cls) return n;
+    for (const c of (n.children || [])) { const r = findCls(c, cls); if (r) return r; }
+    return null;
+  };
+  const sticky = findCls(el7, "editor-toolbar");
+  const inSticky = [];
+  if (sticky) walk(sticky, 0, inSticky);
+  check(inSticky.join("\n").indexOf("<div.run-strip>") !== -1,
+        "полоса стоит внутри залипающей панели, а не в потоке страницы");
+
+  console.log("\n=== 8. Чужой прогон: остаток не выдумываем ===");
+  // Прогон запущен из другого браузера — состава шагов у нас нет. Показываем
+  // только сделанное: придуманное «осталось» и есть то враньё, ради которого
+  // состав вообще считает сервер.
+  global.API.listJobs = async () => activeFullJob(88, { translate: 4 });
+  hookIdx = 0; effects.length = 0;
+  TabEditor({ store: storeStub, toast });
+  effects.forEach(fn => { try { fn(); } catch (e) {} });
+  for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+  hookIdx = 0;
+  const out8 = [];
+  walk(TabEditor({ store: storeStub, toast }), 0, out8);
+  const t8 = out8.join("\n");
+  check(t8.indexOf("<div.run-strip>") !== -1, "полоса всё равно на месте");
+  check(t8.indexOf("осталось") === -1, "остаток по шагам не придуман");
+  check(t8.indexOf("прогон запущен не из этой вкладки") !== -1, "и сказано, почему его нет");
+  check(t8.indexOf("<span.run-step ok>") === -1, "галочку без состава тоже не ставим");
+
+  console.log("\n=== 9. Тот же номер после рестарта сервера — не тот же прогон ===");
+  // Номера задач живут в памяти процесса и после рестарта начинаются с единицы
+  // заново, поэтому снимок опознаётся ещё и по проекту со временем создания.
+  // Совпал номер, но не время — состав чужой, и остаток показывать нельзя.
+  global.API.listJobs = async () => activeFullJob(77, { translate: 4 },
+    { created: "2026-08-23 18:30:00" });
+  hookIdx = 0; effects.length = 0;
+  TabEditor({ store: storeStub, toast });
+  effects.forEach(fn => { try { fn(); } catch (e) {} });
+  for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+  hookIdx = 0;
+  const out9 = [];
+  walk(TabEditor({ store: storeStub, toast }), 0, out9);
+  const t9 = out9.join("\n");
+  check(t9.indexOf("<div.run-strip>") !== -1, "полоса на месте");
+  check(t9.indexOf("осталось") === -1, "чужой снимок к прогону не прилип");
+  check(t9.indexOf("прогон запущен не из этой вкладки") !== -1, "и об этом сказано прямо");
 
   console.log("\n" + (fail.length ? "ПРОВАЛЕНО: " + fail.join("; ") : "ВСЁ ПРОШЛО"));
   process.exit(fail.length ? 1 : 0);

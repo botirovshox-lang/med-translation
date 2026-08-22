@@ -729,6 +729,11 @@ function TabEditor({ store, toast }) {
     const bc = s.backcheck;
     if (!bc || bc.score == null) return "none";
     if (bc.stale) return "stale";
+    // Обратный перевод делала модель-автор текста — по серверному правилу
+    // (_backcheck_cached) это не проверка: она возвращает свой замысел.
+    // Общий прогон возьмёт такой сегмент заново, поэтому группа отмечена
+    // по умолчанию — иначе solo-состав разошёлся бы с общим.
+    if (bc.model && s.provider && bc.model === s.provider) return "self";
     if (bcJudge && !bc.judged && bc.score >= judgeZone[0] && bc.score <= judgeZone[1]) return "nojudge";
     return bc.model || "unknown";
   };
@@ -736,6 +741,7 @@ function TabEditor({ store, toast }) {
   const bcGroupLabel = (key) =>
     key === "none" ? "ещё не проверялся"
       : key === "stale" ? "перевод изменился после проверки"
+      : key === "self" ? "проверял тот, кто переводил — это не проверка"
       : key === "nojudge" ? "проверено без судьи"
       : key === "unknown" ? "проверено (модель неизвестна)"
       : "проверено: " + (providerLabel({ id: key, exact: true }, gptModels) || key);
@@ -743,8 +749,8 @@ function TabEditor({ store, toast }) {
   // Сколько сегментов выборки в каком состоянии проверки — для выбора галочками.
   // Непроверенное и устаревшее идут первыми: ради них back-check и запускают.
   const bcGroups = (() => {
-    const order = { none: 0, stale: 1, nojudge: 2 };
-    const rank = (k) => (order[k] === undefined ? 3 : order[k]);
+    const order = { none: 0, stale: 1, self: 2, nojudge: 3 };
+    const rank = (k) => (order[k] === undefined ? 4 : order[k]);
     const by = new Map();
     project.segments.forEach(s => {
       if (!bcCandidate(s, currentIdSet)) return;
@@ -763,7 +769,7 @@ function TabEditor({ store, toast }) {
   // любой моделью считается сделанной, и по умолчанию отмечено только то, что
   // не проверено, устарело или недопроверено без судьи, — ровно то, что возьмёт
   // и общий прогон.
-  const BC_DEFAULT_GROUPS = ["none", "stale", "nojudge"];
+  const BC_DEFAULT_GROUPS = ["none", "stale", "self", "nojudge"];
   const pickedBcGroups = bcGroupPick
     || new Set(bcGroups.filter(g => BC_DEFAULT_GROUPS.indexOf(g.key) !== -1).map(g => g.key));
 

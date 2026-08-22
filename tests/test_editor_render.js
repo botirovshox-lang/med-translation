@@ -216,6 +216,34 @@ try {
   check(t2.indexOf("проверено, замечаний нет: GPT-5.6 Sol") !== -1,
         "группа с вердиктом сильной модели показана");
 
+  console.log("\n=== 5. Проверка моделью-автором — не проверка: группа self ===");
+  // Сервер (_backcheck_cached) не зачитывает back-check, сделанный моделью,
+  // которая сама и переводила: она возвращает свой замысел. Общий прогон
+  // берёт такой сегмент заново — значит и отдельный запуск по умолчанию
+  // обязан его включать, иначе составы под соседними кнопками разойдутся.
+  project.segments[3].backcheck.model = "gpt-5.5";   // provider у сегмента тоже gpt-5.5
+  hookIdx = 0;
+  const el3 = TabEditor({ store: storeStub, toast });
+  const clicks = [];
+  (function find(n) {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) return n.forEach(find);
+    const p = n.props || {};
+    if (p.onClick && /Подробнее/.test(p["aria-label"] || "")) clicks.push(p.onClick);
+    (n.children || []).forEach(find);
+  })(el3);
+  clicks[1]();                                   // вторая строка — «Back-check»
+  hookIdx = 0;
+  const out3 = [];
+  walk(TabEditor({ store: storeStub, toast }), 0, out3);
+  const t3 = out3.join("\n");
+  check(t3.indexOf("проверял тот, кто переводил — это не проверка") !== -1,
+        "группа self названа человеку по имени");
+  const solo3 = /Запустить: (\d+) сегм\./.exec(t3);
+  check(solo3 && Number(solo3[1]) === 5,
+        "сегмент с self-проверкой входит в отдельный запуск по умолчанию (" +
+        (solo3 ? solo3[1] : "?") + " против 5)");
+
   console.log("\n" + (fail.length ? "ПРОВАЛЕНО: " + fail.join("; ") : "ВСЁ ПРОШЛО"));
   process.exit(fail.length ? 1 : 0);
 } catch (e) {

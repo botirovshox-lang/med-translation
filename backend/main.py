@@ -530,6 +530,9 @@ PROVIDER_TM = "tm"
 # её задача — зеркалить текст, а не переводить его хорошо. Чем «умнее» модель,
 # тем охотнее она чинит ошибки на лету и прячет их от проверки.
 BACKCHECK_DEFAULT_MODEL = "gpt-5.6-luna"
+# Запасная — когда запрошенная модель совпала с автором текста (см.
+# _backcheck_model). Требования те же: буквальная и дешёвая.
+BACKCHECK_FALLBACK_MODEL = "gpt-4o-mini"
 
 # Семантическая близость оригинала и обратного перевода. Лексическая база не умеет
 # в синонимы: «больному назначен» против «пациенту назначили» — это один смысл и
@@ -785,12 +788,15 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         # Автоимпорт — именно подсказка. Приказ "use these exact translations"
         # на этих записях и рождал "rear cyclitis": модель знает правильный
         # термин, но послушно берёт то, что ей назвали утверждённым.
+        # Слово области — из проекта: «standard medical usage» в юридическом
+        # промпте — та самая зашитая медицина, от которой сервис уходит.
+        dom_word = _resolve_domain(domain)["en"]
         terms = "\n".join(f"  {h['src']} → {h['tgt']}" for h in soft)
         system += (
             "\nUnverified glossary hints (bulk-imported, NOT reviewed — some are wrong):\n"
             f"{terms}\n"
             "Use a hint ONLY if it is the standard term in the target language for this context. "
-            "If it is not standard medical usage, IGNORE the hint and use the correct standard term.\n"
+            f"If it is not standard {dom_word} usage, IGNORE the hint and use the correct standard term.\n"
         )
     if tm_context:
         system += (
@@ -3323,6 +3329,25 @@ def _project_for_client(project: dict) -> dict:
     return {**project, "segments": [_segment_for_client(s) for s in list(project["segments"])]}
 
 
+def _backcheck_model(seg: dict, requested: Optional[str]) -> str:
+    """Модель обратного перевода для ЭТОГО сегмента.
+
+    Обратный перевод моделью-автором текста — не проверка: она вернёт свой
+    замысел, а не то, что в тексте написано, и _backcheck_cached такой
+    результат действительным не признаёт. Раньше совпадение просто повторяло
+    вызов той же моделью: прогон платил при каждом запуске, а зачётной
+    проверки не получал никогда — вечная переплата за недействительный
+    результат. Совпала — берём запасную, столь же буквальную и дешёвую."""
+    mid = _resolve_model(requested or BACKCHECK_DEFAULT_MODEL)["id"]
+    provider = seg.get("provider") or ""
+    if mid != provider:
+        return mid
+    for alt in (BACKCHECK_DEFAULT_MODEL, BACKCHECK_FALLBACK_MODEL):
+        if alt != provider:
+            return alt
+    return mid          # недостижимо: две запасных не совпадают между собой
+
+
 def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None,
                            use_judge: bool = False, judge_model: Optional[str] = None,
                            harvest: bool = True) -> dict:
@@ -3333,14 +3358,14 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
     if not target_text:
         return {"ok": False, "error": "Сегмент ещё не переведён"}
 
-    mdl_id = _resolve_model(model or BACKCHECK_DEFAULT_MODEL)["id"]
+    mdl_id = _backcheck_model(seg, model)
     back = ""
     try:
         # Обратный перевод делает ДРУГАЯ модель, а не бесплатный движок: на нём
         # весь смысл проверки. Движок переводил дословно и одинаково хорошо
         # возвращал и верный термин, и кальку — балл получался ни о чём.
         back = _openai_translate(target_text, project["tgt"], project["src"],
-                                 model=model or BACKCHECK_DEFAULT_MODEL, literal=True)
+                                 model=mdl_id, literal=True)
     except Exception as e:
         print(f"[backend] backcheck seg#{seg.get('id')}: {e}", file=sys.stderr)
         return {"ok": False, "error": str(e)}
@@ -4107,9 +4132,10 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True,
                 # умолчанию: тот же самый вызов стоил впятеро дороже нужного
                 # и делался моделью, которую для обратного перевода никто
                 # не выбирал. У этой работы одна правильная модель — самая
-                # буквальная и дешёвая, та же, что у back-check.
+                # буквальная и дешёвая, та же, что у back-check. Совпадение
+                # с автором текста разрешается тем же _backcheck_model.
                 back = _openai_translate(target_text, project["tgt"], project["src"],
-                                         model=bc_model or BACKCHECK_DEFAULT_MODEL,
+                                         model=_backcheck_model(seg, bc_model),
                                          literal=True)
             except Exception as e:
                 print(f"[backend] medical QA backcheck skipped: {e}", file=sys.stderr)

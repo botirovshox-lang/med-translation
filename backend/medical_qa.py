@@ -212,11 +212,17 @@ def _has_target_variant(text, term):
 
 
 def _should_validate_glossary_term(src, tgt, skip_src=None, skip_tgt=None):
+    # Скип-списки приходят из DOMAIN_RULES области и пары языков проекта.
+    # Раньше аргументы игнорировались, и юридический RU→DE проект молча
+    # проверялся по медицинским RU→EN спискам. None — legacy-вызов без
+    # области: для него прежнее поведение сохраняется.
+    skip_src = GLOSSARY_QA_SKIP_SRC if skip_src is None else skip_src
+    skip_tgt = GLOSSARY_QA_SKIP_TARGET if skip_tgt is None else skip_tgt
     src_l = _norm(src)
     variants = [_norm(v) for v in _target_variants(tgt)]
-    if src_l in GLOSSARY_QA_SKIP_SRC:
+    if src_l in skip_src:
         return False
-    if any(v in GLOSSARY_QA_SKIP_TARGET for v in variants):
+    if any(v in skip_tgt for v in variants):
         return False
     return True
 
@@ -257,7 +263,7 @@ def _make_issue(issue_type, severity, explanation_ru, source_fragment="", target
     }
 
 
-def build_context_package(source_ru, prev_ru="", next_ru="", glossary_matches=None, tm_match=None, domain="medical", text_type="clinical_segment"):
+def build_context_package(source_ru, prev_ru="", next_ru="", glossary_matches=None, tm_match=None, domain="medical", text_type="clinical_segment", src_lang="RU", tgt_lang="EN"):
     glossary_matches = glossary_matches or []
     return {
         "source_ru": source_ru or "",
@@ -275,8 +281,10 @@ def build_context_package(source_ru, prev_ru="", next_ru="", glossary_matches=No
             for g in glossary_matches[:20]
         ],
         "tm_examples": [tm_match] if tm_match else [],
+        # Пара языков — проекта, а не зашитая RU→EN: правила стиля чужой пары
+        # в списке запрещённых терминов были бы мусором.
         "forbidden_terms": [{"bad": r["bad"], "preferred": r["preferred"]}
-                            for r in rules_for(domain, "RU", "EN")["style"]],
+                            for r in rules_for(domain, src_lang, tgt_lang)["style"]],
         "style_rules": [
             "Back-check checks semantic preservation only.",
             "Medical Style QA must catch literal calques and weak medical collocations.",
@@ -444,7 +452,7 @@ def _to_ui_issue(issue):
     }
 
 
-def _term_candidates(issues, source_ru):
+def _term_candidates(issues, source_ru, domain=None):
     candidates = []
     eligible = {"literal_calque", "terminology", "forbidden_term", "weak_collocation", "glossary_violation"}
     for issue in issues:
@@ -461,7 +469,9 @@ def _term_candidates(issues, source_ru):
             "preferred_en": preferred,
             "allowed_en": [preferred] if preferred else [],
             "forbidden_en": [bad] if bad else [],
-            "domain": "medical",
+            # Область — из проекта: кандидат юридического проекта не должен
+            # помечаться медициной только потому, что так начинался сервис.
+            "domain": domain or "medical",
             "trigger_words": [],
             "confidence": 0.4,
             "occurrences": 1,
@@ -481,6 +491,8 @@ def run_medical_qa(source_ru, translated_en, backtranslated_ru="", glossary_matc
         glossary_matches=glossary_matches or [],
         tm_match=tm_match,
         domain=domain or "medical",
+        src_lang=src_lang,
+        tgt_lang=tgt_lang,
     )
     issues = deterministic_issues(source_ru, translated_en, glossary_matches=glossary_matches,
                                   domain=domain, src_lang=src_lang, tgt_lang=tgt_lang)
@@ -532,7 +544,7 @@ def run_medical_qa(source_ru, translated_en, backtranslated_ru="", glossary_matc
         "issues": issues,
         "qa_issues": issues,
         "ui_issues": [_to_ui_issue(i) for i in issues],
-        "term_candidates": _term_candidates(issues, source_ru),
+        "term_candidates": _term_candidates(issues, source_ru, domain or "medical"),
         "risk_score": risk["risk_score"],
         "risk_color": risk["risk_color"],
         "routing": {
@@ -700,7 +712,12 @@ def backcheck_issues(source_ru, back_ru, glossary_matches=None, domain=None, src
             source_fragment=", ".join(src_units), target_fragment=", ".join(back_units),
             detected_by="backcheck_comparator"))
 
-    if _contains_any(source, NEGATION_RU) != _contains_any(back, NEGATION_RU):
+    # Маркеры — языка ОРИГИНАЛА: обе стороны здесь на нём. Раньше стоял
+    # жёсткий NEGATION_RU, и для нерусского оригинала проверка была мёртвой,
+    # хотя докстринг обещал обратное. Нет маркеров для языка — молчим:
+    # выдуманная находка хуже отсутствующей.
+    neg = negation_markers(src_lang)
+    if neg and _contains_any(source, neg) != _contains_any(back, neg):
         issues.append(_make_issue(
             "backcheck_negation_shift", "critical",
             "Отрицание изменилось при обратном переводе — утверждение и отрицание "

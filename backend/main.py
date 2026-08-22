@@ -725,6 +725,7 @@ def _openai_judge(source_ru: str, back_ru: str, model: str = None,
             ],
             **extra,
         )
+        _note_usage("judge", mdl["id"], resp)
         raw = (resp.choices[0].message.content or "").strip()
         # Модель иногда оборачивает JSON в ```json ... ``` — вырезаем тело
         m = re.search(r"\{.*\}", raw, re.S)
@@ -872,9 +873,37 @@ def _usage_begin(job: dict) -> None:
 
 
 def _usage_end(job: dict) -> None:
+    """Закрыть счётчик прогона и оставить след, который переживёт рестарт.
+
+    Сами прогоны живут в памяти процесса и теряются при рестарте — это давно
+    так и осознанно. Но расход терять нельзя: смету калибруют по нему, а для
+    этого нужны десятки прогонов, а не один. Запись компактная: цена по шагам,
+    без списков сегментов."""
     global _USAGE_SINK
     with _USAGE_LOCK:
         _USAGE_SINK = None
+        u = job.get("usage")
+    if not u or not u.get("calls"):
+        return
+    try:
+        rec = {"job": job.get("id"), "kind": job.get("kind"), "project": job.get("project"),
+               "status": job.get("status"), "finished": job.get("finished"),
+               "segments": job.get("done"),
+               # Смету кладём рядом с фактом: врозь они не сравниваются, а
+               # ради сравнения всё и затевалось. Прислал её тот, кто её
+               # человеку и показал, — иначе рядом стояли бы два разных числа.
+               "est": (job.get("params") or {}).get("est_cost"),
+               "cost": u["cost"], "calls": u["calls"], "unpriced": u["unpriced"],
+               "in": u["in"], "cached_in": u["cached_in"],
+               "out": u["out"], "reasoning": u["reasoning"],
+               "steps": {k: {"calls": v["calls"], "cost": v["cost"],
+                             "in": v["in"], "out": v["out"], "reasoning": v["reasoning"]}
+                         for k, v in u["steps"].items()}}
+        hist = STATE.setdefault("runCosts", [])
+        hist.append(rec)
+        del hist[:-RUN_COST_HISTORY]
+    except Exception as e:
+        print(f"[backend] расход прогона не записан: {e}", file=sys.stderr)
 
 
 # Direct OpenAI GPT translation
@@ -951,7 +980,7 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
 def _openai_translate(text: str, src: str, tgt: str,
                       gloss_hits: list = None, tm_context: dict = None,
                       model: str = None, literal: bool = False,
-                      domain: Optional[str] = None) -> str:
+                      domain: Optional[str] = None, step: Optional[str] = None) -> str:
     """GPT-перевод с инъекцией глоссария (базовые формы — GPT знает склонения).
 
     literal=True — режим для обратного перевода. Обычный промпт тут вреден:
@@ -974,6 +1003,10 @@ def _openai_translate(text: str, src: str, tgt: str,
         ],
         **extra,
     )
+    # Шаг называет вызывающий: буквальный режим — это обратный перевод, но
+    # заказывают его двое (back-check и Medical QA), и складывать их расход
+    # в одну корзину значит потерять, кто из них сколько стоит.
+    _note_usage(step or ("backcheck" if literal else "translate"), mdl["id"], resp)
     return (resp.choices[0].message.content or "").strip()
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1731,6 +1764,11 @@ def list_models():
         # Ранг приклеивается здесь, а не хранится в OPENAI_MODELS: он живёт
         # в отдельном справочнике, который правят без деплоя (см. model_rank).
         "models": [dict(m, rank=model_rank(m["id"])) for m in OPENAI_MODELS],
+        # Модели, которых нет в списке выбора, но которые стоят денег
+        # (эмбеддинги back-check). Смета обязана брать их цену отсюда:
+        # цифра в .jsx — это второй прайс-лист рядом с настоящим.
+        "aux": AUX_MODEL_PRICES,
+        "embedModel": EMBED_MODEL,
         "domains": [{"id": d["id"], "label": d["label"]} for d in DOMAINS],
         "domainDefault": DEFAULT_DOMAIN,
         "default": DEFAULT_OPENAI_MODEL,
@@ -2645,6 +2683,7 @@ def explain_term_variants(cid: int, req: ExplainRequest = ExplainRequest()):
             model=mdl["id"], response_format={"type": "json_object"},
             messages=[{"role": "system", "content": system},
                       {"role": "user", "content": body}], **extra)
+        _note_usage("terms", mdl["id"], resp)
         raw = (resp.choices[0].message.content or "").strip()
         if not raw:
             # Пустой ответ (модель израсходовала лимит на рассуждения) — это
@@ -3300,6 +3339,7 @@ def _extract_terms_call(pairs: list, model: Optional[str] = None,
                       {"role": "user", "content": body}],
             **extra,
         )
+        _note_usage("terms", mdl["id"], resp)
         raw = (resp.choices[0].message.content or "").strip()
         lo, hi = raw.find("["), raw.rfind("]")
         if lo == -1 or hi <= lo:
@@ -3910,6 +3950,7 @@ def _openai_repair(seg: dict, project: dict, findings: list, model: Optional[str
                       {"role": "user", "content": body}],
             **extra,
         )
+        _note_usage("repair", mdl["id"], resp)
         return (resp.choices[0].message.content or "").strip()
     except Exception as e:
         print(f"[backend] repair failed seg#{seg.get('id')}: {e}", file=sys.stderr)
@@ -4290,7 +4331,7 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True,
                 # с автором текста разрешается тем же _backcheck_model.
                 back = _openai_translate(target_text, project["tgt"], project["src"],
                                          model=_backcheck_model(seg, bc_model),
-                                         literal=True)
+                                         literal=True, step="medical_qa")
             except Exception as e:
                 print(f"[backend] medical QA backcheck skipped: {e}", file=sys.stderr)
 
@@ -5401,6 +5442,7 @@ def _job_loop():
             job["status"] = "running"
             job["started"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             _ACTIVE_JOB["job"] = job
+            _usage_begin(job)
             _job_run(job)
         except Exception as e:
             job["status"] = "error"
@@ -5409,6 +5451,9 @@ def _job_loop():
             print(f"[backend] job#{job.get('id')} crashed: {e}", file=sys.stderr)
         finally:
             _ACTIVE_JOB.pop("job", None)
+            # До save_state: запись о расходе должна уехать на диск вместе
+            # с остальным результатом прогона, а не ждать следующего сохранения.
+            _usage_end(job)
             try:
                 save_state(STATE)
             except Exception as e:
@@ -5462,6 +5507,27 @@ def create_job(pid: int, req: JobRequest):
     _ensure_job_worker()
     _JOB_QUEUE.put(job)
     return {"ok": True, "job": _job_public(job)}
+
+
+@app.get("/api/usage")
+def usage_report(limit: int = 20):
+    """Сколько прогоны стоили на самом деле — рядом с тем, во что их оценили.
+
+    Ни одного вызова модели здесь нет: всё уже посчитано провайдером и снято
+    с ответов. `process` — расход с момента старта сервиса, включая одиночные
+    вызовы по кнопке, которые ни одному прогону не принадлежат."""
+    runs = list(reversed(STATE.get("runCosts") or []))[:max(1, min(limit, 100))]
+    priced = [r for r in runs if r.get("est") and r.get("cost")]
+    return {
+        "process": _USAGE_TOTAL,
+        "runs": runs,
+        # Во сколько раз смета в среднем расходится с фактом. Это и есть та
+        # поправка, которой в системе не было: без неё «ориентировочно $15»
+        # не с чем сравнить, и остаётся гадать, врёт она или прогон не отработал.
+        "estRatio": (round(sum(r["est"] for r in priced) / sum(r["cost"] for r in priced), 2)
+                     if priced and sum(r["cost"] for r in priced) else None),
+        "estRuns": len(priced),
+    }
 
 
 @app.get("/api/jobs")

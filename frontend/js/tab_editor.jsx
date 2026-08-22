@@ -93,7 +93,14 @@ function bandColor(color) {
 // прогон на 2600 сегментов и прогон на 30 отличаются в сто раз.
 const REASONING_MULT = 1.8;
 const JUDGE_SHARE = 0.3;      // доля сегментов, попадающих в зону судьи (замер на проде)
-const EMBED_PRICE = 0.02;     // $/1M токенов, text-embedding-3-small
+
+/* Цена эмбеддингов приходит с сервера (/api/models → aux, embedModel). Числом
+   в браузере она была вторым прайс-листом рядом с настоящим — ровно тем, от
+   чего защищает правило «модели и цены живут в одном месте». Каталог ещё не
+   пришёл — считаем эту строку нулём и молчим: выдуманная цена хуже пропущенной,
+   а весит она сотые доли цента на весь проект. */
+let AUX_PRICES = {}, EMBED_MODEL_ID = "";
+function embedPrice() { return ((AUX_PRICES[EMBED_MODEL_ID] || {}).in) || 0; }
 
 function reasoning(model) { return model && model.api === "modern" ? REASONING_MULT : 1; }
 
@@ -126,7 +133,7 @@ function estimateRun(kind, targets, model, opts) {
       cost += priceOf(o.judgeModel, jn * 400 + (srcChars * JUDGE_SHARE) / 1.1,
                       jn * 250 * reasoning(o.judgeModel));
     }
-    cost += ((srcChars + tgtChars) / 3 / 1e6) * EMBED_PRICE;   // эмбеддинги
+    cost += ((srcChars + tgtChars) / 3 / 1e6) * embedPrice();  // эмбеддинги
     sec = n * EST_SEC_PER_SEG;
   } else if (kind === "termcheck") {
     tokIn = n * 450 + (srcChars + tgtChars) / 3;
@@ -372,6 +379,8 @@ function TabEditor({ store, toast }) {
       setJudgeModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.judgeDefault || d.default || ""));
       setTcModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.termcheckDefault || d.default || ""));
       setRpModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.repairDefault || d.default || ""));
+      AUX_PRICES = d.aux || {};
+      EMBED_MODEL_ID = d.embedModel || "";
       if (d.backcheckBands) setBcBands(d.backcheckBands);
       if (d.judgeZone) setJudgeZone(d.judgeZone);
     });
@@ -911,7 +920,8 @@ function TabEditor({ store, toast }) {
     setCheckedSegs(new Set());
     startJob("translate", targets,
       { force: !!hasExplicitCheck, model: gptModel },
-      "Все подходящие сегменты уже переведены.");
+      "Все подходящие сегменты уже переведены.",
+      estimateRun("translate", targets, gptModelInfo));
   };
 
   // ── Прогоны ─────────────────────────────────────────────────────
@@ -920,11 +930,17 @@ function TabEditor({ store, toast }) {
   // на страницу, пользователь видит прогресс с того места, где тот сейчас есть.
   // Возвращает поставленную задачу (или null): по её id составной прогон
   // запоминает состав шагов — без него полосе прогресса неоткуда взять остаток.
-  const startJob = async (kind, targets, params, emptyMsg) => {
+  const startJob = async (kind, targets, params, emptyMsg, est) => {
     if (batchRun) { toast.warning("Прогон уже идёт", "Дождитесь окончания или остановите текущий."); return null; }
     if (!targets.length) { toast.warning("Нечего запускать", emptyMsg); return null; }
     if (!window.API) return null;
-    const res = await window.API.safeCall(() => window.API.createJob(project.id, kind, targets.map(s => s.id), params));
+    // Смету отдаём серверу вместе с задачей. Не ради сервера: он её не читает
+    // и работу по ней не меняет. Ради того, чтобы рядом с фактическим расходом
+    // лежало то самое число, которое человек видел под кнопкой, — врозь они
+    // не сравниваются, а без сравнения смету не на чем поправить.
+    const withEst = (est == null || est.cost == null) ? params
+      : Object.assign({}, params, { est_cost: est.cost });
+    const res = await window.API.safeCall(() => window.API.createJob(project.id, kind, targets.map(s => s.id), withEst));
     if (!res || !res.ok) { toast.error("Не удалось запустить", "Сервер не принял задачу."); return null; }
     setJob(res.job);
     toast.info(JOB_LABELS[kind] + ": запущено", targets.length + " сегментов. Можно закрыть вкладку — прогон идёт на сервере.");
@@ -936,6 +952,21 @@ function TabEditor({ store, toast }) {
   const reportJobResult = (j) => {
     const c = j.counters || {};
     const name = JOB_LABELS[j.kind] || j.kind;
+    // Факт расхода — в каждом итоге, а не только в успешном: прерванный прогон
+    // тоже стоил денег, и умолчать об этом значит показать его бесплатным.
+    const sp = spendOf(j);
+    // Расхождение называем в ту сторону, в какую оно есть, и только когда оно
+    // заметное: «в 1.0 раза» — это шум, а не наблюдение. Заниженная смета важнее
+    // завышенной, поэтому про неё говорим прямо.
+    const ratio = (sp && sp.est != null && sp.cost > 0) ? sp.est / sp.cost : null;
+    const ratioMsg = ratio == null ? ""
+      : ratio >= 1.15 ? " — смета выше факта в " + ratio.toFixed(1) + " раза"
+      : ratio <= 0.87 ? " — смета НИЖЕ факта в " + (1 / ratio).toFixed(1) + " раза"
+      : "";
+    const costMsg = !sp ? ""
+      : " · потрачено " + fmtCost(sp.cost)
+        + (sp.est != null ? " при смете " + fmtCost(sp.est) + ratioMsg : "")
+        + (sp.unpriced ? " · вызовов по неизвестной цене: " + sp.unpriced : "");
     const errMsg = c.errors ? " · ошибок: " + c.errors : "";
     const dupMsg = c.duplicates ? " · повторов зачтено без вызова: " + c.duplicates : "";
     if (j.status === "error") {
@@ -945,11 +976,11 @@ function TabEditor({ store, toast }) {
       const glossNote = (j.kind === "apply_terms" && c.termsApproved)
         ? " Термины (" + c.termsApproved + ") уже в глоссарии — пачку можно откатить в «Глоссарии»." : "";
       toast.error(name + ": прогон прерван",
-        j.done + " из " + j.total + " обработано и сохранено. " + (j.error || "") + glossNote);
+        j.done + " из " + j.total + " обработано и сохранено. " + (j.error || "") + glossNote + costMsg);
       return;
     }
     if (j.status === "stopped") {
-      toast.warning(name + ": остановлено", j.done + " из " + j.total + " обработано и сохранено." + errMsg);
+      toast.warning(name + ": остановлено", j.done + " из " + j.total + " обработано и сохранено." + errMsg + costMsg);
       return;
     }
     if (j.kind === "apply_terms") {
@@ -959,7 +990,7 @@ function TabEditor({ store, toast }) {
         + " · сегментов исправлено: " + (c.applied || 0)
         + (c.reverted ? " · откачено: " + c.reverted : "")
         + (c.skipped_confirmed ? " · подтверждённых не тронуто: " + c.skipped_confirmed : "")
-        + errMsg + " · откатить пачку можно в «Глоссарии»");
+        + errMsg + costMsg + " · откатить пачку можно в «Глоссарии»");
       return;
     }
     if (j.kind === "full") {
@@ -976,7 +1007,7 @@ function TabEditor({ store, toast }) {
       const skipConfMsg = c.skipped_confirmed ? " · подтверждённых не тронуто: " + c.skipped_confirmed : "";
       toast.success("Перевод и проверка завершены",
         j.done + " сегментов пройдено · " + part + dupMsg + skipConfMsg + blockedMsg + errMsg
-        + (c.flagged ? " · замечания в " + c.flagged : ""));
+        + (c.flagged ? " · замечания в " + c.flagged : "") + costMsg);
       return;
     }
     if (j.kind === "translate") {
@@ -984,20 +1015,20 @@ function TabEditor({ store, toast }) {
       // Пропущенные подтверждённые называем вслух: иначе «переведено 0» выглядит
       // как поломка, хотя сервер просто не тронул заверенное человеком.
       const skipMsg = c.skipped_confirmed ? " · пропущено подтверждённых: " + c.skipped_confirmed : "";
-      toast.success("Перевод завершён", j.done + " сегментов переведено" + tmMsg + dupMsg + skipMsg + errMsg);
+      toast.success("Перевод завершён", j.done + " сегментов переведено" + tmMsg + dupMsg + skipMsg + errMsg + costMsg);
     } else if (j.kind === "termcheck") {
       const skipMsg = c.skipped_trivial ? " · без вызова модели: " + c.skipped_trivial : "";
       if (c.flagged) toast.warning("Проверка терминологии завершена",
-        "Замечания в " + c.flagged + " из " + j.done + " сегментов" + dupMsg + skipMsg + errMsg
+        "Замечания в " + c.flagged + " из " + j.done + " сегментов" + dupMsg + skipMsg + errMsg + costMsg
         + " · предложения замены — в «Глоссарий → Кандидаты»");
-      else toast.success("Проверка терминологии завершена", j.done + " сегментов без замечаний" + dupMsg + skipMsg + errMsg);
+      else toast.success("Проверка терминологии завершена", j.done + " сегментов без замечаний" + dupMsg + skipMsg + errMsg + costMsg);
     } else if (j.kind === "repair") {
       const revMsg = c.reverted ? " · откачено (не стало лучше): " + c.reverted : "";
       if (c.applied) toast.success("Ремонт завершён",
-        "Исправлено " + c.applied + " сегментов" + revMsg + errMsg + " · статус «Требует проверки», подтвердите вручную");
-      else toast.warning("Ничего не исправлено", "Ни один вариант не улучшил оценку — все откачены." + errMsg);
+        "Исправлено " + c.applied + " сегментов" + revMsg + errMsg + costMsg + " · статус «Требует проверки», подтвердите вручную");
+      else toast.warning("Ничего не исправлено", "Ни один вариант не улучшил оценку — все откачены." + errMsg + costMsg);
     } else if (j.kind === "backcheck") {
-      toast.success("Back-check завершён", j.done + " сегментов проверено" + dupMsg + errMsg + " · разбивка в Анализе");
+      toast.success("Back-check завершён", j.done + " сегментов проверено" + dupMsg + errMsg + costMsg + " · разбивка в Анализе");
     } else {
       toast.success(name + " завершён", j.done + " сегментов обработано" + errMsg);
     }
@@ -1032,39 +1063,50 @@ function TabEditor({ store, toast }) {
   const runBackcheckBatch = () => {
     // skip_cached выключен: состав уже отобран галочками «Что проверять»,
     // иначе сервер вырезал бы из порции ровно то, что попросили перепроверить.
-    startJob("backcheck", project.segments.filter(s => backcheckable(s, currentIdSet)),
+    const targets = project.segments.filter(s => backcheckable(s, currentIdSet));
+    startJob("backcheck", targets,
       { model: bcModel || null, use_judge: bcJudge, judge_model: judgeModel || null, skip_cached: false },
       bcSkipConfirmed
         ? "В выборке нет непроверенных сегментов, кроме подтверждённых, а их вы просили пропускать."
-        : "В выборке нет непроверенных сегментов. Отметьте нужные группы в «Что проверять».");
+        : "В выборке нет непроверенных сегментов. Отметьте нужные группы в «Что проверять».",
+      estimateRun("backcheck", targets, bcModelInfo, { judge: bcJudge, judgeModel: judgeModelInfo }));
   };
 
   const runTermcheckBatch = () => {
-    startJob("termcheck", project.segments.filter(s => termcheckable(s, currentIdSet)),
+    const targets = project.segments.filter(s => termcheckable(s, currentIdSet));
+    startJob("termcheck", targets,
       { model: tcModel || null, skip_cached: false },
-      "Всё в выборке уже проверено этой моделью. Отметьте нужные группы в «Что проверять», чтобы прогнать заново.");
+      "Всё в выборке уже проверено этой моделью. Отметьте нужные группы в «Что проверять», чтобы прогнать заново.",
+      estimateRun("termcheck", targets, tcModelInfo));
   };
 
   const runRepairBatch = () => {
-    startJob("repair", project.segments.filter(s => repairable(s, currentIdSet)),
+    const targets = project.segments.filter(s => repairable(s, currentIdSet));
+    startJob("repair", targets,
       { model: rpModel || null, bc_model: bcModel || null, tc_model: tcModel || null,
         use_judge: bcJudge, judge_model: judgeModel || null, retry: repairRetry(),
         include_confirmed: rpFixConfirmed },
       rpGroups.length
         ? "Все сегменты с находками уже проходили ремонт. Отметьте нужные группы в «Что чинить»."
-        : "Нет сегментов с проверяемыми находками. Сначала прогоните back-check или проверку терминологии.");
+        : "Нет сегментов с проверяемыми находками. Сначала прогоните back-check или проверку терминологии.",
+      estimateRun("repair", targets, rpModelInfo, { recheckModel: bcModelInfo }));
   };
 
   const runMedicalQABatch = () => {
     const idSet = currentIdSet;
-    startJob("medical_qa", project.segments.filter(s =>
+    const targets = project.segments.filter(s =>
       s.target && s.target.trim() &&
       ["translated", "qa", "review", "confirmed"].includes(s.status) &&
-      (!idSet || idSet.has(s.id))),
+      (!idSet || idSet.has(s.id)));
+    startJob("medical_qa", targets,
       // Модель обратного перевода — та же, что у back-check. Своей у Medical QA
       // нет: правила детерминированные, вызов нужен только там, где готового
       // обратного перевода не осталось.
-      { bc_model: bcModel }, "Нет переведённых сегментов для пакетной проверки.");
+      { bc_model: bcModel }, "Нет переведённых сегментов для пакетной проверки.",
+      // Платит она только за те сегменты, у которых своего обратного перевода
+      // нет: остальным его отдал back-check. Тот же фильтр, что и в soloEst.
+      estimateRun("medical_qa",
+        targets.filter(s => !(s.backcheck && !s.backcheck.stale && s.backcheck.back)), bcModelInfo));
   };
 
   // Подписи с реальными языками проекта: "Оригинал (RU)" / "Перевод (EN)"
@@ -1422,7 +1464,7 @@ function TabEditor({ store, toast }) {
       // Разрешение сервер отдаёт только шагу ремонта (см. _job_chunk_full):
       // перевод по этой галочке не перегоняет ничего.
       include_confirmed: rpFixConfirmed,
-    }, "В выбранных сегментах нечего делать.");
+    }, "В выбранных сегментах нечего делать.", fullEst);
     if (!started) return;
     // Проект и время создания — часть опознания снимка (см. runStepRows):
     // одного номера мало, они начинаются заново после рестарта сервиса.
@@ -1773,7 +1815,37 @@ function LegendDot({ color, label }) {
    Остатка нет — значит прогон запущен не из этой вкладки и состав шагов
    неизвестен. Тогда показываем только сделанное: придумать «осталось»
    было бы враньём ровно того сорта, ради которого состав считает сервер. */
+/* ── Сколько прогон потратил НА САМОМ ДЕЛЕ ────────────────────────────────
+   Берётся из usage в ответах моделей (сервер складывает их в job.usage), а не
+   из нашего пересчёта объёма текста. Разница принципиальная: смета — это
+   предположение о том, сколько модель ответит, а здесь то, за что выставят счёт.
+
+   Пока не было ни одного вызова — молчим. «$0.00» под идущим прогоном читается
+   как «работа бесплатна», а не как «платить ещё не начали».
+
+   Вызовы по неизвестной цене (модели нет в каталоге) называем отдельно и НЕ
+   прибавляем нулём: расход, показанный меньше настоящего, — ровно то враньё,
+   ради которого учёт и заводился. */
+function spendOf(job) {
+  const u = job && job.usage;
+  if (!u || !u.calls) return null;
+  const est = job.params ? job.params.est_cost : null;
+  return { cost: u.cost, est: est == null ? null : est, unpriced: u.unpriced || 0, usage: u };
+}
+
+function spendTitle(sp) {
+  const u = sp.usage;
+  return "Считано с ответов моделей: " + u.calls + " вызовов, "
+    + Math.round(u.in / 1000) + "К входных токенов"
+    + (u.cached_in ? " (из них " + Math.round(u.cached_in / 1000) + "К кэшированных — скидка на них тут не учтена, цифра завышена на неё)" : "")
+    + ", " + Math.round(u.out / 1000) + "К выходных"
+    + (u.reasoning ? ", включая " + Math.round(u.reasoning / 1000) + "К на рассуждения" : "")
+    + ".\n\nЦена — по каталогу моделей. Смета до запуска считается по объёму текста и точной быть не может; это число — то, за что выставят счёт."
+    + (sp.unpriced ? "\n\nВызовов по модели без цены: " + sp.unpriced + ". Они в сумму НЕ входят." : "");
+}
+
 function RunStrip({ job, steps, onStop }) {
+  const spend = spendOf(job);
   const pct = Math.round(job.done / Math.max(1, job.total) * 100);
   const phase = job.stopping ? "останавливается"
     : job.status === "queued" ? "в очереди" : "идёт на сервере";
@@ -1784,6 +1856,9 @@ function RunStrip({ job, steps, onStop }) {
       React.createElement("div", { className: "rs-title" },
         React.createElement("span", null, (JOB_LABELS[job.kind] || job.kind) + " — " + phase),
         React.createElement("span", { className: "rs-num" }, job.done + " из " + job.total),
+        spend && React.createElement("span", { className: "rs-num", title: spendTitle(spend) },
+          "потрачено " + fmtCost(spend.cost)
+          + (spend.est != null ? " из ≈ " + fmtCost(spend.est) : "")),
         React.createElement("span", { className: "dim", style: { fontWeight: 500, fontSize: 11.5 } },
           "вкладку можно закрыть — прогон продолжится")),
       React.createElement(ProgressBar, { value: pct })),

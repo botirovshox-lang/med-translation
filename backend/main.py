@@ -2095,8 +2095,13 @@ def propagate_segment(pid: int, sid: int, req: PropagateRequest = PropagateReque
 
 # ─── Очередь кандидатов в глоссарий ──────────────────────────────────
 @app.get("/api/term-queue")
-def list_term_queue(status: str = "pending", limit: int = 200, offset: int = 0):
-    """Кандидаты, отсортированные по частоте: сверху то, что мешает чаще всего."""
+def list_term_queue(status: str = "pending", limit: int = 200, offset: int = 0,
+                    project: Optional[int] = None):
+    """Кандидаты, отсортированные по частоте: сверху то, что мешает чаще всего.
+
+    Вместе с карточками отдаём РАЗБОР: почему автоматика не берёт каждую и
+    сколько таких же. Без него очередь на четыреста штук — стена одинаковых
+    карточек, и человек не видит, что треть из них вообще не термины."""
     items = _term_queue()
     counts = {}
     for c in items:
@@ -2105,7 +2110,92 @@ def list_term_queue(status: str = "pending", limit: int = 200, offset: int = 0):
     if status and status != "all":
         items = [c for c in items if c.get("status", "pending") == status]
     items = sorted(items, key=lambda c: (-c.get("hits", 1), -c.get("id", 0)))
-    return {"total": len(items), "counts": counts, "items": items[offset:offset + limit]}
+
+    groups, reason_of = [], {}
+    if project:
+        # Область применяем ко ВСЕМУ ответу, а не только к разбору: иначе
+        # значок показывает одно число, сумма групп другое, а карточки чужой
+        # языковой пары висят без причины и пропадают под любым фильтром.
+        scope = _project_scope(get_project(project))
+        items = [c for c in items if _scope_of(c) == scope]
+    if status == "pending" and items and project:
+        project_obj = get_project(project)
+        pol = _auto_policy(project_obj.get("domain"))
+        ctx = _auto_context(items, pol)
+        ctx["corpus"] = {}          # без сети: это список, а не прогон
+        buckets: dict = {}
+        for c in items:
+            action, why = _auto_verdict(c, ctx)
+            if action in (GLOSSARY_TIER_HARD, GLOSSARY_TIER_SOFT):
+                key = "ready"
+            elif action == "close":
+                key = "closed"      # уже в глоссарии — не «ждёт человека»
+            else:
+                key = why or "—"
+            reason_of[c["id"]] = key
+            b = buckets.setdefault(key, {"reason": key, "count": 0, "ids": [],
+                                         # Отклонять пачкой можно не всё: см. bulk
+                                         "bulk": key not in ("ready", "closed")})
+            b["count"] += 1
+            b["ids"].append(c["id"])
+        # Конфликт нельзя отклонить пачкой: у него нет своего перевода, и
+        # отказ по нему заблокировал бы вопрос навсегда — см. bulk_decide_terms.
+        for b in buckets.values():
+            if b["bulk"] and all(not (c.get("tgt") or "").strip()
+                                 for c in items if c["id"] in set(b["ids"])):
+                b["bulk"] = False
+        groups = sorted(buckets.values(), key=lambda x: -x["count"])
+    out = items[offset:offset + limit]
+    return {"total": len(items), "counts": counts,
+            "groups": groups,
+            "items": [{**c, "why": reason_of.get(c["id"])} for c in out]}
+
+
+class BulkDecision(BaseModel):
+    ids: List[int]
+    action: str = "reject"      # только отклонение: см. ниже
+
+
+@app.post("/api/term-queue/bulk")
+def bulk_decide_terms(req: BulkDecision):
+    """Массовое ОТКЛОНЕНИЕ пачки кандидатов.
+
+    Массового одобрения здесь нет намеренно. Одобрение пишет правило для всех
+    будущих текстов, и «одобрить всё, что видно» — это подпись не глядя под
+    четырьмястами правилами: ровно то, от чего защищает вся остальная система.
+    Массовое одобрение уже есть в другом месте и с доказательствами —
+    /term-queue/auto-approve, который берёт только то, за что может поручиться.
+
+    Отклонение безопасно: оно ничего не пишет в глоссарий, а лишь убирает
+    из очереди то, что термином не является. Ошиблись — кандидат вернётся,
+    как только пара встретится снова с другим переводом."""
+    if req.action != "reject":
+        raise HTTPException(400, "Массовым может быть только отклонение. "
+                                 "Одобрение пачкой — /term-queue/auto-approve, "
+                                 "оно берёт лишь то, что подтверждено.")
+    want = set(req.ids)
+    done, kept = [], []
+    # Под локом: очередь одна, а прогон на сервере пишет в неё из рабочего
+    # потока — проход с мутацией без лока мог бы пропустить часть указанных.
+    with _TERM_QUEUE_LOCK:
+        for c in _term_queue():
+            if c.get("id") not in want or c.get("status", "pending") != "pending":
+                continue
+            if not (c.get("tgt") or "").strip():
+                # Кандидат без своего перевода (конфликт с глоссарием).
+                # Дедупликация помнит его по паре «термин + пустой перевод»,
+                # поэтому отказ закрыл бы этот вопрос НАВСЕГДА — а обещание
+                # «встретится снова — спросим заново» тут выполнить нечем.
+                # Такие решает человек по одному, вписав верный вариант.
+                kept.append(c["id"])
+                continue
+            _mark_decided(c, "rejected", note="отклонён пачкой")
+            done.append(c["id"])
+    save_state(STATE)
+    return {"ok": True, "rejected": done, "count": len(done),
+            "kept": kept,
+            "keptWhy": ("у этих кандидатов нет своего перевода — отказ закрыл бы "
+                        "вопрос навсегда, их решают по одному") if kept else ""}
 
 
 class TermDecision(BaseModel):

@@ -110,7 +110,10 @@
 
     /* Подтверждение теперь возвращает {tm, propagate, termCandidates} — см. confirm_segment */
     propagate:     (pid, sid, ids, includeConfirmed) => call("POST", `/segments/${pid}/${sid}/propagate`, { ids: ids || null, include_confirmed: !!includeConfirmed }),
-    termQueue:     (status, limit)          => call("GET",    `/term-queue?status=${encodeURIComponent(status || "pending")}&limit=${limit || 200}`),
+    /* project — чтобы разбор «почему ждёт» считался в области проекта. */
+    termQueue:     (status, limit, pid)     => call("GET",    `/term-queue?status=${encodeURIComponent(status || "pending")}&limit=${limit || 200}${pid ? "&project=" + pid : ""}`),
+    /* Массовым может быть только отклонение: одобрение пачкой — auto-approve. */
+    bulkReject:    (ids)                    => call("POST",   "/term-queue/bulk", { ids, action: "reject" }),
     glossaryUsage: (src, limit, lang, domain) => call("GET",  `/glossary/usage?src=${encodeURIComponent(src)}&limit=${limit || 6}&lang=${encodeURIComponent(lang||"")}&domain=${encodeURIComponent(domain||"")}`),
     glossaryImpact:(pid)                    => call("GET",    `/projects/${pid}/glossary-impact`),
     /* Итог по проекту одним экраном: чисто / исправлено машиной / нужен человек.

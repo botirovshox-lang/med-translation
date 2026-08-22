@@ -182,5 +182,63 @@ check(r["variants"][0]["tgt"] == "uveitis", "перевод самой карт�
 check(len(r["variants"]) == 6 and r["dropped"] == 5,
       "потолок назван вслух: разобрано 6, не влезло " + str(r["dropped"]))
 
+print("\n=== 11. Очередь объясняет, почему каждый кандидат ждёт ===")
+proj = {"id": 1, "title": "P", "src": "RU", "tgt": "EN", "domain": "medical", "segments": []}
+main.STATE = {"projects": [proj], "glossary": [], "tm": [], "termQueue": [],
+              "exportHistory": [], "team": []}
+main._invalidate_gloss_index()
+main.STATE["termQueue"] += [
+    {"id": 1, "kind": "segment", "src": "очень длинная фраза из пяти слов",
+     "tgt": "a very long phrase", "status": "pending", "hits": 1, "segments": ["1:1"],
+     "lang": "RU→EN", "domain": "medical"},
+    {"id": 2, "kind": "segment", "src": "шов", "tgt": "suture", "status": "pending",
+     "hits": 1, "segments": ["1:2"], "lang": "RU→EN", "domain": "medical"},
+]
+r = main.list_term_queue(status="pending", limit=50, project=1)
+whys = {i["id"]: i["why"] for i in r["items"]}
+check("фраз" in (whys.get(1) or ""), "у длинной фразы названа причина: " + str(whys.get(1)))
+check(whys.get(2), "у второго тоже: " + str(whys.get(2)))
+check(sum(g["count"] for g in r["groups"]) == 2, "группы покрывают всю очередь")
+
+print("\n=== 12. Массовым может быть только отклонение ===")
+# Одобрение пишет правило для всех будущих текстов. Подписать пачкой то,
+# чего не читал, — ровно то, от чего защищает вся остальная система.
+try:
+    main.bulk_decide_terms(main.BulkDecision(ids=[1, 2], action="approve"))
+    check(False, "массовое одобрение должно быть запрещено")
+except main.HTTPException as e:
+    check(e.status_code == 400 and "auto-approve" in e.detail,
+          "отказ с указанием, где законное массовое одобрение")
+r = main.bulk_decide_terms(main.BulkDecision(ids=[1]))
+check(r["count"] == 1, "отклонение пачкой работает")
+left = [c for c in main.STATE["termQueue"] if c.get("status", "pending") == "pending"]
+check([c["id"] for c in left] == [2], "отклонён ровно указанный")
+check(not main.STATE["glossary"], "в глоссарий при этом ничего не записано")
+
+print("\n=== 13. Конфликт пачкой не отклоняется ===")
+# У него нет своего перевода, и дедупликация помнит его по паре «термин +
+# пустой перевод». Отказ закрыл бы вопрос НАВСЕГДА, а интерфейс обещает
+# обратное: «встретится снова — спросим заново». Обещание должно быть верным.
+main.STATE["termQueue"] = [
+    {"id": 5, "kind": "conflict", "src": "увеит", "tgt": "", "status": "pending",
+     "hits": 1, "segments": ["1:1"], "lang": "RU→EN", "domain": "medical"}]
+r = main.bulk_decide_terms(main.BulkDecision(ids=[5]))
+check(r["count"] == 0 and r["kept"] == [5], "конфликт не тронут пачкой")
+check("навсегда" in r["keptWhy"], "и сказано почему: " + r["keptWhy"])
+check(main.STATE["termQueue"][0]["status"] == "pending", "он остался ждать человека")
+
+print("\n=== 14. Разбор и значок считают одно и то же ===")
+# Область применяется ко всему ответу: иначе значок показывает одно число,
+# сумма групп другое, а чужие карточки висят без причины.
+main.STATE["termQueue"] = [
+    {"id": 1, "kind": "segment", "src": "шов", "tgt": "suture", "status": "pending",
+     "hits": 1, "segments": ["1:1"], "lang": "RU→EN", "domain": "medical"},
+    {"id": 2, "kind": "segment", "src": "договор", "tgt": "Vertrag", "status": "pending",
+     "hits": 1, "segments": ["1:2"], "lang": "RU→DE", "domain": "legal"}]
+r = main.list_term_queue(status="pending", limit=50, project=1)
+check(r["total"] == 1, "в области проекта один кандидат: " + str(r["total"]))
+check(sum(g["count"] for g in r["groups"]) == r["total"], "сумма групп равна значку")
+check(all(i["why"] for i in r["items"]), "и у каждой показанной карточки есть причина")
+
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

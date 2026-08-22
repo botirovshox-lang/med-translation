@@ -187,16 +187,45 @@ function TermQueue({ store, toast, version }) {
   // там всегда стояло 200, и разобранные двадцать штук ничего не меняли.
   const [total, setTotal] = useState(0);
   const [limit, setLimit] = useState(QUEUE_PAGE);
+  // Разбор «почему кандидат ждёт» с сервера: очередь на четыреста карточек
+  // без него — стена одинаковых строк, и не видно, что треть из них вообще
+  // не термины, а обрывки фраз.
+  const [groups, setGroups] = useState([]);
+  const [only, setOnly] = useState(null);      // показывать только эту причину
 
   const load = async (lim) => {
     if (!window.API) { setLoading(false); return; }
-    const res = await window.API.safeCall(() => window.API.termQueue("pending", lim || limit));
+    const pid = store.activeProject && store.activeProject.id;
+    const res = await window.API.safeCall(() => window.API.termQueue("pending", lim || limit, pid));
     setItems((res && res.items) || []);
     setCounts((res && res.counts) || {});
+    setGroups((res && res.groups) || []);
     setTotal((res && res.total) || 0);
     setLoading(false);
   };
-  useEffect(() => { load(); }, [version]);
+
+  // Массовое ОТКЛОНЕНИЕ группы. Массового одобрения тут нет намеренно:
+  // одобрение пишет правило для всех будущих текстов, и подписывать пачкой
+  // то, что не читал, — ровно то, от чего защищает вся остальная система.
+  const rejectGroup = async (g) => {
+    const msg = "Отклонить " + g.count + " кандидатов?\n\n" + g.reason
+      + "\n\nВ глоссарий ничего не пишется. Если такая пара встретится снова "
+      + "с другим переводом, вопрос задастся заново.";
+    if (!window.confirm(msg)) return;
+    setBusy("group");
+    const res = await window.API.safeCall(() => window.API.bulkReject(g.ids));
+    setBusy(null);
+    if (!res || !res.ok) { toast.error("Не удалось отклонить", "Сервер не ответил."); return; }
+    toast.info("Отклонено: " + res.count,
+      g.reason + (res.kept && res.kept.length
+        ? " · не тронуто: " + res.kept.length + " — " + res.keptWhy : ""));
+    setOnly(null);
+    load();
+  };
+  // Перезагружаем и при смене проекта: разбор «почему ждёт» и id в группах
+  // считаются в его области, и от чужого проекта они не годятся.
+  useEffect(() => { setOnly(null); load(); },
+    [version, store.activeProject && store.activeProject.id]);
 
   // Решили карточку — убираем её и из показанного, и из общего числа:
   // иначе счётчик стоял бы на месте до перезагрузки страницы.
@@ -264,8 +293,35 @@ function TermQueue({ store, toast, version }) {
       React.createElement("span", { className: "dim", style: { fontSize: 12 } },
         "по частоте · одобрено: " + (counts.approved || 0) + " · отклонено: " + (counts.rejected || 0))),
 
+    // Разбор очереди по причинам: сразу видно, где работа человека, а где мусор.
+    open && groups.length > 0 && React.createElement("div", { className: "col", style: { gap: 5, marginTop: 12 } },
+      React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+        "Почему ждут — нажмите, чтобы отобрать:"),
+      groups.map(g => React.createElement("div", { key: g.reason, className: "row between", style: { gap: 10, fontSize: 12.5, padding: "3px 0" } },
+        React.createElement("span", {
+          style: { cursor: "pointer", fontWeight: only === g.reason ? 650 : 400,
+                   color: g.reason === "ready" ? "var(--c-success)" : "var(--text-2)" },
+          onClick: () => {
+            const next = only === g.reason ? null : g.reason;
+            setOnly(next);
+            // Счётчик группы — по всей очереди, а показанная страница короче.
+            // Без подгрузки клик по группе часто давал бы пустой список.
+            if (next && g.count > items.length) { const n = Math.min(g.count + 5, 400); setLimit(n); load(n); }
+          } },
+          (g.reason === "ready" ? "готовы к автоодобрению (до корпусной проверки)"
+            : g.reason === "closed" ? "уже есть в глоссарии"
+              : g.reason) + " · " + g.count),
+        g.bulk && React.createElement(Btn, {
+          variant: "ghost", size: "sm", disabled: !!busy, onClick: () => rejectGroup(g) },
+          "Отклонить все"))),
+      React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
+        "Одобрить пачкой можно только то, что подтверждено, — это делает "
+        + "«Автоодобрение однозначных» выше. Отклонить можно любую группу: "
+        + "в глоссарий ничего не пишется, а если пара встретится снова "
+        + "с другим переводом, вопрос задастся заново.")),
+
     open && React.createElement("div", { className: "col", style: { gap: 10, marginTop: 14 } },
-      items.map(c => {
+      items.filter(c => !only || c.why === only).map(c => {
         const [label, icon, color] = CAND_KIND[c.kind] || ["Кандидат", "info", "var(--text-2)"];
         return React.createElement("div", { key: c.id, className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 8 } },
           React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
@@ -290,6 +346,13 @@ function TermQueue({ store, toast, version }) {
               style: { maxWidth: 320 } }),
             c.wasTgt && React.createElement("span", { className: "dim", style: { fontSize: 12.5 } },
               "в глоссарии сейчас: ", React.createElement("s", null, c.wasTgt))),
+
+          // Почему автоматика не берёт эту карточку. Без этого человек не
+          // понимает, чего от него ждут: дорешать или дождаться проверок.
+          c.why && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+            c.why === "ready" ? "готов к автоодобрению (до корпусной проверки)"
+              : c.why === "closed" ? "уже есть в глоссарии"
+                : "ждёт человека: " + c.why),
 
           c.note && React.createElement("div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.5 } }, c.note),
 
@@ -340,7 +403,10 @@ function TermQueue({ store, toast, version }) {
       total > items.length && React.createElement(Btn, {
         variant: "ghost", size: "sm", onClick: () => { const n = limit + QUEUE_PAGE; setLimit(n); load(n); } },
         "Показать ещё " + Math.min(QUEUE_PAGE, total - items.length) + " из " + (total - items.length)),
-      !items.length && React.createElement("div", { className: "dim", style: { fontSize: 13 } }, "Нерешённых кандидатов нет.")
+      !items.filter(c => !only || c.why === only).length && React.createElement(
+        "div", { className: "dim", style: { fontSize: 13 } },
+        only ? "В этой группе на загруженной странице ничего нет — нажмите «Показать ещё»."
+             : "Нерешённых кандидатов нет.")
     )
   );
 }

@@ -176,12 +176,27 @@ function tcGroupKey(s) {
   return ((tc.findings || []).length ? "hit:" : "ok:") + (tc.model || "unknown");
 }
 
-// Отмечено по умолчанию: непроверенное, устаревшее и проверенное ДРУГОЙ моделью
-// (второе мнение имеет смысл). Проверенное текущей моделью и пропущенные — нет.
-function tcGroupDefault(key, model) {
+// Ранг модели из каталога /api/models. null — «сила неизвестна».
+function rankOf(models, id) {
+  const m = (models || []).find(x => x.id === id);
+  return m && m.rank != null ? m.rank : null;
+}
+
+// Отмечено по умолчанию: непроверенное, устаревшее и проверенное более СЛАБОЙ
+// моделью. Тот же закон, что у _rank_not_weaker на сервере, и это обязательно:
+// иначе таблица предлагала бы отдельным прогоном перепроверить ровно то, что
+// общий прогон только что законно пропустил, — и числа под соседними кнопками
+// противоречили бы друг другу. Усилить проверку можно всегда, ослабить — нет.
+function tcGroupDefault(key, model, models) {
   if (key === "none" || key === "stale") return true;
+  if (key === "skip") return false;
   const i = key.indexOf(":");
-  return i !== -1 && key.slice(i + 1) !== model;
+  if (i === -1) return false;
+  const had = key.slice(i + 1);
+  if (had === model) return false;
+  const rh = rankOf(models, had), rw = rankOf(models, model);
+  if (rh == null || rw == null) return true;   // не знаем — проверяем заново
+  return rh < rw;
 }
 
 // tried приходит с бэкенда: этот же текст уже проходил через ремонт
@@ -203,14 +218,10 @@ function rpGroupDefault(key) { return key === "none" || key === "changed"; }
    Состав сегментов больше не считается здесь: его отдаёт /run-plan тем же
    кодом, который потом и работает. Раньше браузер считал своими правилами,
    сервер отбирал своими, и снятая галочка уменьшала смету, но не работу. */
-const FULL_STEPS = [
-  ["translate", "Перевод", "только те, что ещё не переведены"],
-  ["backcheck", "Back-check", "обратный перевод другой моделью"],
-  ["termcheck", "Термины", "третья модель смотрит только на результат"],
-  ["repair", "Ремонт", "правит по всем находкам, включая глоссарий"],
-  ["medical_qa", "Medical QA", "числа и отрицания; обратный перевод берёт у back-check"],
-];
-const FULL_STEP_KEYS = FULL_STEPS.map(s => s[0]);
+// Названия и подписи шагов живут в строках таблицы (fullRunRows) — здесь
+// только порядок, и он обязан совпадать с FULL_RUN_STEPS на сервере: карточка
+// показывает, что произойдёт, а произойдёт то, что решил сервер.
+const FULL_STEP_KEYS = ["translate", "backcheck", "termcheck", "repair", "medical_qa"];
 
 function fmtDuration(sec) {
   if (sec < 90) return Math.round(sec) + " с";
@@ -275,6 +286,9 @@ function TabEditor({ store, toast }) {
   const [rpGroupPick, setRpGroupPick] = useState(null);   // то же для ремонта
   // Составной прогон: какие шаги входят. null = все.
   const [fullSteps, setFullSteps] = useState(null);
+  // Раскрыта одна строка за раз: развёрнутые все сразу — это снова простыня,
+  // из которой человек выковыривает нужную галочку.
+  const [openStep, setOpenStep] = useState(null);
   // Разбор автоодобрения (dry_run): что попадёт в глоссарий и чем это
   // подтверждено. Считает сервер, вызовов модели внутри нет.
   const [autoPreview, setAutoPreview] = useState(null);
@@ -744,8 +758,14 @@ function TabEditor({ store, toast }) {
 
   // По умолчанию отмечено всё, кроме уже проверенного выбранной моделью с тем же
   // переводом: платить второй раз за тот же результат незачем, но галочку можно вернуть.
+  // У back-check ранга нет и быть не может: сильная модель там ХУЖЕ — чинит
+  // кривой английский на лету и прячет искомую ошибку. Поэтому свежая проверка
+  // любой моделью считается сделанной, и по умолчанию отмечено только то, что
+  // не проверено, устарело или недопроверено без судьи, — ровно то, что возьмёт
+  // и общий прогон.
+  const BC_DEFAULT_GROUPS = ["none", "stale", "nojudge"];
   const pickedBcGroups = bcGroupPick
-    || new Set(bcGroups.filter(g => g.key !== bcModel).map(g => g.key));
+    || new Set(bcGroups.filter(g => BC_DEFAULT_GROUPS.indexOf(g.key) !== -1).map(g => g.key));
 
   const toggleBcGroup = (key) => setBcGroupPick(prev => {
     const next = new Set(prev || pickedBcGroups);
@@ -759,7 +779,7 @@ function TabEditor({ store, toast }) {
   const backcheckable = (s, idSet) => {
     if (!bcCandidate(s, idSet)) return false;
     const key = bcGroupKey(s);
-    return bcGroupPick ? bcGroupPick.has(key) : key !== bcModel;
+    return bcGroupPick ? bcGroupPick.has(key) : BC_DEFAULT_GROUPS.indexOf(key) !== -1;
   };
 
   // Один и тот же отбор для счётчика на карточке и для самого пакета — иначе цифры расходятся.
@@ -1003,7 +1023,7 @@ function TabEditor({ store, toast }) {
 
   // По умолчанию отмечено непроверенное и устаревшее. Уже проверенное текущей
   // моделью и пропущенные сегменты сняты: результат будет тот же, а вызов платный.
-  const tcDefaultPicked = (key) => tcGroupDefault(key, tcModel);
+  const tcDefaultPicked = (key) => tcGroupDefault(key, tcModel, gptModels);
   const pickedTcGroups = tcGroupPick || new Set(tcGroups.filter(g => tcDefaultPicked(g.key)).map(g => g.key));
   const toggleTcGroup = (key) => setTcGroupPick(prev => {
     const next = new Set(prev || pickedTcGroups);
@@ -1133,6 +1153,135 @@ function TabEditor({ store, toast }) {
     };
   })();
 
+  /* ── Строки таблицы составного прогона ───────────────────────────────
+     У каждой строки два состава и две цены, и путать их нельзя:
+       plan* — что сделает ОБЩИЙ прогон. Считает сервер, галочки групп на это
+               не влияют: он сам не берёт готовое и не даёт слабой модели
+               переписать вердикт сильной.
+       solo* — что сделает кнопка «Запустить только этот шаг». Считается
+               здесь, ПО ГАЛОЧКАМ, и идёт со skip_cached=false — это способ
+               намеренно перепроверить то, что общий прогон считает сделанным.
+     По умолчанию оба состава совпадают: галочки групп выставлены по тому же
+     правилу рангов, что и на сервере. Разойтись они могут только если человек
+     сам отметил лишнюю группу — и тогда это его решение, а не сюрприз. */
+  const groupTable = (title, groups, pickedGroups, onToggleGroup, empty) =>
+    React.createElement("div", { key: "g" },
+      React.createElement("div", { style: { fontSize: 12, fontWeight: 600, marginBottom: 5 } }, title),
+      groups.length === 0
+        ? React.createElement("div", { className: "dim", style: { fontSize: 11.5 } }, empty)
+        : groups.map(g => React.createElement("div", {
+            key: g.key, className: "row between", style: { padding: "2px 0", fontSize: 12.5 } },
+            React.createElement(Checkbox, { checked: pickedGroups.has(g.key),
+              onChange: () => onToggleGroup(g.key) }, g.label),
+            React.createElement("b", { style: { fontSize: 12.5, fontVariantNumeric: "tabular-nums" } }, g.count))));
+
+  const transSolo = pickTargets(project.segments);
+  const confirmedInScope = project.segments.filter(s => s.status === "confirmed"
+    && (s.target || "").trim() && (!currentIdSet || currentIdSet.has(s.id))).length;
+  const qaSolo = project.segments.filter(s => s.target && s.target.trim()
+    && ["translated", "qa", "review", "confirmed"].includes(s.status)
+    && (!currentIdSet || currentIdSet.has(s.id)));
+  const tcModelInfo = gptModels.find(m => m.id === tcModel) || null;
+  const rpModelInfo = gptModels.find(m => m.id === rpModel) || null;
+  const stepPlan = (k) => planByStep[k] || null;
+  const planEstOf = (k, model, opts) => estimateRun(k, fullStepTargets[k] || [], model, opts);
+
+  const fullRunRows = [
+    {
+      key: "translate", label: "Перевод", hint: "только те, что ещё не переведены",
+      modelId: gptModel, onModel: pickGptModel, plan: stepPlan("translate"),
+      planEst: planEstOf("translate", gptModelInfo),
+      soloEst: estimateRun("translate", transSolo.targets, gptModelInfo),
+      onSolo: askRunBatch, onStop: stopJob,
+      running: batchRun && batchRun.engine === "translate"
+        && !(job && job.params && job.params.via === "impact") ? batchRun : null,
+      soloNote: retranslate
+        ? "Перегоняет выбранные заново. Подтверждённые не трогаются никогда, точное совпадение с памятью переводов не подставляется, прежний перевод перезаписывается."
+        : "Берёт только сегменты со статусом «Новый». Включите «Переводить заново», чтобы перегнать уже переведённое.",
+      options: React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+        React.createElement("div", { className: "row between", style: { gap: 12, flexWrap: "wrap" } },
+          React.createElement("div", null,
+            React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600 } }, "Переводить заново уже переведённые"),
+            React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
+              (currentIdSet ? "Применится к текущей выборке"
+                            : "Нужна выборка: галочки в таблице или фильтр из Анализа"))),
+          React.createElement(Switch, { on: retranslate, label: "Переводить заново",
+            onClick: () => setRetranslate(v => !v) })),
+        retranslate && currentIdSet && groupTable("Сейчас переведено через — отметьте, что перевести заново:",
+          providerGroups.map(g => ({ key: g.key, count: g.count,
+            label: g.label + (g.exact ? "" : " (определено по маршруту)") })),
+          pickedProviders, toggleProvider,
+          "В выборке нет сегментов для повторного перевода (все подтверждены).")),
+    },
+    {
+      key: "backcheck", label: "Back-check", hint: "обратный перевод другой моделью",
+      modelId: bcModel, onModel: pickBcModel, plan: stepPlan("backcheck"),
+      planEst: planEstOf("backcheck", bcModelInfo, { judge: bcJudge, judgeModel: judgeModelInfo }),
+      soloEst: estimateRun("backcheck", project.segments.filter(s => backcheckable(s, currentIdSet)),
+        bcModelInfo, { judge: bcJudge, judgeModel: judgeModelInfo }),
+      onSolo: runBackcheckBatch, onStop: stopJob,
+      running: batchRun && batchRun.engine === "backcheck" ? batchRun : null,
+      options: React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+        React.createElement("div", { className: "row between", style: { gap: 12, flexWrap: "wrap" } },
+          React.createElement("div", null,
+            React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center" } },
+              "Судья для средней зоны",
+              React.createElement(InfoTip, { title: "Когда зовут судью",
+                body: "Балл " + judgeZone[0] + "–" + judgeZone[1] + "% — зона, где лексика уже не отвечает, а смысл ещё под вопросом. Наверху и внизу шкалы решение принято детерминированными проверками, и платить за подтверждение очевидного незачем. При жёсткой находке (числа, единицы, отрицание) судья тоже не вызывается: отменить её он не может." })),
+            React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
+              "вызывается только при балле " + judgeZone[0] + "–" + judgeZone[1] + "%")),
+          React.createElement("div", { className: "row", style: { gap: 8 } },
+            bcJudge && React.createElement(Select, { value: judgeModel || "", disabled: !!job,
+              onChange: (e) => pickJudgeModel(e.target.value), style: { fontSize: 12.5, maxWidth: 170 } },
+              gptModels.map(m => React.createElement("option", { key: m.id, value: m.id }, m.label))),
+            React.createElement(Switch, { on: bcJudge, label: "Судья", onClick: () => setBcJudge(v => !v) }))),
+        React.createElement("div", { className: "row between", style: { gap: 12 } },
+          React.createElement("div", { style: { fontSize: 12.5 } }, "Пропускать подтверждённые человеком",
+            React.createElement("span", { className: "dim", style: { fontSize: 11.5, display: "block" } },
+              confirmedInScope + " в выборке")),
+          React.createElement(Switch, { on: bcSkipConfirmed, label: "Пропускать подтверждённые",
+            onClick: toggleBcSkipConfirmed })),
+        groupTable("Что проверять отдельным прогоном:", bcGroups, pickedBcGroups, toggleBcGroup,
+          "В выборке нечего проверять.")),
+    },
+    {
+      key: "termcheck", label: "Термины", hint: "третья модель смотрит только на результат",
+      modelId: tcModel, onModel: pickTcModel, plan: stepPlan("termcheck"),
+      planEst: planEstOf("termcheck", tcModelInfo),
+      soloEst: estimateRun("termcheck", project.segments.filter(s => termcheckable(s, currentIdSet)), tcModelInfo),
+      onSolo: runTermcheckBatch, onStop: stopJob,
+      running: batchRun && batchRun.engine === "termcheck" ? batchRun : null,
+      options: groupTable("Что проверять отдельным прогоном:", tcGroups, pickedTcGroups, toggleTcGroup,
+        "В выборке нечего проверять."),
+    },
+    {
+      key: "repair", label: "Ремонт", hint: "правит по всем находкам, включая глоссарий",
+      modelId: rpModel, onModel: pickRpModel, plan: stepPlan("repair"),
+      planEst: planEstOf("repair", rpModelInfo, { recheckModel: bcModelInfo }),
+      soloEst: estimateRun("repair", project.segments.filter(s => repairable(s, currentIdSet)),
+        rpModelInfo, { recheckModel: bcModelInfo }),
+      onSolo: runRepairBatch, onStop: stopJob,
+      running: batchRun && batchRun.engine === "repair" ? batchRun : null,
+      soloNote: "Правка плюс перепроверка теми же проверками: если оценка упадёт, текст откатится. Один заход на один текст — второй даст то же самое за те же деньги.",
+      options: groupTable("Что чинить — отметьте, если нужен второй заход:",
+        rpGroups, pickedRpGroups, toggleRpGroup,
+        "Нет сегментов с находками. Сначала прогоните back-check или проверку терминов."),
+    },
+    {
+      key: "medical_qa", label: "Medical QA", hint: "числа и отрицания; обратный перевод берёт у back-check",
+      modelId: null, onModel: null, plan: stepPlan("medical_qa"),
+      modelNote: (bcModelInfo ? bcModelInfo.label : "—") + " · от back-check",
+      planEst: planEstOf("medical_qa", bcModelInfo),
+      // Своей модели у неё нет: правила детерминированные. Платный вызов —
+      // только обратный перевод и только там, где готового от back-check нет.
+      soloEst: estimateRun("medical_qa",
+        qaSolo.filter(s => !(s.backcheck && !s.backcheck.stale && s.backcheck.back)), bcModelInfo),
+      onSolo: runMedicalQABatch, onStop: stopJob,
+      running: batchRun && batchRun.engine === "medical_qa" ? batchRun : null,
+      soloNote: "Считает заново по всей выборке. Сегментам со свежим back-check это бесплатно — обратный перевод у них уже есть.",
+    },
+  ];
+
   // Проверка, которую делает та же модель, что переводила, — не независимая,
   // а на независимости стоит автоодобрение терминов. Молчать об этом нельзя.
   // Ремонт тоже: он переписывает перевод, и если это делает та же модель,
@@ -1140,7 +1289,7 @@ function TabEditor({ store, toast }) {
   const sameModelWarn = [bcModel, tcModel, rpModel].filter(m => m && m === gptModel).length > 0;
 
   const runFullJob = () => {
-    const steps = FULL_STEPS.map(s => s[0]).filter(k => pickedFull.has(k));
+    const steps = FULL_STEP_KEYS.filter(k => pickedFull.has(k));
     if (!steps.length) { toast.warning("Не выбрано ни одного шага", "Отметьте хотя бы один."); return; }
     startJob("full", fullRunIds, {
       steps,
@@ -1249,19 +1398,13 @@ function TabEditor({ store, toast }) {
       React.createElement(FullRunCard, {
         running: job && job.kind === "full" ? job : null,
         onRun: runFullJob, onStop: stopJob,
-        steps: FULL_STEPS, picked: pickedFull, onToggle: toggleFullStep,
-        targets: fullStepTargets, scopeSize: fullRunIds.length,
-        plan: planByStep, planBusy: planBusy, planReady: !!runPlan,
+        rows: fullRunRows, picked: pickedFull, onToggle: toggleFullStep,
+        scopeSize: fullRunIds.length,
+        planBusy: planBusy, planReady: !!runPlan,
+        openStep: openStep, onOpenStep: setOpenStep,
         checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf),
         est: fullEst, sameModelWarn: sameModelWarn,
-        transModel: (gptModelInfo || {}).label || gptModel,
-        checkModels: [bcModelInfo, gptModels.find(m => m.id === tcModel)]
-          .filter(Boolean).map(m => m.label),
-        models: gptModels, transModelId: gptModel, onTransModel: pickGptModel,
-        bcModelId: bcModel, onBcModel: pickBcModel,
-        tcModelId: tcModel, onTcModel: pickTcModel,
-        rpModelId: rpModel, onRpModel: pickRpModel,
-        disabled: !!job }),
+        models: gptModels, disabled: !!job }),
       React.createElement(ApplyTermsCard, {
         running: job && job.kind === "apply_terms" ? job : null,
         onRun: runApplyTerms, onStop: stopJob, disabled: !!job,
@@ -1269,109 +1412,14 @@ function TabEditor({ store, toast }) {
         includeConfirmed: impactConfirmed,
         onIncludeConfirmed: () => setImpactConfirmed(v => !v),
         confirmedCount: impact ? impact.confirmed.length : 0 }),
-      React.createElement(Expander, { title: "Отдельные прогоны", icon: "zap", right: "по одному шагу — для точечной работы", defaultOpen: false },
-        React.createElement("div", { className: "grid grid-3" },
-          React.createElement(BatchCard, { est: estimateRun("translate", pickTargets(project.segments).targets, gptModelInfo), running: batchRun && batchRun.engine === "translate" && !(job && job.params && job.params.via === "impact") ? batchRun : null, onRun: askRunBatch, onStop: stopJob,
-            models: gptModels, model: gptModel, modelInfo: gptModelInfo, onModel: pickGptModel,
-            available: pickTargets(project.segments).targets.length,
-            selectionSize: pickTargets(project.segments).selectionSize,
-            checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
-          React.createElement(MedicalQACard, { running: batchRun && batchRun.engine === "medical_qa" ? batchRun : null, onRun: runMedicalQABatch,
-            // Свежий back-check переиспользуется, такие сегменты в смету не идут
-            est: estimateRun("medical_qa", project.segments.filter(s => s.target && s.target.trim()
-              && ["translated", "qa", "review", "confirmed"].includes(s.status)
-              && (checkedSegs.size > 0 ? checkedSegs.has(s.id) : (!store.segmentFilter || store.segmentFilter.has(s.id)))
-              && !(s.backcheck && !s.backcheck.stale && s.backcheck.back)),
-              bcModelInfo),
-            available: project.segments.filter(s => s.target && s.target.trim() && ["translated", "qa", "review", "confirmed"].includes(s.status) && (checkedSegs.size > 0 ? checkedSegs.has(s.id) : (!store.segmentFilter || store.segmentFilter.has(s.id)))).length,
-            checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
-          impact && impact.terms.length > 0 && React.createElement(GlossaryImpactCard, {
-            impact, busy: impactBusy, onRefresh: loadImpact,
-            includeConfirmed: impactConfirmed, onIncludeConfirmed: () => setImpactConfirmed(v => !v),
-            onRun: runImpactRetranslate,
-            onDrill: (ids) => { store.setSegmentFilter(ids); setPage(1); },
-            est: estimateRun("translate", project.segments.filter(s =>
-              new Set(impactConfirmed ? impact.segments : impact.pending).has(s.id)), gptModelInfo),
-            running: batchRun && batchRun.engine === "translate" && job && job.params && job.params.via === "impact" ? batchRun : null }),
-          React.createElement(TermCheckCard, {
-            running: batchRun && batchRun.engine === "termcheck" ? batchRun : null,
-            onRun: runTermcheckBatch, onStop: stopJob,
-            models: gptModels, model: tcModel, modelInfo: gptModels.find(m => m.id === tcModel) || null,
-            onModel: pickTcModel,
-            available: project.segments.filter(s => termcheckable(s, currentIdSet)).length,
-            flagged: project.segments.filter(s => s.termcheck && !s.termcheck.stale
-              && (s.termcheck.findings || []).length).length,
-            groups: tcGroups, pickedGroups: pickedTcGroups, onToggleGroup: toggleTcGroup,
-            est: estimateRun("termcheck", project.segments.filter(s => termcheckable(s, currentIdSet)), gptModels.find(m => m.id === tcModel) || null),
-            checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
-          React.createElement(RepairCard, {
-            running: batchRun && batchRun.engine === "repair" ? batchRun : null,
-            onRun: runRepairBatch, onStop: stopJob,
-            models: gptModels, model: rpModel, modelInfo: gptModels.find(m => m.id === rpModel) || null,
-            onModel: pickRpModel,
-            available: project.segments.filter(s => repairable(s, currentIdSet)).length,
-            repaired: project.segments.filter(s => s.repair && s.repair.applied).length,
-            groups: rpGroups, pickedGroups: pickedRpGroups, onToggleGroup: toggleRpGroup,
-            est: estimateRun("repair", project.segments.filter(s => repairable(s, currentIdSet)),
-              gptModels.find(m => m.id === rpModel) || null, { recheckModel: bcModelInfo }),
-            checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
-          React.createElement(BackcheckCard, {
-            running: batchRun && batchRun.engine === "backcheck" ? batchRun : null,
-            onRun: runBackcheckBatch, onStop: stopJob,
-            models: gptModels, model: bcModel, modelInfo: bcModelInfo, onModel: pickBcModel,
-            judge: bcJudge, onJudge: () => setBcJudge(v => !v),
-            judgeModel: judgeModel, judgeModelInfo: judgeModelInfo, onJudgeModel: pickJudgeModel,
-            judgeZone: judgeZone,
-            est: estimateRun("backcheck", project.segments.filter(s => backcheckable(s, currentIdSet)), bcModelInfo,
-              { judge: bcJudge, judgeModel: judgeModelInfo }),
-            available: project.segments.filter(s => backcheckable(s, currentIdSet)).length,
-            done: project.segments.filter(s => bcCandidate(s, currentIdSet) && s.backcheck
-              && s.backcheck.score != null && !s.backcheck.stale).length,
-            groups: bcGroups, pickedGroups: pickedBcGroups, onToggleGroup: toggleBcGroup,
-            skipConfirmed: bcSkipConfirmed, onSkipConfirmed: toggleBcSkipConfirmed,
-            confirmedCount: project.segments.filter(s => s.status === "confirmed" &&
-              (s.target || "").trim() && (!currentIdSet || currentIdSet.has(s.id))).length,
-            filtered: !!(store.segmentFilter || window._mcat_sf) })
-        ),
-        // Переводить заново уже переведённые. Работает только по явной выборке —
-        // галочки или фильтр из Анализа, — чтобы одним кликом не перегнать весь проект.
-        React.createElement("div", { className: "row between", style: { marginTop: 12, gap: 12, flexWrap: "wrap" } },
-          React.createElement("div", null,
-            React.createElement("div", { style: { fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center" } },
-              "Переводить заново уже переведённые",
-              React.createElement(InfoTip, { title: "Повторный перевод",
-                body: "По умолчанию пакет берёт только сегменты со статусом «Новый». Включите, чтобы перегнать выбранные заново — например, чтобы перевести моделью получше то, что уже переведено. Подтверждённые сегменты не трогаются никогда, точное совпадение с памятью переводов при этом не подставляется. Старый перевод перезаписывается." })),
-            React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-              (store.segmentFilter || window._mcat_sf || checkedSegs.size > 0)
-                ? "Применится к текущей выборке"
-                : "Нужна выборка: галочки или фильтр из Анализа")),
-          React.createElement(Switch, { on: retranslate, label: "Переводить заново",
-            onClick: () => setRetranslate(v => !v) })
-        ),
-
-        // Что именно перегонять: группы «чем переведено сейчас» с количеством.
-        // По умолчанию снята галочка с того, что уже переведено выбранной моделью.
-        retranslate && currentIdSet && React.createElement("div", {
-          className: "card", style: { padding: "10px 14px", marginTop: 10, background: "var(--bg-sunken)" } },
-          React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, marginBottom: 8 } },
-            "Сейчас переведено через — отметьте, что перевести заново:"),
-          providerGroups.length === 0
-            ? React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-                "В выборке нет сегментов для повторного перевода (все подтверждены).")
-            : providerGroups.map(g => React.createElement("div", {
-                key: g.key, className: "row between", style: { padding: "3px 0" } },
-                React.createElement(Checkbox, {
-                  checked: pickedProviders.has(g.key),
-                  onChange: () => toggleProvider(g.key),
-                }, g.label + (g.exact ? "" : " (определено по маршруту)")),
-                React.createElement("b", { style: { fontSize: 13 } }, g.count))),
-          providerGroups.length > 0 && React.createElement("div", {
-            className: "dim", style: { fontSize: 11.5, marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 8 } },
-            "Отмечено к переводу: " + providerGroups.filter(g => pickedProviders.has(g.key))
-              .reduce((a, g) => a + g.count, 0) + " из " +
-              providerGroups.reduce((a, g) => a + g.count, 0))
-        )
-      )
+      impact && impact.terms.length > 0 && React.createElement(GlossaryImpactCard, {
+        impact, busy: impactBusy, onRefresh: loadImpact,
+        includeConfirmed: impactConfirmed, onIncludeConfirmed: () => setImpactConfirmed(v => !v),
+        onRun: runImpactRetranslate,
+        onDrill: (ids) => { store.setSegmentFilter(ids); setPage(1); },
+        est: estimateRun("translate", project.segments.filter(s =>
+          new Set(impactConfirmed ? impact.segments : impact.pending).has(s.id)), gptModelInfo),
+        running: batchRun && batchRun.engine === "translate" && job && job.params && job.params.via === "impact" ? batchRun : null }),
     ),
 
     // ---- Body: table + detail ----
@@ -1583,20 +1631,84 @@ function LegendDot({ color, label }) {
    какие шаги входят, сколько сегментов затронет каждый и во что это обойдётся.
    Порядок шагов фиксирован на сервере и здесь только показан — Medical QA
    берёт обратный перевод из back-check, ремонту нужны находки всех остальных. */
-function FullRunCard({ running, onRun, onStop, steps, picked, onToggle, targets, scopeSize,
-                       checked, filtered, est, sameModelWarn, transModel, checkModels,
-                       models, transModelId, onTransModel, bcModelId, onBcModel,
-                       tcModelId, onTcModel, rpModelId, onRpModel, disabled,
-                       plan, planBusy, planReady }) {
-  const anyWork = steps.some(([k]) => picked.has(k) && (targets[k] || []).length > 0);
-  // Разбор шага: почему сегменты взяты и почему остальные не взяты. Показываем
-  // всегда, а не по кнопке: раньше это знание добывалось перебором галочек
-  // в свёрнутом блоке отдельных прогонов, и человек экономил или ломал качество
-  // наугад. Причина рядом с числом и есть замена этой головоломке.
-  const reasonLine = (items, prefix, color) => (items || []).length
+const FULL_RUN_TIP = "Один прогон вместо пяти: перевод → back-check → проверка терминов → ремонт → Medical QA. Порядок фиксирован и важен: терминологию в глоссарий собирает та из двух проверок, что отработала второй; ремонт чинит по находкам обеих; Medical QA идёт последней, чтобы описывать окончательный текст, а не тот, который через шаг перепишут.\n\nПереводит одна модель, проверяют другие — в этом весь смысл: проверка, сделанная той же моделью, что и перевод, независимой не является.\n\nСостав считает сервер и показывает целиком: разверните строку шага, чтобы увидеть, кого он возьмёт и почему пропустит остальных. Готовую проверку он второй раз не оплачивает, а вердикт более сильной модели не даёт перезаписать более слабой — подбирать это галочками вручную больше не нужно.\n\nВ той же строке любой шаг запускается отдельно и по своим галочкам: это способ намеренно перепроверить то, что общий прогон считает сделанным.\n\nЧтобы сузить прогон, отметьте сегменты галочками или включите фильтр. Прогон идёт на сервере — вкладку можно закрыть.";
+
+/* ── Составной прогон: одна таблица на весь конвейер ───────────────────────
+   Шаги, их модели, состав, цена и запуск по отдельности — в одном месте.
+   Раньше это жило в двух: большая кнопка здесь, а галочки «что проверять» —
+   в свёрнутом блоке «Отдельные прогоны». Скрытый переключатель менял то,
+   что делает главная кнопка, и человек шёл его искать, чтобы не переплатить.
+
+   Строка таблицы отвечает на четыре вопроса сразу: пойдёт ли шаг в общий
+   прогон, какой моделью, сколько сегментов и почём. Развёрнутая строка —
+   на пятый: почему именно столько и как запустить этот шаг отдельно. */
+function StepRow({ row, on, onToggle, open, onOpen, disabled, models }) {
+  const p = row.plan;
+  const est = row.planEst;
+  const cell = (extra) => Object.assign({ padding: "7px 0", alignSelf: "center" }, extra || {});
+  const reasons = (items, prefix, color) => (items || []).length
     ? React.createElement("div", { style: { fontSize: 11.5, lineHeight: 1.55, color: color } },
         prefix + items.map(r => r.count + " " + r.reason).join(" · "))
     : null;
+  return [
+    // ── сама строка: галочка, модель, счёт, цена, раскрытие ──
+    React.createElement("div", { key: row.key + "-name", style: cell({ opacity: on ? 1 : 0.5 }) },
+      React.createElement(Checkbox, { checked: on, onChange: () => onToggle(row.key) },
+        React.createElement("span", null,
+          React.createElement("b", { style: { fontWeight: 600, fontSize: 13 } }, row.label),
+          React.createElement("span", { className: "dim", style: { fontSize: 11.5, display: "block" } },
+            row.hint)))),
+    React.createElement("div", { key: row.key + "-model", style: cell({ opacity: on ? 1 : 0.5 }) },
+      row.onModel
+        ? React.createElement(Select, {
+            value: row.modelId || "", disabled: disabled,
+            onChange: (e) => row.onModel(e.target.value),
+            style: { fontSize: 12.5, maxWidth: 200 } },
+            (models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label)))
+        : React.createElement("span", { className: "dim", style: { fontSize: 12 } }, row.modelNote)),
+    React.createElement("div", { key: row.key + "-n", style: cell({ textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 600, fontSize: 13, opacity: on ? 1 : 0.5, color: (est && est.count) ? "var(--text-1)" : "var(--text-3)" }) },
+      est && est.count ? est.count : "—"),
+    React.createElement("div", { key: row.key + "-c", style: cell({ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 12.5, color: "var(--text-2)", opacity: on ? 1 : 0.5 }) },
+      est && est.count ? (est.cost != null ? fmtCost(est.cost) : "—") : ""),
+    React.createElement("div", { key: row.key + "-x", style: cell({ textAlign: "right" }) },
+      React.createElement(IconBtn, { icon: open ? "chevD" : "chevR", sm: true, size: 16,
+        label: open ? "Свернуть" : "Подробнее и запуск по отдельности",
+        onClick: () => onOpen(open ? null : row.key) })),
+
+    // ── раскрытая строка: причины, опции шага, запуск только его ──
+    open && React.createElement("div", { key: row.key + "-d",
+      style: { gridColumn: "1 / -1", background: "var(--bg-sunken)", borderRadius: 9,
+               padding: "10px 13px", margin: "2px 0 8px", display: "flex",
+               flexDirection: "column", gap: 9 } },
+      p && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 2 } },
+        reasons(p.runs, "в общий прогон: ", "var(--text-2)"),
+        reasons(p.skips, "пропустит: ", "var(--text-3)"),
+        p.note && React.createElement("div", { style: { fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3)" } }, p.note)),
+      row.options,
+      React.createElement("div", { style: { borderTop: "1px solid var(--border)", paddingTop: 9,
+        display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 10, flexWrap: "wrap" } },
+        React.createElement("div", null,
+          React.createElement("div", { style: { fontSize: 12, fontWeight: 600 } }, "Запустить только этот шаг"),
+          React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5, maxWidth: 460 } },
+            row.soloNote || "По отмеченному выше, а не по решению сервера: так перепроверяют то, что общий прогон считает уже сделанным."),
+          React.createElement(EstLine, { est: row.soloEst })),
+        row.running
+          ? React.createElement(Btn, { variant: "ghost", size: "sm", onClick: row.onStop }, "Остановить")
+          : React.createElement(Btn, { variant: "secondary", size: "sm", icon: "zap",
+              onClick: row.onSolo, disabled: disabled || !(row.soloEst && row.soloEst.count) },
+              row.soloEst && row.soloEst.count ? "Запустить: " + row.soloEst.count + " сегм." : "нечего запускать")))
+  ];
+}
+
+function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize,
+                       checked, filtered, est, sameModelWarn, models, disabled,
+                       openStep, onOpenStep, planBusy, planReady }) {
+  const anyWork = rows.some(r => picked.has(r.key) && r.planEst && r.planEst.count > 0);
+  const head = (text, right) => React.createElement("div", {
+    key: "h-" + text, className: "dim",
+    style: { fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em",
+             padding: "0 0 6px", textAlign: right ? "right" : "left",
+             borderBottom: "1px solid var(--border)" } }, text);
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 13, marginBottom: 14, borderLeft: "3px solid var(--c-primary)" } },
 
     React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
@@ -1605,55 +1717,22 @@ function FullRunCard({ running, onRun, onStop, steps, picked, onToggle, targets,
           React.createElement(Icon, { name: "zap", size: 19 })),
         React.createElement("div", null,
           React.createElement("div", { style: { fontWeight: 650, fontSize: 15, display: "flex", alignItems: "center" } }, "Перевести и проверить",
-            React.createElement(InfoTip, { title: "Что делает эта кнопка",
-              body: "Один прогон вместо пяти: перевод → back-check → проверка терминов → ремонт → Medical QA. Порядок фиксирован и важен: терминологию в глоссарий собирает та из двух проверок, что отработала второй; ремонт чинит по находкам обеих; Medical QA идёт последней, чтобы описывать окончательный текст, а не тот, который через шаг перепишут.\n\nПереводит одна модель, проверяют другие — в этом весь смысл: проверка, сделанная той же моделью, что и перевод, независимой не является.\n\nСостав считает сервер и показывает целиком: под каждым шагом написано, кого он возьмёт и почему пропустит остальных. Готовую проверку он второй раз не оплачивает, а вердикт более сильной модели не даёт перезаписать более слабой — подбирать это галочками вручную больше не нужно. Чтобы сузить прогон, отметьте сегменты галочками или включите фильтр.\n\nПрогон идёт на сервере — вкладку можно закрыть." })),
+            React.createElement(InfoTip, { title: "Что делает эта кнопка", body: FULL_RUN_TIP })),
           React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-            "переводит " + (transModel || "—")
-            + (checkModels.length ? " · проверяют " + checkModels.join(" и ") : "")))),
+            "шаги идут по порядку, у каждого своя модель"))),
       React.createElement("span", { className: "dim", style: { fontSize: 12 } },
         "в работу пойдут " + scopeSize + " сегм."
         + (checked > 0 ? " · по галочкам" : filtered ? " · по фильтру" : ""))),
 
     sameModelWarn && React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.5, color: "var(--c-warning)", background: "var(--bg-sunken)", padding: "8px 11px", borderRadius: 8 } },
       "Перевод и проверку делает одна модель. Она не найдёт собственную ошибку — "
-      + "выберите другую модель для back-check, терминов или ремонта ниже."),
+      + "выберите другую модель для back-check, терминов или ремонта."),
 
-    React.createElement("div", { className: "col", style: { gap: 6 } },
-      steps.map(([key, label, hint]) => {
-        const n = (targets[key] || []).length;
-        const on = picked.has(key);
-        const p = (plan || {})[key];
-        return React.createElement("div", { key: key, className: "col", style: { gap: 3, opacity: on ? 1 : 0.5 } },
-          React.createElement("div", { className: "row between", style: { gap: 10, fontSize: 13 } },
-            React.createElement(Checkbox, { checked: on, onChange: () => onToggle(key) },
-              React.createElement("span", null,
-                React.createElement("b", { style: { fontWeight: 600 } }, label),
-                React.createElement("span", { className: "dim", style: { fontSize: 12 } }, " — " + hint))),
-            React.createElement("span", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 600, color: n ? "var(--text-1)" : "var(--text-3)" } },
-              n ? n + " сегм." : "нечего")),
-          on && p && React.createElement("div", { style: { paddingLeft: 26, display: "flex", flexDirection: "column", gap: 2 } },
-            reasonLine(p.runs, "в работу: ", "var(--text-2)"),
-            reasonLine(p.skips, "пропущено: ", "var(--text-3)"),
-            p.note && React.createElement("div", { style: { fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3)" } }, p.note)));
-      })),
-
-    // Выбор моделей прямо здесь, а не в «Отдельных прогонах»: состав проверяющих
-    // определяет качество прогона, и запускать его вслепую нельзя. Переводит одна
-    // модель, проверяют другие — совпадение подсвечивается предупреждением выше.
-    React.createElement("div", { className: "col", style: { gap: 7 } },
-      // Четыре роли — четыре модели. Ремонт стоит дороже всех (правка плюс
-      // перепроверка), и выбирать его вслепую нельзя: раньше он менялся только
-      // в свёрнутом блоке отдельных прогонов, и здесь его не было видно вовсе.
-      [["Переводит", transModelId, onTransModel],
-       ["Back-check", bcModelId, onBcModel],
-       ["Термины", tcModelId, onTcModel],
-       ["Ремонт", rpModelId, onRpModel]].map(([label, value, onChange]) =>
-        React.createElement("div", { key: label, className: "row between", style: { gap: 10 } },
-          React.createElement("span", { className: "dim", style: { fontSize: 12.5, minWidth: 82 } }, label),
-          React.createElement(Select, {
-            value: value || "", onChange: (e) => onChange(e.target.value),
-            style: { fontSize: 12.5, flex: 1, maxWidth: 260 } },
-            (models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label)))))),
+    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "minmax(170px,1fr) auto auto auto auto", columnGap: 12, alignItems: "center" } },
+      head("Шаг"), head("Модель"), head("Сегм.", true), head("≈ цена", true), head(" "),
+      rows.map(r => StepRow({
+        row: r, on: picked.has(r.key), onToggle, models, disabled,
+        open: openStep === r.key, onOpen: onOpenStep }))),
 
     React.createElement(EstLine, { est }),
     React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: -6 } },
@@ -1742,148 +1821,6 @@ function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
           ready ? "Одобрить " + ready + " и применить" : "Однозначных терминов нет"));
 }
 
-function BatchCard({ running, onRun, onStop, available, selectionSize, filtered, checked, models, model, modelInfo, onModel, est }) {
-  // Движок один, поэтому и карточка одна: раньше их было две (Google и GPT),
-  // и сегменты делились между ними по длине — половина проекта оставалась
-  // непереведённой, если запустить не ту.
-  const meta = { icon: "cpu", title: "Только перевод", sub: "без проверок",
-                 note: "Для точечной работы: проверки запускаются отдельно.",
-                 color: "var(--c-purple)", btn: "Перевести",
-                 tipTitle: "Только перевод",
-                 tip: "Переводит выбранной моделью, с глоссарием и памятью переводов в промпте. Проверки не запускает — для полного конвейера есть кнопка «Перевести и проверить»." };
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
-    React.createElement("div", { className: "row", style: { gap: 10 } },
-      React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: meta.color } },
-        React.createElement(Icon, { name: meta.icon, size: 19 })),
-      React.createElement("div", null,
-        React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, meta.title, React.createElement(InfoTip, { title: meta.tipTitle, body: meta.tip })),
-        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, meta.sub))
-    ),
-    React.createElement("p", { className: "muted", style: { fontSize: 13, margin: 0 } }, meta.note),
-
-    // Выбор модели — только у GPT-карточки и только если бэкенд отдал каталог
-    models && models.length > 0 && React.createElement("div", null,
-      React.createElement(Select, {
-        value: model || "", disabled: !!running, style: { width: "100%" },
-        onChange: (e) => onModel && onModel(e.target.value),
-      }, models.map(m => React.createElement("option", { key: m.id, value: m.id },
-        m.label + (m.note ? " — " + m.note : "")))),
-      modelInfo && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 5 } },
-        "Цена за 1M токенов: вход " + fmtCost(modelInfo.in) + " · выход " + fmtCost(modelInfo.out))
-    ),
-
-    React.createElement(EstLine, { est }),
-    running
-      ? React.createElement("div", null,
-          React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
-            React.createElement("span", { className: "muted" }, "Перевод…"),
-            React.createElement("span", { style: { fontWeight: 700 } }, Math.floor(running.done) + "/" + running.total)),
-          React.createElement(ProgressBar, { value: Math.round(running.done / running.total * 100) }),
-          React.createElement("div", { className: "row", style: { justifyContent: "flex-end", marginTop: 8 } },
-            React.createElement(Btn, { variant: "ghost", size: "sm", icon: "x", onClick: onStop }, "Остановить")))
-      : React.createElement("div", { className: "row between" },
-          React.createElement("span", { className: "dim", style: { fontSize: 12 } },
-            // При нуле объясняем причину: «0 доступно (фильтр)» не говорит, почему именно ноль
-            available === 0 && selectionSize > 0
-              ? "0 новых из " + selectionSize + " в выборке"
-              : available + " доступно" + (checked > 0 ? " (" + checked + " выбрано)" : filtered ? " (фильтр)" : "")),
-          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "zap", onClick: onRun, disabled: !available }, meta.btn))
-  );
-}
-
-function BackcheckCard({ running, onRun, onStop, available, done, filtered, models, model, modelInfo, onModel,
-                        judge, onJudge, judgeModel, judgeModelInfo, onJudgeModel, judgeZone,
-                        skipConfirmed, onSkipConfirmed, confirmedCount,
-                        groups, pickedGroups, onToggleGroup, est }) {
-  const zone = judgeZone || [50, 97];
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
-    React.createElement("div", { className: "row", style: { gap: 10 } },
-      React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-info)" } },
-        React.createElement(Icon, { name: "repeat", size: 19 })),
-      React.createElement("div", null,
-        React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, "Back-check",
-          React.createElement(InfoTip, { title: "Обратный перевод и оценка соответствия",
-            body: "Переводит готовый перевод обратно на язык оригинала и сравнивает с исходным текстом: числа, единицы, отрицания, лево-право, сохранность терминов. Выдаёт процент соответствия, разбивка по полосам — во вкладке «Анализ». Для обратного перевода нужна самая буквальная модель: умная незаметно чинит ошибки и прячет их от проверки. Повторный запуск считает только то, где перевод менялся." })),
-        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "Контроль качества перевода"))
-    ),
-    React.createElement("p", { className: "muted", style: { fontSize: 13, margin: 0 } },
-      "Проверяет, что смысл пережил перевод."),
-    models && models.length > 0 && React.createElement("div", null,
-      React.createElement(Select, {
-        value: model || "", disabled: !!running, style: { width: "100%" },
-        onChange: (e) => onModel && onModel(e.target.value),
-      }, models.map(m => React.createElement("option", { key: m.id, value: m.id },
-        m.label + (m.note ? " — " + m.note : "")))),
-      modelInfo && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 5 } },
-        "Цена за 1M токенов: вход " + fmtCost(modelInfo.in) + " · выход " + fmtCost(modelInfo.out))),
-
-    React.createElement("div", { className: "row between", style: { gap: 10 } },
-      React.createElement("div", null,
-        React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center" } },
-          "Пропускать подтверждённые",
-          React.createElement(InfoTip, { title: "Подтверждённые сегменты",
-            body: "По умолчанию back-check проверяет всё, у чего есть перевод, включая подтверждённые: он ничего не перезаписывает, только дописывает оценку рядом. Проверить подтверждённое даже полезнее — если ошибка прошла ревью, узнать об этом важнее всего.\n\nВключите, если подтверждённым переводам доверяете и не хотите тратить на них вызовы модели. На пакетный перевод это не влияет: там подтверждённые не трогаются никогда." })),
-        React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
-          confirmedCount
-            ? (skipConfirmed ? "Исключено из проверки: " + confirmedCount : "Проверяются вместе со всеми: " + confirmedCount)
-            : "В выборке нет подтверждённых")),
-      React.createElement(Switch, { on: !!skipConfirmed, label: "Пропускать подтверждённые",
-        onClick: onSkipConfirmed })),
-
-    React.createElement("div", { className: "row between", style: { gap: 10 } },
-      React.createElement("div", null,
-        React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center" } },
-          "Судья для спорных",
-          React.createElement(InfoTip, { title: "LLM-судья средней зоны",
-            body: "Для сегментов, попавших в середину шкалы (" + zone[0] + "-" + zone[1] + "%), модель отдельно сравнивает оригинал с обратным переводом и решает, подмена это понятия или просто другая формулировка. Подмена роняет балл, подтверждённая эквивалентность — поднимает. Наверху и внизу шкалы судья не вызывается: там вопрос уже решён проверками, платить за подтверждение очевидного незачем.\n\nУ судьи СВОЯ модель, отдельная от модели обратного перевода, и это намеренно: задачи противоположные. Обратному переводу нужна буквальная модель, которая не чинит ошибки; судье — сильная, способная отличить подмену понятия от синонима." })),
-        React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
-          judge ? "Разбирает сегменты в зоне " + zone[0] + "-" + zone[1] + "%" : "Только детерминированные проверки")),
-      React.createElement(Switch, { on: !!judge, label: "Судья", onClick: onJudge })),
-
-    // Своя модель судьи: показываем только когда он включён, чтобы не загромождать
-    judge && models && models.length > 0 && React.createElement("div", null,
-      React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginBottom: 4 } }, "Модель судьи"),
-      React.createElement(Select, {
-        value: judgeModel || "", disabled: !!running, style: { width: "100%" },
-        onChange: (e) => onJudgeModel && onJudgeModel(e.target.value),
-      }, models.map(m => React.createElement("option", { key: m.id, value: m.id },
-        m.label + (m.note ? " — " + m.note : "")))),
-      judgeModelInfo && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 5 } },
-        "Цена за 1M токенов: вход " + fmtCost(judgeModelInfo.in) + " · выход " + fmtCost(judgeModelInfo.out))),
-
-    React.createElement(EstLine, { est }),
-
-    // Что именно проверять: группы «чем уже проверено» с количеством. Одна группа —
-    // выбирать не из чего, не загромождаем карточку.
-    groups && groups.length > 1 && React.createElement("div", {
-      className: "card", style: { padding: "9px 11px", background: "var(--bg-sunken)" } },
-      React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, marginBottom: 6, display: "flex", alignItems: "center" } },
-        "Что проверять",
-        React.createElement(InfoTip, { title: "Повторная проверка",
-          body: "Сегмент, уже проверенный этой же моделью и с тем же переводом, по умолчанию снят с прогона: результат будет тот же, а вызов модели платный. Снимите или верните галочку, чтобы решить самому.\n\nОтдельными группами идут те, у кого проверки ещё не было, и те, чей перевод изменился после проверки, — там старая оценка уже не про этот текст. Если включён судья, сегменты его зоны, проверенные без него, тоже вынесены отдельно." })),
-      groups.map(g => React.createElement("div", {
-        key: g.key, className: "row between", style: { padding: "2px 0" } },
-        React.createElement(Checkbox, {
-          checked: pickedGroups.has(g.key),
-          onChange: () => onToggleGroup(g.key),
-        }, g.label),
-        React.createElement("b", { style: { fontSize: 12.5 } }, g.count)))),
-
-    running
-      ? React.createElement("div", null,
-          React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
-            React.createElement("span", { className: "muted" }, "Обратный перевод…"),
-            React.createElement("span", { style: { fontWeight: 700 } }, Math.floor(running.done) + "/" + running.total)),
-          React.createElement(ProgressBar, { value: Math.round(running.done / running.total * 100) }),
-          React.createElement("div", { className: "row", style: { justifyContent: "flex-end", marginTop: 8 } },
-            React.createElement(Btn, { variant: "ghost", size: "sm", icon: "x", onClick: onStop }, "Остановить")))
-      : React.createElement("div", { className: "row between" },
-          React.createElement("span", { className: "dim", style: { fontSize: 12 } },
-            "к проверке: " + available + " · уже проверено: " + done + (filtered ? " (фильтр)" : "")),
-          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", onClick: onRun, disabled: !available }, "Запустить"))
-  );
-}
-
 // Блок «что прогонять»: группы по состоянию прошлых прогонов с количеством.
 // Одна группа — выбирать не из чего, карточку не загромождаем.
 function RunGroups({ title, tip, groups, pickedGroups, onToggleGroup }) {
@@ -1894,41 +1831,6 @@ function RunGroups({ title, tip, groups, pickedGroups, onToggleGroup }) {
     groups.map(g => React.createElement("div", { key: g.key, className: "row between", style: { padding: "2px 0" } },
       React.createElement(Checkbox, { checked: pickedGroups.has(g.key), onChange: () => onToggleGroup(g.key) }, g.label),
       React.createElement("b", { style: { fontSize: 12.5 } }, g.count))));
-}
-
-function RepairCard({ running, onRun, onStop, available, repaired, filtered, checked, models, model, modelInfo, onModel,
-                     groups, pickedGroups, onToggleGroup, est }) {
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
-    React.createElement("div", { className: "row", style: { gap: 10 } },
-      React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-success)" } },
-        React.createElement(Icon, { name: "repeat", size: 19 })),
-      React.createElement("div", null,
-        React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, "Автоматический ремонт",
-          React.createElement(InfoTip, { title: "Автоматический ремонт",
-            body: "Переписывает перевод по КОНКРЕТНЫМ находкам: потерянные термины, расхождения чисел и единиц, инверсия отрицания, вердикт судьи, кальки с предложенной заменой, а также утверждённые термины глоссария, которых в переводе нет. Не «переведи получше» — модель получает список претензий и правило менять как можно меньше.\n\nВсе проверенные записи глоссария для этого сегмента уходят в промпт целиком, даже если нарушений по ним нет: чиня одно, модель не должна выбить утверждённый термин в другом месте.\n\nПосле правки сегмент перепроверяется теми же проверками, которые ругались. Новый текст остаётся, ТОЛЬКО если оценка не упала, замечаний по терминам не прибавилось и утверждённых терминов не нарушено больше прежнего; иначе — откат, а вариант модели сохраняется для разбора.\n\nСтатус после ремонта — «Требует проверки», не «Подтверждён»: автоправка не заверяет сама себя. Прежний текст хранится и виден в карточке сегмента.\n\nОдин заход на один текст: пока перевод не изменится, повторно чинить нечего." })),
-        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "После проверок"))
-    ),
-    React.createElement(Select, { value: model || "", onChange: (e) => onModel(e.target.value), style: { fontSize: 13 } },
-      (models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label))),
-    modelInfo && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: -4 } },
-      "$" + modelInfo.in + " / $" + modelInfo.out + " за 1M токенов" + (modelInfo.note ? " · " + modelInfo.note : "")),
-    repaired > 0 && React.createElement("div", { style: { fontSize: 12.5, color: "var(--c-success)", fontWeight: 600 } },
-      "Исправлено: " + repaired),
-    React.createElement(EstLine, { est }),
-    React.createElement(RunGroups, { title: "Что чинить", groups, pickedGroups, onToggleGroup,
-      tip: "Сегменты, которые уже проходили ремонт на этом же тексте, по умолчанию сняты: те же претензии дадут тот же результат, а вызов модели платный.\n\nОтметьте группу, чтобы зайти второй раз — например, другой моделью или после того, как одобрили термин в глоссарии.\n\n«Текст менялся после прошлого ремонта» — там прошлая попытка уже не про этот текст, такие сегменты отмечены сразу." }),
-    running
-      ? React.createElement("div", null,
-          React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
-            React.createElement("span", { className: "muted" }, "Чиним и перепроверяем…"),
-            React.createElement("span", { style: { fontWeight: 700 } }, Math.round(running.done) + "/" + running.total)),
-          React.createElement(ProgressBar, { value: Math.round(running.done / running.total * 100) }),
-          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop, style: { marginTop: 8 } }, "Остановить"))
-      : React.createElement("div", { className: "row between" },
-          React.createElement("span", { className: "dim", style: { fontSize: 12 } },
-            available + " с находками" + (checked > 0 ? " (отмечено " + checked + ")" : filtered ? " (фильтр)" : "")),
-          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", onClick: onRun, disabled: !available }, "Починить"))
-  );
 }
 
 // Одобрили термин — старые переводы сами не изменились. Здесь видно, сколько
@@ -1976,68 +1878,6 @@ function GlossaryImpactCard({ impact, busy, onRefresh, onRun, onDrill, includeCo
             busy ? "Считаем…" : "Пересчитать"),
           React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", onClick: onRun, disabled: !targets.length },
             "Перевести заново (" + targets.length + ")"))
-  );
-}
-
-function TermCheckCard({ running, onRun, onStop, available, flagged, filtered, checked, models, model, modelInfo, onModel,
-                        groups, pickedGroups, onToggleGroup, est }) {
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
-    React.createElement("div", { className: "row", style: { gap: 10 } },
-      React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-purple)" } },
-        React.createElement(Icon, { name: "book", size: 19 })),
-      React.createElement("div", null,
-        React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, "Проверка терминологии",
-          React.createElement(InfoTip, { title: "Проверка терминологии",
-            body: "Модель смотрит ТОЛЬКО на перевод и отвечает на вопрос «нормальный ли это термин целевого языка»: кальки, транслитерации, подмены понятия, склеенные обрывки.\n\nЭто не back-check. Back-check спрашивает, пережил ли смысл обратный перевод, и на кальке всегда отвечает «да»: «rear cyclitis» дословно возвращается как «задний циклит» и даёт высокий процент. Такие ошибки видны только прямой проверкой.\n\nТерминология берётся по предметной области проекта, а не по медицине.\n\nНайденные замены попадают в «Глоссарий → Кандидаты»: одобренная пара чинит термин во всех будущих переводах. Повторная проверка считает только то, где перевод менялся." })),
-        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "После перевода"))
-    ),
-    React.createElement(Select, { value: model || "", onChange: (e) => onModel(e.target.value), style: { fontSize: 13 } },
-      (models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label))),
-    modelInfo && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: -4 } },
-      "$" + modelInfo.in + " / $" + modelInfo.out + " за 1M токенов" + (modelInfo.note ? " · " + modelInfo.note : "")),
-    flagged > 0 && React.createElement("div", { style: { fontSize: 12.5, color: "var(--c-warning)", fontWeight: 600 } },
-      "С замечаниями: " + flagged),
-    React.createElement(EstLine, { est }),
-    React.createElement(RunGroups, { title: "Что проверять", groups, pickedGroups, onToggleGroup,
-      tip: "Сегмент, уже проверенный этой же моделью с тем же переводом, по умолчанию снят с прогона: результат будет тот же, а вызов платный. Проверенное ДРУГОЙ моделью отмечено — второе мнение имеет смысл.\n\nОтдельно вынесены те, где замечания были, и те, где их не было: после правок обычно перепроверяют именно первые.\n\n«Нечего проверять» — сегменты без слов или с переводом, совпадающим с оригиналом; они и при повторном прогоне уйдут без вызова модели." }),
-    running
-      ? React.createElement("div", null,
-          React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
-            React.createElement("span", { className: "muted" }, "Проверяем термины…"),
-            React.createElement("span", { style: { fontWeight: 700 } }, Math.round(running.done) + "/" + running.total)),
-          React.createElement(ProgressBar, { value: Math.round(running.done / running.total * 100) }),
-          React.createElement(Btn, { variant: "ghost", size: "sm", icon: "x", onClick: onStop, style: { marginTop: 8 } }, "Остановить"))
-      : React.createElement("div", { className: "row between" },
-          React.createElement("span", { className: "dim", style: { fontSize: 12 } },
-            available + " к проверке" + (checked > 0 ? " (отмечено " + checked + ")" : filtered ? " (фильтр)" : "")),
-          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "book", onClick: onRun, disabled: !available }, "Проверить"))
-  );
-}
-
-function MedicalQACard({ running, onRun, available, filtered, checked, est }) {
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
-    React.createElement("div", { className: "row", style: { gap: 10 } },
-      React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-info)" } },
-        React.createElement(Icon, { name: "shield", size: 19 })),
-      React.createElement("div", null,
-        React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, "Детерминированные проверки",
-          React.createElement(InfoTip, { title: "Детерминированные проверки (Medical QA)",
-            body: "Проверки правилами, без вопросов к модели: совпадение чисел и дозировок, наличие единиц измерения, сохранность отрицания, пары лево/право, внутренний/наружный, верхний/нижний, использование утверждённых терминов глоссария. Даёт risk score.\n\nЧем отличается от back-check: тот сравнивает оригинал с ОБРАТНЫМ переводом и судит о смысле, стоит вызова модели на каждый сегмент и слеп к калькам. Здесь оригинал сравнивается с переводом напрямую по формальным признакам — быстро и без оплаты.\n\nЗапускайте ПОСЛЕ back-check: готовый обратный перевод переиспользуется, и тогда прогон бесплатен целиком. До back-check придётся заказать обратный перевод, и это единственная его платная часть." })),
-        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "Правилами, без вызова модели"))
-    ),
-    React.createElement("p", { className: "muted", style: { fontSize: 13, margin: 0 } },
-      "Числа и дозировки, единицы, отрицание, лево/право, соответствие глоссарию."),
-    React.createElement(EstLine, { est }),
-    running
-      ? React.createElement("div", null,
-          React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
-            React.createElement("span", { className: "muted" }, "Проверяем правилами…"),
-            React.createElement("span", { style: { fontWeight: 700 } }, running.done + "/" + running.total)),
-          React.createElement(ProgressBar, { value: Math.round(running.done / running.total * 100) }))
-      : React.createElement("div", { className: "row between" },
-          React.createElement("span", { className: "dim", style: { fontSize: 12 } },
-            available + " к проверке" + (checked > 0 ? " (отмечено " + checked + ")" : filtered ? " (фильтр)" : "")),
-          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "shield", onClick: onRun, disabled: !available }, "Проверить"))
   );
 }
 

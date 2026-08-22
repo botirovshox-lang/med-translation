@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Сборка справочника RU→EN из Wikidata по понятиям с кодом ICD-10 / ATC / MeSH.
+"""Сборка справочника RU→EN из Wikidata: болезни (ICD-10) и лекарства (ATC).
 
 Зачем именно так
 ────────────────
@@ -186,7 +186,7 @@ def main():
         # данных не доехала.
         out = out.with_name(out.name + ".partial")
     with open(out, "w", encoding="utf-8", newline="\n") as f:
-        f.write("# label: Wikidata — понятия с кодом ICD-10 / ATC / MeSH\n")
+        f.write("# label: Wikidata — болезни (ICD-10) и лекарства (ATC)\n")
         f.write("# lang: RU→EN\n")
         f.write("# domains: medical, pharma\n")
         # tier: auto — метки Wikidata правит сообщество, и выборочная проверка

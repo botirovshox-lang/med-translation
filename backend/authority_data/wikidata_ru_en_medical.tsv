@@ -1,0 +1,3378 @@
+# label: Wikidata — болезни (ICD-10) и лекарства (ATC)
+# lang: RU→EN
+# domains: medical, pharma
+# tier: auto
+# Собрано backend/authority_data/fetch_wikidata.py.
+# Только однозначные в обе стороны пары: если у термина нашлось
+# несколько соответствий, он выброшен — приказ не может быть
+# двусмысленным, такие термины решает человек.
+(+)-псевдоэфедрин	(+)-pseudoephedrine
+(±)-тиопентал	(±)-thiopental
+(−)-эфедрин	(−)-ephedrine
+1-фенил-3-метил-5-пиразолон	edaravone
+17-Гидроксипрогестерон	17α-hydroxyprogesterone
+2-фенилфенол	2-phenylphenol
+4-диметиламинофенол	4-dimethylaminophenol
+4-метилпиразол	fomepizole
+5-гидрокситриптофан	5-HTP
+8-оксихинолин	oxyquinoline
+«бедная симптомами» шизофрения	symptom-depleted schizophrenia
+«лёгкость» головы	lightheadedness
+β-каротин	β-carotene
+γ-линоленовая кислота	gamolenic acid
+Абакавир	abacavir
+Абакавир/Долутегравир/Ламивудин	abacavir/dolutegravir/lamivudine
+Абакавир/Ламивудин/Зидовудин	abacavir/lamivudine/zidovudine
+аборт	abortion
+абрахия	abrachia
+Абсанс	absence seizure
+абстинентный синдром	drug withdrawal
+абсцесс	abscess
+Абузусная головная боль	medication overuse headache
+аванафил	avanafil
+авария на мотоцикле	motorcycle accident
+авиационный инцидент	aviation accident
+авитаминоз	vitamin deficiency
+автокатастрофа	car collision
+автомобильное самоубийство	vehicular suicide
+Агалактия	Agalactia
+Агомелатин	agomelatine
+Агонист рецепторов вазопрессина	Vasopressin receptor agonist
+агорафобия	agoraphobia
+Агрессивная ангиомиксома	angiomyxoma
+адалимумаб	adalimumab
+Аддисонический криз	adrenal crisis
+Аденовирусная инфекция	adenovirus infection
+Аденозин	adenosine
+аденома	adenoma
+Аденома гипофиза	pituitary adenoma
+Аденома паращитовидной железы	parathyroid adenoma
+аденома простаты	prostatic hypertrophy
+аденома соска	nipple adenoma
+аденома щитовидной железы	thyroid adenoma
+адреналин	epinephrine
+Адренокортикальный рак	adrenocortical carcinoma
+адренокортикотропный гормон	corticotropin
+адренолейкодистрофия	X-linked adrenoleukodystrophy
+Адсорбированная коклюшно-дифтерийно-столбнячная вакцина	DPT vaccine
+ажитация	psychomotor agitation
+азатиоприн	azathioprine
+азацитидин	azacitidine
+азелаиновая кислота	azelaic acid
+Азеластин	azelastine
+Азенапин	asenapine
+азитромицин	azithromycin
+азот	nitrogen
+Азотемия	azotemia
+Азотистые иприты	nitrogen mustard
+азтреонам	aztreonam
+Аймалин	ajmaline
+Акалькулия	acalculia
+Акампросат	acamprosate
+Акантохейлонематоз	acanthocheilonemiasis
+акарбоза	acarbose
+акариазы	acariasis
+Акатизия	akathisia
+Аквагенический зуд	aquagenic pruritus
+аквагенная крапивница	aquagenic urticaria
+акне	acne
+акрания	acrania
+акривастин	acrivastine
+Акридонуксусная кислота	cridanimod
+Акрокефалия	oxycephaly
+акромегалия	acromegaly
+Акропарэстезия	acroparesthesia
+Акроцианоз	acrocyanosis
+актинобациллёз	actinobacillosis
+Актрапид	Actrapid
+Акушерские кровотечения	obstetrical hemorrhage
+Акушерские параличи	Obstetrical brachial plexus palsy
+акушерские родовые осложнения	obstetric labor complication
+акцентуация	accentuation of personality traits
+Алгелдрат	algeldrate
+алексия	visual verbal agnosia
+Алектиниб	alectinib
+алемтузумаб	alemtuzumab
+алимемазин	trimeprazine
+алирокумаб	alirocumab
+Алкалоз	alkalosis
+алкилирующие антинеопластические препараты	alkylating antineoplastic agent
+Алкилсульфонаты	alkyl sulfonate
+алкоголизм	alcoholism
+алкоголь и здоровье	alcohol and health
+Алкогольная болезнь печени	alcoholic liver disease
+алкогольная зависимость	alcohol dependence
+алкогольное опьянение	alcohol intoxication
+алкогольный абстинентный синдром	alcohol withdrawal syndrome
+алкогольный галлюциноз	alcoholic hallucinosis
+алкогольный делирий	delirium tremens
+алкогольный психоз	alcohol-induced psychotic disorder
+аллерген	allergen
+аллергический ринит	seasonal allergic rhinitis
+аллергия	allergy
+Аллергия на арахис	peanut allergy
+Аллергия на никель	nickel allergic contact dermatitis
+Аллобарбитал	allobarbital
+Аллопуринол	allopurinol
+алопеция	alopecia
+алпразолам	alprazolam
+алпренолол	alprenolol
+алпростадил	alprostadil
+Алтретамин	altretamine
+алфентанил	alfentanil
+алфузозин	alfuzosin
+альбендазол	albendazol
+альбинизм	albinism
+Альвеолит	alveolitis
+Альгинат кальция	calcium alginate
+альгиновая кислота	alginic acid
+Альдостерон	aldosterone
+альтеплаза	alteplase
+Альфа-галактозидаза	galactosidase alpha
+Альфа-глутамил-триптофан+Аскорбиновая кислота+Бендазол	cytovir-3
+альфакальцидол	alfacalcidol
+амантадин	amantadine
+Амастия	Amastia
+амбазон	ambazone
+Амбенония хлорид	ambenonium
+Амблиопия	amblyopia
+Амброксол	ambroxol
+Амелобластома	ameloblastoma
+амидохлорид ртути	ammoniatedmercuric chloride
+амикацин	amikacin
+Амилоидоз, связанный с гемодиализом	Haemodialysis-associated amyloidosis
+амилорид	amiloride
+Аминептин	amineptine hydrochloride
+аминогликозиды	aminoglycoside antibiotic
+аминокапроновая кислота	aminocaproic acid
+аминокислота	amino acid
+аминолевулиновая кислота	aminolevulinic acid
+Аминофеназон	aminophenazone
+Аминофенилмасляная кислота	phenibut
+амиодарон	amiodarone
+амисульприд	(RS)-amisulpride
+амитриптилин	amitriptyline
+амлодипин	amlodipine
+амобарбитал	amobarbital
+амоксициллин	amoxicillin
+Аморолфин	amorolfine
+ампициллин	ampicillin
+ампренавир	amprenavir
+ампутант	amputee
+амфеникол	amphenicols
+Амфепрамон	(RS)-diethylpropion
+амфетаминовая зависимость	amphetamine dependence
+анаболические стероиды	anabolic steroid
+анагрелид	anagrelide
+анакинра	anakinra
+анальный зуд	pruritus ani
+ананкастное расстройство личности	obsessive-compulsive personality disorder
+анаплазмоз	anaplasmosis
+Анапластический рак щитовидной железы	anaplastic thyroid cancer
+Анастрозол	anastrozole
+анафилаксия	anaphylaxis
+анафилактический шок	anaphylactic shock
+ангидротическая эктодермальная дисплазия	hypohidrotic ectodermal dysplasia
+Ангина герпетическая	herpangina
+Ангина Людвига	Ludwig's angina
+Ангиодисплазия	angiodysplasia
+ангиома	angioma
+Ангиопротекторы	vasoprotective
+Ангиосаркома	angiosarcoma
+Ангиостронгилёз	angiostrongyliasis
+Андекса	andexanet alfa
+Андриол	testosterone undecanoate
+андрогенная алопеция	androgenic alopecia
+андрогены	androgen
+андрофобия	androphobia
+аневризма	aneurysm
+аневризма брюшной аорты	abdominal aortic aneurysm
+Аневризма грудной аорты	thoracic aortic aneurysm
+аневризмы сосудов головного мозга	intracranial aneurysm
+Анемия при беременности	anemia in pregnancy
+анеуплоидия	aneuploidy
+Анизакидоз	Anisakis
+Анизейкония	aniseikonia
+анизокория	anisocoria
+Анизоцитоз	anisocytosis
+Анилиды	anilides
+Анилэридин	anileridine
+Анирацетам	aniracetam
+Анкилозирующий спондилоартрит	spondyloarthropathy
+анкилостомидозы	ancylostoma duodenale ancylostomiasis
+анксиолитик	anxiolytic
+аномалия волос	hair anomaly
+аномалия опорно-двигательного аппарата	musculoskeletal abnormality
+аномалия стоматогнатической системы	stomatognathic system abnormality
+аномальное медицинская находка	abnormal medical finding
+Анопсия	anopsia
+аноргазмия	anorgasmia
+Анорексигенные средства	anorectic
+анорексия	anorexia
+Аноректальный абсцесс	anorectal abscess
+анорхизм	anorchia
+аносмия	anosmia
+Анофтальмия	anophthalmia
+ансувимаб	MAb114
+антагонист кальция	calcium channel blocker
+Антагонист рецепторов вазопрессина	Vasopressin receptor antagonist
+антагонист серотонина	serotonin antagonist
+Антагонисты пуринов	Purine analogue
+Антацид	antacid
+антигистаминный препарат	histamine antagonist
+антидепрессант	antidepressant
+антидиабетические препараты	anti-diabetic medication
+антидиуретический гормон	arginine vasopressin
+антикоагулянты	anticoagulant
+антималярийный препарат	antimalarial
+антиметаболит	antimetabolite
+антинеопластический препарат	antineoplastic
+Антиперспирант	antiperspirant
+антипротозойные средства	antiprotozoal
+антипсихотический препарат	antipsychotics
+Антирабический иммуноглобулин	rabies immunoglobulin or antiserum
+антисептик	antiseptic
+антитромбические препараты	antithrombotic
+антитромбический фермент	antithrombotic enzyme
+антропофобия	anthropophobia
+анурия	anuria
+апалутамид	apalutamide
+апиксабан	apixaban
+апноэ во сне	sleep apnea
+апоморфин	apomorphine
+апраксия	apraxia
+апремиласт	apremilast
+Апротинин	aprotinin
+Арахнодактилия	arachnodactyly
+Арахноидальная киста	arachnoid cyst
+арахнофобия	arachnophobia
+арахноэнтомоз	arthropod infestation
+Аргентинская геморрагическая лихорадка	Argentine hemorrhagic fever
+Аргироз	argyria
+арипипразол	aripiprazole
+аритмия	heart arrhythmia
+армодафинил	armodafinil
+артемизинин	artemisinin
+артериальная гипертензия	arterial hypertension
+артериальная гипотензия	hypotension
+Артериит	arteritis
+Артериовенозная фистула	arteriovenous fistula
+Артериосклероз Менкеберга	Monckeberg arteriosclerosis
+Артесунат	artesunate
+артралгия	arthralgia
+артропатия	arthropathy
+Асбестовидный лишай	pityriasis amiantacea
+асбестоз	asbestosis
+асептический менингит	aseptic meningitis
+Асистолия	asystole
+асоматогнозия	asomatognosia
+Аспарагиназа	Asparaginase
+Аспергиллома	aspergilloma
+Аспермия	aspermia
+аспирация	foreign body aspiration
+Аспириновая бронхиальная астма	aspirin-exacerbated respiratory disease
+аспоксициллин	aspoxicillin
+астемизол	astemizole
+астматический статус	status asthmaticus
+астробластома	astroblastoma
+астроцитома	astrocytoma
+Асунапревир	asunaprevir
+асфиксия	asphyxia
+асцит	ascites
+атазанавир	atazanavir
+атаксия	ataxia
+Атаксия телеангиэктазия	ataxia telangiectasia
+Атаксия Фридрейха	Friedreich ataxia
+аталурен	ataluren
+Атезолизумаб	atezolizumab
+ателектаз	atelectasis
+атенолол	atenolol
+Атерома	atheroma
+Атерома кожи	sebaceous cyst
+Атетоз	athetosis
+атипичный аутизм	atypical autism
+Атипичный гемолитико-уремический синдром	atypical hemolytic uremic syndrome
+Атовакуон	atovaquone
+атозибан	atosiban
+атомоксетин	atomoxetine
+Атония матки	uterine atony
+аторвастатин	atorvastatin
+атракурия безилат	atracurium besylate
+атрезия влагалища	vaginal atresia
+атропин	atropine
+Атрофический ринит	chronic atrophic rhinitis
+атрофия головного мозга	cerebral degeneration
+аура	aura
+ауранофин	auranofin
+ауротиоглюкоза	aurothioglucose
+Ауротиопрол	aurotioprol
+аутизм	autism
+аутоагрессия	autoaggression
+аутоиммунные заболевания	autoimmune disease
+аутоиммунный тиреоидит	chronic thyroiditis
+Аутотопагнозия	autotopagnosia
+афазия	aphasia
+Афазия Брока	expressive aphasia
+Афазия Вернике	receptive aphasia
+афакия	aphakia
+афлиберцепт	aflibercept
+афония	aphonia
+аффективное расстройство	mood disorder
+ахилия	achylia
+ахлоргидрия	achlorhydria
+Ахолия	Acholia
+ацебутолол	acebutolol
+Ацеклидин	aceclidine
+ацеклофенак	aceclofenac
+Ацеметацин	acemetacin
+Ацерулоплазминемия	aceruloplasminemia
+ацетазоламид	acetazolamide
+ацетат калия	potassium acetate
+ацетат кальция	calcium acetate
+ацетат натрия	sodium acetate
+Ацетат цинка	zinc acetate
+Ацетилсалицилат лизина	Lysine acetylsalicylate
+ацетилсалициловая кислота	aspirin
+ацетилхолин	acetylcholine
+ацетилцистеин	N-acetyl-L-cysteine
+Ацетонемия	ketosis
+ацетофеназин	acetophenazine
+Ацефалия	acephaly
+Ацидоз	acidosis
+ацикловир	aciclovir
+Аэроотит	barotitis
+Аэросинусит	Aerosinusitis
+Аэрофагия	aerophagia
+базалиома	basal-cell carcinoma of the skin
+Базиликсимаб	basiliximab
+базофилия	basophilia
+баклофен	(RS)-baclofen
+бактериальная вакцина	bacterial vaccine
+бактериальная инфекция	bacterial infectious disease
+бактериальный вагиноз	bacterial vaginosis
+бактериемия	bacteremia
+Барбитал	barbital
+Барицитиниб	baricitinib
+баротравма	barotrauma
+Бартонеллёз	Carrion's disease
+бацитрацин	bacitracin a
+бевацизумаб	bevacizumab
+бедаквилин	bedaquiline
+Беджель	bejel
+бездомность	homelessness
+безитрамид	bezitramide
+Безлотоксумаб	bezlotoxumab
+безоар	bezoar
+Бекаплермин	becaplermin
+Бекламид	beclamide
+Беклометазона дипропионат	beclomethasone dipropionate
+бексаротен	bexarotene
+Белимумаб	belimumab
+Белиностат	belinostat
+Бемегрид	bemegride
+Бемипарин натрия	bemiparin
+бендазол	tolazoline
+бендамустин	bendamustine
+бензидамин	benzydamine
+бензилбензоат	benzyl benzoate
+бензиловый спирт	benzyl alcohol
+Бензнидазол	benznidazole
+бензоат натрия	sodium benzoate
+бензодиазепин	benzodiazepine drug
+бензодиазепиновая зависимость	benzodiazepine dependence
+бензоилпероксид	benzoyl peroxide
+бензокаин	benzocaine
+бензонатат	benzonatate
+Бензтропин	benzatropine
+Бенперидол	benperidol
+Бенфотиамин	benfotiamine
+бергаптен	bergapten
+беременность и психоактивные вещества	drugs in pregnancy
+беременность человека	human pregnancy
+Бери-бери	beriberi
+Берлинская лазурь	Prussian blue
+бесплодие	infertility
+бессонница	insomnia
+бета-адреноблокатор	beta blocker
+бетагистин	betahistine
+бетаин	betaine
+бетаксолол	betaxolol
+бетаметазон	betamethasone
+Бигуаниды	biguanide
+бикалутамид	bicalutamide
+биластин	bilastine
+биматопрост	bimatoprost
+биназальная гемианопсия	binasal hemianopsia
+биологическая война	biological warfare
+биотин	biotin
+Бипериден	biperiden
+биполярное аффективное расстройство	bipolar disorder
+биполярное расстройство второго типа	bipolar II disorder
+бисакодил	bisacodyl
+бисопролол	bisoprolol
+Битемпоральная гемианопсия	bitemporal hemianopsia
+бифемелан	bifemelane
+Бифоназол	bifonazole
+блеомицин	bleomycin
+ближневосточный респираторный синдром	Middle East respiratory syndrome
+близорукость	myopia
+Блинатумомаб	blinatumomab
+Блокада ножек пучка Гиса	bundle branch block
+блокада сердца	heart conduction disease
+блуждающая почка	nephroptosis
+бозентан гидрат	bosentan hydrate
+Болезненный половой акт	dyspareunia
+болезни волос	hair diseases
+болезнь «трансплантат против хозяина»	graft-versus-host disease
+Болезнь Абта-Леттерера-Сиве	Letterer–Siwe disease
+Болезнь Александера	Alexander disease
+Болезнь Баттена	juvenile neuronal ceroid lipofuscinosis
+Болезнь Бильшовского — Янского	Jansky–Bielschowsky disease
+Болезнь Блаунта	Blount's disease
+Болезнь Боуэна	Bowen's disease
+болезнь вейперов	vaping-associated pulmonary injury
+Болезнь Иценко — Кушинга	Cushing's disease
+болезнь Кашина — Бека	Kashin–Beck disease
+Болезнь Кинбека	Kienbock's disease
+Болезнь Кирле	Kyrle disease
+Болезнь Кэнэвэн	Canavan disease
+болезнь Лайма	Lyme disease
+болезнь Маркиафавы — Биньями	Marchiafava-Bignami disease
+Болезнь Менкеса	Menkes disease
+болезнь нервной системы	nervous system disease
+Болезнь Отто—Хробака	Protrusio acetabuli
+Болезнь Потта	Pott disease
+болезнь Рейно	Raynaud syndrome
+Болезнь Рота-Бернгардта	meralgia paraesthetica
+болезнь рта	mouth disease
+Болезнь Симмондса	Simmonds' cachexia
+болезнь Стилла	systemic-onset juvenile idiopathic arthritis
+болезнь Уиппла	Whipple disease
+Болезнь Унферрихта — Лундборга	Unverricht-Lundborg syndrome
+болезнь Урбаха-Вите	lipoid proteinosis
+Болезнь Фавра — Ракушо	Favre–Racouchot syndrome
+Болезнь Фарбера	Farber lipogranulomatosis
+болезнь Хантингтона	Huntington's disease
+болезнь Хортона	giant cell arteritis
+болезнь челюсти	jaw disease
+Болезнь Шамберга	Schamberg disease
+Болезнь Шляттера	Osgood-Schlatter's disease
+Болезнь Штаргардта	Stargardt disease
+болезнь Эрдгейма-Честера	Erdheim-Chester disease
+болезнь, вызванная вирусом Эбола	Ebola hemorrhagic fever
+боль	pain
+боль в груди	chest pain
+боль в шее	neck pain
+большой депрессивный эпизод	major depressive episode
+Бопиндолол	bopindolol
+борная кислота	orthoboric acid
+бородавка	wart
+Борозды Бо-Рейля	Beau's lines
+бортезомиб	bortezomib
+борцовское ухо	cauliflower ear
+ботулизм	botulism
+ботулотоксин	botulinum toxin group
+брадикинезия	bradykinesia
+брадипноэ	bradypnea
+Брахидактилия	brachydactyly
+Брахиметатарзия	brachymetatarsia
+бредовая вспышка	bouffée délirante
+бредовое расстройство	delusional disorder
+брекспипразол	brexpiprazole
+брентуксимаб ведотин	brentuximab vedotin
+Бриакинумаб	briakinumab
+бримонидин	brimonidine
+бринзоламид	brinzolamide
+Бродалумаб	brodalumab
+Бромгексин	bromhexine
+Бромелаин	bromelain
+бромиды	bromide
+бромизм	bromism
+Бромизовал	bromisoval
+бромокриптин	bromocriptine
+Бромоприд	bromopride
+бромсульфофталеин	sulfobromophthalein
+бромфенак	bromfenac
+бронхиолит	bronchiolitis
+Бронхиолоальвеолярный рак	in situ pulmonary adenocarcinoma
+Бронхолёгочная дисплазия	bronchopulmonary dysplasia
+Бругиоз	Brugia malayi filariasis
+брюшная беременность	abdominal pregnancy
+брюшной тиф	typhoid fever
+бубонная чума	bubonic plague
+будесонид	budesonide
+Будипин	budipine
+Бульбарный синдром	Bulbar palsy
+буметанид	bumetanide
+бупивакаин	bupivacaine-(RS)
+бупренорфин	buprenorphine
+бупропион	bupropion
+буспирон	buspirone
+бусульфан	busulfan
+бутамират	butamirate
+Бутироксан	butyroxan
+буторфанол	butorphanol
+Буфексамак	bufexamac
+БЦЖ	BCG vaccine
+бэд-трип	bad trip
+Вагинальная перегородка	vaginal septum
+вагинальный кандидоз	vulvovaginal candidiasis
+вагинизм	vaginismus
+вазелиновое масло	liquid paraffin
+вазодилататор	vasodilator agent
+вакцина	vaccine
+Вакцина для профилактики гриппа	influenza vaccine
+вакцина от холеры	cholera vaccine
+вакцина против вируса бешенства	rabies vaccine
+Вакцина против желтой лихорадки	yellow fever vaccine
+вакцина против кори	measles vaccine
+вакцина против оспы	smallpox vaccine
+вакцина против паротита	mumps vaccine
+вакцина против пневмококка	pneumococcal vaccine
+вакцина против полиомиелита	polio vaccine
+вакцина против столбняка	tetanus vaccine
+вакцина против туберкулёза	tuberculosis vaccines
+вакцины против вирусного гепатита	viral hepatitis vaccines
+валацикловир	valacyclovir
+Валбеназин	valbenazine
+валдекоксиб	valdecoxib
+валидол	validol
+Валпромид	Valpromide
+вальпроевая кислота	valproic acid
+вальсартан	valsartan
+ванкомицин	vancomycin
+варденафил	vardenafil
+Варениклин	varenicline
+Варикозное расширение вен желудка	gastric varices
+варусная деформация	genu varum
+варфарин	rac-warfarin
+васкулит	vasculitis
+введение антител	antibody injection
+вдыхание	inhalant use disorder
+Вегетососудистая дистония	neurocirculatory asthenia
+Векурония	vecuronium
+велосипедная авария	bicycle accident
+Велпатасвир/Софосбувир	sofosbuvir/velpatasvir
+вемурафениб	vemurafenib
+венерическая лимфогранулёма	lymphogranuloma venereum
+венетоклакс	venetoclax
+венлафаксин	venlafaxine
+Венозная гипертензия	chronic venous insufficiency
+венозный тромбоз	venous thrombosis
+верапамил	verapamil
+Верруциформный акрокератоз Гопфа	acrokeratosis verruciformis
+вертиго	vertigo
+веснушки	freckle
+Вестронидаза альфа	vestronidase alfa
+ветряная оспа	chickenpox
+видарабин	vidarabine
+Вилдаглиптин	vildagliptin
+винбластин	vinblastine
+Виндесин	vindesine
+Винкамин	vincamine
+винкристин	vincristine
+винный камень	potassium hydrogen tartrate
+Винорелбин	vinorelbine
+Винпоцетин	vinpocetine
+виоформ	clioquinol
+ВИПома	VIPoma
+вирусные вакцины	viral vaccines
+вирусный гепатит	viral hepatitis
+Висмута трикалия дицитрат	bismuth subcitrate
+височная эпилепсия	temporal lobe epilepsy
+висцеральный лейшманиоз	visceral leishmaniasis
+витамин А	vitamin A
+ВИЧ и беременность	HIV and pregnancy
+влагалищное выделение	vaginal discharge
+внелёгочный туберкулёз	extrapulmonary tuberculosis
+внутреннее расстройство	internal derangement
+внутрибольничные инфекции	hospital-acquired infection
+внутриматочная спираль	intrauterine device
+внутримозговое кровоизлияние	cerebral hemorrhage
+Внутриутробная гипоксия	intrauterine hypoxia
+Внутриутробные инфекции	vertically transmitted infection
+внутричерепное кровоизлияние	intracranial hemorrhage
+воглибозе	voglibose
+Водянка оболочек яичка	hydrocele
+Возрастное пятно	age spot
+волдырь	blister
+волчаночный нефрит	lupus nephritis
+волынская лихорадка	trench fever
+вориконазол	voriconazole
+вориностат	vorinostat
+Воронкообразная деформация грудной клетки	pectus excavatum
+вортиоксетин	vortioxetine
+восковая гибкость	waxy flexibility
+враждебность	hostility
+вред от вакцин	vaccine adverse event
+врождённая блокада сердца	congenital heart block
+врожденная деформация конечностей	congenital limb deformity
+врожденная катаракта	congenital cataract
+Врожденная клоака	persistent cloaca
+врождённое метаболическое заболевание	inherited metabolic disorder
+Врождённый клапан задней уретры	posterior urethral valve
+Вторичная катаракта	secondary cataract
+Вторичный гиперальдостеронизм	secondary hyperaldosteronism
+втянутый сосок	inverted nipple
+вуайеризм	voyeurism
+вывих	joint dislocation
+Вывих нижней челюсти	dislocation of jaw
+вывих плеча	dislocated shoulder
+Вывих хрусталика	ectopia lentis
+вывихивающий коленные чашечки	luxating patella
+выделения из соска	nipple discharge
+Выздоровление	convalescence
+вызывающее оппозиционное расстройство	oppositional defiant disorder
+выкидыш	miscarriage
+выпадение матки	uterine prolapse
+выпадение пуповины	umbilical cord prolapse
+высокогорный отек легких	high altitude pulmonary edema
+высотная болезнь	altitude sickness
+габапентин	gabapentin
+Гадодиамид	gadodiamide hydrate
+газовая эмболия	air embolism
+галактоза	galactose
+галакторея	galactorrhea
+галантамин	galantamine
+галитоз	halitosis
+галлюцинация	hallucination
+галлюциноз	hallucinosis
+галоперидол	haloperidol
+галотан	halothane
+Гам-КОВИД-Вак	Gam-COVID-Vac
+Гамартома	hamartoma
+гамма-аминомасляная кислота	γ-aminobutyric acid
+гангрена	gangrene
+Гангрена Фурнье	Fournier gangrene
+ганцикловир	ganciclovir
+Гардасил	Gardasil
+гастроинтестинальная стромальная опухоль	gastrointestinal stromal tumor
+гастроптоз	gastroptosis
+Гвайазулен	guaiazulene
+гвайфенезин	guaifenesin
+гебефреническая шизофрения	disorganized schizophrenia
+гексаметилентетрамин	methenamine
+гексилрезорцин	4-hexylresorcinol
+гексобарбитал	hexobarbital
+Гексопреналин	hexoprenaline
+Гексорал	hexetidine
+гелий	helium
+Гемангиобластома	hemangioblastoma
+Гематоген	hematogen
+гематома	hematoma
+Гематомиелия	haematomyelia
+гематурия	hematuria
+гемепрост	gemeprost
+Гемианопсия	hemianopia
+Геминейрин	clomethiazole
+гемиплегия	hemiplegia
+гемифлоксацин	gemifloxacin
+гемоглобинопатия	hemoglobinopathy
+Гемоперикард	hemopericardium
+Геморрагическая болезнь новорождённых	haemorrhagic disease of the newborn
+Геморрагическая лихорадка	viral hemorrhagic fever
+Геморрагическая лихорадка Крым-Конго	Crimean-Congo hemorrhagic fever
+Геморрагическая лихорадка Марбург	Marburg virus disease
+геморрой	hemorrhoid
+гемоспермия	hematospermia
+Гемоторакс	hemothorax
+гемофилия	hemophilia
+Гемофильная палочка	Haemophilus influenzae
+гемохроматоз	iron overload
+гемтузумаб озогамицин	gemtuzumab ozogamicin
+гемфиброзил	gemfibrozil
+гемцитабин	gemcitabine
+Генитальный герпес	genital herpes
+гентамицин	gentamicin
+гепарин	heparin
+Гепарин-индуцированная тромбоцитопения	heparin-induced thrombocytopenia
+Гепатирикс	Hepatyrix
+Гепатит А	hepatitis A
+гепатомегалия	hepatomegaly
+Гепатоспленомегалия	hepatosplenomegaly
+гепатоцеллюлярная карцинома	hepatocellular carcinoma
+героин	heroin
+Герпес	Herpes labialis
+герпетический кератит	herpes simplex virus keratitis
+Герпетический энцефалит	herpesviral encephalitis
+гестринон	gestrinone
+гетеротопическая беременность	heterotopic pregnancy
+Гетерофория	heterophoria
+гетерохромия	heterochromia
+Гефитиниб	gefitinib
+Гиалуронат натрия	Hyaluronan sodium
+гигантизм	gigantism
+Гигантоклеточная опухоль	giant-cell tumor of bone
+Гигрома	ganglion cyst
+гидралазин	hydralazine
+гидрокарбонат калия	potassium hydrogen carbonate
+гидрокарбонат натрия	sodium bicarbonate
+гидрокодон	hydrocodone
+гидроксид алюминия	aluminum hydroxide
+гидроксид магния	magnesium hydroxide
+гидроксизин	(RS)-hydroxyzine
+гидроксикарбамид	hydroxycarbamide
+гидроксихлорохин	hydroxychloroquine
+Гидроксиэтилкрахмал	hydroxyethyl starch
+гидроксокобаламин	hydroxocobalamin
+гидроксохлорид алюминия	aluminium chlorohydrate
+гидроморфон	hydromorphone
+Гидросальпинкс	Hydrosalpinx
+Гидроторакс	hydrothorax
+гидрохинон	hydroquinone
+гидрохлоротиазид	hydrochlorothiazide
+Гинекомастия	gynecomastia
+гиосциамин	hyoscyamine
+гиперакузия	hyperacusis
+Гипераммонемия	hyperammonemia
+гипервитаминоз	hypervitaminosis
+гиперволемия	hypervolemia
+гипергидратация	water intoxication
+гипергидроз	hyperhidrosis
+Гипердонтия	hyperdontia
+гиперестезия	hyperesthesia
+гиперкалиемия	hyperkalemia
+гиперкапния	hypercapnia
+гиперкинетическое расстройство	hyperkinetic disorder
+гиперлипидемия	hyperlipidemia
+Гипермагниемия	hypermagnesemia
+гипернатриемия	hypernatremia
+Гиперосмолярная диабетическая кома	hyperosmolar hyperglycemic state
+гиперпигментация	hyperpigmentation
+гиперсаливация	hypersalivation
+гиперсексуальность	hypersexuality
+Гипертелоризм	hypertelorism
+Гипертензия беременных	gestational hypertension
+гипертонический криз	malignant hypertension
+гипертония	hypertonia
+Гипертриглицеридемия	hypertriglyceridemia
+Гипертропия	hypertropia
+Гиперурикемия	hyperuricemia
+гиперхолестеринемия	hypercholesterolemia
+гиперчувствительность	hypersensitivity
+гипнопомпическая галлюцинация	hypnopompic hallucination
+Гипоальбуминемия	hypoalbuminemia
+Гипоальдостеронизм	hypoaldosteronism
+Гиповитаминоз А	vitamin A deficiency
+Гиповитаминоз В1	thiamine deficiency
+Гиповитаминоз Е	vitamin E deficiency
+Гиповолемический шок	hypovolemic shock
+гиповолемия	hypovolemia
+Гипогалактия	low milk supply
+гипогликемия	hypoglycemia
+гипогонадизм	hypogonadism
+гиподинамия	sedentary lifestyle
+гипокалиемия	hypokalemia
+гипокальциемия	hypocalcaemia
+гипокортицизм	adrenal insufficiency
+гиполибидемия	hypoactive sexual desire disorder
+Гиполипидемические препараты	ATC code C10
+гипомания	hypomania
+гипонатриемия	hyponatremia
+Гипоплазия (стоматология)	Turner's hypoplasia
+гипопротеинемия	hypoproteinemia
+Гипосмия	hyposmia
+гипостенурия	hyposthenuria
+гипотермия	hypothermia
+гипотиреоз	hypothyroidism
+гипотония	hypotony
+Гипофосфатемический рахит	X-linked hypophosphatemic rickets
+Гипофосфатемия	hypophosphatemia
+гипохлорит натрия	sodium hypochlorite
+Гипохондроплазия	hypochondroplasia
+гирсутизм	hirsutism
+Гистаглобулин	histaglobulin
+гистиоцитоз	histiocytosis
+гистоплазмоз	histoplasmosis
+Гифема	hyphema
+глазная болезнь	vision disorder
+Глазная мигрень	scintillating scotoma
+глазной альбинизм	ocular albinism
+глаукома	glaucoma
+глибенкламид	glyburide
+гликлазид	gliclazide
+гликопептидные антибиотики	glycopeptide antibiotic
+глимепирид	glimepiride
+глиобластома	glioblastoma
+глипизид	glipizide
+глиптины	dipeptidyl peptidase-4 inhibitors
+Глистогонные средства	anthelmintic
+Глифлозины	gliflozins
+глицерин	glycerol
+Глицерофосфат кальция	calcium 2-glycerophosphate
+глицин	glycine
+глицирризиновая кислота	glycyrrhizin
+гломерулопатия	glomerulopathy
+Гломусная опухоль уха	glomus tumor
+глубокий прикус	overbite
+глутатион	glutathione
+глухонемота	deaf-mute
+Глюкагон	glucagon
+Глюкагонома	glucagonoma
+Глюкагоноподобный пептид-1	glucagon-like peptide-1
+глюкоза	glucose
+глюкокортикоид	glucocorticoid
+глюконат кальция	calcium gluconate
+глюцептат кальция	calcium gluceptate
+гнойный менингит	purulent meningitis
+голимумаб	golimumab
+Голова медузы	Caput medusae
+головная боль	headache
+Головная боль напряжения	tension headache
+голод	starvation
+Гоматропин	homatropine
+Гомонимная гемианопсия	homonymous hemianopsia
+Гонадотропин хорионический (лекарственное средство)	Gonadotropin preparations
+Гонадотропные гормоны	gonadotropins
+гонартроз	knee osteoarthritis
+Гормоны гипоталамуса	hypothalamic hormones
+Госпитализм	hospitalism
+Грамицидин	gramicidin D
+Гранулёма	granuloma
+Грибковые кератиты	fungal keratitis
+грипп	influenza
+грыжа	hernia
+Грыжа Шморля	Schmorl's nodes
+гуанетидин	guanethidine
+гуанфацин	guanfacine
+гуаровая камедь	guar gum
+Гумма	gummatous syphilis
+Гуселькумаб	guselkumab
+Гутталакс	sodium picosulfate
+дабрафениб	dabrafenib
+Дазатиниб	dasatinib
+дакарбазин	dacarbazine
+Даклатасвир	daclatasvir
+Даклизумаб	daclizumab
+далбаванцин	dalbavancin
+далтепарин натрия	dalteparin
+дальнозоркость	hyperopia
+даназол	danazol
+дантролен	dantrolene
+Дапаглифлозин	dapagliflozin
+Дапсон	dapsone
+даптомицин	(2R)-daptomycin
+Даратумумаб	daratumumab
+дарунавир	darunavir
+дасабувир	dasabuvir
+даунорубицин	daunorubicin
+двигательное расстройство	movement disorders
+ДВС-синдром	disseminated intravascular coagulation
+ДДТ	DDT
+Дегенеративно-дистрофическое заболевание диска	degenerative disc disease
+дезерпидин	deserpidine
+дезинфицирующее средство	disinfectant
+дезипрамин	desipramine
+дезлоратадин	desloratadine
+дезоксикортикостерон	deoxycorticosterone
+Дезоксихолевая кислота	deoxycholic acid
+дезориентация	disorientation
+Декаметилендиметилментоксикарбонилметиламмония дихлорид	(RS)-decamethoxin hydrochloride
+декомпрессионная болезнь	decompression sickness
+дексаметазон	dexamethasone
+дексамфетамин	dextroamphetamine
+Дексетимид	dexetimide
+Декскетопрофен	dexketoprofen
+Дексмедетомидин	dexmedetomidine
+дексметилфенидат	dexmethylphenidate
+Декспантенол	dexpanthenol
+Декстрапозиция	Overriding aorta
+Декстрометорфан	dextromethorphan
+Декстроморамид	dextromoramide
+декстропропоксифен	dextropropoxyphene
+Делавирдин	delavirdine
+Делафлоксацин	delafloxacin
+делирий	delirium
+дельтаметрин	deltamethrin
+деменция	dementia
+Демиелинизирующие заболевания	demyelinating disease
+демодекоз	demodicosis
+Деперсонализация	depersonalization
+депренил	(±)-deprenyl
+депрессант	depressant
+депрессивное расстройство личности	depressive personality disorder
+Дереализация	derealization
+Дерматансульфат	dermatan sulfate
+дерматоз	skin disease
+Дерматомиозит	dermatomyositis
+дерматотропное средство	dermatologic drug
+Дерматофагоидоз	Dermatophagoides allergy
+Десвенлафаксин	desvenlafaxine
+десквамация	desquamation
+Десмоид	aggressive fibromatosis
+десмопрессин	desmopressin
+Десневая улыбка	gummy smile
+десфлуран	desflurane
+детский тип шизофрении	childhood schizophrenia
+детское ожирение	childhood obesity
+деферазирокс	deferasirox
+дефицит 5-альфа-редуктазы	5-alpha-reductase deficiency
+дефицит гормона роста	growth hormone deficiency
+Дефицит селена	selenium deficiency
+дефицит цинка	zinc deficiency
+деформация стопы	foot deformity
+джетлаг	jet lag
+Джозамицин	josamycin
+диабетическая ангиопатия	diabetic angiopathy
+Диабетическая кома	diabetic coma
+диабетическая нейропатия	diabetic neuropathy
+диабетическая нефропатия	diabetic nephropathy
+диабетическая ретинопатия	diabetic retinopathy
+Диабетический кетоацидоз	diabetic ketoacidosis
+диазепам	diazepam
+диазоксид	diazoxide
+диарея	diarrhea
+Диарея путешественников	traveler's diarrhea
+Диастаз прямых мышц живота	diastasis recti
+диастаза	diastase
+Диацереин	diacerein
+дибутилфталат	dibutyl phthalate
+Дивертикул пищевода	Zenker's diverticulum
+дивертикулёз	diverticulosis
+дивертикулит	diverticulitis
+дигидрокодеин	dihydrocodeine
+дигидротахистерол	dihydrotachysterol
+Дигидротестостерон	dihydrotestosterone
+дигидроэрготамин	dihydroergotamine
+Дигидроэрготоксин	ergoloid mesylate
+дигитоксин	digitoxin
+дигоксин	digoxin
+дидецилдиметиламония хлорид	didecyldimonium chloride
+Дидрогестерон	dydrogesterone
+Диеногест	dienogest
+дизартрия	dysarthria
+дизентерия	dysentery
+дизурия	dysuria
+Диизопропилфторфосфат	isoflurophate
+диклофенак	Diclofenac
+дикумарин	dicumarol
+дилатация камер сердца	dilated cardiac chambers
+дилтиазем	diltiazem
+Димеркапрол	dimercaprol
+Диметиламиноэтанол	deanol
+диметилсульфоксид	dimethyl sulfoxide
+Диметилфталат	dimethyl phthalate
+диметилфумарат	dimethyl fumarate
+динамическая кишечная непроходимость	ileus
+динатрия фолинат	Sodium folinate
+Динутуксимаб	dinutuximab
+Диосмектит	Diosmectite
+Диосмин	diosmin
+Дипилидиоз	Dipylidium caninum infectious disease
+Дипиридамол	dipyridamole
+диплопия	diplopia
+диритромицин	dirithromycin
+Дисгевзия	dysgeusia
+Дисгенезия гонад	gonadal dysgenesis
+Дисгидроз	pompholyx
+дискалькулия	dyscalculia
+дискинезия	dyskinesia
+дискинетическая форма дцп	dyskinetic cerebral palsy
+дислипидемия	lipid metabolism disorder
+Дислокация мозга	brain herniation
+дисменорея	dysmenorrhea
+дисморфомания	delusional dysmorphophobia
+дисморфофобия	body dysmorphic disorder
+Дисплазия тазобедренного сустава	hip dysplasia
+Дисплазия шейки матки	cervical intraepithelial neoplasia
+диспрозий	dysprosium
+диссоциальное расстройство личности	antisocial personality disorder
+Диссоциативная амнезия	dissociative amnesia
+Диссоциативная фуга	dissociative fugue
+диссоциативное расстройство	dissociative disorder
+Диссоциативные конвульсии	psychogenic non-epileptic seizures
+дистальный прикус	overjet
+Дистигмина бромид	distigmine bromide
+дистимия	dysthymic disorder
+Дистихиаз	distichia
+дистония	dystonia
+дистресс плода	fetal distress
+Дистрофия колбочек	cone dystrophy
+Дистрофия роговицы	corneal dystrophy
+дисульфид селена	selenium disulfide
+дисульфирам	disulfiram
+Дисфагия	dysphagia
+дисфония	dysphonia
+дисфункциональное маточное кровотечение	abnormal uterine bleeding
+дитирозин	nitrendipine
+диуретик	diuretic
+Дифаллия	diphallia
+дифенгидрамин	diphenhydramine
+Дифеноксин	difenoxin
+дифлунисал	diflunisal
+дифтерия	diphtheria
+дицикломин	dicyclomine
+Диэтиламинопропионилэтоксикарбониламинофенотиазин	ethacizine
+диэтиловый эфир	diethyl ether
+Диэтилстильбестрол	diethylstilbestrol
+диэтилтолуамид	diethyltoluamide
+Дневная слепота	hemeralopia
+доброкачественное новообразование кожи	skin benign neoplasm
+Доброкачественное позиционное пароксизмальное головокружение	benign paroxysmal positional nystagmus
+Добутамин	(RS)-dobutamine
+додекафторпентан	perfluoropentane
+Докозанол-1	docosanol
+доксазозин	doxazosin
+доксепин	cidoxepin
+доксиламин	doxylamine
+доксициклин	doxycycline
+доксорубицин	doxorubicin
+Доласетрон	dolasetron
+долгосрочные эффекты бензодиазепинов	long-term effects of benzodiazepines
+Долихокефалия	dolichocephaly
+Долихоколон	dolichocolon
+долутегравир	dolutegravir
+домашнее насилие	domestic violence
+домперидон	domperidone
+донепезил	donepezil
+дополнительное ребро	extra rib
+Доравирин	doravirine
+дорзоламид	dorzolamide
+дорожно-транспортное происшествие	traffic collision
+Дорсопатия	dorsopathy
+дофамин	dopamine
+дофаминомиметик	dopamine agonist
+доцетаксел	docetaxel
+дроперидол	droperidol
+дротаверин	drotaverine
+другое уточнённое диссоциативное расстройство	dissociative disorder not otherwise specified
+дряхлость	senility
+Дупилумаб	dupilumab
+Дыхание Чейна — Стокса	Cheyne–Stokes respiration
+желатин	gelatin
+Железа глюконат	iron(II) gluconate
+Железодефицитная анемия	iron deficiency anemia
+желтуха	jaundice
+Желудочковая экстрасистолия	premature ventricular contraction
+желудочно-кишечное кровотечение	gastrointestinal bleeding
+Желудочно-кишечные средства	gastrointestinal agent
+желудочное кровотечение	stomach bleeding
+желчнокаменная непроходимость кишечника	gallstone ileus
+жёлчные камни	gallstone
+женское бесплодие	female infertility
+жир печени трески	cod liver oil
+заболевание	illness
+заболевание брюшины	peritoneal disease
+заболевание вегетативной нервной системы	autonomic nervous system disease
+заболевание желудка	stomach disease
+заболевание периферических артерий	peripheral artery disease
+заболевание яичников	ovarian disease
+заболевание, передающиеся половым путём	sexually transmitted infection
+заболевания женской репродуктивной системы	female reproductive system disease
+заболевания мочеполовой системы	genitourinary system disease
+забрюшинное кровотечение	retroperitoneal hemorrhage
+зависимое расстройство личности	dependent personality disorder
+Заглоточный абсцесс	retropharyngeal abscess
+Задержка полового созревания	delayed puberty
+задержка роста плода	intrauterine growth restriction
+заикание	stuttering
+Залеплон	zaleplon
+Заменитель молока	milk substitute
+заместительная гормональная терапия	menopausal hormone therapy
+занамивир	zanamivir
+запах тела	body odor
+затруднённые роды	obstructed labor
+зафирлукаст	zafirlukast
+Зверобой продырявленный	Hypericum perforatum
+зидовудин	zidovudine
+Зиконотид	ziconotide
+Зимелидин	zimelidine
+зипрасидон	ziprasidone
+злокачественная опухоль	cancer
+злокачественный нейролептический синдром	neuroleptic malignant syndrome
+злоупотребление анаболическими андрогенными стероидами	anabolic-androgenic steroids abuse
+злоупотребление веществом	substance abuse
+злоупотребление тианептином	tianeptine abuse
+змеиный укус	snakebite
+золедроновая кислота	zoledronic acid
+золпидем	zolpidem
+Зомепирак	zomepirac
+Зонисамид	zonisamide
+зоофилия	zoophilia
+зоофобия	animal phobia
+зопиклон	zopiclone
+зотепин	zotepine
+зрительная галлюцинация	visual hallucination
+зубная болезнь	dental disease
+зубная боль	toothache
+зуд	itch
+зуклопентиксол	zuclopenthixol
+Ибализумаб	ibalizumab
+Ибандроновая кислота	ibandronic acid
+ибрутиниб	ibrutinib
+ибупрофен	ibuprofen
+ивабрадин	ivabradine
+ивермектин	ivermectin
+идарубицин	idarubicin
+Идаруцизумаб	Idarucizumab
+Идебенон	idebenone
+Идиопатическая гиперсомния	idiopathic hypersomnia
+Идиосинкразическая реакция на лекарство	idiosyncratic drug reaction
+идиот	idiot
+идоксуридин	idoxuridine
+избыточная масса тела	overweight
+изжога	heartburn
+изменение личности	personality change
+изменение текстуры кожи	change in skin texture
+Изоамилнитрит	n-pentyl nitrite
+изокарбоксазид	isocarboxazid
+изониазид	isoniazid
+изопреналин	isoprenaline
+изопропиловый спирт	isopropyl alcohol
+изосорбида динитрат	isosorbide dinitrate
+изосорбида мононитрат	isosorbide mononitrate
+Изоспороз	cystoisosporiasis
+изотретиноин	isotretinoin
+изофлуран	isoflurane
+икота	hiccups
+икотиниб	icotinib
+Иксекизумаб	ixekizumab
+Иксодиоз	tick infestation
+Илоперидон	iloperidone
+иматиниб	imatinib
+имиглюцераза	imiglucerase
+имипрамин	imipramine
+Иммерсионная стопа	immersion foot syndrome
+иммунное расстройство	immune disorder
+иммунодепрессант	immunosuppressive drug
+иммунодефицит	immunodeficiency
+Иммуностимуляторы	immunostimulant
+имунная сыворотка	antiserum
+инвертный сахар	invert sugar
+ингибитор АПФ	ACE inhibitor
+ингибитор моноаминоксидазы	monoamine oxidase inhibitor
+ингибитор протеинкиназ	protein kinase inhibitors
+Ингибиторы нейраминидазы	neuraminidase inhibitor
+ингибиторы фибринолиза	antifibrinolytic
+индапамид	indapamide
+индигокармин	indigotindisulfonate sodium
+индометацин	indomethacin
+Индурация	Induration
+индуцированное бредовое расстройство	folie à deux
+инкатибант	icatibant
+Инклисиран	inclisiran
+Инозин	inosine
+Инозин пранобекс	inosine pranobex
+инозитол	inositol
+инородное тело	foreign body
+Инотузумаб озогамицин	inotuzumab ozogamicin
+инсулин Лиспро	Insulin Lispro
+инсулинома	insulinoma
+интенционный тремор	intention tremor
+Интерлейкины	interleukins
+Интерстициальный нефрит	interstitial nephritis
+Интерферон	interferon
+интоксикационный психоз	substance-induced psychosis
+инфаркт миокарда	myocardial infarction
+Инфаркт мышцы конечности	limb infarction
+инфекционное заболевание	infectious disease
+Инфекционный мононуклеоз	infectious mononucleosis
+инфекционный психоз	infective psychosis
+инфекционный эндокардит	infective endocarditis
+инфекция верхних дыхательных путей	upper respiratory tract infection
+инфестация	infestation
+инфликсимаб	infliximab
+Инфлювак	Influvac
+иодид калия	potassium iodide
+иодоформ	iodoform
+Иопромид	iopromide
+Иохимбин	yohimbine
+ипидакрин	ipidacrine
+ипилимумаб	ipilimumab
+ипохондрическая шизофрения	hypochondriacal schizophrenia
+Ипратропия бромид	ipratropium bromide
+Ипрониазид	iproniazid
+Иридодиализ	Iridodialysis
+иринотекан	irinotecan
+ирит	iritis
+искривление перегородки носа	deviated septum
+истерическое расстройство личности	histrionic personality disorder
+истинный гермафродитизм	true hermaphroditism
+итраконазол	itraconazole
+ифосфамид	ifosfamide
+Ихтиоз	ichthyosis
+ишемическая болезнь сердца	arteriosclerotic heart disease
+Ишемическая оптическая нейропатия задняя	posterior ischemic optic neuropathy
+ишемия мозга	brain ischemia
+ишиас	sciatica
+Йодинол	Iodinolum
+Йододефицит	iodine deficiency
+Йодолипол	ethiodized oil
+Йодсодержащие контрастные препараты	Iodinated contrast
+каберголин	cabergoline
+Кабивен	Kabiven
+казнь через повешение	execution by hanging
+калий	potassium
+кальцитриол	calcitriol
+Кальция добезилат	calcium dobesilate
+Каменноугольная смола	coal tar
+Камостат	camostat
+кампилобактериоз	campylobacteriosis
+камфора	camphor
+Канакинумаб	canakinumab
+Канамицин	kanamycin
+кангрелор	cangrelor
+кандесартан	candesartan
+каннабидиол	cannabidiol
+Капецитабин	capecitabine
+Капиллярит	Capillaritis
+Каплацизумаб	caplacizumab
+Капреомицин	capreomycin
+капсаицин	capsaicin
+Капсикам	Kapsikam
+каптоприл	captopril
+карбамазепин	carbamazepin
+Карбапенемы	carbapenem antibiotic
+Карбахол	carbachol
+карбетоцин	carbetocin
+карбонат кальция	calcium carbonate
+карбонат магния	magnesium carbonate
+карбоплатин	carboplatin
+карбофос	malathion
+Карбункул	carbuncle
+карведилол	carvedilol
+Кардиогенный шок	cardiogenic shock
+Кардиомегалия	cardiomegaly
+кардиомиопатия	cardiomyopathy
+Карельская лихорадка	Pogosta disease
+кариес зубов	Dental caries
+карипразин	cariprazine
+карисопродол	carisoprodol
+карликовость	dwarfism
+Кармустин	carmustine
+карциноид	carcinoid tumor
+карциноидный синдром	carcinoid syndrome
+карцинома	carcinoma
+касторовое масло	castor oil
+каталепсия	catalepsy
+Катаплексия	cataplexy
+кататоническая шизофрения	catatonic schizophrenia
+кататонический синдром	catatonia
+Катафрения	catathrenia
+катин	(+)-norpseudoephedrine
+Кахексия	cachexia
+Квадрантанопия	quadrantanopia
+квазепам	quazepam
+Квассия	Quassia
+квасцы	alum
+Квашиоркор	kwashiorkor
+кверулянтная паранойя	querulous paranoia
+кветиапин	quetiapine
+келоид	keloid
+Кератоглобус	Keratoglobus
+Кератолиз	pitted keratolysis
+кераунопатия	keraunopathy
+кетамин	(RS)-ketamine
+кетансерин	ketanserin
+кетобемидон	ketobemidone
+кетоконазол	ketoconazole
+Кетонурия	ketonuria
+кетопрофен	(RS)-ketoprofen
+кеторолак	ketorolac
+Кетотифен	ketotifen
+Кефалогематома	cephalohematoma
+Кивательный синдром	nodding disease
+кислород	oxygen
+кислородное отравление	oxygen toxicity
+Киста Бейкера	Baker's cyst
+Киста жёлтого тела	corpus luteum cyst
+Киста поджелудочной железы	pancreatic cyst
+Кифоз	abnormal kyphosis
+Кифосколиоз	kyphoscoliosis
+Кишечный каппиляриоз	intestinal capillariasis
+Кишечный миаз	gastrointestinal myiasis
+кладрибин	cladribine
+кларитромицин	clarithromycin
+кластерные головные боли	cluster headache
+клаустрофобия	claustrophobia
+клемастин	clemastine
+кленбутерол	(RS)-clenbuterol
+Клетки Гюртле	Hurthle cell
+клещевая сенсибилизация	dust mite allergy
+Клещевой паралич	tick paralysis
+климакс	climacteric
+клиндамицин	clindamycin
+Клинический анализ мочи	urinalysis
+клинический вампиризм	clinical vampirism
+Клиторомегалия	clitoromegaly
+клобазам	clobazam
+клобетазол	clobetasol
+Клодроновая кислота	clodronic acid
+клозапин	clozapine
+кломипрамин	clomipramine
+клоназепам	clonazepam
+клонидин	clonidine
+Клопидогрел	clopidogrel
+Клоразепат	clorazepic acid
+Клостилбегит	clomifene
+клотиапин	clotiapine
+клотримазол	clotrimazole
+коарктация аорты	coarctation of the aorta
+кобамамид	cobamamide
+кобицистат	cobicistat
+Ковыряние в носу	nose-picking
+кодеин	codeine
+Кожевниковская эпилепсия	epilepsia partialis continua
+Кожная аутосенсибилизация	Autosensitization dermatitis
+Кожный миаз	dermal myiasis
+кокаин	cocaine
+кокаиновая интоксикация	cocaine intoxication
+коклюш	pertussis
+Кокцигодиния	coccydynia
+кокцидиомикоз	coccidioidomycosis
+колестирамин	colestyramine
+колика	colic
+колистин	colistin
+коллаген	collagen
+колоректальный рак	colorectal cancer
+колото-резаная рана	stab wound
+кольпит	vaginitis
+Кольца Кайзера — Флейшера	Kayser–Fleischer ring
+кома	coma
+Комедогенность	acne cosmetica
+Кондуктивная тугоухость	conductive hearing loss
+констриктивный перикардит	constrictive pericarditis
+Консультация по питанию	dietary counselling
+Контрактура	contracture
+Контрактура Дюпюитрена	Dupuytren's contracture
+контрастно-индуцированная нефропатия	contrast-induced nephropathy
+контрастное вещество	contrast agent
+конъюнктивит	conjunctivitis
+копаксон	glatiramer acetate
+копрофилия	coprophilia
+корабельная авария	maritime accident
+корень алтея	althea root
+коронавирусная инфекция	coronavirus disease
+коронавирусы	Coronavirus
+Короткая уздечка языка	ankyloglossia
+кортизол	cortisol
+кортизон	cortisone
+кортикостероиды	corticosteroid
+косметика	cosmetics
+костная резорбция	bone resorption
+костный морфогенетический белок	bone morphogenetic protein
+кофеин	caffeine
+кофеинизм	caffeine dependence
+Краниофарингиома	craniopharyngioma
+крапивница	urticaria
+Крауроз вульвы	kraurosis vulvae
+креатинфосфорная кислота	phosphocreatine
+креозот	creosote
+Кретинизм	cretinism
+Кривошея	torticollis
+Криптококкоз	cryptococcosis
+криптоспоридиоз	cryptosporidiosis
+Криптотия	Cryptotia
+Криптофтальм	cryptophthalmos
+кристаллический фиолетовый	crystal violet
+Кровоизлияние в сетчатку	retinal haemorrhage
+Кровоизлияние в стекловидное тело	vitreous hemorrhage
+кровотечение	bleeding
+кровохарканье	hemoptysis
+Кромоглициевая кислота	cromoglicic acid
+Крофелемер	crofelemer
+Круп	croup
+Крупнобляшечный парапсориаз	Large plaque parapsoriasis
+Ксантелазма	xanthelasma
+ксантин	xanthines
+ксенон	xenon
+ксенон-127	xenon-127
+ксенон-133	xenon-133
+ксеростомия	xerostomia
+Ксилометазолин	xylometazoline
+Куриный клещ	Dermanyssus gallinae
+лабеталол	labetalol
+Лавандовое масло	lavender oil
+Лактитол	lactitol
+лактобациллы	Lactobacillus
+лактостаз	Milk stasis
+Лактулоза	β-lactulose
+Ламеллярный ихтиоз	lamellar ichthyosis
+Ламивудин	lamivudine
+Ламивудин/Зидовудин	lamivudine/zidovudine
+ламотриджин	lamotrigine
+лансопразол	lansoprazole
+лапатиниб	lapatinib
+Лаппаконитина гидробромид	lappaconitine hydrobromide
+ларингит	laryngitis
+Ларингоспазм	laryngospasm
+латанопрост	latanoprost
+латентная шизофрения	latent schizophrenia
+Латентный туберкулёз	latent tuberculosis
+Латиризм	lathyrism
+Латродектизм	Latrodectism
+лаурилсульфат натрия	sodium lauryl sulfate
+Левамизол	levamisole
+Левацетилметадол	levomethadyl acetate
+Левобупивакаин	levobupivacaine
+леводопа	levodopa
+Леводропропизин	levodropropizine
+Левокарнитин	carnitine
+левомепромазин	levomepromazine
+левоноргестрел	levonorgestrel
+Левосимендан	levosimendan
+левосульпирид	levosulpiride
+левофлоксацин	levofloxacin
+левоцетиризин	levocetirizine
+легастения	dysorthography
+лёгочный сурфактант	pulmonary surfactant
+Лёгочный талькоз	pneumoconiosis due to talc
+лёгочный фиброз	pulmonary fibrosis
+Лейкодистрофия	leukodystrophy
+Лейконихия	leukonychia
+Лейкоплакия	leukoplakia
+Лейкоцитоз	leukocytosis
+Лейкоцитурия	pyuria
+лейомиома	leiomyoma
+лекарственная аллергия	drug allergy
+леналидомид	(RS)-lenalidomide
+лефлуномид	leflunomide
+лечение облысения	management of baldness
+Лиганды рецептора инсулина	insulin analog
+лидокаин	lidocaine
+лиздексамфетамин	lisdexamfetamine
+Лизергол	lisuride
+лизиноприл	lisinopril
+Лизосомные болезни накопления	lysosomal storage disease
+лимонная кислота	citric acid
+лимфаденопатия	lymphadenopathy
+лимфатическая мальформация	vascular malformation
+лимфома	lymphoma
+лимфома Беркитта	Burkitt lymphoma
+Лимфома щитовидной железы	thyroid lymphoma
+Лимфостаз	lymphedema
+Лимфоцитарная инфильтрация Джесснера–Канофа	cutaneous lymphoid hyperplasia
+Лимфоцитоз	lymphocytosis
+линаглиптин	linagliptin
+Линаклотид	linaclotide
+Лингватулёз	Linguatulosis
+линезолид	linezolid
+линкозамиды	lincosamides
+линкомицин	lincomycin
+липоевая кислота	(RS)-thioctic acid
+Липома	lipoma
+Липотропные препараты	lipotropic
+литейная лихорадка	metal fume fever
+лихорадка	fever
+лихорадка денге	dengue fever
+Лихорадка Западного Нила	West Nile fever
+Лихорадка Зика	Zika fever
+Лихорадка неясного генеза	fever of unknown origin
+лихорадка от кошачьих царапин	cat-scratch disease
+Лихорадка паппатачи	phlebotomus fever
+Лобно-височная деменция	frontotemporal dementia
+ловастатин	lovastatin
+логорея	logorrhea
+ложная беременность	false pregnancy
+лозартан	losartan
+локсапин	loxapine
+Локсосцелизм	loxoscelism
+ломефлоксацин	lomefloxacin
+Ломустин	lomustine
+Лонидамин	lonidamine
+Лоперамид	loperamide
+Лопинавир/Ритонавир	lopinavir/ritonavir
+лоразепам	lorazepam
+лоратадин	loratadine
+Лорноксикам	lornoxicam
+Лубипростон	lubiprostone
+лудомания	problem gambling
+Лумиракоксиб	lumiracoxib
+луразидон	lurasidone
+лучевая болезнь	radiation sickness
+Лучевой ожог	radiation burn
+льняное семя	flaxseed
+люмбаго	lower back pain
+мазохистическое расстройство личности	self-defeating personality disorder
+макроглобулинемия Вальденстрёма	Waldenström macroglobulinemia
+Макроглоссия	macroglossia
+Макропсия	macropsia
+Макроцефалия	macrocephaly
+макулярная эдема	macular retinal edema
+Мальабсорбция	malabsorption
+Мальабсорбция фруктозы	fructose malabsorption
+Мальформация Арнольда — Киари	Arnold-Chiari malformation
+малярия и беременность	pregnancy-associated malaria
+Мангафодипир	mangafodipir
+маниакальный синдром	mania
+маниакальный эпизод	manic episode
+Манносульфан	mannosulfan
+мантийноклеточная лимфома	mantle cell lymphoma
+мапротилин	maprotiline
+Маравирок	maraviroc
+Марсельская лихорадка	boutonneuse fever
+масса в грудной клетке	mass in chest
+Мастит	mastitis
+материнская смертность	maternal death
+Матка Кувелера	Couvelaire uterus
+маточное кровотечение	vaginal bleeding
+Мебгидролин	mebhydrolin
+Мебеверин	mebeverine
+Мебендазол	mebendazole
+Мебикар	Mebicar
+мегалобластная анемия	megaloblastic anemia
+мегауретер	megaureter
+мегестрол ацетат	megestrol acetate
+Медазепам	medazepam
+медроксипрогестерон	medroxyprogesterone
+Медуллярный рак щитовидной железы	thyroid medullary carcinoma
+Межпозвоночная грыжа	spinal disc herniation
+Межрёберная невралгия	intercostal neuralgia
+Мезаденит	mesenteric adenitis
+Меклофеноксат	meclofenoxate
+Мекониевый илеус	meconium ileus
+меланома	melanoma
+Меларсопрол	melarsoprol
+мелатонин	melatonin
+мелена	melena
+мелоксикам	meloxicam
+мелореостоз	melorheostosis
+мелфалан	melphalan
+Мельдоний	meldonium
+мемантин	memantine
+менадион	menadione
+менингизм	meningism
+менингококковая вакцина	meningococcal vaccine
+Менингококковая инфекция	meningococcal disease
+менопауза	menopause
+менопаузальные и постменопаузальные расстройства	menopausal and postmenopausal disorder
+меноррагия	menorrhagia
+менструальное расстройство	menstrual disorder
+Мепакрин	quinacrine
+Мепартрицин	mepartricin
+Мепивакаин	mepivacaine
+Меполизумаб	mepolizumab
+мепробамат	meprobamate
+Мептазинол	meptazinol
+меркаптопурин	mercaptopurine
+меркурохром	merbromin
+меропенем	meropenem
+Меропенем/Ваборбактам	meropenem/vaborbactam
+мертворождаемость	stillbirth
+Мертиолят	thiomersal
+месалазин	mesalazine
+месоридазин	mesoridazine
+Местеролон	mesterolone
+местный анестетик	local anesthetic
+метаболический алкалоз	metabolic alkalosis
+метаболический ацидоз	metabolic acidosis
+метаболическое заболевание	metabolic disease
+метадон	(RS)-methadone
+Метаквалон	methaqualone
+метамизол натрия	metamizole sodium
+Метандиенон	methandrostenolone
+метастазы в костях	bone metastasis
+Метастронгилёз	metastrongylosis
+метатарзалгия	metatarsalgia
+метеоризм	tympanites
+метилдопа	methyldopa
+метиленовый синий	methylene blue
+метилкобаламин	methylcobalamin
+Метилналтрексона бромид	methylnaltrexone bromide
+Метилоксипропилцеллюлоза	hypromellose
+метилпентинол	meparfynol
+метилпреднизолон	methylprednisolone
+метилтестостерон	methyltestosterone
+метилфенидат	methylphenidate
+метилцеллюлоза	methyl cellulose
+Метилэргометрин	methylergonovine
+Метисазон	metisazone
+Метисергид	methysergide
+метициллин	methicillin
+Метогекситал	methohexital
+метокарбамол	methocarbamol
+метоклопрамид	metoclopramide
+Метоксифлуран	methoxyflurane
+метопимазин	metopimazine
+метопролол	(RS)-metoprolol
+метотрексат	methotrexate
+Метрелептин	metreleptin
+метронидазол	metronidazole
+метформин	metformin
+мефенамовая кислота	mefenamic acid
+Мефенорекс	mefenorex
+мефлохин	mefloquine
+Мехлоретамин	mechlorethamine
+миалгия	myalgia
+миансерин	(RS)-mianserin
+мибефрадил	mibefradil
+мивакурия хлорид	mivacurium
+мигрень	migraine
+мидазолам	midazolam
+Мидекамицин	midecamycin
+Мидодрин	midodrine
+мидриаз	mydriasis
+Миелит	myelitis
+миелодиспластический синдром	myelodysplastic syndrome
+мизопростол	misoprostol
+Микафунгин	micafungin
+микоплазма	Mycoplasma
+Микропсия	micropsia
+микроскопический полиангиит	microscopic polyangiitis
+Микростомия	microstomia
+Микротия	microtia
+Микседематозная кома	Myxedema coma
+миксома сердца	myxoma
+Милиум	Milium
+Милнаципран	milnacipran
+милтефозин	miltefosine
+Минамата	Minamata disease
+Миндальная кислота	(RS)-mandelic acid
+минералокортикоид	mineralocorticoid
+миноксидил	minoxidil
+миноциклин	minocycline
+Миоглобинурия	myoglobinuria
+миоз	miosis
+Миокимия	myokymia
+Миоклония	myoclonus
+миорелаксанты	muscle relaxant
+Миотония	myotonia
+миристилсульфат	myristyl sulfate
+миртазапин	mirtazapine
+митоксантрон	mitoxantrone
+митомицин	mitomycins
+митотан	(RS)-mitotane
+мифепристон	mifepristone
+Младенческая колика	baby colic
+многоплодная беременность	multiple pregnancy
+Многоформная экссудативная эритема	erythema multiforme
+Множественная эндокринная неоплазия	multiple endocrine neoplasia
+множественные отклонения	multiple abnormalities
+модафинил	modafinil
+Мозжечковая атаксия	cerebellar ataxia
+моклобемид	moclobemide
+моксифлоксацин	moxifloxacin
+моксонидин	moxonidine
+молоткообразная деформация пальцев стопы	hammer toe
+молочная болезнь Педжета	mammary Paget's disease
+Молочная смесь	infant formula
+Мометазон	mometasone furoate
+Монгольское пятно	Mongolian spot
+монобензон	monobenzone
+Моноклональная гаммапатия	monoclonal gammopathy
+монокулярная диплопия	monocular diplopia
+Монорхизм	Monorchism
+моносомия	monosomy
+Монофторофосфат натрия	sodium monofluorophosphate
+Моноцитоз	monocytosis
+монтелукаст	montelukast
+морская болезнь	seasickness
+морфин	morphine
+моторное расстройство	motor disorder
+мочевина	urea
+моэксиприл	moexipril
+Мраморность кожи	cutis marmorata telangiectatica congenita
+муковисцидоз	cystic fibrosis
+муколипидоз	mucolipidosis
+Муколитические средства	mucolytic
+мукормикоз	mucormycosis
+мультисистемная атрофия	multiple system atrophy
+мупироцин	mupirocin
+мушки летающие	floater
+мышечная атрофия	muscle atrophy
+мышечная гипотония	hypotonia
+Мышечная дистрофия Беккера	Becker muscular dystrophy
+Наботова киста	Nabothian cyst
+набуметон	nabumetone
+Надифлоксацин	nadifloxacin
+надолол	nadolol
+Назальный миаз	nasopharyngeal myiasis
+назофарингит	nasopharyngitis
+налбуфин	nalbuphine
+Налдемедин	naldemedine
+налидиксовая кислота	nalidixic acid
+Налмефен	nalmefene
+Налоксегол	naloxegol
+налоксон	naloxone
+налорфин	Nalorphine
+налтрексон	naltrexone
+Нандролона деканоат	nandrolone
+Нанофиетоз	Nanophyetiasis
+нападение	assault
+напроксен	naproxen
+наратриптан	naratriptan
+нарколепсия	narcolepsy
+Наркотин	noscapine
+наружный отит	otitis externa
+наруше́ния фетального алкогольного спектра	fetal alcohol spectrum disorders
+нарушение пигментации	pigmentation disorder
+нарушение слуха	deafness
+нарушения зрения	visual impairment
+нарушенное сердцебиение	palpitation
+Наследственная остеодистрофия Олбрайта	Albright's hereditary osteodystrophy
+Наследственный ангионевротический отёк	hereditary angioedema
+наследственный центральный несахарный диабет	hereditary central diabetes insipidus
+насморк	runny nose
+натамицин	natamycin
+Натрия ауротиомалат	gold monosodium thiomalate
+Натрия салицилат	sodium salicylate
+Натрия фосфаты	sodium phosphates
+натуральная оспа	smallpox
+Нафазолин	naphazoline
+Неалкогольная жировая болезнь печени	metabolic dysfunction–associated steatotic liver disease
+небиволол	nebivolol
+Невербальное расстройство обучения	non-verbal learning disorder
+Невирапин	nevirapine
+Невралгия	neuralgia
+неврастения	neurasthenia
+Невринома	neurilemmoma
+невринома слухового нерва	vestibular schwannoma
+неврит	neuritis
+невроз	neurosis
+неврома мортона	Morton's neuroma
+невротическая экскориация	excoriation disorder
+Невус Беккера	Becker's nevus
+невысокий рост	short stature
+Негонококковый уретрит	non-gonococcal urethritis
+недержание кала	fecal incontinence
+недержание мочи	urinary incontinence
+недифференцированная шизофрения	undifferentiated schizophrenia
+недоедание	malnutrition
+недоношенный ребёнок	preterm infant
+недостаточная масса тела	underweight
+Недостаточность конвергенции	convergence insufficiency
+Недостаточность тетрагидробиоптерина	tetrahydrobiopterin deficiency
+Недостаточность трёхстворчатого клапана	tricuspid insufficiency
+нежелательная беременность	unplanned pregnancy
+нежелательное явление	adverse effect
+нейрогенный мочевой пузырь	neurogenic bladder
+Нейрогенный шок	neurogenic shock
+Нейромиотония	neuromyotonia
+Нейросифилис	neurosyphilis
+Нейрофиброма	neurofibroma
+Некомпактный миокард левого желудочка	left ventricular noncompaction
+Некротический энтероколит	necrotizing enterocolitis
+некрофилия	necrophilia
+Неларабин	nelarabine
+нельфинавир	nelfinavir
+нематодозы	nematode infection
+Неомицин	neomycin
+неонатальная диарея	neonatal diarrhea
+неоплазия	neoplasm
+неостигмин	neostigmine
+Непафенак	nepafenac
+неправильное предлежание плода	malpresentation of fetus
+нервная анорексия	anorexia nervosa
+нервная булимия	bulimia nervosa
+нервозность	nervousness
+Нерегулярные менструации	Irregular menstruation
+несахарный диабет	diabetes insipidus
+несиндромный редукционный дефект конечности	non-syndromic limb reduction defect
+Несовершенный остеогенез	osteogenesis imperfecta
+Нетарсудил	netarsudil
+неустойчивое расстройство личности	haltlose personality disorder
+нефопам	(RS)-nefopam
+Нефритический синдром	nephritic syndrome
+Нефробластома	nephroblastoma
+нефрогенный несахарный диабет	nephrogenic diabetes insipidus
+нефрогенный синдром неадекватного антидиуреза	nephrogenic syndrome of inappropriate antidiuresis
+нефротоксичность	nephrotoxicity
+неходжкинские лимфомы	non-Hodgkin lymphoma
+Нецитумумаб	necitumumab
+Ниаламид	nialamide
+ниволумаб	nivolumab
+низатидин	nizatidine
+Низко-дифференцированный рак щитовидной железы	poorly differentiated thyroid cancer
+никетамид	nikethamide
+Никлозамид	niclosamide
+Никорандил	nicorandil
+Никоретте	Nicorette
+никотин	nicotine
+никотинамид	niacinamide
+Никотинзаместительная терапия	nicotine replacement therapy
+никотиновая абстиненция	nicotine withdrawal
+никотиновая кислота	nicotinic acid
+никотиновое отравление	tobacco use disorder
+Никофлекс	Nicoflex
+никталопия	night blindness
+никтурия	nocturia
+нилотиниб	nilotinib
+нилутамид	nilutamide
+нимесулид	nimesulide
+нимодипин	nimodipine
+Нимустин	nimustine
+нимфомания	nymphomania
+Нинтеданиб	nintedanib
+нистагм	nystagmus
+Нистатин	nystatin
+нитразепам	nitrazepam
+нитрит натрия	sodium nitrite
+нитроглицерин	nitroglycerin
+Нитроксолин	nitroxoline
+Нитропруссид натрия	nitroprusside
+Нитрофурал	nitrofurazone
+Нитрофурантоин	nitrofurantoin
+Нитчатка Банкрофта	Wuchereria bancrofti
+нифедипин	nifedipine
+Нифлумовая кислота	niflumic acid
+нифуроксазид	nifuroxazide
+Нифуртимокс	nifurtimox
+Ницерголин	nicergoline
+новообразование кожи	skin neoplasm
+Новообразования эндокринной системы	endocrine gland neoplasm
+нозофобия	nosophobia
+номифензин	(RS)-nomifensine
+норадреналин	norepinephrine
+нортриптилин	nortriptyline
+Норфенефрин	norfenefrine
+норфлоксацин	norfloxacin
+норэтистерон	norethisterone
+носовое кровотечение	nosebleed
+Ночной ужас	night horror
+Нусинерсен	nusinersen
+обвитие пуповины	nuchal cord
+обезвоживание	dehydration
+обезглавливание	decapitation
+обетихолевая кислота	obeticholic acid
+Обидоксим	obidoxime chloride
+обинутузумаб	obinutuzumab
+обморок	syncope
+обсессивно-компульсивное расстройство	obsessive-compulsive disorder
+общее расстройство развития	pervasive developmental disorder
+общий симптом	general symptom
+Овуляторный синдром	Mittelschmerz
+огнестрельное ранение	gunshot wound
+одинофагия	odynophagia
+одноглазость	one-eyed
+Однородительская дисомия	uniparental disomy
+одышка	dyspnea
+ожог	burn
+ожог второй степени	second-degree burn
+ожог первой степени	first-degree burn
+ожог пищевода	esophageal burn
+ожог третьей степени	third-degree burn
+Ожог яда многоножки	millipede burn
+озноб	chills
+Окологлоточный абсцесс	parapharyngeal abscess
+Окрелизумаб	ocrelizumab
+оксазепам	oxazepam
+Оксалатная нефропатия	hyperoxaluria
+оксалиплатин	oxaliplatin
+оксапрозин	oxaprozin
+оксациллин	oxacillin
+Окселадин	oxeladin
+оксибутинин	(RS)-oxybutynin
+оксибутират натрия	sodium oxybate
+оксид алюминия	aluminium oxide
+оксид магния	magnesium oxide
+Оксид цинка (фармакология)	zinc oxide topical cream
+оксикодон	oxycodone
+оксикодон/парацетамол	Oxycodone/paracetamol
+оксиметазолин	oxymetazoline
+окситетрациклин	oxytetracycline
+окситоцин	oxytocin
+оксиэтилидендифосфоновая кислота	etidronic acid
+окскарбазепин	oxcarbazepine
+оксолиновая кислота	oxolinic acid
+Окспренолол	oxprenolol
+Октопамин	octopamine
+октреотид	octreotide
+Окулогирные кризы	oculogyric crisis
+оланзапин	olanzapine
+Олафлур	olaflur
+Олеандомицин	oleandomycin
+Олигодендроглиома	oligodendroglioma
+олигоменорея	oligomenorrhea
+олигоурия	oliguria
+омализумаб	omalizumab
+Омега-3-ненасыщенные жирные кислоты	omega-3 fatty acid
+омепразол	omeprazole
+Омнопон	papaveretum
+Омская геморрагическая лихорадка	Omsk hemorrhagic fever
+Омфалит	omphalitis of newborn
+омфалоцеле	omphalocele
+ондансетрон	ondansetron
+онейрофрения	oneirophrenia
+Онихия	nail disease
+Онихокриптоз	ingrown nail
+Онихолизис	onycholysis
+онихомикоз	onychomycosis
+Онихофагия	nail biting
+опиоид	opioid
+опипрамол	opipramol
+опиум	opium
+опоясывающий лишай	herpes zoster
+Опрелость	intertrigo
+оптическая нейропатия	optic nerve disease
+опухоли глаза	ocular cancer
+Опухоли слюнных желёз	salivary gland neoplasm
+Опухоли средостения	mediastinal neoplasm
+опухоль	tumor
+опухоль головы и шеи	head and neck cancer
+Опухоль Клатскина	Klatskin's tumor
+опухоль Крукенберга	Krukenberg tumor
+органический мозговой синдром	organic brain syndrome
+органическое расстройство личности	organic personality disorder
+оритаванцин	oritavancin
+орлистат	orlistat
+оромандибулярная дистония	oromandibular dystonia
+ортостатический коллапс	orthostatic hypotension
+Ортофосфат натрия	trisodium phosphate
+орципреналин	metaproterenol
+осанка	neutral spine
+Осельтамивир	oseltamivir
+осложнения беременности	complications of pregnancy
+Осложнения инфаркта миокарда	myocardial infarction complication
+оспа обезьян	mpox
+Оссифицирующий миозит	myositis ossificans
+Остаточная мембрана зрачка	persistent pupillary membrane
+остаточная шизофрения	residual schizophrenia
+остеоартроз	osteoarthritis
+остеогенная саркома	osteosarcoma
+остеодисплазия	fibrous dysplasia of bone
+остеолиз	osteolysis
+остеома	osteoma
+остеомаляция	osteomalacia
+остеомаляция беременных	osteomalacia in pregnancy
+остеомиелит	osteomyelitis
+остеопения	osteopenia
+Остеофит	osteophyte
+Остеохондрома	osteochondroma
+остеохондропатия	osteochondropathy
+Остеохондропластическая трахеобронхопатия	tracheobronchopathia osteochondroplastica
+острая дыхательная недостаточность	acute respiratory insufficiency
+острая задержка мочи	urinary retention
+острая интоксикация	substance intoxication
+Острая лучевая болезнь	radiation syndrome
+Острая перемежающаяся порфирия	acute intermittent porphyria
+острая почечная недостаточность	acute kidney injury
+Острая реакция на стресс	acute stress reaction
+острый бронхит	acute bronchitis
+Острый гастрит	Acute gastritis
+Острый живот	acute abdomen
+острый коронарный синдром	acute coronary syndrome
+острый лейкоз	acute leukemia
+Острый моноцитарный лейкоз	acute monocytic leukemia
+Острый панмиелоз с миелофиброзом	Acute panmyelosis with myelofibrosis
+Острый простатит	acute prostatitis
+Острый тучноклеточный лейкоз	mast cell leukemia
+Острый эритроидный лейкоз	acute erythroid leukemia
+оталгия	otalgia
+отёк	edema
+Отёк диска зрительного нерва	papilledema
+отёк мозга	cerebral edema
+Отморожение	frostbite
+Отомиаз	aural myiasis
+Отомикоз	otomycosis
+ототоксичность	ototoxicity
+отравление бериллием	acute beryllium poisoning
+отравление грибами	mushroom poisoning
+отравление кадмием	cadmium poisoning
+отравление кобальтом	cobalt poisoning
+Отравление марганцем	manganism
+отравление металлом	metal poisoning
+отравление мышьяком	arsenic poisoning
+отравление никотином	nicotine poisoning
+отравление оловом	tin poisoning
+отравление пестицидами	pesticide poisoning
+отравление ртутью	mercury poisoning
+отравление свинцом	lead poisoning
+отравление стрихнином	strychnine poisoning
+отравление таллием	thallium poisoning
+отравление угарным газом	carbon monoxide poisoning
+отравление фентанилом	fentanyl toxicity
+Отравление фосфорорганическими соединениями	Organophosphate poisoning
+Отравление цианидами	cyanide poisoning
+отравление цинком	zinc toxicity
+отрубевидный лишай	pityriasis versicolor
+отрыжка	burping
+отхаркивающее средство	mucokinetic
+офатумумаб	ofatumumab
+Офтальмомиаз	ophthalmomyiasis
+офтальмоплегия	ophthalmoplegia
+падение	falling
+паклитаксел	paclitaxel
+палбоциклиб	palbociclib
+палиперидон	paliperidone
+Палоносетрон	(3aS)-palonosetron
+памидроновая кислота	pamidronic acid
+ПАНДАС	PANDAS
+Панитумумаб	panitumumab
+паническая атака	panic attack
+паническое расстройство	panic disorder
+Панкреатин	pancreatin
+Панкуроний	pancuronium (cation)
+панобиностат	panobinostat
+Пантетин	pantethine
+пантопразол	pantoprazole
+папаверин	papaverine
+Папазол	papazole
+папилломавирусы человека	human papillomavirus infection
+Папиллярный рак щитовидной железы	papillary thyroid cancer
+пара-аминобензойная кислота	4-aminobenzoic acid
+Пара-аминосалициловая кислота	4-aminosalicylic acid
+парагрипп	human parainfluenza
+паразитарная болезнь	parasitic infectious diseases
+паразитическая пневмония	parasitic pneumonia
+Паралич блокового нерва	fourth cranial nerve palsy
+Паралич Дежерин-Клюмпке	Klumpke paralysis
+Паралич отводящего нерва	abducens nerve palsy
+Паралич сопряжённого взгляда	conjugate gaze palsy
+паральдегид	paraldehyde
+Параметрит	parametritis
+параноидная шизофрения	paranoid schizophrenia
+параноидное расстройство личности	paranoid personality disorder
+параноидный психоз	paranoid psychosis
+паранойя	paranoia
+паранойяльная шизофрения	paranoial schizophrenia
+Парапроктит	Paraproctitis
+Парапротеинемические лейкозы	malignant immunoproliferative disease
+парасомния	parasomnia
+паратиф А	paratyphoid  A
+Паратонзиллярный абсцесс	peritonsillar abscess
+парафрения	paraphrenia
+парацетамол	paracetamol
+парез	paresis
+парекоксиб	parecoxib
+парестезия	paresthesia
+паркинсонизм	parkinsonian syndrome
+пародонтит	periodontitis
+пароксетин	paroxetine
+Пароксизм	paroxysmal attack
+пассивно-агрессивное поведение	passive–aggressive behavior
+пассивно-агрессивное расстройство личности	passive–aggressive personality disorder
+патиромер	patiromer
+Патисиран	patisiran
+Патологическая стираемость зубов	dental abrasion
+патологический перелом	pathologic fracture
+Патологический прикус	malocclusion
+патологическое опьянение	pathological intoxication
+Патомимия	factitious dermatitis
+пахикарпин	(−)-sparteine
+пегилированный интерферон альфа-2а	peginterferon alfa-2a
+пектиновые вещества	pectin
+Пеллагра	pellagra
+Пеллюцидная краевая дегенерация	pellucid marginal degeneration
+Пембролизумаб	pembrolizumab
+пеметрексед	pemetrexed
+пемолин	pemoline
+пемфигус	pemphigus
+Пентагастрин	pentagastrin
+пентазоцин	(-)-pentazocine
+пентаэритриттетранитрат	pentaerythritol tetranitrate
+Пентилентетразол	pentetrazol
+пентобарбитал	(RS)-pentobarbital
+Пентозурия	pentosuria
+пентоксифиллин	pentoxifylline
+Пенфлуридол	penfluridol
+пенцикловир	penciclovir
+Перамивир	peramivir
+Перборат натрия	sodium perborate
+первичная полидипсия	primary polydipsia
+Первичная ювенильная глаукома	primary congenital glaucoma
+первичные иммунодефициты	primary immunodeficiency disease
+первичный амёбный менингоэнцефалит	primary amebic meningoencephalitis
+первичный туберкулёзный комплекс	Ghon's complex
+перголид	pergolide
+передозировка барбитуратом	barbiturate overdose
+передозировка лекарства	drug overdose
+передозировка опиоидами	opioid overdose
+Перелом бедренной кости	femoral fracture
+перелом голени	leg fracture
+Перелом грудины	sternal fracture
+Перелом Джефферсона	Jefferson fracture
+Перелом диафиза бедренной кости	femoral shaft fracture
+Перелом зубовидного отростка	odontoid fracture
+Перелом ключицы	clavicle fracture
+Перелом костей носа	nasal fracture
+перелом костей черепа	skull fracture
+перелом кости	bone fracture
+Перелом лопатки	scapular fracture
+Перелом нижней челюсти	mandibular fracture
+перелом основания черепа	basilar skull fracture
+Перелом палача	hangman's fracture
+Перелом пальцев кисти	finger fracture
+Перелом плюсневых костей	Jones fracture
+Перелом позвоночника	spinal fracture
+Перелом таза	pelvic fracture
+Перелом шейки бедра	hip fracture
+Переломы рёбер	rib fracture
+Переношенная беременность	postterm pregnancy
+Перепонка	webbed toes
+переутомление	fatigue
+Перивентрикулярная лейкомаляция	periventricular leukomalacia
+перикардит	pericarditis
+перикоронит	pericoronitis
+периндоприл	perindopril
+Периоральный дерматит	perioral dermatitis
+Периорбитальной целлюлит	Periorbital cellulitis
+Периостит	periostitis
+перитонит	peritonitis
+периферическая невропатия	peripheral neuropathy
+перициазин	periciazine
+перламутровые папулы	pearly penile papules
+перманганат калия	potassium permanganate
+Перметрин	permethrin
+перо	feather
+пероксид водорода	hydrogen peroxide
+пероксид магния	magnesium peroxide
+Персистенция фетального гемоглобина	Hereditary persistence of fetal hemoglobin
+Пертузумаб	pertuzumab
+перфеназин	perphenazine
+Перфорация гайморовой пазухи	oroantral fistula
+Перфорация желудочно-кишечного тракта	gastrointestinal perforation
+перфорация матки	uterine perforation
+Перфторан	Perftoran
+перхлорат калия	potassium perchlorate
+петехия	petechia
+петидин	pethidine
+Пефлоксацин	pefloxacin
+печёночная колика	biliary colic
+печёночно-сосудистое заболевание	hepatic vascular disease
+пиблокто	piblokto
+Пивмециллинам	amdinocillin pivoxil
+Пивной живот	abdominal obesity
+пидотимод	pidotimod
+пика	pica
+Пиклоксидин	picloxydine
+пилокарпин	pilocarpine
+Пиломатрикома	pilomatrixoma
+Пилороспазм	pylorospasm
+пимавансерин	pimavanserin
+Пимекролимус	pimecrolimus
+пимозид	pimozide
+пинацидил	pinacidil
+пиндолол	pindolol
+пиоглитазон	(RS)-pioglitazone
+Пионефроз	pyonephrosis
+Пипамперон	pipamperone
+Пипекуроний	pipecuronium bromide
+Пипемидовая кислота	pipemidic acid
+пиперазин	piperazine
+пипотиазин	pipotiazine
+пипрадрол	pipradrol
+Пиразинамид	pyrazinamide
+Пиразолон	pyrazolone
+Пирантел	pyrantel
+пирацетам	piracetam
+Пирензепин	pirenzepine
+Пиретрины	pyrethrin
+Пиридоксальфосфат	pyridoxal phosphate
+Пиридоксин	pyridoxine
+пиридостигмина бромид	pyridostigmine
+Пириметамин	pyrimethamine
+Пиритинол	pyritinol
+Пиритрамид	piritramide
+пироксикам	piroxicam
+пиролагния	pyrophilia
+пиромания	pyromania
+Писчий спазм	focal hand dystonia
+Питолизант	pitolisant
+Питьевое золото	colloidal gold
+пищеварительный симптом	digestive sign
+пищевая аллергия	food allergy
+Плагиоцефалия	plagiocephaly
+плазма крови	blood plasma
+Пламенеющий невус	port-wine stain
+пластырь	adhesive bandage
+Платибазия	Platybasia
+Плацентарная недостаточность	placental insufficiency
+плевральный выпот	pleural effusion
+плеврит	pleurisy
+Плеканатид	plecanatide
+плетал	cilostazol
+Плитидепсин	aplidin
+Плоская роговица, тип 2	Cornea plana 2
+Плоскостопие	flat feet
+плохое обращение	abuse
+пневмомедиастинум	pneumomediastinum
+пневмония	pneumonia
+пневмоторакс	pneumothorax
+Пневмоцистис	Pneumocystis
+Повидон	polyvinylpolypyrrolidone
+Повидон-йод	povidone-iodine
+повреждение головы	cranial trauma
+повреждение организма	major trauma
+Повреждения органов грудной клетки	chest trauma
+повязка	dressing
+пограничное расстройство личности	borderline personality disorder
+Подвывих головки лучевой кости	Nursemaid's elbow
+Подкожная эмфизема	subcutaneous emphysema
+Подкорковая атеросклеротическая энцефалопатия	Binswanger's disease
+Подорожник	Psyllium seed husks
+Подострый склерозирующий панэнцефалит	subacute sclerosing panencephalitis
+Подофиллотоксин	podofilox
+подтипы ВИЧ	subtypes of HIV
+Подтяжка груди	mastopexy
+позаконазол	posaconazole
+поздняя дискинезия	tardive dyskinesia
+Позотонические реакции	abnormal posturing
+Пойкилодермия Сиватта	Poikiloderma of Civatte
+Покраснение радужной оболочки	rubeosis iridis
+полиартрит	polyarthritis
+Поливитаминные препараты	multivitamin
+полидиметилсилоксан	polydimethylsiloxane
+полидипсия	polydipsia
+Поликистоз почек	autosomal dominant polycystic kidney
+Поликозанол	Policosanol
+полимастия	accessory breast
+полименорея	polymenorrhea
+Полимиксины	polymyxins
+полимиозит	polymyositis
+Полиморфная световая сыпь	Polymorphous light eruption
+полинаркомания	poly drug use
+Полиноксилин	polynoxylin
+полиорганная недостаточность	multiple organ dysfunction syndrome
+полип	polyp
+полип носа	nasal polyps
+полип тела матки	endometrial polyp
+полип толстой кишки	colorectal polyp
+полисиндактилия	polysyndactyly
+полителия	nubbin
+политравма	polytrauma
+полиурия	polyuria
+полифагия	polyphagia
+полицейское насилие	police violence
+Полиэтиленгликоль	polyethylene glycol
+поллиноз	allergic rhinitis
+помалидомид	pomalidomide
+Понтиакская лихорадка	Pontiac fever
+поперечный миелит	transverse myelitis
+поражение электрическим током	electrical injury
+Порез бумагой	paper cut
+порок развития груди	breast malformation
+Пороцефалёз	porocephaliasis
+Послеродовое кровотечение	postpartum hemorrhage
+Послеродовой психоз	postpartum psychosis
+Послеродовой тиреоидит	postpartum thyroiditis
+послеродовые осложнения	puerperal disorders
+Пост-СИОЗС сексуальная дисфункция	Post-SSRI sexual dysfunction
+Постгеморрагическая анемия	Acute posthemorrhagic anemia
+постковидный синдром	long covid
+постконтузионный синдром	post-concussion syndrome
+Постназальное затекание	post-nasal drip
+посттравматическое стрессовое расстройство	post-traumatic stress disorder
+посттромбофлебитический синдром	post-thrombotic syndrome
+постшизофреническая депрессия	post-schizophrenic depression
+потребление каннабиса	cannabis consumption
+похмелье	hangover
+похудение	weight loss
+Почесуха	prurigo
+почечная колика	renal colic
+Почечнокаменная болезнь	kidney stone disease
+почечноклеточный рак	renal cell carcinoma
+Правастатин	pravastatin
+празиквантел	praziquantel
+празозин	prazosin
+пралидоксим	pralidoxime
+прамипексол	pramipexole
+Прамирацетам	pramiracetam
+прамлинтид	pramlintide
+прасугрель	prasugrel
+прегабалин	pregabalin
+преднизолон	prednisolone
+преднизон	prednisone
+Предникарбат	prednicarbate
+Преднимустин	prednimustine
+преждевременная болезнь Альцгеймера	early-onset Alzheimer's disease
+Преждевременное излитие околоплодных вод	premature rupture of membranes
+преждевременное половое созревание	precocious puberty
+Преждевременное сокращение предсердий	premature atrial contraction
+преждевременное телархе	premature thelarche
+преждевременные роды	preterm birth
+Преноксдиазин	prenoxdiazine
+препарат для лечения ожирения	anti-obesity medication
+препарат платины	platinum-based antineoplastic
+Препараты железа	iron supplement
+препараты лития	lithium
+пресбиопия	presbyopia
+Прилокаин	prilocaine
+примидон	primidone
+приобретённые пороки сердца	heart valve disease
+приобретенный центральный несахарный диабет	acquired central diabetes insipidus
+проблема с цветовосприятием	colour vision deficiency
+прогестерон	progesterone
+Прогнатизм	prognathism
+прокаин	procaine
+прокаинамид	procainamide
+прокарбазин	procarbazine
+промазин	promazine
+прометазин	(±)-promethazine
+проникающая травма	penetrating trauma
+проникающее ранение головы	penetrating head injury
+Пропанидид	propanidid
+пропафенон	(RS)-propafenone
+пропиловый спирт	propyl alcohol
+Пропионат натрия	sodium propionate
+Пропифеназон	propyphenazone
+пропофол	propofol
+пропранолол	propranolol
+простагландины	prostaglandins
+простациклин	prostacyclin
+Простая почечная киста	simple kidney cyst
+простой тип шизофрении	simple-type schizophrenia
+простуда	common cold
+протамины	protamine
+противовирусный препарат	antiviral drug
+Противодиарейные средства	antidiarrhoeal
+противоинфекционное средство	anti-infective agent
+противоопухолевые антибиотики	antineoplastic antibiotics
+противопаркинсоническое средство	antiparkinson
+противоэпилептический препарат	anticonvulsant agent
+противоядие	antidote
+Протионамид	protionamide
+прохлорперазин	prochlorperazine
+прукалоприд	prucalopride
+Псевдоартроз	pseudarthrosis
+Псевдобульбарный синдром	pseudobulbar palsy
+Псевдогипоальдостеронизм	pseudohypoaldosteronism
+псевдокиста поджелудочной железы	pancreatic pseudocyst
+псевдомембранозный энтероколит	pseudomembranous colitis
+Псевдомиксома брюшной полости	pseudomyxoma peritonei
+псевдоневрастенический синдром	pseudoneurasthenic syndrome
+псевдоневротическая шизофрения	pseudoneurotic schizophrenia
+псевдополидистрофия Гурлер	pseudo-Hurler polydystrophy
+псевдопсихопатическая шизофрения	pseudopsychopathic schizophrenia
+Псевдотуберкулёз	Far East scarlet-like fever
+Психалгия	psychogenic pain
+Психастения	psychasthenia
+психические и поведенческие расстройства	mental and behavioural disorders
+психическое расстройство	mental disorder
+психогенная рвота	psychogenic vomiting
+психолептик	psycholeptic
+психологическое насилие	psychological abuse
+психоорганический синдром	psychoorganic syndrome
+психосексуальное расстройство	psychosexual disorder
+психосоматическое заболевание	psychosomatic disease
+психосоциальная карликовость	psychosocial short stature
+психотическая депрессия	psychotic depression
+птеригий	pterygium
+птичий грипп	avian influenza
+пуликоз	pulicosis
+пульпит	pulpitis
+пьянство	binge drinking
+Пятнистая лихорадка Скалистых гор	Rocky Mountain spotted fever
+рабдомиолиз	rhabdomyolysis
+Рабдомиома	rhabdomyoma
+рабдомиосаркома	rhabdomyosarcoma
+рабепразол	(RS)-rabeprazole
+Радиальная нейропатия	radial neuropathy
+Радикулит	radicular pain
+разагилин	rasagiline
+Разница в длине ног	unequal leg length
+Разрыв вращающей манжеты плеча	rotator cuff tear
+разрыв матки	uterine rupture
+разрыв позвоночной артерии	vertebral artery dissection
+Разрыв селезёнки	ruptured spleen
+разрыв сердца	myocardial rupture
+рак дыхательной системы	respiratory system cancer
+рак желудочно-кишечного тракта	gastrointestinal system cancer
+рак жёлчного пузыря	gallbladder cancer
+рак кожи	skin cancer
+рак кости	bone cancer
+рак лёгкого	lung cancer
+рак молочной железы	breast cancer
+рак простаты	prostate cancer
+рак языка	tongue cancer
+ралтегравир	raltegravir
+Рамелтеон	ramelteon
+рамиприл	ramipril
+рана	wound
+ранибизумаб	ranibizumab
+Ранимустин	ranimustine
+ранитидин	ranitidine
+Ранитидина висмута цитрат	Ranitidine bismuth citrate
+расслоение аорты	aortic dissection
+Расслоение коронарной артерии	coronary artery dissection
+расстройства шизофренического спектра	schizophrenia spectrum disorder
+расстройство гендерной идентичности	gender identity disorder
+Расстройство добавочного нерва	accessory nerve disease
+расстройство компульсивного переедания	binge eating disorder
+расстройство личности	personality disorder
+расстройство поведения	behavioral disorder
+расстройство полового созревания	disorder of puberty
+расстройство приёма пищи	eating disorder
+расстройство приспособительных реакций	adjustment disorder
+расстройство психического развития	developmental disorder
+расстройство речи	speech disorder
+расстройство сна	sleep disorder
+раствор перекиси водорода	hydrogen peroxide solution
+Расторможенное расстройство привязанности	disinhibited attachment disorder
+растяжение связок	sprain
+расщепление нёба	cleft lip and cleft palate
+Расщепление позвоночника	spina bifida
+Ратиндан	diphenadione
+Рахисхизис	Rachischisis
+рвота	vomiting
+Реактивное расстройство привязанностей	reactive attachment disorder
+реакция отторжения трансплантата	transplant rejection
+Реакция Яриша — Герксгеймера	Jarisch-Herxheimer reaction
+Ребамипид	rebamipide
+Ребоксетин	(RS,RS)-reboxetine
+Ревматизм	rheumatism
+Ревматическая хорея	Sydenham's chorea
+Ревмокардит	rheumatic heart disease
+регорафениб	regorafenib
+регрессивный аутизм	regressive autism
+резерпин	reserpine
+резорцин	resorcin
+Резус-конфликт	Rh disease
+Ректовагинальный свищ	rectovaginal fistula
+Рекурвация колена	Genu recurvatum
+Ремдесивир	remdesivir
+ремифентанил	remifentanil
+Рениновый рецептор	renin inhibitor
+Реополиглюкин	dextran-40
+Репаглинид	repaglinide
+Реслизумаб	reslizumab
+респираторная аллергия	respiratory allergy
+респираторное заболевание	respiratory disease
+респираторный алкалоз	respiratory alkalosis
+респираторный ацидоз	respiratory acidosis
+Ретапамулин	retapamulin
+Ретикулярная асфиксия	livedo reticularis
+Ретинальная мигрень	retinal migraine
+ретинобластома	retinoblastoma
+ретинол	retinol
+Ретроверсия матки	retroverted uterus
+Ретроградная эякуляция	retrograde ejaculation
+Рибавирин	ribavirin
+рибофлавин	riboflavin
+ривароксабан	rivaroxaban
+ривастигмин	rivastigmine
+риккетсиозы	rickettsiosis
+рилменидин	rilmenidine
+Рилпивирин	rilpivirine
+Рилузол	riluzole
+римантадин	rimantadine
+ринит	rhinitis
+Ринолит	rhinolith
+Ринофима	rhinophyma
+рискованное сексуальное поведение	sexual risk behavior
+рисперидон	risperidone
+ритонавир	ritonavir
+ритуксимаб	rituximab
+рифабутин	rifabutin
+рифаксимин	rifaximin
+рифамицин	rifamycin
+рифампицин	rifampicin
+родильная горячка	puerperal infection
+родимое пятно	birthmark
+родинка	nevus
+родовая травма	physical birth injuries
+розувастатин	rosuvastatin
+Рокситромицин	roxithromycin
+рокуроний	rocuronium
+ромиплостим	romiplostim
+Ромосозумаб	Romosozumab
+росиглитазон	(RS)-rosiglitazone
+ротавирус	Rotavirus
+ротавирусная вакцина	rotavirus vaccine
+ротавирусная инфекция	Rotaviral gastroenteritis
+рофекоксиб	rofecoxib
+рофлумиласт	roflumilast
+рубец	scar
+Рубцовая алопеция	cicatricial alopecia
+Рутозид	rutin
+саквинавир	saquinavir
+сакроилеит	sacroiliitis
+салициламид	salicylamide
+салициловая кислота	salicylic acid
+сальбутамол	rac-salbutamol
+сальметерол	salmeterol
+самоповреждение	self-injury
+самоубийство	suicide
+сарециклин	sarecycline
+Сарилумаб	sarilumab
+саркома Капоши	Kaposi's sarcoma
+саркома кости	bone sarcoma
+саркома Юинга	Ewing sarcoma
+Саркопения	sarcopenia
+Саркопсиллёз	tungiasis
+Сатраплатин	satraplatin
+Сафинамид	safinamide
+сахарный диабет 1-го типа	type-1 diabetes
+сахарный диабет 2-го типа	type 2 diabetes
+светобоязнь	photophobia
+свиной грипп	swine influenza
+связанное с алкоголем расстройство	alcohol-related disorders
+связанное с веществами расстройство	substance-related disorder
+связанные со стрессом расстройства	stress-related disorders
+Сдавление головного мозга	brain compression
+сдавление пуповины	umbilical cord compression
+себорейный дерматит	seborrhoeic dermatitis
+севофлуран	sevoflurane
+Сезонное аффективное расстройство	seasonal affective disorder
+Секнидазол	secnidazole
+Секретин	secretin
+сексуальная девиация	paraphilia
+сексуальное отвращение	sexual aversion
+Секукинумаб	secukinumab
+Селективные модуляторы эстрогенных рецепторов	selective estrogen-receptor modulators
+селективный мутизм	selective mutism
+селенат натрия	sodium selenate
+селенит натрия	sodium selenite
+семаглутид	semaglutide
+семейная история	family medical history
+семейный аденоматозный полипоз	familial adenomatous polyposis
+семинома	seminoma
+Семустин	semustine
+сенестопатическая шизофрения	cenesthopathic schizophrenia
+Сеннозид	senna glycoside
+сепсис	sepsis
+септический шок	septic shock
+Сердечная астма	cardiac asthma
+сердечная недостаточность	heart failure
+сердечно-сосудистые заболевания	cardiovascular disease
+сердечные гликозиды	cardiac glycoside
+Сертаконазол	(RS)-sertaconazole
+сертиндол	sertindole
+сертралин	sertraline
+Сехифенадин	sequifenadine
+сиалидоз	sialidosis type 1
+сиалолипидоз	mucolipidosis type IV
+сиамские близнецы	conjoined twins
+сиблинговое соперничество	sibling rivalry
+сибутрамин	(RS)-sibutramine
+Сигматизм	lisp
+Сигуатера	ciguatera
+силденафил	sildenafil
+Силибинин	silibinin A
+силикат кальция	calcium silicate
+силикон	silicone
+силимарин	silymarin
+симвастатин	simvastatin
+симпатомиметик	sympathomimetic drug
+Симптом барабанных палочек	nail clubbing
+симптом Джейнуэя	Janeway lesion
+Симуляция	malingering
+Синдром активации тучных клеток	mast cell activation syndrome
+синдром Альстрёма	Alström syndrome
+Синдром амниотических перетяжек	amniotic band constriction
+Синдром Аперта	Apert syndrome
+синдром Аспергера	Asperger syndrome
+Синдром Ашермана	adhesions of uterus
+синдром Бенедикта	Benedikt syndrome
+синдром беспокойных ног	restless legs syndrome
+Синдром Варкани	Warkany syndrome 2
+Синдром верхней полой вены	superior vena cava syndrome
+синдром взрывающейся головы	exploding head syndrome
+Синдром Видемана — Раутенштрауха	Wiedemann-Rautenstrauch syndrome
+синдром Вильямса	Williams-Beuren syndrome
+синдром височно-нижнечелюстного сустава	temporomandibular joint syndrome
+синдром внезапной детской смерти	sudden infant death syndrome
+Синдром Гайе — Вернике	Wernicke–Korsakoff syndrome
+синдром Ганзера	Ganser syndrome
+Синдром гиперстимуляции яичников	ovarian hyperstimulation syndrome
+синдром дата	dhat syndrome
+Синдром де Ля Шапеля	XX male syndrome
+Синдром Денни — Марфана	Dennie–Marfan syndrome
+Синдром Дента	Dent disease
+синдром деперсонализации — дереализации	depersonalization-derealization disorder
+Синдром детского сотрясения	shaken baby syndrome
+Синдром длительного сдавления	crush syndrome
+Синдром Жильбера	Gilbert syndrome
+Синдром жировой эмболии	fat embolism
+синдром зависимости	dependence syndrome
+Синдром задержки фазы сна	delayed sleep phase disorder
+синдром Зудека	complex regional pain syndrome
+синдром избитой женщины	battered woman syndrome
+синдром Картагенера	primary ciliary dyskinesia
+синдром качающейся головы куклы	Bobble-head doll syndrome
+синдром Клейне — Левина	Kleine-Levin syndrome
+синдром Клювера — Бьюси	Klüver–Bucy syndrome
+Синдром короткой кишки	short bowel syndrome
+синдром Корсакова	Korsakoff's syndrome
+Синдром кошачьего глаза	cat eye syndrome
+Синдром Лайелла	toxic epidermal necrolysis
+Синдром Ландау — Клеффнера	Landau–Kleffner syndrome
+синдром лекарственной волчанки	drug-induced lupus erythematosus
+Синдром Леннокса-Гасто	Lennox-Gastaut sindrome
+Синдром Лиддла	Liddle syndrome
+Синдром лизиса опухоли	tumor lysis syndrome
+синдром лобной доли	frontal lobe disorder
+Синдром Лоуренса — Муна	Laurence-Moon syndrome
+синдром Мак-Кьюна — Олбрайта	McCune–Albright syndrome
+Синдром Макла — Уэльса	Muckle-Wells syndrome
+Синдром Маллори — Вейсса	Mallory–Weiss syndrome
+Синдром Марото — Лами	mucopolysaccharidosis VI
+Синдром Мартина — Белл	fragile X syndrome
+Синдром Мей-Тернера	May–Thurner syndrome
+Синдром Мейжа	Meige syndrome
+Синдром Мориака	Mauriac syndrome
+Синдром нерасчёсываемых волос	uncombable hair syndrome
+Синдром Нетертона	Netherton syndrome
+Синдром нечувствительности к андрогенам	androgen insensitivity syndrome
+Синдром нижней полой вены	Inferior vena cava syndrome
+синдром отмены бензодиазепина	benzodiazepine withdrawal syndrome
+Синдром Парино	Parinaud's syndrome
+Синдром Педжета — Шрёттера	Paget–Schroetter disease
+Синдром персистирующих мюллеровых протоков	persistent Müllerian duct syndrome
+синдром подвздошно-большеберцового тракта	Iliotibial band syndrome
+Синдром подключичного обкрадывания	subclavian steal syndrome
+синдром поликистозных яичников	polyendocrine metabolic ovarian syndrome
+синдром раннего детского аутизма	classic autism
+Синдром Рейтера	Reiter disease
+Синдром Рейфенштейна	partial androgen insensitivity syndrome
+Синдром Робена	Pierre Robin syndrome
+Синдром Ротора	Rotor syndrome
+синдром Сандхоффа	Sandhoff disease
+Синдром Свита	febrile neutrophilic dermatosis
+синдром снеддона	Sneddon syndrome
+Синдром Стиклера	Stickler syndrome
+Синдром Суайра	XY gonadal dysgenesis
+Синдром Терсона	Terson syndrome
+синдром Туретта	Tourette syndrome
+синдром Уивера	Weaver syndrome
+синдром усталости	malaise and fatigue
+Синдром фокамелии	phocomelia
+синдром Фреголи	Fregoli delusion
+Синдром Хьюза — Стовина	Hughes-Stovin syndrome
+синдром чрезмерного роста	overgrowth syndrome
+синдром чрезмерного роста Косаки	Kosaki overgrowth syndrome
+Синдром Шерешевского — Тёрнера	Turner syndrome
+Синдром Шмидта	autoimmune polyendocrine syndrome type 2
+синефрин	oxedrine
+Синехии половых губ	Labial fusion
+Синехии радужной оболочки	synechia
+Синовит	synovitis
+синтанол	polidocanol
+сиреномелия	sirenomelia
+Сирингомиелия	syringomyelia
+сиролимус	sirolimus
+системная склеродермия	scleroderma
+ситаглиптин	sitagliptin
+Скарабиаз	scarabiasis
+Склеродактилия	sclerodactyly
+склерома	rhinoscleroma
+Скорпионизм	scorpion sting
+скрофулодермия	scrofuloderma
+слуховая галлюцинация	auditory hallucination
+смертная казнь	execution
+смерть мозга	brain death
+смешанное состояние	mixed affective state
+смешанные расстройства личности	mixed personality disorders
+Снарядный шок	shell shock
+снотворные и седативные средства	hypnotics and sedatives
+Содоку	sodoku
+соединение ртути	mercury compound
+соединения кальция	calcium compounds
+соединения селена	selenium compounds
+соединения серы	sulfur compound
+Солифенацин	solifenacin succinate
+солнечный ожог	sunburn
+солнечный удар	heat stroke
+соляная кислота	hydrochloric acid
+соматоформное расстройство	somatic symptom disorder
+сомнамбулизм	sleepwalking
+сонливость	somnolence
+сорафениб	sorafenib
+соталол	sotalol
+сотрясение мозга	concussion
+софосбувир	sofosbuvir
+спазм	spasm
+спарфлоксацин	sparfloxacin
+Спастическая кривошея	cervical dystonia
+спастичность	spasticity
+специфическое расстройство развития	specific developmental disorder
+спинальная мышечная атрофия	spinal muscular atrophies
+спинная сухотка	tabes dorsalis
+Спиноцеребеллярная атаксия	spinocerebellar ataxia
+Спирамицин	spiramycin
+спиронолактон	spironolactone
+спирохетная инфекция	spirochetal diseases
+спленомегалия	splenomegaly
+спондилёз	spondylosis
+спонтанный разрыв пищевода	Boerhaave syndrome
+ссадина	skin abrasion
+Ставудин	stavudine
+Станозолол	stanozolol
+Стафилококковый менингит	staphylococcal meningitis
+стафюлекс	flucloxacillin
+Стеатогепатит	steatohepatitis
+Стеатоз	steatosis
+стеаторрея	steatorrhea
+Стеноз митрального клапана	mitral valve stenosis
+стеноз пищевода	esophageal stricture
+Стеноз сонной артерии	carotid artery stenosis
+Стеноз трахеи	tracheal stenosis
+стенокардия	angina pectoris
+стенокардия Принцметала	Prinzmetal's angina
+стереотипные двигательные расстройства	stereotypic movement disorder
+Стимулирующие ЦНС вещества	psychoanaleptic
+стимуляторный психоз	stimulant psychosis
+стираемость зубов	dental attrition
+столкновение с поездом	railway accident by collision
+стоматит	stomatitis
+Стрептодорназа	deoxyribonuclease
+Стрептозотоцин	α-streptozocin
+стрептокиназа	streptokinase
+стрептококковый фарингит	streptococcal pharyngitis
+стрептомицин	streptomycin
+стрессовый перелом	stress fracture
+Стридор	stridor
+Стрии	stretch marks
+Стриктура мочеиспускательного канала	urethral stricture
+ступор	stupor
+субарахноидальное кровоизлияние	subarachnoid hemorrhage
+Субдуральная гематома	subdural hematoma
+Субконъюнктивальное кровоизлияние	subconjunctival hemorrhage
+Суворексант	suvorexant
+Суглат (ипраглифлозин)	ipragliflozin
+судорога	muscle cramp
+суицидальная идеация	suicidal ideation
+сукцинилхолин	succinylcholine
+Сукцинимид	succinimide
+сулиндак	sulindac
+Сульбутиамин	sulbutiamine
+сульпирид	(RS)-sulpiride
+Сультоприд	sultopride
+Сульфагуанидин	sulfaguanidine
+Сульфадиазин натрий	sulfadiazine
+сульфадиметоксин	sulfadimethoxine
+Сульфаниламид	sulfanilamide
+Сульфаниламиды	sulfonamide drug
+Сульфапиридин	sulfapyridine
+сульфасалазин	sulfasalazine
+сульфат магния	magnesium sulfate
+сульфат натрия	sodium sulfate
+сульфат цинка	zinc sulfate
+сульфацетамид	sulfacetamide
+Сульфинпиразон	sulfinpyrazone
+сульфонилмочевина	sulfonylurea
+суматриптан	sumatriptan
+сунитиниб	sunitinib
+суправентрикулярная тахикардия	supraventricular tachycardia
+сусто	susto
+суфентанил	sufentanil
+сухая мозоль	callus
+Сухой кератоконъюнктивит	keratoconjunctivitis sicca
+Схватки Брэкстона-Хикса	Braxton Hicks contraction
+Сывороточная болезнь	serum sickness
+сыпь	rash
+тадалафил	tadalafil
+Тазобактам	tazobactam
+Тазовое предлежание	breech presentation
+тайдзин кёфусё	taijin kyofusho
+такрин	tacrine
+такролимус	tacrolimus
+талассемия	thalassemia
+талиглюцераза альфа	taliglucerase alfa
+талидомид	thalidomide
+Талинолол	talinolol
+тамоксифен	tamoxifen
+тамсулозин	tamsulosin
+Тапентадол	tapentadol
+Тафлупрост	tafluprost
+Тахикардия желудочков	ventricular tachycardia
+тахипноэ	tachypnea
+тегафур	(RS)-tegafur
+Тедизолид	tedizolid
+тезаморелин	tesamorelin
+Телапревир	telaprevir
+Телеангиоэктазия	telangiectasia
+телитромицин	telithromycin
+телмисартан	telmisartan
+Телязиоз	thelaziasis
+темазепам	temazepam
+темозоломид	temozolomide
+Темпалгин	Tempalgin
+темсиролимус	temsirolimus
+тендинит	tendinopathy
+тендовагинит	tenosynovitis
+тенезмы	rectal tenesmus
+тенектеплаза	tenecteplase
+тениаринхоз	Taeniasis saginata
+Тенипозид	teniposide
+теноксикам	tenoxicam
+Тенофовир	tenofovir disoproxil
+Тенофовир алафенамид	tenofovir alafenamide
+Тенофовир/эмтрицитабин	tenofovir/emtricitabine
+теобромин	theobromine
+теофиллин	theophylline
+Тепловой удар	heat illness
+Тератома	teratoma
+тербинафин	terbinafine
+тербуталин	terbutaline
+Теризидон	terizidone
+Терифлуномид	teriflunomide
+терлипрессин	terlipressin
+тестостерон	testosterone
+тетания	tetany
+тетрабеназин	tetrabenazine
+тетраборат натрия	borax
+тетрагидробиоптерин	sapropterin
+тетрагидроканнабинол	tetrahydrocannabinol
+тетракаин	tetracaine
+Тетракозактид	cosyntropin
+Тетраметилтиурамдисульфид	thiram
+Тетрасиликат магния	magnesium silicate
+тетрасомия	tetrasomy
+тетрациклин	tetracycline
+тетрациклины	tetracycline antibiotic
+Тетризолин	tetrahydrozoline
+Тиабендазол	thiabendazole
+Тиагабин	tiagabine
+тиазиды	thiazide
+тиазолидиндион	2,4-thiazolidinedione
+тиамин	thiamine(1+) ion
+тианептин	(±)-tianeptine
+Тиаприд	tiapride
+тизанидин	tizanidine
+Тилдракизумаб	tildrakizumab
+Тилидин	rac-tilidine
+Тилорон	tilorone
+тилудроновая кислота	tiludronic acid
+тимома	thymoma
+Тинидазол	tinidazole
+тиннитус	tinnitus
+тиогуанин	6-thioguanine
+Тиопроперазин	thioproperazine
+тиоридазин	thioridazine
+тиосульфат натрия	sodium thiosulfate
+тиотиксен	(Z)-thiothixene
+тиотропия бромид	tiotropium
+типранавир	tipranavir
+Тиреоидит де Кервена	De Quervain's thyroiditis
+Тиреоидит Риделя	Riedel's fibrosing thyroiditis
+тиреоидный гормон	thyroid hormone
+Тиреотоксический периодический паралич	Thyrotoxic periodic paralysis
+Тиреотропный гормон	thyroid-stimulating hormone
+Тирзепатид	tirzepatide
+тиролиберин	thyrotropin-releasing hormone
+тирофибан	tirofiban
+Тисабри	natalizumab
+Тиэтилперазин	thiethylperazine
+тобрамицин	tobramycin
+Токсидермия	drug eruption
+токсикология этанола	long-term effects of alcohol consumption
+токсикомания	non-controlled substance abuse
+Токсическая аденома щитовидной железы	Toxic multinodular goitre
+токсический синовит	transient synovitis of hip
+токсичность меди	copper toxicity
+токсичность парацетамола	paracetamol toxicity
+токсичность толуола	toluene toxicity
+токсичность фтора	fluoride toxicity
+токсоплазмоз	toxoplasmosis
+токсоплазмотическая пневмония	Toxoplasma pneumonia
+толметин	tolmetin
+Толперизон	tolperisone
+толфенамовая кислота	tolfenamic acid
+топирамат	topiramate
+Топотекан	topotecan
+торемифен	(Z)-Toremifene
+Торсионная дистония	torsion dystonia
+тотальная алопеция	alopecia totalis
+тофацитиниб	tofacitinib
+Тофизопам	tofisopam
+тоцилизумаб	tocilizumab
+травма	injury
+травма головного мозга	brain injury
+травма кожи	skin trauma
+травма колена	knee injury
+травма шеи	neck injury
+травматическая ампутация	traumatic amputation
+травопрост	travoprost
+тразодон	trazodone
+тракционная алопеция	traction alopecia
+трамадол	tramadol
+транексамовая кислота	tranexamic acid
+Транзиторная глобальная амнезия	transient global amnesia
+Транзиторный акантолитический дерматоз Гровера	Transient acantholytic dermatosis
+транилципромин	tranylcypromine
+транс	trance
+трансамины	elevated transaminases
+трансвестизм двойной роли	dual-role transvestism
+трансмиссивная губчатая энцефалопатия	transmissible spongiform encephalopathy
+Транспозиция магистральных сосудов	transposition of great vessels
+транспортная авария	transport collision
+транссексуальность	transsexualism
+Траншейная стопа	trench foot
+Трастузумаб	trastuzumab
+Трастузумаб эмтанзин	ado-trastuzumab emtansine
+тревога	anxiety
+Тревожная депрессия	mixed anxiety-depressive disorder
+тревожное расстройство личности	avoidant personality disorder
+тремор	tremor
+Треосульфан	treosulfan
+Трепетание предсердий	atrial flutter
+третиноин	tretinoin
+Трещина заднего прохода	anal fissure
+трещины сосков	cracked nipple
+Триазолам	triazolam
+триамцинолон	triamcinolone
+тригексифенидил	trihexyphenidyl
+тризм	trismus
+Триклабендазол	triclabendazole
+Триклозан	triclosan
+Тримебутин	trimebutine
+Триметадион	trimethadione
+Триметазидин	trimetazidine
+триметиламинурия	trimethylaminuria
+триметоприм	trimethoprim
+тримипрамин	trimipramine
+Трипсин	trypsin
+Трипторелин	triptorelin
+триптофан	tryptophan
+трисомия	trisomy
+Трисомия по Х-хромосоме	triple X syndrome
+Трифаротен	trifarotene
+трифлуоперазин	trifluoperazine
+Трифлуперидол	trifluperidol
+трифлупромазин	triflupromazine
+Трихиаз	trichiasis
+Трихлорэтилен	trichloroethene
+трихотилломания	trichotillomania
+трихофагия	trichophagia
+Трихофития	tinea capitis vale
+триэтаноламин	trolamine
+Триэтилентетрамин	triethylenetetramine
+тровафлоксацин	trovafloxacin
+Тройной синдром	triple-A syndrome
+Троксерутин	Troxerutin
+Тромантадин	tromantadine
+Тромбидиаз	trombiculiasis
+Тромбин	Coagulation factor II, thrombin
+тромбоз	thrombosis
+Тромбоз глубоких вен	deep vein thrombosis
+Тромбоз кавернозного синуса	cavernous sinus thrombosis
+тромбоцит	platelet
+Тромбоэндокардит	marantic endocarditis
+тропикамид	tropicamide
+Трописетрон	tropisetron
+трофическая язва	venous ulcer
+Трофосфамид	trofosfamide
+туберкулёз	tuberculosis
+туберкулёз кишечника	intestinal tuberculosis
+Туберкулёзный коксит	tuberculous arthritis
+туберкулёзный менингит	tuberculous meningitis
+Туберкулин	tuberculin
+Тубокурарина хлорид	tubocurarine
+Тубулопатии	tubulopathy
+туляремия	tularemia
+Тяжёлый комбинированный иммунодефицит	severe combined immunodeficiency
+тяжёлый острый респираторный синдром	severe acute respiratory syndrome
+Уабаин	ouabain
+удар молнии	lightning strike
+удвоение матки	uterus didelphys
+Уденафил	udenafil
+удушение инертным газом	inert gas asphyxiation
+Удушье дымом	smoke inhalation injury
+ужаления и укусы насекомых	insect-inflicted wound
+узловой зоб	thyroid nodule
+укамаиринек	soul wandering
+уксусная кислота	acetic acid
+укус	animal bite
+Укус паука	spider bite
+Укусы многоножек	centipede bite
+Укусы членистоногих	arthropod bites and stings
+Улипристала ацетат	ulipristal acetate
+ультракаин	articaine
+умифеновир	umifenovir
+умственная отсталость	intellectual disability
+Ундециленовая кислота	undecylenic acid
+урамустин	uracil mustard
+Урапидил	urapidil
+Уретаны	carbamate
+Уретероцеле	ureterocele
+урогенитальное новообразование	urogenital neoplasm
+Урокиназный активатор плазминогена	Plasminogen activator, urokinase
+урологическая болезнь	urinary system disease
+урологический симптом	urological symptom
+Урофоллитропин	urofollitropin
+Урсодезоксихолевая кислота	ursodiol
+Устекинумаб	ustekinumab
+устойчивость к антибиотикам	antibiotic resistance
+Устойчивость к антимикотикам	antifungal drug resistance
+утеротоник	uterotonic
+утопление	drowning
+утренняя болезнь	morning sickness
+уфуфуянэ	ufufuyane
+Ушиб	bruise
+ушиб головного мозга	cerebral contusion
+Фабомитозол	fabomotizole
+Фавипиравир	favipiravir
+Факоматозы	phakomatosis
+фактор фон Виллебранда	Von Willebrand factor
+фамотидин	famotidine
+фамцикловир	famciclovir
+фантомная боль	phantom pain
+Фантомная конечность	phantom limb
+Фаринголарингеальный рефлюкс	Laryngopharyngeal reflux
+Фасудил	fasudil
+фасцикуляция	fasciculation
+фатальная семейная бессонница	fatal familial insomnia
+Фебрильная нейтропения	febrile neutropenia
+Фебрильные судороги	febrile seizure
+Фезотеродин	fesoterodine
+Фекалит	fecolith
+фексофенадин	fexofenadine
+Фелбамат	felbamate
+феназон	antipyrine
+Феназопиридин	phenazopyridine
+фенацетин	phenacetin
+фенелзин	phenelzine
+Фенетиллин	fenethylline
+фенилбутазон	phenylbutazone
+фенилкетонурия	phenylketonuria
+Фенилпропаноламин	(±)-norephedrine
+фенилэфрин	phenylephrine
+фенитоин	phenytoin
+фенобарбитал	phenobarbital
+феноксиметилпенициллин	penicillin v
+фенол	phenol
+феноловый красный	phenolsulfonphthalein
+фенолфталеин	phenolphthalein
+фенопрофен	(RS)-fenoprofen
+фенотерол	fenoterol
+фенофибрат	fenofibrate
+Фенспирид	fenspiride
+фентанил	fentanyl
+Фентермин	phentermine
+фентоламин	phentolamine
+фенфлурамин	(RS)-fenfluramine
+Феохромоцитома	phaeochromocytoma
+Ферментопатия	enzymopathy
+Ферропатия	iron deficiency
+фетальный алкогольный синдром	fetal alcohol syndrome
+фетишистский трансвестизм	transvestic fetishism
+Фибрилляция желудочков	ventricular fibrillation
+фибринолизин	fibrinolysin
+Фиброзно-мышечная дисплазия	fibromuscular dysplasia
+фибросаркома	fibrosarcoma
+Фиброторакс	fibrothorax
+фибулярная гемимелия	fibular hemimelia
+физическое насилие	physical violence
+физостигмин	physostigmine
+филграстим	filgrastim
+Филлохинон	(E)-phytonadione
+финастерид	finasteride
+финголимод	fingolimod
+Фирмагон	degarelix
+Фитоверм	Avermectin
+Фитофотодерматит	phytophotodermatitis
+Флавоноиды	flavonoid
+флибансерин	flibanserin
+флороглюцин	phloroglucinol
+Флотирующие переломы рёбер	flail chest
+флувоксамин	fluvoxamine
+Флударабин	fludarabine phosphate
+флудрокортизон	fludrocortisone
+флуконазол	fluconazole
+флумазенил	flumazenil
+флунитразепам	flunitrazepam
+флуоксетин	fluoxetine
+флуоресцеин	fluorescein
+флуоцинолона ацетонид	fluocinolone acetonide
+флупиртин	flupirtine
+флурбипрофен	(±)-flurbiprofen
+Флуспирилен	fluspirilene
+флутамид	flutamide
+флутиказон	fluticasone
+флуфеназин	fluphenazine
+фозиноприл	fosinopril
+Фокально-сегментарный гломерулосклероз	focal segmental glomerulosclerosis
+Фолатная недостаточность	folate deficiency
+фолиевая кислота	folic acid
+Фолликулит	folliculitis
+Фолликулярная лимфома	follicular lymphoma
+Фолликулярный рак щитовидной железы	follicular thyroid cancer
+фондапаринукс	fondaparinux
+формотерол	formoterol
+фосампреновир	fosamprenavir
+фоскарнет	foscarnet
+Фостаматиниб	fostamatinib
+фосфакол	paraoxon
+фосфат алюминия	aluminium phosphate
+Фосфомицин	fosfomycin
+Фотемустин	fotemustine
+фотодерматит	photodermatitis
+Фотодерматоз	photodermatosis
+Фотостарение	photoaging
+Фрамицетин	framycetin
+фригофобия	frigophobia
+фроттеризм	frotteurism
+фруктоза	keto-D-fructose
+Фталазол	phthalylsulfathiazole
+Фтизис глазного яблока	phthisis bulbi
+Фтордезоксиглюкоза	fludeoxyglucose (18F)
+фторид натрия	sodium fluoride
+фторурацил	fluorouracil
+фторхинолоны	quinolone antibiotic
+Фузафунгин	fusafungine
+Фузидовая кислота	fusidic acid
+Фулвестрант	fulvestrant
+фумаровая кислота	fumaric acid
+фуразолидон	furazolidone
+фуросемид	furosemide
+фурункул	boil
+Хантавирусный кардиопульмональный синдром	hantavirus pulmonary syndrome
+хеликобактериоз	Helicobacter pylori infectious disease
+хенодезоксихолевая кислота	chenodiol
+Хилоторакс	chylothorax
+Хилурия	Chyluria
+химическая пневмония	chemical pneumonitis
+химический ожог	chemical burn
+химотрипсин	chymotrypsin
+хинидин	quinidine
+хинин	quinine
+Хифенадин	quifenadine
+хламидиоз	chlamydia infection
+Хлоазма	melasma
+хлоральгидрат	chloral hydrate
+хлорамбуцил	chlorambucil
+хлорамфеникол	chloramphenicol
+хлоргексидин	chlorhexidine
+хлордиазепоксид	chlordiazepoxide
+хлорид алюминия	aluminum chloride
+хлорид аммония	ammonium chloride
+хлорид деквалиния	dequalinium chloride
+хлорид калия	potassium chloride
+хлорид кальция	calcium chloride
+хлорид магния	magnesium chloride
+хлорид натрия	sodium chloride
+хлорид цинка	zinc chloride
+хлорит натрия	sodium chlorite
+Хлоропирамин	chloropyramine
+хлороформ	chloroform
+Хлорофос	metrifonate
+хлорохин	chloroquine
+Хлорпрокаин	chloroprocaine
+хлорпромазин	chlorpromazine
+хлорталидон	chlorthalidone
+Хлортетрациклин	chlortetracycline
+хлорфенамин	chlorpheniramine
+Хлорхинальдол	chlorquinaldol
+хлорэтан	chloroethane
+Хлыстовая травма	whiplash injuries
+холевая кислота	cholic acid
+холекальциферол	cholecalciferol
+Холецистокинин	cholecystokinin
+Холина салицилат	choline salicylate
+холинолитические средства	anticholinergic
+холинэстераза	cholinesterase
+Холодовая аллергия	cold urticaria
+Хондробластома	chondroblastoma
+Хондроитина сульфат	chondroitin sulfate
+Хондрома	chondroma
+Хореоатетоз	Choreoathetosis
+хорея	choreatic disease
+Хориоидпапиллома	choroid plexus papilloma
+Хорионический гонадотропин	chorionic gonadotropin
+храп	snoring
+хроническая боль	chronic pain
+хроническая кишечно-сосудистая недостаточность	chronic intestinal vascular insufficiency
+хроническая недифференцированная шизофрения	chronic undifferentiated schizophrenia
+хроническая обструктивная болезнь лёгких	chronic obstructive pulmonary disease
+хроническая травматическая энцефалопатия	chronic traumatic encephalopathy
+Хроническая цереброспинальная венозная недостаточность	chronic cerebrospinal venous insufficiency
+Хронический бактериальный простатит	chronic bacterial prostatitis
+Хронический бронхит	chronic bronchitis
+хронический галлюцинаторный психоз	chronic hallucinatory psychosis
+хронический гастрит	chronic gastritis
+хронический лимфолейкоз	chronic lymphocytic leukemia
+хронический миелобластный лейкоз	chronic myeloid leukemia
+Хронический панкреатит	chronic pancreatitis
+Хронический тонзиллит	chronic tonsillitis
+хронический эндометрит	chronic endometritis
+хроническое респираторное заболевание	chronic respiratory disease
+целекоксиб	celecoxib
+Ценегермин	cenegermin
+Центральная серозная ретинопатия	central serous retinopathy
+центральный несахарный диабет	central diabetes insipidus
+Ценуроз	Coenurosis
+Цератония	Ceratonia
+Церварикс	Cervarix
+церебральный атеросклероз	cerebral atherosclerosis
+цереброваскулярные болезни	cerebrovascular disease
+Церкариоз	cercarial dermatitis
+цертолизумаб пегол	certolizumab pegol
+цетиризин	cetirizine
+Цетуксимаб	cetuximab
+цефазолин	cefazolin
+цефалексин	cephalexin
+цефалоспорины	cephalosporin antibiotic
+цефдинир	cefdinir
+Цефепим	cefepime
+Цефокситин	cefoxitin
+цефотаксим	cefotaxime
+Цефпирамид	cefpiramide
+Цефпиром	cefpirome
+цефтазидим	ceftazidime
+Цефтазидим/Авибактам	ceftazidime/avibactam
+Цефтаролин	ceftaroline fosamil
+цефтриаксон	ceftriaxone
+цефуроксим	cefuroxime
+цианамид кальция	calcium cyanamide
+цианокобаламин	cyanocobalamin
+цизаприд	cisapride
+циклесонид	ciclesonide
+циклизин	cyclizine
+циклобарбитал	cyclobarbital
+Циклобензаприн	cyclobenzaprine
+циклоидный психоз	cycloid psychosis
+Циклопентолат	cyclopentolate-(RS)
+циклопирокс	ciclopirox
+Циклопия	cyclopia
+Циклосерин	cycloserine
+Циклосиликат циркония-натрия	sodium zirconium cyclosilicate
+Циклоспорин	cyclosporine
+циклофосфамид	(RS)-cyclophosphamide
+цилиндрома	cylindroma
+циметидин	cimetidine
+Цинга	scurvy
+цинеол	eucalyptol
+цинк пиритион	pyrithione zinc
+Циннаризин	cinnarizine
+циперметрин	cypermethrin
+ципрогептадин	cyproheptadine
+ципрофлоксацин	ciprofloxacin
+цисплатин	cisplatin
+Цистицеркоз	cysticercosis
+циталопрам	(RS)-citalopram
+цитарабин	cytarabine
+цитизин	cytisine
+Цитиколин	citicoline
+цитомегаловирусная инфекция	cytomegaloviral disease
+цитомегаловирусный ретинит	cytomegalovirus retinitis
+цитрат калия	tripotassium citrate
+Цитрат кальция	calcium citrate
+цитрат магния	magnesium citrate
+цитраты аммония-железа	ammonium ferric citrate
+черепно-мозговая травма	traumatic brain injury
+черноводная лихорадка	blackwater fever
+Чёрный язык (заболевание)	hairy tongue
+Чесотка	scabies
+Четвертичные аммонийные соединения	quaternary ammonium cation
+Чикунгунья	chikungunya
+чистящее средство	cleaning product
+чрезмерная рвота беременных	hyperemesis gravidarum
+чувствительность к глютенам	non-celiac gluten sensitivity
+чума	plague
+шеечная беременность	cervical pregnancy
+шизоидное расстройство личности	schizoid personality disorder
+шизофазия	schizophasia
+шизофреническая реакция	schizophrenic reaction
+шизофрения	schizophrenia
+шизофреноподобное расстройство	schizophrenia-like disorder
+шизофреноформное расстройство	schizophreniform disorder
+шипица	corn
+шистосомоз	schistosomiasis
+шок	shock
+шумовое загрязнение	noise pollution
+эбастин	ebastine
+Эбермин	silver sulfadiazine
+эверолимус	everolimus
+эволокумаб	evolocumab
+Эгодистоническая половая ориентация	ego-dystonic sexual orientation
+Эзетимиб	ezetimibe
+эзомепразол	esomeprazole
+Эзофория	Esophoria
+Экзантема	exanthem
+экзема	eczema
+Экзокринная недостаточность поджелудочной железы	exocrine pancreatic insufficiency
+Экзофория	Exophoria
+эклампсия	eclampsia
+эксагамглоген аутотемцел	exagamglogene autotemcel
+эксенатид	exenatide
+Экстрамаммарная болезнь Педжета	extramammary Paget's disease
+Экстрофия мочевого пузыря	bladder exstrophy
+эктопаразитизм	ectoparasitism
+Эктопия сердца	ectopia cordis
+Эктопия шейки матки	cervix erosion
+Эктродактилия	ectrodactyly
+эктромелия	ectromelia
+экулизумаб	eculizumab
+элвитегравир	elvitegravir
+Элвитегравир/кобицистат/эмтрицитабин/тенофовир	elvitegravir/cobicistat/emtricitabine/tenofovir disoproxil
+элективный мутизм	elective mutism
+электролитный дисбаланс	electrolyte imbalance
+электромеханическая диссоциация	pulseless electrical activity
+элиглустат	eliglustat
+Элосульфаза альфа	elosulfase alfa
+Элотузумаб	elotuzumab
+эмболия	embolism
+Эмболия околоплодными водами	amniotic fluid embolism
+эмбриотомия	embryotomy
+эметин	emetine
+Эмоллиент	moisturizer
+эмоционально неустойчивое расстройство личности	emotionally unstable personality disorder
+эмоциональное выгорание	occupational burnout
+эмпаглифлозин	empagliflozin
+эмпиема	empyema
+Эмтрицитабин	emtricitabine
+эмфизема лёгких	pulmonary emphysema
+эналаприл	enalapril
+Энантема	enanthem
+эндемичный тиф	endemic typhus
+эндогенная депрессия	endogenous depression
+эндокардит	endocarditis
+эндометриоз	endometriosis
+эндометрит	endometritis
+Эндофтальмит	endophthalmitis
+Энисамия йодид	enisamium iodide
+энкопрез	encopresis
+энтерит	enteritis
+энтероколит	enterocolitis
+Энтероптоз	visceroptosis
+Энтропион	entropion
+Энфлуран	enflurane
+Энфувиртид	enfuvirtide
+энцефалит	encephalitis
+Энцефалит Расмуссена	Rasmussen's encephalitis
+Энцефалит Сент-Луис	St. Louis encephalitis
+энцефаломиелит	encephalomyelitis
+Энцефалотригеминальный ангиоматоз	Sturge–Weber syndrome
+энцефалоцеле	encephalocele
+эозин	eosin
+эозинофилия	eosinopenia
+эпендимома	ependymoma
+Эпидемический сыпной тиф	epidemic typhus
+Эпидермоидная киста	epidermoid cyst
+эпидуральная гематома	epidural cranial hematoma
+эпилептический припадок	seizure
+эпилептический статус	status epilepticus
+Эпиретинальная мембрана	epiretinal membrane
+эпирубицин	epirubicin
+Эписклерит	episcleritis
+эписпадия	epispadias
+Эпоксиды	epoxide
+эптифибатид	eptifibatide
+эпулис	epulis
+эргокальциферол	ergocalciferol
+эргометрин	ergometrine
+эрготамин	ergotamine
+эрготизм	ergotism
+Эрдостеин	erdosteine
+эректильная дисфункция	erectile dysfunction
+эритема	erythema
+эритема мигрирующая хроническая	erythema chronicum migrans
+эритромицин	erythromycin
+Эритроплакия	erythroplakia
+эритроциты	red blood cell
+Эсзопиклон	eszopiclone
+эскетамин	esketamine
+Эссенциальная фруктозурия	essential fructosuria
+эстрадиол	17β-estradiol
+Эстрамустин	estramustine
+Эстриол	estriol
+эстрон	estrone
+эсциталопрам	escitalopram
+этакриновая кислота	ethacrynic acid
+Этамбутол	ethambutol
+Этамзилат	ethamsylate
+этанерцепт	etanercept
+этанол	ethanol
+Этафедрин	etilefrine
+Этеплирсен	eteplirsen
+Этил лофлазепат	ethyl loflazepate
+этилморфин	ethylmorphine
+этинилэстрадиол	ethinylestradiol
+Этионамид	ethionamide
+Этифоксин	etifoxine
+Этихлорвинол	ethchlorvynol
+этодолак	(RS)-etodolac
+этомидат	etomidate
+этопозид	etoposide
+Этосуксимид	ethosuximide
+Этотоин	ethotoin
+этравирин	etravirine
+эуфиллин	aminophylline
+эфавиренз	efavirenz
+эхолалия	echolalia
+ядерная война	nuclear warfare
+язва	ulcer
+Язва Маржолена	Marjolin's ulcer
+язва полости рта	mouth ulcer
+яичниковая беременность	ovarian pregnancy
+ящур	foot-and-mouth disease

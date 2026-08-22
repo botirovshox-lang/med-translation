@@ -2211,6 +2211,149 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     return {"ok": True, "candidate": cand, "replaced": bool(existing), "closed": closed}
 
 
+class ExplainRequest(BaseModel):
+    variants: Optional[List[str]] = None   # что сравниваем; по умолчанию — все из очереди
+    # Вариант, который обязан попасть в сравнение: то, что человек напечатал
+    # в поле карточки. Не список, а добавка — иначе черновик вытеснял бы
+    # остальные варианты, и сравнивать стало бы не с чем.
+    include: Optional[str] = None
+    model: Optional[str] = None
+
+
+@app.post("/api/term-queue/{cid}/explain")
+def explain_term_variants(cid: int, req: ExplainRequest = ExplainRequest()):
+    """Объяснить варианты перевода НА ЯЗЫКЕ ОРИГИНАЛА.
+
+    Ключевая мысль: пользователь может не знать целевого языка — и тогда
+    вопрос «какой перевод верный» для него бессмыслен. Но вопрос «какое из
+    двух значений вы имели в виду» он понимает, если оба значения написаны
+    по-русски. Поэтому по каждому варианту спрашиваем у модели:
+      обратный перевод — как этот вариант читается носителем целевого языка;
+      определение     — что этот термин означает, одной строкой на языке оригинала;
+      область         — где он употребляется.
+    Человек сравнивает РУССКОЕ с РУССКИМ и выбирает смысл, а не строку.
+
+    Вызов платный, поэтому только по кнопке и только на конкретную карточку."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(503, "Разбор вариантов требует ключ OpenAI")
+    cand = next((c for c in _term_queue() if c.get("id") == cid), None)
+    if not cand:
+        raise HTTPException(404, "Кандидат не найден")
+    scope = _scope_of(cand)
+    src_lang, tgt_lang = (authorities_mod.source_lang(scope[0]),
+                          authorities_mod.target_lang(scope[0])) if authorities_mod \
+        else (scope[0].split("→")[0], scope[0].split("→")[-1])
+    term = (cand.get("src") or "").strip()
+
+    # Что сравниваем: присланные варианты, иначе всё, что предлагает очередь
+    # и справочники по этому термину. Пустой перевод у конфликта не вариант.
+    variants = [v.strip() for v in (req.variants or []) if v and v.strip()]
+    if variants and (req.include or "").strip():
+        # include — «этот вариант обязан участвовать». Игнорировать его при
+        # заданном списке значило бы потерять именно то, что человек напечатал.
+        if _norm_key(req.include) not in {_norm_key(v) for v in variants}:
+            variants.insert(0, req.include.strip())
+    if not variants:
+        seen = set()
+        # Первым идёт то, что человек напечатал (или, если не печатал, перевод
+        # самой карточки): обрезая список до шести, нельзя выбросить именно тот
+        # вариант, ради которого нажали кнопку.
+        for first in ((req.include or "").strip(), (cand.get("tgt") or "").strip()):
+            if first and _norm_key(first) not in seen:
+                variants.append(first)
+                seen.add(_norm_key(first))
+        for c in _term_queue():
+            if (c.get("status", "pending") == "pending" and _scope_of(c) == scope
+                    and _norm_key(c.get("src")) == _norm_key(term) and (c.get("tgt") or "").strip()):
+                if _norm_key(c["tgt"]) not in seen:
+                    seen.add(_norm_key(c["tgt"]))
+                    variants.append(c["tgt"].strip())
+        # Запись глоссария — раньше очередных вариантов: её уже утверждали,
+        # и вытеснять её потолком в шесть штук нельзя.
+        known = _glossary_entry(term, scope)
+        if known and known.get("tgt") and _norm_key(known["tgt"]) not in seen:
+            seen.add(_norm_key(known["tgt"]))
+            variants.insert(len(variants) and 1 or 0, known["tgt"])
+        for v in _authority_suggests(term, scope):
+            if _norm_key(v) not in seen:
+                seen.add(_norm_key(v))
+                variants.append(v)
+    # Молчаливых потолков не бывает: сколько не влезло — скажем в ответе.
+    dropped = max(0, len(variants) - 6)
+    variants = variants[:6]
+    if not variants:
+        raise HTTPException(400, "Нечего сравнивать: у термина нет ни одного варианта перевода")
+
+    dom = _resolve_domain(scope[1])
+    system = (
+        f"You are a {dom['expert']}. The user does NOT speak {tgt_lang} and must choose "
+        f"between candidate {tgt_lang} translations of a {src_lang} term by MEANING.\n\n"
+        f"For each candidate return, WRITTEN IN {src_lang} (this is essential — the user "
+        f"reads only {src_lang}):\n"
+        f"  back — how the candidate reads to a native {tgt_lang} speaker, translated back "
+        f"literally into {src_lang};\n"
+        f"  meaning — what the candidate actually denotes, one short sentence in {src_lang};\n"
+        f"  usage — where this wording is used (register, field), a few words in {src_lang};\n"
+        f"  same — true if it denotes exactly the same concept as the {src_lang} term.\n\n"
+        'Return ONLY JSON: {"variants":[{"tgt":"...","back":"...","meaning":"...",'
+        '"usage":"...","same":true}]}. No commentary.'
+    )
+    body = (f"{src_lang} term: {term}\n"
+            + (f"Context sentence: {cand.get('sampleSrc')}\n" if cand.get("sampleSrc") else "")
+            + f"Candidate {tgt_lang} translations:\n"
+            + "\n".join("  - " + v for v in variants))
+    try:
+        import openai
+        mdl = _resolve_model(req.model or JUDGE_DEFAULT_MODEL)
+        client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
+        extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
+                 else {"max_tokens": 900, "temperature": 0})
+        resp = client.chat.completions.create(
+            model=mdl["id"], response_format={"type": "json_object"},
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": body}], **extra)
+        raw = (resp.choices[0].message.content or "").strip()
+        if not raw:
+            # Пустой ответ (модель израсходовала лимит на рассуждения) — это
+            # отказ. Отдать его как «разобрано, но всё пусто» значит показать
+            # человеку прочерки там, где он ждёт объяснения смысла.
+            raise ValueError("модель вернула пустой ответ")
+        data = json.loads(raw)
+        by_tgt = {_norm_key(v.get("tgt")): v
+                  for v in (data.get("variants") or []) if isinstance(v, dict)}
+    except Exception as e:
+        print(f"[backend] explain term #{cid}: {e}", file=sys.stderr)
+        raise HTTPException(502, "Модель не разобрала варианты. Попробуйте ещё раз.")
+
+    # Корпус по всем вариантам разом: шесть последовательных внешних запросов
+    # с троттлингом под лимит источника — это ещё минута поверх уже оплаченного
+    # вызова модели, и человек всё это время смотрит на «Разбираем…».
+    att_by = dict(zip([_norm_key(v) for v in variants],
+                      _run_parallel(variants, lambda v: _corpus_check(v, scope))))
+    out = []
+    for v in variants:
+        got = by_tgt.get(_norm_key(v))
+        # Модель про этот вариант ничего не сказала — так и передаём (None).
+        # «Не знаю» нельзя показывать как «иное понятие»: человек, который по
+        # условию не читает целевой язык, отвергнет верный перевод.
+        answered = isinstance(got, dict)
+        got = got if answered else {}
+        # Корпус тут же: «сколько раз этот термин вообще встречается в языке» —
+        # цифра, которую человек оценит без знания языка.
+        att = att_by.get(_norm_key(v))
+        out.append({
+            "tgt": v,
+            "back": got.get("back") or "",
+            "meaning": got.get("meaning") or "",
+            "usage": got.get("usage") or "",
+            "same": (bool(got.get("same")) if answered and "same" in got else None),
+            "corpus": ({"hits": att["hits"], "label": att["label"]} if att else None),
+            "authority": _authority_match(term, v, scope),
+        })
+    return {"ok": True, "term": term, "variants": out, "dropped": dropped,
+            "model": _resolve_model(req.model or JUDGE_DEFAULT_MODEL)["id"]}
+
+
 @app.post("/api/term-queue/{cid}/reject")
 def reject_term_candidate(cid: int):
     cand = next((c for c in _term_queue() if c.get("id") == cid), None)
@@ -2293,10 +2436,14 @@ def _authority_match(src: str, tgt: str, scope: tuple) -> Optional[dict]:
     Это и есть приказ без человека: норму зафиксировал тот, кто в предметной
     области разбирается. Справочник чужой пары языков или чужой области не
     подходит никогда — выдуманное подтверждение хуже отсутствующего."""
+    best = None
     for d in _DICTIONARIES:
         if d.covers(scope[0], scope[1]) and d.match(src, tgt):
-            return {"id": d.id, "label": d.label}
-    return None
+            hit = {"id": d.id, "label": d.label, "tier": getattr(d, "tier", "verified")}
+            if hit["tier"] == GLOSSARY_TIER_HARD:
+                return hit          # выверенный источник — дальше искать нечего
+            best = best or hit      # краудсорсный запоминаем, вдруг найдётся лучше
+    return best
 
 
 def _authority_suggests(src: str, scope: tuple) -> list:
@@ -2326,7 +2473,8 @@ def _authority_sources(scope: tuple) -> dict:
     """Чем в этой области и паре языков вообще есть чем проверять. Нужно
     интерфейсу: разница в качестве между парами языков должна быть названа,
     а не обнаружена пользователем на своих текстах."""
-    dicts = [{"id": d.id, "label": d.label, "terms": len(d.pairs)}
+    dicts = [{"id": d.id, "label": d.label, "terms": len(d.pairs),
+              "tier": getattr(d, "tier", "verified")}
              for d in _DICTIONARIES if d.covers(scope[0], scope[1])]
     corpus = None
     if authorities_mod:
@@ -2470,10 +2618,14 @@ def _auto_verdict(cand: dict, ctx: dict) -> tuple:
         # Тумблер «только подсказки» — это про ЭТОТ запуск, а не про политику
         # области: человек попросил ничего не поднимать до приказа, и справочник
         # не повод его переспрашивать.
-        if pol.get("cap_soft"):
+        if auth["tier"] == GLOSSARY_TIER_HARD and not pol.get("cap_soft"):
+            return GLOSSARY_TIER_HARD, "совпадает со справочником: " + auth["label"]
+        if auth["tier"] == GLOSSARY_TIER_HARD:
             return GLOSSARY_TIER_SOFT, ("совпадает со справочником (%s), "
                                         "но выбран режим «только подсказки»" % auth["label"])
-        return GLOSSARY_TIER_HARD, "совпадает со справочником: " + auth["label"]
+        # Краудсорсный источник приказывать в одиночку не вправе: выборочная
+        # проверка находит в таких неверные нормы. Он идёт ГОЛОСОМ — дальше по
+        # коду его учитывают вместе с согласием сегментов и корпусом.
 
     if len(ctx["variants"].get((scope, _norm_key(src)), set())) > 1:
         return None, "у термина несколько вариантов перевода"
@@ -2497,9 +2649,23 @@ def _auto_verdict(cand: dict, ctx: dict) -> tuple:
     if not confirmed and good < pol["auto_min_segments"]:
         return None, "подтверждений: %d, нужно %d" % (good, pol["auto_min_segments"])
 
-    if (pol["allow_verified"] and good >= pol["verified_min_segments"]
-            and distinct >= pol["verified_min_segments"]
+    # Краудсорсный справочник + корпус СНИЖАЮТ порог согласия сегментов на один,
+    # но не отменяют запрет области. Почему только снижают: голоса независимы
+    # не полностью — модель могла выучить те же ошибки справочника, а корпус
+    # подтверждает лишь то, что строка в языке существует. «Анизакидоз →
+    # Anisakis» (болезнь против рода паразита) прошёл бы все три проверки, и
+    # в медицине цена такого приказа выше пользы от автоматизации: там приказ
+    # по-прежнему даёт человек или ВЫВЕРЕННЫЙ справочник (см. выше по коду).
+    corroborated = bool(auth) and bool(corpus) and corpus.get("ok")
+    need = pol["verified_min_segments"]
+    if corroborated:
+        need = max(2, need - 1)
+    if (pol["allow_verified"] and good >= need and distinct >= need
             and good == len(_donor_ids(cand))):
+        if corroborated:
+            return GLOSSARY_TIER_HARD, ("%d независимых сегмента + справочник %s + %s (%d)"
+                                        % (distinct, auth["label"],
+                                           corpus["label"], corpus["hits"]))
         # Корпус доступен, но термин в языке почти не встречается — согласия
         # доноров мало: приказ не даём, оставляем подсказкой. Обратное неверно —
         # частотность не делает перевод правильным, поэтому поднять до приказа
@@ -2615,6 +2781,9 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
     ctx["corpus"] = {}
     prelim = [c for c in considered
               if _auto_verdict(c, ctx)[0] in (GLOSSARY_TIER_HARD, GLOSSARY_TIER_SOFT)]
+    # Корпус может ПОДНЯТЬ вердикт (справочник + корпус + сегменты), а не только
+    # отсеять кальку. Значит разбор без него врёт в обе стороны, и молчать об
+    # этом нельзя — см. corpusPending в ответе.
     corpus_asked, corpus_capped = 0, 0
     use_corpus = (not req.dry_run) if req.corpus is None else bool(req.corpus)
     if prelim and authorities_mod and use_corpus:

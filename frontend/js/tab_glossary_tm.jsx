@@ -2,6 +2,9 @@
    Tab: Glossary — medical terminology management
    ============================================================ */
 const PAGE_SIZE = 100;
+// Очередь кандидатов — карточки, а не строки таблицы: сотня разом
+// нечитаема, да и решают их по одной.
+const QUEUE_PAGE = 25;
 
 // Поиск с выбором стороны: русский термин или английский перевод.
 // «ё» приравнена к «е» — в медицинских текстах их пишут вперемешку.
@@ -179,15 +182,46 @@ function TermQueue({ store, toast, version }) {
   const [drafts, setDrafts] = useState({});      // {id: предлагаемый перевод}
   const [busy, setBusy] = useState(null);
   const [open, setOpen] = useState(true);
+  // total — сколько кандидатов ЕСТЬ, items — сколько показано. Раньше значок
+  // показывал длину показанного списка, а он обрезан лимитом: при 260 в очереди
+  // там всегда стояло 200, и разобранные двадцать штук ничего не меняли.
+  const [total, setTotal] = useState(0);
+  const [limit, setLimit] = useState(QUEUE_PAGE);
 
-  const load = async () => {
+  const load = async (lim) => {
     if (!window.API) { setLoading(false); return; }
-    const res = await window.API.safeCall(() => window.API.termQueue("pending", 200));
+    const res = await window.API.safeCall(() => window.API.termQueue("pending", lim || limit));
     setItems((res && res.items) || []);
     setCounts((res && res.counts) || {});
+    setTotal((res && res.total) || 0);
     setLoading(false);
   };
   useEffect(() => { load(); }, [version]);
+
+  // Решили карточку — убираем её и из показанного, и из общего числа:
+  // иначе счётчик стоял бы на месте до перезагрузки страницы.
+  // Разбор вариантов по смыслу: {cid: {loading|variants}}. Платный вызов,
+  // поэтому только по кнопке на конкретной карточке.
+  const [explained, setExplained] = useState({});
+  const explain = async (c) => {
+    setExplained(e => ({ ...e, [c.id]: { loading: true } }));
+    // Черновик из поля — это ровно тот вариант, ради которого нажимают кнопку.
+    // Не передав его, мы сравнили бы всё, кроме того, что человек напечатал.
+    const typed = (drafts[c.id] !== undefined ? drafts[c.id] : c.tgt || "").trim();
+    const res = await window.API.safeCall(() => window.API.explainTerm(c.id, typed));
+    if (!res || !res.ok) {
+      setExplained(e => ({ ...e, [c.id]: null }));
+      toast.error("Не удалось разобрать", "Модель не ответила или у термина нет вариантов.");
+      return;
+    }
+    setExplained(e => ({ ...e, [c.id]: res }));
+  };
+
+  const drop = (ids) => {
+    const gone = new Set(ids);
+    setItems(list => list.filter(x => !gone.has(x.id)));
+    setTotal(t => Math.max(0, t - gone.size));
+  };
 
   const approve = async (c) => {
     const tgt = (drafts[c.id] !== undefined ? drafts[c.id] : c.tgt || "").trim();
@@ -198,8 +232,7 @@ function TermQueue({ store, toast, version }) {
     if (!res || !res.ok) { toast.error("Не удалось одобрить", "Сервер не ответил."); return; }
     // Сервер закрывает и остальные карточки про этот же термин: человек ответил
     // на вопрос, а не на карточку. Убираем их сразу, иначе они висят до перезагрузки.
-    const gone = new Set([c.id].concat(res.closed || []));
-    setItems(list => list.filter(x => !gone.has(x.id)));
+    drop([c.id].concat(res.closed || []));
     toast.success(res.replaced ? "Запись глоссария заменена" : "Термин добавлен в глоссарий",
       c.src + " → " + tgt + ((res.closed && res.closed.length)
         ? " · закрыто карточек про этот же термин: " + res.closed.length : ""));
@@ -210,19 +243,22 @@ function TermQueue({ store, toast, version }) {
     const res = await window.API.safeCall(() => window.API.rejectTerm(c.id));
     setBusy(null);
     if (!res || !res.ok) { toast.error("Не удалось отклонить", "Сервер не ответил."); return; }
-    setItems(list => list.filter(x => x.id !== c.id));
+    drop([c.id]);
     toast.info("Отклонено", "Этот кандидат больше не всплывёт.");
   };
 
   if (loading) return null;
-  if (!items.length && !(counts.pending > 0)) return null;
+  if (!items.length && !total) return null;
 
   return React.createElement("div", { className: "card card-pad", style: { marginBottom: 18 } },
     React.createElement("div", { className: "row between", style: { cursor: "pointer" }, onClick: () => setOpen(o => !o) },
       React.createElement("div", { className: "row", style: { gap: 10 } },
         React.createElement(Icon, { name: open ? "chevD" : "chevR", size: 16 }),
         React.createElement("h3", { style: { margin: 0, fontSize: 16 } }, "Кандидаты в глоссарий"),
-        React.createElement(Badge, { variant: "review" }, items.length),
+        React.createElement(Badge, { variant: "review" }, total),
+        // Молчаливых потолков не бывает: показали часть — сказали, какую.
+        total > items.length && React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+          "показаны " + items.length),
         React.createElement(InfoTip, { title: "Откуда берутся кандидаты",
           body: "Система учится на подтверждённых сегментах: расхождение с глоссарием, короткий сегмент-термин, извлечение моделью. Ни один кандидат не попадает в глоссарий сам — глоссарий уходит в промпт как правило, и автопополнение закрепляло бы ошибки перевода." })),
       React.createElement("span", { className: "dim", style: { fontSize: 12 } },
@@ -261,10 +297,49 @@ function TermQueue({ store, toast, version }) {
             React.createElement("div", null, c.sampleSrc),
             React.createElement("div", { style: { color: "var(--c-primary)" } }, c.sampleTgt)),
 
-          React.createElement("div", { className: "row", style: { gap: 8 } },
+          // Разбор по смыслу: всё написано на языке ОРИГИНАЛА, чтобы выбирать
+          // мог человек, не владеющий целевым языком. Он сравнивает значения,
+          // а не строки, и нажимает на то, которое имел в виду.
+          explained[c.id] && explained[c.id].variants && React.createElement("div",
+            { className: "col", style: { gap: 6, borderTop: "1px solid var(--border)", paddingTop: 8 } },
+            React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+              "Что означает каждый вариант — выберите по смыслу:"),
+            explained[c.id].variants.map((v, i) => React.createElement("div", {
+              key: i, className: "card", style: { padding: "8px 11px", background: "var(--bg)", cursor: "pointer", display: "flex", flexDirection: "column", gap: 3 },
+              onClick: () => setDrafts(d => ({ ...d, [c.id]: v.tgt })) },
+              React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+                React.createElement("span", { style: { fontWeight: 600 } }, v.tgt),
+                React.createElement("span", { className: "row", style: { gap: 6 } },
+                  v.authority && React.createElement(Badge, {
+                    variant: v.authority.tier === "verified" ? "confirmed" : "soft" },
+                    v.authority.tier === "verified" ? "выверенный справочник" : "есть в справочнике"),
+                  v.corpus && React.createElement(Badge, { variant: "soft" },
+                    v.corpus.label + ": " + v.corpus.hits),
+                  v.same === false && React.createElement(Badge, { variant: "review" }, "иное понятие"),
+                  v.same === null && React.createElement(Badge, { variant: "soft" }, "модель не ответила"))),
+              v.back && React.createElement("div", { style: { fontSize: 13 } },
+                React.createElement("span", { className: "dim" }, "обратно: "), v.back),
+              v.meaning && React.createElement("div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.5 } }, v.meaning),
+              v.usage && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "употребление: " + v.usage))),
+            explained[c.id].dropped > 0 && React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
+              "Показаны первые 6 вариантов, ещё " + explained[c.id].dropped + " не разобрано."),
+            React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
+              "Нажмите на вариант — он подставится в поле выше. Разобрала модель "
+              + (explained[c.id].model || "") + "; проверьте, что смысл совпадает с оригиналом.")),
+
+          React.createElement("div", { className: "row row-wrap", style: { gap: 8 } },
             React.createElement(Btn, { variant: "primary", size: "sm", icon: "check", disabled: busy === c.id, onClick: () => approve(c) }, "В глоссарий"),
-            React.createElement(Btn, { variant: "ghost", size: "sm", icon: "close", disabled: busy === c.id, onClick: () => reject(c) }, "Отклонить")));
+            React.createElement(Btn, { variant: "ghost", size: "sm", icon: "close", disabled: busy === c.id, onClick: () => reject(c) }, "Отклонить"),
+            React.createElement(Btn, {
+              variant: "secondary", size: "sm", icon: "book",
+              disabled: busy === c.id || (explained[c.id] && explained[c.id].loading),
+              onClick: () => explain(c) },
+              explained[c.id] && explained[c.id].loading ? "Разбираем…"
+                : explained[c.id] ? "Разобрать заново" : "Что это значит?")));
       }),
+      total > items.length && React.createElement(Btn, {
+        variant: "ghost", size: "sm", onClick: () => { const n = limit + QUEUE_PAGE; setLimit(n); load(n); } },
+        "Показать ещё " + Math.min(QUEUE_PAGE, total - items.length) + " из " + (total - items.length)),
       !items.length && React.createElement("div", { className: "dim", style: { fontSize: 13 } }, "Нерешённых кандидатов нет.")
     )
   );

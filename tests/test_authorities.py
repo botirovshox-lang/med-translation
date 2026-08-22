@@ -328,5 +328,92 @@ check(not r["items"], "оба варианта есть в справочник�
 check("несколько вариантов" in " ".join(b["reason"] for b in r["skipped"]),
       "причина названа: " + " · ".join(b["reason"] for b in r["skipped"]))
 
+print("\n=== 18. Краудсорсный справочник не приказывает в одиночку ===")
+# Выборочная проверка Wikidata находит неверные нормы («Анизакидоз → Anisakis» —
+# болезнь против рода паразита). Приказ такому источнику давать нельзя: модель
+# обязана его исполнить, и ошибку уже никто не поймает.
+write("crowd.tsv", """# label: Краудсорсный источник
+# lang: RU→EN
+# domains: medical, general
+# tier: auto
+увеит\tuveitis
+""")
+loaded = {d.id: d for d in A.load_dictionaries(TMP)}
+check(loaded["crowd"].tier == "auto", "уровень прочитан из заголовка")
+check(loaded["inn_ru_en"].tier == "verified", "без строки tier источник считается выверенным")
+
+main._DICTIONARIES = [loaded["crowd"]]
+main.authorities_mod.attested = lambda t, l, d: None      # корпус молчит
+r = one("увеит", "uveitis", dom="medical")
+it = next((i for i in r["items"] if i["id"] == 1), None)
+check(it is None or it["tier"] != "verified",
+      "в медицине один краудсорсный справочник приказа не даёт")
+
+print("\n=== 19. Справочник и корпус усиливают согласие, но не отменяют запрет ===")
+def STRONG(t, l, d):
+    return {"hits": 2052, "source": "test", "label": "TestCorpus", "ok": True, "absent": False}
+
+
+main.authorities_mod.attested = STRONG
+
+# В медицине трёх голосов НЕ хватает, и это осознанно: они не полностью
+# независимы. Модель могла выучить те же ошибки краудсорсного справочника,
+# а корпус подтверждает лишь существование строки в языке — «Анизакидоз →
+# Anisakis» (болезнь против рода паразита) прошёл бы все три проверки.
+r = one("увеит", "uveitis", dom="medical")
+it = next((i for i in r["items"] if i["id"] == 1), None)
+check(it and it["tier"] == "auto",
+      "в медицине приказа нет даже при трёх голосах: " + str((it or {}).get("tier")))
+
+# Там, где самоодобрение разрешено, те же трое дают приказ — и все названы.
+r = one("увеит", "uveitis", dom="general")
+it = next((i for i in r["items"] if i["id"] == 1), None)
+check(it and it["tier"] == "verified", "в общей области трое дают приказ")
+check(it and "справочник" in it["reason"] and "TestCorpus" in it["reason"],
+      "и в причине названы все трое: " + (it or {}).get("reason", "—"))
+
+# Убери корпус — приказа нет и там.
+main.authorities_mod.attested = lambda t, l, d: {
+    "hits": 1, "source": "test", "label": "TestCorpus", "ok": False, "absent": False}
+r = one("увеит", "uveitis", dom="general")
+it = next((i for i in r["items"] if i["id"] == 1), None)
+check(it and it["tier"] == "auto", "корпус не подтвердил — только подсказка")
+main._DICTIONARIES = []
+main.authorities_mod.attested = STRONG
+r = one("увеит", "uveitis", dom="general")
+it = next((i for i in r["items"] if i["id"] == 1), None)
+check(it and it["tier"] == "verified",
+      "без справочника работает прежнее правило трёх независимых сегментов")
+main.authorities_mod.attested = fake_attested
+
+print("\n=== 20. Подтверждение снижает порог согласия, а не отменяет его ===")
+main._DICTIONARIES = [loaded["crowd"]]
+main.authorities_mod.attested = STRONG
+# Двух независимых сегментов при обычных правилах мало (нужно три), но со
+# справочником и корпусом порог опускается на один — до двух.
+r = one("увеит", "uveitis", donors=("1:1", "1:2"), dom="general")
+it = next((i for i in r["items"] if i["id"] == 1), None)
+check(it and it["tier"] == "verified", "двух сегментов хватило: " + str((it or {}).get("reason")))
+main._DICTIONARIES = []
+r = one("увеит", "uveitis", donors=("1:1", "1:2"), dom="general")
+it = next((i for i in r["items"] if i["id"] == 1), None)
+check(it and it["tier"] == "auto", "без справочника тех же двух сегментов мало")
+# Ниже двух порог не опускается никогда: один сегмент — это одно решение.
+main._DICTIONARIES = [loaded["crowd"]]
+r = one("увеит", "uveitis", donors=("1:1",), dom="general")
+it = next((i for i in r["items"] if i["id"] == 1), None)
+check(it is None or it["tier"] != "verified", "одного сегмента не хватает никогда")
+main._DICTIONARIES = []
+main.authorities_mod.attested = fake_attested
+
+print("\n=== 21. Непонятный уровень в заголовке — слабый, а не сильный ===")
+write("weird.tsv", """# label: Источник с опечаткой
+# lang: RU→EN
+# tier: crowdsourced
+шов\tsuture
+""")
+w = {d.id: d for d in A.load_dictionaries(TMP)}["weird"]
+check(w.tier == "auto", "опечатка не раздаёт право приказывать: " + w.tier)
+
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

@@ -81,13 +81,22 @@ def _norm(text: str) -> str:
 # и опасен.
 
 class Dictionary:
-    def __init__(self, ident, label, lang, domains, pairs, path):
+    def __init__(self, ident, label, lang, domains, pairs, path, tier="verified"):
         self.id = ident
         self.label = label
         self.lang = lang              # «RU→EN»
         self.domains = domains        # set | "*"
         self.pairs = pairs            # {норм. оригинал: {норм. переводы}}
         self.path = path
+        # verified — источник вправе приказывать модели сам по себе (выверенный
+        # отраслевой справочник). auto — источник краудсорсный: его слово идёт
+        # подтверждающим голосом рядом с другими сигналами, но приказом в
+        # одиночку не становится. Разница не косметическая: приказ модель
+        # обязана исполнить, и неверная норма в нём — это ошибка в переводе,
+        # которую уже никто не поймает.
+        # Непонятное значение — закрываемся в СЛАБУЮ сторону: опечатка
+        # в заголовке не должна раздавать источнику право приказывать.
+        self.tier = tier if tier in ("verified", "auto") else "auto"
 
     def covers(self, lang: str, domain: str) -> bool:
         if _norm(self.lang) != _norm(lang):
@@ -104,7 +113,7 @@ class Dictionary:
 
 
 def _parse_header(line: str, meta: dict):
-    m = re.match(r"#\s*(label|lang|domains)\s*:\s*(.+)$", line.strip(), re.I)
+    m = re.match(r"#\s*(label|lang|domains|tier)\s*:\s*(.+)$", line.strip(), re.I)
     if not m:
         return
     key, val = m.group(1).lower(), m.group(2).strip()
@@ -147,10 +156,17 @@ def load_dictionaries(root) -> list:
             continue
         if not pairs:
             continue
+        tier = (meta.get("tier") or "verified").strip().lower()
         out.append(Dictionary(path.stem, meta.get("label", path.stem), meta["lang"],
-                              meta.get("domains", "*"), pairs, str(path)))
+                              meta.get("domains", "*"), pairs, str(path), tier))
+        d = out[-1]
+        # В журнал пишем ПРИНЯТЫЙ уровень, а не то, что было в файле: иначе
+        # «# tier: crowdsourced» логировался бы как crowdsourced, а работал бы
+        # как что-то другое.
         print(f"[authorities] {path.stem}: {len(pairs)} терминов, {meta['lang']}, "
-              f"области {meta.get('domains', '*')}", file=sys.stderr)
+              f"области {meta.get('domains', '*')}, уровень {d.tier}"
+              + (f" (в файле «{tier}» — не распознан)" if d.tier != tier else ""),
+              file=sys.stderr)
     return out
 
 

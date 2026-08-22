@@ -9,6 +9,10 @@ sys.path.insert(0, "backend")
 import main
 
 main.save_state = lambda *a, **k: None
+# Проверяем ДВИЖОК автоодобрения, а не поставляемые справочники: иначе
+# добавление любого источника в authority_data ломало бы эти тесты, хотя
+# правила не менялись. Поведение самих справочников — в test_authorities.
+main._DICTIONARIES = []
 H = main._text_hash
 fail = []
 

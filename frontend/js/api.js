@@ -116,6 +116,10 @@
     /* Итог по проекту одним экраном: чисто / исправлено машиной / нужен человек.
        Вызовов модели внутри нет, дёргать можно свободно. */
     analysis:      (pid)                    => call("GET",    `/projects/${pid}/analysis`),
+    /* Разбор вариантов НА ЯЗЫКЕ ОРИГИНАЛА: обратный перевод, значение и область
+       употребления по каждому. Для тех, кто целевого языка не знает: сравнивать
+       нужно смысл, написанный понятным языком, а не строки. Вызов платный. */
+    explainTerm:   (cid, include)            => call("POST",   `/term-queue/${cid}/explain`, { include: include || null }),
     approveTerm:   (cid, patch)             => call("POST",   `/term-queue/${cid}/approve`,          patch || {}),
     rejectTerm:    (cid)                    => call("POST",   `/term-queue/${cid}/reject`),
     extractTerms:  (pid, segIds, limit, model) => call("POST", `/projects/${pid}/extract-terms`,     { segment_ids: segIds || null, limit: limit || 30, model: model || null }),

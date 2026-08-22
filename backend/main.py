@@ -1957,8 +1957,13 @@ def _harvest_terms(seg: dict, project: dict, via: str = "confirmed") -> list:
 
 def _check_stale(check: Optional[dict], target: str) -> bool:
     """Та же производная, что уходит клиенту в _segment_for_client: проверка
-    относится к другому тексту, значит её результат уже ничего не значит."""
-    return (check or {}).get("target_hash") != _text_hash(target or "")
+    относится к другому тексту, значит её результат уже ничего не значит.
+
+    Хеш ОБРЕЗАННОГО текста — ровно так его и записывают back-check, termcheck
+    и Medical QA. Сравнивая с необрезанным, мы объявляли бы устаревшей свежую
+    проверку любого перевода с висящим пробелом, и прогон платил бы за неё
+    заново."""
+    return (check or {}).get("target_hash") != _text_hash((target or "").strip())
 
 
 def _machine_clean(seg: dict, min_score: int) -> Optional[str]:
@@ -3076,7 +3081,11 @@ def _backcheck_cached(seg: dict, mdl_id: str, use_judge: bool) -> bool:
     Судья вне своей зоны не вызывается, поэтому сегмент за её границами полный
     даже без judged: иначе включённый судья гнал бы весь проект заново."""
     bc = seg.get("backcheck") or {}
-    if bc.get("target_hash") != _text_hash(seg.get("target") or "") or bc.get("model") != mdl_id:
+    # Обрезанный текст: ровно так хеш и записывается. Сравнивая с необрезанным,
+    # мы перезапускали бы платную проверку на каждом переводе с висящим пробелом,
+    # а интерфейс при этом показывал бы её свежей.
+    if (bc.get("target_hash") != _text_hash((seg.get("target") or "").strip())
+            or bc.get("model") != mdl_id):
         return False
     if not use_judge or bc.get("judged"):
         return True
@@ -3104,10 +3113,16 @@ def _segment_for_client(seg: dict) -> dict:
     # свежим и пускал бы в глоссарий.
     cur_trimmed = _text_hash((out.get("target") or "").strip())
     bc, tc, rp = out.get("backcheck"), out.get("termcheck"), out.get("repair")
+    qa = out.get("qa_result")
     if bc:
         out["backcheck"] = {**bc, "stale": bc.get("target_hash") != cur_trimmed}
     if tc:
         out["termcheck"] = {**tc, "stale": tc.get("target_hash") != cur_trimmed}
+    if qa:
+        # Тот же признак и у Medical QA: без него карточка прогона показывала
+        # весь проект и после того, как всё уже проверено. Хеш sha1 браузеру
+        # не посчитать, поэтому производную считаем здесь.
+        out["qa_result"] = {**qa, "stale": qa.get("target_hash") != cur_trimmed}
     if rp:
         out["repair"] = {**rp, "tried": rp.get("source_hash") == cur}
     return out
@@ -3197,7 +3212,7 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
 def _termcheck_cached(seg: dict, mdl_id: str) -> bool:
     """Тот же перевод той же моделью уже разобран — платить второй раз незачем."""
     tc = seg.get("termcheck") or {}
-    if tc.get("target_hash") != _text_hash(seg.get("target") or ""):
+    if tc.get("target_hash") != _text_hash((seg.get("target") or "").strip()):
         return False
     # Пропущенный как «нечего проверять» не зависит от модели — пересчитывать нечего
     return tc.get("model") in (mdl_id, "skip")
@@ -3902,6 +3917,16 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True) -> dict:
     )
 
     seg["backtranslated_ru"] = qa_result["literal_backcheck"]["backtranslated_ru"]
+    # Хеш текста — как у back-check и termcheck: по нему повторный прогон
+    # понимает, что пересчитывать нечего. Без него Medical QA брала В КАЖДЫЙ
+    # прогон все переведённые сегменты, и составная кнопка всегда показывала
+    # полный проект, сколько бы раз её ни нажимали.
+    #
+    # Но ставим отметку ТОЛЬКО если проверка была полной: без обратного перевода
+    # часть находок не считается вовсе, и закэшировать такой результат значит
+    # закрыть сегмент от нормальной проверки навсегда.
+    if (back or "").strip():
+        qa_result["target_hash"] = _text_hash(target_text)
     seg["qa_result"] = qa_result
     seg["qa_issues"] = qa_result["qa_issues"]
     seg["qa"] = qa_result["ui_issues"]
@@ -3936,6 +3961,8 @@ class MedicalQABatchRequest(BaseModel):
     limit: int = 50
     segment_ids: Optional[list] = None
     run_backcheck: bool = True
+    # Пропускать сегменты, чей результат относится к нынешнему тексту.
+    skip_cached: bool = True
 
 
 @app.post("/api/projects/{pid}/medical-qa/batch")
@@ -3948,6 +3975,15 @@ def batch_medical_qa(pid: int, req: MedicalQABatchRequest = MedicalQABatchReques
         and s.get("status") in {"translated", "qa", "review", "confirmed"}
         and (id_filter is None or s["id"] in id_filter)
     ]
+    # Свежую проверку второй раз не считаем. Экономит не только процессор:
+    # Medical QA заказывает обратный перевод, если back-check по этому тексту
+    # устарел, — то есть повторный прогон по всему проекту мог стоить денег.
+    skipped_cached = 0
+    if req.skip_cached:
+        before = len(candidates)
+        candidates = [s for s in candidates
+                      if _check_stale(s.get("qa_result"), s.get("target"))]
+        skipped_cached = before - len(candidates)
     targets = candidates[:req.limit]
     processed = []
     errors = []
@@ -3978,6 +4014,7 @@ def batch_medical_qa(pid: int, req: MedicalQABatchRequest = MedicalQABatchReques
         "count": len(processed),
         "remaining": max(0, len(candidates) - len(targets)),
         "errors": errors,
+        "skipped_cached": skipped_cached,
         "featureEnabled": medical_qa_enabled(),
     }
 
@@ -4054,12 +4091,34 @@ def batch_translate(pid: int, req: BatchRequest):
                        if s["status"] == "new" and
                        (id_filter is None or s["id"] in id_filter)]
         skipped_confirmed = []
+    done_by_src: dict = {}
+    if not req.force:
+        for s0 in project["segments"]:
+            t0 = (s0.get("target") or "").strip()
+            # Тот же белый список, что и у остальных потребителей перевода:
+            # сегмент со статусом failed не прошёл проверку, и копировать его
+            # текст в близнецов — значит размножить брак.
+            if not t0 or s0.get("status") not in ("translated", "qa", "review", "confirmed"):
+                continue
+            key0 = _norm_key(s0.get("source"))
+            prev = done_by_src.get(key0)
+            # Донором становится лучший, а не первый по порядку: заверенный
+            # человеком перевод сильнее машинного, иначе старая ошибка
+            # переехала бы в новые сегменты поверх уже исправленного близнеца.
+            if prev is None or (s0.get("confirmedBy") == "human" and not prev[1]):
+                done_by_src[key0] = (t0, s0.get("confirmedBy") == "human",
+                                     s0.get("provider"))
+
     # Ключ нужен, только если хоть один сегмент придётся ПЕРЕВОДИТЬ. Порция из
-    # одних совпадений с памятью переводов обходится без вызовов модели — и
-    # отказывать ей 503 значило бы запретить работу, которая ничего не стоит.
-    # Проверка стоит здесь, а не выше: до отбора состав ещё неизвестен.
-    if all_targets and not os.environ.get("OPENAI_API_KEY")             and not all(_tm_trusted(_get_context(s["source"], project=project)[1])
-                        for s in all_targets):
+    # одних совпадений с памятью или из повторов уже переведённого обходится
+    # без вызовов модели — отказывать ей 503 значило бы запретить работу,
+    # которая ничего не стоит. Проверка стоит здесь: до отбора состав неизвестен.
+    def _free(sg):
+        if _tm_trusted(_get_context(sg["source"], project=project)[1]):
+            return True
+        return _norm_key(sg["source"]) in done_by_src
+    if (all_targets and not os.environ.get("OPENAI_API_KEY")
+            and not all(_free(s) for s in all_targets)):
         # 503 до работы, как у termcheck, back-check и ремонта: иначе отсутствие
         # ключа вырождается в посегментные ошибки, и составной прогон принимает
         # их за «порция целиком провалилась» вместо «шаг недоступен».
@@ -4085,6 +4144,11 @@ def batch_translate(pid: int, req: BatchRequest):
             order.append(key)
         groups[key].append(seg)
 
+    # Готовые переводы одинаковых исходников ПО ВСЕМУ проекту. Дедупликация
+    # внутри порции ловит только соседей: один и тот же заголовок, встретившийся
+    # в сегментах 12 и 500, попадает в разные порции и оплачивается дважды.
+    # Проект уже переведён наполовину — брать оттуда бесплатно.
+
     def _translate_group(key):
         """Один вызов на группу одинаковых исходников. Возвращает результат,
         применяет его основной поток — так мутации STATE остаются в одном месте."""
@@ -4097,8 +4161,17 @@ def batch_translate(pid: int, req: BatchRequest):
         # При force (явный выбор пользователя: галочки или «перевести заново») шорткат
         # не применяем — иначе «перевести заново выбранной моделью» молча подставляло бы
         # старый текст из памяти. Так же ведёт себя одиночный перевод сегмента.
+        # Память переводов идёт ПЕРЕД повтором внутри проекта: её записи человек
+        # подтверждал, а близнец в проекте мог быть переведён машиной и с тех пор
+        # исправлен только в памяти.
         if not req.force and _tm_trusted(tm_hit) and tm_hit.get("tgt"):
             return {"key": key, "tm": True, "text": tm_hit["tgt"]}
+
+        # Такой текст в проекте уже переведён — платить за него второй раз
+        # не за что. force не трогаем: «перевести заново» должно переводить.
+        ready = done_by_src.get(key)
+        if ready:
+            return {"key": key, "reuse": True, "text": ready[0], "provider": ready[2]}
 
         try:
             translation = _openai_translate(seg["source"], project["src"], project["tgt"],
@@ -4119,15 +4192,20 @@ def batch_translate(pid: int, req: BatchRequest):
         if res.get("error"):
             errors.extend(sg["id"] for sg in segs)
             continue
-        if res.get("tm"):
+        if res.get("tm") or res.get("reuse"):
             for sg in segs:
-                sg["target"] = res["text"]
                 # translated, а не confirmed — см. translate_segment
+                sg["target"] = res["text"]
                 sg["status"] = "translated"
-                sg["route"] = "EXACT_TM"
-                sg["provider"] = PROVIDER_TM
+                sg["route"] = "EXACT_TM" if res.get("tm") else "DUPLICATE"
+                # Копия наследует провайдера донора: писать «tm» на тексте,
+                # взятом у соседнего сегмента, значит соврать о происхождении.
+                sg["provider"] = PROVIDER_TM if res.get("tm") else (res.get("provider") or "")
                 translated.append(sg["id"])
-            tm_hits_count += len(segs)
+            if res.get("tm"):
+                tm_hits_count += len(segs)
+            else:
+                dup_hits_count += len(segs)
             continue
         for i, sg in enumerate(segs):
             # Переписываем заверенный человеком перевод — сохраняем прежний текст
@@ -4470,7 +4548,7 @@ def _job_chunk_full(pid: int, chunk: list, params: dict) -> dict:
             # Уже переведённое не переводим заново: составной прогон гоняют
             # по всему проекту, и force затирал бы готовые переводы.
             sub["force"] = False
-        if st in ("backcheck", "termcheck"):
+        if st in ("backcheck", "termcheck", "medical_qa"):
             # Свежую проверку второй раз не оплачиваем — за состав отвечает
             # отбор сегментов, а не повторный вызов модели.
             sub["skip_cached"] = True
@@ -4555,8 +4633,10 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
                 "applied": len(r.get("applied", [])), "reverted": len(r.get("skipped", [])),
                 "errors": len(r.get("errors", []))}
     if kind == "medical_qa":
-        r = batch_medical_qa(pid, MedicalQABatchRequest(segment_ids=chunk, limit=n))
-        return {"done": r.get("count", 0), "errors": len(r.get("errors", []))}
+        r = batch_medical_qa(pid, MedicalQABatchRequest(
+            segment_ids=chunk, limit=n, skip_cached=bool(params.get("skip_cached", False))))
+        return {"done": r.get("count", 0), "errors": len(r.get("errors", [])),
+                "skipped_cached": r.get("skipped_cached", 0)}
     raise ValueError("unknown job kind: " + kind)
 
 

@@ -47,6 +47,18 @@ function useStore(authed) {
     ...p, segments: p.segments.map(s => s.id === sid ? { ...s, ...patch } : s) })));
 
   const updateSegment = (pid, sid, patch) => {
+    // Перевод изменился — значит проверки к нему больше не относятся. Признак
+    // stale считает сервер по хешу, браузеру sha1 не посчитать; но факт правки
+    // он знает точно, и молчать о нём нельзя: иначе прогон пропустит изменённый
+    // сегмент как «уже проверенный».
+    if (patch && patch.target !== undefined) {
+      const mark = (c) => (c ? { ...c, stale: true } : c);
+      const cur = (projects.find(p => p.id === pid) || {}).segments || [];
+      const seg = cur.find(s => s.id === sid);
+      if (seg) patch = { ...patch,
+        backcheck: mark(seg.backcheck), termcheck: mark(seg.termcheck),
+        qa_result: mark(seg.qa_result) };
+    }
     _patchLocal(pid, sid, patch);
     // Sync to backend (best-effort)
     if (window.API && patch && (patch.target !== undefined || patch.status !== undefined)) {

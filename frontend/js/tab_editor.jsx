@@ -1017,8 +1017,11 @@ function TabEditor({ store, toast }) {
     translate: fullScope.filter(s => s.status === "new"),
     backcheck: fullScope.filter(s => backcheckable(s, currentIdSet)),
     termcheck: fullScope.filter(s => termcheckable(s, currentIdSet)),
+    // Свежую проверку сервер пропустит — значит и считать её здесь нельзя,
+    // иначе карточка обещает работу, которой не будет.
     medical_qa: fullScope.filter(s => s.target && s.target.trim()
-      && ["translated", "qa", "review", "confirmed"].includes(s.status)),
+      && ["translated", "qa", "review", "confirmed"].includes(s.status)
+      && !(s.qa_result && s.qa_result.stale === false)),
     repair: fullScope.filter(s => repairable(s, currentIdSet)),
   };
   const pickedFull = fullSteps || new Set(FULL_STEPS.map(s => s[0]));

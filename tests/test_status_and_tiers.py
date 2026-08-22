@@ -109,13 +109,17 @@ check(main._hit_tier({"src": "задний", "tgt": "rear"}) == main.GLOSSARY_TI
       "уровень по умолчанию — подсказка")
 check(main._hit_tier({"src": "увеит", "tgt": "uveitis", "tier": "verified"})
       == main.GLOSSARY_TIER_HARD, "явный verified читается как приказ")
-# Плейсхолдер Google — это принуждение мимо проверок, туда пускают только приказ.
-calls = []
-main._deep_translate = lambda text, s, t: (calls.append(text), text)[1]
-main._google_with_gloss("задний увеит", "RU", "EN",
-                        [{"src": "задний", "tgt": "rear", "_form": "задний"}])
-check(calls and "rear" not in calls[0] and "__" not in calls[0],
-      "запись без уровня не подставляется плейсхолдером")
+# И главное — как это выглядит в промпте: приказ модель обязана исполнить,
+# подсказку вправе проигнорировать. Запись без уровня не должна принуждать.
+sysmsg = main._translate_system("RU", "EN", [
+    {"src": "увеит", "tgt": "uveitis", "tier": "verified"},
+    {"src": "задний", "tgt": "rear"},                 # уровня нет
+], None, False, "medical", main._resolve_model(None))
+order, hint = sysmsg.split("Unverified glossary hints")
+check("uveitis" in order, "проверенная запись уходит приказом")
+check("rear" in hint, "запись без уровня уходит подсказкой, а не приказом")
+check("задний → rear" not in order, "и в приказ не попадает: именно так рождалось «rear cyclitis»")
+check("задний → rear" in hint, "а в подсказках она есть — с оговоркой, что часть из них неверна")
 
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

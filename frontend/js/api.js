@@ -82,7 +82,8 @@
     },
 
     models:        ()                       => call("GET",    "/models"),
-    translate:     (pid, sid, engine, force, model) => call("POST", `/segments/${pid}/${sid}/translate`, { engine, force: !!force, model: model || null }),
+    /* Движок один — выбранная модель. Параметра engine больше нет. */
+    translate:     (pid, sid, force, model) => call("POST", `/segments/${pid}/${sid}/translate`, { force: !!force, model: model || null }),
     backcheck:     (pid, sid, model, judge, judgeModel) => call("POST", `/segments/${pid}/${sid}/backcheck`, { model: model || null, use_judge: !!judge, judge_model: judgeModel || null }),
     backcheckBatch:(pid, segIds, limit, model, judge, judgeModel, skipCached) => call("POST", `/projects/${pid}/backcheck/batch`, { segment_ids: segIds || null, limit: limit || 10, model: model || null, use_judge: !!judge, judge_model: judgeModel || null, skip_cached: skipCached !== false }),
     medicalQA:     (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/medical-qa`,  { run_backcheck: true }),
@@ -91,7 +92,7 @@
     revert:        (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/revert`),
     update:        (pid, sid, patch)        => call("POST",   `/segments/${pid}/${sid}/update`,     patch),
 
-    batch:         (pid, engine, segIds, force, limit, model) => call("POST", `/projects/${pid}/batch`, { engine, segment_ids: segIds || null, force: !!force, limit: limit || 50, model: model || null }),
+    batch:         (pid, segIds, force, limit, model) => call("POST", `/projects/${pid}/batch`, { segment_ids: segIds || null, force: !!force, limit: limit || 50, model: model || null }),
     medicalQABatch:(pid, segIds)             => call("POST",   `/projects/${pid}/medical-qa/batch`,   { segment_ids: segIds || null, run_backcheck: true }),
     preflight:     (pid)                    => call("POST",   `/projects/${pid}/preflight`),
     exportProject: (pid, format, source)    => call("POST",   `/projects/${pid}/export`,            { format, source: source !== false }),

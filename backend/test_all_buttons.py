@@ -81,19 +81,17 @@ pid = projects[0]["id"]
 s, project = call("GET", f"/projects/{pid}")
 check(f"Editor → open project #{pid}", s == 200 and "segments" in project, f"{len(project['segments'])} segments")
 
-# 7. Translate a "new" segment via Google
-new_seg = next((s for s in project["segments"] if s["status"] == "new"), None)
-if new_seg:
-    s, d = call("POST", f"/segments/{pid}/{new_seg['id']}/translate", {"engine": "google"})
-    check("Editor → Google Translate button",
-          s == 200 and d["ok"] and d["segment"]["status"] == "translated",
-          f"target='{d['segment']['target'][:50]}...'")
-
-# 8. Translate via GPT
+# 7. Перевод одного сегмента. Бесплатного движка больше нет, поэтому здесь
+# ровно ОДИН платный вызов вместо прежних двух — смоук не должен переводить
+# документ целиком, чтобы проверить, что кнопка нажимается.
 new_seg2 = next((s for s in project["segments"] if s["status"] == "new"), None)
 if new_seg2:
-    s, d = call("POST", f"/segments/{pid}/{new_seg2['id']}/translate", {"engine": "gpt"})
-    check("Editor → GPT Translate button", s == 200 and d["ok"])
+    s, d = call("POST", f"/segments/{pid}/{new_seg2['id']}/translate", {})
+    # Деталь считаем ТОЛЬКО при успехе: отказ модели — это одна строка FAIL,
+    # а не KeyError, обрывающий весь смоук на середине.
+    ok = s == 200 and isinstance(d, dict) and d.get("ok") and d.get("segment")
+    check("Editor → кнопка перевода", ok,
+          f"target='{d['segment']['target'][:50]}...'" if ok else f"ответ {s}: {str(d)[:80]}")
 
 # 9. QA
 translated = next((s for s in project["segments"] if s["status"] == "translated"), None)
@@ -124,13 +122,10 @@ check("Editor → manual edit + save", s == 200 and d["segment"]["target"] == "M
 s, d = call("POST", f"/segments/{pid}/{any_seg['id']}/update", {"comment": "Smoke test comment"})
 check("Editor detail → add comment", s == 200)
 
-# 14. Batch translate Google (low-risk)
-s, d = call("POST", f"/projects/{pid}/batch", {"engine": "google"})
-check("Editor → batch Google translate", s == 200 and d.get("ok"), f"translated={d.get('count', 0)}")
-
-# 15. Batch translate GPT (non-low risk)
-s, d = call("POST", f"/projects/{pid}/batch", {"engine": "gpt"})
-check("Editor → batch GPT translate", s == 200 and d.get("ok"), f"translated={d.get('count', 0)}")
+# 14. Пакетный перевод. limit=1: смоук проверяет, что эндпоинт отвечает, а не
+# переводит проект — платные прогоны ради проверки кнопок запускать нельзя.
+s, d = call("POST", f"/projects/{pid}/batch", {"limit": 1})
+check("Editor → пакетный перевод", s == 200 and d.get("ok"), f"translated={d.get('count', 0)}")
 
 # 16. Preflight analyze
 s, d = call("POST", f"/projects/{pid}/preflight")

@@ -18,7 +18,7 @@ Endpoints:
   POST /api/segments/{pid}/{sid}/confirm  → confirm + add to TM
   POST /api/segments/{pid}/{sid}/revert   → revert confirmed/failed
   POST /api/segments/{pid}/{sid}/update   → update target/comment
-  POST /api/projects/{pid}/batch          → batch translate (engine=google|gpt)
+  POST /api/projects/{pid}/batch          → batch translate (выбранной моделью)
   POST /api/projects/{pid}/preflight      → run preflight analysis
   POST /api/projects/{pid}/export         → trigger export (docx|pdf|xlsx)
   POST /api/glossary                      → add/update term
@@ -69,7 +69,6 @@ def _safe_import(name: str):
 
 db = _safe_import("db")
 pipeline = _safe_import("pipeline")
-google_translate = _safe_import("google_translate")
 tm_mod = _safe_import("tm")
 medical_qa_mod = _safe_import("medical_qa")
 # Внешние источники приказов: отраслевые справочники и корпуса целевого языка.
@@ -77,51 +76,15 @@ medical_qa_mod = _safe_import("medical_qa")
 # и не знать. См. шапку authorities.py.
 authorities_mod = _safe_import("authorities")
 
-# Google Cloud Translation API v2 (с fallback на deep-translator)
-import requests as _requests
-
-# Ключ, вернувший 401/403, помечается мёртвым до рестарта — не тратим
-# лишний HTTP-запрос (и не льём ключ в логи) на каждый перевод.
-_GOOGLE_KEY_DEAD = False
-
-def _deep_translate(text: str, src: str, tgt: str) -> str:
-    global _GOOGLE_KEY_DEAD
-    src = src.lower()[:2]
-    tgt = tgt.lower()[:2]
-    api_key = os.environ.get("GOOGLE_TRANSLATE_API_KEY", "")
-    if api_key and not _GOOGLE_KEY_DEAD:
-        try:
-            resp = _requests.post(
-                "https://translation.googleapis.com/language/translate/v2",
-                params={"key": api_key},
-                json={"q": text, "source": src, "target": tgt, "format": "text"},
-                timeout=15,
-            )
-            resp.raise_for_status()
-            return resp.json()["data"]["translations"][0]["translatedText"]
-        except Exception as _ge:
-            msg = str(_ge).replace(api_key, "***KEY***")  # не светим ключ в логах
-            if "401" in msg or "403" in msg:
-                _GOOGLE_KEY_DEAD = True
-                print(f"[backend] Google API key невалиден ({msg}) — отключён до рестарта, "
-                      f"используется бесплатный fallback", file=sys.stderr)
-            else:
-                print(f"[backend] Google API key failed ({msg}), falling back to free tier", file=sys.stderr)
-    # Fallback: deep-translator (без API ключа)
-    from deep_translator import GoogleTranslator as _DTG
-    return _DTG(source=src, target=tgt).translate(text) or ""
-
-try:
-    # Проверяем один раз при старте, а не держим константу True: этот флаг
-    # решает, есть ли у нас бесплатный запасной переводчик. Соврав про него,
-    # мы обещаем фолбэк, которого нет, — и вместо честного «нет переводчика»
-    # получаем посегментные ошибки в середине оплаченного прогона.
-    import deep_translator as _deep_translator_probe   # noqa: F401
-    _DEEP_TRANSLATE_OK = True
-except Exception as _e:                                # pragma: no cover
-    _DEEP_TRANSLATE_OK = False
-    print(f"[backend] deep-translator недоступен ({_e}) — бесплатного фолбэка нет",
-          file=sys.stderr)
+# Google Translate убран из системы. Перевод делает ТОЛЬКО выбранная модель:
+# бесплатный движок не знает предметной области, игнорирует глоссарий (кроме
+# грубой подстановки плейсхолдерами) и давал текст, который потом всё равно
+# приходилось чинить платными прогонами. Экономия была мнимой.
+#
+# Отсюда следует: нет ключа OpenAI — нет перевода. Не заглушка, не «черновик
+# бесплатным движком», а честная ошибка. Исторические сегменты с
+# provider="google" и route="GOOGLE_SAFE" остаются как есть: это факт о том,
+# чем их перевели, и переписывать его нельзя.
 
 import re as _re
 
@@ -392,36 +355,6 @@ def _tm_trusted(t: Optional[dict]) -> bool:
     return bool(t) and (t.get("quality") or "draft") == GLOSSARY_TIER_HARD
 
 
-def _google_with_gloss(text: str, src: str, tgt: str, gloss_hits: list) -> str:
-    """Google Translate с подстановкой глоссарных терминов через плейсхолдеры.
-
-    Заменяем ФАКТИЧЕСКУЮ форму термина (h['_form'], напр. "лимфангита") →
-    плейсхолдер → Google переводит остальное → восстанавливаем целевой термин.
-    """
-    # Плейсхолдер — это принуждение: подставленный термин попадёт в перевод
-    # дословно и мимо любой проверки. Так можно только с проверенными записями;
-    # автоимпорт пусть переводит движок — его ошибку хотя бы видно в QA.
-    gloss_hits = [h for h in (gloss_hits or []) if _hit_tier(h) == GLOSSARY_TIER_HARD]
-    if not gloss_hits:
-        return _deep_translate(text, src, tgt)
-    modified = text
-    placeholders: dict[str, str] = {}
-    for i, h in enumerate(gloss_hits):
-        form = h.get("_form", h["src"])   # реальная форма в тексте
-        ph = f"MCAT{i:03d}X"
-        pattern = _re.compile(_re.escape(form), _re.IGNORECASE)
-        if pattern.search(modified):
-            modified = pattern.sub(ph, modified)
-            placeholders[ph] = h["tgt"]
-    result = _deep_translate(modified, src, tgt)
-    for ph, target in placeholders.items():
-        result = _re.sub(_re.escape(ph), target, result, flags=_re.IGNORECASE)
-    if placeholders:
-        print(f"[backend] Google+glossary: {len(placeholders)} forms replaced "
-              f"{[h.get('_form', h['src']) for h in gloss_hits[:5]]}", file=sys.stderr)
-    return result
-
-
 # ─── Предметные области ──────────────────────────────────────────────
 # Сервис не привязан к медицине: область — параметр проекта. Это ЕДИНСТВЕННОЕ
 # место, где живёт доменная специфика промптов (перевод и проверка терминов).
@@ -505,6 +438,9 @@ _MODELS_BY_ID = {m["id"]: m for m in OPENAI_MODELS}
 # seg["provider"] — чем сегмент переведён по факту: id модели OpenAI, либо эти константы.
 # Поле проставляется в момент перевода; у сегментов, переведённых до его появления,
 # его нет, и фронтенд показывает приблизительное значение по seg["route"].
+# Осталось только для чтения истории: старые сегменты помечены этим
+# провайдером и маршрутом GOOGLE_SAFE. Новый перевод так не помечается
+# никогда — движок один, выбранная модель.
 PROVIDER_GOOGLE = "google"
 PROVIDER_TM = "tm"
 
@@ -721,21 +657,12 @@ def _resolve_model(model_id: Optional[str]) -> dict:
 
 
 # Direct OpenAI GPT translation
-def _openai_translate(text: str, src: str, tgt: str,
-                      gloss_hits: list = None, tm_context: dict = None,
-                      model: str = None, literal: bool = False,
-                      domain: Optional[str] = None) -> str:
-    """GPT-перевод с инъекцией глоссария (базовые формы — GPT знает склонения).
-
-    literal=True — режим для обратного перевода. Обычный промпт тут вреден:
-    сильная модель видит кривой английский, «чинит» его на лету и возвращает
-    правильный русский, маскируя ровно ту ошибку, которую back-check ищет.
-    Поэтому в этом режиме требуем дословности и запрещаем править термины,
-    а глоссарий и TM не подсовываем вовсе — иначе модель подгонит ответ под них."""
-    import openai
-    mdl = _resolve_model(model)
-    # timeout + retries: зависший вызов не должен блокировать поток бесконечно
-    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=2)
+def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
+                      literal: bool, domain, mdl: dict) -> str:
+    """Системный промпт перевода. Вынесен отдельно, чтобы его можно было
+    проверить тестом без обращения к модели: от того, каким уровнем уходит
+    запись глоссария — приказом или подсказкой, — зависит, повторит ли модель
+    чужую ошибку, а такое нельзя оставлять без проверки."""
     if literal:
         system = (
             f"Translate the following text from {src} to {tgt} as literally as possible. "
@@ -794,6 +721,25 @@ def _openai_translate(text: str, src: str, tgt: str,
               f", model={mdl['id']}", file=sys.stderr)
     # GPT-5.x отвергает max_tokens/temperature; лимит выставлен с запасом, потому что
     # у этого семейства в completion_tokens входят ещё и reasoning-токены.
+    return system
+
+
+def _openai_translate(text: str, src: str, tgt: str,
+                      gloss_hits: list = None, tm_context: dict = None,
+                      model: str = None, literal: bool = False,
+                      domain: Optional[str] = None) -> str:
+    """GPT-перевод с инъекцией глоссария (базовые формы — GPT знает склонения).
+
+    literal=True — режим для обратного перевода. Обычный промпт тут вреден:
+    сильная модель видит кривой английский, «чинит» его на лету и возвращает
+    правильный русский, маскируя ровно ту ошибку, которую back-check ищет.
+    Поэтому в этом режиме требуем дословности и запрещаем править термины,
+    а глоссарий и TM не подсовываем вовсе — иначе модель подгонит ответ под них."""
+    import openai
+    mdl = _resolve_model(model)
+    # timeout + retries: зависший вызов не должен блокировать поток бесконечно
+    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=2)
+    system = _translate_system(src, tgt, gloss_hits, tm_context, literal, domain, mdl)
     extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
              else {"max_tokens": 1024, "temperature": 0.1})
     resp = client.chat.completions.create(
@@ -1687,13 +1633,14 @@ async def upload_project(
 
 # ─── Segment actions ────────────────────────────────────────────────
 class TranslateRequest(BaseModel):
-    engine: str  # "google" | "gpt"
+    # engine больше нет: движок один — выбранная модель. Поле осталось бы
+    # враньём про выбор, которого не существует.
     force: bool = False  # True = пропустить TM-шорткат (ручной перевод)
     model: Optional[str] = None  # id из OPENAI_MODELS; неизвестный → DEFAULT_OPENAI_MODEL
 
 @app.post("/api/segments/{pid}/{sid}/translate")
 def translate_segment(pid: int, sid: int, req: TranslateRequest):
-    # обычный def, а не async: внутри блокирующие вызовы OpenAI/Google (см. batch_translate)
+    # обычный def, а не async: внутри блокирующий вызов модели (см. batch_translate)
     seg = get_segment(pid, sid)
     project = get_project(pid)
     src_text = seg["source"]
@@ -1711,56 +1658,26 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
         save_state(STATE)
         return {"ok": True, "segment": seg, "usedRealApi": False, "source": "TM"}
 
-    translation = None
-    used_real_api = False
-    used_provider = None   # чем на самом деле переведено — с учётом всех fallback'ов
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(503, "Перевод требует ключ OpenAI: бесплатного движка "
+                                 "в системе больше нет")
     try:
-        if req.engine == "google" and _DEEP_TRANSLATE_OK:
-            translation = _google_with_gloss(src_text, project["src"], project["tgt"], gloss_hits)
-            used_real_api = True
-            used_provider = PROVIDER_GOOGLE
-        elif req.engine == "gpt" and os.environ.get("OPENAI_API_KEY"):
-            translation = _openai_translate(src_text, project["src"], project["tgt"],
-                                            gloss_hits=gloss_hits, tm_context=tm_hit,
-                                            model=req.model, domain=project.get("domain"))
-            used_real_api = bool(translation)
-            if translation:
-                used_provider = _resolve_model(req.model)["id"]
-        # GPT fallback: Google когда нет ключа OpenAI
-        if not translation and req.engine == "gpt" and _DEEP_TRANSLATE_OK:
-            translation = _google_with_gloss(src_text, project["src"], project["tgt"], gloss_hits)
-            used_real_api = True
-            used_provider = PROVIDER_GOOGLE
+        translation = _openai_translate(src_text, project["src"], project["tgt"],
+                                        gloss_hits=gloss_hits, tm_context=tm_hit,
+                                        model=req.model, domain=project.get("domain"))
     except Exception as e:
-        print(f"[backend] translate fallback ({req.engine}): {e}", file=sys.stderr)
-        # Кросс-движковый fallback: google↑ → пробуем GPT, gpt↑ → пробуем Google
-        try:
-            if req.engine == "google" and os.environ.get("OPENAI_API_KEY"):
-                translation = _openai_translate(src_text, project["src"], project["tgt"],
-                                                gloss_hits=gloss_hits, tm_context=tm_hit,
-                                                model=req.model, domain=project.get("domain"))
-                if translation:
-                    used_provider = _resolve_model(req.model)["id"]
-            elif _DEEP_TRANSLATE_OK:
-                translation = _google_with_gloss(src_text, project["src"], project["tgt"], gloss_hits)
-                if translation:
-                    used_provider = PROVIDER_GOOGLE
-            used_real_api = bool(translation)
-        except Exception as e2:
-            print(f"[backend] translate cross-fallback failed: {e2}", file=sys.stderr)
-
+        print(f"[backend] translate failed seg#{sid}: {e}", file=sys.stderr)
+        translation = None
     if not translation:
-        # Раньше сюда подставлялась заглушка "[GOOGLE demo translation...]" — в медицинском
-        # переводе это недопустимо. Честно сообщаем об ошибке, сегмент не трогаем.
-        raise HTTPException(502, "Перевод недоступен: оба движка вернули ошибку. "
-                                 "Попробуйте ещё раз или проверьте API-ключи.")
+        # Ни заглушек, ни «черновика бесплатным движком»: в медицинском переводе
+        # подсунуть вместо ответа что попало хуже, чем не ответить. Сегмент
+        # не трогаем, ошибку называем.
+        raise HTTPException(502, "Модель не вернула перевод. Попробуйте ещё раз "
+                                 "или выберите другую модель.")
 
-    _replace_target(seg, translation,
-                    used_provider or (PROVIDER_GOOGLE if req.engine == "google"
-                                      else _resolve_model(req.model)["id"]),
-                    "GPT_REQUIRED" if req.engine == "gpt" else "GOOGLE_SAFE")
+    _replace_target(seg, translation, _resolve_model(req.model)["id"], "GPT_REQUIRED")
     save_state(STATE)
-    return {"ok": True, "segment": seg, "usedRealApi": used_real_api}
+    return {"ok": True, "segment": seg, "usedRealApi": True}
 
 
 @app.post("/api/segments/{pid}/{sid}/qa")
@@ -3045,19 +2962,14 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
     mdl_id = _resolve_model(model or BACKCHECK_DEFAULT_MODEL)["id"]
     back = ""
     try:
-        if os.environ.get("OPENAI_API_KEY"):
-            back = _openai_translate(target_text, project["tgt"], project["src"],
-                                     model=model or BACKCHECK_DEFAULT_MODEL, literal=True)
-        elif _DEEP_TRANSLATE_OK:
-            back = _deep_translate(target_text, project["tgt"], project["src"])
-            mdl_id = PROVIDER_GOOGLE
+        # Обратный перевод делает ДРУГАЯ модель, а не бесплатный движок: на нём
+        # весь смысл проверки. Движок переводил дословно и одинаково хорошо
+        # возвращал и верный термин, и кальку — балл получался ни о чём.
+        back = _openai_translate(target_text, project["tgt"], project["src"],
+                                 model=model or BACKCHECK_DEFAULT_MODEL, literal=True)
     except Exception as e:
         print(f"[backend] backcheck seg#{seg.get('id')}: {e}", file=sys.stderr)
-        try:
-            back = _deep_translate(target_text, project["tgt"], project["src"])
-            mdl_id = PROVIDER_GOOGLE
-        except Exception as e2:
-            return {"ok": False, "error": str(e2)}
+        return {"ok": False, "error": str(e)}
 
     if not (back or "").strip():
         return {"ok": False, "error": "Обратный перевод не получен"}
@@ -3702,14 +3614,11 @@ class BackcheckBatchRequest(BaseModel):
 def backcheck_batch(pid: int, req: BackcheckBatchRequest):
     """Пакетный back-check. Порционный, как и пакетный перевод: клиент гоняет
     порции по 10, поэтому один запрос не живёт дольше таймаута прокси."""
-    if not os.environ.get("OPENAI_API_KEY") and not _DEEP_TRANSLATE_OK:
+    if not os.environ.get("OPENAI_API_KEY"):
         # 503 отдаём до работы, как это делают termcheck и ремонт: иначе
         # обратный перевод вырождается в посегментные ошибки, и составной
         # прогон принимает их за «порция целиком провалилась».
-        # Проверяем ОБА пути: _run_segment_backcheck умеет считать обратный
-        # перевод бесплатным переводчиком, и запрещать пакет там, где одиночный
-        # сегмент работает, — значит развести их в поведении.
-        raise HTTPException(503, "Back-check требует ключ OpenAI или доступный переводчик")
+        raise HTTPException(503, "Back-check требует ключ OpenAI")
     project = get_project(pid)
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
     mdl_id = _resolve_model(req.model or BACKCHECK_DEFAULT_MODEL)["id"]
@@ -3805,12 +3714,9 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True) -> dict:
             back = fresh["back"]
         else:
             try:
-                if os.environ.get("OPENAI_API_KEY"):
-                    # literal=True обязателен: обычный промпт «чинит» кривой
-                    # английский на лету и прячет ошибку, которую QA ищет
-                    back = _openai_translate(target_text, project["tgt"], project["src"], literal=True)
-                elif os.environ.get("GOOGLE_TRANSLATE_API_KEY"):
-                    back = _deep_translate(target_text, project["tgt"], project["src"])
+                # literal=True обязателен: обычный промпт «чинит» кривой
+                # английский на лету и прячет ошибку, которую QA ищет
+                back = _openai_translate(target_text, project["tgt"], project["src"], literal=True)
             except Exception as e:
                 print(f"[backend] medical QA backcheck skipped: {e}", file=sys.stderr)
 
@@ -3945,12 +3851,10 @@ def update_segment(pid: int, sid: int, req: UpdateSegmentRequest):
 
 
 class BatchRequest(BaseModel):
-    engine: str                          # "google" | "gpt" | "auto"
-    # "auto" — один прогон на весь проект: движок выбирается посегментно по risk
-    # (длине). Без него составная кнопка брала бы только половину сегментов:
-    # отбор для "gpt" отбрасывает короткие, для "google" — длинные, и остаток
-    # молча оставался бы непереведённым.
-    low_engine: str = "gpt"              # чем переводить короткие в режиме auto
+    # Движок один — выбранная модель, поэтому engine и low_engine убраны.
+    # Заодно исчез отбор по risk: он существовал только чтобы делить сегменты
+    # между Google и моделью, и оставлял половину проекта непереведённой,
+    # если запустить не ту кнопку.
     limit: int = 50                      # максимум за один вызов
     segment_ids: Optional[list] = None  # если передан — обрабатывать только эти сегменты
     force: bool = False                  # True = явный выбор пользователя, пропустить фильтры статуса и риска
@@ -3979,11 +3883,18 @@ def batch_translate(pid: int, req: BatchRequest):
     else:
         all_targets = [s for s in project["segments"]
                        if s["status"] == "new" and
-                       (True if req.engine == "auto" else
-                        (s.get("risk", "medium") == "low" if req.engine == "google"
-                         else s.get("risk", "medium") != "low")) and
                        (id_filter is None or s["id"] in id_filter)]
         skipped_confirmed = []
+    # Ключ нужен, только если хоть один сегмент придётся ПЕРЕВОДИТЬ. Порция из
+    # одних совпадений с памятью переводов обходится без вызовов модели — и
+    # отказывать ей 503 значило бы запретить работу, которая ничего не стоит.
+    # Проверка стоит здесь, а не выше: до отбора состав ещё неизвестен.
+    if all_targets and not os.environ.get("OPENAI_API_KEY")             and not all(_tm_trusted(_get_context(s["source"], project=project)[1])
+                        for s in all_targets):
+        # 503 до работы, как у termcheck, back-check и ремонта: иначе отсутствие
+        # ключа вырождается в посегментные ошибки, и составной прогон принимает
+        # их за «порция целиком провалилась» вместо «шаг недоступен».
+        raise HTTPException(503, "Перевод требует ключ OpenAI")
     # Потолок на порцию: один HTTP-запрос не должен жить дольше proxy_read_timeout (1800s)
     # в nginx. При ~5-6 с на сегмент 100 штук — это ~10 минут, с большим запасом.
     limit = max(1, min(req.limit, 100))
@@ -4020,37 +3931,17 @@ def batch_translate(pid: int, req: BatchRequest):
         if not req.force and _tm_trusted(tm_hit) and tm_hit.get("tgt"):
             return {"key": key, "tm": True, "text": tm_hit["tgt"]}
 
-        translation = None
-        used_provider = None   # чем на самом деле переведено — с учётом fallback на Google
-        # В режиме auto движок выбирается по длине сегмента: короткие можно отдать
-        # дешёвому переводчику, длинные — только модели. low_engine="gpt" (по
-        # умолчанию) означает «всё модели», то есть качество вместо экономии.
-        eng = req.engine
-        if eng == "auto":
-            eng = req.low_engine if seg.get("risk", "medium") == "low" else "gpt"
         try:
-            if eng == "google":
-                translation = _google_with_gloss(seg["source"], project["src"], project["tgt"], gloss_hits)
-                used_provider = PROVIDER_GOOGLE
-            elif eng == "gpt" and os.environ.get("OPENAI_API_KEY"):
-                translation = _openai_translate(seg["source"], project["src"], project["tgt"],
-                                                domain=project.get("domain"),
-                                                gloss_hits=gloss_hits, tm_context=tm_hit,
-                                                model=req.model)
-                if translation:
-                    used_provider = _resolve_model(req.model)["id"]
-            if not translation and eng == "gpt":
-                translation = _google_with_gloss(seg["source"], project["src"], project["tgt"], gloss_hits)
-                if translation:
-                    used_provider = PROVIDER_GOOGLE
+            translation = _openai_translate(seg["source"], project["src"], project["tgt"],
+                                            domain=project.get("domain"),
+                                            gloss_hits=gloss_hits, tm_context=tm_hit,
+                                            model=req.model)
         except Exception as e:
             print(f"[backend] batch error seg#{seg['id']}: {e}", file=sys.stderr)
             return {"key": key, "error": str(e)}
         if not translation:
-            return {"key": key, "error": "перевод не получен"}
-        return {"key": key, "eng": eng, "text": translation,
-                "provider": used_provider or (PROVIDER_GOOGLE if eng == "google"
-                                              else _resolve_model(req.model)["id"])}
+            return {"key": key, "error": "модель не вернула перевод"}
+        return {"key": key, "text": translation, "provider": _resolve_model(req.model)["id"]}
 
     for res in _run_parallel(order, _translate_group):
         segs = groups[res["key"]]
@@ -4082,8 +3973,7 @@ def batch_translate(pid: int, req: BatchRequest):
             sg["target"] = res["text"]
             sg["status"] = "review" if was_confirmed else "translated"
             sg["provider"] = res["provider"]
-            sg["route"] = ("GPT_REQUIRED" if res.get("eng", req.engine) == "gpt"
-                           else "GOOGLE_SAFE") if i == 0 else "DUPLICATE"
+            sg["route"] = "GPT_REQUIRED" if i == 0 else "DUPLICATE"
             translated.append(sg["id"])
         dup_hits_count += len(segs) - 1
     save_state(STATE)
@@ -4098,7 +3988,7 @@ def batch_translate(pid: int, req: BatchRequest):
         # Молчаливых потолков не бывает: сегменты, отсеянные как подтверждённые,
         # называем поимённо — иначе прогон рапортует «готово» и ничего не делает.
         "skipped_confirmed": skipped_confirmed,
-        "model": _resolve_model(req.model)["id"] if req.engine in ("gpt", "auto") else None,
+        "model": _resolve_model(req.model)["id"],
     }
 
 
@@ -4114,7 +4004,7 @@ def run_preflight(pid: int):
             words = len(s["source"].split())
             s["risk"] = "high" if words > 30 else "medium" if words > 8 else "low"
         if not s.get("route"):
-            s["route"] = "GOOGLE_SAFE" if s["risk"] == "low" else "GPT_REQUIRED"
+            s["route"] = "GPT_REQUIRED"
         if s.get("tm") is None:
             s["tm"] = None
 
@@ -4466,9 +4356,8 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
                 "skipped_confirmed": len(r.get("skipped_confirmed", []))}
     if kind == "translate":
         r = batch_translate(pid, BatchRequest(
-            engine=params.get("engine", "gpt"), segment_ids=chunk, limit=n,
+            segment_ids=chunk, limit=n,
             force=bool(params.get("force", True)), model=params.get("model"),
-            low_engine=params.get("low_engine", "gpt"),
             include_confirmed=bool(params.get("include_confirmed"))))
         return {"done": r["count"], "tm_hits": r.get("tm_hits", 0),
                 "duplicates": r.get("duplicates", 0), "errors": len(r.get("errors", [])),

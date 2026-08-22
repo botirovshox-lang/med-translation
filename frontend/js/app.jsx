@@ -220,23 +220,25 @@ function Header({ store, theme, onToggleTheme, onLogout, onSearch }) {
 }
 
 /* ---------- Tabs ---------- */
+/* Пять вкладок вместо девяти. Слиты те, что отвечали на один вопрос в разных
+   местах: глоссарий и память — обе справочные базы одной области; «Анализ»
+   и «QA» — обе про «что не так и во что обойдётся», просто до и после прогона.
+   Бэклог и статистика — командные инструменты, они уехали внутрь «Анализа». */
 const TABS = [
   { key: "import", label: "Импорт", icon: "upload" },
   { key: "editor", label: "Редактор", icon: "edit" },
-  { key: "glossary", label: "Глоссарий", icon: "book" },
-  { key: "tm", label: "Память (TM)", icon: "repeat" },
-  { key: "export", label: "Экспорт", icon: "download" },
+  { key: "glossary", label: "Знания", icon: "book" },
   { key: "preflight", label: "Анализ", icon: "target" },
-  { key: "qa", label: "QA", icon: "shield" },
-  { key: "backlog", label: "Бэклог", icon: "columns" },
-  { key: "stats", label: "Статистика", icon: "chart" },
+  { key: "export", label: "Экспорт", icon: "download" },
 ];
 function TabBar({ store }) {
   const counts = store.activeProject ? store.statusCounts(store.activeProject) : null;
   const badgeFor = (k) => {
     if (!counts) return null;
     if (k === "editor") return counts.all;
-    if (k === "qa") return counts.failed + counts.qa || null;
+    // На «Анализе» теперь живут и открытые замечания: показываем их, а не
+    // общее число сегментов — вкладка про то, что требует внимания.
+    if (k === "preflight") return counts.failed + counts.qa || null;
     if (k === "glossary") return store.glossary.length;
     return null;
   };
@@ -292,9 +294,12 @@ function App() {
 
   if (!authed) return React.createElement(AuthScreen, { onLogin: () => { setAuthed(true); toast.success("Добро пожаловать", "Вы вошли в систему."); }, theme, onToggleTheme: toggleTheme });
 
+  // Старые ключи оставлены живыми: на них ведут ссылки изнутри страниц
+  // (например «показать сегменты с термином») и сохранённое состояние вкладки.
   const tabMap = {
-    import: TabImport, editor: TabEditor, glossary: TabGlossary, tm: TabTM,
-    export: TabExport, preflight: TabPreflight, qa: TabQA, backlog: TabBacklog, stats: TabStats,
+    import: TabImport, editor: TabEditor, glossary: TabKnowledge, tm: TabKnowledge,
+    export: TabExport, preflight: TabAnalysis, qa: TabAnalysis,
+    backlog: TabAnalysis, stats: TabAnalysis,
   };
   const Active = tabMap[store.tab] || TabEditor;
 

@@ -80,6 +80,29 @@ function WorkSummary({ summary, store, toast }) {
         s.human.terms.slice(0, 4).map(t => t.count + "× " + t.reason).join(" · "))));
 }
 
+/* «Анализ» — всё про состояние проекта в одном месте: смета до прогона, итог
+   после, открытые замечания, доска задач и статистика. Раньше это были четыре
+   вкладки, отвечавшие на один вопрос «что не так и во что обойдётся», и
+   проверять приходилось четыре места. */
+function TabAnalysis({ store, toast }) {
+  const [view, setView] = useState("plan");
+  const counts = store.activeProject ? store.statusCounts(store.activeProject) : null;
+  const views = [
+    ["plan", "Итог и смета", null],
+    ["qa", "Замечания", counts ? (counts.failed + counts.qa) || null : null],
+    ["backlog", "Доска", null],
+    ["stats", "Статистика", null],
+  ];
+  const Body = { plan: TabPreflight, qa: window.TabQA, backlog: window.TabBacklog,
+                 stats: window.TabStats }[view] || TabPreflight;
+  return React.createElement("div", null,
+    React.createElement("div", { className: "row row-wrap", style: { gap: 8, padding: "18px 24px 0" } },
+      views.map(([key, label, n]) => React.createElement(Btn, {
+        key, variant: view === key ? "primary" : "ghost", size: "sm",
+        onClick: () => setView(key) }, label + (n ? " · " + n : "")))),
+    React.createElement(Body, { store, toast }));
+}
+
 function TabPreflight({ store, toast }) {
   const project = store.activeProject;
   const [analyzing, setAnalyzing] = useState(false);
@@ -126,13 +149,16 @@ function TabPreflight({ store, toast }) {
   segs.forEach(s => { (byRisk[s.risk] = byRisk[s.risk] || []).push(s); });
 
   // ---- Cost model ----
-  const RATE = { t: 0.0009, qa: 0.0006, bc: 0.0005, sf: 0.0003, google: 0.00002 };
+  // google-строка осталась только ради истории: бесплатного движка в системе
+  // нет, и считать по нему дешёвым будущий перевод — врать в смете на порядок.
+  // Сегмент с маршрутом GOOGLE_SAFE переводится теперь той же моделью, что и все.
+  const RATE = { t: 0.0009, qa: 0.0006, bc: 0.0005, sf: 0.0003, google: 0 };
   const isHi = (s) => s.risk === "high" || s.risk === "critical";
   const segCost = (s) => {
     const w = wordsOf(s);
     const baseline = { t: w * RATE.t, qa: w * RATE.qa, bc: w * RATE.bc, sf: w * RATE.sf, google: 0 };
     let opt = { t: 0, qa: 0, bc: 0, sf: 0, google: 0 };
-    if (s.route === "GOOGLE_SAFE") opt.google = w * RATE.google;
+    if (s.route === "GOOGLE_SAFE") { opt.t = w * RATE.t; opt.qa = w * RATE.qa; }
     else if (s.route === "DUPLICATE") { opt.t = w * RATE.t; opt.qa = w * RATE.qa; }
     else if (s.route === "GPT_REQUIRED") { opt.t = w * RATE.t; opt.qa = w * RATE.qa; if (isHi(s)) { opt.bc = w * RATE.bc; opt.sf = w * RATE.sf; } }
     const sum = (o) => o.t + o.qa + o.bc + o.sf + o.google;
@@ -269,7 +295,7 @@ function TabPreflight({ store, toast }) {
         React.createElement(PfMetric, { icon: "cpu", label: "Базовая (всё через GPT)", value: m(baseTotal), color: "var(--text-2)",
           tip: ["Базовая стоимость (всё через GPT)", "Сколько стоило бы перевести ВСЕ сегменты через GPT-4 без оптимизации."] }),
         React.createElement(PfMetric, { icon: "zap", label: "Оптимизированная", value: m(optTotal), color: "var(--c-purple)",
-          tip: ["Оптимизированная стоимость", "Прогноз с применением маршрутизации: дубликаты, Google для простых, TM для совпадений."] }),
+          tip: ["Оптимизированная стоимость", "Прогноз с учётом того, что считается без вызова модели: дубликаты внутри порции и точные совпадения с памятью переводов."] }),
         React.createElement(PfMetric, { icon: "checkCircle", label: "Экономия (" + savePct + "%)", value: m(savings), color: "var(--c-success)",
           tip: ["Потенциальная экономия", "Baseline − Optimized."] }))),
 
@@ -288,7 +314,7 @@ function TabPreflight({ store, toast }) {
               ["qa", "Проверка качества", ["Проверка качества", "Автоматическая проверка перевода через GPT-4."]],
               ["bc", "Обратная проверка", ["Обратная проверка", "Обратный перевод для проверки смысловой эквивалентности. Только для HIGH/CRITICAL."]],
               ["sf", "Проверка безопасности", ["Проверка безопасности", "Финальная проверка на ошибки в дозировках, медицинскую корректность."]],
-              ["google", "Google Translate", ["Google Translate", "Бесплатно до 500K символов/мес, далее $20 за 1M символов."]],
+              ["google", "Бесплатный движок (убран)", ["Бесплатный движок убран из системы", "Строка осталась для истории: так переведены сегменты с маршрутом GOOGLE_SAFE. Новые переводы делает только выбранная модель."]],
             ].map(([k, label, tip]) => React.createElement("tr", { key: k },
               React.createElement("td", null, React.createElement("span", { style: { fontWeight: 600 } }, label), T(tip[0], tip[1])),
               React.createElement("td", { className: "tnum dim" }, m(compBase[k])),
@@ -706,3 +732,4 @@ function RepairSummary({ segments, onDrill, T }) {
 }
 
 window.TabPreflight = TabPreflight;
+window.TabAnalysis = TabAnalysis;

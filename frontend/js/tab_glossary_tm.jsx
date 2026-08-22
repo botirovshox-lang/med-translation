@@ -270,6 +270,22 @@ function TermQueue({ store, toast, version }) {
   );
 }
 
+/* «Знания» — глоссарий и память переводов на одной странице. Разделены они
+   были только исторически: это две справочные базы, которые работают в паре
+   и по одной и той же области (языковая пара + тематика). Разбираться, почему
+   термин взялся из одной, а перевод строки из другой, проще в одном месте. */
+function TabKnowledge({ store, toast }) {
+  const [side, setSide] = useState("glossary");
+  return React.createElement("div", null,
+    React.createElement("div", { className: "row", style: { gap: 8, padding: "18px 24px 0" } },
+      [["glossary", "Глоссарий", store.glossary.length],
+       ["tm", "Память переводов", (store.tm || []).length]].map(([key, label, n]) =>
+        React.createElement(Btn, {
+          key, variant: side === key ? "primary" : "ghost", size: "sm",
+          onClick: () => setSide(key) }, label + " · " + n))),
+    React.createElement(side === "glossary" ? TabGlossary : TabTM, { store, toast }));
+}
+
 function TabGlossary({ store, toast }) {
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState("all");
@@ -503,6 +519,7 @@ function TermModal({ term, onClose, onSave, scope }) {
   );
 }
 window.TabGlossary = TabGlossary;
+window.TabKnowledge = TabKnowledge;
 
 /* ============================================================
    Tab: TM — translation memory

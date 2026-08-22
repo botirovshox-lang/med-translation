@@ -115,6 +115,8 @@ function providerOf(seg) {
   if (seg.provider) return { id: seg.provider, exact: true };
   if (!seg.target || !seg.target.trim()) return null;
   if (seg.route === "EXACT_TM") return { id: "tm", exact: false };
+  // Исторический маршрут: так помечены сегменты, переведённые до того, как
+  // Google убрали из системы. Новые так не появляются.
   if (seg.route === "GOOGLE_SAFE") return { id: "google", exact: false };
   if (seg.route === "GPT_REQUIRED") return { id: "gpt", exact: false };
   return null;
@@ -254,10 +256,8 @@ function TabEditor({ store, toast }) {
   const [bcGroupPick, setBcGroupPick] = useState(null);   // Set<ключ группы> | null = по умолчанию
   const [tcGroupPick, setTcGroupPick] = useState(null);   // то же для проверки терминологии
   const [rpGroupPick, setRpGroupPick] = useState(null);   // то же для ремонта
-  // Составной прогон: какие шаги входят и чем переводить короткие сегменты.
-  // null = все шаги; экономия на Google по умолчанию выключена — качество важнее.
+  // Составной прогон: какие шаги входят. null = все.
   const [fullSteps, setFullSteps] = useState(null);
-  const [fullLowGoogle, setFullLowGoogle] = useState(false);
   // Разбор автоодобрения (dry_run): что попадёт в глоссарий и чем это
   // подтверждено. Считает сервер, вызовов модели внутри нет.
   const [autoPreview, setAutoPreview] = useState(null);
@@ -457,12 +457,14 @@ function TabEditor({ store, toast }) {
   const setSegBusy = (id, kind) => setBusy(b => ({ ...b, [id]: kind }));
   const clearBusy = (id) => setBusy(b => { const n = { ...b }; delete n[id]; return n; });
 
-  const doTranslate = async (seg, engine, force = false) => {
+  // Движок один — выбранная модель. Параметра engine больше нет: он обещал
+  // выбор, которого не существует.
+  const doTranslate = async (seg, force = false) => {
     if (busy[seg.id]) return;
     setSegBusy(seg.id, "translate");
     let result = null;
     if (window.API) {
-      result = await window.API.safeCall(() => window.API.translate(project.id, seg.id, engine, force, gptModel));
+      result = await window.API.safeCall(() => window.API.translate(project.id, seg.id, force, gptModel));
     }
     if (result && result.segment) {
       store.updateSegment(project.id, seg.id, {
@@ -470,7 +472,7 @@ function TabEditor({ store, toast }) {
         status: result.segment.status,
         route: result.segment.route,
       });
-      const label = engine === "gpt" ? (gptModelInfo ? gptModelInfo.label : "GPT") : "Google Translate";
+      const label = gptModelInfo ? gptModelInfo.label : "модель";
       const src = result.source === "TM" ? " (из TM)" : result.usedRealApi ? "" : " (демо)";
       toast.success("Сегмент переведён", label + " · сегмент #" + seg.id + src);
     } else {
@@ -683,7 +685,7 @@ function TabEditor({ store, toast }) {
   };
 
   // Один и тот же отбор для счётчика на карточке и для самого пакета — иначе цифры расходятся.
-  const pickTargets = (engine, segs) => {
+  const pickTargets = (segs) => {
     const idSet = currentIdSet;
     // Галочки и режим «заново» — это явный выбор пользователя, фильтры статуса и риска
     // к нему не применяем. Без выделения «заново» не срабатывает: иначе один клик
@@ -695,17 +697,15 @@ function TabEditor({ store, toast }) {
       // В режиме «заново» берём только отмеченные группы «чем переведено»
       if (retranslate) targets = targets.filter(s => pickedProviders.has(providerKey(s)));
     } else {
-      targets = segs.filter(s =>
-        s.status === "new" &&
-        (engine === "google" ? s.risk === "low" : s.risk !== "low") &&
-        (!idSet || idSet.has(s.id))
-      );
+      // Раньше здесь сегменты делились по risk между Google и моделью, и запуск
+      // «не той» кнопки молча оставлял половину проекта непереведённой.
+      targets = segs.filter(s => s.status === "new" && (!idSet || idSet.has(s.id)));
     }
     return { targets, explicit, selectionSize: idSet ? idSet.size : 0 };
   };
 
   // Собрать список целей пакета по свежим данным с бэкенда.
-  const collectBatchTargets = async (engine) => {
+  const collectBatchTargets = async () => {
     let currentSegs = project.segments;
     if (window.API) {
       const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
@@ -714,25 +714,25 @@ function TabEditor({ store, toast }) {
         currentSegs = fresh.segments;
       }
     }
-    const { targets, explicit } = pickTargets(engine, currentSegs);
+    const { targets, explicit } = pickTargets(currentSegs);
     return { targets, hasExplicitCheck: explicit };
   };
 
-  // Клик по кнопке пакета: Google — сразу, GPT — сначала смета (это платно).
-  const askRunBatch = async (engine) => {
+  // Клик по кнопке пакета: сначала смета — перевод платный.
+  const askRunBatch = async () => {
     if (batchRun) return;  // не запускать второй пакет поверх незавершённого
     // explicitSel, а не hasExplicitCheck: не путать с одноимённой константой выше
-    const { targets, hasExplicitCheck: explicitSel } = await collectBatchTargets(engine);
+    const { targets, hasExplicitCheck: explicitSel } = await collectBatchTargets();
     if (!targets.length) { toast.warning("Нет подходящих сегментов", "Все сегменты уже переведены или не подходят под фильтр."); return; }
-    if (engine === "gpt") setBatchPlan({ engine, targets, hasExplicitCheck: explicitSel });
-    else runBatch(engine, targets, explicitSel);
+    // Смету показываем всегда: перевод платный, и запускать его без цифры нельзя.
+    setBatchPlan({ targets, hasExplicitCheck: explicitSel });
   };
 
-  const runBatch = (engine, targets, hasExplicitCheck) => {
+  const runBatch = (targets, hasExplicitCheck) => {
     setBatchPlan(null);
     setCheckedSegs(new Set());
     startJob("translate", targets,
-      { engine, force: !!hasExplicitCheck, model: engine === "gpt" ? gptModel : null },
+      { force: !!hasExplicitCheck, model: gptModel },
       "Все подходящие сегменты уже переведены.");
   };
 
@@ -830,7 +830,9 @@ function TabEditor({ store, toast }) {
     if (!impact) return;
     const ids = new Set(impactConfirmed ? impact.segments : impact.pending);
     startJob("translate", project.segments.filter(s => ids.has(s.id)),
-      { engine: "gpt", force: true, model: gptModel, include_confirmed: !!impactConfirmed },
+      // via помечает, ЧЬЯ это задача: прогон один и тот же («перевод»),
+      // но прогресс должен зажечься на той карточке, с которой его запустили.
+      { force: true, model: gptModel, include_confirmed: !!impactConfirmed, via: "impact" },
       "Все переводы уже соответствуют одобренным терминам.");
   };
 
@@ -1081,9 +1083,6 @@ function TabEditor({ store, toast }) {
     if (!steps.length) { toast.warning("Не выбрано ни одного шага", "Отметьте хотя бы один."); return; }
     startJob("full", fullRunIds, {
       steps,
-      // auto: движок выбирается по длине сегмента. low_engine=gpt — «всё модели»,
-      // то есть качество; google экономит на коротких строках.
-      engine: "auto", low_engine: fullLowGoogle ? "google" : "gpt",
       model: gptModel, bc_model: bcModel, tc_model: tcModel,
       rp_model: rpModel, use_judge: bcJudge, judge_model: judgeModel || null,
       // Тот же retry, что и у карточки ремонта: карточка выше посчитала
@@ -1196,7 +1195,9 @@ function TabEditor({ store, toast }) {
         transModel: (gptModelInfo || {}).label || gptModel,
         checkModels: [bcModelInfo, gptModels.find(m => m.id === tcModel)]
           .filter(Boolean).map(m => m.label),
-        lowGoogle: fullLowGoogle, onLowGoogle: () => setFullLowGoogle(v => !v),
+        models: gptModels, transModelId: gptModel, onTransModel: pickGptModel,
+        bcModelId: bcModel, onBcModel: pickBcModel,
+        tcModelId: tcModel, onTcModel: pickTcModel,
         disabled: !!job }),
       React.createElement(ApplyTermsCard, {
         running: job && job.kind === "apply_terms" ? job : null,
@@ -1207,14 +1208,10 @@ function TabEditor({ store, toast }) {
         confirmedCount: impact ? impact.confirmed.length : 0 }),
       React.createElement(Expander, { title: "Отдельные прогоны", icon: "zap", right: "по одному шагу — для точечной работы", defaultOpen: false },
         React.createElement("div", { className: "grid grid-3" },
-          React.createElement(BatchCard, { kind: "google", est: estimateRun("translate", pickTargets("google", project.segments).targets, null), running: batchRun && batchRun.engine === "google" ? batchRun : null, onRun: () => askRunBatch("google"), onStop: stopJob,
-            available: pickTargets("google", project.segments).targets.length,
-            selectionSize: pickTargets("google", project.segments).selectionSize,
-            checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
-          React.createElement(BatchCard, { kind: "gpt", est: estimateRun("translate", pickTargets("gpt", project.segments).targets, gptModelInfo), running: batchRun && batchRun.engine === "gpt" ? batchRun : null, onRun: () => askRunBatch("gpt"), onStop: stopJob,
+          React.createElement(BatchCard, { est: estimateRun("translate", pickTargets(project.segments).targets, gptModelInfo), running: batchRun && batchRun.engine === "translate" && !(job && job.params && job.params.via === "impact") ? batchRun : null, onRun: askRunBatch, onStop: stopJob,
             models: gptModels, model: gptModel, modelInfo: gptModelInfo, onModel: pickGptModel,
-            available: pickTargets("gpt", project.segments).targets.length,
-            selectionSize: pickTargets("gpt", project.segments).selectionSize,
+            available: pickTargets(project.segments).targets.length,
+            selectionSize: pickTargets(project.segments).selectionSize,
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           React.createElement(MedicalQACard, { running: batchRun && batchRun.engine === "medical_qa" ? batchRun : null, onRun: runMedicalQABatch,
             // Свежий back-check переиспользуется, такие сегменты в смету не идут
@@ -1232,7 +1229,7 @@ function TabEditor({ store, toast }) {
             onDrill: (ids) => { store.setSegmentFilter(ids); setPage(1); },
             est: estimateRun("translate", project.segments.filter(s =>
               new Set(impactConfirmed ? impact.segments : impact.pending).has(s.id)), gptModelInfo),
-            running: batchRun && batchRun.engine === "translate" ? batchRun : null }),
+            running: batchRun && batchRun.engine === "translate" && job && job.params && job.params.via === "impact" ? batchRun : null }),
           React.createElement(TermCheckCard, {
             running: batchRun && batchRun.engine === "termcheck" ? batchRun : null,
             onRun: runTermcheckBatch, onStop: stopJob,
@@ -1349,7 +1346,7 @@ function TabEditor({ store, toast }) {
                   hlSrc: scope !== "tgt" ? query : "", hlTgt: scope !== "src" ? query : "",
                   onCheck: (e) => { e.stopPropagation(); setCheckedSegs(prev => { const n = new Set(prev); n.has(s.id) ? n.delete(s.id) : n.add(s.id); return n; }); },
                   onSelect: () => setSelId(s.id),
-                  onTranslate: () => doTranslate(s, s.risk === "low" ? "google" : "gpt"),
+                  onTranslate: () => doTranslate(s),
                   onConfirm: () => doConfirm(s), onRevert: () => doRevert(s),
                 }))
               )
@@ -1379,7 +1376,7 @@ function TabEditor({ store, toast }) {
       React.createElement("div", { className: "editor-side" },
         selected
           ? React.createElement(SegDetail, { key: selected.id, seg: selected, project, store, toast, busy: busy[selected.id],
-              onTranslate: (eng) => doTranslate(selected, eng, true), onQA: () => doQA(selected), onMedicalQA: () => doMedicalQA(selected), onConfirm: (draftTarget) => doConfirm(selected, draftTarget),
+              onTranslate: () => doTranslate(selected, true), onQA: () => doQA(selected), onMedicalQA: () => doMedicalQA(selected), onConfirm: (draftTarget) => doConfirm(selected, draftTarget),
               bcModels: gptModels, bcModel: bcModel, onBcModel: pickBcModel,
               bcJudge: bcJudge, judgeModel: judgeModel,
               tcModel: tcModel, rpModel: rpModel })
@@ -1394,7 +1391,7 @@ function TabEditor({ store, toast }) {
         footer: React.createElement(React.Fragment, null,
           React.createElement(Btn, { variant: "ghost", onClick: () => setBatchPlan(null) }, "Отмена"),
           React.createElement(Btn, { variant: "primary", icon: "zap",
-            onClick: () => runBatch(batchPlan.engine, batchPlan.targets, batchPlan.hasExplicitCheck) }, "Запустить")) },
+            onClick: () => runBatch(batchPlan.targets, batchPlan.hasExplicitCheck) }, "Запустить")) },
         React.createElement("div", { style: { display: "grid", gap: 10, fontSize: 14 } },
           React.createElement("div", { className: "row between" },
             React.createElement("span", { className: "muted" }, "Сегментов"),
@@ -1525,7 +1522,8 @@ function LegendDot({ color, label }) {
    берёт обратный перевод из back-check, ремонту нужны находки всех остальных. */
 function FullRunCard({ running, onRun, onStop, steps, picked, onToggle, targets, scopeSize,
                        checked, filtered, est, sameModelWarn, transModel, checkModels,
-                       lowGoogle, onLowGoogle, disabled }) {
+                       models, transModelId, onTransModel, bcModelId, onBcModel,
+                       tcModelId, onTcModel, disabled }) {
   const anyWork = steps.some(([k]) => picked.has(k) && (targets[k] || []).length > 0);
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 13, marginBottom: 14, borderLeft: "3px solid var(--c-primary)" } },
 
@@ -1546,7 +1544,7 @@ function FullRunCard({ running, onRun, onStop, steps, picked, onToggle, targets,
 
     sameModelWarn && React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.5, color: "var(--c-warning)", background: "var(--bg-sunken)", padding: "8px 11px", borderRadius: 8 } },
       "Перевод и проверку делает одна модель. Она не найдёт собственную ошибку — "
-      + "выберите для back-check или терминов другую модель в «Отдельных прогонах»."),
+      + "выберите другую модель для back-check или терминов ниже."),
 
     React.createElement("div", { className: "col", style: { gap: 6 } },
       steps.map(([key, label, hint]) => {
@@ -1561,10 +1559,19 @@ function FullRunCard({ running, onRun, onStop, steps, picked, onToggle, targets,
             n ? n + " сегм." : "нечего"));
       })),
 
-    React.createElement("div", { className: "row", style: { gap: 8, alignItems: "center" } },
-      React.createElement(Switch, { on: lowGoogle, label: "Короткие через Google", onClick: onLowGoogle }),
-      React.createElement("span", { className: "dim", style: { fontSize: 12 } },
-        lowGoogle ? "дешевле, но короткие строки переводит не модель" : "всё переводит модель")),
+    // Выбор моделей прямо здесь, а не в «Отдельных прогонах»: состав проверяющих
+    // определяет качество прогона, и запускать его вслепую нельзя. Переводит одна
+    // модель, проверяют другие — совпадение подсвечивается предупреждением выше.
+    React.createElement("div", { className: "col", style: { gap: 7 } },
+      [["Переводит", transModelId, onTransModel],
+       ["Back-check", bcModelId, onBcModel],
+       ["Термины", tcModelId, onTcModel]].map(([label, value, onChange]) =>
+        React.createElement("div", { key: label, className: "row between", style: { gap: 10 } },
+          React.createElement("span", { className: "dim", style: { fontSize: 12.5, minWidth: 82 } }, label),
+          React.createElement(Select, {
+            value: value || "", onChange: (e) => onChange(e.target.value),
+            style: { fontSize: 12.5, flex: 1, maxWidth: 260 } },
+            (models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label)))))),
 
     React.createElement(EstLine, { est }),
     React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: -6 } },
@@ -1647,12 +1654,15 @@ function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
           ready ? "Одобрить " + ready + " и применить" : "Однозначных терминов нет"));
 }
 
-function BatchCard({ kind, running, onRun, onStop, available, selectionSize, filtered, checked, models, model, modelInfo, onModel, est }) {
-  const meta = kind === "google"
-    ? { icon: "globe", title: "Google Batch", sub: "Низкорисковые сегменты", note: "Для простых, шаблонных формулировок.", color: "var(--c-warning)", btn: "Запустить Google",
-        tipTitle: "Запустить Google batch", tip: "Перевести все GOOGLE_SAFE сегменты через Google Translate. Результат сохраняется как 'google_draft' (не подтверждён)." }
-    : { icon: "cpu", title: "GPT Batch", sub: "Сложный контент", note: "Для клинических и неоднозначных формулировок.", color: "var(--c-purple)", btn: "Запустить GPT",
-        tipTitle: "Запустить GPT batch", tip: "Перевод через OpenAI GPT с QA и применением глоссария. Результат: status='translated', provider='openai'." };
+function BatchCard({ running, onRun, onStop, available, selectionSize, filtered, checked, models, model, modelInfo, onModel, est }) {
+  // Движок один, поэтому и карточка одна: раньше их было две (Google и GPT),
+  // и сегменты делились между ними по длине — половина проекта оставалась
+  // непереведённой, если запустить не ту.
+  const meta = { icon: "cpu", title: "Только перевод", sub: "без проверок",
+                 note: "Для точечной работы: проверки запускаются отдельно.",
+                 color: "var(--c-purple)", btn: "Перевести",
+                 tipTitle: "Только перевод",
+                 tip: "Переводит выбранной моделью, с глоссарием и памятью переводов в промпте. Проверки не запускает — для полного конвейера есть кнопка «Перевести и проверить»." };
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "row", style: { gap: 10 } },
       React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: meta.color } },
@@ -1664,7 +1674,7 @@ function BatchCard({ kind, running, onRun, onStop, available, selectionSize, fil
     React.createElement("p", { className: "muted", style: { fontSize: 13, margin: 0 } }, meta.note),
 
     // Выбор модели — только у GPT-карточки и только если бэкенд отдал каталог
-    kind === "gpt" && models && models.length > 0 && React.createElement("div", null,
+    models && models.length > 0 && React.createElement("div", null,
       React.createElement(Select, {
         value: model || "", disabled: !!running, style: { width: "100%" },
         onChange: (e) => onModel && onModel(e.target.value),

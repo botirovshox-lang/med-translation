@@ -56,26 +56,56 @@ check(s1["status"] == "translated", "статус translated, а не confirmed"
 check(s1["route"] == "EXACT_TM", "маршрут при этом виден как EXACT_TM")
 check("confirmedBy" not in s1, "отметки человека нет — он этот сегмент не видел")
 
-# ───────────────────── 3. Режим auto ─────────────────────
-print("\n=== 3. Режим auto берёт все сегменты, а не половину ===")
+# ─────────────── 3. Google убран, движок один ───────────────
+print("\n=== 3. Перевод берёт все сегменты, а не половину ===")
+# Раньше отбор делил сегменты по risk между Google и моделью, и запуск «не той»
+# кнопки молча оставлял половину проекта непереведённой. Движок теперь один.
 proj = build([seg(1, "короткий", risk="low"), seg(2, "длинный сегмент про многое", risk="high")])
-r = main.batch_translate(1, main.BatchRequest(engine="gpt", limit=10))
-check(r["count"] == 1, "engine=gpt берёт только не-низкий риск — короткий остался бы навсегда")
-
-proj = build([seg(1, "короткий", risk="low"), seg(2, "длинный сегмент про многое", risk="high")])
-r = main.batch_translate(1, main.BatchRequest(engine="auto", limit=10))
-check(r["count"] == 2, "engine=auto берёт оба")
+r = main.batch_translate(1, main.BatchRequest(limit=10))
+check(r["count"] == 2, "оба сегмента переведены независимо от длины")
 check(all(s["target"].startswith("MODEL:") for s in proj["segments"]),
-      "low_engine по умолчанию gpt — короткие тоже переводит модель")
+      "и оба — выбранной моделью")
+check(all(s["route"] == "GPT_REQUIRED" or s["route"] == "DUPLICATE"
+          for s in proj["segments"]), "маршрут GOOGLE_SAFE больше не появляется")
 
-proj = build([seg(1, "короткий", risk="low"), seg(2, "длинный сегмент про многое", risk="high")])
-main._google_with_gloss = lambda text, s, t, g: "GOOGLE: " + text
-r = main.batch_translate(1, main.BatchRequest(engine="auto", low_engine="google", limit=10))
-by = {s["id"]: s for s in proj["segments"]}
-check(by[1]["target"].startswith("GOOGLE:") and by[1]["route"] == "GOOGLE_SAFE",
-      "с экономией короткий уходит в Google")
-check(by[2]["target"].startswith("MODEL:") and by[2]["route"] == "GPT_REQUIRED",
-      "длинный всё равно переводит модель")
+print("\n=== 3b. Без ключа модели — честная ошибка, а не бесплатный черновик ===")
+key = os.environ.pop("OPENAI_API_KEY")
+proj = build([seg(1, "жалобы")])
+try:
+    main.translate_segment(1, 1, main.TranslateRequest())
+    check(False, "должно было отказать")
+except main.HTTPException as e:
+    check(e.status_code == 503 and "ключ" in e.detail, "503 с внятной причиной: " + e.detail)
+check(proj["segments"][0]["target"] == "", "сегмент не тронут")
+# Пакет обязан отдать ту же 503 ДО работы: иначе составной прогон примет
+# посегментные ошибки за «порция целиком провалилась» и уронит весь прогон
+# вместо того, чтобы пометить недоступный шаг пропущенным.
+try:
+    main.batch_translate(1, main.BatchRequest(limit=10))
+    check(False, "пакет тоже должен был отказать")
+except main.HTTPException as e:
+    check(e.status_code == 503, "пакетный перевод отвечает 503, а не сыплет ошибками")
+# Но порция из одних совпадений с памятью вызовов не делает — запрещать её
+# из-за отсутствия ключа значило бы запретить бесплатную работу.
+proj = build([seg(1, "жалобы")],
+             tm=[{"src": "жалобы", "tgt": "complaints", "lang": "RU→EN", "quality": "verified"}])
+r = main.batch_translate(1, main.BatchRequest(limit=10))
+check(r["count"] == 1 and proj["segments"][0]["target"] == "complaints",
+      "совпадение с памятью подставляется и без ключа модели")
+proj = build([seg(1, "жалобы")])          # без памяти — переводить придётся моделью
+try:
+    main._job_chunk_full(1, [1], {"steps": ["translate"]})
+    check(False, "порция из одного недоступного шага должна падать")
+except RuntimeError as e:
+    check("ни один шаг не выполнен" in str(e), "порция без единой работы честно падает")
+# А если хоть один шаг отработал — недоступный лишь помечается пропущенным.
+_bc = main.backcheck_batch
+main.backcheck_batch = lambda pid, req: {"count": 1, "errors": []}
+out = main._job_chunk_full(1, [1], {"steps": ["translate", "backcheck"]})
+check(out.get("step_skips") == 1 and out.get("backcheck") == 1,
+      "недоступный перевод пропущен, back-check отработал")
+main.backcheck_batch = _bc
+os.environ["OPENAI_API_KEY"] = key
 
 # ─────────────────── 4. Составной прогон ───────────────────
 print("\n=== 4. Составной прогон проходит шаги по порядку ===")

@@ -32,7 +32,9 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
 
   // Cost estimate from source word count + route
   const srcWords = seg.source.trim() ? seg.source.trim().split(/\s+/).length : 0;
-  const rate = seg.route === "GPT_REQUIRED" ? 0.0009 : seg.route === "GOOGLE_SAFE" ? 0.00002 : 0;
+  // GOOGLE_SAFE — исторический маршрут: бесплатного движка нет, и переводить
+  // такой сегмент заново будет та же модель. Считать его дешёвым — врать в 45 раз.
+  const rate = (seg.route === "GPT_REQUIRED" || seg.route === "GOOGLE_SAFE") ? 0.0009 : 0;
   const estCost = srcWords * rate;
   const riskMeta = { low: ["badge-confirmed", "LOW"], medium: ["badge-review", "MEDIUM"], high: ["badge-qa", "HIGH"], critical: ["badge-failed", "CRITICAL"] };
   const riskColorMeta = { green: ["badge-confirmed", "GREEN"], yellow: ["badge-review", "YELLOW"], red: ["badge-failed", "RED"] };
@@ -126,7 +128,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
 
   const STATUS_TIP = {
     new: ["Новый", "Сегмент не переведён. Никаких операций не выполнялось."],
-    translated: ["Переведён", "Перевод получен (Google/GPT/вручную). QA ещё не запускалось."],
+    translated: ["Переведён", "Перевод получен моделью или вписан вручную. Проверки ещё не запускались."],
     qa: ["QA пройдено", "Автоматическая проверка качества выполнена. Можно подтверждать."],
     confirmed: ["Подтверждён", "Финальный статус. Добавлен в TM. Будет в экспорте."],
     review: ["Требует review", "Обнаружены проблемы — необходим человеческий просмотр."],
@@ -162,8 +164,9 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
 
     // actions
     React.createElement("div", { className: "grid grid-2", style: { gap: 8 } },
-      React.createElement(Btn, { variant: "primary", size: "sm", icon: "globe", disabled: busy, onClick: () => onTranslate("google") }, "Google"),
-      React.createElement(Btn, { variant: "primary", size: "sm", icon: "cpu", disabled: busy, onClick: () => onTranslate("gpt"), style: { background: "var(--c-purple)" } }, "GPT"),
+      // Кнопка одна: движок один — выбранная модель. Раньше рядом стояла
+      // «Google», и половина сегментов уходила в бесплатный переводчик.
+      React.createElement(Btn, { variant: "primary", size: "sm", icon: "cpu", disabled: busy, onClick: () => onTranslate(), style: { background: "var(--c-purple)" } }, "Перевести"),
       React.createElement(Btn, { variant: "secondary", size: "sm", icon: "shield", disabled: busy, onClick: onMedicalQA, style: { color: "var(--c-info)", boxShadow: "inset 0 0 0 1.5px var(--c-info)" } }, "Medical QA"),
       React.createElement(Btn, { variant: "secondary", size: "sm", icon: "shield", disabled: busy, onClick: onQA }, "Quick QA"),
       React.createElement(Btn, { variant: "success", size: "sm", icon: "check", disabled: busy, onClick: () => onConfirm(draft) }, "Подтвердить")

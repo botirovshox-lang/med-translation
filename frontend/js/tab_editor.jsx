@@ -1079,7 +1079,9 @@ function TabEditor({ store, toast }) {
 
   // Проверка, которую делает та же модель, что переводила, — не независимая,
   // а на независимости стоит автоодобрение терминов. Молчать об этом нельзя.
-  const sameModelWarn = [bcModel, tcModel].filter(m => m && m === gptModel).length > 0;
+  // Ремонт тоже: он переписывает перевод, и если это делает та же модель,
+  // что переводила, она правит по собственному пониманию текста.
+  const sameModelWarn = [bcModel, tcModel, rpModel].filter(m => m && m === gptModel).length > 0;
 
   const runFullJob = () => {
     const steps = FULL_STEPS.map(s => s[0]).filter(k => pickedFull.has(k));
@@ -1201,6 +1203,7 @@ function TabEditor({ store, toast }) {
         models: gptModels, transModelId: gptModel, onTransModel: pickGptModel,
         bcModelId: bcModel, onBcModel: pickBcModel,
         tcModelId: tcModel, onTcModel: pickTcModel,
+        rpModelId: rpModel, onRpModel: pickRpModel,
         disabled: !!job }),
       React.createElement(ApplyTermsCard, {
         running: job && job.kind === "apply_terms" ? job : null,
@@ -1526,7 +1529,7 @@ function LegendDot({ color, label }) {
 function FullRunCard({ running, onRun, onStop, steps, picked, onToggle, targets, scopeSize,
                        checked, filtered, est, sameModelWarn, transModel, checkModels,
                        models, transModelId, onTransModel, bcModelId, onBcModel,
-                       tcModelId, onTcModel, disabled }) {
+                       tcModelId, onTcModel, rpModelId, onRpModel, disabled }) {
   const anyWork = steps.some(([k]) => picked.has(k) && (targets[k] || []).length > 0);
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 13, marginBottom: 14, borderLeft: "3px solid var(--c-primary)" } },
 
@@ -1547,7 +1550,7 @@ function FullRunCard({ running, onRun, onStop, steps, picked, onToggle, targets,
 
     sameModelWarn && React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.5, color: "var(--c-warning)", background: "var(--bg-sunken)", padding: "8px 11px", borderRadius: 8 } },
       "Перевод и проверку делает одна модель. Она не найдёт собственную ошибку — "
-      + "выберите другую модель для back-check или терминов ниже."),
+      + "выберите другую модель для back-check, терминов или ремонта ниже."),
 
     React.createElement("div", { className: "col", style: { gap: 6 } },
       steps.map(([key, label, hint]) => {
@@ -1566,9 +1569,13 @@ function FullRunCard({ running, onRun, onStop, steps, picked, onToggle, targets,
     // определяет качество прогона, и запускать его вслепую нельзя. Переводит одна
     // модель, проверяют другие — совпадение подсвечивается предупреждением выше.
     React.createElement("div", { className: "col", style: { gap: 7 } },
+      // Четыре роли — четыре модели. Ремонт стоит дороже всех (правка плюс
+      // перепроверка), и выбирать его вслепую нельзя: раньше он менялся только
+      // в свёрнутом блоке отдельных прогонов, и здесь его не было видно вовсе.
       [["Переводит", transModelId, onTransModel],
        ["Back-check", bcModelId, onBcModel],
-       ["Термины", tcModelId, onTcModel]].map(([label, value, onChange]) =>
+       ["Термины", tcModelId, onTcModel],
+       ["Ремонт", rpModelId, onRpModel]].map(([label, value, onChange]) =>
         React.createElement("div", { key: label, className: "row between", style: { gap: 10 } },
           React.createElement("span", { className: "dim", style: { fontSize: 12.5, minWidth: 82 } }, label),
           React.createElement(Select, {

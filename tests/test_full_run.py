@@ -175,15 +175,23 @@ try:
 except RuntimeError as e:
     check("ни один шаг не выполнен" in str(e), "порция без работы честно падает")
 
-print("\n=== 8. Порция, где всё сломалось, роняет прогон ===")
+print("\n=== 8. Порция, где всё сломалось, роняет прогон и называет причину ===")
 main.medical_qa_mod = object()
 main.medical_qa_enabled = lambda: True
-main.backcheck_batch = lambda pid, req: {"count": 0, "errors": [1, 2]}
+# Ровно то, что случилось в бою: у аккаунта кончились деньги. Пакетные
+# эндпоинты глотают ошибку каждого сегмента, и наружу шло только их число —
+# «ошибок: 10» человек читает как поломку программы и лезет в настройки,
+# хотя чинить надо счёт.
+QUOTA = "Error code: 429 - insufficient_quota: You have no credits remaining"
+main.backcheck_batch = lambda pid, req: {
+    "count": 0, "errors": [{"id": 1, "error": QUOTA}, {"id": 2, "error": QUOTA}]}
 try:
     main._job_chunk_full(1, [1, 2], {"steps": ["backcheck"]})
     check(False, "должно было упасть")
 except RuntimeError as e:
-    check("back-check" in str(e), "шаг назван в ошибке: " + str(e))
+    check("back-check" in str(e), "шаг назван в ошибке")
+    check("credits" in str(e) or "429" in str(e),
+          "и причина от провайдера тоже: " + str(e)[:110])
 
 print("\n=== 9. Экран итогов считает тем же движком, что и кнопки ===")
 proj = build([
@@ -353,6 +361,21 @@ check(job["total"] == 1 and job["ids"] == [10],
 check(main.STATE["projects"][0]["segments"][3]["target"] == "uveitis on the right",
       "сегмент починен новым термином")
 check(job["counters"].get("applied") == 1, "и это отражено в счётчиках")
+
+print("\n=== 18b. Причина ошибки не ломает счётчики прогона ===")
+# Текстовое поле среди счётчиков складывалось с числом — TypeError посреди
+# прогона, причём молча: общий обработчик повторял порцию трижды, оплатив
+# её вызовы заново, и лишь потом ронял задачу.
+_bt = main.batch_translate
+main.batch_translate = lambda pid, req: {
+    "count": 2, "errors": [], "tm_hits": 0, "duplicates": 0, "skipped_confirmed": []}
+job3 = {"id": 3, "kind": "translate", "project": 1, "status": "running", "total": 2,
+        "done": 0, "counters": {}, "error": None, "params": {}, "ids": [1, 2],
+        "stop": False, "recent": [], "created": "", "started": None, "finished": None}
+main._job_run(job3)
+check(job3["status"] == "done", "успешная порция не роняет прогон: " + str(job3.get("error")))
+check(job3["done"] == 2, "и счётчик считается: " + str(job3["done"]))
+main.batch_translate = _bt
 
 print("\n=== 19. Одобрять нечего — прогон не падает и ничего не чинит ===")
 job2 = dict(job, id=2, status="running", done=0, counters={}, ids=[], total=0)

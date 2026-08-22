@@ -4600,6 +4600,17 @@ def _job_public(job: dict) -> dict:
     return {k: v for k, v in job.items() if k not in ("ids", "stop")}
 
 
+def _first_error(result: dict) -> str:
+    """Текст первой ошибки порции. Пакетные эндпоинты глотают ошибку каждого
+    сегмента по отдельности, и наружу шло только их число — а «ошибок: 10»
+    не отличить от «кончились деньги на счёте» и «отозван ключ»."""
+    for e in (result.get("errors") or []):
+        txt = e.get("error") if isinstance(e, dict) else str(e)
+        if txt:
+            return str(txt)[:180]
+    return ""
+
+
 def _job_chunk_full(pid: int, chunk: list, params: dict) -> dict:
     """Порция составного прогона: все шаги подряд, в порядке FULL_RUN_STEPS.
 
@@ -4650,11 +4661,23 @@ def _job_chunk_full(pid: int, chunk: list, params: dict) -> dict:
                 continue
             raise
         if r.get("done", 0) == 0 and r.get("errors", 0) >= len(chunk):
-            raise RuntimeError("порция целиком завершилась ошибкой на шаге «%s»"
-                               % FULL_STEP_LABELS[st])
+            # Называем ПРИЧИНУ, а не только симптом. «Порция завершилась
+            # ошибкой» человек прочтёт как поломку программы и полезет
+            # в настройки, тогда как на деле у аккаунта кончились деньги или
+            # отозван ключ — и это видно только в журнале сервера.
+            why = r.get("why") or ""
+            raise RuntimeError("порция целиком завершилась ошибкой на шаге «%s»%s"
+                               % (FULL_STEP_LABELS[st], (": " + why) if why else ""))
         ran.append(st)
         for k, v in r.items():
-            out[st if k == "done" else k] = out.get(st if k == "done" else k, 0) + v
+            key = st if k == "done" else k
+            if isinstance(v, str):
+                # Текстовые поля (причина ошибки) не складываются: берём первое
+                # непустое. Складывать их с числом — TypeError посреди прогона.
+                if v and not out.get(key):
+                    out[key] = v
+                continue
+            out[key] = out.get(key, 0) + v
     if blocked and not ran:
         raise RuntimeError("ни один шаг не выполнен — " + "; ".join(blocked))
     if blocked:
@@ -4688,7 +4711,7 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
         # завершилась ошибкой» никогда не сработает, и мёртвый ключ выглядел бы
         # как «выполнено, исправлено 0».
         return {"done": len(r.get("applied", [])) + len(r.get("skipped", [])),
-                "applied": len(r.get("applied", [])),
+                "applied": len(r.get("applied", [])), "why": _first_error(r),
                 "reverted": len(r.get("skipped", [])), "errors": len(r.get("errors", [])),
                 "skipped_confirmed": len(r.get("skipped_confirmed", []))}
     if kind == "translate":
@@ -4698,20 +4721,21 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
             include_confirmed=bool(params.get("include_confirmed"))))
         return {"done": r["count"], "tm_hits": r.get("tm_hits", 0),
                 "duplicates": r.get("duplicates", 0), "errors": len(r.get("errors", [])),
-                "skipped_confirmed": len(r.get("skipped_confirmed", []))}
+                "why": _first_error(r), "skipped_confirmed": len(r.get("skipped_confirmed", []))}
     if kind == "backcheck":
         r = backcheck_batch(pid, BackcheckBatchRequest(
             segment_ids=chunk, limit=n, model=params.get("model"),
             use_judge=bool(params.get("use_judge")), judge_model=params.get("judge_model"),
             skip_cached=bool(params.get("skip_cached", False))))
         return {"done": r["count"], "duplicates": r.get("duplicates", 0),
-                "skipped_cached": r.get("skipped_cached", 0), "errors": len(r.get("errors", []))}
+                "skipped_cached": r.get("skipped_cached", 0),
+                "errors": len(r.get("errors", [])), "why": _first_error(r)}
     if kind == "termcheck":
         r = termcheck_batch(pid, TermcheckBatchRequest(
             segment_ids=chunk, limit=n, model=params.get("model"),
             skip_cached=bool(params.get("skip_cached", False))))
         return {"done": r["count"], "flagged": r.get("flagged", 0),
-                "duplicates": r.get("duplicates", 0),
+                "duplicates": r.get("duplicates", 0), "why": _first_error(r),
                 "skipped_trivial": r.get("skipped_trivial", 0), "errors": len(r.get("errors", []))}
     if kind == "repair":
         r = repair_batch(pid, RepairBatchRequest(
@@ -4721,12 +4745,12 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
             retry=bool(params.get("retry"))))
         return {"done": len(r.get("applied", [])) + len(r.get("skipped", [])),
                 "applied": len(r.get("applied", [])), "reverted": len(r.get("skipped", [])),
-                "errors": len(r.get("errors", []))}
+                "errors": len(r.get("errors", [])), "why": _first_error(r)}
     if kind == "medical_qa":
         r = batch_medical_qa(pid, MedicalQABatchRequest(
             segment_ids=chunk, limit=n, skip_cached=bool(params.get("skip_cached", False))))
         return {"done": r.get("count", 0), "errors": len(r.get("errors", [])),
-                "skipped_cached": r.get("skipped_cached", 0)}
+                "why": _first_error(r), "skipped_cached": r.get("skipped_cached", 0)}
     raise ValueError("unknown job kind: " + kind)
 
 
@@ -4783,10 +4807,22 @@ def _job_run(job: dict):
                 # ошибку каждого сегмента по отдельности, и без этой проверки
                 # прогон рапортовал бы «готово» с нулевым результатом.
                 if counters.get("done", 0) == 0 and counters.get("errors", 0) >= len(chunk):
-                    raise RuntimeError("порция целиком завершилась ошибкой — проверьте ключи и связь")
+                    # С причиной от провайдера: «проверьте ключи и связь» звучит
+                    # одинаково и для кончившихся денег, и для отозванного ключа,
+                    # и для оборванной сети — а действия у них разные.
+                    raise RuntimeError("порция целиком завершилась ошибкой"
+                                       + (": " + counters["why"] if counters.get("why")
+                                          else " — проверьте ключи и связь"))
                 for k, v in counters.items():
                     if k == "done":
                         job["done"] += v
+                    elif isinstance(v, str):
+                        # Причина ошибки — текст, а не счётчик. Складывать её
+                        # с числом значит уронить TypeError посреди прогона,
+                        # причём молча: общий обработчик повторит порцию
+                        # трижды, оплатив её вызовы заново.
+                        if v and not job["counters"].get(k):
+                            job["counters"][k] = v
                     else:
                         job["counters"][k] = job["counters"].get(k, 0) + v
                 last_err = None

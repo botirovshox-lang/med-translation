@@ -194,6 +194,24 @@ function rpGroupKey(s) {
 
 function rpGroupDefault(key) { return key === "none" || key === "changed"; }
 
+/* ── Составной прогон: весь конвейер одной кнопкой ──────────────────────
+   Порядок ЗДЕСЬ повторяет FULL_RUN_STEPS на сервере и обязан ему совпадать:
+   карточка показывает, что произойдёт, а произойдёт то, что решил сервер.
+   Ремонт идёт перед Medical QA — проверка описывает окончательный текст,
+   а не тот, который через шаг перепишут.
+
+   Состав сегментов больше не считается здесь: его отдаёт /run-plan тем же
+   кодом, который потом и работает. Раньше браузер считал своими правилами,
+   сервер отбирал своими, и снятая галочка уменьшала смету, но не работу. */
+const FULL_STEPS = [
+  ["translate", "Перевод", "только те, что ещё не переведены"],
+  ["backcheck", "Back-check", "обратный перевод другой моделью"],
+  ["termcheck", "Термины", "третья модель смотрит только на результат"],
+  ["repair", "Ремонт", "правит по всем находкам, включая глоссарий"],
+  ["medical_qa", "Medical QA", "числа и отрицания; обратный перевод берёт у back-check"],
+];
+const FULL_STEP_KEYS = FULL_STEPS.map(s => s[0]);
+
 function fmtDuration(sec) {
   if (sec < 90) return Math.round(sec) + " с";
   if (sec < 5400) return Math.round(sec / 60) + " мин";
@@ -241,7 +259,6 @@ function TabEditor({ store, toast }) {
   const [impact, setImpact] = useState(null);     // сегменты, не соответствующие одобренным терминам
   const [impactBusy, setImpactBusy] = useState(false);
   const [impactConfirmed, setImpactConfirmed] = useState(false);  // трогать ли подтверждённые
-  const [defModel, setDefModel] = useState("");   // модель перевода по умолчанию (Medical QA берёт её)
   const [bcBands, setBcBands] = useState([]);
   const [bcJudge, setBcJudge] = useState(false);          // LLM-судья для средней зоны
   const [judgeModel, setJudgeModel] = useState(() => {
@@ -274,7 +291,6 @@ function TabEditor({ store, toast }) {
       setJudgeModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.judgeDefault || d.default || ""));
       setTcModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.termcheckDefault || d.default || ""));
       setRpModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.repairDefault || d.default || ""));
-      setDefModel(d.default || "");
       if (d.backcheckBands) setBcBands(d.backcheckBands);
       if (d.judgeZone) setJudgeZone(d.judgeZone);
     });
@@ -436,6 +452,72 @@ function TabEditor({ store, toast }) {
     setSelId(id);
   }, [store.gotoSegId]);
 
+  // Приоритет выборки: чекбоксы > активный фильтр анализа > весь проект.
+  // Считается ДО раннего return: от выборки зависит разбор прогона ниже,
+  // а хук обязан вызываться на каждом рендере и в одном и том же порядке.
+  const hasExplicitCheck = checkedSegs.size > 0;
+  const currentIdSet = hasExplicitCheck ? checkedSegs : (store.segmentFilter || window._mcat_sf || null);
+
+  /* ── Разбор составного прогона: считает сервер ──────────────────────────
+     Раньше состав и смету считал этот файл, а работу отбирал сервер — своими
+     предикатами. Разойтись они были обязаны: список сегментов у прогона ОДИН,
+     объединение целей всех шагов, и каждый шаг брал оттуда всё, что проходило
+     ЕГО серверную проверку, а не то, что человек отметил галочками в карточке
+     соседнего шага. Снятая галочка уменьшала смету, но не работу.
+
+     Теперь оба ответа даёт один код на сервере, а карточка показывает его
+     целиком — вместе с причинами, по которым сегменты пропущены. Человеку
+     больше не нужно угадывать, какую галочку снять, чтобы не переплатить
+     и не понизить качество: это решение принято до него и объяснено. */
+  const [runPlan, setRunPlan] = useState(null);
+  const [planBusy, setPlanBusy] = useState(false);
+  // Ключ строкой, а не списком зависимостей: Set и массивы сравниваются по
+  // ссылке, и эффект уходил бы в сеть на каждом рендере таблицы.
+  //
+  // В ключ входит и отпечаток самих сегментов: список из разбора уходит потом
+  // в задачу, и устаревший разбор — это не «неточная смета», а прогон не по
+  // тем сегментам. Перевели или проверили строку мимо прогона — отпечаток
+  // изменится, разбор пересчитается.
+  const planFp = project ? project.segments.reduce((a, s) =>
+    a + (s.target || "").length + (s.status || "").length * 7
+      + (s.backcheck ? 3 : 0) + (s.termcheck ? 5 : 0) + (s.qa_result ? 11 : 0)
+      + (s.repair ? 13 : 0), 0) : 0;
+  const scopeFp = currentIdSet
+    ? currentIdSet.size + ":" + Array.from(currentIdSet).reduce((a, i) => a + i, 0) : "all";
+  const planKey = [
+    project && project.id, gptModel, bcModel, tcModel, rpModel, bcJudge,
+    fullSteps ? Array.from(fullSteps).sort().join(",") : "*",
+    rpGroupPick ? Array.from(rpGroupPick).sort().join(",") : "*",
+    scopeFp, planFp,
+    job ? job.id + ":" + job.status : "",
+  ].join("|");
+  useEffect(() => {
+    if (!project || !window.API) { setRunPlan(null); return; }
+    // Пока прогон идёт, разбор не пересчитываем: сегменты меняются каждые
+    // несколько секунд, а воркер на сервере ОДИН — разбор дрался бы за него
+    // с самим прогоном. Карточка в это время показывает прогресс, а не состав;
+    // по окончании прогона статус задачи изменится и разбор пересчитается сам.
+    if (job && job.status === "running") return;
+    let alive = true;
+    setPlanBusy(true);
+    const ids = currentIdSet
+      ? project.segments.filter(s => currentIdSet.has(s.id)).map(s => s.id) : null;
+    window.API.safeCall(() => window.API.runPlan(project.id, {
+      steps: fullSteps ? FULL_STEP_KEYS.filter(k => fullSteps.has(k)) : null,
+      segment_ids: ids,
+      model: gptModel, bc_model: bcModel, tc_model: tcModel, rp_model: rpModel,
+      use_judge: bcJudge,
+      // Тот же признак, что и у карточки ремонта: отмечены группы уже
+      // чинившихся — значит человек просит второй заход.
+      retry: !!(rpGroupPick && (rpGroupPick.has("applied") || rpGroupPick.has("rejected"))),
+    })).then(res => {
+      if (!alive) return;
+      setPlanBusy(false);
+      setRunPlan(res && res.steps ? res : null);
+    });
+    return () => { alive = false; };
+  }, [planKey]);
+
   if (!project) return React.createElement(NoProject, { store });
 
   const counts = store.statusCounts(project);
@@ -590,10 +672,6 @@ function TabEditor({ store, toast }) {
     store.updateSegment(project.id, seg.id, { status: "translated" });
     toast.warning("Подтверждение снято", "Сегмент #" + seg.id + " возвращён в «Переведён».");
   };
-
-  // Приоритет выборки: чекбоксы > активный фильтр анализа > весь проект.
-  const hasExplicitCheck = checkedSegs.size > 0;
-  const currentIdSet = hasExplicitCheck ? checkedSegs : (store.segmentFilter || window._mcat_sf || null);
 
   // Ключ группировки «чем переведено». У сегментов, переведённых до появления поля
   // provider, движок известен лишь приблизительно — такие группы идут отдельно (с «≈»),
@@ -879,7 +957,10 @@ function TabEditor({ store, toast }) {
       s.target && s.target.trim() &&
       ["translated", "qa", "review", "confirmed"].includes(s.status) &&
       (!idSet || idSet.has(s.id))),
-      {}, "Нет переведённых сегментов для пакетной проверки.");
+      // Модель обратного перевода — та же, что у back-check. Своей у Medical QA
+      // нет: правила детерминированные, вызов нужен только там, где готового
+      // обратного перевода не осталось.
+      { bc_model: bcModel }, "Нет переведённых сегментов для пакетной проверки.");
   };
 
   // Подписи с реальными языками проекта: "Оригинал (RU)" / "Перевод (EN)"
@@ -1000,42 +1081,20 @@ function TabEditor({ store, toast }) {
   // Отмечены группы уже чинившихся — серверу нужно разрешение на второй заход
   const repairRetry = () => (pickedRpGroups.has("applied") || pickedRpGroups.has("rejected"));
 
-  /* ── Составной прогон: весь конвейер одной кнопкой ────────────────────
-     Список сегментов у прогона ОДИН, а отбирает под себя каждый шаг сам —
-     теми же предикатами, что и отдельные карточки. Поэтому счётчики здесь
-     и там не разойдутся, а состав по-прежнему выбирается галочками
-     и фильтром: за экономию отвечает отбор, а не отказ от проверок. */
-  const FULL_STEPS = [
-    ["translate", "Перевод", "только те, что ещё не переведены"],
-    ["backcheck", "Back-check", "обратный перевод другой моделью"],
-    ["termcheck", "Термины", "третья модель смотрит только на результат"],
-    ["medical_qa", "Medical QA", "числа, единицы, отрицания — без вызова модели"],
-    ["repair", "Ремонт", "правит по всем находкам, включая глоссарий"],
-  ];
-  const fullScope = project.segments.filter(s => !currentIdSet || currentIdSet.has(s.id));
-  const fullStepTargets = {
-    translate: fullScope.filter(s => s.status === "new"),
-    backcheck: fullScope.filter(s => backcheckable(s, currentIdSet)),
-    termcheck: fullScope.filter(s => termcheckable(s, currentIdSet)),
-    // Свежую проверку сервер пропустит — значит и считать её здесь нельзя,
-    // иначе карточка обещает работу, которой не будет.
-    medical_qa: fullScope.filter(s => s.target && s.target.trim()
-      && ["translated", "qa", "review", "confirmed"].includes(s.status)
-      && !(s.qa_result && s.qa_result.stale === false)),
-    repair: fullScope.filter(s => repairable(s, currentIdSet)),
-  };
-  const pickedFull = fullSteps || new Set(FULL_STEPS.map(s => s[0]));
-  // Серверу отдаём ОБЪЕДИНЕНИЕ сегментов выбранных шагов, а не всё подряд:
-  // счётчики и смета выше посчитаны по этим же спискам, а они учитывают
-  // галочки «что проверять» и «что чинить». Отправив весь проект, мы бы
-  // молча выбросили этот выбор — и прогон стоил бы кратно дороже сметы.
-  const fullRunIds = (() => {
-    const ids = new Set();
-    FULL_STEPS.forEach(([k]) => {
-      if (pickedFull.has(k)) (fullStepTargets[k] || []).forEach(s => ids.add(s.id));
-    });
-    return project.segments.filter(s => ids.has(s.id));
-  })();
+  const pickedFull = fullSteps || new Set(FULL_STEP_KEYS);
+  // Состав шагов — ответ сервера, а не расчёт браузера. Пока разбор не пришёл,
+  // показываем пусто и не даём запустить: обещать работу, состав которой ещё
+  // не известен, значит снова разойтись со сметой.
+  const segById = new Map(project.segments.map(s => [s.id, s]));
+  const planByStep = {};
+  ((runPlan && runPlan.steps) || []).forEach(p => { planByStep[p.step] = p; });
+  const fullStepTargets = {};
+  FULL_STEP_KEYS.forEach(k => {
+    const p = planByStep[k];
+    fullStepTargets[k] = p ? p.ids.map(i => segById.get(i)).filter(Boolean) : [];
+  });
+  // Серверу отдаём ровно то объединение, которое он же и посчитал.
+  const fullRunIds = runPlan ? runPlan.ids.map(i => segById.get(i)).filter(Boolean) : [];
   const toggleFullStep = (key) => setFullSteps(prev => {
     const next = new Set(prev || pickedFull);
     if (next.has(key)) next.delete(key); else next.add(key);
@@ -1045,25 +1104,22 @@ function TabEditor({ store, toast }) {
   // Смета — сумма смет по шагам, каждая своей моделью. Показываем до запуска:
   // составной прогон дороже одиночного, и узнавать об этом постфактум нельзя.
   const fullEst = (() => {
-    // Сегменты, которые прогон переведёт, в ТОЙ ЖЕ порции пойдут в проверки —
-    // а сейчас они пустые и ни в один список проверок не попадают. Без этой
-    // добавки непереведённый проект показывал бы цену одного перевода, хотя
-    // платить придётся ещё и за все проверки поверх него.
-    const willTranslate = pickedFull.has("translate") ? fullStepTargets.translate : [];
-    const plus = (list) => {
-      const has = new Set(list.map(s => s.id));
-      return list.concat(willTranslate.filter(s => !has.has(s.id)));
-    };
+    // Сегменты, которые прогон переведёт, к своим проверкам уже будут
+    // переведены — сервер их в списки проверок включил сам, поэтому добавлять
+    // их здесь второй раз не нужно: получилось бы удвоение.
     const parts = [
       pickedFull.has("translate") && estimateRun("translate", fullStepTargets.translate, gptModelInfo),
-      pickedFull.has("backcheck") && estimateRun("backcheck", plus(fullStepTargets.backcheck), bcModelInfo,
+      pickedFull.has("backcheck") && estimateRun("backcheck", fullStepTargets.backcheck, bcModelInfo,
         { judge: bcJudge, judgeModel: judgeModelInfo }),
-      pickedFull.has("termcheck") && estimateRun("termcheck", plus(fullStepTargets.termcheck),
+      pickedFull.has("termcheck") && estimateRun("termcheck", fullStepTargets.termcheck,
         gptModels.find(m => m.id === tcModel) || null),
+      // Medical QA платит только там, где готового обратного перевода нет:
+      // остальным его отдаёт back-check. И платит она по цене back-check —
+      // модель обратного перевода у них теперь общая.
       pickedFull.has("medical_qa") && estimateRun("medical_qa",
-        plus(fullStepTargets.medical_qa.filter(s => !(s.backcheck && !s.backcheck.stale && s.backcheck.back))),
-        gptModels.find(m => m.id === defModel) || null),
-      pickedFull.has("repair") && estimateRun("repair", plus(fullStepTargets.repair),
+        fullStepTargets.medical_qa.filter(s => !(s.backcheck && !s.backcheck.stale && s.backcheck.back)),
+        bcModelInfo),
+      pickedFull.has("repair") && estimateRun("repair", fullStepTargets.repair,
         gptModels.find(m => m.id === rpModel) || null, { recheckModel: bcModelInfo }),
     ].filter(Boolean);
     // Шаг, у которого есть работа, но нет цены (модель не выбрана или каталог
@@ -1195,6 +1251,7 @@ function TabEditor({ store, toast }) {
         onRun: runFullJob, onStop: stopJob,
         steps: FULL_STEPS, picked: pickedFull, onToggle: toggleFullStep,
         targets: fullStepTargets, scopeSize: fullRunIds.length,
+        plan: planByStep, planBusy: planBusy, planReady: !!runPlan,
         checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf),
         est: fullEst, sameModelWarn: sameModelWarn,
         transModel: (gptModelInfo || {}).label || gptModel,
@@ -1225,7 +1282,7 @@ function TabEditor({ store, toast }) {
               && ["translated", "qa", "review", "confirmed"].includes(s.status)
               && (checkedSegs.size > 0 ? checkedSegs.has(s.id) : (!store.segmentFilter || store.segmentFilter.has(s.id)))
               && !(s.backcheck && !s.backcheck.stale && s.backcheck.back)),
-              gptModels.find(m => m.id === defModel) || null),
+              bcModelInfo),
             available: project.segments.filter(s => s.target && s.target.trim() && ["translated", "qa", "review", "confirmed"].includes(s.status) && (checkedSegs.size > 0 ? checkedSegs.has(s.id) : (!store.segmentFilter || store.segmentFilter.has(s.id)))).length,
             checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf) }),
           impact && impact.terms.length > 0 && React.createElement(GlossaryImpactCard, {
@@ -1529,8 +1586,17 @@ function LegendDot({ color, label }) {
 function FullRunCard({ running, onRun, onStop, steps, picked, onToggle, targets, scopeSize,
                        checked, filtered, est, sameModelWarn, transModel, checkModels,
                        models, transModelId, onTransModel, bcModelId, onBcModel,
-                       tcModelId, onTcModel, rpModelId, onRpModel, disabled }) {
+                       tcModelId, onTcModel, rpModelId, onRpModel, disabled,
+                       plan, planBusy, planReady }) {
   const anyWork = steps.some(([k]) => picked.has(k) && (targets[k] || []).length > 0);
+  // Разбор шага: почему сегменты взяты и почему остальные не взяты. Показываем
+  // всегда, а не по кнопке: раньше это знание добывалось перебором галочек
+  // в свёрнутом блоке отдельных прогонов, и человек экономил или ломал качество
+  // наугад. Причина рядом с числом и есть замена этой головоломке.
+  const reasonLine = (items, prefix, color) => (items || []).length
+    ? React.createElement("div", { style: { fontSize: 11.5, lineHeight: 1.55, color: color } },
+        prefix + items.map(r => r.count + " " + r.reason).join(" · "))
+    : null;
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 13, marginBottom: 14, borderLeft: "3px solid var(--c-primary)" } },
 
     React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
@@ -1540,7 +1606,7 @@ function FullRunCard({ running, onRun, onStop, steps, picked, onToggle, targets,
         React.createElement("div", null,
           React.createElement("div", { style: { fontWeight: 650, fontSize: 15, display: "flex", alignItems: "center" } }, "Перевести и проверить",
             React.createElement(InfoTip, { title: "Что делает эта кнопка",
-              body: "Один прогон вместо пяти: перевод → back-check → проверка терминов → Medical QA → ремонт. Порядок фиксирован и важен: Medical QA берёт готовый обратный перевод из back-check и не платит за него второй раз, терминологию в глоссарий собирает та из двух проверок, что отработала второй, а ремонту нужны находки всех предыдущих шагов.\n\nПереводит одна модель, проверяют другие — в этом весь смысл: проверка, сделанная той же моделью, что и перевод, независимой не является.\n\nКаждый шаг отбирает сегменты сам, теми же правилами, что и отдельные карточки: уже переведённое не переводится заново, свежая проверка не оплачивается второй раз. Чтобы сузить прогон, отметьте сегменты галочками или включите фильтр.\n\nПрогон идёт на сервере — вкладку можно закрыть." })),
+              body: "Один прогон вместо пяти: перевод → back-check → проверка терминов → ремонт → Medical QA. Порядок фиксирован и важен: терминологию в глоссарий собирает та из двух проверок, что отработала второй; ремонт чинит по находкам обеих; Medical QA идёт последней, чтобы описывать окончательный текст, а не тот, который через шаг перепишут.\n\nПереводит одна модель, проверяют другие — в этом весь смысл: проверка, сделанная той же моделью, что и перевод, независимой не является.\n\nСостав считает сервер и показывает целиком: под каждым шагом написано, кого он возьмёт и почему пропустит остальных. Готовую проверку он второй раз не оплачивает, а вердикт более сильной модели не даёт перезаписать более слабой — подбирать это галочками вручную больше не нужно. Чтобы сузить прогон, отметьте сегменты галочками или включите фильтр.\n\nПрогон идёт на сервере — вкладку можно закрыть." })),
           React.createElement("div", { className: "dim", style: { fontSize: 12 } },
             "переводит " + (transModel || "—")
             + (checkModels.length ? " · проверяют " + checkModels.join(" и ") : "")))),
@@ -1556,13 +1622,19 @@ function FullRunCard({ running, onRun, onStop, steps, picked, onToggle, targets,
       steps.map(([key, label, hint]) => {
         const n = (targets[key] || []).length;
         const on = picked.has(key);
-        return React.createElement("div", { key: key, className: "row between", style: { gap: 10, fontSize: 13, opacity: on ? 1 : 0.5 } },
-          React.createElement(Checkbox, { checked: on, onChange: () => onToggle(key) },
-            React.createElement("span", null,
-              React.createElement("b", { style: { fontWeight: 600 } }, label),
-              React.createElement("span", { className: "dim", style: { fontSize: 12 } }, " — " + hint))),
-          React.createElement("span", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 600, color: n ? "var(--text-1)" : "var(--text-3)" } },
-            n ? n + " сегм." : "нечего"));
+        const p = (plan || {})[key];
+        return React.createElement("div", { key: key, className: "col", style: { gap: 3, opacity: on ? 1 : 0.5 } },
+          React.createElement("div", { className: "row between", style: { gap: 10, fontSize: 13 } },
+            React.createElement(Checkbox, { checked: on, onChange: () => onToggle(key) },
+              React.createElement("span", null,
+                React.createElement("b", { style: { fontWeight: 600 } }, label),
+                React.createElement("span", { className: "dim", style: { fontSize: 12 } }, " — " + hint))),
+            React.createElement("span", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 600, color: n ? "var(--text-1)" : "var(--text-3)" } },
+              n ? n + " сегм." : "нечего")),
+          on && p && React.createElement("div", { style: { paddingLeft: 26, display: "flex", flexDirection: "column", gap: 2 } },
+            reasonLine(p.runs, "в работу: ", "var(--text-2)"),
+            reasonLine(p.skips, "пропущено: ", "var(--text-3)"),
+            p.note && React.createElement("div", { style: { fontSize: 11.5, lineHeight: 1.5, color: "var(--text-3)" } }, p.note)));
       })),
 
     // Выбор моделей прямо здесь, а не в «Отдельных прогонах»: состав проверяющих
@@ -1585,7 +1657,11 @@ function FullRunCard({ running, onRun, onStop, steps, picked, onToggle, targets,
 
     React.createElement(EstLine, { est }),
     React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: -6 } },
-      "Смета сверху: проверки посчитаны и по тем сегментам, что будут переведены в этом же прогоне."),
+      planBusy ? "Считаем состав…"
+        : !planReady ? "Состав прогона не получен от сервера — запуск вслепую не даём."
+        : "Состав и смету посчитал сервер тем же кодом, который потом и работает: "
+          + "что показано, то и произойдёт. Проверки посчитаны и по тем сегментам, "
+          + "что будут переведены в этом же прогоне."),
 
     running
       ? React.createElement("div", null,
@@ -1594,8 +1670,9 @@ function FullRunCard({ running, onRun, onStop, steps, picked, onToggle, targets,
             React.createElement("span", { style: { fontWeight: 700 } }, Math.round(running.done) + "/" + running.total)),
           React.createElement(ProgressBar, { value: Math.round(running.done / Math.max(1, running.total) * 100) }),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop, style: { marginTop: 8 } }, "Остановить"))
-      : React.createElement(Btn, { variant: "primary", icon: "zap", onClick: onRun, disabled: disabled || !anyWork },
-          anyWork ? "Перевести и проверить" : "Всё уже сделано"));
+      : React.createElement(Btn, { variant: "primary", icon: "zap", onClick: onRun,
+          disabled: disabled || !anyWork || !planReady },
+          !planReady ? "Считаем состав…" : anyWork ? "Перевести и проверить" : "Всё уже сделано"));
 }
 
 /* Второй клик конвейера. Одобряет однозначные термины пачкой и тут же чинит

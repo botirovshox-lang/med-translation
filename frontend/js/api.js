@@ -93,7 +93,7 @@
     update:        (pid, sid, patch)        => call("POST",   `/segments/${pid}/${sid}/update`,     patch),
 
     batch:         (pid, segIds, force, limit, model) => call("POST", `/projects/${pid}/batch`, { segment_ids: segIds || null, force: !!force, limit: limit || 50, model: model || null }),
-    medicalQABatch:(pid, segIds)             => call("POST",   `/projects/${pid}/medical-qa/batch`,   { segment_ids: segIds || null, run_backcheck: true }),
+    medicalQABatch:(pid, segIds, bcModel)    => call("POST",   `/projects/${pid}/medical-qa/batch`,   { segment_ids: segIds || null, run_backcheck: true, bc_model: bcModel || null }),
     preflight:     (pid)                    => call("POST",   `/projects/${pid}/preflight`),
     exportProject: (pid, format, source)    => call("POST",   `/projects/${pid}/export`,            { format, source: source !== false }),
 
@@ -101,6 +101,11 @@
     repair:        (pid, sid, opts)         => call("POST", `/segments/${pid}/${sid}/repair`, opts || {}),
 
     /* Фоновые прогоны: клиент только ставит задачу и смотрит прогресс */
+    // Разбор прогона до запуска. Состав считает сервер тем же кодом, который
+    // потом и работает: у браузера были свои предикаты, у сервера свои, и
+    // расходились они не в пользу человека — смета показывала одно, а списывалось
+    // другое. Ответ содержит и причины, по которым сегменты пропущены.
+    runPlan:       (pid, body)              => call("POST", `/projects/${pid}/run-plan`, body || {}),
     createJob:     (pid, kind, segIds, params) => call("POST", `/projects/${pid}/jobs`, { kind, segment_ids: segIds, params: params || {} }),
     listJobs:      (pid)                    => call("GET",    `/jobs?project=${pid}`),
     fetchSegments: (pid, ids)               => call("POST",   `/projects/${pid}/segments/fetch`, { ids }),

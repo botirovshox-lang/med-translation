@@ -435,6 +435,88 @@ OPENAI_MODELS = [
 DEFAULT_OPENAI_MODEL = "gpt-4o"
 _MODELS_BY_ID = {m["id"]: m for m in OPENAI_MODELS}
 
+# ── Справочник силы моделей ──────────────────────────────────────────────────
+# Нужен для одного решения: вправе ли проверка одной моделью перезаписать
+# готовую проверку, сделанную другой. Более слабая не вправе — иначе вердикт
+# Sol на тысяче сегментов молча заменяется вердиктом Terra, и человек платит
+# за понижение качества.
+#
+# Ранг лежит ФАЙЛОМ, а не в коде: список моделей меняется чаще, чем выходят
+# релизы сервиса, и обновление ранга не должно требовать деплоя. Копия в
+# data/ сильнее репозиторной: её правят на сервере, и git pull её не затрёт.
+# Из цены ранг не выводится (GPT-5.5 стоит как Sol и слабее его), из даты
+# тоже (у одного поколения три разных уровня) — только руками.
+MODEL_RANK_FILES = [ROOT / "backend" / "model_ranks.json",
+                    ROOT / "backend" / "data" / "model_ranks.json"]
+_MODEL_RANKS: dict = {}
+_MODEL_RANKS_STAMP: tuple = ()
+_MODEL_RANKS_CHECKED: float = 0.0
+# Как часто ходим на диск за временем правки. Ранг спрашивают на каждый сегмент
+# каждого шага: на проекте в 2670 строк это 37 000 вызовов stat() на один разбор
+# прогона — половина его времени уходила в файловую систему. Две секунды — это
+# по-прежнему «правка подхватывается без рестарта», но уже не по разу на сегмент.
+MODEL_RANKS_RECHECK_SEC = 2.0
+
+
+def _model_ranks() -> dict:
+    """Справочник с диска. Перечитывается, когда файл менялся: смысл выносить
+    его из кода теряется, если для правки нужен рестарт сервиса."""
+    global _MODEL_RANKS, _MODEL_RANKS_STAMP, _MODEL_RANKS_CHECKED
+    now = time.monotonic()
+    # Пустой _MODEL_RANKS_STAMP — просьба перечитать немедленно (так это делает
+    # тест). Обычный путь: не чаще раза в MODEL_RANKS_RECHECK_SEC.
+    if (_MODEL_RANKS and _MODEL_RANKS_STAMP
+            and (now - _MODEL_RANKS_CHECKED) < MODEL_RANKS_RECHECK_SEC):
+        return _MODEL_RANKS
+    _MODEL_RANKS_CHECKED = now
+    stamp = []
+    for p in MODEL_RANK_FILES:
+        try:
+            stamp.append(p.stat().st_mtime_ns)
+        except OSError:
+            stamp.append(0)
+    stamp = tuple(stamp)
+    if stamp == _MODEL_RANKS_STAMP and _MODEL_RANKS:
+        return _MODEL_RANKS
+    ranks: dict = {}
+    for p in MODEL_RANK_FILES:          # порядок важен: data/ идёт вторым и побеждает
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            # Битый справочник не роняет сервис и не подменяется пустым молча:
+            # без рангов защита от понижения выключится, и об этом надо знать.
+            print(f"[backend] справочник рангов {p} не прочитан: {e}", file=sys.stderr)
+            continue
+        for mid, rank in (data.get("ranks") or {}).items():
+            if isinstance(rank, int) and not isinstance(rank, bool):
+                ranks[str(mid)] = rank
+    _MODEL_RANKS, _MODEL_RANKS_STAMP = ranks, stamp
+    return ranks
+
+
+def model_rank(mid: str) -> Optional[int]:
+    """None — «не знаю», а не «слабая». Неизвестность не даёт права ни
+    перезаписать чужую проверку, ни назвать её действительной."""
+    return _model_ranks().get(mid or "")
+
+
+def _rank_not_weaker(have: str, want: str) -> bool:
+    """Проверка моделью have не слабее той, что дала бы want.
+
+    Неизвестный ранг с любой стороны — False, то есть «проверить заново».
+    Обратный выбор был бы хуже: сегмент остался бы с вердиктом модели, про
+    которую мы ничего не знаем, а человек читал бы его как вердикт выбранной.
+    Цена ошибки — один вызов и строка в разборе прогона, после которой модель
+    дописывают в справочник."""
+    if have and have == want:
+        return True
+    rh, rw = model_rank(have), model_rank(want)
+    if rh is None or rw is None:
+        return False
+    return rh >= rw
+
 # seg["provider"] — чем сегмент переведён по факту: id модели OpenAI, либо эти константы.
 # Поле проставляется в момент перевода; у сегментов, переведённых до его появления,
 # его нет, и фронтенд показывает приблизительное значение по seg["route"].
@@ -1492,7 +1574,9 @@ def list_models():
     """Каталог GPT-моделей с ценами — для выпадающего списка и оценки стоимости пакета.
     Полосы back-check отдаются отсюда же, чтобы границы не дублировались на фронтенде."""
     return {
-        "models": OPENAI_MODELS,
+        # Ранг приклеивается здесь, а не хранится в OPENAI_MODELS: он живёт
+        # в отдельном справочнике, который правят без деплоя (см. model_rank).
+        "models": [dict(m, rank=model_rank(m["id"])) for m in OPENAI_MODELS],
         "domains": [{"id": d["id"], "label": d["label"]} for d in DOMAINS],
         "domainDefault": DEFAULT_DOMAIN,
         "default": DEFAULT_OPENAI_MODEL,
@@ -3167,15 +3251,31 @@ def _text_hash(text: str) -> str:
 
 
 def _backcheck_cached(seg: dict, mdl_id: str, use_judge: bool) -> bool:
-    """Сегмент уже проверен именно этим переводом и этой моделью — считать нечего.
+    """Сегмент уже проверен ЭТИМ переводом — считать нечего.
     Судья вне своей зоны не вызывается, поэтому сегмент за её границами полный
-    даже без judged: иначе включённый судья гнал бы весь проект заново."""
+    даже без judged: иначе включённый судья гнал бы весь проект заново.
+
+    Модель здесь НЕ сравнивается, в отличие от termcheck, и это не упущение.
+    У обратного перевода нет шкалы «сильнее — лучше»: ему нужна максимально
+    буквальная модель, а сильная чинит кривой английский на лету и прячет
+    ровно ту ошибку, которую проверка ищет. Значит «проверено другой моделью»
+    здесь не хуже и не лучше — это просто проверено, и платить второй раз
+    незачем. Кому нужен другой взгляд, тот запускает back-check отдельной
+    кнопкой: она идёт со skip_cached=False и проверяет что попросили."""
     bc = seg.get("backcheck") or {}
     # Обрезанный текст: ровно так хеш и записывается. Сравнивая с необрезанным,
     # мы перезапускали бы платную проверку на каждом переводе с висящим пробелом,
     # а интерфейс при этом показывал бы её свежей.
-    if (bc.get("target_hash") != _text_hash((seg.get("target") or "").strip())
-            or bc.get("model") != mdl_id):
+    if bc.get("target_hash") != _text_hash((seg.get("target") or "").strip()):
+        return False
+    # ...но проверка СВОЕЙ ЖЕ работы проверкой не является. Раз модель здесь
+    # больше не сравнивается, остаётся ровно один случай, когда готовый
+    # обратный перевод переиспользовать нельзя: его делала та самая модель,
+    # которая писала этот текст. Она вернёт свой же замысел, а не то, что
+    # в тексте написано, — и на такой оценке стоит автоодобрение глоссария.
+    # Раньше это лечилось сменой модели в списке; теперь смена модели ничего
+    # не перезапускает, поэтому случай назван явно.
+    if bc.get("model") and bc.get("model") == seg.get("provider"):
         return False
     if not use_judge or bc.get("judged"):
         return True
@@ -3300,12 +3400,21 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
 
 
 def _termcheck_cached(seg: dict, mdl_id: str) -> bool:
-    """Тот же перевод той же моделью уже разобран — платить второй раз незачем."""
+    """Тот же перевод уже разобран моделью НЕ СЛАБЕЕ запрошенной — платить
+    второй раз незачем.
+
+    Сравнение по рангу, а не по равенству id: у проверки терминов шкала есть,
+    и вердикт сильной модели слабой не перезаписывается. Иначе достаточно было
+    сменить модель в выпадающем списке, чтобы тысяча уже проверенных Sol
+    сегментов ушла на перепроверку Terra — оплаченную и худшую по качеству.
+    Обратное направление разрешено: усилить проверку можно всегда."""
     tc = seg.get("termcheck") or {}
     if tc.get("target_hash") != _text_hash((seg.get("target") or "").strip()):
         return False
     # Пропущенный как «нечего проверять» не зависит от модели — пересчитывать нечего
-    return tc.get("model") in (mdl_id, "skip")
+    if tc.get("model") == "skip":
+        return True
+    return _rank_not_weaker(tc.get("model") or "", mdl_id)
 
 
 def _termcheck_trivial(source: str, target: str) -> Optional[str]:
@@ -3965,9 +4074,11 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
 
 class MedicalQARequest(BaseModel):
     run_backcheck: bool = True
+    bc_model: Optional[str] = None
 
 
-def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True) -> dict:
+def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True,
+                        bc_model: Optional[str] = None) -> dict:
     if not medical_qa_mod:
         raise HTTPException(500, "medical_qa module unavailable")
 
@@ -3989,8 +4100,17 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True) -> dict:
         else:
             try:
                 # literal=True обязателен: обычный промпт «чинит» кривой
-                # английский на лету и прячет ошибку, которую QA ищет
-                back = _openai_translate(target_text, project["tgt"], project["src"], literal=True)
+                # английский на лету и прячет ошибку, которую QA ищет.
+                #
+                # Модель — та же, что у back-check, и это не косметика. Без
+                # явного указания сюда подставлялась модель перевода по
+                # умолчанию: тот же самый вызов стоил впятеро дороже нужного
+                # и делался моделью, которую для обратного перевода никто
+                # не выбирал. У этой работы одна правильная модель — самая
+                # буквальная и дешёвая, та же, что у back-check.
+                back = _openai_translate(target_text, project["tgt"], project["src"],
+                                         model=bc_model or BACKCHECK_DEFAULT_MODEL,
+                                         literal=True)
             except Exception as e:
                 print(f"[backend] medical QA backcheck skipped: {e}", file=sys.stderr)
 
@@ -4026,11 +4146,20 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True) -> dict:
     seg["engine_qa"] = qa_result["engine_qa"]
     seg["medical_qa_enabled"] = medical_qa_enabled()
 
-    # Статус подтверждённого сегмента проверка НЕ трогает: она не изменила ни
-    # буквы текста, а разжаловать решение человека молча — то же самое, что
-    # переписать его перевод. Находка видна по risk_color и qa_issues, и
-    # подтверждённые с замечаниями показывает вкладка QA.
-    if seg.get("status") != "confirmed":
+    # Статус проверка может только ПОВЫСИТЬ до review, но не понизить.
+    #
+    # Подтверждённый не трогаем: она не изменила ни буквы текста, а разжаловать
+    # решение человека молча — то же самое, что переписать его перевод.
+    # Находка видна по risk_color и qa_issues, подтверждённые с замечаниями
+    # показывает вкладка QA.
+    #
+    # review не трогаем по той же причине с другой стороны: этот статус ставят
+    # те, кто ПЕРЕПИСАЛ текст (ремонт, переперевод, правка поверх заверенного),
+    # и значит он «на текст смотрела машина, посмотри человек». Medical QA
+    # проверяет числа и отрицания, а не то, читал ли кто-то результат правки;
+    # её «замечаний нет» — не ответ на этот вопрос. Понижая review до qa, она
+    # уводила починенные сегменты из зоны внимания на доске и в фильтрах.
+    if seg.get("status") in ("translated", "qa"):
         seg["status"] = "review" if qa_result["risk_color"] == "red" else "qa"
     # seg["risk"] не трогаем. Это длина сегмента, по ней выбирается движок
     # перевода (low → Google); медицинскую опасность несут risk_score и
@@ -4042,7 +4171,8 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True) -> dict:
 
 @app.post("/api/segments/{pid}/{sid}/medical-qa")
 def medical_qa_segment(pid: int, sid: int, req: MedicalQARequest = MedicalQARequest()):
-    result = _segment_medical_qa(pid, sid, run_backcheck=req.run_backcheck)
+    result = _segment_medical_qa(pid, sid, run_backcheck=req.run_backcheck,
+                                 bc_model=req.bc_model)
     save_state(STATE)
     return result
 
@@ -4051,6 +4181,10 @@ class MedicalQABatchRequest(BaseModel):
     limit: int = 50
     segment_ids: Optional[list] = None
     run_backcheck: bool = True
+    # Модель обратного перевода — та же, что у back-check. Своей модели у
+    # Medical QA нет: правила детерминированные, вызов нужен только чтобы
+    # получить обратный перевод, когда готового от back-check не осталось.
+    bc_model: Optional[str] = None
     # Пропускать сегменты, чей результат относится к нынешнему тексту.
     skip_cached: bool = True
 
@@ -4081,7 +4215,8 @@ def batch_medical_qa(pid: int, req: MedicalQABatchRequest = MedicalQABatchReques
         if _job_should_stop():
             return {"seg": seg, "skip": True}
         try:
-            return {"seg": seg, "res": _segment_medical_qa(pid, seg["id"], run_backcheck=req.run_backcheck)}
+            return {"seg": seg, "res": _segment_medical_qa(pid, seg["id"], run_backcheck=req.run_backcheck,
+                                                           bc_model=req.bc_model)}
         except Exception as e:
             print(f"[backend] medical QA batch error seg#{seg['id']}: {e}", file=sys.stderr)
             return {"seg": seg, "error": str(e)}
@@ -4574,9 +4709,18 @@ JOB_KINDS = set(JOB_CHUNKS)
 #                за него второй раз;
 #   термины    — вторая независимая проверка; та из двух, что отработала второй,
 #                и собирает терминологию с чистых сегментов;
-#   Medical QA — детерминированные правила поверх обеих оценок;
-#   ремонт     — последним: ему нужны находки всех предыдущих.
-FULL_RUN_STEPS = ["translate", "backcheck", "termcheck", "medical_qa", "repair"]
+#   ремонт     — после обеих проверок: он чинит по ИХ находкам;
+#   Medical QA — последней, и это её место, а не предпоследнее.
+#
+# Medical QA стояла перед ремонтом, пока считалось, что ремонту нужны её
+# находки. Это неправда: _repair_findings читает back-check, termcheck и
+# глоссарий, а qa_result не читает никто — числа, единицы и отрицания,
+# которыми чинит ремонт, считает сам back-check через medical_qa.run_backcheck.
+# Стоя перед ремонтом, проверка описывала текст, который через шаг переписывали,
+# и оставалась устаревшей: следующий прогон забирал те же сегменты снова.
+# Стоя после, она описывает окончательный текст и в следующий прогон
+# не попадает.
+FULL_RUN_STEPS = ["translate", "backcheck", "termcheck", "repair", "medical_qa"]
 FULL_STEP_LABELS = {"translate": "перевод", "backcheck": "back-check",
                     "termcheck": "проверка терминов", "medical_qa": "Medical QA",
                     "repair": "ремонт"}
@@ -4585,6 +4729,206 @@ FULL_STEP_LABELS = {"translate": "перевод", "backcheck": "back-check",
 # другие — иначе проверка перестаёт быть независимой.
 FULL_STEP_MODEL = {"translate": "model", "backcheck": "bc_model",
                    "termcheck": "tc_model", "repair": "rp_model"}
+
+
+# ── Разбор прогона: что он сделает и чего делать не станет ───────────────────
+# Состав и смету раньше считал браузер своими предикатами, а работу отбирал
+# сервер своими — и разойтись они были обязаны. Список сегментов у составного
+# прогона ОДИН, объединение целей всех шагов, и каждый шаг брал оттуда всё,
+# что проходило ЕГО серверную проверку, а не то, что человек отметил галочками
+# в карточке соседнего шага. Снятая галочка уменьшала смету, но не работу:
+# показывали одно, списывалось другое.
+#
+# Теперь состав считает тот же код, который потом и работает, — предикаты
+# _backcheck_cached / _termcheck_cached / _check_stale / _repairable. И разбор
+# отвечает не только «сколько», но и «почему»: «пропущено 970» без причины —
+# это не отчёт, а отговорка, после которой человек идёт кликать галочки
+# наугад.
+def _model_label(mid: str) -> str:
+    m = _MODELS_BY_ID.get(mid or "")
+    return m["label"] if m else (mid or "модель неизвестна")
+
+
+def _plan_step(project: dict, step: str, params: dict, scope: list,
+               will_translate: set, gloss_ids: set) -> dict:
+    """Разбор одного шага: кого возьмёт, кого не возьмёт и почему.
+
+    will_translate — сегменты, которые переведёт этот же прогон. Сейчас у них
+    нет перевода и ни в одну проверку они не попадают, но к своему шагу уже
+    будут переведены. Без них разбор непереведённого проекта показывал бы цену
+    одного перевода, хотя платить придётся и за все проверки поверх него."""
+    ids, runs, skips = [], {}, {}
+
+    def run(reason, seg):
+        ids.append(seg["id"])
+        runs[reason] = runs.get(reason, 0) + 1
+
+    def skip(reason):
+        skips[reason] = skips.get(reason, 0) + 1
+
+    mdl_id = None
+    if step == "backcheck":
+        mdl_id = _resolve_model(params.get("bc_model") or BACKCHECK_DEFAULT_MODEL)["id"]
+    elif step == "termcheck":
+        mdl_id = _resolve_model(params.get("tc_model") or TERMCHECK_DEFAULT_MODEL)["id"]
+    elif step == "repair":
+        mdl_id = _resolve_model(params.get("rp_model") or REPAIR_DEFAULT_MODEL)["id"]
+    elif step == "translate":
+        mdl_id = _resolve_model(params.get("model"))["id"]
+    elif step == "medical_qa":
+        # Своей модели у неё нет: правила детерминированные. Но обратный
+        # перевод, если готового не осталось, она закажет — моделью back-check.
+        # Показываем именно её: «без вызова модели» было полуправдой, из-за
+        # которой шаг молча платил моделью перевода по умолчанию.
+        mdl_id = _resolve_model(params.get("bc_model") or BACKCHECK_DEFAULT_MODEL)["id"]
+
+    use_judge = bool(params.get("use_judge"))
+    retry = bool(params.get("retry"))
+    note = None
+
+    for seg in scope:
+        target = (seg.get("target") or "").strip()
+        pending = seg["id"] in will_translate and not target
+
+        if step == "translate":
+            if seg.get("status") == "new":
+                run("ещё не переведён", seg)
+            else:
+                skip("уже переведён")
+            continue
+
+        # Переводится в этом же прогоне — к своему шагу текст появится.
+        if pending:
+            run("появится после перевода", seg)
+            continue
+        if not target:
+            skip("нет перевода")
+            continue
+
+        if step == "backcheck":
+            if _backcheck_cached(seg, mdl_id, use_judge):
+                bm = (seg.get("backcheck") or {}).get("model")
+                skip("уже проверен этим переводом: " + _model_label(bm))
+            elif (seg.get("backcheck") or {}).get("score") is None:
+                # is None, а не truthy: балл 0 — это проверенный сегмент
+                # с провальной оценкой, а не непроверенный.
+                run("ещё не проверялся", seg)
+            elif _check_stale(seg.get("backcheck"), target):
+                run("перевод изменился после проверки", seg)
+            elif (seg.get("backcheck") or {}).get("model") == seg.get("provider"):
+                run("проверял тот, кто переводил — это не проверка", seg)
+            else:
+                run("проверен без судьи, а судья включён", seg)
+
+        elif step == "termcheck":
+            tc = seg.get("termcheck") or {}
+            if _termcheck_cached(seg, mdl_id):
+                if tc.get("model") == "skip":
+                    skip("нечего проверять — в переводе нет слов")
+                elif tc.get("model") == mdl_id:
+                    skip("уже проверен этой моделью")
+                else:
+                    skip("уже проверен моделью не слабее: " + _model_label(tc.get("model")))
+            elif not tc:
+                run("ещё не проверялся", seg)
+            elif _check_stale(tc, target):
+                run("перевод изменился после проверки", seg)
+            elif model_rank(tc.get("model") or "") is None:
+                # Ранга нет — утверждать «этого достаточно» не о чем. Называем
+                # модель поимённо: строка в разборе и есть подсказка, что её
+                # пора дописать в backend/model_ranks.json.
+                run("прошлая проверка моделью неизвестной силы: "
+                    + _model_label(tc.get("model")), seg)
+            else:
+                run("прошлая проверка слабее выбранной: " + _model_label(tc.get("model")), seg)
+
+        elif step == "medical_qa":
+            if seg.get("status") not in ("translated", "qa", "review", "confirmed"):
+                skip("статус вне работы проверки")
+            elif not _check_stale(seg.get("qa_result"), target):
+                skip("результат относится к нынешнему тексту")
+            else:
+                run("нет свежего результата", seg)
+
+        elif step == "repair":
+            # Глоссарий берётся из готового отчёта о соответствии, а не считается
+            # заново на каждый сегмент: расчёт тот же самый (это записано в
+            # _gloss_misses как обязательство), но 13 мс на сегмент превращали
+            # разбор проекта на 2670 строк в 34 секунды с заблокированным
+            # воркером — при том, что смета пересчитывается на каждую смену
+            # модели в списке. project=None тут и означает «без глоссария»:
+            # остальные находки читаются из самого сегмента и бесплатны.
+            if seg["id"] not in gloss_ids and not _repair_findings(seg, None):
+                skip("чинить нечего — находок нет")
+            elif seg.get("status") == "confirmed":
+                skip("заверено человеком — ремонт таких не берёт")
+            elif not retry and _repair_tried(seg):
+                skip("этот же текст уже чинили")
+            else:
+                run("есть находки", seg)
+
+    # Ремонт и Medical QA зависят от того, что найдут предыдущие шаги ЭТОГО же
+    # прогона, а этого до запуска не знает никто. Молчать об этом нельзя:
+    # смета, посчитанная по нынешним находкам, — нижняя граница, а не цена.
+    if step == "repair":
+        note = ("Считано по нынешним находкам. Проверки в этом же прогоне могут "
+                "добавить ещё — такие сегменты будут починены, но в смету не вошли.")
+    elif step == "medical_qa":
+        note = ("Считано по нынешнему тексту. Сегменты, которые перепишет ремонт, "
+                "проверка возьмёт тоже — они идут следом за ним.")
+
+    fmt = lambda d: [{"reason": k, "count": v} for k, v in
+                     sorted(d.items(), key=lambda kv: -kv[1])]
+    return {"step": step, "label": FULL_STEP_LABELS[step], "model": mdl_id,
+            "modelLabel": _model_label(mdl_id) if mdl_id else None,
+            "ids": ids, "count": len(ids), "note": note,
+            "runs": fmt(runs), "skips": fmt(skips)}
+
+
+class RunPlanRequest(BaseModel):
+    steps: Optional[list] = None
+    segment_ids: Optional[list] = None   # None — весь проект; [] — ничего
+    model: Optional[str] = None
+    bc_model: Optional[str] = None
+    tc_model: Optional[str] = None
+    rp_model: Optional[str] = None
+    use_judge: bool = False
+    retry: bool = False
+
+
+@app.post("/api/projects/{pid}/run-plan")
+def run_plan(pid: int, req: RunPlanRequest):
+    """Что сделает составной прогон с этими настройками — до его запуска.
+
+    Клиент не считает состав сам и не подбирает его галочками: и то и другое
+    он делал по своим правилам, а деньги тратились по серверным."""
+    project = get_project(pid)
+    # is not None, а не truthy: пустой список — это «не выбрано ни одного шага»,
+    # и разбирать надо ноль шагов, а не весь конвейер.
+    want = set(req.steps if req.steps is not None else FULL_RUN_STEPS)
+    steps = [s for s in FULL_RUN_STEPS if s in want]
+    id_filter = set(req.segment_ids) if req.segment_ids is not None else None
+    scope = [s for s in project["segments"]
+             if id_filter is None or s["id"] in id_filter]
+    params = req.dict()
+    will_translate = ({s["id"] for s in scope if s.get("status") == "new"}
+                      if "translate" in steps else set())
+    # Один расчёт соответствия глоссарию на весь разбор, из общего кэша по
+    # отпечатку проекта — тот же, которым живёт отчёт «Соответствие глоссарию».
+    gloss_ids = (set(glossary_impact(pid)["segments"])
+                 if "repair" in steps else set())
+    plans = [_plan_step(project, st, params, scope, will_translate, gloss_ids)
+             for st in steps]
+    # Объединение — в порядке ДОКУМЕНТА, а не в порядке шагов: порции идут по
+    # этому списку, и прогон должен двигаться по тексту сверху вниз, а не
+    # прыгать по проекту в зависимости от того, какому шагу сегмент достался.
+    seen: set = set()
+    for p in plans:
+        seen.update(p["ids"])
+    ids = [s["id"] for s in scope if s["id"] in seen]
+    return {"steps": plans, "ids": ids, "total": len(ids), "scope": len(scope)}
+
+
 JOB_HISTORY = 30                # сколько завершённых прогонов помним
 JOB_CHUNK_RETRIES = 2           # повтор порции при сбое: сеть моргнула — не всё потеряно
 JOB_RETRY_PAUSE = 5             # секунд между попытками
@@ -4748,7 +5092,8 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
                 "errors": len(r.get("errors", [])), "why": _first_error(r)}
     if kind == "medical_qa":
         r = batch_medical_qa(pid, MedicalQABatchRequest(
-            segment_ids=chunk, limit=n, skip_cached=bool(params.get("skip_cached", False))))
+            segment_ids=chunk, limit=n, bc_model=params.get("bc_model"),
+            skip_cached=bool(params.get("skip_cached", False))))
         return {"done": r.get("count", 0), "errors": len(r.get("errors", [])),
                 "why": _first_error(r), "skipped_cached": r.get("skipped_cached", 0)}
     raise ValueError("unknown job kind: " + kind)

@@ -164,6 +164,40 @@ u = main.undo_glossary_purge(r["stamp"])
 check(u["restored"] == 1 and any(g["src"] == "бухтообразный" for g in main.STATE["glossary"]),
       "и возвращается откатом")
 
+print("\n=== 10. Человек понижает запись, которую машина не вправе ===")
+# Сверка находит неверный приказ, но со следом решения человека не трогает.
+# Значит человеку нужен способ согласиться — иначе находка ничем не кончается.
+build([entry("Клинику", "clinical practice", tier="verified", origin="confirmed:2670",
+             meaningKept=True)])
+g = main.STATE["glossary"][0]
+r = main.demote_term(main.TermScopeRequest(src="Клинику", lang="RU→EN", domain="medical"))
+check(r["ok"] and r["already"] is False, "понижение выполнено")
+check(main._hit_tier(g) == "auto", "запись стала подсказкой")
+check(g["tgt"] == "clinical practice", "перевод не тронут — сменился только уровень")
+check(g.get("prevTier") == "verified", "прежний уровень сохранён")
+check("meaningKept" not in g,
+      "пометка «человек решил оставить приказ» снята: он решил обратное")
+check(main._hard_answer(g) is False, "подсказка ответом на вопрос о термине не считается")
+
+r = main.demote_term(main.TermScopeRequest(src="Клинику", lang="RU→EN", domain="medical"))
+check(r["already"] is True, "повторное понижение не ломается и говорит правду")
+
+try:
+    main.demote_term(main.TermScopeRequest(src="нет такого", lang="RU→EN", domain="medical"))
+    check(False, "несуществующая запись обязана дать отказ")
+except main.HTTPException as e:
+    check(e.status_code == 404, "отказ 404")
+
+print("\n=== 11. Понижение убирает запись из расчёта расхождений ===")
+build([entry("Клинику", "clinical practice", tier="verified", origin="confirmed:1")],
+      [{"id": 1, "source": "Направлен в Клинику на дообследование.",
+        "target": "Referred to the clinic for further tests.", "status": "translated"}])
+before = main.glossary_impact(1, refresh=True)["segments"]
+check(before == [1], "пока это приказ — сегмент считается нарушением")
+main.demote_term(main.TermScopeRequest(src="Клинику", lang="RU→EN", domain="medical"))
+after = main.glossary_impact(1, refresh=True)["segments"]
+check(after == [], "после понижения требовать соответствия нечему")
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

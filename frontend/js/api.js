@@ -148,6 +148,9 @@
     saveTerm:      (term, isNew)            => call("POST",   "/glossary",                          { ...term, isNew }),
     /* Область обязательна: без неё удаление уносит однофамильца из другой пары языков. */
     deleteTerm:    (src, lang, domain)      => call("DELETE", `/glossary?src=${encodeURIComponent(src)}&lang=${encodeURIComponent(lang||"")}&domain=${encodeURIComponent(domain||"")}`),
+    /* Понижение приказа до подсказки: намерение, обратное правке (там «правка
+       руками = приказ»), поэтому отдельной дверью. */
+    demoteTerm:    (src, lang, domain)      => call("POST",   "/glossary/demote", { src, lang: lang || "", domain: domain || "" }),
     deleteTM:      (src, lang)              => call("DELETE", `/tm?src=${encodeURIComponent(src)}&lang=${encodeURIComponent(lang||"")}`),
   };
 

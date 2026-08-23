@@ -188,6 +188,32 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
 
   const bad = (res && res.bad) || [];
   const CAP = 20;
+
+  /* Находка, которую машина понизить не вправе (на записи след решения
+     человека), обязана давать человеку способ согласиться. Иначе сверка
+     показывает проблему и ничем не заканчивается — а именно на такие
+     записи приходится больше всего сегментов. */
+  const act = async (b, kind) => {
+    if (kind === "del" && !window.confirm(
+      "Удалить запись «" + b.src + " → " + b.tgt + "» из глоссария?\n\n"
+      + "Готовый перевод не изменится. Если перевод верен в каком-то контексте, "
+      + "лучше понизить до подсказки — тогда модель сможет им пользоваться, "
+      + "но не будет обязана.")) return;
+    setBusy("row");
+    const r = await window.API.safeCall(() => kind === "del"
+      ? window.API.deleteTerm(b.src, b.lang, b.domain)
+      : window.API.demoteTerm(b.src, b.lang, b.domain));
+    setBusy("");
+    if (!r || !r.ok) { toast.error("Не выполнено", "Сервер не ответил."); return; }
+    // Убираем из показанного сразу: строка про запись, которой в приказах
+    // больше нет, — это уже неправда.
+    setRes(x => x && ({ ...x, bad: x.bad.filter(y => y.src !== b.src || y.tgt !== b.tgt),
+                        downgradable: Math.max(0, (x.downgradable || 0) - (b.humanTouched ? 0 : 1)) }));
+    toast.success(kind === "del" ? "Запись удалена" : "Понижено до подсказки",
+      b.src + " → " + b.tgt
+      + (kind === "del" ? "" : " · модель вправе её игнорировать"));
+    onDone && onDone();
+  };
   return React.createElement("div", { className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 } },
     React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
       React.createElement("div", { className: "row", style: { gap: 8 } },
@@ -233,7 +259,12 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
           b.disputed > 0 && React.createElement("span", { className: "dim", style: { fontSize: 12 } },
             "проверка спорит: " + b.disputed),
           b.humanTouched
-            ? React.createElement(Badge, { variant: "confirmed" }, "решил человек — правьте сами")
+            ? React.createElement("span", { className: "row", style: { gap: 6 } },
+                React.createElement(Badge, { variant: "confirmed" }, "решили вы"),
+                React.createElement(Btn, { variant: "ghost", size: "sm", disabled: !!busy,
+                  onClick: () => act(b, "demote") }, "Понизить"),
+                React.createElement(Btn, { variant: "ghost", size: "sm", disabled: !!busy,
+                  onClick: () => act(b, "del") }, "Удалить"))
             : React.createElement(Badge, { variant: "soft" }, "понизится")))),
       bad.length > CAP && React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
         "и ещё " + (bad.length - CAP) + " записей")));

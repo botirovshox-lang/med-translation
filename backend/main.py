@@ -5497,6 +5497,51 @@ def delete_project(pid: int):
     return {"ok": True}
 
 
+class TermScopeRequest(BaseModel):
+    src: str
+    lang: str = ""
+    domain: str = ""
+
+
+@app.post("/api/glossary/demote")
+def demote_term(req: TermScopeRequest):
+    """Понизить приказ до подсказки по решению ЧЕЛОВЕКА.
+
+    Отдельно от `save_term` намеренно. Там действует правило «правка руками =
+    приказ»: меняя перевод, человек за него ручается. Здесь намерение обратное
+    и его нельзя выразить через ту же дверь — запись остаётся в глоссарии
+    и остаётся видна, но перестаёт принуждать модель и быть основанием
+    для ремонта.
+
+    Зачем это нужно: сверка смысла находит неверные приказы, но записи со следом
+    решения человека не понижает — чужое решение машина не отменяет. Значит
+    человеку нужен способ согласиться с ней в один клик, иначе находка
+    показывается и ничем не заканчивается.
+
+    Удаления тут нет: перевод может быть верным В КОНТЕКСТЕ и негодным как
+    правило на весь документ. Подсказка — ровно это и означает."""
+    scope = (req.lang or DEFAULT_GLOSS_LANG, req.domain or DEFAULT_GLOSS_DOMAIN)
+    entry = _glossary_entry(req.src, scope)
+    if entry is None and not (req.lang or req.domain):
+        entry = next((g for g in STATE["glossary"]
+                      if _norm_key(g.get("src")) == _norm_key(req.src)), None)
+    if entry is None:
+        raise HTTPException(404, "Запись не найдена в этой области")
+    if _hit_tier(entry) != GLOSSARY_TIER_HARD:
+        return {"ok": True, "already": True, "tier": _hit_tier(entry)}
+    today = datetime.now().strftime("%Y-%m-%d")
+    entry.update({"prevTier": GLOSSARY_TIER_HARD, "prevNote": entry.get("note", ""),
+                  "prevConf": entry.get("conf", ""), "tier": GLOSSARY_TIER_SOFT,
+                  "conf": "medium", "note": "понижено вручную " + today,
+                  "updated": today})
+    # Пометка «человек решил оставить приказ» с записи снимается: он решил
+    # обратное, и держать её значит соврать следующему аудиту.
+    entry.pop("meaningKept", None)
+    _invalidate_gloss_index()
+    save_state(STATE)
+    return {"ok": True, "already": False, "tier": GLOSSARY_TIER_SOFT}
+
+
 @app.delete("/api/glossary")
 def delete_term(src: str, lang: str = "", domain: str = ""):
     """Удаление — операция без отмены, поэтому область здесь трактуется строго.

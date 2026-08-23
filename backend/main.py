@@ -3628,6 +3628,11 @@ def undo_auto_approve(batch: int):
     """Откатить пачку целиком: созданные записи убрать, заменённые вернуть,
     кандидатов — обратно в очередь. Автоматике, которую нельзя отменить одной
     кнопкой, доверять нельзя."""
+    # Откат ПОНИЖЕНИЯ — это решение человека «запись оставить приказом».
+    # Без этой пометки следующий аудит увидел бы записанный вердикт «не то
+    # понятие» и предложил бы понизить её снова, по кругу.
+    audit = any(b.get("id") == batch and b.get("kind") == "audit"
+                for b in STATE.get("autoBatches", []))
     removed, restored = 0, 0
     keep = []
     for g in STATE["glossary"]:
@@ -3648,6 +3653,8 @@ def undo_auto_approve(batch: int):
             g.pop("origin", None)
         for k in ("autoBatch", "autoCreated"):
             g.pop(k, None)
+        if audit:
+            g["meaningKept"] = True
         restored += 1
         keep.append(g)
     STATE["glossary"] = keep
@@ -3669,6 +3676,71 @@ def list_auto_batches():
     return {"ok": True, "batches": STATE.get("autoBatches", [])}
 
 
+_GLOSS_MARK_LOCK = threading.Lock()
+
+
+def _meaning_pair(entry: dict) -> str:
+    """Отпечаток пары, к которой относится вердикт. Правили перевод — вердикт
+    о прежней паре больше ничего не значит; тот же приём, что у `target_hash`
+    у back-check и termcheck."""
+    return _text_hash(_norm_key(entry.get("src")) + "||" + _norm_key(entry.get("tgt")))
+
+
+def _meaning_stale(entry: dict) -> bool:
+    """Записи нужен вопрос: её ещё не спрашивали, пара изменилась либо после
+    прошлой сверки на неё пожаловалась проверка терминов.
+
+    Без этого аудит переспрашивал ВСЕ записи каждым запуском, а судья на
+    границе «то же понятие / не то» отвечает неустойчиво: список находок
+    каждый раз получался новый, и понижать приходилось бесконечно."""
+    m = entry.get("meaning") or {}
+    if m.get("pair") != _meaning_pair(entry):
+        return True
+    return int(entry.get("disputed") or 0) > int(m.get("disputed") or 0)
+
+
+def _note_term_disputes(seg: dict, project: Optional[dict]) -> int:
+    """Проверка терминов забраковала слово, которое И ЕСТЬ приказной перевод.
+
+    Понизить запись прямо отсюда нельзя: termcheck — один вызов модели, он
+    ошибается (на «infiltrate → induration» ошибается именно он), и отдать
+    ему право переписывать глоссарий значит поставить шумную проверку выше
+    решения. Поэтому он НОМИНИРУЕТ: счётчик `disputed` растёт, вердикт сверки
+    смысла для этой записи считается устаревшим, и следующий аудит спросит
+    про неё заново — а решает по-прежнему вопрос «то же ли это понятие».
+
+    Под локом: termcheck идёт в рабочих потоках, а записи глоссария общие."""
+    if project is None:
+        return 0
+    tc = seg.get("termcheck") or {}
+    bad = [f for f in (tc.get("findings") or [])
+           if f.get("severity") in ("critical", "major") and f.get("tgt_term")]
+    if not bad:
+        return 0
+    hits = {_norm_key(h["tgt"]): h for h in _verified_hits(seg.get("source", ""), project)}
+    if not hits:
+        return 0
+    scope = _project_scope(project)
+    marked = 0
+    with _GLOSS_MARK_LOCK:
+        for f in bad:
+            h = hits.get(_norm_key(f.get("tgt_term")))
+            if h is None:
+                continue
+            # _get_context отдаёт КОПИИ записей (в них подмешан контекст поиска),
+            # поэтому метку надо ставить настоящей записи глоссария — иначе она
+            # уходит во временный словарь и пропадает вместе с ним.
+            entry = _glossary_entry(h.get("src"), scope)
+            if entry is None:
+                continue
+            entry["disputed"] = int(entry.get("disputed") or 0) + 1
+            sug = (f.get("suggestion") or "").strip()
+            if sug:
+                entry["disputedSuggest"] = sug
+            marked += 1
+    return marked
+
+
 def _human_touched(entry: dict) -> bool:
     """У записи есть СЛЕД решения человека, а не просто уровень «приказ».
 
@@ -3684,13 +3756,20 @@ def _human_touched(entry: dict) -> bool:
     origin = (entry.get("origin") or "").lower()
     note = (entry.get("note") or "").lower()
     return bool(origin.startswith("confirmed:") or "уточнено вручную" in note
-                or entry.get("autoBatch") or entry.get("byOverride"))
+                or entry.get("autoBatch") or entry.get("byOverride")
+                # Человек откатил понижение — значит решил оставить запись
+                # приказом, и предлагать понижение снова нельзя.
+                or entry.get("meaningKept"))
 
 
 class GlossaryAuditRequest(BaseModel):
     project: Optional[int] = None      # область: чей глоссарий проверяем
     dry_run: bool = True
-    limit: int = 800                   # потолок пар за проверку
+    # Переспросить и то, что уже сверялось. По умолчанию НЕТ: вердикт лежит
+    # на записи, и повторный проход стоит денег и даёт другой ответ на
+    # пограничных парах — ради этого кэш и заведён.
+    force: bool = False
+    limit: int = 800                   # потолок НОВЫХ пар за проверку
 
 
 @app.post("/api/glossary/audit")
@@ -3734,28 +3813,51 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
                   file=sys.stderr)
     entries.sort(key=lambda g: -weight.get(_norm_key(g.get("src")), 0))
 
-    verdicts, asked, capped = _meaning_check(entries, cap=max(1, min(req.limit, 2000)))
+    # Спрашиваем только то, чего ещё не спрашивали. Вердикт живёт НА ЗАПИСИ,
+    # поэтому список находок от запуска к запуску не пляшет: судья на границе
+    # «то же понятие / не то» отвечает неустойчиво, и без памяти каждый проход
+    # приносил новые записи на понижение — бесконечно.
+    todo = [g for g in entries if req.force or _meaning_stale(g)]
+    verdicts, asked, capped = _meaning_check(todo, cap=max(1, min(req.limit, 2000)))
+    today = datetime.now().strftime("%Y-%m-%d")
+    mdl_id = _resolve_model(JUDGE_DEFAULT_MODEL)["id"]
+    for g in todo:
+        v = verdicts.get((_scope_of(g), _norm_key(g.get("src")), _norm_key(g.get("tgt"))))
+        # «Не знаю» (судья не ответил, вызов упал) не записываем: иначе молчание
+        # закрыло бы запись от нормальной проверки навсегда. Тот же закон, что
+        # у attested() и у отметки Medical QA.
+        if not v or v.get("same") is None:
+            continue
+        g["meaning"] = {"same": bool(v["same"]), "back": v.get("back") or "",
+                        "pair": _meaning_pair(g), "disputed": int(g.get("disputed") or 0),
+                        "model": mdl_id, "at": today}
+    # Список строится по ЗАПИСЯННЫМ вердиктам — и свежим, и лежавшим с прошлого
+    # раза: иначе разбор показывал бы только новое и врал бы про объём работы.
     bad = []
     for g in entries:
-        v = verdicts.get((_scope_of(g), _norm_key(g.get("src")), _norm_key(g.get("tgt"))))
-        # «Не знаю» (судья не ответил, вызов упал) находкой не считается —
-        # тот же закон, что у attested() и у сверки при автоодобрении.
-        if not v or v.get("same") is not False:
+        m = g.get("meaning") or {}
+        if m.get("pair") != _meaning_pair(g) or m.get("same") is not False:
             continue
         bad.append({"src": g["src"], "tgt": g["tgt"],
-                    "back": v.get("back") or "иное понятие",
+                    "back": m.get("back") or "иное понятие",
                     "segments": weight.get(_norm_key(g.get("src")), 0),
+                    "disputed": int(g.get("disputed") or 0),
                     "humanTouched": _human_touched(g),
                     "lang": _scope_of(g)[0], "domain": _scope_of(g)[1]})
     result = {"ok": True, "dryRun": req.dry_run, "total": len(entries),
-              "checked": asked, "capped": capped, "batch": None,
+              "checked": asked, "cached": len(entries) - len(todo),
+              "pending": max(0, len(todo) - asked), "capped": capped, "batch": None,
               "scope": list(scope) if scope else None,
               "bad": sorted(bad, key=lambda b: (b["humanTouched"], -b["segments"])),
               "downgradable": sum(1 for b in bad if not b["humanTouched"])}
     if req.dry_run or not bad:
+        # Вердикты — это КЭШ, а не решение: платный ответ судьи выброшенным
+        # быть не должен, иначе следующий разбор спросит то же самое и получит
+        # другой ответ. Понижения тут по-прежнему нет.
+        if asked:
+            save_state(STATE)
         return result
 
-    today = datetime.now().strftime("%Y-%m-%d")
     batch = STATE.get("autoBatchSeq", 0) + 1
     STATE["autoBatchSeq"] = batch
     done = 0
@@ -4179,7 +4281,11 @@ def _run_segment_termcheck(seg: dict, project: dict, model: Optional[str] = None
     }
     if harvest:
         queued += [c["id"] for c in _harvest_if_clean(seg, project)]
-    return {"ok": True, "termcheck": seg["termcheck"], "queued": queued}
+    # Жалоба на приказной термин — не приговор записи, а повод переспросить
+    # у сверки смысла (см. _note_term_disputes).
+    disputed = _note_term_disputes(seg, project)
+    return {"ok": True, "termcheck": seg["termcheck"], "queued": queued,
+            "disputedTerms": disputed}
 
 
 class TermcheckRequest(BaseModel):

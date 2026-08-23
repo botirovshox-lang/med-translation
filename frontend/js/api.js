@@ -137,6 +137,7 @@
     autoBatches:   ()                       => call("GET",    "/term-queue/auto-batches"),
     /* Смысловая сверка записей, УЖЕ стоящих приказом. dry_run по умолчанию. */
     auditGlossary: (opts)                   => call("POST",   "/glossary/audit",                    opts || {}),
+    /* force — переспросить и то, что уже сверялось: вердикт лежит на записи. */
 
     saveTerm:      (term, isNew)            => call("POST",   "/glossary",                          { ...term, isNew }),
     /* Область обязательна: без неё удаление уносит однофамильца из другой пары языков. */

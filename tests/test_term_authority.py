@@ -312,5 +312,80 @@ r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=False))
 check(not r["bad"] and main._hit_tier(main.STATE["glossary"][0]) == "verified",
       "молчание судьи — не приговор")
 
+print("\n=== 18. Повторная сверка не переспрашивает и не плодит находок ===")
+# Из-за чего это написано: вердикт нигде не хранился, аудит спрашивал ВСЕ
+# записи каждым запуском, а судья на границе отвечает неустойчиво — список
+# на понижение каждый раз получался новый, и конца этому не было.
+good = {"src": "мокрота", "tgt": "sputum", "tier": "verified", "conf": "high",
+        "lang": "RU→EN", "domain": "medical", "note": "", "origin": "seed"}
+proj = build(gloss=[good], segments=[])
+os.environ["OPENAI_API_KEY"] = "test-key"
+asked = []
+
+
+def judge(verdict):
+    def f(pairs, scope):
+        asked.append(len(pairs))
+        return {(main._norm_key(a), main._norm_key(b)): dict(verdict) for a, b in pairs}
+    return f
+
+
+main._openai_meaning = judge({"same": True, "back": "то же"})
+r1 = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True))
+check(r1["checked"] == 1 and not r1["bad"], "первый проход спросил и признал верной")
+
+# Судья передумал — но спрашивать его больше не о чем.
+main._openai_meaning = judge({"same": False, "back": "иное понятие"})
+r2 = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True))
+check(r2["checked"] == 0 and r2["cached"] == 1, "второй проход не потратил ни вызова")
+check(not r2["bad"], "и не принёс новой находки на пустом месте")
+
+r3 = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True, force=True))
+check(r3["checked"] == 1 and len(r3["bad"]) == 1,
+      "переспросить можно, но только явной просьбой")
+
+print("\n=== 19. Правка перевода делает вердикт недействительным ===")
+main.STATE["glossary"][0]["tgt"] = "phlegm"
+main._openai_meaning = judge({"same": True, "back": "то же"})
+r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True))
+check(r["checked"] == 1, "вердикт был про другую пару — спрашиваем заново")
+
+print("\n=== 20. Проверка терминов номинирует, но не понижает ===")
+proj = build(gloss=[VERIFIED],
+             segments=[flagged(1, "Инфильтрат в лёгком.", "Infiltrate in the lung.")])
+g = main.STATE["glossary"][0]
+n = main._note_term_disputes(proj["segments"][0], proj)
+check(n == 1 and g.get("disputed") == 1, "жалоба на приказной термин посчитана")
+check(main._hit_tier(g) == "verified", "но сама по себе запись не понижена")
+check(g.get("disputedSuggest") == "induration", "и что предлагают взамен — записано")
+
+# Запись уже сверялась и была признана верной — жалоба возвращает её на сверку.
+g["meaning"] = {"same": True, "back": "то же", "pair": main._meaning_pair(g),
+                "disputed": 0, "model": "x", "at": "2026-08-01"}
+check(main._meaning_stale(g), "новая жалоба делает прошлый вердикт устаревшим")
+g["meaning"]["disputed"] = 1
+check(not main._meaning_stale(g), "а учтённая жалоба — нет")
+
+# Находка на НЕприказном термине никого не номинирует.
+proj = build(gloss=[dict(VERIFIED, tier="auto")],
+             segments=[flagged(1, "Инфильтрат в лёгком.", "Infiltrate in the lung.")])
+check(main._note_term_disputes(proj["segments"][0], proj) == 0,
+      "подсказку оспаривать не надо — она и так необязательна")
+
+print("\n=== 21. Откат понижения закрывает вопрос навсегда ===")
+mine = {"src": "анизакидоз", "tgt": "anisakis", "tier": "verified", "conf": "high",
+        "lang": "RU→EN", "domain": "medical", "note": ""}
+proj = build(gloss=[mine], segments=[])
+main._openai_meaning = judge({"same": False, "back": "род паразита"})
+r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=False))
+check(r["downgraded"] == 1, "понижено")
+main.undo_auto_approve(r["batch"])
+g = main.STATE["glossary"][0]
+check(main._hit_tier(g) == "verified" and g.get("meaningKept") is True,
+      "откат вернул приказ и пометил решение человека")
+r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True))
+check(len(r["bad"]) == 1 and r["downgradable"] == 0,
+      "находка видна, но понижать её больше не предлагают")
+
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

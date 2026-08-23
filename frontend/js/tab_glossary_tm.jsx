@@ -54,10 +54,10 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
   useEffect(() => { setRes(null); }, [project && project.id]);
   if (!project) return null;
 
-  const run = async (dry) => {
-    setBusy(dry ? "check" : "apply");
+  const run = async (dry, force) => {
+    setBusy(dry ? (force ? "recheck" : "check") : "apply");
     const r = await window.API.safeCall(() => window.API.auditGlossary({
-      project: project.id, dry_run: dry }));
+      project: project.id, dry_run: dry, force: !!force }));
     setBusy("");
     if (!r || !r.ok) {
       toast.error("Сверка не выполнена", "Нужен ключ OpenAI, или сервер не ответил.");
@@ -65,7 +65,7 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
     }
     setRes(r);
     if (dry) {
-      toast.info("Проверено записей: " + r.checked,
+      toast.info("Спрошено: " + r.checked + " · из памяти: " + (r.cached || 0),
         r.bad.length ? "Смысл расходится у " + r.bad.length
           + " · понизить можно " + r.downgradable
           : "Расхождений не найдено.");
@@ -86,20 +86,27 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
         React.createElement("span", { style: { fontWeight: 650, fontSize: 14 } }, "Сверка смысла записей"),
         React.createElement(InfoTip, { title: "Зачем это нужно", body: "Приказная запись глоссария заставляет модель писать именно этот перевод и служит основанием для ремонта. Ни одна другая проверка не спрашивает, ТО ЖЕ ли это понятие: корпус подтверждает лишь, что строка в языке существует, проверка терминов — что термин настоящий, согласие сегментов — что модель повторяет себя. «Анизакидоз → Anisakis» (болезнь против рода паразита) проходит их все.\n\nНаходка ПОНИЖАЕТСЯ до подсказки, а не удаляется: перевод остаётся на месте, запись остаётся видна, но перестаёт приказывать модели и гнать ремонт.\n\nЗаписи со следом решения человека (одобрение кандидата, ручная правка) не понижаются никогда — только помечаются. Своё предположение машина вправе пересмотреть, чужое решение — нет." })),
       React.createElement("span", { className: "dim", style: { fontSize: 12 } },
-        res ? "проверено: " + res.checked + " из " + res.total
+        res ? "спрошено: " + res.checked + " · из памяти: " + (res.cached || 0)
+              + " · всего приказных: " + res.total
             : "проверяются только записи уровня «приказ»")),
 
     React.createElement("div", { className: "row row-wrap", style: { gap: 10, alignItems: "center" } },
-      React.createElement(Btn, { variant: "secondary", size: "sm", icon: "target", disabled: !!busy, onClick: () => run(true) },
-        busy === "check" ? "Сверяем…" : res ? "Сверить заново" : "Проверить смысл записей"),
+      React.createElement(Btn, { variant: "secondary", size: "sm", icon: "target", disabled: !!busy, onClick: () => run(true, false) },
+        busy === "check" ? "Сверяем…" : res ? "Досверить новые" : "Проверить смысл записей"),
+      // Вердикт лежит на записи, поэтому обычная кнопка спрашивает только про
+      // новое. Переспросить всё — отдельное действие: это полная оплата ещё
+      // раз, и на пограничных парах судья ответит иначе.
+      res && React.createElement(Btn, { variant: "ghost", size: "sm", disabled: !!busy, onClick: () => run(true, true) },
+        busy === "recheck" ? "Переспрашиваем…" : "Переспросить всё (" + res.total + ")"),
       res && res.downgradable > 0 && React.createElement(Btn, {
         variant: "primary", size: "sm", icon: "check", disabled: !!busy, onClick: () => run(false) },
         busy === "apply" ? "Понижаем…" : "Понизить " + res.downgradable + " до подсказки"),
       res && React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setRes(null) }, "Скрыть")),
 
-    res && res.capped > 0 && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
-      "Сверх потолка не проверено: " + res.capped
-      + " — первыми идут записи, которые уже расходятся с переводом в этом проекте."),
+    res && (res.capped > 0 || res.pending > 0) && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
+      "Осталось спросить: " + ((res.capped || 0) + (res.pending || 0))
+      + " — нажмите «Досверить новые» ещё раз. Первыми идут записи, которые "
+      + "уже расходятся с переводом в этом проекте."),
 
     res && !bad.length && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
       "Расхождений смысла не найдено."),
@@ -114,6 +121,8 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
         React.createElement("span", { className: "row", style: { gap: 8 } },
           b.segments > 0 && React.createElement("span", { className: "dim", style: { fontSize: 12 } },
             "сегментов: " + b.segments),
+          b.disputed > 0 && React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+            "проверка спорит: " + b.disputed),
           b.humanTouched
             ? React.createElement(Badge, { variant: "confirmed" }, "решил человек — правьте сами")
             : React.createElement(Badge, { variant: "soft" }, "понизится")))),

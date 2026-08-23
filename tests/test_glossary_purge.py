@@ -1,0 +1,143 @@
+"""Массовый вынос автоимпорта из глоссария.
+
+`DELETE /api/glossary` работает по ОДНОЙ записи, а импорт — десять тысяч:
+поштучно их не выносят. Значит операция либо есть осознанной, с предпросмотром
+и откатом, либо делается руками по файлу состояния — что хуже во всех
+отношениях. Проверяется ровно то, без чего она опасна:
+
+  1. `dry_run` считает и НЕ трогает;
+  2. приказы не выносятся вместе с подсказками;
+  3. запись со следом решения человека не выносится никогда, и сказано,
+     скольких пощадили;
+  4. область фильтра соблюдается: чужая языковая пара не страдает;
+  5. `unused_only` считает применимость тем же `_term_match`, что и инъекция
+     в промпт;
+  6. вынесенное лежит файлом и возвращается откатом, а запись, появившаяся
+     после выноса, откатом не затирается;
+  7. на расчёт расхождений вынос подсказок не влияет — он идёт по приказам.
+
+Ни одного вызова модели и ни одного обращения к сети.
+"""
+import os, sys, json, shutil, tempfile
+
+os.environ.setdefault("APP_PASSWORD", "test")
+os.environ["AUTHORITY_CORPUS"] = "0"
+sys.path.insert(0, "backend")
+import main
+
+main.save_state = lambda *a, **k: None
+# Бэкапы выноса пишем во временный каталог: боевой data/backups не трогаем.
+TMP = tempfile.mkdtemp(prefix="mcat-purge-")
+main.PURGE_DIR = __import__("pathlib").Path(TMP)
+
+fail = []
+
+
+def check(cond, label):
+    print(("  OK   " if cond else "  FAIL ") + label)
+    if not cond:
+        fail.append(label)
+
+
+def entry(src, tgt, tier="auto", **extra):
+    e = {"src": src, "tgt": tgt, "tier": tier, "lang": "RU→EN",
+         "domain": "medical", "conf": "medium", "note": ""}
+    e.update(extra)
+    return e
+
+
+def build(gloss, segments=()):
+    proj = {"id": 1, "title": "P", "src": "RU", "tgt": "EN", "domain": "medical",
+            "segments": [dict(s) for s in segments]}
+    main.STATE = {"projects": [proj], "glossary": [dict(g) for g in gloss],
+                  "tm": [], "termQueue": [], "exportHistory": [], "team": [],
+                  "autoBatches": [], "autoBatchSeq": 0}
+    main._invalidate_gloss_index()
+    main._IMPACT_CACHE.clear()
+    return proj
+
+
+GLOSS = [
+    entry("задний увеит", "rear uveitis"),                       # автоимпорт
+    entry("мокрота", "phlegm"),                                  # автоимпорт
+    entry("инфильтрат", "infiltrate", tier="verified"),          # приказ
+    entry("бациллы", "bacilli", origin="confirmed:12"),          # правил человек
+    entry("хрипы", "rales", note="уточнено вручную 2026-08-01"),  # правил человек
+    entry("вертрag", "Vertrag", lang="RU→DE"),                   # чужая пара
+]
+SEGS = [{"id": 1, "source": "Мокрота с примесью крови.", "target": "Sputum with blood.",
+         "status": "translated"}]
+
+print("=== 1. Разбор ничего не меняет и называет пощажённых ===")
+build(GLOSS, SEGS)
+r = main.purge_glossary(main.GlossaryPurgeRequest(dry_run=True))
+check(len(main.STATE["glossary"]) == 6, "в режиме показа глоссарий не тронут")
+check(r["matched"] == 3, "к выносу отобраны три подсказки (включая чужую пару)")
+check(r["keptHuman"] == 2, "две записи со следом человека пощажены и посчитаны")
+check(r["stamp"] is None, "метки отката нет — ничего и не выносили")
+
+print("\n=== 2. Приказ подсказкой не выносится ===")
+srcs = {x["src"] for x in r["samples"]}
+check("инфильтрат" not in srcs, "запись уровня «приказ» в список не попала")
+
+print("\n=== 3. Область фильтра соблюдается ===")
+r = main.purge_glossary(main.GlossaryPurgeRequest(project=1, dry_run=True))
+srcs = {x["src"] for x in r["samples"]}
+check(r["matched"] == 2 and "вертрag" not in srcs,
+      "с областью проекта чужая языковая пара не выносится")
+
+print("\n=== 4. unused_only считает применимость к тексту ===")
+r = main.purge_glossary(main.GlossaryPurgeRequest(project=1, unused_only=True, dry_run=True))
+srcs = {x["src"] for x in r["samples"]}
+check(r["matched"] == 1 and "мокрота" not in srcs,
+      "встречающийся в тексте термин не выносится как неиспользуемый")
+check("задний увеит" in srcs, "а не встречающийся — выносится")
+
+print("\n=== 5. Вынос сохраняет копию и снимает записи ===")
+r = main.purge_glossary(main.GlossaryPurgeRequest(project=1, dry_run=False))
+left = {g["src"] for g in main.STATE["glossary"]}
+check(r["removed"] == 2 and len(main.STATE["glossary"]) == 4, "вынесены две подсказки")
+check("инфильтрат" in left and "бациллы" in left and "хрипы" in left,
+      "приказ и правленое человеком на месте")
+check("вертрag" in left, "чужая языковая пара не затронута")
+check(bool(r["stamp"]), "метка отката выдана")
+saved = json.loads((main.PURGE_DIR / ("glossary-purge-" + r["stamp"] + ".json")).read_text(encoding="utf-8"))
+check(len(saved) == 2, "копия для отката записана на диск")
+
+print("\n=== 6. Вынос подсказок не меняет расчёт расхождений ===")
+# Расхождения считаются ТОЛЬКО по приказам, поэтому подсказками они не двигаются.
+build(GLOSS, [{"id": 1, "source": "Инфильтрат в лёгком.", "target": "Induration in the lung.",
+               "status": "translated"}])
+before = main.glossary_impact(1, refresh=True)["segments"]
+main.purge_glossary(main.GlossaryPurgeRequest(project=1, dry_run=False))
+after = main.glossary_impact(1, refresh=True)["segments"]
+check(before == after == [1], "сегмент расходится с приказом и до, и после выноса")
+
+print("\n=== 7. Откат возвращает вынесенное и не плодит дублей ===")
+build(GLOSS, SEGS)
+r = main.purge_glossary(main.GlossaryPurgeRequest(project=1, dry_run=False))
+# Пока копия лежала, человек завёл запись про тот же термин — её не трогаем.
+main.STATE["glossary"].append(entry("задний увеит", "posterior uveitis", tier="verified"))
+main._invalidate_gloss_index()
+u = main.undo_glossary_purge(r["stamp"])
+check(u["restored"] == 1 and u["skipped"] == 1, "вернулась одна, вторая пропущена")
+back = [g for g in main.STATE["glossary"] if g["src"] == "задний увеит"]
+check(len(back) == 1 and back[0]["tgt"] == "posterior uveitis",
+      "новая запись человека уцелела, дубля не появилось")
+check(any(g["src"] == "мокрота" for g in main.STATE["glossary"]), "остальное вернулось")
+
+print("\n=== 8. Откат несуществующей копии — отказ, а не тишина ===")
+try:
+    main.undo_glossary_purge("20200101-000000")
+    check(False, "откат без копии обязан отказать")
+except main.HTTPException as e:
+    check(e.status_code == 404, "отказ 404 с внятной причиной")
+try:
+    main.undo_glossary_purge("../../etc/passwd")
+    check(False, "метка обязана проверяться")
+except main.HTTPException as e:
+    check(e.status_code == 400, "чужой путь в метке отвергнут")
+
+shutil.rmtree(TMP, ignore_errors=True)
+print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
+sys.exit(1 if fail else 0)

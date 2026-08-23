@@ -42,6 +42,102 @@ const CAND_KIND = {
    что попадёт и что отсеяно с причинами. Применение — отдельным нажатием,
    откат пачки — одним. Правила языко- и тематико-независимы, поэтому панель
    не знает ни про медицину, ни про русский: всё приходит с сервера. */
+/* ---------- Вынос массового импорта ----------
+   Удаление по одной записи — это про правку, а не про десять тысяч строк
+   автоимпорта. Отдельная команда с предпросмотром, пощадой правленого
+   человеком и откатом из файла. */
+function GlossaryPurgePanel({ store, toast, onDone }) {
+  const project = store.activeProject;
+  const [res, setRes] = useState(null);
+  const [busy, setBusy] = useState("");
+  const [unusedOnly, setUnusedOnly] = useState(false);
+  const [wholeService, setWholeService] = useState(false);
+  const [purges, setPurges] = useState([]);
+  const reloadPurges = () => window.API.safeCall(() => window.API.purgeList())
+    .then(r => setPurges((r && r.purges) || []));
+  useEffect(() => { if (window.API) reloadPurges(); }, []);
+  // Любая смена фильтра обесценивает прошлый разбор: цифра на кнопке
+  // «Вынести N» обязана относиться к тому, что уйдёт на самом деле.
+  useEffect(() => { setRes(null); }, [project && project.id, unusedOnly, wholeService]);
+  if (!project) return null;
+
+  const opts = (dry) => ({ project: wholeService ? null : project.id,
+                           unused_only: unusedOnly, dry_run: dry });
+
+  const run = async (dry) => {
+    setBusy(dry ? "check" : "apply");
+    const r = await window.API.safeCall(() => window.API.purgeGlossary(opts(dry)));
+    setBusy("");
+    if (!r || !r.ok) { toast.error("Не выполнено", "Сервер не ответил."); return; }
+    setRes(r);
+    if (dry) {
+      toast.info("К выносу: " + r.matched,
+        "Пощажено правленого человеком: " + r.keptHuman + " · всего записей: " + r.total);
+    } else {
+      toast.warning("Вынесено: " + (r.removed || 0),
+        "Копия сохранена, вернуть можно кнопкой ниже. Готовый перевод не изменился.");
+      reloadPurges();
+      onDone && onDone();
+    }
+  };
+
+  const undo = async (stamp) => {
+    setBusy("undo");
+    const r = await window.API.safeCall(() => window.API.undoPurge(stamp));
+    setBusy("");
+    if (!r || !r.ok) { toast.error("Откат не выполнен", "Копия не найдена."); return; }
+    setRes(null);
+    reloadPurges();
+    toast.success("Возвращено записей: " + r.restored,
+      r.skipped ? "Пропущено: " + r.skipped + " — " + r.skippedWhy : "");
+    onDone && onDone();
+  };
+
+  return React.createElement("div", { className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 } },
+    React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
+      React.createElement("div", { className: "row", style: { gap: 8 } },
+        React.createElement(Icon, { name: "close", size: 16, style: { color: "var(--c-error)" } }),
+        React.createElement("span", { style: { fontWeight: 650, fontSize: 14 } }, "Вынести массовый импорт"),
+        React.createElement(InfoTip, { title: "Что произойдёт", body: "Массовый импорт лежит в глоссарии уровнем «подсказка»: он уходит в промпт с пометкой «не проверено, часть неверна» и прямым разрешением его игнорировать. На уже готовый перевод вынос не влияет НИЧЕМ — расхождения и ремонт считаются только по записям уровня «приказ».\n\nМеняется одно: чем модель воспользуется при СЛЕДУЮЩЕМ переводе. Вместе с мусором уходит и сырьё: подсказка поднимается до приказа, когда несколько независимых чистых сегментов сойдутся на одном переводе.\n\nЗаписи, которых касался человек (одобрение кандидата, ручная правка, откат понижения), не выносятся никогда — сколько таких, сказано в отчёте. Вынесенное целиком уходит файлом в data/backups и возвращается откатом." })),
+      React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+        "выносятся только записи уровня «подсказка»")),
+
+    React.createElement("div", { className: "col", style: { gap: 4 } },
+      React.createElement(Checkbox, { checked: unusedOnly, onChange: () => setUnusedOnly(v => !v) },
+        "Только те, что не встречаются ни в одном тексте"),
+      React.createElement(Checkbox, { checked: wholeService, onChange: () => setWholeService(v => !v) },
+        "По всему сервису, а не только в области этого проекта")),
+
+    React.createElement("div", { className: "row row-wrap", style: { gap: 10, alignItems: "center" } },
+      React.createElement(Btn, { variant: "secondary", size: "sm", icon: "target", disabled: !!busy, onClick: () => run(true) },
+        busy === "check" ? "Считаем…" : "Посмотреть, что уйдёт"),
+      res && res.matched > 0 && React.createElement(Btn, {
+        variant: "danger", size: "sm", icon: "close", disabled: !!busy, onClick: () => run(false) },
+        busy === "apply" ? "Выносим…" : "Вынести " + res.matched),
+      res && React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setRes(null) }, "Скрыть")),
+
+    res && React.createElement("div", { className: "col", style: { gap: 5, fontSize: 12.5 } },
+      React.createElement("div", null,
+        "всего записей: ", React.createElement("b", null, res.total),
+        " · к выносу: ", React.createElement("b", { style: { color: "var(--c-error)" } }, res.matched),
+        " · пощажено правленного человеком: ", React.createElement("b", null, res.keptHuman)),
+      res.matched === 0 && React.createElement("div", { className: "dim" },
+        "Под фильтр ничего не попало — выносить нечего."),
+      res.samples && res.samples.length > 0 && React.createElement("div", { className: "dim", style: { lineHeight: 1.6 } },
+        "например: " + res.samples.map(x => x.src + " → " + x.tgt).join(" · ")),
+      React.createElement("div", { className: "dim", style: { lineHeight: 1.55 } },
+        "Готовый перевод не изменится: расхождения и ремонт считаются только "
+        + "по записям уровня «приказ». Изменится то, чем модель воспользуется "
+        + "при следующем переводе.")),
+
+    purges.length > 0 && React.createElement("div", { className: "row row-wrap", style: { gap: 10, alignItems: "center", fontSize: 12, paddingTop: 6, borderTop: "1px solid var(--border)" } },
+      React.createElement("span", { className: "dim" }, "Прошлые выносы:"),
+      purges.slice(0, 4).map(x => React.createElement("span", { key: x.stamp, className: "row", style: { gap: 6 } },
+        React.createElement("span", { className: "dim" }, x.stamp + (x.count != null ? " · " + x.count + " зап." : "")),
+        React.createElement(Btn, { variant: "ghost", size: "sm", disabled: !!busy, onClick: () => undo(x.stamp) }, "Вернуть")))));
+}
+
+
 /* ---------- Смысловая сверка записей, уже стоящих приказом ----------
    Сверка при автоодобрении сторожит ВХОД в глоссарий. Записи, попавшие туда
    раньше (в том числе получившие приказ по умолчанию миграции), её не
@@ -634,6 +730,7 @@ function TabGlossary({ store, toast }) {
 
     React.createElement(AutoApprovePanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
     React.createElement(GlossaryAuditPanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
+    React.createElement(GlossaryPurgePanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
 
     React.createElement(TermQueue, { store, toast, version: queueVersion }),
 

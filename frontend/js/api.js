@@ -140,6 +140,10 @@
     /* Смысловая сверка записей, УЖЕ стоящих приказом. dry_run по умолчанию. */
     auditGlossary: (opts)                   => call("POST",   "/glossary/audit",                    opts || {}),
     /* force — переспросить и то, что уже сверялось: вердикт лежит на записи. */
+    /* Массовый вынос автоимпорта. dry_run по умолчанию — сервер только считает. */
+    purgeGlossary:(opts)                    => call("POST",   "/glossary/purge",                    opts || {}),
+    purgeList:     ()                       => call("GET",    "/glossary/purge/list"),
+    undoPurge:     (stamp)                  => call("POST",   `/glossary/purge/${stamp}/undo`),
 
     saveTerm:      (term, isNew)            => call("POST",   "/glossary",                          { ...term, isNew }),
     /* Область обязательна: без неё удаление уносит однофамильца из другой пары языков. */

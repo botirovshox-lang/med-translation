@@ -5521,6 +5521,159 @@ def delete_term(src: str, lang: str = "", domain: str = ""):
     return {"ok": True}
 
 
+PURGE_DIR = DATA_DIR / "backups"
+
+
+def _term_used(entry: dict) -> int:
+    """В скольких сегментах запись вообще применима.
+
+    Совпадение ищем тем же `_term_match`, что и инъекция в промпт: список
+    «неиспользуемых» обязан совпадать с тем, на что глоссарий действительно
+    влияет. Область тоже своя — запись RU→EN не управляет немецким проектом,
+    и считать её там использованной значит соврать."""
+    src, scope = entry.get("src") or "", _scope_of(entry)
+    if not src:
+        return 0
+    n = 0
+    for p in STATE["projects"]:
+        if _project_scope(p) != scope:
+            continue
+        for seg in p["segments"]:
+            if _term_match(src, seg.get("source", "")):
+                n += 1
+    return n
+
+
+class GlossaryPurgeRequest(BaseModel):
+    # Что выносим. По умолчанию подсказки: массовый импорт лежит именно там,
+    # а приказы — это решения человека и выверенных справочников.
+    tier: str = GLOSSARY_TIER_SOFT
+    project: Optional[int] = None      # только область этого проекта
+    unused_only: bool = False          # только те, что не встречаются ни в одном проекте
+    dry_run: bool = True
+
+
+@app.post("/api/glossary/purge")
+def purge_glossary(req: GlossaryPurgeRequest = GlossaryPurgeRequest()):
+    """Вынести массовый импорт из глоссария целиком.
+
+    Зачем отдельной командой: `DELETE /api/glossary` работает по ОДНОЙ записи,
+    а импорт — десять тысяч. Кликать их поштучно невозможно, поэтому «удалить
+    всё» либо есть как осознанная операция с предпросмотром и откатом, либо
+    делается руками по файлу состояния — что хуже во всех отношениях.
+
+    Три предохранителя:
+      1. `dry_run=True` по умолчанию — считает и показывает, ничего не трогая;
+      2. записи со СЛЕДОМ РЕШЕНИЯ ЧЕЛОВЕКА (`_human_touched`) не выносятся
+         никогда, даже если подходят под фильтр: человек их трогал, и стирать
+         его работу пачкой нельзя. Сколько таких — сказано в ответе;
+      3. вынесенное целиком уходит файлом в `data/backups/`, и его возвращает
+         `/purge/{stamp}/undo`. Массовое удаление без отката недопустимо —
+         тот же закон, что у пачек автоодобрения.
+
+    На уже переведённый текст не влияет НИЧЕМ: расхождения и ремонт считаются
+    только по приказам (`_verified_hits`), а подсказки в этот расчёт не входят.
+    Меняется лишь то, что уйдёт в промпт при СЛЕДУЮЩЕМ переводе."""
+    tier = req.tier if req.tier in (GLOSSARY_TIER_SOFT, GLOSSARY_TIER_HARD) else GLOSSARY_TIER_SOFT
+    scope = _project_scope(get_project(req.project)) if req.project else None
+
+    matched, kept_human, unused_n = [], 0, 0
+    for g in STATE.get("glossary", []):
+        if _hit_tier(g) != tier:
+            continue
+        if scope is not None and _scope_of(g) != scope:
+            continue
+        if _human_touched(g):
+            kept_human += 1
+            continue
+        used = _term_used(g) if req.unused_only else None
+        if req.unused_only:
+            if used:
+                continue
+            unused_n += 1
+        matched.append(g)
+
+    result = {
+        "ok": True, "dryRun": req.dry_run, "tier": tier,
+        "scope": list(scope) if scope else None,
+        "total": len(STATE.get("glossary", [])),
+        "matched": len(matched),
+        # Молчаливой пощады не бывает: сказано, скольких не тронули и почему.
+        "keptHuman": kept_human,
+        "unusedOnly": req.unused_only,
+        "samples": [{"src": g.get("src"), "tgt": g.get("tgt")} for g in matched[:12]],
+        "stamp": None,
+    }
+    if req.dry_run or not matched:
+        return result
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    doomed = {id(g) for g in matched}
+    try:
+        PURGE_DIR.mkdir(parents=True, exist_ok=True)
+        path = PURGE_DIR / ("glossary-purge-" + stamp + ".json")
+        path.write_text(json.dumps(matched, ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        # Без бэкапа не удаляем: откат — часть операции, а не украшение.
+        print(f"[backend] вынос глоссария: бэкап не записан: {e}", file=sys.stderr)
+        raise HTTPException(500, "Не удалось сохранить копию для отката — удаление отменено")
+    STATE["glossary"] = [g for g in STATE["glossary"] if id(g) not in doomed]
+    _invalidate_gloss_index()
+    save_state(STATE)
+    print(f"[backend] вынесено записей глоссария: {len(matched)} "
+          f"(уровень {tier}), копия: {path.name}", file=sys.stderr)
+    result["stamp"] = stamp
+    result["removed"] = len(matched)
+    return result
+
+
+@app.get("/api/glossary/purge/list")
+def list_glossary_purges():
+    """Что можно вернуть. Без списка откат существует только на словах."""
+    out = []
+    try:
+        for f in sorted(PURGE_DIR.glob("glossary-purge-*.json"), reverse=True):
+            try:
+                n = len(json.loads(f.read_text(encoding="utf-8")))
+            except Exception:
+                n = None
+            out.append({"stamp": f.stem.replace("glossary-purge-", ""),
+                        "count": n, "at": f.stem.replace("glossary-purge-", "")})
+    except Exception as e:                                   # pragma: no cover
+        print(f"[backend] список выносов: {e}", file=sys.stderr)
+    return {"ok": True, "purges": out}
+
+
+@app.post("/api/glossary/purge/{stamp}/undo")
+def undo_glossary_purge(stamp: str):
+    """Вернуть вынесенное. Возвращаем только те записи, которых сейчас нет:
+    иначе откат создал бы дубль поверх записи, добавленной после выноса."""
+    if not re.fullmatch(r"[0-9-]{8,20}", stamp or ""):
+        raise HTTPException(400, "Неверная метка")
+    path = PURGE_DIR / ("glossary-purge-" + stamp + ".json")
+    if not path.exists():
+        raise HTTPException(404, "Копия не найдена — вернуть нечем")
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(500, "Копия не читается: " + str(e))
+    have = {(_scope_of(g), _norm_key(g.get("src"))) for g in STATE.get("glossary", [])}
+    back, skipped = 0, 0
+    for g in saved:
+        key = (_scope_of(g), _norm_key(g.get("src")))
+        if key in have:
+            skipped += 1
+            continue
+        STATE["glossary"].append(g)
+        have.add(key)
+        back += 1
+    _invalidate_gloss_index()
+    save_state(STATE)
+    return {"ok": True, "restored": back, "skipped": skipped,
+            "skippedWhy": ("запись с таким термином уже есть — её не трогали"
+                           if skipped else "")}
+
+
 # ─── TM ─────────────────────────────────────────────────────────────
 @app.delete("/api/tm")
 def delete_tm(src: str, lang: str = ""):

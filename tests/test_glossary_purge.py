@@ -282,6 +282,55 @@ check(seg["target"] == "Referred to the clinic.", "верный перевод �
 check(main.glossary_impact(1, refresh=True)["segments"] == [],
       "и нарушением он больше не числится: правило понижено")
 
+print("\n=== 16. Понижение пачкой берёт одобрения человека только по разрешению ===")
+# Машина чужое решение не отменяет сама. Но человек вправе разрешить это
+# пачкой — с предпросмотром, откатом и возвратом переписанных сегментов.
+# Ведёт список вердикт судьи, а не перечень слов в коде.
+CLAIM2 = "утверждённый перевод термина «Клинику» — «clinical practice», в переводе его нет"
+seg1 = {"id": 1, "source": "Направлен в Клинику.", "target": "Referred to clinical practice.",
+        "status": "review",
+        "repair": {"applied": True, "from": "Referred to the clinic.",
+                   "candidate": "Referred to clinical practice.",
+                   "source_hash": main._text_hash("Referred to clinical practice."),
+                   "issues": [CLAIM2]}}
+build([
+    entry("Клинику", "clinical practice", tier="verified", origin="confirmed:1"),
+    entry("бухтообразный", "scalloped", tier="verified"),
+    entry("хрипы", "rales", tier="verified", origin="confirmed:2", meaningKept=True),
+], [seg1])
+os.environ["OPENAI_API_KEY"] = "test-key"
+main._openai_meaning = lambda pairs, scope: {
+    (main._norm_key(a), main._norm_key(b)):
+        {"same": True, "back": "клиника", "rule": False, "why": "падежная форма"}
+    for a, b in pairs}
+
+r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True))
+check(len(r["bad"]) == 3, "судья забраковал все три")
+check(r["downgradable"] == 1, "сама машина понизит только запись без следа человека")
+check(r["downgradableHuman"] == 1, "с разрешением добавится ещё одна")
+check(r["keptByHuman"] == 1, "возвращённая человеком не считается ни там, ни там")
+
+r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=False,
+                                                  include_human=True))
+by = {g["src"]: g for g in main.STATE["glossary"]}
+check(main._hit_tier(by["Клинику"]) == "auto", "одобрение человека понижено по разрешению")
+check(main._hit_tier(by["бухтообразный"]) == "auto", "и запись импорта тоже")
+check(main._hit_tier(by["хрипы"]) == "verified",
+      "а возвращённая человеком из понижения не тронута даже с разрешением")
+check("падежная форма" in by["Клинику"]["note"],
+      "в примечании причина той проверки, что забраковала")
+check(r["reverted"]["reverted"] == 1, "переписанный сегмент возвращён тем же нажатием")
+check(main.STATE["projects"][0]["segments"][0]["target"] == "Referred to the clinic.",
+      "текст восстановлен из repair.from")
+
+print("\n=== 17. Пачка понижения откатывается целиком ===")
+u = main.undo_auto_approve(r["batch"])
+by = {g["src"]: g for g in main.STATE["glossary"]}
+check(u["restored"] == 2, "обе понижённые записи вернулись")
+check(main._hit_tier(by["Клинику"]) == "verified", "уровень восстановлен")
+check(by["Клинику"].get("meaningKept") is True,
+      "и помечено, что человек решил оставить приказ")
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

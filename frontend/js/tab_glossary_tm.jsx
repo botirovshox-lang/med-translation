@@ -160,13 +160,18 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
   const project = store.activeProject;
   const [res, setRes] = useState(null);
   const [busy, setBusy] = useState("");
-  useEffect(() => { setRes(null); }, [project && project.id]);
+  /* Разрешение понижать и СВОИ одобрения. Машина чужое решение не отменяет
+     сама — но человек вправе разрешить это пачкой. Не в localStorage:
+     разрешение на один заход, а не настройка. */
+  const [alsoMine, setAlsoMine] = useState(false);
+  useEffect(() => { setRes(null); setAlsoMine(false); }, [project && project.id]);
   if (!project) return null;
 
   const run = async (dry, force) => {
     setBusy(dry ? (force ? "recheck" : "check") : "apply");
     const r = await window.API.safeCall(() => window.API.auditGlossary({
-      project: project.id, dry_run: dry, force: !!force }));
+      project: project.id, dry_run: dry, force: !!force,
+      include_human: alsoMine }));
     setBusy("");
     if (!r || !r.ok) {
       toast.error("Сверка не выполнена", "Нужен ключ OpenAI, или сервер не ответил.");
@@ -179,9 +184,13 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
           + " · понизить можно " + r.downgradable
           : "Расхождений не найдено.");
     } else {
+      const rv = r.reverted || {};
       toast.success("Понижено до подсказки: " + (r.downgraded || 0),
-        "Перевод не тронут — записи перестали приказывать модели. "
-        + "Пачку можно откатить в списке ниже.");
+        "Записи перестали приказывать модели"
+        + (rv.reverted ? " · возвращено сегментов: " + rv.reverted : "")
+        + (rv.requeued ? " · отдано ремонту заново: " + rv.requeued : "")
+        + (rv.skipped ? " · не вернуть: " + rv.skipped : "")
+        + " · пачку можно откатить в списке ниже.");
       onDone && onDone();
     }
   };
@@ -249,10 +258,30 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
       // раз, и на пограничных парах судья ответит иначе.
       res && React.createElement(Btn, { variant: "ghost", size: "sm", disabled: !!busy, onClick: () => run(true, true) },
         busy === "recheck" ? "Переспрашиваем…" : "Переспросить всё (" + res.total + ")"),
-      res && res.downgradable > 0 && React.createElement(Btn, {
-        variant: "primary", size: "sm", icon: "check", disabled: !!busy, onClick: () => run(false) },
-        busy === "apply" ? "Понижаем…" : "Понизить " + res.downgradable + " до подсказки"),
+      res && (res.downgradable + (alsoMine ? res.downgradableHuman || 0 : 0)) > 0
+        && React.createElement(Btn, {
+          variant: "primary", size: "sm", icon: "check", disabled: !!busy, onClick: () => run(false) },
+          busy === "apply" ? "Понижаем…"
+            : "Понизить " + (res.downgradable + (alsoMine ? res.downgradableHuman || 0 : 0))
+              + " до подсказки"),
       res && React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setRes(null) }, "Скрыть")),
+
+    res && (res.downgradableHuman > 0 || alsoMine) && React.createElement(
+      "div", { className: "col", style: { gap: 4, padding: "9px 11px", borderRadius: 8,
+        background: alsoMine ? "var(--c-warning-bg, rgba(240,180,40,.10))" : "transparent",
+        border: "1px solid " + (alsoMine ? "var(--c-warning)" : "var(--border)") } },
+      React.createElement(Checkbox, { checked: alsoMine, onChange: () => setAlsoMine(v => !v) },
+        "Понижать и мои одобрения (" + (res.downgradableHuman || 0) + ")"),
+      React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.55 } },
+        alsoMine
+          ? "Разрешение на этот заход: сама машина решение человека не отменяет. "
+            + "Сегменты, переписанные ремонтом по этим записям, вернутся тем же "
+            + "нажатием, а всю пачку можно откатить."
+          : "Эти записи одобрили вы, поэтому машина их не трогает. Отметьте, "
+            + "если согласны со сверкой и хотите понизить их пачкой."),
+      res.keptByHuman > 0 && React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
+        "Не тронутся в любом случае: " + res.keptByHuman
+        + " — вы уже возвращали их из понижения.")),
 
     res && (res.capped > 0 || res.pending > 0) && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
       "Осталось спросить: " + ((res.capped || 0) + (res.pending || 0))
@@ -277,7 +306,8 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
             "проверка спорит: " + b.disputed),
           b.humanTouched
             ? React.createElement("span", { className: "row", style: { gap: 6 } },
-                React.createElement(Badge, { variant: "confirmed" }, "решили вы"),
+                React.createElement(Badge, { variant: b.kept ? "confirmed" : (alsoMine ? "soft" : "confirmed") },
+                  b.kept ? "вы вернули — не тронем" : (alsoMine ? "понизится" : "решили вы")),
                 React.createElement(Btn, { variant: "ghost", size: "sm", disabled: !!busy,
                   onClick: () => act(b, "demote") }, "Понизить"),
                 React.createElement(Btn, { variant: "ghost", size: "sm", disabled: !!busy,

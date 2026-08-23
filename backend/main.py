@@ -3850,6 +3850,11 @@ class GlossaryAuditRequest(BaseModel):
     # на записи, и повторный проход стоит денег и даёт другой ответ на
     # пограничных парах — ради этого кэш и заведён.
     force: bool = False
+    # Понижать и записи со следом решения человека. Это РАЗРЕШЕНИЕ на пачку,
+    # а не новая политика: сама машина чужое решение не отменяет никогда.
+    # Записи с `meaningKept` не трогаются и здесь — человек уже возвращал их
+    # из понижения, и переспрашивать значит не считать его ответ ответом.
+    include_human: bool = False
     limit: int = 800                   # потолок НОВЫХ пар за проверку
 
 
@@ -3934,13 +3939,22 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
                     "segments": weight.get(_norm_key(g.get("src")), 0),
                     "disputed": int(g.get("disputed") or 0),
                     "humanTouched": _human_touched(g),
+                    # Человек уже возвращал эту запись из понижения — его ответ
+                    # окончателен, и разрешение на пачку его не отменяет.
+                    "kept": bool(g.get("meaningKept")),
                     "lang": _scope_of(g)[0], "domain": _scope_of(g)[1]})
     result = {"ok": True, "dryRun": req.dry_run, "total": len(entries),
               "checked": asked, "cached": len(entries) - len(todo),
               "pending": max(0, len(todo) - asked), "capped": capped, "batch": None,
               "scope": list(scope) if scope else None,
               "bad": sorted(bad, key=lambda b: (b["humanTouched"], -b["segments"])),
-              "downgradable": sum(1 for b in bad if not b["humanTouched"])}
+              "downgradable": sum(1 for b in bad if not b["humanTouched"]),
+              # Сколько добавит разрешение — цифра на кнопке обязана относиться
+              # к тому, что произойдёт, а не к тому, что можно было бы.
+              "downgradableHuman": sum(1 for b in bad
+                                       if b["humanTouched"] and not b.get("kept")),
+              "keptByHuman": sum(1 for b in bad if b.get("kept")),
+              "includeHuman": bool(req.include_human)}
     if req.dry_run or not bad:
         # Вердикты — это КЭШ, а не решение: платный ответ судьи выброшенным
         # быть не должен, иначе следующий разбор спросит то же самое и получит
@@ -3953,7 +3967,8 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
     STATE["autoBatchSeq"] = batch
     done = 0
     flagged = {(b["lang"], b["domain"], _norm_key(b["src"]), _norm_key(b["tgt"])): b
-               for b in bad if not b["humanTouched"]}
+               for b in bad
+               if (not b["humanTouched"]) or (req.include_human and not b.get("kept"))}
     for g in STATE.get("glossary", []):
         b = flagged.get((_scope_of(g)[0], _scope_of(g)[1],
                          _norm_key(g.get("src")), _norm_key(g.get("tgt"))))
@@ -3966,10 +3981,23 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
         g.update({"prevTier": _hit_tier(g), "prevNote": g.get("note", ""),
                   "prevConf": g.get("conf", ""), "prevOrigin": g.get("origin", ""),
                   "tier": GLOSSARY_TIER_SOFT, "conf": "medium",
-                  "note": "понижено сверкой смысла " + today + ": " + b["back"],
+                  # Причина в примечании — та, по которой запись и понижена:
+                  # у «правилом не годится» она в why, а не в back.
+                  "note": ("понижено сверкой смысла " + today + ": "
+                           + (b.get("why") or "правилом не годится"
+                              if b.get("kind") == "rule" else b.get("back") or "иное понятие")),
                   "updated": today, "autoBatch": batch, "autoCreated": False})
         done += 1
     batches = STATE.setdefault("autoBatches", [])
+    # Понижение снимает повод чинить дальше, но уже переписанное так и осталось.
+    # Возвращаем его тем же нажатием: руками это сотни сегментов, а откат
+    # ничего не сочиняет — подставляет текст, что стоял до правки.
+    back = _revert_repairs_bulk(list(flagged.values()), scope or (DEFAULT_GLOSS_LANG,
+                                                                  DEFAULT_GLOSS_DOMAIN))
+    if back["reverted"] or back["requeued"]:
+        _IMPACT_CACHE.clear()
+        _ANALYSIS_CACHE.clear()
+    result["reverted"] = back
     batches.insert(0, {"id": batch, "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                        "kind": "audit", "scope": list(scope) if scope else None,
                        "counts": {"verified": 0, "auto": 0, "closed": 0,
@@ -5569,6 +5597,53 @@ def delete_project(pid: int):
     STATE["projects"] = [p for p in STATE["projects"] if p["id"] != pid]
     save_state(STATE)
     return {"ok": True}
+
+
+def _revert_repairs_bulk(entries: list, scope: tuple) -> dict:
+    """Вернуть правки, сделанные по КАЖДОЙ из записей, одним проходом.
+
+    Поштучный `revert_repairs_by_term` на трёхстах записях означал бы триста
+    проходов по всем сегментам проекта. Здесь проход один, а записи разложены
+    по метке претензии — той самой строке, которую формулирует `_gloss_misses`.
+
+    Правила те же, что у поштучного отката: единственная причина — возвращаем
+    прежний текст; причин несколько — не трогаем (откат унёс бы верные правки),
+    а снимаем `source_hash`, и ремонт вернётся к сегменту сам."""
+    marks = {}
+    for e in entries:
+        src, tgt = (e.get("src") or "").strip(), (e.get("tgt") or "").strip()
+        if src and tgt:
+            marks["«" + src + "» — «" + tgt + "»"] = e
+    if not marks:
+        return {"reverted": 0, "requeued": 0, "skipped": 0}
+    rev = req = skip = 0
+    for p in STATE["projects"]:
+        if _project_scope(p) != scope:
+            continue
+        for seg in p["segments"]:
+            rp = seg.get("repair") or {}
+            if not rp.get("applied"):
+                continue
+            issues = list(rp.get("issues") or ())
+            if not any(m in (t or "") for t in issues for m in marks):
+                continue
+            old_text = rp.get("from")
+            if not (old_text or "").strip():
+                skip += 1
+                continue
+            if len(issues) > 1:
+                rp.pop("source_hash", None)
+                req += 1
+                continue
+            _replace_target(seg, old_text, rp.get("model") or seg.get("provider") or "",
+                            "REPAIR_REVERT")
+            seg["status"] = "review"
+            seg["prevTarget"] = rp.get("candidate") or ""
+            seg["repair"] = {"applied": False, "reason": "откачено: правило понижено",
+                             "from": old_text, "model": rp.get("model", ""),
+                             "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+            rev += 1
+    return {"reverted": rev, "requeued": req, "skipped": skip}
 
 
 def _repaired_by_term(entry: dict, scope: tuple) -> list:

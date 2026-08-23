@@ -5571,6 +5571,30 @@ def delete_project(pid: int):
     return {"ok": True}
 
 
+def _repaired_by_term(entry: dict, scope: tuple) -> list:
+    """Сегменты, которые ремонт переписал ИЗ-ЗА этой записи глоссария.
+
+    Ищем по тексту претензии, с которой ремонт работал (`repair.issues`):
+    её формулирует `_gloss_misses` и в неё входят обе стороны пары. Хранить
+    отдельную ссылку на запись было бы честнее, но записи правят и удаляют,
+    а претензия остаётся фактом о том, что и почему переписали."""
+    src, tgt = (entry.get("src") or "").strip(), (entry.get("tgt") or "").strip()
+    if not src or not tgt:
+        return []
+    mark = "«" + src + "» — «" + tgt + "»"
+    out = []
+    for p in STATE["projects"]:
+        if _project_scope(p) != scope:
+            continue
+        for seg in p["segments"]:
+            rp = seg.get("repair") or {}
+            if not rp.get("applied"):
+                continue
+            if any(mark in (t or "") for t in (rp.get("issues") or ())):
+                out.append({"project": p["id"], "id": seg["id"]})
+    return out
+
+
 class TermScopeRequest(BaseModel):
     src: str
     lang: str = ""
@@ -5613,7 +5637,12 @@ def demote_term(req: TermScopeRequest):
     entry.pop("meaningKept", None)
     _invalidate_gloss_index()
     save_state(STATE)
-    return {"ok": True, "already": False, "tier": GLOSSARY_TIER_SOFT}
+    # Понижение снимает ПОВОД чинить, но не отменяет уже сделанного: сегменты,
+    # куда ремонт этот термин вписал, остались переписанными. Молчать об этом
+    # нельзя — человек уверен, что отменил правило целиком.
+    touched = _repaired_by_term(entry, scope)
+    return {"ok": True, "already": False, "tier": GLOSSARY_TIER_SOFT,
+            "repaired": touched[:200], "repairedCount": len(touched)}
 
 
 @app.delete("/api/glossary")

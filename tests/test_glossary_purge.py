@@ -198,6 +198,36 @@ main.demote_term(main.TermScopeRequest(src="Клинику", lang="RU→EN", dom
 after = main.glossary_impact(1, refresh=True)["segments"]
 check(after == [], "после понижения требовать соответствия нечему")
 
+print("\n=== 12. Понижение говорит, что ремонт уже успел вписать ===")
+# Понижение снимает ПОВОД чинить дальше, но уже переписанное так и осталось.
+# Человек уверен, что отменил правило целиком, — и это надо разрушить сразу.
+seg_ok = {"id": 1, "source": "Направлен в Клинику.", "target": "Referred to clinical practice.",
+          "status": "review",
+          "repair": {"applied": True, "from": "Referred to the clinic.",
+                     "issues": ["утверждённый перевод термина «Клинику» — «clinical practice»,"
+                                " в переводе его нет"]}}
+seg_other = {"id": 2, "source": "Мокрота.", "target": "Sputum.", "status": "translated",
+             "repair": {"applied": True, "issues": ["«мокрота» — «sputum»"]}}
+seg_reverted = {"id": 3, "source": "В Клинику направлен.", "target": "Referred to the clinic.",
+                "status": "translated",
+                "repair": {"applied": False,
+                           "issues": ["утверждённый перевод термина «Клинику» — «clinical practice»,"
+                                      " в переводе его нет"]}}
+build([entry("Клинику", "clinical practice", tier="verified", origin="confirmed:1")],
+      [seg_ok, seg_other, seg_reverted])
+r = main.demote_term(main.TermScopeRequest(src="Клинику", lang="RU→EN", domain="medical"))
+check(r["repairedCount"] == 1, "посчитан ровно один переписанный сегмент")
+check(r["repaired"][0]["id"] == 1, "и назван поимённо")
+check(main.STATE["projects"][0]["segments"][0]["target"] == "Referred to clinical practice.",
+      "текст НЕ откатывается: понижение — про правило, а не про готовый перевод")
+
+print("\n=== 13. Понижение не трогает то, что ремонт откатил ===")
+# Сегмент 3: ремонт пробовал и не применил — переписанным он не считается.
+check(all(x["id"] != 3 for x in r["repaired"]),
+      "откаченная правка в список не попала")
+check(all(x["id"] != 2 for x in r["repaired"]),
+      "чужая претензия в список не попала")
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

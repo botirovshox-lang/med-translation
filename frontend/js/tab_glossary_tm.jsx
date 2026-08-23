@@ -209,9 +209,14 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
     // больше нет, — это уже неправда.
     setRes(x => x && ({ ...x, bad: x.bad.filter(y => y.src !== b.src || y.tgt !== b.tgt),
                         downgradable: Math.max(0, (x.downgradable || 0) - (b.humanTouched ? 0 : 1)) }));
+    // Понижение снимает повод чинить дальше, но уже переписанное так и осталось.
+    // Об этом говорим прямо: иначе человек уверен, что отменил правило целиком.
+    const done = (r.repairedCount || 0);
     toast.success(kind === "del" ? "Запись удалена" : "Понижено до подсказки",
       b.src + " → " + b.tgt
-      + (kind === "del" ? "" : " · модель вправе её игнорировать"));
+      + (kind === "del" ? "" : " · модель вправе её игнорировать")
+      + (done ? " · ВНИМАНИЕ: ремонт уже вписал этот перевод в " + done
+                + " сегм. — их правку это не отменяет" : ""));
     onDone && onDone();
   };
   return React.createElement("div", { className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 } },

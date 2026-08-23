@@ -1601,7 +1601,12 @@ function TabEditor({ store, toast }) {
             confirmedCount: impact ? impact.confirmed.length : 0,
             orders: termOrders,
             onOrders: () => setOrdersFor(v => (v === project.id ? null : project.id)) }),
-          impact && impact.terms.length > 0 && React.createElement(GlossaryImpactCard, {
+          // Карточка живёт и при нуле расхождений. Пряча её, мы уносили вместе
+          // с ней «Пересчитать» — единственный способ убедиться, что ноль
+          // настоящий, а не остался с прошлого расчёта. Ровно та же беда, от
+          // которой защищены исчерпывающие корзины «Анализа»: пропавшее
+          // с экрана выглядит благополучнее, чем есть.
+          impact && React.createElement(GlossaryImpactCard, {
             impact, busy: impactBusy, onRefresh: loadImpact,
             includeConfirmed: impactConfirmed, onIncludeConfirmed: () => setImpactConfirmed(v => !v),
             onRun: runImpactRetranslate,
@@ -2171,7 +2176,13 @@ function GlossaryImpactCard({ impact, busy, onRefresh, onRun, onDrill, includeCo
       React.createElement("span", { className: "dim" }, "из них подтверждено"),
       React.createElement("b", { className: "dim" }, impact.confirmed.length)),
 
-    React.createElement("div", { className: "card", style: { padding: "8px 11px", background: "var(--bg-sunken)" } },
+    impact.terms.length === 0 && React.createElement("div",
+      { className: "dim", style: { fontSize: 12.5, lineHeight: 1.55 } },
+      "Все переводы соответствуют утверждённым терминам. Ноль бывает и после "
+      + "понижения записей сверкой смысла: требовать соответствия подсказке "
+      + "нельзя, поэтому она из расчёта уходит."),
+
+    impact.terms.length > 0 && React.createElement("div", { className: "card", style: { padding: "8px 11px", background: "var(--bg-sunken)" } },
       impact.terms.slice(0, 4).map((t, i) => React.createElement("div", {
         key: i, className: "row between", style: { fontSize: 12.5, padding: "2px 0", cursor: "pointer" },
         onClick: () => onDrill(t.segments), title: "Показать сегменты с этим термином" },
@@ -2185,7 +2196,7 @@ function GlossaryImpactCard({ impact, busy, onRefresh, onRun, onDrill, includeCo
       checked: !!includeConfirmed, onChange: onIncludeConfirmed },
       "Включая подтверждённые (" + impact.confirmed.length + ")"),
 
-    React.createElement(EstLine, { est }),
+    targets.length > 0 && React.createElement(EstLine, { est }),
     running
       ? React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "Идёт перевод…")
       : React.createElement("div", { className: "row between" },

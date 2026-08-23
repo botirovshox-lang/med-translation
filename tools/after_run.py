@@ -89,6 +89,7 @@ def digest(pid, title, raw):
     a, plan, job = raw["analysis"], raw["plan"], raw["job"]
     todo, human = a.get("todo", {}), a.get("human", {})
     c = (job or {}).get("counters", {}) or {}
+    u = (job or {}).get("usage") or {}
     return {
         "project": pid,
         "title": title,
@@ -117,8 +118,23 @@ def digest(pid, title, raw):
             "duplicates": c.get("duplicates", 0),
             "tmHits": c.get("tm_hits", 0),
             "stepSkips": c.get("step_skips", 0),
+            # Ноль у обоих — норма. Не ноль — работа, которая ушла в никуда:
+            # desync означает, что решение ремонта разошлось с текстом,
+            # termsDropped — что найденные термины не поместились в очередь.
+            "desync": c.get("desync", 0),
+            "termsDropped": c.get("terms_dropped", 0),
             "skippedConfirmed": c.get("skipped_confirmed", 0),
             "why": (job or {}).get("error") or c.get("why") or "",
+            # Факт расхода снят с ответов моделей, смета — то, что человеку
+            # показали под кнопкой. Порознь они бесполезны: «потрачено $3» без
+            # «обещали $15» не отличить от нормы, а «обещали $15» без факта —
+            # это и есть та цифра, которую не с чем сверить.
+            "cost": u.get("cost"),
+            "estCost": ((job or {}).get("params") or {}).get("est_cost"),
+            "calls": u.get("calls", 0),
+            "unpriced": u.get("unpriced", 0),
+            "reasoning": u.get("reasoning", 0),
+            "costSteps": {k: v.get("cost", 0) for k, v in (u.get("steps") or {}).items()},
         },
     }
 
@@ -139,6 +155,18 @@ def complaints(d, prev):
         out.append("ошибок в последнем прогоне: %d%s" % (j["errors"], (" — " + j["why"]) if j["why"] else ""))
     if j["stepSkips"]:
         out.append("шаги пропускались %d раз (нет ключа или модуля)" % j["stepSkips"])
+    if j["desync"]:
+        out.append("ремонт: у %d сегментов текст разошёлся с записью о решении — "
+                   "подробности в journalctl -u medcat | grep 'разошёлся'" % j["desync"])
+    if j["termsDropped"]:
+        out.append("очередь кандидатов переполнена: выброшено %d находок — "
+                   "сбор терминологии работал вхолостую" % j["termsDropped"])
+    # Смета, разошедшаяся с фактом вдвое, — не мелочь: по ней принимают решение
+    # запускать прогон или нет. Молчать о таком расхождении значит оставить
+    # человека принимать решение по неверной цифре.
+    if j["estCost"] and j["cost"] and max(j["estCost"], j["cost"]) / min(j["estCost"], j["cost"]) >= 2:
+        out.append("смета разошлась с фактом: обещали $%.2f, потратили $%.2f"
+                   % (j["estCost"], j["cost"]))
     if j["skippedConfirmed"]:
         out.append("прогон обошёл %d подтверждённых сегментов: включите «чинить подтверждённые»"
                    % j["skippedConfirmed"])
@@ -186,10 +214,27 @@ def human_report(d, prev, raw, issues):
                                                  ("  завершён " + j["finished"]) if j["finished"] else ""))
         bits = [("ошибок", j["errors"]), ("починено", j["applied"]), ("откачено", j["reverted"]),
                 ("повторов", j["duplicates"]), ("из памяти", j["tmHits"]),
-                ("шагов пропущено", j["stepSkips"])]
+                ("шагов пропущено", j["stepSkips"]),
+                ("текст разошёлся с записью", j["desync"]),
+                ("кандидатов выброшено", j["termsDropped"])]
         add("  " + " · ".join("%s: %d" % (k, v) for k, v in bits if v))
         if j["why"]:
             add("  причина: " + j["why"])
+        if j["calls"]:
+            money = "  расход: $%.2f за %d вызовов" % (j["cost"] or 0, j["calls"])
+            if j["estCost"]:
+                money += " · смета была $%.2f" % j["estCost"]
+                if j["cost"]:
+                    money += " (%s в %.1f раза)" % (
+                        "выше факта" if j["estCost"] >= j["cost"] else "НИЖЕ факта",
+                        max(j["estCost"], j["cost"]) / min(j["estCost"], j["cost"]))
+            if j["unpriced"]:
+                money += " · вызовов по неизвестной цене: %d" % j["unpriced"]
+            add(money)
+            if j["costSteps"]:
+                add("    по шагам: " + " · ".join(
+                    "%s $%.2f" % (k, v) for k, v in
+                    sorted(j["costSteps"].items(), key=lambda kv: -kv[1]) if v))
     else:
         add("Прогонов в памяти сервера нет (рестарт сервиса их теряет).")
 

@@ -130,6 +130,8 @@
        употребления по каждому. Для тех, кто целевого языка не знает: сравнивать
        нужно смысл, написанный понятным языком, а не строки. Вызов платный. */
     explainTerm:   (cid, include)            => call("POST",   `/term-queue/${cid}/explain`, { include: include || null }),
+    /* patch.confirm — «знаю о замечании, всё равно одобряю». Без него сервер
+       возвращает warning и НЕ пишет: предупредить после записи бессмысленно. */
     approveTerm:   (cid, patch)             => call("POST",   `/term-queue/${cid}/approve`,          patch || {}),
     rejectTerm:    (cid)                    => call("POST",   `/term-queue/${cid}/reject`),
     extractTerms:  (pid, segIds, limit, model) => call("POST", `/projects/${pid}/extract-terms`,     { segment_ids: segIds || null, limit: limit || 30, model: model || null }),

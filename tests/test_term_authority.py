@@ -387,5 +387,57 @@ r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True))
 check(len(r["bad"]) == 1 and r["downgradable"] == 0,
       "находка видна, но понижать её больше не предлагают")
 
+print("\n=== 22. Одобрение человеком проходит ту же сверку ===")
+# Раньше этот путь не проверялся ВООБЩЕ: запись уходила приказом напрямую,
+# а машинное автоодобрение при этом шло через корпус и сверку смысла. Выходило
+# наоборот — решения машины проверялись строже решений человека, который
+# целевого языка может не знать.
+proj = build(segments=[])
+os.environ["OPENAI_API_KEY"] = "test-key"
+main.STATE["termQueue"] = [{"id": 1, "kind": "segment", "src": "Клинику",
+                            "tgt": "clinical practice", "status": "pending",
+                            "lang": "RU→EN", "domain": "medical", "segments": []}]
+main._openai_meaning = lambda pairs, scope: {
+    (main._norm_key(a), main._norm_key(b)):
+        {"same": True, "back": "клиника", "rule": False,
+         "why": "падежная форма, перевод зависит от контекста"} for a, b in pairs}
+r = main.approve_term_candidate(1, main.TermDecision(tgt="clinical practice"))
+check(r["written"] is False and r["warning"]["kind"] == "rule",
+      "пара, негодная правилом, останавливается ДО записи")
+check("падежная форма" in r["warning"]["text"], "причина названа по-русски")
+check(not main.STATE["glossary"], "в глоссарий ничего не записано")
+check(main.STATE["termQueue"][0]["status"] == "pending",
+      "и кандидат не решён: человек замечания ещё не видел")
+
+r = main.approve_term_candidate(1, main.TermDecision(tgt="clinical practice", confirm=True))
+check(r["written"] is True, "с явным подтверждением запись проходит")
+g = main.STATE["glossary"][0]
+check(main._hit_tier(g) == "verified", "и становится приказом — решение человека")
+
+print("\n=== 23. Вердикт судьи не переспрашивается аудитом ===")
+proj = build(segments=[])
+main.STATE["termQueue"] = [{"id": 1, "kind": "segment", "src": "мокрота", "tgt": "sputum",
+                            "status": "pending", "lang": "RU→EN", "domain": "medical",
+                            "segments": []}]
+asked = []
+main._openai_meaning = lambda pairs, scope: (asked.append(len(pairs)), {
+    (main._norm_key(a), main._norm_key(b)):
+        {"same": True, "back": "то же", "rule": True, "why": ""} for a, b in pairs})[1]
+main.approve_term_candidate(1, main.TermDecision(tgt="sputum"))
+check(len(asked) == 1, "при одобрении судья спрошен один раз")
+r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True))
+check(r["checked"] == 0 and r["cached"] == 1,
+      "аудит читает тот же вердикт и платно не переспрашивает")
+
+print("\n=== 24. Без ключа одобрение не запирается ===")
+proj = build(segments=[])
+main.STATE["termQueue"] = [{"id": 1, "kind": "segment", "src": "хрипы", "tgt": "rales",
+                            "status": "pending", "lang": "RU→EN", "domain": "medical",
+                            "segments": []}]
+key = os.environ.pop("OPENAI_API_KEY")
+r = main.approve_term_candidate(1, main.TermDecision(tgt="rales"))
+os.environ["OPENAI_API_KEY"] = key
+check(r["written"] is True, "нет ключа — нет проверки, но и нет запрета")
+
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

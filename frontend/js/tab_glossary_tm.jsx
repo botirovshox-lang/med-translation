@@ -252,7 +252,8 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
         React.createElement("span", null,
           b.src + " → ",
           React.createElement("b", { style: { color: "var(--c-error)" } }, b.tgt),
-          React.createElement("span", { className: "dim" }, " — " + b.back)),
+          React.createElement("span", { className: "dim" },
+            " — " + (b.kind === "rule" ? (b.why || "правилом не годится") : b.back))),
         React.createElement("span", { className: "row", style: { gap: 8 } },
           b.segments > 0 && React.createElement("span", { className: "dim", style: { fontSize: 12 } },
             "сегментов: " + b.segments),
@@ -525,13 +526,25 @@ function TermQueue({ store, toast, version }) {
     setTotal(t => Math.max(0, t - gone.size));
   };
 
-  const approve = async (c) => {
+  /* Замечание судьи по карточке: {cid: {kind, text}}. Живёт до решения —
+     одобрение вопреки ему идёт вторым нажатием, уже осознанным. */
+  const [warned, setWarned] = useState({});
+
+  const approve = async (c, confirm) => {
     const tgt = (drafts[c.id] !== undefined ? drafts[c.id] : c.tgt || "").trim();
     if (!tgt) { toast.warning("Нужен перевод", "Впишите верный вариант — он станет проверенной записью глоссария."); return; }
     setBusy(c.id);
-    const res = await window.API.safeCall(() => window.API.approveTerm(c.id, { tgt }));
+    const res = await window.API.safeCall(() => window.API.approveTerm(c.id, { tgt, confirm: !!confirm }));
     setBusy(null);
     if (!res || !res.ok) { toast.error("Не удалось одобрить", "Сервер не ответил."); return; }
+    // Судья возражает — в глоссарий ничего не записано. Показываем возражение
+    // на самой карточке: тост уедет, а решение принимать здесь.
+    if (res.warning) {
+      setWarned(w => ({ ...w, [c.id]: res.warning }));
+      toast.warning("Проверьте перед одобрением", res.warning.text);
+      return;
+    }
+    setWarned(w => { const n = { ...w }; delete n[c.id]; return n; });
     // Сервер закрывает и остальные карточки про этот же термин: человек ответил
     // на вопрос, а не на карточку. Убираем их сразу, иначе они висят до перезагрузки.
     drop([c.id].concat(res.closed || []));
@@ -663,8 +676,28 @@ function TermQueue({ store, toast, version }) {
               "Нажмите на вариант — он подставится в поле выше. Разобрала модель "
               + (explained[c.id].model || "") + "; проверьте, что смысл совпадает с оригиналом.")),
 
+          warned[c.id] && React.createElement("div", {
+            className: "col", style: { gap: 3, padding: "8px 11px", borderRadius: 8,
+              background: "var(--c-warning-bg, rgba(240,180,40,.10))",
+              border: "1px solid var(--c-warning)" } },
+            React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600 } },
+              warned[c.id].kind === "meaning"
+                ? "Судья: перевод означает другое"
+                : "Судья: правилом на весь документ не годится"),
+            React.createElement("div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.55 } },
+              warned[c.id].text),
+            React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
+              warned[c.id].kind === "rule"
+                ? "Запись приказывает модели во ВСЕХ сегментах сразу. Если перевод "
+                  + "верен только в каком-то контексте — лучше отклонить: подсказку "
+                  + "модель применит по месту сама."
+                : "В глоссарий ничего не записано. Исправьте перевод в поле выше "
+                  + "или отклоните кандидата.")),
+
           React.createElement("div", { className: "row row-wrap", style: { gap: 8 } },
-            React.createElement(Btn, { variant: "primary", size: "sm", icon: "check", disabled: busy === c.id, onClick: () => approve(c) }, "В глоссарий"),
+            React.createElement(Btn, { variant: "primary", size: "sm", icon: "check", disabled: busy === c.id,
+              onClick: () => approve(c, !!warned[c.id]) },
+              warned[c.id] ? "Всё равно одобрить" : "В глоссарий"),
             React.createElement(Btn, { variant: "ghost", size: "sm", icon: "close", disabled: busy === c.id, onClick: () => reject(c) }, "Отклонить"),
             React.createElement(Btn, {
               variant: "secondary", size: "sm", icon: "book",

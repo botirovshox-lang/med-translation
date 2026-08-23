@@ -2665,6 +2665,10 @@ class TermDecision(BaseModel):
     src: Optional[str] = None
     tgt: Optional[str] = None
     cat: Optional[str] = None
+    # «Знаю о замечании, всё равно одобряю». Без него одобрение пары, которую
+    # судья считает негодной, возвращает предупреждение и НЕ пишет в глоссарий:
+    # предупредить после записи — то же самое, что не предупредить.
+    confirm: bool = False
 
 
 def _mark_decided(cand: dict, status: str, src: str = None, tgt: str = None, **extra):
@@ -2733,7 +2737,13 @@ def _close_same_term_locked(decided, scope, key, tgt, closed):
 @app.post("/api/term-queue/{cid}/approve")
 def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     """Одобренный кандидат становится проверенной записью глоссария — только
-    такие уходят в промпт жёстким правилом."""
+    такие уходят в промпт жёстким правилом.
+
+    Перед записью пара проходит ту же сверку судьёй, что и машинное
+    автоодобрение. Раньше этот путь не проверялся ВООБЩЕ, и выходило наоборот:
+    решения машины проверялись строже решений человека — который целевого языка
+    может не знать и оценить пару не в состоянии. Замечание возвращается ДО
+    записи (`written: false`), одобрить вопреки ему можно полем `confirm`."""
     cand = next((c for c in _term_queue() if c.get("id") == cid), None)
     if not cand:
         raise HTTPException(404, "Кандидат не найден")
@@ -2747,17 +2757,48 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     cat = req.cat or cand.get("cat") or "Term"
     today = datetime.now().strftime("%Y-%m-%d")
     scope = _scope_of(cand)
+
+    # ── Тот же вопрос, что и машине ──────────────────────────────────
+    # Одобрение пишет ПРАВИЛО на все будущие тексты, и человек, не знающий
+    # целевого языка, оценить пару не может. Спрашиваем судью: то же ли это
+    # понятие и годится ли пара правилом. «Не знаю» (нет ключа, сбой вызова)
+    # не блокирует — тот же закон, что у корпуса.
+    verdict = None
+    if not req.confirm and os.environ.get("OPENAI_API_KEY"):
+        got = _openai_meaning([(src, tgt)], scope)
+        verdict = (got or {}).get((_norm_key(src), _norm_key(tgt)))
+    if verdict and (verdict.get("same") is False or verdict.get("rule") is False):
+        # В глоссарий НИЧЕГО не пишем и кандидата не решаем: человек ещё
+        # не видел замечания, а значит и решения пока нет.
+        return {"ok": True, "written": False, "warning": {
+            "src": src, "tgt": tgt,
+            "kind": "meaning" if verdict.get("same") is False else "rule",
+            "back": verdict.get("back") or "",
+            "why": verdict.get("why") or "",
+            "text": ("перевод означает другое: " + (verdict.get("back") or "иное понятие"))
+                    if verdict.get("same") is False
+                    else ("правилом на весь документ не годится: "
+                          + (verdict.get("why") or "зависит от контекста"))}}
     existing = _glossary_entry(src, scope)
+    # Вердикт судьи кладём на запись: аудит глоссария читает его как свой
+    # (`_meaning_stale` сверяет отпечаток пары) и не переспрашивает платно
+    # то, что только что спросили здесь.
+    mark = ({"meaning": {"same": bool(verdict.get("same")), "rule": verdict.get("rule"),
+                         "back": verdict.get("back") or "", "why": verdict.get("why") or "",
+                         "pair": _text_hash(_norm_key(src) + "||" + _norm_key(tgt)),
+                         "disputed": 0, "model": _resolve_model(JUDGE_DEFAULT_MODEL)["id"],
+                         "at": today}}
+            if verdict and verdict.get("same") is not None else {})
     if existing:
         existing.update({"tgt": tgt, "cat": cat, "conf": "high", "tier": GLOSSARY_TIER_HARD,
                          "note": "уточнено вручную " + today, "updated": today,
-                         "prevTgt": existing.get("tgt", "")})
+                         "prevTgt": existing.get("tgt", ""), **mark})
         _clear_auto_marks(existing)
     else:
         STATE["glossary"].insert(0, {"src": src, "tgt": tgt, "cat": cat, "freq": 1,
                                      "conf": "high", "note": "", "tier": GLOSSARY_TIER_HARD,
                                      "lang": scope[0], "domain": scope[1],
-                                     "updated": today,
+                                     "updated": today, **mark,
                                      "origin": "confirmed:" + str(cand.get("segment", ""))})
     # Пара запоминается до правки, остальные карточки про этот же термин
     # закрываются: иначе одобренный термин всплывал бы снова — и как сосед
@@ -2766,7 +2807,8 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     closed = _close_same_term(cand, scope)
     _invalidate_gloss_index()
     save_state(STATE)
-    return {"ok": True, "candidate": cand, "replaced": bool(existing), "closed": closed}
+    return {"ok": True, "written": True, "candidate": cand,
+            "replaced": bool(existing), "closed": closed}
 
 
 class ExplainRequest(BaseModel):
@@ -3342,8 +3384,16 @@ def _openai_meaning(pairs: list, scope: tuple) -> Optional[dict]:
     (болезнь против рода паразита-возбудителя) проходит всё это разом, потому
     что каждый отвечал не на тот вопрос.
 
+    Вопросов два, и второй не менее важен. `same` — про понятие. `rule` — про
+    то, годится ли пара ПРАВИЛОМ на весь документ: «Клинику → clinical practice»
+    верен в «внедрено в клинику» и неверен в «направлен в клинику», а
+    «частоте → frequency» — падежная форма вместо словарной. Понятия при этом
+    совпадают, и вопрос `same` такое пропускает — а запись между тем принуждает
+    модель во всех сегментах разом.
+
     Возвращает {(термин, перевод) нормализованные: {"same": bool|None,
-    "back": чем кандидат является, НА ЯЗЫКЕ ОРИГИНАЛА}} или None при сбое.
+    "back": чем кандидат является НА ЯЗЫКЕ ОРИГИНАЛА, "rule": bool|None,
+    "why": почему правилом не годится, НА ЯЗЫКЕ ОРИГИНАЛА}} или None при сбое.
     None — это «не знаю», и по тому же закону, что attested() у корпуса,
     он не одобряет и не блокирует."""
     import openai
@@ -3353,13 +3403,20 @@ def _openai_meaning(pairs: list, scope: tuple) -> Optional[dict]:
     dom = _resolve_domain(scope[1])
     system = (
         f"You are a {dom['expert']}. For each pair below decide whether the {tgt_lang} "
-        f"candidate denotes EXACTLY the same concept as the {src_lang} term.\n"
+        f"candidate denotes EXACTLY the same concept as the {src_lang} term, AND whether "
+        "the pair is fit to become a glossary RULE applied to a whole document.\n"
         + MEANING_TRAPS + "\n"
         "For each pair return:\n"
         "  same — true ONLY if the concepts are identical;\n"
         f"  back — what the candidate actually denotes, a few words IN {src_lang} "
-        "(the user reads only that language).\n"
-        'Return ONLY JSON: {"pairs":[{"src":"...","tgt":"...","same":true,"back":"..."}]}. '
+        "(the user reads only that language);\n"
+        f"  rule — false if this pair must NOT become a document-wide rule: the "
+        f"{src_lang} side is an inflected or otherwise non-dictionary form instead of "
+        "a lemma, or it is an ordinary word rather than a term of the field, or the "
+        "correct translation depends on the surrounding context. Otherwise true;\n"
+        f"  why — when rule is false, the reason IN {src_lang}, a few words.\n"
+        'Return ONLY JSON: {"pairs":[{"src":"...","tgt":"...","same":true,"back":"...",'
+        '"rule":true,"why":""}]}. '
         "No commentary."
     )
     body = "\n".join(f"  - {a} → {b}" for a, b in pairs)
@@ -3379,7 +3436,12 @@ def _openai_meaning(pairs: list, scope: tuple) -> Optional[dict]:
             if isinstance(v, dict) and v.get("src") and v.get("tgt"):
                 out[(_norm_key(v["src"]), _norm_key(v["tgt"]))] = {
                     "same": (bool(v["same"]) if "same" in v else None),
-                    "back": (v.get("back") or "").strip()}
+                    "back": (v.get("back") or "").strip(),
+                    # Отсутствие поля — «не знаю», а не «годится»: вердикты,
+                    # записанные прежней версией, его не содержат, и читать
+                    # их как одобрение значило бы закрыть записи от проверки.
+                    "rule": (bool(v["rule"]) if "rule" in v else None),
+                    "why": (v.get("why") or "").strip()}
         return out
     except Exception as e:
         print(f"[backend] смысловая сверка терминов: {e}", file=sys.stderr)
@@ -3535,14 +3597,16 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
         if action in (GLOSSARY_TIER_HARD, GLOSSARY_TIER_SOFT):
             m = meaning.get((_scope_of(cand), _norm_key(cand.get("src")),
                              _norm_key(cand.get("tgt"))))
-            if m and m.get("same") is False:
+            if m and (m.get("same") is False or m.get("rule") is False):
                 # Ложный друг: строка в языке существует, понятие другое.
                 # Причина хранит обратный смысл ПО-РУССКИ (языку оригинала) —
                 # человек, не знающий целевого языка, должен видеть, ЧТО
                 # именно машина у него отвела.
-                mrejected.append((cand, {**row, "tier": None,
-                                         "reason": "смысл расходится: "
-                                                   + (m.get("back") or "иное понятие")}))
+                reason = ("смысл расходится: " + (m.get("back") or "иное понятие")
+                          if m.get("same") is False
+                          else "правилом не годится: "
+                               + (m.get("why") or "зависит от контекста"))
+                mrejected.append((cand, {**row, "tier": None, "reason": reason}))
                 continue
             if m and m.get("same") is True:
                 row["reason"] = row["reason"] + " · смысл сверен судьёй"
@@ -3846,6 +3910,7 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
         if not v or v.get("same") is None:
             continue
         g["meaning"] = {"same": bool(v["same"]), "back": v.get("back") or "",
+                        "rule": v.get("rule"), "why": v.get("why") or "",
                         "pair": _meaning_pair(g), "disputed": int(g.get("disputed") or 0),
                         "model": mdl_id, "at": today}
     # Список строится по ЗАПИСЯННЫМ вердиктам — и свежим, и лежавшим с прошлого
@@ -3853,9 +3918,18 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
     bad = []
     for g in entries:
         m = g.get("meaning") or {}
-        if m.get("pair") != _meaning_pair(g) or m.get("same") is not False:
+        if m.get("pair") != _meaning_pair(g):
+            continue
+        # Две разные беды, и обе делают запись негодной ПРИКАЗОМ: перевод
+        # означает другое либо пара не годится правилом на весь документ
+        # (падежная форма, обычное слово, перевод по контексту).
+        wrong = m.get("same") is False
+        not_rule = m.get("rule") is False
+        if not (wrong or not_rule):
             continue
         bad.append({"src": g["src"], "tgt": g["tgt"],
+                    "kind": "meaning" if wrong else "rule",
+                    "why": m.get("why") or "",
                     "back": m.get("back") or "иное понятие",
                     "segments": weight.get(_norm_key(g.get("src")), 0),
                     "disputed": int(g.get("disputed") or 0),

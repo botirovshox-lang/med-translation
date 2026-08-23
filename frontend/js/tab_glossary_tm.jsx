@@ -42,6 +42,86 @@ const CAND_KIND = {
    что попадёт и что отсеяно с причинами. Применение — отдельным нажатием,
    откат пачки — одним. Правила языко- и тематико-независимы, поэтому панель
    не знает ни про медицину, ни про русский: всё приходит с сервера. */
+/* ---------- Смысловая сверка записей, уже стоящих приказом ----------
+   Сверка при автоодобрении сторожит ВХОД в глоссарий. Записи, попавшие туда
+   раньше (в том числе получившие приказ по умолчанию миграции), её не
+   проходили — а приказывают модели и гонят ремонт именно они. Проверка
+   платная, поэтому только по кнопке; понижение — отдельным нажатием. */
+function GlossaryAuditPanel({ store, toast, onDone }) {
+  const project = store.activeProject;
+  const [res, setRes] = useState(null);
+  const [busy, setBusy] = useState("");
+  useEffect(() => { setRes(null); }, [project && project.id]);
+  if (!project) return null;
+
+  const run = async (dry) => {
+    setBusy(dry ? "check" : "apply");
+    const r = await window.API.safeCall(() => window.API.auditGlossary({
+      project: project.id, dry_run: dry }));
+    setBusy("");
+    if (!r || !r.ok) {
+      toast.error("Сверка не выполнена", "Нужен ключ OpenAI, или сервер не ответил.");
+      return;
+    }
+    setRes(r);
+    if (dry) {
+      toast.info("Проверено записей: " + r.checked,
+        r.bad.length ? "Смысл расходится у " + r.bad.length
+          + " · понизить можно " + r.downgradable
+          : "Расхождений не найдено.");
+    } else {
+      toast.success("Понижено до подсказки: " + (r.downgraded || 0),
+        "Перевод не тронут — записи перестали приказывать модели. "
+        + "Пачку можно откатить в списке ниже.");
+      onDone && onDone();
+    }
+  };
+
+  const bad = (res && res.bad) || [];
+  const CAP = 20;
+  return React.createElement("div", { className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 } },
+    React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
+      React.createElement("div", { className: "row", style: { gap: 8 } },
+        React.createElement(Icon, { name: "book", size: 16, style: { color: "var(--c-warning)" } }),
+        React.createElement("span", { style: { fontWeight: 650, fontSize: 14 } }, "Сверка смысла записей"),
+        React.createElement(InfoTip, { title: "Зачем это нужно", body: "Приказная запись глоссария заставляет модель писать именно этот перевод и служит основанием для ремонта. Ни одна другая проверка не спрашивает, ТО ЖЕ ли это понятие: корпус подтверждает лишь, что строка в языке существует, проверка терминов — что термин настоящий, согласие сегментов — что модель повторяет себя. «Анизакидоз → Anisakis» (болезнь против рода паразита) проходит их все.\n\nНаходка ПОНИЖАЕТСЯ до подсказки, а не удаляется: перевод остаётся на месте, запись остаётся видна, но перестаёт приказывать модели и гнать ремонт.\n\nЗаписи со следом решения человека (одобрение кандидата, ручная правка) не понижаются никогда — только помечаются. Своё предположение машина вправе пересмотреть, чужое решение — нет." })),
+      React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+        res ? "проверено: " + res.checked + " из " + res.total
+            : "проверяются только записи уровня «приказ»")),
+
+    React.createElement("div", { className: "row row-wrap", style: { gap: 10, alignItems: "center" } },
+      React.createElement(Btn, { variant: "secondary", size: "sm", icon: "target", disabled: !!busy, onClick: () => run(true) },
+        busy === "check" ? "Сверяем…" : res ? "Сверить заново" : "Проверить смысл записей"),
+      res && res.downgradable > 0 && React.createElement(Btn, {
+        variant: "primary", size: "sm", icon: "check", disabled: !!busy, onClick: () => run(false) },
+        busy === "apply" ? "Понижаем…" : "Понизить " + res.downgradable + " до подсказки"),
+      res && React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setRes(null) }, "Скрыть")),
+
+    res && res.capped > 0 && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
+      "Сверх потолка не проверено: " + res.capped
+      + " — первыми идут записи, которые уже расходятся с переводом в этом проекте."),
+
+    res && !bad.length && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
+      "Расхождений смысла не найдено."),
+
+    bad.length > 0 && React.createElement("div", { className: "col", style: { gap: 5 } },
+      bad.slice(0, CAP).map((b, i) => React.createElement("div", {
+        key: i, className: "row between row-wrap", style: { gap: 10, fontSize: 12.5, padding: "3px 0" } },
+        React.createElement("span", null,
+          b.src + " → ",
+          React.createElement("b", { style: { color: "var(--c-error)" } }, b.tgt),
+          React.createElement("span", { className: "dim" }, " — " + b.back)),
+        React.createElement("span", { className: "row", style: { gap: 8 } },
+          b.segments > 0 && React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+            "сегментов: " + b.segments),
+          b.humanTouched
+            ? React.createElement(Badge, { variant: "confirmed" }, "решил человек — правьте сами")
+            : React.createElement(Badge, { variant: "soft" }, "понизится")))),
+      bad.length > CAP && React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
+        "и ещё " + (bad.length - CAP) + " записей")));
+}
+
+
 function AutoApprovePanel({ store, toast, onDone }) {
   const project = store.activeProject;
   const [preview, setPreview] = useState(null);
@@ -544,6 +624,7 @@ function TabGlossary({ store, toast }) {
       React.createElement("p", { className: "lead" }, "Утверждённая медицинская терминология. Совпадения автоматически подсказываются в редакторе сегментов.")),
 
     React.createElement(AutoApprovePanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
+    React.createElement(GlossaryAuditPanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
 
     React.createElement(TermQueue, { store, toast, version: queueVersion }),
 

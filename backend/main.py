@@ -1619,10 +1619,7 @@ def glossary_impact(pid: int, refresh: bool = False):
         target = (seg.get("target") or "").strip()
         if not target:
             continue
-        hits, _tm = _get_context(seg.get("source", ""), with_tm=False, project=project)
-        for h in hits:
-            if _hit_tier(h) != GLOSSARY_TIER_HARD or not h.get("tgt"):
-                continue
+        for h in _verified_hits(seg.get("source", ""), project):
             if _tgt_has_term(target, h["tgt"]):
                 continue
             key = h["src"]
@@ -3372,7 +3369,7 @@ def _openai_meaning(pairs: list, scope: tuple) -> Optional[dict]:
         return None
 
 
-def _meaning_check(cands: list) -> tuple:
+def _meaning_check(cands: list, cap: int = AUTO_MEANING_MAX) -> tuple:
     """Смысловая сверка кандидатов пачками по AUTO_MEANING_CHUNK.
     Возвращает ({(область, термин, перевод): вердикт}, отвечено, сверх потолка).
     Пара, на которую судья не ответил, в словарь не попадает — «не знаю»."""
@@ -3385,12 +3382,12 @@ def _meaning_check(cands: list) -> tuple:
         if key not in uniq:
             uniq[key] = (src, tgt)
             order.append(key)
-    capped = max(0, len(order) - AUTO_MEANING_MAX)
+    capped = max(0, len(order) - cap)
     if capped:
         # Молчаливых потолков не бывает.
         print(f"[backend] смысловая сверка: {capped} пар сверх потолка не проверены",
               file=sys.stderr)
-    order = order[:AUTO_MEANING_MAX]
+    order = order[:cap]
     # Один проход и порядок вставки: обход множества областей давал бы разный
     # порядок вызовов от запуска к запуску — такое не воспроизвести по журналу.
     by_scope: dict = {}
@@ -3670,6 +3667,128 @@ def undo_auto_approve(batch: int):
 @app.get("/api/term-queue/auto-batches")
 def list_auto_batches():
     return {"ok": True, "batches": STATE.get("autoBatches", [])}
+
+
+def _human_touched(entry: dict) -> bool:
+    """У записи есть СЛЕД решения человека, а не просто уровень «приказ».
+
+    Разница решающая. Уровень мог достаться записи по умолчанию миграции
+    («её нет в массовом импорте — значит добавлена руками»), и это
+    ПРЕДПОЛОЖЕНИЕ, а не чьё-то решение: на боевых данных ровно так получили
+    приказ 670 записей без единого следа. След оставляют только настоящие
+    действия: одобрение кандидата (`origin: confirmed:*`), ручная правка
+    (`уточнено вручную`) и автоодобрение (`autoBatch`/`byOverride`), которое
+    само по себе шло с разрешения человека.
+
+    Своё предположение машина вправе пересмотреть, чужое решение — нет."""
+    origin = (entry.get("origin") or "").lower()
+    note = (entry.get("note") or "").lower()
+    return bool(origin.startswith("confirmed:") or "уточнено вручную" in note
+                or entry.get("autoBatch") or entry.get("byOverride"))
+
+
+class GlossaryAuditRequest(BaseModel):
+    project: Optional[int] = None      # область: чей глоссарий проверяем
+    dry_run: bool = True
+    limit: int = 800                   # потолок пар за проверку
+
+
+@app.post("/api/glossary/audit")
+def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
+    """Смысловая сверка ЗАПИСЕЙ глоссария, уже стоящих приказом.
+
+    Сверка при автоодобрении сторожит ВХОД: новый ложный друг в глоссарий
+    не сядет. Но записи, попавшие туда раньше, её не проходили — а именно они
+    приказывают модели и гонят ремонт. Этот проход задаёт им тот же вопрос:
+    то же ли это понятие.
+
+    Что делает с находкой: понижает до ПОДСКАЗКИ, а не удаляет. Запись
+    остаётся в глоссарии и остаётся видна, но перестаёт приказывать модели
+    и перестаёт быть основанием для ремонта — то есть перестаёт вредить.
+    Записи со следом решения человека (`_human_touched`) не понижаются
+    никогда: они только помечаются, решение по ним остаётся за человеком.
+
+    Порядок проверки — по вреду: сначала те, что уже расходятся с переводом
+    в этом проекте (их применяет ремонт), потом остальные. Потолок обрежет
+    хвост, а не голову."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(503, "Смысловая сверка требует ключ OpenAI")
+    project = get_project(req.project) if req.project else None
+    scope = _project_scope(project) if project else None
+    entries = [g for g in STATE.get("glossary", [])
+               if _hard_answer(g) and (scope is None or _scope_of(g) == scope)]
+    if not entries:
+        return {"ok": True, "dryRun": req.dry_run, "checked": 0, "capped": 0,
+                "total": 0, "bad": [], "batch": None,
+                "scope": list(scope) if scope else None}
+
+    # Порядок по вреду: записи, которые прямо сейчас расходятся с переводом,
+    # идут первыми — ремонт применит именно их.
+    weight = {}
+    if project is not None:
+        try:
+            for t in glossary_impact(project["id"])["terms"]:
+                weight[_norm_key(t["src"])] = len(t.get("segments") or ())
+        except Exception as e:                                   # pragma: no cover
+            print(f"[backend] аудит глоссария: вес по импакту не посчитан: {e}",
+                  file=sys.stderr)
+    entries.sort(key=lambda g: -weight.get(_norm_key(g.get("src")), 0))
+
+    verdicts, asked, capped = _meaning_check(entries, cap=max(1, min(req.limit, 2000)))
+    bad = []
+    for g in entries:
+        v = verdicts.get((_scope_of(g), _norm_key(g.get("src")), _norm_key(g.get("tgt"))))
+        # «Не знаю» (судья не ответил, вызов упал) находкой не считается —
+        # тот же закон, что у attested() и у сверки при автоодобрении.
+        if not v or v.get("same") is not False:
+            continue
+        bad.append({"src": g["src"], "tgt": g["tgt"],
+                    "back": v.get("back") or "иное понятие",
+                    "segments": weight.get(_norm_key(g.get("src")), 0),
+                    "humanTouched": _human_touched(g),
+                    "lang": _scope_of(g)[0], "domain": _scope_of(g)[1]})
+    result = {"ok": True, "dryRun": req.dry_run, "total": len(entries),
+              "checked": asked, "capped": capped, "batch": None,
+              "scope": list(scope) if scope else None,
+              "bad": sorted(bad, key=lambda b: (b["humanTouched"], -b["segments"])),
+              "downgradable": sum(1 for b in bad if not b["humanTouched"])}
+    if req.dry_run or not bad:
+        return result
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    batch = STATE.get("autoBatchSeq", 0) + 1
+    STATE["autoBatchSeq"] = batch
+    done = 0
+    flagged = {(b["lang"], b["domain"], _norm_key(b["src"]), _norm_key(b["tgt"])): b
+               for b in bad if not b["humanTouched"]}
+    for g in STATE.get("glossary", []):
+        b = flagged.get((_scope_of(g)[0], _scope_of(g)[1],
+                         _norm_key(g.get("src")), _norm_key(g.get("tgt"))))
+        if b is None:
+            continue
+        # Прежние значения — на них держится откат пачки (undo_auto_approve).
+        # Перевод не трогаем: понижается только уровень доверия.
+        # prevOrigin обязателен: откат при его отсутствии СНИМАЕТ origin
+        # (см. undo_auto_approve) — запись потеряла бы своё происхождение.
+        g.update({"prevTier": _hit_tier(g), "prevNote": g.get("note", ""),
+                  "prevConf": g.get("conf", ""), "prevOrigin": g.get("origin", ""),
+                  "tier": GLOSSARY_TIER_SOFT, "conf": "medium",
+                  "note": "понижено сверкой смысла " + today + ": " + b["back"],
+                  "updated": today, "autoBatch": batch, "autoCreated": False})
+        done += 1
+    batches = STATE.setdefault("autoBatches", [])
+    batches.insert(0, {"id": batch, "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                       "kind": "audit", "scope": list(scope) if scope else None,
+                       "counts": {"verified": 0, "auto": 0, "closed": 0,
+                                  "downgraded": done, "skipped": 0}})
+    for gone in batches[AUTO_BATCH_HISTORY:]:
+        _forget_auto_batch(gone["id"])
+    del batches[AUTO_BATCH_HISTORY:]
+    _invalidate_gloss_index()
+    save_state(STATE)
+    result["batch"] = batch
+    result["downgraded"] = done
+    return result
 
 
 # Извлечение терминов из подтверждённых сегментов. Платный прогон: вызывается

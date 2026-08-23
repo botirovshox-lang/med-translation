@@ -260,5 +260,57 @@ main.STATE["termQueue"] = [queue_cand([1, 2, 3])]
 r = main.auto_approve_terms(main.AutoApproveRequest(project=1, dry_run=True))
 check(r["policy"]["domainBanned"] is False, "там, где запрета нет, поле честно ложно")
 
+print("\n=== 15. Аудит глоссария понижает свою ошибку, но не чужое решение ===")
+# Три приказных записи. Первая — предположение миграции (следа человека нет),
+# вторая — решение человека, третья — верная. Судья бракует первые две.
+mine = {"src": "анизакидоз", "tgt": "anisakis", "tier": "verified",
+        "lang": "RU→EN", "domain": "medical", "conf": "high", "note": ""}
+human = {"src": "больного", "tgt": "an infected animal", "tier": "verified",
+         "lang": "RU→EN", "domain": "medical", "conf": "high",
+         "origin": "confirmed:12", "note": ""}
+good = {"src": "мокрота", "tgt": "sputum", "tier": "verified", "conf": "high",
+        "lang": "RU→EN", "domain": "medical", "note": "", "origin": "seed"}
+proj = build(gloss=[mine, human, good], segments=[])
+os.environ["OPENAI_API_KEY"] = "test-key"
+BAD = {"anisakis": "род паразита, а не болезнь",
+       "an infected animal": "заражённое животное, а не пациент"}
+main._openai_meaning = lambda pairs, scope: {
+    (main._norm_key(a), main._norm_key(b)):
+        ({"same": False, "back": BAD[b]} if b in BAD else {"same": True, "back": "то же"})
+    for a, b in pairs}
+
+r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True))
+check(r["total"] == 3 and r["checked"] == 3, "проверены все приказные записи")
+check(len(r["bad"]) == 2, "найдены обе неверные")
+check(r["downgradable"] == 1, "понизить можно только ту, где следа человека нет")
+check(main._hit_tier(main.STATE["glossary"][0]) == "verified", "разбор ничего не изменил")
+
+r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=False))
+by = {g["src"]: g for g in main.STATE["glossary"]}
+check(main._hit_tier(by["анизакидоз"]) == "auto",
+      "своё предположение машина пересмотрела — запись стала подсказкой")
+check(by["анизакидоз"]["tgt"] == "anisakis", "перевод не тронут: понижен только уровень")
+check("род паразита" in by["анизакидоз"]["note"], "и сказано почему, по-русски")
+check(main._hit_tier(by["больного"]) == "verified",
+      "решение человека не отменено — только помечено в отчёте")
+check(main._hit_tier(by["мокрота"]) == "verified", "верная запись не тронута")
+check(r["downgraded"] == 1, "понижена ровно одна")
+
+print("\n=== 16. Понижение откатывается тем же механизмом, что и пачки ===")
+u = main.undo_auto_approve(r["batch"])
+by = {g["src"]: g for g in main.STATE["glossary"]}
+check(u["ok"] and u["restored"] == 1, "откат вернул запись")
+check(main._hit_tier(by["анизакидоз"]) == "verified", "уровень восстановлен")
+check(by["анизакидоз"].get("origin") is None, "происхождения не было — не выдумано")
+check(main._hit_tier(by["мокрота"]) == "verified" and by["мокрота"]["origin"] == "seed",
+      "чужие записи откат не задел")
+
+print("\n=== 17. «Не знаю» судьи запись не понижает ===")
+proj = build(gloss=[dict(mine)], segments=[])
+main._openai_meaning = lambda pairs, scope: {}
+r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=False))
+check(not r["bad"] and main._hit_tier(main.STATE["glossary"][0]) == "verified",
+      "молчание судьи — не приговор")
+
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

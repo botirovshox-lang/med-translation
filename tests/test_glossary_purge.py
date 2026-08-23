@@ -138,6 +138,32 @@ try:
 except main.HTTPException as e:
     check(e.status_code == 400, "чужой путь в метке отвергнут")
 
+print("\n=== 9. Приказ без следа человека выносится, с следом — нет ===")
+# Уровень «приказ» запись могла получить не от человека, а от миграции:
+# «её нет в массовом импорте — значит добавлена руками». Своё предположение
+# машина вправе пересмотреть, чужое решение — нет.
+build([
+    entry("бухтообразный", "scalloped", tier="verified"),            # импорт
+    entry("Клинику", "clinical practice", tier="verified",
+          origin="confirmed:2670"),                                  # одобрил человек
+    entry("хрипы", "rales", tier="verified",
+          note="уточнено вручную 2026-08-01"),                       # правил руками
+    entry("мокрота", "phlegm"),                                      # подсказка
+])
+r = main.purge_glossary(main.GlossaryPurgeRequest(project=1, tier="verified", dry_run=True))
+srcs = {x["src"] for x in r["samples"]}
+check(r["matched"] == 1 and srcs == {"бухтообразный"},
+      "к выносу только приказ без следа решения человека")
+check(r["keptHuman"] == 2, "одобренное и правленное руками пощажено")
+
+r = main.purge_glossary(main.GlossaryPurgeRequest(project=1, tier="verified", dry_run=False))
+left = {g["src"] for g in main.STATE["glossary"]}
+check(left == {"Клинику", "хрипы", "мокрота"}, "вынесен ровно один приказ")
+check("мокрота" in left, "подсказки при выносе приказов не трогаются")
+u = main.undo_glossary_purge(r["stamp"])
+check(u["restored"] == 1 and any(g["src"] == "бухтообразный" for g in main.STATE["glossary"]),
+      "и возвращается откатом")
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

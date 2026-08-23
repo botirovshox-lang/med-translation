@@ -1616,7 +1616,11 @@ function TabEditor({ store, toast }) {
             onIncludeConfirmed: () => setImpactConfirmed(v => !v),
             confirmedCount: impact ? impact.confirmed.length : 0,
             orders: termOrders,
-            onOrders: () => setOrdersFor(v => (v === project.id ? null : project.id)) }),
+            onOrders: () => setOrdersFor(v => (v === project.id ? null : project.id)),
+            // Состав ремонта — тот же список, что показывает соседняя карточка:
+            // считает его один и тот же glossary_impact.
+            pendingSegs: impact
+              ? (impactConfirmed ? impact.segments.length : impact.pending.length) : 0 }),
           // Карточка живёт и при нуле расхождений. Пряча её, мы уносили вместе
           // с ней «Пересчитать» — единственный способ убедиться, что ноль
           // настоящий, а не остался с прошлого расчёта. Ровно та же беда, от
@@ -2075,7 +2079,7 @@ function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize
    сервер сразу после одобрения. */
 function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
                           includeConfirmed, onIncludeConfirmed, confirmedCount,
-                          orders, onOrders }) {
+                          orders, onOrders, pendingSegs }) {
   const c = preview && preview.counts;
   // Запрет области сервер присылает отдельным полем: он снимается ДО учёта
   // разрешения, поэтому тумблер не исчезает от того, что его включили.
@@ -2153,8 +2157,19 @@ function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
           React.createElement("span", { className: "muted", style: { fontSize: 12 } },
             running.total ? "Применяем к сегментам…" : "Одобряем термины…"),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop }, "Остановить"))
-      : React.createElement(Btn, { variant: "primary", icon: "check", onClick: onRun, disabled: disabled || !ready },
-          ready ? "Одобрить " + ready + " и применить" : "Однозначных терминов нет"));
+      : React.createElement(Btn, { variant: "primary", icon: "check", onClick: onRun,
+          // Одобрять нечего — это НЕ значит «работы нет»: расхождения с уже
+          // утверждёнными терминами чинит та же задача, и это единственный
+          // дешёвый путь. Запирая кнопку на нуле терминов, интерфейс оставлял
+          // человеку только переперевод — вдвое дороже и без проверок.
+          disabled: disabled || (!ready && !pendingSegs) },
+          ready ? "Одобрить " + ready + " и применить"
+            : pendingSegs ? "Применить к " + pendingSegs + " сегм."
+              : "Нечего применять"),
+    !ready && pendingSegs > 0 && !running && React.createElement("div",
+      { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
+      "Новых однозначных терминов нет, но " + pendingSegs + " сегм. расходятся "
+      + "с уже утверждёнными — их починит ремонт."));
 }
 
 // Блок «что прогонять»: группы по состоянию прошлых прогонов с количеством.

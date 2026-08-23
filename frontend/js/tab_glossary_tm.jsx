@@ -52,16 +52,22 @@ function GlossaryPurgePanel({ store, toast, onDone }) {
   const [busy, setBusy] = useState("");
   const [unusedOnly, setUnusedOnly] = useState(false);
   const [wholeService, setWholeService] = useState(false);
+  /* Приказы, доставшиеся импорту по умолчанию миграции («записи нет в массовом
+     импорте — значит добавлена руками»). Это предположение машины, а не чьё-то
+     решение: записи со следом человека сервер не выносит в любом случае. */
+  const [alsoOrders, setAlsoOrders] = useState(false);
   const [purges, setPurges] = useState([]);
   const reloadPurges = () => window.API.safeCall(() => window.API.purgeList())
     .then(r => setPurges((r && r.purges) || []));
   useEffect(() => { if (window.API) reloadPurges(); }, []);
   // Любая смена фильтра обесценивает прошлый разбор: цифра на кнопке
   // «Вынести N» обязана относиться к тому, что уйдёт на самом деле.
-  useEffect(() => { setRes(null); }, [project && project.id, unusedOnly, wholeService]);
+  useEffect(() => { setRes(null); },
+    [project && project.id, unusedOnly, wholeService, alsoOrders]);
   if (!project) return null;
 
   const opts = (dry) => ({ project: wholeService ? null : project.id,
+                           tier: alsoOrders ? "verified" : "auto",
                            unused_only: unusedOnly, dry_run: dry });
 
   const run = async (dry) => {
@@ -100,13 +106,20 @@ function GlossaryPurgePanel({ store, toast, onDone }) {
         React.createElement("span", { style: { fontWeight: 650, fontSize: 14 } }, "Вынести массовый импорт"),
         React.createElement(InfoTip, { title: "Что произойдёт", body: "Массовый импорт лежит в глоссарии уровнем «подсказка»: он уходит в промпт с пометкой «не проверено, часть неверна» и прямым разрешением его игнорировать. На уже готовый перевод вынос не влияет НИЧЕМ — расхождения и ремонт считаются только по записям уровня «приказ».\n\nМеняется одно: чем модель воспользуется при СЛЕДУЮЩЕМ переводе. Вместе с мусором уходит и сырьё: подсказка поднимается до приказа, когда несколько независимых чистых сегментов сойдутся на одном переводе.\n\nЗаписи, которых касался человек (одобрение кандидата, ручная правка, откат понижения), не выносятся никогда — сколько таких, сказано в отчёте. Вынесенное целиком уходит файлом в data/backups и возвращается откатом." })),
       React.createElement("span", { className: "dim", style: { fontSize: 12 } },
-        "выносятся только записи уровня «подсказка»")),
+        alsoOrders ? "уровень «приказ» · без следа решения человека"
+                   : "уровень «подсказка»")),
 
     React.createElement("div", { className: "col", style: { gap: 4 } },
       React.createElement(Checkbox, { checked: unusedOnly, onChange: () => setUnusedOnly(v => !v) },
         "Только те, что не встречаются ни в одном тексте"),
       React.createElement(Checkbox, { checked: wholeService, onChange: () => setWholeService(v => !v) },
-        "По всему сервису, а не только в области этого проекта")),
+        "По всему сервису, а не только в области этого проекта"),
+      React.createElement(Checkbox, { checked: alsoOrders, onChange: () => setAlsoOrders(v => !v) },
+        "Приказы, доставшиеся импорту по умолчанию"),
+      alsoOrders && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5, paddingLeft: 26 } },
+        "Уровень «приказ» запись могла получить не от человека, а от миграции: "
+        + "«её нет в массовом импорте — значит добавлена руками». Одобренное "
+        + "вами и правленное руками не тронется в любом случае.")),
 
     React.createElement("div", { className: "row row-wrap", style: { gap: 10, alignItems: "center" } },
       React.createElement(Btn, { variant: "secondary", size: "sm", icon: "target", disabled: !!busy, onClick: () => run(true) },

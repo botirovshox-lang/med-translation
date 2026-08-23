@@ -167,11 +167,29 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
   useEffect(() => { setRes(null); setAlsoMine(false); }, [project && project.id]);
   if (!project) return null;
 
+  /* Потолок за один запрос нужен, чтобы запрос не висел минутами. Но жать
+     кнопку по кругу должен не человек: добираем остаток сами, пока сверка
+     не скажет «спрашивать больше нечего». Условие выхода двойное — остаток
+     кончился ЛИБО заход не спросил ничего: иначе сбой судьи крутил бы цикл. */
+  const AUDIT_PASSES = 20;
+
   const run = async (dry, force) => {
     setBusy(dry ? (force ? "recheck" : "check") : "apply");
-    const r = await window.API.safeCall(() => window.API.auditGlossary({
-      project: project.id, dry_run: dry, force: !!force,
-      include_human: alsoMine }));
+    let r = null, total = 0, pass = 0;
+    while (pass < AUDIT_PASSES) {
+      // force имеет смысл только на первом заходе: дальше добираем то, что
+      // осталось неспрошенным, а не переспрашиваем уже отвеченное по кругу.
+      const step = await window.API.safeCall(() => window.API.auditGlossary({
+        project: project.id, dry_run: dry, force: !!force && pass === 0,
+        include_human: alsoMine }));
+      if (!step || !step.ok) break;
+      r = step;
+      total += step.checked || 0;
+      pass++;
+      if (!dry) break;                       // применение — один заход
+      if (!step.pending || !step.checked) break;
+      setRes(step);                          // видно, что работа идёт
+    }
     setBusy("");
     if (!r || !r.ok) {
       toast.error("Сверка не выполнена", "Нужен ключ OpenAI, или сервер не ответил.");
@@ -179,10 +197,12 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
     }
     setRes(r);
     if (dry) {
-      toast.info("Спрошено: " + r.checked + " · из памяти: " + (r.cached || 0),
-        r.bad.length ? "Смысл расходится у " + r.bad.length
+      toast.info("Спрошено: " + total + " · из памяти: " + (r.cached || 0),
+        (r.bad.length ? "Смысл расходится у " + r.bad.length
           + " · понизить можно " + r.downgradable
-          : "Расхождений не найдено.");
+          : "Расхождений не найдено.")
+        + (r.pending ? " · осталось неспрошенных: " + r.pending
+                       + " — судья ответил не про всё, нажмите ещё раз" : ""));
     } else {
       const rv = r.reverted || {};
       toast.success("Понижено до подсказки: " + (r.downgraded || 0),
@@ -283,10 +303,10 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
         "Не тронутся в любом случае: " + res.keptByHuman
         + " — вы уже возвращали их из понижения.")),
 
-    res && (res.capped > 0 || res.pending > 0) && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
-      "Осталось спросить: " + ((res.capped || 0) + (res.pending || 0))
-      + " — нажмите «Досверить новые» ещё раз. Первыми идут записи, которые "
-      + "уже расходятся с переводом в этом проекте."),
+    res && res.pending > 0 && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
+      "Осталось неспрошенных: " + res.pending
+      + " — судья ответил не про все пары. Нажмите ещё раз: заходы идут "
+      + "порциями и добираются сами, повторно уже спрошенное не оплачивается."),
 
     res && !bad.length && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
       "Расхождений смысла не найдено."),

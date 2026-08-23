@@ -2786,7 +2786,8 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     mark = ({"meaning": {"same": bool(verdict.get("same")), "rule": verdict.get("rule"),
                          "back": verdict.get("back") or "", "why": verdict.get("why") or "",
                          "pair": _text_hash(_norm_key(src) + "||" + _norm_key(tgt)),
-                         "disputed": 0, "model": _resolve_model(JUDGE_DEFAULT_MODEL)["id"],
+                         "disputed": 0, "v": MEANING_VERSION,
+                         "model": _resolve_model(JUDGE_DEFAULT_MODEL)["id"],
                          "at": today}}
             if verdict and verdict.get("same") is not None else {})
     if existing:
@@ -3371,6 +3372,15 @@ MEANING_TRAPS = ("Watch for classic traps: a disease vs its causative agent, "
                  "an organ vs a finding, a substance vs its class, "
                  "a procedure vs its result, a patient vs an animal.")
 
+# Набор вопросов, на которые отвечает сверка. Растёт вместе с промптом.
+# Вердикт, записанный ПРЕЖНИМ набором, отвечает не на те вопросы: когда
+# к «то же ли это понятие» добавился вопрос «годится ли правилом», полторы
+# тысячи записей с готовым вердиктом остались с ним навсегда. Отпечаток пары
+# у них совпадал, устаревшими они не считались, и «Досверить новые» находило
+# ноль — а «Переспросить всё» упиралось в потолок и переспрашивало одни и те же
+# восемьсот, до хвоста не доходя никогда.
+MEANING_VERSION = 2
+
 AUTO_MEANING_MAX = 400      # потолок пар за одно применение
 AUTO_MEANING_CHUNK = 10     # пар в одном вызове судьи
 
@@ -3777,6 +3787,9 @@ def _meaning_stale(entry: dict) -> bool:
     m = entry.get("meaning") or {}
     if m.get("pair") != _meaning_pair(entry):
         return True
+    # Вердикт отвечает не на тот набор вопросов — значит его нет.
+    if int(m.get("v") or 1) != MEANING_VERSION:
+        return True
     return int(entry.get("disputed") or 0) > int(m.get("disputed") or 0)
 
 
@@ -3897,7 +3910,11 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
         except Exception as e:                                   # pragma: no cover
             print(f"[backend] аудит глоссария: вес по импакту не посчитан: {e}",
                   file=sys.stderr)
-    entries.sort(key=lambda g: -weight.get(_norm_key(g.get("src")), 0))
+    # Вторым ключом — сам термин: вес считается по расхождениям, а они меняются
+    # после каждого понижения. Без устойчивого второго ключа порядок плавал бы
+    # от захода к заходу, и потолок отрезал бы каждый раз ДРУГОЙ хвост.
+    entries.sort(key=lambda g: (-weight.get(_norm_key(g.get("src")), 0),
+                                _norm_key(g.get("src"))))
 
     # Спрашиваем только то, чего ещё не спрашивали. Вердикт живёт НА ЗАПИСИ,
     # поэтому список находок от запуска к запуску не пляшет: судья на границе
@@ -3917,7 +3934,7 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
         g["meaning"] = {"same": bool(v["same"]), "back": v.get("back") or "",
                         "rule": v.get("rule"), "why": v.get("why") or "",
                         "pair": _meaning_pair(g), "disputed": int(g.get("disputed") or 0),
-                        "model": mdl_id, "at": today}
+                        "v": MEANING_VERSION, "model": mdl_id, "at": today}
     # Список строится по ЗАПИСЯННЫМ вердиктам — и свежим, и лежавшим с прошлого
     # раза: иначе разбор показывал бы только новое и врал бы про объём работы.
     bad = []
@@ -3943,9 +3960,12 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
                     # окончателен, и разрешение на пачку его не отменяет.
                     "kept": bool(g.get("meaningKept")),
                     "lang": _scope_of(g)[0], "domain": _scope_of(g)[1]})
+    # Остаток — по СВЕЖЕСТИ вердикта, а не по арифметике «todo минус asked»:
+    # судья мог не ответить про часть пар, и такие остаются неспрошенными.
+    left = sum(1 for g in entries if _meaning_stale(g))
     result = {"ok": True, "dryRun": req.dry_run, "total": len(entries),
               "checked": asked, "cached": len(entries) - len(todo),
-              "pending": max(0, len(todo) - asked), "capped": capped, "batch": None,
+              "pending": left, "capped": capped, "batch": None,
               "scope": list(scope) if scope else None,
               "bad": sorted(bad, key=lambda b: (b["humanTouched"], -b["segments"])),
               "downgradable": sum(1 for b in bad if not b["humanTouched"]),

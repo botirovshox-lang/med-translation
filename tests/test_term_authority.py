@@ -360,7 +360,10 @@ check(main._hit_tier(g) == "verified", "но сама по себе запись
 check(g.get("disputedSuggest") == "induration", "и что предлагают взамен — записано")
 
 # Запись уже сверялась и была признана верной — жалоба возвращает её на сверку.
+# v обязателен: вердикт без версии отвечает не на тот набор вопросов и сам
+# по себе устарел — здесь проверяется именно счётчик жалоб, а не версия.
 g["meaning"] = {"same": True, "back": "то же", "pair": main._meaning_pair(g),
+                "rule": True, "why": "", "v": main.MEANING_VERSION,
                 "disputed": 0, "model": "x", "at": "2026-08-01"}
 check(main._meaning_stale(g), "новая жалоба делает прошлый вердикт устаревшим")
 g["meaning"]["disputed"] = 1

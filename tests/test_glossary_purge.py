@@ -331,6 +331,49 @@ check(main._hit_tier(by["Клинику"]) == "verified", "уровень вос
 check(by["Клинику"].get("meaningKept") is True,
       "и помечено, что человек решил оставить приказ")
 
+print("\n=== 18. Сверка сходится: старый вердикт считается устаревшим ===")
+# Из-за чего написано: когда к «то же ли понятие» добавился вопрос «годится ли
+# правилом», полторы тысячи записей с готовым вердиктом остались с прежним
+# набором. Отпечаток пары совпадал, устаревшими они не считались, и «Досверить
+# новые» находило ноль — а «Переспросить всё» упиралось в потолок и брало одни
+# и те же записи, до хвоста не доходя никогда.
+g_old = entry("бухтообразный", "scalloped", tier="verified")
+g_old["meaning"] = {"same": True, "back": "то же",
+                    "pair": main._text_hash(main._norm_key("бухтообразный")
+                                            + "||" + main._norm_key("scalloped")),
+                    "disputed": 0, "model": "x", "at": "2026-08-01"}   # без v и rule
+build([g_old])
+check(main._meaning_stale(main.STATE["glossary"][0]),
+      "вердикт прежнего набора вопросов считается отсутствующим")
+
+os.environ["OPENAI_API_KEY"] = "test-key"
+main._openai_meaning = lambda pairs, scope: {
+    (main._norm_key(a), main._norm_key(b)):
+        {"same": True, "back": "то же", "rule": True, "why": ""} for a, b in pairs}
+r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True))
+check(r["checked"] == 1, "и «Досверить новые» его подхватывает без force")
+check(main.STATE["glossary"][0]["meaning"]["v"] == main.MEANING_VERSION,
+      "новый вердикт клеймён версией набора")
+check(not main._meaning_stale(main.STATE["glossary"][0]), "и больше не устарел")
+r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True))
+check(r["checked"] == 0 and r["pending"] == 0, "второй заход не тратит вызовов")
+
+print("\n=== 19. Потолок добирается порциями, а не отрезает хвост ===")
+# Три записи, потолок в одну: два захода должны спросить РАЗНЫЕ, а не одну
+# и ту же по кругу.
+build([entry("а" * 3, "aaa", tier="verified"),
+       entry("б" * 3, "bbb", tier="verified"),
+       entry("в" * 3, "ccc", tier="verified")])
+seen = []
+main._openai_meaning = lambda pairs, scope: (seen.extend(a for a, _ in pairs), {
+    (main._norm_key(a), main._norm_key(b)):
+        {"same": True, "back": "то же", "rule": True, "why": ""} for a, b in pairs})[1]
+for _ in range(3):
+    r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True, limit=1))
+check(len(seen) == 3 and len(set(seen)) == 3,
+      "за три захода спрошены три РАЗНЫЕ записи: " + str(seen))
+check(r["pending"] == 0, "и остаток честно нулевой")
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

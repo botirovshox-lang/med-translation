@@ -1988,6 +1988,11 @@ def qa_segment(pid: int, sid: int):
 # исходника. В сам глоссарий автоматически не попадает НИЧЕГО: он инжектится
 # в промпт как правило, и автопополнение закрепляло бы собственные ошибки.
 TERM_QUEUE_MAX = 800
+# Кандидаты, выброшенные потолком, с момента старта процесса. Растёт только
+# под _TERM_QUEUE_LOCK (подрезка живёт внутри _queue_insert), поэтому свой лок
+# не нужен. Прогон снимает разницу до и после — см. _job_loop.
+_TERM_DROPPED = {"total": 0}
+TERM_DROP_LOG_EVERY = 100
 
 
 def _norm_key(text: str) -> str:
@@ -2070,9 +2075,17 @@ def _trim_term_queue():
     for c in droppable[:over]:
         q.remove(c)
     if over > 0:
-        # Молчаливых потолков не бывает: подрезали — сказали, сколько и чего.
-        print(f"[backend] очередь кандидатов подрезана: снято {min(over, len(droppable))} "
-              f"машинных кандидатов (потолок {TERM_QUEUE_MAX})", file=sys.stderr)
+        # Молчаливых потолков не бывает. Но подрезка зовётся на КАЖДУЮ вставку,
+        # и на полной очереди это один выброшенный кандидат за раз: прогон
+        # 22.08 оставил в журнале 890 одинаковых строк «снято 1», из которых
+        # не видно главного — что за прогон сбор терминологии потерял 890
+        # находок. Поэтому счётчик: в журнал пишем изредка и с накопленным
+        # итогом, а точное число за прогон уходит в его счётчики (terms_dropped).
+        _TERM_DROPPED["total"] += min(over, len(droppable))
+        n = _TERM_DROPPED["total"]
+        if n == 1 or n % TERM_DROP_LOG_EVERY == 0:
+            print(f"[backend] очередь кандидатов переполнена: выброшено {n} машинных "
+                  f"кандидатов с момента старта (потолок {TERM_QUEUE_MAX})", file=sys.stderr)
 
 
 _TERM_QUEUE_LOCK = threading.Lock()
@@ -3977,6 +3990,30 @@ def _repair_scores(seg: dict, project: Optional[dict] = None) -> dict:
     }
 
 
+def _repair_desync(seg: dict, want: str) -> bool:
+    """Текст сегмента разошёлся с решением, которое только что записано.
+
+    Такого быть не должно: и откат, и применение кладут текст сами, следующей
+    строкой. Но в данных прогона от 22.08 нашлись 34 сегмента, где запись
+    о ремонте описывает один текст, а в сегменте лежит другой — отвергнутый
+    вариант на месте отката и дореморный на месте применённой правки.
+    Воспроизвести на нынешнем коде не удалось, а молча жить с расхождением
+    нельзя: по этим записям считаются «откачено N» в отчёте прогона, и по ним
+    же ремонт решает, заходить ли на сегмент второй раз.
+
+    Поэтому условие проверяется на выходе. Не чинит — называет: в журнале
+    видно сегмент и оба текста, в счётчиках прогона видно, что это случилось.
+    Дальше уже есть с чем идти разбираться, а не выяснять через два дня
+    по остывшему state.json."""
+    if (seg.get("target") or "") == want:
+        return False
+    print("[backend] ремонт seg#%s: текст разошёлся с записью о решении — "
+          "в сегменте %r, ожидалось %r"
+          % (seg.get("id"), (seg.get("target") or "")[:120], (want or "")[:120]),
+          file=sys.stderr)
+    return True
+
+
 def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
                         bc_model: Optional[str] = None, tc_model: Optional[str] = None,
                         use_judge: bool = False, judge_model: Optional[str] = None) -> dict:
@@ -4062,18 +4099,30 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         # Откат вместе с проверками: они уже пересчитаны под отвергнутый текст,
         # возвращаем те, что относились к прежнему переводу
         seg["target"] = old_target
+        # Проверки возвращаем те, что относились к ПРЕЖНЕМУ тексту. Прежней
+        # не было — снимаем совсем, а не оставляем свежую: `seg[k] = seg.pop(k)`
+        # выковыривал ключ и клал обратно, то есть на восстановленном тексте
+        # оставалась проверка ОТВЕРГНУТОГО варианта. На экране это находка про
+        # слова, которых в сегменте нет; ремонт получал по ней повод чинить
+        # сегмент ещё раз, а Medical QA — обратный перевод выброшенного текста.
+        # Случай не редкий: расхождение с глоссарием (`had_gloss`) заказывает
+        # termcheck сегменту, который termcheck до этого ни разу не видел.
         if had_bc:
-            seg["backcheck"] = bc_before if bc_before else seg.pop("backcheck", None)
+            if bc_before:
+                seg["backcheck"] = bc_before
+            else:
+                seg.pop("backcheck", None)
         if had_tc:
-            seg["termcheck"] = tc_before if tc_before else seg.pop("termcheck", None)
-        for key in ("backcheck", "termcheck"):
-            if seg.get(key) is None:
-                seg.pop(key, None)
+            if tc_before:
+                seg["termcheck"] = tc_before
+            else:
+                seg.pop("termcheck", None)
         seg["repair"] = {"applied": False, "reason": "; ".join(why) or "не стало лучше",
                          "source_hash": old_hash, "model": mdl_id, "candidate": new_target,
                          "issues": [f["text"] for f in findings], "before": before, "after": after,
                          "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
-        return {"ok": True, "applied": False, "repair": seg["repair"]}
+        return {"ok": True, "applied": False, "repair": seg["repair"],
+                "desync": _repair_desync(seg, old_target)}
 
     seg["prevTarget"] = old_target
     seg["status"] = "review"          # заверяет человек, автоправка себя не подтверждает
@@ -4087,7 +4136,8 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
                      "model": mdl_id, "issues": [f["text"] for f in findings],
                      "before": before, "after": after,
                      "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
-    return {"ok": True, "applied": True, "repair": seg["repair"], "target": new_target}
+    return {"ok": True, "applied": True, "repair": seg["repair"], "target": new_target,
+            "desync": _repair_desync(seg, new_target)}
 
 
 class RepairRequest(BaseModel):
@@ -4149,7 +4199,7 @@ def repair_batch(pid: int, req: RepairBatchRequest):
     remaining_after = max(0, len(candidates) - limit)
     targets = candidates[:limit]
 
-    applied, skipped, errors = [], [], []
+    applied, skipped, errors, desync = [], [], [], []
 
     def _repair_one(seg):
         if _job_should_stop():
@@ -4170,6 +4220,8 @@ def repair_batch(pid: int, req: RepairBatchRequest):
             errors.append({"id": seg["id"], "error": out["error"]})
             continue
         r = out["res"]
+        if r.get("desync"):
+            desync.append(seg["id"])
         if not r.get("ok"):
             errors.append({"id": seg["id"], "error": r.get("error", "unknown")})
         elif r.get("applied"):
@@ -4182,6 +4234,9 @@ def repair_batch(pid: int, req: RepairBatchRequest):
             # Молчаливых потолков не бывает: подтверждённые, которые есть что чинить,
             # называем поимённо, а не выбрасываем как будто их не было.
             "skipped_confirmed": skipped_confirmed,
+            # Сегменты, где текст разошёлся с записью о решении. Ноль — норма,
+            # не ноль — повод смотреть журнал, а не гадать по остывшим данным.
+            "desync": desync,
             "model": _resolve_model(req.model or REPAIR_DEFAULT_MODEL)["id"]}
 
 
@@ -5296,6 +5351,7 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
         return {"done": len(r.get("applied", [])) + len(r.get("skipped", [])),
                 "applied": len(r.get("applied", [])), "why": _first_error(r),
                 "reverted": len(r.get("skipped", [])), "errors": len(r.get("errors", [])),
+                "desync": len(r.get("desync", [])),
                 "skipped_confirmed": len(r.get("skipped_confirmed", []))}
     if kind == "translate":
         r = batch_translate(pid, BatchRequest(
@@ -5330,6 +5386,7 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
         return {"done": len(r.get("applied", [])) + len(r.get("skipped", [])),
                 "applied": len(r.get("applied", [])), "reverted": len(r.get("skipped", [])),
                 "errors": len(r.get("errors", [])), "why": _first_error(r),
+                "desync": len(r.get("desync", [])),
                 "skipped_confirmed": len(r.get("skipped_confirmed", []))}
     if kind == "medical_qa":
         r = batch_medical_qa(pid, MedicalQABatchRequest(
@@ -5434,6 +5491,7 @@ def _job_run(job: dict):
 def _job_loop():
     while True:
         job = _JOB_QUEUE.get()
+        dropped_at_start = _TERM_DROPPED["total"]
         try:
             if job["stop"]:
                 job["status"] = "stopped"
@@ -5451,6 +5509,13 @@ def _job_loop():
             print(f"[backend] job#{job.get('id')} crashed: {e}", file=sys.stderr)
         finally:
             _ACTIVE_JOB.pop("job", None)
+            # Сколько находок сбор терминологии потерял на потолке очереди.
+            # Ноль — норма; не ноль означает, что часть платной работы прогона
+            # ушла в никуда, и человек об этом узнает из отчёта, а не из
+            # журнала, куда никто не смотрит.
+            lost = _TERM_DROPPED["total"] - dropped_at_start
+            if lost:
+                job["counters"]["terms_dropped"] = lost
             # До save_state: запись о расходе должна уехать на диск вместе
             # с остальным результатом прогона, а не ждать следующего сохранения.
             _usage_end(job)

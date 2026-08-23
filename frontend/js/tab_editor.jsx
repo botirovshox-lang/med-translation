@@ -968,6 +968,10 @@ function TabEditor({ store, toast }) {
         + (sp.est != null ? " при смете " + fmtCost(sp.est) + ratioMsg : "")
         + (sp.unpriced ? " · вызовов по неизвестной цене: " + sp.unpriced : "");
     const errMsg = c.errors ? " · ошибок: " + c.errors : "";
+    // Работа, ушедшая в никуда. Ноль — норма и в отчёте не появляется;
+    // не ноль человек должен увидеть там же, где итог, а не в журнале сервера.
+    const lossMsg = (c.desync ? " · у " + c.desync + " сегментов текст разошёлся с записью о ремонте" : "")
+      + (c.terms_dropped ? " · кандидатов в глоссарий выброшено (очередь полна): " + c.terms_dropped : "");
     const dupMsg = c.duplicates ? " · повторов зачтено без вызова: " + c.duplicates : "";
     if (j.status === "error") {
       // У «Одобрить и применить» глоссарий меняется ДО сегментов. Оборвался
@@ -990,7 +994,7 @@ function TabEditor({ store, toast }) {
         + " · сегментов исправлено: " + (c.applied || 0)
         + (c.reverted ? " · откачено: " + c.reverted : "")
         + (c.skipped_confirmed ? " · подтверждённых не тронуто: " + c.skipped_confirmed : "")
-        + errMsg + costMsg + " · откатить пачку можно в «Глоссарии»");
+        + errMsg + lossMsg + costMsg + " · откатить пачку можно в «Глоссарии»");
       return;
     }
     if (j.kind === "full") {
@@ -1007,7 +1011,7 @@ function TabEditor({ store, toast }) {
       const skipConfMsg = c.skipped_confirmed ? " · подтверждённых не тронуто: " + c.skipped_confirmed : "";
       toast.success("Перевод и проверка завершены",
         j.done + " сегментов пройдено · " + part + dupMsg + skipConfMsg + blockedMsg + errMsg
-        + (c.flagged ? " · замечания в " + c.flagged : "") + costMsg);
+        + (c.flagged ? " · замечания в " + c.flagged : "") + lossMsg + costMsg);
       return;
     }
     if (j.kind === "translate") {
@@ -1025,7 +1029,7 @@ function TabEditor({ store, toast }) {
     } else if (j.kind === "repair") {
       const revMsg = c.reverted ? " · откачено (не стало лучше): " + c.reverted : "";
       if (c.applied) toast.success("Ремонт завершён",
-        "Исправлено " + c.applied + " сегментов" + revMsg + errMsg + costMsg + " · статус «Требует проверки», подтвердите вручную");
+        "Исправлено " + c.applied + " сегментов" + revMsg + errMsg + lossMsg + costMsg + " · статус «Требует проверки», подтвердите вручную");
       else toast.warning("Ничего не исправлено", "Ни один вариант не улучшил оценку — все откачены." + errMsg + costMsg);
     } else if (j.kind === "backcheck") {
       toast.success("Back-check завершён", j.done + " сегментов проверено" + dupMsg + errMsg + costMsg + " · разбивка в Анализе");

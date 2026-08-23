@@ -1582,7 +1582,6 @@ def fetch_segments(pid: int, req: SegmentsFetchRequest):
                                      if s.get("id") in wanted]}
 
 
-@app.get("/api/projects/{pid}/glossary-impact")
 def _verified_hits(source: str, project: Optional[dict]) -> list:
     """Записи глоссария уровня ПРИКАЗ, применимые к этому исходнику.
 
@@ -1599,6 +1598,7 @@ def _verified_hits(source: str, project: Optional[dict]) -> list:
             if _hit_tier(h) == GLOSSARY_TIER_HARD and (h.get("tgt") or "").strip()]
 
 
+@app.get("/api/projects/{pid}/glossary-impact")
 def glossary_impact(pid: int, refresh: bool = False):
     """Сегменты проекта, чей перевод не соответствует ПРОВЕРЕННЫМ записям глоссария.
 

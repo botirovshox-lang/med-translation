@@ -1617,10 +1617,13 @@ function TabEditor({ store, toast }) {
             confirmedCount: impact ? impact.confirmed.length : 0,
             orders: termOrders,
             onOrders: () => setOrdersFor(v => (v === project.id ? null : project.id)),
-            // Состав ремонта — тот же список, что показывает соседняя карточка:
-            // считает его один и тот же glossary_impact.
+            // Состав ремонта — тот же список, что показывает соседняя карточка,
+            // МИНУС застрявшие: сервер их не возьмёт, и обещать по ним работу
+            // значит показать под кнопкой число, которого не будет.
             pendingSegs: impact
-              ? (impactConfirmed ? impact.segments.length : impact.pending.length) : 0 }),
+              ? (impactConfirmed ? impact.segments : impact.pending)
+                  .filter(i => (impact.futile || []).indexOf(i) === -1).length : 0,
+            futileSegs: impact ? (impact.futile || []).length : 0 }),
           // Карточка живёт и при нуле расхождений. Пряча её, мы уносили вместе
           // с ней «Пересчитать» — единственный способ убедиться, что ноль
           // настоящий, а не остался с прошлого расчёта. Ровно та же беда, от
@@ -2079,7 +2082,7 @@ function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize
    сервер сразу после одобрения. */
 function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
                           includeConfirmed, onIncludeConfirmed, confirmedCount,
-                          orders, onOrders, pendingSegs }) {
+                          orders, onOrders, pendingSegs, futileSegs }) {
   const c = preview && preview.counts;
   // Запрет области сервер присылает отдельным полем: он снимается ДО учёта
   // разрешения, поэтому тумблер не исчезает от того, что его включили.
@@ -2169,7 +2172,15 @@ function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
     !ready && pendingSegs > 0 && !running && React.createElement("div",
       { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
       "Новых однозначных терминов нет, но " + pendingSegs + " сегм. расходятся "
-      + "с уже утверждёнными — их починит ремонт."));
+      + "с уже утверждёнными — их починит ремонт."),
+    // Молчаливого отсева не бывает: если часть работы не пойдёт, сказать
+    // почему — иначе человек жмёт кнопку по кругу и не понимает, отчего
+    // список не пустеет.
+    futileSegs > 0 && !running && React.createElement("div",
+      { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
+      "Ещё " + futileSegs + " сегм. расходятся, но ремонт их не возьмёт: тот же "
+      + "текст с теми же претензиями он уже проходил, и заход вернёт то же "
+      + "самое. Их правит человек — либо смените модель ремонта."));
 }
 
 // Блок «что прогонять»: группы по состоянию прошлых прогонов с количеством.
@@ -2206,6 +2217,13 @@ function GlossaryImpactCard({ impact, busy, onRefresh, onRun, onDrill, includeCo
       onClick: () => onDrill(impact.confirmed) },
       React.createElement("span", { className: "dim" }, "из них подтверждено"),
       React.createElement("b", { className: "dim" }, impact.confirmed.length)),
+    // Застрявшие. Их видно ОТДЕЛЬНО, а не спрятано: расходиться с глоссарием
+    // они не перестали, но ремонт по ним даст тот же результат за те же
+    // деньги — работа тут человеческая, и об этом надо сказать прямо.
+    (impact.futile || []).length > 0 && React.createElement("div", { className: "row between", style: { fontSize: 12.5, cursor: "pointer" },
+      onClick: () => onDrill(impact.futile) },
+      React.createElement("span", { className: "dim" }, "ремонт уже не берёт"),
+      React.createElement("b", { className: "dim" }, impact.futile.length)),
 
     impact.terms.length === 0 && React.createElement("div",
       { className: "dim", style: { fontSize: 12.5, lineHeight: 1.55 } },

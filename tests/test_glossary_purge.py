@@ -374,6 +374,52 @@ check(len(seen) == 3 and len(set(seen)) == 3,
       "за три захода спрошены три РАЗНЫЕ записи: " + str(seen))
 check(r["pending"] == 0, "и остаток честно нулевой")
 
+print("\n=== 20. Ремонт не берёт сегмент, где заход заведомо пустой ===")
+# Из-за чего написано: apply_terms ходит со retry=True (глоссарий мог
+# измениться) и потому забирал сегменты, где ремонт уже провалился на ТОМ ЖЕ
+# тексте с ТЕМИ ЖЕ претензиями. На боевых данных это были все 57 оставшихся
+# расхождений: нажатие «Применить» стоило денег и не меняло ничего, а список
+# оставался прежним — работа выглядела нескончаемой.
+CLAIM3 = "утверждённый перевод термина «мокрота» — «sputum», в переводе его нет"
+txt = "Phlegm with blood."
+same = {"id": 1, "source": "Мокрота с кровью.", "target": txt, "status": "translated",
+        "repair": {"applied": False, "reason": "Модель не нашла, что менять",
+                   "source_hash": main._text_hash(txt), "issues": [CLAIM3]}}
+# Тот же текст, но претензия с прошлого раза ДРУГАЯ — заход осмыслен.
+other = {"id": 2, "source": "Мокрота обильная.", "target": "Phlegm is abundant.",
+         "status": "translated",
+         "repair": {"applied": False, "reason": "не стало лучше",
+                    "source_hash": main._text_hash("Phlegm is abundant."),
+                    "issues": ["расхождение чисел"]}}
+# Ремонта не было вовсе.
+fresh = {"id": 3, "source": "Мокрота слизистая.", "target": "Phlegm is mucous.",
+         "status": "translated"}
+build([entry("мокрота", "sputum", tier="verified", origin="confirmed:1")],
+      [same, other, fresh])
+proj = main.STATE["projects"][0]
+by = {sg["id"]: sg for sg in proj["segments"]}
+check(main._repair_futile(by[1], proj),
+      "тот же текст и те же претензии — заход будет пустым")
+check(not main._repair_futile(by[2], proj),
+      "претензии изменились — заход осмыслен")
+check(not main._repair_futile(by[3], proj),
+      "ремонта не было — брать можно")
+
+imp = main.glossary_impact(1, refresh=True)
+check(sorted(imp["segments"]) == [1, 2, 3], "расходятся по-прежнему все три")
+check(imp["futile"] == [1], "но застрявший назван отдельно, а не спрятан")
+
+print("\n=== 21. Состав «Применить» застрявших не берёт ===")
+job = {"kind": "apply_terms", "project": 1, "stop": False, "ids": [], "total": 0,
+       "counters": {}, "params": {"term_limit": 10}, "status": "running",
+       "recent": [], "done": 0}
+main.auto_approve_terms = lambda *a, **k: {"counts": {"verified": 0, "auto": 0,
+                                                      "closed": 0}, "batch": None}
+main._job_chunk = lambda kind, pid, chunk, params: {"done": len(chunk)}
+main._job_run(job)
+check(sorted(job["ids"]) == [2, 3], "в работу пошли только те, где заход осмыслен")
+check(job["counters"]["futile"] == 1, "а отсеянный посчитан и назван")
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

@@ -1635,6 +1635,12 @@ def glossary_impact(pid: int, refresh: bool = False):
     result = {"ok": True, "terms": terms,
               "segments": sorted(seg_ids), "confirmed": sorted(confirmed_ids),
               "pending": sorted(seg_ids - confirmed_ids)}
+    # Кого ремонт уже не возьмёт: тот же текст с теми же претензиями он
+    # проходил, и второй заход вернёт то же самое. Считаем ЗДЕСЬ, чтобы
+    # карточка и состав прогона брали одно число из одного расчёта.
+    by_id = {sg["id"]: sg for sg in project["segments"]}
+    result["futile"] = sorted(i for i in result["segments"]
+                              if i in by_id and _repair_futile(by_id[i], project))
     _IMPACT_CACHE[pid] = (fp, result)
     return result
 
@@ -4618,6 +4624,28 @@ def _repair_tried(seg: dict) -> bool:
     return r.get("source_hash") == _text_hash(seg.get("target") or "")
 
 
+def _repair_futile(seg: dict, project: Optional[dict] = None) -> bool:
+    """Второй заход по ЭТОМУ тексту с ЭТИМИ претензиями даст то же самое.
+
+    `_repair_tried` смотрит только на текст, и этого мало: глоссарий меняется,
+    и по НОВОЙ претензии зайти на тот же текст осмысленно. А вот когда и текст
+    тот же, и список претензий тот же, повторять нечего — модель получит тот
+    же промпт и вернёт тот же ответ, а оценка отвергнет его так же.
+
+    Из-за чего написано: `apply_terms` ходит со `retry=True` (глоссарий с
+    прошлого раза мог измениться) и потому забирал сегменты, где ремонт уже
+    провалился на том же тексте. На боевых данных это все 57 оставшихся
+    расхождений: каждое нажатие «Применить» стоило денег и не меняло ничего,
+    а список оставался тем же — работа выглядела нескончаемой."""
+    rp = seg.get("repair") or {}
+    if not _repair_tried(seg):
+        return False
+    was = set(rp.get("issues") or ())
+    if not was:
+        return False
+    return was == {f["text"] for f in _repair_findings(seg, project)}
+
+
 def _repairable(seg: dict, allow_tried: bool = False, project: Optional[dict] = None) -> bool:
     """allow_tried — человек сам отметил галочкой уже чинившиеся сегменты.
     По умолчанию второй заход по тому же тексту не делаем: те же претензии
@@ -6505,7 +6533,17 @@ def _job_run(job: dict):
         # «Соответствие глоссарию», — расчёт один, чтобы цифры не расходились.
         imp = glossary_impact(pid, refresh=True)
         allow_conf = bool(job["params"].get("include_confirmed"))
-        job["ids"] = list(imp["segments"] if allow_conf else imp["pending"])
+        want = list(imp["segments"] if allow_conf else imp["pending"])
+        # Сегменты, где тот же текст с теми же претензиями уже проходил ремонт,
+        # не берём: заход вернёт тот же результат за те же деньги. Их видно
+        # в отчёте о соответствии как «ремонт уже не берёт» — прятать нельзя,
+        # расходиться с глоссарием они не перестали.
+        project_obj = get_project(pid)
+        by_id = {sg["id"]: sg for sg in project_obj["segments"]}
+        futile = [i for i in want
+                  if i in by_id and _repair_futile(by_id[i], project_obj)]
+        job["ids"] = [i for i in want if i not in set(futile)]
+        job["counters"]["futile"] = len(futile)
         job["total"] = len(job["ids"])
         save_state(STATE)
     ids = job["ids"]

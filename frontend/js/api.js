@@ -120,7 +120,9 @@
     /* Массовым может быть только отклонение: одобрение пачкой — auto-approve. */
     bulkReject:    (ids)                    => call("POST",   "/term-queue/bulk", { ids, action: "reject" }),
     glossaryUsage: (src, limit, lang, domain) => call("GET",  `/glossary/usage?src=${encodeURIComponent(src)}&limit=${limit || 6}&lang=${encodeURIComponent(lang||"")}&domain=${encodeURIComponent(domain||"")}`),
-    glossaryImpact:(pid)                    => call("GET",    `/projects/${pid}/glossary-impact`),
+    /* refresh — «Пересчитать» руками: отчёт кэширован по отпечатку проекта,
+       и без этого нажатие возвращало бы посчитанное раньше, ничего не сделав. */
+    glossaryImpact:(pid, refresh)           => call("GET",    `/projects/${pid}/glossary-impact` + (refresh ? "?refresh=true" : "")),
     /* Итог по проекту одним экраном: чисто / исправлено машиной / нужен человек.
        Вызовов модели внутри нет, дёргать можно свободно. */
     analysis:      (pid)                    => call("GET",    `/projects/${pid}/analysis`),

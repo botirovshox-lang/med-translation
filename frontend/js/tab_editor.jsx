@@ -453,12 +453,28 @@ function TabEditor({ store, toast }) {
   // Расхождения с одобренными терминами считает сервер тем же матчером, что и
   // инъекция в промпт. Пересчитываем при смене проекта и после каждого прогона:
   // одобрили термин и перевели заново — счётчик должен упасть сам.
-  const loadImpact = async () => {
+  /* byHand — нажали «Пересчитать» руками. Тогда отвечаем словами: расчёт
+     идёт доли секунды, и «нажал, ничего не произошло» неотличимо от сломанной
+     кнопки. Сравниваем с прежним числом — «столько же» это тоже ответ. */
+  const loadImpact = async (byHand) => {
     if (!window.API || !window.API.glossaryImpact || !project) return;
     setImpactBusy(true);
-    const res = await window.API.safeCall(() => window.API.glossaryImpact(project.id));
+    const before = impact ? impact.segments.length : null;
+    const res = await window.API.safeCall(() => window.API.glossaryImpact(project.id, !!byHand));
     setImpactBusy(false);
-    if (res && res.ok) setImpact(res);
+    if (!res || !res.ok) {
+      if (byHand) toast.error("Пересчёт не выполнен", "Сервер не ответил.");
+      return;
+    }
+    setImpact(res);
+    if (!byHand) return;
+    const now = res.segments.length;
+    if (before === null || before === now)
+      toast.info("Пересчитано: " + now, "Столько сегментов расходится с глоссарием.");
+    else
+      toast.success("Пересчитано: было " + before + ", стало " + now,
+        now < before ? "Расхождений стало меньше на " + (before - now)
+                     : "Расхождений стало больше на " + (now - before));
   };
   // Разбор автоодобрения в режиме «показать»: сервер считает вердикты и
   // возвращает, что попадёт и чем подтверждено. Ничего не меняет и не стоит
@@ -1607,7 +1623,7 @@ function TabEditor({ store, toast }) {
           // которой защищены исчерпывающие корзины «Анализа»: пропавшее
           // с экрана выглядит благополучнее, чем есть.
           impact && React.createElement(GlossaryImpactCard, {
-            impact, busy: impactBusy, onRefresh: loadImpact,
+            impact, busy: impactBusy, onRefresh: () => loadImpact(true),
             includeConfirmed: impactConfirmed, onIncludeConfirmed: () => setImpactConfirmed(v => !v),
             onRun: runImpactRetranslate,
             onDrill: (ids) => { store.setSegmentFilter(ids); setPage(1); },

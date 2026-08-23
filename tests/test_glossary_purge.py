@@ -420,6 +420,69 @@ main._job_run(job)
 check(sorted(job["ids"]) == [2, 3], "в работу пошли только те, где заход осмыслен")
 check(job["counters"]["futile"] == 1, "а отсеянный посчитан и назван")
 
+print("\n=== 22. Переспрос не переворачивает вердикт с одной попытки ===")
+# Из-за чего написано: судья на границе «годится / не годится» отвечает
+# неустойчиво. «Переспросить всё» превращалось в переброс монеты — каждый
+# заход находил новые записи на понижение, хотя и пара, и вопрос те же.
+# На боевых данных это дало четыре пачки понижений подряд: 12, 13, 6, 4.
+os.environ["OPENAI_API_KEY"] = "test-key"
+GOOD = {"same": True, "back": "то же", "rule": True, "why": ""}
+BAD = {"same": True, "back": "то же", "rule": False, "why": "падежная форма"}
+
+
+def judge(seq):
+    """Отвечает по очереди из списка: первый заход, второй (третий голос)…"""
+    box = list(seq)
+
+    def f(pairs, scope):
+        v = box.pop(0) if box else GOOD
+        return {(main._norm_key(a), main._norm_key(b)): dict(v) for a, b in pairs}
+    return f
+
+
+def one(verdict_seq):
+    build([entry("частоте", "frequency", tier="verified", origin="confirmed:1")])
+    g = main.STATE["glossary"][0]
+    main._openai_meaning = judge([GOOD])          # первый заход: годится
+    main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True))
+    main._openai_meaning = judge(verdict_seq)
+    r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True, force=True))
+    return g, r
+
+
+# Переспрос разошёлся, третий голос ПОДТВЕРДИЛ новый ответ — принимаем.
+g, r = one([BAD, BAD])
+check(r["reasked"] == 1, "спорная пара переспрошена третий раз")
+check(main._verdict_bad(g["meaning"]) is True, "два голоса против одного — вердикт сменился")
+check(len(r["bad"]) == 1, "и она в находках")
+
+# Переспрос разошёлся, третий голос за ПРЕЖНИЙ ответ — вердикт не трогаем.
+g, r = one([BAD, GOOD])
+check(r["reasked"] == 1, "пара переспрошена")
+check(main._verdict_bad(g["meaning"]) is False, "большинство за прежним — вердикт устоял")
+check(not r["bad"], "и в находки она не попала")
+check(g["meaning"]["flips"] == 1, "но спор записан на вердикте")
+
+# Третий голос смолчал — прежний ответ сильнее одиночного расхождения.
+g, r = one([BAD, {"same": None}])
+check(main._verdict_bad(g["meaning"]) is False, "молчание третьего прежний ответ не отменяет")
+
+print("\n=== 23. Повторный переспрос не тянет ту же пару по кругу ===")
+build([entry("частоте", "frequency", tier="verified", origin="confirmed:1")])
+g = main.STATE["glossary"][0]
+main._openai_meaning = judge([GOOD])
+main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True))
+# Судья упорно отвечает иначе — но каждый заход спор решается заново честно,
+# а вердикт остаётся свежим, то есть «Досверить новые» его не подхватывает.
+for _ in range(3):
+    main._openai_meaning = judge([BAD, GOOD])
+    main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True, force=True))
+check(not main._meaning_stale(g), "вердикт остаётся свежим после каждого спора")
+main._openai_meaning = judge([GOOD])
+r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True))
+check(r["checked"] == 0 and r["reasked"] == 0,
+      "обычный заход её не трогает и не тратит вызовов")
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

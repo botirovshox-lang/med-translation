@@ -201,6 +201,7 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
         (r.bad.length ? "Смысл расходится у " + r.bad.length
           + " · понизить можно " + r.downgradable
           : "Расхождений не найдено.")
+        + (r.reasked ? " · спорных пар решено третьим голосом: " + r.reasked : "")
         + (r.pending ? " · осталось неспрошенных: " + r.pending
                        + " — судья ответил не про всё, нажмите ещё раз" : ""));
     } else {
@@ -276,7 +277,19 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
       // Вердикт лежит на записи, поэтому обычная кнопка спрашивает только про
       // новое. Переспросить всё — отдельное действие: это полная оплата ещё
       // раз, и на пограничных парах судья ответит иначе.
-      res && React.createElement(Btn, { variant: "ghost", size: "sm", disabled: !!busy, onClick: () => run(true, true) },
+      res && React.createElement(Btn, { variant: "ghost", size: "sm", disabled: !!busy,
+        // Переспрос стоит полной цены и почти всегда лишний: вердикт лежит
+        // на записи. Спрашиваем прямо, иначе кнопка выглядит безобидной
+        // и её жмут по кругу.
+        onClick: () => {
+          if (!window.confirm(
+            "Переспросить все " + res.total + " записей заново?\n\n"
+            + "Это полная оплата ещё раз. Обычно не нужно: вердикт хранится "
+            + "на записи, и «Досверить новые» спрашивает только то, чего ещё "
+            + "не спрашивали.\n\nНужно только если вы правили сами записи "
+            + "или хотите проверить их другой моделью.")) return;
+          run(true, true);
+        } },
         busy === "recheck" ? "Переспрашиваем…" : "Переспросить всё (" + res.total + ")"),
       res && (res.downgradable + (alsoMine ? res.downgradableHuman || 0 : 0)) > 0
         && React.createElement(Btn, {

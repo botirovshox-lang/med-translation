@@ -3783,6 +3783,15 @@ def _meaning_pair(entry: dict) -> str:
     return _text_hash(_norm_key(entry.get("src")) + "||" + _norm_key(entry.get("tgt")))
 
 
+def _verdict_bad(v: Optional[dict]) -> bool:
+    """Вердикт забраковал пару: понятие другое ЛИБО правилом не годится.
+    Одно определение на всех — разойдись оно между записью вердикта и разбором
+    находок, аудит показывал бы одно, а понижал другое."""
+    if not v:
+        return False
+    return v.get("same") is False or v.get("rule") is False
+
+
 def _meaning_stale(entry: dict) -> bool:
     """Записи нужен вопрос: её ещё не спрашивали, пара изменилась либо после
     прошлой сверки на неё пожаловалась проверка терминов.
@@ -3930,6 +3939,21 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
     verdicts, asked, capped = _meaning_check(todo, cap=max(1, min(req.limit, 2000)))
     today = datetime.now().strftime("%Y-%m-%d")
     mdl_id = _resolve_model(JUDGE_DEFAULT_MODEL)["id"]
+    def _write(g, v, flipped=False):
+        g["meaning"] = {"same": bool(v["same"]), "back": v.get("back") or "",
+                        "rule": v.get("rule"), "why": v.get("why") or "",
+                        "pair": _meaning_pair(g), "disputed": int(g.get("disputed") or 0),
+                        "v": MEANING_VERSION, "model": mdl_id, "at": today,
+                        "flips": int((g.get("meaning") or {}).get("flips") or 0)
+                                 + (1 if flipped else 0)}
+
+    # Переспрос НЕ должен переворачивать готовый вердикт с одной попытки.
+    # Судья на границе «годится / не годится» отвечает неустойчиво, и
+    # «Переспросить всё» превращалось в переброс монеты: каждый заход находил
+    # новые записи на понижение, хотя и пара, и вопрос те же. Отсюда ощущение,
+    # что работа нескончаема. Разошёлся с прежним ответом — спрашиваем ТРЕТИЙ
+    # раз и берём большинство; платит за это только сама спорная пара.
+    flips = []
     for g in todo:
         v = verdicts.get((_scope_of(g), _norm_key(g.get("src")), _norm_key(g.get("tgt"))))
         # «Не знаю» (судья не ответил, вызов упал) не записываем: иначе молчание
@@ -3937,10 +3961,28 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
         # у attested() и у отметки Medical QA.
         if not v or v.get("same") is None:
             continue
-        g["meaning"] = {"same": bool(v["same"]), "back": v.get("back") or "",
-                        "rule": v.get("rule"), "why": v.get("why") or "",
-                        "pair": _meaning_pair(g), "disputed": int(g.get("disputed") or 0),
-                        "v": MEANING_VERSION, "model": mdl_id, "at": today}
+        prev = g.get("meaning") or {}
+        # Сравнимо только с ответом на ТОТ ЖЕ вопрос о ТОЙ ЖЕ паре.
+        comparable = (prev.get("pair") == _meaning_pair(g)
+                      and int(prev.get("v") or 0) == MEANING_VERSION
+                      and prev.get("same") is not None)
+        if comparable and _verdict_bad(prev) != _verdict_bad(v):
+            flips.append((g, prev, v))
+            continue
+        _write(g, v)
+
+    reasked = 0
+    if flips:
+        tie, _n, _c = _meaning_check([g for g, _p, _v in flips], cap=len(flips))
+        reasked = len(flips)
+        for g, prev, v in flips:
+            t = tie.get((_scope_of(g), _norm_key(g.get("src")), _norm_key(g.get("tgt"))))
+            if t and t.get("same") is not None and _verdict_bad(t) == _verdict_bad(v):
+                _write(g, v, flipped=True)      # третий согласен с новым
+            else:
+                # Большинство за прежним ответом (или третий смолчал). Клеймим
+                # его свежим, иначе следующий заход снова потянет ту же пару.
+                _write(g, prev, flipped=True)
     # Список строится по ЗАПИСЯННЫМ вердиктам — и свежим, и лежавшим с прошлого
     # раза: иначе разбор показывал бы только новое и врал бы про объём работы.
     bad = []
@@ -3952,8 +3994,7 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
         # означает другое либо пара не годится правилом на весь документ
         # (падежная форма, обычное слово, перевод по контексту).
         wrong = m.get("same") is False
-        not_rule = m.get("rule") is False
-        if not (wrong or not_rule):
+        if not _verdict_bad(m):
             continue
         bad.append({"src": g["src"], "tgt": g["tgt"],
                     "kind": "meaning" if wrong else "rule",
@@ -3972,6 +4013,9 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
     result = {"ok": True, "dryRun": req.dry_run, "total": len(entries),
               "checked": asked, "cached": len(entries) - len(todo),
               "pending": left, "capped": capped, "batch": None,
+              # Сколько пар разошлись с прежним ответом и решались третьим
+              # голосом. Ноль здесь означает «переспрашивать больше нечего».
+              "reasked": reasked,
               "scope": list(scope) if scope else None,
               "bad": sorted(bad, key=lambda b: (b["humanTouched"], -b["segments"])),
               "downgradable": sum(1 for b in bad if not b["humanTouched"]),

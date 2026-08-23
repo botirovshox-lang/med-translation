@@ -27,6 +27,12 @@ function WorkSummary({ summary, store, toast }) {
   // Считаем по РАЗНЫМ сегментам: один и тот же подтверждённый сегмент может
   // и спорить с глоссарием, и нести находку проверок — сумма длин списков
   // посчитала бы его дважды и завысила бы работу человека.
+  // Один раз: ниже список режется по DISPUTE_CAP и считается остаток —
+  // повторный доступ с дефолтом в четырёх местах легко рассинхронизировать.
+  const disputes = s.human.termcheckDisputes || [];
+  const disputeSegs = s.human.termcheckDisputesSegments || [];
+  const DISPUTE_CAP = 6;
+
   const humanSegs = new Set([].concat(s.human.reverted || [],
                                       s.human.glossaryConfirmed || [],
                                       s.human.confirmedFindings || []));
@@ -88,6 +94,23 @@ function WorkSummary({ summary, store, toast }) {
         n: (s.human.confirmedFindings || []).length, ids: s.human.confirmedFindings,
         color: "var(--c-warning)",
         hint: "починит «Ремонт» с галочкой «чинить подтверждённые»" }),
+      // Спор проверки с утверждённой записью. Своя строка, потому что машина
+      // здесь бессильна по построению: ремонт по такой находке всегда
+      // откатится (нарушённых терминов станет больше), а termcheck переспорить
+      // приказ не может. Считаем по СЕГМЕНТАМ — строка открывает редактор,
+      // а список терминов показан ниже.
+      React.createElement(Row, { label: "Проверка спорит с утверждённым термином",
+        n: disputeSegs.length, ids: disputeSegs, color: "var(--c-warning)",
+        hint: "ремонт это не починит — решать вам: неверна запись или проверка" }),
+      disputes.length > 0 && React.createElement(
+        "div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.7, paddingTop: 8 } },
+        disputes.slice(0, DISPUTE_CAP).map((d, i) => React.createElement(
+          "div", { key: i },
+          d.src + " → ", React.createElement("b", { style: { color: "var(--c-primary)" } }, d.tgt),
+          " · проверка предлагает: " + (d.suggests.join(", ") || "без замены")
+            + " · сегментов: " + d.segments.length)),
+        disputes.length > DISPUTE_CAP && React.createElement(
+          "div", null, "и ещё " + (disputes.length - DISPUTE_CAP) + " записей")),
       s.human.terms.length > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.6, paddingTop: 10, borderTop: "1px solid var(--border)" } },
         "Почему термины остались человеку: ",
         s.human.terms.slice(0, 4).map(t => t.count + "× " + t.reason).join(" · "))));

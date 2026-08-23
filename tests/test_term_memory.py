@@ -144,7 +144,91 @@ check(s1["prevTarget"] == "back uveitis", "прежний текст сохра�
 check(s1["status"] == "review", "статус «требует проверки», а не «подтверждено»")
 check("confirmedBy" not in s1, "отметка «подтвердил человек» снята с чужого текста")
 
-print("\n=== 6. Старое состояние: одобренным конфликтам возвращают их пару ===")
+print("\n=== 6. Решённый термин не возвращается ДРУГИМ видом карточки ===")
+# Из-за чего это написано: дедупликация сверяет пару «термин + перевод» И вид
+# карточки. Следующий прогон предлагает СВОЙ перевод того же термина, а находка
+# termcheck приходит другим видом — пара новая, и утверждённый человеком термин
+# всплывал в очереди как нерешённый, каждым прогоном заново.
+proj = build(segments=[seg(1, "инфильтрат", "infiltrate")])
+born = main._harvest_terms(proj["segments"][0], proj)
+main.approve_term_candidate(born[0]["id"], main.TermDecision(tgt="infiltrate"))
+check(main._hit_tier(main.STATE["glossary"][0]) == "verified", "решение человека — приказ")
+
+# а) другой сегмент, модель перевела иначе: и короткая пара, и conflict.
+proj["segments"].append(seg(2, "Инфильтрат", "induration"))
+main._harvest_terms(proj["segments"][1], proj)
+check(not pending(), "свой вариант нового прогона не заводит карточку заново")
+
+# б) находка termcheck и извлечение модели — другие виды карточек.
+main._queue_term("audit", "инфильтрат", "infiltration", project=1, segment=3,
+                 lang="RU→EN", domain="medical", via="auto")
+main._queue_term("extract", "инфильтрат", "infiltrate", project=1, segment=4,
+                 lang="RU→EN", domain="medical", via="auto")
+check(not pending(), "другой вид карточки про решённый термин не спрашивается")
+
+decided = [c for c in main.STATE["termQueue"] if c["status"] == "approved"][0]
+check(sorted(decided.get("reasked", [])) == ["induration", "infiltration"],
+      "но чужие варианты записаны в решение, а не проглочены молча")
+check(decided["hits"] > 1, "и видно, сколько раз про термин спрашивали снова")
+
+print("\n=== 7. Приказ без карточки тоже закрывает вопрос, подсказка — нет ===")
+# Запись verified могла появиться мимо очереди: ручная правка глоссария или
+# выверенный справочник. Это тот же ответ человека, только данный не карточкой.
+proj = build(gloss=[{"src": "мокрота", "tgt": "sputum", "tier": "verified",
+                     "lang": "RU→EN", "domain": "medical"}],
+             segments=[seg(1, "мокрота", "phlegm")])
+main._harvest_terms(proj["segments"][0], proj)
+check(not pending(), "расхождение с приказом — находка ремонта, а не вопрос о термине")
+
+# А массовый автоимпорт (подсказка) обязан ловиться по-прежнему: ради
+# «задний → rear» conflict-кандидаты и заведены.
+proj = build(gloss=[AUTO_ENTRY], segments=[seg(1, "задний увеит", "posterior uveitis")])
+main._harvest_terms(proj["segments"][0], proj)
+check(any(c["kind"] == "conflict" for c in pending()),
+      "спор с подсказкой по-прежнему спрашивается")
+
+print("\n=== 8. Отклонение вопрос не закрывает ===")
+proj = build(segments=[seg(1, "мазок", "smear")])
+born = main._harvest_terms(proj["segments"][0], proj)
+main.reject_term_candidate(born[0]["id"])
+main._queue_term("extract", "мазок", "swab", project=1, segment=2,
+                 lang="RU→EN", domain="medical", via="auto")
+check(len(pending()) == 1, "«эта пара неверна» — не «с термином разобрались»")
+
+print("\n=== 9. Старое состояние: накопленные дубли снимаются миграцией ===")
+# Очередь, набитая прежним кодом: три карточки про термин, который человек уже
+# утвердил, и одна про термин с приказом в глоссарии мимо очереди.
+st = {"projects": [], "tm": [],
+      "glossary": [{"src": "мокрота", "tgt": "sputum", "tier": "verified",
+                    "lang": "RU→EN", "domain": "medical"}],
+      "termQueue": [
+          {"id": 1, "kind": "segment", "src": "инфильтрат", "tgt": "infiltrate",
+           "status": "approved", "decidedBy": "human", "lang": "RU→EN", "domain": "medical"},
+          {"id": 2, "kind": "segment", "src": "инфильтрат", "tgt": "induration",
+           "status": "pending", "lang": "RU→EN", "domain": "medical"},
+          {"id": 3, "kind": "audit", "src": "инфильтрат", "tgt": "infiltration",
+           "status": "pending", "lang": "RU→EN", "domain": "medical"},
+          {"id": 4, "kind": "conflict", "src": "мокрота", "tgt": "",
+           "status": "pending", "lang": "RU→EN", "domain": "medical"},
+          # Чужая языковая пара: тот же термин, но вопрос там не задавали.
+          {"id": 5, "kind": "segment", "src": "инфильтрат", "tgt": "Infiltrat",
+           "status": "pending", "lang": "RU→DE", "domain": "medical"},
+          # Неотвеченный термин — трогать нечего.
+          {"id": 6, "kind": "segment", "src": "хрипы", "tgt": "rales",
+           "status": "pending", "lang": "RU→EN", "domain": "medical"},
+      ]}
+closed = main._migrate_term_queue(st)
+q = {c["id"]: c for c in st["termQueue"]}
+check(closed == 3, "снято ровно три накопленных дубля")
+check(q[2]["status"] == "approved" and q[2]["decidedWith"] == 1, "чужой вариант закрыт решением человека")
+check(q[3]["status"] == "approved", "и находка другого вида тоже")
+check(q[4]["status"] == "approved", "приказ глоссария закрывает вопрос без карточки")
+check(q[5]["status"] == "pending", "чужая языковая пара не тронута")
+check(q[6]["status"] == "pending", "неотвеченный термин остался в очереди")
+check(not main._human_decision(q[2]), "закрытая миграцией карточка решением человека не становится")
+check(main._migrate_term_queue(st) == 0, "повторный проход ничего не трогает")
+
+print("\n=== 10. Старое состояние: одобренным конфликтам возвращают их пару ===")
 st = main._apply_migrations({
     "projects": [], "glossary": [], "tm": [],
     "termQueue": [

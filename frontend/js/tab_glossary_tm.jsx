@@ -47,6 +47,11 @@ function AutoApprovePanel({ store, toast, onDone }) {
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState("");
   const [softOnly, setSoftOnly] = useState(false);
+  /* Разрешение на приказ по согласию сегментов там, где область его запрещает
+     (медицина, фарма, юриспруденция). НЕ хранится в localStorage намеренно:
+     это разрешение на один запуск, а не настройка. Гаснет при смене проекта
+     и при включении «Только подсказки» — просьба ничего не поднимать сильнее. */
+  const [allowVerified, setAllowVerified] = useState(false);
   const [batches, setBatches] = useState([]);
   const [domains, setDomains] = useState([]);
 
@@ -64,15 +69,22 @@ function AutoApprovePanel({ store, toast, onDone }) {
     window.API.safeCall(() => window.API.autoApprove({
       project: store.activeProject.id, dry_run: true,
       max_tier: softOnly ? "auto" : null,
+      allow_verified: allowVerified,
     })).then(res => { if (!cancelled && res && res.ok) setPreview(res); });
     return () => { cancelled = true; };
-  }, [store.activeProject && store.activeProject.id, softOnly]);
+  }, [store.activeProject && store.activeProject.id, softOnly, allowVerified]);
+
+  /* Разрешение не переживает смену проекта: области у проектов разные, и
+     молча перенести снятый запрет на соседний проект нельзя. */
+  useEffect(() => { setAllowVerified(false); },
+    [store.activeProject && store.activeProject.id]);
 
   if (!project) return null;
   const domLabel = (id) => (domains.find(d => d.id === id) || {}).label || id;
   const scopeText = project.src + "→" + project.tgt + " · " + domLabel(project.domain || "medical");
 
-  const opts = () => ({ project: project.id, max_tier: softOnly ? "auto" : null });
+  const opts = () => ({ project: project.id, max_tier: softOnly ? "auto" : null,
+                        allow_verified: allowVerified });
 
   const check = async () => {
     setBusy("check");
@@ -96,6 +108,8 @@ function AutoApprovePanel({ store, toast, onDone }) {
     if (res.batch) setBatches(b => [{ id: res.batch, at: "только что", counts: res.counts }, ...b]);
     toast.success("Одобрено автоматически: " + n,
       "Подсказок: " + res.counts.auto + " · приказов: " + res.counts.verified +
+      (res.counts.rejectedMeaning
+        ? " · отклонено по смыслу: " + res.counts.rejectedMeaning : "") +
       (res.counts.closed ? " · закрыто как уже известное: " + res.counts.closed : ""));
     onDone && onDone();
   };
@@ -119,6 +133,12 @@ function AutoApprovePanel({ store, toast, onDone }) {
       : React.createElement(Badge, { variant: "soft" }, "уже есть");
 
   const c = preview && preview.counts;
+  // Запрет области виден по политике, которую вернул сервер: зашивать список
+  // «медицина, фарма, юриспруденция» в браузер — значит завести второй
+  // источник правды рядом с AUTO_APPROVE_BY_DOMAIN.
+  // Запрет области — отдельное поле с сервера: он снимается ДО учёта
+  // разрешения, поэтому тумблер не исчезает от того, что его включили.
+  const banned = !!(preview && preview.policy && preview.policy.domainBanned);
   return React.createElement("div", { className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 } },
     React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
       React.createElement("div", { className: "row", style: { gap: 8 } },
@@ -138,6 +158,30 @@ function AutoApprovePanel({ store, toast, onDone }) {
       React.createElement("div", { className: "spacer" }),
       React.createElement(Switch, { on: softOnly, label: "Только подсказки", onClick: () => { setSoftOnly(v => !v); setPreview(null); } }),
       React.createElement("span", { className: "dim", style: { fontSize: 12 } }, "не поднимать до приказа")),
+
+    // Запрет области снимается только здесь и только на этот запуск. Показываем
+    // тумблер лишь там, где запрет реально есть: в остальных областях приказ по
+    // согласию сегментов и так разрешён, и лишний переключатель врал бы о том,
+    // что без него чего-то не хватает.
+    banned && !softOnly && React.createElement(
+      "div", { className: "col", style: { gap: 6, padding: "9px 11px", borderRadius: 8,
+        background: allowVerified ? "var(--c-warning-bg, rgba(240,180,40,.10))" : "transparent",
+        border: "1px solid " + (allowVerified ? "var(--c-warning)" : "var(--border)") } },
+      React.createElement("div", { className: "row", style: { gap: 10, alignItems: "center" } },
+        React.createElement(Switch, { on: allowVerified, label: "Приказ по согласию сегментов",
+          onClick: () => { setAllowVerified(v => !v); setPreview(null); } }),
+        React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+          "снять запрет области на этот запуск")),
+      React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.6 } },
+        allowVerified
+          ? "Приказ получат термины с согласием " + (preview.policy.verified_min_segments || 3)
+            + " независимых чистых сегментов с РАЗНЫМИ исходниками. При "
+            + "применении каждый пройдёт смысловую сверку судьёй (то же ли "
+            + "понятие) — ложные друзья вроде «болезнь → род паразита» будут "
+            + "отклонены. Пачка откатывается целиком кнопкой ниже."
+          : "Сейчас в этой области приказ даёт только человек или выверенный "
+            + "справочник — согласия сегментов не хватает. Включите, если "
+            + "готовы принять машинный приказ под свою ответственность.")),
 
     preview && c.pending === 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.6 } },
       "Кандидатов в этой области пока нет. Они появляются сами: после back-check и проверки терминологии — с сегментов, прошедших обе проверки чисто; и при подтверждении сегмента вручную."),

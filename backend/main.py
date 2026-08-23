@@ -1583,6 +1583,22 @@ def fetch_segments(pid: int, req: SegmentsFetchRequest):
 
 
 @app.get("/api/projects/{pid}/glossary-impact")
+def _verified_hits(source: str, project: Optional[dict]) -> list:
+    """Записи глоссария уровня ПРИКАЗ, применимые к этому исходнику.
+
+    Одно место на всех, кто спрашивает «чего требует глоссарий от сегмента»:
+    расчёт нарушений (`_gloss_misses`), промпт ремонта и корзина спора
+    с проверкой. Разойдись они в определении приказной записи — начали бы
+    переписывать сегмент друг за другом по кругу (та же беда, от которой
+    `_gloss_misses` и `/glossary-impact` считаются одним расчётом).
+    Пустой перевод отсеивается здесь же: требовать «используйте ничего»
+    нельзя, и записью-ответом такая запись тоже не является."""
+    if project is None:
+        return []
+    return [h for h in _get_context(source or "", with_tm=False, project=project)[0]
+            if _hit_tier(h) == GLOSSARY_TIER_HARD and (h.get("tgt") or "").strip()]
+
+
 def glossary_impact(pid: int, refresh: bool = False):
     """Сегменты проекта, чей перевод не соответствует ПРОВЕРЕННЫМ записям глоссария.
 
@@ -1716,6 +1732,43 @@ def project_analysis(pid: int, refresh: bool = False):
         elif s["id"] not in findings and s["id"] not in conf_set:
             weak.append({"id": s["id"], "why": why})
 
+    # ── Termcheck спорит с утверждённым термином ─────────────────────
+    # Находка указывает на слово, которое И ЕСТЬ verified-перевод для этого
+    # сегмента. Машине тут делать нечего: ремонт по такой находке всегда
+    # откатится — _repair_scores считает нарушенные утверждённые термины, и
+    # замена приказного термина поднимает счётчик. Решает человек, и решение
+    # у него ровно одно из двух: неверна запись глоссария либо неверна
+    # проверка. Без этой корзины спор не виден нигде: находка тонет в «с
+    # замечаниями», а запись выглядит соблюдённой.
+    # Считаем только по сегментам с находками — _get_context на каждом
+    # сегменте проекта это секунды CPU единственного воркера.
+    disputes: dict = {}
+    for s in project["segments"]:
+        tc = s.get("termcheck") or {}
+        if not tc or _check_stale(tc, s.get("target") or ""):
+            continue
+        bad = [f for f in (tc.get("findings") or [])
+               if f.get("severity") in ("critical", "major") and f.get("tgt_term")]
+        if not bad:
+            continue
+        approved = {_norm_key(h["tgt"]): h for h in _verified_hits(s.get("source", ""), project)}
+        for f in bad:
+            h = approved.get(_norm_key(f.get("tgt_term")))
+            if h is None:
+                continue
+            d = disputes.setdefault((_norm_key(h["src"]), _norm_key(h["tgt"])),
+                                    {"src": h["src"], "tgt": h["tgt"],
+                                     "suggests": [], "segments": []})
+            sug = (f.get("suggestion") or "").strip()
+            if sug and sug not in d["suggests"] and len(d["suggests"]) < 5:
+                d["suggests"].append(sug)
+            # Сегмент посещается ровно раз, поэтому повтором может быть только
+            # предыдущая находка того же сегмента — линейный поиск по списку
+            # на 2670 сегментов с одним спорным термином был бы O(n²).
+            if not d["segments"] or d["segments"][-1] != s["id"]:
+                d["segments"].append(s["id"])
+    disputed = sorted(disputes.values(), key=lambda d: -len(d["segments"]))
+
     # Что автоодобрение разложило бы прямо сейчас — тем же движком, что и кнопка,
     # иначе цифра на экране разошлась бы с тем, что произойдёт по нажатию.
     pending = [c for c in _term_queue() if c.get("status", "pending") == "pending"
@@ -1743,6 +1796,11 @@ def project_analysis(pid: int, refresh: bool = False):
             "reverted": reverted,
             "glossaryConfirmed": impact["confirmed"],
             "confirmedFindings": confirmed_findings,
+            # Список терминов, а не сегментов: вопрос здесь про ЗАПИСЬ
+            # глоссария («правильна ли она»), и отвечать на него посегментно
+            # значит задать один и тот же вопрос десятки раз.
+            "termcheckDisputes": disputed,
+            "termcheckDisputesSegments": sorted({i for d in disputed for i in d["segments"]}),
         },
         "todo": {"untranslated": untranslated, "unchecked": unchecked,
                  "findings": findings, "glossaryPending": impact["pending"],
@@ -1988,6 +2046,9 @@ def qa_segment(pid: int, sid: int):
 # исходника. В сам глоссарий автоматически не попадает НИЧЕГО: он инжектится
 # в промпт как правило, и автопополнение закрепляло бы собственные ошибки.
 TERM_QUEUE_MAX = 800
+# Сколько чужих вариантов помнит решённая карточка. Это история спора, а не
+# данные: без потолка один термин рос бы в state.json на каждом прогоне.
+TERM_REASKED_MAX = 8
 # Кандидаты, выброшенные потолком, с момента старта процесса. Растёт только
 # под _TERM_QUEUE_LOCK (подрезка живёт внутри _queue_insert), поэтому свой лок
 # не нужен. Прогон снимает разницу до и после — см. _job_loop.
@@ -2116,15 +2177,92 @@ def _cand_pair(c: dict) -> tuple:
             _norm_key(c["origTgt"] if "origTgt" in c else c.get("tgt")))
 
 
+def _answer_keys(c: dict) -> set:
+    """Термины, на которые отвечает эта карточка, если она вообще ответ.
+
+    Ключей два: нынешний термин и тот, с которым карточка родилась —
+    одобрение вправе исправить сам термин. Пустое множество означает «это
+    не ответ»: отклонение сюда не входит намеренно («эта пара неверна» не то
+    же самое, что «с термином разобрались», см. reject_term_candidate), как
+    и решения автоматики (`_human_decision`).
+
+    Одно множество на всех, кто спрашивает «этот вопрос уже задавали»:
+    дедупликация очереди (`_term_answered`) и разбор накопленного хвоста
+    (`_migrate_term_queue`). Разойдись они в определении одного и того же
+    термина — миграция снимала бы то, что дедупликация задаст заново."""
+    if c.get("status") != "approved" or not _human_decision(c):
+        return set()
+    return {k for k in (_cand_pair(c)[0], _norm_key(c.get("src"))) if k}
+
+
+def _hard_answer(entry: Optional[dict]) -> bool:
+    """Запись глоссария — это ответ на вопрос «как переводить термин».
+
+    Ответом делает уровень ПРИКАЗ (его ставит человек либо выверенный
+    справочник) И непустой перевод: запись без перевода не отвечает ничего,
+    и закрывать ею вопрос значило бы похоронить его молча."""
+    return bool(entry) and _hit_tier(entry) == GLOSSARY_TIER_HARD         and bool((entry.get("tgt") or "").strip())
+
+
+def _term_answered(c: dict, src_n: str) -> bool:
+    """Карточка — это ОТВЕТ человека про тот же термин, а не другая пара."""
+    return src_n in _answer_keys(c)
+
+
+def _migrate_term_queue(state: dict) -> int:
+    """Снять карточки про термины, по которым решение УЖЕ есть.
+
+    Пока дедупликация смотрела только на пару «термин + перевод» и вид находки,
+    каждый прогон заводил новую карточку про уже утверждённый термин: свой
+    вариант перевода или другой вид находки давали новый ключ. Заводить их
+    перестал `_queue_term_locked`, но накопленное висит в очереди и просит
+    решения, которое человек уже принял.
+
+    Живёт отдельно от `_apply_migrations` намеренно: та зовётся при импорте
+    раньше, чем определены `_norm_key`, `_cand_pair` и `_human_decision`, а
+    дублировать их правила здесь — значит однажды разойтись с ними в том,
+    что считать одним и тем же термином."""
+    queue = state.get("termQueue") or []
+    decided, hard = {}, {}
+    for c in queue:
+        for k in _answer_keys(c):
+            decided.setdefault((_scope_of(c), k), c)
+    for g in state.get("glossary", []):
+        if _hard_answer(g):
+            hard.setdefault((_scope_of(g), _norm_key(g.get("src"))), g)
+    today, closed = datetime.now().strftime("%Y-%m-%d"), 0
+    for c in queue:
+        if c.get("status", "pending") != "pending":
+            continue
+        key = (_scope_of(c), _cand_pair(c)[0])
+        answer = decided.get(key)
+        if answer is None and key not in hard:
+            continue
+        # Тот же приём, что у _close_same_term: «approved» здесь означает
+        # «вопрос закрыт», а autoWrote=False — что в глоссарий ничего не
+        # писали. Решением человека такая карточка НЕ становится (см.
+        # _human_decision), поэтому сама она вопросы не закрывает и уходит
+        # при подрезке первой.
+        c.update({"status": "approved", "autoWrote": False, "decidedAt": today,
+                  "note": "вопрос уже решён: "
+                          + ((answer or hard[key]).get("tgt") or "")})
+        if answer is not None:
+            c["decidedWith"] = answer.get("id")
+        closed += 1
+    return closed
+
+
 def _queue_term_locked(kind, src, tgt, src_n, tgt_n, now, extra):
     # Область входит в ключ дедупликации: «договор → contract» в RU→EN и
     # «договор → Vertrag» в RU→DE — разные кандидаты, а не спор двух вариантов.
     scope = _scope_of(extra)
     donor = (f"{extra.get('project')}:{extra['segment']}"
              if extra.get("segment") and extra.get("project") else None)
+    answered = None
     for c in _term_queue():
-        if (c.get("kind") == kind and _cand_pair(c) == (src_n, tgt_n)
-                and _scope_of(c) == scope):
+        if _scope_of(c) != scope:
+            continue
+        if c.get("kind") == kind and _cand_pair(c) == (src_n, tgt_n):
             c["hits"] = c.get("hits", 1) + 1
             c["at"] = now
             # Список сегментов-доноров, а не только счётчик: автоодобрение
@@ -2137,6 +2275,37 @@ def _queue_term_locked(kind, src, tgt, src_n, tgt_n, now, extra):
             if extra.get("via") == "confirmed":
                 c["via"] = "confirmed"      # подтверждение человеком не понижается
             return c if c.get("status") == "pending" else None
+        if answered is None and _term_answered(c, src_n):
+            answered = c
+
+    # ── Вопрос про этот термин уже отвечен ───────────────────────────
+    # Дедупликация выше сверяет ПАРУ «термин + перевод» и вид карточки, и этого
+    # мало: следующий прогон предлагает СВОЙ перевод того же термина, а находка
+    # termcheck приходит другим видом. Пара получается новая — и утверждённый
+    # человеком термин возвращался в очередь как нерешённый, каждым прогоном
+    # заново. Спрашивать второй раз нечего: ответ есть.
+    if answered is not None:
+        answered["hits"] = answered.get("hits", 1) + 1
+        answered["at"] = now
+        # Молча глотать несогласие нельзя: в решении остаётся список того, что
+        # прогоны предлагали взамен. Потолок — чтобы история одного термина
+        # не росла в state.json без края.
+        other = _norm_key(tgt)
+        if other and other != _norm_key(answered.get("tgt")):
+            again = answered.setdefault("reasked", [])
+            if other not in again and len(again) < TERM_REASKED_MAX:
+                again.append(other)
+        return None
+
+    # Запись уровня «приказ» — тот же ответ, только данный не через очередь
+    # (ручная правка глоссария, выверенный справочник). Расхождение перевода
+    # с ней — находка ремонта и строка в «Соответствии глоссарию», а не вопрос
+    # «как переводить этот термин». Записи уровня «подсказка» сюда не попадают
+    # намеренно: массовый автоимпорт как раз и ловится conflict-кандидатами
+    # («задний → rear»), ради которых они заведены.
+    if _hard_answer(_glossary_entry(src, scope)):
+        return None
+
     cand = {"id": max((c.get("id", 0) for c in _term_queue()), default=0) + 1,
             "kind": kind, "src": (src or "").strip(), "tgt": (tgt or "").strip(),
             "status": "pending", "hits": 1, "at": now,
@@ -2678,7 +2847,8 @@ def explain_term_variants(cid: int, req: ExplainRequest = ExplainRequest()):
         f"literally into {src_lang};\n"
         f"  meaning — what the candidate actually denotes, one short sentence in {src_lang};\n"
         f"  usage — where this wording is used (register, field), a few words in {src_lang};\n"
-        f"  same — true if it denotes exactly the same concept as the {src_lang} term.\n\n"
+        f"  same — true if it denotes exactly the same concept as the {src_lang} term.\n"
+        + MEANING_TRAPS + "\n\n"
         'Return ONLY JSON: {"variants":[{"tgt":"...","back":"...","meaning":"...",'
         '"usage":"...","same":true}]}. No commentary.'
     )
@@ -2809,6 +2979,14 @@ def _load_authorities():
             print(f"[backend] справочники из {d} не загружены: {e}", file=sys.stderr)
     _DICTIONARIES = loaded
 
+
+_TERM_QUEUE_MIGRATED = _migrate_term_queue(STATE)
+if _TERM_QUEUE_MIGRATED:
+    # Молча укоротить очередь на сотню карточек нельзя: человек увидит другое
+    # число и должен знать, что это разбор старого хвоста, а не потеря данных.
+    print(f"[backend] очередь терминов: снято {_TERM_QUEUE_MIGRATED} карточек "
+          f"про термины, по которым решение уже есть", file=sys.stderr)
+    save_state(STATE)
 
 _load_authorities()      # ОБЯЗАТЕЛЬНО при импорте: без этого вызова весь путь
                          # «приказ от справочника» мёртв, и медицина с фармой
@@ -3086,7 +3264,8 @@ def _clear_auto_marks(entry: dict):
         entry.pop(k, None)
 
 
-def _auto_write(cand: dict, tier: str, batch: int, today: str) -> bool:
+def _auto_write(cand: dict, tier: str, batch: int, today: str,
+                override: bool = False) -> bool:
     """Записать пару в глоссарий. True, если существующая запись заменена.
     Прежние значения сохраняем — на них держится откат пачки."""
     scope = _scope_of(cand)
@@ -3100,17 +3279,22 @@ def _auto_write(cand: dict, tier: str, batch: int, today: str) -> bool:
             "prevOrigin": existing.get("origin", ""),
             "tgt": tgt, "tier": tier, "cat": existing.get("cat") or cat,
             "conf": "high" if tier == GLOSSARY_TIER_HARD else "medium",
-            "note": "автоодобрено " + today, "updated": today,
+            "note": ("автоодобрено " + today
+                     + (" (приказ по разрешению человека)" if override else "")),
+            "updated": today,
             "autoBatch": batch, "autoCreated": False,
+            "byOverride": bool(override),
             "origin": "auto:" + AUTO_POLICY_VERSION,
         })
         return True
     entry = {
         "src": src, "tgt": tgt, "cat": cat, "freq": 1,
         "conf": "high" if tier == GLOSSARY_TIER_HARD else "medium",
-        "note": "автоодобрено " + today, "tier": tier,
+        "note": ("автоодобрено " + today
+                 + (" (приказ по разрешению человека)" if override else "")),
+        "tier": tier,
         "lang": scope[0], "domain": scope[1], "updated": today,
-        "autoBatch": batch, "autoCreated": True,
+        "autoBatch": batch, "autoCreated": True, "byOverride": bool(override),
         "origin": "auto:" + AUTO_POLICY_VERSION,
     }
     STATE["glossary"].insert(0, entry)
@@ -3123,6 +3307,111 @@ def _auto_write(cand: dict, tier: str, batch: int, today: str) -> bool:
     return False
 
 
+# Классические подмены, на которых ломается любая проверка, кроме вопроса
+# «то же ли это понятие». Один список на оба места, где этот вопрос задаётся
+# (пачкой в автоодобрении и по кнопке в разборе вариантов): разойдись они —
+# «Анизакидоз → Anisakis» отклонялся бы автоматикой и подтверждался вручную.
+MEANING_TRAPS = ("Watch for classic traps: a disease vs its causative agent, "
+                 "an organ vs a finding, a substance vs its class, "
+                 "a procedure vs its result, a patient vs an animal.")
+
+AUTO_MEANING_MAX = 400      # потолок пар за одно применение
+AUTO_MEANING_CHUNK = 10     # пар в одном вызове судьи
+
+
+def _openai_meaning(pairs: list, scope: tuple) -> Optional[dict]:
+    """Один вызов судьи на пачку пар «термин → кандидат»: то же ли это ПОНЯТИЕ.
+
+    Это единственный вопрос, который не задаёт ни одна другая проверка. Корпус
+    подтверждает существование строки в языке, termcheck — что термин настоящий,
+    согласие сегментов — что модель повторяет себя; «Анизакидоз → Anisakis»
+    (болезнь против рода паразита-возбудителя) проходит всё это разом, потому
+    что каждый отвечал не на тот вопрос.
+
+    Возвращает {(термин, перевод) нормализованные: {"same": bool|None,
+    "back": чем кандидат является, НА ЯЗЫКЕ ОРИГИНАЛА}} или None при сбое.
+    None — это «не знаю», и по тому же закону, что attested() у корпуса,
+    он не одобряет и не блокирует."""
+    import openai
+    src_lang, tgt_lang = ((authorities_mod.source_lang(scope[0]),
+                           authorities_mod.target_lang(scope[0])) if authorities_mod
+                          else (scope[0].split("→")[0], scope[0].split("→")[-1]))
+    dom = _resolve_domain(scope[1])
+    system = (
+        f"You are a {dom['expert']}. For each pair below decide whether the {tgt_lang} "
+        f"candidate denotes EXACTLY the same concept as the {src_lang} term.\n"
+        + MEANING_TRAPS + "\n"
+        "For each pair return:\n"
+        "  same — true ONLY if the concepts are identical;\n"
+        f"  back — what the candidate actually denotes, a few words IN {src_lang} "
+        "(the user reads only that language).\n"
+        'Return ONLY JSON: {"pairs":[{"src":"...","tgt":"...","same":true,"back":"..."}]}. '
+        "No commentary."
+    )
+    body = "\n".join(f"  - {a} → {b}" for a, b in pairs)
+    try:
+        mdl = _resolve_model(JUDGE_DEFAULT_MODEL)
+        client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
+        extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
+                 else {"max_tokens": 900, "temperature": 0})
+        resp = client.chat.completions.create(
+            model=mdl["id"], response_format={"type": "json_object"},
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": body}], **extra)
+        _note_usage("terms", mdl["id"], resp)
+        data = json.loads((resp.choices[0].message.content or "").strip() or "{}")
+        out = {}
+        for v in (data.get("pairs") or []):
+            if isinstance(v, dict) and v.get("src") and v.get("tgt"):
+                out[(_norm_key(v["src"]), _norm_key(v["tgt"]))] = {
+                    "same": (bool(v["same"]) if "same" in v else None),
+                    "back": (v.get("back") or "").strip()}
+        return out
+    except Exception as e:
+        print(f"[backend] смысловая сверка терминов: {e}", file=sys.stderr)
+        return None
+
+
+def _meaning_check(cands: list) -> tuple:
+    """Смысловая сверка кандидатов пачками по AUTO_MEANING_CHUNK.
+    Возвращает ({(область, термин, перевод): вердикт}, отвечено, сверх потолка).
+    Пара, на которую судья не ответил, в словарь не попадает — «не знаю»."""
+    uniq, order = {}, []
+    for c in cands:
+        src, tgt = (c.get("src") or "").strip(), (c.get("tgt") or "").strip()
+        if not src or not tgt:
+            continue
+        key = (_scope_of(c), _norm_key(src), _norm_key(tgt))
+        if key not in uniq:
+            uniq[key] = (src, tgt)
+            order.append(key)
+    capped = max(0, len(order) - AUTO_MEANING_MAX)
+    if capped:
+        # Молчаливых потолков не бывает.
+        print(f"[backend] смысловая сверка: {capped} пар сверх потолка не проверены",
+              file=sys.stderr)
+    order = order[:AUTO_MEANING_MAX]
+    # Один проход и порядок вставки: обход множества областей давал бы разный
+    # порядок вызовов от запуска к запуску — такое не воспроизвести по журналу.
+    by_scope: dict = {}
+    for k in order:
+        by_scope.setdefault(k[0], []).append(k)
+    jobs = []
+    for scope, keys in by_scope.items():
+        for i in range(0, len(keys), AUTO_MEANING_CHUNK):
+            jobs.append((scope, keys[i:i + AUTO_MEANING_CHUNK]))
+    out = {}
+    for (scope, chunk), got in _run_parallel(
+            jobs, lambda j: (j, _openai_meaning([uniq[k] for k in j[1]], j[0]))):
+        if not got:
+            continue        # сбой вызова: эти пары остаются «не знаю»
+        for k in chunk:
+            v = got.get((k[1], k[2]))
+            if v is not None:
+                out[k] = v
+    return out, len(out), capped
+
+
 class AutoApproveRequest(BaseModel):
     dry_run: bool = True
     # Корпусная проверка — это внешние HTTP-запросы с лимитом источника
@@ -3133,6 +3422,15 @@ class AutoApproveRequest(BaseModel):
     corpus: Optional[bool] = None
     project: Optional[int] = None      # смотреть только область этого проекта
     max_tier: Optional[str] = None     # "auto" — не поднимать до приказа
+    # Снять запрет области на приказ по согласию сегментов (медицина, фарма,
+    # юриспруденция). Это РАЗРЕШЕНИЕ ЧЕЛОВЕКА на конкретный запуск, а не новая
+    # политика: по умолчанию None — как решает область. Отдельным полем, а не
+    # правкой AUTO_APPROVE_BY_DOMAIN, именно потому, что разрешение разовое,
+    # видно в ответе (policy.humanOverride) и откатывается вместе с пачкой.
+    allow_verified: Optional[bool] = None
+    # Смысловая сверка судьёй (то же ли понятие) — платные вызовы, поэтому как
+    # корпус: по умолчанию только при ПРИМЕНЕНИИ. None = решить по dry_run.
+    meaning: Optional[bool] = None
     limit: int = 2000
 
 
@@ -3145,6 +3443,17 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
     project = get_project(req.project) if req.project else None
     scope = _project_scope(project) if project else None
     pol = _auto_policy(project.get("domain") if project else None)
+    # Снимаем ДО любых override: интерфейсу нужно знать, есть ли запрет
+    # в принципе, иначе тумблер исчезал бы ровно от того, что его включили.
+    domain_banned = not pol.get("allow_verified")
+    if req.allow_verified is True and not pol.get("allow_verified"):
+        # Человек снял запрет области на этот запуск. Обмануться тут нечем:
+        # порог сегментов, требование РАЗНЫХ исходников, единственность
+        # варианта и вето корпуса остаются на месте — снимается ровно запрет
+        # «в медицине приказ даёт только человек». Помечаем разрешение, чтобы
+        # оно было видно в ответе и в записях пачки: молчаливое ослабление
+        # защиты хуже её отсутствия.
+        pol = {**pol, "allow_verified": True, "humanOverride": True}
     if req.max_tier == GLOSSARY_TIER_SOFT:
         # cap_soft отдельно от allow_verified: первое — просьба пользователя
         # на этот запуск, второе — политика области. Их нельзя смешивать,
@@ -3190,7 +3499,18 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
             print(f"[backend] корпусная проверка: {corpus_asked} терминов, "
                   f"{corpus_capped} сверх потолка не проверены", file=sys.stderr)
 
-    picked, closed, skipped = [], [], {}
+    # ── Смысловая сверка: то же ли это понятие ───────────────────────
+    # Спрашивается, как и корпус, только про тех, кто иначе прошёл бы, и
+    # по умолчанию только при применении. Явное «не то понятие» отклоняет
+    # кандидата совсем — даже подсказка из ложного друга вредна, модель
+    # вправе её взять. «Не знаю» (сбой, пара не разобрана) не одобряет и
+    # не блокирует — тот же закон, что у attested().
+    use_meaning = (not req.dry_run) if req.meaning is None else bool(req.meaning)
+    meaning, meaning_asked, meaning_capped = {}, 0, 0
+    if prelim and use_meaning and os.environ.get("OPENAI_API_KEY"):
+        meaning, meaning_asked, meaning_capped = _meaning_check(prelim)
+
+    picked, closed, mrejected, skipped = [], [], [], {}
     taken = set()
     for cand in considered:
         action, reason = _auto_verdict(cand, ctx)
@@ -3199,6 +3519,19 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
                "domain": _scope_of(cand)[1], "reason": reason,
                "hits": cand.get("hits", 1), "donors": len(_donor_ids(cand))}
         if action in (GLOSSARY_TIER_HARD, GLOSSARY_TIER_SOFT):
+            m = meaning.get((_scope_of(cand), _norm_key(cand.get("src")),
+                             _norm_key(cand.get("tgt"))))
+            if m and m.get("same") is False:
+                # Ложный друг: строка в языке существует, понятие другое.
+                # Причина хранит обратный смысл ПО-РУССКИ (языку оригинала) —
+                # человек, не знающий целевого языка, должен видеть, ЧТО
+                # именно машина у него отвела.
+                mrejected.append((cand, {**row, "tier": None,
+                                         "reason": "смысл расходится: "
+                                                   + (m.get("back") or "иное понятие")}))
+                continue
+            if m and m.get("same") is True:
+                row["reason"] = row["reason"] + " · смысл сверен судьёй"
             # Один термин — одна запись за пачку. Иначе два кандидата разных
             # kind с одной и той же парой писали её дважды, и второй проход
             # затирал prevTgt собственным значением: запись пережила бы откат.
@@ -3221,6 +3554,7 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
         "verified": sum(1 for _, t, _ in picked if t == GLOSSARY_TIER_HARD),
         "auto": sum(1 for _, t, _ in picked if t == GLOSSARY_TIER_SOFT),
         "closed": len(closed),
+        "rejectedMeaning": len(mrejected),
         "skipped": sum(b["count"] for b in skipped.values()),
         # pending — по рассмотренному срезу: вердикты считаются только по limit,
         # иначе на большой очереди цифры в панели не сходились бы.
@@ -3229,7 +3563,7 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
     }
     result = {
         "ok": True, "dryRun": req.dry_run, "batch": None, "counts": counts,
-        "policy": {**pol, "version": AUTO_POLICY_VERSION},
+        "policy": {**pol, "version": AUTO_POLICY_VERSION, "domainBanned": domain_banned},
         "scope": list(scope) if scope else None,
         # Чем проверялись термины. Разница в покрытии между парами языков
         # огромна, и назвать её честнее, чем дать пользователю обнаружить
@@ -3241,25 +3575,48 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
         # кандидатов может отсеяться как отсутствующие в целевом языке.
         # Названо явно, чтобы цифра на кнопке не обещала лишнего.
         "corpusPending": (not use_corpus) and bool(prelim),
-        "items": [row for _, _, row in picked] + [row for _, row in closed],
+        "meaningChecked": meaning_asked,
+        "meaningSkipped": meaning_capped,
+        # Разбор без сверки — верхняя оценка: при применении часть кандидатов
+        # будет отклонена как иное понятие. Названо явно, как corpusPending.
+        "meaningPending": (not use_meaning) and bool(prelim),
+        # Отклонённые идут в общий список, а не отдельным полем: у них та же
+        # форма строки, что у закрытых, и вторая копия данных ради одного
+        # экрана — это ещё одно место, которое однажды разойдётся.
+        "items": ([row for _, _, row in picked] + [row for _, row in closed]
+                  + [row for _, row in mrejected]),
         "skipped": sorted(skipped.values(), key=lambda b: -b["count"]),
     }
-    if req.dry_run or not (picked or closed):
+    if req.dry_run or not (picked or closed or mrejected):
         return result
 
     today = datetime.now().strftime("%Y-%m-%d")
     batch = STATE.get("autoBatchSeq", 0) + 1
     STATE["autoBatchSeq"] = batch
     for cand, tier, row in picked:
-        row["replaced"] = _auto_write(cand, tier, batch, today)
+        # Пометка только на приказах: подсказку разрешение не меняет, и писать
+        # на ней «по разрешению человека» значит преувеличить его участие.
+        by_override = bool(pol.get("humanOverride")) and tier == GLOSSARY_TIER_HARD
+        row["byOverride"] = by_override
+        row["replaced"] = _auto_write(cand, tier, batch, today, by_override)
         cand.update({"status": "approved", "autoBatch": batch, "autoTier": tier,
                      "autoWrote": True, "autoNote": row["reason"], "decidedAt": today})
     for cand, row in closed:
         cand.update({"status": "approved", "autoBatch": batch, "autoWrote": False,
                      "autoNote": row["reason"], "decidedAt": today})
+    for cand, row in mrejected:
+        # Отклонение машиной, не человеком: _human_decision это различает,
+        # и решённый так кандидат вопрос не закрывает. Откат пачки вернёт его
+        # в очередь — автоматика без отката недопустима.
+        cand.update({"status": "rejected", "autoBatch": batch, "autoWrote": False,
+                     "autoNote": row["reason"], "decidedAt": today})
     batches = STATE.setdefault("autoBatches", [])
     batches.insert(0, {"id": batch, "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                       "counts": counts, "scope": list(scope) if scope else None})
+                       "counts": counts, "scope": list(scope) if scope else None,
+                       # Разрешение человека видно в истории пачек: через месяц
+                       # «откуда в медицине приказы от машины» отвечается здесь,
+                       # а не раскопками по записям глоссария.
+                       "override": bool(pol.get("humanOverride"))})
     for gone in batches[AUTO_BATCH_HISTORY:]:
         _forget_auto_batch(gone["id"])
     del batches[AUTO_BATCH_HISTORY:]
@@ -3835,10 +4192,7 @@ def _gloss_misses(seg: dict, project: Optional[dict]) -> list:
     if not target:
         return []
     out = []
-    hits, _tm = _get_context(seg.get("source", ""), with_tm=False, project=project)
-    for h in hits:
-        if _hit_tier(h) != GLOSSARY_TIER_HARD or not h.get("tgt"):
-            continue
+    for h in _verified_hits(seg.get("source", ""), project):
         if _tgt_has_term(target, h["tgt"]):
             continue
         out.append({"kind": "gloss", "use": h["tgt"], "src": h["src"],
@@ -3943,8 +4297,7 @@ def _openai_repair(seg: dict, project: dict, findings: list, model: Optional[str
     # Проверенные записи глоссария кладём в промпт ЦЕЛИКОМ, а не только те, что
     # нарушены: чиня одно, модель свободно переписывала соседний утверждённый
     # термин — и сегмент возвращался в отчёт о соответствии уже по другой строке.
-    approved = [h for h in _get_context(seg.get("source", ""), with_tm=False, project=project)[0]
-                if _hit_tier(h) == GLOSSARY_TIER_HARD and h.get("tgt")]
+    approved = _verified_hits(seg.get("source", ""), project)
     if approved:
         body += ("\n\nAPPROVED GLOSSARY for this segment — these exact translations must be "
                  "present in the corrected text:\n"
@@ -5416,6 +5769,7 @@ def _job_run(job: dict):
             res = auto_approve_terms(AutoApproveRequest(
                 dry_run=False, project=pid,
                 max_tier=job["params"].get("max_tier"),
+                allow_verified=job["params"].get("allow_verified"),
                 limit=int(job["params"].get("term_limit", 2000))))
         except HTTPException as e:
             job["status"], job["error"] = "error", f"{e.status_code}: {e.detail}"
@@ -5424,6 +5778,7 @@ def _job_run(job: dict):
         job["counters"]["termsApproved"] = res["counts"]["verified"] + res["counts"]["auto"]
         job["counters"]["termsVerified"] = res["counts"]["verified"]
         job["counters"]["termsClosed"] = res["counts"]["closed"]
+        job["counters"]["termsRejected"] = res["counts"].get("rejectedMeaning", 0)
         job["autoBatch"] = res.get("batch")
         # Чиним ТОЛЬКО то, что разошлось с утверждёнными терминами, а не всё,
         # где вообще есть находки: человек нажал «применить термины», а не

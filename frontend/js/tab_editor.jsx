@@ -366,6 +366,13 @@ function TabEditor({ store, toast }) {
   // Разбор автоодобрения (dry_run): что попадёт в глоссарий и чем это
   // подтверждено. Считает сервер, вызовов модели внутри нет.
   const [autoPreview, setAutoPreview] = useState(null);
+  /* Разрешение на приказы по согласию сегментов — на один запуск, как и в
+     панели «Знаний»: не в localStorage. Храним ПРОЕКТ, которому оно выдано,
+     а не булев флаг: сброс эффектом при смене проекта успевал отправить
+     разрешение прошлого проекта в разбор нового и оставить его цифры на
+     экране под выключенным тумблером. */
+  const [ordersFor, setOrdersFor] = useState(null);
+  const termOrders = !!project && ordersFor === project.id;
   const PAGE_SIZE = 10;
 
   // Каталог моделей грузим один раз; пустой список — значит бэкенд старый или ключа нет
@@ -463,13 +470,16 @@ function TabEditor({ store, toast }) {
     if (!window.API || !window.API.autoApprove || !project) return;
     const pid = project.id;
     const res = await window.API.safeCall(() => window.API.autoApprove({
-      project: pid, dry_run: true }));
+      project: pid, dry_run: true, allow_verified: termOrders }));
     if (res && res.ok && store.activeProject && store.activeProject.id === pid) {
       setAutoPreview(res);
     }
   };
+  // Один эффект на оба: разрешение выводится из id проекта (см. ordersFor),
+  // поэтому лишнего прохода при смене проекта не будет. Цифра на кнопке
+  // обязана считаться с теми же параметрами, с которыми пойдёт задача.
   useEffect(() => { setImpact(null); setAutoPreview(null); loadImpact(); loadAutoPreview(); },
-    [project && project.id]);
+    [project && project.id, termOrders]);
 
   // Смена проекта гасит разрешение: заверял сегменты человек в ТОМ проекте,
   // и переносить на новый разрешение их переписать нельзя.
@@ -991,6 +1001,7 @@ function TabEditor({ store, toast }) {
       const t = c.termsApproved || 0;
       toast.success("Одобрено и применено",
         t + " терминов в глоссарий (приказом: " + (c.termsVerified || 0) + ")"
+        + (c.termsRejected ? " · отклонено по смыслу: " + c.termsRejected : "")
         + " · сегментов исправлено: " + (c.applied || 0)
         + (c.reverted ? " · откачено: " + c.reverted : "")
         + (c.skipped_confirmed ? " · подтверждённых не тронуто: " + c.skipped_confirmed : "")
@@ -1487,6 +1498,7 @@ function TabEditor({ store, toast }) {
     if (!window.API) return;
     const res = await window.API.safeCall(() => window.API.createJob(project.id, "apply_terms", [], {
       max_tier: null, term_limit: 2000,
+      allow_verified: termOrders,
       rp_model: rpModel, bc_model: bcModel, tc_model: tcModel,
       use_judge: bcJudge, judge_model: judgeModel || null,
       include_confirmed: !!impactConfirmed,
@@ -1586,7 +1598,9 @@ function TabEditor({ store, toast }) {
             preview: autoPreview, sources: autoPreview && autoPreview.sources,
             includeConfirmed: impactConfirmed,
             onIncludeConfirmed: () => setImpactConfirmed(v => !v),
-            confirmedCount: impact ? impact.confirmed.length : 0 }),
+            confirmedCount: impact ? impact.confirmed.length : 0,
+            orders: termOrders,
+            onOrders: () => setOrdersFor(v => (v === project.id ? null : project.id)) }),
           impact && impact.terms.length > 0 && React.createElement(GlossaryImpactCard, {
             impact, busy: impactBusy, onRefresh: loadImpact,
             includeConfirmed: impactConfirmed, onIncludeConfirmed: () => setImpactConfirmed(v => !v),
@@ -2039,8 +2053,14 @@ function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize
    одобрены, неизвестно, какие сегменты с ними разойдутся — список считает
    сервер сразу после одобрения. */
 function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
-                          includeConfirmed, onIncludeConfirmed, confirmedCount }) {
+                          includeConfirmed, onIncludeConfirmed, confirmedCount,
+                          orders, onOrders }) {
   const c = preview && preview.counts;
+  // Запрет области сервер присылает отдельным полем: он снимается ДО учёта
+  // разрешения, поэтому тумблер не исчезает от того, что его включили.
+  // Выводить его в браузере из allow_verified + humanOverride + cap_soft
+  // значило бы держать второй источник правды рядом с AUTO_APPROVE_BY_DOMAIN.
+  const banned = !!(preview && preview.policy && preview.policy.domainBanned);
   const ready = c ? (c.auto || 0) + (c.verified || 0) : 0;
   const dicts = (sources && sources.dictionaries) || [];
   const corpus = sources && sources.corpus;
@@ -2075,10 +2095,13 @@ function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
     // открытии проекта — это минута ожидания на лимитах источника. При нажатии
     // он отработает, и часть кандидатов может отсеяться как отсутствующие
     // в целевом языке. Обещать больше, чем сделаем, нельзя.
-    preview && preview.corpusPending && corpus && React.createElement("div",
+    preview && (preview.corpusPending || preview.meaningPending) && React.createElement("div",
       { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
-      "Это верхняя оценка: проверку по " + corpus.label
-      + " прогон сделает при нажатии, и калек в списке станет меньше."),
+      "Это верхняя оценка: при нажатии термины пройдут "
+      + [preview.corpusPending && corpus ? "проверку по " + corpus.label : null,
+         preview.meaningPending ? "смысловую сверку судьёй (то же ли понятие)" : null]
+        .filter(Boolean).join(" и ")
+      + " — кальки и ложные друзья будут отклонены, а не записаны."),
 
     c && c.skipped > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
       "останется человеку: ", React.createElement("b", null, c.skipped),
@@ -2087,6 +2110,20 @@ function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
     confirmedCount > 0 && React.createElement(Checkbox, {
       checked: !!includeConfirmed, onChange: onIncludeConfirmed },
       "Чинить и подтверждённые (" + confirmedCount + ")"),
+
+    // Разрешение на приказы — только там, где область их запрещает, и только
+    // на этот запуск (см. панель в «Знаниях»: то же правило, тот же откат).
+    banned && React.createElement("div", { className: "col", style: { gap: 3 } },
+      React.createElement(Checkbox, { checked: !!orders, onChange: onOrders },
+        "Приказы по согласию сегментов"),
+      React.createElement("div", { className: "dim", style: { fontSize: 11, lineHeight: 1.5 } },
+        orders
+          ? "Запрет области снят на этот запуск: согласие независимых чистых "
+            + "сегментов даст приказ. Каждый такой термин пройдёт смысловую "
+            + "сверку судьёй; пачка откатывается целиком в «Глоссарии»."
+          : "Сейчас приказ в этой области даёт только человек или выверенный "
+            + "справочник — однозначные уходят подсказкой, которую модель "
+            + "вправе игнорировать.")),
 
     // Счёт — на полосе наверху, здесь только название текущей половины работы:
     // пока список сегментов не посчитан, идёт запись терминов в глоссарий.

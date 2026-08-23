@@ -228,6 +228,60 @@ check(all(x["id"] != 3 for x in r["repaired"]),
 check(all(x["id"] != 2 for x in r["repaired"]),
       "чужая претензия в список не попала")
 
+print("\n=== 14. Правки по понижённой записи откатываются автоматом ===")
+# Единственная операция, меняющая текст без вызова модели. Так можно потому,
+# что она ничего не сочиняет: подставляется repair.from — то, что стояло
+# в сегменте до правки и у чего были свои проверки.
+CLAIM = "утверждённый перевод термина «Клинику» — «clinical practice», в переводе его нет"
+only = {"id": 1, "source": "Направлен в Клинику.", "target": "Referred to clinical practice.",
+        "status": "review",
+        "backcheck": {"score": 40, "target_hash": main._text_hash("Referred to clinical practice.")},
+        "repair": {"applied": True, "from": "Referred to the clinic.",
+                   "candidate": "Referred to clinical practice.",
+                   "source_hash": main._text_hash("Referred to clinical practice."),
+                   "model": "gpt-5.6-sol", "issues": [CLAIM]}}
+mixed = {"id": 2, "source": "В Клинику, 5 мг.", "target": "To clinical practice, 5 mg.",
+         "status": "review",
+         "repair": {"applied": True, "from": "To the clinic, 50 mg.",
+                    "source_hash": main._text_hash("To clinical practice, 5 mg."),
+                    "issues": [CLAIM, "расхождение чисел"]}}
+lost = {"id": 3, "source": "Клинику осмотрел.", "target": "Inspected clinical practice.",
+        "status": "review",
+        "repair": {"applied": True, "from": "", "issues": [CLAIM]}}
+alien = {"id": 4, "source": "Мокрота.", "target": "Sputum.", "status": "translated",
+         "repair": {"applied": True, "from": "Phlegm.", "issues": ["«мокрота» — «sputum»"]}}
+build([entry("Клинику", "clinical practice", tier="verified", origin="confirmed:1")],
+      [only, mixed, lost, alien])
+r = main.revert_repairs_by_term(main.RevertRepairsRequest(src="Клинику", lang="RU→EN", domain="medical"))
+segs = {x["id"]: x for x in main.STATE["projects"][0]["segments"]}
+check(r["revertedCount"] == 1 and r["reverted"][0]["id"] == 1, "возвращён сегмент с одной причиной")
+check(segs[1]["target"] == "Referred to the clinic.", "текст восстановлен из repair.from")
+check(segs[1]["status"] == "review", "статус «требует проверки» — текст менял не человек")
+check(main._check_stale(segs[1].get("backcheck"), segs[1]["target"]),
+      "проверка отвергнутого текста сама стала устаревшей")
+check(not (segs[1].get("repair") or {}).get("applied"), "запись о правке снята")
+
+check(r["requeuedCount"] == 1 and r["requeued"][0]["id"] == 2,
+      "сегмент с несколькими причинами отдан ремонту заново, а не откачен")
+check(segs[2]["target"] == "To clinical practice, 5 mg.",
+      "его текст не тронут: откат унёс бы и верное исправление чисел")
+check("source_hash" not in segs[2]["repair"], "и ремонт снова к нему пойдёт")
+
+check(r["skippedCount"] == 1 and r["skipped"][0]["id"] == 3,
+      "сегмент без сохранённого текста назван, а не пропущен молча")
+check(segs[3]["target"] == "Inspected clinical practice.", "и не тронут")
+check(segs[4]["target"] == "Sputum.", "чужая правка не задета")
+
+print("\n=== 15. Понижение и откат вместе снимают расхождение ===")
+build([entry("Клинику", "clinical practice", tier="verified", origin="confirmed:1")],
+      [dict(only)])
+main.demote_term(main.TermScopeRequest(src="Клинику", lang="RU→EN", domain="medical"))
+main.revert_repairs_by_term(main.RevertRepairsRequest(src="Клинику", lang="RU→EN", domain="medical"))
+seg = main.STATE["projects"][0]["segments"][0]
+check(seg["target"] == "Referred to the clinic.", "верный перевод вернулся")
+check(main.glossary_impact(1, refresh=True)["segments"] == [],
+      "и нарушением он больше не числится: правило понижено")
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

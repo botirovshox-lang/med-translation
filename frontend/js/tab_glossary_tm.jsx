@@ -210,13 +210,24 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
     setRes(x => x && ({ ...x, bad: x.bad.filter(y => y.src !== b.src || y.tgt !== b.tgt),
                         downgradable: Math.max(0, (x.downgradable || 0) - (b.humanTouched ? 0 : 1)) }));
     // Понижение снимает повод чинить дальше, но уже переписанное так и осталось.
-    // Об этом говорим прямо: иначе человек уверен, что отменил правило целиком.
+    // Возвращаем его тут же: руками это сотни сегментов, а откат ничего
+    // не сочиняет — подставляет текст, который стоял до правки.
     const done = (r.repairedCount || 0);
+    let tail = "";
+    if (kind !== "del" && done) {
+      const rv = await window.API.safeCall(() => window.API.revertRepairs(b.src, b.lang, b.domain));
+      if (rv && rv.ok) {
+        tail = " · возвращено сегментов: " + rv.revertedCount
+          + (rv.requeuedCount ? " · отдано ремонту заново: " + rv.requeuedCount : "")
+          + (rv.skippedCount ? " · не вернуть: " + rv.skippedCount : "");
+      } else {
+        tail = " · ВНИМАНИЕ: ремонт вписал этот перевод в " + done
+          + " сегм., откат не выполнился";
+      }
+    }
     toast.success(kind === "del" ? "Запись удалена" : "Понижено до подсказки",
       b.src + " → " + b.tgt
-      + (kind === "del" ? "" : " · модель вправе её игнорировать")
-      + (done ? " · ВНИМАНИЕ: ремонт уже вписал этот перевод в " + done
-                + " сегм. — их правку это не отменяет" : ""));
+      + (kind === "del" ? "" : " · модель вправе её игнорировать") + tail);
     onDone && onDone();
   };
   return React.createElement("div", { className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 } },

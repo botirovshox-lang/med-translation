@@ -153,6 +153,9 @@
     /* Понижение приказа до подсказки: намерение, обратное правке (там «правка
        руками = приказ»), поэтому отдельной дверью. */
     demoteTerm:    (src, lang, domain)      => call("POST",   "/glossary/demote", { src, lang: lang || "", domain: domain || "" }),
+    /* Откат правок, сделанных по этой записи. Текст меняется БЕЗ вызова модели:
+       подставляется repair.from — то, что стояло до правки. */
+    revertRepairs: (src, lang, domain)      => call("POST",   "/glossary/revert-repairs", { src, lang: lang || "", domain: domain || "" }),
     deleteTM:      (src, lang)              => call("DELETE", `/tm?src=${encodeURIComponent(src)}&lang=${encodeURIComponent(lang||"")}`),
   };
 

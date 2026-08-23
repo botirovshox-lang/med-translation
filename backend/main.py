@@ -5645,6 +5645,87 @@ def demote_term(req: TermScopeRequest):
             "repaired": touched[:200], "repairedCount": len(touched)}
 
 
+class RevertRepairsRequest(BaseModel):
+    src: str
+    lang: str = ""
+    domain: str = ""
+    project: Optional[int] = None
+
+
+@app.post("/api/glossary/revert-repairs")
+def revert_repairs_by_term(req: RevertRepairsRequest):
+    """Вернуть сегменты, которые ремонт переписал ИЗ-ЗА этой записи глоссария.
+
+    Понижение снимает повод чинить дальше, но уже переписанное так и остаётся.
+    Здесь оно возвращается — и это единственная операция во всей системе,
+    которая меняет текст БЕЗ вызова модели. Так можно ровно потому, что она
+    ничего не сочиняет: подставляется `repair.from` — тот самый текст, который
+    в сегменте стоял до правки и у которого были свои проверки.
+
+    Два случая, и смешивать их нельзя:
+      * претензия по этой записи была ЕДИНСТВЕННОЙ причиной правки — возвращаем
+        прежний текст целиком;
+      * причин было несколько — не трогаем: откат унёс бы и верные исправления
+        (потерянные числа, кальки). Вместо этого снимаем `source_hash`, и
+        сегмент снова становится доступен ремонту: он перечинит его по
+        оставшимся находкам, уже без понижённого требования.
+
+    Проверки после отката сами становятся устаревшими: они писали хеш
+    ОТВЕРГНУТОГО текста, а в сегменте теперь другой (см. `_check_stale`).
+    Статус — `review`: текст менял не человек."""
+    scope = (req.lang or DEFAULT_GLOSS_LANG, req.domain or DEFAULT_GLOSS_DOMAIN)
+    entry = _glossary_entry(req.src, scope) or {"src": req.src, "tgt": ""}
+    # Записи может уже не быть (её удалили) — тогда пару берём из запроса.
+    if not (entry.get("tgt") or "").strip():
+        raise HTTPException(400, "Нужен перевод записи, по которой чинили: "
+                                 "у этой записи его нет")
+    mark = "«" + (entry.get("src") or "").strip() + "» — «" + entry["tgt"].strip() + "»"
+    reverted, requeued, skipped = [], [], []
+    for p in STATE["projects"]:
+        if _project_scope(p) != scope:
+            continue
+        if req.project and p["id"] != req.project:
+            continue
+        for seg in p["segments"]:
+            rp = seg.get("repair") or {}
+            if not rp.get("applied"):
+                continue
+            issues = list(rp.get("issues") or ())
+            if not any(mark in (t or "") for t in issues):
+                continue
+            old = rp.get("from")
+            if not (old or "").strip():
+                # Ремонт не сохранил прежний текст — вернуть нечем, врать нельзя.
+                skipped.append({"project": p["id"], "id": seg["id"]})
+                continue
+            if len(issues) > 1:
+                # Правка чинила не только это. Откат унёс бы верные исправления —
+                # отдаём сегмент ремонту заново, без понижённого требования.
+                rp.pop("source_hash", None)
+                requeued.append({"project": p["id"], "id": seg["id"]})
+                continue
+            _replace_target(seg, old, rp.get("model") or seg.get("provider") or "",
+                            "REPAIR_REVERT")
+            seg["status"] = "review"          # текст менял не человек
+            seg["prevTarget"] = rp.get("candidate") or rp.get("from") or ""
+            seg["repair"] = {"applied": False, "reason": "откачено: правило понижено",
+                             "from": old, "model": rp.get("model", ""),
+                             "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+            reverted.append({"project": p["id"], "id": seg["id"]})
+    if reverted or requeued:
+        save_state(STATE)
+        _IMPACT_CACHE.clear()
+        _ANALYSIS_CACHE.clear()
+    return {"ok": True, "reverted": reverted, "revertedCount": len(reverted),
+            "requeued": requeued, "requeuedCount": len(requeued),
+            "skipped": skipped, "skippedCount": len(skipped),
+            "requeuedWhy": ("правка чинила не только это — прежний текст унёс бы "
+                            "и верные исправления; сегменты отданы ремонту заново"
+                            if requeued else ""),
+            "skippedWhy": ("ремонт не сохранил прежний текст — вернуть нечем"
+                           if skipped else "")}
+
+
 @app.delete("/api/glossary")
 def delete_term(src: str, lang: str = "", domain: str = ""):
     """Удаление — операция без отмены, поэтому область здесь трактуется строго.

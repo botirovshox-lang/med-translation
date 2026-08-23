@@ -26,6 +26,9 @@ sys.path.insert(0, "backend")
 import main
 
 main.save_state = lambda *a, **k: None
+# Настоящая сверка: ниже её подменяют заглушками, а блок про разбор
+# ответа судьи проверяет именно её — значит её надо сохранить до подмен.
+REAL_MEANING = main._openai_meaning
 # Бэкапы выноса пишем во временный каталог: боевой data/backups не трогаем.
 TMP = tempfile.mkdtemp(prefix="mcat-purge-")
 main.PURGE_DIR = __import__("pathlib").Path(TMP)
@@ -482,6 +485,99 @@ main._openai_meaning = judge([GOOD])
 r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=True))
 check(r["checked"] == 0 and r["reasked"] == 0,
       "обычный заход её не трогает и не тратит вызовов")
+
+print("\n=== 24. Явный null судьи — «не знаю», а не «понятие другое» ===")
+# Пустота могла прийти двумя путями: ключа нет (вердикты прежней версии) либо
+# явный JSON null — так модель и выражает неуверенность. Проверка «ключ есть»
+# ловила только первое, а bool(None) превращала второе в твёрдое «нет»:
+# запись понижалась, а откат переписывал сегменты — по замечанию, которого
+# не было.
+import types as _t
+
+
+class _Msg:
+    def __init__(self, c): self.content = c
+
+
+class _Resp:
+    def __init__(self, c):
+        self.choices = [_t.SimpleNamespace(message=_Msg(c))]
+        self.usage = None
+
+
+def fake_openai(payload):
+    class C:
+        def __init__(self, **kw): pass
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kw): return _Resp(payload)
+    return _t.SimpleNamespace(OpenAI=lambda **kw: _t.SimpleNamespace(
+        chat=_t.SimpleNamespace(completions=_t.SimpleNamespace(
+            create=lambda **kw: _Resp(payload)))))
+
+
+os.environ["OPENAI_API_KEY"] = "test-key"
+main._openai_meaning = REAL_MEANING          # проверяем РАЗБОР ответа, а не заглушку
+sys.modules["openai"] = fake_openai(
+    '{"pairs":[{"src":"хрипы","tgt":"rales","same":null,"back":"","rule":null,"why":""}]}')
+build([entry("хрипы", "rales", tier="verified")])
+got = main._openai_meaning([("хрипы", "rales")], ("RU→EN", "medical"))
+v = got[(main._norm_key("хрипы"), main._norm_key("rales"))]
+check(v["same"] is None, "явный null по same читается как «не знаю»")
+check(v["rule"] is None, "и по rule тоже")
+check(main._verdict_bad(v) is False, "находкой такое не становится")
+
+r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=False))
+check(not r["bad"], "аудит по молчанию судьи ничего не находит")
+check(main._hit_tier(main.STATE["glossary"][0]) == "verified", "и ничего не понижает")
+
+# А явный false — по-прежнему вердикт.
+sys.modules["openai"] = fake_openai(
+    '{"pairs":[{"src":"хрипы","tgt":"rales","same":false,"back":"иное","rule":true,"why":""}]}')
+got = main._openai_meaning([("хрипы", "rales")], ("RU→EN", "medical"))
+check(main._verdict_bad(got[(main._norm_key("хрипы"), main._norm_key("rales"))]) is True,
+      "явный false остаётся находкой")
+
+print("\n=== 25. Правка глоссария руками оставляет след человека ===")
+build([entry("мокрота", "phlegm", tier="verified")])
+g = main.STATE["glossary"][0]
+check(not main._human_touched(g), "до правки следа нет")
+main.save_term(main.TermRequest(src="мокрота", tgt="sputum", cat="Term",
+                                lang="RU→EN", domain="medical"))
+g = main._glossary_entry("мокрота", ("RU→EN", "medical"))
+check(main._human_touched(g),
+      "после правки руками запись защищена от понижения без разрешения")
+
+print("\n=== 26. Понижение не оставляет чужой prevTgt ===")
+# Из-за чего: откат читает prevTgt безусловно. Значение, оставшееся от прошлой
+# пачки, воскресило бы перевод, от которого давно отказались.
+g = entry("бухтообразный", "scalloped", tier="verified")
+g["prevTgt"] = "bay-shaped"          # хвост от давней пачки автоодобрения
+build([g])
+sys.modules["openai"] = fake_openai(
+    '{"pairs":[{"src":"бухтообразный","tgt":"scalloped","same":true,"back":"то же",'
+    '"rule":false,"why":"обычное слово"}]}')
+r = main.audit_glossary(main.GlossaryAuditRequest(project=1, dry_run=False))
+check(r["downgraded"] == 1, "запись понижена")
+main.undo_auto_approve(r["batch"])
+g = main._glossary_entry("бухтообразный", ("RU→EN", "medical"))
+check(g["tgt"] == "scalloped", "откат вернул уровень, но НЕ чужой перевод")
+
+print("\n=== 27. Откат правки не выбрасывает то, что правили после ремонта ===")
+CLAIM4 = "утверждённый перевод термина «мокрота» — «sputum», в переводе его нет"
+edited = {"id": 1, "source": "Мокрота.", "target": "Sputum, corrected by hand.",
+          "status": "review",
+          "repair": {"applied": True, "from": "Phlegm.",
+                     "source_hash": main._text_hash("Sputum."),   # ремонт писал ДРУГОЙ текст
+                     "issues": [CLAIM4]}}
+build([entry("мокрота", "sputum", tier="verified", origin="confirmed:1")], [edited])
+r = main.revert_repairs_by_term(main.RevertRepairsRequest(src="мокрота", lang="RU→EN",
+                                                          domain="medical"))
+check(r["revertedCount"] == 0, "сегмент не откачен")
+check(r["skippedCount"] == 1, "и назван: текст правили после ремонта")
+check(main.STATE["projects"][0]["segments"][0]["target"] == "Sputum, corrected by hand.",
+      "ручная правка уцелела")
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))

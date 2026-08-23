@@ -2792,7 +2792,11 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     mark = ({"meaning": {"same": bool(verdict.get("same")), "rule": verdict.get("rule"),
                          "back": verdict.get("back") or "", "why": verdict.get("why") or "",
                          "pair": _text_hash(_norm_key(src) + "||" + _norm_key(tgt)),
-                         "disputed": 0, "v": MEANING_VERSION,
+                         # Счётчик жалоб — НЫНЕШНИЙ, а не ноль: иначе вердикт
+                         # рождается устаревшим, и аудит переспрашивает то,
+                         # за что уже заплатили секунду назад.
+                         "disputed": int((existing or {}).get("disputed") or 0),
+                         "v": MEANING_VERSION,
                          "model": _resolve_model(JUDGE_DEFAULT_MODEL)["id"],
                          "at": today}}
             if verdict and verdict.get("same") is not None else {})
@@ -3450,13 +3454,16 @@ def _openai_meaning(pairs: list, scope: tuple) -> Optional[dict]:
         out = {}
         for v in (data.get("pairs") or []):
             if isinstance(v, dict) and v.get("src") and v.get("tgt"):
+                # ПУСТОТА — это «не знаю», а не «нет». Ключ мог отсутствовать
+                # (вердикты прежней версии промпта) либо прийти с явным JSON
+                # null — так модель и выражает неуверенность. Проверка «ключ
+                # есть» ловила только первое, а `bool(None)` превращала второе
+                # в твёрдое «понятие другое»: запись понижалась, и откат
+                # переписывал сегменты — по замечанию, которого не было.
                 out[(_norm_key(v["src"]), _norm_key(v["tgt"]))] = {
-                    "same": (bool(v["same"]) if "same" in v else None),
+                    "same": (None if v.get("same") is None else bool(v["same"])),
                     "back": (v.get("back") or "").strip(),
-                    # Отсутствие поля — «не знаю», а не «годится»: вердикты,
-                    # записанные прежней версией, его не содержат, и читать
-                    # их как одобрение значило бы закрыть записи от проверки.
-                    "rule": (bool(v["rule"]) if "rule" in v else None),
+                    "rule": (None if v.get("rule") is None else bool(v["rule"])),
                     "why": (v.get("why") or "").strip()}
         return out
     except Exception as e:
@@ -4048,7 +4055,12 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
         # Перевод не трогаем: понижается только уровень доверия.
         # prevOrigin обязателен: откат при его отсутствии СНИМАЕТ origin
         # (см. undo_auto_approve) — запись потеряла бы своё происхождение.
-        g.update({"prevTier": _hit_tier(g), "prevNote": g.get("note", ""),
+        # prevTgt — НЫНЕШНИЙ перевод, а не оставшийся от чужой пачки. Понижение
+        # перевода не трогает, но откат читает `prevTgt` безусловно
+        # (undo_auto_approve), и чужое значение воскресило бы перевод,
+        # от которого давно отказались.
+        g.update({"prevTgt": g.get("tgt", ""),
+                  "prevTier": _hit_tier(g), "prevNote": g.get("note", ""),
                   "prevConf": g.get("conf", ""), "prevOrigin": g.get("origin", ""),
                   "tier": GLOSSARY_TIER_SOFT, "conf": "medium",
                   # Причина в примечании — та, по которой запись и понижена:
@@ -4062,8 +4074,17 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
     # Понижение снимает повод чинить дальше, но уже переписанное так и осталось.
     # Возвращаем его тем же нажатием: руками это сотни сегментов, а откат
     # ничего не сочиняет — подставляет текст, что стоял до правки.
-    back = _revert_repairs_bulk(list(flagged.values()), scope or (DEFAULT_GLOSS_LANG,
-                                                                  DEFAULT_GLOSS_DOMAIN))
+    # Область берём у самих записей: разбор без проекта охватывает ВСЕ пары
+    # языков, и один общий откат по области по умолчанию трогал бы чужие
+    # сегменты, а до остальных не доходил вовсе.
+    back = {"reverted": 0, "requeued": 0, "skipped": 0}
+    by_scope: dict = {}
+    for b in flagged.values():
+        by_scope.setdefault((b["lang"], b["domain"]), []).append(b)
+    for sc, items in by_scope.items():
+        part = _revert_repairs_bulk(items, sc)
+        for k in back:
+            back[k] += part[k]
     if back["reverted"] or back["requeued"]:
         _IMPACT_CACHE.clear()
         _ANALYSIS_CACHE.clear()
@@ -5673,8 +5694,14 @@ def save_term(req: TermRequest):
                          if _norm_key(g.get("src")) == _norm_key(req.src)), None)
     # Правка руками = проверенная запись: только такие идут в промпт приказом.
     if existing and not req.isNew:
+        # След решения человека обязателен. Без него `_human_touched` правку
+        # руками не отличает от записи массового импорта, и аудит понижает её
+        # без разрешения — то есть машина молча отменяет то, что человек
+        # только что вписал сам.
         existing.update({"tgt": req.tgt, "cat": req.cat, "freq": req.freq, "conf": req.conf,
-                         "tier": GLOSSARY_TIER_HARD})
+                         "tier": GLOSSARY_TIER_HARD,
+                         "note": "уточнено вручную "
+                                 + datetime.now().strftime("%Y-%m-%d")})
         _clear_auto_marks(existing)
     else:
         STATE["glossary"].insert(0, {**req.dict(exclude={"isNew"}), "tier": GLOSSARY_TIER_HARD,
@@ -5718,6 +5745,14 @@ def _revert_repairs_bulk(entries: list, scope: tuple) -> dict:
                 continue
             issues = list(rp.get("issues") or ())
             if not any(m in (t or "") for t in issues for m in marks):
+                continue
+            # В сегменте должен стоять ИМЕННО тот текст, что написал ремонт.
+            # Иначе перевод правили после него — руками или другим прогоном —
+            # и подстановка `repair.from` выбросила бы чужую работу молча.
+            # Проверка идёт ПОСЛЕ сверки претензии: до неё она отсеивала бы
+            # и сегменты, к этой записи отношения не имеющие.
+            if not _repair_tried(seg):
+                skip += 1
                 continue
             old_text = rp.get("from")
             if not (old_text or "").strip():
@@ -5859,6 +5894,10 @@ def revert_repairs_by_term(req: RevertRepairsRequest):
                 continue
             issues = list(rp.get("issues") or ())
             if not any(mark in (t or "") for t in issues):
+                continue
+            if not _repair_tried(seg):
+                # Текст правили после ремонта — возвращать нечего и нельзя.
+                skipped.append({"project": p["id"], "id": seg["id"]})
                 continue
             old = rp.get("from")
             if not (old or "").strip():

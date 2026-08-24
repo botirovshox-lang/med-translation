@@ -96,6 +96,19 @@
     medicalQABatch:(pid, segIds, bcModel)    => call("POST",   `/projects/${pid}/medical-qa/batch`,   { segment_ids: segIds || null, run_backcheck: true, bc_model: bcModel || null }),
     preflight:     (pid)                    => call("POST",   `/projects/${pid}/preflight`),
     exportProject: (pid, format, source)    => call("POST",   `/projects/${pid}/export`,            { format, source: source !== false }),
+    /* Исходный .docx для экспорта 1в1. Переводы и проверки не трогает: пишется
+       только файл и карта абзацев рядом с ним. force — согласие человека
+       положить файл, совпавший меньше чем наполовину. */
+    attachSource: async (pid, file, force) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("force", force ? "true" : "false");
+      const r = await fetch((window.API_BASE || "") + "/api/projects/" + pid + "/source",
+                            { method: "POST", body: fd, headers: authHeaders({}) });
+      if (r.status === 401) onUnauthorized();
+      if (!r.ok) { const t = await r.text().catch(() => ""); throw new Error("Attach failed: " + r.status + " " + t); }
+      return r.json();
+    },
 
     termcheck:     (pid, sid, model)        => call("POST", `/segments/${pid}/${sid}/termcheck`, { model: model || null }),
     repair:        (pid, sid, opts)         => call("POST", `/segments/${pid}/${sid}/repair`, opts || {}),

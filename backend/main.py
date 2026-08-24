@@ -42,6 +42,8 @@ import asyncio
 import threading
 from pathlib import Path
 from typing import Optional, Any, List
+import io
+import html as _html_mod
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
@@ -1884,6 +1886,109 @@ def create_project(req: CreateProjectRequest):
     return new_project
 
 
+# ─── Исходный .docx: хранение и разметка ────────────────────────────
+# Экспорт «как в оригинале» невозможен из одних сегментов: импорт забирает
+# голый текст, а шрифты, картинки, таблицы и разметка живут в файле. Значит
+# файл надо хранить и при выгрузке подменять в НЁМ текст, а не собирать
+# документ заново — тогда всё, чего мы не трогали, остаётся ровно таким,
+# каким его сделал автор.
+#
+# Якорь сегмента — НОМЕР абзаца в порядке XML. Файл лежит у нас и больше
+# не меняется, поэтому номер стабилен; хранить w14:paraId незачем — его нет
+# в документах старых версий Word, а разбирать два вида якорей значит однажды
+# разойтись с самим собой.
+SOURCE_DIR = DATA_DIR / "sources"   # внутри ReadWritePaths systemd-юнита
+
+# Отбор абзацев в сегменты. Вынесен из upload_project, потому что теперь те же
+# правила нужны второму месту — привязке исходника к УЖЕ существующему проекту.
+# Разойдись они, привязка сажала бы перевод не на те абзацы.
+_SKIP_PARA_RE = re.compile(r'[\d\s\-–—.,:;()\[\]/]+')
+
+
+def _docx_clean(text: str) -> str:
+    text = _html_mod.unescape(text)
+    text = re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]', '', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def _docx_paragraphs(content: bytes) -> list:
+    """Текст КАЖДОГО абзаца документа в порядке XML — включая те, что
+    в сегменты не пойдут. Индекс в этом списке и есть якорь, поэтому список
+    обязан быть полным: выбросишь пустые абзацы — и номера уедут."""
+    from docx import Document
+    from docx.oxml.ns import qn as _qn
+    doc = Document(io.BytesIO(content))
+    # .// — все абзацы, включая вложенные таблицы и надписи
+    return [_docx_clean("".join(t.text for t in p.iter(_qn("w:t")) if t.text))
+            for p in doc.element.body.findall(".//" + _qn("w:p"))]
+
+
+def _docx_units(paras: list) -> list:
+    """(текст сегмента, [номера абзацев]) по правилам импорта: слишком короткие
+    и чисто цифровые абзацы переводить нечего, соседние одинаковые строки —
+    это один сегмент.
+
+    Соседний повтор раньше просто выбрасывался. Теперь он попадает в тот же
+    сегмент вторым якорем: при выгрузке перевод должен встать в ОБА абзаца,
+    иначе второй останется на языке оригинала."""
+    units: list = []
+    prev = None
+    for i, t in enumerate(paras):
+        if len(t) < 2 or _SKIP_PARA_RE.fullmatch(t):
+            continue
+        if t == prev and units:
+            units[-1][1].append(i)
+            continue
+        units.append((t, [i]))
+        prev = t
+    return units
+
+
+def _source_paths(pid: int) -> tuple:
+    return SOURCE_DIR / ("%d.docx" % pid), SOURCE_DIR / ("%d.json" % pid)
+
+
+def _store_source_docx(project: dict, content: bytes, filename: str,
+                       pairs: list, paras: int) -> dict:
+    """Кладёт исходник и карту «абзац → сегмент» рядом с ним.
+
+    Карта принадлежит файлу, а не состоянию проекта: state.json целиком лежит
+    в памяти и переписывается ПРИ КАЖДОМ сохранении, а на 2670 сегментах карта
+    весит десятки килобайт — это лишний мегабайт записи на каждую правку
+    одного сегмента. В самом проекте остаётся только отметка о наличии."""
+    SOURCE_DIR.mkdir(parents=True, exist_ok=True)
+    docx_path, map_path = _source_paths(project["id"])
+    tmp = docx_path.with_name(docx_path.name + ".tmp")
+    tmp.write_bytes(content)
+    os.replace(str(tmp), str(docx_path))
+    payload = {"file": filename, "paras": paras, "pairs": pairs,
+               "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    tmp = map_path.with_name(map_path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(str(tmp), str(map_path))
+    mark = {"file": filename, "at": payload["at"], "paras": paras,
+            "segments": len({p[1] for p in pairs})}
+    project["sourceDocx"] = mark
+    return mark
+
+
+def _load_source_map(pid: int) -> Optional[dict]:
+    """Карта и файл читаются только вместе: карта без файла и файл без карты
+    одинаково бесполезны, а отметка в проекте могла пережить их обоих —
+    восстановление state.json из бэкапа файлы не возвращает."""
+    docx_path, map_path = _source_paths(pid)
+    if not docx_path.exists() or not map_path.exists():
+        return None
+    try:
+        data = json.loads(map_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print("[backend] карта исходника проекта %s не читается: %s" % (pid, e),
+              file=sys.stderr)
+        return None
+    data["path"] = docx_path
+    return data
+
+
 @app.post("/api/projects/upload")
 async def upload_project(
     file: UploadFile = File(...),
@@ -1892,47 +1997,18 @@ async def upload_project(
     tgt: str = Form("EN"),
     domain: str = Form(DEFAULT_DOMAIN),
 ):
-    import io, re, html as _html
     try:
-        from docx import Document
+        import docx  # noqa: F401 — проверка наличия, разбор идёт в _docx_paragraphs
     except ImportError:
         raise HTTPException(500, "python-docx not installed")
 
     content = await file.read()
-    try:
-        from docx.oxml.ns import qn as _qn
-    except ImportError:
-        raise HTTPException(500, "python-docx not installed")
-
-    doc = Document(io.BytesIO(content))
-
-    def clean(text):
-        text = _html.unescape(text)
-        text = re.sub(r'[\x00-\x08\x0B-\x0C\x0E-\x1F\x7F]', '', text)
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text
-
-    def para_text(p_elem):
-        return clean("".join(t.text for t in p_elem.iter(_qn("w:t")) if t.text))
-
-    # Walk ALL paragraphs in document XML order (catches nested tables, frames, etc.)
-    all_p = doc.element.body.findall(".//" + _qn("w:p"))
-    raw = [para_text(p) for p in all_p]
-
-    # Filter: skip pure digits/spaces/punctuation or very short
-    segments_text = [
-        t for t in raw
-        if len(t) >= 2
-        and not re.fullmatch(r'[\d\s\-–—.,:;()\[\]/]+', t)
-    ]
-
-    # Deduplicate adjacent identical lines
-    deduped = []
-    prev = None
-    for t in segments_text:
-        if t != prev:
-            deduped.append(t)
-            prev = t
+    # Разбор и отбор — общие с привязкой исходника к готовому проекту
+    # (_docx_paragraphs / _docx_units): две копии правил однажды разошлись бы,
+    # и перевод при выгрузке встал бы не в те абзацы.
+    paras = _docx_paragraphs(content)
+    units = _docx_units(paras)
+    deduped = [t for t, _ in units]
 
     new_id = max((p["id"] for p in STATE["projects"]), default=0) + 1
     proj_title = title or file.filename.rsplit(".", 1)[0]
@@ -1963,9 +2039,98 @@ async def upload_project(
             for i, text in enumerate(deduped)
         ],
     }
+    # Исходник храним сразу: без него экспорт «как в оригинале» невозможен
+    # в принципе, а второй раз тот же файл человек может и не найти.
+    # Ошибка записи не роняет импорт: сегменты разобраны, переводить можно,
+    # а исходник прикладывается отдельной командой.
+    try:
+        pairs = [[i, u + 1] for u, (_t, idxs) in enumerate(units) for i in idxs]
+        _store_source_docx(new_project, content, file.filename, pairs, len(paras))
+    except Exception as e:
+        print("[backend] исходник проекта %s не сохранён: %s" % (new_id, e),
+              file=sys.stderr)
     STATE["projects"].insert(0, new_project)
     save_state(STATE)
     return new_project
+
+
+# ─── Привязка исходника к УЖЕ существующему проекту ─────────────────
+# Проекты, импортированные до появления экспорта «как в оригинале», исходника
+# не сохранили — а переводить их заново нельзя, там оплаченная работа. Разбор
+# детерминированный, поэтому тот же файл даёт тот же список абзацев, и якоря
+# садятся на существующие сегменты без единого изменения в переводах.
+#
+# Сопоставление идёт ПО ТЕКСТУ, а не по номерам: правила отбора абзацев
+# со временем меняются (номера страниц из оглавления, табуляции), и жёсткая
+# привязка «первый абзац = первый сегмент» после любой такой правки посадила
+# бы перевод на чужие строки — молча и по всему документу.
+_SOURCE_LOOKAHEAD = 50   # насколько далеко вперёд ищем сегмент под абзац
+
+
+def _match_key(text: str) -> str:
+    return re.sub(r'\s+', ' ', (text or "")).strip().lower()
+
+
+def _map_source_to_segments(units: list, segments: list) -> tuple:
+    """(пары «абзац → id сегмента», сколько сегментов нашлось).
+
+    Идём двумя указателями вперёд: документ тот же и порядок тот же, поэтому
+    окно поиска маленькое. Абзац, которому сегмента не нашлось, пропускаем —
+    при выгрузке он останется на языке оригинала, и это честнее, чем сдвинуть
+    на него чужой перевод."""
+    pairs, matched = [], set()
+    j = 0
+    for text, idxs in units:
+        key = _match_key(text)
+        hit = None
+        for k in range(j, min(j + _SOURCE_LOOKAHEAD, len(segments))):
+            if _match_key(segments[k].get("source")) == key:
+                hit = k
+                break
+        if hit is None:
+            continue
+        for i in idxs:
+            pairs.append([i, segments[hit]["id"]])
+        matched.add(segments[hit]["id"])
+        j = hit + 1
+    return pairs, len(matched)
+
+
+@app.post("/api/projects/{pid}/source")
+async def attach_source(pid: int, file: UploadFile = File(...), force: bool = Form(False)):
+    """Приложить исходный .docx к готовому проекту — для экспорта 1в1.
+
+    Переводы, проверки и статусы не трогаются вообще: пишется только файл
+    и карта абзацев рядом с ним."""
+    project = get_project(pid)
+    try:
+        import docx  # noqa: F401
+    except ImportError:
+        raise HTTPException(500, "python-docx not installed")
+    content = await file.read()
+    try:
+        paras = _docx_paragraphs(content)
+    except Exception as e:
+        return {"ok": False, "error": "Файл не читается как .docx: %s" % e}
+
+    units = _docx_units(paras)
+    pairs, matched = _map_source_to_segments(units, project["segments"])
+    total = len(project["segments"])
+    stats = {"paras": len(paras), "units": len(units),
+             "segments": total, "matched": matched, "unmatched": total - matched}
+
+    # Не тот файл виден по числу совпадений, и молча положить его нельзя:
+    # экспорт потом расставил бы переводы по чужим абзацам. Порог — половина:
+    # правки отбора абзацев столько не съедают, а другой документ не наберёт.
+    if not force and (matched == 0 or matched * 2 < total):
+        return {"ok": False, "stats": stats,
+                "error": ("Совпало %d сегментов из %d — похоже, это другой файл "
+                          "или другая его редакция. Экспорт 1в1 расставил бы "
+                          "переводы по чужим абзацам." % (matched, total))}
+
+    mark = _store_source_docx(project, content, file.filename, pairs, len(paras))
+    save_state(STATE)
+    return {"ok": True, "stats": stats, "sourceDocx": mark}
 
 
 # ─── Segment actions ────────────────────────────────────────────────
@@ -5600,13 +5765,203 @@ EXPORT_DIR = DATA_DIR / "exports"   # внутри ReadWritePaths systemd-юни
 def _safe_filename(name: str) -> str:
     return _re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "_", name).strip() or "project"
 
-def _generate_export(project: dict, fmt: str, include_source: bool = True) -> Path:
-    """Собирает реальный файл экспорта. Раньше экспорт был фиктивным —
-    файл не создавался вовсе, только запись в историю."""
+# ─── Экспорт «как в оригинале» ──────────────────────────────────────
+# Документ не собирается заново, а открывается исходный и в нём подменяется
+# текст. Всё, чего мы не тронули, остаётся байт в байт: шрифты, кегли,
+# картинки, таблицы, колонтитулы, нумерация, разметка страницы. Собрать это
+# из сегментов невозможно — в сегментах нет ни шрифта, ни картинок.
+_XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+
+
+def _rpr_sig(rpr) -> tuple:
+    """Отпечаток оформления прогона. Своими руками, а не сериализацией XML:
+    lxml пришлось бы тащить в модуль, который умеет стартовать и без
+    python-docx (тогда просто нет экспорта, а не падения при импорте)."""
+    if rpr is None:
+        return ()
+    return (rpr.tag, tuple(sorted(rpr.attrib.items())),
+            tuple(_rpr_sig(c) for c in rpr))
+
+
+def _para_slots(p_elem, qn) -> tuple:
+    """(куда можно писать, хвост из пропущенного текста).
+
+    Первое — список пар «узел w:t, отпечаток оформления его прогона»
+    в порядке документа. Пропускаем три вещи, и каждая не мелочь:
+
+    * ПОЛЯ (w:fldChar/w:instrText, w:fldSimple). В строке оглавления там
+      лежит номер страницы — тот самый «85», который импорт приклеил
+      к заголовку. Считает его Word, и записать туда перевод значит сломать
+      оглавление.
+    * СКРЫТЫЙ текст (w:webHidden, w:vanish) — его в документе не видно,
+      и перевод, попавший туда, не увидит никто.
+    * ВЛОЖЕННЫЕ абзацы: надпись или таблица внутри абзаца — это свои w:p
+      со своими якорями. Захватить их значит написать один перевод дважды
+      и стереть другой.
+
+    Второе — текст, пропущенный ПОСЛЕ последнего пригодного узла. Нужен
+    ровно для одного: импорт склеивал весь текст абзаца подряд, поэтому
+    в старых сегментах номер страницы сидит внутри самой строки, а значит
+    и внутри её перевода. Зная хвост, его можно снять и не написать «85»
+    дважды — рядом с настоящим полем."""
+    slots: list = []
+    tail: list = []
+    state = {"fld": 0}
+
+    def walk(el, hidden, sig):
+        for ch in el:
+            tag = ch.tag
+            if tag == qn("w:p") or tag == qn("w:fldSimple"):
+                continue
+            if tag == qn("w:fldChar"):
+                kind = ch.get(qn("w:fldCharType"))
+                if kind == "begin":
+                    state["fld"] += 1
+                elif kind == "end":
+                    state["fld"] = max(0, state["fld"] - 1)
+                continue
+            if tag == qn("w:instrText"):
+                continue
+            if tag == qn("w:t"):
+                if hidden or state["fld"]:
+                    tail.append(ch.text or "")
+                else:
+                    slots.append((ch, sig))
+                    tail.clear()
+                continue
+            if tag == qn("w:r"):
+                rpr = ch.find(qn("w:rPr"))
+                # Отпечаток оформления, а не сам факт разбиения на прогоны:
+                # Word режет текст на прогоны сам по себе (проверка орфографии,
+                # метки правок), и у соседних кусков оформление сплошь и рядом
+                # одинаковое. Склейка таких прогонов не теряет НИЧЕГО, и считать
+                # её потерей значит пугать человека пустой цифрой.
+                walk(ch,
+                     hidden or (rpr is not None
+                                and (rpr.find(qn("w:webHidden")) is not None
+                                     or rpr.find(qn("w:vanish")) is not None)),
+                     _rpr_sig(rpr))
+                continue
+            walk(ch, hidden, sig)
+
+    walk(p_elem, False, ())
+    return slots, "".join(tail)
+
+
+def _export_docx_layout(project: dict, out: Path) -> dict:
+    """Подставляет переводы в сохранённый исходник и сохраняет копию.
+
+    Перевод целиком уходит в ПЕРВЫЙ пригодный прогон абзаца, остальные
+    очищаются. Значит форматирование абзаца (шрифт, кегль, цвет, выравнивание,
+    стиль) сохраняется, а разное оформление ВНУТРИ абзаца — одно слово
+    жирным — схлопывается в оформление первого прогона. Иначе никак:
+    сегмент это строка текста, границ жирного куска в ней нет, и разложить
+    перевод по прогонам можно только гаданием. Молчать об этом нельзя,
+    поэтому число таких абзацев возвращается в отчёте."""
+    # Отметка в проекте — часть опознания, а не украшение: номера проектов
+    # переиспользуются (id = max + 1), и файл удалённого проекта мог бы
+    # достаться новому с тем же номером. Проект без отметки исходника
+    # не имеет, чей бы файл ни лежал на диске.
+    data = _load_source_map(project["id"]) if project.get("sourceDocx") else None
+    if data is None:
+        raise HTTPException(400, "К проекту не приложен исходный .docx — "
+                                 "экспорт 1в1 собрать не из чего")
+    try:
+        from docx import Document
+        from docx.oxml.ns import qn
+    except ImportError:
+        raise HTTPException(500, "python-docx not installed")
+
+    doc = Document(str(data["path"]))
+    all_p = doc.element.body.findall(".//" + qn("w:p"))
+    if len(all_p) != data.get("paras"):
+        # Файл под картой подменили. Молча продолжать нельзя: номера абзацев
+        # уехали, и перевод встал бы по всему документу не на свои места.
+        raise HTTPException(400, "Исходник разошёлся с картой абзацев "
+                                 "(%s против %s) — приложите файл заново"
+                                 % (len(all_p), data.get("paras")))
+
+    by_id = {s["id"]: s for s in project["segments"]}
+    stats = {"paragraphs": len(all_p), "written": 0, "untranslated": 0,
+             "noslot": 0, "mismatch": 0, "merged": 0, "trimmed": 0, "lost": 0}
+    shown = 0
+    for idx, sid in data.get("pairs") or []:
+        seg = by_id.get(sid)
+        if seg is None or idx >= len(all_p):
+            # Сегмент удалили после привязки — абзац остаётся на языке оригинала.
+            stats["lost"] += 1
+            continue
+        target = (seg.get("target") or "").strip()
+        if not target:
+            stats["untranslated"] += 1
+            continue
+        slots, tail = _para_slots(all_p[idx], qn)
+        if not slots:
+            # Весь текст абзаца лежит в поле или скрыт — вписывать некуда.
+            stats["noslot"] += 1
+            continue
+        source = seg.get("source") or ""
+        keep = "".join((n.text or "") for n, _sig in slots)
+        tail = tail.strip()
+        if (tail and _match_key(keep + tail) == _match_key(source)
+                and target.rstrip().endswith(tail)):
+            # Старый импорт склеивал весь текст абзаца подряд, поэтому номер
+            # страницы из оглавления попал и в сегмент, и в его перевод.
+            # Снимаем ровно этот хвост и ровно тогда, когда он подтверждён
+            # и текстом абзаца, и текстом сегмента: иначе в оглавлении встанет
+            # «…trachea85» рядом с настоящим полем, показывающим те же «85».
+            target = target.rstrip()[:-len(tail)].rstrip()
+            stats["trimmed"] += 1
+        elif _match_key(keep) != _match_key(source):
+            # Текст сегмента разошёлся с текстом абзаца по другой причине.
+            # Пишем всё равно (перевод абзаца лучше оригинала), но считаем
+            # и называем: большое число здесь означает, что карта села не так.
+            stats["mismatch"] += 1
+            if shown < 5:
+                shown += 1
+                print("[backend] экспорт 1в1: абзац %d не совпал с сегментом #%d\n"
+                      "  в файле:    %r\n  в сегменте: %r"
+                      % (idx, sid, keep[:120], source[:120]), file=sys.stderr)
+        # Пишем не в ПЕРВЫЙ прогон, а в самый длинный. Разница видна на
+        # «**Термин** — определение…»: в первом прогоне там жирное слово,
+        # и перевод всего абзаца ушёл бы жирным. В самом длинном лежит
+        # основной текст, поэтому абзац сохраняет свой обычный вид, а теряется
+        # выделение одного слова. Порядок текста не меняется: остальные
+        # прогоны остаются на местах, просто пустыми.
+        main_i = max(range(len(slots)), key=lambda i: len(slots[i][0].text or ""))
+        if len({sig for _n, sig in slots}) > 1:
+            stats["merged"] += 1
+        for i, (n, _sig) in enumerate(slots):
+            n.text = target if i == main_i else ""
+        slots[main_i][0].set(_XML_SPACE, "preserve")
+        stats["written"] += 1
+
+    doc.save(str(out))
+    return stats
+
+
+# Расширение файла и приписка к имени по формату. Формат docx_layout тоже
+# отдаёт .docx, но имя обязано отличаться: два экспорта одного проекта иначе
+# перезаписывали бы друг друга, и человек скачивал бы не то, что просил.
+EXPORT_EXT = {"docx": "docx", "xlsx": "xlsx", "docx_layout": "docx"}
+EXPORT_SUFFIX = {"docx_layout": " 1в1"}
+
+
+def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tuple:
+    """Собирает реальный файл экспорта и отчёт о том, что в него попало.
+    Раньше экспорт был фиктивным — файл не создавался вовсе, только запись
+    в историю."""
     EXPORT_DIR.mkdir(exist_ok=True)
-    out = EXPORT_DIR / f"{_safe_filename(project['title'])}.{fmt}"
+    ext = EXPORT_EXT.get(fmt)
+    if not ext:
+        raise HTTPException(400, f"Формат {fmt} не поддерживается")
+    out = EXPORT_DIR / (_safe_filename(project["title"])
+                        + EXPORT_SUFFIX.get(fmt, "") + "." + ext)
+    stats: dict = {}
     segs = project["segments"]
-    if fmt == "docx":
+    if fmt == "docx_layout":
+        stats = _export_docx_layout(project, out)
+    elif fmt == "docx":
         from docx import Document
         doc = Document()
         doc.add_heading(project["title"], level=1)
@@ -5637,21 +5992,23 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> Pa
             ws.append([s["id"], s.get("source", ""), s.get("target", ""),
                        s.get("status", ""), s.get("route", ""), s.get("risk", "")])
         wb.save(str(out))
-    else:
-        raise HTTPException(400, f"Формат {fmt} не поддерживается")
-    return out
+    return out, stats
 
 @app.post("/api/projects/{pid}/export")
 def export_project(pid: int, req: ExportRequest):
     project = get_project(pid)
     fmt = req.format.lower()
-    if fmt not in {"docx", "xlsx"}:
+    if fmt not in EXPORT_EXT:
         return {"ok": False,
                 "error": f"Формат {fmt.upper()} пока не поддерживается — выберите DOCX или Excel."}
     try:
-        path = _generate_export(project, fmt, include_source=req.source)
+        path, stats = _generate_export(project, fmt, include_source=req.source)
     except ImportError as e:
         return {"ok": False, "error": f"На сервере нет библиотеки для {fmt.upper()}: {e}"}
+    except HTTPException as e:
+        # Нет исходника, файл разошёлся с картой — это не сбой сервера, а
+        # разговор с человеком: он приложит файл и повторит.
+        return {"ok": False, "error": e.detail}
     size_kb = max(1, path.stat().st_size // 1024)
     STATE["exportHistory"].insert(0, {
         "file": path.name,
@@ -5660,19 +6017,19 @@ def export_project(pid: int, req: ExportRequest):
     })
     STATE["exportHistory"] = STATE["exportHistory"][:50]
     save_state(STATE)
-    return {"ok": True, "file": path.name, "size": f"{size_kb} КБ",
+    return {"ok": True, "file": path.name, "size": f"{size_kb} КБ", "stats": stats,
             "url": f"/api/projects/{pid}/export/download?format={fmt}&source={1 if req.source else 0}"}
 
 @app.get("/api/projects/{pid}/export/download")
 def download_export(pid: int, format: str = "docx", source: bool = True):
     project = get_project(pid)
     fmt = format.lower()
-    if fmt not in {"docx", "xlsx"}:
-        raise HTTPException(400, "Поддерживаются только docx и xlsx")
-    path = _generate_export(project, fmt, include_source=source)
-    media = ("application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-             if fmt == "docx"
-             else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    if fmt not in EXPORT_EXT:
+        raise HTTPException(400, "Поддерживаются только docx, docx_layout и xlsx")
+    path, _stats = _generate_export(project, fmt, include_source=source)
+    media = ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+             if fmt == "xlsx"
+             else "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     return FileResponse(str(path), media_type=media, filename=path.name)
 
 
@@ -5718,6 +6075,15 @@ def save_term(req: TermRequest):
 @app.delete("/api/projects/{pid}")
 def delete_project(pid: int):
     STATE["projects"] = [p for p in STATE["projects"] if p["id"] != pid]
+    # Исходник уходит вместе с проектом. Учебник весит 21 МБ, и оставлять его
+    # на диске после удаления значит копить мусор, который никто уже не найдёт:
+    # имя файла — номер проекта, а проекта больше нет.
+    for path in _source_paths(pid):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            print("[backend] исходник проекта %s не удалён: %s" % (pid, e),
+                  file=sys.stderr)
     save_state(STATE)
     return {"ok": True}
 

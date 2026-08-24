@@ -98,6 +98,11 @@ function useStore(authed) {
   };
 
   const addProject = (project) => setProjects(ps => [project, ...ps.filter(p => p.id !== project.id)]);
+  /* Правка полей проекта БЕЗ его перезагрузки и без изменения порядка списка:
+     проект на 2670 сегментов весит 5 МБ, и тянуть его ради одной отметки
+     (например, о приложенном исходнике) — мегабайты трафика на пустом месте. */
+  const patchProject = (pid, patch) =>
+    setProjects(ps => ps.map(p => p.id !== pid ? p : { ...p, ...patch }));
   const openProject = (id) => { setActiveId(id); setTab("editor"); };
   const replaceProjectSegments = (pid, segments) =>
     setProjects(ps => ps.map(p => p.id !== pid ? p : { ...p, segments }));
@@ -134,7 +139,7 @@ function useStore(authed) {
     projects, glossary, tm, activeId, activeProject, tab,
     exportHistory, team: window.SEED.team, me, apiReady,
     segmentFilter, gotoSegId,
-    go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, openProject, deleteProject, replaceProjectSegments, saveTerm, deleteTerm, deleteTM,
+    go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, patchProject, openProject, deleteProject, replaceProjectSegments, saveTerm, deleteTerm, deleteTM,
     setExportHistory,
     setSegmentFilter: (ids) => {
       const f = ids && ids.length ? new Set(ids) : null;

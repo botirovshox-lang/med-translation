@@ -6,7 +6,36 @@ function TabExport({ store, toast }) {
   const [fmt, setFmt] = useState("docx");
   const [opts, setOpts] = useState({ source: true, notes: true, qa: false, glossary: true });
   const [busy, setBusy] = useState(false);
+  const [attaching, setAttaching] = useState(false);
+  const fileRef = React.useRef(null);
   if (!project) return React.createElement("div", { className: "page" }, React.createElement(NoProject, { store }));
+
+  /* Исходник проекта. Есть он или нет — единственное, что решает, доступен ли
+     экспорт 1в1: собрать оформление из сегментов нельзя, в них нет ни шрифта,
+     ни картинок. Проекты, импортированные до появления этого формата, файла
+     не сохранили, поэтому его прикладывают здесь же. */
+  const srcDoc = project.sourceDocx || null;
+  const doAttach = async (file, force) => {
+    if (!file || !window.API) return;
+    setAttaching(true);
+    const res = await window.API.safeCall(() => window.API.attachSource(project.id, file, force));
+    setAttaching(false);
+    if (fileRef.current) fileRef.current.value = "";
+    if (!res) { toast.error("Файл не приложен", "Сервер недоступен."); return; }
+    const st = res.stats || {};
+    if (!res.ok) {
+      // Не тот файл виден по числу совпадений, и молчать об этом нельзя:
+      // экспорт расставил бы переводы по чужим абзацам.
+      toast.error("Файл не приложен", res.error || "Сервер отказал.");
+      return;
+    }
+    // Точечная правка проекта в сторе, а не перезагрузка: проект на 2670
+    // сегментов весит 5 МБ, и тянуть его ради одной отметки незачем.
+    if (store.patchProject) store.patchProject(project.id, { sourceDocx: res.sourceDocx });
+    toast.success("Исходник приложен",
+      "Абзацев: " + st.paras + " · сегментов совпало: " + st.matched + " из " + st.segments
+        + (st.unmatched ? " · без пары: " + st.unmatched + " (останутся на языке оригинала)" : ""));
+  };
 
   const toggle = (k) => setOpts(o => ({ ...o, [k]: !o[k] }));
   const doExport = async () => {
@@ -25,13 +54,27 @@ function TabExport({ store, toast }) {
       if (store.setExportHistory) {
         store.setExportHistory(h => [{ file: result.file, when: new Date().toISOString().slice(0,16).replace("T"," "), size: result.size || "" }, ...h]);
       }
-      toast.success("Файл готов", result.file + " — загрузка началась.");
+      const st = result.stats || {};
+      // Про 1в1 говорим не «готово», а что именно легло в файл: сколько абзацев
+      // переведено, сколько осталось по-русски и в скольких схлопнулось
+      // оформление внутри абзаца. Без этих цифр человек узнаёт о пропусках,
+      // только пролистав документ до конца.
+      toast.success("Файл готов", st.written != null
+        ? (result.file + " · переведено абзацев: " + st.written
+           + (st.untranslated ? " · без перевода: " + st.untranslated : "")
+           + (st.merged ? " · оформление внутри абзаца склеено: " + st.merged : ""))
+        : (result.file + " — загрузка началась."));
     } else {
       toast.error("Экспорт не выполнен", (result && result.error) || "Сервер недоступен или вернул ошибку.");
     }
   };
+  // Описания честные: обычный DOCX собирается ЗАНОВО и оформления исходника
+  // не переносит вовсе — карточка годами обещала обратное.
   const formats = [
-    ["docx", "DOCX", "Microsoft Word — сохраняет форматирование", "file"],
+    ["docx_layout", "DOCX 1\u04321 \u2014 как оригинал",
+     srcDoc ? "Перевод подставляется в исходный файл: шрифты, картинки, таблицы и разметка на месте"
+            : "Нужен исходный .docx — приложите его ниже", "file"],
+    ["docx", "DOCX — новый файл", "Собирается с нуля: таблица оригинал/перевод либо перевод абзацами. Оформление исходника не переносится", "file"],
     ["pdf", "PDF", "Пока недоступен — используйте DOCX", "file"],
     ["xlsx", "Excel", "Таблица: оригинал и перевод по столбцам", "columns"],
   ];
@@ -57,6 +100,33 @@ function TabExport({ store, toast }) {
                 React.createElement("div", { className: "dim", style: { fontSize: 13 } }, d))))),
           React.createElement("p", { className: "hint", style: { marginTop: 10 } }, "DOCX рекомендуется для большинства случаев.")
         ),
+        React.createElement("div", null,
+          React.createElement("h2", { className: "section-title" }, "Исходный документ"),
+          React.createElement("div", { className: "card card-pad col", style: { gap: 12 } },
+            srcDoc
+              ? React.createElement("div", { className: "row between", style: { gap: 12, flexWrap: "wrap" } },
+                  React.createElement("div", { style: { minWidth: 0 } },
+                    React.createElement("div", { className: "row", style: { gap: 8 } },
+                      React.createElement(Icon, { name: "checkCircle", size: 16, style: { color: "var(--c-success)" } }),
+                      React.createElement("span", { style: { fontWeight: 650 } }, srcDoc.file)),
+                    React.createElement("div", { className: "dim", style: { fontSize: 12.5, marginTop: 3 } },
+                      "приложен " + (srcDoc.at || "") + " · абзацев: " + srcDoc.paras
+                        + " · с переводом связано сегментов: " + srcDoc.segments)),
+                  React.createElement(Btn, { variant: "secondary", size: "sm", icon: "upload",
+                    disabled: attaching, onClick: () => fileRef.current && fileRef.current.click() },
+                    attaching ? "Проверка…" : "Заменить"))
+              : React.createElement("div", { className: "col", style: { gap: 10 } },
+                  React.createElement("div", { style: { fontSize: 13, lineHeight: 1.55 } },
+                    "К проекту не приложен исходный .docx, поэтому экспорт 1в1 собрать не из чего. ",
+                    "Приложите тот самый файл, из которого проект импортирован: переводы, проверки и статусы не изменятся — ",
+                    "сохранится только файл и разметка «абзац → сегмент»."),
+                  React.createElement(Btn, { variant: "primary", size: "sm", icon: "upload",
+                    disabled: attaching, onClick: () => fileRef.current && fileRef.current.click() },
+                    attaching ? "Проверка файла…" : "Приложить исходник")),
+            React.createElement("input", { ref: fileRef, type: "file", accept: ".docx", style: { display: "none" },
+              onChange: (e) => doAttach(e.target.files && e.target.files[0], false) }))
+        ),
+
         React.createElement("div", null,
           React.createElement("h2", { className: "section-title" }, "Что включить"),
           React.createElement("div", { className: "card card-pad col", style: { gap: 16 } },

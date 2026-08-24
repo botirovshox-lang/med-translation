@@ -358,6 +358,12 @@ function TabEditor({ store, toast }) {
   // с прошлого раза он был бы не виден — а главная кнопка всё равно снимала бы
   // отметку «подтвердил человек», в том числе в другом проекте.
   const [rpFixConfirmed, setRpFixConfirmed] = useState(false);
+  // То же самое, но для переперевода (шаг «Перевод», solo-запуск): без него
+  // подтверждённые сегменты не показываются даже в разбивке «переведено
+  // через» — их вообще не с чем перевести повторно, пока человек явно не
+  // разрешит. Composite-прогон («Перевести и проверить») этот флаг не видит
+  // и никогда не трогает подтверждённые — см. _job_chunk_full на бэкенде.
+  const [rtFixConfirmed, setRtFixConfirmed] = useState(false);
   // Составной прогон: какие шаги входят. null = все.
   const [fullSteps, setFullSteps] = useState(null);
   // Раскрыта одна строка за раз: развёрнутые все сразу — это снова простыня,
@@ -500,6 +506,7 @@ function TabEditor({ store, toast }) {
   // Смена проекта гасит разрешение: заверял сегменты человек в ТОМ проекте,
   // и переносить на новый разрешение их переписать нельзя.
   useEffect(() => { setRpFixConfirmed(false); }, [project && project.id]);
+  useEffect(() => { setRtFixConfirmed(false); }, [project && project.id]);
 
   useEffect(() => { setTcGroupPick(null); }, [tcModel, store.segmentFilter, checkedSegs.size]);
   useEffect(() => { setRpGroupPick(null); }, [rpModel, store.segmentFilter, checkedSegs.size]);
@@ -804,6 +811,12 @@ function TabEditor({ store, toast }) {
     return p ? (p.exact ? p.id : "~" + p.id) : "none";
   };
 
+  // Подтверждённые группируем отдельным ключом от того же движка, а не вместе:
+  // это другая по цене галочка — требует rtFixConfirmed и снимает отметку
+  // «подтвердил человек», поэтому не должна прятаться внутри обычной группы
+  // движка и не отмечается по умолчанию вместе с ней.
+  const rtGroupKey = (s) => providerKey(s) + (s.status === "confirmed" ? ":confirmed" : "");
+
   // Сколько сегментов выборки переведено каким движком — для выбора галочками.
   // Как у back-check/термины/ремонта: нет явной выборки — считаем по всему
   // проекту, а не молчим. Раньше без currentIdSet список был всегда пуст,
@@ -812,21 +825,24 @@ function TabEditor({ store, toast }) {
     if (!retranslate) return [];
     const by = new Map();
     project.segments.forEach(s => {
-      if ((currentIdSet && !currentIdSet.has(s.id)) || s.status === "confirmed") return;
+      if (currentIdSet && !currentIdSet.has(s.id)) return;
+      const confirmed = s.status === "confirmed";
+      if (confirmed && !rtFixConfirmed) return;
       const p = providerOf(s);
-      const key = providerKey(s);
-      const label = p ? ((p.exact ? "" : "≈ ") + providerLabel(p, gptModels)) : "ещё не переведён";
-      const g = by.get(key) || { key, label, count: 0, exact: !!(p && p.exact) };
+      const key = rtGroupKey(s);
+      const label = (p ? ((p.exact ? "" : "≈ ") + providerLabel(p, gptModels)) : "ещё не переведён")
+        + (confirmed ? " — подтверждён человеком" : "");
+      const g = by.get(key) || { key, label, count: 0, exact: !!(p && p.exact), confirmed };
       g.count++;
       by.set(key, g);
     });
     return Array.from(by.values()).sort((a, b) => b.count - a.count);
   })();
 
-  // По умолчанию отмечено всё, кроме уже переведённого выбранной моделью:
-  // повторно платить за тот же результат смысла нет, но галочку можно вернуть.
+  // По умолчанию отмечено всё, кроме уже переведённого выбранной моделью и кроме
+  // подтверждённого человеком: последнее требует отдельной, осознанной галочки.
   const pickedProviders = providerPick
-    || new Set(providerGroups.filter(g => g.key !== gptModel).map(g => g.key));
+    || new Set(providerGroups.filter(g => g.key !== gptModel && !g.confirmed).map(g => g.key));
 
   const toggleProvider = (key) => setProviderPick(prev => {
     const next = new Set(prev || pickedProviders);
@@ -912,9 +928,10 @@ function TabEditor({ store, toast }) {
     const explicit = hasExplicitCheck || retranslate;
     let targets;
     if (explicit) {
-      targets = segs.filter(s => (!idSet || idSet.has(s.id)) && s.status !== "confirmed");
+      targets = segs.filter(s => (!idSet || idSet.has(s.id))
+        && (s.status !== "confirmed" || (retranslate && rtFixConfirmed)));
       // В режиме «заново» берём только отмеченные группы «чем переведено»
-      if (retranslate) targets = targets.filter(s => pickedProviders.has(providerKey(s)));
+      if (retranslate) targets = targets.filter(s => pickedProviders.has(rtGroupKey(s)));
     } else {
       // Раньше здесь сегменты делились по risk между Google и моделью, и запуск
       // «не той» кнопки молча оставлял половину проекта непереведённой.
@@ -951,7 +968,11 @@ function TabEditor({ store, toast }) {
     setBatchPlan(null);
     setCheckedSegs(new Set());
     startJob("translate", targets,
-      { force: !!hasExplicitCheck, model: gptModel },
+      // Без этого флага бэкенд сам молча пропустит подтверждённые из targets
+      // (см. batch_translate: force+segment_ids не значит include_confirmed) —
+      // тогда счётчик «переведено: 0» на явно отмеченных сегментах выглядел бы
+      // как сбой, а не как защита.
+      { force: !!hasExplicitCheck, model: gptModel, include_confirmed: retranslate && rtFixConfirmed },
       "Все подходящие сегменты уже переведены.",
       estimateRun("translate", targets, gptModelInfo));
   };
@@ -1376,9 +1397,11 @@ function TabEditor({ store, toast }) {
       onSolo: askRunBatch, onStop: stopJob,
       running: batchRun && batchRun.engine === "translate"
         && !(job && job.params && job.params.via === "impact") ? batchRun : null,
-      soloNote: retranslate
-        ? "Перегоняет выбранные заново. Подтверждённые не трогаются никогда, точное совпадение с памятью переводов не подставляется, прежний перевод перезаписывается."
-        : "Берёт только сегменты со статусом «Новый». Включите «Переводить заново», чтобы перегнать уже переведённое.",
+      soloNote: !retranslate
+        ? "Берёт только сегменты со статусом «Новый». Включите «Переводить заново», чтобы перегнать уже переведённое."
+        : rtFixConfirmed
+          ? "Перегоняет выбранные заново, включая подтверждённые человеком — с них снимется отметка «подтвердил человек». Точное совпадение с памятью переводов не подставляется, прежний перевод перезаписывается."
+          : "Перегоняет выбранные заново. Подтверждённые не трогаются, точное совпадение с памятью переводов не подставляется, прежний перевод перезаписывается.",
       options: React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
         React.createElement("div", { className: "row between", style: { gap: 12, flexWrap: "wrap" } },
           React.createElement("div", null,
@@ -1388,11 +1411,21 @@ function TabEditor({ store, toast }) {
                             : "Применится ко всему проекту — сузить можно галочками в таблице или фильтром из Анализа"))),
           React.createElement(Switch, { on: retranslate, label: "Переводить заново",
             onClick: () => setRetranslate(v => !v) })),
+        // Подтверждённые — отдельная, более дорогая по последствиям галочка:
+        // без неё их вообще не видно в разбивке ниже, и это не баг, а тот же
+        // предохранитель, что и у ремонта («чинить подтверждённые»).
+        retranslate && React.createElement("div", { className: "row between", style: { gap: 12 } },
+          React.createElement("div", { style: { fontSize: 12.5 } }, "Переводить и подтверждённые человеком",
+            React.createElement("span", { className: "dim", style: { fontSize: 11.5, display: "block" } },
+              confirmedInScope + " в выборке; со снятых будет снята отметка «подтвердил человек»")),
+          React.createElement(Switch, { on: rtFixConfirmed, label: "Переводить подтверждённые",
+            onClick: () => setRtFixConfirmed(v => !v) })),
         retranslate && groupTable("Сейчас переведено через — отметьте, что перевести заново:",
           providerGroups.map(g => ({ key: g.key, count: g.count,
             label: g.label + (g.exact ? "" : " (определено по маршруту)") })),
           pickedProviders, toggleProvider,
-          "В выборке нет сегментов для повторного перевода (все подтверждены).")),
+          rtFixConfirmed ? "В выборке нет ни одного переведённого сегмента."
+                         : "В выборке нет сегментов для повторного перевода (все подтверждены).")),
     },
     {
       key: "backcheck", label: FULL_STEP_LABELS.backcheck, hint: "обратный перевод другой моделью",
@@ -1750,6 +1783,18 @@ function TabEditor({ store, toast }) {
           est.cost != null && React.createElement("div", { className: "row between" },
             React.createElement("span", { className: "muted" }, "Примерная стоимость"),
             React.createElement("b", null, "≈ " + fmtCost(est.cost))),
+
+          // Последний экран перед запуском — здесь и должно быть видно
+          // последствие, а не только в свёрнутой строке шага, где галочку
+          // включили несколько кликов назад.
+          (() => {
+            const n = batchPlan.targets.filter(s => s.status === "confirmed").length;
+            return n > 0 && React.createElement("div", {
+              style: { fontSize: 12.5, lineHeight: 1.5, padding: "7px 9px", borderRadius: "var(--r-md)",
+                       background: "var(--bg-sunken)", border: "1px solid var(--c-warning)", color: "var(--text-2)" } },
+              React.createElement("b", { style: { color: "var(--c-warning)" } }, "Среди них подтверждённых: " + n),
+              " — с них снимется отметка «подтвердил человек».");
+          })(),
 
           // Чем эти сегменты переведены сейчас — чтобы было видно, что именно
           // перегоняется и не уходит ли на повтор уже сделанное нужной моделью

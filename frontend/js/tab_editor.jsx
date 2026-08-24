@@ -805,11 +805,14 @@ function TabEditor({ store, toast }) {
   };
 
   // Сколько сегментов выборки переведено каким движком — для выбора галочками.
+  // Как у back-check/термины/ремонта: нет явной выборки — считаем по всему
+  // проекту, а не молчим. Раньше без currentIdSet список был всегда пуст,
+  // и «Переводить заново» выглядело сломанным, пока не выбрать все строки.
   const providerGroups = (() => {
-    if (!retranslate || !currentIdSet) return [];
+    if (!retranslate) return [];
     const by = new Map();
     project.segments.forEach(s => {
-      if (!currentIdSet.has(s.id) || s.status === "confirmed") return;
+      if ((currentIdSet && !currentIdSet.has(s.id)) || s.status === "confirmed") return;
       const p = providerOf(s);
       const key = providerKey(s);
       const label = p ? ((p.exact ? "" : "≈ ") + providerLabel(p, gptModels)) : "ещё не переведён";
@@ -901,12 +904,15 @@ function TabEditor({ store, toast }) {
   const pickTargets = (segs) => {
     const idSet = currentIdSet;
     // Галочки и режим «заново» — это явный выбор пользователя, фильтры статуса и риска
-    // к нему не применяем. Без выделения «заново» не срабатывает: иначе один клик
-    // перегнал бы весь проект целиком.
-    const explicit = hasExplicitCheck || (retranslate && !!idSet);
+    // к нему не применяем. Явной выборки для «заново» больше не требуем (как
+    // и у back-check/термины/ремонта): без неё берём весь проект, а не молчим.
+    // Одним кликом это не перегоняет ничего — разбивка по группам видна ДО
+    // запуска, отмечена не «всё», а «всё кроме выбранной сейчас модели», и перед
+    // самим прогоном всё равно всплывает модалка с подтверждением состава.
+    const explicit = hasExplicitCheck || retranslate;
     let targets;
     if (explicit) {
-      targets = segs.filter(s => idSet.has(s.id) && s.status !== "confirmed");
+      targets = segs.filter(s => (!idSet || idSet.has(s.id)) && s.status !== "confirmed");
       // В режиме «заново» берём только отмеченные группы «чем переведено»
       if (retranslate) targets = targets.filter(s => pickedProviders.has(providerKey(s)));
     } else {
@@ -1379,10 +1385,10 @@ function TabEditor({ store, toast }) {
             React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600 } }, "Переводить заново уже переведённые"),
             React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
               (currentIdSet ? "Применится к текущей выборке"
-                            : "Нужна выборка: «Выбрать все» в шапке таблицы, галочки построчно или фильтр из Анализа"))),
+                            : "Применится ко всему проекту — сузить можно галочками в таблице или фильтром из Анализа"))),
           React.createElement(Switch, { on: retranslate, label: "Переводить заново",
             onClick: () => setRetranslate(v => !v) })),
-        retranslate && currentIdSet && groupTable("Сейчас переведено через — отметьте, что перевести заново:",
+        retranslate && groupTable("Сейчас переведено через — отметьте, что перевести заново:",
           providerGroups.map(g => ({ key: g.key, count: g.count,
             label: g.label + (g.exact ? "" : " (определено по маршруту)") })),
           pickedProviders, toggleProvider,

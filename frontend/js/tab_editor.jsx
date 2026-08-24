@@ -1379,7 +1379,7 @@ function TabEditor({ store, toast }) {
             React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600 } }, "Переводить заново уже переведённые"),
             React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
               (currentIdSet ? "Применится к текущей выборке"
-                            : "Нужна выборка: галочки в таблице или фильтр из Анализа"))),
+                            : "Нужна выборка: «Выбрать все» в шапке таблицы, галочки построчно или фильтр из Анализа"))),
           React.createElement(Switch, { on: retranslate, label: "Переводить заново",
             onClick: () => setRetranslate(v => !v) })),
         retranslate && currentIdSet && groupTable("Сейчас переведено через — отметьте, что перевести заново:",
@@ -1552,6 +1552,18 @@ function TabEditor({ store, toast }) {
           filterDefs.map(([v, l, n]) => React.createElement("button", { key: v, className: filter === v ? "on" : "", onClick: () => setFilter(v) },
             l, React.createElement("span", { className: "cnt" }, n)))
         ),
+        // «Выбрать все N по фильтру» — без неё выбор всех сегментов под текущим
+        // фильтром (например, всех переведённых Google) means тыкать чекбокс на
+        // каждой из PAGE_SIZE-страниц вручную: при 2670 сегментах и странице
+        // по 10 штук это сотни кликов. Список берём из filtered — он уже
+        // учитывает статус/риск/поиск/фильтр из «Анализа», и именно на нём
+        // потом строится разбивка «Переводить заново» по движку-донору.
+        checkedSegs.size > 0
+          ? React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setCheckedSegs(new Set()) },
+              "Снять выбор (" + checkedSegs.size + ")")
+          : filtered.length > 0 && React.createElement(Btn, { variant: "ghost", size: "sm",
+              onClick: () => setCheckedSegs(new Set(filtered.map(s => s.id))) },
+              "Выбрать все " + filtered.length + (filter !== "all" || query || activeFilter ? " по фильтру" : "")),
         // Поиск: отдельно по оригиналу и отдельно по переводу — искать
         // английский термин по русскому тексту бессмысленно и наоборот.
         React.createElement("div", { className: "row", style: { gap: 8, flex: "1 1 380px", justifyContent: "flex-end" } },

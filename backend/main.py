@@ -1911,16 +1911,39 @@ def _docx_clean(text: str) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
 
+def _docx_flat_paragraphs(doc) -> list:
+    """Все абзацы документа одним списком: сначала тело, затем колонтитулы
+    по имени части пакета.
+
+    Колонтитулы лежат отдельными частями и в `body` не попадают — без этого
+    бегущий заголовок остаётся на языке оригинала, а человек узнаёт об этом,
+    только открыв готовый файл. Обход по ЧАСТЯМ, а не по секциям: секции делят
+    колонтитулы между собой, и обход по секциям выдал бы один и тот же абзац
+    несколько раз, а порядок зависел бы от того, какая секция первой его
+    попросила.
+
+    Тело идёт первым не случайно: номера абзацев тела от появления
+    колонтитулов не сдвинулись, и карты, записанные раньше, остались верны."""
+    from docx.oxml.ns import qn as _qn
+    paras = list(doc.element.body.findall(".//" + _qn("w:p")))
+    for part in sorted(doc.part.package.iter_parts(), key=lambda p: str(p.partname)):
+        ct = part.content_type or ""
+        el = getattr(part, "element", None)
+        if el is not None and ("header+xml" in ct or "footer+xml" in ct):
+            paras.extend(el.findall(".//" + _qn("w:p")))
+    return paras
+
+
 def _docx_paragraphs(content: bytes) -> list:
-    """Текст КАЖДОГО абзаца документа в порядке XML — включая те, что
+    """Текст КАЖДОГО абзаца документа в порядке разбора — включая те, что
     в сегменты не пойдут. Индекс в этом списке и есть якорь, поэтому список
     обязан быть полным: выбросишь пустые абзацы — и номера уедут."""
     from docx import Document
-    from docx.oxml.ns import qn as _qn
     doc = Document(io.BytesIO(content))
+    from docx.oxml.ns import qn as _qn
     # .// — все абзацы, включая вложенные таблицы и надписи
     return [_docx_clean("".join(t.text for t in p.iter(_qn("w:t")) if t.text))
-            for p in doc.element.body.findall(".//" + _qn("w:p"))]
+            for p in _docx_flat_paragraphs(doc)]
 
 
 def _docx_units(paras: list) -> list:
@@ -5771,41 +5794,69 @@ def _safe_filename(name: str) -> str:
 # картинки, таблицы, колонтитулы, нумерация, разметка страницы. Собрать это
 # из сегментов невозможно — в сегментах нет ни шрифта, ни картинок.
 _XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+_W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+
+# Что видно глазом. Всё, чего здесь нет, — служебное: w:lang (каким языком
+# проверять орфографию), w:noProof, w:bCs/w:iCs/w:szCs (сложные письменности),
+# w:rFonts cs/eastAsia. Word ставит их сам, кусками, по ходу правки: в учебнике
+# фтизиатрии 255 абзацев из 678 «разного оформления» различались ТОЛЬКО этим.
+# Считать их разными значит резать перевод там, где резать нечего.
+#
+# w:spacing, w:kern, w:position и w:w тоже не в счёт, и это не небрежность:
+# это микроподгонка межбуквенного расстояния под ширину строки (значения
+# вроде -5 двадцатых пункта). Строка после перевода всё равно другой длины,
+# и переносить такую подгонку не только незачем, но и вредно — ещё 96 абзацев.
+_VIS_RPR = {"b", "i", "u", "strike", "dstrike", "color", "sz", "highlight",
+            "vertAlign", "caps", "smallCaps", "rStyle", "shd", "em",
+            "outline", "shadow", "imprint", "emboss"}
 
 
-def _rpr_sig(rpr) -> tuple:
-    """Отпечаток оформления прогона. Своими руками, а не сериализацией XML:
-    lxml пришлось бы тащить в модуль, который умеет стартовать и без
-    python-docx (тогда просто нет экспорта, а не падения при импорте)."""
+def _vis_sig(rpr) -> tuple:
+    """Отпечаток ВИДИМОГО оформления прогона.
+
+    Своими руками, а не сериализацией XML: lxml пришлось бы тащить в модуль,
+    который умеет стартовать и без python-docx (тогда просто нет экспорта,
+    а не падения при импорте)."""
     if rpr is None:
         return ()
-    return (rpr.tag, tuple(sorted(rpr.attrib.items())),
-            tuple(_rpr_sig(c) for c in rpr))
+    out = []
+    for ch in rpr:
+        name = ch.tag[len(_W_NS):] if ch.tag.startswith(_W_NS) else ch.tag
+        if name == "rFonts":
+            fonts = (ch.get(_W_NS + "ascii"), ch.get(_W_NS + "hAnsi"))
+            if any(fonts):
+                out.append(("rFonts", fonts))
+            continue
+        if name not in _VIS_RPR:
+            continue
+        val = ch.get(_W_NS + "val")
+        if val in ("0", "false", "none"):
+            continue          # <w:b w:val="0"/> — это «не жирный», а не отметка
+        out.append((name, val))
+    return tuple(sorted(out, key=repr))
 
 
 def _para_slots(p_elem, qn) -> tuple:
-    """(куда можно писать, хвост из пропущенного текста).
+    """(куда можно писать, весь текст абзаца, пропущенный текст).
 
-    Первое — список пар «узел w:t, отпечаток оформления его прогона»
+    Первое — список пар «узел w:t, отпечаток видимого оформления его прогона»
     в порядке документа. Пропускаем три вещи, и каждая не мелочь:
 
     * ПОЛЯ (w:fldChar/w:instrText, w:fldSimple). В строке оглавления там
-      лежит номер страницы — тот самый «85», который импорт приклеил
-      к заголовку. Считает его Word, и записать туда перевод значит сломать
-      оглавление.
+      лежит номер страницы, а в колонтитуле — номер текущей. Считает их Word,
+      и записать туда перевод значит сломать и оглавление, и нумерацию.
     * СКРЫТЫЙ текст (w:webHidden, w:vanish) — его в документе не видно,
       и перевод, попавший туда, не увидит никто.
     * ВЛОЖЕННЫЕ абзацы: надпись или таблица внутри абзаца — это свои w:p
       со своими якорями. Захватить их значит написать один перевод дважды
       и стереть другой.
 
-    Второе — текст, пропущенный ПОСЛЕ последнего пригодного узла. Нужен
-    ровно для одного: импорт склеивал весь текст абзаца подряд, поэтому
-    в старых сегментах номер страницы сидит внутри самой строки, а значит
-    и внутри её перевода. Зная хвост, его можно снять и не написать «85»
-    дважды — рядом с настоящим полем."""
-    slots: list = []
-    tail: list = []
+    Второе — текст абзаца ЦЕЛИКОМ, ровно так, как его склеивал импорт: подряд
+    все w:t и без табуляций. Нужен, чтобы узнать сегмент, в который номер
+    страницы попал ещё при импорте, — и снять этот номер с перевода, а не
+    написать его вторым рядом с настоящим полем.
+    """
+    slots, full, dropped = [], [], []
     state = {"fld": 0}
 
     def walk(el, hidden, sig):
@@ -5823,41 +5874,262 @@ def _para_slots(p_elem, qn) -> tuple:
             if tag == qn("w:instrText"):
                 continue
             if tag == qn("w:t"):
+                txt = ch.text or ""
+                full.append(txt)
                 if hidden or state["fld"]:
-                    tail.append(ch.text or "")
+                    dropped.append(txt)
                 else:
                     slots.append((ch, sig))
-                    tail.clear()
                 continue
             if tag == qn("w:r"):
                 rpr = ch.find(qn("w:rPr"))
-                # Отпечаток оформления, а не сам факт разбиения на прогоны:
-                # Word режет текст на прогоны сам по себе (проверка орфографии,
-                # метки правок), и у соседних кусков оформление сплошь и рядом
-                # одинаковое. Склейка таких прогонов не теряет НИЧЕГО, и считать
-                # её потерей значит пугать человека пустой цифрой.
                 walk(ch,
                      hidden or (rpr is not None
                                 and (rpr.find(qn("w:webHidden")) is not None
                                      or rpr.find(qn("w:vanish")) is not None)),
-                     _rpr_sig(rpr))
+                     _vis_sig(rpr))
                 continue
             walk(ch, hidden, sig)
 
     walk(p_elem, False, ())
-    return slots, "".join(tail)
+    return slots, "".join(full), "".join(dropped)
+
+
+# ── Перенос выделений внутри абзаца ─────────────────────────────────
+# Сегмент — это строка текста; границ жирного куска в ней нет. Значит перенести
+# выделение можно только сопоставив перевод с исходником. Два способа, и первый
+# точный: кусок, который перевод обязан сохранить ДОСЛОВНО (латинское название
+# вида, аббревиатура, число), ищется в переводе как есть. Остальные границы
+# ставятся по доле длины и подтягиваются к ближайшему пробелу — приблизительно,
+# зато абзац сохраняет свой вид, а не уходит жирным целиком.
+_CYRILLIC = _re.compile(r'[Ѐ-ӿ]')
+
+
+def _verbatim_token(text: str) -> str:
+    """Кусок, по которому выделение можно поставить точно: без кириллицы,
+    но со значащим символом. «Mycobacterium tuberculosis», «MDR/RR-TB», «38»."""
+    t = text.strip()
+    if not t or not any(c.isalnum() for c in t) or _CYRILLIC.search(t):
+        return ""
+    return t
+
+
+# Число вместе с разделителями внутри: «1,3», «450–500», «100 000», «1/4».
+_NUM_RUN = _re.compile(r'\d[\d\s.,/–—-]*\d|\d')
+
+
+def _find_number(target: str, want: str, start: int, guess: int) -> int:
+    """Где в переводе стоит это же число. Сравниваются ЦИФРЫ, а не запись:
+    «1,3» по-русски и «1.3» по-английски — одно число, а разделитель разрядов
+    и дробной части перевод меняет. Без этого выделенная статистика («около
+    1,3 млн человек») теряла опору на пустом месте."""
+    digits = _re.sub(r'\D', '', want)
+    if not digits:
+        return -1
+    best = -1
+    for m in _NUM_RUN.finditer(target, start):
+        if _re.sub(r'\D', '', m.group(0)) != digits:
+            continue
+        if best < 0 or abs(m.start() - guess) < abs(best - guess):
+            best = m.start()
+    return best
+
+
+# Знаки, по которым граница выделения видна в обоих языках. Тире и кавычки
+# в переводе почти всегда другого начертания, поэтому сравниваются классы,
+# а не сами символы: «Алиментарный — заражение» и «Alimentary - infection»
+# делятся в одном и том же месте.
+_DASHES = set("—–—-−‒")
+
+
+def _delim_class(ch: str) -> Optional[str]:
+    if not ch:
+        return None
+    if ch in _DASHES:
+        return "dash"
+    if ch in ".!?…":
+        return "stop"
+    if ch in ":;":
+        return ch
+    if ch in ")]}»":
+        return "close"
+    if ch in "([{«":
+        return "open"
+    return None
+
+
+def _word_starts(target: str, lo: int, hi: int) -> list:
+    return [j for j in range(lo + 1, hi)
+            if target[j - 1].isspace() and not target[j].isspace()]
+
+
+def _snap_word(target: str, guess: int, lo: int, hi: int,
+               left: str = "", right: str = "") -> tuple:
+    """Ближайшая к guess осмысленная граница строго внутри (lo, hi).
+
+    Сначала знак препинания: в исходнике выделения кончаются на нём в подавляющем
+    большинстве случаев — «13 ГЛАВА.», «Клиника: », «ПЦР – полимеразная…».
+    Знак есть и в переводе, стоит на своём месте, и граница по нему —
+    не догадка, а совпадение. Догадка (доля длины) остаётся запасным ходом.
+
+    Резать посреди слова нельзя в любом случае: половина слова жирной — это
+    не «примерно так же», это брак.
+
+    Возвращает (граница, точно ли). «Точно» решается по ПЕРЕВОДУ, а не по
+    исходнику: знак в исходнике есть почти всегда, а найтись в переводе рядом
+    с расчётным местом он может и не найтись. Считать такое совпадением значит
+    отчитаться цифрой, которой не было."""
+    if hi <= lo:
+        return lo, False
+    guess = max(lo, min(hi, guess))
+    window = max(15, (hi - lo) // 3)
+
+    # 1) граница у знака препинания
+    lc = _delim_class((left.rstrip() or " ")[-1])
+    rstr = right.lstrip()
+    rc = _delim_class(rstr[0]) if rstr else None
+    marks = []
+    for i, ch in enumerate(target):
+        cls = _delim_class(ch)
+        if lc and cls == lc:
+            j = i + 1
+            while j < len(target) and target[j].isspace():
+                j += 1          # пробелы за знаком уходят налево, как в исходнике
+            marks.append(j)
+            marks.append(i + 1)
+        if rc and cls == rc:
+            j = i
+            while j > 0 and target[j - 1].isspace():
+                j -= 1
+            marks.append(j)
+            marks.append(i)
+    marks = [j for j in marks if lo < j < hi and abs(j - guess) <= window]
+    if marks:
+        return min(marks, key=lambda j: (abs(j - guess), j)), True
+
+    # 2) запасной ход — ближайшая граница слова
+    cands = _word_starts(target, lo, hi)
+    if not cands:
+        return guess, False
+    return min(cands, key=lambda j: abs(j - guess)), False
+
+
+def _split_target(target: str, sources: list) -> tuple:
+    """Режет перевод на куски по группам оформления исходного абзаца.
+
+    Возвращает (куски, было ли хоть одно приблизительное деление). Сумма кусков
+    ВСЕГДА равна переводу целиком: границы — это индексы одной строки, идущие
+    по возрастанию от 0 до конца. Ни потерять, ни задвоить текст нельзя
+    по построению."""
+    n = len(sources)
+    out = [""] * n
+    idx = [i for i, s in enumerate(sources) if s.strip()]
+    if not idx:
+        return out, False
+    if len(idx) == 1 or len(target) < 2 * len(idx):
+        # Делить нечего или перевод слишком короток, чтобы делить осмысленно.
+        out[idx[0]] = target
+        return out, False
+
+    total = sum(len(sources[i]) for i in idx) or 1
+    bounds = [None] * (len(idx) + 1)
+
+    # 1) точные якоря
+    cur, run = 0, 0
+    for k, i in enumerate(idx):
+        piece = sources[i]
+        guess = int(run / total * len(target))
+        run += len(piece)
+        window = max(12, len(target) // 4)
+        tok = _verbatim_token(piece)
+        if tok:
+            pos = target.find(tok, cur)
+            if pos >= 0 and (len(tok) >= 3 or abs(pos - guess) <= window):
+                # Короткий кусок вроде «2» встречается в переводе много раз:
+                # нашёлся далеко от своего места — это другое вхождение.
+                bounds[k] = pos
+                bounds[k + 1] = pos + len(tok)
+                cur = pos + len(tok)
+                continue
+        # Кусок с кириллицей целиком не найти, но выделение сплошь и рядом
+        # НАЧИНАЕТСЯ с числа: «1,3 млн человек», «43,6 на 100 000 населения».
+        # Число перевод сохраняет, поэтому начало ставится точно, а конец
+        # достаётся общему правилу.
+        head = _NUM_RUN.match(piece.strip())
+        if head:
+            pos = _find_number(target, head.group(0), cur, guess)
+            if pos >= 0 and abs(pos - guess) <= window:
+                bounds[k] = pos
+                cur = pos
+
+    # Края принадлежат крайним группам целиком: якорь в середине не имеет права
+    # отрезать начало или хвост перевода.
+    bounds[0], bounds[len(idx)] = 0, len(target)
+
+    # 2) промежутки — по доле длины исходных кусков
+    approx = False
+    known = [j for j in range(len(bounds)) if bounds[j] is not None]
+    for a, b in zip(known, known[1:]):
+        if b - a <= 1:
+            continue
+        lo, hi = bounds[a], bounds[b]
+        span = sum(len(sources[idx[j]]) for j in range(a, b)) or 1
+        acc = 0
+        for j in range(a, b - 1):
+            acc += len(sources[idx[j]])
+            guess = lo + int(round((hi - lo) * acc / span))
+            left, right = sources[idx[j]], sources[idx[j + 1]]
+            pos, exact = _snap_word(target, guess, bounds[j], hi, left, right)
+            bounds[j + 1] = pos
+            # Граница у знака препинания — не догадка: тот же знак стоит
+            # и в переводе. Приблизительными считаем только те, где опереться
+            # оказалось не на что.
+            approx = approx or not exact
+
+    for k, i in enumerate(idx):
+        out[i] = target[bounds[k]:bounds[k + 1]]
+    return out, approx
+
+
+def _write_para(slots: list, target: str) -> tuple:
+    """Пишет перевод в абзац, сохраняя выделения. (разделён ли, приблизительно ли).
+
+    Прогоны с одинаковым видимым оформлением сливаются в группу — Word режет
+    текст на прогоны сам по себе (орфография, метки правок), и такое деление
+    к оформлению отношения не имеет."""
+    groups: list = []
+    for node, sig in slots:
+        if groups and groups[-1][1] == sig:
+            groups[-1][0] += node.text or ""
+            groups[-1][2].append(node)
+        else:
+            groups.append([node.text or "", sig, [node]])
+
+    nonblank = {g[1] for g in groups if g[0].strip()}
+    if len(nonblank) <= 1:
+        # Оформление одно на весь абзац: пишем в самую длинную группу, чтобы
+        # не отдать текст группе из одних пробелов.
+        main = max(range(len(groups)), key=lambda i: len(groups[i][0]))
+        pieces = ["" if i != main else target for i in range(len(groups))]
+        approx = False
+    else:
+        pieces, approx = _split_target(target, [g[0] for g in groups])
+
+    for piece, g in zip(pieces, groups):
+        nodes = g[2]
+        nodes[0].text = piece
+        nodes[0].set(_XML_SPACE, "preserve")
+        for extra in nodes[1:]:
+            extra.text = ""
+    return len(nonblank) > 1, approx
 
 
 def _export_docx_layout(project: dict, out: Path) -> dict:
     """Подставляет переводы в сохранённый исходник и сохраняет копию.
 
-    Перевод целиком уходит в ПЕРВЫЙ пригодный прогон абзаца, остальные
-    очищаются. Значит форматирование абзаца (шрифт, кегль, цвет, выравнивание,
-    стиль) сохраняется, а разное оформление ВНУТРИ абзаца — одно слово
-    жирным — схлопывается в оформление первого прогона. Иначе никак:
-    сегмент это строка текста, границ жирного куска в ней нет, и разложить
-    перевод по прогонам можно только гаданием. Молчать об этом нельзя,
-    поэтому число таких абзацев возвращается в отчёте."""
+    Всё, чего мы не тронули, остаётся байт в байт: картинки, стили, нумерация,
+    разметка страницы, поля. Трогаем только текстовые узлы тех абзацев, что
+    названы в карте, — и внутри абзаца сохраняем выделения (см. `_write_para`)."""
     # Отметка в проекте — часть опознания, а не украшение: номера проектов
     # переиспользуются (id = max + 1), и файл удалённого проекта мог бы
     # достаться новому с тем же номером. Проект без отметки исходника
@@ -5873,17 +6145,22 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
         raise HTTPException(500, "python-docx not installed")
 
     doc = Document(str(data["path"]))
-    all_p = doc.element.body.findall(".//" + qn("w:p"))
-    if len(all_p) != data.get("paras"):
+    all_p = _docx_flat_paragraphs(doc)
+    body_n = len(doc.element.body.findall(".//" + qn("w:p")))
+    if data.get("paras") not in (len(all_p), body_n):
         # Файл под картой подменили. Молча продолжать нельзя: номера абзацев
         # уехали, и перевод встал бы по всему документу не на свои места.
+        # body_n принимается тоже: карты, записанные до того, как в разбор
+        # вошли колонтитулы, считали только тело — а номера абзацев тела
+        # от этого не сдвинулись, они идут первыми.
         raise HTTPException(400, "Исходник разошёлся с картой абзацев "
                                  "(%s против %s) — приложите файл заново"
                                  % (len(all_p), data.get("paras")))
 
     by_id = {s["id"]: s for s in project["segments"]}
     stats = {"paragraphs": len(all_p), "written": 0, "untranslated": 0,
-             "noslot": 0, "mismatch": 0, "merged": 0, "trimmed": 0, "lost": 0}
+             "noslot": 0, "mismatch": 0, "inline": 0, "approx": 0,
+             "trimmed": 0, "lost": 0}
     shown = 0
     for idx, sid in data.get("pairs") or []:
         seg = by_id.get(sid)
@@ -5895,45 +6172,35 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
         if not target:
             stats["untranslated"] += 1
             continue
-        slots, tail = _para_slots(all_p[idx], qn)
+        slots, full, dropped = _para_slots(all_p[idx], qn)
         if not slots:
             # Весь текст абзаца лежит в поле или скрыт — вписывать некуда.
             stats["noslot"] += 1
             continue
         source = seg.get("source") or ""
-        keep = "".join((n.text or "") for n, _sig in slots)
-        tail = tail.strip()
-        if (tail and _match_key(keep + tail) == _match_key(source)
-                and target.rstrip().endswith(tail)):
-            # Старый импорт склеивал весь текст абзаца подряд, поэтому номер
-            # страницы из оглавления попал и в сегмент, и в его перевод.
-            # Снимаем ровно этот хвост и ровно тогда, когда он подтверждён
-            # и текстом абзаца, и текстом сегмента: иначе в оглавлении встанет
-            # «…trachea85» рядом с настоящим полем, показывающим те же «85».
-            target = target.rstrip()[:-len(tail)].rstrip()
+        same = _match_key(full) == _match_key(source)
+        dropped = dropped.strip()
+        if same and dropped and target.rstrip().endswith(dropped):
+            # Импорт склеивал весь текст абзаца подряд, поэтому номер страницы
+            # из оглавления попал и в сегмент, и в его перевод. Снимаем ровно
+            # этот хвост и ровно тогда, когда он подтверждён и текстом абзаца,
+            # и текстом сегмента: иначе в оглавлении встанет «…trachea85»
+            # рядом с настоящим полем, показывающим те же «85».
+            target = target.rstrip()[:-len(dropped)].rstrip()
             stats["trimmed"] += 1
-        elif _match_key(keep) != _match_key(source):
-            # Текст сегмента разошёлся с текстом абзаца по другой причине.
-            # Пишем всё равно (перевод абзаца лучше оригинала), но считаем
-            # и называем: большое число здесь означает, что карта села не так.
+        elif not same:
+            # Текст сегмента разошёлся с текстом абзаца. Пишем всё равно
+            # (перевод абзаца лучше оригинала), но считаем и называем:
+            # большое число здесь означает, что карта села не так.
             stats["mismatch"] += 1
             if shown < 5:
                 shown += 1
                 print("[backend] экспорт 1в1: абзац %d не совпал с сегментом #%d\n"
                       "  в файле:    %r\n  в сегменте: %r"
-                      % (idx, sid, keep[:120], source[:120]), file=sys.stderr)
-        # Пишем не в ПЕРВЫЙ прогон, а в самый длинный. Разница видна на
-        # «**Термин** — определение…»: в первом прогоне там жирное слово,
-        # и перевод всего абзаца ушёл бы жирным. В самом длинном лежит
-        # основной текст, поэтому абзац сохраняет свой обычный вид, а теряется
-        # выделение одного слова. Порядок текста не меняется: остальные
-        # прогоны остаются на местах, просто пустыми.
-        main_i = max(range(len(slots)), key=lambda i: len(slots[i][0].text or ""))
-        if len({sig for _n, sig in slots}) > 1:
-            stats["merged"] += 1
-        for i, (n, _sig) in enumerate(slots):
-            n.text = target if i == main_i else ""
-        slots[main_i][0].set(_XML_SPACE, "preserve")
+                      % (idx, sid, full[:120], source[:120]), file=sys.stderr)
+        split, approx = _write_para(slots, target)
+        stats["inline"] += 1 if split else 0
+        stats["approx"] += 1 if approx else 0
         stats["written"] += 1
 
     doc.save(str(out))

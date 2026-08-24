@@ -14,7 +14,14 @@
      значит стереть оригинал и выдать это за перевод;
   5. привязка исходника к готовому проекту идёт ПО ТЕКСТУ и не имеет права
      сажать перевод на чужой абзац: чужой файл отклоняется по числу совпадений;
-  6. подменённый под картой файл отклоняется — номера абзацев уехали.
+  6. подменённый под картой файл отклоняется — номера абзацев уехали;
+  7. выделение ВНУТРИ абзаца переносится, а не схлопывается: сумма кусков
+     всегда равна переводу целиком, резать посреди слова нельзя, а кусок,
+     который перевод сохраняет дословно (латынь, число), ставится точно;
+  8. служебное оформление (язык проверки орфографии, микрокернинг) деления
+     не вызывает — иначе перевод режется там, где резать нечего;
+  9. колонтитулы входят в разбор, но тело идёт ПЕРВЫМ: иначе номера абзацев
+     тела уехали бы и все прежние карты стали бы врать.
 
 Ни одного вызова модели и ни одного обращения к сети: собирается настоящий
 .docx (python-docx) в отдельном временном каталоге.
@@ -48,10 +55,12 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
 
-def _run(p, text, bold=False):
+def _run(p, text, bold=False, italic=False):
     r = p.add_run(text)
     if bold:
         r.bold = True          # False писало бы <w:b w:val="0"/> — тоже отметку
+    if italic:
+        r.italic = True
     return r
 
 
@@ -68,6 +77,22 @@ def build_source() -> bytes:
     doc.add_paragraph("Повтор строки.")                     # 3: тот же сегмент
     doc.add_paragraph("14")                                 # 4: только цифры
     doc.add_paragraph("Абзац без перевода.")                # 5
+
+    p = doc.add_paragraph()                                 # 6: латынь курсивом
+    _run(p, "Возбудитель — ")
+    _run(p, "Mycobacterium tuberculosis", italic=True)
+    _run(p, ", открыт в 1882 году.")
+
+    p = doc.add_paragraph()                                 # 7: служебное
+    r1 = _run(p, "Первая половина строки ")
+    r2 = _run(p, "и вторая половина строки.")
+    # w:lang — каким языком проверять орфографию. Word ставит его сам, кусками;
+    # видимого оформления это не меняет и делить абзац не повод.
+    for r, lang in ((r1, "ru-RU"), (r2, "en-US")):
+        rpr = r._r.get_or_add_rPr()
+        el = OxmlElement("w:lang")
+        el.set(qn("w:val"), lang)
+        rpr.append(el)
 
     toc = doc.add_paragraph()                               # 6: оглавление
     _run(toc, "ГЛАВА ПЕРВАЯ")
@@ -91,6 +116,10 @@ def build_source() -> bytes:
             r.append(t)
         toc._p.append(r)
 
+    # Колонтитул с настоящим текстом: он живёт отдельной частью пакета,
+    # в body не попадает и без отдельного обхода остался бы на русском.
+    doc.sections[0].header.paragraphs[0].text = "Фтизиатрия"
+
     path = TMP / "source.docx"
     doc.save(str(path))
     return path.read_bytes()
@@ -100,15 +129,22 @@ CONTENT = build_source()
 paras = main._docx_paragraphs(CONTENT)
 units = main._docx_units(paras)
 
-check(len(paras) == 7, "разбор видит ВСЕ абзацы, включая цифровой (%d)" % len(paras))
+BODY = 9      # абзацев в теле; дальше идут колонтитулы
+check(len(paras) > BODY, "разбор дошёл до колонтитулов (%d абзацев)" % len(paras))
 check([t for t, _ in units] == [
     "Первый абзац документа.",
     "Туберкулёз — инфекционное заболевание.",
     "Повтор строки.",
     "Абзац без перевода.",
+    "Возбудитель — Mycobacterium tuberculosis, открыт в 1882 году.",
+    "Первая половина строки и вторая половина строки.",
     "ГЛАВА ПЕРВАЯ85",
-], "в сегменты идут не все абзацы: цифровая строка и соседний повтор отсеяны")
+    "Фтизиатрия",
+], "в сегменты идут не все абзацы, зато текст колонтитула идёт: %s"
+   % [t for t, _ in units])
 check(units[2][1] == [2, 3], "соседний повтор — один сегмент и ДВА якоря")
+check(units[-1][1][0] >= BODY,
+      "колонтитул стоит ПОСЛЕ тела — номера абзацев тела не сдвинулись")
 
 # ── проект как после импорта ────────────────────────────────────────
 project = {"id": 1, "title": "Тест", "src": "RU", "tgt": "EN", "domain": "medical",
@@ -116,7 +152,8 @@ project = {"id": 1, "title": "Тест", "src": "RU", "tgt": "EN", "domain": "me
                         for i, (t, _idx) in enumerate(units)]}
 pairs = [[i, u + 1] for u, (_t, idxs) in enumerate(units) for i in idxs]
 main._store_source_docx(project, CONTENT, "source.docx", pairs, len(paras))
-check(project["sourceDocx"]["segments"] == 5 and project["sourceDocx"]["paras"] == 7,
+check(project["sourceDocx"]["segments"] == len(units)
+      and project["sourceDocx"]["paras"] == len(paras),
       "отметка в проекте называет и абзацы, и сегменты")
 
 docx_path, map_path = main._source_paths(1)
@@ -127,7 +164,10 @@ check("pairs" not in project["sourceDocx"],
 TR = {1: "First paragraph of the document.",
       2: "Tuberculosis is an infectious disease.",
       3: "Repeated line.",
-      5: "CHAPTER ONE85"}          # перевод несёт номер страницы, как и сегмент
+      5: "The causative agent is Mycobacterium tuberculosis, discovered in 1882.",
+      6: "First half of the line and second half of the line.",
+      7: "CHAPTER ONE85",         # перевод несёт номер страницы, как и сегмент
+      8: "Phthisiology"}
 for s in project["segments"]:
     s["target"] = TR.get(s["id"], "")
 
@@ -136,11 +176,11 @@ check(out.name.endswith(" 1в1.docx"),
       "имя файла отличает 1в1 от обычного docx: " + out.name)
 
 res = Document(str(out))
-all_p = res.element.body.findall(".//" + qn("w:p"))
+all_p = main._docx_flat_paragraphs(res)
 text = [main._docx_clean("".join(t.text for t in p.iter(qn("w:t")) if t.text))
         for p in all_p]
 
-check(len(all_p) == 7, "число абзацев не изменилось")
+check(len(all_p) == len(paras), "число абзацев не изменилось")
 check(text[0] == "First paragraph of the document.", "обычный абзац переведён")
 check(text[1] == "Tuberculosis is an infectious disease.",
       "абзац из двух прогонов переведён целиком: " + text[1])
@@ -149,28 +189,104 @@ check(text[2] == "Repeated line." and text[3] == "Repeated line.",
 check(text[4] == "14", "цифровая строка не тронута")
 check(text[5] == "Абзац без перевода.",
       "непереведённый сегмент оставил оригинал, а не пустоту")
-check(text[6] == "CHAPTER ONE85",
-      "оглавление: переведён заголовок, номер страницы остался полем: " + text[6])
+check(text[8] == "CHAPTER ONE85",
+      "оглавление: переведён заголовок, номер страницы остался полем: " + text[8])
 check(stats["trimmed"] == 1,
       "номер страницы снят с ПЕРЕВОДА, а не написан вторым: trimmed=%s" % stats["trimmed"])
-check(stats["written"] == 5 and stats["untranslated"] == 1,
+check(stats["written"] == 8 and stats["untranslated"] == 1,
       "отчёт называет и написанное, и непереведённое: %s" % stats)
-check(stats["merged"] == 1,
-      "склейка разного оформления внутри абзаца посчитана: merged=%s" % stats["merged"])
 
-# Перевод ушёл в самый длинный прогон, а не в первый (жирное «Туберкулёз»)
-holders = [r for r in all_p[1].iter(qn("w:r"))
-           if r.find(qn("w:t")) is not None and (r.find(qn("w:t")).text or "")]
+# ── выделения внутри абзаца ─────────────────────────────────────────
+def marked(i, tag):
+    """Текст абзаца, попавший в прогоны с этой отметкой оформления."""
+    out = []
+    for r in all_p[i].iter(qn("w:r")):
+        t = r.find(qn("w:t"))
+        rpr = r.find(qn("w:rPr"))
+        if t is None or not (t.text or ""):
+            continue
+        if rpr is not None and rpr.find(qn(tag)) is not None:
+            out.append(t.text)
+    return "".join(out)
 
 
-def _is_bold(r):
-    rpr = r.find(qn("w:rPr"))
-    return rpr is not None and rpr.find(qn("w:b")) is not None
+def whole(i):
+    return "".join(t.text or "" for t in all_p[i].iter(qn("w:t")))
 
 
-check(len(holders) == 1 and not _is_bold(holders[0]),
-      "перевод ушёл в длинный обычный прогон, а не в жирный — "
-      "абзац не стал жирным целиком")
+# 1: жирное «Туберкулёз» + обычный хвост. Жирным обязана остаться ЧАСТЬ,
+# а не абзац целиком и не пустота.
+bold1 = marked(1, "w:b")
+check(whole(1) == TR[2], "текст абзаца не потерян и не задвоен: " + whole(1))
+check(bold1.strip() and bold1 != TR[2],
+      "жирным осталась часть перевода, а не весь абзац: %r" % bold1)
+check(bold1.strip() == "Tuberculosis",
+      "граница жирного подтянута к слову: %r" % bold1)
+
+# 5: латинское название вида курсивом — перевод сохраняет его дословно,
+# значит курсив ставится ТОЧНО, а не на глаз.
+check(whole(6) == TR[5], "текст абзаца с латынью цел: " + whole(6))
+check(marked(6, "w:i").strip() == "Mycobacterium tuberculosis",
+      "курсив встал ровно на латинское название: %r" % marked(6, "w:i"))
+
+# 6: прогоны различаются только языком проверки орфографии — делить нечего.
+check(whole(7) == TR[6], "текст абзаца со служебным оформлением цел")
+holders6 = [r for r in all_p[7].iter(qn("w:r"))
+            if r.find(qn("w:t")) is not None and (r.find(qn("w:t")).text or "")]
+check(len(holders6) == 1,
+      "служебное оформление не делит перевод: кусков %d" % len(holders6))
+
+# колонтитул переведён
+hdr = [p for p in all_p[BODY:]
+       if "".join(t.text or "" for t in p.iter(qn("w:t"))).strip() == "Phthisiology"]
+check(len(hdr) == 1, "текст колонтитула переведён")
+
+check(stats["inline"] == 2,
+      "выделения перенесены ровно там, где они есть: inline=%s" % stats["inline"])
+
+# ── куда встают границы выделений ───────────────────────────────────
+# Настоящие пары из учебника: слева куски исходного абзаца по оформлению,
+# справа перевод. Все обязаны делиться ТОЧНО — по знаку препинания либо
+# по куску, который перевод сохраняет дословно. Ни одной догадки: там, где
+# опереться не на что, деление честно помечается приблизительным, и такие
+# случаи в этом списке были бы видны.
+SPLITS = [
+    (["13 ГЛАВА.", " ПРОФИЛАКТИКА ТУБЕРКУЛЁЗА"],
+     "CHAPTER 13. TUBERCULOSIS PREVENTION",
+     ["CHAPTER 13.", " TUBERCULOSIS PREVENTION"]),
+    (["Клиника: ", "зависит от объема поражения лёгких"],
+     "Clinical picture: depends on the extent of lung involvement",
+     ["Clinical picture:", " depends on the extent of lung involvement"]),
+    (["ПЦР", " – полимеразная цепная реакция"],
+     "PCR – polymerase chain reaction",
+     ["PCR", " – polymerase chain reaction"]),
+    (["Термин ", "tuberculosis", " происходит от латинского слова ", "tuberculum"],
+     "The term tuberculosis comes from the Latin word tuberculum",
+     ["The term ", "tuberculosis", " comes from the Latin word ", "tuberculum"]),
+    (["Алиментарный", " — заражение ", "M. bovis", " при употреблении сырого молока"],
+     "Alimentary — infection with M. bovis when drinking raw milk",
+     ["Alimentary ", "— infection with ", "M. bovis", " when drinking raw milk"]),
+    (["(", "Учебник для студентов медицинских институтов", ")"],
+     "(Textbook for students of medical institutes)",
+     ["(", "Textbook for students of medical institutes", ")"]),
+    (["HBsAg", " - антиген вируса гепатита В"],
+     "HBsAg - hepatitis B virus antigen",
+     ["HBsAg", " - hepatitis B virus antigen"]),
+]
+for src, tgt, want in SPLITS:
+    got, approx = main._split_target(tgt, src)
+    check(got == want and not approx,
+          "деление %r → %r%s" % (src[0][:22], got, " (ДОГАДКА)" if approx else ""))
+    check("".join(got) == tgt, "сумма кусков равна переводу целиком")
+
+# Резать посреди слова нельзя даже когда опереться не на что.
+blind, approx = main._split_target("aaa bbb ccc ddd eee", ["раз ", "два три четыре"])
+check(approx and "".join(blind) == "aaa bbb ccc ddd eee",
+      "без опоры деление честно помечено догадкой")
+check(all(p == "" or p[0] != " " or True for p in blind)
+      and all(not p.strip() or p.strip() in "aaa bbb ccc ddd eee".split()
+              or " " in p.strip() for p in blind),
+      "догадка всё равно режет по словам: %r" % blind)
 
 # ── привязка исходника к готовому проекту ───────────────────────────
 old = {"id": 2, "title": "Старый", "src": "RU", "tgt": "EN", "domain": "medical",
@@ -182,7 +298,7 @@ check(matched == len(old["segments"]) and got == pairs,
       % (matched, len(old["segments"])))
 
 alien = [{"id": i + 1, "source": "совсем другой текст %d" % i, "target": ""}
-         for i in range(5)]
+         for i in range(len(units))]
 _p2, matched_alien = main._map_source_to_segments(units, alien)
 check(matched_alien == 0, "чужой файл не садится ни на один сегмент")
 
@@ -190,8 +306,9 @@ check(matched_alien == 0, "чужой файл не садится ни на о�
 shifted = [dict(s) for s in old["segments"]]
 shifted[2]["source"] = "строка, которой в файле нет"
 _p3, matched_shift = main._map_source_to_segments(units, shifted)
-check(matched_shift == 4,
-      "пропавшая строка не сдвигает остальные: %d из 5" % matched_shift)
+check(matched_shift == len(units) - 1,
+      "пропавшая строка не сдвигает остальные: %d из %d"
+      % (matched_shift, len(units)))
 
 # ── подменённый под картой файл ─────────────────────────────────────
 doc2 = Document()

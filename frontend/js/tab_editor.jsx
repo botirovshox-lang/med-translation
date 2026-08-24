@@ -2085,7 +2085,12 @@ function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop }, "Остановить"))
       : React.createElement(Btn, { variant: "primary", icon: "zap", onClick: onRun,
           disabled: disabled || !anyWork || !planReady },
-          !planReady ? "Считаем состав…" : anyWork ? "Перевести и проверить" : "Всё уже сделано"));
+          // «Всё уже сделано» и «ни один шаг не отмечен» — разные причины нулевой
+          // работы, и молчать о разнице нельзя: сняли все галочки шагов — кнопка
+          // выглядела бы как «весь проект готов», хотя работа просто не выбрана.
+          !planReady ? "Считаем состав…"
+            : picked.size === 0 ? "Отметьте хотя бы один шаг"
+            : anyWork ? "Перевести и проверить" : "Всё уже сделано"));
 }
 
 /* Второй клик конвейера. Одобряет однозначные термины пачкой и тут же чинит

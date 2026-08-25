@@ -7913,24 +7913,35 @@ def delete_term(src: str, lang: str = "", domain: str = ""):
 PURGE_DIR = DATA_DIR / "backups"
 
 
-def _term_used(entry: dict) -> int:
-    """В скольких сегментах запись вообще применима.
+def _used_term_ids() -> set:
+    """id записей глоссария, применимых хоть к одному сегменту хоть одного
+    проекта своей области.
 
-    Совпадение ищем тем же `_term_match`, что и инъекция в промпт: список
-    «неиспользуемых» обязан совпадать с тем, на что глоссарий действительно
-    влияет. Область тоже своя — запись RU→EN не управляет немецким проектом,
-    и считать её там использованной значит соврать."""
-    src, scope = entry.get("src") or "", _scope_of(entry)
-    if not src:
-        return 0
-    n = 0
-    for p in STATE["projects"]:
-        if _project_scope(p) != scope:
-            continue
-        for seg in p["segments"]:
-            if _term_match(src, seg.get("source", "")):
-                n += 1
-    return n
+    Обход СЕГМЕНТАМИ, а не записями, и это не оптимизация ради красоты.
+    Поштучный `_term_used` на 9502 подсказках и 2670 сегментах — двадцать пять
+    миллионов проверок регулярками, минуты работы ЕДИНСТВЕННОГО воркера: запрос
+    отваливается по таймауту, а сервис на это время недоступен всем. Через
+    индекс глоссария тот же ответ считается за секунды.
+    Кандидаты берутся индексом, но НЕ через `_get_context`: он оставляет
+    пятнадцать лучших записей на сегмент, и всё, что не влезло, оказалось бы
+    «неиспользуемым» — то есть вынесенным вместе с работающими записями."""
+    used = set()
+    idx = _gloss_index()
+    for p in STATE.get("projects", []):
+        scope = _project_scope(p)
+        for seg in p.get("segments", ()):
+            text = seg.get("source", "")
+            if not text:
+                continue
+            seen = set()
+            for k in _text_keys(text):
+                for g in idx.get(k, ()):
+                    if id(g) in seen or id(g) in used:
+                        continue
+                    seen.add(id(g))
+                    if _scope_of(g) == scope and g.get("src") and _term_match(g["src"], text):
+                        used.add(id(g))
+    return used
 
 
 class GlossaryPurgeRequest(BaseModel):
@@ -7966,6 +7977,8 @@ def purge_glossary(req: GlossaryPurgeRequest = GlossaryPurgeRequest()):
     tier = req.tier if req.tier in (GLOSSARY_TIER_SOFT, GLOSSARY_TIER_HARD) else GLOSSARY_TIER_SOFT
     scope = _project_scope(get_project(req.project)) if req.project else None
 
+    # Считаем ОДИН раз на всю пачку, а не по записи: см. _used_term_ids.
+    used_ids = _used_term_ids() if req.unused_only else None
     matched, kept_human, unused_n = [], 0, 0
     for g in STATE.get("glossary", []):
         if _hit_tier(g) != tier:
@@ -7975,9 +7988,8 @@ def purge_glossary(req: GlossaryPurgeRequest = GlossaryPurgeRequest()):
         if _human_touched(g):
             kept_human += 1
             continue
-        used = _term_used(g) if req.unused_only else None
         if req.unused_only:
-            if used:
+            if id(g) in used_ids:
                 continue
             unused_n += 1
         matched.append(g)

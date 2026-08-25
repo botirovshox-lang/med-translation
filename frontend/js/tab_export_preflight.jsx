@@ -38,6 +38,13 @@ function TabExport({ store, toast }) {
   };
 
   const toggle = (k) => setOpts(o => ({ ...o, [k]: !o[k] }));
+  /* Единственное условие попадания в файл — непустой перевод. Ни статус,
+     ни подтверждение человеком роли не играют: экспорт не судит о качестве,
+     он выгружает то, что есть. Показываем это числом, потому что рядом стоит
+     «Подтверждено», и без второй строки оно читается как условие. */
+  const translated = project.segments.filter(s => (s.target || "").trim()).length;
+  const untranslated = project.segments.length - translated;
+  const fmtLabel = fmt === "docx_layout" ? "DOCX 1в1" : fmt.toUpperCase();
   const doExport = async () => {
     setBusy(true);
     let result = null;
@@ -84,7 +91,10 @@ function TabExport({ store, toast }) {
   return React.createElement("div", { className: "page" },
     React.createElement("div", { className: "page-head" },
       React.createElement("h1", null, "Экспорт"),
-      React.createElement("p", { className: "lead" }, "Соберите готовый документ из подтверждённых сегментов проекта «" + project.title + "».")),
+      React.createElement("p", { className: "lead" },
+        "Соберите готовый документ по проекту «" + project.title + "». В файл идёт всё, "
+        + "что переведено, независимо от статуса; сегменты без перевода остаются "
+        + "на языке оригинала.")),
 
     React.createElement("div", { className: "grid", style: { gridTemplateColumns: "1.4fr 1fr", gap: 24, alignItems: "start" } },
       React.createElement("div", { className: "col", style: { gap: 32 } },
@@ -144,7 +154,13 @@ function TabExport({ store, toast }) {
           React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, "Готово к экспорту"),
           React.createElement("div", { className: "row between" }, React.createElement("span", { className: "muted" }, "Сегментов"), React.createElement("strong", null, project.segments.length)),
           React.createElement("div", { className: "row between" }, React.createElement("span", { className: "muted" }, "Подтверждено"), React.createElement("strong", { style: { color: "var(--c-success)" } }, store.statusCounts(project).confirmed)),
-          React.createElement("div", { className: "row between" }, React.createElement("span", { className: "muted" }, "Формат"), React.createElement("strong", null, fmt.toUpperCase())),
+          React.createElement("div", { className: "row between" },
+            React.createElement("span", { className: "muted" }, "Пойдёт в файл"),
+            React.createElement("strong", null, translated)),
+          untranslated > 0 && React.createElement("div", { className: "row between" },
+            React.createElement("span", { className: "muted" }, "Останется на языке оригинала"),
+            React.createElement("strong", { style: { color: "var(--c-warning)" } }, untranslated)),
+          React.createElement("div", { className: "row between" }, React.createElement("span", { className: "muted" }, "Формат"), React.createElement("strong", null, fmtLabel)),
           React.createElement(Btn, { variant: "primary", size: "lg", className: "btn-block", icon: busy ? null : "download", disabled: busy, onClick: doExport },
             busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), "Сборка файла…") : "Скачать файл")
         ),

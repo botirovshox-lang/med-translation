@@ -168,8 +168,14 @@ TR = {1: "First paragraph of the document.",
       6: "First half of the line and second half of the line.",
       7: "CHAPTER ONE85",         # перевод несёт номер страницы, как и сегмент
       8: "Phthisiology"}
-for s in project["segments"]:
+# Статусы нарочно вперемешку. В файл идёт всё, у чего есть перевод: экспорт
+# не судит о качестве, он выгружает то, что есть, а «подтвердил человек» —
+# про доверие к переводу, а не про попадание в документ. Фильтр по статусу
+# здесь означал бы, что готовый документ молча теряет часть работы.
+STATUSES = ["new", "translated", "review", "qa", "confirmed", "review", "translated", "new"]
+for s, st in zip(project["segments"], STATUSES):
     s["target"] = TR.get(s["id"], "")
+    s["status"] = st
 
 out, stats = main._generate_export(project, "docx_layout")
 check(out.name.endswith(" 1в1.docx"),
@@ -195,6 +201,13 @@ check(stats["trimmed"] == 1,
       "номер страницы снят с ПЕРЕВОДА, а не написан вторым: trimmed=%s" % stats["trimmed"])
 check(stats["written"] == 8 and stats["untranslated"] == 1,
       "отчёт называет и написанное, и непереведённое: %s" % stats)
+# Ровно столько, сколько якорей у сегментов с переводом, — и ни один статус
+# не отнял себе ни одного абзаца.
+with_target = {s["id"] for s in project["segments"] if (s.get("target") or "").strip()}
+check(stats["written"] == sum(1 for _i, sid in pairs if sid in with_target),
+      "статус не влияет на попадание в файл: пишутся все абзацы с переводом")
+check(text[0] == TR[1] and text[2] == TR[3],
+      "непроверенный сегмент («новый») выгружен наравне с подтверждённым")
 
 # ── выделения внутри абзаца ─────────────────────────────────────────
 def marked(i, tag):

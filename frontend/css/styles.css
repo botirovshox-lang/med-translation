@@ -455,20 +455,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 .row-status-failed td:first-child { box-shadow: inset 4px 0 0 var(--c-error); }
 .row-status-review td:first-child { box-shadow: inset 4px 0 0 #ca8a04; }
 
-/* TM match chip (MemSource-style) */
-.tmchip {
-  display: inline-grid; place-items: center;
-  min-width: 42px; height: 24px; padding: 0 8px;
-  border-radius: var(--r-sm);
-  font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
-  letter-spacing: .3px; cursor: default;
-}
-.tmchip.exact { background: var(--st-conf-bg); color: var(--st-conf-fg); }
-.tmchip.high  { background: var(--st-review-bg); color: var(--st-review-fg); }
-.tmchip.mid   { background: var(--tm-orange-bg); color: var(--tm-orange-fg); }
-.tmchip.low   { background: var(--st-fail-bg); color: var(--st-fail-fg); }
-.tmchip.fresh { background: var(--st-fail-bg); color: var(--st-fail-fg); }
-.tmchip.none  { background: var(--st-new-bg); color: var(--text-3); }
+/* Стили чипа TM убраны вместе с самим чипом: показывать было нечего.
+   Переменные --tm-orange-* остались в обеих темах и больше никем не заняты —
+   готовая пара под оранжевую метку, если такая понадобится. */
 
 /* Compact secondary action buttons (detail panel) */
 .mini-actions { display: flex; flex-wrap: wrap; gap: 6px; }

@@ -248,19 +248,12 @@ function LangPair({ src, tgt }) {
   return React.createElement("span", { className: "badge badge-lang" }, (FLAGS[src] || src) + " " + src + " → " + (FLAGS[tgt] || tgt) + " " + tgt);
 }
 
-/* ---------- TM match chip (MemSource-style) ---------- */
-function tmChipFor(score) {
-  if (score == null) return { cls: "none", text: "—", tip: "Нет совпадения в TM" };
-  if (score === 101) return { cls: "fresh", text: "101", tip: "Новый сегмент — нет совпадения в TM" };
-  if (score >= 100) return { cls: "exact", text: "100", tip: "TM match: 100% — exact" };
-  if (score >= 95) return { cls: "high", text: String(score), tip: "TM match: " + score + "% — high fuzzy" };
-  if (score >= 85) return { cls: "mid", text: String(score), tip: "TM match: " + score + "% — medium fuzzy" };
-  return { cls: "low", text: String(score), tip: "TM match: " + score + "% — low fuzzy" };
-}
-function TMChip({ score }) {
-  const c = tmChipFor(score);
-  return React.createElement("span", { className: "tmchip " + c.cls, title: c.tip }, c.text);
-}
+/* Чип совпадения с памятью переводов убран вместе с колонкой TM%. Считать
+   процент было не по чему: seg.tmScore приходил с сервера нулём при импорте
+   и никогда не менялся, так что чип красил красным нулём каждый сегмент
+   каждого проекта. Появится настоящий нечёткий поиск по памяти переводов —
+   вернуть чип будет чем заполнить; до тех пор его отсутствие честнее его
+   показаний. */
 /* ---------- Cost estimate formatting ---------- */
 function fmtCost(v) {
   if (v > 10) return "$" + v.toFixed(1);
@@ -362,5 +355,5 @@ Object.assign(window, {
   Field, Input, Textarea, Select, SearchInput, Checkbox, Radio, Switch,
   Expander, Modal, ToastProvider, useToast,
   ProgressBar, Ring, Spinner, Avatar, EmptyState, LangPair, FLAGS,
-  TMChip, tmChipFor, fmtCost, InfoTip, ROUTE_INFO, RISK_INFO, RouteLabel, RiskLabel,
+  fmtCost, InfoTip, ROUTE_INFO, RISK_INFO, RouteLabel, RiskLabel,
 });

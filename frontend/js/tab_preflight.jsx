@@ -41,14 +41,19 @@ function WorkSummary({ summary, store, toast }) {
   return React.createElement("div", { className: "section" },
     React.createElement("h2", { className: "section-title" }, "Что сейчас с переводом",
       React.createElement(InfoTip, { title: "Итог работы",
-        body: "Считается по состоянию проекта, а не по последнему прогону: прогонов может быть несколько, а вопрос один — что сделано и что осталось. Ни одного вызова модели здесь нет, открывать можно свободно.\n\n«Проверено начисто» — сегмент прошёл back-check и проверку терминов, замечаний нет, глоссарий соблюдён. Только такие сегменты система считает готовыми учить терминологии.\n\nЛюбая строка открывает редактор с этими сегментами." })),
+        body: "Считается по состоянию проекта, а не по последнему прогону: прогонов может быть несколько, а вопрос один — что сделано и что осталось. Ни одного вызова модели здесь нет, открывать можно свободно.\n\n«Проверено начисто» — сегмент прошёл back-check и проверку терминов, замечаний нет. Соответствие глоссарию сюда НЕ входит: оно считается отдельно и видно своей строкой. Только сегменты «начисто» система считает готовыми учить терминологии.\n\nЛюбая строка открывает редактор с этими сегментами." })),
 
     React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column" } },
       React.createElement("div", { className: "row between", style: { paddingBottom: 4 } },
         React.createElement("span", { className: "dim", style: { fontSize: 12.5 } }, "Всего сегментов"),
         React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, s.total)),
+      // «Глоссарий соблюдён» отсюда убрано: _machine_clean его не смотрит вовсе
+      // (ни _gloss_misses, ни _verified_hits), и сегмент с нарушенным приказным
+      // термином при чистых проверках попадал сюда — а рядом же лежал
+      // в «Расходятся с глоссарием». Обещать соблюдение, которого никто
+      // не проверял, нельзя: на этой строке человек закрывает вопрос.
       React.createElement(Row, { label: "Проверено начисто", n: s.clean.length, ids: s.clean,
-        color: "var(--c-success)", hint: "обе проверки чисто, глоссарий соблюдён" }),
+        color: "var(--c-success)", hint: "обе проверки чисто" }),
       React.createElement(Row, { label: "Исправила машина", n: s.machine.repaired, ids: s.repaired,
         hint: "статус «требует проверки» — заверяет человек" }),
       React.createElement(Row, { label: "Ещё не переведено", n: s.todo.untranslated.length,
@@ -61,8 +66,13 @@ function WorkSummary({ summary, store, toast }) {
         ids: s.todo.findings, hint: "это чинит «Ремонт» внутри прогона" }),
       React.createElement(Row, { label: "Расходятся с глоссарием", n: s.todo.glossaryPending.length,
         ids: s.todo.glossaryPending, hint: "утверждённого термина нет в переводе" }),
-      // Корзина «всё остальное»: оценка ниже порога, мелкие замечания. Без неё
-      // такие сегменты не попадали никуда и экран выглядел бы чище, чем есть.
+      // Корзина «всё остальное». Починенные ремонтом сюда больше НЕ попадают:
+      // у них back-check прошёл и termcheck чист, а отказ _machine_clean был
+      // только про право учить глоссарий — на боевом проекте они составляли
+      // 60% корзины и звали разбираться там, где разбираться не в чем. Своя
+      // строка у них выше — «Исправила машина». Подпись берётся из разбора
+      // причин, а не придумывается здесь: сервер знает состав, экран его
+      // показывает.
       React.createElement(Row, { label: "Оценка ниже порога", n: (s.todo.weak || []).length,
         ids: s.todo.weak, hint: (s.todo.weakWhy || []).slice(0, 2).map(w => w.reason).join(" · ")
           || "проверки прошли, но чисто не получилось" })),
@@ -709,7 +719,21 @@ function TermcheckSummary({ segments, onDrill, T }) {
 /* ============================================================
    Автоматический ремонт — сводка по проекту
    ============================================================ */
+// Уровни находок termcheck, по которым работает ремонт. Значение приходит
+// с сервера (/api/models → termcheckActionable, он же TERMCHECK_ACTIONABLE);
+// здесь — только запас на случай, если ответ ещё не пришёл. Тем же порядком
+// в этом файле берутся полосы back-check: держать такой список литералом
+// значит однажды показать число, которого прогон не сделает.
+const TC_ACTIONABLE_FALLBACK = ["critical", "major", "minor"];
+
 function RepairSummary({ segments, onDrill, T }) {
+  const [tcActionable, setTcActionable] = useState(TC_ACTIONABLE_FALLBACK);
+  useEffect(() => {
+    if (!window.API || !window.API.models) return;
+    window.API.safeCall(() => window.API.models()).then(d => {
+      if (d && d.termcheckActionable && d.termcheckActionable.length) setTcActionable(d.termcheckActionable);
+    });
+  }, []);
   const touched = segments.filter(s => s.repair);
   const applied = touched.filter(s => s.repair.applied);
   const reverted = touched.filter(s => !s.repair.applied);
@@ -732,7 +756,10 @@ function RepairSummary({ segments, onDrill, T }) {
     const bcHit = bc && ((bc.terms_lost || []).length > 0
       || (bc.reasons || []).some(r => REASONS.some(h => r.indexOf(h) !== -1))
       || (bc.judge && ["major", "critical"].indexOf(bc.judge.severity) !== -1));
-    const tcHit = tc && (tc.findings || []).some(f => f.severity === "critical" || f.severity === "major");
+    // Уровни — те же, что на сервере (TERMCHECK_ACTIONABLE): ремонт чинит и
+    // minor, и без него счётчик «Ждут ремонта» занижен ровно на те сегменты,
+    // ради которых ремонту это и разрешили.
+    const tcHit = tc && (tc.findings || []).some(f => tcActionable.indexOf(f.severity) !== -1);
     return !!(bcHit || tcHit);
   });
 

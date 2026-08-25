@@ -168,15 +168,7 @@
     ],
   };
 
-  // ---- TM match scores (MemSource-style) ----
-  // 100 exact · 95-99 high fuzzy · 85-94 medium · <85 low · 101 = new/no-match · null = no TM
-  const TM_OVERRIDE = {
-    7: { 1: 100, 2: null, 3: 87, 4: 99, 5: 92, 6: null, 7: 100, 8: null, 9: 78, 10: null, 11: null, 12: 101, 13: 101, 14: 101, 15: 101 },
-    4: { 1: 100, 2: null, 3: 96 },
-    2: { 1: null, 2: 100 },
-  };
-  window.SEED.projects.forEach(p => p.segments.forEach(s => {
-    const o = TM_OVERRIDE[p.id];
-    s.tmScore = o && (s.id in o) ? o[s.id] : (s.tm ? (s.tm.score || 100) : (s.status === "new" ? 101 : null));
-  }));
+  // Посев tmScore убран вместе с колонкой TM%: он раскрашивал демо-проекты
+  // придуманными процентами, а боевые данные приходили с нулём — и разница
+  // между макетом и правдой не была видна никому.
 })();

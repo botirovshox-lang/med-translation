@@ -1,7 +1,11 @@
 ﻿/* ============================================================
    Segment detail panel (editor right sidebar)
    ============================================================ */
-function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedicalQA, onConfirm, bcModels, bcModel, onBcModel, bcJudge, judgeModel, tcModel, rpModel }) {
+function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedicalQA, onConfirm, bcModels, bcModel, onBcModel, bcJudge, judgeModel, tcModel, rpModel,
+                     // Уровни находок termcheck, по которым работает ремонт.
+                     // Приходят сверху, а сверху — с сервера: список в двух
+                     // местах литералом уже расходился с _repair_findings.
+                     tcActionable = ["critical", "major", "minor"] }) {
   const [tab, setTab] = useState("context");
   const [draft, setDraft] = useState(seg.target || "");
   const [comment, setComment] = useState("");
@@ -93,7 +97,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
   const bcFresh = seg.backcheck && !seg.backcheck.stale ? seg.backcheck : null;
   const tcFresh = seg.termcheck && !seg.termcheck.stale ? seg.termcheck : null;
   const termFindings = (tcFresh && tcFresh.findings) || [];
-  const hardFindings = termFindings.filter(f => f.severity === "critical" || f.severity === "major");
+  const hardFindings = termFindings.filter(f => tcActionable.indexOf(f.severity) !== -1);
   const canRepair = !!seg.target && !(seg.repair && seg.repair.tried) && (
     hardFindings.length > 0 ||
     (bcFresh && ((bcFresh.terms_lost || []).length > 0
@@ -246,14 +250,17 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
       React.createElement("span", { className: "badge " + (riskColorMeta[seg.risk_color] || riskMeta[seg.risk] || riskMeta.medium)[0] }, (riskColorMeta[seg.risk_color] || riskMeta[seg.risk] || riskMeta.medium)[1]),
       seg.risk_score != null && React.createElement("span", { className: "badge badge-soft" }, "Score " + seg.risk_score),
       React.createElement("span", { className: "dim", style: { fontSize: 12 } }, "уровень риска (инфо)")),
+    // Процента совпадения здесь нет: он брался из seg.tmScore, который писался
+    // единожды нулём при импорте и не обновлялся ничем. Показывать «0%» или
+    // «100%» рядом с настоящей записью памяти значит подписывать её выдуманной
+    // цифрой. Сама запись настоящая — она из store.tm, её и показываем.
     infoPanel === "tm" && React.createElement("div", { className: "tm-pop" },
       React.createElement("div", { className: "row between" },
-        React.createElement("span", { className: "label", style: { margin: 0 } }, "Совпадения TM"),
-        React.createElement(TMChip, { score: seg.tmScore })),
+        React.createElement("span", { className: "label", style: { margin: 0 } }, "Совпадения TM")),
       tmHit
         ? React.createElement("div", { className: "tmrow" },
             React.createElement("div", { className: "row between", style: { marginBottom: 6 } },
-              React.createElement(Badge, { variant: "confirmed", icon: "checkCircle" }, (seg.tmScore || 100) + "%"),
+              React.createElement(Badge, { variant: "confirmed", icon: "checkCircle" }, "точное совпадение"),
               React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check", onClick: () => { setDraft(tmHit.target); toast.info("Применено из TM"); } }, "Применить")),
             React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5 } }, tmHit.target))
         : React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, "Точных совпадений в памяти переводов нет.")),

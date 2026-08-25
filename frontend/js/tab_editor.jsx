@@ -92,7 +92,10 @@ function bandColor(color) {
 // везде подписано «ориентировочно». Лучше показать порядок суммы, чем ничего:
 // прогон на 2600 сегментов и прогон на 30 отличаются в сто раз.
 const REASONING_MULT = 1.8;
-const JUDGE_SHARE = 0.3;      // доля сегментов, попадающих в зону судьи (замер на проде)
+// Доля сегментов, попадающих в зону судьи. Только для ЕЩЁ НЕ ПРОВЕРЕННЫХ:
+// у проверенных сервер отвечает точно (backcheck.needs_judge), и гадать про них
+// значит занизить смету на короткие сегменты — их зона открыта до нуля.
+const JUDGE_SHARE = 0.3;
 
 /* Цена эмбеддингов приходит с сервера (/api/models → aux, embedModel). Числом
    в браузере она была вторым прайс-листом рядом с настоящим — ровно тем, от
@@ -127,10 +130,18 @@ function estimateRun(kind, targets, model, opts) {
     tokIn = n * 200 + tgtChars / 3.5;          // короткий промпт буквального перевода
     tokOut = (tgtChars / 2.2) * mult;          // обратный перевод на язык оригинала
     cost = priceOf(model, tokIn, tokOut);
-    // Судья вызывается только в своей зоне и не вызывается при жёсткой находке
+    // Судья вызывается только в своей зоне и не вызывается при жёсткой находке.
+    // У сегментов, которые уже проверялись, гадать не нужно: сервер посчитал
+    // needs_judge своей зоной (у короткого оригинала она открыта до нуля) и
+    // прислал ответ. Доля JUDGE_SHARE остаётся только для непроверенных —
+    // про них не знает никто. Без этого смета занижена ровно на короткие
+    // сегменты, то есть на заголовки, которых в учебнике сотни.
     if (o.judge && o.judgeModel) {
-      const jn = n * JUDGE_SHARE;
-      cost += priceOf(o.judgeModel, jn * 400 + (srcChars * JUDGE_SHARE) / 1.1,
+      const known = targets.filter(s => s.backcheck && s.backcheck.score != null);
+      const jn = known.filter(s => s.backcheck.needs_judge).length
+        + (n - known.length) * JUDGE_SHARE;
+      const jshare = n ? jn / n : 0;
+      cost += priceOf(o.judgeModel, jn * 400 + (srcChars * jshare) / 1.1,
                       jn * 250 * reasoning(o.judgeModel));
     }
     cost += ((srcChars + tgtChars) / 3 / 1e6) * embedPrice();  // эмбеддинги
@@ -344,6 +355,16 @@ function TabEditor({ store, toast }) {
     try { return localStorage.getItem(JUDGE_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
   const [judgeZone, setJudgeZone] = useState([50, 97]);
+  // Уровни находок termcheck, по которым работает ремонт. Приходят с сервера
+  // (/api/models → termcheckActionable): держать их здесь литералом значит
+  // однажды разойтись с _repair_findings и показать под кнопкой число,
+  // которого прогон не найдёт. Значение по умолчанию — на случай, если ответ
+  // ещё не пришёл; оно совпадает с серверным TERMCHECK_ACTIONABLE.
+  const [tcActionable, setTcActionable] = useState(["critical", "major", "minor"]);
+  // Порог «оригинал слишком короток, чтобы лексика что-то значила». Тоже
+  // с сервера: подсказка у тумблера судьи называет это число словами, и вбитое
+  // сюда оно разошлось бы с medical_qa.BACKCHECK_MIN_STEMS молча.
+  const [bcMinStems, setBcMinStems] = useState(3);
   // По умолчанию выключено: back-check ничего не портит, а проверить подтверждённое
   // даже полезнее — если ошибка прошла ревью, узнать об этом важнее всего.
   const [bcSkipConfirmed, setBcSkipConfirmed] = useState(() => {
@@ -396,6 +417,8 @@ function TabEditor({ store, toast }) {
       EMBED_MODEL_ID = d.embedModel || "";
       if (d.backcheckBands) setBcBands(d.backcheckBands);
       if (d.judgeZone) setJudgeZone(d.judgeZone);
+      if (d.termcheckActionable && d.termcheckActionable.length) setTcActionable(d.termcheckActionable);
+      if (d.backcheckMinStems) setBcMinStems(d.backcheckMinStems);
     });
   }, []);
 
@@ -862,7 +885,12 @@ function TabEditor({ store, toast }) {
     // Общий прогон возьмёт такой сегмент заново, поэтому группа отмечена
     // по умолчанию — иначе solo-состав разошёлся бы с общим.
     if (bc.model && s.provider && bc.model === s.provider) return "self";
-    if (bcJudge && !bc.judged && bc.score >= judgeZone[0] && bc.score <= judgeZone[1]) return "nojudge";
+    // needs_judge считает сервер (_segment_for_client): зона вызова судьи
+    // зависит от длины оригинала в содержательных словах, а это русская
+    // морфология из medical_qa. Повтори мы её здесь — состав под кнопкой
+    // «запустить только этот шаг» разошёлся бы с серверным на коротких
+    // сегментах, то есть ровно на тех, ради которых зону и открыли.
+    if (bcJudge && bc.needs_judge) return "nojudge";
     return bc.model || "unknown";
   };
 
@@ -1246,7 +1274,7 @@ function TabEditor({ store, toast }) {
     const bcHit = bc && ((bc.terms_lost || []).length > 0
       || (bc.reasons || []).some(r => REPAIR_REASONS.some(h => r.indexOf(h) !== -1))
       || (bc.judge && ["major", "critical"].indexOf(bc.judge.severity) !== -1));
-    const tcHit = tc && (tc.findings || []).some(f => f.severity === "critical" || f.severity === "major");
+    const tcHit = tc && (tc.findings || []).some(f => tcActionable.indexOf(f.severity) !== -1);
     return !!(bcHit || tcHit || glossIds.has(s.id));
   };
   const rpCandidate = (s, idSet) => {
@@ -1441,9 +1469,10 @@ function TabEditor({ store, toast }) {
             React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center" } },
               "Судья для средней зоны",
               React.createElement(InfoTip, { title: "Когда зовут судью",
-                body: "Балл " + judgeZone[0] + "–" + judgeZone[1] + "% — зона, где лексика уже не отвечает, а смысл ещё под вопросом. Наверху и внизу шкалы решение принято детерминированными проверками, и платить за подтверждение очевидного незачем. При жёсткой находке (числа, единицы, отрицание) судья тоже не вызывается: отменить её он не может." })),
+                body: "Балл " + judgeZone[0] + "–" + judgeZone[1] + "% — зона, где лексика уже не отвечает, а смысл ещё под вопросом. Наверху и внизу шкалы решение принято детерминированными проверками, и платить за подтверждение очевидного незачем. При жёсткой находке (числа, единицы, отрицание) судья тоже не вызывается: отменить её он не может."
+                  + "\n\nИсключение — короткий оригинал (меньше " + bcMinStems + " содержательных слов). Мера, по которой считается балл, на таком отрезке даёт только 0 или 100%, и любой синоним в обратном переводе роняет его в ноль при верном переводе: «Фтизиатрия → Phthisiology → Фтизиология». Ноль здесь значит «нечем измерить», поэтому низ зоны для таких сегментов открыт до нуля. Обратный перевод при этом берётся готовый — платим только за судью." })),
             React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
-              "вызывается только при балле " + judgeZone[0] + "–" + judgeZone[1] + "%")),
+              "балл " + judgeZone[0] + "–" + judgeZone[1] + "%, а на оригиналах короче " + bcMinStems + " слов — от 0")),
           React.createElement("div", { className: "row", style: { gap: 8 } },
             bcJudge && React.createElement(Select, { value: judgeModel || "", disabled: !!job,
               onChange: (e) => pickJudgeModel(e.target.value), style: { fontSize: 12.5, maxWidth: 170 } },
@@ -1482,7 +1511,7 @@ function TabEditor({ store, toast }) {
           React.createElement("div", { style: { minWidth: 0 } },
             React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center" } },
               "Чинить подтверждённые человеком",
-              React.createElement(InfoTip, { title: "Что произойдёт", body: "Ремонт правит только по конкретным находкам и меняет минимум слов — сегмент не переводится заново, и полной цены прогона тут нет. Но прежний текст уйдёт в «прошлый перевод», статус станет «требует проверки», а отметка «подтвердил человек» снимется: она относилась к тексту, которого больше нет.\n\nЕсли после правки оценка не выросла, текст откатывается вместе с прежними проверками.\n\nГалочка действует только на этот шаг. Перевод по ней ничего не перегоняет." })),
+              React.createElement(InfoTip, { title: "Что произойдёт", body: "Ремонт правит только по конкретным находкам и меняет минимум слов — сегмент не переводится заново, и полной цены прогона тут нет. Но прежний текст уйдёт в «прошлый перевод», статус станет «требует проверки», а отметка «подтвердил человек» снимется: она относилась к тексту, которого больше нет.\n\nЕсли после правки оценка УПАЛА, текст откатывается вместе с прежними проверками — ровные оценки правку не отменяют.\n\nУ захода, где кроме мелких замечаний по терминам ничего не было, правило строже: он принимается, только если снял хотя бы одно из тех замечаний, ради которых заходили. Иначе это размен одной придирки на другую — работа за деньги без движения к концу.\n\nГалочка действует только на этот шаг. Перевод по ней ничего не перегоняет." })),
             React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
               rpConfirmedWaiting
                 ? rpConfirmedWaiting + " заверенных сегментов с находками ждут решения"
@@ -1714,7 +1743,8 @@ function TabEditor({ store, toast }) {
                 React.createElement("th", null, "🇷🇺 Оригинал"),
                 React.createElement("th", null, "🇬🇧 Перевод"),
                 React.createElement("th", { style: { width: 132 } }, "Статус"),
-                React.createElement("th", { style: { width: 60 }, title: "TM match %" }, "TM%"),
+                React.createElement("th", { style: { width: 76 },
+                  title: "Ремонт, находки по терминам, back-check" }, "Проверки"),
                 React.createElement("th", { style: { width: 56 } }, "")
               )),
               React.createElement("tbody", null,
@@ -1757,7 +1787,7 @@ function TabEditor({ store, toast }) {
               onTranslate: () => doTranslate(selected, true), onQA: () => doQA(selected), onMedicalQA: () => doMedicalQA(selected), onConfirm: (draftTarget) => doConfirm(selected, draftTarget),
               bcModels: gptModels, bcModel: bcModel, onBcModel: pickBcModel,
               bcJudge: bcJudge, judgeModel: judgeModel,
-              tcModel: tcModel, rpModel: rpModel })
+              tcModel: tcModel, rpModel: rpModel, tcActionable: tcActionable })
           : React.createElement(EmptyState, { icon: "edit", title: "Сегмент не выбран", sub: "Выберите строку в таблице." })
       )
     ),
@@ -2355,8 +2385,13 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
           ? "Переведено: " + provText
           : "Переведено предположительно через " + provText + " — сегмент переведён до того, как система начала записывать движок точно",
       }, (prov.exact ? "" : "≈ ") + provText)),
+    // Колонка проверок. Чипа TM здесь больше нет: tmScore писался единожды
+    // нулём при импорте и не обновлялся ничем, то есть колонка показывала
+    // красный ноль всем сегментам всех проектов всегда. Постоянный ложный
+    // показатель хуже отсутствующего — по нему делают выводы о памяти
+    // переводов, которых он не подтверждает. Реальные совпадения TM видны
+    // в карточке сегмента (вкладка «TM»), где берутся из store.tm.
     React.createElement("td", null,
-      React.createElement(TMChip, { score: seg.tmScore }),
       // Процент соответствия обратного перевода: цифра + причина в подсказке
       seg.repair && seg.repair.applied && React.createElement("div", {
         style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap", color: "var(--c-success)" },

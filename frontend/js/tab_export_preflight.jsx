@@ -3,7 +3,13 @@
    ============================================================ */
 function TabExport({ store, toast }) {
   const project = store.activeProject;
-  const [fmt, setFmt] = useState("docx");
+  /* Формат по умолчанию решает приложенный исходник. Приложить его и значит
+     попросить документ «как оригинал» — другого смысла у этого действия нет.
+     Оставленный на «новом файле» переключатель молча собирал документ с нуля:
+     человек прикладывал 21 МБ исходника и получал голый текст без оформления,
+     причём отличить это можно было, только открыв файл. */
+  const [fmt, setFmt] = useState(
+    () => (store.activeProject && store.activeProject.sourceDocx) ? "docx_layout" : "docx");
   const [opts, setOpts] = useState({ source: true, notes: true, qa: false, glossary: true });
   const [busy, setBusy] = useState(false);
   const [attaching, setAttaching] = useState(false);
@@ -32,6 +38,9 @@ function TabExport({ store, toast }) {
     // Точечная правка проекта в сторе, а не перезагрузка: проект на 2670
     // сегментов весит 5 МБ, и тянуть его ради одной отметки незачем.
     if (store.patchProject) store.patchProject(project.id, { sourceDocx: res.sourceDocx });
+    // Исходник прикладывают ради 1в1 — переключаем формат сами, а не ждём,
+    // что человек заметит радиокнопку выше.
+    setFmt("docx_layout");
     toast.success("Исходник приложен",
       "Абзацев: " + st.paras + " · сегментов совпало: " + st.matched + " из " + st.segments
         + (st.unmatched ? " · без пары: " + st.unmatched + " (останутся на языке оригинала)" : ""));
@@ -110,7 +119,10 @@ function TabExport({ store, toast }) {
               React.createElement("div", null,
                 React.createElement("div", { style: { fontWeight: 650 } }, t),
                 React.createElement("div", { className: "dim", style: { fontSize: 13 } }, d))))),
-          React.createElement("p", { className: "hint", style: { marginTop: 10 } }, "DOCX рекомендуется для большинства случаев.")
+          React.createElement("p", { className: "hint", style: { marginTop: 10 } },
+            srcDoc && fmt !== "docx_layout"
+              ? "К проекту приложен исходник — «DOCX 1в1» сохранит его оформление. Выбранный сейчас формат соберёт документ с нуля."
+              : "«DOCX 1в1» сохраняет оформление оригинала. Остальные форматы собираются с нуля.")
         ),
         React.createElement("div", null,
           React.createElement("h2", { className: "section-title" }, "Исходный документ"),
@@ -162,7 +174,8 @@ function TabExport({ store, toast }) {
             React.createElement("strong", { style: { color: "var(--c-warning)" } }, untranslated)),
           React.createElement("div", { className: "row between" }, React.createElement("span", { className: "muted" }, "Формат"), React.createElement("strong", null, fmtLabel)),
           React.createElement(Btn, { variant: "primary", size: "lg", className: "btn-block", icon: busy ? null : "download", disabled: busy, onClick: doExport },
-            busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), "Сборка файла…") : "Скачать файл")
+            busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), "Сборка файла…")
+                 : "Скачать " + fmtLabel)
         ),
         React.createElement("div", null,
           React.createElement("h2", { className: "section-title", style: { fontSize: 17 } }, "Недавние экспорты"),

@@ -324,6 +324,65 @@ main._run_segment_backcheck(s7, proj, "gpt-5.6-luna", True, "gpt-5.6-terra", har
 check(calls == ["gpt-5.6-luna"], "проверка устарела — обратный перевод делается заново")
 
 
+# ─────────── 5b. Судья добирается до коротких сегментов и вправе их поднять ───────────
+print("\n=== 5b. Что мешало судье поднять короткий сегмент ===")
+GL_F = [{"src": "Фтизиатрия", "tgt": "Phthisiology", "tier": "verified"}]
+rb = medical_qa.run_backcheck("Фтизиатрия", "Фтизиология", GL_F)
+check(rb["terms_lost"] == ["Фтизиатрия"], "термин по основам «не пережил круг» — находка есть")
+check(rb["hard"] is False,
+      "но жёсткой она на коротком оригинале не считается: это то же сравнение "
+      "основ, что дало и сам ноль, а не независимая улика")
+lifted = medical_qa.apply_judge_verdict(dict(rb),
+    {"same_meaning": True, "severity": "none", "comment": "одна дисциплина", "model": "t"})
+check(lifted["score"] == 95, "судья прочитал оба текста и поднял балл")
+check(lifted["terms_lost"] == [],
+      "и снял претензию про термин — иначе ремонт пошёл бы переписывать верный перевод")
+check(any("снято судьёй" in r for r in lifted["reasons"]),
+      "улику не выбросили молча: сказано, кто её отменил и почему")
+
+rp = medical_qa.apply_judge_verdict(medical_qa.run_backcheck("плевры,", "плевра,"),
+    {"same_meaning": True, "severity": "minor",
+     "comment": "различается только грамматическая форма", "model": "t"})
+check(rp["score"] == 95,
+      "«minor + смысл тот же» на коротком сегменте тоже поднимает: судья там "
+      "единственная мера, а ноль никто не измерял")
+
+# На длинном сегменте всё по-прежнему: ноль там что-то значил.
+LG = [{"src": "противотуберкулёзный", "tgt": "anti-tuberculosis", "tier": "verified"}]
+rl = medical_qa.run_backcheck(
+    "В 1920 году открыт первый противотуберкулёзный диспансер в городе.",
+    "В 1920 году открыт первый туберкулёзный диспансер в городе.", LG)
+check(rl["hard"] is True, "на длинном оригинале потерянный термин остаётся жёсткой находкой")
+was = rl["score"]
+rl2 = medical_qa.apply_judge_verdict(dict(rl),
+    {"same_meaning": True, "severity": "none", "comment": "ок", "model": "t"})
+check(rl2["score"] == was and rl2["terms_lost"] == ["противотуберкулёзный"],
+      "и судья её не отменяет: «противотуберкулёзный» против «туберкулёзного» "
+      "потеряно по-настоящему")
+rl3 = medical_qa.apply_judge_verdict(
+    medical_qa.run_backcheck("Длинная строка про очаговый туберкулёз лёгких у взрослых.",
+                             "Совсем другая строка про погоду и настроение сегодня."),
+    {"same_meaning": True, "severity": "minor", "comment": "мелочь", "model": "t"})
+check(rl3["score"] < 90, "и minor на длинном сегменте по-прежнему ничего не поднимает")
+
+# Запись «пропущен по жёсткой находке», сделанная ПРЕЖНИМ правилом, не запирает
+# короткий сегмент: иначе открытая зона до него так и не дойдёт.
+stale = seg_of(1, "Фтизиатрия", "Phthisiology",
+               bc={"score": 0, "model": "gpt-5.6-luna", "back": "Фтизиология",
+                   "judged": False, "judge_skipped": "hard",
+                   "terms_lost": ["Фтизиатрия"],
+                   "reasons": ["потерян термин: Фтизиатрия"]})
+check(not main._backcheck_cached(stale, "gpt-5.6-luna", True),
+      "старая отметка «hard» из-за потерянного термина сегмент не запирает")
+real_hard = seg_of(2, "Доза 5 мг", "Dose 15 mg",
+                   bc={"score": 30, "model": "gpt-5.6-luna", "back": "Доза 15 мг",
+                       "judged": False, "judge_skipped": "hard",
+                       "terms_lost": ["Доза"],
+                       "reasons": ["расхождение чисел", "потерян термин: Доза"]})
+check(main._backcheck_cached(real_hard, "gpt-5.6-luna", True),
+      "а настоящая объективная находка запирает — числа от длины не зависят")
+
+
 # ─────────── 6. Список действующих уровней браузер получает, а не выдумывает ───────────
 print("\n=== 6. Уровни ремонта — один источник на сервер и браузер ===")
 md = main.list_models()

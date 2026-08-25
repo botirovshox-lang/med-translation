@@ -774,9 +774,27 @@ def backcheck_issues(source_ru, back_ru, glossary_matches=None, domain=None, src
     return issues, lost
 
 
-def _hard_issue(issues):
-    hard = {"backcheck_number_mismatch", "backcheck_unit_mismatch",
-            "backcheck_negation_shift", "backcheck_pair_shift", "backcheck_term_lost"}
+# Числа, единицы, отрицание и подмена стороны — объективные находки: они
+# не зависят ни от длины сегмента, ни от морфологии, и судья их отменить
+# не вправе.
+BACKCHECK_HARD_TYPES = {"backcheck_number_mismatch", "backcheck_unit_mismatch",
+                        "backcheck_negation_shift", "backcheck_pair_shift"}
+
+
+def _hard_issue(issues, blind=False):
+    """Есть ли находка, при которой судью звать незачем — он её не отменит.
+
+    `backcheck_term_lost` в этот список входит, НО не на коротком оригинале.
+    Проверка «пережил ли термин круг» — то же самое сравнение основ, что и
+    `_content_recall`, только суженное до слов глоссария. На сегменте короче
+    BACKCHECK_MIN_STEMS слов термин и есть весь сегмент, поэтому «потерян
+    термин» там не независимая улика, а тот же ноль, сказанный второй раз:
+    «Фтизиатрия → Phthisiology → Фтизиология» получает и recall 0, и потерю
+    термина по одной и той же причине — обрезка слова до шести букв. Считать
+    это жёсткой находкой значит закрыть от судьи ровно те сегменты, ради
+    которых ему открыли низ зоны.
+    Числа и единицы от длины не зависят и остаются жёсткими всегда."""
+    hard = BACKCHECK_HARD_TYPES if blind else (BACKCHECK_HARD_TYPES | {"backcheck_term_lost"})
     return any(i.get("type") in hard for i in (issues or []))
 
 
@@ -791,18 +809,41 @@ def apply_judge_verdict(result, verdict):
         sev = "major"
     cap = JUDGE_CAP.get(sev)
     score = result["score"]
+    # На коротком оригинале балл — не измерение (см. lexically_blind), и вердикт
+    # судьи там единственная мера. Поэтому годится и `minor` при подтверждённом
+    # смысле: «плевры → pleura → плевра» судья описывает как «различается только
+    # грамматическая форма» и ставит minor — по вопросу back-check («пережил ли
+    # смысл круг») это чистое «да», а балл без подъёма остаётся нулём, то есть
+    # приговором, которого никто не выносил. На длинном сегменте minor ничего
+    # не поднимает: там ноль что-то значил.
+    blind = bool(result.get("lex_blind"))
+    lifts = sev == "none" or (blind and sev == "minor"
+                              and verdict.get("same_meaning") is True)
+    # «Потерян термин» держит балл только там, где он независимая улика.
+    # На коротком оригинале это то же сравнение основ, что дало и сам ноль.
+    held_by_terms = bool(result.get("terms_lost")) and not blind
     if cap is not None and score > cap:
         score = cap
         result["reasons"] = list(result.get("reasons", [])) + [
             "судья: " + (verdict.get("comment") or "смысл расходится")]
-    elif sev == "none" and score < JUDGE_FLOOR_NONE and not result.get("terms_lost"):
+    elif lifts and score < JUDGE_FLOOR_NONE and not held_by_terms:
         # Поднимаем только когда жёстких находок нет: иначе судья затрёт
         # расхождение чисел или отрицания, которое видно объективно.
-        hard = {"backcheck_number_mismatch", "backcheck_unit_mismatch",
-                "backcheck_negation_shift", "backcheck_pair_shift"}
-        if not any(i.get("type") in hard for i in result.get("issues", [])):
+        if not any(i.get("type") in BACKCHECK_HARD_TYPES
+                   for i in result.get("issues", [])):
             score = JUDGE_FLOOR_NONE
             result["reasons"] = ["судья: смысл эквивалентен, отличается формулировка"]
+            if result.get("terms_lost"):
+                # Улику не выбрасываем молча: её отменил тот, кто читал оба
+                # текста. Оставь её — и ремонт пойдёт переписывать верный
+                # перевод по претензии «термин не пережил обратный перевод».
+                result["reasons"].append(
+                    "«потерян термин: " + ", ".join(result["terms_lost"][:3])
+                    + "» снято судьёй: на таком коротком оригинале это то же "
+                      "сравнение основ, что дало и сам балл")
+                result["terms_lost"] = []
+                result["issues"] = [i for i in result.get("issues", [])
+                                    if i.get("type") != "backcheck_term_lost"]
     result["score"] = int(score)
     result["band"] = band_of(result["score"])
     result["judge"] = {
@@ -831,7 +872,8 @@ def run_backcheck(source_ru, back_ru, glossary_matches=None, semantic=None, sema
                 "terms_lost": [], "reasons": ["Обратный перевод не выполнен"]}
 
     issues, lost = backcheck_issues(source_ru, back_ru, glossary_matches, domain=domain, src_lang=src_lang)
-    hard = _hard_issue(issues)
+    blind = lexically_blind(source_ru)
+    hard = _hard_issue(issues, blind)
     recall = _content_recall(source_ru, back_ru)
     base = recall ** BACKCHECK_RECALL_CURVE
     sem_note = None
@@ -884,7 +926,7 @@ def run_backcheck(source_ru, back_ru, glossary_matches=None, semantic=None, sema
     # тумблер выключен по умолчанию, и обещание разбирательства застыло бы
     # в сегменте навсегда. Сказано только то, что известно точно: кто вправе
     # поднять балл.
-    if lexically_blind(source_ru) and not hard and not sem_note and score < 100:
+    if blind and not hard and not sem_note and score < 100:
         reasons.append("оригинал короче %d содержательных слов: доля совпавших слов "
                        "на таком отрезке бывает только 0 или 100%%, поднять балл "
                        "вправе только судья" % BACKCHECK_MIN_STEMS)
@@ -895,6 +937,10 @@ def run_backcheck(source_ru, back_ru, glossary_matches=None, semantic=None, sema
         "score": score,
         "band": band_of(score),
         "hard": hard,
+        # «Балл посчитан по мере, которая на таком отрезке ничего не мерит».
+        # Едет вместе с результатом, потому что читает его apply_judge_verdict,
+        # а исходного текста у него нет.
+        "lex_blind": blind,
         "recall": round(recall, 3),
         "semantic": round(semantic, 3) if semantic is not None else None,
         "issues": issues,

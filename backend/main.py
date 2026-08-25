@@ -2823,7 +2823,12 @@ def images_blocks(pid: int, skip: str = "", limit: int = 400):
             seg = _image_seg_of(by_id, b, im.get("part"), i)
             out.append({"part": im.get("part"), "block": i, "skip": b.get("skip"),
                         "text": b.get("text") or "", "conf": b.get("conf"),
-                        "flat": b.get("flat"), "seg": seg["id"] if seg else None})
+                        "flat": b.get("flat"), "seg": seg["id"] if seg else None,
+                        # Кто решил. Метку ставят трое: модель при чтении,
+                        # согласие между картинками и сам человек — и найти
+                        # СВОИ пометки в списке «отсеяла модель» он должен
+                        # уметь, иначе разберёт их заново.
+                        "by": b.get("by") or "model"})
     return {"ok": True, "blocks": out[:max(1, min(limit, 2000))],
             "total": len(out)}
 
@@ -2861,12 +2866,29 @@ def image_restore_block(pid: int, req: ImageRestoreRequest):
     have = _image_seg_of(by_id, b, req.part, req.block)
     if have is not None:
         return {"ok": True, "segment": have["id"], "created": False}
-    from docx import Document
-    anchors = _docx_image_anchors(Document(io.BytesIO(Path(data["path"]).read_bytes())))
+    # Номер абзаца-якоря записан при разборе. Читать ради него весь .docx
+    # (у учебника это 22 МБ и 2687 абзацев на единственном воркере) незачем;
+    # старые карты его не знают — только для них и открываем документ.
+    paras = rec.get("paras")
+    if not paras:
+        from docx import Document
+        anchors = _docx_image_anchors(Document(io.BytesIO(Path(data["path"]).read_bytes())))
+        paras = anchors.get(req.part) or []
     nid = max((s["id"] for s in project["segments"]), default=0) + 1
     seg = _image_new_segment(text, req.part, req.block, nid)
-    _image_place_segment(project, seg, _image_anchor_sid(data, anchors.get(req.part) or []), None)
+    # Встаём ЗА своими же соседями по картинке, а не перед ними: иначе
+    # у возвращённого сегмента в промпте перевода окажутся чужие соседи,
+    # а на одном якоре с двумя картинками он сядет в середину первой.
+    after = None
+    for i, other in enumerate(blocks):
+        if i >= req.block:
+            break
+        sib = _image_seg_of(by_id, other, req.part, i)
+        if sib is not None:
+            after = sib["id"]
+    _image_place_segment(project, seg, _image_anchor_sid(data, paras), after)
     b.pop("skip", None)
+    b["by"] = "human"          # см. _image_harmonize: чужое решение не отменяем
     b["seg"] = nid
     _save_source_map(pid, data)
     save_state(STATE)
@@ -2961,6 +2983,12 @@ def _image_harmonize(data: dict, project: dict) -> tuple:
         for b in blocks:
             if b.get("skip") == "overlay":
                 continue
+            if b.get("by") == "human":
+                # Человек уже сказал про эту надпись «это текст документа».
+                # Отменить его решение счётом голосов — значит слушаться его
+                # ровно в одну сторону: пометку «надпечатка» согласие не
+                # трогает никогда, и обратное решение должно быть так же вечно.
+                continue
             seg = by_id.get(b.get("seg"))
             if seg is not None and (seg.get("target") or "").strip():
                 continue                       # переведённое не отменяем
@@ -3004,6 +3032,7 @@ def image_mark_overlay(pid: int, sid: int):
         for i, b in enumerate(im.get("blocks") or []):
             if i == origin.get("block"):
                 b["skip"] = "overlay"
+                b["by"] = "human"
                 b.pop("seg", None)
     project["segments"].remove(seg)
     _save_source_map(pid, data)
@@ -3107,6 +3136,7 @@ def _job_images(job: dict) -> None:
                 rec["w"], rec["h"] = _PIL.open(io.BytesIO(blob)).size
             except Exception:
                 rec["w"] = rec["h"] = 0
+            rec["paras"] = anchors.get(name) or []
             job["counters"]["detected"] = job["counters"].get("detected", 0) + 1
             map_dirty = True
         blocks = rec["blocks"]

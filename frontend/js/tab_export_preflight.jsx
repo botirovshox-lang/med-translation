@@ -24,8 +24,12 @@ function ImagesCard({ project, store, toast }) {
   const [forgetOpen, setForgetOpen] = useState(false);
   /* Что именно отсеяно. Без списка «Отсеяно: 230» — число, которое человеку
      нечем проверить, а отсев делает модель и ошибается в обе стороны. */
-  const [drop, setDrop] = useState(null);        // {kind, rows} | null
+  const [drop, setDrop] = useState(null);        // {kind, pid, rows, total} | null
   const [dropBusy, setDropBusy] = useState(false);
+  /* Кусок картинки по каждой строке списка — по требованию, а не сразу:
+     надписей бывает под три сотни. Решать по голой строке текста нельзя,
+     ровно за этим кроп и заведён. */
+  const [crops, setCrops] = useState({});
 
   /* Ответ принимается, только если он про ТОТ ЖЕ проект. Экран не
      размонтируется при переключении, и без этой сверки числа проекта A
@@ -40,6 +44,8 @@ function ImagesCard({ project, store, toast }) {
   };
   useEffect(() => {
     setRep(null); setJob(null); setAsked(false); setForgetOpen(false);
+    setDrop(null);
+    setCrops(m => { dropCrops(m); return {}; });
     load(pid);
   }, [pid]);
 
@@ -112,6 +118,7 @@ function ImagesCard({ project, store, toast }) {
   };
   const forget = async (wipe) => {
     setForgetOpen(false);
+    closeDrop();          // список ссылается на привязку, которой сейчас не станет
     setBusy(true);
     const r = await window.API.safeCall(() => window.API.imagesForget(pid, true, wipe));
     setBusy(false);
@@ -125,29 +132,67 @@ function ImagesCard({ project, store, toast }) {
       + (r.wiped ? " · прочитанный текст забыт" : " · прочитанное сохранено, повторный заход бесплатный"));
   };
 
-  const loadBlocks = async (kind) => {
-    if (!window.API || !window.API.imagesBlocks) return;
+  const loadBlocks = async (kind, want) => {
+    const forPid = want == null ? pid : want;
+    if (!window.API || !window.API.imagesBlocks) {
+      toast.error("Список не показать", "Связь с сервером недоступна.");
+      return;
+    }
     setDropBusy(true);
-    const r = await window.API.safeCall(() => window.API.imagesBlocks(pid, kind));
+    const r = await window.API.safeCall(() => window.API.imagesBlocks(forPid, kind));
     setDropBusy(false);
-    setDrop(r && r.blocks ? { kind, rows: r.blocks, total: r.total } : null);
+    /* Ответ по ЧУЖОМУ проекту не применяем: экран при переключении
+       не размонтируется, а кнопки в строках работают уже с новым проектом —
+       и «вернуть» вернуло бы чужую надпись, на которую человек не смотрел. */
+    if (forPid !== pid) return;
+    if (!r || !r.blocks) {
+      toast.error("Список не показать", "Сервер не ответил.");
+      return;
+    }
+    setDrop({ kind, pid: forPid, rows: r.blocks, total: r.total });
   };
   const openBlocks = (kind) => {
     if (drop && drop.kind === kind) { setDrop(null); return; }
     loadBlocks(kind);
   };
   const restore = async (b) => {
+    if (!drop || drop.pid !== pid) { setDrop(null); return; }
+    const forPid = pid, kind = drop.kind;
     setDropBusy(true);
-    const r = await window.API.safeCall(() => window.API.imageRestore(pid, b.part, b.block));
+    let r = null, why = "";
+    try { r = await window.API.imageRestore(forPid, b.part, b.block); }
+    catch (e) { why = (e && e.message) || ""; }
     setDropBusy(false);
-    if (!r || !r.ok) { toast.error("Не удалось", "Сервер отказал или идёт разбор."); return; }
-    load(pid);
-    loadBlocks(drop.kind);          // список перечитываем, а не переключаем
-    if (store && store.replaceProjectSegments) {
-      const fresh = await window.API.safeCall(() => window.API.getProject(pid));
-      if (fresh && fresh.segments) store.replaceProjectSegments(pid, fresh.segments);
+    if (!r || !r.ok) {
+      // Причину называем ту, что вернул сервер: «сервер отказал» одинаково
+      // звучит и для идущего разбора, и для отвязанного исходника.
+      toast.error("Не удалось вернуть", why || "Сервер не ответил.");
+      return;
     }
-    toast.success("Возвращено в работу", "сегмент #" + r.segment + " — теперь его надо перевести");
+    load(forPid);
+    /* Список перечитываем, только если он ещё открыт: человек мог закрыть
+       панель, и открывать её обратно за него незачем. Проект целиком отсюда
+       НЕ тянем — 5 МБ ради одного сегмента; редактор подтянет его сам, он
+       теперь сверяет число сегментов с сервером. */
+    if (drop) loadBlocks(kind, forPid);
+    toast.success("Возвращено в работу",
+      "сегмент #" + r.segment + " — теперь его надо перевести");
+  };
+
+  const dropCrops = (map) => {
+    Object.keys(map || {}).forEach(k => { if (map[k]) URL.revokeObjectURL(map[k]); });
+  };
+  const closeDrop = () => { setDrop(null); setCrops(m => { dropCrops(m); return {}; }); };
+  const toggleCrop = async (b) => {
+    const key = b.part + ":" + b.block;
+    if (crops[key]) {
+      setCrops(m => { if (m[key]) URL.revokeObjectURL(m[key]); const n = { ...m }; delete n[key]; return n; });
+      return;
+    }
+    if (!window.API || !window.API.imageCropUrl) return;
+    const url = await window.API.imageCropUrl(pid, { part: b.part, block: b.block });
+    if (!url) { toast.error("Кусок картинки не пришёл", "Проверить надпись глазами не выйдет."); return; }
+    setCrops(m => ({ ...m, [key]: url }));
   };
 
   const st = (rep && rep.stats) || null;
@@ -208,9 +253,11 @@ function ImagesCard({ project, store, toast }) {
         st.text > 0 && row("Вернём в картинку при экспорте", st.repaintable, null,
           "У этих надписей под текстом однородный фон, поэтому при экспорте «1в1» "
           + "перевод впишется В САМУ картинку, на место оригинала: исходную надпись "
-          + "стираем цветом её же фона и пишем поверх. Считает это то же правило, "
-          + "которое потом работает при выгрузке, — число здесь и число в файле "
-          + "не разойдутся."),
+          + "стираем цветом её же фона и пишем поверх. Это число — сколько надписей "
+          + "проходят проверку фона; в файл попадут те из них, что переведены "
+          + "и влезают читаемым кеглем (английский длиннее русского, и в тесную "
+          + "рамку он иногда не помещается). Что не вышло — названо числом "
+          + "в отчёте после выгрузки."),
         st.captioned > 0 && row("Уйдут подписью под картинкой", st.captioned, "var(--c-warning)",
           "Здесь фон пёстрый (рентгенограмма, фотография) либо перевод не влезает "
           + "читаемым кеглем. Стирать надпись значит положить на снимок прямоугольную "
@@ -220,8 +267,10 @@ function ImagesCard({ project, store, toast }) {
           "Надписи, которые сделал не автор книги, а прибор или программа: фамилии "
           + "пациентов и врачей, даты исследования, настройки томографа, линейки "
           + "и пункты меню. Это не текст документа — переводить его незачем, "
-          + "а фамилиям нечего делать в памяти переводов. Решает модель при чтении; "
-          + "нажмите на число, чтобы увидеть список и вернуть ошибочно отсеянное.",
+          + "а фамилиям нечего делать в памяти переводов. Метку ставит модель "
+          + "при чтении, согласие между картинками или вы сами — в списке видно, "
+          + "кто именно. Нажмите на число, чтобы увидеть список, посмотреть кусок "
+          + "картинки и вернуть ошибочно отсеянное.",
           () => openBlocks("overlay")),
         st.noise > 0 && row("Отсеяно: шум", st.noise, null,
           "Строки, в которых переводить нечего: одиночные буквы («а», «б», «L»), "
@@ -236,15 +285,29 @@ function ImagesCard({ project, store, toast }) {
           React.createElement("span", { style: { fontSize: 12.5, fontWeight: 600 } },
             (drop.kind === "overlay" ? "Отсеяно как надпечатка аппарата: " : "Отсеяно как шум: ")
             + drop.rows.length + (drop.total > drop.rows.length ? " из " + drop.total : "")),
-          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setDrop(null) }, "Закрыть")),
-        React.createElement("div", { className: "col", style: { gap: 4, maxHeight: 260, overflowY: "auto" } },
-          drop.rows.map((b, i) => React.createElement("div", { key: b.part + ":" + b.block, className: "row between", style: { gap: 8 } },
-            React.createElement("span", { style: { fontSize: 12, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
-              b.text || "—"),
-            React.createElement(Btn, { variant: "ghost", size: "sm", disabled: dropBusy,
-              onClick: () => restore(b) }, "Это текст документа")))),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: closeDrop }, "Закрыть")),
+        React.createElement("div", { className: "col", style: { gap: 6, maxHeight: 300, overflowY: "auto" } },
+          drop.rows.map((b) => React.createElement("div", { key: b.part + ":" + b.block, className: "col", style: { gap: 3 } },
+            React.createElement("div", { className: "row between", style: { gap: 8 } },
+              React.createElement("span", {
+                onClick: () => toggleCrop(b), title: "Показать кусок картинки",
+                style: { fontSize: 12, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis",
+                         whiteSpace: "nowrap", cursor: "pointer", textDecoration: "underline dotted" } },
+                b.text || "— (модель не прочитала)"),
+              React.createElement("span", { className: "row", style: { gap: 6, flexShrink: 0 } },
+                /* Метку ставят трое, и своё решение человек обязан узнавать:
+                   иначе он найдёт свои же пометки в списке «отсеяла модель»
+                   и будет разбирать их заново. */
+                b.by && b.by !== "model" && React.createElement("span", { className: "dim", style: { fontSize: 11 } },
+                  b.by === "human" ? "ваше решение" : "по согласию картинок"),
+                (b.text || "").trim() && React.createElement(Btn, { variant: "ghost", size: "sm", disabled: dropBusy,
+                  onClick: () => restore(b) }, "Это текст документа"))),
+            crops[b.part + ":" + b.block] && React.createElement("img", {
+              src: crops[b.part + ":" + b.block], alt: "Надпись на картинке",
+              style: { maxWidth: "100%", borderRadius: 4, display: "block" } })))),
         React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
-          "Вернуть можно любую строку: отсев делает модель, и ошибается она в обе стороны.")),
+          "Нажмите на строку — покажем кусок картинки. Вернуть можно любую надпись: "
+          + "отсев делает модель, и ошибается она в обе стороны.")),
 
       running && React.createElement("div", { className: "col", style: { gap: 8 } },
         React.createElement("div", { className: "row", style: { gap: 8 } },

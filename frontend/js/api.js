@@ -120,7 +120,7 @@
     imagesForget:  (pid, force, wipe)       => call("POST",   `/projects/${pid}/images/forget`, { force: !!force, wipe: !!wipe }),
     /* Найденные надписи списком: что отсеяно и почему. Без этого «Отсеяно:
        230» — число, которое человеку нечем проверить. */
-    imagesBlocks:  (pid, skip)              => call("GET",    `/projects/${pid}/images/blocks?skip=${encodeURIComponent(skip || "")}`),
+    imagesBlocks:  (pid, skip, limit)       => call("GET",    `/projects/${pid}/images/blocks?skip=${encodeURIComponent(skip || "")}&limit=${limit || 2000}`),
     /* Обратное решение: «это текст документа, а не надпись аппарата». */
     imageRestore:  (pid, part, block)       => call("POST",   `/projects/${pid}/images/restore`, { part, block }),
     /* «Это надпись аппарата»: убрать сегмент и запомнить метку на блоке,
@@ -130,8 +130,14 @@
        не годится: заголовок в src не положишь, а пускать эндпоинт без токена
        значит открыть куски документов всему интернету. Тянем сами и отдаём
        blob-ссылку. */
-    imageCropUrl: async (pid, segId) => {
-      const r = await fetch(`${BASE}/projects/${pid}/images/crop?seg=${segId}`, { headers: authHeaders({}) });
+    /* Кусок картинки можно спросить и по сегменту, и по паре «часть + блок»:
+       второе нужно списку отсеянного — там сегмента ещё нет, а решать
+       по голой строке текста человек не должен. */
+    imageCropUrl: async (pid, ref) => {
+      const q = (ref && typeof ref === "object")
+        ? `part=${encodeURIComponent(ref.part)}&block=${ref.block}`
+        : `seg=${ref}`;
+      const r = await fetch(`${BASE}/projects/${pid}/images/crop?${q}`, { headers: authHeaders({}) });
       if (r.status === 401) onUnauthorized();
       if (!r.ok) return null;
       return URL.createObjectURL(await r.blob());

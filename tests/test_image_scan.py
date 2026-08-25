@@ -247,6 +247,45 @@ try:
 except main.HTTPException as e:
     check(e.status_code == 404, "несуществующий блок: " + str(e.detail))
 
+# Возврат — решение ЧЕЛОВЕКА, и согласие между картинками его не отменяет.
+# Иначе система слушается в одну сторону: пометку «надпечатка» согласие
+# не трогает никогда, а снятую человеком — стирало бы каждым разбором.
+data = main._load_source_map(1)
+twins = [b for im in data["images"] for b in (im.get("blocks") or [])][:3]
+for t in twins:
+    t["text"], t["skip"] = "KARIMOV SH.", "overlay"
+    t.pop("by", None)
+twins[0].pop("skip")
+twins[0]["by"] = "human"
+moved, dropped = main._image_harmonize(data, project)
+check(moved == 0 and twins[0].get("skip") is None,
+      "согласие между картинками не отменяет возврат, сделанный человеком")
+twins[0].pop("by")
+moved2, _d = main._image_harmonize(data, project)
+check(moved2 == 1 and twins[0].get("skip") == "overlay",
+      "а без следа человека — отменяет, как и раньше")
+
+# Возвращённый сегмент встаёт ЗА своими соседями по картинке, а не перед ними:
+# иначе в промпт перевода ему достаются чужие соседи.
+main.images_forget(1, main.ImagesForgetRequest(force=True, wipe=True))
+main._job_images(new_job(dry_run=False))
+both = main.images_blocks(1, skip="overlay")["blocks"]
+part = [s for s in project["segments"] if (s.get("origin") or {}).get("kind") == "image"][0]["origin"]["part"]
+later = [b for b in both if b["part"] == part and b["block"] > 0]
+if later:
+    r = main.image_restore_block(1, main.ImageRestoreRequest(part=part, block=later[0]["block"]))
+    ids = [s["id"] for s in project["segments"]]
+    mine = [s for s in project["segments"]
+            if (s.get("origin") or {}).get("part") == part]
+    order = [s["origin"]["block"] for s in mine]
+    check(order == sorted(order),
+          "сегменты одной картинки идут по порядку блоков: %s" % order)
+    by = main.images_blocks(1, skip="none")["blocks"]
+    check(any(b.get("by") == "human" for b in by),
+          "в списке видно, что решение принял человек")
+else:
+    check(False, "не нашлось второго блока для проверки порядка")
+
 
 print("\n── «это надпись аппарата» ──")
 # Модель ошибается в обе стороны, и дальше машиной это не отсеять. Решает

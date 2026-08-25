@@ -344,9 +344,10 @@ function TabEditor({ store, toast }) {
      утащили бы нас обратно. Флажок живёт ровно один коммит: его гасит
      эффект БЕЗ списка зависимостей, объявленный ПОСЛЕ этих сбросов. */
   const jumpRef = useRef(false);
-  /* Чтобы подтягивание проекта не зациклилось: ответ придёт с новым числом,
-     эффект пересчитается, и без замка он пошёл бы за проектом снова. */
-  const staleFetch = useRef(false);
+  /* За каким составом проекта уже ходили: "id:число сегментов". Ответ придёт
+     с новым числом, эффект пересчитается — и без этой отметки он пошёл бы
+     за проектом снова. */
+  const staleFetch = useRef(null);
   const [revertTarget, setRevertTarget] = useState(null);
   const [propagateAsk, setPropagateAsk] = useState(null);  // предложение разослать перевод по повторам
   const [gptModels, setGptModels] = useState([]);          // каталог с ценами из /api/models
@@ -711,11 +712,19 @@ function TabEditor({ store, toast }) {
          их нечем, фильтры их не видят, «Новые» показывает ноль. Сверяем
          дешёвым числом из того же ответа и подтягиваем ОДИН раз. */
       const n = res && res.projectSegments;
-      if (!n || n === project.segments.length || staleFetch.current) return;
-      staleFetch.current = true;
+      if (!n || n === project.segments.length) return;
+      /* Замок — не «идёт запрос», а «за ЭТИМ составом уже ходили». Замок
+         по факту запроса откладывал синхронизацию навсегда: эффект,
+         наткнувшийся на него, просто выходил, а тот, что нёс замок, к тому
+         времени мог оказаться устаревшим (человек тронул настройки) и тоже
+         выходил — сегменты не подтягивались, и следующего повода не было. */
+      const sig = project.id + ":" + n;
+      if (staleFetch.current === sig) return;
+      staleFetch.current = sig;
       const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
-      staleFetch.current = false;
-      if (!alive || !fresh || !fresh.segments) return;
+      if (!fresh || !fresh.segments) { staleFetch.current = null; return; }
+      /* Подставляем и из устаревшего эффекта: проект в замыкании свой,
+         а отказ означал бы потерянную синхронизацию. */
       store.replaceProjectSegments(project.id, fresh.segments);
       const added = fresh.segments.length - project.segments.length;
       if (added > 0) {

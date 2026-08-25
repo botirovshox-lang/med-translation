@@ -129,17 +129,30 @@ _ENGINE_ERR = ""
 _ENGINE_LOCK = threading.Lock()
 
 
+_READY = None
+
+
 def engine_ready() -> tuple:
-    """(готов ли движок, причина отказа словами)."""
+    """(готов ли движок, причина отказа словами).
+
+    Ответ кэшируется: внутри `import rapidocr_onnxruntime`, который тянет
+    в процесс onnxruntime на сотни мегабайт, а спрашивают об этом на каждом
+    открытии экрана экспорта — даже в проекте без исходника. Состав пакетов
+    без рестарта не меняется, так что второй раз спрашивать не о чем."""
+    global _READY
+    if _READY is not None:
+        return _READY
     if Image is None:
-        return False, "не установлен Pillow"
-    if _np is None:
-        return False, "не установлен numpy"
-    try:
-        import rapidocr_onnxruntime  # noqa: F401
-    except Exception as e:
-        return False, "не установлен движок распознавания (rapidocr): %s" % e
-    return True, ""
+        _READY = (False, "не установлен Pillow")
+    elif _np is None:
+        _READY = (False, "не установлен numpy")
+    else:
+        try:
+            import rapidocr_onnxruntime  # noqa: F401
+            _READY = (True, "")
+        except Exception as e:
+            _READY = (False, "не установлен движок распознавания (rapidocr): %s" % e)
+    return _READY
 
 
 def _engine():
@@ -355,6 +368,30 @@ def crop(img_bytes: bytes, box: list, pad: float = 0.25,
         return None
     out = io.BytesIO()
     im.crop((x0, y0, x1, y1)).save(out, "PNG")
+    return out.getvalue()
+
+
+def preview(img_bytes: bytes, max_side: int = 768) -> Optional[bytes]:
+    """Уменьшенный PNG всей картинки — обзорный кадр для модели.
+
+    Сырые байты туда отдавать нельзя по двум причинам. Во-первых, тип: они
+    уходят объявленные как image/png, а в пакете лежат и jpeg, и gif, и tiff —
+    BMP и TIFF зрячий API не принимает вовсе, и весь вызов падает, оставляя
+    блоки непрочитанными навсегда. Во-вторых, вес: обзорный кадр нужен ради
+    контекста, а не ради букв — их модель читает по кропам."""
+    if Image is None:
+        return None
+    try:
+        im = Image.open(io.BytesIO(img_bytes))
+        im = im.convert("RGBA") if _has_alpha(im) else im.convert("RGB")
+    except Exception:
+        return None
+    w, h = im.size
+    if max(w, h) > max_side:
+        k = max_side / float(max(w, h))
+        im = im.resize((max(1, int(w * k)), max(1, int(h * k))), Image.LANCZOS)
+    out = io.BytesIO()
+    im.save(out, "PNG")
     return out.getvalue()
 
 

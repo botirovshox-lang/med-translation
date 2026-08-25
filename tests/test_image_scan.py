@@ -211,6 +211,23 @@ img_segs2 = [s for s in project["segments"] if (s.get("origin") or {}).get("kind
 check(len(img_segs2) == 1, "повтор не задваивает сегменты")
 check(calls["n"] == was, "повтор не платит за уже прочитанное")
 
+print("\n── номер сегмента сам по себе ничего не доказывает ──")
+# Номера переиспользуются: max(id)+1 после сноса выдаёт те же числа заново.
+# Блок, чей номер достался ЧУЖОМУ сегменту, обязан завести свой, а не цепляться
+# к соседу — иначе он остаётся без перевода и молча выпадает из выгрузки.
+data = main._load_source_map(1)
+blk = [b for im in data["images"] for b in (im.get("blocks") or []) if b.get("seg")][0]
+blk["seg"] = 1                       # сегмент #1 — абзацный, чужой
+main._save_source_map(1, data)
+before_n = len([s for s in project["segments"] if (s.get("origin") or {}).get("kind") == "image"])
+main._job_images(new_job(dry_run=False))
+after_n = len([s for s in project["segments"] if (s.get("origin") or {}).get("kind") == "image"])
+check(after_n == before_n + 1,
+      "блок с чужим номером завёл свой сегмент, а не принял соседа: было %d, стало %d"
+      % (before_n, after_n))
+main.images_forget(1, main.ImagesForgetRequest(force=True))
+main._job_images(new_job(dry_run=False))
+
 print("\n── «не спросили» ≠ «пусто» ──")
 data = main._load_source_map(1)
 for im in data["images"]:
@@ -260,6 +277,86 @@ check(st["images"] == 2 and st["withText"] == 1 and st["segments"] == 1,
 check(st["overlay"] >= 1 and st["noise"] >= 1, "отсеянное показано, а не спрятано")
 check(rep["est"] == 0.0, "всё прочитано — смета нулевая, а не выдуманная")
 
+print("\n── разбор переживает повторную привязку исходника ──")
+# Человек жмёт «Заменить» в карточке исходника — например, чтобы поправить
+# расхождение по абзацам. Разбор картинок при этом стирался целиком: карточка
+# говорила «разбор не делался», кроп отвечал 404, а перевод надписей молча
+# исчезал из выгрузки, хотя сегменты оставались в проекте.
+was = main._load_source_map(1)
+was_blocks = sum(len(im.get("blocks") or []) for im in was["images"])
+
+
+class _Upload:
+    """UploadFile ровно в том объёме, в каком его читает attach_source."""
+
+    def __init__(self, b, name="t.docx"):
+        self._b, self.filename = b, name
+
+    async def read(self): return self._b
+
+
+import asyncio                                                # noqa: E402
+
+# force=False намеренно: порог «совпало меньше половины» обязан считаться
+# по АБЗАЦНЫМ сегментам. Сегменты из картинок абзацами не являются, и в общем
+# знаменателе они отклоняли бы родной файл как чужой.
+res = asyncio.run(main.attach_source(1, _Upload(content), False))
+now = main._load_source_map(1)
+check(res.get("ok") and sum(len(im.get("blocks") or []) for im in now.get("images") or []) == was_blocks,
+      "повторная привязка исходника не стирает разбор картинок")
+check(now.get("imagesAt") == was.get("imagesAt"), "отметка о разборе на месте")
+
+print("\n── правки во время разбора ──")
+job_live = {"id": 9, "kind": "images", "project": 1, "status": "running",
+            "total": 1, "done": 0, "counters": {}, "params": {}, "stop": False,
+            "ids": [], "recent": []}
+main._JOBS[9] = job_live
+try:
+    asyncio.run(main.attach_source(1, _Upload(content), True))
+    check(False, "привязка во время разбора обязана отказать")
+except main.HTTPException as e:
+    check(e.status_code == 409, "исходник не приложить во время разбора: " + str(e.detail))
+try:
+    main.images_forget(1, main.ImagesForgetRequest())
+    check(False, "снос во время разбора обязан отказать")
+except main.HTTPException as e:
+    check(e.status_code == 409, "распознанное не снести во время разбора")
+main._JOBS.pop(9, None)
+
+print("\n── оборванный ответ модели ──")
+whole = main._image_read_parse('{"blocks":[{"i":0,"text":"A","overlay":false}]}')
+fenced = main._image_read_parse('```json\n{"blocks":[{"i":0,"text":"A"},{"i":1,"text":"B"}]}\n```')
+cut = main._image_read_parse('{"blocks":[{"i":0,"text":"A","overlay":false},{"i":1,"text":"Bcd')
+check(len(whole) == 1 and len(fenced) == 2, "целый ответ разбирается, обёрнутый тоже")
+check(len(cut) == 1 and cut[0]["text"] == "A",
+      "у оборванного ответа берутся законченные блоки: за них уже заплачено")
+check(main._image_read_parse("не могу прочитать") == [],
+      "ответ без JSON — пусто, а не выдуманные блоки")
+
+print("\n── снос не выбрасывает оплаченное ──")
+seg_img = [s for s in project["segments"] if (s.get("origin") or {}).get("kind") == "image"][0]
+res = main.images_forget(1, main.ImagesForgetRequest(force=True))
+after = main._load_source_map(1)
+texts = [b for im in after["images"] for b in (im.get("blocks") or []) if b.get("text")]
+check(res["removed"] >= 1 and texts, "снос сегментов оставляет прочитанный текст")
+check(after["images"] and any(im.get("blocks") for im in after["images"]),
+      "и геометрию тоже — она стоила минут работы детектора")
+st = res["stats"]
+check(st["pending"] >= 1,
+      "кнопка чтения знает, что работа осталась: pending=%s" % st["pending"])
+main._job_images(new_job(dry_run=False))
+check(len([s for s in project["segments"] if (s.get("origin") or {}).get("kind") == "image"]) == 1,
+      "повторный заход заводит сегмент заново и бесплатно")
+res = main.images_forget(1, main.ImagesForgetRequest(force=True, wipe=True))
+after = main._load_source_map(1)
+check(res["wiped"] and not [b for im in after["images"]
+                            for b in (im.get("blocks") or []) if b.get("text")],
+      "с явным разрешением прочитанное выбрасывается")
+check(any(im.get("blocks") for im in after["images"]),
+      "геометрия остаётся даже при wipe: она не зависит от того, верно ли прочитано")
+main._openai_read_image = fake_read
+main._job_images(new_job(dry_run=False))
+
 print("\n── экспорт 1в1: перевод возвращается в картинку ──")
 import hashlib                                                # noqa: E402
 
@@ -303,7 +400,37 @@ check("Caption on the photograph" in texts, "подпись дописана в 
 check(texts.index("Caption on the photograph") > texts.index("Текст перед рисунком."),
       "подпись стоит после своей картинки, а не в начале документа")
 
+# Подменённая картинка не перерисовывается. Карта переживает повторную
+# привязку исходника намеренно, но рамки описывают ТУ картинку: перевод,
+# вписанный по чужим координатам, — заплатка посреди чужого снимка.
+data = main._load_source_map(1)
+mine = [im for im in data["images"] if any(b.get("seg") == seg["id"]
+                                           for b in (im.get("blocks") or []))][0]
+keep_sha = mine["sha"]
+mine["sha"] = "0" * 40
+main._save_source_map(1, data)
+_p3, stats3 = main._generate_export(project, "docx_layout")
+check(stats3["img_stale"] >= 1 and stats3["img_repainted"] == 0,
+      "картинка разошлась с картой — не трогаем и говорим числом: %s"
+      % {k: stats3[k] for k in ("img_stale", "img_repainted")})
+mine["sha"] = keep_sha
+main._save_source_map(1, data)
+
+# Прочитанная надпись без сегмента (разбор остановили, сегменты снесли) —
+# это не «сделано»: она останется на языке оригинала.
+data = main._load_source_map(1)
+for im in data["images"]:
+    for b in (im.get("blocks") or []):
+        if b.get("seg") == seg["id"]:
+            b.pop("seg")
+main._save_source_map(1, data)
+_p4, stats4 = main._generate_export(project, "docx_layout")
+check(stats4["img_noseg"] >= 1,
+      "прочитанная надпись без сегмента посчитана, а не забыта: %s" % stats4["img_noseg"])
+main._job_images(new_job(dry_run=False))
+
 # Непереведённая надпись НЕ стирается: пустой перевод выбросил бы текст совсем.
+seg = [s for s in project["segments"] if (s.get("origin") or {}).get("kind") == "image"][0]
 seg["target"] = ""
 _p2, stats2 = main._generate_export(project, "docx_layout")
 check(stats2["img_untranslated"] == 1 and stats2["img_repainted"] == 0,

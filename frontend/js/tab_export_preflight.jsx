@@ -7,59 +7,98 @@
    Карточка не прячется, когда находок ноль: пропавшее с экрана выглядит
    благополучнее, чем есть, а ноль здесь бывает и настоящим (в документе
    действительно нет надписей), и следствием того, что разбор не запускали. */
-function ImagesCard({ project, toast }) {
+function ImagesCard({ project, store, toast }) {
+  const pid = project.id;
   const [rep, setRep] = useState(null);
+  const [asked, setAsked] = useState(false);   // спрашивали ли сервер вообще
   const [job, setJob] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [forgetOpen, setForgetOpen] = useState(false);
 
-  const load = async () => {
+  /* Ответ принимается, только если он про ТОТ ЖЕ проект. Экран не
+     размонтируется при переключении, и без этой сверки числа проекта A
+     рисуются в карточке проекта B — вместе с кнопками, которые работают
+     уже с B. */
+  const load = async (want) => {
     if (!window.API || !window.API.imagesReport) return;
-    const r = await window.API.safeCall(() => window.API.imagesReport(project.id));
-    if (r) setRep(r);
+    const r = await window.API.safeCall(() => window.API.imagesReport(want));
+    setAsked(true);
+    if (want !== pid) return;
+    setRep(r || null);
   };
-  useEffect(() => { load(); }, [project.id]);
+  useEffect(() => {
+    setRep(null); setJob(null); setAsked(false); setForgetOpen(false);
+    load(pid);
+  }, [pid]);
 
-  /* Опрос идёт, только пока задача жива: разбор 158 картинок — это минуты,
-     и держать вкладку открытой не обязано быть условием. */
+  /* Опрос идёт, только пока задача жива. Задача живёт в памяти процесса:
+     рестарт сервиса или вытеснение историей — и её больше нет. Без разбора
+     этого случая карточка навсегда оставалась бы со спиннером, а кнопки
+     запуска (они скрыты, пока идёт работа) — недоступны до перезагрузки
+     страницы. */
   useEffect(() => {
     if (!job || !window.API) return;
-    const timer = setInterval(async () => {
-      const list = await window.API.safeCall(() => window.API.listJobs(project.id));
-      const j = ((list && list.jobs) || []).find(x => x.id === job.id);
-      if (!j) return;
-      if (j.status === "queued" || j.status === "running") { setJob(j); return; }
+    let dead = false;
+    const tick = async () => {
+      const res = await window.API.safeCall(() => window.API.listJobs(pid));
+      if (dead || !res) return;
+      const live = (res.active || []).find(x => x.id === job.id);
+      if (live) { setJob(live); return; }
       setJob(null);
-      load();
-      const c = j.counters || {};
-      if (j.status === "error") toast.error("Разбор картинок прерван", j.error || "");
-      else toast.success("Разбор картинок закончен",
-        "картинок: " + (j.done || 0) + " · надписей: " + (c.blocks || 0)
+      load(pid);
+      const done = (res.jobs || []).find(x => x.id === job.id);
+      if (!done) {
+        toast.warning("Разбор картинок пропал из очереди",
+          "Сервис мог перезапуститься. Сделанное сохранено — посмотрите числа "
+          + "ниже и при необходимости запустите заново.");
+        return;
+      }
+      const c = done.counters || {};
+      if (done.status === "error") toast.error("Разбор картинок прерван", done.error || "");
+      else toast.success(done.status === "stopped" ? "Разбор остановлен" : "Разбор картинок закончен",
+        "картинок: " + (done.done || 0) + " из " + (done.total || 0)
+        + " · надписей всего: " + (c.blocks || 0)
         + (c.segments ? " · сегментов заведено: " + c.segments : "")
-        + (c.unreadable ? " · не читаются: " + c.unreadable : ""));
-    }, 2500);
-    return () => clearInterval(timer);
-  }, [job && job.id]);
+        + (c.readFailed ? " · не прочитано вызовов: " + c.readFailed : "")
+        + (c.unreadable ? " · картинки не читаются: " + c.unreadable : ""));
+      /* Сегменты завела задача НА СЕРВЕРЕ. Не подтянув их, карточка
+         отчитывается о работе, которой на экране нет: редактор тянет проект
+         один раз при старте. */
+      if (c.segments && store && store.replaceProjectSegments) {
+        const fresh = await window.API.safeCall(() => window.API.getProject(pid));
+        if (!dead && fresh && fresh.segments) store.replaceProjectSegments(pid, fresh.segments);
+      }
+    };
+    const t = setInterval(tick, 2500);
+    return () => { dead = true; clearInterval(t); };
+  }, [job && job.id, pid]);
 
   const start = async (dry) => {
     if (!window.API) return;
     setBusy(true);
-    const r = await window.API.safeCall(
-      () => window.API.createJob(project.id, "images", [], { dry_run: !!dry }));
+    /* Смету отдаём серверу вместе с задачей: без неё факт не с чем сравнить,
+       и поправка estRatio прогоны картинок не увидит никогда. */
+    const r = await window.API.safeCall(() => window.API.createJob(pid, "images", [],
+      { dry_run: !!dry, est_cost: (rep && rep.est) || 0 }));
     setBusy(false);
     if (!r || !r.ok) { toast.error("Разбор не запущен", "Сервер отказал."); return; }
     setJob(r.job);
     toast.info(dry ? "Ищем надписи" : "Читаем надписи",
       "Работа идёт на сервере — вкладку можно закрыть.");
   };
-  const forget = async () => {
+  const forget = async (wipe) => {
+    setForgetOpen(false);
     setBusy(true);
-    const r = await window.API.safeCall(() => window.API.imagesForget(project.id, false));
+    const r = await window.API.safeCall(() => window.API.imagesForget(pid, true, wipe));
     setBusy(false);
-    if (!r) { toast.error("Не удалось", "Сервер недоступен."); return; }
-    load();
-    toast.success("Распознанное снято", "сегментов убрано: " + r.removed
-      + (r.keptTranslated && r.keptTranslated.length
-         ? " · с переводом оставлено: " + r.keptTranslated.length : ""));
+    if (!r) { toast.error("Не удалось", "Сервер недоступен или идёт разбор."); return; }
+    load(pid);
+    if (store && store.replaceProjectSegments) {
+      const fresh = await window.API.safeCall(() => window.API.getProject(pid));
+      if (fresh && fresh.segments) store.replaceProjectSegments(pid, fresh.segments);
+    }
+    toast.success("Готово", "сегментов убрано: " + r.removed
+      + (r.wiped ? " · прочитанный текст забыт" : " · прочитанное сохранено, повторный заход бесплатный"));
   };
 
   const st = (rep && rep.stats) || null;
@@ -86,11 +125,18 @@ function ImagesCard({ project, toast }) {
         "Движок поиска строк недоступен: " + (rep.why || "причина не названа")
         + ". Это «не знаю», а не «надписей нет»."),
 
-      !st && project.sourceDocx && React.createElement("div", { className: "hint" },
+      /* «Не спросили» и «нет находок» — разные вещи, и вторым нельзя
+         называть первое. */
+      !asked && project.sourceDocx && React.createElement("div", { className: "hint" },
+        "Спрашиваем сервер, что известно про картинки…"),
+      !rep && asked && project.sourceDocx && React.createElement("div", { className: "hint", style: { color: "var(--c-warning)" } },
+        "Сервер не ответил про картинки — что там, сейчас неизвестно."),
+      !st && rep && project.sourceDocx && React.createElement("div", { className: "hint" },
         "Разбор ещё не делался."),
 
       st && React.createElement(React.Fragment, null,
         row("Картинок в документе", st.images),
+        row("Разобрано", st.scanned),
         row("С надписями", st.withText),
         row("Надписей найдено", st.blocks),
         st.segments > 0 && row("Стали сегментами", st.segments, "var(--c-success)"),
@@ -110,18 +156,34 @@ function ImagesCard({ project, toast }) {
           onClick: () => window.API.safeCall(() => window.API.stopJob(job.id)) },
           "Остановить")),
 
-      !running && project.sourceDocx && React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
+      !running && project.sourceDocx && !forgetOpen
+        && React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
         React.createElement(Btn, { variant: "secondary", size: "sm", icon: "search",
           disabled: busy, onClick: () => start(true) }, "Найти надписи"),
-        /* Чтение платное, поэтому смета стоит прямо на кнопке. Ноль — это
-           «всё уже прочитано», а не «бесплатно». */
+        /* Кнопку включает ОСТАТОК РАБОТЫ, а не смета. Смета обнуляется, как
+           только всё прочитано, — но после сноса сегментов работа остаётся
+           (завести их заново), и по смете кнопка гасла навсегда. */
         React.createElement(Btn, { variant: "primary", size: "sm", icon: "sparkles",
-          disabled: busy || !st || !st.blocks || (rep && rep.est === 0),
-          onClick: () => start(false) },
+          disabled: busy || !st || !st.pending, onClick: () => start(false) },
           "Прочитать и завести сегменты"
             + (rep && rep.est ? " (~$" + rep.est.toFixed(2) + ")" : "")),
         st && st.segments > 0 && React.createElement(Btn, { variant: "ghost", size: "sm",
-          disabled: busy, onClick: forget }, "Забыть распознанное")),
+          disabled: busy, onClick: () => setForgetOpen(true) }, "Забыть распознанное")),
+
+      /* Отката у этой команды нет, поэтому спрашиваем до, а не рассказываем
+         после. Два разных действия и разная цена: сегменты заводятся заново
+         бесплатно, прочитанный текст — за деньги. */
+      forgetOpen && React.createElement("div", { className: "col", style: { gap: 8 } },
+        React.createElement("div", { style: { fontSize: 13 } },
+          "Убрать сегменты, заведённые из картинок? Сегменты с готовым переводом "
+          + "останутся. Отката у этого действия нет."),
+        React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
+          React.createElement(Btn, { variant: "secondary", size: "sm", disabled: busy,
+            onClick: () => forget(false) }, "Убрать сегменты"),
+          React.createElement(Btn, { variant: "danger", size: "sm", disabled: busy,
+            onClick: () => forget(true) }, "Убрать и забыть прочитанное"),
+          React.createElement(Btn, { variant: "ghost", size: "sm",
+            onClick: () => setForgetOpen(false) }, "Отмена"))),
 
       rep && rep.at && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
         "разбор: " + rep.at + " · модель чтения: " + (rep.model || "")
@@ -208,11 +270,19 @@ function TabExport({ store, toast }) {
       // выделения пришлось ставить по доле длины, а не по знаку препинания.
       // Без этих цифр человек узнаёт о пропусках, только пролистав документ
       // до конца.
+      // Про картинки говорим тем же порядком: что вписали внутрь, что ушло
+      // подписью и что не попало никуда. Счётчик, посчитанный и не показанный,
+      // ничем не лучше несчитанного.
+      const imgLost = (st.img_lost || 0) + (st.img_stale || 0) + (st.img_noseg || 0);
       toast.success("Файл готов", st.written != null
         ? (result.file + " · переведено абзацев: " + st.written
            + (st.untranslated ? " · без перевода: " + st.untranslated : "")
            + (st.inline ? " · выделений перенесено: " + st.inline : "")
-           + (st.approx ? " (из них приблизительно: " + st.approx + ")" : ""))
+           + (st.approx ? " (из них приблизительно: " + st.approx + ")" : "")
+           + (st.img_repainted ? " · надписей вписано в картинки: " + st.img_repainted : "")
+           + (st.img_captioned ? " · подписями под картинками: " + st.img_captioned : "")
+           + (st.img_untranslated ? " · надписей без перевода: " + st.img_untranslated : "")
+           + (imgLost ? " · надписей не попало в файл: " + imgLost : ""))
         : (result.file + " — загрузка началась."));
     } else {
       toast.error("Экспорт не выполнен", (result && result.error) || "Сервер недоступен или вернул ошибку.");
@@ -283,7 +353,7 @@ function TabExport({ store, toast }) {
               onChange: (e) => doAttach(e.target.files && e.target.files[0], false) }))
         ),
 
-        React.createElement(ImagesCard, { project, toast }),
+        React.createElement(ImagesCard, { project, store, toast }),
 
         React.createElement("div", null,
           React.createElement("h2", { className: "section-title" }, "Что включить"),

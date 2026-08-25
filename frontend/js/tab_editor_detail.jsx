@@ -27,15 +27,23 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
   const fromImage = !!(seg.origin && seg.origin.kind === "image");
   const [cropUrl, setCropUrl] = useState(null);
   useEffect(() => {
-    if (!fromImage || !window.API || !window.API.imageCropUrl) { setCropUrl(null); return; }
+    /* Сбрасываем СРАЗУ: прежний blob отзывается уборкой этого же эффекта,
+       и без сброса в <img src> до прихода нового кропа висит отозванная
+       ссылка — на экране битая картинка вместо надписи. */
+    setCropUrl(null);
+    if (!fromImage || !window.API || !window.API.imageCropUrl) return;
     let dead = false, url = null;
     window.API.imageCropUrl(project.id, seg.id).then(u => {
-      if (dead && u) { URL.revokeObjectURL(u); return; }
+      if (dead) { if (u) URL.revokeObjectURL(u); return; }
       url = u;
       setCropUrl(u);
     }).catch(() => {});
     return () => { dead = true; if (url) URL.revokeObjectURL(url); };
-  }, [seg.id, fromImage]);
+    /* project.id в зависимостях обязателен: номера сегментов в проектах
+       свои, и при переключении на проект, где сегмент с тем же номером
+       тоже из картинки, эффект без него не перезапустится — и человек
+       увидит кусок чужого документа. */
+  }, [seg.id, fromImage, project.id]);
 
   const saveDraft = () => {
     store.updateSegment(project.id, seg.id, { target: draft, status: seg.status === "new" ? "translated" : seg.status });

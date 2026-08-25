@@ -1705,18 +1705,11 @@ function TabEditor({ store, toast }) {
           : filtered.length > 0 && React.createElement(Btn, { variant: "ghost", size: "sm",
               onClick: () => setCheckedSegs(new Set(filtered.map(s => s.id))) },
               "Выбрать все " + filtered.length + (inZone ? " в зоне"
-                : (filter !== "all" || query || activeFilter ? " по фильтру" : ""))),
-        // Поиск: отдельно по оригиналу и отдельно по переводу — искать
-        // английский термин по русскому тексту бессмысленно и наоборот.
-        React.createElement("div", { className: "row", style: { gap: 8, flex: "1 1 380px", justifyContent: "flex-end" } },
-          React.createElement(SearchInput, { value: query, onChange: (e) => setQuery(e.target.value),
-            placeholder: searchPlaceholder }),
-          React.createElement(Select, { value: scope, onChange: (e) => pickScope(e.target.value), style: { width: "auto", flex: "0 0 auto" }, "aria-label": "Где искать" },
-            scopeOpts.map(([v, l]) => React.createElement("option", { key: v, value: v }, l))),
-          query && React.createElement(IconBtn, { icon: "close", label: "Очистить поиск", sm: true, onClick: () => setQuery("") }),
-          query && React.createElement("span", { className: "dim", style: { fontSize: 12, whiteSpace: "nowrap" } },
-            filtered.length ? "найдено: " + filtered.length : "ничего не найдено")
-        )
+                : (filter !== "all" || query || activeFilter ? " по фильтру" : "")))
+        // Поиска здесь больше нет: он один и стоит над таблицей, рядом
+        // с переходом по номеру. Два поля на одно состояние — это два места,
+        // где его ищут, и лишняя высота у залипающей панели, из-за которой
+        // таблицу видно хуже.
       ),
       showFilters && React.createElement("div", { className: "row row-wrap", style: { gap: 14, padding: "4px 2px" } },
         React.createElement(Select, { value: riskFilter, onChange: (e) => setRiskFilter(e.target.value), style: { width: 200 } },
@@ -1796,10 +1789,12 @@ function TabEditor({ store, toast }) {
     // ---- Body: table + detail ----
     React.createElement("div", { className: "editor-body" },
       React.createElement("div", { className: "editor-main" },
-        /* Поиск и переход по номеру — прямо над таблицей. Такой же поиск есть
-           в залипающей панели, и это ОДНО состояние: два поля, которые не
-           могут разойтись между собой. Здесь оно нужно потому, что между
-           панелью и таблицей стоят два блока запуска высотой в экран. */
+        /* Поиск и переход по номеру — прямо над таблицей, и поиск тут
+           единственный. Раньше он жил в залипающей панели, то есть за двумя
+           блоками запуска высотой в экран: до таблицы от него было далеко,
+           а рядом с таблицей его не было вовсе.
+           Поиск раздельный по оригиналу и переводу: искать английский термин
+           по русскому тексту бессмысленно и наоборот. */
         React.createElement("div", { className: "table-head" },
           React.createElement("div", { className: "row row-wrap", style: { gap: 8 } },
             // Маленькая строка стоит над колонкой «#» — туда и вводят номер.

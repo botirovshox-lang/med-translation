@@ -47,6 +47,7 @@ import html as _html_mod
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+from fastapi import Response
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -2068,14 +2069,26 @@ def _docx_flat_paragraphs(doc) -> list:
 
     Тело идёт первым не случайно: номера абзацев тела от появления
     колонтитулов не сдвинулись, и карты, записанные раньше, остались верны."""
+    return [p for p, _part in _docx_flat_parts(doc)]
+
+
+def _docx_flat_parts(doc) -> list:
+    """[(абзац, часть пакета, которой он принадлежит)] в том же порядке.
+
+    Часть нужна ссылкам на картинки: r:embed указывает на связь ВНУТРИ своей
+    части, и связь абзаца из колонтитула в связях документа не найдётся.
+    Порядок задаётся здесь один раз: разойдись он с `_docx_flat_paragraphs`,
+    номера абзацев в карте перестали бы значить то же самое, и переводы
+    встали бы по всему документу не на свои места."""
     from docx.oxml.ns import qn as _qn
-    paras = list(doc.element.body.findall(".//" + _qn("w:p")))
+    main = doc.part
+    out = [(p, main) for p in doc.element.body.findall(".//" + _qn("w:p"))]
     for part in sorted(doc.part.package.iter_parts(), key=lambda p: str(p.partname)):
         ct = part.content_type or ""
         el = getattr(part, "element", None)
         if el is not None and ("header+xml" in ct or "footer+xml" in ct):
-            paras.extend(el.findall(".//" + _qn("w:p")))
-    return paras
+            out.extend((p, part) for p in el.findall(".//" + _qn("w:p")))
+    return out
 
 
 def _docx_paragraphs(content: bytes) -> list:
@@ -2297,6 +2310,569 @@ async def attach_source(pid: int, file: UploadFile = File(...), force: bool = Fo
     mark = _store_source_docx(project, content, file.filename, pairs, len(paras))
     save_state(STATE)
     return {"ok": True, "stats": stats, "sourceDocx": mark}
+
+
+# ─── Текст, впечатанный в картинки ───────────────────────────────────
+# В учебнике фтизиатрии 158 растровых картинок, и часть текста живёт ТОЛЬКО
+# в них: подписи под рисунками, схемы, куски отсканированных страниц.
+# Абзацного якоря у такого текста нет, переводить его было нечем, и в выгрузке
+# «1в1» он оставался на языке оригинала.
+#
+# Работа делится надвое, и это не косметика:
+#   ГЕОМЕТРИЮ даёт локальный детектор (image_text.detect_lines): по рамке
+#   придётся стирать и писать, а зрячая модель координаты выдумывает —
+#   ошибка в рамке означает заплатку посреди снимка;
+#   ТЕКСТ даёт зрячая модель: распознавалка, идущая с детектором, знает
+#   китайский и английский, а русский вернула латинской абракадаброй
+#   («пиопневмоторакс» → «WONHeBMOTOpaKC»).
+#
+# Второй вид якоря: «часть пакета + номер блока». Карта лежит в том же
+# sidecar-файле рядом с исходником, что и карта абзацев, и по той же причине:
+# state.json целиком в памяти и переписывается при КАЖДОМ сохранении.
+try:
+    import image_text
+except Exception as _e:            # модуль в том же репозитории, но частичный
+    image_text = None              # деплой не должен ронять весь бэкенд
+    print("[backend] image_text не импортирован: %s" % _e, file=sys.stderr)
+
+IMAGE_MEDIA_EXT = {".png", ".jpeg", ".jpg", ".gif", ".bmp", ".tif", ".tiff"}
+# Сколько блоков уходит модели одним вызовом. Отсканированная страница даёт
+# два-три десятка блоков, и складывать их в один запрос — это картинка
+# на несколько мегабайт в теле и ответ, в котором модель теряет нумерацию.
+IMAGE_READ_MAX_BLOCKS = 12
+# Модель чтения. Своей строки в OPENAI_MODELS ей не нужно — человек выбирает
+# её из общего списка, как и для остальных шагов; здесь только значение
+# по умолчанию.
+IMAGE_READ_MODEL = os.environ.get("IMAGE_READ_MODEL", "") or DEFAULT_OPENAI_MODEL
+
+
+def _docx_media(content: bytes) -> tuple:
+    """({имя части: байты} растровых картинок, [имена нерастровых]).
+
+    EMF/WMF — векторные метафайлы Windows, растровые библиотеки их не читают.
+    В учебнике таких четыре, и они честно считаются пропущенными: молча
+    выброшенная картинка выглядела бы как «текста в ней нет»."""
+    import zipfile
+    raster, other = {}, []
+    with zipfile.ZipFile(io.BytesIO(content)) as z:
+        for name in z.namelist():
+            if not name.startswith("word/media/"):
+                continue
+            ext = ("." + name.rsplit(".", 1)[-1]).lower() if "." in name else ""
+            if ext in IMAGE_MEDIA_EXT:
+                raster[name] = z.read(name)
+            else:
+                other.append(name)
+    return raster, sorted(other)
+
+
+def _docx_media_part(path, name: str) -> Optional[bytes]:
+    """Одна картинка из пакета, не читая пакет целиком.
+
+    Карточка сегмента спрашивает кроп при каждом открытии, а исходник учебника
+    весит 22 МБ: `_docx_media` распаковал бы в память все 158 картинок ради
+    одной, и на каждый клик по сегменту."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(str(path)) as z:
+            return z.read(name)
+    except Exception as e:
+        print("[backend] картинка %s не достаётся: %s" % (name, e), file=sys.stderr)
+        return None
+
+
+def _docx_image_anchors(doc) -> dict:
+    """{имя части: [номера абзацев, где она стоит]}.
+
+    Нужен, чтобы посадить сегмент картинки рядом с тем местом документа,
+    где человек её видит: сегмент, приехавший в конец списка, переводят
+    без всякого контекста. Обход тот же, что у карты абзацев
+    (`_docx_flat_parts`), иначе номера разъедутся."""
+    R = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+    out: dict = {}
+    for idx, (p, part) in enumerate(_docx_flat_parts(doc)):
+        seen = set()
+        for el in p.iter():
+            for key, rid in el.attrib.items():
+                if not key.startswith(R) or rid in seen:
+                    continue
+                seen.add(rid)
+                rel = part.rels.get(rid)
+                if rel is None or "image" not in (rel.reltype or "") or rel.is_external:
+                    continue
+                name = str(rel.target_part.partname).lstrip("/")
+                out.setdefault(name, []).append(idx)
+    return out
+
+
+def _save_source_map(pid: int, data: dict) -> None:
+    """Карта рядом с исходником, запись атомарная — тем же приёмом, что
+    и save_state: разбор идёт минутами, и оборванная посередине запись
+    оставила бы проект с картой, по которой экспорт сажает переводы
+    неизвестно куда."""
+    _docx_path, map_path = _source_paths(pid)
+    payload = {k: v for k, v in data.items() if k != "path"}
+    tmp = map_path.with_name(map_path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(str(tmp), str(map_path))
+
+
+def _image_tokens(w: int, h: int) -> int:
+    """Грубая оценка входных токенов на картинку: плитки 512×512 плюс базовая.
+    Нужна только для сметы ДО прогона — факт снимается с ответа модели
+    (`_note_usage`), как и везде."""
+    tiles = max(1, -(-int(w) // 512)) * max(1, -(-int(h) // 512))
+    return 85 + 170 * tiles
+
+
+def _image_read_system(dom: dict, src_lang: str) -> str:
+    """Промпт чтения. Два вопроса, и второй не менее важен первого.
+
+    `text` — что написано в рамке, дословно. `overlay` — надпись ли это
+    САМОГО АППАРАТА, а не документа: на 38 снимках учебника из 51 с текстом
+    в рамках лежат фамилии пациентов, даты исследования и настройки томографа
+    («KARIMOV SH.», «DEPTH:14cm», «kV 120.0»). Переводить их незачем, а тащить
+    в сегменты, память переводов и очередь терминов нельзя тем более —
+    это персональные данные, и попав в TM они разъедутся по чужим проектам."""
+    return (
+        "You read text that is printed INSIDE an illustration of a "
+        + dom["en"] + " document. The document language is " + src_lang + ".\n"
+        "You are given the whole picture (for context) and then a series of "
+        "close-up crops, one per numbered block.\n\n"
+        "For EVERY block return:\n"
+        '  "text"    — exactly what is written in that crop, verbatim, in the '
+        "original language. Keep numbers, units and capitalisation. If the "
+        "block is split into several lines, join them into one string; if a "
+        "word is hyphenated at a line break, join it back into one word. "
+        "If you cannot read it, return an empty string — never guess.\n"
+        '  "overlay" — true if this is NOT text of the document but a label '
+        "burnt in by equipment or software: patient name, examination date, "
+        "scanner settings, ruler marks, menu items, watermark, file name. "
+        "Otherwise false.\n\n"
+        'Return ONLY JSON: {"blocks": [{"i": 0, "text": "...", "overlay": false}]}'
+    )
+
+
+def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
+                       domain_id: Optional[str] = None,
+                       model: str = None) -> Optional[list]:
+    """Прочитать текст в найденных рамках. Список той же длины, что blocks,
+    либо None — вызов не удался.
+
+    None и пустой текст — разные вещи: None означает «не спросили», и разбор
+    обязан оставить блок нерешённым, а не объявить картинку пустой."""
+    import json as _json
+    import base64
+    import openai
+    if image_text is None or not blocks:
+        return None
+    dom = _resolve_domain(domain_id)
+    mdl = _resolve_model(model or IMAGE_READ_MODEL)
+    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=120,
+                           max_retries=1)
+    content = [{"type": "text",
+                "text": "Whole picture, for context only:"},
+               {"type": "image_url",
+                "image_url": {"url": "data:image/png;base64," +
+                              base64.b64encode(img_bytes).decode(),
+                              "detail": "low"}}]
+    asked = []
+    for i, b in enumerate(blocks):
+        # lineH/rows — чтобы поле кропа считалось от СТРОКИ: у подписи
+        # в шесть строк «четверть блока» захватывает полторы чужие, и модель
+        # добросовестно перепишет соседний абзац в этот сегмент.
+        crop = image_text.crop(img_bytes, b["box"], line_h=b.get("lineH"),
+                               rows=b.get("rows"))
+        if not crop:
+            continue
+        asked.append(i)
+        content.append({"type": "text", "text": "Block %d:" % i})
+        content.append({"type": "image_url",
+                        "image_url": {"url": "data:image/png;base64," +
+                                      base64.b64encode(crop).decode(),
+                                      "detail": "high"}})
+    if not asked:
+        return None
+    extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
+             else {"max_tokens": 1500, "temperature": 0})
+    try:
+        resp = client.chat.completions.create(
+            model=mdl["id"],
+            messages=[{"role": "system", "content": _image_read_system(dom, src_lang)},
+                      {"role": "user", "content": content}],
+            **extra)
+        _note_usage("ocr", mdl["id"], resp)
+        raw = (resp.choices[0].message.content or "").strip()
+        m = re.search(r"\{.*\}", raw, re.S)
+        if not m:
+            return None
+        data = _json.loads(m.group(0))
+    except Exception as e:
+        print("[backend] чтение картинки не удалось: %s" % e, file=sys.stderr)
+        return None
+    out = [None] * len(blocks)
+    for item in (data.get("blocks") or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            i = int(item.get("i"))
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= i < len(blocks)):
+            continue
+        out[i] = {"text": (item.get("text") or "").strip(),
+                  "overlay": bool(item.get("overlay")),
+                  "model": mdl["id"]}
+    return out
+
+
+def _image_anchor_sid(data: dict, paras: list) -> Optional[int]:
+    """Сегмент, после которого встанут блоки этой картинки: последний текст
+    ПЕРЕД ней. Нет такого — первый после неё; нет и его — конец списка."""
+    pairs = sorted((int(p[0]), int(p[1])) for p in (data.get("pairs") or []))
+    if not pairs or not paras:
+        return None
+    first = min(paras)
+    before = [sid for idx, sid in pairs if idx <= first]
+    if before:
+        return before[-1]
+    return pairs[0][1]
+
+
+def _image_new_segment(text: str, part: str, block: int, next_id: int) -> dict:
+    """Сегмент из картинки. Поля те же, что у абзацного: он идёт через тот же
+    перевод, те же проверки и те же корзины разбора — отдельная сущность
+    означала бы второе место, меняющее текст, и второй набор проверок."""
+    words = len(text.split())
+    return {
+        "id": next_id, "source": text, "target": "", "status": "new",
+        "comments": [], "qa": [],
+        "wordCount": words,
+        "risk": "high" if words > 30 else "medium" if words > 8 else "low",
+        "route": "GPT_REQUIRED", "tm": None,
+        # Якорь: по нему экспорт находит, куда вписать перевод, а карточка
+        # сегмента — какой кусок картинки показать человеку.
+        "origin": {"kind": "image", "part": part, "block": block},
+    }
+
+
+def _image_place_segment(project: dict, seg: dict, anchor_sid: Optional[int],
+                         after_id: Optional[int]) -> None:
+    """Вставить сегмент сразу за его картинкой. Сегмент, уехавший в конец
+    списка, переводят и подтверждают без всякого контекста — а контекст здесь
+    и есть половина работы."""
+    segs = project["segments"]
+    want = after_id if after_id is not None else anchor_sid
+    if want is not None:
+        for i, s in enumerate(segs):
+            if s["id"] == want:
+                segs.insert(i + 1, seg)
+                return
+    segs.append(seg)
+
+
+def _image_stats(images: list) -> dict:
+    """Что известно про картинки проекта. Один расчёт на карточку экрана
+    и на отчёт задачи: разойдись они — под соседними числами стояли бы
+    разные ответы на один вопрос."""
+    st = {"images": len(images), "withText": 0, "blocks": 0, "text": 0,
+          "overlay": 0, "noise": 0, "unread": 0, "segments": 0,
+          "repaintable": 0, "captioned": 0, "scanned": 0, "unreadable": 0}
+    for im in images:
+        if im.get("unreadable"):
+            # Посмотреть не удалось. Это не «текста нет» и прятать это нельзя:
+            # иначе картинка навсегда числится разобранной и пустой.
+            st["unreadable"] += 1
+            continue
+        blocks = im.get("blocks") or []
+        st["blocks"] += len(blocks)
+        if im.get("blocks") is not None:
+            st["scanned"] += 1
+        if blocks:
+            st["withText"] += 1
+        for b in blocks:
+            skip = b.get("skip")
+            if skip == "overlay":
+                st["overlay"] += 1
+            elif skip == "noise":
+                st["noise"] += 1
+            elif b.get("text"):
+                st["text"] += 1
+                if b.get("seg"):
+                    st["segments"] += 1
+                # Порог плоскости фона — тот же, по которому откажет
+                # перерисовка при экспорте. Разойдись они, карточка обещала бы
+                # одно, а готовый файл показывал другое.
+                floor = image_text.IMG_FLAT_MIN if image_text else 1.1
+                if (b.get("flat") or 0) >= floor:
+                    st["repaintable"] += 1
+                else:
+                    st["captioned"] += 1
+            elif "text" in b:
+                st["unread"] += 1
+    return st
+
+
+def _image_est_cost(images: list, model_id: str) -> Optional[float]:
+    """Смета чтения: сколько токенов уйдёт на картинки, где ещё не читали.
+    Цена неизвестна — None, а не ноль: неизвестное, посчитанное нулём,
+    показывает расход меньше настоящего."""
+    tin = 0
+    for im in images:
+        blocks = [b for b in (im.get("blocks") or []) if "text" not in b]
+        if not blocks:
+            continue
+        tin += _image_tokens(im.get("w") or 512, im.get("h") or 512) // 4
+        for b in blocks:
+            x0, y0, x1, y1 = b["box"]
+            tin += _image_tokens(max(1, x1 - x0), max(1, y1 - y0))
+    if not tin:
+        return 0.0
+    return _usage_cost(model_id, tin, tin // 6)
+
+
+@app.get("/api/projects/{pid}/images")
+def images_report(pid: int):
+    """Что известно про текст на картинках проекта. Ни одного вызова модели."""
+    project = get_project(pid)
+    ready, why = image_text.engine_ready() if image_text else (False, "модуль не собран")
+    data = _load_source_map(pid) if project.get("sourceDocx") else None
+    images = (data or {}).get("images") or []
+    mdl = _resolve_model(IMAGE_READ_MODEL)
+    return {"ok": True, "engine": ready, "why": why,
+            "hasSource": data is not None,
+            "model": mdl["id"],
+            "stats": _image_stats(images),
+            "est": _image_est_cost(images, mdl["id"]),
+            "at": (data or {}).get("imagesAt"),
+            "skipped": (data or {}).get("imagesSkipped") or []}
+
+
+@app.get("/api/projects/{pid}/images/crop")
+def image_crop(pid: int, seg: int = 0, part: str = "", block: int = 0):
+    """Кусок картинки с одной надписью — картинкой PNG.
+
+    Без него распознанное проверить нечем: человек видит в карточке строку
+    текста и не может знать, то ли это, что нарисовано. Спрашивать можно
+    и по сегменту, и по паре «часть + блок»."""
+    project = get_project(pid)
+    if image_text is None:
+        raise HTTPException(503, "Работа с картинками недоступна: модуль не собран")
+    data = _load_source_map(pid) if project.get("sourceDocx") else None
+    if data is None:
+        raise HTTPException(404, "К проекту не приложен исходный .docx")
+    if seg:
+        s = next((x for x in project["segments"] if x["id"] == seg), None)
+        origin = (s or {}).get("origin") or {}
+        if origin.get("kind") != "image":
+            raise HTTPException(404, "Сегмент #%d пришёл не из картинки" % seg)
+        part, block = origin.get("part") or "", int(origin.get("block") or 0)
+    rec = next((im for im in (data.get("images") or []) if im.get("part") == part), None)
+    blocks = (rec or {}).get("blocks") or []
+    if rec is None or not (0 <= block < len(blocks)):
+        raise HTTPException(404, "Такой надписи в карте картинок нет")
+    blob = _docx_media_part(data["path"], part)
+    if blob is None:
+        raise HTTPException(404, "Картинки %s в исходнике больше нет" % part)
+    b = blocks[block]
+    png = image_text.crop(blob, b["box"], line_h=b.get("lineH"), rows=b.get("rows"))
+    if not png:
+        raise HTTPException(404, "Кусок картинки не вырезался")
+    return Response(content=png, media_type="image/png",
+                    headers={"Cache-Control": "private, max-age=86400"})
+
+
+class ImagesForgetRequest(BaseModel):
+    # Снести распознанное целиком: разбор оказался плохим, движок сменили,
+    # приложили другой исходник. Автоматика без отката недопустима — тот же
+    # закон, что у пачек автоодобрения.
+    force: bool = False       # сносить и те сегменты, где уже есть перевод
+
+
+@app.post("/api/projects/{pid}/images/forget")
+def images_forget(pid: int, req: ImagesForgetRequest):
+    """Забыть текст, найденный на картинках: убрать сегменты и карту.
+
+    Сегменты с готовым переводом по умолчанию НЕ трогаются и называются
+    поимённо: это оплаченная работа, и снести её молча нельзя."""
+    project = get_project(pid)
+    data = _load_source_map(pid) if project.get("sourceDocx") else None
+    kept, removed = [], []
+    for s in list(project["segments"]):
+        if (s.get("origin") or {}).get("kind") != "image":
+            continue
+        if (s.get("target") or "").strip() and not req.force:
+            kept.append(s["id"])
+            continue
+        project["segments"].remove(s)
+        removed.append(s["id"])
+    if data is not None:
+        gone = set(removed)
+        for im in (data.get("images") or []):
+            for b in (im.get("blocks") or []):
+                if b.get("seg") in gone:
+                    b.pop("seg", None)
+        if not kept:
+            data["images"] = []
+            data.pop("imagesAt", None)
+        _save_source_map(pid, data)
+    save_state(STATE)
+    return {"ok": True, "removed": len(removed), "keptTranslated": kept,
+            "stats": _image_stats((data or {}).get("images") or [])}
+
+
+def _job_images(job: dict) -> None:
+    """Разбор картинок проекта: найти строки, собрать в блоки, прочитать
+    моделью, завести сегменты.
+
+    Идёт задачей, а не запросом: 158 картинок учебника — это две с половиной
+    минуты только на поиск строк. Остановка мягкая, сделанное сохраняется:
+    разбор кэшируется ПО СОДЕРЖИМОМУ картинки (sha), поэтому повторный заход
+    не платит и не считает заново."""
+    pid = job["project"]
+    project = get_project(pid)
+    dry = bool(job["params"].get("dry_run", True))
+    if image_text is None:
+        raise RuntimeError("Работа с картинками недоступна: модуль не собран")
+    ready, why = image_text.engine_ready()
+    if not ready:
+        # Не «текста не найдено», а честный отказ с причиной: молчаливый ноль
+        # означал бы «в книге нет ни одной подписи».
+        raise RuntimeError("Поиск строк невозможен: " + why)
+    data = _load_source_map(pid) if project.get("sourceDocx") else None
+    if data is None:
+        raise RuntimeError("К проекту не приложен исходный .docx — "
+                           "искать текст не в чем")
+    if not dry and not os.environ.get("OPENAI_API_KEY"):
+        raise RuntimeError("Чтение текста требует ключ OpenAI")
+
+    content = Path(data["path"]).read_bytes()
+    raster, other = _docx_media(content)
+    from docx import Document
+    anchors = _docx_image_anchors(Document(io.BytesIO(content)))
+    known = {im.get("part"): im for im in (data.get("images") or [])}
+    names = sorted(raster)
+    job["total"], job["done"] = len(names), 0
+    job["counters"]["skippedFormat"] = len(other)
+    model = job["params"].get("ocr_model") or IMAGE_READ_MODEL
+    # Карту и состояние сохраняем ПО РАЗНЫМ поводам. Карта — файл на десятки
+    # килобайт, её пишем после каждой картинки: разбор идёт минутами, и
+    # остановка не должна стоить уже сделанной работы. А state.json на боевом
+    # проекте это 5 МБ, и переписывать его на каждую из 158 картинок, когда
+    # сегментов не прибавилось, — три четверти гигабайта записи впустую.
+    out, map_dirty, segs_dirty = [], False, False
+    for name in names:
+        if job["stop"]:
+            job["status"] = "stopped"
+            break
+        job["recent"] = [name]
+        blob = raster[name]
+        sha = hashlib.sha1(blob).hexdigest()
+        prev = known.get(name) or {}
+        rec = dict(prev) if prev.get("sha") == sha and prev.get("blocks") is not None \
+            else {"part": name, "sha": sha}
+        if rec.get("blocks") is None:
+            lines = image_text.detect_lines(blob)
+            if lines is None:
+                # Битый файл, незнакомый формат, векторный метафайл. Это «не
+                # знаю» про ОДНУ картинку: записать сюда пустой список значило
+                # бы объявить, что надписей в ней нет. Разбор идёт дальше —
+                # ронять из-за одной картинки полтораста остальных незачем.
+                rec["unreadable"] = True
+                rec.pop("blocks", None)
+                out.append(rec)
+                job["counters"]["unreadable"] = job["counters"].get("unreadable", 0) + 1
+                job["done"] += 1
+                map_dirty = True
+                continue
+            rec.pop("unreadable", None)
+            rec["blocks"] = image_text.group_blocks(lines)
+            try:
+                from PIL import Image as _PIL
+                rec["w"], rec["h"] = _PIL.open(io.BytesIO(blob)).size
+            except Exception:
+                rec["w"] = rec["h"] = 0
+            job["counters"]["detected"] = job["counters"].get("detected", 0) + 1
+            map_dirty = True
+        blocks = rec["blocks"]
+        if blocks:
+            job["counters"]["withText"] = job["counters"].get("withText", 0) + 1
+
+        # ЧТЕНИЕ. Спрашиваем только про блоки, о которых ещё не спрашивали:
+        # разбор кэширован по sha картинки, и повторный заход не платит
+        # за то, что уже прочитано.
+        todo = [i for i, b in enumerate(blocks) if "text" not in b]
+        if todo and not dry:
+            for start in range(0, len(todo), IMAGE_READ_MAX_BLOCKS):
+                if job["stop"]:
+                    break
+                part_idx = todo[start:start + IMAGE_READ_MAX_BLOCKS]
+                got = _openai_read_image(blob, [blocks[i] for i in part_idx],
+                                         project.get("src") or "RU",
+                                         project.get("domain"), model)
+                if got is None:
+                    # Не спросили — блок остаётся нерешённым. Записать сюда
+                    # пустоту значило бы навсегда закрыть картинку от чтения.
+                    job["counters"]["readFailed"] = job["counters"].get("readFailed", 0) + 1
+                    continue
+                for k, i in enumerate(part_idx):
+                    ans = got[k]
+                    if ans is None:
+                        continue
+                    b = blocks[i]
+                    b["text"] = ans["text"]
+                    b["reader"] = ans["model"]
+                    if ans["overlay"]:
+                        b["skip"] = "overlay"
+                    elif image_text.is_noise(ans["text"]):
+                        b["skip"] = "noise"
+                    else:
+                        b.pop("skip", None)
+                    map_dirty = True
+
+        # СЕГМЕНТЫ. Только то, что прочитано, не является надпечаткой аппарата
+        # и не шум. Уже заведённые не задваиваются: карта помнит номер.
+        if not dry:
+            by_id = {s["id"]: s for s in project["segments"]}
+            anchor = _image_anchor_sid(data, anchors.get(name) or [])
+            after = None
+            for i, b in enumerate(blocks):
+                if b.get("skip") or not (b.get("text") or "").strip():
+                    continue
+                sid = b.get("seg")
+                if sid and sid in by_id:
+                    after = sid
+                    continue
+                nid = max((s["id"] for s in project["segments"]), default=0) + 1
+                seg = _image_new_segment(b["text"].strip(), name, i, nid)
+                _image_place_segment(project, seg, anchor, after)
+                b["seg"] = nid
+                after = nid
+                map_dirty = segs_dirty = True
+                job["counters"]["segments"] = job["counters"].get("segments", 0) + 1
+        out.append(rec)
+        job["done"] += 1
+        if map_dirty:
+            data["images"] = out + [known[n] for n in names[len(out):] if n in known]
+            data["imagesAt"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            data["imagesSkipped"] = other
+            _save_source_map(pid, data)
+            map_dirty = False
+        if segs_dirty:
+            save_state(STATE)
+            segs_dirty = False
+    data["images"] = out + [known[n] for n in names[len(out):] if n in known]
+    data["imagesAt"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    data["imagesSkipped"] = other
+    _save_source_map(pid, data)
+    save_state(STATE)
+    st = _image_stats(data["images"])
+    for k in ("blocks", "text", "overlay", "noise", "unread"):
+        job["counters"][k] = st[k]
+    job["counters"]["repaintable"] = st["repaintable"]
+    # Модели детектора держат сотни мегабайт, а разбор картинок бывает раз
+    # в жизни проекта: воркер uvicorn один, и эта память отнимается у сервиса.
+    image_text.release_engine()
 
 
 # ─── Segment actions ────────────────────────────────────────────────
@@ -6732,6 +7308,109 @@ def _write_para(slots: list, target: str) -> tuple:
     return len(nonblank) > 1, approx
 
 
+def _image_caption(p_elem, text: str, qn):
+    """Дописать перевод отдельным абзацем сразу за картинкой.
+
+    Так уходит текст, который перерисовать нельзя: надпись на рентгенограмме
+    или на фотографии стирается заплаткой, а заплатка посреди снимка — порча
+    документа. Оформление берём у абзаца картинки (выключка, отступы), чтобы
+    подпись встала под ней, а не у левого поля.
+
+    Никакой приписки вроде «текст на рисунке» здесь нет намеренно: она была бы
+    выдуманным текстом, которого в документе не было, да ещё и на неизвестно
+    каком языке — целевых языков у системы много."""
+    from docx.oxml import OxmlElement
+    from copy import deepcopy
+    new_p = OxmlElement("w:p")
+    ppr = p_elem.find(qn("w:pPr"))
+    if ppr is not None:
+        new_p.append(deepcopy(ppr))
+    run = OxmlElement("w:r")
+    t = OxmlElement("w:t")
+    t.text = text
+    t.set(qn("xml:space"), "preserve")
+    run.append(t)
+    new_p.append(run)
+    p_elem.addnext(new_p)
+    return new_p
+
+
+def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
+    """Перевод, вписанный обратно в картинки.
+
+    Байты картинки подменяются в КОПИИ документа: исходник на диске не
+    трогается никогда, иначе следующий экспорт брал бы уже переведённую
+    картинку и писал перевод поверх перевода.
+
+    Решение по каждому блоку принимает `image_text.render_target` — одно
+    место на всю систему: разойдись оно с тем, что показывает карточка
+    «Текст на картинках», человек читал бы одно число, а получал другое."""
+    images = (data.get("images") or []) if image_text is not None else []
+    if not images:
+        return
+    anchors = _docx_image_anchors(doc)
+    all_p = _docx_flat_paragraphs(doc)
+    parts = {str(p.partname).lstrip("/"): p for p in doc.part.package.iter_parts()}
+    for im in images:
+        name = im.get("part")
+        items = []
+        for b in (im.get("blocks") or []):
+            if b.get("skip") or not b.get("seg"):
+                continue
+            seg = by_id.get(b["seg"])
+            if seg is None:
+                stats["img_lost"] += 1
+                continue
+            target = (seg.get("target") or "").strip()
+            if not target:
+                # Не переведён — надпись остаётся на языке оригинала. Стереть
+                # её «пока что» значило бы выбросить текст совсем.
+                stats["img_untranslated"] += 1
+                continue
+            items.append({"box": b["box"], "text": target, "align": b.get("align"),
+                          # Высота строки и число строк: по ним считаются поля
+                          # рамки и решается, нужно ли увеличивать картинку.
+                          "lineH": b.get("lineH"), "rows": b.get("rows")})
+        if not items:
+            continue
+        part = parts.get(name)
+        if part is None:
+            stats["img_lost"] += len(items)
+            continue
+        stats["img_parts"] += 1
+        new_bytes, report = image_text.render_target(part.blob, items)
+        captions = []
+        for r in report:
+            if r.get("ok"):
+                stats["img_repainted"] += 1
+                continue
+            why = r.get("why") or ""
+            if why == "flat":
+                stats["img_flat"] += 1
+            elif why == "tiny_font":
+                stats["img_font"] += 1
+            else:
+                stats["img_failed"] += 1
+            captions.append(items[r["i"]]["text"])
+        if new_bytes:
+            part._blob = new_bytes
+        idxs = [i for i in (anchors.get(name) or []) if i < len(all_p)]
+        if not captions:
+            continue
+        if not idxs:
+            # Картинка есть в пакете, но ни в одном абзаце не стоит: дописать
+            # перевод некуда. Считаем потерянным, а не «сделанным».
+            stats["img_lost"] += len(captions)
+            continue
+        # Каждая следующая подпись цепляется за предыдущую, а не за картинку:
+        # addnext вставляет СРАЗУ после, и три подписи, посаженные на один
+        # абзац, встали бы в обратном порядке.
+        after = all_p[min(idxs)]
+        for text in captions:
+            after = _image_caption(after, text, qn)
+            stats["img_captioned"] += 1
+
+
 def _export_docx_layout(project: dict, out: Path) -> dict:
     """Подставляет переводы в сохранённый исходник и сохраняет копию.
 
@@ -6768,7 +7447,14 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
     by_id = {s["id"]: s for s in project["segments"]}
     stats = {"paragraphs": len(all_p), "written": 0, "untranslated": 0,
              "noslot": 0, "mismatch": 0, "inline": 0, "approx": 0,
-             "trimmed": 0, "lost": 0}
+             "trimmed": 0, "lost": 0,
+             # Текст, впечатанный в картинки: что перерисовали, что ушло
+             # подписью и почему. Молча пропущенная надпись остаётся
+             # на языке оригинала, и человек узнает об этом, только открыв
+             # готовый файл.
+             "img_parts": 0, "img_repainted": 0, "img_captioned": 0,
+             "img_untranslated": 0, "img_flat": 0, "img_font": 0,
+             "img_failed": 0, "img_lost": 0}
     shown = 0
     for idx, sid in data.get("pairs") or []:
         seg = by_id.get(sid)
@@ -6811,6 +7497,9 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
         stats["approx"] += 1 if approx else 0
         stats["written"] += 1
 
+    # Картинки идут ПОСЛЕ абзацев и только теперь: подписи, которые здесь
+    # добавляются, сдвигают абзацы, а `all_p` уже разобран по номерам.
+    _export_images(doc, data, by_id, qn, stats)
     doc.save(str(out))
     return stats
 
@@ -7423,7 +8112,11 @@ def health(request: Request):
 import queue as _queue
 
 JOB_CHUNKS = {"translate": 10, "backcheck": 10, "termcheck": 10, "medical_qa": 10,
-              "repair": 5, "full": 5, "apply_terms": 5}
+              "repair": 5, "full": 5, "apply_terms": 5,
+              # Разбор картинок идёт СВОИМ циклом (порция — картинка, а не
+              # сегмент), но очередь и воркер те же: два тяжёлых прогона
+              # на одном воркере uvicorn дрались бы за state.json.
+              "images": 1}
 JOB_KINDS = set(JOB_CHUNKS)
 
 # Составной прогон: порция проходит все шаги подряд, порция за порцией. Порядок
@@ -7848,6 +8541,14 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
 def _job_run(job: dict):
     kind, pid = job["kind"], job["project"]
     chunk_size = JOB_CHUNKS[kind]
+    if kind == "images":
+        # Разбор картинок не идёт по сегментам: их ещё нет — они из него
+        # и рождаются. Цикл свой, но остановка, счётчики и сохранение общие.
+        _job_images(job)
+        if job["status"] == "running":
+            job["status"] = "done"
+        job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return
     if kind == "apply_terms":
         # Одобрение пачки — один шаг, а не порция: оно про глоссарий, а не про
         # сегменты. Состав сегментов пересчитываем ПОСЛЕ него: до одобрения
@@ -8015,7 +8716,9 @@ def create_job(pid: int, req: JobRequest):
     ids = list(dict.fromkeys(req.segment_ids))
     # apply_terms сам считает состав после одобрения терминов — до него список
     # сегментов ещё неизвестен, и требовать его от клиента бессмысленно.
-    if not ids and req.kind != "apply_terms":
+    if not ids and req.kind not in ("apply_terms", "images"):
+        # apply_terms считает состав после одобрения терминов, а разбор
+        # картинок — сам себе состав: сегментов из картинок ещё не существует.
         raise HTTPException(400, "Пустой список сегментов")
     with _JOBS_LOCK:
         job = {

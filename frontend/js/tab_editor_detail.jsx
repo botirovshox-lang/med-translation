@@ -20,6 +20,23 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
   useEffect(() => { setDraft(seg.target || ""); setInfoPanel(null); setBackResult(null); setTermBusy(false); setRepairBusy(false); }, [seg.id]);
   useEffect(() => { setDraft(seg.target || ""); }, [seg.target, seg.status]);
 
+  /* Сегмент, пришедший из картинки, человеку нечем проверить: он видит строку
+     текста и не может знать, то ли это, что нарисовано. Поэтому над оригиналом
+     показываем сам кусок картинки. Кроп требует токен, поэтому тянется через
+     fetch и живёт blob-ссылкой — <img src> заголовок не отправит. */
+  const fromImage = !!(seg.origin && seg.origin.kind === "image");
+  const [cropUrl, setCropUrl] = useState(null);
+  useEffect(() => {
+    if (!fromImage || !window.API || !window.API.imageCropUrl) { setCropUrl(null); return; }
+    let dead = false, url = null;
+    window.API.imageCropUrl(project.id, seg.id).then(u => {
+      if (dead && u) { URL.revokeObjectURL(u); return; }
+      url = u;
+      setCropUrl(u);
+    }).catch(() => {});
+    return () => { dead = true; if (url) URL.revokeObjectURL(url); };
+  }, [seg.id, fromImage]);
+
   const saveDraft = () => {
     store.updateSegment(project.id, seg.id, { target: draft, status: seg.status === "new" ? "translated" : seg.status });
     toast.success("Сохранено", "Перевод сегмента #" + seg.id + " обновлён.");
@@ -152,8 +169,15 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
     // source
     React.createElement("div", null,
       React.createElement("div", { className: "row between", style: { marginBottom: 6 } },
-        React.createElement("span", { className: "label" }, "🇷🇺 Оригинал"),
+        React.createElement("span", { className: "label" },
+          fromImage ? "🖼 Оригинал (текст на картинке)" : "🇷🇺 Оригинал"),
         React.createElement(Btn, { variant: "ghost", size: "sm", icon: "copy", onClick: copySrc }, "Копировать")),
+      fromImage && React.createElement("div", { className: "card", style: { padding: 8, marginBottom: 6, background: "var(--bg-sunken)" } },
+        cropUrl
+          ? React.createElement("img", { src: cropUrl, alt: "Надпись на картинке",
+              style: { maxWidth: "100%", display: "block", borderRadius: 4 } })
+          : React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+              "Кусок картинки не загрузился — проверить распознанное нечем.")),
       React.createElement("div", { className: "card", style: { padding: 12, background: "var(--bg-sunken)", lineHeight: 1.55, fontSize: 14 } }, seg.source)
     ),
 

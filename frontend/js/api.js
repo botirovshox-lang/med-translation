@@ -110,6 +110,22 @@
       return r.json();
     },
 
+    /* Текст, впечатанный в картинки. Разбор идёт задачей (createJob "images"):
+       158 картинок учебника — это минуты только на поиск строк, и запросом
+       такое делать нельзя. dry_run=true ищет строки и ничего не платит. */
+    imagesReport:  (pid)                    => call("GET",    `/projects/${pid}/images`),
+    imagesForget:  (pid, force)             => call("POST",   `/projects/${pid}/images/forget`, { force: !!force }),
+    /* Кроп отдаётся картинкой и требует токен, поэтому <img src="..."> тут
+       не годится: заголовок в src не положишь, а пускать эндпоинт без токена
+       значит открыть куски документов всему интернету. Тянем сами и отдаём
+       blob-ссылку. */
+    imageCropUrl: async (pid, segId) => {
+      const r = await fetch(`${BASE}/projects/${pid}/images/crop?seg=${segId}`, { headers: authHeaders({}) });
+      if (r.status === 401) onUnauthorized();
+      if (!r.ok) return null;
+      return URL.createObjectURL(await r.blob());
+    },
+
     termcheck:     (pid, sid, model)        => call("POST", `/segments/${pid}/${sid}/termcheck`, { model: model || null }),
     repair:        (pid, sid, opts)         => call("POST", `/segments/${pid}/${sid}/repair`, opts || {}),
 

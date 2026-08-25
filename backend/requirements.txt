@@ -8,3 +8,22 @@ python-multipart>=0.0.6
 # python-docx>=0.8.11
 # openai>=1.0.0
 # google-cloud-translate>=3.8.0
+
+# ── Текст, впечатанный в картинки (OCR) ─────────────────────────────
+# Геометрию строк даёт локальный детектор RapidOCR, текст читает зрячая
+# модель: распознавалка, идущая с детектором, знает китайский и английский,
+# а кириллицу возвращает латинской абракадаброй.
+#
+# ВАЖНО, как ставить на сервер:
+#     pip install -r requirements.txt
+#     pip install --no-deps rapidocr-onnxruntime
+# Именно --no-deps: своей зависимостью rapidocr тянет opencv-python, а тот
+# требует libGL.so.1, которого на сервере без графики нет — импорт cv2 падает.
+# Тот же модуль даёт headless-сборка, она и стоит в списке ниже.
+opencv-python-headless>=4.9
+onnxruntime>=1.17
+pyclipper>=1.3
+Shapely>=2.0
+PyYAML>=6.0
+Pillow>=10.0
+numpy>=1.24

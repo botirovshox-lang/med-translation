@@ -317,6 +317,10 @@ function TabEditor({ store, toast }) {
     return SEARCH_SCOPES.indexOf(v) !== -1 ? v : "all";
   });
   const [riskFilter, setRiskFilter] = useState("all");
+  /* Откуда сегмент: из абзаца документа или из надписи на картинке. Без этого
+     фильтра распознанное растворяется среди двух с половиной тысяч строк,
+     а проверять его надо отдельно — там своя цена ошибки. */
+  const [originFilter, setOriginFilter] = useState("all");
   const [height, setHeight] = useState(440);
   const [selId, setSelId] = useState(project ? (project.segments[0] && project.segments[0].id) : null);
   const [busy, setBusy] = useState({});       // {segId: 'translate'|'qa'}
@@ -593,7 +597,7 @@ function TabEditor({ store, toast }) {
   useEffect(() => {
     if (jumpRef.current) return;      // фильтры снял сам переход — зону не рушим
     setPage(1); setZone(null);
-  }, [filter, query, scope, riskFilter, project && project.id, store.segmentFilter]);
+  }, [filter, query, scope, riskFilter, originFilter, project && project.id, store.segmentFilter]);
   useEffect(() => { setCheckedSegs(new Set()); }, [project && project.id, store.segmentFilter]);
   useEffect(() => { if (jumpRef.current) return; setSelId(null); }, [page]);
   // Гасим флажок перехода: без списка зависимостей — то есть после КАЖДОГО
@@ -720,6 +724,8 @@ function TabEditor({ store, toast }) {
     if (activeFilter && !activeFilter.has(s.id)) return false;
     if (filter !== "all" && s.status !== filter) return false;
     if (riskFilter !== "all" && s.risk !== riskFilter) return false;
+    if (originFilter !== "all"
+        && (originFilter === "image") !== !!(s.origin && s.origin.kind === "image")) return false;
     if (query && !segMatches(s, query, scope)) return false;
     return true;
   });
@@ -752,6 +758,7 @@ function TabEditor({ store, toast }) {
     const dropped = [];
     if (filter !== "all") { setFilter("all"); dropped.push("фильтр статуса"); }
     if (riskFilter !== "all") { setRiskFilter("all"); dropped.push("фильтр риска"); }
+    if (originFilter !== "all") { setOriginFilter("all"); dropped.push("фильтр источника"); }
     if (query) { setQuery(""); dropped.push("поиск"); }
     if (activeFilter) { window._mcat_sf = null; store.setSegmentFilter(null); dropped.push("выборку из анализа"); }
     jumpRef.current = true;
@@ -1714,6 +1721,9 @@ function TabEditor({ store, toast }) {
       showFilters && React.createElement("div", { className: "row row-wrap", style: { gap: 14, padding: "4px 2px" } },
         React.createElement(Select, { value: riskFilter, onChange: (e) => setRiskFilter(e.target.value), style: { width: 200 } },
           [["all", "Любой риск"], ["low", "Низкий риск"], ["medium", "Средний риск"], ["high", "Высокий риск"], ["critical", "Критический риск"]]
+            .map(([v, l]) => React.createElement("option", { key: v, value: v }, l))),
+        React.createElement(Select, { value: originFilter, onChange: (e) => setOriginFilter(e.target.value), style: { width: 220 } },
+          [["all", "Любой источник"], ["para", "Из абзацев документа"], ["image", "Из надписей на картинках"]]
             .map(([v, l]) => React.createElement("option", { key: v, value: v }, l)))
       ),
 

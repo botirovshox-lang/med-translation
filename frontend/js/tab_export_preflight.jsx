@@ -1,3 +1,135 @@
+/* ── Текст, впечатанный в картинки ───────────────────────────────────
+   Часть текста учебника живёт только в картинках: подписи под рисунками,
+   схемы, куски отсканированных страниц. Абзацного якоря у него нет, поэтому
+   до разбора он не переводится вовсе и в выгрузке «1в1» остаётся на языке
+   оригинала.
+
+   Карточка не прячется, когда находок ноль: пропавшее с экрана выглядит
+   благополучнее, чем есть, а ноль здесь бывает и настоящим (в документе
+   действительно нет надписей), и следствием того, что разбор не запускали. */
+function ImagesCard({ project, toast }) {
+  const [rep, setRep] = useState(null);
+  const [job, setJob] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    if (!window.API || !window.API.imagesReport) return;
+    const r = await window.API.safeCall(() => window.API.imagesReport(project.id));
+    if (r) setRep(r);
+  };
+  useEffect(() => { load(); }, [project.id]);
+
+  /* Опрос идёт, только пока задача жива: разбор 158 картинок — это минуты,
+     и держать вкладку открытой не обязано быть условием. */
+  useEffect(() => {
+    if (!job || !window.API) return;
+    const timer = setInterval(async () => {
+      const list = await window.API.safeCall(() => window.API.listJobs(project.id));
+      const j = ((list && list.jobs) || []).find(x => x.id === job.id);
+      if (!j) return;
+      if (j.status === "queued" || j.status === "running") { setJob(j); return; }
+      setJob(null);
+      load();
+      const c = j.counters || {};
+      if (j.status === "error") toast.error("Разбор картинок прерван", j.error || "");
+      else toast.success("Разбор картинок закончен",
+        "картинок: " + (j.done || 0) + " · надписей: " + (c.blocks || 0)
+        + (c.segments ? " · сегментов заведено: " + c.segments : "")
+        + (c.unreadable ? " · не читаются: " + c.unreadable : ""));
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [job && job.id]);
+
+  const start = async (dry) => {
+    if (!window.API) return;
+    setBusy(true);
+    const r = await window.API.safeCall(
+      () => window.API.createJob(project.id, "images", [], { dry_run: !!dry }));
+    setBusy(false);
+    if (!r || !r.ok) { toast.error("Разбор не запущен", "Сервер отказал."); return; }
+    setJob(r.job);
+    toast.info(dry ? "Ищем надписи" : "Читаем надписи",
+      "Работа идёт на сервере — вкладку можно закрыть.");
+  };
+  const forget = async () => {
+    setBusy(true);
+    const r = await window.API.safeCall(() => window.API.imagesForget(project.id, false));
+    setBusy(false);
+    if (!r) { toast.error("Не удалось", "Сервер недоступен."); return; }
+    load();
+    toast.success("Распознанное снято", "сегментов убрано: " + r.removed
+      + (r.keptTranslated && r.keptTranslated.length
+         ? " · с переводом оставлено: " + r.keptTranslated.length : ""));
+  };
+
+  const st = (rep && rep.stats) || null;
+  const running = !!job;
+  const row = (label, value, color) => React.createElement("div", { className: "row between" },
+    React.createElement("span", { className: "muted" }, label),
+    React.createElement("strong", color ? { style: { color } } : null, value));
+
+  return React.createElement("div", null,
+    React.createElement("h2", { className: "section-title" }, "Текст на картинках"),
+    React.createElement("div", { className: "card card-pad col", style: { gap: 12 } },
+      React.createElement("div", { style: { fontSize: 13, lineHeight: 1.55 } },
+        "Подписи под рисунками и схемы впечатаны в картинки: абзаца у них нет, ",
+        "и без разбора они остаются на языке оригинала. Найденные надписи становятся ",
+        "обычными сегментами проекта, а при экспорте 1в1 перевод возвращается ",
+        "в саму картинку — там, где фон однороден. Где нельзя (снимок, фотография), ",
+        "перевод уходит подписью под картинкой: заплатка поверх рентгенограммы ",
+        "испортила бы документ."),
+
+      !project.sourceDocx && React.createElement("div", { className: "hint" },
+        "Сначала приложите исходный .docx — искать надписи не в чем."),
+
+      rep && !rep.engine && React.createElement("div", { className: "hint", style: { color: "var(--c-warning)" } },
+        "Движок поиска строк недоступен: " + (rep.why || "причина не названа")
+        + ". Это «не знаю», а не «надписей нет»."),
+
+      !st && project.sourceDocx && React.createElement("div", { className: "hint" },
+        "Разбор ещё не делался."),
+
+      st && React.createElement(React.Fragment, null,
+        row("Картинок в документе", st.images),
+        row("С надписями", st.withText),
+        row("Надписей найдено", st.blocks),
+        st.segments > 0 && row("Стали сегментами", st.segments, "var(--c-success)"),
+        st.text > 0 && row("Вернём в картинку при экспорте", st.repaintable),
+        st.captioned > 0 && row("Уйдут подписью под картинкой", st.captioned, "var(--c-warning)"),
+        (st.overlay > 0 || st.noise > 0) && row("Отсеяно (надпечатка аппарата, шум)",
+          st.overlay + st.noise),
+        st.unread > 0 && row("Не прочитано", st.unread, "var(--c-warning)"),
+        st.unreadable > 0 && row("Картинки не читаются", st.unreadable, "var(--c-warning)")),
+
+      running && React.createElement("div", { className: "col", style: { gap: 8 } },
+        React.createElement("div", { className: "row", style: { gap: 8 } },
+          React.createElement(Spinner, null),
+          React.createElement("span", { style: { fontSize: 13 } },
+            "картинка " + (job.done || 0) + " из " + (job.total || 0))),
+        React.createElement(Btn, { variant: "secondary", size: "sm",
+          onClick: () => window.API.safeCall(() => window.API.stopJob(job.id)) },
+          "Остановить")),
+
+      !running && project.sourceDocx && React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
+        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "search",
+          disabled: busy, onClick: () => start(true) }, "Найти надписи"),
+        /* Чтение платное, поэтому смета стоит прямо на кнопке. Ноль — это
+           «всё уже прочитано», а не «бесплатно». */
+        React.createElement(Btn, { variant: "primary", size: "sm", icon: "sparkles",
+          disabled: busy || !st || !st.blocks || (rep && rep.est === 0),
+          onClick: () => start(false) },
+          "Прочитать и завести сегменты"
+            + (rep && rep.est ? " (~$" + rep.est.toFixed(2) + ")" : "")),
+        st && st.segments > 0 && React.createElement(Btn, { variant: "ghost", size: "sm",
+          disabled: busy, onClick: forget }, "Забыть распознанное")),
+
+      rep && rep.at && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+        "разбор: " + rep.at + " · модель чтения: " + (rep.model || "")
+        + ((rep.skipped && rep.skipped.length)
+            ? " · нерастровых картинок пропущено: " + rep.skipped.length : ""))));
+}
+window.ImagesCard = ImagesCard;
+
 /* ============================================================
    Tab: Export — download translated document
    ============================================================ */
@@ -150,6 +282,8 @@ function TabExport({ store, toast }) {
             React.createElement("input", { ref: fileRef, type: "file", accept: ".docx", style: { display: "none" },
               onChange: (e) => doAttach(e.target.files && e.target.files[0], false) }))
         ),
+
+        React.createElement(ImagesCard, { project, toast }),
 
         React.createElement("div", null,
           React.createElement("h2", { className: "section-title" }, "Что включить"),

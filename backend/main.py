@@ -2857,6 +2857,89 @@ def images_forget(pid: int, req: ImagesForgetRequest):
                                   (data or {}).get("imagesTotal") or 0)}
 
 
+def _image_harmonize(data: dict, project: dict) -> tuple:
+    """Одинаковый текст на разных картинках размечается одинаково.
+
+    Модель решает про каждую картинку отдельно и на границе ошибается: строка
+    настроек томографа «kV 120.0 mA: 283 …» на боевом учебнике оказалась
+    надпечаткой на двух снимках и «текстом документа» на третьем — и стала
+    сегментом, за перевод которого человек заплатит. Спрашивать модель второй
+    раз незачем: ответ у неё уже есть, просто разный. Берём большинство —
+    это ноль вызовов и ноль догадок.
+
+    Сегмент, у которого УЖЕ есть перевод, не трогаем: это оплаченная работа,
+    и снимать её по счёту голосов нельзя."""
+    groups: dict = {}
+    for im in (data.get("images") or []):
+        for b in (im.get("blocks") or []):
+            txt = _norm_key(b.get("text") or "")
+            if txt:
+                groups.setdefault(txt, []).append(b)
+    by_id = {sg["id"]: sg for sg in project["segments"]}
+    changed = dropped = 0
+    for blocks in groups.values():
+        if len(blocks) < 2:
+            continue
+        over = sum(1 for b in blocks if b.get("skip") == "overlay")
+        if over <= len(blocks) - over:
+            continue
+        for b in blocks:
+            if b.get("skip") == "overlay":
+                continue
+            seg = by_id.get(b.get("seg"))
+            if seg is not None and (seg.get("target") or "").strip():
+                continue                       # переведённое не отменяем
+            b["skip"] = "overlay"
+            if seg is not None:
+                project["segments"].remove(seg)
+                b.pop("seg", None)
+                dropped += 1
+            changed += 1
+    return changed, dropped
+
+
+@app.post("/api/projects/{pid}/images/{sid}/overlay")
+def image_mark_overlay(pid: int, sid: int):
+    """«Это надпись аппарата, а не текст документа»: убрать сегмент и запомнить.
+
+    Модель ошибается на границе, и ошибается в обе стороны. На боевом учебнике
+    из 41 заведённого сегмента 15 оказались строками прибора — «LINEAR DISTANCE:
+    004.43cm», «kV 120.0 mA: 283», «IPAP DOKTOR HAKIMOV M». Последнее — фамилия
+    врача, и ей нечего делать в памяти переводов.
+
+    Машиной это дальше не отсеять: правило «на картинке большинство надписей —
+    надпечатка» на тех же данных убило бы законную подпись «Диссеминированный
+    (милиарный) туберкулёз», а «нет букв языка оригинала» — латинское название
+    вида. Значит решает человек, а система обязана СЛУШАТЬСЯ и ПОМНИТЬ: метка
+    ложится на блок, и следующий разбор сегмент не заведёт заново."""
+    project = get_project(pid)
+    if _job_busy(pid, "images"):
+        raise HTTPException(409, "Идёт разбор картинок — дождитесь конца")
+    seg = next((x for x in project["segments"] if x["id"] == sid), None)
+    origin = (seg or {}).get("origin") or {}
+    if seg is None or origin.get("kind") != "image":
+        raise HTTPException(404, "Сегмент #%d пришёл не из картинки" % sid)
+    data = _load_source_map(pid) if project.get("sourceDocx") else None
+    if data is None:
+        raise HTTPException(404, "К проекту не приложен исходный .docx")
+    had = (seg.get("target") or "").strip()
+    for im in (data.get("images") or []):
+        if im.get("part") != origin.get("part"):
+            continue
+        for i, b in enumerate(im.get("blocks") or []):
+            if i == origin.get("block"):
+                b["skip"] = "overlay"
+                b.pop("seg", None)
+    project["segments"].remove(seg)
+    _save_source_map(pid, data)
+    save_state(STATE)
+    # Про выброшенный перевод говорим прямо: человек решил, но знать, что
+    # именно уходит вместе с сегментом, он обязан.
+    return {"ok": True, "removed": sid, "hadTarget": had,
+            "stats": _image_stats(data.get("images") or [],
+                                  data.get("imagesTotal") or 0)}
+
+
 def _job_images(job: dict) -> None:
     """Разбор картинок проекта: найти строки, собрать в блоки, прочитать
     моделью, завести сегменты.
@@ -3021,6 +3104,16 @@ def _job_images(job: dict) -> None:
         if segs_dirty:
             save_state(STATE)
             segs_dirty = False
+    if not dry:
+        # Согласие между картинками — последний бесплатный фильтр перед тем,
+        # как человек увидит список.
+        moved, dropped = _image_harmonize(data, project)
+        if moved:
+            job["counters"]["harmonized"] = moved
+            # Вычитаем ровно снятые сегменты, а не все согласованные блоки:
+            # часть из них сегментами не была.
+            job["counters"]["segments"] = max(
+                0, job["counters"].get("segments", 0) - dropped)
     flush()
     save_state(STATE)
     st = _image_stats(data["images"], len(names))

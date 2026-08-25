@@ -211,6 +211,76 @@ img_segs2 = [s for s in project["segments"] if (s.get("origin") or {}).get("kind
 check(len(img_segs2) == 1, "повтор не задваивает сегменты")
 check(calls["n"] == was, "повтор не платит за уже прочитанное")
 
+print("\n── «это надпись аппарата» ──")
+# Модель ошибается в обе стороны, и дальше машиной это не отсеять. Решает
+# человек — а система обязана слушаться и ПОМНИТЬ: следующий разбор не имеет
+# права завести тот же сегмент заново.
+mark = [s for s in project["segments"] if (s.get("origin") or {}).get("kind") == "image"][0]
+res = main.image_mark_overlay(1, mark["id"])
+check(res["ok"] and not [s for s in project["segments"] if s["id"] == mark["id"]],
+      "сегмент убран по решению человека")
+data = main._load_source_map(1)
+o = mark["origin"]
+blk = [b for i, b in enumerate((next(im for im in data["images"] if im["part"] == o["part"])
+                                .get("blocks") or [])) if i == o["block"]][0]
+check(blk.get("skip") == "overlay" and "seg" not in blk, "метка легла на блок")
+main._job_images(new_job(dry_run=False))
+check(not [s for s in project["segments"] if s["id"] == mark["id"]
+           or (s.get("origin") or {}).get("block") == o["block"]
+           and (s.get("origin") or {}).get("part") == o["part"]],
+      "следующий разбор не заводит помеченное заново")
+try:
+    main.image_mark_overlay(1, 1)
+    check(False, "абзацный сегмент так пометить нельзя")
+except main.HTTPException as e:
+    check("не из картинки" in str(e.detail), "абзацный сегмент отклонён: " + str(e.detail))
+# Возвращаем метку, чтобы дальше проверять на полном составе
+blk.pop("skip", None)
+main._save_source_map(1, data)
+main._job_images(new_job(dry_run=False))
+
+print("\n── одинаковый текст размечается одинаково ──")
+# Модель решает про каждую картинку отдельно и на границе ошибается: на боевом
+# учебнике строка настроек томографа оказалась надпечаткой на двух снимках
+# и «текстом документа» на третьем — и стала сегментом, за перевод которого
+# человек заплатит. Спрашивать второй раз незачем: ответ уже есть, просто
+# разный. Берём большинство.
+SETTINGS = "kV 120.0 mA: 283 2.5 mm Tilt: 0.0 degrees"
+data = main._load_source_map(1)
+blocks = [b for im in data["images"] for b in (im.get("blocks") or [])]
+blocks[0]["text"], blocks[0]["skip"] = SETTINGS, "overlay"
+blocks[1]["text"], blocks[1]["skip"] = SETTINGS, "overlay"
+odd = blocks[2]
+odd["text"] = SETTINGS
+odd.pop("skip", None)
+odd_id = max(s["id"] for s in project["segments"]) + 1
+project["segments"].append(main._image_new_segment(SETTINGS, "word/media/x.png", 0, odd_id))
+odd["seg"] = odd_id
+moved, dropped = main._image_harmonize(data, project)
+check(moved == 1 and dropped == 1 and odd.get("skip") == "overlay",
+      "строка, отсеянная на двух картинках, отсеяна и на третьей")
+check(not [s for s in project["segments"] if s["id"] == odd_id],
+      "сегмент, заведённый по ошибке, снят")
+
+# А переведённое большинством голосов не отменяется: это оплаченная работа.
+odd.pop("skip", None)
+odd["seg"] = odd_id
+project["segments"].append(main._image_new_segment(SETTINGS, "word/media/x.png", 0, odd_id))
+project["segments"][-1]["target"] = "Scanner settings"
+moved2, dropped2 = main._image_harmonize(data, project)
+check(moved2 == 0 and dropped2 == 0 and [s for s in project["segments"] if s["id"] == odd_id],
+      "переведённый сегмент не снимается по счёту голосов")
+project["segments"] = [s for s in project["segments"] if s["id"] != odd_id]
+
+# Единственное вхождение никем не переголосовывается.
+alone = {"box": [0, 0, 10, 10], "text": "Рис. 5. Каверна", "rows": 1}
+data["images"][0]["blocks"].append(alone)
+main._image_harmonize(data, project)
+check("skip" not in alone, "одиночная надпись остаётся как решила модель")
+data["images"][0]["blocks"].remove(alone)
+main.images_forget(1, main.ImagesForgetRequest(force=True, wipe=True))
+main._job_images(new_job(dry_run=False))
+
 print("\n── номер сегмента сам по себе ничего не доказывает ──")
 # Номера переиспользуются: max(id)+1 после сноса выдаёт те же числа заново.
 # Блок, чей номер достался ЧУЖОМУ сегменту, обязан завести свой, а не цепляться

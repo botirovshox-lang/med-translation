@@ -26,6 +26,20 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
      fetch и живёт blob-ссылкой — <img src> заголовок не отправит. */
   const fromImage = !!(seg.origin && seg.origin.kind === "image");
   const [cropUrl, setCropUrl] = useState(null);
+  const [overlayBusy, setOverlayBusy] = useState(false);
+  const markOverlay = async () => {
+    if (!window.API || !window.API.imageMarkOverlay) return;
+    setOverlayBusy(true);
+    const r = await window.API.safeCall(() => window.API.imageMarkOverlay(project.id, seg.id));
+    setOverlayBusy(false);
+    if (!r || !r.ok) { toast.error("Не удалось", "Сервер отказал или идёт разбор картинок."); return; }
+    const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
+    if (fresh && fresh.segments && store.replaceProjectSegments) {
+      store.replaceProjectSegments(project.id, fresh.segments);
+    }
+    toast.success("Убрано", "Надпись помечена аппаратной — следующий разбор её не заведёт."
+      + (r.hadTarget ? " Вместе с сегментом ушёл перевод: " + r.hadTarget : ""));
+  };
   useEffect(() => {
     /* Сбрасываем СРАЗУ: прежний blob отзывается уборкой этого же эффекта,
        и без сброса в <img src> до прихода нового кропа висит отозванная
@@ -180,12 +194,22 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
         React.createElement("span", { className: "label" },
           fromImage ? "🖼 Оригинал (текст на картинке)" : "🇷🇺 Оригинал"),
         React.createElement(Btn, { variant: "ghost", size: "sm", icon: "copy", onClick: copySrc }, "Копировать")),
-      fromImage && React.createElement("div", { className: "card", style: { padding: 8, marginBottom: 6, background: "var(--bg-sunken)" } },
+      fromImage && React.createElement("div", { className: "card col", style: { padding: 8, marginBottom: 6, gap: 8, background: "var(--bg-sunken)" } },
         cropUrl
           ? React.createElement("img", { src: cropUrl, alt: "Надпись на картинке",
               style: { maxWidth: "100%", display: "block", borderRadius: 4 } })
           : React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-              "Кусок картинки не загрузился — проверить распознанное нечем.")),
+              "Кусок картинки не загрузился — проверить распознанное нечем."),
+        /* Модель ошибается в обе стороны, и дальше машиной это не отсеять:
+           правило «на картинке большинство — надпечатка» убивает законную
+           подпись, а «нет букв языка оригинала» — латинское название вида.
+           Значит решает человек, а система обязана слушаться и помнить. */
+        React.createElement("div", { className: "row between", style: { gap: 8 } },
+          React.createElement("span", { className: "dim", style: { fontSize: 11.5 } },
+            "не текст документа?"),
+          React.createElement(Btn, { variant: "ghost", size: "sm", disabled: overlayBusy,
+            onClick: markOverlay },
+            overlayBusy ? "Убираем…" : "Это надпись аппарата"))),
       React.createElement("div", { className: "card", style: { padding: 12, background: "var(--bg-sunken)", lineHeight: 1.55, fontSize: 14 } }, seg.source)
     ),
 

@@ -275,7 +275,27 @@ st = rep["stats"]
 check(st["images"] == 2 and st["withText"] == 1 and st["segments"] == 1,
       "отчёт совпадает с картой: %s" % {k: st[k] for k in ("images", "withText", "segments")})
 check(st["overlay"] >= 1 and st["noise"] >= 1, "отсеянное показано, а не спрятано")
-check(rep["est"] == 0.0, "всё прочитано — смета нулевая, а не выдуманная")
+# Смету считает СЕРВЕР и по каждой модели каталога: цифра в .jsx была бы
+# вторым прайс-листом рядом с настоящим.
+check(isinstance(rep["est"], dict) and set(rep["est"]) == {m["id"] for m in main.OPENAI_MODELS},
+      "смета названа по каждой модели каталога")
+check(all(v == 0.0 for v in rep["est"].values()) and rep["estTokens"]["in"] == 0,
+      "всё прочитано — смета нулевая, а не выдуманная")
+
+# А когда читать есть что, смета обязана различать модели: иначе выбор
+# не влияет ни на что, и человек не может решить, чем платить.
+data = main._load_source_map(1)
+for im in data["images"]:
+    for b in (im.get("blocks") or []):
+        b.pop("text", None)
+main._save_source_map(1, data)
+rep2 = main.images_report(1)
+costs = {k: v for k, v in rep2["est"].items() if v}
+check(rep2["estTokens"]["in"] > 0 and len(set(costs.values())) > 1,
+      "у разных моделей разная цена разбора: %s" % sorted(costs.values())[:3])
+check(rep2["est"][main.DEFAULT_OPENAI_MODEL] is not None,
+      "у модели по умолчанию цена известна")
+main._job_images(new_job(dry_run=False))
 
 print("\n── разбор переживает повторную привязку исходника ──")
 # Человек жмёт «Заменить» в карточке исходника — например, чтобы поправить

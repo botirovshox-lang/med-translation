@@ -7,8 +7,16 @@
    Карточка не прячется, когда находок ноль: пропавшее с экрана выглядит
    благополучнее, чем есть, а ноль здесь бывает и настоящим (в документе
    действительно нет надписей), и следствием того, что разбор не запускали. */
+/* Ключ выбора модели чтения. Выбор глобальный, как у остальных шагов:
+   человек решает, чем читать, а не проект. */
+const OCR_MODEL_LS_KEY = "mct-ocr-model";
+
 function ImagesCard({ project, store, toast }) {
   const pid = project.id;
+  const [models, setModels] = useState([]);      // каталог с ценами из /api/models
+  const [ocrModel, setOcrModel] = useState(() => {
+    try { return localStorage.getItem(OCR_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
+  });
   const [rep, setRep] = useState(null);
   const [asked, setAsked] = useState(false);   // спрашивали ли сервер вообще
   const [job, setJob] = useState(null);
@@ -30,6 +38,18 @@ function ImagesCard({ project, store, toast }) {
     setRep(null); setJob(null); setAsked(false); setForgetOpen(false);
     load(pid);
   }, [pid]);
+
+  /* Каталог моделей и цены берём с сервера. Цифра в .jsx была бы вторым
+     прайс-листом рядом с настоящим — тем самым, который однажды разойдётся
+     с тем, по которому списывают. */
+  useEffect(() => {
+    if (!window.API || !window.API.models) return;
+    window.API.safeCall(() => window.API.models()).then(d => {
+      if (!d || !d.models) return;
+      setModels(d.models);
+      setOcrModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : "");
+    });
+  }, []);
 
   /* Опрос идёт, только пока задача жива. Задача живёт в памяти процесса:
      рестарт сервиса или вытеснение историей — и её больше нет. Без разбора
@@ -79,7 +99,7 @@ function ImagesCard({ project, store, toast }) {
     /* Смету отдаём серверу вместе с задачей: без неё факт не с чем сравнить,
        и поправка estRatio прогоны картинок не увидит никогда. */
     const r = await window.API.safeCall(() => window.API.createJob(pid, "images", [],
-      { dry_run: !!dry, est_cost: (rep && rep.est) || 0 }));
+      { dry_run: !!dry, ocr_model: ocrModel || null, est_cost: est || 0 }));
     setBusy(false);
     if (!r || !r.ok) { toast.error("Разбор не запущен", "Сервер отказал."); return; }
     setJob(r.job);
@@ -103,6 +123,16 @@ function ImagesCard({ project, store, toast }) {
 
   const st = (rep && rep.stats) || null;
   const running = !!job;
+  /* Пустой выбор означает «как решил сервер»: подставлять сюда что-то своё
+     значит спорить с настройкой, которой человек не касался. */
+  const useModel = ocrModel || (rep && rep.model) || "";
+  const estOf = (id) => (rep && rep.est && rep.est[id] != null) ? rep.est[id] : null;
+  const est = estOf(useModel);
+  const mInfo = models.find(m => m.id === useModel) || null;
+  const pickModel = (id) => {
+    setOcrModel(id);
+    try { localStorage.setItem(OCR_MODEL_LS_KEY, id); } catch (e) {}
+  };
   const row = (label, value, color) => React.createElement("div", { className: "row between" },
     React.createElement("span", { className: "muted" }, label),
     React.createElement("strong", color ? { style: { color } } : null, value));
@@ -156,6 +186,24 @@ function ImagesCard({ project, store, toast }) {
           onClick: () => window.API.safeCall(() => window.API.stopJob(job.id)) },
           "Остановить")),
 
+      /* Чем читать — решается ЗДЕСЬ, рядом с кнопкой, и с ценой этого самого
+         разбора: цена за миллион токенов ничего не говорит человеку о том,
+         во что обойдётся вот эта книга. */
+      !running && project.sourceDocx && !forgetOpen && React.createElement("div", { className: "col", style: { gap: 6 } },
+        React.createElement("div", { className: "row between", style: { gap: 10 } },
+          React.createElement("span", { className: "muted", style: { fontSize: 13 } }, "Модель чтения"),
+          React.createElement(Select, {
+            value: useModel, style: { width: 260 },
+            onChange: (e) => pickModel(e.target.value) },
+            models.map(m => React.createElement("option", { key: m.id, value: m.id },
+              m.label + (estOf(m.id) ? " — ~$" + estOf(m.id).toFixed(2) : ""))))),
+        mInfo && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+          "цена модели: вход $" + mInfo.in + " · выход $" + mInfo.out + " за 1М токенов"
+          + (rep && rep.estTokens && rep.estTokens.in
+              ? " · в этом разборе ≈ " + Math.round(rep.estTokens.in / 1000) + "К входных" : "")),
+        !models.length && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+          "каталог моделей не загрузился — читать будет модель по умолчанию")),
+
       !running && project.sourceDocx && !forgetOpen
         && React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
         React.createElement(Btn, { variant: "secondary", size: "sm", icon: "search",
@@ -165,8 +213,7 @@ function ImagesCard({ project, store, toast }) {
            (завести их заново), и по смете кнопка гасла навсегда. */
         React.createElement(Btn, { variant: "primary", size: "sm", icon: "sparkles",
           disabled: busy || !st || !st.pending, onClick: () => start(false) },
-          "Прочитать и завести сегменты"
-            + (rep && rep.est ? " (~$" + rep.est.toFixed(2) + ")" : "")),
+          "Прочитать и завести сегменты" + (est ? " (~$" + est.toFixed(2) + ")" : "")),
         st && st.segments > 0 && React.createElement(Btn, { variant: "ghost", size: "sm",
           disabled: busy, onClick: () => setForgetOpen(true) }, "Забыть распознанное")),
 
@@ -186,7 +233,7 @@ function ImagesCard({ project, store, toast }) {
             onClick: () => setForgetOpen(false) }, "Отмена"))),
 
       rep && rep.at && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-        "разбор: " + rep.at + " · модель чтения: " + (rep.model || "")
+        "разбор: " + rep.at + " · по умолчанию: " + (rep.model || "")
         + ((rep.skipped && rep.skipped.length)
             ? " · нерастровых картинок пропущено: " + rep.skipped.length : ""))));
 }

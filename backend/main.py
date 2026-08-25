@@ -2715,22 +2715,34 @@ def _image_stats(images: list, total: int = 0) -> dict:
     return st
 
 
-def _image_est_cost(images: list, model_id: str) -> Optional[float]:
-    """Смета чтения: сколько токенов уйдёт на картинки, где ещё не читали.
-    Цена неизвестна — None, а не ноль: неизвестное, посчитанное нулём,
-    показывает расход меньше настоящего."""
+def _image_est_tokens(images: list) -> tuple:
+    """(входных, выходных) токенов на то, что ещё не читали.
+
+    Считается по КРОПАМ — модели уходят они, а не картинка целиком; обзорный
+    кадр идёт с detail=low и стоит фиксированные 85 токенов."""
     tin = 0
     for im in images:
         blocks = [b for b in (im.get("blocks") or []) if "text" not in b]
         if not blocks:
             continue
-        tin += 85          # обзорный кадр уходит с detail=low — это его цена
+        tin += 85
         for b in blocks:
             x0, y0, x1, y1 = b["box"]
             tin += _image_tokens(max(1, x1 - x0), max(1, y1 - y0))
-    if not tin:
-        return 0.0
-    return _usage_cost(model_id, tin, tin // 6)
+    return tin, tin // 6
+
+
+def _image_est_by_model(images: list) -> dict:
+    """Смета по КАЖДОЙ модели каталога: {id: цена}.
+
+    Считает сервер, а не браузер, и по той же таблице, по которой потом
+    списывается факт. Цифра в .jsx была бы вторым прайс-листом рядом
+    с настоящим — тем самым, который однажды разойдётся. Цена неизвестна —
+    None, а не ноль: неизвестное, посчитанное нулём, показывает расход
+    меньше настоящего."""
+    tin, tout = _image_est_tokens(images)
+    return {m["id"]: (0.0 if not tin else _usage_cost(m["id"], tin, tout))
+            for m in OPENAI_MODELS}
 
 
 @app.get("/api/projects/{pid}/images")
@@ -2741,11 +2753,15 @@ def images_report(pid: int):
     data = _load_source_map(pid) if project.get("sourceDocx") else None
     images = (data or {}).get("images") or []
     mdl = _resolve_model(IMAGE_READ_MODEL)
+    tin, tout = _image_est_tokens(images)
     return {"ok": True, "engine": ready, "why": why,
             "hasSource": data is not None,
+            # Модель по умолчанию — от неё пляшет выпадающий список; выбранную
+            # человеком задача получает отдельным полем `ocr_model`.
             "model": mdl["id"],
             "stats": _image_stats(images, (data or {}).get("imagesTotal") or 0),
-            "est": _image_est_cost(images, mdl["id"]),
+            "est": _image_est_by_model(images),
+            "estTokens": {"in": tin, "out": tout},
             "at": (data or {}).get("imagesAt"),
             "skipped": (data or {}).get("imagesSkipped") or []}
 

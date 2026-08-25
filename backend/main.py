@@ -940,8 +940,34 @@ def _usage_end(job: dict) -> None:
 
 
 # Direct OpenAI GPT translation
+# Сколько символов соседнего сегмента показывать переводчику. Соседи нужны
+# как обстановка, а не как текст для перевода: длинный абзац рядом отвлекает
+# и стоит денег, а первых строк хватает, чтобы понять, о чём речь и в каком
+# ряду стоит сегмент.
+NEIGHBOUR_CHARS = 320
+
+
+def _neighbours(project: Optional[dict], seg: Optional[dict]) -> tuple:
+    """Исходники сегментов ДО и ПОСЛЕ. Пустые строки, если соседей нет.
+
+    Обход списком, а не по id: id не обязаны идти подряд (сегменты удаляют),
+    а «сосед» — это про порядок в документе."""
+    if not project or not seg:
+        return ("", "")
+    segs = project.get("segments") or []
+    try:
+        i = next(k for k, x in enumerate(segs) if x["id"] == seg["id"])
+    except StopIteration:
+        return ("", "")
+    def txt(k):
+        return ((segs[k].get("source") or "").strip()[:NEIGHBOUR_CHARS]
+                if 0 <= k < len(segs) else "")
+    return (txt(i - 1), txt(i + 1))
+
+
 def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
-                      literal: bool, domain, mdl: dict) -> str:
+                      literal: bool, domain, mdl: dict,
+                      prev_src: str = "", next_src: str = "") -> str:
     """Системный промпт перевода. Вынесен отдельно, чтобы его можно было
     проверить тестом без обращения к модели: от того, каким уровнем уходит
     запись глоссария — приказом или подсказкой, — зависит, повторит ли модель
@@ -1002,6 +1028,24 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
             f"  Source: {tm_context.get('src', '')}\n"
             f"  Translation: {tm_context.get('tgt', '')}\n"
         )
+    # Соседние сегменты — обстановка, а не задание. До этого сегмент переводился
+    # в одиночку, и обрывки списка («Выделяют:», «плевры,», «формирование каверн
+    # и распространение процесса.») уходили в модель без всякого признака того,
+    # к чему они относятся. Запрет переводить их сказан прямо и дважды: модель
+    # добросовестно переписывает всё, что ей дали, — на импорте это уже
+    # случалось с соседними абзацами.
+    # В literal-режиме соседей НЕТ и быть не должно: обратный перевод обязан
+    # ОТРАЖАТЬ текст, а не понимать его. Дай ему обстановку — он починит кривой
+    # английский по смыслу соседей и спрячет ровно ту ошибку, которую ищет
+    # back-check. Поэтому проверка literal стоит здесь явно.
+    if not literal and (prev_src or next_src):
+        system += "\nSurrounding context (for disambiguation ONLY — do NOT translate it):\n"
+        if prev_src:
+            system += f"  [previous segment] {prev_src}\n"
+        if next_src:
+            system += f"  [next segment] {next_src}\n"
+        system += ("Use it to resolve ellipsis, list items, headings and pronouns. "
+                   "Translate ONLY the user message.\n")
     if gloss_hits or tm_context:
         print(f"[backend] GPT+context: {len(gloss_hits or [])} gloss, TM={'yes' if tm_context else 'no'}"
               f", model={mdl['id']}", file=sys.stderr)
@@ -1013,7 +1057,8 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
 def _openai_translate(text: str, src: str, tgt: str,
                       gloss_hits: list = None, tm_context: dict = None,
                       model: str = None, literal: bool = False,
-                      domain: Optional[str] = None, step: Optional[str] = None) -> str:
+                      domain: Optional[str] = None, step: Optional[str] = None,
+                      prev_src: str = "", next_src: str = "") -> str:
     """GPT-перевод с инъекцией глоссария (базовые формы — GPT знает склонения).
 
     literal=True — режим для обратного перевода. Обычный промпт тут вреден:
@@ -1025,7 +1070,8 @@ def _openai_translate(text: str, src: str, tgt: str,
     mdl = _resolve_model(model)
     # timeout + retries: зависший вызов не должен блокировать поток бесконечно
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=2)
-    system = _translate_system(src, tgt, gloss_hits, tm_context, literal, domain, mdl)
+    system = _translate_system(src, tgt, gloss_hits, tm_context, literal, domain, mdl,
+                               prev_src, next_src)
     extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
              else {"max_tokens": 1024, "temperature": 0.1})
     resp = client.chat.completions.create(
@@ -1834,6 +1880,29 @@ def project_analysis(pid: int, refresh: bool = False):
                 d["segments"].append(s["id"])
     disputed = sorted(disputes.values(), key=lambda d: -len(d["segments"]))
 
+    # ── Контекстный арбитр: кого ещё не спрашивали и что он ответил ──────
+    # Спор виден и без него, но без довода человек читает только «проверка
+    # против глоссария» и решить не может. Арбитр — единственный, кто смотрит
+    # на сегмент в ряду соседей; его «передан верно» уже сняло претензию
+    # с ремонта, а «передан неверно» здесь и показывается: вопрос про ЗАПИСЬ
+    # глоссария, поэтому список — по записям, а не по сегментам.
+    ctx_pending, ctx_bad = 0, {}
+    for s in project["segments"]:
+        if not _term_disputes_of(s, project):
+            continue
+        if _term_context_stale(s):
+            ctx_pending += 1
+            continue
+        for t in _term_context_of(s):
+            if t.get("ok") is False:
+                k = (_norm_key(t.get("src")), _norm_key(t.get("tgt")))
+                e = ctx_bad.setdefault(k, {"src": t.get("src"), "tgt": t.get("tgt"),
+                                           "use": t.get("use"), "why": t.get("why"),
+                                           "segments": []})
+                if not e["segments"] or e["segments"][-1] != s["id"]:
+                    e["segments"].append(s["id"])
+    ctx_wrong = sorted(ctx_bad.values(), key=lambda d: -len(d["segments"]))
+
     # Что автоодобрение разложило бы прямо сейчас — тем же движком, что и кнопка,
     # иначе цифра на экране разошлась бы с тем, что произойдёт по нажатию.
     pending = [c for c in _term_queue() if c.get("status", "pending") == "pending"
@@ -1866,6 +1935,10 @@ def project_analysis(pid: int, refresh: bool = False):
             # значит задать один и тот же вопрос десятки раз.
             "termcheckDisputes": disputed,
             "termcheckDisputesSegments": sorted({i for d in disputed for i in d["segments"]}),
+            # Сколько спорных сегментов арбитр ещё не видел (платно, по кнопке)
+            # и что он уже сказал про записи глоссария.
+            "termContextPending": ctx_pending,
+            "termContextWrong": ctx_wrong,
         },
         "todo": {"untranslated": untranslated, "unchecked": unchecked,
                  "findings": findings, "glossaryPending": impact["pending"],
@@ -2257,9 +2330,11 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
         raise HTTPException(503, "Перевод требует ключ OpenAI: бесплатного движка "
                                  "в системе больше нет")
     try:
+        prev_src, next_src = _neighbours(project, seg)
         translation = _openai_translate(src_text, project["src"], project["tgt"],
                                         gloss_hits=gloss_hits, tm_context=tm_hit,
-                                        model=req.model, domain=project.get("domain"))
+                                        model=req.model, domain=project.get("domain"),
+                                        prev_src=prev_src, next_src=next_src)
     except Exception as e:
         print(f"[backend] translate failed seg#{sid}: {e}", file=sys.stderr)
         translation = None
@@ -4712,7 +4787,17 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
         return {"ok": False, "error": "Обратный перевод не получен"}
 
     source_text = seg.get("source", "")
-    gloss_hits, _tm = _get_context(source_text, project=project)
+    # ТОЛЬКО приказные записи, тем же расчётом, что у _gloss_misses и
+    # /glossary-impact. Раньше сюда уходил полный _get_context — и подсказки
+    # автоимпорта тоже, — а back-check снижал балл за то, что обратный перевод
+    # не сохранил ПОДСКАЗКУ. Модели её игнорировать разрешено прямо в промпте
+    # («use these exact translations» только для verified), и наказывать за
+    # принятое разрешение нельзя. На боевом проекте это давало 56 спорных
+    # сегментов из 67: балл держали «лёгких», «высокой», «оценка», «метод» —
+    # падежные формы обычных слов из массового импорта, которым сверка смысла
+    # УЖЕ проставила rule: false. Ещё и судья к таким сегментам не приходил:
+    # потерянный термин гасил его как жёсткую находку.
+    gloss_hits = _verified_hits(source_text, project)
     # semantic_fn, а не готовое число: косинус учитывается только при отсутствии
     # жёстких находок, и там, где он всё равно не повлияет, платить за эмбеддинги
     # незачем. Решение принимает medical_qa — он и знает состав находок.
@@ -4998,6 +5083,193 @@ def _gloss_misses(seg: dict, project: Optional[dict]) -> list:
     return out
 
 
+# ── Контекстный арбитр спорного термина ──────────────────────────────
+# Проверки смотрят на сегмент в одиночку, а термин живёт в ряду: «туберкулёз
+# лёгких» обратный перевод возвращает как «лёгочный туберкулёз», и по словам
+# это потеря, а по смыслу — то же самое. Ответить на такое можно только увидев,
+# в каком месте документа сегмент стоит. Отсюда единственный вызов, которому
+# дают соседей: сегмент ДО, этот, ПОСЛЕ — и вопрос «правильно ли передан
+# термин ЗДЕСЬ, а если нет, то как правильно».
+#
+# Вердикт кэшируется НА СЕГМЕНТЕ по хешу перевода и версии вопросов — тем же
+# способом, что back-check, termcheck и сверка смысла глоссария. Меняешь
+# промпт — поднимай версию, иначе новый вопрос не задаётся никогда.
+TERM_CONTEXT_VERSION = 1
+TERM_CONTEXT_DEFAULT_MODEL = JUDGE_DEFAULT_MODEL
+
+
+def _term_disputes_of(seg: dict, project: Optional[dict]) -> list:
+    """Спорные ПРИКАЗНЫЕ термины сегмента: где проверка и глоссарий разошлись.
+
+    Два разных спора и оба про одно и то же слово:
+      • термин не пережил обратный перевод (`backcheck.terms_lost`);
+      • termcheck забраковал слово, которое И ЕСТЬ утверждённый перевод.
+    Считается только по verified: спорить с подсказкой автоимпорта не о чем —
+    модели разрешено её игнорировать."""
+    if project is None:
+        return []
+    target = (seg.get("target") or "").strip()
+    if not target:
+        return []
+    hits = _verified_hits(seg.get("source", ""), project)
+    if not hits:
+        return []
+    by_src = {_norm_key(h.get("src")): h for h in hits}
+    by_tgt = {_norm_key(h.get("tgt")): h for h in hits}
+    out, seen = [], set()
+
+    def add(h, why, form=None):
+        k = _norm_key(h.get("src"))
+        if k in seen:
+            # Форму дописываем и к уже заведённому спору: одна запись глоссария
+            # может встретиться в сегменте несколькими формами, а вопрос к ней
+            # один. По формам потом сверяется снятие претензии в ремонте.
+            for d in out:
+                if _norm_key(d["src"]) == k and form and form not in d["forms"]:
+                    d["forms"].append(form)
+            return
+        seen.add(k)
+        out.append({"src": h.get("src"), "tgt": h.get("tgt"), "why": why,
+                    "forms": [form] if form else []})
+
+    bc = seg.get("backcheck") or {}
+    if bc.get("target_hash") == _text_hash(target):
+        for t in (bc.get("terms_lost") or []):
+            h = by_src.get(_norm_key(t))
+            if h is None:
+                # terms_lost хранит НАЙДЕННУЮ форму («туберкулёза лёгких»),
+                # а запись глоссария — словарную. Ищем по вхождению формы
+                # в исходник записи и обратно.
+                h = next((x for x in hits
+                          if _norm_key(t).startswith(_norm_key(x.get("src"))[:6])), None)
+            if h:
+                add(h, "не пережил обратный перевод: в обратном тексте его нет", t)
+    tc = seg.get("termcheck") or {}
+    if tc.get("target_hash") == _text_hash(target):
+        for f in (tc.get("findings") or []):
+            if f.get("severity") not in TERMCHECK_DISPUTING:
+                continue
+            h = by_tgt.get(_norm_key(f.get("tgt_term")))
+            if h:
+                add(h, "проверка терминов забраковала его и предлагает «%s»"
+                    % (f.get("suggestion") or "другой вариант"))
+    return out
+
+
+def _term_context_stale(seg: dict) -> bool:
+    tcx = seg.get("termContext") or {}
+    return (tcx.get("target_hash") != _text_hash((seg.get("target") or "").strip())
+            or tcx.get("version") != TERM_CONTEXT_VERSION)
+
+
+def _openai_term_context(seg: dict, project: dict, disputes: list,
+                         prev_src: str, next_src: str, model: Optional[str]) -> Optional[dict]:
+    """Один вызов на сегмент: соседи + спорные термины → вердикт по каждому."""
+    import openai
+    mdl = _resolve_model(model or TERM_CONTEXT_DEFAULT_MODEL)
+    dom = _resolve_domain(project.get("domain"))
+    src_lang, tgt_lang = project.get("src", "RU"), project.get("tgt", "EN")
+    system = (
+        "Ты — редактор перевода, специализация: " + dom["label"].lower() + ". "
+        "Тебе дают три подряд идущих сегмента документа (язык: " + src_lang + "), "
+        "перевод СРЕДНЕГО из них на " + tgt_lang + " и список утверждённых терминов, "
+        "вокруг которых возник спор.\n\n"
+        "Для КАЖДОГО термина ответь, передан ли он в переводе среднего сегмента "
+        "правильно ИМЕННО ЗДЕСЬ, с учётом соседних сегментов.\n"
+        "  ok — true, если смысл термина в переводе передан верно (пусть другими "
+        "словами, другой частью речи или другим порядком слов);\n"
+        "  ok — false, если термин передан неверно, потерян или подменён;\n"
+        "  use — когда ok=false, ПРАВИЛЬНЫЙ вариант на " + tgt_lang + ", несколько слов;\n"
+        "  why — причина на " + src_lang + ", несколько слов (её читает человек).\n\n"
+        "Соседние сегменты даны только как обстановка. Не оценивай их перевод.\n"
+        'Верни ТОЛЬКО JSON: {"terms":[{"src":"...","ok":true,"use":"","why":""}]}. '
+        "Без пояснений."
+    )
+    body = (
+        "[сегмент ДО] " + (prev_src or "—") + NL +
+        ">>> [этот сегмент] " + (seg.get("source") or "") + NL +
+        "[сегмент ПОСЛЕ] " + (next_src or "—") + NL + NL +
+        "Перевод этого сегмента (" + tgt_lang + "): " + (seg.get("target") or "") + NL + NL +
+        "Спорные термины:" + NL +
+        NL.join("  - %s → %s (%s)" % (d["src"], d["tgt"], d["why"]) for d in disputes)
+    )
+    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=2)
+    extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
+             else {"max_tokens": 700, "temperature": 0.0})
+    try:
+        resp = client.chat.completions.create(
+            model=mdl["id"],
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": body}],
+            **extra)
+        _note_usage("term_context", mdl["id"], resp)
+        raw = (resp.choices[0].message.content or "").strip()
+        # Модель иногда оборачивает JSON в ```json ... ``` — вырезаем тело,
+        # ровно как у судьи и у сверки смысла.
+        m = re.search(r"\{.*\}", raw, re.S)
+        data = json.loads(m.group(0)) if m else None
+    except Exception as e:
+        print("[backend] контекстный арбитр seg#%s: %s" % (seg.get("id"), e), file=sys.stderr)
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("terms"), list):
+        return None
+    return {"terms": data["terms"], "model": mdl["id"]}
+
+
+def _run_segment_term_context(seg: dict, project: dict,
+                              model: Optional[str] = None) -> dict:
+    """Спросить арбитра про спорные термины сегмента и записать вердикт.
+
+    Ответ проверяется БЕСПЛАТНО, прежде чем стать поводом что-то переписывать:
+    предложенный вариант спрашивается у корпуса целевого языка (`_corpus_check`).
+    Нулевое число вхождений — это калька, и такой совет в ремонт не пойдёт;
+    молчание корпуса («не знаю») не одобряет и не блокирует, как везде в этой
+    системе. Дальше правку всё равно принимает ремонт со своей перепроверкой
+    и откатом — арбитр только предлагает."""
+    disputes = _term_disputes_of(seg, project)
+    if not disputes:
+        return {"ok": False, "error": "Спорных утверждённых терминов нет"}
+    prev_src, next_src = _neighbours(project, seg)
+    res = _openai_term_context(seg, project, disputes, prev_src, next_src, model)
+    if not res:
+        return {"ok": False, "error": "Арбитр не ответил"}
+    by_src = {_norm_key(d["src"]): d for d in disputes}
+    scope = _project_scope(project)
+    terms = []
+    for t in res["terms"]:
+        d = by_src.get(_norm_key(t.get("src")))
+        if d is None:
+            continue
+        ok = t.get("ok")
+        use = (t.get("use") or "").strip()
+        item = {"src": d["src"], "tgt": d["tgt"], "forms": d["forms"],
+                "ok": bool(ok) if ok is not None else None,
+                "use": use, "why": (t.get("why") or "").strip()}
+        if item["ok"] is False and use:
+            c = _corpus_check(use, scope)
+            if c is not None:
+                item["corpus"] = {"hits": c.get("hits"), "source": c.get("source")}
+                if not c.get("ok"):
+                    # Корпус НАЛАГАЕТ ВЕТО, но приказа не даёт: совета,
+                    # которого нет в целевом языке, в ремонте быть не должно.
+                    item["use"] = ""
+                    item["why"] = ((item["why"] + "; ") if item["why"] else "") +                         "вариант не найден в корпусе целевого языка"
+        terms.append(item)
+    seg["termContext"] = {
+        "version": TERM_CONTEXT_VERSION,
+        "target_hash": _text_hash((seg.get("target") or "").strip()),
+        "model": res["model"], "terms": terms,
+        "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    }
+    return {"ok": True, "termContext": seg["termContext"]}
+
+
+def _term_context_of(seg: dict) -> list:
+    """Свежие вердикты арбитра для этого текста. Устаревшие не читаем: они
+    описывают перевод, которого больше нет."""
+    return [] if _term_context_stale(seg) else ((seg.get("termContext") or {}).get("terms") or [])
+
+
 def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     """Претензии к ТЕКУЩЕМУ переводу. Устаревшие проверки (перевод правили
     после них) игнорируем — чинить по ним нечего.
@@ -5014,11 +5286,33 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     # сырым: его так же сырым и пишут.
     cur = _text_hash((seg.get("target") or "").strip())
     items = _gloss_misses(seg, project)
+    # Вердикты контекстного арбитра. Он единственный, кто видел сегмент в ряду
+    # соседей, поэтому его «передан верно» СНИМАЕТ претензию, а «передан
+    # неверно» её ставит — с готовым вариантом, уже прошедшим корпус.
+    ctx = _term_context_of(seg)
+    settled = {_norm_key(f) for c in ctx if c.get("ok") is True for f in (c.get("forms") or ())}
+    settled |= {_norm_key(c["src"]) for c in ctx if c.get("ok") is True}
     bc = seg.get("backcheck") or {}
     if bc and bc.get("target_hash") == cur:
         for t in (bc.get("terms_lost") or []):
+            if _norm_key(t) in settled:
+                # Арбитр прочитал соседей и сказал, что термин передан верно
+                # (другой частью речи, другим порядком слов). Оставить претензию
+                # значит послать ремонт переписывать правильный перевод.
+                continue
             items.append({"kind": "term_lost", "must": t,
                           "text": "термин «" + t + "» не пережил обратный перевод"})
+    # «Передан неверно» поводом для ремонта НЕ становится, и это не забывчивость.
+    # Арбитр в таком случае предлагает вариант, ОТЛИЧНЫЙ от утверждённого
+    # перевода, а `_repair_scores["gloss"]` считает нарушенные приказные термины
+    # и всегда: подставь совет — счётчик вырастет, правка откатится. Заход
+    # с заранее известным исходом, ровно та оплачиваемая карусель, от которой
+    # заведён `_repair_futile`.
+    # Спор «проверка против приказа» машина не решает по построению (см. CLAUDE.md),
+    # и решать его посегментно бессмысленно: вопрос про ЗАПИСЬ глоссария, а не
+    # про строку. Поэтому вердикт уходит человеку в /analysis — с доводом
+    # и готовым вариантом. Исправит он запись — и все затронутые сегменты
+    # приведёт в порядок существующий расчёт соответствия глоссарию.
         for r in (bc.get("reasons") or []):
             if any(h in r for h in REPAIR_HARD_REASONS):
                 items.append({"kind": "backcheck", "text": r})
@@ -5377,6 +5671,62 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
                      "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
     return {"ok": True, "applied": True, "repair": seg["repair"], "target": new_target,
             "desync": _repair_desync(seg, new_target)}
+
+
+class TermContextRequest(BaseModel):
+    segment_ids: Optional[List[int]] = None   # None — все спорные в проекте
+    model: Optional[str] = None
+    limit: int = 40
+    refresh: bool = False                     # переспросить уже отвеченные
+
+
+@app.post("/api/projects/{pid}/term-context")
+def term_context(pid: int, req: TermContextRequest = TermContextRequest()):
+    """Арбитр спорных терминов: сегмент ДО, этот, ПОСЛЕ — и вердикт по каждому
+    утверждённому термину, вокруг которого проверки разошлись с глоссарием.
+
+    Платный, поэтому с потолком и без переспроса уже отвеченного: вердикт лежит
+    на сегменте и устаревает вместе с текстом (`_term_context_stale`), как
+    back-check и termcheck. Считается ОДИН вызов на сегмент, сколько бы спорных
+    терминов в нём ни было."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(503, "Арбитр требует ключ OpenAI")
+    project = get_project(pid)
+    ids = set(req.segment_ids) if req.segment_ids is not None else None
+    todo, skipped = [], 0
+    for sg in project["segments"]:
+        if ids is not None and sg["id"] not in ids:
+            continue
+        if not _term_disputes_of(sg, project):
+            continue
+        if not req.refresh and not _term_context_stale(sg):
+            skipped += 1
+            continue
+        todo.append(sg)
+    capped = len(todo) > max(0, req.limit)
+    todo = todo[:max(0, req.limit)]
+    settled, wrong, failed = [], [], []
+    for sg in todo:
+        if _job_should_stop():
+            break
+        r = _run_segment_term_context(sg, project, req.model)
+        if not r.get("ok"):
+            failed.append(sg["id"])
+            continue
+        for t in r["termContext"]["terms"]:
+            (settled if t.get("ok") is True else wrong).append(
+                {"segment": sg["id"], "src": t.get("src"), "tgt": t.get("tgt"),
+                 "use": t.get("use"), "why": t.get("why")})
+    save_state(STATE)
+    _ANALYSIS_CACHE.pop(pid, None)
+    return {"ok": True, "asked": len(todo), "cachedSkipped": skipped,
+            "capped": capped, "failed": failed,
+            # «Передан верно» — снятая претензия: ремонт по ней больше не пойдёт.
+            "settled": settled,
+            # «Передан неверно» — вопрос к ЗАПИСИ глоссария, а не к строке.
+            # Ремонту он не отдаётся: подстановка чужого варианта нарушила бы
+            # приказ и была бы откачена, см. _repair_findings.
+            "wrong": wrong}
 
 
 class RepairRequest(BaseModel):
@@ -5913,11 +6263,19 @@ def batch_translate(pid: int, req: BatchRequest):
         if ready:
             return {"key": key, "reuse": True, "text": ready[0], "provider": ready[2]}
 
+        # Соседи берутся у ПЕРВОГО сегмента группы. Группа — это сегменты
+        # с одинаковым исходником, и перевод у них будет один на всех
+        # (см. дедупликацию повторов): выбрать «правильных» соседей для
+        # одинакового заголовка, стоящего в трёх местах документа, нельзя
+        # в принципе. Берём обстановку донора — это честнее, чем не брать
+        # никакой, и ровно так же ведёт себя перенос перевода на близнецов.
+        prev_src, next_src = _neighbours(project, seg)
         try:
             translation = _openai_translate(seg["source"], project["src"], project["tgt"],
                                             domain=project.get("domain"),
                                             gloss_hits=gloss_hits, tm_context=tm_hit,
-                                            model=req.model)
+                                            model=req.model,
+                                            prev_src=prev_src, next_src=next_src)
         except Exception as e:
             print(f"[backend] batch error seg#{seg['id']}: {e}", file=sys.stderr)
             return {"key": key, "error": str(e)}

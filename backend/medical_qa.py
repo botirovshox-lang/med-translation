@@ -669,6 +669,14 @@ def band_of(score):
     return "low"
 
 
+def _words_of(text):
+    """Содержательные слова в нормальном виде — БЕЗ обрезки основы.
+    Отбор тот же, что у _stems (короткие и служебные не в счёт), чтобы
+    «пережил термин круг» и «доля выживших слов» считали по одним словам."""
+    return [w for w in re.findall(r"[а-яёa-z0-9]+", _norm(text))
+            if len(w) >= 3 and w not in RU_STOPWORDS]
+
+
 def _stems(text):
     """Грубая нормализация под русскую морфологию: обрезаем слово до основы.
     Полноценный морфоанализатор здесь не нужен — для сравнения двух русских
@@ -694,9 +702,51 @@ def _content_recall(source_ru, back_ru):
     return covered / sum(src.values())
 
 
-def _term_survived(term, back_stems):
+# Сколько букв должно совпасть, чтобы считать два слова одной формой одного
+# слова. Обрезка до BACKCHECK_STEM_LEN режет русское слово ровно по окончанию:
+# «высокой» → «высоко», «высокую» → «высоку». Слово в обратном переводе есть,
+# а проверка объявляет термин потерянным — и балл падает на ровном месте.
+# Поэтому сравниваем не обрезки, а общий префикс: не короче четырёх букв
+# И не меньше 60% короткого из двух слов. «противотуберкулёзный» против
+# «туберкулёзный» так НЕ сходятся (общий префикс ноль) — отвалившаяся
+# приставка остаётся настоящей потерей, ради которой проверка и заведена.
+TERM_SAME_MIN_PREFIX = 4
+TERM_SAME_MIN_SHARE = 0.6
+
+
+def _common_prefix(a, b):
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _same_word_form(a, b):
+    """Два слова — формы одного слова, а не разные слова."""
+    if a == b:
+        return True
+    n = _common_prefix(a, b)
+    return (n >= TERM_SAME_MIN_PREFIX
+            and n >= TERM_SAME_MIN_SHARE * min(len(a), len(b)))
+
+
+def _term_survived(term, back_stems, back_words=()):
+    """Пережил ли термин обратный перевод.
+
+    Сначала по основам (как раньше), потом по формам слова: обрезка основы
+    слишком груба, чтобы на ней одной выносить приговор — см. _same_word_form.
+    Второй проход только смягчает: то, что совпало по основам, совпадёт и так."""
     ts = _stems(term)
-    return bool(ts) and all(t in back_stems for t in ts)
+    if not ts:
+        return False
+    if all(t in back_stems for t in ts):
+        return True
+    if not back_words:
+        return False
+    return all(any(_same_word_form(w, bw) for bw in back_words)
+               for w in _words_of(term))
 
 
 def backcheck_issues(source_ru, back_ru, glossary_matches=None, domain=None, src_lang="RU"):
@@ -757,12 +807,13 @@ def backcheck_issues(source_ru, back_ru, glossary_matches=None, domain=None, src
                 source_fragment=rule["label"], detected_by="backcheck_comparator"))
 
     back_stems = set(_stems(back))
+    back_words = _words_of(back)
     lost = []
     for hit in (glossary_matches or []):
         term = hit.get("_form") or hit.get("src") or ""
         if not term or not _has_exact_term(source, term):
             continue
-        if not _term_survived(term, back_stems):
+        if not _term_survived(term, back_stems, back_words):
             lost.append(term)
     for term in lost:
         issues.append(_make_issue(

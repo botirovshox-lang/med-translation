@@ -6,8 +6,17 @@
 /* Итог работы по проекту. Читается сверху вниз как ответ на один вопрос:
    «что сейчас с переводом». Каждая строка кликается и открывает редактор
    с этими сегментами — цифра без возможности посмотреть на неё бесполезна. */
-function WorkSummary({ summary, store, toast }) {
+function WorkSummary({ summary, store, toast, onReload }) {
   const s = summary;
+  /* Контекстный арбитр. Спор «проверка против утверждённого термина» машина
+     не решает по построению: ремонт по такой находке всегда откатится, потому
+     что нарушённых приказных терминов станет больше. Но человеку одного слова
+     «спор» мало — ему нужен довод. Арбитр единственный смотрит на сегмент
+     в ряду соседей и отвечает, верно ли термин передан ЗДЕСЬ.
+     Вызов платный, поэтому только по кнопке и с числом на ней: сколько
+     сегментов он ещё не видел. Вердикт кэшируется на сегменте, так что
+     повторное нажатие не платит за уже отвеченное. */
+  const [arbBusy, setArbBusy] = useState(false); 
   const go = (ids, label) => {
     if (!ids || !ids.length) return;
     store.setSegmentFilter(ids);
@@ -32,6 +41,25 @@ function WorkSummary({ summary, store, toast }) {
   const disputes = s.human.termcheckDisputes || [];
   const disputeSegs = s.human.termcheckDisputesSegments || [];
   const DISPUTE_CAP = 6;
+
+  const arbPending = s.human.termContextPending || 0;
+  const arbWrong = s.human.termContextWrong || [];
+  const askArbiter = () => {
+    if (!window.API || arbBusy) return;
+    setArbBusy(true);
+    window.API.safeCall(() => window.API.termContext(store.activeProject.id, {}))
+      .then(r => {
+        setArbBusy(false);
+        if (!r || !r.ok) { toast.error("Арбитр не ответил", (r && r.error) || "попробуйте ещё раз"); return; }
+        // Отвечаем словами всегда, в том числе при нуле: молчаливое нажатие
+        // неотличимо от сломанной кнопки.
+        toast.success("Спрошено сегментов: " + r.asked,
+          "снято претензий: " + (r.settled || []).length
+          + " · запись под вопросом: " + (r.wrong || []).length
+          + (r.capped ? " · показан не весь список, нажмите ещё раз" : ""));
+        if (onReload) onReload();
+      });
+  };
 
   const humanSegs = new Set([].concat(s.human.reverted || [],
                                       s.human.glossaryConfirmed || [],
@@ -121,6 +149,34 @@ function WorkSummary({ summary, store, toast }) {
             + " · сегментов: " + d.segments.length)),
         disputes.length > DISPUTE_CAP && React.createElement(
           "div", null, "и ещё " + (disputes.length - DISPUTE_CAP) + " записей")),
+      // Кнопка рисуется и при нуле ожидающих: иначе, спросив арбитра один раз,
+      // человек теряет и способ переспросить, и подтверждение, что ноль
+      // настоящий, — та же беда, что была у «Пересчитать» в соответствии
+      // глоссарию.
+      (arbPending > 0 || arbWrong.length > 0) && React.createElement(
+        "div", { className: "row between", style: { paddingTop: 10, gap: 10, flexWrap: "wrap",
+                                                    borderTop: "1px solid var(--border)" } },
+        React.createElement("span", { className: "dim", style: { fontSize: 12.5 } },
+          arbPending
+            ? "Арбитр ещё не смотрел " + arbPending + " сегм. — он читает соседние сегменты и говорит, верно ли термин передан здесь"
+            : "Арбитр посмотрел все спорные сегменты"),
+        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "search",
+          disabled: arbBusy || !arbPending, onClick: askArbiter },
+          arbBusy ? "Спрашиваю…" : "Спросить арбитра (" + arbPending + ")")),
+      arbWrong.length > 0 && React.createElement(
+        "div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.7, paddingTop: 8 } },
+        React.createElement("div", { style: { fontWeight: 600, color: "var(--c-warning)" } },
+          "Арбитр считает запись глоссария неверной для этого документа:"),
+        arbWrong.slice(0, DISPUTE_CAP).map((d, i) => React.createElement(
+          "div", { key: i },
+          d.src + " → ", React.createElement("b", { style: { color: "var(--c-primary)" } }, d.tgt),
+          d.use ? [" · здесь верно: ", React.createElement("b", { key: "u", style: { color: "var(--c-success)" } }, d.use)] : "",
+          (d.why ? " · " + d.why : "") + " · сегментов: " + d.segments.length)),
+        arbWrong.length > DISPUTE_CAP && React.createElement(
+          "div", null, "и ещё " + (arbWrong.length - DISPUTE_CAP) + " записей"),
+        React.createElement("div", { style: { paddingTop: 6 } },
+          "Правьте саму запись в «Глоссарии» — расчёт соответствия сам приведёт в порядок все затронутые сегменты. "
+          + "Ремонту это не отдаётся намеренно: подстановка варианта, отличного от утверждённого, нарушила бы приказ и была бы откачена.")),
       s.human.terms.length > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.6, paddingTop: 10, borderTop: "1px solid var(--border)" } },
         "Почему термины остались человеку: ",
         s.human.terms.slice(0, 4).map(t => t.count + "× " + t.reason).join(" · "))));
@@ -156,13 +212,16 @@ function TabPreflight({ store, toast }) {
   // Считает сервер тем же движком, что и сами прогоны, — иначе цифры на экране
   // разошлись бы с тем, что произойдёт по нажатию кнопки.
   const [summary, setSummary] = useState(null);
+  // Счётчик перезагрузок: арбитр меняет состав корзин, и без обновления экран
+  // показывал бы состояние до нажатия — то есть выглядел бы сломанной кнопкой.
+  const [sumNonce, setSumNonce] = useState(0);
   useEffect(() => {
     if (!window.API || !window.API.analysis || !project) return;
     let dead = false;
     window.API.safeCall(() => window.API.analysis(project.id))
       .then(r => { if (!dead && r && r.ok) setSummary(r); });
     return () => { dead = true; };
-  }, [project && project.id]);
+  }, [project && project.id, sumNonce]);
 
   if (!project) return React.createElement("div", { className: "page" }, React.createElement(NoProject, { store }));
 
@@ -265,7 +324,8 @@ function TabPreflight({ store, toast }) {
     React.createElement("div", { className: "dim", style: { marginTop: -16, marginBottom: 28, fontSize: 13 } }, "Последний анализ: 2 часа назад · " + total + " сегментов · " + analysisTime + " с"),
 
     // ---- Итог работы: что уже сделано и что осталось ----
-    summary && React.createElement(WorkSummary, { summary, store, toast }),
+    summary && React.createElement(WorkSummary, { summary, store, toast,
+      onReload: () => setSumNonce(n => n + 1) }),
 
     // ---- Statistics ----
     React.createElement("div", { className: "section" },

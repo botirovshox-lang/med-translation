@@ -211,6 +211,43 @@ img_segs2 = [s for s in project["segments"] if (s.get("origin") or {}).get("kind
 check(len(img_segs2) == 1, "повтор не задваивает сегменты")
 check(calls["n"] == was, "повтор не платит за уже прочитанное")
 
+print("")
+print("── отсеянное видно и возвращается ──")
+# «Отсеяно: 230» — число, которое человеку нечем проверить, а отсев делает
+# модель и ошибается в обе стороны. Значит список обязан быть, и обратный ход
+# тоже: решение машины, которое нельзя отменить, — это не помощь, а приговор.
+blocks = main.images_blocks(1)
+check(blocks["total"] >= 3 and all("text" in b for b in blocks["blocks"]),
+      "надписи отдаются списком: %d" % blocks["total"])
+over = main.images_blocks(1, skip="overlay")
+check(over["total"] >= 1 and all(b["skip"] == "overlay" for b in over["blocks"]),
+      "отсеянное как надпечатка отбирается отдельно")
+kept = main.images_blocks(1, skip="none")
+check(all(b["skip"] is None for b in kept["blocks"]) and kept["total"] >= 1,
+      "ставшее сегментами тоже видно")
+
+o = over["blocks"][0]
+was = len(project["segments"])
+res = main.image_restore_block(1, main.ImageRestoreRequest(part=o["part"], block=o["block"]))
+check(res["ok"] and res["created"] and len(project["segments"]) == was + 1,
+      "отсеянная надпись возвращена в работу сегментом #%s" % res.get("segment"))
+data = main._load_source_map(1)
+blk = (next(im for im in data["images"] if im["part"] == o["part"])["blocks"])[o["block"]]
+check("skip" not in blk and blk.get("seg") == res["segment"], "метка снята, сегмент привязан")
+again = main.image_restore_block(1, main.ImageRestoreRequest(part=o["part"], block=o["block"]))
+check(again["ok"] and not again["created"] and again["segment"] == res["segment"],
+      "повторный возврат не заводит второй сегмент")
+main._job_images(new_job(dry_run=False))
+check(len([s for s in project["segments"] if s["id"] == res["segment"]]) == 1,
+      "разбор после возврата не задваивает сегмент")
+main.image_mark_overlay(1, res["segment"])          # возвращаем состав как был
+try:
+    main.image_restore_block(1, main.ImageRestoreRequest(part="word/media/нет.png", block=0))
+    check(False, "несуществующий блок обязан отказать")
+except main.HTTPException as e:
+    check(e.status_code == 404, "несуществующий блок: " + str(e.detail))
+
+
 print("\n── «это надпись аппарата» ──")
 # Модель ошибается в обе стороны, и дальше машиной это не отсеять. Решает
 # человек — а система обязана слушаться и ПОМНИТЬ: следующий разбор не имеет

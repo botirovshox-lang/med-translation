@@ -344,6 +344,9 @@ function TabEditor({ store, toast }) {
      утащили бы нас обратно. Флажок живёт ровно один коммит: его гасит
      эффект БЕЗ списка зависимостей, объявленный ПОСЛЕ этих сбросов. */
   const jumpRef = useRef(false);
+  /* Чтобы подтягивание проекта не зациклилось: ответ придёт с новым числом,
+     эффект пересчитается, и без замка он пошёл бы за проектом снова. */
+  const staleFetch = useRef(false);
   const [revertTarget, setRevertTarget] = useState(null);
   const [propagateAsk, setPropagateAsk] = useState(null);  // предложение разослать перевод по повторам
   const [gptModels, setGptModels] = useState([]);          // каталог с ценами из /api/models
@@ -698,10 +701,27 @@ function TabEditor({ store, toast }) {
       // чинившихся — значит человек просит второй заход.
       retry: !!(rpGroupPick && (rpGroupPick.has("applied") || rpGroupPick.has("rejected"))),
       include_confirmed: rpFixConfirmed,
-    })).then(res => {
+    })).then(async res => {
       if (!alive) return;
       setPlanBusy(false);
       setRunPlan(res && res.steps ? res : null);
+      /* Сегменты могли прибавиться мимо этой вкладки — например, разбором
+         картинок с экрана экспорта. Тогда состав прогона (его считает сервер)
+         говорит про 41 непереведённый сегмент, а в таблице их нет: выбрать
+         их нечем, фильтры их не видят, «Новые» показывает ноль. Сверяем
+         дешёвым числом из того же ответа и подтягиваем ОДИН раз. */
+      const n = res && res.projectSegments;
+      if (!n || n === project.segments.length || staleFetch.current) return;
+      staleFetch.current = true;
+      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
+      staleFetch.current = false;
+      if (!alive || !fresh || !fresh.segments) return;
+      store.replaceProjectSegments(project.id, fresh.segments);
+      const added = fresh.segments.length - project.segments.length;
+      if (added > 0) {
+        toast.info("Подтянуты новые сегменты",
+          "их завели мимо этой вкладки: " + added + ". Теперь они видны в таблице и фильтрах.");
+      }
     });
     return () => { alive = false; };
   }, [planKey]);

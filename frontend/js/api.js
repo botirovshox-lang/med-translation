@@ -118,6 +118,11 @@
        стоила минут работы детектора, текст ещё и оплачен, а повторный заход
        заведёт сегменты заново бесплатно. */
     imagesForget:  (pid, force, wipe)       => call("POST",   `/projects/${pid}/images/forget`, { force: !!force, wipe: !!wipe }),
+    /* Найденные надписи списком: что отсеяно и почему. Без этого «Отсеяно:
+       230» — число, которое человеку нечем проверить. */
+    imagesBlocks:  (pid, skip)              => call("GET",    `/projects/${pid}/images/blocks?skip=${encodeURIComponent(skip || "")}`),
+    /* Обратное решение: «это текст документа, а не надпись аппарата». */
+    imageRestore:  (pid, part, block)       => call("POST",   `/projects/${pid}/images/restore`, { part, block }),
     /* «Это надпись аппарата»: убрать сегмент и запомнить метку на блоке,
        чтобы следующий разбор не завёл его заново. */
     imageMarkOverlay: (pid, sid)            => call("POST",   `/projects/${pid}/images/${sid}/overlay`),

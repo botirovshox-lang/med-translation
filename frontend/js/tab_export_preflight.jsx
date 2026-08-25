@@ -22,6 +22,10 @@ function ImagesCard({ project, store, toast }) {
   const [job, setJob] = useState(null);
   const [busy, setBusy] = useState(false);
   const [forgetOpen, setForgetOpen] = useState(false);
+  /* Что именно отсеяно. Без списка «Отсеяно: 230» — число, которое человеку
+     нечем проверить, а отсев делает модель и ошибается в обе стороны. */
+  const [drop, setDrop] = useState(null);        // {kind, rows} | null
+  const [dropBusy, setDropBusy] = useState(false);
 
   /* Ответ принимается, только если он про ТОТ ЖЕ проект. Экран не
      размонтируется при переключении, и без этой сверки числа проекта A
@@ -121,6 +125,31 @@ function ImagesCard({ project, store, toast }) {
       + (r.wiped ? " · прочитанный текст забыт" : " · прочитанное сохранено, повторный заход бесплатный"));
   };
 
+  const loadBlocks = async (kind) => {
+    if (!window.API || !window.API.imagesBlocks) return;
+    setDropBusy(true);
+    const r = await window.API.safeCall(() => window.API.imagesBlocks(pid, kind));
+    setDropBusy(false);
+    setDrop(r && r.blocks ? { kind, rows: r.blocks, total: r.total } : null);
+  };
+  const openBlocks = (kind) => {
+    if (drop && drop.kind === kind) { setDrop(null); return; }
+    loadBlocks(kind);
+  };
+  const restore = async (b) => {
+    setDropBusy(true);
+    const r = await window.API.safeCall(() => window.API.imageRestore(pid, b.part, b.block));
+    setDropBusy(false);
+    if (!r || !r.ok) { toast.error("Не удалось", "Сервер отказал или идёт разбор."); return; }
+    load(pid);
+    loadBlocks(drop.kind);          // список перечитываем, а не переключаем
+    if (store && store.replaceProjectSegments) {
+      const fresh = await window.API.safeCall(() => window.API.getProject(pid));
+      if (fresh && fresh.segments) store.replaceProjectSegments(pid, fresh.segments);
+    }
+    toast.success("Возвращено в работу", "сегмент #" + r.segment + " — теперь его надо перевести");
+  };
+
   const st = (rep && rep.stats) || null;
   const running = !!job;
   /* Пустой выбор означает «как решил сервер»: подставлять сюда что-то своё
@@ -133,9 +162,15 @@ function ImagesCard({ project, store, toast }) {
     setOcrModel(id);
     try { localStorage.setItem(OCR_MODEL_LS_KEY, id); } catch (e) {}
   };
-  const row = (label, value, color) => React.createElement("div", { className: "row between" },
-    React.createElement("span", { className: "muted" }, label),
-    React.createElement("strong", color ? { style: { color } } : null, value));
+  const row = (label, value, color, tip, onClick) => React.createElement("div", { className: "row between", key: label },
+    React.createElement("span", { className: "row muted", style: { gap: 6 } }, label,
+      tip && React.createElement(InfoTip, { title: label, body: tip, size: 13 })),
+    React.createElement("strong", {
+      onClick: onClick || undefined,
+      title: onClick ? "Показать список" : undefined,
+      style: Object.assign({}, color ? { color } : null,
+        onClick ? { cursor: "pointer", textDecoration: "underline dotted" } : null) },
+      value));
 
   return React.createElement("div", null,
     React.createElement("h2", { className: "section-title" }, "Текст на картинках"),
@@ -170,12 +205,46 @@ function ImagesCard({ project, store, toast }) {
         row("С надписями", st.withText),
         row("Надписей найдено", st.blocks),
         st.segments > 0 && row("Стали сегментами", st.segments, "var(--c-success)"),
-        st.text > 0 && row("Вернём в картинку при экспорте", st.repaintable),
-        st.captioned > 0 && row("Уйдут подписью под картинкой", st.captioned, "var(--c-warning)"),
-        (st.overlay > 0 || st.noise > 0) && row("Отсеяно (надпечатка аппарата, шум)",
-          st.overlay + st.noise),
+        st.text > 0 && row("Вернём в картинку при экспорте", st.repaintable, null,
+          "У этих надписей под текстом однородный фон, поэтому при экспорте «1в1» "
+          + "перевод впишется В САМУ картинку, на место оригинала: исходную надпись "
+          + "стираем цветом её же фона и пишем поверх. Считает это то же правило, "
+          + "которое потом работает при выгрузке, — число здесь и число в файле "
+          + "не разойдутся."),
+        st.captioned > 0 && row("Уйдут подписью под картинкой", st.captioned, "var(--c-warning)",
+          "Здесь фон пёстрый (рентгенограмма, фотография) либо перевод не влезает "
+          + "читаемым кеглем. Стирать надпись значит положить на снимок прямоугольную "
+          + "заплатку — это порча документа. Поэтому картинка остаётся нетронутой, "
+          + "а перевод встаёт отдельным абзацем сразу под ней."),
+        st.overlay > 0 && row("Отсеяно: надпечатка аппарата", st.overlay, null,
+          "Надписи, которые сделал не автор книги, а прибор или программа: фамилии "
+          + "пациентов и врачей, даты исследования, настройки томографа, линейки "
+          + "и пункты меню. Это не текст документа — переводить его незачем, "
+          + "а фамилиям нечего делать в памяти переводов. Решает модель при чтении; "
+          + "нажмите на число, чтобы увидеть список и вернуть ошибочно отсеянное.",
+          () => openBlocks("overlay")),
+        st.noise > 0 && row("Отсеяно: шум", st.noise, null,
+          "Строки, в которых переводить нечего: одиночные буквы («а», «б», «L»), "
+          + "даты, номера кадров, показания приборов вроде «250MA». Правило простое "
+          + "и языконезависимое: меньше трёх букв.",
+          () => openBlocks("noise")),
         st.unread > 0 && row("Не прочитано", st.unread, "var(--c-warning)"),
         st.unreadable > 0 && row("Картинки не читаются", st.unreadable, "var(--c-warning)")),
+
+      drop && React.createElement("div", { className: "col", style: { gap: 6, padding: "8px 10px", background: "var(--bg-sunken)", borderRadius: 8 } },
+        React.createElement("div", { className: "row between" },
+          React.createElement("span", { style: { fontSize: 12.5, fontWeight: 600 } },
+            (drop.kind === "overlay" ? "Отсеяно как надпечатка аппарата: " : "Отсеяно как шум: ")
+            + drop.rows.length + (drop.total > drop.rows.length ? " из " + drop.total : "")),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setDrop(null) }, "Закрыть")),
+        React.createElement("div", { className: "col", style: { gap: 4, maxHeight: 260, overflowY: "auto" } },
+          drop.rows.map((b, i) => React.createElement("div", { key: b.part + ":" + b.block, className: "row between", style: { gap: 8 } },
+            React.createElement("span", { style: { fontSize: 12, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+              b.text || "—"),
+            React.createElement(Btn, { variant: "ghost", size: "sm", disabled: dropBusy,
+              onClick: () => restore(b) }, "Это текст документа")))),
+        React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
+          "Вернуть можно любую строку: отсев делает модель, и ошибается она в обе стороны.")),
 
       running && React.createElement("div", { className: "col", style: { gap: 8 } },
         React.createElement("div", { className: "row", style: { gap: 8 } },

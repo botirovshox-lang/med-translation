@@ -2800,6 +2800,81 @@ def image_crop(pid: int, seg: int = 0, part: str = "", block: int = 0):
                     headers={"Cache-Control": "private, max-age=86400"})
 
 
+@app.get("/api/projects/{pid}/images/blocks")
+def images_blocks(pid: int, skip: str = "", limit: int = 400):
+    """Найденные надписи списком: что отсеяно и почему.
+
+    Без этого «Отсеяно: 230» — число, которое человеку нечем проверить.
+    А проверять есть что: отсев делает модель, и ошибается она в обе стороны.
+    `skip`: overlay | noise | none (то, что стало сегментами) | пусто — всё."""
+    project = get_project(pid)
+    data = _load_source_map(pid) if project.get("sourceDocx") else None
+    if data is None:
+        raise HTTPException(404, "К проекту не приложен исходный .docx")
+    by_id = {s["id"]: s for s in project["segments"]}
+    out = []
+    for im in (data.get("images") or []):
+        for i, b in enumerate(im.get("blocks") or []):
+            if "text" not in b:
+                continue
+            mark = b.get("skip") or "none"
+            if skip and mark != skip:
+                continue
+            seg = _image_seg_of(by_id, b, im.get("part"), i)
+            out.append({"part": im.get("part"), "block": i, "skip": b.get("skip"),
+                        "text": b.get("text") or "", "conf": b.get("conf"),
+                        "flat": b.get("flat"), "seg": seg["id"] if seg else None})
+    return {"ok": True, "blocks": out[:max(1, min(limit, 2000))],
+            "total": len(out)}
+
+
+class ImageRestoreRequest(BaseModel):
+    # «Это текст документа, а не надпись аппарата» — обратное решение к тому,
+    # что принимает кнопка в карточке сегмента.
+    part: str
+    block: int
+
+
+@app.post("/api/projects/{pid}/images/restore")
+def image_restore_block(pid: int, req: ImageRestoreRequest):
+    """Вернуть отсеянную надпись в работу: снять метку и завести сегмент.
+
+    Отсев делает модель, и она ошибается в обе стороны. Обратный ход обязан
+    существовать по тому же правилу, по которому у каждой пачки автоодобрения
+    есть откат: решение машины, которое человек не может отменить, — это
+    не помощь, а приговор."""
+    project = get_project(pid)
+    if _job_busy(pid, "images"):
+        raise HTTPException(409, "Идёт разбор картинок — дождитесь конца")
+    data = _load_source_map(pid) if project.get("sourceDocx") else None
+    if data is None:
+        raise HTTPException(404, "К проекту не приложен исходный .docx")
+    rec = next((im for im in (data.get("images") or []) if im.get("part") == req.part), None)
+    blocks = (rec or {}).get("blocks") or []
+    if rec is None or not (0 <= req.block < len(blocks)):
+        raise HTTPException(404, "Такой надписи в карте картинок нет")
+    b = blocks[req.block]
+    text = (b.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "Надпись не прочитана — возвращать нечего")
+    by_id = {s["id"]: s for s in project["segments"]}
+    have = _image_seg_of(by_id, b, req.part, req.block)
+    if have is not None:
+        return {"ok": True, "segment": have["id"], "created": False}
+    from docx import Document
+    anchors = _docx_image_anchors(Document(io.BytesIO(Path(data["path"]).read_bytes())))
+    nid = max((s["id"] for s in project["segments"]), default=0) + 1
+    seg = _image_new_segment(text, req.part, req.block, nid)
+    _image_place_segment(project, seg, _image_anchor_sid(data, anchors.get(req.part) or []), None)
+    b.pop("skip", None)
+    b["seg"] = nid
+    _save_source_map(pid, data)
+    save_state(STATE)
+    return {"ok": True, "segment": nid, "created": True,
+            "stats": _image_stats(data.get("images") or [],
+                                  data.get("imagesTotal") or 0)}
+
+
 class ImagesForgetRequest(BaseModel):
     # Снести заведённое: разбор оказался плохим, движок сменили, приложили
     # другой исходник.
@@ -8635,7 +8710,14 @@ def run_plan(pid: int, req: RunPlanRequest):
     for p in plans:
         seen.update(p["ids"])
     ids = [s["id"] for s in scope if s["id"] in seen]
-    return {"steps": plans, "ids": ids, "total": len(ids), "scope": len(scope)}
+    return {"steps": plans, "ids": ids, "total": len(ids), "scope": len(scope),
+            # Сколько сегментов у проекта на сервере. Браузер держит проект
+            # с момента загрузки страницы, а прибавиться они могут где угодно
+            # — например, разбором картинок с соседнего экрана. Тогда состав
+            # прогона (его считает сервер) говорит про 41 непереведённый
+            # сегмент, а в таблице их нет и выбрать их нечем. Число дешёвое,
+            # ответ и так приходит на каждую правку настроек.
+            "projectSegments": len(project["segments"])}
 
 
 JOB_HISTORY = 30                # сколько завершённых прогонов помним

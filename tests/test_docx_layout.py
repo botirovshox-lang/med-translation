@@ -301,6 +301,32 @@ check(all(p == "" or p[0] != " " or True for p in blind)
               or " " in p.strip() for p in blind),
       "догадка всё равно режет по словам: %r" % blind)
 
+# ── запись атомарна ─────────────────────────────────────────────────
+# Экспорт учебника это 21 МБ и несколько секунд. Записанный прямо в итоговый
+# файл, он в это время доступен на скачивание НЕДОПИСАННЫМ, а перезапись
+# требует прав на сам файл: один файл, случайно оставленный в exports/ от
+# другого владельца, ронял экспорт этого проекта навсегда (PermissionError
+# на боевом сервере, «Сервер недоступен» на экране). os.replace требует прав
+# только на каталог.
+stale = out.with_name(out.name + ".tmp")
+stale.write_bytes("мусор от упавшей сборки".encode("utf-8"))
+out2, _st2 = main._generate_export(project, "docx_layout")
+check(out2 == out and not stale.exists(),
+      "временный файл убран за собой, а не оставлен рядом с готовым")
+check(Document(str(out2)) is not None, "итоговый файл читается как .docx")
+
+if os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() != 0:
+    # Только не под root: ему права на файл не помеха, и проверка была бы
+    # зелёной ни о чём.
+    out.chmod(0o444)
+    try:
+        main._generate_export(project, "docx_layout")
+        check(True, "экспорт переживает недоступный на запись прежний файл")
+    except OSError as e:
+        check(False, "экспорт упал на прежнем файле: %s" % e)
+    finally:
+        out.chmod(0o644)
+
 # ── привязка исходника к готовому проекту ───────────────────────────
 old = {"id": 2, "title": "Старый", "src": "RU", "tgt": "EN", "domain": "medical",
        "segments": [{"id": i + 1, "source": t, "target": "x", "status": "translated"}

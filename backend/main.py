@@ -6218,16 +6218,25 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
     """Собирает реальный файл экспорта и отчёт о том, что в него попало.
     Раньше экспорт был фиктивным — файл не создавался вовсе, только запись
     в историю."""
-    EXPORT_DIR.mkdir(exist_ok=True)
+    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     ext = EXPORT_EXT.get(fmt)
     if not ext:
         raise HTTPException(400, f"Формат {fmt} не поддерживается")
     out = EXPORT_DIR / (_safe_filename(project["title"])
                         + EXPORT_SUFFIX.get(fmt, "") + "." + ext)
+    # Пишем во временный файл и подменяем готовый одним os.replace — тем же
+    # приёмом, что и save_state. Две причины, и обе не теоретические:
+    #   1) экспорт учебника это 21 МБ и несколько секунд. Записанный прямо
+    #      в итоговый файл, он в это время доступен на скачивание НЕДОПИСАННЫМ;
+    #   2) запись поверх существующего файла требует прав НА ФАЙЛ, а os.replace —
+    #      только на каталог. Один файл, случайно оставленный в exports/ от
+    #      другого владельца, ронял весь экспорт этого проекта навсегда:
+    #      PermissionError на боевом сервере, «Сервер недоступен» на экране.
+    tmp = out.with_name(out.name + ".tmp")
     stats: dict = {}
     segs = project["segments"]
     if fmt == "docx_layout":
-        stats = _export_docx_layout(project, out)
+        stats = _export_docx_layout(project, tmp)
     elif fmt == "docx":
         from docx import Document
         doc = Document()
@@ -6248,7 +6257,7 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
             for s in segs:
                 if s.get("target"):
                     doc.add_paragraph(s["target"])
-        doc.save(str(out))
+        doc.save(str(tmp))
     elif fmt == "xlsx":
         from openpyxl import Workbook
         wb = Workbook()
@@ -6258,7 +6267,8 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
         for s in segs:
             ws.append([s["id"], s.get("source", ""), s.get("target", ""),
                        s.get("status", ""), s.get("route", ""), s.get("risk", "")])
-        wb.save(str(out))
+        wb.save(str(tmp))
+    os.replace(str(tmp), str(out))
     return out, stats
 
 @app.post("/api/projects/{pid}/export")
@@ -6276,6 +6286,16 @@ def export_project(pid: int, req: ExportRequest):
         # Нет исходника, файл разошёлся с картой — это не сбой сервера, а
         # разговор с человеком: он приложит файл и повторит.
         return {"ok": False, "error": e.detail}
+    except Exception as e:
+        # Сборка падает не только на нашей логике: не хватило места, файл занят,
+        # исходник побился. Пятисотка превращается на экране в «сервер недоступен»
+        # — сообщение, по которому нельзя ни понять причину, ни решить, что
+        # делать. Разбор с настоящей причиной остаётся в журнале.
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        return {"ok": False,
+                "error": "Не удалось собрать файл (%s: %s). Подробности — в журнале сервера."
+                         % (type(e).__name__, e)}
     size_kb = max(1, path.stat().st_size // 1024)
     STATE["exportHistory"].insert(0, {
         "file": path.name,

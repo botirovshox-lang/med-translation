@@ -328,6 +328,18 @@ function TabEditor({ store, toast }) {
   const [checkedSegs, setCheckedSegs] = useState(new Set()); // ручной выбор
   const [showFilters, setShowFilters] = useState(false);
   const [page, setPage] = useState(1);
+  /* Переход к сегменту по номеру — маленькая строка над колонкой «#».
+     Показывается не страница, а ЗОНА: сегменты ДО и ПОСЛЕ введённого
+     (ZONE_HALF в каждую сторону). Страница на десять строк на этот вопрос
+     не отвечает — искомый сегмент оказывается то первой строкой, то
+     последней, и «что стояло перед ним» видно через раз. */
+  const [jump, setJump] = useState("");
+  const [zone, setZone] = useState(null);        // номер сегмента-центра | null
+  /* Переход снимает фильтры и меняет страницу, а на то и другое подвешены
+     сбросы (страница — на первую, выбранный сегмент — в null), которые
+     утащили бы нас обратно. Флажок живёт ровно один коммит: его гасит
+     эффект БЕЗ списка зависимостей, объявленный ПОСЛЕ этих сбросов. */
+  const jumpRef = useRef(false);
   const [revertTarget, setRevertTarget] = useState(null);
   const [propagateAsk, setPropagateAsk] = useState(null);  // предложение разослать перевод по повторам
   const [gptModels, setGptModels] = useState([]);          // каталог с ценами из /api/models
@@ -401,6 +413,7 @@ function TabEditor({ store, toast }) {
   const [ordersFor, setOrdersFor] = useState(null);
   const termOrders = !!project && ordersFor === project.id;
   const PAGE_SIZE = 10;
+  const ZONE_HALF = 10;      // сколько сегментов показывать до и после введённого
 
   // Каталог моделей грузим один раз; пустой список — значит бэкенд старый или ключа нет
   useEffect(() => {
@@ -577,9 +590,27 @@ function TabEditor({ store, toast }) {
     try { localStorage.setItem(JUDGE_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
   };
 
-  useEffect(() => { setPage(1); }, [filter, query, scope, riskFilter, project && project.id, store.segmentFilter]);
+  useEffect(() => {
+    if (jumpRef.current) return;      // фильтры снял сам переход — зону не рушим
+    setPage(1); setZone(null);
+  }, [filter, query, scope, riskFilter, project && project.id, store.segmentFilter]);
   useEffect(() => { setCheckedSegs(new Set()); }, [project && project.id, store.segmentFilter]);
-  useEffect(() => { setSelId(null); }, [page]);
+  useEffect(() => { if (jumpRef.current) return; setSelId(null); }, [page]);
+  // Гасим флажок перехода: без списка зависимостей — то есть после КАЖДОГО
+  // коммита и обязательно после сбросов выше (порядок объявления = порядок
+  // выполнения). Иначе переход, не изменивший ни фильтров, ни страницы,
+  // оставил бы флажок взведённым и съел бы следующий честный сброс.
+  useEffect(() => { jumpRef.current = false; });
+
+  // Сегмент-центр стоит посередине окна, то есть ниже первого экрана таблицы:
+  // без прокрутки «перешли» выглядит как «ничего не произошло».
+  useEffect(() => {
+    if (zone == null) return;
+    try {
+      const el = document.querySelector('tr[data-seg="' + zone + '"]');
+      if (el && el.scrollIntoView) el.scrollIntoView({ block: "center", behavior: "smooth" });
+    } catch (e) { /* вне браузера (тест рендера) — не страшно */ }
+  }, [zone]);
 
   useEffect(() => {
     if (project && !project.segments.find(s => s.id === selId)) setSelId(project.segments[0] && project.segments[0].id);
@@ -675,7 +706,17 @@ function TabEditor({ store, toast }) {
 
   const counts = store.statusCounts(project);
   const activeFilter = store.segmentFilter || window._mcat_sf || null;
-  const filtered = project.segments.filter(s => {
+  /* Зона — окно вокруг введённого номера. Прочий отбор она отменяет
+     намеренно: просили показать соседей ЦЕЛИКОМ, а не тех из них, кто уцелел
+     после фильтра. Центр ищется ПО НОМЕРУ, а не запоминается индексом:
+     сегменты приезжают с сервера заново после каждого прогона, и запомненный
+     индекс однажды указал бы на чужую строку. Номера нет в проекте —
+     зоны нет: показываем обычный список, а не пустоту. */
+  const zoneIdx = zone == null ? -1 : project.segments.findIndex(s => s.id === zone);
+  const inZone = zoneIdx >= 0;
+  const zoneFrom = Math.max(0, zoneIdx - ZONE_HALF);
+  const zoneTo = Math.min(project.segments.length, zoneIdx + ZONE_HALF + 1);
+  const filtered = inZone ? project.segments.slice(zoneFrom, zoneTo) : project.segments.filter(s => {
     if (activeFilter && !activeFilter.has(s.id)) return false;
     if (filter !== "all" && s.status !== filter) return false;
     if (riskFilter !== "all" && s.risk !== riskFilter) return false;
@@ -683,11 +724,43 @@ function TabEditor({ store, toast }) {
     return true;
   });
   const selected = project.segments.find(s => s.id === selId);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  // Зона показывается целиком: 21 строку резать на страницы по десять —
+  // значит снова спрятать половину соседей, ради которых её и открывали.
+  const totalPages = inZone ? 1 : Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const curPage = Math.min(page, totalPages);
-  const paged = filtered.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE);
+  const paged = inZone ? filtered : filtered.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE);
   const wordCount = (arr) => arr.reduce((a, s) => a + (s.source.trim() ? s.source.trim().split(/\s+/).length : 0), 0);
   const charCount = (arr) => arr.reduce((a, s) => a + s.source.length, 0);
+
+  /* Переход к сегменту по номеру. Всё, что сузило список, снимается — под
+     фильтром соседей не видно, а зона именно про них. Снятое НАЗЫВАЕТСЯ:
+     молча убранный фильтр человек потом ищет глазами по всей панели. */
+  const goToZone = (raw) => {
+    const n = parseInt(String(raw == null ? "" : raw).replace(/[^0-9]/g, ""), 10);
+    if (!isFinite(n)) {
+      toast.warning("Номер сегмента", "Введите номер сегмента — например 128.");
+      return;
+    }
+    const idx = project.segments.findIndex(s => s.id === n);
+    if (idx < 0) {
+      const ids = project.segments.map(s => s.id);
+      toast.warning("Сегмента #" + n + " в проекте нет",
+        ids.length ? "Номера идут от " + Math.min.apply(null, ids) + " до " + Math.max.apply(null, ids) + "."
+                   : "В проекте нет сегментов.");
+      return;
+    }
+    const dropped = [];
+    if (filter !== "all") { setFilter("all"); dropped.push("фильтр статуса"); }
+    if (riskFilter !== "all") { setRiskFilter("all"); dropped.push("фильтр риска"); }
+    if (query) { setQuery(""); dropped.push("поиск"); }
+    if (activeFilter) { window._mcat_sf = null; store.setSegmentFilter(null); dropped.push("выборку из анализа"); }
+    jumpRef.current = true;
+    setZone(n);
+    setSelId(n);
+    setJump(String(n));
+    if (dropped.length) toast.info("Зона сегмента #" + n,
+      "Снял " + dropped.join(", ") + ": под ним соседних сегментов не видно.");
+  };
 
   const setSegBusy = (id, kind) => setBusy(b => ({ ...b, [id]: kind }));
   const clearBusy = (id) => setBusy(b => { const n = { ...b }; delete n[id]; return n; });
@@ -1631,7 +1704,8 @@ function TabEditor({ store, toast }) {
               "Снять выбор (" + checkedSegs.size + ")")
           : filtered.length > 0 && React.createElement(Btn, { variant: "ghost", size: "sm",
               onClick: () => setCheckedSegs(new Set(filtered.map(s => s.id))) },
-              "Выбрать все " + filtered.length + (filter !== "all" || query || activeFilter ? " по фильтру" : "")),
+              "Выбрать все " + filtered.length + (inZone ? " в зоне"
+                : (filter !== "all" || query || activeFilter ? " по фильтру" : ""))),
         // Поиск: отдельно по оригиналу и отдельно по переводу — искать
         // английский термин по русскому тексту бессмысленно и наоборот.
         React.createElement("div", { className: "row", style: { gap: 8, flex: "1 1 380px", justifyContent: "flex-end" } },
@@ -1685,42 +1759,88 @@ function TabEditor({ store, toast }) {
             est: fullEst, sameModelWarn: sameModelWarn,
           fixConfirmed: rpFixConfirmed, fixConfirmedCount: rpConfirmedWaiting,
           models: gptModels, disabled: !!job }),
-        // Вторая колонка: одобрение терминов и то, что из него следует —
-        // расхождения готовых переводов с одобренным. Один сюжет, один столбец.
-        React.createElement("div", { className: "col", style: { gap: "var(--sp-md)" } },
-          React.createElement(ApplyTermsCard, {
-            running: job && job.kind === "apply_terms" ? job : null,
-            onRun: runApplyTerms, onStop: stopJob, disabled: !!job,
-            preview: autoPreview, sources: autoPreview && autoPreview.sources,
-            includeConfirmed: impactConfirmed,
-            onIncludeConfirmed: () => setImpactConfirmed(v => !v),
-            confirmedCount: impact ? impact.confirmed.length : 0,
-            orders: termOrders,
-            onOrders: () => setOrdersFor(v => (v === project.id ? null : project.id)),
-            // Состав ремонта — тот же список, что показывает соседняя карточка,
-            // МИНУС застрявшие: сервер их не возьмёт, и обещать по ним работу
-            // значит показать под кнопкой число, которого не будет.
-            pendingSegs: impact
-              ? (impactConfirmed ? impact.segments : impact.pending)
-                  .filter(i => (impact.futile || []).indexOf(i) === -1).length : 0,
-            futileSegs: impact ? (impact.futile || []).length : 0 }),
-          // Карточка живёт и при нуле расхождений. Пряча её, мы уносили вместе
-          // с ней «Пересчитать» — единственный способ убедиться, что ноль
-          // настоящий, а не остался с прошлого расчёта. Ровно та же беда, от
-          // которой защищены исчерпывающие корзины «Анализа»: пропавшее
-          // с экрана выглядит благополучнее, чем есть.
-          impact && React.createElement(GlossaryImpactCard, {
-            impact, busy: impactBusy, onRefresh: () => loadImpact(true),
-            includeConfirmed: impactConfirmed, onIncludeConfirmed: () => setImpactConfirmed(v => !v),
-            onRun: runImpactRetranslate,
-            onDrill: (ids) => { store.setSegmentFilter(ids); setPage(1); },
-            est: estimateRun("translate", project.segments.filter(s =>
-              new Set(impactConfirmed ? impact.segments : impact.pending).has(s.id)), gptModelInfo),
-            running: batchRun && batchRun.engine === "translate" && job && job.params && job.params.via === "impact" ? batchRun : null })))),
+        // Одобрение терминов и то, что из него следует, — расхождения готовых
+        // переводов с одобренным. Один сюжет, но две СОСЕДНИЕ колонки: одна
+        // под другой карточка соответствия уезжала под сгиб, а смотрят на неё
+        // сразу после одобрения.
+        React.createElement(ApplyTermsCard, {
+          running: job && job.kind === "apply_terms" ? job : null,
+          onRun: runApplyTerms, onStop: stopJob, disabled: !!job,
+          preview: autoPreview, sources: autoPreview && autoPreview.sources,
+          includeConfirmed: impactConfirmed,
+          onIncludeConfirmed: () => setImpactConfirmed(v => !v),
+          confirmedCount: impact ? impact.confirmed.length : 0,
+          orders: termOrders,
+          onOrders: () => setOrdersFor(v => (v === project.id ? null : project.id)),
+          // Состав ремонта — тот же список, что показывает соседняя карточка,
+          // МИНУС застрявшие: сервер их не возьмёт, и обещать по ним работу
+          // значит показать под кнопкой число, которого не будет.
+          pendingSegs: impact
+            ? (impactConfirmed ? impact.segments : impact.pending)
+                .filter(i => (impact.futile || []).indexOf(i) === -1).length : 0,
+          futileSegs: impact ? (impact.futile || []).length : 0 }),
+        // Карточка живёт и при нуле расхождений. Пряча её, мы уносили вместе
+        // с ней «Пересчитать» — единственный способ убедиться, что ноль
+        // настоящий, а не остался с прошлого расчёта. Ровно та же беда, от
+        // которой защищены исчерпывающие корзины «Анализа»: пропавшее
+        // с экрана выглядит благополучнее, чем есть.
+        impact && React.createElement(GlossaryImpactCard, {
+          impact, busy: impactBusy, onRefresh: () => loadImpact(true),
+          includeConfirmed: impactConfirmed, onIncludeConfirmed: () => setImpactConfirmed(v => !v),
+          onRun: runImpactRetranslate,
+          onDrill: (ids) => { store.setSegmentFilter(ids); setPage(1); },
+          est: estimateRun("translate", project.segments.filter(s =>
+            new Set(impactConfirmed ? impact.segments : impact.pending).has(s.id)), gptModelInfo),
+          running: batchRun && batchRun.engine === "translate" && job && job.params && job.params.via === "impact" ? batchRun : null }))),
 
     // ---- Body: table + detail ----
     React.createElement("div", { className: "editor-body" },
       React.createElement("div", { className: "editor-main" },
+        /* Поиск и переход по номеру — прямо над таблицей. Такой же поиск есть
+           в залипающей панели, и это ОДНО состояние: два поля, которые не
+           могут разойтись между собой. Здесь оно нужно потому, что между
+           панелью и таблицей стоят два блока запуска высотой в экран. */
+        React.createElement("div", { className: "table-head" },
+          React.createElement("div", { className: "row row-wrap", style: { gap: 8 } },
+            // Маленькая строка стоит над колонкой «#» — туда и вводят номер.
+            React.createElement("div", { className: "seg-jump" },
+              React.createElement("span", { className: "sj-hash" }, "#"),
+              React.createElement("input", { className: "input", value: jump, inputMode: "numeric",
+                placeholder: "№",
+                "aria-label": "Перейти к сегменту по номеру",
+                title: "Номер сегмента: покажу его и по " + ZONE_HALF + " соседей до и после",
+                onChange: (e) => setJump(e.target.value),
+                onKeyDown: (e) => { if (e.key === "Enter") goToZone(jump); } })),
+            React.createElement(IconBtn, { icon: "arrowR", label: "Перейти к сегменту", sm: true,
+              onClick: () => goToZone(jump) }),
+            React.createElement(SearchInput, { value: query, onChange: (e) => setQuery(e.target.value),
+              placeholder: searchPlaceholder }),
+            React.createElement(Select, { value: scope, onChange: (e) => pickScope(e.target.value),
+              style: { width: "auto", flex: "0 0 auto" }, "aria-label": "Где искать" },
+              scopeOpts.map(([v, l]) => React.createElement("option", { key: v, value: v }, l))),
+            query && React.createElement(IconBtn, { icon: "close", label: "Очистить поиск", sm: true, onClick: () => setQuery("") }),
+            query && React.createElement("span", { className: "dim", style: { fontSize: 12, whiteSpace: "nowrap" } },
+              filtered.length ? "найдено: " + filtered.length : "ничего не найдено")
+          ),
+          // Пока открыта зона, в таблице не весь файл. Сказать об этом обязаны
+          // мы: иначе «куда делись сегменты» человек ищет в фильтрах, которых
+          // мы же и не оставили.
+          inZone && React.createElement("div", { className: "zone-strip" },
+            React.createElement(Icon, { name: "target", size: 14, style: { color: "var(--c-primary)" } }),
+            React.createElement("span", null,
+              "Зона сегмента #" + zone + ": " + (zoneIdx - zoneFrom) + " до и " + (zoneTo - zoneIdx - 1) + " после"
+              + " — строки " + (zoneFrom + 1) + "–" + zoneTo + " из " + project.segments.length),
+            // Выход из зоны оставляет человека НА ТОМ ЖЕ месте файла: страница
+            // берётся по сегменту-центру. Иначе «Весь файл» телепортирует
+            // на первую страницу, и найденное место приходится искать заново.
+            React.createElement(Btn, { variant: "secondary", size: "sm", icon: "close",
+              onClick: () => {
+                jumpRef.current = true;                 // страницу сменили мы — выбор не сбрасывать
+                setPage(Math.floor(zoneIdx / PAGE_SIZE) + 1);
+                setZone(null); setJump("");
+              } }, "Весь файл")
+          )
+        ),
         React.createElement("div", { className: "table-wrap" },
           React.createElement("div", { className: "tbl-scroll", style: { maxHeight: height } },
             React.createElement("table", { className: "tbl" },
@@ -2369,7 +2489,9 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
           ? React.createElement("button", { className: "status-cell-btn revertable", title: "Нажмите, чтобы сбросить в «Новый»", "aria-label": "Сбросить статус", onClick: onRevert },
               React.createElement(Icon, { name: "close", size: 18, style: { color: "var(--c-error)" } }))
           : React.createElement(IconBtn, { icon: "check", label: "Подтвердить", sm: true, onClick: onConfirm });
-  return React.createElement("tr", { className: "row-status-" + seg.status + (selected ? " selected" : "") + (checked ? " row-checked" : ""), onClick: onSelect },
+  // data-seg — якорь для прокрутки к сегменту зоны: искать строку по номеру
+  // проще, чем тянуть ref через таблицу.
+  return React.createElement("tr", { "data-seg": seg.id, className: "row-status-" + seg.status + (selected ? " selected" : "") + (checked ? " row-checked" : ""), onClick: onSelect },
     React.createElement("td", { style: { width: 36, textAlign: "center" }, onClick: (e) => e.stopPropagation() },
       React.createElement("input", { type: "checkbox", checked: !!checked, onChange: onCheck })),
     React.createElement("td", { className: "col-id" }, seg.id),

@@ -46,7 +46,13 @@ const React = {
     return [hooks[i], (v) => { hooks[i] = typeof v === "function" ? v(hooks[i]) : v; }];
   },
   useEffect(fn) { effects.push(fn); },
-  useRef(v) { return { current: v === undefined ? null : v }; },
+  useRef(v) {
+    // Ref обязан пережить рендер: на нём держится флажок перехода к сегменту —
+    // ровно то место, где ошибка не видна ни глазами, ни node --check.
+    const i = hookIdx++;
+    if (!(i in hooks)) hooks[i] = { current: v === undefined ? null : v };
+    return hooks[i];
+  },
   useMemo(f) { return f(); },
   useCallback(f) { return f; },
   Fragment: "Fragment",
@@ -406,6 +412,86 @@ try {
   check(text.indexOf("Перевести заново (0)") !== -1,
         "кнопка честно показывает ноль, а не исчезает");
 
+  console.log("\n=== 11. Поиск над таблицей и переход к сегменту по номеру ===");
+  // Зона — окно в ZONE_HALF (10) строк в каждую сторону. На семи сегментах она
+  // совпала бы со всем файлом и не доказала бы ничего, поэтому добираем.
+  for (let i = 8; i <= 40; i++) project.segments.push(seg(i));
+  const rec = { list: [], info(t, m) { this.list.push(t + " " + m); },
+                warning(t, m) { this.list.push(t + " " + m); }, error() {}, success() {} };
+  const byProp = (n, key, val) => {
+    if (!n || typeof n !== "object") return null;
+    if (Array.isArray(n)) { for (const c of n) { const r = byProp(c, key, val); if (r) return r; } return null; }
+    if ((n.props || {})[key] === val) return n;
+    for (const c of (n.children || [])) { const r = byProp(c, key, val); if (r) return r; }
+    return null;
+  };
+  const byLabel = (n, label) => {
+    if (!n || typeof n !== "object") return null;
+    if (Array.isArray(n)) { for (const c of n) { const r = byLabel(c, label); if (r) return r; } return null; }
+    if (n.type === "button" && (n.children || []).indexOf(label) !== -1) return n;
+    for (const c of (n.children || [])) { const r = byLabel(c, label); if (r) return r; }
+    return null;
+  };
+  const segRows = (n, out) => {
+    out = out || [];
+    if (!n || typeof n !== "object") return out;
+    if (Array.isArray(n)) { n.forEach(c => segRows(c, out)); return out; }
+    const d = (n.props || {})["data-seg"];
+    if (d !== undefined) out.push(d);
+    (n.children || []).forEach(c => segRows(c, out));
+    return out;
+  };
+  const draw = () => { hookIdx = 0; return TabEditor({ store: storeStub, toast: rec }); };
+  const jumpTo = (num, el) => {
+    byProp(el, "aria-label", "Перейти к сегменту по номеру").props.onChange({ target: { value: String(num) } });
+    byProp(draw(), "aria-label", "Перейти к сегменту").props.onClick();
+    return draw();
+  };
+
+  const el11 = draw();
+  const head = findCls(el11, "table-head");
+  check(!!head, "строка над таблицей отрисована");
+  check(!!head && !!byProp(head, "placeholder", "Поиск по оригиналу и переводу…"),
+        "поиск стоит НАД таблицей, а не только в залипающей панели");
+  check(!!head && !!byProp(head, "aria-label", "Перейти к сегменту по номеру"),
+        "и рядом слева — маленькая строка для номера сегмента");
+
+  const el11c = jumpTo(20, el11);
+  const rows11 = segRows(el11c);
+  check(rows11.length === 21, "в зоне 21 строка: десять до, сам сегмент и десять после (" + rows11.length + ")");
+  check(rows11[0] === 10 && rows11[rows11.length - 1] === 30, "окно построено вокруг введённого номера");
+  check(rows11.indexOf(20) === 10, "сам сегмент — посередине, а не первой строкой страницы");
+  const out11 = []; walk(el11c, 0, out11);
+  const t11 = out11.join("\n");
+  check(t11.indexOf("Зона сегмента #20") !== -1, "сказано, что в таблице не весь файл");
+  check(t11.indexOf("10 до и 10 после") !== -1, "и сколько соседей видно");
+
+  // Сбросы страницы и выбранного сегмента висят на фильтрах, а переход их
+  // снимает: без флажка они в том же коммите утащили бы нас с зоны обратно
+  // на первую страницу. Прогоняем эффекты сразу после перехода.
+  effects.length = 0;
+  const el11cc = draw();
+  effects.forEach(fn => { try { fn(); } catch (e) {} });
+  check(segRows(draw()).length === 21, "сбросы после перехода зону не рушат");
+
+  rec.list.length = 0;
+  const el11e = jumpTo(999, el11cc);
+  check(/Сегмента #999 в проекте нет/.test(rec.list.join(" ")),
+        "несуществующий номер назван словами, а не молчанием");
+  check(segRows(el11e).length === 21, "и зона от промаха не рассыпалась");
+
+  const back = byLabel(el11e, "Весь файл");
+  check(!!back, "из зоны есть выход");
+  if (back) back.props.onClick();
+  check(segRows(draw()).length === 10, "«Весь файл» возвращает обычную страницу");
+
+  // Фильтр статуса зону не режет: просили показать СОСЕДЕЙ, а не тех из них,
+  // кто уцелел после отбора. Снятое при этом называется вслух.
+  byLabel(draw(), "Новые").props.onClick();
+  rec.list.length = 0;
+  const el11h = jumpTo(20, draw());
+  check(segRows(el11h).length === 21, "зона показывает соседей поверх фильтра статуса");
+  check(/Снял фильтр статуса/.test(rec.list.join(" ")), "и сказано, какой фильтр для этого снят");
   console.log("\n" + (fail.length ? "ПРОВАЛЕНО: " + fail.join("; ") : "ВСЁ ПРОШЛО"));
   process.exit(fail.length ? 1 : 0);
 } catch (e) {

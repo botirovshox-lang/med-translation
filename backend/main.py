@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Optional, Any, List
 import io
 import html as _html_mod
+import unicodedata
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
@@ -1013,17 +1014,44 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         f"2. Use {dom['terminology']}. NEVER transliterate source-language or Latin word forms,\n"
         f"   and never invent word-by-word calques that are not real terms in {tgt}.\n"
         + (f"   {dom['examples']}\n" if dom.get("examples") else "") +
-        f"3. NEVER mix languages. Output must be 100% {tgt}.\n"
+        f"3. NEVER mix languages. Output must be 100% {tgt}. Not a single letter of the\n"
+        "   source script may survive — not inside numbers, units, formulas or abbreviations,\n"
+        "   and not as a look-alike character.\n"
         "4. NEVER use parenthetical alternatives: NOT 'biologic(al)', NOT 'cell(s)'. Choose ONE correct form.\n"
         "5. NEVER list multiple synonyms separated by semicolons for the same concept.\n"
         "6. Preserve all numbers, abbreviations, and punctuation exactly as in the source.\n"
         f"7. Abbreviations that are identical in {tgt} may be kept as they are.\n"
+        # Регистр букв. Без этого правила перевод молча терял заглавную в начале
+        # заголовка и подписи, а КАПС заголовка становился обычной строкой: на
+        # боевом учебнике так вышло у 36 сегментов. Правило сказано с ДВУХ сторон
+        # намеренно — портится регистр в обе (см. оговорку у глоссария ниже):
+        # «6. Кавернозный туберкулёз» → «6. cavitary tuberculosis», а
+        # «туберкулёза органов дыхания» → «RESPIRATORY TUBERCULOSIS» посреди фразы.
+        "8. Follow the capitalisation of the source. A sentence, heading or caption that\n"
+        "   starts with a capital letter must start with a capital letter in the translation;\n"
+        "   an ALL-CAPS heading stays ALL-CAPS; a word written in lower case inside a sentence\n"
+        f"   stays in lower case. Apply {tgt} rules on top of that (proper nouns, nationalities\n"
+        "   and months are capitalised even where the source writes them small), but NEVER open\n"
+        "   a sentence with a lower-case letter and never shout a word the source does not shout.\n"
         )
     hard = [h for h in (gloss_hits or []) if _hit_tier(h) == GLOSSARY_TIER_HARD]
     soft = [h for h in (gloss_hits or []) if _hit_tier(h) == GLOSSARY_TIER_SOFT]
     if hard:
         terms = "\n".join(f"  {h['src']} → {h['tgt']}" for h in hard)
-        system += f"\nApproved glossary — use these exact translations:\n{terms}\n"
+        # Начертание записи в требование НЕ входит, и сказать это надо прямо.
+        # «use these exact translations» модель понимает буквально и копирует
+        # регистр записи: приказ «Туберкулема → Tuberculoma» ставил заглавную
+        # посреди фразы, «ТУБЕРКУЛЕЗ ОРГАНОВ ДЫХАНИЯ → RESPIRATORY TUBERCULOSIS» —
+        # капс посреди фразы, «Фиброзно-кавернозный туберкулёз → fibrocavitary
+        # tuberculosis» роняло строчную в начало заголовка. Слово при этом верное,
+        # испорчено ровно начертание, и правкой записей это не чинится: у записи
+        # один регистр, а мест, куда она встаёт, много.
+        system += (f"\nApproved glossary — use these exact translations:\n{terms}\n"
+                   "They are given in dictionary form. Keep the wording, but put each term into\n"
+                   "the grammatical form AND the letter case its position requires: capitalised\n"
+                   "at the start of a sentence or heading, lower case inside one, ALL-CAPS in an\n"
+                   "ALL-CAPS heading. Capitals inside proper nouns and abbreviations (Mantoux,\n"
+                   "BCG, M. tuberculosis) stay as written.\n")
     if soft:
         # Автоимпорт — именно подсказка. Приказ "use these exact translations"
         # на этих записях и рождал "rear cyclitis": модель знает правильный
@@ -1037,6 +1065,7 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
             f"{terms}\n"
             "Use a hint ONLY if it is the standard term in the target language for this context. "
             f"If it is not standard {dom_word} usage, IGNORE the hint and use the correct standard term.\n"
+            "Their letter case is not part of the hint either — capitalise by position, as above.\n"
         )
     if tm_context:
         system += (
@@ -3352,6 +3381,16 @@ TERM_DROP_LOG_EVERY = 100
 
 def _norm_key(text: str) -> str:
     return " ".join((text or "").lower().replace("ё", "е").split())
+
+
+def _same_words(a: str, b: str) -> bool:
+    """Тот же текст с точностью до пробелов, но НЕ до регистра.
+
+    Отдельно от `_norm_key` намеренно: тот отвечает на вопрос «то же ли это
+    слово» (ключ поиска, дедупликация) и потому опускает регистр. А здесь
+    вопрос другой — «изменился ли текст», и правка, у которой всё отличие
+    в заглавной букве, это изменение."""
+    return " ".join((a or "").split()) == " ".join((b or "").split())
 
 
 def _tm_upsert(source: str, target: str, project: dict = None) -> str:
@@ -6453,6 +6492,186 @@ def _gloss_misses(seg: dict, project: Optional[dict]) -> list:
     return out
 
 
+# ── Регистр букв ─────────────────────────────────────────────────────
+# Проверка детерминированная и БЕСПЛАТНАЯ — заведена там же и по той же
+# причине, что `_gloss_misses`: испортить регистр умеет не модель сама
+# по себе, а запись глоссария. «use these exact translations» модель
+# понимает буквально и копирует НАЧЕРТАНИЕ записи, поэтому «Туберкулема →
+# Tuberculoma» ставит заглавную посреди фразы, «ТУБЕРКУЛЕЗ ОРГАНОВ ДЫХАНИЯ
+# → RESPIRATORY TUBERCULOSIS» — капс посреди фразы, а «Фиброзно-кавернозный
+# туберкулёз → fibrocavitary tuberculosis» роняет строчную в начало
+# заголовка. Промпт перевода это правило теперь называет (см.
+# `_translate_system`), но промпт лечит только НОВЫЕ переводы: у 2711
+# сегментов боевого учебника текст уже написан, и без находки его никто
+# не пересмотрит.
+#
+# Правил ровно три, и все три проверены на боевом проекте: 38 находок
+# на 2711 сегментах, ни одной ложной. Четвёртого («в оригинале слово
+# со строчной, в переводе с заглавной») здесь нет намеренно: английский
+# законно поднимает регистр там, где русский его не поднимает — названия
+# народов, месяцев, дней недели, — и такое правило кричало бы на верный
+# перевод.
+CASE_CAPS_MIN = 8          # букв, с которых надпись считается КАПС-заголовком,
+                           # а не аббревиатурой: «МБТ» и «ВИЧ» это не заголовки
+_CASE_WORD = re.compile(r"[^\W\d_]+", re.UNICODE)
+
+
+def _has_case(text: str) -> bool:
+    """Различает ли письмо этого текста заглавные и строчные.
+
+    Иероглифы, арабица, иврит регистра не имеют, и спрашивать с них
+    заглавную букву — выдуманная находка. Тот же закон, что у DOMAIN_RULES:
+    нечем проверить — молчим."""
+    return text.upper() != text.lower()
+
+
+def _first_alpha(text: str) -> str:
+    """Первая БУКВА текста. Не первый символ: подпись начинается с номера
+    («139-Рис.»), пункт списка — с цифры и скобки, и по первому символу
+    регистр не виден вовсе."""
+    for ch in text:
+        if ch.isalpha():
+            return ch
+    return ""
+
+
+def _all_caps(text: str) -> bool:
+    """Все буквы текста — заглавные (цифры и знаки не мешают)."""
+    letters = [c for c in text if c.isalpha()]
+    return bool(letters) and all(c.isupper() for c in letters)
+
+
+def _caps_runs(text: str) -> list:
+    """Цепочки ПОДРЯД идущих слов целиком заглавными, длиннее одного слова.
+
+    Одиночное слово капсом сюда не попадает намеренно: это аббревиатура
+    («ELISA», «RSNPMCFP»), законная в любом месте фразы. А вот два слова
+    подряд — уже кусок заголовка, приехавший из записи глоссария.
+
+    Однобуквенное слово цепочку РАЗРЫВАЕТ: в «A16 — RESPIRATORY TUBERCULOSIS»
+    буква из шифра болезни попадала в цепочку, и человеку показывалась
+    «A RESPIRATORY TUBERCULOSIS» — строка, которой в переводе нет. Назвать
+    находку тем, чего в тексте не написано, значит послать ремонт искать
+    несуществующее."""
+    out, run = [], []
+    for w in _CASE_WORD.findall(text):
+        if len(w) > 1 and _all_caps(w) and _has_case(w):
+            run.append(w)
+        else:
+            if len(run) > 1:
+                out.append(run)
+            run = []
+    if len(run) > 1:
+        out.append(run)
+    return out
+
+
+def _case_misses(seg: dict) -> list:
+    """Расхождения по регистру между оригиналом и переводом.
+
+    Ничего не переписывает и не стоит ни одного вызова модели — как
+    `_gloss_misses`, устаревать тут нечему: сверяются нынешние тексты."""
+    src = (seg.get("source") or "").strip()
+    tgt = (seg.get("target") or "").strip()
+    if not src or not tgt or not _has_case(src) or not _has_case(tgt):
+        return []
+    out = []
+    a, b = _first_alpha(src), _first_alpha(tgt)
+    if a and b and a.isupper() and b.islower():
+        out.append({"kind": "case",
+                    "text": "перевод начинается со строчной буквы («" + tgt[:40]
+                            + "…»), а оригинал — с заглавной"})
+    src_caps = _all_caps(src) and len([c for c in src if c.isalpha()]) >= CASE_CAPS_MIN
+    if src_caps and not _all_caps(tgt):
+        out.append({"kind": "case",
+                    "text": "оригинал набран ЗАГЛАВНЫМИ целиком, перевод — нет"})
+    # Обратная сторона той же поломки: капс, которого в оригинале не было.
+    # Спрашиваем только у сегментов, где оригинал капсом НЕ набран и своих
+    # капс-цепочек не имеет, — иначе это законный перенос заголовка.
+    if not src_caps and not _caps_runs(src):
+        for run in _caps_runs(tgt):
+            if (sum(len(w) for w in run) >= CASE_CAPS_MIN
+                    and max(len(w) for w in run) >= 5):
+                out.append({"kind": "case",
+                            "text": "«" + " ".join(run) + "» набрано ЗАГЛАВНЫМИ, "
+                                    "хотя в оригинале это обычный текст"})
+    return out
+
+
+# ── Буквы чужого письма ──────────────────────────────────────────────
+# Третья бесплатная детерминированная претензия, рядом с `_gloss_misses`
+# и `_case_misses` и по той же причине. Промпт требует «Output must be 100%
+# EN» с самого начала, но требование это про ТЕКСТ, а рвётся оно на кусках,
+# которые текстом не выглядят: на боевом учебнике в английском переводе
+# остались «(МБТ+)», «Р02»/«РС02», «38°С», «2HSЕ/10HE», «2-х», «3х» —
+# кириллица внутри формул, единиц и аббревиатур. Найти это глазами нельзя:
+# «РС02» и «PCO2» на экране неотличимы, а в поиске по документу — разные
+# строки.
+#
+# Письмо считается ПО ТЕКСТАМ, а не по таблице «RU→EN»: хардкодить пару
+# языков в новом коде нельзя (см. DOMAIN_RULES). Совпали письменности
+# оригинала и перевода (RU→UK, EN→DE) — молчим: там буквы общие и
+# претензия была бы выдумана.
+_SCRIPT_CACHE: dict = {}
+
+
+def _script_of(ch: str) -> str:
+    """Письменность одной БУКВЫ («CYRILLIC», «LATIN», «HAN»…) или "".
+
+    По имени символа в Юникоде, без внешних зависимостей: первое слово имени
+    и есть письменность у всех алфавитов, которые нас касаются."""
+    got = _SCRIPT_CACHE.get(ch)
+    if got is None:
+        got = unicodedata.name(ch, "").split(" ")[0] if ch.isalpha() else ""
+        if got == "CJK":
+            got = "HAN"
+        _SCRIPT_CACHE[ch] = got
+    return got
+
+
+def _dominant_script(text: str) -> str:
+    """Письменность, которой набрано БОЛЬШИНСТВО букв текста.
+
+    Именно большинство, а не «любая встреченная»: латиница законно попадает
+    в русский текст («Mycobacterium bovis»), и по факту её присутствия язык
+    определять нельзя."""
+    counts: dict = {}
+    for ch in text:
+        sc = _script_of(ch)
+        if sc:
+            counts[sc] = counts.get(sc, 0) + 1
+    if not counts:
+        return ""
+    return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
+
+def _script_misses(seg: dict) -> list:
+    """Буквы письменности ОРИГИНАЛА, оставшиеся в переводе."""
+    src = (seg.get("source") or "").strip()
+    tgt = (seg.get("target") or "").strip()
+    if not src or not tgt:
+        return []
+    s_script = _dominant_script(src)
+    t_script = _dominant_script(tgt)
+    if not s_script or not t_script or s_script == t_script:
+        return []
+    bad, seen = [], set()
+    for word in tgt.split():
+        if any(_script_of(c) == s_script for c in word) and word not in seen:
+            seen.add(word)
+            bad.append(word.strip("()[].,;:«»\"'"))
+    if not bad:
+        return []
+    # Куски называются поимённо: «остались буквы оригинала» без списка —
+    # претензия, которую нечем исполнить, а искать глазами кириллическую «С»
+    # среди латинских бессмысленно.
+    return [{"kind": "script",
+             "text": "в переводе остались буквы исходного письма ("
+                     + s_script.lower() + "): "
+                     + ", ".join("«" + w + "»" for w in bad[:6])
+                     + (" и ещё " + str(len(bad) - 6) if len(bad) > 6 else "")}]
+
+
 # ── Контекстный арбитр спорного термина ──────────────────────────────
 # Проверки смотрят на сегмент в одиночку, а термин живёт в ряду: «туберкулёз
 # лёгких» обратный перевод возвращает как «лёгочный туберкулёз», и по словам
@@ -6679,7 +6898,11 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     # проверки числились свежими. Хеш ремонта (repair.source_hash) остаётся
     # сырым: его так же сырым и пишут.
     cur = _text_hash((seg.get("target") or "").strip())
-    items = _gloss_misses(seg, project)
+    # Регистр — такая же бесплатная детерминированная претензия, как
+    # соответствие глоссарию, и приходит она отсюда же: приказная запись
+    # копируется в перевод вместе со своим начертанием. Устаревать ей нечему,
+    # поэтому хеша у неё нет — сверяются нынешние тексты.
+    items = _gloss_misses(seg, project) + _case_misses(seg) + _script_misses(seg)
     # Потерянные приказные термины — через _terms_lost_open, тем же расчётом,
     # что и счётчик в `_repair_scores`. Он и снимает вердикты контекстного
     # арбитра: арбитр единственный видел сегмент в ряду соседей, и его
@@ -6803,8 +7026,16 @@ def _repair_system(dom: dict, src_lang: str, tgt_lang: str) -> str:
         "3. Required replacements must be applied exactly as given.\n"
         "4. Terms reported as lost MUST be present in the corrected translation.\n"
         "5. Keep all numbers, units, negations and abbreviations exactly as in the SOURCE.\n"
-        "6. Use " + dom["terminology"] + ". Output must be 100% " + tgt_lang + ".\n"
+        "6. Use " + dom["terminology"] + ". Output must be 100% " + tgt_lang + " — not a single\n"
+        "   letter of the source script, inside formulas and abbreviations included.\n"
         "7. If an issue looks wrong to you, leave that part unchanged rather than inventing something new.\n"
+        # То же правило, что в промпте перевода, и по той же причине: ремонт
+        # переписывает текст последним, и промолчи он про регистр — вернул бы
+        # строчную в начало заголовка следом за находкой про термин.
+        "8. Follow the capitalisation of the SOURCE: a sentence, heading or caption that starts\n"
+        "   with a capital letter starts with one in the translation, an ALL-CAPS heading stays\n"
+        "   ALL-CAPS, and no word is shouted that the SOURCE does not shout. Glossary terms below\n"
+        "   are dictionary forms — their letter case follows the position, not the entry.\n"
     )
 
 
@@ -6829,7 +7060,7 @@ def _openai_repair(seg: dict, project: dict, findings: list, model: Optional[str
     approved = _verified_hits(seg.get("source", ""), project)
     if approved:
         body += ("\n\nAPPROVED GLOSSARY for this segment — these exact translations must be "
-                 "present in the corrected text:\n"
+                 "present in the corrected text (wording exact, letter case by position):\n"
                  + "\n".join("  " + h["src"] + " → " + h["tgt"] for h in approved))
     back = ((seg.get("backcheck") or {}).get("back") or "").strip()
     if back:
@@ -6892,6 +7123,11 @@ def _repair_scores(seg: dict, project: Optional[dict] = None) -> dict:
         "terms_lost": (len(_terms_lost_open(seg))
                        if bc and not _check_stale(bc, seg.get("target") or "")
                        else None),
+        # Как и глоссарий, считается ВСЕГДА и бесплатно: правка ради термина
+        # не должна попутно ронять заглавную в начале заголовка.
+        "case": len(_case_misses(seg)),
+        # И буквы чужого письма — тоже бесплатно и тоже всегда.
+        "script": len(_script_misses(seg)),
     }
 
 
@@ -6953,6 +7189,13 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     minor_targets = {_norm_key(f["replace"][0]) for f in findings
                      if f["kind"] == "term" and f.get("sev") == "minor"
                      and (f.get("replace") or [""])[0]}
+    # Заход ТОЛЬКО из-за регистра — ровно тот же случай, что only_minor: ни балл,
+    # ни termcheck не пересчитываются, глоссарию нарушать нечего, и «не стало
+    # хуже» засчитало бы успехом любой переписанный текст. Мерить тут есть чем
+    # и это бесплатно — сама находка детерминированная, поэтому спрашиваем
+    # прямо: убавилось ли расхождений по регистру.
+    had_free = any(f["kind"] in ("case", "script") for f in findings)
+    only_free = had_free and not had_bc and not had_tc
     before = _repair_scores(seg, project)
     # Проверки старого текста сохраняем целиком: при откате их надо вернуть,
     # иначе сегмент окажется «непроверенным» и человек заплатит за прогон снова.
@@ -6962,7 +7205,12 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     new_target = _openai_repair(seg, project, findings, model)
     if not new_target:
         return {"ok": False, "error": "Модель не вернула исправленный текст"}
-    if _norm_key(new_target) == _norm_key(old_target):
+    # Пробелы схлопываем, регистр — НЕТ. `_norm_key` приводит текст к нижнему
+    # регистру, и правка, у которой всё отличие в заглавной букве, читалась бы
+    # как «модель не нашла, что менять»: единственная находка, ради которой
+    # заходили, оставалась бы неисправленной, а сегмент получал бы клеймо
+    # `tried` и больше не чинился НИКОГДА.
+    if _same_words(new_target, old_target):
         seg["repair"] = {"applied": False, "reason": "Модель не нашла, что менять",
                          "source_hash": old_hash, "model": _resolve_model(model or REPAIR_DEFAULT_MODEL)["id"],
                          "issues": [f["text"] for f in findings],
@@ -7052,6 +7300,26 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         better = False
         why.append("приказных терминов не пережило обратный перевод больше "
                    + str(before["terms_lost"]) + " → " + str(after["terms_lost"]))
+    # Регистр — по тем же двум причинам, что глоссарий: проверка бесплатна,
+    # а правка ради термина не должна попутно ронять заглавную в заголовке.
+    if after["case"] > before["case"]:
+        better = False
+        why.append("расхождений по регистру стало больше "
+                   + str(before["case"]) + " → " + str(after["case"]))
+    if after["script"] > before["script"]:
+        better = False
+        why.append("букв чужого письма стало больше "
+                   + str(before["script"]) + " → " + str(after["script"]))
+    # Заход ТОЛЬКО по бесплатным находкам меряется ими же и по существу:
+    # ни балл, ни termcheck не пересчитывались, глоссарию нарушать нечего,
+    # и «не стало хуже» засчитало бы успехом любой переписанный текст.
+    # Считаем их вместе: размен регистра на кириллицу — не работа.
+    if only_free and (after["case"] + after["script"]
+                      >= before["case"] + before["script"]):
+        better = False
+        why.append("правка не сняла ни регистра, ни чужого письма: "
+                   + str(before["case"] + before["script"]) + " → "
+                   + str(after["case"] + after["script"]))
 
     mdl_id = _resolve_model(model or REPAIR_DEFAULT_MODEL)["id"]
     if not better:

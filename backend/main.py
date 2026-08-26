@@ -6746,6 +6746,17 @@ def _acronymish(word: str) -> bool:
     return any(c.isupper() for c in letters[1:])
 
 
+def _shout_keep(word: str) -> bool:
+    """Оставить ли слово капсом при снятии КРИКА с записи.
+
+    Внутри кричащей записи аббревиатуру от обычного слова отличить нечем —
+    заглавные у всех, и правило «короткое слово капсом = аббревиатура»
+    превращало «GENERALIZED FORMS OF TUBERCULOSIS» в «generalized FORMS OF
+    tuberculosis». Поэтому признак только СТРУКТУРНЫЙ: цифра или дефис
+    («MDR-TB», «2HRE») — у обычного слова их не бывает."""
+    return any(c.isdigit() or c == "-" for c in word)
+
+
 def _case_like(form: str, target: str, term: str = "") -> str:
     """Перевод термина, подогнанный под начертание НАЙДЕННОЙ формы оригинала.
 
@@ -6758,13 +6769,21 @@ def _case_like(form: str, target: str, term: str = "") -> str:
     letters = [c for c in form if c.isalpha()]
     if not letters or not _has_case(form) or not _has_case(target):
         return target
-    src_caps = len(letters) >= CASE_CAPS_MIN and all(c.isupper() for c in letters)
+    all_caps = all(c.isupper() for c in letters)
+    if all_caps and len(letters) < CASE_CAPS_MIN:
+        # Оригинал — АББРЕВИАТУРА. Её заглавные это часть написания, а не
+        # признак места в предложении: «ПТП» стоит капсом и посреди фразы,
+        # но расшифровка «anti-tuberculosis drugs» — обычное словосочетание,
+        # и поднимать ей регистр значило бы портить перевод в 17 сегментах.
+        # Начертание неизвестно — не трогаем ничего.
+        return target
+    src_caps = all_caps and len(letters) >= CASE_CAPS_MIN
     base = target
     t_letters = [c for c in target if c.isalpha()]
     if (not src_caps and len(t_letters) >= CASE_CAPS_MIN
             and all(c.isupper() for c in t_letters)):
         base = _re.sub(r"\S+",
-                       lambda m: m.group(0) if _acronymish(m.group(0))
+                       lambda m: m.group(0) if _shout_keep(m.group(0))
                        else m.group(0).lower(), target)
     i = next((k for k, c in enumerate(base) if c.isalpha()), None)
     if i is None:

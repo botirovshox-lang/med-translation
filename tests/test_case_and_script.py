@@ -141,6 +141,15 @@ check(cl("ТУБЕРКУЛЕЗ ОРГАНОВ ДЫХАНИЯ", "respiratory tube
       "капс заголовка переносится на перевод")
 check(cl("RW", "Wassermann reaction", "RW") == "Wassermann reaction",
       "короткая аббревиатура заголовком не считается — крика не будет")
+check(cl("ПТП", "Anti-tuberculosis drugs", "ПТП") == "Anti-tuberculosis drugs",
+      "аббревиатура вообще не говорит о начертании: её капс — часть написания")
+check(cl("птп", "anti-tuberculosis drugs", "ПТП") == "anti-tuberculosis drugs",
+      "и в другую сторону тоже — начертание расшифровки решает не она")
+check(cl("генерализованные формы туберкулёза", "GENERALIZED FORMS OF TUBERCULOSIS",
+         "ГЕНЕРАЛИЗОВАННЫЕ ФОРМЫ ТУБЕРКУЛЁЗА") == "generalized forms of tuberculosis",
+      "крик записи снимается ЦЕЛИКОМ, а не с первой буквы и не через слово")
+check(cl("лечения МЛУ-ТБ", "MDR-TB TREATMENT", "ЛЕЧЕНИЕ МЛУ-ТБ") == "MDR-TB treatment",
+      "аббревиатуру внутри крика выдаёт дефис, и она остаётся капсом")
 check(cl("Туберкулема", "tuberculoma", "Туберкулема") == "Tuberculoma",
       "заглавная в оригинале — заглавная в переводе")
 check(cl("туберкулемы", "Tuberculoma", "Туберкулема") == "tuberculoma",

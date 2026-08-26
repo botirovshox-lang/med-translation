@@ -269,5 +269,23 @@ res = main.term_case(1, main.TermCaseRequest(dry_run=False, include_confirmed=Tr
 check("tuberculoma" in bad["target"] and bad["status"] == "review",
       "с разрешением правится, и отметка человека снимается — текст изменился")
 
+print("=== 15. Термин внутри термина начертания не диктует ===")
+seg = {"id": 1, "source": "Ревакцинация БЦЖ проводится в 7 лет.",
+       "target": "BCG revaccination is performed at the age of 7.", "status": "review"}
+proj = {"id": 1, "title": "P", "src": "RU", "tgt": "EN", "domain": "medical",
+        "segments": [seg]}
+main.STATE = {"projects": [proj], "termQueue": [], "exportHistory": [], "team": [], "tm": [],
+              "glossary": [
+                  {"src": "Ревакцинация БЦЖ", "tgt": "BCG revaccination", "tier": "verified",
+                   "lang": "RU→EN", "domain": "medical"},
+                  {"src": "ревакцинация", "tgt": "revaccination", "tier": "verified",
+                   "lang": "RU→EN", "domain": "medical"}]}
+main._invalidate_gloss_index()
+check(main._term_case_fix(seg, proj)[1] == [],
+      "короткая запись внутри длинной своего начертания не навязывает: %s"
+      % main._term_case_fix(seg, proj)[1])
+check(not main._term_case_misses(seg, proj),
+      "и претензии по ней тоже нет — иначе две записи правили бы одно место по кругу")
+
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

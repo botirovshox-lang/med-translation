@@ -6850,22 +6850,30 @@ def _term_case_misses(seg: dict, project: Optional[dict]) -> list:
     """Приказные термины, чьё начертание в переводе разошлось с оригиналом.
 
     Считается по тем же `_verified_hits`, что `_gloss_misses`: разойдись
-    определение — ремонт и отчёт правили бы сегмент по кругу. Смотрим только
-    БУКВАЛЬНЫЕ вхождения перевода термина: нет вхождения вовсе — это забота
-    `_gloss_misses`, а не наша, и говорить об одном и том же дважды нельзя."""
+    определение — ремонт и отчёт правили бы сегмент по кругу."""
     if project is None:
         return []
     return _term_case_hits(seg, _verified_hits(seg.get("source", ""), project))
 
 
-def _term_case_hits(seg: dict, hits: list) -> list:
-    """То же по УЖЕ найденным приказным записям: `glossary_impact` ходит по
-    всему проекту и второй проход по глоссарию себе позволить не может."""
+def _term_case_spans(seg: dict, hits: list) -> list:
+    """[(начало, конец, как надо, как есть, термин)] — места, где начертание
+    приказного термина разошлось с оригиналом.
+
+    Один расчёт на проверку и на правку: разойдись они — отчёт показывал бы
+    одно, а команда делала другое.
+
+    Смотрим только БУКВАЛЬНЫЕ вхождения перевода термина: нет вхождения
+    вовсе — это забота `_gloss_misses`, и говорить об одном и том же дважды
+    нельзя. Термин ВНУТРИ другого термина своего начертания не диктует:
+    «ревакцинация → revaccination» сидит внутри «Ревакцинация БЦЖ → BCG
+    revaccination», и без этого правила две записи правили одно место по
+    очереди, каждая ломая работу другой."""
     target = (seg.get("target") or "").strip()
     if not target or not _has_case(target):
         return []
     low = target.lower()
-    out = []
+    claims = []
     for h in hits:
         tgt = (h.get("tgt") or "").strip()
         # Форма берётся СОГЛАСОВАННАЯ по всему оригиналу, а не первая
@@ -6875,23 +6883,39 @@ def _term_case_hits(seg: dict, hits: list) -> list:
         if not tgt or not form:
             continue
         want = _case_like(form, tgt, h.get("src") or "")
-        need, ok, seen_any = tgt.lower(), False, False
-        start = 0
-        while True:
-            k = low.find(need, start)
-            if k < 0:
-                break
-            seen_any = True
-            got = target[k:k + len(tgt)]
-            if got == want or (want[:1].islower() and _sentence_start(target, k)
-                               and got[:1].upper() + got[1:] == want[:1].upper() + want[1:]):
-                ok = True
-                break
-            start = k + 1
-        if seen_any and not ok:
-            out.append({"kind": "term_case", "use": want, "src": h.get("src"),
-                        "text": "в оригинале термин написан как «" + form
-                                + "», значит и в переводе он пишется «" + want + "»"})
+        need = tgt.lower()
+        k = low.find(need)
+        while k >= 0:
+            claims.append((k, k + len(tgt), want, target[k:k + len(tgt)],
+                           h.get("src") or ""))
+            k = low.find(need, k + 1)
+    # Длинный термин главнее: слева направо, длинный первым, а всё, что попало
+    # внутрь уже занятого места, пропускаем.
+    claims.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+    taken, out = [], []
+    for c in claims:
+        if any(c[0] >= t[0] and c[1] <= t[1] for t in taken):
+            continue
+        taken.append(c)
+        # Заглавная в начале предложения законна при любом оригинале.
+        if c[3] == c[2] or (c[2][:1].islower() and _sentence_start(target, c[0])
+                            and c[3][:1].upper() + c[3][1:] == c[2][:1].upper() + c[2][1:]):
+            continue
+        out.append(c)
+    return out
+
+
+def _term_case_hits(seg: dict, hits: list) -> list:
+    """То же по УЖЕ найденным приказным записям: `glossary_impact` ходит по
+    всему проекту и второй проход по глоссарию себе позволить не может."""
+    seen, out = set(), []
+    for _a, _b, want, _got, src in _term_case_spans(seg, hits):
+        if (src, want) in seen:
+            continue
+        seen.add((src, want))
+        out.append({"kind": "term_case", "use": want, "src": src,
+                    "text": "в оригинале термин «" + src + "» написан так, что "
+                            "в переводе он пишется «" + want + "»"})
     return out
 
 
@@ -6906,31 +6930,13 @@ def _term_case_fix(seg: dict, project: Optional[dict]) -> tuple:
     без модели (первая — `/glossary/revert-repairs`), и по той же причине:
     она ничего не сочиняет."""
     target = (seg.get("target") or "").strip()
-    if not target or project is None or not _has_case(target):
+    if not target or project is None:
         return target, []
-    low = target.lower()
-    spans = []
-    for h in _verified_hits(seg.get("source", ""), project):
-        tgt = (h.get("tgt") or "").strip()
-        form = _agreed_form(h.get("src") or "", seg.get("source") or "")
-        if not tgt or not form:
-            continue
-        want = _case_like(form, tgt, h.get("src") or "")
-        need = tgt.lower()
-        k = low.find(need)
-        while k >= 0:
-            got = target[k:k + len(tgt)]
-            if got != want and not (want[:1].islower() and _sentence_start(target, k)):
-                spans.append((k, k + len(tgt), want, got))
-            k = low.find(need, k + 1)
+    spans = _term_case_spans(seg, _verified_hits(seg.get("source", ""), project))
     if not spans:
         return target, []
-    # Длинный термин перекрывает короткий («туберкулез легких» и «туберкулез»).
-    # Берём по документу слева направо, длинный первым, и пересечения не трогаем:
-    # две правки одного места дали бы обрывок слова.
-    spans.sort(key=lambda x: (x[0], -(x[1] - x[0])))
     out, moves, pos = [], [], 0
-    for a, b, want, got in spans:
+    for a, b, want, got, _src in spans:
         if a < pos:
             continue
         out.append(target[pos:a])

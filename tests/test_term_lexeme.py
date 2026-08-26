@@ -64,9 +64,9 @@ DIFF = [
     ("саркома", "саркоидоз", "опухоль и гранулематоз"),
 ]
 for a, b, why in SAME:
-    check(main._same_lexeme(a, b) is True, "одно слово: %s / %s - %s" % (a, b, why))
+    check(main._same_lexeme(a, b, "RU") is True, "одно слово: %s / %s - %s" % (a, b, why))
 for a, b, why in DIFF:
-    check(main._same_lexeme(a, b) is False, "разные: %s / %s - %s" % (a, b, why))
+    check(main._same_lexeme(a, b, "RU") is False, "разные: %s / %s - %s" % (a, b, why))
 
 # Известные пределы правила. Записаны тестом, чтобы следующий не считал их
 # случайностью и не «чинил» их ослаблением: любое ослабление возвращает
@@ -76,17 +76,41 @@ for a, b, why in [("лимфоузел", "лимфоузлы", "беглая г�
                   ("время", "времени", "разносклоняемое на -мя"),
                   ("гражданин", "граждане", "и на -анин"),
                   ("разрушать", "разрушается", "глагольные формы: список именной")]:
-    check(main._same_lexeme(a, b) is False,
+    check(main._same_lexeme(a, b, "RU") is False,
           "предел правила: %s / %s - %s" % (a, b, why))
 # Весь этот класс на боевом глоссарии - около 4% снятых пар и НИ ОДНОЙ
 # приказной записи: цена ошибки тут потерянная подсказка, а не приказ.
 
-check(main._same_lexeme("mycobacterium", "mycobacteria") is True,
-      "не кириллица - молчим: список окончаний русский, и для латиницы он "
-      "не значит ничего (тот же закон, что у DOMAIN_RULES)")
-for bad in ("ма", "за", "оз", "ит", "ома", "ема", "ация", "ник"):
-    check(bad not in main._RU_ENDINGS,
-          "словообразовательного суффикса «%s» в списке окончаний нет" % bad)
+check(main._same_lexeme("С-реактивный", "С-реактивного", "RU") is True,
+      "слово не одной письменности (дефис, цифра, латиница внутри) - молчим: "
+      "судить о его словоизменении нечем")
+BAD_ENDINGS = {
+    "RU": ("ма", "за", "оз", "ит", "ома", "ема", "ация", "ник"),
+    # «ed»/«ing» путают существительное с глаголом («conditioned -> condition»,
+    # «forms -> formed»), «on» давало «plasmon -> plasma», «ary»/«ic»/«al» —
+    # производные прилагательные («cavity» / «cavitary»).
+    "EN": ("ed", "ing", "on", "ary", "ic", "al", "ity", "ist"),
+    # Одиночная гласная в роде превращает одно слово в другое:
+    # «puerto/puerta», «grupo/grupa», «rein/reine», «Rat/Rate».
+    "DE": ("er", "em", "ung", "lich"),
+    "ES": ("a", "o", "as", "os", "ar", "cion"),
+    "FR": ("e", "eux", "ment", "ion"),
+}
+for lang, bads in BAD_ENDINGS.items():
+    tbl = main._LANG_ENDINGS[lang]
+    for bad in bads:
+        check(bad not in tbl,
+              "%s: словообразовательного суффикса «%s» в таблице нет" % (lang, bad))
+check(set(main._LANG_APPEND) == set(main._LANG_ENDINGS),
+      "приписка задана для КАЖДОГО языка: запасным вариантом раньше был полный "
+      "набор окончаний, и это давало «sal -> sala», «rein -> reine», «Rat -> Rate»")
+check(main._LANG_APPEND.get("XX", main._APPEND_NONE) == main._APPEND_NONE
+      and main._APPEND_NONE == frozenset(("",)),
+      "а для языка вне таблицы приписки нет вовсе: нет правил — молчим")
+check(not hasattr(main, "_ENDING_MAX"),
+      "потолок длины окончания считается по таблице ЭТОГО языка, а не по всем "
+      "сразу: иначе длинное окончание в чужой таблице ослабило бы русское "
+      "правило «туберкулема != туберкулез»")
 
 
 # ─────────── 2. То же самое через сам поиск термина ───────────
@@ -106,7 +130,7 @@ CASES = [
     ("Туберкулезный процесс", "признаки туберкулезного процесса", "туберкулезного процесса"),
 ]
 for term, text, want in CASES:
-    got = main._term_match(term, text)
+    got = main._term_match(term, text, "RU")
     ok = (got or "").lower() == (want or "").lower()
     check(ok, "%-22s в %-34s -> %s" % (repr(term), repr(text), repr(got)))
 
@@ -121,7 +145,7 @@ for term, text, want in [
     ("аллергия", "введение аллергена вызывает аллергию", "аллергию"),
     ("инфильтрат", "зона инфильтрации и инфильтраты в доле", "инфильтраты"),
 ]:
-    check((main._term_match(term, text) or "").lower() == want.lower(),
+    check((main._term_match(term, text, "RU") or "").lower() == want.lower(),
           "ложное вхождение впереди верного не гасит поиск: %s -> %s"
           % (term, want))
 
@@ -134,10 +158,10 @@ for term, text, want in [
     ("рак", "рака лёгкого", "рака"),
     ("нос", "полость носа", "носа"),
 ]:
-    got = main._term_match(term, text)
+    got = main._term_match(term, text, "RU")
     check((got or "").lower() == (want or "").lower(),
           "короткая запись: %-6s в %-30s -> %s" % (term, repr(text), repr(got)))
-check(main._term_match("туберкулез", "признаки туберкулезного процесса")
+check(main._term_match("туберкулез", "признаки туберкулезного процесса", "RU")
       == "туберкулезного",
       "а длинная запись входит в производное как и раньше")
 
@@ -146,14 +170,14 @@ check(main._term_match("туберкулез", "признаки туберку�
 for term, text, want in [("верхний", "верхнее лёгочное поле", "верхнее"),
                          ("средний", "среднее ухо воспалено", "среднее"),
                          ("внутренний", "внутреннее кровотечение", "внутреннее")]:
-    check((main._term_match(term, text) or "").lower() == want,
+    check((main._term_match(term, text, "RU") or "").lower() == want,
           "средний род мягкого прилагательного находится: %s -> %s" % (term, want))
-check(main._same_lexeme("ранний", "раннее") is True,
+check(main._same_lexeme("ранний", "раннее", "RU") is True,
       "«ранний»/«раннее» правило одобряет, а не находит их стем 85% "
       "(«ранни» против «раннее») - это предел порога, не проверки")
 
 # Точное совпадение проверку не проходит — оно до неё и не доходит.
-check(main._term_match("Туберкулема", "Туберкулема верхней доли") == "Туберкулема",
+check(main._term_match("Туберкулема", "Туберкулема верхней доли", "RU") == "Туберкулема",
       "точное совпадение возвращается как было: стем-ветка до него не доходит")
 
 
@@ -199,6 +223,159 @@ check(main._tgt_has_term("chest pain", "Tuberculoma") is False,
 # в платный ремонт. Опасна была связка «ужесточить цель, не тронув оригинал» —
 # она бы приказала заменить tuberculosis на Tuberculoma на 875 сегментах.
 
+
+print("")
+print("=== 5. Другие языки: обрубков нет, а без таблицы — только точное ===")
+# До правки класс букв в стем-шаблоне был кириллическим, поэтому на латинице
+# он совпадал с нулём символов: находкой становился ОБРУБОК, а `_same_lexeme`
+# для некириллицы молчала — то есть защита от подмены была выключена целиком.
+for term, text, want in [
+    ("Mycobacterium", "Mycobacteria were isolated", "Mycobacteria"),
+    ("bronchus", "bronchi are dilated", "bronchi"),
+    ("node", "lymph nodes enlarged", "nodes"),
+    ("cavity", "multiple cavities seen", "cavities"),
+]:
+    got = main._term_match(term, text, "EN")
+    check(got == want, "английская словоформа находится ЦЕЛИКОМ: %s -> %s" % (term, repr(got)))
+for term, text in [("test", "testosterone level"),
+                   ("gene", "generalized form"),
+                   ("cavity", "cavitary lesion"),
+                   ("infiltrate", "infiltration of the lobe")]:
+    got = main._term_match(term, text, "EN")
+    check(got is None, "чужое слово не берётся: %s в %s -> %s"
+          % (term, repr(text), repr(got)))
+
+# Нет таблицы окончаний — стем-поиска нет вовсе. Отсутствие правил должно
+# означать максимальную СТРОГОСТЬ, а не «совпадает что угодно»: тот же закон,
+# что у DOMAIN_RULES и правил регистра.
+check(main._term_match("Mycobacterium", "Mycobacteria were isolated", "XX") is None,
+      "язык без таблицы: словоформа не берётся")
+check(main._term_match("Mycobacterium", "Mycobacterium bovis", "XX") == "Mycobacterium",
+      "но точное совпадение работает на любом языке")
+check(main._term_patterns("Mycobacterium", "XX")[1] is None,
+      "стем-шаблон для такого языка не собирается вовсе")
+check(main._term_patterns("Mycobacterium", "EN")[1] is not None,
+      "а для языка с таблицей — собирается")
+
+# Письменность берётся у ТЕРМИНА, а не у языка: латинское название вида
+# в RU-проекте не должно рваться на середине слова.
+check(main._term_match("Mycobacterium", "выделены Mycobacteria в мокроте", "RU") is None,
+      "в RU-проекте латинская словоформа по русской таблице не берётся — "
+      "и обрубка тоже не возвращается")
+check(main._term_match("Mycobacterium", "выделены Mycobacterium bovis", "RU")
+      == "Mycobacterium", "а точное латинское название находится")
+
+# Послабление «найденное начинается с записи целиком» — свойство ЯЗЫКА,
+# а не всеобщее правило. В русском без него перестал бы находиться «туберкулёз»
+# в «туберкулёзного» (96 законных совпадений на боевом проекте), в английском
+# оно ошибается в опасную сторону: там слова наращиваются суффиксом без
+# соединительной морфемы, и запись садится на чужое слово целиком.
+check(main._term_match("туберкулез", "признаки туберкулезного процесса", "RU")
+      == "туберкулезного", "в русском послабление работает")
+for term, text in [("creatin", "creating enzymes"), ("derma", "dermatologists say"),
+                   ("magnet", "Magnetic resonance"), ("asbestos", "asbestosis of the lung"),
+                   ("keloid", "keloidal scar"), ("bipolar", "bipolarity of the trait"),
+                   ("opportunist", "Opportunistic infection"),
+                   ("broncholith", "broncholithiasis found")]:
+    check(main._term_match(term, text, "EN") is None,
+          "в английском — нет, иначе подмена понятия: %s / %s" % (term, text))
+
+# Приписка и замена окончания — разные случаи. Латинское множественное
+# ЗАМЕНЯЕТ хвост («bronchus -> bronchi»), и разрешив его припиской, получаем
+# «ARV -> ARVI»: антиретровирусные препараты против ОРВИ.
+check(main._term_match("ARV", "ARVI is common", "EN") is None,
+      "приписка латинского окончания к аббревиатуре не проходит")
+check(main._term_match("echocardiograph", "Echocardiography done", "EN") is None,
+      "и «-graph -> -graphy» тоже: это приписка, а не словоизменение")
+for term, text, want in [("node", "lymph nodes", "nodes"),
+                         ("filtrate", "filtrates seen", "filtrates"),
+                         ("bronchus", "bronchi dilated", "bronchi"),
+                         ("Mycobacterium", "Mycobacteria found", "Mycobacteria")]:
+    check(main._term_match(term, text, "EN") == want,
+          "а настоящее словоизменение находится: %s -> %s" % (term, want))
+check(main._term_match("рак", "рака лёгкого", "RU") == "рака",
+      "в русском приписка законна почти всегда — там список полный")
+
+# Немецкий, испанский, французский: таблицы сведены к ЧИСЛУ. Род и падеж
+# в них не входят намеренно — на минимальных парах одиночная гласная
+# превращает одно слово в другое, а потерянная подсказка дешевле подмены.
+for term, text, lang in [("sal", "la sala de operaciones", "ES"),
+                         ("gas", "la gasa esteril", "ES"),
+                         ("puerto", "la puerta abierta", "ES"),
+                         ("rein", "la reine des abeilles", "FR"),
+                         ("sein", "la seine coule", "FR"),
+                         ("Rat", "die Rate war hoch", "DE"),
+                         ("Not", "die Note", "DE"),
+                         ("Mast", "der Master", "DE")]:
+    check(main._term_match(term, text, lang) is None,
+          "%s: чужое слово не берётся — %s / %s" % (lang, term, text))
+for term, text, want, lang in [("celula", "las celulas rojas", "celulas", "ES"),
+                               ("poumon", "les poumons sains", "poumons", "FR"),
+                               ("Lunge", "die Lungen sind", "Lungen", "DE")]:
+    check(main._term_match(term, text, lang) == want,
+          "%s: число находится — %s -> %s" % (lang, term, want))
+# Индекс обязан видеть диакритику, иначе окончания этих языков бесполезны:
+# ключ записи «ärzt», а ключи текста считались бы от «rzte».
+check("ärzt" in main._text_keys("Die Ärzte sagen") and "ärzt" in main._entry_keys("Ärzte"),
+      "ключ записи и ключ текста сходятся на слове с умлаутом")
+check("épau" in main._text_keys("une épaule douloureuse"), "и на слове с акутом")
+
+# Цифра в границе — только когда термин ею КОНЧАЕТСЯ (или начинается).
+# Глухой запрет отнимал у приказной записи законное совпадение: импорт этого
+# учебника приклеивал к словам номера страниц («ДЫХАНИЯ16»).
+check(main._term_match("CD4", "CD40 ligand", "EN") is None,
+      "«CD4» не ловит «CD40»: разные рецепторы")
+check(main._term_match("CD4", "CD4 count is low", "EN") == "CD4", "а сам себя ловит")
+check(main._term_match("Т1", "Т12 стадия", "RU") is None, "«Т1» не ловит «Т12»")
+check(main._term_match("2HRE", "12HRE схема", "EN") is None,
+      "и слева тоже: «2HRE» не ловит «12HRE»")
+check(main._term_match("ТУБЕРКУЛЕЗ ОРГАНОВ ДЫХАНИЯ",
+                       "ТУБЕРКУЛЕЗА ОРГАНОВ ДЫХАНИЯ16", "RU")
+      == "ТУБЕРКУЛЕЗА ОРГАНОВ ДЫХАНИЯ",
+      "а приклеенный номер страницы совпадению не мешает")
+
+# Склоняется КАЖДОЕ СЛОВО ОТДЕЛЬНО и только то, что читается как слово.
+check(main._term_match("рак in situ", "рака in situ найден", "RU") == "рака in situ",
+      "смешанная запись склоняет русское слово и требует латинское точно")
+check(main._term_match("вирус HIV", "вирус HIVB тип", "RU") is None,
+      "и латинское слово не лезет в середину чужого")
+check(main._term_match("повторное вдыхание (CO2)",
+                       "повторного вдыхания (CO2) в маске", "RU")
+      == "повторного вдыхания (CO2)",
+      "слово со скобкой требуется точно, а соседнее склоняется — раньше "
+      "находка обрывалась на «(CO2» без закрывающей скобки")
+check(main._term_match("ТУБЕРКУЛЁЗА16", "при туберкулёза больных", "RU") is None,
+      "запись с приклеенной цифрой склонению не подлежит вовсе")
+
+# Дефис внутри слова склонению НЕ мешает: на нём стоит вся русская
+# медицинская терминология.
+for term, text, want in [("фиброзно-кавернозный", "фиброзно-кавернозного туберкулеза",
+                          "фиброзно-кавернозного"),
+                         ("клинико-рентгенологический", "клинико-рентгенологических данных",
+                          "клинико-рентгенологических"),
+                         ("черепно-мозговая", "черепно-мозговых травм", "черепно-мозговых")]:
+    check(main._term_match(term, text, "RU") == want,
+          "дефисный термин склоняется: %s -> %s" % (term, want))
+check(main._term_match("T-cell", "T-cells found", "EN") == "T-cells",
+      "и в английском тоже")
+
+check(main._word_script("2024") is None and main._word_script("туберкулёз") == "cyr"
+      and main._word_script("Mycobacterium") == "lat",
+      "письменность слова: одни цифры — не знаем, остальное по большинству букв")
+
+# Начертание и поиск считаются ОДНИМ расчётом: иначе отчёт показывал бы одно,
+# а правка делала другое.
+check(main._agreed_form("Туберкулема", "Туберкулема плотна. Части туберкулемы.", "RU") == "",
+      "разнобой в начертании — молчим")
+check(main._agreed_form("Туберкулема", "Очаговый туберкулез. Туберкулемы видны.", "RU")
+      == "Туберкулемы",
+      "а слово, которое матчер отвергает, в расчёт начертания не попадает")
+
+# Язык записи выводится из её области.
+check(main._src_lang({"lang": "RU→EN"}) == "RU", "источник пары RU→EN — RU")
+check(main._src_lang({"lang": "de-AT→EN"}) == "DE", "разделитель может быть любым")
+check(main._src_lang({}) == main._src_lang({"lang": main.DEFAULT_GLOSS_LANG}),
+      "запись без области читается как область по умолчанию")
 
 print("")
 print("ВСЁ ПРОШЛО" if not fail else "ЕСТЬ ПАДЕНИЯ: %d" % len(fail))

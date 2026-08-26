@@ -8,8 +8,10 @@
      выброси из него пустые строки, и переводы поедут по всему документу;
   2. соседние одинаковые абзацы — один сегмент, но ДВА якоря: иначе второй
      останется на языке оригинала;
-  3. в поля (номер страницы в оглавлении) и в скрытый текст писать нельзя —
-     номер считает Word, а скрытого не видит никто;
+  3. в ВЫЧИСЛЯЕМЫЕ поля (номер страницы в оглавлении) и в скрытый текст писать
+     нельзя — номер считает Word, а скрытого не видит никто; зато результат
+     остальных полей (строка оглавления внутри TOC) — обычный текст, и он
+     переводится, иначе одна строка остаётся на языке оригинала;
   4. непереведённый сегмент оставляет абзац как есть — подставить туда пусто
      значит стереть оригинал и выдать это за перевод;
   5. привязка исходника к готовому проекту идёт ПО ТЕКСТУ и не имеет права
@@ -404,6 +406,84 @@ try:
     check(False, "без исходника экспорт 1в1 обязан отказать")
 except main.HTTPException as e:
     check("не приложен" in str(e.detail), "отказ назван словами: " + str(e.detail))
+
+# ── Поля: что переводим, что оставляем и что просим пересчитать ─────
+# Строка оглавления, несущая метку самого поля TOC, — это обычный видимый
+# текст внутри результата поля. Раньше её пропускали заодно с номером
+# страницы, и в английском документе она одна оставалась русской.
+print("\n=== поля и оглавление ===")
+BSL = chr(92)
+check(main._field_key(" PAGEREF _Toc219883320 " + BSL + "h ") == "PAGEREF",
+      "имя поля читается, а ключи-переключатели именем не считаются")
+check(main._field_key(" TOC " + BSL + 'o "1-3" ' + BSL + "h ") == "TOC",
+      "TOC опознаётся так же")
+check(main._field_key("") == "", "пустая инструкция имени не даёт")
+
+fdoc = Document()
+fp = fdoc.add_paragraph()
+
+
+def _piece(par, kind=None, instr=None, text=None):
+    r = OxmlElement("w:r")
+    if kind:
+        f = OxmlElement("w:fldChar")
+        f.set(qn("w:fldCharType"), kind)
+        r.append(f)
+    elif instr is not None:
+        i = OxmlElement("w:instrText")
+        i.text = instr
+        r.append(i)
+    else:
+        t = OxmlElement("w:t")
+        t.text = text
+        r.append(t)
+    par._p.append(r)
+
+
+# Ровно то, что лежит в учебнике: первая строка оглавления несёт begin самого
+# TOC, внутри неё — заголовок, а номер страницы отдельным полем PAGEREF.
+_piece(fp, kind="begin")
+_piece(fp, instr=" TOC " + BSL + 'o "1-3" ' + BSL + "h ")
+_piece(fp, kind="separate")
+_piece(fp, text="СПИСОК СОКРАЩЕНИЙ")
+_piece(fp, kind="begin")
+_piece(fp, instr=" PAGEREF _Toc1 " + BSL + "h ")
+_piece(fp, kind="separate")
+_piece(fp, text="3")
+_piece(fp, kind="end")
+
+slots, full, dropped = main._para_slots(fp._p, qn)
+check([t.text for t, _sig in slots] == ["СПИСОК СОКРАЩЕНИЙ"],
+      "текст внутри TOC переводится: %s" % [t.text for t, _s in slots])
+check(dropped == "3", "номер страницы остаётся полем: %r" % dropped)
+check(full == "СПИСОК СОКРАЩЕНИЙ3", "текст абзаца склеен как при импорте: %r" % full)
+
+# Неизвестное поле — молчим и не пишем: писать в то, чего не понимаешь,
+# опаснее, чем пропустить.
+up = fdoc.add_paragraph()
+_piece(up, kind="begin")
+_piece(up, kind="separate")
+_piece(up, text="что-то посчитанное")
+_piece(up, kind="end")
+check(main._para_slots(up._p, qn)[0] == [],
+      "поле без прочитанной инструкции считается вычисляемым")
+
+n = main._refresh_fields(fdoc, qn)
+check(n == 2, "к пересчёту помечены оба поля (TOC и PAGEREF): %d" % n)
+begins = [e for e in fdoc.element.iter(qn("w:fldChar"))
+          if e.get(qn("w:fldCharType")) == "begin"]
+check(sum(1 for e in begins if e.get(qn("w:dirty")) == "true") == 2,
+      "метка стоит именно на begin поля")
+upd = fdoc.settings.element.find(qn("w:updateFields"))
+check(upd is not None and upd.get(qn("w:val")) == "true",
+      "в настройках документа выставлен пересчёт полей при открытии")
+order = [c.tag.split("}")[1] for c in fdoc.settings.element]
+check("updateFields" in order
+      and ("compat" not in order or order.index("updateFields") < order.index("compat")),
+      "и стоит там, где его ждёт схема: %s" % order)
+main._refresh_fields(fdoc, qn)
+check(len(fdoc.settings.element.findall(qn("w:updateFields"))) == 1,
+      "повторный вызов не плодит вторую настройку")
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))

@@ -35,9 +35,9 @@ check("Not a single letter of the" in sysmsg,
       "и требование «ни одной буквы исходного письма» — тоже")
 check("ALL-CAPS heading stays ALL-CAPS" in sysmsg, "КАПС-заголовок остаётся КАПСОМ")
 order, hint = sysmsg.split("Unverified glossary hints")
-check("letter case its position requires" in order,
-      "у приказных записей сказано: регистр — по месту, а не по записи")
-check("letter case is not part of the hint" in hint,
+check("Copy the right-hand side letter for letter" in order,
+      "у приказных записей сказано: начертание уже подогнано, копируй как есть")
+check("already matched to the source fragment" in hint,
       "и у подсказок тоже")
 
 print("=== 2. Обратный перевод правило не получает ===")
@@ -133,6 +133,87 @@ check(not main._same_words("Serous meningitis", "serous meningitis"),
       "_same_words различает регистр: иначе правка читалась бы как «нечего менять»")
 check(main._same_words("serous  meningitis", " serous meningitis "),
       "а лишние пробелы — не правка")
+
+print("=== 11. Регистр глоссарного термина — 1в1 по оригиналу ===")
+cl = main._case_like
+check(cl("ТУБЕРКУЛЕЗ ОРГАНОВ ДЫХАНИЯ", "respiratory tuberculosis",
+         "ТУБЕРКУЛЕЗ ОРГАНОВ ДЫХАНИЯ") == "RESPIRATORY TUBERCULOSIS",
+      "капс заголовка переносится на перевод")
+check(cl("RW", "Wassermann reaction", "RW") == "Wassermann reaction",
+      "короткая аббревиатура заголовком не считается — крика не будет")
+check(cl("Туберкулема", "tuberculoma", "Туберкулема") == "Tuberculoma",
+      "заглавная в оригинале — заглавная в переводе")
+check(cl("туберкулемы", "Tuberculoma", "Туберкулема") == "tuberculoma",
+      "строчная в оригинале — строчная в переводе")
+check(cl("реакции Манту", "Mantoux reaction", "реакция Манту") == "Mantoux reaction",
+      "имя собственное внутри термина регистр не отдаёт")
+check(cl("вакцины БЦЖ", "BCG vaccine", "вакцина БЦЖ") == "BCG vaccine",
+      "и аббревиатура тоже")
+check(cl("очага Гона", "Ghon focus", "очаг Гона") == "Ghon focus",
+      "«очаг Гона» не превращается в «ghon focus»")
+check(cl("туберкулёз", "肺结核", "туберкулёз") == "肺结核",
+      "у письма без регистра переносить нечего")
+
+print("=== 12. Расхождение по начертанию доезжает до ремонта ===")
+def build(source, target, entry=("Туберкулема", "Tuberculoma")):
+    seg = {"id": 1, "source": source, "target": target, "status": "review"}
+    proj = {"id": 1, "title": "P", "src": "RU", "tgt": "EN", "domain": "medical",
+            "segments": [seg]}
+    main.STATE = {"projects": [proj], "termQueue": [], "exportHistory": [], "team": [],
+                  "tm": [],
+                  "glossary": [{"src": entry[0], "tgt": entry[1], "tier": "verified",
+                                "lang": "RU→EN", "domain": "medical"}]}
+    main._invalidate_gloss_index()
+    return proj, seg
+
+proj, seg = build("В казеозной части туберкулемы сосуды отсутствуют.",
+                  "In the caseous part of a Tuberculoma vessels are absent.")
+got = main._term_case_misses(seg, proj)
+check(len(got) == 1 and got[0]["use"] == "tuberculoma",
+      "заглавная посреди фразы найдена, и назван нужный вариант: %s" % got)
+check(any(f["kind"] == "term_case" for f in main._repair_findings(seg, proj)),
+      "находка доезжает до ремонта")
+check(main._repair_scores(seg, proj)["term_case"] == 1,
+      "и до его оценки — значит откат сработает")
+check(main._repair_scores(seg, None)["term_case"] == 0,
+      "без проекта глоссария нет, и претензии тоже — как у gloss рядом")
+
+proj, seg = build("В казеозной части туберкулемы сосуды отсутствуют.",
+                  "In the caseous part of a tuberculoma vessels are absent.")
+check(not main._term_case_misses(seg, proj), "исправленный вариант претензии не даёт")
+
+proj, seg = build("Туберкулема — это инкапсулированный очаг.",
+                  "Tuberculoma is an encapsulated focus.")
+check(not main._term_case_misses(seg, proj),
+      "заглавная в оригинале — заглавная в переводе, всё сходится")
+
+proj, seg = build("туберкулемы бывают разной величины.",
+                  "Tuberculomas vary in size.")
+check(not main._term_case_misses(seg, proj),
+      "начало предложения оправдывает заглавную при строчной в оригинале")
+
+proj, seg = build("Диагностика туберкулеза органов дыхания сложна.",
+                  "Diagnosis of RESPIRATORY TUBERCULOSIS is difficult.",
+                  ("ТУБЕРКУЛЕЗ ОРГАНОВ ДЫХАНИЯ", "RESPIRATORY TUBERCULOSIS"))
+got = main._term_case_misses(seg, proj)
+check(len(got) == 1 and got[0]["use"] == "respiratory tuberculosis",
+      "капс записи не приказывает: в оригинале строчная — и в переводе строчная: %s" % got)
+
+proj, seg = build("Диагностика туберкулеза органов дыхания сложна.",
+                  "Diagnosis of tuberculosis is difficult.",
+                  ("ТУБЕРКУЛЕЗ ОРГАНОВ ДЫХАНИЯ", "RESPIRATORY TUBERCULOSIS"))
+check(not main._term_case_misses(seg, proj),
+      "термина в переводе нет вовсе — это забота _gloss_misses, а не наша")
+
+print("=== 13. В промпт уходит уже подогнанное начертание ===")
+msg = main._translate_system("RU", "EN", [
+    {"src": "Туберкулема", "tgt": "Tuberculoma", "tier": "verified",
+     "_form": "туберкулемы"},
+], None, False, "medical", main._resolve_model(None))
+check("туберкулемы → tuberculoma" in msg,
+      "слева форма из сегмента, справа перевод в её начертании")
+check("Tuberculoma" not in msg,
+      "словарное начертание в промпт не уходит вовсе — копировать нечего")
 
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

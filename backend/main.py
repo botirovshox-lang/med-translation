@@ -92,6 +92,65 @@ authorities_mod = _safe_import("authorities")
 
 import re as _re
 
+# Окончания русского словоизменения — закрытый список, длиной до четырёх букв.
+# Нужен ровно для одного вопроса: найденная форма — форма ТОГО ЖЕ слова или
+# другого слова с общим началом. Словообразовательных суффиксов (-ома, -оз,
+# -ит, -ация) здесь нет намеренно: ими понятия и различаются.
+_RU_ENDINGS = frozenset((
+    "", "а", "е", "и", "й", "о", "у", "ы", "ь", "ю", "я",
+    "ам", "ах", "ая", "ев", "ей", "ем", "ею", "ие", "ий", "им", "их", "ия",
+    "ов", "ое", "ой", "ом", "ою", "ую", "ые", "ый", "ым", "ых", "ья", "ье",
+    "ью", "юю", "яя", "ям", "ях",
+    "ами", "его", "ему", "ими", "ого", "ому", "ыми", "ями", "ией", "иям",
+    "иях", "ьев", "ьям", "ьях", "иями", "ьями",
+))
+_RU_ENDING_MAX = 4
+_CYR_ONLY_RE = _re.compile(r"[а-я]+")
+
+
+def _same_lexeme(term_word: str, found_word: str) -> bool:
+    """Найденная форма — форма ТОГО ЖЕ слова, а не другого с общим началом.
+
+    Зачем: стем режет слово до 85% букв, и на длинном слове это срезает ровно
+    тот хвост, которым в медицине различаются понятия. «Туберкулема» (11 букв)
+    даёт стем «туберкуле» — и ловит «туберкулез» со всеми его формами. На боевом
+    учебнике так вышло 1006 раз у одной этой записи, ещё 136 у «Туберкулёма
+    лёгких», плюс «аллергия → аллергена», «инфильтрат → инфильтрации»,
+    «алкоголизм → алкоголики». Итого 1185 ложных совпадений на 875 сегментах —
+    и в промпт перевода уходил приказ «Туберкулема → Tuberculoma» на сегменты
+    про туберкулёз. Комментарий к порогу 85% предупреждал ровно об этом на паре
+    «циклоз/циклит» — там шести букв хватило, на одиннадцати перестало.
+
+    Правило: у записи и у найденной формы должен найтись ОБЩИЙ стем, после
+    которого у обеих остаётся окончание из закрытого списка. «первичный» и
+    «первичного» дают стем «первичн» + «ый»/«ого» — одно слово; «туберкулема»
+    и «туберкулеза» не дают такого стема ни при какой длине: «ма»/«за»,
+    «ема»/«еза», «лема»/«леза» окончаниями не бывают.
+
+    Два намеренных исключения, оба ради того, чтобы не менять лишнего:
+      • найденное НАЧИНАЕТСЯ с записи целиком («туберкулёз» → «туберкулёзного»,
+        «инфильтрат» → «инфильтративный») — это как работало, так и работает.
+        Судить о производных прилагательных этой проверке не по чему, а запрет
+        сузил бы глоссарий там, где на него никто не жаловался;
+      • слово не из кириллицы — МОЛЧИМ. Список окончаний русский, и для
+        латиницы он не значит ничего: тот же закон, что у DOMAIN_RULES без
+        правил для пары языков."""
+    a, b = (term_word or "").lower().replace("ё", "е"), (found_word or "").lower().replace("ё", "е")
+    if not _CYR_ONLY_RE.fullmatch(a) or not _CYR_ONLY_RE.fullmatch(b):
+        return True
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    if n >= len(a):
+        return True
+    for k in range(n, max(0, n - _RU_ENDING_MAX) - 1, -1):
+        if a[k:] in _RU_ENDINGS and b[k:] in _RU_ENDINGS:
+            return True
+    return False
+
+
 def _term_match(term: str, text: str) -> str | None:
     """Ищет термин (в любой грамматической форме) в тексте.
     Возвращает фактически найденную подстроку или None.
@@ -115,7 +174,15 @@ def _term_match(term: str, text: str) -> str | None:
     if hit:
         return hit.group(0)
     hit = stem.search(text) if stem is not None else None
-    return hit.group(0) if hit else None
+    if not hit:
+        return None
+    # Стем совпал — но совпасть он мог и с ДРУГИМ словом: см. _same_lexeme.
+    # Проверяем пословно, потому что стем-шаблон и собран пословно.
+    found = hit.group(0)
+    tw, fw = (term or "").lower().split(), found.lower().split()
+    if len(tw) != len(fw) or not all(_same_lexeme(a, b) for a, b in zip(tw, fw)):
+        return None
+    return found
 
 
 _PATTERN_CACHE: dict = {}
@@ -1036,22 +1103,36 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         )
     hard = [h for h in (gloss_hits or []) if _hit_tier(h) == GLOSSARY_TIER_HARD]
     soft = [h for h in (gloss_hits or []) if _hit_tier(h) == GLOSSARY_TIER_SOFT]
+
+    def _gloss_line(h) -> str:
+        """Строка глоссария для промпта: слева — форма, стоящая В ЭТОМ сегменте,
+        справа — перевод, уже подогнанный под её начертание.
+
+        Регистр не оставляем на усмотрение модели: запись хранит одно
+        начертание, а мест, куда она встаёт, много, и «use these exact
+        translations» модель понимает буквально — вместе с заглавной или капсом
+        записи. Подгонка детерминированная (`_case_like`), поэтому в промпт
+        уходит ровно та строка, которую надо поставить."""
+        form = h.get("_form") or h.get("src") or ""
+        return "  " + form + " → " + _case_like(form, (h.get("tgt") or ""),
+                                                h.get("src") or "")
+
     if hard:
-        terms = "\n".join(f"  {h['src']} → {h['tgt']}" for h in hard)
-        # Начертание записи в требование НЕ входит, и сказать это надо прямо.
-        # «use these exact translations» модель понимает буквально и копирует
-        # регистр записи: приказ «Туберкулема → Tuberculoma» ставил заглавную
-        # посреди фразы, «ТУБЕРКУЛЕЗ ОРГАНОВ ДЫХАНИЯ → RESPIRATORY TUBERCULOSIS» —
-        # капс посреди фразы, «Фиброзно-кавернозный туберкулёз → fibrocavitary
-        # tuberculosis» роняло строчную в начало заголовка. Слово при этом верное,
-        # испорчено ровно начертание, и правкой записей это не чинится: у записи
-        # один регистр, а мест, куда она встаёт, много.
+        terms = "\n".join(_gloss_line(h) for h in hard)
+        # Слева — форма ИЗ ЭТОГО сегмента, справа — перевод в её начертании.
+        # Раньше сюда уходила словарная запись как есть, и модель копировала её
+        # регистр: «Туберкулема → Tuberculoma» ставило заглавную посреди фразы,
+        # «ТУБЕРКУЛЕЗ ОРГАНОВ ДЫХАНИЯ → RESPIRATORY TUBERCULOSIS» — капс посреди
+        # фразы, «Фиброзно-кавернозный туберкулёз → fibrocavitary tuberculosis»
+        # роняло строчную в начало заголовка. Слово при этом верное — испорчено
+        # ровно начертание, и правкой записей это не чинится: у записи один
+        # регистр, а мест, куда она встаёт, много.
         system += (f"\nApproved glossary — use these exact translations:\n{terms}\n"
-                   "They are given in dictionary form. Keep the wording, but put each term into\n"
-                   "the grammatical form AND the letter case its position requires: capitalised\n"
-                   "at the start of a sentence or heading, lower case inside one, ALL-CAPS in an\n"
-                   "ALL-CAPS heading. Capitals inside proper nouns and abbreviations (Mantoux,\n"
-                   "BCG, M. tuberculosis) stay as written.\n")
+                   "On the left is the fragment exactly as it stands in THIS source segment;\n"
+                   "on the right the translation is already written in the letter case that\n"
+                   "fragment calls for. Copy the right-hand side letter for letter — do not\n"
+                   "re-capitalise and do not lower it. Only the grammatical form still follows\n"
+                   "the sentence.\n")
     if soft:
         # Автоимпорт — именно подсказка. Приказ "use these exact translations"
         # на этих записях и рождал "rear cyclitis": модель знает правильный
@@ -1059,13 +1140,14 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         # Слово области — из проекта: «standard medical usage» в юридическом
         # промпте — та самая зашитая медицина, от которой сервис уходит.
         dom_word = _resolve_domain(domain)["en"]
-        terms = "\n".join(f"  {h['src']} → {h['tgt']}" for h in soft)
+        terms = "\n".join(_gloss_line(h) for h in soft)
         system += (
             "\nUnverified glossary hints (bulk-imported, NOT reviewed — some are wrong):\n"
             f"{terms}\n"
             "Use a hint ONLY if it is the standard term in the target language for this context. "
             f"If it is not standard {dom_word} usage, IGNORE the hint and use the correct standard term.\n"
-            "Their letter case is not part of the hint either — capitalise by position, as above.\n"
+            "Their letter case is already matched to the source fragment on the left — if you\n"
+            "take a hint, take it as printed.\n"
         )
     if tm_context:
         system += (
@@ -1738,12 +1820,19 @@ def glossary_impact(pid: int, refresh: bool = False):
     if cached and cached[0] == fp and not refresh:
         return cached[1]
     by_term: dict = {}
-    seg_ids, confirmed_ids = set(), set()
+    seg_ids, confirmed_ids, case_ids = set(), set(), set()
     for seg in project["segments"]:
         target = (seg.get("target") or "").strip()
         if not target:
             continue
-        for h in _verified_hits(seg.get("source", ""), project):
+        hits = _verified_hits(seg.get("source", ""), project)
+        # Регистр приказных терминов считаем ЗДЕСЬ же, по тем же самым hits:
+        # `_verified_hits` — самый дорогой вызов в этом проходе (13 мс на
+        # сегмент), и звать его второй раз ради того же ответа значит
+        # удвоить полминуты работы единственного воркера.
+        if _term_case_hits(seg, hits):
+            case_ids.add(seg["id"])
+        for h in hits:
             if _tgt_has_term(target, h["tgt"]):
                 continue
             key = h["src"]
@@ -1758,7 +1847,12 @@ def glossary_impact(pid: int, refresh: bool = False):
     terms = sorted(by_term.values(), key=lambda t: len(t["segments"]), reverse=True)
     result = {"ok": True, "terms": terms,
               "segments": sorted(seg_ids), "confirmed": sorted(confirmed_ids),
-              "pending": sorted(seg_ids - confirmed_ids)}
+              "pending": sorted(seg_ids - confirmed_ids),
+              # Отдельным списком, а не вперемешку с `segments`: там «термина
+              # в переводе нет вовсе», здесь «термин есть, но не в том
+              # начертании». Смешай их — и карточка соответствия начала бы
+              # звать переводить заново то, где надо поправить одну букву.
+              "caseSegments": sorted(case_ids)}
     # Кого ремонт уже не возьмёт: тот же текст с теми же претензиями он
     # проходил, и второй заход вернёт то же самое. Считаем ЗДЕСЬ, чтобы
     # карточка и состав прогона брали одно число из одного расчёта.
@@ -1834,7 +1928,9 @@ def project_analysis(pid: int, refresh: bool = False):
     # расчёт на весь проект и он кэширован. Вызов _repair_findings с project
     # гонял бы _get_context на каждый сегмент — 10 секунд CPU единственного
     # воркера на 2670 сегментах, и это при каждом открытии экрана.
-    gloss_bad = set(impact["segments"])
+    # Сюда же расхождения по НАЧЕРТАНИЮ приказного термина: они тоже считаются
+    # по глоссарию, а `_repair_findings(s)` ниже зовётся без проекта.
+    gloss_bad = set(impact["segments"]) | set(impact.get("caseSegments") or ())
     for s in project["segments"]:
         target = (s.get("target") or "").strip()
         if not target:
@@ -6598,6 +6694,143 @@ def _case_misses(seg: dict) -> list:
     return out
 
 
+# ── Регистр глоссарного термина: 1в1 по оригиналу ────────────────────
+# Запись глоссария хранит ОДНО начертание, а мест, куда она встаёт, много:
+# «Туберкулема» стоит и заголовком, и посреди фразы. Правильный ответ даёт
+# не запись, а САМ ОРИГИНАЛ: как термин написан в этом сегменте, так он
+# и должен быть написан в переводе. Форма из текста у нас есть — `_form`
+# из `_get_context` (её же возвращает `_term_match`), поэтому подгонку
+# делаем детерминированно, а не просьбой к модели.
+#
+# Три направления и у каждого своя оговорка:
+#   ОРИГИНАЛ КАПСОМ  → перевод капсом, но только от CASE_CAPS_MIN букв:
+#      «RW» — аббревиатура, и «WASSERMANN REACTION» из неё было бы криком;
+#   Оригинал с заглавной → заглавная (поднять регистр безопасно всегда);
+#   оригинал со строчной → строчная, КРОМЕ имён собственных и аббревиатур.
+# Последнее и есть единственное опасное направление: «реакция Манту» →
+# «Mantoux reaction», «очаг Гона» → «Ghon focus», «вакцина БЦЖ» → «BCG
+# vaccine» — опустив первую букву, мы испортили бы имя. Признак берётся
+# из САМОЙ записи: заглавная НЕ у первого слова оригинала означает имя
+# внутри термина, а две заглавные в слове перевода — аббревиатуру.
+
+
+def _name_bearing(term: str) -> bool:
+    """В термине есть имя собственное: заглавная не у первого слова.
+
+    «реакция Манту», «очаг Гона», «вакцина БЦЖ» — опускать регистр у таких
+    переводов нельзя, там имя или аббревиатура."""
+    words = [w for w in (term or "").split() if any(c.isalpha() for c in w)]
+    for w in words[1:]:
+        first = next((c for c in w if c.isalpha()), "")
+        if first and first.isupper():
+            return True
+    return False
+
+
+CASE_ACRONYM_MAX = 5     # букв, до которых слово капсом — аббревиатура, а не крик
+
+
+def _acronymish(word: str) -> bool:
+    """Слово, у которого заглавные — часть написания: BCG, XDR-TB, «M.», pH.
+
+    Длинное слово капсом сюда НЕ попадает: «RESPIRATORY» — не аббревиатура,
+    а крик, приехавший из записи глоссария, и опустить его как раз надо."""
+    letters = [c for c in word if c.isalpha()]
+    if not letters:
+        return False
+    if word.endswith(".") and len(word) <= 2:
+        return True
+    if all(c.isupper() for c in letters):
+        return len(letters) <= CASE_ACRONYM_MAX
+    # Заглавная НЕ в начале — McDonald, pH, DNase: регистр внутри значащий.
+    return any(c.isupper() for c in letters[1:])
+
+
+def _case_like(form: str, target: str, term: str = "") -> str:
+    """Перевод термина, подогнанный под начертание НАЙДЕННОЙ формы оригинала.
+
+    Сначала с записи снимается её собственный КРИК, если оригинал здесь так
+    не написан: «ТУБЕРКУЛЕЗ ОРГАНОВ ДЫХАНИЯ → RESPIRATORY TUBERCULOSIS» посреди
+    фразы должно стать «respiratory tuberculosis», а не «rESPIRATORY
+    TUBERCULOSIS». Аббревиатуры внутри при этом не трогаются."""
+    if not target or not form:
+        return target
+    letters = [c for c in form if c.isalpha()]
+    if not letters or not _has_case(form) or not _has_case(target):
+        return target
+    src_caps = len(letters) >= CASE_CAPS_MIN and all(c.isupper() for c in letters)
+    base = target
+    t_letters = [c for c in target if c.isalpha()]
+    if (not src_caps and len(t_letters) >= CASE_CAPS_MIN
+            and all(c.isupper() for c in t_letters)):
+        base = _re.sub(r"\S+",
+                       lambda m: m.group(0) if _acronymish(m.group(0))
+                       else m.group(0).lower(), target)
+    i = next((k for k, c in enumerate(base) if c.isalpha()), None)
+    if i is None:
+        return base
+    if src_caps:
+        return base.upper()
+    if letters[0].isupper():
+        return base[:i] + base[i].upper() + base[i + 1:]
+    head = base[i:].split()[0] if base[i:].split() else ""
+    if _name_bearing(term) or _acronymish(head):
+        return base
+    return base[:i] + base[i].lower() + base[i + 1:]
+
+
+def _sentence_start(text: str, pos: int) -> bool:
+    """Стоит ли позиция в начале предложения: перед ней либо ничего,
+    либо знак конца. Заглавная там законна при любом оригинале."""
+    before = text[:pos].rstrip()
+    return not before or before[-1] in ".!?:;•–—-”)"
+
+
+def _term_case_misses(seg: dict, project: Optional[dict]) -> list:
+    """Приказные термины, чьё начертание в переводе разошлось с оригиналом.
+
+    Считается по тем же `_verified_hits`, что `_gloss_misses`: разойдись
+    определение — ремонт и отчёт правили бы сегмент по кругу. Смотрим только
+    БУКВАЛЬНЫЕ вхождения перевода термина: нет вхождения вовсе — это забота
+    `_gloss_misses`, а не наша, и говорить об одном и том же дважды нельзя."""
+    if project is None:
+        return []
+    return _term_case_hits(seg, _verified_hits(seg.get("source", ""), project))
+
+
+def _term_case_hits(seg: dict, hits: list) -> list:
+    """То же по УЖЕ найденным приказным записям: `glossary_impact` ходит по
+    всему проекту и второй проход по глоссарию себе позволить не может."""
+    target = (seg.get("target") or "").strip()
+    if not target or not _has_case(target):
+        return []
+    low = target.lower()
+    out = []
+    for h in hits:
+        tgt, form = (h.get("tgt") or "").strip(), h.get("_form") or ""
+        if not tgt or not form:
+            continue
+        want = _case_like(form, tgt, h.get("src") or "")
+        need, ok, seen_any = tgt.lower(), False, False
+        start = 0
+        while True:
+            k = low.find(need, start)
+            if k < 0:
+                break
+            seen_any = True
+            got = target[k:k + len(tgt)]
+            if got == want or (want[:1].islower() and _sentence_start(target, k)
+                               and got[:1].upper() + got[1:] == want[:1].upper() + want[1:]):
+                ok = True
+                break
+            start = k + 1
+        if seen_any and not ok:
+            out.append({"kind": "term_case", "use": want, "src": h.get("src"),
+                        "text": "в оригинале термин написан как «" + form
+                                + "», значит и в переводе он пишется «" + want + "»"})
+    return out
+
+
 # ── Буквы чужого письма ──────────────────────────────────────────────
 # Третья бесплатная детерминированная претензия, рядом с `_gloss_misses`
 # и `_case_misses` и по той же причине. Промпт требует «Output must be 100%
@@ -6902,7 +7135,8 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     # соответствие глоссарию, и приходит она отсюда же: приказная запись
     # копируется в перевод вместе со своим начертанием. Устаревать ей нечему,
     # поэтому хеша у неё нет — сверяются нынешние тексты.
-    items = _gloss_misses(seg, project) + _case_misses(seg) + _script_misses(seg)
+    items = (_gloss_misses(seg, project) + _term_case_misses(seg, project)
+             + _case_misses(seg) + _script_misses(seg))
     # Потерянные приказные термины — через _terms_lost_open, тем же расчётом,
     # что и счётчик в `_repair_scores`. Он и снимает вердикты контекстного
     # арбитра: арбитр единственный видел сегмент в ряду соседей, и его
@@ -7034,8 +7268,8 @@ def _repair_system(dom: dict, src_lang: str, tgt_lang: str) -> str:
         # строчную в начало заголовка следом за находкой про термин.
         "8. Follow the capitalisation of the SOURCE: a sentence, heading or caption that starts\n"
         "   with a capital letter starts with one in the translation, an ALL-CAPS heading stays\n"
-        "   ALL-CAPS, and no word is shouted that the SOURCE does not shout. Glossary terms below\n"
-        "   are dictionary forms — their letter case follows the position, not the entry.\n"
+        "   ALL-CAPS, and no word is shouted that the SOURCE does not shout. Glossary terms are\n"
+        "   listed with their case already matched to the source — copy them as printed.\n"
     )
 
 
@@ -7059,9 +7293,12 @@ def _openai_repair(seg: dict, project: dict, findings: list, model: Optional[str
     # термин — и сегмент возвращался в отчёт о соответствии уже по другой строке.
     approved = _verified_hits(seg.get("source", ""), project)
     if approved:
-        body += ("\n\nAPPROVED GLOSSARY for this segment — these exact translations must be "
-                 "present in the corrected text (wording exact, letter case by position):\n"
-                 + "\n".join("  " + h["src"] + " → " + h["tgt"] for h in approved))
+        body += ("\n\nAPPROVED GLOSSARY for this segment — the right-hand side must be present "
+                 "in the corrected text letter for letter (its case is already matched to the "
+                 "source fragment on the left):\n"
+                 + "\n".join("  " + (h.get("_form") or h["src"]) + " → "
+                              + _case_like(h.get("_form") or h["src"], h["tgt"], h["src"])
+                              for h in approved))
     back = ((seg.get("backcheck") or {}).get("back") or "").strip()
     if back:
         body += ("\n\nBACK-TRANSLATION of the current translation (for reference — it shows how the "
@@ -7128,6 +7365,9 @@ def _repair_scores(seg: dict, project: Optional[dict] = None) -> dict:
         "case": len(_case_misses(seg)),
         # И буквы чужого письма — тоже бесплатно и тоже всегда.
         "script": len(_script_misses(seg)),
+        # Регистр приказных терминов: бесплатно, но глоссарий нужен — с
+        # project=None считается нулём, как и `gloss` рядом.
+        "term_case": len(_term_case_misses(seg, project)),
     }
 
 
@@ -7194,7 +7434,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # хуже» засчитало бы успехом любой переписанный текст. Мерить тут есть чем
     # и это бесплатно — сама находка детерминированная, поэтому спрашиваем
     # прямо: убавилось ли расхождений по регистру.
-    had_free = any(f["kind"] in ("case", "script") for f in findings)
+    had_free = any(f["kind"] in ("case", "script", "term_case") for f in findings)
     only_free = had_free and not had_bc and not had_tc
     before = _repair_scores(seg, project)
     # Проверки старого текста сохраняем целиком: при откате их надо вернуть,
@@ -7310,16 +7550,19 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         better = False
         why.append("букв чужого письма стало больше "
                    + str(before["script"]) + " → " + str(after["script"]))
+    if after["term_case"] > before["term_case"]:
+        better = False
+        why.append("приказных терминов не в начертании оригинала стало больше "
+                   + str(before["term_case"]) + " → " + str(after["term_case"]))
     # Заход ТОЛЬКО по бесплатным находкам меряется ими же и по существу:
     # ни балл, ни termcheck не пересчитывались, глоссарию нарушать нечего,
     # и «не стало хуже» засчитало бы успехом любой переписанный текст.
     # Считаем их вместе: размен регистра на кириллицу — не работа.
-    if only_free and (after["case"] + after["script"]
-                      >= before["case"] + before["script"]):
+    _free = lambda d: d["case"] + d["script"] + d["term_case"]
+    if only_free and _free(after) >= _free(before):
         better = False
         why.append("правка не сняла ни регистра, ни чужого письма: "
-                   + str(before["case"] + before["script"]) + " → "
-                   + str(after["case"] + after["script"]))
+                   + str(_free(before)) + " → " + str(_free(after)))
 
     mdl_id = _resolve_model(model or REPAIR_DEFAULT_MODEL)["id"]
     if not better:
@@ -8125,15 +8368,49 @@ def _vis_sig(rpr) -> tuple:
     return tuple(sorted(out, key=repr))
 
 
+# Поля, чей результат считает САМ движок вёрстки: номер страницы, дата,
+# счётчики, зеркала чужого текста. Перевод, вписанный туда, либо ломает
+# оглавление и нумерацию, либо стирается при первом же обновлении поля.
+# Всё ОСТАЛЬНОЕ переводится: результат поля TOC — обычный видимый текст,
+# и строка оглавления, несущая метку поля, оставалась единственной русской
+# строкой в английском документе.
+FIELD_COMPUTED = {
+    "PAGE", "PAGEREF", "NUMPAGES", "SECTIONPAGES", "SECTION", "SEQ", "REF",
+    "STYLEREF", "NOTEREF", "AUTONUM", "AUTONUMLGL", "AUTONUMOUT", "LISTNUM",
+    "DATE", "TIME", "CREATEDATE", "SAVEDATE", "PRINTDATE", "EDITTIME",
+    "REVNUM", "FILENAME", "FILESIZE", "NUMWORDS", "NUMCHARS", "AUTHOR",
+    "USERNAME", "LASTSAVEDBY", "DOCPROPERTY", "TEMPLATE", "INFO", "TITLE",
+    "SUBJECT", "KEYWORDS", "COMMENTS", "DOCVARIABLE",
+}
+# Их же (плюс сами таблицы-указатели) просим пересчитать при открытии.
+FIELD_REFRESH = FIELD_COMPUTED | {"TOC", "TOA", "INDEX", "RD", "XE", "TC"}
+
+
+_FIELD_SWITCH = chr(92)          # обратная косая: с неё начинаются ключи поля
+
+
+def _field_key(instr: str) -> str:
+    """Имя поля из инструкции: « PAGEREF _Toc219883320 [ключ]h » → «PAGEREF».
+
+    Ключи-переключатели начинаются с обратной косой и именем поля не бывают."""
+    for w in (instr or "").split():
+        if w and w[0] != _FIELD_SWITCH:
+            return w.upper()
+    return ""
+
+
 def _para_slots(p_elem, qn) -> tuple:
     """(куда можно писать, весь текст абзаца, пропущенный текст).
 
     Первое — список пар «узел w:t, отпечаток видимого оформления его прогона»
     в порядке документа. Пропускаем три вещи, и каждая не мелочь:
 
-    * ПОЛЯ (w:fldChar/w:instrText, w:fldSimple). В строке оглавления там
-      лежит номер страницы, а в колонтитуле — номер текущей. Считает их Word,
+    * ВЫЧИСЛЯЕМЫЕ ПОЛЯ (`FIELD_COMPUTED`). В строке оглавления там лежит номер
+      страницы, а в колонтитуле — номер текущей. Считает их движок вёрстки,
       и записать туда перевод значит сломать и оглавление, и нумерацию.
+      А вот результат ОСТАЛЬНЫХ полей — обычный видимый текст, и он
+      переводится: у поля TOC результат растянут на десятки абзацев, метку
+      несёт только первый, и без этого он один оставался на языке оригинала.
     * СКРЫТЫЙ текст (w:webHidden, w:vanish) — его в документе не видно,
       и перевод, попавший туда, не увидит никто.
     * ВЛОЖЕННЫЕ абзацы: надпись или таблица внутри абзаца — это свои w:p
@@ -8146,26 +8423,46 @@ def _para_slots(p_elem, qn) -> tuple:
     написать его вторым рядом с настоящим полем.
     """
     slots, full, dropped = [], [], []
-    state = {"fld": 0}
+    # Стек открытых полей: имя или None, пока инструкция не прочитана.
+    # Инструкция всегда идёт ДО результата, поэтому к тексту имя уже известно;
+    # непрочитанное поле до тех пор считается вычисляемым — молча писать
+    # в неизвестное поле опаснее, чем пропустить его.
+    fields: list = []
+
+    def blocked():
+        return any(k is None or k in FIELD_COMPUTED for k in fields)
 
     def walk(el, hidden, sig):
         for ch in el:
             tag = ch.tag
-            if tag == qn("w:p") or tag == qn("w:fldSimple"):
+            if tag == qn("w:p"):
+                continue
+            if tag == qn("w:fldSimple"):
+                if _field_key(ch.get(qn("w:instr")) or "") in FIELD_COMPUTED:
+                    txt = "".join(t.text or "" for t in ch.iter(qn("w:t")))
+                    full.append(txt)
+                    dropped.append(txt)
+                    continue
+                walk(ch, hidden, sig)
                 continue
             if tag == qn("w:fldChar"):
                 kind = ch.get(qn("w:fldCharType"))
                 if kind == "begin":
-                    state["fld"] += 1
-                elif kind == "end":
-                    state["fld"] = max(0, state["fld"] - 1)
+                    fields.append(None)
+                elif kind == "end" and fields:
+                    fields.pop()
                 continue
             if tag == qn("w:instrText"):
+                # Инструкция приезжает кусками; имя даёт первый непустой.
+                if fields and fields[-1] is None:
+                    key = _field_key(ch.text or "")
+                    if key:
+                        fields[-1] = key
                 continue
             if tag == qn("w:t"):
                 txt = ch.text or ""
                 full.append(txt)
-                if hidden or state["fld"]:
+                if hidden or blocked():
                     dropped.append(txt)
                 else:
                     slots.append((ch, sig))
@@ -8548,6 +8845,67 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
             stats["img_captioned"] += 1
 
 
+# Порядок элементов в settings.xml задан схемой, и Word разборчив: чужое
+# место — «содержимое нечитаемо». `w:updateFields` стоит перед этой группой,
+# поэтому вставляем ПЕРЕД первым найденным из неё, а не в конец.
+_SETTINGS_AFTER = ("hdrShapeDefaults", "footnotePr", "endnotePr", "compat",
+                   "docVars", "rsids")
+
+
+def _refresh_fields(doc, qn) -> int:
+    """Просит пересчитать поля при открытии файла. Возвращает число помеченных.
+
+    Иначе в оглавлении остаются номера страниц ИСХОДНИКА: английский текст
+    короче русского, книга похудела с 324 страниц до 302, а «311» в оглавлении
+    осталось. Сами эти числа посчитать нельзя — их даёт вёрстка, которой у нас
+    нет; всё, что можно, — попросить Word и LibreOffice пересчитать.
+    Просим ДВУМЯ способами, потому что клиенты слушают разное: `w:dirty`
+    на самом поле и `w:updateFields` в настройках документа.
+
+    Пересчёт заодно перебирает оглавление по ЗАГОЛОВКАМ, а они переведены, —
+    то есть чинит и текст строк, и номера разом."""
+    n = 0
+    roots = [doc.element]
+    for part in sorted(doc.part.package.iter_parts(), key=lambda p: str(p.partname)):
+        ct = part.content_type or ""
+        el = getattr(part, "element", None)
+        if el is not None and ("header+xml" in ct or "footer+xml" in ct):
+            roots.append(el)
+    for root in roots:
+        stack: list = []
+        for el in root.iter():
+            if el.tag == qn("w:fldChar"):
+                kind = el.get(qn("w:fldCharType"))
+                if kind == "begin":
+                    stack.append(el)
+                elif kind == "end" and stack:
+                    stack.pop()
+            elif el.tag == qn("w:instrText") and stack:
+                if (_field_key(el.text or "") in FIELD_REFRESH
+                        and stack[-1].get(qn("w:dirty")) != "true"):
+                    stack[-1].set(qn("w:dirty"), "true")
+                    n += 1
+            elif el.tag == qn("w:fldSimple"):
+                if _field_key(el.get(qn("w:instr")) or "") in FIELD_REFRESH:
+                    el.set(qn("w:dirty"), "true")
+                    n += 1
+    try:
+        settings = doc.settings.element
+        if settings.find(qn("w:updateFields")) is None:
+            upd = settings.makeelement(qn("w:updateFields"), {qn("w:val"): "true"})
+            anchor = next((settings.find(qn("w:" + name)) for name in _SETTINGS_AFTER
+                           if settings.find(qn("w:" + name)) is not None), None)
+            if anchor is not None:
+                anchor.addprevious(upd)
+            else:
+                settings.append(upd)
+    except Exception as e:
+        # Не нашли настроек — поля всё равно помечены `w:dirty`. Молча
+        # ронять экспорт из-за необязательной части пакета нельзя.
+        print("[backend] settings.xml: updateFields не выставлен: %s" % e, file=sys.stderr)
+    return n
+
+
 def _export_docx_layout(project: dict, out: Path) -> dict:
     """Подставляет переводы в сохранённый исходник и сохраняет копию.
 
@@ -8591,7 +8949,10 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
              # готовый файл.
              "img_parts": 0, "img_repainted": 0, "img_captioned": 0,
              "img_untranslated": 0, "img_flat": 0, "img_font": 0,
-             "img_failed": 0, "img_lost": 0, "img_stale": 0, "img_noseg": 0}
+             "img_failed": 0, "img_lost": 0, "img_stale": 0, "img_noseg": 0,
+             # Полей, помеченных к пересчёту: по ним Word пересоберёт
+             # оглавление и номера страниц уже под перевод.
+             "fields_refreshed": 0}
     shown = 0
     for idx, sid in data.get("pairs") or []:
         seg = by_id.get(sid)
@@ -8637,6 +8998,8 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
     # Картинки идут ПОСЛЕ абзацев и только теперь: подписи, которые здесь
     # добавляются, сдвигают абзацы, а `all_p` уже разобран по номерам.
     _export_images(doc, data, by_id, qn, stats)
+    # ПОСЛЕ всех правок: пересчитывать надо готовый текст, а не промежуточный.
+    stats["fields_refreshed"] = _refresh_fields(doc, qn)
     doc.save(str(out))
     return stats
 
@@ -9511,7 +9874,13 @@ def run_plan(pid: int, req: RunPlanRequest):
                       if "translate" in steps else set())
     # Один расчёт соответствия глоссарию на весь разбор, из общего кэша по
     # отпечатку проекта — тот же, которым живёт отчёт «Соответствие глоссарию».
-    gloss_ids = (set(glossary_impact(pid)["segments"])
+    # В один набор: и «утверждённого термина в переводе нет», и «есть, но не
+    # в начертании оригинала». Оба чинит ремонт, и оба считаются по глоссарию,
+    # то есть `_repair_findings(seg, None)` их не видит — она зовётся БЕЗ
+    # проекта ради скорости, и без этого набора состав прогона разошёлся бы
+    # с тем, что прогон делает.
+    _imp = glossary_impact(pid) if "repair" in steps else {}
+    gloss_ids = (set(_imp.get("segments") or ()) | set(_imp.get("caseSegments") or ())
                  if "repair" in steps else set())
     plans = [_plan_step(project, st, params, scope, will_translate, gloss_ids)
              for st in steps]

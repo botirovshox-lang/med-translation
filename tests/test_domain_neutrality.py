@@ -50,14 +50,18 @@ def build(segments, domain="medical"):
 
 
 # ─────────────── 1. Промпт перевода: область из проекта ───────────────
-print("=== 1. Подсказки глоссария называют область проекта, а не медицину ===")
+print("=== 1. Промпт перевода называет область проекта, а не медицину ===")
+# Проверяем ПРОМПТ ЦЕЛИКОМ, а не блок подсказок: сам блок из промпта убран
+# (пользу доказать не удалось, вред — 15 медицинских ошибок на 11 414 вставок),
+# а вопрос этого теста от него не зависел никогда: область берётся из проекта.
 hints = [{"src": "договор", "tgt": "contract"}]        # без tier → подсказка
 mdl = main._MODELS_BY_ID[main.DEFAULT_OPENAI_MODEL]
 legal = main._translate_system("RU", "EN", hints, None, False, "legal", mdl)
 check("medical" not in legal.lower(), "юридический промпт не упоминает медицину")
-check("legal" in legal.lower(), "слово области в подсказке — из проекта")
+check("legal" in legal.lower(), "слово области — из проекта")
 med = main._translate_system("RU", "EN", hints, None, False, "medical", mdl)
-check("standard medical usage" in med, "медицинский проект остался медицинским")
+check("medical" in med.lower() and "legal" not in med.lower(),
+      "медицинский проект остался медицинским")
 
 # ─────────────── 2. Модель обратного перевода ≠ автор текста ───────────────
 print("\n=== 2. Back-check не заказывается моделью-автором перевода ===")

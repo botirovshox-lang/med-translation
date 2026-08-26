@@ -34,11 +34,14 @@ check("capitalisation of the source" in sysmsg, "правило о регист�
 check("Not a single letter of the" in sysmsg,
       "и требование «ни одной буквы исходного письма» — тоже")
 check("ALL-CAPS heading stays ALL-CAPS" in sysmsg, "КАПС-заголовок остаётся КАПСОМ")
-order, hint = sysmsg.split("Unverified glossary hints")
-check("Copy the right-hand side letter for letter" in order,
+check("Copy the right-hand side letter for letter" in sysmsg,
       "у приказных записей сказано: начертание уже подогнано, копируй как есть")
-check("already matched to the source fragment" in hint,
-      "и у подсказок тоже")
+# Про подсказки здесь больше не спрашиваем: блок «Unverified glossary hints»
+# из промпта убран целиком (пользу доказать не удалось, вред — 15 медицинских
+# ошибок на 11 414 вставок). Правило о начертании осталось там, где оно
+# и работает, — у приказных записей.
+check("Unverified glossary hints" not in sysmsg,
+      "подсказки автоимпорта в промпт не уходят")
 
 print("=== 2. Обратный перевод правило не получает ===")
 lit = main._translate_system("EN", "RU", None, None, True, "medical",

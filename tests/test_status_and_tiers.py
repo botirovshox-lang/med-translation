@@ -115,11 +115,19 @@ sysmsg = main._translate_system("RU", "EN", [
     {"src": "увеит", "tgt": "uveitis", "tier": "verified"},
     {"src": "задний", "tgt": "rear"},                 # уровня нет
 ], None, False, "medical", main._resolve_model(None))
-order, hint = sysmsg.split("Unverified glossary hints")
-check("uveitis" in order, "проверенная запись уходит приказом")
-check("rear" in hint, "запись без уровня уходит подсказкой, а не приказом")
-check("задний → rear" not in order, "и в приказ не попадает: именно так рождалось «rear cyclitis»")
-check("задний → rear" in hint, "а в подсказках она есть — с оговоркой, что часть из них неверна")
+check("uveitis" in sysmsg, "проверенная запись уходит приказом")
+check("задний → rear" not in sysmsg,
+      "а запись без уровня в промпт не уходит ВООБЩЕ: именно так рождалось "
+      "«rear cyclitis»")
+check("Unverified glossary hints" not in sysmsg,
+      "блока подсказок в промпте больше нет — пользу от него доказать "
+      "не удалось (72% «следования» это в основном совпадение с тем, что "
+      "модель и так написала бы), а вред доказан: 15 медицинских ошибок, "
+      "которым модель послушалась, на 11 414 вставок")
+# Сами записи при этом живы и работают: растут в приказ через согласие
+# независимых чистых сегментов и ловят расхождения conflict-кандидатами.
+check(main._hit_tier({"src": "задний", "tgt": "rear"}) == main.GLOSSARY_TIER_SOFT,
+      "уровень записи от этого не изменился")
 
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

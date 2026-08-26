@@ -1384,6 +1384,8 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         "   a sentence with a lower-case letter and never shout a word the source does not shout.\n"
         )
     hard = [h for h in (gloss_hits or []) if _hit_tier(h) == GLOSSARY_TIER_HARD]
+    # Подсказки автоимпорта в промпт НЕ уходят — см. блок ниже, где раньше
+    # стоял их список. Отбор оставлен: по нему считается строка журнала.
     soft = [h for h in (gloss_hits or []) if _hit_tier(h) == GLOSSARY_TIER_SOFT]
 
     def _gloss_line(h) -> str:
@@ -1415,22 +1417,33 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
                    "fragment calls for. Copy the right-hand side letter for letter — do not\n"
                    "re-capitalise and do not lower it. Only the grammatical form still follows\n"
                    "the sentence.\n")
-    if soft:
-        # Автоимпорт — именно подсказка. Приказ "use these exact translations"
-        # на этих записях и рождал "rear cyclitis": модель знает правильный
-        # термин, но послушно берёт то, что ей назвали утверждённым.
-        # Слово области — из проекта: «standard medical usage» в юридическом
-        # промпте — та самая зашитая медицина, от которой сервис уходит.
-        dom_word = _resolve_domain(domain)["en"]
-        terms = "\n".join(_gloss_line(h) for h in soft)
-        system += (
-            "\nUnverified glossary hints (bulk-imported, NOT reviewed — some are wrong):\n"
-            f"{terms}\n"
-            "Use a hint ONLY if it is the standard term in the target language for this context. "
-            f"If it is not standard {dom_word} usage, IGNORE the hint and use the correct standard term.\n"
-            "Their letter case is already matched to the source fragment on the left — if you\n"
-            "take a hint, take it as printed.\n"
-        )
+    # ── Подсказки автоимпорта в промпт не уходят ─────────────────────
+    # Здесь стоял блок «Unverified glossary hints (bulk-imported, NOT reviewed
+    # — some are wrong)». Его убрали, и вот на каких числах.
+    #
+    # ПОЛЬЗУ доказать не удалось. Замер на боевом проекте: подсказки попадали
+    # в 2316 сегментов из 2711, в среднем 2.6 записи на промпт, и в 72%
+    # случаев их вариант оказывался в переводе. Но это не доказательство
+    # пользы: «больной → patient» и «мокрота → sputum» модель напишет и без
+    # подсказки, а отличить «подсказка помогла» от «подсказка совпала»
+    # можно только платным сравнением двух прогонов.
+    #
+    # ВРЕД доказан и конкретен. Строго: подсказка стоит в переводе И termcheck
+    # забраковал ровно это слово — 15 случаев из 11 414 вставок. Каждый
+    # из них медицинская ошибка, которой модель послушалась: «лимфаденит →
+    # adenolymphitis» (это разные вещи), «пунктат → punctate» (точечный вместо
+    # аспирата), «воспалительное → IBD», «ПТК → PTC», «микобактерии
+    # туберкулёза → Mycobacteria tuberculosis».
+    #
+    # Ноль целых тринадцать сотых процента — мало, но чаша весов здесь
+    # несимметрична: с одной стороны недоказуемая польза, с другой доказанная
+    # подмена понятия в МЕДИЦИНСКОМ переводе. Плюс промпт становится короче
+    # на 130 тысяч входных токенов на книгу.
+    #
+    # Сами записи при этом остаются и работают: они растут в приказ через
+    # согласие независимых чистых сегментов, ловят расхождения conflict-
+    # кандидатами и разбираются сверкой смысла. Убрано ровно одно — право
+    # неверенной записи влиять на перевод напрямую.
     if tm_context:
         system += (
             f"\nTranslation Memory (similar segment, for reference):\n"

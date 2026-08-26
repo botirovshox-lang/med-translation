@@ -249,5 +249,37 @@ check(plan["ids"] == sorted(plan["ids"]),
       "объединение идёт в порядке документа, а не в порядке шагов: "
       "порции берутся из этого списка, и прогон не должен прыгать по проекту")
 
+# ─────────── 12. Разбивка по статусам: чем браузер ловит устаревшую копию ───────────
+print("")
+print("=== 12. Статусы проекта в ответе разбора ===")
+proj = build([seg(1, "а", "", "new"), seg(2, "б", "b", "qa"), seg(3, "в", "c", "qa"),
+              seg(4, "г", "d", "confirmed"), seg(5, "д", "e", "review")])
+plan = main.run_plan(1, main.RunPlanRequest())
+check(plan["projectStatus"] == {"new": 1, "qa": 2, "confirmed": 1, "review": 1},
+      "разбивка по статусам посчитана: %s" % plan["projectStatus"])
+check(sum(plan["projectStatus"].values()) == plan["projectSegments"],
+      "сумма разбивки равна числу сегментов — иначе браузер сверял бы разное")
+
+# Считается ВЕСЬ проект, а не выбранные сегменты: браузер сверяет свою копию
+# целиком, и разбивка по выборке нашла бы расхождение на пустом месте.
+plan = main.run_plan(1, main.RunPlanRequest(segment_ids=[2]))
+check(plan["projectStatus"] == {"new": 1, "qa": 2, "confirmed": 1, "review": 1},
+      "выборка на разбивку не влияет: она про проект, а не про состав прогона")
+
+# Сегмент без статуса читается как «new» — ровно так же, как в браузере
+# (statusCountsOf в tab_editor.jsx). Разойдись нормализации — сверка нашла бы
+# расхождение там, где его нет, и тянула бы проект целиком каждым разбором.
+for missing in (None, "", "__pop__"):
+    if missing == "__pop__":
+        proj["segments"][0].pop("status", None)
+    else:
+        proj["segments"][0]["status"] = missing
+    got = main.run_plan(1, main.RunPlanRequest())["projectStatus"]
+    # .get, а не [...]: расхождение обязано читаться как «ПРОВАЛЕНО»,
+    # а не как KeyError посреди прогона — тогда из хвоста вывода видно,
+    # что именно сломалось.
+    check(got.get("new") == 1 and len(got) == 4,
+          "статус %r читается как «new», а не отдельной корзиной: %s" % (missing, got))
+
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

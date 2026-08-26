@@ -27,24 +27,65 @@
     window.dispatchEvent(new Event("mct-auth-expired"));
   }
 
+  /* Правки ОДНОГО сегмента, ушедшие на сервер: сколько начато и сколько
+     закончено. Считает один потребитель — сверка статусов в редакторе.
+
+     Правка применяется в браузере сразу, а на сервер уходит отдельным
+     запросом. Разбор состава, посланный МЕЖДУ этими двумя событиями, вернёт
+     статусы ДО правки — и сверка приняла бы свежую вкладку за устаревшую
+     и потянула бы весь проект заново: на 2711 сегментах это пять мегабайт
+     на каждое нажатие «Подтвердить».
+
+     Отпечаток строкой, а не флагом «занято»: правка, успевшая и начаться,
+     и закончиться за время разбора, флагом не ловится, а отпечатком —
+     ловится. Считаем по префиксу пути, а не по списку методов: под
+     /segments/ лежат ВСЕ команды, меняющие один сегмент (перевод,
+     подтверждение, откат, правка, ремонт, рассылка повторов), и перечислять
+     их поимённо значит однажды забыть новую. Пакетные /projects/... сюда
+     не попадают намеренно: они идут задачами, а на время задачи разбор
+     состава и так не считается. */
+  let segStarted = 0, segDone = 0, segFailed = 0;
+
   async function call(method, path, body) {
-    const init = { method, headers: authHeaders({}) };
-    if (body !== undefined) {
-      init.headers["Content-Type"] = "application/json";
-      init.body = JSON.stringify(body);
+    const seg = path.lastIndexOf("/segments/", 0) === 0;
+    if (seg) segStarted++;
+    try {
+      const init = { method, headers: authHeaders({}) };
+      if (body !== undefined) {
+        init.headers["Content-Type"] = "application/json";
+        init.body = JSON.stringify(body);
+      }
+      const r = await fetch(BASE + path, init);
+      if (r.status === 401 && path !== "/auth/login") onUnauthorized();
+      if (!r.ok) {
+        const text = await r.text().catch(() => "");
+        const err = new Error(`API ${method} ${path} failed: ${r.status} ${text}`);
+        err.status = r.status;
+        throw err;
+      }
+      return await r.json();
+    } catch (e) {
+      /* Правка НЕ доехала. Считаем такие отдельно и навсегда: локальный патч
+         применён (store.updateSegment оптимистичен), а на сервере его нет —
+         значит в браузере лежит текст, которого сервер не знает. Подстановка
+         проекта целиком выбросила бы его молча, вместе с набранным человеком
+         переводом. Пока такая правка есть, сверка статусов не работает:
+         несохранённая работа человека дороже автоматической синхронизации. */
+      if (seg) segFailed++;
+      throw e;
+    } finally {
+      // finally, а не после return: упавший запрос обязан снять отметку «в пути»
+      // тоже, иначе одна моргнувшая сеть вешает счётчик навсегда.
+      if (seg) segDone++;
     }
-    const r = await fetch(BASE + path, init);
-    if (r.status === 401 && path !== "/auth/login") onUnauthorized();
-    if (!r.ok) {
-      const text = await r.text().catch(() => "");
-      const err = new Error(`API ${method} ${path} failed: ${r.status} ${text}`);
-      err.status = r.status;
-      throw err;
-    }
-    return r.json();
   }
 
   window.API = {
+    /* busy — правка сегмента ещё в пути, failed — хоть одна не доехала,
+       ticket — отпечаток «начато:закончено». См. комментарий у счётчиков выше. */
+    segEdits:      ()                       => ({ busy: segStarted !== segDone,
+                                                  failed: segFailed > 0,
+                                                  ticket: segStarted + ":" + segDone }),
     health:        ()                       => call("GET",    "/health"),
     seed:          ()                       => call("GET",    "/seed"),
     login: async (password) => {

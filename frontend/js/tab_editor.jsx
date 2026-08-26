@@ -24,6 +24,31 @@ const JOB_LABELS = { translate: "Перевод", backcheck: "Back-check", termc
 const FULL_STEP_LABELS = { translate: "Перевод", backcheck: "Back-check", termcheck: "Термины",
                            repair: "Ремонт", medical_qa: "Medical QA" };
 
+/* Сколько раз пробуем забрать результат прогона, прежде чем сдаться вслух.
+   Ноль попыток — оборванная сеть оставляет таблицу устаревшей навсегда;
+   без потолка — вкладка раз в 15 секунд бесконечно долбит самый тяжёлый
+   эндпоинт, а воркер uvicorn на сервере ОДИН: это самообстрел. */
+const PULL_TRIES = 3;
+/* Пауза между сверками статусов. Пока прогон идёт в СОСЕДНЕЙ вкладке, эта
+   узнаёт о нём не сразу (опрос в простое — раз в 15 с), а статусы на сервере
+   меняются каждые несколько секунд: без паузы сверка гоняла бы «разбор →
+   пять мегабайт → разбор» по кругу все эти пятнадцать секунд. */
+const DRIFT_PAUSE_MS = 30000;
+
+/* Отпечаток статусов проекта — строкой, чтобы сравнивать с ответом сервера
+   одним равенством. Нормализация («нет статуса» = «new») обязана совпадать
+   с серверной (_status_counts в main.py) буква в букву: разойдись они —
+   сверка находила бы расхождение там, где его нет, и тянула бы проект
+   целиком на каждый разбор состава. */
+function statusCountsOf(segments) {
+  const out = {};
+  segments.forEach(s => { const k = s.status || "new"; out[k] = (out[k] || 0) + 1; });
+  return out;
+}
+function statusSig(counts) {
+  return Object.keys(counts).sort().map(k => k + ":" + counts[k]).join(",");
+}
+
 /* ── Снимок состава прогона ───────────────────────────────────────────
    Счётчики задачи (job.counters) говорят, сколько сегментов шаг УЖЕ прошёл.
    Сколько ему всего — знает только разбор, а во время прогона он не
@@ -328,7 +353,11 @@ function TabEditor({ store, toast }) {
   const [job, setJob] = useState(null);           // активный серверный прогон
   // Состав шагов запущенного прогона: из него полоса прогресса берёт «осталось».
   const [runSnap, setRunSnap] = useState(readRunSnap);
-  const lastJobId = useRef(null);                 // чтобы отчитаться о завершении один раз
+  const lastJobId = useRef(null);                 // прогон, результат которого ещё не забрали
+  const reportedJob = useRef(null);               // чтобы отчитаться о завершении один раз
+  const pullBusy = useRef(null);                  // подстановка проекта уже идёт
+  const pullFails = useRef(0);                    // сколько раз подряд не удалось её забрать
+  const driftAt = useRef(0);                      // когда в последний раз сверка тянула проект
   const [checkedSegs, setCheckedSegs] = useState(new Set()); // ручной выбор
   const [showFilters, setShowFilters] = useState(false);
   const [page, setPage] = useState(1);
@@ -448,6 +477,33 @@ function TabEditor({ store, toast }) {
     [retranslate, gptModel, store.segmentFilter, checkedSegs.size]);
   useEffect(() => { setBcGroupPick(null); },
     [bcModel, bcJudge, bcSkipConfirmed, store.segmentFilter, checkedSegs.size]);
+  /* Подстановка проекта ЦЕЛИКОМ — одна на все поводы (конец прогона, сверка
+     статусов). Три правила, и каждое куплено дорого:
+
+     1) идёт РОВНО ОДНА за раз. setJob(null) пересоздаёт эффект опроса, и новый
+        экземпляр немедленно делает свой tick — без замка конец каждого прогона
+        стоил бы двух-трёх ответов по пять мегабайт подряд, причём на
+        единственном воркере uvicorn, который в этот момент занят;
+     2) отставший ответ не затирает обогнавший — это следствие первого правила,
+        а не отдельная проверка: второго запроса просто нет. Иначе старый
+        снимок лёг бы поверх нового и с экрана пропала бы отметка «подтвердил
+        человек», которую только что поставили;
+     3) кладём по id ИЗ ЗАМЫКАНИЯ, а не в «текущий» проект: человек мог уйти
+        в другой, и результат обязан лечь туда, откуда его просили.
+
+     Три исхода, а не два: свежий проект, null (сходили и не вышло) и undefined
+     (не ходили — тянет другой заход). Смешать последние два нельзя, иначе
+     счётчик попыток сгорал бы на заходах, которых не было. */
+  const pullProject = async (pid) => {
+    if (pullBusy.current) return undefined;
+    pullBusy.current = pid;
+    try {
+      const fresh = await window.API.safeCall(() => window.API.getProject(pid));
+      if (!fresh || !fresh.segments) return null;
+      store.replaceProjectSegments(pid, fresh.segments);
+      return fresh;
+    } finally { pullBusy.current = null; }
+  };
   // Опрос прогонов. Идёт работа — раз в 2 с, простой — раз в 15 с: прогон мог
   // быть запущен из другой вкладки или до перезагрузки страницы.
   useEffect(() => {
@@ -465,12 +521,43 @@ function TabEditor({ store, toast }) {
       // Прогон закончился между опросами — отчитываемся и подтягиваем результат
       const finished = (res.jobs || []).find(j => j.id === lastJobId.current);
       if (finished && finished.status !== "queued" && finished.status !== "running") {
-        lastJobId.current = null;
-        reportJobResult(finished);
-        loadImpact();
-        loadAutoPreview();      // прогон мог родить новых кандидатов
-        const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
-        if (!dead && fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
+        /* Отчёт — один раз, подстановка — сколько понадобится: события разные,
+           и отметки у них разные. Прогон опознаётся ТРОЙКОЙ «номер + проект +
+           время создания» — той же, что и снимок состава (см. runStepRows):
+           номера задач живут в памяти процесса и после рестарта сервиса
+           начинаются с единицы заново, поэтому по голому номеру отчёт
+           о чужом третьем прогоне считался бы уже сделанным и пропал бы
+           молча — вместе с ценой, ошибками и обновлением карточек. */
+        const key = finished.id + ":" + finished.project + ":" + finished.created;
+        if (reportedJob.current !== key) {
+          reportedJob.current = key;
+          reportJobResult(finished);
+          loadImpact();
+          loadAutoPreview();    // прогон мог родить новых кандидатов
+        }
+        /* Проверки dead здесь НЕТ, и это не недосмотр. Строкой выше
+           setJob(null) меняет зависимость !!job — React делает cleanup
+           эффекта, и dead становится true ЗАДОЛГО до того, как
+           пятимегабайтный проект доедет по сети. То есть условие отменяло
+           подстановку не иногда, а ВСЕГДА: человек видел отчёт о прогоне
+           и свежие карточки, а таблица оставалась с допрогонными статусами —
+           «Новые 25» там, где на сервере ноль. */
+        const fresh = await pullProject(project.id);
+        if (fresh === undefined) return;    // тянет другой заход — он и отчитается
+        if (fresh) { lastJobId.current = null; pullFails.current = 0; return; }
+        /* Не забрали. Отметку не снимаем — следующий опрос зайдёт снова, иначе
+           одна моргнувшая сеть оставляет таблицу устаревшей навсегда. Но и
+           бесконечно долбить самый тяжёлый эндпоинт нельзя: воркер ОДИН.
+           Кончились попытки — сдаёмся ВСЛУХ, потому что молча оставленные
+           допрогонные статусы это ровно тот баг, который здесь и чинится. */
+        pullFails.current += 1;
+        if (pullFails.current >= PULL_TRIES) {
+          lastJobId.current = null;
+          pullFails.current = 0;
+          toast.warning("Результат прогона не забран",
+            "Сервер не отдал проект " + PULL_TRIES + " раза подряд. Обновите страницу: "
+            + "иначе в таблице останутся статусы, какими они были до прогона.");
+        }
       }
     };
     tick();
@@ -693,6 +780,8 @@ function TabEditor({ store, toast }) {
     setPlanBusy(true);
     const ids = currentIdSet
       ? project.segments.filter(s => currentIdSet.has(s.id)).map(s => s.id) : null;
+    /* Отпечаток наших правок сегментов ДО запроса: см. сверку статусов ниже. */
+    const editsBefore = window.API.segEdits ? window.API.segEdits() : null;
     window.API.safeCall(() => window.API.runPlan(project.id, {
       steps: fullSteps ? FULL_STEP_KEYS.filter(k => fullSteps.has(k)) : null,
       segment_ids: ids,
@@ -712,24 +801,63 @@ function TabEditor({ store, toast }) {
          их нечем, фильтры их не видят, «Новые» показывает ноль. Сверяем
          дешёвым числом из того же ответа и подтягиваем ОДИН раз. */
       const n = res && res.projectSegments;
-      if (!n || n === project.segments.length) return;
+      if (!n) return;
+      /* А статусы могли РАЗОЙТИСЬ при совпавшем числе, и это отдельная беда.
+         Прогон идёт на сервере, вкладка забирает только те сегменты, что
+         сервер назвал в job.recent, — а ушедшая в фон вкладка душится
+         браузером до одного опроса в минуту и пропускает порции целиком.
+         Тогда в одном окне стоят два ответа на один вопрос: строка «Перевод»
+         говорит «—» (её считает сервер), а фильтр — «Новые 25» (его считает
+         браузер по своей копии). Число сегментов при этом сходится, и старая
+         сверка молчала.
+
+         Сверяем ТОЛЬКО когда наших правок нет ни в пути, ни за время запроса:
+         правка применяется в браузере сразу, а на сервер уходит отдельно, и
+         разбор, посланный между этими событиями, честно вернёт статусы ДО неё.
+         Без этой оговорки каждое нажатие «Подтвердить» тянуло бы весь проект
+         заново. */
+      const editsNow = window.API.segEdits ? window.API.segEdits() : null;
+      const quiet = !!editsBefore && !editsNow.busy && !editsNow.failed
+        && editsNow.ticket === editsBefore.ticket;
+      const srvSig = res.projectStatus ? statusSig(res.projectStatus) : null;
+      const mySig = statusSig(statusCountsOf(project.segments));
+      /* Результат прогона ещё не забран — этим занят опрос задач, и проект он
+         тянет сам. Наша сверка в это время сравнивала бы ДОПРОГОННУЮ копию
+         с послепрогонным ответом: те же пять мегабайт второй раз и тост про
+         аварию после каждого штатного прогона. */
+      const settled = !lastJobId.current;
+      const cool = Date.now() - driftAt.current > DRIFT_PAUSE_MS;
+      const drift = n !== project.segments.length
+        || (settled && quiet && cool && srvSig !== null && srvSig !== mySig);
+      if (!drift) return;
       /* Замок — не «идёт запрос», а «за ЭТИМ составом уже ходили». Замок
          по факту запроса откладывал синхронизацию навсегда: эффект,
          наткнувшийся на него, просто выходил, а тот, что нёс замок, к тому
          времени мог оказаться устаревшим (человек тронул настройки) и тоже
          выходил — сегменты не подтягивались, и следующего повода не было. */
-      const sig = project.id + ":" + n;
+      const sig = project.id + ":" + n + ":" + (srvSig || "");
       if (staleFetch.current === sig) return;
       staleFetch.current = sig;
-      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
-      if (!fresh || !fresh.segments) { staleFetch.current = null; return; }
       /* Подставляем и из устаревшего эффекта: проект в замыкании свой,
          а отказ означал бы потерянную синхронизацию. */
-      store.replaceProjectSegments(project.id, fresh.segments);
+      const fresh = await pullProject(project.id);
+      if (!fresh) { staleFetch.current = null; return; }
+      driftAt.current = Date.now();
       const added = fresh.segments.length - project.segments.length;
       if (added > 0) {
         toast.info("Подтянуты новые сегменты",
           "их завели мимо этой вкладки: " + added + ". Теперь они видны в таблице и фильтрах.");
+      } else if (added < 0) {
+        /* Сегментов стало МЕНЬШЕ — например, надпись на картинке пометили
+           надпечаткой из другого окна. Пропавшие с экрана строки выглядят
+           благополучнее, чем есть, поэтому число называется вслух. */
+        toast.info("Сегментов стало меньше",
+          "их убрали мимо этой вкладки: " + (-added) + ".");
+      } else if (srvSig !== null && srvSig !== mySig) {
+        /* Молчать нельзя: статусы в таблице сейчас поменяются сами собой,
+           и без объяснения это выглядит как сбой. */
+        toast.info("Таблица показывала устаревшее",
+          "на сервере статусы сегментов уже другие — подтянули свежие.");
       }
     });
     return () => { alive = false; };

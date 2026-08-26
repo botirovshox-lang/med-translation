@@ -497,6 +497,216 @@ try {
   const el11h = jumpTo(20, draw());
   check(segRows(el11h).length === 21, "зона показывает соседей поверх фильтра статуса");
   check(/Снял фильтр статуса/.test(rec.list.join(" ")), "и сказано, какой фильтр для этого снят");
+  // ── 12. Сверка статусов: чем ловится устаревшая копия проекта ──
+  console.log("");
+  console.log("=== 12. Сверка статусов проекта с сервером ===");
+  check(statusSig(statusCountsOf([{ id: 1 }, { id: 2, status: "qa" }])) === "new:1,qa:1",
+        "сегмент без статуса считается «new» — ровно как на сервере");
+  check(statusSig({ qa: 2, new: 1 }) === statusSig({ new: 1, qa: 2 }),
+        "отпечаток не зависит от порядка ключей — иначе сверка врала бы на ровном месте");
+
+  /* Число сегментов сходится, а статусы — нет: ровно тот случай, ради которого
+     сверка и заведена. Прогон отработал на сервере, вкладка результат не
+     забрала, и в одном окне стоят два ответа на один вопрос. */
+  const pulls = [];
+  const baseAPI = global.API;
+  const driftAPI = Object.assign({}, baseAPI, {
+    // Прогонов нет: сверка статусов — про простой. Пока результат прогона
+    // не забран, ею занимается опрос задач, и лезть туда второй раз незачем.
+    listJobs: async () => ({ active: [], jobs: [] }),
+    segEdits: () => ({ busy: false, failed: false, ticket: "0:0" }),
+    runPlan: async () => Object.assign(await baseAPI.runPlan(), {
+      projectSegments: project.segments.length,
+      projectStatus: { translated: 4, confirmed: 1, new: 1, qa: 1 },
+    }),
+    getProject: async () => { pulls.push(1); return { id: 1, segments: project.segments }; },
+  });
+  storeStub.replaceProjectSegments = () => {};
+  const rerun = async () => {
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    TabEditor({ store: storeStub, toast });
+    effects.forEach(fn => { try { fn(); } catch (e) {} });
+    for (let i = 0; i < 30; i++) await new Promise(r => setImmediate(r));
+  };
+  global.API = driftAPI;
+  await rerun();
+  check(pulls.length === 1,
+        "статусы разошлись при том же числе сегментов — проект подтянут (" + pulls.length + ")");
+
+  /* А своя правка, ещё не доехавшая до сервера, поводом быть не должна:
+     она применяется в браузере сразу, и разбор честно вернёт статусы ДО неё.
+     Иначе каждое «Подтвердить» тянуло бы весь проект заново. */
+  pulls.length = 0;
+  global.API = Object.assign({}, driftAPI,
+    { segEdits: () => ({ busy: true, failed: false, ticket: "1:0" }) });
+  await rerun();
+  check(pulls.length === 0,
+        "наша правка в пути расхождением не считается (" + pulls.length + ")");
+
+  /* Сервер молчит о статусах (старая версия бэкенда) — сверка молчит тоже,
+     а не считает молчание расхождением. */
+  pulls.length = 0;
+  global.API = Object.assign({}, driftAPI, {
+    runPlan: async () => Object.assign(await baseAPI.runPlan(),
+      { projectSegments: project.segments.length }),
+  });
+  await rerun();
+  check(pulls.length === 0, "без разбивки по статусам сверка не срабатывает (" + pulls.length + ")");
+  global.API = baseAPI;
+
+
+  /* Правка, успевшая и начаться, и закончиться за время разбора, флагом
+     «занято» не ловится — только отпечатком. Ради этого он и заведён. */
+  pulls.length = 0;
+  let tk = 0;
+  global.API = Object.assign({}, driftAPI,
+    { segEdits: () => ({ busy: false, failed: false, ticket: (tk++) + ":" + tk }) });
+  await rerun();
+  check(pulls.length === 0,
+        "правка, прошедшая целиком за время разбора, расхождением не считается (" + pulls.length + ")");
+
+  /* Правка НЕ доехала до сервера: в браузере лежит текст, которого сервер
+     не знает. Подстановка выбросила бы его молча — вместе с набранным
+     человеком переводом. */
+  pulls.length = 0;
+  global.API = Object.assign({}, driftAPI,
+    { segEdits: () => ({ busy: false, failed: true, ticket: "1:1" }) });
+  await rerun();
+  check(pulls.length === 0,
+        "несохранённая правка выключает сверку: её текст дороже синхронизации (" + pulls.length + ")");
+
+  // ── 13. Результат прогона забирается, несмотря на cleanup эффекта ──
+  console.log("");
+  console.log("=== 13. Конец прогона: подстановка переживает пересоздание эффекта ===");
+  /* Тот самый баг: tick зовёт setJob(null), от этого меняется зависимость
+     !!job, React делает cleanup — и dead взводится ЗАДОЛГО до того, как
+     пятимегабайтный проект доедет. Проверка dead отменяла подстановку
+     не иногда, а всегда. Здесь cleanup вызывается руками ровно в тот момент,
+     когда его делает React: ответ getProject ещё в пути. */
+  const laid = [];
+  storeStub.replaceProjectSegments = (pid, segs) => laid.push(segs.length);
+  const JOB = { id: 9, kind: "full", project: 1, created: "2026-08-26 00:00:00",
+                status: "running", done: 3, total: 7, counters: {}, recent: [],
+                params: { steps: ["translate"] } };
+  let polls = 0, asked = 0;
+  global.API = Object.assign({}, driftAPI, {
+    listJobs: async () => (polls++ === 0
+      ? { active: [JOB], jobs: [] }
+      : { active: [], jobs: [Object.assign({}, JOB, { status: "done", done: 7 })] }),
+    /* Разбор состава расхождение НАХОДИТ — и всё равно тянуть не должен:
+       результат прогона ещё не забран, этим занят опрос задач. Иначе те же
+       пять мегабайт уходят второй раз, да ещё с тостом про аварию после
+       каждого штатного прогона. */
+    runPlan: async () => Object.assign(await baseAPI.runPlan(), {
+      projectSegments: project.segments.length,
+      projectStatus: { translated: 4, confirmed: 1, new: 1, qa: 1 },
+    }),
+    getProject: async () => { asked++; await new Promise(r => setTimeout(r, 5));
+                              return { id: 1, segments: project.segments }; },
+  });
+  hooks.length = 0; hookIdx = 0; effects.length = 0;
+  TabEditor({ store: storeStub, toast });
+  effects.forEach(fn => { try { fn(); } catch (e) {} });        // опрос 1: прогон идёт
+  for (let i = 0; i < 10; i++) await new Promise(r => setImmediate(r));
+  hookIdx = 0; effects.length = 0;
+  TabEditor({ store: storeStub, toast });
+  const cleanups = [];
+  effects.forEach(fn => {
+    try { const c = fn(); if (typeof c === "function") cleanups.push(c); } catch (e) {}
+  });
+  for (let i = 0; i < 5; i++) await new Promise(r => setImmediate(r));  // запрос ушёл
+  cleanups.forEach(c => { try { c(); } catch (e) {} });                 // ← React гасит эффект
+  /* И пересоздаёт его: !!job изменилось. Новый экземпляр немедленно делает
+     свой tick и находит тот же завершённый прогон — второй ответ по пять
+     мегабайт подряд на единственном воркере. */
+  hookIdx = 0; effects.length = 0;
+  TabEditor({ store: storeStub, toast });
+  effects.forEach(fn => { try { fn(); } catch (e) {} });
+  await new Promise(r => setTimeout(r, 60));
+  check(laid.length === 1,
+        "проект подставлен, хотя эффект погашен во время запроса (" + laid.length + ")");
+  check(asked === 1,
+        "и запрошен ОДИН раз, а не каждым пересозданным эффектом (" + asked + ")");
+  /* Забрали — отметку снимаем. Иначе КАЖДЫЙ следующий опрос находит тот же
+     завершённый прогон и тянет пять мегабайт заново, вечно. Разбор состава
+     на этом круге расхождения не находит: проверяется путь прогона, а свой
+     повод тянуть проект только запутал бы счёт. */
+  global.API = Object.assign({}, global.API, {
+    runPlan: async () => Object.assign(await baseAPI.runPlan(),
+      { projectSegments: project.segments.length }),
+  });
+  hookIdx = 0; effects.length = 0;
+  TabEditor({ store: storeStub, toast });
+  effects.forEach(fn => { try { fn(); } catch (e) {} });
+  await new Promise(r => setTimeout(r, 40));
+  check(asked === 1,
+        "забранный результат второй раз не запрашивается (" + asked + ")");
+
+  /* Сервер стабильно не отдаёт проект. Отметку «результат не забран» держим —
+     иначе одна моргнувшая сеть оставляет таблицу устаревшей навсегда, — но
+     не бесконечно: воркер uvicorn ОДИН, и вечный запрос самого тяжёлого
+     эндпоинта раз в 15 с это самообстрел. Кончились попытки — говорим вслух.
+     Пока отметка держится, сверка статусов молчит: тянет опрос задач. */
+  const say = { list: [], info(t, m) { this.list.push(t + " " + m); },
+                warning(t, m) { this.list.push(t + " " + m); }, error() {}, success() {} };
+  laid.length = 0; asked = 0; polls = 0;
+  global.API = Object.assign({}, global.API, {
+    getProject: async () => { asked++; return null; },
+    // Без разбивки по статусам: здесь проверяется путь прогона, и лишний
+    // повод тянуть проект только запутал бы счёт попыток.
+    runPlan: async () => Object.assign(await baseAPI.runPlan(),
+      { projectSegments: project.segments.length }),
+  });
+  hooks.length = 0; hookIdx = 0; effects.length = 0;
+  // Круг 1 — прогон ещё идёт (отметка ставится), круги 2-4 — три неудачи,
+  // круг 5 — отметка снята, больше не ходим.
+  for (let round = 0; round < 5; round++) {
+    hookIdx = 0; effects.length = 0;
+    TabEditor({ store: storeStub, toast: say });
+    effects.forEach(fn => { try { fn(); } catch (e) {} });
+    for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+  }
+  check(asked === 3,
+        "неудачных попыток ровно три, а не бесконечно (" + asked + ")");
+  check(laid.length === 0, "и ничего не подставлено (" + laid.length + ")");
+  check(say.list.some(t => /Результат прогона не забран/.test(t)),
+        "исчерпав попытки, вкладка говорит человеку обновить страницу");
+
+  /* Номера задач живут в памяти процесса и после рестарта сервиса начинаются
+     с единицы заново — поэтому прогон опознаётся ТРОЙКОЙ «номер + проект +
+     время создания», как и снимок состава. По голому номеру отчёт о новом
+     прогоне №9 считался бы уже сделанным и пропал бы молча: ни цены,
+     ни числа ошибок, ни обновления карточек. */
+  const said = { list: [], info(t) { this.list.push(t); }, warning(t) { this.list.push(t); },
+                 error(t) { this.list.push(t); }, success(t) { this.list.push(t); } };
+  const cycle = async (created) => {
+    let step = 0;
+    global.API = Object.assign({}, global.API, {
+      getProject: async () => ({ id: 1, segments: project.segments }),
+      listJobs: async () => (step++ === 0
+        ? { active: [{ id: 9, kind: "full", project: 1, created, status: "running",
+                       done: 1, total: 7, counters: {}, recent: [],
+                       params: { steps: ["translate"] } }], jobs: [] }
+        : { active: [], jobs: [{ id: 9, kind: "full", project: 1, created,
+                                 status: "done", done: 7, total: 7, counters: {} }] }),
+    });
+    for (let r = 0; r < 2; r++) {
+      hookIdx = 0; effects.length = 0;
+      TabEditor({ store: storeStub, toast: said });
+      effects.forEach(fn => { try { fn(); } catch (e) {} });
+      for (let i = 0; i < 20; i++) await new Promise(z => setImmediate(z));
+    }
+  };
+  hooks.length = 0;                       // свежая вкладка; дальше рефы живут
+  await cycle("2026-08-26 01:00:00");
+  const afterFirst = said.list.length;
+  await cycle("2026-08-26 02:00:00");     // тот же номер, другой прогон
+  check(afterFirst > 0, "о первом прогоне отчитались (" + afterFirst + ")");
+  check(said.list.length > afterFirst,
+        "и о втором с тем же номером — тоже (" + afterFirst + " → " + said.list.length + ")");
+  global.API = baseAPI;
+
+
   console.log("\n" + (fail.length ? "ПРОВАЛЕНО: " + fail.join("; ") : "ВСЁ ПРОШЛО"));
   process.exit(fail.length ? 1 : 0);
 } catch (e) {

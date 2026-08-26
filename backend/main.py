@@ -9652,10 +9652,14 @@ def _used_term_ids() -> set:
 # Разделитель ВАРИАНТОВ перевода в записи массового импорта. Ровно точка
 # с запятой и ничего больше: на боевом глоссарии она стоит в 157 записях
 # и НИ В ОДНОЙ приказной, то есть двусмысленна только у подсказок.
-# Косую черту сюда добавлять нельзя — она сплошь и рядом часть самого термина
-# («HIV/TB coinfection», «Eto/Pto», «helper/suppressor T-cell balance»),
-# запятую тоже: ею перечисляют дозировки («Ciprofloxacin (250, 500, 750 mg)»)
-# и однородные члены внутри одного термина.
+# Косая черта сюда НЕ добавлена, и это размен, а не факт: из семи записей
+# со слэшем в трёх он часть термина («HIV/TB coinfection», «Eto/Pto»,
+# «helper/suppressor T-cell balance»), в четырёх — разделитель вариантов.
+# Ложный вынос верной записи дороже пропущенной кривой, поэтому берём только
+# однозначный разделитель. Запятая не годится по той же причине, но с обратным
+# перевесом: из двенадцати записей в десяти это дозировки и однородные члены
+# («Ciprofloxacin (250, 500, 750 mg)»). Фильтр берёт 157 записей из ~163
+# многовариантных — 96%.
 _VARIANT_SEP = ";"
 
 
@@ -9672,8 +9676,17 @@ def _multi_variant(entry: dict) -> bool:
     Чинить такую запись выбором варианта нельзя: какой из двух верен, знает
     предметная область, а не разделитель. Запись, которая не может сказать,
     что она означает, вреднее отсутствующей — поэтому её выносят, а не правят.
-    Приказных записей это не касается: там `;` не встречается вовсе."""
-    return _VARIANT_SEP in (entry.get("tgt") or "")
+
+    Уровень записи предикат НЕ смотрит — отсев по уровню делает `_hit_tier`
+    в самом отборе. На боевом глоссарии 26.08 «;» стояла в 157 подсказках
+    и ни в одной приказной записи, но это измерение, а не свойство кода:
+    выверенный справочник даёт приказы без следа человека, и запись с «;»
+    оттуда режимом `tier=verified` вынеслась бы.
+
+    Считаются непустые ЧАСТИ, а не наличие символа: висячая точка с запятой
+    в конце («appendicitis;») — обычная грязь импорта, а не второй вариант."""
+    parts = [p for p in (entry.get("tgt") or "").split(_VARIANT_SEP) if p.strip()]
+    return len(parts) > 1
 
 
 class GlossaryPurgeRequest(BaseModel):
@@ -9712,21 +9725,25 @@ def purge_glossary(req: GlossaryPurgeRequest = GlossaryPurgeRequest()):
 
     # Считаем ОДИН раз на всю пачку, а не по записи: см. _used_term_ids.
     used_ids = _used_term_ids() if req.unused_only else None
-    matched, kept_human, unused_n = [], 0, 0
+    matched, kept_human = [], 0
     for g in STATE.get("glossary", []):
         if _hit_tier(g) != tier:
             continue
         if scope is not None and _scope_of(g) != scope:
             continue
+        if req.multi_variant and not _multi_variant(g):
+            continue
+        if req.unused_only and id(g) in used_ids:
+            continue
+        # Пощада считается ПОСЛЕДНЕЙ, уже после всех сужений. Стой она первой,
+        # `keptHuman` отвечал бы не на тот вопрос: при `multi_variant` он
+        # называл бы все пощажённые подсказки области (690 против 157 взятых),
+        # то есть тех, кого и не собирались трогать. Читалось бы это как
+        # «у выноса огромный защищённый хвост», а на деле многовариантных
+        # со следом человека нет ни одной.
         if _human_touched(g):
             kept_human += 1
             continue
-        if req.multi_variant and not _multi_variant(g):
-            continue
-        if req.unused_only:
-            if id(g) in used_ids:
-                continue
-            unused_n += 1
         matched.append(g)
 
     result = {
@@ -9739,6 +9756,9 @@ def purge_glossary(req: GlossaryPurgeRequest = GlossaryPurgeRequest()):
         "unusedOnly": req.unused_only,
         "multiVariant": bool(req.multi_variant),
         "samples": [{"src": g.get("src"), "tgt": g.get("tgt")} for g in matched[:12]],
+        # Всегда, а не только на удавшемся применении: пустой отбор при
+        # dry_run=False уходил ранним return без этого ключа.
+        "removed": 0,
         "stamp": None,
     }
     if req.dry_run or not matched:

@@ -56,6 +56,11 @@ function GlossaryPurgePanel({ store, toast, onDone }) {
      импорте — значит добавлена руками»). Это предположение машины, а не чьё-то
      решение: записи со следом человека сервер не выносит в любом случае. */
   const [alsoOrders, setAlsoOrders] = useState(false);
+  /* Записи, хранящие НЕСКОЛЬКО вариантов перевода через «;» («аппендицит →
+     appendicitis; ecphyaditis»). Это не перевод, а строка из словарной статьи:
+     модель получает её одной подсказкой целиком и берёт первый вариант,
+     который часто хуже второго. */
+  const [multiVariant, setMultiVariant] = useState(false);
   const [purges, setPurges] = useState([]);
   const reloadPurges = () => window.API.safeCall(() => window.API.purgeList())
     .then(r => setPurges((r && r.purges) || []));
@@ -63,12 +68,13 @@ function GlossaryPurgePanel({ store, toast, onDone }) {
   // Любая смена фильтра обесценивает прошлый разбор: цифра на кнопке
   // «Вынести N» обязана относиться к тому, что уйдёт на самом деле.
   useEffect(() => { setRes(null); },
-    [project && project.id, unusedOnly, wholeService, alsoOrders]);
+    [project && project.id, unusedOnly, wholeService, alsoOrders, multiVariant]);
   if (!project) return null;
 
   const opts = (dry) => ({ project: wholeService ? null : project.id,
                            tier: alsoOrders ? "verified" : "auto",
-                           unused_only: unusedOnly, dry_run: dry });
+                           unused_only: unusedOnly, multi_variant: multiVariant,
+                           dry_run: dry });
 
   const run = async (dry) => {
     setBusy(dry ? "check" : "apply");
@@ -114,6 +120,13 @@ function GlossaryPurgePanel({ store, toast, onDone }) {
         "Только те, что не встречаются ни в одном тексте"),
       React.createElement(Checkbox, { checked: wholeService, onChange: () => setWholeService(v => !v) },
         "По всему сервису, а не только в области этого проекта"),
+      React.createElement(Checkbox, { checked: multiVariant, onChange: () => setMultiVariant(v => !v) },
+        "Только записи с несколькими вариантами перевода через «;»"),
+      multiVariant && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5, paddingLeft: 26 } },
+        "«аппендицит → appendicitis; ecphyaditis» — это не перевод, а строка "
+        + "из словарной статьи. Модель получает её целиком и берёт первый "
+        + "вариант, который часто хуже второго. Выбрать за неё верный нельзя: "
+        + "какой из двух подходит, знает предметная область, а не разделитель."),
       React.createElement(Checkbox, { checked: alsoOrders, onChange: () => setAlsoOrders(v => !v) },
         "Приказы, доставшиеся импорту по умолчанию"),
       alsoOrders && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5, paddingLeft: 26 } },

@@ -608,10 +608,55 @@ check(r["removed"] == 2 and left == {"лимфангит", "двойной ин�
                                      "Этамбутол", "мокрота"},
       "вынесены только многовариантные подсказки: %s" % sorted(left))
 check("мокрота" in left,
-      "приказная запись не выносится даже с точкой с запятой: уровень «приказ» "
-      "ставит человек, и пачкой его решение не отменяют")
+      "приказ при отборе подсказок не берётся — но отсекает его фильтр УРОВНЯ, "
+      "а не многовариантность: сама она уровня не смотрит")
 main.undo_glossary_purge(r["stamp"])
 check(len(main.STATE["glossary"]) == 6, "откат вернул вынесенное")
+
+# И это надо было проверить, а не предположить: с tier=verified приказная
+# запись с «;» выносится. Так и задумано (см. CLAUDE.md про вынос приказов,
+# доставшихся импорту по умолчанию миграции), но обещать обратное нельзя.
+build([entry("мокрота", "sputum; phlegm", tier="verified")])
+r2 = main.purge_glossary(main.GlossaryPurgeRequest(tier="verified", multi_variant=True,
+                                                   dry_run=True))
+check(r2["matched"] == 1,
+      "режимом tier=verified многовариантный приказ БЕРЁТСЯ: предикат уровня "
+      "не знает, а защищает записи след решения человека")
+build([entry("мокрота", "sputum; phlegm", tier="verified", origin="confirmed:7")])
+r3 = main.purge_glossary(main.GlossaryPurgeRequest(tier="verified", multi_variant=True,
+                                                   dry_run=True))
+check(r3["matched"] == 0 and r3["keptHuman"] == 1,
+      "а со следом человека — не берётся, и пощада названа числом")
+
+# Предикат считает ВАРИАНТЫ, а не наличие символа: висячая точка с запятой —
+# обычная грязь импорта, а не второй вариант.
+check(main._multi_variant({"tgt": "appendicitis;"}) is False, "висячая «;» вариантом не считается")
+check(main._multi_variant({"tgt": ";"}) is False, "и одна голая «;» тоже")
+check(main._multi_variant({"tgt": ""}) is False, "пустой перевод — не многовариантность")
+check(main._multi_variant({}) is False, "и отсутствующий тоже")
+
+# Пощада считается ПОСЛЕ сужения: иначе число отвечало бы не на тот вопрос.
+build([entry("аппендицит", "appendicitis; ecphyaditis"),
+       entry("лимфангит", "lymphangitis", origin="confirmed:1"),
+       entry("мокрота", "sputum", origin="confirmed:2")])
+r4 = main.purge_glossary(main.GlossaryPurgeRequest(multi_variant=True, dry_run=True))
+check(r4["matched"] == 1 and r4["keptHuman"] == 0,
+      "пощажённых ноль: правленые человеком записи под фильтр не подходили, "
+      "и считать их в keptHuman значило бы обещать защищённый хвост, "
+      "которого нет")
+
+build([entry("аппендицит", "appendicitis; ecphyaditis"),
+       entry("бледность", "paleness; pallor", origin="confirmed:3")])
+r5 = main.purge_glossary(main.GlossaryPurgeRequest(multi_variant=True, dry_run=True))
+check(r5["matched"] == 1 and r5["keptHuman"] == 1,
+      "а вот многовариантная запись со следом человека и подходит, и щадится")
+
+# Пустой отбор на применении отвечает числом, а не отсутствием ключа.
+build([entry("лимфангит", "lymphangitis")])
+r6 = main.purge_glossary(main.GlossaryPurgeRequest(multi_variant=True, dry_run=False))
+check(r6["removed"] == 0 and r6["stamp"] is None,
+      "выносить нечего — «removed: 0», а не пропавший ключ")
+
 
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))

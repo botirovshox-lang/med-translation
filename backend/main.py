@@ -134,7 +134,19 @@ def _same_lexeme(term_word: str, found_word: str) -> bool:
         сузил бы глоссарий там, где на него никто не жаловался;
       • слово не из кириллицы — МОЛЧИМ. Список окончаний русский, и для
         латиницы он не значит ничего: тот же закон, что у DOMAIN_RULES без
-        правил для пары языков."""
+        правил для пары языков.
+
+    Чего правило НЕ умеет, и это названо намеренно:
+      • беглая гласная («пузырёк» → «пузырька», «палец» → «пальца»): основа
+        меняется, общего стема с окончаниями не находится, и законная форма
+        отвергается. На боевом глоссарии это ~4% снятых пар и НИ ОДНОЙ среди
+        приказных записей — цена ошибки здесь потерянная подсказка, а не
+        потерянный приказ;
+      • глагольные формы («разрушать» → «разрушается»): список окончаний
+        именной, а глагол словарной записью глоссария почти не бывает.
+    Чинит это настоящая морфология, и её сюда не вставить: любое ослабление
+    правила возвращает «туберкулема → туберкулез», ради которого оно и
+    заведено."""
     a, b = (term_word or "").lower().replace("ё", "е"), (found_word or "").lower().replace("ё", "е")
     if not _CYR_ONLY_RE.fullmatch(a) or not _CYR_ONLY_RE.fullmatch(b):
         return True
@@ -6798,6 +6810,35 @@ def _case_like(form: str, target: str, term: str = "") -> str:
     return base[:i] + base[i].lower() + base[i + 1:]
 
 
+def _case_class(form: str) -> str:
+    """Класс начертания найденной формы: «caps», «abbr», «upper», «lower», «"»."""
+    letters = [c for c in form if c.isalpha()]
+    if not letters or not _has_case(form):
+        return ""
+    if all(c.isupper() for c in letters):
+        return "caps" if len(letters) >= CASE_CAPS_MIN else "abbr"
+    return "upper" if letters[0].isupper() else "lower"
+
+
+def _agreed_form(term: str, text: str) -> str:
+    """Форма термина в оригинале — если ВСЕ его вхождения написаны одинаково.
+
+    Иначе "": в одном сегменте термин может стоять и заголовком, и посреди
+    фразы («Туберкулема плотна. …части туберкулемы…»), а требование у нас
+    одно на сегмент. Навязать одно начертание всем вхождениям значит испортить
+    то из них, которое и так верно. Не знаем — молчим, как везде."""
+    exact, stem = _term_patterns(term)
+    if exact is None:
+        return ""
+    got = [m.group(0) for m in (stem or exact).finditer(text)]
+    if not got:
+        got = [m.group(0) for m in exact.finditer(text)]
+    if not got:
+        return ""
+    classes = {_case_class(g) for g in got}
+    return got[0] if len(classes) == 1 else ""
+
+
 def _sentence_start(text: str, pos: int) -> bool:
     """Стоит ли позиция в начале предложения: перед ней либо ничего,
     либо знак конца. Заглавная там законна при любом оригинале."""
@@ -6826,7 +6867,11 @@ def _term_case_hits(seg: dict, hits: list) -> list:
     low = target.lower()
     out = []
     for h in hits:
-        tgt, form = (h.get("tgt") or "").strip(), h.get("_form") or ""
+        tgt = (h.get("tgt") or "").strip()
+        # Форма берётся СОГЛАСОВАННАЯ по всему оригиналу, а не первая
+        # попавшаяся: требование у нас одно на сегмент, и разнобой в оригинале
+        # означает «не знаем».
+        form = _agreed_form(h.get("src") or "", seg.get("source") or "")
         if not tgt or not form:
             continue
         want = _case_like(form, tgt, h.get("src") or "")
@@ -6848,6 +6893,52 @@ def _term_case_hits(seg: dict, hits: list) -> list:
                         "text": "в оригинале термин написан как «" + form
                                 + "», значит и в переводе он пишется «" + want + "»"})
     return out
+
+
+def _term_case_fix(seg: dict, project: Optional[dict]) -> tuple:
+    """(новый текст, [(было, стало)]) — начертание приказных терминов по оригиналу.
+
+    Меняются ТОЛЬКО заглавные и строчные: буквы, слова и порядок остаются те же,
+    поэтому вызов модели здесь не нужен и вреден. Ремонт на такую претензию
+    переписывает предложение целиком, оценка находит, что стало чуть хуже,
+    и откатывает правку — на боевом учебнике так застряли 5 сегментов из 77,
+    каждый ценой платного вызова. Это вторая команда в системе, меняющая текст
+    без модели (первая — `/glossary/revert-repairs`), и по той же причине:
+    она ничего не сочиняет."""
+    target = (seg.get("target") or "").strip()
+    if not target or project is None or not _has_case(target):
+        return target, []
+    low = target.lower()
+    spans = []
+    for h in _verified_hits(seg.get("source", ""), project):
+        tgt = (h.get("tgt") or "").strip()
+        form = _agreed_form(h.get("src") or "", seg.get("source") or "")
+        if not tgt or not form:
+            continue
+        want = _case_like(form, tgt, h.get("src") or "")
+        need = tgt.lower()
+        k = low.find(need)
+        while k >= 0:
+            got = target[k:k + len(tgt)]
+            if got != want and not (want[:1].islower() and _sentence_start(target, k)):
+                spans.append((k, k + len(tgt), want, got))
+            k = low.find(need, k + 1)
+    if not spans:
+        return target, []
+    # Длинный термин перекрывает короткий («туберкулез легких» и «туберкулез»).
+    # Берём по документу слева направо, длинный первым, и пересечения не трогаем:
+    # две правки одного места дали бы обрывок слова.
+    spans.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+    out, moves, pos = [], [], 0
+    for a, b, want, got in spans:
+        if a < pos:
+            continue
+        out.append(target[pos:a])
+        out.append(want)
+        moves.append((got, want))
+        pos = b
+    out.append(target[pos:])
+    return "".join(out), moves
 
 
 # ── Буквы чужого письма ──────────────────────────────────────────────
@@ -7154,7 +7245,13 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     # соответствие глоссарию, и приходит она отсюда же: приказная запись
     # копируется в перевод вместе со своим начертанием. Устаревать ей нечему,
     # поэтому хеша у неё нет — сверяются нынешние тексты.
-    items = (_gloss_misses(seg, project) + _term_case_misses(seg, project)
+    # Начертания приказных терминов здесь НЕТ намеренно: оно чинится
+    # детерминированно и бесплатно (`_term_case_fix`, POST …/term-case).
+    # Отдать его модели значит платить за переписывание предложения ради
+    # одной буквы — и получить откат, потому что «чуть хуже» по баллу
+    # перевесит. В `_repair_scores` оно остаётся: ремонт, ЛОМАЮЩИЙ начертание,
+    # обязан откатиться.
+    items = (_gloss_misses(seg, project)
              + _case_misses(seg) + _script_misses(seg))
     # Потерянные приказные термины — через _terms_lost_open, тем же расчётом,
     # что и счётчик в `_repair_scores`. Он и снимает вердикты контекстного
@@ -7627,6 +7724,49 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
                      "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
     return {"ok": True, "applied": True, "repair": seg["repair"], "target": new_target,
             "desync": _repair_desync(seg, new_target)}
+
+
+class TermCaseRequest(BaseModel):
+    dry_run: bool = True                      # по умолчанию только считаем
+    segment_ids: Optional[List[int]] = None   # None — весь проект
+    include_confirmed: bool = False            # трогать заверенное человеком
+
+
+@app.post("/api/projects/{pid}/term-case")
+def term_case(pid: int, req: TermCaseRequest = TermCaseRequest()):
+    """Приводит начертание приказных терминов к оригиналу. БЕЗ вызова модели.
+
+    Запись глоссария хранит одно начертание, а мест, куда она встаёт, много:
+    «Туберкулема» стоит и заголовком, и посреди фразы. Как термин написан
+    в ЭТОМ сегменте оригинала — так он пишется и в переводе (`_case_like`).
+    Меняются только заглавные и строчные: слова, их порядок и знаки те же,
+    поэтому сочинять тут нечего и модель не нужна.
+
+    `dry_run` по умолчанию: сначала показываем, что изменится, — то же правило,
+    что у выноса глоссария и пересчёта баллов. Заверенное человеком не трогаем
+    без явного разрешения: правка снимет с него отметку (`_replace_target`)."""
+    project = get_project(pid)
+    ids = set(req.segment_ids) if req.segment_ids is not None else None
+    changed, skipped_confirmed, samples = 0, [], []
+    for seg in project["segments"]:
+        if ids is not None and seg["id"] not in ids:
+            continue
+        new_text, moves = _term_case_fix(seg, project)
+        if not moves:
+            continue
+        if seg.get("status") == "confirmed" and not req.include_confirmed:
+            skipped_confirmed.append(seg["id"])
+            continue
+        changed += 1
+        if len(samples) < 20:
+            samples.append({"id": seg["id"],
+                            "fixed": [{"was": a, "now": b} for a, b in moves]})
+        if not req.dry_run:
+            _replace_target(seg, new_text, seg.get("provider") or "", "TERM_CASE")
+    if changed and not req.dry_run:
+        save_state(STATE)
+    return {"ok": True, "dryRun": req.dry_run, "segments": changed,
+            "skippedConfirmed": skipped_confirmed, "samples": samples}
 
 
 class TermContextRequest(BaseModel):
@@ -9893,13 +10033,12 @@ def run_plan(pid: int, req: RunPlanRequest):
                       if "translate" in steps else set())
     # Один расчёт соответствия глоссарию на весь разбор, из общего кэша по
     # отпечатку проекта — тот же, которым живёт отчёт «Соответствие глоссарию».
-    # В один набор: и «утверждённого термина в переводе нет», и «есть, но не
-    # в начертании оригинала». Оба чинит ремонт, и оба считаются по глоссарию,
-    # то есть `_repair_findings(seg, None)` их не видит — она зовётся БЕЗ
-    # проекта ради скорости, и без этого набора состав прогона разошёлся бы
-    # с тем, что прогон делает.
-    _imp = glossary_impact(pid) if "repair" in steps else {}
-    gloss_ids = (set(_imp.get("segments") or ()) | set(_imp.get("caseSegments") or ())
+    # Только «утверждённого термина в переводе НЕТ»: это работа ремонта, и
+    # `_repair_findings(seg, None)` её не видит — она зовётся БЕЗ проекта ради
+    # скорости. Расхождения по НАЧЕРТАНИЮ (`caseSegments`) сюда не входят:
+    # их чинит бесплатная детерминированная команда, и звать ради них модель
+    # значит платить за то, что делается точно и даром.
+    gloss_ids = (set(glossary_impact(pid)["segments"])
                  if "repair" in steps else set())
     plans = [_plan_step(project, st, params, scope, will_translate, gloss_ids)
              for st in steps]

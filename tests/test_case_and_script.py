@@ -180,8 +180,8 @@ proj, seg = build("В казеозной части туберкулемы со�
 got = main._term_case_misses(seg, proj)
 check(len(got) == 1 and got[0]["use"] == "tuberculoma",
       "заглавная посреди фразы найдена, и назван нужный вариант: %s" % got)
-check(any(f["kind"] == "term_case" for f in main._repair_findings(seg, proj)),
-      "находка доезжает до ремонта")
+check(not any(f["kind"] == "term_case" for f in main._repair_findings(seg, proj)),
+      "в ремонт начертание НЕ идёт: оно чинится точно и бесплатно")
 check(main._repair_scores(seg, proj)["term_case"] == 1,
       "и до его оценки — значит откат сработает")
 check(main._repair_scores(seg, None)["term_case"] == 0,
@@ -223,6 +223,51 @@ check("туберкулемы → tuberculoma" in msg,
       "слева форма из сегмента, справа перевод в её начертании")
 check("Tuberculoma" not in msg,
       "словарное начертание в промпт не уходит вовсе — копировать нечего")
+
+print("=== 14. Начертание чинится БЕЗ модели ===")
+# Разнобой в оригинале («Туберкулема плотна» и «части туберкулемы») —
+# требования нет: одно начертание на сегмент испортило бы верное вхождение.
+proj, seg = build("В казеозной части туберкулемы сосуды отсутствуют. Туберкулема плотна.",
+                  "In the caseous part of a Tuberculoma vessels are absent. tuberculoma is dense.")
+check(main._term_case_fix(seg, proj)[1] == [] and not main._term_case_misses(seg, proj),
+      "оригинал сам себе противоречит — молчим, как везде")
+
+proj, seg = build("В казеозной части туберкулемы сосуды отсутствуют, туберкулемы плотны.",
+                  "In the caseous part of a Tuberculoma vessels are absent, Tuberculoma is dense.")
+new, moves = main._term_case_fix(seg, proj)
+check(new == "In the caseous part of a tuberculoma vessels are absent, tuberculoma is dense.",
+      "оба вхождения приведены к оригиналу: %r" % new)
+check(len(moves) == 2, "и каждое названо: %s" % moves)
+check(main._norm_key(new) == main._norm_key(seg["target"]),
+      "слова и порядок не тронуты — изменился только регистр")
+
+seg["target"] = new
+check(not main._term_case_misses(seg, proj), "после правки претензий нет")
+check(main._term_case_fix(seg, proj)[1] == [], "повторный заход ничего не меняет")
+
+check(not any(f["kind"] == "term_case" for f in main._repair_findings(seg, proj)),
+      "в находки ремонта начертание НЕ идёт: платить за одну букву незачем")
+proj2, bad = build("В казеозной части туберкулемы сосуды отсутствуют.",
+                   "In the caseous part of a Tuberculoma vessels are absent.")
+check(main._repair_scores(bad, proj2)["term_case"] == 1,
+      "но в оценке остаётся: ремонт, СЛОМАВШИЙ начертание, обязан откатиться")
+
+res = main.term_case(1, main.TermCaseRequest(dry_run=True))
+check(res["segments"] == 1 and res["dryRun"] is True,
+      "разбор считает, но не меняет: %s" % {k: res[k] for k in ("segments", "dryRun")})
+check(bad["target"].count("Tuberculoma") == 1, "текст при разборе не тронут")
+res = main.term_case(1, main.TermCaseRequest(dry_run=False))
+check(res["segments"] == 1 and "tuberculoma" in bad["target"],
+      "а с dry_run=False правит: %r" % bad["target"])
+
+bad["status"] = "confirmed"
+bad["target"] = "In the caseous part of a Tuberculoma vessels are absent."
+res = main.term_case(1, main.TermCaseRequest(dry_run=False))
+check(res["skippedConfirmed"] == [bad["id"]] and "Tuberculoma" in bad["target"],
+      "заверенное человеком без разрешения не трогается: %s" % res)
+res = main.term_case(1, main.TermCaseRequest(dry_run=False, include_confirmed=True))
+check("tuberculoma" in bad["target"] and bad["status"] == "review",
+      "с разрешением правится, и отметка человека снимается — текст изменился")
 
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

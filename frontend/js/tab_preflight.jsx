@@ -453,7 +453,7 @@ function TabPreflight({ store, toast }) {
     // ---- Соответствие обратного перевода ----
     React.createElement(BackcheckBands, { segments: segs, project, onDrill: openDrill, T }),
 
-    React.createElement(GlossaryImpact, { project, onDrill: openDrill, T }),
+    React.createElement(GlossaryImpact, { project, store, toast, onDrill: openDrill, T }),
 
     React.createElement(TermcheckSummary, { segments: segs, onDrill: openDrill, T }),
 
@@ -667,9 +667,10 @@ function StatRow({ label, note, count, color, onDrill, bold }) {
 // Одобрение термина не переписывает готовые переводы. Этот блок показывает,
 // где они разошлись с глоссарием, и открывает такие сегменты в редакторе —
 // сам переперевод запускается там, карточкой «Соответствие глоссарию».
-function GlossaryImpact({ project, onDrill, T }) {
+function GlossaryImpact({ project, store, toast, onDrill, T }) {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [fixing, setFixing] = useState(false);
 
   const load = () => {
     if (!window.API || !window.API.glossaryImpact || !project) return;
@@ -684,6 +685,53 @@ function GlossaryImpact({ project, onDrill, T }) {
   const segsById = new Map((project ? project.segments : []).map(s => [s.id, s]));
   const pick = (ids) => (ids || []).map(id => segsById.get(id)).filter(Boolean);
 
+  /* Начертание приказных терминов под оригинал. Вызовов модели тут НЕТ:
+     меняются только заглавные и строчные, слова и порядок те же. Поэтому
+     кнопка не спрашивает про модель и не считает цену — но спрашивает
+     подтверждение: текст в проекте всё-таки меняется, и показать, ЧТО именно
+     изменится, дешевле, чем объяснять потом. Отсюда два захода: разбор
+     (dry_run) и, если человек согласился, сама правка. */
+  const fixCase = async () => {
+    if (!window.API || !window.API.termCase || !project) return;
+    setFixing(true);
+    const dry = await window.API.safeCall(() => window.API.termCase(project.id));
+    if (!dry || !dry.ok) {
+      setFixing(false);
+      toast && toast.error("Не вышло разобрать начертание", (dry && dry.error) || "попробуйте ещё раз");
+      return;
+    }
+    if (!dry.segments) {
+      setFixing(false);
+      toast && toast.info("Начертание терминов", "и так по оригиналу — менять нечего");
+      return;
+    }
+    const sample = (dry.samples || []).slice(0, 5)
+      .map(x => "  #" + x.id + ": " + (x.fixed || []).map(f => f.was + " → " + f.now).join(", "))
+      .join("\n");
+    const skipped = (dry.skippedConfirmed || []).length;
+    const ok = window.confirm(
+      "Привести начертание терминов к оригиналу: " + dry.segments + " сегм.\n"
+      + "Меняются только заглавные и строчные — слова и порядок те же.\n\n"
+      + sample + (dry.segments > 5 ? "\n  …" : "")
+      + (skipped ? "\n\nЗаверенных человеком не трогаем: " + skipped : ""));
+    if (!ok) { setFixing(false); return; }
+    const res = await window.API.safeCall(() => window.API.termCase(project.id, { apply: true }));
+    setFixing(false);
+    if (!res || !res.ok) {
+      toast && toast.error("Правка не выполнена", (res && res.error) || "попробуйте ещё раз");
+      return;
+    }
+    /* Подтягиваем ТОЛЬКО правленые сегменты: проект на 2670 строк весит
+       5 МБ, и тянуть его целиком ради десятка изменившихся — трафик впустую. */
+    if ((res.ids || []).length && window.API.fetchSegments && store) {
+      const got = await window.API.safeCall(() => window.API.fetchSegments(project.id, res.ids));
+      (got && got.segments || []).forEach(sg => store.updateSegment(project.id, sg.id, sg));
+    }
+    toast && toast.success("Начертание приведено к оригиналу",
+                           res.segments + " сегм. — без единого вызова модели");
+    load();
+  };
+
   return React.createElement("div", { className: "section" },
     React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
       React.createElement("div", { className: "row between", style: { alignItems: "flex-end", flexWrap: "wrap", gap: 10 } },
@@ -695,7 +743,21 @@ function GlossaryImpact({ project, onDrill, T }) {
             busy ? "Считаем…" : !data ? "—"
               : data.segments.length ? "Расходятся с глоссарием: " + data.segments.length + " сегм. по " + data.terms.length + " терминам"
               : "Все переводы соответствуют одобренным терминам")),
-        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", disabled: busy, onClick: load }, "Пересчитать")),
+        React.createElement("div", { className: "row", style: { gap: 8 } },
+          data && (data.caseSegments || []).length > 0 && React.createElement(Btn, {
+            variant: "primary", size: "sm", icon: "edit", disabled: fixing || busy, onClick: fixCase },
+            fixing ? "Правим…" : "Привести начертание"),
+          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", disabled: busy, onClick: load }, "Пересчитать"))),
+
+      /* Отдельной строкой, а не вперемешку с расхождениями выше: там термина
+         в переводе НЕТ вовсе и нужен платный переперевод, здесь он есть, но
+         не в том начертании — и чинится бесплатно, одной кнопкой. */
+      data && React.createElement(StatRow, {
+        label: "Начертание не по оригиналу",
+        note: (data.caseSegments || []).length ? "чинится без вызовов модели" : "всё по оригиналу",
+        count: (data.caseSegments || []).length,
+        color: (data.caseSegments || []).length ? "var(--c-warning)" : undefined,
+        onDrill: () => onDrill("Начертание терминов не по оригиналу", pick(data.caseSegments)) }),
 
       data && data.terms.length > 0 && React.createElement("div", { style: { display: "flex", flexDirection: "column" } },
         React.createElement(StatRow, { label: "Всего расхождений", bold: true, count: data.segments.length,

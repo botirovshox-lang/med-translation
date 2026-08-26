@@ -168,10 +168,101 @@ check(t3.some(s => s.indexOf("была бы откачена") !== -1),
 check(t3.some(s => s.indexOf("Арбитр посмотрел все") !== -1),
       "карточка не исчезает при нуле ожидающих: иначе не видно, что ноль настоящий");
 
-console.log();
-if (fail.length) {
-  console.log("ПРОВАЛЕНО: " + fail.length);
-  fail.forEach(f => console.log("  - " + f));
-  process.exit(1);
+// ─────────── 4. Начертание терминов: строка, кнопка и сама правка ───────────
+// Правка бесплатная и детерминированная, но текст в проекте она всё-таки
+// меняет — значит человек обязан увидеть, ЧТО изменится, и сколько таких мест.
+console.log("\n=== 4. Начертание терминов не по оригиналу ===");
+
+const project = { id: 1, segments: [{ id: 3, source: "туберкулемы", target: "Tuberculoma" }] };
+let impact = { ok: true, terms: [], segments: [], pending: [], confirmed: [], caseSegments: [3] };
+const calls = [];
+const patched = [];
+global.API.glossaryImpact = async () => impact;
+global.API.termCase = async (pid, opts) => {
+  calls.push(opts && opts.apply ? "apply" : "dry");
+  return opts && opts.apply
+    ? { ok: true, segments: 1, ids: [3] }
+    : { ok: true, dryRun: true, segments: 1, ids: [3], skippedConfirmed: [7],
+        samples: [{ id: 3, fixed: [{ was: "Tuberculoma", now: "tuberculoma" }] }] };
+};
+global.API.fetchSegments = async () => ({ ok: true, segments: [{ id: 3, target: "tuberculoma" }] });
+const store4 = { updateSegment: (pid, sid, sg) => patched.push([pid, sid, sg.target]) };
+let confirmText = "";
+global.confirm = (t) => { confirmText = t; return true; };
+
+async function renderCard(props) {
+  hooks = []; hookIdx = 0; effects.length = 0;
+  React.createElement(GlossaryImpact, props);          // заводит хуки и эффект
+  effects.slice().forEach(fn => fn());                  // useEffect стуб их только копит
+  await new Promise(r => setImmediate(r));              // даём промисам дорешаться
+  hookIdx = 0; effects.length = 0;
+  return React.createElement(GlossaryImpact, props);
 }
-console.log("ВСЁ ПРОШЛО");
+
+const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
+(async () => {
+  let tree4 = null, ok4 = true;
+  try { tree4 = await renderCard(props4); }
+  catch (e) { ok4 = false; console.log("      " + e.message); }
+  check(ok4, "карточка соответствия рендерится с отчётом сервера");
+  const t4 = ok4 ? texts(tree4) : [];
+  check(t4.some(s => s.indexOf("Начертание не по оригиналу") !== -1),
+        "строка про начертание есть — иначе о расхождении неоткуда узнать");
+  check(t4.some(s => s.indexOf("чинится без вызовов модели") !== -1),
+        "и сказано, что это бесплатно: иначе кнопку побоятся нажать");
+  check(t4.some(s => s.indexOf("Привести начертание") !== -1),
+        "кнопка на месте");
+
+  // Ноль — строка остаётся, кнопка уходит: пропавшая строка выглядит
+  // благополучнее, чем есть, а кнопке при нуле делать нечего.
+  impact = Object.assign({}, impact, { caseSegments: [] });
+  const zero = await renderCard(props4);
+  check(texts(zero).some(s => s.indexOf("всё по оригиналу") !== -1),
+        "при нуле строка не исчезает, а говорит, что ноль настоящий");
+  check(!texts(zero).some(s => s.indexOf("Привести начертание") !== -1),
+        "а кнопки нет: править нечего");
+
+  // Старый сервер отвечает без caseSegments — экран обязан пережить.
+  impact = { ok: true, terms: [], segments: [], pending: [], confirmed: [] };
+  let okOld = true;
+  try { await renderCard(props4); } catch (e) { okOld = false; console.log("      " + e.message); }
+  check(okOld, "ответ сервера БЕЗ caseSegments карточку не роняет");
+
+  // Сама правка: разбор → подтверждение → правка → подтягиваем только
+  // изменившиеся сегменты, а не весь проект на пять мегабайт.
+  impact = { ok: true, terms: [], segments: [], pending: [], confirmed: [], caseSegments: [3] };
+  hooks = []; hookIdx = 0; effects.length = 0;
+  const live = React.createElement(GlossaryImpact, props4);
+  effects.slice().forEach(fn => fn());
+  await new Promise(r => setImmediate(r));
+  hookIdx = 0; effects.length = 0;
+  let onClick = null;
+  (function find(n) {
+    if (!n || typeof n !== "object") return;
+    if (n.props && typeof n.props.onClick === "function"
+        && texts(n).some(s => s.indexOf("Привести начертание") !== -1)) onClick = n.props.onClick;
+    (n.children || []).forEach(find);
+  })(React.createElement(GlossaryImpact, props4));
+  check(!!onClick, "у кнопки есть обработчик");
+  if (onClick) {
+    await onClick();
+    await new Promise(r => setImmediate(r));
+    check(calls.join(",") === "dry,apply",
+          "сначала разбор, потом правка — и только с согласия: " + calls.join(","));
+    check(confirmText.indexOf("Tuberculoma → tuberculoma") !== -1,
+          "в подтверждении показано, что именно изменится");
+    check(confirmText.indexOf("Заверенных человеком не трогаем: 1") !== -1,
+          "и сказано про заверенные, которых правка не касается");
+    check(patched.length === 1 && patched[0][2] === "tuberculoma",
+          "подтянут только правленый сегмент: " + JSON.stringify(patched));
+  }
+
+  console.log();
+  if (fail.length) {
+    console.log("ПРОВАЛЕНО: " + fail.length);
+    fail.forEach(f => console.log("  - " + f));
+    process.exit(1);
+  }
+  console.log("ВСЁ ПРОШЛО");
+})();
+

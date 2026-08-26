@@ -213,6 +213,12 @@
     /* refresh — «Пересчитать» руками: отчёт кэширован по отпечатку проекта,
        и без этого нажатие возвращало бы посчитанное раньше, ничего не сделав. */
     glossaryImpact:(pid, refresh)           => call("GET",    `/projects/${pid}/glossary-impact` + (refresh ? "?refresh=true" : "")),
+    /* Начертание приказных терминов — под оригинал, 1в1. Вызовов модели НЕТ:
+       меняются только заглавные и строчные, слова и порядок те же. dryRun
+       по умолчанию: сначала показываем, что изменится, потом делаем. */
+    termCase:      (pid, opts)              => call("POST",   `/projects/${pid}/term-case`, {
+                                                 dry_run: !(opts && opts.apply),
+                                                 include_confirmed: !!(opts && opts.includeConfirmed) }),
     /* Итог по проекту одним экраном: чисто / исправлено машиной / нужен человек.
        Вызовов модели внутри нет, дёргать можно свободно. */
     analysis:      (pid)                    => call("GET",    `/projects/${pid}/analysis`),

@@ -7790,7 +7790,7 @@ def term_case(pid: int, req: TermCaseRequest = TermCaseRequest()):
     без явного разрешения: правка снимет с него отметку (`_replace_target`)."""
     project = get_project(pid)
     ids = set(req.segment_ids) if req.segment_ids is not None else None
-    changed, skipped_confirmed, samples = 0, [], []
+    changed, skipped_confirmed, samples = [], [], []
     for seg in project["segments"]:
         if ids is not None and seg["id"] not in ids:
             continue
@@ -7800,7 +7800,7 @@ def term_case(pid: int, req: TermCaseRequest = TermCaseRequest()):
         if seg.get("status") == "confirmed" and not req.include_confirmed:
             skipped_confirmed.append(seg["id"])
             continue
-        changed += 1
+        changed.append(seg["id"])
         if len(samples) < 20:
             samples.append({"id": seg["id"],
                             "fixed": [{"was": a, "now": b} for a, b in moves]})
@@ -7808,8 +7808,11 @@ def term_case(pid: int, req: TermCaseRequest = TermCaseRequest()):
             _replace_target(seg, new_text, seg.get("provider") or "", "TERM_CASE")
     if changed and not req.dry_run:
         save_state(STATE)
-    return {"ok": True, "dryRun": req.dry_run, "segments": changed,
-            "skippedConfirmed": skipped_confirmed, "samples": samples}
+    # Список id нужен браузеру: подтянуть ПРАВЛЕННЫЕ сегменты, а не весь проект
+    # на пять мегабайт ради десятка изменившихся строк.
+    return {"ok": True, "dryRun": req.dry_run, "segments": len(changed),
+            "ids": changed, "skippedConfirmed": skipped_confirmed,
+            "samples": samples}
 
 
 class TermContextRequest(BaseModel):

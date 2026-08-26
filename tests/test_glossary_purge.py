@@ -579,6 +579,40 @@ check(r["skippedCount"] == 1, "и назван: текст правили пос
 check(main.STATE["projects"][0]["segments"][0]["target"] == "Sputum, corrected by hand.",
       "ручная правка уцелела")
 
+print("")
+print("=== 28. Вынос многовариантных записей ===")
+# «appendicitis; ecphyaditis» — не перевод, а строка из словарной статьи.
+# Модель получает её одной подсказкой, и на боевом проекте 267 раз в перевод
+# садился ПЕРВЫЙ вариант, который сплошь и рядом хуже второго.
+build([entry("аппендицит", "appendicitis; ecphyaditis"),
+       entry("биоптат", "biopsied; material"),
+       entry("лимфангит", "lymphangitis"),
+       entry("двойной инфекцией ВИЧ/ТБ", "HIV/TB coinfection"),
+       entry("Этамбутол", "Ethambutol (100, 400 mg)"),
+       entry("мокрота", "sputum; phlegm", tier="verified")])
+check(main._multi_variant({"tgt": "appendicitis; ecphyaditis"}) is True,
+      "точка с запятой — разделитель вариантов")
+check(main._multi_variant({"tgt": "HIV/TB coinfection"}) is False,
+      "косая черта им НЕ считается: она часть самого термина")
+check(main._multi_variant({"tgt": "Ethambutol (100, 400 mg)"}) is False,
+      "и запятая тоже: ею перечисляют дозировки")
+
+r = main.purge_glossary(main.GlossaryPurgeRequest(multi_variant=True, dry_run=True))
+check(r["matched"] == 2, "разбор нашёл ровно две многовариантные подсказки")
+check(r["multiVariant"] is True, "и назвал, чем сузили отбор")
+check(len(main.STATE["glossary"]) == 6, "разбор ничего не вынес")
+
+r = main.purge_glossary(main.GlossaryPurgeRequest(multi_variant=True, dry_run=False))
+left = {g["src"] for g in main.STATE["glossary"]}
+check(r["removed"] == 2 and left == {"лимфангит", "двойной инфекцией ВИЧ/ТБ",
+                                     "Этамбутол", "мокрота"},
+      "вынесены только многовариантные подсказки: %s" % sorted(left))
+check("мокрота" in left,
+      "приказная запись не выносится даже с точкой с запятой: уровень «приказ» "
+      "ставит человек, и пачкой его решение не отменяют")
+main.undo_glossary_purge(r["stamp"])
+check(len(main.STATE["glossary"]) == 6, "откат вернул вынесенное")
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

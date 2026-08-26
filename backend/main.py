@@ -9649,12 +9649,40 @@ def _used_term_ids() -> set:
     return used
 
 
+# Разделитель ВАРИАНТОВ перевода в записи массового импорта. Ровно точка
+# с запятой и ничего больше: на боевом глоссарии она стоит в 157 записях
+# и НИ В ОДНОЙ приказной, то есть двусмысленна только у подсказок.
+# Косую черту сюда добавлять нельзя — она сплошь и рядом часть самого термина
+# («HIV/TB coinfection», «Eto/Pto», «helper/suppressor T-cell balance»),
+# запятую тоже: ею перечисляют дозировки («Ciprofloxacin (250, 500, 750 mg)»)
+# и однородные члены внутри одного термина.
+_VARIANT_SEP = ";"
+
+
+def _multi_variant(entry: dict) -> bool:
+    """Запись хранит НЕСКОЛЬКО вариантов перевода, а не перевод.
+
+    «аппендицит → appendicitis; ecphyaditis», «биоптат → biopsied; material»,
+    «бледность → paleness; pallor» — это строка из словарной статьи, а не
+    ответ на вопрос «как переводить термин». Модель получает её одной
+    подсказкой целиком, и на боевом проекте 267 раз в перевод садился ПЕРВЫЙ
+    вариант — а первый там сплошь и рядом хуже второго («aspergillomycosis»
+    вместо «aspergillosis», «biopsied» вместо «material»).
+
+    Чинить такую запись выбором варианта нельзя: какой из двух верен, знает
+    предметная область, а не разделитель. Запись, которая не может сказать,
+    что она означает, вреднее отсутствующей — поэтому её выносят, а не правят.
+    Приказных записей это не касается: там `;` не встречается вовсе."""
+    return _VARIANT_SEP in (entry.get("tgt") or "")
+
+
 class GlossaryPurgeRequest(BaseModel):
     # Что выносим. По умолчанию подсказки: массовый импорт лежит именно там,
     # а приказы — это решения человека и выверенных справочников.
     tier: str = GLOSSARY_TIER_SOFT
     project: Optional[int] = None      # только область этого проекта
     unused_only: bool = False          # только те, что не встречаются ни в одном проекте
+    multi_variant: bool = False        # только записи с НЕСКОЛЬКИМИ вариантами перевода
     dry_run: bool = True
 
 
@@ -9693,6 +9721,8 @@ def purge_glossary(req: GlossaryPurgeRequest = GlossaryPurgeRequest()):
         if _human_touched(g):
             kept_human += 1
             continue
+        if req.multi_variant and not _multi_variant(g):
+            continue
         if req.unused_only:
             if id(g) in used_ids:
                 continue
@@ -9707,6 +9737,7 @@ def purge_glossary(req: GlossaryPurgeRequest = GlossaryPurgeRequest()):
         # Молчаливой пощады не бывает: сказано, скольких не тронули и почему.
         "keptHuman": kept_human,
         "unusedOnly": req.unused_only,
+        "multiVariant": bool(req.multi_variant),
         "samples": [{"src": g.get("src"), "tgt": g.get("tgt")} for g in matched[:12]],
         "stamp": None,
     }

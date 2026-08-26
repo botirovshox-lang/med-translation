@@ -219,6 +219,64 @@ check(main._neighbours(proj, proj["segments"][0])[0] == "",
 check(main._neighbours(None, None) == ("", ""), "без проекта соседей тоже нет")
 
 print()
+print("")
+print("=== Сверка терминов моделью как штатный шаг ===")
+# Шаг спрашивает про ВСЕ приказные термины сегмента, а не только про спорные.
+# Детерминированная проверка знает морфологию одного языка и знает её грубо;
+# модель отвечает на тот же вопрос на любом языке — ради этого шаг и заведён.
+proj, seg = build("Очаговый туберкулёз лёгких у взрослых.",
+                  "Focal pulmonary tuberculosis in adults.",
+                  "Очаговый лёгочный туберкулёз у взрослых.")
+check([d["src"] for d in main._term_disputes_of(seg, proj)] == [],
+      "спора нет: термин на месте, проверки молчат")
+audit = main._term_terms_of(seg, proj, disputes_only=False)
+check([d["src"] for d in audit] == ["туберкулёз лёгких"],
+      "а сверка всё равно спрашивает про приказной термин сегмента")
+check(audit[0]["why"] == "" and audit[0]["forms"] == ["туберкулёз лёгких"],
+      "без причины (спора нет) и с формой из текста: %r" % (audit[0],))
+check(all(_d["src"] != "высокой" for _d in audit),
+      "подсказку автоимпорта не сверяем: модели разрешено её игнорировать")
+
+# Промпт один на оба режима, поэтому вердикт, полученный шагом, закрывает
+# и спор. Версия вопросов поднята — иначе новый вопрос не задавался бы никогда.
+check(main.TERM_CONTEXT_VERSION >= 2, "версия вопросов поднята вместе с промптом")
+asked = {}
+
+
+def fake_ctx(seg_, project_, disputes, prev_src, next_src, model):
+    asked["terms"] = [d["src"] for d in disputes]
+    return {"terms": [{"src": "туберкулёз лёгких", "ok": True, "use": "", "why": "передан верно"}],
+            "model": "gpt-5.6-terra"}
+
+
+main._openai_term_context = fake_ctx
+r = main._run_segment_term_context(seg, proj, None, disputes_only=False)
+check(r.get("ok") is True and asked["terms"] == ["туберкулёз лёгких"],
+      "шаг спросил про приказной термин")
+check(main._term_context_stale(seg) is False, "вердикт записан и свеж")
+check([t["ok"] for t in main._term_context_of(seg)] == [True], "и читается как «передан верно»")
+
+# «Передан верно» СНИМАЕТ претензию: ремонт по ней больше не пойдёт.
+seg["backcheck"]["terms_lost"] = ["туберкулёз лёгких"]
+check(not any(f["kind"] == "term_lost" for f in main._repair_findings(seg, proj)),
+      "снятая арбитром претензия в ремонт не идёт")
+
+# Разбор шага и его исполнение считают ОДНО и то же: иначе под соседними
+# кнопками стояли бы разные числа.
+plan = main._plan_step(proj, "termaudit", {}, list(proj["segments"]), set(), set())
+check(seg["id"] not in plan["ids"], "сверенный сегмент разбор второй раз не берёт")
+seg["target"] = "Focal pulmonary TB in adults."
+plan2 = main._plan_step(proj, "termaudit", {}, list(proj["segments"]), set(), set())
+check(seg["id"] in plan2["ids"], "а после правки перевода — берёт: вердикт устарел")
+check("termaudit" in main.FULL_RUN_STEPS
+      and main.FULL_RUN_STEPS.index("termaudit") < main.FULL_RUN_STEPS.index("repair"),
+      "шаг стоит ПЕРЕД ремонтом: его вердикт снимает претензию, и ремонт "
+      "по снятой не идёт")
+check(main.FULL_RUN_STEPS.index("termaudit") > main.FULL_RUN_STEPS.index("termcheck"),
+      "и ПОСЛЕ проверки терминов: её находки — причина спора")
+check(main.FULL_STEP_MODEL["termaudit"] == "tcx_model" and "termaudit" in main.JOB_CHUNKS,
+      "у шага своя модель и своя порция")
+
 if fail:
     print("ПРОВАЛЕНО: " + str(len(fail)))
     for f in fail:

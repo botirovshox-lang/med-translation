@@ -2105,7 +2105,7 @@ def glossary_impact(pid: int, refresh: bool = False):
     if cached and cached[0] == fp and not refresh:
         return cached[1]
     by_term: dict = {}
-    seg_ids, confirmed_ids, case_ids = set(), set(), set()
+    seg_ids, confirmed_ids, case_ids, term_ids = set(), set(), set(), set()
     for seg in project["segments"]:
         target = (seg.get("target") or "").strip()
         if not target:
@@ -2117,6 +2117,12 @@ def glossary_impact(pid: int, refresh: bool = False):
         # удвоить полминуты работы единственного воркера.
         if _term_case_hits(seg, hits):
             case_ids.add(seg["id"])
+        # И список «где вообще есть что сверять» — по тем же hits и тем же
+        # проходом. Шагу сверки терминов нужен именно он, а второй проход
+        # `_verified_hits` по проекту стоит 40 секунд единственного воркера:
+        # разбор прогона пересчитывается на каждую смену модели и галочки.
+        if hits:
+            term_ids.add(seg["id"])
         for h in hits:
             if _tgt_has_term(target, h["tgt"]):
                 continue
@@ -2137,7 +2143,11 @@ def glossary_impact(pid: int, refresh: bool = False):
               # в переводе нет вовсе», здесь «термин есть, но не в том
               # начертании». Смешай их — и карточка соответствия начала бы
               # звать переводить заново то, где надо поправить одну букву.
-              "caseSegments": sorted(case_ids)}
+              "caseSegments": sorted(case_ids),
+              # Сегменты, к которым применим хоть один приказной термин.
+              # Не «расходятся», а «есть что сверить»: по нему считается состав
+              # шага termaudit.
+              "termSegments": sorted(term_ids)}
     # Кого ремонт уже не возьмёт: тот же текст с теми же претензиями он
     # проходил, и второй заход вернёт то же самое. Считаем ЗДЕСЬ, чтобы
     # карточка и состав прогона брали одно число из одного расчёта.
@@ -2316,12 +2326,26 @@ def project_analysis(pid: int, refresh: bool = False):
     # на сегмент в ряду соседей; его «передан верно» уже сняло претензию
     # с ремонта, а «передан неверно» здесь и показывается: вопрос про ЗАПИСЬ
     # глоссария, поэтому список — по записям, а не по сегментам.
+    # Считаем по ВСЕМ вердиктам, а не только по спорным сегментам. Шаг сверки
+    # спрашивает про все приказные термины: на боевом проекте это 713 сегментов
+    # против 178 спорных, то есть при отборе по спору три четверти оплаченных
+    # ответов не читал бы никто — в ремонт «передан неверно» не идёт намеренно,
+    # а больше его показывать негде. Корзины обязаны быть исчерпывающими.
     ctx_pending, ctx_bad = 0, {}
     for s in project["segments"]:
-        if not _term_disputes_of(s, project):
+        if not (s.get("target") or "").strip():
             continue
-        if _term_context_stale(s):
-            ctx_pending += 1
+        seg_ctx = s.get("termContext") or {}
+        fresh = bool(seg_ctx) and not _term_context_stale(s)
+        # «Ждут арбитра» и «что он ответил» — РАЗНЫЕ вопросы, и считать их
+        # одним условием нельзя. Вердикт разбора спора — настоящий ответ про
+        # настоящий термин, и показывать его надо; но сегмент при этом всё
+        # равно ждёт полной сверки, потому что неспорные термины в нём никто
+        # не спрашивал.
+        if not fresh or not seg_ctx.get("all_terms"):
+            if _term_terms_of(s, project, disputes_only=False):
+                ctx_pending += 1
+        if not fresh:
             continue
         for t in _term_context_of(s):
             if t.get("ok") is False:
@@ -7301,11 +7325,12 @@ def _script_misses(seg: dict) -> list:
 # Вердикт кэшируется НА СЕГМЕНТЕ по хешу перевода и версии вопросов — тем же
 # способом, что back-check, termcheck и сверка смысла глоссария. Меняешь
 # промпт — поднимай версию, иначе новый вопрос не задаётся никогда.
-TERM_CONTEXT_VERSION = 1
+TERM_CONTEXT_VERSION = 2
 TERM_CONTEXT_DEFAULT_MODEL = JUDGE_DEFAULT_MODEL
 
 
-def _term_disputes_of(seg: dict, project: Optional[dict]) -> list:
+def _term_terms_of(seg: dict, project: Optional[dict],
+                   disputes_only: bool = True) -> list:
     """Спорные ПРИКАЗНЫЕ термины сегмента: где проверка и глоссарий разошлись.
 
     Два разных спора и оба про одно и то же слово:
@@ -7360,7 +7385,23 @@ def _term_disputes_of(seg: dict, project: Optional[dict]) -> list:
             if h:
                 add(h, "проверка терминов забраковала его и предлагает «%s»"
                     % (f.get("suggestion") or "другой вариант"))
+    if not disputes_only:
+        # Режим сверки: спрашиваем про ВСЕ приказные термины сегмента, а не
+        # только про те, вокруг которых уже вышел спор. Спор находят
+        # детерминированные проверки, а они знают морфологию одного языка
+        # и знают её грубо: «туберкулёз лёгких» им возвращается как «лёгочный
+        # туберкулёз» и считается потерей. Модель отвечает на тот же вопрос
+        # без всякой морфологии и на любом языке — ради этого шаг и заведён.
+        for h in hits:
+            add(h, "", h.get("_form"))
     return out
+
+
+def _term_disputes_of(seg: dict, project: Optional[dict]) -> list:
+    """Только СПОРНЫЕ приказные термины: где детерминированная проверка
+    разошлась с глоссарием. Отдельным именем, потому что вопрос другой:
+    здесь платят за разбор конфликта, а в сверке — за проверку всего."""
+    return _term_terms_of(seg, project, disputes_only=True)
 
 
 def _term_context_stale(seg: dict) -> bool:
@@ -7380,7 +7421,9 @@ def _openai_term_context(seg: dict, project: dict, disputes: list,
         "Ты — редактор перевода, специализация: " + dom["label"].lower() + ". "
         "Тебе дают три подряд идущих сегмента документа (язык: " + src_lang + "), "
         "перевод СРЕДНЕГО из них на " + tgt_lang + " и список утверждённых терминов, "
-        "вокруг которых возник спор.\n\n"
+        "применимых к этому сегменту. У некоторых в скобках сказано, чем "
+        "недовольна автоматическая проверка; у остальных скобок нет — их надо "
+        "просто сверить.\n\n"
         "Для КАЖДОГО термина ответь, передан ли он в переводе среднего сегмента "
         "правильно ИМЕННО ЗДЕСЬ, с учётом соседних сегментов.\n"
         "  ok — true, если смысл термина в переводе передан верно (пусть другими "
@@ -7397,8 +7440,10 @@ def _openai_term_context(seg: dict, project: dict, disputes: list,
         ">>> [этот сегмент] " + (seg.get("source") or "") + NL +
         "[сегмент ПОСЛЕ] " + (next_src or "—") + NL + NL +
         "Перевод этого сегмента (" + tgt_lang + "): " + (seg.get("target") or "") + NL + NL +
-        "Спорные термины:" + NL +
-        NL.join("  - %s → %s (%s)" % (d["src"], d["tgt"], d["why"]) for d in disputes)
+        "Утверждённые термины:" + NL +
+        NL.join("  - %s → %s%s" % (d["src"], d["tgt"],
+                                   (" (%s)" % d["why"]) if d.get("why") else "")
+                for d in disputes)
     )
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=2)
     extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
@@ -7424,7 +7469,8 @@ def _openai_term_context(seg: dict, project: dict, disputes: list,
 
 
 def _run_segment_term_context(seg: dict, project: dict,
-                              model: Optional[str] = None) -> dict:
+                              model: Optional[str] = None,
+                              disputes_only: bool = True) -> dict:
     """Спросить арбитра про спорные термины сегмента и записать вердикт.
 
     Ответ проверяется БЕСПЛАТНО, прежде чем стать поводом что-то переписывать:
@@ -7433,9 +7479,9 @@ def _run_segment_term_context(seg: dict, project: dict,
     молчание корпуса («не знаю») не одобряет и не блокирует, как везде в этой
     системе. Дальше правку всё равно принимает ремонт со своей перепроверкой
     и откатом — арбитр только предлагает."""
-    disputes = _term_disputes_of(seg, project)
+    disputes = _term_terms_of(seg, project, disputes_only=disputes_only)
     if not disputes:
-        return {"ok": False, "error": "Спорных утверждённых терминов нет"}
+        return {"ok": False, "error": "Утверждённых терминов в сегменте нет"}
     prev_src, next_src = _neighbours(project, seg)
     res = _openai_term_context(seg, project, disputes, prev_src, next_src, model)
     if not res:
@@ -7464,6 +7510,11 @@ def _run_segment_term_context(seg: dict, project: dict,
         terms.append(item)
     seg["termContext"] = {
         "version": TERM_CONTEXT_VERSION,
+        # Охват вопроса. Разбор СПОРА спрашивает только про спорные термины,
+        # сверка — про все. Без этой отметки вердикт разбора закрывал сегмент
+        # для сверки навсегда: на боевом проекте так осталось бы не сверено
+        # 89 приказных терминов в 61 сегменте.
+        "all_terms": not disputes_only,
         "target_hash": _text_hash((seg.get("target") or "").strip()),
         "model": res["model"], "terms": terms,
         "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -7748,8 +7799,15 @@ def _repair_scores(seg: dict, project: Optional[dict] = None) -> dict:
         # а следующий прогон завёл бы по ней новую находку — второй платный
         # заход. None по тому же правилу, что у `terms`: back-check не видел
         # этого текста, значит ноль означает «неизвестно», а не «чисто».
+        # None и тогда, когда претензию СНЯЛ арбитр: после правки его вердикт
+        # устареет вместе с текстом, `_terms_lost_open` вернёт сырой список
+        # нового back-check, и правка откатится по претензии, которую только
+        # что отменил тот, кто читал оба текста, — платный заход с заранее
+        # известным исходом.
         "terms_lost": (len(_terms_lost_open(seg))
                        if bc and not _check_stale(bc, seg.get("target") or "")
+                       and not any(x.get("ok") is True
+                                   for x in ((seg.get("termContext") or {}).get("terms") or ()))
                        else None),
         # Как и глоссарий, считается ВСЕГДА и бесплатно: правка ради термина
         # не должна попутно ронять заглавную в начале заголовка.
@@ -8048,10 +8106,15 @@ def term_case(pid: int, req: TermCaseRequest = TermCaseRequest()):
 
 
 class TermContextRequest(BaseModel):
-    segment_ids: Optional[List[int]] = None   # None — все спорные в проекте
+    segment_ids: Optional[List[int]] = None   # None — весь проект
     model: Optional[str] = None
     limit: int = 40
     refresh: bool = False                     # переспросить уже отвеченные
+    # False — разбирать только СПОР (дорого и точечно), True — сверять ВСЕ
+    # приказные термины сегмента. Второе и есть штатный шаг конвейера:
+    # детерминированная проверка знает морфологию одного языка и грубо,
+    # а модель отвечает на тот же вопрос на любом языке.
+    all_terms: bool = False
 
 
 @app.post("/api/projects/{pid}/term-context")
@@ -8067,11 +8130,12 @@ def term_context(pid: int, req: TermContextRequest = TermContextRequest()):
         raise HTTPException(503, "Арбитр требует ключ OpenAI")
     project = get_project(pid)
     ids = set(req.segment_ids) if req.segment_ids is not None else None
-    todo, skipped = [], 0
+    todo, skipped, nothing = [], 0, 0
     for sg in project["segments"]:
         if ids is not None and sg["id"] not in ids:
             continue
-        if not _term_disputes_of(sg, project):
+        if not _term_terms_of(sg, project, disputes_only=not req.all_terms):
+            nothing += 1
             continue
         if not req.refresh and not _term_context_stale(sg):
             skipped += 1
@@ -8080,10 +8144,37 @@ def term_context(pid: int, req: TermContextRequest = TermContextRequest()):
     capped = len(todo) > max(0, req.limit)
     todo = todo[:max(0, req.limit)]
     settled, wrong, failed = [], [], []
-    for sg in todo:
+    # Дедупликации по паре «оригинал+перевод» здесь НЕТ намеренно, и это надо
+    # сказать вслух: контракт прогонов её требует. Ответ арбитра зависит
+    # от СОСЕДЕЙ, а не только от пары, поэтому копировать вердикт близнецу
+    # значило бы приписать ему чужую обстановку — та же уступка, что у перевода
+    # («соседи берутся у первого»), но здесь она бессмысленна: на боевом
+    # проекте среди 713 берущихся сегментов 711 уникальных пар, то есть вся
+    # экономия — два вызова из семисот.
+    #
+    # А вот параллельность нужна: вызов модели это ожидание сети, и порция
+    # из десяти сегментов подряд держала бы прогон вдесятеро дольше.
+    def _ask(sg):
+        # Остановку проверяем ЗДЕСЬ, а не в цикле: порция уходит в потоки
+        # разом, и сегменты, до которых очередь ещё не дошла, должны остаться
+        # неспрошенными, а не «провалившимися».
         if _job_should_stop():
-            break
-        r = _run_segment_term_context(sg, project, req.model)
+            return sg, None
+        try:
+            return sg, _run_segment_term_context(sg, project, req.model,
+                                                 disputes_only=not req.all_terms)
+        except Exception as e:                                   # pragma: no cover
+            # _run_parallel требует, чтобы fn ловила своё сама: одна упавшая
+            # пара не должна ронять всю порцию.
+            print("[backend] сверка терминов seg#%s: %s" % (sg.get("id"), e),
+                  file=sys.stderr)
+            return sg, {"ok": False, "error": str(e)}
+
+    asked = 0
+    for sg, r in _run_parallel(todo, _ask):
+        if r is None:
+            continue
+        asked += 1
         if not r.get("ok"):
             failed.append(sg["id"])
             continue
@@ -8093,7 +8184,11 @@ def term_context(pid: int, req: TermContextRequest = TermContextRequest()):
                  "use": t.get("use"), "why": t.get("why")})
     save_state(STATE)
     _ANALYSIS_CACHE.pop(pid, None)
-    return {"ok": True, "asked": len(todo), "cachedSkipped": skipped,
+    return {"ok": True, "asked": asked, "cachedSkipped": skipped,
+            # Сколько сегментов сверять было нечем. Без этого числа отдельный
+            # прогон на весь проект молча терял бы три четверти списка,
+            # а полоса дошла бы до «выполнено» на четверти.
+            "nothingToCheck": nothing,
             "capped": capped, "failed": failed,
             # «Передан верно» — снятая претензия: ремонт по ней больше не пойдёт.
             "settled": settled,
@@ -10113,6 +10208,9 @@ def health(request: Request):
 import queue as _queue
 
 JOB_CHUNKS = {"translate": 10, "backcheck": 10, "termcheck": 10, "medical_qa": 10,
+              # Сверка терминов моделью: один вызов на сегмент, порция как
+              # у остальных проверок.
+              "termaudit": 10,
               "repair": 5, "full": 5, "apply_terms": 5,
               # Разбор картинок идёт СВОИМ циклом (порция — картинка, а не
               # сегмент), но очередь и воркер те же: два тяжёлых прогона
@@ -10138,15 +10236,17 @@ JOB_KINDS = set(JOB_CHUNKS)
 # и оставалась устаревшей: следующий прогон забирал те же сегменты снова.
 # Стоя после, она описывает окончательный текст и в следующий прогон
 # не попадает.
-FULL_RUN_STEPS = ["translate", "backcheck", "termcheck", "repair", "medical_qa"]
+FULL_RUN_STEPS = ["translate", "backcheck", "termcheck", "termaudit",
+                  "repair", "medical_qa"]
 FULL_STEP_LABELS = {"translate": "перевод", "backcheck": "back-check",
                     "termcheck": "проверка терминов", "medical_qa": "Medical QA",
-                    "repair": "ремонт"}
+                    "termaudit": "сверка терминов", "repair": "ремонт"}
 # Откуда шаг берёт свою модель. Подшаги читают её из params["model"], а моделей
 # в составном прогоне несколько: смысл в том, что переводит одна, а проверяют
 # другие — иначе проверка перестаёт быть независимой.
 FULL_STEP_MODEL = {"translate": "model", "backcheck": "bc_model",
-                   "termcheck": "tc_model", "repair": "rp_model"}
+                   "termcheck": "tc_model", "termaudit": "tcx_model",
+                   "repair": "rp_model"}
 
 
 # ── Разбор прогона: что он сделает и чего делать не станет ───────────────────
@@ -10168,7 +10268,8 @@ def _model_label(mid: str) -> str:
 
 
 def _plan_step(project: dict, step: str, params: dict, scope: list,
-               will_translate: set, gloss_ids: set) -> dict:
+               will_translate: set, gloss_ids: set,
+               term_ids: Optional[set] = None) -> dict:
     """Разбор одного шага: кого возьмёт, кого не возьмёт и почему.
 
     will_translate — сегменты, которые переведёт этот же прогон. Сейчас у них
@@ -10193,6 +10294,8 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
         mdl_id = _resolve_model(params.get("rp_model") or REPAIR_DEFAULT_MODEL)["id"]
     elif step == "translate":
         mdl_id = _resolve_model(params.get("model"))["id"]
+    elif step == "termaudit":
+        mdl_id = _resolve_model(params.get("tcx_model") or TERM_CONTEXT_DEFAULT_MODEL)["id"]
     elif step == "medical_qa":
         # Своей модели у неё нет: правила детерминированные. Но обратный
         # перевод, если готового не осталось, она закажет — моделью back-check.
@@ -10223,7 +10326,16 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
 
         # Переводится в этом же прогоне — к своему шагу текст появится.
         if pending:
-            run("появится после перевода", seg)
+            # У сверки терминов есть о чём спрашивать не везде, и знать это
+            # можно ЗАРАНЕЕ: приказные записи применимы к ОРИГИНАЛУ, а он
+            # от перевода не меняется. Без этой оговорки разбор свежей книги
+            # обещал бы сверку всего проекта, а спросил бы четверть — смета
+            # вчетверо больше работы, а полоса прогона до галочки «шаг взял
+            # всё» не дошла бы никогда.
+            if step == "termaudit" and not _verified_hits(seg.get("source", ""), project):
+                skip("приказных терминов в сегменте нет")
+            else:
+                run("появится после перевода", seg)
             continue
         if not target:
             skip("нет перевода")
@@ -10265,6 +10377,32 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
                     + _model_label(tc.get("model")), seg)
             else:
                 run("прошлая проверка слабее выбранной: " + _model_label(tc.get("model")), seg)
+
+        elif step == "termaudit":
+            tcx = seg.get("termContext") or {}
+            # Спрашиваем только там, где есть о чём: сегмент без приказных
+            # терминов сверять нечем, и платить за него незачем.
+            # Готовый список — ускорение, а не источник правды: его отсутствие
+            # обязано менять только скорость, но не ОТВЕТ. Прямой вызов
+            # (тесты, будущий код) считает сам.
+            has_terms = (seg["id"] in term_ids if term_ids is not None
+                         else bool(_verified_hits(seg.get("source", ""), project)))
+            if not has_terms:
+                skip("приказных терминов в сегменте нет")
+            elif not _term_context_stale(seg) and tcx.get("all_terms"):
+                skip("уже сверен этим переводом")
+            elif not tcx:
+                run("ещё не сверялся", seg)
+            elif not tcx.get("all_terms"):
+                # Вердикт получен разбором СПОРА: там спрашивали только про
+                # спорные термины, остальные не сверяли ни разу.
+                run("сверялись только спорные термины", seg)
+            elif tcx.get("version") != TERM_CONTEXT_VERSION:
+                # Текст не менялся — изменился набор вопросов. Сказать «перевод
+                # изменился» значит соврать в отчёте, который для того и заведён.
+                run("вопросы сверки изменились", seg)
+            else:
+                run("перевод изменился после сверки", seg)
 
         elif step == "medical_qa":
             if seg.get("status") not in ("translated", "qa", "review", "confirmed"):
@@ -10338,6 +10476,7 @@ class RunPlanRequest(BaseModel):
     model: Optional[str] = None
     bc_model: Optional[str] = None
     tc_model: Optional[str] = None
+    tcx_model: Optional[str] = None
     rp_model: Optional[str] = None
     use_judge: bool = False
     retry: bool = False
@@ -10368,9 +10507,15 @@ def run_plan(pid: int, req: RunPlanRequest):
     # скорости. Расхождения по НАЧЕРТАНИЮ (`caseSegments`) сюда не входят:
     # их чинит бесплатная детерминированная команда, и звать ради них модель
     # значит платить за то, что делается точно и даром.
-    gloss_ids = (set(glossary_impact(pid)["segments"])
-                 if "repair" in steps else set())
-    plans = [_plan_step(project, st, params, scope, will_translate, gloss_ids)
+    impact = (glossary_impact(pid)
+              if ("repair" in steps or "termaudit" in steps) else None)
+    gloss_ids = set(impact["segments"]) if (impact and "repair" in steps) else set()
+    # Сегменты, где есть что сверять, берём из того же кэшированного отчёта.
+    # Считать `_verified_hits` заново — 13 мс на сегмент, то есть сорок секунд
+    # заблокированного воркера на каждый разбор; ровно та беда, из-за которой
+    # ремонт уже ходит сюда, а не считает глоссарий сам.
+    term_ids = set(impact["termSegments"]) if (impact and "termaudit" in steps) else set()
+    plans = [_plan_step(project, st, params, scope, will_translate, gloss_ids, term_ids)
              for st in steps]
     # Объединение — в порядке ДОКУМЕНТА, а не в порядке шагов: порции идут по
     # этому списку, и прогон должен двигаться по тексту сверху вниз, а не
@@ -10566,6 +10711,27 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
         return {"done": r["count"], "duplicates": r.get("duplicates", 0),
                 "skipped_cached": r.get("skipped_cached", 0),
                 "errors": len(r.get("errors", [])), "why": _first_error(r)}
+    if kind == "termaudit":
+        # Сверка ВСЕХ приказных терминов, а не разбор спора: сюда шаг и заведён.
+        # `refresh=False` — свежий вердикт второй раз не оплачиваем, за состав
+        # отвечает отбор сегментов (см. _plan_step).
+        r = term_context(pid, TermContextRequest(
+            segment_ids=chunk, limit=n, model=params.get("model"),
+            all_terms=True, refresh=False))
+        # done — вся порция, а не только спрошенное: сегменты без приказных
+        # терминов пройдены, просто спрашивать в них нечего. Иначе полоса
+        # прогона доходила бы до четверти и там останавливалась.
+        return {"done": (r.get("asked", 0) + r.get("nothingToCheck", 0)
+                         + r.get("cachedSkipped", 0)),
+                "asked": r.get("asked", 0),
+                "settled": len(r.get("settled") or []),
+                "wrong": len(r.get("wrong") or []),
+                "nothing": r.get("nothingToCheck", 0),
+                "skipped_cached": r.get("cachedSkipped", 0),
+                "errors": len(r.get("failed") or []),
+                # Строкой, а не None: счётчики порции складываются, и None
+                # среди них — TypeError посреди прогона.
+                "why": ("арбитр не ответил" if r.get("failed") else "")}
     if kind == "termcheck":
         r = termcheck_batch(pid, TermcheckBatchRequest(
             segment_ids=chunk, limit=n, model=params.get("model"),

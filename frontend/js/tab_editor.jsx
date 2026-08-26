@@ -13,8 +13,10 @@ const JUDGE_MODEL_LS_KEY = "mcat_judge_model";
 const BC_SKIP_CONFIRMED_LS_KEY = "mcat_bc_skip_confirmed";
 const SEARCH_SCOPE_LS_KEY = "mcat_search_scope";
 const TC_MODEL_LS_KEY = "mcat_termcheck_model";
+const TCX_MODEL_LS_KEY = "mcat_termaudit_model";
 const RP_MODEL_LS_KEY = "mcat_repair_model";
 const JOB_LABELS = { translate: "Перевод", backcheck: "Back-check", termcheck: "Проверка терминологии",
+                     termaudit: "Сверка терминов моделью",
                      repair: "Автоматический ремонт", medical_qa: "Medical QA",
                      full: "Перевод и проверка", apply_terms: "Одобрение и применение" };
 
@@ -22,6 +24,7 @@ const JOB_LABELS = { translate: "Перевод", backcheck: "Back-check", termc
 // в полосе прогресса: разойдись они — человек не свяжет галочку на полосе
 // со строкой, галочками в которой он этот шаг и набирал.
 const FULL_STEP_LABELS = { translate: "Перевод", backcheck: "Back-check", termcheck: "Термины",
+                           termaudit: "Сверка терминов",
                            repair: "Ремонт", medical_qa: "Medical QA" };
 
 /* Сколько раз пробуем забрать результат прогона, прежде чем сдаться вслух.
@@ -129,7 +132,7 @@ function priceOf(model, tokIn, tokOut) {
   return (tokIn / 1e6) * model.in + (tokOut / 1e6) * model.out;
 }
 
-// kind: translate | backcheck | termcheck | repair | medical_qa
+// kind: translate | backcheck | termcheck | termaudit | repair | medical_qa
 // opts: { judge, judgeModel, secPerSeg }
 function estimateRun(kind, targets, model, opts) {
   const o = opts || {};
@@ -177,6 +180,12 @@ function estimateRun(kind, targets, model, opts) {
                       (tgtChars / 2.2) * reasoning(o.recheckModel));
     }
     sec = n * EST_SEC_PER_SEG * 2;             // правка + перепроверка
+  } else if (kind === "termaudit") {
+    // Один вызов на сегмент: соседи + список приказных терминов -> вердикт
+    // по каждому. Соседи и есть основной вход, поэтому исходника втрое.
+    tokIn = n * 350 + (srcChars * 3 + tgtChars) / 2.6;
+    tokOut = n * 200 * mult;                   // короткий JSON по терминам
+    cost = priceOf(model, tokIn, tokOut);
   } else if (kind === "medical_qa") {
     tokIn = n * 200 + tgtChars / 3.5;
     tokOut = (tgtChars / 2.2) * mult;
@@ -315,7 +324,8 @@ function rpGroupDefault(key) { return key === "none" || key === "changed"; }
 // Названия и подписи шагов живут в строках таблицы (fullRunRows) — здесь
 // только порядок, и он обязан совпадать с FULL_RUN_STEPS на сервере: карточка
 // показывает, что произойдёт, а произойдёт то, что решил сервер.
-const FULL_STEP_KEYS = ["translate", "backcheck", "termcheck", "repair", "medical_qa"];
+const FULL_STEP_KEYS = ["translate", "backcheck", "termcheck", "termaudit",
+                        "repair", "medical_qa"];
 
 function fmtDuration(sec) {
   if (sec < 90) return Math.round(sec) + " с";
@@ -383,6 +393,9 @@ function TabEditor({ store, toast }) {
   });
   const [tcModel, setTcModel] = useState(() => {
     try { return localStorage.getItem(TC_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
+  });
+  const [tcxModel, setTcxModel] = useState(() => {
+    try { return localStorage.getItem(TCX_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
   const [rpModel, setRpModel] = useState(() => {
     try { return localStorage.getItem(RP_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
@@ -646,6 +659,11 @@ function TabEditor({ store, toast }) {
     try { localStorage.setItem(TC_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
   };
 
+  const pickTcxModel = (id) => {
+    setTcxModel(id);
+    try { localStorage.setItem(TCX_MODEL_LS_KEY, id); } catch (e) { /* приватный режим */ }
+  };
+
   const pickScope = (v) => {
     setScope(v);
     try { localStorage.setItem(SEARCH_SCOPE_LS_KEY, v); } catch (e) { /* приватный режим — не страшно */ }
@@ -673,6 +691,9 @@ function TabEditor({ store, toast }) {
     (!idSet || idSet.has(s.id));
 
   const judgeModelInfo = gptModels.find(m => m.id === judgeModel) || null;
+  // Объявлено ЗДЕСЬ, а не рядом со строками шагов: смета главной кнопки
+  // (fullEst) считается выше по файлу, а const до объявления не доступен.
+  const tcxModelInfo = gptModels.find(m => m.id === tcxModel) || null;
   const pickJudgeModel = (id) => {
     setJudgeModel(id);
     try { localStorage.setItem(JUDGE_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
@@ -755,7 +776,7 @@ function TabEditor({ store, toast }) {
   const scopeFp = currentIdSet
     ? currentIdSet.size + ":" + Array.from(currentIdSet).reduce((a, i) => a + i, 0) : "all";
   const planKey = [
-    project && project.id, gptModel, bcModel, tcModel, rpModel, bcJudge,
+    project && project.id, gptModel, bcModel, tcModel, tcxModel, rpModel, bcJudge,
     fullSteps ? Array.from(fullSteps).sort().join(",") : "*",
     rpGroupPick ? Array.from(rpGroupPick).sort().join(",") : "*",
     rpFixConfirmed ? "rc" : "",
@@ -779,6 +800,7 @@ function TabEditor({ store, toast }) {
       steps: fullSteps ? FULL_STEP_KEYS.filter(k => fullSteps.has(k)) : null,
       segment_ids: ids,
       model: gptModel, bc_model: bcModel, tc_model: tcModel, rp_model: rpModel,
+      tcx_model: tcxModel,
       use_judge: bcJudge,
       // Тот же признак, что и у карточки ремонта: отмечены группы уже
       // чинившихся — значит человек просит второй заход.
@@ -1316,6 +1338,13 @@ function TabEditor({ store, toast }) {
         c.translate ? "переведено " + c.translate : null,
         c.backcheck ? "back-check " + c.backcheck : null,
         c.termcheck ? "термины " + c.termcheck : null,
+        // Сверка терминов: показываем не «сколько сегментов прошло», а что
+        // она ОТВЕТИЛА — снятые претензии и найденные неверные передачи.
+        // Число пройденных сегментов тут ни о чём не говорит: в большинстве
+        // из них сверять нечего.
+        (c.settled || c.wrong)
+          ? "сверка терминов: снято " + (c.settled || 0) + ", неверных " + (c.wrong || 0)
+          : (c.termaudit ? "сверка терминов " + c.termaudit : null),
         c.medical_qa ? "Medical QA " + c.medical_qa : null,
         c.applied ? "исправлено " + c.applied : null,
       ].filter(Boolean).join(" · ") || "нового ничего не потребовалось";
@@ -1394,6 +1423,19 @@ function TabEditor({ store, toast }) {
       { model: tcModel || null, skip_cached: false },
       "Всё в выборке уже проверено этой моделью. Отметьте нужные группы в «Что проверять», чтобы прогнать заново.",
       estimateRun("termcheck", targets, tcModelInfo));
+  };
+
+  const runTermAudit = () => {
+    // Список берём из серверного разбора, а не считаем сами: приказные термины
+    // сегмента считает `_verified_hits`, и повторить его в браузере нечем.
+    const plan = stepPlan("termaudit");
+    const ids = new Set((plan && plan.ids) || []);
+    const targets = project.segments.filter(s => ids.has(s.id));
+    startJob("termaudit", targets,
+      { model: tcxModel || null },
+      "Сверять нечего: в выборке нет сегментов с утверждёнными терминами, "
+      + "либо все уже сверены этим переводом.",
+      estimateRun("termaudit", targets, tcxModelInfo));
   };
 
   const runRepairBatch = () => {
@@ -1593,6 +1635,12 @@ function TabEditor({ store, toast }) {
         { judge: bcJudge, judgeModel: judgeModelInfo }),
       pickedFull.has("termcheck") && estimateRun("termcheck", fullStepTargets.termcheck,
         gptModels.find(m => m.id === tcModel) || null),
+      // Сверка терминов моделью. Без неё смета главной кнопки была занижена
+      // на четверть: шаг по умолчанию включён, работу делает, а цены не имел —
+      // ровно то молчание, от которого этот блок и заведён. Заодно это число
+      // уходит в историю расхода как est_cost, по которому калибруется смета.
+      pickedFull.has("termaudit") && estimateRun("termaudit", fullStepTargets.termaudit,
+        tcxModelInfo),
       // Medical QA платит только там, где готового обратного перевода нет:
       // остальным его отдаёт back-check. И платит она по цене back-check —
       // модель обратного перевода у них теперь общая.
@@ -1728,6 +1776,23 @@ function TabEditor({ store, toast }) {
         "В выборке нечего проверять."),
     },
     {
+      key: "termaudit", label: FULL_STEP_LABELS.termaudit,
+      hint: "модель смотрит термин В РЯДУ соседей — то, чего морфология не умеет",
+      modelId: tcxModel, onModel: pickTcxModel, plan: stepPlan("termaudit"),
+      planEst: planEstOf("termaudit", tcxModelInfo),
+      // Состав ОБЕИХ кнопок берём у сервера: приказные термины сегмента
+      // браузер не считает и считать не должен — повтори мы этот расчёт,
+      // под соседними кнопками встали бы разные числа (замер на боевом
+      // проекте: 713 против 2711, разница в 3.8 раза).
+      soloEst: planEstOf("termaudit", tcxModelInfo),
+      onSolo: runTermAudit, onStop: stopJob,
+      running: batchRun && batchRun.engine === "termaudit" ? batchRun : null,
+      soloNote: "Один вызов на сегмент, сколько бы утверждённых терминов в нём "
+        + "ни было. Вердикт «передан верно» СНИМАЕТ претензию: ремонт по ней "
+        + "больше не пойдёт. «Передан неверно» уходит человеку на экран «Анализ» "
+        + "— это вопрос к записи глоссария, а не к строке.",
+    },
+    {
       key: "repair", label: FULL_STEP_LABELS.repair, hint: "правит по всем находкам, включая глоссарий",
       modelId: rpModel, onModel: pickRpModel, plan: stepPlan("repair"),
       planEst: planEstOf("repair", rpModelInfo, { recheckModel: bcModelInfo }),
@@ -1785,7 +1850,7 @@ function TabEditor({ store, toast }) {
     steps.forEach(k => { planned[k] = (fullStepTargets[k] || []).length; });
     const started = await startJob("full", fullRunIds, {
       steps,
-      model: gptModel, bc_model: bcModel, tc_model: tcModel,
+      model: gptModel, bc_model: bcModel, tc_model: tcModel, tcx_model: tcxModel,
       rp_model: rpModel, use_judge: bcJudge, judge_model: judgeModel || null,
       // Тот же retry, что и у карточки ремонта: карточка выше посчитала
       // и оценила сегменты по этому же правилу, и разойтись они не должны.

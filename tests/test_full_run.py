@@ -126,12 +126,37 @@ main.backcheck_batch = fake_step("backcheck", {"count": 2, "errors": []})
 main.termcheck_batch = fake_step("termcheck", {"count": 2, "flagged": 1, "errors": []})
 main.batch_medical_qa = fake_step("medical_qa", {"count": 2, "errors": []})
 main.repair_batch = fake_step("repair", {"applied": [1], "skipped": [], "errors": []})
+# Сверка терминов моделью: платный шаг, поэтому в тесте подменён, как и все
+# остальные. Порядок несущий — она обязана идти ПЕРЕД ремонтом: её вердикт
+# «передан верно» снимает претензию, и ремонт по снятой больше не идёт.
+tcx_req = {}
+
+
+def _fake_term_context(pid, req):
+    # Записывающая, а не немая: пропажа all_terms=True превращает штатный шаг
+    # обратно в разбор спора — молча и без единого падения.
+    order.append("termaudit")
+    tcx_req.update({"all_terms": req.all_terms, "refresh": req.refresh,
+                    "limit": req.limit, "ids": list(req.segment_ids or []),
+                    "model": req.model})
+    return {"asked": 2, "settled": [], "wrong": [], "cachedSkipped": 0,
+            "nothingToCheck": 0, "failed": []}
+
+
+main.term_context = _fake_term_context
 _real_translate = main.batch_translate
 main.batch_translate = fake_step("translate", {"count": 2, "errors": [], "tm_hits": 0,
                                                "duplicates": 0, "skipped_confirmed": []})
 
 out = main._job_chunk_full(1, [1, 2], {})
 check(order == main.FULL_RUN_STEPS, "порядок шагов: " + " → ".join(order))
+check(tcx_req.get("all_terms") is True,
+      "сверка идёт в режиме ВСЕХ приказных терминов, а не разбора спора: "
+      "иначе шаг делает не то, ради чего заведён")
+check(tcx_req.get("refresh") is False,
+      "и не переспрашивает уже отвеченное: за состав отвечает отбор сегментов")
+check(tcx_req.get("limit") == len(tcx_req.get("ids") or []) == 2,
+      "потолок равен порции, а не умолчанию в 40: %r" % (tcx_req,))
 check(out["done"] == 2, "прогресс считается сегментами порции, а не суммой шагов")
 check(out.get("translate") == 2 and out.get("applied") == 1,
       "счётчики шагов не сливаются в один")
@@ -154,10 +179,26 @@ seen = {}
 main.backcheck_batch = lambda pid, req: seen.update({"bc": req.model}) or {"count": 2, "errors": []}
 main.termcheck_batch = lambda pid, req: seen.update({"tc": req.model}) or {"count": 2, "errors": []}
 main.repair_batch = lambda pid, req: seen.update({"rp": req.model}) or {"applied": [], "skipped": [], "errors": []}
-main._job_chunk_full(1, [1, 2], {"steps": ["backcheck", "termcheck", "repair"],
-                                 "model": "T", "bc_model": "B", "tc_model": "C", "rp_model": "R"})
-check(seen == {"bc": "B", "tc": "C", "rp": "R"},
+main.term_context = lambda pid, req: seen.update({"tcx": req.model}) or {
+    "asked": 0, "settled": [], "wrong": [], "cachedSkipped": 0,
+    "nothingToCheck": 0, "failed": []}
+main._job_chunk_full(1, [1, 2], {"steps": ["backcheck", "termcheck", "termaudit", "repair"],
+                                 "model": "T", "bc_model": "B", "tc_model": "C",
+                                 "tcx_model": "X", "rp_model": "R"})
+check(seen == {"bc": "B", "tc": "C", "tcx": "X", "rp": "R"},
       "back-check не идёт той же моделью, что переводила: " + str(seen))
+
+print("")
+print("=== 6b. Смета главной кнопки знает про КАЖДЫЙ шаг ===")
+# Шаг, у которого есть работа, но нет цены, — худший вид молчания: человек
+# видит одну сумму, списывается другая, и она же уходит в историю расхода
+# как est_cost, по которому потом калибруется смета.
+_jsx = open("frontend/js/tab_editor.jsx", encoding="utf-8").read()
+_lo = _jsx.index("const fullEst")
+_parts = _jsx[_lo:_jsx.index("})();", _lo)]
+for _st in main.FULL_RUN_STEPS:
+    check(('pickedFull.has("%s")' % _st) in _parts,
+          "шаг «%s» посчитан в смете «Перевести и проверить»" % _st)
 
 print("\n=== 7. Недоступный шаг не роняет прогон, но молча не пропадает ===")
 main.medical_qa_mod = None

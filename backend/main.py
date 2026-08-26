@@ -559,6 +559,21 @@ def _lex_blind(source: str) -> bool:
     return bool(fn(source or "")) if fn else False
 
 
+def _bc_version() -> int:
+    """Версия ПРАВИЛ подсчёта back-check (medical_qa.BACKCHECK_VERSION).
+
+    Через getattr по той же причине, что и _lex_blind: medical_qa подключается
+    через _safe_import и может отсутствовать. Молчаливый ответ — 0, то есть
+    «версия неизвестна»: записи с таким числом никто не клеймит (у прежних
+    ключа `v` нет вовсе), и ни одна проверка на равенство не сработает
+    случайно."""
+    v = getattr(medical_qa_mod, "BACKCHECK_VERSION", 0) if medical_qa_mod else 0
+    try:
+        return int(v or 0)
+    except (TypeError, ValueError):                          # pragma: no cover
+        return 0
+
+
 def _judge_zone(source: str) -> tuple:
     """Зона вызова судьи для КОНКРЕТНОГО сегмента.
 
@@ -1751,7 +1766,11 @@ def project_analysis(pid: int, refresh: bool = False):
     checks = "".join(
         "%s:%s|%s:%s|%s:%s;" % (
             (s.get("backcheck") or {}).get("target_hash", ""),
-            (s.get("backcheck") or {}).get("score", ""),
+            # Балла мало: пересчёт правил может оставить балл прежним (ноль
+            # и до, и после клампа), а список претензий поменять — корзины
+            # findings и weak тогда остались бы докоррекционными.
+            "%s/%s" % ((s.get("backcheck") or {}).get("score", ""),
+                       len((s.get("backcheck") or {}).get("terms_lost") or ())),
             (s.get("termcheck") or {}).get("target_hash", ""),
             len((s.get("termcheck") or {}).get("findings") or ()),
             (s.get("repair") or {}).get("source_hash", ""),
@@ -3427,6 +3446,84 @@ def _trim_term_queue():
 _TERM_QUEUE_LOCK = threading.Lock()
 
 
+# Виды находок, где пара ПРЕДЛАГАЕТСЯ из свободного текста, а не берётся
+# из готового решения: извлечение терминов моделью и короткий сегмент целиком.
+# У `conflict` исходная сторона — уже существующая запись глоссария, у `audit`
+# — слово из находки termcheck; сомневаться в самой формулировке там не наше
+# дело, и проверять её значит выбрасывать чужой вопрос.
+TERM_HARVEST_KINDS = ("extract", "segment")
+# Сколько пар отсеяно как «это не словарная запись». Считаем, а не молчим:
+# отсев без счётчика неотличим от «модель ничего не нашла».
+_TERM_NOT_TERM = [0]
+
+
+# Кириллическое слово целиком: по нему из общего набора служебных слов
+# отбираются русские.
+_CYR_WORD_RE = re.compile(r"[а-яё]+")
+
+
+def _head_word(text: str) -> str:
+    """Первое НАСТОЯЩЕЕ слово строки, в нижнем регистре.
+
+    По пробелам, а не по буквам: «В-лимфоцит», «Т-хелперы», «С-реактивный
+    белок» начинаются одной буквой, но она часть слова, а не предлог. Токены
+    из одной пунктуации («— туберкулёз») пропускаются, иначе строка отклонялась
+    бы целиком из-за тире."""
+    for token in (text or "").split():
+        head = re.sub(r"^\W+|\W+$", "", token, flags=re.UNICODE).lower()
+        if head:
+            return head
+    return ""
+
+
+def _looks_like_term(src: str, tgt: str) -> bool:
+    """Похоже ли это на СЛОВАРНУЮ запись, а не на обрывок предложения.
+
+    Правило одно: запись не начинается служебным словом С ОБЕИХ СТОРОН.
+    «в лёгких → in the lungs», «у больного → The patient», «при кашле →
+    in cough» — это куски предложения, а не термины; на боевом проекте модель
+    извлечения выдавала такие пары вопреки прямой просьбе промпта («dictionary
+    form», `_term_extract_system`, правило 2), и они потом держали балл
+    back-check как «потерянный термин».
+
+    Сторон именно две, и это главное в правиле. По одному только оригиналу
+    отличить предлог от буквенной метки нельзя: «в лёгких» и «В-лимфоцит»,
+    «с кашлем» и «С реактивный белок», «у больного» и «витамин У» начинаются
+    одинаково. А вот перевод их разводит: у обрывка фразы служебное слово
+    стоит и в переводе («in the lungs»), у термина — нет («B lymphocytes»,
+    «C-reactive protein»). Конец записи не проверяется вообще: «Гепатит В»,
+    «Гепатит С», «Витамин С» кончаются буквами, которые в любом наборе
+    служебных слов стоят предлогами.
+
+    Со стороны оригинала берутся только КИРИЛЛИЧЕСКИЕ служебные слова, поэтому
+    «in situ» и «in vivo» остаются, а для источника на другом алфавите проверка
+    просто МОЛЧИТ — тот же закон, что у `DOMAIN_RULES` без правил для пары.
+    Со стороны перевода годится любое: там вопрос только «служебное ли это
+    слово», а язык перевода заранее неизвестен.
+
+    Чего правило НЕ ловит: «имеются у пациента» — служебное слово там
+    в середине, а широкое «содержит предлог» убило бы «боль в груди». Такие
+    пары останавливает сверка смысла (`_meaning_check` поставила этой паре
+    `rule: false`): приказом они не становятся, а балл back-check считается
+    только по приказным записям.
+
+    Набор берётся из medical_qa: там он уже есть и участвует в подсчёте балла,
+    а второй список тех же слов однажды разошёлся бы с первым. Набора нет
+    (модуль не подключён) — НЕ запрещаем: молчаливый ответ здесь «пропустить»,
+    тот же закон, что у `attested()` и `_lex_blind`."""
+    if not re.search(r"[^\W\d_]", src or ""):
+        # Пара без единой буквы («1.3», «—») словарной записью не бывает.
+        return False
+    stop = set(getattr(medical_qa_mod, "RU_STOPWORDS", ()) or ()) if medical_qa_mod else set()
+    if not stop:
+        return True
+    src_head, tgt_head = _head_word(src), _head_word(tgt)
+    if not src_head or not tgt_head:
+        return bool(src_head)
+    return not (_CYR_WORD_RE.fullmatch(src_head) and src_head in stop
+                and tgt_head in stop)
+
+
 def _queue_term(kind: str, src: str, tgt: str, **extra) -> Optional[dict]:
     """Кандидат в глоссарий. Повтор той же пары не плодит запись, а поднимает
     hits: по нему видно, какая проблема встречается чаще всего. Отклонённое
@@ -3579,6 +3676,20 @@ def _queue_term_locked(kind, src, tgt, src_n, tgt_n, now, extra):
     # намеренно: массовый автоимпорт как раз и ловится conflict-кандидатами
     # («задний → rear»), ради которых они заведены.
     if _hard_answer(_glossary_entry(src, scope)):
+        return None
+
+    # Последней — и только для видов, где пара ПРЕДЛАГАЕТСЯ из свободного
+    # текста. Именно последней: выше растут `hits` у существующей карточки
+    # и пишется `reasked` — список того, что прогоны предлагали взамен
+    # решённого. Поставь проверку раньше — и система начала бы молча глотать
+    # несогласие, чего делать нельзя.
+    if kind in TERM_HARVEST_KINDS and not _looks_like_term(src, tgt):
+        # Считаем И называем: отсев без следа неотличим от «модель ничего
+        # не нашла», а платили за вызов одинаково. Тот же закон, что у списка
+        # отсеянных надписей на картинках.
+        _TERM_NOT_TERM[0] += 1
+        print("[backend] не словарная запись, в очередь не идёт: %r → %r"
+              % ((src or "")[:60], (tgt or "")[:60]), file=sys.stderr)
         return None
 
     cand = {"id": max((c.get("id", 0) for c in _term_queue()), default=0) + 1,
@@ -5492,6 +5603,7 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
     if not segs:
         return {"ok": True, "scanned": 0, "skipped_cached": skipped_cached, "candidates": []}
     found = []
+    not_terms = 0
     CHUNK = 10
     for i in range(0, len(segs), CHUNK):
         chunk = segs[i:i + CHUNK]
@@ -5501,6 +5613,12 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
             known = _glossary_entry(item.get("src", ""), _sc)
             if known and _norm_key(known.get("tgt")) == _norm_key(item.get("tgt")):
                 continue      # уже знаем ровно эту пару
+            if not _looks_like_term(item.get("src", ""), item.get("tgt", "")):
+                # Своей проверкой, а не по дельте глобального счётчика: тот
+                # растёт и из сбора терминологии в рабочих потоках, и число
+                # в ответе включало бы чужие отсевы.
+                not_terms += 1
+                continue
             c = _queue_term("extract", item.get("src", ""), item.get("tgt", ""),
                             cat=item.get("cat", ""), wasTgt=(known or {}).get("tgt", ""),
                             lang=_sc[0], domain=_sc[1], via="auto",
@@ -5510,7 +5628,10 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
         for sg in chunk:
             sg["extracted_hash"] = sg.pop("_extract_hash", None)
     save_state(STATE)
-    return {"ok": True, "scanned": len(segs), "skipped_cached": skipped_cached, "candidates": found}
+    # «Отсеяно как не словарная запись» — отдельным числом. Молчаливый отсев
+    # неотличим от «модель ничего не нашла», а платили за вызов одинаково.
+    return {"ok": True, "scanned": len(segs), "skipped_cached": skipped_cached,
+            "skipped_not_terms": not_terms, "candidates": found}
 
 
 # ─── Параллельные вызовы внутри порции ───────────────────────────────
@@ -5552,6 +5673,49 @@ def _text_hash(text: str) -> str:
     return hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:16]
 
 
+def _hard_mark_trusted(bc: dict) -> bool:
+    """Верна ли отметка `judge_skipped: "hard"`, стоящая в записи.
+
+    Своей версии правил верим сразу. У записей постарше отметка могла быть
+    вынесена за «потерян термин» — прежде он считался жёсткой находкой на
+    длинном оригинале. Теперь он не жёсткий ни при какой длине (см.
+    `medical_qa._hard_issue`), и верить такой отметке значит навсегда закрыть
+    от судьи ровно те сегменты, ради которых он и нужен. Настоящая объективная
+    находка (числа, единицы, отрицание, подмена стороны) отметку держит."""
+    if bc.get("v") == _bc_version():
+        return True
+    return not (bool(bc.get("terms_lost"))
+                and not any(h in r for r in (bc.get("reasons") or [])
+                            for h in BACKCHECK_OBJECTIVE_REASONS))
+
+
+def _judge_pending(seg: dict) -> bool:
+    """Судья ещё не смотрел на ЭТОТ перевод, и его вердикт что-то изменит.
+
+    Один предикат на всех, кто задаёт этот вопрос: состав прогона
+    (`_backcheck_cached`) и признак `needs_judge`, который уезжает браузеру
+    (`_segment_for_client`). Раньше это были две разные формулы — и первая
+    после введения версии правил начала отвечать «беру» там, где вторая
+    отвечала «не нужен». Получались противоречащие числа под соседними
+    кнопками: составной прогон брал 303 сегмента, а «Запустить только этот
+    шаг» их не видел и смета судьи их не считала. Ровно та беда, ради которой
+    состав вынесен на сервер.
+
+    «Пропущен по зоне» решением не считается: зона зависит от сегмента
+    (`_judge_zone`), и записанный отказ мог быть вынесен по прежней, узкой
+    шкале. Поэтому зону считаем заново, а не верим отметке. «Молчание судьи»
+    (`failed`) законченной проверкой тоже не считается — спросить ещё раз
+    правильно, и теперь это дёшево: обратный перевод берётся готовым."""
+    bc = seg.get("backcheck") or {}
+    score = bc.get("score")
+    if score is None or bc.get("judged"):
+        return False
+    if bc.get("judge_skipped") == "hard" and _hard_mark_trusted(bc):
+        return False
+    lo, hi = _judge_zone(seg.get("source") or "")
+    return lo <= score <= hi
+
+
 def _backcheck_cached(seg: dict, mdl_id: str, use_judge: bool) -> bool:
     """Сегмент уже проверен ЭТИМ переводом — считать нечего.
     Судья вне своей зоны не вызывается, поэтому сегмент за её границами полный
@@ -5579,31 +5743,15 @@ def _backcheck_cached(seg: dict, mdl_id: str, use_judge: bool) -> bool:
     # не перезапускает, поэтому случай назван явно.
     if bc.get("model") and bc.get("model") == seg.get("provider"):
         return False
+    # Балла нет — проверки не было. Случай штатный: без medical_qa
+    # `run_backcheck` не зовётся вовсе, а запись всё равно пишется. Раньше это
+    # ловил хвост «score is not None and ...»; в _judge_pending переносить
+    # нельзя — там «балла нет» правильно означает «судья не нужен».
+    if bc.get("score") is None:
+        return False
     if not use_judge or bc.get("judged"):
         return True
-    # Объективная находка (числа, единицы, отрицание) уже есть — её судья
-    # отменить не вправе, и от длины сегмента это не зависит. Такая проверка
-    # закончена при любой зоне.
-    #
-    # Кроме одного случая: отметка стоит из-за «потерян термин» на КОРОТКОМ
-    # оригинале. Это не объективная находка, а то же сравнение основ, что дало
-    # и сам балл (см. _hard_issue), и записана отметка ПРЕЖНИМ правилом.
-    # Верить ей значит закрыть от судьи ровно те сегменты, ради которых ему
-    # открыли низ зоны: «Фтизиатрия → Phthisiology» так и осталась бы нулём.
-    if bc.get("judge_skipped") == "hard":
-        stale_hard = (bool(bc.get("terms_lost")) and _lex_blind(seg.get("source") or "")
-                      and not any(h in r for r in (bc.get("reasons") or [])
-                                  for h in BACKCHECK_OBJECTIVE_REASONS))
-        if not stale_hard:
-            return True
-    # А вот «пропущен по зоне» — решение, принятое ПРЕЖНЕЙ зоной. Зона теперь
-    # зависит от сегмента (_judge_zone), и записанный отказ мог быть вынесен
-    # по узкой шкале. Поэтому зону считаем заново, а не верим отметке: иначе
-    # короткие сегменты, однажды отброшенные вниз шкалы, не попали бы к судье
-    # уже никогда — ради них зона и открывается.
-    lo, hi = _judge_zone(seg.get("source") or "")
-    score = bc.get("score")
-    return score is not None and not (lo <= score <= hi)
+    return not _judge_pending(seg)
 
 
 def _segment_for_client(seg: dict) -> dict:
@@ -5629,12 +5777,9 @@ def _segment_for_client(seg: dict) -> dict:
         # разойтись с сервером в том, кого судья ещё не смотрел, и получить
         # два разных состава под соседними кнопками. То же правило, что у
         # _backcheck_cached, и выведено оно здесь один раз.
-        lo, hi = _judge_zone(out.get("source") or "")
-        sc = bc.get("score")
         out["backcheck"] = {
             **bc, "stale": bc.get("target_hash") != cur_trimmed,
-            "needs_judge": (not bc.get("judged") and bc.get("judge_skipped") != "hard"
-                            and sc is not None and lo <= sc <= hi)}
+            "needs_judge": _judge_pending(out)}
     if tc:
         out["termcheck"] = {**tc, "stale": tc.get("target_hash") != cur_trimmed}
     if qa:
@@ -5650,6 +5795,295 @@ def _segment_for_client(seg: dict) -> dict:
 def _project_for_client(project: dict) -> dict:
     """Копия проекта с производными признаками у каждого сегмента."""
     return {**project, "segments": [_segment_for_client(s) for s in list(project["segments"])]}
+
+
+# ── Бесплатный пересчёт сохранённых оценок back-check ────────────────
+# Оценка живёт в сегменте и переживает всё: хеш перевода сторожит ТЕКСТ, а
+# правила подсчёта он не сторожит никак. Когда 25.08 потерю термина ограничили
+# приказными записями, а обрезку основ заменили сравнением форм слова, 798
+# сегментов боевого проекта остались с оценками, посчитанными по-старому: текст
+# не менялся, `_backcheck_cached` считал их свежими, и пересчитать их не мог
+# уже НИКТО. У 303 из них судья был погашен как при жёсткой находке, то есть
+# претензию, выведенную морфологией, стало нечем обжаловать.
+#
+# Пересчёт возможен без единого вызова модели, и это здесь главное: обратный
+# перевод, оригинал и косинус лежат в самой записи, глоссарий берётся нынешний,
+# а `run_backcheck` — чистая функция от них. Ничего не выдумывается: тот же
+# текст, та же мера, нынешние правила. Поэтому косинус передаётся ГОТОВЫМ
+# числом, а не `semantic_fn`: ленивый вариант полез бы считать эмбеддинги,
+# то есть пересчёт стал бы платным.
+#
+# Вердикт судьи — оплаченная работа, и он применяется заново поверх свежего
+# балла, а не выбрасывается.
+BACKCHECK_RESCORE_DIR = DATA_DIR / "backups"
+# Порог, ниже которого сегмент не считается машинно-чистым и донором глоссария
+# не становится. Берётся из политики автоодобрения, а не пишется числом заново:
+# два порога с одним смыслом однажды разойдутся, и отчёт начнёт обещать не то,
+# что потом произойдёт.
+_DONOR_MIN = AUTO_APPROVE_DEFAULT["backcheck_min"]
+
+
+def _rescore_backcheck(seg: dict, project: dict,
+                       hits_cache: Optional[dict] = None) -> Optional[dict]:
+    """Новая запись back-check для сегмента или None, если считать нечем.
+
+    Нечем — это либо проверки не было (`score is None`), либо не сохранён
+    обратный перевод: выдумать его нельзя, а посчитать балл без него значит
+    выдать за измерение то, чего не измеряли."""
+    bc = seg.get("backcheck") or {}
+    back = (bc.get("back") or "").strip()
+    if not medical_qa_mod or bc.get("score") is None or not back:
+        return None
+    source = seg.get("source") or ""
+    # `_verified_hits` — тринадцать миллисекунд на сегмент, и это самое дорогое
+    # здесь. У учебника заголовки повторяются, а требования глоссария зависят
+    # только от оригинала — считаем их один раз на текст.
+    if hits_cache is None:
+        hits = _verified_hits(source, project)
+    elif source in hits_cache:
+        hits = hits_cache[source]
+    else:
+        hits = hits_cache[source] = _verified_hits(source, project)
+    res = medical_qa_mod.run_backcheck(
+        source, back, hits,
+        semantic=bc.get("semantic"),
+        domain=project.get("domain"), src_lang=project.get("src", "RU"))
+    if res.get("score") is None:                             # pragma: no cover
+        return None
+    judged = bool(bc.get("judged") and bc.get("judge"))
+    if judged:
+        res = medical_qa_mod.apply_judge_verdict(res, bc["judge"])
+    # Отметка о судье выводится заново — она и была главной потерей. «Молчание
+    # судьи» пересчёту не подлежит: его звали, он не ответил, и этот факт
+    # правилами подсчёта не отменяется.
+    skipped = bc.get("judge_skipped")
+    if judged:
+        skipped = None
+    elif skipped != "failed":
+        lo, hi = _judge_zone(source)
+        skipped = ("zone" if not (lo <= res["score"] <= hi)
+                   else "hard" if res.get("hard") else None)
+    out = dict(bc)
+    out.update({
+        "score": res["score"], "band": res.get("band"), "recall": res.get("recall"),
+        "semantic": res.get("semantic"), "reasons": res.get("reasons", []),
+        "terms_lost": res.get("terms_lost", []),
+        "judge": res.get("judge") if judged else bc.get("judge"),
+        "judged": judged, "judge_skipped": skipped,
+        "v": _bc_version(),
+    })
+    return out
+
+
+def _rescore_backchecks(state: dict, dry_run: bool = False,
+                        pid: Optional[int] = None, force: bool = False) -> dict:
+    """Пересчитать сохранённые оценки back-check по нынешним правилам.
+
+    `force=False` — только записи, посчитанные ЧУЖОЙ версией правил; повторный
+    запуск при этом не делает ничего.
+    `force=True` нужен после правки глоссария: версия правил та же, а вот
+    приказных записей стало меньше или больше, и претензия «потерян термин»
+    в сегментах ссылается на записи, которые приказом уже не являются.
+
+    Отчёт называет не только «сколько», но и КУДА сдвинулось: полосы до и
+    после. «Пересчитано 789» без распределения — не отчёт, а отговорка."""
+    before: dict = {}
+    after: dict = {}
+    scanned = rescored = changed = freed = 0
+    clean_before = clean_after = no_semantic = 0
+    hits_cache: dict = {}
+    saved: dict = {}
+    for project in state.get("projects", []):
+        if pid is not None and project.get("id") != pid:
+            continue
+        for seg in project.get("segments", []):
+            bc = seg.get("backcheck") or {}
+            if bc.get("score") is None:
+                continue
+            scanned += 1
+            if not force and bc.get("v") == _bc_version():
+                continue
+            new = _rescore_backcheck(seg, project, hits_cache)
+            if new is None:
+                continue
+            rescored += 1
+            # «Было» считаем только у тех, кого пересчитали: иначе пара
+            # «было/стало» посчиталась бы на разных множествах.
+            if _machine_clean(seg, _DONOR_MIN) is None:
+                clean_before += 1
+            b0, b1 = medical_qa_mod.band_of(bc["score"]), medical_qa_mod.band_of(new["score"])
+            before[b0] = before.get(b0, 0) + 1
+            after[b1] = after.get(b1, 0) + 1
+            if new["score"] != bc["score"]:
+                changed += 1
+            if bc.get("judge_skipped") == "hard" and new.get("judge_skipped") != "hard":
+                freed += 1
+            if new.get("semantic") is None:
+                # Косинус пересчёт не покупает — и не может: `semantic_fn`
+                # звал бы эмбеддинги, то есть пересчёт стал бы платным.
+                # У записей, где прежде стояла жёсткая находка, косинуса нет
+                # вовсе (его тогда не считали), и теперь он БЫ повлиял. Значит
+                # у стольких-то сегментов балл посчитан без него — и сказать
+                # это надо, а не молчать: платный перезапуск дал бы им другое
+                # число.
+                no_semantic += 1
+            # Сегмент, чей балл поднялся выше порога донора, начинает годиться
+            # в источники для глоссария. Это правильное следствие — оценка была
+            # занижена, — но молчать о нём нельзя: расширение донорской базы
+            # человек обязан увидеть числом, а не обнаружить через месяц
+            # по машинным записям в медицинском глоссарии. Само по себе
+            # автоодобрение отсюда не запускается: у него своя команда,
+            # свой dry_run и свои пороги согласия.
+            # Запись подставляется временно — чтобы `_machine_clean` посчитал
+            # «стало» по ней. При разборе она обязана вернуться на место при
+            # ЛЮБОМ исходе: STATE живёт в памяти процесса, и «посчитали и ничего
+            # не изменили» должно означать ровно это, а не «изменили и упали».
+            seg["backcheck"] = new
+            try:
+                if _machine_clean(seg, _DONOR_MIN) is None:
+                    clean_after += 1
+            finally:
+                if dry_run:
+                    seg["backcheck"] = bc
+                else:
+                    saved.setdefault(str(project["id"]), {})[str(seg["id"])] = bc
+    # Копия прежних записей — то, чем работает откат
+    # (`POST /api/backcheck/rescore/{stamp}/undo`). Почасовой копии состояния
+    # тут мало: она снимок ВСЕГО состояния, и откатить ею пересчёт значит
+    # выбросить вместе с ним всю работу, сделанную после. Результат пересчёта
+    # восстановить можно и так — входные данные на месте, — а прежние оценки
+    # после перезаписи взять было бы неоткуда.
+    backup = None
+    if saved and not dry_run:
+        try:
+            BACKCHECK_RESCORE_DIR.mkdir(exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            path = BACKCHECK_RESCORE_DIR / f"backcheck-{stamp}.json"
+            path.write_text(json.dumps({"at": stamp, "version": _bc_version(),
+                                        "projects": saved}, ensure_ascii=False),
+                            encoding="utf-8")
+            backup = str(path)
+            # Подрезаем, как почасовые копии состояния: в файле лежат целые
+            # записи вместе с обратными переводами, а `force` можно жать
+            # сколько угодно.
+            for stale in sorted(BACKCHECK_RESCORE_DIR.glob("backcheck-*.json"))[:-_BACKUP_KEEP]:
+                stale.unlink(missing_ok=True)
+        except Exception as e:                               # pragma: no cover
+            print(f"[backend] пересчёт back-check: копия не сохранена: {e}", file=sys.stderr)
+    return {"scanned": scanned, "rescored": rescored, "changed": changed,
+            "freed_judge": freed, "before": before, "after": after,
+            "machine_clean": {"before": clean_before, "after": clean_after,
+                              "min_score": _DONOR_MIN},
+            "no_semantic": no_semantic,
+            "dry_run": dry_run, "backup": backup, "version": _bc_version()}
+
+
+class RescoreRequest(BaseModel):
+    dry_run: bool = True
+    force: bool = False
+
+
+@app.post("/api/projects/{pid}/backcheck/rescore")
+def rescore_backchecks(pid: int, req: RescoreRequest = RescoreRequest()):
+    """Пересчитать оценки back-check проекта по нынешним правилам. Бесплатно.
+
+    Без `force` пересчитываются записи, посчитанные ПРЕЖНИМИ правилами. Сам
+    по себе, проходом при старте, пересчёт не идёт намеренно: он зовёт
+    `_verified_hits` на каждый сегмент, а это тринадцать миллисекунд —
+    полминуты заблокированного единственного воркера на проекте в 2700 строк,
+    то есть отвалившийся по таймауту деплой. И правило тут то же, что
+    у выноса глоссария и пачек автоодобрения: посчитали, показали числа,
+    человек нажал.
+
+    `force` нужен для второго случая: поменялся ГЛОССАРИЙ. Понижение записи до подсказки
+    убирает её из требований к переводу, но в сохранённых оценках претензия
+    «потерян термин» по ней остаётся и продолжает держать балл — на это и
+    нужен `force`. Вызов ничего не переводит и не проверяет: он пересчитывает
+    уже измеренное."""
+    get_project(pid)
+    # Прогон пишет `seg["backcheck"]` из рабочего потока, а этот обработчик —
+    # обычный def, то есть живёт в пуле FastAPI и идёт параллельно. Между
+    # чтением записи и её заменой свежая ОПЛАЧЕННАЯ проверка была бы затёрта
+    # пересчитанной копией старой — и следующий прогон заплатил бы за неё
+    # заново. Два писателя одного места: тот же отказ, что у `/source`
+    # и `/images/forget`.
+    if not req.dry_run and _job_live(pid):
+        raise HTTPException(409, "Идёт прогон — пересчёт подождёт: он заменяет "
+                                 "те же записи, которые прогон сейчас пишет")
+    report = _rescore_backchecks(STATE, dry_run=req.dry_run, pid=pid, force=req.force)
+    if not req.dry_run and report["rescored"]:
+        # Оба кэша — руками. Экран «Анализ» протух бы и сам (в его отпечаток
+        # входят балл и длина списка потерянных терминов), а вот отчёт
+        # о соответствии глоссарию — нет: его отпечаток это тексты переводов
+        # плюс поколение глоссария, и пересчёт не трогает ни то, ни другое.
+        # Между тем строка «ремонт уже не берёт» (`impact["futile"]`) считается
+        # через `_repair_findings`, то есть по back-check, — и без явной чистки
+        # осталась бы доперегонной навсегда.
+        _IMPACT_CACHE.pop(pid, None)
+        _ANALYSIS_CACHE.pop(pid, None)
+        save_state(STATE)
+    return {"ok": True, **report}
+
+
+@app.post("/api/backcheck/rescore/{stamp}/undo")
+def rescore_backchecks_undo(stamp: str):
+    """Вернуть оценки back-check такими, какими они были до пересчёта {stamp}.
+
+    Массовая правка без отката недопустима — тот же закон, что у пачек
+    автоодобрения и у выноса глоссария. Почасовой копии состояния тут мало:
+    она снимок ВСЕГО состояния, и откатить ею пересчёт значит выбросить
+    вместе с ним всю работу, сделанную после.
+
+    Откат возвращает числа, а не решения: пересчёт ничего человеческого
+    не трогает. Поэтому и повторный пересчёт после отката сделает то же самое —
+    если пересчёт оказался неверным, откатывать надо и код."""
+    if not re.fullmatch(r"\d{8}-\d{6}", stamp or ""):
+        # Имя файла склеивается из этой строки, и подставлять в путь что
+        # угодно из URL нельзя.
+        raise HTTPException(400, "Неверная отметка времени")
+    path = BACKCHECK_RESCORE_DIR / f"backcheck-{stamp}.json"
+    if not path.exists():
+        raise HTTPException(404, "Копия пересчёта не найдена")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    restored, missing, skipped = 0, 0, 0
+    for pid_s, saved in (data.get("projects") or {}).items():
+        project = next((p for p in STATE.get("projects", [])
+                        if str(p.get("id")) == str(pid_s)), None)
+        if project is None:
+            missing += len(saved)
+            continue
+        if _job_live(project["id"]):
+            raise HTTPException(409, "Идёт прогон — откат подождёт")
+        by_id = {str(s.get("id")): s for s in project.get("segments", [])}
+        for sid, bc in saved.items():
+            seg = by_id.get(str(sid))
+            if seg is None:
+                # Сегмент снесли после пересчёта — возвращать оценку некуда.
+                # Молчать нельзя: «откачено 700 из 798» и «откачено 798» —
+                # разные ответы.
+                missing += 1
+                continue
+            cur = seg.get("backcheck") or {}
+            # Возвращаем, только если в сегменте до сих пор лежит результат
+            # ЭТОГО пересчёта. Пересчёт не трогает ни обратный перевод, ни его
+            # модель, ни время проверки — значит настоящая проверка, прошедшая
+            # после него, отличается хотя бы одним из этих полей. Подставить
+            # поверх неё старую оценку значит молча выбросить оплаченную
+            # работу; тот же закон, что у отката правок ремонта
+            # (`_repair_tried`): прежний текст возвращают, только если в
+            # сегменте стоит именно тот, что клали.
+            if (cur.get("at") != bc.get("at") or cur.get("back") != bc.get("back")
+                    or cur.get("target_hash") != bc.get("target_hash")):
+                skipped += 1
+                continue
+            seg["backcheck"] = bc
+            restored += 1
+        _IMPACT_CACHE.pop(project["id"], None)
+        _ANALYSIS_CACHE.pop(project["id"], None)
+    if restored:
+        save_state(STATE)
+    return {"ok": True, "restored": restored, "missing": missing,
+            "skipped": skipped, "stamp": stamp}
 
 
 def _backcheck_model(seg: dict, requested: Optional[str]) -> str:
@@ -5777,6 +6211,9 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
         "judged": judged,
         "judge_skipped": judge_skipped,
         "target_hash": _text_hash(target_text),
+        # Правила, по которым посчитан балл. По ним идёт бесплатный пересчёт,
+        # когда правила меняются: без клейма старая оценка неотличима от свежей.
+        "v": _bc_version(),
         "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
     # Обе оценки на месте — можно собрать терминологию без участия человека.
@@ -5981,14 +6418,16 @@ def termcheck_batch(pid: int, req: TermcheckBatchRequest):
 #   2. после ремонта перепроверяем ТЕМИ ЖЕ проверками и оставляем новый текст,
 #      только если стало лучше, иначе откат;
 #   3. статус после ремонта — review, не confirmed: заверяет человек.
-REPAIR_HARD_REASONS = ("расхождение чисел", "расхождение единиц", "инверсия отрицания",
-                       "подмена на противоположное", "обратный перевод про другое",
-                       "потерян термин")
-# Те же причины БЕЗ потерянного термина: по ним видно, что «жёсткая» отметка
-# в старой записи стоит из-за настоящей объективной находки, а не из-за
-# сравнения основ на коротком сегменте. Выводится из списка выше, чтобы
-# два перечня одних и тех же фраз не разошлись.
-BACKCHECK_OBJECTIVE_REASONS = tuple(r for r in REPAIR_HARD_REASONS if r != "потерян термин")
+# Причины back-check, за которыми стоит ОБЪЕКТИВНАЯ находка: числа, единицы,
+# отрицание, подмена стороны и «обратный перевод про другое». По ним ремонт
+# берёт претензию из строки причины, и по ним же видно, что «жёсткая» отметка
+# в старой записи стоит за настоящей находкой, а не за сравнением основ.
+# «Потерян термин» сюда НЕ входит: эта претензия выставляется отдельной строкой
+# из `terms_lost` — с учётом вердикта арбитра и вердикта судьи, чего сравнение
+# подстрокой русской фразы не знает.
+BACKCHECK_OBJECTIVE_REASONS = ("расхождение чисел", "расхождение единиц",
+                               "инверсия отрицания", "подмена на противоположное",
+                               "обратный перевод про другое")
 
 
 def _gloss_misses(seg: dict, project: Optional[dict]) -> list:
@@ -6201,6 +6640,30 @@ def _term_context_of(seg: dict) -> list:
     return [] if _term_context_stale(seg) else ((seg.get("termContext") or {}).get("terms") or [])
 
 
+def _terms_lost_open(seg: dict) -> list:
+    """Приказные термины, чью потерю НИКТО ещё не снял.
+
+    Одно определение на двоих: по нему ремонт заводит претензию
+    (`_repair_findings`) и по нему же считается его собственный счётчик
+    (`_repair_scores["terms_lost"]`). Разойдись они — ремонт откатывал бы
+    правку из-за потери, которую сам же претензией не считает.
+
+    Снимают потерю двое. Устаревшая проверка: описывает другой текст, значит
+    не описывает ничего. Вердикт контекстного арбитра «передан верно»: он
+    единственный видел сегмент в ряду соседей, а «туберкулёз лёгких» обратный
+    перевод законно возвращает как «лёгочный туберкулёз». (Судья снимает свою
+    претензию иначе — вычищая `terms_lost` прямо в записи, см.
+    `medical_qa.apply_judge_verdict`.)"""
+    bc = seg.get("backcheck") or {}
+    if not bc or _check_stale(bc, seg.get("target") or ""):
+        return []
+    ctx = _term_context_of(seg)
+    settled = {_norm_key(f) for c in ctx if c.get("ok") is True
+               for f in (c.get("forms") or ())}
+    settled |= {_norm_key(c["src"]) for c in ctx if c.get("ok") is True}
+    return [t for t in (bc.get("terms_lost") or []) if _norm_key(t) not in settled]
+
+
 def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     """Претензии к ТЕКУЩЕМУ переводу. Устаревшие проверки (перевод правили
     после них) игнорируем — чинить по ним нечего.
@@ -6217,22 +6680,11 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     # сырым: его так же сырым и пишут.
     cur = _text_hash((seg.get("target") or "").strip())
     items = _gloss_misses(seg, project)
-    # Вердикты контекстного арбитра. Он единственный, кто видел сегмент в ряду
-    # соседей, поэтому его «передан верно» СНИМАЕТ претензию, а «передан
-    # неверно» её ставит — с готовым вариантом, уже прошедшим корпус.
-    ctx = _term_context_of(seg)
-    settled = {_norm_key(f) for c in ctx if c.get("ok") is True for f in (c.get("forms") or ())}
-    settled |= {_norm_key(c["src"]) for c in ctx if c.get("ok") is True}
-    bc = seg.get("backcheck") or {}
-    if bc and bc.get("target_hash") == cur:
-        for t in (bc.get("terms_lost") or []):
-            if _norm_key(t) in settled:
-                # Арбитр прочитал соседей и сказал, что термин передан верно
-                # (другой частью речи, другим порядком слов). Оставить претензию
-                # значит послать ремонт переписывать правильный перевод.
-                continue
-            items.append({"kind": "term_lost", "must": t,
-                          "text": "термин «" + t + "» не пережил обратный перевод"})
+    # Потерянные приказные термины — через _terms_lost_open, тем же расчётом,
+    # что и счётчик в `_repair_scores`. Он и снимает вердикты контекстного
+    # арбитра: арбитр единственный видел сегмент в ряду соседей, и его
+    # «передан верно» СНИМАЕТ претензию.
+    #
     # «Передан неверно» поводом для ремонта НЕ становится, и это не забывчивость.
     # Арбитр в таком случае предлагает вариант, ОТЛИЧНЫЙ от утверждённого
     # перевода, а `_repair_scores["gloss"]` считает нарушенные приказные термины
@@ -6244,8 +6696,24 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     # про строку. Поэтому вердикт уходит человеку в /analysis — с доводом
     # и готовым вариантом. Исправит он запись — и все затронутые сегменты
     # приведёт в порядок существующий расчёт соответствия глоссарию.
+    for t in _terms_lost_open(seg):
+        items.append({"kind": "term_lost", "must": t,
+                      "text": "термин «" + t + "» не пережил обратный перевод"})
+    bc = seg.get("backcheck") or {}
+    if bc and bc.get("target_hash") == cur:
+        # По причинам берём только ОБЪЕКТИВНЫЕ (числа, единицы, отрицание,
+        # подмена стороны, «обратный перевод про другое»). «Потерян термин»
+        # отсюда исключён намеренно: эта претензия уже выставлена выше, строкой
+        # `kind: "term_lost"`, и выставлена ПРАВИЛЬНО — с учётом вердикта
+        # арбитра (`settled`). Сравнение подстрокой русской фразы такого учёта
+        # не знает, поэтому одна и та же жалоба попадала в список дважды,
+        # а после того, как судья её снял и написал об этом в reasons, его
+        # отречение само становилось поводом для ремонта: строка «„потерян
+        # термин: X“ снято судьёй» содержит искомую подстроку. Заход
+        # с заранее известным исходом — ровно та карусель, от которой заведён
+        # `_repair_futile`.
         for r in (bc.get("reasons") or []):
-            if any(h in r for h in REPAIR_HARD_REASONS):
+            if any(h in r for h in BACKCHECK_OBJECTIVE_REASONS):
                 items.append({"kind": "backcheck", "text": r})
         j = bc.get("judge") or {}
         if j.get("severity") in ("major", "critical"):
@@ -6303,7 +6771,13 @@ def _repair_futile(seg: dict, project: Optional[dict] = None) -> bool:
     rp = seg.get("repair") or {}
     if not _repair_tried(seg):
         return False
-    was = set(rp.get("issues") or ())
+    # Записи, сделанные до того, как претензия про потерянный термин перестала
+    # дублироваться строкой причины, несут её ДВАЖДЫ: «термин «X» не пережил
+    # обратный перевод» из terms_lost и «потерян термин: X» из reasons. Второй
+    # строки больше не бывает, и без этой чистки сравнение «тот же список»
+    # никогда бы не сошлось — то есть сегмент, который ремонт уже пробовал
+    # и откатил, снова пошёл бы в платный заход с заранее известным исходом.
+    was = {i for i in (rp.get("issues") or ()) if not i.startswith("потерян термин")}
     if not was:
         return False
     return was == {f["text"] for f in _repair_findings(seg, project)}
@@ -6405,6 +6879,19 @@ def _repair_scores(seg: dict, project: Optional[dict] = None) -> dict:
                              if f.get("severity") == "minor"])
                         if fresh_tc else None),
         "gloss": len(_gloss_misses(seg, project)),
+        # Потерянные ПРИКАЗНЫЕ термины — ещё один бесплатный счётчик. Нужен
+        # потому, что после перехода на долевой штраф потеря термина почти
+        # не двигает балл на длинном сегменте (одно слово из сорока — два-три
+        # пункта), а `gloss` её не видит вовсе: он смотрит, стоит ли
+        # утверждённый вариант в ПЕРЕВОДЕ, и перефразировку, из-за которой
+        # термин перестал возвращаться через обратный перевод, не замечает.
+        # Без этого счётчика ремонт мог принять правку, потерявшую термин,
+        # а следующий прогон завёл бы по ней новую находку — второй платный
+        # заход. None по тому же правилу, что у `terms`: back-check не видел
+        # этого текста, значит ноль означает «неизвестно», а не «чисто».
+        "terms_lost": (len(_terms_lost_open(seg))
+                       if bc and not _check_stale(bc, seg.get("target") or "")
+                       else None),
     }
 
 
@@ -6557,6 +7044,14 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         better = False
         why.append("нарушено утверждённых терминов больше "
                    + str(before["gloss"]) + " → " + str(after["gloss"]))
+    # И по той же причине — потерянные приказные термины. Сверяется только
+    # когда известны обе стороны: сравнивать с «неизвестно» значит откатывать
+    # правку из-за того, что проверки прежнего текста не было.
+    if (before["terms_lost"] is not None and after["terms_lost"] is not None
+            and after["terms_lost"] > before["terms_lost"]):
+        better = False
+        why.append("приказных терминов не пережило обратный перевод больше "
+                   + str(before["terms_lost"]) + " → " + str(after["terms_lost"]))
 
     mdl_id = _resolve_model(model or REPAIR_DEFAULT_MODEL)["id"]
     if not better:
@@ -8782,6 +9277,16 @@ _JOBS: dict = {}                # id -> job
 _JOB_QUEUE = _queue.Queue()
 _JOBS_LOCK = threading.Lock()
 _JOB_WORKER = None
+
+
+def _job_live(pid: int) -> bool:
+    """Есть ли у проекта ЛЮБАЯ живая задача.
+
+    Рядом с `_job_busy`, но вопрос другой: тому важен вид задачи (разбор
+    картинок пишет свой файл), а пересчёт оценок сталкивается с любым прогоном
+    — все они пишут `seg["backcheck"]` или сам перевод."""
+    return any(j["project"] == pid and j["status"] in ("queued", "running")
+               for j in list(_JOBS.values()))
 
 
 def _job_busy(pid: int, kind: str) -> bool:

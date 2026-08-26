@@ -350,10 +350,54 @@ function RiskLabel({ risk, withTip = true }) {
   );
 }
 
+/* ---------- Соответствие обратного перевода: полосы и цвет ---------- */
+/* Границы полос задаёт бэкенд (`medical_qa.BACKCHECK_BANDS`, приезжают
+   в /api/models как backcheckBands). Здесь ЕДИНСТВЕННАЯ копия на фронтенде —
+   запасная, на время до прихода каталога. Копий было три: этот список
+   в tab_preflight и ещё две лесенки «>= 95 ? зелёный : >= 80 ? жёлтый»
+   в редакторе и в карточке сегмента. После сдвига границ они дали бы трём
+   экранам три разных цвета у одного и того же балла — то самое «три копии
+   одного правила в трёх файлах», от которого заведён и TERMCHECK_ACTIONABLE. */
+const BC_BANDS_FALLBACK = [
+  { key: "b100", min: 100, max: 100, label: "100%",   note: "Дословное совпадение",     color: "green" },
+  { key: "b98",  min: 98,  max: 99,  label: "98-99%", note: "Почти дословно",           color: "green" },
+  { key: "b95",  min: 95,  max: 97,  label: "95-97%", note: "Незначительные расхождения", color: "green" },
+  { key: "b90",  min: 90,  max: 94,  label: "90-94%", note: "Обычная перефразировка",   color: "green" },
+  { key: "b80",  min: 80,  max: 89,  label: "80-89%", note: "Свободная перефразировка", color: "green" },
+  { key: "b71",  min: 71,  max: 79,  label: "71-79%", note: "Стоит взглянуть",          color: "yellow" },
+  { key: "b61",  min: 61,  max: 70,  label: "61-70%", note: "Смысл расходится",         color: "red" },
+  { key: "b50",  min: 50,  max: 60,  label: "50-60%", note: "Существенные расхождения", color: "red" },
+  { key: "b40",  min: 40,  max: 49,  label: "40-49%", note: "Смысл разошёлся",          color: "red" },
+  { key: "low",  min: 0,   max: 39,  label: "< 40%",  note: "Совпадения почти нет",     color: "red" },
+];
+
+let BC_BANDS = null;                    // приезжает из /api/models
+
+function setBcBands(list) {
+  if (list && list.length) BC_BANDS = list;
+}
+
+function bcBands() { return BC_BANDS || BC_BANDS_FALLBACK; }
+
+function bcBandColor(color) {
+  return color === "green" ? "var(--c-success)"
+    : color === "yellow" ? "var(--c-warning)"
+    : color === "orange" ? "var(--c-warning)"
+    : "var(--c-error)";
+}
+
+/* Цвет балла — через ту же таблицу полос, а не лесенкой из чисел. */
+function bcScoreColor(score) {
+  if (score == null) return "var(--text-3)";
+  const b = bcBands().find(x => score >= x.min && score <= x.max);
+  return bcBandColor(b ? b.color : "red");
+}
+
 Object.assign(window, {
   Icon, Btn, IconBtn, StatusBadge, Badge, STATUS_META,
   Field, Input, Textarea, Select, SearchInput, Checkbox, Radio, Switch,
   Expander, Modal, ToastProvider, useToast,
   ProgressBar, Ring, Spinner, Avatar, EmptyState, LangPair, FLAGS,
   fmtCost, InfoTip, ROUTE_INFO, RISK_INFO, RouteLabel, RiskLabel,
+  BC_BANDS_FALLBACK, setBcBands, bcBands, bcBandColor, bcScoreColor,
 });

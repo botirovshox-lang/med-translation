@@ -451,7 +451,7 @@ function TabPreflight({ store, toast }) {
               })))))),
 
     // ---- Соответствие обратного перевода ----
-    React.createElement(BackcheckBands, { segments: segs, onDrill: openDrill, T }),
+    React.createElement(BackcheckBands, { segments: segs, project, onDrill: openDrill, T }),
 
     React.createElement(GlossaryImpact, { project, onDrill: openDrill, T }),
 
@@ -539,34 +539,35 @@ function OptBtn({ icon, label, tip, onClick }) {
 
 
 /* ---------- Соответствие обратного перевода: полосы с переходом в редактор ---------- */
-// Границы полос дублировать нельзя — берём их из /api/models, где их задаёт бэкенд.
-// Пока каталог не пришёл, показываем блок по встроенному запасному списку.
-const BC_BANDS_FALLBACK = [
-  { key: "eq100", min: 100, max: 100, label: "100%",   note: "Дословное совпадение",       color: "green" },
-  { key: "b98",   min: 98,  max: 99,  label: "98-99%", note: "Почти дословно",             color: "green" },
-  { key: "b95",   min: 95,  max: 97,  label: "95-97%", note: "Незначительные расхождения", color: "green" },
-  { key: "b90",   min: 90,  max: 94,  label: "90-94%", note: "Мелкие расхождения",         color: "yellow" },
-  { key: "b85",   min: 85,  max: 89,  label: "85-89%", note: "Заметные расхождения",       color: "yellow" },
-  { key: "b80",   min: 80,  max: 84,  label: "80-84%", note: "Требует просмотра",          color: "orange" },
-  { key: "b71",   min: 71,  max: 79,  label: "71-79%", note: "Смысл поплыл",               color: "orange" },
-  { key: "b61",   min: 61,  max: 70,  label: "61-70%", note: "Существенные расхождения",   color: "red" },
-  { key: "b50",   min: 50,  max: 60,  label: "50-60%", note: "Смысл разошёлся",            color: "red" },
-  { key: "low",   min: 0,   max: 49,  label: "< 50%",  note: "Совпадения почти нет",       color: "red" },
-];
+// Границы полос и раскраску держит ui.jsx (window.BC_BANDS_FALLBACK,
+// bcBandColor, setBcBands) — там же, где ими красят балл редактор и карточка
+// сегмента. Дубликат списка здесь означал бы разные цвета у одного балла
+// на соседних экранах.
 
-function bcBandColor(color) {
-  return color === "green" ? "var(--c-success)"
-    : color === "yellow" ? "var(--c-warning)"
-    : color === "orange" ? "var(--c-warning)"
-    : "var(--c-error)";
-}
+function BackcheckBands({ segments, project, onDrill, T }) {
+  const [bands, setBands] = useState(window.bcBands());
+  // Пересчёт оценок по нынешним правилам. Кнопка нужна потому, что правила
+  // подсчёта версионированы, а хеш перевода сторожит только ТЕКСТ: запись,
+  // посчитанная прежними правилами, считается свежей вечно и сама
+  // не пересчитается. Порядок как у выноса глоссария: сперва разбор (ничего
+  // не меняет и показывает числа), потом решение человека.
+  const [resc, setResc] = useState(null);
+  const [rescBusy, setRescBusy] = useState(false);
 
-function BackcheckBands({ segments, onDrill, T }) {
-  const [bands, setBands] = useState(BC_BANDS_FALLBACK);
+  const rescore = (apply) => {
+    if (!window.API || !window.API.rescoreBackchecks || !project) return;
+    setRescBusy(true);
+    window.API.safeCall(() => window.API.rescoreBackchecks(project.id, !apply)).then(r => {
+      setRescBusy(false);
+      if (r && r.ok) setResc(r);
+    });
+  };
   useEffect(() => {
     if (!window.API || !window.API.models) return;
     window.API.safeCall(() => window.API.models()).then(d => {
-      if (d && d.backcheckBands && d.backcheckBands.length) setBands(d.backcheckBands);
+      if (!d || !d.backcheckBands || !d.backcheckBands.length) return;
+      window.setBcBands(d.backcheckBands);
+      setBands(d.backcheckBands);
     });
   }, []);
 
@@ -601,14 +602,36 @@ function BackcheckBands({ segments, onDrill, T }) {
                 key: b.key, className: "row", style: { gap: 10, cursor: list.length ? "pointer" : "default", opacity: list.length ? 1 : 0.45, padding: "3px 0" },
                 onClick: () => list.length && onDrill(b.label, list),
                 title: list.length ? "Открыть эти сегменты в редакторе" : "Нет сегментов в этой полосе" },
-                React.createElement("span", { className: "mono", style: { width: 72, fontSize: 13, fontWeight: 700, color: bcBandColor(b.color) } }, b.label),
+                React.createElement("span", { className: "mono", style: { width: 72, fontSize: 13, fontWeight: 700, color: window.bcBandColor(b.color) } }, b.label),
                 React.createElement("span", { className: "dim", style: { width: 190, fontSize: 12.5 } }, b.note),
                 React.createElement("div", { style: { flex: 1, height: 10, background: "var(--bg-sunken)", borderRadius: 5, overflow: "hidden" } },
-                  React.createElement("div", { style: { width: pct + "%", height: "100%", background: bcBandColor(b.color) } })),
+                  React.createElement("div", { style: { width: pct + "%", height: "100%", background: window.bcBandColor(b.color) } })),
                 React.createElement("b", { className: "tnum", style: { width: 56, textAlign: "right", fontSize: 13 } }, list.length)
               );
             })
           ),
+
+      React.createElement("div", {
+        className: "row between", style: { borderTop: "1px solid var(--border)", paddingTop: 10, flexWrap: "wrap", gap: 10 } },
+        React.createElement("div", { style: { minWidth: 0 } },
+          React.createElement("div", { className: "row", style: { gap: 6 } },
+            React.createElement("span", { style: { fontSize: 13, fontWeight: 600 } }, "Оценки по прежним правилам"),
+            T("Пересчёт оценок back-check",
+              "Правила подсчёта меняются, а хеш перевода сторожит только текст — запись, посчитанная по-старому, считается свежей вечно и сама не пересчитается.\n\nПересчёт бесплатный: обратный перевод, оригинал и вердикт судьи лежат в самой записи, ни одного вызова модели он не делает.\n\nСперва разбор — он ничего не меняет и показывает числа. Прежние записи уходят копией в data/backups и возвращаются откатом.")),
+          React.createElement("p", { className: "muted", style: { marginTop: 4, fontSize: 13 } },
+            rescBusy ? "Считаем…"
+              : !resc ? "Нажмите «Разобрать», чтобы узнать, сколько оценок посчитано прежними правилами"
+              : !resc.rescored ? "Все оценки посчитаны нынешними правилами"
+              : (resc.dry_run ? "Посчитано прежними правилами: " : "Пересчитано: ") + resc.rescored
+                + "; балл " + (resc.dry_run ? "изменится" : "изменился") + " у " + resc.changed
+                + "; к судье " + (resc.dry_run ? "вернётся " : "вернулось ") + resc.freed_judge
+                + "; машинно-чистых было " + resc.machine_clean.before + ", стало " + resc.machine_clean.after)),
+        React.createElement("div", { className: "row", style: { gap: 8 } },
+          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", disabled: rescBusy,
+            onClick: () => rescore(false) }, "Разобрать"),
+          resc && resc.dry_run && resc.rescored > 0 && React.createElement(Btn, {
+            variant: "primary", size: "sm", disabled: rescBusy, onClick: () => rescore(true) },
+            "Пересчитать " + resc.rescored))),
 
       termLost.length > 0 && React.createElement("div", {
         className: "row between", style: { borderTop: "1px solid var(--border)", paddingTop: 10, cursor: "pointer" },

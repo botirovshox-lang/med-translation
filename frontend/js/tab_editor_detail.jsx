@@ -327,8 +327,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
       seg.backcheck && seg.backcheck.score != null && React.createElement("div", {
         className: "row between", style: { marginBottom: 6, gap: 10, flexWrap: "wrap" } },
         React.createElement("span", { style: { fontSize: 18, fontWeight: 750,
-          color: seg.backcheck.score >= 95 ? "var(--c-success)"
-            : seg.backcheck.score >= 80 ? "var(--c-warning)" : "var(--c-error)" } },
+          color: window.bcScoreColor(seg.backcheck.score) } },
           seg.backcheck.score + "% соответствия"),
         React.createElement("span", { className: "dim", style: { fontSize: 11.5 } },
           (seg.backcheck.model || "") + (seg.backcheck.at ? " · " + seg.backcheck.at : ""))),

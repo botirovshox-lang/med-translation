@@ -102,14 +102,6 @@ function runStepRows(job, snap) {
   });
 }
 
-// Цвет полосы соответствия обратного перевода
-function bandColor(color) {
-  return color === "green" ? "var(--c-success)"
-    : color === "yellow" ? "var(--c-warning)"
-    : color === "orange" ? "var(--c-warning)"
-    : "var(--c-error)";
-}
-
 // ── Смета прогонов ───────────────────────────────────────────────────
 // Кириллица ≈ 2.2 симв./токен, латиница ≈ 3.5. У моделей GPT-5.x в оплачиваемый
 // вывод входят ещё и reasoning-токены — отсюда надбавка ×1.8.
@@ -398,7 +390,6 @@ function TabEditor({ store, toast }) {
   const [impact, setImpact] = useState(null);     // сегменты, не соответствующие одобренным терминам
   const [impactBusy, setImpactBusy] = useState(false);
   const [impactConfirmed, setImpactConfirmed] = useState(false);  // трогать ли подтверждённые
-  const [bcBands, setBcBands] = useState([]);
   const [bcJudge, setBcJudge] = useState(false);          // LLM-судья для средней зоны
   const [judgeModel, setJudgeModel] = useState(() => {
     try { return localStorage.getItem(JUDGE_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
@@ -465,7 +456,9 @@ function TabEditor({ store, toast }) {
       setRpModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.repairDefault || d.default || ""));
       AUX_PRICES = d.aux || {};
       EMBED_MODEL_ID = d.embedModel || "";
-      if (d.backcheckBands) setBcBands(d.backcheckBands);
+      // Полосы кладём в общее место: по ним красят балл и эта таблица,
+      // и карточка сегмента, и экран экспорта.
+      window.setBcBands(d.backcheckBands);
       if (d.judgeZone) setJudgeZone(d.judgeZone);
       if (d.termcheckActionable && d.termcheckActionable.length) setTcActionable(d.termcheckActionable);
       if (d.backcheckMinStems) setBcMinStems(d.backcheckMinStems);
@@ -2693,8 +2686,7 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
       }, (seg.termcheck.stale ? "≈ " : "") + "термин: " + seg.termcheck.findings.length),
       seg.backcheck && seg.backcheck.score != null && React.createElement("div", {
         style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap",
-                 color: seg.backcheck.score >= 95 ? "var(--c-success)"
-                   : seg.backcheck.score >= 80 ? "var(--c-warning)" : "var(--c-error)" },
+                 color: window.bcScoreColor(seg.backcheck.score) },
         title: "Соответствие обратного перевода: " + seg.backcheck.score + "%"
           + ((seg.backcheck.reasons || []).length ? "\n" + seg.backcheck.reasons.join("; ") : "")
           + "\nОбратный перевод: " + (seg.backcheck.back || ""),

@@ -127,6 +127,9 @@
     translate:     (pid, sid, force, model) => call("POST", `/segments/${pid}/${sid}/translate`, { force: !!force, model: model || null }),
     backcheck:     (pid, sid, model, judge, judgeModel) => call("POST", `/segments/${pid}/${sid}/backcheck`, { model: model || null, use_judge: !!judge, judge_model: judgeModel || null }),
     backcheckBatch:(pid, segIds, limit, model, judge, judgeModel, skipCached) => call("POST", `/projects/${pid}/backcheck/batch`, { segment_ids: segIds || null, limit: limit || 10, model: model || null, use_judge: !!judge, judge_model: judgeModel || null, skip_cached: skipCached !== false }),
+    /* Пересчёт сохранённых оценок back-check по нынешним правилам. Бесплатный:
+       обратный перевод берётся из самой записи, ни одного вызова модели. */
+    rescoreBackchecks: (pid, dryRun, force) => call("POST", `/projects/${pid}/backcheck/rescore`, { dry_run: dryRun !== false, force: !!force }),
     medicalQA:     (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/medical-qa`,  { run_backcheck: true }),
     qa:            (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/qa`),
     confirm:       (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/confirm`),

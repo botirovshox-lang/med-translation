@@ -128,7 +128,11 @@ function embedPrice() { return ((AUX_PRICES[EMBED_MODEL_ID] || {}).in) || 0; }
 function reasoning(model) { return model && model.api === "modern" ? REASONING_MULT : 1; }
 
 function priceOf(model, tokIn, tokOut) {
-  if (!model) return null;
+  /* Ждём ОБЪЕКТ модели, а не её id: передашь строку — `model.in` окажется
+     undefined, цена станет NaN и на экране встанет «$NaN». Так и случилось,
+     когда в смету ремонта добавили судью. Неизвестная цена — это null
+     («не знаю»), а не NaN: null экран покажет прочерком. */
+  if (!model || typeof model.in !== "number" || typeof model.out !== "number") return null;
   return (tokIn / 1e6) * model.in + (tokOut / 1e6) * model.out;
 }
 
@@ -191,8 +195,11 @@ function estimateRun(kind, targets, model, opts) {
       const jn = jdone + (o.judge ? (n - jdone) * JUDGE_SHARE : 0);
       if (jn > 0) {
         const jshare = n ? jn / n : 0;
-        cost += priceOf(o.judgeModel, jn * 400 + (srcChars * jshare) / 1.1,
-                        jn * 250 * reasoning(o.judgeModel));
+        const jc = priceOf(o.judgeModel, jn * 400 + (srcChars * jshare) / 1.1,
+                           jn * 250 * reasoning(o.judgeModel));
+        /* Цена судьи неизвестна — вся смета шага становится «не знаю».
+           Прибавить ноль значило бы показать сумму меньше настоящей. */
+        cost = (jc == null || cost == null) ? null : cost + jc;
       }
     }
     sec = n * EST_SEC_PER_SEG * 2;             // правка + перепроверка
@@ -1840,10 +1847,10 @@ function TabEditor({ store, toast }) {
         : "правит по всем находкам, включая глоссарий",
       modelId: rpModel, onModel: pickRpModel, plan: stepPlan("repair"),
       planEst: planEstOf("repair", rpModelInfo, { recheckModel: bcModelInfo,
-        judge: bcJudge, judgeModel: judgeModel || bcModel }),
+        judge: bcJudge, judgeModel: judgeModelInfo || bcModelInfo }),
       soloEst: estimateRun("repair", project.segments.filter(s => repairable(s, currentIdSet)),
         rpModelInfo, { recheckModel: bcModelInfo,
-          judge: bcJudge, judgeModel: judgeModel || bcModel }),
+          judge: bcJudge, judgeModel: judgeModelInfo || bcModelInfo }),
       onSolo: runRepairBatch, onStop: stopJob,
       running: batchRun && batchRun.engine === "repair" ? batchRun : null,
       soloNote: "Правка плюс перепроверка теми же проверками: если оценка упадёт, текст откатится. Один заход на один текст — второй даст то же самое за те же деньги.",

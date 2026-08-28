@@ -88,11 +88,25 @@ for i in $(seq 1 15); do sleep 2; curl -s --max-time 5 http://127.0.0.1:8000/api
 Репозиторий принадлежит `medcat`, деплой идёт от root: `/opt/med-translation` прописан
 в `safe.directory` root'а, часть объектов `.git` root-овая — пул от `medcat` уже не пройдёт.
 
+## Промпты проверяются НАСТОЯЩИМ кодом
+
+Подменять надо КЛИЕНТА OpenAI, а не свою функцию. `tests/test_term_context.py`
+подменял `_openai_term_context` целиком — и настоящий сборщик промпта не
+выполнялся ни разу. В нём жила необъявленная `NL`: функция падала с NameError
+на построении тела запроса (то есть ДО вызова модели) и возвращала None.
+Наружу это выглядело как «арбитр не ответил», и штатный шаг «сверка терминов»
+отчитался отказом по всем 698 сегментам боевого проекта, ни разу не сходив
+в модель. Денег не стоило, работы не сделало, на экране осталось
+«698 ещё не сверялся».
+Образец — `tests/test_prompt_build.py`: `sys.modules["openai"]` заменён
+заглушкой, весь наш код отрабатывает по-настоящему, сеть не трогается.
+У каждой функции, которая СТРОИТ запрос к модели, должен быть такой заход.
+
 ## Проверка после изменений (минимум)
 
 ```bash
 .venv/bin/python -m py_compile backend/main.py
-for t in tests/test_*.py; do .venv/bin/python "$t" | tail -1; done   # 25 наборов
+for t in tests/test_*.py; do .venv/bin/python "$t" | tail -1; done   # 29 наборов
 node tests/test_editor_render.js                                    # фронтенд без браузера
 node tests/test_export_render.js                                    # экран экспорта
 node tests/test_analysis_render.js                                  # экран «Анализ»

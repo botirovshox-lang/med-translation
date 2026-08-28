@@ -8405,6 +8405,42 @@ def repair_segment(pid: int, sid: int, req: RepairRequest = RepairRequest()):
     raise HTTPException(502, result.get("error", "Ремонт не удался"))
 
 
+def _repair_accept_snapshot(seg: dict) -> dict:
+    """Что надо вернуть, чтобы отменить принятие. Копия, а не ссылка: запись
+    ремонта через строку будет переписана."""
+    return {"id": seg["id"], "target": seg.get("target") or "",
+            "status": seg.get("status"), "provider": seg.get("provider"),
+            "route": seg.get("route"),
+            "confirmedBy": seg.get("confirmedBy"), "confirmedAt": seg.get("confirmedAt"),
+            "prevTarget": seg.get("prevTarget"),
+            "repair": json.loads(json.dumps(seg.get("repair") or {}))}
+
+
+def _apply_repair_candidate(seg: dict) -> str:
+    """Подставить `repair.candidate` в перевод. Возвращает ПРЕЖНИЙ текст.
+
+    Вызова модели тут нет: подставляется то, что система уже написала.
+    Одна ветка на одиночную и пакетную команду — разойдись они, «принять»
+    и «принять все» оставляли бы сегмент в разных состояниях."""
+    rp = seg["repair"]
+    cand = rp["candidate"]
+    was = seg.get("target") or ""
+    # Тот же закон, что у любой машинной правки: заверенный человеком текст
+    # уходит в prevTarget, статус становится review, отметка снимается.
+    # Автоправка не заверяет сама себя — принял её человек, а не проверка.
+    _replace_target(seg, cand, rp.get("model") or "", "REPAIR_ACCEPTED")
+    # Проверки описывают ОТВЕРГНУТЫЙ текст: их хеш от нового не совпадёт, и
+    # `stale` встанет сам. Снимать их руками нельзя — на них держится история.
+    seg["repair"] = {**rp, "applied": True, "from": was,
+                     "source_hash": _text_hash(cand),
+                     # След решения человека: без него следующий прогон
+                     # не отличит принятого кандидата от машинной правки.
+                     "acceptedBy": "human",
+                     "acceptedAt": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    seg["repair"].pop("candidate", None)
+    return was
+
+
 @app.post("/api/segments/{pid}/{sid}/repair/accept")
 def accept_repair_candidate(pid: int, sid: int):
     """Принять текст, который ремонт написал и отменил падением балла.
@@ -8426,27 +8462,148 @@ def accept_repair_candidate(pid: int, sid: int):
     if not _repair_score_vetoed(seg):
         raise HTTPException(400, "У сегмента нет отменённой баллом правки, "
                                  "которую можно принять")
-    rp = seg["repair"]
-    cand = rp["candidate"]
-    was = seg.get("target") or ""
-    # Тот же закон, что у любой машинной правки: заверенный человеком текст
-    # уходит в prevTarget, статус становится review, отметка снимается.
-    # Автоправка не заверяет сама себя — принял её человек, а не проверка.
-    _replace_target(seg, cand, rp.get("model") or "", "REPAIR_ACCEPTED")
-    # Проверки описывают ОТВЕРГНУТЫЙ текст: их хеш от нового не совпадёт, и
-    # `stale` встанет сам. Снимать их руками нельзя — на них держится история.
-    seg["repair"] = {**rp, "applied": True, "from": was,
-                     "source_hash": _text_hash(cand),
-                     # След решения человека: без него следующий прогон
-                     # не отличит принятого кандидата от машинной правки.
-                     "acceptedBy": "human",
-                     "acceptedAt": datetime.now().strftime("%Y-%m-%d %H:%M")}
-    seg["repair"].pop("candidate", None)
+    was = _apply_repair_candidate(seg)
+    cand = seg["target"]
     _IMPACT_CACHE.pop(pid, None)
     _ANALYSIS_CACHE.pop(pid, None)
     save_state(STATE)
     return {"ok": True, "target": cand, "prev": was,
             "segment": _segment_for_client(seg)}
+
+
+class RepairAcceptBatchRequest(BaseModel):
+    dry_run: bool = True                       # сначала показать, потом делать
+    segment_ids: Optional[List[int]] = None    # None — все подходящие в проекте
+    # Заверенное человеком пачкой не трогаем: подстановка снимет отметку
+    # «подтвердил человек», а он заверял ДРУГОЙ текст. То же правило, что
+    # у пакетного ремонта и переперевода по глоссарию.
+    include_confirmed: bool = False
+
+
+@app.post("/api/projects/{pid}/repair/accept-batch")
+def accept_repair_candidates(pid: int, req: RepairAcceptBatchRequest = RepairAcceptBatchRequest()):
+    """Принять пачкой все тексты, которые ремонт написал и отменил баллом.
+
+    Одиночная кнопка есть в карточке сегмента, но сегментов таких сотня, и
+    выбирать их в таблице по одному — та же работа руками, от которой заведены
+    `/glossary/purge` и `/backcheck/rescore`. Поэтому команда есть, и живёт она
+    по их правилам:
+
+      1. `dry_run=True` по умолчанию — считает и показывает, ничего не меняя;
+      2. заверенное человеком не трогается без явного `include_confirmed`,
+         и сколько таких — сказано в ответе;
+      3. прежнее состояние сегментов целиком уходит файлом в `data/backups/`
+         и возвращается `/repair/accept/{stamp}/undo`. Массовая правка текста
+         без отката недопустима.
+
+    Оговорка, которую надо понимать. Проверки прежнего текста после подстановки
+    устаревают САМИ (их хеш описывает отвергнутый вариант), а нового текста
+    ещё нет ни у кого: пачка переводит сегменты в «никем не проверено».
+    Это не порча — кандидат написан по конкретным находкам и отвергнут мерой,
+    негодной для правки термина (см. `_run_segment_repair`), — но проверить его
+    обязан ближайший прогон, и до тех пор сегмент стоит с непроверенным
+    переводом. Поэтому число сказано до применения, а не после."""
+    project = get_project(pid)
+    ids = set(req.segment_ids) if req.segment_ids is not None else None
+    matched, skipped_confirmed = [], []
+    for seg in project["segments"]:
+        if ids is not None and seg["id"] not in ids:
+            continue
+        if not _repair_score_vetoed(seg):
+            continue
+        if seg.get("status") == "confirmed" and not req.include_confirmed:
+            skipped_confirmed.append(seg["id"])
+            continue
+        matched.append(seg)
+
+    result = {
+        "ok": True, "dryRun": req.dry_run,
+        "matched": len(matched),
+        "ids": [sg["id"] for sg in matched],
+        # Молчаливой пощады не бывает: сказано, скольких не тронули и почему.
+        "skippedConfirmed": skipped_confirmed,
+        "samples": [{"id": sg["id"],
+                     "was": (sg.get("target") or "")[:200],
+                     "now": (sg["repair"].get("candidate") or "")[:200]}
+                    for sg in matched[:12]],
+        "accepted": 0, "stamp": None,
+    }
+    if req.dry_run or not matched:
+        return result
+
+    snapshot = [_repair_accept_snapshot(sg) for sg in matched]
+    try:
+        PURGE_DIR.mkdir(parents=True, exist_ok=True)
+        # Метка с точностью до СЕКУНДЫ, а две пачки подряд укладываются
+        # в одну: вторая молча затирала бы копию первой, и откат первой
+        # возвращал бы чужие сегменты. Бэкап, который можно затереть, —
+        # не бэкап, поэтому занятую метку разводим суффиксом.
+        base = datetime.now().strftime("%Y%m%d-%H%M%S")
+        stamp, n = base, 1
+        while (PURGE_DIR / ("repair-accept-" + stamp + ".json")).exists():
+            stamp = base + "-" + str(n)
+            n += 1
+        path = PURGE_DIR / ("repair-accept-" + stamp + ".json")
+        path.write_text(json.dumps({"project": pid, "segments": snapshot},
+                                   ensure_ascii=False), encoding="utf-8")
+    except Exception as e:
+        # Без бэкапа не применяем: откат — часть операции, а не украшение.
+        print(f"[backend] принятие правок: бэкап не записан: {e}", file=sys.stderr)
+        raise HTTPException(500, "Не удалось сохранить копию для отката — применение отменено")
+    for sg in matched:
+        _apply_repair_candidate(sg)
+    _IMPACT_CACHE.pop(pid, None)
+    _ANALYSIS_CACHE.pop(pid, None)
+    save_state(STATE)
+    print(f"[backend] принято отменённых правок: {len(matched)} "
+          f"(проект {pid}), копия: {path.name}", file=sys.stderr)
+    result["accepted"] = len(matched)
+    result["stamp"] = stamp
+    return result
+
+
+@app.post("/api/projects/{pid}/repair/accept/{stamp}/undo")
+def undo_accept_repair_candidates(pid: int, stamp: str):
+    """Вернуть тексты, принятые пачкой.
+
+    Возвращаем ТОЛЬКО те сегменты, где сейчас стоит именно принятый кандидат:
+    правили после — значит поверх нашей подстановки легла чужая работа, и
+    затирать её откатом нельзя. Тот же закон, что у `_repair_tried` в
+    `_revert_repairs`. Неподходящие названы поимённо."""
+    project = get_project(pid)
+    path = PURGE_DIR / ("repair-accept-" + stamp + ".json")
+    if not path.exists():
+        raise HTTPException(404, "Копия для отката не найдена")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(500, "Копия для отката не читается: " + str(e))
+    by_id = {sg["id"]: sg for sg in project["segments"]}
+    restored, changed_since = [], []
+    for snap in data.get("segments") or []:
+        seg = by_id.get(snap["id"])
+        if seg is None:
+            continue
+        # Принятый кандидат лежит в снимке записи ремонта как `candidate`;
+        # после применения он же стоит в переводе. Разошлись — текст правили.
+        want = (snap.get("repair") or {}).get("candidate")
+        if want is not None and (seg.get("target") or "") != want:
+            changed_since.append(seg["id"])
+            continue
+        seg["target"] = snap["target"]
+        seg["status"] = snap["status"]
+        for k in ("provider", "route", "confirmedBy", "confirmedAt", "prevTarget"):
+            if snap.get(k) is None:
+                seg.pop(k, None)
+            else:
+                seg[k] = snap[k]
+        seg["repair"] = snap["repair"]
+        restored.append(seg["id"])
+    if restored:
+        _IMPACT_CACHE.pop(pid, None)
+        _ANALYSIS_CACHE.pop(pid, None)
+        save_state(STATE)
+    return {"ok": True, "restored": restored, "changedSince": changed_since}
 
 
 class RepairBatchRequest(BaseModel):

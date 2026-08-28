@@ -192,6 +192,9 @@
     // Принять текст, который ремонт написал и отменил падением балла.
     // Вызова модели нет: подставляется уже написанный repair.candidate.
     acceptRepair:  (pid, sid)               => call("POST", `/segments/${pid}/${sid}/repair/accept`, {}),
+    // Пачкой. dry_run=true — только посчитать; откат по stamp.
+    acceptRepairBatch: (pid, opts)          => call("POST", `/projects/${pid}/repair/accept-batch`, opts || {}),
+    undoAcceptRepair:  (pid, stamp)         => call("POST", `/projects/${pid}/repair/accept/${stamp}/undo`, {}),
 
     /* Фоновые прогоны: клиент только ставит задачу и смотрит прогресс */
     // Разбор прогона до запуска. Состав считает сервер тем же кодом, который

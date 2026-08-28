@@ -128,6 +128,29 @@ check(ok1 && texts(tree1).some(t => t.indexOf("Проверено начисто
 check(ok1 && !texts(tree1).some(t => t.indexOf("Спросить арбитра") !== -1),
       "карточки арбитра нет: спрашивать не о чем");
 
+// ── 1b. Отменённые баллом правки: строка есть всегда, кнопка — по числу ──
+console.log("");
+console.log("=== 1b. «Ремонт отменил верную правку» ===");
+check(ok1 && !texts(tree1).some(t => t.indexOf("Принять все") !== -1),
+      "принимать нечего — кнопки нет, иначе она обещала бы работу, которой нет");
+
+const VETOED = JSON.parse(JSON.stringify(BASE));
+VETOED.human.reverted = [7, 8, 9];
+VETOED.human.revertedByScore = [7, 8];
+let treeV = null, okV = true;
+try { treeV = render(React.createElement(WorkSummary, { summary: VETOED, store, toast })); }
+catch (e) { okV = false; console.log("      " + e.message); }
+check(okV, "рендер со списком отменённых прошёл");
+const tV = okV ? texts(treeV) : [];
+check(tV.some(s => s.indexOf("Ремонт отменил верную правку") !== -1),
+      "своя строка на экране есть");
+check(tV.some(s => s.indexOf("Принять все") !== -1),
+      "и кнопка пакетного принятия при ней");
+// revertedByScore — ПОДМНОЖЕСТВО reverted, и общая строка не должна считать
+// его дважды: 3 всего, 2 из них с готовым текстом, значит в общей строке 1.
+check(tV.filter(s => s === "1").length >= 1,
+      "в «не стало лучше» осталось 3 - 2 = 1: подмножество не посчитано дважды");
+
 // ─────────── 2. Есть спорные сегменты — есть кнопка с числом ───────────
 console.log("\n=== 2. Спорные сегменты есть — арбитра можно спросить ===");
 const WITH = JSON.parse(JSON.stringify(BASE));

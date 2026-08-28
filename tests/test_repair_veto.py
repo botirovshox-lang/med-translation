@@ -364,6 +364,71 @@ main._apply_migrations(st)                      # второй проход
 check("source_hash" not in a["repair"], "миграция идемпотентна: снимать второй раз нечего")
 
 
+# ─────────── 6c. Пачкой: разбор, бэкап, откат ───────────
+print()
+print("=== 6c. Принять пачкой ===")
+import tempfile, pathlib
+main.PURGE_DIR = pathlib.Path(tempfile.mkdtemp())
+
+a1 = seg_of(1, SRC, OLD_T, repair=dict(GOOD))
+a2 = seg_of(2, SRC, OLD_T, repair=dict(GOOD))
+conf = seg_of(3, SRC, OLD_T, repair=dict(GOOD))
+conf["status"] = "confirmed"
+conf["confirmedBy"] = "human"
+other = seg_of(4, SRC, OLD_T, repair=dict(
+    GOOD, reason="балл back-check упал 57 → 8; замечаний по терминам стало больше 1 → 2"))
+project_of([a1, a2, conf, other])
+
+dry = main.accept_repair_candidates(1)
+check(dry["dryRun"] is True and dry["matched"] == 2,
+      "разбор по умолчанию: считает и показывает, ничего не меняя")
+check(a1["target"] == OLD_T, "текст при разборе не тронут")
+check(dry["skippedConfirmed"] == [3],
+      "заверенное человеком пачкой не трогаем и говорим, сколько таких")
+check(4 not in dry["ids"], "правку с претензией по существу не принимаем")
+check(dry["samples"] and dry["samples"][0]["now"] == NEW_T,
+      "в разборе показано, что именно встанет в перевод")
+
+res = main.accept_repair_candidates(1, main.RepairAcceptBatchRequest(dry_run=False))
+check(res["accepted"] == 2 and res["stamp"], "применение состоялось и назвало метку отката")
+check(a1["target"] == NEW_T and a2["target"] == NEW_T, "оба текста подставлены")
+check(conf["target"] == OLD_T and conf.get("confirmedBy") == "human",
+      "заверенный человеком не тронут — отметка на месте")
+check((main.PURGE_DIR / ("repair-accept-" + res["stamp"] + ".json")).exists(),
+      "копия для отката записана: массовой правки текста без отката не бывает")
+
+# Разрешение на заверенные — отдельным полем, а не правкой правила.
+res2 = main.accept_repair_candidates(1, main.RepairAcceptBatchRequest(
+    dry_run=False, include_confirmed=True))
+check(res2["accepted"] == 1 and conf["target"] == NEW_T,
+      "с явным разрешением берётся и заверенный")
+# Две пачки укладываются в одну секунду, и метка обязана быть РАЗНОЙ: иначе
+# вторая затирает копию первой, и откат первой возвращает чужие сегменты.
+check(res2["stamp"] != res["stamp"], "метки двух пачек подряд не совпадают")
+check((main.PURGE_DIR / ("repair-accept-" + res["stamp"] + ".json")).exists()
+      and (main.PURGE_DIR / ("repair-accept-" + res2["stamp"] + ".json")).exists(),
+      "обе копии на месте — затирания нет")
+check(conf["status"] == "review" and "confirmedBy" not in conf,
+      "и отметка с него снимается: он заверял другой текст")
+
+# Откат возвращает всё, кроме того, что правили после.
+a2["target"] = "Кто-то поправил это руками."
+undo = main.undo_accept_repair_candidates(1, res["stamp"])
+check(undo["restored"] == [1], "вернули только сегмент 1")
+check(a1["target"] == OLD_T, "и текст у него прежний")
+check(undo["changedSince"] == [2],
+      "сегмент 2 правили после принятия — откат его не трогает и называет")
+check(a2["target"] == "Кто-то поправил это руками.", "чужая работа цела")
+check(main._repair_score_vetoed(a1) is True,
+      "откат вернул и запись ремонта: кандидат снова на месте")
+
+try:
+    main.undo_accept_repair_candidates(1, "нет-такой-метки")
+    check(False, "откат по несуществующей метке обязан быть отказан")
+except main.HTTPException as e:
+    check(e.status_code == 404, "несуществующая метка — 404")
+
+
 # ─────────── 7. Корзина в /analysis ───────────
 print("\n=== 7. Отдельная строка на экране «Анализ» ===")
 vetoed = seg_of(1, SRC, OLD_T, repair=GOOD,

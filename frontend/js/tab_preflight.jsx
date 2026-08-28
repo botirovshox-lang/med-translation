@@ -23,7 +23,7 @@ function WorkSummary({ summary, store, toast, onReload }) {
     store.go("editor");
     toast.info(label, ids.length + " сегментов");
   };
-  const Row = ({ label, n, hint, ids, color }) =>
+  const Row = ({ label, n, hint, ids, color, action }) =>
     React.createElement("div", {
       className: "row between", onClick: ids && ids.length ? () => go(ids, label) : null,
       style: { padding: "9px 0", borderTop: "1px solid var(--border)", gap: 12,
@@ -31,7 +31,11 @@ function WorkSummary({ summary, store, toast, onReload }) {
       React.createElement("div", { style: { minWidth: 0 } },
         React.createElement("span", { style: { fontWeight: 600, color: color || "var(--text-1)" } }, label),
         hint && React.createElement("span", { className: "dim", style: { fontSize: 12.5 } }, " — " + hint)),
-      React.createElement("b", { style: { fontVariantNumeric: "tabular-nums", color: n ? (color || "var(--text-1)") : "var(--text-3)" } }, n));
+      React.createElement("div", { className: "row", style: { gap: 10, alignItems: "center" } },
+        /* Действие живёт СПРАВА от числа и гасит клик по строке: строка ведёт
+           в редактор, кнопка меняет текст — путать их нельзя. */
+        action && React.createElement("span", { onClick: (e) => e.stopPropagation() }, action),
+        React.createElement("b", { style: { fontVariantNumeric: "tabular-nums", color: n ? (color || "var(--text-1)") : "var(--text-3)" } }, n)));
 
   // Считаем по РАЗНЫМ сегментам: один и тот же подтверждённый сегмент может
   // и спорить с глоссарием, и нести находку проверок — сумма длин списков
@@ -41,6 +45,42 @@ function WorkSummary({ summary, store, toast, onReload }) {
   const disputes = s.human.termcheckDisputes || [];
   const disputeSegs = s.human.termcheckDisputesSegments || [];
   const DISPUTE_CAP = 6;
+
+  /* Пакетное принятие отменённых правок. Вызовов модели нет — подставляется
+     уже написанный repair.candidate. Порядок тот же, что у выноса глоссария
+     и пересчёта баллов: сначала разбор, потом подтверждение, потом применение;
+     копия для отката уходит в data/backups/. */
+  const [accBusy, setAccBusy] = useState(false);
+  const acceptAll = () => {
+    if (!window.API || accBusy) return;
+    setAccBusy(true);
+    window.API.safeCall(() => window.API.acceptRepairBatch(store.activeProject.id, { dry_run: true }))
+      .then(dry => {
+        if (!dry || !dry.ok) { setAccBusy(false); toast.error("Не удалось посчитать", "Сервер не ответил."); return; }
+        if (!dry.matched) { setAccBusy(false); toast.info("Принимать нечего", "Отменённых баллом правок не осталось."); return; }
+        const skipped = (dry.skippedConfirmed || []).length;
+        /* Многострочное сообщение шаблонным литералом: перенос строки берётся
+           из самого исходника, экранировать нечего. */
+        const ok = window.confirm(
+          `Принять готовые тексты в ${dry.matched} сегментах?
+
+Вызовов модели нет — подставляется вариант, который ремонт уже написал.
+Проверки этих сегментов устареют вместе с текстом: перевод станет непроверенным
+до ближайшего прогона.
+${skipped ? `Заверенных человеком не тронем: ${skipped}.
+` : ""}
+Откат есть — копия уйдёт в data/backups/.`);
+        if (!ok) { setAccBusy(false); return; }
+        window.API.safeCall(() => window.API.acceptRepairBatch(store.activeProject.id, { dry_run: false }))
+          .then(res => {
+            setAccBusy(false);
+            if (!res || !res.ok) { toast.error("Не удалось применить", "Сервер отказал."); return; }
+            toast.success("Принято сегментов: " + res.accepted,
+              "Откат: " + (res.stamp || "—") + " · проверить их сможет ближайший прогон");
+            if (onReload) onReload();
+          });
+      });
+  };
 
   const arbPending = s.human.termContextPending || 0;
   const arbWrong = s.human.termContextWrong || [];
@@ -137,7 +177,12 @@ function WorkSummary({ summary, store, toast, onReload }) {
       React.createElement(Row, { label: "Ремонт отменил верную правку — текст готов",
         n: (s.human.revertedByScore || []).length, ids: s.human.revertedByScore,
         color: "var(--c-warning)",
-        hint: "балл back-check упал, но термины стали чище — принять можно в карточке сегмента" }),
+        hint: "балл back-check упал, но термины стали чище — текст уже написан и оплачен",
+        action: (s.human.revertedByScore || []).length
+          ? React.createElement(Btn, { variant: "ghost", size: "sm", icon: "check",
+              disabled: accBusy, onClick: acceptAll },
+              accBusy ? "Принимаем…" : "Принять все")
+          : null }),
       React.createElement(Row, { label: "Подтверждено, но спорит с глоссарием", n: s.human.glossaryConfirmed.length,
         ids: s.human.glossaryConfirmed, color: "var(--c-warning)", hint: "переписать можно только по явной галочке" }),
       // Своя строка, а не «оценка ниже порога»: это заверенные человеком

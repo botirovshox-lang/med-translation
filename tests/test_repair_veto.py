@@ -337,6 +337,33 @@ except main.HTTPException as e:
     check(e.status_code == 400, "повторное принятие отклонено с 400")
 
 
+# ─────────── 6b. Миграция: снять клеймо, поставленное прежним кодом ───────────
+print()
+print("=== 6b. Клеймо прежнего кода снимается миграцией ===")
+STAMPED = {"applied": False, "reason": main.REPAIR_RECHECK_FAILED,
+           "candidate": NEW_T, "issues": ["«Erect solar rays»"],
+           "source_hash": main._text_hash(OLD_T)}
+MIXED = {"applied": False,
+         "reason": main.REPAIR_RECHECK_FAILED + "; нарушено утверждённых терминов больше 0 → 1",
+         "candidate": NEW_T, "issues": ["«Erect solar rays»"],
+         "source_hash": main._text_hash(OLD_T)}
+st = {"projects": [{"id": 1, "segments": [
+        dict(seg_of(1, SRC, OLD_T), repair=dict(STAMPED)),
+        dict(seg_of(2, SRC, OLD_T), repair=dict(MIXED))]}],
+      "glossary": [], "tm": [], "termQueue": []}
+main._apply_migrations(st)
+a, b = st["projects"][0]["segments"]
+check("source_hash" not in a["repair"] and a["repair"].get("retryable") is True,
+      "сбой был единственной причиной — клеймо снято, сегмент снова доступен")
+check(a["repair"].get("reason") == main.REPAIR_RECHECK_FAILED,
+      "причина отказа сохранена: теряется только запись о попытке")
+check(b["repair"].get("source_hash") == main._text_hash(OLD_T),
+      "рядом стояла претензия по существу — вердикт вынесен, клеймо остаётся")
+
+main._apply_migrations(st)                      # второй проход
+check("source_hash" not in a["repair"], "миграция идемпотентна: снимать второй раз нечего")
+
+
 # ─────────── 7. Корзина в /analysis ───────────
 print("\n=== 7. Отдельная строка на экране «Анализ» ===")
 vetoed = seg_of(1, SRC, OLD_T, repair=GOOD,

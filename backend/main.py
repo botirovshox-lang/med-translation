@@ -1828,6 +1828,13 @@ _SAVE_LOCK = threading.Lock()          # сериализует записи sta
 _BACKUP_KEEP = 48                      # почасовые бэкапы, ~2 суток
 
 
+# Отказ ремонта, к КАЧЕСТВУ правки отношения не имеющий: перепроверка не
+# ответила. Константой, потому что об этой строке говорят двое — writer
+# в `_run_segment_repair` и миграция, разжимающая записи прежнего кода.
+# В самих данных лежит этот же литерал: переформулировать его задним числом
+# нельзя, поэтому миграция сверяется с ним, а не с кодом причины.
+REPAIR_RECHECK_FAILED = "перепроверка терминов не выполнилась"
+
 def _apply_migrations(state: dict) -> dict:
     # Migrate: if glossary is tiny seed, upgrade to full loaded glossary
     if len(state.get("glossary", [])) < 100 and len(SEED_GLOSSARY) >= 100:
@@ -1865,6 +1872,27 @@ def _apply_migrations(state: dict) -> dict:
         if (c.get("kind") == "conflict" and c.get("status") == "approved"
                 and c.get("tgt") and "origTgt" not in c):
             c["origTgt"] = ""
+    # Migrate: прежний код засчитывал заход ремонта даже тогда, когда правку
+    # отвергла не оценка, а ОБОРВАННЫЙ вызов перепроверки. `repair.source_hash`
+    # при этом ставился, `_repair_tried` возвращал True — и сегмент оказывался
+    # закрыт от ремонта навсегда из-за чужой сетевой ошибки. На боевом проекте
+    # так заклеймлены 9 сегментов (#645: «accidental» → «casual», балл не падал
+    # вовсе). Снимаем клеймо: причина отказа сохраняется, теряется только запись
+    # о попытке — то есть ровно то, чего прежний код не должен был писать.
+    #
+    # Сверяемся с ПОЛНЫМ совпадением строки: «;» в причине означает, что рядом
+    # стояла претензия по существу, и тогда вердикт вынесен — повторный заход
+    # даст то же самое за те же деньги. Миграция идемпотентна: снимать второй
+    # раз нечего. Хешей тут нет намеренно — `_apply_migrations` зовётся при
+    # импорте раньше, чем определён `_text_hash`.
+    for _p in state.get("projects", []):
+        for _s in _p.get("segments", []):
+            _r = _s.get("repair") or {}
+            if (_r.get("applied") is False
+                    and _r.get("reason") == REPAIR_RECHECK_FAILED
+                    and "source_hash" in _r):
+                _r.pop("source_hash", None)
+                _r["retryable"] = True
     return state
 
 
@@ -8062,7 +8090,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         # это не «проверка сказала, что всё хорошо».
         better = False
         infra_fail = True
-        why.append("перепроверка терминов не выполнилась")
+        why.append(REPAIR_RECHECK_FAILED)
     elif had_tc and before["terms"] is not None and after["terms"] > before["terms"]:
         better = False
         why.append("замечаний по терминам стало больше " + str(before["terms"]) + " → " + str(after["terms"]))

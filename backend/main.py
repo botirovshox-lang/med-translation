@@ -1888,10 +1888,23 @@ def _apply_migrations(state: dict) -> dict:
     for _p in state.get("projects", []):
         for _s in _p.get("segments", []):
             _r = _s.get("repair") or {}
-            if (_r.get("applied") is False
-                    and _r.get("reason") == REPAIR_RECHECK_FAILED
-                    and "source_hash" in _r):
-                _r.pop("source_hash", None)
+            # Причина целиком состоит из сбоя перепроверки и, возможно,
+            # упавшего балла — то есть по существу ничего сказано не было.
+            # Проверять только полное совпадение мало: заход почти всегда
+            # смешанный, и такие записи остались бы заклеймлёнными навсегда.
+            _parts = [x.strip() for x in (_r.get("reason") or "").split(";") if x.strip()]
+            # «жёсткая находка» в строке про балл — отказ ПО СУЩЕСТВУ, и такую
+            # запись разжимать нельзя: её заклеймил нынешний код и намеренно.
+            _only_infra = bool(_parts) and REPAIR_RECHECK_FAILED in _parts and all(
+                x == REPAIR_RECHECK_FAILED
+                or (x.startswith("балл back-check упал") and "жёсткая находка" not in x)
+                for x in _parts)
+            if (_r.get("applied") is False and _only_infra
+                    and not _r.get("hardAfter") and "source_hash" in _r):
+                # Снятый клеймящий хеш становится информационным: он и есть
+                # хеш текста, на котором заход не состоялся. Пересчитывать
+                # нечего — `_text_hash` здесь ещё не определён.
+                _r["attemptHash"] = _r.pop("source_hash")
                 _r["retryable"] = True
     return state
 
@@ -6294,6 +6307,11 @@ def _segment_for_client(seg: dict) -> dict:
         # предлагалась бы там, где эндпоинт отвечает 400. Тот же закон, что
         # у TERMCHECK_ACTIONABLE: одно правило — одно место.
         out["repair"] = {**rp, "tried": rp.get("source_hash") == cur,
+                         # Несостоявшийся заход — только пока текст тот же:
+                         # после ручной правки подпись «сбой перепроверки»
+                         # врала бы, текст как раз менялся.
+                         "retryable": bool(rp.get("retryable")
+                                           and rp.get("attemptHash") == cur),
                          "acceptable": _repair_score_vetoed(seg)}
     return out
 
@@ -7783,12 +7801,40 @@ def _repair_score_vetoed(seg: dict) -> bool:
     why = rp.get("reason") or ""
     if not why.startswith("балл back-check упал") or ";" in why:
         return False
+    # ЖЁСТКАЯ находка на кандидате — отказ по существу, а не «упал балл».
+    # Строка причины у обоих исходов почти одна, поэтому решает поле записи.
+    if rp.get("hardAfter"):
+        return False
     b, a = rp.get("before") or {}, rp.get("after") or {}
-    return bool(
+    cleaner = bool(
         (b.get("terms") is not None and a.get("terms") is not None
          and a["terms"] < b["terms"])
         or (b.get("gloss") is not None and a.get("gloss") is not None
             and a["gloss"] < b["gloss"]))
+    if not cleaner:
+        return False
+    # Второй рубеж, и он нужен из-за НАСЛЕДСТВА: у записей прежнего кода поля
+    # `hardAfter` нет вовсе, а отменить их могла ровно та же жёсткая находка —
+    # строка причины тогда писалась одна на оба исхода. Поэтому кандидата
+    # сверяем с оригиналом ЗАНОВО, детерминированными правилами: числа,
+    # единицы и отрицание считаются по паре «оригинал → перевод» без единого
+    # вызова модели и без знания языка.
+    # Стоит ПОСЛЕДНИМ: предикат зовётся на каждый сегмент при выдаче проекта
+    # (2711 штук), а до этой строки доходят единицы.
+    # Чего этот рубеж не ловит у старых записей — подмену стороны из
+    # DOMAIN_RULES, если правил для пары языков нет: тот же закон, молчим.
+    if medical_qa_mod:
+        try:
+            bad = medical_qa_mod.deterministic_issues(
+                seg.get("source") or "", rp.get("candidate") or "")
+            if any(i.get("type") in medical_qa_mod.BACKCHECK_HARD_TYPES
+                   or i.get("type") in ("number_unit_dosage_mismatch", "negation_shift")
+                   for i in (bad or [])):
+                return False
+        except Exception as e:                                  # pragma: no cover
+            print(f"[backend] сверка кандидата seg#{seg.get('id')}: {e}", file=sys.stderr)
+            return False        # не смогли проверить — не предлагаем
+    return True
 
 
 def _repairable(seg: dict, allow_tried: bool = False, project: Optional[dict] = None) -> bool:
@@ -8041,6 +8087,10 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # Отмена по причине, к КАЧЕСТВУ правки отношения не имеющей (перепроверка
     # не выполнилась). Такой заход не засчитывается: см. ниже про source_hash.
     infra_fail = False
+    # Жёсткая находка на КАНДИДАТЕ (числа, единицы, отрицание, подмена стороны).
+    # Уезжает в запись отката: по ней решают, можно ли предлагать кандидата
+    # человеку к принятию. Считается, только когда back-check перепроверялся.
+    hard_after = False
     # Решения, принятые ВОПРЕКИ падению балла, — в запись: без них человек
     # видит принятую правку с упавшим баллом и не понимает, почему её оставили.
     notes = []
@@ -8077,13 +8127,15 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
             # ВЫШЕ, — то есть он всегда свежий и всегда есть. У записей
             # прежних версий его нет, но сюда такие не попадают.
             hard_now = bool((seg.get("backcheck") or {}).get("hard"))
+            hard_after = hard_now
             if terms_cleaner and not hard_now:
                 notes.append("балл back-check упал " + str(before["score"]) + " → "
                              + str(after["score"]) + ", но правка почистила термины "
                              + "и жёстких находок нет — отменой не считаем")
             else:
                 better = False
-                why.append("балл back-check упал " + str(before["score"]) + " → " + str(after["score"]))
+                why.append("балл back-check упал " + str(before["score"]) + " → " + str(after["score"])
+                           + ("" if not hard_now else ", жёсткая находка на новом тексте"))
     if had_tc and after["terms"] is None:
         # Перепроверка не состоялась (вызов упал) — подтвердить правку нечем.
         # Откат: автоправка не заверяет сама себя, и «проверка не ответила»
@@ -8211,14 +8263,35 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         seg["repair"] = {"applied": False, "reason": "; ".join(why) or "не стало лучше",
                          "model": mdl_id, "candidate": new_target,
                          "issues": [f["text"] for f in findings], "before": before, "after": after,
+                         # Была ли на КАНДИДАТЕ жёсткая находка (числа, единицы,
+                         # отрицание, подмена стороны). Отдельным полем, а не
+                         # разбором строки причины: строка у обоих исходов почти
+                         # одна, и по ней их не различить — а различать надо,
+                         # потому что кандидата с расхождением чисел нельзя
+                         # предлагать человеку к принятию.
+                         "hardAfter": bool(hard_after),
                          "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
-        # ЕДИНСТВЕННАЯ причина, и она про сбой. Когда рядом стоит претензия
-        # по существу (нарушен приказный термин, замечаний стало больше,
-        # жёсткая находка), правку отвергли не из-за сети: вердикт вынесен,
-        # и повторный заход даст тот же результат за те же деньги.
-        if infra_fail and len(why) == 1:
+        # Заход НЕ засчитывается, когда правку отвергли сбоем перепроверки и
+        # больше ничем ПО СУЩЕСТВУ. Упавший балл существом не считается, и это
+        # не поблажка: балл — та самая мера, которую этот же код объявил
+        # негодной для правки термина, а взвесить её было нечем именно потому,
+        # что termcheck не ответил (`after["terms"] is None`, значит и
+        # `terms_cleaner` посчитать не из чего). Считать такой заход
+        # состоявшимся значит закрыть сегмент навсегда по показанию прибора,
+        # которому в этом вопросе не верят, — а это самая частая форма отказа:
+        # заход почти всегда смешанный.
+        # Жёсткая находка на кандидате существом является всегда.
+        substantive = [w for w in why
+                       if w != REPAIR_RECHECK_FAILED
+                       and not w.startswith("балл back-check упал")]
+        if infra_fail and not substantive and not hard_after:
             # Признак для экрана: заход не состоялся, сегмент ждёт повтора.
             seg["repair"]["retryable"] = True
+            # Хеш текста, на котором заход не состоялся. НЕ `source_hash`:
+            # тот клеймит сегмент, а этот только уточняет подпись на экране —
+            # правь текст руками, и «заход не состоялся» станет неправдой,
+            # потому что текст как раз менялся.
+            seg["repair"]["attemptHash"] = old_hash
         else:
             seg["repair"]["source_hash"] = old_hash
         return {"ok": True, "applied": False, "repair": seg["repair"],
@@ -8429,6 +8502,12 @@ def _apply_repair_candidate(seg: dict) -> str:
     # уходит в prevTarget, статус становится review, отметка снимается.
     # Автоправка не заверяет сама себя — принял её человек, а не проверка.
     _replace_target(seg, cand, rp.get("model") or "", "REPAIR_ACCEPTED")
+    # `_replace_target` ставит review только заверенному, остальным translated.
+    # Здесь этого мало: текст НИКЕМ не проверен (проверки описывали отвергнутый
+    # вариант и устарели вместе с ним), а сегмент мог стоять в review после
+    # прошлой правки — и потерял бы отметку «посмотри человек». Ставим её сами,
+    # ровно как это делает сам ремонт после применения правки.
+    seg["status"] = "review"
     # Проверки описывают ОТВЕРГНУТЫЙ текст: их хеш от нового не совпадёт, и
     # `stale` встанет сам. Снимать их руками нельзя — на них держится история.
     seg["repair"] = {**rp, "applied": True, "from": was,
@@ -8452,12 +8531,13 @@ def accept_repair_candidate(pid: int, sid: int):
     оказавшейся негодной для правки термина (балл back-check вознаграждает
     кальку, см. `_run_segment_repair`).
 
-    Решение принимает ЧЕЛОВЕК, по одному сегменту: пакетного применения тут
-    нет намеренно. Проверки прежнего текста после подстановки устаревают сами
-    (их хеш описывает отвергнутый вариант), а нового текста ещё нет ни у кого —
-    то есть массовое применение перевело бы сотню сегментов в состояние
-    «никем не проверено» одним нажатием. Сегмент после этого идёт в ближайший
-    прогон и проверяется штатно."""
+    Решение принимает ЧЕЛОВЕК. Пачкой то же самое делает
+    `/api/projects/{pid}/repair/accept-batch` — с разбором, копией для отката
+    и пощадой заверенному человеком. Оговорка одна на обе двери: проверки
+    прежнего текста после подстановки устаревают сами (их хеш описывает
+    отвергнутый вариант), а нового текста ещё нет ни у кого, — то есть сегмент
+    остаётся непроверенным до ближайшего прогона. Это не запрет, а условие,
+    и пачка называет его числом до применения."""
     seg = get_segment(pid, sid)
     if not _repair_score_vetoed(seg):
         raise HTTPException(400, "У сегмента нет отменённой баллом правки, "
@@ -8505,11 +8585,24 @@ def accept_repair_candidates(pid: int, req: RepairAcceptBatchRequest = RepairAcc
     переводом. Поэтому число сказано до применения, а не после."""
     project = get_project(pid)
     ids = set(req.segment_ids) if req.segment_ids is not None else None
+    # Тот же отбор, что у корзины `human.revertedByScore` в /analysis, и это
+    # обязательство: кнопка «Принять все» стоит в строке с числом N и обязана
+    # применить ровно N. Корзина берёт сегмент только при ОТКРЫТЫХ находках —
+    # если претензии с тех пор сняли (арбитр отменил `term_lost`, запись
+    # глоссария понизили, откат снял termcheck), кандидат чинит то, чего
+    # больше нет, и ставить его в перевод незачем.
+    # Глоссарий берём из готового отчёта, а `_repair_findings` зовём БЕЗ
+    # проекта — ровно как в /analysis: с проектом это `_get_context` на каждый
+    # сегмент, десятки секунд единственного воркера.
+    impact = glossary_impact(pid)
+    gloss_bad = set(impact["segments"]) | set(impact.get("caseSegments") or ())
     matched, skipped_confirmed = [], []
     for seg in project["segments"]:
         if ids is not None and seg["id"] not in ids:
             continue
         if not _repair_score_vetoed(seg):
+            continue
+        if not (_repair_findings(seg) or seg["id"] in gloss_bad):
             continue
         if seg.get("status") == "confirmed" and not req.include_confirmed:
             skipped_confirmed.append(seg["id"])
@@ -8571,6 +8664,10 @@ def undo_accept_repair_candidates(pid: int, stamp: str):
     затирать её откатом нельзя. Тот же закон, что у `_repair_tried` в
     `_revert_repairs`. Неподходящие названы поимённо."""
     project = get_project(pid)
+    # Метку из URL подставлять в путь как есть нельзя — то же правило и та же
+    # проверка, что у откатов пересчёта баллов и выноса глоссария.
+    if not re.fullmatch(r"[0-9-]{8,24}", stamp or ""):
+        raise HTTPException(400, "Неверная метка отката")
     path = PURGE_DIR / ("repair-accept-" + stamp + ".json")
     if not path.exists():
         raise HTTPException(404, "Копия для отката не найдена")
@@ -8578,6 +8675,11 @@ def undo_accept_repair_candidates(pid: int, stamp: str):
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:
         raise HTTPException(500, "Копия для отката не читается: " + str(e))
+    # Копия помнит, чей это проект. Без сверки метку от одного проекта можно
+    # подать в откат другого: от порчи спасало бы только совпадение текстов,
+    # то есть случайность, а не правило.
+    if data.get("project") != pid:
+        raise HTTPException(400, "Эта копия относится к другому проекту")
     by_id = {sg["id"]: sg for sg in project["segments"]}
     restored, changed_since = [], []
     for snap in data.get("segments") or []:

@@ -308,6 +308,17 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
         seg.repair.applied ? "Автоматический ремонт применён" : "Автоматический ремонт откачен"),
       React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.6, marginTop: 4 } },
         (seg.repair.issues || []).join("; ")),
+      /* Решения, принятые ВОПРЕКИ падению балла. Поле заведено ровно затем,
+         чтобы человек не смотрел на принятую правку с упавшим баллом и не
+         гадал, почему её оставили, — а значит его надо показывать. */
+      (seg.repair.notes || []).length > 0 && React.createElement("div",
+        { style: { fontSize: 12.5, color: "var(--text-2)", marginTop: 4, lineHeight: 1.5 } },
+        (seg.repair.notes || []).join("; ")),
+      /* Принятый человеком кандидат от машинной правки на экране неотличим,
+         а это разные вещи: одну заверила оценка, другую — человек. */
+      seg.repair.acceptedBy === "human" && React.createElement("div",
+        { style: { fontSize: 12.5, color: "var(--c-success)", marginTop: 4 } },
+        "Вариант принят человеком" + (seg.repair.acceptedAt ? " · " + seg.repair.acceptedAt : "")),
       !seg.repair.applied && seg.repair.reason && React.createElement("div", { style: { fontSize: 12.5, color: "var(--c-warning)", marginTop: 4 } },
         "Причина отката: " + seg.repair.reason),
       seg.repair.applied && seg.repair.from && React.createElement("div", { style: { marginTop: 6 } },

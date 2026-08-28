@@ -69,14 +69,30 @@ function WorkSummary({ summary, store, toast, onReload }) {
 до ближайшего прогона.
 ${skipped ? `Заверенных человеком не тронем: ${skipped}.
 ` : ""}
-Откат есть — копия уйдёт в data/backups/.`);
+Откат есть: копия уйдёт в data/backups/, метку скажу после применения.
+Кнопки отката в интерфейсе пока нет — он делается запросом по метке.`);
         if (!ok) { setAccBusy(false); return; }
         window.API.safeCall(() => window.API.acceptRepairBatch(store.activeProject.id, { dry_run: false }))
-          .then(res => {
+          .then(async res => {
             setAccBusy(false);
             if (!res || !res.ok) { toast.error("Не удалось применить", "Сервер отказал."); return; }
+            /* Подтянуть ПРАВЛЕНЫЕ сегменты обязательно, и это не косметика:
+               без этого в браузере остаётся ПРЕЖНИЙ текст, а в карточке
+               сегмента черновик берётся из него — первое же «Сохранить»
+               вернуло бы старый перевод поверх принятого, молча и без
+               единого счётчика. Сверка расхождения копии сюда не приходит:
+               число сегментов не меняется, статус — тоже. Тянем по ids,
+               а не весь проект: тот весит пять мегабайт (образец — /term-case). */
+            const ids = res.ids || [];
+            if (ids.length && window.API.fetchSegments) {
+              const got = await window.API.safeCall(
+                () => window.API.fetchSegments(store.activeProject.id, ids));
+              (got && got.segments || []).forEach(
+                sg => store.updateSegment(store.activeProject.id, sg.id, sg));
+            }
             toast.success("Принято сегментов: " + res.accepted,
-              "Откат: " + (res.stamp || "—") + " · проверить их сможет ближайший прогон");
+              "Откат — по метке " + (res.stamp || "—")
+              + " · проверить их сможет ближайший прогон");
             if (onReload) onReload();
           });
       });

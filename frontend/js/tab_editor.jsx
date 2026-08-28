@@ -179,6 +179,22 @@ function estimateRun(kind, targets, model, opts) {
       cost += priceOf(o.recheckModel, n * 300 + tgtChars / 3.5,
                       (tgtChars / 2.2) * reasoning(o.recheckModel));
     }
+    // Судья. Ремонт зовёт его СИММЕТРИЧНО: там, где он участвовал в прежней
+    // оценке, перепроверка зовёт его тоже (judge_after на сервере) — иначе
+    // вердикт сравнивался бы с сырым измерением. Значит вызовы покупаются
+    // и при ВЫКЛЮЧЕННОМ тумблере, и без этой строки смета их не считает,
+    // а её число уходит в est_cost и калибрует поправку estRatio по всей
+    // системе. Считается по сохранённому признаку `backcheck.judged`,
+    // а не по правилу зоны: правило зоны живёт на сервере.
+    if (o.judgeModel) {
+      const jdone = targets.filter(s => s.backcheck && s.backcheck.judged).length;
+      const jn = jdone + (o.judge ? (n - jdone) * JUDGE_SHARE : 0);
+      if (jn > 0) {
+        const jshare = n ? jn / n : 0;
+        cost += priceOf(o.judgeModel, jn * 400 + (srcChars * jshare) / 1.1,
+                        jn * 250 * reasoning(o.judgeModel));
+      }
+    }
     sec = n * EST_SEC_PER_SEG * 2;             // правка + перепроверка
   } else if (kind === "termaudit") {
     // Один вызов на сегмент: соседи + список приказных терминов -> вердикт
@@ -1819,9 +1835,11 @@ function TabEditor({ store, toast }) {
           + " с находками ждут второго захода — раскройте строку"
         : "правит по всем находкам, включая глоссарий",
       modelId: rpModel, onModel: pickRpModel, plan: stepPlan("repair"),
-      planEst: planEstOf("repair", rpModelInfo, { recheckModel: bcModelInfo }),
+      planEst: planEstOf("repair", rpModelInfo, { recheckModel: bcModelInfo,
+        judge: bcJudge, judgeModel: judgeModel || bcModel }),
       soloEst: estimateRun("repair", project.segments.filter(s => repairable(s, currentIdSet)),
-        rpModelInfo, { recheckModel: bcModelInfo }),
+        rpModelInfo, { recheckModel: bcModelInfo,
+          judge: bcJudge, judgeModel: judgeModel || bcModel }),
       onSolo: runRepairBatch, onStop: stopJob,
       running: batchRun && batchRun.engine === "repair" ? batchRun : null,
       soloNote: "Правка плюс перепроверка теми же проверками: если оценка упадёт, текст откатится. Один заход на один текст — второй даст то же самое за те же деньги.",

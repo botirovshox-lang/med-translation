@@ -370,12 +370,15 @@ print("=== 6c. Принять пачкой ===")
 import tempfile, pathlib
 main.PURGE_DIR = pathlib.Path(tempfile.mkdtemp())
 
-a1 = seg_of(1, SRC, OLD_T, repair=dict(GOOD))
-a2 = seg_of(2, SRC, OLD_T, repair=dict(GOOD))
-conf = seg_of(3, SRC, OLD_T, repair=dict(GOOD))
+# С открытыми находками: пачка берёт ровно то, что показывает корзина
+# в /analysis, а та требует, чтобы к сегменту были претензии.
+TCF = {"model": "gpt-5.6-terra", "findings": [dict(FIND)]}
+a1 = seg_of(1, SRC, OLD_T, repair=dict(GOOD), tc=TCF)
+a2 = seg_of(2, SRC, OLD_T, repair=dict(GOOD), tc=TCF)
+conf = seg_of(3, SRC, OLD_T, repair=dict(GOOD), tc=TCF)
 conf["status"] = "confirmed"
 conf["confirmedBy"] = "human"
-other = seg_of(4, SRC, OLD_T, repair=dict(
+other = seg_of(4, SRC, OLD_T, tc=TCF, repair=dict(
     GOOD, reason="балл back-check упал 57 → 8; замечаний по терминам стало больше 1 → 2"))
 project_of([a1, a2, conf, other])
 
@@ -422,11 +425,105 @@ check(a2["target"] == "Кто-то поправил это руками.", "чу
 check(main._repair_score_vetoed(a1) is True,
       "откат вернул и запись ремонта: кандидат снова на месте")
 
+# Метка из URL подставляется в путь, поэтому сначала проверяется её ФОРМА —
+# то же правило, что у откатов пересчёта баллов и выноса глоссария.
 try:
-    main.undo_accept_repair_candidates(1, "нет-такой-метки")
+    main.undo_accept_repair_candidates(1, "../../etc/passwd")
+    check(False, "кривая метка обязана быть отклонена")
+except main.HTTPException as e:
+    check(e.status_code == 400, "метка неверной формы — 400, в путь она не попадает")
+try:
+    main.undo_accept_repair_candidates(1, "20200101-000000")
     check(False, "откат по несуществующей метке обязан быть отказан")
 except main.HTTPException as e:
-    check(e.status_code == 404, "несуществующая метка — 404")
+    check(e.status_code == 404, "метка верной формы, но копии нет — 404")
+# Копия помнит свой проект: метку от чужого проекта в откат не принимаем.
+main.STATE["projects"].append({"id": 7, "src": "RU", "tgt": "EN",
+                               "domain": "medical", "segments": []})
+try:
+    main.undo_accept_repair_candidates(7, res["stamp"])
+    check(False, "чужая метка обязана быть отклонена")
+except main.HTTPException as e:
+    check(e.status_code == 400, "копия от другого проекта — 400")
+
+
+# ────── 6d. Находки внешнего ревью: чего нельзя предлагать к принятию ──────
+print()
+print("=== 6d. Жёсткая находка и сбой — разбор ревью ===")
+
+# (1) Правку отменила ЖЁСТКАЯ находка на кандидате. Строка причины у неё почти
+# та же, что у «просто упал балл», поэтому решает поле записи. Без него система
+# предлагала человеку принять текст с испорченным ЧИСЛОМ.
+proj, seg = build()
+stub_checks(score_after=8, findings_after=[], hard=True)
+main._openai_repair = lambda *a, **k: "Direct sunlight kills mycobacteria within 50 minutes."
+r = main._run_segment_repair(seg, proj)
+check(r.get("applied") is False, "жёсткая находка правку отменила")
+check(seg["repair"].get("hardAfter") is True, "исход вето записан отдельным полем")
+check("жёсткая находка" in (seg["repair"].get("reason") or ""),
+      "и человеку сказано словами, а не только полем")
+check(main._repair_score_vetoed(seg) is False,
+      "принимать такое нельзя: размен числа на термин — не работа")
+check(main._segment_for_client(seg)["repair"].get("acceptable") is False,
+      "и кнопки «Принять» у него нет")
+main._openai_repair = lambda *a, **k: NEW_T
+
+# (2) У записей ПРЕЖНЕГО кода поля нет, а отменить их могла та же жёсткая
+# находка. Кандидата поэтому сверяем с оригиналом заново — бесплатно.
+OLDREC = {"applied": False, "reason": "балл back-check упал 57 → 8",
+          "issues": ["x"], "before": {"score": 57, "terms": 1, "gloss": 0},
+          "after": {"score": 8, "terms": 0, "gloss": 0}}
+s_ok = seg_of(1, SRC, OLD_T, repair=dict(OLDREC, candidate=NEW_T))
+s_bad = seg_of(2, SRC, OLD_T, repair=dict(
+    OLDREC, candidate="Direct sunlight kills mycobacteria within 50 minutes."))
+project_of([s_ok, s_bad])
+check(main._repair_score_vetoed(s_ok) is True, "старая запись с целыми числами принимается")
+check(main._repair_score_vetoed(s_bad) is False,
+      "старая запись с испорченным числом — нет, хотя поля hardAfter у неё нет")
+
+# (3) Сбой перепроверки ВМЕСТЕ с упавшим баллом. Это самая частая форма отказа,
+# и заход по ней засчитывать нельзя: балл — та самая негодная мера, а взвесить
+# её было нечем именно потому, что termcheck не ответил.
+proj, seg = build()
+stub_checks(score_after=8, findings_after=[])
+main._run_segment_termcheck = dead_tc
+r = main._run_segment_repair(seg, proj)
+check(r.get("applied") is False, "правку откатили")
+w = seg["repair"].get("reason") or ""
+check("балл back-check упал" in w and main.REPAIR_RECHECK_FAILED in w,
+      "в причинах и балл, и сбой")
+check("source_hash" not in seg["repair"] and seg["repair"].get("retryable") is True,
+      "заход НЕ засчитан: по существу сказано не было ничего")
+check(main._repair_tried(seg) is False, "сегмент остаётся доступен ремонту")
+
+# (4) Миграция разжимает и смешанные записи прежнего кода, но НЕ трогает те,
+# где рядом стояла жёсткая находка.
+MIX = {"applied": False, "source_hash": main._text_hash(OLD_T),
+       "reason": "балл back-check упал 57 → 8; " + main.REPAIR_RECHECK_FAILED}
+HARDMIX = {"applied": False, "source_hash": main._text_hash(OLD_T),
+           "reason": "балл back-check упал 57 → 8, жёсткая находка на новом тексте; "
+                     + main.REPAIR_RECHECK_FAILED}
+st2 = {"projects": [{"id": 1, "segments": [
+        dict(seg_of(1, SRC, OLD_T), repair=dict(MIX)),
+        dict(seg_of(2, SRC, OLD_T), repair=dict(HARDMIX))]}],
+       "glossary": [], "tm": [], "termQueue": []}
+main._apply_migrations(st2)
+m1, m2 = st2["projects"][0]["segments"]
+check("source_hash" not in m1["repair"] and m1["repair"].get("attemptHash"),
+      "смешанная запись разжата, клеймящий хеш стал информационным")
+check(m2["repair"].get("source_hash"), "запись с жёсткой находкой не тронута")
+
+# (5) Пачка берёт ровно то, что показывает корзина: без открытых находок
+# кандидат чинит то, чего больше нет.
+noop = seg_of(9, SRC, OLD_T, repair=dict(OLDREC, candidate=NEW_T),
+              bc={"score": 99, "model": "m", "back": "b", "reasons": [], "terms_lost": []},
+              tc={"model": "t", "findings": []})
+project_of([noop])
+a2 = main.project_analysis(1)
+check(a2["human"]["revertedByScore"] == [],
+      "находок нет — корзина сегмент не показывает")
+check(main.accept_repair_candidates(1)["matched"] == 0,
+      "и пачка его не берёт: под одной строкой не может стоять двух чисел")
 
 
 # ─────────── 7. Корзина в /analysis ───────────

@@ -526,6 +526,24 @@ check(m3["repair"].get("attemptHash"), "хеш попытки сохранён �
 main._apply_migrations(st3)
 check("source_hash" not in m3["repair"], "и эта миграция идемпотентна")
 
+# Тот же случай у вето по баллу: счётчик не изменился («1 → 1»), значит заказ
+# мог быть снят, а прежнее правило этого не умело видеть.
+SAME = {"applied": False, "source_hash": main._text_hash(OLD_T),
+        "reason": "балл back-check упал 63 → 37",
+        "before": {"score": 63, "terms": 1, "gloss": 0},
+        "after": {"score": 37, "terms": 1, "gloss": 0}}
+GREW = dict(SAME, reason="балл back-check упал 63 → 37",
+            after={"score": 37, "terms": 3, "gloss": 0})
+st4 = {"projects": [{"id": 1, "segments": [
+        dict(seg_of(1, SRC, OLD_T), repair=dict(SAME)),
+        dict(seg_of(2, SRC, OLD_T), repair=dict(GREW))]}],
+       "glossary": [], "tm": [], "termQueue": []}
+main._apply_migrations(st4)
+n1, n2 = st4["projects"][0]["segments"]
+check("source_hash" not in n1["repair"], "счётчик не менялся — вердикт снят")
+check(n2["repair"].get("source_hash"),
+      "счётчик вырос — прежний вердикт нынешним правилам не противоречит")
+
 # (5) Пачка берёт ровно то, что показывает корзина: без открытых находок
 # кандидат чинит то, чего больше нет.
 noop = seg_of(9, SRC, OLD_T, repair=dict(OLDREC, candidate=NEW_T),

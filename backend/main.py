@@ -1906,8 +1906,23 @@ def _apply_migrations(state: dict) -> dict:
             # поменялась формула — прежняя оценка перестала быть свежей.
             # Денег это само по себе не тратит: сегмент лишь становится виден
             # разбору прогона, а тот называет число и цену до запуска.
+            # Тот же случай у вето по БАЛЛУ: «стало чище» теперь включает
+            # снятое заказанное замечание (`ordered_fixed`), поэтому правка
+            # с неизменившимся счётчиком («1 → 1» — сняли одно, пришло другое)
+            # прежде не проходила ни в одну ветку и откатывалась баллом.
+            # Берём ровно этот признак: отказ ТОЛЬКО по баллу и счётчик
+            # серьёзных замечаний не изменился. Где счётчик вырос или неизвестен,
+            # прежний вердикт правилам не противоречит и остаётся в силе.
+            _b, _a = _r.get("before") or {}, _r.get("after") or {}
+            _score_only = ((_r.get("reason") or "").startswith("балл back-check упал")
+                           and ";" not in (_r.get("reason") or "")
+                           and "жёсткая находка" not in (_r.get("reason") or ""))
+            _same_terms = (_b.get("terms") is not None and _a.get("terms") is not None
+                           and _b["terms"] == _a["terms"])
             if (_r.get("applied") is False and "source_hash" in _r
-                    and "замечаний по терминам стало больше" in (_r.get("reason") or "")):
+                    and not _r.get("hardAfter")
+                    and (("замечаний по терминам стало больше" in (_r.get("reason") or ""))
+                         or (_score_only and _same_terms))):
                 _r["attemptHash"] = _r.pop("source_hash")
                 _r["retryable"] = True
                 _r["retryReason"] = "rules"

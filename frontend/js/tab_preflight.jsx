@@ -119,7 +119,8 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
 
   /* revertedByScore — ПОДМНОЖЕСТВО reverted, поэтому в сумму отдельно
      не идёт: Set и так схлопнет повторы, но полагаться на это молча нельзя. */
-  const humanSegs = new Set([].concat(s.human.reverted || [],
+  const humanSegs = new Set([].concat(s.human.confirmWithdrawn || [],
+                                      s.human.reverted || [],
                                       s.human.glossaryConfirmed || [],
                                       s.human.confirmedFindings || []));
   const humanTotal = s.human.termsTotal + humanSegs.size;
@@ -199,6 +200,14 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
               disabled: accBusy, onClick: acceptAll },
               accBusy ? "Принимаем…" : "Принять все")
           : null }),
+      /* Машина отменила решение человека. Это самая громкая строка экрана
+         и стоит она выше остальных: отмену заверения человек обязан увидеть
+         сам, а не обнаружить пропажу отметки случайно. Доказательство лежит
+         на сегменте (`confirmWithdrawn.evidence`). */
+      React.createElement(Row, { label: "Машина сняла ваше подтверждение",
+        n: (s.human.confirmWithdrawn || []).length, ids: s.human.confirmWithdrawn,
+        color: "var(--c-danger)",
+        hint: "расхождение чисел, единиц или отрицания — это сильнее заверения; доказательство в карточке сегмента" }),
       React.createElement(Row, { label: "Подтверждено, но спорит с глоссарием", n: s.human.glossaryConfirmed.length,
         ids: s.human.glossaryConfirmed, color: "var(--c-warning)", hint: "переписать можно только по явной галочке" }),
       // Своя строка, а не «оценка ниже порога»: это заверенные человеком

@@ -702,6 +702,59 @@ kinds = {f["kind"] for f in main._repair_findings(seg_dup, proj)}
 check("dup" in kinds, "повтор стал поводом для ремонта")
 
 
+# ────── 6i. Объективная находка сильнее заверения человеком ──────
+print()
+print("=== 6i. Заверение снимается только неоспоримым — и громко ===")
+HARDBC = {"score": 40, "model": "m", "back": "иначе", "terms_lost": [],
+          "reasons": ["расхождение чисел"]}
+SOFTBC = {"score": 40, "model": "m", "back": "иначе", "terms_lost": [],
+          "reasons": ["часть текста не совпала дословно", "обратный перевод про другое"]}
+
+hard = seg_of(1, "Доза 5 мг в сутки.", "Dose 15 mg per day.", bc=HARDBC,
+              tc={"model": "t", "findings": [dict(FIND)]})
+hard["status"] = "confirmed"; hard["confirmedBy"] = "human"; hard["confirmedAt"] = "2026-08-01 10:00"
+soft = seg_of(2, SRC, OLD_T, bc=SOFTBC, tc={"model": "t", "findings": [dict(FIND)]})
+soft["status"] = "confirmed"; soft["confirmedBy"] = "human"
+proj = project_of([hard, soft])
+
+check(main._confirm_override(hard) == ["расхождение чисел"],
+      "расхождение чисел — доказательство, которое сильнее заверения")
+check(main._confirm_override(soft) == [],
+      "«про другое» и «не совпало дословно» заверение НЕ отменяют: "
+      "на коротком сегменте косинус врёт")
+
+# Нарушенный приказный термин заверение тоже НЕ отменяет: посылка «запись
+# верна» недоказана, а редактор, исправивший кальку руками, иначе получил бы
+# бесконечную борьбу с глоссарием.
+GL2 = [{"src": "доза", "tgt": "dosage", "tier": "verified", "cat": "Term",
+        "lang": "RU→EN", "domain": "medical"}]
+gl_seg = seg_of(3, "Доза препарата.", "Drug dose.", bc=SOFTBC, tc={"model": "t", "findings": []})
+gl_seg["status"] = "confirmed"; gl_seg["confirmedBy"] = "human"
+proj2 = project_of([gl_seg], GL2)
+check(any(f["kind"] == "gloss" for f in main._repair_findings(gl_seg, proj2)),
+      "нарушение приказного термина находкой остаётся")
+check(main._confirm_override(gl_seg) == [],
+      "но заверение оно не снимает — это спор про ЗАПИСЬ, а не про строку")
+
+# Заверение снимается со следом: что нашли, кто заверял, какой текст был.
+proj = project_of([hard])
+stub_checks(score_after=95, findings_after=[])
+main._openai_repair = lambda *a, **k: "Dose 5 mg per day."
+r = main._run_segment_repair(hard, proj)
+check(r.get("applied") is True, "правка принята")
+cw = hard.get("confirmWithdrawn") or {}
+check(cw.get("evidence") == ["расхождение чисел"], "доказательство записано на сегмент")
+check(cw.get("by") == "human" and cw.get("at") == "2026-08-01 10:00",
+      "кто и когда заверял — сохранено")
+check(cw.get("was") == "Dose 15 mg per day.", "заверенный текст сохранён целиком")
+check(hard.get("status") == "review" and "confirmedBy" not in hard,
+      "отметка снята, сегмент ждёт человека")
+a = main.project_analysis(1)
+check(a["human"]["confirmWithdrawn"] == [1],
+      "и своя строка на экране: молча снятое заверение недопустимо")
+main._openai_repair = lambda *a, **k: NEW_T
+
+
 # ─────────── 7. Корзина в /analysis ───────────
 print("\n=== 7. Отдельная строка на экране «Анализ» ===")
 vetoed = seg_of(1, SRC, OLD_T, repair=GOOD,

@@ -2294,6 +2294,10 @@ def project_analysis(pid: int, refresh: bool = False):
     # прогон не дотянется без явного разрешения.
     confirmed_findings: list = []
     conf_set: set = set()
+    # Заверение, снятое МАШИНОЙ по объективной находке. Своя строка обязательна:
+    # человек поставил отметку, машина её отменила — он должен об этом узнать
+    # и увидеть доказательство, а не обнаружить пропажу случайно.
+    withdrawn: list = []
     # Подмножество `reverted`: правку отменил только балл back-check, а термины
     # она почистила. Подмножество, а не отдельная корзина, — иначе исчерпаемость
     # держалась бы на совпадении двух предикатов в разных концах файла.
@@ -2317,6 +2321,8 @@ def project_analysis(pid: int, refresh: bool = False):
         if not target:
             untranslated.append(s["id"])
             continue
+        if s.get("confirmWithdrawn"):
+            withdrawn.append(s["id"])
         rp = s.get("repair") or {}
         open_findings = _repair_findings(s) or (
             [{"kind": "gloss"}] if s["id"] in gloss_bad else [])
@@ -2481,6 +2487,8 @@ def project_analysis(pid: int, refresh: bool = False):
             "revertedByScore": score_vetoed,
             "glossaryConfirmed": impact["confirmed"],
             "confirmedFindings": confirmed_findings,
+            # Машина сняла заверение человека — с доказательством на сегменте.
+            "confirmWithdrawn": withdrawn,
             # Список терминов, а не сегментов: вопрос здесь про ЗАПИСЬ
             # глоссария («правильна ли она»), и отвечать на него посегментно
             # значит задать один и тот же вопрос десятки раз.
@@ -6987,6 +6995,47 @@ def termcheck_batch(pid: int, req: TermcheckBatchRequest):
 # «Потерян термин» сюда НЕ входит: эта претензия выставляется отдельной строкой
 # из `terms_lost` — с учётом вердикта арбитра и вердикта судьи, чего сравнение
 # подстрокой русской фразы не знает.
+# Находки, которые СИЛЬНЕЕ заверения человеком. Класс намеренно уже, чем
+# BACKCHECK_OBJECTIVE_REASONS: сюда входит только то, чья ПОСЫЛКА не зависит
+# ни от чьей записи, ни от мнения модели, ни от языка и области — расхождение
+# чисел, единиц, инверсия отрицания и подмена стороны. Считаются они
+# детерминированно из пары «оригинал → перевод».
+#
+# Чего здесь НЕТ и почему:
+#   • «обратный перевод про другое» — это сравнение по косинусу, на коротком
+#     сегменте оно врёт («Посев и ТЛЧ» → «Culture and drug susceptibility
+#     testing» помечено как «про другое» при верном переводе);
+#   • НАРУШЕННЫЙ ПРИКАЗНЫЙ ТЕРМИН — вычисление детерминированное, но посылка
+#     («запись верна») недоказана: 20 приказных записей пришли импортом без
+#     следа человека, а «Бактериовыделение → bacillary excretion» заверена
+#     человеком и при этом калька. Дай глоссарию право снимать заверение —
+#     и редактор, исправивший кальку руками, получит бесконечную борьбу:
+#     он правит, ремонт вписывает запись обратно, статус слетает, и так по
+#     кругу. Единственная дверь (правка самой записи) с экрана сегмента
+#     не видна. Такой спор уходит в human.termcheckDisputes, где и стоит
+#     вопрос «неверна запись либо неверна проверка»;
+#   • регистр, чужое письмо и самоповтор — сигналы для НОМИНАЦИИ: у них есть
+#     законные исключения (торговая марка, название закона на чужом письме;
+#     повтор наименований сторон в договоре), и снимать по ним решение
+#     человека нельзя.
+CONFIRM_OVERRIDE_REASONS = ("расхождение чисел", "расхождение единиц",
+                            "инверсия отрицания", "подмена на противоположное")
+
+
+def _confirm_override(seg: dict) -> list:
+    """Доказательства, которые сильнее заверения человеком.
+
+    Пусто — заверение неприкосновенно, как и было. Непусто — ремонт вправе
+    переписать текст без отдельного разрешения, но ОБЯЗАН оставить след:
+    что нашли, каким правилом, какой текст был. Молча снятое заверение —
+    это ровно та потеря доверия, ради которой правило и заведено узким."""
+    bc = seg.get("backcheck") or {}
+    if not bc or _check_stale(bc, seg.get("target") or ""):
+        return []
+    return [r for r in (bc.get("reasons") or [])
+            if any(r.startswith(k) for k in CONFIRM_OVERRIDE_REASONS)]
+
+
 BACKCHECK_OBJECTIVE_REASONS = ("расхождение чисел", "расхождение единиц",
                                "инверсия отрицания", "подмена на противоположное",
                                "обратный перевод про другое")
@@ -8010,6 +8059,24 @@ def _dup_count(text: str) -> int:
 _SELF_GLOSS_RE = re.compile(r"\b([^\W\d_]{4,})\s*\(\s*\1\s*\)", re.IGNORECASE | re.UNICODE)
 
 
+def _adjacent_repeat(text: str) -> list:
+    """Подряд идущие повторы: хвост из N слов равен следующим N словам.
+
+    Один расчёт на ОРИГИНАЛ и на ПЕРЕВОД: по нему же решается, не повторяется
+    ли автор сам, — а два расчёта одного и того же однажды разойдутся."""
+    w = _DUP_WORD_RE.findall(text or "")
+    low = [x.lower() for x in w]
+    out, seen = [], set()
+    for n in (6, 5, 4, 3):
+        for i in range(len(low) - 2 * n + 1):
+            if i in seen:
+                continue
+            if low[i:i + n] == low[i + n:i + 2 * n]:
+                seen.update(range(i, i + 2 * n))
+                out.append((" ".join(w[i:i + n]), n))
+    return out
+
+
 def _dup_misses(seg: dict) -> list:
     """Текст сам себя повторяет. Бесплатно, детерминированно, без знания языка.
 
@@ -8037,19 +8104,17 @@ def _dup_misses(seg: dict) -> list:
     if not tgt:
         return []
     out = []
-    w = _DUP_WORD_RE.findall(tgt)
-    low = [x.lower() for x in w]
-    # Подряд идущий повтор: хвост из N слов равен следующим N словам.
-    seen_span = set()
-    for n in (6, 5, 4, 3):
-        for i in range(len(low) - 2 * n + 1):
-            if i in seen_span:
-                continue
-            if low[i:i + n] == low[i + n:i + 2 * n]:
-                seen_span.update(range(i, i + 2 * n))
-                out.append({"kind": "dup",
-                            "text": "кусок повторён подряд: «"
-                                    + " ".join(w[i:i + n]) + "»"})
+    # Повтор ЕСТЬ И В ОРИГИНАЛЕ — значит так написал автор, и отличить его
+    # повтор от нашего нечем: языки разные, n-граммы не сопоставимы. Молчим,
+    # тот же закон, что у DOMAIN_RULES. Правило не косметическое: на боевом
+    # проекте так отсеиваются 3 находки из 12 («туберкулёз семенных пузырьков»
+    # повторён в самом оригинале), а в договорах и законах повтор наименований
+    # сторон и определённых терминов — норма оформления, и там доля ложных
+    # была бы много выше. Система не только медицинская.
+    if _adjacent_repeat(seg.get("source") or ""):
+        return []
+    for a, b in _adjacent_repeat(tgt):
+        out.append({"kind": "dup", "text": "кусок повторён подряд: «" + a + "»"})
     for m in _SELF_GLOSS_RE.finditer(tgt):
         out.append({"kind": "dup",
                     "text": "слово поясняет само себя: «" + m.group(0) + "»"})
@@ -8199,6 +8264,11 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # прямо: убавилось ли расхождений по регистру.
     had_free = any(f["kind"] in ("case", "script", "term_case", "dup") for f in findings)
     only_free = had_free and not had_bc and not had_tc
+    # Доказательство, сильнее ли находка заверения, снимаем ДО правки: после
+    # перепроверки back-check описывает уже НОВЫЙ текст, и находки на старом
+    # там нет — след получился бы пустым ровно там, где он нужнее всего.
+    was_confirmed = seg.get("status") == "confirmed"
+    override_ev = _confirm_override(seg) if was_confirmed else []
     before = _repair_scores(seg, project)
     # Проверки старого текста сохраняем целиком: при откате их надо вернуть,
     # иначе сегмент окажется «непроверенным» и человек заплатит за прогон снова.
@@ -8514,6 +8584,15 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         return {"ok": True, "applied": False, "repair": seg["repair"],
                 "desync": _repair_desync(seg, old_target)}
 
+    # Заверение снимаем ГРОМКО. Человек его поставил, и если машина его
+    # отменяет, она обязана предъявить, за что: какая находка, каким правилом,
+    # какой текст стоял. Без этого следа отмена решения человека неотличима
+    # от обычной правки, и доверять системе больше нельзя.
+    if was_confirmed and override_ev:
+        seg["confirmWithdrawn"] = {
+            "by": seg.get("confirmedBy"), "at": seg.get("confirmedAt"),
+            "withdrawnAt": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "evidence": override_ev, "was": old_target}
     seg["prevTarget"] = old_target
     seg["status"] = "review"          # заверяет человек, автоправка себя не подтверждает
     # Чинили заверенный перевод — отметка «подтвердил человек» относилась к
@@ -8951,11 +9030,15 @@ def repair_batch(pid: int, req: RepairBatchRequest):
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
     candidates = [s for s in project["segments"]
                   if (id_filter is None or s["id"] in id_filter)
-                  and (req.include_confirmed or s.get("status") != "confirmed")
+                  and (req.include_confirmed or s.get("status") != "confirmed"
+                       or _confirm_override(s))
                   and _repairable(s, req.retry, project)]
+    # Пощада названа поимённо и БЕЗ тех, кого забрала объективная находка:
+    # иначе отчёт говорил бы «не тронули», а текст был бы переписан.
     skipped_confirmed = ([s["id"] for s in project["segments"]
                           if (id_filter is None or s["id"] in id_filter)
                           and s.get("status") == "confirmed"
+                          and not _confirm_override(s)
                           and _repairable(s, req.retry, project)]
                          if not req.include_confirmed else [])
     limit = max(1, min(req.limit, 30))
@@ -11127,8 +11210,14 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
             # остальные находки читаются из самого сегмента и бесплатны.
             if seg["id"] not in gloss_ids and not _repair_findings(seg, None):
                 skip("чинить нечего — находок нет")
-            elif seg.get("status") == "confirmed" and not fix_confirmed:
+            elif (seg.get("status") == "confirmed" and not fix_confirmed
+                    and not _confirm_override(seg)):
                 skip("заверено человеком — включите «чинить подтверждённые»")
+            elif seg.get("status") == "confirmed" and not fix_confirmed:
+                # Объективная находка сильнее заверения. Причина названа
+                # отдельно: у этих сегментов последствие особое — с них
+                # снимется отметка человека, и он должен видеть, за что.
+                run("расхождение чисел, единиц или отрицания — сильнее заверения", seg)
             elif not retry and _repair_tried(seg):
                 skip("этот же текст уже чинили")
             elif seg.get("status") == "confirmed":

@@ -303,6 +303,23 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
                 (seg.termcheck.model === "skip" ? "без вызова модели" : seg.termcheck.model || "")
                 + (seg.termcheck.at ? " · " + seg.termcheck.at : "")))),
 
+    /* Доказательство отмены заверения. Стоит ВЫШЕ карточки ремонта и красным:
+       машина отменила решение человека, и он должен увидеть, за что именно,
+       не разыскивая это по журналам. */
+    seg.confirmWithdrawn && React.createElement("div",
+      { className: "tm-pop", style: { marginTop: 8, borderLeft: "3px solid var(--c-danger)" } },
+      React.createElement("span", { className: "label", style: { margin: 0, color: "var(--c-danger)" } },
+        "Подтверждение снято машиной"),
+      React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.6, marginTop: 4 } },
+        (seg.confirmWithdrawn.evidence || []).join("; ")),
+      React.createElement("div", { className: "dim", style: { fontSize: 12, marginTop: 4 } },
+        "заверил: " + (seg.confirmWithdrawn.by || "—")
+        + (seg.confirmWithdrawn.at ? " · " + seg.confirmWithdrawn.at : "")
+        + " · снято " + (seg.confirmWithdrawn.withdrawnAt || "")),
+      seg.confirmWithdrawn.was && React.createElement("div", { style: { marginTop: 6 } },
+        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "Заверенный текст был:"),
+        React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5 } }, seg.confirmWithdrawn.was))),
+
     seg.repair && React.createElement("div", { className: "tm-pop", style: { marginTop: 8 } },
       React.createElement("span", { className: "label", style: { margin: 0 } },
         seg.repair.applied ? "Автоматический ремонт применён" : "Автоматический ремонт откачен"),

@@ -7706,7 +7706,7 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     # перевесит. В `_repair_scores` оно остаётся: ремонт, ЛОМАЮЩИЙ начертание,
     # обязан откатиться.
     items = (_gloss_misses(seg, project)
-             + _case_misses(seg) + _script_misses(seg))
+             + _case_misses(seg) + _script_misses(seg) + _dup_misses(seg))
     # Потерянные приказные термины — через _terms_lost_open, тем же расчётом,
     # что и счётчик в `_repair_scores`. Он и снимает вердикты контекстного
     # арбитра: арбитр единственный видел сегмент в ряду соседей, и его
@@ -8005,6 +8005,57 @@ def _dup_count(text: str) -> int:
     return sum(c - 1 for c in seen.values() if c >= 2)
 
 
+# Слово повторено само собой в скобках: «Prevalence (prevalence)». Четыре
+# буквы и больше — короткие («ТБ (TB)») бывают законной расшифровкой.
+_SELF_GLOSS_RE = re.compile(r"\b([^\W\d_]{4,})\s*\(\s*\1\s*\)", re.IGNORECASE | re.UNICODE)
+
+
+def _dup_misses(seg: dict) -> list:
+    """Текст сам себя повторяет. Бесплатно, детерминированно, без знания языка.
+
+    Две находки, и обе были СОВЕРШЕННО невидимы всем проверкам:
+      1. подряд идущий повтор из трёх и более слов — «Infiltrative pulmonary
+         tuberculosis Infiltrative pulmonary tuberculosis» (балл back-check 100,
+         termcheck молчит);
+      2. слово, поясняющее само себя скобкой, — «Prevalence (prevalence)»
+         (тоже 100). Так схлопываются два РАЗНЫХ термина оригинала
+         («Распространённость (болезненность)») в одно английское слово,
+         напечатанное дважды.
+
+    Почему этого не видел никто: back-check считает долю слов ОРИГИНАЛА,
+    вернувшихся через обратный перевод, и от повтора она не падает; termcheck
+    спрашивает, нормальный ли это термин целевого языка, — а повторённый термин
+    нормален; глоссарию повтор угодил. Проверка ничего не стоит и потому идёт
+    наравне с регистром и чужим письмом.
+
+    Скобка ловится только когда в ней стоит ТО ЖЕ САМОЕ слово. «ТБ (tuberculosis)»
+    — законная расшифровка, и таких мы не трогаем; «Prevalence (prevalence)»
+    законным не бывает ни при каком оригинале. Наличие скобки в оригинале
+    признаком не является: у #128 она там есть, и именно в неё схлопнулись
+    два разных русских термина."""
+    tgt = (seg.get("target") or "").strip()
+    if not tgt:
+        return []
+    out = []
+    w = _DUP_WORD_RE.findall(tgt)
+    low = [x.lower() for x in w]
+    # Подряд идущий повтор: хвост из N слов равен следующим N словам.
+    seen_span = set()
+    for n in (6, 5, 4, 3):
+        for i in range(len(low) - 2 * n + 1):
+            if i in seen_span:
+                continue
+            if low[i:i + n] == low[i + n:i + 2 * n]:
+                seen_span.update(range(i, i + 2 * n))
+                out.append({"kind": "dup",
+                            "text": "кусок повторён подряд: «"
+                                    + " ".join(w[i:i + n]) + "»"})
+    for m in _SELF_GLOSS_RE.finditer(tgt):
+        out.append({"kind": "dup",
+                    "text": "слово поясняет само себя: «" + m.group(0) + "»"})
+    return out
+
+
 def _repair_scores(seg: dict, project: Optional[dict] = None) -> dict:
     """Снимок качества сегмента: балл back-check, число серьёзных замечаний
     по терминам и число нарушенных утверждённых терминов. По нему решаем,
@@ -8146,7 +8197,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # хуже» засчитало бы успехом любой переписанный текст. Мерить тут есть чем
     # и это бесплатно — сама находка детерминированная, поэтому спрашиваем
     # прямо: убавилось ли расхождений по регистру.
-    had_free = any(f["kind"] in ("case", "script", "term_case") for f in findings)
+    had_free = any(f["kind"] in ("case", "script", "term_case", "dup") for f in findings)
     only_free = had_free and not had_bc and not had_tc
     before = _repair_scores(seg, project)
     # Проверки старого текста сохраняем целиком: при откате их надо вернуть,
@@ -8382,7 +8433,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # ни балл, ни termcheck не пересчитывались, глоссарию нарушать нечего,
     # и «не стало хуже» засчитало бы успехом любой переписанный текст.
     # Считаем их вместе: размен регистра на кириллицу — не работа.
-    _free = lambda d: d["case"] + d["script"] + d["term_case"]
+    _free = lambda d: d["case"] + d["script"] + d["term_case"] + d["dup"]
     if only_free and _free(after) >= _free(before):
         better = False
         why.append("правка не сняла ни регистра, ни чужого письма: "

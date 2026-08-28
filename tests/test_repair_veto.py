@@ -679,6 +679,29 @@ check(main._run_segment_repair(seg, proj).get("applied") is False,
 main._openai_repair = lambda *a, **k: NEW_T
 
 
+# ────── 6h. Текст, повторяющий сам себя, — находка ремонта ──────
+print()
+print("=== 6h. Самоповтор: балл 100, termcheck молчит, дефект налицо ===")
+d = lambda src, tgt: [f["text"] for f in main._dup_misses({"source": src, "target": tgt})]
+check(len(d("4. Инфильтративный туберкулёз лёгких",
+            "4. Infiltrative pulmonary tuberculosis Infiltrative pulmonary tuberculosis")) == 1,
+      "подряд идущий повтор из трёх слов найден")
+check(len(d("Распространённость (болезненность)", "Prevalence (prevalence)")) == 1,
+      "слово, поясняющее само себя, найдено — два разных термина схлопнулись в одно")
+check(d("ТБ (туберкулёз)", "TB (tuberculosis)") == [],
+      "законная расшифровка находкой не считается: в скобке ДРУГОЕ слово")
+check(d("Обычный текст", "A normal sentence about the number of patients here") == [],
+      "обычный текст чист")
+check(d("x", "") == [] and d("x", "one two") == [],
+      "пустой и короткий текст счётчик не ломают")
+
+# Находка идёт тем же путём, что регистр и чужое письмо: бесплатно, в ремонт.
+seg_dup = seg_of(1, SRC, "Infiltrative pulmonary tuberculosis Infiltrative pulmonary tuberculosis")
+proj = project_of([seg_dup])
+kinds = {f["kind"] for f in main._repair_findings(seg_dup, proj)}
+check("dup" in kinds, "повтор стал поводом для ремонта")
+
+
 # ─────────── 7. Корзина в /analysis ───────────
 print("\n=== 7. Отдельная строка на экране «Анализ» ===")
 vetoed = seg_of(1, SRC, OLD_T, repair=GOOD,

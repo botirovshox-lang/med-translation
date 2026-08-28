@@ -61,6 +61,8 @@ function WorkSummary({ summary, store, toast, onReload }) {
       });
   };
 
+  /* revertedByScore — ПОДМНОЖЕСТВО reverted, поэтому в сумму отдельно
+     не идёт: Set и так схлопнет повторы, но полагаться на это молча нельзя. */
   const humanSegs = new Set([].concat(s.human.reverted || [],
                                       s.human.glossaryConfirmed || [],
                                       s.human.confirmedFindings || []));
@@ -121,8 +123,21 @@ function WorkSummary({ summary, store, toast, onReload }) {
         React.createElement("b", { style: { fontVariantNumeric: "tabular-nums", color: humanTotal ? "var(--c-warning)" : "var(--c-success)" } }, humanTotal)),
       React.createElement(Row, { label: "Терминов машина решать не берётся", n: s.human.termsTotal,
         color: "var(--c-warning)", hint: "спорные варианты и конфликты — в «Глоссарии»" }),
-      React.createElement(Row, { label: "Правка откачена — не стало лучше", n: s.human.reverted.length,
-        ids: s.human.reverted, color: "var(--c-warning)", hint: "модель пробовала починить и не смогла" }),
+      React.createElement(Row, { label: "Правка откачена — не стало лучше",
+        n: s.human.reverted.length - (s.human.revertedByScore || []).length,
+        ids: (s.human.reverted || []).filter(i => !(s.human.revertedByScore || []).includes(i)),
+        color: "var(--c-warning)", hint: "модель пробовала починить и не смогла" }),
+      /* Подмножество откачённых, и своей строкой: отмену там держал ТОЛЬКО
+         упавший балл back-check, а термины правка почистила. Балл меряет долю
+         слов оригинала, вернувшихся через обратный перевод, то есть
+         вознаграждает кальку, — и «sanguiferous bed» набирал по нему больше,
+         чем верное «bloodstream». Нынешний ремонт так уже не откатывает,
+         а прежние записи остались: текст написан, оплачен и лежит рядом.
+         В общей корзине он выглядит безнадёжным и не разбирается никогда. */
+      React.createElement(Row, { label: "Ремонт отменил верную правку — текст готов",
+        n: (s.human.revertedByScore || []).length, ids: s.human.revertedByScore,
+        color: "var(--c-warning)",
+        hint: "балл back-check упал, но термины стали чище — принять можно в карточке сегмента" }),
       React.createElement(Row, { label: "Подтверждено, но спорит с глоссарием", n: s.human.glossaryConfirmed.length,
         ids: s.human.glossaryConfirmed, color: "var(--c-warning)", hint: "переписать можно только по явной галочке" }),
       // Своя строка, а не «оценка ниже порога»: это заверенные человеком

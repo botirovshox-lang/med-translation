@@ -13,6 +13,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
   const [backResult, setBackResult] = useState(null); // null|'loading'|string
   const [termBusy, setTermBusy] = useState(false);
   const [repairBusy, setRepairBusy] = useState(false);
+  const [acceptBusy, setAcceptBusy] = useState(false);
   const idx = project.segments.findIndex(s => s.id === seg.id) + 1;
   const words = (draft.trim() ? draft.trim().split(/\s+/).length : 0);
   const dirty = draft !== (seg.target || "");
@@ -127,6 +128,25 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
         if (fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
       });
       toast.success("Сегмент исправлен", "Статус «Требует проверки» — подтвердите вручную.");
+    });
+  };
+
+  /* Принять текст, который ремонт написал и отменил падением балла.
+     Вызова модели нет — подставляется уже оплаченный repair.candidate,
+     поэтому и подтверждения не спрашиваем: сочинять тут нечего, а прежний
+     текст уходит в repair.from и виден кнопкой «Вернуть прежний». */
+  const acceptRepair = () => {
+    if (acceptBusy || !window.API) return;
+    setAcceptBusy(true);
+    window.API.safeCall(() => window.API.acceptRepair(project.id, seg.id)).then(res => {
+      setAcceptBusy(false);
+      if (!res || !res.ok) { toast.error("Не удалось принять вариант", "Сервер отказал — обновите страницу."); return; }
+      /* Кладём ОДИН сегмент, а не тянем проект: на 2670 строках это 5 МБ ради
+         одной изменившейся строки (то же правило, что у /term-case). Сервер
+         вернул его уже с производными stale/tried — считать их тут нечем. */
+      if (res.segment) store.updateSegment(project.id, seg.id, res.segment);
+      toast.success("Вариант принят",
+        "Проверки устарели вместе с текстом — сегмент пойдёт в ближайший прогон.");
     });
   };
 
@@ -296,8 +316,19 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
         React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", style: { marginTop: 6 },
           onClick: () => { setDraft(seg.repair.from); toast.info("Прежний текст в черновике", "Сохраните, чтобы вернуть."); } }, "Вернуть прежний")),
       !seg.repair.applied && seg.repair.candidate && React.createElement("div", { style: { marginTop: 6 } },
-        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "Вариант модели (отклонён проверкой):"),
-        React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5 } }, seg.repair.candidate))),
+        React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+          seg.repair.acceptable
+            ? "Вариант модели — термины он почистил, отменил его только упавший балл:"
+            : "Вариант модели (отклонён проверкой):"),
+        React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5 } }, seg.repair.candidate),
+        /* Кнопка стоит, только когда её разрешил СЕРВЕР (repair.acceptable):
+           правило «отмену держал один балл, а термины стали чище» живёт
+           в _repair_score_vetoed, и повторять его здесь значит однажды
+           предложить нажатие, на которое эндпоинт ответит 400. */
+        seg.repair.acceptable && React.createElement(Btn, {
+          variant: "ghost", size: "sm", icon: "check", style: { marginTop: 6 },
+          disabled: acceptBusy, onClick: acceptRepair },
+          acceptBusy ? "Принимаем…" : "Принять этот вариант"))),
 
     infoPanel === "route" && React.createElement("div", { className: "row", style: { gap: 8 } },
       React.createElement("span", { className: "badge badge-translated" }, seg.route),

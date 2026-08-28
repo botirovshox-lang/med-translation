@@ -2225,6 +2225,10 @@ def project_analysis(pid: int, refresh: bool = False):
     # прогон не дотянется без явного разрешения.
     confirmed_findings: list = []
     conf_set: set = set()
+    # Подмножество `reverted`: правку отменил только балл back-check, а термины
+    # она почистила. Подмножество, а не отдельная корзина, — иначе исчерпаемость
+    # держалась бы на совпадении двух предикатов в разных концах файла.
+    score_vetoed: list = []
     # Множество, а не повторение условия: ниже переписанные ремонтом сегменты
     # НЕ идут в «оценку ниже порога», и правомерно это ровно потому, что они
     # уже попали в `repaired`. Два одинаковых предиката в тысяче строк друг от
@@ -2256,6 +2260,13 @@ def project_analysis(pid: int, refresh: bool = False):
             # _repair_tried обязателен: запись о неудачной правке могла остаться
             # от прежнего текста, а к нынешнему уже не относится.
             reverted.append(s["id"])
+            # Отдельной строкой — те, где отмена держалась ТОЛЬКО на упавшем
+            # балле, а термины правка почистила. Это не «модель не смогла»:
+            # текст написан и оплачен, лежит в repair.candidate и ждёт одного
+            # нажатия. В общей корзине они выглядят безнадёжными и потому
+            # не разбираются никогда.
+            if _repair_score_vetoed(s):
+                score_vetoed.append(s["id"])
         # Только неподтверждённые: подтверждённые с находками пакетный ремонт
         # без явного разрешения не трогает, и обещать «это починится само»
         # было бы неправдой. Они уходят в свою корзину — не потому, что с ними
@@ -2395,6 +2406,10 @@ def project_analysis(pid: int, refresh: bool = False):
                             key=lambda x: -x["count"]),
             "termsTotal": sum(need_human.values()),
             "reverted": reverted,
+            # Из них: правка была верной, отменил её негодный измеритель.
+            # Готовый текст лежит в сегменте, применяется без вызова модели
+            # (POST /api/segments/{pid}/{sid}/repair/accept).
+            "revertedByScore": score_vetoed,
             "glossaryConfirmed": impact["confirmed"],
             "confirmedFindings": confirmed_findings,
             # Список терминов, а не сегментов: вопрос здесь про ЗАПИСЬ
@@ -6245,7 +6260,13 @@ def _segment_for_client(seg: dict) -> dict:
         # не посчитать, поэтому производную считаем здесь.
         out["qa_result"] = {**qa, "stale": qa.get("target_hash") != cur_trimmed}
     if rp:
-        out["repair"] = {**rp, "tried": rp.get("source_hash") == cur}
+        # `acceptable` считает СЕРВЕР по той же причине, что и `tried`: правило
+        # «отмену держал только балл, а термины стали чище» разобрано в
+        # `_repair_score_vetoed`, и повтори его браузер — кнопка «Принять»
+        # предлагалась бы там, где эндпоинт отвечает 400. Тот же закон, что
+        # у TERMCHECK_ACTIONABLE: одно правило — одно место.
+        out["repair"] = {**rp, "tried": rp.get("source_hash") == cur,
+                         "acceptable": _repair_score_vetoed(seg)}
     return out
 
 
@@ -6662,6 +6683,16 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
         "semantic": res.get("semantic"),
         "reasons": res.get("reasons", []),
         "terms_lost": res.get("terms_lost", []),
+        # Объективная находка (числа, единицы, отрицание, подмена стороны —
+        # BACKCHECK_HARD_TYPES). Кладём в запись, потому что её спрашивает
+        # ремонт: падение балла он больше не считает отменой, если правка
+        # почистила термины, — а вот жёсткая находка остаётся вето при любом
+        # улучшении терминологии. Считать её по `reasons` подстрокой нельзя:
+        # это ровно то сравнение с русской фразой, от которого заведены
+        # CLEAN_* коды. Поле новое, у старых записей его нет; читает его
+        # только тот, кто сам эту запись сейчас и написал (перепроверка
+        # внутри ремонта), поэтому None ни во что не превращается.
+        "hard": bool(res.get("hard")),
         "judge": res.get("judge"),
         "back": back,
         "model": mdl_id,
@@ -7695,6 +7726,43 @@ def _repair_futile(seg: dict, project: Optional[dict] = None) -> bool:
     return was == {f["text"] for f in _repair_findings(seg, project)}
 
 
+def _repair_score_vetoed(seg: dict) -> bool:
+    """Правку отменил ТОЛЬКО упавший балл back-check, а термины она почистила.
+
+    Это разбор НАСЛЕДСТВА, а не действующая ветка: нынешний `_run_segment_repair`
+    такую правку больше не откатывает (см. там про кальку и `_content_recall`).
+    Но записи, сделанные прежним правилом, никуда не делись — на боевом проекте
+    это 111 сегментов, где перевод и сегодня несёт «medicine physicians» вместо
+    «pulmonologists», а верный вариант лежит рядом в `repair.candidate`,
+    написанный и оплаченный.
+
+    Предикат намеренно узкий, три условия:
+      1) причина отмены РОВНО одна и это балл — «;» в строке означает, что были
+         и другие претензии (термины, глоссарий, регистр), а они законны;
+      2) термины при этом стали ЧИЩЕ по бесплатным объективным счётчикам;
+      3) кандидат относится к НЫНЕШНЕМУ тексту (`_repair_tried`) — иначе перевод
+         правили после отмены, и подставлять старого кандидата значит выбросить
+         чужую работу, ровно как в `_revert_repairs`.
+
+    Сравнение по строке причины здесь законно (в отличие от корзин `/analysis`,
+    где заведены CLEAN_*): строку писал этот же файл, она лежит в данных
+    прошлых прогонов и переформулировать её задним числом нельзя."""
+    rp = seg.get("repair") or {}
+    if rp.get("applied") or not (rp.get("candidate") or "").strip():
+        return False
+    if not _repair_tried(seg):
+        return False
+    why = rp.get("reason") or ""
+    if not why.startswith("балл back-check упал") or ";" in why:
+        return False
+    b, a = rp.get("before") or {}, rp.get("after") or {}
+    return bool(
+        (b.get("terms") is not None and a.get("terms") is not None
+         and a["terms"] < b["terms"])
+        or (b.get("gloss") is not None and a.get("gloss") is not None
+            and a["gloss"] < b["gloss"]))
+
+
 def _repairable(seg: dict, allow_tried: bool = False, project: Optional[dict] = None) -> bool:
     """allow_tried — человек сам отметил галочкой уже чинившиеся сегменты.
     По умолчанию второй заход по тому же тексту не делаем: те же претензии
@@ -7925,22 +7993,75 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # проставлен. Собирать терминологию с текста, который через две строки
     # может быть откачен, — значит закрепить в глоссарии отменённую правку.
     if had_bc:
-        _run_segment_backcheck(seg, project, bc_model, use_judge, judge_model, harvest=False)
+        # Судья с ОБЕИХ сторон либо ни с одной. Прежний балл мог сложиться
+        # с участием судьи (JUDGE_CAP опускает, JUDGE_FLOOR_NONE поднимает),
+        # а перепроверка идёт с `use_judge` из прогона — тумблер «Судья»
+        # выключен по умолчанию. Тогда сравниваются два числа РАЗНОЙ природы:
+        # вердикт против сырого измерения. На боевом проекте так вышло у 66
+        # отмен из 176, и падение у них медианно 25 пунктов против 12
+        # у остальных — то есть отменяла правку сама несимметричность.
+        # Зовём судью там, где он участвовал в прежней оценке: лишний вызов
+        # только на таких сегментах, зато сравнение честное.
+        judge_after = use_judge or bool(bc_before and bc_before.get("judged"))
+        _run_segment_backcheck(seg, project, bc_model, judge_after, judge_model, harvest=False)
     if had_tc:
         _run_segment_termcheck(seg, project, tc_model, harvest=False)
     after = _repair_scores(seg, project)
 
     better = True
     why = []
+    # Отмена по причине, к КАЧЕСТВУ правки отношения не имеющей (перепроверка
+    # не выполнилась). Такой заход не засчитывается: см. ниже про source_hash.
+    infra_fail = False
+    # Решения, принятые ВОПРЕКИ падению балла, — в запись: без них человек
+    # видит принятую правку с упавшим баллом и не понимает, почему её оставили.
+    notes = []
     if had_bc and before["score"] is not None and after["score"] is not None:
         if after["score"] < before["score"]:
-            better = False
-            why.append("балл back-check упал " + str(before["score"]) + " → " + str(after["score"]))
+            # Балл back-check — доля основ ОРИГИНАЛА, вернувшихся через
+            # обратный перевод (_content_recall). Значит он вознаграждает
+            # КАЛЬКУ: «Erect solar rays» возвращается как «прямые солнечные
+            # лучи» слово в слово и набирает почти единицу, а верное «direct
+            # sunlight» возвращается синонимом и балл роняет. Termcheck заведён
+            # ровно против кальки — и его правку отменяла проверка, для которой
+            # калька выглядит образцовой. На боевом проекте так выброшены 111
+            # верных правок: «medicine physicians» → «pulmonologists»,
+            # «sanguiferous bed» → «bloodstream», «an infected animal» →
+            # «the patient». Медиана падения 24 пункта, и это не эффект
+            # коротких сегментов — медиана длины 23 содержательных слова.
+            #
+            # Поэтому балл больше не отменяет правку, которая ПОЧИСТИЛА
+            # ТЕРМИНЫ. Обоснование то же, каким обоснован only_minor: у захода
+            # должна быть измеримая цель, а на правке кальки балл меряет не то.
+            # Ослабление узкое, и границы у него две:
+            #   1) улучшение считается по БЕСПЛАТНЫМ и объективным счётчикам
+            #      (серьёзные находки termcheck, нарушенные приказные термины),
+            #      а не по мнению модели о собственной работе;
+            #   2) ЖЁСТКАЯ находка на новом тексте (числа, единицы, отрицание,
+            #      подмена стороны) остаётся вето при любом улучшении
+            #      терминологии: она не зависит ни от морфологии, ни от
+            #      буквализма, и размен числа на термин — не работа.
+            terms_cleaner = (
+                (before["terms"] is not None and after["terms"] is not None
+                 and after["terms"] < before["terms"])
+                or after["gloss"] < before["gloss"])
+            # Флаг читаем у записи, которую только что написала перепроверка
+            # ВЫШЕ, — то есть он всегда свежий и всегда есть. У записей
+            # прежних версий его нет, но сюда такие не попадают.
+            hard_now = bool((seg.get("backcheck") or {}).get("hard"))
+            if terms_cleaner and not hard_now:
+                notes.append("балл back-check упал " + str(before["score"]) + " → "
+                             + str(after["score"]) + ", но правка почистила термины "
+                             + "и жёстких находок нет — отменой не считаем")
+            else:
+                better = False
+                why.append("балл back-check упал " + str(before["score"]) + " → " + str(after["score"]))
     if had_tc and after["terms"] is None:
         # Перепроверка не состоялась (вызов упал) — подтвердить правку нечем.
         # Откат: автоправка не заверяет сама себя, и «проверка не ответила»
         # это не «проверка сказала, что всё хорошо».
         better = False
+        infra_fail = True
         why.append("перепроверка терминов не выполнилась")
     elif had_tc and before["terms"] is not None and after["terms"] > before["terms"]:
         better = False
@@ -8049,10 +8170,29 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
                 seg["termcheck"] = tc_before
             else:
                 seg.pop("termcheck", None)
+        # Заход ЗАСЧИТЫВАЕТСЯ (source_hash), только если правку отвергла ОЦЕНКА:
+        # тот же текст с теми же претензиями даст тот же ответ модели, и второй
+        # заход — это платный вызов с заранее известным исходом (_repair_tried,
+        # _repair_futile). А вот сбой перепроверки о качестве правки не говорит
+        # НИЧЕГО: причина в оборванном вызове, и клеймить за неё сегмент значит
+        # закрыть его от ремонта навсегда из-за чужой сетевой ошибки. Откат при
+        # этом правильный — система не заверяет сама себя, — но попытка не
+        # записывается, и сегмент остаётся доступен. На боевом проекте так
+        # потеряны 5 верных правок (#645: «accidental» → «casual», балл
+        # не падал вовсе); при плохой сети их были бы десятки.
         seg["repair"] = {"applied": False, "reason": "; ".join(why) or "не стало лучше",
-                         "source_hash": old_hash, "model": mdl_id, "candidate": new_target,
+                         "model": mdl_id, "candidate": new_target,
                          "issues": [f["text"] for f in findings], "before": before, "after": after,
                          "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+        # ЕДИНСТВЕННАЯ причина, и она про сбой. Когда рядом стоит претензия
+        # по существу (нарушен приказный термин, замечаний стало больше,
+        # жёсткая находка), правку отвергли не из-за сети: вердикт вынесен,
+        # и повторный заход даст тот же результат за те же деньги.
+        if infra_fail and len(why) == 1:
+            # Признак для экрана: заход не состоялся, сегмент ждёт повтора.
+            seg["repair"]["retryable"] = True
+        else:
+            seg["repair"]["source_hash"] = old_hash
         return {"ok": True, "applied": False, "repair": seg["repair"],
                 "desync": _repair_desync(seg, old_target)}
 
@@ -8067,6 +8207,10 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     seg["repair"] = {"applied": True, "from": old_target, "source_hash": _text_hash(new_target),
                      "model": mdl_id, "issues": [f["text"] for f in findings],
                      "before": before, "after": after,
+                     # Чем правка обязана решению, принятому вопреки падению
+                     # балла. Без этого на экране стоит принятая правка
+                     # с упавшим баллом и ничем не объяснённая.
+                     "notes": notes,
                      "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
     return {"ok": True, "applied": True, "repair": seg["repair"], "target": new_target,
             "desync": _repair_desync(seg, new_target)}
@@ -8231,6 +8375,50 @@ def repair_segment(pid: int, sid: int, req: RepairRequest = RepairRequest()):
         save_state(STATE)
         return result
     raise HTTPException(502, result.get("error", "Ремонт не удался"))
+
+
+@app.post("/api/segments/{pid}/{sid}/repair/accept")
+def accept_repair_candidate(pid: int, sid: int):
+    """Принять текст, который ремонт написал и отменил падением балла.
+
+    Третья команда в системе, меняющая перевод БЕЗ вызова модели, — после
+    `/glossary/revert-repairs` и `/term-case`, и по той же причине: она ничего
+    не сочиняет. Подставляется `repair.candidate` — текст, который эта же
+    система написала по конкретным находкам и который отвергла мерой,
+    оказавшейся негодной для правки термина (балл back-check вознаграждает
+    кальку, см. `_run_segment_repair`).
+
+    Решение принимает ЧЕЛОВЕК, по одному сегменту: пакетного применения тут
+    нет намеренно. Проверки прежнего текста после подстановки устаревают сами
+    (их хеш описывает отвергнутый вариант), а нового текста ещё нет ни у кого —
+    то есть массовое применение перевело бы сотню сегментов в состояние
+    «никем не проверено» одним нажатием. Сегмент после этого идёт в ближайший
+    прогон и проверяется штатно."""
+    seg = get_segment(pid, sid)
+    if not _repair_score_vetoed(seg):
+        raise HTTPException(400, "У сегмента нет отменённой баллом правки, "
+                                 "которую можно принять")
+    rp = seg["repair"]
+    cand = rp["candidate"]
+    was = seg.get("target") or ""
+    # Тот же закон, что у любой машинной правки: заверенный человеком текст
+    # уходит в prevTarget, статус становится review, отметка снимается.
+    # Автоправка не заверяет сама себя — принял её человек, а не проверка.
+    _replace_target(seg, cand, rp.get("model") or "", "REPAIR_ACCEPTED")
+    # Проверки описывают ОТВЕРГНУТЫЙ текст: их хеш от нового не совпадёт, и
+    # `stale` встанет сам. Снимать их руками нельзя — на них держится история.
+    seg["repair"] = {**rp, "applied": True, "from": was,
+                     "source_hash": _text_hash(cand),
+                     # След решения человека: без него следующий прогон
+                     # не отличит принятого кандидата от машинной правки.
+                     "acceptedBy": "human",
+                     "acceptedAt": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    seg["repair"].pop("candidate", None)
+    _IMPACT_CACHE.pop(pid, None)
+    _ANALYSIS_CACHE.pop(pid, None)
+    save_state(STATE)
+    return {"ok": True, "target": cand, "prev": was,
+            "segment": _segment_for_client(seg)}
 
 
 class RepairBatchRequest(BaseModel):

@@ -306,11 +306,20 @@ function tcGroupDefault(key, model, models) {
 function rpGroupKey(s) {
   const r = s.repair;
   if (!r) return "none";
+  /* Заход, отменённый СБОЕМ перепроверки, сервер намеренно не засчитывает
+     (source_hash не пишется), поэтому tried у него false. В «текст менялся»
+     такие класть нельзя: текст как раз не менялся, не состоялась проверка. */
+  if (r.retryable && !r.tried) return "failed";
   if (!r.tried) return "changed";
   return r.applied ? "applied" : "rejected";
 }
 
-function rpGroupDefault(key) { return key === "none" || key === "changed"; }
+/* Второй заход по тому же тексту даёт то же самое, поэтому группы уже
+   чинившихся по умолчанию сняты. «failed» — не второй заход: там первый
+   не состоялся, и сегмент ждёт своей очереди наравне с нетронутыми. */
+function rpGroupDefault(key) {
+  return key === "none" || key === "changed" || key === "failed";
+}
 
 /* ── Составной прогон: весь конвейер одной кнопкой ──────────────────────
    Порядок ЗДЕСЬ повторяет FULL_RUN_STEPS на сервере и обязан ему совпадать:
@@ -1568,11 +1577,12 @@ function TabEditor({ store, toast }) {
   const rpGroupLabel = (key) =>
     key === "none" ? "ремонт не запускался"
       : key === "changed" ? "текст менялся после прошлого ремонта"
+      : key === "failed" ? "заход не состоялся — сбой перепроверки"
       : key === "applied" ? "уже чинилось, замечания остались"
       : "правка была откачена (не стало лучше)";
 
   const rpGroups = (() => {
-    const order = { none: 0, changed: 1, applied: 2, rejected: 3 };
+    const order = { none: 0, changed: 1, failed: 2, applied: 3, rejected: 4 };
     const by = new Map();
     project.segments.forEach(s => {
       if (!rpCandidate(s, currentIdSet)) return;
@@ -1602,6 +1612,10 @@ function TabEditor({ store, toast }) {
 
   // Отмечены группы уже чинившихся — серверу нужно разрешение на второй заход
   const repairRetry = () => (pickedRpGroups.has("applied") || pickedRpGroups.has("rejected"));
+  /* Сколько сегментов с находками отложено СНЯТЫМИ галочками. Считается по тем
+     же rpGroups, что и таблица ниже, — второй расчёт разошёлся бы с ней. */
+  const rpWaiting = rpGroups.reduce(
+    (a, g) => a + (pickedRpGroups.has(g.key) ? 0 : g.count), 0);
 
   const pickedFull = fullSteps || new Set(FULL_STEP_KEYS);
   // Состав шагов — ответ сервера, а не расчёт браузера. Пока разбор не пришёл,
@@ -1793,7 +1807,17 @@ function TabEditor({ store, toast }) {
         + "— это вопрос к записи глоссария, а не к строке.",
     },
     {
-      key: "repair", label: FULL_STEP_LABELS.repair, hint: "правит по всем находкам, включая глоссарий",
+      key: "repair", label: FULL_STEP_LABELS.repair,
+      /* Подсказка в СВЁРНУТОЙ строке. Группы «уже чинилось» и «правка была
+         откачена» сняты по умолчанию и живут в раскрытой части, поэтому
+         сегменты с непочиненными находками просто не видны: на боевом проекте
+         так молча стояли 510 строк, и понять, почему состав шага «—», было
+         неоткуда. Молчать об отложенной работе нельзя — это тот же закон, что
+         у `impact["futile"]`: расходиться с находками они не перестали. */
+      hint: rpWaiting
+        ? "правит по всем находкам · ещё " + rpWaiting
+          + " с находками ждут второго захода — раскройте строку"
+        : "правит по всем находкам, включая глоссарий",
       modelId: rpModel, onModel: pickRpModel, plan: stepPlan("repair"),
       planEst: planEstOf("repair", rpModelInfo, { recheckModel: bcModelInfo }),
       soloEst: estimateRun("repair", project.segments.filter(s => repairable(s, currentIdSet)),

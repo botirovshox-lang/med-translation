@@ -93,7 +93,10 @@ main._run_segment_termcheck(s1, proj, harvest=True)
 check(len(main.STATE["termQueue"]) == 1, "harvest=True — пара собрана")
 import re as _re
 src_all = open("backend/main.py", encoding="utf-8").read()
-check("_run_segment_backcheck(seg, project, bc_model, use_judge, judge_model, harvest=False)" in src_all,
+# judge_after, а не use_judge: судья зовётся ещё и тогда, когда он участвовал
+# в ПРЕЖНЕЙ оценке, — иначе вердикт сравнивается с сырым измерением
+# (см. test_repair_veto.py). harvest=False при этом обязателен по-прежнему.
+check("_run_segment_backcheck(seg, project, bc_model, judge_after, judge_model, harvest=False)" in src_all,
       "ремонт зовёт back-check с harvest=False")
 check("_run_segment_termcheck(seg, project, tc_model, harvest=False)" in src_all,
       "ремонт зовёт termcheck с harvest=False")

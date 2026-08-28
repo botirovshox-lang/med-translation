@@ -189,6 +189,9 @@
 
     termcheck:     (pid, sid, model)        => call("POST", `/segments/${pid}/${sid}/termcheck`, { model: model || null }),
     repair:        (pid, sid, opts)         => call("POST", `/segments/${pid}/${sid}/repair`, opts || {}),
+    // Принять текст, который ремонт написал и отменил падением балла.
+    // Вызова модели нет: подставляется уже написанный repair.candidate.
+    acceptRepair:  (pid, sid)               => call("POST", `/segments/${pid}/${sid}/repair/accept`, {}),
 
     /* Фоновые прогоны: клиент только ставит задачу и смотрит прогресс */
     // Разбор прогона до запуска. Состав считает сервер тем же кодом, который

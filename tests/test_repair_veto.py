@@ -513,6 +513,19 @@ check("source_hash" not in m1["repair"] and m1["repair"].get("attemptHash"),
       "смешанная запись разжата, клеймящий хеш стал информационным")
 check(m2["repair"].get("source_hash"), "запись с жёсткой находкой не тронута")
 
+# Правило отмены изменилось — прежние вердикты по нему больше не держат сегмент.
+RULE = {"applied": False, "source_hash": main._text_hash(OLD_T),
+        "reason": "замечаний по терминам стало больше 1 → 2"}
+st3 = {"projects": [{"id": 1, "segments": [dict(seg_of(1, SRC, OLD_T), repair=dict(RULE))]}],
+       "glossary": [], "tm": [], "termQueue": []}
+main._apply_migrations(st3)
+m3 = st3["projects"][0]["segments"][0]
+check("source_hash" not in m3["repair"] and m3["repair"].get("retryReason") == "rules",
+      "вердикт прежнего правила снят и помечен своей причиной")
+check(m3["repair"].get("attemptHash"), "хеш попытки сохранён информационным")
+main._apply_migrations(st3)
+check("source_hash" not in m3["repair"], "и эта миграция идемпотентна")
+
 # (5) Пачка берёт ровно то, что показывает корзина: без открытых находок
 # кандидат чинит то, чего больше нет.
 noop = seg_of(9, SRC, OLD_T, repair=dict(OLDREC, candidate=NEW_T),
@@ -524,6 +537,93 @@ check(a2["human"]["revertedByScore"] == [],
       "находок нет — корзина сегмент не показывает")
 check(main.accept_repair_candidates(1)["matched"] == 0,
       "и пачка его не берёт: под одной строкой не может стоять двух чисел")
+
+
+# ────── 6e. Заказанное сняли — правку не отменяют по счёту ──────
+print()
+print("=== 6e. Серьёзные замечания сверяются ПОИМЁННО ===")
+
+# Боевой случай #2083: правка сняла заказанное «an infected animal» → «a patient»,
+# а termcheck на переписанном тексте назвал две ДРУГИЕ придирки. Счёт «1 → 2»
+# откатывал верную правку и клеймил сегмент навсегда.
+proj, seg = build()
+stub_checks(score_after=91, findings_after=[
+    {"tgt_term": "tuberculous intoxication", "suggestion": "constitutional symptoms",
+     "severity": "critical", "why": "чужая, уже стоявшая в тексте проблема"},
+    {"tgt_term": "Mantoux reaction tests", "suggestion": "Mantoux tests",
+     "severity": "major", "why": "и вторая такая же"}])
+r = main._run_segment_repair(seg, proj)
+check(r.get("applied") is True,
+      "заказанное снято — правку приняли, хотя серьёзных замечаний стало больше")
+check(seg["target"] == NEW_T, "исправленный текст на месте")
+check(any("заказанные сняты" in n for n in (seg["repair"].get("notes") or [])),
+      "и решение записано: по чему судили")
+
+# А если заказанное НЕ снято — откат, как и прежде.
+proj, seg = build()
+stub_checks(score_after=91, findings_after=[dict(FIND),
+    {"tgt_term": "other", "suggestion": "another", "severity": "major", "why": "ещё"}])
+r = main._run_segment_repair(seg, proj)
+check(r.get("applied") is False, "заказанное осталось — правку отвергли")
+check("ни одно из заказанных" in (seg["repair"].get("reason") or ""),
+      "и причина названа по существу, а не счётом")
+
+# Замечание на СВОЁМ, подставленном слове откатывает всегда: за то, что
+# вписали мы, отвечаем мы целиком.
+proj, seg = build()
+seg["termContext"] = {"version": main.TERM_CONTEXT_VERSION,
+                      "target_hash": main._text_hash(OLD_T.strip()),
+                      "terms": [{"src": "микобактерии", "tgt": "mycobacteria",
+                                 "forms": ["микобактерии"], "ok": False,
+                                 "use": "mycobacteria", "why": "передан неверно"}]}
+stub_checks(score_after=91, findings_after=[
+    {"tgt_term": "mycobacteria", "suggestion": "Mycobacterium tuberculosis",
+     "severity": "major", "why": "забраковано на подставленном"}])
+r = main._run_segment_repair(seg, proj)
+check(r.get("applied") is False, "забракован подставленный термин — откат")
+check("подставленный термин" in (seg["repair"].get("reason") or ""),
+      "и причина именно про него")
+
+# Отвергнутые находки лежат в записи: иначе шум от регрессии не отличить.
+check([f["tgt_term"] for f in (seg["repair"].get("afterFindings") or [])] == ["mycobacteria"],
+      "находки отвергнутого текста сохранены, а не выброшены")
+
+
+# ────── 6f. Совет арбитра доходит до ремонта, когда согласен с записью ──────
+print()
+print("=== 6f. «Передан неверно» становится работой, а не заметкой ===")
+GL = [{"src": "больной", "tgt": "patient", "tier": "verified", "cat": "Term",
+       "lang": "RU→EN", "domain": "medical"}]
+def with_ctx(use):
+    t = "Tests in an infected animal do not always indicate the absence."
+    sg = {"id": 1, "source": "Пробы у больного не всегда свидетельствуют об отсутствии.",
+          "target": t, "status": "translated",
+          "termContext": {"version": main.TERM_CONTEXT_VERSION,
+                          "target_hash": main._text_hash(t.strip()),
+                          "terms": [{"src": "больной", "tgt": "patient",
+                                     "forms": ["больного"], "ok": False,
+                                     "use": use, "why": "подменён животным"}]}}
+    return project_of([sg], GL), sg
+
+# Совет СОГЛАСЕН с приказной записью — подстановка счётчик глоссария опустит,
+# карусели нет, и ремонту это законная работа.
+proj, sg = with_ctx("in a patient")
+kinds = {f["kind"] for f in main._repair_findings(sg, proj)}
+check("term_ctx" in kinds, "совет арбитра стал находкой ремонта")
+f = next(f for f in main._repair_findings(sg, proj) if f["kind"] == "term_ctx")
+check(f.get("use") == "in a patient", "и готовый вариант едет вместе с ней")
+
+# Совет ПРОТИВОРЕЧИТ записи — это спор про запись, машина его не решает.
+proj, sg = with_ctx("in a sick individual")
+check("term_ctx" not in {f["kind"] for f in main._repair_findings(sg, proj)},
+      "совет против приказной записи ремонту не отдаётся: подстановка "
+      "подняла бы счётчик нарушенных терминов и правка откатилась бы")
+
+# «Передан верно» работой не становится и претензию снимает (как и прежде).
+proj, sg = with_ctx("in a patient")
+sg["termContext"]["terms"][0]["ok"] = True
+check("term_ctx" not in {f["kind"] for f in main._repair_findings(sg, proj)},
+      "«передан верно» поводом для правки не бывает")
 
 
 # ─────────── 7. Корзина в /analysis ───────────

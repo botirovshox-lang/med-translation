@@ -325,7 +325,7 @@ function rpGroupKey(s) {
   /* Заход, отменённый СБОЕМ перепроверки, сервер намеренно не засчитывает
      (source_hash не пишется), поэтому tried у него false. В «текст менялся»
      такие класть нельзя: текст как раз не менялся, не состоялась проверка. */
-  if (r.retryable && !r.tried) return "failed";
+  if (r.retryable && !r.tried) return r.retryReason === "rules" ? "rules" : "failed";
   if (!r.tried) return "changed";
   return r.applied ? "applied" : "rejected";
 }
@@ -334,7 +334,10 @@ function rpGroupKey(s) {
    чинившихся по умолчанию сняты. «failed» — не второй заход: там первый
    не состоялся, и сегмент ждёт своей очереди наравне с нетронутыми. */
 function rpGroupDefault(key) {
-  return key === "none" || key === "changed" || key === "failed";
+  /* «rules» отмечена по умолчанию: прежний вердикт вынесен правилом, которого
+     больше нет, а значит он ничего не говорит о нынешнем заходе. Это не второй
+     заход по тем же правилам, ради которого группы «уже чинилось» и сняты. */
+  return key === "none" || key === "changed" || key === "failed" || key === "rules";
 }
 
 /* ── Составной прогон: весь конвейер одной кнопкой ──────────────────────
@@ -1594,11 +1597,12 @@ function TabEditor({ store, toast }) {
     key === "none" ? "ремонт не запускался"
       : key === "changed" ? "текст менялся после прошлого ремонта"
       : key === "failed" ? "заход не состоялся — сбой перепроверки"
+      : key === "rules" ? "правило отмены изменилось — прежний вердикт устарел"
       : key === "applied" ? "уже чинилось, замечания остались"
       : "правка была откачена (не стало лучше)";
 
   const rpGroups = (() => {
-    const order = { none: 0, changed: 1, failed: 2, applied: 3, rejected: 4 };
+    const order = { none: 0, changed: 1, failed: 2, rules: 3, applied: 4, rejected: 5 };
     const by = new Map();
     project.segments.forEach(s => {
       if (!rpCandidate(s, currentIdSet)) return;

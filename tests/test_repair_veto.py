@@ -644,6 +644,41 @@ check("term_ctx" not in {f["kind"] for f in main._repair_findings(sg, proj)},
       "«передан верно» поводом для правки не бывает")
 
 
+# ────── 6g. Ремонт обязан ЗАМЕНЯТЬ термин, а не дописывать его рядом ──────
+print()
+print("=== 6g. Дописанный термин — это повтор, и он откатывает ===")
+check(main._dup_count("Check bone defects, areas of increased bone density, "
+                      "areas of increased bone density, signs of rickets.") == 3,
+      "повтор трёхсловных сочетаний считается")
+check(main._dup_count("The test result is assessed after 72 hours.") == 0,
+      "у обычного текста повторов нет")
+check(main._dup_count("") == 0 and main._dup_count("два слова") == 0,
+      "короткий текст не ломает счётчик")
+
+# Боевой случай #813: ремонту сказали «термин потерян», он дописал соседний
+# кусок ещё раз. Не видит этого никто: back-check считает долю слов ОРИГИНАЛА
+# в обратном переводе и от лишних слов только растёт.
+DUPED = ("Check osseous tissues for fractures, bone defects, areas of increased "
+         "bone density, areas of increased bone density, signs of rickets.")
+proj, seg = build()
+main._openai_repair = lambda *a, **k: DUPED
+stub_checks(score_after=99, findings_after=[])
+r = main._run_segment_repair(seg, proj)
+check(r.get("applied") is False, "правка, добавившая повтор, откачена")
+check("повторов в тексте стало больше" in (seg["repair"].get("reason") or ""),
+      "и причина названа прямо: термин дописан вместо замены")
+check(seg["target"] == OLD_T, "текст вернули")
+main._openai_repair = lambda *a, **k: NEW_T
+
+# Сверка бесплатная и БЕЗУСЛОВНАЯ: работает и там, где чинили не из-за терминов.
+proj, seg = build()
+main._openai_repair = lambda *a, **k: DUPED
+stub_checks(score_after=99, findings_after=[])
+check(main._run_segment_repair(seg, proj).get("applied") is False,
+      "проверка не зависит от того, ради чего заходили — она ничего не стоит")
+main._openai_repair = lambda *a, **k: NEW_T
+
+
 # ─────────── 7. Корзина в /analysis ───────────
 print("\n=== 7. Отдельная строка на экране «Анализ» ===")
 vetoed = seg_of(1, SRC, OLD_T, repair=GOOD,

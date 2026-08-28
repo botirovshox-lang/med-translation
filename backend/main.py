@@ -7982,6 +7982,29 @@ def _openai_repair(seg: dict, project: dict, findings: list, model: Optional[str
         return None
 
 
+_DUP_WORD_RE = re.compile(r"[^\W\d_]+(?:-[^\W\d_]+)*", re.UNICODE)
+
+
+def _dup_count(text: str) -> int:
+    """Сколько ЛИШНИХ повторов трёхсловных сочетаний в тексте.
+
+    Мера грубая и в одиночку ничего не значит: в длинном абзаце «number of
+    patients» законно встречается дважды. Поэтому она и не показывается
+    человеку — её сравнивают ТОЛЬКО «до и после» одной и той же правки, где
+    шум сокращается: выросло — значит повтор добавила именно правка.
+
+    Триграммы, а не слова: повтор одного слова в тексте норма, повтор трёх
+    подряд — почти всегда дописанный кусок."""
+    w = _DUP_WORD_RE.findall(text or "")
+    if len(w) < 3:
+        return 0
+    seen: dict = {}
+    for i in range(len(w) - 2):
+        k = " ".join(w[i:i + 3]).lower()
+        seen[k] = seen.get(k, 0) + 1
+    return sum(c - 1 for c in seen.values() if c >= 2)
+
+
 def _repair_scores(seg: dict, project: Optional[dict] = None) -> dict:
     """Снимок качества сегмента: балл back-check, число серьёзных замечаний
     по терминам и число нарушенных утверждённых терминов. По нему решаем,
@@ -8034,6 +8057,16 @@ def _repair_scores(seg: dict, project: Optional[dict] = None) -> dict:
         "case": len(_case_misses(seg)),
         # И буквы чужого письма — тоже бесплатно и тоже всегда.
         "script": len(_script_misses(seg)),
+        # Повторы. Ремонту говорят «термин потерян», и он ДОПИСЫВАЕТ вариант
+        # вместо замены: «areas of increased bone density, areas of increased
+        # bone density», «pulmonary tuberculosis (lung tuberculosis)» через
+        # весь абзац, пять имён одного диагноза подряд. Не видит этого никто:
+        # back-check считает долю слов ОРИГИНАЛА, вернувшихся через обратный
+        # перевод, и от лишних слов только растёт; termcheck смотрит на термины,
+        # а не на повторы; глоссарию дописанный термин угодил. На боевом
+        # проекте так испорчено 12 правок из 1176 — мало, но чинит это только
+        # человек, а стоит бесплатно.
+        "dup": _dup_count(seg.get("target") or ""),
         # Регистр приказных терминов: бесплатно, но глоссарий нужен — с
         # project=None считается нулём, как и `gloss` рядом.
         "term_case": len(_term_case_misses(seg, project)),
@@ -8334,6 +8367,13 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         better = False
         why.append("букв чужого письма стало больше "
                    + str(before["script"]) + " → " + str(after["script"]))
+    # Повторы — та же бесплатная и безусловная сверка. Ремонт обязан ЗАМЕНЯТЬ
+    # неверный термин, а не дописывать верный рядом с ним.
+    if after["dup"] > before["dup"]:
+        better = False
+        why.append("повторов в тексте стало больше "
+                   + str(before["dup"]) + " → " + str(after["dup"])
+                   + " — термин дописан вместо замены")
     if after["term_case"] > before["term_case"]:
         better = False
         why.append("приказных терминов не в начертании оригинала стало больше "

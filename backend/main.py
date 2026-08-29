@@ -7996,6 +7996,29 @@ def _repair_tried(seg: dict) -> bool:
     return r.get("source_hash") == _text_hash(seg.get("target") or "")
 
 
+def _repair_clamped(seg: dict) -> bool:
+    """Закрыт ли сегмент от ремонта. Клеймит ТОЛЬКО совпавший отпечаток.
+
+    Отличие от `_repair_tried` существенное и вот в чём. `_repair_tried`
+    отвечает на вопрос «проходил ли ЭТОТ текст через ремонт» — на нём стоят
+    экраны и разбор наследства, и он должен работать для записей любого
+    возраста. А «не пускать сюда снова» — вопрос другой: вердикт, вынесенный
+    ПРЕЖНИМИ правилами, нынешние правила не описывает.
+
+    У записей без отпечатка (сделаны до появления `REPAIR_RULES_VERSION`)
+    правила неизвестны, а менялись они с тех пор не раз: вето по баллу,
+    подгонка начертания, зачёт частичного успеха, отсев споров с приказной
+    записью. Держать по такому вердикту сегмент закрытым — отказывать
+    в починке по решению, которого больше нет. На боевом проекте так стояли
+    79 сегментов с открытыми находками при пустом составе ремонта.
+
+    Открывается при этом НЕ весь проект: в состав попадают только сегменты
+    с находками, а их считает разбор и называет числом до запуска."""
+    rp = seg.get("repair") or {}
+    key = rp.get("attemptKey")
+    return bool(key) and key == _repair_attempt_key(seg)
+
+
 def _repair_futile(seg: dict, project: Optional[dict] = None) -> bool:
     """Второй заход по ЭТОМУ тексту с ЭТИМИ претензиями даст то же самое.
 
@@ -8095,7 +8118,7 @@ def _repairable(seg: dict, allow_tried: bool = False, project: Optional[dict] = 
     дадут тот же результат за те же деньги."""
     if not (seg.get("target") or "").strip() or not _repair_findings(seg, project):
         return False
-    return allow_tried or not _repair_tried(seg)
+    return allow_tried or not _repair_clamped(seg)
 
 
 def _repair_system(dom: dict, src_lang: str, tgt_lang: str) -> str:
@@ -11535,8 +11558,8 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
                 # отдельно: у этих сегментов последствие особое — с них
                 # снимется отметка человека, и он должен видеть, за что.
                 run("расхождение чисел, единиц или отрицания — сильнее заверения", seg)
-            elif not retry and _repair_tried(seg):
-                skip("этот же текст уже чинили")
+            elif not retry and _repair_clamped(seg):
+                skip("такой же заход уже делали")
             elif seg.get("status") == "confirmed":
                 # Причина названа отдельно намеренно: цена у этих сегментов та же,
                 # а последствие другое — отметка «подтвердил человек» с них снимется.

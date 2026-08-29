@@ -893,7 +893,14 @@ BACKCHECK_FALLBACK_MODEL = "gpt-4o-mini"
 EMBED_MODEL = "text-embedding-3-small"
 # Судья вызывается только в средней зоне: наверху и внизу шкалы решение уже принято
 # детерминированными проверками, и платить за подтверждение очевидного незачем.
-JUDGE_ZONE = (50, 97)
+# Полоса баллов, в которой вызов судьи имеет смысл. НИЗ: ниже него решение
+# уже принято детерминированной находкой. ВЕРХ: выше него спорить не о чем —
+# так считалось, пока не выяснилось, что «бугорка → cusps» и «Prevalence
+# (prevalence)» имеют балл 100 и к судье не попадают никогда. Потолок поэтому
+# вынесен в окружение: поднять его — решение с прямой ценой (каждый сегмент
+# зоны стоит вызова), и принимать его должен человек, а не автор кода.
+JUDGE_ZONE = (int(os.environ.get("JUDGE_ZONE_LOW", "50")),
+              int(os.environ.get("JUDGE_ZONE_TOP", "97")))
 
 
 def _lex_blind(source: str) -> bool:
@@ -2298,6 +2305,18 @@ def project_analysis(pid: int, refresh: bool = False):
     # человек поставил отметку, машина её отменила — он должен об этом узнать
     # и увидеть доказательство, а не обнаружить пропажу случайно.
     withdrawn: list = []
+    # Сегменты, которые НИКТО не проверял по существу. Две разные причины,
+    # и обе нельзя показывать как «чисто»:
+    #   • балл выше потолка зоны судьи — детерминированные проверки довольны,
+    #     а спросить того, кто читает смысл, правило не даёт. Именно здесь
+    #     прячется «беглое неверное слово»: monostable, cusps, actinoid —
+    #     нормальные английские слова не из той области, и балл у них 100;
+    #   • балл не измеряется (короткий оригинал), а судья не смотрел —
+    #     система честно сказала «мерить нечем» и на этом остановилась.
+    # Показываются ЧИСЛОМ и лечатся одной кнопкой (судья), а не разбором
+    # руками: 845 сегментов человеку не пересмотреть, и не в этом смысл.
+    unverified: list = []
+    unjudged_blind: list = []
     # Подмножество `reverted`: правку отменил только балл back-check, а термины
     # она почистила. Подмножество, а не отдельная корзина, — иначе исчерпаемость
     # держалась бы на совпадении двух предикатов в разных концах файла.
@@ -2323,6 +2342,13 @@ def project_analysis(pid: int, refresh: bool = False):
             continue
         if s.get("confirmWithdrawn"):
             withdrawn.append(s["id"])
+        _bc = s.get("backcheck") or {}
+        if _bc and not _check_stale(_bc, target) and not _bc.get("judged"):
+            _sc = _bc.get("score")
+            if _lex_blind(s.get("source") or ""):
+                unjudged_blind.append(s["id"])
+            elif _sc is not None and _sc > JUDGE_ZONE[1]:
+                unverified.append(s["id"])
         rp = s.get("repair") or {}
         open_findings = _repair_findings(s) or (
             [{"kind": "gloss"}] if s["id"] in gloss_bad else [])
@@ -2502,6 +2528,16 @@ def project_analysis(pid: int, refresh: bool = False):
         "todo": {"untranslated": untranslated, "unchecked": unchecked,
                  "findings": findings, "glossaryPending": impact["pending"],
                  "weak": [w["id"] for w in weak],
+                 # Не «плохо», а «никто не смотрел». Лечится судьёй.
+                 "unverified": unverified,
+                 "unjudgedBlind": unjudged_blind,
+                 # Разнобой по документу: один оборот переведён по-разному.
+                 # Список ПАР, а не сегментов: решение одно на пару, и в этом
+                 # весь смысл — ручной работы одно нажатие вместо сотни.
+                 "consistency": [
+                     {"was": p["was"], "want": p["want"], "why": p["why"],
+                      "segments": p["segments"], "already": p["already"]}
+                     for p in _consistency_of(project)],
                  "weakWhy": sorted(
                      ({"reason": r, "count": sum(1 for w in weak if w["why"] == r)}
                       for r in {w["why"] for w in weak}),
@@ -7754,7 +7790,7 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     # одной буквы — и получить откат, потому что «чуть хуже» по баллу
     # перевесит. В `_repair_scores` оно остаётся: ремонт, ЛОМАЮЩИЙ начертание,
     # обязан откатиться.
-    items = (_gloss_misses(seg, project)
+    items = (_gloss_misses(seg, project) + _consist_misses(seg, project)
              + _case_misses(seg) + _script_misses(seg) + _dup_misses(seg))
     # Потерянные приказные термины — через _terms_lost_open, тем же расчётом,
     # что и счётчик в `_repair_scores`. Он и снимает вердикты контекстного
@@ -7851,10 +7887,55 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     return out
 
 
+# Версия ПРАВИЛ, по которым ремонт решает «принять или откатить». Поднимается
+# при каждой правке этих правил — как BACKCHECK_VERSION у формулы балла.
+# Вердикт, вынесенный прежними правилами, нынешние правила не описывает,
+# и держать по нему сегмент закрытым значит отказывать в починке по решению,
+# которого больше нет. Из переменной окружения — чтобы поднять её можно было
+# и без выката кода (например, после правки политики в данных).
+REPAIR_RULES_VERSION = os.environ.get("REPAIR_RULES_VERSION", "3")
+
+
+def _repair_attempt_key(seg: dict) -> str:
+    """Отпечаток ЗАХОДА: что ремонт увидит, если пойдёт сюда сейчас.
+
+    Три составляющие, и каждая меняет исход:
+      • сам текст — иначе чиним другое;
+      • СПИСОК претензий — от него зависит промпт, а значит и ответ модели;
+      • версия правил — от неё зависит, примут правку или откатят.
+
+    Отпечаток и есть ответ на вопрос «даст ли второй заход что-то новое».
+    Совпал — заход вернёт то же самое за те же деньги, и его не делаем;
+    разошёлся — работа новая, и запрещать её незачем. Так второй заход
+    разрешён там, где он осмыслен, и запрещён там, где это перерасход.
+
+    Глоссарий в отпечаток НЕ входит, и это не упущение. Считается он всюду
+    одинаково — `_repair_findings(seg, None)`, — потому что иначе отпечаток
+    зависел бы от того, кто его считает: разбор состава ходит без проекта ради
+    скорости, `_segment_for_client` проекта не имеет вовсе, а прогон имеет.
+    Разойдись они — сегмент чинился бы по кругу либо не чинился никогда.
+    Смену глоссария по-прежнему открывает `retry=True` у «Применить термины»,
+    а бессмысленный повтор там останавливает `_repair_futile`."""
+    items = sorted(f["text"] for f in _repair_findings(seg, None))
+    return _text_hash("|".join([_text_hash(seg.get("target") or ""),
+                                REPAIR_RULES_VERSION] + items))
+
+
 def _repair_tried(seg: dict) -> bool:
-    """Этот же текст уже пытались чинить — второй заход по тем же претензиям
-    даёт то же самое и стоит тех же денег."""
+    """Такой же заход уже делали — второй даст то же самое за те же деньги.
+
+    «Такой же» — это совпавший отпечаток (текст + претензии + версия правил),
+    а не просто тот же текст. Прежняя проверка смотрела только на текст, и
+    поэтому держала сегмент закрытым даже после того, как появились НОВЫЕ
+    находки или изменились правила отмены: на боевом проекте так простаивали
+    93 сегмента из 115 найденных дефектов — не «не смогли», а «не пустили».
+
+    Отпечатка нет (записи прежних версий) — откатываемся на старое сравнение
+    по тексту, иначе разом открылся бы весь проект."""
     r = seg.get("repair") or {}
+    key = r.get("attemptKey")
+    if key:
+        return key == _repair_attempt_key(seg)
     return r.get("source_hash") == _text_hash(seg.get("target") or "")
 
 
@@ -8121,6 +8202,144 @@ def _dup_misses(seg: dict) -> list:
     return out
 
 
+# Сколько раз пару «было → надо» должен назвать termcheck, чтобы считать её
+# мнением о ДОКУМЕНТЕ, а не придиркой к одной строке. Единичное срабатывание
+# бывает случайным; из окружения — чтобы порог можно было подобрать под проект,
+# не трогая код.
+CONSIST_MIN_VOTES = int(os.environ.get("CONSIST_MIN_VOTES", "1"))
+# Потолок пар в отчёте: список ведёт человек, и бесконечным он быть не должен.
+CONSIST_MAX_PAIRS = int(os.environ.get("CONSIST_MAX_PAIRS", "40"))
+
+
+def _word_re(term: str):
+    """Поиск варианта в переводе по границам слова. Границей цифра не считается
+    только там, где сам вариант ею не кончается, — иначе «CD4» ловил бы «CD40»
+    (то же правило, что у подбора терминов)."""
+    t = (term or "").strip()
+    if not t:
+        return None
+    key = "consist::" + t
+    rx = _PATTERN_CACHE.get(key)
+    if rx is None:
+        rx = re.compile(r"(?<![^\W\d_])" + re.escape(t) + r"(?![^\W\d_])",
+                        re.IGNORECASE | re.UNICODE)
+        _PATTERN_CACHE[key] = rx
+    return rx
+
+
+def _consistency_pairs(project: dict) -> list:
+    """Разнобой по ДОКУМЕНТУ: один и тот же оборот переведён по-разному.
+
+    Ни back-check, ни termcheck, ни глоссарий не смотрят дальше своего
+    сегмента, поэтому книга спокойно пишет «MBT» в 37 местах и «MTB» в 49,
+    а титул говорит «Phthisiatry» при «phthisiology» в тексте — и всё это
+    «чисто». Читателю же нужен единый перевод, а не среднее по сегментам.
+
+    Откуда берутся пары «было → надо»: из САМИХ НАХОДОК termcheck. Он уже
+    сказал про какой-то сегмент «здесь X, а надо Y» — это и есть суждение
+    о терминологии, и его незачем спрашивать второй раз про каждое из
+    оставшихся мест. Так одна оплаченная находка распространяется на весь
+    документ бесплатно, а ручной работы становится одно решение на пару
+    вместо одного на сегмент.
+
+    Никаких зашитых списков вариантов тут нет и быть не может: система
+    работает с любой областью и любой парой языков, а словарь вариантов
+    существует только в данных проекта."""
+    segs = project.get("segments") or []
+    votes: dict = {}
+    for s in segs:
+        tc = s.get("termcheck") or {}
+        if _check_stale(tc, s.get("target") or ""):
+            continue
+        for f in (tc.get("findings") or []):
+            if f.get("severity") not in TERMCHECK_DISPUTING:
+                continue
+            was, want = (f.get("tgt_term") or "").strip(), (f.get("suggestion") or "").strip()
+            if not was or not want or was.lower() == want.lower():
+                continue
+            v = votes.setdefault((was.lower(), want.lower()),
+                                 {"was": was, "want": want, "votes": 0, "why": f.get("why") or ""})
+            v["votes"] += 1
+    out = []
+    for v in votes.values():
+        if v["votes"] < CONSIST_MIN_VOTES:
+            continue
+        rx_was, rx_want = _word_re(v["was"]), _word_re(v["want"])
+        if not rx_was or not rx_want:
+            continue
+        with_was = [s["id"] for s in segs if rx_was.search(s.get("target") or "")]
+        with_want = [s["id"] for s in segs if rx_want.search(s.get("target") or "")]
+        if not with_was:
+            continue
+        out.append({"was": v["was"], "want": v["want"], "why": v["why"],
+                    "votes": v["votes"], "segments": with_was,
+                    # Сколько мест уже пишут правильно. Ноль означает, что
+                    # разнобоя нет — есть один сплошной вариант, и вопрос
+                    # к нему тот же, но человек должен видеть разницу.
+                    "already": len(with_want)})
+    out.sort(key=lambda x: (-len(x["segments"]), x["was"]))
+    return out[:CONSIST_MAX_PAIRS]
+
+
+_CONSIST_CACHE: dict = {}
+
+
+def _consistency_of(project: dict) -> list:
+    """Пары разнобоя проекта, посчитанные один раз на отпечаток.
+
+    Считать их на каждый сегмент нельзя: это проход по всему проекту на каждую
+    пару. Отпечаток тот же, что у отчёта о соответствии, — тексты и находки."""
+    pid = project.get("id")
+    fp = _text_hash("|".join(
+        (s.get("target") or "") + str(len(((s.get("termcheck") or {}).get("findings") or [])))
+        for s in (project.get("segments") or [])))
+    hit = _CONSIST_CACHE.get(pid)
+    if hit and hit[0] == fp:
+        return hit[1]
+    pairs = _consistency_pairs(project)
+    _CONSIST_CACHE[pid] = (fp, pairs)
+    return pairs
+
+
+def _consist_misses(seg: dict, project: Optional[dict]) -> list:
+    """Сегмент пишет то, что termcheck УЖЕ забраковал в другом месте документа.
+
+    Это и есть «проверка смотрит дальше своего сегмента»: находку оплатили
+    один раз, а применяется она везде, где встретился тот же оборот.
+    Совет, спорящий с приказной записью глоссария, сюда не идёт — тот же
+    закон, что у вердикта арбитра: подстановка подняла бы счётчик нарушенных
+    приказных терминов, и правка откатилась бы сама."""
+    if not project:
+        return []
+    tgt = seg.get("target") or ""
+    if not tgt.strip():
+        return []
+    # Приказные переводы ЭТОГО сегмента: если разнобой предлагает заменить
+    # то, что требует глоссарий, — молчим. Подстановка подняла бы счётчик
+    # нарушенных приказных терминов, правка откатилась бы сама, и вышел бы
+    # платный вызов с заранее известным исходом. Спор с записью решает
+    # человек, а не документ (тот же закон, что у вердикта арбитра).
+    ordered = {(h.get("tgt") or "").lower() for h in _verified_hits(seg.get("source") or "", project)}
+    # Про что termcheck уже сказал В ЭТОМ сегменте. Об одном и том же дважды
+    # не говорим: смысл проверки — донести находку до ОСТАЛЬНЫХ мест
+    # документа, а здесь она и так есть, со своей тяжестью и своим доводом.
+    tc = seg.get("termcheck") or {}
+    own = ({(f.get("tgt_term") or "").lower() for f in (tc.get("findings") or [])}
+           if not _check_stale(tc, tgt) else set())
+    out = []
+    for pr in _consistency_of(project):
+        rx = _word_re(pr["was"])
+        if not rx or not rx.search(tgt):
+            continue
+        if pr["was"].lower() in ordered or pr["was"].lower() in own:
+            continue
+        out.append({"kind": "consist", "replace": [pr["was"], pr["want"]],
+                    "text": "по документу принято «" + pr["want"] + "», здесь «"
+                            + pr["was"] + "»"
+                            + (" — " + pr["why"] if pr.get("why") else "")})
+    return out
+
+
 def _repair_scores(seg: dict, project: Optional[dict] = None) -> dict:
     """Снимок качества сегмента: балл back-check, число серьёзных замечаний
     по терминам и число нарушенных утверждённых терминов. По нему решаем,
@@ -8267,6 +8486,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # Доказательство, сильнее ли находка заверения, снимаем ДО правки: после
     # перепроверки back-check описывает уже НОВЫЙ текст, и находки на старом
     # там нет — след получился бы пустым ровно там, где он нужнее всего.
+    attempt_key = _repair_attempt_key(seg)
     was_confirmed = seg.get("status") == "confirmed"
     override_ev = _confirm_override(seg) if was_confirmed else []
     before = _repair_scores(seg, project)
@@ -8285,7 +8505,8 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # `tried` и больше не чинился НИКОГДА.
     if _same_words(new_target, old_target):
         seg["repair"] = {"applied": False, "reason": "Модель не нашла, что менять",
-                         "source_hash": old_hash, "model": _resolve_model(model or REPAIR_DEFAULT_MODEL)["id"],
+                         "source_hash": old_hash, "attemptKey": attempt_key,
+                         "model": _resolve_model(model or REPAIR_DEFAULT_MODEL)["id"],
                          "issues": [f["text"] for f in findings],
                          "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
         return {"ok": True, "applied": False, "repair": seg["repair"]}
@@ -8580,7 +8801,12 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
             # потому что текст как раз менялся.
             seg["repair"]["attemptHash"] = old_hash
         else:
+            # Отпечаток ЗАХОДА пишем вместе с клеймящим хешем и по той же
+            # причине: заход состоялся, вердикт вынесен. У несостоявшегося
+            # (оборванная перепроверка) не пишем ни того, ни другого —
+            # иначе сегмент закрыт из-за чужой сетевой ошибки.
             seg["repair"]["source_hash"] = old_hash
+            seg["repair"]["attemptKey"] = attempt_key
         return {"ok": True, "applied": False, "repair": seg["repair"],
                 "desync": _repair_desync(seg, old_target)}
 
@@ -8602,6 +8828,10 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     seg.pop("confirmedAt", None)
     seg["provider"] = mdl_id
     seg["repair"] = {"applied": True, "from": old_target, "source_hash": _text_hash(new_target),
+                     # По НОВОМУ тексту: находки пересчитаны, и если их не
+                     # осталось, повторять нечего; появились новые — заход
+                     # будет другим и разрешён.
+                     "attemptKey": _repair_attempt_key(seg),
                      "model": mdl_id, "issues": [f["text"] for f in findings],
                      "before": before, "after": after,
                      # Чем правка обязана решению, принятому вопреки падению
@@ -11057,7 +11287,8 @@ def _model_label(mid: str) -> str:
 
 def _plan_step(project: dict, step: str, params: dict, scope: list,
                will_translate: set, gloss_ids: set,
-               term_ids: Optional[set] = None) -> dict:
+               term_ids: Optional[set] = None,
+               consist_ids: Optional[set] = None) -> dict:
     """Разбор одного шага: кого возьмёт, кого не возьмёт и почему.
 
     will_translate — сегменты, которые переведёт этот же прогон. Сейчас у них
@@ -11208,7 +11439,8 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
             # воркером — при том, что смета пересчитывается на каждую смену
             # модели в списке. project=None тут и означает «без глоссария»:
             # остальные находки читаются из самого сегмента и бесплатны.
-            if seg["id"] not in gloss_ids and not _repair_findings(seg, None):
+            if (seg["id"] not in gloss_ids and seg["id"] not in (consist_ids or ())
+                    and not _repair_findings(seg, None)):
                 skip("чинить нечего — находок нет")
             elif (seg.get("status") == "confirmed" and not fix_confirmed
                     and not _confirm_override(seg)):
@@ -11304,12 +11536,20 @@ def run_plan(pid: int, req: RunPlanRequest):
     impact = (glossary_impact(pid)
               if ("repair" in steps or "termaudit" in steps) else None)
     gloss_ids = set(impact["segments"]) if (impact and "repair" in steps) else set()
+    # Разнобой по документу считается тем же готовым проходом, что и глоссарий:
+    # разбор зовёт `_repair_findings` БЕЗ проекта ради скорости, и без этого
+    # списка обещал бы меньше работы, чем сделает прогон.
+    consist_ids = set()
+    if "repair" in steps:
+        for _pr in _consistency_of(project):
+            consist_ids.update(_pr["segments"])
     # Сегменты, где есть что сверять, берём из того же кэшированного отчёта.
     # Считать `_verified_hits` заново — 13 мс на сегмент, то есть сорок секунд
     # заблокированного воркера на каждый разбор; ровно та беда, из-за которой
     # ремонт уже ходит сюда, а не считает глоссарий сам.
     term_ids = set(impact["termSegments"]) if (impact and "termaudit" in steps) else set()
-    plans = [_plan_step(project, st, params, scope, will_translate, gloss_ids, term_ids)
+    plans = [_plan_step(project, st, params, scope, will_translate, gloss_ids,
+                        term_ids, consist_ids)
              for st in steps]
     # Объединение — в порядке ДОКУМЕНТА, а не в порядке шагов: порции идут по
     # этому списку, и прогон должен двигаться по тексту сверху вниз, а не

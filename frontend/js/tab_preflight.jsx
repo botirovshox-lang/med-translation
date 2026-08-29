@@ -160,6 +160,19 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
       // строка у них выше — «Исправила машина». Подпись берётся из разбора
       // причин, а не придумывается здесь: сервер знает состав, экран его
       // показывает.
+      /* Не «плохо», а «никто не смотрел» — и это разные вещи. Тут прячется
+         «беглое неверное слово»: monostable, cusps, actinoid — нормальные
+         английские слова не из той области, балл у них 100, и все проверки
+         довольны. Показываем ЧИСЛОМ: разбирать 845 сегментов руками никто
+         не станет, лечится это одной кнопкой — судьёй. */
+      React.createElement(Row, { label: "Никто не проверял: балл выше зоны судьи",
+        n: (s.todo.unverified || []).length, ids: s.todo.unverified,
+        color: "var(--c-warning)",
+        hint: "детерминированные проверки довольны, а смысл не читал никто — включите «Судья»" }),
+      React.createElement(Row, { label: "Балл не измерить, судья не смотрел",
+        n: (s.todo.unjudgedBlind || []).length, ids: s.todo.unjudgedBlind,
+        color: "var(--c-warning)",
+        hint: "оригинал короче трёх содержательных слов — судья тут единственная мера" }),
       React.createElement(Row, { label: "Оценка ниже порога", n: (s.todo.weak || []).length,
         ids: s.todo.weak, hint: (s.todo.weakWhy || []).slice(0, 2).map(w => w.reason).join(" · ")
           || "проверки прошли, но чисто не получилось" })),
@@ -204,6 +217,18 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
          и стоит она выше остальных: отмену заверения человек обязан увидеть
          сам, а не обнаружить пропажу отметки случайно. Доказательство лежит
          на сегменте (`confirmWithdrawn.evidence`). */
+      /* Разнобой по документу. Строка ведёт СПИСОК ПАР, а не сегментов: решение
+         одно на пару, и в этом весь смысл — вместо сотни разборов одно. */
+      React.createElement(Row, { label: "Один оборот переведён по-разному",
+        n: (s.todo.consistency || []).length,
+        ids: [].concat.apply([], (s.todo.consistency || []).map(c => c.segments || [])),
+        color: "var(--c-warning)",
+        hint: "termcheck забраковал вариант в одном месте — остальные места видны только так" }),
+      (s.todo.consistency || []).length > 0 && React.createElement(
+        "div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.7, paddingTop: 4 } },
+        (s.todo.consistency || []).slice(0, 6).map((c, i) => React.createElement("div", { key: i },
+          "«" + c.was + "» → «" + c.want + "» · мест: " + (c.segments || []).length
+          + (c.already ? " · уже верно: " + c.already : "")))),
       React.createElement(Row, { label: "Машина сняла ваше подтверждение",
         n: (s.human.confirmWithdrawn || []).length, ids: s.human.confirmWithdrawn,
         color: "var(--c-danger)",

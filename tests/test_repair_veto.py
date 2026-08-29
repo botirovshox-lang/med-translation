@@ -755,6 +755,113 @@ check(a["human"]["confirmWithdrawn"] == [1],
 main._openai_repair = lambda *a, **k: NEW_T
 
 
+# ────── 6j. Второй заход разрешён, когда он ДРУГОЙ ──────
+print()
+print("=== 6j. Отпечаток захода: повтор без перерасхода ===")
+proj, seg = build()
+k1 = main._repair_attempt_key(seg)
+check(bool(k1), "отпечаток считается")
+check(main._repair_attempt_key(seg) == k1, "и он устойчив: те же данные — тот же ключ")
+
+# Записали заход — повтор запрещён.
+seg["repair"] = {"applied": False, "reason": "балл back-check упал 57 → 8",
+                 "attemptKey": k1, "issues": ["x"]}
+check(main._repair_tried(seg) is True, "тот же текст, те же находки, те же правила — не пускаем")
+
+# Появилась НОВАЯ находка — заход другой, и запрещать его незачем.
+seg["termcheck"]["findings"].append(
+    {"tgt_term": "mycobacteria", "suggestion": "Mycobacterium tuberculosis",
+     "severity": "major", "why": "новая находка"})
+check(main._repair_tried(seg) is False,
+      "список претензий изменился — промпт будет другим, заход осмыслен")
+
+# Изменились ПРАВИЛА — прежний вердикт их не описывает.
+seg["termcheck"]["findings"].pop()
+check(main._repair_tried(seg) is True, "вернули как было — снова не пускаем")
+_was = main.REPAIR_RULES_VERSION
+try:
+    main.REPAIR_RULES_VERSION = _was + "-next"
+    check(main._repair_tried(seg) is False,
+          "правила отмены изменились — вердикт по ним больше не держит сегмент")
+finally:
+    main.REPAIR_RULES_VERSION = _was
+
+# Записи прежних версий отпечатка не имеют — работает старое сравнение.
+seg["repair"] = {"applied": False, "reason": "x", "source_hash": main._text_hash(OLD_T)}
+check(main._repair_tried(seg) is True,
+      "у старой записи отпечатка нет — сравниваем по тексту, как раньше")
+
+
+# ────── 6k. Проверка смотрит ДАЛЬШЕ своего сегмента ──────
+print()
+print("=== 6k. Разнобой по документу ===")
+hh = lambda t: main._text_hash((t or "").strip())
+flagged = {"id": 1, "source": "МБТ обнаружены.", "target": "MBT detected.",
+           "status": "translated",
+           "termcheck": {"model": "t", "target_hash": hh("MBT detected."),
+                         "findings": [{"tgt_term": "MBT", "suggestion": "MTB",
+                                       "severity": "major", "why": "транслитерация"}]}}
+silent = {"id": 2, "source": "МБТ в мокроте.", "target": "MBT in sputum.",
+          "status": "translated",
+          "termcheck": {"model": "t", "target_hash": hh("MBT in sputum."), "findings": []}}
+right = {"id": 3, "source": "МБТ выделены.", "target": "MTB isolated.",
+         "status": "translated",
+         "termcheck": {"model": "t", "target_hash": hh("MTB isolated."), "findings": []}}
+proj = project_of([flagged, silent, right])
+main._CONSIST_CACHE.clear()
+pairs = main._consistency_of(proj)
+check(len(pairs) == 1 and pairs[0]["was"] == "MBT" and pairs[0]["want"] == "MTB",
+      "пара «было → надо» взята из находки termcheck, а не из зашитого списка")
+check(pairs[0]["segments"] == [1, 2], "найдены ОБА места, включая непомеченное")
+check(pairs[0]["already"] == 1, "и сказано, сколько мест уже пишут верно")
+
+kinds = {f["kind"] for f in main._repair_findings(silent, proj)}
+check("consist" in kinds,
+      "сегмент, которого termcheck не касался, получил находку из другого места")
+own = {f["kind"] for f in main._repair_findings(flagged, proj)}
+check("consist" not in own,
+      "а тому, где находка уже есть, второй раз о том же не говорим")
+
+# Спор с приказной записью в разнобой не идёт: правка откатилась бы сама.
+GLV = [{"src": "МБТ", "tgt": "MBT", "tier": "verified", "cat": "Term",
+        "lang": "RU→EN", "domain": "medical"}]
+proj2 = project_of([dict(flagged), dict(silent), dict(right)], GLV)
+main._CONSIST_CACHE.clear()
+sg = proj2["segments"][1]
+check("consist" not in {f["kind"] for f in main._repair_findings(sg, proj2)},
+      "вариант требует приказная запись — молчим, иначе платный вызов "
+      "с заранее известным исходом")
+
+
+# ────── 6l. «Никто не проверял» — своя корзина ──────
+print()
+print("=== 6l. Не «плохо», а «никто не смотрел» ===")
+# Длинный оригинал: балл измерим, он высок, и судья туда не ходит по правилу
+# зоны. Ровно там и живёт «беглое неверное слово».
+clean_hi = seg_of(1, "Полное рассасывание бугорка наблюдается у части больных.",
+                  "Complete resorption of the cusps is observed in some patients.",
+                  bc={"score": 100, "model": "m", "back": "b", "reasons": [],
+                      "terms_lost": [], "judged": False},
+                  tc={"model": "t", "findings": []})
+blind = seg_of(2, "Моноустойчивый,", "monostable,",
+               bc={"score": 0, "model": "m", "back": "b", "reasons": [],
+                   "terms_lost": [], "judged": False},
+               tc={"model": "t", "findings": []})
+project_of([clean_hi, blind])
+main._CONSIST_CACHE.clear()
+a = main.project_analysis(1)
+check(a["todo"]["unverified"] == [1],
+      "балл выше зоны судьи и никто не смотрел — тут и прячется «беглое слово»")
+check(a["todo"]["unjudgedBlind"] == [2],
+      "балл не измерить и судья не смотрел — своя причина, а не «оценка ниже порога»")
+# Пересечение с «проверено начисто» НАМЕРЕННОЕ: та корзина отвечает на вопрос
+# «можно ли этим учить глоссарий», а эта — «читал ли кто-нибудь смысл».
+# Вопросы разные, и сегмент законно попадает в обе (тот же случай, что
+# у соответствия глоссарию: «начисто» не означает «глоссарий соблюдён»).
+check(1 in a["clean"],
+      "«начисто» отвечает на другой вопрос — пересечение здесь законно")
+
+
 # ─────────── 7. Корзина в /analysis ───────────
 print("\n=== 7. Отдельная строка на экране «Анализ» ===")
 vetoed = seg_of(1, SRC, OLD_T, repair=GOOD,

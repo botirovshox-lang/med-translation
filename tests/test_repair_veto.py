@@ -807,12 +807,36 @@ silent = {"id": 2, "source": "МБТ в мокроте.", "target": "MBT in sput
 right = {"id": 3, "source": "МБТ выделены.", "target": "MTB isolated.",
          "status": "translated",
          "termcheck": {"model": "t", "target_hash": hh("MTB isolated."), "findings": []}}
-proj = project_of([flagged, silent, right])
+# Порог голосов — 2: одна находка termcheck это мнение о СТРОКЕ, а не
+# о документе. Здесь пару называют дважды, поэтому она проходит.
+flagged2 = {"id": 4, "source": "МБТ в мазке.", "target": "MBT in smear.",
+            "status": "translated",
+            "termcheck": {"model": "t", "target_hash": hh("MBT in smear."),
+                          "findings": [{"tgt_term": "MBT", "suggestion": "MTB",
+                                        "severity": "major", "why": "транслитерация"}]}}
+proj = project_of([flagged, silent, right, flagged2])
 main._CONSIST_CACHE.clear()
 pairs = main._consistency_of(proj)
 check(len(pairs) == 1 and pairs[0]["was"] == "MBT" and pairs[0]["want"] == "MTB",
       "пара «было → надо» взята из находки termcheck, а не из зашитого списка")
-check(pairs[0]["segments"] == [1, 2], "найдены ОБА места, включая непомеченное")
+check(pairs[0]["segments"] == [1, 2, 4], "найдены ВСЕ места, включая непомеченное")
+
+# Пара, названная ОДИН раз, документом не считается: на боевых данных так
+# держались «Bronchoscopy → sputum smear microscopy» (другая процедура)
+# и «bacillary excretion → bacteriological conversion» (обратный смысл).
+lone = {"id": 5, "source": "Бронхоскопия.", "target": "Bronchoscopy.",
+        "status": "translated",
+        "termcheck": {"model": "t", "target_hash": hh("Bronchoscopy."),
+                      "findings": [{"tgt_term": "Bronchoscopy",
+                                    "suggestion": "sputum smear microscopy",
+                                    "severity": "major", "why": "одиночное мнение"}]}}
+proj_l = project_of([lone])
+main._CONSIST_CACHE.clear()
+check(main._consistency_of(proj_l) == [],
+      "один голос — мнение о строке, а не о документе; по всему тексту "
+      "такое применять нельзя")
+project_of([flagged, silent, right, flagged2])
+main._CONSIST_CACHE.clear()
 check(pairs[0]["already"] == 1, "и сказано, сколько мест уже пишут верно")
 
 kinds = {f["kind"] for f in main._repair_findings(silent, proj)}

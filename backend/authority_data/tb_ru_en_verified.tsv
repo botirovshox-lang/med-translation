@@ -1,0 +1,145 @@
+# label: Фтизиатрия RU→EN — выверенный отраслевой минимум
+# lang: RU→EN
+# domains: medical
+# tier: verified
+#
+# Собрано вручную по терминологии ВОЗ (End TB, определения случаев ТБ),
+# CDC/ATS и МКБ-10. НЕ выгрузка из нашего глоссария и НЕ машинный перевод:
+# источник обязан быть вне контура системы.
+#
+# Правила отбора — они же защита перевода от порчи:
+#   1. Только СЛОВАРНАЯ форма и только термины, у которых в этой области
+#      ОДИН правильный английский эквивалент. Всё, что зависит от контекста,
+#      сюда не входит: «инфильтрат» (в рентгенологии infiltrate, в пробе
+#      Манту induration), «бактериовыделение» (smear-positive / culture-
+#      positive / bacteriologically confirmed — зависит от метода).
+#   2. Ничего короче шести букв и ни одного общеупотребительного слова.
+#      Короткая запись помещается внутрь чужого слова, а общее слово
+#      принуждает модель там, где перевод зависит от фразы.
+#   3. Ни одной пары, где основа одного термина является началом другого:
+#      «туберкулема» и «туберкулёз» вместе сюда попасть не могут — на этом
+#      проект уже получил 1006 ложных совпадений.
+#   4. Ни одной аббревиатуры: они ловятся внутри слов и в формулах.
+#   5. Ни одной записи, чей ОРИГИНАЛ лежит внутри другого, если её
+#      перевод не вкладывается в перевод длинной записи по границам
+#      слов. «пневмоторакс» внутри «пиопневмоторакс», «вакцинация»
+#      внутри «ревакцинация», «лекарственная устойчивость» внутри
+#      «множественная лекарственная устойчивость»: срабатывают ОБЕ
+#      записи, а pneumothorax внутри pyopneumothorax по границе слова
+#      не находится — и верный перевод объявляется нарушением.
+#      Проверено скриптом на боевых текстах, пять таких пар удалено.
+#   6. Ни одной записи, чьё расхождение с текстом — ОРФОГРАФИЯ или
+#      порядок слов, а не термин. Сухой прогон по 2711 сегментам
+#      показал: книга пишет hemoptysis (американское), antituberculosis
+#      (без дефиса), а «очаговый туберкулёз» переводит как «focal
+#      PULMONARY tuberculosis» — вставленное слово рвёт совпадение.
+#      Такие записи объявляли бы нарушением верный текст, поэтому
+#      удалены: 9 записей, 60 ложных требований из 91.
+#
+# Каждая строка проверена на боевом тексте: см. отчёт в истории коммита.
+
+# ── Формы и локализации ──────────────────────────────────────────────
+диссеминированный туберкулёз	disseminated tuberculosis
+диссеминированный туберкулез	disseminated tuberculosis
+милиарный туберкулёз	miliary tuberculosis
+милиарный туберкулез	miliary tuberculosis
+инфильтративный туберкулёз	infiltrative tuberculosis
+инфильтративный туберкулез	infiltrative tuberculosis
+фиброзно-кавернозный туберкулёз	fibrocavitary tuberculosis
+фиброзно-кавернозный туберкулез	fibrocavitary tuberculosis
+цирротический туберкулёз	cirrhotic tuberculosis
+цирротический туберкулез	cirrhotic tuberculosis
+казеозная пневмония	caseous pneumonia
+туберкулёзный плеврит	tuberculous pleurisy
+туберкулезный плеврит	tuberculous pleurisy
+туберкулёзный менингит	tuberculous meningitis
+туберкулезный менингит	tuberculous meningitis
+туберкулёзный спондилит	tuberculous spondylitis
+туберкулезный спондилит	tuberculous spondylitis
+туберкулёзный перикардит	tuberculous pericarditis
+туберкулезный перикардит	tuberculous pericarditis
+внелёгочный туберкулёз	extrapulmonary tuberculosis
+внелегочный туберкулез	extrapulmonary tuberculosis
+первичный туберкулёзный комплекс	primary tuberculous complex
+первичный туберкулезный комплекс	primary tuberculous complex
+латентная туберкулёзная инфекция	latent tuberculosis infection
+латентная туберкулезная инфекция	latent tuberculosis infection
+
+# ── Морфология и патоморфология ──────────────────────────────────────
+казеозный некроз	caseous necrosis
+казеификация	caseation
+обызвествление	calcification
+петрификат	calcified focus
+инкапсуляция	encapsulation
+гранулёма	granuloma
+гранулема	granuloma
+эпителиоидная клетка	epithelioid cell
+лимфаденопатия	lymphadenopathy
+лимфаденит	lymphadenitis
+плевральный выпот	pleural effusion
+пиопневмоторакс	pyopneumothorax
+ателектаз	atelectasis
+
+# ── Диагностика ──────────────────────────────────────────────────────
+туберкулинодиагностика	tuberculin testing
+проба Манту	Mantoux test
+диаскинтест	Diaskintest
+рентгенография органов грудной клетки	chest radiography
+флюорография	fluorography
+компьютерная томография	computed tomography
+бронхоскопия	bronchoscopy
+бронхоальвеолярный лаваж	bronchoalveolar lavage
+плевральная пункция	pleural puncture
+микроскопия мазка	smear microscopy
+посев мокроты	sputum culture
+лекарственная чувствительность	drug susceptibility
+тест на лекарственную чувствительность	drug susceptibility testing
+гистологическое исследование	histological examination
+
+# ── Эпидемиология и организация ──────────────────────────────────────
+заболеваемость туберкулёзом	tuberculosis incidence
+заболеваемость туберкулезом	tuberculosis incidence
+распространённость туберкулёза	tuberculosis prevalence
+распространенность туберкулеза	tuberculosis prevalence
+смертность от туберкулёза	tuberculosis mortality
+смертность от туберкулеза	tuberculosis mortality
+противотуберкулёзный диспансер	tuberculosis dispensary
+противотуберкулезный диспансер	tuberculosis dispensary
+очаг туберкулёзной инфекции	tuberculosis infection focus
+очаг туберкулезной инфекции	tuberculosis infection focus
+контактное лицо	contact person
+химиопрофилактика	chemoprophylaxis
+ревакцинация	revaccination
+
+# ── Лечение и препараты (МНН ВОЗ) ────────────────────────────────────
+изониазид	isoniazid
+рифампицин	rifampicin
+пиразинамид	pyrazinamide
+этамбутол	ethambutol
+стрептомицин	streptomycin
+протионамид	prothionamide
+этионамид	ethionamide
+циклосерин	cycloserine
+капреомицин	capreomycin
+канамицин	kanamycin
+амикацин	amikacin
+левофлоксацин	levofloxacin
+моксифлоксацин	moxifloxacin
+бедаквилин	bedaquiline
+линезолид	linezolid
+деламанид	delamanid
+клофазимин	clofazimine
+режим химиотерапии	chemotherapy regimen
+интенсивная фаза	intensive phase
+фаза продолжения	continuation phase
+приверженность лечению	treatment adherence
+
+# ── Устойчивость ─────────────────────────────────────────────────────
+монорезистентность	monoresistance
+полирезистентность	polyresistance
+множественная лекарственная устойчивость	multidrug resistance
+широкая лекарственная устойчивость	extensive drug resistance
+монорезистентный туберкулёз	monoresistant tuberculosis
+монорезистентный туберкулез	monoresistant tuberculosis
+полирезистентный туберкулёз	polyresistant tuberculosis
+полирезистентный туберкулез	polyresistant tuberculosis

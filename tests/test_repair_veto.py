@@ -862,6 +862,84 @@ check(1 in a["clean"],
       "«начисто» отвечает на другой вопрос — пересечение здесь законно")
 
 
+# ────── 6m. Три причины отката, которые были нашими, а не модели ──────
+print()
+print("=== 6m. Регистр, спор с записью и частичный успех ===")
+
+# A. Модель дала верный термин не в том начертании. Правим сами, бесплатно.
+check(main._case_fit("ИНСТРУМЕНТАЛЬНЫЕ ИССЛЕДОВАНИЯ", "Diagnostic investigations")
+      == "DIAGNOSTIC INVESTIGATIONS",
+      "КАПС заголовка оригинала переносится на перевод")
+check(main._case_fit("Прямые лучи убивают.", "direct sunlight kills.")
+      == "Direct sunlight kills.", "заглавная в начале поднимается")
+check(main._case_fit("прямые лучи", "Direct sunlight") == "Direct sunlight",
+      "опускать регистр нельзя: в переводе заглавная бывает законной")
+check(main._case_fit("Обычный текст", "Normal text") == "Normal text",
+      "там, где всё сходится, ничего не трогаем")
+
+CAPS = "ИНСТРУМЕНТАЛЬНЫЕ ИССЛЕДОВАНИЯ"
+seg_c = seg_of(1, CAPS, "INSTRUMENTAL INVESTIGATIONS",
+               bc={"score": 100, "model": "m", "back": "b", "reasons": [],
+                   "terms_lost": []},
+               tc={"model": "t", "findings": [
+                   {"tgt_term": "INSTRUMENTAL INVESTIGATIONS",
+                    "suggestion": "Diagnostic investigations",
+                    "severity": "major", "why": "калька"}]})
+proj = project_of([seg_c])
+main._openai_repair = lambda *a, **k: "Diagnostic investigations"
+stub_checks(score_after=100, findings_after=[])
+r = main._run_segment_repair(seg_c, proj)
+check(r.get("applied") is True,
+      "правка принята: начертание поправили сами, а не откатили весь заход")
+check(seg_c["target"] == "DIAGNOSTIC INVESTIGATIONS",
+      "и в сегменте стоит верный термин в верном регистре")
+main._openai_repair = lambda *a, **k: NEW_T
+
+# B. Находка ПРОТИВ приказной записи ремонту не отдаётся: исход известен.
+GLB = [{"src": "бактериовыделитель", "tgt": "bacillary excretor", "tier": "verified",
+        "cat": "Term", "lang": "RU→EN", "domain": "medical"}]
+seg_v = seg_of(2, "Контакт с больным бактериовыделителем.",
+               "Contact with a patient who is a bacillary excretor.",
+               tc={"model": "t", "findings": [
+                   {"tgt_term": "bacillary excretor", "suggestion": "bacterial shedder",
+                    "severity": "major", "why": "калька"}]})
+proj_v = project_of([seg_v], GLB)
+main._note_term_disputes(seg_v, proj_v)
+check(seg_v["termcheck"]["findings"][0].get("vsVerified") is True,
+      "находка помечена как спор с приказной записью — при обнаружении, "
+      "где проект есть")
+check("term" not in {f["kind"] for f in main._repair_findings(seg_v, proj_v)},
+      "ремонту она не отдаётся: подстановка подняла бы счётчик нарушенных "
+      "терминов и правка откатилась бы сама")
+check("term" not in {f["kind"] for f in main._repair_findings(seg_v, None)},
+      "и БЕЗ проекта тоже — метка на находке, а не в расчёте: иначе смета "
+      "обещала бы одно, а прогон делал другое")
+
+# C. Сняли одно заказанное из двух — это движение вперёд, а не провал.
+seg_p = seg_of(3, "Асцитическая жидкость и определение теста.",
+               "ascites and determination of the test.",
+               bc={"score": 60, "model": "m", "back": "b", "reasons": [],
+                   "terms_lost": []},
+               tc={"model": "t", "findings": [
+                   {"tgt_term": "ascites", "suggestion": "ascitic fluid",
+                    "severity": "major", "why": "это состояние, а не жидкость"},
+                   {"tgt_term": "determination of the test",
+                    "suggestion": "drug susceptibility testing",
+                    "severity": "minor", "why": "принято иначе"}]})
+proj_p = project_of([seg_p])
+main._openai_repair = lambda *a, **k: "ascites and drug susceptibility testing."
+stub_checks(score_after=60, findings_after=[
+    {"tgt_term": "ascites", "suggestion": "ascitic fluid", "severity": "major",
+     "why": "осталось"},
+    {"tgt_term": "and", "suggestion": "plus", "severity": "major", "why": "новая придирка"}])
+r = main._run_segment_repair(seg_p, proj_p)
+check(r.get("applied") is True,
+      "одно из двух заказанных снято — правку приняли, оплаченную работу "
+      "не выбрасываем")
+check("drug susceptibility testing" in seg_p["target"], "снятое замечание исправлено")
+main._openai_repair = lambda *a, **k: NEW_T
+
+
 # ─────────── 7. Корзина в /analysis ───────────
 print("\n=== 7. Отдельная строка на экране «Анализ» ===")
 vetoed = seg_of(1, SRC, OLD_T, repair=GOOD,

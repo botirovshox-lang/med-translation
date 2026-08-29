@@ -5834,10 +5834,24 @@ def _note_term_disputes(seg: dict, project: Optional[dict]) -> int:
     tc = seg.get("termcheck") or {}
     bad = [f for f in (tc.get("findings") or [])
            if f.get("severity") in TERMCHECK_DISPUTING and f.get("tgt_term")]
-    if not bad:
+    every = [f for f in (tc.get("findings") or [])
+             if f.get("severity") in TERMCHECK_ACTIONABLE and f.get("tgt_term")]
+    if not every:
         return 0
     hits = {_norm_key(h["tgt"]): h for h in _verified_hits(seg.get("source", ""), project)}
     if not hits:
+        return 0
+    # Метку «эта находка воюет с приказной записью» ставим НА САМУ НАХОДКУ,
+    # здесь и сейчас: проект тут есть, а `_repair_findings` его не имеет —
+    # разбор состава зовёт её без проекта ради скорости. Считай мы это
+    # по-разному, смета обещала бы одно, а прогон делал другое.
+    # Ремонту такая находка не отдаётся: он подставит совет, `_repair_scores`
+    # увидит нарушенный приказный термин и откатит правку. На боевом проекте
+    # так сгорели 22 захода, и исход у них был известен заранее.
+    for f in every:
+        if _norm_key(f.get("tgt_term")) in hits:
+            f["vsVerified"] = True
+    if not bad:
         return 0
     scope = _project_scope(project)
     marked = 0
@@ -7206,7 +7220,40 @@ def _case_misses(seg: dict) -> list:
     return out
 
 
-# ── Регистр глоссарного термина: 1в1 по оригиналу ────────────────────
+def _case_fit(src: str, text: str) -> str:
+    """Привести НАЧЕРТАНИЕ текста к оригиналу. Без вызова модели.
+
+    Нужна ремонту. Модель приносит верный термин в неверном регистре
+    («ИНСТРУМЕНТАЛЬНЫЕ ИССЛЕДОВАНИЯ» → «Diagnostic investigations»), и правка
+    откатывается расхождением по регистру — на боевом проекте так сгорели
+    18 заходов. Промпт про регистр просит дважды, и всё равно; а поправить
+    это можно бесплатно и однозначно, потому что сочинять нечего: слова
+    и их порядок те же, меняются только заглавные и строчные.
+
+    Правила ровно два, и оба ПОДНИМАЮТ регистр — направление, безопасное
+    всегда (см. `_case_like`):
+      1) оригинал набран ЗАГЛАВНЫМИ целиком (от CASE_CAPS_MIN букв) —
+         переводу тоже быть заглавными;
+      2) оригинал начинается с заглавной — и перевод начинается с заглавной.
+    Опускать регистр здесь нельзя: «в оригинале строчная» законно уживается
+    с заглавной в переводе (народы, месяцы, названия), и правило кричало бы
+    на верный текст. Письмо без регистра — молчим, тот же закон, что
+    у DOMAIN_RULES."""
+    src, text = (src or "").strip(), (text or "").strip()
+    if not src or not text or not _has_case(src) or not _has_case(text):
+        return text
+    if (_all_caps(src) and len([c for c in src if c.isalpha()]) >= CASE_CAPS_MIN
+            and not _all_caps(text)):
+        return text.upper()
+    a, b = _first_alpha(src), _first_alpha(text)
+    if a and b and a.isupper() and b.islower():
+        i = text.find(b)
+        if i >= 0:
+            return text[:i] + b.upper() + text[i + 1:]
+    return text
+
+
+# ── Регистр глоссарного термина: 1в1 по оригиналу ────────────────────# ── Регистр глоссарного термина: 1в1 по оригиналу ────────────────────
 # Запись глоссария хранит ОДНО начертание, а мест, куда она встаёт, много:
 # «Туберкулема» стоит и заголовком, и посреди фразы. Правильный ответ даёт
 # не запись, а САМ ОРИГИНАЛ: как термин написан в этом сегменте, так он
@@ -7873,7 +7920,12 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
         # ли лучше, и без неё размен major на minor был бы неотличим от
         # размена minor на major.
         for f in (tc.get("findings") or []):
-            if f.get("severity") in TERMCHECK_ACTIONABLE:
+            # Находка ПРОТИВ приказной записи ремонту не отдаётся: подстановка
+            # совета поднимет счётчик нарушенных приказных терминов, и правка
+            # откатится сама. Спор про ЗАПИСЬ решает человек — он видит его
+            # в `human.termcheckDisputes`. Метку ставит `_note_term_disputes`
+            # там, где есть проект (здесь его может не быть).
+            if f.get("severity") in TERMCHECK_ACTIONABLE and not f.get("vsVerified"):
                 items.append({"kind": "term", "sev": f.get("severity"),
                               "replace": [f.get("tgt_term", ""), f.get("suggestion", "")],
                               "text": "«" + f.get("tgt_term", "") + "»"
@@ -8476,6 +8528,11 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     major_targets = {_norm_key(f["replace"][0]) for f in findings
                      if f["kind"] == "term" and f.get("sev") in ("critical", "major")
                      and (f.get("replace") or [""])[0]}
+    # Все заказанные замечания любой тяжести. По ним меряется «сделала ли
+    # правка хоть что-то из того, ради чего заходили»; `major_targets` остаётся
+    # мерой для вето по баллу, где речь именно о серьёзном улучшении.
+    all_targets = {_norm_key(f["replace"][0]) for f in findings
+                   if f["kind"] == "term" and (f.get("replace") or [""])[0]}
     # Заход ТОЛЬКО из-за регистра — ровно тот же случай, что only_minor: ни балл,
     # ни termcheck не пересчитываются, глоссарию нарушать нечего, и «не стало
     # хуже» засчитало бы успехом любой переписанный текст. Мерить тут есть чем
@@ -8498,6 +8555,11 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     new_target = _openai_repair(seg, project, findings, model)
     if not new_target:
         return {"ok": False, "error": "Модель не вернула исправленный текст"}
+    # Начертание правим САМИ и бесплатно, до всякой оценки. Модель приносит
+    # верный термин не в том регистре, и правка откатывалась расхождением
+    # по регистру — 18 заходов на боевом проекте, каждый оплаченный. Сочинять
+    # тут нечего: слова и порядок те же.
+    new_target = _case_fit(seg.get("source") or "", new_target)
     # Пробелы схлопываем, регистр — НЕТ. `_norm_key` приводит текст к нижнему
     # регистру, и правка, у которой всё отличие в заглавной букве, читалась бы
     # как «модель не нашла, что менять»: единственная находка, ради которой
@@ -8625,6 +8687,9 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         # в тексте проблема не повод выбрасывать верную правку вместе
         # с оплаченной проверкой — её человек увидит на экране итогов.
         left = tc_left
+        left_all = {_norm_key(f.get("tgt_term")) for f in
+                    ((seg.get("termcheck") or {}).get("findings") or [])
+                    if f.get("severity") in TERMCHECK_ACTIONABLE}
         # Подставленное разбирает отдельная проверка ниже — она работает
         # при любом движении счётчиков, а не только когда их стало больше.
         if not major_targets:
@@ -8633,10 +8698,15 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
             better = False
             why.append("замечаний по терминам стало больше "
                        + str(before["terms"]) + " → " + str(after["terms"]))
-        elif not (major_targets - left):
+        elif not (all_targets - left_all):
+            # Сверяем ВСЕ заказанные замечания, а не только серьёзные: правка,
+            # снявшая одно из двух, — это движение вперёд, и выбрасывать её
+            # целиком значит терять оплаченную работу. Оставшееся замечание
+            # никуда не девается, оно так и висит находкой, а текст изменился —
+            # значит отпечаток захода другой и следующий заход разрешён.
             better = False
             why.append("ни одно из заказанных замечаний не снято: "
-                       + ", ".join(sorted(major_targets)[:3]))
+                       + ", ".join(sorted(all_targets)[:3]))
         else:
             notes.append("замечаний по терминам стало больше "
                          + str(before["terms"]) + " → " + str(after["terms"])

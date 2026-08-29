@@ -2317,6 +2317,9 @@ def project_analysis(pid: int, refresh: bool = False):
     # руками: 845 сегментов человеку не пересмотреть, и не в этом смысл.
     unverified: list = []
     unjudged_blind: list = []
+    # Сегменты, где проверять нечего по существу. Своя корзина, а не «не
+    # проверено»: работой это не является ни сейчас, ни когда-либо.
+    nothing_to_check: list = []
     # Подмножество `reverted`: правку отменил только балл back-check, а термины
     # она почистила. Подмножество, а не отдельная корзина, — иначе исчерпаемость
     # держалась бы на совпадении двух предикатов в разных концах файла.
@@ -2382,6 +2385,14 @@ def project_analysis(pid: int, refresh: bool = False):
         why = _machine_clean(s, pol["backcheck_min"])
         if why is None:
             clean.append(s["id"])
+        elif why == CLEAN_TERMCHECK_SKIP:
+            # НЕ «не проверено»: `_termcheck_trivial` сам сказал, что проверять
+            # нечего — в переводе нет слов либо он совпадает с оригиналом
+            # («40%», «kV 120.0 mA: 283»). Такой сегмент из корзины «не
+            # проверено» не уйдёт НИКОГДА: текст не изменится, и проверять
+            # в нём по-прежнему нечего. На боевом проекте так висели 70 из 138,
+            # то есть половина корзины звала человека к работе, которой нет.
+            nothing_to_check.append(s["id"])
         elif why in CLEAN_UNCHECKED:
             unchecked.append(s["id"])
         elif why == CLEAN_REPAIRED and s["id"] in repaired_set:
@@ -2500,6 +2511,15 @@ def project_analysis(pid: int, refresh: bool = False):
         "total": len(project["segments"]),
         "clean": clean,
         "repaired": repaired,
+        # Готовность БЕЗ двойного счёта. `clean` и `repaired` считаются
+        # независимо от корзин остатка и пересекаются с ними: на боевом
+        # проекте 181 сегмент числился и готовым, и требующим работы, отчего
+        # готовность показывалась 93.3% вместо 86.6%. Считаем здесь, а не
+        # в браузере: два расчёта одного числа однажды разойдутся.
+        "readyIds": sorted((set(clean) | set(repaired)) - (
+            set(untranslated) | set(unchecked) | set(findings)
+            | set(impact["pending"]) | {w["id"] for w in weak}
+            | set(reverted) | set(confirmed_findings))),
         "machine": {"repaired": len(repaired), "reverted": len(reverted)},
         "proposed": {"terms": ready},
         "human": {
@@ -2529,6 +2549,7 @@ def project_analysis(pid: int, refresh: bool = False):
                  "findings": findings, "glossaryPending": impact["pending"],
                  "weak": [w["id"] for w in weak],
                  # Не «плохо», а «никто не смотрел». Лечится судьёй.
+                 "nothingToCheck": nothing_to_check,
                  "unverified": unverified,
                  "unjudgedBlind": unjudged_blind,
                  # Разнобой по документу: один оборот переведён по-разному.
@@ -6454,8 +6475,10 @@ def _rescore_backcheck(seg: dict, project: dict,
         hits = hits_cache[source]
     else:
         hits = hits_cache[source] = _verified_hits(source, project)
+    # Кэш общий на текст, а вердикт арбитра — свой у КАЖДОГО сегмента,
+    # поэтому фильтр применяется после кэша, а не внутри него.
     res = medical_qa_mod.run_backcheck(
-        source, back, hits,
+        source, back, _hits_for_score(seg, hits),
         semantic=bc.get("semantic"),
         domain=project.get("domain"), src_lang=project.get("src", "RU"))
     if res.get("score") is None:                             # pragma: no cover
@@ -6772,7 +6795,7 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
     # падежные формы обычных слов из массового импорта, которым сверка смысла
     # УЖЕ проставила rule: false. Ещё и судья к таким сегментам не приходил:
     # потерянный термин гасил его как жёсткую находку.
-    gloss_hits = _verified_hits(source_text, project)
+    gloss_hits = _hits_for_score(seg, _verified_hits(source_text, project))
     # semantic_fn, а не готовое число: косинус учитывается только при отсутствии
     # жёстких находок, и там, где он всё равно не повлияет, платить за эмбеддинги
     # незачем. Решение принимает medical_qa — он и знает состав находок.
@@ -7785,6 +7808,38 @@ def _run_segment_term_context(seg: dict, project: dict,
         "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
     return {"ok": True, "termContext": seg["termContext"]}
+
+
+def _arbiter_settled(seg: dict) -> set:
+    """Термины, про которые арбитр СВЕЖИМ вердиктом сказал «передан верно».
+
+    Нужна балльщику. `_terms_lost_open` уже снимает по этому вердикту претензию
+    ремонта, а `run_backcheck` считает штраф за потерянный термин заново и
+    вердикта не спрашивает — то есть балл держится на претензии, которую
+    оплаченный арбитр официально отменил. На боевом учебнике так вышло у 59
+    сегментов: у #445 «Туберкулёз органов дыхания» балл 8 при верном переводе,
+    а восьмёрка ещё и гасит судью, потому что лежит ниже низа его зоны.
+    Половина корзины «оценка ниже порога» держалась именно на этом."""
+    out = set()
+    for c in _term_context_of(seg):
+        if c.get("ok") is not True:
+            continue
+        out.add(_norm_key(c.get("src") or ""))
+        for f in (c.get("forms") or ()):
+            out.add(_norm_key(f))
+    out.discard("")
+    return out
+
+
+def _hits_for_score(seg: dict, hits: list) -> list:
+    """Требования глоссария, по которым СЧИТАЕТСЯ БАЛЛ. Из них выброшены те,
+    что арбитр уже признал переданными верно: наказывать за потерю термина,
+    про который сказано «на месте», значит спорить с собственным оплаченным
+    вердиктом."""
+    settled = _arbiter_settled(seg)
+    if not settled:
+        return hits
+    return [h for h in hits if _norm_key(h.get("src") or "") not in settled]
 
 
 def _term_context_of(seg: dict) -> list:

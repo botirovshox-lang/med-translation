@@ -974,6 +974,52 @@ check("drug susceptibility testing" in seg_p["target"], "снятое замеч
 main._openai_repair = lambda *a, **k: NEW_T
 
 
+# ────── 6n. Балл не держится на претензии, снятой арбитром ──────
+print()
+print("=== 6n. Оплаченный вердикт арбитра доходит до балла ===")
+GLX = [{"src": "туберкулёз органов дыхания", "tgt": "respiratory tuberculosis",
+        "tier": "verified", "cat": "Disease", "lang": "RU→EN", "domain": "medical"}]
+sx = seg_of(1, "Туберкулёз органов дыхания", "Respiratory tuberculosis")
+sx["termContext"] = {"version": main.TERM_CONTEXT_VERSION,
+                     "target_hash": main._text_hash("Respiratory tuberculosis"),
+                     "terms": [{"src": "туберкулёз органов дыхания",
+                                "tgt": "respiratory tuberculosis",
+                                "forms": ["Туберкулёз органов дыхания"],
+                                "ok": True, "use": "", "why": ""}]}
+projx = project_of([sx], GLX)
+hits = main._verified_hits(sx["source"], projx)
+check(len(hits) == 1, "требование глоссария к сегменту есть")
+check(main._hits_for_score(sx, hits) == [],
+      "но в БАЛЛ оно не идёт: арбитр уже сказал «передан верно», "
+      "и наказывать за потерю значит спорить с собственным вердиктом")
+check(main._arbiter_settled(sx), "снятые термины собраны из свежего вердикта")
+
+# Устаревший вердикт не снимает ничего: он описывает другой текст.
+sx["termContext"]["target_hash"] = main._text_hash("другой текст")
+check(main._hits_for_score(sx, hits) == hits,
+      "устаревший вердикт претензию не снимает")
+# «Передан неверно» тоже не снимает.
+sx["termContext"]["target_hash"] = main._text_hash("Respiratory tuberculosis")
+sx["termContext"]["terms"][0]["ok"] = False
+check(main._hits_for_score(sx, hits) == hits, "«передан неверно» не снимает претензию")
+
+
+# ────── 6o. «Нечего проверять» — не «не проверено» ──────
+print()
+print("=== 6o. Корзина, из которой нельзя выйти, не должна звать к работе ===")
+num = seg_of(1, "40%", "40%",
+             bc={"score": 100, "model": "m", "back": "40%", "reasons": [], "terms_lost": []},
+             tc={"model": "skip", "findings": []})
+project_of([num])
+main._CONSIST_CACHE.clear()
+a = main.project_analysis(1)
+check(a["todo"]["nothingToCheck"] == [1],
+      "«40%» — проверять нечего, и это своя причина")
+check(1 not in a["todo"]["unchecked"],
+      "в «не проверено» его больше нет: оттуда он не ушёл бы никогда")
+check("readyIds" in a, "готовность считается без двойного счёта на сервере")
+
+
 # ─────────── 7. Корзина в /analysis ───────────
 print("\n=== 7. Отдельная строка на экране «Анализ» ===")
 vetoed = seg_of(1, SRC, OLD_T, repair=GOOD,

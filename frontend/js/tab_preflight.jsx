@@ -876,7 +876,17 @@ function GlossaryImpact({ project, store, toast, onDrill, T }) {
           count: data.pending.length, onDrill: () => onDrill("Расходятся с глоссарием (не подтверждено)", pick(data.pending)) }),
         React.createElement(StatRow, { label: "— подтверждено", note: "перезапись только по явной команде",
           count: data.confirmed.length, color: "var(--c-error)",
-          onDrill: () => onDrill("Расходятся с глоссарием (подтверждено)", pick(data.confirmed)) })),
+          onDrill: () => onDrill("Расходятся с глоссарием (подтверждено)", pick(data.confirmed)) }),
+        /* Куда нажимать. Сама кнопка живёт в СОСЕДНЕЙ карточке «Одобрение
+           терминов» (одна задача одобряет термины и тут же чинит ими текст),
+           и человек искал её здесь — в карточке, названной по задаче.
+           Дублировать запуск нельзя: под двумя кнопками встали бы два состава.
+           Поэтому здесь — указание, а не вторая кнопка. */
+        data.pending.length > 0 && React.createElement("div",
+          { className: "dim", style: { fontSize: 12, lineHeight: 1.5, paddingTop: 8 } },
+          "Починить их: вкладка «Редактор» → карточка «Одобрение терминов» → "
+          + "кнопка «Применить к " + data.pending.length + " сегм.». "
+          + "Правка записи готовый текст сама не меняет — это отдельная команда.")),
 
       data && data.terms.length > 0 && React.createElement("div", { style: { borderTop: "1px solid var(--border)", paddingTop: 10 } },
         React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, marginBottom: 6 } }, "По терминам"),

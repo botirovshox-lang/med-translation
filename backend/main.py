@@ -5299,7 +5299,7 @@ def _auto_verdict(cand: dict, ctx: dict) -> tuple:
         # доноров мало: приказ не даём, оставляем подсказкой. Обратное неверно —
         # частотность не делает перевод правильным, поэтому поднять до приказа
         # она не может, только удержать.
-        if corpus and not corpus.get("ok"):
+        if corpus and not corpus.get("ok") and corpus.get("vetoAllowed", True):
             return GLOSSARY_TIER_SOFT, ("%d независимых сегмента, но термин редок в %s (%d)"
                                         % (distinct, corpus["label"], corpus["hits"]))
         return GLOSSARY_TIER_HARD, ("%d независимых чистых сегмента" % distinct
@@ -7762,7 +7762,12 @@ def _run_segment_term_context(seg: dict, project: dict,
             c = _corpus_check(use, scope)
             if c is not None:
                 item["corpus"] = {"hits": c.get("hits"), "source": c.get("source")}
-                if not c.get("ok"):
+                # Запрещать вправе только корпус, СВОЙ для этой области:
+                # ноль в Википедии для узкого медицинского термина доказывает
+                # лишь отсутствие статьи с таким названием. Пока PubMed был
+                # недоступен с сервера, так молча срезали готовый совет
+                # у пяти вердиктов арбитра.
+                if not c.get("ok") and c.get("vetoAllowed", True):
                     # Корпус НАЛАГАЕТ ВЕТО, но приказа не даёт: совета,
                     # которого нет в целевом языке, в ремонте быть не должно.
                     item["use"] = ""

@@ -2485,6 +2485,16 @@ def project_analysis(pid: int, refresh: bool = False):
             continue
         for t in _term_context_of(s):
             if t.get("ok") is False:
+                # Предъявить человеку нечего в двух случаях, и оба — шум:
+                # совет ПУСТ (корпус его снял или арбитр не предложил) либо
+                # совет СОВПАДАЕТ с приказной записью — тогда это не спор
+                # про запись, а «здесь термин передан неверно», и это уже
+                # находка ремонта (`kind: "term_ctx"`), а не вопрос к человеку.
+                # На боевом проекте так набралось 8 карточек из 10, и строка
+                # звала разбираться там, где разбираться не в чем.
+                use = (t.get("use") or "").strip()
+                if not use or _norm_key(use) == _norm_key(t.get("tgt") or ""):
+                    continue
                 k = (_norm_key(t.get("src")), _norm_key(t.get("tgt")))
                 e = ctx_bad.setdefault(k, {"src": t.get("src"), "tgt": t.get("tgt"),
                                            "use": t.get("use"), "why": t.get("why"),
@@ -2492,6 +2502,31 @@ def project_analysis(pid: int, refresh: bool = False):
                 if not e["segments"] or e["segments"][-1] != s["id"]:
                     e["segments"].append(s["id"])
     ctx_wrong = sorted(ctx_bad.values(), key=lambda d: -len(d["segments"]))
+
+    # Забракованное termcheck слово, которое ВСЁ ЕЩЁ стоит в тексте.
+    # Карточка очереди помнит `wasTgt` — формулировку, которую проверка
+    # отвергла, — а сегмент об этом не помнит: свежий termcheck мог передумать
+    # между прогонами, и тогда дефект остаётся в готовом на вид тексте.
+    # На боевом проекте так вышло у 83 сегментов, 59 из которых числились
+    # готовыми: «bioptate» вместо «biopsy specimen», «nodules» вместо
+    # «papules», «hormone therapy» вместо «corticosteroid therapy».
+    # Сверка бесплатна — подстрока по границам слов.
+    #
+    # Это НОМИНАЦИЯ, а не находка ремонта, и намеренно: одно суждение termcheck
+    # о строке — не приказ переписывать (тот же закон, что у разнобоя, где
+    # для применения по документу нужны два голоса). Тем более что проверка
+    # с тех пор передумала, и кто из двух её мнений верен, решает человек.
+    by_id = {sg["id"]: sg for sg in project["segments"]}
+    stale_bad: dict = {}
+    for c in (STATE.get("termQueue") or ()):
+        was = (c.get("wasTgt") or "").strip()
+        sid = c.get("segment")
+        if not was or c.get("project") != pid or sid not in by_id:
+            continue
+        rx = _word_re(was)
+        if rx and rx.search(by_id[sid].get("target") or ""):
+            stale_bad.setdefault(sid, []).append(was)
+    stale_findings = sorted(stale_bad)
 
     # Что автоодобрение разложило бы прямо сейчас — тем же движком, что и кнопка,
     # иначе цифра на экране разошлась бы с тем, что произойдёт по нажатию.
@@ -2544,6 +2579,10 @@ def project_analysis(pid: int, refresh: bool = False):
             # и что он уже сказал про записи глоссария.
             "termContextPending": ctx_pending,
             "termContextWrong": ctx_wrong,
+            # Забракованное проверкой слово всё ещё в тексте — с примерами.
+            "staleFindings": stale_findings,
+            "staleFindingWords": [{"id": k, "words": v[:3]}
+                                  for k, v in sorted(stale_bad.items())][:20],
         },
         "todo": {"untranslated": untranslated, "unchecked": unchecked,
                  "findings": findings, "glossaryPending": impact["pending"],
@@ -4139,6 +4178,19 @@ def _queue_term(kind: str, src: str, tgt: str, **extra) -> Optional[dict]:
     два потока могли бы завести две записи об одном и том же."""
     src_n, tgt_n = _norm_key(src), _norm_key(tgt)
     if not src_n:
+        return None
+    # Карточка, которую политика области отвергнет ВСЕГДА, в очередь не идёт.
+    # Раньше её пускали на входе и отвергали на выходе: на боевом проекте так
+    # накопилось 115 карточек длиннее лимита слов — они никогда не будут
+    # одобрены, но занимают место у потолка TERM_QUEUE_MAX и вытесняют
+    # настоящие находки. Отказ здесь ровно тот же, что в `_auto_verdict`,
+    # и берётся из той же политики — разойдись они, очередь снова начала бы
+    # копить неодобряемое.
+    _pol = _auto_policy((extra or {}).get("domain"))
+    if (len(src.split()) > _pol["max_src_words"]
+            or (tgt and len(tgt.split()) > _pol["max_tgt_words"])
+            or src.rstrip().endswith((".", "!", "?", ":", ";"))):
+        _TERM_NOT_TERM[0] = _TERM_NOT_TERM[0] + 1
         return None
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     with _TERM_QUEUE_LOCK:

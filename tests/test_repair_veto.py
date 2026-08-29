@@ -1020,6 +1020,51 @@ check(1 not in a["todo"]["unchecked"],
 check("readyIds" in a, "готовность считается без двойного счёта на сервере")
 
 
+# ────── 6p. Забракованное слово осталось в тексте ──────
+print()
+print("=== 6p. Очередь помнит, а сегмент забыл ===")
+bad = seg_of(1, "Исследуют биоптат.", "The bioptate is examined.",
+             bc={"score": 100, "model": "m", "back": "b", "reasons": [], "terms_lost": []},
+             tc={"model": "t", "findings": []})
+good = seg_of(2, "Исследуют мокроту.", "The sputum is examined.",
+              bc={"score": 100, "model": "m", "back": "b", "reasons": [], "terms_lost": []},
+              tc={"model": "t", "findings": []})
+project_of([bad, good])
+main.STATE["termQueue"] = [
+    {"id": "c1", "kind": "audit", "status": "pending", "src": "биоптат",
+     "wasTgt": "bioptate", "project": 1, "segment": 1},
+    {"id": "c2", "kind": "audit", "status": "pending", "src": "мокрота",
+     "wasTgt": "expectorate", "project": 1, "segment": 2}]
+main._CONSIST_CACHE.clear()
+a = main.project_analysis(1)
+check(a["human"]["staleFindings"] == [1],
+      "слово, которое termcheck забраковал, всё ещё в тексте — своя строка")
+check(2 not in a["human"]["staleFindings"],
+      "а там, где его убрали, претензии нет")
+check(any(w["id"] == 1 and "bioptate" in w["words"]
+          for w in a["human"]["staleFindingWords"]),
+      "и слово названо — иначе претензию нечем исполнить")
+check("term" not in {f["kind"] for f in main._repair_findings(bad, None)},
+      "ремонту это НЕ отдаётся: одно суждение о строке не приказ переписывать, "
+      "тем более что проверка себе противоречит")
+
+
+# ────── 6q. Очередь не копит то, что политика отвергнет всегда ──────
+print()
+print("=== 6q. Неодобряемое не заводится ===")
+main.STATE["termQueue"] = []
+long_src = "Искусственное лечение пневмоторакса закрыто совсем"
+c = main._queue_term("audit", long_src, "closed artificial pneumothorax",
+                     project=1, segment=1, domain="medical", lang="RU→EN")
+check(c is None, "термин длиннее лимита политики в очередь не идёт")
+c2 = main._queue_term("audit", "биоптат", "biopsy specimen",
+                      project=1, segment=1, domain="medical", lang="RU→EN")
+check(c2 is not None, "нормальный кандидат заводится как раньше")
+c3 = main._queue_term("audit", "Это предложение, а не термин.", "A sentence.",
+                      project=1, segment=1, domain="medical", lang="RU→EN")
+check(c3 is None, "предложение с точкой на конце — тоже нет")
+
+
 # ─────────── 7. Корзина в /analysis ───────────
 print("\n=== 7. Отдельная строка на экране «Анализ» ===")
 vetoed = seg_of(1, SRC, OLD_T, repair=GOOD,

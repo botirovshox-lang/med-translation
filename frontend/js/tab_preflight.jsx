@@ -119,7 +119,8 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
 
   /* revertedByScore — ПОДМНОЖЕСТВО reverted, поэтому в сумму отдельно
      не идёт: Set и так схлопнет повторы, но полагаться на это молча нельзя. */
-  const humanSegs = new Set([].concat(s.human.confirmWithdrawn || [],
+  const humanSegs = new Set([].concat(s.human.staleFindings || [],
+                                      s.human.confirmWithdrawn || [],
                                       s.human.reverted || [],
                                       s.human.glossaryConfirmed || [],
                                       s.human.confirmedFindings || []));
@@ -236,6 +237,20 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
         (s.todo.consistency || []).slice(0, 6).map((c, i) => React.createElement("div", { key: i },
           "«" + c.was + "» → «" + c.want + "» · мест: " + (c.segments || []).length
           + (c.already ? " · уже верно: " + c.already : "")))),
+      /* Проверка забраковала слово, а оно всё ещё в тексте. Очередь помнит
+         формулировку, сегмент — нет: termcheck мог передумать между прогонами,
+         и дефект остался в готовом на вид тексте. Номинация, а не находка
+         ремонта: одно суждение о строке не приказ переписывать, тем более
+         что проверка себе же противоречит — решает человек. */
+      React.createElement(Row, { label: "Забракованное слово осталось в тексте",
+        n: (s.human.staleFindings || []).length, ids: s.human.staleFindings,
+        color: "var(--c-warning)",
+        hint: "termcheck отверг эту формулировку, а потом передумал — а слово на месте" }),
+      (s.human.staleFindingWords || []).length > 0 && React.createElement(
+        "div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.7, paddingTop: 4 } },
+        (s.human.staleFindingWords || []).slice(0, 5).map((w, i) =>
+          React.createElement("div", { key: i },
+            "#" + w.id + ": " + (w.words || []).join(", ")))),
       React.createElement(Row, { label: "Машина сняла ваше подтверждение",
         n: (s.human.confirmWithdrawn || []).length, ids: s.human.confirmWithdrawn,
         color: "var(--c-danger)",

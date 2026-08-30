@@ -81,6 +81,22 @@ check(pub <= paths, "в списке публичных нет несущест�
 check(pub == {"/api/auth/login", "/api/auth/logout", "/api/health"},
       "публичны только вход, выход и здоровье: " + str(sorted(pub)))
 
+print("\n=== 4b. Обработчик с {pid} ходит через get_project ===")
+# Изоляция организаций держится на одном горле: get_project отвечает 404
+# на чужой проект. Обработчик, взявший проект в обход него (или через
+# хелпер, который его обходит), — дыра, и ловится она здесь, а не
+# внимательностью. get_segment и _seg_of сами зовут get_project.
+GATES = ("get_project(", "get_segment(", "_segment_medical_qa(")   # хелперы сами зовут get_project
+no_gate = []
+for r in api:
+    if "{pid}" not in r.path:
+        continue
+    src_code = inspect.getsource(r.endpoint)
+    if not any(g in src_code for g in GATES):
+        no_gate.append((r.path, r.endpoint.__name__))
+check(not no_gate, "каждый обработчик с {pid} берёт проект через get_project"
+      + (" — " + str(no_gate) if no_gate else ""))
+
 print("\n=== 5. Один путь — один обработчик на метод ===")
 seen, dup = {}, []
 for r in api:

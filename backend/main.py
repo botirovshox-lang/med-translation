@@ -525,16 +525,58 @@ def _lang_pair(project: Optional[dict]) -> str:
     return f"{(project or {}).get('src', 'RU')}→{(project or {}).get('tgt', 'EN')}"
 
 
+# ─── Организация (арендатор) — ТРЕТЬЕ измерение области ──────────────
+# Изоляция клиентов держится не на проверке в каждом из 72 эндпоинтов,
+# а на конструкции: организация — такое же поле области, как пара и
+# тематика. Всё, что сравнивает области (глоссарий, TM, очередь терминов,
+# обходы «по всем проектам»), закрывается этим одним кортежем. Организация
+# стоит ПОСЛЕДНЕЙ, чтобы `scope[0]`/`scope[1]` во всех прежних местах
+# остались парой и тематикой. Записи без поля читаются как организация
+# по умолчанию — тот же закон миграции, что у `lang`/`domain`: боевой файл
+# не переписывается. НО каждая НОВАЯ запись обязана нести `tenant`: без него
+# она уедет в организацию по умолчанию, то есть к чужому клиенту.
+DEFAULT_TENANT = "default"
+_JOB_TENANT = threading.local()      # организация фонового прогона (в его потоках)
+
+
+def _current_tenant() -> str:
+    """Организация текущего запроса (из сессии) или текущего прогона
+    (из его потока). Ни того ни другого — организация по умолчанию:
+    так ходят миграции при старте и тесты."""
+    sess = CURRENT_SESSION.get() if "CURRENT_SESSION" in globals() else None
+    if sess and sess.get("tenant"):
+        return sess["tenant"]
+    return getattr(_JOB_TENANT, "id", None) or DEFAULT_TENANT
+
+
+def _tenant_of(obj: Optional[dict]) -> str:
+    return (obj or {}).get("tenant") or DEFAULT_TENANT
+
+
+def _tenant_projects() -> list:
+    """Проекты ТЕКУЩЕЙ организации — единственный законный обход списка
+    в эндпоинтах. Прямой `STATE["projects"]` остаётся миграциям и id."""
+    t = _current_tenant()
+    return [p for p in STATE["projects"] if _tenant_of(p) == t]
+
+
+def _scope(lang: Optional[str], domain: Optional[str]) -> tuple:
+    """Область из полей запроса — с организацией текущей сессии."""
+    return (lang or DEFAULT_GLOSS_LANG, domain or DEFAULT_GLOSS_DOMAIN, _current_tenant())
+
+
 def _scope_of(entry: dict) -> tuple:
-    """(языковая пара, тематика) записи глоссария или кандидата."""
+    """(языковая пара, тематика, организация) записи глоссария или кандидата."""
     return (entry.get("lang") or DEFAULT_GLOSS_LANG,
-            entry.get("domain") or DEFAULT_GLOSS_DOMAIN)
+            entry.get("domain") or DEFAULT_GLOSS_DOMAIN,
+            _tenant_of(entry))
 
 
 def _project_scope(project: Optional[dict]) -> tuple:
     if project is None:
-        return (DEFAULT_GLOSS_LANG, DEFAULT_GLOSS_DOMAIN)
-    return (_lang_pair(project), _resolve_domain(project.get("domain"))["id"])
+        return (DEFAULT_GLOSS_LANG, DEFAULT_GLOSS_DOMAIN, _current_tenant())
+    return (_lang_pair(project), _resolve_domain(project.get("domain"))["id"],
+            _tenant_of(project))
 
 
 def _hit_tier(h: dict) -> str:
@@ -673,7 +715,8 @@ def _get_context(text: str, with_tm: bool = True, project: Optional[dict] = None
     tm_hit = next(
         (t for t in STATE.get("tm", [])
          if t.get("src", "").strip().lower() == text.strip().lower()
-         and (t.get("lang") or DEFAULT_GLOSS_LANG) == scope[0]),
+         and (t.get("lang") or DEFAULT_GLOSS_LANG) == scope[0]
+         and _tenant_of(t) == scope[2]),
         None,
     )
     return hits, tm_hit
@@ -1342,6 +1385,7 @@ def _usage_end(job: dict) -> None:
         return
     try:
         rec = {"job": job.get("id"), "kind": job.get("kind"), "project": job.get("project"),
+               "tenant": job.get("tenant") or DEFAULT_TENANT,
                "status": job.get("status"), "finished": job.get("finished"),
                "segments": job.get("done"),
                # Смету кладём рядом с фактом: врозь они не сравниваются, а
@@ -1595,7 +1639,6 @@ if not _RAW_PASSWORD:
           file=sys.stderr)
 
 BOOTSTRAP_LOGIN = "admin"
-DEFAULT_TENANT = "default"
 ROLES = ("owner", "translator")
 PBKDF2_ITERS = 200_000
 
@@ -2189,8 +2232,13 @@ STATE = load_state()
 
 
 def get_project(pid: int) -> dict:
+    """Единственное горло к проекту по номеру. Чужой организации — 404,
+    а не 403: 403 подтверждал бы, что проект с таким номером существует."""
+    t = _current_tenant()
     for p in STATE["projects"]:
         if p["id"] == pid:
+            if _tenant_of(p) != t:
+                break
             return p
     raise HTTPException(404, f"Project {pid} not found")
 
@@ -2371,9 +2419,12 @@ def logout(request: Request):
 def get_seed():
     """Initial data dump — glossary capped at 150 terms for performance; full list via /api/glossary."""
     # Пользователи и организации в общую выдачу НЕ идут: там хеши паролей.
+    t = _current_tenant()
     public = {k: v for k, v in STATE.items() if k not in ("users", "tenants")}
-    return {**public, "projects": [_project_for_client(p) for p in STATE["projects"]],
-            "glossary": STATE["glossary"][:150]}
+    for key in ("exportHistory", "termQueue", "autoBatches", "runCosts"):
+        public[key] = [e for e in (STATE.get(key) or []) if _tenant_of(e) == t]
+    return {**public, "projects": [_project_for_client(p) for p in _tenant_projects()],
+            "glossary": [g for g in STATE["glossary"] if _tenant_of(g) == t][:150]}
 
 
 @app.get("/api/glossary")
@@ -2382,7 +2433,8 @@ def list_glossary(q: str = "", cat: str = "", limit: int = 200, offset: int = 0,
     """Full glossary with optional search and pagination.
     lang/domain сужают выдачу до области проекта — той самой, что уходит
     в промпт. Без них отдаём всё: вкладка «Глоссарий» листает общий список."""
-    items = STATE["glossary"]
+    t_id = _current_tenant()
+    items = [t for t in STATE["glossary"] if _tenant_of(t) == t_id]
     if lang or domain:
         items = [t for t in items
                  if (not lang or _scope_of(t)[0] == lang)
@@ -2408,10 +2460,11 @@ def glossary_usage(src: str, limit: int = 6, lang: str = "", domain: str = ""):
     # глоссария» помечался каждый сегмент: искомого перевода там и не могло быть.
     # Пустые lang/domain читаем как область по умолчанию — так же, как их читает
     # _scope_of; запасной поиск по имени срабатывает, только если запись одна.
-    want = (lang or DEFAULT_GLOSS_LANG, domain or DEFAULT_GLOSS_DOMAIN)
+    want = _scope(lang, domain)
     entry = _glossary_entry(src, want)
     if entry is None and not (lang or domain):
-        same = [g for g in STATE["glossary"] if _norm_key(g.get("src")) == _norm_key(src)]
+        same = [g for g in STATE["glossary"] if _norm_key(g.get("src")) == _norm_key(src)
+                and _tenant_of(g) == _current_tenant()]
         entry = same[0] if len(same) == 1 else None
         if entry is not None:
             want = _scope_of(entry)
@@ -2420,7 +2473,7 @@ def glossary_usage(src: str, limit: int = 6, lang: str = "", domain: str = ""):
     # стем-поиск и по какой таблице окончаний.
     want_lang = _src_lang({"lang": want[0]})
     projects, examples = [], []
-    for p in STATE["projects"]:
+    for p in _tenant_projects():
         # Проект чужой области этой записью не управляется: помечать его
         # сегменты нарушением глоссария — то же враньё, только на уровне отчёта.
         if entry is not None and _project_scope(p) != want:
@@ -3196,7 +3249,7 @@ def list_models():
 
 @app.get("/api/projects")
 def list_projects():
-    return [{k: v for k, v in p.items() if k != "segments"} | {"segmentCount": len(p["segments"])} for p in STATE["projects"]]
+    return [{k: v for k, v in p.items() if k != "segments"} | {"segmentCount": len(p["segments"])} for p in _tenant_projects()]
 
 
 @app.get("/api/projects/{pid}")
@@ -3214,21 +3267,22 @@ class CreateProjectRequest(BaseModel):
 @app.post("/api/projects")
 def create_project(req: CreateProjectRequest):
     src, tgt = _check_lang_pair(req.src, req.tgt)
+    # Номер — глобальный (один ряд на все организации: файлы исходников
+    # и якоря картинок именуются им). Сегментов у нового проекта НЕТ: прежде
+    # сюда копировались восемь сегментов первого проекта в списке — то есть
+    # текст одного клиента оказывался в проекте другого.
     new_id = max((p["id"] for p in STATE["projects"]), default=0) + 1
-    sample = STATE["projects"][0]["segments"][:8] if STATE["projects"] else []
     new_project = {
         "id": new_id,
         "title": req.title or "Новый проект",
         "titleEn": req.title or "New Project",
         "src": src, "tgt": tgt,
         "domain": _resolve_domain(req.domain)["id"],
+        "tenant": _current_tenant(),
         "status": "in_progress",
         "created": datetime.now().strftime("%Y-%m-%d"),
         "deadline": "",
-        "segments": [
-            {**s, "id": i + 1, "target": "", "status": "new", "comments": [], "qa": []}
-            for i, s in enumerate(sample)
-        ],
+        "segments": [],
     }
     STATE["projects"].insert(0, new_project)
     save_state(STATE)
@@ -3420,6 +3474,7 @@ async def upload_project(
         "titleEn": proj_title,
         "src": src, "tgt": tgt,
         "domain": _resolve_domain(domain)["id"],
+        "tenant": _current_tenant(),
         "status": "in_progress",
         "created": datetime.now().strftime("%Y-%m-%d"),
         "deadline": "",
@@ -4558,8 +4613,9 @@ def _tm_upsert(source: str, target: str, project: dict = None) -> str:
     key = _norm_key(source)
     today = datetime.now().strftime("%Y-%m-%d")
     lang = f"{(project or {}).get('src', 'RU')}→{(project or {}).get('tgt', 'EN')}"
+    tenant = _tenant_of(project) if project else _current_tenant()
     for t in STATE["tm"]:
-        if _norm_key(t.get("src")) != key:
+        if _norm_key(t.get("src")) != key or _tenant_of(t) != tenant:
             continue
         # Пара языков — часть ключа. Без неё подтверждение RU→DE переписывало
         # tgt у RU→EN записи, оставляя ей прежний lang: следующий RU→EN проект
@@ -4575,7 +4631,7 @@ def _tm_upsert(source: str, target: str, project: dict = None) -> str:
         t["updated"] = today
         return "updated"
     STATE["tm"].insert(0, {
-        "src": source, "tgt": target, "lang": lang,
+        "src": source, "tgt": target, "lang": lang, "tenant": tenant,
         "score": 100, "quality": "verified", "used": 1, "created": today,
     })
     return "added"
@@ -4992,6 +5048,8 @@ def _gloss_by_src() -> dict:
 def _glossary_entry(src: str, scope: tuple) -> Optional[dict]:
     """Запись глоссария по термину В ПРЕДЕЛАХ области. Раньше поиск шёл по
     всему списку, и запись из чужой языковой пары выглядела как «уже есть»."""
+    if len(scope) == 2:                   # прежний вид (пара, тематика)
+        scope = (scope[0], scope[1], _current_tenant())
     return _gloss_by_src().get((scope, _norm_key(src)))
 
 
@@ -5017,7 +5075,7 @@ def _harvest_terms(seg: dict, project: dict, via: str = "confirmed") -> list:
         return out
     scope = _project_scope(project)
     meta = {"project": project["id"], "segment": seg["id"],
-            "lang": scope[0], "domain": scope[1], "via": via}
+            "lang": scope[0], "domain": scope[1], "tenant": scope[2], "via": via}
     if via == "confirmed":
         hits, _tm = _get_context(source, project=project)
         for h in hits:
@@ -5232,7 +5290,8 @@ def list_term_queue(status: str = "pending", limit: int = 200, offset: int = 0,
     Вместе с карточками отдаём РАЗБОР: почему автоматика не берёт каждую и
     сколько таких же. Без него очередь на четыреста штук — стена одинаковых
     карточек, и человек не видит, что треть из них вообще не термины."""
-    items = _term_queue()
+    t = _current_tenant()
+    items = [c for c in _term_queue() if _tenant_of(c) == t]
     counts = {}
     for c in items:
         st = c.get("status", "pending")
@@ -5469,7 +5528,7 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     else:
         STATE["glossary"].insert(0, {"src": src, "tgt": tgt, "cat": cat, "freq": 1,
                                      "conf": "high", "note": "", "tier": GLOSSARY_TIER_HARD,
-                                     "lang": scope[0], "domain": scope[1],
+                                     "lang": scope[0], "domain": scope[1], "tenant": scope[2],
                                      "updated": today, **mark,
                                      "origin": "confirmed:" + str(cand.get("segment", ""))})
     # Пара запоминается до правки, остальные карточки про этот же термин
@@ -5797,7 +5856,9 @@ def _auto_context(pending: list, pol: dict) -> dict:
     """Индексы, собранные ОДИН раз на прогон. Без них разбор 2000 кандидатов
     гонял бы линейный поиск по 10 000 записей глоссария и по всем сегментам
     проекта на каждого — единственный воркер вставал бы на секунды."""
-    segs = {(p["id"], s["id"]): s for p in STATE["projects"] for s in p["segments"]}
+    # Только СВОЯ организация: иначе чужой сегмент становится донором
+    # перевода и глоссария — утечка содержания, а не прав.
+    segs = {(p["id"], s["id"]): s for p in _tenant_projects() for s in p["segments"]}
     gloss: dict = {}
     for g in STATE["glossary"]:
         gloss.setdefault((_scope_of(g), _norm_key(g.get("src"))), g)
@@ -6020,7 +6081,7 @@ def _auto_write(cand: dict, tier: str, batch: int, today: str,
         "note": ("автоодобрено " + today
                  + (" (приказ по разрешению человека)" if override else "")),
         "tier": tier,
-        "lang": scope[0], "domain": scope[1], "updated": today,
+        "lang": scope[0], "domain": scope[1], "tenant": scope[2], "updated": today,
         "autoBatch": batch, "autoCreated": True, "byOverride": bool(override),
         "origin": "auto:" + AUTO_POLICY_VERSION,
     }
@@ -6441,7 +6502,8 @@ def undo_auto_approve(batch: int):
 
 @app.get("/api/term-queue/auto-batches")
 def list_auto_batches():
-    return {"ok": True, "batches": STATE.get("autoBatches", [])}
+    t = _current_tenant()
+    return {"ok": True, "batches": [b for b in STATE.get("autoBatches", []) if _tenant_of(b) == t]}
 
 
 _GLOSS_MARK_LOCK = threading.Lock()
@@ -6691,7 +6753,8 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
                     # Человек уже возвращал эту запись из понижения — его ответ
                     # окончателен, и разрешение на пачку его не отменяет.
                     "kept": bool(g.get("meaningKept")),
-                    "lang": _scope_of(g)[0], "domain": _scope_of(g)[1]})
+                    "lang": _scope_of(g)[0], "domain": _scope_of(g)[1],
+                    "tenant": _scope_of(g)[2]})
     # Остаток — по СВЕЖЕСТИ вердикта, а не по арифметике «todo минус asked»:
     # судья мог не ответить про часть пар, и такие остаются неспрошенными.
     left = sum(1 for g in entries if _meaning_stale(g))
@@ -6758,7 +6821,7 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
     back = {"reverted": 0, "requeued": 0, "skipped": 0}
     by_scope: dict = {}
     for b in flagged.values():
-        by_scope.setdefault((b["lang"], b["domain"]), []).append(b)
+        by_scope.setdefault((b["lang"], b["domain"], b.get("tenant") or DEFAULT_TENANT), []).append(b)
     for sc, items in by_scope.items():
         part = _revert_repairs_bulk(items, sc)
         for k in back:
@@ -6881,7 +6944,7 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
                 continue
             c = _queue_term("extract", item.get("src", ""), item.get("tgt", ""),
                             cat=item.get("cat", ""), wasTgt=(known or {}).get("tgt", ""),
-                            lang=_sc[0], domain=_sc[1], via="auto",
+                            lang=_sc[0], domain=_sc[1], tenant=_sc[2], via="auto",
                             project=pid, model=_resolve_model(req.model or DEFAULT_OPENAI_MODEL)["id"])
             if c:
                 found.append(c)
@@ -6912,9 +6975,15 @@ def _run_parallel(items: list, fn):
     if RUN_WORKERS <= 1 or len(items) <= 1:
         return [fn(x) for x in items]
     from concurrent.futures import ThreadPoolExecutor
+    # Организация — в рабочие потоки: они свои и thread-local не наследуют.
+    tid = _current_tenant()
+
+    def run(x):
+        _JOB_TENANT.id = tid
+        return fn(x)
     with ThreadPoolExecutor(max_workers=min(RUN_WORKERS, len(items)),
                             thread_name_prefix="mcat-run") as pool:
-        return list(pool.map(fn, items))
+        return list(pool.map(run, items))
 
 
 # Флаг «текущий прогон просят остановить». Пакетные циклы сверяются с ним
@@ -7588,7 +7657,7 @@ def _run_segment_termcheck(seg: dict, project: dict, model: Optional[str] = None
             _sc = _project_scope(project)
             c = _queue_term("audit", f["src_term"], f["suggestion"],
                             wasTgt=f["tgt_term"], project=project["id"], segment=seg["id"],
-                            lang=_sc[0], domain=_sc[1], via="auto",
+                            lang=_sc[0], domain=_sc[1], tenant=_sc[2], via="auto",
                             note=f["why"], model=res["model"],
                             sampleSrc=seg.get("source", "")[:240], sampleTgt=target[:240])
             if c:
@@ -11521,6 +11590,7 @@ def export_project(pid: int, req: ExportRequest):
                          % (type(e).__name__, e)}
     size_kb = max(1, path.stat().st_size // 1024)
     STATE["exportHistory"].insert(0, {
+        "tenant": _current_tenant(),
         "file": path.name,
         "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "size": f"{size_kb} КБ",
@@ -11556,7 +11626,7 @@ class TermRequest(BaseModel):
 
 @app.post("/api/glossary")
 def save_term(req: TermRequest):
-    scope = (req.lang or DEFAULT_GLOSS_LANG, req.domain or DEFAULT_GLOSS_DOMAIN)
+    scope = _scope(req.lang, req.domain)
     existing = _glossary_entry(req.src, scope)
     if existing is None and not (req.lang or req.domain):
         # Клиент не прислал область (правка записи из общего списка) — правим ту
@@ -11576,7 +11646,7 @@ def save_term(req: TermRequest):
         _clear_auto_marks(existing)
     else:
         STATE["glossary"].insert(0, {**req.dict(exclude={"isNew"}), "tier": GLOSSARY_TIER_HARD,
-                                     "lang": scope[0], "domain": scope[1]})
+                                     "lang": scope[0], "domain": scope[1], "tenant": scope[2]})
     _invalidate_gloss_index()
     save_state(STATE)
     return {"ok": True}
@@ -11584,6 +11654,7 @@ def save_term(req: TermRequest):
 
 @app.delete("/api/projects/{pid}")
 def delete_project(pid: int):
+    get_project(pid)                      # чужой проект — 404, удалять нечего
     STATE["projects"] = [p for p in STATE["projects"] if p["id"] != pid]
     # Исходник уходит вместе с проектом. Учебник весит 21 МБ, и оставлять его
     # на диске после удаления значит копить мусор, который никто уже не найдёт:
@@ -11700,7 +11771,7 @@ def demote_term(req: TermScopeRequest):
 
     Удаления тут нет: перевод может быть верным В КОНТЕКСТЕ и негодным как
     правило на весь документ. Подсказка — ровно это и означает."""
-    scope = (req.lang or DEFAULT_GLOSS_LANG, req.domain or DEFAULT_GLOSS_DOMAIN)
+    scope = _scope(req.lang, req.domain)
     entry = _glossary_entry(req.src, scope)
     if entry is None and not (req.lang or req.domain):
         entry = next((g for g in STATE["glossary"]
@@ -11755,7 +11826,7 @@ def revert_repairs_by_term(req: RevertRepairsRequest):
     Проверки после отката сами становятся устаревшими: они писали хеш
     ОТВЕРГНУТОГО текста, а в сегменте теперь другой (см. `_check_stale`).
     Статус — `review`: текст менял не человек."""
-    scope = (req.lang or DEFAULT_GLOSS_LANG, req.domain or DEFAULT_GLOSS_DOMAIN)
+    scope = _scope(req.lang, req.domain)
     entry = _glossary_entry(req.src, scope) or {"src": req.src, "tgt": ""}
     # Записи может уже не быть (её удалили) — тогда пару берём из запроса.
     if not (entry.get("tgt") or "").strip():
@@ -11818,7 +11889,7 @@ def delete_term(src: str, lang: str = "", domain: str = ""):
     Пустые lang/domain означают область по умолчанию (так же читаются записи
     без полей), а НЕ «любую»: иначе удаление RU→EN термина уносило бы и его
     RU→DE тёзку из чужого проекта."""
-    want = (lang or DEFAULT_GLOSS_LANG, domain or DEFAULT_GLOSS_DOMAIN)
+    want = _scope(lang, domain)
     victims = [t for t in STATE["glossary"] if t.get("src") == src and _scope_of(t) == want]
     if not victims and not (lang or domain):
         # Область не назвали и в области по умолчанию записи нет. Удаляем по
@@ -11949,6 +12020,8 @@ def purge_glossary(req: GlossaryPurgeRequest = GlossaryPurgeRequest()):
     used_ids = _used_term_ids() if req.unused_only else None
     matched, kept_human = [], 0
     for g in STATE.get("glossary", []):
+        if _tenant_of(g) != _current_tenant():
+            continue
         if _hit_tier(g) != tier:
             continue
         if scope is not None and _scope_of(g) != scope:
@@ -12692,6 +12765,9 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
 
 def _job_run(job: dict):
     kind, pid = job["kind"], job["project"]
+    # Организация прогона — в его поток: ContextVar сессии сюда не доезжает,
+    # а get_project и области считаются по ней.
+    _JOB_TENANT.id = job.get("tenant") or DEFAULT_TENANT
     chunk_size = JOB_CHUNKS[kind]
     if kind == "images":
         # Разбор картинок не идёт по сегментам: их ещё нет — они из него
@@ -12876,6 +12952,7 @@ def create_job(pid: int, req: JobRequest):
         job = {
             "id": max(_JOBS, default=0) + 1,
             "kind": req.kind, "project": pid, "status": "queued",
+            "tenant": _current_tenant(),
             "total": len(ids), "done": 0, "counters": {}, "error": None,
             "params": dict(req.params or {}),
             "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -12896,7 +12973,9 @@ def usage_report(limit: int = 20):
     Ни одного вызова модели здесь нет: всё уже посчитано провайдером и снято
     с ответов. `process` — расход с момента старта сервиса, включая одиночные
     вызовы по кнопке, которые ни одному прогону не принадлежат."""
-    runs = list(reversed(STATE.get("runCosts") or []))[:max(1, min(limit, 100))]
+    t = _current_tenant()
+    runs = [r for r in reversed(STATE.get("runCosts") or [])
+            if _tenant_of(r) == t][:max(1, min(limit, 100))]
     priced = [r for r in runs if r.get("est") and r.get("cost")]
     return {
         "process": _USAGE_TOTAL,
@@ -12912,7 +12991,9 @@ def usage_report(limit: int = 20):
 
 @app.get("/api/jobs")
 def list_jobs(project: Optional[int] = None, limit: int = 20):
-    jobs = [j for j in _JOBS.values() if project is None or j["project"] == project]
+    t = _current_tenant()
+    jobs = [j for j in _JOBS.values() if _tenant_of(j) == t
+            and (project is None or j["project"] == project)]
     jobs.sort(key=lambda j: j["id"], reverse=True)
     active = [_job_public(j) for j in jobs if j["status"] in ("queued", "running")]
     return {"active": active, "jobs": [_job_public(j) for j in jobs[:max(1, min(limit, 100))]]}
@@ -12921,7 +13002,7 @@ def list_jobs(project: Optional[int] = None, limit: int = 20):
 @app.get("/api/jobs/{jid}")
 def get_job(jid: int):
     job = _JOBS.get(jid)
-    if not job:
+    if not job or _tenant_of(job) != _current_tenant():
         raise HTTPException(404, "Прогон не найден")
     return {"ok": True, "job": _job_public(job)}
 
@@ -12932,7 +13013,7 @@ def stop_job(jid: int):
     не начинается. Обрывать порцию на середине значило бы заплатить за вызовы
     и выбросить их результат."""
     job = _JOBS.get(jid)
-    if not job:
+    if not job or _tenant_of(job) != _current_tenant():
         raise HTTPException(404, "Прогон не найден")
     job["stop"] = True
     if job["status"] == "queued":

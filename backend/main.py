@@ -7495,6 +7495,12 @@ def _segment_for_client(seg: dict) -> dict:
                          "retryable": bool(rp.get("retryable")
                                            and rp.get("attemptHash") == cur),
                          "acceptable": _repair_score_vetoed(seg)}
+    # Советы арбитра, которые есть чем исполнить, — признак для кнопки
+    # «Применить» в карточке сегмента. Считает сервер (см. `_ctx_advices`).
+    if out.get("termContext"):
+        adv = _ctx_advices(seg)
+        if adv:
+            out["ctxAdvice"] = adv
     return out
 
 
@@ -10495,6 +10501,184 @@ def undo_accept_repair_candidates(pid: int, stamp: str):
             else:
                 seg[k] = snap[k]
         seg["repair"] = snap["repair"]
+        restored.append(seg["id"])
+    if restored:
+        _IMPACT_CACHE.pop(pid, None)
+        _ANALYSIS_CACHE.pop(pid, None)
+        save_state(STATE)
+    return {"ok": True, "restored": restored, "changedSince": changed_since}
+
+
+
+# ─── Совет арбитра одним нажатием ────────────────────────────────────
+def _ctx_advices(seg: dict) -> list:
+    """Вердикты арбитра «здесь термин передан неверно», которые есть чем
+    исполнить: совет непустой, отличен от утверждённого перевода и БУКВАЛЬНО
+    стоит в тексте сегмента — подставлять есть куда. Тот же отбор, что у
+    корзины `human.termContextWrong` в /analysis, плюс проверка вхождения:
+    кнопка обязана нажиматься там, где эндпоинт сработает, поэтому признак
+    считает СЕРВЕР (`ctxAdvice` в `_segment_for_client`), а не браузер."""
+    out = []
+    target = seg.get("target") or ""
+    for t in _term_context_of(seg):
+        if t.get("ok") is not False:
+            continue
+        use, tgt = (t.get("use") or "").strip(), (t.get("tgt") or "").strip()
+        if not use or not tgt or _norm_key(use) == _norm_key(tgt):
+            continue
+        if not _ctx_pattern(tgt).search(target):
+            continue
+        out.append({"src": t.get("src"), "tgt": tgt, "use": use, "why": t.get("why")})
+    return out
+
+
+def _ctx_pattern(tgt: str):
+    """Буквальное вхождение по границам слова, без учёта регистра. Пробелы
+    в записи терпимы к переносам, остальное — как есть."""
+    body = r"\s+".join(re.escape(w) for w in tgt.split())
+    return re.compile(r"(?<![\w-])" + body + r"(?![\w-])", re.IGNORECASE)
+
+
+def _ctx_substitute(target: str, tgt: str, use: str) -> str:
+    """Заменить все вхождения `tgt` на `use`, унаследовав начертание найденного
+    места: заглавная в начале и капс берутся у ТЕКСТА, а не у совета — тот же
+    закон, что у `_case_like`. Ничего не сочиняется: слова совета те же."""
+    def fit(m):
+        found = m.group(0)
+        if found.isupper() and len(found) >= CASE_CAPS_MIN:
+            return use.upper()
+        if found[:1].isupper() and not use[:1].isupper():
+            return use[:1].upper() + use[1:]
+        return use
+    return _ctx_pattern(tgt).sub(fit, target)
+
+
+class TermContextApplyRequest(BaseModel):
+    src: str
+    tgt: str
+    use: str
+    dry_run: bool = True
+    segment_ids: Optional[List[int]] = None
+    include_confirmed: bool = False
+
+
+@app.post("/api/projects/{pid}/term-context/apply")
+def apply_term_context(pid: int, req: TermContextApplyRequest):
+    """Подставить вариант арбитра вместо утверждённого перевода — по строке,
+    а не по записи глоссария.
+
+    Четвёртая команда в системе, меняющая текст БЕЗ вызова модели, и по той же
+    причине, что три прежние: она ничего не сочиняет. Вариант предложил
+    оплаченный арбитр, единственный, кто видел сегмент в ряду соседей, а корпус
+    целевого языка уже проверил его бесплатно (`_corpus_check`) — кальку он
+    снял бы до показа. Запись глоссария при этом НЕ трогается: она может быть
+    верна в остальных местах документа, а спор про запись остаётся человеку.
+
+    Живёт по правилам массовых команд: `dry_run` по умолчанию, заверенное
+    не трогается без `include_confirmed` и названо числом, прежнее состояние
+    уходит копией в `data/backups/` и возвращается
+    `/term-context/apply/{stamp}/undo`. После подстановки сегмент — `review`:
+    проверки описывали прежний текст и устаревают сами, вердикт арбитра тоже
+    (его хеш от нового текста не совпадёт) — это честно, текст другой.
+    Бесплатно: в `_PAID` не входит."""
+    project = get_project(pid)
+    ids = set(req.segment_ids) if req.segment_ids is not None else None
+    want = (_norm_key(req.src), _norm_key(req.tgt), _norm_key(req.use))
+    matched, skipped_confirmed = [], []
+    for seg in project["segments"]:
+        if ids is not None and seg["id"] not in ids:
+            continue
+        adv = next((a for a in _ctx_advices(seg)
+                    if (_norm_key(a["src"]), _norm_key(a["tgt"]), _norm_key(a["use"])) == want), None)
+        if not adv:
+            continue
+        if seg.get("status") == "confirmed" and not req.include_confirmed:
+            skipped_confirmed.append(seg["id"])
+            continue
+        matched.append((seg, adv))
+    result = {"ok": True, "dryRun": req.dry_run, "matched": len(matched),
+              "ids": [sg["id"] for sg, _ in matched],
+              "skippedConfirmed": skipped_confirmed,
+              "samples": [{"id": sg["id"], "was": (sg.get("target") or "")[:200],
+                           "now": _ctx_substitute(sg.get("target") or "", a["tgt"], a["use"])[:200]}
+                          for sg, a in matched[:12]],
+              "applied": 0, "stamp": None}
+    if req.dry_run or not matched:
+        return result
+    snapshot = [{**_repair_accept_snapshot(sg),
+                 "termContext": json.loads(json.dumps(sg.get("termContext") or {}))}
+                for sg, _ in matched]
+    try:
+        PURGE_DIR.mkdir(parents=True, exist_ok=True)
+        base = datetime.now().strftime("%Y%m%d-%H%M%S")
+        stamp, n = base, 1
+        while (PURGE_DIR / ("term-ctx-" + stamp + ".json")).exists():
+            stamp = base + "-" + str(n)
+            n += 1
+        path = PURGE_DIR / ("term-ctx-" + stamp + ".json")
+        path.write_text(json.dumps({"project": pid, "segments": snapshot}, ensure_ascii=False),
+                        encoding="utf-8")
+    except Exception as e:
+        print(f"[backend] совет арбитра: бэкап не записан: {e}", file=sys.stderr)
+        raise HTTPException(500, "Не удалось сохранить копию для отката — применение отменено")
+    for sg, a in matched:
+        was = sg.get("target") or ""
+        now = _ctx_substitute(was, a["tgt"], a["use"])
+        _replace_target(sg, now, sg.get("provider") or "", "TERM_CTX_ACCEPTED")
+        sg["status"] = "review"
+        # След решения: без него следующий прогон не отличит подстановку
+        # по совету от правки руками, а человек — своё решение от машинного.
+        sg["termCtxApplied"] = {"src": a["src"], "tgt": a["tgt"], "use": a["use"],
+                                "from": was, "by": "human",
+                                "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    _IMPACT_CACHE.pop(pid, None)
+    _ANALYSIS_CACHE.pop(pid, None)
+    save_state(STATE)
+    _audit("term_context.apply", project=pid, count=len(matched), src=req.src, use=req.use, stamp=stamp)
+    print(f"[backend] совет арбитра применён: {len(matched)} сегм. (проект {pid}), "
+          f"копия: {path.name}", file=sys.stderr)
+    result["applied"] = len(matched)
+    result["stamp"] = stamp
+    return result
+
+
+@app.post("/api/projects/{pid}/term-context/apply/{stamp}/undo")
+def undo_apply_term_context(pid: int, stamp: str):
+    """Вернуть тексты до подстановки совета. Только там, где стоит именно
+    наш текст: правили после — чужую работу откатом не затираем."""
+    project = get_project(pid)
+    if not re.fullmatch(r"[0-9-]{8,24}", stamp or ""):
+        raise HTTPException(400, "Неверная метка отката")
+    path = PURGE_DIR / ("term-ctx-" + stamp + ".json")
+    if not path.exists():
+        raise HTTPException(404, "Копия для отката не найдена")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(500, "Копия для отката не читается: " + str(e))
+    if data.get("project") != pid:
+        raise HTTPException(400, "Эта копия относится к другому проекту")
+    by_id = {sg["id"]: sg for sg in project["segments"]}
+    restored, changed_since = [], []
+    for snap in data.get("segments") or []:
+        seg = by_id.get(snap["id"])
+        if seg is None:
+            continue
+        rec = seg.get("termCtxApplied") or {}
+        expect = _ctx_substitute(snap["target"], rec.get("tgt") or "", rec.get("use") or "")
+        if rec.get("from") != snap["target"] or (seg.get("target") or "") != expect:
+            changed_since.append(seg["id"])
+            continue
+        seg["target"] = snap["target"]
+        seg["status"] = snap["status"]
+        for k in ("provider", "route", "confirmedBy", "confirmedAt", "prevTarget"):
+            if snap.get(k) is None:
+                seg.pop(k, None)
+            else:
+                seg[k] = snap[k]
+        seg["repair"] = snap["repair"]
+        seg["termContext"] = snap["termContext"]
+        seg.pop("termCtxApplied", None)
         restored.append(seg["id"])
     if restored:
         _IMPACT_CACHE.pop(pid, None)

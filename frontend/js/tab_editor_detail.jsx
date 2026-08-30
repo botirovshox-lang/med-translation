@@ -135,6 +135,28 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
      Вызова модели нет — подставляется уже оплаченный repair.candidate,
      поэтому и подтверждения не спрашиваем: сочинять тут нечего, а прежний
      текст уходит в repair.from и виден кнопкой «Вернуть прежний». */
+  /* Совет арбитра одним нажатием. Признак `ctxAdvice` считает СЕРВЕР
+     (`_ctx_advices`): кнопка стоит только там, где эндпоинт сработает.
+     Подтверждения не спрашиваем — ничего не сочиняется, прежний текст
+     уходит в termCtxApplied.from и виден в карточке. */
+  const [ctxBusy, setCtxBusy] = useState(false);
+  const applyAdvice = (a) => {
+    if (ctxBusy || !window.API) return;
+    setCtxBusy(true);
+    window.API.safeCall(() => window.API.termContextApply(project.id,
+      { src: a.src, tgt: a.tgt, use: a.use, dry_run: false, segment_ids: [seg.id], include_confirmed: true }))
+      .then(res => {
+        setCtxBusy(false);
+        if (!res || !res.ok || !res.applied) { toast.error("Не удалось применить", (res && res.error) || "Сервер отказал — обновите страницу."); return; }
+        const now = draft.split(a.tgt).join(a.use);
+        setDraft(now);
+        store.updateSegment(project.id, seg.id, { target: now, status: "review", ctxAdvice: null,
+          termCtxApplied: { src: a.src, tgt: a.tgt, use: a.use, from: seg.target, by: "human" } });
+        toast.success("Подставлено: " + a.use,
+          "Проверки устарели вместе с текстом — сегмент пойдёт в ближайший прогон. Запись глоссария не тронута.");
+      });
+  };
+
   const acceptRepair = () => {
     if (acceptBusy || !window.API) return;
     setAcceptBusy(true);
@@ -304,6 +326,29 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
               React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
                 (seg.termcheck.model === "skip" ? "без вызова модели" : seg.termcheck.model || "")
                 + (seg.termcheck.at ? " · " + seg.termcheck.at : "")))),
+
+    /* Совет арбитра, который есть чем исполнить. Стоит ОТДЕЛЬНОЙ карточкой,
+       а не подсказкой при наведении: подсказку не видно и не нажать, а тут
+       готовое решение в один клик. Жёлтая полоса — это спор с глоссарием,
+       и человеку сказано, что запись не трогается. */
+    (seg.ctxAdvice || []).length > 0 && React.createElement("div",
+      { className: "tm-pop", style: { marginTop: 8, borderLeft: "3px solid var(--c-warning)" } },
+      React.createElement("span", { className: "label", style: { margin: 0, color: "var(--c-warning)" } },
+        "Арбитр: термин здесь передан неверно"),
+      seg.ctxAdvice.map((a, i) => React.createElement("div", { key: i, style: { marginTop: 6 } },
+        React.createElement("div", { style: { fontSize: 13, lineHeight: 1.6 } },
+          a.src + " · в тексте: ", React.createElement("b", null, a.tgt),
+          " → здесь верно: ", React.createElement("b", { style: { color: "var(--c-success)" } }, a.use)),
+        a.why && React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.5 } }, a.why),
+        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check", style: { marginTop: 4 },
+          disabled: ctxBusy, onClick: () => applyAdvice(a) },
+          ctxBusy ? "Подставляем…" : "Применить в этом сегменте"))),
+      React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 6 } },
+        "Меняется только эта строка; запись глоссария остаётся. Все сегменты с тем же советом — на «Анализе».")),
+    seg.termCtxApplied && React.createElement("div",
+      { style: { fontSize: 12.5, color: "var(--c-success)", marginTop: 6 } },
+      "Совет арбитра применён: " + seg.termCtxApplied.tgt + " → " + seg.termCtxApplied.use
+      + (seg.termCtxApplied.at ? " · " + seg.termCtxApplied.at : "")),
 
     /* Доказательство отмены заверения. Стоит ВЫШЕ карточки ремонта и красным:
        машина отменила решение человека, и он должен увидеть, за что именно,

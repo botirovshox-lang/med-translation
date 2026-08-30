@@ -268,6 +268,8 @@
        вопрос «правильно ли передан термин ЗДЕСЬ» без ряда не решается.
        Платный, поэтому с потолком; вердикт кэшируется на сегменте. */
     termContext:   (pid, body)               => call("POST",   `/projects/${pid}/term-context`, body || {}),
+    termContextApply: (pid, body)            => call("POST",   `/projects/${pid}/term-context/apply`, body || {}),
+    termContextUndo:  (pid, stamp)           => call("POST",   `/projects/${pid}/term-context/apply/${stamp}/undo`, {}),
     /* Разбор вариантов НА ЯЗЫКЕ ОРИГИНАЛА: обратный перевод, значение и область
        употребления по каждому. Для тех, кто целевого языка не знает: сравнивать
        нужно смысл, написанный понятным языком, а не строки. Вызов платный. */

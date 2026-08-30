@@ -170,6 +170,25 @@ check([w["src"] for w in a["human"]["termContextWrong"]] == ["туберкулё
 check(a["human"]["termContextWrong"][0]["use"] == "lung tuberculosis",
       "вместе с готовым вариантом")
 
+# 3b'. Совет исполняется одним нажатием — по строке, без модели и без правки записи.
+adv = main._segment_for_client(seg).get("ctxAdvice") or []
+check([x["use"] for x in adv] == ["lung tuberculosis"],
+      "признак для кнопки считает сервер: совет есть чем исполнить")
+body = main.TermContextApplyRequest(src="туберкулёз лёгких", tgt=adv[0]["tgt"], use="lung tuberculosis")
+r = main.apply_term_context(1, body)
+check(r["dryRun"] and r["matched"] == 1 and r["applied"] == 0, "dry_run по умолчанию ничего не меняет")
+was_target = seg["target"]
+r = main.apply_term_context(1, main.TermContextApplyRequest(src="туберкулёз лёгких", tgt=adv[0]["tgt"],
+                                                            use="lung tuberculosis", dry_run=False))
+check(r["applied"] == 1 and "lung tuberculosis" in seg["target"] and adv[0]["tgt"].lower() not in seg["target"].lower(),
+      "подставлено буквально, утверждённый вариант из строки ушёл")
+check(seg["status"] == "review" and seg["termCtxApplied"]["from"] == was_target,
+      "сегмент — на проверку человеку, прежний текст сохранён")
+check(not main._segment_for_client(seg).get("ctxAdvice"), "совет исполнен — кнопки больше нет")
+u = main.undo_apply_term_context(1, r["stamp"])
+check(u["restored"] == [seg["id"]] and seg["target"] == was_target and "termCtxApplied" not in seg,
+      "откат по метке возвращает текст")
+
 # 3c. Корпус целевого языка накладывает вето БЕСПЛАТНО.
 proj, seg = build("Очаговый туберкулёз лёгких у взрослых.",
                   "Focal pulmonary tuberculosis in adults.",

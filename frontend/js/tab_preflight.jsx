@@ -84,6 +84,32 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
       });
   };
 
+  /* «Применить к N сегм.» — по строке, а не по записи: глоссарий не трогается.
+     Сначала dry_run — сервер называет число и заверенных, потом применяем. */
+  const [ctxBusy, setCtxBusy] = useState(false);
+  const applyAdvice = (d) => {
+    if (!window.API || ctxBusy) return;
+    setCtxBusy(true);
+    const body = { src: d.src, tgt: d.tgt, use: d.use };
+    window.API.safeCall(() => window.API.termContextApply(store.activeProject.id, { ...body, dry_run: true }))
+      .then(r => {
+        if (!r || !r.ok) { setCtxBusy(false); toast.error("Не удалось посчитать", (r && r.error) || ""); return null; }
+        if (!r.matched) { setCtxBusy(false); toast.info("Применять нечего", "в " + r.skippedConfirmed.length + " заверенных сегм. не трогаем"); return null; }
+        const ok = window.confirm("Подставить «" + d.use + "» вместо «" + d.tgt + "» в " + r.matched + " сегм.?\n"
+          + (r.skippedConfirmed.length ? "Заверенных человеком не трогаем: " + r.skippedConfirmed.length + "\n" : "")
+          + "Запись глоссария не меняется. Проверки этих сегментов устареют до ближайшего прогона. Откат — по метке.");
+        if (!ok) { setCtxBusy(false); return null; }
+        return window.API.safeCall(() => window.API.termContextApply(store.activeProject.id, { ...body, dry_run: false }));
+      })
+      .then(r => {
+        if (!r) return;
+        setCtxBusy(false);
+        if (!r.ok) { toast.error("Не удалось применить", r.error || ""); return; }
+        toast.success("Подставлено в " + r.applied + " сегм.", "Откат — по метке " + (r.stamp || "—"));
+        if (onReload) onReload();
+      });
+  };
+
   const arbPending = s.human.termContextPending || 0;
   const arbWrong = s.human.termContextWrong || [];
   const askArbiter = () => {
@@ -301,12 +327,15 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
           "div", { key: i },
           d.src + " → ", React.createElement("b", { style: { color: "var(--c-primary)" } }, d.tgt),
           d.use ? [" · здесь верно: ", React.createElement("b", { key: "u", style: { color: "var(--c-success)" } }, d.use)] : "",
-          (d.why ? " · " + d.why : "") + " · сегментов: " + d.segments.length)),
+          (d.why ? " · " + d.why : "") + " · сегментов: " + d.segments.length,
+          d.use && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check",
+            style: { marginLeft: 8 }, disabled: ctxBusy, onClick: () => applyAdvice(d) },
+            "Применить к " + d.segments.length + " сегм."))),
         arbWrong.length > DISPUTE_CAP && React.createElement(
           "div", null, "и ещё " + (arbWrong.length - DISPUTE_CAP) + " записей"),
         React.createElement("div", { style: { paddingTop: 6 } },
-          "Правьте саму запись в «Глоссарии» — расчёт соответствия сам приведёт в порядок все затронутые сегменты. "
-          + "Ремонту это не отдаётся намеренно: подстановка варианта, отличного от утверждённого, нарушила бы приказ и была бы откачена.")),
+          "«Применить» подставляет вариант арбитра только в эти строки — запись глоссария остаётся, и в остальных местах документа она продолжает действовать. "
+          + "Если неверна сама запись — правьте её в «Глоссарии», расчёт соответствия приведёт в порядок все затронутые сегменты.")),
       s.human.terms.length > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.6, paddingTop: 10, borderTop: "1px solid var(--border)" } },
         "Почему термины остались человеку: ",
         s.human.terms.slice(0, 4).map(t => t.count + "× " + t.reason).join(" · "))));

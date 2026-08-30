@@ -1347,6 +1347,60 @@ def _usage_add(bucket: dict, step: str, mid: str, tin: int, cached: int,
             d["cost"] = round(d["cost"] + cost, 6)
 
 
+# ─── Расход и лимит по организации ───────────────────────────────────
+# Факт расхода уже снимается с каждого ответа модели; здесь он ещё и
+# складывается по организации и месяцу (`STATE["spend"][tenant][YYYY-MM]`).
+# Лимит (`tenant["limitUsd"]`, ставит суперпользователь) режет ДЕНЬГИ, а не
+# работу: платные команды отвечают 402 с остатком и датой сброса, а всё
+# бесплатное — правка начертания, откат правок ремонта, пересчёт back-check,
+# принятие кандидатов, разбор состава, экспорт — работает и на исчерпанном
+# лимите. Иначе лимит превращается в «сервис сломался», и человек не может
+# забрать то, за что уже заплатил. Цена неизвестна — в расход не идёт
+# (считается `unpriced`), потому что неизвестное, посчитанное нулём, — это
+# расход меньше настоящего, а посчитанное наугад — отказ по выдуманному числу.
+def _month_key() -> str:
+    return datetime.now().strftime("%Y-%m")
+
+
+def _spend_add(tenant: str, cost: Optional[float]) -> None:
+    sp = STATE.setdefault("spend", {}).setdefault(tenant or DEFAULT_TENANT, {})
+    m = sp.setdefault(_month_key(), {"usd": 0.0, "calls": 0, "unpriced": 0})
+    m["calls"] += 1
+    if cost is None:
+        m["unpriced"] += 1
+    else:
+        m["usd"] = round(m["usd"] + cost, 6)
+
+
+def _tenant_rec(tid: str) -> Optional[dict]:
+    return next((t for t in _tenants() if t.get("id") == tid), None)
+
+
+def _spend_status(tenant: Optional[str] = None) -> dict:
+    t = tenant or _current_tenant()
+    m = (STATE.get("spend") or {}).get(t, {}).get(_month_key()) or {"usd": 0.0, "calls": 0, "unpriced": 0}
+    rec = _tenant_rec(t) or {}
+    limit = rec.get("limitUsd")
+    return {"tenant": t, "month": _month_key(), "spentUsd": round(m["usd"], 4),
+            "calls": m["calls"], "unpriced": m["unpriced"], "limitUsd": limit,
+            "over": bool(limit is not None and m["usd"] >= float(limit))}
+
+
+# Что стоит денег: платные команды по путям. Таблица здесь, а не флаг
+# на каждом обработчике — как `_OWNER_ONLY`: одна точка, забыть строку видно.
+_PAID = [
+    ("POST", re.compile(r"/api/projects/\d+/jobs$")),
+    ("POST", re.compile(r"/api/projects/\d+/(batch|extract-terms|term-context|termcheck/batch|backcheck/batch|images/scan)$")),
+    ("POST", re.compile(r"/api/segments/\d+/\d+/(translate|backcheck|termcheck|repair|medical-qa)$")),
+    ("POST", re.compile(r"/api/term-queue/\d+/explain$")),
+    ("POST", re.compile(r"/api/glossary/audit$")),
+]
+
+
+def _is_paid(method: str, path: str) -> bool:
+    return any(m == method and rx.match(path) for m, rx in _PAID)
+
+
 def _note_usage(step: str, model_id: str, resp) -> None:
     """Записать то, что посчитал провайдер, а не то, что мы предполагали."""
     try:
@@ -1364,6 +1418,7 @@ def _note_usage(step: str, model_id: str, resp) -> None:
             for bucket in (_USAGE_TOTAL, _USAGE_SINK):
                 if bucket is not None:
                     _usage_add(bucket, step, model_id, tin, cached, tout, think, cost)
+            _spend_add(_current_tenant(), cost)
     except Exception as e:
         print(f"[backend] учёт расхода не сработал ({step}/{model_id}): {e}", file=sys.stderr)
 
@@ -1898,6 +1953,14 @@ async def require_token(request: Request, call_next):
         if _owner_only(request.method, path) and sess.get("role") != "owner":
             return JSONResponse({"ok": False, "error": "Это действие доступно только владельцу организации"},
                                 status_code=403)
+        if _is_paid(request.method, path):
+            st = _spend_status(sess.get("tenant"))
+            if st["over"]:
+                return JSONResponse({"ok": False, "error":
+                    "Месячный лимит расхода организации исчерпан: $%.2f из $%.2f. Бесплатные команды "
+                    "(правка начертания, откаты, пересчёт, экспорт) работают; лимит сбрасывается "
+                    "1-го числа." % (st["spentUsd"], float(st["limitUsd"])), "spend": st},
+                    status_code=402)
         request.state.session = sess
         tok = CURRENT_SESSION.set(sess)
         try:
@@ -2249,7 +2312,8 @@ def auth_me(request: Request):
     tenant = next((t for t in _tenants() if t.get("id") == u.get("tenant")), None)
     return {"ok": True, "me": _user_public(u),
             "tenant": tenant or {"id": u.get("tenant", DEFAULT_TENANT), "name": ""},
-            "can": {"owner": u.get("role") == "owner", "super": bool(u.get("super"))}}
+            "can": {"owner": u.get("role") == "owner", "super": bool(u.get("super"))},
+            "spend": _spend_status(u.get("tenant"))}
 
 
 class UserCreate(BaseModel):
@@ -2339,6 +2403,44 @@ def admin_audit(request: Request, limit: int = 200, action: str = ""):
     return {"ok": True, "items": rows[:max(1, min(limit, 1000))]}
 
 
+class TenantPatch(BaseModel):
+    name: Optional[str] = None
+    active: Optional[bool] = None
+    limitUsd: Optional[float] = None      # 0 — запретить платное; None — оставить как есть
+    clearLimit: bool = False
+
+
+@app.post("/api/admin/tenants/{tid}")
+def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Лимиты и организации правит только суперпользователь")
+    rec = _tenant_rec(tid)
+    if not rec:
+        raise HTTPException(404, "Организация не найдена")
+    if req.name is not None:
+        rec["name"] = req.name.strip() or rec["name"]
+    if req.active is not None:
+        rec["active"] = bool(req.active)
+    if req.clearLimit:
+        rec.pop("limitUsd", None)
+    elif req.limitUsd is not None:
+        if req.limitUsd < 0:
+            raise HTTPException(400, "Лимит не может быть отрицательным")
+        rec["limitUsd"] = float(req.limitUsd)
+    _audit("tenant.update", tenant_target=tid, limitUsd=rec.get("limitUsd"))
+    save_state(STATE)
+    return {"ok": True, "tenant": rec, "spend": _spend_status(tid)}
+
+
+@app.get("/api/admin/tenants")
+def admin_tenants(request: Request):
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Список организаций — только суперпользователю")
+    return {"ok": True, "tenants": [dict(t, spend=_spend_status(t["id"])) for t in _tenants()]}
+
+
 class TenantCreate(BaseModel):
     id: str
     name: str
@@ -2386,6 +2488,7 @@ def get_seed():
     t = _current_tenant()
     public = {k: v for k, v in STATE.items() if k not in ("users", "tenants")}
     public.pop("audit", None)
+    public.pop("spend", None)
     for key in ("exportHistory", "termQueue", "autoBatches", "runCosts"):
         public[key] = [e for e in (STATE.get(key) or []) if _tenant_of(e) == t]
     return {**public, "projects": [_project_for_client(p) for p in _tenant_projects()],

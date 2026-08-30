@@ -149,6 +149,15 @@ function TabOrg({ store, toast }) {
     React.createElement("div", { className: "page-head" },
       React.createElement("h1", null, "Организация" + (info && info.tenant && info.tenant.name ? " · " + info.tenant.name : "")),
       React.createElement("p", { className: "lead" }, "Пользователи и словарь организации. Проекты, глоссарий и память переводов других организаций отсюда не видны.")),
+    info && info.spend && React.createElement("div", { className: "card card-pad", style: { marginBottom: 16, fontSize: 13 } },
+      React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, "Расход за " + info.spend.month),
+      React.createElement("div", { style: { fontWeight: 600, color: info.spend.over ? "var(--c-danger)" : undefined } },
+        "$" + Number(info.spend.spentUsd || 0).toFixed(2)
+        + (info.spend.limitUsd != null ? " из $" + Number(info.spend.limitUsd).toFixed(2) : " · лимит не задан")
+        + " · вызовов: " + info.spend.calls
+        + (info.spend.unpriced ? " · без цены: " + info.spend.unpriced : "")),
+      info.spend.over && React.createElement("div", { className: "dim", style: { marginTop: 4 } },
+        "Лимит исчерпан: платные прогоны отвечают отказом, бесплатные команды и экспорт работают. Лимит ставит администратор сервиса.")),
     React.createElement("div", { className: "col", style: { gap: 16 } },
       React.createElement(OrgUsers, { toast }),
       React.createElement(OrgGlossaryImport, { store, toast }),

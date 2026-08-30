@@ -585,37 +585,43 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
       plan === false && React.createElement("span", { className: "dim", style: { fontSize: 12.5 } },
         "разбор не получен — обновите страницу")),
     !plan && plan !== false && React.createElement("div", { className: "dim", style: { fontSize: 13 } }, "Считаем состав…"),
-    plan && (plan.steps || []).map(st => {
-      const row = est && est.byStep[st.step];
-      const pkey = STEP_MODEL_PARAM[st.step];
-      return React.createElement("div", { key: st.step, className: "row between",
-                                          style: { fontSize: 13, gap: 10, flexWrap: "wrap" } },
-        React.createElement("span", { className: "row", style: { gap: 8, alignItems: "center" } },
-          React.createElement("span", { style: { minWidth: 150 } }, st.label),
+    /* Шаги — СЕТКОЙ (.tk-grid в styles.css), а не флексом: у флекса текст
+       действующей модели сжимался до ширины одного слова и вставал столбиком,
+       а селектор судьи растягивался на всю строку. Четыре колонки — шаг,
+       выбор, действующая модель, состав·цена; ниже 720 px сетка складывается
+       в две, и строка занимает две линии вместо четырёх столбиков. */
+    plan && React.createElement("div", { className: "tk-grid" },
+      (plan.steps || []).map(st => {
+        const row = est && est.byStep[st.step];
+        const pkey = STEP_MODEL_PARAM[st.step];
+        return React.createElement(React.Fragment, { key: st.step },
+          React.createElement("span", { className: "tk-label" }, st.label),
           /* Модель шага — выбирается тут же, а не только в редакторе; пустой
              выбор = дефолт сервера, действующая модель названа рядом. У Medical
              QA селектора нет: своей модели у неё нет, обратный перевод она
              заказывает моделью back-check. */
           pkey && setMod
-            ? React.createElement(Select, { value: mm[pkey] || "", style: { fontSize: 12.5, padding: "2px 6px" },
+            ? React.createElement(Select, { className: "select tk-select", value: mm[pkey] || "",
                 onChange: (e) => setMod(pkey, e.target.value) },
                 React.createElement("option", { value: "" }, "по умолчанию"),
                 (cat && cat.models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label)))
-            : null,
-          React.createElement("span", { className: "dim" },
-            st.modelLabel ? "→ " + st.modelLabel + (st.step === "medical_qa" ? " (модель back-check)" : "") : "")),
-        React.createElement("span", { className: "dim", style: { fontVariantNumeric: "tabular-nums" } },
-          st.count + " сегм." + (row && row.cost != null && typeof fmtCost === "function"
-            ? " · ≈ " + fmtCost(row.cost) : "")));
-    }),
-    /* Судья — не шаг, а участник back-check и ремонта: своя строка с выбором. */
-    plan && setMod && React.createElement("div", { className: "row", style: { fontSize: 13, gap: 8, alignItems: "center" } },
-      React.createElement("span", { style: { minWidth: 150 } }, "судья"),
-      React.createElement(Select, { value: mm.judge_model || "", style: { fontSize: 12.5, padding: "2px 6px" },
-        onChange: (e) => setMod("judge_model", e.target.value) },
-        React.createElement("option", { value: "" }, "по умолчанию"),
-        (cat && cat.models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label))),
-      React.createElement("span", { className: "dim" }, "в back-check и перепроверке ремонта, с разрешением выше зоны")),
+            : React.createElement("span", { className: "dim tk-select" }, "модель back-check"),
+          React.createElement("span", { className: "dim tk-eff", title: st.modelLabel || "" },
+            st.modelLabel ? "→ " + st.modelLabel : ""),
+          React.createElement("span", { className: "dim tk-cost" },
+            st.count + " сегм." + (row && row.cost != null && typeof fmtCost === "function"
+              ? " · ≈ " + fmtCost(row.cost) : "")));
+      }),
+      /* Судья — не шаг, а участник back-check и ремонта: та же сетка. */
+      setMod && React.createElement(React.Fragment, { key: "judge" },
+        React.createElement("span", { className: "tk-label" }, "судья"),
+        React.createElement(Select, { className: "select tk-select", value: mm.judge_model || "",
+          onChange: (e) => setMod("judge_model", e.target.value) },
+          React.createElement("option", { value: "" }, "по умолчанию"),
+          (cat && cat.models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label))),
+        React.createElement("span", { className: "dim tk-eff", title: "в back-check и перепроверке ремонта, с разрешением выше зоны" },
+          "в back-check и ремонте, выше зоны"),
+        React.createElement("span", { className: "dim tk-cost" }, ""))),
     /* Модели, спорящие друг с другом по роли, — вслух и до нажатия. */
     plan && modelConflicts(plan, cat, mm).map((w, i) => React.createElement("div", { key: "w" + i,
       style: { fontSize: 12.5, color: "var(--c-warning)", lineHeight: 1.5 } }, "⚠ " + w)),

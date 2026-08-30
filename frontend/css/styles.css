@@ -776,3 +776,24 @@ tr.row-checked td { background: color-mix(in srgb, var(--c-primary) 8%, transpar
 .drill-metric:hover { box-shadow: 0 0 0 2px var(--c-primary); transform: translateY(-1px); }
 .drill-row { cursor: pointer; }
 .drill-row:hover td { background: var(--bg-hover) !important; }
+
+/* Панель «Перевести и доделать» (tab_preflight.jsx, RunPanel): шаги сеткой.
+   Флекс здесь ломался: подпись действующей модели сжималась до ширины одного
+   слова и вставала столбиком, а селектор судьи растягивался на всю строку.
+   Ниже 720 px четыре колонки складываются в две — строка занимает две линии. */
+.tk-grid { display: grid; grid-template-columns: minmax(110px, 150px) minmax(140px, 200px) minmax(0, 1fr) auto;
+           gap: 6px 12px; align-items: center; font-size: 13px; }
+.tk-grid .tk-label { min-width: 0; }
+.tk-grid .tk-select { width: 100%; min-width: 0; font-size: 12.5px; padding: 3px 28px 3px 8px; }
+.tk-grid .tk-eff { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tk-grid .tk-cost { white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) {
+  /* Две колонки и ПЛОТНАЯ раскладка: dense сажает подпись модели в дыру
+     рядом с названием шага, а цену — рядом с селектором. Без dense
+     курсор авторазмещения не возвращается назад, и шаг растягивался
+     бы на три строки с пустыми ячейками. */
+  .tk-grid { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; grid-auto-flow: row dense; }
+  .tk-grid .tk-select { grid-column: 1; }
+  .tk-grid .tk-eff { grid-column: 2; text-align: right; max-width: 45vw; }
+  .tk-grid .tk-cost { grid-column: 2; padding-bottom: 6px; }
+}

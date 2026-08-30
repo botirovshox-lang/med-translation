@@ -158,8 +158,21 @@ function estimateRun(kind, targets, model, opts) {
     tokOut = (srcChars / 3.5) * mult;
     cost = priceOf(model, tokIn, tokOut);
   } else if (kind === "backcheck") {
-    tokIn = n * 200 + tgtChars / 3.5;          // короткий промпт буквального перевода
-    tokOut = (tgtChars / 2.2) * mult;          // обратный перевод на язык оригинала
+    // Сегменты, которым нужен ТОЛЬКО судья, обратный перевод не покупают:
+    // он у них уже есть, и сервер берёт его готовым (reuse в
+    // _run_segment_backcheck — то же условие: проверка свежая, текст обратного
+    // перевода на месте, делал его не тот, кто переводил). Считать им полный
+    // back-check значило бы завысить смету вдвое на прогоне с разрешением
+    // judge_all: там таких большинство, и кнопка обещала «≈ $5.81» за
+    // работу, которой сервер не делает.
+    const judgeOnly = o.judge
+      ? targets.filter(s => s.backcheck && !s.backcheck.stale && s.backcheck.back
+          && s.backcheck.score != null && s.backcheck.model !== s.provider)
+      : [];
+    const buying = judgeOnly.length ? targets.filter(s => judgeOnly.indexOf(s) === -1) : targets;
+    const bChars = buying.reduce((a, s) => a + (s.target || "").length, 0);
+    tokIn = buying.length * 200 + bChars / 3.5; // короткий промпт буквального перевода
+    tokOut = (bChars / 2.2) * mult;             // обратный перевод на язык оригинала
     cost = priceOf(model, tokIn, tokOut);
     // Судья вызывается только в своей зоне и не вызывается при жёсткой находке.
     // У сегментов, которые уже проверялись, гадать не нужно: сервер посчитал

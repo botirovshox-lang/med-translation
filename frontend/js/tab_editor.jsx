@@ -162,7 +162,13 @@ function estimateRun(kind, targets, model, opts) {
     // сегменты, то есть на заголовки, которых в учебнике сотни.
     if (o.judge && o.judgeModel) {
       const known = targets.filter(s => s.backcheck && s.backcheck.score != null);
-      const jn = known.filter(s => s.backcheck.needs_judge).length
+      // judgeAll — прогон с разрешением судить и выше зоны: needs_judge
+      // сервер считает по ОБЫЧНОЙ зоне, и по нему смета не увидела бы ровно
+      // те бесспорные сегменты, ради которых разрешение дано. Несудимые
+      // с баллом — верхняя оценка (жёсткие отметки в ней тоже): завышенная
+      // смета честнее заниженной.
+      const jn = known.filter(s => o.judgeAll
+          ? !s.backcheck.judged : s.backcheck.needs_judge).length
         + (n - known.length) * JUDGE_SHARE;
       const jshare = n ? jn / n : 0;
       cost += priceOf(o.judgeModel, jn * 400 + (srcChars * jshare) / 1.1,

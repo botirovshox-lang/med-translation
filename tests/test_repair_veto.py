@@ -102,7 +102,7 @@ def stub_checks(score_after, findings_after, hard=False, judged=False, seen=None
 
     `seen` — куда сложить аргумент use_judge: на нём держится проверка 4.
     """
-    def fake_bc(s, p, model=None, use_judge=False, judge_model=None, harvest=True):
+    def fake_bc(s, p, model=None, use_judge=False, judge_model=None, harvest=True, **kw):
         if seen is not None:
             seen.append(use_judge)
         s["backcheck"] = {"score": score_after, "model": "gpt-5.6-luna",

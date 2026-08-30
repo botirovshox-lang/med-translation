@@ -96,8 +96,17 @@ src_all = open("backend/main.py", encoding="utf-8").read()
 # judge_after, а не use_judge: судья зовётся ещё и тогда, когда он участвовал
 # в ПРЕЖНЕЙ оценке, — иначе вердикт сравнивается с сырым измерением
 # (см. test_repair_veto.py). harvest=False при этом обязателен по-прежнему.
-check("_run_segment_backcheck(seg, project, bc_model, judge_after, judge_model, harvest=False)" in src_all,
+# Сверяем по СЖАТЫМ пробелам: вызов не помещается в строку, и требовать
+# конкретной вёрстки значит ронять тест на переносе, а не на смысле.
+_flat = _re.sub(r"\s+", " ", src_all)
+check("_run_segment_backcheck(seg, project, bc_model, judge_after, judge_model, "
+      "harvest=False, judge_all=judge_all)" in _flat,
       "ремонт зовёт back-check с harvest=False")
+# judge_all обязан доехать и до перепроверки: прежний балл в прогоне
+# с разрешением мог сложиться с участием судьи ВЫШЕ обычной зоны, и без
+# флага сравнивались бы вердикт и сырое измерение — та же асимметрия,
+# ради которой заведён judge_after.
+check("judge_all=judge_all" in _flat, "и с judge_all — судья с обеих сторон")
 check("_run_segment_termcheck(seg, project, tc_model, harvest=False)" in src_all,
       "ремонт зовёт termcheck с harvest=False")
 

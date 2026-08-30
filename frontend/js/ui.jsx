@@ -2,7 +2,13 @@
    Shared UI kit — Icon, Btn, Badge, inputs, Modal, Toast, etc.
    Exposes components on window for cross-file use.
    ============================================================ */
-const { useState, useEffect, useRef, useCallback, createContext, useContext } = React;
+/* Хуки достаются ОТСЮДА и раздаются всем .jsx: сборки нет, файлы грузятся
+   как есть, и хук, забытый в этой строке, роняет экран целиком —
+   ReferenceError при первом же рендере, то есть белая страница. Тесты этого
+   не ловят: они объявляют свои заглушки хуков сами. Сторожит строку
+   tests/test_editor_render.js («все хуки объявлены»). */
+const { useState, useEffect, useRef, useMemo, useCallback,
+        createContext, useContext } = React;
 
 /* ---------- Icons (functional line icons, 24x24 stroke) ---------- */
 const ICONS = {

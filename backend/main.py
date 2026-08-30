@@ -931,7 +931,7 @@ def _bc_version() -> int:
         return 0
 
 
-def _judge_zone(source: str) -> tuple:
+def _judge_zone(source: str, judge_all: bool = False) -> tuple:
     """Зона вызова судьи для КОНКРЕТНОГО сегмента.
 
     Низ шкалы закрыт потому, что там решение уже принято детерминированной
@@ -944,8 +944,22 @@ def _judge_zone(source: str) -> tuple:
 
     Верх не двигаем: выше 97 спорить не о чем при любой длине.
     Жёсткая находка (числа, единицы, отрицание) судью по-прежнему отменяет —
-    её он не вправе отменить, и проверяется она отдельно от зоны."""
+    её он не вправе отменить, и проверяется она отдельно от зоны.
+
+    `judge_all` — разовое разрешение прогона поднять ВЕРХ до предела: балл
+    выше потолка означает лишь, что довольны детерминированные проверки,
+    а смысл при этом не читал никто — там и живёт «беглое неверное слово»
+    (monostable, sanguiferous), у которого другой меры нет. Низ разрешение
+    не открывает: ниже низа решение уже вынесено, и спорить не о чем.
+
+    Потолок разрешения живёт ЗДЕСЬ и только здесь. Раньше `hi = 100` стояло
+    отдельными строками у каждого спрашивающего, а зона — это правило, у
+    которого обязано быть одно место: разойдись копии (например, когда
+    потолок разрешения станет ниже 100 или переедет в окружение), разбор
+    обещал бы один состав, а прогон делал другой."""
     lo, hi = JUDGE_ZONE
+    if judge_all:
+        hi = 100
     return (0, hi) if _lex_blind(source) else (lo, hi)
 
 # У судьи СВОЯ модель, отдельная от модели обратного перевода, и это намеренно:
@@ -2271,17 +2285,31 @@ def project_analysis(pid: int, refresh: bool = False):
     # тексту другой моделью даёт тот же target_hash и другой балл, и по одним
     # хешам экран показал бы доперегонные цифры.
     checks = "".join(
-        "%s:%s|%s:%s|%s:%s;" % (
+        "%s:%s|%s:%s|%s:%s|%s|%s;" % (
             (s.get("backcheck") or {}).get("target_hash", ""),
             # Балла мало: пересчёт правил может оставить балл прежним (ноль
             # и до, и после клампа), а список претензий поменять — корзины
             # findings и weak тогда остались бы докоррекционными.
-            "%s/%s" % ((s.get("backcheck") or {}).get("score", ""),
-                       len((s.get("backcheck") or {}).get("terms_lost") or ())),
+            # judged — тоже: судья не меняет ни хеш, ни (при «severity: none»
+            # с высоким баллом) сам балл, а корзину «возьмёт прогон» меняет.
+            "%s/%s/%s" % ((s.get("backcheck") or {}).get("score", ""),
+                          len((s.get("backcheck") or {}).get("terms_lost") or ()),
+                          1 if (s.get("backcheck") or {}).get("judged") else 0),
             (s.get("termcheck") or {}).get("target_hash", ""),
             len((s.get("termcheck") or {}).get("findings") or ()),
             (s.get("repair") or {}).get("source_hash", ""),
-            (s.get("repair") or {}).get("applied", ""))
+            (s.get("repair") or {}).get("applied", ""),
+            # Medical QA и вердикт арбитра в отпечатке обязательны: корзины
+            # qaCritical и termContext* считаются по ним, а прогоны этих
+            # проверок не меняют ни текст, ни статус — на прежнем отпечатке
+            # экран навсегда показывал бы доперегонные цифры.
+            "%s/%s/%s" % ((s.get("qa_result") or {}).get("target_hash", ""),
+                          s.get("risk_color") or "",
+                          len(s.get("qa_issues") or ())),
+            "%s/%s/%s/%s" % ((s.get("termContext") or {}).get("target_hash", ""),
+                             (s.get("termContext") or {}).get("version", ""),
+                             1 if (s.get("termContext") or {}).get("all_terms") else 0,
+                             1 if s.get("confirmWithdrawn") else 0))
         for s in project["segments"])
     fp = (_impact_fingerprint(project) + "|" + str(len(q)) + "|"
           + str(sum(1 for c in q if c.get("status", "pending") == "pending"))
@@ -2331,6 +2359,26 @@ def project_analysis(pid: int, refresh: bool = False):
     # худшая из здешних ошибок. Со множеством он в худшем случае окажется
     # в «оценке ниже порога»: видно и слегка неверно вместо не видно и совсем.
     repaired_set: set = set()
+    # ── Сырьё для трёх корзин «под ключ» (см. сборку ниже, turnkey) ──────
+    # Судья ещё не смотрел, считая по расширенной зоне (judge_all): эту
+    # недостачу закрывает прогон с разрешением, а не человек.
+    judge_ext: set = set()
+    # Находки есть, но ремонт с retry=False сюда не пойдёт (совпавший
+    # отпечаток захода) — дальше только человек или другая модель.
+    clamped_ids: set = set()
+    # Подтверждённые с ОБЪЕКТИВНОЙ находкой: ремонт возьмёт их и без галочки
+    # (_confirm_override), то есть это работа машины, а не вопрос человеку.
+    override_ids: set = set()
+    # Снятое машиной заверение, которое человек ещё не пересмотрел
+    # (статус так и не confirmed) — вопрос к человеку, пока он не закрыт.
+    withdrawn_open: set = set()
+    # Подтверждённые с критической находкой Medical QA. Единственное место,
+    # где они были видны, — вкладка «Замечания»; корзины /analysis qa_issues
+    # не читали вовсе, и удаление вкладки спрятало бы их отовсюду.
+    qa_critical: list = []
+    # Заверенные человеком — нужны корзинам: без явного разрешения прогон их
+    # не переписывает, значит обещать «машина доделает» про них нельзя.
+    confirmed_ids: set = set()
     # Расхождения с глоссарием берём из отчёта, а не считаем заново: там тот же
     # расчёт на весь проект и он кэширован. Вызов _repair_findings с project
     # гонял бы _get_context на каждый сегмент — 10 секунд CPU единственного
@@ -2345,15 +2393,44 @@ def project_analysis(pid: int, refresh: bool = False):
             continue
         if s.get("confirmWithdrawn"):
             withdrawn.append(s["id"])
+            if s.get("status") != "confirmed":
+                withdrawn_open.add(s["id"])
         _bc = s.get("backcheck") or {}
-        if _bc and not _check_stale(_bc, target) and not _bc.get("judged"):
+        # Свежесть считаем ОДИН раз: это sha1 перевода, а ниже её спрашивают
+        # обе ветки — и «никто не проверял», и расширенная зона судьи.
+        _bc_fresh = bool(_bc) and not _check_stale(_bc, target)
+        if _bc_fresh and not _bc.get("judged"):
             _sc = _bc.get("score")
             if _lex_blind(s.get("source") or ""):
                 unjudged_blind.append(s["id"])
             elif _sc is not None and _sc > JUDGE_ZONE[1]:
                 unverified.append(s["id"])
+        # Расширенная зона (judge_all=True): прогон с разрешением спросит
+        # судью и здесь. Свежесть проверяется отдельно — _judge_pending про
+        # неё не знает, а вердикт по прежнему тексту недостачей не считается:
+        # сам перевод сначала перепроверит back-check (корзина unchecked).
+        if _bc_fresh and _judge_pending(s, above=True):
+            judge_ext.add(s["id"])
+        if s.get("status") == "confirmed":
+            confirmed_ids.add(s["id"])
+            _qa = s.get("qa_result") or {}
+            _hardqa = any((i.get("severity") or i.get("sev")) in
+                          ("critical", "high", "major")
+                          for i in (s.get("qa_issues") or ()))
+            # Только свежий результат: устаревший пересчитает шаг Medical QA
+            # ближайшего прогона, и находка либо подтвердится, либо снимется.
+            if (_hardqa or s.get("risk_color") == "red") and _qa \
+                    and not _check_stale(_qa, target):
+                qa_critical.append(s["id"])
         rp = s.get("repair") or {}
-        open_findings = _repair_findings(s) or (
+        # Настоящие находки держим отдельно от `open_findings`: у второго
+        # бывает фолбэк-заглушка `[{"kind": "gloss"}]` без ключа `text`,
+        # и отпечатку захода её отдавать нельзя. А сам список нужен ниже
+        # `_repair_clamped`, чтобы тот не считал то же самое второй раз:
+        # на боевом проекте это лишние полсекунды единственного воркера
+        # при каждом открытии экрана.
+        rp_findings = _repair_findings(s)
+        open_findings = rp_findings or (
             [{"kind": "gloss"}] if s["id"] in gloss_bad else [])
         if rp.get("applied") and _repair_tried(s):
             repaired.append(s["id"])
@@ -2377,9 +2454,16 @@ def project_analysis(pid: int, refresh: bool = False):
         # нечего делать, а потому, что решение принимает человек.
         if open_findings and s.get("status") != "confirmed":
             findings.append(s["id"])
+            # Тот же предикат, что у _plan_step с retry=False: совпавший
+            # отпечаток захода прогон не берёт — это работа человека.
+            if _repair_clamped(s, rp_findings):
+                clamped_ids.add(s["id"])
         elif open_findings:
             confirmed_findings.append(s["id"])
             conf_set.add(s["id"])
+            # Объективная находка сильнее заверения: таких ремонт берёт сам.
+            if _confirm_override(s):
+                override_ids.add(s["id"])
         # Корзины обязаны быть исчерпывающими: сегмент, не попавший ни в одну,
         # исчезает с экрана, и картина выглядит благополучнее, чем есть.
         why = _machine_clean(s, pol["backcheck_min"])
@@ -2528,6 +2612,77 @@ def project_analysis(pid: int, refresh: bool = False):
             stale_bad.setdefault(sid, []).append(was)
     stale_findings = sorted(stale_bad)
 
+    # Разнобой по документу — один раз: он нужен и корзинам «под ключ»,
+    # и списку todo.consistency, а считается кэшированным проходом.
+    consist_pairs = _consistency_of(project)
+
+    # ── Три корзины «под ключ»: готово / возьмёт прогон / нужен человек ──
+    # Пользователю, которому нужен перевод под ключ, экран обязан отвечать
+    # на один вопрос тремя числами, и числа обязаны сходиться с total:
+    # сегмент, не попавший ни в одну корзину, исчез бы с экрана.
+    #
+    # Правила раздачи:
+    #   • «нужен человек» — то, что прогон НЕ решает ПО ПОСТРОЕНИЮ: заверено
+    #     человеком и без объективной находки (ремонт не тронет), спор проверки
+    #     с приказной записью, вердикт арбитра о записи, забракованное слово
+    #     в тексте, снятое заверение, откаченные и заклеймлённые ремонтом,
+    #     «ремонт уже не берёт» (futile), слабый балл после судьи, критика
+    #     Medical QA на подтверждённом. Приоритет у этой корзины: если сегмент
+    #     прогон и возьмёт (освежить проверку), находку это не закроет,
+    #     и обещание «машина доделает» было бы враньём.
+    #   • «возьмёт прогон» — то, что берут шаги _plan_step с параметрами
+    #     кнопки (use_judge=True, judge_all=True, retry=False): не переведено,
+    #     не проверено, находки для ремонта, расхождения с глоссарием,
+    #     разнобой, судья (в зоне, ниже зоны у коротких, выше зоны
+    #     по judge_all) — плюс начертание, которое чинит бесплатная команда
+    #     той же кнопки.
+    #   • «готово» — остаток. Остатком, а не повторением предикатов clean/
+    #     repaired/nothingToCheck: разойдись копии, сегмент исчез бы с экрана
+    #     совсем, а так он в худшем случае виден в не той корзине.
+    human_set: set = set()
+    human_set.update(i for i in confirmed_findings if i not in override_ids)
+    human_set.update(impact["confirmed"])
+    human_set.update(qa_critical)
+    human_set.update(i for d in disputed for i in d["segments"])
+    human_set.update(stale_findings)
+    human_set.update(withdrawn_open)
+    human_set.update(i for d in ctx_wrong for i in d["segments"])
+    human_set.update(reverted)
+    human_set.update(impact.get("futile") or ())
+    human_set.update(clamped_ids)
+    # Слабый балл, который судья уже не поднимет (смотрел либо не позовут), —
+    # читать глазами. Тот, куда судья ещё придёт, — работа прогона.
+    human_set.update(w["id"] for w in weak if w["id"] not in judge_ext)
+
+    # Разнобой у ЗАВЕРЕННОГО сегмента — работа человека, а не прогона.
+    # Ловится это только здесь: `_repair_findings` в /analysis зовётся БЕЗ
+    # проекта (ради скорости), а `_consist_misses` без проекта возвращает
+    # пусто — то есть в `confirmed_findings` такой сегмент не попадает и сам
+    # в human_set не уходит. Прогон же идёт с include_confirmed=False и его
+    # пропускает: оставь его машине — и корзина «возьмёт прогон» держала бы
+    # число, которое не осушится никогда. Исключение — объективная находка
+    # (`override_ids`): такие ремонт берёт и без разрешения.
+    _consist_ids = {i for p in consist_pairs for i in p["segments"]}
+    _consist_human = (_consist_ids & confirmed_ids) - override_ids
+    human_set.update(_consist_human)
+
+    machine_set: set = set(untranslated)
+    machine_set.update(unchecked)
+    machine_set.update(findings)
+    machine_set.update(override_ids)
+    machine_set.update(impact["pending"])
+    machine_set.update(_consist_ids)
+    # caseSegments заверенных сюда попадают, но human_set их уже забрал:
+    # фолбэк `[{"kind": "gloss"}]` по `gloss_bad` заводит их в
+    # `confirmed_findings` выше. Вычитание ниже и есть страховка от того,
+    # что это когда-нибудь перестанет быть правдой.
+    machine_set.update(impact.get("caseSegments") or ())
+    machine_set.update(judge_ext)
+    machine_set -= human_set
+
+    _order = [s["id"] for s in project["segments"]]
+    ready_set = set(_order) - human_set - machine_set
+
     # Что автоодобрение разложило бы прямо сейчас — тем же движком, что и кнопка,
     # иначе цифра на экране разошлась бы с тем, что произойдёт по нажатию.
     pending = [c for c in _term_queue() if c.get("status", "pending") == "pending"
@@ -2544,6 +2699,23 @@ def project_analysis(pid: int, refresh: bool = False):
     result = {
         "ok": True,
         "total": len(project["segments"]),
+        # Три корзины «под ключ» (см. сборку выше). Порядок — документа.
+        # params — единственный источник параметров для кнопки «Перевести
+        # и доделать»: состав machine считан ПОД НИХ, и запуск с другими
+        # оставил бы число недостижимым (например, без judge_all корзину
+        # держали бы сегменты выше зоны судьи, к которым судья не придёт).
+        "turnkey": {
+            "ready": [i for i in _order if i in ready_set],
+            "machine": [i for i in _order if i in machine_set],
+            "human": [i for i in _order if i in human_set],
+            # Начертание приказных терминов: чинится бесплатной командой
+            # /term-case, кнопка предлагает её отдельной галочкой.
+            "case": [i for i in (impact.get("caseSegments") or ())
+                     if i not in human_set],
+            "params": {"steps": list(FULL_RUN_STEPS), "use_judge": True,
+                       "judge_all": True, "retry": False,
+                       "include_confirmed": False},
+        },
         "clean": clean,
         "repaired": repaired,
         # Готовность БЕЗ двойного счёта. `clean` и `repaired` считаются
@@ -2583,6 +2755,10 @@ def project_analysis(pid: int, refresh: bool = False):
             "staleFindings": stale_findings,
             "staleFindingWords": [{"id": k, "words": v[:3]}
                                   for k, v in sorted(stale_bad.items())][:20],
+            # Подтверждённые с критической находкой Medical QA. Раньше их
+            # показывала только вкладка «Замечания» — с её уходом это
+            # единственное место, где такую находку видно.
+            "qaCritical": qa_critical,
         },
         "todo": {"untranslated": untranslated, "unchecked": unchecked,
                  "findings": findings, "glossaryPending": impact["pending"],
@@ -2597,7 +2773,7 @@ def project_analysis(pid: int, refresh: bool = False):
                  "consistency": [
                      {"was": p["was"], "want": p["want"], "why": p["why"],
                       "segments": p["segments"], "already": p["already"]}
-                     for p in _consistency_of(project)],
+                     for p in consist_pairs],
                  "weakWhy": sorted(
                      ({"reason": r, "count": sum(1 for w in weak if w["why"] == r)}
                       for r in {w["why"] for w in weak}),
@@ -6361,7 +6537,7 @@ def _hard_mark_trusted(bc: dict) -> bool:
                             for h in BACKCHECK_OBJECTIVE_REASONS))
 
 
-def _judge_pending(seg: dict) -> bool:
+def _judge_pending(seg: dict, above: bool = False) -> bool:
     """Судья ещё не смотрел на ЭТОТ перевод, и его вердикт что-то изменит.
 
     Один предикат на всех, кто задаёт этот вопрос: состав прогона
@@ -6377,21 +6553,36 @@ def _judge_pending(seg: dict) -> bool:
     (`_judge_zone`), и записанный отказ мог быть вынесен по прежней, узкой
     шкале. Поэтому зону считаем заново, а не верим отметке. «Молчание судьи»
     (`failed`) законченной проверкой тоже не считается — спросить ещё раз
-    правильно, и теперь это дёшево: обратный перевод берётся готовым."""
+    правильно, и теперь это дёшево: обратный перевод берётся готовым.
+
+    `above=True` — разовое разрешение звать судью и ВЫШЕ потолка зоны
+    (`judge_all` у прогона): балл выше 97 означает лишь, что детерминированные
+    проверки довольны, а смысл при этом не читал никто — именно там живёт
+    «беглое неверное слово» (monostable, sanguiferous), у которого другой
+    меры нет. Это параметр ЗАПУСКА, а не новая политика: по умолчанию верх
+    зоны стоит где стоял, а решение с прямой ценой принимает человек кнопкой,
+    на которой цена написана. Сам потолок разрешения живёт в `_judge_zone` —
+    здесь только передаём флаг. НИЗ зоны разрешение не открывает: ниже низа
+    детерминированная проверка уже вынесла решение, и спорить там не о чем.
+    Жёсткую отметку (числа, единицы, отрицание) оно тоже не обходит — её
+    судья не вправе отменить ни в какой зоне."""
     bc = seg.get("backcheck") or {}
     score = bc.get("score")
     if score is None or bc.get("judged"):
         return False
     if bc.get("judge_skipped") == "hard" and _hard_mark_trusted(bc):
         return False
-    lo, hi = _judge_zone(seg.get("source") or "")
+    lo, hi = _judge_zone(seg.get("source") or "", above)
     return lo <= score <= hi
 
 
-def _backcheck_cached(seg: dict, mdl_id: str, use_judge: bool) -> bool:
+def _backcheck_cached(seg: dict, mdl_id: str, use_judge: bool,
+                      judge_all: bool = False) -> bool:
     """Сегмент уже проверен ЭТИМ переводом — считать нечего.
     Судья вне своей зоны не вызывается, поэтому сегмент за её границами полный
     даже без judged: иначе включённый судья гнал бы весь проект заново.
+    `judge_all` — разрешение этого прогона звать судью и выше зоны
+    (см. `_judge_pending`): с ним сегмент с баллом 98 без вердикта — работа.
 
     Модель здесь НЕ сравнивается, в отличие от termcheck, и это не упущение.
     У обратного перевода нет шкалы «сильнее — лучше»: ему нужна максимально
@@ -6423,7 +6614,7 @@ def _backcheck_cached(seg: dict, mdl_id: str, use_judge: bool) -> bool:
         return False
     if not use_judge or bc.get("judged"):
         return True
-    return not _judge_pending(seg)
+    return not _judge_pending(seg, judge_all)
 
 
 def _segment_for_client(seg: dict) -> dict:
@@ -6792,10 +6983,11 @@ def _backcheck_model(seg: dict, requested: Optional[str]) -> str:
 
 def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None,
                            use_judge: bool = False, judge_model: Optional[str] = None,
-                           harvest: bool = True) -> dict:
+                           harvest: bool = True, judge_all: bool = False) -> dict:
     """Обратный перевод сегмента + оценка соответствия оригиналу.
     Результат кладётся в seg['backcheck'] вместе с хешем перевода — по нему
-    повторный прогон понимает, что пересчитывать нечего."""
+    повторный прогон понимает, что пересчитывать нечего.
+    `judge_all` — разрешение этого прогона звать судью и выше зоны."""
     target_text = (seg.get("target") or "").strip()
     if not target_text:
         return {"ok": False, "error": "Сегмент ещё не переведён"}
@@ -6814,7 +7006,7 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
     have = seg.get("backcheck") or {}
     reuse = bool(use_judge and (have.get("back") or "").strip()
                  and _backcheck_cached(seg, mdl_id, False)
-                 and not _backcheck_cached(seg, mdl_id, True))
+                 and not _backcheck_cached(seg, mdl_id, True, judge_all))
     back = ""
     if reuse:
         back = have["back"]
@@ -6857,9 +7049,12 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
         domain=project.get("domain"), src_lang=project.get("src", "RU")) if medical_qa_mod else {})
 
     # Судья — только для средней зоны: наверху и внизу шкалы вопрос уже решён.
+    # `judge_all` открывает ВЕРХ (потолок считает сам `_judge_zone`): выше
+    # потолка вопрос решён только детерминированно, а смысл там не читал
+    # никто. Низ закрыт и с разрешением — там решение настоящее.
     judged, judge_skipped = False, None
     if use_judge and medical_qa_mod and res.get("score") is not None:
-        lo, hi = _judge_zone(source_text)
+        lo, hi = _judge_zone(source_text, judge_all)
         if not (lo <= res["score"] <= hi):
             judge_skipped = "zone"
         elif res.get("hard"):
@@ -8060,7 +8255,7 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
 REPAIR_RULES_VERSION = os.environ.get("REPAIR_RULES_VERSION", "3")
 
 
-def _repair_attempt_key(seg: dict) -> str:
+def _repair_attempt_key(seg: dict, findings: Optional[list] = None) -> str:
     """Отпечаток ЗАХОДА: что ремонт увидит, если пойдёт сюда сейчас.
 
     Три составляющие, и каждая меняет исход:
@@ -8079,8 +8274,16 @@ def _repair_attempt_key(seg: dict) -> str:
     скорости, `_segment_for_client` проекта не имеет вовсе, а прогон имеет.
     Разойдись они — сегмент чинился бы по кругу либо не чинился никогда.
     Смену глоссария по-прежнему открывает `retry=True` у «Применить термины»,
-    а бессмысленный повтор там останавливает `_repair_futile`."""
-    items = sorted(f["text"] for f in _repair_findings(seg, None))
+    а бессмысленный повтор там останавливает `_repair_futile`.
+
+    `findings` — уже посчитанный `_repair_findings(seg, None)`: он не бесплатен
+    (письменность, начертание, триграммы — около миллисекунды на сегмент),
+    а зовущие его обычно только что посчитали то же самое. Передавать сюда
+    можно РОВНО этот список: посчитанный с проектом (то есть с глоссарием)
+    сделал бы отпечаток зависящим от того, кто его считает, — а это ровно то,
+    от чего предостерегает абзац выше."""
+    items = sorted(f["text"] for f in
+                   (findings if findings is not None else _repair_findings(seg, None)))
     return _text_hash("|".join([_text_hash(seg.get("target") or ""),
                                 REPAIR_RULES_VERSION] + items))
 
@@ -8103,8 +8306,13 @@ def _repair_tried(seg: dict) -> bool:
     return r.get("source_hash") == _text_hash(seg.get("target") or "")
 
 
-def _repair_clamped(seg: dict) -> bool:
+def _repair_clamped(seg: dict, findings: Optional[list] = None) -> bool:
     """Закрыт ли сегмент от ремонта. Клеймит ТОЛЬКО совпавший отпечаток.
+
+    `findings` — готовый `_repair_findings(seg, None)`, если он уже посчитан
+    у зовущего (см. `_repair_attempt_key`): экран «Анализ» считает его на
+    каждый сегмент, и второй проход стоил бы полсекунды единственного воркера
+    на боевом проекте — при том, что ответ лежит строкой выше.
 
     Отличие от `_repair_tried` существенное и вот в чём. `_repair_tried`
     отвечает на вопрос «проходил ли ЭТОТ текст через ремонт» — на нём стоят
@@ -8123,7 +8331,7 @@ def _repair_clamped(seg: dict) -> bool:
     с находками, а их считает разбор и называет числом до запуска."""
     rp = seg.get("repair") or {}
     key = rp.get("attemptKey")
-    return bool(key) and key == _repair_attempt_key(seg)
+    return bool(key) and key == _repair_attempt_key(seg, findings)
 
 
 def _repair_futile(seg: dict, project: Optional[dict] = None) -> bool:
@@ -8631,8 +8839,12 @@ def _repair_desync(seg: dict, want: str) -> bool:
 
 def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
                         bc_model: Optional[str] = None, tc_model: Optional[str] = None,
-                        use_judge: bool = False, judge_model: Optional[str] = None) -> dict:
-    """Один заход ремонта с обязательной перепроверкой и откатом."""
+                        use_judge: bool = False, judge_model: Optional[str] = None,
+                        judge_all: bool = False) -> dict:
+    """Один заход ремонта с обязательной перепроверкой и откатом.
+
+    `judge_all` доезжает до перепроверки: судья обязан смотреть на текст ДО
+    и ПОСЛЕ по одному правилу, иначе сравниваются числа разной природы."""
     findings = _repair_findings(seg, project)
     if not findings:
         return {"ok": False, "error": "Нет находок, по которым можно чинить"}
@@ -8734,7 +8946,14 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         # Зовём судью там, где он участвовал в прежней оценке: лишний вызов
         # только на таких сегментах, зато сравнение честное.
         judge_after = use_judge or bool(bc_before and bc_before.get("judged"))
-        _run_segment_backcheck(seg, project, bc_model, judge_after, judge_model, harvest=False)
+        # `judge_all` обязан доехать и сюда — по той же причине, по которой
+        # заведён `judge_after`. Прежний балл в прогоне с разрешением мог
+        # сложиться с участием судьи ВЫШЕ обычной зоны (JUDGE_CAP опускает
+        # балл 98 до 70), а перепроверка без разрешения на сыром балле 98
+        # судью не позовёт — и мы снова сравним вердикт с сырым измерением,
+        # ровно ту асимметрию, из-за которой откатывались верные правки.
+        _run_segment_backcheck(seg, project, bc_model, judge_after, judge_model,
+                               harvest=False, judge_all=judge_all)
     if had_tc:
         _run_segment_termcheck(seg, project, tc_model, harvest=False)
     after = _repair_scores(seg, project)
@@ -9203,6 +9422,9 @@ class RepairRequest(BaseModel):
     tc_model: Optional[str] = None
     use_judge: bool = False
     judge_model: Optional[str] = None
+    # Судья и выше зоны — то же разрешение, что у back-check: перепроверка
+    # внутри ремонта обязана идти тем же правилом, каким считали прежний балл.
+    judge_all: bool = False
 
 
 @app.post("/api/segments/{pid}/{sid}/repair")
@@ -9212,7 +9434,7 @@ def repair_segment(pid: int, sid: int, req: RepairRequest = RepairRequest()):
     seg = get_segment(pid, sid)
     project = get_project(pid)
     result = _run_segment_repair(seg, project, req.model, req.bc_model, req.tc_model,
-                                 req.use_judge, req.judge_model)
+                                 req.use_judge, req.judge_model, req.judge_all)
     if result.get("ok"):
         save_state(STATE)
         return result
@@ -9463,6 +9685,8 @@ class RepairBatchRequest(BaseModel):
     tc_model: Optional[str] = None
     use_judge: bool = False
     judge_model: Optional[str] = None
+    # См. RepairRequest: перепроверка судится тем же правилом, что и прежний балл.
+    judge_all: bool = False
 
 
 @app.post("/api/projects/{pid}/repair/batch")
@@ -9497,7 +9721,7 @@ def repair_batch(pid: int, req: RepairBatchRequest):
             return {"seg": seg, "skip": True}
         try:
             r = _run_segment_repair(seg, project, req.model, req.bc_model, req.tc_model,
-                                    req.use_judge, req.judge_model)
+                                    req.use_judge, req.judge_model, req.judge_all)
             return {"seg": seg, "res": r}
         except Exception as e:
             print(f"[backend] repair batch seg#{seg['id']}: {e}", file=sys.stderr)
@@ -9557,6 +9781,9 @@ class BackcheckBatchRequest(BaseModel):
     skip_cached: bool = True     # не пересчитывать сегменты с неизменившимся переводом
     use_judge: bool = False
     judge_model: Optional[str] = None
+    # Разовое разрешение звать судью и выше потолка зоны (см. _judge_pending).
+    # Поле запуска, как include_confirmed: не настройка и не новая политика.
+    judge_all: bool = False
 
 
 @app.post("/api/projects/{pid}/backcheck/batch")
@@ -9579,7 +9806,8 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
             continue
         if not (s.get("target") or "").strip():
             continue
-        if req.skip_cached and _backcheck_cached(s, mdl_id, req.use_judge):
+        if req.skip_cached and _backcheck_cached(s, mdl_id, req.use_judge,
+                                                 req.judge_all):
             skipped_cached += 1
             continue
         candidates.append(s)
@@ -9606,7 +9834,8 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
         if _job_should_stop():
             return {"pair": pair, "skip": True}
         try:
-            r = _run_segment_backcheck(seg, project, req.model, req.use_judge, req.judge_model)
+            r = _run_segment_backcheck(seg, project, req.model, req.use_judge,
+                                       req.judge_model, judge_all=req.judge_all)
             return {"pair": pair, "ok": bool(r.get("ok")), "error": r.get("error")}
         except Exception as e:
             print(f"[backend] backcheck batch seg#{seg['id']}: {e}", file=sys.stderr)
@@ -9848,6 +10077,25 @@ def update_segment(pid: int, sid: int, req: UpdateSegmentRequest):
     return {"ok": True, "segment": seg}
 
 
+def _needs_translation(seg: dict) -> bool:
+    """Сегмент ждёт перевода: его возьмёт пакет БЕЗ force.
+
+    Один предикат на три места — сам пакет (`batch_translate`), разбор шага
+    перевода (`_plan_step`) и множество «переведём в этом же прогоне»
+    (`will_translate` в `run_plan`, от которого зависит, попадут ли эти
+    сегменты в состав ПРОВЕРОК). Три копии условия разошлись бы, и разойтись
+    им хватило бы одного дня: смета обещала бы одно, а прогон делал другое —
+    ровно та беда, ради которой состав вынесен на сервер.
+
+    `failed` с ПУСТЫМ переводом — это «не переведён»: ошибка перевода
+    сегмент не трогает (инвариант №4), и без повтора он остался бы в корзине
+    «возьмёт прогон» навсегда, а прогон честно отвечал бы «нечего делать».
+    `failed` с НЕПУСТЫМ переводом не берём: там лежит прежний текст, и его
+    судьба — вопрос проверок, а не молчаливого переперевода."""
+    st = seg.get("status")
+    return st == "new" or (st == "failed" and not (seg.get("target") or "").strip())
+
+
 class BatchRequest(BaseModel):
     # Движок один — выбранная модель, поэтому engine и low_engine убраны.
     # Заодно исчез отбор по risk: он существовал только чтобы делить сегменты
@@ -9879,9 +10127,10 @@ def batch_translate(pid: int, req: BatchRequest):
                               if s["id"] in id_filter and s["status"] == "confirmed"]
                              if not req.include_confirmed else [])
     else:
+        # Предикат общий с разбором прогона — см. _needs_translation.
         all_targets = [s for s in project["segments"]
-                       if s["status"] == "new" and
-                       (id_filter is None or s["id"] in id_filter)]
+                       if _needs_translation(s)
+                       and (id_filter is None or s["id"] in id_filter)]
         skipped_confirmed = []
     done_by_src: dict = {}
     if not req.force:
@@ -11538,6 +11787,10 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
         mdl_id = _resolve_model(params.get("bc_model") or BACKCHECK_DEFAULT_MODEL)["id"]
 
     use_judge = bool(params.get("use_judge"))
+    # Разрешение этого прогона звать судью и выше зоны. Разбор обязан его
+    # читать по той же причине, что include_confirmed: иначе смета обещает
+    # одно, а прогон делает другое.
+    judge_all = bool(params.get("judge_all"))
     retry = bool(params.get("retry"))
     # Разрешение чинить заверенное человеком. Разбор ОБЯЗАН его читать: раньше
     # он отбрасывал подтверждённые безусловно, а прогон брал их по флагу —
@@ -11552,10 +11805,15 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
         pending = seg["id"] in will_translate and not target
 
         if step == "translate":
-            if seg.get("status") == "new":
-                run("ещё не переведён", seg)
-            else:
+            # Предикат общий с самим пакетом — см. _needs_translation.
+            # Причины при этом РАЗНЫЕ: «ещё не переведён» и «прошлый перевод
+            # не удался» — это не одно и то же для человека, читающего отчёт.
+            if not _needs_translation(seg):
                 skip("уже переведён")
+            elif seg.get("status") == "failed":
+                run("прошлый перевод не удался — попробуем снова", seg)
+            else:
+                run("ещё не переведён", seg)
             continue
 
         # Переводится в этом же прогоне — к своему шагу текст появится.
@@ -11576,7 +11834,7 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
             continue
 
         if step == "backcheck":
-            if _backcheck_cached(seg, mdl_id, use_judge):
+            if _backcheck_cached(seg, mdl_id, use_judge, judge_all):
                 bm = (seg.get("backcheck") or {}).get("model")
                 skip("уже проверен этим переводом: " + _model_label(bm))
             elif (seg.get("backcheck") or {}).get("score") is None:
@@ -11720,6 +11978,9 @@ class RunPlanRequest(BaseModel):
     tcx_model: Optional[str] = None
     rp_model: Optional[str] = None
     use_judge: bool = False
+    # Судья и выше потолка зоны — разовое разрешение прогона, как
+    # include_confirmed. Осушает корзину «смысл не читал никто».
+    judge_all: bool = False
     retry: bool = False
     include_confirmed: bool = False   # чинить и заверенное человеком (только ремонт)
 
@@ -11739,7 +12000,12 @@ def run_plan(pid: int, req: RunPlanRequest):
     scope = [s for s in project["segments"]
              if id_filter is None or s["id"] in id_filter]
     params = req.dict()
-    will_translate = ({s["id"] for s in scope if s.get("status") == "new"}
+    # Тем же предикатом, что и сам перевод (_needs_translation): от этого
+    # множества зависит, попадут ли сегменты в состав ПРОВЕРОК — к своему
+    # шагу они уже будут переведены. Считай его по «status == new», и
+    # сегмент, перевод которого сорвался, прогон переведёт и проверит,
+    # а разбор скажет про него «нет перевода» и занизит смету.
+    will_translate = ({s["id"] for s in scope if _needs_translation(s)}
                       if "translate" in steps else set())
     # Один расчёт соответствия глоссарию на весь разбор, из общего кэша по
     # отпечатку проекта — тот же, которым живёт отчёт «Соответствие глоссарию».
@@ -11935,6 +12201,7 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
             segment_ids=chunk, limit=n, model=params.get("rp_model") or params.get("model"),
             bc_model=params.get("bc_model"), tc_model=params.get("tc_model"),
             use_judge=bool(params.get("use_judge")), judge_model=params.get("judge_model"),
+            judge_all=bool(params.get("judge_all")),
             include_confirmed=bool(params.get("include_confirmed")), retry=True))
         # done = сделанное, а не размер порции: иначе проверка «порция целиком
         # завершилась ошибкой» никогда не сработает, и мёртвый ключ выглядел бы
@@ -11956,6 +12223,7 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
         r = backcheck_batch(pid, BackcheckBatchRequest(
             segment_ids=chunk, limit=n, model=params.get("model"),
             use_judge=bool(params.get("use_judge")), judge_model=params.get("judge_model"),
+            judge_all=bool(params.get("judge_all")),
             skip_cached=bool(params.get("skip_cached", False))))
         return {"done": r["count"], "duplicates": r.get("duplicates", 0),
                 "skipped_cached": r.get("skipped_cached", 0),
@@ -11993,6 +12261,7 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
             segment_ids=chunk, limit=n, model=params.get("model"),
             bc_model=params.get("bc_model"), tc_model=params.get("tc_model"),
             use_judge=bool(params.get("use_judge")), judge_model=params.get("judge_model"),
+            judge_all=bool(params.get("judge_all")),
             include_confirmed=bool(params.get("include_confirmed")),
             retry=bool(params.get("retry"))))
         return {"done": len(r.get("applied", [])) + len(r.get("skipped", [])),

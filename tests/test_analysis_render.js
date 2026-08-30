@@ -191,6 +191,44 @@ check(t3.some(s => s.indexOf("была бы откачена") !== -1),
 check(t3.some(s => s.indexOf("Арбитр посмотрел все") !== -1),
       "карточка не исчезает при нуле ожидающих: иначе не видно, что ноль настоящий");
 
+// ─────────── 3b. Корзины «под ключ»: проценты, кнопка, строка QA ───────────
+console.log("\n=== 3b. TurnkeySummary: три корзины с процентами ===");
+const TK = JSON.parse(JSON.stringify(BASE));
+TK.total = 4;
+TK.turnkey = { ready: [1, 2], machine: [3], human: [4], case: [3],
+               params: { steps: ["translate"], use_judge: true, judge_all: true,
+                         retry: false, include_confirmed: false } };
+TK.human.qaCritical = [4];
+let treeTk = null, okTk = true;
+try { treeTk = render(React.createElement(TurnkeySummary, { summary: TK, store, toast })); }
+catch (e) { okTk = false; console.log("      " + e.message); }
+check(okTk, "TurnkeySummary рендерится");
+const tTk = okTk ? texts(treeTk) : [];
+check(tTk.some(s => s === "Готово к сдаче") && tTk.some(s => s === "Возьмёт ближайший прогон")
+      && tTk.some(s => s === "Нужно ваше решение"),
+      "три корзины названы");
+check(tTk.filter(s => s === "50%").length >= 2 && tTk.filter(s => s === "25%").length >= 2,
+      "и у каждой процент: готовность 50%, корзины 50/25/25");
+check(tTk.some(s => s.indexOf("Перевести и доделать") !== -1),
+      "главная кнопка на месте");
+check(tTk.some(s => s.indexOf("2 из 4") !== -1),
+      "готовность названа и числом сегментов");
+
+console.log("\n=== 3c. WorkSummary: критика Medical QA на подтверждённом видна ===");
+const QA = JSON.parse(JSON.stringify(BASE));
+QA.human.qaCritical = [7, 9];
+let treeQa = null, okQa = true;
+try { treeQa = render(React.createElement(WorkSummary, { summary: QA, store, toast })); }
+catch (e) { okQa = false; console.log("      " + e.message); }
+check(okQa, "рендер прошёл");
+check(okQa && texts(treeQa).some(s => s.indexOf("Medical QA нашла критичное") !== -1),
+      "строка qaCritical есть — вкладки «Замечания» больше нет, показывать больше негде");
+// Строка одна на весь экран (SegRow), но доля показывается ТОЛЬКО там, где
+// целое известно: в подробном итоге часть строк считает термины, а не
+// сегменты, и процент от чужого целого был бы выдумкой.
+check(okQa && !texts(treeQa).some(s => /^\d+(\.\d)?%$/.test(s)),
+      "в подробном итоге долей нет — их целое не определено");
+
 // ─────────── 4. Начертание терминов: строка, кнопка и сама правка ───────────
 // Правка бесплатная и детерминированная, но текст в проекте она всё-таки
 // меняет — значит человек обязан увидеть, ЧТО изменится, и сколько таких мест.
@@ -279,6 +317,109 @@ const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
     check(patched.length === 1 && patched[0][2] === "tuberculoma",
           "подтянут только правленый сегмент: " + JSON.stringify(patched));
   }
+
+  // ─────────── 4b. RunPanel: состав от сервера, галочки, запуск ───────────
+  // Панель тратит деньги, поэтому проверяем именно то, на что человек смотрит
+  // перед нажатием: состав по шагам приходит с СЕРВЕРА, бесплатные правки
+  // названы числом и идут ДО прогона, а состав для задачи пересчитывается
+  // после них — принятые тексты обязаны попасть в этот же прогон.
+  console.log("\n=== 4b. RunPanel ===");
+  const planSrv = {
+    steps: [{ step: "translate", label: "Перевод", count: 2, model: "m1",
+              modelLabel: "Модель 1", ids: [1, 2] },
+            { step: "backcheck", label: "Back-check", count: 1, model: "m2",
+              modelLabel: "Модель 2", ids: [1] }],
+    ids: [1, 2], total: 2,
+  };
+  const catSrv = { models: [{ id: "m1", label: "Модель 1", in: 1, out: 2 },
+                            { id: "m2", label: "Модель 2", in: 1, out: 2 }],
+                   judgeDefault: "m2" };
+  const seen = [];
+  global.API.runPlan = async () => { seen.push("plan"); return planSrv; };
+  global.API.listJobs = async () => ({ active: [], jobs: [] });
+  global.API.createJob = async (pid, kind, ids, params) => {
+    seen.push("job:" + kind + ":" + ids.length + ":judge_all=" + params.judge_all);
+    return { ok: true, job: { id: 5, project: pid, created: "2026-08-30 10:00" } };
+  };
+  global.API.termCase = async (pid, o) => { seen.push("case:" + (o && o.apply)); return { ok: true, segments: 1, ids: [3] }; };
+  global.API.acceptRepairBatch = async () => {
+    seen.push("accept");
+    return { ok: true, accepted: 2, ids: [4], stamp: "s1" };
+  };
+  const TKP = JSON.parse(JSON.stringify(TK));
+  TKP.human.revertedByScore = [4];
+  const storeRun = { activeProject: { id: 1, segments: [{ id: 1, source: "аа", target: "bb" },
+                                                        { id: 2, source: "вв", target: "" }] },
+                     go() {}, setSegmentFilter() {}, updateSegment() {} };
+  let treeRp = null, okRp = true;
+  try {
+    hooks = []; hookIdx = 0; effects.length = 0;
+    treeRp = React.createElement(RunPanel, { summary: TKP, store: storeRun, toast,
+                                             plan: planSrv, cat: catSrv,
+                                             onClose() {}, onStarted() {} });
+  } catch (e) { okRp = false; console.log("      " + e.message); }
+  check(okRp, "RunPanel рендерится с планом от сервера");
+  const tRp = okRp ? texts(treeRp) : [];
+  check(tRp.some(s => s.indexOf("Перевод") !== -1) && tRp.some(s => s.indexOf("2 сегм.") !== -1),
+        "шаги и их состав показаны числом от сервера");
+  check(tRp.some(s => s.indexOf("Модель 1") !== -1),
+        "и модель шага названа — её выбирает сервер, а не браузер");
+  check(tRp.some(s => s.indexOf("Привести начертание") !== -1)
+        && tRp.some(s => s.indexOf("Принять правки") !== -1),
+        "бесплатные правки названы отдельными галочками, а не спрятаны в кнопке");
+  check(tRp.some(s => s.indexOf("нижняя граница") !== -1),
+        "и сказано, что смета — нижняя граница");
+
+  // Нажатие: начертание включено по умолчанию, принятие правок — нет.
+  let runClick = null;
+  (function find(n) {
+    if (!n || typeof n !== "object") return;
+    if (n.props && typeof n.props.onClick === "function"
+        && texts(n).some(s => s.indexOf("Запустить") !== -1)) runClick = n.props.onClick;
+    (n.children || []).forEach(find);
+  })(treeRp);
+  check(!!runClick, "у кнопки запуска есть обработчик");
+  if (runClick) {
+    await runClick();
+    await new Promise(r => setImmediate(r));
+    check(seen.indexOf("case:true") !== -1, "начертание правится до прогона (галочка по умолчанию)");
+    // Подмена текста — не побочное действие кнопки: галочка выключена
+    // по умолчанию, и без неё команда не зовётся вовсе.
+    check(seen.indexOf("accept") === -1,
+          "принятие отменённых правок по умолчанию НЕ выполняется: " + seen.join(","));
+    check(seen.indexOf("case:true") < seen.findIndex(s => s.indexOf("job:") === 0),
+          "и именно ДО постановки задачи: " + seen.join(","));
+    check(seen.some(s => s.indexOf("job:full:") === 0 && s.indexOf("judge_all=true") !== -1),
+          "задача поставлена с серверными параметрами, включая judge_all: " + seen.join(","));
+    check(seen.filter(s => s === "plan").length === 1,
+          "состав пересчитан после бесплатной правки — ровно один раз: " + seen.join(","));
+  }
+
+  // ─────────── 5. TabAnalysis: старый сервер без turnkey не роняет экран ───────────
+  console.log("\n=== 5. TabAnalysis переживает ответ сервера без turnkey ===");
+  global.API.analysis = async () => BASE;          // старый ответ, корзин нет
+  global.API.runPlan = async () => ({ steps: [], ids: [], total: 0 });
+  global.API.listJobs = async () => ({ active: [], jobs: [] });
+  const storeTab = { activeProject: { id: 1, segments: [] }, glossary: [],
+                     go() {}, setSegmentFilter() {}, updateSegment() {},
+                     statusCounts() { return { failed: 0, qa: 0, all: 0 }; } };
+  let okTab = true, treeTab = null;
+  try {
+    hooks = []; hookIdx = 0; effects.length = 0;
+    React.createElement(TabAnalysis, { store: storeTab, toast });
+    effects.slice().forEach(fn => fn());
+    await new Promise(r => setImmediate(r));
+    hookIdx = 0; effects.length = 0;
+    treeTab = React.createElement(TabAnalysis, { store: storeTab, toast });
+  } catch (e) { okTab = false; console.log("      " + e.message); }
+  check(okTab, "TabAnalysis не падает на старом ответе");
+  const tTab = okTab ? texts(treeTab) : [];
+  check(tTab.some(s => s.indexOf("Сервер прежней версии") !== -1),
+        "и говорит, почему корзин нет, а не молчит");
+  check(tTab.some(s => s.indexOf("Проверено начисто") !== -1),
+        "подробный итог при этом показан");
+  check(tTab.some(s => s.indexOf("Экспорт перевода") !== -1),
+        "кнопка экспорта на месте");
 
   console.log();
   if (fail.length) {

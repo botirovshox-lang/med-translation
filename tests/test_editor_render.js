@@ -13,6 +13,35 @@
  *
  * Запуск: node tests/test_editor_render.js
  */
+/* Сторож хуков. Сборки у фронтенда нет: .jsx грузятся как есть, а хуки
+   раздаёт одна строка деструктуризации в ui.jsx. Забытый там хук — это
+   ReferenceError при первом рендере, то есть БЕЛЫЙ ЭКРАН, и ни один тест
+   этого не видит: каждый объявляет свои заглушки хуков сам (ниже — тоже).
+   Так и уехал useMemo. Поэтому сверяем ИСХОДНИКИ: всякий хук, которым
+   пользуются .jsx, обязан стоять в той строке. */
+function checkHookExports(fs, path, root, report) {
+  const ui = fs.readFileSync(path.join(root, "ui.jsx"), "utf8");
+  const m = ui.match(/const\s*\{([^}]*)\}\s*=\s*React;/);
+  const declared = new Set((m ? m[1] : "").split(",").map(s => s.trim()).filter(Boolean));
+  const used = new Set();
+  for (const f of fs.readdirSync(root)) {
+    if (!f.endsWith(".jsx")) continue;
+    const code = fs.readFileSync(path.join(root, f), "utf8");
+    // Голый вызов хука: «useMemo(» без «React.» перед ним.
+    for (const hit of code.matchAll(/(^|[^.\w])(use[A-Z]\w*)\s*\(/g)) {
+      const name = hit[2];
+      // Свои хуки компонентов (useStore, useTheme, useToast) объявлены
+      // в самих файлах — сторожим только реактовские.
+      if (["useState", "useEffect", "useRef", "useMemo", "useCallback",
+           "useContext", "useReducer", "useLayoutEffect"].includes(name)) used.add(name);
+    }
+  }
+  const missing = [...used].filter(h => !declared.has(h));
+  report(missing.length === 0,
+         "все реактовские хуки объявлены в ui.jsx" +
+         (missing.length ? " — НЕ объявлены: " + missing.join(", ") : ""));
+}
+
 const fs = require("fs");
 const path = require("path");
 
@@ -111,6 +140,9 @@ global.API = {
 };
 
 const root = process.argv[2] || "frontend/js";
+console.log("=== 0. Хуки, которыми пользуются .jsx, объявлены в ui.jsx ===");
+checkHookExports(fs, path, root, check);
+
 for (const f of ["ui.jsx", "data.js", "tab_editor_detail.jsx", "tab_editor.jsx"]) {
   const code = fs.readFileSync(path.join(root, f), "utf8");
   // Файлы грузятся тегами <script> — то есть в одну общую область видимости.

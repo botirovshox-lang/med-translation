@@ -18,12 +18,16 @@ function useStore(authed) {
      какие кнопки показывать. Право СДЕЛАТЬ проверяет сервер. */
   const [me, setMe] = useState({ name: "Вы", initials: "ВЫ", color: "var(--c-primary)", role: "translator" });
   const [can, setCan] = useState({ owner: false, super: false });
+  const [brand, setBrand] = useState("CAT Translator");
   useEffect(() => {
     if (!authed || !window.API || !window.API.me) return;
     let cancelled = false;
     window.API.safeCall(() => window.API.me()).then(r => {
       if (cancelled || !r || !r.me) return;
       setMe(r.me); setCan(r.can || { owner: false, super: false });
+    });
+    window.API.safeCall(() => window.API.models()).then(r => {
+      if (!cancelled && r && r.brand) setBrand(r.brand);
     });
     return () => { cancelled = true; };
   }, [authed]);
@@ -151,7 +155,7 @@ function useStore(authed) {
 
   return {
     projects, glossary, tm, activeId, activeProject, tab,
-    exportHistory, team: [], me, can, apiReady,
+    exportHistory, team: [], me, can, brand, apiReady, setGlossary,
     segmentFilter, gotoSegId,
     go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, patchProject, openProject, deleteProject, replaceProjectSegments, saveTerm, deleteTerm, deleteTM,
     setExportHistory,
@@ -215,9 +219,9 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
   return React.createElement("div", { className: "auth-wrap" },
     React.createElement("div", { className: "auth-theme" }, React.createElement(ThemeToggle, { theme, onToggle: onToggleTheme })),
     React.createElement("form", { className: "auth-card", onSubmit: submit, style: shake ? { animation: "pop .1s, shake .4s" } : null },
-      React.createElement("div", { className: "auth-logo" }, React.createElement(Icon, { name: "hospital", size: 28 })),
-      React.createElement("h1", null, "Medical CAT Translator"),
-      React.createElement("p", { className: "auth-sub" }, "Система перевода медицинских документов · v5.5"),
+      React.createElement("div", { className: "auth-logo" }, React.createElement(Icon, { name: "globe", size: 28 })),
+      React.createElement("h1", null, "Вход"),
+      React.createElement("p", { className: "auth-sub" }, "Система перевода документов с проверками"),
       React.createElement(Field, { label: "Логин" },
         React.createElement("div", { className: "search" },
           React.createElement(Icon, { name: "user", size: 17 }),
@@ -232,7 +236,7 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
       React.createElement("div", { className: "row", style: { gap: 10, marginTop: 20 } },
         React.createElement(Btn, { variant: "primary", type: "submit", icon: "unlock", className: "btn-block", disabled: busy }, busy ? "Проверка..." : "Войти"),
         React.createElement(Btn, { variant: "secondary", type: "button", icon: "info", onClick: () => alert("Логин и пароль выдаёт владелец вашей организации.") }, "Справка")),
-      React.createElement("p", { className: "auth-foot" }, "© 2026 Medical CAT Translator · Конфиденциально")
+      React.createElement("p", { className: "auth-foot" }, "Конфиденциально")
     )
   );
 }
@@ -241,17 +245,20 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
 function Header({ store, theme, onToggleTheme, onLogout, onSearch }) {
   return React.createElement("header", { className: "header" },
     React.createElement("div", { className: "brand" },
-      React.createElement("div", { className: "brand-mark" }, React.createElement(Icon, { name: "hospital", size: 20 })),
+      React.createElement("div", { className: "brand-mark" }, React.createElement(Icon, { name: "globe", size: 20 })),
       React.createElement("div", null,
-        React.createElement("div", { className: "brand-title" }, "Medical CAT Translator"),
-        React.createElement("div", { className: "brand-sub" }, "v5.5 · " + (store.activeProject ? store.activeProject.title : "Нет проекта")))),
+        React.createElement("div", { className: "brand-title" }, store.brand || "CAT Translator"),
+        React.createElement("div", { className: "brand-sub" }, store.activeProject ? store.activeProject.title : "Нет проекта"))),
     React.createElement("div", { className: "spacer" }),
     React.createElement("div", { className: "h-actions" },
       React.createElement(IconBtn, { icon: "search", label: "Поиск", onClick: onSearch }),
       React.createElement(ThemeToggle, { theme, onToggle: onToggleTheme }),
-      React.createElement(IconBtn, { icon: "settings", label: "Настройки" }),
+      /* Мёртвая кнопка неотличима от сломанной: у владельца она ведёт
+         на экран организации, остальным не показывается. */
+      store.can && store.can.owner && React.createElement(IconBtn, { icon: "settings", label: "Организация", onClick: () => store.go("org") }),
       React.createElement("div", { style: { width: 1, height: 26, background: "var(--border)", margin: "0 6px" } }),
-      React.createElement(Avatar, { person: store.me, size: 32 }),
+      React.createElement("span", { title: (store.me.name || "") + (store.me.role === "owner" ? " · владелец" : "") },
+        React.createElement(Avatar, { person: store.me, size: 32 })),
       React.createElement(IconBtn, { icon: "logout", label: "Выйти", onClick: onLogout }))
   );
 }
@@ -267,6 +274,7 @@ const TABS = [
   { key: "glossary", label: "Знания", icon: "book" },
   { key: "preflight", label: "Анализ", icon: "target" },
   { key: "export", label: "Экспорт", icon: "download" },
+  { key: "org", label: "Организация", icon: "user", owner: true },
 ];
 function TabBar({ store }) {
   const counts = store.activeProject ? store.statusCounts(store.activeProject) : null;
@@ -280,7 +288,7 @@ function TabBar({ store }) {
     return null;
   };
   return React.createElement("nav", { className: "tabbar", role: "tablist" },
-    TABS.map(t => {
+    TABS.filter(t => !t.owner || (store.can && store.can.owner)).map(t => {
       const b = badgeFor(t.key);
       return React.createElement("button", { key: t.key, className: "tab" + (store.tab === t.key ? " active" : ""),
         role: "tab", "aria-selected": store.tab === t.key, onClick: () => store.go(t.key) },
@@ -336,7 +344,7 @@ function App() {
   const tabMap = {
     import: TabImport, editor: TabEditor, glossary: TabKnowledge, tm: TabKnowledge,
     export: TabExport, preflight: TabAnalysis, qa: TabAnalysis,
-    backlog: TabAnalysis, stats: TabAnalysis,
+    backlog: TabAnalysis, stats: TabAnalysis, org: TabOrg,
   };
   const Active = tabMap[store.tab] || TabEditor;
 

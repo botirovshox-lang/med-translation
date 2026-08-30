@@ -864,6 +864,10 @@ OPENAI_MODELS = [
     {"id": "gpt-4o-mini",   "label": "GPT-4o mini",   "in": 0.15, "out": 0.60,  "api": "classic", "note": "Самая дешёвая"},
 ]
 DEFAULT_OPENAI_MODEL = "gpt-4o"
+
+# Название сервиса — из окружения: «Medical» в шапке у клиента-юриста
+# выглядит как чужой продукт. Отдаётся через /api/models.
+APP_BRAND = os.environ.get("APP_BRAND", "").strip() or "CAT Translator"
 _MODELS_BY_ID = {m["id"]: m for m in OPENAI_MODELS}
 
 # ── Справочник силы моделей ──────────────────────────────────────────────────
@@ -2339,6 +2343,80 @@ def list_glossary(q: str = "", cat: str = "", limit: int = 200, offset: int = 0,
     return {"total": total, "items": items[offset:offset + limit]}
 
 
+@app.post("/api/glossary/import")
+async def import_glossary(request: Request, file: UploadFile = File(...),
+                          lang: str = Form(""), domain: str = Form(""),
+                          tier: str = Form(GLOSSARY_TIER_SOFT), dry_run: bool = Form(True)):
+    """Словарь клиента приходит ФАЙЛОМ, а не из кода: стартовый глоссарий пуст.
+
+    TSV/CSV; колонки по заголовку (src/source/original, tgt/target/translation,
+    cat, note) либо первые две. Область — пара и тематика, организация —
+    текущей сессии. Уровень по умолчанию — ПОДСКАЗКА: приказом («use these
+    exact translations») импорт становится только по явному выбору владельца,
+    потому что приказ уходит модели мимо всех проверок. Повторы в пределах
+    области пропускаются — импорт не переписывает то, что уже решено.
+    `dry_run` по умолчанию: сначала числа и образец, потом запись."""
+    import csv, io as _io
+    me = _current_user(request)
+    if tier not in (GLOSSARY_TIER_SOFT, GLOSSARY_TIER_HARD):
+        raise HTTPException(400, "Уровень: %s | %s" % (GLOSSARY_TIER_SOFT, GLOSSARY_TIER_HARD))
+    if tier == GLOSSARY_TIER_HARD and me.get("role") != "owner":
+        raise HTTPException(403, "Импорт приказом — только владелец организации")
+    pair = (lang or "").replace("->", "→").strip().upper()
+    if "→" not in pair:
+        raise HTTPException(400, "Языковая пара вида RU→EN")
+    src_l, tgt_l = _check_lang_pair(*pair.split("→", 1))
+    scope = _scope(f"{src_l}→{tgt_l}", _resolve_domain(domain)["id"])
+    raw = (await file.read()).decode("utf-8-sig", errors="replace")
+    first = raw.split("\n", 1)[0]
+    delim = "\t" if "\t" in first else (";" if first.count(";") > first.count(",") else ",")
+    rows = list(csv.reader(_io.StringIO(raw), delimiter=delim))
+    if not rows:
+        raise HTTPException(400, "Файл пуст")
+    head = [h.strip().lower() for h in rows[0]]
+    names = {"src": ("src", "source", "original", "term", "russian", "оригинал", "термин"),
+             "tgt": ("tgt", "target", "translation", "english", "перевод"),
+             "cat": ("cat", "category", "категория"), "note": ("note", "comment", "примечание")}
+    col = {}
+    for k, alts in names.items():
+        for i, h in enumerate(head):
+            if h in alts:
+                col[k] = i
+                break
+    has_head = "src" in col and "tgt" in col
+    if not has_head:
+        col = {"src": 0, "tgt": 1}
+    body = rows[1:] if has_head else rows
+    existing = {_norm_key(g.get("src")) for g in STATE["glossary"] if _scope_of(g) == scope}
+    today = datetime.now().strftime("%Y-%m-%d")
+    added, seen, dup, bad = [], set(), 0, 0
+    for r in body:
+        get = lambda k: (r[col[k]].strip() if k in col and col[k] < len(r) else "")
+        s_, t_ = get("src"), get("tgt")
+        if not s_ or not t_ or len(s_) > 200 or len(t_) > 200:
+            bad += 1
+            continue
+        key = _norm_key(s_)
+        if key in existing or key in seen:
+            dup += 1
+            continue
+        seen.add(key)
+        added.append({"src": s_, "tgt": t_, "cat": get("cat") or "Term", "freq": 1,
+                      "conf": "high" if tier == GLOSSARY_TIER_HARD else "medium",
+                      "note": get("note"), "tier": tier,
+                      "origin": ("import:" + (file.filename or "file"))[:60],
+                      "lang": scope[0], "domain": scope[1], "tenant": scope[2], "updated": today})
+    out = {"ok": True, "dryRun": dry_run, "rows": len(body), "added": len(added),
+           "skippedDup": dup, "skippedBad": bad, "tier": tier,
+           "lang": scope[0], "domain": scope[1], "header": has_head,
+           "sample": [{"src": a["src"], "tgt": a["tgt"]} for a in added[:10]]}
+    if not dry_run and added:
+        STATE["glossary"][0:0] = added
+        _invalidate_gloss_index()
+        save_state(STATE)
+    return out
+
+
 @app.get("/api/glossary/usage")
 def glossary_usage(src: str, limit: int = 6, lang: str = "", domain: str = ""):
     """Где термин реально встречается. Совпадение ищем тем же _term_match, что и
@@ -3134,6 +3212,7 @@ def list_models():
         "backcheckMinStems": getattr(medical_qa_mod, "BACKCHECK_MIN_STEMS", 3) if medical_qa_mod else 3,
         "backcheckBands": getattr(medical_qa_mod, "BACKCHECK_BANDS", []) if medical_qa_mod else [],
         "available": bool(os.environ.get("OPENAI_API_KEY")),
+        "brand": APP_BRAND,
         "pricesChecked": "2026-08-15",
     }
 

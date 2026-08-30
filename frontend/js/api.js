@@ -128,6 +128,19 @@
     },
 
     models:        ()                       => call("GET",    "/models"),
+    importGlossary: async (file, lang, domain, tier, dryRun) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("lang", lang || "");
+      fd.append("domain", domain || "");
+      fd.append("tier", tier || "auto");
+      fd.append("dry_run", dryRun ? "true" : "false");
+      const r = await fetch(BASE + "/glossary/import", { method: "POST", body: fd, headers: authHeaders({}) });
+      if (r.status === 401) onUnauthorized();
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { const e = new Error(data.detail || data.error || ("Import failed: " + r.status)); e.status = r.status; throw e; }
+      return data;
+    },
     /* Движок один — выбранная модель. Параметра engine больше нет. */
     translate:     (pid, sid, force, model) => call("POST", `/segments/${pid}/${sid}/translate`, { force: !!force, model: model || null }),
     backcheck:     (pid, sid, model, judge, judgeModel) => call("POST", `/segments/${pid}/${sid}/backcheck`, { model: model || null, use_judge: !!judge, judge_model: judgeModel || null }),

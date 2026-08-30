@@ -275,6 +275,7 @@ const TABS = [
   { key: "preflight", label: "Анализ", icon: "target" },
   { key: "export", label: "Экспорт", icon: "download" },
   { key: "org", label: "Организация", icon: "user", owner: true },
+  { key: "admin", label: "Админ", icon: "settings", super: true },
 ];
 function TabBar({ store }) {
   const counts = store.activeProject ? store.statusCounts(store.activeProject) : null;
@@ -288,7 +289,7 @@ function TabBar({ store }) {
     return null;
   };
   return React.createElement("nav", { className: "tabbar", role: "tablist" },
-    TABS.filter(t => !t.owner || (store.can && store.can.owner)).map(t => {
+    TABS.filter(t => (!t.owner || (store.can && store.can.owner)) && (!t.super || (store.can && store.can.super))).map(t => {
       const b = badgeFor(t.key);
       return React.createElement("button", { key: t.key, className: "tab" + (store.tab === t.key ? " active" : ""),
         role: "tab", "aria-selected": store.tab === t.key, onClick: () => store.go(t.key) },
@@ -346,7 +347,7 @@ function App() {
   const tabMap = {
     import: TabImport, editor: TabEditor, glossary: TabKnowledge, tm: TabKnowledge,
     export: TabExport, preflight: TabAnalysis, qa: TabAnalysis,
-    backlog: TabAnalysis, stats: TabAnalysis, org: TabOrg,
+    backlog: TabAnalysis, stats: TabAnalysis, org: TabOrg, admin: TabAdmin,
   };
   const Active = tabMap[store.tab] || TabEditor;
 

@@ -2337,6 +2337,7 @@ class UserCreate(BaseModel):
     password: str
     role: str = "translator"
     name: str = ""
+    tenant: Optional[str] = None        # только для суперпользователя
 
 
 class UserPatch(BaseModel):
@@ -2356,11 +2357,18 @@ def _check_user_fields(login: str = None, password: str = None, role: str = None
         raise HTTPException(400, "Роль: " + " | ".join(ROLES))
 
 
+def _is_super(request: Request) -> bool:
+    return bool((getattr(request.state, "session", None) or CURRENT_SESSION.get() or {}).get("super"))
+
+
 @app.get("/api/admin/users")
-def admin_users(request: Request):
+def admin_users(request: Request, all: bool = False):
+    """Владелец — своих; суперпользователь с `all=1` — всех, с организацией."""
     me = _current_user(request)
+    if all and not _is_super(request):
+        raise HTTPException(403, "Все пользователи — только суперпользователю")
     return {"ok": True, "users": [_user_public(u) for u in _users()
-                                  if u.get("tenant") == me.get("tenant")]}
+                                  if all or u.get("tenant") == me.get("tenant")]}
 
 
 @app.post("/api/admin/users")
@@ -2370,8 +2378,15 @@ def admin_user_create(req: UserCreate, request: Request):
     _check_user_fields(req.login, req.password, req.role)
     if _user_by_login(req.login):
         raise HTTPException(409, "Такой логин уже есть")
+    tenant = me.get("tenant")
+    if req.tenant and req.tenant != tenant:
+        if not _is_super(request):
+            raise HTTPException(403, "Пользователей в другой организации заводит только суперпользователь")
+        if not _tenant_rec(req.tenant):
+            raise HTTPException(404, "Организация не найдена")
+        tenant = req.tenant
     h, salt = _hash_password(req.password)
-    u = {"id": max((x["id"] for x in _users()), default=0) + 1, "tenant": me.get("tenant"),
+    u = {"id": max((x["id"] for x in _users()), default=0) + 1, "tenant": tenant,
          "login": req.login.strip(), "hash": h, "salt": salt, "role": req.role,
          "name": req.name.strip() or req.login.strip(), "active": True, "uiLang": "ru",
          "created": datetime.now().strftime("%Y-%m-%d")}
@@ -2384,7 +2399,8 @@ def admin_user_create(req: UserCreate, request: Request):
 def admin_user_update(uid: int, req: UserPatch, request: Request):
     _audit("user.update", target=uid)
     me = _current_user(request)
-    u = next((x for x in _users() if x["id"] == uid and x.get("tenant") == me.get("tenant")), None)
+    u = next((x for x in _users() if x["id"] == uid
+              and (x.get("tenant") == me.get("tenant") or _is_super(request))), None)
     if not u:
         raise HTTPException(404, "Пользователь не найден")
     _check_user_fields(None, req.password, req.role)
@@ -2411,11 +2427,13 @@ def admin_user_update(uid: int, req: UserPatch, request: Request):
 
 
 @app.get("/api/admin/audit")
-def admin_audit(request: Request, limit: int = 200, action: str = ""):
+def admin_audit(request: Request, limit: int = 200, action: str = "", all: bool = False):
     _current_user(request)
+    if all and not _is_super(request):
+        raise HTTPException(403, "Журнал всех организаций — только суперпользователю")
     t = _current_tenant()
     rows = [r for r in reversed(STATE.get("audit") or [])
-            if r.get("tenant") == t and (not action or r.get("action", "").startswith(action))]
+            if (all or r.get("tenant") == t) and (not action or r.get("action", "").startswith(action))]
     return {"ok": True, "items": rows[:max(1, min(limit, 1000))]}
 
 
@@ -2566,6 +2584,48 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
     _audit("tenant.update", tenant_target=tid, limitUsd=rec.get("limitUsd"))
     save_state(STATE)
     return {"ok": True, "tenant": rec, "spend": _spend_status(tid)}
+
+
+@app.get("/api/admin/overview")
+def admin_overview(request: Request):
+    """Одним экраном для администратора сервиса: организации с людьми,
+    проектами и расходом; прогоны всех организаций; расход процесса;
+    здоровье. Ни одного вызова модели; STATE не обходится по сегментам —
+    только счётчики."""
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Сводка — только суперпользователю")
+    users, projects = _users(), STATE["projects"]
+    tenants = []
+    for t in _tenants():
+        tid = t["id"]
+        tp = [p for p in projects if _tenant_of(p) == tid]
+        tenants.append({**t, "users": sum(1 for u in users if u.get("tenant") == tid),
+                        "activeUsers": sum(1 for u in users if u.get("tenant") == tid and u.get("active", True)),
+                        "projects": len(tp), "segments": sum(len(p["segments"]) for p in tp),
+                        "glossary": sum(1 for g in STATE["glossary"] if _tenant_of(g) == tid),
+                        "domains": len(_tenant_domains(tid)),
+                        "spend": _spend_status(tid)})
+    jobs = sorted(_JOBS.values(), key=lambda j: j["id"], reverse=True)
+    with _USAGE_LOCK:
+        proc = json.loads(json.dumps(_USAGE_TOTAL))
+    try:
+        state_bytes = STATE_FILE.stat().st_size
+    except Exception:
+        state_bytes = None
+    worker_alive = bool(_JOB_WORKER and _JOB_WORKER.is_alive())
+    return {"ok": True,
+            "tenants": tenants,
+            "jobs": {"active": [dict(_job_public(j), tenant=_tenant_of(j))
+                                for j in jobs if j["status"] in ("queued", "running")],
+                     "recent": [dict(_job_public(j), tenant=_tenant_of(j)) for j in jobs[:15]],
+                     "queued": _JOB_QUEUE.qsize(), "workerAlive": worker_alive},
+            "process": {"uptimeSec": int(time.time() - _SERVER_STARTED), "usage": proc,
+                        "stateBytes": state_bytes, "sessions": len(_SESSIONS),
+                        "openaiKey": bool(os.environ.get("OPENAI_API_KEY")),
+                        "version": "5.6.0", "termQueue": len(_term_queue()),
+                        "auditRows": len(STATE.get("audit") or [])},
+            "month": _month_key()}
 
 
 @app.get("/api/admin/tenants")
@@ -12845,6 +12905,7 @@ JOB_CHUNK_RETRIES = 2           # повтор порции при сбое: с�
 JOB_RETRY_PAUSE = 5             # секунд между попытками
 
 _JOBS: dict = {}                # id -> job
+_SERVER_STARTED = time.time()
 _JOB_QUEUE = _queue.Queue()
 _JOBS_LOCK = threading.Lock()
 _JOB_WORKER = None
@@ -13305,7 +13366,8 @@ def list_jobs(project: Optional[int] = None, limit: int = 20):
 @app.get("/api/jobs/{jid}")
 def get_job(jid: int):
     job = _JOBS.get(jid)
-    if not job or _tenant_of(job) != _current_tenant():
+    if not job or (_tenant_of(job) != _current_tenant()
+                   and not (CURRENT_SESSION.get() or {}).get("super")):
         raise HTTPException(404, "Прогон не найден")
     return {"ok": True, "job": _job_public(job)}
 
@@ -13316,7 +13378,8 @@ def stop_job(jid: int):
     не начинается. Обрывать порцию на середине значило бы заплатить за вызовы
     и выбросить их результат."""
     job = _JOBS.get(jid)
-    if not job or _tenant_of(job) != _current_tenant():
+    if not job or (_tenant_of(job) != _current_tenant()
+                   and not (CURRENT_SESSION.get() or {}).get("super")):
         raise HTTPException(404, "Прогон не найден")
     job["stop"] = True
     if job["status"] == "queued":

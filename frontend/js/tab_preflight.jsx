@@ -739,6 +739,41 @@ function TurnkeySummary({ summary, store, toast, onReload }) {
       onClose: () => setPanel(false), onStarted: onReload }));
 }
 
+/* ---------- Что проверяется в этой паре ----------
+   Закон детерминированных проверок: нет правил для пары — молчим. Но молчание
+   неотличимо от успеха, пока о нём не сказано. Списки считает СЕРВЕР по тем
+   же таблицам, из которых проверки берут правила; здесь только показ. */
+function CoverageCard({ project }) {
+  const [cov, setCov] = useState(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!window.API || !window.API.coverage || !project) return;
+    let dead = false;
+    window.API.safeCall(() => window.API.coverage(project.id))
+      .then(r => { if (!dead && r && r.ok) setCov(r); });
+    return () => { dead = true; };
+  }, [project && project.id]);
+  if (!cov) return null;
+  const n = cov.silent.length;
+  const head = n
+    ? "На паре " + cov.src + " → " + cov.tgt + " молчат " + n + " из " + (n + cov.works.length) + " бесплатных проверок"
+    : "На паре " + cov.src + " → " + cov.tgt + " работают все бесплатные проверки";
+  const col = (title, items, why) => React.createElement("div", null,
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, title),
+    React.createElement("ul", { style: { margin: 0, paddingLeft: 18, fontSize: 13 } },
+      items.map(i => React.createElement("li", { key: i.key },
+        i.label, why && i.why ? React.createElement("span", { className: "dim" }, " — " + i.why) : null))));
+  return React.createElement("div", { className: "card card-pad", style: { marginBottom: 14 } },
+    React.createElement("div", { className: "row between" },
+      React.createElement("div", { style: { fontWeight: 600, color: n ? "var(--c-warn)" : undefined } }, head),
+      React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setOpen(o => !o) },
+        open ? "Скрыть" : "Подробнее")),
+    open && React.createElement("div", { className: "grid grid-3", style: { marginTop: 12, gap: 16 } },
+      col("Работает", cov.works, false),
+      col("Молчит", cov.silent, true),
+      col("Через модель — на любой паре", cov.model, false)));
+}
+
 function TabAnalysis({ store, toast }) {
   const project = store.activeProject;
   const [summary, setSummary] = useState(null);
@@ -774,6 +809,7 @@ function TabAnalysis({ store, toast }) {
       React.createElement(Btn, { variant: "secondary", icon: "download",
         onClick: () => store.go("export") }, "Экспорт перевода")),
     !summary && React.createElement("div", { className: "dim", style: { fontSize: 13 } }, "Считаем итог…"),
+    React.createElement(CoverageCard, { project }),
     tk && React.createElement(TurnkeySummary, { summary, store, toast, onReload: reload }),
     summary && !tk && React.createElement("div", { className: "dim", style: { fontSize: 13, marginBottom: 10 } },
       "Сервер прежней версии — корзин «под ключ» нет, ниже подробный итог."),

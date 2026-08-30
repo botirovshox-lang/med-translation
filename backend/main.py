@@ -2299,6 +2299,74 @@ def glossary_impact(pid: int, refresh: bool = False):
 _ANALYSIS_CACHE: dict = {}
 
 
+# ─── Покрытие проверок для пары и области проекта ────────────────────
+# Пара проекта может быть любой, и закон у детерминированных проверок один:
+# нет правил для этой пары — МОЛЧИМ. Но молчание неотличимо от успеха, пока
+# о нём не сказано: человек видит «находок нет» и считает текст проверенным.
+# Поэтому здесь по ТЕМ ЖЕ таблицам, из которых проверки берут правила,
+# считается три списка — что работает, что молчит и почему, что покупается
+# вызовом модели (и потому работает на любой паре). Отдельный список
+# «поддерживаемых языков» разошёлся бы с таблицами первой же правкой.
+def _coverage(project: dict) -> dict:
+    src = (project.get("src") or "").upper()
+    tgt = (project.get("tgt") or "").upper()
+    dom = _resolve_domain(project.get("domain"))
+    works, silent, model = [], [], []
+    # Языконезависимые — работают всегда.
+    works += [
+        {"key": "numbers", "label": "Числа и единицы измерения"},
+        {"key": "glossary", "label": "Соответствие утверждённым терминам (точное совпадение)"},
+        {"key": "case", "label": "Регистр букв"},
+        {"key": "script", "label": "Буквы чужого письма в переводе"},
+        {"key": "dup", "label": "Самоповтор текста"},
+        {"key": "consist", "label": "Единство терминологии по документу"},
+    ]
+    # Морфологический подбор терминов — по таблице окончаний языка оригинала.
+    if src in _LANG_ENDINGS:
+        works.append({"key": "morph", "label": "Термины в косвенных формах (морфология %s)" % src})
+    else:
+        silent.append({"key": "morph", "label": "Термины в косвенных формах",
+                       "why": "нет таблицы окончаний для %s — термин находится только в словарной форме" % src})
+    # Правила области и пары (лево/право, стиль, скип-списки).
+    rules = (medical_qa_mod.rules_for(dom["id"], src, tgt) if medical_qa_mod
+             else {"pairs": [], "style": []})
+    if rules.get("pairs") or rules.get("style"):
+        works.append({"key": "domain_rules", "label": "Правила области «%s» для %s→%s (подмена стороны, стиль)" % (dom["label"], src, tgt)})
+    else:
+        silent.append({"key": "domain_rules", "label": "Правила области «%s»" % dom["label"],
+                       "why": "для пары %s→%s правила не описаны — проверка стороны и стиля не срабатывает" % (src, tgt)})
+    # Инверсия отрицания — по маркерам языка оригинала (сравниваются оригинал и обратный перевод).
+    neg = medical_qa_mod.negation_markers(src) if medical_qa_mod else []
+    if neg:
+        works.append({"key": "negation", "label": "Инверсия отрицания"})
+    else:
+        silent.append({"key": "negation", "label": "Инверсия отрицания",
+                       "why": "нет маркеров отрицания для %s" % src})
+    # Балл back-check по словам — письмо без пробелов мерить нечем.
+    info = _LANG_BY_CODE.get(src) or {}
+    if info.get("script") in ("HAN", "THAI", "KHMER", "MYANMAR"):
+        silent.append({"key": "recall", "label": "Доля слов оригинала, переживших обратный перевод",
+                       "why": "письмо без пробелов между словами — балл не измеряется, решает судья"})
+    else:
+        works.append({"key": "recall", "label": "Доля слов оригинала, переживших обратный перевод"})
+    # Платные — через модель, языка не требуют.
+    model += [
+        {"key": "backcheck", "label": "Обратный перевод (back-check)"},
+        {"key": "termcheck", "label": "Проверка терминологии моделью"},
+        {"key": "judge", "label": "Судья смысла"},
+        {"key": "termaudit", "label": "Сверка терминов в контексте"},
+        {"key": "meaning", "label": "Сверка смысла кандидатов глоссария"},
+    ]
+    return {"ok": True, "src": src, "tgt": tgt, "domain": dom["id"],
+            "works": works, "silent": silent, "model": model}
+
+
+@app.get("/api/projects/{pid}/coverage")
+def project_coverage(pid: int):
+    """Что проверяется на паре и области ЭТОГО проекта, что молчит и почему."""
+    return _coverage(get_project(pid))
+
+
 @app.get("/api/projects/{pid}/analysis")
 def project_analysis(pid: int, refresh: bool = False):
     """Итог работы по проекту одним экраном: что чисто, что исправила машина,

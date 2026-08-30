@@ -304,7 +304,9 @@ function SearchPalette({ store, onClose }) {
   const results = [];
   if (store.activeProject) store.activeProject.segments.forEach(s => {
     if (q && (s.source.toLowerCase().includes(q.toLowerCase()) || (s.target || "").toLowerCase().includes(q.toLowerCase())))
-      results.push({ type: "Сегмент #" + s.id, text: s.source, action: () => { store.go("editor"); onClose(); } });
+      /* Переход к зоне сегмента (jumpRef в редакторе), а не просто на вкладку:
+         иначе найденное приходилось искать глазами второй раз. */
+      results.push({ type: "Сегмент #" + s.id, text: s.source, action: () => { store.goToSegment(s.id); onClose(); } });
   });
   store.glossary.forEach(g => { if (q && g.src.toLowerCase().includes(q.toLowerCase())) results.push({ type: "Глоссарий", text: g.src + " → " + g.tgt, action: () => { store.go("glossary"); onClose(); } }); });
   return React.createElement(Modal, { title: "Поиск по проекту", icon: "search", onClose },

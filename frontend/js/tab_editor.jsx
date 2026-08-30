@@ -24,7 +24,7 @@ window.MODEL_LS = { model: GPT_MODEL_LS_KEY, bc_model: BC_MODEL_LS_KEY,
                     rp_model: RP_MODEL_LS_KEY, judge_model: JUDGE_MODEL_LS_KEY };
 const JOB_LABELS = { translate: "Перевод", backcheck: "Back-check", termcheck: "Проверка терминологии",
                      termaudit: "Сверка терминов моделью",
-                     repair: "Автоматический ремонт", medical_qa: "Medical QA",
+                     repair: "Автоматический ремонт", medical_qa: "Детерминированные проверки",
                      full: "Перевод и проверка", apply_terms: "Одобрение и применение" };
 
 // Короткие имена шагов составного прогона. Одни и те же в таблице состава и
@@ -32,7 +32,7 @@ const JOB_LABELS = { translate: "Перевод", backcheck: "Back-check", termc
 // со строкой, галочками в которой он этот шаг и набирал.
 const FULL_STEP_LABELS = { translate: "Перевод", backcheck: "Back-check", termcheck: "Термины",
                            termaudit: "Сверка терминов",
-                           repair: "Ремонт", medical_qa: "Medical QA" };
+                           repair: "Ремонт", medical_qa: "Детерминированные проверки" };
 
 /* Сколько раз пробуем забрать результат прогона, прежде чем сдаться вслух.
    Ноль попыток — оборванная сеть оставляет таблицу устаревшей навсегда;
@@ -1053,7 +1053,7 @@ function TabEditor({ store, toast }) {
   const doMedicalQA = async (seg) => {
     if (busy[seg.id]) return;
     if (!seg.target) {
-      toast.warning("Medical QA", "Сначала переведите сегмент #" + seg.id + ".");
+      toast.warning("Проверки", "Сначала переведите сегмент #" + seg.id + ".");
       return;
     }
     setSegBusy(seg.id, "medical_qa");
@@ -1078,11 +1078,11 @@ function TabEditor({ store, toast }) {
       const color = qa.risk_color || result.segment.risk_color || "green";
       const score = qa.risk_score != null ? qa.risk_score : result.segment.risk_score;
       const n = (result.issues || result.segment.qa_issues || []).length;
-      const title = color === "red" ? "Medical QA: нужен review" : color === "yellow" ? "Medical QA: есть правки" : "Medical QA: зелёный";
+      const title = color === "red" ? "Проверки: нужен review" : color === "yellow" ? "Проверки: есть правки" : "Проверки: зелёный";
       const msg = "Сегмент #" + seg.id + " · risk " + color.toUpperCase() + " · score " + (score == null ? 0 : score) + " · issues: " + n;
       (color === "red" ? toast.warning : color === "yellow" ? toast.warning : toast.success)(title, msg);
     } else {
-      toast.error("Medical QA", result && result.error ? result.error : "Не удалось выполнить проверку.");
+      toast.error("Проверки", result && result.error ? result.error : "Не удалось выполнить проверку.");
     }
     clearBusy(seg.id);
   };
@@ -1412,7 +1412,7 @@ function TabEditor({ store, toast }) {
         (c.settled || c.wrong)
           ? "сверка терминов: снято " + (c.settled || 0) + ", неверных " + (c.wrong || 0)
           : (c.termaudit ? "сверка терминов " + c.termaudit : null),
-        c.medical_qa ? "Medical QA " + c.medical_qa : null,
+        c.medical_qa ? "Проверки " + c.medical_qa : null,
         c.applied ? "исправлено " + c.applied : null,
       ].filter(Boolean).join(" · ") || "нового ничего не потребовалось";
       const blockedMsg = c.step_skips ? " · шаги пропускались (нет ключа или модуля)" : "";
@@ -2847,8 +2847,10 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
 
 function NoProject({ store }) {
   return React.createElement("div", { className: "page" },
-    React.createElement(EmptyState, { icon: "folder", title: "Проект не выбран",
-      sub: "Импортируйте документ или откройте существующий проект.",
+    React.createElement(EmptyState, { icon: "folder",
+      title: store.projects.length ? "Проект не выбран" : "Проектов пока нет",
+      sub: store.projects.length ? "Откройте существующий проект или импортируйте документ."
+                                 : "Начните с импорта .docx: документ разобьётся на сегменты, а перевод и проверки запустятся одной кнопкой.",
       action: React.createElement(Btn, { variant: "primary", icon: "upload", onClick: () => store.go("import") }, "К импорту") }));
 }
 window.TabEditor = TabEditor;

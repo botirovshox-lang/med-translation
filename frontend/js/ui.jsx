@@ -250,7 +250,7 @@ function EmptyState({ icon, title, sub, action }) {
 }
 
 /* Пара языков — кодами, без флагов. Флаг — это страна, а не язык: английский
-   не 🇬🇧, у арабского двадцать стран, у курдского флага нет вовсе. Каталог
+   не флаг Британии, у арабского двадцать стран, у курдского флага нет вовсе. Каталог
    с названиями отдаёт сервер (/api/models → languages); здесь только код. */
 function LangPair({ src, tgt }) {
   return React.createElement("span", { className: "badge badge-lang" }, src + " → " + tgt);

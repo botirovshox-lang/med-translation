@@ -18,9 +18,19 @@
 ## Жёсткие инварианты (нарушение = потеря данных)
 
 1. **Ровно 1 uvicorn worker.** `STATE` — глобальный dict в памяти процесса,
-   `state.json` — его снапшот. Два воркера затирают данные друг друга.
-2. **Все мутации `STATE` заканчиваются `save_state(STATE)`.** Запись атомарна
-   (tmp + `os.replace` под `_SAVE_LOCK`) — не заменяй на прямую запись.
+   хранилище (`backend/store.py`) — его снапшот. Два воркера затирают данные
+   друг друга; база это НЕ снимает — кэши (`_gloss_index`, `_CONSIST_CACHE`,
+   `_JOBS`) живут в процессе.
+2. **Все мутации `STATE` заканчиваются `save_state(STATE)`.** Пишет `STORE`
+   под `_SAVE_LOCK`: на боевом сервере это PostgreSQL (`DATABASE_URL`
+   в `/etc/medcat/env`, кластер 18, порт 5433, база `medcat`) — каждый
+   проект своим документом `state_docs`, остальные верхние ключи по документу,
+   пишутся ТОЛЬКО изменившиеся; без `DATABASE_URL` — файл `state.json`
+   атомарно (tmp + `os.replace`). Очередь прогонов в таблице `jobs`
+   переживает рестарт (`_restore_jobs`). Отказ соединения при заданном URL —
+   громкий, а не тихий откат на файл. Почасовой JSON-бэкап в `data/backups/`
+   остаётся при любом хранилище; `state.json` на сервере больше НЕ источник
+   правды — только след до переноса.
 3. **Писать на диск можно только в `backend/data/`** (systemd `ProtectSystem=full`,
    `ReadWritePaths`). Экспорты — в `data/exports/`, бэкапы — в `data/backups/`.
 4. **Никаких демо-заглушек в target.** Ошибка перевода → HTTP 502 / `{"ok": false, "error": ...}`,
@@ -127,6 +137,8 @@ systemctl restart medcat
 for i in $(seq 1 15); do sleep 2; curl -s --max-time 5 http://127.0.0.1:8000/api/health && break; done
 ```
 Секреты в `/etc/medcat/env` (не в git): `APP_PASSWORD`, `OPENAI_API_KEY`.
+`DATABASE_URL` — хранилище PostgreSQL (см. инвариант 2); резервная копия базы —
+`sudo -u postgres pg_dump -p 5433 medcat`.
 Необязательные: `APP_BRAND` (название в шапке; по умолчанию «CAT Translator»),
 `DEMO_SEED=1` (демо-данные при пустом состоянии — только для показа).
 `GOOGLE_TRANSLATE_API_KEY` больше не используется — Google убран из системы.
@@ -156,7 +168,7 @@ for i in $(seq 1 15); do sleep 2; curl -s --max-time 5 http://127.0.0.1:8000/api
 
 ```bash
 .venv/bin/python -m py_compile backend/main.py
-for t in tests/test_*.py; do .venv/bin/python "$t" | tail -1; done   # 38 наборов
+for t in tests/test_*.py; do .venv/bin/python "$t" | tail -1; done   # 40 наборов
 node tests/test_editor_render.js                                    # фронтенд без браузера
 node tests/test_export_render.js                                    # экран экспорта
 node tests/test_analysis_render.js                                  # экран «Анализ»

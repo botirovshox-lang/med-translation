@@ -115,6 +115,30 @@ function OrgGlossaryImport({ store, toast }) {
         preview.sample.map((x, i) => React.createElement("li", { key: i }, x.src + " → " + x.tgt)))));
 }
 
+/* Журнал действий: кто, когда, что. Пишет сервер (`_audit`), здесь показ. */
+const AUDIT_LABELS = { login: "вход", "segment.confirm": "подтвердил сегмент", "segment.edit": "правил перевод",
+  "glossary.save": "правил глоссарий", "glossary.demote": "понизил запись", "glossary.purge": "вынос глоссария",
+  "glossary.import": "импорт глоссария", "tm.delete": "удалил из памяти", "term.approve": "одобрил термин",
+  "term.reject": "отклонил термин", "project.delete": "удалил проект", "project.export": "экспорт",
+  "job.create": "запустил прогон", "user.create": "завёл пользователя", "user.update": "правил пользователя",
+  "tenant.create": "завёл организацию" };
+function OrgAudit() {
+  const [items, setItems] = useState([]);
+  useEffect(() => { window.API.safeCall(() => window.API.audit(200)).then(r => setItems((r && r.items) || [])); }, []);
+  const detail = (r) => Object.keys(r).filter(k => !["at", "tenant", "user", "login", "action"].includes(k))
+    .map(k => k + "=" + r[k]).join(" · ");
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 10px" } }, "Журнал действий · последние " + items.length),
+    items.length === 0 && React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, "Пока пусто."),
+    items.length > 0 && React.createElement("div", { style: { maxHeight: 360, overflow: "auto" } },
+      React.createElement("table", { className: "tbl" },
+        React.createElement("tbody", null, items.map((r, i) => React.createElement("tr", { key: i },
+          React.createElement("td", { className: "dim", style: { whiteSpace: "nowrap", fontSize: 12 } }, r.at),
+          React.createElement("td", { style: { whiteSpace: "nowrap" } }, r.login || "—"),
+          React.createElement("td", null, AUDIT_LABELS[r.action] || r.action),
+          React.createElement("td", { className: "dim", style: { fontSize: 12 } }, detail(r))))))));
+}
+
 function TabOrg({ store, toast }) {
   const [info, setInfo] = useState(null);
   useEffect(() => { window.API.safeCall(() => window.API.me()).then(r => r && setInfo(r)); }, []);
@@ -127,5 +151,6 @@ function TabOrg({ store, toast }) {
       React.createElement("p", { className: "lead" }, "Пользователи и словарь организации. Проекты, глоссарий и память переводов других организаций отсюда не видны.")),
     React.createElement("div", { className: "col", style: { gap: 16 } },
       React.createElement(OrgUsers, { toast }),
-      React.createElement(OrgGlossaryImport, { store, toast })));
+      React.createElement(OrgGlossaryImport, { store, toast }),
+      React.createElement(OrgAudit, null)));
 }

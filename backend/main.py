@@ -1689,6 +1689,57 @@ def _users() -> list:
     return STATE.setdefault("users", [])
 
 
+# ─── Авторство и журнал действий ─────────────────────────────────────
+# Кто перевёл, кто подтвердил, кто одобрил термин — медицинский и юридический
+# перевод продаются вместе с ответственностью. Отметка «подтвердил человек»
+# теперь несёт идентификатор пользователя; прежнее значение "human" остаётся
+# ДЕЙСТВИТЕЛЬНЫМ (это факт о том, что заверение было — потерян только автор),
+# и читать поле надо ТОЛЬКО через `_confirmed_by_human`: буквальное сравнение
+# со строкой молча выключило бы защиту заверений — прогоны начали бы
+# переписывать подтверждённый текст, а донор глоссария потерял бы сильнейший
+# голос. Журнал — кольцо в STATE (как runCosts): AUDIT_MAX последних записей.
+AUDIT_MAX = max(500, int(os.environ.get("AUDIT_MAX", "5000")))
+
+
+def _actor() -> Optional[dict]:
+    sess = CURRENT_SESSION.get()
+    if not sess:
+        return None
+    for u in _users():
+        if u["id"] == sess.get("user"):
+            return u
+    return None
+
+
+def _actor_id():
+    """Что писать в confirmedBy: идентификатор пользователя, а без сессии
+    (тесты, миграции) — прежнее "human"."""
+    u = _actor()
+    return u["id"] if u else "human"
+
+
+def _confirmed_by_human(seg: dict) -> bool:
+    by = (seg or {}).get("confirmedBy")
+    return by == "human" or isinstance(by, int)
+
+
+def _audit(action: str, **fields) -> None:
+    try:
+        u = _actor()
+        sess = CURRENT_SESSION.get() or {}
+        rec = {"at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+               "tenant": sess.get("tenant") or _current_tenant(),
+               "user": u["id"] if u else None, "login": u["login"] if u else None,
+               "action": action}
+        rec.update({k: v for k, v in fields.items() if v is not None})
+        log = STATE.setdefault("audit", [])
+        log.append(rec)
+        if len(log) > AUDIT_MAX:
+            del log[:-AUDIT_MAX]
+    except Exception as e:      # журнал не вправе ронять действие
+        print(f"[backend] audit failed: {e}", file=sys.stderr)
+
+
 def _tenants() -> list:
     return STATE.setdefault("tenants", [])
 
@@ -2170,7 +2221,13 @@ def login(req: LoginRequest, request: Request):
     if not user or not _verify_password(user, req.password):
         _note_login_fail(ip)
         raise HTTPException(401, "Неверный логин или пароль")
-    return {"ok": True, "token": _new_session(user), "expiresIn": SESSION_TTL,
+    token = _new_session(user)
+    tok = CURRENT_SESSION.set(_SESSIONS[token])
+    try:
+        _audit("login", ip=ip)
+    finally:
+        CURRENT_SESSION.reset(tok)
+    return {"ok": True, "token": token, "expiresIn": SESSION_TTL,
             "me": _user_public(user)}
 
 
@@ -2228,6 +2285,7 @@ def admin_users(request: Request):
 
 @app.post("/api/admin/users")
 def admin_user_create(req: UserCreate, request: Request):
+    _audit("user.create", login=req.login, role=req.role)
     me = _current_user(request)
     _check_user_fields(req.login, req.password, req.role)
     if _user_by_login(req.login):
@@ -2244,6 +2302,7 @@ def admin_user_create(req: UserCreate, request: Request):
 
 @app.post("/api/admin/users/{uid}")
 def admin_user_update(uid: int, req: UserPatch, request: Request):
+    _audit("user.update", target=uid)
     me = _current_user(request)
     u = next((x for x in _users() if x["id"] == uid and x.get("tenant") == me.get("tenant")), None)
     if not u:
@@ -2271,6 +2330,15 @@ def admin_user_update(uid: int, req: UserPatch, request: Request):
     return {"ok": True, "user": _user_public(u)}
 
 
+@app.get("/api/admin/audit")
+def admin_audit(request: Request, limit: int = 200, action: str = ""):
+    _current_user(request)
+    t = _current_tenant()
+    rows = [r for r in reversed(STATE.get("audit") or [])
+            if r.get("tenant") == t and (not action or r.get("action", "").startswith(action))]
+    return {"ok": True, "items": rows[:max(1, min(limit, 1000))]}
+
+
 class TenantCreate(BaseModel):
     id: str
     name: str
@@ -2281,6 +2349,7 @@ class TenantCreate(BaseModel):
 @app.post("/api/admin/tenants")
 def admin_tenant_create(req: TenantCreate, request: Request):
     """Только с флагом super: организация и её первый владелец одним шагом."""
+    _audit("tenant.create", tenant_new=req.id)
     me = _current_user(request)
     if not me.get("super"):
         raise HTTPException(403, "Заводить организации вправе только суперпользователь")
@@ -2316,6 +2385,7 @@ def get_seed():
     # Пользователи и организации в общую выдачу НЕ идут: там хеши паролей.
     t = _current_tenant()
     public = {k: v for k, v in STATE.items() if k not in ("users", "tenants")}
+    public.pop("audit", None)
     for key in ("exportHistory", "termQueue", "autoBatches", "runCosts"):
         public[key] = [e for e in (STATE.get(key) or []) if _tenant_of(e) == t]
     return {**public, "projects": [_project_for_client(p) for p in _tenant_projects()],
@@ -2412,6 +2482,7 @@ async def import_glossary(request: Request, file: UploadFile = File(...),
            "sample": [{"src": a["src"], "tgt": a["tgt"]} for a in added[:10]]}
     if not dry_run and added:
         STATE["glossary"][0:0] = added
+        _audit("glossary.import", file=file.filename, added=len(added), tier=tier)
         _invalidate_gloss_index()
         save_state(STATE)
     return out
@@ -5197,8 +5268,9 @@ def confirm_segment(pid: int, sid: int):
     # оно ставит `translated`, см. _replace_target). Автоодобрение опирается
     # на «подтвердил человек» — без отметки такая подстановка сходила бы
     # за подтверждение и накручивала бы доказательства сама себе.
-    seg["confirmedBy"] = "human"
+    seg["confirmedBy"] = _actor_id()
     seg["confirmedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    _audit("segment.confirm", project=pid, segment=sid)
     tm_action, candidates = None, []
     if (seg.get("target") or "").strip():
         tm_action = _tm_upsert(seg["source"], seg["target"], project)
@@ -5440,6 +5512,7 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     решения машины проверялись строже решений человека — который целевого языка
     может не знать и оценить пару не в состоянии. Замечание возвращается ДО
     записи (`written: false`), одобрить вопреки ему можно полем `confirm`."""
+    _audit("term.approve", candidate=cid)
     cand = next((c for c in _term_queue() if c.get("id") == cid
                  and _tenant_of(c) == _current_tenant()), None)
     if not cand:
@@ -5661,6 +5734,7 @@ def explain_term_variants(cid: int, req: ExplainRequest = ExplainRequest()):
 
 @app.post("/api/term-queue/{cid}/reject")
 def reject_term_candidate(cid: int):
+    _audit("term.reject", candidate=cid)
     cand = next((c for c in _term_queue() if c.get("id") == cid
                  and _tenant_of(c) == _current_tenant()), None)
     if not cand:
@@ -5861,7 +5935,7 @@ def _donor_quality(cand: dict, ctx: dict) -> tuple:
         if seg.get("route") == "DUPLICATE" or seg.get("propagatedFrom"):
             why = why or "перевод скопирован с другого сегмента"
             continue
-        if seg.get("status") == "confirmed" and seg.get("confirmedBy") == "human":
+        if seg.get("status") == "confirmed" and _confirmed_by_human(seg):
             good += 1
             confirmed = True
             sources.add(_norm_key(seg.get("source")))
@@ -10518,6 +10592,8 @@ class UpdateSegmentRequest(BaseModel):
 def update_segment(pid: int, sid: int, req: UpdateSegmentRequest):
     seg = get_segment(pid, sid)
     if req.target is not None:
+        if req.target != seg.get("target"):
+            _audit("segment.edit", project=pid, segment=sid)
         seg["target"] = req.target
         if seg["status"] == "new" and req.target.strip():
             seg["status"] = "translated"
@@ -10602,8 +10678,8 @@ def batch_translate(pid: int, req: BatchRequest):
             # Донором становится лучший, а не первый по порядку: заверенный
             # человеком перевод сильнее машинного, иначе старая ошибка
             # переехала бы в новые сегменты поверх уже исправленного близнеца.
-            if prev is None or (s0.get("confirmedBy") == "human" and not prev[1]):
-                done_by_src[key0] = (t0, s0.get("confirmedBy") == "human",
+            if prev is None or (_confirmed_by_human(s0) and not prev[1]):
+                done_by_src[key0] = (t0, _confirmed_by_human(s0),
                                      s0.get("provider"))
 
     # Ключ нужен, только если хоть один сегмент придётся ПЕРЕВОДИТЬ. Порция из
@@ -11540,6 +11616,7 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
 
 @app.post("/api/projects/{pid}/export")
 def export_project(pid: int, req: ExportRequest):
+    _audit("project.export", project=pid, format=getattr(req, "format", None))
     project = get_project(pid)
     fmt = req.format.lower()
     if fmt not in EXPORT_EXT:
@@ -11623,6 +11700,7 @@ def save_term(req: TermRequest):
     else:
         STATE["glossary"].insert(0, {**req.dict(exclude={"isNew"}), "tier": GLOSSARY_TIER_HARD,
                                      "lang": scope[0], "domain": scope[1], "tenant": scope[2]})
+    _audit("glossary.save", src=req.src, tgt=req.tgt)
     _invalidate_gloss_index()
     save_state(STATE)
     return {"ok": True}
@@ -11630,6 +11708,7 @@ def save_term(req: TermRequest):
 
 @app.delete("/api/projects/{pid}")
 def delete_project(pid: int):
+    _audit("project.delete", project=pid)
     get_project(pid)                      # чужой проект — 404, удалять нечего
     STATE["projects"] = [p for p in STATE["projects"] if p["id"] != pid]
     # Исходник уходит вместе с проектом. Учебник весит 21 МБ, и оставлять его
@@ -11747,6 +11826,7 @@ def demote_term(req: TermScopeRequest):
 
     Удаления тут нет: перевод может быть верным В КОНТЕКСТЕ и негодным как
     правило на весь документ. Подсказка — ровно это и означает."""
+    _audit("glossary.demote", src=req.src)
     scope = _scope(req.lang, req.domain)
     entry = _glossary_entry(req.src, scope)
     if entry is None and not (req.lang or req.domain):
@@ -11989,6 +12069,8 @@ def purge_glossary(req: GlossaryPurgeRequest = GlossaryPurgeRequest()):
     На уже переведённый текст не влияет НИЧЕМ: расхождения и ремонт считаются
     только по приказам (`_verified_hits`), а подсказки в этот расчёт не входят.
     Меняется лишь то, что уйдёт в промпт при СЛЕДУЮЩЕМ переводе."""
+    if not req.dry_run:
+        _audit("glossary.purge", mode=getattr(req, "mode", None))
     tier = req.tier if req.tier in (GLOSSARY_TIER_SOFT, GLOSSARY_TIER_HARD) else GLOSSARY_TIER_SOFT
     scope = _project_scope(get_project(req.project)) if req.project else None
 
@@ -12108,6 +12190,7 @@ def delete_tm(src: str, lang: str = ""):
     """Как и у глоссария: пустой lang — это пара по умолчанию, а не «любая».
     _tm_upsert теперь держит по записи на языковую пару, и удаление RU→EN
     иначе уносило бы RU→DE запись того же исходника."""
+    _audit("tm.delete", src=src)
     want = lang or DEFAULT_GLOSS_LANG
     victims = [t for t in STATE["tm"]
                if t.get("src") == src and (t.get("lang") or DEFAULT_GLOSS_LANG) == want]
@@ -12914,6 +12997,7 @@ class JobRequest(BaseModel):
 def create_job(pid: int, req: JobRequest):
     """Поставить прогон в очередь. Клиенту достаточно отдать список сегментов —
     дальше страница может быть закрыта, сервер доведёт работу до конца."""
+    _audit("job.create", project=pid, kind=req.kind)
     get_project(pid)                        # 404, если проекта нет
     if req.kind not in JOB_KINDS:
         raise HTTPException(400, "Неизвестный тип прогона: " + req.kind)
@@ -12929,6 +13013,7 @@ def create_job(pid: int, req: JobRequest):
             "id": max(_JOBS, default=0) + 1,
             "kind": req.kind, "project": pid, "status": "queued",
             "tenant": _current_tenant(),
+            "user": (CURRENT_SESSION.get() or {}).get("user"),
             "total": len(ids), "done": 0, "counters": {}, "error": None,
             "params": dict(req.params or {}),
             "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

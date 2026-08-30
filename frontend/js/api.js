@@ -104,6 +104,7 @@
     userCreate:    (body)                   => call("POST",   "/admin/users", body),
     userUpdate:    (uid, body)              => call("POST",   `/admin/users/${uid}`, body),
     tenantCreate:  (body)                   => call("POST",   "/admin/tenants", body),
+    audit:         (limit)                  => call("GET",    "/admin/audit?limit=" + (limit || 200)),
     /* Для <a href> скачивания: заголовок в ссылку не подставить, токен идёт в query. */
     downloadUrl: (url) => url + (url.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(getToken()),
 

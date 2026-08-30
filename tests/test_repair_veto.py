@@ -929,6 +929,23 @@ check(seg_c["target"] == "DIAGNOSTIC INVESTIGATIONS",
       "и в сегменте стоит верный термин в верном регистре")
 main._openai_repair = lambda *a, **k: NEW_T
 
+# A2. Заход ТОЛЬКО по самоповтору меряется самой находкой, а не триграммами.
+# Боевой #128: «Распространённость (болезненность)» → «Prevalence (prevalence)»,
+# правка «Prevalence (morbidity)» откатывалась с «0 → 0» — триграмм в двух
+# словах нет, а находка скобки в меру не входила.
+seg_d = seg_of(3, "Распространённость (болезненность)", "Prevalence (prevalence)",
+               bc={"score": 100, "model": "m", "back": "b", "reasons": [], "terms_lost": []},
+               tc={"model": "t", "findings": []})
+proj = project_of([seg_d])
+check([f["kind"] for f in main._repair_findings(seg_d, proj)] == ["dup"],
+      "единственная находка — самоповтор в скобке")
+main._openai_repair = lambda *a, **k: "Prevalence (morbidity)"
+stub_checks(score_after=100, findings_after=[])
+r = main._run_segment_repair(seg_d, proj)
+check(r.get("applied") is True and seg_d["target"] == "Prevalence (morbidity)",
+      "правка, снявшая самоповтор, принята — заход мерился находкой, а не триграммами")
+main._openai_repair = lambda *a, **k: NEW_T
+
 # B. Находка ПРОТИВ приказной записи ремонту не отдаётся: исход известен.
 GLB = [{"src": "бактериовыделитель", "tgt": "bacillary excretor", "tier": "verified",
         "cat": "Term", "lang": "RU→EN", "domain": "medical"}]

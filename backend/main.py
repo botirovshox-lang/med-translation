@@ -9109,7 +9109,7 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
 # и держать по нему сегмент закрытым значит отказывать в починке по решению,
 # которого больше нет. Из переменной окружения — чтобы поднять её можно было
 # и без выката кода (например, после правки политики в данных).
-REPAIR_RULES_VERSION = os.environ.get("REPAIR_RULES_VERSION", "3")
+REPAIR_RULES_VERSION = os.environ.get("REPAIR_RULES_VERSION", "4")
 
 
 def _repair_attempt_key(seg: dict, findings: Optional[list] = None) -> str:
@@ -9664,6 +9664,12 @@ def _repair_scores(seg: dict, project: Optional[dict] = None) -> dict:
         # проекте так испорчено 12 правок из 1176 — мало, но чинит это только
         # человек, а стоит бесплатно.
         "dup": _dup_count(seg.get("target") or ""),
+        # Сами НАХОДКИ самоповтора — скобка «Prevalence (prevalence)» и повтор
+        # подряд. `dup` выше их не считает (там триграммы), и заход ТОЛЬКО по
+        # такой находке мерился нулём «0 → 0»: верная правка «Prevalence
+        # (morbidity)» на боевом #128 откатывалась и клеймилась `tried`.
+        # Бесплатно, как всё в этой группе.
+        "self_dup": len(_dup_misses(seg)),
         # Регистр приказных терминов: бесплатно, но глоссарий нужен — с
         # project=None считается нулём, как и `gloss` рядом.
         "term_case": len(_term_case_misses(seg, project)),
@@ -10015,10 +10021,10 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # ни балл, ни termcheck не пересчитывались, глоссарию нарушать нечего,
     # и «не стало хуже» засчитало бы успехом любой переписанный текст.
     # Считаем их вместе: размен регистра на кириллицу — не работа.
-    _free = lambda d: d["case"] + d["script"] + d["term_case"] + d["dup"]
+    _free = lambda d: d["case"] + d["script"] + d["term_case"] + d["dup"] + d["self_dup"]
     if only_free and _free(after) >= _free(before):
         better = False
-        why.append("правка не сняла ни регистра, ни чужого письма: "
+        why.append("правка не сняла ни регистра, ни чужого письма, ни самоповтора: "
                    + str(_free(before)) + " → " + str(_free(after)))
 
     mdl_id = _resolve_model(model or REPAIR_DEFAULT_MODEL)["id"]

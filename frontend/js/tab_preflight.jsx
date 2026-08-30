@@ -110,6 +110,26 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
       });
   };
 
+  /* Спор про ЗАПИСЬ решается той же дверью, что у сверки смысла:
+     `/glossary/demote` — приказ становится подсказкой, перевод остаётся.
+     Без кнопки здесь человек шёл искать запись в «Глоссарии» руками. */
+  const demoteAdvised = (d) => {
+    if (!window.API || ctxBusy) return;
+    if (!window.confirm("Понизить запись «" + d.src + " → " + d.tgt + "» до подсказки?\n"
+      + "Модель перестанет быть обязана этим вариантом, ремонт перестанет его вписывать. "
+      + "Готовые переводы не меняются; вернуть приказ можно в «Глоссарии».")) return;
+    setCtxBusy(true);
+    const p = store.activeProject;
+    window.API.safeCall(() => window.API.demoteTerm(d.src, p.src + "→" + p.tgt, p.domain || ""))
+      .then(r => {
+        setCtxBusy(false);
+        if (!r || !r.ok) { toast.error("Не понижено", (r && r.error) || "Сервер отказал"); return; }
+        toast.success(r.already ? "Запись уже подсказка" : "Запись понижена до подсказки",
+          r.repairedCount ? "Ремонт уже вписал её в " + r.repairedCount + " сегм. — вернуть их можно в «Глоссарии»" : "");
+        if (onReload) onReload();
+      });
+  };
+
   const arbPending = s.human.termContextPending || 0;
   const arbWrong = s.human.termContextWrong || [];
   const askArbiter = () => {
@@ -330,7 +350,10 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
           (d.why ? " · " + d.why : "") + " · сегментов: " + d.segments.length,
           d.use && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check",
             style: { marginLeft: 8 }, disabled: ctxBusy, onClick: () => applyAdvice(d) },
-            "Применить к " + d.segments.length + " сегм."))),
+            "Применить к " + d.segments.length + " сегм."),
+          React.createElement(Btn, { variant: "ghost", size: "sm", icon: "warn",
+            style: { marginLeft: 4 }, disabled: ctxBusy, onClick: () => demoteAdvised(d) },
+            "Понизить запись"))),
         arbWrong.length > DISPUTE_CAP && React.createElement(
           "div", null, "и ещё " + (arbWrong.length - DISPUTE_CAP) + " записей"),
         React.createElement("div", { style: { paddingTop: 6 } },

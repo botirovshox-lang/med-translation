@@ -842,8 +842,24 @@ def _check_lang_pair(src: str, tgt: str) -> tuple:
     return s, t
 
 
+# Свои области организации (`STATE["domains"]`): те же поля, что у встроенных,
+# потому что промпты читают ровно их. Встроенные — неудаляемый шаблон.
+# Ищутся ПЕРВЫМИ и только в своей организации: одноимённая область другого
+# клиента не видна. Правило области для автоодобрения — поле `strict`
+# (приказ только от человека), для самодельной по умолчанию включено:
+# незнакомая область не должна получать право самоодобрения молча.
+def _tenant_domains(tenant: Optional[str] = None) -> list:
+    t = tenant or _current_tenant()
+    return [d for d in STATE.get("domains") or [] if _tenant_of(d) == t]
+
+
 def _resolve_domain(domain_id: Optional[str]) -> dict:
-    """Неизвестная/пустая область → дефолт. У старых проектов поля нет вовсе."""
+    """Своя область организации, иначе встроенная, иначе дефолт.
+    У старых проектов поля нет вовсе."""
+    if domain_id:
+        for d in _tenant_domains():
+            if d.get("id") == domain_id:
+                return d
     return _DOMAINS_BY_ID.get(domain_id or "") or _DOMAINS_BY_ID[DEFAULT_DOMAIN]
 
 
@@ -2403,6 +2419,125 @@ def admin_audit(request: Request, limit: int = 200, action: str = ""):
     return {"ok": True, "items": rows[:max(1, min(limit, 1000))]}
 
 
+_DOMAIN_FIELDS = ("label", "en", "expert", "terminology", "extract", "examples")
+
+
+class DomainBody(BaseModel):
+    id: Optional[str] = None
+    base: Optional[str] = None          # встроенная область-шаблон
+    label: Optional[str] = None
+    en: Optional[str] = None
+    expert: Optional[str] = None
+    terminology: Optional[str] = None
+    extract: Optional[str] = None
+    examples: Optional[str] = None
+    cats: Optional[List[str]] = None
+    strict: Optional[bool] = None
+
+
+def _domain_public(d: dict) -> dict:
+    return {k: d.get(k) for k in ("id", "base", "cats", "strict", "created", "updated") + _DOMAIN_FIELDS} | {"custom": True}
+
+
+@app.get("/api/admin/domains")
+def admin_domains(request: Request):
+    _current_user(request)
+    return {"ok": True, "builtin": [{"id": d["id"], "label": d["label"], "cats": d["cats"],
+                                    "expert": d["expert"], "terminology": d["terminology"],
+                                    "extract": d["extract"], "examples": d.get("examples", ""),
+                                    "strict": d["id"] in AUTO_APPROVE_BY_DOMAIN} for d in DOMAINS],
+            "domains": [_domain_public(d) for d in _tenant_domains()]}
+
+
+@app.post("/api/admin/domains")
+def admin_domain_create(req: DomainBody, request: Request):
+    """Своя область — копия встроенного шаблона с правками. Поля ровно те,
+    что читают промпты; ничего нового изобретать не надо."""
+    _current_user(request)
+    base = _DOMAINS_BY_ID.get(req.base or "") or _DOMAINS_BY_ID["general"]
+    did = (req.id or "").strip().lower() or re.sub(r"[^a-z0-9]+", "-", (req.label or "").lower()).strip("-")
+    if not did:                        # название не латиницей — номерной идентификатор
+        did = "area-%d" % (len(STATE.get("domains") or []) + 1)
+        while did in _DOMAINS_BY_ID or any(d["id"] == did for d in _tenant_domains()):
+            did = did + "x"
+    if not re.fullmatch(r"[a-z0-9-]{2,32}", did or ""):
+        raise HTTPException(400, "Идентификатор области: 2–32 символа, a-z, 0-9, дефис")
+    if did in _DOMAINS_BY_ID or any(d["id"] == did for d in _tenant_domains()):
+        raise HTTPException(409, "Область с таким идентификатором уже есть")
+    today = datetime.now().strftime("%Y-%m-%d")
+    d = {"id": did, "tenant": _current_tenant(), "base": base["id"], "custom": True,
+         "cats": [c.strip() for c in (req.cats or base["cats"]) if c.strip()] or ["Term", "Document"],
+         "strict": True if req.strict is None else bool(req.strict),
+         "created": today, "updated": today}
+    for k in _DOMAIN_FIELDS:
+        v = getattr(req, k)
+        d[k] = (v.strip() if isinstance(v, str) and v.strip() else base.get(k, ""))
+    STATE.setdefault("domains", []).append(d)
+    _audit("domain.create", domain=did)
+    save_state(STATE)
+    return {"ok": True, "domain": _domain_public(d)}
+
+
+@app.post("/api/admin/domains/{did}")
+def admin_domain_update(did: str, req: DomainBody, request: Request):
+    _current_user(request)
+    d = next((x for x in _tenant_domains() if x["id"] == did), None)
+    if not d:
+        raise HTTPException(404, "Область не найдена")
+    for k in _DOMAIN_FIELDS:
+        v = getattr(req, k)
+        if v is not None:
+            d[k] = v.strip()
+    if req.cats is not None:
+        d["cats"] = [c.strip() for c in req.cats if c.strip()] or d["cats"]
+    if req.strict is not None:
+        d["strict"] = bool(req.strict)
+    d["updated"] = datetime.now().strftime("%Y-%m-%d")
+    _audit("domain.update", domain=did)
+    save_state(STATE)
+    return {"ok": True, "domain": _domain_public(d)}
+
+
+@app.delete("/api/admin/domains/{did}")
+def admin_domain_delete(did: str, request: Request):
+    _current_user(request)
+    d = next((x for x in _tenant_domains() if x["id"] == did), None)
+    if not d:
+        raise HTTPException(404, "Область не найдена")
+    used = [p["id"] for p in _tenant_projects() if p.get("domain") == did]
+    if used:
+        raise HTTPException(409, "Область используют проекты: %s" % used[:10])
+    STATE["domains"] = [x for x in STATE.get("domains", []) if x is not d]
+    _audit("domain.delete", domain=did)
+    save_state(STATE)
+    return {"ok": True}
+
+
+class ProjectDomainRequest(BaseModel):
+    domain: str
+
+
+@app.post("/api/projects/{pid}/domain")
+def set_project_domain(pid: int, req: ProjectDomainRequest):
+    """Смена области у готового проекта. Меняется область глоссария — то есть
+    состав приказных терминов, — поэтому оценки back-check с претензией
+    «потерян термин» устаревают; пересчёт бесплатный (`/backcheck/rescore`,
+    `force: true`), и ответ его называет."""
+    project = get_project(pid)
+    dom = _resolve_domain(req.domain)
+    if dom["id"] != (req.domain or "").strip():
+        raise HTTPException(400, "Неизвестная область: %r" % req.domain)
+    prev = project.get("domain")
+    project["domain"] = dom["id"]
+    n_hard = sum(1 for g in STATE["glossary"]
+                 if _scope_of(g) == _project_scope(project) and _hit_tier(g) == GLOSSARY_TIER_HARD)
+    _audit("project.domain", project=pid, domain=dom["id"], prev=prev)
+    save_state(STATE)
+    return {"ok": True, "domain": dom["id"], "prev": prev, "verifiedTerms": n_hard,
+            "note": "Состав приказных терминов изменился: оценки с претензией «потерян термин» "
+                    "устарели — пересчитайте back-check (бесплатно, /backcheck/rescore с force)."}
+
+
 class TenantPatch(BaseModel):
     name: Optional[str] = None
     active: Optional[bool] = None
@@ -3364,7 +3499,8 @@ def list_models():
         # цифра в .jsx — это второй прайс-лист рядом с настоящим.
         "aux": AUX_MODEL_PRICES,
         "embedModel": EMBED_MODEL,
-        "domains": [{"id": d["id"], "label": d["label"]} for d in DOMAINS],
+        "domains": ([{"id": d["id"], "label": d["label"]} for d in DOMAINS]
+                    + [{"id": d["id"], "label": d["label"], "custom": True} for d in _tenant_domains()]),
         "domainDefault": DEFAULT_DOMAIN,
         "languages": LANGUAGES,
         "default": DEFAULT_OPENAI_MODEL,
@@ -5986,7 +6122,10 @@ def _authority_sources(scope: tuple) -> dict:
 
 def _auto_policy(domain_id: Optional[str]) -> dict:
     pol = dict(AUTO_APPROVE_DEFAULT)
-    pol.update(AUTO_APPROVE_BY_DOMAIN.get(_resolve_domain(domain_id)["id"], {}))
+    dom = _resolve_domain(domain_id)
+    pol.update(AUTO_APPROVE_BY_DOMAIN.get(dom["id"], {}))
+    if dom.get("custom") and dom.get("strict", True):
+        pol["allow_verified"] = False
     return pol
 
 

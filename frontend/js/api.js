@@ -105,6 +105,11 @@
     userUpdate:    (uid, body)              => call("POST",   `/admin/users/${uid}`, body),
     tenantCreate:  (body)                   => call("POST",   "/admin/tenants", body),
     audit:         (limit)                  => call("GET",    "/admin/audit?limit=" + (limit || 200)),
+    domains:       ()                       => call("GET",    "/admin/domains"),
+    domainCreate:  (body)                   => call("POST",   "/admin/domains", body),
+    domainUpdate:  (did, body)              => call("POST",   `/admin/domains/${did}`, body),
+    domainDelete:  (did)                    => call("DELETE", `/admin/domains/${did}`),
+    setProjectDomain: (pid, domain)         => call("POST",   `/projects/${pid}/domain`, { domain }),
     /* Для <a href> скачивания: заголовок в ссылку не подставить, токен идёт в query. */
     downloadUrl: (url) => url + (url.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(getToken()),
 

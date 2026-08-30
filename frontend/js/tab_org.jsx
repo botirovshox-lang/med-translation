@@ -139,6 +139,59 @@ function OrgAudit() {
           React.createElement("td", { className: "dim", style: { fontSize: 12 } }, detail(r))))))));
 }
 
+/* Свои предметные области: копия встроенного шаблона с правками. Поля —
+   ровно те, что читают промпты перевода, проверки и извлечения терминов. */
+function OrgDomains({ toast }) {
+  const [data, setData] = useState({ builtin: [], domains: [] });
+  const [edit, setEdit] = useState(null);      // { id?, base, label, expert, terminology, extract, examples, cats, strict }
+  const reload = () => window.API.safeCall(() => window.API.domains()).then(r => r && setData(r));
+  useEffect(() => { reload(); }, []);
+  const fromBase = (b) => ({ base: b.id, label: b.label + " (своя)", expert: b.expert, terminology: b.terminology,
+    extract: b.extract, examples: b.examples || "", cats: (b.cats || []).join(", "), strict: true });
+  const save = async () => {
+    const body = { ...edit, cats: String(edit.cats || "").split(",").map(x => x.trim()).filter(Boolean) };
+    try {
+      if (edit.id && data.domains.some(d => d.id === edit.id)) await window.API.domainUpdate(edit.id, body);
+      else await window.API.domainCreate(body);
+      toast.success("Область сохранена", edit.label); setEdit(null); reload();
+    } catch (e) { toast.error("Не сохранена", e.message || String(e)); }
+  };
+  const del = async (d) => {
+    if (!confirm("Удалить область «" + d.label + "»?")) return;
+    try { await window.API.domainDelete(d.id); toast.success("Удалена", d.label); reload(); }
+    catch (e) { toast.error("Не удалена", e.message || String(e)); }
+  };
+  const F = (k, label, rows) => React.createElement(Field, { label },
+    rows ? React.createElement(Textarea, { value: edit[k] || "", style: { minHeight: 60 }, onChange: (e) => setEdit({ ...edit, [k]: e.target.value }) })
+         : React.createElement(Input, { value: edit[k] || "", onChange: (e) => setEdit({ ...edit, [k]: e.target.value }) }));
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+    React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, "Предметные области"),
+    React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } },
+      "Встроенные области — шаблон. Своя область задаёт, кем модель себя считает при переводе, что считать эталоном терминологии, что извлекать в глоссарий и какие категории терминов есть. «Приказ только от человека» — защита от самоодобрения глоссария в незнакомой области."),
+    data.domains.length > 0 && React.createElement("table", { className: "tbl" },
+      React.createElement("tbody", null, data.domains.map(d => React.createElement("tr", { key: d.id },
+        React.createElement("td", null, React.createElement("b", null, d.label), " ", React.createElement("span", { className: "dim" }, d.id + " · шаблон: " + d.base + (d.strict ? " · приказ только от человека" : ""))),
+        React.createElement("td", { style: { whiteSpace: "nowrap", textAlign: "right" } },
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setEdit({ ...d, cats: (d.cats || []).join(", ") }) }, "Править"),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => del(d) }, "Удалить")))))),
+    !edit && React.createElement("div", { className: "row row-wrap", style: { gap: 6 } },
+      React.createElement("span", { className: "dim", style: { fontSize: 13 } }, "Создать на основе:"),
+      data.builtin.map(b => React.createElement(Btn, { key: b.id, variant: "secondary", size: "sm", onClick: () => setEdit(fromBase(b)) }, b.label))),
+    edit && React.createElement("div", { className: "col", style: { gap: 8 } },
+      React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
+        F("label", "Название"), F("id", "Идентификатор (a-z, 0-9, дефис; пусто — из названия)"),
+        F("expert", "Кем модель себя считает (по-английски)"), F("terminology", "Эталон терминологии (по-английски)")),
+      F("extract", "Что извлекать в глоссарий (по-английски)", true),
+      F("examples", "Типичные кальки области: BAD / GOOD (по-английски, можно пусто)", true),
+      F("cats", "Категории терминов через запятую"),
+      React.createElement("label", { className: "row", style: { gap: 8, fontSize: 13 } },
+        React.createElement("input", { type: "checkbox", checked: !!edit.strict, onChange: (e) => setEdit({ ...edit, strict: e.target.checked }) }),
+        "Приказ в глоссарий — только от человека (согласия сегментов не хватает)"),
+      React.createElement("div", { className: "row", style: { gap: 8 } },
+        React.createElement(Btn, { variant: "primary", disabled: !edit.label, onClick: save }, "Сохранить"),
+        React.createElement(Btn, { variant: "ghost", onClick: () => setEdit(null) }, "Отмена"))));
+}
+
 function TabOrg({ store, toast }) {
   const [info, setInfo] = useState(null);
   useEffect(() => { window.API.safeCall(() => window.API.me()).then(r => r && setInfo(r)); }, []);
@@ -160,6 +213,7 @@ function TabOrg({ store, toast }) {
         "Лимит исчерпан: платные прогоны отвечают отказом, бесплатные команды и экспорт работают. Лимит ставит администратор сервиса.")),
     React.createElement("div", { className: "col", style: { gap: 16 } },
       React.createElement(OrgUsers, { toast }),
+      React.createElement(OrgDomains, { toast }),
       React.createElement(OrgGlossaryImport, { store, toast }),
       React.createElement(OrgAudit, null)));
 }

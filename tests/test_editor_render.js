@@ -132,6 +132,7 @@ global.API = {
     default: "gpt-4o", backcheckDefault: "gpt-5.6-luna", termcheckDefault: "gpt-5.6-terra",
     repairDefault: "gpt-5.6-terra", judgeDefault: "gpt-5.6-terra", judgeZone: [50, 97],
     domains: [{ id: "medical", label: "Медицина" }], domainDefault: "medical",
+    languages: [{ code: "RU", ru: "Русский", native: "Русский" }, { code: "EN", ru: "Английский", native: "English" }],
     backcheckBands: [], available: true,
   }),
   glossaryImpact: async () => ({ ok: true, terms: [], segments: [], pending: [], confirmed: [] }),
@@ -149,6 +150,17 @@ checkHookExports(fs, path, root, check);
    редактора — и таблица сегментов рисовала строки «0» без текста, при
    исправных данных и фильтре. Ни один рендер-тест этого не видел: каждый
    грузит только свои файлы, вместе их не грузит никто. */
+console.log("=== 0a. Флагов стран в исходниках нет ===");
+/* Флаг — это страна, а не язык: английский не 🇬🇧, у арабского двадцать
+   стран. Пара проекта теперь любая, и языки приходят с сервера кодами;
+   эмодзи-флаг в .jsx — это возврат к пяти зашитым языкам. */
+{
+  const flagRe = /[\u{1F1E6}-\u{1F1FF}]{2}/u;
+  const withFlags = fs.readdirSync(root).filter(f => f.endsWith(".jsx")
+    && flagRe.test(fs.readFileSync(path.join(root, f), "utf8")));
+  check(withFlags.length === 0, "эмодзи-флагов нет" + (withFlags.length ? ": " + withFlags.join(", ") : ""));
+}
+
 console.log("=== 0b. Имена верхнего уровня не совпадают между .jsx ===");
 {
   const decl = {};

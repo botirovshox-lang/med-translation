@@ -96,4 +96,19 @@ check(not q._has_exact_term("الرئةالحاد", "الرئة"),
 check(q._has_exact_term("туберкулёз лёгких", "лёгких") and not q._has_exact_term("облёгких", "лёгких"),
       "кириллица работает как раньше")
 
+print("=== 5. Пара проекта — из каталога языков ===")
+import main
+main.save_state = lambda *a, **k: None
+from fastapi import HTTPException
+check(len(main.LANGUAGES) >= 60 and all("code" in l and "ru" in l for l in main.LANGUAGES),
+      "каталог загружен: %d языков" % len(main.LANGUAGES))
+check(main._check_lang_pair("ru", "en") == ("RU", "EN"), "коды нормализуются к верхнему регистру")
+for bad in [("RU", "RU"), ("Русский", "EN"), ("RU", "XX"), ("", "EN")]:
+    try:
+        main._check_lang_pair(*bad)
+        check(False, "пара %r отвергнута" % (bad,))
+    except HTTPException as e:
+        check(e.status_code == 400, "пара %r отвергнута — 400" % (bad,))
+check("languages" in main.list_models(), "/api/models отдаёт каталог")
+
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))

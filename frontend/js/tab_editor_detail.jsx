@@ -212,7 +212,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
     React.createElement("div", null,
       React.createElement("div", { className: "row between", style: { marginBottom: 6 } },
         React.createElement("span", { className: "label" },
-          fromImage ? "🖼 Оригинал (текст на картинке)" : "🇷🇺 Оригинал"),
+          fromImage ? "🖼 Оригинал (текст на картинке)" : "Оригинал · " + (project.src || "")),
         React.createElement(Btn, { variant: "ghost", size: "sm", icon: "copy", onClick: copySrc }, "Копировать")),
       fromImage && React.createElement("div", { className: "card col", style: { padding: 8, marginBottom: 6, gap: 8, background: "var(--bg-sunken)" } },
         cropUrl
@@ -235,8 +235,10 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
 
     // translation
     React.createElement("div", null,
-      React.createElement("div", { className: "label", style: { marginBottom: 6 } }, "🇬🇧 Перевод"),
-      React.createElement(Textarea, { value: draft, onChange: (e) => setDraft(e.target.value), placeholder: "Введите перевод…", style: { minHeight: 120 } }),
+      React.createElement("div", { className: "label", style: { marginBottom: 6 } }, "Перевод · " + (project.tgt || "")),
+      /* dir="auto": направление письма браузер берёт из самого текста — арабский
+         и иврит выравниваются справа без каталога языков в браузере. */
+      React.createElement(Textarea, { value: draft, onChange: (e) => setDraft(e.target.value), placeholder: "Введите перевод…", dir: "auto", style: { minHeight: 120 } }),
       React.createElement("div", { className: "row between", style: { marginTop: 8 } },
         React.createElement("span", { className: "dim", style: { fontSize: 12 } }, words + " слов · " + draft.length + " симв."),
         dirty && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check", onClick: saveDraft }, "Сохранить"))

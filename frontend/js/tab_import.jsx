@@ -9,6 +9,8 @@ function TabImport({ store, toast }) {
   const [tgt, setTgt] = useState("EN");
   const [domain, setDomain] = useState("medical");   // область: от неё зависят промпты перевода и проверки
   const [domains, setDomains] = useState([["medical", "Медицина"]]);
+  // Каталог языков — тоже с сервера: пара проекта может быть любой.
+  const [langs, setLangs] = useState([["RU", "Русский"], ["EN", "Английский"]]);
   const [creating, setCreating] = useState(false);
   const [progress, setProgress] = useState("");
   const fileRef = useRef(null);
@@ -20,6 +22,8 @@ function TabImport({ store, toast }) {
         setDomains(res.domains.map(d => [d.id, d.label]));
         setDomain(res.domainDefault || res.domains[0].id);
       }
+      if (res && res.languages && res.languages.length)
+        setLangs(res.languages.map(l => [l.code, l.ru + " · " + l.native]));
     });
   }, []);
 
@@ -51,7 +55,8 @@ function TabImport({ store, toast }) {
     }
   };
 
-  const langOpts = [["RU", "Русский"], ["EN", "Английский"], ["DE", "Немецкий"], ["FR", "Французский"], ["ES", "Испанский"]];
+  const langOpts = langs;
+  const pairBad = src === tgt;
 
   return React.createElement("div", { className: "page" },
     React.createElement("div", { className: "page-head" },
@@ -98,6 +103,8 @@ function TabImport({ store, toast }) {
               React.createElement(Select, { value: tgt, onChange: (e) => setTgt(e.target.value) },
                 langOpts.map(([v, l]) => React.createElement("option", { key: v, value: v }, l))))
           ),
+          pairBad && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } },
+            "Язык оригинала и язык перевода совпадают."),
           React.createElement(Field, { label: "Предметная область",
             hint: "Задаёт терминологию в промптах перевода и проверки. Меняется только для новых проектов." },
             React.createElement(Select, { value: domain, onChange: (e) => setDomain(e.target.value) },

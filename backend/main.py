@@ -764,6 +764,41 @@ DEFAULT_DOMAIN = "medical"      # исторически сервис начин
 _DOMAINS_BY_ID = {d["id"]: d for d in DOMAINS}
 
 
+# ─── Каталог языков ──────────────────────────────────────────────────
+# Пара проекта может быть ЛЮБОЙ: список живёт файлом, а не в .jsx (там было
+# пять языков с флагами стран). Код — ISO 639-1 в верхнем регистре, тот же,
+# что ключует таблицы окончаний и маркеры отрицания; то, чего в каталоге
+# нет, проектом стать не может — иначе «язык» станет произвольной строкой,
+# и ни одна таблица к нему не подойдёт. Флагов нет намеренно: флаг — это
+# страна, а не язык.
+def _load_languages() -> list:
+    try:
+        with open(ROOT / "backend" / "languages.json", encoding="utf-8") as f:
+            langs = json.load(f)["languages"]
+    except Exception as e:
+        print(f"[backend] WARN: languages.json не прочитан: {e}", file=sys.stderr)
+        langs = [{"code": "RU", "ru": "Русский", "en": "Russian", "native": "Русский", "script": "CYRILLIC"},
+                 {"code": "EN", "ru": "Английский", "en": "English", "native": "English", "script": "LATIN"}]
+    return sorted(langs, key=lambda l: l["ru"])
+
+
+LANGUAGES = _load_languages()
+_LANG_BY_CODE = {l["code"]: l for l in LANGUAGES}
+
+
+def _check_lang_pair(src: str, tgt: str) -> tuple:
+    """Коды языков проекта — из каталога, и пара не вырождена. Ответ 400,
+    а не молчаливое «RU» по умолчанию: проект с языком «Русский→English»
+    не найдёт ни одной таблицы, и все проверки на нём просто умолкнут."""
+    s, t = (src or "").strip().upper(), (tgt or "").strip().upper()
+    if s not in _LANG_BY_CODE or t not in _LANG_BY_CODE:
+        raise HTTPException(400, f"Неизвестный код языка: {src!r} → {tgt!r}. "
+                                 "Ожидается код ISO 639-1 из каталога (/api/models → languages).")
+    if s == t:
+        raise HTTPException(400, "Язык оригинала и язык перевода совпадают.")
+    return s, t
+
+
 def _resolve_domain(domain_id: Optional[str]) -> dict:
     """Неизвестная/пустая область → дефолт. У старых проектов поля нет вовсе."""
     return _DOMAINS_BY_ID.get(domain_id or "") or _DOMAINS_BY_ID[DEFAULT_DOMAIN]
@@ -2801,6 +2836,7 @@ def list_models():
         "embedModel": EMBED_MODEL,
         "domains": [{"id": d["id"], "label": d["label"]} for d in DOMAINS],
         "domainDefault": DEFAULT_DOMAIN,
+        "languages": LANGUAGES,
         "default": DEFAULT_OPENAI_MODEL,
         "backcheckDefault": BACKCHECK_DEFAULT_MODEL,
         "termcheckDefault": TERMCHECK_DEFAULT_MODEL,
@@ -2843,13 +2879,14 @@ class CreateProjectRequest(BaseModel):
 
 @app.post("/api/projects")
 def create_project(req: CreateProjectRequest):
+    src, tgt = _check_lang_pair(req.src, req.tgt)
     new_id = max((p["id"] for p in STATE["projects"]), default=0) + 1
     sample = STATE["projects"][0]["segments"][:8] if STATE["projects"] else []
     new_project = {
         "id": new_id,
         "title": req.title or "Новый проект",
         "titleEn": req.title or "New Project",
-        "src": req.src, "tgt": req.tgt,
+        "src": src, "tgt": tgt,
         "domain": _resolve_domain(req.domain)["id"],
         "status": "in_progress",
         "created": datetime.now().strftime("%Y-%m-%d"),
@@ -3027,6 +3064,7 @@ async def upload_project(
     tgt: str = Form("EN"),
     domain: str = Form(DEFAULT_DOMAIN),
 ):
+    src, tgt = _check_lang_pair(src, tgt)
     try:
         import docx  # noqa: F401 — проверка наличия, разбор идёт в _docx_paragraphs
     except ImportError:

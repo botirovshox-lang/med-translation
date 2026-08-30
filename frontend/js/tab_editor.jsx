@@ -2165,8 +2165,8 @@ function TabEditor({ store, toast }) {
                   })
                 ),
                 React.createElement("th", { className: "col-id" }, "#"),
-                React.createElement("th", null, "🇷🇺 Оригинал"),
-                React.createElement("th", null, "🇬🇧 Перевод"),
+                React.createElement("th", null, "Оригинал · " + (project.src || "")),
+                React.createElement("th", null, "Перевод · " + (project.tgt || "")),
                 React.createElement("th", { style: { width: 132 } }, "Статус"),
                 React.createElement("th", { style: { width: 76 },
                   title: "Ремонт, находки по терминам, back-check" }, "Проверки"),

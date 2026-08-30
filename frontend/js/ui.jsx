@@ -249,9 +249,11 @@ function EmptyState({ icon, title, sub, action }) {
   );
 }
 
-const FLAGS = { RU: "🇷🇺", EN: "🇬🇧", DE: "🇩🇪", FR: "🇫🇷", ES: "🇪🇸" };
+/* Пара языков — кодами, без флагов. Флаг — это страна, а не язык: английский
+   не 🇬🇧, у арабского двадцать стран, у курдского флага нет вовсе. Каталог
+   с названиями отдаёт сервер (/api/models → languages); здесь только код. */
 function LangPair({ src, tgt }) {
-  return React.createElement("span", { className: "badge badge-lang" }, (FLAGS[src] || src) + " " + src + " → " + (FLAGS[tgt] || tgt) + " " + tgt);
+  return React.createElement("span", { className: "badge badge-lang" }, src + " → " + tgt);
 }
 
 /* Чип совпадения с памятью переводов убран вместе с колонкой TM%. Считать
@@ -403,7 +405,7 @@ Object.assign(window, {
   Icon, Btn, IconBtn, StatusBadge, Badge, STATUS_META,
   Field, Input, Textarea, Select, SearchInput, Checkbox, Radio, Switch,
   Expander, Modal, ToastProvider, useToast,
-  ProgressBar, Ring, Spinner, Avatar, EmptyState, LangPair, FLAGS,
+  ProgressBar, Ring, Spinner, Avatar, EmptyState, LangPair,
   fmtCost, InfoTip, ROUTE_INFO, RISK_INFO, RouteLabel, RiskLabel,
   BC_BANDS_FALLBACK, setBcBands, bcBands, bcBandColor, bcScoreColor,
 });

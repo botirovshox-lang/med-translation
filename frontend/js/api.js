@@ -104,6 +104,8 @@
     userCreate:    (body)                   => call("POST",   "/admin/users", body),
     userUpdate:    (uid, body)              => call("POST",   `/admin/users/${uid}`, body),
     tenantCreate:  (body)                   => call("POST",   "/admin/tenants", body),
+    tenants:       ()                       => call("GET",    "/admin/tenants"),
+    tenantUpdate:  (tid, body)              => call("POST",   `/admin/tenants/${tid}`, body),
     audit:         (limit)                  => call("GET",    "/admin/audit?limit=" + (limit || 200)),
     domains:       ()                       => call("GET",    "/admin/domains"),
     domainCreate:  (body)                   => call("POST",   "/admin/domains", body),

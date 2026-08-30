@@ -192,6 +192,46 @@ function OrgDomains({ toast }) {
         React.createElement(Btn, { variant: "ghost", onClick: () => setEdit(null) }, "Отмена"))));
 }
 
+/* Суперпользователь: организации, их расход и лимиты. Лимит — решение
+   администратора сервиса, владелец сам себе его не ставит. */
+function SuperTenants({ toast }) {
+  const [tenants, setTenants] = useState([]);
+  const [form, setForm] = useState({ id: "", name: "", ownerLogin: "", ownerPassword: "" });
+  const reload = () => window.API.safeCall(() => window.API.tenants()).then(r => setTenants((r && r.tenants) || []));
+  useEffect(() => { reload(); }, []);
+  const setLimit = async (t) => {
+    const v = prompt("Месячный лимит для «" + t.name + "», $ (пусто — снять лимит):", t.limitUsd != null ? t.limitUsd : "");
+    if (v === null) return;
+    try {
+      await window.API.tenantUpdate(t.id, v.trim() === "" ? { clearLimit: true } : { limitUsd: Number(v) });
+      toast.success("Лимит обновлён", t.name); reload();
+    } catch (e) { toast.error("Не обновлён", e.message || String(e)); }
+  };
+  const create = async () => {
+    try { await window.API.tenantCreate(form); toast.success("Организация заведена", form.name); setForm({ id: "", name: "", ownerLogin: "", ownerPassword: "" }); reload(); }
+    catch (e) { toast.error("Не заведена", e.message || String(e)); }
+  };
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+    React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, "Организации (администратор сервиса)"),
+    React.createElement("table", { className: "tbl" },
+      React.createElement("thead", null, React.createElement("tr", null,
+        ["Организация", "Расход за месяц", "Лимит", ""].map((h, i) => React.createElement("th", { key: i }, h)))),
+      React.createElement("tbody", null, tenants.map(t => React.createElement("tr", { key: t.id },
+        React.createElement("td", null, React.createElement("b", null, t.name), " ", React.createElement("span", { className: "dim" }, t.id)),
+        React.createElement("td", { style: { color: t.spend && t.spend.over ? "var(--c-danger)" : undefined } },
+          "$" + Number((t.spend && t.spend.spentUsd) || 0).toFixed(2) + " · вызовов " + ((t.spend && t.spend.calls) || 0)),
+        React.createElement("td", null, t.limitUsd != null ? "$" + Number(t.limitUsd).toFixed(2) : "—"),
+        React.createElement("td", { style: { textAlign: "right" } },
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLimit(t) }, "Лимит")))))),
+    React.createElement("div", { className: "eyebrow", style: { margin: "6px 0 0" } }, "Новая организация"),
+    React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
+      React.createElement(Field, { label: "Идентификатор (a-z, 0-9, дефис)" }, React.createElement(Input, { value: form.id, onChange: (e) => setForm({ ...form, id: e.target.value }) })),
+      React.createElement(Field, { label: "Название" }, React.createElement(Input, { value: form.name, onChange: (e) => setForm({ ...form, name: e.target.value }) })),
+      React.createElement(Field, { label: "Логин владельца" }, React.createElement(Input, { value: form.ownerLogin, onChange: (e) => setForm({ ...form, ownerLogin: e.target.value }) })),
+      React.createElement(Field, { label: "Пароль владельца (от 8)" }, React.createElement(Input, { type: "password", value: form.ownerPassword, onChange: (e) => setForm({ ...form, ownerPassword: e.target.value }) }))),
+    React.createElement("div", null, React.createElement(Btn, { variant: "primary", disabled: !form.id || !form.ownerLogin || form.ownerPassword.length < 8, onClick: create }, "Завести организацию")));
+}
+
 function TabOrg({ store, toast }) {
   const [info, setInfo] = useState(null);
   useEffect(() => { window.API.safeCall(() => window.API.me()).then(r => r && setInfo(r)); }, []);
@@ -213,6 +253,7 @@ function TabOrg({ store, toast }) {
         "Лимит исчерпан: платные прогоны отвечают отказом, бесплатные команды и экспорт работают. Лимит ставит администратор сервиса.")),
     React.createElement("div", { className: "col", style: { gap: 16 } },
       React.createElement(OrgUsers, { toast }),
+      store.can && store.can.super && React.createElement(SuperTenants, { toast }),
       React.createElement(OrgDomains, { toast }),
       React.createElement(OrgGlossaryImport, { store, toast }),
       React.createElement(OrgAudit, null)));

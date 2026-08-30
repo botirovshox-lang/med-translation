@@ -407,6 +407,50 @@ check(main._looks_like_term("Hepatitis C", "Hepatitis C") is True,
       "для источника на другом алфавите проверка молчит — как молчат "
       "DOMAIN_RULES без правил для пары языков")
 
+# --------- Ворота формы (_term_shape_reject): после дедупликации, conflict мимо ---------
+# Прежние ворота стояли на ВХОДЕ в _queue_term и трём вещам вредили разом:
+# резали conflict-карточки (которые _auto_verdict по построению отдаёт
+# человеку раньше любых проверок формы), глушили рост hits/reasked у решённых
+# терминов и крутили общий счётчик без лока из рабочих потоков.
+print("")
+print("=== Ворота формы очереди ===")
+project_of([])
+main.STATE["termQueue"] = []
+LONG_SRC = "фиброзно-кавернозный туберкулёз лёгких у взрослых"   # 5 слов > лимита 3
+# 1. conflict длиннее лимита ОБЯЗАН завестись: расхождение заверенного
+# перевода с длинной записью глоссария иначе не всплывёт никогда.
+c = main._queue_term("conflict", LONG_SRC, "", lang="RU->EN", domain="medical",
+                     project=1, segment=5)
+check(c is not None and main.STATE["termQueue"],
+      "conflict длиннее лимита слов заводится — его решает человек")
+# 2. Свободно предложенная пара той же длины — нет: её автоодобрение
+# отвергнет всегда, у потолка ей делать нечего.
+before = main._TERM_NOT_TERM[0]
+check(main._queue_term("extract", LONG_SRC, "fibrocavitary pulmonary tuberculosis",
+                       lang="RU->EN", domain="medical", project=1, segment=5) is None,
+      "extract длиннее лимита карточки не заводит")
+check(main._TERM_NOT_TERM[0] == before + 1, "и отсев посчитан (под локом)")
+# 3. Ворота стоят ПОСЛЕ дедупликации: у УЖЕ заведённой длинной карточки hits
+# растёт — иначе система молча глотала бы несогласие, что запрещено тем же
+# правилом, что у _looks_like_term.
+main.STATE["termQueue"].append({"id": 98, "kind": "extract", "src": LONG_SRC,
+                                "tgt": "fibrocavitary pulmonary tuberculosis",
+                                "status": "pending", "hits": 1,
+                                "lang": "RU->EN", "domain": "medical"})
+grown = main._queue_term("extract", LONG_SRC, "fibrocavitary pulmonary tuberculosis",
+                         lang="RU->EN", domain="medical", project=1, segment=7)
+check(grown is not None and grown["hits"] == 2,
+      "у существующей длинной карточки hits растёт: ворота только для новых")
+# 4. Предикат ОБЩИЙ: _auto_verdict больше не держит собственной копии условий.
+import inspect as _insp
+check("max_src_words" not in _insp.getsource(main._auto_verdict),
+      "_auto_verdict читает форму через _term_shape_reject, а не копией")
+check((main._auto_verdict({"kind": "extract", "src": LONG_SRC, "tgt": "x",
+                           "lang": "RU->EN", "domain": "medical"},
+                          {"pol": main._auto_policy("medical")})[1]
+       or "").startswith("длинный термин"),
+      "и отвечает той же причиной")
+
 
 # --------- 9. Чего нельзя было сломать по дороге ---------
 print("")

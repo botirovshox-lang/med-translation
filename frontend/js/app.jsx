@@ -25,6 +25,7 @@ function useStore(authed) {
     window.API.safeCall(() => window.API.me()).then(r => {
       if (cancelled || !r || !r.me) return;
       setMe(r.me); setCan(r.can || { owner: false, super: false });
+      if (window.ADMIN_ENTRY && r.can && r.can.super) setTab("admin");
     });
     window.API.safeCall(() => window.API.models()).then(r => {
       if (!cancelled && r && r.brand) setBrand(r.brand);
@@ -275,7 +276,9 @@ const TABS = [
   { key: "preflight", label: "Анализ", icon: "target" },
   { key: "export", label: "Экспорт", icon: "download" },
   { key: "org", label: "Организация", icon: "user", owner: true },
-  { key: "admin", label: "Админ", icon: "settings", super: true },
+  /* Админка открывается только с нестандартного адреса (window.ADMIN_ENTRY
+     ставит сервер на /console-…), а не с главной — и только super. */
+  { key: "admin", label: "Админ", icon: "settings", super: true, entry: true },
 ];
 function TabBar({ store }) {
   const counts = store.activeProject ? store.statusCounts(store.activeProject) : null;
@@ -289,7 +292,8 @@ function TabBar({ store }) {
     return null;
   };
   return React.createElement("nav", { className: "tabbar", role: "tablist" },
-    TABS.filter(t => (!t.owner || (store.can && store.can.owner)) && (!t.super || (store.can && store.can.super))).map(t => {
+    TABS.filter(t => (!t.owner || (store.can && store.can.owner)) && (!t.super || (store.can && store.can.super))
+                  && (!t.entry || window.ADMIN_ENTRY)).map(t => {
       const b = badgeFor(t.key);
       return React.createElement("button", { key: t.key, className: "tab" + (store.tab === t.key ? " active" : ""),
         role: "tab", "aria-selected": store.tab === t.key, onClick: () => store.go(t.key) },

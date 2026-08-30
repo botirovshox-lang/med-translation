@@ -242,6 +242,8 @@ function TabOrg({ store, toast }) {
     React.createElement("div", { className: "page-head" },
       React.createElement("h1", null, "Организация" + (info && info.tenant && info.tenant.name ? " · " + info.tenant.name : "")),
       React.createElement("p", { className: "lead" }, "Пользователи и словарь организации. Проекты, глоссарий и память переводов других организаций отсюда не видны.")),
+    info && info.adminPath && !window.ADMIN_ENTRY && React.createElement("p", { className: "dim", style: { fontSize: 13, marginTop: -8 } },
+      "Админка сервиса — по служебному адресу ", React.createElement("a", { href: info.adminPath }, info.adminPath)),
     info && info.spend && React.createElement("div", { className: "card card-pad", style: { marginBottom: 16, fontSize: 13 } },
       React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, "Расход за " + info.spend.month),
       React.createElement("div", { style: { fontWeight: 600, color: info.spend.over ? "var(--c-danger)" : undefined } },

@@ -62,4 +62,12 @@ r = c.post("/api/jobs/9002/stop", headers=H(S))
 check(r.status_code == 200 and main._JOBS[9002]["stop"], "super остановил чужой прогон")
 main._JOBS.pop(9002, None)
 
+print("=== 4. Вход в админку — по нестандартному адресу ===")
+check(not main.ADMIN_PATH.startswith("admin") and len(main.ADMIN_PATH) >= 12, "адрес не /admin: /" + main.ADMIN_PATH)
+r = c.get("/" + main.ADMIN_PATH)
+check(r.status_code == 200 and "window.ADMIN_ENTRY=true" in r.text, "служебный адрес отдаёт приложение с меткой входа")
+check(c.get("/admin").status_code == 404 and "ADMIN_ENTRY" not in c.get("/").text, "/admin — 404, главная без метки")
+check(c.get("/api/auth/me", headers=H(S)).json().get("adminPath") == "/" + main.ADMIN_PATH, "super видит адрес в /auth/me")
+check("adminPath" not in c.get("/api/auth/me", headers=H(O)).json(), "владелец без super — не видит")
+
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))

@@ -124,8 +124,8 @@ function TabAdmin({ store, toast }) {
     const h = setInterval(tick, 10000);
     return () => { dead = true; clearInterval(h); };
   }, [nonce, store.can && store.can.super]);
-  if (!(store.can && store.can.super))
-    return React.createElement("div", { className: "page" }, React.createElement("p", { className: "dim" }, "Этот экран доступен администратору сервиса."));
+  if (!(store.can && store.can.super) || !window.ADMIN_ENTRY)
+    return React.createElement("div", { className: "page" }, React.createElement("p", { className: "dim" }, "Этот экран доступен администратору сервиса по служебному адресу."));
   const reload = () => setNonce(n => n + 1);
   const pr = ov && ov.process;
   return React.createElement("div", { className: "page page-wide" },

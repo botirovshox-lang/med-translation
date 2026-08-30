@@ -1717,6 +1717,12 @@ BOOTSTRAP_LOGIN = "admin"
 ROLES = ("owner", "translator")
 PBKDF2_ITERS = 200_000
 
+# Адрес входа в админку: ADMIN_PATH из окружения, иначе выводится из APP_PASSWORD
+# (стабилен для установки, не угадывается). Обфускация входа, не защита.
+ADMIN_PATH = re.sub(r"[^A-Za-z0-9._-]", "", os.environ.get("ADMIN_PATH", "").strip()) or (
+    "console-" + hashlib.sha256(("admin-console:" + _RAW_PASSWORD).encode()).hexdigest()[:12])
+print(f"[backend] админка: /{ADMIN_PATH}", file=sys.stderr)
+
 # Текущая сессия запроса — для мест, куда Request не доезжает (get_project
 # и фильтры по организации). В рабочие потоки прогона ContextVar НЕ
 # наследуется (`_run_parallel` — ThreadPoolExecutor): задача обязана нести
@@ -2348,7 +2354,8 @@ def auth_me(request: Request):
     return {"ok": True, "me": _user_public(u),
             "tenant": tenant or {"id": u.get("tenant", DEFAULT_TENANT), "name": ""},
             "can": {"owner": u.get("role") == "owner", "super": bool(u.get("super"))},
-            "spend": _spend_status(u.get("tenant"))}
+            "spend": _spend_status(u.get("tenant")),
+            **({"adminPath": "/" + ADMIN_PATH} if u.get("super") else {})}
 
 
 class UserCreate(BaseModel):
@@ -13627,6 +13634,17 @@ if FRONTEND_DIR.exists():
     @app.get("/", response_class=HTMLResponse)
     def index():
         return FileResponse(str(FRONTEND_DIR / "index.html"))
+
+    # Вход в админку — по нестандартному адресу, а не /admin. Адрес — из
+    # ADMIN_PATH в окружении, иначе выводится из APP_PASSWORD (стабилен для
+    # установки, не угадывается) и печатается в журнал при старте. Это
+    # обфускация входа, а не защита: право на /api/admin/* даёт роль super.
+    @app.get("/" + ADMIN_PATH, response_class=HTMLResponse)
+    def admin_console():
+        html = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+        marker = "<script>window.ADMIN_ENTRY=true;</script>"
+        html = html.replace("<head>", "<head>" + marker, 1) if "<head>" in html else marker + html
+        return HTMLResponse(html)
 else:
     @app.get("/", response_class=HTMLResponse)
     def index_fallback():

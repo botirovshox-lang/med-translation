@@ -555,7 +555,13 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat }) {
         label: "Принять правки, отменённые только баллом (" + accIds.length + " сегм.)",
         note: "текст уже написан и оплачен; заверенное человеком не трогается, копия уйдёт в бэкап, этот же прогон всё перепроверит" })),
     React.createElement("div", { className: "row", style: { gap: 8, paddingTop: 4 } },
-      React.createElement(Btn, { variant: "primary", disabled: busy || !plan || !(plan && (plan.ids || []).length) && !(fixCase && caseIds.length) && !(fixAcc && accIds.length), onClick: run },
+      /* Запуск гаснет, когда делать нечего ВООБЩЕ: ни состава у прогона,
+         ни включённой бесплатной правки. && связывает сильнее || — скобки
+         вокруг трёх последних не нужны, но читаются лучше. */
+      React.createElement(Btn, { variant: "primary",
+        disabled: busy || !plan || (!(plan.ids || []).length
+          && !(fixCase && caseIds.length) && !(fixAcc && accIds.length)),
+        onClick: run },
         busy ? "Запускаем…"
           : "Запустить" + (est && est.cost != null && typeof fmtCost === "function"
               ? " · ≈ " + fmtCost(est.cost) + (est.unknown ? "+" : "") : "")),

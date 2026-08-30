@@ -2292,9 +2292,12 @@ def project_analysis(pid: int, refresh: bool = False):
             # findings и weak тогда остались бы докоррекционными.
             # judged — тоже: судья не меняет ни хеш, ни (при «severity: none»
             # с высоким баллом) сам балл, а корзину «возьмёт прогон» меняет.
-            "%s/%s/%s" % ((s.get("backcheck") or {}).get("score", ""),
-                          len((s.get("backcheck") or {}).get("terms_lost") or ()),
-                          1 if (s.get("backcheck") or {}).get("judged") else 0),
+            # judge_skipped — тоже: отметка «hard» меняет корзину judge_ext
+            # (судью туда не позовут), не меняя ни балла, ни judged, ни хеша.
+            "%s/%s/%s/%s" % ((s.get("backcheck") or {}).get("score", ""),
+                             len((s.get("backcheck") or {}).get("terms_lost") or ()),
+                             1 if (s.get("backcheck") or {}).get("judged") else 0,
+                             (s.get("backcheck") or {}).get("judge_skipped") or ""),
             (s.get("termcheck") or {}).get("target_hash", ""),
             len((s.get("termcheck") or {}).get("findings") or ()),
             (s.get("repair") or {}).get("source_hash", ""),

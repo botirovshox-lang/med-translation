@@ -1256,7 +1256,13 @@ function TabEditor({ store, toast }) {
     } else {
       // Раньше здесь сегменты делились по risk между Google и моделью, и запуск
       // «не той» кнопки молча оставлял половину проекта непереведённой.
-      targets = segs.filter(s => s.status === "new" && (!idSet || idSet.has(s.id)));
+      // Предикат зеркалит серверный _needs_translation: failed с ПУСТЫМ
+      // переводом — это «не переведён» (ошибка перевода сегмент не тронула),
+      // и без него кнопка слала бы force=false со списком БЕЗ таких
+      // сегментов — сервер бы их взял, а браузер не дал.
+      targets = segs.filter(s => (s.status === "new"
+          || (s.status === "failed" && !(s.target || "").trim()))
+        && (!idSet || idSet.has(s.id)));
     }
     return { targets, explicit, selectionSize: idSet ? idSet.size : 0 };
   };

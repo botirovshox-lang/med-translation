@@ -130,6 +130,15 @@ class PgStore:
                     self.cur.close()
                 except Exception:
                     pass
+                # Соединение не держим между транзакциями: серверный процесс
+                # Postgres с разобранными JSONB-документами весит сотни
+                # мегабайт в простое, а база локальная — переподключение
+                # стоит миллисекунды. Память дороже.
+                try:
+                    self.conn.close()
+                except Exception:
+                    pass
+                self.store._conn = None
             finally:
                 self.store._lock.release()
             return False

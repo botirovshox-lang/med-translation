@@ -1883,87 +1883,26 @@ def medical_qa_enabled() -> bool:
     return os.environ.get("MEDICAL_TRANSLATION_QA_ENABLED", "1").lower() not in {"0", "false", "no", "off"}
 
 # ─────────────────────────────────────────────────────────────────────
-# In-memory store, persisted to JSON
-# Starts from the design's SEED if no state.json exists, otherwise loads it
+# Стартовые данные
 # ─────────────────────────────────────────────────────────────────────
-SEED_PROJECTS = [
-    {
-        "id": 7,
-        "title": "Эпикриз — кардиология 2026",
-        "titleEn": "Discharge Summary — Cardiology 2026",
-        "src": "RU", "tgt": "EN",
-        "status": "in_progress",
-        "created": "2026-05-28",
-        "deadline": "2026-06-13",
-        "segments": [
-            {"id": 1, "source": "Выписной эпикриз пациента, находившегося на стационарном лечении в кардиологическом отделении.",
-             "target": "Discharge summary of a patient who received inpatient treatment in the cardiology department.",
-             "status": "confirmed", "route": "EXACT_TM", "risk": "low", "comments": [], "qa": [],
-             "tm": {"score": 100, "source": "Выписной эпикриз пациента, находившегося на стационарном лечении в кардиологическом отделении.",
-                    "target": "Discharge summary of a patient who received inpatient treatment in the cardiology department."}},
-            {"id": 2, "source": "Жалобы при поступлении: давящие боли за грудиной, одышка при умеренной физической нагрузке, перебои в работе сердца.",
-             "target": "Complaints on admission: pressing retrosternal pain, dyspnea on moderate exertion, and palpitations.",
-             "status": "confirmed", "route": "GPT_REQUIRED", "risk": "medium", "comments": [], "qa": [], "tm": None},
-            {"id": 3, "source": "Анамнез заболевания: считает себя больным в течение трёх лет, когда впервые появились ангинозные приступы.",
-             "target": "History of present illness: the patient has considered himself ill for three years, when anginal attacks first appeared.",
-             "status": "qa", "route": "GPT_REQUIRED", "risk": "medium", "comments": [],
-             "qa": [{"sev": "medium", "type": "terminology", "msg": "Термин «ангинозные» — проверьте соответствие глоссарию (anginal vs. angina-type)."}], "tm": None},
-            {"id": 4, "source": "Объективно: общее состояние удовлетворительное. Кожные покровы обычной окраски.",
-             "target": "Objectively: general condition is satisfactory. Skin is of normal colour.",
-             "status": "confirmed", "route": "DUPLICATE", "risk": "low", "comments": [], "qa": [], "tm": None},
-            {"id": 5, "source": "Тоны сердца приглушены, ритм правильный. ЧСС 78 ударов в минуту. АД 140/90 мм рт. ст.",
-             "target": "Heart sounds are muffled, rhythm is regular. Heart rate 78 bpm. Blood pressure 140/90 mmHg.",
-             "status": "translated", "route": "GPT_REQUIRED", "risk": "high", "comments": [], "qa": [], "tm": None},
-            {"id": 6, "source": "На ЭКГ: синусовый ритм, признаки гипертрофии левого желудочка, депрессия сегмента ST в отведениях V4–V6.",
-             "target": "ECG: sinus rhythm, signs of left ventricular hypertrophy, ST-segment depression in leads V4–V6.",
-             "status": "translated", "route": "GPT_REQUIRED", "risk": "high", "comments": [], "qa": [], "tm": None},
-            {"id": 7, "source": "Эхокардиография выявила снижение фракции выброса левого желудочка до 48%.",
-             "target": "Echocardiography revealed a reduction of the left ventricular ejection fraction to 48%.",
-             "status": "qa", "route": "GPT_REQUIRED", "risk": "high", "comments": [],
-             "qa": [{"sev": "high", "type": "numeric", "msg": "Проверьте число: 48% присутствует и в источнике, и в переводе. ОК."}], "tm": None},
-            {"id": 8, "source": "Коронароангиография: стеноз передней межжелудочковой ветви левой коронарной артерии до 75%.",
-             "target": "Coronary angiography: stenosis of the anterior interventricular branch of the left coronary artery up to 75%.",
-             "status": "translated", "route": "GPT_REQUIRED", "risk": "critical", "comments": [], "qa": [], "tm": None},
-            {"id": 9, "source": "Клинический диагноз: ИБС. Стабильная стенокардия напряжения, функциональный класс III.",
-             "target": "Clinical diagnosis: coronary artery disease. Stable exertional angina, functional class III.",
-             "status": "review", "route": "HUMAN_REVIEW", "risk": "critical", "comments": [],
-             "qa": [{"sev": "high", "type": "terminology", "msg": "«ИБС» раскрыто как coronary artery disease — подтвердите предпочтительный вариант (CAD / IHD)."}], "tm": None},
-            {"id": 10, "source": "Сопутствующие заболевания: гипертоническая болезнь II стадии, сахарный диабет 2 типа, компенсированный.",
-             "target": "Comorbidities: stage II essential hypertension, compensated type 2 diabetes mellitus.",
-             "status": "translated", "route": "GPT_REQUIRED", "risk": "medium", "comments": [], "qa": [], "tm": None},
-            {"id": 11, "source": "Назначено лечение: бисопролол 5 мг утром, аторвастатин 20 мг вечером, ацетилсалициловая кислота 75 мг.",
-             "target": "Treatment prescribed: bisoprolol 5 mg in the morning, atorvastatin 20 mg in the evening, acetylsalicylic acid 75 mg.",
-             "status": "failed", "route": "GPT_REQUIRED", "risk": "high", "comments": [],
-             "qa": [{"sev": "critical", "type": "numeric", "msg": "Несоответствие дозировки: проверьте «75 мг» — в черновике перевода указано 750 mg."}], "tm": None},
-            {"id": 12, "source": "Рекомендовано: контроль артериального давления, соблюдение гиполипидемической диеты, дозированные физические нагрузки.",
-             "target": "", "status": "new", "route": "GOOGLE_SAFE", "risk": "low", "comments": [], "qa": [], "tm": None},
-            {"id": 13, "source": "Повторная консультация кардиолога через один месяц с результатами липидограммы.",
-             "target": "", "status": "new", "route": "GOOGLE_SAFE", "risk": "low", "comments": [], "qa": [], "tm": None},
-            {"id": 14, "source": "Прогноз для жизни благоприятный при условии соблюдения рекомендаций и регулярного приёма препаратов.",
-             "target": "", "status": "new", "route": "GPT_REQUIRED", "risk": "medium", "comments": [], "qa": [], "tm": None},
-            {"id": 15, "source": "Листок нетрудоспособности выдан с 14.05.2026 по 28.05.2026.",
-             "target": "", "status": "new", "route": "GOOGLE_SAFE", "risk": "low", "comments": [], "qa": [], "tm": None},
-        ],
-    },
-    {
-        "id": 4,
-        "title": "Инструкция по применению — Метформин",
-        "titleEn": "Patient Information Leaflet — Metformin",
-        "src": "RU", "tgt": "EN",
-        "status": "review", "created": "2026-05-12", "deadline": "2026-06-09",
-        "segments": [
-            {"id": 1, "source": "Перед началом приёма препарата внимательно прочитайте инструкцию.",
-             "target": "Read this leaflet carefully before you start taking the medicine.",
-             "status": "confirmed", "route": "EXACT_TM", "risk": "low", "comments": [], "qa": [], "tm": None},
-            {"id": 2, "source": "Показания к применению: сахарный диабет 2 типа у взрослых и детей старше 10 лет.",
-             "target": "Indications: type 2 diabetes mellitus in adults and children over 10 years of age.",
-             "status": "confirmed", "route": "GPT_REQUIRED", "risk": "medium", "comments": [], "qa": [], "tm": None},
-            {"id": 3, "source": "Противопоказания: повышенная чувствительность к метформину, диабетический кетоацидоз.",
-             "target": "Contraindications: hypersensitivity to metformin, diabetic ketoacidosis.",
-             "status": "qa", "route": "GPT_REQUIRED", "risk": "high", "comments": [], "qa": [], "tm": None},
-        ],
-    },
-]
+# Пустой старт — норма: словарь клиента приходит импортом, а не из кода,
+# и демонстрационный «Эпикриз — кардиология» с выдуманными сотрудниками
+# не должен подниматься у клиента, потерявшего файл состояния. Демо лежит
+# файлом (`backend/demo_seed.json`) и включается ТОЛЬКО `DEMO_SEED=1`.
+DEMO_SEED = os.environ.get("DEMO_SEED", "").strip().lower() in ("1", "true", "yes", "on")
+_EMPTY_SEED = {"projects": [], "glossary": [], "tm": [], "exportHistory": [], "team": []}
+
+
+def _demo_seed() -> dict:
+    if not DEMO_SEED:
+        return dict(_EMPTY_SEED)
+    try:
+        with open(ROOT / "backend" / "demo_seed.json", encoding="utf-8") as f:
+            return {**_EMPTY_SEED, **json.load(f)}
+    except Exception as e:
+        print(f"[backend] WARN: demo_seed.json не прочитан: {e}", file=sys.stderr)
+        return dict(_EMPTY_SEED)
+
 
 def _load_glossary_from_tsv() -> list:
     """Load real medical glossary from TSV file; fall back to 10 hardcoded terms."""
@@ -2006,46 +1945,6 @@ def _load_glossary_from_tsv() -> list:
         print(f"[backend] WARN: could not load glossary TSV: {e}", file=sys.stderr)
     return terms
 
-SEED_GLOSSARY = _load_glossary_from_tsv() or [
-    {"src": "стенокардия", "tgt": "angina", "cat": "Disease", "freq": 142, "conf": "high", "note": ""},
-    {"src": "инфаркт миокарда", "tgt": "myocardial infarction", "cat": "Disease", "freq": 98, "conf": "high", "note": ""},
-    {"src": "ишемическая болезнь сердца", "tgt": "coronary artery disease", "cat": "Disease", "freq": 76, "conf": "high", "note": ""},
-    {"src": "ЭКГ", "tgt": "ECG", "cat": "Procedure", "freq": 210, "conf": "high", "note": ""},
-    {"src": "артериальное давление", "tgt": "blood pressure", "cat": "Anatomy", "freq": 322, "conf": "high", "note": ""},
-    {"src": "фракция выброса", "tgt": "ejection fraction", "cat": "Anatomy", "freq": 54, "conf": "high", "note": ""},
-    {"src": "бисопролол", "tgt": "bisoprolol", "cat": "Dosage", "freq": 41, "conf": "high", "note": ""},
-    {"src": "аторвастатин", "tgt": "atorvastatin", "cat": "Dosage", "freq": 33, "conf": "high", "note": ""},
-    {"src": "сахарный диабет 2 типа", "tgt": "type 2 diabetes mellitus", "cat": "Disease", "freq": 58, "conf": "high", "note": ""},
-    {"src": "одышка", "tgt": "dyspnea", "cat": "Symptom", "freq": 64, "conf": "medium", "note": ""},
-]
-
-SEED_TM = [
-    {"src": "Выписной эпикриз пациента, находившегося на стационарном лечении в кардиологическом отделении.",
-     "tgt": "Discharge summary of a patient who received inpatient treatment in the cardiology department.",
-     "lang": "RU→EN", "score": 100, "quality": "verified", "used": 12, "created": "2026-04-12"},
-    {"src": "Перед началом приёма препарата внимательно прочитайте инструкцию.",
-     "tgt": "Read this leaflet carefully before you start taking the medicine.",
-     "lang": "RU→EN", "score": 100, "quality": "verified", "used": 22, "created": "2026-03-01"},
-    {"src": "Объективно: общее состояние удовлетворительное. Кожные покровы обычной окраски.",
-     "tgt": "Objectively: general condition is satisfactory. Skin is of normal colour.",
-     "lang": "RU→EN", "score": 100, "quality": "verified", "used": 8, "created": "2026-04-18"},
-    {"src": "Артериальное давление 140/90 мм рт. ст., пульс ритмичный.",
-     "tgt": "Blood pressure 140/90 mmHg, pulse is regular.",
-     "lang": "RU→EN", "score": 95, "quality": "draft", "used": 3, "created": "2026-05-22"},
-]
-
-SEED_EXPORT_HISTORY = [
-    {"file": "Эпикриз — кардиология 2026.docx", "when": "2026-06-10 14:21", "size": "84 КБ"},
-    {"file": "Инструкция — Метформин.docx",      "when": "2026-06-04 11:05", "size": "62 КБ"},
-]
-
-SEED_TEAM = [
-    {"name": "Анна Иванова",   "initials": "АИ", "color": "#2c7be5"},
-    {"name": "Дмитрий Петров", "initials": "ДП", "color": "#22b07d"},
-    {"name": "Олег Соколов",   "initials": "ОС", "color": "#f1a040"},
-    {"name": "Мария Кравцова", "initials": "МК", "color": "#cc4a4a"},
-]
-
 
 BACKUP_DIR = DATA_DIR / "backups"
 _SAVE_LOCK = threading.Lock()          # сериализует записи state.json (эндпоинты идут в threadpool)
@@ -2060,9 +1959,6 @@ _BACKUP_KEEP = 48                      # почасовые бэкапы, ~2 с�
 REPAIR_RECHECK_FAILED = "перепроверка терминов не выполнилась"
 
 def _apply_migrations(state: dict) -> dict:
-    # Migrate: if glossary is tiny seed, upgrade to full loaded glossary
-    if len(state.get("glossary", [])) < 100 and len(SEED_GLOSSARY) >= 100:
-        state["glossary"] = list(SEED_GLOSSARY)
     # Migrate: fix TM quality field (verified bool → quality string)
     for t in state.get("tm", []):
         if "quality" not in t:
@@ -2071,7 +1967,8 @@ def _apply_migrations(state: dict) -> dict:
     # по эталонному TSV; чего в массовом импорте нет — добавлено руками, значит
     # проверено. Иначе весь автоимпорт так и остался бы приказом для модели.
     if any("tier" not in t for t in state.get("glossary", [])):
-        tiers = {t["src"]: t.get("tier", GLOSSARY_TIER_HARD) for t in SEED_GLOSSARY}
+        # TSV читается лениво и только здесь: при обычном старте он не нужен.
+        tiers = {t["src"]: t.get("tier", GLOSSARY_TIER_HARD) for t in _load_glossary_from_tsv()}
         for t in state.get("glossary", []):
             if "tier" not in t:
                 t["tier"] = tiers.get(t.get("src"), GLOSSARY_TIER_HARD)
@@ -2185,16 +2082,10 @@ def load_state() -> dict:
                           f"(для ручного восстановления)", file=sys.stderr)
                 except Exception:
                     pass
-    print("[backend] CRITICAL: рабочее состояние не найдено — старт с демо-данными (SEED)",
+    print("[backend] CRITICAL: рабочее состояние не найдено — "
+          + ("старт с демо-данными (DEMO_SEED=1)" if DEMO_SEED else "пустой старт"),
           file=sys.stderr)
-    return {
-        "projects": json.loads(json.dumps(SEED_PROJECTS)),
-        "glossary": list(SEED_GLOSSARY),
-        "tm": list(SEED_TM),
-        "exportHistory": list(SEED_EXPORT_HISTORY),
-        "team": list(SEED_TEAM),
-        "termQueue": [],
-    }
+    return {**json.loads(json.dumps(_demo_seed())), "termQueue": []}
 
 
 def _hourly_backup(payload: str):
@@ -5470,7 +5361,8 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     решения машины проверялись строже решений человека — который целевого языка
     может не знать и оценить пару не в состоянии. Замечание возвращается ДО
     записи (`written: false`), одобрить вопреки ему можно полем `confirm`."""
-    cand = next((c for c in _term_queue() if c.get("id") == cid), None)
+    cand = next((c for c in _term_queue() if c.get("id") == cid
+                 and _tenant_of(c) == _current_tenant()), None)
     if not cand:
         raise HTTPException(404, "Кандидат не найден")
     src = (req.src or cand.get("src") or "").strip()
@@ -5567,7 +5459,8 @@ def explain_term_variants(cid: int, req: ExplainRequest = ExplainRequest()):
     Вызов платный, поэтому только по кнопке и только на конкретную карточку."""
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(503, "Разбор вариантов требует ключ OpenAI")
-    cand = next((c for c in _term_queue() if c.get("id") == cid), None)
+    cand = next((c for c in _term_queue() if c.get("id") == cid
+                 and _tenant_of(c) == _current_tenant()), None)
     if not cand:
         raise HTTPException(404, "Кандидат не найден")
     scope = _scope_of(cand)
@@ -5689,7 +5582,8 @@ def explain_term_variants(cid: int, req: ExplainRequest = ExplainRequest()):
 
 @app.post("/api/term-queue/{cid}/reject")
 def reject_term_candidate(cid: int):
-    cand = next((c for c in _term_queue() if c.get("id") == cid), None)
+    cand = next((c for c in _term_queue() if c.get("id") == cid
+                 and _tenant_of(c) == _current_tenant()), None)
     if not cand:
         raise HTTPException(404, "Кандидат не найден")
     # Соседей не трогаем: «эта пара неверна» — не то же самое, что «с термином
@@ -6286,6 +6180,7 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
         pol = {**pol, "allow_verified": False, "cap_soft": True}
 
     pending = [c for c in _term_queue() if c.get("status", "pending") == "pending"
+               and _tenant_of(c) == _current_tenant()
                and (scope is None or _scope_of(c) == scope)]
     ctx = _auto_context(pending, pol)
 
@@ -6656,7 +6551,8 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
     project = get_project(req.project) if req.project else None
     scope = _project_scope(project) if project else None
     entries = [g for g in STATE.get("glossary", [])
-               if _hard_answer(g) and (scope is None or _scope_of(g) == scope)]
+               if _hard_answer(g) and _tenant_of(g) == _current_tenant()
+               and (scope is None or _scope_of(g) == scope)]
     if not entries:
         return {"ok": True, "dryRun": req.dry_run, "checked": 0, "capped": 0,
                 "total": 0, "bad": [], "batch": None,
@@ -11632,7 +11528,8 @@ def save_term(req: TermRequest):
         # Клиент не прислал область (правка записи из общего списка) — правим ту
         # запись, что есть, а не заводим рядом дубль в области по умолчанию.
         existing = next((g for g in STATE["glossary"]
-                         if _norm_key(g.get("src")) == _norm_key(req.src)), None)
+                         if _norm_key(g.get("src")) == _norm_key(req.src)
+                         and _tenant_of(g) == _current_tenant()), None)
     # Правка руками = проверенная запись: только такие идут в промпт приказом.
     if existing and not req.isNew:
         # След решения человека обязателен. Без него `_human_touched` правку

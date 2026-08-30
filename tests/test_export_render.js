@@ -78,7 +78,7 @@ global.document = { addEventListener() {}, removeEventListener() {}, querySelect
 global.API = { safeCall: async (fn) => fn() };
 
 const root = process.argv[2] || "frontend/js";
-for (const f of ["ui.jsx", "data.js", "tab_export_preflight.jsx"]) {
+for (const f of ["ui.jsx", "tab_export_preflight.jsx"]) {
   (0, eval)(fs.readFileSync(path.join(root, f), "utf8") + "\n//# sourceURL=" + f);
 }
 

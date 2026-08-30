@@ -179,7 +179,7 @@ console.log("=== 0b. Имена верхнего уровня не совпад�
           : ""));
 }
 
-for (const f of ["ui.jsx", "data.js", "tab_editor_detail.jsx", "tab_editor.jsx"]) {
+for (const f of ["ui.jsx", "tab_editor_detail.jsx", "tab_editor.jsx"]) {
   const code = fs.readFileSync(path.join(root, f), "utf8");
   // Файлы грузятся тегами <script> — то есть в одну общую область видимости.
   (0, eval)(code + "\n//# sourceURL=" + f);

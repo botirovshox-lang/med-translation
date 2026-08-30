@@ -2,11 +2,13 @@
    App shell — store, auth, header, tab routing
    ============================================================ */
 function useStore(authed) {
-  const [projects, setProjects] = useState(() => JSON.parse(JSON.stringify(window.SEED.projects)));
-  const [glossary, setGlossary] = useState(() => window.SEED.glossary.slice());
-  const [tm, setTM] = useState(() => window.SEED.tm.slice());
-  const [exportHistory, setExportHistory] = useState(() => window.SEED.exportHistory.slice());
-  const [activeId, setActiveId] = useState(7);
+  /* Стартуем с пустого: мок data.js показывал чужой кардиологический эпикриз,
+     пока грузился /api/seed, а активным проектом стоял его номер 7. */
+  const [projects, setProjects] = useState([]);
+  const [glossary, setGlossary] = useState([]);
+  const [tm, setTM] = useState([]);
+  const [exportHistory, setExportHistory] = useState([]);
+  const [activeId, setActiveId] = useState(null);
   const [tab, setTab] = useState("editor");
   const [apiReady, setApiReady] = useState(false);
   const [segmentFilter, setSegmentFilterState] = useState(null); // Set<id> | null
@@ -93,7 +95,7 @@ function useStore(authed) {
     const id = Math.max(0, ...projects.map(p => p.id)) + 1;
     const np = { id, title: info.title, titleEn: info.title, src: info.src, tgt: info.tgt, status: "in_progress",
       created: new Date().toISOString().slice(0, 10), deadline: "",
-      segments: window.SEED.projects[0].segments.slice(0, 8).map((s, i) => ({ ...s, id: i + 1, target: "", status: "new", comments: [], qa: [] })) };
+      segments: [] };
     setProjects(ps => [np, ...ps]);
     if (window.API) {
       window.API.safeCall(() => window.API.createProject({
@@ -149,7 +151,7 @@ function useStore(authed) {
 
   return {
     projects, glossary, tm, activeId, activeProject, tab,
-    exportHistory, team: window.SEED.team, me, can, apiReady,
+    exportHistory, team: [], me, can, apiReady,
     segmentFilter, gotoSegId,
     go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, patchProject, openProject, deleteProject, replaceProjectSegments, saveTerm, deleteTerm, deleteTM,
     setExportHistory,

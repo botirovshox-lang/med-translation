@@ -1,0 +1,327 @@
+{
+ "projects": [
+  {
+   "id": 7,
+   "title": "Эпикриз — кардиология 2026",
+   "titleEn": "Discharge Summary — Cardiology 2026",
+   "src": "RU",
+   "tgt": "EN",
+   "status": "in_progress",
+   "created": "2026-05-28",
+   "deadline": "2026-06-13",
+   "segments": [
+    {
+     "id": 1,
+     "source": "Выписной эпикриз пациента, находившегося на стационарном лечении в кардиологическом отделении.",
+     "target": "Discharge summary of a patient who received inpatient treatment in the cardiology department.",
+     "status": "confirmed",
+     "route": "EXACT_TM",
+     "risk": "low",
+     "comments": [],
+     "qa": [],
+     "tm": {
+      "score": 100,
+      "source": "Выписной эпикриз пациента, находившегося на стационарном лечении в кардиологическом отделении.",
+      "target": "Discharge summary of a patient who received inpatient treatment in the cardiology department."
+     }
+    },
+    {
+     "id": 2,
+     "source": "Жалобы при поступлении: давящие боли за грудиной, одышка при умеренной физической нагрузке, перебои в работе сердца.",
+     "target": "Complaints on admission: pressing retrosternal pain, dyspnea on moderate exertion, and palpitations.",
+     "status": "confirmed",
+     "route": "GPT_REQUIRED",
+     "risk": "medium",
+     "comments": [],
+     "qa": [],
+     "tm": null
+    },
+    {
+     "id": 3,
+     "source": "Анамнез заболевания: считает себя больным в течение трёх лет, когда впервые появились ангинозные приступы.",
+     "target": "History of present illness: the patient has considered himself ill for three years, when anginal attacks first appeared.",
+     "status": "qa",
+     "route": "GPT_REQUIRED",
+     "risk": "medium",
+     "comments": [],
+     "qa": [
+      {
+       "sev": "medium",
+       "type": "terminology",
+       "msg": "Термин «ангинозные» — проверьте соответствие глоссарию (anginal vs. angina-type)."
+      }
+     ],
+     "tm": null
+    },
+    {
+     "id": 4,
+     "source": "Объективно: общее состояние удовлетворительное. Кожные покровы обычной окраски.",
+     "target": "Objectively: general condition is satisfactory. Skin is of normal colour.",
+     "status": "confirmed",
+     "route": "DUPLICATE",
+     "risk": "low",
+     "comments": [],
+     "qa": [],
+     "tm": null
+    },
+    {
+     "id": 5,
+     "source": "Тоны сердца приглушены, ритм правильный. ЧСС 78 ударов в минуту. АД 140/90 мм рт. ст.",
+     "target": "Heart sounds are muffled, rhythm is regular. Heart rate 78 bpm. Blood pressure 140/90 mmHg.",
+     "status": "translated",
+     "route": "GPT_REQUIRED",
+     "risk": "high",
+     "comments": [],
+     "qa": [],
+     "tm": null
+    },
+    {
+     "id": 6,
+     "source": "На ЭКГ: синусовый ритм, признаки гипертрофии левого желудочка, депрессия сегмента ST в отведениях V4–V6.",
+     "target": "ECG: sinus rhythm, signs of left ventricular hypertrophy, ST-segment depression in leads V4–V6.",
+     "status": "translated",
+     "route": "GPT_REQUIRED",
+     "risk": "high",
+     "comments": [],
+     "qa": [],
+     "tm": null
+    },
+    {
+     "id": 7,
+     "source": "Эхокардиография выявила снижение фракции выброса левого желудочка до 48%.",
+     "target": "Echocardiography revealed a reduction of the left ventricular ejection fraction to 48%.",
+     "status": "qa",
+     "route": "GPT_REQUIRED",
+     "risk": "high",
+     "comments": [],
+     "qa": [
+      {
+       "sev": "high",
+       "type": "numeric",
+       "msg": "Проверьте число: 48% присутствует и в источнике, и в переводе. ОК."
+      }
+     ],
+     "tm": null
+    },
+    {
+     "id": 8,
+     "source": "Коронароангиография: стеноз передней межжелудочковой ветви левой коронарной артерии до 75%.",
+     "target": "Coronary angiography: stenosis of the anterior interventricular branch of the left coronary artery up to 75%.",
+     "status": "translated",
+     "route": "GPT_REQUIRED",
+     "risk": "critical",
+     "comments": [],
+     "qa": [],
+     "tm": null
+    },
+    {
+     "id": 9,
+     "source": "Клинический диагноз: ИБС. Стабильная стенокардия напряжения, функциональный класс III.",
+     "target": "Clinical diagnosis: coronary artery disease. Stable exertional angina, functional class III.",
+     "status": "review",
+     "route": "HUMAN_REVIEW",
+     "risk": "critical",
+     "comments": [],
+     "qa": [
+      {
+       "sev": "high",
+       "type": "terminology",
+       "msg": "«ИБС» раскрыто как coronary artery disease — подтвердите предпочтительный вариант (CAD / IHD)."
+      }
+     ],
+     "tm": null
+    },
+    {
+     "id": 10,
+     "source": "Сопутствующие заболевания: гипертоническая болезнь II стадии, сахарный диабет 2 типа, компенсированный.",
+     "target": "Comorbidities: stage II essential hypertension, compensated type 2 diabetes mellitus.",
+     "status": "translated",
+     "route": "GPT_REQUIRED",
+     "risk": "medium",
+     "comments": [],
+     "qa": [],
+     "tm": null
+    },
+    {
+     "id": 11,
+     "source": "Назначено лечение: бисопролол 5 мг утром, аторвастатин 20 мг вечером, ацетилсалициловая кислота 75 мг.",
+     "target": "Treatment prescribed: bisoprolol 5 mg in the morning, atorvastatin 20 mg in the evening, acetylsalicylic acid 75 mg.",
+     "status": "failed",
+     "route": "GPT_REQUIRED",
+     "risk": "high",
+     "comments": [],
+     "qa": [
+      {
+       "sev": "critical",
+       "type": "numeric",
+       "msg": "Несоответствие дозировки: проверьте «75 мг» — в черновике перевода указано 750 mg."
+      }
+     ],
+     "tm": null
+    },
+    {
+     "id": 12,
+     "source": "Рекомендовано: контроль артериального давления, соблюдение гиполипидемической диеты, дозированные физические нагрузки.",
+     "target": "",
+     "status": "new",
+     "route": "GOOGLE_SAFE",
+     "risk": "low",
+     "comments": [],
+     "qa": [],
+     "tm": null
+    },
+    {
+     "id": 13,
+     "source": "Повторная консультация кардиолога через один месяц с результатами липидограммы.",
+     "target": "",
+     "status": "new",
+     "route": "GOOGLE_SAFE",
+     "risk": "low",
+     "comments": [],
+     "qa": [],
+     "tm": null
+    },
+    {
+     "id": 14,
+     "source": "Прогноз для жизни благоприятный при условии соблюдения рекомендаций и регулярного приёма препаратов.",
+     "target": "",
+     "status": "new",
+     "route": "GPT_REQUIRED",
+     "risk": "medium",
+     "comments": [],
+     "qa": [],
+     "tm": null
+    },
+    {
+     "id": 15,
+     "source": "Листок нетрудоспособности выдан с 14.05.2026 по 28.05.2026.",
+     "target": "",
+     "status": "new",
+     "route": "GOOGLE_SAFE",
+     "risk": "low",
+     "comments": [],
+     "qa": [],
+     "tm": null
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "title": "Инструкция по применению — Метформин",
+   "titleEn": "Patient Information Leaflet — Metformin",
+   "src": "RU",
+   "tgt": "EN",
+   "status": "review",
+   "created": "2026-05-12",
+   "deadline": "2026-06-09",
+   "segments": [
+    {
+     "id": 1,
+     "source": "Перед началом приёма препарата внимательно прочитайте инструкцию.",
+     "target": "Read this leaflet carefully before you start taking the medicine.",
+     "status": "confirmed",
+     "route": "EXACT_TM",
+     "risk": "low",
+     "comments": [],
+     "qa": [],
+     "tm": null
+    },
+    {
+     "id": 2,
+     "source": "Показания к применению: сахарный диабет 2 типа у взрослых и детей старше 10 лет.",
+     "target": "Indications: type 2 diabetes mellitus in adults and children over 10 years of age.",
+     "status": "confirmed",
+     "route": "GPT_REQUIRED",
+     "risk": "medium",
+     "comments": [],
+     "qa": [],
+     "tm": null
+    },
+    {
+     "id": 3,
+     "source": "Противопоказания: повышенная чувствительность к метформину, диабетический кетоацидоз.",
+     "target": "Contraindications: hypersensitivity to metformin, diabetic ketoacidosis.",
+     "status": "qa",
+     "route": "GPT_REQUIRED",
+     "risk": "high",
+     "comments": [],
+     "qa": [],
+     "tm": null
+    }
+   ]
+  }
+ ],
+ "tm": [
+  {
+   "src": "Выписной эпикриз пациента, находившегося на стационарном лечении в кардиологическом отделении.",
+   "tgt": "Discharge summary of a patient who received inpatient treatment in the cardiology department.",
+   "lang": "RU→EN",
+   "score": 100,
+   "quality": "verified",
+   "used": 12,
+   "created": "2026-04-12"
+  },
+  {
+   "src": "Перед началом приёма препарата внимательно прочитайте инструкцию.",
+   "tgt": "Read this leaflet carefully before you start taking the medicine.",
+   "lang": "RU→EN",
+   "score": 100,
+   "quality": "verified",
+   "used": 22,
+   "created": "2026-03-01"
+  },
+  {
+   "src": "Объективно: общее состояние удовлетворительное. Кожные покровы обычной окраски.",
+   "tgt": "Objectively: general condition is satisfactory. Skin is of normal colour.",
+   "lang": "RU→EN",
+   "score": 100,
+   "quality": "verified",
+   "used": 8,
+   "created": "2026-04-18"
+  },
+  {
+   "src": "Артериальное давление 140/90 мм рт. ст., пульс ритмичный.",
+   "tgt": "Blood pressure 140/90 mmHg, pulse is regular.",
+   "lang": "RU→EN",
+   "score": 95,
+   "quality": "draft",
+   "used": 3,
+   "created": "2026-05-22"
+  }
+ ],
+ "exportHistory": [
+  {
+   "file": "Эпикриз — кардиология 2026.docx",
+   "when": "2026-06-10 14:21",
+   "size": "84 КБ"
+  },
+  {
+   "file": "Инструкция — Метформин.docx",
+   "when": "2026-06-04 11:05",
+   "size": "62 КБ"
+  }
+ ],
+ "team": [
+  {
+   "name": "Анна Иванова",
+   "initials": "АИ",
+   "color": "#2c7be5"
+  },
+  {
+   "name": "Дмитрий Петров",
+   "initials": "ДП",
+   "color": "#22b07d"
+  },
+  {
+   "name": "Олег Соколов",
+   "initials": "ОС",
+   "color": "#f1a040"
+  },
+  {
+   "name": "Мария Кравцова",
+   "initials": "МК",
+   "color": "#cc4a4a"
+  }
+ ],
+ "glossary": []
+}

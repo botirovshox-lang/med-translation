@@ -88,8 +88,8 @@
                                                   ticket: segStarted + ":" + segDone }),
     health:        ()                       => call("GET",    "/health"),
     seed:          ()                       => call("GET",    "/seed"),
-    login: async (password) => {
-      const r = await call("POST", "/auth/login", { password });
+    login: async (login, password) => {
+      const r = await call("POST", "/auth/login", { login: login || "", password });
       if (!r || !r.token) throw new Error("Сервер не выдал токен сессии");
       setToken(r.token);
       return r;
@@ -99,6 +99,11 @@
       setToken("");
     },
     hasToken: () => !!getToken(),
+    me:            ()                       => call("GET",    "/auth/me"),
+    users:         ()                       => call("GET",    "/admin/users"),
+    userCreate:    (body)                   => call("POST",   "/admin/users", body),
+    userUpdate:    (uid, body)              => call("POST",   `/admin/users/${uid}`, body),
+    tenantCreate:  (body)                   => call("POST",   "/admin/tenants", body),
     /* Для <a href> скачивания: заголовок в ссылку не подставить, токен идёт в query. */
     downloadUrl: (url) => url + (url.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(getToken()),
 

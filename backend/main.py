@@ -1569,10 +1569,23 @@ def _openai_translate(text: str, src: str, tgt: str,
 # ─────────────────────────────────────────────────────────────────────
 # Аутентификация
 #
-# Пароль пока один на весь сервис (мультитенантности нет), но каждый вход
-# выдаёт свой токен, и БЕЗ токена не работает ни один /api/* эндпоинт.
-# Токены живут только в памяти процесса: рестарт = всем перелогиниться.
+# Пользователи и организации лежат в STATE («users», «tenants»). Каждый вход
+# выдаёт свой токен, сессия помнит пользователя, организацию и роль, и БЕЗ
+# токена не работает ни один /api/* эндпоинт. Токены живут только в памяти
+# процесса: рестарт = всем перелогиниться.
+#
+# Ролей две, и третья появится по первой просьбе, а не заранее:
+#   owner       — пользователи, вынос глоссария, удаление проектов, лимиты;
+#   translator  — всё остальное, включая платные прогоны.
+# Флаг `super` у пользователя — право заводить организации (первый владелец).
+#
+# Право показать кнопку и право сделать — разные права: роль проверяется
+# СЕРВЕРОМ (в `require_token` по таблице `_OWNER_ONLY`), гашение кнопки
+# в браузере — удобство. `APP_PASSWORD` остался ТОЛЬКО паролем первого
+# владельца при пустой базе пользователей (`_ensure_users`).
 # ─────────────────────────────────────────────────────────────────────
+import contextvars
+
 _RAW_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
 if not _RAW_PASSWORD:
     # Зашитого дефолта быть не должно: публичный сервис оказался бы открыт
@@ -1580,13 +1593,91 @@ if not _RAW_PASSWORD:
     _RAW_PASSWORD = secrets.token_urlsafe(9)
     print(f"[backend] WARN: APP_PASSWORD не задан. Пароль на этот запуск: {_RAW_PASSWORD}",
           file=sys.stderr)
-PASSWORD_HASH = hashlib.sha256(_RAW_PASSWORD.encode()).hexdigest()
+
+BOOTSTRAP_LOGIN = "admin"
+DEFAULT_TENANT = "default"
+ROLES = ("owner", "translator")
+PBKDF2_ITERS = 200_000
+
+# Текущая сессия запроса — для мест, куда Request не доезжает (get_project
+# и фильтры по организации). В рабочие потоки прогона ContextVar НЕ
+# наследуется (`_run_parallel` — ThreadPoolExecutor): задача обязана нести
+# организацию в себе и выставлять её сама.
+CURRENT_SESSION: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar(
+    "session", default=None)
+
+
+def _hash_password(password: str, salt: Optional[str] = None) -> tuple:
+    """pbkdf2, не голый sha256: база паролей клиентов ломается словарём за вечер."""
+    salt = salt or secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), PBKDF2_ITERS).hex()
+    return h, salt
+
+
+def _verify_password(user: dict, password: str) -> bool:
+    if not user or not user.get("active", True):
+        return False
+    h, _ = _hash_password(password, user.get("salt") or "")
+    return hmac.compare_digest(h, user.get("hash") or "")
+
+
+def _initials(name: str) -> str:
+    parts = [p for p in (name or "").split() if p]
+    return ("".join(p[0] for p in parts[:2]) or (name or "?")[:2]).upper()
+
+
+_USER_COLORS = ("#2c7be5", "#22b07d", "#f1a040", "#cc4a4a", "#7a5af8", "#0aa2c0")
+
+
+def _user_public(u: dict) -> dict:
+    return {"id": u["id"], "login": u["login"], "name": u.get("name") or u["login"],
+            "initials": u.get("initials") or _initials(u.get("name") or u["login"]),
+            "color": u.get("color") or _USER_COLORS[u["id"] % len(_USER_COLORS)],
+            "role": u.get("role", "translator"), "tenant": u.get("tenant", DEFAULT_TENANT),
+            "super": bool(u.get("super")), "active": u.get("active", True),
+            "uiLang": u.get("uiLang") or "ru", "created": u.get("created")}
+
+
+def _users() -> list:
+    return STATE.setdefault("users", [])
+
+
+def _tenants() -> list:
+    return STATE.setdefault("tenants", [])
+
+
+def _user_by_login(login: str) -> Optional[dict]:
+    key = (login or "").strip().lower()
+    for u in _users():
+        if u.get("login", "").lower() == key:
+            return u
+    return None
+
+
+def _ensure_users() -> None:
+    """Пустая база пользователей → организация по умолчанию и её владелец
+    с паролем APP_PASSWORD. Зовётся лениво (на входе), а не при импорте:
+    тесты импортируют модуль с боевой копией state.json, и писать в неё
+    пользователя ради импорта нельзя."""
+    if _users():
+        return
+    if not any(t.get("id") == DEFAULT_TENANT for t in _tenants()):
+        _tenants().append({"id": DEFAULT_TENANT, "name": "Организация",
+                           "created": datetime.now().strftime("%Y-%m-%d"), "active": True})
+    h, salt = _hash_password(_RAW_PASSWORD)
+    _users().append({"id": 1, "tenant": DEFAULT_TENANT, "login": BOOTSTRAP_LOGIN,
+                     "hash": h, "salt": salt, "role": "owner", "super": True,
+                     "name": "Администратор", "active": True, "uiLang": "ru",
+                     "created": datetime.now().strftime("%Y-%m-%d")})
+    print(f"[backend] пользователей не было — заведён владелец «{BOOTSTRAP_LOGIN}» "
+          f"организации «{DEFAULT_TENANT}» с паролем из APP_PASSWORD", file=sys.stderr)
+    save_state(STATE)
 
 SESSION_TTL = max(300, int(os.environ.get("SESSION_TTL_HOURS", "12")) * 3600)
 LOGIN_MAX_FAILS = 10           # неудачных попыток с одного IP
 LOGIN_FAIL_WINDOW = 15 * 60    # за это окно; потом счётчик обнуляется
 
-_SESSIONS: dict = {}           # token -> expires_at (epoch)
+_SESSIONS: dict = {}           # token -> {"exp", "user", "tenant", "role", "super"}
 _LOGIN_FAILS: dict = {}        # ip -> (fail_count, window_started_at)
 _AUTH_LOCK = threading.Lock()
 
@@ -1594,27 +1685,51 @@ _AUTH_LOCK = threading.Lock()
 PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/health"}
 
 
-def _new_session() -> str:
+def _new_session(user: dict) -> str:
     token = secrets.token_urlsafe(32)
     now = time.time()
     with _AUTH_LOCK:
-        for dead in [t for t, exp in _SESSIONS.items() if exp <= now]:
+        for dead in [t for t, s in _SESSIONS.items() if s["exp"] <= now]:
             _SESSIONS.pop(dead, None)
-        _SESSIONS[token] = now + SESSION_TTL
+        _SESSIONS[token] = {"exp": now + SESSION_TTL, "user": user["id"],
+                            "tenant": user.get("tenant", DEFAULT_TENANT),
+                            "role": user.get("role", "translator"),
+                            "super": bool(user.get("super"))}
     return token
 
 
-def _session_valid(token: Optional[str]) -> bool:
+def _session_of(token: Optional[str]) -> Optional[dict]:
     if not token:
-        return False
+        return None
     with _AUTH_LOCK:
-        exp = _SESSIONS.get(token)
-        if exp is None:
-            return False
-        if exp <= time.time():
+        s = _SESSIONS.get(token)
+        if s is None:
+            return None
+        if s["exp"] <= time.time():
             _SESSIONS.pop(token, None)
-            return False
-    return True
+            return None
+    return s
+
+
+def _session_valid(token: Optional[str]) -> bool:
+    return _session_of(token) is not None
+
+
+# Что вправе делать только владелец. Таблица здесь, а не декоратор на каждом
+# обработчике: проверка в одной точке (как и сам токен), и забыть её на новом
+# эндпоинте нельзя — забыть можно только строку в таблице, и это видно.
+_OWNER_ONLY = [
+    ("DELETE", re.compile(r"/api/projects/\d+$")),
+    ("POST",   re.compile(r"/api/glossary/purge(/.*)?$")),
+    ("DELETE", re.compile(r"/api/glossary$")),
+    ("DELETE", re.compile(r"/api/tm$")),
+    ("POST",   re.compile(r"/api/glossary/demote$")),
+    ("*",      re.compile(r"/api/admin/")),
+]
+
+
+def _owner_only(method: str, path: str) -> bool:
+    return any((m == "*" or m == method) and rx.match(path) for m, rx in _OWNER_ONLY)
 
 
 def _drop_session(token: Optional[str]) -> None:
@@ -1678,9 +1793,19 @@ async def require_token(request: Request, call_next):
     path = request.url.path
     if (request.method != "OPTIONS"              # preflight обслуживает CORSMiddleware
             and path.startswith("/api/")
-            and path not in PUBLIC_API_PATHS
-            and not _session_valid(_token_from_request(request))):
-        return JSONResponse({"ok": False, "error": "Требуется вход в систему"}, status_code=401)
+            and path not in PUBLIC_API_PATHS):
+        sess = _session_of(_token_from_request(request))
+        if sess is None:
+            return JSONResponse({"ok": False, "error": "Требуется вход в систему"}, status_code=401)
+        if _owner_only(request.method, path) and sess.get("role") != "owner":
+            return JSONResponse({"ok": False, "error": "Это действие доступно только владельцу организации"},
+                                status_code=403)
+        request.state.session = sess
+        tok = CURRENT_SESSION.set(sess)
+        try:
+            return await call_next(request)
+        finally:
+            CURRENT_SESSION.reset(tok)
     return await call_next(request)
 
 
@@ -2083,6 +2208,7 @@ def get_segment(pid: int, sid: int) -> dict:
 # ─────────────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
+    login: str = ""
     password: str
 
 @app.post("/api/auth/login")
@@ -2090,11 +2216,149 @@ def login(req: LoginRequest, request: Request):
     ip = _client_ip(request)
     if _login_blocked(ip):
         raise HTTPException(429, "Слишком много попыток входа. Повторите через 15 минут.")
-    given = hashlib.sha256(req.password.encode()).hexdigest()
-    if not hmac.compare_digest(given, PASSWORD_HASH):
+    _ensure_users()
+    # Прежний формат {password} без логина — ещё один релиз: он маппится
+    # на первого владельца, иначе выкат запирает нынешнего пользователя.
+    login_name = (req.login or "").strip() or BOOTSTRAP_LOGIN
+    if not req.login:
+        print("[backend] вход без логина — принят как «%s» (прежний формат)" % BOOTSTRAP_LOGIN,
+              file=sys.stderr)
+    user = _user_by_login(login_name)
+    if not user or not _verify_password(user, req.password):
         _note_login_fail(ip)
-        raise HTTPException(401, "Invalid password")
-    return {"ok": True, "token": _new_session(), "expiresIn": SESSION_TTL}
+        raise HTTPException(401, "Неверный логин или пароль")
+    return {"ok": True, "token": _new_session(user), "expiresIn": SESSION_TTL,
+            "me": _user_public(user)}
+
+
+def _current_user(request: Request) -> dict:
+    sess = getattr(request.state, "session", None) or CURRENT_SESSION.get()
+    if not sess:
+        raise HTTPException(401, "Требуется вход в систему")
+    for u in _users():
+        if u["id"] == sess["user"]:
+            return u
+    raise HTTPException(401, "Пользователь удалён — войдите заново")
+
+
+@app.get("/api/auth/me")
+def auth_me(request: Request):
+    """Кто я: пользователь, организация, роль. Из этого браузер берёт аватар
+    и решает, какие кнопки показывать; право сделать проверяет сервер."""
+    u = _current_user(request)
+    tenant = next((t for t in _tenants() if t.get("id") == u.get("tenant")), None)
+    return {"ok": True, "me": _user_public(u),
+            "tenant": tenant or {"id": u.get("tenant", DEFAULT_TENANT), "name": ""},
+            "can": {"owner": u.get("role") == "owner", "super": bool(u.get("super"))}}
+
+
+class UserCreate(BaseModel):
+    login: str
+    password: str
+    role: str = "translator"
+    name: str = ""
+
+
+class UserPatch(BaseModel):
+    password: Optional[str] = None
+    role: Optional[str] = None
+    name: Optional[str] = None
+    active: Optional[bool] = None
+    uiLang: Optional[str] = None
+
+
+def _check_user_fields(login: str = None, password: str = None, role: str = None):
+    if login is not None and not re.fullmatch(r"[A-Za-z0-9._@-]{2,64}", login):
+        raise HTTPException(400, "Логин: 2–64 символа, латиница, цифры, . _ @ -")
+    if password is not None and len(password) < 8:
+        raise HTTPException(400, "Пароль короче 8 символов")
+    if role is not None and role not in ROLES:
+        raise HTTPException(400, "Роль: " + " | ".join(ROLES))
+
+
+@app.get("/api/admin/users")
+def admin_users(request: Request):
+    me = _current_user(request)
+    return {"ok": True, "users": [_user_public(u) for u in _users()
+                                  if u.get("tenant") == me.get("tenant")]}
+
+
+@app.post("/api/admin/users")
+def admin_user_create(req: UserCreate, request: Request):
+    me = _current_user(request)
+    _check_user_fields(req.login, req.password, req.role)
+    if _user_by_login(req.login):
+        raise HTTPException(409, "Такой логин уже есть")
+    h, salt = _hash_password(req.password)
+    u = {"id": max((x["id"] for x in _users()), default=0) + 1, "tenant": me.get("tenant"),
+         "login": req.login.strip(), "hash": h, "salt": salt, "role": req.role,
+         "name": req.name.strip() or req.login.strip(), "active": True, "uiLang": "ru",
+         "created": datetime.now().strftime("%Y-%m-%d")}
+    _users().append(u)
+    save_state(STATE)
+    return {"ok": True, "user": _user_public(u)}
+
+
+@app.post("/api/admin/users/{uid}")
+def admin_user_update(uid: int, req: UserPatch, request: Request):
+    me = _current_user(request)
+    u = next((x for x in _users() if x["id"] == uid and x.get("tenant") == me.get("tenant")), None)
+    if not u:
+        raise HTTPException(404, "Пользователь не найден")
+    _check_user_fields(None, req.password, req.role)
+    if req.role is not None:
+        if u["id"] == me["id"] and req.role != "owner":
+            raise HTTPException(400, "Нельзя снять роль владельца с самого себя")
+        u["role"] = req.role
+    if req.password is not None:
+        u["hash"], u["salt"] = _hash_password(req.password)
+        # Сменили пароль — чужие сессии этого пользователя закрываются.
+        with _AUTH_LOCK:
+            for t in [t for t, s in _SESSIONS.items() if s["user"] == u["id"]]:
+                _SESSIONS.pop(t, None)
+    if req.name is not None:
+        u["name"] = req.name.strip() or u["login"]
+    if req.uiLang is not None:
+        u["uiLang"] = req.uiLang[:5]
+    if req.active is not None:
+        if u["id"] == me["id"] and not req.active:
+            raise HTTPException(400, "Нельзя отключить самого себя")
+        u["active"] = bool(req.active)
+    save_state(STATE)
+    return {"ok": True, "user": _user_public(u)}
+
+
+class TenantCreate(BaseModel):
+    id: str
+    name: str
+    ownerLogin: str
+    ownerPassword: str
+
+
+@app.post("/api/admin/tenants")
+def admin_tenant_create(req: TenantCreate, request: Request):
+    """Только с флагом super: организация и её первый владелец одним шагом."""
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Заводить организации вправе только суперпользователь")
+    tid = req.id.strip().lower()
+    if not re.fullmatch(r"[a-z0-9-]{2,32}", tid):
+        raise HTTPException(400, "Идентификатор организации: 2–32 символа, a-z, 0-9, дефис")
+    if any(t.get("id") == tid for t in _tenants()):
+        raise HTTPException(409, "Организация с таким идентификатором уже есть")
+    _check_user_fields(req.ownerLogin, req.ownerPassword, "owner")
+    if _user_by_login(req.ownerLogin):
+        raise HTTPException(409, "Такой логин уже есть")
+    _tenants().append({"id": tid, "name": req.name.strip() or tid,
+                       "created": datetime.now().strftime("%Y-%m-%d"), "active": True})
+    h, salt = _hash_password(req.ownerPassword)
+    u = {"id": max((x["id"] for x in _users()), default=0) + 1, "tenant": tid,
+         "login": req.ownerLogin.strip(), "hash": h, "salt": salt, "role": "owner",
+         "name": req.ownerLogin.strip(), "active": True, "uiLang": "ru",
+         "created": datetime.now().strftime("%Y-%m-%d")}
+    _users().append(u)
+    save_state(STATE)
+    return {"ok": True, "tenant": _tenants()[-1], "owner": _user_public(u)}
 
 
 @app.post("/api/auth/logout")
@@ -2106,7 +2370,9 @@ def logout(request: Request):
 @app.get("/api/seed")
 def get_seed():
     """Initial data dump — glossary capped at 150 terms for performance; full list via /api/glossary."""
-    return {**STATE, "projects": [_project_for_client(p) for p in STATE["projects"]],
+    # Пользователи и организации в общую выдачу НЕ идут: там хеши паролей.
+    public = {k: v for k, v in STATE.items() if k not in ("users", "tenants")}
+    return {**public, "projects": [_project_for_client(p) for p in STATE["projects"]],
             "glossary": STATE["glossary"][:150]}
 
 

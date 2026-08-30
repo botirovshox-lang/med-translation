@@ -12,7 +12,19 @@ function useStore(authed) {
   const [segmentFilter, setSegmentFilterState] = useState(null); // Set<id> | null
   const [gotoSegId, setGotoSegId] = useState(null);
 
-  const me = { name: "Вы", initials: "ВЫ", color: "var(--c-primary)" };
+  /* Кто я — с сервера (/api/auth/me), а не заглушка: аватар, роль и то,
+     какие кнопки показывать. Право СДЕЛАТЬ проверяет сервер. */
+  const [me, setMe] = useState({ name: "Вы", initials: "ВЫ", color: "var(--c-primary)", role: "translator" });
+  const [can, setCan] = useState({ owner: false, super: false });
+  useEffect(() => {
+    if (!authed || !window.API || !window.API.me) return;
+    let cancelled = false;
+    window.API.safeCall(() => window.API.me()).then(r => {
+      if (cancelled || !r || !r.me) return;
+      setMe(r.me); setCan(r.can || { owner: false, super: false });
+    });
+    return () => { cancelled = true; };
+  }, [authed]);
   const activeProject = projects.find(p => p.id === activeId) || null;
 
   /* Hydrate from backend after login; fall back to SEED if backend unreachable.
@@ -137,7 +149,7 @@ function useStore(authed) {
 
   return {
     projects, glossary, tm, activeId, activeProject, tab,
-    exportHistory, team: window.SEED.team, me, apiReady,
+    exportHistory, team: window.SEED.team, me, can, apiReady,
     segmentFilter, gotoSegId,
     go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, patchProject, openProject, deleteProject, replaceProjectSegments, saveTerm, deleteTerm, deleteTM,
     setExportHistory,
@@ -173,6 +185,7 @@ function ThemeToggle({ theme, onToggle }) {
 
 /* ---------- Auth screen ---------- */
 function AuthScreen({ onLogin, theme, onToggleTheme }) {
+  const [login, setLogin] = useState("");
   const [pw, setPw] = useState("");
   const [shake, setShake] = useState(false);
   const [err, setErr] = useState("");
@@ -186,10 +199,10 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
        на локальных мок-данных, и это же скрывало отсутствие реальной защиты. */
     let ok = false;
     try {
-      await window.API.login(pw);
+      await window.API.login(login, pw);
       ok = true;
     } catch (e2) {
-      if (e2.status === 401) setErr("Неверный пароль");
+      if (e2.status === 401) setErr("Неверный логин или пароль");
       else if (e2.status === 429) setErr("Слишком много попыток. Повторите через 15 минут.");
       else setErr("Сервер недоступен — вход невозможен");
     }
@@ -203,15 +216,20 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
       React.createElement("div", { className: "auth-logo" }, React.createElement(Icon, { name: "hospital", size: 28 })),
       React.createElement("h1", null, "Medical CAT Translator"),
       React.createElement("p", { className: "auth-sub" }, "Система перевода медицинских документов · v5.5"),
-      React.createElement(Field, { label: "Пароль доступа" },
+      React.createElement(Field, { label: "Логин" },
+        React.createElement("div", { className: "search" },
+          React.createElement(Icon, { name: "user", size: 17 }),
+          React.createElement("input", { className: "input", style: { paddingLeft: 38 }, type: "text", value: login,
+            autoComplete: "username", onChange: (e) => setLogin(e.target.value), placeholder: "admin", autoFocus: true }))),
+      React.createElement(Field, { label: "Пароль" },
         React.createElement("div", { className: "search" },
           React.createElement(Icon, { name: "lock", size: 17 }),
           React.createElement("input", { className: "input", style: { paddingLeft: 38 }, type: "password", value: pw,
-            onChange: (e) => setPw(e.target.value), placeholder: "Введите пароль", autoFocus: true }))),
+            autoComplete: "current-password", onChange: (e) => setPw(e.target.value), placeholder: "Введите пароль" }))),
       err && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13, marginTop: 8 } }, err),
       React.createElement("div", { className: "row", style: { gap: 10, marginTop: 20 } },
         React.createElement(Btn, { variant: "primary", type: "submit", icon: "unlock", className: "btn-block", disabled: busy }, busy ? "Проверка..." : "Войти"),
-        React.createElement(Btn, { variant: "secondary", type: "button", icon: "info", onClick: () => alert("Пароль выдаёт администратор сервиса (переменная окружения APP_PASSWORD на сервере).") }, "Справка")),
+        React.createElement(Btn, { variant: "secondary", type: "button", icon: "info", onClick: () => alert("Логин и пароль выдаёт владелец вашей организации.") }, "Справка")),
       React.createElement("p", { className: "auth-foot" }, "© 2026 Medical CAT Translator · Конфиденциально")
     )
   );

@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from datetime import datetime
 
 
@@ -194,8 +195,11 @@ def _term_boundary_pattern(term):
     parts = [re.escape(p) for p in re.split(r"\s+", _norm(term)) if p]
     if not parts:
         return None
-    word = r"0-9A-Za-z\u0400-\u04FF"
-    return r"(?<![" + word + r"])" + r"\s+".join(parts) + r"(?![" + word + r"])"
+    # Граница слова — любая буква или цифра ЛЮБОЙ письменности ([^\W_]),
+    # а не два зашитых алфавита: с классом «латиница + кириллица» арабский
+    # или греческий термин находился ВНУТРИ чужого слова, потому что его
+    # соседние буквы границей не считались.
+    return r"(?<![^\W_])" + r"\s+".join(parts) + r"(?![^\W_])"
 
 
 def _has_exact_term(text, term):
@@ -722,11 +726,46 @@ def band_of(score):
     return "low"
 
 
+# Слово — буквы и цифры ЛЮБОЙ письменности. Прежний класс [а-яёa-z0-9]
+# видел два алфавита: «über» становился «ber», а арабский, греческий,
+# иврит и хинди давали НОЛЬ слов — и `_content_recall` при пустом оригинале
+# отвечал 1.0, то есть балл 100 любому переводу, включая пустой. Письмо без
+# пробелов (иероглифы, тайский) даёт одно «слово» на фразу — это ловит
+# `lexically_blind`: мерить нечем, решает судья, а не выдуманное число.
+# Регуляркой это не выразить: `\w` не считает буквой комбинирующий знак
+# (тайские и индийские гласные, арабские огласовки, категория M*), и слово
+# рвалось бы на каждом таком знаке — тайская фраза выглядела бы десятком
+# «слов» и переставала быть слепой для меры.
+_CUTTABLE_RE = re.compile(r"[a-zа-яё]")
+_WORD_CHAR_CACHE = {}
+
+
+def _is_word_char(ch):
+    got = _WORD_CHAR_CACHE.get(ch)
+    if got is None:
+        got = ch != "_" and (ch.isalnum() or unicodedata.category(ch).startswith("M"))
+        _WORD_CHAR_CACHE[ch] = got
+    return got
+
+
+def _tokens(text):
+    out, cur = [], []
+    for ch in text:
+        if _is_word_char(ch):
+            cur.append(ch)
+        elif cur:
+            out.append("".join(cur))
+            cur = []
+    if cur:
+        out.append("".join(cur))
+    return out
+
+
 def _words_of(text):
     """Содержательные слова в нормальном виде — БЕЗ обрезки основы.
     Отбор тот же, что у _stems (короткие и служебные не в счёт), чтобы
     «пережил термин круг» и «доля выживших слов» считали по одним словам."""
-    return [w for w in re.findall(r"[а-яёa-z0-9]+", _norm(text))
+    return [w for w in _tokens(_norm(text))
             if len(w) >= 3 and w not in RU_STOPWORDS]
 
 
@@ -734,12 +773,15 @@ def _stems(text):
     """Грубая нормализация под русскую морфологию: обрезаем слово до основы.
     Полноценный морфоанализатор здесь не нужен — для сравнения двух русских
     текстов между собой достаточно совпадения основ."""
-    words = re.findall(r"[а-яёa-z0-9]+", _norm(text))
+    words = _tokens(_norm(text))
     out = []
     for w in words:
         if len(w) < 3 or w in RU_STOPWORDS:
             continue
-        out.append(w[:6] if len(w) > 6 else w)
+        # Обрезка до шести букв подобрана под русское окончание и проверена
+        # на кириллице и латинице; на другом письме она резала бы слово
+        # неизвестно где — там слово берётся целиком.
+        out.append(w[:6] if len(w) > 6 and _CUTTABLE_RE.match(w) else w)
     return out
 
 

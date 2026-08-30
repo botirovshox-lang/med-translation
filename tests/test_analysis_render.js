@@ -395,6 +395,39 @@ const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
           "состав пересчитан после бесплатной правки — ровно один раз: " + seen.join(","));
   }
 
+  // ─────────── 4c. Модели по шагам и подсказки о конфликтах ───────────
+  // Выбор модели меняет и СОСТАВ (ранг termcheck, «проверял тот, кто
+  // переводил»), и цену, поэтому он должен уходить в run-plan и в задачу
+  // ОДНИМ телом. А модели, спорящие по роли (проверка себя, судья =
+  // буквальный переводчик), называются вслух до нажатия.
+  console.log("\n=== 4c. Модели по шагам ===");
+  const planSame = JSON.parse(JSON.stringify(planSrv));
+  planSame.steps[1].model = "m1";                    // back-check той же моделью, что перевод
+  const setCalls = [];
+  let treeMd = null, okMd = true;
+  try {
+    hooks = []; hookIdx = 0; effects.length = 0;
+    treeMd = React.createElement(RunPanel, { summary: TKP, store: storeRun, toast,
+                                             plan: planSame, cat: catSrv,
+                                             mods: { judge_model: "m1" },
+                                             setMod: (k, v) => setCalls.push(k + "=" + v),
+                                             onClose() {}, onStarted() {} });
+  } catch (e) { okMd = false; console.log("      " + e.message); }
+  check(okMd, "RunPanel рендерится с выбором моделей");
+  const tMd = okMd ? texts(treeMd) : [];
+  check(tMd.filter(s => s === "по умолчанию").length >= 3,
+        "у шагов и судьи есть выбор с пунктом «по умолчанию»");
+  check(tMd.some(s => s.indexOf("Back-check той же моделью, что и перевод") !== -1),
+        "проверка себя названа предупреждением");
+  check(tMd.some(s => s.indexOf("Судья и обратный перевод одной моделью") !== -1),
+        "судья = модель обратного перевода — тоже");
+  check(!tMd.some(s => s.indexOf("Ремонт той же моделью") !== -1),
+        "а про ремонт (другая модель) не врёт");
+  check(JSON.stringify(tkPlanBody({ use_judge: true, judge_all: true },
+                                  { bc_model: "m2", tc_model: "" }))
+        === JSON.stringify({ use_judge: true, judge_all: true, bc_model: "m2" }),
+        "tkPlanBody: пустой выбор не уходит, выбранное — уходит");
+
   // ─────────── 5. TabAnalysis: старый сервер без turnkey не роняет экран ───────────
   console.log("\n=== 5. TabAnalysis переживает ответ сервера без turnkey ===");
   global.API.analysis = async () => BASE;          // старый ответ, корзин нет

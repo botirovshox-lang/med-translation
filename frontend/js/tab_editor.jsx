@@ -15,6 +15,13 @@ const SEARCH_SCOPE_LS_KEY = "mcat_search_scope";
 const TC_MODEL_LS_KEY = "mcat_termcheck_model";
 const TCX_MODEL_LS_KEY = "mcat_termaudit_model";
 const RP_MODEL_LS_KEY = "mcat_repair_model";
+/* Один источник ключей для панели «Анализа»: она читает и пишет ТЕ ЖЕ выборы
+   моделей, что и карточки редактора. Свои литералы там завели бы второе
+   хранилище того же выбора — модель, сменённая на одном экране, молча
+   не доехала бы до другого. Имена параметров = имена полей run-plan. */
+window.MODEL_LS = { model: GPT_MODEL_LS_KEY, bc_model: BC_MODEL_LS_KEY,
+                    tc_model: TC_MODEL_LS_KEY, tcx_model: TCX_MODEL_LS_KEY,
+                    rp_model: RP_MODEL_LS_KEY, judge_model: JUDGE_MODEL_LS_KEY };
 const JOB_LABELS = { translate: "Перевод", backcheck: "Back-check", termcheck: "Проверка терминологии",
                      termaudit: "Сверка терминов моделью",
                      repair: "Автоматический ремонт", medical_qa: "Medical QA",

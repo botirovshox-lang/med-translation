@@ -17,11 +17,11 @@ function WorkSummary({ summary, store, toast, onReload }) {
      сегментов он ещё не видел. Вердикт кэшируется на сегменте, так что
      повторное нажатие не платит за уже отвеченное. */
   const [arbBusy, setArbBusy] = useState(false);
-  /* Строка итога — тот же SegRow, что и у корзин «под ключ»: две копии одной
-     строки на ОДНОМ экране разъезжаются молча (см. комментарий у SegRow).
+  /* Строка итога — тот же AnalysisRow, что и у корзин «под ключ»: две копии одной
+     строки на ОДНОМ экране разъезжаются молча (см. комментарий у AnalysisRow).
      Здесь `n` передаётся отдельно от `ids`: часть строк считает не сегменты,
      а термины («Терминов машина решать не берётся»), и списка у них нет. */
-  const Row = (p) => React.createElement(SegRow, Object.assign({ store, toast }, p));
+  const Row = (p) => React.createElement(AnalysisRow, Object.assign({ store, toast }, p));
 
   // Считаем по РАЗНЫМ сегментам: один и тот же подтверждённый сегмент может
   // и спорить с глоссарием, и нести находку проверок — сумма длин списков
@@ -341,7 +341,7 @@ function tkPct(n, total) {
    ключ»), без него только число (подробный итог, где часть строк считает
    термины, а не сегменты). `n` можно передать отдельно от `ids` — ровно для
    таких строк без списка. */
-function SegRow({ label, hint, ids, n, total, color, action, store, toast }) {
+function AnalysisRow({ label, hint, ids, n, total, color, action, store, toast }) {
   const count = n != null ? n : (ids || []).length;
   const clickable = !!(ids && ids.length);
   const go = () => {
@@ -384,6 +384,17 @@ function SegRow({ label, hint, ids, n, total, color, action, store, toast }) {
    Начертание включено по умолчанию (меняются только заглавные и строчные,
    сочинять там нечему), принятие отменённых баллом правок — выключено:
    оно подменяет текст, и такое решение человек принимает явно. */
+/* Тело запроса run-plan: серверные turnkey.params + выбранные модели.
+   ОДНО место сборки на оба потребителя (разбор в TurnkeySummary и запуск
+   в RunPanel): собери их порознь — и смета считалась бы под одни модели,
+   а задача уходила бы под другие. Пустой выбор не отправляется вовсе:
+   незаполненная модель шага означает «возьми свою по умолчанию». */
+function tkPlanBody(tkParams, mods) {
+  const body = Object.assign({}, tkParams);
+  Object.keys(mods || {}).forEach(k => { if (mods[k]) body[k] = mods[k]; });
+  return body;
+}
+
 /* Галочка бесплатной правки. МОДУЛЬНАЯ, а не внутри RunPanel: объявленная
    в теле компонента, она заново рождается на каждый рендер — React считает
    это ДРУГИМ типом и пересоздаёт узел, то есть нажатая галочка теряет фокус
@@ -397,9 +408,51 @@ function FreeFixCheck({ on, setOn, label, note }) {
       React.createElement("span", { className: "dim" }, " — " + note)));
 }
 
-function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat }) {
+/* Какой параметр run-plan/задачи отвечает за модель шага. Зеркалит
+   FULL_STEP_MODEL сервера; Medical QA своей модели не имеет — она берёт
+   модель back-check для обратного перевода. */
+const STEP_MODEL_PARAM = { translate: "model", backcheck: "bc_model",
+                           termcheck: "tc_model", termaudit: "tcx_model",
+                           repair: "rp_model" };
+
+/* Подсказки о моделях, которые противоречат друг другу по РОЛИ, а не
+   по силе. Считается по ДЕЙСТВУЮЩИМ моделям — тем, что сервер назвал
+   в разборе (plan.steps[].model): выбор «по умолчанию» тоже может
+   совпасть с моделью перевода, и молчать о нём нельзя. */
+function modelConflicts(plan, cat, mods) {
+  const eff = {};
+  (plan && plan.steps || []).forEach(st => { eff[st.step] = st.model; });
+  const label = (id) => {
+    const m = (cat && cat.models || []).find(x => x.id === id);
+    return m ? m.label : (id || "?");
+  };
+  const judge = (mods && mods.judge_model) || (cat && cat.judgeDefault) || "";
+  const out = [];
+  if (eff.translate && eff.backcheck && eff.translate === eff.backcheck) {
+    out.push("Back-check той же моделью, что и перевод (" + label(eff.translate)
+      + "): проверка себя — не проверка. На таких сегментах сервер сам возьмёт "
+      + "запасную модель, и смета поплывёт; выберите другую.");
+  }
+  [["termcheck", "Проверка терминов"], ["termaudit", "Сверка терминов"],
+   ["repair", "Ремонт"]].forEach(([stp, name]) => {
+    if (eff.translate && eff[stp] && eff[stp] === eff.translate) {
+      out.push(name + " той же моделью, что и перевод (" + label(eff.translate)
+        + "): она правит и судит по собственному пониманию текста — "
+        + "независимости, на которой стоит автоодобрение терминов, нет.");
+    }
+  });
+  if (judge && eff.backcheck && judge === eff.backcheck) {
+    out.push("Судья и обратный перевод одной моделью (" + label(judge)
+      + "): судье нужна сильная, обратному переводу — буквальная, которая "
+      + "не чинит ошибки на лету. Одна на обе роли плоха в одной из них.");
+  }
+  return out;
+}
+
+function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, setMod }) {
   const project = store.activeProject;
   const tk = summary.turnkey;
+  const mm = mods || {};
   const [busy, setBusy] = useState(false);
   const caseIds = tk.case || [];
   const accIds = (summary.human || {}).revertedByScore || [];
@@ -416,7 +469,9 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat }) {
     (cat.models || []).forEach(m => { byId[m.id] = m; });
     const segById = {};
     (project.segments || []).forEach(sg => { segById[sg.id] = sg; });
-    const judgeM = byId[cat.judgeDefault];
+    // Судья — выбранный здесь либо дефолт сервера; сам он в plan.steps
+    // не значится, потому что вызывается внутри back-check и ремонта.
+    const judgeM = byId[mm.judge_model || cat.judgeDefault];
     const bcStep = (plan.steps || []).find(x => x.step === "backcheck") || {};
     let cost = 0, unknown = false;
     const rows = (plan.steps || []).map(st => {
@@ -443,7 +498,7 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat }) {
                modelLabel: st.modelLabel, cost: e.cost };
     });
     return { rows, cost, unknown, byStep: rows.reduce((a, r) => (a[r.step] = r, a), {}) };
-  }, [plan, cat, project && project.id]);
+  }, [plan, cat, project && project.id, mm.judge_model]);
 
   const run = async () => {
     if (busy || !plan || !window.API) return;
@@ -490,7 +545,7 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat }) {
     // Состав берём ПОСЛЕ бесплатных правок: принятые тексты стали
     // непроверенными и обязаны попасть в этот же прогон, а не в следующий.
     const fresh = freeFixed
-      ? await window.API.safeCall(() => window.API.runPlan(project.id, tk.params))
+      ? await window.API.safeCall(() => window.API.runPlan(project.id, tkPlanBody(tk.params, mm)))
       : plan;
     const ids = (fresh && fresh.ids) || [];
     if (!ids.length) {
@@ -501,8 +556,9 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat }) {
       return;
     }
     // est_cost — то самое число, что человек видел на кнопке: рядом с фактом
-    // оно и калибрует поправку estRatio.
-    const params = Object.assign({}, tk.params,
+    // оно и калибрует поправку estRatio. Модели — те же, под которые считан
+    // разбор (tkPlanBody): задача с другими моделями сделала бы другую работу.
+    const params = Object.assign(tkPlanBody(tk.params, mm),
       est && est.cost != null ? { est_cost: est.cost } : {});
     const res = await window.API.safeCall(() => window.API.createJob(project.id, "full", ids, params));
     setBusy(false);
@@ -531,14 +587,38 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat }) {
     !plan && plan !== false && React.createElement("div", { className: "dim", style: { fontSize: 13 } }, "Считаем состав…"),
     plan && (plan.steps || []).map(st => {
       const row = est && est.byStep[st.step];
-      return React.createElement("div", { key: st.step, className: "row between", style: { fontSize: 13 } },
-        React.createElement("span", null, st.label,
+      const pkey = STEP_MODEL_PARAM[st.step];
+      return React.createElement("div", { key: st.step, className: "row between",
+                                          style: { fontSize: 13, gap: 10, flexWrap: "wrap" } },
+        React.createElement("span", { className: "row", style: { gap: 8, alignItems: "center" } },
+          React.createElement("span", { style: { minWidth: 150 } }, st.label),
+          /* Модель шага — выбирается тут же, а не только в редакторе; пустой
+             выбор = дефолт сервера, действующая модель названа рядом. У Medical
+             QA селектора нет: своей модели у неё нет, обратный перевод она
+             заказывает моделью back-check. */
+          pkey && setMod
+            ? React.createElement(Select, { value: mm[pkey] || "", style: { fontSize: 12.5, padding: "2px 6px" },
+                onChange: (e) => setMod(pkey, e.target.value) },
+                React.createElement("option", { value: "" }, "по умолчанию"),
+                (cat && cat.models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label)))
+            : null,
           React.createElement("span", { className: "dim" },
-            st.modelLabel ? " · " + st.modelLabel : "")),
+            st.modelLabel ? "→ " + st.modelLabel + (st.step === "medical_qa" ? " (модель back-check)" : "") : "")),
         React.createElement("span", { className: "dim", style: { fontVariantNumeric: "tabular-nums" } },
           st.count + " сегм." + (row && row.cost != null && typeof fmtCost === "function"
             ? " · ≈ " + fmtCost(row.cost) : "")));
     }),
+    /* Судья — не шаг, а участник back-check и ремонта: своя строка с выбором. */
+    plan && setMod && React.createElement("div", { className: "row", style: { fontSize: 13, gap: 8, alignItems: "center" } },
+      React.createElement("span", { style: { minWidth: 150 } }, "судья"),
+      React.createElement(Select, { value: mm.judge_model || "", style: { fontSize: 12.5, padding: "2px 6px" },
+        onChange: (e) => setMod("judge_model", e.target.value) },
+        React.createElement("option", { value: "" }, "по умолчанию"),
+        (cat && cat.models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label))),
+      React.createElement("span", { className: "dim" }, "в back-check и перепроверке ремонта, с разрешением выше зоны")),
+    /* Модели, спорящие друг с другом по роли, — вслух и до нажатия. */
+    plan && modelConflicts(plan, cat, mm).map((w, i) => React.createElement("div", { key: "w" + i,
+      style: { fontSize: 12.5, color: "var(--c-warning)", lineHeight: 1.5 } }, "⚠ " + w)),
     plan && extra > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
       "В состав входят и готовые сегменты — освежить проверки (" + extra + " сегм. сверх корзины)."),
     plan && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
@@ -584,15 +664,36 @@ function TurnkeySummary({ summary, store, toast, onReload }) {
      то есть свежесть у них общая. */
   const [plan, setPlan] = useState(null);
   const [cat, setCat] = useState(null);
+  /* Модели по шагам. Источник — ТЕ ЖЕ ключи localStorage, что у карточек
+     редактора (window.MODEL_LS из tab_editor.jsx): выбранное здесь видно
+     там и наоборот, второго хранилища одного выбора нет. Пустая строка —
+     «дефолт сервера»; выбор влияет и на СОСТАВ (ранг termcheck, правило
+     «проверял тот, кто переводил»), поэтому смена модели перезапрашивает
+     разбор — тем же телом, каким потом уйдёт задача (tkPlanBody). */
+  const [mods, setMods] = useState(() => {
+    const out = {}, keys = window.MODEL_LS || {};
+    Object.keys(keys).forEach(k => {
+      try { out[k] = localStorage.getItem(keys[k]) || ""; } catch (e) { out[k] = ""; }
+    });
+    return out;
+  });
+  const setMod = (k, v) => {
+    setMods(m => Object.assign({}, m, { [k]: v }));
+    const keys = window.MODEL_LS || {};
+    if (keys[k]) {
+      try { v ? localStorage.setItem(keys[k], v) : localStorage.removeItem(keys[k]); }
+      catch (e) { /* приватный режим — выбор живёт до перезагрузки */ }
+    }
+  };
   useEffect(() => {
     if (!window.API || !store.activeProject) return;
     let dead = false;
     Promise.all([
-      window.API.safeCall(() => window.API.runPlan(store.activeProject.id, tk.params)),
+      window.API.safeCall(() => window.API.runPlan(store.activeProject.id, tkPlanBody(tk.params, mods))),
       window.API.safeCall(() => window.API.models()),
     ]).then(([p, m]) => { if (!dead) { setPlan(p || false); setCat(m || null); } });
     return () => { dead = true; };
-  }, [store.activeProject && store.activeProject.id, summary]);
+  }, [store.activeProject && store.activeProject.id, summary, mods]);
   /* Тернарник, а не `total && ...`: при total === 0 такое выражение даёт
      ЧИСЛО 0, и React честно печатает его — в пустом проекте внутри полосы
      появлялись три нуля. */
@@ -617,18 +718,18 @@ function TurnkeySummary({ summary, store, toast, onReload }) {
         seg(ready.length, "var(--c-success)"),
         seg(machine.length, "var(--c-primary)"),
         seg(human.length, "var(--c-warning)")),
-      React.createElement(SegRow, { store, toast, total, ids: ready,
+      React.createElement(AnalysisRow, { store, toast, total, ids: ready,
         label: "Готово к сдаче", color: "var(--c-success)",
         hint: "переведено и проверено, открытых вопросов нет" }),
-      React.createElement(SegRow, { store, toast, total, ids: machine,
+      React.createElement(AnalysisRow, { store, toast, total, ids: machine,
         label: "Возьмёт ближайший прогон", color: "var(--c-primary)",
         hint: "перевод, проверки, судья и ремонт по находкам",
         action: React.createElement(Btn, { variant: "primary", size: "sm", icon: "zap",
           onClick: () => setPanel(p => !p) }, "Перевести и доделать") }),
-      React.createElement(SegRow, { store, toast, total, ids: human,
+      React.createElement(AnalysisRow, { store, toast, total, ids: human,
         label: "Нужно ваше решение", color: "var(--c-warning)",
         hint: "прогон это не решит — состав и команды в «Подробностях»" })),
-    panel && React.createElement(RunPanel, { summary, store, toast, plan, cat,
+    panel && React.createElement(RunPanel, { summary, store, toast, plan, cat, mods, setMod,
       onClose: () => setPanel(false), onStarted: onReload }));
 }
 

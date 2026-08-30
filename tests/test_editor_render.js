@@ -143,6 +143,30 @@ const root = process.argv[2] || "frontend/js";
 console.log("=== 0. Хуки, которыми пользуются .jsx, объявлены в ui.jsx ===");
 checkHookExports(fs, path, root, check);
 
+/* Сторож коллизий имён. Все .jsx грузятся тегами <script> в ОДНУ глобальную
+   область, и функция верхнего уровня из позднего файла молча перезаписывает
+   одноимённую из раннего. Так SegRow из tab_preflight.jsx затёр SegRow
+   редактора — и таблица сегментов рисовала строки «0» без текста, при
+   исправных данных и фильтре. Ни один рендер-тест этого не видел: каждый
+   грузит только свои файлы, вместе их не грузит никто. */
+console.log("=== 0b. Имена верхнего уровня не совпадают между .jsx ===");
+{
+  const decl = {};
+  for (const f of fs.readdirSync(root)) {
+    if (!f.endsWith(".jsx")) continue;
+    const code = fs.readFileSync(path.join(root, f), "utf8");
+    for (const m of code.matchAll(/^(?:function\s+([A-Za-z_]\w*)|const\s+([A-Za-z_]\w*)\s*=)/gm)) {
+      const name = m[1] || m[2];
+      (decl[name] = decl[name] || new Set()).add(f);
+    }
+  }
+  const dupes = Object.entries(decl).filter(([, files]) => files.size > 1);
+  check(dupes.length === 0,
+        "коллизий нет" + (dupes.length
+          ? " — ЕСТЬ: " + dupes.map(([n, fl]) => n + " (" + [...fl].join(", ") + ")").join("; ")
+          : ""));
+}
+
 for (const f of ["ui.jsx", "data.js", "tab_editor_detail.jsx", "tab_editor.jsx"]) {
   const code = fs.readFileSync(path.join(root, f), "utf8");
   // Файлы грузятся тегами <script> — то есть в одну общую область видимости.

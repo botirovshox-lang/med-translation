@@ -27,3 +27,4 @@ Shapely>=2.0
 PyYAML>=6.0
 Pillow>=10.0
 numpy>=1.24
+psycopg[binary]>=3.1   # хранилище PostgreSQL (DATABASE_URL); без него — файл

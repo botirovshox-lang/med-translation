@@ -2011,6 +2011,16 @@ DATA_DIR = ROOT / "backend" / "data"
 DATA_DIR.mkdir(exist_ok=True)
 STATE_FILE = DATA_DIR / "state.json"
 
+# Хранилище: файл или PostgreSQL (DATABASE_URL). STATE остаётся моделью
+# в памяти, меняется только то, куда пишет save_state и откуда читает
+# load_state — см. backend/store.py. Отказ соединения при заданном URL —
+# громкий, а не тихий откат на файл.
+try:
+    import store as _store_mod
+except ImportError:                       # запуск как backend.main:app
+    from backend import store as _store_mod
+STORE = _store_mod.open_store(os.environ.get("DATABASE_URL"), STATE_FILE)
+
 def medical_qa_enabled() -> bool:
     if medical_qa_mod and hasattr(medical_qa_mod, "enabled_from_env"):
         return medical_qa_mod.enabled_from_env(os.environ.get("MEDICAL_TRANSLATION_QA_ENABLED", "1"))
@@ -2193,7 +2203,20 @@ def _apply_migrations(state: dict) -> dict:
 
 
 def load_state() -> dict:
-    """Загрузка состояния. Если state.json повреждён — НЕ теряем данные молча:
+    """Из базы, если она включена и не пуста; иначе из файла (и это же —
+    первичный перенос: пустая база + state.json на диске = первое
+    сохранение уложит всё в базу документами)."""
+    if STORE.kind == "pg":
+        st = STORE.load()
+        if st is not None:
+            return _apply_migrations(st)
+        print("[backend] база пуста — состояние поднимается из state.json и уйдёт "
+              "в базу при первом сохранении", file=sys.stderr)
+    return _load_state_file()
+
+
+def _load_state_file() -> dict:
+    """Загрузка из файла. Если state.json повреждён — НЕ теряем данные молча:
     битый файл сохраняется как state.corrupt-*, затем пробуем свежайший бэкап."""
     candidates = [STATE_FILE] + sorted(BACKUP_DIR.glob("state-*.json"), reverse=True)
     for path in candidates:
@@ -2222,13 +2245,15 @@ def load_state() -> dict:
     return {**json.loads(json.dumps(_demo_seed())), "termQueue": []}
 
 
-def _hourly_backup(payload: str):
-    """Раз в час откладывает копию состояния в data/backups/ (хранится ~2 суток)."""
+def _hourly_backup(state: dict):
+    """Раз в час откладывает копию состояния в data/backups/ (хранится ~2 суток).
+    JSON собирается только когда файл этого часа ещё не записан — при базе
+    это единственное место, где состояние сериализуется целиком."""
     try:
         BACKUP_DIR.mkdir(exist_ok=True)
         bak = BACKUP_DIR / f"state-{datetime.now().strftime('%Y%m%d-%H')}.json"
         if not bak.exists():
-            bak.write_text(payload, encoding="utf-8")
+            bak.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
             for old in sorted(BACKUP_DIR.glob("state-*.json"))[:-_BACKUP_KEEP]:
                 old.unlink()
     except Exception as e:
@@ -2241,14 +2266,8 @@ def save_state(state: dict):
     а load_state() молча сбрасывал всё на демо-данные (потеря проектов)."""
     try:
         with _SAVE_LOCK:
-            payload = json.dumps(state, ensure_ascii=False)
-            tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write(payload)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, STATE_FILE)
-            _hourly_backup(payload)
+            STORE.save(state)
+            _hourly_backup(state)
     except Exception as e:
         print(f"[backend] WARN: could not save state: {e}", file=sys.stderr)
 
@@ -13434,6 +13453,7 @@ def _job_loop():
                 continue
             job["status"] = "running"
             job["started"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _job_persist(job)
             _ACTIVE_JOB["job"] = job
             _usage_begin(job)
             _job_run(job)
@@ -13458,6 +13478,7 @@ def _job_loop():
                 save_state(STATE)
             except Exception as e:
                 print(f"[backend] job#{job.get('id')} save failed: {e}", file=sys.stderr)
+            _job_persist(job)
             _JOB_QUEUE.task_done()
 
 
@@ -13468,10 +13489,21 @@ def _ensure_job_worker():
         _JOB_WORKER.start()
 
 
+def _job_persist(job: dict) -> None:
+    try:
+        STORE.save_job(job)
+    except Exception as e:
+        print(f"[backend] job#{job.get('id')} не сохранён в базу: {e}", file=sys.stderr)
+
+
 def _trim_jobs():
     finished = [j for j in _JOBS.values() if j["status"] in ("done", "stopped", "error")]
     for j in sorted(finished, key=lambda x: x["id"])[:-JOB_HISTORY]:
         _JOBS.pop(j["id"], None)
+        try:
+            STORE.delete_job(j["id"])
+        except Exception as e:
+            print(f"[backend] job#{j['id']} не удалён из базы: {e}", file=sys.stderr)
 
 
 class JobRequest(BaseModel):
@@ -13509,6 +13541,7 @@ def create_job(pid: int, req: JobRequest):
         }
         _JOBS[job["id"]] = job
         _trim_jobs()
+    _job_persist(job)
     _ensure_job_worker()
     _JOB_QUEUE.put(job)
     return {"ok": True, "job": _job_public(job)}
@@ -13600,3 +13633,34 @@ if __name__ == "__main__":
     print(f"[backend] Frontend dir: {FRONTEND_DIR}")
     print(f"[backend] Loaded modules: {list(_BACKEND_MODULES.keys())}")
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
+def _restore_jobs() -> None:
+    """Очередь прогонов из базы после рестарта. Незаконченные (queued/running)
+    ставятся в очередь заново: порция, оборванная рестартом, повторится, но
+    готовые проверки у сегментов кэшированы — второй раз они не оплачиваются.
+    Файловое хранилище очередь не хранит: там, как и раньше, рестарт её теряет."""
+    try:
+        jobs = STORE.load_jobs()
+    except Exception as e:
+        print(f"[backend] очередь прогонов из базы не прочитана: {e}", file=sys.stderr)
+        return
+    requeued = 0
+    for j in jobs:
+        j.setdefault("stop", False)
+        j.setdefault("recent", [])
+        j.setdefault("ids", [])
+        j.setdefault("counters", {})
+        _JOBS[j["id"]] = j
+        if j.get("status") in ("queued", "running"):
+            j["status"], j["stop"], j["started"] = "queued", False, None
+            _JOB_QUEUE.put(j)
+            requeued += 1
+    if jobs:
+        print(f"[backend] прогонов из базы: {len(jobs)}, поставлено в очередь заново: {requeued}",
+              file=sys.stderr)
+    if requeued:
+        _ensure_job_worker()
+
+
+_restore_jobs()

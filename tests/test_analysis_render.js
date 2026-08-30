@@ -221,7 +221,7 @@ let treeQa = null, okQa = true;
 try { treeQa = render(React.createElement(WorkSummary, { summary: QA, store, toast })); }
 catch (e) { okQa = false; console.log("      " + e.message); }
 check(okQa, "рендер прошёл");
-check(okQa && texts(treeQa).some(s => s.indexOf("Medical QA нашла критичное") !== -1),
+check(okQa && texts(treeQa).some(s => s.indexOf("проверки нашли критичное") !== -1),
       "строка qaCritical есть — вкладки «Замечания» больше нет, показывать больше негде");
 // Строка одна на весь экран (SegRow), но доля показывается ТОЛЬКО там, где
 // целое известно: в подробном итоге часть строк считает термины, а не

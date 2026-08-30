@@ -264,7 +264,7 @@ try {
   console.log("\n=== 1. Таблица шагов на месте ===");
   for (const m of ["Перевести и проверить", "Шаг", "Модель", "Сегм.", "≈ цена"])
     check(text.indexOf(m) !== -1, "колонка/заголовок: " + m);
-  for (const m of ["Перевод", "Back-check", "Термины", "Ремонт", "Medical QA"])
+  for (const m of ["Перевод", "Back-check", "Термины", "Ремонт", "Детерминированные проверки"])
     check(text.indexOf(m) !== -1, "строка шага: " + m);
   check(text.indexOf("Ориентировочно") !== -1, "общая смета под таблицей");
   check(text.indexOf("от back-check") !== -1,

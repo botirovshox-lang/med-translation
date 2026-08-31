@@ -3606,6 +3606,18 @@ def project_analysis(pid: int, refresh: bool = False):
     machine_set.update(impact.get("caseSegments") or ())
     machine_set.update(judge_ext)
     machine_set -= human_set
+    # Заверение человека — сильнейший сигнал системы (инвариант про
+    # confirmedBy), и корзины обязаны его видеть: раньше подтверждение НЕ
+    # меняло на этом экране ни одной цифры — подтверждённый сегмент без
+    # находок так и стоял в «возьмёт прогон» из-за недостающего back-check
+    # или несмотревшего судьи. Человек прочитал и заверил — открытых
+    # вопросов нет, это «готово». Прогон такие сегменты по-прежнему ВОЗЬМЁТ
+    # (проверки статус не фильтруют — это их право и защита), и как только
+    # появится находка, сегмент сам уйдёт в human (confirmed_findings /
+    # qaCritical): «готово» — снимок «сейчас вопросов нет», а не пожизненный
+    # пропуск. Объективные находки (override_ids) остаются машине: их ремонт
+    # берёт и без разрешения, обещание честное.
+    machine_set -= (confirmed_ids - override_ids)
 
     _order = [s["id"] for s in project["segments"]]
     ready_set = set(_order) - human_set - machine_set
@@ -3635,6 +3647,11 @@ def project_analysis(pid: int, refresh: bool = False):
             "ready": [i for i in _order if i in ready_set],
             "machine": [i for i in _order if i in machine_set],
             "human": [i for i in _order if i in human_set],
+            # Заверенные человеком (по статусу — тем же признаком, которым
+            # раздаются корзины). Не корзина, а СРЕЗ поверх них: работа
+            # человека обязана быть видна на экране числом, а не только
+            # через рост «готово».
+            "confirmed": [i for i in _order if i in confirmed_ids],
             # Начертание приказных терминов: чинится бесплатной командой
             # /term-case, кнопка предлагает её отдельной галочкой.
             "case": [i for i in (impact.get("caseSegments") or ())
@@ -10288,6 +10305,39 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     seg.pop("confirmedBy", None)
     seg.pop("confirmedAt", None)
     seg["provider"] = mdl_id
+    # Принятая правка не выходит из прогона с устаревшей проверкой. Ремонт —
+    # последний платный шаг конвейера, back-check и termcheck идут ДО него,
+    # и правка по терминам (had_tc без had_bc) оставляла back-check от
+    # прежнего текста: сегмент тут же возвращался в «переведено, но не
+    # проверено», а следующий прогон покупал обратный перевод заново — после
+    # каждого прогона оставался хвост (боевые #1349, #1741, #1925, #2577).
+    # Освежаем только НЕДОСТАЮЩУЮ проверку и только у ПРИНЯТОЙ правки: у
+    # откачённой восстановлены прежние проверки, и платить за выброшенного
+    # кандидата незачем. Денег это не прибавляет — тот же вызов всё равно
+    # купил бы следующий прогон, просто теперь сегмент закрывается этим.
+    # Судья — по правилу judge_after (см. had_bc выше): прежний балл мог
+    # сложиться с его участием. Сбой освежения правку НЕ откатывает: вердикт
+    # уже вынесен теми проверками, которые ругались, а проверка просто
+    # остаётся устаревшей — ровно как было до этой правки. Идёт ДО записи
+    # repair: attemptKey обязан видеть находки свежих проверок.
+    # Каждая проверка в СВОЁМ try: вызовы независимы, и сбой back-check
+    # не повод не делать дешёвый termcheck (заход только по бесплатным
+    # находкам освежает обе) — иначе один обрыв сети возвращал бы тот самый
+    # платный хвост, ради которого освежение заведено.
+    if not had_bc:
+        try:
+            _run_segment_backcheck(seg, project, bc_model,
+                                   use_judge or bool(bc_before and bc_before.get("judged")),
+                                   judge_model, harvest=False, judge_all=judge_all)
+        except Exception as e:
+            print(f"[backend] repair: освежение back-check после принятой правки не удалось: {e}",
+                  file=sys.stderr)
+    if not had_tc:
+        try:
+            _run_segment_termcheck(seg, project, tc_model, harvest=False)
+        except Exception as e:
+            print(f"[backend] repair: освежение termcheck после принятой правки не удалось: {e}",
+                  file=sys.stderr)
     seg["repair"] = {"applied": True, "from": old_target, "source_hash": _text_hash(new_target),
                      # По НОВОМУ тексту: находки пересчитаны, и если их не
                      # осталось, повторять нечего; появились новые — заход
@@ -13069,8 +13119,21 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
 
         if step == "backcheck":
             if _backcheck_cached(seg, mdl_id, use_judge, judge_all):
-                bm = (seg.get("backcheck") or {}).get("model")
-                skip("уже проверен этим переводом: " + _model_label(bm))
+                # «Уже проверен» — полуправда, когда судья ещё не смотрел:
+                # прогон без тумблера «Судья» такие сегменты не осушает
+                # НИКОГДА (тумблер выключен по умолчанию и не переживает
+                # перезагрузку), и на боевом проекте 17 сегментов с баллом
+                # 77–95 пережили все прогоны из редактора. Причина обязана
+                # называть лекарство, которое работает.
+                if not use_judge and _judge_pending(seg):
+                    skip("судья не смотрел — его позовёт тумблер «Судья» "
+                         "или кнопка «Перевести и доделать»")
+                elif not judge_all and _judge_pending(seg, above=True):
+                    skip("балл выше зоны судьи — смысл прочтёт только "
+                         "«Перевести и доделать»")
+                else:
+                    bm = (seg.get("backcheck") or {}).get("model")
+                    skip("уже проверен этим переводом: " + _model_label(bm))
             elif (seg.get("backcheck") or {}).get("score") is None:
                 # is None, а не truthy: балл 0 — это проверенный сегмент
                 # с провальной оценкой, а не непроверенный.

@@ -228,6 +228,34 @@ print("=== 4. Старые поля /analysis на месте ===")
 check(isinstance(res.get("readyIds"), list), "readyIds остался")
 check("clean" in res and "todo" in res and "machine" in res, "clean/todo/machine на месте")
 
+# ─────────────── 5. Заверение человека видно корзинам ───────────────
+# Раньше подтверждение не меняло на экране НИ ОДНОЙ цифры: заверенный сегмент
+# без находок стоял в «возьмёт прогон» из-за недостающего back-check или
+# несмотревшего судьи. Человек прочитал и заверил — открытых вопросов нет.
+print("")
+print("=== 5. Подтверждение вручную двигает корзины ===")
+c_unchecked = seg(41, LONG_RU, LONG_EN, status="confirmed")   # заверен, проверок нет
+c_judge = seg(42, LONG_RU, LONG_EN, status="confirmed")       # заверен, судья не смотрел
+bc_done(c_judge, score=85)
+tc_done(c_judge)
+u_unchecked = seg(43, LONG_RU, LONG_EN)                       # НЕ заверен, проверок нет
+c_find = seg(44, LONG_RU, LONG_EN, status="confirmed")        # заверен + находка
+bc_done(c_find, score=96, judged=True)
+tc_done(c_find, findings=[{"severity": "major", "tgt_term": "upper lobes",
+                           "suggestion": "superior lobes"}])
+build([c_unchecked, c_judge, u_unchecked, c_find])
+res5 = main.project_analysis(1, refresh=True)
+tk5 = res5["turnkey"]
+r5, m5, h5 = set(tk5["ready"]), set(tk5["machine"]), set(tk5["human"])
+check(41 in r5, "заверенный без проверок — готов (человек и есть проверка)")
+check(42 in r5, "заверенный с баллом в зоне судьи — готов, а не «возьмёт прогон»")
+check(43 in m5, "тот же сегмент БЕЗ заверения — по-прежнему машине")
+check(44 in h5, "заверенный с находкой — по-прежнему человеку, заверение не пропуск")
+check(tk5.get("confirmed") == [41, 42, 44],
+      "срез «заверено вручную» отдаётся списком в порядке документа")
+check(len(r5 | m5 | h5) == res5["total"] and not (r5 & m5) and not (m5 & h5),
+      "корзины по-прежнему исчерпывающие и непересекающиеся")
+
 print("")
 if fail:
     print("ПРОВАЛЕНО: %d" % len(fail))

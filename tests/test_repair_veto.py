@@ -1103,6 +1103,57 @@ check(set(a["human"]["reverted"]) >= {1, 2},
       "и это ПОДМНОЖЕСТВО откачённых, а не отдельная корзина — иначе "
       "исчерпаемость держалась бы на совпадении двух предикатов")
 
+# ─────────── 8. Принятая правка выходит из прогона со СВЕЖИМИ проверками ───────────
+# Ремонт — последний платный шаг, back-check идёт до него: правка по терминам
+# (had_tc без had_bc) оставляла back-check от прежнего текста, сегмент тут же
+# возвращался в «переведено, но не проверено», и следующий прогон покупал
+# обратный перевод заново. После каждого прогона оставался хвост.
+print("\n=== 8. Освежение недостающей проверки после принятой правки ===")
+
+# Заход ТОЛЬКО по termcheck: bc без претензий (had_bc False).
+def build_term_only():
+    s = seg_of(1, SRC, OLD_T,
+               bc={"score": 95, "model": "gpt-5.6-luna", "back": OLD_T,
+                   "reasons": [], "terms_lost": [], "judged": False},
+               tc={"model": "gpt-5.6-terra", "findings": [dict(FIND)]})
+    return project_of([s]), s
+
+proj, seg = build_term_only()
+check({f["kind"] for f in main._repair_findings(seg, proj)} == {"term"},
+      "заход только по termcheck — back-check перепроверять было не за что")
+bc_calls = []
+stub_checks(score_after=95, findings_after=[], seen=bc_calls)
+r = main._run_segment_repair(seg, proj)
+check(r.get("applied") is True, "правка принята")
+check(seg["backcheck"]["target_hash"] == main._text_hash(NEW_T),
+      "back-check освежён под НОВЫЙ текст — сегмент не вернётся в «не проверено»")
+check(len(bc_calls) == 1, "и это ровно один вызов, а не перепроверка на каждый чих")
+check(main._repair_tried(seg) is True,
+      "attemptKey посчитан ПОСЛЕ освежения — свежие проверки в отпечатке")
+
+# Откат (замечаний стало больше): платить за выброшенного кандидата незачем.
+proj, seg = build_term_only()
+bc_calls = []
+stub_checks(score_after=95, seen=bc_calls,
+            findings_after=[dict(FIND),
+                            dict(FIND, tgt_term="second", suggestion="other")])
+r = main._run_segment_repair(seg, proj)
+check(r.get("applied") is False, "правка откачена — замечаний стало больше")
+check(len(bc_calls) == 0,
+      "back-check у откачённой правки НЕ покупается: прежняя запись верна")
+check(seg["backcheck"]["target_hash"] == main._text_hash(OLD_T),
+      "и относится к восстановленному тексту")
+
+# Зеркальный случай: заход только по back-check (term_lost) — освежается termcheck.
+proj, seg = build(findings=())
+check({f["kind"] for f in main._repair_findings(seg, proj)} == {"term_lost"},
+      "заход только по back-check")
+stub_checks(score_after=95, findings_after=[])
+r = main._run_segment_repair(seg, proj)
+check(r.get("applied") is True, "правка принята")
+check(seg["termcheck"]["target_hash"] == main._text_hash(NEW_T),
+      "termcheck освежён под новый текст")
+
 print()
 if fail:
     print("ПРОВАЛЕНО: " + str(len(fail)))

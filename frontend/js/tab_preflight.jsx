@@ -393,7 +393,7 @@ function tkPct(n, total) {
    ключ»), без него только число (подробный итог, где часть строк считает
    термины, а не сегменты). `n` можно передать отдельно от `ids` — ровно для
    таких строк без списка. */
-function AnalysisRow({ label, hint, ids, n, total, color, action, store, toast }) {
+function AnalysisRow({ label, hint, ids, n, total, color, action, store, toast, dim }) {
   const count = n != null ? n : (ids || []).length;
   const clickable = !!(ids && ids.length);
   const go = () => {
@@ -403,12 +403,14 @@ function AnalysisRow({ label, hint, ids, n, total, color, action, store, toast }
     toast.info(label, ids.length + " сегментов");
   };
   return React.createElement("div", {
-    className: "row between",
+    className: "row between" + (dim ? " dim" : ""),
     onClick: clickable ? go : null,
-    style: { padding: "10px 0", borderTop: "1px solid var(--border)", gap: 12,
+    style: { padding: dim ? "8px 0 0" : "10px 0",
+             borderTop: dim ? undefined : "1px solid var(--border)", gap: 12,
+             fontSize: dim ? 12.5 : undefined,
              cursor: clickable ? "pointer" : "default", alignItems: "baseline" } },
     React.createElement("div", { style: { minWidth: 0 } },
-      React.createElement("span", { style: { fontWeight: 650, color: color || "var(--text-1)" } }, label),
+      React.createElement("span", { style: { fontWeight: dim ? 500 : 650, color: color || "var(--text-1)" } }, label),
       hint && React.createElement("span", { className: "dim", style: { fontSize: 12.5 } }, " — " + hint)),
     React.createElement("div", { className: "row", style: { gap: 10, alignItems: "center" } },
       /* Действие живёт СПРАВА от числа и гасит клик по строке: строка ведёт
@@ -786,7 +788,16 @@ function TurnkeySummary({ summary, store, toast, onReload }) {
           onClick: () => setPanel(p => !p) }, "Перевести и доделать") }),
       React.createElement(AnalysisRow, { store, toast, total, ids: human,
         label: "Нужно ваше решение", color: "var(--c-warning)",
-        hint: "прогон это не решит — состав и команды в «Подробностях»" })),
+        hint: "прогон это не решит — состав и команды в «Подробностях»" }),
+      /* Срез поверх корзин, а не четвёртая корзина: заверенные человеком
+         входят в «Готово» (или в «Нужно ваше решение», если проверки нашли
+         находку), но работа человека обязана быть видна числом — раньше
+         подтверждение не меняло на этом экране ничего. Та же AnalysisRow
+         (правило клика живёт в одном месте), только приглушённая (`dim`).
+         Старый сервер поля не отдаёт — строки просто нет. */
+      (tk.confirmed || []).length > 0 && React.createElement(AnalysisRow, {
+        store, toast, total, ids: tk.confirmed, dim: true,
+        label: "Заверено вручную", hint: "входит в корзины выше" })),
     panel && React.createElement(RunPanel, { summary, store, toast, plan, cat, mods, setMod,
       onClose: () => setPanel(false), onStarted: onReload }));
 }

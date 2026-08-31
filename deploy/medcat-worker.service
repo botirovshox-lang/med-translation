@@ -1,0 +1,26 @@
+# Прогоны отдельным процессом (см. backend/worker.py и CLAUDE.md, инвариант 2).
+# Копируется в /etc/systemd/system/. Включается ТОЛЬКО вместе с
+# MEDCAT_EXTERNAL_WORKER=1 в /etc/medcat/env — иначе задачи возьмут оба.
+# MemoryMax держит воркер в рамках: лучше упасть и перезапуститься, чем
+# утащить сервер в своп.
+[Unit]
+Description=Med-CAT job worker (прогоны перевода и проверок)
+After=network.target postgresql@18-main.service
+Requires=postgresql@18-main.service
+
+[Service]
+Type=exec
+User=medcat
+Group=medcat
+WorkingDirectory=/opt/med-translation
+EnvironmentFile=/etc/medcat/env
+Environment=MEDCAT_ROLE=worker
+ExecStart=/opt/med-translation/.venv/bin/python -m backend.worker
+Restart=always
+RestartSec=5
+MemoryMax=1800M
+ProtectSystem=full
+ReadWritePaths=/opt/med-translation/backend/data
+
+[Install]
+WantedBy=multi-user.target

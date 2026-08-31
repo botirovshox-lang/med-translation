@@ -1375,6 +1375,20 @@ def _usage_add(bucket: dict, step: str, mid: str, tin: int, cached: int,
 # забрать то, за что уже заплатил. Цена неизвестна — в расход не идёт
 # (считается `unpriced`), потому что неизвестное, посчитанное нулём, — это
 # расход меньше настоящего, а посчитанное наугад — отказ по выдуманному числу.
+def _next_batch_seq() -> int:
+    """Номер пачки автоодобрения. В базе — атомарный счётчик: пачку может
+    завести и API, и воркер (apply_terms), и два процесса не должны выдать
+    один номер. floor — прежний счётчик из state.json, ниже не опускаемся."""
+    if STORE.kind == "pg":
+        try:
+            return STORE.next_counter("autoBatchSeq", int(STATE.get("autoBatchSeq") or 0))
+        except Exception as e:
+            print(f"[backend] счётчик пачек из базы не взялся: {e}", file=sys.stderr)
+    batch = STATE.get("autoBatchSeq", 0) + 1
+    STATE["autoBatchSeq"] = batch
+    return batch
+
+
 def _month_key() -> str:
     return datetime.now().strftime("%Y-%m")
 
@@ -2045,6 +2059,14 @@ except ImportError:                       # запуск как backend.main:app
     from backend import store as _store_mod
 STORE = _store_mod.open_store(os.environ.get("DATABASE_URL"), STATE_FILE)
 
+# Прогоны отдельным процессом (systemd-юнит medcat-worker, backend/worker.py):
+# API только ставит задачу в таблицу jobs, воркер забирает её claim_job
+# (SKIP LOCKED). Включается ТОЛЬКО с базой: файлу второй процесс запрещён
+# (инвариант 1). Роль процесса — MEDCAT_ROLE=worker у самого воркера.
+EXTERNAL_WORKER = (STORE.kind == "pg" and os.environ.get(
+    "MEDCAT_EXTERNAL_WORKER", "").strip().lower() in ("1", "true", "yes", "on"))
+IS_WORKER = os.environ.get("MEDCAT_ROLE", "").strip() == "worker"
+
 def medical_qa_enabled() -> bool:
     if medical_qa_mod and hasattr(medical_qa_mod, "enabled_from_env"):
         return medical_qa_mod.enabled_from_env(os.environ.get("MEDICAL_TRANSLATION_QA_ENABLED", "1"))
@@ -2290,7 +2312,18 @@ def save_state(state: dict):
     а load_state() молча сбрасывал всё на демо-данные (потеря проектов)."""
     try:
         with _SAVE_LOCK:
-            STORE.save(state)
+            try:
+                STORE.save(state)
+            except _store_mod.DocConflict as e:
+                # Документ переписал другой процесс. Наши правки ЭТОГО
+                # документа теряются — громко; остальное сохраняется повтором.
+                # Штатно сюда не попадаем: ручные правки проекта закрыты 409
+                # на время прогона, пакетные команды такие проекты пропускают.
+                print(f"[backend] CRITICAL: конфликт документа {e.key} — "
+                      f"перечитан из базы, локальные правки этого документа потеряны",
+                      file=sys.stderr)
+                _apply_doc(e.key, STORE.load_doc(e.key))
+                STORE.save(state)
             _hourly_backup(state)
     except Exception as e:
         print(f"[backend] WARN: could not save state: {e}", file=sys.stderr)
@@ -2323,6 +2356,11 @@ def _sync_shared(force: bool = False) -> None:
         return
     for coll in stale:
         try:
+            if coll.startswith("doc:"):
+                key = coll[4:]
+                _apply_doc(key, STORE.load_doc(key))
+                print(f"[backend] {key}: перечитан после чужого прогона", file=sys.stderr)
+                continue
             items = STORE.load_rows(coll)
         except Exception as e:
             print(f"[backend] коллекция {coll} не перечитана: {e}", file=sys.stderr)
@@ -2333,6 +2371,52 @@ def _sync_shared(force: bool = False) -> None:
             _invalidate_gloss_index()
         print(f"[backend] {coll}: подтянуто чужое изменение ({len(items)} записей)",
               file=sys.stderr)
+
+
+def _apply_doc(key: str, doc) -> None:
+    """Подменить документ в STATE тем, что лежит в базе (None — убрать)."""
+    with _SAVE_LOCK:
+        if key.startswith("projects:"):
+            pid = int(key.split(":", 1)[1])
+            lst = STATE["projects"]
+            for i, pr in enumerate(lst):
+                if pr["id"] == pid:
+                    if doc is None:
+                        lst.pop(i)
+                    else:
+                        lst[i] = doc
+                    return
+            if doc is not None:
+                lst.insert(0, doc)
+        elif doc is None:
+            STATE.pop(key, None)
+        else:
+            STATE[key] = doc
+
+
+def _active_job_for(pid: int) -> Optional[int]:
+    """Идущий или ждущий прогон по проекту — в зеркале и в базе."""
+    for j in _JOBS.values():
+        if j.get("project") == pid and j.get("status") in ("queued", "running"):
+            return j["id"]
+    if EXTERNAL_WORKER and not IS_WORKER:
+        try:
+            return STORE.active_job_for(pid)
+        except Exception as e:
+            print(f"[backend] проверка прогона по проекту не удалась: {e}", file=sys.stderr)
+    return None
+
+
+def _guard_project_write(pid: int) -> None:
+    """Пока прогон идёт в ОТДЕЛЬНОМ процессе, проект принадлежит ему: правка
+    из API писала бы тот же документ и затирала работу прогона (или он — её).
+    В одном процессе, как раньше, правки и прогон сериализует сам процесс."""
+    if not EXTERNAL_WORKER or IS_WORKER:
+        return
+    jid = _active_job_for(pid)
+    if jid:
+        raise HTTPException(409, f"По проекту идёт прогон №{jid}: правка подождёт его конца "
+                                 f"(или остановите прогон)")
 
 
 def get_project(pid: int) -> dict:
@@ -4919,6 +5003,7 @@ class TranslateRequest(BaseModel):
 
 @app.post("/api/segments/{pid}/{sid}/translate")
 def translate_segment(pid: int, sid: int, req: TranslateRequest):
+    _guard_project_write(pid)
     # обычный def, а не async: внутри блокирующий вызов модели (см. batch_translate)
     seg = get_segment(pid, sid)
     project = get_project(pid)
@@ -5639,6 +5724,7 @@ def confirm_segment(pid: int, sid: int):
     """Подтверждение = момент обучения: пара уходит в TM, термины — в очередь
     кандидатов, повторы исходника возвращаются клиенту предложением.
     Ничего чужого сами не переписываем: распространение — отдельная команда."""
+    _guard_project_write(pid)
     seg = get_segment(pid, sid)
     project = get_project(pid)
     seg["status"] = "confirmed"
@@ -5674,6 +5760,7 @@ def propagate_segment(pid: int, sid: int, req: PropagateRequest = PropagateReque
     переписать чужую правку — худшее, что может сделать CAT-инструмент.
     Затронутые сегменты получают статус translated, а не confirmed: подтвердить
     перевод может только человек, иначе автоподстановка сама себя заверяет."""
+    _guard_project_write(pid)
     seg = get_segment(pid, sid)
     project = get_project(pid)
     target = (seg.get("target") or "").strip()
@@ -6847,8 +6934,7 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
         return result
 
     today = datetime.now().strftime("%Y-%m-%d")
-    batch = STATE.get("autoBatchSeq", 0) + 1
-    STATE["autoBatchSeq"] = batch
+    batch = _next_batch_seq()
     for cand, tier, row in picked:
         # Пометка только на приказах: подсказку разрешение не меняет, и писать
         # на ней «по разрешению человека» значит преувеличить его участие.
@@ -7212,8 +7298,7 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
             save_state(STATE)
         return result
 
-    batch = STATE.get("autoBatchSeq", 0) + 1
-    STATE["autoBatchSeq"] = batch
+    batch = _next_batch_seq()
     done = 0
     flagged = {(b["lang"], b["domain"], _norm_key(b["src"]), _norm_key(b["tgt"])): b
                for b in bad
@@ -7424,9 +7509,26 @@ def _run_parallel(items: list, fn):
 _ACTIVE_JOB: dict = {}
 
 
+_STOP_CHECK = {"t": 0.0}
+
+
 def _job_should_stop() -> bool:
     job = _ACTIVE_JOB.get("job")
-    return bool(job and job.get("stop"))
+    if not job:
+        return False
+    if job.get("stop"):
+        return True
+    if IS_WORKER and time.time() - _STOP_CHECK["t"] > 2:
+        _STOP_CHECK["t"] = time.time()
+        try:
+            fresh = STORE.get_job(job["id"])
+            if fresh and fresh.get("stop"):
+                job["stop"] = True
+            else:
+                _job_persist(job)      # заодно прогресс — API показывает его из базы
+        except Exception as e:
+            print(f"[backend] стоп-флаг из базы не прочитан: {e}", file=sys.stderr)
+    return bool(job.get("stop"))
 
 
 def _text_hash(text: str) -> str:
@@ -7794,6 +7896,7 @@ def rescore_backchecks(pid: int, req: RescoreRequest = RescoreRequest()):
     «потерян термин» по ней остаётся и продолжает держать балл — на это и
     нужен `force`. Вызов ничего не переводит и не проверяет: он пересчитывает
     уже измеренное."""
+    _guard_project_write(pid)
     get_project(pid)
     # Прогон пишет `seg["backcheck"]` из рабочего потока, а этот обработчик —
     # обычный def, то есть живёт в пуле FastAPI и идёт параллельно. Между
@@ -10220,6 +10323,7 @@ def term_case(pid: int, req: TermCaseRequest = TermCaseRequest()):
     `dry_run` по умолчанию: сначала показываем, что изменится, — то же правило,
     что у выноса глоссария и пересчёта баллов. Заверенное человеком не трогаем
     без явного разрешения: правка снимет с него отметку (`_replace_target`)."""
+    _guard_project_write(pid)
     project = get_project(pid)
     ids = set(req.segment_ids) if req.segment_ids is not None else None
     changed, skipped_confirmed, samples = [], [], []
@@ -10353,6 +10457,7 @@ class RepairRequest(BaseModel):
 
 @app.post("/api/segments/{pid}/{sid}/repair")
 def repair_segment(pid: int, sid: int, req: RepairRequest = RepairRequest()):
+    _guard_project_write(pid)
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(503, "Ремонт требует ключ OpenAI")
     seg = get_segment(pid, sid)
@@ -10425,6 +10530,7 @@ def accept_repair_candidate(pid: int, sid: int):
     отвергнутый вариант), а нового текста ещё нет ни у кого, — то есть сегмент
     остаётся непроверенным до ближайшего прогона. Это не запрет, а условие,
     и пачка называет его числом до применения."""
+    _guard_project_write(pid)
     seg = get_segment(pid, sid)
     if not _repair_score_vetoed(seg):
         raise HTTPException(400, "У сегмента нет отменённой баллом правки, "
@@ -10470,6 +10576,7 @@ def accept_repair_candidates(pid: int, req: RepairAcceptBatchRequest = RepairAcc
     негодной для правки термина (см. `_run_segment_repair`), — но проверить его
     обязан ближайший прогон, и до тех пор сегмент стоит с непроверенным
     переводом. Поэтому число сказано до применения, а не после."""
+    _guard_project_write(pid)
     project = get_project(pid)
     ids = set(req.segment_ids) if req.segment_ids is not None else None
     # Тот же отбор, что у корзины `human.revertedByScore` в /analysis, и это
@@ -10667,6 +10774,7 @@ def apply_term_context(pid: int, req: TermContextApplyRequest):
     проверки описывали прежний текст и устаревают сами, вердикт арбитра тоже
     (его хеш от нового текста не совпадёт) — это честно, текст другой.
     Бесплатно: в `_PAID` не входит."""
+    _guard_project_write(pid)
     project = get_project(pid)
     ids = set(req.segment_ids) if req.segment_ids is not None else None
     want = (_norm_key(req.src), _norm_key(req.tgt), _norm_key(req.use))
@@ -11069,6 +11177,7 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True,
 
 @app.post("/api/segments/{pid}/{sid}/medical-qa")
 def medical_qa_segment(pid: int, sid: int, req: MedicalQARequest = MedicalQARequest()):
+    _guard_project_write(pid)
     result = _segment_medical_qa(pid, sid, run_backcheck=req.run_backcheck,
                                  bc_model=req.bc_model)
     save_state(STATE)
@@ -11144,6 +11253,7 @@ def batch_medical_qa(pid: int, req: MedicalQABatchRequest = MedicalQABatchReques
 
 @app.post("/api/segments/{pid}/{sid}/revert")
 def revert_segment(pid: int, sid: int):
+    _guard_project_write(pid)
     seg = get_segment(pid, sid)
     if seg["status"] == "confirmed":
         seg["status"] = "translated"
@@ -11162,6 +11272,7 @@ class UpdateSegmentRequest(BaseModel):
 
 @app.post("/api/segments/{pid}/{sid}/update")
 def update_segment(pid: int, sid: int, req: UpdateSegmentRequest):
+    _guard_project_write(pid)
     seg = get_segment(pid, sid)
     if req.target is not None:
         if req.target != seg.get("target"):
@@ -12316,6 +12427,13 @@ def _revert_repairs_bulk(entries: list, scope: tuple) -> dict:
     rev = req = skip = 0
     for p in STATE["projects"]:
         if _project_scope(p) != scope:
+            continue
+        if _active_job_for(p["id"]):
+            # Проект сейчас пишет воркер прогона — пропускаем поимённо,
+            # иначе два процесса затёрли бы документ друг друга.
+            print(f"[backend] revert-repairs: проект {p['id']} пропущен — идёт прогон",
+                  file=sys.stderr)
+            skip += 1
             continue
         for seg in p["segments"]:
             rp = seg.get("repair") or {}
@@ -13512,15 +13630,24 @@ def _job_run(job: dict):
 def _job_loop():
     while True:
         job = _JOB_QUEUE.get()
-        # Перед прогоном — свежие глоссарий и очередь: их могла править
-        # другая сторона (после разделения на процессы — обязательно).
-        _sync_shared(force=True)
+        _job_execute(job)
+        _JOB_QUEUE.task_done()
+
+
+def _job_execute(job: dict):
+    """Одна задача от начала до конца: статусы, расход, сохранение. Вынесено
+    из цикла, потому что исполнителей два: поток в процессе API (файловое
+    хранилище) и отдельный процесс medcat-worker (base + claim_job)."""
+    # Перед прогоном — свежие глоссарий и очередь: их могла править
+    # другая сторона (после разделения на процессы — обязательно).
+    _sync_shared(force=True)
+    if True:
         dropped_at_start = _TERM_DROPPED["total"]
         try:
             if job["stop"]:
                 job["status"] = "stopped"
                 job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                continue
+                return
             job["status"] = "running"
             job["started"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             _job_persist(job)
@@ -13549,7 +13676,6 @@ def _job_loop():
             except Exception as e:
                 print(f"[backend] job#{job.get('id')} save failed: {e}", file=sys.stderr)
             _job_persist(job)
-            _JOB_QUEUE.task_done()
 
 
 def _ensure_job_worker():
@@ -13557,6 +13683,36 @@ def _ensure_job_worker():
     if _JOB_WORKER is None or not _JOB_WORKER.is_alive():
         _JOB_WORKER = threading.Thread(target=_job_loop, name="mcat-jobs", daemon=True)
         _JOB_WORKER.start()
+
+
+def _next_job_id() -> int:
+    if STORE.kind == "pg":
+        try:
+            return STORE.next_counter("jobId", max(_JOBS, default=0))
+        except Exception as e:
+            print(f"[backend] счётчик задач из базы не взялся: {e}", file=sys.stderr)
+    return max(_JOBS, default=0) + 1
+
+
+def _refresh_jobs_from_db(force: bool = False) -> None:
+    """Зеркало задач для API при внешнем воркере: прогресс и статусы пишет
+    воркер в базу, здесь их только показывают. Не чаще раза в 2 секунды."""
+    if not EXTERNAL_WORKER or IS_WORKER:
+        return
+    now = time.time()
+    if not force and now - _JOBS_REFRESH["t"] < 2:
+        return
+    _JOBS_REFRESH["t"] = now
+    try:
+        for j in STORE.load_jobs():
+            j.setdefault("stop", False)
+            j.setdefault("recent", [])
+            _JOBS[j["id"]] = j
+    except Exception as e:
+        print(f"[backend] зеркало задач не обновлено: {e}", file=sys.stderr)
+
+
+_JOBS_REFRESH = {"t": 0.0}
 
 
 def _job_persist(job: dict) -> None:
@@ -13599,7 +13755,7 @@ def create_job(pid: int, req: JobRequest):
         raise HTTPException(400, "Пустой список сегментов")
     with _JOBS_LOCK:
         job = {
-            "id": max(_JOBS, default=0) + 1,
+            "id": _next_job_id(),
             "kind": req.kind, "project": pid, "status": "queued",
             "tenant": _current_tenant(),
             "user": (CURRENT_SESSION.get() or {}).get("user"),
@@ -13612,8 +13768,12 @@ def create_job(pid: int, req: JobRequest):
         _JOBS[job["id"]] = job
         _trim_jobs()
     _job_persist(job)
-    _ensure_job_worker()
-    _JOB_QUEUE.put(job)
+    if EXTERNAL_WORKER:
+        # Задачу заберёт medcat-worker из таблицы jobs (claim_job).
+        pass
+    else:
+        _ensure_job_worker()
+        _JOB_QUEUE.put(job)
     return {"ok": True, "job": _job_public(job)}
 
 
@@ -13642,6 +13802,7 @@ def usage_report(limit: int = 20):
 
 @app.get("/api/jobs")
 def list_jobs(project: Optional[int] = None, limit: int = 20):
+    _refresh_jobs_from_db()
     t = _current_tenant()
     jobs = [j for j in _JOBS.values() if _tenant_of(j) == t
             and (project is None or j["project"] == project)]
@@ -13652,6 +13813,7 @@ def list_jobs(project: Optional[int] = None, limit: int = 20):
 
 @app.get("/api/jobs/{jid}")
 def get_job(jid: int):
+    _refresh_jobs_from_db()
     job = _JOBS.get(jid)
     if not job or (_tenant_of(job) != _current_tenant()
                    and not (CURRENT_SESSION.get() or {}).get("super")):
@@ -13664,11 +13826,16 @@ def stop_job(jid: int):
     """Остановка мягкая: текущая порция досчитывается и сохраняется, следующая
     не начинается. Обрывать порцию на середине значило бы заплатить за вызовы
     и выбросить их результат."""
+    _refresh_jobs_from_db(force=True)
     job = _JOBS.get(jid)
     if not job or (_tenant_of(job) != _current_tenant()
                    and not (CURRENT_SESSION.get() or {}).get("super")):
         raise HTTPException(404, "Прогон не найден")
     job["stop"] = True
+    if EXTERNAL_WORKER:
+        # Стоп-флаг доезжает до воркера через базу: он читает его между
+        # сегментами (_job_should_stop) и мягко останавливается.
+        _job_persist(job)
     if job["status"] == "queued":
         job["status"] = "stopped"
         job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -13733,7 +13900,9 @@ def _restore_jobs() -> None:
         j.setdefault("ids", [])
         j.setdefault("counters", {})
         _JOBS[j["id"]] = j
-        if j.get("status") in ("queued", "running"):
+        # При внешнем воркере очередь ведёт он сам (claim_job + сброс running
+        # на своём старте); API держит только зеркало для показа.
+        if not EXTERNAL_WORKER and j.get("status") in ("queued", "running"):
             j["status"], j["stop"], j["started"] = "queued", False, None
             _JOB_QUEUE.put(j)
             requeued += 1

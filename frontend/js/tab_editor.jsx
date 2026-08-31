@@ -464,6 +464,7 @@ function TabEditor({ store, toast }) {
   const [impact, setImpact] = useState(null);     // сегменты, не соответствующие одобренным терминам
   const [impactBusy, setImpactBusy] = useState(false);
   const [impactConfirmed, setImpactConfirmed] = useState(false);  // трогать ли подтверждённые
+  const [tkSum, setTkSum] = useState(null);       // корзины «под ключ» с сервера (/analysis) для карточки «Анализ»
   const [bcJudge, setBcJudge] = useState(false);          // LLM-судья для средней зоны
   const [judgeModel, setJudgeModel] = useState(() => {
     try { return localStorage.getItem(JUDGE_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
@@ -601,6 +602,7 @@ function TabEditor({ store, toast }) {
           reportJobResult(finished);
           loadImpact();
           loadAutoPreview();    // прогон мог родить новых кандидатов
+          loadAnalysis(true);   // корзины «под ключ» изменились этим же прогоном
         }
         /* Проверки dead здесь НЕТ, и это не недосмотр. Строкой выше
            setJob(null) меняет зависимость !!job — React делает cleanup
@@ -695,6 +697,27 @@ function TabEditor({ store, toast }) {
       setAutoPreview(res);
     }
   };
+  /* Корзины «под ключ» для карточки «Анализ» в блоках запуска. Считает СЕРВЕР
+     (/analysis → turnkey) теми же предикатами, что и прогон, — браузер числа
+     не повторяет: второй расчёт однажды разошёлся бы с работой. До первого
+     перевода карточки нет и запрос не идёт: в проекте из одних «новых»
+     корзины тривиальны, а интерфейс они бы только загромождали.
+     afterRun — прогон только что закончился: копия браузера могла ещё не
+     узнать о новых статусах, но сам факт прогона открывает карточку. */
+  const loadAnalysis = async (afterRun) => {
+    if (!window.API || !window.API.analysis || !project) return;
+    // «нет статуса = new» — та же нормализация, что в statusCountsOf и на сервере.
+    const started = project.segments.some(s => (s.status || "new") !== "new");
+    if (!started && !afterRun) return;
+    const pid = project.id;
+    const res = await window.API.safeCall(() => window.API.analysis(pid));
+    // Сверка id — как у loadAutoPreview: ответ мог доехать после смены проекта.
+    if (res && res.ok && res.turnkey && store.activeProject && store.activeProject.id === pid) {
+      setTkSum(res);
+    }
+  };
+  useEffect(() => { setTkSum(null); loadAnalysis(); }, [project && project.id]);
+
   // Один эффект на оба: разрешение выводится из id проекта (см. ordersFor),
   // поэтому лишнего прохода при смене проекта не будет. Цифра на кнопке
   // обязана считаться с теми же параметрами, с которыми пойдёт задача.
@@ -2075,26 +2098,34 @@ function TabEditor({ store, toast }) {
           confirmedCount: impact ? impact.confirmed.length : 0,
           orders: termOrders,
           onOrders: () => setOrdersFor(v => (v === project.id ? null : project.id)),
-          // Состав ремонта — тот же список, что показывает соседняя карточка,
-          // МИНУС застрявшие: сервер их не возьмёт, и обещать по ним работу
-          // значит показать под кнопкой число, которого не будет.
+          // Состав ремонта — тот же список, что показывает секция соответствия
+          // ниже, МИНУС застрявшие: сервер их не возьмёт, и обещать по ним
+          // работу значит показать под кнопкой число, которого не будет.
           pendingSegs: impact
             ? (impactConfirmed ? impact.segments : impact.pending)
                 .filter(i => (impact.futile || []).indexOf(i) === -1).length : 0,
-          futileSegs: impact ? (impact.futile || []).length : 0 }),
-        // Карточка живёт и при нуле расхождений. Пряча её, мы уносили вместе
-        // с ней «Пересчитать» — единственный способ убедиться, что ноль
-        // настоящий, а не остался с прошлого расчёта. Ровно та же беда, от
-        // которой защищены исчерпывающие корзины «Анализа»: пропавшее
-        // с экрана выглядит благополучнее, чем есть.
-        impact && React.createElement(GlossaryImpactCard, {
-          impact, busy: impactBusy, onRefresh: () => loadImpact(true),
-          includeConfirmed: impactConfirmed, onIncludeConfirmed: () => setImpactConfirmed(v => !v),
-          onRun: runImpactRetranslate,
+          futileSegs: impact ? (impact.futile || []).length : 0,
+          // Соответствие глоссарию живёт секцией ЭТОЙ карточки, а не отдельной
+          // колонкой: списки «По терминам» и начертание — на вкладке «Анализ»,
+          // здесь остались команды, которых больше нигде нет («Пересчитать»
+          // с refresh и «Перевести заново»). Секция не прячется при нуле —
+          // вместе с ней исчезал бы «Пересчитать», единственный способ
+          // убедиться, что ноль настоящий, а не остался с прошлого расчёта.
+          impact: impact, impactBusy: impactBusy,
+          onImpactRefresh: () => loadImpact(true),
+          onRetranslate: runImpactRetranslate,
           onDrill: (ids) => { store.setSegmentFilter(ids); setPage(1); },
-          est: estimateRun("translate", project.segments.filter(s =>
-            new Set(impactConfirmed ? impact.segments : impact.pending).has(s.id)), gptModelInfo),
-          running: batchRun && batchRun.engine === "translate" && job && job.params && job.params.via === "impact" ? batchRun : null }))),
+          retEst: impact ? estimateRun("translate", project.segments.filter(s =>
+            new Set(impactConfirmed ? impact.segments : impact.pending).has(s.id)), gptModelInfo) : null,
+          retRunning: !!(batchRun && batchRun.engine === "translate" && job && job.params && job.params.via === "impact") }),
+        // «Анализ» — те же три корзины, что на одноимённой вкладке, только
+        // рядом с кнопками, которые их осушают. Появляется ПОСЛЕ первого
+        // прогона (см. loadAnalysis): в проекте из одних «новых» корзины
+        // тривиальны. Числа считает сервер — браузер их не повторяет.
+        tkSum && React.createElement(EditorAnalysisCard, {
+          sum: tkSum,
+          onDrill: (ids) => { store.setSegmentFilter(ids); setPage(1); },
+          onOpen: () => store.go("preflight") }))),
 
     // ---- Body: table + detail ----
     React.createElement("div", { className: "editor-body" },
@@ -2605,8 +2636,13 @@ function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize
    сервер сразу после одобрения. */
 function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
                           includeConfirmed, onIncludeConfirmed, confirmedCount,
-                          orders, onOrders, pendingSegs, futileSegs }) {
+                          orders, onOrders, pendingSegs, futileSegs,
+                          impact, impactBusy, onImpactRefresh, onRetranslate,
+                          onDrill, retEst, retRunning }) {
   const c = preview && preview.counts;
+  // Состав «Перевести заново»: тот же выбор «трогать ли подтверждённые»,
+  // что и у ремонта, — одна галочка на оба пути, состояние у них общее.
+  const retTargets = impact ? (includeConfirmed ? impact.segments : impact.pending) : [];
   // Запрет области сервер присылает отдельным полем: он снимается ДО учёта
   // разрешения, поэтому тумблер не исчезает от того, что его включили.
   // Выводить его в браузере из allow_verified + humanOverride + cap_soft
@@ -2700,10 +2736,55 @@ function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
     // почему — иначе человек жмёт кнопку по кругу и не понимает, отчего
     // список не пустеет.
     futileSegs > 0 && !running && React.createElement("div",
-      { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
+      { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5,
+                                   cursor: onDrill && impact ? "pointer" : "default" },
+        title: "Показать эти сегменты",
+        onClick: onDrill && impact ? () => onDrill(impact.futile || []) : null },
       "Ещё " + futileSegs + " сегм. расходятся, но ремонт их не возьмёт: тот же "
       + "текст с теми же претензиями он уже проходил, и заход вернёт то же "
-      + "самое. Их правит человек — либо смените модель ремонта."));
+      + "самое. Их правит человек, «Перевести заново» ниже — либо смените "
+      + "модель ремонта."),
+
+    /* ── Соответствие глоссарию ── Прежде отдельная карточка в третьей
+       колонке; списки «По терминам» и начертание живут на вкладке «Анализ»,
+       а здесь остались команды, которых больше нигде нет. Секция живёт
+       и при нуле расхождений: пряча её, мы уносили бы «Пересчитать» —
+       единственный способ убедиться, что ноль настоящий, а не остался
+       с прошлого расчёта. */
+    impact && React.createElement("div", { className: "col",
+      style: { gap: 7, borderTop: "1px solid var(--border)", paddingTop: 9 } },
+      React.createElement("div", { style: { fontSize: 12.5, fontWeight: 650, display: "flex", alignItems: "center" } },
+        "Соответствие глоссарию",
+        React.createElement(InfoTip, { title: "Расхождения с одобренными терминами",
+          body: "Одобренный термин влияет только на будущие переводы — уже готовые сегменты сами не меняются. Здесь собраны все сегменты проекта, где термин есть в оригинале, а утверждённого варианта в переводе нет.\n\nСчитается только по проверенным записям глоссария: автоимпорт модель вправе игнорировать, требовать соответствия ему нельзя.\n\nДешёвый путь — ремонт по находкам (кнопка выше). «Перевести заново» переводит эти сегменты целиком, уже с новым термином в промпте, — дороже, зато берёт и застрявшие. Подтверждённые по умолчанию не трогаются; с галочкой они тоже переводятся заново, прежний текст сохраняется для отката, а статус становится «Требует проверки».\n\nРазбор по терминам и начертание — на вкладке «Анализ»." })),
+      React.createElement("div", { className: "row between",
+        style: { fontSize: 12.5, cursor: impact.segments.length && onDrill ? "pointer" : "default" },
+        onClick: impact.segments.length && onDrill ? () => onDrill(impact.segments) : null,
+        title: impact.segments.length ? "Показать эти сегменты" : undefined },
+        React.createElement("span", { style: { fontWeight: 600,
+          color: impact.segments.length ? "var(--c-warning)" : undefined } }, "Расходятся с глоссарием"),
+        React.createElement("b", null, impact.segments.length)),
+      impact.confirmed.length > 0 && React.createElement("div", { className: "row between",
+        style: { fontSize: 12, cursor: onDrill ? "pointer" : "default" },
+        onClick: onDrill ? () => onDrill(impact.confirmed) : null,
+        title: "Показать эти сегменты" },
+        React.createElement("span", { className: "dim" }, "из них подтверждено"),
+        React.createElement("b", { className: "dim" }, impact.confirmed.length)),
+      impact.terms.length === 0 && React.createElement("div",
+        { className: "dim", style: { fontSize: 12, lineHeight: 1.55 } },
+        "Все переводы соответствуют утверждённым терминам. Ноль бывает и после "
+        + "понижения записей сверкой смысла: требовать соответствия подсказке "
+        + "нельзя, поэтому она из расчёта уходит."),
+      retTargets.length > 0 && retEst && React.createElement(EstLine, { est: retEst }),
+      retRunning
+        ? React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "Идёт перевод…")
+        : React.createElement("div", { className: "row between" },
+            React.createElement("button", { className: "linklike", style: { fontSize: 12 },
+              onClick: onImpactRefresh, disabled: impactBusy },
+              impactBusy ? "Считаем…" : "Пересчитать"),
+            React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat",
+              onClick: onRetranslate, disabled: disabled || !retTargets.length },
+              "Перевести заново (" + retTargets.length + ")"))));
 }
 
 // Блок «что прогонять»: группы по состоянию прошлых прогонов с количеством.
@@ -2718,65 +2799,66 @@ function RunGroups({ title, tip, groups, pickedGroups, onToggleGroup }) {
       React.createElement("b", { style: { fontSize: 12.5 } }, g.count))));
 }
 
-// Одобрили термин — старые переводы сами не изменились. Здесь видно, сколько
-// сегментов разошлось с глоссарием, и отсюда же их можно переперевести пакетом.
-function GlossaryImpactCard({ impact, busy, onRefresh, onRun, onDrill, includeConfirmed, onIncludeConfirmed, est, running }) {
-  const targets = includeConfirmed ? impact.segments : impact.pending;
+/* Итог «под ключ» рядом с кнопками, которые его меняют. Только показ:
+   корзины пришли с сервера (/analysis → turnkey) — те же и тем же расчётом,
+   что на вкладке «Анализ». Клик по строке фильтрует таблицу ниже, полный
+   разбор и ручные команды — на самой вкладке. Долю считает tkPct из
+   tab_preflight.jsx (все .jsx живут в одной глобальной области); запасной
+   расчёт — для тестов, которые грузят только этот файл. */
+function EditorAnalysisCard({ sum, onDrill, onOpen }) {
+  const tk = sum.turnkey;
+  const total = sum.total || 0;
+  const ready = tk.ready || [], machine = tk.machine || [], human = tk.human || [];
+  const pct = (n) => typeof tkPct === "function" ? tkPct(n, total)
+    : (total ? Math.round(n / total * 100) + "%" : "0%");
+  // Тернарник, а не `total && …`: при нуле выражение даёт ЧИСЛО 0, и React
+  // честно его печатает (тот же урок, что у полосы в TurnkeySummary).
+  const bar = (n, color) => (total > 0 && n > 0)
+    ? React.createElement("div", { style: { width: (n / total * 100) + "%", background: color, height: "100%" } })
+    : null;
+  const row = (label, ids, color, hint) => React.createElement("div", {
+    className: "row between",
+    style: { fontSize: 12.5, gap: 8, cursor: ids.length && onDrill ? "pointer" : "default" },
+    onClick: ids.length && onDrill ? () => onDrill(ids) : null,
+    title: hint },
+    React.createElement("span", { style: { fontWeight: 600, color: color } }, label),
+    React.createElement("span", { className: "row", style: { gap: 8, alignItems: "baseline" } },
+      React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, ids.length),
+      React.createElement("span", { className: "dim", style: { fontSize: 11.5, minWidth: 40,
+        textAlign: "right", fontVariantNumeric: "tabular-nums" } }, pct(ids.length))));
   return React.createElement("div", { className: "card card-pad-sm", style: { display: "flex", flexDirection: "column", gap: 10 } },
-    React.createElement("div", { className: "row", style: { gap: 10 } },
-      React.createElement("span", { style: { width: 36, height: 36, borderRadius: 9, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-warning)" } },
-        React.createElement(Icon, { name: "book", size: 19 })),
-      React.createElement("div", null,
-        React.createElement("div", { style: { fontWeight: 650, display: "flex", alignItems: "center" } }, "Соответствие глоссарию",
-          React.createElement(InfoTip, { title: "Расхождения с одобренными терминами",
-            body: "Одобренный термин влияет только на будущие переводы — уже готовые сегменты сами не меняются. Здесь собраны все сегменты проекта, где термин есть в оригинале, а утверждённого варианта в переводе нет.\n\nСчитается только по проверенным записям глоссария: автоимпорт модель вправе игнорировать, требовать соответствия ему нельзя.\n\nКнопка переводит эти сегменты заново — уже с новым термином в промпте. Подтверждённые по умолчанию не трогаются; с галочкой они тоже переводятся заново, прежний текст сохраняется для отката, а статус становится «Требует проверки» — заверить перевод снова может только человек." })),
-        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "После правок глоссария"))
-    ),
-    React.createElement("div", { className: "row between", style: { fontSize: 13, cursor: "pointer" },
-      onClick: () => onDrill(impact.segments) },
-      React.createElement("span", { style: { fontWeight: 600, color: "var(--c-warning)" } }, "Расходятся с глоссарием"),
-      React.createElement("b", null, impact.segments.length)),
-    impact.confirmed.length > 0 && React.createElement("div", { className: "row between", style: { fontSize: 12.5, cursor: "pointer" },
-      onClick: () => onDrill(impact.confirmed) },
-      React.createElement("span", { className: "dim" }, "из них подтверждено"),
-      React.createElement("b", { className: "dim" }, impact.confirmed.length)),
-    // Застрявшие. Их видно ОТДЕЛЬНО, а не спрятано: расходиться с глоссарием
-    // они не перестали, но ремонт по ним даст тот же результат за те же
-    // деньги — работа тут человеческая, и об этом надо сказать прямо.
-    (impact.futile || []).length > 0 && React.createElement("div", { className: "row between", style: { fontSize: 12.5, cursor: "pointer" },
-      onClick: () => onDrill(impact.futile) },
-      React.createElement("span", { className: "dim" }, "ремонт уже не берёт"),
-      React.createElement("b", { className: "dim" }, impact.futile.length)),
-
-    impact.terms.length === 0 && React.createElement("div",
-      { className: "dim", style: { fontSize: 12.5, lineHeight: 1.55 } },
-      "Все переводы соответствуют утверждённым терминам. Ноль бывает и после "
-      + "понижения записей сверкой смысла: требовать соответствия подсказке "
-      + "нельзя, поэтому она из расчёта уходит."),
-
-    impact.terms.length > 0 && React.createElement("div", { className: "card", style: { padding: "8px 11px", background: "var(--bg-sunken)" } },
-      impact.terms.slice(0, 4).map((t, i) => React.createElement("div", {
-        key: i, className: "row between", style: { fontSize: 12.5, padding: "2px 0", cursor: "pointer" },
-        onClick: () => onDrill(t.segments), title: "Показать сегменты с этим термином" },
-        React.createElement("span", { style: { minWidth: 0 } },
-          t.src, " → ", React.createElement("b", { style: { color: "var(--c-success)" } }, t.tgt)),
-        React.createElement("b", null, t.segments.length))),
-      impact.terms.length > 4 && React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 4 } },
-        "и ещё " + (impact.terms.length - 4) + " терминов")),
-
-    impact.confirmed.length > 0 && React.createElement(Checkbox, {
-      checked: !!includeConfirmed, onChange: onIncludeConfirmed },
-      "Включая подтверждённые (" + impact.confirmed.length + ")"),
-
-    targets.length > 0 && React.createElement(EstLine, { est }),
-    running
-      ? React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "Идёт перевод…")
-      : React.createElement("div", { className: "row between" },
-          React.createElement("button", { className: "linklike", style: { fontSize: 12 }, onClick: onRefresh, disabled: busy },
-            busy ? "Считаем…" : "Пересчитать"),
-          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", onClick: onRun, disabled: !targets.length },
-            "Перевести заново (" + targets.length + ")"))
-  );
+    React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+      React.createElement("div", { className: "row", style: { gap: 9 } },
+        React.createElement("span", { style: { width: 30, height: 30, borderRadius: 8, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-primary)", flex: "0 0 30px" } },
+          React.createElement(Icon, { name: "target", size: 17 })),
+        React.createElement("div", null,
+          React.createElement("div", { style: { fontWeight: 650, fontSize: 14, display: "flex", alignItems: "center" } }, "Анализ",
+            React.createElement(InfoTip, { title: "Три корзины",
+              body: "Каждый сегмент проекта ровно в одной корзине, суммы сходятся с общим числом — считает сервер теми же правилами, что и сам прогон.\n\n«Готово к сдаче» — переведено, проверено, открытых вопросов нет.\n\n«Возьмёт ближайший прогон» — закроет кнопка «Перевести и проверить».\n\n«Нужно ваше решение» — то, что прогон не решает по построению: споры с глоссарием, заверенные сегменты с находками, откаченные правки. Команды — на вкладке «Анализ».\n\nЛюбая строка фильтрует таблицу ниже." })),
+          React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
+            "что сейчас с переводом"))),
+      React.createElement("span", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 17,
+        color: ready.length ? "var(--c-success)" : "var(--text-3)" } },
+        pct(ready.length))),
+    React.createElement("div", { style: { display: "flex", height: 10, borderRadius: 5,
+      overflow: "hidden", background: "var(--bg-sunken)" } },
+      bar(ready.length, "var(--c-success)"),
+      bar(machine.length, "var(--c-primary)"),
+      bar(human.length, "var(--c-warning)")),
+    row("Готово к сдаче", ready, "var(--c-success)", "переведено и проверено, открытых вопросов нет"),
+    row("Возьмёт ближайший прогон", machine, "var(--c-primary)", "перевод, проверки, судья и ремонт по находкам"),
+    row("Нужно ваше решение", human, "var(--c-warning)", "прогон это не решит — состав и команды на вкладке «Анализ»"),
+    (tk.confirmed || []).length > 0 && React.createElement("div", { className: "dim row between",
+      style: { fontSize: 11.5, cursor: onDrill ? "pointer" : "default" },
+      onClick: onDrill ? () => onDrill(tk.confirmed) : null,
+      title: "входит в корзины выше" },
+      React.createElement("span", null, "заверено вручную"),
+      React.createElement("b", null, tk.confirmed.length)),
+    React.createElement("div", { className: "row between", style: { gap: 8 } },
+      React.createElement("span", { className: "dim", style: { fontSize: 11.5 } },
+        ready.length + " из " + total + " сегм. готово"),
+      React.createElement(Btn, { variant: "secondary", size: "sm", icon: "target", onClick: onOpen },
+        "Открыть «Анализ»")));
 }
 
 function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, onConfirm, onRevert, models, hlSrc, hlTgt }) {

@@ -138,6 +138,10 @@ global.API = {
   glossaryImpact: async () => ({ ok: true, terms: [], segments: [], pending: [], confirmed: [] }),
   autoApprovePreview: async () => null,
   listJobs: async () => ({ jobs: [] }),
+  // Корзины «под ключ» для карточки «Анализ» в блоках запуска: та же форма,
+  // что отдаёт /analysis. Считает их сервер — карточка только показывает.
+  analysis: async () => ({ ok: true, total: 7,
+    turnkey: { ready: [1, 2, 5], machine: [3, 6], human: [7], confirmed: [5], params: {} } }),
 };
 
 const root = process.argv[2] || "frontend/js";
@@ -471,19 +475,28 @@ try {
   check(t9.indexOf("осталось") === -1, "чужой снимок к прогону не прилип");
   check(t9.indexOf("прогон запущен не из этой вкладки") !== -1, "и об этом сказано прямо");
 
-  console.log("\n=== 10. Ноль расхождений с глоссарием не уносит карточку ===");
-  // Заглушка отдаёт ПУСТОЙ отчёт — ровно то состояние, в котором карточка
-  // раньше не отрисовывалась вовсе. Вместе с ней пропадала «Пересчитать»,
-  // то есть единственный способ убедиться, что ноль настоящий, а не остался
-  // с прошлого расчёта.
+  console.log("\n=== 10. Ноль расхождений с глоссарием не уносит секцию ===");
+  // Заглушка отдаёт ПУСТОЙ отчёт — ровно то состояние, в котором прежняя
+  // отдельная карточка не отрисовывалась вовсе. Теперь это секция внутри
+  // «Одобрить и применить», но закон тот же: пропади она — пропала бы
+  // «Пересчитать», то есть единственный способ убедиться, что ноль
+  // настоящий, а не остался с прошлого расчёта.
   check(text.indexOf("Соответствие глоссарию") !== -1,
-        "карточка на месте и при нуле");
+        "секция на месте и при нуле");
   check(text.indexOf("Пересчитать") !== -1,
         "и «Пересчитать» вместе с ней");
   check(/Все переводы соответствуют утверждённым терминам/.test(text),
         "ноль назван словами, а не пустотой");
   check(text.indexOf("Перевести заново (0)") !== -1,
         "кнопка честно показывает ноль, а не исчезает");
+
+  console.log("\n=== 10a. Карточка «Анализ» стоит в блоках запуска ===");
+  // Корзины считает СЕРВЕР (/analysis) — карточка их только показывает,
+  // рядом с кнопками, которые эти корзины осушают.
+  for (const m of ["Готово к сдаче", "Возьмёт ближайший прогон", "Нужно ваше решение"])
+    check(text.indexOf(m) !== -1, "корзина: " + m);
+  check(text.indexOf("Открыть «Анализ»") !== -1, "и есть переход на вкладку «Анализ»");
+  check(text.indexOf("заверено вручную") !== -1, "срез «заверено вручную» показан числом");
 
   console.log("\n=== 11. Поиск над таблицей и переход к сегменту по номеру ===");
   // Зона — окно в ZONE_HALF (10) строк в каждую сторону. На семи сегментах она
@@ -779,6 +792,32 @@ try {
         "и о втором с тем же номером — тоже (" + afterFirst + " → " + said.list.length + ")");
   global.API = baseAPI;
 
+  console.log("\n=== 14. До первого прогона карточки «Анализ» нет ===");
+  // Проект из одних «новых»: корзины тривиальны, и нагружать ими интерфейс
+  // (и единственный воркер запросом /analysis) незачем. Карточка появляется
+  // после первого прогона либо когда в проекте уже есть переведённое.
+  let asked14 = 0;
+  const freshProject = { id: 2, title: "Новый", src: "RU", tgt: "EN", domain: "medical",
+    segments: [{ id: 1, source: "текст", target: "", status: "new", risk: "low" }] };
+  const freshStore = Object.assign({}, storeStub, {
+    activeProject: freshProject, projects: [freshProject],
+    statusCounts: () => ({ all: 1, new: 1, translated: 0, qa: 0, confirmed: 0, failed: 0, review: 0 }),
+  });
+  global.API = Object.assign({}, baseAPI, {
+    listJobs: async () => ({ active: [], jobs: [] }),
+    analysis: async () => { asked14++; return { ok: true, total: 1,
+      turnkey: { ready: [], machine: [1], human: [] } }; },
+  });
+  hooks.length = 0; hookIdx = 0; effects.length = 0;
+  TabEditor({ store: freshStore, toast });
+  effects.forEach(fn => { try { fn(); } catch (e) {} });
+  for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+  hookIdx = 0;
+  const out15 = [];
+  walk(TabEditor({ store: freshStore, toast }), 0, out15);
+  check(out15.join("\n").indexOf("Готово к сдаче") === -1, "корзин на экране нет");
+  check(asked14 === 0, "и /analysis не запрашивался зря (" + asked14 + ")");
+  global.API = baseAPI;
 
   console.log("\n" + (fail.length ? "ПРОВАЛЕНО: " + fail.join("; ") : "ВСЁ ПРОШЛО"));
   process.exit(fail.length ? 1 : 0);

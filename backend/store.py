@@ -4,28 +4,42 @@
 Меняется только то, куда она пишется и откуда поднимается:
 
   файл       — state.json целиком, атомарно (как было);
-  postgres   — таблица документов `state_docs(key, doc jsonb)`: каждый проект —
-               свой документ (`projects:{id}`), остальные верхние ключи
-               (glossary, tm, users, …) — по документу. Пишутся ТОЛЬКО
-               изменившиеся документы (сверка по отпечатку JSON), так что
-               подтверждение одного сегмента больше не переписывает 12 МБ.
-               Очередь прогонов лежит в `jobs` и переживает рестарт.
+  postgres   — три вида записей:
+    state_docs  каждый проект — свой документ (`projects:{id}`), остальные
+                верхние ключи — по документу; пишутся ТОЛЬКО изменившиеся
+                (сверка по отпечатку JSON);
+    state_rows  РАЗДЕЛЯЕМЫЕ коллекции (глоссарий, очередь кандидатов) —
+                по СТРОКЕ на запись. Это подготовка к воркеру отдельным
+                процессом: два процесса, пишущие один документ, затирали бы
+                друг друга целиком, а по строкам каждый трогает только то,
+                что менял сам. Запись получает `gid` (случайный ключ) и `seq`
+                (порядок: глоссарий живёт «новые сверху», очередь — «в конец»);
+    epochs      счётчик поколения каждой коллекции. Процесс, изменивший
+                строки, поднимает эпоху; остальные видят чужую эпоху и
+                перечитывают коллекцию (`stale_collections` → `load_rows`).
 
-Инварианты CLAUDE.md не меняются: воркер один, все мутации заканчиваются
-`save_state`, писать на диск можно только в data/. Драйвер — psycopg 3;
-без него и без DATABASE_URL молча остаётся файл.
+Очередь прогонов лежит в `jobs` и переживает рестарт. Инварианты CLAUDE.md
+не меняются: все мутации заканчиваются `save_state`; соединение с базой
+не держится между транзакциями (сеанс с разобранными JSONB весил сотни
+мегабайт в простое, а база локальная). Без DATABASE_URL — файл, и коллекции
+живут внутри state.json, как раньше.
 """
 import hashlib
 import json
 import os
+import secrets
 import sys
 import threading
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 PROJECT_PREFIX = "projects:"
 ORDER_KEY = "projects_order"
+
+# Коллекции, разложенные по строкам, и закон их порядка:
+#   desc — новые записи идут В НАЧАЛО списка (glossary: insert(0));
+#   asc  — новые идут В КОНЕЦ (termQueue: append).
+ROW_COLLECTIONS = {"glossary": "desc", "termQueue": "asc"}
 
 
 def _dumps(obj) -> str:
@@ -55,7 +69,14 @@ class FileStore:
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, self.path)
-        return {"written": 1, "bytes": len(payload)}
+        return {"written": 1, "rows": 0, "deleted": 0, "bytes": len(payload)}
+
+    # Один процесс, один файл: чужих изменений не бывает.
+    def stale_collections(self) -> list:
+        return []
+
+    def load_rows(self, coll: str) -> list:
+        raise RuntimeError("файловое хранилище не хранит коллекции строками")
 
     # Очередь прогонов файл не хранит — как и раньше.
     def save_job(self, job: dict) -> None:
@@ -75,6 +96,13 @@ class PgStore:
         "CREATE TABLE IF NOT EXISTS state_docs ("
         " key TEXT PRIMARY KEY, doc JSONB NOT NULL,"
         " updated TIMESTAMPTZ NOT NULL DEFAULT now())",
+        "CREATE TABLE IF NOT EXISTS state_rows ("
+        " coll TEXT NOT NULL, gid TEXT NOT NULL, tenant TEXT, seq BIGINT NOT NULL,"
+        " doc JSONB NOT NULL, updated TIMESTAMPTZ NOT NULL DEFAULT now(),"
+        " PRIMARY KEY (coll, gid))",
+        "CREATE INDEX IF NOT EXISTS state_rows_coll_seq ON state_rows (coll, seq)",
+        "CREATE TABLE IF NOT EXISTS epochs ("
+        " coll TEXT PRIMARY KEY, n BIGINT NOT NULL DEFAULT 0)",
         "CREATE TABLE IF NOT EXISTS jobs ("
         " id INTEGER PRIMARY KEY, status TEXT NOT NULL, tenant TEXT,"
         " doc JSONB NOT NULL, updated TIMESTAMPTZ NOT NULL DEFAULT now())",
@@ -83,7 +111,10 @@ class PgStore:
     def __init__(self, url: str, connect=None):
         self.url = url
         self._lock = threading.Lock()
-        self._hashes: dict = {}          # key -> отпечаток последнего записанного документа
+        self._hashes: dict = {}                     # ключ документа -> отпечаток
+        self._row_hashes = {c: {} for c in ROW_COLLECTIONS}   # coll -> {gid: отпечаток}
+        self._row_seq = {c: 0 for c in ROW_COLLECTIONS}       # наибольший выданный seq
+        self._epochs = {c: 0 for c in ROW_COLLECTIONS}        # поколение, которое мы видели
         self._connect = connect or self._default_connect
         self._conn = None
         with self._cursor() as cur:
@@ -156,27 +187,71 @@ class PgStore:
             order.append(p["id"])
         docs[ORDER_KEY] = order
         for k, v in state.items():
-            if k != "projects":
+            if k != "projects" and k not in ROW_COLLECTIONS:
                 docs[k] = v
         return docs
+
+    def _ensure_ids(self, coll: str, items: list) -> None:
+        """gid и seq — свойства ХРАНИЛИЩА, но живут в самой записи: она ходит
+        между процессами и сессиями, и внешний реестр однажды разошёлся бы
+        с данными. Запись без gid — новая: глоссарь растёт «в голову» (новый
+        получает НАИБОЛЬШИЙ seq), очередь — «в хвост» (наименьший из новых
+        идёт первым). Уже пронумерованное не перенумеровывается никогда —
+        иначе каждое сохранение переписывало бы все строки."""
+        for it in items:
+            if it.get("seq") is not None:
+                self._row_seq[coll] = max(self._row_seq[coll], int(it["seq"]))
+        fresh = [it for it in items if not it.get("gid")]
+        if not fresh:
+            return
+        if ROW_COLLECTIONS[coll] == "desc":
+            fresh = list(reversed(fresh))       # головной элемент получит наибольший seq
+        for it in fresh:
+            self._row_seq[coll] += 1
+            it["gid"] = secrets.token_hex(12)
+            it["seq"] = self._row_seq[coll]
 
     def load(self) -> Optional[dict]:
         with self._cursor() as cur:
             cur.execute("SELECT key, doc FROM state_docs")
-            rows = cur.fetchall()
-        if not rows:
+            doc_rows = cur.fetchall()
+            cur.execute("SELECT coll, doc FROM state_rows ORDER BY seq")
+            row_rows = cur.fetchall()
+            cur.execute("SELECT coll, n FROM epochs")
+            for coll, n in cur.fetchall():
+                if coll in self._epochs:
+                    self._epochs[coll] = n
+        if not doc_rows and not row_rows:
             return None
         docs = {}
-        for key, doc in rows:
+        for key, doc in doc_rows:
             if isinstance(doc, str):
                 doc = json.loads(doc)
             docs[key] = doc
             self._hashes[key] = _fp(_dumps(doc))
-        projects_by_id = {int(k[len(PROJECT_PREFIX):]): v for k, v in docs.items() if k.startswith(PROJECT_PREFIX)}
+        by_coll = {c: [] for c in ROW_COLLECTIONS}
+        for coll, doc in row_rows:
+            if isinstance(doc, str):
+                doc = json.loads(doc)
+            if coll in by_coll:
+                by_coll[coll].append(doc)
+        projects_by_id = {int(k[len(PROJECT_PREFIX):]): v for k, v in docs.items()
+                          if k.startswith(PROJECT_PREFIX)}
         order = [i for i in (docs.get(ORDER_KEY) or []) if i in projects_by_id]
         order += [i for i in projects_by_id if i not in order]
-        state = {k: v for k, v in docs.items() if not k.startswith(PROJECT_PREFIX) and k != ORDER_KEY}
+        state = {k: v for k, v in docs.items()
+                 if not k.startswith(PROJECT_PREFIX) and k != ORDER_KEY}
         state["projects"] = [projects_by_id[i] for i in order]
+        for coll, direction in ROW_COLLECTIONS.items():
+            if by_coll[coll]:
+                items = by_coll[coll]
+                if direction == "desc":
+                    items = list(reversed(items))
+                state[coll] = items
+                self._row_hashes[coll] = {it["gid"]: _fp(_dumps(it)) for it in items}
+                self._row_seq[coll] = max(int(it.get("seq") or 0) for it in items)
+            # Строк нет, а документ есть — состояние ещё в прежнем виде
+            # (до раскладки): отдаём документ, первое сохранение разложит.
         return state
 
     def save(self, state: dict) -> dict:
@@ -189,8 +264,30 @@ class PgStore:
                 changed.append(key)
                 texts[key] = (text, fp)
         gone = [k for k in self._hashes if k.startswith(PROJECT_PREFIX) and k not in docs]
-        if not changed and not gone:
-            return {"written": 0, "deleted": 0, "bytes": 0}
+
+        row_ops = {}          # coll -> (upserts:[(gid, tenant, seq, text, fp)], deletes:[gid])
+        for coll in ROW_COLLECTIONS:
+            items = state.get(coll)
+            if items is None:
+                continue
+            self._ensure_ids(coll, items)
+            known = self._row_hashes[coll]
+            ups, seen = [], set()
+            for it in items:
+                gid = it["gid"]
+                seen.add(gid)
+                text = _dumps(it)
+                fp = _fp(text)
+                if known.get(gid) != fp:
+                    ups.append((gid, it.get("tenant"), int(it.get("seq") or 0), text, fp))
+            dels = [gid for gid in known if gid not in seen]
+            if ups or dels or (coll in self._hashes):
+                row_ops[coll] = (ups, dels)
+
+        if not changed and not gone and not row_ops:
+            return {"written": 0, "rows": 0, "deleted": 0, "bytes": 0}
+
+        bumped = {}
         with self._cursor() as cur:
             for key in changed:
                 cur.execute(
@@ -199,12 +296,71 @@ class PgStore:
                     (key, texts[key][0]))
             for key in gone:
                 cur.execute("DELETE FROM state_docs WHERE key = %s", (key,))
+            for coll, (ups, dels) in row_ops.items():
+                for gid, tenant, seq, text, _f in ups:
+                    cur.execute(
+                        "INSERT INTO state_rows (coll, gid, tenant, seq, doc, updated) "
+                        "VALUES (%s, %s, %s, %s, %s::jsonb, now()) "
+                        "ON CONFLICT (coll, gid) DO UPDATE SET doc = EXCLUDED.doc, "
+                        " tenant = EXCLUDED.tenant, seq = EXCLUDED.seq, updated = now()",
+                        (coll, gid, tenant, seq, text))
+                for gid in dels:
+                    cur.execute("DELETE FROM state_rows WHERE coll = %s AND gid = %s", (coll, gid))
+                if ups or dels:
+                    cur.execute(
+                        "INSERT INTO epochs (coll, n) VALUES (%s, 1) "
+                        "ON CONFLICT (coll) DO UPDATE SET n = epochs.n + 1 RETURNING n",
+                        (coll,))
+                    bumped[coll] = cur.fetchone()[0]
+                if coll in self._hashes:
+                    # Прежний документ-целиком этой коллекции больше не нужен:
+                    # источник правды теперь строки.
+                    cur.execute("DELETE FROM state_docs WHERE key = %s", (coll,))
+
         for key in changed:
             self._hashes[key] = texts[key][1]
         for key in gone:
             self._hashes.pop(key, None)
-        return {"written": len(changed), "deleted": len(gone),
+        rows_written = 0
+        for coll, (ups, dels) in row_ops.items():
+            for gid, _t, _s, _txt, fp in ups:
+                self._row_hashes[coll][gid] = fp
+            for gid in dels:
+                self._row_hashes[coll].pop(gid, None)
+            rows_written += len(ups) + len(dels)
+            self._hashes.pop(coll, None)
+            if coll in bumped:
+                self._epochs[coll] = bumped[coll]
+        return {"written": len(changed), "rows": rows_written, "deleted": len(gone),
                 "bytes": sum(len(texts[k][0]) for k in changed)}
+
+    # ── синхронизация между процессами ──
+    def stale_collections(self) -> list:
+        """Коллекции, чью эпоху поднял КТО-ТО ДРУГОЙ: наша запись обновляет
+        локальную эпоху сама, поэтому расхождение означает чужую руку."""
+        with self._cursor() as cur:
+            cur.execute("SELECT coll, n FROM epochs")
+            rows = cur.fetchall()
+        return [coll for coll, n in rows
+                if coll in self._epochs and n != self._epochs[coll]]
+
+    def load_rows(self, coll: str) -> list:
+        """Перечитать коллекцию строк (после чужой эпохи) и запомнить её
+        отпечатки — иначе следующее сохранение перезаписало бы всё заново."""
+        assert coll in ROW_COLLECTIONS, coll
+        with self._cursor() as cur:
+            cur.execute("SELECT doc FROM state_rows WHERE coll = %s ORDER BY seq", (coll,))
+            rows = cur.fetchall()
+            cur.execute("SELECT n FROM epochs WHERE coll = %s", (coll,))
+            got = cur.fetchone()
+        items = [json.loads(d) if isinstance(d, str) else d for (d,) in rows]
+        if ROW_COLLECTIONS[coll] == "desc":
+            items = list(reversed(items))
+        self._row_hashes[coll] = {it["gid"]: _fp(_dumps(it)) for it in items}
+        self._row_seq[coll] = max([int(it.get("seq") or 0) for it in items], default=self._row_seq[coll])
+        if got:
+            self._epochs[coll] = got[0]
+        return items
 
     # ── прогоны ──
     def save_job(self, job: dict) -> None:

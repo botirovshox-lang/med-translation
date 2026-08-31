@@ -51,6 +51,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi import Response
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -1986,6 +1987,8 @@ async def require_token(request: Request, call_next):
         request.state.session = sess
         tok = CURRENT_SESSION.set(sess)
         try:
+            if STORE.kind == "pg":
+                await run_in_threadpool(_sync_shared)
             return await call_next(request)
         finally:
             CURRENT_SESSION.reset(tok)
@@ -2279,6 +2282,42 @@ def save_state(state: dict):
 
 
 STATE = load_state()
+
+# ── Синхронизация разделяемых коллекций между процессами ─────────────
+# Глоссарий и очередь кандидатов лежат в базе по строке на запись с эпохой
+# поколения (store.ROW_COLLECTIONS). Пока процесс один, эпоху поднимаем
+# только мы сами и перечитывания не случаются; появится воркер отдельным
+# процессом — его правки станут видны здесь тем же механизмом, без гонки
+# «кто последний сохранил документ». Проверка эпох — один SELECT, но и он
+# не бесплатен на каждый запрос, поэтому не чаще раза в SYNC_EVERY секунд.
+SYNC_EVERY = float(os.environ.get("SYNC_EVERY", "3"))
+_SYNC_LAST = {"t": 0.0}
+
+
+def _sync_shared(force: bool = False) -> None:
+    if STORE.kind != "pg":
+        return
+    now = time.time()
+    if not force and now - _SYNC_LAST["t"] < SYNC_EVERY:
+        return
+    _SYNC_LAST["t"] = now
+    try:
+        stale = STORE.stale_collections()
+    except Exception as e:
+        print(f"[backend] сверка эпох не удалась: {e}", file=sys.stderr)
+        return
+    for coll in stale:
+        try:
+            items = STORE.load_rows(coll)
+        except Exception as e:
+            print(f"[backend] коллекция {coll} не перечитана: {e}", file=sys.stderr)
+            continue
+        with _SAVE_LOCK:
+            STATE[coll] = items
+        if coll == "glossary":
+            _invalidate_gloss_index()
+        print(f"[backend] {coll}: подтянуто чужое изменение ({len(items)} записей)",
+              file=sys.stderr)
 
 
 def get_project(pid: int) -> dict:
@@ -13458,6 +13497,9 @@ def _job_run(job: dict):
 def _job_loop():
     while True:
         job = _JOB_QUEUE.get()
+        # Перед прогоном — свежие глоссарий и очередь: их могла править
+        # другая сторона (после разделения на процессы — обязательно).
+        _sync_shared(force=True)
         dropped_at_start = _TERM_DROPPED["total"]
         try:
             if job["stop"]:

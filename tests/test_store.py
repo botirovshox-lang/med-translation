@@ -60,6 +60,17 @@ class FakeCur:
             self._rows = [(c, json.loads(t)) for (c, g), (q, t) in sorted(self.conn.rows.items(), key=lambda kv: kv[1][0])]
         elif s.startswith("SELECT doc FROM state_rows"):
             self._rows = [(json.loads(t),) for (c, g), (q, t) in sorted(self.conn.rows.items(), key=lambda kv: kv[1][0]) if c == params[0]]
+        elif s.startswith("INSERT INTO spend"):
+            if "DO NOTHING" in s:
+                t, mo, usd, calls, unp = params
+                self.conn.spend.setdefault((t, mo), (float(usd), int(calls), int(unp)))
+            else:
+                t, mo, usd, unp = params
+                cur0 = self.conn.spend.get((t, mo), (0.0, 0, 0))
+                self.conn.spend[(t, mo)] = (cur0[0] + float(usd), cur0[1] + 1, cur0[2] + int(unp))
+        elif s.startswith("SELECT usd, calls, unpriced"):
+            got = self.conn.spend.get((params[0], params[1]))
+            self._one = got
         elif s.startswith("INSERT INTO jobs"):
             self.conn.jobs[params[0]] = params[3]
         elif s.startswith("DELETE FROM jobs"):
@@ -73,7 +84,7 @@ class FakeCur:
 
 class FakeConn:
     closed = False
-    def __init__(self): self.log, self.docs, self.rows, self.epochs, self.jobs = [], {}, {}, {}, {}
+    def __init__(self): self.log, self.docs, self.rows, self.epochs, self.jobs, self.spend = [], {}, {}, {}, {}, {}
     def cursor(self): return FakeCur(self)
     def commit(self): pass
     def rollback(self): pass
@@ -89,7 +100,7 @@ state = {"projects": [{"id": 2, "title": "B", "segments": [{"id": 1, "target": "
          "tm": [], "users": [{"id": 1}],
          "termQueue": [{"kind": "extract", "src": "c1"}, {"kind": "extract", "src": "c2"}]}
 r = pg.save(state)
-check(r["written"] == 5 and set(conn.docs) == {"projects:1", "projects:2", "projects_order", "tm", "users"},
+check(r["written"] == 4 and set(conn.docs) == {"projects:1", "projects:2", "projects_order", "users"},
       "документы — без разделяемых коллекций: %s" % r)
 check(r["rows"] == 4 and len(conn.rows) == 4, "глоссарий и очередь ушли строками")
 check(all(g.get("gid") and g.get("seq") for g in state["glossary"]), "записи получили gid и seq")
@@ -135,6 +146,13 @@ pg3.save(st3)
 check("glossary" not in conn2.docs and len(conn2.rows) == 2, "первое сохранение: строки записаны, документ удалён")
 st4 = store.PgStore("postgresql://x", connect=lambda url: conn2).load()
 check([g["src"] for g in st4["glossary"]] == ["стар1", "стар2"], "порядок пережил раскладку")
+
+print("=== 4b. Расход — счётчик с прямым инкрементом ===")
+pg.add_spend("acme", "2026-08", 0.5)
+pg.add_spend("acme", "2026-08", None)
+m = pg.get_spend("acme", "2026-08")
+check(m["usd"] == 0.5 and m["calls"] == 2 and m["unpriced"] == 1, "инкременты сложились: %s" % m)
+check(pg.get_spend("acme", "2026-09") == {"usd": 0.0, "calls": 0, "unpriced": 0}, "пустой месяц — нули")
 
 print("=== 5. Очередь прогонов ===")
 pg.save_job({"id": 5, "kind": "full", "status": "running", "tenant": "t", "ids": [1, 2], "stop": False})

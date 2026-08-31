@@ -1380,6 +1380,14 @@ def _month_key() -> str:
 
 
 def _spend_add(tenant: str, cost: Optional[float]) -> None:
+    # В базе расход — счётчик с прямым инкрементом (store.add_spend):
+    # снимок словаря из двух процессов терял бы приращения друг друга.
+    if STORE.kind == "pg":
+        try:
+            STORE.add_spend(tenant or DEFAULT_TENANT, _month_key(), cost)
+            return
+        except Exception as e:
+            print(f"[backend] расход не записан в базу: {e}", file=sys.stderr)
     sp = STATE.setdefault("spend", {}).setdefault(tenant or DEFAULT_TENANT, {})
     m = sp.setdefault(_month_key(), {"usd": 0.0, "calls": 0, "unpriced": 0})
     m["calls"] += 1
@@ -1395,7 +1403,14 @@ def _tenant_rec(tid: str) -> Optional[dict]:
 
 def _spend_status(tenant: Optional[str] = None) -> dict:
     t = tenant or _current_tenant()
-    m = (STATE.get("spend") or {}).get(t, {}).get(_month_key()) or {"usd": 0.0, "calls": 0, "unpriced": 0}
+    if STORE.kind == "pg":
+        try:
+            m = STORE.get_spend(t, _month_key())
+        except Exception as e:
+            print(f"[backend] расход не прочитан из базы: {e}", file=sys.stderr)
+            m = {"usd": 0.0, "calls": 0, "unpriced": 0}
+    else:
+        m = (STATE.get("spend") or {}).get(t, {}).get(_month_key()) or {"usd": 0.0, "calls": 0, "unpriced": 0}
     rec = _tenant_rec(t) or {}
     limit = rec.get("limitUsd")
     return {"tenant": t, "month": _month_key(), "spentUsd": round(m["usd"], 4),

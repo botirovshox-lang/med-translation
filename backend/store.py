@@ -37,9 +37,10 @@ PROJECT_PREFIX = "projects:"
 ORDER_KEY = "projects_order"
 
 # Коллекции, разложенные по строкам, и закон их порядка:
-#   desc — новые записи идут В НАЧАЛО списка (glossary: insert(0));
-#   asc  — новые идут В КОНЕЦ (termQueue: append).
-ROW_COLLECTIONS = {"glossary": "desc", "termQueue": "asc"}
+#   desc — новые записи идут В НАЧАЛО списка (glossary, tm: insert(0));
+#   asc  — новые идут В КОНЕЦ (termQueue, audit, runCosts: append).
+ROW_COLLECTIONS = {"glossary": "desc", "termQueue": "asc", "tm": "desc",
+                   "audit": "asc", "runCosts": "asc"}
 
 
 def _dumps(obj) -> str:
@@ -103,6 +104,14 @@ class PgStore:
         "CREATE INDEX IF NOT EXISTS state_rows_coll_seq ON state_rows (coll, seq)",
         "CREATE TABLE IF NOT EXISTS epochs ("
         " coll TEXT PRIMARY KEY, n BIGINT NOT NULL DEFAULT 0)",
+        # Расход — НЕ документ и не строка-снимок, а СЧЁТЧИК с прямым
+        # инкрементом: два процесса, пишущие снимок счётчика, теряли бы
+        # приращения друг друга, а UPDATE ... SET usd = usd + delta — нет.
+        "CREATE TABLE IF NOT EXISTS spend ("
+        " tenant TEXT NOT NULL, month TEXT NOT NULL,"
+        " usd DOUBLE PRECISION NOT NULL DEFAULT 0,"
+        " calls BIGINT NOT NULL DEFAULT 0, unpriced BIGINT NOT NULL DEFAULT 0,"
+        " PRIMARY KEY (tenant, month))",
         "CREATE TABLE IF NOT EXISTS jobs ("
         " id INTEGER PRIMARY KEY, status TEXT NOT NULL, tenant TEXT,"
         " doc JSONB NOT NULL, updated TIMESTAMPTZ NOT NULL DEFAULT now())",
@@ -187,7 +196,7 @@ class PgStore:
             order.append(p["id"])
         docs[ORDER_KEY] = order
         for k, v in state.items():
-            if k != "projects" and k not in ROW_COLLECTIONS:
+            if k != "projects" and k != "spend" and k not in ROW_COLLECTIONS:
                 docs[k] = v
         return docs
 
@@ -235,6 +244,19 @@ class PgStore:
                 doc = json.loads(doc)
             if coll in by_coll:
                 by_coll[coll].append(doc)
+        # Расход, приехавший прежним документом, — в таблицу-счётчик.
+        spend_doc = docs.pop("spend", None)
+        if spend_doc:
+            with self._cursor() as cur:
+                for tenant, months in spend_doc.items():
+                    for month, m in (months or {}).items():
+                        cur.execute(
+                            "INSERT INTO spend (tenant, month, usd, calls, unpriced) "
+                            "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (tenant, month) DO NOTHING",
+                            (tenant, month, float(m.get("usd") or 0),
+                             int(m.get("calls") or 0), int(m.get("unpriced") or 0)))
+                cur.execute("DELETE FROM state_docs WHERE key = %s", ("spend",))
+            self._hashes.pop("spend", None)
         projects_by_id = {int(k[len(PROJECT_PREFIX):]): v for k, v in docs.items()
                           if k.startswith(PROJECT_PREFIX)}
         order = [i for i in (docs.get(ORDER_KEY) or []) if i in projects_by_id]
@@ -361,6 +383,26 @@ class PgStore:
         if got:
             self._epochs[coll] = got[0]
         return items
+
+    # ── расход: счётчик с прямым инкрементом ──
+    def add_spend(self, tenant: str, month: str, cost) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO spend (tenant, month, usd, calls, unpriced) "
+                "VALUES (%s, %s, %s, 1, %s) "
+                "ON CONFLICT (tenant, month) DO UPDATE SET "
+                " usd = spend.usd + EXCLUDED.usd, calls = spend.calls + 1,"
+                " unpriced = spend.unpriced + EXCLUDED.unpriced",
+                (tenant, month, float(cost or 0), 0 if cost is not None else 1))
+
+    def get_spend(self, tenant: str, month: str) -> dict:
+        with self._cursor() as cur:
+            cur.execute("SELECT usd, calls, unpriced FROM spend WHERE tenant = %s AND month = %s",
+                        (tenant, month))
+            got = cur.fetchone()
+        if not got:
+            return {"usd": 0.0, "calls": 0, "unpriced": 0}
+        return {"usd": float(got[0]), "calls": int(got[1]), "unpriced": int(got[2])}
 
     # ── прогоны ──
     def save_job(self, job: dict) -> None:

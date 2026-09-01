@@ -9344,7 +9344,8 @@ def _repair_tried(seg: dict) -> bool:
     return r.get("source_hash") == _text_hash(seg.get("target") or "")
 
 
-def _repair_clamped(seg: dict, findings: Optional[list] = None) -> bool:
+def _repair_clamped(seg: dict, findings: Optional[list] = None,
+                    model: Optional[str] = None) -> bool:
     """Закрыт ли сегмент от ремонта. Клеймит ТОЛЬКО совпавший отпечаток.
 
     `findings` — готовый `_repair_findings(seg, None)`, если он уже посчитан
@@ -9366,10 +9367,42 @@ def _repair_clamped(seg: dict, findings: Optional[list] = None) -> bool:
     79 сегментов с открытыми находками при пустом составе ремонта.
 
     Открывается при этом НЕ весь проект: в состав попадают только сегменты
-    с находками, а их считает разбор и называет числом до запуска."""
+    с находками, а их считает разбор и называет числом до запуска.
+
+    `model` — РАЗРЕШЁННЫЙ id модели, которой заход пойдёт сейчас. Другая
+    модель — другой заход: тот же промпт она ответит по-своему, и держать
+    сегмент закрытым вердиктом чужой модели значит отказывать во втором
+    мнении, которое ремонту прямо обещано («дальше только человек или другая
+    модель»). Записи помнят, кто уже ходил на этот отпечаток (`triedModels`;
+    у старых записей — их `model`, она пишется с самого начала). `model=None`
+    означает «какой моделью пойдут, неизвестно» (экран «Анализ»,
+    `_segment_for_client`) — клеймо держит, как и раньше: обещать «возьмёт
+    прогон» про сегмент, который возьмёт только смена модели, нельзя."""
     rp = seg.get("repair") or {}
     key = rp.get("attemptKey")
-    return bool(key) and key == _repair_attempt_key(seg, findings)
+    if not key or key != _repair_attempt_key(seg, findings):
+        return False
+    if model is None:
+        return True
+    tried = rp.get("triedModels") or ([rp["model"]] if rp.get("model") else None)
+    # Запись без модели — чей это был заход, неизвестно: клеймо держит.
+    return tried is None or model in tried
+
+
+def _models_tried(seg: dict, attempt_key: str) -> list:
+    """Модели, уже ходившие на ЭТОТ отпечаток захода.
+
+    У старых записей списка нет — берём модель самой записи: она пишется
+    в запись ремонта с первого дня. Запись о ДРУГОМ отпечатке не в счёт:
+    сменился текст или претензии — прежние попытки к новому заходу
+    отношения не имеют."""
+    rp = seg.get("repair") or {}
+    if rp.get("attemptKey") != attempt_key:
+        return []
+    tried = rp.get("triedModels")
+    if tried is None:
+        tried = [rp["model"]] if rp.get("model") else []
+    return list(tried)
 
 
 def _repair_futile(seg: dict, project: Optional[dict] = None) -> bool:
@@ -9465,13 +9498,15 @@ def _repair_score_vetoed(seg: dict) -> bool:
     return True
 
 
-def _repairable(seg: dict, allow_tried: bool = False, project: Optional[dict] = None) -> bool:
+def _repairable(seg: dict, allow_tried: bool = False, project: Optional[dict] = None,
+                model: Optional[str] = None) -> bool:
     """allow_tried — человек сам отметил галочкой уже чинившиеся сегменты.
     По умолчанию второй заход по тому же тексту не делаем: те же претензии
-    дадут тот же результат за те же деньги."""
+    дадут тот же результат за те же деньги. `model` — разрешённый id модели
+    ЭТОГО прогона: другая модель — другой заход (см. _repair_clamped)."""
     if not (seg.get("target") or "").strip() or not _repair_findings(seg, project):
         return False
-    return allow_tried or not _repair_clamped(seg)
+    return allow_tried or not _repair_clamped(seg, model=model)
 
 
 def _repair_system(dom: dict, src_lang: str, tgt_lang: str) -> str:
@@ -9945,6 +9980,12 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # перепроверки back-check описывает уже НОВЫЙ текст, и находки на старом
     # там нет — след получился бы пустым ровно там, где он нужнее всего.
     attempt_key = _repair_attempt_key(seg)
+    # Кто уже ходил на этот отпечаток. Второй заход другой моделью ДОПИСЫВАЕТ
+    # её к списку, а не затирает чужую: затёртая модель снова считалась бы
+    # «не пробовала», и смена моделей туда-сюда открывала бы сегмент заново.
+    mdl_planned = _resolve_model(model or REPAIR_DEFAULT_MODEL)["id"]
+    prev_tried = _models_tried(seg, attempt_key)
+    tried_now = prev_tried if mdl_planned in prev_tried else prev_tried + [mdl_planned]
     was_confirmed = seg.get("status") == "confirmed"
     override_ev = _confirm_override(seg) if was_confirmed else []
     before = _repair_scores(seg, project)
@@ -9969,7 +10010,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     if _same_words(new_target, old_target):
         seg["repair"] = {"applied": False, "reason": "Модель не нашла, что менять",
                          "source_hash": old_hash, "attemptKey": attempt_key,
-                         "model": _resolve_model(model or REPAIR_DEFAULT_MODEL)["id"],
+                         "model": mdl_planned, "triedModels": tried_now,
                          "issues": [f["text"] for f in findings],
                          "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
         return {"ok": True, "applied": False, "repair": seg["repair"]}
@@ -10285,6 +10326,9 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
             # иначе сегмент закрыт из-за чужой сетевой ошибки.
             seg["repair"]["source_hash"] = old_hash
             seg["repair"]["attemptKey"] = attempt_key
+            # Вместе с отпечатком, и только с ним: несостоявшийся заход
+            # (оборванная перепроверка) не в счёт — модель не «пробовала».
+            seg["repair"]["triedModels"] = tried_now
         return {"ok": True, "applied": False, "repair": seg["repair"],
                 "desync": _repair_desync(seg, old_target)}
 
@@ -10343,7 +10387,10 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
                      # осталось, повторять нечего; появились новые — заход
                      # будет другим и разрешён.
                      "attemptKey": _repair_attempt_key(seg),
-                     "model": mdl_id, "issues": [f["text"] for f in findings],
+                     # Список заново: отпечаток описывает НОВЫЙ текст, и на
+                     # него ходила только модель, которая его написала.
+                     "model": mdl_id, "triedModels": [mdl_id],
+                     "issues": [f["text"] for f in findings],
                      "before": before, "after": after,
                      # Чем правка обязана решению, принятому вопреки падению
                      # балла. Без этого на экране стоит принятая правка
@@ -10957,18 +11004,22 @@ def repair_batch(pid: int, req: RepairBatchRequest):
         raise HTTPException(503, "Ремонт требует ключ OpenAI")
     project = get_project(pid)
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
+    # Разрешаем модель ТЕМ ЖЕ выражением, что _plan_step и сам заход: клеймо
+    # «уже чинилось» смотрит, ходила ли на отпечаток ИМЕННО эта модель, и две
+    # формулы разрешения дали бы смете один состав, а прогону другой.
+    rp_mdl = _resolve_model(req.model or REPAIR_DEFAULT_MODEL)["id"]
     candidates = [s for s in project["segments"]
                   if (id_filter is None or s["id"] in id_filter)
                   and (req.include_confirmed or s.get("status") != "confirmed"
                        or _confirm_override(s))
-                  and _repairable(s, req.retry, project)]
+                  and _repairable(s, req.retry, project, rp_mdl)]
     # Пощада названа поимённо и БЕЗ тех, кого забрала объективная находка:
     # иначе отчёт говорил бы «не тронули», а текст был бы переписан.
     skipped_confirmed = ([s["id"] for s in project["segments"]
                           if (id_filter is None or s["id"] in id_filter)
                           and s.get("status") == "confirmed"
                           and not _confirm_override(s)
-                          and _repairable(s, req.retry, project)]
+                          and _repairable(s, req.retry, project, rp_mdl)]
                          if not req.include_confirmed else [])
     limit = max(1, min(req.limit, 30))
     remaining_after = max(0, len(candidates) - limit)
@@ -13220,8 +13271,15 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
                 # отдельно: у этих сегментов последствие особое — с них
                 # снимется отметка человека, и он должен видеть, за что.
                 run("расхождение чисел, единиц или отрицания — сильнее заверения", seg)
-            elif not retry and _repair_clamped(seg):
+            elif not retry and _repair_clamped(seg, None, mdl_id):
                 skip("такой же заход уже делали")
+            elif not retry and _repair_clamped(seg):
+                # Заход был, но ДРУГОЙ моделью — а другая модель на тот же
+                # промпт отвечает по-своему, и это второе мнение человек
+                # заказал сам, выбрав её в панели. Прежнюю называем поимённо:
+                # без неё строка читается как повтор уже сделанного.
+                run("уже чинила %s — выбранная модель зайдёт со вторым мнением"
+                    % _model_label((seg.get("repair") or {}).get("model")), seg)
             elif seg.get("status") == "confirmed":
                 # Причина названа отдельно намеренно: цена у этих сегментов та же,
                 # а последствие другое — отметка «подтвердил человек» с них снимется.

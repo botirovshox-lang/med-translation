@@ -3495,6 +3495,10 @@ def project_analysis(pid: int, refresh: bool = False):
         if not fresh:
             continue
         for t in _term_context_of(s):
+            # Вердикты по забракованным СЛОВАМ — не спор про запись глоссария:
+            # «негодно» уже стало находкой ремонта, «годно» сняло претензию.
+            if t.get("stale"):
+                continue
             if t.get("ok") is False:
                 # Предъявить человеку нечего в двух случаях, и оба — шум:
                 # совет ПУСТ (корпус его снял или арбитр не предложил) либо
@@ -3527,16 +3531,19 @@ def project_analysis(pid: int, refresh: bool = False):
     # о строке — не приказ переписывать (тот же закон, что у разнобоя, где
     # для применения по документу нужны два голоса). Тем более что проверка
     # с тех пор передумала, и кто из двух её мнений верен, решает человек.
+    # Один расчёт с шагом сверки (_stale_words_of) — смета и работа не должны
+    # видеть разные списки. Человеку остаются только слова БЕЗ свежего вердикта
+    # арбитра: «годно» претензию сняло, «негодно» стало находкой ремонта
+    # (сегмент уходит в findings, то есть в машинную корзину) — второй голос
+    # получен, звать сюда человека больше не за чем.
     by_id = {sg["id"]: sg for sg in project["segments"]}
     stale_bad: dict = {}
-    for c in (STATE.get("termQueue") or ()):
-        was = (c.get("wasTgt") or "").strip()
-        sid = c.get("segment")
-        if not was or c.get("project") != pid or sid not in by_id:
-            continue
-        rx = _word_re(was)
-        if rx and rx.search(by_id[sid].get("target") or ""):
-            stale_bad.setdefault(sid, []).append(was)
+    for sid, words in _stale_words_of(project).items():
+        judged = {_norm_key(c.get("tgt") or "") for c in _term_context_of(by_id[sid])
+                  if c.get("stale") and c.get("ok") is not None}
+        left = [w for w in words if _norm_key(w) not in judged]
+        if left:
+            stale_bad[sid] = left
     stale_findings = sorted(stale_bad)
 
     # Разнобой по документу — один раз: он нужен и корзинам «под ключ»,
@@ -9040,6 +9047,44 @@ def _term_context_stale(seg: dict) -> bool:
             or tcx.get("version") != TERM_CONTEXT_VERSION)
 
 
+def _stale_words_of(project: dict) -> dict:
+    """{id сегмента: [слова]} — забракованные termcheck слова, всё ещё стоящие
+    в тексте. Карточка очереди помнит `wasTgt` — формулировку, которую проверка
+    отвергла, — а сегмент об этом не помнит: свежий termcheck мог передумать
+    между прогонами, и дефект остаётся в готовом на вид тексте. Сверка
+    бесплатна — подстрока по границам слов. ОДИН расчёт на три места
+    (/analysis, _plan_step, сам шаг сверки): разойдись они, смета обещала бы
+    одно, а работа делала другое."""
+    by_id = {sg["id"]: sg for sg in project["segments"]}
+    out: dict = {}
+    for c in (STATE.get("termQueue") or ()):
+        was = (c.get("wasTgt") or "").strip()
+        sid = c.get("segment")
+        if not was or c.get("project") != project["id"] or sid not in by_id:
+            continue
+        rx = _word_re(was)
+        if rx and rx.search(by_id[sid].get("target") or ""):
+            words = out.setdefault(sid, [])
+            if was not in words:
+                words.append(was)
+    return out
+
+
+def _stale_unasked(seg: dict, words: list) -> list:
+    """Забракованные слова, про которые арбитра ещё не спрашивали СВЕЖИМ
+    вердиктом. Охват лежит на вердикте (`termContext.staleAsked`) — тот же
+    приём, что `all_terms`: без отметки вердикт без этих вопросов закрывал бы
+    сегмент от них навсегда. Записываются только ОТВЕЧЕННЫЕ слова: пропущенное
+    моделью слово обязано спроситься снова."""
+    if not words:
+        return []
+    if _term_context_stale(seg):
+        return list(words)
+    asked = {_norm_key(w) for w in
+             ((seg.get("termContext") or {}).get("staleAsked") or ())}
+    return [w for w in words if _norm_key(w) not in asked]
+
+
 # Перевод строки для промптов, которые собираются склейкой. Отдельной
 # константой — и она ОБЯЗАНА быть объявлена: без неё `_openai_term_context`
 # падал с NameError на построении тела запроса, то есть ДО вызова модели.
@@ -9051,8 +9096,15 @@ NL = "\n"
 
 
 def _openai_term_context(seg: dict, project: dict, disputes: list,
-                         prev_src: str, next_src: str, model: Optional[str]) -> Optional[dict]:
-    """Один вызов на сегмент: соседи + спорные термины → вердикт по каждому."""
+                         prev_src: str, next_src: str, model: Optional[str],
+                         stale: list = ()) -> Optional[dict]:
+    """Один вызов на сегмент: соседи + спорные термины → вердикт по каждому.
+
+    `stale` — забракованные termcheck слова, всё ещё стоящие в переводе:
+    их секция добавляется в промпт ТОЛЬКО когда такие слова есть, поэтому
+    для остальных сегментов промпт байт в байт прежний и TERM_CONTEXT_VERSION
+    не поднимается — подъём перекупил бы сотни готовых вердиктов ради
+    вопросов, которых им никто не задаёт."""
     import openai
     mdl = _resolve_model(model or TERM_CONTEXT_DEFAULT_MODEL)
     dom = _resolve_domain(project.get("domain"))
@@ -9075,6 +9127,20 @@ def _openai_term_context(seg: dict, project: dict, disputes: list,
         'Верни ТОЛЬКО JSON: {"terms":[{"src":"...","ok":true,"use":"","why":""}]}. '
         "Без пояснений."
     )
+    if stale:
+        # Второй голос по забракованному слову: одно мнение termcheck — не
+        # приказ переписывать (тот же закон, что у разнобоя), а проверка
+        # с тех пор могла и передумать. Арбитр видит сегмент в ряду соседей
+        # и решает: слово годно (претензия снимается) либо негодно (замена
+        # уходит ремонту). Ответ идёт тем же форматом, слово кладётся в src.
+        system += (
+            "\n\nОтдельным списком даны СЛОВА ИЗ ПЕРЕВОДА (" + tgt_lang + "), "
+            "которые автоматическая проверка терминологии раньше браковала. "
+            "Для каждого ответь тем же форматом JSON, положив само слово в поле src:\n"
+            "  ok — true, если слово здесь уместно и браковать его не за что;\n"
+            "  ok — false, если слово в этом контексте действительно негодно; "
+            "тогда в use дай верный вариант на " + tgt_lang + ".\n"
+        )
     body = (
         "[сегмент ДО] " + (prev_src or "—") + NL +
         ">>> [этот сегмент] " + (seg.get("source") or "") + NL +
@@ -9085,6 +9151,9 @@ def _openai_term_context(seg: dict, project: dict, disputes: list,
                                    (" (%s)" % d["why"]) if d.get("why") else "")
                 for d in disputes)
     )
+    if stale:
+        body += (NL + NL + "Забракованные проверкой слова перевода:" + NL
+                 + NL.join("  - " + w for w in stale))
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=2)
     extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
              else {"max_tokens": 700, "temperature": 0.0})
@@ -9110,7 +9179,8 @@ def _openai_term_context(seg: dict, project: dict, disputes: list,
 
 def _run_segment_term_context(seg: dict, project: dict,
                               model: Optional[str] = None,
-                              disputes_only: bool = True) -> dict:
+                              disputes_only: bool = True,
+                              stale_words: Optional[list] = None) -> dict:
     """Спросить арбитра про спорные термины сегмента и записать вердикт.
 
     Ответ проверяется БЕСПЛАТНО, прежде чем стать поводом что-то переписывать:
@@ -9118,20 +9188,52 @@ def _run_segment_term_context(seg: dict, project: dict,
     Нулевое число вхождений — это калька, и такой совет в ремонт не пойдёт;
     молчание корпуса («не знаю») не одобряет и не блокирует, как везде в этой
     системе. Дальше правку всё равно принимает ремонт со своей перепроверкой
-    и откатом — арбитр только предлагает."""
+    и откатом — арбитр только предлагает.
+
+    `stale_words` — забракованные termcheck слова, всё ещё стоящие в тексте
+    (см. _stale_words_of): арбитр даёт по ним ВТОРОЙ голос. Слово, которое
+    само есть утверждённый перевод, сюда не идёт — это спор с ЗАПИСЬЮ, он
+    решается человеком в human.termcheckDisputes, а не подстановкой."""
     disputes = _term_terms_of(seg, project, disputes_only=disputes_only)
-    if not disputes:
+    hits_tgt = {_norm_key(h.get("tgt") or "")
+                for h in _verified_hits(seg.get("source", ""), project)}
+    stale = [w for w in (stale_words or []) if _norm_key(w) not in hits_tgt]
+    if not disputes and not stale:
         return {"ok": False, "error": "Утверждённых терминов в сегменте нет"}
     prev_src, next_src = _neighbours(project, seg)
-    res = _openai_term_context(seg, project, disputes, prev_src, next_src, model)
+    res = _openai_term_context(seg, project, disputes, prev_src, next_src, model,
+                               stale=stale)
     if not res:
         return {"ok": False, "error": "Арбитр не ответил"}
     by_src = {_norm_key(d["src"]): d for d in disputes}
+    by_stale = {_norm_key(w): w for w in stale}
     scope = _project_scope(project)
-    terms = []
+    terms, stale_asked = [], []
     for t in res["terms"]:
         d = by_src.get(_norm_key(t.get("src")))
         if d is None:
+            # Ответ про забракованное слово: модель кладёт его в src.
+            w = by_stale.get(_norm_key(t.get("src")))
+            if w is None:
+                continue
+            ok = t.get("ok")
+            use = (t.get("use") or "").strip()
+            item = {"stale": True, "src": "", "tgt": w, "forms": [],
+                    "ok": bool(ok) if ok is not None else None,
+                    "use": use, "why": (t.get("why") or "").strip()}
+            if item["ok"] is False and use:
+                c = _corpus_check(use, scope)
+                if c is not None:
+                    item["corpus"] = {"hits": c.get("hits"), "source": c.get("source")}
+                    if not c.get("ok") and c.get("vetoAllowed", True):
+                        item["use"] = ""
+                        item["why"] = ((item["why"] + "; ") if item["why"] else "") + \
+                            "вариант не найден в корпусе целевого языка"
+            if item["ok"] is not None:
+                # Охват пишется только по ОТВЕЧЕННЫМ словам: пропущенное
+                # моделью обязано спроситься снова (см. _stale_unasked).
+                stale_asked.append(w)
+            terms.append(item)
             continue
         ok = t.get("ok")
         use = (t.get("use") or "").strip()
@@ -9160,6 +9262,8 @@ def _run_segment_term_context(seg: dict, project: dict,
         # для сверки навсегда: на боевом проекте так осталось бы не сверено
         # 89 приказных терминов в 61 сегменте.
         "all_terms": not disputes_only,
+        # Охват по забракованным словам — тот же закон (см. _stale_unasked).
+        "staleAsked": stale_asked,
         "target_hash": _text_hash((seg.get("target") or "").strip()),
         "model": res["model"], "terms": terms,
         "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -9291,6 +9395,26 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     # Спор с записью по-прежнему уходит человеку (`human.termContextWrong`):
     # там вопрос про ЗАПИСЬ, и машина его не решает.
     for c in _term_context_of(seg):
+        if c.get("stale"):
+            # Забракованное слово, чью негодность подтвердил арбитр, — находка
+            # ремонта. Один голос termcheck переписывать не приказывает (тот же
+            # закон, что у разнобоя: для применения нужны ДВА голоса), поэтому
+            # без вердикта такие слова ждут человека в human.staleFindings.
+            # Арбитр и есть второй голос: «негодно» — чиним, «годно» — претензия
+            # снята. Слово-приказный-перевод сюда не попадает по построению:
+            # _run_segment_term_context такие не спрашивает (спор с записью).
+            w = (c.get("tgt") or "").strip()
+            if c.get("ok") is False and w:
+                rx = _word_re(w)
+                if rx and rx.search(seg.get("target") or ""):
+                    use = (c.get("use") or "").strip()
+                    items.append({
+                        "kind": "term_ctx",
+                        "replace": [w, use] if use else None,
+                        "text": "слово «" + w + "» забраковано проверкой, "
+                                "арбитр подтвердил"
+                                + (" — " + c["why"] if c.get("why") else "")})
+            continue
         use = (c.get("use") or "").strip()
         if c.get("ok") is not False or not use:
             continue
@@ -10545,14 +10669,27 @@ def term_context(pid: int, req: TermContextRequest = TermContextRequest()):
         raise HTTPException(503, "Арбитр требует ключ OpenAI")
     project = get_project(pid)
     ids = set(req.segment_ids) if req.segment_ids is not None else None
+    # Забракованные слова сверяются в режиме полной сверки (штатный шаг):
+    # точечный разбор спора — про конкретную запись глоссария, и подмешивать
+    # к нему чужие вопросы значило бы платить за неспрошенное.
+    stale_map = _stale_words_of(project) if req.all_terms else {}
     todo, skipped, nothing = [], 0, 0
     for sg in project["segments"]:
         if ids is not None and sg["id"] not in ids:
             continue
-        if not _term_terms_of(sg, project, disputes_only=not req.all_terms):
+        stale_pending = _stale_unasked(sg, stale_map.get(sg["id"]) or [])
+        if (not _term_terms_of(sg, project, disputes_only=not req.all_terms)
+                and not stale_pending):
             nothing += 1
             continue
-        if not req.refresh and not _term_context_stale(sg):
+        # Свежий вердикт закрывает сегмент, только если покрывает ОХВАТ
+        # запроса: сверке (all_terms) вердикт разбора спора не ответ — иначе
+        # смета шага обещает сегмент, а шаг его молча пропускает, — и вопросы
+        # про забракованные слова должны быть заданы все.
+        tcx = sg.get("termContext") or {}
+        covered = (not _term_context_stale(sg) and not stale_pending
+                   and (tcx.get("all_terms") or not req.all_terms))
+        if not req.refresh and covered:
             skipped += 1
             continue
         todo.append(sg)
@@ -10577,7 +10714,8 @@ def term_context(pid: int, req: TermContextRequest = TermContextRequest()):
             return sg, None
         try:
             return sg, _run_segment_term_context(sg, project, req.model,
-                                                 disputes_only=not req.all_terms)
+                                                 disputes_only=not req.all_terms,
+                                                 stale_words=stale_map.get(sg["id"]))
         except Exception as e:                                   # pragma: no cover
             # _run_parallel требует, чтобы fn ловила своё сама: одна упавшая
             # пара не должна ронять всю порцию.
@@ -13193,6 +13331,10 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
         # которой шаг молча платил моделью перевода по умолчанию.
         mdl_id = _resolve_model(params.get("bc_model") or BACKCHECK_DEFAULT_MODEL)["id"]
 
+    # Забракованные слова — тем же расчётом, что шаг сверки и /analysis:
+    # один раз на разбор, а не на сегмент (это проход по очереди кандидатов).
+    stale_map = _stale_words_of(project) if step == "termaudit" else {}
+
     use_judge = bool(params.get("use_judge"))
     # Разрешение этого прогона звать судью и выше зоны. Разбор обязан его
     # читать по той же причине, что include_confirmed: иначе смета обещает
@@ -13299,12 +13441,20 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
             # (тесты, будущий код) считает сам.
             has_terms = (seg["id"] in term_ids if term_ids is not None
                          else bool(_verified_hits(seg.get("source", ""), project)))
-            if not has_terms:
+            # Забракованные слова — второй повод для шага: арбитр даёт по ним
+            # второй голос (снять претензию либо отдать ремонту). Тот же
+            # расчёт, что у самого шага, — иначе смета и работа расходятся.
+            stale_pending = _stale_unasked(seg, stale_map.get(seg["id"]) or [])
+            if not has_terms and not stale_pending:
                 skip("приказных терминов в сегменте нет")
-            elif not _term_context_stale(seg) and tcx.get("all_terms"):
+            elif (not _term_context_stale(seg) and tcx.get("all_terms")
+                    and not stale_pending):
                 skip("уже сверен этим переводом")
             elif not tcx:
                 run("ещё не сверялся", seg)
+            elif (stale_pending and not _term_context_stale(seg)
+                    and tcx.get("all_terms")):
+                run("проверка браковала слово — спросит арбитра", seg)
             elif not tcx.get("all_terms"):
                 # Вердикт получен разбором СПОРА: там спрашивали только про
                 # спорные термины, остальные не сверяли ни разу.

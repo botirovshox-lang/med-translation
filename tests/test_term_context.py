@@ -132,9 +132,10 @@ asked = {}
 
 
 def fake_arbiter(ok, use="", why=""):
-    def f(sg, pj, disputes, prev, nxt, model):
+    def f(sg, pj, disputes, prev, nxt, model, stale=()):
         asked["prev"], asked["next"] = prev, nxt
         asked["disputes"] = [x["src"] for x in disputes]
+        asked["stale"] = list(stale)
         return {"model": "gpt-5.6-terra",
                 "terms": [{"src": x["src"], "ok": ok, "use": use, "why": why} for x in disputes]}
     main._openai_term_context = f
@@ -262,7 +263,7 @@ check(main.TERM_CONTEXT_VERSION >= 2, "версия вопросов подня�
 asked = {}
 
 
-def fake_ctx(seg_, project_, disputes, prev_src, next_src, model):
+def fake_ctx(seg_, project_, disputes, prev_src, next_src, model, stale=()):
     asked["terms"] = [d["src"] for d in disputes]
     return {"terms": [{"src": "туберкулёз лёгких", "ok": True, "use": "", "why": "передан верно"}],
             "model": "gpt-5.6-terra"}

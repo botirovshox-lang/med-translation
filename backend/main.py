@@ -1743,6 +1743,24 @@ if not _RAW_PASSWORD:
     print(f"[backend] WARN: APP_PASSWORD не задан. Пароль на этот запуск: {_RAW_PASSWORD}",
           file=sys.stderr)
 
+# ─── Самостоятельная регистрация по почте ────────────────────────────
+# Человек заводит организацию сам: почта + пароль, письмо с кодом,
+# подтверждение. Два предохранителя, без которых открытая регистрация —
+# это открытый кран к нашему ключу OpenAI и к чужим документам:
+#   1) НОВАЯ организация получает лимит расхода SIGNUP_TRIAL_USD (по
+#      умолчанию 0 — платное недоступно, пока администратор не поставит
+#      лимит). Бесплатные команды и экспорт работают всегда;
+#   2) регистрация выключается одной переменной (SIGNUP_ENABLED=0) и
+#      ограничена по IP (SIGNUP_MAX_PER_HOUR).
+# Вход по почте ИЛИ по логину — обе двери ведут к одному пользователю.
+SIGNUP_ENABLED = os.environ.get("SIGNUP_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
+SIGNUP_TRIAL_USD = float(os.environ.get("SIGNUP_TRIAL_USD", "0") or 0)
+SIGNUP_MAX_PER_HOUR = int(os.environ.get("SIGNUP_MAX_PER_HOUR", "5") or 5)
+CODE_TTL = int(os.environ.get("AUTH_CODE_TTL_MIN", "30")) * 60
+CODE_MAX_TRIES = 5
+_EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s.]+(\.[^@\s.]+)+$")
+_SIGNUP_FAILS: dict = {}        # ip -> [время каждой регистрации за час]
+
 BOOTSTRAP_LOGIN = "admin"
 ROLES = ("owner", "translator")
 PBKDF2_ITERS = 200_000
@@ -1784,7 +1802,9 @@ _USER_COLORS = ("#2c7be5", "#22b07d", "#f1a040", "#cc4a4a", "#7a5af8", "#0aa2c0"
 
 
 def _user_public(u: dict) -> dict:
-    return {"id": u["id"], "login": u["login"], "name": u.get("name") or u["login"],
+    return {"id": u["id"], "login": u["login"], "email": u.get("email") or "",
+            "emailVerified": bool(u.get("emailVerified")),
+            "name": u.get("name") or u["login"],
             "initials": u.get("initials") or _initials(u.get("name") or u["login"]),
             "color": u.get("color") or _USER_COLORS[u["id"] % len(_USER_COLORS)],
             "role": u.get("role", "translator"), "tenant": u.get("tenant", DEFAULT_TENANT),
@@ -1852,11 +1872,73 @@ def _tenants() -> list:
 
 
 def _user_by_login(login: str) -> Optional[dict]:
+    """Пользователь по логину ИЛИ по почте: человек помнит что-то одно,
+    и заставлять его гадать, чем он регистрировался, — плохая дверь."""
     key = (login or "").strip().lower()
+    if not key:
+        return None
     for u in _users():
-        if u.get("login", "").lower() == key:
+        if u.get("login", "").lower() == key or (u.get("email") or "").lower() == key:
             return u
     return None
+
+
+def _user_by_email(email: str) -> Optional[dict]:
+    key = (email or "").strip().lower()
+    for u in _users():
+        if (u.get("email") or "").lower() == key:
+            return u
+    return None
+
+
+def _check_email(email: str) -> str:
+    e = (email or "").strip().lower()
+    if not _EMAIL_RE.match(e) or len(e) > 190:
+        raise HTTPException(400, "Неверный адрес почты")
+    return e
+
+
+def _issue_code(user: dict, kind: str) -> str:
+    """Код подтверждения: шесть цифр, живёт CODE_TTL, хранится ХЭШОМ
+    (в базу утечь может, а код — нет) с потолком попыток."""
+    code = "%06d" % secrets.randbelow(1000000)
+    h, salt = _hash_password(code)
+    user["authCode"] = {"hash": h, "salt": salt, "kind": kind,
+                        "exp": time.time() + CODE_TTL, "tries": 0}
+    return code
+
+
+def _check_code(user: dict, code: str, kind: str) -> None:
+    rec = user.get("authCode") or {}
+    if rec.get("kind") != kind or rec.get("exp", 0) < time.time():
+        raise HTTPException(400, "Код устарел — запросите новый")
+    if rec.get("tries", 0) >= CODE_MAX_TRIES:
+        raise HTTPException(429, "Слишком много попыток — запросите новый код")
+    h, _ = _hash_password((code or "").strip(), rec.get("salt") or "")
+    if not hmac.compare_digest(h, rec.get("hash") or ""):
+        rec["tries"] = rec.get("tries", 0) + 1
+        save_state(STATE)
+        raise HTTPException(400, "Неверный код")
+    user.pop("authCode", None)
+
+
+def _signup_blocked(ip: str) -> bool:
+    now = time.time()
+    hits = [t for t in _SIGNUP_FAILS.get(ip, []) if now - t < 3600]
+    _SIGNUP_FAILS[ip] = hits
+    return len(hits) >= SIGNUP_MAX_PER_HOUR
+
+
+def _new_tenant_id(base: str) -> str:
+    slug = re.sub(r"[^a-z0-9-]+", "-", (base or "").lower()).strip("-")[:24] or "org"
+    if not re.match(r"^[a-z]", slug):
+        slug = "org-" + slug
+    taken = {t.get("id") for t in _tenants()}
+    tid, n = slug, 1
+    while tid in taken:
+        n += 1
+        tid = f"{slug}-{n}"
+    return tid
 
 
 def _ensure_users() -> None:
@@ -1887,7 +1969,15 @@ _LOGIN_FAILS: dict = {}        # ip -> (fail_count, window_started_at)
 _AUTH_LOCK = threading.Lock()
 
 # Единственный список исключений. Всё прочее под /api/ требует токен.
-PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/health"}
+# Двери самостоятельной регистрации публичны по своей природе: их зовёт
+# человек, у которого ещё нет ни токена, ни учётной записи. Каждая из них
+# ограничена по IP и по числу попыток, а «забыли пароль» отвечает одинаково
+# при любом адресе — иначе она превратилась бы в проверку «есть ли такой
+# клиент». Всё остальное под /api/ по-прежнему требует токен.
+PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/health",
+                    "/api/auth/signup-info", "/api/auth/register",
+                    "/api/auth/verify", "/api/auth/resend",
+                    "/api/auth/forgot", "/api/auth/reset"}
 
 
 def _new_session(user: dict) -> str:
@@ -2057,6 +2147,7 @@ try:
     import store as _store_mod
 except ImportError:                       # запуск как backend.main:app
     from backend import store as _store_mod
+mailer_mod = _safe_import("mailer")
 STORE = _store_mod.open_store(os.environ.get("DATABASE_URL"), STATE_FILE)
 
 # Прогоны отдельным процессом (systemd-юнит medcat-worker, backend/worker.py):
@@ -2137,7 +2228,12 @@ def _load_glossary_from_tsv() -> list:
 
 
 BACKUP_DIR = DATA_DIR / "backups"
-_SAVE_LOCK = threading.Lock()          # сериализует записи state.json (эндпоинты идут в threadpool)
+# Сериализует записи состояния (эндпоинты идут в threadpool). ИМЕННО RLock:
+# save_state под этим локом при DocConflict зовёт _apply_doc, который берёт
+# его же, — с обычным Lock это самоблокировка НАВСЕГДА. На боевом сервере
+# так замер старт API: рестарт вместе с воркером дал конфликт документа
+# на модульном save_state, и порт 8000 не поднялся вовсе.
+_SAVE_LOCK = threading.RLock()
 _BACKUP_KEEP = 48                      # почасовые бэкапы, ~2 суток
 
 
@@ -2463,6 +2559,11 @@ def login(req: LoginRequest, request: Request):
     if not user or not _verify_password(user, req.password):
         _note_login_fail(ip)
         raise HTTPException(401, "Неверный логин или пароль")
+    # Незавершённая регистрация — не «неверный пароль»: человек ввёл всё
+    # правильно, ему нужен код из письма, и сказать об этом надо прямо.
+    if user.get("email") and not user.get("emailVerified"):
+        raise HTTPException(403, "Почта не подтверждена: введите код из письма "
+                                 "или запросите новый")
     token = _new_session(user)
     tok = CURRENT_SESSION.set(_SESSIONS[token])
     try:
@@ -2471,6 +2572,173 @@ def login(req: LoginRequest, request: Request):
         CURRENT_SESSION.reset(tok)
     return {"ok": True, "token": token, "expiresIn": SESSION_TTL,
             "me": _user_public(user)}
+
+
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    org: str = ""
+    name: str = ""
+
+
+class CodeRequest(BaseModel):
+    email: str
+    code: str = ""
+    password: str = ""
+
+
+def _mail_code(user: dict, kind: str, code: str) -> bool:
+    brand = APP_BRAND
+    if kind == "verify":
+        subject = f"{brand}: код подтверждения {code}"
+        body = (f"Код подтверждения почты: {code}\n\n"
+                f"Он действует {CODE_TTL // 60} минут. Если вы не заводили учётную запись "
+                f"в «{brand}», просто не отвечайте на это письмо.")
+    else:
+        subject = f"{brand}: код для смены пароля {code}"
+        body = (f"Код для смены пароля: {code}\n\n"
+                f"Он действует {CODE_TTL // 60} минут. Если вы не просили менять пароль, "
+                f"ничего делать не нужно — пароль останется прежним.")
+    return mailer_mod.send(user["email"], subject, body) if mailer_mod else False
+
+
+@app.get("/api/auth/signup-info")
+def signup_info():
+    """Что показывать на экране входа: открыта ли регистрация и уходят ли
+    письма. Без второго признака человек упёрся бы в «проверьте почту»
+    при ненастроенном SMTP."""
+    return {"ok": True, "signup": SIGNUP_ENABLED,
+            "mail": bool(mailer_mod and mailer_mod.configured()),
+            "brand": APP_BRAND, "trialUsd": SIGNUP_TRIAL_USD}
+
+
+@app.post("/api/auth/register")
+def register(req: RegisterRequest, request: Request):
+    """Своя организация одним шагом: почта, пароль, название. Человек
+    становится её владельцем; лимит расхода — SIGNUP_TRIAL_USD."""
+    if not SIGNUP_ENABLED:
+        raise HTTPException(403, "Самостоятельная регистрация выключена — "
+                                 "обратитесь к администратору сервиса")
+    ip = _client_ip(request)
+    if _signup_blocked(ip):
+        raise HTTPException(429, "Слишком много регистраций с этого адреса. Повторите через час.")
+    _ensure_users()
+    email = _check_email(req.email)
+    _check_user_fields(None, req.password, None)
+    if _user_by_email(email) or _user_by_login(email):
+        raise HTTPException(409, "Такая почта уже зарегистрирована — войдите или "
+                                 "восстановите пароль")
+    tid = _new_tenant_id(req.org or email.split("@")[0])
+    today = datetime.now().strftime("%Y-%m-%d")
+    tenant = {"id": tid, "name": (req.org or "").strip() or email.split("@")[0],
+              "created": today, "active": True, "signup": True}
+    if SIGNUP_TRIAL_USD >= 0:
+        # Ноль — тоже решение: платное закрыто до тех пор, пока лимит
+        # не поставит администратор. Открытый кран к ключу дороже неудобства.
+        tenant["limitUsd"] = SIGNUP_TRIAL_USD
+    _tenants().append(tenant)
+    h, salt = _hash_password(req.password)
+    user = {"id": max((x["id"] for x in _users()), default=0) + 1, "tenant": tid,
+            "login": email, "email": email, "emailVerified": False,
+            "hash": h, "salt": salt, "role": "owner", "name": (req.name or "").strip() or email.split("@")[0],
+            "active": True, "uiLang": "ru", "created": today}
+    _users().append(user)
+    code = _issue_code(user, "verify")
+    _SIGNUP_FAILS.setdefault(ip, []).append(time.time())
+    tok = CURRENT_SESSION.set({"tenant": tid, "user": user["id"], "role": "owner"})
+    try:
+        _audit("signup", email=email, tenant_new=tid, ip=ip)
+    finally:
+        CURRENT_SESSION.reset(tok)
+    save_state(STATE)
+    sent = _mail_code(user, "verify", code)
+    return {"ok": True, "email": email, "tenant": tid, "mailSent": sent,
+            "next": "verify",
+            "note": ("Код отправлен на почту." if sent else
+                     "Почта на сервере не настроена — код записан в журнал сервиса, "
+                     "запросите его у администратора.")}
+
+
+@app.post("/api/auth/verify")
+def verify_email(req: CodeRequest, request: Request):
+    ip = _client_ip(request)
+    if _login_blocked(ip):
+        raise HTTPException(429, "Слишком много попыток. Повторите через 15 минут.")
+    user = _user_by_email(_check_email(req.email))
+    if not user:
+        _note_login_fail(ip)
+        raise HTTPException(400, "Неверный код")
+    if user.get("emailVerified"):
+        return {"ok": True, "already": True}
+    _check_code(user, req.code, "verify")
+    user["emailVerified"] = True
+    token = _new_session(user)
+    tok = CURRENT_SESSION.set(_SESSIONS[token])
+    try:
+        _audit("email.verify", email=user["email"])
+    finally:
+        CURRENT_SESSION.reset(tok)
+    save_state(STATE)
+    return {"ok": True, "token": token, "expiresIn": SESSION_TTL, "me": _user_public(user)}
+
+
+@app.post("/api/auth/resend")
+def resend_code(req: CodeRequest, request: Request):
+    """Повторный код подтверждения. Ответ одинаков при любом адресе:
+    иначе эта дверь отвечала бы на вопрос «а есть ли у вас такой клиент»."""
+    ip = _client_ip(request)
+    if _signup_blocked(ip):
+        raise HTTPException(429, "Слишком много запросов. Повторите через час.")
+    user = _user_by_email(_check_email(req.email))
+    sent = False
+    if user and not user.get("emailVerified"):
+        code = _issue_code(user, "verify")
+        save_state(STATE)
+        sent = _mail_code(user, "verify", code)
+        _SIGNUP_FAILS.setdefault(ip, []).append(time.time())
+    return {"ok": True, "mailSent": sent}
+
+
+@app.post("/api/auth/forgot")
+def forgot_password(req: CodeRequest, request: Request):
+    ip = _client_ip(request)
+    if _signup_blocked(ip):
+        raise HTTPException(429, "Слишком много запросов. Повторите через час.")
+    user = _user_by_email(_check_email(req.email))
+    sent = False
+    if user and user.get("active", True):
+        code = _issue_code(user, "reset")
+        save_state(STATE)
+        sent = _mail_code(user, "reset", code)
+        _SIGNUP_FAILS.setdefault(ip, []).append(time.time())
+    # Про существование адреса не говорим — ответ один на все случаи.
+    return {"ok": True, "mailSent": sent}
+
+
+@app.post("/api/auth/reset")
+def reset_password(req: CodeRequest, request: Request):
+    ip = _client_ip(request)
+    if _login_blocked(ip):
+        raise HTTPException(429, "Слишком много попыток. Повторите через 15 минут.")
+    user = _user_by_email(_check_email(req.email))
+    if not user:
+        _note_login_fail(ip)
+        raise HTTPException(400, "Неверный код")
+    _check_user_fields(None, req.password, None)
+    _check_code(user, req.code, "reset")
+    user["hash"], user["salt"] = _hash_password(req.password)
+    user["emailVerified"] = True        # код пришёл на эту почту — она рабочая
+    with _AUTH_LOCK:                    # прежние сессии закрываем
+        for t in [t for t, sess in _SESSIONS.items() if sess["user"] == user["id"]]:
+            _SESSIONS.pop(t, None)
+    token = _new_session(user)
+    tok = CURRENT_SESSION.set(_SESSIONS[token])
+    try:
+        _audit("password.reset", email=user["email"])
+    finally:
+        CURRENT_SESSION.reset(tok)
+    save_state(STATE)
+    return {"ok": True, "token": token, "expiresIn": SESSION_TTL, "me": _user_public(user)}
 
 
 def _current_user(request: Request) -> dict:
@@ -2501,6 +2769,7 @@ class UserCreate(BaseModel):
     password: str
     role: str = "translator"
     name: str = ""
+    email: str = ""
     tenant: Optional[str] = None        # только для суперпользователя
 
 
@@ -2550,8 +2819,12 @@ def admin_user_create(req: UserCreate, request: Request):
             raise HTTPException(404, "Организация не найдена")
         tenant = req.tenant
     h, salt = _hash_password(req.password)
+    email = _check_email(req.email) if req.email else ""
+    if email and _user_by_email(email):
+        raise HTTPException(409, "Такая почта уже занята")
     u = {"id": max((x["id"] for x in _users()), default=0) + 1, "tenant": tenant,
          "login": req.login.strip(), "hash": h, "salt": salt, "role": req.role,
+         "email": email, "emailVerified": bool(email),   # завёл владелец — подтверждать нечего
          "name": req.name.strip() or req.login.strip(), "active": True, "uiLang": "ru",
          "created": datetime.now().strftime("%Y-%m-%d")}
     _users().append(u)

@@ -352,7 +352,7 @@ function tcGroupDefault(key, model, models) {
 }
 
 // tried приходит с бэкенда: этот же текст уже проходил через ремонт
-function rpGroupKey(s) {
+function rpGroupKey(s, model) {
   const r = s.repair;
   if (!r) return "none";
   /* Заход, отменённый СБОЕМ перепроверки, сервер намеренно не засчитывает
@@ -360,6 +360,16 @@ function rpGroupKey(s) {
      такие класть нельзя: текст как раз не менялся, не состоялась проверка. */
   if (r.retryable && !r.tried) return r.retryReason === "rules" ? "rules" : "failed";
   if (!r.tried) return "changed";
+  /* Другая модель — другой заход (repair.triedModels с сервера): клеймо чужой
+     модели выбранную не держит, и сервер берёт такие сегменты «со вторым
+     мнением» — группа отмечена по умолчанию, иначе строка плана обещала бы N,
+     а кнопка под ней отправляла меньше. Сравниваем только ЯВНО выбранную
+     модель: пустой выбор означает модель по умолчанию, чей id браузер
+     не разрешает, — тогда честнее прежняя группа, чем угаданная. */
+  if (model) {
+    const tried = r.triedModels || (r.model ? [r.model] : null);
+    if (tried && tried.indexOf(model) === -1) return "second";
+  }
   return r.applied ? "applied" : "rejected";
 }
 
@@ -369,8 +379,10 @@ function rpGroupKey(s) {
 function rpGroupDefault(key) {
   /* «rules» отмечена по умолчанию: прежний вердикт вынесен правилом, которого
      больше нет, а значит он ничего не говорит о нынешнем заходе. Это не второй
-     заход по тем же правилам, ради которого группы «уже чинилось» и сняты. */
-  return key === "none" || key === "changed" || key === "failed" || key === "rules";
+     заход по тем же правилам, ради которого группы «уже чинилось» и сняты.
+     «second» — тоже: другая модель даст другой ответ, сервер берёт такие сам. */
+  return key === "none" || key === "changed" || key === "failed"
+    || key === "rules" || key === "second";
 }
 
 /* ── Составной прогон: весь конвейер одной кнопкой ──────────────────────
@@ -1660,15 +1672,17 @@ function TabEditor({ store, toast }) {
       : key === "changed" ? "текст менялся после прошлого ремонта"
       : key === "failed" ? "заход не состоялся — сбой перепроверки"
       : key === "rules" ? "правило отмены изменилось — прежний вердикт устарел"
+      : key === "second" ? "чинила другая модель — выбранная зайдёт со вторым мнением"
       : key === "applied" ? "уже чинилось, замечания остались"
       : "правка была откачена (не стало лучше)";
 
   const rpGroups = (() => {
-    const order = { none: 0, changed: 1, failed: 2, rules: 3, applied: 4, rejected: 5 };
+    const order = { none: 0, changed: 1, failed: 2, rules: 3, second: 4,
+                    applied: 5, rejected: 6 };
     const by = new Map();
     project.segments.forEach(s => {
       if (!rpCandidate(s, currentIdSet)) return;
-      const key = rpGroupKey(s);
+      const key = rpGroupKey(s, rpModel || null);
       const g = by.get(key) || { key, label: rpGroupLabel(key), count: 0 };
       g.count++;
       by.set(key, g);
@@ -1688,7 +1702,8 @@ function TabEditor({ store, toast }) {
 
   const repairable = (s, idSet) => {
     if (!rpCandidate(s, idSet)) return false;
-    const key = rpGroupKey(s);
+    // Та же модель, что у rpGroups: группировка и отбор — один расчёт.
+    const key = rpGroupKey(s, rpModel || null);
     return rpGroupPick ? rpGroupPick.has(key) : rpDefaultPicked(key);
   };
 

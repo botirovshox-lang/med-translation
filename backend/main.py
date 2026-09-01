@@ -3539,9 +3539,9 @@ def project_analysis(pid: int, refresh: bool = False):
     by_id = {sg["id"]: sg for sg in project["segments"]}
     stale_bad: dict = {}
     for sid, words in _stale_words_of(project).items():
-        judged = {_norm_key(c.get("tgt") or "") for c in _term_context_of(by_id[sid])
-                  if c.get("stale") and c.get("ok") is not None}
-        left = [w for w in words if _norm_key(w) not in judged]
+        # Тем же _stale_unasked, что смета шага и эндпоинт: вторая формула
+        # «какие слова уже отвечены» разошлась бы с ними первой же правкой.
+        left = _stale_unasked(by_id[sid], words)
         if left:
             stale_bad[sid] = left
     stale_findings = sorted(stale_bad)
@@ -6662,13 +6662,11 @@ def _auto_write(cand: dict, tier: str, batch: int, today: str,
         }
         if existing.get("autoBatch"):
             # Запись ещё принадлежит ПРОШЛОЙ пачке. Цепочку отката НЕ трогаем:
-            # prev* указывают на состояние ДО той пачки, и откат ЭТОЙ вернёт
-            # именно его, а не машинный вариант прошлой. autoCreated
-            # наследуется по той же причине: запись, рождённую прошлой пачкой,
-            # откат этой обязан УБРАТЬ, а не «вернуть» к значению, которого
-            # никогда не было. Прошлая пачка запись теряет — её откат считает
-            # такие в superseded.
-            upd["autoCreated"] = existing.get("autoCreated", False)
+            # prev* и autoCreated остаются как есть (в upd их нет) — они
+            # указывают на состояние ДО той пачки, и откат ЭТОЙ вернёт именно
+            # его (или уберёт запись, рождённую пачками). Прошлая пачка запись
+            # теряет — её откат считает такие в superseded.
+            pass
         else:
             upd.update({
                 "prevTgt": existing.get("tgt", ""), "prevTier": _hit_tier(existing),
@@ -7097,10 +7095,19 @@ def undo_auto_approve(batch: int):
             # поздней пачкой (см. _auto_write): она больше не наша, откат её
             # не трогает — трогать значило бы затереть более позднее решение.
             # Молчать нельзя: человек уверен, что откатил пачку целиком.
+            # И В ОЧЕРЕДЬ такая карточка не возвращается: снова ставшая
+            # pending, она следующим же «Одобрить и применить» вписала бы
+            # СТАРЫЙ машинный вариант поверх более позднего решения — глоссарий
+            # молча откатывался бы назад без единого выбора человека.
             if c.get("autoWrote"):
                 g = _glossary_entry(c.get("src") or "", _scope_of(c))
                 if g is not None and g.get("autoBatch") not in (None, batch):
                     superseded += 1
+                    c["note"] = ("запись перехвачена пачкой #%s — вопрос "
+                                 "решает она" % g["autoBatch"])
+                    for k in ("autoBatch", "autoTier", "decidedAt"):
+                        c.pop(k, None)
+                    continue
             c["status"] = "pending"
             for k in ("autoBatch", "autoTier", "autoWrote", "autoNote", "decidedAt"):
                 c.pop(k, None)
@@ -9054,7 +9061,13 @@ def _stale_words_of(project: dict) -> dict:
     между прогонами, и дефект остаётся в готовом на вид тексте. Сверка
     бесплатна — подстрока по границам слов. ОДИН расчёт на три места
     (/analysis, _plan_step, сам шаг сверки): разойдись они, смета обещала бы
-    одно, а работа делала другое."""
+    одно, а работа делала другое.
+
+    Слово, которое САМО есть утверждённый перевод, отсеивается ЗДЕСЬ, а не
+    в шаге: это спор с ЗАПИСЬЮ (human.termcheckDisputes), второго голоса
+    у него не будет никогда. Отсеянный только у шага, такой сегмент вечно
+    числился бы «спросит арбитра», оплачивал вызов каждым прогоном — а слово
+    молча выпадало бы из вопроса и из охвата: платная карусель."""
     by_id = {sg["id"]: sg for sg in project["segments"]}
     out: dict = {}
     for c in (STATE.get("termQueue") or ()):
@@ -9067,6 +9080,12 @@ def _stale_words_of(project: dict) -> dict:
             words = out.setdefault(sid, [])
             if was not in words:
                 words.append(was)
+    for sid in list(out):
+        hits_tgt = {_norm_key(h.get("tgt") or "") for h in
+                    _verified_hits(by_id[sid].get("source", ""), project)}
+        out[sid] = [w for w in out[sid] if _norm_key(w) not in hits_tgt]
+        if not out[sid]:
+            del out[sid]
     return out
 
 
@@ -9133,6 +9152,9 @@ def _openai_term_context(seg: dict, project: dict, disputes: list,
         # с тех пор могла и передумать. Арбитр видит сегмент в ряду соседей
         # и решает: слово годно (претензия снимается) либо негодно (замена
         # уходит ремонту). Ответ идёт тем же форматом, слово кладётся в src.
+        # ПРАВИШЬ ФОРМУЛИРОВКУ ЭТОЙ СЕКЦИИ — поднимай TERM_CONTEXT_VERSION:
+        # охват staleAsked своей версии не несёт, и без подъёма уже отвеченные
+        # слова навсегда останутся с вердиктами по старому вопросу.
         system += (
             "\n\nОтдельным списком даны СЛОВА ИЗ ПЕРЕВОДА (" + tgt_lang + "), "
             "которые автоматическая проверка терминологии раньше браковала. "
@@ -9145,12 +9167,17 @@ def _openai_term_context(seg: dict, project: dict, disputes: list,
         "[сегмент ДО] " + (prev_src or "—") + NL +
         ">>> [этот сегмент] " + (seg.get("source") or "") + NL +
         "[сегмент ПОСЛЕ] " + (next_src or "—") + NL + NL +
-        "Перевод этого сегмента (" + tgt_lang + "): " + (seg.get("target") or "") + NL + NL +
-        "Утверждённые термины:" + NL +
-        NL.join("  - %s → %s%s" % (d["src"], d["tgt"],
-                                   (" (%s)" % d["why"]) if d.get("why") else "")
-                for d in disputes)
+        "Перевод этого сегмента (" + tgt_lang + "): " + (seg.get("target") or "")
     )
+    # Пустой заголовок «Утверждённые термины:» без единой строки под ним
+    # толкал бы модель выдумывать записи (сегмент из одних забракованных
+    # слов): секция появляется только с содержимым. Для сегментов с
+    # терминами тело байт в байт прежнее.
+    if disputes:
+        body += (NL + NL + "Утверждённые термины:" + NL
+                 + NL.join("  - %s → %s%s" % (d["src"], d["tgt"],
+                                              (" (%s)" % d["why"]) if d.get("why") else "")
+                           for d in disputes))
     if stale:
         body += (NL + NL + "Забракованные проверкой слова перевода:" + NL
                  + NL.join("  - " + w for w in stale))
@@ -9177,6 +9204,29 @@ def _openai_term_context(seg: dict, project: dict, disputes: list,
     return {"terms": data["terms"], "model": mdl["id"]}
 
 
+def _ctx_corpus_gate(item: dict, scope: tuple) -> None:
+    """Бесплатная проверка совета арбитра корпусом целевого языка — ОДНО
+    правило на оба вида вердиктов (термин глоссария и забракованное слово):
+    правь его здесь, а не в двух копиях. Запрещать вправе только корпус,
+    СВОЙ для этой области: ноль в Википедии для узкого медицинского термина
+    доказывает лишь отсутствие статьи с таким названием — пока PubMed был
+    недоступен с сервера, так молча срезали готовый совет у пяти вердиктов.
+    Молчание корпуса («не знаю») не одобряет и не блокирует."""
+    use = item.get("use") or ""
+    if item.get("ok") is not False or not use:
+        return
+    c = _corpus_check(use, scope)
+    if c is None:
+        return
+    item["corpus"] = {"hits": c.get("hits"), "source": c.get("source")}
+    if not c.get("ok") and c.get("vetoAllowed", True):
+        # Корпус НАЛАГАЕТ ВЕТО, но приказа не даёт: совета, которого нет
+        # в целевом языке, в ремонте быть не должно.
+        item["use"] = ""
+        item["why"] = ((item["why"] + "; ") if item.get("why") else "") + \
+            "вариант не найден в корпусе целевого языка"
+
+
 def _run_segment_term_context(seg: dict, project: dict,
                               model: Optional[str] = None,
                               disputes_only: bool = True,
@@ -9190,14 +9240,23 @@ def _run_segment_term_context(seg: dict, project: dict,
     системе. Дальше правку всё равно принимает ремонт со своей перепроверкой
     и откатом — арбитр только предлагает.
 
-    `stale_words` — забракованные termcheck слова, всё ещё стоящие в тексте
-    (см. _stale_words_of): арбитр даёт по ним ВТОРОЙ голос. Слово, которое
-    само есть утверждённый перевод, сюда не идёт — это спор с ЗАПИСЬЮ, он
-    решается человеком в human.termcheckDisputes, а не подстановкой."""
+    `stale_words` — забракованные termcheck слова, всё ещё стоящие в тексте:
+    арбитр даёт по ним ВТОРОЙ голос. Слова приходят из `_stale_words_of` —
+    слово-приказный-перевод отсеяно уже там (спор с ЗАПИСЬЮ решает человек).
+    Свежие вердикты по УЖЕ отвеченным словам сохраняются, а не затираются:
+    точечный разбор спора (stale_words=None) прежде переписывал termContext
+    целиком и выбрасывал оплаченные ответы вместе с находкой ремонта — та же
+    работа покупалась следующим прогоном второй раз."""
     disputes = _term_terms_of(seg, project, disputes_only=disputes_only)
-    hits_tgt = {_norm_key(h.get("tgt") or "")
-                for h in _verified_hits(seg.get("source", ""), project)}
-    stale = [w for w in (stale_words or []) if _norm_key(w) not in hits_tgt]
+    # Прежние stale-вердикты живы, пока жив сам вердикт (тот же текст и та же
+    # версия вопросов): переносим их и спрашиваем только неспрошенное.
+    prev = seg.get("termContext") or {}
+    keep_stale, keep_asked = [], []
+    if prev and not _term_context_stale(seg):
+        keep_stale = [t for t in (prev.get("terms") or []) if t.get("stale")]
+        keep_asked = list(prev.get("staleAsked") or [])
+    asked_norm = {_norm_key(w) for w in keep_asked}
+    stale = [w for w in (stale_words or []) if _norm_key(w) not in asked_norm]
     if not disputes and not stale:
         return {"ok": False, "error": "Утверждённых терминов в сегменте нет"}
     prev_src, next_src = _neighbours(project, seg)
@@ -9208,7 +9267,7 @@ def _run_segment_term_context(seg: dict, project: dict,
     by_src = {_norm_key(d["src"]): d for d in disputes}
     by_stale = {_norm_key(w): w for w in stale}
     scope = _project_scope(project)
-    terms, stale_asked = [], []
+    terms, stale_asked = list(keep_stale), list(keep_asked)
     for t in res["terms"]:
         d = by_src.get(_norm_key(t.get("src")))
         if d is None:
@@ -9221,14 +9280,7 @@ def _run_segment_term_context(seg: dict, project: dict,
             item = {"stale": True, "src": "", "tgt": w, "forms": [],
                     "ok": bool(ok) if ok is not None else None,
                     "use": use, "why": (t.get("why") or "").strip()}
-            if item["ok"] is False and use:
-                c = _corpus_check(use, scope)
-                if c is not None:
-                    item["corpus"] = {"hits": c.get("hits"), "source": c.get("source")}
-                    if not c.get("ok") and c.get("vetoAllowed", True):
-                        item["use"] = ""
-                        item["why"] = ((item["why"] + "; ") if item["why"] else "") + \
-                            "вариант не найден в корпусе целевого языка"
+            _ctx_corpus_gate(item, scope)
             if item["ok"] is not None:
                 # Охват пишется только по ОТВЕЧЕННЫМ словам: пропущенное
                 # моделью обязано спроситься снова (см. _stale_unasked).
@@ -9240,20 +9292,7 @@ def _run_segment_term_context(seg: dict, project: dict,
         item = {"src": d["src"], "tgt": d["tgt"], "forms": d["forms"],
                 "ok": bool(ok) if ok is not None else None,
                 "use": use, "why": (t.get("why") or "").strip()}
-        if item["ok"] is False and use:
-            c = _corpus_check(use, scope)
-            if c is not None:
-                item["corpus"] = {"hits": c.get("hits"), "source": c.get("source")}
-                # Запрещать вправе только корпус, СВОЙ для этой области:
-                # ноль в Википедии для узкого медицинского термина доказывает
-                # лишь отсутствие статьи с таким названием. Пока PubMed был
-                # недоступен с сервера, так молча срезали готовый совет
-                # у пяти вердиктов арбитра.
-                if not c.get("ok") and c.get("vetoAllowed", True):
-                    # Корпус НАЛАГАЕТ ВЕТО, но приказа не даёт: совета,
-                    # которого нет в целевом языке, в ремонте быть не должно.
-                    item["use"] = ""
-                    item["why"] = ((item["why"] + "; ") if item["why"] else "") +                         "вариант не найден в корпусе целевого языка"
+        _ctx_corpus_gate(item, scope)
         terms.append(item)
     seg["termContext"] = {
         "version": TERM_CONTEXT_VERSION,
@@ -9580,9 +9619,11 @@ def _repair_clamped(seg: dict, findings: Optional[list] = None,
         return False
     if model is None:
         return True
-    tried = rp.get("triedModels") or ([rp["model"]] if rp.get("model") else None)
-    # Запись без модели — чей это был заход, неизвестно: клеймо держит.
-    return tried is None or model in tried
+    # Правило «кто уже ходил» — одно, в _models_tried: вторая копия вывода
+    # списка из старой записи разошлась бы с ним первой же правкой.
+    tried = _models_tried(seg, key)
+    # Запись без модели (пустой список) — чей заход, неизвестно: клеймо держит.
+    return not tried or model in tried
 
 
 def _models_tried(seg: dict, attempt_key: str) -> list:
@@ -10369,7 +10410,13 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # ремонта, ремонт полезет менять утверждённый термин, `gloss` вырастет
     # и правку откатят: платный вызов с заранее известным исходом.
     if better and had_tc and after["terms"] is not None:
-        inserted = {_norm_key(f["use"]) for f in findings if f.get("use")}
+        # Подставленное — это и совет из `use`, и замена из `replace`
+        # (находка по забракованному слову несёт её именно там): за слово,
+        # которое вписали мы, отвечаем мы, каким бы полем оно ни приехало.
+        inserted = ({_norm_key(f["use"]) for f in findings if f.get("use")}
+                    | {_norm_key(f["replace"][1]) for f in findings
+                       if f["kind"] == "term_ctx" and f.get("replace")
+                       and f["replace"][1]})
         hit = next((f for f in ((seg.get("termcheck") or {}).get("findings") or [])
                     if f.get("severity") in TERMCHECK_ACTIONABLE
                     and _norm_key(f.get("tgt_term")) in inserted), None) if inserted else None
@@ -11021,7 +11068,11 @@ def _ctx_advices(seg: dict) -> list:
     out = []
     target = seg.get("target") or ""
     for t in _term_context_of(seg):
-        if t.get("ok") is not False:
+        # Вердикт по забракованному СЛОВУ — не спор с записью глоссария:
+        # он уже находка ремонта (kind term_ctx), и карточка «Арбитр: термин
+        # передан неверно» с пустым src была бы про несуществующую запись.
+        # Тот же отбор, что у human.termContextWrong в /analysis.
+        if t.get("stale") or t.get("ok") is not False:
             continue
         use, tgt = (t.get("use") or "").strip(), (t.get("tgt") or "").strip()
         if not use or not tgt or _norm_key(use) == _norm_key(tgt):
@@ -13482,8 +13533,13 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
             # воркером — при том, что смета пересчитывается на каждую смену
             # модели в списке. project=None тут и означает «без глоссария»:
             # остальные находки читаются из самого сегмента и бесплатны.
+            # Находки считаются ОДИН раз и отдаются клейму готовыми:
+            # _repair_clamped без списка пересчитывает их внутри отпечатка,
+            # а разбор пересчитывается на каждую смену модели в панели —
+            # лишние секунды единственного воркера на проекте в 2700 строк.
+            rp_f = _repair_findings(seg, None)
             if (seg["id"] not in gloss_ids and seg["id"] not in (consist_ids or ())
-                    and not _repair_findings(seg, None)):
+                    and not rp_f):
                 skip("чинить нечего — находок нет")
             elif (seg.get("status") == "confirmed" and not fix_confirmed
                     and not _confirm_override(seg)):
@@ -13493,9 +13549,9 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
                 # отдельно: у этих сегментов последствие особое — с них
                 # снимется отметка человека, и он должен видеть, за что.
                 run("расхождение чисел, единиц или отрицания — сильнее заверения", seg)
-            elif not retry and _repair_clamped(seg, None, mdl_id):
+            elif not retry and _repair_clamped(seg, rp_f, mdl_id):
                 skip("такой же заход уже делали")
-            elif not retry and _repair_clamped(seg):
+            elif not retry and _repair_clamped(seg, rp_f):
                 # Заход был, но ДРУГОЙ моделью — а другая модель на тот же
                 # промпт отвечает по-своему, и это второе мнение человек
                 # заказал сам, выбрав её в панели. Прежнюю называем поимённо:

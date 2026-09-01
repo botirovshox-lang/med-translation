@@ -444,7 +444,10 @@ function AutoApprovePanel({ store, toast, onDone }) {
     setBatches(b => b.filter(x => x.id !== batch));
     toast.warning("Пачка #" + batch + " откачена",
       "Удалено: " + res.removed + " · возвращено прежних: " + res.restored +
-      " · кандидатов обратно в очередь: " + res.returned);
+      " · кандидатов обратно в очередь: " + res.returned +
+      // Перехваченное позднейшей пачкой откат не трогает — молчать об этом
+      // нельзя: человек уверен, что откатил пачку целиком.
+      (res.superseded ? " · перехвачено позднейшей пачкой: " + res.superseded : ""));
     onDone && onDone();
   };
 

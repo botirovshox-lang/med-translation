@@ -96,11 +96,14 @@ CARD_VS = {"id": 8, "kind": "audit", "src": "больной", "tgt": "sick perso
            "wasTgt": "patient", "project": 1, "segment": 1, "status": "pending",
            "lang": "RU→EN", "domain": "medical"}
 
-print("(1) один расчёт слов, спор с записью отфильтрован")
+print("(1) один расчёт слов, спор с записью отфильтрован У ИСТОЧНИКА")
 proj, seg = project_of(queue=[CARD, CARD_VS])
 words = main._stale_words_of(proj)
-check(words == {1: ["bioptate", "patient"]}, "слова найдены по границам слов")
-check(main._stale_unasked(seg, words[1]) == ["bioptate", "patient"],
+# «patient» — сам утверждённый перевод: это спор с ЗАПИСЬЮ, второго голоса
+# у него не будет, и отсеян он в _stale_words_of. Отсеянный только у шага,
+# он вечно числился бы «спросит арбитра» и оплачивал вызов каждым прогоном.
+check(words == {1: ["bioptate"]}, "слово-приказный-перевод отсеяно у источника")
+check(main._stale_unasked(seg, words[1]) == ["bioptate"],
       "без вердикта не спрошено ничего")
 
 print("(2) промпт: секция появляется только при забракованных словах")
@@ -129,11 +132,10 @@ kinds = {f["kind"]: f for f in main._repair_findings(seg)}
 check("term_ctx" in kinds and kinds["term_ctx"].get("replace") == ["bioptate", "biopsy specimen"],
       "находка с заменой для ремонта — без проекта, по самому сегменту")
 a = main.project_analysis(1, refresh=True)
-# «bioptate» снят вердиктом; «patient» — спор с ЗАПИСЬЮ, его арбитру не задают,
-# и претензия остаётся человеку. Сегмент из human не уходит, но слово — одно.
-sw = {w["id"]: w["words"] for w in a["human"]["staleFindingWords"]}
-check(sw.get(1) == ["patient"],
-      "отвеченное слово снято, спор с записью остался человеку")
+# «bioptate» снят вердиктом, «patient» отсеян у источника (спор с записью) —
+# корзина пуста, вопрос закрыт вторым голосом.
+check(a["human"]["staleFindings"] == [],
+      "отвеченное слово снято из корзины человека")
 check(1 in a["todo"]["findings"], "сегмент ушёл в находки — его возьмёт прогон")
 
 print("(4) «годно» снимает претензию без находки")
@@ -181,6 +183,29 @@ check(seg["termContext"].get("all_terms") is False, "вердикт помнит
 r = main.term_context(1, main.TermContextRequest(all_terms=True))
 check(r["asked"] == 1,
       "полная сверка сегмент берёт — прежде эндпоинт молча пропускал его")
+
+print("(8) точечный разбор спора не выбрасывает оплаченные stale-вердикты")
+proj, seg = project_of(queue=[CARD])
+seg["backcheck"] = {"score": 70, "model": "m", "back": "b", "reasons": [],
+                    "terms_lost": ["больной"],
+                    "target_hash": main._text_hash(TGT.strip())}
+ANSWER["terms"] = [{"src": "bioptate", "ok": False, "use": "biopsy specimen",
+                    "why": "калька"},
+                   {"src": "больной", "ok": True, "use": "", "why": ""}]
+main._run_segment_term_context(seg, proj, "gpt-5.6-terra", disputes_only=False,
+                               stale_words=["bioptate"])
+ANSWER["terms"] = [{"src": "больной", "ok": True, "use": "", "why": ""}]
+main._run_segment_term_context(seg, proj, "gpt-5.6-terra", disputes_only=True)
+tcx = seg["termContext"]
+check(tcx.get("staleAsked") == ["bioptate"], "охват пережил точечный разбор")
+check(any(t.get("stale") and t["ok"] is False for t in tcx["terms"]),
+      "оплаченный вердикт не затёрт — прежде переписывался весь termContext")
+check(any(f["kind"] == "term_ctx" for f in main._repair_findings(seg)),
+      "находка ремонта жива")
+main._run_segment_term_context(seg, proj, "gpt-5.6-terra", disputes_only=False,
+                               stale_words=["bioptate"])
+check("Забракован" not in SENT["user"],
+      "отвеченное слово второй раз не спрашивается — за него уже платили")
 
 print()
 print("FAIL: %d" % len(fail) if fail else "ВСЁ ПРОШЛО")

@@ -2019,6 +2019,9 @@ _OWNER_ONLY = [
     ("DELETE", re.compile(r"/api/glossary$")),
     ("DELETE", re.compile(r"/api/tm$")),
     ("POST",   re.compile(r"/api/glossary/demote$")),
+    ("POST",   re.compile(r"/api/pricing(/.*)?$")),
+    ("POST",   re.compile(r"/api/quotes/\d+$")),
+    ("DELETE", re.compile(r"/api/quotes/\d+$")),
     ("*",      re.compile(r"/api/admin/")),
 ]
 
@@ -2147,6 +2150,10 @@ try:
     import store as _store_mod
 except ImportError:                       # запуск как backend.main:app
     from backend import store as _store_mod
+try:
+    import textcount
+except ImportError:                       # запуск как backend.main:app
+    from backend import textcount
 mailer_mod = _safe_import("mailer")
 STORE = _store_mod.open_store(os.environ.get("DATABASE_URL"), STATE_FILE)
 
@@ -2757,8 +2764,13 @@ def auth_me(request: Request):
     и решает, какие кнопки показывать; право сделать проверяет сервер."""
     u = _current_user(request)
     tenant = next((t for t in _tenants() if t.get("id") == u.get("tenant")), None)
-    return {"ok": True, "me": _user_public(u),
-            "tenant": tenant or {"id": u.get("tenant", DEFAULT_TENANT), "name": ""},
+    # Поля организации перечислены ЯВНО: запись растёт (лимит, прайс, что
+    # появится дальше), и отдача её целиком означает, что следующее поле уедет
+    # браузеру само, без единого решения.
+    tpub = {k: (tenant or {}).get(k) for k in ("id", "name", "active")}
+    tpub["id"] = tpub["id"] or u.get("tenant", DEFAULT_TENANT)
+    tpub["name"] = tpub["name"] or ""
+    return {"ok": True, "me": _user_public(u), "tenant": tpub,
             "can": {"owner": u.get("role") == "owner", "super": bool(u.get("super"))},
             "spend": _spend_status(u.get("tenant")),
             **({"adminPath": "/" + ADMIN_PATH} if u.get("super") else {})}
@@ -3047,7 +3059,8 @@ def admin_tenant_delete(tid: str, request: Request):
     for u in users:
         _drop_user_sessions(u["id"])
         _users().remove(u)
-    for coll in ("glossary", "tm", "termQueue", "autoBatches", "exportHistory", "domains"):
+    for coll in ("glossary", "tm", "termQueue", "autoBatches", "exportHistory",
+                 "domains", "quotes"):
         rows = STATE.get(coll)
         if isinstance(rows, list):
             STATE[coll] = [r for r in rows if _tenant_of(r) != tid]
@@ -3102,7 +3115,9 @@ def admin_overview(request: Request):
     for t in _tenants():
         tid = t["id"]
         tp = [p for p in projects if _tenant_of(p) == tid]
-        tenants.append({**t, "users": sum(1 for u in users if u.get("tenant") == tid),
+        # Прайс агентства суперпользователю не показываем: лимит расхода —
+        # наше дело, цена страницы — то, что агентство продаёт своим клиентам.
+        tenants.append({**{k: v for k, v in t.items() if k != "pricing"}, "users": sum(1 for u in users if u.get("tenant") == tid),
                         "activeUsers": sum(1 for u in users if u.get("tenant") == tid and u.get("active", True)),
                         "projects": len(tp), "segments": sum(len(p["segments"]) for p in tp),
                         "glossary": sum(1 for g in STATE["glossary"] if _tenant_of(g) == tid),
@@ -3135,7 +3150,8 @@ def admin_tenants(request: Request):
     me = _current_user(request)
     if not me.get("super"):
         raise HTTPException(403, "Список организаций — только суперпользователю")
-    return {"ok": True, "tenants": [dict(t, spend=_spend_status(t["id"])) for t in _tenants()]}
+    return {"ok": True, "tenants": [dict({k: v for k, v in t.items() if k != "pricing"},
+                                         spend=_spend_status(t["id"])) for t in _tenants()]}
 
 
 class TenantCreate(BaseModel):
@@ -3172,6 +3188,444 @@ def admin_tenant_create(req: TenantCreate, request: Request):
     return {"ok": True, "tenant": _tenants()[-1], "owner": _user_public(u)}
 
 
+# ═══ Стоимость перевода: страницы и цена ════════════════════════════
+# Перевод продают СТРАНИЦАМИ исходника, а не токенами. Поэтому счёт знаков
+# и цена лежат отдельно от расхода на модели (`_spend_*`, `limitUsd`): то —
+# наши затраты на прогоны, это — выручка организации, и путать их нельзя.
+# Ни один эндпоинт этого раздела не зовёт модель, значит в `_PAID` им не место:
+# на исчерпанном лимите смету посчитать по-прежнему можно.
+#
+# Ценовая карточка живёт В ЗАПИСИ ОРГАНИЗАЦИИ (`tenant["pricing"]`), а НЕ
+# отдельным верхним ключом STATE, и довод ровно один: `/api/seed` отдаёт ВСЕ
+# верхние ключи, кроме `users`/`tenants`/`audit`/`spend`, — новый ключ уехал бы
+# каждому вошедшему вместе с ценами чужих агентств, и держалась бы эта тайна
+# на строчке фильтра, которую забудут при следующем ключе. Записи организаций
+# из выдачи исключены уже сегодня, и лимит расхода лежит там же.
+# Про ЗАПИСЬ в хранилище это ничего не меняет, и обещать обратное нечестно:
+# `tenants` — такой же ОДИН документ на всех арендаторов (`store._docs_of`),
+# каким был бы и `pricing`, и два владельца, правящих цены одновременно,
+# дерутся за него ровно так же, как сегодня дерутся за лимиты. Сеть
+# безопасности та же — версия документа (`DocConflict`).
+from decimal import Decimal, ROUND_HALF_UP
+
+PRICING_DEFAULTS = {"currency": "USD", "default": None, "rates": [], "norms": {},
+                    "minPages": 1.0, "roundTo": 0.1}
+PRICE_MAX = 100000.0          # цена страницы: защита от опечатки в ноль лишний
+NORM_MIN, NORM_MAX = 100, 20000
+
+
+def _pricing_of(tid: Optional[str] = None) -> dict:
+    """Карточка организации, дополненная умолчаниями. Отсутствие карточки —
+    это «цена не задана», а не «бесплатно»: `default: None` доезжает до ответа
+    и превращается там в честный отказ считать сумму."""
+    rec = _tenant_rec(tid or _current_tenant()) or {}
+    return {**PRICING_DEFAULTS, **(rec.get("pricing") or {})}
+
+
+def _rate_for(card: dict, src: str, tgt: str) -> dict:
+    """Цена за страницу для ПАРЫ языков: сначала строка прайса, затем общая
+    цена карточки. Не нашлось — `price: None`, и сумма не считается вовсе.
+    Ноль вместо неизвестной цены показал бы клиенту бесплатный перевод."""
+    s, t = (src or "").strip().upper(), (tgt or "").strip().upper()
+    for r in card.get("rates") or []:
+        if str(r.get("src", "")).upper() == s and str(r.get("tgt", "")).upper() == t:
+            return {"price": float(r.get("price") or 0), "source": "pair"}
+    if card.get("default") is not None:
+        return {"price": float(card["default"]), "source": "default"}
+    return {"price": None, "source": None}
+
+
+def _money(pages: float, price: Optional[float]) -> Optional[float]:
+    """Деньги считаются десятичными, а не двоичными: 0.1 страницы по $12.30
+    во float даёт неповторяемый хвост, а смета — это оферта, и она обязана
+    воспроизводиться до копейки."""
+    if price is None:
+        return None
+    # Две цифры после запятой — при любой валюте: в UZS и JPY копеек нет,
+    # и лишние нули там просто ничего не значат. Округлять до целых по коду
+    # валюты нельзя — округление это условие договора, а не свойство денег.
+    return float((Decimal(str(pages)) * Decimal(str(price))).quantize(
+        Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def _quote_of(counts: dict, src: str, tgt: str, card: dict, basis: str,
+              notes: Optional[list] = None) -> dict:
+    """Смета по готовому счёту знаков. `basis` называет, ЧТО посчитано:
+    `file` — весь текст файла, `segments` — сегменты проекта. Две величины
+    на одном документе расходятся (импорт выбрасывает чисто цифровые абзацы
+    и склеивает соседние повторы), и подать их под одним именем значило бы
+    показать человеку две разные суммы за одну работу без объяснения."""
+    norm = textcount.norm_for(src, card.get("norms"))
+    notes = list(notes or [])
+    if norm["source"] == "default":
+        # Оговорка живёт ЗДЕСЬ, а не только в textcount.measure: смету
+        # по сегментам проекта считают мимо measure, и там догадка о норме
+        # молчала бы — то есть в деньгах.
+        notes.append("Нормы для языка %s в таблице нет — взята норма по умолчанию (%d знаков). "
+                     "Задайте свою в ценовой карточке." % (norm["lang"] or "?", norm["chars"]))
+    pages = textcount.pages_of(counts["chars"], norm["chars"],
+                               card.get("minPages", 1.0), card.get("roundTo", 0.1))
+    rate = _rate_for(card, src, tgt)
+    total = _money(pages["billed"], rate["price"])
+    return {"basis": basis, "src": src, "tgt": tgt, "counts": counts, "norm": norm,
+            "pages": pages, "rate": rate, "currency": card.get("currency") or "USD",
+            "total": total, "pricingUpdated": card.get("updated"), "notes": notes,
+            # Расчёт строкой — чтобы человек мог проверить сумму глазами,
+            # а не верить ей на слово.
+            "formula": "%d знаков с пробелами ÷ %d = %s стр.; к оплате %s стр. × %s %s = %s"
+                       % (counts["chars"], norm["chars"], pages["exact"], pages["billed"],
+                          rate["price"] if rate["price"] is not None else "—",
+                          card.get("currency") or "USD",
+                          total if total is not None else "цена не задана")}
+
+
+def _docx_bill_paragraphs(content: bytes) -> list:
+    """Текст .docx для СЧЁТА — ровно тот, куда экспорт «как в оригинале»
+    пишет перевод (`_para_slots`).
+
+    Почему не `_docx_paragraphs`: тот склеивает `.//w:t` всего абзаца, то есть
+    берёт и вложенные надписи (их абзацы идут в списке ещё раз — двойной счёт),
+    и скрытый текст, и результат вычисляемых полей — номера страниц оглавления.
+    Клиент платил бы за то, что переводить не станут. И не `_docx_units`: тот
+    режет короткие абзацы и схлопывает соседние повторы — это правила ИМПОРТА,
+    а объём файла от них не уменьшается."""
+    from docx import Document
+    from docx.oxml.ns import qn as _qn
+    doc = Document(io.BytesIO(content))
+    out = []
+    for p in _docx_flat_paragraphs(doc):
+        slots, _full, _dropped = _para_slots(p, _qn)
+        out.append(_docx_clean("".join((t.text or "") for t, _sig in slots)))
+    return out
+
+
+def _measure_kwargs(card: dict) -> dict:
+    return {"overrides": card.get("norms"), "min_pages": card.get("minPages", 1.0),
+            "round_to": card.get("roundTo", 0.1),
+            "docx_paragraphs": _docx_bill_paragraphs}
+
+
+def _count_error(e: Exception) -> HTTPException:
+    """Три разных отказа и три разных кода: 413 — файл больше потолка,
+    503 — формат поддержан, но библиотеки нет, 415 — не разбираем такое.
+    Один общий код заставлял бы человека гадать, что делать дальше."""
+    if isinstance(e, textcount.TooBig):
+        return HTTPException(413, str(e))
+    if isinstance(e, textcount.NotAvailable):
+        return HTTPException(503, str(e))
+    return HTTPException(415, str(e))
+
+
+class RateRow(BaseModel):
+    src: str
+    tgt: str
+    price: float
+
+
+class PricingBody(BaseModel):
+    currency: Optional[str] = None
+    default: Optional[float] = None       # цена страницы для пар без своей строки
+    clearDefault: bool = False            # снять общую цену (None ≠ 0)
+    rates: Optional[List[RateRow]] = None
+    norms: Optional[dict] = None          # переопределение нормы: {"RU": 1800}
+    minPages: Optional[float] = None
+    roundTo: Optional[float] = None
+
+
+@app.get("/api/pricing")
+def get_pricing(request: Request):
+    """Ценовая карточка СВОЕЙ организации плюс таблица норм страницы.
+
+    Норму и цены отдаёт сервер, а не хранит браузер: второй прайс-лист в `.jsx`
+    — это ровно та беда, ради которой модели и их цены живут в `OPENAI_MODELS`
+    и уезжают через `/api/models`."""
+    _current_user(request)
+    t = textcount.norms()
+    return {"ok": True, "tenant": _current_tenant(), "pricing": _pricing_of(),
+            "norms": {"default": t["default"], "basis": t["basis"],
+                      "rows": sorted(t["rows"].values(), key=lambda r: r["lang"])}}
+
+
+@app.post("/api/pricing")
+def save_pricing(req: PricingBody, request: Request):
+    """Правит цены ВЛАДЕЛЕЦ организации (строка в `_OWNER_ONLY`), а не
+    суперпользователь: `limitUsd` — наш расход на модели и наше дело, а цена
+    страницы — то, что агентство продаёт своим клиентам, и в это мы не лезем.
+    Переводчику остаётся GET: смету он посчитать вправе, прайс — нет."""
+    me = _current_user(request)
+    rec = _tenant_rec(_current_tenant())
+    if not rec:
+        raise HTTPException(404, "Записи вашей организации нет в базе — прайс сохранять некуда. "
+                                 "Это сбой данных, а не права: позовите администратора сервиса.")
+    card = {**PRICING_DEFAULTS, **(rec.get("pricing") or {})}
+    if req.currency is not None:
+        cur = req.currency.strip().upper()
+        if not re.fullmatch(r"[A-Z]{3}", cur):
+            raise HTTPException(400, "Валюта — три буквы кода ISO 4217: USD, EUR, UZS")
+        card["currency"] = cur
+    if req.clearDefault:
+        card["default"] = None
+    elif req.default is not None:
+        if not (0 < req.default <= PRICE_MAX):
+            # Ноль — это не цена, а «не задана»: пустое поле в браузере
+            # приходит нулём, и без этой проверки клиенту показали бы
+            # бесплатный перевод. Снимают цену полем clearDefault.
+            raise HTTPException(400, "Цена страницы: больше нуля и не выше %g "
+                                     "(снять цену — пустым полем)" % PRICE_MAX)
+        card["default"] = float(req.default)
+    if req.rates is not None:
+        rows, seen = [], set()
+        for r in req.rates:
+            s, t = _check_lang_pair(r.src, r.tgt)   # пара проверяется каталогом языков
+            if (s, t) in seen:
+                raise HTTPException(400, "Пара %s→%s указана дважды" % (s, t))
+            if not (0 < r.price <= PRICE_MAX):
+                raise HTTPException(400, "Цена %s→%s: больше нуля и не выше %g "
+                                         "(бесплатной строки в прайсе не бывает — уберите строку)"
+                                    % (s, t, PRICE_MAX))
+            seen.add((s, t))
+            rows.append({"src": s, "tgt": t, "price": float(r.price)})
+        card["rates"] = rows
+    if req.norms is not None:
+        norms = {}
+        for k, v in req.norms.items():
+            code = str(k).strip().upper()
+            if not re.fullmatch(r"[A-Z]{2}", code):
+                raise HTTPException(400, "Код языка нормы: две буквы, а не %r" % k)
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                raise HTTPException(400, "Норма для %s — целое число знаков" % code)
+            if not (NORM_MIN <= n <= NORM_MAX):
+                raise HTTPException(400, "Норма для %s вне разумного: %d…%d"
+                                    % (code, NORM_MIN, NORM_MAX))
+            norms[code] = n
+        card["norms"] = norms
+    if req.minPages is not None:
+        if not (0 <= req.minPages <= 100):
+            raise HTTPException(400, "Минимальный заказ: 0…100 страниц")
+        card["minPages"] = float(req.minPages)
+    if req.roundTo is not None:
+        if not (0 <= req.roundTo <= 1):
+            raise HTTPException(400, "Шаг округления: от 0 (без округления) до 1 страницы")
+        card["roundTo"] = float(req.roundTo)
+    card["updated"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    card["by"] = me.get("login")
+    rec["pricing"] = card
+    _audit("pricing.update", currency=card["currency"], default=card["default"],
+           rates=len(card.get("rates") or []), norms=len(card.get("norms") or {}))
+    save_state(STATE)
+    return {"ok": True, "pricing": card}
+
+
+@app.post("/api/quote")
+async def quote_file(request: Request, file: UploadFile = File(...),
+                     src: str = Form("RU"), tgt: str = Form("EN"),
+                     save: bool = Form(True)):
+    """Сколько знаков, страниц и денег в ЭТОМ файле — до всякого импорта.
+
+    Файл никуда не сохраняется — писать можно только в `data/`, и незачем:
+    это расчёт, а не проект. А вот САМА смета уходит в историю организации
+    (`save=false` отключает): человек считает сегодня, платит через неделю,
+    и к числам надо иметь возможность вернуться. Вызовов модели нет, поэтому
+    команда бесплатна и работает на исчерпанном лимите. Разбор идёт
+    в отдельном потоке: воркер ОДИН, и распаковка чужого пакета не должна
+    держать всех."""
+    _current_user(request)
+    src, tgt = _check_lang_pair(src, tgt)
+    # Потолок проверяется ДО чтения тела: воркер один, и полугигабайтная
+    # загрузка не должна сначала лечь в память, а потом получить отказ.
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > textcount.MAX_BYTES * 1.1:
+        raise HTTPException(413, "Файл больше %d МБ — разберите его по частям"
+                            % (textcount.MAX_BYTES // 1024 // 1024))
+    content = await file.read()
+    card = _pricing_of()
+    try:
+        m = await run_in_threadpool(textcount.measure, file.filename or "", content,
+                                    src, **_measure_kwargs(card))
+    except (textcount.Unsupported, textcount.NotAvailable, textcount.TooBig) as e:
+        raise _count_error(e)
+    q = _quote_of(m["counts"], src, tgt, card, "file", m["notes"])
+    saved = None
+    if save:
+        # Отпечаток содержимого, а не имя файла: «договор.docx» бывает разным,
+        # и по имени повторный расчёт того же файла не опознать.
+        sha = hashlib.sha256(content).hexdigest()[:16]
+        saved = _quote_save(q, file.filename or "", m["kind"], sha)
+    return {"ok": True, "file": m["file"], "kind": m["kind"], **q,
+            "saved": saved, "supported": textcount.SUPPORTED_EXT}
+
+
+@app.get("/api/projects/{pid}/quote")
+def quote_project(pid: int, request: Request, withFile: bool = False):
+    """Смета по УЖЕ разобранному проекту: считаются исходники его сегментов.
+
+    Это ДРУГАЯ величина, чем `/api/quote` по тому же файлу, и ответ говорит
+    об этом прямо: импорт выбрасывает чисто цифровые и совсем короткие абзацы,
+    а соседние одинаковые склеивает в один сегмент. Сегменты, заведённые
+    разбором картинок, сюда входят — их тоже переводят.
+    `withFile=true` доcчитывает объём приложенного исходника для сравнения:
+    он читает и разбирает весь .docx, поэтому по умолчанию выключен."""
+    _current_user(request)
+    project = get_project(pid)
+    card = _pricing_of()
+    src = project.get("src") or "RU"
+    tgt = project.get("tgt") or "EN"
+    segs = project.get("segments") or []
+    counts = textcount.count_blocks([s.get("source") or "" for s in segs])
+    notes = ["Посчитаны исходники %d сегментов проекта. Объём файла бывает больше: "
+             "импорт не заводит сегменты на чисто цифровые и очень короткие абзацы, "
+             "а соседние одинаковые склеивает в один." % len(segs)]
+    imgs = sum(1 for s in segs if (s.get("origin") or {}).get("kind") == "image")
+    if imgs:
+        notes.append("Из них %d — надписи, распознанные на картинках." % imgs)
+    q = _quote_of(counts, src, tgt, card, "segments", notes)
+    out = {"ok": True, "project": pid, "segments": len(segs), **q}
+    if withFile:
+        # Сравнение с исходником: расхождение объёмов — законный вопрос
+        # клиента, и отвечать на него молчанием нельзя.
+        info = _load_source_map(pid)
+        if not info:
+            out["file"] = {"error": "Исходник к проекту не приложен"}
+        else:
+            try:
+                # Через measure, а не своим путём: те же потолки размера и та же
+                # обработка отказов, что у загруженного файла. Мимо них чужой
+                # .docx на сотню мегабайт душил бы единственный воркер именно
+                # отсюда — из безобидного на вид GET.
+                fm = textcount.measure(info["path"].name, info["path"].read_bytes(),
+                                       src, **_measure_kwargs(card))
+                out["file"] = {"counts": fm["counts"], "pages": fm["pages"],
+                               "notes": fm["notes"]}
+            except Exception as e:
+                out["file"] = {"error": "Исходник не разобрался: %s" % e}
+    return out
+
+
+# ── История смет: к чему возвращаться при оплате ────────────────────
+# Смета — ОФЕРТА, а не расчёт «на сейчас»: клиент увидел сумму, ушёл думать,
+# вернулся через неделю платить. За это время прайс мог смениться, файл —
+# исчезнуть, норма — быть переопределена. Поэтому в историю кладутся ЧИСЛА,
+# а не ссылка на пересчёт: знаки, страницы, норма, цена страницы и итог
+# замораживаются в момент расчёта и потом не пересчитываются НИКОГДА.
+# Пересчитанная задним числом смета — это другая сумма под тем же счётом.
+#
+# Файл не хранится (писать можно только в data/, и незачем — это расчёт,
+# а не проект), поэтому запись несёт отпечаток содержимого (sha) и имя:
+# по отпечатку видно, что принесли ТОТ ЖЕ файл, а не похожий.
+QUOTE_HISTORY_MAX = max(50, int(os.environ.get("QUOTE_HISTORY_MAX", "500")))
+QUOTE_STATUSES = ("new", "invoiced", "paid")
+
+
+def _quotes() -> list:
+    return STATE.setdefault("quotes", [])
+
+
+def _tenant_quotes() -> list:
+    t = _current_tenant()
+    return [q for q in _quotes() if _tenant_of(q) == t]
+
+
+def _quote_fingerprint(rec: dict) -> tuple:
+    """Что делает смету ТОЙ ЖЕ: тот же файл, та же пара, та же норма и цена.
+    Смени прайс — и повторный расчёт станет НОВОЙ записью, потому что это
+    другая оферта. Без этого история заросла бы копиями одного нажатия."""
+    return (rec.get("sha"), rec.get("src"), rec.get("tgt"), rec.get("normChars"),
+            rec.get("pricePerPage"), rec.get("currency"), rec.get("pagesBilled"))
+
+
+def _quote_save(q: dict, filename: str, kind: str, sha: str) -> dict:
+    """Положить смету в историю. Повторный расчёт того же файла по той же цене
+    НЕ плодит запись: обновляется время и счётчик обращений — иначе три нажатия
+    подряд выглядели бы тремя заказами."""
+    rec = {"id": max((x.get("id", 0) for x in _quotes()), default=0) + 1,
+           "tenant": _current_tenant(),          # инвариант 11: каждая новая запись несёт организацию
+           "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+           "by": (_actor() or {}).get("login"),
+           "file": filename, "kind": kind, "sha": sha,
+           "src": q["src"], "tgt": q["tgt"],
+           "chars": q["counts"]["chars"], "charsNoSpaces": q["counts"]["charsNoSpaces"],
+           "words": q["counts"]["words"], "repeatChars": q["counts"]["repeatChars"],
+           "normChars": q["norm"]["chars"], "normSource": q["norm"]["source"],
+           "pagesExact": q["pages"]["exact"], "pagesBilled": q["pages"]["billed"],
+           "minPages": q["pages"]["minPages"], "roundTo": q["pages"]["roundTo"],
+           "pricePerPage": q["rate"]["price"], "rateSource": q["rate"]["source"],
+           "currency": q["currency"], "total": q["total"], "formula": q["formula"],
+           "status": "new", "count": 1}
+    fp = _quote_fingerprint(rec)
+    for old in _quotes():
+        if _tenant_of(old) == rec["tenant"] and _quote_fingerprint(old) == fp:
+            old["at"], old["count"] = rec["at"], (old.get("count") or 1) + 1
+            save_state(STATE)
+            return old
+    _quotes().insert(0, rec)
+    # Подрезка ПО ОРГАНИЗАЦИИ: общий потолок съедал бы историю тихого клиента
+    # ради шумного соседа. Оплаченные и выставленные не выбрасываем — по ним
+    # ещё придут деньги; выбрасываются только черновые расчёты.
+    mine = [x for x in _quotes() if _tenant_of(x) == rec["tenant"]]
+    if len(mine) > QUOTE_HISTORY_MAX:
+        drop = {id(x) for x in [y for y in mine if y.get("status") == "new"][QUOTE_HISTORY_MAX:]}
+        STATE["quotes"] = [x for x in _quotes() if id(x) not in drop]
+    save_state(STATE)
+    return rec
+
+
+@app.get("/api/quotes")
+def list_quotes(request: Request, limit: int = 200):
+    """История смет своей организации, новые первыми. Числа отдаются такими,
+    какими их посчитали тогда: пересчёт по нынешнему прайсу показал бы другую
+    сумму под тем же счётом."""
+    _current_user(request)
+    rows = _tenant_quotes()[:max(1, min(limit, QUOTE_HISTORY_MAX))]
+    return {"ok": True, "quotes": rows, "total": len(_tenant_quotes()),
+            "statuses": list(QUOTE_STATUSES)}
+
+
+class QuotePatch(BaseModel):
+    status: Optional[str] = None      # new | invoiced | paid
+    note: Optional[str] = None
+
+
+@app.post("/api/quotes/{qid}")
+def update_quote(qid: int, req: QuotePatch, request: Request):
+    """Пометить смету выставленной или оплаченной. Право владельца: это
+    коммерческое решение, а не работа переводчика. Числа сметы не меняются
+    здесь НИКОГДА — меняется только её судьба."""
+    _current_user(request)
+    rec = next((q for q in _tenant_quotes() if q.get("id") == qid), None)
+    if not rec:
+        raise HTTPException(404, "Смета не найдена")
+    if req.status is not None:
+        if req.status not in QUOTE_STATUSES:
+            raise HTTPException(400, "Состояние сметы: %s" % ", ".join(QUOTE_STATUSES))
+        rec["status"] = req.status
+        stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        # След решения человека остаётся и при возврате в «новую»: кто и когда
+        # объявил смету оплаченной — вопрос денег, и стирать его нельзя.
+        rec.setdefault("log", []).append({"at": stamp, "by": (_actor() or {}).get("login"),
+                                          "status": req.status})
+        if req.status == "paid":
+            rec["paidAt"] = stamp
+    if req.note is not None:
+        rec["note"] = req.note.strip()[:500]
+    _audit("quote.update", quote=qid, status=rec.get("status"))
+    save_state(STATE)
+    return {"ok": True, "quote": rec}
+
+
+@app.delete("/api/quotes/{qid}")
+def delete_quote(qid: int, request: Request):
+    _current_user(request)
+    rec = next((q for q in _tenant_quotes() if q.get("id") == qid), None)
+    if not rec:
+        raise HTTPException(404, "Смета не найдена")
+    STATE["quotes"] = [q for q in _quotes() if q is not rec]
+    _audit("quote.delete", quote=qid, total=rec.get("total"))
+    save_state(STATE)
+    return {"ok": True}
+
+
 @app.post("/api/auth/logout")
 def logout(request: Request):
     _drop_session(_token_from_request(request))
@@ -3186,7 +3640,7 @@ def get_seed():
     public = {k: v for k, v in STATE.items() if k not in ("users", "tenants")}
     public.pop("audit", None)
     public.pop("spend", None)
-    for key in ("exportHistory", "termQueue", "autoBatches", "runCosts"):
+    for key in ("exportHistory", "termQueue", "autoBatches", "runCosts", "quotes"):
         public[key] = [e for e in (STATE.get(key) or []) if _tenant_of(e) == t]
     return {**public, "projects": [_project_for_client(p) for p in _tenant_projects()],
             "glossary": [g for g in STATE["glossary"] if _tenant_of(g) == t][:150]}

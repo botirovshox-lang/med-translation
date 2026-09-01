@@ -1,0 +1,590 @@
+{
+  "_comment": "Норма условной переводческой страницы: сколько знаков ИСХОДНИКА идёт за одну страницу. Это ДОГОВОРЁННОСТЬ рынка, а не измерение: работа переводчика соразмерна числу слов, а не букв, поэтому базис один для всех языков — 250 слов на страницу, — а знаки выводятся из средней длины слова языка: chars = 250 * (wordLen + 1 пробел), округление до 50. Отсюда и канон СНГ: русское слово 6.2 буквы даёт ровно 1800 знаков с пробелами, а английское 4.9 — 1500, то есть западную норму. spaceless — письмо без пробелов между словами (китайский, японский, тайский, кхмерский, бирманский): «знаки с пробелами» там ничего не значат, норма задана прямо и совпадает с отраслевой (яп. 400 знаков — лист 原稿用紙). Языка нет в таблице — берётся default, и ответ говорит об этом словом (assumed), а не молчит. Организация вправе переопределить любую строку своей ценовой карточкой (pricing.norms) — тогда в ответе стоит source: tenant. basis: derived — выведено из базиса (250 слов), convention — отраслевая договорённость, которую формула не описывает.",
+  "basis": {
+    "wordsPerPage": 250,
+    "roundTo": 50,
+    "reference": {
+      "lang": "RU",
+      "chars": 1800
+    }
+  },
+  "default": 1800,
+  "norms": [
+    {
+      "lang": "AF",
+      "chars": 1600,
+      "wordLen": 5.3,
+      "ru": "Африкаанс",
+      "en": "Afrikaans",
+      "basis": "derived"
+    },
+    {
+      "lang": "AM",
+      "chars": 1250,
+      "wordLen": 4.0,
+      "ru": "Амхарский",
+      "en": "Amharic",
+      "basis": "derived"
+    },
+    {
+      "lang": "AR",
+      "chars": 1400,
+      "wordLen": 4.7,
+      "ru": "Арабский",
+      "en": "Arabic",
+      "basis": "derived"
+    },
+    {
+      "lang": "AZ",
+      "chars": 1800,
+      "wordLen": 6.3,
+      "ru": "Азербайджанский",
+      "en": "Azerbaijani",
+      "basis": "derived"
+    },
+    {
+      "lang": "BE",
+      "chars": 1800,
+      "wordLen": 6.1,
+      "ru": "Белорусский",
+      "en": "Belarusian",
+      "basis": "derived"
+    },
+    {
+      "lang": "BG",
+      "chars": 1600,
+      "wordLen": 5.5,
+      "ru": "Болгарский",
+      "en": "Bulgarian",
+      "basis": "derived"
+    },
+    {
+      "lang": "BN",
+      "chars": 1550,
+      "wordLen": 5.2,
+      "ru": "Бенгальский",
+      "en": "Bengali",
+      "basis": "derived"
+    },
+    {
+      "lang": "BS",
+      "chars": 1600,
+      "wordLen": 5.5,
+      "ru": "Боснийский",
+      "en": "Bosnian",
+      "basis": "derived"
+    },
+    {
+      "lang": "CA",
+      "chars": 1500,
+      "wordLen": 4.9,
+      "ru": "Каталанский",
+      "en": "Catalan",
+      "basis": "derived"
+    },
+    {
+      "lang": "CS",
+      "chars": 1700,
+      "wordLen": 5.8,
+      "ru": "Чешский",
+      "en": "Czech",
+      "basis": "derived"
+    },
+    {
+      "lang": "CY",
+      "chars": 1600,
+      "wordLen": 5.4,
+      "ru": "Валлийский",
+      "en": "Welsh",
+      "basis": "derived"
+    },
+    {
+      "lang": "DA",
+      "chars": 1600,
+      "wordLen": 5.5,
+      "ru": "Датский",
+      "en": "Danish",
+      "basis": "derived"
+    },
+    {
+      "lang": "DE",
+      "chars": 1800,
+      "wordLen": 6.3,
+      "ru": "Немецкий",
+      "en": "German",
+      "basis": "derived"
+    },
+    {
+      "lang": "EL",
+      "chars": 1650,
+      "wordLen": 5.6,
+      "ru": "Греческий",
+      "en": "Greek",
+      "basis": "derived"
+    },
+    {
+      "lang": "EN",
+      "chars": 1500,
+      "wordLen": 4.9,
+      "ru": "Английский",
+      "en": "English",
+      "basis": "derived"
+    },
+    {
+      "lang": "ES",
+      "chars": 1500,
+      "wordLen": 5.0,
+      "ru": "Испанский",
+      "en": "Spanish",
+      "basis": "derived"
+    },
+    {
+      "lang": "ET",
+      "chars": 1900,
+      "wordLen": 6.5,
+      "ru": "Эстонский",
+      "en": "Estonian",
+      "basis": "derived"
+    },
+    {
+      "lang": "EU",
+      "chars": 1900,
+      "wordLen": 6.5,
+      "ru": "Баскский",
+      "en": "Basque",
+      "basis": "derived"
+    },
+    {
+      "lang": "FA",
+      "chars": 1500,
+      "wordLen": 4.9,
+      "ru": "Персидский",
+      "en": "Persian",
+      "basis": "derived"
+    },
+    {
+      "lang": "FI",
+      "chars": 2100,
+      "wordLen": 7.5,
+      "ru": "Финский",
+      "en": "Finnish",
+      "basis": "derived"
+    },
+    {
+      "lang": "FR",
+      "chars": 1500,
+      "wordLen": 5.1,
+      "ru": "Французский",
+      "en": "French",
+      "basis": "derived"
+    },
+    {
+      "lang": "GA",
+      "chars": 1600,
+      "wordLen": 5.4,
+      "ru": "Ирландский",
+      "en": "Irish",
+      "basis": "derived"
+    },
+    {
+      "lang": "GL",
+      "chars": 1500,
+      "wordLen": 5.0,
+      "ru": "Галисийский",
+      "en": "Galician",
+      "basis": "derived"
+    },
+    {
+      "lang": "GU",
+      "chars": 1550,
+      "wordLen": 5.2,
+      "ru": "Гуджарати",
+      "en": "Gujarati",
+      "basis": "derived"
+    },
+    {
+      "lang": "HE",
+      "chars": 1300,
+      "wordLen": 4.3,
+      "ru": "Иврит",
+      "en": "Hebrew",
+      "basis": "derived"
+    },
+    {
+      "lang": "HI",
+      "chars": 1450,
+      "wordLen": 4.8,
+      "ru": "Хинди",
+      "en": "Hindi",
+      "basis": "derived"
+    },
+    {
+      "lang": "HR",
+      "chars": 1600,
+      "wordLen": 5.5,
+      "ru": "Хорватский",
+      "en": "Croatian",
+      "basis": "derived"
+    },
+    {
+      "lang": "HU",
+      "chars": 1900,
+      "wordLen": 6.5,
+      "ru": "Венгерский",
+      "en": "Hungarian",
+      "basis": "derived"
+    },
+    {
+      "lang": "HY",
+      "chars": 1750,
+      "wordLen": 6.0,
+      "ru": "Армянский",
+      "en": "Armenian",
+      "basis": "derived"
+    },
+    {
+      "lang": "ID",
+      "chars": 1800,
+      "wordLen": 6.3,
+      "ru": "Индонезийский",
+      "en": "Indonesian",
+      "basis": "derived"
+    },
+    {
+      "lang": "IS",
+      "chars": 1750,
+      "wordLen": 6.0,
+      "ru": "Исландский",
+      "en": "Icelandic",
+      "basis": "derived"
+    },
+    {
+      "lang": "IT",
+      "chars": 1550,
+      "wordLen": 5.2,
+      "ru": "Итальянский",
+      "en": "Italian",
+      "basis": "derived"
+    },
+    {
+      "lang": "JA",
+      "chars": 400,
+      "spaceless": true,
+      "ru": "Японский",
+      "en": "Japanese",
+      "basis": "convention"
+    },
+    {
+      "lang": "KA",
+      "chars": 1900,
+      "wordLen": 6.5,
+      "ru": "Грузинский",
+      "en": "Georgian",
+      "basis": "derived"
+    },
+    {
+      "lang": "KK",
+      "chars": 1850,
+      "wordLen": 6.4,
+      "ru": "Казахский",
+      "en": "Kazakh",
+      "basis": "derived"
+    },
+    {
+      "lang": "KM",
+      "chars": 1250,
+      "spaceless": true,
+      "ru": "Кхмерский",
+      "en": "Khmer",
+      "basis": "convention"
+    },
+    {
+      "lang": "KO",
+      "chars": 1050,
+      "wordLen": 3.2,
+      "ru": "Корейский",
+      "en": "Korean",
+      "basis": "derived"
+    },
+    {
+      "lang": "KY",
+      "chars": 1800,
+      "wordLen": 6.3,
+      "ru": "Киргизский",
+      "en": "Kyrgyz",
+      "basis": "derived"
+    },
+    {
+      "lang": "LA",
+      "chars": 1650,
+      "wordLen": 5.6,
+      "ru": "Латынь",
+      "en": "Latin",
+      "basis": "derived"
+    },
+    {
+      "lang": "LT",
+      "chars": 1800,
+      "wordLen": 6.3,
+      "ru": "Литовский",
+      "en": "Lithuanian",
+      "basis": "derived"
+    },
+    {
+      "lang": "LV",
+      "chars": 1800,
+      "wordLen": 6.2,
+      "ru": "Латышский",
+      "en": "Latvian",
+      "basis": "derived"
+    },
+    {
+      "lang": "MK",
+      "chars": 1600,
+      "wordLen": 5.5,
+      "ru": "Македонский",
+      "en": "Macedonian",
+      "basis": "derived"
+    },
+    {
+      "lang": "MN",
+      "chars": 1800,
+      "wordLen": 6.3,
+      "ru": "Монгольский",
+      "en": "Mongolian",
+      "basis": "derived"
+    },
+    {
+      "lang": "MS",
+      "chars": 1750,
+      "wordLen": 6.0,
+      "ru": "Малайский",
+      "en": "Malay",
+      "basis": "derived"
+    },
+    {
+      "lang": "MT",
+      "chars": 1550,
+      "wordLen": 5.2,
+      "ru": "Мальтийский",
+      "en": "Maltese",
+      "basis": "derived"
+    },
+    {
+      "lang": "MY",
+      "chars": 1150,
+      "spaceless": true,
+      "ru": "Бирманский",
+      "en": "Burmese",
+      "basis": "convention"
+    },
+    {
+      "lang": "NE",
+      "chars": 1500,
+      "wordLen": 5.0,
+      "ru": "Непальский",
+      "en": "Nepali",
+      "basis": "derived"
+    },
+    {
+      "lang": "NL",
+      "chars": 1700,
+      "wordLen": 5.7,
+      "ru": "Нидерландский",
+      "en": "Dutch",
+      "basis": "derived"
+    },
+    {
+      "lang": "NO",
+      "chars": 1600,
+      "wordLen": 5.4,
+      "ru": "Норвежский",
+      "en": "Norwegian",
+      "basis": "derived"
+    },
+    {
+      "lang": "PA",
+      "chars": 1500,
+      "wordLen": 5.0,
+      "ru": "Панджаби",
+      "en": "Punjabi",
+      "basis": "derived"
+    },
+    {
+      "lang": "PL",
+      "chars": 1750,
+      "wordLen": 6.0,
+      "ru": "Польский",
+      "en": "Polish",
+      "basis": "derived"
+    },
+    {
+      "lang": "PS",
+      "chars": 1500,
+      "wordLen": 4.9,
+      "ru": "Пушту",
+      "en": "Pashto",
+      "basis": "derived"
+    },
+    {
+      "lang": "PT",
+      "chars": 1500,
+      "wordLen": 5.1,
+      "ru": "Португальский",
+      "en": "Portuguese",
+      "basis": "derived"
+    },
+    {
+      "lang": "RO",
+      "chars": 1600,
+      "wordLen": 5.5,
+      "ru": "Румынский",
+      "en": "Romanian",
+      "basis": "derived"
+    },
+    {
+      "lang": "RU",
+      "chars": 1800,
+      "wordLen": 6.2,
+      "ru": "Русский",
+      "en": "Russian",
+      "basis": "derived"
+    },
+    {
+      "lang": "SK",
+      "chars": 1700,
+      "wordLen": 5.8,
+      "ru": "Словацкий",
+      "en": "Slovak",
+      "basis": "derived"
+    },
+    {
+      "lang": "SL",
+      "chars": 1600,
+      "wordLen": 5.5,
+      "ru": "Словенский",
+      "en": "Slovenian",
+      "basis": "derived"
+    },
+    {
+      "lang": "SQ",
+      "chars": 1600,
+      "wordLen": 5.4,
+      "ru": "Албанский",
+      "en": "Albanian",
+      "basis": "derived"
+    },
+    {
+      "lang": "SR",
+      "chars": 1600,
+      "wordLen": 5.5,
+      "ru": "Сербский",
+      "en": "Serbian",
+      "basis": "derived"
+    },
+    {
+      "lang": "SV",
+      "chars": 1700,
+      "wordLen": 5.7,
+      "ru": "Шведский",
+      "en": "Swedish",
+      "basis": "derived"
+    },
+    {
+      "lang": "SW",
+      "chars": 1800,
+      "wordLen": 6.2,
+      "ru": "Суахили",
+      "en": "Swahili",
+      "basis": "derived"
+    },
+    {
+      "lang": "TA",
+      "chars": 1900,
+      "wordLen": 6.5,
+      "ru": "Тамильский",
+      "en": "Tamil",
+      "basis": "derived"
+    },
+    {
+      "lang": "TE",
+      "chars": 1800,
+      "wordLen": 6.3,
+      "ru": "Телугу",
+      "en": "Telugu",
+      "basis": "derived"
+    },
+    {
+      "lang": "TG",
+      "chars": 1750,
+      "wordLen": 6.0,
+      "ru": "Таджикский",
+      "en": "Tajik",
+      "basis": "derived"
+    },
+    {
+      "lang": "TH",
+      "chars": 1150,
+      "spaceless": true,
+      "ru": "Тайский",
+      "en": "Thai",
+      "basis": "convention"
+    },
+    {
+      "lang": "TK",
+      "chars": 1800,
+      "wordLen": 6.3,
+      "ru": "Туркменский",
+      "en": "Turkmen",
+      "basis": "derived"
+    },
+    {
+      "lang": "TR",
+      "chars": 1800,
+      "wordLen": 6.3,
+      "ru": "Турецкий",
+      "en": "Turkish",
+      "basis": "derived"
+    },
+    {
+      "lang": "UK",
+      "chars": 1800,
+      "wordLen": 6.1,
+      "ru": "Украинский",
+      "en": "Ukrainian",
+      "basis": "derived"
+    },
+    {
+      "lang": "UR",
+      "chars": 1400,
+      "wordLen": 4.7,
+      "ru": "Урду",
+      "en": "Urdu",
+      "basis": "derived"
+    },
+    {
+      "lang": "UZ",
+      "chars": 1800,
+      "wordLen": 6.3,
+      "ru": "Узбекский",
+      "en": "Uzbek",
+      "basis": "derived"
+    },
+    {
+      "lang": "VI",
+      "chars": 1600,
+      "wordLen": 5.4,
+      "ru": "Вьетнамский",
+      "en": "Vietnamese",
+      "basis": "derived"
+    },
+    {
+      "lang": "ZH",
+      "chars": 400,
+      "spaceless": true,
+      "ru": "Китайский",
+      "en": "Chinese",
+      "basis": "convention"
+    }
+  ]
+}

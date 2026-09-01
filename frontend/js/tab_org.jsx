@@ -232,6 +232,131 @@ function SuperTenants({ toast }) {
     React.createElement("div", null, React.createElement(Btn, { variant: "primary", disabled: !form.id || !form.ownerLogin || form.ownerPassword.length < 8, onClick: create }, "Завести организацию")));
 }
 
+/* ── Цены: сколько организация продаёт страницу перевода ────────────
+   Прайс и нормы страницы приходят с сервера (/api/pricing) и туда же
+   уходят: своих чисел этот экран не знает — иначе в системе появился бы
+   второй прайс-лист рядом с настоящим, и смета считалась бы по одному,
+   а счёт выставлялся по другому. Право ПОКАЗАТЬ — здесь, право СДЕЛАТЬ
+   (владелец) — на сервере: та же команда из консоли получит 403. */
+function OrgPricing({ toast }) {
+  const [card, setCard] = useState(null);
+  const [norms, setNorms] = useState(null);
+  const [langs, setLangs] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const reload = () => window.API.safeCall(() => window.API.pricing()).then(r => {
+    if (!r) return;
+    setCard(r.pricing);
+    setNorms(r.norms);
+  });
+  useEffect(() => {
+    reload();
+    window.API.safeCall(() => window.API.models()).then(r => {
+      if (r && r.languages) setLangs(r.languages.map(l => [l.code, l.ru]));
+    });
+  }, []);
+  if (!card) return null;
+
+  const set = (k, v) => setCard({ ...card, [k]: v });
+  const rates = card.rates || [];
+  const setRate = (i, k, v) => set("rates", rates.map((r, j) => j === i ? { ...r, [k]: v } : r));
+  const normRows = Object.keys(card.norms || {}).sort();
+  const save = async (body) => {
+    setBusy(true);
+    try {
+      const r = await window.API.pricingSave(body);
+      setCard(r.pricing);
+      toast.success("Прайс сохранён", "цена за страницу применится к новым сметам");
+    } catch (e) { toast.error("Не сохранено", e.message || String(e)); }
+    setBusy(false);
+  };
+  // Цена «не задана» и цена «ноль» — разные вещи: пустое поле снимает
+  // общую цену (clearDefault), и смета честно скажет «цена не задана»,
+  // а не покажет клиенту бесплатный перевод.
+  const submit = () => save({
+    currency: card.currency,
+    default: card.default === "" || card.default == null ? null : Number(card.default),
+    clearDefault: card.default === "" || card.default == null,
+    minPages: Number(card.minPages || 0),
+    roundTo: Number(card.roundTo || 0),
+    rates: rates.filter(r => r.src && r.tgt && String(r.price).trim() !== "" && Number(r.price) > 0)
+      .map(r => ({ src: r.src, tgt: r.tgt, price: Number(r.price) })),
+    norms: card.norms || {},
+  });
+
+  const langOpts = (langs.length ? langs : [["RU", "Русский"], ["EN", "Английский"]])
+    .map(([c, n]) => React.createElement("option", { key: c, value: c }, c + " · " + n));
+
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+    React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, "Цены за страницу"),
+    React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 13 } },
+      "Страница — условная переводческая: столько знаков ИСХОДНИКА с пробелами, сколько задано нормой языка. "
+      + "Смета считается по этим числам во вкладке «Импорт»: там видно знаки, страницы и сумму по файлу."),
+    React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
+      React.createElement(Field, { label: "Валюта (ISO: USD, EUR, UZS)" },
+        React.createElement(Input, { value: card.currency || "", onChange: (e) => set("currency", e.target.value.toUpperCase()) })),
+      React.createElement(Field, { label: "Цена страницы по умолчанию (пусто — не задана)" },
+        React.createElement(Input, { type: "number", step: "0.01", min: "0", value: card.default == null ? "" : card.default,
+          onChange: (e) => set("default", e.target.value) })),
+      React.createElement(Field, { label: "Минимальный заказ, страниц" },
+        React.createElement(Input, { type: "number", step: "0.1", min: "0", value: card.minPages,
+          onChange: (e) => set("minPages", e.target.value) })),
+      React.createElement(Field, { label: "Округление, страниц (0 — без округления)" },
+        React.createElement(Input, { type: "number", step: "0.1", min: "0", max: "1", value: card.roundTo,
+          onChange: (e) => set("roundTo", e.target.value) }))),
+
+    React.createElement("div", { className: "eyebrow", style: { margin: "6px 0 0" } }, "Цены по парам языков"),
+    React.createElement("table", { className: "tbl" },
+      React.createElement("thead", null, React.createElement("tr", null,
+        ["Исходник", "Перевод", "Цена за страницу", ""].map((h, i) => React.createElement("th", { key: i }, h)))),
+      React.createElement("tbody", null, rates.map((r, i) => React.createElement("tr", { key: i },
+        React.createElement("td", null, React.createElement(Select, { value: r.src, onChange: (e) => setRate(i, "src", e.target.value) }, langOpts)),
+        React.createElement("td", null, React.createElement(Select, { value: r.tgt, onChange: (e) => setRate(i, "tgt", e.target.value) }, langOpts)),
+        React.createElement("td", null, React.createElement(Input, { type: "number", step: "0.01", min: "0", value: r.price,
+          onChange: (e) => setRate(i, "price", e.target.value) })),
+        React.createElement("td", { style: { textAlign: "right" } },
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => set("rates", rates.filter((_x, j) => j !== i)) }, "Убрать")))))),
+    React.createElement("div", null,
+      React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => set("rates", rates.concat([{ src: "RU", tgt: "EN", price: 0 }])) }, "Добавить пару")),
+
+    React.createElement("div", { className: "eyebrow", style: { margin: "6px 0 0" } }, "Норма страницы"),
+    React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 13 } },
+      "По умолчанию берётся из таблицы сервиса (базис — 250 слов на страницу; "
+      + (norms ? "русский " + (norms.rows.find(x => x.lang === "RU") || {}).chars + " знаков, английский "
+        + (norms.rows.find(x => x.lang === "EN") || {}).chars + " знаков" : "") + "). "
+      + "Договор с клиентом может называть другое число — задайте его здесь, и смета пойдёт по нему."),
+    normRows.length > 0 && React.createElement("table", { className: "tbl" },
+      React.createElement("thead", null, React.createElement("tr", null,
+        ["Язык исходника", "Знаков в странице", ""].map((h, i) => React.createElement("th", { key: i }, h)))),
+      React.createElement("tbody", null, normRows.map(code => React.createElement("tr", { key: code },
+        React.createElement("td", null, code),
+        React.createElement("td", null, React.createElement(Input, {
+          type: "number", step: "50", min: "100", value: card.norms[code],
+          onChange: (e) => set("norms", { ...card.norms, [code]: e.target.value }) })),
+        React.createElement("td", { style: { textAlign: "right" } },
+          React.createElement(Btn, {
+            variant: "ghost", size: "sm",
+            onClick: () => { const n = { ...card.norms }; delete n[code]; set("norms", n); }
+          }, "Вернуть норму сервиса")))))),
+    React.createElement("div", null,
+      React.createElement(Btn, {
+        variant: "ghost", size: "sm",
+        onClick: () => {
+          const code = (prompt("Код языка исходника (две буквы, например RU):") || "").trim().toUpperCase();
+          if (!code) return;
+          const row = norms && norms.rows.find(x => x.lang === code);
+          set("norms", { ...(card.norms || {}), [code]: row ? row.chars : (norms ? norms.default : 1800) });
+        }
+      }, "Задать свою норму")),
+
+    React.createElement("div", { style: { display: "flex", gap: 8, alignItems: "center", marginTop: 6 } },
+      React.createElement(Btn, { variant: "primary", disabled: busy, onClick: submit }, busy ? "Сохраняем…" : "Сохранить прайс"),
+      rates.some(r => String(r.price).trim() === "" || !(Number(r.price) > 0)) && React.createElement(
+        "span", { className: "dim", style: { fontSize: 12 } },
+        "Строки без цены не сохранятся: ноль — это не цена, а «не задана»."),
+      card.updated && React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+        "изменён " + card.updated + (card.by ? " · " + card.by : ""))));
+}
+
 function TabOrg({ store, toast }) {
   const [info, setInfo] = useState(null);
   useEffect(() => { window.API.safeCall(() => window.API.me()).then(r => r && setInfo(r)); }, []);
@@ -255,6 +380,7 @@ function TabOrg({ store, toast }) {
         "Лимит исчерпан: платные прогоны отвечают отказом, бесплатные команды и экспорт работают. Лимит ставит администратор сервиса.")),
     React.createElement("div", { className: "col", style: { gap: 16 } },
       React.createElement(OrgUsers, { toast }),
+      React.createElement(OrgPricing, { toast }),
       store.can && store.can.super && React.createElement(SuperTenants, { toast }),
       React.createElement(OrgDomains, { toast }),
       React.createElement(OrgGlossaryImport, { store, toast }),

@@ -155,6 +155,33 @@
     },
 
     models:        ()                       => call("GET",    "/models"),
+
+    /* ── Страницы и стоимость ──────────────────────────────────────
+       Норму страницы и прайс отдаёт СЕРВЕР: второй прайс-лист в .jsx —
+       ровно та беда, ради которой модели и их цены живут в OPENAI_MODELS.
+       Считать смету вправе любой, править прайс — только владелец (403). */
+    pricing:       ()                       => call("GET",    "/pricing"),
+    /* История смет: числа заморожены на момент расчёта, здесь их не
+       пересчитывают. Судьбу сметы (выставлена/оплачена) правит владелец. */
+    quotes:        (limit)                  => call("GET",    `/quotes?limit=${limit || 200}`),
+    quoteMark:     (qid, body)              => call("POST",   `/quotes/${qid}`, body),
+    quoteDelete:   (qid)                    => call("DELETE", `/quotes/${qid}`),
+    pricingSave:   (body)                   => call("POST",   "/pricing", body),
+    quoteProject:  (pid, withFile)          => call("GET",    `/projects/${pid}/quote?withFile=${withFile ? "true" : "false"}`),
+    /* Файл никуда не сохраняется — ни на диск, ни в состояние: это только
+       расчёт. Ошибки разные и разбираются по коду: 413 — файл велик,
+       415 — формат не разбираем, 503 — нечем прочитать. */
+    quoteFile: async (file, src, tgt) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("src", src || "RU");
+      fd.append("tgt", tgt || "EN");
+      const r = await fetch(BASE + "/quote", { method: "POST", body: fd, headers: authHeaders({}) });
+      if (r.status === 401) onUnauthorized();
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { const e = new Error(data.detail || data.error || ("Не посчитано: " + r.status)); e.status = r.status; throw e; }
+      return data;
+    },
     importGlossary: async (file, lang, domain, tier, dryRun) => {
       const fd = new FormData();
       fd.append("file", file);

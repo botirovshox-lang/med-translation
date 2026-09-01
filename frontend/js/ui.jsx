@@ -92,12 +92,12 @@ function IconBtn({ icon, label, active, sm, size, className = "", ...rest }) {
 
 /* ---------- Badge ---------- */
 const STATUS_META = {
-  new:        { cls: "badge-new",        label: "Новый",       icon: "file" },
-  translated: { cls: "badge-translated", label: "Переведён",   icon: "globe" },
+  new:        { cls: "badge-new",        label: TR("Новый"),       icon: "file" },
+  translated: { cls: "badge-translated", label: TR("Переведён"),   icon: "globe" },
   qa:         { cls: "badge-qa",         label: "QA",          icon: "shield" },
-  confirmed:  { cls: "badge-confirmed",  label: "Подтверждён", icon: "checkCircle" },
-  failed:     { cls: "badge-failed",     label: "Ошибка",      icon: "alert" },
-  review:     { cls: "badge-review",     label: "На проверке", icon: "warn" },
+  confirmed:  { cls: "badge-confirmed",  label: TR("Подтверждён"), icon: "checkCircle" },
+  failed:     { cls: "badge-failed",     label: TR("Ошибка"),      icon: "alert" },
+  review:     { cls: "badge-review",     label: TR("На проверке"), icon: "warn" },
 };
 function StatusBadge({ status, withIcon = true }) {
   const m = STATUS_META[status] || STATUS_META.new;
@@ -174,7 +174,7 @@ function Modal({ title, icon, onClose, children, footer, width }) {
       React.createElement("div", { className: "modal-head" },
         icon && React.createElement(Icon, { name: icon, size: 20, style: { color: "var(--c-primary)" } }),
         React.createElement("h3", null, title),
-        React.createElement(IconBtn, { icon: "close", label: "Закрыть", sm: true, onClick: onClose })
+        React.createElement(IconBtn, { icon: "close", label: TR("Закрыть"), sm: true, onClick: onClose })
       ),
       React.createElement("div", { className: "modal-body" }, children),
       footer && React.createElement("div", { className: "modal-foot" }, footer)
@@ -209,7 +209,7 @@ function ToastProvider({ children }) {
           React.createElement("div", { className: "t-title" }, t.title),
           t.msg && React.createElement("div", { className: "t-msg" }, t.msg)
         ),
-        React.createElement("button", { className: "t-close iconbtn sm", onClick: () => remove(t.id), "aria-label": "Закрыть" },
+        React.createElement("button", { className: "t-close iconbtn sm", onClick: () => remove(t.id), "aria-label": TR("Закрыть") },
           React.createElement(Icon, { name: "close", size: 15 }))
       ))
     )
@@ -308,20 +308,20 @@ function InfoTip({ title, body, code, size = 14, className = "" }) {
 
 /* ---------- Route + Risk metadata (RU label + EN code + tooltip) ---------- */
 const ROUTE_INFO = {
-  EXACT_TM: { label: "Точное TM", code: "EXACT_TM", color: "var(--route-tm)",
-    tip: "Точное совпадение в Translation Memory (99%+) — использовать существующий перевод. Стоимость: $0. Не требует вызова API." },
-  DUPLICATE: { label: "Представитель дубликатов", code: "DUPLICATE_REPRESENTATIVE", color: "var(--route-dup)",
-    tip: "Первый сегмент в группе дубликатов — перевести один раз через GPT. Остальные сегменты группы получат копию. Стоимость: только за representative." },
-  DUPLICATE_PROPAGATION_PENDING: { label: "Копия из дубликата", code: "DUPLICATE_PROPAGATION_PENDING", color: "var(--c-purple)",
-    tip: "Дубликат другого сегмента — скопировать перевод от representative после его подтверждения. Стоимость: $0. Не требует вызова API." },
-  GOOGLE_SAFE: { label: "Бесплатный движок (убран)", code: "GOOGLE_SAFE", color: "var(--route-google)",
-    tip: "Исторический маршрут: так помечены сегменты, переведённые до того, как бесплатный движок убрали из системы. Новые переводы так не помечаются." },
-  GPT_REQUIRED: { label: "Требуется GPT", code: "GPT_REQUIRED", color: "var(--route-gpt)",
-    tip: "Требуется OpenAI GPT для перевода и QA. Стандартный маршрут для большинства медицинских сегментов." },
-  GPT_WITH_GLOSSARY_REQUIRED: { label: "GPT + Глоссарий", code: "GPT_WITH_GLOSSARY_REQUIRED", color: "var(--c-warning)",
-    tip: "Требуется OpenAI GPT с инъекцией глоссария в промпт. Применяется для сегментов с большим количеством медицинских терминов (3+) или с риском HIGH." },
-  HUMAN_REVIEW: { label: "Ручной перевод", code: "HUMAN_REVIEW_REQUIRED", color: "var(--route-human)",
-    tip: "Критичный или высокий риск без глоссария — требуется человеческий перевод/review. API не вызывается до решения переводчика." },
+  EXACT_TM: { label: TR("Точное TM"), code: "EXACT_TM", color: "var(--route-tm)",
+    tip: TR("Точное совпадение в Translation Memory (99%+) — использовать существующий перевод. Стоимость: $0. Не требует вызова API.") },
+  DUPLICATE: { label: TR("Представитель дубликатов"), code: "DUPLICATE_REPRESENTATIVE", color: "var(--route-dup)",
+    tip: TR("Первый сегмент в группе дубликатов — перевести один раз через GPT. Остальные сегменты группы получат копию. Стоимость: только за representative.") },
+  DUPLICATE_PROPAGATION_PENDING: { label: TR("Копия из дубликата"), code: "DUPLICATE_PROPAGATION_PENDING", color: "var(--c-purple)",
+    tip: TR("Дубликат другого сегмента — скопировать перевод от representative после его подтверждения. Стоимость: $0. Не требует вызова API.") },
+  GOOGLE_SAFE: { label: TR("Бесплатный движок (убран)"), code: "GOOGLE_SAFE", color: "var(--route-google)",
+    tip: TR("Исторический маршрут: так помечены сегменты, переведённые до того, как бесплатный движок убрали из системы. Новые переводы так не помечаются.") },
+  GPT_REQUIRED: { label: TR("Требуется GPT"), code: "GPT_REQUIRED", color: "var(--route-gpt)",
+    tip: TR("Требуется OpenAI GPT для перевода и QA. Стандартный маршрут для большинства медицинских сегментов.") },
+  GPT_WITH_GLOSSARY_REQUIRED: { label: TR("GPT + Глоссарий"), code: "GPT_WITH_GLOSSARY_REQUIRED", color: "var(--c-warning)",
+    tip: TR("Требуется OpenAI GPT с инъекцией глоссария в промпт. Применяется для сегментов с большим количеством медицинских терминов (3+) или с риском HIGH.") },
+  HUMAN_REVIEW: { label: TR("Ручной перевод"), code: "HUMAN_REVIEW_REQUIRED", color: "var(--route-human)",
+    tip: TR("Критичный или высокий риск без глоссария — требуется человеческий перевод/review. API не вызывается до решения переводчика.") },
 };
 // ВАЖНО: уровень риска назначается анализом ПО ДЛИНЕ ИСХОДНОГО СЕГМЕНТА
 // (backend: words > 30 → high, words > 8 → medium, иначе low). Никакого скора 0–100
@@ -330,14 +330,14 @@ const ROUTE_INFO = {
 // величина описывает исходник, а не перевод, и повторный перевод её не меняет.
 // Оценку качества самого перевода даёт back-check (вкладка «Анализ»).
 const RISK_INFO = {
-  low: { label: "Низкий", range: "≤ 8 слов", color: "var(--c-success)",
-    tip: "Короткие сегменты: заголовки, метаданные, простые предложения.\nНазначается по длине исходного текста, а не по содержанию.\nПовторный перевод эту величину НЕ меняет — она описывает оригинал.\nНа выбор движка больше не влияет: переводит всё выбранная модель." },
-  medium: { label: "Средний", range: "9–30 слов", color: "#ca8a04",
-    tip: "Сегменты средней длины: стандартный медицинский контент, описания.\nНазначается по длине исходного текста, а не по содержанию.\nПовторный перевод эту величину НЕ меняет — она описывает оригинал.\n→ Маршрут: GPT_REQUIRED." },
-  high: { label: "Высокий", range: "> 30 слов", color: "var(--c-warning)",
-    tip: "Длинные сегменты: сложные конструкции, выше шанс потерять смысл.\nНазначается по длине исходного текста, а не по содержанию.\nПовторный перевод эту величину НЕ меняет — она описывает оригинал.\n→ Маршрут: GPT_WITH_GLOSSARY_REQUIRED." },
-  critical: { label: "Критический", range: "вручную", color: "var(--c-error)",
-    tip: "Выставляется отдельно, автоматическим анализом по длине не назначается.\nТребует ручной проверки.\n→ Маршрут: HUMAN_REVIEW_REQUIRED." },
+  low: { label: TR("Низкий"), range: TR("≤ 8 слов"), color: "var(--c-success)",
+    tip: TR("Короткие сегменты: заголовки, метаданные, простые предложения.\nНазначается по длине исходного текста, а не по содержанию.\nПовторный перевод эту величину НЕ меняет — она описывает оригинал.\nНа выбор движка больше не влияет: переводит всё выбранная модель.") },
+  medium: { label: TR("Средний"), range: TR("9–30 слов"), color: "#ca8a04",
+    tip: TR("Сегменты средней длины: стандартный медицинский контент, описания.\nНазначается по длине исходного текста, а не по содержанию.\nПовторный перевод эту величину НЕ меняет — она описывает оригинал.\n→ Маршрут: GPT_REQUIRED.") },
+  high: { label: TR("Высокий"), range: TR("> 30 слов"), color: "var(--c-warning)",
+    tip: TR("Длинные сегменты: сложные конструкции, выше шанс потерять смысл.\nНазначается по длине исходного текста, а не по содержанию.\nПовторный перевод эту величину НЕ меняет — она описывает оригинал.\n→ Маршрут: GPT_WITH_GLOSSARY_REQUIRED.") },
+  critical: { label: TR("Критический"), range: TR("вручную"), color: "var(--c-error)",
+    tip: TR("Выставляется отдельно, автоматическим анализом по длине не назначается.\nТребует ручной проверки.\n→ Маршрут: HUMAN_REVIEW_REQUIRED.") },
 };
 function RouteLabel({ route, withTip = true }) {
   const r = ROUTE_INFO[route] || { label: route, code: route, color: "var(--text-3)", tip: "" };
@@ -367,16 +367,16 @@ function RiskLabel({ risk, withTip = true }) {
    экранам три разных цвета у одного и того же балла — то самое «три копии
    одного правила в трёх файлах», от которого заведён и TERMCHECK_ACTIONABLE. */
 const BC_BANDS_FALLBACK = [
-  { key: "b100", min: 100, max: 100, label: "100%",   note: "Дословное совпадение",     color: "green" },
-  { key: "b98",  min: 98,  max: 99,  label: "98-99%", note: "Почти дословно",           color: "green" },
-  { key: "b95",  min: 95,  max: 97,  label: "95-97%", note: "Незначительные расхождения", color: "green" },
-  { key: "b90",  min: 90,  max: 94,  label: "90-94%", note: "Обычная перефразировка",   color: "green" },
-  { key: "b80",  min: 80,  max: 89,  label: "80-89%", note: "Свободная перефразировка", color: "green" },
-  { key: "b71",  min: 71,  max: 79,  label: "71-79%", note: "Стоит взглянуть",          color: "yellow" },
-  { key: "b61",  min: 61,  max: 70,  label: "61-70%", note: "Смысл расходится",         color: "red" },
-  { key: "b50",  min: 50,  max: 60,  label: "50-60%", note: "Существенные расхождения", color: "red" },
-  { key: "b40",  min: 40,  max: 49,  label: "40-49%", note: "Смысл разошёлся",          color: "red" },
-  { key: "low",  min: 0,   max: 39,  label: "< 40%",  note: "Совпадения почти нет",     color: "red" },
+  { key: "b100", min: 100, max: 100, label: "100%",   note: TR("Дословное совпадение"),     color: "green" },
+  { key: "b98",  min: 98,  max: 99,  label: "98-99%", note: TR("Почти дословно"),           color: "green" },
+  { key: "b95",  min: 95,  max: 97,  label: "95-97%", note: TR("Незначительные расхождения"), color: "green" },
+  { key: "b90",  min: 90,  max: 94,  label: "90-94%", note: TR("Обычная перефразировка"),   color: "green" },
+  { key: "b80",  min: 80,  max: 89,  label: "80-89%", note: TR("Свободная перефразировка"), color: "green" },
+  { key: "b71",  min: 71,  max: 79,  label: "71-79%", note: TR("Стоит взглянуть"),          color: "yellow" },
+  { key: "b61",  min: 61,  max: 70,  label: "61-70%", note: TR("Смысл расходится"),         color: "red" },
+  { key: "b50",  min: 50,  max: 60,  label: "50-60%", note: TR("Существенные расхождения"), color: "red" },
+  { key: "b40",  min: 40,  max: 49,  label: "40-49%", note: TR("Смысл разошёлся"),          color: "red" },
+  { key: "low",  min: 0,   max: 39,  label: "< 40%",  note: TR("Совпадения почти нет"),     color: "red" },
 ];
 
 let BC_BANDS = null;                    // приезжает из /api/models

@@ -1734,6 +1734,7 @@ def _openai_translate(text: str, src: str, tgt: str,
 # владельца при пустой базе пользователей (`_ensure_users`).
 # ─────────────────────────────────────────────────────────────────────
 import contextvars
+import mail_texts                      # тексты писем на языке получателя
 
 _RAW_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
 if not _RAW_PASSWORD:
@@ -1763,6 +1764,17 @@ _SIGNUP_FAILS: dict = {}        # ip -> [время каждой регистр�
 
 BOOTSTRAP_LOGIN = "admin"
 ROLES = ("owner", "translator")
+
+# Языки интерфейса. Список ЗДЕСЬ, а не в браузере: язык лежит на пользователе
+# (`uiLang`), и сервер обязан отказать в том, чего у него нет, — иначе
+# в записи окажется код, для которого каталога перевода не существует,
+# и человек увидит пустые надписи вместо русских.
+# По умолчанию — узбекская латиница: сервис продаётся в Узбекистане.
+# Кто выбрал русский, тот его и видит: `uiLang` у него записан явно.
+UI_LANGS = ("uz", "ru")
+DEFAULT_UI_LANG = os.environ.get("DEFAULT_UI_LANG", "uz").strip().lower() or "uz"
+if DEFAULT_UI_LANG not in UI_LANGS:
+    DEFAULT_UI_LANG = "uz"
 PBKDF2_ITERS = 200_000
 
 # Адрес входа в админку: ADMIN_PATH из окружения, иначе выводится из APP_PASSWORD
@@ -1809,7 +1821,7 @@ def _user_public(u: dict) -> dict:
             "color": u.get("color") or _USER_COLORS[u["id"] % len(_USER_COLORS)],
             "role": u.get("role", "translator"), "tenant": u.get("tenant", DEFAULT_TENANT),
             "super": bool(u.get("super")), "active": u.get("active", True),
-            "uiLang": u.get("uiLang") or "ru", "created": u.get("created")}
+            "uiLang": u.get("uiLang") or DEFAULT_UI_LANG, "created": u.get("created")}
 
 
 def _users() -> list:
@@ -1954,7 +1966,7 @@ def _ensure_users() -> None:
     h, salt = _hash_password(_RAW_PASSWORD)
     _users().append({"id": 1, "tenant": DEFAULT_TENANT, "login": BOOTSTRAP_LOGIN,
                      "hash": h, "salt": salt, "role": "owner", "super": True,
-                     "name": "Администратор", "active": True, "uiLang": "ru",
+                     "name": "Администратор", "active": True, "uiLang": DEFAULT_UI_LANG,
                      "created": datetime.now().strftime("%Y-%m-%d")})
     print(f"[backend] пользователей не было — заведён владелец «{BOOTSTRAP_LOGIN}» "
           f"организации «{DEFAULT_TENANT}» с паролем из APP_PASSWORD", file=sys.stderr)
@@ -2023,6 +2035,9 @@ _OWNER_ONLY = [
     ("POST",   re.compile(r"/api/quotes/\d+$")),
     ("DELETE", re.compile(r"/api/quotes/\d+$")),
     ("*",      re.compile(r"/api/admin/")),
+    # Команд здесь НЕТ намеренно: таблица берёт роль из сессии — роль
+    # в АКТИВНОЙ команде, — а путь /api/teams/{tid}/… называет другую.
+    # Право владельца команды проверяет `_team_owner_or_403` в обработчике.
 ]
 
 
@@ -2594,18 +2609,19 @@ class CodeRequest(BaseModel):
     password: str = ""
 
 
+def _mail_lang(user: dict) -> str:
+    """Язык письма — язык ПОЛУЧАТЕЛЯ, а не отправителя и не сервера.
+    Письмо уходит мимо браузера, и подставить перевод на границе показа,
+    как везде, здесь некому."""
+    return (user or {}).get("uiLang") or DEFAULT_UI_LANG
+
+
 def _mail_code(user: dict, kind: str, code: str) -> bool:
-    brand = APP_BRAND
-    if kind == "verify":
-        subject = f"{brand}: код подтверждения {code}"
-        body = (f"Код подтверждения почты: {code}\n\n"
-                f"Он действует {CODE_TTL // 60} минут. Если вы не заводили учётную запись "
-                f"в «{brand}», просто не отвечайте на это письмо.")
-    else:
-        subject = f"{brand}: код для смены пароля {code}"
-        body = (f"Код для смены пароля: {code}\n\n"
-                f"Он действует {CODE_TTL // 60} минут. Если вы не просили менять пароль, "
-                f"ничего делать не нужно — пароль останется прежним.")
+    lang = _mail_lang(user)
+    key = "verify" if kind == "verify" else "reset"
+    subject = mail_texts.text(lang, key + ".subject", brand=APP_BRAND, code=code)
+    body = mail_texts.text(lang, key + ".body", brand=APP_BRAND, code=code,
+                           minutes=CODE_TTL // 60)
     return mailer_mod.send(user["email"], subject, body) if mailer_mod else False
 
 
@@ -2648,7 +2664,7 @@ def register(req: RegisterRequest, request: Request):
     user = {"id": max((x["id"] for x in _users()), default=0) + 1, "tenant": tid,
             "login": email, "email": email, "emailVerified": False,
             "hash": h, "salt": salt, "role": "owner", "name": (req.name or "").strip() or email.split("@")[0],
-            "active": True, "uiLang": "ru", "created": today}
+            "active": True, "uiLang": DEFAULT_UI_LANG, "created": today}
     _users().append(user)
     code = _issue_code(user, "verify")
     _SIGNUP_FAILS.setdefault(ip, []).append(time.time())
@@ -2763,16 +2779,25 @@ def auth_me(request: Request):
     """Кто я: пользователь, организация, роль. Из этого браузер берёт аватар
     и решает, какие кнопки показывать; право сделать проверяет сервер."""
     u = _current_user(request)
-    tenant = next((t for t in _tenants() if t.get("id") == u.get("tenant")), None)
+    sess = getattr(request.state, "session", None) or CURRENT_SESSION.get() or {}
+    # Организация и роль берутся из СЕССИИ, а не с записи пользователя:
+    # человек может состоять в нескольких командах, и работает он в той,
+    # которую выбрал. `u["tenant"]`/`u["role"]` — про ДОМАШНЮЮ организацию,
+    # и показывать их как текущие значило бы врать про то, где он находится
+    # и что ему разрешено.
+    tid = sess.get("tenant") or u.get("tenant", DEFAULT_TENANT)
+    role = sess.get("role") or u.get("role", "translator")
+    tenant = next((t for t in _tenants() if t.get("id") == tid), None)
     # Поля организации перечислены ЯВНО: запись растёт (лимит, прайс, что
     # появится дальше), и отдача её целиком означает, что следующее поле уедет
     # браузеру само, без единого решения.
     tpub = {k: (tenant or {}).get(k) for k in ("id", "name", "active")}
-    tpub["id"] = tpub["id"] or u.get("tenant", DEFAULT_TENANT)
+    tpub["id"] = tpub["id"] or tid
     tpub["name"] = tpub["name"] or ""
     return {"ok": True, "me": _user_public(u), "tenant": tpub,
-            "can": {"owner": u.get("role") == "owner", "super": bool(u.get("super"))},
-            "spend": _spend_status(u.get("tenant")),
+            "can": {"owner": role == "owner", "super": bool(u.get("super"))},
+            "teams": _teams_of(u), "invites": _my_invites(u),
+            "spend": _spend_status(tid),
             **({"adminPath": "/" + ADMIN_PATH} if u.get("super") else {})}
 
 
@@ -2837,7 +2862,7 @@ def admin_user_create(req: UserCreate, request: Request):
     u = {"id": max((x["id"] for x in _users()), default=0) + 1, "tenant": tenant,
          "login": req.login.strip(), "hash": h, "salt": salt, "role": req.role,
          "email": email, "emailVerified": bool(email),   # завёл владелец — подтверждать нечего
-         "name": req.name.strip() or req.login.strip(), "active": True, "uiLang": "ru",
+         "name": req.name.strip() or req.login.strip(), "active": True, "uiLang": DEFAULT_UI_LANG,
          "created": datetime.now().strftime("%Y-%m-%d")}
     _users().append(u)
     save_state(STATE)
@@ -2866,13 +2891,465 @@ def admin_user_update(uid: int, req: UserPatch, request: Request):
     if req.name is not None:
         u["name"] = req.name.strip() or u["login"]
     if req.uiLang is not None:
-        u["uiLang"] = req.uiLang[:5]
+        if req.uiLang not in UI_LANGS:
+            raise HTTPException(400, "Язык интерфейса: " + " | ".join(UI_LANGS))
+        u["uiLang"] = req.uiLang
     if req.active is not None:
         if u["id"] == me["id"] and not req.active:
             raise HTTPException(400, "Нельзя отключить самого себя")
         u["active"] = bool(req.active)
     save_state(STATE)
     return {"ok": True, "user": _user_public(u)}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Профиль пользователя и КОМАНДЫ
+# ─────────────────────────────────────────────────────────────────────
+# Команда — это рабочее пространство, то есть АРЕНДАТОР (`tenants`), а не
+# новая сущность внутри организации. Иначе рушится инвариант 11: область
+# записи уже трёхмерна (пара языков, тематика, организация), и «команда
+# внутри организации» потребовала бы ЧЕТВЁРТОГО измерения у глоссария,
+# памяти переводов, очереди кандидатов, расхода и задач — то есть правки
+# каждого места, где сегодня стоит `tenant`.
+#
+# Один человек может состоять в НЕСКОЛЬКИХ командах: `user["memberships"]` —
+# список `{tenant, role, since}`. Домашняя организация (`user["tenant"]`)
+# читается членством ВСЕГДА и в список не переписывается — тот же закон
+# миграции, что у `lang`/`domain`: боевые записи не трогаем.
+#
+# АКТИВНАЯ команда живёт в СЕССИИ (`sess["tenant"]`, `sess["role"]`) — ровно
+# то, что уже читает `_current_tenant()`. Поэтому изоляция работает без
+# единой правки в проектах, глоссарии и прогонах: у запроса по-прежнему
+# РОВНО ОДНА организация, просто теперь человек выбирает, какая.
+#
+# Роль тоже переключается вместе с командой: владелец своей команды может
+# быть переводчиком в чужой, и оставить ему права владельца значило бы
+# отдать чужой глоссарий на вынос.
+TEAM_MAX_PER_USER = int(os.environ.get("TEAM_MAX_PER_USER", "5") or 5)
+INVITE_TTL_DAYS = int(os.environ.get("INVITE_TTL_DAYS", "30") or 30)
+
+
+def _invites() -> list:
+    return STATE.setdefault("invites", [])
+
+
+def _memberships(u: dict) -> list:
+    """Все команды человека: домашняя организация ПЛЮС принятые приглашения.
+    Домашняя всегда первая и удалению не подлежит — иначе человек остался бы
+    без единого рабочего пространства."""
+    home = u.get("tenant") or DEFAULT_TENANT
+    out = [{"tenant": home, "role": u.get("role", "translator"),
+            "since": u.get("created"), "home": True}]
+    seen = {home}
+    for m in (u.get("memberships") or []):
+        tid = m.get("tenant")
+        if not tid or tid in seen:
+            continue
+        seen.add(tid)
+        out.append({"tenant": tid, "role": m.get("role", "translator"),
+                    "since": m.get("since"), "home": False})
+    return out
+
+
+def _member_role(u: dict, tid: str) -> Optional[str]:
+    """Роль человека в КОМАНДЕ tid или None, если он в ней не состоит."""
+    for m in _memberships(u):
+        if m["tenant"] == tid:
+            return m["role"]
+    return None
+
+
+def _team_public(u: dict, m: dict) -> dict:
+    rec = _tenant_rec(m["tenant"]) or {}
+    return {"id": m["tenant"], "name": rec.get("name") or m["tenant"],
+            "role": m["role"], "home": m["home"], "since": m.get("since"),
+            "active": rec.get("active", True),
+            "members": sum(1 for x in _users() if _member_role(x, m["tenant"]))}
+
+
+def _teams_of(u: dict) -> list:
+    return [_team_public(u, m) for m in _memberships(u)]
+
+
+def _drop_user_sessions(uid: int, tenant: Optional[str] = None) -> None:
+    """Закрыть сессии пользователя (все или только в одной команде).
+    Исключённый из команды обязан потерять доступ СРАЗУ, а не через
+    SESSION_TTL: до истечения токена он работал бы в чужих проектах."""
+    with _AUTH_LOCK:
+        for t in [t for t, s in _SESSIONS.items()
+                  if s.get("user") == uid and (tenant is None or s.get("tenant") == tenant)]:
+            _SESSIONS.pop(t, None)
+
+
+def _team_owner_or_403(u: dict, tid: str) -> dict:
+    """Право распоряжаться КОМАНДОЙ проверяется здесь, а не таблицей
+    `_OWNER_ONLY` (инвариант 12), и это не забывчивость: таблица берёт роль
+    из сессии — роль в АКТИВНОЙ команде, — а путь называет ДРУГУЮ. Владелец
+    своей команды получил бы права владельца в чужой."""
+    rec = _tenant_rec(tid)
+    if not rec:
+        raise HTTPException(404, "Команда не найдена")
+    if _member_role(u, tid) != "owner":
+        raise HTTPException(403, "Это действие доступно только владельцу команды")
+    return rec
+
+
+def _invite_public(inv: dict) -> dict:
+    rec = _tenant_rec(inv.get("tenant")) or {}
+    return {"id": inv.get("id"), "tenant": inv.get("tenant"),
+            "teamName": rec.get("name") or inv.get("tenant"),
+            "email": inv.get("email"), "role": inv.get("role", "translator"),
+            "by": inv.get("byName") or inv.get("byLogin") or "",
+            "at": inv.get("at"), "status": inv.get("status", "pending"),
+            "expired": _invite_expired(inv)}
+
+
+def _invite_expired(inv: dict) -> bool:
+    try:
+        at = datetime.strptime((inv.get("at") or "")[:10], "%Y-%m-%d")
+    except Exception:
+        return False
+    return (datetime.now() - at).days > INVITE_TTL_DAYS
+
+
+def _my_invites(u: dict) -> list:
+    """Приглашения, ждущие решения ЭТОГО человека. Ключ — почта: приглашают
+    по ней, а не по номеру, и до принятия человек с командой не связан ничем."""
+    key = (u.get("email") or "").strip().lower()
+    if not key:
+        return []
+    return [_invite_public(i) for i in _invites()
+            if (i.get("email") or "").lower() == key
+            and i.get("status") == "pending"
+            and not _invite_expired(i)
+            and _member_role(u, i.get("tenant")) is None]
+
+
+class ProfilePatch(BaseModel):
+    name: Optional[str] = None
+    uiLang: Optional[str] = None
+    password: Optional[str] = None
+    currentPassword: Optional[str] = None
+
+
+@app.get("/api/profile")
+def profile_get(request: Request):
+    """Профиль: кто я, в каких командах состою, что ждёт моего решения.
+    Доступен КАЖДОМУ вошедшему — в отличие от `/api/admin/users`, куда
+    переводчику хода нет, а язык интерфейса менять ему надо."""
+    u = _current_user(request)
+    sess = getattr(request.state, "session", None) or CURRENT_SESSION.get() or {}
+    return {"ok": True, "me": _user_public(u),
+            "activeTeam": sess.get("tenant") or u.get("tenant"),
+            "activeRole": sess.get("role") or u.get("role"),
+            "teams": _teams_of(u), "invites": _my_invites(u),
+            "canCreateTeam": len(_memberships(u)) < TEAM_MAX_PER_USER,
+            "teamLimit": TEAM_MAX_PER_USER,
+            "spend": _spend_status(sess.get("tenant") or u.get("tenant"))}
+
+
+@app.post("/api/profile")
+def profile_update(req: ProfilePatch, request: Request):
+    """Свои имя, язык интерфейса и пароль человек меняет сам. Смена пароля
+    требует НЫНЕШНЕГО: украденный токен иначе означал бы украденную
+    учётную запись навсегда."""
+    u = _current_user(request)
+    if req.name is not None:
+        u["name"] = req.name.strip() or u["login"]
+        u["initials"] = _initials(u["name"])
+    if req.uiLang is not None:
+        lang = (req.uiLang or "").strip().lower()[:5]
+        if lang not in UI_LANGS:
+            raise HTTPException(400, "Язык интерфейса: " + " | ".join(UI_LANGS))
+        u["uiLang"] = lang
+    if req.password is not None:
+        _check_user_fields(None, req.password, None)
+        if not _verify_password(u, req.currentPassword or ""):
+            raise HTTPException(403, "Нынешний пароль указан неверно")
+        u["hash"], u["salt"] = _hash_password(req.password)
+        token = _token_from_request(request)
+        _drop_user_sessions(u["id"])            # чужие сессии закрываются
+        if token:                               # свою оставляем — иначе выкинет себя же
+            with _AUTH_LOCK:
+                _SESSIONS[token] = {"exp": time.time() + SESSION_TTL, "user": u["id"],
+                                    "tenant": (CURRENT_SESSION.get() or {}).get("tenant", u.get("tenant")),
+                                    "role": (CURRENT_SESSION.get() or {}).get("role", u.get("role")),
+                                    "super": bool(u.get("super"))}
+        _audit("password.change")
+    save_state(STATE)
+    return {"ok": True, "me": _user_public(u)}
+
+
+class TeamSwitch(BaseModel):
+    tenant: str
+
+
+@app.post("/api/profile/team")
+def profile_switch_team(req: TeamSwitch, request: Request):
+    """Переключение активной команды. Меняется И роль: владелец своей
+    команды в чужой может быть переводчиком, и `_OWNER_ONLY` обязан
+    увидеть ту роль, которая действует ЗДЕСЬ."""
+    u = _current_user(request)
+    role = _member_role(u, req.tenant)
+    if role is None:
+        raise HTTPException(404, "Вы не состоите в этой команде")
+    rec = _tenant_rec(req.tenant) or {}
+    if not rec.get("active", True):
+        raise HTTPException(403, "Команда отключена администратором сервиса")
+    token = _token_from_request(request)
+    with _AUTH_LOCK:
+        s = _SESSIONS.get(token)
+        if s is None:
+            raise HTTPException(401, "Требуется вход в систему")
+        s["tenant"], s["role"] = req.tenant, role
+    sess = _SESSIONS.get(token) or {}
+    tok = CURRENT_SESSION.set(sess)
+    try:
+        _audit("team.switch", team=req.tenant)
+    finally:
+        CURRENT_SESSION.reset(tok)
+    return {"ok": True, "activeTeam": req.tenant, "activeRole": role,
+            "can": {"owner": role == "owner", "super": bool(u.get("super"))},
+            "teams": _teams_of(u)}
+
+
+class InviteDecision(BaseModel):
+    action: str                     # accept | decline
+
+
+@app.post("/api/profile/invites/{iid}")
+def profile_invite_decide(iid: str, req: InviteDecision, request: Request):
+    """Решение по приглашению принимает САМ приглашённый, и оба исхода
+    записываются: молча исчезнувшее приглашение неотличимо от потерянного."""
+    u = _current_user(request)
+    key = (u.get("email") or "").strip().lower()
+    inv = next((i for i in _invites() if i.get("id") == iid
+                and (i.get("email") or "").lower() == key), None)
+    if not inv:
+        raise HTTPException(404, "Приглашение не найдено")
+    if inv.get("status") != "pending":
+        raise HTTPException(409, "Решение по этому приглашению уже принято")
+    if _invite_expired(inv):
+        raise HTTPException(410, "Срок приглашения истёк — попросите новое")
+    if req.action not in ("accept", "decline"):
+        raise HTTPException(400, "Решение: accept | decline")
+    inv["status"] = "accepted" if req.action == "accept" else "declined"
+    inv["decidedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if req.action == "accept":
+        tid = inv.get("tenant")
+        if not _tenant_rec(tid):
+            raise HTTPException(404, "Команда удалена")
+        if _member_role(u, tid) is None:
+            u.setdefault("memberships", []).append(
+                {"tenant": tid, "role": inv.get("role", "translator"),
+                 "since": datetime.now().strftime("%Y-%m-%d")})
+    _audit("invite." + req.action, team=inv.get("tenant"))
+    save_state(STATE)
+    return {"ok": True, "teams": _teams_of(u), "invites": _my_invites(u)}
+
+
+class TeamCreate(BaseModel):
+    name: str
+
+
+@app.get("/api/teams")
+def teams_list(request: Request):
+    u = _current_user(request)
+    return {"ok": True, "teams": _teams_of(u), "invites": _my_invites(u),
+            "canCreateTeam": len(_memberships(u)) < TEAM_MAX_PER_USER}
+
+
+@app.post("/api/teams")
+def team_create(req: TeamCreate, request: Request):
+    """Новая команда — новое рабочее пространство со своим глоссарием,
+    памятью переводов и РАСХОДОМ. Лимит ей ставится тот же, что при
+    регистрации (SIGNUP_TRIAL_USD, по умолчанию 0): иначе платный ключ
+    открывался бы кнопкой «создать команду» столько раз, сколько нужно.
+    Потолок числа команд — по той же причине."""
+    u = _current_user(request)
+    name = (req.name or "").strip()
+    if not (2 <= len(name) <= 64):
+        raise HTTPException(400, "Название команды: 2–64 символа")
+    if len(_memberships(u)) >= TEAM_MAX_PER_USER:
+        raise HTTPException(409, "Больше %d команд на одного человека нельзя" % TEAM_MAX_PER_USER)
+    tid = _new_tenant_id(name)
+    _tenants().append({"id": tid, "name": name, "created": datetime.now().strftime("%Y-%m-%d"),
+                       "active": True, "team": True, "limitUsd": SIGNUP_TRIAL_USD,
+                       "createdBy": u["id"]})
+    u.setdefault("memberships", []).append(
+        {"tenant": tid, "role": "owner", "since": datetime.now().strftime("%Y-%m-%d")})
+    _audit("team.create", team=tid, name=name)
+    save_state(STATE)
+    return {"ok": True, "team": _team_public(u, {"tenant": tid, "role": "owner", "home": False,
+                                                 "since": datetime.now().strftime("%Y-%m-%d")}),
+            "teams": _teams_of(u)}
+
+
+@app.get("/api/teams/{tid}")
+def team_detail(tid: str, request: Request):
+    """Состав команды видит её участник; приглашения — только владелец:
+    список чужих почт не дело переводчика."""
+    u = _current_user(request)
+    role = _member_role(u, tid)
+    if role is None:
+        raise HTTPException(404, "Команда не найдена")
+    rec = _tenant_rec(tid) or {}
+    members = []
+    for x in _users():
+        r = _member_role(x, tid)
+        if r is None:
+            continue
+        members.append({"id": x["id"], "login": x["login"], "name": x.get("name") or x["login"],
+                        "email": x.get("email") or "", "role": r,
+                        "home": (x.get("tenant") or DEFAULT_TENANT) == tid,
+                        "active": x.get("active", True),
+                        "initials": x.get("initials") or _initials(x.get("name") or x["login"]),
+                        "color": x.get("color") or _USER_COLORS[x["id"] % len(_USER_COLORS)]})
+    out = {"ok": True, "team": {"id": tid, "name": rec.get("name") or tid,
+                                "active": rec.get("active", True), "created": rec.get("created")},
+           "myRole": role, "members": members}
+    if role == "owner":
+        out["invites"] = [_invite_public(i) for i in _invites() if i.get("tenant") == tid]
+    return out
+
+
+class TeamInvite(BaseModel):
+    email: str
+    role: str = "translator"
+
+
+@app.post("/api/teams/{tid}/invite")
+def team_invite(tid: str, req: TeamInvite, request: Request):
+    """Приглашается ЗАРЕГИСТРИРОВАННЫЙ человек по почте, и отказ «такого нет»
+    здесь честный: приглашение — не дверь регистрации, а сообщение внутри
+    сервиса. Заводить учётную запись за человека нельзя — пароль знает он.
+
+    Про существование адреса эта дверь говорит намеренно, в отличие от
+    `/api/auth/forgot`: там спрашивал кто угодно из интернета, здесь —
+    вошедший владелец команды, и без ответа он не поймёт, почему приглашение
+    не дошло."""
+    u = _current_user(request)
+    _team_owner_or_403(u, tid)
+    email = _check_email(req.email)
+    if req.role not in ROLES:
+        raise HTTPException(400, "Роль: " + " | ".join(ROLES))
+    target = _user_by_email(email)
+    if not target:
+        raise HTTPException(404, "Такой почты в сервисе нет — человек должен "
+                                 "сначала зарегистрироваться")
+    if not target.get("active", True):
+        raise HTTPException(409, "Учётная запись отключена")
+    if _member_role(target, tid) is not None:
+        raise HTTPException(409, "Этот человек уже в команде")
+    if any(i.get("tenant") == tid and (i.get("email") or "").lower() == email
+           and i.get("status") == "pending" and not _invite_expired(i) for i in _invites()):
+        raise HTTPException(409, "Приглашение уже отправлено и ждёт решения")
+    inv = {"id": secrets.token_urlsafe(9), "tenant": tid, "email": email,
+           "role": req.role, "byUser": u["id"], "byName": u.get("name") or u["login"],
+           "byLogin": u["login"], "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+           "status": "pending"}
+    _invites().append(inv)
+    _audit("invite.send", team=tid, email=email, role=req.role)
+    save_state(STATE)
+    sent = _mail_invite(target, _tenant_rec(tid) or {}, u)
+    return {"ok": True, "invite": _invite_public(inv), "mailSent": sent}
+
+
+def _mail_invite(target: dict, team: dict, by: dict) -> bool:
+    """Письмо — уведомление, а НЕ дверь: решение принимается внутри сервиса,
+    в профиле. Ссылки-приглашения по почте здесь нет намеренно — она была бы
+    вторым входом мимо пароля."""
+    if not mailer_mod:
+        return False
+    name = team.get("name") or team.get("id")
+    who = by.get("name") or by.get("login")
+    lang = _mail_lang(target)
+    subject = mail_texts.text(lang, "invite.subject", brand=APP_BRAND, team=name)
+    body = mail_texts.text(lang, "invite.body", brand=APP_BRAND, team=name, who=who)
+    try:
+        return mailer_mod.send(target["email"], subject, body)
+    except Exception as e:
+        print(f"[backend] приглашение не отправлено: {e}", file=sys.stderr)
+        return False
+
+
+@app.post("/api/teams/{tid}/invites/{iid}/revoke")
+def team_invite_revoke(tid: str, iid: str, request: Request):
+    u = _current_user(request)
+    _team_owner_or_403(u, tid)
+    inv = next((i for i in _invites() if i.get("id") == iid and i.get("tenant") == tid), None)
+    if not inv:
+        raise HTTPException(404, "Приглашение не найдено")
+    if inv.get("status") != "pending":
+        raise HTTPException(409, "Решение по этому приглашению уже принято")
+    inv["status"] = "revoked"
+    inv["decidedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _audit("invite.revoke", team=tid, email=inv.get("email"))
+    save_state(STATE)
+    return {"ok": True}
+
+
+class MemberPatch(BaseModel):
+    role: Optional[str] = None
+    remove: bool = False
+
+
+@app.post("/api/teams/{tid}/members/{uid}")
+def team_member_update(tid: str, uid: int, req: MemberPatch, request: Request):
+    """Роль участника и исключение из команды. Три запрета, и все три —
+    про необратимое: нельзя снять последнего владельца (команда осталась бы
+    без хозяина), нельзя исключить человека из его ДОМАШНЕЙ организации
+    (он остался бы без рабочего пространства вовсе) и нельзя исключить
+    себя — выход из команды это отдельное решение, не правка состава."""
+    u = _current_user(request)
+    _team_owner_or_403(u, tid)
+    target = next((x for x in _users() if x["id"] == uid), None)
+    if not target or _member_role(target, tid) is None:
+        raise HTTPException(404, "Участник не найден")
+    if (target.get("tenant") or DEFAULT_TENANT) == tid:
+        raise HTTPException(400, "Это домашняя организация человека — "
+                                 "её состав правится на экране «Организация»")
+    owners = [x for x in _users() if _member_role(x, tid) == "owner"]
+    if req.remove:
+        if target["id"] == u["id"]:
+            raise HTTPException(400, "Себя из команды исключить нельзя — "
+                                     "передайте владение или удалите команду")
+        target["memberships"] = [m for m in (target.get("memberships") or [])
+                                 if m.get("tenant") != tid]
+        _drop_user_sessions(target["id"], tid)
+        _audit("team.member.remove", team=tid, target=uid)
+    elif req.role is not None:
+        if req.role not in ROLES:
+            raise HTTPException(400, "Роль: " + " | ".join(ROLES))
+        if req.role != "owner" and len(owners) <= 1 and _member_role(target, tid) == "owner":
+            raise HTTPException(400, "В команде должен остаться хотя бы один владелец")
+        for m in (target.get("memberships") or []):
+            if m.get("tenant") == tid:
+                m["role"] = req.role
+        _drop_user_sessions(target["id"], tid)   # роль в сессии протухла
+        _audit("team.member.role", team=tid, target=uid, role=req.role)
+    save_state(STATE)
+    return {"ok": True}
+
+
+@app.post("/api/teams/{tid}/leave")
+def team_leave(tid: str, request: Request):
+    """Выход из команды по своей воле. Домашнюю организацию покинуть нельзя:
+    человек остался бы без рабочего пространства."""
+    u = _current_user(request)
+    if (u.get("tenant") or DEFAULT_TENANT) == tid:
+        raise HTTPException(400, "Домашнюю организацию покинуть нельзя")
+    if _member_role(u, tid) is None:
+        raise HTTPException(404, "Вы не состоите в этой команде")
+    owners = [x for x in _users() if _member_role(x, tid) == "owner"]
+    if _member_role(u, tid) == "owner" and len(owners) <= 1:
+        raise HTTPException(400, "Вы единственный владелец команды — "
+                                 "назначьте другого или удалите команду")
+    u["memberships"] = [m for m in (u.get("memberships") or []) if m.get("tenant") != tid]
+    _drop_user_sessions(u["id"], tid)
+    _audit("team.leave", team=tid)
+    save_state(STATE)
+    return {"ok": True, "teams": _teams_of(u)}
 
 
 @app.get("/api/admin/audit")
@@ -3005,12 +3482,6 @@ def set_project_domain(pid: int, req: ProjectDomainRequest):
                     "устарели — пересчитайте back-check (бесплатно, /backcheck/rescore с force)."}
 
 
-def _drop_user_sessions(uid: int) -> None:
-    with _AUTH_LOCK:
-        for t in [t for t, sess in _SESSIONS.items() if sess["user"] == uid]:
-            _SESSIONS.pop(t, None)
-
-
 @app.delete("/api/admin/users/{uid}")
 def admin_user_delete(uid: int, request: Request):
     """Убрать учётную запись. Отключение (`active: false`) закрывает вход,
@@ -3059,6 +3530,19 @@ def admin_tenant_delete(tid: str, request: Request):
     for u in users:
         _drop_user_sessions(u["id"])
         _users().remove(u)
+    # Люди из ДРУГИХ организаций, состоявшие в этой командой: членство
+    # снимается вместе с самой командой. Иначе оно остаётся висеть, в списке
+    # команд человека появляется строка без организации, а переключение на
+    # неё сажает его в рабочее пространство, которого больше нет.
+    # Приглашения этой команды закрываются по той же причине.
+    orphans = 0
+    for u in _users():
+        rest = [m for m in (u.get("memberships") or []) if m.get("tenant") != tid]
+        if len(rest) != len(u.get("memberships") or []):
+            u["memberships"] = rest
+            _drop_user_sessions(u["id"], tid)
+            orphans += 1
+    STATE["invites"] = [i for i in _invites() if i.get("tenant") != tid]
     for coll in ("glossary", "tm", "termQueue", "autoBatches", "exportHistory",
                  "domains", "quotes"):
         rows = STATE.get(coll)
@@ -3066,9 +3550,9 @@ def admin_tenant_delete(tid: str, request: Request):
             STATE[coll] = [r for r in rows if _tenant_of(r) != tid]
     _tenants().remove(rec)
     _invalidate_gloss_index()
-    _audit("tenant.delete", tenant_target=tid, users=len(users))
+    _audit("tenant.delete", tenant_target=tid, users=len(users), members=orphans)
     save_state(STATE)
-    return {"ok": True, "usersRemoved": len(users)}
+    return {"ok": True, "usersRemoved": len(users), "membershipsRemoved": orphans}
 
 
 class TenantPatch(BaseModel):
@@ -3181,7 +3665,7 @@ def admin_tenant_create(req: TenantCreate, request: Request):
     h, salt = _hash_password(req.ownerPassword)
     u = {"id": max((x["id"] for x in _users()), default=0) + 1, "tenant": tid,
          "login": req.ownerLogin.strip(), "hash": h, "salt": salt, "role": "owner",
-         "name": req.ownerLogin.strip(), "active": True, "uiLang": "ru",
+         "name": req.ownerLogin.strip(), "active": True, "uiLang": DEFAULT_UI_LANG,
          "created": datetime.now().strftime("%Y-%m-%d")}
     _users().append(u)
     save_state(STATE)
@@ -3640,6 +4124,9 @@ def get_seed():
     public = {k: v for k, v in STATE.items() if k not in ("users", "tenants")}
     public.pop("audit", None)
     public.pop("spend", None)
+    # Приглашения — почты людей из ДРУГИХ организаций. Верхний ключ уехал бы
+    # каждому вошедшему вместе с ними: `/api/seed` отдаёт всё, что не названо.
+    public.pop("invites", None)
     for key in ("exportHistory", "termQueue", "autoBatches", "runCosts", "quotes"):
         public[key] = [e for e in (STATE.get(key) or []) if _tenant_of(e) == t]
     return {**public, "projects": [_project_for_client(p) for p in _tenant_projects()],

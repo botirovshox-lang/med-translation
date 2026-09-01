@@ -42,26 +42,24 @@ function WorkSummary({ summary, store, toast, onReload }) {
     setAccBusy(true);
     window.API.safeCall(() => window.API.acceptRepairBatch(store.activeProject.id, { dry_run: true }))
       .then(dry => {
-        if (!dry || !dry.ok) { setAccBusy(false); toast.error("Не удалось посчитать", "Сервер не ответил."); return; }
-        if (!dry.matched) { setAccBusy(false); toast.info("Принимать нечего", "Отменённых баллом правок не осталось."); return; }
+        if (!dry || !dry.ok) { setAccBusy(false); toast.error(TR("Не удалось посчитать"), TR("Сервер не ответил.")); return; }
+        if (!dry.matched) { setAccBusy(false); toast.info(TR("Принимать нечего"), TR("Отменённых баллом правок не осталось.")); return; }
         const skipped = (dry.skippedConfirmed || []).length;
-        /* Многострочное сообщение шаблонным литералом: перенос строки берётся
-           из самого исходника, экранировать нечего. */
+        /* Собрано КУСКАМИ, а не одним шаблонным литералом: в шаблоне с
+           подстановкой нет постоянного текста, значит нет и ключа словаря —
+           такое сообщение не перевести. Куски переводятся каждый сам. */
         const ok = window.confirm(
-          `Принять готовые тексты в ${dry.matched} сегментах?
-
-Вызовов модели нет — подставляется вариант, который ремонт уже написал.
-Проверки этих сегментов устареют вместе с текстом: перевод станет непроверенным
-до ближайшего прогона.
-${skipped ? `Заверенных человеком не тронем: ${skipped}.
-` : ""}
-Откат есть: копия уйдёт в data/backups/, метку скажу после применения.
-Кнопки отката в интерфейсе пока нет — он делается запросом по метке.`);
+          TR("Принять готовые тексты в ") + dry.matched + TR(" сегментах?") + "\n\n"
+          + TR("Вызовов модели нет — подставляется вариант, который ремонт уже написал.") + "\n"
+          + TR("Проверки этих сегментов устареют вместе с текстом: перевод станет непроверенным до ближайшего прогона.") + "\n"
+          + (skipped ? TR("Заверенных человеком не тронем: ") + skipped + ".\n" : "")
+          + "\n" + TR("Откат есть: копия уйдёт в data/backups/, метку скажу после применения.") + "\n"
+          + TR("Кнопки отката в интерфейсе пока нет — он делается запросом по метке."));
         if (!ok) { setAccBusy(false); return; }
         window.API.safeCall(() => window.API.acceptRepairBatch(store.activeProject.id, { dry_run: false }))
           .then(async res => {
             setAccBusy(false);
-            if (!res || !res.ok) { toast.error("Не удалось применить", "Сервер отказал."); return; }
+            if (!res || !res.ok) { toast.error(TR("Не удалось применить"), TR("Сервер отказал.")); return; }
             /* Подтянуть ПРАВЛЕНЫЕ сегменты обязательно, и это не косметика:
                без этого в браузере остаётся ПРЕЖНИЙ текст, а в карточке
                сегмента черновик берётся из него — первое же «Сохранить»
@@ -76,9 +74,9 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
               (got && got.segments || []).forEach(
                 sg => store.updateSegment(store.activeProject.id, sg.id, sg));
             }
-            toast.success("Принято сегментов: " + res.accepted,
-              "Откат — по метке " + (res.stamp || "—")
-              + " · проверить их сможет ближайший прогон");
+            toast.success(TR("Принято сегментов: ") + res.accepted,
+              TR("Откат — по метке ") + (res.stamp || "—")
+              + TR(" · проверить их сможет ближайший прогон"));
             if (onReload) onReload();
           });
       });
@@ -93,19 +91,19 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
     const body = { src: d.src, tgt: d.tgt, use: d.use };
     window.API.safeCall(() => window.API.termContextApply(store.activeProject.id, { ...body, dry_run: true }))
       .then(r => {
-        if (!r || !r.ok) { setCtxBusy(false); toast.error("Не удалось посчитать", (r && r.error) || ""); return null; }
-        if (!r.matched) { setCtxBusy(false); toast.info("Применять нечего", "в " + r.skippedConfirmed.length + " заверенных сегм. не трогаем"); return null; }
-        const ok = window.confirm("Подставить «" + d.use + "» вместо «" + d.tgt + "» в " + r.matched + " сегм.?\n"
-          + (r.skippedConfirmed.length ? "Заверенных человеком не трогаем: " + r.skippedConfirmed.length + "\n" : "")
-          + "Запись глоссария не меняется. Проверки этих сегментов устареют до ближайшего прогона. Откат — по метке.");
+        if (!r || !r.ok) { setCtxBusy(false); toast.error(TR("Не удалось посчитать"), (r && r.error) || ""); return null; }
+        if (!r.matched) { setCtxBusy(false); toast.info(TR("Применять нечего"), TR("в ") + r.skippedConfirmed.length + TR(" заверенных сегм. не трогаем")); return null; }
+        const ok = window.confirm(TR("Подставить «") + d.use + TR("» вместо «") + d.tgt + TR("» в ") + r.matched + TR(" сегм.?\n")
+          + (r.skippedConfirmed.length ? TR("Заверенных человеком не трогаем: ") + r.skippedConfirmed.length + "\n" : "")
+          + TR("Запись глоссария не меняется. Проверки этих сегментов устареют до ближайшего прогона. Откат — по метке."));
         if (!ok) { setCtxBusy(false); return null; }
         return window.API.safeCall(() => window.API.termContextApply(store.activeProject.id, { ...body, dry_run: false }));
       })
       .then(r => {
         if (!r) return;
         setCtxBusy(false);
-        if (!r.ok) { toast.error("Не удалось применить", r.error || ""); return; }
-        toast.success("Подставлено в " + r.applied + " сегм.", "Откат — по метке " + (r.stamp || "—"));
+        if (!r.ok) { toast.error(TR("Не удалось применить"), r.error || ""); return; }
+        toast.success(TR("Подставлено в ") + r.applied + TR(" сегм."), TR("Откат — по метке ") + (r.stamp || "—"));
         if (onReload) onReload();
       });
   };
@@ -115,17 +113,17 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
      Без кнопки здесь человек шёл искать запись в «Глоссарии» руками. */
   const demoteAdvised = (d) => {
     if (!window.API || ctxBusy) return;
-    if (!window.confirm("Понизить запись «" + d.src + " → " + d.tgt + "» до подсказки?\n"
-      + "Модель перестанет быть обязана этим вариантом, ремонт перестанет его вписывать. "
-      + "Готовые переводы не меняются; вернуть приказ можно в «Глоссарии».")) return;
+    if (!window.confirm(TR("Понизить запись «") + d.src + " → " + d.tgt + TR("» до подсказки?\n")
+      + TR("Модель перестанет быть обязана этим вариантом, ремонт перестанет его вписывать. ")
+      + TR("Готовые переводы не меняются; вернуть приказ можно в «Глоссарии»."))) return;
     setCtxBusy(true);
     const p = store.activeProject;
     window.API.safeCall(() => window.API.demoteTerm(d.src, p.src + "→" + p.tgt, p.domain || ""))
       .then(r => {
         setCtxBusy(false);
-        if (!r || !r.ok) { toast.error("Не понижено", (r && r.error) || "Сервер отказал"); return; }
-        toast.success(r.already ? "Запись уже подсказка" : "Запись понижена до подсказки",
-          r.repairedCount ? "Ремонт уже вписал её в " + r.repairedCount + " сегм. — вернуть их можно в «Глоссарии»" : "");
+        if (!r || !r.ok) { toast.error(TR("Не понижено"), (r && r.error) || TR("Сервер отказал")); return; }
+        toast.success(r.already ? TR("Запись уже подсказка") : TR("Запись понижена до подсказки"),
+          r.repairedCount ? TR("Ремонт уже вписал её в ") + r.repairedCount + TR(" сегм. — вернуть их можно в «Глоссарии»") : "");
         if (onReload) onReload();
       });
   };
@@ -138,13 +136,13 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
     window.API.safeCall(() => window.API.termContext(store.activeProject.id, {}))
       .then(r => {
         setArbBusy(false);
-        if (!r || !r.ok) { toast.error("Арбитр не ответил", (r && r.error) || "попробуйте ещё раз"); return; }
+        if (!r || !r.ok) { toast.error(TR("Арбитр не ответил"), (r && r.error) || TR("попробуйте ещё раз")); return; }
         // Отвечаем словами всегда, в том числе при нуле: молчаливое нажатие
         // неотличимо от сломанной кнопки.
-        toast.success("Спрошено сегментов: " + r.asked,
-          "снято претензий: " + (r.settled || []).length
-          + " · запись под вопросом: " + (r.wrong || []).length
-          + (r.capped ? " · показан не весь список, нажмите ещё раз" : ""));
+        toast.success(TR("Спрошено сегментов: ") + r.asked,
+          TR("снято претензий: ") + (r.settled || []).length
+          + TR(" · запись под вопросом: ") + (r.wrong || []).length
+          + (r.capped ? TR(" · показан не весь список, нажмите ещё раз") : ""));
         if (onReload) onReload();
       });
   };
@@ -160,33 +158,33 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
   const humanTotal = s.human.termsTotal + humanSegs.size;
 
   return React.createElement("div", { className: "section" },
-    React.createElement("h2", { className: "section-title" }, "Что сейчас с переводом",
-      React.createElement(InfoTip, { title: "Итог работы",
-        body: "Считается по состоянию проекта, а не по последнему прогону: прогонов может быть несколько, а вопрос один — что сделано и что осталось. Ни одного вызова модели здесь нет, открывать можно свободно.\n\n«Проверено начисто» — сегмент прошёл back-check и проверку терминов, замечаний нет. Соответствие глоссарию сюда НЕ входит: оно считается отдельно и видно своей строкой. Только сегменты «начисто» система считает готовыми учить терминологии.\n\nЛюбая строка открывает редактор с этими сегментами." })),
+    React.createElement("h2", { className: "section-title" }, TR("Что сейчас с переводом"),
+      React.createElement(InfoTip, { title: TR("Итог работы"),
+        body: TR("Считается по состоянию проекта, а не по последнему прогону: прогонов может быть несколько, а вопрос один — что сделано и что осталось. Ни одного вызова модели здесь нет, открывать можно свободно.\n\n«Проверено начисто» — сегмент прошёл back-check и проверку терминов, замечаний нет. Соответствие глоссарию сюда НЕ входит: оно считается отдельно и видно своей строкой. Только сегменты «начисто» система считает готовыми учить терминологии.\n\nЛюбая строка открывает редактор с этими сегментами.") })),
 
     React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column" } },
       React.createElement("div", { className: "row between", style: { paddingBottom: 4 } },
-        React.createElement("span", { className: "dim", style: { fontSize: 12.5 } }, "Всего сегментов"),
+        React.createElement("span", { className: "dim", style: { fontSize: 12.5 } }, TR("Всего сегментов")),
         React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, s.total)),
       // «Глоссарий соблюдён» отсюда убрано: _machine_clean его не смотрит вовсе
       // (ни _gloss_misses, ни _verified_hits), и сегмент с нарушенным приказным
       // термином при чистых проверках попадал сюда — а рядом же лежал
       // в «Расходятся с глоссарием». Обещать соблюдение, которого никто
       // не проверял, нельзя: на этой строке человек закрывает вопрос.
-      React.createElement(Row, { label: "Проверено начисто", n: s.clean.length, ids: s.clean,
-        color: "var(--c-success)", hint: "обе проверки чисто" }),
-      React.createElement(Row, { label: "Исправила машина", n: s.machine.repaired, ids: s.repaired,
-        hint: "статус «требует проверки» — заверяет человек" }),
-      React.createElement(Row, { label: "Ещё не переведено", n: s.todo.untranslated.length,
-        ids: s.todo.untranslated, hint: "запустите «Перевести и проверить»" }),
-      React.createElement(Row, { label: "Переведено, но не проверено", n: s.todo.unchecked.length,
-        ids: s.todo.unchecked, hint: "back-check или проверка терминов не делались" }),
+      React.createElement(Row, { label: TR("Проверено начисто"), n: s.clean.length, ids: s.clean,
+        color: "var(--c-success)", hint: TR("обе проверки чисто") }),
+      React.createElement(Row, { label: TR("Исправила машина"), n: s.machine.repaired, ids: s.repaired,
+        hint: TR("статус «требует проверки» — заверяет человек") }),
+      React.createElement(Row, { label: TR("Ещё не переведено"), n: s.todo.untranslated.length,
+        ids: s.todo.untranslated, hint: TR("запустите «Перевести и проверить»") }),
+      React.createElement(Row, { label: TR("Переведено, но не проверено"), n: s.todo.unchecked.length,
+        ids: s.todo.unchecked, hint: TR("back-check или проверка терминов не делались") }),
       // Без этой строки сегменты с замечаниями не попадали никуда: они не «чисто»
       // и не «не проверено», и экран показывал бы благополучие, которого нет.
-      React.createElement(Row, { label: "С замечаниями проверок", n: s.todo.findings.length,
-        ids: s.todo.findings, hint: "это чинит «Ремонт» внутри прогона" }),
-      React.createElement(Row, { label: "Расходятся с глоссарием", n: s.todo.glossaryPending.length,
-        ids: s.todo.glossaryPending, hint: "утверждённого термина нет в переводе" }),
+      React.createElement(Row, { label: TR("С замечаниями проверок"), n: s.todo.findings.length,
+        ids: s.todo.findings, hint: TR("это чинит «Ремонт» внутри прогона") }),
+      React.createElement(Row, { label: TR("Расходятся с глоссарием"), n: s.todo.glossaryPending.length,
+        ids: s.todo.glossaryPending, hint: TR("утверждённого термина нет в переводе") }),
       // Корзина «всё остальное». Починенные ремонтом сюда больше НЕ попадают:
       // у них back-check прошёл и termcheck чист, а отказ _machine_clean был
       // только про право учить глоссарий — на боевом проекте они составляли
@@ -203,51 +201,51 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
          из корзины «не проверено» не уйдёт никогда: текст не изменится,
          и проверять в нём по-прежнему нечего. Своя строка снимает половину
          корзины, которая звала человека к несуществующей работе. */
-      React.createElement(Row, { label: "Проверять нечего — цифры, коды, строки приборов",
+      React.createElement(Row, { label: TR("Проверять нечего — цифры, коды, строки приборов"),
         n: (s.todo.nothingToCheck || []).length, ids: s.todo.nothingToCheck,
-        hint: "перевод совпадает с оригиналом или в нём нет слов — работой это не станет" }),
+        hint: TR("перевод совпадает с оригиналом или в нём нет слов — работой это не станет") }),
       /* Подсказка не зовёт «включить Судью»: тумблер выше потолка зоны
          не действует — туда судью пускает только разовое разрешение
          judge_all, которое даёт кнопка «Перевести и доделать». Прежняя
          формулировка обещала лекарство, которое не работало. */
-      React.createElement(Row, { label: "Никто не проверял: балл выше зоны судьи",
+      React.createElement(Row, { label: TR("Никто не проверял: балл выше зоны судьи"),
         n: (s.todo.unverified || []).length, ids: s.todo.unverified,
         color: "var(--c-warning)",
-        hint: "смысл не читал никто — их спросит судья кнопки «Перевести и доделать»" }),
-      React.createElement(Row, { label: "Балл не измерить, судья не смотрел",
+        hint: TR("смысл не читал никто — их спросит судья кнопки «Перевести и доделать»") }),
+      React.createElement(Row, { label: TR("Балл не измерить, судья не смотрел"),
         n: (s.todo.unjudgedBlind || []).length, ids: s.todo.unjudgedBlind,
         color: "var(--c-warning)",
-        hint: "оригинал короче трёх содержательных слов — судья тут единственная мера" }),
-      React.createElement(Row, { label: "Оценка ниже порога", n: (s.todo.weak || []).length,
+        hint: TR("оригинал короче трёх содержательных слов — судья тут единственная мера") }),
+      React.createElement(Row, { label: TR("Оценка ниже порога"), n: (s.todo.weak || []).length,
         ids: s.todo.weak, hint: (s.todo.weakWhy || []).slice(0, 2).map(w => w.reason).join(" · ")
-          || "проверки прошли, но чисто не получилось" })),
+          || TR("проверки прошли, но чисто не получилось") })),
 
     React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", marginTop: 14 } },
       React.createElement("div", { className: "row between", style: { paddingBottom: 4 } },
-        React.createElement("span", { style: { fontWeight: 650 } }, "Машина предлагает"),
-        React.createElement("span", { className: "dim", style: { fontSize: 12.5 } }, "одним нажатием")),
+        React.createElement("span", { style: { fontWeight: 650 } }, TR("Машина предлагает")),
+        React.createElement("span", { className: "dim", style: { fontSize: 12.5 } }, TR("одним нажатием"))),
       React.createElement("div", { className: "row between", style: { padding: "9px 0", borderTop: "1px solid var(--border)", cursor: "pointer" },
         onClick: () => store.go("glossary") },
-        React.createElement("span", null, "Терминов готовы к одобрению",
-          React.createElement("span", { className: "dim", style: { fontSize: 12.5 } }, " — «Глоссарий» → «Автоодобрение однозначных»")),
+        React.createElement("span", null, TR("Терминов готовы к одобрению"),
+          React.createElement("span", { className: "dim", style: { fontSize: 12.5 } }, TR(" — «Глоссарий» → «Автоодобрение однозначных»"))),
         React.createElement("b", { style: { fontVariantNumeric: "tabular-nums", color: s.proposed.terms ? "var(--c-primary)" : "var(--text-3)" } }, s.proposed.terms))),
 
     React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", marginTop: 14 } },
       React.createElement("div", { className: "row between", style: { paddingBottom: 4 } },
-        React.createElement("span", { style: { fontWeight: 650 } }, "Нужен человек"),
+        React.createElement("span", { style: { fontWeight: 650 } }, TR("Нужен человек")),
         React.createElement("b", { style: { fontVariantNumeric: "tabular-nums", color: humanTotal ? "var(--c-warning)" : "var(--c-success)" } }, humanTotal)),
-      React.createElement(Row, { label: "Терминов машина решать не берётся", n: s.human.termsTotal,
-        color: "var(--c-warning)", hint: "спорные варианты и конфликты — в «Глоссарии»" }),
+      React.createElement(Row, { label: TR("Терминов машина решать не берётся"), n: s.human.termsTotal,
+        color: "var(--c-warning)", hint: TR("спорные варианты и конфликты — в «Глоссарии»") }),
       /* Ждут ДАННЫХ, а не решения: доноров приносят следующие чистые прогоны,
          и дорешает их автоматика. Раньше они шли в строку выше и пугали числом:
          на боевом проекте 412 из 684 «ждущих человека» человека не ждали. */
       (s.human.termsWaitingTotal || 0) > 0 && React.createElement(Row, {
-        label: "Терминов ждут новых данных — дорешается само", n: s.human.termsWaitingTotal,
-        hint: "не хватает сегментов-доноров или чистых проверок; следующие прогоны добирают их сами" }),
-      React.createElement(Row, { label: "Правка откачена — не стало лучше",
+        label: TR("Терминов ждут новых данных — дорешается само"), n: s.human.termsWaitingTotal,
+        hint: TR("не хватает сегментов-доноров или чистых проверок; следующие прогоны добирают их сами") }),
+      React.createElement(Row, { label: TR("Правка откачена — не стало лучше"),
         n: s.human.reverted.length - (s.human.revertedByScore || []).length,
         ids: (s.human.reverted || []).filter(i => !(s.human.revertedByScore || []).includes(i)),
-        color: "var(--c-warning)", hint: "модель пробовала починить и не смогла" }),
+        color: "var(--c-warning)", hint: TR("модель пробовала починить и не смогла") }),
       /* Подмножество откачённых, и своей строкой: отмену там держал ТОЛЬКО
          упавший балл back-check, а термины правка почистила. Балл меряет долю
          слов оригинала, вернувшихся через обратный перевод, то есть
@@ -255,14 +253,14 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
          чем верное «bloodstream». Нынешний ремонт так уже не откатывает,
          а прежние записи остались: текст написан, оплачен и лежит рядом.
          В общей корзине он выглядит безнадёжным и не разбирается никогда. */
-      React.createElement(Row, { label: "Ремонт отменил верную правку — текст готов",
+      React.createElement(Row, { label: TR("Ремонт отменил верную правку — текст готов"),
         n: (s.human.revertedByScore || []).length, ids: s.human.revertedByScore,
         color: "var(--c-warning)",
-        hint: "балл back-check упал, но термины стали чище — текст уже написан и оплачен",
+        hint: TR("балл back-check упал, но термины стали чище — текст уже написан и оплачен"),
         action: (s.human.revertedByScore || []).length
           ? React.createElement(Btn, { variant: "ghost", size: "sm", icon: "check",
               disabled: accBusy, onClick: acceptAll },
-              accBusy ? "Принимаем…" : "Принять все")
+              accBusy ? TR("Принимаем…") : TR("Принять все"))
           : null }),
       /* Машина отменила решение человека. Это самая громкая строка экрана
          и стоит она выше остальных: отмену заверения человек обязан увидеть
@@ -270,67 +268,67 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
          на сегменте (`confirmWithdrawn.evidence`). */
       /* Разнобой по документу. Строка ведёт СПИСОК ПАР, а не сегментов: решение
          одно на пару, и в этом весь смысл — вместо сотни разборов одно. */
-      React.createElement(Row, { label: "Один оборот переведён по-разному",
+      React.createElement(Row, { label: TR("Один оборот переведён по-разному"),
         n: (s.todo.consistency || []).length,
         ids: [].concat.apply([], (s.todo.consistency || []).map(c => c.segments || [])),
         color: "var(--c-warning)",
-        hint: "termcheck забраковал вариант в одном месте — остальные места видны только так" }),
+        hint: TR("termcheck забраковал вариант в одном месте — остальные места видны только так") }),
       (s.todo.consistency || []).length > 0 && React.createElement(
         "div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.7, paddingTop: 4 } },
         (s.todo.consistency || []).slice(0, 6).map((c, i) => React.createElement("div", { key: i },
-          "«" + c.was + "» → «" + c.want + "» · мест: " + (c.segments || []).length
-          + (c.already ? " · уже верно: " + c.already : "")))),
+          "«" + c.was + "» → «" + c.want + TR("» · мест: ") + (c.segments || []).length
+          + (c.already ? TR(" · уже верно: ") + c.already : "")))),
       /* Проверка забраковала слово, а оно всё ещё в тексте. Очередь помнит
          формулировку, сегмент — нет: termcheck мог передумать между прогонами,
          и дефект остался в готовом на вид тексте. Номинация, а не находка
          ремонта: одно суждение о строке не приказ переписывать, тем более
          что проверка себе же противоречит — решает человек. */
-      React.createElement(Row, { label: "Забракованное слово осталось в тексте",
+      React.createElement(Row, { label: TR("Забракованное слово осталось в тексте"),
         n: (s.human.staleFindings || []).length, ids: s.human.staleFindings,
         color: "var(--c-warning)",
-        hint: "termcheck отверг эту формулировку, а потом передумал — а слово на месте" }),
+        hint: TR("termcheck отверг эту формулировку, а потом передумал — а слово на месте") }),
       (s.human.staleFindingWords || []).length > 0 && React.createElement(
         "div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.7, paddingTop: 4 } },
         (s.human.staleFindingWords || []).slice(0, 5).map((w, i) =>
           React.createElement("div", { key: i },
             "#" + w.id + ": " + (w.words || []).join(", ")))),
-      React.createElement(Row, { label: "Машина сняла ваше подтверждение",
+      React.createElement(Row, { label: TR("Машина сняла ваше подтверждение"),
         n: (s.human.confirmWithdrawn || []).length, ids: s.human.confirmWithdrawn,
         color: "var(--c-error)",
-        hint: "расхождение чисел, единиц или отрицания — это сильнее заверения; доказательство в карточке сегмента" }),
-      React.createElement(Row, { label: "Подтверждено, но спорит с глоссарием", n: s.human.glossaryConfirmed.length,
-        ids: s.human.glossaryConfirmed, color: "var(--c-warning)", hint: "переписать можно только по явной галочке" }),
+        hint: TR("расхождение чисел, единиц или отрицания — это сильнее заверения; доказательство в карточке сегмента") }),
+      React.createElement(Row, { label: TR("Подтверждено, но спорит с глоссарием"), n: s.human.glossaryConfirmed.length,
+        ids: s.human.glossaryConfirmed, color: "var(--c-warning)", hint: TR("переписать можно только по явной галочке") }),
       // Своя строка, а не «оценка ниже порога»: это заверенные человеком
       // сегменты, до которых прогон не дотянется без разрешения. В общей куче
       // они выглядели как машинные и ждали бы вечно.
-      React.createElement(Row, { label: "Подтверждено, но есть находки проверок",
+      React.createElement(Row, { label: TR("Подтверждено, но есть находки проверок"),
         n: (s.human.confirmedFindings || []).length, ids: s.human.confirmedFindings,
         color: "var(--c-warning)",
-        hint: "починит «Ремонт» с галочкой «чинить подтверждённые»" }),
+        hint: TR("починит «Ремонт» с галочкой «чинить подтверждённые»") }),
       /* Критика Medical QA на подтверждённом. Проверка не трогает ни буквы
          текста и статус не понижает, поэтому находка видна ТОЛЬКО здесь:
          раньше её показывала вкладка «Замечания», которой больше нет. */
-      React.createElement(Row, { label: "Подтверждено, но проверки нашли критичное",
+      React.createElement(Row, { label: TR("Подтверждено, но проверки нашли критичное"),
         n: (s.human.qaCritical || []).length, ids: s.human.qaCritical,
         color: "var(--c-error)",
-        hint: "числа, дозировки или структура — проверка статус не меняет, решает человек" }),
+        hint: TR("числа, дозировки или структура — проверка статус не меняет, решает человек") }),
       // Спор проверки с утверждённой записью. Своя строка, потому что машина
       // здесь бессильна по построению: ремонт по такой находке всегда
       // откатится (нарушённых терминов станет больше), а termcheck переспорить
       // приказ не может. Считаем по СЕГМЕНТАМ — строка открывает редактор,
       // а список терминов показан ниже.
-      React.createElement(Row, { label: "Проверка спорит с утверждённым термином",
+      React.createElement(Row, { label: TR("Проверка спорит с утверждённым термином"),
         n: disputeSegs.length, ids: disputeSegs, color: "var(--c-warning)",
-        hint: "ремонт это не починит — решать вам: неверна запись или проверка" }),
+        hint: TR("ремонт это не починит — решать вам: неверна запись или проверка") }),
       disputes.length > 0 && React.createElement(
         "div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.7, paddingTop: 8 } },
         disputes.slice(0, DISPUTE_CAP).map((d, i) => React.createElement(
           "div", { key: i },
           d.src + " → ", React.createElement("b", { style: { color: "var(--c-primary)" } }, d.tgt),
-          " · проверка предлагает: " + (d.suggests.join(", ") || "без замены")
-            + " · сегментов: " + d.segments.length)),
+          TR(" · проверка предлагает: ") + (d.suggests.join(", ") || TR("без замены"))
+            + TR(" · сегментов: ") + d.segments.length)),
         disputes.length > DISPUTE_CAP && React.createElement(
-          "div", null, "и ещё " + (disputes.length - DISPUTE_CAP) + " записей")),
+          "div", null, TR("и ещё ") + (disputes.length - DISPUTE_CAP) + TR(" записей"))),
       // Кнопка рисуется и при нуле ожидающих: иначе, спросив арбитра один раз,
       // человек теряет и способ переспросить, и подтверждение, что ноль
       // настоящий, — та же беда, что была у «Пересчитать» в соответствии
@@ -340,33 +338,33 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
                                                     borderTop: "1px solid var(--border)" } },
         React.createElement("span", { className: "dim", style: { fontSize: 12.5 } },
           arbPending
-            ? "Арбитр ещё не смотрел " + arbPending + " сегм. — он читает соседние сегменты и говорит, верно ли термин передан здесь"
-            : "Арбитр посмотрел все спорные сегменты"),
+            ? TR("Арбитр ещё не смотрел ") + arbPending + TR(" сегм. — он читает соседние сегменты и говорит, верно ли термин передан здесь")
+            : TR("Арбитр посмотрел все спорные сегменты")),
         React.createElement(Btn, { variant: "secondary", size: "sm", icon: "search",
           disabled: arbBusy || !arbPending, onClick: askArbiter },
-          arbBusy ? "Спрашиваю…" : "Спросить арбитра (" + arbPending + ")")),
+          arbBusy ? TR("Спрашиваю…") : TR("Спросить арбитра (") + arbPending + ")")),
       arbWrong.length > 0 && React.createElement(
         "div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.7, paddingTop: 8 } },
         React.createElement("div", { style: { fontWeight: 600, color: "var(--c-warning)" } },
-          "Арбитр считает запись глоссария неверной для этого документа:"),
+          TR("Арбитр считает запись глоссария неверной для этого документа:")),
         arbWrong.slice(0, DISPUTE_CAP).map((d, i) => React.createElement(
           "div", { key: i },
           d.src + " → ", React.createElement("b", { style: { color: "var(--c-primary)" } }, d.tgt),
-          d.use ? [" · здесь верно: ", React.createElement("b", { key: "u", style: { color: "var(--c-success)" } }, d.use)] : "",
-          (d.why ? " · " + d.why : "") + " · сегментов: " + d.segments.length,
+          d.use ? [TR(" · здесь верно: "), React.createElement("b", { key: "u", style: { color: "var(--c-success)" } }, d.use)] : "",
+          (d.why ? " · " + d.why : "") + TR(" · сегментов: ") + d.segments.length,
           d.use && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check",
             style: { marginLeft: 8 }, disabled: ctxBusy, onClick: () => applyAdvice(d) },
-            "Применить к " + d.segments.length + " сегм."),
+            TR("Применить к ") + d.segments.length + TR(" сегм.")),
           React.createElement(Btn, { variant: "ghost", size: "sm", icon: "warn",
             style: { marginLeft: 4 }, disabled: ctxBusy, onClick: () => demoteAdvised(d) },
-            "Понизить запись"))),
+            TR("Понизить запись")))),
         arbWrong.length > DISPUTE_CAP && React.createElement(
-          "div", null, "и ещё " + (arbWrong.length - DISPUTE_CAP) + " записей"),
+          "div", null, TR("и ещё ") + (arbWrong.length - DISPUTE_CAP) + TR(" записей")),
         React.createElement("div", { style: { paddingTop: 6 } },
-          "«Применить» подставляет вариант арбитра только в эти строки — запись глоссария остаётся, и в остальных местах документа она продолжает действовать. "
-          + "Если неверна сама запись — правьте её в «Глоссарии», расчёт соответствия приведёт в порядок все затронутые сегменты.")),
+          TR("«Применить» подставляет вариант арбитра только в эти строки — запись глоссария остаётся, и в остальных местах документа она продолжает действовать. ")
+          + TR("Если неверна сама запись — правьте её в «Глоссарии», расчёт соответствия приведёт в порядок все затронутые сегменты."))),
       s.human.terms.length > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.6, paddingTop: 10, borderTop: "1px solid var(--border)" } },
-        "Почему термины остались человеку: ",
+        TR("Почему термины остались человеку: "),
         s.human.terms.slice(0, 4).map(t => t.count + "× " + t.reason).join(" · "))));
 }
 
@@ -406,7 +404,7 @@ function AnalysisRow({ label, hint, ids, n, total, color, action, store, toast, 
     if (!clickable) return;
     store.setSegmentFilter(ids);
     store.go("editor");
-    toast.info(label, ids.length + " сегментов");
+    toast.info(label, ids.length + TR(" сегментов"));
   };
   return React.createElement("div", {
     className: "row between" + (dim ? " dim" : ""),
@@ -489,22 +487,22 @@ function modelConflicts(plan, cat, mods) {
   const judge = (mods && mods.judge_model) || (cat && cat.judgeDefault) || "";
   const out = [];
   if (eff.translate && eff.backcheck && eff.translate === eff.backcheck) {
-    out.push("Back-check той же моделью, что и перевод (" + label(eff.translate)
-      + "): проверка себя — не проверка. На таких сегментах сервер сам возьмёт "
-      + "запасную модель, и смета поплывёт; выберите другую.");
+    out.push(TR("Back-check той же моделью, что и перевод (") + label(eff.translate)
+      + TR("): проверка себя — не проверка. На таких сегментах сервер сам возьмёт ")
+      + TR("запасную модель, и смета поплывёт; выберите другую."));
   }
-  [["termcheck", "Проверка терминов"], ["termaudit", "Сверка терминов"],
-   ["repair", "Ремонт"]].forEach(([stp, name]) => {
+  [["termcheck", TR("Проверка терминов")], ["termaudit", TR("Сверка терминов")],
+   ["repair", TR("Ремонт")]].forEach(([stp, name]) => {
     if (eff.translate && eff[stp] && eff[stp] === eff.translate) {
-      out.push(name + " той же моделью, что и перевод (" + label(eff.translate)
-        + "): она правит и судит по собственному пониманию текста — "
-        + "независимости, на которой стоит автоодобрение терминов, нет.");
+      out.push(name + TR(" той же моделью, что и перевод (") + label(eff.translate)
+        + TR("): она правит и судит по собственному пониманию текста — ")
+        + TR("независимости, на которой стоит автоодобрение терминов, нет."));
     }
   });
   if (judge && eff.backcheck && judge === eff.backcheck) {
-    out.push("Судья и обратный перевод одной моделью (" + label(judge)
-      + "): судье нужна сильная, обратному переводу — буквальная, которая "
-      + "не чинит ошибки на лету. Одна на обе роли плоха в одной из них.");
+    out.push(TR("Судья и обратный перевод одной моделью (") + label(judge)
+      + TR("): судье нужна сильная, обратному переводу — буквальная, которая ")
+      + TR("не чинит ошибки на лету. Одна на обе роли плоха в одной из них."));
   }
   return out;
 }
@@ -569,7 +567,7 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
     const jl = await window.API.safeCall(() => window.API.listJobs(project.id));
     if (jl && (jl.active || []).length) {
       setBusy(false);
-      toast.warning("Прогон уже идёт", "Дождитесь окончания — прогресс в «Редакторе».");
+      toast.warning(TR("Прогон уже идёт"), TR("Дождитесь окончания — прогресс в «Редакторе»."));
       return;
     }
     const pull = async (ids) => {
@@ -586,9 +584,9 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
       if (r && r.ok) {
         await pull(r.ids);
         freeFixed = true;
-        toast.success("Начертание приведено к оригиналу", r.segments + " сегм. — без вызова модели");
+        toast.success(TR("Начертание приведено к оригиналу"), r.segments + TR(" сегм. — без вызова модели"));
       } else {
-        toast.error("Начертание не поправилось", (r && r.error) || "сервер не ответил");
+        toast.error(TR("Начертание не поправилось"), (r && r.error) || TR("сервер не ответил"));
       }
     }
     if (fixAcc && accIds.length) {
@@ -596,10 +594,10 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
       if (r && r.ok) {
         await pull(r.ids);
         freeFixed = true;
-        toast.success("Принято правок: " + r.accepted,
-          "откат — по метке " + (r.stamp || "—") + "; этот же прогон их перепроверит");
+        toast.success(TR("Принято правок: ") + r.accepted,
+          TR("откат — по метке ") + (r.stamp || "—") + TR("; этот же прогон их перепроверит"));
       } else {
-        toast.error("Правки не принялись", "Сервер отказал.");
+        toast.error(TR("Правки не принялись"), TR("Сервер отказал."));
       }
     }
     // Состав берём ПОСЛЕ бесплатных правок: принятые тексты стали
@@ -610,7 +608,7 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
     const ids = (fresh && fresh.ids) || [];
     if (!ids.length) {
       setBusy(false);
-      toast.info("Прогону нечего делать", "Все проверки свежие.");
+      toast.info(TR("Прогону нечего делать"), TR("Все проверки свежие."));
       if (onStarted) onStarted();
       onClose();
       return;
@@ -622,7 +620,7 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
       est && est.cost != null ? { est_cost: est.cost } : {});
     const res = await window.API.safeCall(() => window.API.createJob(project.id, "full", ids, params));
     setBusy(false);
-    if (!res || !res.ok) { toast.error("Не удалось запустить", "Сервер не принял задачу."); return; }
+    if (!res || !res.ok) { toast.error(TR("Не удалось запустить"), TR("Сервер не принял задачу.")); return; }
     // Снимок состава для полосы прогона в редакторе — та же тройка опознания
     // «номер + проект + время создания», что и у запуска из редактора.
     if (typeof writeRunSnap === "function" && fresh && fresh.steps) {
@@ -631,7 +629,7 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
       writeRunSnap({ jobId: res.job.id, project: res.job.project,
                      created: res.job.created, steps: planned });
     }
-    toast.info("Прогон запущен", ids.length + " сегм. — прогресс в «Редакторе», вкладку можно закрыть.");
+    toast.info(TR("Прогон запущен"), ids.length + TR(" сегм. — прогресс в «Редакторе», вкладку можно закрыть."));
     if (onStarted) onStarted();
     store.go("editor");
   };
@@ -641,10 +639,10 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
   return React.createElement("div", { className: "card card-pad",
     style: { marginTop: 10, display: "flex", flexDirection: "column", gap: 10 } },
     React.createElement("div", { className: "row between" },
-      React.createElement("span", { style: { fontWeight: 650 } }, "Что сделает прогон"),
+      React.createElement("span", { style: { fontWeight: 650 } }, TR("Что сделает прогон")),
       plan === false && React.createElement("span", { className: "dim", style: { fontSize: 12.5 } },
-        "разбор не получен — обновите страницу")),
-    !plan && plan !== false && React.createElement("div", { className: "dim", style: { fontSize: 13 } }, "Считаем состав…"),
+        TR("разбор не получен — обновите страницу"))),
+    !plan && plan !== false && React.createElement("div", { className: "dim", style: { fontSize: 13 } }, TR("Считаем состав…")),
     /* Шаги — СЕТКОЙ (.tk-grid в styles.css), а не флексом: у флекса текст
        действующей модели сжимался до ширины одного слова и вставал столбиком,
        а селектор судьи растягивался на всю строку. Четыре колонки — шаг,
@@ -663,43 +661,43 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
           pkey && setMod
             ? React.createElement(Select, { className: "select tk-select", value: mm[pkey] || "",
                 onChange: (e) => setMod(pkey, e.target.value) },
-                React.createElement("option", { value: "" }, "по умолчанию"),
+                React.createElement("option", { value: "" }, TR("по умолчанию")),
                 (cat && cat.models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label)))
-            : React.createElement("span", { className: "dim tk-select" }, "модель back-check"),
+            : React.createElement("span", { className: "dim tk-select" }, TR("модель back-check")),
           React.createElement("span", { className: "dim tk-eff", title: st.modelLabel || "" },
             st.modelLabel ? "→ " + st.modelLabel : ""),
           React.createElement("span", { className: "dim tk-cost" },
-            st.count + " сегм." + (row && row.cost != null && typeof fmtCost === "function"
+            st.count + TR(" сегм.") + (row && row.cost != null && typeof fmtCost === "function"
               ? " · ≈ " + fmtCost(row.cost) : "")));
       }),
       /* Судья — не шаг, а участник back-check и ремонта: та же сетка. */
       setMod && React.createElement(React.Fragment, { key: "judge" },
-        React.createElement("span", { className: "tk-label" }, "судья"),
+        React.createElement("span", { className: "tk-label" }, TR("судья")),
         React.createElement(Select, { className: "select tk-select", value: mm.judge_model || "",
           onChange: (e) => setMod("judge_model", e.target.value) },
-          React.createElement("option", { value: "" }, "по умолчанию"),
+          React.createElement("option", { value: "" }, TR("по умолчанию")),
           (cat && cat.models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label))),
-        React.createElement("span", { className: "dim tk-eff", title: "в back-check и перепроверке ремонта, с разрешением выше зоны" },
-          "в back-check и ремонте, выше зоны"),
+        React.createElement("span", { className: "dim tk-eff", title: TR("в back-check и перепроверке ремонта, с разрешением выше зоны") },
+          TR("в back-check и ремонте, выше зоны")),
         React.createElement("span", { className: "dim tk-cost" }, ""))),
     /* Модели, спорящие друг с другом по роли, — вслух и до нажатия. */
     plan && modelConflicts(plan, cat, mm).map((w, i) => React.createElement("div", { key: "w" + i,
       style: { fontSize: 12.5, color: "var(--c-warning)", lineHeight: 1.5 } }, "⚠ " + w)),
     plan && extra > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
-      "В состав входят и готовые сегменты — освежить проверки (" + extra + " сегм. сверх корзины)."),
+      TR("В состав входят и готовые сегменты — освежить проверки (") + extra + TR(" сегм. сверх корзины).")),
     plan && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
-      "Смета — нижняя граница: проверки этого же прогона могут добавить работы ремонту. "
-      + "Судья идёт с разовым разрешением смотреть и бесспорные сегменты (балл выше зоны)."),
+      TR("Смета — нижняя граница: проверки этого же прогона могут добавить работы ремонту. ")
+      + TR("Судья идёт с разовым разрешением смотреть и бесспорные сегменты (балл выше зоны).")),
     (caseIds.length > 0 || accIds.length > 0) && React.createElement("div", {
       style: { display: "flex", flexDirection: "column", gap: 6, paddingTop: 8,
                borderTop: "1px solid var(--border)" } },
-      React.createElement("span", { style: { fontWeight: 650, fontSize: 13 } }, "Заодно бесплатно, без вызова модели:"),
+      React.createElement("span", { style: { fontWeight: 650, fontSize: 13 } }, TR("Заодно бесплатно, без вызова модели:")),
       caseIds.length > 0 && React.createElement(FreeFixCheck, { on: fixCase, setOn: setFixCase,
-        label: "Привести начертание терминов к оригиналу (" + caseIds.length + " сегм.)",
-        note: "меняются только заглавные и строчные, слова и порядок те же" }),
+        label: TR("Привести начертание терминов к оригиналу (") + caseIds.length + TR(" сегм.)"),
+        note: TR("меняются только заглавные и строчные, слова и порядок те же") }),
       accIds.length > 0 && React.createElement(FreeFixCheck, { on: fixAcc, setOn: setFixAcc,
-        label: "Принять правки, отменённые только баллом (" + accIds.length + " сегм.)",
-        note: "текст уже написан и оплачен; заверенное человеком не трогается, копия уйдёт в бэкап, этот же прогон всё перепроверит" })),
+        label: TR("Принять правки, отменённые только баллом (") + accIds.length + TR(" сегм.)"),
+        note: TR("текст уже написан и оплачен; заверенное человеком не трогается, копия уйдёт в бэкап, этот же прогон всё перепроверит") })),
     React.createElement("div", { className: "row", style: { gap: 8, paddingTop: 4 } },
       /* Запуск гаснет, когда делать нечего ВООБЩЕ: ни состава у прогона,
          ни включённой бесплатной правки. && связывает сильнее || — скобки
@@ -708,10 +706,10 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
         disabled: busy || !plan || (!(plan.ids || []).length
           && !(fixCase && caseIds.length) && !(fixAcc && accIds.length)),
         onClick: run },
-        busy ? "Запускаем…"
-          : "Запустить" + (est && est.cost != null && typeof fmtCost === "function"
+        busy ? TR("Запускаем…")
+          : TR("Запустить") + (est && est.cost != null && typeof fmtCost === "function"
               ? " · ≈ " + fmtCost(est.cost) + (est.unknown ? "+" : "") : "")),
-      React.createElement(Btn, { variant: "ghost", disabled: busy, onClick: onClose }, "Отмена")));
+      React.createElement(Btn, { variant: "ghost", disabled: busy, onClick: onClose }, TR("Отмена"))));
 }
 
 /* Карточка «под ключ»: полоса готовности и три корзины с процентами. */
@@ -768,33 +766,33 @@ function TurnkeySummary({ summary, store, toast, onReload }) {
         style: { width: (n / total * 100) + "%", background: color, height: "100%" } })
     : null;
   return React.createElement("div", { className: "section" },
-    React.createElement("h2", { className: "section-title" }, "Перевод под ключ",
-      React.createElement(InfoTip, { title: "Три корзины",
-        body: "Каждый сегмент проекта ровно в одной корзине, суммы сходятся с общим числом — считает сервер теми же правилами, что и сам прогон.\n\n«Готово» — переведено, проверено, открытых вопросов нет.\n\n«Возьмёт прогон» — кнопка «Перевести и доделать»: перевод, проверки, судья (включая бесспорные по разовому разрешению), ремонт по находкам.\n\n«Нужно ваше решение» — то, что прогон не решает по построению: споры с глоссарием, заверенные сегменты с находками, откаченные правки. Команды — в «Подробностях» ниже.\n\nЛюбая строка открывает редактор с этими сегментами." })),
+    React.createElement("h2", { className: "section-title" }, TR("Перевод под ключ"),
+      React.createElement(InfoTip, { title: TR("Три корзины"),
+        body: TR("Каждый сегмент проекта ровно в одной корзине, суммы сходятся с общим числом — считает сервер теми же правилами, что и сам прогон.\n\n«Готово» — переведено, проверено, открытых вопросов нет.\n\n«Возьмёт прогон» — кнопка «Перевести и доделать»: перевод, проверки, судья (включая бесспорные по разовому разрешению), ремонт по находкам.\n\n«Нужно ваше решение» — то, что прогон не решает по построению: споры с глоссарием, заверенные сегменты с находками, откаченные правки. Команды — в «Подробностях» ниже.\n\nЛюбая строка открывает редактор с этими сегментами.") })),
     React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column" } },
       React.createElement("div", { className: "row between", style: { alignItems: "baseline", paddingBottom: 8 } },
-        React.createElement("span", { style: { fontWeight: 650 } }, "Готовность"),
+        React.createElement("span", { style: { fontWeight: 650 } }, TR("Готовность")),
         React.createElement("div", { style: { textAlign: "right" } },
           React.createElement("b", { style: { fontSize: 26, fontVariantNumeric: "tabular-nums" } },
             tkPct(ready.length, total)),
           React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
-            ready.length + " из " + total + " сегментов"))),
+            ready.length + TR(" из ") + total + TR(" сегментов")))),
       React.createElement("div", { style: { display: "flex", height: 12, borderRadius: 6,
         overflow: "hidden", background: "var(--bg-sunken)", marginBottom: 6 } },
         seg(ready.length, "var(--c-success)"),
         seg(machine.length, "var(--c-primary)"),
         seg(human.length, "var(--c-warning)")),
       React.createElement(AnalysisRow, { store, toast, total, ids: ready,
-        label: "Готово к сдаче", color: "var(--c-success)",
-        hint: "переведено и проверено, открытых вопросов нет" }),
+        label: TR("Готово к сдаче"), color: "var(--c-success)",
+        hint: TR("переведено и проверено, открытых вопросов нет") }),
       React.createElement(AnalysisRow, { store, toast, total, ids: machine,
-        label: "Возьмёт ближайший прогон", color: "var(--c-primary)",
-        hint: "перевод, проверки, судья и ремонт по находкам",
+        label: TR("Возьмёт ближайший прогон"), color: "var(--c-primary)",
+        hint: TR("перевод, проверки, судья и ремонт по находкам"),
         action: React.createElement(Btn, { variant: "primary", size: "sm", icon: "zap",
-          onClick: () => setPanel(p => !p) }, "Перевести и доделать") }),
+          onClick: () => setPanel(p => !p) }, TR("Перевести и доделать")) }),
       React.createElement(AnalysisRow, { store, toast, total, ids: human,
-        label: "Нужно ваше решение", color: "var(--c-warning)",
-        hint: "прогон это не решит — состав и команды в «Подробностях»" }),
+        label: TR("Нужно ваше решение"), color: "var(--c-warning)",
+        hint: TR("прогон это не решит — состав и команды в «Подробностях»") }),
       /* Срез поверх корзин, а не четвёртая корзина: заверенные человеком
          входят в «Готово» (или в «Нужно ваше решение», если проверки нашли
          находку), но работа человека обязана быть видна числом — раньше
@@ -803,7 +801,7 @@ function TurnkeySummary({ summary, store, toast, onReload }) {
          Старый сервер поля не отдаёт — строки просто нет. */
       (tk.confirmed || []).length > 0 && React.createElement(AnalysisRow, {
         store, toast, total, ids: tk.confirmed, dim: true,
-        label: "Заверено вручную", hint: "входит в корзины выше" })),
+        label: TR("Заверено вручную"), hint: TR("входит в корзины выше") })),
     panel && React.createElement(RunPanel, { summary, store, toast, plan, cat, mods, setMod,
       onClose: () => setPanel(false), onStarted: onReload }));
 }
@@ -825,8 +823,8 @@ function CoverageCard({ project }) {
   if (!cov) return null;
   const n = cov.silent.length;
   const head = n
-    ? "На паре " + cov.src + " → " + cov.tgt + " молчат " + n + " из " + (n + cov.works.length) + " бесплатных проверок"
-    : "На паре " + cov.src + " → " + cov.tgt + " работают все бесплатные проверки";
+    ? TR("На паре ") + cov.src + " → " + cov.tgt + TR(" молчат ") + n + TR(" из ") + (n + cov.works.length) + TR(" бесплатных проверок")
+    : TR("На паре ") + cov.src + " → " + cov.tgt + TR(" работают все бесплатные проверки");
   const col = (title, items, why) => React.createElement("div", null,
     React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, title),
     React.createElement("ul", { style: { margin: 0, paddingLeft: 18, fontSize: 13 } },
@@ -836,11 +834,11 @@ function CoverageCard({ project }) {
     React.createElement("div", { className: "row between" },
       React.createElement("div", { style: { fontWeight: 600, color: n ? "var(--c-warn)" : undefined } }, head),
       React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setOpen(o => !o) },
-        open ? "Скрыть" : "Подробнее")),
+        open ? TR("Скрыть") : TR("Подробнее"))),
     open && React.createElement("div", { className: "grid grid-3", style: { marginTop: 12, gap: 16 } },
-      col("Работает", cov.works, false),
-      col("Молчит", cov.silent, true),
-      col("Через модель — на любой паре", cov.model, false)));
+      col(TR("Работает"), cov.works, false),
+      col(TR("Молчит"), cov.silent, true),
+      col(TR("Через модель — на любой паре"), cov.model, false)));
 }
 
 function TabAnalysis({ store, toast }) {
@@ -872,20 +870,20 @@ function TabAnalysis({ store, toast }) {
   return React.createElement("div", { className: "page page-wide" },
     React.createElement("div", { className: "row between page-head", style: { alignItems: "flex-end" } },
       React.createElement("div", null,
-        React.createElement("h1", null, "Анализ"),
+        React.createElement("h1", null, TR("Анализ")),
         React.createElement("p", { className: "lead", style: { marginBottom: 0 } },
-          "Что сейчас с переводом — и одна кнопка, чтобы довести его до готовности.")),
+          TR("Что сейчас с переводом — и одна кнопка, чтобы довести его до готовности."))),
       React.createElement(Btn, { variant: "secondary", icon: "download",
-        onClick: () => store.go("export") }, "Экспорт перевода")),
-    !summary && React.createElement("div", { className: "dim", style: { fontSize: 13 } }, "Считаем итог…"),
+        onClick: () => store.go("export") }, TR("Экспорт перевода"))),
+    !summary && React.createElement("div", { className: "dim", style: { fontSize: 13 } }, TR("Считаем итог…")),
     React.createElement(CoverageCard, { project }),
     tk && React.createElement(TurnkeySummary, { summary, store, toast, onReload: reload }),
     summary && !tk && React.createElement("div", { className: "dim", style: { fontSize: 13, marginBottom: 10 } },
-      "Сервер прежней версии — корзин «под ключ» нет, ниже подробный итог."),
+      TR("Сервер прежней версии — корзин «под ключ» нет, ниже подробный итог.")),
     summary && tk && React.createElement("div", { style: { margin: "6px 0 14px" } },
       React.createElement(Btn, { variant: "ghost", size: "sm",
         onClick: () => setDetails(d => !d) },
-        showDetails ? "▴ Скрыть подробности" : "▾ Подробности и ручные команды")),
+        showDetails ? TR("▴ Скрыть подробности") : TR("▾ Подробности и ручные команды"))),
     summary && showDetails && React.createElement(React.Fragment, null,
       React.createElement(WorkSummary, { summary, store, toast, onReload: reload }),
       React.createElement(BackcheckBands, { segments: segs, project, onDrill, T }),
@@ -937,19 +935,19 @@ function BackcheckBands({ segments, project, onDrill, T }) {
     React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 14 } },
       React.createElement("div", { className: "row between", style: { alignItems: "flex-end", flexWrap: "wrap", gap: 10 } },
         React.createElement("div", null,
-          React.createElement("h3", { style: { fontSize: 18, fontWeight: 700 } }, "Соответствие обратного перевода",
-            T("Соответствие обратного перевода",
-              "Перевод переводится обратно на язык оригинала и сравнивается с исходным текстом: числа, единицы, отрицания, лево-право, сохранность терминов. Процент показывает, сколько смысла пережило круг. Запускается на вкладке «Редактор», карточка Back-check.")),
+          React.createElement("h3", { style: { fontSize: 18, fontWeight: 700 } }, TR("Соответствие обратного перевода"),
+            T(TR("Соответствие обратного перевода"),
+              TR("Перевод переводится обратно на язык оригинала и сравнивается с исходным текстом: числа, единицы, отрицания, лево-право, сохранность терминов. Процент показывает, сколько смысла пережило круг. Запускается на вкладке «Редактор», карточка Back-check."))),
           React.createElement("p", { className: "muted", style: { marginTop: 6, fontSize: 14 } },
-            "Проверено " + checked.length + " из " + translated.length + " переведённых сегментов")),
+            TR("Проверено ") + checked.length + TR(" из ") + translated.length + TR(" переведённых сегментов"))),
         checked.length > 0 && React.createElement("div", { className: "dim", style: { fontSize: 13 } },
-          "Средний балл: " +
+          TR("Средний балл: ") +
           Math.round(checked.reduce((a, s) => a + s.backcheck.score, 0) / checked.length) + "%")
       ),
 
       checked.length === 0
-        ? React.createElement(EmptyState, { icon: "repeat", title: "Back-check ещё не запускался",
-            sub: "Запустите его в Редакторе — карточка Back-check в блоке пакетных операций." })
+        ? React.createElement(EmptyState, { icon: "repeat", title: TR("Back-check ещё не запускался"),
+            sub: TR("Запустите его в Редакторе — карточка Back-check в блоке пакетных операций.") })
         : React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6 } },
             bands.map(b => {
               const list = checked.filter(s => s.backcheck.score >= b.min && s.backcheck.score <= b.max);
@@ -957,7 +955,7 @@ function BackcheckBands({ segments, project, onDrill, T }) {
               return React.createElement("div", {
                 key: b.key, className: "row", style: { gap: 10, cursor: list.length ? "pointer" : "default", opacity: list.length ? 1 : 0.45, padding: "3px 0" },
                 onClick: () => list.length && onDrill(b.label, list),
-                title: list.length ? "Открыть эти сегменты в редакторе" : "Нет сегментов в этой полосе" },
+                title: list.length ? TR("Открыть эти сегменты в редакторе") : TR("Нет сегментов в этой полосе") },
                 React.createElement("span", { className: "mono", style: { width: 72, fontSize: 13, fontWeight: 700, color: window.bcBandColor(b.color) } }, b.label),
                 React.createElement("span", { className: "dim", style: { width: 190, fontSize: 12.5 } }, b.note),
                 React.createElement("div", { style: { flex: 1, height: 10, background: "var(--bg-sunken)", borderRadius: 5, overflow: "hidden" } },
@@ -971,30 +969,30 @@ function BackcheckBands({ segments, project, onDrill, T }) {
         className: "row between", style: { borderTop: "1px solid var(--border)", paddingTop: 10, flexWrap: "wrap", gap: 10 } },
         React.createElement("div", { style: { minWidth: 0 } },
           React.createElement("div", { className: "row", style: { gap: 6 } },
-            React.createElement("span", { style: { fontSize: 13, fontWeight: 600 } }, "Оценки по прежним правилам"),
-            T("Пересчёт оценок back-check",
-              "Правила подсчёта меняются, а хеш перевода сторожит только текст — запись, посчитанная по-старому, считается свежей вечно и сама не пересчитается.\n\nПересчёт бесплатный: обратный перевод, оригинал и вердикт судьи лежат в самой записи, ни одного вызова модели он не делает.\n\nСперва разбор — он ничего не меняет и показывает числа. Прежние записи уходят копией в data/backups и возвращаются откатом.")),
+            React.createElement("span", { style: { fontSize: 13, fontWeight: 600 } }, TR("Оценки по прежним правилам")),
+            T(TR("Пересчёт оценок back-check"),
+              TR("Правила подсчёта меняются, а хеш перевода сторожит только текст — запись, посчитанная по-старому, считается свежей вечно и сама не пересчитается.\n\nПересчёт бесплатный: обратный перевод, оригинал и вердикт судьи лежат в самой записи, ни одного вызова модели он не делает.\n\nСперва разбор — он ничего не меняет и показывает числа. Прежние записи уходят копией в data/backups и возвращаются откатом."))),
           React.createElement("p", { className: "muted", style: { marginTop: 4, fontSize: 13 } },
-            rescBusy ? "Считаем…"
-              : !resc ? "Нажмите «Разобрать», чтобы узнать, сколько оценок посчитано прежними правилами"
-              : !resc.rescored ? "Все оценки посчитаны нынешними правилами"
-              : (resc.dry_run ? "Посчитано прежними правилами: " : "Пересчитано: ") + resc.rescored
-                + "; балл " + (resc.dry_run ? "изменится" : "изменился") + " у " + resc.changed
-                + "; к судье " + (resc.dry_run ? "вернётся " : "вернулось ") + resc.freed_judge
-                + "; машинно-чистых было " + resc.machine_clean.before + ", стало " + resc.machine_clean.after)),
+            rescBusy ? TR("Считаем…")
+              : !resc ? TR("Нажмите «Разобрать», чтобы узнать, сколько оценок посчитано прежними правилами")
+              : !resc.rescored ? TR("Все оценки посчитаны нынешними правилами")
+              : (resc.dry_run ? TR("Посчитано прежними правилами: ") : TR("Пересчитано: ")) + resc.rescored
+                + TR("; балл ") + (resc.dry_run ? TR("изменится") : TR("изменился")) + TR(" у ") + resc.changed
+                + TR("; к судье ") + (resc.dry_run ? TR("вернётся ") : TR("вернулось ")) + resc.freed_judge
+                + TR("; машинно-чистых было ") + resc.machine_clean.before + TR(", стало ") + resc.machine_clean.after)),
         React.createElement("div", { className: "row", style: { gap: 8 } },
           React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", disabled: rescBusy,
-            onClick: () => rescore(false) }, "Разобрать"),
+            onClick: () => rescore(false) }, TR("Разобрать")),
           resc && resc.dry_run && resc.rescored > 0 && React.createElement(Btn, {
             variant: "primary", size: "sm", disabled: rescBusy, onClick: () => rescore(true) },
-            "Пересчитать " + resc.rescored))),
+            TR("Пересчитать ") + resc.rescored))),
 
       termLost.length > 0 && React.createElement("div", {
         className: "row between", style: { borderTop: "1px solid var(--border)", paddingTop: 10, cursor: "pointer" },
-        onClick: () => onDrill("Потеря термина", termLost),
-        title: "Открыть эти сегменты в редакторе" },
+        onClick: () => onDrill(TR("Потеря термина"), termLost),
+        title: TR("Открыть эти сегменты в редакторе") },
         React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: "var(--c-error)" } },
-          "Из них с потерей термина"),
+          TR("Из них с потерей термина")),
         React.createElement("b", { className: "tnum", style: { fontSize: 13 } }, termLost.length))
     )
   );
@@ -1010,7 +1008,7 @@ function StatRow({ label, note, count, color, onDrill, bold }) {
     className: "row between",
     style: { gap: 10, padding: "5px 0", cursor: clickable ? "pointer" : "default", opacity: count ? 1 : 0.45 },
     onClick: clickable ? onDrill : undefined,
-    title: clickable ? "Открыть эти сегменты в редакторе" : "Нет таких сегментов" },
+    title: clickable ? TR("Открыть эти сегменты в редакторе") : TR("Нет таких сегментов") },
     React.createElement("div", { className: "row", style: { gap: 8, minWidth: 0 } },
       React.createElement("span", { style: { fontSize: 13, fontWeight: bold ? 700 : 500, color: color || "var(--text)" } }, label),
       note && React.createElement("span", { className: "dim", style: { fontSize: 12 } }, note)),
@@ -1054,12 +1052,12 @@ function GlossaryImpact({ project, store, toast, onDrill, T }) {
     const dry = await window.API.safeCall(() => window.API.termCase(project.id));
     if (!dry || !dry.ok) {
       setFixing(false);
-      toast && toast.error("Не вышло разобрать начертание", (dry && dry.error) || "попробуйте ещё раз");
+      toast && toast.error(TR("Не вышло разобрать начертание"), (dry && dry.error) || TR("попробуйте ещё раз"));
       return;
     }
     if (!dry.segments) {
       setFixing(false);
-      toast && toast.info("Начертание терминов", "и так по оригиналу — менять нечего");
+      toast && toast.info(TR("Начертание терминов"), TR("и так по оригиналу — менять нечего"));
       return;
     }
     const sample = (dry.samples || []).slice(0, 5)
@@ -1067,15 +1065,15 @@ function GlossaryImpact({ project, store, toast, onDrill, T }) {
       .join("\n");
     const skipped = (dry.skippedConfirmed || []).length;
     const ok = window.confirm(
-      "Привести начертание терминов к оригиналу: " + dry.segments + " сегм.\n"
-      + "Меняются только заглавные и строчные — слова и порядок те же.\n\n"
+      TR("Привести начертание терминов к оригиналу: ") + dry.segments + TR(" сегм.\n")
+      + TR("Меняются только заглавные и строчные — слова и порядок те же.\n\n")
       + sample + (dry.segments > 5 ? "\n  …" : "")
-      + (skipped ? "\n\nЗаверенных человеком не трогаем: " + skipped : ""));
+      + (skipped ? TR("\n\nЗаверенных человеком не трогаем: ") + skipped : ""));
     if (!ok) { setFixing(false); return; }
     const res = await window.API.safeCall(() => window.API.termCase(project.id, { apply: true }));
     setFixing(false);
     if (!res || !res.ok) {
-      toast && toast.error("Правка не выполнена", (res && res.error) || "попробуйте ещё раз");
+      toast && toast.error(TR("Правка не выполнена"), (res && res.error) || TR("попробуйте ещё раз"));
       return;
     }
     /* Подтягиваем ТОЛЬКО правленые сегменты: проект на 2670 строк весит
@@ -1084,8 +1082,8 @@ function GlossaryImpact({ project, store, toast, onDrill, T }) {
       const got = await window.API.safeCall(() => window.API.fetchSegments(project.id, res.ids));
       (got && got.segments || []).forEach(sg => store.updateSegment(project.id, sg.id, sg));
     }
-    toast && toast.success("Начертание приведено к оригиналу",
-                           res.segments + " сегм. — без единого вызова модели");
+    toast && toast.success(TR("Начертание приведено к оригиналу"),
+                           res.segments + TR(" сегм. — без единого вызова модели"));
     load();
   };
 
@@ -1093,37 +1091,37 @@ function GlossaryImpact({ project, store, toast, onDrill, T }) {
     React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
       React.createElement("div", { className: "row between", style: { alignItems: "flex-end", flexWrap: "wrap", gap: 10 } },
         React.createElement("div", null,
-          React.createElement("h3", { style: { fontSize: 18, fontWeight: 700 } }, "Соответствие глоссарию",
-            T("Соответствие одобренным терминам",
-              "Сегменты, где термин есть в оригинале, а утверждённого перевода в готовом тексте нет.\n\nОдобрение термина влияет только на будущие переводы — уже сделанные сами не меняются, поэтому после правок глоссария этот список и появляется.\n\nСчитается только по проверенным записям: автоимпорт модель вправе игнорировать.\n\nПереперевести пакетом можно в Редакторе — секция «Соответствие глоссарию» в карточке «Одобрить и применить».")),
+          React.createElement("h3", { style: { fontSize: 18, fontWeight: 700 } }, TR("Соответствие глоссарию"),
+            T(TR("Соответствие одобренным терминам"),
+              TR("Сегменты, где термин есть в оригинале, а утверждённого перевода в готовом тексте нет.\n\nОдобрение термина влияет только на будущие переводы — уже сделанные сами не меняются, поэтому после правок глоссария этот список и появляется.\n\nСчитается только по проверенным записям: автоимпорт модель вправе игнорировать.\n\nПереперевести пакетом можно в Редакторе — секция «Соответствие глоссарию» в карточке «Одобрить и применить»."))),
           React.createElement("p", { className: "muted", style: { marginTop: 6, fontSize: 14 } },
-            busy ? "Считаем…" : !data ? "—"
-              : data.segments.length ? "Расходятся с глоссарием: " + data.segments.length + " сегм. по " + data.terms.length + " терминам"
-              : "Все переводы соответствуют одобренным терминам")),
+            busy ? TR("Считаем…") : !data ? "—"
+              : data.segments.length ? TR("Расходятся с глоссарием: ") + data.segments.length + TR(" сегм. по ") + data.terms.length + TR(" терминам")
+              : TR("Все переводы соответствуют одобренным терминам"))),
         React.createElement("div", { className: "row", style: { gap: 8 } },
           data && (data.caseSegments || []).length > 0 && React.createElement(Btn, {
             variant: "primary", size: "sm", icon: "edit", disabled: fixing || busy, onClick: fixCase },
-            fixing ? "Правим…" : "Привести начертание"),
-          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", disabled: busy, onClick: load }, "Пересчитать"))),
+            fixing ? TR("Правим…") : TR("Привести начертание")),
+          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", disabled: busy, onClick: load }, TR("Пересчитать")))),
 
       /* Отдельной строкой, а не вперемешку с расхождениями выше: там термина
          в переводе НЕТ вовсе и нужен платный переперевод, здесь он есть, но
          не в том начертании — и чинится бесплатно, одной кнопкой. */
       data && React.createElement(StatRow, {
-        label: "Начертание не по оригиналу",
-        note: (data.caseSegments || []).length ? "чинится без вызовов модели" : "всё по оригиналу",
+        label: TR("Начертание не по оригиналу"),
+        note: (data.caseSegments || []).length ? TR("чинится без вызовов модели") : TR("всё по оригиналу"),
         count: (data.caseSegments || []).length,
         color: (data.caseSegments || []).length ? "var(--c-warning)" : undefined,
-        onDrill: () => onDrill("Начертание терминов не по оригиналу", pick(data.caseSegments)) }),
+        onDrill: () => onDrill(TR("Начертание терминов не по оригиналу"), pick(data.caseSegments)) }),
 
       data && data.terms.length > 0 && React.createElement("div", { style: { display: "flex", flexDirection: "column" } },
-        React.createElement(StatRow, { label: "Всего расхождений", bold: true, count: data.segments.length,
-          color: "var(--c-warning)", onDrill: () => onDrill("Расходятся с глоссарием", pick(data.segments)) }),
-        React.createElement(StatRow, { label: "— не подтверждено", note: "можно переперевести сразу",
-          count: data.pending.length, onDrill: () => onDrill("Расходятся с глоссарием (не подтверждено)", pick(data.pending)) }),
-        React.createElement(StatRow, { label: "— подтверждено", note: "перезапись только по явной команде",
+        React.createElement(StatRow, { label: TR("Всего расхождений"), bold: true, count: data.segments.length,
+          color: "var(--c-warning)", onDrill: () => onDrill(TR("Расходятся с глоссарием"), pick(data.segments)) }),
+        React.createElement(StatRow, { label: TR("— не подтверждено"), note: TR("можно переперевести сразу"),
+          count: data.pending.length, onDrill: () => onDrill(TR("Расходятся с глоссарием (не подтверждено)"), pick(data.pending)) }),
+        React.createElement(StatRow, { label: TR("— подтверждено"), note: TR("перезапись только по явной команде"),
           count: data.confirmed.length, color: "var(--c-error)",
-          onDrill: () => onDrill("Расходятся с глоссарием (подтверждено)", pick(data.confirmed)) }),
+          onDrill: () => onDrill(TR("Расходятся с глоссарием (подтверждено)"), pick(data.confirmed)) }),
         /* Куда нажимать. Сама кнопка живёт в СОСЕДНЕЙ карточке «Одобрение
            терминов» (одна задача одобряет термины и тут же чинит ими текст),
            и человек искал её здесь — в карточке, названной по задаче.
@@ -1131,16 +1129,16 @@ function GlossaryImpact({ project, store, toast, onDrill, T }) {
            Поэтому здесь — указание, а не вторая кнопка. */
         data.pending.length > 0 && React.createElement("div",
           { className: "dim", style: { fontSize: 12, lineHeight: 1.5, paddingTop: 8 } },
-          "Починить их: вкладка «Редактор» → карточка «Одобрение терминов» → "
-          + "кнопка «Применить к " + data.pending.length + " сегм.». "
-          + "Правка записи готовый текст сама не меняет — это отдельная команда.")),
+          TR("Починить их: вкладка «Редактор» → карточка «Одобрение терминов» → ")
+          + TR("кнопка «Применить к ") + data.pending.length + TR(" сегм.». ")
+          + TR("Правка записи готовый текст сама не меняет — это отдельная команда."))),
 
       data && data.terms.length > 0 && React.createElement("div", { style: { borderTop: "1px solid var(--border)", paddingTop: 10 } },
-        React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, marginBottom: 6 } }, "По терминам"),
+        React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, marginBottom: 6 } }, TR("По терминам")),
         data.terms.slice(0, 10).map((t, i) => React.createElement("div", {
           key: i, className: "row between", style: { padding: "3px 0", fontSize: 13, cursor: "pointer" },
-          onClick: () => onDrill("Термин: " + t.src, pick(t.segments)),
-          title: "Открыть сегменты с этим термином" },
+          onClick: () => onDrill(TR("Термин: ") + t.src, pick(t.segments)),
+          title: TR("Открыть сегменты с этим термином") },
           React.createElement("div", { className: "row", style: { gap: 8, minWidth: 0, flexWrap: "wrap" } },
             React.createElement("span", null, t.src),
             React.createElement("span", { style: { color: "var(--c-success)", fontWeight: 600 } }, "→ " + t.tgt),
@@ -1180,46 +1178,46 @@ function TermcheckSummary({ segments, onDrill, T }) {
     React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
       React.createElement("div", { className: "row between", style: { alignItems: "flex-end", flexWrap: "wrap", gap: 10 } },
         React.createElement("div", null,
-          React.createElement("h3", { style: { fontSize: 18, fontWeight: 700 } }, "Проверка терминологии",
-            T("Проверка терминологии",
-              "Модель смотрит только на перевод и отвечает, нормальный ли это термин целевого языка: кальки, транслитерации, подмены понятия, склеенные обрывки.\n\nЭто не back-check: тот спрашивает, пережил ли смысл обратный перевод, и на кальке всегда отвечает «да». Запускается в Редакторе, карточка «Проверка терминологии».")),
+          React.createElement("h3", { style: { fontSize: 18, fontWeight: 700 } }, TR("Проверка терминологии"),
+            T(TR("Проверка терминологии"),
+              TR("Модель смотрит только на перевод и отвечает, нормальный ли это термин целевого языка: кальки, транслитерации, подмены понятия, склеенные обрывки.\n\nЭто не back-check: тот спрашивает, пережил ли смысл обратный перевод, и на кальке всегда отвечает «да». Запускается в Редакторе, карточка «Проверка терминологии»."))),
           React.createElement("p", { className: "muted", style: { marginTop: 6, fontSize: 14 } },
-            "Проверено " + checked.length + " из " + translated.length + " переведённых сегментов")),
+            TR("Проверено ") + checked.length + TR(" из ") + translated.length + TR(" переведённых сегментов"))),
         withFindings.length > 0 && React.createElement("div", { className: "dim", style: { fontSize: 13 } },
-          "Замечания в " + Math.round(withFindings.length / Math.max(1, fresh.length) * 100) + "% проверенного")),
+          TR("Замечания в ") + Math.round(withFindings.length / Math.max(1, fresh.length) * 100) + TR("% проверенного"))),
 
       checked.length === 0
-        ? React.createElement(EmptyState, { icon: "book", title: "Проверка терминологии ещё не запускалась",
-            sub: "Запустите её в Редакторе — карточка «Проверка терминологии» в блоке пакетных прогонов." })
+        ? React.createElement(EmptyState, { icon: "book", title: TR("Проверка терминологии ещё не запускалась"),
+            sub: TR("Запустите её в Редакторе — карточка «Проверка терминологии» в блоке пакетных прогонов.") })
         : React.createElement("div", { style: { display: "flex", flexDirection: "column" } },
-            React.createElement(StatRow, { label: "С замечаниями", note: "нужна правка или решение", bold: true,
+            React.createElement(StatRow, { label: TR("С замечаниями"), note: TR("нужна правка или решение"), bold: true,
               count: withFindings.length, color: "var(--c-warning)",
-              onDrill: () => onDrill("Терминология: есть замечания", withFindings) }),
-            React.createElement(StatRow, { label: "— критично", note: "другое понятие или нечитаемый фрагмент",
+              onDrill: () => onDrill(TR("Терминология: есть замечания"), withFindings) }),
+            React.createElement(StatRow, { label: TR("— критично"), note: TR("другое понятие или нечитаемый фрагмент"),
               count: bySev("critical").length, color: "var(--c-error)",
-              onDrill: () => onDrill("Терминология: критичные замечания", bySev("critical")) }),
-            React.createElement(StatRow, { label: "— серьёзно", note: "не термин целевого языка",
+              onDrill: () => onDrill(TR("Терминология: критичные замечания"), bySev("critical")) }),
+            React.createElement(StatRow, { label: TR("— серьёзно"), note: TR("не термин целевого языка"),
               count: bySev("major").length, color: "var(--c-warning)",
-              onDrill: () => onDrill("Терминология: серьёзные замечания", bySev("major")) }),
-            React.createElement(StatRow, { label: "Без замечаний", count: clean.length, color: "var(--c-success)",
-              onDrill: () => onDrill("Терминология: без замечаний", clean) }),
-            React.createElement(StatRow, { label: "Нечего проверять", note: "числа, обозначения — без вызова модели",
-              count: skipped.length, onDrill: () => onDrill("Терминология: нечего проверять", skipped) }),
-            React.createElement(StatRow, { label: "Проверка устарела", note: "перевод меняли после проверки",
-              count: stale.length, onDrill: () => onDrill("Терминология: устаревшие проверки", stale) }),
-            React.createElement(StatRow, { label: "Ещё не проверялись", count: translated.length - checked.length,
-              onDrill: () => onDrill("Терминология: не проверялись", translated.filter(s => !s.termcheck)) })),
+              onDrill: () => onDrill(TR("Терминология: серьёзные замечания"), bySev("major")) }),
+            React.createElement(StatRow, { label: TR("Без замечаний"), count: clean.length, color: "var(--c-success)",
+              onDrill: () => onDrill(TR("Терминология: без замечаний"), clean) }),
+            React.createElement(StatRow, { label: TR("Нечего проверять"), note: TR("числа, обозначения — без вызова модели"),
+              count: skipped.length, onDrill: () => onDrill(TR("Терминология: нечего проверять"), skipped) }),
+            React.createElement(StatRow, { label: TR("Проверка устарела"), note: TR("перевод меняли после проверки"),
+              count: stale.length, onDrill: () => onDrill(TR("Терминология: устаревшие проверки"), stale) }),
+            React.createElement(StatRow, { label: TR("Ещё не проверялись"), count: translated.length - checked.length,
+              onDrill: () => onDrill(TR("Терминология: не проверялись"), translated.filter(s => !s.termcheck)) })),
 
       topTerms.length > 0 && React.createElement("div", { style: { borderTop: "1px solid var(--border)", paddingTop: 10 } },
         React.createElement("div", { className: "row", style: { fontSize: 12.5, fontWeight: 600, marginBottom: 6 } },
-          "Чаще всего повторяется",
-          T("Повторяющиеся замечания",
-            "Один и тот же неверный термин обычно тянется по всему документу. Выгоднее одобрить правильный вариант в «Глоссарий → Кандидаты» и перевести затронутые сегменты заново, чем чинить каждый по отдельности.")),
+          TR("Чаще всего повторяется"),
+          T(TR("Повторяющиеся замечания"),
+            TR("Один и тот же неверный термин обычно тянется по всему документу. Выгоднее одобрить правильный вариант в «Глоссарий → Кандидаты» и перевести затронутые сегменты заново, чем чинить каждый по отдельности."))),
         topTerms.map((t, i) => React.createElement("div", {
           key: i, className: "row between",
           style: { padding: "3px 0", cursor: "pointer", fontSize: 13 },
-          onClick: () => onDrill("Термин: " + t.term, t.segs),
-          title: "Открыть сегменты с этим термином" },
+          onClick: () => onDrill(TR("Термин: ") + t.term, t.segs),
+          title: TR("Открыть сегменты с этим термином") },
           React.createElement("div", { className: "row", style: { gap: 8, minWidth: 0, flexWrap: "wrap" } },
             React.createElement("s", { style: { color: "var(--c-error)" } }, t.term),
             t.suggestion && React.createElement("span", { style: { color: "var(--c-success)", fontWeight: 600 } }, "→ " + t.suggestion)),
@@ -1259,8 +1257,8 @@ function RepairSummary({ segments, onDrill, T }) {
     : null;
 
   // Ждут ремонта: есть свежие находки, но через ремонт этот текст не проходил
-  const REASONS = ["расхождение чисел", "расхождение единиц", "инверсия отрицания",
-                   "подмена на противоположное", "обратный перевод про другое", "потерян термин"];
+  const REASONS = [TR("расхождение чисел"), TR("расхождение единиц"), TR("инверсия отрицания"),
+                   TR("подмена на противоположное"), TR("обратный перевод про другое"), TR("потерян термин")];
   const pending = segments.filter(s => {
     if (!(s.target || "").trim() || (s.repair && s.repair.tried)) return false;
     const bc = s.backcheck && !s.backcheck.stale ? s.backcheck : null;
@@ -1279,29 +1277,29 @@ function RepairSummary({ segments, onDrill, T }) {
     React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
       React.createElement("div", { className: "row between", style: { alignItems: "flex-end", flexWrap: "wrap", gap: 10 } },
         React.createElement("div", null,
-          React.createElement("h3", { style: { fontSize: 18, fontWeight: 700 } }, "Автоматический ремонт",
-            T("Автоматический ремонт",
-              "Переписывает перевод по конкретным находкам back-check и проверки терминологии, затем перепроверяет теми же проверками. Новый текст остаётся, только если оценка не упала.\n\nИсправленные сегменты получают статус «Требует проверки»: автоправка не заверяет сама себя, подтвердить должен человек.")),
+          React.createElement("h3", { style: { fontSize: 18, fontWeight: 700 } }, TR("Автоматический ремонт"),
+            T(TR("Автоматический ремонт"),
+              TR("Переписывает перевод по конкретным находкам back-check и проверки терминологии, затем перепроверяет теми же проверками. Новый текст остаётся, только если оценка не упала.\n\nИсправленные сегменты получают статус «Требует проверки»: автоправка не заверяет сама себя, подтвердить должен человек."))),
           React.createElement("p", { className: "muted", style: { marginTop: 6, fontSize: 14 } },
-            touched.length ? "Ремонт применялся к " + touched.length + " сегментам" : "Ремонт ещё не запускался")),
+            touched.length ? TR("Ремонт применялся к ") + touched.length + TR(" сегментам") : TR("Ремонт ещё не запускался"))),
         gain !== null && React.createElement("div", { className: "dim", style: { fontSize: 13 } },
-          "Средний прирост back-check: " + (gain > 0 ? "+" : "") + gain + "%")),
+          TR("Средний прирост back-check: ") + (gain > 0 ? "+" : "") + gain + "%")),
 
       touched.length === 0 && pending.length === 0
-        ? React.createElement(EmptyState, { icon: "repeat", title: "Чинить пока нечего",
-            sub: "Сначала прогоните back-check или проверку терминологии — ремонт работает по их находкам." })
+        ? React.createElement(EmptyState, { icon: "repeat", title: TR("Чинить пока нечего"),
+            sub: TR("Сначала прогоните back-check или проверку терминологии — ремонт работает по их находкам.") })
         : React.createElement("div", { style: { display: "flex", flexDirection: "column" } },
-            React.createElement(StatRow, { label: "Исправлено", note: "текст заменён, проверка подтвердила улучшение", bold: true,
+            React.createElement(StatRow, { label: TR("Исправлено"), note: TR("текст заменён, проверка подтвердила улучшение"), bold: true,
               count: applied.length, color: "var(--c-success)",
-              onDrill: () => onDrill("Ремонт: исправлено", applied) }),
-            React.createElement(StatRow, { label: "— ждут подтверждения", note: "статус «Требует проверки»",
+              onDrill: () => onDrill(TR("Ремонт: исправлено"), applied) }),
+            React.createElement(StatRow, { label: TR("— ждут подтверждения"), note: TR("статус «Требует проверки»"),
               count: needReview.length, color: "var(--c-warning)",
-              onDrill: () => onDrill("Ремонт: ждут подтверждения", needReview) }),
-            React.createElement(StatRow, { label: "Откачено", note: "вариант модели не улучшил оценку",
-              count: reverted.length, onDrill: () => onDrill("Ремонт: откачено", reverted) }),
-            React.createElement(StatRow, { label: "Ждут ремонта", note: "есть находки, ремонт не запускался",
+              onDrill: () => onDrill(TR("Ремонт: ждут подтверждения"), needReview) }),
+            React.createElement(StatRow, { label: TR("Откачено"), note: TR("вариант модели не улучшил оценку"),
+              count: reverted.length, onDrill: () => onDrill(TR("Ремонт: откачено"), reverted) }),
+            React.createElement(StatRow, { label: TR("Ждут ремонта"), note: TR("есть находки, ремонт не запускался"),
               count: pending.length, color: "var(--c-primary)",
-              onDrill: () => onDrill("Ремонт: ждут ремонта", pending) }))
+              onDrill: () => onDrill(TR("Ремонт: ждут ремонта"), pending) }))
     )
   );
 }

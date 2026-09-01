@@ -183,7 +183,10 @@ console.log("=== 0b. Имена верхнего уровня не совпад�
           : ""));
 }
 
-for (const f of ["ui.jsx", "tab_editor_detail.jsx", "tab_editor.jsx"]) {
+// i18n.js грузится первым и здесь: TR() зовут ВСЕ .jsx, и без него
+// первый же рендер падает с ReferenceError. Словарь не подключаем —
+// без него TR(s) === s, то есть тест видит ровно прежние надписи.
+for (const f of ["i18n.js", "ui.jsx", "tab_editor_detail.jsx", "tab_editor.jsx"]) {
   const code = fs.readFileSync(path.join(root, f), "utf8");
   // Файлы грузятся тегами <script> — то есть в одну общую область видимости.
   (0, eval)(code + "\n//# sourceURL=" + f);

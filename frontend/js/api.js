@@ -59,8 +59,19 @@
       if (r.status === 401 && path !== "/auth/login") onUnauthorized();
       if (!r.ok) {
         const text = await r.text().catch(() => "");
-        const err = new Error(`API ${method} ${path} failed: ${r.status} ${text}`);
+        /* Граница показа ответа сервера — единственное место, где работает
+           фразовая подстановка TRS(). Сервер отвечает по-русски намеренно
+           (его строки лежат в боевых данных и разбираются подстрокой), а
+           человеку показывать «API POST /… failed: 402 {"error":…}» нельзя:
+           это не сообщение, а свалка. Достаём причину и переводим ЕЁ. */
+        let detail = "";
+        try { const j = JSON.parse(text); detail = j.detail || j.error || ""; }
+        catch (e) { detail = ""; }
+        if (typeof detail !== "string") detail = "";
+        const err = new Error(detail ? TRS(detail)
+                                     : `API ${method} ${path} failed: ${r.status} ${text}`);
         err.status = r.status;
+        err.detail = detail;
         throw err;
       }
       return await r.json();
@@ -104,7 +115,7 @@
     },
     login: async (login, password) => {
       const r = await call("POST", "/auth/login", { login: login || "", password });
-      if (!r || !r.token) throw new Error("Сервер не выдал токен сессии");
+      if (!r || !r.token) throw new Error(TR("Сервер не выдал токен сессии"));
       setToken(r.token);
       return r;
     },
@@ -114,6 +125,23 @@
     },
     hasToken: () => !!getToken(),
     me:            ()                       => call("GET",    "/auth/me"),
+    /* ── Профиль и команды ──────────────────────────────────────────
+       Профиль доступен КАЖДОМУ вошедшему, в отличие от /admin/users:
+       переводчику туда хода нет, а язык интерфейса и пароль менять надо.
+       Команда — это рабочее пространство (арендатор), поэтому её
+       переключение меняет ВСЁ, что видно на экране, и делается отдельным
+       запросом, а не флажком в браузере. */
+    profile:       ()                       => call("GET",    "/profile"),
+    profileSave:   (body)                   => call("POST",   "/profile", body),
+    teamSwitch:    (tenant)                 => call("POST",   "/profile/team", { tenant }),
+    inviteDecide:  (iid, action)            => call("POST",   `/profile/invites/${iid}`, { action }),
+    teams:         ()                       => call("GET",    "/teams"),
+    teamCreate:    (name)                   => call("POST",   "/teams", { name }),
+    teamDetail:    (tid)                    => call("GET",    `/teams/${encodeURIComponent(tid)}`),
+    teamInvite:    (tid, email, role)       => call("POST",   `/teams/${encodeURIComponent(tid)}/invite`, { email, role: role || "translator" }),
+    teamInviteRevoke: (tid, iid)            => call("POST",   `/teams/${encodeURIComponent(tid)}/invites/${iid}/revoke`),
+    teamMember:    (tid, uid, body)         => call("POST",   `/teams/${encodeURIComponent(tid)}/members/${uid}`, body),
+    teamLeave:     (tid)                    => call("POST",   `/teams/${encodeURIComponent(tid)}/leave`),
     users:         ()                       => call("GET",    "/admin/users"),
     userCreate:    (body)                   => call("POST",   "/admin/users", body),
     userUpdate:    (uid, body)              => call("POST",   `/admin/users/${uid}`, body),
@@ -179,7 +207,7 @@
       const r = await fetch(BASE + "/quote", { method: "POST", body: fd, headers: authHeaders({}) });
       if (r.status === 401) onUnauthorized();
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) { const e = new Error(data.detail || data.error || ("Не посчитано: " + r.status)); e.status = r.status; throw e; }
+      if (!r.ok) { const e = new Error(data.detail || data.error || (TR("Не посчитано: ") + r.status)); e.status = r.status; throw e; }
       return data;
     },
     importGlossary: async (file, lang, domain, tier, dryRun) => {

@@ -33,13 +33,13 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
     setOverlayBusy(true);
     const r = await window.API.safeCall(() => window.API.imageMarkOverlay(project.id, seg.id));
     setOverlayBusy(false);
-    if (!r || !r.ok) { toast.error("Не удалось", "Сервер отказал или идёт разбор картинок."); return; }
+    if (!r || !r.ok) { toast.error(TR("Не удалось"), TR("Сервер отказал или идёт разбор картинок.")); return; }
     const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
     if (fresh && fresh.segments && store.replaceProjectSegments) {
       store.replaceProjectSegments(project.id, fresh.segments);
     }
-    toast.success("Убрано", "Надпись помечена аппаратной — следующий разбор её не заведёт."
-      + (r.hadTarget ? " Вместе с сегментом ушёл перевод: " + r.hadTarget : ""));
+    toast.success(TR("Убрано"), TR("Надпись помечена аппаратной — следующий разбор её не заведёт.")
+      + (r.hadTarget ? TR(" Вместе с сегментом ушёл перевод: ") + r.hadTarget : ""));
   };
   useEffect(() => {
     /* Сбрасываем СРАЗУ: прежний blob отзывается уборкой этого же эффекта,
@@ -62,13 +62,13 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
 
   const saveDraft = () => {
     store.updateSegment(project.id, seg.id, { target: draft, status: seg.status === "new" ? "translated" : seg.status });
-    toast.success("Сохранено", "Перевод сегмента #" + seg.id + " обновлён.");
+    toast.success(TR("Сохранено"), TR("Перевод сегмента #") + seg.id + TR(" обновлён."));
   };
-  const copySrc = () => { navigator.clipboard && navigator.clipboard.writeText(seg.source); toast.info("Скопировано", "Оригинал в буфере обмена."); };
+  const copySrc = () => { navigator.clipboard && navigator.clipboard.writeText(seg.source); toast.info(TR("Скопировано"), TR("Оригинал в буфере обмена.")); };
   const addComment = () => {
     if (!comment.trim()) return;
     store.addComment(project.id, seg.id, comment.trim());
-    setComment(""); toast.info("Комментарий добавлен");
+    setComment(""); toast.info(TR("Комментарий добавлен"));
   };
 
   const glossHits = store.glossary.filter(g => seg.source.toLowerCase().includes(g.src.toLowerCase()));
@@ -101,12 +101,12 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
     setTermBusy(true);
     window.API.safeCall(() => window.API.termcheck(project.id, seg.id, tcModel)).then(res => {
       setTermBusy(false);
-      if (!res || !res.ok) { toast.error("Проверка не удалась", "Модель не ответила или нет ключа OpenAI."); return; }
+      if (!res || !res.ok) { toast.error(TR("Проверка не удалась"), TR("Модель не ответила или нет ключа OpenAI.")); return; }
       store.updateSegment(project.id, seg.id, { termcheck: { ...res.termcheck, stale: false } });
       const n = (res.termcheck.findings || []).length;
-      if (res.skipped) toast.info("Проверять нечего", res.skipped);
-      else if (n) toast.warning("Замечания по терминам", n + " шт. · предложения замены ушли в «Глоссарий → Кандидаты»");
-      else toast.success("Терминология в порядке", "Замечаний нет.");
+      if (res.skipped) toast.info(TR("Проверять нечего"), res.skipped);
+      else if (n) toast.warning(TR("Замечания по терминам"), n + TR(" шт. · предложения замены ушли в «Глоссарий → Кандидаты»"));
+      else toast.success(TR("Терминология в порядке"), TR("Замечаний нет."));
     });
   };
 
@@ -118,16 +118,16 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
       model: rpModel || null, bc_model: bcModel || null, tc_model: tcModel || null,
       use_judge: !!bcJudge, judge_model: judgeModel || null })).then(res => {
       setRepairBusy(false);
-      if (!res || !res.ok) { toast.error("Ремонт не удался", "Модель не ответила или нет ключа OpenAI."); return; }
+      if (!res || !res.ok) { toast.error(TR("Ремонт не удался"), TR("Модель не ответила или нет ключа OpenAI.")); return; }
       if (!res.applied) {
         store.updateSegment(project.id, seg.id, { repair: { ...res.repair, tried: true } });
-        toast.warning("Правка откачена", (res.repair && res.repair.reason) || "Не стало лучше — текст оставлен прежним.");
+        toast.warning(TR("Правка откачена"), (res.repair && res.repair.reason) || TR("Не стало лучше — текст оставлен прежним."));
         return;
       }
       window.API.safeCall(() => window.API.getProject(project.id)).then(fresh => {
         if (fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
       });
-      toast.success("Сегмент исправлен", "Статус «Требует проверки» — подтвердите вручную.");
+      toast.success(TR("Сегмент исправлен"), TR("Статус «Требует проверки» — подтвердите вручную."));
     });
   };
 
@@ -147,13 +147,13 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
       { src: a.src, tgt: a.tgt, use: a.use, dry_run: false, segment_ids: [seg.id], include_confirmed: true }))
       .then(res => {
         setCtxBusy(false);
-        if (!res || !res.ok || !res.applied) { toast.error("Не удалось применить", (res && res.error) || "Сервер отказал — обновите страницу."); return; }
+        if (!res || !res.ok || !res.applied) { toast.error(TR("Не удалось применить"), (res && res.error) || TR("Сервер отказал — обновите страницу.")); return; }
         const now = draft.split(a.tgt).join(a.use);
         setDraft(now);
         store.updateSegment(project.id, seg.id, { target: now, status: "review", ctxAdvice: null,
           termCtxApplied: { src: a.src, tgt: a.tgt, use: a.use, from: seg.target, by: "human" } });
-        toast.success("Подставлено: " + a.use,
-          "Проверки устарели вместе с текстом — сегмент пойдёт в ближайший прогон. Запись глоссария не тронута.");
+        toast.success(TR("Подставлено: ") + a.use,
+          TR("Проверки устарели вместе с текстом — сегмент пойдёт в ближайший прогон. Запись глоссария не тронута."));
       });
   };
 
@@ -162,19 +162,19 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
     setAcceptBusy(true);
     window.API.safeCall(() => window.API.acceptRepair(project.id, seg.id)).then(res => {
       setAcceptBusy(false);
-      if (!res || !res.ok) { toast.error("Не удалось принять вариант", "Сервер отказал — обновите страницу."); return; }
+      if (!res || !res.ok) { toast.error(TR("Не удалось принять вариант"), TR("Сервер отказал — обновите страницу.")); return; }
       /* Кладём ОДИН сегмент, а не тянем проект: на 2670 строках это 5 МБ ради
          одной изменившейся строки (то же правило, что у /term-case). Сервер
          вернул его уже с производными stale/tried — считать их тут нечем. */
       if (res.segment) store.updateSegment(project.id, seg.id, res.segment);
-      toast.success("Вариант принят",
-        "Проверки устарели вместе с текстом — сегмент пойдёт в ближайший прогон.");
+      toast.success(TR("Вариант принят"),
+        TR("Проверки устарели вместе с текстом — сегмент пойдёт в ближайший прогон."));
     });
   };
 
   // Что именно можно чинить в этом сегменте (критерий тот же, что на сервере)
-  const REPAIR_REASONS = ["расхождение чисел", "расхождение единиц", "инверсия отрицания",
-                          "подмена на противоположное", "обратный перевод про другое", "потерян термин"];
+  const REPAIR_REASONS = [TR("расхождение чисел"), TR("расхождение единиц"), TR("инверсия отрицания"),
+                          TR("подмена на противоположное"), TR("обратный перевод про другое"), TR("потерян термин")];
   const bcFresh = seg.backcheck && !seg.backcheck.stale ? seg.backcheck : null;
   const tcFresh = seg.termcheck && !seg.termcheck.stale ? seg.termcheck : null;
   const termFindings = (tcFresh && tcFresh.findings) || [];
@@ -193,9 +193,9 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
         // Подтягиваем оценку в локальный state, чтобы процент сразу встал в строке
         if (res.backcheck) store.updateSegment(project.id, seg.id, { backcheck: res.backcheck, backtranslated_ru: res.back });
       } else {
-        setBackResult("Ошибка: " + (res && res.error ? res.error : "нет ответа"));
+        setBackResult(TR("Ошибка: ") + (res && res.error ? res.error : TR("нет ответа")));
       }
-    }).catch(e => setBackResult("Ошибка: " + e.message));
+    }).catch(e => setBackResult(TR("Ошибка: ") + e.message));
   };
   const openBack = () => {
     toggleInfo("back");
@@ -207,24 +207,24 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
   };
 
   const minitabs = [
-    ["context", "Контекст"], ["tm", "TM" + (tmHit ? " (1)" : "")],
-    ["qa", "QA" + (qaIssues.length ? " (" + qaIssues.length + ")" : "")], ["comments", "Чат" + (seg.comments.length ? " (" + seg.comments.length + ")" : "")],
+    ["context", TR("Контекст")], ["tm", "TM" + (tmHit ? " (1)" : "")],
+    ["qa", "QA" + (qaIssues.length ? " (" + qaIssues.length + ")" : "")], ["comments", TR("Чат") + (seg.comments.length ? " (" + seg.comments.length + ")" : "")],
   ];
 
   const STATUS_TIP = {
-    new: ["Новый", "Сегмент не переведён. Никаких операций не выполнялось."],
-    translated: ["Переведён", "Перевод получен моделью или вписан вручную. Проверки ещё не запускались."],
-    qa: ["QA пройдено", "Автоматическая проверка качества выполнена. Можно подтверждать."],
-    confirmed: ["Подтверждён", "Финальный статус. Добавлен в TM. Будет в экспорте."],
-    review: ["Требует review", "Обнаружены проблемы — необходим человеческий просмотр."],
-    failed: ["Ошибка", "Перевод/QA завершились с ошибкой. См. логи."],
+    new: [TR("Новый"), TR("Сегмент не переведён. Никаких операций не выполнялось.")],
+    translated: [TR("Переведён"), TR("Перевод получен моделью или вписан вручную. Проверки ещё не запускались.")],
+    qa: [TR("QA пройдено"), TR("Автоматическая проверка качества выполнена. Можно подтверждать.")],
+    confirmed: [TR("Подтверждён"), TR("Финальный статус. Добавлен в TM. Будет в экспорте.")],
+    review: [TR("Требует review"), TR("Обнаружены проблемы — необходим человеческий просмотр.")],
+    failed: [TR("Ошибка"), TR("Перевод/QA завершились с ошибкой. См. логи.")],
   };
 
   return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 16 } },
     React.createElement("div", { className: "row between" },
       React.createElement("div", null,
-        React.createElement("div", { style: { fontWeight: 700, fontSize: 16 } }, "Сегмент #" + seg.id),
-        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, idx + " из " + project.segments.length)),
+        React.createElement("div", { style: { fontWeight: 700, fontSize: 16 } }, TR("Сегмент #") + seg.id),
+        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, idx + TR(" из ") + project.segments.length)),
       React.createElement("div", { className: "row", style: { gap: 2 } },
         React.createElement(StatusBadge, { status: seg.status }),
         React.createElement(InfoTip, { title: (STATUS_TIP[seg.status] || STATUS_TIP.new)[0], body: (STATUS_TIP[seg.status] || STATUS_TIP.new)[1] }))
@@ -234,46 +234,46 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
     React.createElement("div", null,
       React.createElement("div", { className: "row between", style: { marginBottom: 6 } },
         React.createElement("span", { className: "label" },
-          fromImage ? "🖼 Оригинал (текст на картинке)" : "Оригинал · " + (project.src || "")),
-        React.createElement(Btn, { variant: "ghost", size: "sm", icon: "copy", onClick: copySrc }, "Копировать")),
+          fromImage ? TR("🖼 Оригинал (текст на картинке)") : TR("Оригинал · ") + (project.src || "")),
+        React.createElement(Btn, { variant: "ghost", size: "sm", icon: "copy", onClick: copySrc }, TR("Копировать"))),
       fromImage && React.createElement("div", { className: "card col", style: { padding: 8, marginBottom: 6, gap: 8, background: "var(--bg-sunken)" } },
         cropUrl
-          ? React.createElement("img", { src: cropUrl, alt: "Надпись на картинке",
+          ? React.createElement("img", { src: cropUrl, alt: TR("Надпись на картинке"),
               style: { maxWidth: "100%", display: "block", borderRadius: 4 } })
           : React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-              "Кусок картинки не загрузился — проверить распознанное нечем."),
+              TR("Кусок картинки не загрузился — проверить распознанное нечем.")),
         /* Модель ошибается в обе стороны, и дальше машиной это не отсеять:
            правило «на картинке большинство — надпечатка» убивает законную
            подпись, а «нет букв языка оригинала» — латинское название вида.
            Значит решает человек, а система обязана слушаться и помнить. */
         React.createElement("div", { className: "row between", style: { gap: 8 } },
           React.createElement("span", { className: "dim", style: { fontSize: 11.5 } },
-            "не текст документа?"),
+            TR("не текст документа?")),
           React.createElement(Btn, { variant: "ghost", size: "sm", disabled: overlayBusy,
             onClick: markOverlay },
-            overlayBusy ? "Убираем…" : "Это надпись аппарата"))),
+            overlayBusy ? TR("Убираем…") : TR("Это надпись аппарата")))),
       React.createElement("div", { className: "card", style: { padding: 12, background: "var(--bg-sunken)", lineHeight: 1.55, fontSize: 14 } }, seg.source)
     ),
 
     // translation
     React.createElement("div", null,
-      React.createElement("div", { className: "label", style: { marginBottom: 6 } }, "Перевод · " + (project.tgt || "")),
+      React.createElement("div", { className: "label", style: { marginBottom: 6 } }, TR("Перевод · ") + (project.tgt || "")),
       /* dir="auto": направление письма браузер берёт из самого текста — арабский
          и иврит выравниваются справа без каталога языков в браузере. */
-      React.createElement(Textarea, { value: draft, onChange: (e) => setDraft(e.target.value), placeholder: "Введите перевод…", dir: "auto", style: { minHeight: 120 } }),
+      React.createElement(Textarea, { value: draft, onChange: (e) => setDraft(e.target.value), placeholder: TR("Введите перевод…"), dir: "auto", style: { minHeight: 120 } }),
       React.createElement("div", { className: "row between", style: { marginTop: 8 } },
-        React.createElement("span", { className: "dim", style: { fontSize: 12 } }, words + " слов · " + draft.length + " симв."),
-        dirty && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check", onClick: saveDraft }, "Сохранить"))
+        React.createElement("span", { className: "dim", style: { fontSize: 12 } }, words + TR(" слов · ") + draft.length + TR(" симв.")),
+        dirty && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check", onClick: saveDraft }, TR("Сохранить")))
     ),
 
     // actions
     React.createElement("div", { className: "grid grid-2", style: { gap: 8 } },
       // Кнопка одна: движок один — выбранная модель. Раньше рядом стояла
       // «Google», и половина сегментов уходила в бесплатный переводчик.
-      React.createElement(Btn, { variant: "primary", size: "sm", icon: "cpu", disabled: busy, onClick: () => onTranslate(), style: { background: "var(--c-purple)" } }, "Перевести"),
-      React.createElement(Btn, { variant: "secondary", size: "sm", icon: "shield", disabled: busy, onClick: onMedicalQA, style: { color: "var(--c-info)", boxShadow: "inset 0 0 0 1.5px var(--c-info)" } }, "Проверки"),
+      React.createElement(Btn, { variant: "primary", size: "sm", icon: "cpu", disabled: busy, onClick: () => onTranslate(), style: { background: "var(--c-purple)" } }, TR("Перевести")),
+      React.createElement(Btn, { variant: "secondary", size: "sm", icon: "shield", disabled: busy, onClick: onMedicalQA, style: { color: "var(--c-info)", boxShadow: "inset 0 0 0 1.5px var(--c-info)" } }, TR("Проверки")),
       React.createElement(Btn, { variant: "secondary", size: "sm", icon: "shield", disabled: busy, onClick: onQA }, "Quick QA"),
-      React.createElement(Btn, { variant: "success", size: "sm", icon: "check", disabled: busy, onClick: () => onConfirm(draft) }, "Подтвердить")
+      React.createElement(Btn, { variant: "success", size: "sm", icon: "check", disabled: busy, onClick: () => onConfirm(draft) }, TR("Подтвердить"))
     ),
 
     // compact secondary actions (MemSource-style)
@@ -283,36 +283,36 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
       React.createElement("button", { className: "mini-btn" + (infoPanel === "back" ? " on" : ""), onClick: openBack },
         React.createElement(Icon, { name: "repeat", size: 14 }), "Back check"),
       React.createElement("button", { className: "mini-btn" + (infoPanel === "terms" ? " on" : ""), onClick: openTerms,
-        title: "Проверка терминологии: нормальные ли термины целевого языка" },
-        React.createElement(Icon, { name: "book", size: 14 }), "Термины",
+        title: TR("Проверка терминологии: нормальные ли термины целевого языка") },
+        React.createElement(Icon, { name: "book", size: 14 }), TR("Термины"),
         termFindings.length > 0 && React.createElement("span", { className: "mb-val", style: { color: "var(--c-warning)" } }, termFindings.length)),
       canRepair && React.createElement("button", { className: "mini-btn", onClick: runRepair, disabled: repairBusy,
-        title: "Переписать перевод по найденным замечаниям и перепроверить" },
-        React.createElement(Icon, { name: "repeat", size: 14 }), repairBusy ? "Чиним…" : "Починить"),
+        title: TR("Переписать перевод по найденным замечаниям и перепроверить") },
+        React.createElement(Icon, { name: "repeat", size: 14 }), repairBusy ? TR("Чиним…") : TR("Починить")),
       React.createElement("button", { className: "mini-btn" + (infoPanel === "route" ? " on" : ""), onClick: () => toggleInfo("route") },
         React.createElement(Icon, { name: "target", size: 14 }), "Route"),
       React.createElement("button", { className: "mini-btn" + (infoPanel === "risk" ? " on" : ""), onClick: () => toggleInfo("risk") },
         React.createElement(Icon, { name: "warn", size: 14 }), "Risk"),
-      React.createElement("span", { className: "mini-btn readonly", title: "Оценка стоимости перевода" },
+      React.createElement("span", { className: "mini-btn readonly", title: TR("Оценка стоимости перевода") },
         React.createElement(Icon, { name: "zap", size: 14 }), "Est: ", React.createElement("span", { className: "mb-val" }, fmtCost(estCost)))
     ),
 
     infoPanel === "terms" && React.createElement("div", { className: "tm-pop" },
       React.createElement("div", { className: "row between" },
-        React.createElement("span", { className: "label", style: { margin: 0 } }, "Терминология перевода"),
+        React.createElement("span", { className: "label", style: { margin: 0 } }, TR("Терминология перевода")),
         React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", disabled: termBusy, onClick: runTerms },
-          termBusy ? "Проверяем…" : "Проверить заново")),
+          termBusy ? TR("Проверяем…") : TR("Проверить заново"))),
       termBusy && !seg.termcheck
         ? React.createElement("div", { className: "row", style: { gap: 10 } },
             React.createElement(Spinner, null),
-            React.createElement("span", { className: "dim", style: { fontSize: 13 } }, "Модель разбирает термины…"))
+            React.createElement("span", { className: "dim", style: { fontSize: 13 } }, TR("Модель разбирает термины…")))
         : !seg.termcheck
-          ? React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, "Ещё не проверялось.")
+          ? React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, TR("Ещё не проверялось."))
           : React.createElement("div", { className: "col", style: { gap: 8 } },
               seg.termcheck.stale && React.createElement("div", { style: { fontSize: 12, color: "var(--c-warning)" } },
-                "Перевод менялся после проверки — данные устарели."),
+                TR("Перевод менялся после проверки — данные устарели.")),
               seg.termcheck.note && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } }, seg.termcheck.note),
-              termFindings.length === 0 && !seg.termcheck.note && React.createElement("div", { style: { fontSize: 13, color: "var(--c-success)" } }, "Замечаний нет."),
+              termFindings.length === 0 && !seg.termcheck.note && React.createElement("div", { style: { fontSize: 13, color: "var(--c-success)" } }, TR("Замечаний нет.")),
               termFindings.map((f, i) => React.createElement("div", { key: i, className: "tmrow", style: { display: "flex", flexDirection: "column", gap: 4 } },
                 React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
                   React.createElement("span", { className: "badge " + (f.severity === "critical" ? "badge-failed" : f.severity === "major" ? "badge-qa" : "badge-soft") }, f.severity),
@@ -322,9 +322,9 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
                     React.createElement("b", { style: { color: "var(--c-success)" } }, f.suggestion))),
                 f.why && React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.5 } }, f.why),
                 f.suggestion && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check",
-                  onClick: () => { setDraft(draft.split(f.tgt_term).join(f.suggestion)); toast.info("Подставлено в черновик", "Проверьте и сохраните."); } }, "Заменить в тексте"))),
+                  onClick: () => { setDraft(draft.split(f.tgt_term).join(f.suggestion)); toast.info(TR("Подставлено в черновик"), TR("Проверьте и сохраните.")); } }, TR("Заменить в тексте")))),
               React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
-                (seg.termcheck.model === "skip" ? "без вызова модели" : seg.termcheck.model || "")
+                (seg.termcheck.model === "skip" ? TR("без вызова модели") : seg.termcheck.model || "")
                 + (seg.termcheck.at ? " · " + seg.termcheck.at : "")))),
 
     /* Совет арбитра, который есть чем исполнить. Стоит ОТДЕЛЬНОЙ карточкой,
@@ -334,20 +334,20 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
     (seg.ctxAdvice || []).length > 0 && React.createElement("div",
       { className: "tm-pop", style: { marginTop: 8, borderLeft: "3px solid var(--c-warning)" } },
       React.createElement("span", { className: "label", style: { margin: 0, color: "var(--c-warning)" } },
-        "Арбитр: термин здесь передан неверно"),
+        TR("Арбитр: термин здесь передан неверно")),
       seg.ctxAdvice.map((a, i) => React.createElement("div", { key: i, style: { marginTop: 6 } },
         React.createElement("div", { style: { fontSize: 13, lineHeight: 1.6 } },
-          a.src + " · в тексте: ", React.createElement("b", null, a.tgt),
-          " → здесь верно: ", React.createElement("b", { style: { color: "var(--c-success)" } }, a.use)),
+          a.src + TR(" · в тексте: "), React.createElement("b", null, a.tgt),
+          TR(" → здесь верно: "), React.createElement("b", { style: { color: "var(--c-success)" } }, a.use)),
         a.why && React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.5 } }, a.why),
         React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check", style: { marginTop: 4 },
           disabled: ctxBusy, onClick: () => applyAdvice(a) },
-          ctxBusy ? "Подставляем…" : "Применить в этом сегменте"))),
+          ctxBusy ? TR("Подставляем…") : TR("Применить в этом сегменте")))),
       React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 6 } },
-        "Меняется только эта строка; запись глоссария остаётся. Все сегменты с тем же советом — на «Анализе».")),
+        TR("Меняется только эта строка; запись глоссария остаётся. Все сегменты с тем же советом — на «Анализе»."))),
     seg.termCtxApplied && React.createElement("div",
       { style: { fontSize: 12.5, color: "var(--c-success)", marginTop: 6 } },
-      "Совет арбитра применён: " + seg.termCtxApplied.tgt + " → " + seg.termCtxApplied.use
+      TR("Совет арбитра применён: ") + seg.termCtxApplied.tgt + " → " + seg.termCtxApplied.use
       + (seg.termCtxApplied.at ? " · " + seg.termCtxApplied.at : "")),
 
     /* Доказательство отмены заверения. Стоит ВЫШЕ карточки ремонта и красным:
@@ -356,20 +356,20 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
     seg.confirmWithdrawn && React.createElement("div",
       { className: "tm-pop", style: { marginTop: 8, borderLeft: "3px solid var(--c-danger)" } },
       React.createElement("span", { className: "label", style: { margin: 0, color: "var(--c-danger)" } },
-        "Подтверждение снято машиной"),
+        TR("Подтверждение снято машиной")),
       React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.6, marginTop: 4 } },
         (seg.confirmWithdrawn.evidence || []).join("; ")),
       React.createElement("div", { className: "dim", style: { fontSize: 12, marginTop: 4 } },
-        "заверил: " + (seg.confirmWithdrawn.by || "—")
+        TR("заверил: ") + (seg.confirmWithdrawn.by || "—")
         + (seg.confirmWithdrawn.at ? " · " + seg.confirmWithdrawn.at : "")
-        + " · снято " + (seg.confirmWithdrawn.withdrawnAt || "")),
+        + TR(" · снято ") + (seg.confirmWithdrawn.withdrawnAt || "")),
       seg.confirmWithdrawn.was && React.createElement("div", { style: { marginTop: 6 } },
-        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "Заверенный текст был:"),
+        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TR("Заверенный текст был:")),
         React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5 } }, seg.confirmWithdrawn.was))),
 
     seg.repair && React.createElement("div", { className: "tm-pop", style: { marginTop: 8 } },
       React.createElement("span", { className: "label", style: { margin: 0 } },
-        seg.repair.applied ? "Автоматический ремонт применён" : "Автоматический ремонт откачен"),
+        seg.repair.applied ? TR("Автоматический ремонт применён") : TR("Автоматический ремонт откачен")),
       React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.6, marginTop: 4 } },
         (seg.repair.issues || []).join("; ")),
       /* Решения, принятые ВОПРЕКИ падению балла. Поле заведено ровно затем,
@@ -382,19 +382,19 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
          а это разные вещи: одну заверила оценка, другую — человек. */
       seg.repair.acceptedBy === "human" && React.createElement("div",
         { style: { fontSize: 12.5, color: "var(--c-success)", marginTop: 4 } },
-        "Вариант принят человеком" + (seg.repair.acceptedAt ? " · " + seg.repair.acceptedAt : "")),
+        TR("Вариант принят человеком") + (seg.repair.acceptedAt ? " · " + seg.repair.acceptedAt : "")),
       !seg.repair.applied && seg.repair.reason && React.createElement("div", { style: { fontSize: 12.5, color: "var(--c-warning)", marginTop: 4 } },
-        "Причина отката: " + seg.repair.reason),
+        TR("Причина отката: ") + seg.repair.reason),
       seg.repair.applied && seg.repair.from && React.createElement("div", { style: { marginTop: 6 } },
-        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, "Было:"),
+        React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TR("Было:")),
         React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5 } }, seg.repair.from),
         React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", style: { marginTop: 6 },
-          onClick: () => { setDraft(seg.repair.from); toast.info("Прежний текст в черновике", "Сохраните, чтобы вернуть."); } }, "Вернуть прежний")),
+          onClick: () => { setDraft(seg.repair.from); toast.info(TR("Прежний текст в черновике"), TR("Сохраните, чтобы вернуть.")); } }, TR("Вернуть прежний"))),
       !seg.repair.applied && seg.repair.candidate && React.createElement("div", { style: { marginTop: 6 } },
         React.createElement("div", { className: "dim", style: { fontSize: 12 } },
           seg.repair.acceptable
-            ? "Вариант модели — термины он почистил, отменил его только упавший балл:"
-            : "Вариант модели (отклонён проверкой):"),
+            ? TR("Вариант модели — термины он почистил, отменил его только упавший балл:")
+            : TR("Вариант модели (отклонён проверкой):")),
         React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5 } }, seg.repair.candidate),
         /* Кнопка стоит, только когда её разрешил СЕРВЕР (repair.acceptable):
            правило «отмену держал один балл, а термины стали чище» живёт
@@ -403,51 +403,51 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
         seg.repair.acceptable && React.createElement(Btn, {
           variant: "ghost", size: "sm", icon: "check", style: { marginTop: 6 },
           disabled: acceptBusy, onClick: acceptRepair },
-          acceptBusy ? "Принимаем…" : "Принять этот вариант"))),
+          acceptBusy ? TR("Принимаем…") : TR("Принять этот вариант")))),
 
     infoPanel === "route" && React.createElement("div", { className: "row", style: { gap: 8 } },
       React.createElement("span", { className: "badge badge-translated" }, seg.route),
-      React.createElement("span", { className: "dim", style: { fontSize: 12 } }, "маршрут обработки (инфо)")),
+      React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("маршрут обработки (инфо)"))),
     infoPanel === "risk" && React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
       React.createElement("span", { className: "badge " + (riskColorMeta[seg.risk_color] || riskMeta[seg.risk] || riskMeta.medium)[0] }, (riskColorMeta[seg.risk_color] || riskMeta[seg.risk] || riskMeta.medium)[1]),
       seg.risk_score != null && React.createElement("span", { className: "badge badge-soft" }, "Score " + seg.risk_score),
-      React.createElement("span", { className: "dim", style: { fontSize: 12 } }, "уровень риска (инфо)")),
+      React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("уровень риска (инфо)"))),
     // Процента совпадения здесь нет: он брался из seg.tmScore, который писался
     // единожды нулём при импорте и не обновлялся ничем. Показывать «0%» или
     // «100%» рядом с настоящей записью памяти значит подписывать её выдуманной
     // цифрой. Сама запись настоящая — она из store.tm, её и показываем.
     infoPanel === "tm" && React.createElement("div", { className: "tm-pop" },
       React.createElement("div", { className: "row between" },
-        React.createElement("span", { className: "label", style: { margin: 0 } }, "Совпадения TM")),
+        React.createElement("span", { className: "label", style: { margin: 0 } }, TR("Совпадения TM"))),
       tmHit
         ? React.createElement("div", { className: "tmrow" },
             React.createElement("div", { className: "row between", style: { marginBottom: 6 } },
-              React.createElement(Badge, { variant: "confirmed", icon: "checkCircle" }, "точное совпадение"),
-              React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check", onClick: () => { setDraft(tmHit.target); toast.info("Применено из TM"); } }, "Применить")),
+              React.createElement(Badge, { variant: "confirmed", icon: "checkCircle" }, TR("точное совпадение")),
+              React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check", onClick: () => { setDraft(tmHit.target); toast.info(TR("Применено из TM")); } }, TR("Применить"))),
             React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5 } }, tmHit.target))
-        : React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, "Точных совпадений в памяти переводов нет.")),
+        : React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, TR("Точных совпадений в памяти переводов нет."))),
     infoPanel === "back" && React.createElement("div", { className: "tm-pop" },
-      React.createElement("span", { className: "label", style: { margin: 0 } }, "Обратный перевод (EN → RU)"),
+      React.createElement("span", { className: "label", style: { margin: 0 } }, TR("Обратный перевод (EN → RU)")),
 
       // Процент соответствия и почему он такой
       seg.backcheck && seg.backcheck.score != null && React.createElement("div", {
         className: "row between", style: { marginBottom: 6, gap: 10, flexWrap: "wrap" } },
         React.createElement("span", { style: { fontSize: 18, fontWeight: 750,
           color: window.bcScoreColor(seg.backcheck.score) } },
-          seg.backcheck.score + "% соответствия"),
+          seg.backcheck.score + TR("% соответствия")),
         React.createElement("span", { className: "dim", style: { fontSize: 11.5 } },
           (seg.backcheck.model || "") + (seg.backcheck.at ? " · " + seg.backcheck.at : ""))),
       seg.backcheck && (seg.backcheck.reasons || []).length > 0 && React.createElement("div", {
         className: "dim", style: { fontSize: 12, marginBottom: 8, lineHeight: 1.5 } },
-        "Причины: " + seg.backcheck.reasons.join("; ")),
+        TR("Причины: ") + seg.backcheck.reasons.join("; ")),
 
       backResult === "loading"
-        ? React.createElement("div", { className: "row", style: { gap: 10 } }, React.createElement(Spinner, null), React.createElement("span", { className: "dim", style: { fontSize: 13 } }, "Переводим EN→RU…"))
+        ? React.createElement("div", { className: "row", style: { gap: 10 } }, React.createElement(Spinner, null), React.createElement("span", { className: "dim", style: { fontSize: 13 } }, TR("Переводим EN→RU…")))
         : backResult === "no_target"
-          ? React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, "Сначала переведите сегмент.")
+          ? React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, TR("Сначала переведите сегмент."))
           : backResult
             ? React.createElement("div", { className: "tmrow", style: { fontSize: 13, lineHeight: 1.5 } }, backResult)
-            : React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, "Нет перевода для проверки."),
+            : React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, TR("Нет перевода для проверки.")),
 
       // Выбор модели для штучной перепроверки
       bcModels && bcModels.length > 0 && React.createElement("div", {
@@ -458,7 +458,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
         }, bcModels.map(m => React.createElement("option", { key: m.id, value: m.id }, m.label))),
         React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat",
           disabled: backResult === "loading" || !seg.target,
-          onClick: () => runBack(bcModel) }, "Проверить заново"))),
+          onClick: () => runBack(bcModel) }, TR("Проверить заново")))),
 
     React.createElement("div", { className: "divider" }),
 
@@ -468,7 +468,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
 
     React.createElement("div", { style: { minHeight: 80 } },
       tab === "context" && React.createElement(ContextPane, { seg, glossHits }),
-      tab === "tm" && React.createElement(TMPane, { tmHit, onApply: (t) => { setDraft(t); toast.info("Применено из TM"); } }),
+      tab === "tm" && React.createElement(TMPane, { tmHit, onApply: (t) => { setDraft(t); toast.info(TR("Применено из TM")); } }),
       tab === "qa" && React.createElement(QAPane, { seg, qaResult }),
       tab === "comments" && React.createElement(CommentPane, { seg, store, comment, setComment, addComment })
     )
@@ -478,7 +478,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
 function ContextPane({ seg, glossHits }) {
   return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", null,
-      React.createElement("div", { className: "label", style: { marginBottom: 8 } }, "Термины глоссария"),
+      React.createElement("div", { className: "label", style: { marginBottom: 8 } }, TR("Термины глоссария")),
       glossHits.length
         ? React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
             glossHits.map((g, i) => React.createElement("div", { key: i, className: "card", style: { padding: "10px 12px" } },
@@ -489,23 +489,23 @@ function ContextPane({ seg, glossHits }) {
                 React.createElement(Icon, { name: "arrowR", size: 13, style: { color: "var(--text-3)" } }),
                 React.createElement("span", { style: { color: "var(--c-primary)", fontWeight: 600 } }, g.tgt))
             )))
-        : React.createElement("p", { className: "dim", style: { fontSize: 13 } }, "Совпадений с глоссарием не найдено.")
+        : React.createElement("p", { className: "dim", style: { fontSize: 13 } }, TR("Совпадений с глоссарием не найдено."))
     ),
     React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
-      React.createElement(Badge, { variant: "soft", icon: "target" }, "Риск: " + ({ low: "низкий", medium: "средний", high: "высокий", critical: "критический" }[seg.risk])),
+      React.createElement(Badge, { variant: "soft", icon: "target" }, TR("Риск: ") + ({ low: TR("низкий"), medium: TR("средний"), high: TR("высокий"), critical: TR("критический") }[seg.risk])),
       React.createElement(Badge, { variant: "soft", icon: "zap" }, seg.route)
     )
   );
 }
 
 function TMPane({ tmHit, onApply }) {
-  if (!tmHit) return React.createElement("p", { className: "dim", style: { fontSize: 13 } }, "Точных совпадений в памяти переводов нет.");
+  if (!tmHit) return React.createElement("p", { className: "dim", style: { fontSize: 13 } }, TR("Точных совпадений в памяти переводов нет."));
   return React.createElement("div", { className: "card", style: { padding: 12, display: "flex", flexDirection: "column", gap: 10 } },
     React.createElement("div", { className: "row between" },
-      React.createElement(Badge, { variant: "confirmed", icon: "checkCircle" }, (tmHit.score || 100) + "% совпадение"),
+      React.createElement(Badge, { variant: "confirmed", icon: "checkCircle" }, (tmHit.score || 100) + TR("% совпадение")),
       React.createElement("span", { className: "dim", style: { fontSize: 12 } }, "TM")),
     React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5 } }, tmHit.target),
-    React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check", onClick: () => onApply(tmHit.target) }, "Применить перевод")
+    React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check", onClick: () => onApply(tmHit.target) }, TR("Применить перевод"))
   );
 }
 
@@ -566,10 +566,10 @@ function CommentPane({ seg, store, comment, setComment, addComment }) {
                 React.createElement("span", { style: { fontWeight: 600, fontSize: 13 } }, c.author.name),
                 React.createElement("span", { className: "dim", style: { fontSize: 11 } }, c.when)),
               React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5, marginTop: 2 } }, c.text)))))
-      : React.createElement("p", { className: "dim", style: { fontSize: 13 } }, "Комментариев пока нет."),
+      : React.createElement("p", { className: "dim", style: { fontSize: 13 } }, TR("Комментариев пока нет.")),
     React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
-      React.createElement(Textarea, { value: comment, onChange: (e) => setComment(e.target.value), placeholder: "Добавить комментарий…", style: { minHeight: 70 } }),
-      React.createElement(Btn, { variant: "secondary", size: "sm", icon: "send", onClick: addComment, disabled: !comment.trim() }, "Отправить"))
+      React.createElement(Textarea, { value: comment, onChange: (e) => setComment(e.target.value), placeholder: TR("Добавить комментарий…"), style: { minHeight: 70 } }),
+      React.createElement(Btn, { variant: "secondary", size: "sm", icon: "send", onClick: addComment, disabled: !comment.trim() }, TR("Отправить")))
   );
 }
 window.SegDetail = SegDetail;

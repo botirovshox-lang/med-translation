@@ -78,7 +78,10 @@ global.document = { addEventListener() {}, removeEventListener() {}, querySelect
 global.API = { safeCall: async (fn) => fn() };
 
 const root = process.argv[2] || "frontend/js";
-for (const f of ["ui.jsx", "tab_export_preflight.jsx"]) {
+// i18n.js грузится первым и здесь: TR() зовут ВСЕ .jsx, и без него
+// первый же рендер падает с ReferenceError. Словарь не подключаем —
+// без него TR(s) === s, то есть тест видит ровно прежние надписи.
+for (const f of ["i18n.js", "ui.jsx", "tab_export_preflight.jsx"]) {
   (0, eval)(fs.readFileSync(path.join(root, f), "utf8") + "\n//# sourceURL=" + f);
 }
 

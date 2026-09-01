@@ -354,8 +354,12 @@ check(all(medical_qa.band_of(i) for i in range(0, 101)), "и покрывают 
 import re as _re
 js = open("frontend/js/ui.jsx", encoding="utf-8").read()
 lo = js.index("const BC_BANDS_FALLBACK")
-rows = _re.findall(r'key:\s*"([^"]+)",\s*min:\s*(\d+),\s*max:\s*(\d+),\s*label:\s*"([^"]+)",'
-                   r'\s*note:\s*"([^"]+)",\s*color:\s*"([^"]+)"', js[lo:js.index("];", lo)])
+# `label`/`note` обёрнуты в TR(...) — ключом словаря остаётся та же
+# русская строка, поэтому сверяется она же, просто снаружи скобки.
+rows = _re.findall(r'key:\s*"([^"]+)",\s*min:\s*(\d+),\s*max:\s*(\d+),'
+                   r'\s*label:\s*(?:TR\()?"([^"]+)"\)?,'
+                   r'\s*note:\s*(?:TR\()?"([^"]+)"\)?,\s*color:\s*"([^"]+)"',
+                   js[lo:js.index("];", lo)])
 py = [(b["key"], str(b["min"]), str(b["max"]), b["label"], b["note"], b["color"])
       for b in medical_qa.BACKCHECK_BANDS]
 check(rows == py, "запасной список в ui.jsx совпадает с серверным до буквы")

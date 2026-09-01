@@ -43,6 +43,7 @@
   ];
   var DEFAULT_LANG = "uz";
   var catalogs = {};                 // код языка -> { "русская строка": "перевод" }
+  var servers = {};                  // то же, но ТОЛЬКО куски сообщений сервера
   var misses = {};                   // непереведённое: строка -> сколько раз спросили
   var phraseRe = null;               // ленивая регулярка для TS(): собирается один раз
   var phraseFor = null;
@@ -54,6 +55,7 @@
   } catch (e) { /* приватное окно: остаёмся на языке по умолчанию */ }
 
   function dict() { return catalogs[lang] || null; }
+  function srvDict() { return servers[lang] || null; }
 
   /* Перевод ОДНОЙ строки-ключа. На русском — тождество. */
   function T(s) {
@@ -78,13 +80,21 @@
      имя и ровно одна точка вызова — граница показа ответа сервера. */
   function TS(s) {
     if (typeof s !== "string" || !s) return s;
-    var d = dict();
-    if (!d) return s;
-    if (d[s] !== undefined) return d[s];
+    var d = dict(), sd = srvDict();
+    if (!d && !sd) return s;
+    if (d && d[s] !== undefined) return d[s];
+    if (sd && sd[s] !== undefined) return sd[s];
     if (!/[А-Яа-яЁё]/.test(s)) return s;
+    if (!sd) { misses[s] = (misses[s] || 0) + 1; return s; }
     if (phraseRe === null || phraseFor !== lang) {
-      var keys = Object.keys(d).filter(function (k) {
-        return k.length >= 6 && /[А-Яа-яЁё]/.test(k);
+      /* Порога длины здесь НЕТ, и это важно: «Месячный лимит… исчерпан: $1.00
+         из $2.00» собран из кусков, и « из $» — пять символов. Порог молча
+         оставлял такие куски по-русски посреди узбекской фразы.
+         Обойтись без порога можно ровно потому, что таблица здесь СЕРВЕРНАЯ:
+         её куски — части конкретных сообщений сервера, а не обрывки надписей
+         интерфейса («ин », « с»), которыми подстановка изуродовала бы текст. */
+      var keys = Object.keys(sd).filter(function (k) {
+        return /[А-Яа-яЁё]/.test(k);
       }).sort(function (a, b) { return b.length - a.length; });
       phraseRe = keys.length
         ? new RegExp(keys.map(function (k) {
@@ -93,7 +103,7 @@
         : /(?!)/g;
       phraseFor = lang;
     }
-    var out = s.replace(phraseRe, function (m) { return d[m] !== undefined ? d[m] : m; });
+    var out = s.replace(phraseRe, function (m) { return sd[m] !== undefined ? sd[m] : m; });
     if (out === s) misses[s] = (misses[s] || 0) + 1;
     return out;
   }
@@ -115,6 +125,12 @@
        нет намеренно: ключ и есть русская строка. */
     register: function (code, table) {
       catalogs[code] = Object.assign(catalogs[code] || {}, table || {});
+    },
+    /* Куски сообщений СЕРВЕРА — своей таблицей, а не вперемешку с надписями.
+       Из неё и только из неё TRS() собирает фразовую подстановку: обрывки
+       интерфейса («ин », « с») внутри серверного сообщения дали бы кашу. */
+    registerServer: function (code, table) {
+      servers[code] = Object.assign(servers[code] || {}, table || {});
       if (code === lang) { phraseRe = null; }
     },
     label: function (code) {

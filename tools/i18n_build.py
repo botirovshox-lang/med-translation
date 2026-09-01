@@ -52,27 +52,33 @@ def main():
     if not parts:
         print("нет частей словаря в " + SRC, file=sys.stderr)
         return 1
-    table, dupes = {}, []
+    table, server, dupes = {}, {}, []
     for p in parts:
         data = json.load(open(p, encoding="utf-8"))
+        # Куски сообщений СЕРВЕРА идут своей таблицей: из неё TRS() собирает
+        # фразовую подстановку, и мешать их с надписями интерфейса нельзя.
+        into = server if os.path.basename(p) == "uz.server.json" else table
         for k, v in data.items():
             if k == "_":                    # пояснение части, не перевод
                 continue
-            if k in table and table[k] != v:
+            if k in into and into[k] != v:
                 dupes.append((k, os.path.basename(p)))
-            table[k] = v
+            into[k] = v
     if dupes:
         print("ОДИН ключ переведён по-разному в разных частях:")
         for k, p in dupes:
             print("  %s  (%s)" % (k[:60], p))
         return 1
-    body = json.dumps(table, ensure_ascii=False, indent=1, sort_keys=True)
     with open(OUT, "w", encoding="utf-8", newline="") as fh:
         fh.write(HEAD)
         fh.write("window.I18N.register(\"uz\", ")
-        fh.write(body)
+        fh.write(json.dumps(table, ensure_ascii=False, indent=1, sort_keys=True))
+        fh.write(");\n\n")
+        fh.write("window.I18N.registerServer(\"uz\", ")
+        fh.write(json.dumps(server, ensure_ascii=False, indent=1, sort_keys=True))
         fh.write(");\n")
-    print("собрано %d строк из %d частей → %s" % (len(table), len(parts), OUT))
+    print("собрано %d надписей + %d кусков сервера из %d частей → %s"
+          % (len(table), len(server), len(parts), OUT))
     return 0
 
 

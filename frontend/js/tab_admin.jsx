@@ -28,6 +28,11 @@ function AdminTenants({ ov, toast, onChange }) {
     try { await window.API.tenantUpdate(t.id, { active: !t.active }); toast.success(t.active ? "Отключена" : "Включена", t.name); onChange(); }
     catch (e) { toast.error("Не удалось", e.message || String(e)); }
   };
+  const del = async (t) => {
+    if (!confirm("Удалить организацию «" + t.name + "» вместе с её пользователями?\nПроекты должны быть удалены заранее.")) return;
+    try { const r = await window.API.tenantDelete(t.id); toast.success("Организация удалена", "пользователей: " + r.usersRemoved); onChange(); }
+    catch (e) { toast.error("Не удалена", e.message || String(e)); }
+  };
   return React.createElement("div", { className: "card card-pad" },
     React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } }, "Организации · " + ov.tenants.length),
     React.createElement("div", { style: { overflowX: "auto" } }, React.createElement("table", { className: "tbl" },
@@ -44,7 +49,8 @@ function AdminTenants({ ov, toast, onChange }) {
         React.createElement("td", null, t.limitUsd != null ? "$" + Number(t.limitUsd).toFixed(2) : "—"),
         React.createElement("td", { style: { whiteSpace: "nowrap", textAlign: "right" } },
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLimit(t) }, "Лимит"),
-          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => toggle(t) }, t.active === false ? "Включить" : "Отключить"))))))));
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => toggle(t) }, t.active === false ? "Включить" : "Отключить"),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => del(t) }, "Удалить"))))))));
 }
 
 function AdminUsers({ toast }) {
@@ -56,16 +62,22 @@ function AdminUsers({ toast }) {
     try { await window.API.userUpdate(u.id, body); toast.success(msg, u.login); reload(); }
     catch (e) { toast.error("Не удалось", e.message || String(e)); }
   };
-  const shown = users.filter(u => !q || (u.login + " " + u.name + " " + u.tenant).toLowerCase().includes(q.toLowerCase()));
+  const remove = async (u) => {
+    if (!confirm("Удалить учётную запись «" + u.login + "»?")) return;
+    try { await window.API.userDelete(u.id); toast.success("Удалён", u.login); reload(); }
+    catch (e) { toast.error("Не удалён", e.message || String(e)); }
+  };
+  const shown = users.filter(u => !q || (u.login + " " + (u.email || "") + " " + u.name + " " + u.tenant).toLowerCase().includes(q.toLowerCase()));
   return React.createElement("div", { className: "card card-pad" },
     React.createElement("div", { className: "row between", style: { marginBottom: 8 } },
       React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, "Аккаунты · " + users.length),
       React.createElement(Input, { value: q, placeholder: "поиск: логин, имя, организация", style: { maxWidth: 280 }, onChange: (e) => setQ(e.target.value) })),
     React.createElement("div", { style: { overflowX: "auto", maxHeight: 360, overflowY: "auto" } }, React.createElement("table", { className: "tbl" },
       React.createElement("thead", null, React.createElement("tr", null,
-        ["Логин", "Имя", "Организация", "Роль", "Создан", "Состояние", ""].map((h, i) => React.createElement("th", { key: i }, h)))),
+        ["Логин", "Почта", "Имя", "Организация", "Роль", "Создан", "Состояние", ""].map((h, i) => React.createElement("th", { key: i }, h)))),
       React.createElement("tbody", null, shown.map(u => React.createElement("tr", { key: u.id },
         React.createElement("td", null, u.login, u.super ? React.createElement("span", { className: "dim" }, " · super") : null),
+        React.createElement("td", { className: "dim" }, (u.email || "—") + (u.email && !u.emailVerified ? " · не подтверждена" : "")),
         React.createElement("td", null, u.name),
         React.createElement("td", null, u.tenant),
         React.createElement("td", null, u.role === "owner" ? "владелец" : "переводчик"),
@@ -73,7 +85,8 @@ function AdminUsers({ toast }) {
         React.createElement("td", null, u.active ? "активен" : "отключён"),
         React.createElement("td", { style: { whiteSpace: "nowrap", textAlign: "right" } },
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => { const pw = prompt("Новый пароль для " + u.login + ":"); if (pw) patch(u, { password: pw }, "Пароль сменён"); } }, "Пароль"),
-          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => patch(u, { active: !u.active }, u.active ? "Отключён" : "Включён") }, u.active ? "Отключить" : "Включить"))))))));
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => patch(u, { active: !u.active }, u.active ? "Отключён" : "Включён") }, u.active ? "Отключить" : "Включить"),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => remove(u) }, "Удалить"))))))));
 }
 
 function AdminJobs({ ov, toast, onChange }) {

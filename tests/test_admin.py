@@ -62,6 +62,30 @@ r = c.post("/api/jobs/9002/stop", headers=H(S))
 check(r.status_code == 200 and main._JOBS[9002]["stop"], "super остановил чужой прогон")
 main._JOBS.pop(9002, None)
 
+print("=== 3b. Удаление аккаунтов и организаций ===")
+uid2 = [u for u in main.STATE["users"] if u["login"] == "acme-tr"][0]["id"]
+check(c.request("DELETE", "/api/admin/users/1", headers=H(S)).status_code == 400, "себя удалить нельзя")
+check(c.request("DELETE", "/api/admin/users/%d" % uid2, headers=H(S)).status_code == 200, "super удалил чужого переводчика")
+check(not any(u["id"] == uid2 for u in main.STATE["users"]), "запись исчезла")
+owner_id = [u for u in main.STATE["users"] if u["login"] == "acme"][0]["id"]
+check(c.request("DELETE", "/api/admin/users/%d" % owner_id, headers=H(S)).status_code == 409,
+      "последнего владельца организации удалить нельзя")
+check(c.request("DELETE", "/api/admin/tenants/acme", headers=H(O)).status_code == 403, "владелец организации не удаляет")
+check(c.request("DELETE", "/api/admin/tenants/default", headers=H(S)).status_code == 400, "организацию по умолчанию — нельзя")
+main.STATE["projects"].append({"id": 987654, "tenant": "acme", "title": "x", "segments": [],
+                               "src": "RU", "tgt": "EN", "domain": "medical"})
+check(c.request("DELETE", "/api/admin/tenants/acme", headers=H(S)).status_code == 409,
+      "организация с проектами не удаляется — работа не пропадает молча")
+main.STATE["projects"] = [p for p in main.STATE["projects"] if p["id"] != 987654]
+r = c.request("DELETE", "/api/admin/tenants/acme", headers=H(S))
+check(r.status_code == 200 and r.json()["usersRemoved"] == 1, "пустая организация удалена вместе с владельцем")
+check(not main._tenant_rec("acme") and not any(u.get("tenant") == "acme" for u in main.STATE["users"]),
+      "ни организации, ни её людей не осталось")
+check(c.get("/api/auth/me", headers=H(O)).status_code == 401, "его сессия закрыта")
+c.post("/api/admin/tenants", headers=H(S),
+       json={"id": "acme", "name": "ACME", "ownerLogin": "acme", "ownerPassword": "acme-pass-123"})
+O = c.post("/api/auth/login", json={"login": "acme", "password": "acme-pass-123"}).json()["token"]
+
 print("=== 4. Вход в админку — по нестандартному адресу ===")
 check(not main.ADMIN_PATH.startswith("admin") and len(main.ADMIN_PATH) >= 12, "адрес не /admin: /" + main.ADMIN_PATH)
 r = c.get("/" + main.ADMIN_PATH)

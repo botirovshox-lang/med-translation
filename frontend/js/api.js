@@ -123,6 +123,8 @@
     usersAll:      ()                       => call("GET",    "/admin/users?all=1"),
     auditAll:      (limit)                  => call("GET",    "/admin/audit?all=1&limit=" + (limit || 300)),
     tenantUpdate:  (tid, body)              => call("POST",   `/admin/tenants/${tid}`, body),
+    userDelete:    (uid)                    => call("DELETE", `/admin/users/${uid}`),
+    tenantDelete:  (tid)                    => call("DELETE", `/admin/tenants/${tid}`),
     audit:         (limit)                  => call("GET",    "/admin/audit?limit=" + (limit || 200)),
     domains:       ()                       => call("GET",    "/admin/domains"),
     domainCreate:  (body)                   => call("POST",   "/admin/domains", body),

@@ -2993,6 +2993,71 @@ def set_project_domain(pid: int, req: ProjectDomainRequest):
                     "устарели — пересчитайте back-check (бесплатно, /backcheck/rescore с force)."}
 
 
+def _drop_user_sessions(uid: int) -> None:
+    with _AUTH_LOCK:
+        for t in [t for t, sess in _SESSIONS.items() if sess["user"] == uid]:
+            _SESSIONS.pop(t, None)
+
+
+@app.delete("/api/admin/users/{uid}")
+def admin_user_delete(uid: int, request: Request):
+    """Убрать учётную запись. Отключение (`active: false`) закрывает вход,
+    но оставляет строку — этого мало, когда в базе копится мусор
+    самостоятельных регистраций. Два запрета: себя и последнего владельца
+    организации (иначе у неё не останется никого, кто вправе её вести)."""
+    me = _current_user(request)
+    u = next((x for x in _users() if x["id"] == uid
+              and (x.get("tenant") == me.get("tenant") or _is_super(request))), None)
+    if not u:
+        raise HTTPException(404, "Пользователь не найден")
+    if u["id"] == me["id"]:
+        raise HTTPException(400, "Нельзя удалить самого себя")
+    if u.get("role") == "owner":
+        others = [x for x in _users() if x.get("tenant") == u.get("tenant")
+                  and x["id"] != uid and x.get("role") == "owner" and x.get("active", True)]
+        if not others:
+            raise HTTPException(409, "Это последний владелец организации: сначала назначьте другого")
+    _users().remove(u)
+    _drop_user_sessions(uid)
+    _audit("user.delete", target=uid, login=u.get("login"))
+    save_state(STATE)
+    return {"ok": True}
+
+
+@app.delete("/api/admin/tenants/{tid}")
+def admin_tenant_delete(tid: str, request: Request):
+    """Снести организацию целиком — вместе с её людьми. Только суперпользователь
+    и только пустую: проекты (а с ними переводы и оплаченная работа) молча
+    не удаляются НИКОГДА. Глоссарий, память и очередь организации уходят
+    вместе с ней — они и так видны только ей."""
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Удалять организации вправе только суперпользователь")
+    if tid == DEFAULT_TENANT:
+        raise HTTPException(400, "Организацию по умолчанию удалить нельзя")
+    rec = _tenant_rec(tid)
+    if not rec:
+        raise HTTPException(404, "Организация не найдена")
+    if me.get("tenant") == tid:
+        raise HTTPException(400, "Нельзя удалить организацию, в которой вы сами состоите")
+    projects = [p["id"] for p in STATE["projects"] if _tenant_of(p) == tid]
+    if projects:
+        raise HTTPException(409, "В организации есть проекты: %s — удалите их сначала" % projects[:10])
+    users = [u for u in _users() if u.get("tenant") == tid]
+    for u in users:
+        _drop_user_sessions(u["id"])
+        _users().remove(u)
+    for coll in ("glossary", "tm", "termQueue", "autoBatches", "exportHistory", "domains"):
+        rows = STATE.get(coll)
+        if isinstance(rows, list):
+            STATE[coll] = [r for r in rows if _tenant_of(r) != tid]
+    _tenants().remove(rec)
+    _invalidate_gloss_index()
+    _audit("tenant.delete", tenant_target=tid, users=len(users))
+    save_state(STATE)
+    return {"ok": True, "usersRemoved": len(users)}
+
+
 class TenantPatch(BaseModel):
     name: Optional[str] = None
     active: Optional[bool] = None

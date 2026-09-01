@@ -88,6 +88,20 @@
                                                   ticket: segStarted + ":" + segDone }),
     health:        ()                       => call("GET",    "/health"),
     seed:          ()                       => call("GET",    "/seed"),
+    signupInfo:    ()                       => call("GET",    "/auth/signup-info"),
+    register:      (body)                   => call("POST",   "/auth/register", body),
+    resendCode:    (email)                  => call("POST",   "/auth/resend", { email }),
+    forgotPassword:(email)                  => call("POST",   "/auth/forgot", { email }),
+    verifyEmail: async (email, code) => {
+      const r = await call("POST", "/auth/verify", { email, code });
+      if (r && r.token) setToken(r.token);
+      return r;
+    },
+    resetPassword: async (email, code, password) => {
+      const r = await call("POST", "/auth/reset", { email, code, password });
+      if (r && r.token) setToken(r.token);
+      return r;
+    },
     login: async (login, password) => {
       const r = await call("POST", "/auth/login", { login: login || "", password });
       if (!r || !r.token) throw new Error("Сервер не выдал токен сессии");

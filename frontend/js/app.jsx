@@ -192,51 +192,120 @@ function ThemeToggle({ theme, onToggle }) {
 
 /* ---------- Auth screen ---------- */
 function AuthScreen({ onLogin, theme, onToggleTheme }) {
-  const [login, setLogin] = useState("");
-  const [pw, setPw] = useState("");
-  const [shake, setShake] = useState(false);
+  /* Четыре состояния одной двери: вход, регистрация, код из письма,
+     восстановление пароля. Регистрация показывается, только если сервер
+     говорит, что она открыта (/auth/signup-info) — выключенная кнопка,
+     ведущая в 403, хуже отсутствующей. */
+  const [mode, setMode] = useState("login");   // login | register | verify | forgot | reset
+  const [info, setInfo] = useState({ signup: false, mail: false, brand: "CAT Translator", trialUsd: 0 });
+  const [f, setF] = useState({ login: "", password: "", email: "", org: "", name: "", code: "" });
   const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
+  const [shake, setShake] = useState(false);
   const [busy, setBusy] = useState(false);
-  const submit = async (e) => {
-    e.preventDefault();
-    setErr("");
-    if (!pw.length) { setShake(true); setTimeout(() => setShake(false), 400); return; }
-    setBusy(true);
-    /* Без токена от сервера входа нет: раньше сетевая ошибка пускала внутрь
-       на локальных мок-данных, и это же скрывало отсутствие реальной защиты. */
-    let ok = false;
+  useEffect(() => {
+    window.API && window.API.safeCall(() => window.API.signupInfo()).then(r => r && setInfo(r));
+  }, []);
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const bad = (m) => { setErr(m); setShake(true); setTimeout(() => setShake(false), 400); };
+  const go = (m) => { setMode(m); setErr(""); setNote(""); };
+  const msg = (e) => (e && e.message) ? e.message : "Сервер недоступен";
+
+  const submit = async (ev) => {
+    ev.preventDefault();
+    setErr(""); setNote(""); setBusy(true);
     try {
-      await window.API.login(login, pw);
-      ok = true;
-    } catch (e2) {
-      if (e2.status === 401) setErr("Неверный логин или пароль");
-      else if (e2.status === 429) setErr("Слишком много попыток. Повторите через 15 минут.");
-      else setErr("Сервер недоступен — вход невозможен");
+      if (mode === "login") {
+        if (!f.password) throw new Error("Введите пароль");
+        await window.API.login(f.login, f.password);
+        onLogin();
+      } else if (mode === "register") {
+        const r = await window.API.register({ email: f.email, password: f.password, org: f.org, name: f.name });
+        setNote(r.note || "Код отправлен на почту.");
+        setMode("verify");
+      } else if (mode === "verify") {
+        await window.API.verifyEmail(f.email, f.code);
+        onLogin();
+      } else if (mode === "forgot") {
+        await window.API.forgotPassword(f.email);
+        setNote("Если такая почта у нас есть, письмо с кодом уже ушло.");
+        setMode("reset");
+      } else if (mode === "reset") {
+        await window.API.resetPassword(f.email, f.code, f.password);
+        onLogin();
+      }
+    } catch (e) {
+      if (e.status === 401) bad("Неверный логин или пароль");
+      else if (e.status === 429) bad(msg(e));
+      else bad(msg(e));
     }
     setBusy(false);
-    if (ok) onLogin();
-    else { setShake(true); setTimeout(() => setShake(false), 400); }
   };
+
+  const field = (label, key, type, ph, extra) => React.createElement(Field, { label, key: key },
+    React.createElement("input", Object.assign({
+      className: "input", type: type || "text", value: f[key], onChange: set(key), placeholder: ph,
+    }, extra || {})));
+  const title = { login: "Вход", register: "Регистрация", verify: "Код из письма",
+                  forgot: "Восстановление пароля", reset: "Новый пароль" }[mode];
+  const sub = {
+    login: "Система перевода документов с проверками",
+    register: "Своя организация: проекты, глоссарий и память переводов видите только вы",
+    verify: "Мы отправили шестизначный код на " + (f.email || "вашу почту"),
+    forgot: "Пришлём код на почту, которой вы регистрировались",
+    reset: "Введите код из письма и новый пароль",
+  }[mode];
+
+  const rows = [];
+  if (mode === "login") {
+    rows.push(field("Логин или почта", "login", "text", "admin или you@mail.com", { autoComplete: "username", autoFocus: true }));
+    rows.push(field("Пароль", "password", "password", "", { autoComplete: "current-password" }));
+  } else if (mode === "register") {
+    rows.push(field("Рабочая почта", "email", "email", "you@company.com", { autoComplete: "email", autoFocus: true }));
+    rows.push(field("Название организации", "org", "text", "напр. Бюро переводов"));
+    rows.push(field("Ваше имя", "name", "text", "необязательно"));
+    rows.push(field("Пароль (от 8 символов)", "password", "password", "", { autoComplete: "new-password" }));
+  } else if (mode === "verify") {
+    rows.push(field("Почта", "email", "email", "", { autoComplete: "email" }));
+    rows.push(field("Код из письма", "code", "text", "123456", { inputMode: "numeric", autoFocus: true }));
+  } else if (mode === "forgot") {
+    rows.push(field("Почта", "email", "email", "you@company.com", { autoComplete: "email", autoFocus: true }));
+  } else if (mode === "reset") {
+    rows.push(field("Почта", "email", "email", "", { autoComplete: "email" }));
+    rows.push(field("Код из письма", "code", "text", "123456", { inputMode: "numeric", autoFocus: true }));
+    rows.push(field("Новый пароль (от 8)", "password", "password", "", { autoComplete: "new-password" }));
+  }
+
+  const link = (label, m) => React.createElement("button", {
+    type: "button", className: "linklike", onClick: () => go(m),
+    style: { background: "none", border: 0, color: "var(--c-primary)", cursor: "pointer", fontSize: 13, padding: 0 },
+  }, label);
+
   return React.createElement("div", { className: "auth-wrap" },
     React.createElement("div", { className: "auth-theme" }, React.createElement(ThemeToggle, { theme, onToggle: onToggleTheme })),
     React.createElement("form", { className: "auth-card", onSubmit: submit, style: shake ? { animation: "pop .1s, shake .4s" } : null },
       React.createElement("div", { className: "auth-logo" }, React.createElement(Icon, { name: "globe", size: 28 })),
-      React.createElement("h1", null, "Вход"),
-      React.createElement("p", { className: "auth-sub" }, "Система перевода документов с проверками"),
-      React.createElement(Field, { label: "Логин" },
-        React.createElement("div", { className: "search" },
-          React.createElement(Icon, { name: "user", size: 17 }),
-          React.createElement("input", { className: "input", style: { paddingLeft: 38 }, type: "text", value: login,
-            autoComplete: "username", onChange: (e) => setLogin(e.target.value), placeholder: "admin", autoFocus: true }))),
-      React.createElement(Field, { label: "Пароль" },
-        React.createElement("div", { className: "search" },
-          React.createElement(Icon, { name: "lock", size: 17 }),
-          React.createElement("input", { className: "input", style: { paddingLeft: 38 }, type: "password", value: pw,
-            autoComplete: "current-password", onChange: (e) => setPw(e.target.value), placeholder: "Введите пароль" }))),
+      React.createElement("h1", null, title),
+      React.createElement("p", { className: "auth-sub" }, sub),
+      React.createElement("div", { className: "col", style: { gap: 4 } }, rows),
+      /* Почта на сервере не настроена — говорим об этом ДО того, как человек
+         нажмёт «Зарегистрироваться» и уйдёт ждать письма, которого не будет. */
+      mode === "register" && !info.mail && React.createElement("div", { className: "dim", style: { fontSize: 12, marginTop: 8 } },
+        "Отправка почты на сервере не настроена: код придётся взять у администратора."),
+      note && React.createElement("div", { style: { color: "var(--c-info)", fontSize: 13, marginTop: 8 } }, note),
       err && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13, marginTop: 8 } }, err),
-      React.createElement("div", { className: "row", style: { gap: 10, marginTop: 20 } },
-        React.createElement(Btn, { variant: "primary", type: "submit", icon: "unlock", className: "btn-block", disabled: busy }, busy ? "Проверка..." : "Войти"),
-        React.createElement(Btn, { variant: "secondary", type: "button", icon: "info", onClick: () => alert("Логин и пароль выдаёт владелец вашей организации.") }, "Справка")),
+      React.createElement("div", { className: "row", style: { gap: 10, marginTop: 18 } },
+        React.createElement(Btn, { variant: "primary", type: "submit", icon: "unlock", className: "btn-block", disabled: busy },
+          busy ? "Минуту…" : { login: "Войти", register: "Зарегистрироваться", verify: "Подтвердить",
+                               forgot: "Прислать код", reset: "Сменить пароль" }[mode])),
+      React.createElement("div", { className: "row row-wrap", style: { gap: 14, marginTop: 14, justifyContent: "center" } },
+        mode !== "login" && link("← Ко входу", "login"),
+        mode === "login" && info.signup && link("Создать организацию", "register"),
+        mode === "login" && link("Забыли пароль?", "forgot"),
+        mode === "verify" && React.createElement("button", {
+          type: "button", style: { background: "none", border: 0, color: "var(--c-primary)", cursor: "pointer", fontSize: 13, padding: 0 },
+          onClick: () => window.API.safeCall(() => window.API.resendCode(f.email)).then(() => setNote("Код отправлен заново.")),
+        }, "Прислать код заново")),
       React.createElement("p", { className: "auth-foot" }, "Конфиденциально")
     )
   );

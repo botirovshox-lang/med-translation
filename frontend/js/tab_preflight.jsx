@@ -238,6 +238,12 @@ ${skipped ? `Заверенных человеком не тронем: ${skippe
         React.createElement("b", { style: { fontVariantNumeric: "tabular-nums", color: humanTotal ? "var(--c-warning)" : "var(--c-success)" } }, humanTotal)),
       React.createElement(Row, { label: "Терминов машина решать не берётся", n: s.human.termsTotal,
         color: "var(--c-warning)", hint: "спорные варианты и конфликты — в «Глоссарии»" }),
+      /* Ждут ДАННЫХ, а не решения: доноров приносят следующие чистые прогоны,
+         и дорешает их автоматика. Раньше они шли в строку выше и пугали числом:
+         на боевом проекте 412 из 684 «ждущих человека» человека не ждали. */
+      (s.human.termsWaitingTotal || 0) > 0 && React.createElement(Row, {
+        label: "Терминов ждут новых данных — дорешается само", n: s.human.termsWaitingTotal,
+        hint: "не хватает сегментов-доноров или чистых проверок; следующие прогоны добирают их сами" }),
       React.createElement(Row, { label: "Правка откачена — не стало лучше",
         n: s.human.reverted.length - (s.human.revertedByScore || []).length,
         ids: (s.human.reverted || []).filter(i => !(s.human.revertedByScore || []).includes(i)),

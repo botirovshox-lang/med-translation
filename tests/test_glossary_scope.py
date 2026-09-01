@@ -228,7 +228,7 @@ check(r["tgt"] == "spasm", "без области взята запись обл
 check(sum(len(p.get("violating", [])) for p in r["projects"]) == 0,
       "сегмент не помечен нарушением")
 
-print("\n=== 13. Вторая пачка не наступает на запись первой ===")
+print("\n=== 13. Вторая пачка перехватывает запись первой, сохраняя откат ===")
 base_state(
     projects=[dict(P_EN, segments=[seg(1, "спазм сосудов", "vascular spasm"),
                                    seg(2, "мышечный спазм", "muscle spasm")])],
@@ -241,10 +241,19 @@ main.STATE["termQueue"].append({"id": 2, "kind": "extract", "src": "спазм",
                                 "lang": "RU→EN", "domain": "medical", "via": "auto"})
 second = main.auto_approve_terms(main.AutoApproveRequest(dry_run=True, project=1))
 reasons = " ".join(b["reason"] for b in second["skipped"])
-check("занята пачкой" in reasons, "кандидат отложен: запись принадлежит прошлой пачке")
-check(main.STATE["glossary"][0]["tgt"] == "spasm", "значение первой пачки не переписано")
-main.undo_auto_approve(first["batch"])
-check(not main.STATE["glossary"], "первая пачка по-прежнему откатывается")
+# Прежний отказ «занята пачкой #N» копил неразрешимые карточки: _auto_write
+# теперь сохраняет цепочку отката при перезаписи, и запрет снят.
+check("занята пачкой" not in reasons, "запрет «занята пачкой» снят")
+check(second["counts"]["auto"] >= 1, "кандидат готов к одобрению")
+applied = main.auto_approve_terms(main.AutoApproveRequest(dry_run=False, project=1))
+g = main.STATE["glossary"][0]
+check(g["tgt"] == "cramp" and g.get("autoCreated") is True,
+      "вторая пачка перехватила запись, autoCreated унаследован")
+r1 = main.undo_auto_approve(first["batch"])
+check(r1.get("superseded") == 1 and main.STATE["glossary"][0]["tgt"] == "cramp",
+      "откат первой пачки перехваченное не трогает и называет числом")
+main.undo_auto_approve(applied["batch"])
+check(not main.STATE["glossary"], "откат второй пачки убирает запись: до пачек её не было")
 
 print("\n=== 14. Откат возвращает запись целиком ===")
 base_state(

@@ -3627,11 +3627,17 @@ def project_analysis(pid: int, refresh: bool = False):
     pending = [c for c in _term_queue() if c.get("status", "pending") == "pending"
                and _scope_of(c) == scope]
     ctx = _auto_context(pending, pol)
-    ready, need_human = 0, {}
+    ready, need_human, need_wait = 0, {}, {}
     for cand in pending:
         action, reason = _auto_verdict(cand, ctx)
         if action in (GLOSSARY_TIER_HARD, GLOSSARY_TIER_SOFT):
             ready += 1
+        elif action == "wait":
+            # Не хватает ДАННЫХ, а не решения: следующие чистые прогоны
+            # приносят доноров сами. Считать это «ждёт человека» значило
+            # звать его к работе, которой нет, — на боевом проекте так
+            # пугали 412 карточек из 684.
+            need_wait[reason] = need_wait.get(reason, 0) + 1
         elif action != "close":
             need_human[reason] = need_human.get(reason, 0) + 1
 
@@ -3677,6 +3683,11 @@ def project_analysis(pid: int, refresh: bool = False):
             "terms": sorted(({"reason": k, "count": v} for k, v in need_human.items()),
                             key=lambda x: -x["count"]),
             "termsTotal": sum(need_human.values()),
+            # Ждут не решения, а ДАННЫХ (доноров, чистых проверок) — дорешает
+            # автоматика следующих прогонов. Отдельно, чтобы не пугать числом.
+            "termsWaiting": sorted(({"reason": k, "count": v} for k, v in need_wait.items()),
+                                   key=lambda x: -x["count"]),
+            "termsWaitingTotal": sum(need_wait.values()),
             "reverted": reverted,
             # Из них: правка была верной, отменил её негодный измеритель.
             # Готовый текст лежит в сегменте, применяется без вызова модели
@@ -5423,6 +5434,29 @@ def _migrate_term_queue(state: dict) -> int:
         if answer is not None:
             c["decidedWith"] = answer.get("id")
         closed += 1
+    # Обрывки фраз, накопленные ДО ворот формы (_term_shape_reject в
+    # _queue_term_locked): политика отвергнет их при любых обстоятельствах,
+    # а место у потолка TERM_QUEUE_MAX они занимают и вытесняют настоящие
+    # находки — на боевом проекте так висело 115 карточек. Тем же предикатом,
+    # что ворота и _auto_verdict, — копия условий разошлась бы первой же
+    # правкой политики. conflict не трогаем: его _auto_verdict отдаёт человеку
+    # раньше любых проверок формы, и ловить расхождение заверенного перевода
+    # с записью длиннее лимита — его работа. Решением человека закрытая так
+    # карточка не становится (autoWrote в ключах — см. _human_decision).
+    for c in queue:
+        if c.get("status", "pending") != "pending" or c.get("kind") == "conflict":
+            continue
+        src = (c.get("src") or "").strip()
+        tgt = (c.get("tgt") or "").strip()
+        if not src or not tgt:
+            continue
+        why = _term_shape_reject(_auto_policy(_scope_of(c)[1]), src, tgt)
+        if why:
+            c.update({"status": "rejected", "autoWrote": False, "decidedAt": today,
+                      "note": "снято разбором очереди: " + why})
+            for k in ("sampleSrc", "sampleTgt"):
+                c.pop(k, None)
+            closed += 1
     return closed
 
 
@@ -6288,23 +6322,6 @@ def _load_authorities():
     _DICTIONARIES = loaded
 
 
-_TERM_QUEUE_MIGRATED = _migrate_term_queue(STATE)
-# Занятость очереди — в журнал при старте. О потолке узнавали только из строки
-# «выброшено N», то есть уже после потери находок.
-try:
-    _q = _term_queue()
-    _q_pending = sum(1 for c in _q if c.get("status", "pending") == "pending")
-    print(f"[backend] очередь кандидатов: {len(_q)} из {TERM_QUEUE_MAX} "
-          f"(ожидают решения: {_q_pending})", file=sys.stderr)
-except Exception as _e:                                      # pragma: no cover
-    print(f"[backend] очередь кандидатов: размер не посчитан: {_e}", file=sys.stderr)
-if _TERM_QUEUE_MIGRATED:
-    # Молча укоротить очередь на сотню карточек нельзя: человек увидит другое
-    # число и должен знать, что это разбор старого хвоста, а не потеря данных.
-    print(f"[backend] очередь терминов: снято {_TERM_QUEUE_MIGRATED} карточек "
-          f"про термины, по которым решение уже есть", file=sys.stderr)
-    save_state(STATE)
-
 _load_authorities()      # ОБЯЗАТЕЛЬНО при импорте: без этого вызова весь путь
                          # «приказ от справочника» мёртв, и медицина с фармой
                          # навсегда остаются без приказов, кроме человеческих.
@@ -6371,6 +6388,27 @@ def _auto_policy(domain_id: Optional[str]) -> dict:
     if dom.get("custom") and dom.get("strict", True):
         pol["allow_verified"] = False
     return pol
+
+
+# Поздний проход по очереди — ПОСЛЕ определения _auto_policy: разбор формы
+# внутри миграции читает лимиты слов той же политикой, что и _auto_verdict.
+_TERM_QUEUE_MIGRATED = _migrate_term_queue(STATE)
+# Занятость очереди — в журнал при старте. О потолке узнавали только из строки
+# «выброшено N», то есть уже после потери находок.
+try:
+    _q = _term_queue()
+    _q_pending = sum(1 for c in _q if c.get("status", "pending") == "pending")
+    print(f"[backend] очередь кандидатов: {len(_q)} из {TERM_QUEUE_MAX} "
+          f"(ожидают решения: {_q_pending})", file=sys.stderr)
+except Exception as _e:                                      # pragma: no cover
+    print(f"[backend] очередь кандидатов: размер не посчитан: {_e}", file=sys.stderr)
+if _TERM_QUEUE_MIGRATED:
+    # Молча укоротить очередь на сотню карточек нельзя: человек увидит другое
+    # число и должен знать, что это разбор старого хвоста, а не потеря данных.
+    print(f"[backend] очередь терминов: снято {_TERM_QUEUE_MIGRATED} карточек "
+          f"про термины, по которым решение уже есть либо которые политика "
+          f"не одобрит никогда", file=sys.stderr)
+    save_state(STATE)
 
 
 def _donor_ids(cand: dict) -> list:
@@ -6451,9 +6489,14 @@ def _auto_variants(pending: list) -> dict:
 
 
 def _auto_verdict(cand: dict, ctx: dict) -> tuple:
-    """(действие, причина). Действие: "verified" | "auto" | "close" | None.
+    """(действие, причина). Действие: "verified" | "auto" | "close" | "wait" | None.
     "close" — пара уже есть в глоссарии слово в слово: кандидата закрываем,
-    глоссарий не трогаем."""
+    глоссарий не трогаем. "wait" — решать НЕЧЕГО, не хватает ДАННЫХ (доноров,
+    чистых проверок): следующие прогоны могут дорешать сами, и звать человека
+    сюда — звать его к работе, которой нет. Для одобрения оба не годятся
+    одинаково (кандидат остаётся ждать), различие читает только разбор:
+    на боевом проекте 412 карточек из 684 «ждущих человека» ждали на самом
+    деле данных, и число пугало без причины."""
     pol = ctx["pol"]
     src = (cand.get("src") or "").strip()
     tgt = (cand.get("tgt") or "").strip()
@@ -6474,11 +6517,14 @@ def _auto_verdict(cand: dict, ctx: dict) -> tuple:
             return "close", "уже в глоссарии"
         if _hit_tier(known) == GLOSSARY_TIER_HARD:
             return None, "спорит с проверенной записью глоссария"
-        if known.get("autoBatch"):
-            # Записать поверх — значит затереть prevTgt прошлой пачки своим же
-            # значением: та пачка перестанет откатываться, а откат этой вернёт
-            # чужой машинный вариант вместо исходного.
-            return None, "запись занята пачкой #%s — сначала откатите её" % known["autoBatch"]
+        # Запись, занятую прошлой пачкой, писать поверх МОЖНО: _auto_write
+        # сохраняет её цепочку отката (prev* не затираются, autoCreated
+        # наследуется), поэтому откат НОВОЙ пачки возвращает состояние до
+        # СТАРОЙ, а не чужой машинный вариант. Прежний отказ «сначала
+        # откатите пачку #N» копил неразрешимые карточки: на боевом проекте
+        # 36 кандидатов висели за шестью пачками, откатывать которые никто
+        # не собирался. Старой пачке запись больше не принадлежит — её откат
+        # такие называет числом superseded.
         # Запись уровня "auto" (массовый импорт) — как раз то, что автоодобрение
         # и должно чинить: у нас есть доказательства, у неё их не было.
 
@@ -6524,14 +6570,17 @@ def _auto_verdict(cand: dict, ctx: dict) -> tuple:
         return None, "перевода нет в текстах целевого языка (%s)" % corpus["label"]
 
     good, confirmed, distinct, why = _donor_quality(cand, ctx)
+    # Дальше — не вопросы к человеку, а нехватка ДАННЫХ: новые чистые прогоны
+    # приносят доноров сами (сбор терминологии висит на back-check и termcheck),
+    # и карточка дорешается без человека. "wait", а не None.
     if good == 0:
-        return None, why or "сегмент-источник не проходил проверок"
+        return "wait", why or "сегмент-источник не проходил проверок"
     if cand.get("kind") == "audit" and good < 2:
         # Находка termcheck — это мнение модели о собственном переводе.
         # Одного такого мнения мало даже для подсказки.
-        return None, "находка termcheck встретилась только раз"
+        return "wait", "находка termcheck встретилась только раз"
     if not confirmed and good < pol["auto_min_segments"]:
-        return None, "подтверждений: %d, нужно %d" % (good, pol["auto_min_segments"])
+        return "wait", "подтверждений: %d, нужно %d" % (good, pol["auto_min_segments"])
 
     # Краудсорсный справочник + корпус СНИЖАЮТ порог согласия сегментов на один,
     # но не отменяют запрет области. Почему только снижают: голоса независимы
@@ -6594,19 +6643,32 @@ def _auto_write(cand: dict, tier: str, batch: int, today: str,
     cat = cand.get("cat") or "Term"
     existing = _glossary_entry(src, scope)
     if existing:
-        existing.update({
-            "prevTgt": existing.get("tgt", ""), "prevTier": _hit_tier(existing),
-            "prevNote": existing.get("note", ""), "prevConf": existing.get("conf", ""),
-            "prevOrigin": existing.get("origin", ""),
+        upd = {
             "tgt": tgt, "tier": tier, "cat": existing.get("cat") or cat,
             "conf": "high" if tier == GLOSSARY_TIER_HARD else "medium",
             "note": ("автоодобрено " + today
                      + (" (приказ по разрешению человека)" if override else "")),
             "updated": today,
-            "autoBatch": batch, "autoCreated": False,
+            "autoBatch": batch,
             "byOverride": bool(override),
             "origin": "auto:" + AUTO_POLICY_VERSION,
-        })
+        }
+        if existing.get("autoBatch"):
+            # Запись ещё принадлежит ПРОШЛОЙ пачке. Цепочку отката НЕ трогаем:
+            # prev* указывают на состояние ДО той пачки, и откат ЭТОЙ вернёт
+            # именно его, а не машинный вариант прошлой. autoCreated
+            # наследуется по той же причине: запись, рождённую прошлой пачкой,
+            # откат этой обязан УБРАТЬ, а не «вернуть» к значению, которого
+            # никогда не было. Прошлая пачка запись теряет — её откат считает
+            # такие в superseded.
+            upd["autoCreated"] = existing.get("autoCreated", False)
+        else:
+            upd.update({
+                "prevTgt": existing.get("tgt", ""), "prevTier": _hit_tier(existing),
+                "prevNote": existing.get("note", ""), "prevConf": existing.get("conf", ""),
+                "prevOrigin": existing.get("origin", ""), "autoCreated": False,
+            })
+        existing.update(upd)
         return True
     entry = {
         "src": src, "tgt": tgt, "cat": cat, "freq": 1,
@@ -7021,8 +7083,17 @@ def undo_auto_approve(batch: int):
         keep.append(g)
     STATE["glossary"] = keep
     back = 0
+    superseded = 0
     for c in _term_queue():
         if c.get("autoBatch") == batch:
+            # Запись, которую эта пачка писала, могла быть ПЕРЕЗАПИСАНА более
+            # поздней пачкой (см. _auto_write): она больше не наша, откат её
+            # не трогает — трогать значило бы затереть более позднее решение.
+            # Молчать нельзя: человек уверен, что откатил пачку целиком.
+            if c.get("autoWrote"):
+                g = _glossary_entry(c.get("src") or "", _scope_of(c))
+                if g is not None and g.get("autoBatch") not in (None, batch):
+                    superseded += 1
             c["status"] = "pending"
             for k in ("autoBatch", "autoTier", "autoWrote", "autoNote", "decidedAt"):
                 c.pop(k, None)
@@ -7030,7 +7101,8 @@ def undo_auto_approve(batch: int):
     STATE["autoBatches"] = [b for b in STATE.get("autoBatches", []) if b.get("id") != batch]
     _invalidate_gloss_index()
     save_state(STATE)
-    return {"ok": True, "removed": removed, "restored": restored, "returned": back}
+    return {"ok": True, "removed": removed, "restored": restored, "returned": back,
+            "superseded": superseded}
 
 
 @app.get("/api/term-queue/auto-batches")

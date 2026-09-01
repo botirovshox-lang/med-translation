@@ -2894,6 +2894,7 @@ def admin_user_update(uid: int, req: UserPatch, request: Request):
         if req.uiLang not in UI_LANGS:
             raise HTTPException(400, "Язык интерфейса: " + " | ".join(UI_LANGS))
         u["uiLang"] = req.uiLang
+        u["uiLangSet"] = True
     if req.active is not None:
         if u["id"] == me["id"] and not req.active:
             raise HTTPException(400, "Нельзя отключить самого себя")
@@ -3062,6 +3063,10 @@ def profile_update(req: ProfilePatch, request: Request):
         if lang not in UI_LANGS:
             raise HTTPException(400, "Язык интерфейса: " + " | ".join(UI_LANGS))
         u["uiLang"] = lang
+        # След решения ЧЕЛОВЕКА — тот же приём, что у `_human_touched`
+        # в глоссарии: без него не отличить выбранный язык от языка,
+        # доставшегося записи по умолчанию кода (см. `_migrate_ui_lang`).
+        u["uiLangSet"] = True
     if req.password is not None:
         _check_user_fields(None, req.password, None)
         if not _verify_password(u, req.currentPassword or ""):
@@ -6680,6 +6685,35 @@ def _term_answered(c: dict, src_n: str) -> bool:
     return src_n in _answer_keys(c)
 
 
+def _migrate_ui_lang() -> None:
+    """Язык записи, доставшийся ей ПО УМОЛЧАНИЮ КОДА, — это не выбор человека.
+
+    До появления узбекского каждая учётная запись заводилась с `uiLang: "ru"`
+    литералом: выбора там не было и быть не могло, языка в системе был один.
+    Оставить это значением значит показать русский интерфейс тем, кто ничего
+    не выбирал, — то есть сделать перевод невидимым.
+
+    Отличить одно от другого нечем, кроме СЛЕДА решения: `uiLangSet` пишется
+    только когда язык поменял человек (`/api/profile`, `/api/admin/users`).
+    Тот же приём, что `_human_touched` в глоссарии, и тот же закон: своё
+    предположение машина вправе пересмотреть, чужое решение — нет.
+
+    Идемпотентна: запись без следа каждый старт получает нынешний язык
+    по умолчанию, запись со следом не трогается НИКОГДА.
+    """
+    changed = 0
+    for u in STATE.get("users") or []:
+        if u.get("uiLangSet"):
+            continue
+        if u.get("uiLang") != DEFAULT_UI_LANG:
+            u["uiLang"] = DEFAULT_UI_LANG
+            changed += 1
+    if changed:
+        print("[backend] язык интерфейса по умолчанию (%s) проставлен %d записям "
+              "без следа выбора человека" % (DEFAULT_UI_LANG, changed), file=sys.stderr)
+    return changed
+
+
 def _migrate_term_queue(state: dict) -> int:
     """Снять карточки про термины, по которым решение УЖЕ есть.
 
@@ -7679,6 +7713,7 @@ def _auto_policy(domain_id: Optional[str]) -> dict:
 # Поздний проход по очереди — ПОСЛЕ определения _auto_policy: разбор формы
 # внутри миграции читает лимиты слов той же политикой, что и _auto_verdict.
 _TERM_QUEUE_MIGRATED = _migrate_term_queue(STATE)
+_migrate_ui_lang()
 # Занятость очереди — в журнал при старте. О потолке узнавали только из строки
 # «выброшено N», то есть уже после потери находок.
 try:

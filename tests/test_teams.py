@@ -97,6 +97,29 @@ r = c.post("/api/profile", headers=H(anna_t),
            json={"password": "password-123", "currentPassword": "new-password-1"})
 check(r.status_code == 200, "пароль возвращён обратно")
 
+print("=== 2b. Язык по умолчанию против выбора человека ===")
+# «ru» в старых записях стоял ЛИТЕРАЛОМ: языка в системе был один, и выбора
+# там быть не могло. Отличить его от настоящего выбора нечем, кроме следа.
+old = {"id": 99, "tenant": "acme", "login": "old", "uiLang": "ru", "role": "translator",
+       "hash": "x", "salt": "y", "active": True}
+chosen = {"id": 98, "tenant": "acme", "login": "chosen", "uiLang": "ru", "uiLangSet": True,
+          "role": "translator", "hash": "x", "salt": "y", "active": True}
+main._users().extend([old, chosen])
+main._migrate_ui_lang()
+check(old["uiLang"] == main.DEFAULT_UI_LANG,
+      "язык без следа выбора — это умолчание кода, и оно обновляется")
+check(chosen["uiLang"] == "ru",
+      "а выбор ЧЕЛОВЕКА не отменяется никогда — иначе он менял бы язык каждый старт")
+main._migrate_ui_lang()
+check(old["uiLang"] == main.DEFAULT_UI_LANG and chosen["uiLang"] == "ru", "миграция идемпотентна")
+check(main._users().pop()["login"] == "chosen" and main._users().pop()["login"] == "old",
+      "тестовые записи убраны")
+# А сама смена языка человеком след ОБЯЗАНА оставлять — иначе следующий
+# старт вернёт ему язык по умолчанию, и выбор будет нечем защитить.
+c.post("/api/profile", headers=H(anna_t), json={"uiLang": "ru"})
+check(anna.get("uiLangSet") is True, "смена языка через профиль оставляет след решения")
+c.post("/api/profile", headers=H(anna_t), json={"uiLang": "uz"})
+
 print("=== 3. Команда: создание и потолок ===")
 r = c.post("/api/teams", headers=H(anna_t), json={"name": "Клиника Шифо"})
 check(r.status_code == 200, "команда создана")

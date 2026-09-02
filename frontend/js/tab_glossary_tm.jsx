@@ -7,7 +7,7 @@ const PAGE_SIZE = 100;
 const QUEUE_PAGE = 25;
 
 // Поиск с выбором стороны: русский термин или английский перевод.
-// «ё» приравнена к «е» — в медицинских текстах их пишут вперемешку.
+// «ё» приравнена к «е»: в русских текстах их пишут вперемешку.
 const PAIR_SCOPES = [["all", TR("Везде")], ["src", TR("Оригинал (RU)")], ["tgt", TR("Перевод (EN)")]];
 function pairNorm(t) { return (t || "").toLowerCase().replace(/ё/g, TR("е")); }
 function pairMatches(row, q, scope) {
@@ -41,7 +41,7 @@ const CAND_KIND = {
    Кнопка «Проверить» ничего не меняет: сервер считает вердикты и возвращает,
    что попадёт и что отсеяно с причинами. Применение — отдельным нажатием,
    откат пачки — одним. Правила языко- и тематико-независимы, поэтому панель
-   не знает ни про медицину, ни про русский: всё приходит с сервера. */
+   не знает ни про область, ни про язык: всё приходит с сервера. */
 /* ---------- Вынос массового импорта ----------
    Удаление по одной записи — это про правку, а не про десять тысяч строк
    автоимпорта. Отдельная команда с предпросмотром, пощадой правленого
@@ -403,7 +403,7 @@ function AutoApprovePanel({ store, toast, onDone }) {
 
   if (!project) return null;
   const domLabel = (id) => (domains.find(d => d.id === id) || {}).label || id;
-  const scopeText = project.src + "→" + project.tgt + " · " + domLabel(project.domain || "medical");
+  const scopeText = project.src + "→" + project.tgt + " · " + domLabel(project.domain || LEGACY_DOMAIN);
 
   const opts = () => ({ project: project.id, max_tier: softOnly ? "auto" : null,
                         allow_verified: allowVerified });
@@ -897,8 +897,8 @@ function TabGlossary({ store, toast }) {
   return React.createElement("div", { className: "page page-wide" },
     React.createElement("div", { className: "page-head" },
       React.createElement("h1", null, TR("Глоссарий"),
-        React.createElement(InfoTip, { title: TR("Глоссарий"), body: TR("База утверждённых медицинских терминов с переводами. Используется для инъекции в GPT-промпт и проверки консистентности в QA.") })),
-      React.createElement("p", { className: "lead" }, TR("Утверждённая медицинская терминология. Совпадения автоматически подсказываются в редакторе сегментов."))),
+        React.createElement(InfoTip, { title: TR("Глоссарий"), body: TR("База утверждённых терминов организации с переводами. Используется для инъекции в GPT-промпт и проверки консистентности в QA.") })),
+      React.createElement("p", { className: "lead" }, TR("Утверждённая терминология организации. Совпадения автоматически подсказываются в редакторе сегментов."))),
 
     React.createElement(AutoApprovePanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
     React.createElement(GlossaryAuditPanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
@@ -965,7 +965,7 @@ function TabGlossary({ store, toast }) {
     modal && React.createElement(TermModal, { term: modal === "add" ? null : modal,
       scope: store.activeProject
         ? { lang: store.activeProject.src + "→" + store.activeProject.tgt,
-            domain: store.activeProject.domain || "medical" }
+            domain: store.activeProject.domain || LEGACY_DOMAIN }
         : null,
       onClose: () => setModal(null), onSave: save })
   );
@@ -1047,7 +1047,7 @@ function TermModal({ term, onClose, onSave, scope }) {
       hint: TR("Пара языков и тематика, в которых запись видна при переводе") },
       React.createElement("div", { className: "dim", style: { fontSize: 13 } },
         (term ? (term.lang || "RU→EN") : ((scope || {}).lang || "RU→EN")) + " · " +
-        (term ? (term.domain || "medical") : ((scope || {}).domain || "medical")))),
+        (term ? (term.domain || LEGACY_DOMAIN) : ((scope || {}).domain || LEGACY_DOMAIN)))),
     React.createElement(Field, { label: TR("Категория") },
       React.createElement(Select, { value: cat, onChange: (e) => setCat(e.target.value) }, cats.map(c => React.createElement("option", { key: c, value: c }, c)))),
     React.createElement(Field, { label: TR("Примечание (необязательно)") },

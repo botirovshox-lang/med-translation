@@ -64,7 +64,7 @@ finally:
     main.CURRENT_SESSION.reset(tok)
 tok = main.CURRENT_SESSION.set({"tenant": "beta", "user": 3, "role": "owner"})
 try:
-    check(main._resolve_domain(did)["id"] == main.DEFAULT_DOMAIN, "другая организация её не видит — дефолт")
+    check(main._resolve_domain(did)["id"] == main.LEGACY_DOMAIN, "другая организация её не видит — дефолт")
 finally:
     main.CURRENT_SESSION.reset(tok)
 r = c.get("/api/admin/domains", headers=H(B))

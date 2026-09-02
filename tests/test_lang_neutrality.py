@@ -14,7 +14,7 @@
 import os, re, sys
 os.environ.setdefault("APP_PASSWORD", "test")
 sys.path.insert(0, "backend")
-import medical_qa as q
+import checks as q
 
 fail = []
 

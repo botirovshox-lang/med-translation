@@ -252,6 +252,12 @@ function EmptyState({ icon, title, sub, action }) {
 /* Пара языков — кодами, без флагов. Флаг — это страна, а не язык: английский
    не флаг Британии, у арабского двадцать стран, у курдского флага нет вовсе. Каталог
    с названиями отдаёт сервер (/api/models → languages); здесь только код. */
+/* Запись и проект БЕЗ поля domain — это СТАРЫЕ данные первого клиента,
+   и читаются они как медицинские (тот же закон миграции, что на сервере,
+   см. LEGACY_DOMAIN в main.py). Область НОВОГО проекта — общая: сервис
+   не про медицину. Две разные вещи, и путать их нельзя. */
+const LEGACY_DOMAIN = "medical";
+
 function LangPair({ src, tgt }) {
   return React.createElement("span", { className: "badge badge-lang" }, src + " → " + tgt);
 }
@@ -317,9 +323,9 @@ const ROUTE_INFO = {
   GOOGLE_SAFE: { label: TR("Бесплатный движок (убран)"), code: "GOOGLE_SAFE", color: "var(--route-google)",
     tip: TR("Исторический маршрут: так помечены сегменты, переведённые до того, как бесплатный движок убрали из системы. Новые переводы так не помечаются.") },
   GPT_REQUIRED: { label: TR("Требуется GPT"), code: "GPT_REQUIRED", color: "var(--route-gpt)",
-    tip: TR("Требуется OpenAI GPT для перевода и QA. Стандартный маршрут для большинства медицинских сегментов.") },
+    tip: TR("Требуется OpenAI GPT для перевода и QA. Стандартный маршрут для большинства сегментов.") },
   GPT_WITH_GLOSSARY_REQUIRED: { label: TR("GPT + Глоссарий"), code: "GPT_WITH_GLOSSARY_REQUIRED", color: "var(--c-warning)",
-    tip: TR("Требуется OpenAI GPT с инъекцией глоссария в промпт. Применяется для сегментов с большим количеством медицинских терминов (3+) или с риском HIGH.") },
+    tip: TR("Требуется OpenAI GPT с инъекцией глоссария в промпт. Применяется для сегментов с большим количеством терминов (3+) или с риском HIGH.") },
   HUMAN_REVIEW: { label: TR("Ручной перевод"), code: "HUMAN_REVIEW_REQUIRED", color: "var(--route-human)",
     tip: TR("Критичный или высокий риск без глоссария — требуется человеческий перевод/review. API не вызывается до решения переводчика.") },
 };
@@ -333,7 +339,7 @@ const RISK_INFO = {
   low: { label: TR("Низкий"), range: TR("≤ 8 слов"), color: "var(--c-success)",
     tip: TR("Короткие сегменты: заголовки, метаданные, простые предложения.\nНазначается по длине исходного текста, а не по содержанию.\nПовторный перевод эту величину НЕ меняет — она описывает оригинал.\nНа выбор движка больше не влияет: переводит всё выбранная модель.") },
   medium: { label: TR("Средний"), range: TR("9–30 слов"), color: "#ca8a04",
-    tip: TR("Сегменты средней длины: стандартный медицинский контент, описания.\nНазначается по длине исходного текста, а не по содержанию.\nПовторный перевод эту величину НЕ меняет — она описывает оригинал.\n→ Маршрут: GPT_REQUIRED.") },
+    tip: TR("Сегменты средней длины: обычный текст, описания.\nНазначается по длине исходного текста, а не по содержанию.\nПовторный перевод эту величину НЕ меняет — она описывает оригинал.\n→ Маршрут: GPT_REQUIRED.") },
   high: { label: TR("Высокий"), range: TR("> 30 слов"), color: "var(--c-warning)",
     tip: TR("Длинные сегменты: сложные конструкции, выше шанс потерять смысл.\nНазначается по длине исходного текста, а не по содержанию.\nПовторный перевод эту величину НЕ меняет — она описывает оригинал.\n→ Маршрут: GPT_WITH_GLOSSARY_REQUIRED.") },
   critical: { label: TR("Критический"), range: TR("вручную"), color: "var(--c-error)",
@@ -405,7 +411,7 @@ Object.assign(window, {
   Icon, Btn, IconBtn, StatusBadge, Badge, STATUS_META,
   Field, Input, Textarea, Select, SearchInput, Checkbox, Radio, Switch,
   Expander, Modal, ToastProvider, useToast,
-  ProgressBar, Ring, Spinner, Avatar, EmptyState, LangPair,
+  ProgressBar, Ring, Spinner, Avatar, EmptyState, LangPair, LEGACY_DOMAIN,
   fmtCost, InfoTip, ROUTE_INFO, RISK_INFO, RouteLabel, RiskLabel,
   BC_BANDS_FALLBACK, setBcBands, bcBands, bcBandColor, bcScoreColor,
 });

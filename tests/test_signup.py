@@ -47,12 +47,15 @@ print("=== 1. Регистрация: организация, владелец, 
 r = c.get("/api/auth/signup-info")
 check(r.status_code == 200 and r.json()["signup"] and r.json()["mail"] is False,
       "экран входа знает: регистрация открыта, почта не настроена")
-r = c.post("/api/auth/register", json={"email": "не-почта", "password": "long-enough-1"})
+r = c.post("/api/auth/register", json={"email": "не-почта", "password": "long-enough-1", "accept": True})
 check(r.status_code == 400, "кривой адрес — 400")
-r = c.post("/api/auth/register", json={"email": "boss@acme.io", "password": "short"})
+r = c.post("/api/auth/register", json={"email": "boss@acme.io", "password": "short", "accept": True})
 check(r.status_code == 400, "короткий пароль — 400")
 r = c.post("/api/auth/register", json={"email": "boss@acme.io", "password": "long-enough-1",
                                        "org": "ACME", "name": "Босс"})
+check(r.status_code == 400, "без согласия с офертой регистрации нет")
+r = c.post("/api/auth/register", json={"email": "boss@acme.io", "password": "long-enough-1",
+                                       "org": "ACME", "name": "Босс", "accept": True})
 j = r.json()
 check(r.status_code == 200 and j["next"] == "verify" and j["mailSent"] is False,
       "регистрация принята, письмо честно не отправлено")
@@ -60,9 +63,12 @@ tid = j["tenant"]
 u = main._user_by_email("boss@acme.io")
 check(u and u["role"] == "owner" and not u.get("super") and not u["emailVerified"],
       "владелец своей организации, не super, почта не подтверждена")
+acc = u.get("acceptedTerms") or {}
+check(acc.get("version") and acc.get("at") and acc.get("ip"),
+      "согласие зафиксировано: редакция, дата, адрес — %s" % acc)
 t = main._tenant_rec(tid)
 check(t and t["limitUsd"] == 0.0 and t.get("signup"), "новой организации выставлен лимит 0 — платное закрыто")
-r = c.post("/api/auth/register", json={"email": "BOSS@acme.io", "password": "another-pass-1"})
+r = c.post("/api/auth/register", json={"email": "BOSS@acme.io", "password": "another-pass-1", "accept": True})
 check(r.status_code == 409, "повтор почты (в другом регистре) — 409")
 
 print("=== 2. Вход до подтверждения и код ===")
@@ -128,11 +134,11 @@ check(c.post("/api/auth/login", json={"login": "boss@acme.io", "password": "long
 
 print("=== 6. Регистрацию можно закрыть, IP ограничен ===")
 main.SIGNUP_ENABLED = False
-check(c.post("/api/auth/register", json={"email": "x@y.zz", "password": "long-enough-1"}).status_code == 403,
+check(c.post("/api/auth/register", json={"email": "x@y.zz", "password": "long-enough-1", "accept": True}).status_code == 403,
       "SIGNUP_ENABLED=0 — 403")
 main.SIGNUP_ENABLED = True
 main._SIGNUP_FAILS.clear()
-codes = [c.post("/api/auth/register", json={"email": "u%d@acme.io" % i, "password": "long-enough-1"}).status_code
+codes = [c.post("/api/auth/register", json={"email": "u%d@acme.io" % i, "password": "long-enough-1", "accept": True}).status_code
          for i in range(main.SIGNUP_MAX_PER_HOUR + 1)]
 check(codes[-1] == 429, "потолок регистраций с одного адреса: %s" % codes)
 

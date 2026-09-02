@@ -67,7 +67,7 @@ function OrgGlossaryImport({ store, toast }) {
   const [domains, setDomains] = useState([["medical", TR("Медицина")]]);
   const [src, setSrc] = useState("RU");
   const [tgt, setTgt] = useState("EN");
-  const [domain, setDomain] = useState("medical");
+  const [domain, setDomain] = useState("general");
   const [tier, setTier] = useState("auto");
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);

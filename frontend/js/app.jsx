@@ -2,7 +2,7 @@
    App shell — store, auth, header, tab routing
    ============================================================ */
 function useStore(authed) {
-  /* Стартуем с пустого: мок data.js показывал чужой кардиологический эпикриз,
+  /* Стартуем с пустого: мок data.js показывал выдуманный чужой проект,
      пока грузился /api/seed, а активным проектом стоял его номер 7. */
   const [projects, setProjects] = useState([]);
   const [glossary, setGlossary] = useState([]);
@@ -150,7 +150,7 @@ function useStore(authed) {
      затирала бы в таблице его RU→DE тёзку, а удаление убирало бы обоих. */
   const sameEntry = (a, b) => a.src === b.src
     && (a.lang || "RU→EN") === (b.lang || "RU→EN")
-    && (a.domain || "medical") === (b.domain || "medical");
+    && (a.domain || LEGACY_DOMAIN) === (b.domain || LEGACY_DOMAIN);
 
   const saveTerm = (term, isNew) => {
     setGlossary(g => isNew ? [term, ...g] : g.map(t => sameEntry(t, term) ? term : t));
@@ -214,6 +214,7 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
   const [mode, setMode] = useState("login");   // login | register | verify | forgot | reset
   const [info, setInfo] = useState({ signup: false, mail: false, brand: "CAT Translator", trialUsd: 0 });
   const [f, setF] = useState({ login: "", password: "", email: "", org: "", name: "", code: "" });
+  const [accepted, setAccepted] = useState(false);
   const [err, setErr] = useState("");
   const [note, setNote] = useState("");
   const [shake, setShake] = useState(false);
@@ -235,7 +236,8 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
         await window.API.login(f.login, f.password);
         onLogin();
       } else if (mode === "register") {
-        const r = await window.API.register({ email: f.email, password: f.password, org: f.org, name: f.name });
+        const r = await window.API.register({ email: f.email, password: f.password,
+                                              org: f.org, name: f.name, accept: accepted });
         setNote(r.note || TR("Код отправлен на почту."));
         setMode("verify");
       } else if (mode === "verify") {
@@ -307,10 +309,24 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
          нажмёт «Зарегистрироваться» и уйдёт ждать письма, которого не будет. */
       mode === "register" && !info.mail && React.createElement("div", { className: "dim", style: { fontSize: 12, marginTop: 8 } },
         TR("Отправка почты на сервере не настроена: код придётся взять у администратора.")),
+      /* Согласие — условие заключения договора: сервер откажет без него,
+         поэтому и кнопка погашена. Ссылки открываются в новой вкладке,
+         чтобы человек не потерял заполненную форму. */
+      mode === "register" && React.createElement("label", {
+        className: "row", style: { gap: 8, alignItems: "flex-start", marginTop: 12, fontSize: 13 } },
+        React.createElement("input", { type: "checkbox", checked: accepted, style: { marginTop: 3 },
+          onChange: (e) => setAccepted(e.target.checked) }),
+        React.createElement("span", null, TR("Принимаю "),
+          React.createElement("a", { href: (info.legal || {}).terms || "/terms", target: "_blank", rel: "noopener" }, TR("оферту")),
+          TR(" и "),
+          React.createElement("a", { href: (info.legal || {}).privacy || "/privacy", target: "_blank", rel: "noopener" },
+            TR("политику обработки персональных данных")),
+          TR(". Загружаемые документы обрабатываются языковой моделью стороннего поставщика."))),
       note && React.createElement("div", { style: { color: "var(--c-info)", fontSize: 13, marginTop: 8 } }, note),
       err && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13, marginTop: 8 } }, err),
       React.createElement("div", { className: "row", style: { gap: 10, marginTop: 18 } },
-        React.createElement(Btn, { variant: "primary", type: "submit", icon: "unlock", className: "btn-block", disabled: busy },
+        React.createElement(Btn, { variant: "primary", type: "submit", icon: "unlock", className: "btn-block",
+          disabled: busy || (mode === "register" && !accepted) },
           busy ? TR("Минуту…") : { login: TR("Войти"), register: TR("Зарегистрироваться"), verify: TR("Подтвердить"),
                                forgot: TR("Прислать код"), reset: TR("Сменить пароль") }[mode])),
       React.createElement("div", { className: "row row-wrap", style: { gap: 14, marginTop: 14, justifyContent: "center" } },
@@ -321,7 +337,10 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
           type: "button", style: { background: "none", border: 0, color: "var(--c-primary)", cursor: "pointer", fontSize: 13, padding: 0 },
           onClick: () => window.API.safeCall(() => window.API.resendCode(f.email)).then(() => setNote(TR("Код отправлен заново."))),
         }, TR("Прислать код заново"))),
-      React.createElement("p", { className: "auth-foot" }, TR("Конфиденциально"))
+      React.createElement("p", { className: "auth-foot" },
+        React.createElement("a", { href: "/terms", target: "_blank", rel: "noopener" }, TR("Оферта")),
+        " · ",
+        React.createElement("a", { href: "/privacy", target: "_blank", rel: "noopener" }, TR("Персональные данные")))
     )
   );
 }
@@ -480,7 +499,7 @@ function App() {
 
   return React.createElement("div", { className: "app" },
     React.createElement(Header, { store, theme, onToggleTheme: toggleTheme,
-      /* Перезагрузка после выхода: иначе документы пациентов остаются в памяти вкладки. */
+      /* Перезагрузка после выхода: иначе документы клиента остаются в памяти вкладки. */
       onLogout: () => {
         const done = () => window.location.reload();
         if (window.API) window.API.logout().then(done, done); else done();

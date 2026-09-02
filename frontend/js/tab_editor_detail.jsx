@@ -1,7 +1,7 @@
 ﻿/* ============================================================
    Segment detail panel (editor right sidebar)
    ============================================================ */
-function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedicalQA, onConfirm, bcModels, bcModel, onBcModel, bcJudge, judgeModel, tcModel, rpModel,
+function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChecks, onConfirm, bcModels, bcModel, onBcModel, bcJudge, judgeModel, tcModel, rpModel,
                      // Уровни находок termcheck, по которым работает ремонт.
                      // Приходят сверху, а сверху — с сервера: список в двух
                      // местах литералом уже расходился с _repair_findings.
@@ -277,7 +277,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
       // Кнопка одна: движок один — выбранная модель. Раньше рядом стояла
       // «Google», и половина сегментов уходила в бесплатный переводчик.
       React.createElement(Btn, { variant: "primary", size: "sm", icon: "cpu", disabled: busy, onClick: () => onTranslate(), style: { background: "var(--c-purple)" } }, TR("Перевести")),
-      React.createElement(Btn, { variant: "secondary", size: "sm", icon: "shield", disabled: busy, onClick: onMedicalQA, style: { color: "var(--c-info)", boxShadow: "inset 0 0 0 1.5px var(--c-info)" } }, TR("Проверки")),
+      React.createElement(Btn, { variant: "secondary", size: "sm", icon: "shield", disabled: busy, onClick: onChecks, style: { color: "var(--c-info)", boxShadow: "inset 0 0 0 1.5px var(--c-info)" } }, TR("Проверки")),
       React.createElement(Btn, { variant: "secondary", size: "sm", icon: "shield", disabled: busy, onClick: onQA }, "Quick QA"),
       React.createElement(Btn, { variant: "success", size: "sm", icon: "check", disabled: busy, onClick: () => onConfirm(draft) }, TR("Подтвердить"))
     ),

@@ -28,7 +28,7 @@ os.environ["OPENAI_API_KEY"] = "test-key"
 os.environ["AUTHORITY_CORPUS"] = "0"
 sys.path.insert(0, "backend")
 import main
-import medical_qa
+import checks as medical_qa
 
 main.save_state = lambda *a, **k: None
 

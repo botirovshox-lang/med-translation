@@ -96,10 +96,10 @@ console.log("=== 2b. Сообщения сервера ===");
    переведённым. Кусками, а не целиком, потому что до браузера доезжает
    уже подставленное число («…исчерпан: $1.00 из $2.00»), и целая строка
    с %s не совпадёт ни с чем. */
-/* medical_qa.py здесь ОБЯЗАН быть: причины балла back-check и вердикт
+/* checks.py здесь ОБЯЗАН быть: причины балла back-check и вердикт
    судьи пишутся там, и без него проверка молчала бы ровно про те
    объяснения, которые человек читает чаще всего. */
-const backend = ["backend/main.py", "backend/medical_qa.py",
+const backend = ["backend/main.py", "backend/checks.py",
                  "backend/textcount.py", "backend/store.py"]
   .filter(f => fs.existsSync(f))
   .map(f => fs.readFileSync(f, "utf8")).join("\n")

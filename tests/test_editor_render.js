@@ -822,6 +822,57 @@ try {
   check(asked14 === 0, "и /analysis не запрашивался зря (" + asked14 + ")");
   global.API = baseAPI;
 
+  console.log("\n=== 16. Смета главной кнопки — число, а не прочерк ===");
+  /* Шаг с работой и без цены обнуляет ВСЮ смету намеренно: «$0.00» под
+     кнопкой, которая сделает тысячи платных вызовов, — худший вид молчания.
+     Но цены у шага может не быть по причине, к деньгам отношения не имеющей:
+     выбор модели в браузере пуст. Так и вышло со сверкой терминов — её
+     единственную каталог не заполнял, — и прочерк вставал под кнопкой при
+     исправных ценах всех шести шагов, а список моделей у шага рисовался
+     без выбранной строки.
+     Два рубежа, и оба проверяются:
+       1) КАЖДЫЙ выбор модели заполняется из каталога (проверка по исходнику:
+          забытая строка — это ровно то, что случилось, и рендер её не видит,
+          потому что дефолт каталога подставляется дальше по цепочке);
+       2) модель, которой шаг ПОЙДЁТ, называет сервер в разборе (plan.model),
+          и смета берёт её, когда выбора нет. */
+  {
+    const src16 = fs.readFileSync(path.join(root, "tab_editor.jsx"), "utf8");
+    const eff = src16.slice(src16.indexOf("window.API.models()"));
+    const body = eff.slice(0, eff.indexOf("}, []);"));
+    const SETTER = { model: "setGptModel", bc_model: "setBcModel",
+                     tc_model: "setTcModel", tcx_model: "setTcxModel",
+                     rp_model: "setRpModel", judge_model: "setJudgeModel" };
+    const lost = Object.keys(SETTER).filter(k => body.indexOf(SETTER[k] + "(") === -1);
+    check(lost.length === 0,
+          "каталог заполняет ВСЕ выборы моделей" + (lost.length ? ": забыт " + lost.join(", ") : ""));
+  }
+  global.API = Object.assign({}, baseAPI, {
+    runPlan: async () => {
+      const p = await baseAPI.runPlan();
+      return Object.assign({}, p, { steps: p.steps.concat([
+        planStep("termaudit", "сверка терминов", "gpt-5.6-terra", [1, 3, 5],
+                 [{ reason: "ещё не сверялся", count: 3 }], []),
+      ]) });
+    },
+  });
+  hooks.length = 0; hookIdx = 0; effects.length = 0;
+  TabEditor({ store: storeStub, toast });
+  effects.forEach(fn => { try { fn(); } catch (e) {} });
+  for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+  hookIdx = 0;
+  const out16 = [];
+  walk(TabEditor({ store: storeStub, toast }), 0, out16);
+  const t16 = out16.join("\n");
+  // Цена лежит в <b> следующей строкой обхода, поэтому тег пропускаем явно:
+  // регулярка без него ловила сам тег и радовалась «не прочерк».
+  const est16 = /Ориентировочно:\s*\n\s*<b>\s*\n\s*(\S+)/.exec(t16);
+  check(!!est16, "смета под таблицей есть");
+  check(est16 && /^\$[\d.]+$/.test(est16[1]),
+        "и это цена, а не прочерк (" + (est16 ? est16[1] : "?") + ")");
+  check(t16.indexOf("Сверка терминов") !== -1, "строка сверки терминов на месте");
+  global.API = baseAPI;
+
   console.log("\n" + (fail.length ? "ПРОВАЛЕНО: " + fail.join("; ") : "ВСЁ ПРОШЛО"));
   process.exit(fail.length ? 1 : 0);
 } catch (e) {

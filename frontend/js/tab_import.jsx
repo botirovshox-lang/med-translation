@@ -125,7 +125,7 @@ function TabImport({ store, toast }) {
   const [title, setTitle] = useState("");
   const [src, setSrc] = useState("RU");
   const [tgt, setTgt] = useState("EN");
-  const [domain, setDomain] = useState("medical");   // область: от неё зависят промпты перевода и проверки
+  const [domain, setDomain] = useState("general");   // область: от неё зависят промпты перевода и проверки
   const [domains, setDomains] = useState([["medical", TR("Медицина")]]);
   // Каталог языков — тоже с сервера: пара проекта может быть любой.
   const [langs, setLangs] = useState([["RU", TR("Русский")], ["EN", TR("Английский")]]);
@@ -213,7 +213,7 @@ function TabImport({ store, toast }) {
         React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 18 } },
           React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Шаг 2 — Параметры")),
           React.createElement(Field, { label: TR("Название проекта") },
-            React.createElement(Input, { value: title, placeholder: TR("напр. Эпикриз 2026"), onChange: (e) => setTitle(e.target.value) })),
+            React.createElement(Input, { value: title, placeholder: TR("напр. Договор поставки"), onChange: (e) => setTitle(e.target.value) })),
           React.createElement("div", { className: "grid grid-2" },
             React.createElement(Field, { label: TR("Язык оригинала") },
               React.createElement(Select, { value: src, onChange: (e) => setSrc(e.target.value) },

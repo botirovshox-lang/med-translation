@@ -69,14 +69,14 @@ print("\n=== 3. Medical QA помнит, к какому тексту относ
 
 
 class FakeQA:
-    def run_medical_qa(self, source, target, **kw):
+    def run_checks(self, source, target, **kw):
         return {"literal_backcheck": {"backtranslated_ru": ""}, "qa_issues": [],
                 "ui_issues": [], "term_candidates": [], "risk_score": 10,
                 "risk_color": "green", "engine_qa": "test"}
 
 
-main.medical_qa_mod = FakeQA()
-main.medical_qa_enabled = lambda: True
+main.checks_mod = FakeQA()
+main.checks_enabled = lambda: True
 proj = build([seg(1, "жалобы", "complaints", status="translated"),
               seg(2, "одышка", "dyspnea", status="translated")])
 # Свежий back-check уже есть — так и бывает в составном прогоне, где он идёт
@@ -84,9 +84,9 @@ proj = build([seg(1, "жалобы", "complaints", status="translated"),
 h = main._text_hash
 for s0 in proj["segments"]:
     s0["backcheck"] = {"score": 95, "target_hash": h(s0["target"]), "back": "обратно"}
-r = main.batch_medical_qa(1, main.MedicalQABatchRequest())
+r = main.batch_checks(1, main.ChecksBatchRequest())
 check(r["count"] == 2, "первый прогон проверил оба сегмента")
-r = main.batch_medical_qa(1, main.MedicalQABatchRequest())
+r = main.batch_checks(1, main.ChecksBatchRequest())
 check(r["count"] == 0 and r["skipped_cached"] == 2,
       "второй прогон не делает ничего и говорит об этом: " + str(r["skipped_cached"]))
 
@@ -94,7 +94,7 @@ check(r["count"] == 0 and r["skipped_cached"] == 2,
 proj["segments"][0]["target"] = "complaints, revised"
 proj["segments"][0]["backcheck"] = {"score": 95, "back": "обратно",
                                     "target_hash": h("complaints, revised")}
-r = main.batch_medical_qa(1, main.MedicalQABatchRequest())
+r = main.batch_checks(1, main.ChecksBatchRequest())
 check(r["count"] == 1, "изменённый сегмент проверяется заново")
 
 print("\n=== 4. Именно из-за этого прогон брал весь проект ===")
@@ -106,7 +106,7 @@ proj = build([seg(i, "текст %d" % i, "EN %d" % i, status="translated")
 for s0 in proj["segments"]:
     s0["backcheck"] = {"score": 95, "target_hash": h(s0["target"]), "back": "обратно"}
     s0["termcheck"] = {"findings": [], "target_hash": h(s0["target"]), "model": "t"}
-main.batch_medical_qa(1, main.MedicalQABatchRequest())
+main.batch_checks(1, main.ChecksBatchRequest())
 stale = [s for s in proj["segments"] if main._check_stale(s.get("qa_result"), s.get("target"))]
 check(not stale, "после прогона к пересчёту не осталось ничего")
 
@@ -160,7 +160,7 @@ print("\n=== 10. Неполная Medical QA не кэшируется ===")
 # Без обратного перевода часть находок не считается вовсе. Закэшировать такой
 # результат — закрыть сегмент от нормальной проверки навсегда.
 proj = build([seg(1, "жалобы", "complaints", status="translated")])
-main.batch_medical_qa(1, main.MedicalQABatchRequest(run_backcheck=False))
+main.batch_checks(1, main.ChecksBatchRequest(run_backcheck=False))
 check(main._check_stale(proj["segments"][0].get("qa_result"), "complaints"),
       "результат без обратного перевода не помечен свежим")
 

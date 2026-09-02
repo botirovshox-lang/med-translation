@@ -19,7 +19,7 @@ os.environ["OPENAI_API_KEY"] = "test-key"
 os.environ["AUTHORITY_CORPUS"] = "0"
 sys.path.insert(0, "backend")
 import main
-import medical_qa
+import checks as medical_qa
 
 main.save_state = lambda *a, **k: None
 main._semantic_similarity = lambda a, b: None      # эмбеддинги — сеть, в тесте её нет
@@ -97,7 +97,7 @@ print("\n=== 4. Medical QA заказывает обратный перевод 
 seen = []
 main._openai_translate = lambda text, s, t, **k: (seen.append(k.get("model")), "RU: " + text)[1]
 build([seg(1, "жалобы", "complaints", provider=main.BACKCHECK_DEFAULT_MODEL)])
-main.batch_medical_qa(1, main.MedicalQABatchRequest())
+main.batch_checks(1, main.ChecksBatchRequest())
 check(seen == [main.BACKCHECK_FALLBACK_MODEL],
       "модель обратного перевода QA не совпала с автором текста")
 
@@ -125,7 +125,7 @@ check(not medical_qa._should_validate_glossary_term("оферта", "offer", {"�
       "скип своей области срабатывает")
 
 print("\n=== 7. Кандидаты Medical QA несут область проекта ===")
-res = medical_qa.run_medical_qa("договор аренды", "the deal",
+res = medical_qa.run_checks("договор аренды", "the deal",
                                 glossary_matches=[{"src": "договор", "tgt": "contract"}],
                                 domain="legal", src_lang="RU", tgt_lang="EN")
 cands = res["term_candidates"]

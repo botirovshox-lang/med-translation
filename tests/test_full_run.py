@@ -124,7 +124,7 @@ proj = build([seg(1, "жалобы"), seg(2, "одышка")])
 _real_repair, _real_tc = main.repair_batch, main._run_segment_termcheck
 main.backcheck_batch = fake_step("backcheck", {"count": 2, "errors": []})
 main.termcheck_batch = fake_step("termcheck", {"count": 2, "flagged": 1, "errors": []})
-main.batch_medical_qa = fake_step("medical_qa", {"count": 2, "errors": []})
+main.batch_checks = fake_step("medical_qa", {"count": 2, "errors": []})
 main.repair_batch = fake_step("repair", {"applied": [1], "skipped": [], "errors": []})
 # Сверка терминов моделью: платный шаг, поэтому в тесте подменён, как и все
 # остальные. Порядок несущий — она обязана идти ПЕРЕД ремонтом: её вердикт
@@ -201,7 +201,7 @@ for _st in main.FULL_RUN_STEPS:
           "шаг «%s» посчитан в смете «Перевести и проверить»" % _st)
 
 print("\n=== 7. Недоступный шаг не роняет прогон, но молча не пропадает ===")
-main.medical_qa_mod = None
+main.checks_mod = None
 order.clear()
 main.backcheck_batch = fake_step("backcheck", {"count": 2, "errors": []})
 out = main._job_chunk_full(1, [1, 2], {"steps": ["backcheck", "medical_qa"]})
@@ -217,8 +217,8 @@ except RuntimeError as e:
     check("ни один шаг не выполнен" in str(e), "порция без работы честно падает")
 
 print("\n=== 8. Порция, где всё сломалось, роняет прогон и называет причину ===")
-main.medical_qa_mod = object()
-main.medical_qa_enabled = lambda: True
+main.checks_mod = object()
+main.checks_enabled = lambda: True
 # Ровно то, что случилось в бою: у аккаунта кончились деньги. Пакетные
 # эндпоинты глотают ошибку каждого сегмента, и наружу шло только их число —
 # «ошибок: 10» человек читает как поломку программы и лезет в настройки,
@@ -424,6 +424,27 @@ main._job_run(job2)
 check(job2["status"] == "done" and job2["counters"].get("termsApproved") == 0,
       "пустое одобрение — это не ошибка")
 check(job2["total"] == 0, "и чинить после него нечего")
+
+print("\n=== 20. У каждого шага есть НАЗВАННАЯ моделью по умолчанию ===")
+# Пустой выбор шага в браузере означает «возьми свою по умолчанию», и её id
+# знает только сервер. Не назови он её в /api/models — список моделей рисуется
+# без выбранной строки, цены у шага нет вовсе, а шаг с работой и без цены
+# обнуляет ВСЮ смету главной кнопки: под ней остаётся прочерк. Так и вышло
+# со сверкой терминов (tcx_model), для которой ключа в каталоге не было.
+md = main.list_models()
+DEFAULT_KEY = {"model": "default", "bc_model": "backcheckDefault",
+               "tc_model": "termcheckDefault", "tcx_model": "termauditDefault",
+               "rp_model": "repairDefault"}
+ids = {m["id"] for m in md["models"]}
+for step in main.FULL_RUN_STEPS:
+    mkey = main.FULL_STEP_MODEL.get(step)
+    if not mkey:
+        continue          # Medical QA своей модели не имеет — берёт back-check
+    key = DEFAULT_KEY.get(mkey)
+    check(bool(key) and md.get(key) in ids,
+          "шаг «%s»: /api/models называет модель по умолчанию (%s = %s)"
+          % (step, key, md.get(key)))
+check(md.get("judgeDefault") in ids, "и судью тоже: он платный и в смету входит")
 
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

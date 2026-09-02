@@ -32,7 +32,7 @@ class FakeQA:
     def __init__(self, color):
         self.color = color
 
-    def run_medical_qa(self, source, target, **kw):
+    def run_checks(self, source, target, **kw):
         return {"literal_backcheck": {"backtranslated_ru": ""}, "qa_issues": [],
                 "ui_issues": [], "term_candidates": [], "risk_score": 42,
                 "risk_color": self.color, "engine_qa": "test"}
@@ -45,29 +45,29 @@ def build(status, source=LONG, risk="high", color="red"):
     main.STATE = {"projects": [proj], "glossary": [], "tm": [], "termQueue": [],
                   "exportHistory": [], "team": []}
     main._invalidate_gloss_index()
-    main.medical_qa_mod = FakeQA(color)
-    main.medical_qa_enabled = lambda: True
+    main.checks_mod = FakeQA(color)
+    main.checks_enabled = lambda: True
     return proj, seg
 
 
 print("=== 1. Medical QA не снимает подтверждение ===")
 proj, seg = build("confirmed")
 seg["confirmedBy"] = "human"
-main._segment_medical_qa(1, 1, run_backcheck=False)
+main._segment_checks(1, 1, run_backcheck=False)
 check(seg["status"] == "confirmed", "подтверждённый сегмент остался подтверждённым")
 check(seg["confirmedBy"] == "human", "отметка человека на месте")
 check(seg["risk_color"] == "red", "находка при этом записана, а не потеряна")
 
 proj, seg = build("translated")
-main._segment_medical_qa(1, 1, run_backcheck=False)
+main._segment_checks(1, 1, run_backcheck=False)
 check(seg["status"] == "review", "неподтверждённый с красной оценкой уходит на проверку")
 proj, seg = build("translated", color="green")
-main._segment_medical_qa(1, 1, run_backcheck=False)
+main._segment_checks(1, 1, run_backcheck=False)
 check(seg["status"] == "qa", "чистый неподтверждённый получает статус qa")
 
 print("\n=== 2. Medical QA не трогает risk (длину сегмента) ===")
 proj, seg = build("translated", source=LONG, risk="high", color="green")
-main._segment_medical_qa(1, 1, run_backcheck=False)
+main._segment_checks(1, 1, run_backcheck=False)
 check(seg["risk"] == "high", "длинный сегмент остался high, а не стал low")
 check(seg["risk_score"] == 42 and seg["risk_color"] == "green",
       "медицинская оценка живёт в своих полях")

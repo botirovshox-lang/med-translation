@@ -1,5 +1,9 @@
 """
-FastAPI backend for Medical CAT Translator v5.5
+FastAPI backend for CAT Translator v5.6 (перевод документов с проверками).
+
+Сервис НЕ медицинский: предметная область — параметр проекта (`DOMAINS`),
+языковая пара — любая из каталога `languages.json`. Медицина осталась одной
+из встроенных областей и данными первого клиента, а не свойством системы.
 Serves the React design at /, exposes REST API at /api/*
 
 Авторизация: POST /api/auth/login отдаёт токен сессии; его нужно присылать
@@ -75,7 +79,11 @@ def _safe_import(name: str):
 db = _safe_import("db")
 pipeline = _safe_import("pipeline")
 tm_mod = _safe_import("tm")
-medical_qa_mod = _safe_import("medical_qa")
+# Модуль детерминированных проверок. Назывался medical_qa, пока сервис был
+# медицинским; правила в нём — числа, единицы, отрицания, соответствие
+# глоссарию — предметной области не касаются вовсе, а те, что касаются,
+# лежат таблицей DOMAIN_RULES по ключу «область + пара языков».
+checks_mod = _safe_import("checks")
 # Внешние источники приказов: отраслевые справочники и корпуса целевого языка.
 # Без них термин может заверить только человек — а он целевого языка может
 # и не знать. См. шапку authorities.py.
@@ -519,7 +527,8 @@ def _tier_from_origin(origin: str) -> str:
 # дефолт, а не как «годится везде». Массовую миграцию не делаем: 10 022
 # записи × два поля — лишние сотни килобайт в state.json на каждое сохранение.
 DEFAULT_GLOSS_LANG = "RU→EN"
-DEFAULT_GLOSS_DOMAIN = "medical"
+LEGACY_DOMAIN = "medical"        # как читается запись/проект БЕЗ поля domain
+DEFAULT_GLOSS_DOMAIN = LEGACY_DOMAIN
 
 
 def _lang_pair(project: Optional[dict]) -> str:
@@ -833,7 +842,14 @@ DOMAINS = [
      "terminology": "standard contemporary usage",
      "examples": ""},
 ]
-DEFAULT_DOMAIN = "medical"      # исторически сервис начинался с медицины
+# Область НОВОГО проекта — общая: сервис не про медицину, и подставлять
+# её человеку, который пришёл с договором, нельзя. А вот запись и проект
+# БЕЗ поля `domain` читаются как медицинские (LEGACY_DOMAIN) — это закон
+# миграции, тот же, что у `lang`: у первого клиента поля нет ни у проекта,
+# ни у 1307 записей глоссария, и смена этого чтения оторвала бы глоссарий
+# от его проекта. Разводить эти два смысла обязательно: «чем заполнить
+# пустое поле сейчас» и «как понимать пустое поле в старых данных».
+DEFAULT_DOMAIN = "general"
 _DOMAINS_BY_ID = {d["id"]: d for d in DOMAINS}
 
 
@@ -884,13 +900,14 @@ def _tenant_domains(tenant: Optional[str] = None) -> list:
 
 
 def _resolve_domain(domain_id: Optional[str]) -> dict:
-    """Своя область организации, иначе встроенная, иначе дефолт.
-    У старых проектов поля нет вовсе."""
+    """Своя область организации, иначе встроенная, иначе LEGACY_DOMAIN.
+    Пустое поле — это СТАРАЯ запись (см. DEFAULT_DOMAIN), а не «общая
+    тематика»: у новых проектов область проставлена всегда."""
     if domain_id:
         for d in _tenant_domains():
             if d.get("id") == domain_id:
                 return d
-    return _DOMAINS_BY_ID.get(domain_id or "") or _DOMAINS_BY_ID[DEFAULT_DOMAIN]
+    return _DOMAINS_BY_ID.get(domain_id or "") or _DOMAINS_BY_ID[LEGACY_DOMAIN]
 
 
 # ─── Каталог моделей OpenAI ──────────────────────────────────────────
@@ -1034,25 +1051,25 @@ JUDGE_ZONE = (int(os.environ.get("JUDGE_ZONE_LOW", "50")),
 def _lex_blind(source: str) -> bool:
     """«Оригинал слишком короток, чтобы лексическая мера что-то значила».
 
-    Через getattr, а не прямым вызовом: medical_qa подключается через
+    Через getattr, а не прямым вызовом: checks подключается через
     _safe_import и может отсутствовать или оказаться старее кода (то же
     правило, что у BACKCHECK_BANDS). Молчаливый ответ здесь — False, то есть
     «ничего не меняем»: не зная длины, безопаснее оставить прежнюю зону судьи
     и прежнюю подпись корзины, чем открыть низ шкалы наугад и платить за
     судью по всему проекту."""
-    fn = getattr(medical_qa_mod, "lexically_blind", None) if medical_qa_mod else None
+    fn = getattr(checks_mod, "lexically_blind", None) if checks_mod else None
     return bool(fn(source or "")) if fn else False
 
 
 def _bc_version() -> int:
-    """Версия ПРАВИЛ подсчёта back-check (medical_qa.BACKCHECK_VERSION).
+    """Версия ПРАВИЛ подсчёта back-check (checks.BACKCHECK_VERSION).
 
-    Через getattr по той же причине, что и _lex_blind: medical_qa подключается
+    Через getattr по той же причине, что и _lex_blind: checks подключается
     через _safe_import и может отсутствовать. Молчаливый ответ — 0, то есть
     «версия неизвестна»: записи с таким числом никто не клеймит (у прежних
     ключа `v` нет вовсе), и ни одна проверка на равенство не сработает
     случайно."""
-    v = getattr(medical_qa_mod, "BACKCHECK_VERSION", 0) if medical_qa_mod else 0
+    v = getattr(checks_mod, "BACKCHECK_VERSION", 0) if checks_mod else 0
     try:
         return int(v or 0)
     except (TypeError, ValueError):                          # pragma: no cover
@@ -1467,7 +1484,7 @@ def _spend_status(tenant: Optional[str] = None) -> dict:
 _PAID = [
     ("POST", re.compile(r"/api/projects/\d+/jobs$")),
     ("POST", re.compile(r"/api/projects/\d+/(batch|extract-terms|term-context|termcheck/batch|backcheck/batch|images/scan)$")),
-    ("POST", re.compile(r"/api/segments/\d+/\d+/(translate|backcheck|termcheck|repair|medical-qa)$")),
+    ("POST", re.compile(r"/api/segments/\d+/\d+/(translate|backcheck|termcheck|repair|medical-qa|checks)$")),
     ("POST", re.compile(r"/api/term-queue/\d+/explain$")),
     ("POST", re.compile(r"/api/glossary/audit$")),
 ]
@@ -2131,7 +2148,7 @@ def _token_from_request(request: Request) -> Optional[str]:
 # ─────────────────────────────────────────────────────────────────────
 # App setup
 # ─────────────────────────────────────────────────────────────────────
-app = FastAPI(title="Medical CAT Translator API", version="5.6.0")
+app = FastAPI(title=APP_BRAND + " API", version="5.6.0")
 
 
 @app.middleware("http")
@@ -2204,6 +2221,7 @@ try:
 except ImportError:                       # запуск как backend.main:app
     from backend import textcount
 mailer_mod = _safe_import("mailer")
+legal_mod = _safe_import("legal")
 STORE = _store_mod.open_store(os.environ.get("DATABASE_URL"), STATE_FILE)
 
 # Прогоны отдельным процессом (systemd-юнит medcat-worker, backend/worker.py):
@@ -2214,10 +2232,15 @@ EXTERNAL_WORKER = (STORE.kind == "pg" and os.environ.get(
     "MEDCAT_EXTERNAL_WORKER", "").strip().lower() in ("1", "true", "yes", "on"))
 IS_WORKER = os.environ.get("MEDCAT_ROLE", "").strip() == "worker"
 
-def medical_qa_enabled() -> bool:
-    if medical_qa_mod and hasattr(medical_qa_mod, "enabled_from_env"):
-        return medical_qa_mod.enabled_from_env(os.environ.get("MEDICAL_TRANSLATION_QA_ENABLED", "1"))
-    return os.environ.get("MEDICAL_TRANSLATION_QA_ENABLED", "1").lower() not in {"0", "false", "no", "off"}
+def checks_enabled() -> bool:
+    """Детерминированные проверки включены. Переменная называется
+    CHECKS_ENABLED; прежняя MEDICAL_TRANSLATION_QA_ENABLED читается ещё
+    релиз — выкат не должен молча менять поведение боевого сервера."""
+    raw = (os.environ.get("CHECKS_ENABLED")
+           or os.environ.get("MEDICAL_TRANSLATION_QA_ENABLED") or "1")
+    if checks_mod and hasattr(checks_mod, "enabled_from_env"):
+        return checks_mod.enabled_from_env(raw)
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 # ─────────────────────────────────────────────────────────────────────
 # Стартовые данные
@@ -2242,7 +2265,8 @@ def _demo_seed() -> dict:
 
 
 def _load_glossary_from_tsv() -> list:
-    """Load real medical glossary from TSV file; fall back to 10 hardcoded terms."""
+    """Стартовый словарь первого клиента из TSV. Читается ЛЕНИВО и только
+    миграцией уровней доверия: у новой установки глоссарий пустой."""
     import csv
     _CAT_MAP = {
         "diagnosis": "Disease", "anatomy": "Anatomy", "symptom": "Symptom",
@@ -2635,6 +2659,7 @@ class RegisterRequest(BaseModel):
     password: str
     org: str = ""
     name: str = ""
+    accept: bool = False        # согласие с офертой и политикой ПДн
 
 
 class CodeRequest(BaseModel):
@@ -2666,7 +2691,12 @@ def signup_info():
     при ненастроенном SMTP."""
     return {"ok": True, "signup": SIGNUP_ENABLED,
             "mail": bool(mailer_mod and mailer_mod.configured()),
-            "brand": APP_BRAND, "trialUsd": SIGNUP_TRIAL_USD}
+            "brand": APP_BRAND, "trialUsd": SIGNUP_TRIAL_USD,
+            "legal": {"version": (legal_mod.VERSION if legal_mod else ""),
+                      "terms": "/terms", "privacy": "/privacy",
+                      # Реквизиты не заполнены — документ ещё не работает
+                      # как договор, и владелец сервиса обязан это видеть.
+                      "ready": bool(legal_mod and legal_mod.complete())}}
 
 
 @app.post("/api/auth/register")
@@ -2682,6 +2712,12 @@ def register(req: RegisterRequest, request: Request):
     _ensure_users()
     email = _check_email(req.email)
     _check_user_fields(None, req.password, None)
+    # Согласие — условие заключения договора, а не галочка для красоты:
+    # без него регистрации нет. Фиксируем РЕДАКЦИЮ документа, дату и адрес —
+    # иначе через год не ответить, с чем именно человек согласился.
+    if not req.accept:
+        raise HTTPException(400, "Без согласия с офертой и политикой обработки "
+                                 "персональных данных регистрация невозможна")
     if _user_by_email(email) or _user_by_login(email):
         raise HTTPException(409, "Такая почта уже зарегистрирована — войдите или "
                                  "восстановите пароль")
@@ -2698,7 +2734,9 @@ def register(req: RegisterRequest, request: Request):
     user = {"id": max((x["id"] for x in _users()), default=0) + 1, "tenant": tid,
             "login": email, "email": email, "emailVerified": False,
             "hash": h, "salt": salt, "role": "owner", "name": (req.name or "").strip() or email.split("@")[0],
-            "active": True, "uiLang": DEFAULT_UI_LANG, "created": today}
+            "active": True, "uiLang": DEFAULT_UI_LANG, "created": today,
+            "acceptedTerms": {"version": (legal_mod.VERSION if legal_mod else ""),
+                              "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ip": ip}}
     _users().append(user)
     code = _issue_code(user, "verify")
     _SIGNUP_FAILS.setdefault(ip, []).append(time.time())
@@ -4353,6 +4391,24 @@ def fetch_segments(pid: int, req: SegmentsFetchRequest):
                                      if s.get("id") in wanted]}
 
 
+# Подбор приказных записей по исходнику — САМЫЙ дорогой расчёт бесплатной
+# части: десять тысяч записей глоссария против текста сегмента, 13 мс на
+# сегмент. Зовут его отчёт о соответствии, разбор прогона, /analysis, ремонт
+# и промпты — каждый своим проходом, и на боевом проекте в 2711 сегментов
+# один такой проход занимал 33 секунды ЕДИНСТВЕННОГО воркера: подтверждение
+# одного сегмента меняло отпечаток, и экран «Анализ» покупал весь расчёт
+# заново, а на это время сервис был недоступен всем.
+# Зависит ответ РОВНО от трёх вещей: текста оригинала, области проекта
+# и поколения глоссария. Ни перевод, ни статус, ни проверки на него не
+# влияют — потому подтверждение сегмента (и любая правка перевода) кэш
+# не роняет вовсе.
+_HITS_CACHE: dict = {}
+_HITS_CACHE_EPOCH = [-1]
+# Потолок — про ПАМЯТЬ, а не про терпение: запись держит копии найденных
+# записей глоссария. На проект в 2711 сегментов уходит столько же ключей.
+_HITS_CACHE_MAX = int(os.environ.get("HITS_CACHE_MAX", "20000"))
+
+
 def _verified_hits(source: str, project: Optional[dict]) -> list:
     """Записи глоссария уровня ПРИКАЗ, применимые к этому исходнику.
 
@@ -4362,11 +4418,32 @@ def _verified_hits(source: str, project: Optional[dict]) -> list:
     переписывать сегмент друг за другом по кругу (та же беда, от которой
     `_gloss_misses` и `/glossary-impact` считаются одним расчётом).
     Пустой перевод отсеивается здесь же: требовать «используйте ничего»
-    нельзя, и записью-ответом такая запись тоже не является."""
+    нельзя, и записью-ответом такая запись тоже не является.
+
+    Ответ КЭШИРУЕТСЯ по (область, исходник) при неизменном поколении
+    глоссария (`_HITS_CACHE`). Наружу уходят КОПИИ записей — ровно так их
+    отдаёт и `_get_context`: вызывающие дописывают в найденное свои поля
+    (`_form`, пометки ремонта), и общая на всех запись однажды уехала бы
+    в чужой промпт."""
     if project is None:
         return []
-    return [h for h in _get_context(source or "", with_tm=False, project=project)[0]
-            if _hit_tier(h) == GLOSSARY_TIER_HARD and (h.get("tgt") or "").strip()]
+    # Поколение глоссария сторожит таблицу ЦЕЛИКОМ, а не лежит в ключе:
+    # записи прошлого поколения не спросит уже никто, и держать их — значит
+    # копить мусор до потолка.
+    if _HITS_CACHE_EPOCH[0] != _GLOSS_EPOCH[0]:
+        _HITS_CACHE.clear()
+        _HITS_CACHE_EPOCH[0] = _GLOSS_EPOCH[0]
+    key = (_project_scope(project), source or "")
+    got = _HITS_CACHE.get(key)
+    if got is None:
+        got = [h for h in _get_context(source or "", with_tm=False, project=project)[0]
+               if _hit_tier(h) == GLOSSARY_TIER_HARD and (h.get("tgt") or "").strip()]
+        # Переполнение чистит таблицу целиком: выбирать, кого выселить,
+        # дороже, чем посчитать заново.
+        if len(_HITS_CACHE) >= _HITS_CACHE_MAX:
+            _HITS_CACHE.clear()
+        _HITS_CACHE[key] = got
+    return [dict(h) for h in got]
 
 
 @app.get("/api/projects/{pid}/glossary-impact")
@@ -4470,7 +4547,7 @@ def _coverage(project: dict) -> dict:
         silent.append({"key": "morph", "label": "Термины в косвенных формах",
                        "why": "нет таблицы окончаний для %s — термин находится только в словарной форме" % src})
     # Правила области и пары (лево/право, стиль, скип-списки).
-    rules = (medical_qa_mod.rules_for(dom["id"], src, tgt) if medical_qa_mod
+    rules = (checks_mod.rules_for(dom["id"], src, tgt) if checks_mod
              else {"pairs": [], "style": []})
     if rules.get("pairs") or rules.get("style"):
         works.append({"key": "domain_rules", "label": "Правила области «%s» для %s→%s (подмена стороны, стиль)" % (dom["label"], src, tgt)})
@@ -4478,7 +4555,7 @@ def _coverage(project: dict) -> dict:
         silent.append({"key": "domain_rules", "label": "Правила области «%s»" % dom["label"],
                        "why": "для пары %s→%s правила не описаны — проверка стороны и стиля не срабатывает" % (src, tgt)})
     # Инверсия отрицания — по маркерам языка оригинала (сравниваются оригинал и обратный перевод).
-    neg = medical_qa_mod.negation_markers(src) if medical_qa_mod else []
+    neg = checks_mod.negation_markers(src) if checks_mod else []
     if neg:
         works.append({"key": "negation", "label": "Инверсия отрицания"})
     else:
@@ -4509,6 +4586,166 @@ def project_coverage(pid: int):
     return _coverage(get_project(pid))
 
 
+def _analysis_seg_fp(s: dict) -> str:
+    """Отпечаток СОДЕРЖИМОГО сегмента для экрана «Анализ».
+
+    Перечня «что влияет на экран» здесь намеренно НЕТ. Раньше он был и рос
+    с каждой проверкой: сперва хеши текста, потом баллы, потом судья, потом
+    Medical QA и арбитр, — а забытое поле означало доперегонные цифры
+    на экране, то есть враньё без единого видимого признака. Считать
+    содержимое целиком стоит 30 мс на 2711 сегментов, промахнуться им нельзя
+    по построению, и тем же отпечатком помечена готовая строка разбора
+    (`_ANALYSIS_ROWS`) — одно определение на кэш и на сверку свежести.
+
+    Полей ровно столько, сколько читает `_analysis_row` со своими вызовами
+    (`_repair_findings`, `_machine_clean`, `_repair_clamped`,
+    `_confirm_override`, `_judge_pending`, `_repair_score_vetoed`). Начал
+    читать новое поле — впиши его СЮДА, иначе строка не пересчитается."""
+    return hashlib.sha1(repr([
+        s.get("source"), s.get("target"), s.get("status"), s.get("backcheck"),
+        s.get("termcheck"), s.get("repair"), s.get("qa_result"),
+        s.get("qa_issues"), s.get("risk_color"), s.get("termContext"),
+        s.get("confirmWithdrawn")]).encode("utf-8")).hexdigest()
+
+
+# Готовые строки разбора: {pid: {id сегмента: (ключ, строка)}}. Ключ — тройка
+# «отпечаток сегмента + расходится ли он с глоссарием + порог балла»: ровно
+# то, от чего строка зависит. Подтверждение одного сегмента меняет ОДИН ключ,
+# значит и считается один сегмент, а не весь проект. Без этого пересчёт стоил
+# 10 секунд единственного воркера на боевом проекте — и человек, нажавший
+# «Подтвердить», ждал экран «Анализ» дольше, чем правил сам текст.
+_ANALYSIS_ROWS: dict = {}
+
+
+def _analysis_row(s: dict, gloss_bad: bool, min_score: int) -> dict:
+    """Разбор ОДНОГО сегмента для экрана «Анализ»: в какие корзины он идёт.
+
+    Вынесено из общего прохода ради кэша по содержимому (`_ANALYSIS_ROWS`),
+    и раскладка по спискам осталась у вызывающего: строка описывает сегмент,
+    а не его место среди других, — только поэтому её и можно переиспользовать.
+    Всё, от чего строка зависит, обязано входить в ключ: содержимое сегмента
+    (`_analysis_seg_fp`), расхождение с глоссарием и порог балла области."""
+    row = {"untranslated": False, "withdrawn": False, "withdrawnOpen": False,
+           "unjudgedBlind": False, "unverified": False, "judgeExt": False,
+           "confirmed": False, "qaCritical": False, "repaired": False,
+           "reverted": False, "scoreVetoed": False, "findings": False,
+           "clamped": False, "confirmedFindings": False, "override": False,
+           "bucket": None, "why": ""}
+    target = (s.get("target") or "").strip()
+    if not target:
+        row["untranslated"] = True
+        return row
+    if s.get("confirmWithdrawn"):
+        row["withdrawn"] = True
+        if s.get("status") != "confirmed":
+            row["withdrawnOpen"] = True
+    _bc = s.get("backcheck") or {}
+    # Свежесть считаем ОДИН раз: это sha1 перевода, а ниже её спрашивают
+    # обе ветки — и «никто не проверял», и расширенная зона судьи.
+    _bc_fresh = bool(_bc) and not _check_stale(_bc, target)
+    if _bc_fresh and not _bc.get("judged"):
+        _sc = _bc.get("score")
+        if _lex_blind(s.get("source") or ""):
+            row["unjudgedBlind"] = True
+        elif _sc is not None and _sc > JUDGE_ZONE[1]:
+            row["unverified"] = True
+    # Расширенная зона (judge_all=True): прогон с разрешением спросит
+    # судью и здесь. Свежесть проверяется отдельно — _judge_pending про
+    # неё не знает, а вердикт по прежнему тексту недостачей не считается:
+    # сам перевод сначала перепроверит back-check (корзина unchecked).
+    if _bc_fresh and _judge_pending(s, above=True):
+        row["judgeExt"] = True
+    if s.get("status") == "confirmed":
+        row["confirmed"] = True
+        _qa = s.get("qa_result") or {}
+        _hardqa = any((i.get("severity") or i.get("sev")) in
+                      ("critical", "high", "major")
+                      for i in (s.get("qa_issues") or ()))
+        # Только свежий результат: устаревший пересчитает шаг Medical QA
+        # ближайшего прогона, и находка либо подтвердится, либо снимется.
+        if (_hardqa or s.get("risk_color") == "red") and _qa \
+                and not _check_stale(_qa, target):
+            row["qaCritical"] = True
+    rp = s.get("repair") or {}
+    # Настоящие находки держим отдельно от `open_findings`: у второго
+    # бывает фолбэк-заглушка `[{"kind": "gloss"}]` без ключа `text`,
+    # и отпечатку захода её отдавать нельзя. А сам список нужен ниже
+    # `_repair_clamped`, чтобы тот не считал то же самое второй раз:
+    # на боевом проекте это лишние полсекунды единственного воркера
+    # при каждом открытии экрана.
+    rp_findings = _repair_findings(s)
+    open_findings = rp_findings or ([{"kind": "gloss"}] if gloss_bad else [])
+    if rp.get("applied") and _repair_tried(s):
+        row["repaired"] = True
+    elif rp and not rp.get("applied") and open_findings and _repair_tried(s):
+        # Модель пробовала починить и не смогла — дальше только человек.
+        # _repair_tried обязателен: запись о неудачной правке могла остаться
+        # от прежнего текста, а к нынешнему уже не относится.
+        row["reverted"] = True
+        # Отдельной строкой — те, где отмена держалась ТОЛЬКО на упавшем
+        # балле, а термины правка почистила. Это не «модель не смогла»:
+        # текст написан и оплачен, лежит в repair.candidate и ждёт одного
+        # нажатия. В общей корзине они выглядят безнадёжными и потому
+        # не разбираются никогда.
+        if _repair_score_vetoed(s):
+            row["scoreVetoed"] = True
+    # Только неподтверждённые: подтверждённые с находками пакетный ремонт
+    # без явного разрешения не трогает, и обещать «это починится само»
+    # было бы неправдой. Они уходят в свою корзину — не потому, что с ними
+    # нечего делать, а потому, что решение принимает человек.
+    if open_findings and s.get("status") != "confirmed":
+        row["findings"] = True
+        # Тот же предикат, что у _plan_step с retry=False: совпавший
+        # отпечаток захода прогон не берёт — это работа человека.
+        if _repair_clamped(s, rp_findings):
+            row["clamped"] = True
+    elif open_findings:
+        row["confirmedFindings"] = True
+        # Объективная находка сильнее заверения: таких ремонт берёт сам.
+        if _confirm_override(s):
+            row["override"] = True
+    # Корзины обязаны быть исчерпывающими: сегмент, не попавший ни в одну,
+    # исчезает с экрана, и картина выглядит благополучнее, чем есть.
+    why = _machine_clean(s, min_score)
+    if why is None:
+        row["bucket"] = "clean"
+    elif why == CLEAN_TERMCHECK_SKIP:
+        # НЕ «не проверено»: `_termcheck_trivial` сам сказал, что проверять
+        # нечего — в переводе нет слов либо он совпадает с оригиналом
+        # («40%», «kV 120.0 mA: 283»). Такой сегмент из корзины «не
+        # проверено» не уйдёт НИКОГДА: текст не изменится, и проверять
+        # в нём по-прежнему нечего. На боевом проекте так висели 70 из 138,
+        # то есть половина корзины звала человека к работе, которой нет.
+        row["bucket"] = "nothing"
+    elif why in CLEAN_UNCHECKED:
+        row["bucket"] = "unchecked"
+    elif why == CLEAN_REPAIRED and row["repaired"]:
+        # НЕ в «оценку ниже порога». У такого сегмента back-check прошёл
+        # и termcheck чист (глоссарий _machine_clean не смотрит вовсе —
+        # расхождение с ним видно отдельной строкой), а отказ он получил
+        # только за то, что систему нельзя пускать заверять собственную
+        # правку. На боевом проекте это 306 сегментов из 511: корзина на
+        # 60% состояла из благополучных строк и звала человека разбираться
+        # там, где разбираться не в чем. Своя строка у них есть —
+        # «Исправила машина», и ждут они там ровно того, что им нужно:
+        # подтверждения человеком. Условие `row["repaired"]` — не
+        # перестраховка: без него выброс держался бы на том, что два
+        # предиката в разных концах файла совпадают буква в букву.
+        pass
+    elif not row["findings"] and not row["confirmedFindings"]:
+        # Балл ниже порога у КОРОТКОГО оригинала — это не «оценка ниже
+        # порога», а «оценки нет»: мерить было нечем, и пока судья не
+        # ответил, число ничего не значит. Своей причиной, чтобы человек
+        # не шёл разбираться с верным переводом.
+        if (why.startswith("back-check ниже")
+                and not _bc.get("judged")
+                and _lex_blind(s.get("source") or "")):
+            why = CLEAN_LEX_BLIND
+        row["bucket"] = "weak"
+        row["why"] = why
+    return row
+
+
 @app.get("/api/projects/{pid}/analysis")
 def project_analysis(pid: int, refresh: bool = False):
     """Итог работы по проекту одним экраном: что чисто, что исправила машина,
@@ -4522,46 +4759,16 @@ def project_analysis(pid: int, refresh: bool = False):
     отпечатку тех же данных, из которых считается."""
     project = get_project(pid)
     q = _term_queue()
-    # Отпечаток обязан включать сами проверки: отчёт о глоссарии считается по
-    # тексту, а этот экран — ещё и по backcheck/termcheck/repair. Прогон
-    # back-check не меняет ни статус, ни перевод, и на отпечатке импакта
-    # экран навсегда показывал бы доперегонные цифры.
-    # Не только хеши текста, но и САМИ оценки: повторный back-check по тому же
-    # тексту другой моделью даёт тот же target_hash и другой балл, и по одним
-    # хешам экран показал бы доперегонные цифры.
-    checks = "".join(
-        "%s:%s|%s:%s|%s:%s|%s|%s;" % (
-            (s.get("backcheck") or {}).get("target_hash", ""),
-            # Балла мало: пересчёт правил может оставить балл прежним (ноль
-            # и до, и после клампа), а список претензий поменять — корзины
-            # findings и weak тогда остались бы докоррекционными.
-            # judged — тоже: судья не меняет ни хеш, ни (при «severity: none»
-            # с высоким баллом) сам балл, а корзину «возьмёт прогон» меняет.
-            # judge_skipped — тоже: отметка «hard» меняет корзину judge_ext
-            # (судью туда не позовут), не меняя ни балла, ни judged, ни хеша.
-            "%s/%s/%s/%s" % ((s.get("backcheck") or {}).get("score", ""),
-                             len((s.get("backcheck") or {}).get("terms_lost") or ()),
-                             1 if (s.get("backcheck") or {}).get("judged") else 0,
-                             (s.get("backcheck") or {}).get("judge_skipped") or ""),
-            (s.get("termcheck") or {}).get("target_hash", ""),
-            len((s.get("termcheck") or {}).get("findings") or ()),
-            (s.get("repair") or {}).get("source_hash", ""),
-            (s.get("repair") or {}).get("applied", ""),
-            # Medical QA и вердикт арбитра в отпечатке обязательны: корзины
-            # qaCritical и termContext* считаются по ним, а прогоны этих
-            # проверок не меняют ни текст, ни статус — на прежнем отпечатке
-            # экран навсегда показывал бы доперегонные цифры.
-            "%s/%s/%s" % ((s.get("qa_result") or {}).get("target_hash", ""),
-                          s.get("risk_color") or "",
-                          len(s.get("qa_issues") or ())),
-            "%s/%s/%s/%s" % ((s.get("termContext") or {}).get("target_hash", ""),
-                             (s.get("termContext") or {}).get("version", ""),
-                             1 if (s.get("termContext") or {}).get("all_terms") else 0,
-                             1 if s.get("confirmWithdrawn") else 0))
-        for s in project["segments"])
+    # Отпечаток считается ПО СОДЕРЖИМОМУ сегментов (`_analysis_seg_fp`),
+    # тем же, каким помечены готовые строки разбора. Ручного перечня полей
+    # здесь больше нет: он рос с каждой проверкой (хеши текста, баллы, судья,
+    # Medical QA, арбитр), а забытое поле означало доперегонные цифры
+    # на экране — враньё без единого видимого признака.
+    seg_fp = {s["id"]: _analysis_seg_fp(s) for s in project["segments"]}
     fp = (_impact_fingerprint(project) + "|" + str(len(q)) + "|"
           + str(sum(1 for c in q if c.get("status", "pending") == "pending"))
-          + "|" + hashlib.sha1(checks.encode("utf-8")).hexdigest())
+          + "|" + hashlib.sha1("".join(
+              "%s:%s;" % (i, f) for i, f in seg_fp.items()).encode("utf-8")).hexdigest())
     cached = _ANALYSIS_CACHE.get(pid)
     if cached and cached[0] == fp and not refresh:
         return cached[1]
@@ -4634,122 +4841,63 @@ def project_analysis(pid: int, refresh: bool = False):
     # Сюда же расхождения по НАЧЕРТАНИЮ приказного термина: они тоже считаются
     # по глоссарию, а `_repair_findings(s)` ниже зовётся без проекта.
     gloss_bad = set(impact["segments"]) | set(impact.get("caseSegments") or ())
+    # Проход по сегментам: сам разбор лежит в `_analysis_row`, здесь — только
+    # раскладка по спискам. Готовая строка переиспользуется, пока не менялись
+    # ни сегмент, ни его расхождение с глоссарием, ни порог области: экран
+    # открывают после каждой правки, и пересчитывать из-за одного
+    # подтверждения весь проект — это те самые секунды единственного воркера,
+    # на которые сервис недоступен всем.
+    rows_prev = _ANALYSIS_ROWS.get(pid) or {}
+    rows_new: dict = {}
     for s in project["segments"]:
-        target = (s.get("target") or "").strip()
-        if not target:
-            untranslated.append(s["id"])
+        sid = s["id"]
+        key = (seg_fp.get(sid), sid in gloss_bad, pol["backcheck_min"])
+        got = rows_prev.get(sid)
+        row = got[1] if got and got[0] == key else _analysis_row(
+            s, sid in gloss_bad, pol["backcheck_min"])
+        rows_new[sid] = (key, row)
+        if row["untranslated"]:
+            untranslated.append(sid)
             continue
-        if s.get("confirmWithdrawn"):
-            withdrawn.append(s["id"])
-            if s.get("status") != "confirmed":
-                withdrawn_open.add(s["id"])
-        _bc = s.get("backcheck") or {}
-        # Свежесть считаем ОДИН раз: это sha1 перевода, а ниже её спрашивают
-        # обе ветки — и «никто не проверял», и расширенная зона судьи.
-        _bc_fresh = bool(_bc) and not _check_stale(_bc, target)
-        if _bc_fresh and not _bc.get("judged"):
-            _sc = _bc.get("score")
-            if _lex_blind(s.get("source") or ""):
-                unjudged_blind.append(s["id"])
-            elif _sc is not None and _sc > JUDGE_ZONE[1]:
-                unverified.append(s["id"])
-        # Расширенная зона (judge_all=True): прогон с разрешением спросит
-        # судью и здесь. Свежесть проверяется отдельно — _judge_pending про
-        # неё не знает, а вердикт по прежнему тексту недостачей не считается:
-        # сам перевод сначала перепроверит back-check (корзина unchecked).
-        if _bc_fresh and _judge_pending(s, above=True):
-            judge_ext.add(s["id"])
-        if s.get("status") == "confirmed":
-            confirmed_ids.add(s["id"])
-            _qa = s.get("qa_result") or {}
-            _hardqa = any((i.get("severity") or i.get("sev")) in
-                          ("critical", "high", "major")
-                          for i in (s.get("qa_issues") or ()))
-            # Только свежий результат: устаревший пересчитает шаг Medical QA
-            # ближайшего прогона, и находка либо подтвердится, либо снимется.
-            if (_hardqa or s.get("risk_color") == "red") and _qa \
-                    and not _check_stale(_qa, target):
-                qa_critical.append(s["id"])
-        rp = s.get("repair") or {}
-        # Настоящие находки держим отдельно от `open_findings`: у второго
-        # бывает фолбэк-заглушка `[{"kind": "gloss"}]` без ключа `text`,
-        # и отпечатку захода её отдавать нельзя. А сам список нужен ниже
-        # `_repair_clamped`, чтобы тот не считал то же самое второй раз:
-        # на боевом проекте это лишние полсекунды единственного воркера
-        # при каждом открытии экрана.
-        rp_findings = _repair_findings(s)
-        open_findings = rp_findings or (
-            [{"kind": "gloss"}] if s["id"] in gloss_bad else [])
-        if rp.get("applied") and _repair_tried(s):
-            repaired.append(s["id"])
-            repaired_set.add(s["id"])
-        elif (rp and not rp.get("applied") and open_findings
-                and _repair_tried(s)):
-            # Модель пробовала починить и не смогла — дальше только человек.
-            # _repair_tried обязателен: запись о неудачной правке могла остаться
-            # от прежнего текста, а к нынешнему уже не относится.
-            reverted.append(s["id"])
-            # Отдельной строкой — те, где отмена держалась ТОЛЬКО на упавшем
-            # балле, а термины правка почистила. Это не «модель не смогла»:
-            # текст написан и оплачен, лежит в repair.candidate и ждёт одного
-            # нажатия. В общей корзине они выглядят безнадёжными и потому
-            # не разбираются никогда.
-            if _repair_score_vetoed(s):
-                score_vetoed.append(s["id"])
-        # Только неподтверждённые: подтверждённые с находками пакетный ремонт
-        # без явного разрешения не трогает, и обещать «это починится само»
-        # было бы неправдой. Они уходят в свою корзину — не потому, что с ними
-        # нечего делать, а потому, что решение принимает человек.
-        if open_findings and s.get("status") != "confirmed":
-            findings.append(s["id"])
-            # Тот же предикат, что у _plan_step с retry=False: совпавший
-            # отпечаток захода прогон не берёт — это работа человека.
-            if _repair_clamped(s, rp_findings):
-                clamped_ids.add(s["id"])
-        elif open_findings:
-            confirmed_findings.append(s["id"])
-            conf_set.add(s["id"])
-            # Объективная находка сильнее заверения: таких ремонт берёт сам.
-            if _confirm_override(s):
-                override_ids.add(s["id"])
-        # Корзины обязаны быть исчерпывающими: сегмент, не попавший ни в одну,
-        # исчезает с экрана, и картина выглядит благополучнее, чем есть.
-        why = _machine_clean(s, pol["backcheck_min"])
-        if why is None:
-            clean.append(s["id"])
-        elif why == CLEAN_TERMCHECK_SKIP:
-            # НЕ «не проверено»: `_termcheck_trivial` сам сказал, что проверять
-            # нечего — в переводе нет слов либо он совпадает с оригиналом
-            # («40%», «kV 120.0 mA: 283»). Такой сегмент из корзины «не
-            # проверено» не уйдёт НИКОГДА: текст не изменится, и проверять
-            # в нём по-прежнему нечего. На боевом проекте так висели 70 из 138,
-            # то есть половина корзины звала человека к работе, которой нет.
-            nothing_to_check.append(s["id"])
-        elif why in CLEAN_UNCHECKED:
-            unchecked.append(s["id"])
-        elif why == CLEAN_REPAIRED and s["id"] in repaired_set:
-            # НЕ в «оценку ниже порога». У такого сегмента back-check прошёл
-            # и termcheck чист (глоссарий _machine_clean не смотрит вовсе —
-            # расхождение с ним видно отдельной строкой), а отказ он получил
-            # только за то, что систему нельзя пускать заверять собственную
-            # правку. На боевом проекте это 306 сегментов из 511: корзина на
-            # 60% состояла из благополучных строк и звала человека разбираться
-            # там, где разбираться не в чем. Своя строка у них есть —
-            # «Исправила машина», и ждут они там ровно того, что им нужно:
-            # подтверждения человеком. Условие `in repaired_set` — не
-            # перестраховка: без него выброс держался бы на том, что два
-            # предиката в разных концах файла совпадают буква в букву.
-            pass
-        elif s["id"] not in findings and s["id"] not in conf_set:
-            # Балл ниже порога у КОРОТКОГО оригинала — это не «оценка ниже
-            # порога», а «оценки нет»: мерить было нечем, и пока судья не
-            # ответил, число ничего не значит. Своей причиной, чтобы человек
-            # не шёл разбираться с верным переводом.
-            if (why.startswith("back-check ниже")
-                    and not (s.get("backcheck") or {}).get("judged")
-                    and _lex_blind(s.get("source") or "")):
-                why = CLEAN_LEX_BLIND
-            weak.append({"id": s["id"], "why": why})
+        if row["withdrawn"]:
+            withdrawn.append(sid)
+            if row["withdrawnOpen"]:
+                withdrawn_open.add(sid)
+        if row["unjudgedBlind"]:
+            unjudged_blind.append(sid)
+        if row["unverified"]:
+            unverified.append(sid)
+        if row["judgeExt"]:
+            judge_ext.add(sid)
+        if row["confirmed"]:
+            confirmed_ids.add(sid)
+        if row["qaCritical"]:
+            qa_critical.append(sid)
+        if row["repaired"]:
+            repaired.append(sid)
+            repaired_set.add(sid)
+        if row["reverted"]:
+            reverted.append(sid)
+        if row["scoreVetoed"]:
+            score_vetoed.append(sid)
+        if row["findings"]:
+            findings.append(sid)
+        if row["clamped"]:
+            clamped_ids.add(sid)
+        if row["confirmedFindings"]:
+            confirmed_findings.append(sid)
+            conf_set.add(sid)
+        if row["override"]:
+            override_ids.add(sid)
+        if row["bucket"] == "clean":
+            clean.append(sid)
+        elif row["bucket"] == "nothing":
+            nothing_to_check.append(sid)
+        elif row["bucket"] == "unchecked":
+            unchecked.append(sid)
+        elif row["bucket"] == "weak":
+            weak.append({"id": sid, "why": row["why"]})
+    _ANALYSIS_ROWS[pid] = rows_new
 
     # ── Termcheck спорит с утверждённым термином ─────────────────────
     # Находка указывает на слово, которое И ЕСТЬ verified-перевод для этого
@@ -5088,6 +5236,11 @@ def list_models():
         "termcheckDefault": TERMCHECK_DEFAULT_MODEL,
         "repairDefault": REPAIR_DEFAULT_MODEL,
         "judgeDefault": JUDGE_DEFAULT_MODEL,
+        # Модель сверки терминов. Отдаётся по той же причине, что и
+        # четыре соседние: браузер не знает, чем пойдёт шаг с пустым
+        # выбором, — а без цены шага прочерком становится ВСЯ смета
+        # главной кнопки (шаг с работой и без цены обнуляет её намеренно).
+        "termauditDefault": TERM_CONTEXT_DEFAULT_MODEL,
         "judgeZone": list(JUDGE_ZONE),
         # Уровни находок termcheck, по которым ремонт работает. Фронтенд по ним
         # считает состав кнопки «запустить только ремонт», и держать этот список
@@ -5099,8 +5252,8 @@ def list_models():
         # Отдаётся по той же причине, что judgeZone и backcheckBands: подсказка
         # у тумблера судьи называет это число словами, и вбитое в .jsx оно
         # разошлось бы с medical_qa молча.
-        "backcheckMinStems": getattr(medical_qa_mod, "BACKCHECK_MIN_STEMS", 3) if medical_qa_mod else 3,
-        "backcheckBands": getattr(medical_qa_mod, "BACKCHECK_BANDS", []) if medical_qa_mod else [],
+        "backcheckMinStems": getattr(checks_mod, "BACKCHECK_MIN_STEMS", 3) if checks_mod else 3,
+        "backcheckBands": getattr(checks_mod, "BACKCHECK_BANDS", []) if checks_mod else [],
         "available": bool(os.environ.get("OPENAI_API_KEY")),
         "brand": APP_BRAND,
         "pricesChecked": "2026-08-15",
@@ -6620,14 +6773,14 @@ def _looks_like_term(src: str, tgt: str) -> bool:
     `rule: false`): приказом они не становятся, а балл back-check считается
     только по приказным записям.
 
-    Набор берётся из medical_qa: там он уже есть и участвует в подсчёте балла,
+    Набор берётся из checks: там он уже есть и участвует в подсчёте балла,
     а второй список тех же слов однажды разошёлся бы с первым. Набора нет
     (модуль не подключён) — НЕ запрещаем: молчаливый ответ здесь «пропустить»,
     тот же закон, что у `attested()` и `_lex_blind`."""
     if not re.search(r"[^\W\d_]", src or ""):
         # Пара без единой буквы («1.3», «—») словарной записью не бывает.
         return False
-    stop = set(getattr(medical_qa_mod, "RU_STOPWORDS", ()) or ()) if medical_qa_mod else set()
+    stop = set(getattr(checks_mod, "RU_STOPWORDS", ()) or ()) if checks_mod else set()
     if not stop:
         return True
     src_head, tgt_head = _head_word(src), _head_word(tgt)
@@ -9000,7 +9153,7 @@ def _hard_mark_trusted(bc: dict) -> bool:
     Своей версии правил верим сразу. У записей постарше отметка могла быть
     вынесена за «потерян термин» — прежде он считался жёсткой находкой на
     длинном оригинале. Теперь он не жёсткий ни при какой длине (см.
-    `medical_qa._hard_issue`), и верить такой отметке значит навсегда закрыть
+    `checks._hard_issue`), и верить такой отметке значит навсегда закрыть
     от судьи ровно те сегменты, ради которых он и нужен. Настоящая объективная
     находка (числа, единицы, отрицание, подмена стороны) отметку держит."""
     if bc.get("v") == _bc_version():
@@ -9109,7 +9262,7 @@ def _segment_for_client(seg: dict) -> dict:
     if bc:
         # needs_judge считает СЕРВЕР, а не браузер. Зона вызова судьи зависит
         # от длины оригинала (_judge_zone), а длина считается русской
-        # морфологией из medical_qa — повторять её в .jsx значит однажды
+        # морфологией из checks — повторять её в .jsx значит однажды
         # разойтись с сервером в том, кого судья ещё не смотрел, и получить
         # два разных состава под соседними кнопками. То же правило, что у
         # _backcheck_cached, и выведено оно здесь один раз.
@@ -9185,7 +9338,7 @@ def _rescore_backcheck(seg: dict, project: dict,
     выдать за измерение то, чего не измеряли."""
     bc = seg.get("backcheck") or {}
     back = (bc.get("back") or "").strip()
-    if not medical_qa_mod or bc.get("score") is None or not back:
+    if not checks_mod or bc.get("score") is None or not back:
         return None
     source = seg.get("source") or ""
     # `_verified_hits` — тринадцать миллисекунд на сегмент, и это самое дорогое
@@ -9199,7 +9352,7 @@ def _rescore_backcheck(seg: dict, project: dict,
         hits = hits_cache[source] = _verified_hits(source, project)
     # Кэш общий на текст, а вердикт арбитра — свой у КАЖДОГО сегмента,
     # поэтому фильтр применяется после кэша, а не внутри него.
-    res = medical_qa_mod.run_backcheck(
+    res = checks_mod.run_backcheck(
         source, back, _hits_for_score(seg, hits),
         semantic=bc.get("semantic"),
         domain=project.get("domain"), src_lang=project.get("src", "RU"))
@@ -9207,7 +9360,7 @@ def _rescore_backcheck(seg: dict, project: dict,
         return None
     judged = bool(bc.get("judged") and bc.get("judge"))
     if judged:
-        res = medical_qa_mod.apply_judge_verdict(res, bc["judge"])
+        res = checks_mod.apply_judge_verdict(res, bc["judge"])
     # Отметка о судье выводится заново — она и была главной потерей. «Молчание
     # судьи» пересчёту не подлежит: его звали, он не ответил, и этот факт
     # правилами подсчёта не отменяется.
@@ -9266,7 +9419,7 @@ def _rescore_backchecks(state: dict, dry_run: bool = False,
             # «было/стало» посчиталась бы на разных множествах.
             if _machine_clean(seg, _DONOR_MIN) is None:
                 clean_before += 1
-            b0, b1 = medical_qa_mod.band_of(bc["score"]), medical_qa_mod.band_of(new["score"])
+            b0, b1 = checks_mod.band_of(bc["score"]), checks_mod.band_of(new["score"])
             before[b0] = before.get(b0, 0) + 1
             after[b1] = after.get(b1, 0) + 1
             if new["score"] != bc["score"]:
@@ -9523,17 +9676,17 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
     # semantic_fn, а не готовое число: косинус учитывается только при отсутствии
     # жёстких находок, и там, где он всё равно не повлияет, платить за эмбеддинги
     # незачем. Решение принимает medical_qa — он и знает состав находок.
-    res = (medical_qa_mod.run_backcheck(
+    res = (checks_mod.run_backcheck(
         source_text, back, gloss_hits,
         semantic_fn=lambda: _semantic_similarity(source_text, back),
-        domain=project.get("domain"), src_lang=project.get("src", "RU")) if medical_qa_mod else {})
+        domain=project.get("domain"), src_lang=project.get("src", "RU")) if checks_mod else {})
 
     # Судья — только для средней зоны: наверху и внизу шкалы вопрос уже решён.
     # `judge_all` открывает ВЕРХ (потолок считает сам `_judge_zone`): выше
     # потолка вопрос решён только детерминированно, а смысл там не читал
     # никто. Низ закрыт и с разрешением — там решение настоящее.
     judged, judge_skipped = False, None
-    if use_judge and medical_qa_mod and res.get("score") is not None:
+    if use_judge and checks_mod and res.get("score") is not None:
         lo, hi = _judge_zone(source_text, judge_all)
         if not (lo <= res["score"] <= hi):
             judge_skipped = "zone"
@@ -9546,7 +9699,7 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
             verdict = _openai_judge(source_text, back, judge_model,
                                     project.get("domain"), project.get("src", "RU"))
             if verdict:
-                res = medical_qa_mod.apply_judge_verdict(res, verdict)
+                res = checks_mod.apply_judge_verdict(res, verdict)
                 judged = True
             else:
                 # Судью звали, он не ответил (сеть, лимит, неразобранный ответ).
@@ -10718,7 +10871,7 @@ def _terms_lost_open(seg: dict) -> list:
     единственный видел сегмент в ряду соседей, а «туберкулёз лёгких» обратный
     перевод законно возвращает как «лёгочный туберкулёз». (Судья снимает свою
     претензию иначе — вычищая `terms_lost` прямо в записи, см.
-    `medical_qa.apply_judge_verdict`.)"""
+    `checks.apply_judge_verdict`.)"""
     bc = seg.get("backcheck") or {}
     if not bc or _check_stale(bc, seg.get("target") or ""):
         return []
@@ -11078,11 +11231,11 @@ def _repair_score_vetoed(seg: dict) -> bool:
     # (2711 штук), а до этой строки доходят единицы.
     # Чего этот рубеж не ловит у старых записей — подмену стороны из
     # DOMAIN_RULES, если правил для пары языков нет: тот же закон, молчим.
-    if medical_qa_mod:
+    if checks_mod:
         try:
-            bad = medical_qa_mod.deterministic_issues(
+            bad = checks_mod.deterministic_issues(
                 seg.get("source") or "", rp.get("candidate") or "")
-            if any(i.get("type") in medical_qa_mod.BACKCHECK_HARD_TYPES
+            if any(i.get("type") in checks_mod.BACKCHECK_HARD_TYPES
                    or i.get("type") in ("number_unit_dosage_mismatch", "negation_shift")
                    for i in (bad or [])):
                 return False
@@ -12796,15 +12949,15 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
     }
 
 
-class MedicalQARequest(BaseModel):
+class ChecksRequest(BaseModel):
     run_backcheck: bool = True
     bc_model: Optional[str] = None
 
 
-def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True,
+def _segment_checks(pid: int, sid: int, run_backcheck: bool = True,
                         bc_model: Optional[str] = None) -> dict:
-    if not medical_qa_mod:
-        raise HTTPException(500, "medical_qa module unavailable")
+    if not checks_mod:
+        raise HTTPException(500, "Модуль проверок недоступен")
 
     seg = get_segment(pid, sid)
     project = get_project(pid)
@@ -12816,7 +12969,7 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True,
     gloss_hits, tm_hit = _get_context(source_text, project=project)
     back = seg.get("backtranslated_ru", "")
 
-    if run_backcheck and medical_qa_enabled():
+    if run_backcheck and checks_enabled():
         fresh = seg.get("backcheck") or {}
         if fresh.get("back") and fresh.get("target_hash") == _text_hash(target_text):
             # Обратный перевод для этого же текста уже есть — второй раз не платим
@@ -12839,7 +12992,7 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True,
             except Exception as e:
                 print(f"[backend] medical QA backcheck skipped: {e}", file=sys.stderr)
 
-    qa_result = medical_qa_mod.run_medical_qa(
+    qa_result = checks_mod.run_checks(
         source_text,
         target_text,
         backtranslated_ru=back,
@@ -12869,7 +13022,7 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True,
     seg["risk_score"] = qa_result["risk_score"]
     seg["risk_color"] = qa_result["risk_color"]
     seg["engine_qa"] = qa_result["engine_qa"]
-    seg["medical_qa_enabled"] = medical_qa_enabled()
+    seg["medical_qa_enabled"] = checks_enabled()
 
     # Статус проверка может только ПОВЫСИТЬ до review, но не понизить.
     #
@@ -12894,16 +13047,19 @@ def _segment_medical_qa(pid: int, sid: int, run_backcheck: bool = True,
     return {"ok": True, "segment": seg, "qa_result": qa_result, "issues": qa_result["qa_issues"]}
 
 
+# Путь назывался medical-qa; новое имя нейтрально, старое оставлено ещё
+# релиз — по нему ходит вкладка, открытая до выката.
+@app.post("/api/segments/{pid}/{sid}/checks")
 @app.post("/api/segments/{pid}/{sid}/medical-qa")
-def medical_qa_segment(pid: int, sid: int, req: MedicalQARequest = MedicalQARequest()):
+def checks_segment(pid: int, sid: int, req: ChecksRequest = ChecksRequest()):
     _guard_project_write(pid)
-    result = _segment_medical_qa(pid, sid, run_backcheck=req.run_backcheck,
+    result = _segment_checks(pid, sid, run_backcheck=req.run_backcheck,
                                  bc_model=req.bc_model)
     save_state(STATE)
     return result
 
 
-class MedicalQABatchRequest(BaseModel):
+class ChecksBatchRequest(BaseModel):
     limit: int = 50
     segment_ids: Optional[list] = None
     run_backcheck: bool = True
@@ -12915,8 +13071,9 @@ class MedicalQABatchRequest(BaseModel):
     skip_cached: bool = True
 
 
+@app.post("/api/projects/{pid}/checks/batch")
 @app.post("/api/projects/{pid}/medical-qa/batch")
-def batch_medical_qa(pid: int, req: MedicalQABatchRequest = MedicalQABatchRequest()):
+def batch_checks(pid: int, req: ChecksBatchRequest = ChecksBatchRequest()):
     project = get_project(pid)
     id_filter = set(req.segment_ids) if req.segment_ids else None
     candidates = [
@@ -12941,7 +13098,7 @@ def batch_medical_qa(pid: int, req: MedicalQABatchRequest = MedicalQABatchReques
         if _job_should_stop():
             return {"seg": seg, "skip": True}
         try:
-            return {"seg": seg, "res": _segment_medical_qa(pid, seg["id"], run_backcheck=req.run_backcheck,
+            return {"seg": seg, "res": _segment_checks(pid, seg["id"], run_backcheck=req.run_backcheck,
                                                            bc_model=req.bc_model)}
         except Exception as e:
             print(f"[backend] medical QA batch error seg#{seg['id']}: {e}", file=sys.stderr)
@@ -12966,7 +13123,7 @@ def batch_medical_qa(pid: int, req: MedicalQABatchRequest = MedicalQABatchReques
         "remaining": max(0, len(candidates) - len(targets)),
         "errors": errors,
         "skipped_cached": skipped_cached,
-        "featureEnabled": medical_qa_enabled(),
+        "featureEnabled": checks_enabled(),
     }
 
 
@@ -14622,7 +14779,9 @@ def health(request: Request):
     info = {
         "ok": True,
         "version": "5.6.0",
-        "medicalQaEnabled": medical_qa_enabled(),
+        "checksEnabled": checks_enabled(),
+        # Прежний ключ — ещё релиз: на него смотрит смоук деплоя.
+        "medicalQaEnabled": checks_enabled(),
         "projects": len(STATE["projects"]),
     }
     if _session_valid(_token_from_request(request)):
@@ -15109,7 +15268,7 @@ def _job_chunk_full(pid: int, chunk: list, params: dict) -> dict:
         # Medical QA сообщает о своей недоступности пятисоткой посегментно, а не
         # 503 на пакет: без этой проверки отсутствие модуля выглядело бы как
         # «порция целиком провалилась» и роняло весь прогон.
-        if st == "medical_qa" and not (medical_qa_mod and medical_qa_enabled()):
+        if st == "medical_qa" and not (checks_mod and checks_enabled()):
             blocked.append("Medical QA: модуль недоступен")
             continue
         sub = dict(params)
@@ -15261,7 +15420,7 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
                 "desync": len(r.get("desync", [])),
                 "skipped_confirmed": len(r.get("skipped_confirmed", []))}
     if kind == "medical_qa":
-        r = batch_medical_qa(pid, MedicalQABatchRequest(
+        r = batch_checks(pid, ChecksBatchRequest(
             segment_ids=chunk, limit=n, bc_model=params.get("bc_model"),
             skip_cached=bool(params.get("skip_cached", False))))
         return {"done": r.get("count", 0), "errors": len(r.get("errors", [])),
@@ -15623,6 +15782,18 @@ if FRONTEND_DIR.exists():
     # ADMIN_PATH в окружении, иначе выводится из APP_PASSWORD (стабилен для
     # установки, не угадывается) и печатается в журнал при старте. Это
     # обфускация входа, а не защита: право на /api/admin/* даёт роль super.
+    @app.get("/terms", response_class=HTMLResponse)
+    def legal_terms():
+        if not legal_mod:
+            raise HTTPException(503, "Документы недоступны")
+        return HTMLResponse(legal_mod.page("terms"))
+
+    @app.get("/privacy", response_class=HTMLResponse)
+    def legal_privacy():
+        if not legal_mod:
+            raise HTTPException(503, "Документы недоступны")
+        return HTMLResponse(legal_mod.page("privacy"))
+
     @app.get("/" + ADMIN_PATH, response_class=HTMLResponse)
     def admin_console():
         html = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")

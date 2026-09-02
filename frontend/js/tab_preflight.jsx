@@ -926,8 +926,24 @@ function BackcheckBands({ segments, project, onDrill, T }) {
   }, []);
 
   const translated = segments.filter(s => (s.target || "").trim());
-  const checked = translated.filter(s => s.backcheck && s.backcheck.score != null);
+  const scored = translated.filter(s => s.backcheck && s.backcheck.score != null);
+  // Устаревшая оценка описывает текст, которого больше нет: человек правил
+  // перевод после проверки. Считать её действующей — значит вечно держать
+  // исправленный и подтверждённый сегмент в полосе «Совпадения почти нет»
+  // и звать разбираться с работой, которая уже сделана. Признак `stale`
+  // считает СЕРВЕР (_segment_for_client): sha1 браузеру не пересчитать.
+  // Так же устроена соседняя карточка «Проверка терминологии» — и по той же
+  // причине. Своей строкой ниже: пропавшее с экрана выглядит благополучнее,
+  // чем есть, а такой сегмент ждёт очередного прогона.
+  const staleBc = scored.filter(s => s.backcheck.stale);
+  const checked = scored.filter(s => !s.backcheck.stale);
   const termLost = checked.filter(s => (s.backcheck.terms_lost || []).length > 0);
+  // Заверенные человеком со свежей оценкой. Балл их не отменяет: он мера
+  // обратного перевода, а не приговор — человек прочитал текст и подтвердил,
+  // и корзины «под ключ» считают такой сегмент готовым (см. /analysis:
+  // machine_set -= confirmed_ids). Без этой строки низкий балл на заверённом
+  // сегменте выглядит невыполненной работой, и её идут делать заново.
+  const bcConfirmed = checked.filter(s => s.status === "confirmed");
   const maxCount = Math.max(1, ...bands.map(b =>
     checked.filter(s => s.backcheck.score >= b.min && s.backcheck.score <= b.max).length));
 
@@ -965,6 +981,16 @@ function BackcheckBands({ segments, project, onDrill, T }) {
             })
           ),
 
+      staleBc.length > 0 && React.createElement("div", {
+        className: "row between", style: { borderTop: "1px solid var(--border)", paddingTop: 10, cursor: "pointer" },
+        onClick: () => onDrill(TR("Оценка устарела"), staleBc),
+        title: TR("Открыть эти сегменты в редакторе") },
+        React.createElement("div", { style: { minWidth: 0 } },
+          React.createElement("span", { style: { fontSize: 13, fontWeight: 600 } }, TR("Оценка устарела")),
+          React.createElement("p", { className: "muted", style: { marginTop: 2, fontSize: 12.5 } },
+            TR("перевод правили после проверки — прежний балл говорит о тексте, которого больше нет"))),
+        React.createElement("b", { className: "tnum", style: { fontSize: 13 } }, staleBc.length)),
+
       React.createElement("div", {
         className: "row between", style: { borderTop: "1px solid var(--border)", paddingTop: 10, flexWrap: "wrap", gap: 10 } },
         React.createElement("div", { style: { minWidth: 0 } },
@@ -986,6 +1012,17 @@ function BackcheckBands({ segments, project, onDrill, T }) {
           resc && resc.dry_run && resc.rescored > 0 && React.createElement(Btn, {
             variant: "primary", size: "sm", disabled: rescBusy, onClick: () => rescore(true) },
             TR("Пересчитать ") + resc.rescored))),
+
+      bcConfirmed.length > 0 && React.createElement("div", {
+        className: "row between", style: { borderTop: "1px solid var(--border)", paddingTop: 10, cursor: "pointer" },
+        onClick: () => onDrill(TR("Заверено человеком"), bcConfirmed),
+        title: TR("Открыть эти сегменты в редакторе") },
+        React.createElement("div", { style: { minWidth: 0 } },
+          React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: "var(--c-success)" } },
+            TR("Из них заверено человеком")),
+          React.createElement("p", { className: "muted", style: { marginTop: 2, fontSize: 12.5 } },
+            TR("балл этого не отменяет: на экране «Анализ» такой сегмент считается готовым"))),
+        React.createElement("b", { className: "tnum", style: { fontSize: 13 } }, bcConfirmed.length)),
 
       termLost.length > 0 && React.createElement("div", {
         className: "row between", style: { borderTop: "1px solid var(--border)", paddingTop: 10, cursor: "pointer" },

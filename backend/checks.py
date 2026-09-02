@@ -487,7 +487,7 @@ def _term_candidates(issues, source_ru, domain=None):
     return candidates
 
 
-def run_medical_qa(source_ru, translated_en, backtranslated_ru="", glossary_matches=None,
+def run_checks(source_ru, translated_en, backtranslated_ru="", glossary_matches=None,
                    tm_match=None, engine_qa="deterministic+mvp", domain=None,
                    src_lang="RU", tgt_lang="EN"):
     context_package = build_context_package(
@@ -1131,3 +1131,8 @@ def run_backcheck(source_ru, back_ru, glossary_matches=None, semantic=None, sema
         "terms_lost": lost,
         "reasons": reasons,
     }
+
+
+# Историческое имя: на него ссылается legacy-код в med_translation/.
+# Оставлено ровно поэтому, а не ради красоты.
+run_medical_qa = run_checks

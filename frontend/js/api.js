@@ -230,14 +230,14 @@
     /* Пересчёт сохранённых оценок back-check по нынешним правилам. Бесплатный:
        обратный перевод берётся из самой записи, ни одного вызова модели. */
     rescoreBackchecks: (pid, dryRun, force) => call("POST", `/projects/${pid}/backcheck/rescore`, { dry_run: dryRun !== false, force: !!force }),
-    medicalQA:     (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/medical-qa`,  { run_backcheck: true }),
+    runChecks:     (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/checks`,  { run_backcheck: true }),
     qa:            (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/qa`),
     confirm:       (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/confirm`),
     revert:        (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/revert`),
     update:        (pid, sid, patch)        => call("POST",   `/segments/${pid}/${sid}/update`,     patch),
 
     batch:         (pid, segIds, force, limit, model) => call("POST", `/projects/${pid}/batch`, { segment_ids: segIds || null, force: !!force, limit: limit || 50, model: model || null }),
-    medicalQABatch:(pid, segIds, bcModel)    => call("POST",   `/projects/${pid}/medical-qa/batch`,   { segment_ids: segIds || null, run_backcheck: true, bc_model: bcModel || null }),
+    checksBatch:(pid, segIds, bcModel)    => call("POST",   `/projects/${pid}/checks/batch`,   { segment_ids: segIds || null, run_backcheck: true, bc_model: bcModel || null }),
     preflight:     (pid)                    => call("POST",   `/projects/${pid}/preflight`),
     exportProject: (pid, format, source)    => call("POST",   `/projects/${pid}/export`,            { format, source: source !== false }),
     /* Исходный .docx для экспорта 1в1. Переводы и проверки не трогает: пишется

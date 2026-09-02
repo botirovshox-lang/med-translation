@@ -10,7 +10,7 @@ import os, sys
 os.environ.setdefault("APP_PASSWORD", "test")
 sys.path.insert(0, "backend")
 import main
-import medical_qa as q
+import checks as q
 
 main.save_state = lambda *a, **k: None
 fail = []

@@ -130,11 +130,11 @@ print("\n=== 4. Обратный перевод для Medical QA — модел
 seen = []
 main._openai_translate = lambda text, s, t, **k: (seen.append(k.get("model")), "RU: " + text)[1]
 build([seg(1, "жалобы", "complaints")])
-main.batch_medical_qa(1, main.MedicalQABatchRequest(bc_model="gpt-5.6-luna"))
+main.batch_checks(1, main.ChecksBatchRequest(bc_model="gpt-5.6-luna"))
 check(seen == ["gpt-5.6-luna"], "заказан моделью back-check, а не переводчиком по умолчанию")
 seen.clear()
 build([seg(1, "жалобы", "complaints")])
-main.batch_medical_qa(1, main.MedicalQABatchRequest())
+main.batch_checks(1, main.ChecksBatchRequest())
 check(seen == [main.BACKCHECK_DEFAULT_MODEL],
       "без явной модели — дефолт back-check, а не DEFAULT_OPENAI_MODEL")
 check(main.DEFAULT_OPENAI_MODEL not in seen, "модель перевода к этому вызову отношения не имеет")
@@ -143,21 +143,21 @@ print("\n=== 5. Готовый обратный перевод из back-check �
 seen.clear()
 proj = build([seg(1, "жалобы", "complaints")])
 bc_done(proj["segments"][0], "gpt-5.6-luna")
-main.batch_medical_qa(1, main.MedicalQABatchRequest())
+main.batch_checks(1, main.ChecksBatchRequest())
 check(seen == [], "вызова не было — обратный перевод взят у back-check")
 
 # ─────────────── 6. Статус review не понижается ───────────────
 print("\n=== 6. Medical QA не разжалует сегмент, который переписала машина ===")
 proj = build([seg(1, "жалобы", "complaints", status="review")])
-main.batch_medical_qa(1, main.MedicalQABatchRequest())
+main.batch_checks(1, main.ChecksBatchRequest())
 check(proj["segments"][0]["status"] == "review",
       "review остался review: «машина переписала текст, посмотри» чистой QA не отменяется")
 proj = build([seg(1, "жалобы", "complaints", status="translated")])
-main.batch_medical_qa(1, main.MedicalQABatchRequest())
+main.batch_checks(1, main.ChecksBatchRequest())
 check(proj["segments"][0]["status"] in ("qa", "review"),
       "translated по-прежнему получает статус проверки")
 proj = build([seg(1, "жалобы", "complaints", status="confirmed")])
-main.batch_medical_qa(1, main.MedicalQABatchRequest())
+main.batch_checks(1, main.ChecksBatchRequest())
 check(proj["segments"][0]["status"] == "confirmed", "подтверждённый по-прежнему неприкосновенен")
 
 # ─────────────── 7. Порядок шагов ───────────────

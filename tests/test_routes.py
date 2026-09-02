@@ -92,7 +92,7 @@ print("\n=== 4b. Обработчик с {pid} ходит через get_project
 # на чужой проект. Обработчик, взявший проект в обход него (или через
 # хелпер, который его обходит), — дыра, и ловится она здесь, а не
 # внимательностью. get_segment и _seg_of сами зовут get_project.
-GATES = ("get_project(", "get_segment(", "_segment_medical_qa(")   # хелперы сами зовут get_project
+GATES = ("get_project(", "get_segment(", "_segment_checks(")   # хелперы сами зовут get_project
 no_gate = []
 for r in api:
     if "{pid}" not in r.path:

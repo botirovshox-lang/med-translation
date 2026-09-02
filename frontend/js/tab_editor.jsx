@@ -1153,6 +1153,23 @@ function TabEditor({ store, toast }) {
     else if (res && res.tm === "added") learned.push(TR("пара добавлена в память переводов"));
     const cands = (res && res.termCandidates) || [];
     if (cands.length) learned.push(cands.length + TR(" терминов ждут решения в «Глоссарий → Кандидаты»"));
+    /* Исправленные внутри сегмента термины. Пары и споры называются
+       поимённо — молчаливое обучение в медицинском инструменте пугает
+       сильнее его отсутствия, а молча съеденное несогласие запрещено.
+       Причина пропуска приходит КОДОМ (закон корзин CLEAN_*): подстрока
+       русской фразы сломалась бы от правки формулировки на сервере. */
+    const eh = res && res.editHarvest;
+    if (eh && (eh.pairs || []).length)
+      learned.push(TR("исправления выучены: ")
+        + eh.pairs.map(p => "«" + p.src + " → " + p.tgt + "»").join(", "));
+    if (eh && (eh.disputed || []).length)
+      learned.push(TR("правка расходится с приказом глоссария: ")
+        + eh.disputed.map(p => "«" + p.src + " → " + p.tgt + "»" + TR(" (в глоссарии «") + p.gloss + "»)").join("; ")
+        + TR(" — решается правкой самой записи"));
+    if (eh && eh.skipped)
+      learned.push(eh.skipped === "limit" ? TR("исправленные термины не разобраны: исчерпан лимит расходов")
+        : eh.skipped === "no_key" ? TR("исправленные термины не разобраны: нет ключа OpenAI")
+        : TR("исправленные термины не разобраны: модель не ответила"));
     toast.success(TR("Подтверждено"), TR("Сегмент #") + seg.id + (learned.length ? ". " + learned.join("; ") + "." : "."));
     const prop = res && res.propagate;
     if (prop && (prop.pending.length || prop.confirmed.length)) setPropagateAsk({ seg, prop });

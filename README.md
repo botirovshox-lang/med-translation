@@ -4,7 +4,9 @@
 импорт DOCX → сегментация → перевод (Google / GPT + глоссарий + TM) → QA и back-check
 → подтверждение → экспорт DOCX/XLSX.
 
-**Продакшен:** https://trasnlateuz.duckdns.org (VPS, systemd-сервис `medcat`)
+**Продакшен:** https://simpletranslate.me (VPS, systemd-сервис `medcat`).
+Прежний адрес https://trasnlateuz.duckdns.org продолжает работать — на него
+ведут закладки и старые ссылки.
 
 ---
 

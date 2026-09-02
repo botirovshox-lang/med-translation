@@ -2192,6 +2192,9 @@ async def require_token(request: Request, call_next):
 # Список origin'ов вместо прежнего "*": со звёздочкой и allow_credentials
 # любой сторонний сайт мог дёргать API из браузера пользователя.
 _DEFAULT_ORIGINS = [
+    "https://simpletranslate.me",
+    "https://www.simpletranslate.me",
+    # Прежний адрес: на него ведут закладки и ссылки из старых писем.
     "https://trasnlateuz.duckdns.org",
     "http://localhost:8000",
     "http://127.0.0.1:8000",
@@ -6717,11 +6720,13 @@ _TERM_QUEUE_LOCK = threading.Lock()
 
 
 # Виды находок, где пара ПРЕДЛАГАЕТСЯ из свободного текста, а не берётся
-# из готового решения: извлечение терминов моделью и короткий сегмент целиком.
-# У `conflict` исходная сторона — уже существующая запись глоссария, у `audit`
-# — слово из находки termcheck; сомневаться в самой формулировке там не наше
-# дело, и проверять её значит выбрасывать чужой вопрос.
-TERM_HARVEST_KINDS = ("extract", "segment")
+# из готового решения: извлечение терминов моделью, короткий сегмент целиком
+# и пара, извлечённая из правки человека (`edit` — модель выравнивает диф,
+# то есть формулировка предложена ею же). У `conflict` исходная сторона —
+# уже существующая запись глоссария, у `audit` — слово из находки termcheck;
+# сомневаться в самой формулировке там не наше дело, и проверять её значит
+# выбрасывать чужой вопрос.
+TERM_HARVEST_KINDS = ("extract", "segment", "edit")
 # Сколько пар отсеяно как «это не словарная запись». Считаем, а не молчим:
 # отсев без счётчика неотличим от «модель ничего не нашла».
 _TERM_NOT_TERM = [0]
@@ -7302,12 +7307,18 @@ def confirm_segment(pid: int, sid: int):
     seg["confirmedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     _audit("segment.confirm", project=pid, segment=sid)
     tm_action, candidates = None, []
+    edit_harvest = None
     if (seg.get("target") or "").strip():
         tm_action = _tm_upsert(seg["source"], seg["target"], project)
         candidates = _harvest_terms(seg, project)
+        # Исправленное ЧЕЛОВЕКОМ внутри сегмента — тем же моментом обучения:
+        # законы и коды исхода описаны у самой функции.
+        edit_harvest = _harvest_edited_terms(seg, project)
+        candidates += edit_harvest.pop("cards")
     same = _identical_source_segments(project, seg)
     save_state(STATE)
     return {"ok": True, "segment": seg, "tm": tm_action, "propagate": same,
+            "editHarvest": edit_harvest,
             "termCandidates": [{"id": c["id"], "kind": c["kind"], "src": c["src"],
                                 "tgt": c.get("tgt", ""), "wasTgt": c.get("wasTgt", "")}
                                for c in candidates]}
@@ -7484,7 +7495,7 @@ def _mark_decided(cand: dict, status: str, src: str = None, tgt: str = None, **e
     cand["decidedBy"] = "human"
     cand["decidedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     cand.update(extra)
-    for k in ("sampleSrc", "sampleTgt"):
+    for k in ("sampleSrc", "sampleTgt", "wasTgtLeft"):
         cand.pop(k, None)
     return cand
 
@@ -9018,6 +9029,189 @@ def _extract_terms_call(pairs: list, model: Optional[str] = None,
     except Exception as e:
         print(f"[backend] term extraction failed: {e}", file=sys.stderr)
         return []
+
+
+# Потолок пар из одной правки: человек за один заход не исправляет больше —
+# длиннее список бывает только у выдумки, и оплачивать её разбор незачем.
+EDIT_TERMS_MAX = 10
+
+
+def _edit_terms_prompt(src_lang: str, tgt_lang: str, domain: dict) -> str:
+    """Промпт извлечения ИСПРАВЛЕННОЙ человеком терминологии.
+
+    Отдельной функцией — тот же закон, что у `_translate_system`: собирается
+    без сети и проверяется тестом с подменённым openai (см. раздел «Промпты
+    проверяются НАСТОЯЩИМ кодом» в CLAUDE.md).
+
+    Соседей здесь НЕТ намеренно: правка локальна, контекст ей даёт сам
+    оригинал сегмента, а лишние сотни токенов на каждое подтверждение —
+    расход без измеримой пользы. Свободного текста в ответе нет, поэтому
+    язык объяснений (`_explain_lang_name`) сюда не протаскивается."""
+    return (
+        "You extract " + domain["en"] + " terminology that a HUMAN translator corrected.\n"
+        "You are given the source text (" + src_lang + "), a DRAFT translation (" + tgt_lang + ")\n"
+        "and the FINAL translation the human produced by editing that draft.\n\n"
+        "Compare DRAFT and FINAL. Return ONLY a JSON array, no prose.\n"
+        'Each item: {"src": <source-language term, dictionary form>,\n'
+        '            "tgt": <the human\'s corrected translation, dictionary form>,\n'
+        '            "was": <the draft\'s rejected wording for this term>}\n\n'
+        "RULES:\n"
+        "1. List ONLY terminology corrections: a domain term whose translation the human changed.\n"
+        "2. Grammar, style, word-order or punctuation edits are NOT terminology — skip them.\n"
+        "3. Do not invent: src must occur in the source text, tgt must occur in the FINAL text.\n"
+        "4. At most " + str(EDIT_TERMS_MAX) + " items. Return [] if no terminology was corrected.\n"
+    )
+
+
+def _openai_edit_terms(source: str, before: str, after: str, project: dict):
+    """Один вызов модели про одну правку. None — СБОЙ, а не «пар нет»:
+    вызывающий обязан назвать причину, молчаливый пропуск запрещён."""
+    import json as _json
+    import openai
+    dom = _resolve_domain(project.get("domain"))
+    mdl = _resolve_model(DEFAULT_OPENAI_MODEL)
+    src_l = (project.get("src") or "").upper() or "SRC"
+    tgt_l = (project.get("tgt") or "").upper() or "TGT"
+    # Таймаут 60 — младший из прецедентов проекта; без повторов: подтверждение
+    # ждёт этот ответ, и вторая попытка удвоила бы паузу человеку.
+    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"),
+                           timeout=60, max_retries=0)
+    cut = 2000     # сегмент столько не занимает; это страховка, не норма
+    body = ("SOURCE (" + src_l + "): " + (source or "")[:cut]
+            + "\n\nDRAFT (" + tgt_l + "): " + (before or "")[:cut]
+            + "\n\nFINAL (" + tgt_l + "): " + (after or "")[:cut])
+    extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
+             else {"max_tokens": 1000, "temperature": 0})
+    try:
+        resp = client.chat.completions.create(
+            model=mdl["id"],
+            messages=[{"role": "system", "content": _edit_terms_prompt(src_l, tgt_l, dom)},
+                      {"role": "user", "content": body}],
+            **extra,
+        )
+        _note_usage("edit_terms", mdl["id"], resp)
+        raw = (resp.choices[0].message.content or "").strip()
+        # Разбор как в _extract_terms_call: JSON между первой «[» и последней
+        # «]» — устойчиво к мусору вокруг.
+        lo, hi = raw.find("["), raw.rfind("]")
+        if lo == -1 or hi <= lo:
+            return None
+        data = _json.loads(raw[lo:hi + 1])
+        return [d for d in data if isinstance(d, dict)]
+    except Exception as e:
+        print(f"[backend] разбор правки не удался: {e}", file=sys.stderr)
+        return None
+
+
+def _was_tgt_left(project: dict, sid: int, was: str) -> dict:
+    """Сколько сегментов ЭТОГО проекта ещё содержат отвергнутый человеком
+    вариант. Только свой проект и только счёт с горсткой id: по остальным
+    после одобрения честно отвечает `glossary_impact`, а обход «по всем
+    проектам» был бы здесь и лишним сканом на каждое подтверждение, и обходом
+    изоляции организаций (инвариант 11)."""
+    rx = _word_re(was)
+    if not rx:
+        return {"count": 0, "ids": []}
+    ids = [s["id"] for s in project.get("segments") or ()
+           if s.get("id") != sid and rx.search(s.get("target") or "")]
+    return {"count": len(ids), "ids": ids[:20]}
+
+
+def _harvest_edited_terms(seg: dict, project: dict) -> dict:
+    """Термины, исправленные ЧЕЛОВЕКОМ внутри сегмента, — кандидатами в очередь.
+
+    `_harvest_terms` видит только глоссарные конфликты и короткие сегменты
+    целиком; правка термина ВНУТРИ длинного сегмента не извлекалась ничем —
+    человек чинил «bioptate» на «biopsy specimen», а система не узнавала
+    об этом никогда. Здесь диф «база правки → подтверждённый текст» уходит
+    одним вызовом модели, и каждая возвращённая пара проверяется
+    ДЕТЕРМИНИРОВАННО, прежде чем стать карточкой.
+
+    Законы, которые нельзя ослаблять:
+    • в глоссарий НИЧЕГО не пишется (инвариант 8: подтверждение сегмента
+      приказа не даёт) — только кандидат; приказ появится, когда человек
+      одобрит карточку, и одобрение пройдёт штатную сверку смысла;
+    • fail-open: подтверждение — бесплатная работа (инвариант 15), и сбой
+      здесь его не останавливает. Нет ключа, исчерпан лимит, модель молчит —
+      пропуск с КОДОМ причины в ответе (`skipped`), а не молча и не 402;
+      confirm в `_PAID` не входит намеренно — 402 запер бы подтверждение.
+      Код, а не русская фраза: браузер переводит по коду (закон корзин
+      `CLEAN_*`), подстрока сломалась бы от правки формулировки;
+    • база одноразовая: `editedFrom` снимается ДО вызова, повторное
+      подтверждение то же извлечение не покупает. Оборванный вызов пару
+      теряет, и это названный закон, а не случайность: пара уже в TM,
+      а сторожить неудачу значило бы копить в сегменте вечное поле;
+    • ответ модели — только сырьё: src обязан НАЙТИСЬ в оригинале
+      (`_term_match` — та же морфология, что у подбора терминов: модель
+      отвечает словарной формой, а в тексте форма косвенная), tgt — в
+      подтверждённом тексте (`_tgt_has_term`). Не нашлось — выдумка, отсев
+      считается (`dropped`);
+    • правка, расходящаяся с ПРИКАЗНОЙ записью, карточкой не становится
+      (`_queue_term` её и не завёл бы — `_hard_answer` закрывает вопрос),
+      но и не глотается: пара уходит в `disputed`, тост называет спор
+      вслух. Решается он правкой самой записи (понижение/правка в
+      глоссарии) — машина чужой приказ не трогает;
+    • охват — только свой проект (`wasTgtLeft`), см. `_was_tgt_left`.
+    """
+    out: dict = {"pairs": [], "skipped": None, "dropped": 0,
+                 "disputed": [], "cards": []}
+    before = seg.pop("editedFrom", None)
+    to_hash = seg.pop("editedToHash", None)
+    target = (seg.get("target") or "").strip()
+    if not before or not str(before).strip() or not target:
+        return out
+    # База жива, только если ПОСЛЕДНИМ target писал человек: цепочку хешей
+    # ведёт _note_hand_edit. Разошлось — между правками писала машина
+    # (ремонт, пакетный перевод, undo), и диф приписал бы человеку её слова.
+    if to_hash != _text_hash(seg.get("target") or ""):
+        return out
+    if _norm_key(before) == _norm_key(target):
+        return out
+    if not os.environ.get("OPENAI_API_KEY"):
+        out["skipped"] = "no_key"
+        return out
+    if _spend_status().get("over"):
+        out["skipped"] = "limit"
+        return out
+    items = _openai_edit_terms(seg.get("source") or "", str(before), target, project)
+    if items is None:
+        out["skipped"] = "error"
+        return out
+    scope = _project_scope(project)
+    src_lang = _src_lang({"lang": scope[0]})
+    for it in items[:EDIT_TERMS_MAX]:
+        t_src = (it.get("src") or "").strip()
+        t_tgt = (it.get("tgt") or "").strip()
+        t_was = (it.get("was") or "").strip()
+        if not t_src or not t_tgt or _norm_key(t_tgt) == _norm_key(t_was):
+            out["dropped"] += 1
+            continue
+        if not _term_match(t_src, seg.get("source") or "", src_lang):
+            out["dropped"] += 1
+            continue
+        if not _tgt_has_term(target, t_tgt):
+            out["dropped"] += 1
+            continue
+        entry = _glossary_entry(t_src, scope)
+        if _hard_answer(entry) and _norm_key(entry.get("tgt")) != _norm_key(t_tgt):
+            out["disputed"].append({"src": t_src, "tgt": t_tgt,
+                                    "gloss": (entry.get("tgt") or "").strip()})
+            continue
+        meta = {"project": project["id"], "segment": seg["id"],
+                "lang": scope[0], "domain": scope[1], "tenant": scope[2],
+                "via": "confirmed",
+                "sampleSrc": (seg.get("source") or "")[:240],
+                "sampleTgt": target[:240]}
+        if t_was:
+            meta["wasTgt"] = t_was
+            left = _was_tgt_left(project, seg["id"], t_was)
+            if left["count"]:
+                meta["wasTgtLeft"] = left
+        c = _queue_term("edit", t_src, t_tgt, **meta)
+        if c:
+            out["cards"].append(c)
+            out["pairs"].append({"src": t_src, "tgt": t_tgt, "wasTgt": t_was})
+    return out
 
 
 class ExtractTermsRequest(BaseModel):
@@ -13613,6 +13807,29 @@ def revert_segment(pid: int, sid: int):
     return {"ok": True, "segment": seg}
 
 
+def _note_hand_edit(seg: dict, new_target: str) -> None:
+    """Запомнить БАЗУ правки человека — текст, что стоял до его руки.
+
+    Диф «база → подтверждённый текст» — сырьё для `_harvest_edited_terms`.
+    Жива ли база, решает ЦЕПОЧКА ХЕШЕЙ, а не чистка по всем машинным путям
+    записи: target пишут и ремонт, и пакетный перевод, и undo-восстановления —
+    мимо `_replace_target`, и забытая чистка в любом из них приписала бы
+    человеку правки машины. `editedToHash` — «последний текст, который писал
+    человек»: совпал с тем, что лежит в сегменте, — цепочка правок
+    не прерывалась, база жива; разошёлся — между правками писала машина,
+    и базой становится ЕЁ свежий текст. Перевод, набранный с нуля
+    (прежний target пуст), исправлением не считается: диффать его не с чем."""
+    prev = seg.get("target") or ""
+    if seg.get("editedFrom") and seg.get("editedToHash") == _text_hash(prev):
+        seg["editedToHash"] = _text_hash(new_target or "")
+    elif prev.strip():
+        seg["editedFrom"] = prev
+        seg["editedToHash"] = _text_hash(new_target or "")
+    else:
+        seg.pop("editedFrom", None)
+        seg.pop("editedToHash", None)
+
+
 class UpdateSegmentRequest(BaseModel):
     target: Optional[str] = None
     status: Optional[str] = None
@@ -13626,6 +13843,7 @@ def update_segment(pid: int, sid: int, req: UpdateSegmentRequest):
     if req.target is not None:
         if req.target != seg.get("target"):
             _audit("segment.edit", project=pid, segment=sid)
+            _note_hand_edit(seg, req.target)
         seg["target"] = req.target
         if seg["status"] == "new" and req.target.strip():
             seg["status"] = "translated"

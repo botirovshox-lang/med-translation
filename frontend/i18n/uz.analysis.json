@@ -278,5 +278,10 @@
   "▴ Скрыть подробности": "▴ Tafsilotlarni yashirish",
   "▾ Подробности и ручные команды": "▾ Tafsilotlar va qo'lda buyruqlar",
   "Похоже, повреждён сам оригинал": "Asl matnning o'zi shikastlangan ko'rinadi",
-  "обрывок, ошибка распознавания или бессвязная фраза — перевод чинить нечем, пока не выправлен исходник": "parcha, tanish xatosi yoki bog'lanmagan ibora — asl matn tuzatilmaguncha tarjimani tuzatib bo'lmaydi"
+  "обрывок, ошибка распознавания или бессвязная фраза — перевод чинить нечем, пока не выправлен исходник": "parcha, tanish xatosi yoki bog'lanmagan ibora — asl matn tuzatilmaguncha tarjimani tuzatib bo'lmaydi",
+  "Back-check той же моделью, что и ревизия (": "Reviziya bilan bir xil model bo'yicha back-check (",
+  "): ревизия пишет текст, и проверять его собой — не проверка. ": "): reviziya matnni yozadi, uni o'zi bilan tekshirish — tekshiruv emas. ",
+  "Сервер возьмёт запасную модель, и смета поплывёт; выберите другую.": "Server zaxira modelni oladi va smeta suriladi; boshqasini tanlang.",
+  "Ревизия той же моделью, что и перевод (": "Tarjima bilan bir xil model bo'yicha reviziya (",
+  "): она перечитывает собственный перевод и находит в нём меньше.": "): u o'z tarjimasini qayta o'qiydi va unda kamroq kamchilik topadi."
 }

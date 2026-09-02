@@ -464,6 +464,18 @@ md = main.list_models()
 DEFAULT_KEY = {"model": "default", "bc_model": "backcheckDefault",
                "tc_model": "termcheckDefault", "tcx_model": "termauditDefault",
                "rp_model": "repairDefault", "rv_model": "reviewDefault"}
+# Поле в RunPlanRequest — у КАЖДОГО ключа FULL_STEP_MODEL. Pydantic лишнее
+# выбрасывает молча, поэтому забытое поле означает: браузер шлёт выбор модели,
+# сервер его теряет, разбор считает смету под модель ПО УМОЛЧАНИЮ, а прогон
+# идёт под выбранную. Ровно то расхождение «смета под одни модели, работа под
+# другие», ради которого тело разбора и задачи собирает одна функция.
+_plan_fields = set(main.RunPlanRequest.model_fields
+                   if hasattr(main.RunPlanRequest, "model_fields")
+                   else main.RunPlanRequest.__fields__)
+for _step, _key in main.FULL_STEP_MODEL.items():
+    check(_key in _plan_fields,
+          "шаг «%s»: модель доезжает до разбора (поле %s)" % (_step, _key))
+
 ids = {m["id"] for m in md["models"]}
 for step in main.FULL_RUN_STEPS:
     mkey = main.FULL_STEP_MODEL.get(step)

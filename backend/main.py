@@ -9507,6 +9507,25 @@ def _segment_for_client(seg: dict) -> dict:
             "needs_judge": _judge_pending(out)}
     if tc:
         out["termcheck"] = {**tc, "stale": tc.get("target_hash") != cur_trimmed}
+    rv = out.get("review")
+    if rv:
+        # Свежесть считает СЕРВЕР тем же `_review_stale`, что и прогон: он
+        # знает и про версию вопросов, и про правку ОРИГИНАЛА, а браузеру
+        # ни того, ни другого не вычислить. Повтори он «сравню хеш перевода» —
+        # карточка показывала бы свежим вердикт, который прогон считает
+        # протухшим.
+        # `candidate` наружу НЕ отдаём: это полный текст сегмента, второй
+        # раз на каждую строку, а браузеру он не нужен — применяет правку
+        # сервер (`apply_saved`). Прежний текст (`from`) остаётся: без него
+        # человеку не с чем сравнить то, что переписали.
+        out["review"] = {k: v for k, v in rv.items() if k != "candidate"}
+        out["review"]["stale"] = _review_stale(seg)
+        # Подписи вето собирает СЕРВЕР: в `veto` лежат внутренние ключи
+        # (`gloss`, `hard`), которых нет ни в одном словаре, — на экране
+        # это была латиница посреди узбекской фразы. Таблица
+        # REVIEW_VETO_LABELS теперь используется, а не лежит мёртвой.
+        out["review"]["vetoLabels"] = [REVIEW_VETO_LABELS.get(k, k)
+                                       for k in (rv.get("veto") or [])]
     if qa:
         # Тот же признак и у Medical QA: без него карточка прогона показывала
         # весь проект и после того, как всё уже проверено. Хеш sha1 браузеру
@@ -12716,7 +12735,10 @@ def _run_segment_review(seg: dict, project: dict, model: Optional[str] = None,
            "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
     veto, why = [], None
     if not cand:
-        why = "нет варианта"
+        # Самая частая причина из всех: у хорошего перевода модель не
+        # возвращает `fixed` вовсе. «Нет варианта» читалось как сбой,
+        # хотя это ответ «перевод годится».
+        why = "перевод годится, править нечего"
     elif res["score"] > REVIEW_APPLY_MAX:
         # Вариант есть, а оценка выше порога: модель предлагает улучшение,
         # а не чинит дефект. Переписывать по такому поводу — тратить деньги
@@ -12773,6 +12795,11 @@ def _apply_review(seg: dict, include_confirmed: bool = False) -> bool:
     # Машина не заверяет сама себя: текст переписан, значит его смотрит человек.
     seg["status"] = "review"
     rv["applied"] = True
+    # Кандидата из ЗАПИСИ убираем: после применения он буква в букву равен
+    # переводу, а документ проекта переписывается при КАЖДОМ сохранении —
+    # хранить текст сегмента трижды (target + from + candidate) значит
+    # платить весом за копию. Так же поступает `_apply_repair_candidate`.
+    rv.pop("candidate", None)
     # Хеш теперь описывает НОВЫЙ текст — сегмент закрыт от повторного платного
     # захода. Спрашивать модель о тексте, который она сама только что
     # написала, значит покупать второе мнение у того же мнения. Что оценка
@@ -13032,7 +13059,13 @@ def undo_review(pid: int, stamp: str):
         if seg is None:
             continue
         rv = seg.get("review") or {}
-        if not rv.get("applied") or (seg.get("target") or "") != (rv.get("candidate") or ""):
+        # «Стоит ли сейчас именно наш текст» спрашиваем у ХЕША, а не у копии
+        # кандидата: после применения `target_hash` описывает как раз
+        # поставленный текст, а сам кандидат из записи убран — он был бы
+        # третьей копией перевода в документе проекта. Правили после нас —
+        # хеш не сойдётся, и чужую работу мы не затрём.
+        if (not rv.get("applied")
+                or _text_hash((seg.get("target") or "").strip()) != rv.get("target_hash")):
             changed_since.append(seg["id"])
             continue
         seg["target"] = snap["target"]
@@ -15806,7 +15839,15 @@ def _model_label(mid: str) -> str:
 def _plan_step(project: dict, step: str, params: dict, scope: list,
                will_translate: set, gloss_ids: set,
                term_ids: Optional[set] = None,
-               consist_ids: Optional[set] = None) -> dict:
+               consist_ids: Optional[set] = None,
+               # Полный состав прогона: шаг обязан знать, кто работает ДО него.
+               # Без этого разбор молчит о работе, которую сам же и создаст —
+               # ревизия перепишет текст, и проверки этих сегментов протухнут.
+               # Сколько сегментов возьмёт РЕВИЗИЯ в этом же прогоне. Не состав
+               # шагов, а именно число: она идёт раньше всех, кто описывает
+               # текст, и переписанные сегменты обесценят их проверки. Ноль —
+               # значит и говорить не о чем (повторный прогон).
+               review_takes: int = 0) -> dict:
     """Разбор одного шага: кого возьмёт, кого не возьмёт и почему.
 
     will_translate — сегменты, которые переведёт этот же прогон. Сейчас у них
@@ -15948,7 +15989,12 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
             # Ветки «нет перевода» и «переведём в этом прогоне» сюда не нужны:
             # общий блок выше перехватывает и то и другое раньше, и вторая
             # копия правила просто никогда не сработала бы.
-            if seg.get("status") == "confirmed" and not fix_confirmed:
+            # БЕЗУСЛОВНО, а не по `fix_confirmed`: до ревизии этот флаг
+            # не доезжает (`_job_chunk_full` гасит его всем, кроме ремонта),
+            # и `_review_pick` заверенные не берёт. Прочитай мы его здесь —
+            # галочка в строке РЕМОНТА заставила бы строку ревизии обещать
+            # все заверенные сегменты проекта.
+            if seg.get("status") == "confirmed":
                 # Вердикт получить можно, но ПРАВКИ не будет: `include_confirmed`
                 # до ревизии не доезжает. Платить за совет, который некуда
                 # применить, — тот же перерасход, от которого заведён
@@ -16060,6 +16106,21 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
     elif step == "medical_qa":
         note = ("Считано по нынешнему тексту. Сегменты, которые перепишет ремонт, "
                 "проверка возьмёт тоже — они идут следом за ним.")
+    # Ревизия идёт ПЕРЕД всеми, кто описывает текст, и переписывает часть
+    # сегментов. Их проверки после этого протухают (`_check_stale`) и будут
+    # куплены заново — `skip_cached` тут не спасает, потому что текст ДРУГОЙ.
+    # Молчать об этом нельзя: смета таких сегментов не видит, а её число
+    # уходит в `est_cost` и калибрует поправку по всей системе.
+    if (step in ("backcheck", "termcheck", "termaudit", "repair")
+            and review_takes):
+        # Ремонт тоже в списке: переписанный текст — другие находки и другой
+        # отпечаток захода, то есть другой состав.
+        add = ("Ревизия идёт раньше и перепишет часть из %d сегментов — "
+               "их проверки придётся сделать заново, и в этот состав они "
+               "не вошли." % review_takes)
+        # У medical_qa своя фраза про то же самое; двух формулировок об одном
+        # человеку не нужно.
+        note = (note + " " + add) if note else add
 
     fmt = lambda d: [{"reason": k, "count": v} for k, v in
                      sorted(d.items(), key=lambda kv: -kv[1])]
@@ -16096,6 +16157,10 @@ class RunPlanRequest(BaseModel):
     tc_model: Optional[str] = None
     tcx_model: Optional[str] = None
     rp_model: Optional[str] = None
+    # Поле обязано быть у КАЖДОГО ключа FULL_STEP_MODEL: лишнее pydantic
+    # выбрасывает молча, и разбор посчитал бы смету под модель по умолчанию,
+    # а прогон пошёл бы под выбранную. Сторожит tests/test_full_run.py.
+    rv_model: Optional[str] = None
     use_judge: bool = False
     # Судья и выше потолка зоны — разовое разрешение прогона, как
     # include_confirmed. Осушает корзину «смысл не читал никто».
@@ -16148,8 +16213,15 @@ def run_plan(pid: int, req: RunPlanRequest):
     # заблокированного воркера на каждый разбор; ровно та беда, из-за которой
     # ремонт уже ходит сюда, а не считает глоссарий сам.
     term_ids = set(impact["termSegments"]) if (impact and "termaudit" in steps) else set()
-    plans = [_plan_step(project, st, params, scope, will_translate, gloss_ids,
-                        term_ids, consist_ids)
+    # Ревизию разбираем ПЕРВОЙ: её число нужно остальным шагам, чтобы честно
+    # сказать, сколько работы она им создаст. Второй раз её не считаем.
+    rv_plan = (_plan_step(project, "review", params, scope, will_translate,
+                          gloss_ids, term_ids, consist_ids)
+               if "review" in steps else None)
+    rv_takes = rv_plan["count"] if rv_plan else 0
+    plans = [(rv_plan if st == "review" else
+              _plan_step(project, st, params, scope, will_translate, gloss_ids,
+                         term_ids, consist_ids, rv_takes))
              for st in steps]
     # Объединение — в порядке ДОКУМЕНТА, а не в порядке шагов: порции идут по
     # этому списку, и прогон должен двигаться по тексту сверху вниз, а не

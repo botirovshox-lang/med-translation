@@ -221,5 +221,16 @@
   "перевод означает другое: ": "tarjima boshqa narsani anglatadi: ",
   "иное понятие": "boshqa tushuncha",
   "смысл расходится: ": "ma'no mos kelmayapti: ",
-  "правилом не годится": "qoida bo'la olmaydi"
+  "правилом не годится": "qoida bo'la olmaydi",
+  "перевод годится, править нечего": "tarjima yaroqli, tuzatishga narsa yo'q",
+  "оценка выше порога": "baho chegaradan yuqori",
+  "оригинал под подозрением": "asl matn shubha ostida",
+  "не прошёл сверку": "tekshiruvdan o'tmadi",
+  "нарушено приказных терминов больше": "buzilgan majburiy atamalar ko'proq",
+  "расхождений по регистру больше": "registr bo'yicha farqlar ko'proq",
+  "букв чужого письма больше": "begona yozuv harflari ko'proq",
+  "повторов больше": "takrorlar ko'proq",
+  "самоповторов больше": "o'z-o'zini takrorlash ko'proq",
+  "приказных терминов не в начертании оригинала больше": "asl matn ko'rinishida bo'lmagan majburiy atamalar ko'proq",
+  "расхождение чисел, единиц или отрицания": "sonlar, birliklar yoki inkor nomuvofiqligi"
 }

@@ -1,6 +1,5 @@
 {
   "_": "Карточка сегмента: перевод, проверки, ремонт, TM, комментарии, надписи на картинках.",
-
   " · в тексте: ": " · matnda: ",
   " · снято ": " · olib tashlandi ",
   " Вместе с сегментом ушёл перевод: ": " Segment bilan birga tarjima ham ketdi: ",
@@ -114,5 +113,12 @@
   "средний": "o'rta",
   "точное совпадение": "aniq moslik",
   "уровень риска (инфо)": "xavf darajasi (ma'lumot)",
-  "🖼 Оригинал (текст на картинке)": "🖼 Asl matn (rasmdagi matn)"
+  "🖼 Оригинал (текст на картинке)": "🖼 Asl matn (rasmdagi matn)",
+  "Ревизия: похоже, повреждён сам оригинал": "Reviziya: asl matnning o'zi shikastlangan ko'rinadi",
+  "Ревизия исправила перевод": "Reviziya tarjimani tuzatdi",
+  "Ревизия прочитала пару": "Reviziya juftlikni o'qidi",
+  "оценка ": "baho ",
+  "Было: ": "Avval edi: ",
+  "Правка не поставлена: ": "Tuzatish qo'yilmadi: ",
+  "Правка откачена человеком — повторно предлагаться не будет.": "Tuzatishni inson qaytardi — qayta taklif qilinmaydi."
 }

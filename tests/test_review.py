@@ -420,8 +420,19 @@ check(a == b == [2],
 conf = seg_of(3, status="confirmed", confirmedBy="u1")
 a, b = plan_vs_pick([conf, seg_of(4)])
 check(a == b == [4], "заверенный не попадает ни в план, ни в работу: %r против %r" % (a, b))
-a, b = plan_vs_pick([conf, seg_of(4)], include_confirmed=True)
-check(a == b == [3, 4], "с разрешением — попадает в оба: %r против %r" % (a, b))
+# Разбор описывает ПРОГОН, а прогон ревизии `include_confirmed` не даёт вовсе
+# (`_job_chunk_full` гасит флаг всем, кроме ремонта). Поэтому план пропускает
+# заверенные БЕЗУСЛОВНО: прочитай он флаг — галочка в строке РЕМОНТА заставила
+# бы строку ревизии обещать все заверенные сегменты проекта, а шаг их не взял
+# бы. Прямой вызов API с явным разрешением — другой путь, и он их берёт.
+proj, _ = build([conf, seg_of(4)])
+plan = main._plan_step(proj, "review", {"include_confirmed": True},
+                       list(proj["segments"]), set(), set())
+got, _tot = main._review_pick(proj, main.ReviewRequest(limit=99, include_confirmed=True))
+check(sorted(plan.get("ids") or []) == [4],
+      "галочка ремонта не заставляет план обещать заверенные: %r" % (plan.get("ids"),))
+check(sorted(s["id"] for s in got) == [3, 4],
+      "прямой вызов с разрешением заверенные берёт")
 
 # Вердикт устаревает и от правки ОРИГИНАЛА: иначе корзину «повреждён сам
 # оригинал» нечем осушить — человек выправил исходник, а строка висит вечно.

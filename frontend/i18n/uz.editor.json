@@ -490,5 +490,10 @@
   "отрицание, сторона, утверждённые термины, регистр, письмо, повторы. ": "inkor, tomon, tasdiqlangan atamalar, registr, yozuv, takrorlar. ",
   "читает пару целиком и сразу правит текст — единственный шаг, который не спорит с баллом": "juftlikni to'liq o'qiydi va matnni darhol tuzatadi — ball bilan bahslashmaydigan yagona qadam",
   "ревизия переписала ": "reviziya qayta yozdi ",
-  "оригинал под подозрением: ": "asl matn shubha ostida: "
+  "оригинал под подозрением: ": "asl matn shubha ostida: ",
+  "Back-check той же моделью, что и ревизия. На переписанных ею сегментах ": "Reviziya bilan bir xil model bo'yicha back-check. U qayta yozgan segmentlarda ",
+  "это проверка себя: сервер возьмёт запасную модель, и смета поплывёт.": "bu o'z-o'zini tekshirish: server zaxira modelni oladi va smeta suriladi.",
+  "Ревизия той же моделью, что и перевод: она перечитывает собственный ": "Tarjima bilan bir xil model bo'yicha reviziya: u o'z matnini qayta o'qiydi ",
+  "текст и находит в нём меньше.": "va unda kamroq kamchilik topadi.",
+  "Текст менялся после ревизии — сказанное ниже относится к прежней версии.": "Matn reviziyadan keyin o'zgargan — quyidagilar avvalgi versiyaga tegishli."
 }

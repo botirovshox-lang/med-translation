@@ -2095,7 +2095,27 @@ function TabEditor({ store, toast }) {
   // а на независимости стоит автоодобрение терминов. Молчать об этом нельзя.
   // Ремонт тоже: он переписывает перевод, и если это делает та же модель,
   // что переводила, она правит по собственному пониманию текста.
-  const sameModelWarn = [bcModel, tcModel, rpModel].filter(m => m && m === gptModel).length > 0;
+  /* Конфликт по РОЛИ, а не по силе. Ревизия здесь особая: она не переводит,
+     но ПИШЕТ окончательный текст и ставит себя провайдером сегмента — значит
+     back-check её же моделью станет проверкой себя, сервер молча уйдёт
+     на запасную модель (`_backcheck_model`), и смета поплывёт. */
+  const modelWarn = (() => {
+    const on = (k) => pickedFull.has(k);
+    if (on("translate") && [["backcheck", bcModel], ["termcheck", tcModel], ["repair", rpModel]]
+        .some(([k, m]) => on(k) && m && m === gptModel))
+      return TR("Перевод и проверку делает одна модель. Она не найдёт собственную ошибку — ")
+        + TR("выберите другую модель для back-check, терминов или ремонта.");
+    /* Ревизия пишет ОКОНЧАТЕЛЬНЫЙ текст и становится провайдером сегмента,
+       поэтому back-check её же моделью — проверка себя: сервер уйдёт
+       на запасную модель, и смета поплывёт. */
+    if (on("review") && on("backcheck") && rvModel && rvModel === bcModel)
+      return TR("Back-check той же моделью, что и ревизия. На переписанных ею сегментах ")
+        + TR("это проверка себя: сервер возьмёт запасную модель, и смета поплывёт.");
+    if (on("review") && on("translate") && rvModel && rvModel === gptModel)
+      return TR("Ревизия той же моделью, что и перевод: она перечитывает собственный ")
+        + TR("текст и находит в нём меньше.");
+    return null;
+  })();
 
   const runFullJob = async () => {
     const steps = FULL_STEP_KEYS.filter(k => pickedFull.has(k));
@@ -2232,7 +2252,7 @@ function TabEditor({ store, toast }) {
           planBusy: planBusy, planReady: !!runPlan,
           openStep: openStep, onOpenStep: setOpenStep,
           checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf),
-            est: fullEst, sameModelWarn: sameModelWarn,
+            est: fullEst, modelWarn: modelWarn,
           fixConfirmed: rpFixConfirmed, fixConfirmedCount: rpConfirmedWaiting,
           models: gptModels, disabled: !!job }),
         // Одобрение терминов и то, что из него следует, — расхождения готовых
@@ -2711,7 +2731,7 @@ function StepRow({ row, on, onToggle, open, onOpen, disabled, models }) {
 }
 
 function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize,
-                       checked, filtered, est, sameModelWarn, models, disabled,
+                       checked, filtered, est, modelWarn, models, disabled,
                        openStep, onOpenStep, planBusy, planReady,
                        fixConfirmed, fixConfirmedCount }) {
   const anyWork = rows.some(r => picked.has(r.key) && r.planEst && r.planEst.count > 0);
@@ -2735,9 +2755,8 @@ function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize
         TR("в работу пойдут ") + scopeSize + TR(" сегм.")
         + (checked > 0 ? TR(" · по галочкам") : filtered ? TR(" · по фильтру") : ""))),
 
-    sameModelWarn && React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.5, color: "var(--c-warning)", background: "var(--bg-sunken)", padding: "8px 11px", borderRadius: 8 } },
-      TR("Перевод и проверку делает одна модель. Она не найдёт собственную ошибку — ")
-      + TR("выберите другую модель для back-check, терминов или ремонта.")),
+    modelWarn && React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.5, color: "var(--c-warning)", background: "var(--bg-sunken)", padding: "8px 11px", borderRadius: 8 } },
+      modelWarn),
 
     React.createElement("div", { style: { display: "grid", gridTemplateColumns: "minmax(170px,1fr) auto auto auto auto", columnGap: 12, alignItems: "center" } },
       head(TR("Шаг")), head(TR("Модель")), head(TR("Сегм."), true), head(TR("≈ цена"), true), head(" "),

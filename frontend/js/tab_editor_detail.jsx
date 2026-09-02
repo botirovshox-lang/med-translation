@@ -356,6 +356,45 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
       TR("Совет арбитра применён: ") + seg.termCtxApplied.tgt + " → " + seg.termCtxApplied.use
       + (seg.termCtxApplied.at ? " · " + seg.termCtxApplied.at : "")),
 
+    /* Вердикт ревизии. Единственный шаг, который читает пару целиком и сразу
+       правит текст, — и до этой карточки его вердикт не было видно НИГДЕ:
+       человек получал переписанный сегмент без объяснения, за что.
+       Красная полоса — «повреждён сам оригинал»: там машина бессильна
+       по построению, и решать человеку. */
+    seg.review && React.createElement("div",
+      { className: "tm-pop", style: { marginTop: 8,
+        borderLeft: "3px solid " + (seg.review.stale ? "var(--border)"
+          : seg.review.sourceSuspect ? "var(--c-error)"
+          : seg.review.applied ? "var(--c-success)" : "var(--c-warning)") } },
+      React.createElement("div", { className: "row between", style: { gap: 10, flexWrap: "wrap" } },
+        React.createElement("span", { className: "label", style: { margin: 0 } },
+          seg.review.sourceSuspect ? TR("Ревизия: похоже, повреждён сам оригинал")
+            : seg.review.applied ? TR("Ревизия исправила перевод") : TR("Ревизия прочитала пару")),
+        React.createElement("span", { className: "dim", style: { fontSize: 11.5 } },
+          TR("оценка ") + seg.review.score + "/10"
+          + (seg.review.model ? " · " + seg.review.model : "")
+          + (seg.review.at ? " · " + seg.review.at : ""))),
+      seg.review.stale && React.createElement("div",
+        { className: "dim", style: { fontSize: 12, marginTop: 4, lineHeight: 1.5 } },
+        TR("Текст менялся после ревизии — сказанное ниже относится к прежней версии.")),
+      (seg.review.issues || []).length > 0 && React.createElement("ul",
+        { style: { margin: "6px 0 0", paddingLeft: 18, fontSize: 12.5, lineHeight: 1.5 } },
+        seg.review.issues.map((x, i) => React.createElement("li", { key: i }, TRS(x)))),
+      /* Прежний текст: правку видно, только если есть с чем сравнить. */
+      seg.review.from && React.createElement("div",
+        { className: "dim", style: { fontSize: 12, marginTop: 6, lineHeight: 1.5 } },
+        TR("Было: "), React.createElement("s", null, seg.review.from)),
+      /* Почему НЕ применили — причина приходит с сервера, браузер её не
+         вычисляет: правило одно и живёт там же, где решение. */
+      seg.review.skipped && React.createElement("div",
+        { className: "dim", style: { fontSize: 12, marginTop: 6 } },
+        TR("Правка не поставлена: ") + TRS(seg.review.skipped)
+        + ((seg.review.vetoLabels || []).length
+            ? " (" + seg.review.vetoLabels.map(TRS).join(", ") + ")" : "")),
+      seg.review.undone && React.createElement("div",
+        { style: { fontSize: 12, marginTop: 6, color: "var(--c-warning)" } },
+        TR("Правка откачена человеком — повторно предлагаться не будет."))),
+
     /* Доказательство отмены заверения. Стоит ВЫШЕ карточки ремонта и красным:
        машина отменила решение человека, и он должен увидеть, за что именно,
        не разыскивая это по журналам. */

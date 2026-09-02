@@ -538,6 +538,7 @@ def _lang_pair(project: Optional[dict]) -> str:
 # она уедет в организацию по умолчанию, то есть к чужому клиенту.
 DEFAULT_TENANT = "default"
 _JOB_TENANT = threading.local()      # организация фонового прогона (в его потоках)
+_JOB_LANG = threading.local()        # язык объяснений прогона (там же и по той же причине)
 
 
 def _current_tenant() -> str:
@@ -548,6 +549,34 @@ def _current_tenant() -> str:
     if sess and sess.get("tenant"):
         return sess["tenant"]
     return getattr(_JOB_TENANT, "id", None) or DEFAULT_TENANT
+
+
+# Язык, на котором модель пишет ЧЕЛОВЕКУ (`why` у проверки терминов, `comment`
+# судьи, довод арбитра). Вопрос модели при этом не меняется — меняется только
+# язык объяснения, поэтому версии вердиктов НЕ поднимаются: они сторожат
+# ПРИГОДНОСТЬ ответа, а пригодность от языка пояснительной фразы не зависит.
+# Подъём версии перекупил бы тысячи оплаченных вердиктов ради одной фразы.
+#
+# Обратная сторона названа честно: уже написанное объяснение остаётся на своём
+# языке до ближайшей перепроверки этого сегмента. Переписать его задним числом
+# нечем — это текст модели, а не наш шаблон.
+#
+# Язык берётся у ТОГО, КТО ЗАПУСТИЛ работу: у запроса — из сессии, у прогона —
+# из задачи (ContextVar в рабочие потоки не доезжает, ровно как организация).
+EXPLAIN_LANG_NAME = {"ru": "Russian", "uz": "Uzbek (Latin script)"}
+
+
+def _explain_lang() -> str:
+    sess = CURRENT_SESSION.get() if "CURRENT_SESSION" in globals() else None
+    if sess and sess.get("uiLang"):
+        return sess["uiLang"]
+    return getattr(_JOB_LANG, "code", None) or DEFAULT_UI_LANG
+
+
+def _explain_lang_name() -> str:
+    """Как назвать язык в промпте. Незнакомый код — русский: пустое имя
+    языка модель истолкует по-своему, и объяснение придёт неизвестно на чём."""
+    return EXPLAIN_LANG_NAME.get(_explain_lang()) or EXPLAIN_LANG_NAME["ru"]
 
 
 def _tenant_of(obj: Optional[dict]) -> str:
@@ -1137,7 +1166,8 @@ def _judge_system(domain: dict, src_lang: str) -> str:
         "различия, разные грамматические формы, если смысл тот же.\n\n"
         "Верни ТОЛЬКО JSON без пояснений:\n"
         '{"same_meaning": true|false, "severity": "none"|"minor"|"major"|"critical", '
-        '"divergences": ["короткое описание расхождения"], "comment": "одно предложение по-русски"}\n'
+        '"divergences": ["one short sentence in ' + _explain_lang_name() + '"], '
+        '"comment": "one sentence in ' + _explain_lang_name() + '"}\n'
         "severity: none — смысл идентичен; minor — стилистика; major — заметное смысловое "
         "расхождение; critical — подмена понятия, числа, отрицания или стороны."
     )
@@ -1172,7 +1202,7 @@ def _termcheck_system(domain: dict, src_lang: str, tgt_lang: str) -> str:
         '{"findings": [{"src_term": "<the matching fragment of SOURCE, or empty>", '
         '"tgt_term": "<the exact fragment of TRANSLATION that is wrong>", '
         '"suggestion": "<the correct term>", "severity": "critical|major|minor", '
-        '"why": "<one short sentence in Russian>"}]}\n'
+        '"why": "<one short sentence in ' + _explain_lang_name() + '>"}]}\n'
         "severity: critical — a different concept or an unreadable fragment; "
         "major — not a real term of the target language; minor — understandable but non-standard.\n"
         'If the terminology is fine, return {"findings": []}.'
@@ -2001,6 +2031,10 @@ def _new_session(user: dict) -> str:
         _SESSIONS[token] = {"exp": now + SESSION_TTL, "user": user["id"],
                             "tenant": user.get("tenant", DEFAULT_TENANT),
                             "role": user.get("role", "translator"),
+                            # Язык объяснений модели: на нём она пишет `why`
+                            # и `comment`. Держим в сессии, чтобы не ходить
+                            # в базу пользователей на каждый вызов.
+                            "uiLang": user.get("uiLang") or DEFAULT_UI_LANG,
                             "super": bool(user.get("super"))}
     return token
 
@@ -3063,6 +3097,9 @@ def profile_update(req: ProfilePatch, request: Request):
         if lang not in UI_LANGS:
             raise HTTPException(400, "Язык интерфейса: " + " | ".join(UI_LANGS))
         u["uiLang"] = lang
+        sess = CURRENT_SESSION.get()
+        if sess is not None:
+            sess["uiLang"] = lang        # иначе модель до перелогина пишет на прежнем
         # След решения ЧЕЛОВЕКА — тот же приём, что у `_human_touched`
         # в глоссарии: без него не отличить выбранный язык от языка,
         # доставшегося записи по умолчанию кода (см. `_migrate_ui_lang`).
@@ -8067,13 +8104,13 @@ def _openai_meaning(pairs: list, scope: tuple) -> Optional[dict]:
         + MEANING_TRAPS + "\n"
         "For each pair return:\n"
         "  same — true ONLY if the concepts are identical;\n"
-        f"  back — what the candidate actually denotes, a few words IN {src_lang} "
-        "(the user reads only that language);\n"
+        f"  back — what the candidate actually denotes, a few words IN {_explain_lang_name()} "
+        "(this line is read by a person, so it follows the interface language);\n"
         f"  rule — false if this pair must NOT become a document-wide rule: the "
         f"{src_lang} side is an inflected or otherwise non-dictionary form instead of "
         "a lemma, or it is an ordinary word rather than a term of the field, or the "
         "correct translation depends on the surrounding context. Otherwise true;\n"
-        f"  why — when rule is false, the reason IN {src_lang}, a few words.\n"
+        f"  why — when rule is false, the reason IN {_explain_lang_name()}, a few words.\n"
         'Return ONLY JSON: {"pairs":[{"src":"...","tgt":"...","same":true,"back":"...",'
         '"rule":true,"why":""}]}. '
         "No commentary."
@@ -8909,10 +8946,15 @@ def _run_parallel(items: list, fn):
         return [fn(x) for x in items]
     from concurrent.futures import ThreadPoolExecutor
     # Организация — в рабочие потоки: они свои и thread-local не наследуют.
+    # Язык объяснений — там же и по той же причине: без него модель в потоках
+    # порции пишет `why` на языке по умолчанию, а в основном потоке — на языке
+    # человека, и один прогон даёт объяснения на двух языках вперемешку.
     tid = _current_tenant()
+    lang = _explain_lang()
 
     def run(x):
         _JOB_TENANT.id = tid
+        _JOB_LANG.code = lang
         return fn(x)
     with ThreadPoolExecutor(max_workers=min(RUN_WORKERS, len(items)),
                             thread_name_prefix="mcat-run") as pool:
@@ -10455,7 +10497,8 @@ def _openai_term_context(seg: dict, project: dict, disputes: list,
         "словами, другой частью речи или другим порядком слов);\n"
         "  ok — false, если термин передан неверно, потерян или подменён;\n"
         "  use — когда ok=false, ПРАВИЛЬНЫЙ вариант на " + tgt_lang + ", несколько слов;\n"
-        "  why — причина на " + src_lang + ", несколько слов (её читает человек).\n\n"
+        "  why — причина на " + _explain_lang_name() + ", несколько слов "
+        "(её читает человек, поэтому язык — его, а не документа).\n\n"
         "Соседние сегменты даны только как обстановка. Не оценивай их перевод.\n"
         'Верни ТОЛЬКО JSON: {"terms":[{"src":"...","ok":true,"use":"","why":""}]}. '
         "Без пояснений."
@@ -15231,6 +15274,7 @@ def _job_run(job: dict):
     # Организация прогона — в его поток: ContextVar сессии сюда не доезжает,
     # а get_project и области считаются по ней.
     _JOB_TENANT.id = job.get("tenant") or DEFAULT_TENANT
+    _JOB_LANG.code = job.get("lang") or DEFAULT_UI_LANG
     chunk_size = JOB_CHUNKS[kind]
     if kind == "images":
         # Разбор картинок не идёт по сегментам: их ещё нет — они из него
@@ -15472,6 +15516,9 @@ def create_job(pid: int, req: JobRequest):
             "kind": req.kind, "project": pid, "status": "queued",
             "tenant": _current_tenant(),
             "user": (CURRENT_SESSION.get() or {}).get("user"),
+            # Язык объяснений — того, кто запустил. В поток прогона ContextVar
+            # не доезжает, поэтому задача несёт его в себе (как организацию).
+            "lang": _explain_lang(),
             "total": len(ids), "done": 0, "counters": {}, "error": None,
             "params": dict(req.params or {}),
             "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

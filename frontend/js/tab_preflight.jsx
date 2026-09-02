@@ -351,7 +351,7 @@ function WorkSummary({ summary, store, toast, onReload }) {
           "div", { key: i },
           d.src + " → ", React.createElement("b", { style: { color: "var(--c-primary)" } }, d.tgt),
           d.use ? [TR(" · здесь верно: "), React.createElement("b", { key: "u", style: { color: "var(--c-success)" } }, d.use)] : "",
-          (d.why ? " · " + d.why : "") + TR(" · сегментов: ") + d.segments.length,
+          (d.why ? " · " + TRS(d.why) : "") + TR(" · сегментов: ") + d.segments.length,
           d.use && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check",
             style: { marginLeft: 8 }, disabled: ctxBusy, onClick: () => applyAdvice(d) },
             TR("Применить к ") + d.segments.length + TR(" сегм.")),
@@ -829,7 +829,7 @@ function CoverageCard({ project }) {
     React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, title),
     React.createElement("ul", { style: { margin: 0, paddingLeft: 18, fontSize: 13 } },
       items.map(i => React.createElement("li", { key: i.key },
-        i.label, why && i.why ? React.createElement("span", { className: "dim" }, " — " + i.why) : null))));
+        i.label, why && i.why ? React.createElement("span", { className: "dim" }, " — " + TRS(i.why)) : null))));
   return React.createElement("div", { className: "card card-pad", style: { marginBottom: 14 } },
     React.createElement("div", { className: "row between" },
       React.createElement("div", { style: { fontWeight: 600, color: n ? "var(--c-warn)" : undefined } }, head),
@@ -1257,8 +1257,14 @@ function RepairSummary({ segments, onDrill, T }) {
     : null;
 
   // Ждут ремонта: есть свежие находки, но через ремонт этот текст не проходил
-  const REASONS = [TR("расхождение чисел"), TR("расхождение единиц"), TR("инверсия отрицания"),
-                   TR("подмена на противоположное"), TR("обратный перевод про другое"), TR("потерян термин")];
+  /* БЕЗ TR(): это не надписи, а КОДЫ ПРИЧИН, которые сравниваются
+     с `backcheck.reasons` — русским текстом, пришедшим с сервера. Оберни их
+     переводом, и в узбекском интерфейсе `indexOf` перестанет находить
+     совпадения: кнопка «Починить» погаснет на сегментах, которые чинить
+     МОЖНО, и понять почему будет неоткуда. Тот же закон, что у ключей
+     объекта и операндов сравнения (CLAUDE.md, инвариант 17). */
+  const REASONS = ["расхождение чисел", "расхождение единиц", "инверсия отрицания",
+                   "подмена на противоположное", "обратный перевод про другое", "потерян термин"];
   const pending = segments.filter(s => {
     if (!(s.target || "").trim() || (s.repair && s.repair.tried)) return false;
     const bc = s.backcheck && !s.backcheck.stale ? s.backcheck : null;

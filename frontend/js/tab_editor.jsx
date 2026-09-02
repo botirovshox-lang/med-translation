@@ -1627,8 +1627,14 @@ function TabEditor({ store, toast }) {
   // ── Ремонт: кандидаты и группы «что уже чинилось» ────────────────
   // Критерий кандидата повторяет серверный _repair_findings: иначе кнопка
   // обещала бы работу, которой сервер не найдёт.
-  const REPAIR_REASONS = [TR("расхождение чисел"), TR("расхождение единиц"), TR("инверсия отрицания"),
-                          TR("подмена на противоположное"), TR("обратный перевод про другое"), TR("потерян термин")];
+  /* БЕЗ TR(): это не надписи, а КОДЫ ПРИЧИН, которые сравниваются
+     с `backcheck.reasons` — русским текстом, пришедшим с сервера. Оберни их
+     переводом, и в узбекском интерфейсе `indexOf` перестанет находить
+     совпадения: кнопка «Починить» погаснет на сегментах, которые чинить
+     МОЖНО, и понять почему будет неоткуда. Тот же закон, что у ключей
+     объекта и операндов сравнения (CLAUDE.md, инвариант 17). */
+  const REPAIR_REASONS = ["расхождение чисел", "расхождение единиц", "инверсия отрицания",
+                          "подмена на противоположное", "обратный перевод про другое", "потерян термин"];
   // Расхождения с глоссарием сервер тоже считает поводом чинить. Берём их из
   // уже загруженного отчёта о соответствии — он и есть тот же расчёт, только
   // посчитанный один раз на проект. pending, а не segments: подтверждённые
@@ -2925,21 +2931,21 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
         style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap", color: "var(--c-success)" },
         title: TR("Автоматически исправлено ") + (seg.repair.at || "")
           + TR("\nБыло: ") + (seg.repair.from || "")
-          + TR("\nПричины: ") + (seg.repair.issues || []).join("; "),
+          + TR("\nПричины: ") + (seg.repair.issues || []).map(TRS).join("; "),
       }, TR("✓ ремонт")),
       seg.termcheck && (seg.termcheck.findings || []).length > 0 && React.createElement("div", {
         style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap",
                  color: seg.termcheck.severity === "critical" ? "var(--c-error)"
                    : seg.termcheck.severity === "major" ? "var(--c-warning)" : "var(--text-3)" },
         title: TR("Терминология: ") + seg.termcheck.findings.map(f =>
-          f.tgt_term + (f.suggestion ? " → " + f.suggestion : "") + (f.why ? " (" + f.why + ")" : "")).join("\n")
+          f.tgt_term + (f.suggestion ? " → " + f.suggestion : "") + (f.why ? " (" + TRS(f.why) + ")" : "")).join("\n")
           + (seg.termcheck.stale ? TR("\n\nПеревод менялся после проверки — данные устарели.") : ""),
       }, (seg.termcheck.stale ? "≈ " : "") + TR("термин: ") + seg.termcheck.findings.length),
       seg.backcheck && seg.backcheck.score != null && React.createElement("div", {
         style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap",
                  color: window.bcScoreColor(seg.backcheck.score) },
         title: TR("Соответствие обратного перевода: ") + seg.backcheck.score + "%"
-          + ((seg.backcheck.reasons || []).length ? "\n" + seg.backcheck.reasons.join("; ") : "")
+          + ((seg.backcheck.reasons || []).length ? "\n" + seg.backcheck.reasons.map(TRS).join("; ") : "")
           + TR("\nОбратный перевод: ") + (seg.backcheck.back || ""),
       }, "↩ " + seg.backcheck.score + "%")),
     React.createElement("td", { onClick: (e) => e.stopPropagation() }, actionCell)

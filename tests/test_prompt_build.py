@@ -126,6 +126,66 @@ check("term_ctx" in kinds,
       "подтверждает ошибку и оставляет её в тексте")
 
 print()
+print("=== 3. Язык объяснения — язык интерфейса, а вопрос неизменен ===")
+# Модель пишет человеку `why` и `comment`. Пока пользователь был один, язык
+# был зашит («одно предложение по-русски»), и в узбекском интерфейсе половина
+# карточки сегмента оставалась русской. Меняется ТОЛЬКО язык объяснения:
+# вопрос и разбор те же, поэтому версии вердиктов не поднимаются.
+dom = main._resolve_domain("medical")
+
+
+def prompts(lang):
+    """Промпт арбитра собирается ВНУТРИ `_openai_term_context`, отдельной
+    функции у него нет — поэтому берём его так же, как первый раздел этого
+    файла: гоняем настоящий код и читаем, что ушло поддельному клиенту."""
+    tok = main.CURRENT_SESSION.set({"tenant": "default", "user": 1,
+                                    "role": "owner", "uiLang": lang})
+    try:
+        seg2 = dict(seg)
+        seg2.pop("termContext", None)
+        main._run_segment_term_context(seg2, proj, model="gpt-5.6-sol",
+                                       disputes_only=False)
+        return {
+            "judge": main._judge_system(dom, "RU"),
+            "termcheck": main._termcheck_system(dom, "RU", "EN"),
+            "arbiter": SENT["system"],
+        }
+    finally:
+        main.CURRENT_SESSION.reset(tok)
+
+
+ru, uz = prompts("ru"), prompts("uz")
+for name in ("judge", "termcheck", "arbiter"):
+    check("Uzbek" in uz[name], name + ": у узбекского интерфейса объяснение просят по-узбекски")
+    check("Uzbek" not in ru[name] and "Russian" in ru[name],
+          name + ": у русского — по-русски")
+
+# А вопрос обязан остаться тем же: если разойдётся и он, вердикты, купленные
+# на одном языке, станут несравнимы с купленными на другом.
+def question(t):
+    """Промпт без названия языка: остальное обязано совпасть до буквы."""
+    return t.replace("Uzbek (Latin script)", "«язык»").replace("Russian", "«язык»")
+
+
+check(question(ru["arbiter"]) == question(uz["arbiter"]),
+      "арбитр: кроме языка объяснения, промпт не изменился")
+check(question(ru["judge"]) == question(uz["judge"]),
+      "судья: тоже")
+check(question(ru["termcheck"]) == question(uz["termcheck"]),
+      "проверка терминов: тоже")
+
+# Язык доезжает до потоков прогона: ContextVar туда не наследуется.
+main._JOB_LANG.code = "uz"
+tok = main.CURRENT_SESSION.set(None)
+try:
+    check(main._explain_lang() == "uz", "без сессии язык берётся у задачи прогона")
+finally:
+    main.CURRENT_SESSION.reset(tok)
+    main._JOB_LANG.code = None
+check(main._explain_lang() == main.DEFAULT_UI_LANG,
+      "ни сессии, ни задачи — язык по умолчанию, а не пустота")
+
+print()
 if fail:
     print("ПРОВАЛЕНО: " + str(len(fail)))
     for f in fail:

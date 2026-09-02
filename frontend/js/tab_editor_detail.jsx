@@ -121,7 +121,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
       if (!res || !res.ok) { toast.error(TR("Ремонт не удался"), TR("Модель не ответила или нет ключа OpenAI.")); return; }
       if (!res.applied) {
         store.updateSegment(project.id, seg.id, { repair: { ...res.repair, tried: true } });
-        toast.warning(TR("Правка откачена"), (res.repair && res.repair.reason) || TR("Не стало лучше — текст оставлен прежним."));
+        toast.warning(TR("Правка откачена"), TRS((res.repair && res.repair.reason) || "") || TR("Не стало лучше — текст оставлен прежним."));
         return;
       }
       window.API.safeCall(() => window.API.getProject(project.id)).then(fresh => {
@@ -173,8 +173,14 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
   };
 
   // Что именно можно чинить в этом сегменте (критерий тот же, что на сервере)
-  const REPAIR_REASONS = [TR("расхождение чисел"), TR("расхождение единиц"), TR("инверсия отрицания"),
-                          TR("подмена на противоположное"), TR("обратный перевод про другое"), TR("потерян термин")];
+  /* БЕЗ TR(): это не надписи, а КОДЫ ПРИЧИН, которые сравниваются
+     с `backcheck.reasons` — русским текстом, пришедшим с сервера. Оберни их
+     переводом, и в узбекском интерфейсе `indexOf` перестанет находить
+     совпадения: кнопка «Починить» погаснет на сегментах, которые чинить
+     МОЖНО, и понять почему будет неоткуда. Тот же закон, что у ключей
+     объекта и операндов сравнения (CLAUDE.md, инвариант 17). */
+  const REPAIR_REASONS = ["расхождение чисел", "расхождение единиц", "инверсия отрицания",
+                          "подмена на противоположное", "обратный перевод про другое", "потерян термин"];
   const bcFresh = seg.backcheck && !seg.backcheck.stale ? seg.backcheck : null;
   const tcFresh = seg.termcheck && !seg.termcheck.stale ? seg.termcheck : null;
   const termFindings = (tcFresh && tcFresh.findings) || [];
@@ -320,7 +326,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
                   f.suggestion && React.createElement(React.Fragment, null,
                     React.createElement(Icon, { name: "chevR", size: 13 }),
                     React.createElement("b", { style: { color: "var(--c-success)" } }, f.suggestion))),
-                f.why && React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.5 } }, f.why),
+                f.why && React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.5 } }, TRS(f.why)),
                 f.suggestion && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check",
                   onClick: () => { setDraft(draft.split(f.tgt_term).join(f.suggestion)); toast.info(TR("Подставлено в черновик"), TR("Проверьте и сохраните.")); } }, TR("Заменить в тексте")))),
               React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
@@ -339,7 +345,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
         React.createElement("div", { style: { fontSize: 13, lineHeight: 1.6 } },
           a.src + TR(" · в тексте: "), React.createElement("b", null, a.tgt),
           TR(" → здесь верно: "), React.createElement("b", { style: { color: "var(--c-success)" } }, a.use)),
-        a.why && React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.5 } }, a.why),
+        a.why && React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.5 } }, TRS(a.why)),
         React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check", style: { marginTop: 4 },
           disabled: ctxBusy, onClick: () => applyAdvice(a) },
           ctxBusy ? TR("Подставляем…") : TR("Применить в этом сегменте")))),
@@ -358,7 +364,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
       React.createElement("span", { className: "label", style: { margin: 0, color: "var(--c-danger)" } },
         TR("Подтверждение снято машиной")),
       React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.6, marginTop: 4 } },
-        (seg.confirmWithdrawn.evidence || []).join("; ")),
+        (seg.confirmWithdrawn.evidence || []).map(TRS).join("; ")),
       React.createElement("div", { className: "dim", style: { fontSize: 12, marginTop: 4 } },
         TR("заверил: ") + (seg.confirmWithdrawn.by || "—")
         + (seg.confirmWithdrawn.at ? " · " + seg.confirmWithdrawn.at : "")
@@ -370,21 +376,27 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
     seg.repair && React.createElement("div", { className: "tm-pop", style: { marginTop: 8 } },
       React.createElement("span", { className: "label", style: { margin: 0 } },
         seg.repair.applied ? TR("Автоматический ремонт применён") : TR("Автоматический ремонт откачен")),
+      /* TRS(), а не TR(): объяснение собрано СЕРВЕРОМ вместе с числами
+         и именами терминов («балл back-check упал 70 → 45»), точного ключа
+         у него нет. Переводится на выходе — сама строка в данных остаётся
+         русской, потому что по ней сравнивает и сервер (`_repair_score_vetoed`),
+         и браузер (`REPAIR_REASONS`). Свободный текст модели словарь не знает
+         и вернёт как есть: русский оригинал честнее пустоты. */
       React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.6, marginTop: 4 } },
-        (seg.repair.issues || []).join("; ")),
+        (seg.repair.issues || []).map(TRS).join("; ")),
       /* Решения, принятые ВОПРЕКИ падению балла. Поле заведено ровно затем,
          чтобы человек не смотрел на принятую правку с упавшим баллом и не
          гадал, почему её оставили, — а значит его надо показывать. */
       (seg.repair.notes || []).length > 0 && React.createElement("div",
         { style: { fontSize: 12.5, color: "var(--text-2)", marginTop: 4, lineHeight: 1.5 } },
-        (seg.repair.notes || []).join("; ")),
+        (seg.repair.notes || []).map(TRS).join("; ")),
       /* Принятый человеком кандидат от машинной правки на экране неотличим,
          а это разные вещи: одну заверила оценка, другую — человек. */
       seg.repair.acceptedBy === "human" && React.createElement("div",
         { style: { fontSize: 12.5, color: "var(--c-success)", marginTop: 4 } },
         TR("Вариант принят человеком") + (seg.repair.acceptedAt ? " · " + seg.repair.acceptedAt : "")),
       !seg.repair.applied && seg.repair.reason && React.createElement("div", { style: { fontSize: 12.5, color: "var(--c-warning)", marginTop: 4 } },
-        TR("Причина отката: ") + seg.repair.reason),
+        TR("Причина отката: ") + TRS(seg.repair.reason)),
       seg.repair.applied && seg.repair.from && React.createElement("div", { style: { marginTop: 6 } },
         React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TR("Было:")),
         React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5 } }, seg.repair.from),
@@ -439,7 +451,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onMedi
           (seg.backcheck.model || "") + (seg.backcheck.at ? " · " + seg.backcheck.at : ""))),
       seg.backcheck && (seg.backcheck.reasons || []).length > 0 && React.createElement("div", {
         className: "dim", style: { fontSize: 12, marginBottom: 8, lineHeight: 1.5 } },
-        TR("Причины: ") + seg.backcheck.reasons.join("; ")),
+        TR("Причины: ") + seg.backcheck.reasons.map(TRS).join("; ")),
 
       backResult === "loading"
         ? React.createElement("div", { className: "row", style: { gap: 10 } }, React.createElement(Spinner, null), React.createElement("span", { className: "dim", style: { fontSize: 13 } }, TR("Переводим EN→RU…")))
@@ -535,7 +547,7 @@ function QAPane({ seg, qaResult }) {
     issues.map((q, i) => {
       const sev = q.severity || q.sev || "medium";
       const [cls, lab] = sevMeta[sev] || sevMeta.medium;
-      const msg = q.explanation_ru || q.msg || "QA issue";
+      const msg = TRS(q.explanation_ru || q.msg || "QA issue");
       const suggestion = q.suggested_fragment || "";
       const fragment = q.bad_fragment || q.target_fragment || q.source_fragment || "";
       return React.createElement("div", { key: i, className: "card", style: { padding: 12 } },

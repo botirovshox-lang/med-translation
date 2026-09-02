@@ -537,6 +537,13 @@ function TabEditor({ store, toast }) {
   // с прошлого раза он был бы не виден — а главная кнопка всё равно снимала бы
   // отметку «подтвердил человек», в том числе в другом проекте.
   const [rpFixConfirmed, setRpFixConfirmed] = useState(false);
+  /* Разрешение ревизии читать и переписывать заверенное человеком. Своё,
+     а не общее с ремонтом: там «правь по конкретным находкам», здесь
+     «перечитай и перепиши целиком» — разные решения и разная цена, и одна
+     галочка на оба означала бы молчаливое расширение прав. В localStorage
+     НЕ живёт и гаснет при смене проекта: это разрешение на один прогон,
+     а не настройка. */
+  const [rvConfirmed, setRvConfirmed] = useState(false);
   // То же самое, но для переперевода (шаг «Перевод», solo-запуск): без него
   // подтверждённые сегменты не показываются даже в разбивке «переведено
   // через» — их вообще не с чем перевести повторно, пока человек явно не
@@ -784,7 +791,7 @@ function TabEditor({ store, toast }) {
 
   // Смена проекта гасит разрешение: заверял сегменты человек в ТОМ проекте,
   // и переносить на новый разрешение их переписать нельзя.
-  useEffect(() => { setRpFixConfirmed(false); }, [project && project.id]);
+  useEffect(() => { setRpFixConfirmed(false); setRvConfirmed(false); }, [project && project.id]);
   useEffect(() => { setRtFixConfirmed(false); }, [project && project.id]);
 
   useEffect(() => { setTcGroupPick(null); }, [tcModel, store.segmentFilter, checkedSegs.size]);
@@ -929,7 +936,7 @@ function TabEditor({ store, toast }) {
     project && project.id, gptModel, bcModel, tcModel, tcxModel, rpModel, rvModel, bcJudge,
     fullSteps ? Array.from(fullSteps).sort().join(",") : "*",
     rpGroupPick ? Array.from(rpGroupPick).sort().join(",") : "*",
-    rpFixConfirmed ? "rc" : "",
+    rpFixConfirmed ? "rc" : "", rvConfirmed ? "vc" : "",
     scopeFp, planFp,
     job ? job.id + ":" + job.status : "",
   ].join("|");
@@ -955,7 +962,7 @@ function TabEditor({ store, toast }) {
       // Тот же признак, что и у карточки ремонта: отмечены группы уже
       // чинившихся — значит человек просит второй заход.
       retry: !!(rpGroupPick && (rpGroupPick.has("applied") || rpGroupPick.has("rejected"))),
-      include_confirmed: rpFixConfirmed,
+      include_confirmed: rpFixConfirmed, rv_confirmed: rvConfirmed,
     })).then(async res => {
       if (!alive) return;
       setPlanBusy(false);
@@ -1636,7 +1643,7 @@ function TabEditor({ store, toast }) {
     const ids = new Set((plan && plan.ids) || []);
     const targets = project.segments.filter(s => ids.has(s.id));
     startJob("review", targets,
-      { model: rvModel || null },
+      { model: rvModel || null, rv_confirmed: rvConfirmed },
       TR("Ревизовать нечего: в выборке нет переведённых сегментов, ")
       + TR("либо все уже ревизованы этим переводом."),
       estimateRun("review", targets, rvModelInfo));
@@ -1992,11 +1999,28 @@ function TabEditor({ store, toast }) {
       soloEst: planEstOf("review", stepModel("review", rvModelInfo)),
       onSolo: runReview, onStop: stopJob,
       running: batchRun && batchRun.engine === "review" ? batchRun : null,
+      options: React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+        React.createElement("div", { className: "row between", style: { gap: 12 } },
+          React.createElement("div", { style: { minWidth: 0 } },
+            React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center" } },
+              TR("Ревизовать заверенные человеком"),
+              React.createElement(InfoTip, { title: TR("Что произойдёт"),
+                body: TR("По умолчанию ревизия заверенные даже не читает: применить к ним правку нечем, а платить за совет, который некуда деть, — перерасход.\n\nС этой галочкой она их прочитает и, если найдёт дефект, перепишет текст: прежний уйдёт в «прошлый перевод», статус станет «требует проверки», а отметка «подтвердил человек» снимется — она относилась к тексту, которого больше нет.\n\nОбъективные сверки работают и здесь: кандидат с расхождением чисел, единиц, отрицания или стороны, с нарушенным утверждённым термином, битым регистром или повтором не ставится.\n\nГалочка действует на ЭТОТ прогон и только на ревизию: разрешение чинить подтверждённые у ремонта — отдельное.") })),
+            React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
+              confirmedInScope
+                ? confirmedInScope + TR(" заверенных в выборке")
+                : TR("в выборке нет заверенных сегментов"))),
+          React.createElement(Switch, { on: rvConfirmed, label: TR("Ревизовать заверенные"),
+            onClick: () => setRvConfirmed(v => !v) })),
+        rvConfirmed && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
+          TR("С переписанных снимется отметка «подтвердил человек» — их придётся заверить заново."))),
       soloNote: TR("Один вызов на сегмент. Правка ставится, только если оценка ")
         + TR("не выше порога И кандидат прошёл бесплатные сверки: числа, единицы, ")
         + TR("отрицание, сторона, утверждённые термины, регистр, письмо, повторы. ")
         + TR("Балл back-check в этом решении НЕ участвует — он вознаграждает кальку. ")
-        + TR("Заверенное человеком не переписывается, откат есть у каждой пачки."),
+        + (rvConfirmed
+            ? TR("Заверенное человеком БУДЕТ переписано — разрешение включено выше; откат есть у каждой пачки.")
+            : TR("Заверенное человеком не переписывается, откат есть у каждой пачки.")),
     },
     {
       key: "backcheck", label: FULL_STEP_LABELS.backcheck, hint: TR("обратный перевод другой моделью"),
@@ -2158,8 +2182,10 @@ function TabEditor({ store, toast }) {
       // и оценила сегменты по этому же правилу, и разойтись они не должны.
       retry: repairRetry(),
       // Разрешение сервер отдаёт только шагу ремонта (см. _job_chunk_full):
-      // перевод по этой галочке не перегоняет ничего.
-      include_confirmed: rpFixConfirmed,
+      // перевод по этой галочке не перегоняет ничего. У ревизии разрешение
+      // СВОЁ: «правь по находкам» и «перечитай и перепиши целиком» — разные
+      // решения, и одна галочка на оба означала бы молчаливое расширение.
+      include_confirmed: rpFixConfirmed, rv_confirmed: rvConfirmed,
     }, TR("В выбранных сегментах нечего делать."), fullEst);
     if (!started) return;
     // Проект и время создания — часть опознания снимка (см. runStepRows):
@@ -2277,6 +2303,7 @@ function TabEditor({ store, toast }) {
           openStep: openStep, onOpenStep: setOpenStep,
           checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf),
             est: fullEst, modelWarn: modelWarn,
+          rvConfirmed: rvConfirmed, rvConfirmedCount: confirmedInScope,
           fixConfirmed: rpFixConfirmed, fixConfirmedCount: rpConfirmedWaiting,
           models: gptModels, disabled: !!job }),
         // Одобрение терминов и то, что из него следует, — расхождения готовых
@@ -2756,6 +2783,7 @@ function StepRow({ row, on, onToggle, open, onOpen, disabled, models }) {
 
 function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize,
                        checked, filtered, est, modelWarn, models, disabled,
+                       rvConfirmed, rvConfirmedCount,
                        openStep, onOpenStep, planBusy, planReady,
                        fixConfirmed, fixConfirmedCount }) {
   const anyWork = rows.some(r => picked.has(r.key) && r.planEst && r.planEst.count > 0);
@@ -2808,6 +2836,14 @@ function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize
       fixConfirmedCount ? " — " + fixConfirmedCount + TR(" заверенных сегментов с находками; ")
                         : TR(" — в выборке таких сейчас нет; "),
       TR("с исправленных снимется отметка «подтвердил человек». Выключается в строке «Ремонт».")),
+    rvConfirmed && React.createElement("div", {
+      style: { fontSize: 11.5, lineHeight: 1.5, padding: "7px 9px", borderRadius: "var(--r-md)",
+               background: "var(--bg-sunken)", border: "1px solid var(--c-warning)",
+               color: "var(--text-2)" } },
+      React.createElement("b", { style: { color: "var(--c-warning)" } }, TR("Ревизия перепишет и заверенные")),
+      rvConfirmedCount ? " — " + rvConfirmedCount + TR(" заверенных в выборке; ")
+                       : TR(" — в выборке таких сейчас нет; "),
+      TR("с переписанных снимется отметка «подтвердил человек». Выключается в строке «Ревизия».")),
 
     // Во время прогона цифры показывает полоса наверху — она залипающая и
     // видна всегда. Второй прогресс-бар здесь только повторял бы её и уезжал
@@ -3105,6 +3141,32 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
           + TR("\nБыло: ") + (seg.repair.from || "")
           + TR("\nПричины: ") + (seg.repair.issues || []).map(TRS).join("; "),
       }, TR("✓ ремонт")),
+      /* Что ревизия уже прошла — прямо в таблице. Без этого «пройденные
+         участки» видно только числом в строке прогона («98 уже ревизован»),
+         а какие именно — никак: при прогоне частями это и есть главный
+         вопрос. Три исхода различаются цветом, потому что действия у них
+         разные: переписано (смотреть, что стало), нашла и не тронула
+         (решать человеку), прочитано и претензий нет.
+         `stale` считает СЕРВЕР (`_review_stale`) — он знает и про версию
+         вопросов, и про правку оригинала; браузеру этого не вычислить. */
+      seg.review && React.createElement("div", {
+        style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap",
+                 opacity: seg.review.stale ? 0.5 : 1,
+                 /* Исход считает СЕРВЕР (`review.flagged`) — тем же правилом,
+                    что корзина «Ревизия нашла проблему» на «Анализе». Свой
+                    порог и своё чтение кода в браузере были вторым правилом
+                    рядом с настоящим и расходились с экраном на записях без
+                    поля `code`. */
+                 color: seg.review.applied ? "var(--c-success)"
+                   : (seg.review.sourceSuspect || seg.review.flagged)
+                     ? "var(--c-warning)" : "var(--text-3)" },
+        title: TR("Ревизия: оценка ") + seg.review.score + "/10"
+          + (seg.review.applied ? TR("\nТекст переписан. Было: ") + (seg.review.from || "") : "")
+          + (seg.review.skipped ? TR("\nПравка не поставлена: ") + TRS(seg.review.skipped) : "")
+          + ((seg.review.issues || []).length ? "\n" + seg.review.issues.map(TRS).join("; ") : "")
+          + (seg.review.stale ? TR("\n\nТекст менялся после ревизии — данные устарели.") : ""),
+      }, (seg.review.stale ? "≈ " : "") + (seg.review.applied ? TR("✓ ревизия")
+          : TR("ревизия: ") + seg.review.score)),
       seg.termcheck && (seg.termcheck.findings || []).length > 0 && React.createElement("div", {
         style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap",
                  color: seg.termcheck.severity === "critical" ? "var(--c-error)"

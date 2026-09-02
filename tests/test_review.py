@@ -594,6 +594,36 @@ seg["review"]["applied"] = True
 check("candidate" not in main._segment_for_client(seg)["review"],
       "у применённой — не уезжает: он равен переводу")
 
+# ────── 14. Разрешение ревизовать заверенные ──────
+print()
+print("=== 14. Заверенные — по СВОЕМУ разрешению ===")
+# Флаг свой, а не общий с ремонтом: у того «правь по конкретным находкам»,
+# здесь «перечитай и перепиши целиком». Одна галочка на два разных решения
+# означала бы, что человек, разрешивший точечную починку, молча разрешил
+# и переписывание заверенного текста.
+conf = seg_of(1, status="confirmed", confirmedBy="u1")
+proj, _ = build([conf, seg_of(2)])
+plan_off = main._plan_step(proj, "review", {}, list(proj["segments"]), set(), set())
+plan_rp = main._plan_step(proj, "review", {"include_confirmed": True},
+                          list(proj["segments"]), set(), set())
+plan_rv = main._plan_step(proj, "review", {"rv_confirmed": True},
+                          list(proj["segments"]), set(), set())
+check(sorted(plan_off.get("ids") or []) == [2], "без разрешения заверенный не берётся")
+check(sorted(plan_rp.get("ids") or []) == [2],
+      "галочка РЕМОНТА ревизию не открывает: %r" % (plan_rp.get("ids"),))
+check(sorted(plan_rv.get("ids") or []) == [1, 2],
+      "своя галочка — берётся: %r" % (plan_rv.get("ids"),))
+
+# И шаг делает ровно то, что обещал разбор.
+ANSWER = {"score": 3, "issues": ["калька"], "fixed": "Closed pneumothorax is temporary."}
+r = main.review_project(1, main.ReviewRequest(segment_ids=[1], limit=5, dry_run=False,
+                                              include_confirmed=True, refresh=True))
+check(r["applied"] == 1 and conf["target"] == "Closed pneumothorax is temporary.",
+      "заверенный переписан по разрешению")
+check(conf.get("confirmedBy") is None and conf["status"] == "review",
+      "отметка «подтвердил человек» снята — она относилась к другому тексту")
+check(conf.get("prevTarget") == TGT, "прежний текст сохранён в «прошлом переводе»")
+
 print()
 if fail:
     print("ПРОВАЛЕНО: " + str(len(fail)))

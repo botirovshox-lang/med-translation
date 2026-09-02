@@ -501,5 +501,21 @@
   "; вернёт те, что после неё не правили)": "; undan keyin tuzatilmaganlarini qaytaradi)",
   "Ревизия завершена": "Reviziya tugadi",
   " сегментов прочитано": " ta segment o'qildi",
-  " · оригинал под подозрением: ": " · asl matn shubha ostida: "
+  " · оригинал под подозрением: ": " · asl matn shubha ostida: ",
+  "Ревизовать заверенные человеком": "Inson tasdiqlaganlarni reviziya qilish",
+  "По умолчанию ревизия заверенные даже не читает: применить к ним правку нечем, а платить за совет, который некуда деть, — перерасход.\n\nС этой галочкой она их прочитает и, если найдёт дефект, перепишет текст: прежний уйдёт в «прошлый перевод», статус станет «требует проверки», а отметка «подтвердил человек» снимется — она относилась к тексту, которого больше нет.\n\nОбъективные сверки работают и здесь: кандидат с расхождением чисел, единиц, отрицания или стороны, с нарушенным утверждённым термином, битым регистром или повтором не ставится.\n\nГалочка действует на ЭТОТ прогон и только на ревизию: разрешение чинить подтверждённые у ремонта — отдельное.": "Sukut bo'yicha reviziya tasdiqlanganlarni o'qimaydi ham: ularga tuzatishni qo'llab bo'lmaydi, qo'yib bo'lmaydigan maslahat uchun to'lash esa ortiqcha xarajat.\n\nBu belgi bilan u ularni o'qiydi va nuqson topsa matnni qayta yozadi: avvalgisi «oldingi tarjima»ga o'tadi, holat «tekshirish talab qiladi» bo'ladi, «inson tasdiqladi» belgisi esa olib tashlanadi — u endi mavjud bo'lmagan matnga tegishli edi.\n\nObyektiv tekshiruvlar bu yerda ham ishlaydi: sonlar, birliklar, inkor yoki tomon nomuvofiqligi, buzilgan majburiy atama, noto'g'ri registr yoki takror bo'lgan nomzod qo'yilmaydi.\n\nBelgi SHU progonga va faqat reviziyaga ta'sir qiladi: ta'mirning tasdiqlanganlarni tuzatish ruxsati — alohida.",
+  " заверенных в выборке": " ta tasdiqlangan tanlovda",
+  "в выборке нет заверенных сегментов": "tanlovda tasdiqlangan segmentlar yo'q",
+  "Ревизовать заверенные": "Tasdiqlanganlarni reviziya qilish",
+  "С переписанных снимется отметка «подтвердил человек» — их придётся заверить заново.": "Qayta yozilganlardan «inson tasdiqladi» belgisi olib tashlanadi — ularni qaytadan tasdiqlash kerak bo'ladi.",
+  "Ревизия: оценка ": "Reviziya: baho ",
+  "\nТекст переписан. Было: ": "\nMatn qayta yozilgan. Avval edi: ",
+  "\nПравка не поставлена: ": "\nTuzatish qo'yilmadi: ",
+  "\n\nТекст менялся после ревизии — данные устарели.": "\n\nMatn reviziyadan keyin o'zgargan — ma'lumotlar eskirgan.",
+  "ревизия: ": "reviziya: ",
+  "✓ ревизия": "✓ reviziya",
+  "Заверенное человеком БУДЕТ переписано — разрешение включено выше; откат есть у каждой пачки.": "Inson tasdiqlagan matn QAYTA YOZILADI — ruxsat yuqorida yoqilgan; har bir to'plamni qaytarish mumkin.",
+  "Ревизия перепишет и заверенные": "Reviziya tasdiqlanganlarni ham qayta yozadi",
+  " заверенных в выборке; ": " ta tasdiqlangan tanlovda; ",
+  "с переписанных снимется отметка «подтвердил человек». Выключается в строке «Ревизия».": "qayta yozilganlardan «inson tasdiqladi» belgisi olib tashlanadi. «Reviziya» qatorida o'chiriladi."
 }

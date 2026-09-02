@@ -9568,6 +9568,17 @@ def _segment_for_client(seg: dict) -> dict:
         # REVIEW_VETO_LABELS теперь используется, а не лежит мёртвой.
         out["review"]["vetoLabels"] = [REVIEW_VETO_LABELS.get(k, k)
                                        for k in (rv.get("veto") or [])]
+        # `flagged` — тот же признак, что корзина `human.reviewFlagged`: одно
+        # правило, одно место. Иначе таблица красит по своему порогу и своему
+        # чтению кода, а экран «Анализ» числит по серверному — на записях без
+        # `code` (155 вердиктов первого прогона) они расходятся сразу.
+        code = _review_code(rv)
+        out["review"]["flagged"] = bool(
+            not rv.get("applied") and not rv.get("undone")
+            and not out["review"]["stale"]
+            and (code == REVIEW_VETOED
+                 or (code == REVIEW_OK and rv.get("score") is not None
+                     and rv["score"] <= REVIEW_FLAG_SCORE)))
     if qa:
         # Тот же признак и у Medical QA: без него карточка прогона показывала
         # весь проект и после того, как всё уже проверено. Хеш sha1 браузеру
@@ -13090,10 +13101,11 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
         for k in rv.get("veto") or []:
             vetoed[k] = vetoed.get(k, 0) + 1
         if out.get("ready"):
-            # Заверенное человеком пачка не переписывает — правило всех
-            # массовых команд. Вердикт при этом получен и виден: находка
-            # на заверенном тексте показывается всегда.
-            if seg.get("status") == "confirmed":
+            # Второй рубеж у самого `_replace_target`: без разрешения
+            # заверенное не переписываем. В обычном заходе сюда не доходят —
+            # `_review_pick` отсекает их раньше и денег на них не тратит;
+            # ветка работает для `apply_saved`, где вердикты уже лежат.
+            if seg.get("status") == "confirmed" and not req.include_confirmed:
                 skipped_confirmed.append(seg["id"])
             else:
                 ready.append(seg)
@@ -16060,6 +16072,9 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
     # (см. _job_chunk_full): он правит по конкретным находкам и точечно,
     # а перевод заново перегнал бы сегмент целиком и за полную цену.
     fix_confirmed = bool(params.get("include_confirmed"))
+    # Разрешение ревизии трогать заверенное — своё. Разбор ОБЯЗАН читать
+    # именно его, иначе строка обещает одно, а шаг делает другое.
+    rv_confirmed = bool(params.get("rv_confirmed"))
     note = None
 
     for seg in scope:
@@ -16150,14 +16165,14 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
             # Ветки «нет перевода» и «переведём в этом прогоне» сюда не нужны:
             # общий блок выше перехватывает и то и другое раньше, и вторая
             # копия правила просто никогда не сработала бы.
-            # БЕЗУСЛОВНО, а не по `fix_confirmed`: до ревизии этот флаг
-            # не доезжает (`_job_chunk_full` гасит его всем, кроме ремонта),
-            # и `_review_pick` заверенные не берёт. Прочитай мы его здесь —
-            # галочка в строке РЕМОНТА заставила бы строку ревизии обещать
-            # все заверенные сегменты проекта.
-            if seg.get("status") == "confirmed":
-                # Вердикт получить можно, но ПРАВКИ не будет: `include_confirmed`
-                # до ревизии не доезжает. Платить за совет, который некуда
+            # По СВОЕМУ флагу, а не по ремонтному: у того «правь по
+            # конкретным находкам», здесь «перечитай и перепиши целиком».
+            # Прочитай мы `fix_confirmed` — галочка в строке РЕМОНТА
+            # заставила бы строку ревизии обещать все заверенные сегменты
+            # проекта, а шаг их не взял бы.
+            if seg.get("status") == "confirmed" and not rv_confirmed:
+                # Вердикт получить можно, но ПРАВКИ не будет: без разрешения
+                # заверенное не переписывают. Платить за совет, который некуда
                 # применить, — тот же перерасход, от которого заведён
                 # `_repair_futile`. Разбор обязан сказать это вслух.
                 skip("заверено человеком — правка не применится")
@@ -16322,6 +16337,12 @@ class RunPlanRequest(BaseModel):
     # выбрасывает молча, и разбор посчитал бы смету под модель по умолчанию,
     # а прогон пошёл бы под выбранную. Сторожит tests/test_full_run.py.
     rv_model: Optional[str] = None
+    # Разрешение ревизии читать и переписывать заверенное человеком. СВОЁ,
+    # а не общее с ремонтом: у того флаг значит «правь по конкретным
+    # находкам», здесь — «перечитай и перепиши целиком». Одна галочка на два
+    # разных решения означала бы, что человек, разрешивший точечный ремонт,
+    # молча разрешил и переписывание заверенного текста.
+    rv_confirmed: bool = False
     use_judge: bool = False
     # Судья и выше потолка зоны — разовое разрешение прогона, как
     # include_confirmed. Осушает корзину «смысл не читал никто».
@@ -16493,6 +16514,9 @@ def _job_chunk_full(pid: int, chunk: list, params: dict) -> dict:
         # и без единой находки в основании. Это и есть точечность: правим
         # найденное, а не переводим сегмент сначала.
         sub["include_confirmed"] = bool(params.get("include_confirmed")) if st == "repair" else False
+        # То же и для разрешения ревизии: страховка от будущего читателя,
+        # который прочтёт чужой флаг и молча расширит себе права.
+        sub["rv_confirmed"] = bool(params.get("rv_confirmed")) if st == "review" else False
         if st == "translate":
             # Уже переведённое не переводим заново: составной прогон гоняют
             # по всему проекту, и force затирал бы готовые переводы.
@@ -16604,12 +16628,17 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
                 "why": ("арбитр не ответил" if r.get("failed") else "")}
     if kind == "review":
         # Ревизия ПРАВИТ текст, поэтому идёт с dry_run=False. Заверенное
-        # человеком она не переписывает: флаг include_confirmed доезжает
-        # только до ремонта (`_job_chunk_full` гасит его остальным), и здесь
-        # он всегда False — заверенный сегмент получит вердикт, но не правку.
+        # человеком она читает и переписывает ТОЛЬКО по своему разрешению
+        # (`rv_confirmed`); без него `_review_pick` их не спрашивает вовсе —
+        # платить за совет, который некуда применить, незачем.
         r = review_project(pid, ReviewRequest(
             segment_ids=chunk, limit=n, model=params.get("model"),
-            dry_run=False, include_confirmed=bool(params.get("include_confirmed")),
+            dry_run=False,
+            # Именно `rv_confirmed`: общий `include_confirmed` доезжает только
+            # до ремонта (`_job_chunk_full` гасит его остальным), и разрешение
+            # на точечную починку не должно означать разрешения на
+            # переписывание заверенного целиком.
+            include_confirmed=bool(params.get("rv_confirmed")),
             stamp=params.get("review_stamp")))
         # done — ОТВЕЧЕННЫЕ, без провалов. Складывать провалы сюда нельзя:
         # `_job_chunk_full` роняет прогон по условию «done == 0 и ошибок

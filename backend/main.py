@@ -4704,13 +4704,12 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int) -> dict:
     # `above` — «можно улучшить», а не «сломано», звать человека к вкусовщине
     # нельзя; `undone` — он уже ответил; вердикт БЕЗ кода — это ждущий
     # применения кандидат (сухой прогон), и решает его `apply_saved`, машина.
-    elif (_rv.get("code") in (REVIEW_VETOED, REVIEW_OK)
-            and not _rv.get("applied") and not _rv.get("undone")
-            and not _review_stale(s)
-            and (_rv.get("code") == REVIEW_VETOED
-                 or (_rv.get("score") is not None
-                     and _rv["score"] <= REVIEW_FLAG_SCORE))):
-        row["reviewFlagged"] = True
+    elif _rv and not _rv.get("applied") and not _rv.get("undone")             and not _review_stale(s):
+        _code = _review_code(_rv)
+        if _code == REVIEW_VETOED or (
+                _code == REVIEW_OK and _rv.get("score") is not None
+                and _rv["score"] <= REVIEW_FLAG_SCORE):
+            row["reviewFlagged"] = True
     rp = s.get("repair") or {}
     # Настоящие находки держим отдельно от `open_findings`: у второго
     # бывает фолбэк-заглушка `[{"kind": "gloss"}]` без ключа `text`,
@@ -12588,6 +12587,27 @@ REVIEW_OK = "ok"            # перевод годится, варианта м
 REVIEW_ABOVE = "above"      # вариант есть, но оценка выше порога — не дефект
 REVIEW_SUSPECT = "suspect"  # повреждён сам оригинал, чинить догадкой нельзя
 REVIEW_VETOED = "veto"      # кандидат не прошёл объективные сверки
+# Вердикты, записанные ДО появления кода, читаются по литералу причины.
+# Строки точные: их писал наш код, они лежат в боевых данных, и
+# переформулировать их задним числом нельзя — тот же закон, что
+# у `REPAIR_RECHECK_FAILED`. Без этого 155 вердиктов первого прогона стали бы
+# для корзины невидимы навсегда: они свежие, значит ни один прогон их больше
+# не перезапишет и кода им не проставит.
+_REVIEW_CODE_LEGACY = {
+    "нет варианта": REVIEW_OK,                      # прежняя формулировка
+    "перевод годится, править нечего": REVIEW_OK,
+    "оценка выше порога": REVIEW_ABOVE,
+    "оригинал под подозрением": REVIEW_SUSPECT,
+    "не прошёл сверку": REVIEW_VETOED,
+}
+
+
+def _review_code(rv: dict) -> Optional[str]:
+    """Код решения ревизии. Одно место на всех, кто его спрашивает: разойдись
+    чтение старых записей по копиям — корзины показывали бы разное."""
+    return rv.get("code") or _REVIEW_CODE_LEGACY.get(rv.get("skipped") or "")
+
+
 REVIEW_VETO_LABELS = {
     "gloss": "нарушено приказных терминов больше",
     "case": "расхождений по регистру больше",

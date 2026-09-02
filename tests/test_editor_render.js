@@ -290,13 +290,16 @@ try {
     if (p.onClick && /Подробнее/.test(p["aria-label"] || "")) found.push(p.onClick);
     (n.children || []).forEach(find);
   })(el);
-  // Шагов шесть: перевод, back-check, термины, СВЕРКА терминов моделью,
-  // ремонт, Medical QA. Сверка добавлена как языконезависимая проверка —
-  // морфология знает один язык и знает его грубо.
-  check(found.length === 6, "у каждого шага есть раскрытие (" + found.length + " из 6)");
+  // Шагов семь: перевод, РЕВИЗИЯ, back-check, термины, сверка терминов
+  // моделью, ремонт, Medical QA. Ревизия стоит второй — всё, что переписывает
+  // текст, обязано идти раньше того, что его описывает.
+  check(found.length === 7, "у каждого шага есть раскрытие (" + found.length + " из 7)");
 
   console.log("\n=== 3. Раскрытая строка объясняет состав и даёт запуск ===");
-  found[2]();                                    // третья строка — «Термины»
+  // Порядок строк повторяет FULL_RUN_STEPS: перевод, ревизия, back-check,
+  // ТЕРМИНЫ. Индекс жёсткий, поэтому при вставке шага его правят здесь —
+  // иначе тест молча проверял бы соседнюю строку.
+  found[3]();                                    // четвёртая строка — «Термины»
   hookIdx = 0;
   const out2 = [];
   walk(TabEditor({ store: storeStub, toast }), 0, out2);
@@ -334,7 +337,11 @@ try {
     if (p.onClick && /Подробнее/.test(p["aria-label"] || "")) clicks.push(p.onClick);
     (n.children || []).forEach(find);
   })(el3);
-  clicks[1]();                                   // вторая строка — «Back-check»
+  clicks[2]();                                   // третья строка — «Back-check»
+  // Индексы строк жёсткие и повторяют FULL_RUN_STEPS: перевод, ревизия,
+  // BACK-CHECK, термины, сверка терминов, ремонт, Medical QA. Вставили шаг —
+  // правьте здесь, иначе тест молча проверит соседнюю строку. Что открылась
+  // именно нужная, сторожит её собственный маркер ниже.
   hookIdx = 0;
   const out3 = [];
   walk(TabEditor({ store: storeStub, toast }), 0, out3);
@@ -359,12 +366,12 @@ try {
     if (p.onClick && /Подробнее/.test(p["aria-label"] || "")) clicks4.push(p.onClick);
     (n.children || []).forEach(find);
   })(el4);
-  // Индекс 3, а не 4: у раскрытой строки (после шага 5 это back-check) шеврон
-  // подписан «Свернуть» и в этот список не попадает. Считать надо от списка
-  // шагов: перевод, back-check(раскрыт), термины, СВЕРКА терминов, ремонт,
-  // Medical QA — значит ремонт третий среди оставшихся. Что открылась именно
-  // нужная строка, проверяет её собственный маркер «Что чинить» ниже.
-  clicks4[3]();
+  // У раскрытой строки (после шага 5 это back-check) шеврон подписан
+  // «Свернуть» и в этот список не попадает. Считаем от списка шагов:
+  // перевод, ревизия, back-check(раскрыт), термины, сверка терминов, ремонт,
+  // Medical QA — значит среди оставшихся ремонт пятый, индекс 4. Что открылась
+  // именно нужная строка, проверяет её собственный маркер «Что чинить» ниже.
+  clicks4[4]();
   hookIdx = 0;
   const out4 = [];
   const el4b = TabEditor({ store: storeStub, toast });
@@ -840,9 +847,17 @@ try {
     const src16 = fs.readFileSync(path.join(root, "tab_editor.jsx"), "utf8");
     const eff = src16.slice(src16.indexOf("window.API.models()"));
     const body = eff.slice(0, eff.indexOf("}, []);"));
-    const SETTER = { model: "setGptModel", bc_model: "setBcModel",
-                     tc_model: "setTcModel", tcx_model: "setTcxModel",
-                     rp_model: "setRpModel", judge_model: "setJudgeModel" };
+    /* Список выводим из window.MODEL_LS, а не пишем руками: захардкоженная
+       карта пропустила новый шаг (ревизию) и проверка осталась зелёной при
+       живом дефекте — выбор модели каталогом не заполнялся, а цены у шага
+       не было, то есть смета ГЛАВНОЙ кнопки становилась прочерком.
+       Имя сеттера выводится из имени параметра: rv_model -> setRvModel. */
+    const setterOf = (k) => "set" + k.replace(/_model$/, "")
+      .replace(/(^|_)([a-z])/g, (m, s, c) => c.toUpperCase()) + "Model";
+    const keys = Object.keys(global.window.MODEL_LS || {});
+    check(keys.length >= 7, "карта ключей моделей полна (" + keys.length + ")");
+    const SETTER = {};
+    keys.forEach(k => { SETTER[k] = k === "model" ? "setGptModel" : setterOf(k); });
     const lost = Object.keys(SETTER).filter(k => body.indexOf(SETTER[k] + "(") === -1);
     check(lost.length === 0,
           "каталог заполняет ВСЕ выборы моделей" + (lost.length ? ": забыт " + lost.join(", ") : ""));

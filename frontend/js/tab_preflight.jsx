@@ -154,7 +154,8 @@ function WorkSummary({ summary, store, toast, onReload }) {
                                       s.human.reverted || [],
                                       s.human.glossaryConfirmed || [],
                                       s.human.confirmedFindings || [],
-                                      s.human.qaCritical || []));
+                                      s.human.qaCritical || [],
+                                      s.human.sourceSuspect || []));
   const humanTotal = s.human.termsTotal + humanSegs.size;
 
   return React.createElement("div", { className: "section" },
@@ -312,6 +313,14 @@ function WorkSummary({ summary, store, toast, onReload }) {
         n: (s.human.qaCritical || []).length, ids: s.human.qaCritical,
         color: "var(--c-error)",
         hint: TR("числа, дозировки или структура — проверка статус не меняет, решает человек") }),
+      /* Ревизор усомнился в САМОМ ОРИГИНАЛЕ. Своя строка, потому что машина
+         бессильна по построению: чинить перевод догадкой по битому исходнику
+         значит сочинять, а до появления шага сказать это было негде вовсе —
+         termcheck прямо инструктирован не трогать ничего в SOURCE. */
+      React.createElement(Row, { label: TR("Похоже, повреждён сам оригинал"),
+        n: (s.human.sourceSuspect || []).length, ids: s.human.sourceSuspect,
+        color: "var(--c-error)",
+        hint: TR("обрывок, ошибка распознавания или бессвязная фраза — перевод чинить нечем, пока не выправлен исходник") }),
       // Спор проверки с утверждённой записью. Своя строка, потому что машина
       // здесь бессильна по построению: ремонт по такой находке всегда
       // откатится (нарушённых терминов станет больше), а termcheck переспорить
@@ -469,9 +478,12 @@ function FreeFixCheck({ on, setOn, label, note }) {
 /* Какой параметр run-plan/задачи отвечает за модель шага. Зеркалит
    FULL_STEP_MODEL сервера; Medical QA своей модели не имеет — она берёт
    модель back-check для обратного перевода. */
+/* Зеркало FULL_STEP_MODEL на сервере. Забыть шаг здесь — значит показать
+   у него чужую подпись («модель back-check», ветка Medical QA ниже) и не
+   отправить его модель в задачу. */
 const STEP_MODEL_PARAM = { translate: "model", backcheck: "bc_model",
                            termcheck: "tc_model", termaudit: "tcx_model",
-                           repair: "rp_model" };
+                           repair: "rp_model", review: "rv_model" };
 
 /* Подсказки о моделях, которые противоречат друг другу по РОЛИ, а не
    по силе. Считается по ДЕЙСТВУЮЩИМ моделям — тем, что сервер назвал

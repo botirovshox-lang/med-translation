@@ -1,6 +1,5 @@
 {
   "_": "Вкладка «Анализ»: корзины «под ключ», полосы back-check, соответствие глоссарию, termcheck, ремонт, арбитр.",
-
   "\n\nЗаверенных человеком не трогаем: ": "\n\nOdam tasdiqlaganlariga tegmaymiz: ",
   " · запись под вопросом: ": " · yozuv shubha ostida: ",
   " · здесь верно: ": " · bu yerda to'g'risi: ",
@@ -277,5 +276,7 @@
   "— подтверждено": "— tasdiqlangan",
   "— серьёзно": "— jiddiy",
   "▴ Скрыть подробности": "▴ Tafsilotlarni yashirish",
-  "▾ Подробности и ручные команды": "▾ Tafsilotlar va qo'lda buyruqlar"
+  "▾ Подробности и ручные команды": "▾ Tafsilotlar va qo'lda buyruqlar",
+  "Похоже, повреждён сам оригинал": "Asl matnning o'zi shikastlangan ko'rinadi",
+  "обрывок, ошибка распознавания или бессвязная фраза — перевод чинить нечем, пока не выправлен исходник": "parcha, tanish xatosi yoki bog'lanmagan ibora — asl matn tuzatilmaguncha tarjimani tuzatib bo'lmaydi"
 }

@@ -15,15 +15,17 @@ const SEARCH_SCOPE_LS_KEY = "mcat_search_scope";
 const TC_MODEL_LS_KEY = "mcat_termcheck_model";
 const TCX_MODEL_LS_KEY = "mcat_termaudit_model";
 const RP_MODEL_LS_KEY = "mcat_repair_model";
+const RV_MODEL_LS_KEY = "mcat_review_model";
 /* Один источник ключей для панели «Анализа»: она читает и пишет ТЕ ЖЕ выборы
    моделей, что и карточки редактора. Свои литералы там завели бы второе
    хранилище того же выбора — модель, сменённая на одном экране, молча
    не доехала бы до другого. Имена параметров = имена полей run-plan. */
 window.MODEL_LS = { model: GPT_MODEL_LS_KEY, bc_model: BC_MODEL_LS_KEY,
                     tc_model: TC_MODEL_LS_KEY, tcx_model: TCX_MODEL_LS_KEY,
-                    rp_model: RP_MODEL_LS_KEY, judge_model: JUDGE_MODEL_LS_KEY };
+                    rp_model: RP_MODEL_LS_KEY, judge_model: JUDGE_MODEL_LS_KEY,
+                    rv_model: RV_MODEL_LS_KEY };
 const JOB_LABELS = { translate: TR("Перевод"), backcheck: "Back-check", termcheck: TR("Проверка терминологии"),
-                     termaudit: TR("Сверка терминов моделью"),
+                     termaudit: TR("Сверка терминов моделью"), review: TR("Ревизия перевода"),
                      repair: TR("Автоматический ремонт"), medical_qa: TR("Детерминированные проверки"),
                      full: TR("Перевод и проверка"), apply_terms: TR("Одобрение и применение") };
 
@@ -31,7 +33,7 @@ const JOB_LABELS = { translate: TR("Перевод"), backcheck: "Back-check", t
 // в полосе прогресса: разойдись они — человек не свяжет галочку на полосе
 // со строкой, галочками в которой он этот шаг и набирал.
 const FULL_STEP_LABELS = { translate: TR("Перевод"), backcheck: "Back-check", termcheck: TR("Термины"),
-                           termaudit: TR("Сверка терминов"),
+                           termaudit: TR("Сверка терминов"), review: TR("Ревизия"),
                            repair: TR("Ремонт"), medical_qa: TR("Детерминированные проверки") };
 
 /* Сколько раз пробуем забрать результат прогона, прежде чем сдаться вслух.
@@ -123,6 +125,11 @@ const REASONING_MULT = 1.8;
 // у проверенных сервер отвечает точно (backcheck.needs_judge), и гадать про них
 // значит занизить смету на короткие сегменты — их зона открыта до нуля.
 const JUDGE_SHARE = 0.3;
+/* Доля сегментов, на которых ревизия возвращает исправленный текст (с разбором
+   для человека). Замер на боевом учебнике: 30 правок и 6 «оригинал повреждён»
+   на 150 сегментов. Число нужно ровно для сметы — сколько выходных токенов
+   купит шаг; работу оно не выбирает. */
+const REVIEW_FIX_SHARE = 0.25;
 
 /* Цена эмбеддингов приходит с сервера (/api/models → aux, embedModel). Числом
    в браузере она была вторым прайс-листом рядом с настоящим — ровно тем, от
@@ -229,6 +236,22 @@ function estimateRun(kind, targets, model, opts) {
       }
     }
     sec = n * EST_SEC_PER_SEG * 2;             // правка + перепроверка
+  } else if (kind === "review") {
+    // Вход тот же, что у сверки терминов: соседи + оригинал + перевод.
+    // Выход СЧИТАЕТСЯ ДВУМЯ ЧАСТЯМИ и это не педантизм: ревизор отвечает
+    // либо «годится» (несколько токенов), либо готовым текстом с разбором.
+    // Считать разбор на каждом сегменте — завысить смету втрое: на боевом
+    // замере 150 сегментов правки потребовали 20%, а стоил прогон $0.33,
+    // то есть $0.0022 на сегмент против $0.009 по «разбору всегда».
+    tokIn = n * 450 + (srcChars * 3 + tgtChars) / 2.6;
+    /* Множитель рассуждения — ТОЛЬКО на части с правкой. Ответ «годится» —
+       это несколько токенов, думать там не над чем, и умножать их на 1.8
+       значит завышать смету на ровном месте. Сверка с боевым замером
+       (150 сегментов, Terra, $0.3259): со множителем на всём выходе формула
+       давала $0.49 (+51%), так — $0.41 (+26%). Завышение осталось намеренно:
+       заниженная смета хуже завышенной, а замер пока ОДИН и на одной модели. */
+    tokOut = n * 10 + REVIEW_FIX_SHARE * (n * 200 + tgtChars / 3.5) * mult;
+    cost = priceOf(model, tokIn, tokOut);
   } else if (kind === "termaudit") {
     // Один вызов на сегмент: соседи + список приказных терминов -> вердикт
     // по каждому. Соседи и есть основной вход, поэтому исходника втрое.
@@ -397,7 +420,12 @@ function rpGroupDefault(key) {
 // Названия и подписи шагов живут в строках таблицы (fullRunRows) — здесь
 // только порядок, и он обязан совпадать с FULL_RUN_STEPS на сервере: карточка
 // показывает, что произойдёт, а произойдёт то, что решил сервер.
-const FULL_STEP_KEYS = ["translate", "backcheck", "termcheck", "termaudit",
+/* Порядок и состав — зеркало FULL_RUN_STEPS на сервере. Забыть здесь шаг
+   значит: галочка снята по умолчанию, состав шага пуст, строка показывает
+   «—», кнопка соло погашена, в задачу уходит список без него — а сервер
+   при этом планирует работу и обещает её человеку. Ровно то расхождение,
+   ради которого состав вынесен на сервер. */
+const FULL_STEP_KEYS = ["translate", "review", "backcheck", "termcheck", "termaudit",
                         "repair", "medical_qa"];
 
 function fmtDuration(sec) {
@@ -473,6 +501,9 @@ function TabEditor({ store, toast }) {
   const [rpModel, setRpModel] = useState(() => {
     try { return localStorage.getItem(RP_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
+  const [rvModel, setRvModel] = useState(() => {
+    try { return localStorage.getItem(RV_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
+  });
   const [impact, setImpact] = useState(null);     // сегменты, не соответствующие одобренным терминам
   const [impactBusy, setImpactBusy] = useState(false);
   const [impactConfirmed, setImpactConfirmed] = useState(false);  // трогать ли подтверждённые
@@ -545,6 +576,7 @@ function TabEditor({ store, toast }) {
       // моделей рисовался без выбранной строки, а цены у шага не было вовсе —
       // от одного такого шага смета ГЛАВНОЙ кнопки становилась прочерком.
       setTcxModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.termauditDefault || d.default || ""));
+      setRvModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.reviewDefault || d.default || ""));
       AUX_PRICES = d.aux || {};
       EMBED_MODEL_ID = d.embedModel || "";
       // Полосы кладём в общее место: по ним красят балл и эта таблица,
@@ -774,6 +806,11 @@ function TabEditor({ store, toast }) {
     try { localStorage.setItem(TCX_MODEL_LS_KEY, id); } catch (e) { /* приватный режим */ }
   };
 
+  const pickRvModel = (id) => {
+    setRvModel(id);
+    try { localStorage.setItem(RV_MODEL_LS_KEY, id); } catch (e) { /* приватный режим */ }
+  };
+
   const pickScope = (v) => {
     setScope(v);
     try { localStorage.setItem(SEARCH_SCOPE_LS_KEY, v); } catch (e) { /* приватный режим — не страшно */ }
@@ -806,6 +843,7 @@ function TabEditor({ store, toast }) {
   const tcxModelInfo = gptModels.find(m => m.id === tcxModel) || null;
   const tcModelInfo = gptModels.find(m => m.id === tcModel) || null;
   const rpModelInfo = gptModels.find(m => m.id === rpModel) || null;
+  const rvModelInfo = gptModels.find(m => m.id === rvModel) || null;
   const pickJudgeModel = (id) => {
     setJudgeModel(id);
     try { localStorage.setItem(JUDGE_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
@@ -888,7 +926,7 @@ function TabEditor({ store, toast }) {
   const scopeFp = currentIdSet
     ? currentIdSet.size + ":" + Array.from(currentIdSet).reduce((a, i) => a + i, 0) : "all";
   const planKey = [
-    project && project.id, gptModel, bcModel, tcModel, tcxModel, rpModel, bcJudge,
+    project && project.id, gptModel, bcModel, tcModel, tcxModel, rpModel, rvModel, bcJudge,
     fullSteps ? Array.from(fullSteps).sort().join(",") : "*",
     rpGroupPick ? Array.from(rpGroupPick).sort().join(",") : "*",
     rpFixConfirmed ? "rc" : "",
@@ -912,7 +950,7 @@ function TabEditor({ store, toast }) {
       steps: fullSteps ? FULL_STEP_KEYS.filter(k => fullSteps.has(k)) : null,
       segment_ids: ids,
       model: gptModel, bc_model: bcModel, tc_model: tcModel, rp_model: rpModel,
-      tcx_model: tcxModel,
+      tcx_model: tcxModel, rv_model: rvModel,
       use_judge: bcJudge,
       // Тот же признак, что и у карточки ремонта: отмечены группы уже
       // чинившихся — значит человек просит второй заход.
@@ -1483,6 +1521,11 @@ function TabEditor({ store, toast }) {
           ? TR("сверка терминов: снято ") + (c.settled || 0) + TR(", неверных ") + (c.wrong || 0)
           : (c.termaudit ? TR("сверка терминов ") + c.termaudit : null),
         c.medical_qa ? TR("Проверки ") + c.medical_qa : null,
+        // Ревизия считается ОТДЕЛЬНО от ремонта: это разные работы, и общее
+        // число не отвечает на вопрос, чем именно исправлено. Молчать о ней
+        // нельзя — она переписывает текст клиента.
+        c.revised ? TR("ревизия переписала ") + c.revised : null,
+        c.suspect ? TR("оригинал под подозрением: ") + c.suspect : null,
         c.applied ? TR("исправлено ") + c.applied : null,
       ].filter(Boolean).join(" · ") || TR("нового ничего не потребовалось");
       const blockedMsg = c.step_skips ? TR(" · шаги пропускались (нет ключа или модуля)") : "";
@@ -1560,6 +1603,19 @@ function TabEditor({ store, toast }) {
       { model: tcModel || null, skip_cached: false },
       TR("Всё в выборке уже проверено этой моделью. Отметьте нужные группы в «Что проверять», чтобы прогнать заново."),
       estimateRun("termcheck", targets, tcModelInfo));
+  };
+
+  const runReview = () => {
+    // Список — из серверного разбора: кого шаг возьмёт, решает `_plan_step`
+    // теми же предикатами, что и сам прогон.
+    const plan = stepPlan("review");
+    const ids = new Set((plan && plan.ids) || []);
+    const targets = project.segments.filter(s => ids.has(s.id));
+    startJob("review", targets,
+      { model: rvModel || null },
+      TR("Ревизовать нечего: в выборке нет переведённых сегментов, ")
+      + TR("либо все уже ревизованы этим переводом."),
+      estimateRun("review", targets, rvModelInfo));
   };
 
   const runTermAudit = () => {
@@ -1798,6 +1854,11 @@ function TabEditor({ store, toast }) {
         stepModel("backcheck", bcModelInfo), { judge: bcJudge, judgeModel: judgeModelInfo }),
       pickedFull.has("termcheck") && estimateRun("termcheck", fullStepTargets.termcheck,
         stepModel("termcheck", tcModelInfo)),
+      // Ревизия. Шаг с работой и без цены обнуляет ВСЮ смету намеренно,
+      // поэтому забыть его здесь — значит поставить прочерк под кнопкой,
+      // которая сделает тысячи платных вызовов.
+      pickedFull.has("review") && estimateRun("review", fullStepTargets.review || [],
+        stepModel("review", rvModelInfo)),
       // Сверка терминов моделью. Без неё смета главной кнопки была занижена
       // на четверть: шаг по умолчанию включён, работу делает, а цены не имел —
       // ровно то молчание, от которого этот блок и заведён. Заодно это число
@@ -1898,6 +1959,20 @@ function TabEditor({ store, toast }) {
           pickedProviders, toggleProvider,
           rtFixConfirmed ? TR("В выборке нет ни одного переведённого сегмента.")
                          : TR("В выборке нет сегментов для повторного перевода (все подтверждены)."))),
+    },
+    {
+      key: "review", label: FULL_STEP_LABELS.review,
+      hint: TR("читает пару целиком и сразу правит текст — единственный шаг, который не спорит с баллом"),
+      modelId: rvModel, onModel: pickRvModel, plan: stepPlan("review"),
+      planEst: planEstOf("review", stepModel("review", rvModelInfo)),
+      soloEst: planEstOf("review", stepModel("review", rvModelInfo)),
+      onSolo: runReview, onStop: stopJob,
+      running: batchRun && batchRun.engine === "review" ? batchRun : null,
+      soloNote: TR("Один вызов на сегмент. Правка ставится, только если оценка ")
+        + TR("не выше порога И кандидат прошёл бесплатные сверки: числа, единицы, ")
+        + TR("отрицание, сторона, утверждённые термины, регистр, письмо, повторы. ")
+        + TR("Балл back-check в этом решении НЕ участвует — он вознаграждает кальку. ")
+        + TR("Заверенное человеком не переписывается, откат есть у каждой пачки."),
     },
     {
       key: "backcheck", label: FULL_STEP_LABELS.backcheck, hint: TR("обратный перевод другой моделью"),
@@ -2033,7 +2108,8 @@ function TabEditor({ store, toast }) {
     const started = await startJob("full", fullRunIds, {
       steps,
       model: gptModel, bc_model: bcModel, tc_model: tcModel, tcx_model: tcxModel,
-      rp_model: rpModel, use_judge: bcJudge, judge_model: judgeModel || null,
+      rp_model: rpModel, rv_model: rvModel,
+      use_judge: bcJudge, judge_model: judgeModel || null,
       // Тот же retry, что и у карточки ремонта: карточка выше посчитала
       // и оценила сегменты по этому же правилу, и разойтись они не должны.
       retry: repairRetry(),

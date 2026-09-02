@@ -144,12 +144,37 @@ def _fake_term_context(pid, req):
 
 
 main.term_context = _fake_term_context
+
+
+rv_req = {}
+
+
+def _fake_review(pid, req):
+    # Ревизия — платный шаг, поэтому подменена, как и остальные. Записывающая:
+    # порядок у неё несущий (она ПЕРЕПИСЫВАЕТ текст и обязана идти раньше всех,
+    # кто его описывает), а dry_run=True превратил бы шаг в замер — он бы
+    # отчитался «сделано», не тронув ни одной строки.
+    order.append("review")
+    rv_req.update({"dry_run": req.dry_run, "limit": req.limit,
+                   "ids": list(req.segment_ids or []), "model": req.model,
+                   "include_confirmed": req.include_confirmed})
+    return {"ok": True, "answered": 2, "failed": 0, "applied": 1, "proposed": 1,
+            "sourceSuspect": [], "skippedConfirmed": [], "vetoed": {}}
+
+
+main.review_project = _fake_review
 _real_translate = main.batch_translate
 main.batch_translate = fake_step("translate", {"count": 2, "errors": [], "tm_hits": 0,
                                                "duplicates": 0, "skipped_confirmed": []})
 
 out = main._job_chunk_full(1, [1, 2], {})
 check(order == main.FULL_RUN_STEPS, "порядок шагов: " + " → ".join(order))
+# Ревизия правит ТЕКСТ, а не считает: dry_run в прогоне означал бы «шаг
+# отчитался, не тронув ни строки». И разрешение чинить заверенное до неё
+# не доезжает — оно относится только к ремонту (см. _job_chunk_full).
+check(rv_req.get("dry_run") is False, "ревизия в прогоне идёт боевым режимом, а не замером")
+check(rv_req.get("include_confirmed") is False,
+      "заверенное человеком ревизия в прогоне не переписывает")
 check(tcx_req.get("all_terms") is True,
       "сверка идёт в режиме ВСЕХ приказных терминов, а не разбора спора: "
       "иначе шаг делает не то, ради чего заведён")
@@ -160,6 +185,10 @@ check(tcx_req.get("limit") == len(tcx_req.get("ids") or []) == 2,
 check(out["done"] == 2, "прогресс считается сегментами порции, а не суммой шагов")
 check(out.get("translate") == 2 and out.get("applied") == 1,
       "счётчики шагов не сливаются в один")
+# Имена счётчиков у ревизии свои: общий `applied` с ремонтом дал бы сумму
+# двух разных работ одним числом.
+check(out.get("revised") == 1 and out.get("applied") == 1,
+      "ревизия и ремонт считаются порознь: %r" % ({k: out[k] for k in out if "appl" in k or k == "revised"},))
 
 print("\n=== 5. Выбор шагов и отбор внутри ===")
 order.clear()
@@ -434,7 +463,7 @@ print("\n=== 20. У каждого шага есть НАЗВАННАЯ моде
 md = main.list_models()
 DEFAULT_KEY = {"model": "default", "bc_model": "backcheckDefault",
                "tc_model": "termcheckDefault", "tcx_model": "termauditDefault",
-               "rp_model": "repairDefault"}
+               "rp_model": "repairDefault", "rv_model": "reviewDefault"}
 ids = {m["id"] for m in md["models"]}
 for step in main.FULL_RUN_STEPS:
     mkey = main.FULL_STEP_MODEL.get(step)

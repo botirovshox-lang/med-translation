@@ -478,5 +478,17 @@
   "✓ ремонт": "✓ ta'mir",
   "Слов: ": "So'zlar: ",
   "Знаков: ": "Belgilar: ",
-  " Сегментов: ": " Segmentlar: "
+  " Сегментов: ": " Segmentlar: ",
+  "Балл back-check в этом решении НЕ участвует — он вознаграждает кальку. ": "Bu qarorda back-check bali QATNASHMAYDI — u kalkani rag'batlantiradi. ",
+  "Заверенное человеком не переписывается, откат есть у каждой пачки.": "Inson tasdiqlagan matn qayta yozilmaydi, har bir to'plamni qaytarish mumkin.",
+  "Один вызов на сегмент. Правка ставится, только если оценка ": "Har segmentga bitta chaqiruv. Tuzatish faqat baho ",
+  "Ревизия": "Reviziya",
+  "Ревизия перевода": "Tarjima reviziyasi",
+  "Ревизовать нечего: в выборке нет переведённых сегментов, ": "Reviziya qilishga narsa yo'q: tanlovda tarjima qilingan segmentlar yo'q, ",
+  "либо все уже ревизованы этим переводом.": "yoki barchasi shu tarjima bo'yicha allaqachon revizuya qilingan.",
+  "не выше порога И кандидат прошёл бесплатные сверки: числа, единицы, ": "chegaradan yuqori bo'lmasa VA nomzod bepul tekshiruvlardan o'tsa qo'yiladi: sonlar, birliklar, ",
+  "отрицание, сторона, утверждённые термины, регистр, письмо, повторы. ": "inkor, tomon, tasdiqlangan atamalar, registr, yozuv, takrorlar. ",
+  "читает пару целиком и сразу правит текст — единственный шаг, который не спорит с баллом": "juftlikni to'liq o'qiydi va matnni darhol tuzatadi — ball bilan bahslashmaydigan yagona qadam",
+  "ревизия переписала ": "reviziya qayta yozdi ",
+  "оригинал под подозрением: ": "asl matn shubha ostida: "
 }

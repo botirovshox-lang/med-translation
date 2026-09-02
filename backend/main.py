@@ -4612,7 +4612,7 @@ def _analysis_seg_fp(s: dict) -> str:
         s.get("source"), s.get("target"), s.get("status"), s.get("backcheck"),
         s.get("termcheck"), s.get("repair"), s.get("qa_result"),
         s.get("qa_issues"), s.get("risk_color"), s.get("termContext"),
-        s.get("confirmWithdrawn")]).encode("utf-8")).hexdigest()
+        s.get("confirmWithdrawn"), s.get("review")]).encode("utf-8")).hexdigest()
 
 
 # Готовые строки разбора: {pid: {id сегмента: (ключ, строка)}}. Ключ — тройка
@@ -4635,6 +4635,7 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int) -> dict:
     row = {"untranslated": False, "withdrawn": False, "withdrawnOpen": False,
            "unjudgedBlind": False, "unverified": False, "judgeExt": False,
            "confirmed": False, "qaCritical": False, "repaired": False,
+           "sourceSuspect": False,
            "reverted": False, "scoreVetoed": False, "findings": False,
            "clamped": False, "confirmedFindings": False, "override": False,
            "bucket": None, "why": ""}
@@ -4673,6 +4674,16 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int) -> dict:
         if (_hardqa or s.get("risk_color") == "red") and _qa \
                 and not _check_stale(_qa, target):
             row["qaCritical"] = True
+    # Ревизор усомнился в САМОМ ОРИГИНАЛЕ (обрывок, ошибка распознавания,
+    # бессвязная фраза). Машине тут делать нечего по построению: чинить
+    # перевод догадкой по битому исходнику — значит сочинять. Свежесть
+    # проверяем как у всех: вердикт мог описывать текст, которого уже нет.
+    # Свежесть — тем же предикатом, что у прогона (`_review_stale`): он знает
+    # и про версию вопросов, и про правку ОРИГИНАЛА. `_check_stale` смотрит
+    # только на перевод, и корзина «повреждён оригинал» не осушалась бы даже
+    # после того, как исходник выправили.
+    if (s.get("review") or {}).get("sourceSuspect") and not _review_stale(s):
+        row["sourceSuspect"] = True
     rp = s.get("repair") or {}
     # Настоящие находки держим отдельно от `open_findings`: у второго
     # бывает фолбэк-заглушка `[{"kind": "gloss"}]` без ключа `text`,
@@ -4838,6 +4849,7 @@ def project_analysis(pid: int, refresh: bool = False):
     # где они были видны, — вкладка «Замечания»; корзины /analysis qa_issues
     # не читали вовсе, и удаление вкладки спрятало бы их отовсюду.
     qa_critical: list = []
+    source_suspect: list = []
     # Заверенные человеком — нужны корзинам: без явного разрешения прогон их
     # не переписывает, значит обещать «машина доделает» про них нельзя.
     confirmed_ids: set = set()
@@ -4880,6 +4892,8 @@ def project_analysis(pid: int, refresh: bool = False):
             confirmed_ids.add(sid)
         if row["qaCritical"]:
             qa_critical.append(sid)
+        if row["sourceSuspect"]:
+            source_suspect.append(sid)
         if row["repaired"]:
             repaired.append(sid)
             repaired_set.add(sid)
@@ -5053,6 +5067,7 @@ def project_analysis(pid: int, refresh: bool = False):
     human_set.update(i for i in confirmed_findings if i not in override_ids)
     human_set.update(impact["confirmed"])
     human_set.update(qa_critical)
+    human_set.update(source_suspect)
     human_set.update(i for d in disputed for i in d["segments"])
     human_set.update(stale_findings)
     human_set.update(withdrawn_open)
@@ -5197,6 +5212,12 @@ def project_analysis(pid: int, refresh: bool = False):
             # показывала только вкладка «Замечания» — с её уходом это
             # единственное место, где такую находку видно.
             "qaCritical": qa_critical,
+            # Ревизор говорит, что повреждён САМ ОРИГИНАЛ. Единственная
+            # корзина, где машина бессильна по построению: перевод чинить
+            # нечем, пока не выправлен исходник. До появления шага сказать
+            # это было негде вовсе — termcheck прямо инструктирован
+            # не трогать ничего в SOURCE.
+            "sourceSuspect": source_suspect,
         },
         "todo": {"untranslated": untranslated, "unchecked": unchecked,
                  "findings": findings, "glossaryPending": impact["pending"],
@@ -5248,6 +5269,14 @@ def list_models():
         # выбором, — а без цены шага прочерком становится ВСЯ смета
         # главной кнопки (шаг с работой и без цены обнуляет её намеренно).
         "termauditDefault": TERM_CONTEXT_DEFAULT_MODEL,
+        # По той же причине, что и termauditDefault: браузер заполняет выбор
+        # модели для КАЖДОГО ключа FULL_STEP_MODEL, а шаг с работой и без цены
+        # обнуляет ВСЮ смету главной кнопки.
+        "reviewDefault": REVIEW_DEFAULT_MODEL,
+        # Порог, ниже которого (и при котором) ревизия правит текст. Числом
+        # в .jsx он был бы вторым порогом рядом с настоящим — тот же закон,
+        # что у judgeZone и backcheckBands.
+        "reviewApplyMax": REVIEW_APPLY_MAX,
         "judgeZone": list(JUDGE_ZONE),
         # Уровни находок termcheck, по которым ремонт работает. Фронтенд по ним
         # считает состав кнопки «запустить только ремонт», и держать этот список
@@ -12532,8 +12561,15 @@ def _review_stale(seg: dict) -> bool:
     меняешь вопрос — поднимай REVIEW_VERSION, иначе новый вопрос не задаётся
     (ровно та беда, что была у MEANING_VERSION)."""
     rv = seg.get("review") or {}
-    return (not rv or str(rv.get("v")) != str(REVIEW_VERSION)
-            or _check_stale(rv, seg.get("target") or ""))
+    if not rv or str(rv.get("v")) != str(REVIEW_VERSION):
+        return True
+    # Источник — вторая сторона пары, и вердикт описывает ИМЕННО ПАРУ.
+    # У записей прежней версии поля нет: считаем их устаревшими по одному
+    # только тексту перевода, как и раньше.
+    src_h = rv.get("source_hash")
+    if src_h is not None and src_h != _text_hash((seg.get("source") or "").strip()):
+        return True
+    return _check_stale(rv, seg.get("target") or "")
 
 
 def _openai_review(seg: dict, project: dict, prev_src: str, next_src: str,
@@ -12631,8 +12667,24 @@ def _review_veto(seg: dict, project: Optional[dict], candidate: str) -> list:
     return bad
 
 
+def _review_ask(seg: dict, project: dict, model: Optional[str] = None) -> Optional[dict]:
+    """Только вызов модели — то, что можно отдать в рабочий поток.
+
+    Мутации STATE применяет основной поток (контракт `_run_parallel`):
+    рабочая функция ВОЗВРАЩАЕТ результат, а не пишет в общие структуры.
+    Своё исключение ловит сама — одна упавшая пара не должна ронять порцию."""
+    try:
+        prev_src, next_src = _neighbours(project, seg)
+        return _openai_review(seg, project, prev_src, next_src,
+                              _verified_hits(seg.get("source") or "", project), model)
+    except Exception as e:                                      # pragma: no cover
+        print(f"[backend] ревизия seg#{seg.get('id')}: {e}", file=sys.stderr)
+        return None
+
+
 def _run_segment_review(seg: dict, project: dict, model: Optional[str] = None,
-                        apply: bool = True, include_confirmed: bool = False) -> dict:
+                        apply: bool = True, include_confirmed: bool = False,
+                        res: Optional[dict] = None) -> dict:
     """Один заход ревизии: вердикт, бесплатные сверки кандидата и подстановка.
 
     Вердикт кладётся на сегмент по хешу текста, который в нём СЕЙЧАС стоит —
@@ -12644,9 +12696,11 @@ def _run_segment_review(seg: dict, project: dict, model: Optional[str] = None,
     old = (seg.get("target") or "").strip()
     if not old:
         return {"ok": False, "error": "Нечего ревизовать: перевода нет"}
-    prev_src, next_src = _neighbours(project, seg)
-    res = _openai_review(seg, project, prev_src, next_src,
-                         _verified_hits(seg.get("source") or "", project), model)
+    # `res` уже посчитан рабочим потоком (`_review_ask`) — тогда сеть не
+    # трогаем. Одна ветка на оба пути: разойдись они, порционный прогон
+    # и одиночный заход оставляли бы сегмент в разных состояниях.
+    if res is None:
+        res = _review_ask(seg, project, model)
     if res is None:
         return {"ok": False, "error": "Ревизор не ответил"}
     cand = res["fixed"]
@@ -12658,6 +12712,7 @@ def _run_segment_review(seg: dict, project: dict, model: Optional[str] = None,
     rec = {"score": res["score"], "issues": res["issues"],
            "sourceSuspect": res["source_suspect"], "model": res["model"],
            "v": REVIEW_VERSION, "applied": False, "veto": [],
+           "source_hash": _text_hash((seg.get("source") or "").strip()),
            "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
     veto, why = [], None
     if not cand:
@@ -12789,8 +12844,21 @@ def _review_pick(project: dict, req: ReviewRequest) -> tuple:
                and not (s.get("review") or {}).get("undone")
                and not _review_stale(s)]
         return got, len(got)
+    if not req.include_confirmed:
+        # Заверенное человеком не спрашиваем ВОВСЕ, а не спрашиваем и потом
+        # отбрасываем правку. Применить вердикт к такому сегменту нечем
+        # (`_apply_review` откажет), а показать его человеку пока негде —
+        # значит это платный совет в никуда, тот же перерасход, от которого
+        # заведён `_repair_futile`. Нужен вердикт — разрешите и правку: это
+        # один тумблер. Разбор состава (`_plan_step`) читает то же правило
+        # и называет причину вслух, иначе план обещал бы работу, которой
+        # не будет.
+        segs = [s for s in segs if s.get("status") != "confirmed"]
     if not req.refresh:
-        segs = [s for s in segs if _review_stale(s)]
+        # `undone` читают ОБА: и разбор состава, и этот отбор. Разойдись
+        # они — план говорит «пропустим», а шаг идёт в модель и платит.
+        segs = [s for s in segs
+                if _review_stale(s) and not (s.get("review") or {}).get("undone")]
     if req.sample != "mixed" or req.segment_ids is not None:
         return segs[:max(0, req.limit)], len(segs)
     ready, rest = [], []
@@ -12822,10 +12890,9 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
     без него сухой прогон закрывал сегменты от повторного отбора, и применить
     оплаченное было нечем.
 
-    Шага пока нет ни в `FULL_RUN_STEPS`, ни в `_plan_step`, ни в `/api/models`,
-    ни в браузере: это осознанный ЗАМЕР через API, а не готовая кнопка.
-    Встраивание в конвейер — отдельная работа, и делать её надо по числам
-    пилота, а не по допущениям.
+    Шаг встроен в составной прогон (`FULL_RUN_STEPS`, вторым — сразу после
+    перевода), в разбор состава и в браузер; этот эндпоинт остаётся точкой
+    входа для точечного запуска и для `apply_saved`.
 
     Платный: строка в `_PAID` обязательна, иначе шаг бесплатен для клиента."""
     if not req.apply_saved and not os.environ.get("OPENAI_API_KEY"):
@@ -12853,11 +12920,18 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
     answered = failed = 0
     proposed, suspect, vetoed, samples, skipped_confirmed = [], [], {}, [], []
     ready, buckets = [], {"9-10": 0, "8": 0, "5-7": 0, "0-4": 0}
+    # Вызовы модели идут ПАРАЛЛЕЛЬНО (вызов — это ожидание сети, а не
+    # процессора), а пишет результаты основной поток — контракт `_run_parallel`.
+    # Последовательно шаг держал единственный воркер 2.5 с на сегмент: книга
+    # в 2711 строк заняла бы почти два часа, и всё это время сервис недоступен
+    # всем. Порядок ответов сохраняется, поэтому zip с `todo` верен.
+    answers = ([None] * len(todo) if req.apply_saved
+               else _run_parallel(todo, lambda s: _review_ask(s, project, req.model)))
     # ПЕРВЫЙ проход — только вердикты, текст не трогаем. Разделение не
     # косметическое: копия для отката обязана лечь на диск ДО первой правки,
     # иначе неудачная запись оставила бы в памяти изменения, откатить которые
     # уже нечем.
-    for seg in todo:
+    for seg, ans in zip(todo, answers):
         if req.apply_saved:
             # Вердикт уже оплачен и лежит на сегменте — модель не трогаем.
             rv = seg["review"]
@@ -12889,7 +12963,7 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
                                 "was": (seg.get("target") or "")[:220],
                                 "now": (rv.get("candidate") or "")[:220]})
             continue
-        out = _run_segment_review(seg, project, req.model, apply=False)
+        out = _run_segment_review(seg, project, req.model, apply=False, res=ans)
         spent[0] += out.get("cost") or 0.0
         if not out.get("ok"):
             failed += 1
@@ -15659,6 +15733,11 @@ JOB_CHUNKS = {"translate": 10, "backcheck": 10, "termcheck": 10, "medical_qa": 1
               # Сверка терминов моделью: один вызов на сегмент, порция как
               # у остальных проверок.
               "termaudit": 10,
+              # Ревизия: один вызов на сегмент, но вызовы внутри порции идут
+              # параллельно (`_run_parallel`), поэтому порция как у проверок.
+              # Без записи ЗДЕСЬ отдельный запуск шага отвечает 400
+              # («неизвестный тип прогона»), а `_job_run` падает KeyError.
+              "review": 10,
               "repair": 5, "full": 5, "apply_terms": 5,
               # Разбор картинок идёт СВОИМ циклом (порция — картинка, а не
               # сегмент), но очередь и воркер те же: два тяжёлых прогона
@@ -15684,17 +15763,26 @@ JOB_KINDS = set(JOB_CHUNKS)
 # и оставалась устаревшей: следующий прогон забирал те же сегменты снова.
 # Стоя после, она описывает окончательный текст и в следующий прогон
 # не попадает.
-FULL_RUN_STEPS = ["translate", "backcheck", "termcheck", "termaudit",
+# Ревизия стоит ВТОРОЙ, сразу после перевода, и это несущее свойство порядка:
+# всё, что ПЕРЕПИСЫВАЕТ текст, обязано идти раньше всего, что его ОПИСЫВАЕТ.
+# Тот же урок, из-за которого Medical QA уехала в конец — стоя перед ремонтом,
+# она описывала текст, который через шаг заменяли, и её результат устаревал
+# сразу. С ревизией цена ошибки выше: поставь её после back-check, и каждая
+# правка обесценит оплаченный обратный перевод, а следующий прогон купит его
+# заново. Ремонт при этом остаётся последним платным шагом и чинит остаток —
+# расхождения с глоссарием, регистр, чужое письмо.
+FULL_RUN_STEPS = ["translate", "review", "backcheck", "termcheck", "termaudit",
                   "repair", "medical_qa"]
 FULL_STEP_LABELS = {"translate": "перевод", "backcheck": "back-check",
                     "termcheck": "проверка терминов", "medical_qa": "Medical QA",
-                    "termaudit": "сверка терминов", "repair": "ремонт"}
+                    "termaudit": "сверка терминов", "repair": "ремонт",
+                    "review": "ревизия"}
 # Откуда шаг берёт свою модель. Подшаги читают её из params["model"], а моделей
 # в составном прогоне несколько: смысл в том, что переводит одна, а проверяют
 # другие — иначе проверка перестаёт быть независимой.
 FULL_STEP_MODEL = {"translate": "model", "backcheck": "bc_model",
                    "termcheck": "tc_model", "termaudit": "tcx_model",
-                   "repair": "rp_model"}
+                   "repair": "rp_model", "review": "rv_model"}
 
 
 # ── Разбор прогона: что он сделает и чего делать не станет ───────────────────
@@ -15745,6 +15833,8 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
         mdl_id = _resolve_model(params.get("model"))["id"]
     elif step == "termaudit":
         mdl_id = _resolve_model(params.get("tcx_model") or TERM_CONTEXT_DEFAULT_MODEL)["id"]
+    elif step == "review":
+        mdl_id = _resolve_model(params.get("rv_model") or REVIEW_DEFAULT_MODEL)["id"]
     elif step == "medical_qa":
         # Своей модели у неё нет: правила детерминированные. Но обратный
         # перевод, если готового не осталось, она закажет — моделью back-check.
@@ -15852,6 +15942,32 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
                     + _model_label(tc.get("model")), seg)
             else:
                 run("прошлая проверка слабее выбранной: " + _model_label(tc.get("model")), seg)
+
+        elif step == "review":
+            rv = seg.get("review") or {}
+            # Ветки «нет перевода» и «переведём в этом прогоне» сюда не нужны:
+            # общий блок выше перехватывает и то и другое раньше, и вторая
+            # копия правила просто никогда не сработала бы.
+            if seg.get("status") == "confirmed" and not fix_confirmed:
+                # Вердикт получить можно, но ПРАВКИ не будет: `include_confirmed`
+                # до ревизии не доезжает. Платить за совет, который некуда
+                # применить, — тот же перерасход, от которого заведён
+                # `_repair_futile`. Разбор обязан сказать это вслух.
+                skip("заверено человеком — правка не применится")
+            elif rv.get("undone"):
+                # Человек откатил правку: спрашивать заново значит предлагать
+                # ему то же самое второй раз за его же деньги.
+                skip("правка откачена человеком")
+            elif not _review_stale(seg):
+                skip("уже ревизован этим переводом")
+            elif not rv:
+                run("ещё не ревизовался", seg)
+            elif str(rv.get("v")) != str(REVIEW_VERSION):
+                # Текст не менялся — изменился набор вопросов. Сказать «перевод
+                # изменился» значит соврать в отчёте, который для того и заведён.
+                run("вопросы ревизии изменились", seg)
+            else:
+                run("перевод изменился после ревизии", seg)
 
         elif step == "termaudit":
             tcx = seg.get("termContext") or {}
@@ -16253,6 +16369,31 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
                 # Строкой, а не None: счётчики порции складываются, и None
                 # среди них — TypeError посреди прогона.
                 "why": ("арбитр не ответил" if r.get("failed") else "")}
+    if kind == "review":
+        # Ревизия ПРАВИТ текст, поэтому идёт с dry_run=False. Заверенное
+        # человеком она не переписывает: флаг include_confirmed доезжает
+        # только до ремонта (`_job_chunk_full` гасит его остальным), и здесь
+        # он всегда False — заверенный сегмент получит вердикт, но не правку.
+        r = review_project(pid, ReviewRequest(
+            segment_ids=chunk, limit=n, model=params.get("model"),
+            dry_run=False, include_confirmed=bool(params.get("include_confirmed"))))
+        # done — ОТВЕЧЕННЫЕ, без провалов. Складывать провалы сюда нельзя:
+        # `_job_chunk_full` роняет прогон по условию «done == 0 и ошибок
+        # не меньше порции», и с провалами внутри done оно недостижимо —
+        # отозванный ключ или кончившиеся деньги выглядели бы как
+        # «выполнено, исправлено 0», то есть ровно тем враньём, ради которого
+        # это условие и заведено.
+        # Имена счётчиков СВОИ, а не общие с ремонтом: счётчики порций
+        # складываются в прогресс задачи, и общий `applied` показал бы сумму
+        # двух разных работ одним числом — «исправлено 40» без ответа на
+        # вопрос, чем именно и что теперь смотреть человеку.
+        return {"done": r.get("answered", 0),
+                "revised": r.get("applied", 0),
+                "review_proposed": r.get("proposed", 0),
+                "suspect": len(r.get("sourceSuspect") or []),
+                "errors": r.get("failed", 0),
+                "skipped_confirmed": len(r.get("skippedConfirmed") or []),
+                "why": ("ревизор не ответил" if r.get("failed") else "")}
     if kind == "termcheck":
         r = termcheck_batch(pid, TermcheckBatchRequest(
             segment_ids=chunk, limit=n, model=params.get("model"),

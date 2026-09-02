@@ -274,8 +274,11 @@ r = main.review_project(1, main.ReviewRequest(limit=10, sample="all"))
 check(r["dryRun"] is True and r["applied"] == 0,
       "dry_run по умолчанию: посчитали и показали, текст не тронули")
 check(segs[0]["target"] == TGT, "в сухом прогоне текст на месте")
-check(r["proposed"] == 3 and r["wouldApply"] == 2 and r["skippedConfirmed"] == [2],
-      "заверенное человеком названо числом и в правку не пойдёт")
+# Заверенное человеком не спрашивают ВОВСЕ: применить вердикт к нему нечем,
+# а платный совет в никуда — тот же перерасход, от которого заведён
+# _repair_futile. Разбор состава говорит об этом отдельной причиной.
+check(r["proposed"] == 2 and r["wouldApply"] == 2 and r["asked"] == 2,
+      "заверенный сегмент в ревизию не попал: %r" % ({k: r[k] for k in ("asked", "proposed", "wouldApply")},))
 
 # ШТАТНЫЙ порядок массовой команды: посмотрел сухим прогоном → применил.
 # Без apply_saved он не работал вовсе: сухой прогон закрывает сегменты от
@@ -372,6 +375,63 @@ got, total = main._review_pick(proj, main.ReviewRequest(limit=1))
 check([s["id"] for s in got] == [10],
       "первым идёт «готовый»: иначе замер не отвечает на вопрос, ради которого сделан")
 check(total == 2, "общее число считается ОДНИМ проходом — второй прошёл бы книгу заново")
+
+# ────── 11. Встраивание в конвейер: находки аудита ──────
+print()
+print("=== 11. Шаг в составном прогоне ===")
+check(main.FULL_RUN_STEPS.index("review") == 1,
+      "ревизия идёт ВТОРОЙ: переписывающее раньше описывающего")
+check(main.FULL_STEP_MODEL.get("review") == "rv_model"
+      and main.list_models().get("reviewDefault") in {m["id"] for m in main.list_models()["models"]},
+      "каталог называет модель шага — иначе смета главной кнопки станет прочерком")
+check("review" in main.JOB_CHUNKS and "review" in main.JOB_KINDS,
+      "тип прогона зарегистрирован: иначе отдельный запуск отвечает 400")
+
+# Мёртвый ключ обязан ронять порцию, а не выглядеть как «выполнено».
+proj, _ = build([seg_of(1), seg_of(2)])
+_real_rp = main.review_project
+main.review_project = lambda pid, req: {"ok": True, "answered": 0, "failed": 2,
+                                        "applied": 0, "proposed": 0,
+                                        "sourceSuspect": [], "skippedConfirmed": [],
+                                        "vetoed": {}}
+r = main._job_chunk("review", 1, [1, 2], {})
+check(r["done"] == 0 and r["errors"] >= 2,
+      "порция, где не ответил НИ ОДИН сегмент, видна как ошибка: %r" % (r,))
+main.review_project = _real_rp
+
+# Разбор состава и отбор шага обязаны совпадать: разойдись они — план обещает
+# одно, а прогон платит за другое.
+def plan_vs_pick(segs, **params):
+    proj, _ = build(segs)
+    plan = main._plan_step(proj, "review", params, list(proj["segments"]), set(), set())
+    got, _total = main._review_pick(proj, main.ReviewRequest(
+        segment_ids=[s["id"] for s in proj["segments"]], limit=99,
+        include_confirmed=bool(params.get("include_confirmed"))))
+    return sorted(plan.get("ids") or []), sorted(s["id"] for s in got)
+
+undone = seg_of(1, tgt="Правленный руками текст.")
+undone["review"] = {"score": 4, "candidate": "X", "model": "m", "v": main.REVIEW_VERSION,
+                    "applied": False, "undone": {"by": "u1", "at": "now"},
+                    "target_hash": main._text_hash("другой текст")}
+a, b = plan_vs_pick([undone, seg_of(2)])
+check(a == b == [2],
+      "откачённый человеком не попадает НИ в план, НИ в работу: %r против %r" % (a, b))
+
+conf = seg_of(3, status="confirmed", confirmedBy="u1")
+a, b = plan_vs_pick([conf, seg_of(4)])
+check(a == b == [4], "заверенный не попадает ни в план, ни в работу: %r против %r" % (a, b))
+a, b = plan_vs_pick([conf, seg_of(4)], include_confirmed=True)
+check(a == b == [3, 4], "с разрешением — попадает в оба: %r против %r" % (a, b))
+
+# Вердикт устаревает и от правки ОРИГИНАЛА: иначе корзину «повреждён сам
+# оригинал» нечем осушить — человек выправил исходник, а строка висит вечно.
+proj, seg = build()
+ANSWER = {"score": 3, "issues": ["исходник бессвязен"], "source_suspect": True, "fixed": ""}
+main._run_segment_review(seg, proj)
+check(main._review_stale(seg) is False, "вердикт свежий")
+seg["source"] = "Исправленный человеком оригинал."
+check(main._review_stale(seg) is True,
+      "правка ОРИГИНАЛА делает вердикт устаревшим — корзина осушается")
 
 print()
 if fail:

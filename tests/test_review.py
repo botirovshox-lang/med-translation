@@ -512,6 +512,78 @@ except Exception as e:
     check(getattr(e, "status_code", None) == 400,
           "негодная метка — 400 ДО правки, а не копия, которую нечем прочитать")
 
+# ────── 13. Корзина «нашла, но не тронула» ──────
+print()
+print("=== 13. Сигнал для ручной работы ===")
+# Самое ценное, что даёт ревизия человеку: модель прочитала пару целиком
+# и считает перевод дефектным, но машина чинить не стала. Следующий прогон
+# тут не поможет — вето по построению повторится.
+def row_of(**rv):
+    seg = seg_of(1)
+    if rv:
+        base = {"v": main.REVIEW_VERSION,
+                "target_hash": main._text_hash(seg["target"].strip()),
+                "source_hash": main._text_hash(seg["source"].strip())}
+        base.update(rv)
+        seg["review"] = base
+    proj, _ = build([seg])
+    return main._analysis_row(seg, False, 90)
+
+check(row_of(score=4, veto=["gloss"], candidate="X",
+             code=main.REVIEW_VETOED)["reviewFlagged"] is True,
+      "правку не пустила сверка — сигнал человеку")
+check(row_of(score=3, issues=["калька"], code=main.REVIEW_OK)["reviewFlagged"] is True,
+      "низкая оценка без варианта — тоже сигнал")
+check(row_of(score=6, candidate="X", code=main.REVIEW_ABOVE)["reviewFlagged"] is False,
+      "оценка выше порога — это «можно улучшить», а не «сломано»: человека не зовём")
+# Сухой прогон: кандидат ГОТОВ и все сверки прошёл, ждёт `apply_saved`.
+# Считай мы условия заново — сегмент показался бы как «сверка не пустила»,
+# то есть враньё, да ещё и с уводом машинной работы в корзину человека.
+check(row_of(score=4, candidate="X")["reviewFlagged"] is False,
+      "ждущий применения кандидат — работа машины, а не человека")
+# Порог применения меняют, чтобы машина трогала больше или меньше; решение,
+# записанное прогоном, от этого меняться не должно.
+_was = main.REVIEW_APPLY_MAX
+main.REVIEW_APPLY_MAX = 7.0
+check(row_of(score=6, candidate="X", code=main.REVIEW_ABOVE)["reviewFlagged"] is False,
+      "смена порога применения задним числом корзину не переклассифицирует")
+main.REVIEW_APPLY_MAX = _was
+check(row_of(score=4, applied=True)["reviewFlagged"] is False,
+      "применённая правка сигналом не является — она уже в тексте")
+check(row_of(score=3, sourceSuspect=True, code=main.REVIEW_SUSPECT)["reviewFlagged"] is False,
+      "повреждённый оригинал идёт в СВОЮ корзину, а не в обе сразу")
+check(row_of(score=4, veto=["hard"], code=main.REVIEW_VETOED,
+             undone={"by": "u1", "at": "now"})["reviewFlagged"] is False,
+      "откачённое человеком не предлагаем снова — он уже ответил")
+check(row_of()["reviewFlagged"] is False, "без вердикта строка молчит")
+
+# Устаревший вердикт не сигнал: он про текст, которого уже нет.
+seg = seg_of(1)
+seg["review"] = {"v": main.REVIEW_VERSION, "score": 3, "veto": ["gloss"],
+                 "code": main.REVIEW_VETOED,
+                 "target_hash": main._text_hash("другой текст"),
+                 "source_hash": main._text_hash(seg["source"].strip())}
+proj, _ = build([seg])
+check(main._analysis_row(seg, False, 90)["reviewFlagged"] is False,
+      "устаревший вердикт человека не зовёт")
+
+# Совет виден человеку: ради него строка «Ревизия нашла проблему» и зовёт
+# в карточку. У ПРИМЕНЁННОЙ правки кандидат равен переводу — вторая копия
+# текста на строку без читателя, её не отдаём.
+seg = seg_of(1)
+seg["review"] = {"v": main.REVIEW_VERSION, "score": 4, "candidate": "Closed pneumothorax.",
+                 "code": main.REVIEW_VETOED, "veto": ["gloss"], "applied": False,
+                 "target_hash": main._text_hash(seg["target"].strip()),
+                 "source_hash": main._text_hash(seg["source"].strip())}
+out = main._segment_for_client(seg)
+check(out["review"].get("candidate") == "Closed pneumothorax.",
+      "у отклонённой правки совет уезжает в браузер")
+check(out["review"].get("vetoLabels") == ["нарушено приказных терминов больше"],
+      "и причина — человеческой подписью, а не ключом")
+seg["review"]["applied"] = True
+check("candidate" not in main._segment_for_client(seg)["review"],
+      "у применённой — не уезжает: он равен переводу")
+
 print()
 if fail:
     print("ПРОВАЛЕНО: " + str(len(fail)))

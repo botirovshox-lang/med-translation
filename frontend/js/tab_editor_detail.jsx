@@ -386,6 +386,13 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
         TR("Было: "), React.createElement("s", null, seg.review.from)),
       /* Почему НЕ применили — причина приходит с сервера, браузер её не
          вычисляет: правило одно и живёт там же, где решение. */
+      /* Совет, который машина не рискнула поставить. Ради него человека сюда
+         и зовёт строка «Ревизия нашла проблему, но текст не тронула»: сервер
+         отдаёт `candidate` только у НЕприменённой правки. */
+      seg.review.candidate && !seg.review.applied && React.createElement("div",
+        { style: { fontSize: 12.5, marginTop: 6, lineHeight: 1.5 } },
+        React.createElement("span", { className: "dim" }, TR("Предлагалось: ")),
+        seg.review.candidate),
       seg.review.skipped && React.createElement("div",
         { className: "dim", style: { fontSize: 12, marginTop: 6 } },
         TR("Правка не поставлена: ") + TRS(seg.review.skipped)

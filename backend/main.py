@@ -4635,7 +4635,7 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int) -> dict:
     row = {"untranslated": False, "withdrawn": False, "withdrawnOpen": False,
            "unjudgedBlind": False, "unverified": False, "judgeExt": False,
            "confirmed": False, "qaCritical": False, "repaired": False,
-           "sourceSuspect": False,
+           "sourceSuspect": False, "reviewFlagged": False,
            "reverted": False, "scoreVetoed": False, "findings": False,
            "clamped": False, "confirmedFindings": False, "override": False,
            "bucket": None, "why": ""}
@@ -4682,8 +4682,35 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int) -> dict:
     # и про версию вопросов, и про правку ОРИГИНАЛА. `_check_stale` смотрит
     # только на перевод, и корзина «повреждён оригинал» не осушалась бы даже
     # после того, как исходник выправили.
-    if (s.get("review") or {}).get("sourceSuspect") and not _review_stale(s):
+    _rv = s.get("review") or {}
+    if _rv.get("sourceSuspect") and not _review_stale(s):
         row["sourceSuspect"] = True
+    # Ревизия НАШЛА проблему, а текст остался прежним. Самый ценный сигнал
+    # для человека из всего, что она даёт: модель прочитала пару целиком
+    # и считает перевод дефектным, но машина чинить не стала.
+    #
+    # Читаем ЗАПИСАННОЕ решение (`code`), а не пересчитываем условия. Пересчёт
+    # не знает, что решил прогон, и врал дважды: сегмент с готовым кандидатом
+    # после СУХОГО прогона (сверку прошёл, ждёт `apply_saved`) показывался как
+    # «сверка не пустила», а смена `REVIEW_APPLY_MAX` задним числом
+    # переклассифицировала записи, у которых вето вообще не считалось.
+    #
+    # Что входит:
+    #   • `veto` — кандидат не прошёл объективные сверки: чинить его машине
+    #     нечем, следующий заход даст то же самое;
+    #   • `ok` при НИЗКОЙ оценке — модель считает перевод плохим, но варианта
+    #     не дала: машине тут делать нечего вовсе.
+    # Чего нет: `suspect` — своя корзина (вопрос к исходнику, а не к переводу);
+    # `above` — «можно улучшить», а не «сломано», звать человека к вкусовщине
+    # нельзя; `undone` — он уже ответил; вердикт БЕЗ кода — это ждущий
+    # применения кандидат (сухой прогон), и решает его `apply_saved`, машина.
+    elif (_rv.get("code") in (REVIEW_VETOED, REVIEW_OK)
+            and not _rv.get("applied") and not _rv.get("undone")
+            and not _review_stale(s)
+            and (_rv.get("code") == REVIEW_VETOED
+                 or (_rv.get("score") is not None
+                     and _rv["score"] <= REVIEW_FLAG_SCORE))):
+        row["reviewFlagged"] = True
     rp = s.get("repair") or {}
     # Настоящие находки держим отдельно от `open_findings`: у второго
     # бывает фолбэк-заглушка `[{"kind": "gloss"}]` без ключа `text`,
@@ -4850,6 +4877,7 @@ def project_analysis(pid: int, refresh: bool = False):
     # не читали вовсе, и удаление вкладки спрятало бы их отовсюду.
     qa_critical: list = []
     source_suspect: list = []
+    review_flagged: list = []
     # Заверенные человеком — нужны корзинам: без явного разрешения прогон их
     # не переписывает, значит обещать «машина доделает» про них нельзя.
     confirmed_ids: set = set()
@@ -4894,6 +4922,8 @@ def project_analysis(pid: int, refresh: bool = False):
             qa_critical.append(sid)
         if row["sourceSuspect"]:
             source_suspect.append(sid)
+        if row["reviewFlagged"]:
+            review_flagged.append(sid)
         if row["repaired"]:
             repaired.append(sid)
             repaired_set.add(sid)
@@ -5068,6 +5098,7 @@ def project_analysis(pid: int, refresh: bool = False):
     human_set.update(impact["confirmed"])
     human_set.update(qa_critical)
     human_set.update(source_suspect)
+    human_set.update(review_flagged)
     human_set.update(i for d in disputed for i in d["segments"])
     human_set.update(stale_findings)
     human_set.update(withdrawn_open)
@@ -5174,7 +5205,13 @@ def project_analysis(pid: int, refresh: bool = False):
         "readyIds": sorted((set(clean) | set(repaired)) - (
             set(untranslated) | set(unchecked) | set(findings)
             | set(impact["pending"]) | {w["id"] for w in weak}
-            | set(reverted) | set(confirmed_findings))),
+            | set(reverted) | set(confirmed_findings)
+            # Ревизия смотрит в том числе на сегменты, которые нынешние
+            # проверки считают чистыми, — ради этого шаг и заведён. Не вычти
+            # их, и сегмент числился бы и «готовым», и требующим работы
+            # одновременно (та же беда, из-за которой готовность показывала
+            # 93.3% вместо честных 86.6%).
+            | set(source_suspect) | set(review_flagged))),
         "machine": {"repaired": len(repaired), "reverted": len(reverted)},
         "proposed": {"terms": ready},
         "human": {
@@ -5218,6 +5255,10 @@ def project_analysis(pid: int, refresh: bool = False):
             # это было негде вовсе — termcheck прямо инструктирован
             # не трогать ничего в SOURCE.
             "sourceSuspect": source_suspect,
+            # Ревизия нашла проблему, но текст не тронула: кандидат не прошёл
+            # объективные сверки либо варианта не было. Совет — в карточке
+            # сегмента, решение за человеком.
+            "reviewFlagged": review_flagged,
         },
         "todo": {"untranslated": untranslated, "unchecked": unchecked,
                  "findings": findings, "glossaryPending": impact["pending"],
@@ -9514,11 +9555,13 @@ def _segment_for_client(seg: dict) -> dict:
         # ни того, ни другого не вычислить. Повтори он «сравню хеш перевода» —
         # карточка показывала бы свежим вердикт, который прогон считает
         # протухшим.
-        # `candidate` наружу НЕ отдаём: это полный текст сегмента, второй
-        # раз на каждую строку, а браузеру он не нужен — применяет правку
-        # сервер (`apply_saved`). Прежний текст (`from`) остаётся: без него
-        # человеку не с чем сравнить то, что переписали.
-        out["review"] = {k: v for k, v in rv.items() if k != "candidate"}
+        # `candidate` отдаём ТОЛЬКО у неприменённой правки. У применённой он
+        # буква в букву равен переводу — это вторая копия текста на каждую
+        # строку без единого читателя. А вот у отклонённой он и есть совет,
+        # ради которого человека зовут в карточку: экран «Анализ» обещает
+        # «совет в карточке сегмента», и обещание надо выполнять.
+        out["review"] = {k: v for k, v in rv.items()
+                         if k != "candidate" or not rv.get("applied")}
         out["review"]["stale"] = _review_stale(seg)
         # Подписи вето собирает СЕРВЕР: в `veto` лежат внутренние ключи
         # (`gloss`, `hard`), которых нет ни в одном словаре, — на экране
@@ -12530,6 +12573,21 @@ REVIEW_APPLY_LABEL = ("%g" % REVIEW_APPLY_MAX)
 # нет намеренно: первый меряет не то, вторые потребовали бы вызовов модели,
 # ради отказа от которых шаг и заведён.
 REVIEW_FREE_KEYS = ("gloss", "case", "script", "dup", "self_dup", "term_case")
+# Оценка, ниже которой сегмент зовёт человека, даже если правки не было.
+# Отдельно от REVIEW_APPLY_MAX намеренно: тот отвечает на вопрос «когда машина
+# правит сама», а этот — «когда звать человека», и двигают их по разным
+# причинам. Связав их, мы бы переклассифицировали корзину при каждой правке
+# политики применения.
+REVIEW_FLAG_SCORE = float(os.environ.get("REVIEW_FLAG_SCORE", "5"))
+# Коды решений ревизии. Русская фраза рядом с ними — для человека, а разбор
+# идёт ПО КОДУ (закон корзин CLEAN_*): подстрока ломается от правки
+# формулировки, а пересчёт условий на показе врёт ещё хуже — он не знает,
+# что решил прогон. Так и вышло у первой версии корзины: сегмент с готовым
+# кандидатом, прошедшим все сверки, показывался как «сверка не пустила».
+REVIEW_OK = "ok"            # перевод годится, варианта модель не дала
+REVIEW_ABOVE = "above"      # вариант есть, но оценка выше порога — не дефект
+REVIEW_SUSPECT = "suspect"  # повреждён сам оригинал, чинить догадкой нельзя
+REVIEW_VETOED = "veto"      # кандидат не прошёл объективные сверки
 REVIEW_VETO_LABELS = {
     "gloss": "нарушено приказных терминов больше",
     "case": "расхождений по регистру больше",
@@ -12734,30 +12792,32 @@ def _run_segment_review(seg: dict, project: dict, model: Optional[str] = None,
            "source_hash": _text_hash((seg.get("source") or "").strip()),
            "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
     veto, why = [], None
+    code = None
     if not cand:
         # Самая частая причина из всех: у хорошего перевода модель не
         # возвращает `fixed` вовсе. «Нет варианта» читалось как сбой,
         # хотя это ответ «перевод годится».
-        why = "перевод годится, править нечего"
+        why, code = "перевод годится, править нечего", REVIEW_OK
     elif res["score"] > REVIEW_APPLY_MAX:
         # Вариант есть, а оценка выше порога: модель предлагает улучшение,
         # а не чинит дефект. Переписывать по такому поводу — тратить деньги
         # клиента на вкусовщину.
-        why = "оценка выше порога"
+        why, code = "оценка выше порога", REVIEW_ABOVE
     elif res["source_suspect"]:
         # Оригинал под подозрением: чинить перевод догадкой нельзя, это
         # работа человека. Единственный класс, которого в системе не было
         # вообще ни в каком виде.
-        why = "оригинал под подозрением"
+        why, code = "оригинал под подозрением", REVIEW_SUSPECT
     else:
         veto = _review_veto(seg, project, cand)
         if veto:
-            why = "не прошёл сверку"
+            why, code = "не прошёл сверку", REVIEW_VETOED
     if cand:
         rec["candidate"] = cand
     rec["veto"] = veto
     if why:
         rec["skipped"] = why
+        rec["code"] = code
     rec["target_hash"] = _text_hash(old)
     seg["review"] = rec
     if cand and not why and apply:
@@ -12980,6 +13040,7 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
             if veto:
                 rv["veto"] = veto
                 rv["skipped"] = "не прошёл сверку"
+                rv["code"] = REVIEW_VETOED
                 for k in veto:
                     vetoed[k] = vetoed.get(k, 0) + 1
             elif seg.get("status") == "confirmed" and not req.include_confirmed:

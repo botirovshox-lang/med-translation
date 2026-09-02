@@ -155,7 +155,8 @@ function WorkSummary({ summary, store, toast, onReload }) {
                                       s.human.glossaryConfirmed || [],
                                       s.human.confirmedFindings || [],
                                       s.human.qaCritical || [],
-                                      s.human.sourceSuspect || []));
+                                      s.human.sourceSuspect || [],
+                                      s.human.reviewFlagged || []));
   const humanTotal = s.human.termsTotal + humanSegs.size;
 
   return React.createElement("div", { className: "section" },
@@ -313,6 +314,16 @@ function WorkSummary({ summary, store, toast, onReload }) {
         n: (s.human.qaCritical || []).length, ids: s.human.qaCritical,
         color: "var(--c-error)",
         hint: TR("числа, дозировки или структура — проверка статус не меняет, решает человек") }),
+      /* Ревизия прочитала пару целиком, нашла дефект — и текст не тронула:
+         кандидат не прошёл объективные сверки (числа, приказный термин,
+         регистр) либо варианта не было. Своя строка, потому что это НЕ то же
+         самое, что «возьмёт прогон»: следующий заход даст тот же результат,
+         вето по построению повторится. Готовый совет лежит в карточке
+         сегмента — там оценка, замечания и причина отказа. */
+      React.createElement(Row, { label: TR("Ревизия нашла проблему, но текст не тронула"),
+        n: (s.human.reviewFlagged || []).length, ids: s.human.reviewFlagged,
+        color: "var(--c-warning)",
+        hint: TR("сверка не пустила правку либо модель не дала варианта — оценка, замечания и предложенный текст в карточке сегмента") }),
       /* Ревизор усомнился в САМОМ ОРИГИНАЛЕ. Своя строка, потому что машина
          бессильна по построению: чинить перевод догадкой по битому исходнику
          значит сочинять, а до появления шага сказать это было негде вовсе —

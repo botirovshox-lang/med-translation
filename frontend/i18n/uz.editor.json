@@ -495,5 +495,11 @@
   "это проверка себя: сервер возьмёт запасную модель, и смета поплывёт.": "bu o'z-o'zini tekshirish: server zaxira modelni oladi va smeta suriladi.",
   "Ревизия той же моделью, что и перевод: она перечитывает собственный ": "Tarjima bilan bir xil model bo'yicha reviziya: u o'z matnini qayta o'qiydi ",
   "текст и находит в нём меньше.": "va unda kamroq kamchilik topadi.",
-  "Текст менялся после ревизии — сказанное ниже относится к прежней версии.": "Matn reviziyadan keyin o'zgargan — quyidagilar avvalgi versiyaga tegishli."
+  "Текст менялся после ревизии — сказанное ниже относится к прежней версии.": "Matn reviziyadan keyin o'zgargan — quyidagilar avvalgi versiyaga tegishli.",
+  " (откат: ": " (qaytarish: ",
+  " · ревизия переписала ": " · reviziya qayta yozdi ",
+  "; вернёт те, что после неё не правили)": "; undan keyin tuzatilmaganlarini qaytaradi)",
+  "Ревизия завершена": "Reviziya tugadi",
+  " сегментов прочитано": " ta segment o'qildi",
+  " · оригинал под подозрением: ": " · asl matn shubha ostida: "
 }

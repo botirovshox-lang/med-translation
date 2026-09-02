@@ -12836,6 +12836,9 @@ class ReviewRequest(BaseModel):
     # Переписывать заверенное человеком. Как у ремонта — только по явному
     # разрешению на ЭТОТ запуск.
     include_confirmed: bool = False
+    # Метка отката. Задаёт её ПРОГОН — одну на всю задачу, чтобы сотни порций
+    # писали в одну копию и весь прогон откатывался одной командой.
+    stamp: Optional[str] = None
     # Как выбирать сегменты, когда список не задан:
     #   mixed — половина из тех, что система считает ГОТОВЫМИ (без находок,
     #           балл высокий). Иначе замер отвечает не на тот вопрос: дефекты,
@@ -13023,7 +13026,8 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
                             "now": (rv.get("candidate") or "")[:220]})
     stamp, applied = None, 0
     if ready and not req.dry_run:
-        stamp = _backup_segments("review", pid, [_repair_accept_snapshot(s) for s in ready])
+        stamp = _backup_segments("review", pid,
+                                 [_repair_accept_snapshot(s) for s in ready], req.stamp)
         applied = len([s for s in ready if _apply_review(s, req.include_confirmed)])
     if answered:
         # Журнал — ДО сохранения: `_audit` пишет в STATE["audit"], и рестарт
@@ -13230,7 +13234,58 @@ def repair_segment(pid: int, sid: int, req: RepairRequest = RepairRequest()):
     raise HTTPException(502, result.get("error", "Ремонт не удался"))
 
 
-def _backup_segments(kind: str, pid: int, snapshot: list) -> str:
+# Копию пачки читают-и-переписывают порции одного прогона, а «читать, слить,
+# записать» без лока — это потерянные записи и общий .tmp на двоих.
+# RLock, а не Lock: `_backup_segments` берёт его и внутри может позвать
+# `_backup_stamp`, который берёт тот же лок, — с обычным Lock это дедлок,
+# то есть намертво вставший прогон.
+_BACKUP_LOCK = threading.RLock()
+# Метка ходит через публичный API (`ReviewRequest.stamp`) и через params
+# задачи, поэтому проверяется ТАМ ЖЕ, где пишется, а не только при чтении:
+# иначе `{"stamp": "abc"}` создаёт копию, которую `_read_backup` откажется
+# открывать, — то есть массовая правка текста без действующего отката.
+_STAMP_RE = re.compile(r"[0-9-]{8,24}$")
+
+
+def _backup_stamp(kind: str) -> str:
+    """Свободная метка для НОВОЙ пачки, СРАЗУ занятая пустым файлом.
+
+    Отдельно от записи, потому что метка нужна раньше первой правки: прогон
+    идёт порциями по пять сегментов, и без общей метки каждая порция заводила
+    бы свою — на книге это ~250 копий по одному-два сегмента, то есть откат,
+    которым нельзя воспользоваться.
+
+    Файл создаётся сразу, а не «когда понадобится»: между выдачей метки
+    и первой правкой проходят минуты, и ручная пачка по другому проекту,
+    начатая в ту же секунду, заняла бы имя — прогон умер бы на первой же
+    правке с 500. Пустую копию убирает `_backup_drop_empty`."""
+    with _BACKUP_LOCK:
+        PURGE_DIR.mkdir(parents=True, exist_ok=True)
+        base = datetime.now().strftime("%Y%m%d-%H%M%S")
+        stamp, n = base, 1
+        while (PURGE_DIR / (kind + "-" + stamp + ".json")).exists():
+            stamp = base + "-" + str(n)
+            n += 1
+        (PURGE_DIR / (kind + "-" + stamp + ".json")).write_text(
+            json.dumps({"project": None, "segments": []}), encoding="utf-8")
+        return stamp
+
+
+def _backup_drop_empty(kind: str, stamp: Optional[str]) -> None:
+    """Убрать зарезервированную копию, в которую так ничего и не записали."""
+    if not stamp or not _STAMP_RE.fullmatch(stamp):
+        return
+    try:
+        path = PURGE_DIR / (kind + "-" + stamp + ".json")
+        if path.exists() and not (json.loads(path.read_text(encoding="utf-8"))
+                                  .get("segments") or []):
+            path.unlink()
+    except Exception as e:                                      # pragma: no cover
+        print(f"[backend] {kind}: пустая копия {stamp} не убрана: {e}", file=sys.stderr)
+
+
+def _backup_segments(kind: str, pid: int, snapshot: list,
+                     stamp: Optional[str] = None) -> str:
     """Копия состояния сегментов ПЕРЕД массовой правкой текста. Массовая
     команда без отката недопустима — тот же закон, что у пачек автоодобрения
     и выноса глоссария.
@@ -13239,16 +13294,41 @@ def _backup_segments(kind: str, pid: int, snapshot: list) -> str:
     в одну секунду, и вторая молча затирала бы копию первой — а бэкап,
     который можно затереть, не бэкап. Не записалась копия — команда
     отменяется целиком: правка без отката хуже несделанной правки."""
+    if stamp is not None and not _STAMP_RE.fullmatch(stamp):
+        # Метка приходит из публичного API и из params задачи. Проверять её
+        # надо ЗДЕСЬ, а не только в `_read_backup`: иначе команда перепишет
+        # тексты и сложит копию под именем, которое чтение не примет, —
+        # массовая правка без действующего отката.
+        raise HTTPException(400, "Неверная метка отката")
     try:
-        PURGE_DIR.mkdir(parents=True, exist_ok=True)
-        base = datetime.now().strftime("%Y%m%d-%H%M%S")
-        stamp, n = base, 1
-        while (PURGE_DIR / (kind + "-" + stamp + ".json")).exists():
-            stamp = base + "-" + str(n)
-            n += 1
-        (PURGE_DIR / (kind + "-" + stamp + ".json")).write_text(
-            json.dumps({"project": pid, "segments": snapshot}, ensure_ascii=False),
-            encoding="utf-8")
+        with _BACKUP_LOCK:
+            PURGE_DIR.mkdir(parents=True, exist_ok=True)
+            if stamp is None:
+                stamp = _backup_stamp(kind)
+            path = PURGE_DIR / (kind + "-" + stamp + ".json")
+            segs = list(snapshot)
+            if path.exists():
+                # ДОПИСЫВАЕМ: метку задаёт прогон, а порций у него сотни. Своя
+                # копия на каждую означала бы, что отменить прогон целиком нечем.
+                old = json.loads(path.read_text(encoding="utf-8"))
+                old_segs = old.get("segments") or []
+                if old_segs and old.get("project") != pid:
+                    raise RuntimeError("метка занята копией другого проекта")
+                # Побеждает ПЕРВЫЙ снимок, а не последний, и это несущее
+                # свойство отката. Сегмент попадает сюда дважды, когда порцию
+                # повторяют (`JOB_CHUNK_RETRIES`) или когда прогон начинают
+                # заново после рестарта: во второй раз в нём стоит уже НАШ
+                # текст, и сохрани мы его — откат вернул бы машинную правку,
+                # а перевод человека пропал бы навсегда (`prevTarget` пишется
+                # только у заверенных, а `review.from` перезаписывается).
+                have = {s["id"] for s in old_segs}
+                segs = old_segs + [s for s in snapshot if s["id"] not in have]
+            # Атомарно: оборванная запись растущего файла — это потерянный откат
+            # у всех сегментов пачки, а не только у последней порции.
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"project": pid, "segments": segs}, ensure_ascii=False),
+                           encoding="utf-8")
+            os.replace(tmp, path)
         return stamp
     except Exception as e:
         print(f"[backend] {kind}: копия для отката не записана: {e}", file=sys.stderr)
@@ -16448,7 +16528,8 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
         # он всегда False — заверенный сегмент получит вердикт, но не правку.
         r = review_project(pid, ReviewRequest(
             segment_ids=chunk, limit=n, model=params.get("model"),
-            dry_run=False, include_confirmed=bool(params.get("include_confirmed"))))
+            dry_run=False, include_confirmed=bool(params.get("include_confirmed")),
+            stamp=params.get("review_stamp")))
         # done — ОТВЕЧЕННЫЕ, без провалов. Складывать провалы сюда нельзя:
         # `_job_chunk_full` роняет прогон по условию «done == 0 и ошибок
         # не меньше порции», и с провалами внутри done оно недостижимо —
@@ -16465,6 +16546,10 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
                 "suspect": len(r.get("sourceSuspect") or []),
                 "errors": r.get("failed", 0),
                 "skipped_confirmed": len(r.get("skippedConfirmed") or []),
+                # Метка — СТРОКА, и счётчики её не складывают (первое непустое
+                # значение побеждает): без неё человек не знает, чем отменить
+                # прогон, переписавший сотни сегментов.
+                "reviewStamp": r.get("stamp") or "",
                 "why": ("ревизор не ответил" if r.get("failed") else "")}
     if kind == "termcheck":
         r = termcheck_batch(pid, TermcheckBatchRequest(
@@ -16557,6 +16642,18 @@ def _job_run(job: dict):
         job["total"] = len(job["ids"])
         save_state(STATE)
     ids = job["ids"]
+    # Одна метка отката на ВЕСЬ прогон: ревизия идёт порциями по пять
+    # сегментов, и без общей метки книга дала бы ~250 копий по одному-два
+    # сегмента — отменить прогон целиком было бы нечем. Кладём в params,
+    # потому что до `_job_chunk` доезжают именно они; `setdefault` —
+    # чтобы повтор задачи после рестарта не завёл вторую метку.
+    if kind in ("full", "review"):
+        if not job["params"].get("review_stamp"):
+            job["params"]["review_stamp"] = _backup_stamp("review")
+            # Сохраняем СРАЗУ: иначе рестарт поднимет задачу с params без
+            # метки, она заведёт вторую, а первая копия останется сиротой —
+            # её имени не будет ни в счётчиках, ни в отчёте.
+            _job_persist(job)
     for i in range(0, len(ids), chunk_size):
         if job["stop"]:
             job["status"] = "stopped"
@@ -16607,6 +16704,9 @@ def _job_run(job: dict):
             break
     if job["status"] == "running":
         job["status"] = "done"
+    # Метка резервируется файлом ДО первой правки — если правок так и не
+    # случилось, убираем пустышку, чтобы каталог копий не зарастал.
+    _backup_drop_empty("review", job["params"].get("review_stamp"))
     job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 

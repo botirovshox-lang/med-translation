@@ -1481,6 +1481,17 @@ function TabEditor({ store, toast }) {
     const lossMsg = (c.desync ? TR(" · у ") + c.desync + TR(" сегментов текст разошёлся с записью о ремонте") : "")
       + (c.terms_dropped ? TR(" · кандидатов в глоссарий выброшено (очередь полна): ") + c.terms_dropped : "");
     const dupMsg = c.duplicates ? TR(" · повторов зачтено без вызова: ") + c.duplicates : "";
+    /* Ревизия переписывает текст клиента, поэтому «чем это отменить» —
+       часть отчёта, а не то, что человек ищет в файлах на сервере. Метка
+       нужна во ВСЕХ ветках: у оборванного и остановленного прогона её ищут
+       чаще, чем у успешного. Про частичность сказано прямо: сегмент, который
+       после ревизии переписал ремонт, откат не тронет (чужую работу мы
+       не затираем). */
+    const revMsgFull = c.revised
+      ? TR(" · ревизия переписала ") + c.revised
+        + (c.reviewStamp ? TR(" (откат: ") + c.reviewStamp
+            + TR("; вернёт те, что после неё не правили)") : "")
+      : "";
     if (j.status === "error") {
       // У «Одобрить и применить» глоссарий меняется ДО сегментов. Оборвался
       // ремонт — термины уже записаны, и молчать об этом нельзя: человек должен
@@ -1488,11 +1499,13 @@ function TabEditor({ store, toast }) {
       const glossNote = (j.kind === "apply_terms" && c.termsApproved)
         ? TR(" Термины (") + c.termsApproved + TR(") уже в глоссарии — пачку можно откатить в «Глоссарии».") : "";
       toast.error(name + TR(": прогон прерван"),
-        j.done + TR(" из ") + j.total + TR(" обработано и сохранено. ") + (j.error || "") + glossNote + costMsg);
+        j.done + TR(" из ") + j.total + TR(" обработано и сохранено. ") + (j.error || "")
+        + glossNote + revMsgFull + costMsg);
       return;
     }
     if (j.status === "stopped") {
-      toast.warning(name + TR(": остановлено"), j.done + TR(" из ") + j.total + TR(" обработано и сохранено.") + errMsg + costMsg);
+      toast.warning(name + TR(": остановлено"), j.done + TR(" из ") + j.total
+        + TR(" обработано и сохранено.") + revMsgFull + errMsg + costMsg);
       return;
     }
     if (j.kind === "apply_terms") {
@@ -1524,7 +1537,13 @@ function TabEditor({ store, toast }) {
         // Ревизия считается ОТДЕЛЬНО от ремонта: это разные работы, и общее
         // число не отвечает на вопрос, чем именно исправлено. Молчать о ней
         // нельзя — она переписывает текст клиента.
-        c.revised ? TR("ревизия переписала ") + c.revised : null,
+        // Метку называем ВМЕСТЕ с числом: прогон переписал текст клиента,
+        // и «чем это отменить» — часть отчёта, а не то, что человек должен
+        // искать в файлах на сервере.
+        c.revised ? TR("ревизия переписала ") + c.revised
+          + (c.reviewStamp ? TR(" (откат: ") + c.reviewStamp + ")" : "") : null,
+        // Полная формулировка с оговоркой о частичности — в самом конце
+        // сообщения, чтобы не тонуть в перечислении шагов.
         c.suspect ? TR("оригинал под подозрением: ") + c.suspect : null,
         c.applied ? TR("исправлено ") + c.applied : null,
       ].filter(Boolean).join(" · ") || TR("нового ничего не потребовалось");
@@ -1554,6 +1573,11 @@ function TabEditor({ store, toast }) {
       else toast.warning(TR("Ничего не исправлено"), TR("Ни один вариант не улучшил оценку — все откачены.") + errMsg + costMsg);
     } else if (j.kind === "backcheck") {
       toast.success(TR("Back-check завершён"), j.done + TR(" сегментов проверено") + dupMsg + errMsg + costMsg + TR(" · разбивка в Анализе"));
+    } else if (j.kind === "review") {
+      toast.success(TR("Ревизия завершена"),
+        j.done + TR(" сегментов прочитано") + revMsgFull
+        + (c.suspect ? TR(" · оригинал под подозрением: ") + c.suspect : "")
+        + errMsg + costMsg + TR(" · статус «Требует проверки», подтвердите вручную"));
     } else {
       toast.success(name + TR(" завершён"), j.done + TR(" сегментов обработано") + errMsg);
     }

@@ -444,6 +444,74 @@ seg["source"] = "Исправленный человеком оригинал."
 check(main._review_stale(seg) is True,
       "правка ОРИГИНАЛА делает вердикт устаревшим — корзина осушается")
 
+# ────── 12. Откат ПРОГОНА — одной командой ──────
+print()
+print("=== 12. Одна метка на весь прогон, а не на каждую порцию ===")
+# Прогон идёт порциями по пять сегментов. Своя копия на каждую означала бы
+# на книге ~250 меток по одному-два сегмента: откат, которым нельзя
+# воспользоваться.
+segs = [seg_of(i, tgt="Artificial pneumothorax treatment is closed. #%d" % i)
+        for i in range(1, 7)]
+proj, _ = build(segs)
+ANSWER = {"score": 4, "issues": ["фраза"], "fixed": "Closed pneumothorax is temporary."}
+shared = main._backup_stamp("review")
+stamps = set()
+for chunk in ([1, 2], [3, 4], [5, 6]):          # три «порции» одного прогона
+    r = main.review_project(1, main.ReviewRequest(
+        segment_ids=chunk, limit=5, dry_run=False, stamp=shared, refresh=True))
+    stamps.add(r["stamp"])
+check(stamps == {shared}, "все порции пишут в ОДНУ метку: %r" % (stamps,))
+data = main._read_backup("review", 1, shared)
+check(sorted(s["id"] for s in data["segments"]) == [1, 2, 3, 4, 5, 6],
+      "в копии лежит весь прогон, а не последняя порция: %r"
+      % ([s["id"] for s in data["segments"]],))
+u = main.undo_review(1, shared)
+check(sorted(u["restored"]) == [1, 2, 3, 4, 5, 6],
+      "и откатывается он ОДНОЙ командой: %r" % (u["restored"],))
+check(all(s["target"].startswith("Artificial") for s in segs),
+      "тексты вернулись все до одного")
+
+# Повторно снятый сегмент: побеждает ПЕРВЫЙ снимок. Второй раз сегмент
+# попадает сюда, когда порцию повторяют (JOB_CHUNK_RETRIES) или когда прогон
+# начинают заново после рестарта, — и в нём уже стоит НАШ текст. Сохрани мы
+# его, откат вернул бы машинную правку, а перевод человека пропал бы
+# навсегда: prevTarget пишется только у заверенных, а review.from
+# перезаписывается вторым применением.
+def snap(sid, text):
+    return {"id": sid, "target": text, "status": "translated", "provider": None,
+            "route": None, "confirmedBy": None, "confirmedAt": None,
+            "prevTarget": None, "repair": {}}
+
+proj, _ = build([seg_of(1)])
+st = main._backup_stamp("review")
+main._backup_segments("review", 1, [snap(1, "текст человека")], st)
+main._backup_segments("review", 1, [snap(1, "уже переписанный машиной")], st)
+d2 = main._read_backup("review", 1, st)
+check(len(d2["segments"]) == 1 and d2["segments"][0]["target"] == "текст человека",
+      "в копии остаётся ПЕРВЫЙ снимок: %r" % (d2["segments"][0]["target"],))
+
+# Метка резервируется файлом СРАЗУ: между её выдачей и первой правкой проходят
+# минуты, и ручная пачка в ту же секунду заняла бы имя — прогон умер бы на
+# первой правке с 500.
+st2 = main._backup_stamp("review")
+check(st2 != st and (main.PURGE_DIR / ("review-" + st2 + ".json")).exists(),
+      "новая метка отличается и сразу занята файлом")
+main._backup_drop_empty("review", st2)
+check(not (main.PURGE_DIR / ("review-" + st2 + ".json")).exists(),
+      "пустая копия убирается, каталог не зарастает")
+main._backup_drop_empty("review", st)
+check((main.PURGE_DIR / ("review-" + st + ".json")).exists(),
+      "а НЕпустую не трогает — в ней лежит чужой откат")
+
+# Метка приходит из публичного API: не проверь мы её при ЗАПИСИ, команда
+# переписала бы тексты и сложила копию под именем, которое чтение не примет.
+try:
+    main._backup_segments("review", 1, [snap(2, "x")], "../abc")
+    check(False, "негодная метка обязана отказывать")
+except Exception as e:
+    check(getattr(e, "status_code", None) == 400,
+          "негодная метка — 400 ДО правки, а не копия, которую нечем прочитать")
+
 print()
 if fail:
     print("ПРОВАЛЕНО: " + str(len(fail)))

@@ -97,7 +97,9 @@ ANSWER = {"score": 9, "issues": [], "fixed": ""}
 out = main._run_segment_review(seg, proj)
 check(out.get("ok") is True, "вызов прошёл через настоящий сборщик промпта")
 sysmsg = SENT["system"]
-check(str(main.REVIEW_APPLY_MAX) in sysmsg, "порог применения назван в промпте")
+check(main.REVIEW_APPLY_LABEL in sysmsg, "порог применения назван в промпте")
+check("7.0" not in sysmsg,
+      "и назван целым: дробный хвост читается как точность, которой у оценки нет")
 check("EN" in sysmsg and "RU" in sysmsg, "пара языков берётся у проекта, а не зашита")
 check("менять НЕЛЬЗЯ" in sysmsg,
       "приказные термины трогать запрещено: они согласованы с заказчиком")
@@ -172,6 +174,41 @@ main._run_segment_review(seg, proj)
 check(seg["target"] == TGT, "приказный термин выбит — правка не поставлена")
 check("gloss" in (seg["review"]["veto"] or []), "вето: нарушено приказных терминов больше")
 
+# Подмена СТОРОНЫ и потеря ЕДИНИЦ. Первая версия фильтровала находки по
+# checks.BACKCHECK_HARD_TYPES — а те рождаются только в run_backcheck, и
+# deterministic_issues не выдаёт из них ни одной: половина условия была
+# мёртвым кодом, и «right lung» → «left lung» уходило в документ клиента.
+SIDE_SRC, SIDE_TGT = "Поражено правое лёгкое.", "The right lung is affected."
+proj, seg = build([seg_of(1, SIDE_SRC, SIDE_TGT)])
+ANSWER = {"score": 4, "issues": ["стиль"], "fixed": "The left lung is affected."}
+main._run_segment_review(seg, proj)
+check(seg["target"] == SIDE_TGT and "hard" in (seg["review"]["veto"] or []),
+      "подмена стороны поражения — вето (правое лёгкое не станет левым молча)")
+
+UNIT_SRC, UNIT_TGT = "Доза 300 мг в сутки.", "Dose 300 mg per day."
+proj, seg = build([seg_of(1, UNIT_SRC, UNIT_TGT)])
+ANSWER = {"score": 4, "issues": ["стиль"], "fixed": "Dose 300 per day."}
+main._run_segment_review(seg, proj)
+check(seg["target"] == UNIT_TGT and "hard" in (seg["review"]["veto"] or []),
+      "единицы выброшены из дозировки — вето")
+
+# Жёсткая находка меряется АБСОЛЮТНО, а не «стало ли больше»: размен одной
+# объективной ошибки на другую даёт счёт 1 → 1 и прошёл бы сравнением.
+BAD2_SRC, BAD2_TGT = "Доза 5 мг, правое лёгкое.", "Dose 15 mg, the right lung."
+proj, seg = build([seg_of(1, BAD2_SRC, BAD2_TGT)])
+ANSWER = {"score": 4, "issues": ["стиль"], "fixed": "Dose 5 mg, the left lung."}
+main._run_segment_review(seg, proj)
+check(seg["target"] == BAD2_TGT and "hard" in (seg["review"]["veto"] or []),
+      "размен числа на сторону — не работа: вето при любом счёте")
+
+# Область и языки берутся у ПРОЕКТА, а не по умолчанию medical RU→EN.
+import inspect as _insp
+_src_veto = _insp.getsource(main._review_veto)
+check("domain=dom" in _src_veto and "src_lang=src_lang" in _src_veto,
+      "deterministic_issues зовётся с областью и парой языков проекта")
+check("OBJECTIVE_ISSUE_TYPES" in _src_veto and "BACKCHECK_HARD_TYPES" not in _src_veto,
+      "фильтр по типам находок ПАРЫ, а не по типам back-check")
+
 proj, seg = build()
 ANSWER = {"score": 4, "issues": ["стиль"],
           "fixed": "Closed pneumothorax (closed pneumothorax) is temporary."}
@@ -179,13 +216,15 @@ main._run_segment_review(seg, proj)
 check("self_dup" in (seg["review"]["veto"] or []),
       "самоповтор кандидата — та же бесплатная сверка, что у ремонта")
 
-# Унаследованная проблема правку НЕ отменяет: сравниваем «до и после».
+# Унаследованная объективная ошибка тоже держит правку: цена строгости
+# названа честно — такой сегмент чинит человек, и он же видит его в
+# sourceSuspect. Бесплатные счётчики при этом сравниваются «до и после».
 BAD_SRC, BAD_TGT = "Доза 5 мг.", "Dose 15 mg, artificial treatment is closed."
 proj, seg = build([seg_of(1, BAD_SRC, BAD_TGT)])
 ANSWER = {"score": 4, "issues": ["фраза"], "fixed": "Dose 15 mg, closed pneumothorax."}
 main._run_segment_review(seg, proj)
-check(seg["target"] == "Dose 15 mg, closed pneumothorax.",
-      "число разошлось ещё в прежнем тексте — не наша вина и не повод отменять правку")
+check(seg["target"] == BAD_TGT and "hard" in (seg["review"]["veto"] or []),
+      "число разошлось ещё в оригинале — молча в документ такое не пишем")
 
 # ────── 6. Повреждённый оригинал — к человеку, а не догадкой ──────
 print()
@@ -238,16 +277,50 @@ check(segs[0]["target"] == TGT, "в сухом прогоне текст на м
 check(r["proposed"] == 3 and r["wouldApply"] == 2 and r["skippedConfirmed"] == [2],
       "заверенное человеком названо числом и в правку не пойдёт")
 
-r = main.review_project(1, main.ReviewRequest(limit=10, sample="all", dry_run=False,
-                                              refresh=True))
+# ШТАТНЫЙ порядок массовой команды: посмотрел сухим прогоном → применил.
+# Без apply_saved он не работал вовсе: сухой прогон закрывает сегменты от
+# отбора, боевой запуск находил ноль, и обойти можно было только refresh —
+# заплатив за те же вердикты второй раз.
+calls_before = SENT.get("calls", 0)
+# Сверки при применении СЧИТАЮТСЯ ЗАНОВО: вердикт мог быть вынесен прежними
+# правилами или до правки глоссария. Проверяем на подложенном кандидате,
+# который ломает число, — сохранённый вердикт его не спасает.
+trap = seg_of(99, "Доза 5 мг.", "Dose 5 mg.")
+trap["review"] = {"score": 4, "candidate": "Dose 50 mg.", "model": "m",
+                  "v": main.REVIEW_VERSION, "applied": False,
+                  "target_hash": main._text_hash("Dose 5 mg.")}
+segs.append(trap)
+r = main.review_project(1, main.ReviewRequest(dry_run=False, apply_saved=True))
+check(trap["target"] == "Dose 5 mg." and "hard" in (trap["review"].get("veto") or []),
+      "сохранённый вердикт не обходит сверку: правила могли смениться после него")
+segs.remove(trap)
+check(SENT.get("calls", 0) == calls_before,
+      "применение сохранённого НЕ ходит в модель — оплачено один раз")
 check(r["applied"] == 2 and r["stamp"], "правки применены, метка отката выдана")
+check(segs[0]["review"]["from"] == TGT, "прежний текст сохранён при применении")
 check(segs[1]["target"] == "Confirmed text about pneumothorax.",
       "заверенный человеком сегмент пачка не переписала")
+check(segs[0]["provider"] == "gpt-5.6-terra",
+      "провайдер — модель РЕВИЗОРА: иначе back-check пойдёт к автору текста за отзывом о нём же")
+check(main._machine_clean(segs[0], 90) is not None,
+      "переписанный ревизией сегмент не учит глоссарий — система не заверяет свою правку")
+
 was = segs[0]["review"]["from"]
 u = main.undo_review(1, r["stamp"])
 check(u["restored"] == [1, 3] and segs[0]["target"] == was,
       "откат вернул прежние тексты")
-check("review" not in segs[0], "и снял вердикт: он описывал текст, которого больше нет")
+# Откат ОКОНЧАТЕЛЕН: прежде вердикт стирался, сегмент снова считался
+# неспрошенным, и следующий прогон платил ещё раз и ставил тот же текст
+# обратно — машина переигрывала решение человека.
+check(segs[0]["review"]["undone"] and segs[0]["review"]["applied"] is False,
+      "откат оставил след, а не стёр вердикт")
+calls_before = SENT.get("calls", 0)
+r2 = main.review_project(1, main.ReviewRequest(limit=10, sample="all"))
+check(r2["asked"] == 0 and SENT.get("calls", 0) == calls_before,
+      "следующий прогон откачённый сегмент не переспрашивает")
+r3 = main.review_project(1, main.ReviewRequest(dry_run=False, apply_saved=True))
+check(r3["applied"] == 0 and segs[0]["target"] == was,
+      "и applied_saved его не возвращает: человек уже ответил")
 
 # Правленный после ревизии сегмент откат не трогает.
 r = main.review_project(1, main.ReviewRequest(limit=10, sample="all", dry_run=False,
@@ -257,6 +330,36 @@ u = main.undo_review(1, r["stamp"])
 check(1 in u["changedSince"] and segs[0]["target"] == "Человек поправил руками.",
       "чужую работу откат не затирает — тот же закон, что у _repair_tried")
 
+# Заверенное человеком защищено в САМОЙ подстановке, а не только в эндпоинте.
+conf = seg_of(77, tgt="Confirmed by a human.", status="confirmed",
+              confirmedBy="u1")
+proj, _ = build([conf])
+conf["review"] = {"score": 3, "candidate": "Rewritten by the machine.",
+                  "model": "m", "v": main.REVIEW_VERSION, "applied": False,
+                  "target_hash": main._text_hash("Confirmed by a human.")}
+check(main._apply_review(conf) is False and conf["target"] == "Confirmed by a human.",
+      "_apply_review сам не трогает заверенное — правило живёт рядом с _replace_target")
+check(main._apply_review(conf, include_confirmed=True) is True
+      and conf["target"] == "Rewritten by the machine.",
+      "с явным разрешением — переписывает")
+
+# Потолок и усечение.
+proj, _ = build([seg_of(i) for i in range(1, 8)])
+r = main.review_project(1, main.ReviewRequest(limit=3, sample="all"))
+check(r["asked"] == 3 and r["capped"] == 4,
+      "остаток назван числом: молчаливое усечение неотличимо от «работа кончилась»")
+try:
+    main.review_project(1, main.ReviewRequest(limit=10 ** 6))
+    check(False, "потолок limit обязан отказывать")
+except Exception as e:
+    check(getattr(e, "status_code", None) == 400, "limit сверх потолка — 400, воркер один")
+try:
+    main.review_project(1, main.ReviewRequest(sample="mix"))
+    check(False, "опечатка в sample обязана отказывать")
+except Exception as e:
+    check(getattr(e, "status_code", None) == 400,
+          "опечатка в sample — 400, а не молчаливое «all»")
+
 # ────── 10. Выборка mixed берёт и «готовые» ──────
 print()
 print("=== 10. Выборка: дефекты живут там, где все проверки довольны ===")
@@ -265,9 +368,10 @@ clean["backcheck"] = {"score": 98, "model": "m", "back": "b", "terms_lost": [],
                       "reasons": [], "target_hash": main._text_hash(clean["target"])}
 noisy = seg_of(11, tgt="pneumothorax pneumothorax pneumothorax pneumothorax")
 proj, _ = build([clean, noisy])
-picked = [s["id"] for s in main._review_pick(proj, main.ReviewRequest(limit=1))]
-check(picked == [10],
+got, total = main._review_pick(proj, main.ReviewRequest(limit=1))
+check([s["id"] for s in got] == [10],
       "первым идёт «готовый»: иначе замер не отвечает на вопрос, ради которого сделан")
+check(total == 2, "общее число считается ОДНИМ проходом — второй прошёл бы книгу заново")
 
 print()
 if fail:

@@ -958,6 +958,25 @@ def _term_lost_penalty(source_ru, lost):
 BACKCHECK_HARD_TYPES = {"backcheck_number_mismatch", "backcheck_unit_mismatch",
                         "backcheck_negation_shift", "backcheck_pair_shift"}
 
+# ТО ЖЕ САМОЕ, но для пары «оригинал → перевод», а не «оригинал → обратный
+# перевод». Множества РАЗНЫЕ и путать их нельзя: типы выше рождаются только
+# в `run_backcheck`, а `deterministic_issues` не выдаёт из них ни одного
+# НИКОГДА. Фильтр по BACKCHECK_HARD_TYPES над результатом
+# `deterministic_issues` — мёртвый код, который выглядит как защита; так и
+# вышло у первой версии ревизии, где подмена стороны («right lung» → «left
+# lung») и потеря единиц («300 mg» → «300») проходили в текст молча.
+#
+# Здесь перечислено ровно то, что считается из пары детерминированно, без
+# модели, без языка и без области, — то есть то, за что можно отменить
+# машинную правку, не споря о вкусах. `unit_mismatch` (единицы были
+# в оригинале и пропали в переводе) входит сюда, но НЕ входит
+# в `semantic_equivalence` ниже: там вопрос «сохранился ли смысл», и на него
+# пропавшая единица отвечает не всегда, а здесь вопрос «можно ли молча
+# записать это в документ клиента», и ответ однозначный.
+OBJECTIVE_ISSUE_TYPES = {"number_unit_dosage_mismatch", "unit_mismatch",
+                         "negation_shift", "laterality_shift",
+                         "upper_lower_shift", "inner_outer_shift"}
+
 
 def _hard_issue(issues):
     """Есть ли находка, при которой судью звать незачем — он её не отменит.

@@ -7258,6 +7258,15 @@ def _machine_clean(seg: dict, min_score: int) -> Optional[str]:
     # оставался бы «переписанным» и никогда не стал бы донором для глоссария.
     if (seg.get("repair") or {}).get("applied") and _repair_tried(seg):
         return CLEAN_REPAIRED
+    # Ревизия — тот же случай, что ремонт, и по той же причине: текст написан
+    # МАШИНОЙ по её собственному вердикту. Пусти такой сегмент в доноры — и
+    # система начнёт заверять в глоссарии собственную правку, то есть закреплять
+    # свои ошибки перевода правилом на весь документ (инвариант 8). Сверка хеша
+    # обязательна ровно как у ремонта: сегмент, переведённый заново после
+    # ревизии, к ней уже не относится.
+    rv = seg.get("review") or {}
+    if rv.get("applied") and not _review_stale(seg):
+        return CLEAN_REPAIRED
     return None
 
 
@@ -12457,7 +12466,16 @@ REVIEW_DEFAULT_MODEL = os.environ.get("REVIEW_MODEL", "gpt-5.6-terra")
 # 7.5 — у спора о приказном термине (его решает человек, а не мы), а 4-7 —
 # у настоящих дефектов. Из окружения, потому что это цена решения: порог выше
 # означает больше автоматических правок и больше риска.
-REVIEW_APPLY_MAX = float(os.environ.get("REVIEW_APPLY_MAX", "7"))
+try:
+    REVIEW_APPLY_MAX = float(os.environ.get("REVIEW_APPLY_MAX", "7"))
+except ValueError:
+    # Мусор в переменной окружения не должен ронять ИМПОРТ модуля: сервис
+    # тогда не стартует вовсе, и починить это можно только с консоли сервера.
+    print("[backend] REVIEW_APPLY_MAX: не число, беру 7", file=sys.stderr)
+    REVIEW_APPLY_MAX = 7.0
+# «7», а не «7.0»: порог уходит в промпт текстом, и дробный хвост там читается
+# как требование точности, которой у оценки нет.
+REVIEW_APPLY_LABEL = ("%g" % REVIEW_APPLY_MAX)
 # Что сверяем у кандидата. Ровно бесплатные ключи `_repair_scores` — считает
 # их ОДНА функция на всех, потому что второй расчёт того же однажды разойдётся
 # с первым. Балла (`score`) и платных проверок (`terms`, `terms_lost`) здесь
@@ -12483,7 +12501,7 @@ def _review_system(domain: dict, src_lang: str, tgt_lang: str) -> str:
         "Тебе дают сегмент документа (язык: " + src_lang + "), его перевод "
         "на " + tgt_lang + " и соседние сегменты как обстановку.\n\n"
         "Оцени перевод по шкале 0-10. Если оценка "
-        + str(REVIEW_APPLY_MAX) + " или ниже — верни ИСПРАВЛЕННЫЙ ПЕРЕВОД ЦЕЛИКОМ.\n\n"
+        + REVIEW_APPLY_LABEL + " или ниже — верни ИСПРАВЛЕННЫЙ ПЕРЕВОД ЦЕЛИКОМ.\n\n"
         "Смотри на перевод как целое, а не на отдельные термины: смысл фразы, "
         "синтаксис, естественность " + tgt_lang + ", повторы, обрывки, "
         "нечитаемые места.\n"
@@ -12544,6 +12562,12 @@ def _openai_review(seg: dict, project: dict, prev_src: str, next_src: str,
             **extra,
         )
         _note_usage("review", mdl["id"], resp)
+        # Цена ЭТОГО вызова — для отчёта запроса. Разностью процессного
+        # счётчика её брать нельзя: он общий на процесс, и фоновый прогон
+        # добавил бы в отчёт ревизии свой расход.
+        u = getattr(resp, "usage", None)
+        cost = _usage_cost(mdl["id"], _usage_field(u, "prompt_tokens"),
+                           _usage_field(u, "completion_tokens")) or 0.0
         raw = (resp.choices[0].message.content or "").strip()
         m = re.search(r"\{.*\}", raw, re.S)
         if not m:
@@ -12558,7 +12582,7 @@ def _openai_review(seg: dict, project: dict, prev_src: str, next_src: str,
                        if str(x).strip()][:6],
             "fixed": (data.get("fixed") or "").strip(),
             "source_suspect": bool(data.get("source_suspect")),
-            "model": mdl["id"]}
+            "model": mdl["id"], "cost": cost}
 
 
 def _review_veto(seg: dict, project: Optional[dict], candidate: str) -> list:
@@ -12580,13 +12604,25 @@ def _review_veto(seg: dict, project: Optional[dict], candidate: str) -> list:
     after = _repair_scores(probe, project)
     bad = [k for k in REVIEW_FREE_KEYS if (after.get(k) or 0) > (before.get(k) or 0)]
     if checks_mod:
-        def hard(text: str) -> int:
-            issues = checks_mod.deterministic_issues(seg.get("source") or "", text) or []
-            return len([i for i in issues
-                        if i.get("type") in checks_mod.BACKCHECK_HARD_TYPES
-                        or i.get("type") in ("number_unit_dosage_mismatch", "negation_shift")])
+        # Область и пара языков — из ПРОЕКТА. Без них `rules_for` берёт
+        # medical RU→EN по умолчанию, то есть на немецком проекте маркеры
+        # отрицания искались бы русские, а правила направлений — чужие.
+        dom = (project or {}).get("domain")
+        src_lang, tgt_lang = ((project or {}).get("src") or "RU",
+                              (project or {}).get("tgt") or "EN")
         try:
-            if hard(candidate) > hard(seg.get("target") or ""):
+            issues = checks_mod.deterministic_issues(
+                seg.get("source") or "", candidate, domain=dom,
+                src_lang=src_lang, tgt_lang=tgt_lang) or []
+            # ЛЮБАЯ объективная находка на кандидате — вето, а не «стало
+            # больше, чем было». Здесь та же асимметрия, что у ремонта
+            # (`hard_now` в `_run_segment_repair`): числа, единицы, отрицание
+            # и сторона неразменны — сняв одно расхождение и внеся другое,
+            # правка даёт счёт «1 → 1» и прошла бы сравнением. Цена
+            # строгости названа честно: сегмент, где числа разошлись ещё
+            # в оригинале, ревизия не починит — его чинит человек, и он же
+            # видит его в `sourceSuspect`.
+            if any(i.get("type") in checks_mod.OBJECTIVE_ISSUE_TYPES for i in issues):
                 bad.append("hard")
         except Exception as e:                                  # pragma: no cover
             print(f"[backend] сверка кандидата ревизии seg#{seg.get('id')}: {e}",
@@ -12596,7 +12632,7 @@ def _review_veto(seg: dict, project: Optional[dict], candidate: str) -> list:
 
 
 def _run_segment_review(seg: dict, project: dict, model: Optional[str] = None,
-                        apply: bool = True) -> dict:
+                        apply: bool = True, include_confirmed: bool = False) -> dict:
     """Один заход ревизии: вердикт, бесплатные сверки кандидата и подстановка.
 
     Вердикт кладётся на сегмент по хешу текста, который в нём СЕЙЧАС стоит —
@@ -12648,21 +12684,37 @@ def _run_segment_review(seg: dict, project: dict, model: Optional[str] = None,
     rec["target_hash"] = _text_hash(old)
     seg["review"] = rec
     if cand and not why and apply:
-        _apply_review(seg)
+        _apply_review(seg, include_confirmed)
     return {"ok": True, "applied": rec["applied"], "review": rec,
+            "cost": res.get("cost") or 0.0,
             "ready": bool(cand and not why)}
 
 
-def _apply_review(seg: dict) -> None:
+def _apply_review(seg: dict, include_confirmed: bool = False) -> bool:
     """Подставить кандидата ревизии. Вызова модели тут нет: ставится то, что
     она уже написала и что прошло бесплатные объективные сверки.
 
     Одна ветка на одиночную и пакетную команду — разойдись они, «применить»
     и «применить все» оставляли бы сегмент в разных состояниях (тот же закон,
-    что у `_apply_repair_candidate`)."""
-    rv = seg["review"]
+    что у `_apply_repair_candidate`).
+
+    Право переписать ЗАВЕРЕННОЕ человеком проверяется ЗДЕСЬ, а не только
+    в эндпоинте (инвариант 9). Стоять этажом выше оно не может: `apply`
+    у `_run_segment_review` по умолчанию True, и первый же будущий вызов —
+    подключение шага к прогону, кнопка на сегменте — молча снял бы
+    `confirmedBy`. Правило должно жить рядом с `_replace_target`."""
+    rv = seg.get("review") or {}
+    if not rv.get("candidate") or rv.get("skipped") or rv.get("applied"):
+        return False
+    if seg.get("status") == "confirmed" and not include_confirmed:
+        return False
     rv["from"] = seg.get("target") or ""
-    _replace_target(seg, rv["candidate"], seg.get("provider") or "", "REVIEW")
+    # Провайдер — модель РЕВИЗОРА, а не прежнего переводчика: текст целиком
+    # написала она. Соврав здесь, мы ломаем защиту «обратный перевод делает
+    # не тот, кто писал» (`_backcheck_model` сравнивает bc["model"]
+    # с seg["provider"]) — и back-check пошёл бы к автору текста за отзывом
+    # о собственной работе. Так же поступает `_apply_repair_candidate`.
+    _replace_target(seg, rv["candidate"], rv.get("model") or "", "REVIEW")
     # Машина не заверяет сама себя: текст переписан, значит его смотрит человек.
     seg["status"] = "review"
     rv["applied"] = True
@@ -12671,6 +12723,17 @@ def _apply_review(seg: dict) -> None:
     # написала, значит покупать второе мнение у того же мнения. Что оценка
     # относилась к прежнему тексту, видно по `applied` и `from`.
     rv["target_hash"] = _text_hash((seg.get("target") or "").strip())
+    return True
+
+
+# Потолок на один запрос. Воркер uvicorn ОДИН, а шаг идёт последовательно:
+# каждый сегмент — вызов модели в теле HTTP-запроса. На боевом замере вышло
+# 2.5 с на сегмент, то есть 150 штук держат сервис 6 минут, а весь проект
+# в 2711 сегментов держал бы его почти два часа — и всё равно оборвался бы
+# по таймауту клиента, потратив деньги впустую. Ограничение честнее: остаток
+# называется числом (`capped`), и запрос повторяют.
+REVIEW_LIMIT_MAX = int(os.environ.get("REVIEW_LIMIT_MAX", "300"))
+REVIEW_SAMPLES = ("mixed", "all")
 
 
 class ReviewRequest(BaseModel):
@@ -12679,6 +12742,18 @@ class ReviewRequest(BaseModel):
     limit: int = 150
     dry_run: bool = True                      # считаем и показываем, текст не трогаем
     refresh: bool = False                     # переспросить уже отвеченные
+    # Применить УЖЕ ПОЛУЧЕННЫЕ вердикты, не спрашивая модель. Без этого пути
+    # штатный порядок массовой команды («посмотрел сухим прогоном → применил»)
+    # не работал вовсе: сухой прогон пишет вердикт на сегмент, тот перестаёт
+    # быть `_review_stale`, и боевой запуск не находил НИ ОДНОГО сегмента —
+    # применять было нечего, а обойти можно было только `refresh`, то есть
+    # заплатив за те же вердикты второй раз. Шестая команда в системе,
+    # меняющая текст без вызова модели: подставляется то, что уже написано
+    # и уже прошло объективные сверки.
+    apply_saved: bool = False
+    # Переписывать заверенное человеком. Как у ремонта — только по явному
+    # разрешению на ЭТОТ запуск.
+    include_confirmed: bool = False
     # Как выбирать сегменты, когда список не задан:
     #   mixed — половина из тех, что система считает ГОТОВЫМИ (без находок,
     #           балл высокий). Иначе замер отвечает не на тот вопрос: дефекты,
@@ -12688,17 +12763,36 @@ class ReviewRequest(BaseModel):
     sample: str = "mixed"
 
 
-def _review_pick(project: dict, req: ReviewRequest) -> list:
-    """Кого спрашиваем. Порядок важен: `mixed` чередует «готовые» и остальные,
-    чтобы потолок `limit` не срезал целиком одну из половин."""
+def _review_pick(project: dict, req: ReviewRequest) -> tuple:
+    """Кого спрашиваем и сколько всего таких. Порядок важен: `mixed` чередует
+    «готовые» и остальные, чтобы потолок `limit` не срезал целиком одну
+    из половин.
+
+    Второе число — весь список ДО потолка: без него усечение по `limit` было
+    бы молчаливым, а «спросили 150» неотличимо от «работа кончилась». Считать
+    его вторым вызовом нельзя — при `mixed` отбор зовёт `_repair_findings`
+    на каждый сегмент с переводом, то есть проходит книгу целиком."""
     segs = [s for s in project["segments"] if (s.get("target") or "").strip()]
     if req.segment_ids is not None:
         ids = set(req.segment_ids)
         segs = [s for s in segs if s["id"] in ids]
+    if req.apply_saved:
+        # Модель не спрашиваем вовсе: берём готовые вердикты с кандидатом,
+        # который ещё не поставлен. `skipped` (оценка выше порога, вето,
+        # подозрительный оригинал) сюда не попадает — это решения, а не
+        # очередь.
+        got = [s for s in segs
+               if (s.get("review") or {}).get("candidate")
+               and not (s.get("review") or {}).get("applied")
+               and not (s.get("review") or {}).get("skipped")
+               # Откачено человеком — не предлагаем снова: он уже ответил.
+               and not (s.get("review") or {}).get("undone")
+               and not _review_stale(s)]
+        return got, len(got)
     if not req.refresh:
         segs = [s for s in segs if _review_stale(s)]
     if req.sample != "mixed" or req.segment_ids is not None:
-        return segs[:max(0, req.limit)]
+        return segs[:max(0, req.limit)], len(segs)
     ready, rest = [], []
     for s in segs:
         bc = s.get("backcheck") or {}
@@ -12712,7 +12806,7 @@ def _review_pick(project: dict, req: ReviewRequest) -> list:
         for pool in (ready, rest):
             if i < len(pool) and len(out) < max(0, req.limit):
                 out.append(pool[i])
-    return out
+    return out, len(ready) + len(rest)
 
 
 @app.post("/api/projects/{pid}/review")
@@ -12724,17 +12818,38 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
     разрешения, прежнее состояние уходит копией в `data/backups/`
     и возвращается `/review/{stamp}/undo`.
 
+    `apply_saved` — поставить уже полученные вердикты, не спрашивая модель:
+    без него сухой прогон закрывал сегменты от повторного отбора, и применить
+    оплаченное было нечем.
+
+    Шага пока нет ни в `FULL_RUN_STEPS`, ни в `_plan_step`, ни в `/api/models`,
+    ни в браузере: это осознанный ЗАМЕР через API, а не готовая кнопка.
+    Встраивание в конвейер — отдельная работа, и делать её надо по числам
+    пилота, а не по допущениям.
+
     Платный: строка в `_PAID` обязательна, иначе шаг бесплатен для клиента."""
-    if not os.environ.get("OPENAI_API_KEY"):
+    if not req.apply_saved and not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(503, "Ревизия требует ключ OpenAI")
+    if req.sample not in REVIEW_SAMPLES:
+        # Молча считать опечатку за «all» нельзя: это ровно та выборка, против
+        # которой заведён `mixed`, и человек не узнал бы, что мерил не то.
+        raise HTTPException(400, "sample: " + " | ".join(REVIEW_SAMPLES))
+    project = get_project(pid)
     # Охранник нужен и в СУХОМ прогоне: он не трогает текст, но пишет вердикт
     # в документ проекта (`seg["review"]` — кэш, как вердикт сверки смысла при
     # dry_run), а во время прогона проект принадлежит воркеру. Без этой строки
-    # сухой запуск затирал бы работу идущего прогона молча.
+    # сухой запуск затирал бы работу идущего прогона молча. Стоит ПОСЛЕ
+    # `get_project`: иначе чужой проект с идущим прогоном ответил бы 409
+    # вместо 404, то есть подтвердил бы своё существование (инвариант 11).
     _guard_project_write(pid)
-    project = get_project(pid)
-    todo = _review_pick(project, req)
-    spent0 = _USAGE_TOTAL.get("cost") or 0.0
+    if req.limit > REVIEW_LIMIT_MAX:
+        raise HTTPException(400, f"limit больше потолка {REVIEW_LIMIT_MAX}: "
+                                 "воркер один, и шаг держит его на всё время запроса")
+    todo, total = _review_pick(project, req)
+    # Расход считаем ПО СВОИМ ответам, а не разностью процессного счётчика:
+    # `_USAGE_TOTAL` один на процесс, и когда прогон идёт фоновым потоком
+    # здесь же, его расход приписался бы ревизии.
+    spent = [0.0]
     answered = failed = 0
     proposed, suspect, vetoed, samples, skipped_confirmed = [], [], {}, [], []
     ready, buckets = [], {"9-10": 0, "8": 0, "5-7": 0, "0-4": 0}
@@ -12743,7 +12858,39 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
     # иначе неудачная запись оставила бы в памяти изменения, откатить которые
     # уже нечем.
     for seg in todo:
+        if req.apply_saved:
+            # Вердикт уже оплачен и лежит на сегменте — модель не трогаем.
+            rv = seg["review"]
+            answered += 1
+            s = rv["score"]
+            buckets["9-10" if s >= 9 else "8" if s >= 8 else "5-7" if s >= 5 else "0-4"] += 1
+            proposed.append(seg["id"])
+            # Сверки ПЕРЕСЧИТЫВАЮТСЯ, а не берутся из вердикта. Они бесплатны,
+            # а вердикт мог быть вынесен когда угодно раньше — в том числе
+            # прежними правилами (первая версия не ловила подмену стороны
+            # и потерю единиц) или до правки глоссария, после которой кандидат
+            # стал нарушать приказный термин. Подставлять по устаревшему
+            # разрешению значит писать в документ клиента по решению,
+            # которого больше нет.
+            veto = _review_veto(seg, project, rv["candidate"])
+            if veto:
+                rv["veto"] = veto
+                rv["skipped"] = "не прошёл сверку"
+                for k in veto:
+                    vetoed[k] = vetoed.get(k, 0) + 1
+            elif seg.get("status") == "confirmed" and not req.include_confirmed:
+                skipped_confirmed.append(seg["id"])
+            else:
+                ready.append(seg)
+            if len(samples) < 25:
+                samples.append({"id": seg["id"], "score": s,
+                                "issues": rv.get("issues") or [],
+                                "willApply": seg in ready, "skipped": None, "veto": [],
+                                "was": (seg.get("target") or "")[:220],
+                                "now": (rv.get("candidate") or "")[:220]})
+            continue
         out = _run_segment_review(seg, project, req.model, apply=False)
+        spent[0] += out.get("cost") or 0.0
         if not out.get("ok"):
             failed += 1
             continue
@@ -12776,21 +12923,25 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
     stamp, applied = None, 0
     if ready and not req.dry_run:
         stamp = _backup_segments("review", pid, [_repair_accept_snapshot(s) for s in ready])
-        for seg in ready:
-            _apply_review(seg)
-        applied = len(ready)
+        applied = len([s for s in ready if _apply_review(s, req.include_confirmed)])
     if answered:
+        # Журнал — ДО сохранения: `_audit` пишет в STATE["audit"], и рестарт
+        # между ним и следующей записью стёр бы запись о массовой перезаписи
+        # текстов клиента, то есть ровно то событие, ради которого журнал есть.
+        if applied:
+            _audit("review.apply", project=pid, count=applied, stamp=stamp)
         _IMPACT_CACHE.pop(pid, None)
         _ANALYSIS_CACHE.pop(pid, None)
         save_state(STATE)
-    if applied:
-        _audit("review.apply", project=pid, count=applied, stamp=stamp)
     return {"ok": True, "dryRun": req.dry_run, "asked": len(todo),
             "answered": answered, "failed": failed,
+            # Сколько ещё ждёт своей очереди: молчаливое усечение по `limit`
+            # неотличимо от «работа кончилась».
+            "capped": max(0, total - len(todo)),
             "proposed": len(proposed), "wouldApply": len(ready), "applied": applied,
             "skippedConfirmed": skipped_confirmed,
             "sourceSuspect": suspect, "vetoed": vetoed, "scores": buckets,
-            "cost": round((_USAGE_TOTAL.get("cost") or 0.0) - spent0, 4),
+            "cost": round(spent[0], 4),
             "stamp": stamp, "samples": samples}
 
 
@@ -12818,7 +12969,19 @@ def undo_review(pid: int, stamp: str):
             else:
                 seg[k] = snap[k]
         seg["repair"] = snap["repair"]
-        seg.pop("review", None)
+        # Вердикт НЕ стираем, а помечаем отменённым. Стереть его значит
+        # сделать сегмент снова «неспрошенным»: следующий прогон заплатил бы
+        # ещё раз и поставил бы ровно тот же текст обратно — то есть машина
+        # переиграла бы решение человека. Тот же закон, что у `meaningKept`
+        # и `_human_touched`: своё предположение машина вправе пересмотреть,
+        # чужое решение — нет. Хеш описывает восстановленный текст, поэтому
+        # вердикт считается свежим и сегмент в отбор не попадает.
+        rv = dict(seg.get("review") or {})
+        rv["applied"] = False
+        rv["undone"] = {"by": _actor_id(), "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+        rv["target_hash"] = _text_hash((snap["target"] or "").strip())
+        rv.pop("from", None)
+        seg["review"] = rv
         restored.append(seg["id"])
     if restored:
         _IMPACT_CACHE.pop(pid, None)

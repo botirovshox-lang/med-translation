@@ -888,6 +888,82 @@ try {
   check(t16.indexOf("Сверка терминов") !== -1, "строка сверки терминов на месте");
   global.API = baseAPI;
 
+  /* Сегмент, распознанный на КАРТИНКЕ, заводится последним и получает номер
+     max+1, а встаёт на место своей картинки в документе. Номера в таблице
+     из-за этого перестают идти подряд — и выглядит это как сломанный отбор,
+     хотя ни поиск, ни фильтр строк не двигают. Проверяем ровно три вещи:
+     порядок документа по умолчанию, разрыв назван вслух и чинится кнопкой,
+     а сортировка по номеру честно говорит, что документом список больше
+     не является. */
+  console.log("");
+  console.log("=== 17. Порядок строк: документ против номера ===");
+  const text17 = (node) => {
+    const out = [];
+    (function go(n) {
+      if (n === null || n === undefined) return;
+      if (typeof n === "string" || typeof n === "number") { out.push(String(n)); return; }
+      if (Array.isArray(n)) return n.forEach(go);
+      if (typeof n !== "object") return;
+      const p = n.props || {};
+      if (p.title) out.push(p.title);
+      (n.children || []).forEach(go);
+    })(node);
+    return out.join(" | ");
+  };
+  const click17 = (node, label) => {
+    let hit = null;
+    (function go(n) {
+      if (hit || !n || typeof n !== "object") return;
+      if (Array.isArray(n)) return n.forEach(go);
+      const p = n.props || {};
+      if (n.type === "button" && p.onClick
+          && (n.children || []).filter(c => typeof c === "string").join(" ").indexOf(label) !== -1) {
+        hit = p.onClick; return;
+      }
+      (n.children || []).forEach(go);
+    })(node);
+    return hit;
+  };
+  const render17 = () => { hookIdx = 0; effects.length = 0; return TabEditor({ store: storeStub, toast }); };
+  // Картинка стоит между сегментами 4 и 5, поэтому её сегмент встаёт туда же,
+  // а номер у него max+1 — ровно тот разрыв, из-за которого таблицу читают
+  // как сломанную.
+  project.segments.splice(4, 0, seg(2692, {
+    origin: { kind: "image", part: "word/media/image7.png", block: 0 } }));
+  store.removeItem("mcat_seg_order");
+  hooks.length = 0; hookIdx = 0; effects.length = 0;
+  TabEditor({ store: storeStub, toast });
+  effects.forEach(fn => { try { fn(); } catch (e) {} });
+  for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+  const el17 = render17();
+  const rows17 = segRows(el17).join(",");
+  check(rows17 === "1,2,3,4,2692,5,6,7,8,9",
+        "по умолчанию строки идут порядком документа (" + rows17 + ")");
+  const t17 = text17(el17);
+  check(t17.indexOf("Номера идут не по возрастанию") !== -1,
+        "разрыв в номерах назван вслух, а не оставлен догадкой");
+  check(t17.indexOf("Распознано на картинке") !== -1,
+        "строка, пришедшая с картинки, помечена в самой таблице");
+  const toNum = click17(el17, "Сортировать по номеру");
+  check(!!toNum, "рядом с объяснением стоит кнопка сортировки");
+  if (toNum) toNum();
+  const el17b = render17();
+  const rows17b = segRows(el17b).join(",");
+  check(rows17b === "1,2,3,4,5,6,7,8,9,10",
+        "по номеру список монотонный (" + rows17b + ")");
+  const t17b = text17(el17b);
+  check(t17b.indexOf("соседями в тексте не являются") !== -1,
+        "и сказано, что соседство в нём документу больше не соответствует");
+  check(t17b.indexOf("Номера идут не по возрастанию") === -1,
+        "прежняя полоса про разрыв ушла: в показанном порядке разрыва нет");
+  const toDoc = click17(el17b, "Вернуть порядок документа");
+  check(!!toDoc, "и есть чем вернуть порядок документа");
+  if (toDoc) toDoc();
+  check(segRows(render17()).join(",") === "1,2,3,4,2692,5,6,7,8,9",
+        "возврат работает: снова порядок документа");
+  project.segments = project.segments.filter(s => s.id !== 2692);
+  store.removeItem("mcat_seg_order");
+
   console.log("\n" + (fail.length ? "ПРОВАЛЕНО: " + fail.join("; ") : "ВСЁ ПРОШЛО"));
   process.exit(fail.length ? 1 : 0);
 } catch (e) {

@@ -216,6 +216,61 @@ check(tTk.some(s => s.indexOf("Перевести и доделать") !== -1),
       "главная кнопка на месте");
 check(tTk.some(s => s.indexOf("2 из 4") !== -1),
       "готовность названа и числом сегментов");
+// Срез «ревизия ручается»: старый сервер поля не шлёт — строки нет; новый
+// шлёт — строка названа. Снятое молча неотличимо от потерянного.
+check(!tTk.some(s => s.indexOf("Ревизия ручается") !== -1),
+      "без поля reviewVouched строки нет");
+const TV = JSON.parse(JSON.stringify(TK));
+TV.turnkey.reviewVouched = [1];
+let treeTv = null;
+try { treeTv = render(React.createElement(TurnkeySummary, { summary: TV, store, toast })); }
+catch (e) { console.log("      " + e.message); }
+check(treeTv && texts(treeTv).some(s => s.indexOf("Ревизия ручается") !== -1),
+      "с полем — строка среза названа");
+
+// ─────────── 3d. «Нужен человек» — группы по действию ───────────
+// Прежде карточка рисовала все четырнадцать строк всегда, половина — нули.
+console.log("\n=== 3d. Группы по действию: нули спрятаны, топ-3, свёрнутый хвост ===");
+const GR = JSON.parse(JSON.stringify(BASE));
+GR.total = 20;
+GR.human.reviewFlagged = [1, 2, 3]; GR.human.weak = [4, 5]; GR.human.reverted = [6];
+GR.human.staleFindings = [7]; GR.human.sourceSuspect = [8, 9];
+GR.human.confirmWithdrawn = [6];                 // тот же сегмент, что и в reverted
+GR.human.termcheckDisputes = [{ src: "a", tgt: "b", suggests: [], segments: [10] },
+                              { src: "c", tgt: "d", suggests: [], segments: [10] }];
+GR.human.termcheckDisputesSegments = [10];
+GR.human.termContextWrong = [{ src: "C", tgt: "D", use: "e", segments: [10] }];  // та же запись c→d
+GR.turnkey = { ready: [11], machine: [12], human: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], params: {} };
+const gs = analysisHumanGroups(GR);
+check(gs.map(g => g.key).join() === "fix,source,records", "три группы в порядке действия");
+check(gs[0].n === 7 && gs[1].n === 2 && gs[2].n === 2,
+      "счёт: 7 сегментов без повтора, 2 оригинала, 2 записи (спор+арбитр об одной записи — один раз): "
+      + gs.map(g => g.n).join("/"));
+check(gs[0].rows.map(r => r.key).join() === "confirmWithdrawn,reviewFlagged,weak,reverted,staleFindings",
+      "громкая строка первой, дальше по убыванию, нули выброшены");
+const GR2 = JSON.parse(JSON.stringify(GR));
+GR2.turnkey.human = [1, 2, 8, 9, 10];
+check(analysisHumanGroups(GR2)[0].n === 2 && analysisHumanGroups(GR2)[1].n === 2,
+      "сегменты берутся только из корзины «нужен человек»: «из них» — подмножество");
+let treeG = null;
+try { treeG = render(React.createElement(WorkSummary, { summary: GR, store, toast })); }
+catch (e) { console.log("      " + e.message); }
+const tG = treeG ? texts(treeG) : [];
+check(tG.some(s => s === "Править перевод") && tG.some(s => s === "Править оригинал")
+      && tG.some(s => s === "Решить про записи глоссария"), "заголовки групп на экране");
+check(!tG.some(s => s.indexOf("проверки нашли критичное") !== -1), "нулевая строка не рисуется");
+check(tG.some(s => s.indexOf("Машина сняла ваше подтверждение") !== -1)
+      && !tG.some(s => s.indexOf("Забракованное слово") !== -1) && tG.some(s => s.indexOf("Ещё строк") !== -1),
+      "громкая строка видна, а хвост группы спрятан под «Ещё строк»");
+let treeG2 = null;
+try { treeG2 = render(React.createElement(TurnkeySummary, { summary: GR, store, toast })); }
+catch (e) { console.log("      " + e.message); }
+const tG2 = treeG2 ? texts(treeG2) : [];
+check(tG2.some(s => s.indexOf("из них: править перевод") !== -1)
+      && tG2.some(s => s.indexOf("из них: править оригинал") !== -1),
+      "три числа групп — в карточке «под ключ»");
+check(tG2.some(s => s.indexOf("ждут правки оригинала") !== -1),
+      "подпись под готовностью называет повреждённый оригинал");
 
 console.log("\n=== 3c. WorkSummary: критика Medical QA на подтверждённом видна ===");
 const QA = JSON.parse(JSON.stringify(BASE));

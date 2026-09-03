@@ -6,6 +6,96 @@
 /* Итог работы по проекту. Читается сверху вниз как ответ на один вопрос:
    «что сейчас с переводом». Каждая строка кликается и открывает редактор
    с этими сегментами — цифра без возможности посмотреть на неё бесполезна. */
+/* Ручная работа — по ДЕЙСТВИЮ, а не по проверке. Три группы: править
+   перевод, править оригинал, решить про записи глоссария (там счёт идёт
+   записями и парами — одно решение закрывает все затронутые сегменты).
+   Один расчёт на «Подробности» и на карточку «Перевод под ключ»: два
+   расчёта одного числа разошлись бы. Нулевые строки выбрасываются здесь,
+   внутри группы — по убыванию числа. Чистая функция без JSX: кнопки
+   привязывает по `key` тот, кто рисует. Старый сервер без `human.weak`
+   переживается — поля читаются с запасом. */
+const HUMAN_GROUP_TOP = 3;
+function analysisHumanGroups(s) {
+  const h = (s && s.human) || {}, t = (s && s.todo) || {};
+  const sub = (a, b) => (a || []).filter(i => (b || []).indexOf(i) === -1);
+  const flat = (arr, k) => [].concat.apply([], (arr || []).map(c => c[k] || []));
+  /* Сегменты — только из корзины «нужен человек» (`turnkey.human`), если
+     сервер её отдал: confirmWithdrawn он отдаёт целиком (и уже закрытые),
+     confirmedFindings — с объективными, которые берёт машина, а «из них»
+     обязано быть подмножеством «Нужно ваше решение». Старый сервер без
+     turnkey — без фильтра. */
+  const within = s && s.turnkey && Array.isArray(s.turnkey.human) ? new Set(s.turnkey.human) : null;
+  const inside = ids => within ? (ids || []).filter(i => within.has(i)) : (ids || []);
+  const row = (key, label, hint, ids, color, n) => {
+    const got = inside(ids);
+    return { key, label, hint, ids: got, color, n: n != null ? n : got.length };
+  };
+  const byScore = h.revertedByScore || [];
+  const ctxWrong = h.termContextWrong || [];
+  /* Запись, про которую уже ответил арбитр, в спорах termcheck второй раз
+     не считается: арбитра спрашивают ровно про спорные записи, и одна
+     запись иначе давала два решения. */
+  const rkey = d => ((d.src || "") + "→" + (d.tgt || "")).toLowerCase();
+  const ctxKeys = new Set(ctxWrong.map(rkey));
+  const disputes = (h.termcheckDisputes || []).filter(d => !ctxKeys.has(rkey(d)));
+  const fix = [
+    row("reviewFlagged", TR("Ревизия нашла проблему, но текст не тронула"),
+      TR("сверка не пустила правку либо модель не дала варианта — оценка, замечания и предложенный текст в карточке сегмента"),
+      h.reviewFlagged, "var(--c-warning)"),
+    row("weak", TR("Оценка ниже порога после судьи"),
+      TR("судья смотрел или не придёт — балл читать глазами"), h.weak, "var(--c-warning)"),
+    row("reverted", TR("Правка откачена — не стало лучше"),
+      TR("модель пробовала починить и не смогла"), sub(h.reverted, byScore), "var(--c-warning)"),
+    row("revertedByScore", TR("Ремонт отменил верную правку — текст готов"),
+      TR("балл back-check упал, но термины стали чище — текст уже написан и оплачен"), byScore, "var(--c-warning)"),
+    row("staleFindings", TR("Забракованное слово осталось в тексте"),
+      TR("termcheck отверг эту формулировку, а потом передумал — а слово на месте"), h.staleFindings, "var(--c-warning)"),
+    row("confirmWithdrawn", TR("Машина сняла ваше подтверждение"),
+      TR("расхождение чисел, единиц или отрицания — это сильнее заверения; доказательство в карточке сегмента"),
+      h.confirmWithdrawn, "var(--c-error)"),
+    row("glossaryConfirmed", TR("Подтверждено, но спорит с глоссарием"),
+      TR("переписать можно только по явной галочке"), h.glossaryConfirmed, "var(--c-warning)"),
+    row("confirmedFindings", TR("Подтверждено, но есть находки проверок"),
+      TR("починит «Ремонт» с галочкой «чинить подтверждённые»"), h.confirmedFindings, "var(--c-warning)"),
+    row("qaCritical", TR("Подтверждено, но проверки нашли критичное"),
+      TR("числа, дозировки или структура — проверка статус не меняет, решает человек"), h.qaCritical, "var(--c-error)"),
+  ];
+  const source = [
+    row("sourceSuspect", TR("Похоже, повреждён сам оригинал"),
+      TR("обрывок, ошибка распознавания или бессвязная фраза — перевод чинить нечем, пока не выправлен исходник"),
+      h.sourceSuspect, "var(--c-error)"),
+  ];
+  const records = [
+    row("disputes", TR("Проверка спорит с утверждённым термином"),
+      TR("ремонт это не починит — решать вам: неверна запись или проверка"),
+      h.termcheckDisputesSegments, "var(--c-warning)", disputes.length),
+    row("ctxWrong", TR("Арбитр считает запись неверной для документа"),
+      TR("довод и готовый вариант — ниже"), flat(ctxWrong, "segments"), "var(--c-warning)", ctxWrong.length),
+    /* Разнобоя здесь НЕТ: сервер кладёт его в корзину МАШИНЫ (к человеку
+       уходят только заверенные), и в итог «нужен человек» он не входит —
+       строка с парами живёт ниже групп, как и раньше. */
+    row("terms", TR("Терминов машина решать не берётся"),
+      TR("спорные варианты и конфликты — в «Глоссарии»"), [], "var(--c-warning)", h.termsTotal || 0),
+  ];
+  const group = (key, label, hint, rows, byRecords) => {
+    /* Громкие строки (снятое заверение, критика QA — `c-error`) и единственная
+       точка входа к «Принять все» не уезжают под свёртку за большим числом:
+       сперва по весу, затем по числу. */
+    const rank = r => (r.color === "var(--c-error)" ? 2 : 0) + (r.key === "revertedByScore" ? 1 : 0);
+    const live = rows.filter(r => r.n > 0).sort((a, b) => (rank(b) - rank(a)) || (b.n - a.n));
+    const seen = new Set();
+    live.forEach(r => r.ids.forEach(i => seen.add(i)));
+    const ids = Array.from(seen);
+    return { key, label, hint, rows: live, ids, color: "var(--c-warning)",
+             n: byRecords ? live.reduce((a, r) => a + r.n, 0) : ids.length };
+  };
+  return [
+    group("fix", TR("Править перевод"), TR("текст неверен или сомнителен — открыть и вычитать"), fix, false),
+    group("source", TR("Править оригинал"), TR("перевод сделан, насколько позволяет исходник"), source, false),
+    group("records", TR("Решить про записи глоссария"), TR("одно решение закрывает все затронутые сегменты"), records, true),
+  ];
+}
+
 function WorkSummary({ summary, store, toast, onReload }) {
   const s = summary;
   /* Контекстный арбитр. Спор «проверка против утверждённого термина» машина
@@ -17,6 +107,7 @@ function WorkSummary({ summary, store, toast, onReload }) {
      сегментов он ещё не видел. Вердикт кэшируется на сегменте, так что
      повторное нажатие не платит за уже отвеченное. */
   const [arbBusy, setArbBusy] = useState(false);
+  const [groupOpen, setGroupOpen] = useState({});
   /* Строка итога — тот же AnalysisRow, что и у корзин «под ключ»: две копии одной
      строки на ОДНОМ экране разъезжаются молча (см. комментарий у AnalysisRow).
      Здесь `n` передаётся отдельно от `ids`: часть строк считает не сегменты,
@@ -147,17 +238,14 @@ function WorkSummary({ summary, store, toast, onReload }) {
       });
   };
 
-  /* revertedByScore — ПОДМНОЖЕСТВО reverted, поэтому в сумму отдельно
-     не идёт: Set и так схлопнет повторы, но полагаться на это молча нельзя. */
-  const humanSegs = new Set([].concat(s.human.staleFindings || [],
-                                      s.human.confirmWithdrawn || [],
-                                      s.human.reverted || [],
-                                      s.human.glossaryConfirmed || [],
-                                      s.human.confirmedFindings || [],
-                                      s.human.qaCritical || [],
-                                      s.human.sourceSuspect || [],
-                                      s.human.reviewFlagged || []));
-  const humanTotal = s.human.termsTotal + humanSegs.size;
+  /* Группы по ДЕЙСТВИЮ — один расчёт на этот экран и на «Перевод под ключ»
+     (analysisHumanGroups). Итог карточки — сегменты первых двух групп без
+     повторов плюс записи третьей: один сегмент может и спорить с глоссарием,
+     и нести находку, и считать его дважды нельзя. */
+  const groups = analysisHumanGroups(s);
+  const humanSegs = new Set();
+  groups.filter(g => g.key !== "records").forEach(g => g.ids.forEach(i => humanSegs.add(i)));
+  const humanTotal = humanSegs.size + (groups.find(g => g.key === "records") || { n: 0 }).n;
 
   return React.createElement("div", { className: "section" },
     React.createElement("h2", { className: "section-title" }, TR("Что сейчас с переводом"),
@@ -236,41 +324,55 @@ function WorkSummary({ summary, store, toast, onReload }) {
       React.createElement("div", { className: "row between", style: { paddingBottom: 4 } },
         React.createElement("span", { style: { fontWeight: 650 } }, TR("Нужен человек")),
         React.createElement("b", { style: { fontVariantNumeric: "tabular-nums", color: humanTotal ? "var(--c-warning)" : "var(--c-success)" } }, humanTotal)),
-      React.createElement(Row, { label: TR("Терминов машина решать не берётся"), n: s.human.termsTotal,
-        color: "var(--c-warning)", hint: TR("спорные варианты и конфликты — в «Глоссарии»") }),
+      /* Группы по ДЕЙСТВИЮ (analysisHumanGroups): нулевые строки спрятаны,
+         внутри группы — по убыванию числа, сверху HUMAN_GROUP_TOP строк,
+         остальное под «ещё N». Прежде карточка рисовала все четырнадцать
+         строк всегда, половина из них нули, и на что смотреть, было
+         не понять. Заголовок группы открывает редактор с объединением её
+         сегментов; у строки — свой клик. Кнопка «Принять все» привязана
+         по ключу строки: сама функция групп без JSX. */
+      humanTotal === 0 && React.createElement("div", { className: "dim",
+          style: { padding: "9px 0", fontSize: 12.5, borderTop: "1px solid var(--border)" } },
+        TR("Открытых вопросов нет")),
+      groups.filter(g => g.n > 0).map(g => {
+        const open = !!groupOpen[g.key];
+        const shown = open ? g.rows : g.rows.slice(0, HUMAN_GROUP_TOP);
+        const go = () => {
+          store.setSegmentFilter(g.ids); store.go("editor");
+          toast.info(g.label, g.ids.length + TR(" сегментов"));
+        };
+        return React.createElement(React.Fragment, { key: g.key },
+          React.createElement("div", { className: "row between",
+              style: { padding: "12px 0 2px", borderTop: "1px solid var(--border)", gap: 12, alignItems: "baseline" } },
+            React.createElement("div", { style: { minWidth: 0 } },
+              React.createElement("span", { style: { fontWeight: 700, color: g.color } }, g.label),
+              React.createElement("span", { className: "dim", style: { fontSize: 12.5 } }, " — " + g.hint)),
+            React.createElement("div", { className: "row", style: { gap: 10, alignItems: "center" } },
+              g.ids.length > 0 && React.createElement(Btn, { variant: "ghost", size: "sm", icon: "search", onClick: go }, TR("Открыть")),
+              React.createElement("b", { style: { fontVariantNumeric: "tabular-nums", color: g.color } }, g.n))),
+          shown.map(r => React.createElement(Row, {
+            key: r.key, label: r.label, hint: r.hint, ids: r.ids, n: r.n, color: r.color,
+            action: r.key === "revertedByScore"
+              ? React.createElement(Btn, { variant: "ghost", size: "sm", icon: "check",
+                  disabled: accBusy, onClick: acceptAll },
+                  accBusy ? TR("Принимаем…") : TR("Принять все"))
+              : null })),
+          g.rows.length > HUMAN_GROUP_TOP && React.createElement("div", { className: "dim",
+              style: { fontSize: 12.5, padding: "4px 0 6px", cursor: "pointer" },
+              onClick: () => setGroupOpen(o => Object.assign({}, o, { [g.key]: !open })) },
+            open ? TR("Свернуть") : TR("Ещё строк: ") + (g.rows.length - HUMAN_GROUP_TOP)));
+      }),
       /* Ждут ДАННЫХ, а не решения: доноров приносят следующие чистые прогоны,
          и дорешает их автоматика. Раньше они шли в строку выше и пугали числом:
          на боевом проекте 412 из 684 «ждущих человека» человека не ждали. */
       (s.human.termsWaitingTotal || 0) > 0 && React.createElement(Row, {
         label: TR("Терминов ждут новых данных — дорешается само"), n: s.human.termsWaitingTotal,
         hint: TR("не хватает сегментов-доноров или чистых проверок; следующие прогоны добирают их сами") }),
-      React.createElement(Row, { label: TR("Правка откачена — не стало лучше"),
-        n: s.human.reverted.length - (s.human.revertedByScore || []).length,
-        ids: (s.human.reverted || []).filter(i => !(s.human.revertedByScore || []).includes(i)),
-        color: "var(--c-warning)", hint: TR("модель пробовала починить и не смогла") }),
-      /* Подмножество откачённых, и своей строкой: отмену там держал ТОЛЬКО
-         упавший балл back-check, а термины правка почистила. Балл меряет долю
-         слов оригинала, вернувшихся через обратный перевод, то есть
-         вознаграждает кальку, — и «sanguiferous bed» набирал по нему больше,
-         чем верное «bloodstream». Нынешний ремонт так уже не откатывает,
-         а прежние записи остались: текст написан, оплачен и лежит рядом.
-         В общей корзине он выглядит безнадёжным и не разбирается никогда. */
-      React.createElement(Row, { label: TR("Ремонт отменил верную правку — текст готов"),
-        n: (s.human.revertedByScore || []).length, ids: s.human.revertedByScore,
-        color: "var(--c-warning)",
-        hint: TR("балл back-check упал, но термины стали чище — текст уже написан и оплачен"),
-        action: (s.human.revertedByScore || []).length
-          ? React.createElement(Btn, { variant: "ghost", size: "sm", icon: "check",
-              disabled: accBusy, onClick: acceptAll },
-              accBusy ? TR("Принимаем…") : TR("Принять все"))
-          : null }),
-      /* Машина отменила решение человека. Это самая громкая строка экрана
-         и стоит она выше остальных: отмену заверения человек обязан увидеть
-         сам, а не обнаружить пропажу отметки случайно. Доказательство лежит
-         на сегменте (`confirmWithdrawn.evidence`). */
-      /* Разнобой по документу. Строка ведёт СПИСОК ПАР, а не сегментов: решение
-         одно на пару, и в этом весь смысл — вместо сотни разборов одно. */
-      React.createElement(Row, { label: TR("Один оборот переведён по-разному"),
+      /* Разнобой — корзина МАШИНЫ (сервер кладёт его в machine_set, человеку
+         остаются только заверенные), поэтому в группы и в итог не входит.
+         Строка ведёт СПИСОК ПАР: решение одно на пару. */
+      (s.todo.consistency || []).length > 0 && React.createElement(Row, {
+        label: TR("Один оборот переведён по-разному"),
         n: (s.todo.consistency || []).length,
         ids: [].concat.apply([], (s.todo.consistency || []).map(c => c.segments || [])),
         color: "var(--c-warning)",
@@ -280,66 +382,11 @@ function WorkSummary({ summary, store, toast, onReload }) {
         (s.todo.consistency || []).slice(0, 6).map((c, i) => React.createElement("div", { key: i },
           "«" + c.was + "» → «" + c.want + TR("» · мест: ") + (c.segments || []).length
           + (c.already ? TR(" · уже верно: ") + c.already : "")))),
-      /* Проверка забраковала слово, а оно всё ещё в тексте. Очередь помнит
-         формулировку, сегмент — нет: termcheck мог передумать между прогонами,
-         и дефект остался в готовом на вид тексте. Номинация, а не находка
-         ремонта: одно суждение о строке не приказ переписывать, тем более
-         что проверка себе же противоречит — решает человек. */
-      React.createElement(Row, { label: TR("Забракованное слово осталось в тексте"),
-        n: (s.human.staleFindings || []).length, ids: s.human.staleFindings,
-        color: "var(--c-warning)",
-        hint: TR("termcheck отверг эту формулировку, а потом передумал — а слово на месте") }),
       (s.human.staleFindingWords || []).length > 0 && React.createElement(
         "div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.7, paddingTop: 4 } },
         (s.human.staleFindingWords || []).slice(0, 5).map((w, i) =>
           React.createElement("div", { key: i },
             "#" + w.id + ": " + (w.words || []).join(", ")))),
-      React.createElement(Row, { label: TR("Машина сняла ваше подтверждение"),
-        n: (s.human.confirmWithdrawn || []).length, ids: s.human.confirmWithdrawn,
-        color: "var(--c-error)",
-        hint: TR("расхождение чисел, единиц или отрицания — это сильнее заверения; доказательство в карточке сегмента") }),
-      React.createElement(Row, { label: TR("Подтверждено, но спорит с глоссарием"), n: s.human.glossaryConfirmed.length,
-        ids: s.human.glossaryConfirmed, color: "var(--c-warning)", hint: TR("переписать можно только по явной галочке") }),
-      // Своя строка, а не «оценка ниже порога»: это заверенные человеком
-      // сегменты, до которых прогон не дотянется без разрешения. В общей куче
-      // они выглядели как машинные и ждали бы вечно.
-      React.createElement(Row, { label: TR("Подтверждено, но есть находки проверок"),
-        n: (s.human.confirmedFindings || []).length, ids: s.human.confirmedFindings,
-        color: "var(--c-warning)",
-        hint: TR("починит «Ремонт» с галочкой «чинить подтверждённые»") }),
-      /* Критика Medical QA на подтверждённом. Проверка не трогает ни буквы
-         текста и статус не понижает, поэтому находка видна ТОЛЬКО здесь:
-         раньше её показывала вкладка «Замечания», которой больше нет. */
-      React.createElement(Row, { label: TR("Подтверждено, но проверки нашли критичное"),
-        n: (s.human.qaCritical || []).length, ids: s.human.qaCritical,
-        color: "var(--c-error)",
-        hint: TR("числа, дозировки или структура — проверка статус не меняет, решает человек") }),
-      /* Ревизия прочитала пару целиком, нашла дефект — и текст не тронула:
-         кандидат не прошёл объективные сверки (числа, приказный термин,
-         регистр) либо варианта не было. Своя строка, потому что это НЕ то же
-         самое, что «возьмёт прогон»: следующий заход даст тот же результат,
-         вето по построению повторится. Готовый совет лежит в карточке
-         сегмента — там оценка, замечания и причина отказа. */
-      React.createElement(Row, { label: TR("Ревизия нашла проблему, но текст не тронула"),
-        n: (s.human.reviewFlagged || []).length, ids: s.human.reviewFlagged,
-        color: "var(--c-warning)",
-        hint: TR("сверка не пустила правку либо модель не дала варианта — оценка, замечания и предложенный текст в карточке сегмента") }),
-      /* Ревизор усомнился в САМОМ ОРИГИНАЛЕ. Своя строка, потому что машина
-         бессильна по построению: чинить перевод догадкой по битому исходнику
-         значит сочинять, а до появления шага сказать это было негде вовсе —
-         termcheck прямо инструктирован не трогать ничего в SOURCE. */
-      React.createElement(Row, { label: TR("Похоже, повреждён сам оригинал"),
-        n: (s.human.sourceSuspect || []).length, ids: s.human.sourceSuspect,
-        color: "var(--c-error)",
-        hint: TR("обрывок, ошибка распознавания или бессвязная фраза — перевод чинить нечем, пока не выправлен исходник") }),
-      // Спор проверки с утверждённой записью. Своя строка, потому что машина
-      // здесь бессильна по построению: ремонт по такой находке всегда
-      // откатится (нарушённых терминов станет больше), а termcheck переспорить
-      // приказ не может. Считаем по СЕГМЕНТАМ — строка открывает редактор,
-      // а список терминов показан ниже.
-      React.createElement(Row, { label: TR("Проверка спорит с утверждённым термином"),
-        n: disputeSegs.length, ids: disputeSegs, color: "var(--c-warning)",
-        hint: TR("ремонт это не починит — решать вам: неверна запись или проверка") }),
       disputes.length > 0 && React.createElement(
         "div", { className: "dim", style: { fontSize: 12.5, lineHeight: 1.7, paddingTop: 8 } },
         disputes.slice(0, DISPUTE_CAP).map((d, i) => React.createElement(
@@ -752,6 +799,12 @@ function TurnkeySummary({ summary, store, toast, onReload }) {
   const tk = summary.turnkey;
   const total = summary.total || 0;
   const ready = tk.ready || [], machine = tk.machine || [], human = tk.human || [];
+  /* Те же группы по действию, что в «Подробностях» (analysisHumanGroups):
+     три числа здесь, чтобы не идти за ними в четырнадцать строк ниже.
+     «Править оригинал» ещё и подписью под готовностью: перевод там сделан,
+     насколько позволяет исходник, и бить им по проценту перевода нечестно. */
+  const groups = analysisHumanGroups(summary);
+  const srcN = (groups.find(g => g.key === "source") || { n: 0 }).n;
   const [panel, setPanel] = useState(false);
   /* Разбор прогона держит РОДИТЕЛЬ, а не панель. Панель монтируется по
      нажатию, и её собственный useEffect гонял бы /run-plan на каждое
@@ -811,7 +864,8 @@ function TurnkeySummary({ summary, store, toast, onReload }) {
           React.createElement("b", { style: { fontSize: 26, fontVariantNumeric: "tabular-nums" } },
             tkPct(ready.length, total)),
           React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
-            ready.length + TR(" из ") + total + TR(" сегментов")))),
+            ready.length + TR(" из ") + total + TR(" сегментов")
+            + (srcN ? TR(" · ") + srcN + TR(" ждут правки оригинала") : "")))),
       React.createElement("div", { style: { display: "flex", height: 12, borderRadius: 6,
         overflow: "hidden", background: "var(--bg-sunken)", marginBottom: 6 } },
         seg(ready.length, "var(--c-success)"),
@@ -828,6 +882,10 @@ function TurnkeySummary({ summary, store, toast, onReload }) {
       React.createElement(AnalysisRow, { store, toast, total, ids: human,
         label: TR("Нужно ваше решение"), color: "var(--c-warning)",
         hint: TR("прогон это не решит — состав и команды в «Подробностях»") }),
+      groups.filter(g => g.n > 0).map(g => React.createElement(AnalysisRow, {
+        key: g.key, store, toast, ids: g.ids, n: g.n, dim: true,
+        total: g.key === "records" ? undefined : total,
+        label: TR("из них: ") + g.label.charAt(0).toLowerCase() + g.label.slice(1), hint: g.hint })),
       /* Срез поверх корзин, а не четвёртая корзина: заверенные человеком
          входят в «Готово» (или в «Нужно ваше решение», если проверки нашли
          находку), но работа человека обязана быть видна числом — раньше
@@ -836,7 +894,14 @@ function TurnkeySummary({ summary, store, toast, onReload }) {
          Старый сервер поля не отдаёт — строки просто нет. */
       (tk.confirmed || []).length > 0 && React.createElement(AnalysisRow, {
         store, toast, total, ids: tk.confirmed, dim: true,
-        label: TR("Заверено вручную"), hint: TR("входит в корзины выше") })),
+        label: TR("Заверено вручную"), hint: TR("входит в корзины выше") }),
+      /* Претензии слепых измерителей (балл back-check, одиночное мнение
+         termcheck) снял свежий вердикт ревизии — сегменты в «Готово».
+         Срезом, а не молча: снятое без следа неотличимо от потерянного. */
+      (tk.reviewVouched || []).length > 0 && React.createElement(AnalysisRow, {
+        store, toast, total, ids: tk.reviewVouched, dim: true,
+        label: TR("Ревизия ручается — претензии проверок сняты"),
+        hint: TR("ревизор прочитал пару целиком и не нашёл дефекта; входит в «Готово»") })),
     panel && React.createElement(RunPanel, { summary, store, toast, plan, cat, mods, setMod,
       onClose: () => setPanel(false), onStarted: onReload }));
 }

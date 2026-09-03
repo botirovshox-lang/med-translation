@@ -4635,7 +4635,7 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int) -> dict:
     row = {"untranslated": False, "withdrawn": False, "withdrawnOpen": False,
            "unjudgedBlind": False, "unverified": False, "judgeExt": False,
            "confirmed": False, "qaCritical": False, "repaired": False,
-           "sourceSuspect": False, "reviewFlagged": False,
+           "sourceSuspect": False, "reviewFlagged": False, "reviewVouched": False,
            "reverted": False, "scoreVetoed": False, "findings": False,
            "clamped": False, "confirmedFindings": False, "override": False,
            "bucket": None, "why": ""}
@@ -4785,8 +4785,23 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int) -> dict:
                 and not _bc.get("judged")
                 and _lex_blind(s.get("source") or "")):
             why = CLEAN_LEX_BLIND
-        row["bucket"] = "weak"
-        row["why"] = why
+        # Ручательство ревизии. Она единственная читает ПАРУ целиком, а балл
+        # back-check меряет долю основ оригинала, вернувшихся через обратный
+        # перевод, — вознаграждает кальку и роняет верный синоним. Свежая
+        # оценка ≥ REVIEW_VOUCH_SCORE на том же тексте — прямое чтение против
+        # косвенной меры, и прав ревизор: тот же закон, по которому вердикт
+        # арбитра снимает `term_lost`. Чего ручательство не переживает,
+        # решает сам `_review_vouches` (объективная находка, вердикт судьи);
+        # детерминированные претензии (глоссарий, регистр, письмо, повтор)
+        # сюда не доходят — с ними сегмент ушёл в findings выше. Донором
+        # глоссария он не становится: `_machine_clean` ревизию не спрашивает,
+        # «можно ли учить» и «нужен ли человек» — разные вопросы.
+        if _review_vouches(s):
+            row["reviewVouched"] = True
+            row["bucket"] = "vouched"
+        else:
+            row["bucket"] = "weak"
+            row["why"] = why
     return row
 
 
@@ -4822,6 +4837,10 @@ def project_analysis(pid: int, refresh: bool = False):
 
     clean, repaired, reverted, untranslated, unchecked = [], [], [], [], []
     findings, weak = [], []
+    # Претензии слепых измерителей снял свежий вердикт ревизии — «готово»,
+    # но названное числом (`turnkey.reviewVouched`): снятое молча
+    # неотличимо от потерянного.
+    review_vouched: list = []
     # Подтверждённые с находками — своя корзина. Раньше они растворялись
     # в «оценка ниже порога» вперемешку с машинными сегментами, и по экрану
     # нельзя было понять, что это ручные подтверждения, до которых ни один
@@ -4947,6 +4966,8 @@ def project_analysis(pid: int, refresh: bool = False):
             unchecked.append(sid)
         elif row["bucket"] == "weak":
             weak.append({"id": sid, "why": row["why"]})
+        elif row["bucket"] == "vouched":
+            review_vouched.append(sid)
     _ANALYSIS_ROWS[pid] = rows_new
 
     # ── Termcheck спорит с утверждённым термином ─────────────────────
@@ -5186,6 +5207,10 @@ def project_analysis(pid: int, refresh: bool = False):
             # человека обязана быть видна на экране числом, а не только
             # через рост «готово».
             "confirmed": [i for i in _order if i in confirmed_ids],
+            # Претензии слепых измерителей (балл back-check, одиночное мнение
+            # termcheck) снял свежий вердикт ревизии (`_review_vouches`).
+            # Тоже срез поверх корзин: сегменты лежат в «готово».
+            "reviewVouched": review_vouched,
             # Начертание приказных терминов: чинится бесплатной командой
             # /term-case, кнопка предлагает её отдельной галочкой.
             "case": [i for i in (impact.get("caseSegments") or ())
@@ -5201,16 +5226,13 @@ def project_analysis(pid: int, refresh: bool = False):
         # проекте 181 сегмент числился и готовым, и требующим работы, отчего
         # готовность показывалась 93.3% вместо 86.6%. Считаем здесь, а не
         # в браузере: два расчёта одного числа однажды разойдутся.
-        "readyIds": sorted((set(clean) | set(repaired)) - (
-            set(untranslated) | set(unchecked) | set(findings)
-            | set(impact["pending"]) | {w["id"] for w in weak}
-            | set(reverted) | set(confirmed_findings)
-            # Ревизия смотрит в том числе на сегменты, которые нынешние
-            # проверки считают чистыми, — ради этого шаг и заведён. Не вычти
-            # их, и сегмент числился бы и «готовым», и требующим работы
-            # одновременно (та же беда, из-за которой готовность показывала
-            # 93.3% вместо честных 86.6%).
-            | set(source_suspect) | set(review_flagged))),
+        # Вычитаются КОРЗИНЫ, а не перечень списков: перечень отставал от
+        # корзин (в нём не было judge_ext, споров, забракованных слов), и
+        # у `clean` это было недостижимо, а у `vouched` — штатно: сегмент
+        # с ручательством, которого ещё ждёт судья, числился бы и готовым,
+        # и работой прогона разом.
+        "readyIds": sorted(i for i in ready_set
+                           if i in (set(clean) | set(repaired) | set(review_vouched))),
         "machine": {"repaired": len(repaired), "reverted": len(reverted)},
         "proposed": {"terms": ready},
         "human": {
@@ -5223,6 +5245,11 @@ def project_analysis(pid: int, refresh: bool = False):
                                    key=lambda x: -x["count"]),
             "termsWaitingTotal": sum(need_wait.values()),
             "reverted": reverted,
+            # Слабый балл, который судья уже не поднимет (смотрел либо
+            # не позовут) — та часть `todo.weak`, что лежит в human_set.
+            # Экран группирует ручную работу по действию и обязан брать
+            # состав у сервера, а не вычитать judge_ext сам.
+            "weak": [w["id"] for w in weak if w["id"] not in judge_ext],
             # Из них: правка была верной, отменил её негодный измеритель.
             # Готовый текст лежит в сегменте, применяется без вызова модели
             # (POST /api/segments/{pid}/{sid}/repair/accept).
@@ -9562,6 +9589,10 @@ def _segment_for_client(seg: dict) -> dict:
         out["review"] = {k: v for k, v in rv.items()
                          if k != "candidate" or not rv.get("applied")}
         out["review"]["stale"] = _review_stale(seg)
+        # Ручательство считает СЕРВЕР: соло-состав ремонта в браузере считает
+        # находки termcheck сам, а `_repairable` их под ручательством не видит
+        # — без признака кнопка обещала бы N сегментов, а делала меньше.
+        out["review"]["vouches"] = _review_vouches(seg)
         # Подписи вето собирает СЕРВЕР: в `veto` лежат внутренние ключи
         # (`gloss`, `hard`), которых нет ни в одном словаре, — на экране
         # это была латиница посреди узбекской фразы. Таблица
@@ -11306,7 +11337,16 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
             if j.get("comment"):
                 items.append({"kind": "judge", "text": j["comment"]})
     tc = seg.get("termcheck") or {}
-    if tc and tc.get("target_hash") == cur:
+    # Свежее ручательство ревизии (`_review_vouches`) снимает мнение termcheck
+    # о строке: та смотрит только на перевод, а ревизор прочитал пару целиком
+    # и поставил ≥ REVIEW_VOUCH_SCORE. Одно суждение termcheck переписывать
+    # не приказывает (закон двух голосов), а против него здесь стоит более
+    # осведомлённое мнение. Снимается ТОЛЬКО мнение модели: детерминированные
+    # претензии выше остаются, объективную находку ручательство не переживает
+    # по построению. Считается ЗДЕСЬ, а не в разборе экрана: список претензий
+    # один на состав прогона, ремонт, отпечаток захода и корзины — снятое
+    # в одном месте вернулось бы в другом платным заходом.
+    if tc and tc.get("target_hash") == cur and not _review_vouches(seg):
         # minor входит наравне с critical/major. Раньше он не входил никуда:
         # ремонт его не брал, а _machine_clean всё равно объявлял сегмент
         # нечистым — на боевом проекте 168 сегментов висели между двумя
@@ -11873,9 +11913,12 @@ def _consist_misses(seg: dict, project: Optional[dict]) -> list:
     # Про что termcheck уже сказал В ЭТОМ сегменте. Об одном и том же дважды
     # не говорим: смысл проверки — донести находку до ОСТАЛЬНЫХ мест
     # документа, а здесь она и так есть, со своей тяжестью и своим доводом.
+    # Под ручательством ревизии (`_review_vouches`) находки termcheck из
+    # списка претензий сняты — значит «здесь она и так есть» неправда,
+    # и разнобой обязан сказать сам: у него ДВА голоса по документу.
     tc = seg.get("termcheck") or {}
     own = ({(f.get("tgt_term") or "").lower() for f in (tc.get("findings") or [])}
-           if not _check_stale(tc, tgt) else set())
+           if not _check_stale(tc, tgt) and not _review_vouches(seg) else set())
     out = []
     for pr in _consistency_of(project):
         rx = _word_re(pr["was"])
@@ -12589,6 +12632,12 @@ REVIEW_FREE_KEYS = ("gloss", "case", "script", "dup", "self_dup", "term_case")
 # причинам. Связав их, мы бы переклассифицировали корзину при каждой правке
 # политики применения.
 REVIEW_FLAG_SCORE = float(os.environ.get("REVIEW_FLAG_SCORE", "5"))
+# Оценка, от которой свежий вердикт ревизии РУЧАЕТСЯ за перевод и снимает
+# претензии слепых измерителей (`_review_vouches`). Девятка — из той же
+# боевой выборки, что и семёрка выше: 9–10 стоит у переводов, которые править
+# нечего. Отдельно от REVIEW_FLAG_SCORE: «звать человека» и «снять с человека»
+# — разные решения с разной ценой ошибки.
+REVIEW_VOUCH_SCORE = float(os.environ.get("REVIEW_VOUCH_SCORE", "9"))
 # Коды решений ревизии. Русская фраза рядом с ними — для человека, а разбор
 # идёт ПО КОДУ (закон корзин CLEAN_*): подстрока ломается от правки
 # формулировки, а пересчёт условий на показе врёт ещё хуже — он не знает,
@@ -12678,6 +12727,58 @@ def _review_stale(seg: dict) -> bool:
     if src_h is not None and src_h != _text_hash((seg.get("source") or "").strip()):
         return True
     return _check_stale(rv, seg.get("target") or "")
+
+
+def _review_vouches(seg: dict) -> bool:
+    """Свежий вердикт ревизии ручается за ЭТОТ перевод.
+
+    Ревизия — единственная проверка, читающая пару целиком; back-check меряет
+    долю основ оригинала, вернувшихся через обратный перевод (вознаграждает
+    кальку, роняет верный синоним), termcheck смотрит только на перевод.
+    Оценка ≥ REVIEW_VOUCH_SCORE на том же тексте и по тем же вопросам — прямое
+    чтение против косвенной меры, и оно сильнее: тот же закон, по которому
+    вердикт арбитра снимает `term_lost` (`_arbiter_settled`). На боевом
+    проекте так стояли 30 сегментов «оценка ниже порога» с ревизией 9–10.
+
+    Чего ручательство не переживает — не список исключений, а само правило
+    «мнение снимает только мнение»:
+      • объективная находка на паре (`_confirm_override`: числа, единицы,
+        отрицание, сторона) — тот класс, что сильнее заверения человека,
+        и мнение модели его не отменяет ни в какую сторону;
+      • вердикт судьи major/critical — два оплаченных мнения расходятся,
+        решает человек;
+      • подозрение на оригинал, применённая или откачённая правка — там
+        вердикт не о годности нынешнего текста.
+    Донором глоссария сегмент от этого не становится (`_machine_clean`
+    ревизию не спрашивает), заверением человека — тем более: `confirmedBy`
+    машина не пишет никогда."""
+    rv = seg.get("review") or {}
+    if not rv or _review_stale(seg):
+        return False
+    if rv.get("applied") or rv.get("undone") or rv.get("sourceSuspect"):
+        return False
+    if _review_code(rv) in (REVIEW_VETOED, REVIEW_SUSPECT):
+        return False
+    sc = rv.get("score")
+    if sc is None or sc < REVIEW_VOUCH_SCORE:
+        return False
+    if _confirm_override(seg):
+        return False
+    target = seg.get("target") or ""
+    bc = seg.get("backcheck") or {}
+    if bc and not _check_stale(bc, target) \
+            and (bc.get("judge") or {}).get("severity") in ("major", "critical"):
+        return False
+    # Серьёзная находка termcheck (уровни TERMCHECK_DISPUTING — те же, что
+    # вправе усомниться в решении человека) держит и здесь: промпт ревизора
+    # прямо уводит его от терминов («смотри на перевод как целое»), и девятка
+    # про подмену понятия не говорит ничего — «rear cyclitis» читается гладко.
+    # Снимается только minor: там termcheck шумит больше всего.
+    tc = seg.get("termcheck") or {}
+    if tc and not _check_stale(tc, target) and any(
+            f.get("severity") in TERMCHECK_DISPUTING for f in (tc.get("findings") or [])):
+        return False
+    return True
 
 
 def _openai_review(seg: dict, project: dict, prev_src: str, next_src: str,

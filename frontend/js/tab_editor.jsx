@@ -12,6 +12,17 @@ const BC_MODEL_LS_KEY = "mcat_backcheck_model";
 const JUDGE_MODEL_LS_KEY = "mcat_judge_model";
 const BC_SKIP_CONFIRMED_LS_KEY = "mcat_bc_skip_confirmed";
 const SEARCH_SCOPE_LS_KEY = "mcat_search_scope";
+/* Порядок строк таблицы. По умолчанию — ПОРЯДОК ДОКУМЕНТА: текст идёт так,
+   как он идёт в файле, и соседи на экране — настоящие соседи. Номер при этом
+   монотонным не бывает: сегмент, распознанный на КАРТИНКЕ, заводится позже
+   всех и получает номер max+1, а встаёт на место своей картинки в документе
+   (_image_anchor_sid на сервере). Отсюда «2692, 2693, 1811» посреди таблицы —
+   это не сбой отбора (ни поиск, ни фильтр порядка не трогают), а два разных
+   порядка, показанных одной колонкой. Переключается это ЯВНО и называется
+   вслух: «по номеру» даёт монотонный список, но соседство в нём документу
+   больше не соответствует — молча подменить одно другим нельзя. */
+const SEG_ORDER_LS_KEY = "mcat_seg_order";
+const SEG_ORDERS = ["doc", "num"];
 const TC_MODEL_LS_KEY = "mcat_termcheck_model";
 const TCX_MODEL_LS_KEY = "mcat_termaudit_model";
 const RP_MODEL_LS_KEY = "mcat_repair_model";
@@ -445,6 +456,11 @@ function TabEditor({ store, toast }) {
     return SEARCH_SCOPES.indexOf(v) !== -1 ? v : "all";
   });
   const [riskFilter, setRiskFilter] = useState("all");
+  const [order, setOrder] = useState(() => {              // порядок строк: документ / номер
+    let v = null;
+    try { v = localStorage.getItem(SEG_ORDER_LS_KEY); } catch (e) { /* приватный режим */ }
+    return SEG_ORDERS.indexOf(v) !== -1 ? v : "doc";
+  });
   /* Откуда сегмент: из абзаца документа или из надписи на картинке. Без этого
      фильтра распознанное растворяется среди двух с половиной тысяч строк,
      а проверять его надо отдельно — там своя цена ошибки. */
@@ -823,6 +839,11 @@ function TabEditor({ store, toast }) {
     try { localStorage.setItem(SEARCH_SCOPE_LS_KEY, v); } catch (e) { /* приватный режим — не страшно */ }
   };
 
+  const pickOrder = (v) => {
+    setOrder(v);
+    try { localStorage.setItem(SEG_ORDER_LS_KEY, v); } catch (e) { /* приватный режим — не страшно */ }
+  };
+
   const pickGptModel = (id) => {
     setGptModel(id);
     try { localStorage.setItem(GPT_MODEL_LS_KEY, id); } catch (e) { /* приватный режим — не страшно */ }
@@ -1049,7 +1070,7 @@ function TabEditor({ store, toast }) {
   const inZone = zoneIdx >= 0;
   const zoneFrom = Math.max(0, zoneIdx - ZONE_HALF);
   const zoneTo = Math.min(project.segments.length, zoneIdx + ZONE_HALF + 1);
-  const filtered = inZone ? project.segments.slice(zoneFrom, zoneTo) : project.segments.filter(s => {
+  const docRows = inZone ? project.segments.slice(zoneFrom, zoneTo) : project.segments.filter(s => {
     if (activeFilter && !activeFilter.has(s.id)) return false;
     if (filter !== "all" && s.status !== filter) return false;
     if (riskFilter !== "all" && s.risk !== riskFilter) return false;
@@ -1058,6 +1079,14 @@ function TabEditor({ store, toast }) {
     if (query && !segMatches(s, query, scope)) return false;
     return true;
   });
+  /* Строк, у которых номер МЕНЬШЕ номера строки над ней. Считается всегда
+     по документному порядку (docRows), а не по показанному: в режиме «по
+     номеру» разрывов нет по построению, и полоса, считающая по нему,
+     говорила бы «всё ровно» ровно там, где порядок и подменили.
+     Зона — окно соседей, её сортировать нельзя вовсе: там весь смысл в том,
+     что стоит ДО и ПОСЛЕ. */
+  const outOfOrder = inZone ? 0 : docRows.filter((s, i) => i > 0 && s.id < docRows[i - 1].id).length;
+  const filtered = (!inZone && order === "num") ? docRows.slice().sort((a, b) => a.id - b.id) : docRows;
   const selected = project.segments.find(s => s.id === selId);
   // Зона показывается целиком: 21 строку резать на страницы по десять —
   // значит снова спрятать половину соседей, ради которых её и открывали.
@@ -1776,7 +1805,12 @@ function TabEditor({ store, toast }) {
     const bcHit = bc && ((bc.terms_lost || []).length > 0
       || (bc.reasons || []).some(r => REPAIR_REASONS.some(h => r.indexOf(h) !== -1))
       || (bc.judge && ["major", "critical"].indexOf(bc.judge.severity) !== -1));
-    const tcHit = tc && (tc.findings || []).some(f => tcActionable.indexOf(f.severity) !== -1);
+    // Под ручательством ревизии (`review.vouches`, считает сервер) сервер
+    // находок termcheck не видит — и соло-состав не должен: иначе кнопка
+    // обещает N сегментов, а `_repairable` берёт меньше.
+    const vouched = !!(s.review && s.review.vouches);
+    const tcHit = tc && !vouched
+      && (tc.findings || []).some(f => tcActionable.indexOf(f.severity) !== -1);
     return !!(bcHit || tcHit || glossIds.has(s.id));
   };
   const rpCandidate = (s, idSet) => {
@@ -2378,6 +2412,28 @@ function TabEditor({ store, toast }) {
             query && React.createElement(IconBtn, { icon: "close", label: TR("Очистить поиск"), sm: true, onClick: () => setQuery("") }),
             query && React.createElement("span", { className: "dim", style: { fontSize: 12, whiteSpace: "nowrap" } },
               filtered.length ? TR("найдено: ") + filtered.length : TR("ничего не найдено"))
+          ),
+          /* Разрыв в номерах называется вслух и объясняется на месте: без
+             этого он читается как сломанный отбор — «поиск показывает не ту
+             последовательность», — хотя ни поиск, ни фильтр строк не двигают.
+             Кнопка рядом с объяснением: то, о чём сказали, должно быть чем
+             починить. */
+          !inZone && order === "doc" && outOfOrder > 0 && React.createElement("div", { className: "zone-strip" },
+            React.createElement(Icon, { name: "info", size: 14, style: { color: "var(--c-primary)" } }),
+            React.createElement("span", null,
+              TR("Номера идут не по возрастанию: ") + outOfOrder
+              + TR(" строк(и). Сегменты, распознанные на картинках, заводятся позже всех и номер получают по счёту заведения, а в таблице стоят на месте своей картинки в документе.")),
+            React.createElement(Btn, { variant: "secondary", size: "sm", onClick: () => pickOrder("num") },
+              TR("Сортировать по номеру"))
+          ),
+          /* Обратная сторона названа так же честно: монотонный список
+             перестал быть документом, и соседи в нём чужие. */
+          !inZone && order === "num" && React.createElement("div", { className: "zone-strip" },
+            React.createElement(Icon, { name: "list", size: 14, style: { color: "var(--c-primary)" } }),
+            React.createElement("span", null,
+              TR("Порядок: по номеру сегмента. Строки идут не так, как идёт документ, — соседние строки соседями в тексте не являются.")),
+            React.createElement(Btn, { variant: "secondary", size: "sm", onClick: () => pickOrder("doc") },
+              TR("Вернуть порядок документа"))
           ),
           // Пока открыта зона, в таблице не весь файл. Сказать об этом обязаны
           // мы: иначе «куда делись сегменты» человек ищет в фильтрах, которых
@@ -3114,7 +3170,15 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
   return React.createElement("tr", { "data-seg": seg.id, className: "row-status-" + seg.status + (selected ? " selected" : "") + (checked ? " row-checked" : ""), onClick: onSelect },
     React.createElement("td", { style: { width: 36, textAlign: "center" }, onClick: (e) => e.stopPropagation() },
       React.createElement("input", { type: "checkbox", checked: !!checked, onChange: onCheck })),
-    React.createElement("td", { className: "col-id" }, seg.id),
+    React.createElement("td", { className: "col-id" }, seg.id,
+      /* Метка объясняет разрыв в номерах НА САМОЙ строке: сегмент с картинки
+         заведён позже всех (номер max+1), а стоит на месте своей картинки
+         в документе. Без метки строка «2692» посреди тысячи восьмисотых
+         неотличима от поломки отбора. */
+      seg.origin && seg.origin.kind === "image" && React.createElement("span", {
+        title: TR("Распознано на картинке: номер выдан при заведении, место в таблице — по документу"),
+        style: { marginLeft: 4, opacity: 0.7, verticalAlign: "middle", display: "inline-block" } },
+        React.createElement(Icon, { name: "image", size: 12 }))),
     React.createElement("td", { className: "src-cell" }, markHits(seg.source, hlSrc)),
     React.createElement("td", { className: seg.target ? "tgt-cell" : "tgt-cell tgt-empty" },
       seg.target ? markHits(seg.target, hlTgt) : TR("— не переведено —")),

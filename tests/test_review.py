@@ -624,6 +624,101 @@ check(conf.get("confirmedBy") is None and conf["status"] == "review",
       "отметка «подтвердил человек» снята — она относилась к другому тексту")
 check(conf.get("prevTarget") == TGT, "прежний текст сохранён в «прошлом переводе»")
 
+# ────── 15. Ручательство ревизии снимает претензии слепых измерителей ──────
+print()
+print("=== 15. Ревизия ручается: балл и мнение termcheck снимаются, факты — нет ===")
+# Балл back-check меряет долю основ оригинала, вернувшихся через обратный
+# перевод, и роняет верный синоним; termcheck смотрит только на перевод.
+# Ревизия прочитала пару целиком и поставила 9–10 — прямое чтение против
+# косвенной меры. На боевом проекте так стояли 30 сегментов «оценка ниже
+# порога» и 40 откачённых правок с ревизией 9–10.
+def vouch_seg(score=9.5, bc_score=60, judge=None, reasons=(), findings=(), **rv):
+    sg = seg_of(1)
+    h = main._text_hash(sg["target"].strip())
+    sg["backcheck"] = {"score": bc_score, "model": "gpt-4o-mini", "back": sg["source"],
+                       "reasons": list(reasons), "terms_lost": [], "judged": bool(judge),
+                       "judge": ({"severity": judge} if judge else None),
+                       "target_hash": h, "at": "2026-09-01"}
+    sg["termcheck"] = {"findings": list(findings), "severity": "none",
+                       "model": "gpt-5.6-terra", "target_hash": h, "at": "2026-09-01"}
+    sg["review"] = dict({"v": main.REVIEW_VERSION, "score": score, "code": main.REVIEW_OK,
+                         "applied": False, "target_hash": h,
+                         "source_hash": main._text_hash(sg["source"].strip())}, **rv)
+    build([sg])
+    return sg
+
+
+vs = vouch_seg()
+check(main._review_vouches(vs), "свежая оценка 9.5 на том же тексте — ручательство")
+row = main._analysis_row(vs, False, 90)
+check(row["bucket"] == "vouched" and row["reviewVouched"],
+      "балл 60 больше не «оценка ниже порога»: строка идёт в vouched")
+check(main._analysis_row(vouch_seg(score=8), False, 90)["bucket"] == "weak",
+      "восьмёрка не ручается — порог REVIEW_VOUCH_SCORE")
+check(not main._review_vouches(vouch_seg(reasons=["расхождение чисел: 5 против 50"])),
+      "объективная находка (числа) сильнее мнения — как и заверения человека")
+check(not main._review_vouches(vouch_seg(judge="major")),
+      "судья major против ревизии 9.5 — два мнения, решает человек")
+check(not main._review_vouches(vouch_seg(sourceSuspect=True)),
+      "подозрение на оригинал — вердикт не о годности перевода")
+check(not main._review_vouches(vouch_seg(applied=True)),
+      "применённая правка — оценка относилась к прежнему тексту")
+vs = vouch_seg()
+vs["review"]["target_hash"] = main._text_hash("другой")
+check(not main._review_vouches(vs), "устаревший вердикт не ручается")
+check(not main._review_vouches(vouch_seg(judge="critical")), "судья critical — тем более")
+check(not main._review_vouches(vouch_seg(undone={"by": "u1", "at": "now"})),
+      "откачённая правка — человек уже ответил")
+vs = vouch_seg()
+vs["source"] = vs["source"] + " Добавлено."
+check(not main._review_vouches(vs), "правка ОРИГИНАЛА делает вердикт устаревшим")
+
+# Мнение termcheck снимается В ИСТОЧНИКЕ претензий: один список на состав
+# прогона, ремонт, отпечаток захода и корзины — иначе снятое здесь
+# вернулось бы там платным заходом. Снимается только minor: серьёзная
+# находка (TERMCHECK_DISPUTING) держит — промпт ревизора уводит его
+# от терминов, и девятка про подмену понятия не говорит ничего.
+TF = [{"severity": "minor", "tgt_term": "closed", "suggestion": "sealed",
+       "why": "не тот термин"}]
+TM = [{"severity": "major", "tgt_term": "closed", "suggestion": "sealed",
+       "why": "подмена понятия"}]
+check(not main._review_vouches(vouch_seg(findings=TM)),
+      "major от termcheck держит ручательство")
+vs = vouch_seg(findings=TF)
+check(main._repair_findings(vs) == [], "minor под ручательством снята")
+check(main._analysis_row(vs, False, 90)["bucket"] == "vouched",
+      "и сегмент с ней уходит в vouched, а не в findings/reverted")
+check(any(f["kind"] == "term" for f in main._repair_findings(vouch_seg(score=8, findings=TF))),
+      "без ручательства находка на месте")
+# Детерминированную претензию ручательство не трогает: самоповтор считается
+# по тексту, а не по мнению.
+vs = vouch_seg()
+vs["target"] = "Closed pneumothorax treatment. Closed pneumothorax treatment."
+_h = main._text_hash(vs["target"].strip())
+for _k in ("backcheck", "termcheck", "review"):
+    vs[_k]["target_hash"] = _h
+check(main._review_vouches(vs)
+      and any(f["kind"] == "dup" for f in main._repair_findings(vs)),
+      "самоповтор остаётся претензией при ручательстве")
+row = main._analysis_row(vs, False, 90)
+check(row["findings"] and not row["reviewVouched"],
+      "и такой сегмент — в findings, не в vouched")
+# Целиком: корзины сходятся, сегмент в «готово» и в срезе reviewVouched.
+# Балл 60 без судьи лежит в его зоне — это работа ПРОГОНА (judge_all),
+# и ручательство её не отменяет: «возьмёт прогон» сильнее «готово».
+vs = vouch_seg()
+res = main.project_analysis(1, refresh=True)
+check(1 in res["turnkey"]["machine"] and 1 in res["turnkey"]["reviewVouched"],
+      "судья ещё не смотрел — сегмент у прогона, но срез его уже называет")
+check(1 not in res["readyIds"], "и в readyIds его нет: «возьмёт прогон» сильнее «готово»")
+vs["backcheck"].update({"judged": True, "judge": {"severity": "none"}})
+res = main.project_analysis(1, refresh=True)
+tk = res["turnkey"]
+check(1 in tk["ready"] and 1 in tk["reviewVouched"] and 1 in res["readyIds"],
+      "после судьи: готов, назван в срезе reviewVouched и в readyIds")
+check(len(set(tk["ready"]) | set(tk["machine"]) | set(tk["human"])) == res["total"],
+      "корзины по-прежнему исчерпывающие")
+
 print()
 if fail:
     print("ПРОВАЛЕНО: " + str(len(fail)))

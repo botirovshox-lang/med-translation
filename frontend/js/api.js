@@ -335,6 +335,8 @@
     analysis:      (pid)                    => call("GET",    `/projects/${pid}/analysis`),
     coverage:      (pid)                    => call("GET",    `/projects/${pid}/coverage`),
     style:         (pid)                    => call("GET",    `/projects/${pid}/style`),
+    termlist:      (pid)                    => call("GET",    `/projects/${pid}/termlist`),
+    setTermlist:   (pid, body)              => call("POST",   `/projects/${pid}/termlist`, body || {}),
     setStyle:      (pid, body)              => call("POST",   `/projects/${pid}/style`, body || {}),
     styleCheck:    (pid, body)              => call("POST",   `/projects/${pid}/style-check`, body || {}),
     styleUndo:     (pid, stamp)             => call("POST",   `/projects/${pid}/style-check/${stamp}/undo`, {}),

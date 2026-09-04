@@ -945,6 +945,99 @@ function CoverageCard({ project }) {
 // журнал и вариант орфографии. Действующие значения и блок промпта считает
 // СЕРВЕР (`/style`); проверка орфографии и аббревиатур — `/style-check`,
 // бесплатно и с откатом по метке.
+// Терм-лист документа (фаза 0): термины решаются ДО перевода. Список собирает
+// задача `termsheet`; в промпт уходит только по тумблеру, и рядом стоит замер
+// вреда — тот же счёт, каким похоронили подсказки автоимпорта.
+function TermlistCard({ project, toast }) {
+  const [tl, setTl] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [jobId, setJobId] = useState(null);
+  const [showAll, setShowAll] = useState(false);
+  const load = () => {
+    if (!window.API || !window.API.termlist || !project) return Promise.resolve();
+    return window.API.safeCall(() => window.API.termlist(project.id)).then(r => { if (r && r.ok) setTl(r); });
+  };
+  useEffect(() => { setTl(null); setJobId(null); load(); }, [project && project.id]);
+  useEffect(() => {
+    if (!jobId || !window.API || !window.API.listJobs) return;
+    let dead = false;
+    const t = setInterval(() => {
+      window.API.safeCall(() => window.API.listJobs(project.id)).then(r => {
+        if (dead || !r) return;
+        const j = (r.jobs || []).find(x => x.id === jobId);
+        if (j && ["done", "error", "stopped"].indexOf(j.status) !== -1) {
+          setJobId(null); load();
+          const c = j.counters || {};
+          if (j.status === "error") toast(TR("Сбор терм-листа не удался: ") + (j.error || ""));
+          else if (j.status === "stopped") toast(TR("Сбор остановлен: список не записан, вызовов оплачено ") + (c.calls || 0));
+        }
+      });
+    }, 4000);
+    return () => { dead = true; clearInterval(t); };
+  }, [jobId]);
+  if (!tl) return null;
+  const build = () => {
+    setBusy(true);
+    window.API.safeCall(() => window.API.createJob(project.id, "termsheet", [], {})).then(r => {
+      setBusy(false);
+      if (!r || !r.ok) return;
+      setJobId(r.job.id);
+      toast(TR("Терм-лист собирается: ") + (r.job.total || "") + TR(" сегм."));
+    });
+  };
+  const post = (body) => {
+    setBusy(true);
+    window.API.safeCall(() => window.API.setTermlist(project.id, body)).then(r => { setBusy(false); if (r && r.ok) setTl(r); });
+  };
+  const c = tl.counts || {};
+  const m = tl.measure || {};
+  const disputed = (tl.entries || []).filter(e => e.status === "disputed");
+  const agreed = (tl.entries || []).filter(e => e.status === "agreed");
+  return React.createElement("div", { className: "card card-pad", style: { marginBottom: 14 } },
+    React.createElement("div", { className: "row between" },
+      React.createElement("div", null,
+        React.createElement("div", { style: { fontWeight: 600 } }, TR("Терм-лист документа")),
+        React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+          tl.built
+            ? TR("согласовано ") + (c.agreed || 0) + TR(", спорных ") + (c.disputed || 0) + TR(", отклонено ") + (c.rejected || 0)
+              + TR(", без ответа ") + (c.pending || 0) + TR(", уже в глоссарии ") + (c.shadowed || 0)
+              + (tl.strict ? " · " + TR("строгая область: в промпте просьба, не приказ") : "")
+              + (tl.partial ? " · " + TR("часть порций не прошла: ") + tl.partial : "")
+            : TR("Термины решаются до перевода: модель читает оригинал, предлагает стандартный перевод, корпус и сверка смысла отсеивают кальки. В глоссарий ничего не пишется."))),
+      React.createElement("div", { className: "row", style: { gap: 8 } },
+        jobId ? React.createElement("span", { className: "dim" }, TR("собирается…"))
+          : React.createElement(Btn, { variant: tl.built ? "ghost" : "secondary", size: "sm", disabled: busy, onClick: build },
+              tl.built ? TR("Пересобрать") : TR("Собрать терм-лист")))),
+    tl.built && React.createElement("div", { style: { marginTop: 10, fontSize: 13 } },
+      React.createElement("label", { className: "row", style: { gap: 8, alignItems: "center" } },
+        React.createElement("input", { type: "checkbox", checked: !!tl.use, disabled: busy || !agreed.length,
+          onChange: (e) => post({ use: e.target.checked }) }),
+        TR("Использовать в промптах перевода, ревизии и ремонта")
+        + (tl.use ? " · " + TR("в промпте: ") + (tl.active || 0) : "")),
+      tl.pendingHuman ? React.createElement("div", { className: "row", style: { gap: 8, alignItems: "center", marginTop: 6 } },
+        React.createElement("span", { className: "dim" },
+          (tl.strict ? TR("Строгая область: в промпт идут только принятые человеком. Согласовано машиной: ")
+                     : TR("Согласовано машиной, без решения человека: ")) + tl.pendingHuman),
+        React.createElement(Btn, { variant: "secondary", size: "sm", disabled: busy,
+          onClick: () => { if (window.confirm(TR("Принять все согласованные машиной пары как решение человека?"))) post({ accept_all: true }); } },
+          TR("Принять все") + " (" + tl.pendingHuman + ")")) : null,
+      m.insertions ? React.createElement("div", { className: "dim", style: { marginTop: 6 } },
+        TR("Замер: ") + m.insertions + TR(" вставок в ") + m.segments + TR(" сегм., забраковано termcheck ") + m.harm
+        + " (" + m.per10k + TR(" на 10 тыс.; подсказки автоимпорта давали ") + m.baseline.per10k + "). "
+        + TR("Меряется только вред; пользу покажут два прогона одних сегментов.")) : null,
+      disputed.length ? React.createElement("div", { style: { marginTop: 8 } },
+        React.createElement("div", { className: "eyebrow" }, TR("Спорные — решает человек")),
+        disputed.slice(0, showAll ? 200 : 8).map(e => React.createElement("div", { key: e.src, className: "row", style: { gap: 8, alignItems: "center", marginTop: 4 } },
+          React.createElement("span", null, e.src + " → " + e.tgt),
+          React.createElement("span", { className: "dim" }, e.why ? " · " + e.why : ""),
+          React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy, onClick: () => post({ decisions: [{ src: e.src, tgt: e.tgt, status: "agreed" }] }) }, TR("Принять")),
+          React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy, onClick: () => post({ decisions: [{ src: e.src, tgt: e.tgt, status: "rejected" }] }) }, TR("Отклонить")))),
+        disputed.length > 8 ? React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setShowAll(v => !v) },
+          showAll ? TR("Скрыть") : TR("Показать все") + " (" + disputed.length + ")") : null) : null,
+      agreed.length ? React.createElement("div", { className: "dim", style: { marginTop: 8 } },
+        TR("Согласовано: ") + agreed.slice(0, 12).map(e => e.src + " → " + e.tgt).join("; ") + (agreed.length > 12 ? " …" : "")) : null));
+}
+
 function StyleCard({ project, toast }) {
   const [st, setSt] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -1077,6 +1170,7 @@ function TabAnalysis({ store, toast }) {
     !summary && React.createElement("div", { className: "dim", style: { fontSize: 13 } }, TR("Считаем итог…")),
     React.createElement(CoverageCard, { project }),
     React.createElement(StyleCard, { project, toast }),
+    React.createElement(TermlistCard, { project, toast }),
     tk && React.createElement(TurnkeySummary, { summary, store, toast, onReload: reload }),
     summary && !tk && React.createElement("div", { className: "dim", style: { fontSize: 13, marginBottom: 10 } },
       TR("Сервер прежней версии — корзин «под ключ» нет, ниже подробный итог.")),

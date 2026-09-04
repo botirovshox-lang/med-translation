@@ -1689,6 +1689,12 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
                    "fragment calls for. Copy the right-hand side letter for letter — do not\n"
                    "re-capitalise and do not lower it. Only the grammatical form still follows\n"
                    "the sentence.\n")
+    # Терм-лист документа (`tier: "doc"`, см. фазу 0): просьба или правило
+    # в зависимости от строгости области; приказ глоссария выше сильнее всегда.
+    doc = [] if literal else [h for h in (gloss_hits or []) if h.get("tier") == "doc"]
+    if doc:
+        system += _termsheet_block("\n".join(_gloss_line(h) for h in doc),
+                                   not _auto_policy(domain).get("allow_verified", True))
     # ── Подсказки автоимпорта в промпт не уходят ─────────────────────
     # Здесь стоял блок «Unverified glossary hints (bulk-imported, NOT reviewed
     # — some are wrong)». Его убрали, и вот на каких числах.
@@ -6781,6 +6787,7 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
 
     # Глоссарий + TM контекст
     gloss_hits, tm_hit = _get_context(src_text, project=project)
+    gloss_hits = gloss_hits + _doc_hits(src_text, project, gloss_hits)
 
     # TM точное совпадение → 0 токенов (только для авто/пакетного, не для ручного force-перевода)
     # и только для записей, которые завёл человек: см. _tm_trusted.
@@ -6789,6 +6796,7 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
         # все будущие строки с тем же исходником. Сегмент проходит проверки,
         # как всякий машинный перевод, и подтверждает его снова человек.
         _replace_target(seg, tm_hit["tgt"], PROVIDER_TM, "EXACT_TM")
+        seg.pop("docTerms", None)      # промпта не было — следа быть не должно
         save_state(STATE)
         return {"ok": True, "segment": seg, "usedRealApi": False, "source": "TM"}
 
@@ -6811,6 +6819,13 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
         # не трогаем, ошибку называем.
         raise HTTPException(502, "Модель не вернула перевод. Попробуйте ещё раз "
                                  "или выберите другую модель.")
+    # След для замера (`_termlist_measure`) — только у состоявшегося вызова:
+    # у ошибки или TM-совпадения промпта не было.
+    _dt = [h["tgt"] for h in gloss_hits if h.get("tier") == "doc"]
+    if _dt:
+        seg["docTerms"] = _dt
+    else:
+        seg.pop("docTerms", None)
 
     _replace_target(seg, translation, _resolve_model(req.model)["id"], "GPT_REQUIRED")
     save_state(STATE)
@@ -7489,6 +7504,11 @@ CLEAN_LEX_BLIND = "балл не измерен: оригинал короче �
 # `_review_wrote`), и «оценка ниже порога» здесь говорит не то — человек
 # видел бы балл 45 без намёка, что спорят ревизор и судья.
 CLEAN_JUDGE_VS_REVIEW = "текст написала ревизия, судья не согласен — решает человек"
+# Пара стояла в промпте перевода из терм-листа документа: согласие такого
+# сегмента с другими — одно решение, повторённое трижды, а не три подтверждения
+# (тот же закон, что у DUPLICATE/propagatedFrom). Иначе терм-лист утекал бы
+# в глоссарий приказом через автоодобрение, мимо инварианта 8.
+CLEAN_TERMLIST = "перевод подсказан терм-листом документа"
 
 
 def _machine_clean(seg: dict, min_score: int) -> Optional[str]:
@@ -8278,6 +8298,9 @@ def _donor_quality(cand: dict, ctx: dict) -> tuple:
         if seg.get("route") == "DUPLICATE" or seg.get("propagatedFrom"):
             why = why or "перевод скопирован с другого сегмента"
             continue
+        if _norm_key(cand.get("tgt")) in {_norm_key(t) for t in (seg.get("docTerms") or [])}:
+            why = why or CLEAN_TERMLIST
+            continue
         if seg.get("status") == "confirmed" and _confirmed_by_human(seg):
             good += 1
             confirmed = True
@@ -9003,6 +9026,14 @@ def _note_term_disputes(seg: dict, project: Optional[dict]) -> int:
              if f.get("severity") in TERMCHECK_ACTIONABLE and f.get("tgt_term")]
     if not every:
         return 0
+    # Терм-лист документа: один голос любой действующей тяжести снимает пару
+    # из промпта (`_termlist_dispute`) — той же, по которой ремонт заменил бы
+    # её; решает дальше человек.
+    doc = _doc_hits(seg.get("source", ""), project)
+    for f in every:
+        for h in doc:
+            if _term_forms_overlap(f.get("tgt_term") or "", h["tgt"]):
+                _termlist_dispute(project, h["src"], "termcheck: " + (f.get("issue") or f.get("why") or "")[:160])
     hits = {_norm_key(h["tgt"]): h for h in _verified_hits(seg.get("source", ""), project)}
     if not hits:
         return 0
@@ -11902,6 +11933,11 @@ def _openai_repair(seg: dict, project: dict, findings: list, model: Optional[str
                  + "\n".join("  " + (h.get("_form") or h["src"]) + " → "
                               + _case_like(h.get("_form") or h["src"], h["tgt"], h["src"])
                               for h in approved))
+    doc = _doc_hits(seg.get("source", ""), project, approved)
+    if doc:
+        body += ("\n\nDOCUMENT TERM SHEET (agreed for this document, not verified by a human — "
+                 "the approved glossary above always wins):\n"
+                 + "\n".join("  " + (h.get("_form") or h["src"]) + " → " + h["tgt"] for h in doc))
     back = ((seg.get("backcheck") or {}).get("back") or "").strip()
     if back:
         body += ("\n\nBACK-TRANSLATION of the current translation (for reference — it shows how the "
@@ -12182,7 +12218,8 @@ def _consist_misses(seg: dict, project: Optional[dict]) -> list:
     return out
 
 
-def _repair_scores(seg: dict, project: Optional[dict] = None) -> dict:
+def _repair_scores(seg: dict, project: Optional[dict] = None,
+                   doc_skip: Optional[set] = None) -> dict:
     """Снимок качества сегмента: балл back-check, число серьёзных замечаний
     по терминам и число нарушенных утверждённых терминов. По нему решаем,
     стало ли лучше. Глоссарий считается всегда: это единственная из трёх
@@ -12234,6 +12271,10 @@ def _repair_scores(seg: dict, project: Optional[dict] = None) -> dict:
         "case": len(_case_misses(seg)),
         # И буквы чужого письма — тоже бесплатно и тоже всегда.
         "script": len(_script_misses(seg)),
+        # Терм-лист документа: бесплатный счётчик, не находка — ремонт за ним
+        # не ходит, но ломать согласованную пару правкой по другой претензии
+        # не вправе. Без включённого терм-листа всегда ноль.
+        "doc": len(_doc_misses(seg, project, doc_skip)),
         # Повторы. Ремонту говорят «термин потерян», и он ДОПИСЫВАЕТ вариант
         # вместо замены: «areas of increased bone density, areas of increased
         # bone density», «pulmonary tuberculosis (lung tuberculosis)» через
@@ -12352,7 +12393,8 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     tried_now = prev_tried if mdl_planned in prev_tried else prev_tried + [mdl_planned]
     was_confirmed = seg.get("status") == "confirmed"
     override_ev = _confirm_override(seg) if was_confirmed else []
-    before = _repair_scores(seg, project)
+    doc_skip = _doc_flagged(seg, project)
+    before = _repair_scores(seg, project, doc_skip)
     # Проверки старого текста сохраняем целиком: при откате их надо вернуть,
     # иначе сегмент окажется «непроверенным» и человек заплатит за прогон снова.
     bc_before = json.loads(json.dumps(seg.get("backcheck"))) if seg.get("backcheck") else None
@@ -12405,7 +12447,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
                                harvest=False, judge_all=judge_all)
     if had_tc:
         _run_segment_termcheck(seg, project, tc_model, harvest=False)
-    after = _repair_scores(seg, project)
+    after = _repair_scores(seg, project, doc_skip)
     # Что говорит СВЕЖИЙ termcheck и ушли ли заказанные замечания. Считаем
     # один раз: этим пользуются и вето по баллу, и сверка по числу замечаний,
     # а два расчёта одного и того же однажды разойдутся.
@@ -12598,6 +12640,10 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         better = False
         why.append("букв чужого письма стало больше "
                    + str(before["script"]) + " → " + str(after["script"]))
+    if after.get("doc", 0) > before.get("doc", 0):
+        better = False
+        why.append("пар терм-листа документа нарушено больше "
+                   + str(before.get("doc", 0)) + " → " + str(after.get("doc", 0)))
     # Повторы — та же бесплатная и безусловная сверка. Ремонт обязан ЗАМЕНЯТЬ
     # неверный термин, а не дописывать верный рядом с ним.
     if after["dup"] > before["dup"]:
@@ -12875,7 +12921,7 @@ REVIEW_APPLY_LABEL = ("%g" % REVIEW_APPLY_MAX)
 # с первым. Балла (`score`) и платных проверок (`terms`, `terms_lost`) здесь
 # нет намеренно: первый меряет не то, вторые потребовали бы вызовов модели,
 # ради отказа от которых шаг и заведён.
-REVIEW_FREE_KEYS = ("gloss", "case", "script", "dup", "self_dup", "term_case")
+REVIEW_FREE_KEYS = ("gloss", "case", "script", "dup", "self_dup", "term_case", "doc")
 # Оценка, ниже которой сегмент зовёт человека, даже если правки не было.
 # Отдельно от REVIEW_APPLY_MAX намеренно: тот отвечает на вопрос «когда машина
 # правит сама», а этот — «когда звать человека», и двигают их по разным
@@ -13067,6 +13113,11 @@ def _openai_review(seg: dict, project: dict, prev_src: str, next_src: str,
         body += (NL + NL + "Утверждённые термины: "
                  + "; ".join((t.get("src") or "") + " → " + (t.get("tgt") or "")
                              for t in terms[:20]))
+    doc = _doc_hits(seg.get("source") or "", project, terms)
+    if doc:
+        body += (NL + "Терм-лист документа (согласован машиной, не приказ; при споре "
+                 "сильнее утверждённые термины): "
+                 + "; ".join(h["src"] + " → " + h["tgt"] for h in doc))
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
     extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
              else {"max_tokens": 900, "temperature": 0})
@@ -13115,10 +13166,11 @@ def _review_veto(seg: dict, project: Optional[dict], candidate: str) -> list:
     долю основ оригинала, вернувшихся через обратный перевод, то есть
     вознаграждает кальку — ровно то, что ревизор и убирает. На боевом проекте
     этот балл выбросил 111 верных правок termcheck."""
-    before = _repair_scores(seg, project)
+    doc_skip = _doc_flagged(seg, project)
+    before = _repair_scores(seg, project, doc_skip)
     probe = dict(seg)
     probe["target"] = candidate
-    after = _repair_scores(probe, project)
+    after = _repair_scores(probe, project, doc_skip)
     bad = [k for k in REVIEW_FREE_KEYS if (after.get(k) or 0) > (before.get(k) or 0)]
     if checks_mod:
         # Область и пара языков — из ПРОЕКТА. Без них `rules_for` берёт
@@ -14108,6 +14160,566 @@ class TermContextApplyRequest(BaseModel):
 
 
 
+# ── Терм-лист документа (фаза 0) ──────────────────────────────────────
+# Терминология решается ДО перевода, а не выкапывается из готовых сегментов:
+# спор «Phthisiatry/Phthisiology» на боевой книге решился после того, как 2711
+# сегментов были переведены и оплачены, и стоил ремонта. Задача `termsheet`
+# читает ОРИГИНАЛ порциями, модель называет термины и стандартный перевод,
+# дальше — ворота: приказ глоссария (тогда пара и не нужна: `shadowed`),
+# форма (`_looks_like_term`, `_term_shape_reject`), корпус (вето только там,
+# где у него есть право, `vetoAllowed`), сверка смысла (`same`/`rule` — тот же
+# вопрос, что у автоодобрения). «Не знаю» остаётся `pending` и в промпт
+# НЕ идёт.
+# В глоссарий терм-лист НЕ пишет ничего (инвариант 8): это КОНТРАКТ
+# КОНСИСТЕНТНОСТИ ОДНОГО ДОКУМЕНТА, `tier: "doc"`, и в промпт он попадает
+# только по явному включению (`use`) — до A/B-замера на той же книге
+# (`_termlist_measure`: вред termcheck на 10 тыс. вставок против прежних
+# подсказок 15/11414). Приказ глоссария на том же куске сильнее всегда;
+# в строгих областях (медицина, фарма, право) блок сформулирован просьбой,
+# а не приказом. Один голос termcheck ЛЮБОЙ действующей тяжести
+# (TERMCHECK_ACTIONABLE) снимает пару (`_termlist_dispute`): умолчание здесь
+# «приказывать по всему документу», и цена ошибки другая, чем у разнобоя
+# (там нужны два голоса). Той же тяжестью считает вред и замер.
+TERMSHEET_CHUNK = 10
+TERMSHEET_CORPUS_MAX = int(os.environ.get("TERMSHEET_CORPUS_MAX", "300"))
+TERMSHEET_MEANING_MAX = int(os.environ.get("TERMSHEET_MEANING_MAX", "1500"))
+TERMSHEET_VERSION = "1"
+TERMLIST_PROMPT_MAX = 15
+
+
+def _termsheet_system(domain: dict, src_lang: str, tgt_lang: str) -> str:
+    """Промпт терм-листа. Отдельно от вызова — проверяется тестом настоящим кодом."""
+    return (
+        "You prepare a bilingual TERM SHEET for translating a " + domain["en"] + " document\n"
+        "from " + src_lang + " to " + tgt_lang + ". You are given SOURCE segments only.\n"
+        "Return ONLY a JSON array, no prose.\n\n"
+        'Each item: {"src": <term in the source language, dictionary form (nominative singular)>,\n'
+        '            "tgt": <the standard ' + tgt_lang + " term used in " + domain["en"] + ' publications>,\n'
+        '            "cat": <one of ' + "|".join(domain["cats"]) + '>}\n\n'
+        "RULES:\n"
+        "1. " + domain["extract"] + "\n"
+        "2. Include abbreviations with their standard " + tgt_lang + " equivalent — the target-language\n"
+        "   abbreviation, never a transliteration of the source one.\n"
+        "3. The target side is the accepted term of the field, never a word-by-word calque and never\n"
+        "   a transliteration. If the field uses several names, give the most common one.\n"
+        "4. Skip general vocabulary, numbers, whole sentences, anything longer than 5 words.\n"
+        "5. At most 5 terms per segment. Return [] if the segments have no terminology.\n"
+    )
+
+
+def _termsheet_call(sources: list, model: Optional[str], domain_id: Optional[str],
+                    src_lang: str, tgt_lang: str) -> list:
+    """Один вызов на порцию оригиналов. Возвращает список пар или []."""
+    import json as _json
+    import openai
+    dom = _resolve_domain(domain_id)
+    mdl = _resolve_model(model or REVIEW_DEFAULT_MODEL)
+    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
+    body = "\n\n".join(f"[{i + 1}] {t}" for i, t in enumerate(sources))
+    extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
+             else {"max_tokens": 1500, "temperature": 0})
+    try:
+        resp = client.chat.completions.create(
+            model=mdl["id"],
+            messages=[{"role": "system", "content": _termsheet_system(dom, src_lang, tgt_lang)},
+                      {"role": "user", "content": body}],
+            **extra,
+        )
+        _note_usage("terms", mdl["id"], resp)
+        raw = (resp.choices[0].message.content or "").strip()
+        lo, hi = raw.find("["), raw.rfind("]")
+        if lo == -1 or hi <= lo:
+            return None
+        data = _json.loads(raw[lo:hi + 1])
+        return [d for d in data if isinstance(d, dict) and d.get("src") and d.get("tgt")]
+    except Exception as e:
+        # None — «вызов не состоялся», и это НЕ то же, что «терминов нет»:
+        # мёртвый ключ иначе выглядел бы как выполненный сбор с пустым списком.
+        print(f"[backend] терм-лист: вызов не удался: {e}", file=sys.stderr)
+        return None
+
+
+def _termlist_entries(project: Optional[dict]) -> list:
+    """Пары, которые вправе идти в промпт. В строгой области (медицина, фарма,
+    право) — ТОЛЬКО принятые человеком: пары предлагает модель, и судит сверка
+    той же моделью, — это самоодобрение, которое там запрещено даже глоссарию
+    (инвариант 8). «Согласовано машиной» в строгой области — список на решение
+    человека, не подсказка в промпт."""
+    ents = ((project or {}).get("termlist") or {}).get("entries") or []
+    strict = _termlist_strict(project) if project else True
+    return [e for e in ents if e.get("status") == "agreed"
+            and (not strict or e.get("by") == "human")]
+
+
+def _termlist_active(project: Optional[dict]) -> bool:
+    tl = (project or {}).get("termlist") or {}
+    return bool(tl.get("use")) and bool(_termlist_entries(project))
+
+
+def _termlist_prompt_fp(project: dict) -> str:
+    """Отпечаток того, что из терм-листа видит промпт: смена — та же смена
+    промпта ревизии, что у стайл-шита."""
+    if not _termlist_active(project):
+        return ""
+    return _text_hash(json.dumps(sorted((e["src"], e["tgt"]) for e in _termlist_entries(project)),
+                                 ensure_ascii=False))
+
+
+def _reviews_mark_stale(project: dict) -> int:
+    """Пометить свежие вердикты ревизии устаревшими (смена промпта: стайл-шит
+    или терм-лист). Число — цена, её называют в ответе."""
+    n = 0
+    for seg in project.get("segments") or []:
+        rv = seg.get("review")
+        if rv and not rv.get("styleStale") and not _review_stale(seg):
+            rv["styleStale"] = True
+            n += 1
+    return n
+
+
+_TERMLIST_INDEX: dict = {}
+
+
+def _termlist_index(project: dict) -> dict:
+    """Индекс терм-листа по ключам-началам слов — как `_gloss_index`, но свой
+    у проекта и по отпечатку согласованных пар: перебирать сотни регулярок
+    на каждый сегмент незачем."""
+    ents = _termlist_entries(project)
+    fp = _text_hash(json.dumps([(e["src"], e["tgt"]) for e in ents], ensure_ascii=False))
+    cached = _TERMLIST_INDEX.get(project["id"])
+    if cached and cached[0] == fp:
+        return cached[1]
+    idx: dict = {}
+    for e in ents:
+        for k in _entry_keys(e.get("src") or ""):
+            idx.setdefault(k, []).append(e)
+    _TERMLIST_INDEX[project["id"]] = (fp, idx)
+    return idx
+
+
+def _doc_hits(source: str, project: Optional[dict], other: Optional[list] = None) -> list:
+    """Согласованные пары терм-листа, чей термин стоит в ЭТОМ оригинале —
+    хиты `tier: "doc"`. Пара, чей термин совпадает с приказной записью или
+    вложен в неё (`other` — хиты глоссария), не идёт: приказ сильнее."""
+    if not project or not source or not _termlist_active(project):
+        return []
+    idx = _termlist_index(project)
+    seen, hits = set(), []
+    for k in _text_keys(source):
+        for e in idx.get(k, ()):
+            if id(e) in seen:
+                continue
+            seen.add(id(e))
+            form = _term_match(e["src"], source, _src_lang(e))
+            if form:
+                hits.append({"src": e["src"], "tgt": e["tgt"], "tier": "doc",
+                             "lang": e.get("lang"), "_form": form})
+    if not hits:
+        return []
+    hard = [_norm_key(h.get("src") or "") for h in (other or [])
+            if h.get("tier") == GLOSSARY_TIER_HARD]
+
+    def _inside(d: str) -> bool:
+        # Целым словом: «рак» не вложен в «характер», «тест» — в «тестостерон».
+        rx = re.compile(r"(?<!\w)" + re.escape(d) + r"(?!\w)")
+        return any(rx.search(v) for v in hard if v)
+    hits = [h for h in hits if not _inside(_norm_key(h["src"]))]
+    best: dict = {}
+    for h in hits:
+        key = h["_form"].lower()
+        if key not in best or len(h["src"]) > len(best[key]["src"]):
+            best[key] = h
+    return sorted(best.values(), key=lambda x: len(x["src"]), reverse=True)[:TERMLIST_PROMPT_MAX]
+
+
+def _doc_misses(seg: dict, project: Optional[dict], skip: Optional[set] = None) -> list:
+    """Пары терм-листа, чей термин есть в оригинале, а перевод — нет.
+    Счётчик ремонта, НЕ находка: ремонт за терм-листом не ходит, но и ломать
+    его правкой по другой претензии не вправе."""
+    if not project or not _termlist_active(project):
+        return []
+    target = seg.get("target") or ""
+    hits = _doc_hits(seg.get("source") or "", project, _verified_hits(seg.get("source") or "", project))
+    skip = skip or set()
+    return [h for h in hits if not _tgt_has_term(target, h["tgt"]) and _norm_key(h["tgt"]) not in skip]
+
+
+def _doc_flagged(seg: dict, project: Optional[dict] = None) -> set:
+    """Пары терм-листа, забракованные СВЕЖИМ termcheck в этом сегменте.
+    Считается ОДИН раз, до правки, и передаётся в обе оценки: ремонт,
+    заменивший такую пару по находке, иначе откатывался бы счётчиком «после»
+    (у нового текста termcheck про исчезнувшее слово молчит) и клеймился."""
+    tc = seg.get("termcheck") or {}
+    if tc.get("target_hash") != _text_hash((seg.get("target") or "").strip()):
+        return set()
+    words = [f.get("tgt_term") for f in (tc.get("findings") or [])
+             if f.get("severity") in TERMCHECK_ACTIONABLE and f.get("tgt_term")]
+    if not words:
+        return set()
+    hits = _doc_hits(seg.get("source") or "", project)
+    return {_norm_key(h["tgt"]) for h in hits if any(_term_forms_overlap(w, h["tgt"]) for w in words)}
+
+
+def _term_forms_overlap(found: str, term: str) -> bool:
+    """Находка termcheck цитирует фрагмент ПЕРЕВОДА («Bioptates»), а пара
+    хранит словарную форму («bioptate»): сравнение буквальное их не сведёт,
+    и ни диспут, ни исключение из счётчика не сработали бы ровно там, где
+    нужны. Вхождение в любую сторону — тем же `_tgt_has_term`, каким
+    `_gloss_misses` решает, стоит ли термин в тексте."""
+    if not found or not term:
+        return False
+    return _norm_key(found) == _norm_key(term) or _tgt_has_term(found, term) or _tgt_has_term(term, found)
+
+
+def _termlist_strict(project: dict) -> bool:
+    return not _auto_policy((project or {}).get("domain")).get("allow_verified", True)
+
+
+def _termsheet_block(terms: str, strict: bool) -> str:
+    if strict:
+        return ("\nDocument term sheet (agreed by the model for THIS document, not verified by a human):\n"
+                + terms + "\nPrefer these translations for consistency across the document unless one is\n"
+                "clearly wrong in this context. The approved glossary above always takes precedence.\n")
+    return ("\nDocument term sheet — use these translations consistently across the document:\n"
+            + terms + "\nThe approved glossary above always takes precedence.\n")
+
+
+def _termlist_dispute(project: Optional[dict], src: str, why: str) -> bool:
+    """Один голос снимает пару: согласованная машиной запись уходит из промпта
+    и ждёт человека. Решение человека (`by: human`) машина не отменяет."""
+    if not project:
+        return False
+    key = _norm_key(src)
+    for e in ((project.get("termlist") or {}).get("entries") or []):
+        if _norm_key(e.get("src")) == key and e.get("status") == "agreed" and e.get("by") != "human":
+            e["status"] = "disputed"
+            e["why"] = why
+            e["votes"] = int(e.get("votes") or 0) + 1
+            _TERMLIST_INDEX.pop(project["id"], None)
+            return True
+    return False
+
+
+def _termlist_measure(project: dict) -> dict:
+    """Замер вреда: среди сегментов, переведённых с терм-листом в промпте
+    (`docTerms`) и проверенных termcheck, сколько вставленных и СТОЯЩИХ
+    в переводе пар termcheck забраковал (любой действующей тяжести). Тот же
+    счёт, каким похоронили подсказки автоимпорта: 15 подмен на 11 414 вставок.
+    Меряется только вред: пользу можно измерить лишь двумя прогонами одних
+    сегментов, и в карточке это сказано."""
+    segs = ins = harm = 0
+    samples = []
+    for sg in project.get("segments") or []:
+        dt = sg.get("docTerms") or []
+        target = (sg.get("target") or "").strip()
+        if not dt or not target:
+            continue
+        tc = sg.get("termcheck") or {}
+        if tc.get("target_hash") != _text_hash(target):
+            continue
+        # Текст, переписанный ремонтом или ревизией, описывает не тот промпт.
+        rp = sg.get("repair") or {}
+        if _review_wrote(sg) or (rp.get("applied") and rp.get("source_hash") == _text_hash(target)):
+            continue
+        # Считаются только пары, которые СТОЯТ в переводе (модель послушалась):
+        # тот же счёт, что у прежнего замера подсказок.
+        dt = [t for t in dt if _tgt_has_term(target, t)]
+        if not dt:
+            continue
+        segs += 1
+        ins += len(dt)
+        dts = {_norm_key(t) for t in dt}
+        for f in tc.get("findings") or []:
+            if f.get("severity") in TERMCHECK_ACTIONABLE and _norm_key(f.get("tgt_term")) in dts:
+                harm += 1
+                if len(samples) < 10:
+                    samples.append({"id": sg["id"], "term": f.get("tgt_term"), "why": f.get("issue") or f.get("why") or ""})
+    return {"segments": segs, "insertions": ins, "harm": harm,
+            "per10k": (round(harm * 10000.0 / ins, 1) if ins else None),
+            "baseline": {"insertions": 11414, "harm": 15, "per10k": 13.1}, "samples": samples}
+
+
+def _termlist_counts(entries: list) -> dict:
+    out = {k: 0 for k in ("agreed", "disputed", "rejected", "pending", "shadowed")}
+    for e in entries:
+        out[e.get("status")] = out.get(e.get("status"), 0) + 1
+    return out
+
+
+def _job_termsheet(job: dict) -> None:
+    """Терм-лист документа: одна задача на проект, оригиналы порциями,
+    вызовы параллельно, ворота после сбора. Прежние решения человека и уже
+    оплаченные вердикты сверки/корпуса по той же паре переживают пересбор."""
+    pid = job["project"]
+    project = next((p for p in STATE["projects"] if p["id"] == pid), None)
+    if project is None:
+        job["status"], job["error"] = "error", "проект не найден"
+        return
+    src_lang, tgt_lang = project.get("src", "RU"), project.get("tgt", "EN")
+    model = job["params"].get("model") or REVIEW_DEFAULT_MODEL
+    segs = [sg for sg in project["segments"] if (sg.get("source") or "").strip()]
+    chunks = [segs[i:i + TERMSHEET_CHUNK] for i in range(0, len(segs), TERMSHEET_CHUNK)]
+    job["total"], job["done"] = len(segs), 0
+    found: dict = {}
+
+    def work(chunk):
+        return _termsheet_call([sg["source"] for sg in chunk], model, project.get("domain"),
+                               src_lang, tgt_lang)
+
+    calls = failed = 0
+    step = max(1, RUN_WORKERS * 2)
+    for i in range(0, len(chunks), step):
+        # Стоп-флаг читается ТЕМ ЖЕ помощником, что у порционных прогонов:
+        # во внешнем воркере он перечитывает таблицу jobs и заодно пишет
+        # прогресс; локальная копия `job["stop"]` там не обновляется.
+        if _job_should_stop():
+            job["status"] = "stopped"
+            job["counters"].update({"calls": calls, "failed": failed, "stoppedAt": job["done"]})
+            return    # список не пишется: половина книги под листом — разнобой по построению
+        batch = chunks[i:i + step]
+        for chunk, items in zip(batch, _run_parallel(batch, work)):
+            calls += 1
+            if items is None:
+                failed += 1
+                continue
+            for it in items:
+                s_, t_ = (it.get("src") or "").strip(), (it.get("tgt") or "").strip()
+                if not s_ or not t_:
+                    continue
+                rec = found.setdefault(_norm_key(s_), {"src": s_, "tgts": {}, "cat": it.get("cat") or ""})
+                rec["tgts"][t_] = rec["tgts"].get(t_, 0) + 1
+            job["done"] += len(chunk)
+    if calls and failed >= calls:
+        # Ни один вызов не прошёл — это отозванный ключ, лимит или сеть,
+        # а не пустой документ. Прежний список не трогается.
+        job["status"], job["error"] = "error", "ни один вызов терм-листа не прошёл: ключ, лимит или сеть"
+        job["counters"].update({"calls": calls, "failed": failed})
+        return
+
+    scope = _project_scope(project)
+    pol = _auto_policy(project.get("domain"))
+    old = ((project.get("termlist") or {}).get("entries") or [])
+    prev = {(_norm_key(e.get("src")), _norm_key(e.get("tgt"))): e for e in old}
+    entries = []
+    for rec in found.values():
+        tgts = sorted(rec["tgts"].items(), key=lambda x: -x[1])
+        tgt = tgts[0][0]
+        e = {"src": rec["src"], "tgt": tgt, "cat": rec["cat"], "lang": scope[0],
+             "hits": sum(n for _t, n in tgts), "variants": [t for t, _n in tgts[1:4]],
+             "status": "pending", "by": "model", "gates": {}, "why": ""}
+        was = prev.get((_norm_key(e["src"]), _norm_key(tgt)))
+        if was and was.get("by") == "human":
+            # Решение человека переживает пересбор: своё предположение машина
+            # вправе пересмотреть, чужое решение — нет.
+            e.update({"status": was["status"], "by": "human", "why": was.get("why") or "",
+                      "gates": dict(was.get("gates") or {})})
+            entries.append(e)
+            continue
+        known = _glossary_entry(rec["src"], scope)
+        if known and known.get("tier") == GLOSSARY_TIER_HARD:
+            e["status"], e["gates"]["shadowedBy"] = "shadowed", known.get("tgt")
+            entries.append(e)
+            continue
+        if not _looks_like_term(rec["src"], tgt):
+            e["status"], e["why"] = "rejected", "не термин: обрывок фразы"
+            entries.append(e)
+            continue
+        shape = _term_shape_reject(pol, rec["src"], tgt)
+        if shape:
+            e["status"], e["why"] = "rejected", shape
+            entries.append(e)
+            continue
+        if len(tgts) > 1 and tgts[1][1] >= tgts[0][1]:
+            e["status"] = "disputed"
+            e["why"] = "модель предложила разные переводы: " + ", ".join(t for t, _n in tgts[:3])
+        if was and was.get("gates"):
+            e["gates"] = {k: v for k, v in was["gates"].items() if k in ("corpus", "meaning")}
+            c = e["gates"].get("corpus") or {}
+            if c and c.get("ok") is False and c.get("veto", True):
+                e["status"], e["why"] = "rejected", "корпус целевого языка не знает такого термина — калька"
+        entries.append(e)
+
+    # Корпус: только про то, что не решено, в пределах потолка; вето — только
+    # у корпуса своей области (`vetoAllowed`). Счётчики называют честно, что
+    # корпус сделал: молчание и «нет права вето» — не защита.
+    corpus_n = {"corpusChecked": 0, "corpusVeto": 0, "corpusSilent": 0, "corpusNoVeto": 0}
+    for e in entries:
+        if e["status"] not in ("pending", "disputed") or "corpus" in e["gates"]:
+            continue
+        if corpus_n["corpusChecked"] >= TERMSHEET_CORPUS_MAX:
+            break
+        c = _corpus_check(e["tgt"], scope)
+        corpus_n["corpusChecked"] += 1
+        if c is None:
+            corpus_n["corpusSilent"] += 1
+            continue
+        e["gates"]["corpus"] = {"ok": c.get("ok"), "hits": c.get("hits"), "source": c.get("source"),
+                                "veto": bool(c.get("vetoAllowed", True))}
+        if not c.get("ok"):
+            if c.get("vetoAllowed", True):
+                corpus_n["corpusVeto"] += 1
+                e["status"], e["why"] = "rejected", "корпус целевого языка не знает такого термина — калька"
+            else:
+                corpus_n["corpusNoVeto"] += 1
+    # Готовый вердикт той же пары на записи глоссария (аудит уже платил за него)
+    # не переспрашивается.
+    for e in entries:
+        if e["status"] not in ("pending", "disputed") or "meaning" in e["gates"]:
+            continue
+        g = _glossary_entry(e["src"], scope) or {}
+        mv = g.get("meaning") or {}
+        if mv and mv.get("pair") == _meaning_pair({"src": e["src"], "tgt": e["tgt"]}) \
+                and str(mv.get("v")) == str(MEANING_VERSION) and mv.get("same") is not None:
+            e["gates"]["meaning"] = {"same": mv.get("same"), "rule": mv.get("rule"), "why": mv.get("why") or ""}
+
+    # Сверка смысла — те же два вопроса, что у автоодобрения. Готовый
+    # вердикт по той же паре не переспрашивается.
+    cands = [{"src": e["src"], "tgt": e["tgt"], "lang": scope[0], "domain": scope[1], "tenant": scope[2]}
+             for e in entries if e["status"] in ("pending", "disputed") and "meaning" not in e["gates"]]
+    verdicts, _answered, capped = _meaning_check(cands, cap=TERMSHEET_MEANING_MAX) if cands else ({}, 0, 0)
+    for e in entries:
+        if e["status"] not in ("pending", "disputed"):
+            continue
+        v = e["gates"].get("meaning")
+        if v is None:
+            raw = verdicts.get((scope, _norm_key(e["src"]), _norm_key(e["tgt"])))
+            if not raw:
+                continue
+            v = {"same": raw.get("same"), "rule": raw.get("rule"), "why": raw.get("why") or ""}
+            e["gates"]["meaning"] = v
+        if v.get("same") is False:
+            e["status"], e["why"] = "rejected", "не то понятие: " + (v.get("why") or "")
+        elif v.get("rule") is False:
+            e["status"], e["why"] = "disputed", "верно в контексте, но не годится правилом: " + (v.get("why") or "")
+        elif v.get("same") and v.get("rule") and e["status"] == "pending":
+            e["status"] = "agreed"
+    entries.sort(key=lambda x: (-x["hits"], x["src"].lower()))
+    # Слияние под локом: решение, принятое человеком ПОКА шёл сбор (в одном
+    # процессе охранник записи не держит), не теряется, а принятая человеком
+    # пара, которую модель в этот раз не назвала, остаётся в списке.
+    with _SAVE_LOCK:
+        cur = project.get("termlist") or {}
+        human = {_norm_key(e.get("src")): e for e in (cur.get("entries") or []) if e.get("by") == "human"}
+        seen = set()
+        for e in entries:
+            k = _norm_key(e["src"])
+            h = human.get(k)
+            if not h:
+                continue
+            same_pair = _norm_key(h.get("tgt")) == _norm_key(e["tgt"])
+            # «Эта пара неверна» не равно «с термином разобрались»: отклонение
+            # относится к ПАРЕ, и новый перевод того же термина проходит ворота
+            # сам. Согласие человека — решение о термине, оно сильнее.
+            if h.get("status") == "agreed" or same_pair:
+                seen.add(k)
+                e.update({"status": h["status"], "tgt": h.get("tgt") or e["tgt"], "by": "human",
+                          "why": h.get("why") or ""})
+                if same_pair:
+                    e["gates"] = dict(h.get("gates") or e.get("gates") or {})
+        for k, h in human.items():
+            if k not in seen:
+                entries.append(h)     # решение человека не исчезает, если модель термин не назвала
+        if failed:
+            # Часть порций не прошла (429, сеть): прежние машинные пары из них
+            # неоткуда взять заново — оставляем как были, а число упавших
+            # порций уходит в счётчики и на карточку.
+            have = {(_norm_key(e["src"]), _norm_key(e["tgt"])) for e in entries}
+            for e in cur.get("entries") or []:
+                if (_norm_key(e.get("src")), _norm_key(e.get("tgt"))) not in have:
+                    entries.append(e)
+        project["termlist"] = {"v": TERMSHEET_VERSION, "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                               "model": _resolve_model(model)["id"], "strict": _termlist_strict(project),
+                               "use": bool(cur.get("use", False)),
+                               "acceptedBy": cur.get("acceptedBy"), "acceptedAt": cur.get("acceptedAt"),
+                               "entries": entries}
+        _TERMLIST_INDEX.pop(pid, None)
+    job["counters"].update({"calls": calls, "failed": failed, "terms": len(entries),
+                            "meaningCapped": capped, **corpus_n, **_termlist_counts(entries)})
+    if failed:
+        project["termlist"]["partial"] = failed
+    _ANALYSIS_CACHE.pop(pid, None)
+    save_state(STATE)
+
+
+class TermlistBody(BaseModel):
+    use: Optional[bool] = None
+    decisions: Optional[list] = None     # [{"src", "status": agreed|rejected, "tgt"?}]
+    # «Принять все согласованные машиной» — одно решение человека списком,
+    # со следом (`acceptedBy/At`): в строгой области без него в промпт
+    # не идёт ничего.
+    accept_all: bool = False
+
+
+def _termlist_view(project: dict) -> dict:
+    tl = project.get("termlist") or {}
+    ents = tl.get("entries") or []
+    return {"ok": True, "built": bool(tl), "use": bool(tl.get("use")), "at": tl.get("at"),
+            "model": tl.get("model"), "strict": _termlist_strict(project),
+            "acceptedAt": tl.get("acceptedAt"), "active": len(_termlist_entries(project)),
+            "partial": tl.get("partial") or 0,
+            "pendingHuman": sum(1 for e in ents if e.get("status") == "agreed" and e.get("by") != "human"),
+            "counts": _termlist_counts(ents),
+            # Карточке нужны спорные (все) и согласованные (образец): тысячи
+            # отклонённых пар с причинами — сотни килобайт на каждый клик.
+            "entries": [{k: e.get(k) for k in ("src", "tgt", "status", "by", "why", "hits", "variants", "cat", "votes")}
+                        for e in ents if e.get("status") == "disputed"]
+                       + [{k: e.get(k) for k in ("src", "tgt", "status", "by", "hits")}
+                          for e in ents if e.get("status") == "agreed"][:300],
+            "measure": _termlist_measure(project)}
+
+
+@app.get("/api/projects/{pid}/termlist")
+def get_termlist(pid: int):
+    return _termlist_view(get_project(pid))
+
+
+@app.post("/api/projects/{pid}/termlist")
+def set_termlist(pid: int, req: TermlistBody):
+    """Включить терм-лист в промпты и записать решения человека по спорным
+    парам. Бесплатно; в глоссарий не пишет ничего."""
+    _guard_project_write(pid)
+    if _job_busy(pid, "termsheet"):
+        raise HTTPException(409, "Идёт сбор терм-листа — дождитесь конца или остановите его")
+    project = get_project(pid)
+    tl = project.get("termlist")
+    if not tl:
+        raise HTTPException(400, "Терм-лист ещё не собран")
+    before = _termlist_prompt_fp(project)
+    if req.use is not None:
+        tl["use"] = bool(req.use)
+    ents = tl.get("entries") or []
+    decided = 0
+    if req.accept_all:
+        for e in tl.get("entries") or []:
+            if e.get("status") == "agreed" and e.get("by") != "human":
+                e["by"], e["why"] = "human", "принято списком"
+                decided += 1
+        tl["acceptedBy"] = _actor_id()
+        tl["acceptedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    for d in req.decisions or []:
+        d = d or {}
+        st = d.get("status")
+        ks, kt = _norm_key(d.get("src") or ""), _norm_key(d.get("tgt") or "")
+        # Решение адресует ПАРУ: у одного термина в списке может стоять и
+        # отклонённый человеком перевод, и новый от модели.
+        e = next((x for x in ents if _norm_key(x.get("src")) == ks
+                  and (not kt or _norm_key(x.get("tgt")) == kt)
+                  and (kt or x.get("status") != "rejected")), None)
+        if e is None or st not in ("agreed", "rejected"):
+            continue
+        e["status"], e["by"] = st, "human"
+        e["why"] = "решение человека" if st == "agreed" else "отклонено человеком"
+        decided += 1
+    _TERMLIST_INDEX.pop(pid, None)
+    # Состав промпта изменился — вердикты ревизии устарели, как при смене
+    # стайл-шита; число названо.
+    stale = _reviews_mark_stale(project) if _termlist_prompt_fp(project) != before else 0
+    _ANALYSIS_CACHE.pop(pid, None)
+    save_state(STATE)
+    _audit("termlist.set", project=pid, use=req.use, decided=decided, accept_all=req.accept_all)
+    return {**_termlist_view(project), "decided": decided, "reviewsStale": stale}
+
+
 # ── Стайл-шит документа ────────────────────────────────────────────────
 # Единая стилистика — свойство ДОКУМЕНТА, а не соседей: два соседних сегмента
 # не скажут, как в статье пишутся заголовки, аббревиатуры при первом
@@ -14466,11 +15078,7 @@ def set_project_style(pid: int, req: StyleBody):
     after = _style_fp(project)
     stale = 0
     if after != before:
-        for seg in project["segments"]:
-            rv = seg.get("review")
-            if rv and not rv.get("styleStale") and not _review_stale(seg):
-                rv["styleStale"] = True
-                stale += 1
+        stale = _reviews_mark_stale(project)
         _ANALYSIS_CACHE.pop(pid, None)
     save_state(STATE)
     _audit("style.project", project=pid, fields=sorted(req.fields or {}), enable=req.enable)
@@ -15310,6 +15918,7 @@ def batch_translate(pid: int, req: BatchRequest):
         if _job_should_stop():
             return {"key": key, "skip": True}
         gloss_hits, tm_hit = _get_context(seg["source"], project=project)
+        gloss_hits = gloss_hits + _doc_hits(seg["source"], project, gloss_hits)
 
         # TM точное совпадение → пропускаем API вызов.
         # При force (явный выбор пользователя: галочки или «перевести заново») шорткат
@@ -15346,7 +15955,9 @@ def batch_translate(pid: int, req: BatchRequest):
             return {"key": key, "error": str(e)}
         if not translation:
             return {"key": key, "error": "модель не вернула перевод"}
-        return {"key": key, "text": translation, "provider": _resolve_model(req.model)["id"]}
+        # След для замера: какие пары терм-листа ушли в ЭТОТ промпт.
+        return {"key": key, "text": translation, "provider": _resolve_model(req.model)["id"],
+                "docTerms": [h["tgt"] for h in gloss_hits if h.get("tier") == "doc"]}
 
     for res in _run_parallel(order, _translate_group):
         segs = groups[res["key"]]
@@ -15360,6 +15971,7 @@ def batch_translate(pid: int, req: BatchRequest):
                 # translated, а не confirmed — см. translate_segment
                 sg["target"] = res["text"]
                 sg["status"] = "translated"
+                sg.pop("docTerms", None)   # текст из памяти или копия: промпта с терм-листом не было
                 sg["route"] = "EXACT_TM" if res.get("tm") else "DUPLICATE"
                 # Копия наследует провайдера донора: писать «tm» на тексте,
                 # взятом у соседнего сегмента, значит соврать о происхождении.
@@ -15371,6 +15983,10 @@ def batch_translate(pid: int, req: BatchRequest):
                 dup_hits_count += len(segs)
             continue
         for i, sg in enumerate(segs):
+            if res.get("docTerms"):
+                sg["docTerms"] = list(res["docTerms"])
+            else:
+                sg.pop("docTerms", None)
             # Переписываем заверенный человеком перевод — сохраняем прежний текст
             # и снимаем отметку о подтверждении: статус «требует проверки», а не
             # «подтверждено». Машина не заверяет сама себя, и «подтвердил человек»
@@ -16854,6 +17470,8 @@ JOB_CHUNKS = {"translate": 10, "backcheck": 10, "termcheck": 10, "medical_qa": 1
               # Сверка терминов моделью: один вызов на сегмент, порция как
               # у остальных проверок.
               "termaudit": 10,
+              # Терм-лист документа: одна задача на проект, оригиналы порциями.
+              "termsheet": 10,
               # Ревизия: один вызов на сегмент, но вызовы внутри порции идут
               # параллельно (`_run_parallel`), поэтому порция как у проверок.
               # Без записи ЗДЕСЬ отдельный запуск шага отвечает 400
@@ -17622,6 +18240,12 @@ def _job_run(job: dict):
             job["status"] = "done"
         job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return
+    if kind == "termsheet":
+        _job_termsheet(job)
+        if job["status"] == "running":
+            job["status"] = "done"
+        job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return
     if kind == "apply_terms":
         # Одобрение пачки — один шаг, а не порция: оно про глоссарий, а не про
         # сегменты. Состав сегментов пересчитываем ПОСЛЕ него: до одобрения
@@ -17859,7 +18483,7 @@ def create_job(pid: int, req: JobRequest):
     ids = list(dict.fromkeys(req.segment_ids))
     # apply_terms сам считает состав после одобрения терминов — до него список
     # сегментов ещё неизвестен, и требовать его от клиента бессмысленно.
-    if not ids and req.kind not in ("apply_terms", "images"):
+    if not ids and req.kind not in ("apply_terms", "images", "termsheet"):
         # apply_terms считает состав после одобрения терминов, а разбор
         # картинок — сам себе состав: сегментов из картинок ещё не существует.
         raise HTTPException(400, "Пустой список сегментов")

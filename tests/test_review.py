@@ -720,6 +720,27 @@ check(len(set(tk["ready"]) | set(tk["machine"]) | set(tk["human"])) == res["tota
       "корзины по-прежнему исчерпывающие")
 
 print()
+# ── судья не гонит ремонт на текст, написанный ревизией ────────────────
+vs = vouch_seg(score=6.5, bc_score=0, judge="major", applied=True)
+vs["backcheck"]["judge"]["divergences"] = ["«Фтизиатрия» заменена на «фтизиологию»"]
+check(not any(f["kind"] == "judge" for f in main._repair_findings(vs)),
+      "текст написала ревизия, судья major — в ремонт не идёт, решает человек")
+vs = vouch_seg(score=6.5, bc_score=0, judge="major", applied=True, v="0")
+vs["backcheck"]["judge"]["divergences"] = ["другая дисциплина"]
+check(main._review_wrote(vs) and not any(f["kind"] == "judge" for f in main._repair_findings(vs)),
+      "чужая версия вердикта не отменяет «текст написала ревизия»: хеш тот же")
+vs["backcheck"]["reasons"] = ["расхождение чисел"]
+check(any(f["kind"] == "backcheck" for f in main._repair_findings(vs)),
+      "объективная причина (числа) идёт в ремонт и под ревизией")
+vs = vouch_seg(score=6.5, bc_score=0, judge="major", applied=False)
+vs["backcheck"]["judge"]["divergences"] = ["другая дисциплина"]
+check(any(f["kind"] == "judge" for f in main._repair_findings(vs)),
+      "без ревизии на этом тексте судья major гонит ремонт, как прежде")
+vs = vouch_seg(score=6.5, bc_score=0, judge="major", applied=True, target_hash="stale")
+vs["backcheck"]["judge"]["divergences"] = ["другая дисциплина"]
+check(any(f["kind"] == "judge" for f in main._repair_findings(vs)),
+      "устаревший вердикт ревизии (текст правили после) не защищает")
+
 if fail:
     print("ПРОВАЛЕНО: " + str(len(fail)))
     for f in fail:

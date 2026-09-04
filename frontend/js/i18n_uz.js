@@ -2097,6 +2097,7 @@ window.I18N.registerServer("uz", {
  "смысл расходится: ": "ma'no mos kelmayapti: ",
  "судья: ": "hakam: ",
  "судья: смысл эквивалентен, отличается формулировка": "hakam: ma'no ekvivalent, ifoda farq qiladi",
+ "текст написала ревизия, судья не согласен — решает человек": "matnni reviziya yozgan, hakam rozi emas — odam hal qiladi",
  "термин «": "atama «",
  "утверждённый перевод термина «": "atamaning tasdiqlangan tarjimasi «",
  "часть текста не совпала дословно": "matnning bir qismi so'zma-so'z mos kelmadi",

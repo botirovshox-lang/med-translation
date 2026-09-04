@@ -159,6 +159,13 @@ def _bound_r(term: str, cls: str = "") -> str:
 # «infiltra»), а `_same_lexeme` для некириллицы молчала — то есть защита
 # от подмены была выключена целиком: «test» ловил «testosterone», «gene»
 # ловил «generalized».
+# Окончания, при которых найденная форма ОБЯЗАНА сохранить «и»: существительное
+# на «-ия» держит его во всех формах (терапия, терапии, терапию, терапией,
+# терапий). Форма без него — другое слово с тем же началом: дисциплина против
+# врача. «Фтизиатрия» ловила «фтизиатр», «фтизиатра», «фтизиатром», и приказ
+# «Фтизиатрия → Phthisiology» шёл на сегменты про врача (то же «хирургия →
+# хирурга», «педиатрия → педиатром»).
+_KEEP_I_ENDINGS = frozenset(("ия",))
 _RU_ENDINGS = frozenset((
     "", "а", "е", "и", "й", "о", "у", "ы", "ь", "ю", "я",
     "ам", "ах", "ая", "ев", "ей", "ем", "ею", "ие", "ий", "им", "их", "ия",
@@ -374,6 +381,8 @@ def _same_lexeme(term_word: str, found_word: str, lang: str = "") -> bool:
         if a[k:] not in endings:
             continue
         allowed = append if not a[k:] else endings
+        if a[k:] in _KEEP_I_ENDINGS and not b[k:].startswith("и"):
+            continue
         if b[k:] in allowed:
             return True
     return False
@@ -4785,6 +4794,10 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int) -> dict:
                 and not _bc.get("judged")
                 and _lex_blind(s.get("source") or "")):
             why = CLEAN_LEX_BLIND
+        if (why.startswith("back-check ниже")
+                and (_bc.get("judge") or {}).get("severity") in ("major", "critical")
+                and _review_wrote(s)):
+            why = CLEAN_JUDGE_VS_REVIEW
         # Ручательство ревизии. Она единственная читает ПАРУ целиком, а балл
         # back-check меряет долю основ оригинала, вернувшихся через обратный
         # перевод, — вознаграждает кальку и роняет верный синоним. Свежая
@@ -5465,36 +5478,66 @@ def _docx_flat_parts(doc) -> list:
     return out
 
 
-def _docx_paragraphs(content: bytes) -> list:
-    """Текст КАЖДОГО абзаца документа в порядке разбора — включая те, что
-    в сегменты не пойдут. Индекс в этом списке и есть якорь, поэтому список
-    обязан быть полным: выбросишь пустые абзацы — и номера уедут."""
+def _docx_paragraph_texts(content: bytes) -> list:
+    """[(текст, куда встанет перевод; полный текст абзаца)] по КАЖДОМУ абзацу
+    в порядке разбора — включая те, что в сегменты не пойдут. Индекс в этом
+    списке и есть якорь, поэтому список обязан быть полным: выбросишь пустые
+    абзацы — и номера уедут.
+
+    В сегмент идёт текст СЛОТОВ (`_para_slots`) — ровно то, куда экспорт 1в1
+    пишет перевод: без результата вычисляемых полей, скрытого текста
+    и вложенных w:p. Раньше склеивался весь `.//w:t`, и номер страницы из
+    поля PAGEREF оглавления попадал в сегмент («ЛЕЧЕНИЯ.80»): его переводили
+    как текст, арбитр и ремонт отрывали или удаляли, back-check ставил ложное
+    жёсткое «расхождение чисел», а экспорт снимал хвост обратно (`trimmed`).
+    Полный текст остаётся рядом ради СТАРЫХ проектов: их сегменты равны ему
+    (это склейка прежнего импорта — весь .//w:t, с вложенными надписями),
+    и по нему их узнают привязка исходника и экспорт. Экспорт сравнивает
+    с полным текстом `_para_slots` (без вложенных w:p), поэтому абзац
+    с надписью у старого проекта там по-прежнему `mismatch` — как и прежде."""
     from docx import Document
-    doc = Document(io.BytesIO(content))
     from docx.oxml.ns import qn as _qn
-    # .// — все абзацы, включая вложенные таблицы и надписи
-    return [_docx_clean("".join(t.text for t in p.iter(_qn("w:t")) if t.text))
-            for p in _docx_flat_paragraphs(doc)]
+    doc = Document(io.BytesIO(content))
+    out = []
+    for p in _docx_flat_paragraphs(doc):
+        slots, _full, _dropped = _para_slots(p, _qn)
+        # Полный текст — ровно так, как склеивал ПРЕЖНИЙ импорт: весь .//w:t,
+        # включая вложенные надписи. Сегменты старых проектов равны ему буква
+        # в букву, и привязка исходника узнаёт их без потерь.
+        out.append((_docx_clean("".join((t.text or "") for t, _sig in slots)),
+                    _docx_clean("".join(t.text for t in p.iter(_qn("w:t")) if t.text))))
+    return out
 
 
-def _docx_units(paras: list) -> list:
+def _docx_paragraphs(content: bytes) -> list:
+    """Текст сегмента по каждому абзацу — см. `_docx_paragraph_texts`."""
+    return [t for t, _full in _docx_paragraph_texts(content)]
+
+
+def _docx_units(paras: list, full: Optional[list] = None) -> list:
     """(текст сегмента, [номера абзацев]) по правилам импорта: слишком короткие
     и чисто цифровые абзацы переводить нечего, соседние одинаковые строки —
     это один сегмент.
+
+    Одинаковыми соседи считаются, только если равен и ПОЛНЫЙ текст (`full`,
+    с результатом поля): две строки оглавления «Введение» с разными номерами
+    страниц — разные абзацы. Склей их — и на старом проекте (там это два
+    сегмента) второй абзац получил бы перевод первого рядом с живым полем.
 
     Соседний повтор раньше просто выбрасывался. Теперь он попадает в тот же
     сегмент вторым якорем: при выгрузке перевод должен встать в ОБА абзаца,
     иначе второй останется на языке оригинала."""
     units: list = []
-    prev = None
+    prev, prev_i = None, -1
     for i, t in enumerate(paras):
         if len(t) < 2 or _SKIP_PARA_RE.fullmatch(t):
             continue
-        if t == prev and units:
+        if t == prev and units and (full is None or full[i] == full[prev_i]):
             units[-1][1].append(i)
+            prev_i = i
             continue
         units.append((t, [i]))
-        prev = t
+        prev, prev_i = t, i
     return units
 
 
@@ -5578,8 +5621,9 @@ async def upload_project(
     # Разбор и отбор — общие с привязкой исходника к готовому проекту
     # (_docx_paragraphs / _docx_units): две копии правил однажды разошлись бы,
     # и перевод при выгрузке встал бы не в те абзацы.
-    paras = _docx_paragraphs(content)
-    units = _docx_units(paras)
+    texts = _docx_paragraph_texts(content)
+    paras = [t for t, _full in texts]
+    units = _docx_units(paras, [f for _t, f in texts])
     deduped = [t for t, _ in units]
 
     new_id = max((p["id"] for p in STATE["projects"]), default=0) + 1
@@ -5643,8 +5687,13 @@ def _match_key(text: str) -> str:
     return re.sub(r'\s+', ' ', (text or "")).strip().lower()
 
 
-def _map_source_to_segments(units: list, segments: list) -> tuple:
+def _map_source_to_segments(units: list, segments: list,
+                            full: Optional[list] = None) -> tuple:
     """(пары «абзац → id сегмента», сколько сегментов нашлось).
+
+    `full` — полный текст абзацев по индексу: сегмент СТАРОГО импорта равен
+    ему (с номером страницы из поля), нового — тексту слотов. Свой абзац
+    узнаётся по любому из двух.
 
     Идём двумя указателями вперёд: документ тот же и порядок тот же, поэтому
     окно поиска маленькое. Абзац, которому сегмента не нашлось, пропускаем —
@@ -5660,10 +5709,12 @@ def _map_source_to_segments(units: list, segments: list) -> tuple:
     pairs, matched = [], set()
     j = 0
     for text, idxs in units:
-        key = _match_key(text)
+        keys = {_match_key(text)}
+        if full:
+            keys |= {_match_key(full[i]) for i in idxs if i < len(full)}
         hit = None
         for k in range(j, min(j + _SOURCE_LOOKAHEAD, len(segments))):
-            if _match_key(segments[k].get("source")) == key:
+            if _match_key(segments[k].get("source")) in keys:
                 hit = k
                 break
         if hit is None:
@@ -5694,12 +5745,14 @@ async def attach_source(pid: int, file: UploadFile = File(...), force: bool = Fo
         raise HTTPException(500, "python-docx not installed")
     content = await file.read()
     try:
-        paras = _docx_paragraphs(content)
+        texts = _docx_paragraph_texts(content)
     except Exception as e:
         return {"ok": False, "error": "Файл не читается как .docx: %s" % e}
 
-    units = _docx_units(paras)
-    pairs, matched = _map_source_to_segments(units, project["segments"])
+    paras = [t for t, _full in texts]
+    full = [f for _t, f in texts]
+    units = _docx_units(paras, full)
+    pairs, matched = _map_source_to_segments(units, project["segments"], full)
     total = len([s for s in project["segments"]
                  if (s.get("origin") or {}).get("kind") != "image"])
     stats = {"paras": len(paras), "units": len(units),
@@ -7323,6 +7376,11 @@ CLEAN_UNCHECKED = (CLEAN_NO_BACKCHECK, CLEAN_NO_TERMCHECK, CLEAN_TERMCHECK_SKIP)
 # той же причине: система знает, что цифра ничего не значит, а на экране
 # показывает её как приговор.
 CLEAN_LEX_BLIND = "балл не измерен: оригинал короче трёх содержательных слов, нужен судья"
+# Текст написала ревизия, а судья back-check ставит major/critical: два
+# оплаченных мнения разошлись. В ремонт это не идёт (`_repair_findings`,
+# `_review_wrote`), и «оценка ниже порога» здесь говорит не то — человек
+# видел бы балл 45 без намёка, что спорят ревизор и судья.
+CLEAN_JUDGE_VS_REVIEW = "текст написала ревизия, судья не согласен — решает человек"
 
 
 def _machine_clean(seg: dict, min_score: int) -> Optional[str]:
@@ -9593,6 +9651,11 @@ def _segment_for_client(seg: dict) -> dict:
         # находки termcheck сам, а `_repairable` их под ручательством не видит
         # — без признака кнопка обещала бы N сегментов, а делала меньше.
         out["review"]["vouches"] = _review_vouches(seg)
+        # «Текст написала ревизия» — мнение судьи в ремонт не идёт
+        # (`_repair_findings`); соло-состав и кнопка «Починить» в браузере
+        # обязаны видеть тот же список, иначе строка обещает N, а сервер
+        # берёт меньше.
+        out["review"]["wrote"] = _review_wrote(seg)
         # Подписи вето собирает СЕРВЕР: в `veto` лежат внутренние ключи
         # (`gloss`, `hard`), которых нет ни в одном словаре, — на экране
         # это была латиница посреди узбекской фразы. Таблица
@@ -10647,9 +10710,12 @@ def _term_case_spans(seg: dict, hits: list) -> list:
     Один расчёт на проверку и на правку: разойдись они — отчёт показывал бы
     одно, а команда делала другое.
 
-    Смотрим только БУКВАЛЬНЫЕ вхождения перевода термина: нет вхождения
-    вовсе — это забота `_gloss_misses`, и говорить об одном и том же дважды
-    нельзя. Термин ВНУТРИ другого термина своего начертания не диктует:
+    Смотрим только БУКВАЛЬНЫЕ вхождения перевода термина ЦЕЛЫМ СЛОВОМ
+    (сосед — не буква; дефис и апостроф границей считаются, как в
+    `_bound_l`/`_bound_r`): нет вхождения вовсе — это забота `_gloss_misses`,
+    и говорить об одном и том же дважды нельзя. Цена: форма с приписанным
+    окончанием («Tuberculomas» у записи «tuberculoma») на начертание
+    не проверяется — молчим, как везде, где не знаем. Термин ВНУТРИ другого термина своего начертания не диктует:
     «ревакцинация → revaccination» сидит внутри «Ревакцинация БЦЖ → BCG
     revaccination», и без этого правила две записи правили одно место по
     очереди, каждая ломая работу другой."""
@@ -10667,12 +10733,31 @@ def _term_case_spans(seg: dict, hits: list) -> list:
                             _src_lang(h))
         if not tgt or not form:
             continue
-        want = _case_like(form, tgt, h.get("src") or "")
+        if _case_class(form) == "abbr":
+            if _case_class(seg.get("source") or "") != "caps":
+                # Оригинал — АББРЕВИАТУРА (капс короче CASE_CAPS_MIN): начертание
+                # неизвестно, и `_case_like` отдаёт написание ЗАПИСИ. Требовать
+                # его от текста нельзя: «БОЛЬНЫХ → patient» превращало
+                # «TB PATIENTS» в «TB patientS» (боевой #22), а ремонт, вернувший
+                # капс, откатывался этим же счётчиком.
+                continue
+            # Короткий капс ВНУТРИ капс-заголовка — слово заголовка, а не
+            # аббревиатура: «НАБЛЮДЕНИЕ БОЛЬНЫХ ТБ» → «MANAGEMENT OF TB PATIENTS».
+            # Тот же закон, что у `_case_misses` на уровне сегмента.
+            want = tgt.upper()
+        else:
+            want = _case_like(form, tgt, h.get("src") or "")
         need = tgt.lower()
         k = low.find(need)
         while k >= 0:
-            claims.append((k, k + len(tgt), want, target[k:k + len(tgt)],
-                           h.get("src") or ""))
+            e = k + len(tgt)
+            # Только ЦЕЛОЕ слово: «patient» внутри «PATIENTS» — не то место,
+            # и перекраска куска слова даёт «patientS». Нет целого вхождения —
+            # молчим, как везде, где не знаем.
+            whole = ((k == 0 or not low[k - 1].isalpha())
+                     and (e >= len(low) or not low[e].isalpha()))
+            if whole:
+                claims.append((k, e, want, target[k:e], h.get("src") or ""))
             k = low.find(need, k + 1)
     # Длинный термин главнее: слева направо, длинный первым, а всё, что попало
     # внутрь уже занятого места, пропускаем.
@@ -11331,7 +11416,17 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
             if any(h in r for h in BACKCHECK_OBJECTIVE_REASONS):
                 items.append({"kind": "backcheck", "text": r})
         j = bc.get("judge") or {}
-        if j.get("severity") in ("major", "critical"):
+        # Мнение судьи НЕ гонит ремонт на текст, который только что написала
+        # РЕВИЗИЯ (`review.applied` на нынешнем тексте): судья видел оригинал
+        # и ОБРАТНЫЙ перевод, ревизор — саму пару. Два оплаченных мнения
+        # разошлись — решает человек (по баллу под вердиктом major сегмент
+        # уходит в «оценку ниже порога»). Иначе карусель: на боевом #4 ревизия
+        # поставила «Phthisiology», судья на обратном «Фтизиология» объявил
+        # «другую дисциплину», ремонт вернул кальку «Phthisiatry» с баллом
+        # 100 (калька возвращается дословно), ревизия снова устарела — и
+        # следующий прогон повторил бы всё за те же деньги. Объективные
+        # причины выше остаются: мнение снимает только мнение.
+        if j.get("severity") in ("major", "critical") and not _review_wrote(seg):
             for d in (j.get("divergences") or []):
                 items.append({"kind": "judge", "text": str(d)})
             if j.get("comment"):
@@ -12727,6 +12822,20 @@ def _review_stale(seg: dict) -> bool:
     if src_h is not None and src_h != _text_hash((seg.get("source") or "").strip()):
         return True
     return _check_stale(rv, seg.get("target") or "")
+
+
+def _review_wrote(seg: dict) -> bool:
+    """Нынешний текст сегмента написала РЕВИЗИЯ: вердикт применён, и его хеш
+    — хеш этого текста.
+
+    Не `_review_stale`: та отвечает «свеж ли ВЕРДИКТ» и включает
+    REVIEW_VERSION и source_hash. Подъём версии промпта разом «устарел» бы все
+    применённые ревизии, и судейские находки вернулись бы в ремонт на всех
+    переписанных сегментах — массовый платный откат от одной правки промпта."""
+    rv = seg.get("review") or {}
+    if not rv.get("applied") or not rv.get("target_hash"):
+        return False
+    return rv["target_hash"] == _text_hash((seg.get("target") or "").strip())
 
 
 def _review_vouches(seg: dict) -> bool:
@@ -15310,9 +15419,15 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
             stats["noslot"] += 1
             continue
         source = seg.get("source") or ""
-        same = _match_key(full) == _match_key(source)
+        skey = _match_key(source)
+        # Сегмент СТАРОГО импорта равен полному тексту абзаца (с номером
+        # страницы из поля), нового — тексту слотов. Хвост-номер снимается
+        # только у старого: у нового его в сегменте нет по построению.
+        same_full = _match_key(full) == skey
+        same = same_full or _match_key(
+            "".join((t.text or "") for t, _sig in slots)) == skey
         dropped = dropped.strip()
-        if same and dropped and target.rstrip().endswith(dropped):
+        if same_full and dropped and target.rstrip().endswith(dropped):
             # Импорт склеивал весь текст абзаца подряд, поэтому номер страницы
             # из оглавления попал и в сегмент, и в его перевод. Снимаем ровно
             # этот хвост и ровно тогда, когда он подтверждён и текстом абзаца,

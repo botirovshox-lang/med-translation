@@ -189,7 +189,10 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
     hardFindings.length > 0 ||
     (bcFresh && ((bcFresh.terms_lost || []).length > 0
       || (bcFresh.reasons || []).some(r => REPAIR_REASONS.some(h => r.indexOf(h) !== -1))
-      || (bcFresh.judge && ["major", "critical"].indexOf(bcFresh.judge.severity) !== -1))));
+      // Текст написала ревизия — мнение судьи ремонту не отдаётся
+      // (`_repair_findings`, `review.wrote` считает сервер).
+      || (!(seg.review && seg.review.wrote) && bcFresh.judge
+          && ["major", "critical"].indexOf(bcFresh.judge.severity) !== -1))));
   const runBack = (model) => {
     if (!seg.target) { setBackResult("no_target"); return; }
     setBackResult("loading");

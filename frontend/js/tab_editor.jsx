@@ -1802,9 +1802,13 @@ function TabEditor({ store, toast }) {
     if (!(s.target && s.target.trim())) return false;
     const bc = s.backcheck && !s.backcheck.stale ? s.backcheck : null;
     const tc = s.termcheck && !s.termcheck.stale ? s.termcheck : null;
+    // Текст написала ревизия (`review.wrote`, считает сервер) — мнение судьи
+    // в ремонт не идёт (`_repair_findings`): два мнения разошлись, решает
+    // человек. Соло-состав обязан видеть тот же список.
+    const byReview = !!(s.review && s.review.wrote);
     const bcHit = bc && ((bc.terms_lost || []).length > 0
       || (bc.reasons || []).some(r => REPAIR_REASONS.some(h => r.indexOf(h) !== -1))
-      || (bc.judge && ["major", "critical"].indexOf(bc.judge.severity) !== -1));
+      || (!byReview && bc.judge && ["major", "critical"].indexOf(bc.judge.severity) !== -1));
     // Под ручательством ревизии (`review.vouches`, считает сервер) сервер
     // находок termcheck не видит — и соло-состав не должен: иначе кнопка
     // обещает N сегментов, а `_repairable` берёт меньше.

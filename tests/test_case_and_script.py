@@ -290,5 +290,34 @@ check(main._term_case_fix(seg, proj)[1] == [],
 check(not main._term_case_misses(seg, proj),
       "и претензии по ней тоже нет — иначе две записи правили бы одно место по кругу")
 
+# ── аббревиатура-класс молчит, вхождение только целым словом (боевой #22) ──
+proj, seg = build("НАБЛЮДЕНИЕ И ВЕДЕНИЕ БОЛЬНЫХ ТБ НА РАЗНЫХ ЭТАПАХ ЛЕЧЕНИЯ",
+                  "MONITORING AND MANAGEMENT OF TB PATIENTS AT DIFFERENT STAGES OF TREATMENT",
+                  ("больной", "patient"))
+check(main._verified_hits(seg["source"], proj), "«больной» найден в «БОЛЬНЫХ»")
+check(not main._term_case_misses(seg, proj) and main._term_case_fix(seg, proj)[1] == [],
+      "«БОЛЬНЫХ» короче CASE_CAPS_MIN — начертание неизвестно, претензии нет "
+      "(было «TB patientS»): %s" % main._term_case_misses(seg, proj))
+CAPS_SRC = "НАБЛЮДЕНИЕ И ВЕДЕНИЕ БОЛЬНЫХ ТБ НА РАЗНЫХ ЭТАПАХ ЛЕЧЕНИЯ"
+proj, seg = build(CAPS_SRC, "MONITORING AND MANAGEMENT OF TB patientS AT DIFFERENT STAGES",
+                  ("больной", "patient"))
+check(main._term_case_fix(seg, proj)[1] == [] and main._case_misses(seg),
+      "битое «patientS» начертание термина не трогает (не целое слово), "
+      "а потерянный капс сегмента ловится по-прежнему")
+proj, seg = build(CAPS_SRC, "MONITORING AND MANAGEMENT OF TB patient AT DIFFERENT STAGES",
+                  ("больной", "patient"))
+check([m["use"] for m in main._term_case_misses(seg, proj)] == ["PATIENT"]
+      and "TB PATIENT AT" in str(main._term_case_fix(seg, proj)[0]),
+      "короткий капс внутри капс-заголовка — слово заголовка: %s"
+      % main._term_case_fix(seg, proj)[0])
+proj, seg = build("Лечение больного туберкулёзом.",
+                  "Treatment of the Patients with tuberculosis.", ("больной", "patient"))
+check(not main._term_case_misses(seg, proj),
+      "«patient» внутри «Patients» — не целое слово, претензии нет")
+proj, seg = build("Лечение больного туберкулёзом.",
+                  "Treatment of the Patient with tuberculosis.", ("больной", "patient"))
+check([m["use"] for m in main._term_case_misses(seg, proj)] == ["patient"],
+      "целое слово с лишней заглавной по-прежнему находится")
+
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

@@ -134,8 +134,9 @@ def build_source() -> bytes:
 
 
 CONTENT = build_source()
-paras = main._docx_paragraphs(CONTENT)
-units = main._docx_units(paras)
+TEXTS = main._docx_paragraph_texts(CONTENT)
+paras = [t for t, _f in TEXTS]
+units = main._docx_units(paras, [f for _t, f in TEXTS])   # тем же путём, что upload_project
 
 BODY = 10     # абзацев в теле; дальше идут колонтитулы
 check(len(paras) > BODY, "разбор дошёл до колонтитулов (%d абзацев)" % len(paras))
@@ -146,7 +147,7 @@ check([t for t, _ in units] == [
     "Абзац без перевода.",
     "Возбудитель — Mycobacterium tuberculosis, открыт в 1882 году.",
     "Первая половина строки и вторая половина строки.",
-    "ГЛАВА ПЕРВАЯ85",
+    "ГЛАВА ПЕРВАЯ",
     "Рис. 60. Казеозная пневмония.",
     "Фтизиатрия",
 ], "в сегменты идут не все абзацы, зато текст колонтитула идёт: %s"
@@ -175,7 +176,7 @@ TR = {1: "First paragraph of the document.",
       3: "Repeated line.",
       5: "The causative agent is Mycobacterium tuberculosis, discovered in 1882.",
       6: "First half of the line and second half of the line.",
-      7: "CHAPTER ONE85",         # перевод несёт номер страницы, как и сегмент
+      7: "CHAPTER ONE",           # номера в сегменте больше нет: поле — не текст
       8: "Fig. 60. Caseous pneumonia.",
       9: "Phthisiology"}
 # Статусы нарочно вперемешку. В файл идёт всё, у чего есть перевод: экспорт
@@ -208,8 +209,22 @@ check(text[5] == "Абзац без перевода.",
       "непереведённый сегмент оставил оригинал, а не пустоту")
 check(text[8] == "CHAPTER ONE85",
       "оглавление: переведён заголовок, номер страницы остался полем: " + text[8])
-check(stats["trimmed"] == 1,
-      "номер страницы снят с ПЕРЕВОДА, а не написан вторым: trimmed=%s" % stats["trimmed"])
+check(stats["trimmed"] == 0 and stats["mismatch"] == 0,
+      "новый импорт: номера в сегменте нет, абзац узнан по тексту слотов: "
+      "trimmed=%s mismatch=%s" % (stats["trimmed"], stats["mismatch"]))
+
+# Проект СТАРОГО импорта: номер из поля попал и в сегмент, и в перевод —
+# абзац узнаётся по ПОЛНОМУ тексту, хвост-номер снимается с перевода.
+_s7 = project["segments"][6]
+_s7["source"], _s7["target"] = "ГЛАВА ПЕРВАЯ85", "CHAPTER ONE85"
+_out2, _st2 = main._generate_export(project, "docx_layout")
+_res2 = Document(str(_out2))
+_t2 = [main._docx_clean("".join(t.text for t in p.iter(qn("w:t")) if t.text))
+       for p in main._docx_flat_paragraphs(_res2)]
+check(_t2[8] == "CHAPTER ONE85" and _st2["trimmed"] == 1 and _st2["mismatch"] == 0,
+      "старый импорт: хвост-номер снят с перевода, абзац узнан по полному тексту: "
+      "%r trimmed=%s mismatch=%s" % (_t2[8], _st2["trimmed"], _st2["mismatch"]))
+_s7["source"], _s7["target"] = "ГЛАВА ПЕРВАЯ", "CHAPTER ONE"
 check(stats["written"] == 9 and stats["untranslated"] == 1,
       "отчёт называет и написанное, и непереведённое: %s" % stats)
 # Ровно столько, сколько якорей у сегментов с переводом, — и ни один статус
@@ -352,11 +367,28 @@ if os.name == "posix" and hasattr(os, "geteuid") and os.geteuid() != 0:
     finally:
         out.chmod(0o644)
 
+# ── соседи склеиваются только при равном ПОЛНОМ тексте ─────────────
+_u = main._docx_units(["Введение", "Введение"], ["Введение.3", "Введение.5"])
+check(len(_u) == 2, "две строки оглавления с разными номерами — два сегмента: %s" % _u)
+_u = main._docx_units(["Введение", "Введение"], ["Введение.3", "Введение.3"])
+check(len(_u) == 1 and _u[0][1] == [0, 1], "одинаковые целиком — один сегмент, два якоря")
+check(len(main._docx_units(["Введение", "Введение"])) == 1, "без полного текста — как прежде")
+
 # ── привязка исходника к готовому проекту ───────────────────────────
 old = {"id": 2, "title": "Старый", "src": "RU", "tgt": "EN", "domain": "medical",
        "segments": [{"id": i + 1, "source": t, "target": "x", "status": "translated"}
                     for i, (t, _idx) in enumerate(units)]}
 got, matched = main._map_source_to_segments(units, old["segments"])
+# Сегмент СТАРОГО импорта несёт номер страницы из поля: узнаётся по полному
+# тексту абзаца, без него строка оглавления не находится.
+_old85 = [dict(sg) for sg in old["segments"]]
+_old85[6]["source"] = "ГЛАВА ПЕРВАЯ85"
+_full = [f for _t, f in main._docx_paragraph_texts(CONTENT)]
+check(_full[units[6][1][0]] == "ГЛАВА ПЕРВАЯ85", "полный текст абзаца оглавления несёт номер")
+_p85, _m85 = main._map_source_to_segments(units, _old85, _full)
+check(_m85 == len(_old85), "старый сегмент с номером узнан по полному тексту: %d" % _m85)
+_p0, _m0 = main._map_source_to_segments(units, _old85)
+check(_m0 == len(_old85) - 1, "а без полного текста — нет: %d" % _m0)
 check(matched == len(old["segments"]) and got == pairs,
       "тот же файл садится на существующий проект без потерь (%d из %d)"
       % (matched, len(old["segments"])))

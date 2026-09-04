@@ -941,6 +941,105 @@ function CoverageCard({ project }) {
       col(TR("Через модель — на любой паре"), cov.model, false)));
 }
 
+// Стайл-шит документа: выборы, а не слова — человек без целевого языка выбирает
+// журнал и вариант орфографии. Действующие значения и блок промпта считает
+// СЕРВЕР (`/style`); проверка орфографии и аббревиатур — `/style-check`,
+// бесплатно и с откатом по метке.
+function StyleCard({ project, toast }) {
+  const [st, setSt] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [rep, setRep] = useState(null);
+  const [stamp, setStamp] = useState(null);
+  useEffect(() => {
+    if (!window.API || !window.API.style || !project) return;
+    let dead = false;
+    setRep(null); setStamp(null);
+    window.API.safeCall(() => window.API.style(project.id))
+      .then(r => { if (!dead && r && r.ok) setSt(r); });
+    return () => { dead = true; };
+  }, [project && project.id]);
+  if (!st) return null;
+  const OPTS = {
+    preset: [["", TR("не задан")], ["ama", "AMA"], ["vancouver", "Vancouver"], ["apa", "APA"], ["nature", "Nature"]],
+    spelling: [["", TR("по умолчанию")], ["US", TR("американская")], ["UK", TR("британская")]],
+    register: [["", TR("по умолчанию")], ["academic", TR("научная статья")], ["clinical", TR("клиническая документация")],
+               ["textbook", TR("учебник")], ["plain", TR("простой язык")]],
+    abbreviations: [["", TR("по умолчанию")], ["expand_first", TR("расшифровка при первом упоминании")], ["as_source", TR("как в оригинале")]],
+    quotes: [["", TR("по умолчанию")], ["double", "“ ”"], ["single", "‘ ’"], ["guillemets", "« »"]],
+  };
+  const LABEL = { preset: TR("Журнал"), spelling: TR("Орфография"), register: TR("Регистр"),
+                  abbreviations: TR("Аббревиатуры"), quotes: TR("Кавычки") };
+  const save = (body) => {
+    setBusy(true);
+    window.API.safeCall(() => window.API.setStyle(project.id, body)).then(r => {
+      setBusy(false);
+      if (!r || !r.ok) return;
+      setSt(s => ({ ...s, ...r }));
+      setRep(null);
+      if (r.reviewsStale) toast(TR("Стайл-шит изменён: ревизия перечитает ") + r.reviewsStale + TR(" сегм. при следующем прогоне"));
+    });
+  };
+  const check = (apply) => {
+    if (apply && rep && rep.staleChecks
+        && !window.confirm(TR("Проверки устареют у ") + rep.staleChecks + TR(" сегм.: ближайший прогон купит их заново. Исправить орфографию?"))) return;
+    setBusy(true);
+    window.API.safeCall(() => window.API.styleCheck(project.id, { dry_run: !apply })).then(r => {
+      setBusy(false);
+      if (!r || !r.ok) return;
+      setRep(r);
+      if (apply) { setStamp(r.stamp); toast(TR("Орфография исправлена: ") + r.applied + TR(" сегм.")); }
+    });
+  };
+  const undo = () => window.API.safeCall(() => window.API.styleUndo(project.id, stamp)).then(r => {
+    if (r && r.ok) { setStamp(null); setRep(null); toast(TR("Откат выполнен: ") + (r.restored || 0) + TR(" сегм.")); }
+  });
+  const eff = st.effective || {};
+  const proj = st.project || {};
+  if (!st.enabled) {
+    return React.createElement("div", { className: "card card-pad", style: { marginBottom: 14 } },
+      React.createElement("div", { className: "row between" },
+        React.createElement("div", null,
+          React.createElement("div", { style: { fontWeight: 600 } }, TR("Стайл-шит документа не включён")),
+          React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+            TR("Орфография, регистр, аббревиатуры и кавычки — одним правилом на весь документ, в промпты перевода, ревизии и ремонта."))),
+        React.createElement(Btn, { variant: "secondary", size: "sm", disabled: busy, onClick: () => save({ fields: {} }) },
+          TR("Включить"))));
+  }
+  const field = (k) => React.createElement("label", { key: k, style: { display: "flex", flexDirection: "column", gap: 4, fontSize: 12 } },
+    React.createElement("span", { className: "dim" }, LABEL[k] + (proj[k] ? "" : (eff[k] ? " · " + TR("действует: ") + eff[k] : ""))),
+    React.createElement(Select, { value: proj[k] || "", disabled: busy || (k === "spelling" && !st.spellingApplies),
+                                  onChange: (e) => save({ fields: { [k]: e.target.value } }) },
+      OPTS[k].map(([v, l]) => React.createElement("option", { key: v, value: v }, l))));
+  const abbrs = (rep && rep.abbreviations) || [];
+  return React.createElement("div", { className: "card card-pad", style: { marginBottom: 14 } },
+    React.createElement("div", { className: "row between" },
+      React.createElement("div", { style: { fontWeight: 600 } }, TR("Стайл-шит документа")),
+      React.createElement("div", { className: "row", style: { gap: 8 } },
+        React.createElement(Btn, { variant: "secondary", size: "sm", disabled: busy, onClick: () => check(false) }, TR("Проверить стиль")),
+        React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy, onClick: () => save({ enable: false }) }, TR("Отключить")))),
+    React.createElement("div", { className: "grid grid-3", style: { marginTop: 10, gap: 12 } },
+      ["preset", "spelling", "register", "abbreviations", "quotes"].map(field)),
+    rep && React.createElement("div", { style: { marginTop: 12, fontSize: 13 } },
+      React.createElement("div", null,
+        TR("Орфография") + (rep.spelling ? " (" + rep.spelling + "): " : ": ")
+        + (rep.spelling ? rep.spellingChanges + TR(" замен в ") + rep.spellingSegments + TR(" сегм.") : TR("вариант не задан")),
+        rep.skippedConfirmed && rep.skippedConfirmed.length
+          ? React.createElement("span", { className: "dim" }, " · " + TR("заверено человеком, не тронуто: ") + rep.skippedConfirmed.length) : null,
+        rep.dryRun && rep.staleChecks
+          ? React.createElement("span", { className: "dim" }, " · " + TR("проверки устареют у ") + rep.staleChecks + TR(" сегм.")) : null),
+      (rep.samples || []).slice(0, 3).map(sm => React.createElement("div", { key: sm.id, className: "dim" },
+        "#" + sm.id + ": " + sm.changes.map(c => c[0] + " → " + c[1]).join(", "))),
+      React.createElement("div", { style: { marginTop: 6 } },
+        TR("Аббревиатуры без расшифровки при первом упоминании: ") + rep.abbreviationsTotal,
+        abbrs.length ? React.createElement("span", { className: "dim" },
+          " · " + abbrs.slice(0, 8).map(a => a.abbr + " (#" + a.id + ")").join(", ")) : null),
+      React.createElement("div", { className: "row", style: { gap: 8, marginTop: 8 } },
+        rep.dryRun && rep.ids && rep.ids.length
+          ? React.createElement(Btn, { variant: "primary", size: "sm", disabled: busy, onClick: () => check(true) },
+              TR("Исправить орфографию") + " (" + rep.ids.length + ")") : null,
+        stamp ? React.createElement(Btn, { variant: "ghost", size: "sm", onClick: undo }, TR("Вернуть прежний")) : null)));
+}
+
 function TabAnalysis({ store, toast }) {
   const project = store.activeProject;
   const [summary, setSummary] = useState(null);
@@ -977,6 +1076,7 @@ function TabAnalysis({ store, toast }) {
         onClick: () => store.go("export") }, TR("Экспорт перевода"))),
     !summary && React.createElement("div", { className: "dim", style: { fontSize: 13 } }, TR("Считаем итог…")),
     React.createElement(CoverageCard, { project }),
+    React.createElement(StyleCard, { project, toast }),
     tk && React.createElement(TurnkeySummary, { summary, store, toast, onReload: reload }),
     summary && !tk && React.createElement("div", { className: "dim", style: { fontSize: 13, marginBottom: 10 } },
       TR("Сервер прежней версии — корзин «под ключ» нет, ниже подробный итог.")),

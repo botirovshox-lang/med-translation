@@ -334,6 +334,12 @@
        Вызовов модели внутри нет, дёргать можно свободно. */
     analysis:      (pid)                    => call("GET",    `/projects/${pid}/analysis`),
     coverage:      (pid)                    => call("GET",    `/projects/${pid}/coverage`),
+    style:         (pid)                    => call("GET",    `/projects/${pid}/style`),
+    setStyle:      (pid, body)              => call("POST",   `/projects/${pid}/style`, body || {}),
+    styleCheck:    (pid, body)              => call("POST",   `/projects/${pid}/style-check`, body || {}),
+    styleUndo:     (pid, stamp)             => call("POST",   `/projects/${pid}/style-check/${stamp}/undo`, {}),
+    orgStyle:      ()                       => call("GET",    `/style`),
+    setOrgStyle:   (fields)                 => call("POST",   `/style`, { fields }),
     /* Контекстный арбитр спорного термина: смотрит сегмент ДО, этот и ПОСЛЕ.
        Единственный вызов в системе, которому дают соседей, — потому что
        вопрос «правильно ли передан термин ЗДЕСЬ» без ряда не решается.

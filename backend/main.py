@@ -1598,7 +1598,8 @@ def _neighbours(project: Optional[dict], seg: Optional[dict]) -> tuple:
 
 def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
                       literal: bool, domain, mdl: dict,
-                      prev_src: str = "", next_src: str = "") -> str:
+                      prev_src: str = "", next_src: str = "",
+                      style: str = "") -> str:
     """Системный промпт перевода. Вынесен отдельно, чтобы его можно было
     проверить тестом без обращения к модели: от того, каким уровнем уходит
     запись глоссария — приказом или подсказкой, — зависит, повторит ли модель
@@ -1648,6 +1649,11 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         "   and months are capitalised even where the source writes them small), but NEVER open\n"
         "   a sentence with a lower-case letter and never shout a word the source does not shout.\n"
         )
+        # Стайл-шит документа (`_style_block`) — только в обычный перевод,
+        # никогда в обратный: тот обязан ОТРАЖАТЬ текст, а не причёсывать его.
+        # Пусто — промпт байт в байт прежний, версии вердиктов не трогаются.
+        if style:
+            system += "\n" + style
     hard = [h for h in (gloss_hits or []) if _hit_tier(h) == GLOSSARY_TIER_HARD]
     # Подсказки автоимпорта в промпт НЕ уходят — см. блок ниже, где раньше
     # стоял их список. Отбор оставлен: по нему считается строка журнала.
@@ -1745,7 +1751,8 @@ def _openai_translate(text: str, src: str, tgt: str,
                       gloss_hits: list = None, tm_context: dict = None,
                       model: str = None, literal: bool = False,
                       domain: Optional[str] = None, step: Optional[str] = None,
-                      prev_src: str = "", next_src: str = "") -> str:
+                      prev_src: str = "", next_src: str = "",
+                      style: str = "") -> str:
     """GPT-перевод с инъекцией глоссария (базовые формы — GPT знает склонения).
 
     literal=True — режим для обратного перевода. Обычный промпт тут вреден:
@@ -1758,7 +1765,7 @@ def _openai_translate(text: str, src: str, tgt: str,
     # timeout + retries: зависший вызов не должен блокировать поток бесконечно
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=2)
     system = _translate_system(src, tgt, gloss_hits, tm_context, literal, domain, mdl,
-                               prev_src, next_src)
+                               prev_src, next_src, "" if literal else style)
     extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
              else {"max_tokens": 1024, "temperature": 0.1})
     resp = client.chat.completions.create(
@@ -2096,6 +2103,7 @@ _OWNER_ONLY = [
     ("DELETE", re.compile(r"/api/tm$")),
     ("POST",   re.compile(r"/api/glossary/demote$")),
     ("POST",   re.compile(r"/api/pricing(/.*)?$")),
+    ("POST",   re.compile(r"/api/style$")),
     ("POST",   re.compile(r"/api/quotes/\d+$")),
     ("DELETE", re.compile(r"/api/quotes/\d+$")),
     ("*",      re.compile(r"/api/admin/")),
@@ -6694,6 +6702,7 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
         prev_src, next_src = _neighbours(project, seg)
         translation = _openai_translate(src_text, project["src"], project["tgt"],
                                         gloss_hits=gloss_hits, tm_context=tm_hit,
+                                        style=_style_block(project),
                                         model=req.model, domain=project.get("domain"),
                                         prev_src=prev_src, next_src=next_src)
     except Exception as e:
@@ -7419,7 +7428,10 @@ def _machine_clean(seg: dict, min_score: int) -> Optional[str]:
     # обязательна ровно как у ремонта: сегмент, переведённый заново после
     # ревизии, к ней уже не относится.
     rv = seg.get("review") or {}
-    if rv.get("applied") and not _review_stale(seg):
+    if (rv.get("applied") and not _review_stale(seg)) or seg.get("route") == "REVIEW":
+        # Маршрут REVIEW остаётся и после ПЕРЕревизии (смена стайл-шита или
+        # версии вопросов пишет свежий вердикт с applied=False): текст всё
+        # так же написала машина.
         return CLEAN_REPAIRED
     return None
 
@@ -11699,7 +11711,7 @@ def _repairable(seg: dict, allow_tried: bool = False, project: Optional[dict] = 
     return allow_tried or not _repair_clamped(seg, model=model)
 
 
-def _repair_system(dom: dict, src_lang: str, tgt_lang: str) -> str:
+def _repair_system(dom: dict, src_lang: str, tgt_lang: str, style: str = "") -> str:
     return (
         "You are a senior " + dom["expert"] + ". You are given a SOURCE text in " + src_lang
         + ", its TRANSLATION into " + tgt_lang + ", and a list of ISSUES found by quality control.\n\n"
@@ -11720,6 +11732,7 @@ def _repair_system(dom: dict, src_lang: str, tgt_lang: str) -> str:
         "   with a capital letter starts with one in the translation, an ALL-CAPS heading stays\n"
         "   ALL-CAPS, and no word is shouted that the SOURCE does not shout. Glossary terms are\n"
         "   listed with their case already matched to the source — copy them as printed.\n"
+        + ("\n" + style if style else "")
     )
 
 
@@ -11759,7 +11772,8 @@ def _openai_repair(seg: dict, project: dict, findings: list, model: Optional[str
     try:
         resp = client.chat.completions.create(
             model=mdl["id"],
-            messages=[{"role": "system", "content": _repair_system(dom, project.get("src", "RU"), project.get("tgt", "EN"))},
+            messages=[{"role": "system", "content": _repair_system(dom, project.get("src", "RU"), project.get("tgt", "EN"),
+                                                                  _style_block(project))},
                       {"role": "user", "content": body}],
             **extra,
         )
@@ -12774,7 +12788,7 @@ REVIEW_VETO_LABELS = {
 }
 
 
-def _review_system(domain: dict, src_lang: str, tgt_lang: str) -> str:
+def _review_system(domain: dict, src_lang: str, tgt_lang: str, style: str = "") -> str:
     """Промпт ревизора. Отдельно от вызова — чтобы его гонял тест настоящим
     кодом: от формулировки зависит, что попадёт в текст клиента."""
     return (
@@ -12798,6 +12812,7 @@ def _review_system(domain: dict, src_lang: str, tgt_lang: str) -> str:
         "Если ПОВРЕЖДЁН САМ ОРИГИНАЛ (обрывок, ошибка распознавания, "
         "бессвязная фраза) — поставь source_suspect: true и не чини перевод "
         "догадкой: пусть это увидит человек.\n\n"
+        + (style + "\n" if style else "") +
         "Верни ТОЛЬКО JSON, без пояснений:\n"
         '{"score": 0-10, "source_suspect": false, '
         '"issues": ["короткая фраза на ' + _explain_lang_name() + '"], '
@@ -12818,6 +12833,12 @@ def _review_stale(seg: dict) -> bool:
     # Источник — вторая сторона пары, и вердикт описывает ИМЕННО ПАРУ.
     # У записей прежней версии поля нет: считаем их устаревшими по одному
     # только тексту перевода, как и раньше.
+    # Стайл-шит сменили ПОСЛЕ вердикта (`set_project_style` ставит метку
+    # на месте: `_review_stale` проекта не имеет, а отпечаток стиля живёт
+    # на проекте). Ревизор перечитает под новые правила — это платно,
+    # и число названо в ответе на смену.
+    if rv.get("styleStale"):
+        return True
     src_h = rv.get("source_hash")
     if src_h is not None and src_h != _text_hash((seg.get("source") or "").strip()):
         return True
@@ -12911,7 +12932,8 @@ def _openai_review(seg: dict, project: dict, prev_src: str, next_src: str,
     try:
         resp = client.chat.completions.create(
             model=mdl["id"],
-            messages=[{"role": "system", "content": _review_system(dom, src_lang, tgt_lang)},
+            messages=[{"role": "system", "content": _review_system(dom, src_lang, tgt_lang,
+                                                                  _style_block(project))},
                       {"role": "user", "content": body}],
             **extra,
         )
@@ -13943,6 +13965,497 @@ class TermContextApplyRequest(BaseModel):
     include_confirmed: bool = False
 
 
+
+# ── Стайл-шит документа ────────────────────────────────────────────────
+# Единая стилистика — свойство ДОКУМЕНТА, а не соседей: два соседних сегмента
+# не скажут, как в статье пишутся заголовки, аббревиатуры при первом
+# упоминании или американская ли орфография. Поэтому правила лежат таблицей
+# из ВЫБОРОВ (человек, не знающий целевого языка, выбирает журнал и вариант
+# орфографии, а не слова) и уходят ОДНИМ блоком в промпты перевода, ревизии
+# и ремонта (`_style_block`), а детерминированная проверка (`_style_findings`)
+# читает ТЕ ЖЕ поля — промпт и проверка разойтись не могут.
+# Три слоя, как у областей: встроенный пресет по области → пресет организации
+# (запись tenant, как pricing) → проект. Стайл-шит ВКЛЮЧАЕТСЯ на проекте
+# (`project["style"]` — dict): без него блок пуст, промпты байт в байт прежние,
+# и ни один оплаченный вердикт не устаревает.
+# Чего в первой версии НЕТ намеренно: формат чисел и единиц (сравнение чисел
+# идёт по строкам, и «1,3 → 1.3» стало бы объективной находкой, снимающей
+# заверение человека), регистр заголовков кроме «как в оригинале» (так
+# считают `_case_misses` и `_term_case_spans`, второе правило рядом дало бы
+# две правки одного места по очереди), курсив (в сегменте нет оформления).
+STYLE_FIELDS = {
+    "preset":        ("", "ama", "vancouver", "apa", "nature"),
+    "spelling":      ("", "US", "UK"),
+    "register":      ("", "academic", "clinical", "textbook", "plain"),
+    "abbreviations": ("", "expand_first", "as_source"),
+    "quotes":        ("", "double", "single", "guillemets"),
+    "headings":      ("", "as_source"),
+}
+STYLE_PRESETS = {
+    "ama":       {"spelling": "US", "register": "academic", "abbreviations": "expand_first", "quotes": "double"},
+    "vancouver": {"spelling": "US", "register": "academic", "abbreviations": "expand_first", "quotes": "double"},
+    "apa":       {"spelling": "US", "register": "academic", "abbreviations": "expand_first", "quotes": "double"},
+    "nature":    {"spelling": "UK", "register": "academic", "abbreviations": "expand_first", "quotes": "single"},
+}
+STYLE_PRESET_LABEL = {"ama": "AMA Manual of Style", "vancouver": "Vancouver (ICMJE)",
+                      "apa": "APA", "nature": "Nature journals"}
+# Встроенный пресет по области (по `base` своей области организации).
+STYLE_DOMAIN_PRESET = {"medical": "ama", "pharma": "ama"}
+STYLE_TEXT = {
+    "spelling": {"US": "Spelling: American English (US).",
+                 "UK": "Spelling: British English (UK, -ise forms)."},
+    "register": {"academic": "Register: academic prose for a peer-reviewed publication — precise, impersonal, no colloquialisms.",
+                 "clinical": "Register: clinical documentation — concise, standard clinical phrasing.",
+                 "textbook": "Register: textbook prose — clear, explanatory, consistent terminology.",
+                 "plain":    "Register: plain language for a general reader."},
+    "abbreviations": {"expand_first": "Abbreviations: spell out at first use in the document as “Full form (ABBR)”, then use the abbreviation consistently.",
+                      "as_source":    "Abbreviations: keep them exactly as the source uses them."},
+    "quotes": {"double": "Quotation marks: “double”.", "single": "Quotation marks: ‘single’.",
+               "guillemets": "Quotation marks: «guillemets»."},
+    "headings": {"as_source": "Headings: keep the casing of the source."},
+}
+
+
+def _style_layer(fields: dict) -> dict:
+    """Один слой: пресет заполняет поля, явные значения слоя сильнее пресета."""
+    preset = (fields or {}).get("preset") or ""
+    out = dict(STYLE_PRESETS.get(preset, {}))
+    for k, v in (fields or {}).items():
+        if k != "preset" and v:
+            out[k] = v
+    out["preset"] = preset
+    return out
+
+
+def _style_effective(project: dict) -> Optional[dict]:
+    """Действующие поля: встроенный пресет области ← организация ← проект.
+    None — стайл-шит на проекте не включён."""
+    if not isinstance((project or {}).get("style"), dict):
+        return None
+    dom = _resolve_domain(project.get("domain"))
+    rec = _tenant_rec(project.get("tenant") or _current_tenant()) or {}
+    eff = _style_layer({"preset": STYLE_DOMAIN_PRESET.get(dom.get("base") or dom.get("id") or "", "")})
+    for layer in (rec.get("style") or {}, project.get("style") or {}):
+        for k, v in _style_layer(layer).items():
+            if v:
+                eff[k] = v
+    if (project.get("tgt") or "").upper() != "EN":
+        # Орфографический вариант есть только у английского; на другой паре
+        # поле молчит, как и правила, которых для языка нет.
+        eff["spelling"] = ""
+    eff.setdefault("headings", "as_source")
+    return {k: eff.get(k, "") for k in STYLE_FIELDS}
+
+
+def _style_fp(project: dict) -> str:
+    eff = _style_effective(project)
+    return _text_hash(json.dumps(eff, sort_keys=True)) if eff else ""
+
+
+def _style_block(project: Optional[dict]) -> str:
+    """Блок STYLE SHEET для промптов. Пусто, пока стайл-шит не включён."""
+    eff = _style_effective(project or {}) if project else None
+    if not eff:
+        return ""
+    lines = []
+    if eff.get("preset"):
+        lines.append("Journal style: " + STYLE_PRESET_LABEL.get(eff["preset"], eff["preset"]) + ".")
+    for k in ("spelling", "register", "abbreviations", "quotes", "headings"):
+        t = STYLE_TEXT.get(k, {}).get(eff.get(k) or "")
+        if t:
+            lines.append(t)
+    if not lines:
+        return ""
+    # Приказ глоссария сильнее стиля: иначе «Spelling: US» рядом с приказом
+    # «haemoglobin» даёт модели два требования, ремонт подставит одно,
+    # `_repair_scores["gloss"]` откатит — платный вызов с известным исходом.
+    lines.append("Approved glossary terms take precedence over these conventions.")
+    return ("STYLE SHEET — document-wide conventions, apply consistently:\n"
+            + "\n".join("- " + l for l in lines) + "\n")
+
+
+def _style_state(project: dict) -> dict:
+    enabled = isinstance(project.get("style"), dict)
+    dom = _resolve_domain(project.get("domain"))
+    rec = _tenant_rec(project.get("tenant") or _current_tenant()) or {}
+    return {"enabled": enabled,
+            "project": dict(project.get("style") or {}) if enabled else {},
+            "org": dict(rec.get("style") or {}),
+            "builtinPreset": STYLE_DOMAIN_PRESET.get(dom.get("base") or dom.get("id") or "", ""),
+            "effective": _style_effective(project) or {},
+            "block": _style_block(project),
+            "spellingApplies": (project.get("tgt") or "").upper() == "EN"}
+
+
+# Орфография: (британская основа, американская основа, допустимый хвост).
+# Хвост — ЗАКРЫТЫЙ список, а не «любые буквы»: «organis» + любые буквы ловил бы
+# «organism», «liter» без границы — «literature», «analys» + «is» — «analysis»,
+# который в обоих вариантах один. Слова, у которых вариант зависит от части речи
+# или спорен (practise/practice, licence/license, programme, sulphur, foetus,
+# metre/meter-прибор), в списке нет намеренно: пропуск дешевле подмены.
+_SPELL_VERB = r"(?:e|es|ed|ing|er|ers|ation|ations|ational|ationally)"
+_SPELLING = [
+    ("tumour", "tumor", r"s?"), ("colour", "color", r"(?:s|ed|ing|less|ful)?"),
+    ("behaviour", "behavior", r"(?:s|al)?"), ("labour", "labor", r"(?:s|ed|ing)?"),
+    ("haemoglobin", "hemoglobin", r"s?"), ("oedema", "edema", r"s?"), ("oedemat", "edemat", r"[a-z]{1,4}"),
+    ("oesophag", "esophag", r"[a-z]{1,8}"), ("anaemi", "anemi", r"[a-z]{1,3}"),
+    ("leukaemi", "leukemi", r"[a-z]{1,3}"), ("ischaemi", "ischemi", r"[a-z]{1,3}"),
+    ("haemorrhag", "hemorrhag", r"[a-z]{1,4}"), ("haematolog", "hematolog", r"[a-z]{1,5}"),
+    ("anaesthe", "anesthe", r"[a-z]{1,6}"), ("paediatr", "pediatr", r"[a-z]{1,6}"),
+    ("orthopaed", "orthoped", r"[a-z]{1,4}"), ("gynaecolog", "gynecolog", r"[a-z]{1,5}"),
+    ("aetiolog", "etiolog", r"[a-z]{1,5}"), ("oestrogen", "estrogen", r"[a-z]{0,2}"),
+    ("diarrhoea", "diarrhea", r"l?"), ("faeces", "feces", r""), ("faecal", "fecal", r""),
+    ("caesarean", "cesarean", r"s?"), ("catalogue", "catalog", r"(?:s|d)?"),
+    ("centre", "center", r"s?"), ("litre", "liter", r"s?"), ("fibre", "fiber", r"s?"),
+    ("defence", "defense", r"s?"),
+    ("analys", "analyz", _SPELL_VERB), ("paralys", "paralyz", _SPELL_VERB),
+    ("organis", "organiz", _SPELL_VERB), ("randomis", "randomiz", _SPELL_VERB),
+    ("immunis", "immuniz", _SPELL_VERB), ("hospitalis", "hospitaliz", _SPELL_VERB),
+    ("sterilis", "steriliz", _SPELL_VERB), ("characteris", "characteriz", _SPELL_VERB),
+    ("minimis", "minimiz", _SPELL_VERB), ("maximis", "maximiz", _SPELL_VERB),
+    ("optimis", "optimiz", _SPELL_VERB), ("recognis", "recogniz", _SPELL_VERB),
+    ("stabilis", "stabiliz", _SPELL_VERB), ("utilis", "utiliz", _SPELL_VERB),
+    ("standardis", "standardiz", _SPELL_VERB), ("normalis", "normaliz", _SPELL_VERB),
+    ("localis", "localiz", _SPELL_VERB), ("generalis", "generaliz", _SPELL_VERB),
+    ("visualis", "visualiz", _SPELL_VERB), ("categoris", "categoriz", _SPELL_VERB),
+]
+_SPELL_RULES: dict = {}
+
+
+def _spelling_rules(want: str) -> list:
+    if want not in _SPELL_RULES:
+        rules = []
+        for uk, us, tail in _SPELLING:
+            frm, to = (uk, us) if want == "US" else (us, uk)
+            rules.append((re.compile(r"\b(" + frm + r")(" + tail + r")\b", re.I), to))
+        _SPELL_RULES[want] = rules
+    return _SPELL_RULES[want]
+
+
+def _match_case(sample: str, word: str) -> str:
+    if len(sample) > 1 and sample.isupper():
+        return word.upper()
+    if sample[:1].isupper():
+        return word[:1].upper() + word[1:]
+    return word
+
+
+def _spelling_fix(text: str, want: str, protect: frozenset = frozenset()) -> tuple:
+    """(текст в нужном варианте, [(было, стало)]). Начертание слова сохраняется.
+
+    Не трогаем: слово из `protect` (приказные переводы глоссария — иначе
+    правка и ремонт ходили бы по кругу) и слово с заглавной НЕ в начале
+    предложения — имя собственное, название, латинский род: «Centers for
+    Disease Control», «Department of Defense», «Oesophagostomum», заглавие
+    цитируемой статьи. Пропуск дешевле подмены в библиографии."""
+    if want not in ("US", "UK") or not text:
+        return text, []
+    changes = []
+    for rx, to in _spelling_rules(want):
+        cur = text
+
+        def _r(m, to=to, cur=cur):
+            whole, head = m.group(0), m.group(1)
+            if whole.lower() in protect:
+                return whole
+            if head[:1].isupper() and not head.isupper() and not _sentence_start(cur, m.start()):
+                return whole
+            new = _match_case(head, to) + m.group(2)
+            changes.append((whole, new))
+            return new
+        text = rx.sub(_r, text)
+    return text, changes
+
+
+def _style_protected_words(project: dict) -> frozenset:
+    """Слова приказных переводов области проекта: орфография их не правит."""
+    scope = _project_scope(project)
+    words = set()
+    for g in STATE.get("glossary") or []:
+        if g.get("tier") != GLOSSARY_TIER_HARD or _scope_of(g) != scope:
+            continue
+        words.update(w.lower() for w in re.findall(r"[A-Za-z]{3,}", g.get("tgt") or ""))
+    return frozenset(words)
+
+
+# Аббревиатуры, которые журналы не расшифровывают, и то, что аббревиатурой
+# лишь выглядит (римские числа, единицы).
+_ABBR_KNOWN = frozenset((
+    "DNA", "RNA", "HIV", "AIDS", "WHO", "PCR", "CT", "MRI", "US", "UK", "USA", "EU",
+    "SI", "ISO", "AM", "PM", "OK", "TB", "BCG", "COVID", "SARS", "CD", "IG", "ID",
+    "II", "III", "IV", "VI", "VII", "VIII", "IX", "XI", "XII", "XIII", "XIV", "XV",
+    "MG", "ML", "KG", "CM", "MM", "MHZ", "KHZ", "GHZ", "KM", "NM", "MCG", "IU",
+))
+# Дефисное сложение («MDR-TB») — одна аббревиатура: расшифровка «(MDR-TB)»
+# покрывает и её части.
+_ABBR_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,5}(?:-[A-Z][A-Z0-9]{1,5})*s?\b")
+
+
+def _abbr_report(project: dict) -> list:
+    """Аббревиатуры без расшифровки при ПЕРВОМ упоминании — в порядке
+    документа (список сегментов и есть его порядок: сегменты с картинок
+    стоят у своей картинки). Только отчёт: расшифровку сочинять нельзя."""
+    seen, out = set(), []
+    for seg in project.get("segments") or []:
+        t = seg.get("target") or ""
+        if not t.strip():
+            continue
+        words = re.findall(r"[A-Za-z]{2,}", t)
+        if words and all(w.isupper() for w in words):
+            continue    # капс-заголовок («MAIN FORMS», «NOTE:»): там каждое слово похоже на аббревиатуру
+        for m in _ABBR_RE.finditer(t):
+            a = m.group(0)
+            if a.endswith("s") and len(a) > 2:
+                a = a[:-1]
+            if a in seen or a in _ABBR_KNOWN or a.isdigit():
+                continue
+            seen.add(a)
+            expanded = bool(re.search(r"\(" + re.escape(a) + r"s?\)", t)
+                            or re.search(r"\b" + re.escape(a) + r"s?\s*\(", t))
+            if expanded:
+                seen.update(a.split("-"))
+            elif "-" in a and all(x in seen or x in _ABBR_KNOWN for x in a.split("-")):
+                continue    # части уже расшифрованы порознь
+            else:
+                out.append({"abbr": a, "id": seg["id"]})
+    return out
+
+
+def _style_findings(project: dict, ids: Optional[set] = None) -> dict:
+    """Детерминированные находки по действующему стайл-шиту: орфография
+    (с готовой заменой) и аббревиатуры (отчёт). Бесплатно."""
+    eff = _style_effective(project) or {}
+    want = eff.get("spelling") or ""
+    protect = _style_protected_words(project) if want else frozenset()
+    spelling = []
+    for seg in project.get("segments") or []:
+        if ids is not None and seg["id"] not in ids:
+            continue
+        t = seg.get("target") or ""
+        if not t.strip() or not want:
+            continue
+        new, ch = _spelling_fix(t, want, protect)
+        if ch:
+            spelling.append({"id": seg["id"], "status": seg.get("status"),
+                             "changes": [list(c) for c in ch[:20]], "now": new})
+    abbr = _abbr_report(project) if eff.get("abbreviations") == "expand_first" else []
+    return {"spelling": spelling, "abbreviations": abbr, "want": want}
+
+
+class StyleBody(BaseModel):
+    fields: dict = {}
+    enable: Optional[bool] = None
+
+
+class StyleCheckRequest(BaseModel):
+    dry_run: bool = True
+    include_confirmed: bool = False
+    segment_ids: Optional[list] = None
+
+
+def _style_validate(fields: dict) -> dict:
+    out = {}
+    for k, v in (fields or {}).items():
+        if k not in STYLE_FIELDS:
+            raise HTTPException(400, "Неизвестное поле стайл-шита: " + str(k))
+        v = v or ""
+        if not isinstance(v, str) or v not in STYLE_FIELDS[k]:
+            raise HTTPException(400, "Недопустимое значение поля «" + k + "»: " + str(v))
+        out[k] = v
+    return out
+
+
+@app.get("/api/style")
+def get_org_style(request: Request):
+    """Стайл-шит СВОЕЙ организации плюс каталог полей. Наружу его не отдаёт
+    никто другой: `/api/auth/me` перечисляет поля организации белым списком."""
+    _current_user(request)
+    rec = _tenant_rec(_current_tenant()) or {}
+    return {"ok": True, "tenant": _current_tenant(), "style": dict(rec.get("style") or {}),
+            "catalog": STYLE_FIELDS, "presets": STYLE_PRESETS,
+            "domainDefaults": STYLE_DOMAIN_PRESET}
+
+
+@app.post("/api/style")
+def save_org_style(req: StyleBody, request: Request):
+    """Правит ВЛАДЕЛЕЦ (строка в `_OWNER_ONLY`): это продукт агентства."""
+    _current_user(request)
+    rec = _tenant_rec(_current_tenant())
+    if not rec:
+        raise HTTPException(404, "Записи вашей организации нет в базе — стайл-шит сохранять некуда.")
+    cur = dict(rec.get("style") or {})
+    cur.update(_style_validate(req.fields))
+    rec["style"] = {k: v for k, v in cur.items() if v}
+    save_state(STATE)
+    # Запись организации — документ, а эпоху документов поднимает только
+    # воркер для проектов. Без этого `medcat-worker` до рестарта переводил бы
+    # под прежним слоем организации, а API показывал бы новый.
+    try:
+        if hasattr(STORE, "bump_epoch"):
+            STORE.bump_epoch("doc:tenants")
+    except Exception as e:
+        print(f"[backend] стайл-шит организации: эпоха не поднята: {e}", file=sys.stderr)
+    _audit("style.org", fields=sorted(req.fields or {}))
+    return {"ok": True, "style": rec["style"]}
+
+
+@app.get("/api/projects/{pid}/style")
+def get_project_style(pid: int):
+    project = get_project(pid)
+    return {"ok": True, **_style_state(project), "catalog": STYLE_FIELDS, "presets": STYLE_PRESETS}
+
+
+@app.post("/api/projects/{pid}/style")
+def set_project_style(pid: int, req: StyleBody):
+    """Включает стайл-шит на проекте и правит его поля. Пустое поле снимает
+    значение проекта — действует слой ниже. Смена ДЕЙСТВУЮЩИХ полей делает
+    вердикты ревизии устаревшими (метка на месте, число в ответе): ревизор
+    перечитает под новые правила, а это платно. Готовые переводы и заходы
+    ремонта не трогаются — переперевод под новый стиль отдельное решение."""
+    _guard_project_write(pid)
+    project = get_project(pid)
+    before = _style_fp(project)
+    if req.enable is False:
+        project.pop("style", None)
+    else:
+        cur = dict(project.get("style") or {}) if isinstance(project.get("style"), dict) else {}
+        cur.update(_style_validate(req.fields))
+        project["style"] = {k: v for k, v in cur.items() if v}
+    after = _style_fp(project)
+    stale = 0
+    if after != before:
+        for seg in project["segments"]:
+            rv = seg.get("review")
+            if rv and not rv.get("styleStale") and not _review_stale(seg):
+                rv["styleStale"] = True
+                stale += 1
+        _ANALYSIS_CACHE.pop(pid, None)
+    save_state(STATE)
+    _audit("style.project", project=pid, fields=sorted(req.fields or {}), enable=req.enable)
+    return {"ok": True, **_style_state(project), "reviewsStale": stale, "changed": after != before}
+
+
+def _style_backup(pid: int, snapshot: list) -> tuple:
+    PURGE_DIR.mkdir(parents=True, exist_ok=True)
+    base = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stamp, n = base, 1
+    while (PURGE_DIR / ("style-" + stamp + ".json")).exists():
+        stamp = base + "-" + str(n)
+        n += 1
+    path = PURGE_DIR / ("style-" + stamp + ".json")
+    path.write_text(json.dumps({"project": pid, "segments": snapshot}, ensure_ascii=False),
+                    encoding="utf-8")
+    return stamp, path
+
+
+@app.post("/api/projects/{pid}/style-check")
+def style_check(pid: int, req: StyleCheckRequest):
+    """Проверка стиля по действующему стайл-шиту: орфографический вариант
+    (с готовой заменой) и аббревиатуры без расшифровки (только отчёт).
+    Седьмая команда, меняющая текст БЕЗ вызова модели, и по той же причине:
+    она ничего не сочиняет — меняются буквы внутри слов из закрытого списка.
+    Правила массовых команд: `dry_run` по умолчанию, заверенное не трогается
+    без `include_confirmed` и названо числом, копия в `data/backups/`,
+    откат `/style-check/{stamp}/undo`. Бесплатно."""
+    _guard_project_write(pid)
+    project = get_project(pid)
+    if not isinstance(project.get("style"), dict):
+        raise HTTPException(400, "Стайл-шит проекта не включён")
+    ids = set(req.segment_ids) if req.segment_ids is not None else None
+    rep_ = _style_findings(project, ids)
+    by_id = {sg["id"]: sg for sg in project["segments"]}
+    todo, skipped_confirmed = [], []
+    for f in rep_["spelling"]:
+        sg = by_id[f["id"]]
+        if sg.get("status") == "confirmed" and not req.include_confirmed:
+            skipped_confirmed.append(sg["id"])
+            continue
+        todo.append((sg, f))
+    # Правка меняет текст, и хеши back-check, termcheck и ревизии перестают
+    # его описывать: ближайший прогон купит проверки заново. Число названо
+    # ДО применения — как у пачки `/repair/accept-batch`.
+    stale_checks = 0
+    for sg, _f in todo:
+        cur_h = _text_hash((sg.get("target") or "").strip())
+        if any((sg.get(k) or {}).get("target_hash") == cur_h for k in ("backcheck", "termcheck")) \
+                or not _review_stale(sg):
+            stale_checks += 1
+    result = {"ok": True, "dryRun": req.dry_run, "spelling": rep_["want"],
+              "staleChecks": stale_checks,
+              "spellingSegments": len(rep_["spelling"]),
+              "spellingChanges": sum(len(f["changes"]) for f in rep_["spelling"]),
+              "ids": [sg["id"] for sg, _ in todo], "skippedConfirmed": skipped_confirmed,
+              "samples": [{"id": f["id"], "changes": f["changes"][:6]} for _sg, f in todo[:12]],
+              "abbreviations": rep_["abbreviations"][:60],
+              "abbreviationsTotal": len(rep_["abbreviations"]),
+              "applied": 0, "stamp": None}
+    if req.dry_run or not todo:
+        return result
+    snapshot = [{**_repair_accept_snapshot(sg), "now": f["now"]} for sg, f in todo]
+    try:
+        stamp, path = _style_backup(pid, snapshot)
+    except Exception as e:
+        print(f"[backend] стайл-шит: бэкап не записан: {e}", file=sys.stderr)
+        raise HTTPException(500, "Не удалось сохранить копию для отката — применение отменено")
+    at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    for sg, f in todo:
+        was = sg.get("target") or ""
+        _replace_target(sg, f["now"], sg.get("provider") or "", "STYLE_SPELLING")
+        sg["status"] = "review"
+        sg["styleApplied"] = {"from": was, "changes": f["changes"], "by": "human", "at": at}
+    _IMPACT_CACHE.pop(pid, None)
+    _ANALYSIS_CACHE.pop(pid, None)
+    save_state(STATE)
+    _audit("style.apply", project=pid, count=len(todo), spelling=rep_["want"], stamp=stamp)
+    print(f"[backend] стайл-шит: орфография исправлена в {len(todo)} сегм. (проект {pid}), "
+          f"копия: {path.name}", file=sys.stderr)
+    result["applied"] = len(todo)
+    result["stamp"] = stamp
+    return result
+
+
+@app.post("/api/projects/{pid}/style-check/{stamp}/undo")
+def undo_style_check(pid: int, stamp: str):
+    """Возвращает ТОЛЬКО те сегменты, где сейчас стоит именно наш текст:
+    правили после — чужую работу откатом не затираем."""
+    _guard_project_write(pid)
+    project = get_project(pid)
+    if not re.fullmatch(r"[0-9-]{8,24}", stamp or ""):
+        raise HTTPException(400, "Неверная метка отката")
+    path = PURGE_DIR / ("style-" + stamp + ".json")
+    if not path.exists():
+        raise HTTPException(404, "Копия для отката не найдена")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(500, "Копия для отката не читается: " + str(e))
+    if data.get("project") != pid:
+        raise HTTPException(400, "Эта копия относится к другому проекту")
+    by_id = {sg["id"]: sg for sg in project["segments"]}
+    restored, changed_since = [], []
+    for snap in data.get("segments") or []:
+        sg = by_id.get(snap["id"])
+        if sg is None:
+            continue
+        if (sg.get("target") or "") != (snap.get("now") or ""):
+            changed_since.append(sg["id"])
+            continue
+        sg["target"] = snap["target"]
+        sg["status"] = snap["status"]
+        for k in ("provider", "route", "confirmedBy", "confirmedAt", "prevTarget"):
+            if snap.get(k) is None:
+                sg.pop(k, None)
+            else:
+                sg[k] = snap[k]
+        sg.pop("styleApplied", None)
+        restored.append(sg["id"])
+    _IMPACT_CACHE.pop(pid, None)
+    _ANALYSIS_CACHE.pop(pid, None)
+    save_state(STATE)
+    _audit("style.undo", project=pid, stamp=stamp, restored=len(restored))
+    return {"ok": True, "restored": len(restored), "ids": restored, "changedSince": changed_since}
+
+
 @app.post("/api/projects/{pid}/term-context/apply")
 def apply_term_context(pid: int, req: TermContextApplyRequest):
     """Подставить вариант арбитра вместо утверждённого перевода — по строке,
@@ -14659,6 +15172,7 @@ def batch_translate(pid: int, req: BatchRequest):
         try:
             translation = _openai_translate(seg["source"], project["src"], project["tgt"],
                                             domain=project.get("domain"),
+                                            style=_style_block(project),
                                             gloss_hits=gloss_hits, tm_context=tm_hit,
                                             model=req.model,
                                             prev_src=prev_src, next_src=next_src)
@@ -16404,6 +16918,8 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
                 # Текст не менялся — изменился набор вопросов. Сказать «перевод
                 # изменился» значит соврать в отчёте, который для того и заведён.
                 run("вопросы ревизии изменились", seg)
+            elif rv.get("styleStale"):
+                run("стайл-шит изменился после ревизии", seg)
             else:
                 run("перевод изменился после ревизии", seg)
 

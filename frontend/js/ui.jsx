@@ -241,6 +241,21 @@ function Avatar({ person, size = 30 }) {
   return React.createElement("span", { className: "avatar", title: person.name,
     style: { background: person.color, width: size, height: size, fontSize: size * 0.4 } }, person.initials);
 }
+/* Роли — ОДНА подпись на все экраны и ОДИН список в селектах: пары кнопок
+   «→ владелец / → переводчик» в четырёх файлах разошлись бы первой же новой
+   ролью. Владелец — всё; редактор и переводчик в правах равны, роль идёт
+   в след ответственного («подтвердил: Ева · переводчик»). Право СДЕЛАТЬ
+   проверяет сервер (`_OWNER_ONLY`). */
+function roleLabel(role) {
+  return role === "owner" ? TR("владелец") : role === "editor" ? TR("редактор") : TR("переводчик");
+}
+function RoleSelect({ value, onChange, disabled, style }) {
+  return React.createElement(Select, { value: value || "translator", disabled, style,
+      onChange: (e) => onChange(e.target.value) },
+    React.createElement("option", { value: "translator" }, TR("Переводчик")),
+    React.createElement("option", { value: "editor" }, TR("Редактор")),
+    React.createElement("option", { value: "owner" }, TR("Владелец")));
+}
 function EmptyState({ icon, title, sub, action }) {
   return React.createElement("div", { className: "empty" },
     React.createElement(Icon, { name: icon || "folder", size: 44, className: "e-ic", stroke: 1.6 }),

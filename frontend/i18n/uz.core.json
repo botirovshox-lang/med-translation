@@ -38,7 +38,6 @@
   "Требуется GPT": "GPT kerak",
   "Требуется OpenAI GPT для перевода и QA. Стандартный маршрут для большинства сегментов.": "Tarjima va sifat nazorati uchun OpenAI GPT kerak. Aksariyat segmentlar uchun odatiy yo'nalish.",
   "Требуется OpenAI GPT с инъекцией глоссария в промпт. Применяется для сегментов с большим количеством терминов (3+) или с риском HIGH.": "Promptga lug'at qo'shilgan OpenAI GPT kerak. Tibbiy atamalari ko'p (3+) yoki xavfi HIGH bo'lgan segmentlar uchun qo'llanadi.",
-  " · владелец": " · egasi",
   "admin или you@mail.com": "admin yoki you@mail.com",
   "Админ": "Admin",
   "Анализ": "Tahlil",
@@ -172,8 +171,6 @@
   "переводчик": "tarjimon",
   "Не удалось": "Bajarilmadi",
   "Роль изменена": "Rol o'zgartirildi",
-  "→ переводчик": "→ tarjimon",
-  "→ владелец": "→ egasi",
   " · ваша": " · sizniki",
   " · нажмите, чтобы заменить": " · almashtirish uchun bosing",
   " · общая": " · umumiy",
@@ -264,5 +261,6 @@
   "политику обработки персональных данных": "shaxsiy ma'lumotlarni qayta ishlash siyosati",
   ". Загружаемые документы обрабатываются языковой моделью стороннего поставщика.": ". Yuklangan hujjatlar uchinchi tomon yetkazib beruvchisining til modeli tomonidan qayta ishlanadi.",
   "Оферта": "Oferta",
-  "Персональные данные": "Shaxsiy ma'lumotlar"
+  "Персональные данные": "Shaxsiy ma'lumotlar",
+  "редактор": "muharrir"
 }

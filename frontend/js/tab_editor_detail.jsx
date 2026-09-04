@@ -238,6 +238,21 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
         React.createElement(StatusBadge, { status: seg.status }),
         React.createElement(InfoTip, { title: (STATUS_TIP[seg.status] || STATUS_TIP.new)[0], body: (STATUS_TIP[seg.status] || STATUS_TIP.new)[1] }))
     ),
+    /* Кто отвечает за этот текст: подпись заверившего (имя по id даёт
+       сервер — `confirmedByName`), роль на момент подписи и кто правил
+       руками. Прежняя отметка «human» — заверение до учёта авторов: имени
+       нет, факт заверения остаётся. Снятая подпись названа тоже: молча
+       пропавшая отметка неотличима от обычной правки. */
+    (seg.confirmedBy || seg.editedByName || seg.unconfirmed) && React.createElement("div", { className: "dim", style: { fontSize: 12, marginTop: -8, lineHeight: 1.6 } },
+      seg.confirmedBy && seg.status === "confirmed" && React.createElement("div", null,
+        TR("Подтвердил: ") + (seg.confirmedByName || TR("человек (до учёта авторов)"))
+        + (seg.confirmedRole ? " · " + roleLabel(seg.confirmedRole) : "")
+        + (seg.confirmedAt ? " · " + seg.confirmedAt : "")),
+      seg.status !== "confirmed" && seg.unconfirmed && React.createElement("div", null,
+        TR("Заверение снято") + (seg.unconfirmed.withdrawnAt ? " · " + seg.unconfirmed.withdrawnAt : "")
+        + (seg.unconfirmed.how === "edit" ? TR(" · правкой текста") : "")),
+      seg.editedByName && React.createElement("div", null,
+        TR("Правил: ") + seg.editedByName + (seg.editedAt ? " · " + seg.editedAt : ""))),
 
     // source
     React.createElement("div", null,

@@ -547,6 +547,16 @@ function AutoApprovePanel({ store, toast, onDone }) {
   );
 }
 
+/* Подпись ответственного на записи глоссария (`signedBy` с сервера): кто,
+   в какой роли, когда и что сделал. Одна строка на таблицу и на карточку —
+   разойдись они, человек читал бы про одну запись два разных следа. */
+function glossSignedTitle(sb) {
+  if (!sb || !sb.name) return "";
+  const act = { approve: TR("одобрил кандидата"), add: TR("добавил запись"), edit: TR("правил запись"),
+                demote: TR("понизил до подсказки"), import: TR("импорт приказом") }[sb.action] || "";
+  return sb.name + (sb.role ? " · " + roleLabel(sb.role) : "") + (sb.at ? " · " + sb.at : "") + (act ? " · " + act : "");
+}
+
 function TermQueue({ store, toast, version }) {
   const [items, setItems] = useState([]);
   const [counts, setCounts] = useState({});
@@ -952,7 +962,10 @@ function TabGlossary({ store, toast }) {
                 React.createElement("td", { style: { color: "var(--c-primary)", fontWeight: 500 } }, g.tgt,
                   // auto = массовый автоимпорт: модель получает такую запись подсказкой, а не правилом
                   g.tier === "auto" && React.createElement("span", { className: "dim", style: { fontSize: 11, marginLeft: 8, whiteSpace: "nowrap" },
-                    title: TR("Автоимпорт, не проверено человеком. В промпт уходит подсказкой, а не жёстким правилом.") }, TR("авто"))),
+                    title: TR("Автоимпорт, не проверено человеком. В промпт уходит подсказкой, а не жёстким правилом.") }, TR("авто")),
+                  // Кто отвечает за запись — рядом с переводом, подробности в подсказке.
+                  g.signedBy && g.signedBy.name && React.createElement("span", { className: "dim", style: { fontSize: 11, marginLeft: 8, whiteSpace: "nowrap" },
+                    title: glossSignedTitle(g.signedBy) }, "· " + g.signedBy.name)),
                 React.createElement("td", null, React.createElement(Badge, { variant: "soft" }, g.cat)),
                 React.createElement("td", { className: "tnum dim" }, g.freq + "×"),
                 React.createElement("td", null, React.createElement("span", { className: "badge " + cls }, lab)),
@@ -1061,6 +1074,8 @@ function TermModal({ term, onClose, onSave, scope }) {
       React.createElement("div", { className: "dim", style: { fontSize: 13 } },
         (term ? (term.lang || "RU→EN") : ((scope || {}).lang || "RU→EN")) + " · " +
         (term ? (term.domain || LEGACY_DOMAIN) : ((scope || {}).domain || LEGACY_DOMAIN)))),
+    term && term.signedBy && term.signedBy.name && React.createElement(Field, { label: TR("Кто отвечает") },
+      React.createElement("div", { className: "dim", style: { fontSize: 13 } }, glossSignedTitle(term.signedBy))),
     React.createElement(Field, { label: TR("Категория") },
       React.createElement(Select, { value: cat, onChange: (e) => setCat(e.target.value) }, cats.map(c => React.createElement("option", { key: c, value: c }, c)))),
     React.createElement(Field, { label: TR("Примечание (необязательно)") },

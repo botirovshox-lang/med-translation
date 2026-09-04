@@ -780,6 +780,7 @@ def _replace_target(seg: dict, text: str, provider: str, route: str):
         seg["prevTarget"] = seg.get("target", "")
         seg.pop("confirmedBy", None)
         seg.pop("confirmedAt", None)
+        seg.pop("confirmedRole", None)
         seg["status"] = "review"
     else:
         seg["status"] = "translated"
@@ -1830,7 +1831,20 @@ _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s.]+(\.[^@\s.]+)+$")
 _SIGNUP_FAILS: dict = {}        # ip -> [время каждой регистрации за час]
 
 BOOTSTRAP_LOGIN = "admin"
-ROLES = ("owner", "translator")
+# Роли — три. Право читается РАНГОМ («не ниже»): владельцу — всё, включая
+# необратимое (удаление записей и проектов, деньги, пользователи); редактор
+# и переводчик сегодня в правах РАВНЫ — оба заверяют сегменты, решают
+# по терминам, понижают и выносят записи, а роль идёт в СЛЕД ответственного
+# («подтвердил: Ева · переводчик»). Это решение
+# владельца сервиса, а не забывчивость: первая версия закрывала переводчику
+# заверение, и её отменили по прямой просьбе. Что закрыто рангом —
+# `_OWNER_ONLY` и (пустая) `_EDITOR_ONLY`.
+ROLES = ("owner", "editor", "translator")
+ROLE_RANK = {"translator": 0, "editor": 1, "owner": 2}
+
+
+def _role_at_least(role: Optional[str], need: str) -> bool:
+    return ROLE_RANK.get(role or "", -1) >= ROLE_RANK[need]
 
 # Языки интерфейса. Список ЗДЕСЬ, а не в браузере: язык лежит на пользователе
 # (`uiLang`), и сервер обязан отказать в том, чего у него нет, — иначе
@@ -1924,6 +1938,60 @@ def _actor_id():
     return u["id"] if u else "human"
 
 
+def _actor_role() -> Optional[str]:
+    """Роль, с которой человек действует СЕЙЧАС, — из сессии (роль в активной
+    команде), а не с записи пользователя: та про домашнюю организацию."""
+    sess = CURRENT_SESSION.get() or {}
+    return sess.get("role") or None
+
+
+def _user_label(uid) -> Optional[str]:
+    """Имя для показа по идентификатору. "human" и None — прежние отметки
+    без автора, имени у них нет. Удалённый пользователь — «#N»: след остаётся
+    следом и когда учётной записи больше нет."""
+    if not isinstance(uid, int):
+        return None
+    for u in _users():
+        if u["id"] == uid:
+            return u.get("name") or u.get("login") or ("#%d" % uid)
+    return "#%d" % uid
+
+
+def _signed(action: str) -> Optional[dict]:
+    """След ответственного на записи глоссария: кто, в какой роли, когда и что
+    сделал (approve | add | edit | demote | import). Без сессии (миграции,
+    тесты) следа нет — выдумывать автора нельзя."""
+    u = _actor()
+    if not u:
+        return None
+    return {"user": u["id"], "name": u.get("name") or u["login"],
+            "role": _actor_role() or u.get("role", "translator"),
+            "at": datetime.now().strftime("%Y-%m-%d %H:%M"), "action": action}
+
+
+def _signed_field(action: str) -> dict:
+    """Для `**` в литерале записи: `{"signedBy": …}` либо ничего."""
+    sig = _signed(action)
+    return {"signedBy": sig} if sig else {}
+
+
+def _withdraw_confirmation(seg: dict, how: str) -> None:
+    """Снять заверение человека с сегмента — при снятии руками (`revert`)
+    и при ПРАВКЕ заверенного текста (`edit`). Подпись относилась к тексту
+    и решению, которых больше нет: оставь `confirmedBy` — и `_confirmed_by_human`
+    считал бы снятый сегмент заверенным, а на чужой формулировке стояла бы
+    подпись человека, который её не видел. Кто снял — на сегменте
+    (`unconfirmed`), не только в кольцевом журнале."""
+    if seg.get("confirmedBy") is not None:
+        seg["unconfirmed"] = {"by": seg.get("confirmedBy"), "at": seg.get("confirmedAt"),
+                              "role": seg.get("confirmedRole"), "how": how,
+                              "withdrawnBy": _actor_id(),
+                              "withdrawnAt": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    for k in ("confirmedBy", "confirmedAt", "confirmedRole"):
+        seg.pop(k, None)
+    seg["status"] = "translated"
+
+
 def _confirmed_by_human(seg: dict) -> bool:
     by = (seg or {}).get("confirmedBy")
     return by == "human" or isinstance(by, int)
@@ -1936,6 +2004,7 @@ def _audit(action: str, **fields) -> None:
         rec = {"at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                "tenant": sess.get("tenant") or _current_tenant(),
                "user": u["id"] if u else None, "login": u["login"] if u else None,
+               "role": sess.get("role"),
                "action": action}
         rec.update({k: v for k, v in fields.items() if v is not None})
         log = STATE.setdefault("audit", [])
@@ -2098,10 +2167,11 @@ def _session_valid(token: Optional[str]) -> bool:
 # эндпоинте нельзя — забыть можно только строку в таблице, и это видно.
 _OWNER_ONLY = [
     ("DELETE", re.compile(r"/api/projects/\d+$")),
-    ("POST",   re.compile(r"/api/glossary/purge(/.*)?$")),
     ("DELETE", re.compile(r"/api/glossary$")),
     ("DELETE", re.compile(r"/api/tm$")),
-    ("POST",   re.compile(r"/api/glossary/demote$")),
+    # Понижения записи и выноса здесь НЕТ по решению владельца сервиса: у обоих
+    # есть откат (`prevTier`, копия в data/backups), а кто нажал — в подписи
+    # записи (`signedBy`) и в журнале.
     ("POST",   re.compile(r"/api/pricing(/.*)?$")),
     ("POST",   re.compile(r"/api/style$")),
     ("POST",   re.compile(r"/api/quotes/\d+$")),
@@ -2115,6 +2185,24 @@ _OWNER_ONLY = [
 
 def _owner_only(method: str, path: str) -> bool:
     return any((m == "*" or m == method) and rx.match(path) for m, rx in _OWNER_ONLY)
+
+
+# Права редактора и переводчика сегодня РАВНЫ, и таблица пуста намеренно:
+# владелец сервиса решил, что заверяет каждый, а роль — подпись
+# ответственности в следе («подтвердил: Ева · переводчик»), а не замок.
+# Первая версия закрывала переводчику заверение сегментов и решения по
+# терминам; отменено по прямой просьбе. Таблица оставлена как место, куда
+# лягут права, когда роли разойдутся, — проверка в `require_token` уже стоит.
+_EDITOR_ONLY: list = []
+_ROLE_DENIED = {
+    "owner": "Это действие доступно только владельцу организации",
+    "editor": "Это действие доступно редактору или владельцу: заверение и решения "
+              "по терминам оставляют подпись ответственного",
+}
+
+
+def _editor_only(method: str, path: str) -> bool:
+    return any((m == "*" or m == method) and rx.match(path) for m, rx in _EDITOR_ONLY)
 
 
 def _drop_session(token: Optional[str]) -> None:
@@ -2183,8 +2271,9 @@ async def require_token(request: Request, call_next):
         if sess is None:
             return JSONResponse({"ok": False, "error": "Требуется вход в систему"}, status_code=401)
         if _owner_only(request.method, path) and sess.get("role") != "owner":
-            return JSONResponse({"ok": False, "error": "Это действие доступно только владельцу организации"},
-                                status_code=403)
+            return JSONResponse({"ok": False, "error": _ROLE_DENIED["owner"]}, status_code=403)
+        if _editor_only(request.method, path) and not _role_at_least(sess.get("role"), "editor"):
+            return JSONResponse({"ok": False, "error": _ROLE_DENIED["editor"]}, status_code=403)
         if _is_paid(request.method, path):
             st = _spend_status(sess.get("tenant"))
             if st["over"]:
@@ -2891,7 +2980,7 @@ def auth_me(request: Request):
     tpub["id"] = tpub["id"] or tid
     tpub["name"] = tpub["name"] or ""
     return {"ok": True, "me": _user_public(u), "tenant": tpub,
-            "can": {"owner": role == "owner", "super": bool(u.get("super"))},
+            "can": {"owner": role == "owner", "super": bool(u.get("super")), "role": role},
             "teams": _teams_of(u), "invites": _my_invites(u),
             "spend": _spend_status(tid),
             **({"adminPath": "/" + ADMIN_PATH} if u.get("super") else {})}
@@ -3213,7 +3302,7 @@ def profile_switch_team(req: TeamSwitch, request: Request):
     finally:
         CURRENT_SESSION.reset(tok)
     return {"ok": True, "activeTeam": req.tenant, "activeRole": role,
-            "can": {"owner": role == "owner", "super": bool(u.get("super"))},
+            "can": {"owner": role == "owner", "super": bool(u.get("super")), "role": role},
             "teams": _teams_of(u)}
 
 
@@ -4275,7 +4364,10 @@ async def import_glossary(request: Request, file: UploadFile = File(...),
     me = _current_user(request)
     if tier not in (GLOSSARY_TIER_SOFT, GLOSSARY_TIER_HARD):
         raise HTTPException(400, "Уровень: %s | %s" % (GLOSSARY_TIER_SOFT, GLOSSARY_TIER_HARD))
-    if tier == GLOSSARY_TIER_HARD and me.get("role") != "owner":
+    # Роль — из СЕССИИ (роль в активной команде), а не с записи пользователя:
+    # владелец своей команды в чужой может быть переводчиком, и запись пустила
+    # бы его импортировать приказы в чужой глоссарий.
+    if tier == GLOSSARY_TIER_HARD and _actor_role() != "owner":
         raise HTTPException(403, "Импорт приказом — только владелец организации")
     pair = (lang or "").replace("->", "→").strip().upper()
     if "→" not in pair:
@@ -4305,6 +4397,10 @@ async def import_glossary(request: Request, file: UploadFile = File(...),
     existing = {_norm_key(g.get("src")) for g in STATE["glossary"] if _scope_of(g) == scope}
     today = datetime.now().strftime("%Y-%m-%d")
     added, seen, dup, bad = [], set(), 0, 0
+    # Приказ подписывает владелец — на КАЖДОЙ записи, потому что дальше она
+    # живёт и правится отдельно от файла. Подсказка подписи не несёт: за неё
+    # никто не ручается, а десять тысяч записей × след — лишний вес документа.
+    signed_import = _signed_field("import") if tier == GLOSSARY_TIER_HARD else {}
     for r in body:
         get = lambda k: (r[col[k]].strip() if k in col and col[k] < len(r) else "")
         s_, t_ = get("src"), get("tgt")
@@ -4320,7 +4416,8 @@ async def import_glossary(request: Request, file: UploadFile = File(...),
                       "conf": "high" if tier == GLOSSARY_TIER_HARD else "medium",
                       "note": get("note"), "tier": tier,
                       "origin": ("import:" + (file.filename or "file"))[:60],
-                      "lang": scope[0], "domain": scope[1], "tenant": scope[2], "updated": today})
+                      "lang": scope[0], "domain": scope[1], "tenant": scope[2], "updated": today,
+                      **signed_import})
     out = {"ok": True, "dryRun": dry_run, "rows": len(body), "added": len(added),
            "skippedDup": dup, "skippedBad": bad, "tier": tier,
            "lang": scope[0], "domain": scope[1], "header": has_head,
@@ -6808,10 +6905,12 @@ def _tm_upsert(source: str, target: str, project: dict = None) -> str:
         t["quality"] = "verified"
         t["score"] = 100
         t["updated"] = today
+        t["by"] = _actor_id()            # кто заверил этот перевод (id, «human» без сессии)
         return "updated"
     STATE["tm"].insert(0, {
         "src": source, "tgt": target, "lang": lang, "tenant": tenant,
         "score": 100, "quality": "verified", "used": 1, "created": today,
+        "by": _actor_id(),
     })
     return "added"
 
@@ -7480,6 +7579,13 @@ def confirm_segment(pid: int, sid: int):
     # за подтверждение и накручивала бы доказательства сама себе.
     seg["confirmedBy"] = _actor_id()
     seg["confirmedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    # Роль на момент заверения — ЧАСТЬ следа: роль человеку потом меняют,
+    # а вопрос «кто и в каком качестве подписал» задают про прошлое.
+    if _actor_role():
+        seg["confirmedRole"] = _actor_role()
+    else:
+        seg.pop("confirmedRole", None)
+    seg.pop("unconfirmed", None)
     _audit("segment.confirm", project=pid, segment=sid)
     tm_action, candidates = None, []
     edit_harvest = None
@@ -7667,8 +7773,18 @@ def _mark_decided(cand: dict, status: str, src: str = None, tgt: str = None, **e
         cand.setdefault("origTgt", cand.get("tgt", ""))
         cand["tgt"] = tgt
     cand["status"] = status
-    cand["decidedBy"] = "human"
+    # Кто решил — идентификатор пользователя; прежнее "human" (без сессии)
+    # законно навсегда, как у `confirmedBy`. Имя и роль — рядом: карточка
+    # показывает их без похода за списком пользователей.
+    cand["decidedBy"] = _actor_id()
     cand["decidedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    who = _actor()
+    if who:
+        cand["decidedName"] = who.get("name") or who["login"]
+        cand["decidedRole"] = _actor_role() or who.get("role", "translator")
+    else:
+        cand.pop("decidedName", None)
+        cand.pop("decidedRole", None)
     cand.update(extra)
     for k in ("sampleSrc", "sampleTgt", "wasTgtLeft"):
         cand.pop(k, None)
@@ -7678,7 +7794,8 @@ def _mark_decided(cand: dict, status: str, src: str = None, tgt: str = None, **e
 def _human_decision(c: dict) -> bool:
     """Решение принял человек, а не автоодобрение. Такие живут в очереди дольше:
     именно они не дают спросить про уже решённый термин второй раз."""
-    if c.get("decidedBy") == "human":
+    by = c.get("decidedBy")
+    if by == "human" or isinstance(by, int):
         return True
     return not (c.get("autoBatch") or c.get("autoTier") or "autoWrote" in c)
 
@@ -7784,13 +7901,14 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     if existing:
         existing.update({"tgt": tgt, "cat": cat, "conf": "high", "tier": GLOSSARY_TIER_HARD,
                          "note": "уточнено вручную " + today, "updated": today,
-                         "prevTgt": existing.get("tgt", ""), **mark})
+                         "prevTgt": existing.get("tgt", ""), **mark,
+                         **_signed_field("approve")})
         _clear_auto_marks(existing)
     else:
         STATE["glossary"].insert(0, {"src": src, "tgt": tgt, "cat": cat, "freq": 1,
                                      "conf": "high", "note": "", "tier": GLOSSARY_TIER_HARD,
                                      "lang": scope[0], "domain": scope[1], "tenant": scope[2],
-                                     "updated": today, **mark,
+                                     "updated": today, **mark, **_signed_field("approve"),
                                      "origin": "confirmed:" + str(cand.get("segment", ""))})
     # Пара запоминается до правки, остальные карточки про этот же термин
     # закрываются: иначе одобренный термин всплывал бы снова — и как сосед
@@ -8321,7 +8439,7 @@ def _forget_auto_batch(batch: int):
     for g in STATE.get("glossary", []):
         if g.get("autoBatch") == batch:
             _clear_auto_marks(g)
-            for k in ("prevTgt", "prevConf", "prevOrigin"):
+            for k in ("prevTgt", "prevConf", "prevOrigin", "prevSignedBy"):
                 g.pop(k, None)
     for c in _term_queue():
         if c.get("autoBatch") == batch:
@@ -8331,7 +8449,7 @@ def _forget_auto_batch(batch: int):
 def _clear_auto_marks(entry: dict):
     """Человек тронул запись — она больше не принадлежит пачке автоодобрения.
     Иначе откат пачки снёс бы или откатил именно то, что человек исправил."""
-    for k in ("autoBatch", "autoCreated", "prevTier", "prevNote"):
+    for k in ("autoBatch", "autoCreated", "prevTier", "prevNote", "prevSignedBy"):
         entry.pop(k, None)
 
 
@@ -8366,8 +8484,12 @@ def _auto_write(cand: dict, tier: str, batch: int, today: str,
                 "prevTgt": existing.get("tgt", ""), "prevTier": _hit_tier(existing),
                 "prevNote": existing.get("note", ""), "prevConf": existing.get("conf", ""),
                 "prevOrigin": existing.get("origin", ""), "autoCreated": False,
+                "prevSignedBy": existing.get("signedBy"),
             })
         existing.update(upd)
+        # Подпись человека относилась к ПРЕЖНЕМУ переводу: на машинной записи
+        # она врала бы про ответственного. Откат пачки её возвращает.
+        existing.pop("signedBy", None)
         return True
     entry = {
         "src": src, "tgt": tgt, "cat": cat, "freq": 1,
@@ -8754,12 +8876,16 @@ def undo_auto_approve(batch: int):
     # Откат ПОНИЖЕНИЯ — это решение человека «запись оставить приказом».
     # Без этой пометки следующий аудит увидел бы записанный вердикт «не то
     # понятие» и предложил бы понизить её снова, по кругу.
-    audit = any(b.get("id") == batch and b.get("kind") == "audit"
-                for b in STATE.get("autoBatches", []))
+    # Номер пачки — общий счётчик на все организации, а откат переписывает
+    # глоссарий: чужой номер → 404 (не 403: не подтверждаем, что пачка есть).
+    rec = next((b for b in STATE.get("autoBatches", []) if b.get("id") == batch), None)
+    if rec is not None and _tenant_of(rec) != _current_tenant():
+        raise HTTPException(404, "Пачка не найдена")
+    audit = bool(rec and rec.get("kind") == "audit")
     removed, restored = 0, 0
     keep = []
     for g in STATE["glossary"]:
-        if g.get("autoBatch") != batch:
+        if g.get("autoBatch") != batch or _tenant_of(g) != _current_tenant():
             keep.append(g)
             continue
         if g.get("autoCreated"):
@@ -8774,6 +8900,9 @@ def undo_auto_approve(batch: int):
             g["origin"] = prev_origin
         else:
             g.pop("origin", None)
+        prev_signed = g.pop("prevSignedBy", None)
+        if prev_signed:
+            g["signedBy"] = prev_signed
         for k in ("autoBatch", "autoCreated"):
             g.pop(k, None)
         if audit:
@@ -8784,7 +8913,7 @@ def undo_auto_approve(batch: int):
     back = 0
     superseded = 0
     for c in _term_queue():
-        if c.get("autoBatch") == batch:
+        if c.get("autoBatch") == batch and _tenant_of(c) == _current_tenant():
             # Запись, которую эта пачка писала, могла быть ПЕРЕЗАПИСАНА более
             # поздней пачкой (см. _auto_write): она больше не наша, откат её
             # не трогает — трогать значило бы затереть более позднее решение.
@@ -8926,6 +9055,8 @@ def _human_touched(entry: dict) -> bool:
     note = (entry.get("note") or "").lower()
     return bool(origin.startswith("confirmed:") or "уточнено вручную" in note
                 or entry.get("autoBatch") or entry.get("byOverride")
+                # Подпись ответственного — и есть след, ради которого заведена.
+                or entry.get("signedBy")
                 # Человек откатил понижение — значит решил оставить запись
                 # приказом, и предлагать понижение снова нельзя.
                 or entry.get("meaningKept"))
@@ -9101,6 +9232,10 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
                for b in bad
                if (not b["humanTouched"]) or (req.include_human and not b.get("kept"))}
     for g in STATE.get("glossary", []):
+        # Ключ — без организации, и без этой строки понижалась бы и одноимённая
+        # запись ЧУЖОГО глоссария (`bad` собран по своей организации).
+        if _tenant_of(g) != _current_tenant():
+            continue
         b = flagged.get((_scope_of(g)[0], _scope_of(g)[1],
                          _norm_key(g.get("src")), _norm_key(g.get("tgt"))))
         if b is None:
@@ -9624,6 +9759,11 @@ def _segment_for_client(seg: dict) -> dict:
         out = dict(seg)
     except RuntimeError:
         out = dict(seg)          # правка из фонового потока длится микросекунды
+    # Имена ответственных — для карточки: в сегменте лежит идентификатор
+    # (`confirmedBy`, `editedBy`), а списка пользователей браузеру не дают.
+    for k, name_k in (("confirmedBy", "confirmedByName"), ("editedBy", "editedByName")):
+        if isinstance(out.get(k), int):
+            out[name_k] = _user_label(out[k])
     cur = _text_hash(out.get("target") or "")
     # back-check и termcheck кладут хеш ОБРЕЗАННОГО текста, ремонт — сырого.
     # Сравнивать надо тем же способом, каким писали: иначе перевод с висящим
@@ -12578,6 +12718,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # считает такие сегменты доказательством), и пользователю.
     seg.pop("confirmedBy", None)
     seg.pop("confirmedAt", None)
+    seg.pop("confirmedRole", None)
     seg["provider"] = mdl_id
     # Принятая правка не выходит из прогона с устаревшей проверкой. Ремонт —
     # последний платный шаг конвейера, back-check и termcheck идут ДО него,
@@ -13399,7 +13540,7 @@ def undo_review(pid: int, stamp: str):
             continue
         seg["target"] = snap["target"]
         seg["status"] = snap["status"]
-        for k in ("provider", "route", "confirmedBy", "confirmedAt", "prevTarget"):
+        for k in ("provider", "route", "confirmedBy", "confirmedAt", "confirmedRole", "prevTarget"):
             if snap.get(k) is None:
                 seg.pop(k, None)
             else:
@@ -13683,6 +13824,7 @@ def _repair_accept_snapshot(seg: dict) -> dict:
             "status": seg.get("status"), "provider": seg.get("provider"),
             "route": seg.get("route"),
             "confirmedBy": seg.get("confirmedBy"), "confirmedAt": seg.get("confirmedAt"),
+            "confirmedRole": seg.get("confirmedRole"),
             "prevTarget": seg.get("prevTarget"),
             "repair": json.loads(json.dumps(seg.get("repair") or {}))}
 
@@ -13894,7 +14036,7 @@ def undo_accept_repair_candidates(pid: int, stamp: str):
             continue
         seg["target"] = snap["target"]
         seg["status"] = snap["status"]
-        for k in ("provider", "route", "confirmedBy", "confirmedAt", "prevTarget"):
+        for k in ("provider", "route", "confirmedBy", "confirmedAt", "confirmedRole", "prevTarget"):
             if snap.get(k) is None:
                 seg.pop(k, None)
             else:
@@ -14566,7 +14708,7 @@ def undo_apply_term_context(pid: int, stamp: str):
             continue
         seg["target"] = snap["target"]
         seg["status"] = snap["status"]
-        for k in ("provider", "route", "confirmedBy", "confirmedAt", "prevTarget"):
+        for k in ("provider", "route", "confirmedBy", "confirmedAt", "confirmedRole", "prevTarget"):
             if snap.get(k) is None:
                 seg.pop(k, None)
             else:
@@ -14965,7 +15107,8 @@ def revert_segment(pid: int, sid: int):
     _guard_project_write(pid)
     seg = get_segment(pid, sid)
     if seg["status"] == "confirmed":
-        seg["status"] = "translated"
+        _withdraw_confirmation(seg, "revert")
+        _audit("segment.unconfirm", project=pid, segment=sid)
     elif seg["status"] == "failed":
         seg["status"] = "new"
         seg["target"] = ""
@@ -15006,14 +15149,36 @@ class UpdateSegmentRequest(BaseModel):
 def update_segment(pid: int, sid: int, req: UpdateSegmentRequest):
     _guard_project_write(pid)
     seg = get_segment(pid, sid)
+    want_confirm = req.status == "confirmed"
+    if want_confirm and seg.get("status") != "confirmed":
+        # Заверение — только командой /confirm: она ставит подпись
+        # ответственного и проверяется по роли. Статус без подписи — это
+        # «подтвердил кто-то», след, за который никто не отвечает.
+        # На УЖЕ заверенном сегменте тот же статус в теле — не просьба
+        # заверить, а копия браузера (store шлёт статус вместе с текстом).
+        raise HTTPException(400, "Заверение ставится командой «Подтвердить» — она оставляет подпись ответственного")
+    changing = req.target is not None and req.target != seg.get("target")
+    if seg.get("status") == "confirmed" and (changing or (req.status and not want_confirm)):
+        # Правка заверенного текста и уход из статуса снимают подпись: она
+        # относилась к тексту, которого больше нет. Прежний текст — в
+        # prevTarget, как у `_replace_target`: заверенное не пропадает молча.
+        if changing:
+            seg["prevTarget"] = seg.get("target", "")
+        _withdraw_confirmation(seg, "edit" if changing else "revert")
+        _audit("segment.unconfirm", project=pid, segment=sid)
     if req.target is not None:
-        if req.target != seg.get("target"):
+        if changing:
             _audit("segment.edit", project=pid, segment=sid)
             _note_hand_edit(seg, req.target)
+            # Кто правил руками — след на сегменте, не только в журнале:
+            # журнал кольцевой, а вопрос «чья это формулировка» задают
+            # про сегмент.
+            seg["editedBy"] = _actor_id()
+            seg["editedAt"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         seg["target"] = req.target
         if seg["status"] == "new" and req.target.strip():
             seg["status"] = "translated"
-    if req.status:
+    if req.status and not want_confirm:
         seg["status"] = req.status
     if req.comment:
         seg.setdefault("comments", []).append({
@@ -15215,6 +15380,7 @@ def batch_translate(pid: int, req: BatchRequest):
                 sg["prevTarget"] = sg.get("target", "")
                 sg.pop("confirmedBy", None)
                 sg.pop("confirmedAt", None)
+                sg.pop("confirmedRole", None)
             sg["target"] = res["text"]
             sg["status"] = "review" if was_confirmed else "translated"
             sg["provider"] = res["provider"]
@@ -16118,11 +16284,13 @@ def save_term(req: TermRequest):
         existing.update({"tgt": req.tgt, "cat": req.cat, "freq": req.freq, "conf": req.conf,
                          "tier": GLOSSARY_TIER_HARD,
                          "note": "уточнено вручную "
-                                 + datetime.now().strftime("%Y-%m-%d")})
+                                 + datetime.now().strftime("%Y-%m-%d"),
+                         **_signed_field("edit")})
         _clear_auto_marks(existing)
     else:
         STATE["glossary"].insert(0, {**req.dict(exclude={"isNew"}), "tier": GLOSSARY_TIER_HARD,
-                                     "lang": scope[0], "domain": scope[1], "tenant": scope[2]})
+                                     "lang": scope[0], "domain": scope[1], "tenant": scope[2],
+                                     **_signed_field("add")})
     _audit("glossary.save", src=req.src, tgt=req.tgt)
     _invalidate_gloss_index()
     save_state(STATE)
@@ -16260,8 +16428,11 @@ def demote_term(req: TermScopeRequest):
     scope = _scope(req.lang, req.domain)
     entry = _glossary_entry(req.src, scope)
     if entry is None and not (req.lang or req.domain):
+        # Только СВОЯ организация: по одному имени термина эта дверь понижала
+        # бы приказ в ЧУЖОМ глоссарии.
         entry = next((g for g in STATE["glossary"]
-                      if _norm_key(g.get("src")) == _norm_key(req.src)), None)
+                      if _norm_key(g.get("src")) == _norm_key(req.src)
+                      and _tenant_of(g) == _current_tenant()), None)
     if entry is None:
         raise HTTPException(404, "Запись не найдена в этой области")
     if _hit_tier(entry) != GLOSSARY_TIER_HARD:
@@ -16270,7 +16441,7 @@ def demote_term(req: TermScopeRequest):
     entry.update({"prevTier": GLOSSARY_TIER_HARD, "prevNote": entry.get("note", ""),
                   "prevConf": entry.get("conf", ""), "tier": GLOSSARY_TIER_SOFT,
                   "conf": "medium", "note": "понижено вручную " + today,
-                  "updated": today})
+                  "updated": today, **_signed_field("demote")})
     # Пометка «человек решил оставить приказ» с записи снимается: он решил
     # обратное, и держать её значит соврать следующему аудиту.
     entry.pop("meaningKept", None)
@@ -16381,7 +16552,10 @@ def delete_term(src: str, lang: str = "", domain: str = ""):
         # Область не назвали и в области по умолчанию записи нет. Удаляем по
         # одному имени, только если претендент ровно один — иначе непонятно,
         # какой именно, а угадывать в необратимой операции нельзя.
-        same = [t for t in STATE["glossary"] if t.get("src") == src]
+        # Только своя организация: удаление по одному имени термина иначе
+        # уносило бы запись из чужого глоссария.
+        same = [t for t in STATE["glossary"] if t.get("src") == src
+                and _tenant_of(t) == _current_tenant()]
         if len(same) == 1:
             victims = same
     if not victims:
@@ -16574,9 +16748,14 @@ def list_glossary_purges():
     try:
         for f in sorted(PURGE_DIR.glob("glossary-purge-*.json"), reverse=True):
             try:
-                n = len(json.loads(f.read_text(encoding="utf-8")))
+                rows = json.loads(f.read_text(encoding="utf-8"))
             except Exception:
-                n = None
+                continue
+            # Копия — одной организации (вынос идёт по своей): чужая в списке
+            # не показывается, как и её число.
+            if any(_tenant_of(g) != _current_tenant() for g in rows[:1]):
+                continue
+            n = len(rows)
             out.append({"stamp": f.stem.replace("glossary-purge-", ""),
                         "count": n, "at": f.stem.replace("glossary-purge-", "")})
     except Exception as e:                                   # pragma: no cover
@@ -16597,6 +16776,10 @@ def undo_glossary_purge(stamp: str):
         saved = json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:
         raise HTTPException(500, "Копия не читается: " + str(e))
+    # Возвращается только СВОЁ: копия чужой организации по метке не читается.
+    saved = [g for g in saved if _tenant_of(g) == _current_tenant()]
+    if not saved:
+        raise HTTPException(404, "Копия не найдена — вернуть нечем")
     have = {(_scope_of(g), _norm_key(g.get("src"))) for g in STATE.get("glossary", [])}
     back, skipped = 0, 0
     for g in saved:
@@ -16623,9 +16806,11 @@ def delete_tm(src: str, lang: str = ""):
     _audit("tm.delete", src=src)
     want = lang or DEFAULT_GLOSS_LANG
     victims = [t for t in STATE["tm"]
-               if t.get("src") == src and (t.get("lang") or DEFAULT_GLOSS_LANG) == want]
+               if t.get("src") == src and (t.get("lang") or DEFAULT_GLOSS_LANG) == want
+               and _tenant_of(t) == _current_tenant()]
     if not victims and not lang:
-        same = [t for t in STATE["tm"] if t.get("src") == src]
+        same = [t for t in STATE["tm"] if t.get("src") == src
+                and _tenant_of(t) == _current_tenant()]
         if len(same) == 1:
             victims = same
     if not victims:

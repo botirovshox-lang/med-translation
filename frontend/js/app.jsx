@@ -97,7 +97,17 @@ function useStore(authed) {
     if (window.API && patch && (patch.target !== undefined || patch.status !== undefined)) {
       window.API.safeCall(() => window.API.update(pid, sid, {
         target: patch.target, status: patch.status,
-      }));
+      })).then(r => {
+        /* Сервер вправе ответить ДРУГИМ статусом: правка заверенного текста
+           снимает подпись («подтвердил человек» относилась к прежнему
+           тексту), и копия в браузере обязана это увидеть — иначе на экране
+           стоит отметка, которой на сервере больше нет. */
+        if (r && r.segment && r.segment.status && r.segment.status !== patch.status)
+          _patchLocal(pid, sid, { status: r.segment.status, confirmedBy: r.segment.confirmedBy,
+                                  confirmedAt: r.segment.confirmedAt, confirmedRole: r.segment.confirmedRole,
+                                  confirmedByName: r.segment.confirmedByName,
+                                  unconfirmed: r.segment.unconfirmed, prevTarget: r.segment.prevTarget });
+      });
     }
   };
 
@@ -386,7 +396,7 @@ function Header({ store, theme, onToggleTheme, onLogout, onSearch }) {
       /* Аватар — дверь в профиль, а не украшение: единственный экран, где
          человек меняет язык, пароль и отвечает на приглашения. */
       React.createElement("button", {
-        className: "icon-btn", title: (store.me.name || "") + (store.me.role === "owner" ? TR(" · владелец") : ""),
+        className: "icon-btn", title: (store.me.name || "") + (store.can && store.can.role ? " · " + roleLabel(store.can.role) : ""),
         "aria-label": TR("Профиль"), onClick: () => store.go("profile"),
         style: { position: "relative", padding: 0, background: "none", border: "none", cursor: "pointer" } },
         React.createElement(Avatar, { person: store.me, size: 32 }),

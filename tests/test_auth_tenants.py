@@ -71,8 +71,7 @@ r = c.post("/api/auth/login", json={"login": "petrov", "password": "long-enough-
 tr_tok = r.json()["token"]
 check(r.status_code == 200 and r.json()["me"]["role"] == "translator", "переводчик вошёл")
 for method, path in [("DELETE", "/api/tm"), ("DELETE", "/api/projects/1"),
-                     ("POST", "/api/glossary/purge"), ("GET", "/api/admin/users"),
-                     ("POST", "/api/glossary/demote")]:
+                     ("GET", "/api/admin/users")]:
     r = c.request(method, path, headers=H(tr_tok), json={})
     check(r.status_code == 403, "%s %s переводчику — 403" % (method, path))
 r = c.get("/api/models", headers=H(tr_tok))

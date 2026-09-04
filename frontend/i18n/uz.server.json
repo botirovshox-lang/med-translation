@@ -234,5 +234,8 @@
   "приказных терминов не в начертании оригинала больше": "asl matn ko'rinishida bo'lmagan majburiy atamalar ko'proq",
   "расхождение чисел, единиц или отрицания": "sonlar, birliklar yoki inkor nomuvofiqligi",
   "текст написала ревизия, судья не согласен — решает человек": "matnni reviziya yozgan, hakam rozi emas — odam hal qiladi",
+  "Это действие доступно редактору или владельцу: заверение и решения по терминам оставляют подпись ответственного": "Bu amal muharrir yoki egasiga ochiq: tasdiqlash va atamalar bo'yicha qarorlar mas'ul imzosini qoldiradi",
+  "Заверение ставится командой «Подтвердить» — она оставляет подпись ответственного": "Tasdiq «Tasdiqlash» buyrug'i bilan qo'yiladi — u mas'ul imzosini qoldiradi",
+  "Пачка не найдена": "To'plam topilmadi",
   "стайл-шит изменился после ревизии": "uslub varag‘i reviziyadan keyin o‘zgardi"
 }

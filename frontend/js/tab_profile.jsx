@@ -140,7 +140,7 @@ function ProfileInvites({ data, onChange, toast }) {
       React.createElement("div", { style: { fontWeight: 600 } }, inv.teamName),
       React.createElement("div", { className: "dim", style: { fontSize: 13, marginTop: 2 } },
         (inv.by ? TR("Пригласил: ") + inv.by + " · " : "")
-        + TR("роль: ") + (inv.role === "owner" ? TR("владелец") : TR("переводчик"))
+        + TR("роль: ") + roleLabel(inv.role)
         + (inv.at ? " · " + inv.at : "")),
       React.createElement("div", { className: "row", style: { gap: 8, marginTop: 10 } },
         React.createElement(Btn, { variant: "primary", size: "sm", icon: "check",
@@ -200,7 +200,7 @@ function ProfileTeams({ data, onChange, toast }) {
           React.createElement("span", { style: { fontWeight: t.id === active ? 700 : 400 } }, t.name),
           t.id === active && React.createElement("span", { className: "dim", style: { marginLeft: 8, fontSize: 12 } }, TR("· сейчас здесь")),
           t.home && React.createElement("span", { className: "dim", style: { marginLeft: 8, fontSize: 12 } }, TR("· домашняя"))),
-        React.createElement("td", null, t.role === "owner" ? TR("владелец") : TR("переводчик")),
+        React.createElement("td", null, roleLabel(t.role)),
         React.createElement("td", null, t.members),
         React.createElement("td", { style: { whiteSpace: "nowrap" } },
           t.id !== active && React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy, onClick: () => switchTo(t) }, TR("Перейти")),
@@ -257,14 +257,14 @@ function ProfileMembers({ data, toast }) {
           React.createElement("span", { className: "row", style: { gap: 8, alignItems: "center" } },
             React.createElement(Avatar, { person: u, size: 24 }), u.name || u.login)),
         React.createElement("td", null, u.email || "—"),
-        React.createElement("td", null, u.role === "owner" ? TR("владелец") : TR("переводчик")),
+        React.createElement("td", null, roleLabel(u.role)),
         React.createElement("td", { style: { whiteSpace: "nowrap" } },
           /* Домашнюю запись человека отсюда не правят: там своя дверь на
              экране «Организация», и правило одно — человек не должен
              остаться без рабочего пространства. */
-          owner && !u.home && React.createElement(Btn, { variant: "ghost", size: "sm",
-            onClick: () => member(u, { role: u.role === "owner" ? "translator" : "owner" }, TR("Роль изменена")) },
-            u.role === "owner" ? TR("→ переводчик") : TR("→ владелец")),
+          owner && !u.home && React.createElement(RoleSelect, { value: u.role,
+            style: { width: 130, display: "inline-block", marginRight: 6 },
+            onChange: (r) => r !== u.role && member(u, { role: r }, TR("Роль изменена")) }),
           owner && !u.home && React.createElement(Btn, { variant: "ghost", size: "sm",
             onClick: () => member(u, { remove: true }, TR("Исключён")) }, TR("Исключить")),
           u.home && React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("домашняя запись"))))))),
@@ -274,9 +274,7 @@ function ProfileMembers({ data, toast }) {
       React.createElement(Field, { label: TR("Почта участника") },
         React.createElement(Input, { value: email, onChange: (e) => setEmail(e.target.value), placeholder: "user@example.com" })),
       React.createElement(Field, { label: TR("Роль") },
-        React.createElement(Select, { value: role, onChange: (e) => setRole(e.target.value) },
-          React.createElement("option", { value: "translator" }, TR("Переводчик")),
-          React.createElement("option", { value: "owner" }, TR("Владелец")))),
+        React.createElement(RoleSelect, { value: role, onChange: setRole })),
       React.createElement(Btn, { variant: "primary", size: "sm", icon: "send",
         disabled: busy || !email.trim(), onClick: invite }, TR("Пригласить"))),
     owner && React.createElement("p", { className: "dim", style: { fontSize: 12, margin: 0 } },
@@ -286,7 +284,7 @@ function ProfileMembers({ data, toast }) {
       React.createElement("div", { className: "eyebrow", style: { margin: "6px 0 6px" } }, TR("Ждут решения")),
       (det.invites || []).filter(i => i.status === "pending").map(i => React.createElement("div", { key: i.id,
         className: "row between", style: { fontSize: 13, padding: "4px 0" } },
-        React.createElement("span", null, i.email + " · " + (i.role === "owner" ? TR("владелец") : TR("переводчик"))),
+        React.createElement("span", null, i.email + " · " + roleLabel(i.role)),
         React.createElement(Btn, { variant: "ghost", size: "sm",
           onClick: () => window.API.safeCall(() => window.API.teamInviteRevoke(tid, i.id)).then(reload) }, TR("Отозвать"))))));
 }

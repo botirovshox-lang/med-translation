@@ -121,5 +121,10 @@
   "Было: ": "Avval edi: ",
   "Правка не поставлена: ": "Tuzatish qo'yilmadi: ",
   "Правка откачена человеком — повторно предлагаться не будет.": "Tuzatishni inson qaytardi — qayta taklif qilinmaydi.",
-  "Предлагалось: ": "Taklif qilingan edi: "
+  "Предлагалось: ": "Taklif qilingan edi: ",
+  "Подтвердил: ": "Tasdiqladi: ",
+  "человек (до учёта авторов)": "inson (mualliflar hisobga olinguncha)",
+  "Заверение снято": "Tasdiq olib tashlandi",
+  " · правкой текста": " · matn tahriri bilan",
+  "Правил: ": "Tahrirladi: "
 }

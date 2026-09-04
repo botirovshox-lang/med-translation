@@ -80,7 +80,7 @@ function AdminUsers({ toast }) {
         React.createElement("td", { className: "dim" }, (u.email || "—") + (u.email && !u.emailVerified ? TR(" · не подтверждена") : "")),
         React.createElement("td", null, u.name),
         React.createElement("td", null, u.tenant),
-        React.createElement("td", null, u.role === "owner" ? TR("владелец") : TR("переводчик")),
+        React.createElement("td", null, roleLabel(u.role)),
         React.createElement("td", { className: "dim" }, u.created || ""),
         React.createElement("td", null, u.active ? TR("активен") : TR("отключён")),
         React.createElement("td", { style: { whiteSpace: "nowrap", textAlign: "right" } },

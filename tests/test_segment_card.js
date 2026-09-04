@@ -182,6 +182,30 @@ const old = render(Object.assign({}, BASE, { review: { score: 8 } }));
 check(old.indexOf("Ревизия") !== -1, "рендер пережил запись без единого нового поля");
 
 console.log("");
+console.log("=== 7. Кто заверил — видно ===");
+// След ответственного: id → имя даёт сервер (confirmedByName), роль на момент
+// подписи — с записи. Прежняя отметка "human" — заверение до учёта авторов.
+const signed = render(Object.assign({}, BASE, {
+  status: "confirmed", confirmedBy: 7, confirmedByName: "Ева", confirmedRole: "editor",
+  confirmedAt: "2026-09-04 12:00", editedBy: 7, editedByName: "Ева", editedAt: "2026-09-04 11:50",
+}));
+check(signed.indexOf("Подтвердил: ") !== -1 && signed.indexOf("Ева") !== -1 && signed.indexOf("редактор") !== -1,
+      "подпись: кто, в какой роли");
+check(signed.indexOf("2026-09-04 12:00") !== -1, "…и когда");
+check(signed.indexOf("Правил: ") !== -1, "правка руками названа");
+const legacy = render(Object.assign({}, BASE, { status: "confirmed", confirmedBy: "human" }));
+check(legacy.indexOf("человек (до учёта авторов)") !== -1, "старая отметка без автора не выдаётся за имя");
+const withdrawn = render(Object.assign({}, BASE, {
+  status: "translated", unconfirmed: { by: 7, withdrawnBy: 7, how: "edit", withdrawnAt: "2026-09-04 12:30" },
+}));
+check(withdrawn.indexOf("Заверение снято") !== -1 && withdrawn.indexOf("правкой текста") !== -1,
+      "снятая подпись названа, а не пропала молча");
+storeStub.can = { owner: false, super: false, role: "translator" };
+const asTranslator = render(Object.assign({}, BASE));
+delete storeStub.can;
+check(asTranslator.indexOf("Подтвердить") !== -1, "кнопка «Подтвердить» есть у любой роли: заверяет каждый, след — подпись");
+
+console.log("");
 if (fail.length) {
   console.log("ПРОВАЛЕНО: " + fail.length);
   fail.forEach(f => console.log("  - " + f));

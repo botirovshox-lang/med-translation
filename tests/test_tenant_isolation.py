@@ -120,4 +120,44 @@ check(c.get("/api/jobs/9001", headers=H(A)).status_code == 200, "свой — 20
 check(all(j["id"] != 9001 for j in c.get("/api/jobs", headers=H(B)).json()["jobs"]), "в списке B его нет")
 main._JOBS.pop(9001, None)
 
+print("=== 6. Правки глоссария и TM ПО ИМЕНИ не пересекают организацию ===")
+# У A есть «договор → contract» (RU→EN, legal). B заводит одноимённую запись
+# в своей области — и правит «по имени», без lang/domain: так делает экран
+# общего списка. Раньше запасная ветка искала по ВСЕМУ глоссарию.
+r = c.post("/api/glossary", headers=H(B), json={"src": "договор", "tgt": "Vertrag", "cat": "Term",
+                                                "lang": "DE→EN", "domain": "legal", "isNew": True})
+check(r.status_code == 200, "B завёл свой «договор» (DE→EN)")
+a_entry = next(g for g in main.STATE["glossary"] if g.get("src") == "договор" and main._tenant_of(g) == "default")
+r = c.post("/api/glossary/demote", headers=H(B), json={"src": "договор"})
+check(r.status_code == 200 and a_entry.get("tier") == "verified",
+      "понижение по имени у B не тронуло приказ A")
+b_entry = next(g for g in main.STATE["glossary"] if g.get("src") == "договор" and main._tenant_of(g) == "beta")
+check(b_entry.get("tier") == "auto", "…а своя запись B понижена")
+r = c.delete("/api/glossary", headers=H(B), params={"src": "договор"})
+check(r.status_code == 200 and any(g is a_entry for g in main.STATE["glossary"]),
+      "удаление по имени у B унесло только свою запись")
+r = c.delete("/api/glossary", headers=H(B), params={"src": "договор"})
+check(r.status_code == 404, "второй раз у B удалять нечего — запись A не видна и как «единственная»")
+# TM: «исходник» лежит в beta (см. раздел 3). A удаляет по имени.
+r = c.delete("/api/tm", headers=H(A), params={"src": "исходник"})
+check(r.status_code == 404 and any(t.get("src") == "исходник" for t in main.STATE["tm"]),
+      "удаление TM по имени не достаёт чужую запись")
+# Пачка автоодобрения: номер общий на все организации.
+main.STATE["glossary"].append({"src": "пачечный", "tgt": "batchy", "tier": "auto", "conf": "medium",
+                               "lang": "RU→EN", "domain": "legal", "tenant": "default",
+                               "autoBatch": 777, "autoCreated": True})
+main._invalidate_gloss_index()
+main.STATE.setdefault("autoBatches", []).append({"id": 777, "tenant": "default", "kind": "auto"})
+r = c.post("/api/term-queue/auto-approve/777/undo", headers=H(B))
+check(r.status_code == 404 and any(g.get("src") == "пачечный" for g in main.STATE["glossary"]),
+      "откат чужой пачки — 404, записи целы")
+r = c.post("/api/term-queue/auto-approve/777/undo", headers=H(A))
+check(r.status_code == 200 and r.json().get("removed") == 1, "свою пачку A откатил")
+import inspect as _insp
+src6 = _insp.getsource(main.audit_glossary)
+check("_tenant_of(g) != _current_tenant()" in src6, "аудит глоссария понижает только записи своей организации")
+src7 = _insp.getsource(main.import_glossary)
+check("_actor_role()" in src7 and 'me.get("role")' not in src7,
+      "импорт приказом смотрит роль в АКТИВНОЙ команде, а не домашнюю")
+
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))

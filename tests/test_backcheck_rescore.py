@@ -244,7 +244,18 @@ def _fake_bc(seg, project, *a, **k):
     return {"ok": True}
 
 
+def _fake_tc(seg, project, *a, **k):
+    """Termcheck кандидата: ремонт спрашивает его на КАЖДОМ заходе, а не
+    только когда чинил по его находкам, — иначе приёмка судейской правки
+    держится на одном балле, а балл вознаграждает кальку (боевой #62).
+    Подменён, потому что платных вызовов в тестах не бывает."""
+    seg["termcheck"] = {"model": "gpt-5.6-terra", "findings": [],
+                        "target_hash": main._text_hash((seg.get("target") or "").strip())}
+    return {"ok": True}
+
+
 main._run_segment_backcheck = _fake_bc
+main._run_segment_termcheck = _fake_tc
 out = main._run_segment_repair(rep_seg, proj4)
 check(out.get("applied") is False,
       "правка, потерявшая ещё один приказной термин, откатывается")

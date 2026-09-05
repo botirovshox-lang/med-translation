@@ -1635,8 +1635,11 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         "   and not as a look-alike character.\n"
         "4. NEVER use parenthetical alternatives: NOT 'biologic(al)', NOT 'cell(s)'. Choose ONE correct form.\n"
         "5. NEVER list multiple synonyms separated by semicolons for the same concept.\n"
-        "6. Preserve all numbers, abbreviations, and punctuation exactly as in the source.\n"
-        f"7. Abbreviations that are identical in {tgt} may be kept as they are.\n"
+        "6. Preserve all numbers and punctuation exactly as in the source.\n"
+        f"7. An abbreviation is TRANSLATED, not transliterated. Use the abbreviation {tgt}\n"
+        "   actually uses for that term; keep it unchanged only if both languages write it\n"
+        f"   the same way; if {tgt} has no accepted abbreviation, spell the term out. NEVER\n"
+        "   render a source abbreviation letter by letter in the target script.\n"
         # Регистр букв. Без этого правила перевод молча терял заглавную в начале
         # заголовка и подписи, а КАПС заголовка становился обычной строкой: на
         # боевом учебнике так вышло у 36 сегментов. Правило сказано с ДВУХ сторон
@@ -11074,6 +11077,152 @@ def _script_misses(seg: dict) -> list:
                      + (" и ещё " + str(len(bad) - 6) if len(bad) > 6 else "")}]
 
 
+# Транслитерация вместо перевода аббревиатуры.
+#
+# Зачем отдельно от `_script_misses`, стоящего строкой выше. Тот ловит буквы
+# ЧУЖОГО письма, оставшиеся в переводе («(МБТ+)», «РС02»), — их видно по
+# алфавиту. Здесь буквы как раз свои: «ЛЧ» переписано латиницей как «LCh»,
+# и на экране это выглядит обычным английским сокращением.
+#
+# Не видит такого НИКТО. Балл back-check — доля основ ОРИГИНАЛА, вернувшихся
+# через обратный перевод, и на транслитерации он не падает, а РАСТЁТ: «LCh»
+# возвращается как «LCh» дословно (боевой #62: 70 → 100). termcheck на это
+# как раз ругается, но приходит позже. Глоссарию угодила стоящая рядом
+# расшифровка «drug susceptibility», поэтому `gloss` = 0.
+#
+# Правило НАМЕРЕННО узкое, и узость его измерена на боевом учебнике.
+# Транслитерация сама по себе не ошибка: «ТБ → TB» стоит там 96 раз,
+# «ПЦР → PCR», «ЦНС → CNS», «ППД → PPD», «АЛТ → ALT» — принятые английские
+# сокращения, совпавшие с побуквенной передачей. Запрети транслитерацию
+# вообще — и находкой станут 169 законных мест, а на словах и того хуже
+# («процесс → process», «рифампицин → rifampicin», «Ташкент → Tashkent»,
+# фамилии авторов). Отличает подмену ОДИН признак: буква, которой в целевом
+# письме соответствует НЕСКОЛЬКО знаков (ч → ch, ж → zh, х → kh, щ → shch,
+# ю → yu, я → ya, ё → yo). Английская аббревиатура так не строится НИКОГДА —
+# она собирается из первых букв СВОИХ слов, а не из диграфов чужого алфавита.
+# Замер на 2696 сегментах: срабатывает РОВНО ОДИН раз (#62 «ЛЧ» → «LCh»),
+# ложных нет.
+#
+# Только КАПС-сокращения, и это тоже мерилось: то же правило на обычных
+# словах ловит «Ташкент → tashkent» и «Мухтеремова → mukhteremova» —
+# транслитерация имён собственных законна, а имена латиница и передаёт
+# диграфами.
+#
+# ПАРА ЯЗЫКОВ, а не письменность, и вот почему. Диграфы «ch», «sh», «yo»,
+# «yu», «ya» — РОДНЫЕ буквы узбекской латиницы, а сервис продаётся в
+# Узбекистане (`DEFAULT_UI_LANG=uz`): на паре RU→UZ передача русского
+# сокращения ими сплошь и рядом законна, и правило кричало бы на верный
+# перевод. Измерено оно только на RU→EN, поэтому только там и работает —
+# тот же закон, что у `DOMAIN_RULES`, `_LANG_ENDINGS` и правил регистра:
+# нет правил для этой пары — МОЛЧИМ, выдуманная находка хуже отсутствующей.
+# Отсюда же `project=None` → пусто: `_repair_findings(seg, None)` зовут
+# разбор состава и /analysis (ради скорости), языковой пары там нет.
+# Ведёт себя ровно как `_gloss_misses` рядом, и следствие то же: в отпечаток
+# захода (`_repair_attempt_key`, он считается без проекта) находка не входит,
+# то есть сама по себе она сегмент для повторного ремонта не открывает.
+_TRANSLIT = {
+    "RU": {
+        "а": ("a",), "б": ("b",), "в": ("v", "w"), "г": ("g",), "д": ("d",),
+        "е": ("e", "ye", "je"), "ё": ("yo", "jo", "e"), "ж": ("zh", "j"),
+        "з": ("z",), "и": ("i",), "й": ("y", "i", "j"), "к": ("k",),
+        "л": ("l",), "м": ("m",), "н": ("n",), "о": ("o",), "п": ("p",),
+        "р": ("r",), "с": ("s",), "т": ("t",), "у": ("u",), "ф": ("f",),
+        "х": ("kh", "h"), "ц": ("ts", "c"), "ч": ("ch",), "ш": ("sh",),
+        "щ": ("shch", "sch"), "ъ": ("",), "ы": ("y",), "ь": ("",),
+        "э": ("e",), "ю": ("yu", "ju", "iu"), "я": ("ya", "ja", "ia"),
+    },
+}
+# Языки перевода, на которых правило ИЗМЕРЕНО. Список короткий намеренно:
+# добавлять сюда язык можно только после замера на боевых данных этой пары.
+_TRANSLIT_TGT = frozenset(("EN",))
+
+# Потолок на разбор вариантов: у сокращения из одних «ю» их 3^n, и считать
+# их на каждый сегмент незачем — правило и так про короткие. Кэш словарём,
+# а не `lru_cache`: в этом файле так же живут `_SCRIPT_CACHE` и
+# `_PATTERN_CACHE`, а лишний импорт ради одной функции не нужен.
+_TRANSLIT_MAX_VARIANTS = 256
+_TRANSLIT_CACHE: dict = {}
+
+# Буквы подряд, любой письменности: и сокращение оригинала, и слово перевода
+# ищутся ОДНИМ выражением. Через `_SCRIPTS` этого делать нельзя — там свой
+# словарь коротких имён («cyr», «lat»), а `_dominant_script` отвечает именами
+# Юникода («CYRILLIC», «LATIN»), и смешивать два словаря в одном расчёте
+# значит однажды сравнить одно с другим.
+_LETTER_RUN_RE = re.compile(r"[^\W\d_]+")
+
+
+def _translit_variants(word: str, lang: str) -> frozenset:
+    """Побуквенные передачи слова, в которых хоть одна буква дала 2+ знака.
+
+    Односложные передачи (каждая буква — один знак) сюда НЕ входят намеренно:
+    именно так выглядят законные «ТБ → TB» и «ПЦР → PCR», и объявить их
+    находкой значит закричать на 169 верных мест боевого учебника."""
+    key = (lang, word.lower())
+    got = _TRANSLIT_CACHE.get(key)
+    if got is not None:
+        return got
+    table = _TRANSLIT.get(lang)
+    if not table:
+        return frozenset()
+    out = [("", False)]
+    for ch in key[1]:
+        opts = table.get(ch)
+        if opts is None:
+            out = None                  # буквы нет в таблице — молчим
+            break
+        out = [(acc + o, multi or len(o) > 1) for acc, multi in out for o in opts]
+        if len(out) > _TRANSLIT_MAX_VARIANTS:
+            out = out[:_TRANSLIT_MAX_VARIANTS]
+    got = frozenset(acc for acc, multi in (out or ()) if multi and acc)
+    if len(_TRANSLIT_CACHE) < 20000:
+        _TRANSLIT_CACHE[key] = got
+    return got
+
+
+def _translit_misses(seg: dict, project: Optional[dict] = None) -> list:
+    """Аббревиатура оригинала, переданная в перевод побуквенно."""
+    if project is None:
+        return []
+    src_lang = (project.get("src") or "").upper()
+    tgt_lang = (project.get("tgt") or "").upper()
+    if src_lang not in _TRANSLIT or tgt_lang not in _TRANSLIT_TGT:
+        return []
+    src = (seg.get("source") or "").strip()
+    tgt = (seg.get("target") or "").strip()
+    if not src or not tgt:
+        return []
+    low = {}
+    for w in _LETTER_RUN_RE.findall(tgt):
+        low.setdefault(w.lower(), w)
+    if not low:
+        return []
+    out, seen = [], set()
+    for abbr in _LETTER_RUN_RE.findall(src):
+        # Аббревиатурой считаем КОРОТКОЕ слово капсом — той же мерой, что
+        # и правила регистра (`CASE_ACRONYM_MAX`): длинное капсом — это крик
+        # заголовка, а не сокращение.
+        if not abbr.isupper() or not 2 <= len(abbr) <= CASE_ACRONYM_MAX:
+            continue
+        if abbr in seen:
+            continue
+        # sorted: перебор по frozenset зависит от соли хеширования, и слово
+        # в тексте находки менялось бы от запуска к запуску.
+        hit = next((low[v] for v in sorted(_translit_variants(abbr, src_lang))
+                    if v in low), None)
+        if not hit:
+            continue
+        seen.add(abbr)
+        # Совета («replace») у находки нет намеренно: принятую аббревиатуру
+        # целевого языка знает предметная область, а не мы, и подставить её
+        # нечем. Правило 9 промпта ремонта говорит модели то же самое словами.
+        out.append({
+            "kind": "translit",
+            "text": "сокращение «" + abbr + "» передано побуквенно как «" + hit
+                    + "» — нужна принятая аббревиатура целевого языка "
+                      "либо расшифровка"})
+    return out
+
+
 # ── Контекстный арбитр спорного термина ──────────────────────────────
 # Проверки смотрят на сегмент в одиночку, а термин живёт в ряду: «туберкулёз
 # лёгких» обратный перевод возвращает как «лёгочный туберкулёз», и по словам
@@ -11516,6 +11665,17 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     # обязан откатиться.
     items = (_gloss_misses(seg, project) + _consist_misses(seg, project)
              + _case_misses(seg) + _script_misses(seg) + _dup_misses(seg))
+    # Транслитерации сокращения здесь НЕТ, и это не забывчивость.
+    # Находка обязана быть исполнимой и видимой одинаково всем: `_plan_step`
+    # и /analysis зовут этот расчёт БЕЗ проекта (ради скорости), а правило
+    # привязано к паре языков — то есть смета показывала бы «чинить нечего»,
+    # а `repair_batch` сегмент забирал бы. Компенсирующего списка id, какой
+    # есть у глоссария (`impact["segments"]`) и у разнобоя (`consist_ids`),
+    # тут нет. Да и чинить модели нечем: принятую аббревиатуру знает
+    # предметная область, совета у находки не было бы. Поэтому правило
+    # живёт СЧЁТЧИКОМ в `_repair_scores` и вето ревизии — тот же приём,
+    # что у начертания приказных терминов (`term_case`): ремонт за ним
+    # не ходит, но сломать его правкой по другой претензии не вправе.
     # Потерянные приказные термины — через _terms_lost_open, тем же расчётом,
     # что и счётчик в `_repair_scores`. Он и снимает вердикты контекстного
     # арбитра: арбитр единственный видел сегмент в ряду соседей, и его
@@ -11892,7 +12052,7 @@ def _repair_system(dom: dict, src_lang: str, tgt_lang: str, style: str = "") -> 
         "2. Change as little as possible: keep every wording that is not part of an issue.\n"
         "3. Required replacements must be applied exactly as given.\n"
         "4. Terms reported as lost MUST be present in the corrected translation.\n"
-        "5. Keep all numbers, units, negations and abbreviations exactly as in the SOURCE.\n"
+        "5. Keep all numbers, units and negations exactly as in the SOURCE.\n"
         "6. Use " + dom["terminology"] + ". Output must be 100% " + tgt_lang + " — not a single\n"
         "   letter of the source script, inside formulas and abbreviations included.\n"
         "7. If an issue looks wrong to you, leave that part unchanged rather than inventing something new.\n"
@@ -11903,6 +12063,10 @@ def _repair_system(dom: dict, src_lang: str, tgt_lang: str, style: str = "") -> 
         "   with a capital letter starts with one in the translation, an ALL-CAPS heading stays\n"
         "   ALL-CAPS, and no word is shouted that the SOURCE does not shout. Glossary terms are\n"
         "   listed with their case already matched to the source — copy them as printed.\n"
+        f"9. An abbreviation is TRANSLATED, not transliterated: use the abbreviation {tgt_lang}\n"
+        "   actually uses, or spell the term out if it has none. NEVER render a source\n"
+        "   abbreviation letter by letter in the target script — an issue saying that an\n"
+        "   abbreviation was changed does NOT ask you to do that.\n"
         + ("\n" + style if style else "")
     )
 
@@ -12271,6 +12435,12 @@ def _repair_scores(seg: dict, project: Optional[dict] = None,
         "case": len(_case_misses(seg)),
         # И буквы чужого письма — тоже бесплатно и тоже всегда.
         "script": len(_script_misses(seg)),
+        # Транслитерация сокращения. Сверяется ВСЕГДА и по той же причине,
+        # что глоссарий и регистр: не стоит ни одного вызова, а поймать
+        # подмену больше нечем — балл back-check на транслитерации РАСТЁТ
+        # (калька возвращается дословно), termcheck высказывается позже,
+        # глоссарию стоящая рядом расшифровка угодила.
+        "translit": len(_translit_misses(seg, project)),
         # Терм-лист документа: бесплатный счётчик, не находка — ремонт за ним
         # не ходит, но ломать согласованную пару правкой по другой претензии
         # не вправе. Без включённого терм-листа всегда ноль.
@@ -12336,10 +12506,10 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     old_hash = _text_hash(old_target)
     had_bc = any(f["kind"] in ("term_lost", "backcheck", "judge") for f in findings)
     had_gloss = any(f["kind"] == "gloss" for f in findings)
-    # Правка ради глоссария меняет формулировку, и проверить её обязан кто-то,
-    # кроме самой правки. Termcheck смотрит только на целевой текст и стоит один
-    # вызов — без него подстановка термина принималась бы на веру: сравнивать
-    # было бы нечего, обе оценки остались бы от прежнего текста.
+    # ЗАКАЗ от termcheck: чинили ли ПО его находкам (и по глоссарию, который
+    # проверяет он же). Сам вызов от этого больше не зависит — термины
+    # кандидата считаются всегда, см. перепроверку ниже, — но заказ решает,
+    # чем мерить успех: по ИМЕНАМ снятых замечаний или по их числу.
     had_tc = any(f["kind"] in ("term", "term_ctx") for f in findings) or had_gloss
     had_minor = any(f["kind"] == "term" and f.get("sev") == "minor" for f in findings)
     # Заход ТОЛЬКО из-за мелких замечаний — единственный случай, где у правки
@@ -12445,8 +12615,30 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         # ровно ту асимметрию, из-за которой откатывались верные правки.
         _run_segment_backcheck(seg, project, bc_model, judge_after, judge_model,
                                harvest=False, judge_all=judge_all)
-    if had_tc:
+    # Термины КАНДИДАТА считаются ВСЕГДА, а не только когда чинили по их
+    # находкам. Прежде при заходе от судьи или back-check (had_tc False)
+    # приёмка держалась на одном балле — а балл вознаграждает КАЛЬКУ, ровно
+    # ту, против которой заведён termcheck. Так на боевом #62 правка
+    # «DS – drug susceptibility» → «LCh – drug susceptibility» подняла балл
+    # 70 → 100 и была принята, а termcheck назвал «LCh» негодным уже после.
+    # Замер: из 444 таких принятых правок шесть несут серьёзную находку,
+    # и каждое забракованное слово внесла сама правка («bacterial excretion»
+    # вместо «bacillary», «Conglomerative» вместо «Conglomerate»).
+    #
+    # Денег это почти не стоит: у ПРИНЯТОЙ правки вызов не добавился,
+    # а переехал — ниже стоит освежение недостающей проверки, и оно всё
+    # равно покупало тот же termcheck, только уже поверх записанного текста.
+    # Платят одни откаты: на всей истории боевой книги их 89.
+    #
+    # В try, потому что вызов сетевой: у захода ПО термо-находкам сбой
+    # разбирается ниже отдельной веткой (откат без клейма), а у захода
+    # без заказа он просто оставляет `after["terms"]` пустым — то есть
+    # ровно то поведение, что было до этой правки.
+    try:
         _run_segment_termcheck(seg, project, tc_model, harvest=False)
+    except Exception as e:                                  # pragma: no cover
+        print(f"[backend] repair: перепроверка терминов seg#{seg.get('id')}: {e}",
+              file=sys.stderr)
     after = _repair_scores(seg, project, doc_skip)
     # Что говорит СВЕЖИЙ termcheck и ушли ли заказанные замечания. Считаем
     # один раз: этим пользуются и вето по баллу, и сверка по числу замечаний,
@@ -12527,6 +12719,12 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
                 better = False
                 why.append("балл back-check упал " + str(before["score"]) + " → " + str(after["score"])
                            + ("" if not hard_now else ", жёсткая находка на новом тексте"))
+    if not had_tc and after["terms"] is None:
+        # Проверка не ответила, а заход шёл не по её находкам: правку это
+        # не отменяет (до этой правки её и не спрашивали вовсе), но принята
+        # она без неё — и молчать об этом нельзя, иначе слепая приёмка
+        # возвращается без единого следа.
+        notes.append("проверка терминов не ответила — принято без неё")
     if had_tc and after["terms"] is None:
         # Перепроверка не состоялась (вызов упал) — подтвердить правку нечем.
         # Откат: автоправка не заверяет сама себя, и «проверка не ответила»
@@ -12534,7 +12732,8 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         better = False
         infra_fail = True
         why.append(REPAIR_RECHECK_FAILED)
-    elif had_tc and before["terms"] is not None and after["terms"] > before["terms"]:
+    elif (had_tc and before["terms"] is not None and after["terms"] is not None
+            and after["terms"] > before["terms"]):
         # Заказ ОТ TERMCHECK меряется поимённо, а не счётом — тот же закон, что
         # у `only_minor`, и по той же причине. Спрашиваем по существу: ушли ли
         # те замечания, ради которых заходили, и не пришло ли новое на слово,
@@ -12578,7 +12777,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # термине правку не отменит, зато следующий прогон сделает из него повод для
     # ремонта, ремонт полезет менять утверждённый термин, `gloss` вырастет
     # и правку откатят: платный вызов с заранее известным исходом.
-    if better and had_tc and after["terms"] is not None:
+    if better and after["terms"] is not None:
         # Подставленное — это и совет из `use`, и замена из `replace`
         # (находка по забракованному слову несёт её именно там): за слово,
         # которое вписали мы, отвечаем мы, каким бы полем оно ни приехало.
@@ -12588,7 +12787,43 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
                        and f["replace"][1]})
         hit = next((f for f in ((seg.get("termcheck") or {}).get("findings") or [])
                     if f.get("severity") in TERMCHECK_ACTIONABLE
+                    and not f.get("vsVerified")
                     and _norm_key(f.get("tgt_term")) in inserted), None) if inserted else None
+        # Заход БЕЗ термо-заказа (судья, back-check, бесплатные находки).
+        # Списка «что мы велели вставить» тут нет — заказывал судья, и
+        # словами он не говорил, — поэтому подставленным считаем то, чего
+        # в прежнем тексте НЕ БЫЛО: за написанное нами отвечаем мы, чужая
+        # унаследованная проблема правку не топит.
+        #
+        # Сравнение ПО ЧИСЛУ здесь было бы неверным, и это сказано выше
+        # в 12500: termcheck на переписанном тексте почти всегда добавляет
+        # свою придирку, и по счёту «1 → 2» откатывались верные правки.
+        # Шесть боевых случаев объединяет не прирост счёта, а то, что
+        # забракованное слово внесла сама правка («bacterial excretion»
+        # вместо «bacillary», «Conglomerative» вместо «Conglomerate»,
+        # «LCh» вместо «DS»).
+        #
+        # Фразой целиком, а не по словам: правка бывает перестановкой
+        # («cavitary lesions» → «cavities of destruction»), и по отдельным
+        # словам такая подмена читалась бы как унаследованная. Сравнение
+        # в нижнем регистре, поэтому правка ОДНОГО начертания (заход
+        # только по регистру) под это правило не попадает никогда.
+        #
+        # Только critical/major: minor — самый шумный уровень, и откатывать
+        # по нему значит отнять автоматизацию там, где она работает (тот же
+        # довод, по которому minor не отменяет заверение человека).
+        if hit is None and not had_tc:
+            was = " ".join(_LETTER_RUN_RE.findall(old_target.lower()))
+            hit = next((f for f in ((seg.get("termcheck") or {}).get("findings") or [])
+                        if f.get("severity") in ("critical", "major")
+                        # Находка ПРОТИВ приказной записи — не наш случай:
+                        # спор проверки с глоссарием решается в пользу
+                        # глоссария, и правка, ВОССТАНОВИВШАЯ утверждённый
+                        # термин, откатывалась бы по мнению termcheck о нём.
+                        and not f.get("vsVerified")
+                        and f.get("tgt_term")
+                        and " ".join(_LETTER_RUN_RE.findall(
+                            f["tgt_term"].lower())) not in was), None)
         if hit:
             better = False
             why.append("подставленный термин «%s» забракован проверкой"
@@ -12640,6 +12875,14 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         better = False
         why.append("букв чужого письма стало больше "
                    + str(before["script"]) + " → " + str(after["script"]))
+    # Транслитерация сокращения — сверка того же рода: бесплатная
+    # и безусловная. Нужна потому, что ловить эту подмену больше нечем:
+    # балл на ней РАСТЁТ, а termcheck высказывается уже после приёмки.
+    # На боевом #62 правка «DS» → «LCh» прошла приёмку ровно так.
+    if after["translit"] > before["translit"]:
+        better = False
+        why.append("сокращений передано побуквенно стало больше "
+                   + str(before["translit"]) + " → " + str(after["translit"]))
     if after.get("doc", 0) > before.get("doc", 0):
         better = False
         why.append("пар терм-листа документа нарушено больше "
@@ -12683,11 +12926,13 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
                 seg["backcheck"] = bc_before
             else:
                 seg.pop("backcheck", None)
-        if had_tc:
-            if tc_before:
-                seg["termcheck"] = tc_before
-            else:
-                seg.pop("termcheck", None)
+        # termcheck теперь считается на любом заходе, значит и возвращать
+        # прежний надо на любом: оставленная свежая проверка описывала бы
+        # ОТВЕРГНУТЫЙ текст — находку про слова, которых в сегменте нет.
+        if tc_before:
+            seg["termcheck"] = tc_before
+        else:
+            seg.pop("termcheck", None)
         # Заход ЗАСЧИТЫВАЕТСЯ (source_hash), только если правку отвергла ОЦЕНКА:
         # тот же текст с теми же претензиями даст тот же ответ модели, и второй
         # заход — это платный вызов с заранее известным исходом (_repair_tried,
@@ -12776,6 +13021,8 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # откачённой восстановлены прежние проверки, и платить за выброшенного
     # кандидата незачем. Денег это не прибавляет — тот же вызов всё равно
     # купил бы следующий прогон, просто теперь сегмент закрывается этим.
+    # Termcheck отсюда УБРАН: он посчитан выше, до решения о приёмке, —
+    # иначе тот же вызов уходил бы дважды. Осталcя back-check.
     # Судья — по правилу judge_after (см. had_bc выше): прежний балл мог
     # сложиться с его участием. Сбой освежения правку НЕ откатывает: вердикт
     # уже вынесен теми проверками, которые ругались, а проверка просто
@@ -12792,12 +13039,6 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
                                    judge_model, harvest=False, judge_all=judge_all)
         except Exception as e:
             print(f"[backend] repair: освежение back-check после принятой правки не удалось: {e}",
-                  file=sys.stderr)
-    if not had_tc:
-        try:
-            _run_segment_termcheck(seg, project, tc_model, harvest=False)
-        except Exception as e:
-            print(f"[backend] repair: освежение termcheck после принятой правки не удалось: {e}",
                   file=sys.stderr)
     seg["repair"] = {"applied": True, "from": old_target, "source_hash": _text_hash(new_target),
                      # По НОВОМУ тексту: находки пересчитаны, и если их не
@@ -12921,7 +13162,8 @@ REVIEW_APPLY_LABEL = ("%g" % REVIEW_APPLY_MAX)
 # с первым. Балла (`score`) и платных проверок (`terms`, `terms_lost`) здесь
 # нет намеренно: первый меряет не то, вторые потребовали бы вызовов модели,
 # ради отказа от которых шаг и заведён.
-REVIEW_FREE_KEYS = ("gloss", "case", "script", "dup", "self_dup", "term_case", "doc")
+REVIEW_FREE_KEYS = ("gloss", "case", "script", "dup", "self_dup", "term_case",
+                    "doc", "translit")
 # Оценка, ниже которой сегмент зовёт человека, даже если правки не было.
 # Отдельно от REVIEW_APPLY_MAX намеренно: тот отвечает на вопрос «когда машина
 # правит сама», а этот — «когда звать человека», и двигают их по разным
@@ -12971,6 +13213,7 @@ REVIEW_VETO_LABELS = {
     "dup": "повторов больше",
     "self_dup": "самоповторов больше",
     "term_case": "приказных терминов не в начертании оригинала больше",
+    "translit": "сокращений передано побуквенно больше",
     "hard": "расхождение чисел, единиц или отрицания",
 }
 

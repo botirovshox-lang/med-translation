@@ -242,5 +242,17 @@
   "Это действие доступно редактору или владельцу: заверение и решения по терминам оставляют подпись ответственного": "Bu amal muharrir yoki egasiga ochiq: tasdiqlash va atamalar bo'yicha qarorlar mas'ul imzosini qoldiradi",
   "Заверение ставится командой «Подтвердить» — она оставляет подпись ответственного": "Tasdiq «Tasdiqlash» buyrug'i bilan qo'yiladi — u mas'ul imzosini qoldiradi",
   "Пачка не найдена": "To'plam topilmadi",
-  "стайл-шит изменился после ревизии": "uslub varag‘i reviziyadan keyin o‘zgardi"
+  "стайл-шит изменился после ревизии": "uslub varag‘i reviziyadan keyin o‘zgardi",
+  "Смета прогона $": "Ishlov hisob-kitobi $",
+  " больше остатка лимита $": " chegara qoldig'i $",
+  ": выберите меньше сегментов или снимите шаги": " dan katta: kamroq segment tanlang yoki bosqichlarni olib tashlang",
+  "В организации уже ": "Tashkilotda allaqachon ",
+  " проектов, а потолок ": " ta loyiha bor, yuqori chegara esa ",
+  ": удалите ненужные": ": keraksizlarini o'chiring",
+  "Файл на ": "Fayl ",
+  " стр. больше потолка на проект (": " sahifa: bitta loyiha uchun yuqori chegaradan katta (",
+  " стр.): разбейте документ": " sahifa): hujjatni bo'laklarga ajrating",
+  " стр., с этим файлом ": " sahifa bor, bu fayl bilan ",
+  " при потолке ": ", yuqori chegara esa ",
+  ": сначала удалите старые проекты": ": avval eski loyihalarni o'chiring"
 }

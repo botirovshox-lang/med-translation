@@ -1489,6 +1489,39 @@ def _spend_status(tenant: Optional[str] = None) -> dict:
             "over": bool(limit is not None and m["usd"] >= float(limit))}
 
 
+# Стоп-причина прогона, упёршегося в лимит МЕЖДУ порциями (см. `_job_run`).
+# Литерал уходит в `job["error"]` и на экран; переводится кусками из
+# `uz.server.json` (инвариант 17).
+JOB_STOP_LIMIT = ("Лимит расхода организации исчерпан: прогон остановлен, сделанное "
+                  "сохранено. Остальные сегменты возьмёт следующий прогон, когда лимит "
+                  "поднимут или сбросят 1-го числа.")
+
+
+def _job_limit_hit(job: dict) -> bool:
+    """Лимит расхода организации исчерпан — остановить задачу МЯГКО (инвариант 15).
+    Мидварь отвечает 402 только на POST /jobs; дальше нужен свой рубеж, и он
+    один на три места: `_job_execute` ДО ветвлений по видам (задача из очереди
+    стартует, когда лимит уже мог кончиться; у `apply_terms` одобрение с судьёй
+    идёт до всякого цикла порций), цикл порций `_job_run` и цикл картинок
+    `_job_images`. `stopped`, а не `error`: сделанное сохранено, это не сбой.
+    Код `stopReason` читает браузер и переводит сам (закон `CLEAN_*`), текст
+    в `error` — для журнала и отчётов. Перед проверкой `_sync_shared()`
+    (троттлится сам): у внешнего воркера РАСХОД читается из базы живым,
+    а ПОТОЛОК — из `STATE["tenants"]`, перечитанного один раз на старте;
+    владелец, поднявший лимит, чтобы прогон доработал, иначе остался бы
+    неуслышанным. Организация — из задачи: ContextVar в поток не доезжает."""
+    try:
+        _sync_shared()
+    except Exception as e:
+        print(f"[backend] job#{job.get('id')}: _sync_shared перед проверкой лимита: {e}", file=sys.stderr)
+    if not _spend_status(job.get("tenant") or DEFAULT_TENANT).get("over"):
+        return False
+    job["status"] = "stopped"
+    job["stopReason"] = "limit"
+    job["error"] = JOB_STOP_LIMIT
+    job["counters"]["limitStop"] = 1
+    return True
+
 # Что стоит денег: платные команды по путям. Таблица здесь, а не флаг
 # на каждом обработчике — как `_OWNER_ONLY`: одна точка, забыть строку видно.
 _PAID = [
@@ -3709,6 +3742,20 @@ def admin_user_delete(uid: int, request: Request):
     return {"ok": True}
 
 
+def _tenants_changed() -> None:
+    """Поднять эпоху `doc:tenants` после правки организации. `save_state`
+    поднимает эпохи только строковым коллекциям, а `tenants` — документ:
+    без этого внешний воркер (`medcat-worker`) до рестарта читал бы лимит
+    расхода, каким он был на старте процесса, — и `_job_limit_hit` останавливал
+    бы прогон по потолку, который владелец уже поднял. Тот же приём, что
+    у стайл-шита организации (`save_org_style`)."""
+    try:
+        if hasattr(STORE, "bump_epoch"):
+            STORE.bump_epoch("doc:tenants")
+    except Exception as e:
+        print(f"[backend] организации: эпоха не поднята: {e}", file=sys.stderr)
+
+
 @app.delete("/api/admin/tenants/{tid}")
 def admin_tenant_delete(tid: str, request: Request):
     """Снести организацию целиком — вместе с её людьми. Только суперпользователь
@@ -3754,6 +3801,7 @@ def admin_tenant_delete(tid: str, request: Request):
     _invalidate_gloss_index()
     _audit("tenant.delete", tenant_target=tid, users=len(users), members=orphans)
     save_state(STATE)
+    _tenants_changed()
     return {"ok": True, "usersRemoved": len(users), "membershipsRemoved": orphans}
 
 
@@ -3784,6 +3832,7 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
         rec["limitUsd"] = float(req.limitUsd)
     _audit("tenant.update", tenant_target=tid, limitUsd=rec.get("limitUsd"))
     save_state(STATE)
+    _tenants_changed()
     return {"ok": True, "tenant": rec, "spend": _spend_status(tid)}
 
 
@@ -3871,6 +3920,7 @@ def admin_tenant_create(req: TenantCreate, request: Request):
          "created": datetime.now().strftime("%Y-%m-%d")}
     _users().append(u)
     save_state(STATE)
+    _tenants_changed()
     return {"ok": True, "tenant": _tenants()[-1], "owner": _user_public(u)}
 
 
@@ -5717,8 +5767,52 @@ def _load_source_map(pid: int) -> Optional[dict]:
     return data
 
 
+# Потолки импорта проекта — про ЕДИНСТВЕННЫЙ воркер, а не про деньги: книга
+# в 2700 сегментов держит подбор терминов полминуты и весит 5 МБ, и тестовая
+# группа, заливающая по книге каждый, положила бы сервис всем. Ноль выключает
+# потолок (боевой клиент работает с книгами); на тест ставятся в /etc/medcat/env.
+# Страницы считаются ТЕМ ЖЕ счётом, что смета по файлу (`basis: file`), по тем
+# же абзацам (`_import_volume`), и кладутся в проект (`project["pages"]`): у старых проектов
+# поля нет, и в сумме по организации оно читается нулём (закон миграции
+# `lang`/`domain`, файл не переписывается). Байты — тот же `textcount.MAX_BYTES`,
+# что у сметы.
+IMPORT_MAX_PAGES = float(os.environ.get("IMPORT_MAX_PAGES", "0") or 0)
+TENANT_MAX_PAGES = float(os.environ.get("TENANT_MAX_PAGES", "0") or 0)
+TENANT_MAX_PROJECTS = int(os.environ.get("TENANT_MAX_PROJECTS", "0") or 0)
+
+
+def _pages_exact(blocks: list, lang: str, card: dict) -> float:
+    """Точные страницы по списку абзацев — тем же счётом, что смета
+    (`count_blocks` + норма организации из карточки цен + `pages_of`)."""
+    counts = textcount.count_blocks(blocks)
+    norm = textcount.norm_for(lang, card.get("norms"))
+    return float(textcount.pages_of(counts["chars"], norm["chars"], 0, card.get("roundTo", 0.1))["exact"])
+
+
+def _project_pages(p: dict, card: dict) -> float:
+    """Объём проекта в страницах: записанный при импорте, а у проекта БЕЗ поля —
+    по сегментам (`basis: segments`, как `quote_project`). Ноль вместо расчёта
+    был бы дырой в потолке: организация с уже залитой книгой обходила бы
+    `TENANT_MAX_PAGES` до конца жизни этих проектов."""
+    if p.get("pages") is not None:
+        return float(p["pages"])
+    return _pages_exact([sg.get("source") or "" for sg in p.get("segments") or []],
+                        p.get("src") or "RU", card)
+
+
+def _import_volume(paras: list, lang: str, card: dict, others: list) -> tuple:
+    """(страницы файла, страницы остальных проектов организации). Файл считается
+    по ТЕМ ЖЕ абзацам, что отдаёт `_docx_bill_paragraphs` смете (текст слотов
+    `_para_slots` — первый элемент `_docx_paragraph_texts`), поэтому второй
+    разбор пакета не нужен, а смета и отказ импорта называют одно число.
+    Сумма по чужим проектам без `pages` идёт по сегментам — тысячи строк,
+    поэтому вызов живёт в threadpool, а не в event loop."""
+    return _pages_exact(paras, lang, card), sum(_project_pages(p, card) for p in others)
+
+
 @app.post("/api/projects/upload")
 async def upload_project(
+    request: Request,
     file: UploadFile = File(...),
     title: str = Form(""),
     src: str = Form("RU"),
@@ -5730,13 +5824,34 @@ async def upload_project(
         import docx  # noqa: F401 — проверка наличия, разбор идёт в _docx_paragraphs
     except ImportError:
         raise HTTPException(500, "python-docx not installed")
-
+    # 402 на потолки организации, как у всего квотного слоя; 413 — про файл.
+    if TENANT_MAX_PROJECTS and len(_tenant_projects()) >= TENANT_MAX_PROJECTS:
+        raise HTTPException(402, "В организации уже %d проектов, а потолок %d: удалите ненужные"
+                            % (len(_tenant_projects()), TENANT_MAX_PROJECTS))
+    # Потолки идут ДО тяжёлого разбора: сначала байты (по заголовку, потом
+    # по факту), затем страницы, и только потом `_docx_paragraph_texts`.
+    too_big = "Файл больше %d МБ — разберите его по частям" % (textcount.MAX_BYTES // 1024 // 1024)
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > textcount.MAX_BYTES * 1.1:
+        raise HTTPException(413, too_big)
     content = await file.read()
+    if len(content) > textcount.MAX_BYTES:
+        raise HTTPException(413, too_big)
+    # Разбор — в threadpool: обработчик async, и распаковка 32-мегабайтного
+    # пакета в event loop держала бы ЕДИНСТВЕННЫЙ воркер для всех. Разбор
+    # ОДИН: страницы считаются по тем же абзацам, что идут в сегменты.
     # Разбор и отбор — общие с привязкой исходника к готовому проекту
     # (_docx_paragraphs / _docx_units): две копии правил однажды разошлись бы,
     # и перевод при выгрузке встал бы не в те абзацы.
-    texts = _docx_paragraph_texts(content)
+    texts = await run_in_threadpool(_docx_paragraph_texts, content)
     paras = [t for t, _full in texts]
+    card = _pricing_of()                     # ContextVar — здесь, не в потоке
+    others = _tenant_projects() if TENANT_MAX_PAGES else []
+    pages, have = await run_in_threadpool(_import_volume, paras, src, card, others)
+    if IMPORT_MAX_PAGES and pages > IMPORT_MAX_PAGES:
+        raise HTTPException(413, "Файл на %.1f стр. больше потолка на проект (%g стр.): разбейте документ" % (pages, IMPORT_MAX_PAGES))
+    if TENANT_MAX_PAGES and have + pages > TENANT_MAX_PAGES:
+        raise HTTPException(402, "В организации уже %.1f стр., с этим файлом %.1f при потолке %g: сначала удалите старые проекты" % (have, have + pages, TENANT_MAX_PAGES))
     units = _docx_units(paras, [f for _t, f in texts])
     deduped = [t for t, _ in units]
 
@@ -5753,6 +5868,7 @@ async def upload_project(
         "created": datetime.now().strftime("%Y-%m-%d"),
         "deadline": "",
         "fileName": file.filename,
+        "pages": pages,
         "segments": [
             {
                 "id": i + 1,
@@ -6648,6 +6764,8 @@ def _job_images(job: dict) -> None:
     for name in names:
         if job["stop"]:
             job["status"] = "stopped"
+            break
+        if _job_limit_hit(job):        # каждая картинка — вызов зрячей модели
             break
         # recent — это id сегментов, их ждёт /segments/fetch у редактора.
         # Имя части в этом поле давало 422 каждые три секунды.
@@ -14715,7 +14833,9 @@ def _job_termsheet(job: dict) -> None:
         # Стоп-флаг читается ТЕМ ЖЕ помощником, что у порционных прогонов:
         # во внешнем воркере он перечитывает таблицу jobs и заодно пишет
         # прогресс; локальная копия `job["stop"]` там не обновляется.
-        if _job_should_stop():
+        # Лимит расхода — тем же рубежом (`_job_limit_hit`): каждая пачка —
+        # платный вызов, и старт «на цент ниже потолка» оплатил бы всю книгу.
+        if _job_should_stop() or _job_limit_hit(job):
             job["status"] = "stopped"
             job["counters"].update({"calls": calls, "failed": failed, "stoppedAt": job["done"]})
             return    # список не пишется: половина книги под листом — разнобой по построению
@@ -18552,6 +18672,10 @@ def _job_run(job: dict):
         if job["stop"]:
             job["status"] = "stopped"
             break
+        # Лимит расхода — МЕЖДУ порциями, а не только на старте: прогон книги,
+        # запущенный при остатке в цент, доработал бы до конца за наш счёт.
+        if _job_limit_hit(job):
+            break
         chunk = ids[i:i + chunk_size]
         job["recent"] = chunk          # клиент подтянет только эти сегменты
         last_err = None
@@ -18624,6 +18748,12 @@ def _job_execute(job: dict):
             if job["stop"]:
                 job["status"] = "stopped"
                 job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                return
+            # Лимит — ДО ветвлений по видам: у `apply_terms` одобрение с судьёй
+            # и у `images` разбор зрячей моделью идут мимо цикла порций.
+            if _job_limit_hit(job):
+                job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                _job_persist(job)
                 return
             job["status"] = "running"
             job["started"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -18730,6 +18860,18 @@ def create_job(pid: int, req: JobRequest):
         # apply_terms считает состав после одобрения терминов, а разбор
         # картинок — сам себе состав: сегментов из картинок ещё не существует.
         raise HTTPException(400, "Пустой список сегментов")
+    # Отказ по СМЕТЕ на старте. Мидварь отвечает 402 только на ИСЧЕРПАННОМ
+    # лимите; прогон со сметой больше остатка стартовал бы и упирался в лимит
+    # посреди работы (проверка между порциями в `_job_run`). Число клиентское —
+    # то же, что уходит в историю расхода как `est_cost`, — поэтому это защита
+    # от случайности, а не от умысла: жёсткий рубеж остаётся между порциями.
+    est = (req.params or {}).get("est_cost")
+    if isinstance(est, (int, float)) and est > 0:
+        st = _spend_status()
+        if st.get("limitUsd") is not None and st["spentUsd"] + float(est) > float(st["limitUsd"]):
+            raise HTTPException(402, "Смета прогона $%.2f больше остатка лимита $%.2f: выберите "
+                                "меньше сегментов или снимите шаги"
+                                % (float(est), max(0.0, float(st["limitUsd"]) - st["spentUsd"])))
     with _JOBS_LOCK:
         job = {
             "id": _next_job_id(),

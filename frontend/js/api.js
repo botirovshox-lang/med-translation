@@ -178,7 +178,14 @@
       const r = await fetch((window.API_BASE || "") + "/api/projects/upload",
                             { method: "POST", body: fd, headers: authHeaders({}) });
       if (r.status === 401) onUnauthorized();
-      if (!r.ok) { const t = await r.text().catch(() => ""); throw new Error("Upload failed: " + r.status + " " + t); }
+      if (!r.ok) {
+        // Отказ импорта (потолки страниц/проектов, размер файла) — текст
+        // сервера, и переводится он там же, где все detail: через TRS().
+        const t = await r.text().catch(() => "");
+        let d = ""; try { d = JSON.parse(t).detail || ""; } catch (e) { d = ""; }
+        const err = new Error(typeof d === "string" && d ? TRS(d) : "Upload failed: " + r.status + " " + t);
+        err.status = r.status; throw err;
+      }
       return r.json();
     },
 

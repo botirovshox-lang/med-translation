@@ -95,5 +95,106 @@ check(r.status_code != 402, "платное снова доступно")
 seed = c.get("/api/seed", headers=H(B)).json()
 check("spend" not in seed, "/api/seed расход по организациям не отдаёт")
 
+print("=== 5. Смета больше остатка — 402 на старте (число клиентское, рубеж от случайности) ===")
+r = c.post("/api/admin/tenants/acme", headers=H(A), json={"limitUsd": 1.0})
+check(r.status_code == 200 and not r.json()["spend"]["over"], "лимит $1, расход меньше")
+body = {"kind": "backcheck", "segment_ids": [1], "params": {"est_cost": 5.0}}
+r = c.post("/api/projects/%d/jobs" % pid, headers=H(B), json=body)
+check(r.status_code == 402 and "Смета прогона" in r.json().get("detail", ""),
+      "смета $5 больше остатка → 402: %s" % r.text[:120])
+ew = main.EXTERNAL_WORKER
+main.EXTERNAL_WORKER = True                      # задачу никто не подхватит — без сети
+body["params"]["est_cost"] = 0.01
+r = c.post("/api/projects/%d/jobs" % pid, headers=H(B), json=body)
+main.EXTERNAL_WORKER = ew
+check(r.status_code == 200, "смета в остаток → задача принята: %s" % r.text[:120])
+if r.status_code == 200:
+    main._JOBS.pop(r.json()["job"]["id"], None)
+
+print("=== 6. Лимит исчерпан — задача из очереди останавливается ДО первой порции ===")
+r = c.post("/api/admin/tenants/acme", headers=H(A), json={"limitUsd": 0.001})
+calls = []
+orig_chunk = main._job_chunk
+main._job_chunk = lambda *a, **k: calls.append(a) or {"done": len(a[2])}
+mk = lambda ids: {"id": 999, "kind": "backcheck", "project": pid, "status": "queued", "tenant": "acme",
+                  "total": len(ids), "done": 0, "counters": {}, "error": None, "params": {}, "ids": ids,
+                  "stop": False, "recent": [], "created": "", "started": None, "finished": None}
+job = mk([1])
+try:
+    main._job_execute(job)
+finally:
+    main._job_chunk = orig_chunk
+check(job["status"] == "stopped" and job.get("stopReason") == "limit" and job.get("finished"),
+      "stopped с кодом limit до старта: %s/%s" % (job["status"], job.get("stopReason")))
+check(job["error"] == main.JOB_STOP_LIMIT and job["counters"].get("limitStop") == 1, "причина и счётчик записаны")
+check(not calls, "ни одна порция не вызвана")
+
+bumped = []
+orig_bump = getattr(main.STORE, "bump_epoch", None)
+main.STORE.bump_epoch = lambda name: bumped.append(name) or 0
+try:
+    c.post("/api/admin/tenants/acme", headers=H(A), json={"limitUsd": 0.5})
+finally:
+    if orig_bump is not None:
+        main.STORE.bump_epoch = orig_bump
+check("doc:tenants" in bumped, "правка лимита поднимает эпоху doc:tenants — внешний воркер увидит новый потолок")
+
+print("=== 6a. Лимит кончился ПОСЛЕ первой порции — вторая не идёт, сделанное сохранено ===")
+r = c.post("/api/admin/tenants/acme", headers=H(A), json={"limitUsd": 1.0})
+orig_ss, seen = main._spend_status, {"n": 0}
+def _ss(tenant=None):
+    st = orig_ss(tenant); st["over"] = seen["n"] >= 1; return st
+def _chunk(*a, **k):
+    seen["n"] += 1; calls.append(a); return {"done": len(a[2])}
+main._spend_status, main._job_chunk = _ss, _chunk
+job = mk(list(range(1, main.JOB_CHUNKS["backcheck"] + 2)))     # две порции
+try:
+    main._job_execute(job)
+finally:
+    main._spend_status, main._job_chunk = orig_ss, orig_chunk
+check(len(calls) == 1 and job["status"] == "stopped" and job.get("stopReason") == "limit",
+      "одна порция прошла, вторая остановлена лимитом: calls=%d %s" % (len(calls), job["status"]))
+check(job["done"] == main.JOB_CHUNKS["backcheck"], "сделанное сохранено в done: %s" % job["done"])
+r = c.post("/api/admin/tenants/acme", headers=H(A), json={"clearLimit": True})
+
+print("=== 7. Потолки импорта: страницы на файл (413), проекты и страницы организации (402) ===")
+try:
+    from docx import Document
+    HAVE_DOCX = True
+except ImportError:
+    HAVE_DOCX = False
+if HAVE_DOCX:
+    import io as _io
+    d = Document()
+    d.add_paragraph("Первый абзац про туберкулёз лёгких и его лечение в стационаре.")
+    d.add_paragraph("Второй абзац про профилактику.")
+    b = _io.BytesIO(); d.save(b); raw = b.getvalue()
+    MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    up = lambda: c.post("/api/projects/upload", headers=H(B), files={"file": ("t.docx", raw, MIME)},
+                        data={"src": "RU", "tgt": "EN"})
+    caps = (main.IMPORT_MAX_PAGES, main.TENANT_MAX_PAGES, main.TENANT_MAX_PROJECTS)
+    try:
+        main.IMPORT_MAX_PAGES, main.TENANT_MAX_PAGES, main.TENANT_MAX_PROJECTS = 0.01, 0, 0
+        r = up()
+        check(r.status_code == 413 and "Файл на " in r.json().get("detail", ""),
+              "потолок страниц на файл → 413: %s" % r.text[:110])
+        main.IMPORT_MAX_PAGES, main.TENANT_MAX_PROJECTS = 0, 1          # у acme уже есть проект
+        r = up()
+        check(r.status_code == 402 and "проектов" in r.json().get("detail", ""), "потолок проектов → 402: %s" % r.text[:110])
+        main.TENANT_MAX_PROJECTS, main.TENANT_MAX_PAGES = 0, 0.01
+        r = up()
+        check(r.status_code == 402 and " стр." in r.json().get("detail", ""),
+              "потолок страниц организации → 402, старый проект без pages посчитан по сегментам: %s" % r.text[:110])
+        main.TENANT_MAX_PAGES = 0
+        r = up()
+        ok = r.status_code == 200 and (r.json().get("pages") or 0) > 0
+        check(ok, "без потолков импорт проходит, pages записан: %s" % (r.json().get("pages") if r.status_code == 200 else r.text[:110]))
+        if r.status_code == 200:
+            main.STATE["projects"] = [p for p in main.STATE["projects"] if p["id"] != r.json()["id"]]
+    finally:
+        main.IMPORT_MAX_PAGES, main.TENANT_MAX_PAGES, main.TENANT_MAX_PROJECTS = caps
+else:
+    print("python-docx нет — раздел 7 пропущен")
+
 main.STATE["projects"] = [p for p in main.STATE["projects"] if p["id"] != pid]
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))

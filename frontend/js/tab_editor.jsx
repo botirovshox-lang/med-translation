@@ -1484,7 +1484,12 @@ function TabEditor({ store, toast }) {
     // не сравниваются, а без сравнения смету не на чем поправить.
     const withEst = (est == null || est.cost == null) ? params
       : Object.assign({}, params, { est_cost: est.cost });
-    const res = await window.API.safeCall(() => window.API.createJob(project.id, kind, targets.map(s => s.id), withEst));
+    // Не через safeCall: тот глотает ошибку, а сервер отвечает 402 с числами
+    // («смета больше остатка лимита») — без них человеку нечего исправлять.
+    // e.message уже переведён на границе показа (TRS в api.js).
+    let res = null;
+    try { res = await window.API.createJob(project.id, kind, targets.map(s => s.id), withEst); }
+    catch (e) { toast.error(TR("Не удалось запустить"), (e && e.message) || TR("Сервер не принял задачу.")); return null; }
     if (!res || !res.ok) { toast.error(TR("Не удалось запустить"), TR("Сервер не принял задачу.")); return null; }
     setJob(res.job);
     toast.info(JOB_LABELS[kind] + TR(": запущено"), targets.length + TR(" сегментов. Можно закрыть вкладку — прогон идёт на сервере."));
@@ -1540,8 +1545,17 @@ function TabEditor({ store, toast }) {
       return;
     }
     if (j.status === "stopped") {
+      // Стоп-причина сервера — КОДОМ (stopReason), текст собирает браузер
+      // из TR(): ошибка задачи приезжает данными через опрос, мимо TRS()
+      // в api.js. Без неё остановка по лимиту неотличима от нажатой кнопки.
+      // Одобренные до остановки термины уже в глоссарии — об этом тоже
+      // сказано: ветка стоит раньше ветки apply_terms.
+      const stopMsg = j.stopReason === "limit"
+        ? " " + TR("Лимит расхода организации исчерпан: прогон остановлен, сделанное сохранено. Остальные сегменты возьмёт следующий прогон, когда лимит поднимут или сбросят 1-го числа.")
+        : (j.error ? " " + j.error : "");
+      const termsMsg = c.termsApproved ? TR(" · терминов уже в глоссарии: ") + c.termsApproved : "";
       toast.warning(name + TR(": остановлено"), j.done + TR(" из ") + j.total
-        + TR(" обработано и сохранено.") + revMsgFull + errMsg + costMsg);
+        + TR(" обработано и сохранено.") + stopMsg + termsMsg + revMsgFull + errMsg + costMsg);
       return;
     }
     if (j.kind === "apply_terms") {

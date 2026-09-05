@@ -1,11 +1,11 @@
 {
   "_": "Редактор: таблица сегментов, составной прогон, шаги, одобрение терминов, соответствие глоссарию, полоса прогона.",
   "Номера идут не по возрастанию: ": "Raqamlar o'sish tartibida emas: ",
-  " строк(и). Сегменты, распознанные на картинках, заводятся позже всех и номер получают по счёту заведения, а в таблице стоят на месте своей картинки в документе.": " qator. Rasmlarda tanilgan segmentlar hammadan keyin yaratiladi va raqamni yaratilish tartibida oladi, jadvalda esa hujjatdagi o'z rasmi o'rnida turadi.",
+  " строк(и). Сегменты, распознанные на картинках, заводятся позже всех и номер получают по счёту заведения, а в таблице стоят на месте своей картинки в документе.": " ta qator. Rasmlardan o'qilgan segmentlar hammadan keyin yaratiladi va raqamni yaratilish tartibida oladi, jadvalda esa hujjatdagi o'z rasmi o'rnida turadi.",
   "Сортировать по номеру": "Raqam bo'yicha saralash",
-  "Порядок: по номеру сегмента. Строки идут не так, как идёт документ, — соседние строки соседями в тексте не являются.": "Tartib: segment raqami bo'yicha. Qatorlar hujjat tartibida emas — qo'shni qatorlar matnda qo'shni emas.",
+  "Порядок: по номеру сегмента. Строки идут не так, как идёт документ, — соседние строки соседями в тексте не являются.": "Tartib: segment raqami bo'yicha. Qatorlar hujjat tartibida emas — yonma-yon qatorlar matnda qo'shni emas.",
   "Вернуть порядок документа": "Hujjat tartibini qaytarish",
-  "Распознано на картинке: номер выдан при заведении, место в таблице — по документу": "Rasmda tanilgan: raqam yaratilishda berilgan, jadvaldagi o'rni — hujjat bo'yicha",
+  "Распознано на картинке: номер выдан при заведении, место в таблице — по документу": "Rasmdan o'qilgan: raqam yaratilishda berilgan, jadvaldagi o'rni esa hujjat bo'yicha",
   "\n\nВызовов по модели без цены: ": "\n\nNarxi noma'lum model chaqiruvlari: ",
   "\n\nИсключение — короткий оригинал (меньше ": "\n\nIstisno — qisqa asl matn (kamroq: ",
   " содержательных слов). Мера, по которой считается балл, на таком отрезке даёт только 0 или 100%, и любой синоним в обратном переводе роняет его в ноль при верном переводе: «Фтизиатрия → Phthisiology → Фтизиология». Ноль здесь значит «нечем измерить», поэтому низ зоны для таких сегментов открыт до нуля. Обратный перевод при этом берётся готовый — платим только за судью.": " ta mazmunli so'z). Ball hisoblanadigan o'lchov bunday parchada faqat 0 yoki 100% beradi, teskari tarjimadagi har qanday sinonim esa to'g'ri tarjimada ham uni nolga tushiradi: «Ftiziatriya → Phthisiology → Ftiziologiya». Nol bu yerda «o'lchaydigan narsa yo'q» degani, shuning uchun bunday segmentlar uchun zonaning pasti nolgacha ochiq. Teskari tarjima esa tayyorini olinadi — faqat hakam uchun to'laymiz.",
@@ -524,10 +524,6 @@
   "Ревизия перепишет и заверенные": "Reviziya tasdiqlanganlarni ham qayta yozadi",
   " заверенных в выборке; ": " ta tasdiqlangan tanlovda; ",
   "с переписанных снимется отметка «подтвердил человек». Выключается в строке «Ревизия».": "qayta yozilganlardan «inson tasdiqladi» belgisi olib tashlanadi. «Reviziya» qatorida o'chiriladi.",
-  "Номера идут не по возрастанию: ": "Raqamlar o'sish tartibida emas: ",
-  " строк(и). Сегменты, распознанные на картинках, заводятся позже всех и номер получают по счёту заведения, а в таблице стоят на месте своей картинки в документе.": " ta qator. Rasmlardan o'qilgan segmentlar hammadan keyin yaratiladi va raqamni yaratilish tartibida oladi, jadvalda esa hujjatdagi o'z rasmi o'rnida turadi.",
-  "Сортировать по номеру": "Raqam bo'yicha saralash",
-  "Порядок: по номеру сегмента. Строки идут не так, как идёт документ, — соседние строки соседями в тексте не являются.": "Tartib: segment raqami bo'yicha. Qatorlar hujjat tartibida emas — yonma-yon qatorlar matnda qo'shni emas.",
-  "Вернуть порядок документа": "Hujjat tartibini qaytarish",
-  "Распознано на картинке: номер выдан при заведении, место в таблице — по документу": "Rasmdan o'qilgan: raqam yaratilishda berilgan, jadvaldagi o'rni esa hujjat bo'yicha"
+  "Лимит расхода организации исчерпан: прогон остановлен, сделанное сохранено. Остальные сегменты возьмёт следующий прогон, когда лимит поднимут или сбросят 1-го числа.": "Tashkilotning xarajat chegarasi tugadi: ishlov to'xtatildi, bajarilgani saqlandi. Qolgan segmentlarni chegara oshirilgach yoki oyning 1-kunida tiklangach keyingi ishlov oladi.",
+  " · терминов уже в глоссарии: ": " · glossariyga kiritilgan terminlar: "
 }

@@ -186,6 +186,20 @@ if HAVE_DOCX:
         check(r.status_code == 402 and " стр." in r.json().get("detail", ""),
               "потолок страниц организации → 402, старый проект без pages посчитан по сегментам: %s" % r.text[:110])
         main.TENANT_MAX_PAGES = 0
+        # своё значение организации сильнее окружения, «пусто» возвращает к нему
+        r = c.post("/api/admin/tenants/acme", headers=H(A), json={"maxPages": 0.01, "maxProjects": 50})
+        check(r.status_code == 200 and r.json()["caps"]["maxPages"] == 0.01 and r.json()["caps"]["own"]["maxProjects"] == 50
+              and r.json()["usage"]["projects"] == 1, "потолки организации записаны и видны с объёмом: %s" % r.text[:160])
+        r = up()
+        check(r.status_code == 402 and " стр." in r.json().get("detail", ""), "потолок страниц ОРГАНИЗАЦИИ → 402 при выключенном окружении")
+        r = c.post("/api/admin/tenants/acme", headers=H(B), json={"maxPages": 100})
+        check(r.status_code == 403, "владелец сам себе потолок не ставит")
+        r = c.post("/api/admin/tenants/acme", headers=H(A), json={"clearMaxPages": True, "clearMaxProjects": True})
+        check(r.status_code == 200 and r.json()["caps"]["own"]["maxPages"] is None, "потолки сняты — снова по умолчанию")
+        ov = c.get("/api/admin/overview", headers=H(A)).json()
+        check("capDefaults" in ov and all("caps" in t and "usage" in t for t in ov["tenants"]), "сводка несёт потолки и объём")
+        me = c.get("/api/auth/me", headers=H(B)).json()
+        check(me.get("usage", {}).get("projects") == 1 and "caps" in me, "владелец видит объём и потолки своей организации")
         r = up()
         ok = r.status_code == 200 and (r.json().get("pages") or 0) > 0
         check(ok, "без потолков импорт проходит, pages записан: %s" % (r.json().get("pages") if r.status_code == 200 else r.text[:110]))

@@ -17,12 +17,39 @@ function AdminStat({ label, value, warn }) {
     React.createElement("div", { style: { fontSize: 20, fontWeight: 600, color: warn ? "var(--c-danger)" : undefined } }, value));
 }
 
+/* Потолок как текст: 0 и пусто — «без потолка». Своё значение организации
+   (не унаследованное из окружения) помечается звёздочкой. */
+function fmtCap(v) { return v ? String(v) : "∞"; }
+function capSuffix(t, key) {
+  const c = t.caps || {}; const own = c.own || {};
+  return (c[key] ? " / " + c[key] : "") + (own[key] != null ? " ★" : "");
+}
+function capTitle(t, key) {
+  const c = t.caps || {}; const own = c.own || {};
+  return own[key] != null ? TR("своё значение организации") : (c[key] ? TR("по умолчанию из окружения") : TR("без потолка"));
+}
+
 function AdminTenants({ ov, toast, onChange }) {
   const setLimit = async (t) => {
     const v = prompt(TR("Месячный лимит для «") + t.name + TR("», $ (пусто — снять):"), t.limitUsd != null ? t.limitUsd : "");
     if (v === null) return;
     try { await window.API.tenantUpdate(t.id, v.trim() === "" ? { clearLimit: true } : { limitUsd: Number(v) }); toast.success(TR("Лимит обновлён"), t.name); onChange(); }
     catch (e) { toast.error(TR("Не обновлён"), e.message || String(e)); }
+  };
+  // Потолки импорта — «лимит страницами»: пусто — по умолчанию из окружения
+  // (ov.capDefaults), 0 — без потолка. Два prompt подряд, как у лимита.
+  const setCaps = async (t) => {
+    const d = ov.capDefaults || {};
+    const own = (t.caps && t.caps.own) || {};
+    const p1 = prompt(TR("Потолок страниц для «") + t.name + TR("» (пусто — по умолчанию ") + fmtCap(d.maxPages) + TR(", 0 — без потолка):"), own.maxPages != null ? own.maxPages : "");
+    if (p1 === null) return;
+    const p2 = prompt(TR("Потолок проектов для «") + t.name + TR("» (пусто — по умолчанию ") + fmtCap(d.maxProjects) + TR(", 0 — без потолка):"), own.maxProjects != null ? own.maxProjects : "");
+    if (p2 === null) return;
+    const body = {};
+    if (p1.trim() === "") body.clearMaxPages = true; else body.maxPages = Number(p1);
+    if (p2.trim() === "") body.clearMaxProjects = true; else body.maxProjects = Number(p2);
+    try { await window.API.tenantUpdate(t.id, body); toast.success(TR("Потолки обновлены"), t.name); onChange(); }
+    catch (e) { toast.error(TR("Не обновлены"), e.message || String(e)); }
   };
   const toggle = async (t) => {
     try { await window.API.tenantUpdate(t.id, { active: !t.active }); toast.success(t.active ? TR("Отключена") : TR("Включена"), t.name); onChange(); }
@@ -35,13 +62,18 @@ function AdminTenants({ ov, toast, onChange }) {
   };
   return React.createElement("div", { className: "card card-pad" },
     React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } }, TR("Организации · ") + ov.tenants.length),
+    ov.capDefaults && React.createElement("p", { className: "dim", style: { margin: "0 0 8px", fontSize: 13 } },
+      TR("Потолки импорта по умолчанию (из окружения, 0 — без потолка): файл ≤ ") + fmtCap(ov.capDefaults.filePages)
+      + TR(" стр. · организация ≤ ") + fmtCap(ov.capDefaults.maxPages) + TR(" стр., ≤ ") + fmtCap(ov.capDefaults.maxProjects)
+      + TR(" проектов. Своё значение организации — кнопка «Потолки»; помечено ★.")),
     React.createElement("div", { style: { overflowX: "auto" } }, React.createElement("table", { className: "tbl" },
       React.createElement("thead", null, React.createElement("tr", null,
-        [TR("Организация"), TR("Люди"), TR("Проекты"), TR("Сегменты"), TR("Глоссарий"), TR("Расход за ") + ov.month, TR("Лимит"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
+        [TR("Организация"), TR("Люди"), TR("Проекты"), TR("Страницы"), TR("Сегменты"), TR("Глоссарий"), TR("Расход за ") + ov.month, TR("Лимит"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
       React.createElement("tbody", null, ov.tenants.map(t => React.createElement("tr", { key: t.id, style: t.active === false ? { opacity: .55 } : null },
         React.createElement("td", null, React.createElement("b", null, t.name), " ", React.createElement("span", { className: "dim" }, t.id + (t.active === false ? TR(" · отключена") : ""))),
         React.createElement("td", null, t.activeUsers + (t.users !== t.activeUsers ? " / " + t.users : "")),
-        React.createElement("td", null, t.projects),
+        React.createElement("td", { title: capTitle(t, "maxProjects") }, t.projects + capSuffix(t, "maxProjects")),
+        React.createElement("td", { title: capTitle(t, "maxPages") }, (t.usage ? t.usage.pages : "—") + capSuffix(t, "maxPages")),
         React.createElement("td", null, t.segments),
         React.createElement("td", null, t.glossary + (t.domains ? TR(" · обл. ") + t.domains : "")),
         React.createElement("td", { style: { color: t.spend.over ? "var(--c-danger)" : undefined } },
@@ -49,6 +81,7 @@ function AdminTenants({ ov, toast, onChange }) {
         React.createElement("td", null, t.limitUsd != null ? "$" + Number(t.limitUsd).toFixed(2) : "—"),
         React.createElement("td", { style: { whiteSpace: "nowrap", textAlign: "right" } },
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLimit(t) }, TR("Лимит")),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setCaps(t) }, TR("Потолки")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => toggle(t) }, t.active === false ? TR("Включить") : TR("Отключить")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => del(t) }, TR("Удалить")))))))));
 }

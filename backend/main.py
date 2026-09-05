@@ -3025,6 +3025,9 @@ def auth_me(request: Request):
             "can": {"owner": role == "owner", "super": bool(u.get("super")), "role": role},
             "teams": _teams_of(u), "invites": _my_invites(u),
             "spend": _spend_status(tid),
+            # Объём в СТРАНИЦАХ — то, чем организация меряет свою работу:
+            # деньги (`spend`) — наши затраты на модели, страницы — её заказ.
+            "caps": _tenant_caps(tid), "usage": _tenant_usage(tid),
             **({"adminPath": "/" + ADMIN_PATH} if u.get("super") else {})}
 
 
@@ -3810,6 +3813,13 @@ class TenantPatch(BaseModel):
     active: Optional[bool] = None
     limitUsd: Optional[float] = None      # 0 — запретить платное; None — оставить как есть
     clearLimit: bool = False
+    # Потолки импорта СВОИ у организации (админка): страниц по всем проектам
+    # и проектов. 0 — без потолка; clear* — снять своё и вернуться к значению
+    # по умолчанию из окружения (`_tenant_caps`).
+    maxPages: Optional[float] = None
+    maxProjects: Optional[int] = None
+    clearMaxPages: bool = False
+    clearMaxProjects: bool = False
 
 
 @app.post("/api/admin/tenants/{tid}")
@@ -3830,10 +3840,24 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
         if req.limitUsd < 0:
             raise HTTPException(400, "Лимит не может быть отрицательным")
         rec["limitUsd"] = float(req.limitUsd)
-    _audit("tenant.update", tenant_target=tid, limitUsd=rec.get("limitUsd"))
+    if req.clearMaxPages:
+        rec.pop("maxPages", None)
+    elif req.maxPages is not None:
+        if req.maxPages < 0:
+            raise HTTPException(400, "Потолок страниц не может быть отрицательным")
+        rec["maxPages"] = float(req.maxPages)
+    if req.clearMaxProjects:
+        rec.pop("maxProjects", None)
+    elif req.maxProjects is not None:
+        if req.maxProjects < 0:
+            raise HTTPException(400, "Потолок проектов не может быть отрицательным")
+        rec["maxProjects"] = int(req.maxProjects)
+    _audit("tenant.update", tenant_target=tid, limitUsd=rec.get("limitUsd"),
+           maxPages=rec.get("maxPages"), maxProjects=rec.get("maxProjects"))
     save_state(STATE)
     _tenants_changed()
-    return {"ok": True, "tenant": rec, "spend": _spend_status(tid)}
+    return {"ok": True, "tenant": rec, "spend": _spend_status(tid),
+            "caps": _tenant_caps(tid), "usage": _tenant_usage(tid)}
 
 
 @app.get("/api/admin/overview")
@@ -3857,7 +3881,8 @@ def admin_overview(request: Request):
                         "projects": len(tp), "segments": sum(len(p["segments"]) for p in tp),
                         "glossary": sum(1 for g in STATE["glossary"] if _tenant_of(g) == tid),
                         "domains": len(_tenant_domains(tid)),
-                        "spend": _spend_status(tid)})
+                        "spend": _spend_status(tid),
+                        "caps": _tenant_caps(tid), "usage": _tenant_usage(tid)})
     jobs = sorted(_JOBS.values(), key=lambda j: j["id"], reverse=True)
     with _USAGE_LOCK:
         proc = json.loads(json.dumps(_USAGE_TOTAL))
@@ -3877,6 +3902,7 @@ def admin_overview(request: Request):
                         "openaiKey": bool(os.environ.get("OPENAI_API_KEY")),
                         "version": "5.6.0", "termQueue": len(_term_queue()),
                         "auditRows": len(STATE.get("audit") or [])},
+            "capDefaults": _cap_defaults(),
             "month": _month_key()}
 
 
@@ -3885,8 +3911,10 @@ def admin_tenants(request: Request):
     me = _current_user(request)
     if not me.get("super"):
         raise HTTPException(403, "Список организаций — только суперпользователю")
-    return {"ok": True, "tenants": [dict({k: v for k, v in t.items() if k != "pricing"},
-                                         spend=_spend_status(t["id"])) for t in _tenants()]}
+    return {"ok": True, "capDefaults": _cap_defaults(),
+            "tenants": [dict({k: v for k, v in t.items() if k != "pricing"},
+                             spend=_spend_status(t["id"]), caps=_tenant_caps(t["id"]),
+                             usage=_tenant_usage(t["id"])) for t in _tenants()]}
 
 
 class TenantCreate(BaseModel):
@@ -5781,6 +5809,38 @@ TENANT_MAX_PAGES = float(os.environ.get("TENANT_MAX_PAGES", "0") or 0)
 TENANT_MAX_PROJECTS = int(os.environ.get("TENANT_MAX_PROJECTS", "0") or 0)
 
 
+def _cap_defaults() -> dict:
+    """Потолки из окружения — значения ПО УМОЛЧАНИЮ для организаций без своих."""
+    return {"filePages": IMPORT_MAX_PAGES, "maxPages": TENANT_MAX_PAGES, "maxProjects": TENANT_MAX_PROJECTS}
+
+
+def _tenant_caps(tid: str) -> dict:
+    """Действующие потолки организации: своё значение из записи (`maxPages`,
+    `maxProjects` — ставит суперпользователь в админке, это и есть «выдать
+    лимит страницами»), иначе — по умолчанию из окружения. Потолок на ФАЙЛ
+    общий: он про единственный воркер, а не про организацию. 0 — без потолка.
+    `own` — что задано именно этой организации (админке нужно отличать
+    своё от унаследованного)."""
+    rec = _tenant_rec(tid) or {}
+    own = {"maxPages": rec.get("maxPages"), "maxProjects": rec.get("maxProjects")}
+    return {"maxPages": float(own["maxPages"]) if own["maxPages"] is not None else TENANT_MAX_PAGES,
+            "maxProjects": int(own["maxProjects"]) if own["maxProjects"] is not None else TENANT_MAX_PROJECTS,
+            "filePages": IMPORT_MAX_PAGES, "own": own}
+
+
+_PAGES_CACHE: dict = {}
+
+
+def _tenant_usage(tid: str) -> dict:
+    """Объём организации: страницы по всем её проектам (`_project_pages`)
+    и число проектов. Считается по записи проекта, а у проектов без `pages`
+    — по сегментам; это идёт в `/api/auth/me` на каждый вход, поэтому счёт
+    по сегментам кэшируется по (id, число сегментов) в `_PAGES_CACHE`."""
+    card = _pricing_of(tid)
+    mine = [p for p in STATE["projects"] if _tenant_of(p) == tid]
+    return {"pages": round(sum(_project_pages(p, card) for p in mine), 1), "projects": len(mine)}
+
+
 def _pages_exact(blocks: list, lang: str, card: dict) -> float:
     """Точные страницы по списку абзацев — тем же счётом, что смета
     (`count_blocks` + норма организации из карточки цен + `pages_of`)."""
@@ -5796,8 +5856,13 @@ def _project_pages(p: dict, card: dict) -> float:
     `TENANT_MAX_PAGES` до конца жизни этих проектов."""
     if p.get("pages") is not None:
         return float(p["pages"])
-    return _pages_exact([sg.get("source") or "" for sg in p.get("segments") or []],
-                        p.get("src") or "RU", card)
+    segs = p.get("segments") or []
+    # Номера проектов переиспользуются (`max + 1`), поэтому в ключе и дата
+    # создания: иначе новый проект под старым номером читал бы чужой объём.
+    key = (p.get("id"), p.get("created"), len(segs), p.get("src") or "RU")
+    if key not in _PAGES_CACHE:
+        _PAGES_CACHE[key] = _pages_exact([sg.get("source") or "" for sg in segs], p.get("src") or "RU", card)
+    return _PAGES_CACHE[key]
 
 
 def _import_volume(paras: list, lang: str, card: dict, others: list) -> tuple:
@@ -5825,9 +5890,10 @@ async def upload_project(
     except ImportError:
         raise HTTPException(500, "python-docx not installed")
     # 402 на потолки организации, как у всего квотного слоя; 413 — про файл.
-    if TENANT_MAX_PROJECTS and len(_tenant_projects()) >= TENANT_MAX_PROJECTS:
+    caps = _tenant_caps(_current_tenant())
+    if caps["maxProjects"] and len(_tenant_projects()) >= caps["maxProjects"]:
         raise HTTPException(402, "В организации уже %d проектов, а потолок %d: удалите ненужные"
-                            % (len(_tenant_projects()), TENANT_MAX_PROJECTS))
+                            % (len(_tenant_projects()), caps["maxProjects"]))
     # Потолки идут ДО тяжёлого разбора: сначала байты (по заголовку, потом
     # по факту), затем страницы, и только потом `_docx_paragraph_texts`.
     too_big = "Файл больше %d МБ — разберите его по частям" % (textcount.MAX_BYTES // 1024 // 1024)
@@ -5846,12 +5912,12 @@ async def upload_project(
     texts = await run_in_threadpool(_docx_paragraph_texts, content)
     paras = [t for t, _full in texts]
     card = _pricing_of()                     # ContextVar — здесь, не в потоке
-    others = _tenant_projects() if TENANT_MAX_PAGES else []
+    others = _tenant_projects() if caps["maxPages"] else []
     pages, have = await run_in_threadpool(_import_volume, paras, src, card, others)
-    if IMPORT_MAX_PAGES and pages > IMPORT_MAX_PAGES:
-        raise HTTPException(413, "Файл на %.1f стр. больше потолка на проект (%g стр.): разбейте документ" % (pages, IMPORT_MAX_PAGES))
-    if TENANT_MAX_PAGES and have + pages > TENANT_MAX_PAGES:
-        raise HTTPException(402, "В организации уже %.1f стр., с этим файлом %.1f при потолке %g: сначала удалите старые проекты" % (have, have + pages, TENANT_MAX_PAGES))
+    if caps["filePages"] and pages > caps["filePages"]:
+        raise HTTPException(413, "Файл на %.1f стр. больше потолка на проект (%g стр.): разбейте документ" % (pages, caps["filePages"]))
+    if caps["maxPages"] and have + pages > caps["maxPages"]:
+        raise HTTPException(402, "В организации уже %.1f стр., с этим файлом %.1f при потолке %g: сначала удалите старые проекты" % (have, have + pages, caps["maxPages"]))
     units = _docx_units(paras, [f for _t, f in texts])
     deduped = [t for t, _ in units]
 

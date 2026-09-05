@@ -171,5 +171,22 @@
   "удалил из памяти": "xotiradan o'chirdi",
   "удалил проект": "loyihani o'chirdi",
   "цена за страницу применится к новым сметам": "sahifa narxi yangi hisob-kitoblarga qo'llanadi",
-  "экспорт": "eksport"
+  "экспорт": "eksport",
+  "Потолок страниц для «": "Sahifalar chegarasi: «",
+  "» (пусто — по умолчанию ": "» (bo'sh — sukut bo'yicha ",
+  ", 0 — без потолка):": ", 0 — chegarasiz):",
+  "Потолок проектов для «": "Loyihalar chegarasi: «",
+  "Потолки обновлены": "Chegaralar yangilandi",
+  "Не обновлены": "Yangilanmadi",
+  "Страницы": "Sahifalar",
+  "Потолки": "Chegaralar",
+  "Потолки импорта по умолчанию (из окружения, 0 — без потолка): файл ≤ ": "Import chegaralari sukut bo'yicha (muhitdan, 0 — chegarasiz): fayl ≤ ",
+  " стр. · организация ≤ ": " sahifa · tashkilot ≤ ",
+  " стр., ≤ ": " sahifa, ≤ ",
+  " проектов. Своё значение организации — кнопка «Потолки»; помечено ★.": " ta loyiha. Tashkilotning o'z qiymati — «Chegaralar» tugmasi; ★ bilan belgilangan.",
+  "своё значение организации": "tashkilotning o'z qiymati",
+  "по умолчанию из окружения": "muhitdan sukut bo'yicha",
+  "без потолка": "chegarasiz",
+  "Страниц загружено: ": "Yuklangan sahifalar: ",
+  " · проектов: ": " · loyihalar: "
 }

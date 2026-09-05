@@ -254,5 +254,7 @@
   " стр.): разбейте документ": " sahifa): hujjatni bo'laklarga ajrating",
   " стр., с этим файлом ": " sahifa bor, bu fayl bilan ",
   " при потолке ": ", yuqori chegara esa ",
-  ": сначала удалите старые проекты": ": avval eski loyihalarni o'chiring"
+  ": сначала удалите старые проекты": ": avval eski loyihalarni o'chiring",
+  "Потолок страниц не может быть отрицательным": "Sahifalar chegarasi manfiy bo'lishi mumkin emas",
+  "Потолок проектов не может быть отрицательным": "Loyihalar chegarasi manfiy bo'lishi mumkin emas"
 }

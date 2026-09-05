@@ -374,7 +374,14 @@ function TabOrg({ store, toast }) {
         + TR(" · вызовов: ") + info.spend.calls
         + (info.spend.unpriced ? TR(" · без цены: ") + info.spend.unpriced : "")),
       info.spend.over && React.createElement("div", { className: "dim", style: { marginTop: 4 } },
-        TR("Лимит исчерпан: платные прогоны отвечают отказом, бесплатные команды и экспорт работают. Лимит ставит администратор сервиса."))),
+        TR("Лимит исчерпан: платные прогоны отвечают отказом, бесплатные команды и экспорт работают. Лимит ставит администратор сервиса.")),
+      // Объём в СТРАНИЦАХ — мера заказа, а не наших затрат: считается
+      // по загруженным файлам (как смета), потолок выдаёт администратор.
+      info.usage && React.createElement("div", { style: { marginTop: 6 } },
+        TR("Страниц загружено: ") + info.usage.pages
+        + (info.caps && info.caps.maxPages ? TR(" из ") + info.caps.maxPages : "")
+        + TR(" · проектов: ") + info.usage.projects
+        + (info.caps && info.caps.maxProjects ? TR(" из ") + info.caps.maxProjects : ""))),
     React.createElement("div", { className: "col", style: { gap: 16 } },
       React.createElement(OrgUsers, { toast }),
       React.createElement(OrgPricing, { toast }),

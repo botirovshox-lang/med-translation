@@ -3028,6 +3028,7 @@ def auth_me(request: Request):
             # Объём в СТРАНИЦАХ — то, чем организация меряет свою работу:
             # деньги (`spend`) — наши затраты на модели, страницы — её заказ.
             "caps": _tenant_caps(tid), "usage": _tenant_usage(tid),
+            "pagesLog": ((tenant or {}).get("pagesLog") or [])[-PAGES_LOG_TAIL:],
             **({"adminPath": "/" + ADMIN_PATH} if u.get("super") else {})}
 
 
@@ -3813,12 +3814,13 @@ class TenantPatch(BaseModel):
     active: Optional[bool] = None
     limitUsd: Optional[float] = None      # 0 — запретить платное; None — оставить как есть
     clearLimit: bool = False
-    # Потолки импорта СВОИ у организации (админка): страниц по всем проектам
-    # и проектов. 0 — без потолка; clear* — снять своё и вернуться к значению
-    # по умолчанию из окружения (`_tenant_caps`).
-    maxPages: Optional[float] = None
+    # Лимит СТРАНИЦ выдаётся ПОПОЛНЕНИЕМ (`addPages`, отрицательное —
+    # исправление): сумма копится в `pagesCredit`, каждое — запись журнала
+    # `pagesLog`. Потолок проектов — своё число; clearMaxProjects — снять
+    # и вернуться к значению из окружения (`_tenant_caps`).
+    addPages: Optional[float] = None
+    note: Optional[str] = None
     maxProjects: Optional[int] = None
-    clearMaxPages: bool = False
     clearMaxProjects: bool = False
 
 
@@ -3840,23 +3842,21 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
         if req.limitUsd < 0:
             raise HTTPException(400, "Лимит не может быть отрицательным")
         rec["limitUsd"] = float(req.limitUsd)
-    if req.clearMaxPages:
-        rec.pop("maxPages", None)
-    elif req.maxPages is not None:
-        if req.maxPages < 0:
-            raise HTTPException(400, "Потолок страниц не может быть отрицательным")
-        rec["maxPages"] = float(req.maxPages)
+    # Все проверки — ДО первой записи: отказ 400 не должен оставлять следа
+    # (пополнение, применённое при отклонённом потолке проектов, — след).
+    if req.maxProjects is not None and req.maxProjects < 0 and not req.clearMaxProjects:
+        raise HTTPException(400, "Потолок проектов не может быть отрицательным")
+    if req.addPages:
+        _pages_topup(tid, float(req.addPages), (req.note or "").strip() or None)
     if req.clearMaxProjects:
         rec.pop("maxProjects", None)
     elif req.maxProjects is not None:
-        if req.maxProjects < 0:
-            raise HTTPException(400, "Потолок проектов не может быть отрицательным")
         rec["maxProjects"] = int(req.maxProjects)
     _audit("tenant.update", tenant_target=tid, limitUsd=rec.get("limitUsd"),
-           maxPages=rec.get("maxPages"), maxProjects=rec.get("maxProjects"))
+           addPages=req.addPages, pagesCredit=rec.get("pagesCredit"), maxProjects=rec.get("maxProjects"))
     save_state(STATE)
     _tenants_changed()
-    return {"ok": True, "tenant": rec, "spend": _spend_status(tid),
+    return {"ok": True, "tenant": _tenant_admin_view(rec), "spend": _spend_status(tid),
             "caps": _tenant_caps(tid), "usage": _tenant_usage(tid)}
 
 
@@ -3876,7 +3876,7 @@ def admin_overview(request: Request):
         tp = [p for p in projects if _tenant_of(p) == tid]
         # Прайс агентства суперпользователю не показываем: лимит расхода —
         # наше дело, цена страницы — то, что агентство продаёт своим клиентам.
-        tenants.append({**{k: v for k, v in t.items() if k != "pricing"}, "users": sum(1 for u in users if u.get("tenant") == tid),
+        tenants.append({**_tenant_admin_view(t), "users": sum(1 for u in users if u.get("tenant") == tid),
                         "activeUsers": sum(1 for u in users if u.get("tenant") == tid and u.get("active", True)),
                         "projects": len(tp), "segments": sum(len(p["segments"]) for p in tp),
                         "glossary": sum(1 for g in STATE["glossary"] if _tenant_of(g) == tid),
@@ -3912,7 +3912,7 @@ def admin_tenants(request: Request):
     if not me.get("super"):
         raise HTTPException(403, "Список организаций — только суперпользователю")
     return {"ok": True, "capDefaults": _cap_defaults(),
-            "tenants": [dict({k: v for k, v in t.items() if k != "pricing"},
+            "tenants": [dict(_tenant_admin_view(t),
                              spend=_spend_status(t["id"]), caps=_tenant_caps(t["id"]),
                              usage=_tenant_usage(t["id"])) for t in _tenants()]}
 
@@ -5814,16 +5814,49 @@ def _cap_defaults() -> dict:
     return {"filePages": IMPORT_MAX_PAGES, "maxPages": TENANT_MAX_PAGES, "maxProjects": TENANT_MAX_PROJECTS}
 
 
+# Учёт в СТРАНИЦАХ — предоплата, а не потолок по живым проектам:
+#   `pagesCredit` — выдано (сумма пополнений, только через `_pages_topup`);
+#                   ВЫДАНО 0 — исчерпано, а не «без потолка» (`pagesLimited`);
+#   `pagesUsed`   — списано, НИКОГДА не уменьшается: удаление проекта его
+#                   не трогает, иначе «импорт → перевод → выгрузка → удаление
+#                   → импорт заново» обходил бы лимит бесплатно;
+#   `filesSeen`   — {sha1 файла + пара языков: страницы}: повтор того же
+#                   файла на ту же пару списывает ноль (три нажатия «импорт»
+#                   — не три заказа, закон смет); на другую пару — новый
+#                   перевод, списывается; пересохранённый Word'ом файл —
+#                   другой sha, спишется (названо, не чинится);
+#   `pagesLog`    — журнал для людей (init / credit / debit / repeat: когда,
+#                   кто, сколько, какой проект), хвост PAGES_LOG_MAX; источник
+#                   правды — счётчики, журнал — след.
+# Организация БЕЗ счётчика читается по живым проектам (как до предоплаты)
+# и не переписывается; счётчик заводит ПЕРВОЕ ПОПОЛНЕНИЕ от этой суммы
+# (строка `init` в журнале) — с этого момента удаление ничего не возвращает.
+# Заводить его первым списанием нельзя: до него «снёс всё → залил» стартовал
+# бы счётчик с нуля. Лимит без единого пополнения — из окружения.
+# Документ `tenants` пишет ТОЛЬКО процесс API (воркер — никогда): счётчик
+# в документе не переживёт двух писателей (`DocConflict` выбрасывает правки
+# молча, потерянное списание неотличимо от бесплатного импорта). Появится
+# второй писатель — счётчик переезжает в таблицу с инкрементом, как `spend`.
+# Проверка и инкремент — одним блоком под `_SAVE_LOCK` с перечитанной
+# записью: `_sync_shared` из чужого потока подменяет `STATE["tenants"]`
+# целиком, и взятая раньше запись становится сиротой.
+PAGES_LOG_MAX = int(os.environ.get("PAGES_LOG_MAX", "500") or 500)
+PAGES_LOG_TAIL = 30
+FILES_SEEN_MAX = 1000
+
+
 def _tenant_caps(tid: str) -> dict:
-    """Действующие потолки организации: своё значение из записи (`maxPages`,
-    `maxProjects` — ставит суперпользователь в админке, это и есть «выдать
-    лимит страницами»), иначе — по умолчанию из окружения. Потолок на ФАЙЛ
-    общий: он про единственный воркер, а не про организацию. 0 — без потолка.
-    `own` — что задано именно этой организации (админке нужно отличать
-    своё от унаследованного)."""
+    """Действующие потолки организации: выданные страницы (`pagesCredit`,
+    пополняет суперпользователь в админке — это и есть «лимит страницами»)
+    и свой потолок проектов; без своего — по умолчанию из окружения. Потолок
+    на ФАЙЛ общий: он про единственный воркер, а не про организацию.
+    `pagesLimited` — действует ли лимит страниц вообще (выдано 0 — действует,
+    ноль из окружения — нет). `own` — что выдано именно этой организации."""
     rec = _tenant_rec(tid) or {}
-    own = {"maxPages": rec.get("maxPages"), "maxProjects": rec.get("maxProjects")}
-    return {"maxPages": float(own["maxPages"]) if own["maxPages"] is not None else TENANT_MAX_PAGES,
+    credit = float(rec["pagesCredit"]) if rec.get("pagesCredit") is not None else None
+    own = {"maxPages": credit, "maxProjects": rec.get("maxProjects")}
+    return {"maxPages": credit if credit is not None else TENANT_MAX_PAGES,
+            "pagesLimited": credit is not None or bool(TENANT_MAX_PAGES),
             "maxProjects": int(own["maxProjects"]) if own["maxProjects"] is not None else TENANT_MAX_PROJECTS,
             "filePages": IMPORT_MAX_PAGES, "own": own}
 
@@ -5831,14 +5864,131 @@ def _tenant_caps(tid: str) -> dict:
 _PAGES_CACHE: dict = {}
 
 
+def _image_pages_of(p: dict, card: dict) -> float:
+    """Страницы текста, распознанного на картинках, — ПО ФАКТУ существующих
+    сегментов (`origin.kind == "image"`), а не счётчиком: сегменты картинок
+    снимают (`/images/forget`, надпечатка, согласие) и заводят заново, и счётчик
+    рос бы каждым заходом. Без кэша: ключ по длине списка устаревал бы на паре
+    «снять один, вернуть другой», а число входит в проверку лимита; текстов
+    здесь десятки, счёт дешёв. У проекта без `pages` (объём по сегментам) они
+    уже внутри `_project_pages` — второй раз не считаются. Обратная сторона
+    названа: это объём по ЖИВЫМ проектам, и удалённый проект уносит свои
+    картиночные страницы из «списано» — единственная часть учёта, которую
+    удаление возвращает (доли страницы на книгу)."""
+    if p.get("pages") is None:
+        return 0.0
+    texts = [sg.get("source") or "" for sg in p.get("segments") or []
+             if (sg.get("origin") or {}).get("kind") == "image"]
+    return _pages_exact(texts, p.get("src") or "RU", card) if texts else 0.0
+
+
+def _pages_used(rec: dict, tid: str, card: dict) -> float:
+    """Списано страниц. Без счётчика — сумма страниц живых проектов
+    (`_project_pages`, у проектов без `pages` — по сегментам, кэш
+    `_PAGES_CACHE`); поле не переписывается, счётчик заводит первое пополнение."""
+    if rec.get("pagesUsed") is not None:
+        return float(rec["pagesUsed"])
+    return sum(_project_pages(p, card) for p in STATE["projects"] if _tenant_of(p) == tid)
+
+
+def _pages_log(rec: dict, kind: str, pages: float, **extra) -> dict:
+    e = {"at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "kind": kind,
+         "pages": round(float(pages), 3), "by": _actor_id(), "name": _user_label(_actor_id())}
+    e.update({k: v for k, v in extra.items() if v is not None})
+    log = rec.setdefault("pagesLog", [])
+    log.append(e)
+    if len(log) > PAGES_LOG_MAX:
+        del log[:len(log) - PAGES_LOG_MAX]
+    return e
+
+
+def _pages_init(rec: dict, tid: str) -> None:
+    """Завести счётчик списаний от живого объёма — со строкой `init` в журнале."""
+    if rec.get("pagesUsed") is None:
+        rec["pagesUsed"] = round(_pages_used(rec, tid, _pricing_of(tid)), 3)
+        _pages_log(rec, "init", rec["pagesUsed"])
+
+
+def _pages_topup(tid: str, pages: float, note: Optional[str]) -> None:
+    """Пополнение (отрицательное — исправление). Первое пополнение заводит
+    счётчик и начинается от лимита из окружения, который ложится в журнал
+    отдельной строкой (`note: env`): иначе «+100» у организации с лимитом 200
+    по умолчанию превращал бы 200 в 100. Знак проверяется ДО первой мутации:
+    отклонённая команда не должна молча переводить организацию на счётчик.
+    Объём греется до лока: холодный кэш по сегментам книги под `_SAVE_LOCK`
+    остановил бы все сохранения процесса, включая порции идущего прогона."""
+    _tenant_usage(tid)
+    with _SAVE_LOCK:
+        rec = _tenant_rec(tid)
+        if rec is None:
+            raise HTTPException(404, "Организация не найдена")
+        fresh = rec.get("pagesCredit") is None
+        base = float(TENANT_MAX_PAGES or 0) if fresh else float(rec["pagesCredit"])
+        new = round(base + pages, 3)
+        if new < 0:
+            raise HTTPException(400, "Лимит страниц не может стать отрицательным")
+        _pages_init(rec, tid)
+        if fresh and TENANT_MAX_PAGES:
+            _pages_log(rec, "credit", TENANT_MAX_PAGES, note="env")
+        rec["pagesCredit"] = new
+        _pages_log(rec, "credit", pages, note=note)
+
+
+def _pages_debit(tid: str, pages: float, key: str, project_id: int, title: str) -> float:
+    """Проверить лимит и списать страницы за импорт ОДНИМ блоком под локом;
+    возвращает списанное (0 при повторе файла). 402 — ничего не записано."""
+    with _SAVE_LOCK:
+        rec = _tenant_rec(tid)
+        if rec is None:
+            return 0.0
+        seen = rec.get("filesSeen") or {}
+        repeat = key in seen
+        debit = 0.0 if repeat else float(pages)
+        caps, usage = _tenant_caps(tid), _tenant_usage(tid)
+        if caps["pagesLimited"] and usage["pages"] + debit > caps["maxPages"]:
+            raise HTTPException(402, "В организации списано %.1f стр., с этим файлом %.1f при лимите %g: пополните лимит у администратора"
+                                % (usage["pages"], usage["pages"] + debit, caps["maxPages"]))
+        # При действующем лимите счётчик заводится и первым списанием: без него
+        # объём читался бы по живым проектам, и «повтор, списано 0» в журнале
+        # врал бы — второй проект по тому же файлу входил бы в объём целиком.
+        # Без лимита счётчика нет, объём по живым проектам — информационный.
+        if caps["pagesLimited"]:
+            _pages_init(rec, tid)
+        if rec.get("pagesUsed") is not None:
+            rec["pagesUsed"] = round(float(rec["pagesUsed"]) + debit, 3)
+        seen[key] = round(float(pages), 3)
+        while len(seen) > FILES_SEEN_MAX:
+            del seen[next(iter(seen))]
+        rec["filesSeen"] = seen
+        _pages_log(rec, "repeat" if repeat else "debit", debit, project=project_id, title=title,
+                   filePages=round(float(pages), 3))
+        return debit
+
+
+def _tenant_admin_view(t: dict) -> dict:
+    """Запись организации для админки: без прайса (не наше дело), без
+    `filesSeen` (отпечатки — служебное) и с ХВОСТОМ журнала, а не всем."""
+    out = {k: v for k, v in t.items() if k not in ("pricing", "filesSeen", "pagesLog")}
+    out["pagesLog"] = (t.get("pagesLog") or [])[-PAGES_LOG_TAIL:]
+    return out
+
+
 def _tenant_usage(tid: str) -> dict:
-    """Объём организации: страницы по всем её проектам (`_project_pages`)
-    и число проектов. Считается по записи проекта, а у проектов без `pages`
-    — по сегментам; это идёт в `/api/auth/me` на каждый вход, поэтому счёт
-    по сегментам кэшируется по (id, число сегментов) в `_PAGES_CACHE`."""
+    """Объём организации в страницах: списано (`_pages_used`) + текст
+    с картинок по живым проектам (`_image_pages_of`); выдано и остаток —
+    из `_tenant_caps`. Одним расчётом для владельца (/api/auth/me), админки
+    и импорта — иначе три экрана называли бы три числа."""
+    rec = _tenant_rec(tid) or {}
     card = _pricing_of(tid)
     mine = [p for p in STATE["projects"] if _tenant_of(p) == tid]
-    return {"pages": round(sum(_project_pages(p, card) for p in mine), 1), "projects": len(mine)}
+    used = round(_pages_used(rec, tid, card), 1)
+    img = round(sum(_image_pages_of(p, card) for p in mine), 1)
+    caps = _tenant_caps(tid)
+    total = round(used + img, 1)
+    return {"pages": total, "used": used, "imagePages": img, "projects": len(mine),
+            "credit": caps["own"]["maxPages"],
+            "left": round(max(0.0, caps["maxPages"] - total), 1) if caps["pagesLimited"] else None,
+            "counter": rec.get("pagesUsed") is not None}
 
 
 def _pages_exact(blocks: list, lang: str, card: dict) -> float:
@@ -5865,14 +6015,15 @@ def _project_pages(p: dict, card: dict) -> float:
     return _PAGES_CACHE[key]
 
 
-def _import_volume(paras: list, lang: str, card: dict, others: list) -> tuple:
-    """(страницы файла, страницы остальных проектов организации). Файл считается
-    по ТЕМ ЖЕ абзацам, что отдаёт `_docx_bill_paragraphs` смете (текст слотов
-    `_para_slots` — первый элемент `_docx_paragraph_texts`), поэтому второй
-    разбор пакета не нужен, а смета и отказ импорта называют одно число.
-    Сумма по чужим проектам без `pages` идёт по сегментам — тысячи строк,
-    поэтому вызов живёт в threadpool, а не в event loop."""
-    return _pages_exact(paras, lang, card), sum(_project_pages(p, card) for p in others)
+def _import_volume(paras: list, lang: str, card: dict, tid: str) -> float:
+    """Страницы файла — по ТЕМ ЖЕ абзацам, что отдаёт `_docx_bill_paragraphs`
+    смете (текст слотов `_para_slots` — первый элемент `_docx_paragraph_texts`),
+    поэтому второй разбор пакета не нужен, а смета и отказ импорта называют
+    одно число. Заодно греет кэши объёма организации (у проектов без `pages`
+    — тысячи строк по сегментам) — в threadpool, а не в event loop: само
+    списание потом идёт синхронно под локом и считает объём по кэшу."""
+    _tenant_usage(tid)
+    return _pages_exact(paras, lang, card)
 
 
 @app.post("/api/projects/upload")
@@ -5890,7 +6041,8 @@ async def upload_project(
     except ImportError:
         raise HTTPException(500, "python-docx not installed")
     # 402 на потолки организации, как у всего квотного слоя; 413 — про файл.
-    caps = _tenant_caps(_current_tenant())
+    tid = _current_tenant()
+    caps = _tenant_caps(tid)
     if caps["maxProjects"] and len(_tenant_projects()) >= caps["maxProjects"]:
         raise HTTPException(402, "В организации уже %d проектов, а потолок %d: удалите ненужные"
                             % (len(_tenant_projects()), caps["maxProjects"]))
@@ -5912,12 +6064,12 @@ async def upload_project(
     texts = await run_in_threadpool(_docx_paragraph_texts, content)
     paras = [t for t, _full in texts]
     card = _pricing_of()                     # ContextVar — здесь, не в потоке
-    others = _tenant_projects() if caps["maxPages"] else []
-    pages, have = await run_in_threadpool(_import_volume, paras, src, card, others)
+    pages = await run_in_threadpool(_import_volume, paras, src, card, tid)
     if caps["filePages"] and pages > caps["filePages"]:
         raise HTTPException(413, "Файл на %.1f стр. больше потолка на проект (%g стр.): разбейте документ" % (pages, caps["filePages"]))
-    if caps["maxPages"] and have + pages > caps["maxPages"]:
-        raise HTTPException(402, "В организации уже %.1f стр., с этим файлом %.1f при потолке %g: сначала удалите старые проекты" % (have, have + pages, caps["maxPages"]))
+    # Лимит страниц проверяет и списывает `_pages_debit` — одним блоком под
+    # локом, ниже, когда проект собран: до этого 402 ничего не оставляет.
+    sha = hashlib.sha1(content).hexdigest()
     units = _docx_units(paras, [f for _t, f in texts])
     deduped = [t for t, _ in units]
 
@@ -5935,6 +6087,7 @@ async def upload_project(
         "deadline": "",
         "fileName": file.filename,
         "pages": pages,
+        "sourceSha": sha,
         "segments": [
             {
                 "id": i + 1,
@@ -5955,14 +6108,22 @@ async def upload_project(
     # в принципе, а второй раз тот же файл человек может и не найти.
     # Ошибка записи не роняет импорт: сегменты разобраны, переводить можно,
     # а исходник прикладывается отдельной командой.
+    # Списание, вставка и ЗАПИСЬ — одним блоком под локом (RLock): между
+    # списанием и `save_state` чужой поток (`_sync_shared` → `_apply_doc`)
+    # подменяет `STATE["tenants"]` целиком, и списание пропало бы молча.
+    # Отказ 402 идёт до вставки и до файла исходника — сирот не остаётся.
+    with _SAVE_LOCK:
+        _pages_debit(tid, pages, "%s:%s→%s" % (sha, src, tgt), new_id, proj_title)
+        STATE["projects"].insert(0, new_project)
+        save_state(STATE)
+    _tenants_changed()                  # после save_state: эпоху поднимает записанный документ
     try:
         pairs = [[i, u + 1] for u, (_t, idxs) in enumerate(units) for i in idxs]
         _store_source_docx(new_project, content, file.filename, pairs, len(paras))
     except Exception as e:
         print("[backend] исходник проекта %s не сохранён: %s" % (new_id, e),
               file=sys.stderr)
-    STATE["projects"].insert(0, new_project)
-    save_state(STATE)
+    save_state(STATE)                   # отметка исходника на проекте
     return new_project
 
 

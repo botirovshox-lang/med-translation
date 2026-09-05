@@ -253,8 +253,9 @@
   " стр. больше потолка на проект (": " sahifa: bitta loyiha uchun yuqori chegaradan katta (",
   " стр.): разбейте документ": " sahifa): hujjatni bo'laklarga ajrating",
   " стр., с этим файлом ": " sahifa bor, bu fayl bilan ",
-  " при потолке ": ", yuqori chegara esa ",
-  ": сначала удалите старые проекты": ": avval eski loyihalarni o'chiring",
-  "Потолок страниц не может быть отрицательным": "Sahifalar chegarasi manfiy bo'lishi mumkin emas",
-  "Потолок проектов не может быть отрицательным": "Loyihalar chegarasi manfiy bo'lishi mumkin emas"
+  "Потолок проектов не может быть отрицательным": "Loyihalar chegarasi manfiy bo'lishi mumkin emas",
+  "В организации списано ": "Tashkilotda hisobdan chiqarilgan ",
+  " при лимите ": ", chegara esa ",
+  ": пополните лимит у администратора": ": chegarani administrator orqali to'ldiring",
+  "Лимит страниц не может стать отрицательным": "Sahifalar chegarasi manfiy bo'lib qolishi mumkin emas"
 }

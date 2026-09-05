@@ -189,6 +189,13 @@ function OrgDomains({ toast }) {
         React.createElement(Btn, { variant: "ghost", onClick: () => setEdit(null) }, TR("Отмена")))));
 }
 
+/* Вид записи журнала страниц — код с сервера, подпись даёт браузер. */
+function orgPagesKind(k) {
+  return k === "credit" ? TR("пополнение") : k === "repeat" ? TR("повтор файла, без списания")
+    : k === "init" ? TR("стартовый объём по проектам") : TR("списание");
+}
+function orgPagesNote(n) { return n === "env" ? TR("стартовый лимит из окружения") : n; }
+
 /* Суперпользователь: организации, их расход и лимиты. Лимит — решение
    администратора сервиса, владелец сам себе его не ставит. */
 function SuperTenants({ toast }) {
@@ -378,10 +385,15 @@ function TabOrg({ store, toast }) {
       // Объём в СТРАНИЦАХ — мера заказа, а не наших затрат: считается
       // по загруженным файлам (как смета), потолок выдаёт администратор.
       info.usage && React.createElement("div", { style: { marginTop: 6 } },
-        TR("Страниц загружено: ") + info.usage.pages
-        + (info.caps && info.caps.maxPages ? TR(" из ") + info.caps.maxPages : "")
+        TR("Страниц списано: ") + info.usage.used
+        + (info.usage.imagePages ? TR(" · на картинках: ") + info.usage.imagePages : "")
+        + (info.usage.left != null ? TR(" · всего ") + info.usage.pages + TR(" из ") + info.caps.maxPages + TR(" · осталось ") + info.usage.left : "")
         + TR(" · проектов: ") + info.usage.projects
-        + (info.caps && info.caps.maxProjects ? TR(" из ") + info.caps.maxProjects : ""))),
+        + (info.caps && info.caps.maxProjects ? TR(" из ") + info.caps.maxProjects : "")),
+      info.pagesLog && info.pagesLog.length > 0 && React.createElement("div", { className: "dim", style: { marginTop: 4, fontSize: 12 } },
+        info.pagesLog.slice().reverse().slice(0, 10).map((e, i) => React.createElement("div", { key: i },
+          e.at + " · " + orgPagesKind(e.kind) + " " + (e.kind === "credit" && e.pages > 0 ? "+" : "") + e.pages
+          + (e.title ? " · " + e.title : "") + (e.note ? " · " + orgPagesNote(e.note) : ""))))),
     React.createElement("div", { className: "col", style: { gap: 16 } },
       React.createElement(OrgUsers, { toast }),
       React.createElement(OrgPricing, { toast }),

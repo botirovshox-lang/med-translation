@@ -22,11 +22,19 @@ function AdminStat({ label, value, warn }) {
 function fmtCap(v) { return v ? String(v) : "∞"; }
 function capSuffix(t, key) {
   const c = t.caps || {}; const own = c.own || {};
-  return (c[key] ? " / " + c[key] : "") + (own[key] != null ? " ★" : "");
+  // выдано 0 страниц — это исчерпано, а не «без потолка»: своё значение
+  // показывается всегда; у проектов ноль по-прежнему «без потолка».
+  const show = key === "maxPages" ? (c[key] || own[key] != null) : !!c[key];
+  return (show ? " / " + c[key] : "") + (own[key] != null ? " ★" : "");
 }
 function capTitle(t, key) {
   const c = t.caps || {}; const own = c.own || {};
   return own[key] != null ? TR("своё значение организации") : (c[key] ? TR("по умолчанию из окружения") : TR("без потолка"));
+}
+function pagesTitle(t) {
+  const u = t.usage || {};
+  return TR("списано ") + (u.used != null ? u.used : "—") + TR(" · на картинках ") + (u.imagePages || 0)
+    + (u.left != null ? TR(" · осталось ") + u.left : "") + " · " + capTitle(t, "maxPages");
 }
 
 function AdminTenants({ ov, toast, onChange }) {
@@ -36,18 +44,23 @@ function AdminTenants({ ov, toast, onChange }) {
     try { await window.API.tenantUpdate(t.id, v.trim() === "" ? { clearLimit: true } : { limitUsd: Number(v) }); toast.success(TR("Лимит обновлён"), t.name); onChange(); }
     catch (e) { toast.error(TR("Не обновлён"), e.message || String(e)); }
   };
-  // Потолки импорта — «лимит страницами»: пусто — по умолчанию из окружения
-  // (ov.capDefaults), 0 — без потолка. Два prompt подряд, как у лимита.
+  // Лимит страниц выдаётся ПОПОЛНЕНИЕМ (журнал на сервере), потолок проектов —
+  // число: пусто — по умолчанию из окружения (ov.capDefaults), 0 — без потолка.
+  const [logFor, setLogFor] = useState(null);
+  const topUp = async (t) => {
+    const u = t.usage || {};
+    const v = prompt(TR("Сколько страниц добавить организации «") + t.name + TR("»? Отрицательное число — исправление. Выдано ")
+      + (u.credit != null ? u.credit : fmtCap((ov.capDefaults || {}).maxPages)) + TR(", списано ") + (u.used != null ? u.used : "—") + ":", "");
+    if (v === null || v.trim() === "" || !Number(v)) return;
+    try { await window.API.tenantUpdate(t.id, { addPages: Number(v) }); toast.success(TR("Лимит страниц пополнен"), t.name); onChange(); }
+    catch (e) { toast.error(TR("Не пополнен"), e.message || String(e)); }
+  };
   const setCaps = async (t) => {
     const d = ov.capDefaults || {};
     const own = (t.caps && t.caps.own) || {};
-    const p1 = prompt(TR("Потолок страниц для «") + t.name + TR("» (пусто — по умолчанию ") + fmtCap(d.maxPages) + TR(", 0 — без потолка):"), own.maxPages != null ? own.maxPages : "");
-    if (p1 === null) return;
     const p2 = prompt(TR("Потолок проектов для «") + t.name + TR("» (пусто — по умолчанию ") + fmtCap(d.maxProjects) + TR(", 0 — без потолка):"), own.maxProjects != null ? own.maxProjects : "");
     if (p2 === null) return;
-    const body = {};
-    if (p1.trim() === "") body.clearMaxPages = true; else body.maxPages = Number(p1);
-    if (p2.trim() === "") body.clearMaxProjects = true; else body.maxProjects = Number(p2);
+    const body = p2.trim() === "" ? { clearMaxProjects: true } : { maxProjects: Number(p2) };
     try { await window.API.tenantUpdate(t.id, body); toast.success(TR("Потолки обновлены"), t.name); onChange(); }
     catch (e) { toast.error(TR("Не обновлены"), e.message || String(e)); }
   };
@@ -65,15 +78,15 @@ function AdminTenants({ ov, toast, onChange }) {
     ov.capDefaults && React.createElement("p", { className: "dim", style: { margin: "0 0 8px", fontSize: 13 } },
       TR("Потолки импорта по умолчанию (из окружения, 0 — без потолка): файл ≤ ") + fmtCap(ov.capDefaults.filePages)
       + TR(" стр. · организация ≤ ") + fmtCap(ov.capDefaults.maxPages) + TR(" стр., ≤ ") + fmtCap(ov.capDefaults.maxProjects)
-      + TR(" проектов. Своё значение организации — кнопка «Потолки»; помечено ★.")),
+      + TR(" проектов. Своё — кнопки «Пополнить» (страницы, с журналом) и «Потолки» (проекты); помечено ★.")),
     React.createElement("div", { style: { overflowX: "auto" } }, React.createElement("table", { className: "tbl" },
       React.createElement("thead", null, React.createElement("tr", null,
         [TR("Организация"), TR("Люди"), TR("Проекты"), TR("Страницы"), TR("Сегменты"), TR("Глоссарий"), TR("Расход за ") + ov.month, TR("Лимит"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
-      React.createElement("tbody", null, ov.tenants.map(t => React.createElement("tr", { key: t.id, style: t.active === false ? { opacity: .55 } : null },
+      React.createElement("tbody", null, ov.tenants.map(t => [React.createElement("tr", { key: t.id, style: t.active === false ? { opacity: .55 } : null },
         React.createElement("td", null, React.createElement("b", null, t.name), " ", React.createElement("span", { className: "dim" }, t.id + (t.active === false ? TR(" · отключена") : ""))),
         React.createElement("td", null, t.activeUsers + (t.users !== t.activeUsers ? " / " + t.users : "")),
         React.createElement("td", { title: capTitle(t, "maxProjects") }, t.projects + capSuffix(t, "maxProjects")),
-        React.createElement("td", { title: capTitle(t, "maxPages") }, (t.usage ? t.usage.pages : "—") + capSuffix(t, "maxPages")),
+        React.createElement("td", { title: pagesTitle(t) }, (t.usage ? t.usage.pages : "—") + capSuffix(t, "maxPages")),
         React.createElement("td", null, t.segments),
         React.createElement("td", null, t.glossary + (t.domains ? TR(" · обл. ") + t.domains : "")),
         React.createElement("td", { style: { color: t.spend.over ? "var(--c-danger)" : undefined } },
@@ -81,9 +94,30 @@ function AdminTenants({ ov, toast, onChange }) {
         React.createElement("td", null, t.limitUsd != null ? "$" + Number(t.limitUsd).toFixed(2) : "—"),
         React.createElement("td", { style: { whiteSpace: "nowrap", textAlign: "right" } },
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLimit(t) }, TR("Лимит")),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => topUp(t) }, TR("Пополнить")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setCaps(t) }, TR("Потолки")),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLogFor(logFor === t.id ? null : t.id) }, TR("Журнал")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => toggle(t) }, t.active === false ? TR("Включить") : TR("Отключить")),
-          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => del(t) }, TR("Удалить")))))))));
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => del(t) }, TR("Удалить")))),
+        logFor === t.id && React.createElement("tr", { key: t.id + ":log" },
+          React.createElement("td", { colSpan: 9 }, React.createElement(AdminPagesLog, { log: t.pagesLog })))]))))));
+}
+
+/* Журнал страниц организации: пополнения и списания, хвост с сервера.
+   Вид записи и служебные пометки — КОДЫ, подпись даёт браузер (закон CLEAN_*). */
+function pagesKindLabel(k) {
+  return k === "credit" ? TR("пополнение") : k === "repeat" ? TR("повтор файла, без списания")
+    : k === "init" ? TR("стартовый объём по проектам") : TR("списание");
+}
+function pagesNoteLabel(n) { return n === "env" ? TR("стартовый лимит из окружения") : (n || ""); }
+function AdminPagesLog({ log }) {
+  if (!log || !log.length) return React.createElement("div", { className: "dim" }, TR("Журнал страниц пуст"));
+  return React.createElement("table", { className: "tbl", style: { fontSize: 12 } },
+    React.createElement("tbody", null, log.slice().reverse().map((e, i) => React.createElement("tr", { key: i },
+      React.createElement("td", null, e.at),
+      React.createElement("td", null, pagesKindLabel(e.kind)),
+      React.createElement("td", { style: { textAlign: "right" } }, (e.pages > 0 && e.kind === "credit" ? "+" : "") + e.pages),
+      React.createElement("td", { className: "dim" }, [e.title, pagesNoteLabel(e.note), e.name].filter(Boolean).join(" · "))))));
 }
 
 function AdminUsers({ toast }) {

@@ -186,20 +186,73 @@ if HAVE_DOCX:
         check(r.status_code == 402 and " стр." in r.json().get("detail", ""),
               "потолок страниц организации → 402, старый проект без pages посчитан по сегментам: %s" % r.text[:110])
         main.TENANT_MAX_PAGES = 0
-        # своё значение организации сильнее окружения, «пусто» возвращает к нему
-        r = c.post("/api/admin/tenants/acme", headers=H(A), json={"maxPages": 0.01, "maxProjects": 50})
-        check(r.status_code == 200 and r.json()["caps"]["maxPages"] == 0.01 and r.json()["caps"]["own"]["maxProjects"] == 50
-              and r.json()["usage"]["projects"] == 1, "потолки организации записаны и видны с объёмом: %s" % r.text[:160])
+        # ── учёт в страницах: пополнение → списание → повтор → удаление ──
+        me0 = c.get("/api/auth/me", headers=H(B)).json()
+        check(me0["usage"]["counter"] is False and me0["usage"]["left"] is None, "до пополнения: объём по живым проектам, лимита нет")
+        r = c.post("/api/admin/tenants/acme", headers=H(A), json={"addPages": -5})
+        me1 = c.get("/api/auth/me", headers=H(B)).json()
+        check(r.status_code == 400 and me1["usage"]["counter"] is False and not me1["pagesLog"],
+              "отклонённое пополнение следа не оставляет: счётчика и журнала нет")
+        r = c.post("/api/admin/tenants/acme", headers=H(A), json={"addPages": 1, "maxProjects": -1})
+        me1 = c.get("/api/auth/me", headers=H(B)).json()
+        check(r.status_code == 400 and me1["usage"]["counter"] is False, "потолок проектов ниже нуля → 400, пополнение не применено")
+        r = c.post("/api/admin/tenants/acme", headers=H(A), json={"addPages": 0.01, "maxProjects": 50})
+        j = r.json()
+        check(r.status_code == 200 and j["caps"]["maxPages"] == 0.01 and j["caps"]["own"]["maxProjects"] == 50
+              and j["usage"]["credit"] == 0.01 and j["usage"]["counter"] and "filesSeen" not in j["tenant"]
+              and j["tenant"]["pagesLog"][0]["kind"] == "init", "первое пополнение заводит счётчик со строкой init: %s" % r.text[:200])
         r = up()
-        check(r.status_code == 402 and " стр." in r.json().get("detail", ""), "потолок страниц ОРГАНИЗАЦИИ → 402 при выключенном окружении")
-        r = c.post("/api/admin/tenants/acme", headers=H(B), json={"maxPages": 100})
-        check(r.status_code == 403, "владелец сам себе потолок не ставит")
-        r = c.post("/api/admin/tenants/acme", headers=H(A), json={"clearMaxPages": True, "clearMaxProjects": True})
-        check(r.status_code == 200 and r.json()["caps"]["own"]["maxPages"] is None, "потолки сняты — снова по умолчанию")
-        ov = c.get("/api/admin/overview", headers=H(A)).json()
-        check("capDefaults" in ov and all("caps" in t and "usage" in t for t in ov["tenants"]), "сводка несёт потолки и объём")
+        check(r.status_code == 402 and " при лимите " in r.json().get("detail", ""), "лимит страниц не покрывает файл → 402")
+        r = c.post("/api/admin/tenants/acme", headers=H(B), json={"addPages": 100})
+        check(r.status_code == 403, "владелец сам себе лимит не пополняет")
+        r = c.post("/api/admin/tenants/acme", headers=H(A), json={"addPages": -5})
+        check(r.status_code == 400, "исправление ниже нуля → 400")
+        r = c.post("/api/admin/tenants/acme", headers=H(A), json={"addPages": -0.01})
+        r2 = up()
+        check(r.json()["caps"]["maxPages"] == 0 and r.json()["caps"]["pagesLimited"] and r2.status_code == 402,
+              "выдано 0 — исчерпано, а не «без потолка»: импорт → 402")
+        r = c.post("/api/admin/tenants/acme", headers=H(A), json={"addPages": 1.01, "note": "тест"})
+        check(r.status_code == 200 and abs(r.json()["caps"]["maxPages"] - 1.01) < 1e-9, "пополнения суммируются")
+        used0 = c.get("/api/auth/me", headers=H(B)).json()["usage"]["used"]
+        r = up()
+        check(r.status_code == 200 and r.json().get("sourceSha"), "импорт прошёл, отпечаток файла записан")
+        p2 = r.json()["id"]
         me = c.get("/api/auth/me", headers=H(B)).json()
-        check(me.get("usage", {}).get("projects") == 1 and "caps" in me, "владелец видит объём и потолки своей организации")
+        check(me["usage"]["used"] > used0 and me["usage"]["left"] is not None, "списано, остаток виден: %s" % me["usage"])
+        used1 = me["usage"]["used"]
+        r = up()
+        p3 = r.json()["id"] if r.status_code == 200 else None
+        me = c.get("/api/auth/me", headers=H(B)).json()
+        check(r.status_code == 200 and me["usage"]["used"] == used1 and me["pagesLog"][-1]["kind"] == "repeat",
+              "повтор того же файла: проект заведён, списано 0, в журнале repeat")
+        if p3:
+            c.request("DELETE", "/api/projects/%d" % p3, headers=H(B))
+        me = c.get("/api/auth/me", headers=H(B)).json()
+        check(me["usage"]["used"] == used1, "удаление проекта счётчик не уменьшает")
+        kinds = [e["kind"] for e in me["pagesLog"]]
+        check(kinds[0] == "init" and kinds.count("credit") == 3 and "debit" in kinds, "журнал: init, три пополнения, списание: %s" % kinds)
+        ov = c.get("/api/admin/overview", headers=H(A)).json()
+        check("capDefaults" in ov and all("caps" in t and "usage" in t and "pagesLog" in t and "filesSeen" not in t
+                                          for t in ov["tenants"]), "сводка несёт потолки, объём и хвост журнала без отпечатков")
+        main.STATE["projects"] = [p for p in main.STATE["projects"] if p["id"] not in (p2, p3)]
+        # лимит только из окружения, пополнений не было: счётчик заводит первое списание
+        c.post("/api/admin/tenants", headers=H(A),
+               json={"id": "beta", "name": "Beta", "ownerLogin": "beta", "ownerPassword": "beta-pass-123"})
+        BT = c.post("/api/auth/login", json={"login": "beta", "password": "beta-pass-123"}).json()["token"]
+        main.TENANT_MAX_PAGES = 5
+        r = c.post("/api/projects/upload", headers=H(BT), files={"file": ("t.docx", raw, MIME)}, data={"src": "RU", "tgt": "EN"})
+        mb = c.get("/api/auth/me", headers=H(BT)).json()
+        check(r.status_code == 200 and mb["usage"]["counter"] and mb["pagesLog"][0]["kind"] == "init"
+              and mb["usage"]["left"] is not None, "лимит из окружения: первое списание заводит счётчик: %s" % mb["usage"])
+        ub = mb["usage"]["used"]
+        r = c.post("/api/projects/upload", headers=H(BT), files={"file": ("t.docx", raw, MIME)}, data={"src": "RU", "tgt": "EN"})
+        mb = c.get("/api/auth/me", headers=H(BT)).json()
+        check(r.status_code == 200 and mb["usage"]["used"] == ub and mb["pagesLog"][-1]["kind"] == "repeat",
+              "повтор у организации на лимите из окружения: списано 0 и объём не вырос")
+        main.STATE["projects"] = [p for p in main.STATE["projects"] if main._tenant_of(p) != "beta"]
+        main.TENANT_MAX_PAGES = 0
+        r = c.post("/api/admin/tenants/acme", headers=H(A), json={"addPages": 500, "clearMaxProjects": True})
+        check(r.status_code == 200 and r.json()["caps"]["own"]["maxProjects"] is None, "потолок проектов снят — снова по умолчанию")
         r = up()
         ok = r.status_code == 200 and (r.json().get("pages") or 0) > 0
         check(ok, "без потолков импорт проходит, pages записан: %s" % (r.json().get("pages") if r.status_code == 200 else r.text[:110]))

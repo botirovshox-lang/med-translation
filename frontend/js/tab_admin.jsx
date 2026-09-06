@@ -100,7 +100,7 @@ function AdminTenants({ ov, toast, onChange }) {
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => toggle(t) }, t.active === false ? TR("Включить") : TR("Отключить")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => del(t) }, TR("Удалить")))),
         logFor === t.id && React.createElement("tr", { key: t.id + ":log" },
-          React.createElement("td", { colSpan: 9 }, React.createElement(AdminPagesLog, { log: t.pagesLog })))]))))));
+          React.createElement("td", { colSpan: 9 }, React.createElement(AdminPagesLog, { log: t.pagesLog })))])))));
 }
 
 /* Журнал страниц организации: пополнения и списания, хвост с сервера.

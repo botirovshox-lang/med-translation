@@ -169,13 +169,13 @@ function useStore(authed) {
 
   const deleteTerm = (term) => {
     setGlossary(g => g.filter(t => !sameEntry(t, term)));
-    if (window.API) window.API.safeCall(() => window.API.deleteTerm(term.src, term.lang, term.domain));
+    if (window.API) window.API.safeCall(() => window.API.deleteTerm(term.src, term.lang, term.domain, term.project));
   };
 
   const deleteTM = (entry) => {
     setTM(t => t.filter(x => !(x.src === entry.src
       && (x.lang || "RU→EN") === (entry.lang || "RU→EN"))));
-    if (window.API) window.API.safeCall(() => window.API.deleteTM(entry.src, entry.lang));
+    if (window.API) window.API.safeCall(() => window.API.deleteTM(entry.src, entry.lang, entry.project));
   };
 
   return {

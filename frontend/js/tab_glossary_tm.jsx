@@ -251,8 +251,8 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
       + TR("но не будет обязана."))) return;
     setBusy("row");
     const r = await window.API.safeCall(() => kind === "del"
-      ? window.API.deleteTerm(b.src, b.lang, b.domain)
-      : window.API.demoteTerm(b.src, b.lang, b.domain));
+      ? window.API.deleteTerm(b.src, b.lang, b.domain, b.project)
+      : window.API.demoteTerm(b.src, b.lang, b.domain, b.project));
     setBusy("");
     if (!r || !r.ok) { toast.error(TR("Не выполнено"), TR("Сервер не ответил.")); return; }
     // Убираем из показанного сразу: строка про запись, которой в приказах
@@ -265,7 +265,7 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
     const done = (r.repairedCount || 0);
     let tail = "";
     if (kind !== "del" && done) {
-      const rv = await window.API.safeCall(() => window.API.revertRepairs(b.src, b.lang, b.domain));
+      const rv = await window.API.safeCall(() => window.API.revertRepairs(b.src, b.lang, b.domain, b.project));
       if (rv && rv.ok) {
         tail = TR(" · возвращено сегментов: ") + rv.revertedCount
           + (rv.requeuedCount ? TR(" · отдано ремонту заново: ") + rv.requeuedCount : "")
@@ -1101,7 +1101,10 @@ function TermModal({ term, onClose, onSave, scope }) {
         /* Новая запись заводится в области открытого проекта, у правки область
            берётся от самой записи: иначе термин, добавленный в RU→DE проекте,
            лёг бы в область по умолчанию и не нашёлся бы при переводе. */
+        // Видимость записи едет с правкой: без неё правка проектной записи
+        // заводила бы рядом общий дубль, а проектная оставалась бы сильнее.
         onClick: () => onSave({ src, tgt, cat, note, conf, freq: term ? term.freq : 1,
+                                project: term && term.project != null ? term.project : undefined,
                                 lang: term ? term.lang : (scope || {}).lang || null,
                                 domain: term ? term.domain : (scope || {}).domain || null }, !term) }, TR("Сохранить")))
   },

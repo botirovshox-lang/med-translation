@@ -2333,6 +2333,9 @@ _OWNER_ONLY = [
     # есть откат (`prevTier`, копия в data/backups), а кто нажал — в подписи
     # записи (`signedBy`) и в журнале.
     ("POST",   re.compile(r"/api/pricing(/.*)?$")),
+    # Расширить знание проекта на всю организацию — это общий ПРИКАЗ, то есть
+    # то же право, что импорт приказом. Возврат в проект (сужение) — любому.
+    ("POST",   re.compile(r"/api/glossary/promote$")),
     ("POST",   re.compile(r"/api/style$")),
     ("POST",   re.compile(r"/api/quotes/\d+$")),
     ("DELETE", re.compile(r"/api/quotes/\d+$")),
@@ -4756,7 +4759,10 @@ async def import_glossary(request: Request, file: UploadFile = File(...),
     if not has_head:
         col = {"src": 0, "tgt": 1}
     body = rows[1:] if has_head else rows
-    existing = {_norm_key(g.get("src")) for g in STATE["glossary"] if _scope_of(g) == scope}
+    # Повтор — только среди ОБЩИХ записей: импорт идёт в организацию, и термин,
+    # живущий лишь проектной записью, пропускать как «уже есть» нельзя.
+    existing = {_norm_key(g.get("src")) for g in STATE["glossary"]
+                if _scope_of(g) == scope and _gproj(g) is None}
     today = datetime.now().strftime("%Y-%m-%d")
     added, seen, dup, bad = [], set(), 0, 0
     # Приказ подписывает владелец — на КАЖДОЙ записи, потому что дальше она
@@ -7275,6 +7281,12 @@ def _job_images(job: dict) -> None:
     # наперёд: читать такой проект человеку.
     names = sorted(raster, key=lambda n: (min(anchors.get(n) or [10 ** 9]), n))
     job["total"], job["done"] = len(names), 0
+    # Обход идёт с начала и при ВОЗОБНОВЛЕНИИ после уступки: прочитанное
+    # берётся из карты бесплатно, но счётчики за него насчитались бы второй
+    # раз. Поэтому они не накапливаются между заходами, а считаются заново
+    # каждым обходом — как и `done`.
+    for k in ("detected", "readFailed", "segments", "unreadable", "withText"):
+        job["counters"].pop(k, None)
     job["counters"]["skippedFormat"] = len(other)
     model = job["params"].get("ocr_model") or IMAGE_READ_MODEL
     # Карту и состояние сохраняем ПО РАЗНЫМ поводам. Карта — файл на десятки
@@ -7310,7 +7322,7 @@ def _job_images(job: dict) -> None:
         # нечего: прочитанное лежит в файле рядом с исходником по отпечатку
         # картинки, и второй заход берёт его оттуда бесплатно.
         if job["done"] and _job_should_yield(job):
-            save()
+            flush()
             _job_yield(job, job.get("ids") or [])
             return
         # recent — это id сегментов, их ждёт /segments/fetch у редактора.
@@ -7879,19 +7891,25 @@ def _migrate_term_queue(state: dict) -> int:
     что считать одним и тем же термином."""
     queue = state.get("termQueue") or []
     decided, hard = {}, {}
+    # Проект — часть ключа, как и в `_queue_term_locked`: ответ проекта A
+    # ничего не говорит про вопрос проекта B. Ответ уровня организации
+    # (без проекта) закрывает вопрос в любом проекте — тот же закон.
     for c in queue:
         for k in _answer_keys(c):
-            decided.setdefault((_scope_of(c), k), c)
+            decided.setdefault((_scope_of(c), _gproj(c), k), c)
     for g in state.get("glossary", []):
         if _hard_answer(g):
-            hard.setdefault((_scope_of(g), _norm_key(g.get("src"))), g)
+            hard.setdefault((_scope_of(g), _gproj(g), _norm_key(g.get("src"))), g)
     today, closed = datetime.now().strftime("%Y-%m-%d"), 0
     for c in queue:
         if c.get("status", "pending") != "pending":
             continue
-        key = (_scope_of(c), _cand_pair(c)[0])
-        answer = decided.get(key)
-        if answer is None and key not in hard:
+        sc, k0 = _scope_of(c), _cand_pair(c)[0]
+        key = (sc, _gproj(c), k0)
+        answer = decided.get(key) or decided.get((sc, None, k0))
+        # Свой проект, потом организация — тот же порядок, что у `_glossary_entry`.
+        hard_hit = hard.get(key) or hard.get((sc, None, k0))
+        if answer is None and hard_hit is None:
             continue
         # Тот же приём, что у _close_same_term: «approved» здесь означает
         # «вопрос закрыт», а autoWrote=False — что в глоссарий ничего не
@@ -7900,7 +7918,7 @@ def _migrate_term_queue(state: dict) -> int:
         # при подрезке первой.
         c.update({"status": "approved", "autoWrote": False, "decidedAt": today,
                   "note": "вопрос уже решён: "
-                          + ((answer or hard[key]).get("tgt") or "")})
+                          + ((answer or hard_hit).get("tgt") or "")})
         if answer is not None:
             c["decidedWith"] = answer.get("id")
         closed += 1
@@ -8147,7 +8165,7 @@ def _harvest_terms(seg: dict, project: dict, via: str = "confirmed") -> list:
         # Числа и обозначения («38,5 °C», «IFN-γ») терминами не бывают: пара
         # без букв — это не словарная запись, а строка документа.
         if re.search(r"[A-Za-zА-Яа-яЁё]{3}", term_src) and re.search(r"[A-Za-zА-Яа-яЁё]{3}", term_tgt):
-            known = _glossary_entry(term_src, scope)
+            known = _glossary_entry(term_src, scope, project.get("id"))
             if not (known and _norm_key(known.get("tgt")) == _norm_key(term_tgt)):
                 c = _queue_term("segment", term_src, term_tgt,
                                 cat=(known or {}).get("cat", ""),
@@ -8622,6 +8640,11 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     # и правка по ней — про него. Нет своей — правится общая (её и видел
     # человек, когда решал).
     existing = _glossary_entry(src, scope, _gproj(cand))
+    # Нашлась только ОБЩАЯ запись, а карточка проектная — общую не трогаем:
+    # правилом для всей организации знание делает отдельное решение человека
+    # (`/promote`), а не одобрение в одном проекте. Заводим проектную.
+    if existing is not None and _gproj(cand) is not None and _gproj(existing) != _gproj(cand):
+        existing = None
     # Вердикт судьи кладём на запись: аудит глоссария читает его как свой
     # (`_meaning_stale` сверяет отпечаток пары) и не переспрашивает платно
     # то, что только что спросили здесь.
@@ -8996,7 +9019,9 @@ def _auto_context(pending: list, pol: dict) -> dict:
     segs = {(p["id"], s["id"]): s for p in _tenant_projects() for s in p["segments"]}
     gloss: dict = {}
     for g in STATE["glossary"]:
-        gloss.setdefault((_scope_of(g), _norm_key(g.get("src"))), g)
+        # Проект в ключе: запись проекта A иначе «спорила» с кандидатом
+        # проекта B, и автоодобрение по проектам не работало бы никогда.
+        gloss.setdefault((_scope_of(g), _gproj(g), _norm_key(g.get("src"))), g)
     return {"variants": _auto_variants(pending), "segs": segs, "gloss": gloss, "pol": pol}
 
 
@@ -9051,7 +9076,7 @@ def _auto_variants(pending: list) -> dict:
         tgt = (c.get("tgt") or "").strip()
         if not tgt:
             continue
-        out.setdefault((_scope_of(c), _norm_key(c.get("src"))), set()).add(_norm_key(tgt))
+        out.setdefault((_scope_of(c), _gproj(c), _norm_key(c.get("src"))), set()).add(_norm_key(tgt))
     return out
 
 
@@ -9078,7 +9103,9 @@ def _auto_verdict(cand: dict, ctx: dict) -> tuple:
         return None, shape_why
 
     scope = _scope_of(cand)
-    known = ctx["gloss"].get((scope, _norm_key(src)))
+    # Своя проектная запись, потом общая — тот же порядок, что у `_glossary_entry`.
+    known = (ctx["gloss"].get((scope, _gproj(cand), _norm_key(src)))
+             or ctx["gloss"].get((scope, None, _norm_key(src))))
     if known:
         if _norm_key(known.get("tgt")) == _norm_key(tgt):
             return "close", "уже в глоссарии"
@@ -9108,7 +9135,7 @@ def _auto_verdict(cand: dict, ctx: dict) -> tuple:
         # подходит сразу два кандидата из очереди — он не разрешает спор, а
         # участвует в нём: решает человек. Иначе первый по порядку очереди
         # получал бы приказ, а второй молча закрывался как решённый.
-        rivals = [v for v in ctx["variants"].get((scope, _norm_key(src)), set())
+        rivals = [v for v in ctx["variants"].get((scope, _gproj(cand), _norm_key(src)), set())
                   if _authority_match(src, v, scope)]
         if len(rivals) > 1:
             return None, "справочник допускает несколько вариантов — решает человек"
@@ -9124,7 +9151,7 @@ def _auto_verdict(cand: dict, ctx: dict) -> tuple:
         # проверка находит в таких неверные нормы. Он идёт ГОЛОСОМ — дальше по
         # коду его учитывают вместе с согласием сегментов и корпусом.
 
-    if len(ctx["variants"].get((scope, _norm_key(src)), set())) > 1:
+    if len(ctx["variants"].get((scope, _gproj(cand), _norm_key(src)), set())) > 1:
         return None, "у термина несколько вариантов перевода"
 
     # ── Корпус целевого языка: вето на кальки ────────────────────────
@@ -9229,6 +9256,9 @@ def _auto_write(cand: dict, tier: str, batch: int, today: str,
     src, tgt = cand["src"].strip(), cand["tgt"].strip()
     cat = cand.get("cat") or "Term"
     existing = _glossary_entry(src, scope, _gproj(cand))
+    # Общую запись машина из проекта не переписывает — см. approve_term_candidate.
+    if existing is not None and _gproj(cand) is not None and _gproj(existing) != _gproj(cand):
+        existing = None
     if existing:
         upd = {
             "tgt": tgt, "tier": tier, "cat": existing.get("cat") or cat,
@@ -9531,7 +9561,7 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
         action, reason = _auto_verdict(cand, ctx)
         row = {"id": cand["id"], "kind": cand.get("kind"), "src": cand.get("src"),
                "tgt": cand.get("tgt"), "lang": _scope_of(cand)[0],
-               "domain": _scope_of(cand)[1], "reason": reason,
+               "domain": _scope_of(cand)[1], "project": _gproj(cand), "reason": reason,
                "hits": cand.get("hits", 1), "donors": len(_donor_ids(cand))}
         if action in (GLOSSARY_TIER_HARD, GLOSSARY_TIER_SOFT):
             m = meaning.get((_scope_of(cand), _norm_key(cand.get("src")),
@@ -9707,7 +9737,7 @@ def undo_auto_approve(batch: int):
             # СТАРЫЙ машинный вариант поверх более позднего решения — глоссарий
             # молча откатывался бы назад без единого выбора человека.
             if c.get("autoWrote"):
-                g = _glossary_entry(c.get("src") or "", _scope_of(c))
+                g = _glossary_entry(c.get("src") or "", _scope_of(c), _gproj(c))
                 if g is not None and g.get("autoBatch") not in (None, batch):
                     superseded += 1
                     c["note"] = ("запись перехвачена пачкой #%s — вопрос "
@@ -9820,7 +9850,7 @@ def _note_term_disputes(seg: dict, project: Optional[dict]) -> int:
             # _get_context отдаёт КОПИИ записей (в них подмешан контекст поиска),
             # поэтому метку надо ставить настоящей записи глоссария — иначе она
             # уходит во временный словарь и пропадает вместе с ним.
-            entry = _glossary_entry(h.get("src"), scope)
+            entry = _glossary_entry(h.get("src"), scope, _gproj(h))
             if entry is None:
                 continue
             entry["disputed"] = int(entry.get("disputed") or 0) + 1
@@ -9893,7 +9923,8 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
     scope = _project_scope(project) if project else None
     entries = [g for g in STATE.get("glossary", [])
                if _hard_answer(g) and _tenant_of(g) == _current_tenant()
-               and (scope is None or _scope_of(g) == scope)]
+               and (scope is None or _scope_of(g) == scope)
+               and (req.project is None or _entry_here(g, req.project))]
     if not entries:
         return {"ok": True, "dryRun": req.dry_run, "checked": 0, "capped": 0,
                 "total": 0, "bad": [], "batch": None,
@@ -10294,7 +10325,7 @@ def _harvest_edited_terms(seg: dict, project: dict) -> dict:
         if not _tgt_has_term(target, t_tgt):
             out["dropped"] += 1
             continue
-        entry = _glossary_entry(t_src, scope)
+        entry = _glossary_entry(t_src, scope, project.get("id"))
         if _hard_answer(entry) and _norm_key(entry.get("tgt")) != _norm_key(t_tgt):
             out["disputed"].append({"src": t_src, "tgt": t_tgt,
                                     "gloss": (entry.get("tgt") or "").strip()})
@@ -10356,7 +10387,7 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
         for item in _extract_terms_call([(s["source"], s["target"]) for s in chunk],
                                         req.model, project.get("domain")):
             _sc = _project_scope(project)
-            known = _glossary_entry(item.get("src", ""), _sc)
+            known = _glossary_entry(item.get("src", ""), _sc, pid)
             if known and _norm_key(known.get("tgt")) == _norm_key(item.get("tgt")):
                 continue      # уже знаем ровно эту пару
             if not _looks_like_term(item.get("src", ""), item.get("tgt", "")):
@@ -15903,7 +15934,7 @@ def _job_termsheet(job: dict) -> None:
                       "gates": dict(was.get("gates") or {})})
             entries.append(e)
             continue
-        known = _glossary_entry(rec["src"], scope)
+        known = _glossary_entry(rec["src"], scope, job.get("project"))
         if known and known.get("tier") == GLOSSARY_TIER_HARD:
             e["status"], e["gates"]["shadowedBy"] = "shadowed", known.get("tgt")
             entries.append(e)
@@ -15954,7 +15985,7 @@ def _job_termsheet(job: dict) -> None:
     for e in entries:
         if e["status"] not in ("pending", "disputed") or "meaning" in e["gates"]:
             continue
-        g = _glossary_entry(e["src"], scope) or {}
+        g = _glossary_entry(e["src"], scope, job.get("project")) or {}
         mv = g.get("meaning") or {}
         if mv and mv.get("pair") == _meaning_pair({"src": e["src"], "tgt": e["tgt"]}) \
                 and str(mv.get("v")) == str(MEANING_VERSION) and mv.get("same") is not None:
@@ -18217,7 +18248,10 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
         # просто вёрстки взять неоткуда — и об этом говорит `pdfFrom`,
         # а не молчание.
         base = "layout" if project.get("sourceDocx") else "docx"
-        inner = out.with_name(out.name + ".src.docx")
+        # Имя промежуточного файла уникально на вызов: два скачивания подряд
+        # иначе писали бы один `.src.docx`, и `unlink` одного уносил бы файл
+        # другого до чтения.
+        inner = out.with_name(out.name + ".%s.src.docx" % secrets.token_hex(4))
         try:
             if base == "layout":
                 stats = _export_docx_layout(project, inner)
@@ -18298,6 +18332,13 @@ def download_export(pid: int, format: str = "docx", source: bool = True):
     fmt = format.lower()
     if fmt not in EXPORT_EXT:
         raise HTTPException(400, "Поддерживаются только docx, docx_layout, xlsx и pdf")
+    if fmt == "pdf":
+        # PDF только что собран кнопкой «Экспорт», и собирать его снова на
+        # каждое скачивание — это ещё раз до трёх минут конвертера на
+        # единственном воркере. Отдаём готовый; нет его — собираем.
+        ready = EXPORT_DIR / (_safe_filename(project["title"]) + EXPORT_SUFFIX.get("pdf", "") + ".pdf")
+        if ready.exists():
+            return FileResponse(str(ready), media_type="application/pdf", filename=ready.name)
     path, _stats = _generate_export(project, fmt, include_source=source)
     media = ("application/pdf" if fmt == "pdf" else
              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -18316,17 +18357,24 @@ class TermRequest(BaseModel):
     isNew: bool = False
     lang: Optional[str] = None      # языковая пара записи; пусто — дефолтная область
     domain: Optional[str] = None
+    # Видимость записи: число — знание проекта, пусто — всей организации.
+    # Браузер шлёт то, что стояло на строке: правка проектной записи иначе
+    # заводила бы рядом общий дубль, а проектная оставалась бы сильнее.
+    project: Optional[int] = None
 
 @app.post("/api/glossary")
 def save_term(req: TermRequest):
     scope = _scope(req.lang, req.domain)
-    existing = _glossary_entry(req.src, scope)
+    existing = _glossary_entry(req.src, scope, req.project)
+    if existing is not None and _gproj(existing) != req.project:
+        existing = None                 # чужая видимость — заводим свою
     if existing is None and not (req.lang or req.domain):
         # Клиент не прислал область (правка записи из общего списка) — правим ту
         # запись, что есть, а не заводим рядом дубль в области по умолчанию.
         existing = next((g for g in STATE["glossary"]
                          if _norm_key(g.get("src")) == _norm_key(req.src)
-                         and _tenant_of(g) == _current_tenant()), None)
+                         and _tenant_of(g) == _current_tenant()
+                         and _gproj(g) == req.project), None)
     # Правка руками = проверенная запись: только такие идут в промпт приказом.
     if existing and not req.isNew:
         # След решения человека обязателен. Без него `_human_touched` правку
@@ -18340,9 +18388,12 @@ def save_term(req: TermRequest):
                          **_signed_field("edit")})
         _clear_auto_marks(existing)
     else:
-        STATE["glossary"].insert(0, {**req.dict(exclude={"isNew"}), "tier": GLOSSARY_TIER_HARD,
-                                     "lang": scope[0], "domain": scope[1], "tenant": scope[2],
-                                     **_signed_field("add")})
+        fresh = {**req.dict(exclude={"isNew", "project"}), "tier": GLOSSARY_TIER_HARD,
+                 "lang": scope[0], "domain": scope[1], "tenant": scope[2],
+                 **_signed_field("add")}
+        if req.project is not None:
+            fresh["project"] = req.project
+        STATE["glossary"].insert(0, fresh)
     _audit("glossary.save", src=req.src, tgt=req.tgt)
     _invalidate_gloss_index()
     save_state(STATE)
@@ -18457,6 +18508,7 @@ class TermScopeRequest(BaseModel):
     src: str
     lang: str = ""
     domain: str = ""
+    project: Optional[int] = None   # видимость записи, которую видел человек
 
 
 # ═══ Знание проекта и знание организации ════════════════════════════
@@ -18496,6 +18548,13 @@ def promote_term(req: TermProjectRequest):
     для него особое значение значило бы иметь два способа сказать одно
     и то же."""
     entry = _term_by_project(req, want_project=True)
+    scope = _scope_of(entry)
+    # Общая запись с тем же термином уже есть — две общие записи на один
+    # ключ означали бы, что видна только первая, а продвинутая молча мертва.
+    other = _gloss_by_src().get((scope, None, _norm_key(entry.get("src"))))
+    if other is not None and other is not entry:
+        raise HTTPException(409, "У организации уже есть общая запись «%s → %s»: сначала "
+                                 "поправьте или удалите её" % (other.get("src"), other.get("tgt")))
     _audit("glossary.promote", term=entry.get("src"), fromProject=req.project)
     entry.pop("project", None)
     entry["scopeChanged"] = {"by": _actor_id(), "role": _actor_role(),
@@ -18511,6 +18570,12 @@ def restrict_term(req: TermProjectRequest):
     """Вернуть знание в проект. Обратная дверь к продвижению: решение
     человека обязано быть отменяемым тем же человеком."""
     entry = _term_by_project(req, want_project=False)
+    if _gproj(entry) == req.project:
+        return {"ok": True, "term": entry.get("src"), "scope": "project", "project": req.project}
+    own = _gloss_by_src().get((_scope_of(entry), req.project, _norm_key(entry.get("src"))))
+    if own is not None:
+        raise HTTPException(409, "У проекта уже есть своя запись «%s → %s»: она и действует"
+                                 % (own.get("src"), own.get("tgt")))
     _audit("glossary.restrict", term=entry.get("src"), toProject=req.project)
     entry["project"] = req.project
     entry["scopeChanged"] = {"by": _actor_id(), "role": _actor_role(),
@@ -18575,7 +18640,7 @@ def demote_term(req: TermScopeRequest):
     правило на весь документ. Подсказка — ровно это и означает."""
     _audit("glossary.demote", src=req.src)
     scope = _scope(req.lang, req.domain)
-    entry = _glossary_entry(req.src, scope)
+    entry = _glossary_entry(req.src, scope, req.project)
     if entry is None and not (req.lang or req.domain):
         # Только СВОЯ организация: по одному имени термина эта дверь понижала
         # бы приказ в ЧУЖОМ глоссарии.
@@ -18633,7 +18698,7 @@ def revert_repairs_by_term(req: RevertRepairsRequest):
     ОТВЕРГНУТОГО текста, а в сегменте теперь другой (см. `_check_stale`).
     Статус — `review`: текст менял не человек."""
     scope = _scope(req.lang, req.domain)
-    entry = _glossary_entry(req.src, scope) or {"src": req.src, "tgt": ""}
+    entry = _glossary_entry(req.src, scope, req.project) or {"src": req.src, "tgt": ""}
     # Записи может уже не быть (её удалили) — тогда пару берём из запроса.
     if not (entry.get("tgt") or "").strip():
         raise HTTPException(400, "Нужен перевод записи, по которой чинили: "
@@ -18690,13 +18755,16 @@ def revert_repairs_by_term(req: RevertRepairsRequest):
 
 
 @app.delete("/api/glossary")
-def delete_term(src: str, lang: str = "", domain: str = ""):
+def delete_term(src: str, lang: str = "", domain: str = "", project: Optional[int] = None):
     """Удаление — операция без отмены, поэтому область здесь трактуется строго.
     Пустые lang/domain означают область по умолчанию (так же читаются записи
     без полей), а НЕ «любую»: иначе удаление RU→EN термина уносило бы и его
     RU→DE тёзку из чужого проекта."""
     want = _scope(lang, domain)
-    victims = [t for t in STATE["glossary"] if t.get("src") == src and _scope_of(t) == want]
+    # Видимость — часть ключа: удаляется ровно та запись, которую видел
+    # человек (проектная либо общая), а не все тёзки сквозь проекты.
+    victims = [t for t in STATE["glossary"] if t.get("src") == src and _scope_of(t) == want
+               and _gproj(t) == project]
     if not victims and not (lang or domain):
         # Область не назвали и в области по умолчанию записи нет. Удаляем по
         # одному имени, только если претендент ровно один — иначе непонятно,
@@ -18704,7 +18772,7 @@ def delete_term(src: str, lang: str = "", domain: str = ""):
         # Только своя организация: удаление по одному имени термина иначе
         # уносило бы запись из чужого глоссария.
         same = [t for t in STATE["glossary"] if t.get("src") == src
-                and _tenant_of(t) == _current_tenant()]
+                and _tenant_of(t) == _current_tenant() and _gproj(t) == project]
         if len(same) == 1:
             victims = same
     if not victims:
@@ -18837,6 +18905,9 @@ def purge_glossary(req: GlossaryPurgeRequest = GlossaryPurgeRequest()):
             continue
         if scope is not None and _scope_of(g) != scope:
             continue
+        # Чужое проектное знание выносу из другого проекта не подлежит.
+        if req.project is not None and not _entry_here(g, req.project):
+            continue
         if req.multi_variant and not _multi_variant(g):
             continue
         if req.unused_only and id(g) in used_ids:
@@ -18948,7 +19019,7 @@ def undo_glossary_purge(stamp: str):
 
 # ─── TM ─────────────────────────────────────────────────────────────
 @app.delete("/api/tm")
-def delete_tm(src: str, lang: str = ""):
+def delete_tm(src: str, lang: str = "", project: Optional[int] = None):
     """Как и у глоссария: пустой lang — это пара по умолчанию, а не «любая».
     _tm_upsert теперь держит по записи на языковую пару, и удаление RU→EN
     иначе уносило бы RU→DE запись того же исходника."""
@@ -18956,10 +19027,10 @@ def delete_tm(src: str, lang: str = ""):
     want = lang or DEFAULT_GLOSS_LANG
     victims = [t for t in STATE["tm"]
                if t.get("src") == src and (t.get("lang") or DEFAULT_GLOSS_LANG) == want
-               and _tenant_of(t) == _current_tenant()]
+               and _tenant_of(t) == _current_tenant() and _gproj(t) == project]
     if not victims and not lang:
         same = [t for t in STATE["tm"] if t.get("src") == src
-                and _tenant_of(t) == _current_tenant()]
+                and _tenant_of(t) == _current_tenant() and _gproj(t) == project]
         if len(same) == 1:
             victims = same
     if not victims:
@@ -20177,7 +20248,7 @@ def _job_loop():
             continue
         try:
             _job_execute(job)
-        except BaseException as e:
+        except Exception as e:
             # Статус `running` ставит отбор — ДО входа в `_job_execute`,
             # и падение раньше его собственного try (например, обрыв связи
             # с базой в `_sync_shared`) оставляло бы в памяти фантом
@@ -20455,10 +20526,6 @@ def stop_job(jid: int):
                    and not (CURRENT_SESSION.get() or {}).get("super")):
         raise HTTPException(404, "Прогон не найден")
     job["stop"] = True
-    if EXTERNAL_WORKER:
-        # Стоп-флаг доезжает до воркера через базу: он читает его между
-        # сегментами (_job_should_stop) и мягко останавливается.
-        _job_persist(job)
     if job["status"] == "queued":
         job["status"] = "stopped"
         job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -20474,6 +20541,11 @@ def stop_job(jid: int):
         # Промежуточный статус: обработка текущего сегмента доигрывается, но
         # пользователю сразу видно, что кнопка сработала.
         job["stopping"] = True
+    if EXTERNAL_WORKER:
+        # В базу — ПОСЛЕ смены статуса. Записанная раньше, ждущая задача
+        # оставалась там `queued`: зеркало возвращало её в память, воркер
+        # забирал, и расход уступившего прогона писался в историю дважды.
+        _job_persist(job)
     return {"ok": True, "job": _job_public(job)}
 
 
@@ -20650,6 +20722,7 @@ class TesterIn(BaseModel):
     chat: Optional[int] = None
     username: str = ""
     name: str = ""
+    reset: bool = False          # бот потерял свою запись — выдать новый пароль
 
 
 @app.post("/api/tg/tester")
@@ -20675,17 +20748,23 @@ def tg_tester(req: TesterIn):
         was = next((t for t in _tenants() if t.get("tgChat") == req.chat), None)
         if was:
             u_was = next((u for u in _users() if u.get("tenant") == was["id"]), None)
-            # Пароль у нас только отпечатком, назвать его нечем — выдаём
-            # новый и говорим об этом прямо: молча вернуть «тот же доступ»
-            # без пароля значит оставить человека без входа.
-            pw = _tester_password()
+            if u_was and not u_was.get("active", True):
+                return JSONResponse({"ok": False, "code": "closed",
+                                     "error": "Доступ отключён"}, status_code=409)
             if u_was:
-                u_was["hash"], u_was["salt"] = _hash_password(pw)
-                save_state(STATE)
-                _audit("tester.reissue", _tenant=was["id"], login=u_was["login"], chat=req.chat)
-                return {"ok": True, "login": u_was["login"], "password": pw,
-                        "tenant": was["id"], "again": True,
-                        "pages": (_tenant_caps(was["id"]) or {}).get("maxPages")}
+                out = {"ok": True, "login": u_was["login"], "tenant": was["id"], "again": True,
+                       "pages": (_tenant_caps(was["id"]) or {}).get("maxPages")}
+                # Пароль у нас только отпечатком. Новый выдаётся ТОЛЬКО по явной
+                # просьбе бота (он потерял свою запись): случайное второе нажатие
+                # иначе сбрасывало бы пароль, который человек уже сменил в профиле.
+                if req.reset:
+                    pw = _tester_password()
+                    u_was["hash"], u_was["salt"] = _hash_password(pw)
+                    _drop_user_sessions(u_was["id"], was["id"])
+                    save_state(STATE)
+                    _audit("tester.reissue", _tenant=was["id"], login=u_was["login"], chat=req.chat)
+                    out["password"] = pw
+                return out
     b = _active_batch()
     if not b:
         return JSONResponse({"ok": False, "code": "closed",

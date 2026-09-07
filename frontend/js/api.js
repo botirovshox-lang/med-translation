@@ -408,14 +408,16 @@
 
     saveTerm:      (term, isNew)            => call("POST",   "/glossary",                          { ...term, isNew }),
     /* Область обязательна: без неё удаление уносит однофамильца из другой пары языков. */
-    deleteTerm:    (src, lang, domain)      => call("DELETE", `/glossary?src=${encodeURIComponent(src)}&lang=${encodeURIComponent(lang||"")}&domain=${encodeURIComponent(domain||"")}`),
+    // `project` — видимость записи, которую видел человек: проектная либо общая.
+    // Без него удаление/понижение уносило бы все тёзки сквозь проекты.
+    deleteTerm:    (src, lang, domain, project) => call("DELETE", `/glossary?src=${encodeURIComponent(src)}&lang=${encodeURIComponent(lang||"")}&domain=${encodeURIComponent(domain||"")}` + (project != null ? `&project=${project}` : "")),
     /* Понижение приказа до подсказки: намерение, обратное правке (там «правка
        руками = приказ»), поэтому отдельной дверью. */
-    demoteTerm:    (src, lang, domain)      => call("POST",   "/glossary/demote", { src, lang: lang || "", domain: domain || "" }),
+    demoteTerm:    (src, lang, domain, project) => call("POST",   "/glossary/demote", { src, lang: lang || "", domain: domain || "", project: project != null ? project : null }),
     /* Откат правок, сделанных по этой записи. Текст меняется БЕЗ вызова модели:
        подставляется repair.from — то, что стояло до правки. */
-    revertRepairs: (src, lang, domain)      => call("POST",   "/glossary/revert-repairs", { src, lang: lang || "", domain: domain || "" }),
-    deleteTM:      (src, lang)              => call("DELETE", `/tm?src=${encodeURIComponent(src)}&lang=${encodeURIComponent(lang||"")}`),
+    revertRepairs: (src, lang, domain, project) => call("POST",   "/glossary/revert-repairs", { src, lang: lang || "", domain: domain || "", project: project != null ? project : null }),
+    deleteTM:      (src, lang, project)     => call("DELETE", `/tm?src=${encodeURIComponent(src)}&lang=${encodeURIComponent(lang||"")}` + (project != null ? `&project=${project}` : "")),
   };
 
   // Best-effort: fail silently in dev if backend down (UI keeps working on mock data).

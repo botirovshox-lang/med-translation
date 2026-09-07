@@ -234,6 +234,14 @@ def issue_access(st: dict, chat_id, rec: dict) -> None:
     r = api("POST", "/api/tg/tester", {
         "lang": lang, "chat": chat_id,
         "username": rec.get("username") or "", "name": rec.get("name") or ""})
+    if r.get("ok") and r.get("again") and not r.get("password"):
+        # Сервер человека помнит, а мы — нет (файл состояния потерян). Пароль
+        # у сервера только отпечатком, поэтому просим НОВЫЙ явно: сам он его
+        # не сбрасывает — случайное второе нажатие иначе отнимало бы пароль,
+        # который человек уже сменил в профиле.
+        r = api("POST", "/api/tg/tester", {
+            "lang": lang, "chat": chat_id, "reset": True,
+            "username": rec.get("username") or "", "name": rec.get("name") or ""})
     if not r.get("ok"):
         why = (r.get("error") or "").lower()
         if r.get("code") == "full":

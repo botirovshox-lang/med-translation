@@ -208,5 +208,68 @@ r = c.post("/api/glossary/promote", headers=H(TOK),
 check(r.status_code == 404, "чужую запись не продвинуть: " + str(r.status_code))
 check(g.get("project") == 101, "и она не тронута")
 
+print("\n=== 11. Одобрение карточки проекта не переписывает ОБЩУЮ запись ===")
+# Правилом для всей организации знание делает /promote, а не одобрение
+# в одном проекте: иначе одна карточка проекта B меняла бы перевод у всех.
+# Чистим наследство раздела 9: у «акт» там ДВА проектных приказа, и приказ
+# проекта 102 закрыл бы вопрос до заведения карточки.
+main.STATE["glossary"] = [g for g in main.STATE["glossary"] if g["src"] not in ("реестр", "акт")]
+main._invalidate_gloss_index()
+# Общая запись — ПОДСКАЗКА: приказ уровня организации закрывает вопрос во всех
+# проектах (тот же закон, что у `_queue_term_locked`), и карточка не завелась бы.
+term("акт", "act", tier="auto")
+main.STATE["termQueue"] = []
+cand = main._queue_term("segment", "акт", "deed", lang="RU→EN", domain="medical",
+                        tenant="default", project=102, segment=3, via="confirmed")
+r = c.post("/api/term-queue/%d/approve" % cand["id"], headers=H(TOK), json={"confirm": True})
+check(r.status_code == 200 and r.json().get("written"), "карточка проекта одобрена: " + r.text[:80])
+org = [g for g in main.STATE["glossary"] if g["src"] == "акт" and g.get("project") is None]
+own = [g for g in main.STATE["glossary"] if g["src"] == "акт" and g.get("project") == 102]
+check(len(org) == 1 and org[0]["tgt"] == "act", "общая запись не тронута: " + str(org[0]["tgt"]))
+check(len(own) == 1 and own[0]["tgt"] == "deed", "заведена проектная: " + str([o["tgt"] for o in own]))
+# Общая — подсказка, приказом её `_verified_hits` не отдаёт; смотрим промпт.
+check([h["tgt"] for h in main._get_context("акт приёмки", False, A)[0]] == ["act"], "проект A видит общую")
+check([h["tgt"] for h in main._get_context("акт приёмки", False, B)[0]] == ["deed"], "проект B — свою")
+
+print("\n=== 12. Удаление, правка и понижение — записи СВОЕЙ видимости ===")
+r = c.request("DELETE", "/api/glossary", headers=H(TOK),
+              params={"src": "акт", "lang": "RU→EN", "domain": "medical", "project": 102})
+check(r.status_code == 200, "удалена проектная запись")
+left = [g for g in main.STATE["glossary"] if g["src"] == "акт"]
+check(len(left) == 1 and left[0].get("project") is None, "общая уцелела — удаление не идёт сквозь проекты")
+r = c.post("/api/glossary", headers=H(TOK),
+           json={"src": "акт", "tgt": "protocol", "lang": "RU→EN", "domain": "medical", "project": 101})
+check(r.status_code == 200, "правка из проекта принята")
+recs = [(g["tgt"], g.get("project")) for g in main.STATE["glossary"] if g["src"] == "акт"]
+check(("act", None) in recs and ("protocol", 101) in recs and len(recs) == 2,
+      "правка из проекта завела проектную запись, общая не тронута: " + str(recs))
+r = c.post("/api/glossary/demote", headers=H(TOK),
+           json={"src": "акт", "lang": "RU→EN", "domain": "medical", "project": 101})
+check(r.status_code == 200, "понижение проектной записи прошло")
+check(next(g for g in main.STATE["glossary"] if g["src"] == "акт" and g.get("project") == 101)["tier"] == "auto"
+      and next(g for g in main.STATE["glossary"] if g["src"] == "акт" and g.get("project") is None).get("prevTier") is None,
+      "понижена проектная, общая не тронута")
+
+print("\n=== 13. Продвижение и возврат не плодят записи с одним ключом ===")
+r = c.post("/api/glossary/promote", headers=H(TOK),
+           json={"src": "акт", "lang": "RU→EN", "domain": "medical", "project": 101})
+check(r.status_code == 409, "продвижение при живой общей записи — 409, а не вторая общая: " + str(r.status_code))
+r = c.post("/api/glossary/restrict", headers=H(TOK),
+           json={"src": "акт", "lang": "RU→EN", "domain": "medical", "project": 101})
+check(r.status_code == 409, "возврат общей в проект, где своя уже есть, — 409")
+
+print("\n=== 14. Миграция очереди на старте не закрывает чужой проект ===")
+main.STATE["termQueue"] = []
+term("лицензия", "licence", project=101)              # приказ ТОЛЬКО проекта A
+card = main._queue_term("extract", "лицензия", "permit", lang="RU→EN", domain="medical",
+                        tenant="default", project=102, segment=4, via="auto")
+check(card is not None, "карточка проекта B заведена: приказ проекта A ей не ответ")
+main._migrate_term_queue(main.STATE)
+check(card.get("status", "pending") == "pending",
+      "миграция на старте её не закрыла: " + str(card.get("status")))
+term("лицензия", "license")                          # а приказ ОРГАНИЗАЦИИ — ответ всем
+main._migrate_term_queue(main.STATE)
+check(card.get("status") == "approved", "общий приказ закрывает вопрос в любом проекте")
+
 print("\n" + ("ПРОВАЛЕНО: " + "; ".join(fail) if fail else "ВСЁ ПРОШЛО"))
 sys.exit(1 if fail else 0)

@@ -159,6 +159,20 @@ r2 = c.post("/api/tg/tester", json={"lang": "ru", "chat": 222, "username": "b"},
 check(r2.status_code == 200, "второй тестировщик тоже заведён")
 check(r2.json()["tenant"] != got["tenant"], "у каждого СВОЯ организация")
 
+print("\n=== 6b. Повторное нажатие не сбрасывает пароль ===")
+# Пароль у сервера только отпечатком. Случайное второе нажатие иначе
+# отнимало бы пароль, который человек уже сменил в профиле; новый выдаётся
+# ТОЛЬКО по явной просьбе бота (`reset`), когда тот потерял свою запись.
+before = (u["hash"], u["salt"])
+r = c.post("/api/tg/tester", json={"lang": "uz", "chat": 111, "username": "aziz"}, headers=SVC)
+check(r.status_code == 200 and r.json().get("again") is True, "повтор по тому же чату — «уже есть»")
+check("password" not in r.json() and r.json()["login"] == got["login"], "пароль не выдан и не сброшен")
+check((u["hash"], u["salt"]) == before, "отпечаток пароля прежний")
+check(len(main._users()) == 3, "второй организации не завелось (админ + двое)")
+r = c.post("/api/tg/tester", json={"lang": "uz", "chat": 111, "reset": True}, headers=SVC)
+check(r.status_code == 200 and r.json().get("password") and (u["hash"], u["salt"]) != before,
+      "явная просьба бота выдаёт новый пароль")
+
 print("\n=== 7. Мест ровно столько, сколько назначил владелец ===")
 r3 = c.post("/api/tg/tester", json={"lang": "ru", "chat": 333}, headers=SVC)
 check(r3.status_code == 409 and r3.json().get("code") == "full",

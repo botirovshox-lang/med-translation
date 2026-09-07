@@ -114,8 +114,9 @@ print("\n=== 5. Кандидаты извлечения получают обл�
 _extract_block = src_all[src_all.index('_queue_term("extract"'):][:400]
 check("lang=_sc[0], domain=_sc[1]" in _extract_block,
       "extract помечается языковой парой и тематикой")
-check("_glossary_entry(item.get(\"src\", \"\"), _sc)" in src_all,
-      "«уже знаем эту пару» проверяется в своей области")
+check("_glossary_entry(item.get(\"src\", \"\"), _sc, pid)" in src_all,
+      "«уже знаем эту пару» проверяется в своей области И в своём проекте: "
+      "проектная запись сильнее общей, и без pid извлечение не знало бы её")
 
 print("\n=== 6. Дубль пары внутри пачки пишется один раз и переживает откат ===")
 base_state(

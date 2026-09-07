@@ -328,9 +328,9 @@ function ImagesCard({ project, store, toast }) {
             value: useModel, style: { width: 260 },
             onChange: (e) => pickModel(e.target.value) },
             models.map(m => React.createElement("option", { key: m.id, value: m.id },
-              m.label + (estOf(m.id) ? " — ~$" + estOf(m.id).toFixed(2) : ""))))),
+              m.label + (estOf(m.id) && !costHidden() ? " — ~$" + estOf(m.id).toFixed(2) : ""))))),
         mInfo && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-          TR("цена модели: вход $") + mInfo.in + TR(" · выход $") + mInfo.out + TR(" за 1М токенов")
+          costHidden() ? "" : TR("цена модели: вход $") + mInfo.in + TR(" · выход $") + mInfo.out + TR(" за 1М токенов")
           + (rep && rep.estTokens && rep.estTokens.in
               ? TR(" · в этом разборе ≈ ") + Math.round(rep.estTokens.in / 1000) + TR("К входных") : "")),
         !models.length && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
@@ -345,7 +345,7 @@ function ImagesCard({ project, store, toast }) {
            (завести их заново), и по смете кнопка гасла навсегда. */
         React.createElement(Btn, { variant: "primary", size: "sm", icon: "sparkles",
           disabled: busy || !st || !st.pending, onClick: () => start(false) },
-          TR("Прочитать и завести сегменты") + (est ? " (~$" + est.toFixed(2) + ")" : "")),
+          TR("Прочитать и завести сегменты") + (est && !costHidden() ? " (~$" + est.toFixed(2) + ")" : "")),
         st && st.segments > 0 && React.createElement(Btn, { variant: "ghost", size: "sm",
           disabled: busy, onClick: () => setForgetOpen(true) }, TR("Забыть распознанное"))),
 

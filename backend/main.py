@@ -1472,6 +1472,46 @@ def _tenant_rec(tid: str) -> Optional[dict]:
     return next((t for t in _tenants() if t.get("id") == tid), None)
 
 
+# ─── Упрощённый режим: ни денег, ни имён моделей на экране ───────────
+# Флаг стоит НА ОРГАНИЗАЦИИ (`simple`), а не на человеке: скрывать надо
+# и от того, кого владелец позовёт себе в помощь. Заводится он для тестовых
+# организаций, но по существу это режим «переводчику показывают перевод,
+# а не бухгалтерию», и годится он любому клиенту.
+#
+# Две разные вещи, и путать их нельзя:
+#   ПОКАЗ  — цену и имя модели не рисуем (сервер их не отдаёт, браузер
+#            не рисует полей выбора);
+#   РАБОТА — модели шагов назначает ОРГАНИЗАЦИЯ, а не браузер: без этого
+#            выбор, оставшийся в localStorage, всё равно уехал бы в задачу.
+# Смету при этом продолжаем СЧИТАТЬ и слать: на ней стоит отказ по смете
+# на старте прогона и калибровка `estRatio`, и убери её — тихо исчезли бы
+# оба, а на экране ничего бы не изменилось.
+
+def _spend_public(st: dict, tid: Optional[str] = None) -> dict:
+    """Расход НАРУЖУ. В упрощённом режиме сумм нет, но факт «лимит исчерпан»
+    остаётся: иначе кнопки гаснут без единого объяснения, и человек считает,
+    что сломался сервис.
+
+    Организацию можно назвать явно, и мидварь обязана это делать: отказ 402
+    она отдаёт ДО того, как выставит `CURRENT_SESSION`, — без довода
+    `_current_tenant()` вернёт организацию по умолчанию, и суммы уехали бы
+    именно в том ответе, ради которого всё и затевалось."""
+    if not (_tenant_simple(tid) if tid else _hide_cost()):
+        return st
+    return {"over": bool(st.get("over")), "hidden": True}
+
+
+def _tenant_simple(tid: Optional[str] = None) -> bool:
+    return bool((_tenant_rec(tid or _current_tenant()) or {}).get("simple"))
+
+
+def _hide_cost() -> bool:
+    """Прятать ли деньги от ТЕКУЩЕГО запроса. Отдельной функцией, чтобы
+    место решения было одно: разойдись ответы у разных экранов — часть
+    сумм осталась бы видна, и обещание «ни $ на экране» стало бы ложным."""
+    return _tenant_simple()
+
+
 def _spend_status(tenant: Optional[str] = None) -> dict:
     t = tenant or _current_tenant()
     if STORE.kind == "pg":
@@ -2357,6 +2397,12 @@ async def require_token(request: Request, call_next):
         if _is_paid(request.method, path):
             st = _spend_status(sess.get("tenant"))
             if st["over"]:
+                if _tenant_simple(sess.get("tenant")):
+                    return JSONResponse({"ok": False, "error":
+                        "Месячный лимит организации исчерпан: обратитесь к администратору. "
+                        "Бесплатные команды (правка начертания, откаты, пересчёт, экспорт) "
+                        "работают; лимит сбрасывается 1-го числа.",
+                        "spend": _spend_public(st, sess.get("tenant"))}, status_code=402)
                 return JSONResponse({"ok": False, "error":
                     "Месячный лимит расхода организации исчерпан: $%.2f из $%.2f. Бесплатные команды "
                     "(правка начертания, откаты, пересчёт, экспорт) работают; лимит сбрасывается "
@@ -3081,7 +3127,12 @@ def auth_me(request: Request):
     return {"ok": True, "me": _user_public(u), "tenant": tpub,
             "can": {"owner": role == "owner", "super": bool(u.get("super")), "role": role},
             "teams": _teams_of(u), "invites": _my_invites(u),
-            "spend": _spend_status(tid),
+            # Упрощённый режим организации: браузер не рисует ни сумм, ни
+            # выбора моделей. Признак идёт и отсюда, и из каталога моделей:
+            # экран входа спрашивает «кто я» раньше каталога, и без него
+            # первый кадр успел бы показать то, что обещано не показывать.
+            "hideCost": _tenant_simple(tid),
+            "spend": _spend_public(_spend_status(tid)),
             # Объём в СТРАНИЦАХ — то, чем организация меряет свою работу:
             # деньги (`spend`) — наши затраты на модели, страницы — её заказ.
             "caps": _tenant_caps(tid), "usage": _tenant_usage(tid),
@@ -3334,7 +3385,8 @@ def profile_get(request: Request):
             "teams": _teams_of(u), "invites": _my_invites(u),
             "canCreateTeam": len(_memberships(u)) < TEAM_MAX_PER_USER,
             "teamLimit": TEAM_MAX_PER_USER,
-            "spend": _spend_status(sess.get("tenant") or u.get("tenant"))}
+            "hideCost": _hide_cost(),
+            "spend": _spend_public(_spend_status(sess.get("tenant") or u.get("tenant")))}
 
 
 @app.post("/api/profile")
@@ -3930,6 +3982,12 @@ class TenantPatch(BaseModel):
     note: Optional[str] = None
     maxProjects: Optional[int] = None
     clearMaxProjects: bool = False
+    # Упрощённый режим: ни сумм, ни имён моделей на экране, а модели шагов
+    # назначает организация. Ставится и снимается администратором сервиса.
+    simple: Optional[bool] = None
+    # {шаг: id модели}, ключи — ключи FULL_STEP_MODEL. Пустое значение
+    # означает «модель шага по умолчанию».
+    models: Optional[dict] = None
 
 
 @app.post("/api/admin/tenants/{tid}")
@@ -3960,6 +4018,20 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
         rec.pop("maxProjects", None)
     elif req.maxProjects is not None:
         rec["maxProjects"] = int(req.maxProjects)
+    if req.simple is not None:
+        rec["simple"] = bool(req.simple)
+    if req.models is not None:
+        # Проверяем ДО записи: имя несуществующей модели, молча положенное
+        # в запись, обернулось бы прогоном по модели-умолчанию при уверенности
+        # администратора, что назначена другая.
+        known = {m["id"] for m in OPENAI_MODELS}
+        bad = [v for v in req.models.values() if v and v not in known]
+        if bad:
+            raise HTTPException(400, "Неизвестная модель: " + ", ".join(sorted(set(bad))))
+        wrong = [k for k in req.models if k not in FULL_STEP_MODEL]
+        if wrong:
+            raise HTTPException(400, "Неизвестный шаг: " + ", ".join(sorted(wrong)))
+        rec["models"] = {k: v for k, v in req.models.items() if v}
     _audit("tenant.update", tenant_target=tid, limitUsd=rec.get("limitUsd"),
            addPages=req.addPages, pagesCredit=rec.get("pagesCredit"), maxProjects=rec.get("maxProjects"))
     save_state(STATE)
@@ -4011,6 +4083,10 @@ def admin_overview(request: Request):
                         "version": "5.6.0", "termQueue": len(_term_queue()),
                         "auditRows": len(STATE.get("audit") or [])},
             "capDefaults": _cap_defaults(),
+            # Список моделей — чтобы админка могла назначить модель шага
+            # организации в упрощённом режиме, не спрашивая каталог отдельно.
+            "models": [{"id": m["id"], "label": m["label"]} for m in OPENAI_MODELS],
+            "steps": FULL_STEP_MODEL,
             "month": _month_key()}
 
 
@@ -4522,6 +4598,9 @@ def get_seed():
     public.pop("testBatches", None)
     for key in ("exportHistory", "termQueue", "autoBatches", "runCosts", "quotes"):
         public[key] = [e for e in (STATE.get(key) or []) if _tenant_of(e) == t]
+    if _hide_cost():
+        # История расхода прогонов — это суммы и модели по шагам.
+        public["runCosts"] = []
     return {**public, "projects": [_project_for_client(p) for p in _tenant_projects()],
             "glossary": [g for g in STATE["glossary"] if _tenant_of(g) == t][:150]}
 
@@ -5677,6 +5756,12 @@ def list_models():
         "backcheckBands": getattr(checks_mod, "BACKCHECK_BANDS", []) if checks_mod else [],
         "available": bool(os.environ.get("OPENAI_API_KEY")),
         "brand": APP_BRAND,
+        # Упрощённый режим организации: браузер не рисует ни сумм, ни выбора
+        # моделей. Цены при этом в ответе ОСТАЮТСЯ — по ним считается смета,
+        # на которой держатся отказ по смете на старте прогона и поправка
+        # estRatio. Прячем показ, а не расчёт: убери расчёт — тихо исчезли бы
+        # оба, а на экране ничего бы не изменилось.
+        "hideCost": _hide_cost(),
         "pricesChecked": "2026-08-15",
     }
 
@@ -18227,6 +18312,31 @@ FULL_STEP_MODEL = {"translate": "model", "backcheck": "bc_model",
                    "repair": "rp_model", "review": "rv_model"}
 
 
+def _forced_models(params: dict, tid: Optional[str] = None) -> dict:
+    """В упрощённом режиме модели шагов назначает ОРГАНИЗАЦИЯ, а не браузер.
+
+    Зачем вообще: у такой организации полей выбора на экране нет, но выбор,
+    оставшийся в localStorage от прежнего входа, всё равно уехал бы в задачу —
+    и работа пошла бы под модель, которой никто не назначал.
+
+    Пустое значение в настройке организации означает «модель шага по
+    умолчанию», а не «оставить выбор браузера»: иначе настройка «все шаги
+    по умолчанию» ничего бы не меняла.
+
+    Зовут это ДВА места — постановка задачи и разбор состава, — и обязаны
+    звать оба: разбор считает смету и состав по присланным моделям, а от
+    модели зависит и состав (ранг termcheck, «проверял тот, кто переводил»).
+    Разойдись они — под соседними кнопками встали бы противоречащие числа.
+    """
+    if not _tenant_simple(tid):
+        return params
+    conf = (_tenant_rec(tid or _current_tenant()) or {}).get("models") or {}
+    out = dict(params or {})
+    for step, key in FULL_STEP_MODEL.items():
+        out[key] = conf.get(step) or None
+    return out
+
+
 # ── Разбор прогона: что он сделает и чего делать не станет ───────────────────
 # Состав и смету раньше считал браузер своими предикатами, а работу отбирал
 # сервер своими — и разойтись они были обязаны. Список сегментов у составного
@@ -18603,7 +18713,10 @@ def run_plan(pid: int, req: RunPlanRequest):
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
     scope = [s for s in project["segments"]
              if id_filter is None or s["id"] in id_filter]
-    params = req.dict()
+    # Модели — те же, под которыми ПОЙДЁТ прогон: в упрощённом режиме их
+    # назначает организация. Считай разбор под присланные, а работай под
+    # назначенные — и смета под кнопкой перестала бы описывать работу.
+    params = _forced_models(req.dict())
     # Тем же предикатом, что и сам перевод (_needs_translation): от этого
     # множества зависит, попадут ли сегменты в состав ПРОВЕРОК — к своему
     # шагу они уже будут переведены. Считай его по «status == new», и
@@ -18696,8 +18809,17 @@ def _job_busy(pid: int, kind: str) -> bool:
 
 
 def _job_public(job: dict) -> dict:
-    """Наружу отдаём без внутренних полей (список id и флаг остановки)."""
-    return {k: v for k, v in job.items() if k not in ("ids", "stop")}
+    """Наружу отдаём без внутренних полей (список id и флаг остановки).
+
+    В упрощённом режиме снимаем и расход: `job["usage"]` несёт и сумму,
+    и разбивку по МОДЕЛЯМ, а статус задачи браузер опрашивает каждые
+    несколько секунд — то есть это самая частая утечка того, что обещано
+    не показывать."""
+    out = {k: v for k, v in job.items() if k not in ("ids", "stop")}
+    if out.get("usage") and _hide_cost():
+        out["usage"] = {k: v for k, v in out["usage"].items()
+                        if k not in ("cost", "models", "steps", "unpriced")}
+    return out
 
 
 def _first_error(result: dict) -> str:
@@ -19209,9 +19331,15 @@ def create_job(pid: int, req: JobRequest):
     if isinstance(est, (int, float)) and est > 0:
         st = _spend_status()
         if st.get("limitUsd") is not None and st["spentUsd"] + float(est) > float(st["limitUsd"]):
+            if _hide_cost():
+                raise HTTPException(402, "Этот прогон не уместится в лимит организации: выберите "
+                                    "меньше сегментов или снимите шаги")
             raise HTTPException(402, "Смета прогона $%.2f больше остатка лимита $%.2f: выберите "
                                 "меньше сегментов или снимите шаги"
                                 % (float(est), max(0.0, float(st["limitUsd"]) - st["spentUsd"])))
+    # Модели шагов в упрощённом режиме назначает организация, а не браузер:
+    # полей выбора там нет, но прежний выбор в localStorage уехал бы в задачу.
+    req.params = _forced_models(req.params)
     with _JOBS_LOCK:
         job = {
             "id": _next_job_id(),
@@ -19246,6 +19374,11 @@ def usage_report(limit: int = 20):
     Ни одного вызова модели здесь нет: всё уже посчитано провайдером и снято
     с ответов. `process` — расход с момента старта сервиса, включая одиночные
     вызовы по кнопке, которые ни одному прогону не принадлежат."""
+    if _hide_cost():
+        # Экран расхода в упрощённом режиме не показывается вовсе. Пустой
+        # ответ с признаком, а не 403: браузеру надо знать, что скрыто, —
+        # молчаливая ошибка выглядит поломкой.
+        return {"hidden": True, "process": None, "runs": [], "estRatio": None, "estRuns": 0}
     t = _current_tenant()
     runs = [r for r in reversed(STATE.get("runCosts") or [])
             if _tenant_of(r) == t][:max(1, min(limit, 100))]

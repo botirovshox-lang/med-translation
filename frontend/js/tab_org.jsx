@@ -223,8 +223,8 @@ function SuperTenants({ toast }) {
       React.createElement("tbody", null, tenants.map(t => React.createElement("tr", { key: t.id },
         React.createElement("td", null, React.createElement("b", null, t.name), " ", React.createElement("span", { className: "dim" }, t.id)),
         React.createElement("td", { style: { color: t.spend && t.spend.over ? "var(--c-danger)" : undefined } },
-          "$" + Number((t.spend && t.spend.spentUsd) || 0).toFixed(2) + TR(" · вызовов ") + ((t.spend && t.spend.calls) || 0)),
-        React.createElement("td", null, t.limitUsd != null ? "$" + Number(t.limitUsd).toFixed(2) : "—"),
+          costHidden() ? "" : "$" + Number((t.spend && t.spend.spentUsd) || 0).toFixed(2) + TR(" · вызовов ") + ((t.spend && t.spend.calls) || 0)),
+        React.createElement("td", null, costHidden() ? "" : (t.limitUsd != null ? "$" + Number(t.limitUsd).toFixed(2) : "—")),
         React.createElement("td", { style: { textAlign: "right" } },
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLimit(t) }, TR("Лимит"))))))),
     React.createElement("div", { className: "eyebrow", style: { margin: "6px 0 0" } }, TR("Новая организация")),
@@ -376,7 +376,7 @@ function TabOrg({ store, toast }) {
     info && info.spend && React.createElement("div", { className: "card card-pad", style: { marginBottom: 16, fontSize: 13 } },
       React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, TR("Расход за ") + info.spend.month),
       React.createElement("div", { style: { fontWeight: 600, color: info.spend.over ? "var(--c-danger)" : undefined } },
-        "$" + Number(info.spend.spentUsd || 0).toFixed(2)
+        costHidden() ? "" : "$" + Number(info.spend.spentUsd || 0).toFixed(2)
         + (info.spend.limitUsd != null ? TR(" из $") + Number(info.spend.limitUsd).toFixed(2) : TR(" · лимит не задан"))
         + TR(" · вызовов: ") + info.spend.calls
         + (info.spend.unpriced ? TR(" · без цены: ") + info.spend.unpriced : "")),

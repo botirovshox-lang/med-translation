@@ -740,20 +740,21 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
              выбор = дефолт сервера, действующая модель названа рядом. У Medical
              QA селектора нет: своей модели у неё нет, обратный перевод она
              заказывает моделью back-check. */
-          pkey && setMod
+          pkey && setMod && !costHidden()
             ? React.createElement(Select, { className: "select tk-select", value: mm[pkey] || "",
                 onChange: (e) => setMod(pkey, e.target.value) },
                 React.createElement("option", { value: "" }, TR("по умолчанию")),
                 (cat && cat.models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label)))
-            : React.createElement("span", { className: "dim tk-select" }, TR("модель back-check")),
-          React.createElement("span", { className: "dim tk-eff", title: st.modelLabel || "" },
-            st.modelLabel ? "→ " + st.modelLabel : ""),
+            : React.createElement("span", { className: "dim tk-select" },
+                costHidden() ? "" : TR("модель back-check")),
+          React.createElement("span", { className: "dim tk-eff", title: costHidden() ? "" : (st.modelLabel || "") },
+            (st.modelLabel && !costHidden()) ? "→ " + st.modelLabel : ""),
           React.createElement("span", { className: "dim tk-cost" },
             st.count + TR(" сегм.") + (row && row.cost != null && typeof fmtCost === "function"
               ? " · ≈ " + fmtCost(row.cost) : "")));
       }),
       /* Судья — не шаг, а участник back-check и ремонта: та же сетка. */
-      setMod && React.createElement(React.Fragment, { key: "judge" },
+      setMod && !costHidden() && React.createElement(React.Fragment, { key: "judge" },
         React.createElement("span", { className: "tk-label" }, TR("судья")),
         React.createElement(Select, { className: "select tk-select", value: mm.judge_model || "",
           onChange: (e) => setMod("judge_model", e.target.value) },

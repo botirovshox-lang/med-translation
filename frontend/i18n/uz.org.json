@@ -264,5 +264,17 @@
  "Смета": "Smeta",
  "Факт": "Fakt",
  "Вызовов": "Chaqiruvlar",
- "вызовы, цена которых неизвестна": "narxi noma'lum chaqiruvlar"
+ "вызовы, цена которых неизвестна": "narxi noma'lum chaqiruvlar",
+ "Обычный режим": "Oddiy rejim",
+ "Модель для шага «": "«",
+ "» (пусто — по умолчанию сервера): ": "» qadami uchun model (bo'sh — server sukut bo'yicha): ",
+ "ревизия": "reviziya",
+ "термины": "atamalar",
+ "сверка терминов": "atamalarni solishtirish",
+ "ремонт": "ta'mir",
+ "Упрощённый режим включён": "Soddalashtirilgan rejim yoqildi",
+ "сейчас: без сумм и моделей на экране": "hozir: ekranda summa va modellar yo'q",
+ "сейчас: обычный режим": "hozir: oddiy rejim",
+ "Режим ★": "Rejim ★",
+ "Режим": "Rejim"
 }

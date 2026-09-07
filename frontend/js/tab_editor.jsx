@@ -1512,7 +1512,7 @@ function TabEditor({ store, toast }) {
       : ratio >= 1.15 ? TR(" — смета выше факта в ") + ratio.toFixed(1) + TR(" раза")
       : ratio <= 0.87 ? TR(" — смета НИЖЕ факта в ") + (1 / ratio).toFixed(1) + TR(" раза")
       : "";
-    const costMsg = !sp ? ""
+    const costMsg = (!sp || costHidden()) ? ""
       : TR(" · потрачено ") + fmtCost(sp.cost)
         + (sp.est != null ? TR(" при смете ") + fmtCost(sp.est) + ratioMsg : "")
         + (sp.unpriced ? TR(" · вызовов по неизвестной цене: ") + sp.unpriced : "");
@@ -2094,7 +2094,7 @@ function TabEditor({ store, toast }) {
             React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
               TR("балл ") + judgeZone[0] + "–" + judgeZone[1] + TR("%, а на оригиналах короче ") + bcMinStems + TR(" слов — от 0"))),
           React.createElement("div", { className: "row", style: { gap: 8 } },
-            bcJudge && React.createElement(Select, { value: judgeModel || "", disabled: !!job,
+            bcJudge && !costHidden() && React.createElement(Select, { value: judgeModel || "", disabled: !!job,
               onChange: (e) => pickJudgeModel(e.target.value), style: { fontSize: 12.5, maxWidth: 170 } },
               gptModels.map(m => React.createElement("option", { key: m.id, value: m.id }, m.label))),
             React.createElement(Switch, { on: bcJudge, label: TR("Судья"), onClick: () => setBcJudge(v => !v) }))),
@@ -2561,7 +2561,7 @@ function TabEditor({ store, toast }) {
           React.createElement("div", { className: "row between" },
             React.createElement("span", { className: "muted" }, TR("Примерное время")),
             React.createElement("b", null, "≈ " + fmtDuration(est.seconds))),
-          est.cost != null && React.createElement("div", { className: "row between" },
+          est.cost != null && !costHidden() && React.createElement("div", { className: "row between" },
             React.createElement("span", { className: "muted" }, TR("Примерная стоимость")),
             React.createElement("b", null, "≈ " + fmtCost(est.cost))),
 
@@ -2750,7 +2750,7 @@ function RunStrip({ job, steps, onStop }) {
       React.createElement("div", { className: "rs-title" },
         React.createElement("span", null, (JOB_LABELS[job.kind] || job.kind) + " — " + phase),
         React.createElement("span", { className: "rs-num" }, job.done + TR(" из ") + job.total),
-        spend && React.createElement("span", { className: "rs-num", title: spendTitle(spend) },
+        spend && !costHidden() && React.createElement("span", { className: "rs-num", title: spendTitle(spend) },
           TR("потрачено ") + fmtCost(spend.cost)
           + (spend.est != null ? TR(" из ≈ ") + fmtCost(spend.est) : "")),
         React.createElement("span", { className: "dim", style: { fontWeight: 500, fontSize: 11.5 } },
@@ -2814,7 +2814,12 @@ function StepRow({ row, on, onToggle, open, onOpen, disabled, models }) {
           React.createElement("span", { className: "dim", style: { fontSize: 11.5, display: "block" } },
             row.hint)))),
     React.createElement("div", { key: row.key + "-model", style: cell({ opacity: on ? 1 : 0.5 }) },
-      row.onModel
+      // Упрощённый режим: выбора моделей нет — их назначает организация,
+      // и сервер всё равно подставит назначенные (`_forced_models`).
+      // Пустая ячейка, а не «по умолчанию»: имя модели тоже прячем.
+      costHidden()
+        ? null
+        : row.onModel
         ? React.createElement(Select, {
             value: row.modelId || "", disabled: disabled,
             onChange: (e) => row.onModel(e.target.value),
@@ -2824,7 +2829,7 @@ function StepRow({ row, on, onToggle, open, onOpen, disabled, models }) {
     React.createElement("div", { key: row.key + "-n", style: cell({ textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 600, fontSize: 13, opacity: on ? 1 : 0.5, color: (est && est.count) ? "var(--text-1)" : "var(--text-3)" }) },
       est && est.count ? est.count : "—"),
     React.createElement("div", { key: row.key + "-c", style: cell({ textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 12.5, color: "var(--text-2)", opacity: on ? 1 : 0.5 }) },
-      est && est.count ? (est.cost != null ? fmtCost(est.cost) : "—") : ""),
+      est && est.count && !costHidden() ? (est.cost != null ? fmtCost(est.cost) : "—") : ""),
     React.createElement("div", { key: row.key + "-x", style: cell({ textAlign: "right" }) },
       React.createElement(IconBtn, { icon: open ? "chevD" : "chevR", sm: true, size: 16,
         label: open ? TR("Свернуть") : TR("Подробнее и запуск по отдельности"),

@@ -68,6 +68,34 @@ function AdminTenants({ ov, toast, onChange }) {
     try { await window.API.tenantUpdate(t.id, { active: !t.active }); toast.success(t.active ? TR("Отключена") : TR("Включена"), t.name); onChange(); }
     catch (e) { toast.error(TR("Не удалось"), e.message || String(e)); }
   };
+  /* Упрощённый режим: ни сумм, ни выбора моделей на экране организации,
+     а модели шагов назначает ОНА, а не браузер. Модели спрашиваем сразу
+     после включения: включить режим и не назначить модели — значит отдать
+     все шаги умолчаниям сервера, о чём администратор потом не вспомнит. */
+  const simpleMode = async (t) => {
+    const on = !t.simple;
+    if (!on) {
+      try { await window.API.tenantUpdate(t.id, { simple: false }); toast.success(TR("Обычный режим"), t.name); onChange(); }
+      catch (e) { toast.error(TR("Не удалось"), e.message || String(e)); }
+      return;
+    }
+    const cur = t.models || {};
+    const list = (ov.models || []).map(m => m.id).join(", ");
+    const ask = (step, label) => {
+      const v = prompt(TR("Модель для шага «") + label + TR("» (пусто — по умолчанию сервера): ") + list, cur[step] || "");
+      return v === null ? null : v.trim();
+    };
+    const steps = [["translate", TR("перевод")], ["review", TR("ревизия")], ["backcheck", TR("back-check")],
+                   ["termcheck", TR("термины")], ["termaudit", TR("сверка терминов")], ["repair", TR("ремонт")]];
+    const models = {};
+    for (const [k, label] of steps) {
+      const v = ask(k, label);
+      if (v === null) return;
+      if (v) models[k] = v;
+    }
+    try { await window.API.tenantUpdate(t.id, { simple: true, models }); toast.success(TR("Упрощённый режим включён"), t.name); onChange(); }
+    catch (e) { toast.error(TR("Не удалось"), e.message || String(e)); }
+  };
   const del = async (t) => {
     if (!confirm(TR("Удалить организацию «") + t.name + TR("» вместе с её пользователями?\nПроекты должны быть удалены заранее."))) return;
     try { const r = await window.API.tenantDelete(t.id); toast.success(TR("Организация удалена"), TR("пользователей: ") + r.usersRemoved); onChange(); }
@@ -97,6 +125,9 @@ function AdminTenants({ ov, toast, onChange }) {
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => topUp(t) }, TR("Пополнить")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setCaps(t) }, TR("Потолки")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLogFor(logFor === t.id ? null : t.id) }, TR("Журнал")),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => simpleMode(t),
+            title: t.simple ? TR("сейчас: без сумм и моделей на экране") : TR("сейчас: обычный режим") },
+            t.simple ? TR("Режим ★") : TR("Режим")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => toggle(t) }, t.active === false ? TR("Включить") : TR("Отключить")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => del(t) }, TR("Удалить")))),
         logFor === t.id && React.createElement("tr", { key: t.id + ":log" },

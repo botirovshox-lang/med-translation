@@ -4076,7 +4076,8 @@ def admin_overview(request: Request):
             "jobs": {"active": [dict(_job_public(j), tenant=_tenant_of(j))
                                 for j in jobs if j["status"] in ("queued", "running")],
                      "recent": [dict(_job_public(j), tenant=_tenant_of(j)) for j in jobs[:15]],
-                     "queued": _JOB_QUEUE.qsize(), "workerAlive": worker_alive},
+                     "queued": sum(1 for j in _JOBS.values() if j["status"] == "queued"),
+                     "workerAlive": worker_alive},
             "process": {"uptimeSec": int(time.time() - _SERVER_STARTED), "usage": proc,
                         "stateBytes": state_bytes, "sessions": len(_SESSIONS),
                         "openaiKey": bool(os.environ.get("OPENAI_API_KEY")),
@@ -18808,6 +18809,121 @@ def _job_busy(pid: int, kind: str) -> bool:
                for j in list(_JOBS.values()))
 
 
+# ─── Очередь: своя каждому, исполнитель один ─────────────────────────
+# Исполнитель прогонов ОДИН (инвариант 2: второй писатель того же проекта
+# молча теряет работу одного из них). Значит «своя очередь каждому» нельзя
+# сделать параллельностью — только порядком, и порядок этот обязан быть
+# честным: пять тестировщиков, запустивших книги одновременно, не должны
+# ждать друг друга целиком.
+#
+# Отбор по номеру задачи этого не даёт. Единица планирования там — ЗАДАЧА,
+# то есть книга на часы: сосед, вставший вторым, ждёт два часа при любом
+# порядке отбора. Поэтому единицей планирования сделана ПОРЦИЯ:
+#
+#   * у каждой задачи есть БИЛЕТ (`qseq`) — он и задаёт порядок;
+#   * между порциями задача СМОТРИТ, ждёт ли кто-то ещё, и если ждёт —
+#     уступает исполнителя: берёт новый (самый большой) билет, возвращается
+#     в очередь со СВОИМ остатком и встаёт в хвост;
+#   * следующей идёт та, чей билет меньше, — то есть чужая.
+#
+# Уступивший ничего не теряет: сделанные сегменты сохранены, счётчики и
+# расход накапливаются в самой задаче (`_usage_begin` продолжает тот же
+# счётчик, а не заводит новый), метка отката ревизии живёт в параметрах.
+# Отчёт о расходе пишется РОВНО ОДИН раз — на настоящем завершении.
+
+QUEUE_YIELD = os.environ.get("QUEUE_YIELD", "1").strip().lower() not in ("0", "false", "no", "off")
+_QSEQ = [0]
+
+
+def _next_qseq() -> int:
+    """Билет очереди. В базе — общий счётчик (исполнитель и API — разные
+    процессы), у файла — свой: там и процесс один.
+
+    Начинается он ВЫШЕ всех уже выданных билетов, и это не мелочь. У задачи
+    без билета им служит её номер (`qseq or id` — так читаются задачи,
+    поставленные прежним кодом), поэтому счётчик, стартующий с нуля, выдал бы
+    уступившей задаче билет МЕНЬШЕ, чем у ждущих. Она тут же забрала бы
+    исполнителя обратно, и уступка превратилась бы в пустую трату: на замере
+    так и вышло — первый прогон доел две порции подряд, пока сосед ждал."""
+    floor = _QSEQ[0]
+    for j in list(_JOBS.values()):
+        floor = max(floor, int(j.get("qseq") or j.get("id") or 0))
+    if STORE.kind == "pg":
+        try:
+            got = STORE.next_counter("jobSeq", floor)
+            _QSEQ[0] = max(_QSEQ[0], got)
+            return got
+        except Exception as e:
+            print(f"[backend] билет очереди из базы не взялся: {e}", file=sys.stderr)
+    _QSEQ[0] = floor + 1
+    return _QSEQ[0]
+
+
+def _queued_jobs() -> list:
+    """Кто сейчас ждёт очереди — по порядку билетов.
+
+    Источник разный, и это не дублирование: при внешнем исполнителе задачи
+    живут в базе (зеркало в памяти API отстаёт до двух секунд, и решать по
+    нему «уступать ли» значило бы уступать вслепую), а без него — в памяти
+    процесса, где базы нет вовсе."""
+    if STORE.kind == "pg":
+        try:
+            return STORE.queued_summary()
+        except Exception as e:
+            print(f"[backend] очередь не прочитана: {e}", file=sys.stderr)
+            return []
+    with _JOBS_LOCK:
+        qs = [{"id": j["id"], "tenant": _tenant_of(j), "project": j["project"],
+               "qseq": j.get("qseq") or j["id"]}
+              for j in _JOBS.values() if j["status"] == "queued"]
+    qs.sort(key=lambda x: (x["qseq"], x["id"]))
+    return qs
+
+
+def _job_should_yield(job: dict) -> bool:
+    """Уступить ли исполнителя после этой порции.
+
+    Уступаем только ЧУЖОМУ: своей же второй задаче уступать незачем —
+    человек всё равно ждёт себя, а перекладывание порций между своими
+    задачами только растянет обе."""
+    if not QUEUE_YIELD:
+        return False
+    mine = _tenant_of(job)
+    return any(q["tenant"] != mine and q["id"] != job["id"] for q in _queued_jobs())
+
+
+def _job_yield(job: dict, remaining: list) -> None:
+    """Вернуть задачу в очередь с остатком и новым билетом.
+
+    Билет НОВЫЙ и самый большой — иначе уступивший тут же и заберёт
+    исполнителя обратно: у него меньше номер, и по любому порядку «кто
+    раньше встал» он снова первый. Именно смена билета и делает очередь
+    круговой."""
+    job["ids"] = list(remaining)
+    job["status"] = "queued"
+    job["qseq"] = _next_qseq()
+    job["yields"] = int(job.get("yields") or 0) + 1
+    job["recent"] = []
+    _job_persist(job)
+
+
+def _queue_place(job: dict) -> dict:
+    """Место задачи в очереди: сколько прогонов впереди и сколько из них
+    чужих. ТОЛЬКО ЧИСЛА: чей это прогон и по какому проекту — не наше дело
+    показывать соседу (инвариант 11).
+
+    Считается по очереди, а не по зеркалу в памяти API: то отстаёт до двух
+    секунд, а «вы третий» с отставанием — это «вы не знаете, который вы»."""
+    if job.get("status") != "queued":
+        return {}
+    q = _queued_jobs()
+    mine = _tenant_of(job)
+    ahead = [x for x in q if (x["qseq"], x["id"]) < ((job.get("qseq") or job["id"]), job["id"])]
+    return {"queuePos": len(ahead) + 1, "queueAhead": len(ahead),
+            "queueOthers": sum(1 for x in ahead if x["tenant"] != mine),
+            "queueTotal": len(q)}
+
+
 def _job_public(job: dict) -> dict:
     """Наружу отдаём без внутренних полей (список id и флаг остановки).
 
@@ -18816,6 +18932,7 @@ def _job_public(job: dict) -> dict:
     несколько секунд — то есть это самая частая утечка того, что обещано
     не показывать."""
     out = {k: v for k, v in job.items() if k not in ("ids", "stop")}
+    out.update(_queue_place(job))
     if out.get("usage") and _hide_cost():
         out["usage"] = {k: v for k, v in out["usage"].items()
                         if k not in ("cost", "models", "steps", "unpriced")}
@@ -19138,6 +19255,14 @@ def _job_run(job: dict):
         # запущенный при остатке в цент, доработал бы до конца за наш счёт.
         if _job_limit_hit(job):
             break
+        # Уступить исполнителя, если ждёт ЧУЖОЙ прогон. Проверка стоит перед
+        # порцией, а не после: остаток считается по ещё не тронутым `ids`,
+        # и уступив после — пришлось бы помнить, какая порция уже прошла.
+        # Не на первой порции: задача, уступившая до единой порции, ходила бы
+        # по кругу, не делая ничего.
+        if i and _job_should_yield(job):
+            _job_yield(job, ids[i:])
+            return
         chunk = ids[i:i + chunk_size]
         job["recent"] = chunk          # клиент подтянет только эти сегменты
         last_err = None
@@ -19190,11 +19315,44 @@ def _job_run(job: dict):
     job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _pick_queued_local() -> Optional[dict]:
+    """Следующая задача для исполнителя В ЭТОМ процессе (без базы).
+
+    Правило РОВНО то же, что у `claim_job` в базе, и это обязательно: два
+    разных правила отбора — два разных ответа на вопрос «кто следующий»,
+    и очередь вела бы себя по-разному в зависимости от хранилища.
+    Порядок — по билету; задача проекта, у которого уже идёт прогон,
+    не берётся."""
+    with _JOBS_LOCK:
+        busy = {j["project"] for j in _JOBS.values() if j["status"] == "running"}
+        qs = [j for j in _JOBS.values()
+              if j["status"] == "queued" and j["project"] not in busy]
+        if not qs:
+            return None
+        qs.sort(key=lambda j: (j.get("qseq") or j["id"], j["id"]))
+        job = qs[0]
+        job["status"] = "running"
+        return job
+
+
 def _job_loop():
+    """Один исполнитель, очередь по билетам. Очередь-сигнал (`_JOB_QUEUE`)
+    только будит поток: сам выбор идёт по `_JOBS`, иначе уступившая задача
+    вставала бы в хвост FIFO, а не в хвост по билету, и порядок расходился
+    бы с тем, что делает база."""
     while True:
-        job = _JOB_QUEUE.get()
+        job = _pick_queued_local()
+        if job is None:
+            try:
+                _JOB_QUEUE.get(timeout=2)
+                _JOB_QUEUE.task_done()
+            except _queue.Empty:
+                pass
+            continue
         _job_execute(job)
-        _JOB_QUEUE.task_done()
+        if job.get("status") == "queued":
+            # Уступила — будим себя же: следующий круг выберет по билету.
+            _JOB_QUEUE.put(1)
 
 
 def _job_execute(job: dict):
@@ -19239,7 +19397,18 @@ def _job_execute(job: dict):
                 job["counters"]["terms_dropped"] = lost
             # До save_state: запись о расходе должна уехать на диск вместе
             # с остальным результатом прогона, а не ждать следующего сохранения.
-            _usage_end(job)
+            #
+            # УСТУПИВШАЯ задача не завершена: она вернулась в очередь со своим
+            # остатком. Отчёт о расходе ей писать нельзя — вышло бы по записи
+            # на порцию, и смета (`est`, одна на весь прогон) посчиталась бы
+            # столько же раз, испортив поправку estRatio. Счётчик при этом
+            # не обнуляется: `_usage_begin` на следующем заходе продолжает
+            # ТОТ ЖЕ `job["usage"]`, и итог придёт полным.
+            if job.get("status") == "queued":
+                with _USAGE_LOCK:
+                    globals()["_USAGE_SINK"] = None
+            else:
+                _usage_end(job)
             try:
                 save_state(STATE)
             except Exception as e:
@@ -19353,6 +19522,10 @@ def create_job(pid: int, req: JobRequest):
             "params": dict(req.params or {}),
             "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "started": None, "finished": None,
+            # Билет очереди: по нему исполнитель и выбирает следующую задачу.
+            # Уступив между порциями, задача берёт НОВЫЙ билет и встаёт
+            # в хвост — так очередь и становится круговой.
+            "qseq": _next_qseq(),
             "ids": ids, "stop": False, "recent": [],
         }
         _JOBS[job["id"]] = job
@@ -19363,7 +19536,7 @@ def create_job(pid: int, req: JobRequest):
         pass
     else:
         _ensure_job_worker()
-        _JOB_QUEUE.put(job)
+        _JOB_QUEUE.put(1)          # сигнал «появилась работа», выбор — по билету
     return {"ok": True, "job": _job_public(job)}
 
 
@@ -19870,7 +20043,8 @@ def _restore_jobs() -> None:
         # на своём старте); API держит только зеркало для показа.
         if not EXTERNAL_WORKER and j.get("status") in ("queued", "running"):
             j["status"], j["stop"], j["started"] = "queued", False, None
-            _JOB_QUEUE.put(j)
+            j.setdefault("qseq", j["id"])
+            _JOB_QUEUE.put(1)
             requeued += 1
     if jobs:
         print(f"[backend] прогонов из базы: {len(jobs)}, поставлено в очередь заново: {requeued}",

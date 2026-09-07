@@ -58,10 +58,18 @@ def run() -> None:
         main._job_execute(job)
         try:
             # Готовый проект — в API: он перечитает документ по этой эпохе.
+            # Поднимаем и у УСТУПИВШЕЙ задачи: сделанные ею сегменты уже
+            # в документе, и ждать конца всего прогона, чтобы их показать,
+            # значило бы держать экран человека в прошлом.
             main.STORE.bump_epoch("doc:" + key)
         except Exception as e:
             print(f"[worker] эпоха проекта не поднята: {e}", file=sys.stderr)
-        print(f"[worker] прогон №{job['id']} завершён: {job.get('status')}", file=sys.stderr)
+        if job.get("status") == "queued":
+            print(f"[worker] прогон №{job['id']} уступил очередь: сделано "
+                  f"{job.get('done')} из {job.get('total')}, остаток вернулся в очередь",
+                  file=sys.stderr)
+        else:
+            print(f"[worker] прогон №{job['id']} завершён: {job.get('status')}", file=sys.stderr)
 
 
 if __name__ == "__main__":

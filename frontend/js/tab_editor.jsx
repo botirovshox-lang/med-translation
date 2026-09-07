@@ -2741,8 +2741,20 @@ function spendTitle(sp) {
 function RunStrip({ job, steps, onStop }) {
   const spend = spendOf(job);
   const pct = Math.round(job.done / Math.max(1, job.total) * 100);
+  /* Место в очереди считает СЕРВЕР (`queuePos`/`queueAhead`): исполнитель
+     один на всех, и задачи ходят по кругу — уступая друг другу между
+     порциями. Придуманное браузером число было бы враньём: он не видит ни
+     чужих задач, ни билетов очереди. Нет числа — говорим просто «в очереди»,
+     а не выдумываем.
+
+     Прогон, уступивший исполнителя, снова показывается «в очереди» —
+     и это правда: он ждёт своей следующей порции. Сделанное при этом
+     сохранено, и счётчик «N из M» не откатывается. */
+  const ahead = job.status === "queued" && job.queueAhead != null ? job.queueAhead : null;
   const phase = job.stopping ? TR("останавливается")
-    : job.status === "queued" ? TR("в очереди") : TR("идёт на сервере");
+    : job.status === "queued"
+      ? (ahead ? TR("в очереди, впереди ") + ahead : TR("в очереди, следующий"))
+    : TR("идёт на сервере");
   const unknown = steps.length > 0 && steps.every(st => st.total == null);
   return React.createElement("div", { className: "run-strip" },
     React.createElement(Spinner, null),

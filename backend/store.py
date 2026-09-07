@@ -114,6 +114,9 @@ class FileStore:
     def claim_job(self):
         return None
 
+    def queued_summary(self) -> list:
+        return []
+
     def reset_running_jobs(self) -> list:
         return []
 
@@ -520,19 +523,62 @@ class PgStore:
                 (job["id"], job.get("status"), job.get("tenant"), job.get("project"), _dumps(doc)))
 
     def claim_job(self) -> Optional[dict]:
-        """Забрать одну задачу из очереди. SKIP LOCKED: два воркера не возьмут
-        одну и ту же, взятая помечается running в той же транзакции."""
+        """Забрать одну задачу из очереди — по БИЛЕТУ, а не по номеру.
+
+        Порядок задаёт `doc->>'qseq'` (при отсутствии — номер задачи): его
+        выдают при постановке в очередь и ОБНОВЛЯЮТ, когда задача уступает
+        исполнителя между порциями. Отсюда и берётся «своя очередь каждому»:
+        уступивший прогон получает новый, самый большой билет и встаёт в хвост,
+        а следующий по кругу — чужой. Порядок по `id` этого не умеет: у книги
+        номер меньше, и она забирала бы исполнителя обратно немедленно.
+
+        Задача проекта, у которого УЖЕ идёт прогон, не берётся: два писателя
+        одного документа — это молча потерянная работа одного из них
+        (`DocConflict` выбрасывает правки). Сегодня исполнитель один и такого
+        случиться не может; условие стоит, чтобы второй воркер перестал
+        зависеть от честного слова.
+
+        Отбор и захват — РАЗНЫЕ запросы, поэтому захват сверяет статус
+        (`AND status = 'queued'`) и повторяется: между ними задачу успевает
+        погасить `stop_job`, и без сверки воркер запустил бы остановленную.
+        `doc` берётся из того же UPDATE — из отдельного SELECT он был бы
+        снимком ДО остановки, то есть со старым стоп-флагом.
+        """
+        for _ in range(8):
+            with self._cursor() as cur:
+                cur.execute(
+                    "SELECT id FROM jobs j WHERE status = 'queued'"
+                    " AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.status = 'running'"
+                    "                 AND r.project = j.project)"
+                    " ORDER BY COALESCE((doc->>'qseq')::bigint, id), id LIMIT 1")
+                row = cur.fetchone()
+                if not row:
+                    return None
+                jid = row[0]
+                cur.execute(
+                    "UPDATE jobs SET status = 'running', updated = now()"
+                    " WHERE id = %s AND status = 'queued' RETURNING doc", (jid,))
+                got = cur.fetchone()
+            if got:
+                doc = json.loads(got[0]) if isinstance(got[0], str) else got[0]
+                doc["status"] = "running"
+                return doc
+        return None
+
+    def queued_summary(self) -> list:
+        """Кто ждёт очереди: [{id, tenant, project, qseq}] по порядку билетов.
+
+        Нужен исполнителю, чтобы решить, уступать ли между порциями, и API —
+        чтобы честно назвать место в очереди. Без списка место пришлось бы
+        выдумывать, а выдуманное число — то самое враньё, ради которого
+        состав прогона вообще считает сервер."""
         with self._cursor() as cur:
             cur.execute(
-                "UPDATE jobs SET status = 'running', updated = now() WHERE id = ("
-                " SELECT id FROM jobs WHERE status = 'queued' ORDER BY id"
-                " LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING doc")
-            got = cur.fetchone()
-        if not got:
-            return None
-        doc = json.loads(got[0]) if isinstance(got[0], str) else got[0]
-        doc["status"] = "running"
-        return doc
+                "SELECT id, tenant, project, COALESCE((doc->>'qseq')::bigint, id)"
+                " FROM jobs WHERE status = 'queued'"
+                " ORDER BY COALESCE((doc->>'qseq')::bigint, id), id")
+            return [{"id": r[0], "tenant": r[1], "project": r[2], "qseq": r[3]}
+                    for r in cur.fetchall()]
 
     def reset_running_jobs(self) -> list:
         """running после рестарта воркера — оборванные: назад в очередь."""

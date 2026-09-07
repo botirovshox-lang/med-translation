@@ -96,34 +96,54 @@ class FakeCur:
             self._one = got
         elif s.startswith("INSERT INTO jobs"):
             jid, status, tenant, project, text = params
-            self.conn.jobs[jid] = (status, project, text)
+            self.conn.jobs[jid] = (status, project, text, tenant)
         elif s.startswith("DELETE FROM jobs"):
             self.conn.jobs.pop(params[0], None)
+        # Отбор и захват — РАЗНЫЕ запросы: между ними задачу успевает погасить
+        # стоп, поэтому захват сверяет статус. Подражаем этому буквально,
+        # иначе тест не увидел бы, что сверки нет.
+        elif s.startswith("SELECT id FROM jobs j WHERE status = 'queued'"):
+            busy = {pr for (st, pr, _t, _tn) in self.conn.jobs.values() if st == "running"}
+            free = [(self._qseq(i), i) for i, (st, pr, _t, _tn) in self.conn.jobs.items()
+                    if st == "queued" and pr not in busy]
+            self._one = (min(free)[1],) if free else None
         elif s.startswith("UPDATE jobs SET status = 'running'"):
-            queued = [i for i, (st, _p, _t) in sorted(self.conn.jobs.items()) if st == "queued"]
-            if queued:
-                i = queued[0]
-                st, pr, t = self.conn.jobs[i]
-                self.conn.jobs[i] = ("running", pr, t)
-                self._one = (json.loads(t),)
+            got = self.conn.jobs.get(params[0])
+            if got and got[0] == "queued":
+                self.conn.jobs[params[0]] = ("running", got[1], got[2], got[3])
+                self._one = (json.loads(got[2]),)
             else:
                 self._one = None
+        elif s.startswith("SELECT id, tenant, project"):
+            out = [(i, tn, pr, self._qseq(i))
+                   for i, (st, pr, _t, tn) in self.conn.jobs.items() if st == "queued"]
+            out.sort(key=lambda r: (r[3], r[0]))
+            self._rows = out
         elif s.startswith("UPDATE jobs SET status = 'queued'"):
             out = []
-            for i, (st, pr, t) in list(self.conn.jobs.items()):
+            for i, (st, pr, t, tn) in list(self.conn.jobs.items()):
                 if st == "running":
-                    self.conn.jobs[i] = ("queued", pr, t)
+                    self.conn.jobs[i] = ("queued", pr, t, tn)
                     out.append((i,))
             self._rows = out
         elif s.startswith("SELECT id FROM jobs WHERE project"):
-            got = [i for i, (st, pr, _t) in sorted(self.conn.jobs.items())
+            got = [i for i, (st, pr, _t, _tn) in sorted(self.conn.jobs.items())
                    if pr == params[0] and st in ("queued", "running")]
             self._one = (got[0],) if got else None
         elif s.startswith("SELECT doc FROM jobs WHERE id"):
             got = self.conn.jobs.get(params[0])
             self._one = (json.loads(got[2]),) if got else None
         elif s.startswith("SELECT doc FROM jobs"):
-            self._rows = [(json.loads(t),) for _, (st, pr, t) in sorted(self.conn.jobs.items())]
+            self._rows = [(json.loads(t),) for _, (st, pr, t, tn) in sorted(self.conn.jobs.items())]
+
+    def _qseq(self, jid):
+        """Билет задачи; нет — её номер. Ровно так читает и настоящий SQL."""
+        try:
+            doc = json.loads(self.conn.jobs[jid][2])
+        except Exception:
+            return jid
+        v = doc.get("qseq")
+        return int(v) if v is not None else jid
     def fetchall(self): return self._rows
     def fetchone(self): return self._one
     def close(self): pass
@@ -226,6 +246,49 @@ j2 = w2.claim_job()
 check(j2 and j2["id"] == 2, "вторая задача — второй claim, не та же")
 check(w2.claim_job() is None, "очередь пуста — None")
 check(w2.reset_running_jobs() == [1, 2], "рестарт воркера возвращает running в очередь")
+
+# Очередь ведёт БИЛЕТ, а не номер: уступив исполнителя между порциями, задача
+# берёт новый (самый большой) билет и встаёт в хвост. По номеру этого не
+# сделать — у книги он меньше, и она забирала бы исполнителя обратно.
+w1.save_job({"id": 1, "kind": "full", "status": "queued", "tenant": "t", "project": 7,
+             "stop": False, "qseq": 9})
+w1.save_job({"id": 2, "kind": "full", "status": "queued", "tenant": "u", "project": 8,
+             "stop": False, "qseq": 3})
+j = w2.claim_job()
+check(j and j["id"] == 2, "claim идёт по билету, а не по номеру: " + str(j and j["id"]))
+q = w2.queued_summary()
+check([x["id"] for x in q] == [1] and q[0]["tenant"] == "t",
+      "в очереди виден остаток с организацией: " + str(q))
+check((w2.claim_job() or {}).get("id") == 1, "чужой проект берётся следующим")
+w2.reset_running_jobs()
+# А вторая задача ТОГО ЖЕ проекта — нет: два писателя одного документа
+# означают молча потерянную работу одного из них (DocConflict).
+w1.save_job({"id": 3, "kind": "full", "status": "running", "tenant": "t", "project": 7,
+             "stop": False, "qseq": 1})
+w1.save_job({"id": 4, "kind": "full", "status": "queued", "tenant": "t", "project": 7,
+             "stop": False, "qseq": 2})
+w1.save_job({"id": 1, "kind": "full", "status": "done", "tenant": "t", "project": 7,
+             "stop": False, "qseq": 9})
+w1.save_job({"id": 2, "kind": "full", "status": "done", "tenant": "u", "project": 8,
+             "stop": False, "qseq": 3})
+check(w2.claim_job() is None,
+      "вторая задача занятого проекта не берётся, хотя её билет самый маленький")
+w1.save_job({"id": 3, "kind": "full", "status": "done", "tenant": "t", "project": 7,
+             "stop": False, "qseq": 1})
+check((w2.claim_job() or {}).get("id") == 4, "освободился проект — задача пошла")
+w2.reset_running_jobs()
+for _jid in (3, 4):
+    w1.save_job({"id": _jid, "kind": "full", "status": "done", "tenant": "t", "project": 7,
+                 "stop": False, "qseq": _jid})
+# Остановленная задача исполнителю не достаётся: `stop_job` гасит ЖДУЩУЮ
+# задачу прямо в очереди, и захват обязан это увидеть — отбор и захват
+# разные запросы, между ними успевает пройти остановка.
+w1.save_job({"id": 2, "kind": "full", "status": "stopped", "tenant": "u", "project": 8,
+             "stop": True, "qseq": 3})
+w1.save_job({"id": 1, "kind": "full", "status": "queued", "tenant": "t", "project": 7,
+             "stop": False, "qseq": 9})
+j = w2.claim_job()
+check(j and j["id"] == 1, "остановленную задачу claim не берёт, берёт следующую живую")
 got = w1.get_job(1)
 got["stop"] = True
 w1.save_job(got)

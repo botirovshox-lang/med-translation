@@ -164,6 +164,10 @@
     auditAll:      (limit)                  => call("GET",    "/admin/audit?all=1&limit=" + (limit || 300)),
     tenantUpdate:  (tid, body)              => call("POST",   `/admin/tenants/${tid}`, body),
     userDelete:    (uid)                    => call("DELETE", `/admin/users/${uid}`),
+    // Область действия записи глоссария: знание проекта ↔ знание организации.
+    promoteTerm:   (body)                   => call("POST",   "/glossary/promote", body),
+    restrictTerm:  (body)                   => call("POST",   "/glossary/restrict", body),
+    promotions:    ()                       => call("GET",    "/glossary/promotions"),
     logins:        (limit)                  => call("GET",    "/admin/logins?all=1&limit=" + (limit || 200)),
     runsHistory:   (limit)                  => call("GET",    "/admin/runs?all=1&limit=" + (limit || 100)),
     // Тест-группа: наборы с числом мест, заведённые тестировщики, анкеты.

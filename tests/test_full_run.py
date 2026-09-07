@@ -448,7 +448,10 @@ check(job3["done"] == 2, "и счётчик считается: " + str(job3["do
 main.batch_translate = _bt
 
 print("\n=== 19. Одобрять нечего — прогон не падает и ничего не чинит ===")
-job2 = dict(job, id=2, status="running", done=0, counters={}, ids=[], total=0)
+# params — СВОЙ словарь, а не общий с предыдущей задачей: одобрение пачки
+# помечается в params (`termsApplied`), чтобы уступка исполнителя и рестарт
+# не заводили вторую пачку, а `dict(job, ...)` копирует ссылку, не значение.
+job2 = dict(job, id=2, status="running", done=0, counters={}, ids=[], total=0, params={})
 main._job_run(job2)
 check(job2["status"] == "done" and job2["counters"].get("termsApproved") == 0,
       "пустое одобрение — это не ошибка")

@@ -322,13 +322,16 @@ function ImagesCard({ project, store, toast }) {
          разбора: цена за миллион токенов ничего не говорит человеку о том,
          во что обойдётся вот эта книга. */
       !running && project.sourceDocx && !forgetOpen && React.createElement("div", { className: "col", style: { gap: 6 } },
-        React.createElement("div", { className: "row between", style: { gap: 10 } },
+        // Упрощённый режим: ни выбора модели, ни её имени. Модель разбора
+        // назначает организация, и сервер подставит назначенную (`ocr_model`
+        // входит в _MODEL_PARAM_KEYS) — выбор из localStorage сюда не уедет.
+        !costHidden() && React.createElement("div", { className: "row between", style: { gap: 10 } },
           React.createElement("span", { className: "muted", style: { fontSize: 13 } }, TR("Модель чтения")),
           React.createElement(Select, {
             value: useModel, style: { width: 260 },
             onChange: (e) => pickModel(e.target.value) },
             models.map(m => React.createElement("option", { key: m.id, value: m.id },
-              m.label + (estOf(m.id) && !costHidden() ? " — ~$" + estOf(m.id).toFixed(2) : ""))))),
+              m.label + (estOf(m.id) ? " — ~$" + estOf(m.id).toFixed(2) : ""))))),
         mInfo && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
           costHidden() ? "" : TR("цена модели: вход $") + mInfo.in + TR(" · выход $") + mInfo.out + TR(" за 1М токенов")
           + (rep && rep.estTokens && rep.estTokens.in
@@ -386,6 +389,16 @@ function TabExport({ store, toast }) {
   const [opts, setOpts] = useState({ source: true, notes: true, qa: false, glossary: true });
   const [busy, setBusy] = useState(false);
   const [attaching, setAttaching] = useState(false);
+  /* Умеет ли ЭТОТ сервер собирать PDF. Спрашиваем каталог, а не гадаем:
+     конвертер — внешняя программа, и на разных установках его то есть,
+     то нет. Ответ приходит асинхронно, поэтому до него формат описывается
+     осторожно — обещать нечего. */
+  const [pdfReady, setPdfReady] = useState(false);
+  useEffect(() => {
+    window.API && window.API.safeCall(() => window.API.models())
+      .then(d => { if (d) setPdfReady(!!d.pdfReady); });
+  }, []);
+
   const fileRef = React.useRef(null);
   if (!project) return React.createElement("div", { className: "page" }, React.createElement(NoProject, { store }));
 
@@ -474,7 +487,12 @@ function TabExport({ store, toast }) {
      srcDoc ? TR("Перевод подставляется в исходный файл: шрифты, картинки, таблицы, колонтитулы и выделения внутри абзаца на месте")
             : TR("Нужен исходный .docx — приложите его ниже"), "file"],
     ["docx", TR("DOCX — новый файл"), TR("Собирается с нуля: таблица оригинал/перевод либо перевод абзацами. Оформление исходника не переносится"), "file"],
-    ["pdf", "PDF", TR("Пока недоступен — используйте DOCX"), "file"],
+    // PDF собирается ИЗ «как оригинал» сторонним конвертером, поэтому и
+    // выглядит так же. Нет конвертера на сервере — говорим об этом прямо,
+    // а не показываем кнопку, которая кончится отказом.
+    ["pdf", "PDF", pdfReady
+      ? TR("Тот же документ «как оригинал», собранный в PDF: вёрстка, картинки и колонтитулы на месте")
+      : TR("На сервере нет конвертера — используйте DOCX"), "file"],
     ["xlsx", "Excel", TR("Таблица: оригинал и перевод по столбцам"), "columns"],
   ];
 

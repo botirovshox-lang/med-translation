@@ -620,6 +620,29 @@ def _scope_of(entry: dict) -> tuple:
             _tenant_of(entry))
 
 
+def _gproj(entry: dict):
+    """Проект, которому принадлежит знание, либо None — вся организация.
+
+    Поля НЕТ у всего, что заведено до этой правки, и читается это как «знание
+    организации» — тот же закон миграции, что у `lang`, `domain` и `tenant`:
+    боевые данные не переписываются, а читаются по-старому. Иначе выкат
+    обнулил бы работающий глоссарий первого клиента одним движением."""
+    v = entry.get("project")
+    return v if isinstance(v, int) else None
+
+
+def _entry_here(entry: dict, pid) -> bool:
+    """Применимо ли знание к ЭТОМУ проекту.
+
+    Проектное знание соседу не видно НИ ОДНИМ путём: ни промптом
+    (`_get_context`), ни требованием (`_verified_hits`). Второе не менее
+    важно первого — по требованиям считаются нарушения и ходит ремонт,
+    и запись, невидимая в промпте, но требуемая проверкой, дала бы вечное
+    «расходится с глоссарием», которое нечем закрыть."""
+    own = _gproj(entry)
+    return own is None or own == pid
+
+
 def _project_scope(project: Optional[dict]) -> tuple:
     if project is None:
         return (DEFAULT_GLOSS_LANG, DEFAULT_GLOSS_DOMAIN, _current_tenant())
@@ -732,6 +755,7 @@ def _get_context(text: str, with_tm: bool = True, project: Optional[dict] = None
                 seen_ids.add(id(g))
                 candidates.append(g)
     scope = _project_scope(project)
+    pid = (project or {}).get("id")
     for g in candidates:
         src = g.get("src", "")
         if not src:
@@ -739,6 +763,11 @@ def _get_context(text: str, with_tm: bool = True, project: Optional[dict] = None
         # Чужая языковая пара или тематика — мимо: в промпт уходят только
         # записи, заведённые для таких же проектов.
         if _scope_of(g) != scope:
+            continue
+        # Знание соседнего проекта сюда не идёт: у медицинского учебника и
+        # у договора «сторона» и «показание» значат разное, и общий словарь
+        # превращает это в спор, которого никто не заказывал.
+        if not _entry_here(g, pid):
             continue
         # Язык берём у САМОЙ записи: от него зависит таблица окончаний,
         # а записи чужой языковой пары сюда и не доходят (проверка выше).
@@ -751,7 +780,11 @@ def _get_context(text: str, with_tm: bool = True, project: Optional[dict] = None
     best: dict = {}
     for h in hits:
         key = h["_form"].lower()
-        if key not in best or _hit_rank(h) > _hit_rank(best[key]):
+        # Проектная запись сильнее общей: она и заведена затем, чтобы
+        # переопределить общее правило именно здесь. Ранг решает только
+        # между записями одного уровня видимости.
+        if key not in best or (_gproj(h) is not None, _hit_rank(h)) > (
+                _gproj(best[key]) is not None, _hit_rank(best[key])):
             best[key] = h
     # Длинные термины первыми: меньше риск перекрытия плейсхолдеров
     hits = sorted(best.values(), key=lambda x: len(x["src"]), reverse=True)[:15]
@@ -760,13 +793,14 @@ def _get_context(text: str, with_tm: bool = True, project: Optional[dict] = None
     # TM хранит языковую пару с самого начала — и обязана её учитывать: без
     # этого RU→DE проект получил бы английский перевод как точное совпадение,
     # да ещё со статусом confirmed.
-    tm_hit = next(
-        (t for t in STATE.get("tm", [])
-         if t.get("src", "").strip().lower() == text.strip().lower()
-         and (t.get("lang") or DEFAULT_GLOSS_LANG) == scope[0]
-         and _tenant_of(t) == scope[2]),
-        None,
-    )
+    # Пара своего проекта сильнее общей — по той же причине, что и у
+    # глоссария: она и заведена, чтобы переопределить общее правило здесь.
+    tm_pool = [t for t in STATE.get("tm", [])
+               if t.get("src", "").strip().lower() == text.strip().lower()
+               and (t.get("lang") or DEFAULT_GLOSS_LANG) == scope[0]
+               and _tenant_of(t) == scope[2] and _entry_here(t, pid)]
+    tm_hit = next((t for t in tm_pool if _gproj(t) == pid and pid is not None),
+                  tm_pool[0] if tm_pool else None)
     return hits, tm_hit
 
 
@@ -1559,6 +1593,13 @@ def _job_limit_hit(job: dict) -> bool:
     job["status"] = "stopped"
     job["stopReason"] = "limit"
     job["error"] = JOB_STOP_LIMIT
+    # Исчерпанный лимит — не поломка, но и не то, о чём узнают вовремя:
+    # прогон встал посреди книги, а поднять потолок может только владелец
+    # сервиса. Поэтому сообщаем ему, а не ждём жалобы.
+    if tg_mod:
+        tg_mod.notify_admin_async(
+            "💸 Лимит организации «%s» исчерпан: прогон №%s остановлен на %s из %s"
+            % (_tenant_of(job), job.get("id"), job.get("done"), job.get("total")))
     job["counters"]["limitStop"] = 1
     return True
 
@@ -2331,10 +2372,23 @@ def _drop_session(token: Optional[str]) -> None:
 
 
 def _client_ip(request: Request) -> str:
-    # За nginx реальный адрес приходит в X-Forwarded-For (см. deploy/nginx.conf).
+    """Адрес клиента. Берём ПОСЛЕДНИЙ элемент X-Forwarded-For, а не первый.
+
+    Наш nginx ставит заголовок через `$proxy_add_x_forwarded_for`
+    (deploy/nginx.conf): он ДОПИСЫВАЕТ увиденный адрес в конец к тому, что
+    прислал клиент. Значит последний элемент — единственный, который написали
+    мы, а всё, что левее, прислано снаружи и подделывается одним заголовком.
+
+    Первый элемент делал бессмысленными оба наших потолка разом: и запрет
+    подбора пароля (`_login_blocked`), и частоту приёма анкет
+    (`_survey_throttle`) — достаточно менять `X-Forwarded-For` на каждый
+    запрос. Ровно то же и в журнале: подделанный адрес попадал в след
+    неудачного входа как настоящий."""
     fwd = request.headers.get("x-forwarded-for", "")
     if fwd:
-        return fwd.split(",")[0].strip()
+        parts = [p.strip() for p in fwd.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
     return request.client.host if request.client else "?"
 
 
@@ -2383,6 +2437,13 @@ app = FastAPI(title=APP_BRAND + " API", version="5.6.0")
 async def require_token(request: Request, call_next):
     """Одна точка проверки: новый /api/* эндпоинт защищён автоматически."""
     path = request.url.path
+    # Служебные ручки бота закрыты для ВСЕХ, кроме самого бота. Обход входа
+    # (`_service_call`) — это разрешение, а не ограничение: без явного отказа
+    # любой вошедший (в том числе сам тестировщик) заводил бы себе новые
+    # организации с выданными страницами, пока в наборе есть места.
+    if (request.method != "OPTIONS" and path.startswith("/api/tg/")
+            and not _service_call(request, path)):
+        return JSONResponse({"ok": False, "error": "Служебный доступ"}, status_code=401)
     if (request.method != "OPTIONS"              # preflight обслуживает CORSMiddleware
             and path.startswith("/api/")
             and path not in PUBLIC_API_PATHS
@@ -2466,6 +2527,10 @@ legal_mod = _safe_import("legal")
 # отдельным процессом `backend/tgbot.py` — доводы в шапке `backend/tg.py`.
 survey_mod = _safe_import("survey")
 tg_mod = _safe_import("tg")
+# PDF собирается сторонним конвертером из готового «как в оригинале».
+# Нет конвертера на сервере — честный отказ, а не PDF из голого текста:
+# такой выглядел бы выгрузкой и не был бы ею (инвариант 4).
+topdf_mod = _safe_import("topdf")
 STORE = _store_mod.open_store(os.environ.get("DATABASE_URL"), STATE_FILE)
 
 # Прогоны отдельным процессом (systemd-юнит medcat-worker, backend/worker.py):
@@ -2884,10 +2949,16 @@ def login(req: LoginRequest, request: Request):
         _note_login_fail(ip)
         # Неудачная попытка — тоже история входа, и именно она интересна:
         # десять отказов подряд по одному логину видно только так. Пишем
-        # в организацию ТОГО, чью запись подбирают (если такая есть),
-        # иначе владелец своего предупреждения не увидит.
-        _audit("login.fail", _tenant=(user or {}).get("tenant"), ip=ip,
-               triedLogin=login_name[:64])
+        # в организацию ТОГО, чью запись подбирают.
+        #
+        # По НЕСУЩЕСТВУЮЩЕМУ логину не пишем ничего, и это не экономия:
+        # журнал действий кольцевой (AUDIT_MAX), а вход публичен — перебор
+        # выдуманных логинов вытеснил бы из него след ответственного
+        # (инвариант 14) у всех организаций разом, да ещё сложил бы чужой
+        # мусор с произвольной строкой в организацию по умолчанию.
+        if user is not None:
+            _audit("login.fail", _tenant=user.get("tenant"), ip=ip,
+                   triedLogin=login_name[:64])
         raise HTTPException(401, "Неверный логин или пароль")
     # Незавершённая регистрация — не «неверный пароль»: человек ввёл всё
     # правильно, ему нужен код из письма, и сказать об этом надо прямо.
@@ -3727,12 +3798,17 @@ def admin_logins(request: Request, limit: int = 200, all: bool = False):
     events = [r for r in reversed(STATE.get("audit") or [])
               if (all or r.get("tenant") == t)
               and str(r.get("action") or "").startswith("login")][:max(1, min(limit, 1000))]
+    # Отбор по ЧЛЕНСТВУ, а не по домашней организации: человек может состоять
+    # в нескольких командах (инвариант 18), и фильтр по `user["tenant"]`
+    # прятал бы участника, чей дом другой, а показывал бы ушедшего.
+    def _in_team(u):
+        return any((m or {}).get("tenant") == t for m in _memberships(u))
     users = [{"id": u["id"], "login": u["login"], "name": u.get("name"),
               "tenant": u.get("tenant"), "role": u.get("role"),
               "active": u.get("active", True), "tester": bool(u.get("tester")),
               "created": u.get("created"),
               "lastLogin": u.get("lastLogin"), "loginCount": u.get("loginCount") or 0}
-             for u in _users() if all or u.get("tenant") == t]
+             for u in _users() if all or _in_team(u)]
     # Кто дольше всех не заходил — первым: список нужен, чтобы увидеть
     # тех, кто НЕ пришёл, а не тех, кто только что был.
     users.sort(key=lambda x: (x["lastLogin"] or "", x["login"]))
@@ -3752,11 +3828,17 @@ def admin_runs(request: Request, limit: int = 100, all: bool = False):
     if all and not _is_super(request):
         raise HTTPException(403, "Прогоны всех организаций — только суперпользователю")
     t = _current_tenant()
+    if _hide_cost() and not all:
+        return {"ok": True, "runs": [], "hidden": True, "totalUsd": None,
+                "estRatio": None, "estRuns": 0, "kept": RUN_COST_HISTORY}
     rows = [r for r in reversed(STATE.get("runCosts") or [])
             if all or _tenant_of(r) == t][:max(1, min(limit, 500))]
     priced = [r for r in rows if r.get("est") and r.get("cost")]
     total = sum(float(r.get("cost") or 0) for r in rows)
-    return {"ok": True, "runs": rows, "totalUsd": round(total, 4),
+    # Сумма ПОКАЗАННЫХ прогонов, а не всего расхода: строки урезаны `limit`,
+    # и подписать это «всего» значило бы менять денежное число от того,
+    # сколько строк попросили.
+    return {"ok": True, "runs": rows, "shownUsd": round(total, 4),
             "estRatio": (round(sum(r["est"] for r in priced) / sum(r["cost"] for r in priced), 2)
                          if priced and sum(r["cost"] for r in priced) else None),
             "estRuns": len(priced), "kept": RUN_COST_HISTORY}
@@ -4834,7 +4916,10 @@ def _verified_hits(source: str, project: Optional[dict]) -> list:
     if _HITS_CACHE_EPOCH[0] != _GLOSS_EPOCH[0]:
         _HITS_CACHE.clear()
         _HITS_CACHE_EPOCH[0] = _GLOSS_EPOCH[0]
-    key = (_project_scope(project), source or "")
+    # Проект — часть ключа: у двух проектов одной организации `_project_scope`
+    # совпадает буква в букву, и без него требования одного уехали бы в другой
+    # через кэш, минуя все фильтры.
+    key = (_project_scope(project), (project or {}).get("id"), source or "")
     got = _HITS_CACHE.get(key)
     if got is None:
         got = [h for h in _get_context(source or "", with_tm=False, project=project)[0]
@@ -5763,6 +5848,10 @@ def list_models():
         # estRatio. Прячем показ, а не расчёт: убери расчёт — тихо исчезли бы
         # оба, а на экране ничего бы не изменилось.
         "hideCost": _hide_cost(),
+        # Есть ли на ЭТОМ сервере чем собрать PDF. Экран спрашивает заранее,
+        # чтобы не предлагать формат, который кончится отказом: обещанная
+        # и неработающая кнопка хуже отсутствующей.
+        "pdfReady": bool(topdf_mod and topdf_mod.available()),
         "pricesChecked": "2026-08-15",
     }
 
@@ -7193,6 +7282,16 @@ def _job_images(job: dict) -> None:
             break
         if _job_limit_hit(job):        # каждая картинка — вызов зрячей модели
             break
+        # Уступка исполнителя между КАРТИНКАМИ. Свой цикл — свой заход:
+        # разбор полутора сотен картинок идёт минутами, и без этого в самом
+        # типичном сценарии тест-группы очередь не работала бы вовсе, хотя
+        # обещана. Списка сегментов у этого вида задачи нет, и возобновлять
+        # нечего: прочитанное лежит в файле рядом с исходником по отпечатку
+        # картинки, и второй заход берёт его оттуда бесплатно.
+        if job["done"] and _job_should_yield(job):
+            save()
+            _job_yield(job, job.get("ids") or [])
+            return
         # recent — это id сегментов, их ждёт /segments/fetch у редактора.
         # Имя части в этом поле давало 422 каждые три секунды.
         job["recent"] = []
@@ -7452,8 +7551,15 @@ def _tm_upsert(source: str, target: str, project: dict = None) -> str:
     today = datetime.now().strftime("%Y-%m-%d")
     lang = f"{(project or {}).get('src', 'RU')}→{(project or {}).get('tgt', 'EN')}"
     tenant = _tenant_of(project) if project else _current_tenant()
+    pid = (project or {}).get("id")
     for t in STATE["tm"]:
         if _norm_key(t.get("src")) != key or _tenant_of(t) != tenant:
+            continue
+        # Проект — часть ключа. Это единственное место, где чужой текст
+        # попадал в перевод мимо глоссария и мимо всех проверок: подтверждение
+        # той же строки в соседнем проекте переписывало готовую пару, и
+        # следующий сегмент получал её как точное совпадение.
+        if _gproj(t) != pid:
             continue
         # Пара языков — часть ключа. Без неё подтверждение RU→DE переписывало
         # tgt у RU→EN записи, оставляя ей прежний lang: следующий RU→EN проект
@@ -7469,11 +7575,16 @@ def _tm_upsert(source: str, target: str, project: dict = None) -> str:
         t["updated"] = today
         t["by"] = _actor_id()            # кто заверил этот перевод (id, «human» без сессии)
         return "updated"
-    STATE["tm"].insert(0, {
+    rec = {
         "src": source, "tgt": target, "lang": lang, "tenant": tenant,
         "score": 100, "quality": "verified", "used": 1, "created": today,
         "by": _actor_id(),
-    })
+    }
+    # Новая пара рождается ПРОЕКТНОЙ: иначе первое же подтверждение одного
+    # переводчика становится правилом для всех проектов организации.
+    if pid is not None:
+        rec["project"] = pid
+    STATE["tm"].insert(0, rec)
     return "added"
 
 
@@ -7802,11 +7913,21 @@ def _queue_term_locked(kind, src, tgt, src_n, tgt_n, now, extra):
     # Область входит в ключ дедупликации: «договор → contract» в RU→EN и
     # «договор → Vertrag» в RU→DE — разные кандидаты, а не спор двух вариантов.
     scope = _scope_of(extra)
+    # Проект — часть ключа дедупликации, а не фильтр поверх неё. Иначе
+    # карточка была бы одна на два проекта: её `segments` набирались бы
+    # из разных документов, согласие «независимых доноров» считалось бы
+    # ПОПЕРЁК проектов, а одобрение в одном молча закрывало бы открытый
+    # вопрос в другом. Ответ про договор ничего не говорит про учебник.
+    pid = _gproj(extra)
     donor = (f"{extra.get('project')}:{extra['segment']}"
              if extra.get("segment") and extra.get("project") else None)
     answered = None
     for c in _term_queue():
-        if _scope_of(c) != scope:
+        # Карточка БЕЗ проекта — вопрос уровня организации (закон миграции:
+        # поля нет — знание общее). Такую занимает и проектная находка, иначе
+        # первый же прогон после выката задвоил бы все накопленные карточки
+        # боевого клиента их проектными копиями.
+        if _scope_of(c) != scope or _gproj(c) not in (None, pid):
             continue
         if c.get("kind") == kind and _cand_pair(c) == (src_n, tgt_n):
             c["hits"] = c.get("hits", 1) + 1
@@ -7849,7 +7970,7 @@ def _queue_term_locked(kind, src, tgt, src_n, tgt_n, now, extra):
     # «как переводить этот термин». Записи уровня «подсказка» сюда не попадают
     # намеренно: массовый автоимпорт как раз и ловится conflict-кандидатами
     # («задний → rear»), ради которых они заведены.
-    if _hard_answer(_glossary_entry(src, scope)):
+    if _hard_answer(_glossary_entry(src, scope, pid)):
         return None
 
     # Последней — и только для видов, где пара ПРЕДЛАГАЕТСЯ из свободного
@@ -7932,19 +8053,36 @@ def _gloss_by_src() -> dict:
         if _GLOSS_BY_SRC is None:
             built: dict = {}
             for g in STATE.get("glossary", []):
-                built.setdefault((_scope_of(g), _norm_key(g.get("src"))), g)
+                # Проект — часть КЛЮЧА, а не фильтр поверх него. С фильтром
+                # вторая запись про тот же термин просто не завелась бы
+                # («такая уже есть»), и два проекта не смогли бы держать
+                # разные переводы одного слова — ради чего всё и затевалось.
+                built.setdefault((_scope_of(g), _gproj(g), _norm_key(g.get("src"))), g)
             _GLOSS_BY_SRC = built
         # Возвращаем локальную ссылку: параллельный _invalidate_gloss_index()
         # обнуляет глобал, и вызывающий получил бы None вместо словаря.
         return _GLOSS_BY_SRC
 
 
-def _glossary_entry(src: str, scope: tuple) -> Optional[dict]:
+def _glossary_entry(src: str, scope: tuple, pid=None) -> Optional[dict]:
     """Запись глоссария по термину В ПРЕДЕЛАХ области. Раньше поиск шёл по
-    всему списку, и запись из чужой языковой пары выглядела как «уже есть»."""
+    всему списку, и запись из чужой языковой пары выглядела как «уже есть».
+
+    `pid` — проект, если вопрос задают из него: сначала ищем ЕГО запись,
+    потом общую. Порядок именно такой, потому что проектная запись и заведена
+    затем, чтобы переопределить общее правило здесь. Без `pid` видно только
+    общее знание — это верное умолчание для действий уровня организации
+    (импорт, вынос, аудит): они не вправе трогать чужие проектные решения
+    вслепую."""
     if len(scope) == 2:                   # прежний вид (пара, тематика)
         scope = (scope[0], scope[1], _current_tenant())
-    return _gloss_by_src().get((scope, _norm_key(src)))
+    idx = _gloss_by_src()
+    key = _norm_key(src)
+    if pid is not None:
+        own = idx.get((scope, pid, key))
+        if own is not None:
+            return own
+    return idx.get((scope, None, key))
 
 
 def _harvest_terms(seg: dict, project: dict, via: str = "confirmed") -> list:
@@ -8382,10 +8520,19 @@ def _close_same_term(decided: dict, scope: tuple) -> list:
 
 
 def _close_same_term_locked(decided, scope, key, tgt, closed):
+    # Закрываем вопрос ТОЛЬКО в том проекте, где на него ответили: решение
+    # про договор ничего не говорит про учебник, и молча погашенная карточка
+    # соседа — это потерянный вопрос, который больше никто не задаст.
+    pid = _gproj(decided)
     for c in _term_queue():
         if c is decided or c.get("status", "pending") != "pending":
             continue
         if _cand_pair(c)[0] != key or _scope_of(c) != scope:
+            continue
+        # Решение ПРОЕКТА закрывает вопросы своего проекта; решение уровня
+        # организации (карточка без проекта) — все. Обратного пути нет:
+        # ответ про договор ничего не говорит про учебник.
+        if pid is not None and _gproj(c) != pid:
             continue
         rival = _norm_key(c.get("tgt"))
         if rival and rival != tgt:
@@ -8450,7 +8597,10 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
                     if verdict.get("same") is False
                     else ("правилом на весь документ не годится: "
                           + (verdict.get("why") or "зависит от контекста"))}}
-    existing = _glossary_entry(src, scope)
+    # Свою проектную запись правим, а не общую: карточка родилась в проекте,
+    # и правка по ней — про него. Нет своей — правится общая (её и видел
+    # человек, когда решал).
+    existing = _glossary_entry(src, scope, _gproj(cand))
     # Вердикт судьи кладём на запись: аудит глоссария читает его как свой
     # (`_meaning_stale` сверяет отпечаток пары) и не переспрашивает платно
     # то, что только что спросили здесь.
@@ -8472,10 +8622,17 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
                          **_signed_field("approve")})
         _clear_auto_marks(existing)
     else:
+        # Новое знание рождается ПРОЕКТНЫМ: карточка родилась в проекте,
+        # и ответ на неё — тоже про него. Правилом для всей организации
+        # его делает отдельное решение человека (`/api/glossary/promote`),
+        # иначе первая находка одного переводчика приказывала бы во всех
+        # документах организации.
+        born = {"project": _gproj(cand)} if _gproj(cand) is not None else {}
         STATE["glossary"].insert(0, {"src": src, "tgt": tgt, "cat": cat, "freq": 1,
                                      "conf": "high", "note": "", "tier": GLOSSARY_TIER_HARD,
                                      "lang": scope[0], "domain": scope[1], "tenant": scope[2],
-                                     "updated": today, **mark, **_signed_field("approve"),
+                                     "updated": today, **mark, **born,
+                                     **_signed_field("approve"),
                                      "origin": "confirmed:" + str(cand.get("segment", ""))})
     # Пара запоминается до правки, остальные карточки про этот же термин
     # закрываются: иначе одобренный термин всплывал бы снова — и как сосед
@@ -9030,7 +9187,7 @@ def _auto_write(cand: dict, tier: str, batch: int, today: str,
     scope = _scope_of(cand)
     src, tgt = cand["src"].strip(), cand["tgt"].strip()
     cat = cand.get("cat") or "Term"
-    existing = _glossary_entry(src, scope)
+    existing = _glossary_entry(src, scope, _gproj(cand))
     if existing:
         upd = {
             "tgt": tgt, "tier": tier, "cat": existing.get("cat") or cat,
@@ -9052,6 +9209,7 @@ def _auto_write(cand: dict, tier: str, batch: int, today: str,
         else:
             upd.update({
                 "prevTgt": existing.get("tgt", ""), "prevTier": _hit_tier(existing),
+                "prevProject": _gproj(existing),
                 "prevNote": existing.get("note", ""), "prevConf": existing.get("conf", ""),
                 "prevOrigin": existing.get("origin", ""), "autoCreated": False,
                 "prevSignedBy": existing.get("signedBy"),
@@ -9071,13 +9229,18 @@ def _auto_write(cand: dict, tier: str, batch: int, today: str,
         "autoBatch": batch, "autoCreated": True, "byOverride": bool(override),
         "origin": "auto:" + AUTO_POLICY_VERSION,
     }
+    # Знание рождается ПРОЕКТНЫМ и здесь: автоодобрение разбирает карточки,
+    # родившиеся в проекте, и его решение не должно приказывать во всех
+    # документах организации раньше, чем это разрешит человек.
+    if _gproj(cand) is not None:
+        entry["project"] = _gproj(cand)
     STATE["glossary"].insert(0, entry)
     # Индекс по термину живёт всю пачку: без досыпки следующий кандидат той же
     # пары считал бы, что записи ещё нет. Полная инвалидация тут стоила бы
     # пересборки 10 000 записей на каждое одобрение.
     idx = _GLOSS_BY_SRC
     if idx is not None:
-        idx.setdefault((scope, _norm_key(src)), entry)
+        idx.setdefault((scope, _gproj(entry), _norm_key(src)), entry)
     return False
 
 
@@ -9465,6 +9628,16 @@ def undo_auto_approve(batch: int):
         g["tier"] = g.pop("prevTier", GLOSSARY_TIER_SOFT)
         g["note"] = g.pop("prevNote", "")
         g["conf"] = g.pop("prevConf", "")
+        # Видимость возвращаем тоже. Пачка могла ПЕРЕХВАТИТЬ проектную запись
+        # и сделать её общей; откат, вернувший перевод, но оставивший её
+        # приказывающей во всех документах организации, — это откат наполовину,
+        # а «откатывается вместе с пачкой» перестало бы быть правдой.
+        if "prevProject" in g:
+            prev_pid = g.pop("prevProject")
+            if prev_pid is None:
+                g.pop("project", None)
+            else:
+                g["project"] = prev_pid
         prev_origin = g.pop("prevOrigin", "")
         if prev_origin:
             g["origin"] = prev_origin
@@ -16846,7 +17019,7 @@ def run_preflight(pid: int):
 
 
 class ExportRequest(BaseModel):
-    format: str          # "docx" | "xlsx" ("pdf" пока не поддерживается)
+    format: str          # "docx" | "docx_layout" | "xlsx" | "pdf"
     source: bool = True  # включить колонку с оригиналом
 
 EXPORT_DIR = DATA_DIR / "exports"   # внутри ReadWritePaths systemd-юнита
@@ -17547,8 +17720,42 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
 # Расширение файла и приписка к имени по формату. Формат docx_layout тоже
 # отдаёт .docx, но имя обязано отличаться: два экспорта одного проекта иначе
 # перезаписывали бы друг друга, и человек скачивал бы не то, что просил.
-EXPORT_EXT = {"docx": "docx", "xlsx": "xlsx", "docx_layout": "docx"}
+# PDF собирается ИЗ ГОТОВОГО «как в оригинале» (см. backend/topdf.py):
+# оформление у нас живёт в исходном .docx, и собирать PDF с нуля значило бы
+# потерять шрифты, таблицы, картинки и колонтитулы разом — то есть заменить
+# точную выгрузку на приблизительную.
+EXPORT_EXT = {"docx": "docx", "xlsx": "xlsx", "docx_layout": "docx", "pdf": "pdf"}
 EXPORT_SUFFIX = {"docx_layout": " 1в1"}
+
+
+def _export_docx_plain(project: dict, tmp, include_source: bool = True) -> dict:
+    """Обычный DOCX: собирается С НУЛЯ, оформление исходника не переносит.
+
+    Вынесено из `_generate_export` затем, что этим же файлом собирается PDF
+    у проекта без исходника: вторая копия сборки однажды разошлась бы с этой,
+    и два формата одного экспорта отличались бы содержимым."""
+    segs = project["segments"]
+    from docx import Document
+    doc = Document()
+    doc.add_heading(project["title"], level=1)
+    doc.add_paragraph(f"{project.get('src','RU')} → {project.get('tgt','EN')} · "
+                      f"сегментов: {len(segs)} · экспорт: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    if include_source:
+        table = doc.add_table(rows=1, cols=3)
+        table.style = "Table Grid"
+        hdr = table.rows[0].cells
+        hdr[0].text, hdr[1].text, hdr[2].text = "#", "Источник", "Перевод"
+        for s in segs:
+            row = table.add_row().cells
+            row[0].text = str(s["id"])
+            row[1].text = s.get("source", "")
+            row[2].text = s.get("target", "")
+    else:
+        for s in segs:
+            if s.get("target"):
+                doc.add_paragraph(s["target"])
+    doc.save(str(tmp))
+    return {}
 
 
 def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tuple:
@@ -17572,29 +17779,42 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
     tmp = out.with_name(out.name + ".tmp")
     stats: dict = {}
     segs = project["segments"]
-    if fmt == "docx_layout":
+    if fmt == "pdf":
+        if not topdf_mod:
+            raise HTTPException(503, "PDF собирать нечем: модуль конвертера не загружен")
+        # Сначала честная выгрузка «как в оригинале», потом конвертация её же.
+        # Порядок несущий: PDF обязан показывать ТОТ ЖЕ документ, который
+        # человек скачал бы в .docx, иначе два формата одного экспорта
+        # расходились бы по содержанию.
+        # Основа — «как в оригинале», если исходник приложен, иначе обычный
+        # DOCX. Отказывать проекту без исходника нельзя: PDF ему нужен так же,
+        # просто вёрстки взять неоткуда — и об этом говорит `pdfFrom`,
+        # а не молчание.
+        base = "layout" if project.get("sourceDocx") else "docx"
+        inner = out.with_name(out.name + ".src.docx")
+        try:
+            if base == "layout":
+                stats = _export_docx_layout(project, inner)
+            else:
+                stats = _export_docx_plain(project, inner, include_source)
+            data = inner.read_bytes()
+        finally:
+            try:
+                inner.unlink()
+            except OSError:
+                pass
+        try:
+            pdf = topdf_mod.convert(data, DATA_DIR / "lo")
+        except topdf_mod.NotAvailable as e:
+            raise HTTPException(503, str(e))
+        except topdf_mod.Failed as e:
+            raise HTTPException(502, str(e))
+        tmp.write_bytes(pdf)
+        stats = dict(stats or {}, pdfBytes=len(pdf), pdfFrom=base)
+    elif fmt == "docx_layout":
         stats = _export_docx_layout(project, tmp)
     elif fmt == "docx":
-        from docx import Document
-        doc = Document()
-        doc.add_heading(project["title"], level=1)
-        doc.add_paragraph(f"{project.get('src','RU')} → {project.get('tgt','EN')} · "
-                          f"сегментов: {len(segs)} · экспорт: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-        if include_source:
-            table = doc.add_table(rows=1, cols=3)
-            table.style = "Table Grid"
-            hdr = table.rows[0].cells
-            hdr[0].text, hdr[1].text, hdr[2].text = "#", "Источник", "Перевод"
-            for s in segs:
-                row = table.add_row().cells
-                row[0].text = str(s["id"])
-                row[1].text = s.get("source", "")
-                row[2].text = s.get("target", "")
-        else:
-            for s in segs:
-                if s.get("target"):
-                    doc.add_paragraph(s["target"])
-        doc.save(str(tmp))
+        stats = _export_docx_plain(project, tmp, include_source)
     elif fmt == "xlsx":
         from openpyxl import Workbook
         wb = Workbook()
@@ -17651,9 +17871,10 @@ def download_export(pid: int, format: str = "docx", source: bool = True):
     project = get_project(pid)
     fmt = format.lower()
     if fmt not in EXPORT_EXT:
-        raise HTTPException(400, "Поддерживаются только docx, docx_layout и xlsx")
+        raise HTTPException(400, "Поддерживаются только docx, docx_layout, xlsx и pdf")
     path, _stats = _generate_export(project, fmt, include_source=source)
-    media = ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    media = ("application/pdf" if fmt == "pdf" else
+             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
              if fmt == "xlsx"
              else "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     return FileResponse(str(path), media_type=media, filename=path.name)
@@ -17810,6 +18031,103 @@ class TermScopeRequest(BaseModel):
     src: str
     lang: str = ""
     domain: str = ""
+
+
+# ═══ Знание проекта и знание организации ════════════════════════════
+# Новое знание рождается ПРОЕКТНЫМ (`project` на записи), потому что иначе
+# первая же находка одного переводчика становится правилом для всех: у
+# медицинского учебника и у договора «сторона» и «показание» значат разное.
+# Расширить его до организации — отдельное решение ЧЕЛОВЕКА, и оно обратимо.
+# Машина такого решения не принимает никогда: она только ПРЕДЛАГАЕТ пары,
+# сошедшиеся в разных проектах (инвариант 8 — приказ даёт человек).
+
+class TermProjectRequest(BaseModel):
+    src: str
+    lang: str = ""
+    domain: str = ""
+    project: int
+
+
+def _term_by_project(req: "TermProjectRequest", want_project: bool) -> dict:
+    """Найти запись и убедиться, что она НАША. Общая для обеих дверей:
+    разойдись проверки — одна из них выпускала бы правку за организацию."""
+    project = get_project(req.project)          # чужой проект → 404
+    scope = _scope(req.lang, req.domain) if (req.lang or req.domain) else _project_scope(project)
+    entry = _glossary_entry(req.src, scope, req.project if want_project else None)
+    if entry is None or _tenant_of(entry) != _current_tenant():
+        raise HTTPException(404, "Запись глоссария не найдена")
+    if want_project and _gproj(entry) != req.project:
+        raise HTTPException(404, "У этого проекта такой записи нет")
+    return entry
+
+
+@app.post("/api/glossary/promote")
+def promote_term(req: TermProjectRequest):
+    """Расширить знание проекта на всю организацию.
+
+    Поле СНИМАЕТСЯ, а не переписывается на другой проект: «знание
+    организации» — это именно отсутствие поля (закон миграции), и завести
+    для него особое значение значило бы иметь два способа сказать одно
+    и то же."""
+    entry = _term_by_project(req, want_project=True)
+    _audit("glossary.promote", term=entry.get("src"), fromProject=req.project)
+    entry.pop("project", None)
+    entry["scopeChanged"] = {"by": _actor_id(), "role": _actor_role(),
+                             "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                             "action": "promote", "fromProject": req.project}
+    _invalidate_gloss_index()
+    save_state(STATE)
+    return {"ok": True, "term": entry.get("src"), "scope": "tenant"}
+
+
+@app.post("/api/glossary/restrict")
+def restrict_term(req: TermProjectRequest):
+    """Вернуть знание в проект. Обратная дверь к продвижению: решение
+    человека обязано быть отменяемым тем же человеком."""
+    entry = _term_by_project(req, want_project=False)
+    _audit("glossary.restrict", term=entry.get("src"), toProject=req.project)
+    entry["project"] = req.project
+    entry["scopeChanged"] = {"by": _actor_id(), "role": _actor_role(),
+                             "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                             "action": "restrict", "toProject": req.project}
+    _invalidate_gloss_index()
+    save_state(STATE)
+    return {"ok": True, "term": entry.get("src"), "scope": "project", "project": req.project}
+
+
+@app.get("/api/glossary/promotions")
+def glossary_promotions(limit: int = 100):
+    """Что стоит расширить на организацию — ПРЕДЛОЖЕНИЕ, а не приказ.
+
+    Признак один и он не зависит ни от языка, ни от области: одна и та же
+    пара «оригинал → перевод» независимо утверждена в РАЗНЫХ проектах.
+    Это уже не мнение одного переводчика — но и не основание записать
+    правило за человека: приказ даёт он (инвариант 8), а система лишь
+    показывает, где спора нет.
+
+    Пара из одного проекта сюда не идёт, сколько бы раз её там ни
+    подтверждали: повтор внутри проекта — это одно решение, а не два."""
+    t = _current_tenant()
+    mine = {p["id"] for p in STATE["projects"] if _tenant_of(p) == t}
+    by_pair: dict = {}
+    for g in STATE["glossary"]:
+        pid = _gproj(g)
+        if _tenant_of(g) != t or pid is None or pid not in mine:
+            continue
+        key = (_scope_of(g), _norm_key(g.get("src")), _norm_key(g.get("tgt")))
+        rec = by_pair.setdefault(key, {"src": g.get("src"), "tgt": g.get("tgt"),
+                                       "lang": _scope_of(g)[0], "domain": _scope_of(g)[1],
+                                       "tier": _hit_tier(g), "projects": []})
+        if pid not in rec["projects"]:
+            rec["projects"].append(pid)
+        # Уровень доверия берём СИЛЬНЕЙШИЙ из сошедшихся: продвигают то,
+        # чем запись станет для всех, а не то, чем она была в одном месте.
+        if _hit_tier(g) == GLOSSARY_TIER_HARD:
+            rec["tier"] = GLOSSARY_TIER_HARD
+    items = [r for r in by_pair.values() if len(r["projects"]) >= 2]
+    items.sort(key=lambda r: (-len(r["projects"]), r["src"]))
+    return {"ok": True, "items": items[:max(1, min(limit, 500))],
+            "total": len(items)}
 
 
 @app.post("/api/glossary/demote")
@@ -18313,6 +18631,14 @@ FULL_STEP_MODEL = {"translate": "model", "backcheck": "bc_model",
                    "repair": "rp_model", "review": "rv_model"}
 
 
+# Все ключи параметров, называющие модель. Шаги конвейера — из
+# `FULL_STEP_MODEL`, плюс двое, которых там нет и быть не может: судья
+# (он не шаг, а участник back-check и ремонта) и зрячая модель разбора
+# картинок (свой цикл, свой экран). Забудь их — и выбор из localStorage
+# всё равно уехал бы в задачу, а имя модели осталось бы на экране.
+_MODEL_PARAM_KEYS = set(FULL_STEP_MODEL.values()) | {"judge_model", "ocr_model"}
+
+
 def _forced_models(params: dict, tid: Optional[str] = None) -> dict:
     """В упрощённом режиме модели шагов назначает ОРГАНИЗАЦИЯ, а не браузер.
 
@@ -18335,6 +18661,16 @@ def _forced_models(params: dict, tid: Optional[str] = None) -> dict:
     out = dict(params or {})
     for step, key in FULL_STEP_MODEL.items():
         out[key] = conf.get(step) or None
+    out["judge_model"] = conf.get("judge") or None
+    out["ocr_model"] = conf.get("ocr") or None
+    # Смету считал БРАУЗЕР по моделям, которых он больше не выбирает. Пока
+    # организация ничего не назначила, обе стороны берут умолчания сервера
+    # и смета верна; как только назначение появилось — она посчитана не по
+    # тем ценам, и держать на ней отказ 402 и калибровку `estRatio` значит
+    # калибровать по выдуманному числу. Тогда честнее не иметь его вовсе:
+    # жёсткий рубеж по лимиту между порциями никуда не делся.
+    if any(conf.values()):
+        out.pop("est_cost", None)
     return out
 
 
@@ -18848,6 +19184,15 @@ def _next_qseq() -> int:
     floor = _QSEQ[0]
     for j in list(_JOBS.values()):
         floor = max(floor, int(j.get("qseq") or j.get("id") or 0))
+    # В процессе ВОРКЕРА `_JOBS` почти пуст (там лежит только текущая задача),
+    # поэтому пол берём и по самой очереди: у задач без билета им служит
+    # номер, и счётчик ниже этих номеров выдал бы уступившему билет МЕНЬШЕ,
+    # чем у ждущих, — он забрал бы исполнителя обратно.
+    try:
+        for q in _queued_jobs():
+            floor = max(floor, int(q.get("qseq") or q.get("id") or 0))
+    except Exception:
+        pass
     if STORE.kind == "pg":
         try:
             got = STORE.next_counter("jobSeq", floor)
@@ -18859,23 +19204,40 @@ def _next_qseq() -> int:
     return _QSEQ[0]
 
 
+_QUEUED_CACHE = {"t": 0.0, "rows": []}
+
+
 def _queued_jobs() -> list:
     """Кто сейчас ждёт очереди — по порядку билетов.
+
+    Ответ КЭШИРУЕТСЯ на секунду: список зовут перед каждой порцией и на
+    каждый показ статуса задачи, а браузер опрашивает статус раз в пару
+    секунд. Без кэша это запрос к базе на каждые пять сегментов плюс
+    по запросу на задачу на каждый опрос. Секунда здесь безвредна:
+    вопрос к списку один — «есть ли кто впереди», и ответ на него
+    не меняется чаще, чем идёт порция.
 
     Источник разный, и это не дублирование: при внешнем исполнителе задачи
     живут в базе (зеркало в памяти API отстаёт до двух секунд, и решать по
     нему «уступать ли» значило бы уступать вслепую), а без него — в памяти
     процесса, где базы нет вовсе."""
     if STORE.kind == "pg":
+        now = time.time()
+        if now - _QUEUED_CACHE["t"] < 1.0:
+            return _QUEUED_CACHE["rows"]
         try:
-            return STORE.queued_summary()
+            rows = STORE.queued_summary()
         except Exception as e:
             print(f"[backend] очередь не прочитана: {e}", file=sys.stderr)
             return []
-    with _JOBS_LOCK:
-        qs = [{"id": j["id"], "tenant": _tenant_of(j), "project": j["project"],
-               "qseq": j.get("qseq") or j["id"]}
-              for j in _JOBS.values() if j["status"] == "queued"]
+        _QUEUED_CACHE["t"], _QUEUED_CACHE["rows"] = now, rows
+        return rows
+    # Без захвата лока: список задач правят только под ним, а нам нужен
+    # снимок, и вложенный захват (например, из `_next_qseq` внутри
+    # `create_job`) повесил бы обработчик — `_JOBS_LOCK` не реентерабельный.
+    qs = [{"id": j["id"], "tenant": _tenant_of(j), "project": j["project"],
+           "qseq": j.get("qseq") or j["id"]}
+          for j in list(_JOBS.values()) if j["status"] == "queued"]
     qs.sort(key=lambda x: (x["qseq"], x["id"]))
     return qs
 
@@ -18903,7 +19265,10 @@ def _job_yield(job: dict, remaining: list) -> None:
     job["status"] = "queued"
     job["qseq"] = _next_qseq()
     job["yields"] = int(job.get("yields") or 0) + 1
-    job["recent"] = []
+    # `recent` НЕ чистим: браузер тянет по нему сегменты последней порции,
+    # и уступка на границе оставила бы их в таблице с допрогонным статусом
+    # до конца всего прогона — ровно тот класс поломки, ради которого
+    # заведена полная подстановка проекта после прогона.
     _job_persist(job)
 
 
@@ -18933,9 +19298,16 @@ def _job_public(job: dict) -> dict:
     не показывать."""
     out = {k: v for k, v in job.items() if k not in ("ids", "stop")}
     out.update(_queue_place(job))
-    if out.get("usage") and _hide_cost():
-        out["usage"] = {k: v for k, v in out["usage"].items()
-                        if k not in ("cost", "models", "steps", "unpriced")}
+    if _hide_cost():
+        if out.get("usage"):
+            out["usage"] = {k: v for k, v in out["usage"].items()
+                            if k not in ("cost", "models", "steps", "unpriced")}
+        # `params` несёт имена ВСЕХ моделей и смету — то есть ровно то, что
+        # соседние строки прячут. Статус задачи браузер опрашивает каждые
+        # пару секунд, так что это была бы самая частая утечка из всех.
+        if out.get("params"):
+            out["params"] = {k: v for k, v in out["params"].items()
+                             if k not in _MODEL_PARAM_KEYS and k != "est_cost"}
     return out
 
 
@@ -19178,6 +19550,8 @@ def _job_run(job: dict):
         # Разбор картинок не идёт по сегментам: их ещё нет — они из него
         # и рождаются. Цикл свой, но остановка, счётчики и сохранение общие.
         _job_images(job)
+        if job["status"] == "queued":
+            return                     # уступила исполнителя, работа не закончена
         if job["status"] == "running":
             job["status"] = "done"
         job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -19188,7 +19562,15 @@ def _job_run(job: dict):
             job["status"] = "done"
         job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         return
-    if kind == "apply_terms":
+    # Одобрение пачки делается РОВНО ОДИН раз за задачу, и флаг об этом живёт
+    # в `params` — то есть переживает и уступку исполнителя, и рестарт.
+    #
+    # Без флага возобновление входило бы в эту ветку заново: в глоссарий
+    # ложилась бы ВТОРАЯ пачка, `job["autoBatch"]` (единственная ручка отката
+    # первой) затирался бы, счётчики одобрения переписывались вместо
+    # накопления, а состав пересчитывался бы из `glossary_impact` — то есть
+    # остаток, сохранённый уступкой, выбрасывался, и прогресс уезжал за 100%.
+    if kind == "apply_terms" and not job["params"].get("termsApplied"):
         # Одобрение пачки — один шаг, а не порция: оно про глоссарий, а не про
         # сегменты. Состав сегментов пересчитываем ПОСЛЕ него: до одобрения
         # неизвестно, какие сегменты разойдутся с новыми терминами, и клиент
@@ -19233,6 +19615,8 @@ def _job_run(job: dict):
         job["ids"] = [i for i in want if i not in set(futile)]
         job["counters"]["futile"] = len(futile)
         job["total"] = len(job["ids"])
+        job["params"]["termsApplied"] = True
+        _job_persist(job)          # флаг обязан пережить уступку и рестарт
         save_state(STATE)
     ids = job["ids"]
     # Одна метка отката на ВЕСЬ прогон: ревизия идёт порциями по пять
@@ -19349,7 +19733,19 @@ def _job_loop():
             except _queue.Empty:
                 pass
             continue
-        _job_execute(job)
+        try:
+            _job_execute(job)
+        except BaseException as e:
+            # Статус `running` ставит отбор — ДО входа в `_job_execute`,
+            # и падение раньше его собственного try (например, обрыв связи
+            # с базой в `_sync_shared`) оставляло бы в памяти фантом
+            # «идёт прогон»: проект запирался бы охраной 409 и не брался
+            # отбором до рестарта сервиса.
+            job["status"] = "error"
+            job["error"] = str(e)
+            job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"[backend] job#{job.get('id')} не запустился: {e}", file=sys.stderr)
+            _job_persist(job)
         if job.get("status") == "queued":
             # Уступила — будим себя же: следующий круг выберет по билету.
             _JOB_QUEUE.put(1)
@@ -19376,7 +19772,11 @@ def _job_execute(job: dict):
                 _job_persist(job)
                 return
             job["status"] = "running"
-            job["started"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Время старта ставится ОДИН раз: прогон, уступавший исполнителя,
+            # начался тогда, когда начался, и переписывать это на каждом
+            # возобновлении значит терять его длительность.
+            if not job.get("started"):
+                job["started"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             _job_persist(job)
             _ACTIVE_JOB["job"] = job
             _usage_begin(job)
@@ -19386,6 +19786,15 @@ def _job_execute(job: dict):
             job["error"] = str(e)
             job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             print(f"[backend] job#{job.get('id')} crashed: {e}", file=sys.stderr)
+            # Упавший прогон — единственное событие, о котором человек
+            # не узнает сам: вкладку он закрыл, а письма у нас нет. Пишем
+            # владельцу СЕРВИСА, а не клиенту: чинить всё равно нам, и
+            # молчащий сервис в тест-группе означает потерянную неделю.
+            if tg_mod:
+                tg_mod.notify_admin_async(
+                    "⚠️ Прогон №%s (%s) упал\nОрганизация: %s · проект %s\nСделано %s из %s\n%s"
+                    % (job.get("id"), job.get("kind"), _tenant_of(job), job.get("project"),
+                       job.get("done"), job.get("total"), str(e)[:300]))
         finally:
             _ACTIVE_JOB.pop("job", None)
             # Сколько находок сбор терминологии потерял на потолке очереди.
@@ -19509,6 +19918,10 @@ def create_job(pid: int, req: JobRequest):
     # Модели шагов в упрощённом режиме назначает организация, а не браузер:
     # полей выбора там нет, но прежний выбор в localStorage уехал бы в задачу.
     req.params = _forced_models(req.params)
+    # Билет берём ДО лока: `_next_qseq` заглядывает в очередь, а та читается
+    # под тем же `_JOBS_LOCK`, который здесь и держат. Лок обычный, не
+    # реентерабельный, — вложенный захват вешает обработчик намертво.
+    qseq = _next_qseq()
     with _JOBS_LOCK:
         job = {
             "id": _next_job_id(),
@@ -19525,7 +19938,7 @@ def create_job(pid: int, req: JobRequest):
             # Билет очереди: по нему исполнитель и выбирает следующую задачу.
             # Уступив между порциями, задача берёт НОВЫЙ билет и встаёт
             # в хвост — так очередь и становится круговой.
-            "qseq": _next_qseq(),
+            "qseq": qseq,
             "ids": ids, "stop": False, "recent": [],
         }
         _JOBS[job["id"]] = job
@@ -19607,6 +20020,14 @@ def stop_job(jid: int):
     if job["status"] == "queued":
         job["status"] = "stopped"
         job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Уступивший исполнителя прогон тоже стоит «в очереди», но деньги
+        # за сделанные порции УЖЕ потрачены. Прежде `queued` означало «ни
+        # одного вызова не было», и запись о расходе тут была не нужна;
+        # теперь без неё расход исчезал бы из истории и из калибровки сметы,
+        # оставаясь в счётчике организации.
+        if (job.get("usage") or {}).get("calls"):
+            _usage_end(job)
+            save_state(STATE)
     elif job["status"] == "running":
         # Промежуточный статус: обработка текущего сегмента доигрывается, но
         # пользователю сразу видно, что кнопка сработала.
@@ -19631,8 +20052,13 @@ def stop_job(jid: int):
 # и глубина хранения. Без них публичный вход в `save_state` — это способ
 # гонять сохранения всего процесса.
 
-SURVEY_MAX = 500                # сколько анкет храним (кольцо)
-SURVEY_BODY_MAX = 20000         # знаков в ответах: анкета, а не документ
+# Потолки держат РАЗМЕР ДОКУМЕНТА, а не терпение человека: верхний ключ STATE
+# сериализуется целиком при каждом сохранении, и мегабайт анкет лёг бы на
+# каждую правку сегмента у единственного воркера. 150 × 6000 знаков — это
+# около мегабайта в худшем случае, и это потолок для ТЕСТА; понадобится
+# больше — анкеты переезжают в построчную коллекцию, как журнал.
+SURVEY_MAX = 150                # сколько анкет храним (кольцо)
+SURVEY_BODY_MAX = 6000          # знаков в ответах: анкета, а не документ
 SURVEY_PER_HOUR = 6             # заполнений с одного адреса в час
 _SURVEY_HITS: dict = {}         # ip -> [времена попыток]
 _SURVEY_LOCK = threading.Lock()
@@ -19799,6 +20225,25 @@ def tg_tester(req: TesterIn):
     Организация запроса здесь НЕ из сессии: бот приходит без неё, и всё,
     что зовётся ниже, получает `tid` явным доводом. Тот же закон, что
     у прогонов: ContextVar в чужой поток не доезжает."""
+    # Повторный запрос по тому же чату НЕ заводит вторую организацию.
+    # Защита от повтора жила только в файле бота, а он отдельный процесс:
+    # потеря или переезд его состояния выдавали бы человеку второй доступ
+    # и съедали чужое место в наборе.
+    if req.chat is not None:
+        was = next((t for t in _tenants() if t.get("tgChat") == req.chat), None)
+        if was:
+            u_was = next((u for u in _users() if u.get("tenant") == was["id"]), None)
+            # Пароль у нас только отпечатком, назвать его нечем — выдаём
+            # новый и говорим об этом прямо: молча вернуть «тот же доступ»
+            # без пароля значит оставить человека без входа.
+            pw = _tester_password()
+            if u_was:
+                u_was["hash"], u_was["salt"] = _hash_password(pw)
+                save_state(STATE)
+                _audit("tester.reissue", _tenant=was["id"], login=u_was["login"], chat=req.chat)
+                return {"ok": True, "login": u_was["login"], "password": pw,
+                        "tenant": was["id"], "again": True,
+                        "pages": (_tenant_caps(was["id"]) or {}).get("maxPages")}
     b = _active_batch()
     if not b:
         return JSONResponse({"ok": False, "code": "closed",
@@ -19853,6 +20298,7 @@ def tg_tester(req: TesterIn):
     _tenants().append(tenant)
     _users().append(u)
     b["issued"] = n
+    _audit("tester.create", _tenant=tid, login=login, batch=b["id"], chat=req.chat)
     b.setdefault("log", []).append({"at": now, "tenant": tid, "login": login,
                                     "tg": (req.username or "").strip()[:64], "chat": req.chat})
     save_state(STATE)

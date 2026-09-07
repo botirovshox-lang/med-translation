@@ -68,6 +68,24 @@ a["qseq"] = 99
 check(main._pick_queued_local()["id"] == 2,
       "сменился билет — сменилась и очередь: номер задачи тут ни при чём")
 
+print("\n=== 1b. Билет берётся БЕЗ лока очереди ===")
+# `_JOBS_LOCK` обычный, не реентерабельный. `_next_qseq` заглядывает
+# в очередь, а `create_job` собирает задачу под локом — вложенный захват
+# вешал обработчик НАМЕРТВО, и снаружи это выглядело как «тесты идут
+# медленно», а не как поломка. Сторож проще самой ошибки: берём лок
+# и зовём обе функции.
+import threading as _th
+held = {"ok": False}
+def _under_lock():
+    with main._JOBS_LOCK:
+        main._queued_jobs()
+        main._next_qseq()
+    held["ok"] = True
+_t = _th.Thread(target=_under_lock, daemon=True)
+_t.start()
+_t.join(5)
+check(held["ok"], "очередь и билет читаются, когда лок уже держат (иначе дедлок)")
+
 print("\n=== 2. Занятый проект не берут ===")
 main._JOBS.clear()
 mkjob(1, "aziz", 7, [1], qseq=1)["status"] = "running"
@@ -164,6 +182,51 @@ check(len(mine_costs) == 1,
 check(abs(mine_costs[0]["cost"] - 0.02) < 1e-9,
       "и в ней ПОЛНАЯ сумма обеих порций: " + str(mine_costs[0]["cost"]))
 check(mine_costs[0]["status"] == "done", "запись сделана на настоящем завершении")
+
+print("\n=== 6b. Одобрение пачки терминов делается РОВНО один раз ===")
+# Ветка apply_terms стоит ДО цикла порций и пишет пачку в глоссарий.
+# Без флага в params возобновление после уступки входило бы в неё заново:
+# вторая пачка в глоссарии, затёртая ручка отката первой, переписанные
+# вместо накопленных счётчики и выброшенный остаток.
+main._JOBS.clear()
+ncalls = {"approve": 0}
+main.JOB_CHUNKS["apply_terms"] = 2
+def fake_approve(req):
+    ncalls["approve"] += 1
+    return {"counts": {"verified": 1, "auto": 0, "closed": 0}, "batch": 7}
+main.auto_approve_terms = fake_approve
+main.glossary_impact = lambda pid, refresh=False: {"segments": [1, 2, 3, 4], "pending": [1, 2, 3, 4]}
+main.get_project = lambda pid: {"id": pid, "segments": [{"id": i} for i in range(1, 5)]}
+main._repair_futile = lambda seg, project: False
+main._job_chunk = lambda kind, pid, chunk, params: {"done": len(chunk), "errors": 0}
+ap = mkjob(1, "aziz", 1, [0], qseq=1)
+ap["kind"] = "apply_terms"
+mkjob(2, "bek", 2, [9], qseq=2)
+for _ in range(8):
+    j = main._pick_queued_local()
+    if not j:
+        break
+    main._job_execute(j)
+check(ncalls["approve"] == 1, "одобрение позвано один раз, а не на каждом заходе: " + str(ncalls["approve"]))
+check(ap["counters"]["termsApproved"] == 1, "счётчик одобрения не задвоился")
+check(ap["done"] == 4 and ap["status"] == "done",
+      "состав, посчитанный после одобрения, доведён до конца: " + str((ap["done"], ap["total"], ap["status"])))
+check(ap["done"] <= ap["total"], "прогресс не уехал за сто процентов")
+
+print("\n=== 6c. Остановка уступившего прогона не теряет расход ===")
+main._JOBS.clear()
+main.STATE["runCosts"] = []
+stj = mkjob(1, "aziz", 1, [1, 2], qseq=1)
+stj["usage"] = dict(main._usage_zero(), calls=3, cost=0.05)
+tok2 = main.CURRENT_SESSION.set({"tenant": "aziz", "role": "owner", "user": 1})
+try:
+    main.stop_job(1)
+finally:
+    main.CURRENT_SESSION.reset(tok2)
+check(stj["status"] == "stopped", "задача остановлена")
+rows = [r for r in main.STATE["runCosts"] if r["job"] == 1]
+check(len(rows) == 1 and abs(rows[0]["cost"] - 0.05) < 1e-9,
+      "потраченное за сделанные порции попало в историю: " + str(rows))
 
 print("\n=== 7. Место в очереди отдаётся числом и без чужих подробностей ===")
 main._JOBS.clear()

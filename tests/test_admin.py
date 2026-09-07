@@ -136,7 +136,10 @@ own = c.get("/api/admin/runs", headers=H(O)).json()
 check(len(own["runs"]) == 1 and own["runs"][0]["tenant"] == "acme", "владелец видит только свои прогоны")
 allr = c.get("/api/admin/runs?all=1", headers=H(S)).json()
 check(len(allr["runs"]) == 2, "суперпользователь видит все")
-check(abs(allr["totalUsd"] - 0.15) < 1e-6, "сумма факта: " + str(allr["totalUsd"]))
+# Поле называется `shownUsd`, а не `totalUsd`: строки урезаны `limit`,
+# и «всего» менялось бы от того, сколько строк попросили, — денежное число
+# так вести себя не должно.
+check(abs(allr["shownUsd"] - 0.15) < 1e-6, "сумма показанных: " + str(allr["shownUsd"]))
 check(allr["estRatio"] == 2.0, "поправка сметы считается только по прогонам, где есть ОБА числа")
 check(allr["estRuns"] == 1, "и таких прогонов один")
 

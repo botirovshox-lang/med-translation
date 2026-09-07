@@ -892,6 +892,27 @@ function TabGlossary({ store, toast }) {
     toast.success(isNew ? TR("Термин добавлен") : TR("Термин обновлён"), term.src + " → " + term.tgt);
   };
   const del = (term) => { store.deleteTerm(term); toast.warning(TR("Термин удалён"), term.src); };
+  /* Область действия записи. Проектная работает только в своём проекте —
+     ради этого поле и заведено: у учебника и у договора «сторона» значат
+     разное. Расширение и возврат — решения ЧЕЛОВЕКА, поэтому кнопка, а не
+     правило: машина сама себе приказа не даёт. */
+  const changeTermScope = async (g) => {
+    const pid = g.project != null ? g.project : (store.activeProject && store.activeProject.id);
+    if (!pid) { toast.error(TR("Не выбран проект"), TR("Откройте проект: запись привязывается к нему")); return; }
+    const toTenant = g.project != null;
+    if (!confirm(toTenant
+      ? TR("Сделать «") + g.src + TR("» правилом всей организации?")
+      : TR("Вернуть «") + g.src + TR("» в текущий проект? В остальных проектах запись перестанет действовать.")))
+      return;
+    try {
+      const body = { src: g.src, lang: g.lang || "", domain: g.domain || "", project: pid };
+      await (toTenant ? window.API.promoteTerm(body) : window.API.restrictTerm(body));
+      toast.success(toTenant ? TR("Теперь во всей организации") : TR("Теперь только в проекте"), g.src);
+      // Тот же сигнал «перечитай», что у автоодобрения и отката: таблица
+      // иначе показывает прежнюю область действия записи.
+      setQueueVersion(v => v + 1);
+    } catch (e) { toast.error(TR("Не удалось"), e.message || String(e)); }
+  };
 
   // Клик по самому термину = «покажи, где он используется»: открываем редактор
   // с фильтром по затронутым сегментам. Совпадения ищет сервер тем же матчером,
@@ -965,13 +986,27 @@ function TabGlossary({ store, toast }) {
                     title: TR("Автоимпорт, не проверено человеком. В промпт уходит подсказкой, а не жёстким правилом.") }, TR("авто")),
                   // Кто отвечает за запись — рядом с переводом, подробности в подсказке.
                   g.signedBy && g.signedBy.name && React.createElement("span", { className: "dim", style: { fontSize: 11, marginLeft: 8, whiteSpace: "nowrap" },
-                    title: glossSignedTitle(g.signedBy) }, "· " + g.signedBy.name)),
+                    title: glossSignedTitle(g.signedBy) }, "· " + g.signedBy.name),
+                  // Область действия записи. Показываем ТОЛЬКО проектную:
+                  // «вся организация» — это отсутствие поля, то есть обычное
+                  // состояние, и метить его значило бы пометить весь глоссарий.
+                  g.project != null && React.createElement("span", { className: "badge soft", style: { fontSize: 11, marginLeft: 8, whiteSpace: "nowrap" },
+                    title: TR("Запись работает только в этом проекте. «Расширить» сделает её правилом всей организации.") },
+                    TR("проект ") + g.project)),
                 React.createElement("td", null, React.createElement(Badge, { variant: "soft" }, g.cat)),
                 React.createElement("td", { className: "tnum dim" }, g.freq + "×"),
                 React.createElement("td", null, React.createElement("span", { className: "badge " + cls }, lab)),
                 React.createElement("td", { onClick: (e) => e.stopPropagation() },
                   React.createElement("div", { className: "row", style: { gap: 2 } },
                     React.createElement(IconBtn, { icon: "edit", label: TR("Редактировать"), sm: true, onClick: () => setModal(g) }),
+                    // Расширить знание проекта на организацию — и вернуть
+                    // обратно. Решение человека, поэтому кнопка, а не правило.
+                    React.createElement(Btn, { variant: "ghost", size: "sm",
+                      title: g.project != null
+                        ? TR("Сделать правилом всей организации")
+                        : TR("Вернуть запись в проект: она перестанет действовать в остальных"),
+                      onClick: () => changeTermScope(g) },
+                      g.project != null ? TR("Расширить") : TR("В проект")),
                     React.createElement(IconBtn, { icon: "trash", label: TR("Удалить"), sm: true, onClick: () => del(g) }))));
             })
           )

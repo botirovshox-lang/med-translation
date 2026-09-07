@@ -112,7 +112,6 @@
  "Неверная отметка времени": "Vaqt belgisi noto'g'ri",
  "К проекту не приложен исходный .docx": "Loyihaga asl .docx biriktirilmagan",
  "К проекту не приложен исходный .docx — экспорт 1в1 собрать не из чего": "Loyihaga asl .docx biriktirilmagan — 1v1 eksportni yig'ishning imkoni yo'q",
- "Поддерживаются только docx, docx_layout и xlsx": "Faqat docx, docx_layout va xlsx qo'llab-quvvatlanadi",
  "Исходник разошёлся с картой абзацев (": "Asl fayl abzatslar xaritasiga mos kelmadi (",
  " против ": " ↔ ",
  ") — приложите файл заново": ") — faylni qaytadan biriktiring",
@@ -260,5 +259,6 @@
  "Лимит страниц не может стать отрицательным": "Sahifalar chegarasi manfiy bo'lib qolishi mumkin emas",
  "Месячный лимит организации исчерпан: обратитесь к администратору. ": "Tashkilotning oylik limiti tugadi: administratorga murojaat qiling. ",
  "Этот прогон не уместится в лимит организации: выберите ": "Bu ishlov tashkilot limitiga sig'maydi: ",
- "меньше сегментов или снимите шаги": "kamroq segment tanlang yoki qadamlarni olib tashlang"
+ "меньше сегментов или снимите шаги": "kamroq segment tanlang yoki qadamlarni olib tashlang",
+ "Поддерживаются только docx, docx_layout, xlsx и pdf": "Faqat docx, docx_layout, xlsx va pdf qo'llab-quvvatlanadi"
 }

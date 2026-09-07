@@ -968,6 +968,29 @@ render();
 """
 
 
+def _js(value) -> str:
+    """Значение внутри тега <script>.
+
+    `json.dumps` экранирует кавычки, но НЕ последовательность, закрывающую
+    сам тег: строка со «</script>» выходит из скрипта в разметку. На этой
+    странице такое значение бывает — в анкету приходят `who` и `ref` из
+    адреса, — и страницу отдаёт ТОТ ЖЕ адрес, что и приложение, где в
+    хранилище браузера лежит токен сессии. Поэтому закрываем и его, и
+    открывающую скобку комментария HTML: это единственные две
+    последовательности, которыми можно выйти из тега."""
+    out = json.dumps(value, ensure_ascii=False)
+    # Экранируем ИМЕНЕМ, а не символом: в строке должно остаться шесть знаков
+    # \u003c, а не сам «<». JSON.parse и разбор строкового литерала
+    # в браузере прочтут их обратно, а разборщик разметки — нет, и выйти
+    # из тега станет нечем. U+2028/U+2029 закрыты по той же причине: они
+    # обрывают строковый литерал JavaScript, хотя в JSON законны.
+    for ch, esc in ((chr(60), chr(92) + 'u003c'), (chr(62), chr(92) + 'u003e'),
+                    (chr(38), chr(92) + 'u0026'), (chr(0x2028), chr(92) + 'u2028'),
+                    (chr(0x2029), chr(92) + 'u2029')):
+        out = out.replace(ch, esc)
+    return out
+
+
 def form_page(form_id: str, lang: str = "uz", pre: dict = None) -> str:
     """Страница опроса. `pre` — то, что уже известно про человека (Telegram
     из бота, метка приглашения): подставить это лучше, чем спрашивать второй
@@ -978,9 +1001,9 @@ def form_page(form_id: str, lang: str = "uz", pre: dict = None) -> str:
     payload = {"id": form["id"], "T": form["T"], "questions": form["questions"],
                "consent": form.get("consent") or [], "who": bool(form.get("who"))}
     script = (FORM_JS
-              .replace("__FORM__", json.dumps(payload, ensure_ascii=False))
-              .replace("__LANG__", json.dumps(lang))
-              .replace("__PRE__", json.dumps(pre or {}, ensure_ascii=False)))
+              .replace("__FORM__", _js(payload))
+              .replace("__LANG__", _js(lang))
+              .replace("__PRE__", _js(pre or {})))
     body = (_topbar(T["sub"], lang, form["path"], counter=bool(form.get("who")))
             + '<div class="wrap"><main id="app"></main></div>')
     return _shell(T["title"], body, script, lang)

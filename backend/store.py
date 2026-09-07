@@ -573,10 +573,14 @@ class PgStore:
         выдумывать, а выдуманное число — то самое враньё, ради которого
         состав прогона вообще считает сервер."""
         with self._cursor() as cur:
+            # Потолок обязателен: список зовут перед КАЖДОЙ порцией (решить,
+            # уступать ли) и на каждый показ статуса задачи. Ответ нужен
+            # только для «есть ли кто впереди», и первых двух сотен для
+            # этого хватает с запасом.
             cur.execute(
                 "SELECT id, tenant, project, COALESCE((doc->>'qseq')::bigint, id)"
                 " FROM jobs WHERE status = 'queued'"
-                " ORDER BY COALESCE((doc->>'qseq')::bigint, id), id")
+                " ORDER BY COALESCE((doc->>'qseq')::bigint, id), id LIMIT 200")
             return [{"id": r[0], "tenant": r[1], "project": r[2], "qseq": r[3]}
                     for r in cur.fetchall()]
 

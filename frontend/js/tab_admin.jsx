@@ -120,7 +120,7 @@ function AdminPagesLog({ log }) {
       React.createElement("td", { className: "dim" }, [e.title, pagesNoteLabel(e.note), e.name].filter(Boolean).join(" · "))))));
 }
 
-function AdminUsers({ toast }) {
+function AdminUsers({ toast, tenants }) {
   const [users, setUsers] = useState([]);
   const [q, setQ] = useState("");
   const reload = () => window.API.safeCall(() => window.API.usersAll()).then(r => setUsers((r && r.users) || []));
@@ -138,7 +138,9 @@ function AdminUsers({ toast }) {
   return React.createElement("div", { className: "card card-pad" },
     React.createElement("div", { className: "row between", style: { marginBottom: 8 } },
       React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Аккаунты · ") + users.length),
-      React.createElement(Input, { value: q, placeholder: TR("поиск: логин, имя, организация"), style: { maxWidth: 280 }, onChange: (e) => setQ(e.target.value) })),
+      React.createElement("div", { className: "row", style: { gap: 8 } },
+        React.createElement(Input, { value: q, placeholder: TR("поиск: логин, имя, организация"), style: { maxWidth: 280 }, onChange: (e) => setQ(e.target.value) }),
+        React.createElement(AdminUserAdd, { tenants, toast, onDone: reload }))),
     React.createElement("div", { style: { overflowX: "auto", maxHeight: 360, overflowY: "auto" } }, React.createElement("table", { className: "tbl" },
       React.createElement("thead", null, React.createElement("tr", null,
         [TR("Логин"), TR("Почта"), TR("Имя"), TR("Организация"), TR("Роль"), TR("Создан"), TR("Состояние"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
@@ -154,6 +156,141 @@ function AdminUsers({ toast }) {
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => { const pw = prompt(TR("Новый пароль для ") + u.login + ":"); if (pw) patch(u, { password: pw }, TR("Пароль сменён")); } }, TR("Пароль")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => patch(u, { active: !u.active }, u.active ? TR("Отключён") : TR("Включён")) }, u.active ? TR("Отключить") : TR("Включить")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => remove(u) }, TR("Удалить")))))))));
+}
+
+/* Заведение учётной записи. Эндпоинт был с самого начала, кнопки не было —
+   и завести человека можно было только запросом руками. Пароль предлагается
+   сразу и читаемый: пустое поле «пароль» в форме для администратора кончается
+   паролем «12345678». */
+function randomPass() {
+  const A = "abcdefghijkmnpqrstuvwxyz23456789";   // без похожих 0/O, 1/l
+  let out = [];
+  for (let g = 0; g < 3; g++) {
+    let s = "";
+    for (let i = 0; i < 4; i++) s += A[Math.floor(Math.random() * A.length)];
+    out.push(s);
+  }
+  return out.join("-");
+}
+
+function AdminUserAdd({ tenants, onDone, toast }) {
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({ login: "", name: "", email: "", role: "translator", tenant: "", password: randomPass() });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  if (!open)
+    return React.createElement(Btn, { size: "sm", onClick: () => { setF({ ...f, password: randomPass() }); setOpen(true); } },
+      TR("Добавить пользователя"));
+  const save = async () => {
+    try {
+      const r = await window.API.userCreate({
+        login: f.login.trim(), name: f.name.trim(), email: f.email.trim(),
+        role: f.role, tenant: f.tenant || undefined, password: f.password
+      });
+      // Пароль показываем ОДИН раз и целиком: на сервере лежит только его
+      // хеш, и если администратор его сейчас не запишет — восстановить
+      // будет нечего, останется только сменить.
+      toast.success(TR("Заведён: ") + r.user.login, TR("пароль: ") + f.password);
+      setOpen(false);
+      setF({ login: "", name: "", email: "", role: "translator", tenant: "", password: randomPass() });
+      onDone();
+    } catch (e) { toast.error(TR("Не заведён"), e.message || String(e)); }
+  };
+  return React.createElement("div", { className: "col", style: { gap: 8, padding: "10px 0" } },
+    React.createElement("div", { className: "row row-wrap", style: { gap: 8 } },
+      React.createElement(Input, { value: f.login, placeholder: TR("логин"), style: { maxWidth: 150 }, onChange: set("login") }),
+      React.createElement(Input, { value: f.name, placeholder: TR("имя"), style: { maxWidth: 150 }, onChange: set("name") }),
+      React.createElement(Input, { value: f.email, placeholder: TR("почта (необязательно)"), style: { maxWidth: 190 }, onChange: set("email") }),
+      React.createElement("select", { className: "input", value: f.role, style: { maxWidth: 140 }, onChange: set("role") },
+        ["owner", "editor", "translator"].map(r => React.createElement("option", { key: r, value: r }, roleLabel(r)))),
+      React.createElement("select", { className: "input", value: f.tenant, style: { maxWidth: 170 }, onChange: set("tenant") },
+        React.createElement("option", { value: "" }, TR("своя организация")),
+        (tenants || []).map(t => React.createElement("option", { key: t.id, value: t.id }, t.name || t.id))),
+      React.createElement(Input, { value: f.password, style: { maxWidth: 160 }, onChange: set("password") }),
+      React.createElement(Btn, { size: "sm", variant: "ghost", onClick: () => setF({ ...f, password: randomPass() }) }, TR("Другой пароль")),
+      React.createElement(Btn, { size: "sm", onClick: save, disabled: !f.login.trim() || f.password.length < 8 }, TR("Завести")),
+      React.createElement(Btn, { size: "sm", variant: "ghost", onClick: () => setOpen(false) }, TR("Отмена"))),
+    React.createElement("p", { className: "dim", style: { fontSize: 12, margin: 0 } },
+      TR("Пароль показывается один раз — на сервере хранится только его отпечаток. Новому человеку нужен лимит расхода и выданные страницы: их выдаёт карточка организации выше.")));
+}
+
+/* Тест-группа: наборы с числом мест, заведённые ботом тестировщики, анкеты.
+   Лимит мест правится ЗДЕСЬ, потому что темп теста — решение владельца:
+   пятерых за раз разобрать можно, пятьдесят нет. */
+function AdminTesting({ toast }) {
+  const [d, setD] = useState(null);
+  const reload = () => window.API.safeCall(() => window.API.testing()).then(r => setD(r && r.ok ? r : null));
+  useEffect(() => { reload(); }, []);
+  if (!d) return null;
+  const add = async () => {
+    const id = prompt(TR("Идентификатор набора (латиница, цифры, дефис):"), "test-1");
+    if (!id) return;
+    const lim = prompt(TR("Сколько мест в наборе?"), "5");
+    if (lim === null) return;
+    const pages = prompt(TR("Сколько страниц выдать каждому?"), "30");
+    if (pages === null) return;
+    try {
+      await window.API.batchCreate({ id: id.trim(), name: id.trim(), limit: Number(lim), pages: Number(pages) });
+      toast.success(TR("Набор заведён"), id); reload();
+    } catch (e) { toast.error(TR("Не заведён"), e.message || String(e)); }
+  };
+  const patch = async (b, body, msg) => {
+    try { await window.API.batchUpdate(b.id, body); toast.success(msg, b.name || b.id); reload(); }
+    catch (e) { toast.error(TR("Не изменено"), e.message || String(e)); }
+  };
+  const setLimit = (b) => {
+    const v = prompt(TR("Сколько мест в наборе «") + (b.name || b.id) + TR("»? Выдано уже ") + (b.issued || 0) + ":", String(b.limit || 0));
+    if (v === null || v.trim() === "") return;
+    patch(b, { limit: Number(v) }, TR("Мест изменено"));
+  };
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "row between", style: { marginBottom: 8 } },
+      React.createElement("div", { className: "eyebrow", style: { margin: 0 } },
+        TR("Тест-группа · наборов ") + d.batches.length + TR(" · тестировщиков ") + d.testers.length
+        + TR(" · анкет ") + d.surveys.length),
+      React.createElement(Btn, { size: "sm", onClick: add }, TR("Новый набор"))),
+    // Бот без токена молчит, и молчание неотличимо от «никто не пишет».
+    (!d.botReady || !d.serviceToken) && React.createElement("p", { className: "dim", style: { fontSize: 13, marginTop: 0 } },
+      !d.botReady ? TR("Бот не настроен: нет TELEGRAM_BOT_TOKEN в окружении — доступ выдавать некому.")
+        : TR("Нет TG_SERVICE_TOKEN: служебная дверь закрыта, бот не сможет завести тестировщика.")),
+    React.createElement("div", { style: { overflowX: "auto" } }, React.createElement("table", { className: "tbl" },
+      React.createElement("thead", null, React.createElement("tr", null,
+        [TR("Набор"), TR("Места"), TR("Страниц"), TR("Лимит $"), TR("Состояние"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
+      React.createElement("tbody", null, d.batches.map(b => React.createElement("tr", { key: b.id },
+        React.createElement("td", null, b.name || b.id, React.createElement("span", { className: "dim" }, " · " + b.id)),
+        React.createElement("td", null, (b.issued || 0) + " / " + (b.limit || 0),
+          React.createElement("span", { className: "dim" }, TR(" · свободно ") + Math.max(0, (b.limit || 0) - (b.issued || 0)))),
+        React.createElement("td", null, b.pages),
+        React.createElement("td", null, b.limitUsd),
+        React.createElement("td", null, b.active ? TR("идёт набор") : TR("закрыт")),
+        React.createElement("td", { style: { textAlign: "right", whiteSpace: "nowrap" } },
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLimit(b) }, TR("Мест")),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => patch(b, { active: !b.active }, b.active ? TR("Набор закрыт") : TR("Набор открыт")) },
+            b.active ? TR("Закрыть") : TR("Открыть")))))))),
+    d.testers.length > 0 && React.createElement("div", { style: { overflowX: "auto", marginTop: 12 } },
+      React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, TR("Тестировщики")),
+      React.createElement("table", { className: "tbl" },
+        React.createElement("thead", null, React.createElement("tr", null,
+          [TR("Логин"), TR("Имя"), TR("Telegram"), TR("Набор"), TR("Язык"), TR("Страниц"), TR("Заведён")].map((h, i) => React.createElement("th", { key: i }, h)))),
+        React.createElement("tbody", null, d.testers.map(u => React.createElement("tr", { key: u.login },
+          React.createElement("td", null, u.login),
+          React.createElement("td", null, u.name || "—"),
+          React.createElement("td", { className: "dim" }, u.tgUser ? "@" + u.tgUser : "—"),
+          React.createElement("td", null, u.batch || "—"),
+          React.createElement("td", null, (u.uiLang || "").toUpperCase()),
+          React.createElement("td", null, (u.usage && u.usage.used != null ? u.usage.used : "—") + " / "
+            + (u.usage && u.usage.credit != null ? u.usage.credit : "∞")),
+          React.createElement("td", { className: "dim" }, u.created || "")))))),
+    d.surveys.length > 0 && React.createElement("div", { style: { marginTop: 12 } },
+      React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, TR("Анкеты")),
+      React.createElement("div", { style: { maxHeight: 240, overflow: "auto" } },
+        React.createElement("table", { className: "tbl" },
+          React.createElement("tbody", null, d.surveys.map(s => React.createElement("tr", { key: s.id },
+            React.createElement("td", { className: "dim", style: { whiteSpace: "nowrap", fontSize: 12 } }, s.at),
+            React.createElement("td", null, s.form === "apply" ? TR("заявка") : TR("разбор")),
+            React.createElement("td", null, s.who || s.ref || "—"),
+            React.createElement("td", null, (s.lang || "").toUpperCase()),
+            React.createElement("td", { style: { textAlign: "right" } },
+              React.createElement("a", { className: "link", href: "/t/a/" + s.token, target: "_blank", rel: "noopener" }, TR("Открыть лист"))))))))));
 }
 
 function AdminJobs({ ov, toast, onChange }) {
@@ -176,6 +313,71 @@ function AdminJobs({ ov, toast, onChange }) {
         ov.jobs.active.map(j => row(j, true)),
         ov.jobs.recent.filter(j => !ov.jobs.active.some(a => a.id === j.id)).map(j => row(j, false))))),
     ov.jobs.recent.length === 0 && React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, TR("С момента старта сервиса прогонов не было (они живут в памяти процесса).")));
+}
+
+/* История входов. Два списка, потому что вопросы разные: события отвечают
+   «что происходило» (включая неудачные попытки) и вытесняются кольцом,
+   а срез по людям отвечает «кто когда заходил» и лежит НА ЗАПИСИ — по нему
+   виден тот, кто не заходил ни разу, а такого в событиях нет по построению. */
+function AdminLogins() {
+  const [d, setD] = useState(null);
+  useEffect(() => { window.API.safeCall(() => window.API.logins(200)).then(r => setD(r && r.ok ? r : null)); }, []);
+  if (!d) return null;
+  const never = d.users.filter(u => !u.lastLogin).length;
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+      TR("Входы · событий ") + d.events.length + (never ? TR(" · ни разу не заходили: ") + never : "")),
+    React.createElement("div", { className: "row row-wrap", style: { gap: 16, alignItems: "flex-start" } },
+      React.createElement("div", { style: { flex: "1 1 320px", minWidth: 0 } },
+        React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, TR("Кто когда заходил")),
+        React.createElement("div", { style: { maxHeight: 300, overflow: "auto" } },
+          React.createElement("table", { className: "tbl" },
+            React.createElement("tbody", null, d.users.map(u => React.createElement("tr", { key: u.id },
+              React.createElement("td", null, u.login, u.tester ? React.createElement("span", { className: "dim" }, TR(" · тестировщик")) : null),
+              React.createElement("td", { className: "dim" }, u.tenant),
+              React.createElement("td", { className: "dim", style: { whiteSpace: "nowrap" } },
+                u.lastLogin || TR("ни разу")),
+              React.createElement("td", { className: "dim" }, u.loginCount ? u.loginCount + TR(" вх.") : ""))))))),
+      React.createElement("div", { style: { flex: "1 1 320px", minWidth: 0 } },
+        React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, TR("События")),
+        React.createElement("div", { style: { maxHeight: 300, overflow: "auto" } },
+          React.createElement("table", { className: "tbl" },
+            React.createElement("tbody", null, d.events.map((r, i) => React.createElement("tr", { key: i },
+              React.createElement("td", { className: "dim", style: { whiteSpace: "nowrap", fontSize: 12 } }, r.at),
+              React.createElement("td", { style: { color: r.action === "login.fail" ? "var(--c-danger)" : undefined } },
+                r.action === "login.fail" ? TR("отказ") : TR("вход")),
+              React.createElement("td", null, r.login || r.triedLogin || "—"),
+              React.createElement("td", { className: "dim" }, r.tenant),
+              React.createElement("td", { className: "dim", style: { fontSize: 12 } }, r.ip || "")))))))));
+}
+
+/* История прогонов с ФАКТИЧЕСКОЙ суммой. Берётся из runCosts, а не из
+   списка задач: задачи живут в памяти процесса и теряются при рестарте,
+   а расход терять нельзя — по нему калибруется смета. */
+function AdminRuns() {
+  const [d, setD] = useState(null);
+  useEffect(() => { window.API.safeCall(() => window.API.runsHistory(100)).then(r => setD(r && r.ok ? r : null)); }, []);
+  if (!d) return null;
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+      TR("Прогоны с расходом · ") + d.runs.length + TR(" · всего $") + Number(d.totalUsd || 0).toFixed(2)
+      + (d.estRatio ? TR(" · смета в среднем в ") + d.estRatio + TR(" раза от факта (по ") + d.estRuns + TR(" прогонам)") : "")),
+    d.runs.length === 0 && React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } },
+      TR("Прогонов с расходом ещё не было.")),
+    React.createElement("div", { style: { maxHeight: 340, overflow: "auto" } },
+      React.createElement("table", { className: "tbl" },
+        React.createElement("thead", null, React.createElement("tr", null,
+          [TR("Когда"), TR("Организация"), TR("Прогон"), TR("Сегментов"), TR("Смета"), TR("Факт"), TR("Вызовов")].map((h, i) => React.createElement("th", { key: i }, h)))),
+        React.createElement("tbody", null, d.runs.map((r, i) => React.createElement("tr", { key: i },
+          React.createElement("td", { className: "dim", style: { whiteSpace: "nowrap", fontSize: 12 } }, r.finished || ""),
+          React.createElement("td", null, r.tenant),
+          React.createElement("td", null, "№" + r.job + " · " + r.kind
+            + (r.status && r.status !== "done" ? " · " + r.status : "")),
+          React.createElement("td", null, r.segments != null ? r.segments : "—"),
+          React.createElement("td", { className: "dim" }, r.est != null ? "$" + Number(r.est).toFixed(3) : "—"),
+          React.createElement("td", null, r.cost != null ? "$" + Number(r.cost).toFixed(3) : "—",
+            r.unpriced ? React.createElement("span", { className: "dim", title: TR("вызовы, цена которых неизвестна") }, TR(" · без цены ") + r.unpriced) : null),
+          React.createElement("td", { className: "dim" }, r.calls)))))));
 }
 
 function AdminAudit() {
@@ -226,6 +428,9 @@ function TabAdmin({ store, toast }) {
         React.createElement(AdminStat, { label: TR("Очередь терминов"), value: pr.termQueue })),
       React.createElement(AdminJobs, { ov, toast, onChange: reload }),
       React.createElement(AdminTenants, { ov, toast, onChange: reload }),
-      React.createElement(AdminUsers, { toast }),
+      React.createElement(AdminUsers, { toast, tenants: ov.tenants }),
+      React.createElement(AdminTesting, { toast }),
+      React.createElement(AdminRuns, null),
+      React.createElement(AdminLogins, null),
       React.createElement(AdminAudit, null)));
 }

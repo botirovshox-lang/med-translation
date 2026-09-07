@@ -1,0 +1,36 @@
+# Бот тест-группы: приём сообщений, выдача доступа, напоминание на третий день.
+# Копируется в /etc/systemd/system/.
+#
+# ОТДЕЛЬНЫЙ ПРОЦЕСС — не по вкусу, а по трём причинам (шапка backend/tg.py):
+# worker.py импортирует main.py, поэтому опрос, поднятый на импорте, дал бы
+# ДВА опрашивающих на один токен (Telegram отвечает 409, половина нажатий
+# обрабатывается дважды); организация запроса живёт в ContextVar, которого
+# в постороннем потоке нет; STATE — словарь в памяти процесса API.
+#
+# В STATE бот не пишет ни байта: он ходит в наш же API по HTTP служебным
+# токеном (TG_SERVICE_TOKEN — тот же, что у сервиса), а своё состояние
+# держит файлом backend/data/tg_state.json. Отсюда и ReadWritePaths.
+#
+# Нужны в /etc/medcat/env: TELEGRAM_BOT_TOKEN, TG_SERVICE_TOKEN,
+# TELEGRAM_ADMIN_CHAT (числовой id владельца), PUBLIC_BASE_URL.
+# Нет токена бота — процесс сразу выходит с кодом 0, и это штатно.
+[Unit]
+Description=Med-CAT Telegram bot (тест-группа)
+After=network.target medcat.service
+Wants=medcat.service
+
+[Service]
+Type=exec
+User=medcat
+Group=medcat
+WorkingDirectory=/opt/med-translation
+EnvironmentFile=/etc/medcat/env
+ExecStart=/opt/med-translation/.venv/bin/python -m backend.tgbot
+Restart=always
+RestartSec=10
+MemoryMax=256M
+ProtectSystem=full
+ReadWritePaths=/opt/med-translation/backend/data
+
+[Install]
+WantedBy=multi-user.target

@@ -1944,7 +1944,12 @@ def _user_public(u: dict) -> dict:
             "color": u.get("color") or _USER_COLORS[u["id"] % len(_USER_COLORS)],
             "role": u.get("role", "translator"), "tenant": u.get("tenant", DEFAULT_TENANT),
             "super": bool(u.get("super")), "active": u.get("active", True),
-            "uiLang": u.get("uiLang") or DEFAULT_UI_LANG, "created": u.get("created")}
+            "uiLang": u.get("uiLang") or DEFAULT_UI_LANG, "created": u.get("created"),
+            # Последний вход и их число: журнал кольцевой, а вопрос «заходил
+            # ли этот человек вообще» переживать вытеснение обязан. Адрес
+            # НЕ отдаём: он нужен разбору происшествия, а не списку людей.
+            "lastLogin": u.get("lastLogin"), "loginCount": u.get("loginCount") or 0,
+            "tester": bool(u.get("tester"))}
 
 
 def _users() -> list:
@@ -2039,12 +2044,16 @@ def _confirmed_by_human(seg: dict) -> bool:
     return by == "human" or isinstance(by, int)
 
 
-def _audit(action: str, **fields) -> None:
+def _audit(action: str, _tenant: Optional[str] = None, **fields) -> None:
+    """След действия. `_tenant` называют явно там, где сессии ЕЩЁ НЕТ:
+    неудачный вход происходит до неё, а записанный в организацию `default`
+    он не виден владельцу той организации, чью учётную запись подбирают, —
+    то есть предупреждение не доходит ровно до того, кому адресовано."""
     try:
         u = _actor()
         sess = CURRENT_SESSION.get() or {}
         rec = {"at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-               "tenant": sess.get("tenant") or _current_tenant(),
+               "tenant": _tenant or sess.get("tenant") or _current_tenant(),
                "user": u["id"] if u else None, "login": u["login"] if u else None,
                "role": sess.get("role"),
                "action": action}
@@ -2167,7 +2176,35 @@ _AUTH_LOCK = threading.Lock()
 PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/health",
                     "/api/auth/signup-info", "/api/auth/register",
                     "/api/auth/verify", "/api/auth/resend",
-                    "/api/auth/forgot", "/api/auth/reset"}
+                    "/api/auth/forgot", "/api/auth/reset",
+                    # Приём анкеты тест-группы. Публичен по существу: её
+                    # заполняет человек, у которого ещё нет учётной записи —
+                    # ради неё он анкету и заполняет. Защита не входом,
+                    # а потолком частоты и размера (`_survey_throttle`).
+                    "/api/public/survey"}
+
+# Служебный токен бота. Бот — ОТДЕЛЬНЫЙ процесс и ходит к нам как обычный
+# клиент, поэтому ему нужен вход. Пароль суперпользователя ему давать нельзя:
+# бот умеет ровно две вещи (завести тестировщика, узнать, кто уже ответил),
+# и права у него должны быть ровно на них. Пусто — ручки `/api/tg/*` закрыты
+# так же, как всё остальное: молчаливо открытый служебный вход хуже
+# отсутствующего.
+TG_SERVICE_TOKEN = os.environ.get("TG_SERVICE_TOKEN", "").strip()
+
+
+def _service_call(request: "Request", path: str) -> bool:
+    """Это вызов бота с действующим служебным токеном?
+
+    Сравнение постоянного времени: токен приходит из сети, и обычное `==`
+    на длинной строке подбирается по времени ответа."""
+    if not (TG_SERVICE_TOKEN and path.startswith("/api/tg/")):
+        return False
+    got = request.headers.get("X-Service-Token") or ""
+    # Сравниваем БАЙТЫ, а не строки: `compare_digest` на строке с не-ASCII
+    # знаком бросает TypeError, то есть присланная кириллица в заголовке
+    # превращала бы отказ 401 в ошибку 500.
+    return bool(got) and secrets.compare_digest(got.encode("utf-8", "replace"),
+                                                TG_SERVICE_TOKEN.encode("utf-8"))
 
 
 def _new_session(user: dict) -> str:
@@ -2308,7 +2345,8 @@ async def require_token(request: Request, call_next):
     path = request.url.path
     if (request.method != "OPTIONS"              # preflight обслуживает CORSMiddleware
             and path.startswith("/api/")
-            and path not in PUBLIC_API_PATHS):
+            and path not in PUBLIC_API_PATHS
+            and not _service_call(request, path)):
         sess = _session_of(_token_from_request(request))
         if sess is None:
             return JSONResponse({"ok": False, "error": "Требуется вход в систему"}, status_code=401)
@@ -2377,6 +2415,11 @@ except ImportError:                       # запуск как backend.main:app
     from backend import textcount
 mailer_mod = _safe_import("mailer")
 legal_mod = _safe_import("legal")
+# Опросы тест-группы и инструкция — публичные страницы нашего сервера.
+# `tg` умеет ТОЛЬКО слать (уведомления владельцу); приём сообщений живёт
+# отдельным процессом `backend/tgbot.py` — доводы в шапке `backend/tg.py`.
+survey_mod = _safe_import("survey")
+tg_mod = _safe_import("tg")
 STORE = _store_mod.open_store(os.environ.get("DATABASE_URL"), STATE_FILE)
 
 # Прогоны отдельным процессом (systemd-юнит medcat-worker, backend/worker.py):
@@ -2793,6 +2836,12 @@ def login(req: LoginRequest, request: Request):
     user = _user_by_login(login_name)
     if not user or not _verify_password(user, req.password):
         _note_login_fail(ip)
+        # Неудачная попытка — тоже история входа, и именно она интересна:
+        # десять отказов подряд по одному логину видно только так. Пишем
+        # в организацию ТОГО, чью запись подбирают (если такая есть),
+        # иначе владелец своего предупреждения не увидит.
+        _audit("login.fail", _tenant=(user or {}).get("tenant"), ip=ip,
+               triedLogin=login_name[:64])
         raise HTTPException(401, "Неверный логин или пароль")
     # Незавершённая регистрация — не «неверный пароль»: человек ввёл всё
     # правильно, ему нужен код из письма, и сказать об этом надо прямо.
@@ -2805,6 +2854,14 @@ def login(req: LoginRequest, request: Request):
         _audit("login", ip=ip)
     finally:
         CURRENT_SESSION.reset(tok)
+    # След ПОСЛЕДНЕГО входа лежит на самой записи, а не только в журнале:
+    # журнал кольцевой (AUDIT_MAX), и «когда этот человек заходил в последний
+    # раз» — вопрос, ответ на который не должен вытесняться чужой работой.
+    # Тот же закон, что у подписи заверения (инвариант 14).
+    user["lastLogin"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    user["lastIp"] = ip
+    user["loginCount"] = int(user.get("loginCount") or 0) + 1
+    save_state(STATE)
     return {"ok": True, "token": token, "expiresIn": SESSION_TTL,
             "me": _user_public(user)}
 
@@ -3600,6 +3657,57 @@ def admin_audit(request: Request, limit: int = 200, action: str = "", all: bool 
     rows = [r for r in reversed(STATE.get("audit") or [])
             if (all or r.get("tenant") == t) and (not action or r.get("action", "").startswith(action))]
     return {"ok": True, "items": rows[:max(1, min(limit, 1000))]}
+
+
+@app.get("/api/admin/logins")
+def admin_logins(request: Request, limit: int = 200, all: bool = False):
+    """История входов: события из журнала плюс срез «кто когда заходил».
+
+    Двумя списками, а не одним, потому что отвечают они на РАЗНЫЕ вопросы
+    и живут по разным законам. `events` — что происходило (включая неудачные
+    попытки), и это кольцо: старое вытесняется чужой работой. `users` — срез
+    состояния, он лежит НА ЗАПИСИ и не вытесняется никогда; по нему видно
+    того, кто не заходил ни разу, а такого в событиях нет по построению."""
+    _current_user(request)
+    if all and not _is_super(request):
+        raise HTTPException(403, "Входы всех организаций — только суперпользователю")
+    t = _current_tenant()
+    events = [r for r in reversed(STATE.get("audit") or [])
+              if (all or r.get("tenant") == t)
+              and str(r.get("action") or "").startswith("login")][:max(1, min(limit, 1000))]
+    users = [{"id": u["id"], "login": u["login"], "name": u.get("name"),
+              "tenant": u.get("tenant"), "role": u.get("role"),
+              "active": u.get("active", True), "tester": bool(u.get("tester")),
+              "created": u.get("created"),
+              "lastLogin": u.get("lastLogin"), "loginCount": u.get("loginCount") or 0}
+             for u in _users() if all or u.get("tenant") == t]
+    # Кто дольше всех не заходил — первым: список нужен, чтобы увидеть
+    # тех, кто НЕ пришёл, а не тех, кто только что был.
+    users.sort(key=lambda x: (x["lastLogin"] or "", x["login"]))
+    return {"ok": True, "events": events, "users": users,
+            "auditRows": len(STATE.get("audit") or []), "auditMax": AUDIT_MAX}
+
+
+@app.get("/api/admin/runs")
+def admin_runs(request: Request, limit: int = 100, all: bool = False):
+    """История прогонов с ФАКТИЧЕСКОЙ суммой расхода.
+
+    Берётся из `runCosts`, а не из `_JOBS`: те живут в памяти процесса и
+    теряются при рестарте, а расход терять нельзя — по нему калибруют смету.
+    Рядом с фактом лежит смета, которую человеку показали перед запуском:
+    врозь эти два числа не сравниваются, а ради сравнения всё и затевалось."""
+    _current_user(request)
+    if all and not _is_super(request):
+        raise HTTPException(403, "Прогоны всех организаций — только суперпользователю")
+    t = _current_tenant()
+    rows = [r for r in reversed(STATE.get("runCosts") or [])
+            if all or _tenant_of(r) == t][:max(1, min(limit, 500))]
+    priced = [r for r in rows if r.get("est") and r.get("cost")]
+    total = sum(float(r.get("cost") or 0) for r in rows)
+    return {"ok": True, "runs": rows, "totalUsd": round(total, 4),
+            "estRatio": (round(sum(r["est"] for r in priced) / sum(r["cost"] for r in priced), 2)
+                         if priced and sum(r["cost"] for r in priced) else None),
+            "estRuns": len(priced), "kept": RUN_COST_HISTORY}
 
 
 _DOMAIN_FIELDS = ("label", "en", "expert", "terminology", "extract", "examples")
@@ -4407,6 +4515,11 @@ def get_seed():
     # Приглашения — почты людей из ДРУГИХ организаций. Верхний ключ уехал бы
     # каждому вошедшему вместе с ними: `/api/seed` отдаёт всё, что не названо.
     public.pop("invites", None)
+    # Анкеты тест-группы и наборы тестировщиков. Тот же закон, что у
+    # приглашений: в анкете лежат имя, Telegram и мнение постороннего
+    # человека — верхний ключ уехал бы каждому вошедшему вместе с ними.
+    public.pop("surveys", None)
+    public.pop("testBatches", None)
     for key in ("exportHistory", "termQueue", "autoBatches", "runCosts", "quotes"):
         public[key] = [e for e in (STATE.get(key) or []) if _tenant_of(e) == t]
     return {**public, "projects": [_project_for_client(p) for p in _tenant_projects()],
@@ -19193,6 +19306,365 @@ def stop_job(jid: int):
         # пользователю сразу видно, что кнопка сработала.
         job["stopping"] = True
     return {"ok": True, "job": _job_public(job)}
+
+
+# ═════════════════════════════════════════════════════════════════════
+# ТЕСТ-ГРУППА: анкеты, инструкция, выдача доступа ботом
+# ═════════════════════════════════════════════════════════════════════
+# Анкеты и инструкция — ПУБЛИЧНЫЕ страницы нашего сервера (`/t/...`), и это
+# не прихоть размещения. Раньше они жили страницами claude.ai, а те не умеют
+# отправить ответ на чужой хост — поэтому единственным способом доставки было
+# «скопируйте текст и пришлите в Telegram», а чтобы человеку было куда слать,
+# в странице стоял НИК владельца. Ник — не служебная деталь: по нему пишут
+# в личку кому угодно. Здесь ответ уходит нам, а владельцу его приносит бот
+# по ЧИСЛОВОМУ id, которого на странице нет.
+#
+# Приём анкеты — единственная НЕАУТЕНТИФИЦИРОВАННАЯ запись в состояние во всём
+# сервисе (её заполняет тот, у кого учётной записи ещё нет — ради неё и
+# заполняет), поэтому у неё три потолка: частота с одного адреса, размер тела
+# и глубина хранения. Без них публичный вход в `save_state` — это способ
+# гонять сохранения всего процесса.
+
+SURVEY_MAX = 500                # сколько анкет храним (кольцо)
+SURVEY_BODY_MAX = 20000         # знаков в ответах: анкета, а не документ
+SURVEY_PER_HOUR = 6             # заполнений с одного адреса в час
+_SURVEY_HITS: dict = {}         # ip -> [времена попыток]
+_SURVEY_LOCK = threading.Lock()
+
+
+def _surveys() -> list:
+    return STATE.setdefault("surveys", [])
+
+
+def _test_batches() -> list:
+    """Наборы тестировщиков. У каждого своё число мест — им владелец и
+    управляет темпом: пять человек за раз разобрать можно, пятьдесят нет."""
+    return STATE.setdefault("testBatches", [])
+
+
+def _active_batch() -> Optional[dict]:
+    return next((b for b in _test_batches() if b.get("active")), None)
+
+
+def _batch_free(b: dict) -> int:
+    """Свободных мест. Лимит 0 читается как «мест нет», а не «без потолка»:
+    тот же закон, что у выданных страниц (`pagesLimited`)."""
+    return max(0, int(b.get("limit") or 0) - int(b.get("issued") or 0))
+
+
+def _survey_throttle(ip: str) -> bool:
+    """Не слишком ли часто с этого адреса. True — отказать."""
+    now = time.time()
+    with _SURVEY_LOCK:
+        hits = [t for t in _SURVEY_HITS.get(ip, []) if now - t < 3600]
+        if len(hits) >= SURVEY_PER_HOUR:
+            _SURVEY_HITS[ip] = hits
+            return True
+        hits.append(now)
+        _SURVEY_HITS[ip] = hits
+        # Чужие адреса не копим: словарь живёт в памяти процесса.
+        if len(_SURVEY_HITS) > 2000:
+            for k in [k for k, v in _SURVEY_HITS.items() if not v or now - v[-1] > 3600]:
+                _SURVEY_HITS.pop(k, None)
+    return False
+
+
+class SurveyIn(BaseModel):
+    form: str
+    lang: str = "uz"
+    answers: dict = {}
+    consent: dict = {}
+    who: str = ""
+    ref: str = ""          # откуда пришли: «tg<chat>» — метка бота
+
+
+@app.post("/api/public/survey")
+def public_survey(req: SurveyIn, request: Request):
+    """Принять заполненную анкету и отдать её владельцу в Telegram.
+
+    Ответ человеку не ждёт Telegram: доставка идёт отдельным потоком
+    (`notify_admin_async`). Недоступный Telegram не должен превращаться
+    в таймаут страницы у того, кто честно заполнил 15 вопросов."""
+    if not survey_mod or req.form not in getattr(survey_mod, "FORMS", {}):
+        raise HTTPException(404, "Анкета не найдена")
+    ip = _client_ip(request)
+    if _survey_throttle(ip):
+        raise HTTPException(429, "Слишком много отправок с этого адреса. Попробуйте через час.")
+    body = json.dumps({"a": req.answers, "c": req.consent}, ensure_ascii=False)
+    if len(body) > SURVEY_BODY_MAX:
+        raise HTTPException(413, "Ответы слишком длинные")
+    rec = {
+        "id": max((s.get("id") or 0 for s in _surveys()), default=0) + 1,
+        "token": secrets.token_urlsafe(16),
+        "form": req.form, "lang": survey_mod._lang(req.lang),
+        "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "who": (req.who or "").strip()[:120],
+        "ref": (req.ref or "").strip()[:64],
+        "answers": req.answers, "consent": req.consent, "ip": ip,
+    }
+    lst = _surveys()
+    lst.append(rec)
+    del lst[:-SURVEY_MAX]
+    save_state(STATE)
+    if tg_mod:
+        url = tg_mod.link("/t/a/%s" % rec["token"])
+        tg_mod.notify_admin_async(survey_mod.summary_text(rec, url))
+    return {"ok": True, "token": rec["token"]}
+
+
+def _survey_page(form_id: str, lang: str, ref: str, who: str = ""):
+    if not survey_mod:
+        raise HTTPException(503, "Страница недоступна")
+    pre = {}
+    if ref:
+        pre["ref"] = ref[:64]
+    if who:
+        pre["who"] = who[:120]
+    return HTMLResponse(survey_mod.form_page(form_id, lang, pre))
+
+
+@app.get("/t/apply", response_class=HTMLResponse)
+def page_apply(lang: str = "", ref: str = "", who: str = ""):
+    return _survey_page("apply", lang, ref, who)
+
+
+@app.get("/t/debrief", response_class=HTMLResponse)
+def page_debrief(lang: str = "", ref: str = "", who: str = ""):
+    return _survey_page("debrief", lang, ref, who)
+
+
+@app.get("/t/guide", response_class=HTMLResponse)
+def page_guide(lang: str = ""):
+    if not survey_mod:
+        raise HTTPException(503, "Страница недоступна")
+    return HTMLResponse(survey_mod.guide_page(lang))
+
+
+@app.get("/t/a/{token}", response_class=HTMLResponse)
+def page_answers(token: str, lang: str = ""):
+    """Лист заполненной анкеты. Адрес угадать нельзя (`token_urlsafe(16)`),
+    и это вся его защита — заходят по нему двое: владелец из Telegram
+    и сам заполнивший сразу после отправки. Держать ради этого вход
+    в систему значило бы закрыть человеку его же ответы."""
+    if not survey_mod:
+        raise HTTPException(503, "Страница недоступна")
+    rec = next((s for s in _surveys() if s.get("token") == token), None)
+    if not rec:
+        raise HTTPException(404, "Лист не найден")
+    return HTMLResponse(survey_mod.answers_page(rec, lang))
+
+
+# ─── Служебные ручки бота ───────────────────────────────────────────
+# Бот — отдельный процесс (доводы в шапке `backend/tg.py`) и ходит сюда
+# со служебным токеном. Права у него ровно на две вещи: завести
+# тестировщика и узнать, кто уже ответил. Пароля суперпользователя
+# у него нет и быть не должно.
+
+TESTER_PASS_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789"   # без похожих 0/O, 1/l
+
+
+def _tester_password() -> str:
+    """Пароль, который человек прочтёт с экрана телефона и наберёт руками.
+    Похожие знаки исключены: «0» и «O» в чужом шрифте не различить, а
+    невходящий тестировщик — это потерянный тестировщик."""
+    return "-".join("".join(secrets.choice(TESTER_PASS_ALPHABET) for _ in range(4))
+                    for _ in range(3))
+
+
+class TesterIn(BaseModel):
+    lang: str = "uz"
+    chat: Optional[int] = None
+    username: str = ""
+    name: str = ""
+
+
+@app.post("/api/tg/tester")
+def tg_tester(req: TesterIn):
+    """Завести тестировщика: своя организация, свой доступ, свои страницы.
+
+    СВОЯ ОРГАНИЗАЦИЯ у каждого — не щедрость, а инвариант 11: организация
+    и есть единица изоляции. Посади двух переводчиков в одну — и глоссарий
+    одного начнёт приказывать в документе другого.
+
+    Роль — `translator`, а не `owner`: владелец правит цены и лимиты своей
+    организации, а тестировщику этого показывать не надо (и не будет —
+    запись помечена `simple`).
+
+    Организация запроса здесь НЕ из сессии: бот приходит без неё, и всё,
+    что зовётся ниже, получает `tid` явным доводом. Тот же закон, что
+    у прогонов: ContextVar в чужой поток не доезжает."""
+    b = _active_batch()
+    if not b:
+        return JSONResponse({"ok": False, "code": "closed",
+                             "error": "Набор закрыт"}, status_code=409)
+    if _batch_free(b) <= 0:
+        return JSONResponse({"ok": False, "code": "full",
+                             "error": "Мест в наборе нет"}, status_code=409)
+    lang = survey_mod._lang(req.lang) if survey_mod else "uz"
+    n = int(b.get("issued") or 0) + 1
+    tid = "%s-%02d" % (b["id"], n)
+    while _tenant_rec(tid):
+        n += 1
+        tid = "%s-%02d" % (b["id"], n)
+    login = tid
+    while _user_by_login(login):
+        login = "%s-%s" % (tid, secrets.token_hex(2))
+    password = _tester_password()
+    h, salt = _hash_password(password)
+    who = (req.name or req.username or "").strip()[:60]
+    now = datetime.now().strftime("%Y-%m-%d")
+    tenant = {"id": tid, "name": ("Тестировщик " + who).strip() if who else ("Тестировщик " + tid),
+              "created": now, "active": True,
+              # Режим тестировщика: ни расхода, ни имён моделей на экране.
+              # Флаг стоит НА ОРГАНИЗАЦИИ, а не на человеке: скрывать надо
+              # и от того, кого владелец позовёт себе в помощь.
+              "simple": True, "tester": True, "batch": b["id"],
+              "tgChat": req.chat, "tgUser": (req.username or "").strip()[:64],
+              # Страницы выдаются СРАЗУ и точным числом. Через `_pages_topup`
+              # было бы «из окружения плюс это» — у новой организации счётчика
+              # ещё нет, и лимит вышел бы не тем, что назначил владелец.
+              "pagesCredit": float(b.get("pages") or 0), "pagesUsed": 0.0,
+              "limitUsd": float(b.get("limitUsd") or 0)}
+    if survey_mod:
+        tenant["pagesLog"] = [{"at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                               "kind": "credit", "pages": float(b.get("pages") or 0),
+                               "by": "bot", "name": "бот", "note": "batch " + b["id"]}]
+    u = {"id": max((x["id"] for x in _users()), default=0) + 1, "tenant": tid,
+         "login": login, "hash": h, "salt": salt, "role": "translator",
+         "name": who or login, "email": "", "emailVerified": True,
+         "active": True, "tester": True,
+         # Язык ВЫБРАЛ человек — значит, это решение, а не умолчание кода:
+         # без `uiLangSet` поздняя миграция вернула бы его к DEFAULT_UI_LANG
+         # (инвариант 19), и узбек получил бы русский экран.
+         "uiLang": lang, "uiLangSet": True,
+         "created": now}
+    if legal_mod:
+        # Согласие с офертой: сам факт получения доступа. В сообщении бота
+        # документы названы ссылками — иначе отметка была бы пустой формой.
+        u["acceptedTerms"] = {"version": legal_mod.VERSION,
+                              "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                              "via": "telegram", "chat": req.chat}
+    _tenants().append(tenant)
+    _users().append(u)
+    b["issued"] = n
+    b.setdefault("log", []).append({"at": now, "tenant": tid, "login": login,
+                                    "tg": (req.username or "").strip()[:64], "chat": req.chat})
+    save_state(STATE)
+    _tenants_changed()
+    if tg_mod:
+        tg_mod.notify_admin_async(
+            "🆕 Тестировщик в наборе «%s»\n%s%s\nЛогин: %s\nОрганизация: %s\nСтраниц: %s\n"
+            "Свободных мест: %d"
+            % (b.get("name") or b["id"], who or "—",
+               (" · @" + req.username) if req.username else "",
+               login, tid, b.get("pages"), _batch_free(b)))
+    return {"ok": True, "login": login, "password": password, "tenant": tid,
+            "pages": b.get("pages"), "batch": b["id"]}
+
+
+@app.get("/api/tg/state")
+def tg_state():
+    """Что боту нужно знать: сколько мест осталось и кто уже прислал разбор.
+
+    Второе — чтобы не спрашивать «вы уже протестировали?» у человека,
+    который только что ответил на пятнадцать вопросов."""
+    b = _active_batch()
+    return {"ok": True,
+            "batch": ({"id": b["id"], "name": b.get("name"), "free": _batch_free(b)} if b else None),
+            "submitted": sorted({s.get("ref") for s in _surveys()
+                                 if s.get("form") == "debrief" and s.get("ref")})}
+
+
+# ─── Админка: наборы тестировщиков ──────────────────────────────────
+
+class BatchIn(BaseModel):
+    id: str = ""
+    name: str = ""
+    limit: Optional[int] = None
+    pages: Optional[float] = None
+    limitUsd: Optional[float] = None
+    active: Optional[bool] = None
+
+
+@app.get("/api/admin/testing")
+def admin_testing(request: Request):
+    """Наборы, анкеты и заведённые тестировщики — одним экраном."""
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Тест-группа — только суперпользователю")
+    testers = [{"login": u["login"], "name": u.get("name"), "tenant": u.get("tenant"),
+                "created": u.get("created"), "active": u.get("active", True),
+                "uiLang": u.get("uiLang"),
+                "batch": (_tenant_rec(u.get("tenant")) or {}).get("batch"),
+                "tgUser": (_tenant_rec(u.get("tenant")) or {}).get("tgUser"),
+                "usage": _tenant_usage(u.get("tenant")),
+                "spend": _spend_status(u.get("tenant"))}
+               for u in _users() if u.get("tester")]
+    surveys = [{"id": s["id"], "token": s["token"], "form": s["form"], "lang": s["lang"],
+                "at": s["at"], "who": s.get("who"), "ref": s.get("ref")}
+               for s in reversed(_surveys())][:100]
+    return {"ok": True, "batches": _test_batches(), "testers": testers,
+            "surveys": surveys, "botReady": bool(tg_mod and tg_mod.enabled()),
+            "serviceToken": bool(TG_SERVICE_TOKEN)}
+
+
+@app.post("/api/admin/testing/batches")
+def admin_batch_create(req: BatchIn, request: Request):
+    """Новый набор. Активным может быть ровно ОДИН: бот спрашивает «куда
+    записывать», и два ответа на этот вопрос — это два разных лимита мест
+    на одну кнопку."""
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Наборы заводит только суперпользователь")
+    bid = (req.id or "").strip().lower()
+    if not re.fullmatch(r"[a-z0-9-]{2,24}", bid):
+        raise HTTPException(400, "Идентификатор набора: 2–24 символа, a-z, 0-9, дефис")
+    if any(b["id"] == bid for b in _test_batches()):
+        raise HTTPException(409, "Такой набор уже есть")
+    if req.limit is not None and req.limit < 0:
+        raise HTTPException(400, "Число мест не может быть отрицательным")
+    b = {"id": bid, "name": (req.name or "").strip() or bid,
+         "limit": int(req.limit or 0), "issued": 0,
+         "pages": float(req.pages if req.pages is not None else 30),
+         "limitUsd": float(req.limitUsd if req.limitUsd is not None else 5),
+         "active": True, "created": datetime.now().strftime("%Y-%m-%d"), "log": []}
+    for other in _test_batches():
+        other["active"] = False
+    _test_batches().append(b)
+    _audit("testbatch.create", batch=bid, limit=b["limit"])
+    save_state(STATE)
+    return {"ok": True, "batch": b}
+
+
+@app.post("/api/admin/testing/batches/{bid}")
+def admin_batch_update(bid: str, req: BatchIn, request: Request):
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Наборы правит только суперпользователь")
+    b = next((x for x in _test_batches() if x["id"] == bid), None)
+    if not b:
+        raise HTTPException(404, "Набор не найден")
+    if req.limit is not None:
+        if req.limit < 0:
+            raise HTTPException(400, "Число мест не может быть отрицательным")
+        # Опустить лимит НИЖЕ выданного нельзя: места уже отданы людям,
+        # и «свободно −2» — это не число, а поломанный счёт.
+        b["limit"] = max(int(req.limit), int(b.get("issued") or 0))
+    if req.name is not None and req.name.strip():
+        b["name"] = req.name.strip()
+    if req.pages is not None:
+        b["pages"] = float(req.pages)
+    if req.limitUsd is not None:
+        b["limitUsd"] = float(req.limitUsd)
+    if req.active is not None:
+        b["active"] = bool(req.active)
+        if b["active"]:
+            for other in _test_batches():
+                if other is not b:
+                    other["active"] = False
+    _audit("testbatch.update", batch=bid, limit=b.get("limit"), active=b.get("active"))
+    save_state(STATE)
+    return {"ok": True, "batch": b}
 
 
 # ─────────────────────────────────────────────────────────────────────

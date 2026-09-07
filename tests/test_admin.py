@@ -94,4 +94,50 @@ check(c.get("/admin").status_code == 404 and "ADMIN_ENTRY" not in c.get("/").tex
 check(c.get("/api/auth/me", headers=H(S)).json().get("adminPath") == "/" + main.ADMIN_PATH, "super видит адрес в /auth/me")
 check("adminPath" not in c.get("/api/auth/me", headers=H(O)).json(), "владелец без super — не видит")
 
+print("\n=== 5. История входов ===")
+# Журнал КОЛЬЦЕВОЙ, поэтому «когда человек заходил в последний раз» лежит
+# на самой записи и вытесниться не может. А неудачная попытка пишется
+# в организацию ТОГО, чью запись подбирают, — иначе владелец своего
+# предупреждения не увидит.
+check(c.get("/api/admin/logins", headers=H(O)).json().get("ok") is True, "владелец видит СВОЮ историю")
+check(c.get("/api/admin/logins?all=1", headers=H(O)).status_code == 403,
+      "историю всех организаций — только суперпользователю")
+r = c.get("/api/admin/logins?all=1", headers=H(S)).json()
+me = next(u for u in r["users"] if u["login"] == "acme")
+check(me["lastLogin"] and me["loginCount"] >= 1, "последний вход записан на учётной записи")
+check(any(e["action"] == "login" for e in r["events"]), "события входа в журнале")
+c.post("/api/auth/login", json={"login": "acme", "password": "неверный"})
+r2 = c.get("/api/admin/logins?all=1", headers=H(S)).json()
+bad = [e for e in r2["events"] if e["action"] == "login.fail"]
+check(bad and bad[0].get("triedLogin") == "acme", "неудачная попытка записана с логином")
+check(bad[0].get("tenant") == "acme",
+      "и записана в организацию того, чью запись подбирали: " + str(bad[0].get("tenant")))
+check(c.get("/api/admin/logins", headers=H(O)).json()["users"][0]["tenant"] == "acme",
+      "владелец видит только своих")
+never = c.get("/api/admin/logins?all=1", headers=H(S)).json()["users"]
+check(never[0]["lastLogin"] is None or never[0]["lastLogin"] <= (never[-1]["lastLogin"] or "я"),
+      "не заходившие — первыми: список нужен, чтобы увидеть тех, кто НЕ пришёл")
+
+print("\n=== 6. История прогонов с фактической суммой ===")
+# Берётся из runCosts, а не из списка задач: те живут в памяти процесса
+# и теряются при рестарте, а расход терять нельзя.
+main.STATE["runCosts"] = [
+    {"job": 1, "kind": "full", "project": 5, "tenant": "acme", "status": "done",
+     "finished": "2026-09-07 10:00", "segments": 20, "est": 0.2, "cost": 0.1,
+     "calls": 40, "unpriced": 0, "in": 1000, "cached_in": 0, "out": 500,
+     "reasoning": 0, "steps": {}},
+    {"job": 2, "kind": "full", "project": 6, "tenant": "default", "status": "done",
+     "finished": "2026-09-07 11:00", "segments": 10, "est": None, "cost": 0.05,
+     "calls": 10, "unpriced": 2, "in": 100, "cached_in": 0, "out": 50,
+     "reasoning": 0, "steps": {}}]
+check(c.get("/api/admin/runs?all=1", headers=H(O)).status_code == 403,
+      "прогоны всех организаций — только суперпользователю")
+own = c.get("/api/admin/runs", headers=H(O)).json()
+check(len(own["runs"]) == 1 and own["runs"][0]["tenant"] == "acme", "владелец видит только свои прогоны")
+allr = c.get("/api/admin/runs?all=1", headers=H(S)).json()
+check(len(allr["runs"]) == 2, "суперпользователь видит все")
+check(abs(allr["totalUsd"] - 0.15) < 1e-6, "сумма факта: " + str(allr["totalUsd"]))
+check(allr["estRatio"] == 2.0, "поправка сметы считается только по прогонам, где есть ОБА числа")
+check(allr["estRuns"] == 1, "и таких прогонов один")
+
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))

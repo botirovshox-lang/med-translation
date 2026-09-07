@@ -82,10 +82,38 @@ check(pub <= paths, "в списке публичных нет несущест�
 # человек без токена. Каждая ограничена по IP и по числу попыток, «забыли
 # пароль» отвечает одинаково при любом адресе. Список закрытый: новая
 # публичная дверь обязана быть осознанным решением, а не опечаткой.
+# Приём анкеты тест-группы публичен по существу: её заполняет тот, у кого
+# учётной записи ещё НЕТ, — ради неё он анкету и заполняет. Взамен входа
+# у неё три потолка (частота с адреса, размер тела, глубина кольца),
+# и записывает она в свой ключ STATE, исключённый из /api/seed.
 check(pub == {"/api/auth/login", "/api/auth/logout", "/api/health",
               "/api/auth/signup-info", "/api/auth/register", "/api/auth/verify",
-              "/api/auth/resend", "/api/auth/forgot", "/api/auth/reset"},
-      "публичны только вход, выход, здоровье и двери регистрации: " + str(sorted(pub)))
+              "/api/auth/resend", "/api/auth/forgot", "/api/auth/reset",
+              "/api/public/survey"},
+      "публичны только вход, выход, здоровье, двери регистрации и приём анкеты: " + str(sorted(pub)))
+
+print("\n=== 4b. Служебная дверь бота закрыта без токена ===")
+# Бот — отдельный процесс и ходит сюда со служебным токеном. Пустой токен
+# в окружении обязан означать ЗАКРЫТО: молчаливо открытая служебная дверь
+# заводит чужому человеку организацию с выданными страницами.
+class _FakeReq:
+    def __init__(self, hdrs): self.headers = hdrs
+_saved = main.TG_SERVICE_TOKEN
+try:
+    main.TG_SERVICE_TOKEN = ""
+    check(not main._service_call(_FakeReq({"X-Service-Token": "что-угодно"}), "/api/tg/tester"),
+          "без TG_SERVICE_TOKEN служебная дверь закрыта")
+    main.TG_SERVICE_TOKEN = "s3cret-token"
+    check(not main._service_call(_FakeReq({}), "/api/tg/tester"),
+          "без заголовка не пускает")
+    check(not main._service_call(_FakeReq({"X-Service-Token": "другой"}), "/api/tg/tester"),
+          "чужой токен не пускает")
+    check(main._service_call(_FakeReq({"X-Service-Token": "s3cret-token"}), "/api/tg/tester"),
+          "свой токен пускает")
+    check(not main._service_call(_FakeReq({"X-Service-Token": "s3cret-token"}), "/api/glossary"),
+          "служебный токен открывает ТОЛЬКО /api/tg/, а не весь API")
+finally:
+    main.TG_SERVICE_TOKEN = _saved
 
 print("\n=== 4b. Обработчик с {pid} ходит через get_project ===")
 # Изоляция организаций держится на одном горле: get_project отвечает 404

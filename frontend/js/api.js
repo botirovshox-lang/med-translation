@@ -326,6 +326,10 @@
     acceptRepair:  (pid, sid)               => call("POST", `/segments/${pid}/${sid}/repair/accept`, {}),
     // Пачкой. dry_run=true — только посчитать; откат по stamp.
     acceptRepairBatch: (pid, opts)          => call("POST", `/projects/${pid}/repair/accept-batch`, opts || {}),
+    // Подстановка ГОТОВЫХ вердиктов ревизии: модель не зовётся, поэтому путь
+    // свой — общий `/review` лежит в платных и на исчерпанном лимите ответил
+    // бы 402 за работу, которая денег не стоит.
+    applyReview:       (pid, opts)          => call("POST", `/projects/${pid}/review/apply`, opts || {}),
     undoAcceptRepair:  (pid, stamp)         => call("POST", `/projects/${pid}/repair/accept/${stamp}/undo`, {}),
 
     /* Фоновые прогоны: клиент только ставит задачу и смотрит прогресс */

@@ -124,6 +124,10 @@ def digest(pid, title, raw):
             "desync": c.get("desync", 0),
             "termsDropped": c.get("terms_dropped", 0),
             "skippedConfirmed": c.get("skipped_confirmed", 0),
+            # Ревизия прочитала заверенный сегмент и предложила правку,
+            # которую держит подпись человека: работа СДЕЛАНА и ждёт
+            # решения. Молчать о ней нельзя — она уже оплачена.
+            "reviewHeld": c.get("review_held", 0),
             "why": (job or {}).get("error") or c.get("why") or "",
             # Факт расхода снят с ответов моделей, смета — то, что человеку
             # показали под кнопкой. Порознь они бесполезны: «потрачено $3» без

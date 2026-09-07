@@ -5115,6 +5115,7 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int) -> dict:
            "unjudgedBlind": False, "unverified": False, "judgeExt": False,
            "confirmed": False, "qaCritical": False, "repaired": False,
            "sourceSuspect": False, "reviewFlagged": False, "reviewVouched": False,
+           "reviewConfirmed": False,
            "reverted": False, "scoreVetoed": False, "findings": False,
            "clamped": False, "confirmedFindings": False, "override": False,
            "bucket": None, "why": ""}
@@ -5183,7 +5184,15 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int) -> dict:
     # `above` — «можно улучшить», а не «сломано», звать человека к вкусовщине
     # нельзя; `undone` — он уже ответил; вердикт БЕЗ кода — это ждущий
     # применения кандидат (сухой прогон), и решает его `apply_saved`, машина.
-    elif _rv and not _rv.get("applied") and not _rv.get("undone")             and not _review_stale(s):
+    elif _review_held(s) and not _review_stale(s):
+        # Ревизия НАСТАИВАЕТ на правке заверенного текста: кандидат прошёл
+        # все объективные сверки, менять его машине не за что, а подпись
+        # человека снимать без разрешения нельзя. Своя корзина, а не
+        # `reviewFlagged`: там «машина чинить не стала», здесь «машина
+        # готова, ждёт вашего слова», и действие у них разное.
+        row["reviewConfirmed"] = True
+    elif (_rv and not _rv.get("applied") and not _rv.get("undone")
+            and not _review_stale(s)):
         _code = _review_code(_rv)
         if _code == REVIEW_VETOED or (
                 _code == REVIEW_OK and _rv.get("score") is not None
@@ -5324,6 +5333,7 @@ def project_analysis(pid: int, refresh: bool = False):
     # но названное числом (`turnkey.reviewVouched`): снятое молча
     # неотличимо от потерянного.
     review_vouched: list = []
+    review_confirmed: list = []
     # Подтверждённые с находками — своя корзина. Раньше они растворялись
     # в «оценка ниже порога» вперемешку с машинными сегментами, и по экрану
     # нельзя было понять, что это ручные подтверждения, до которых ни один
@@ -5425,6 +5435,8 @@ def project_analysis(pid: int, refresh: bool = False):
             source_suspect.append(sid)
         if row["reviewFlagged"]:
             review_flagged.append(sid)
+        if row["reviewConfirmed"]:
+            review_confirmed.append(sid)
         if row["repaired"]:
             repaired.append(sid)
             repaired_set.add(sid)
@@ -5602,6 +5614,11 @@ def project_analysis(pid: int, refresh: bool = False):
     human_set.update(qa_critical)
     human_set.update(source_suspect)
     human_set.update(review_flagged)
+    # Заверенный сегмент с готовым советом — работа ЧЕЛОВЕКА: подпись снимает
+    # только он. Без этой строки сегмент так и лежал бы в «готово» (заверение
+    # корзины видят), то есть несогласие системы с подписью было бы не видно
+    # ни одним числом — ровно то, что случилось с боевым #128.
+    human_set.update(review_confirmed)
     human_set.update(i for d in disputed for i in d["segments"])
     human_set.update(stale_findings)
     human_set.update(withdrawn_open)
@@ -5768,6 +5785,10 @@ def project_analysis(pid: int, refresh: bool = False):
             # объективные сверки либо варианта не было. Совет — в карточке
             # сегмента, решение за человеком.
             "reviewFlagged": review_flagged,
+            # Ревизия настаивает на правке ЗАВЕРЕННОГО текста: готовый
+            # вариант прошёл объективные сверки и ждёт разрешения человека.
+            # Применяется без вызова модели (`apply_saved` + разрешение).
+            "reviewConfirmed": review_confirmed,
         },
         "todo": {"untranslated": untranslated, "unchecked": unchecked,
                  "findings": findings, "glossaryPending": impact["pending"],
@@ -9121,11 +9142,22 @@ def _auto_verdict(cand: dict, ctx: dict) -> tuple:
     # и карточка дорешается без человека. "wait", а не None.
     if good == 0:
         return "wait", why or "сегмент-источник не проходил проверок"
-    if cand.get("kind") == "audit" and good < 2:
+    if cand.get("kind") in ("audit", "review") and good < 2:
         # Находка termcheck — это мнение модели о собственном переводе.
-        # Одного такого мнения мало даже для подсказки.
-        return "wait", "находка termcheck встретилась только раз"
-    if not confirmed and good < pol["auto_min_segments"]:
+        # Одного такого мнения мало даже для подсказки. Совет ревизии
+        # (`review`) — ровно то же самое: мнение модели о тексте, который
+        # человек не принял.
+        return "wait", ("находка termcheck встретилась только раз"
+                        if cand.get("kind") == "audit"
+                        else "совет ревизии встретился только раз")
+    # Подпись человека на сегменте-доноре совет РЕВИЗИИ не подтверждает
+    # НИКОГДА, и это главный предохранитель этого источника: донором такой
+    # карточки служит заверенный сегмент, а `tgt` в ней — текст, которого
+    # в сегменте НЕТ и который человек как раз не принял. Прими мы
+    # `confirmed` здесь, машинный совет получил бы след решения человека,
+    # то есть подделку подписи (инвариант 8 и 14).
+    if ((not confirmed or cand.get("kind") == "review")
+            and good < pol["auto_min_segments"]):
         return "wait", "подтверждений: %d, нужно %d" % (good, pol["auto_min_segments"])
 
     # Краудсорсный справочник + корпус СНИЖАЮТ порог согласия сегментов на один,
@@ -9139,7 +9171,13 @@ def _auto_verdict(cand: dict, ctx: dict) -> tuple:
     need = pol["verified_min_segments"]
     if corroborated:
         need = max(2, need - 1)
+    # Совет РЕВИЗИИ приказом не становится ни при каком согласии сегментов:
+    # «три независимых чистых сегмента» подтверждали бы термин, которого
+    # НИ В ОДНОМ ИЗ НИХ НЕТ — там стоит перевод, который человек и заверил.
+    # Приказ по-прежнему даёт человек (инвариант 8), карточка ждёт его
+    # решения подсказкой.
     if (pol["allow_verified"] and good >= need and distinct >= need
+            and cand.get("kind") != "review"
             and good == len(_donor_ids(cand))):
         if corroborated:
             return GLOSSARY_TIER_HARD, ("%d независимых сегмента + справочник %s + %s (%d)"
@@ -9155,7 +9193,10 @@ def _auto_verdict(cand: dict, ctx: dict) -> tuple:
         return GLOSSARY_TIER_HARD, ("%d независимых чистых сегмента" % distinct
                                     + (" · подтверждён в %s (%d)" % (corpus["label"], corpus["hits"])
                                        if corpus else ""))
-    return GLOSSARY_TIER_SOFT, ("подтвердил человек" if confirmed
+    # «Подтвердил человек» про совет ревизии — неправда даже в тексте причины:
+    # человек подтвердил ДРУГОЙ перевод, тот, что стоит в сегменте.
+    return GLOSSARY_TIER_SOFT, ("подтвердил человек"
+                                if confirmed and cand.get("kind") != "review"
                                 else "%d независимых чистых сегмента" % good)
 
 
@@ -10569,6 +10610,20 @@ def _segment_for_client(seg: dict) -> dict:
         # правило, одно место. Иначе таблица красит по своему порогу и своему
         # чтению кода, а экран «Анализ» числит по серверному — на записях без
         # `code` (155 вердиктов первого прогона) они расходятся сразу.
+        # «Настаивает на правке заверенного» считает СЕРВЕР — тем же
+        # предикатом, что и корзина `human.reviewConfirmed`. Браузеру эту
+        # развилку не повторить: у записей прежнего кода признак выводится
+        # из СТАТУСА сегмента, а не из кода вердикта.
+        out["review"]["held"] = bool(_review_held(seg) and not out["review"]["stale"])
+        # Прежний совет: относится ли он к НЫНЕШНЕМУ тексту — считаем сейчас,
+        # а не берём замороженным (хеш лежит в записи).
+        if (rv.get("heldBy") or {}).get("user"):
+            # Имя, а не голый идентификатор: след без читателя — не след.
+            out["review"]["heldByName"] = _user_label(rv["heldBy"]["user"])
+        if (rv.get("prev") or {}).get("candidate"):
+            _pv = dict(rv["prev"])
+            _pv["sameText"] = _pv.get("forHash") == rv.get("target_hash")
+            out["review"]["prev"] = _pv
         code = _review_code(rv)
         out["review"]["flagged"] = bool(
             not rv.get("applied") and not rv.get("undone")
@@ -12878,6 +12933,82 @@ _SELF_GLOSS_RE = re.compile(
     r"\b([^\W\d_]{4,}(?:[ \t\-][^\W\d_]+){0,3})\s*\(\s*\1\s*\)",
     re.IGNORECASE | re.UNICODE)
 
+# ВТОРАЯ форма схлопывания, и точным повтором она не ловится: в скобке стоит
+# не то же самое слово, а ФРАЗА С НИМ ЖЕ внутри — «Prevalence (case
+# prevalence)». Боевой #128: оригинал «Распространённость (болезненность)» —
+# два РАЗНЫХ термина, а перевод назвал оба одним словом, второй раз с уточнением.
+#
+# Форма сама по себе НИЧЕГО не доказывает: «prevalence (point prevalence)»
+# и «Tuberculosis (pulmonary tuberculosis)» построены точно так же и законны.
+# Поэтому решает не она, а ОРИГИНАЛ, и он здесь УСЛОВИЕ, а не глушилка:
+#   1) в оригинале скобка ЕСТЬ — иначе сравнивать не с чем и мы молчим;
+#   2) в оригинале перед скобкой и внутри неё — РАЗНЫЕ слова (не формы одного).
+#      Автор назвал два понятия; перевод, назвавший их одним словом, потерял одно;
+#   3) содержимое скобки в переводе не повторяет оригинал буква в букву —
+#      «Микобактерия туберкулёза (M. tuberculosis)» → «Mycobacterium
+#      tuberculosis (M. tuberculosis)»: скобку не переводили, это цитата
+#      и сокращение того же названия, а не схлопывание.
+# Режим переключается окружением (`SELF_GLOSS_MODE=exact` выключает вторую
+# форму без выката кода) — правило новое, и цена ошибки у него не нулевая:
+# находка идёт в ремонт и в счётчики приёмки.
+_PAREN_UNIT_RE = re.compile(r"([^\W\d_]{4,})\s*\(\s*([^()]{1,120}?)\s*\)", re.UNICODE)
+_PAREN_WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
+# Скобка длиннее — ПОЯСНЕНИЕ, а не повтор, и головное слово входит в него
+# законно: «airborne transmission (airborne droplet and dust-borne
+# transmission)». Замер на боевой книге (2692 сегмента): без этого порога
+# правило давало 6 находок, из них 2 ложные; с порогом — 4 находки, ложных
+# ни одной. Цена названа: длинный повтор («tuberculosis (small forms of
+# tuberculosis …)», #1056) остаётся человеку.
+SELF_GLOSS_INNER_MAX = 3
+
+
+def _self_gloss_head() -> bool:
+    return os.environ.get("SELF_GLOSS_MODE", "head").strip().lower() != "exact"
+
+
+# Окончания русских прилагательных и причастий. Нужны для ОДНОГО решения:
+# в скобке оригинала стоит определение, а не второй термин. «Туберкулёз
+# (диссеминированный)» по-английски обязан повторить головное слово —
+# «Tuberculosis (disseminated tuberculosis)», — и находкой это не является.
+# Конструкция «Термин (уточняющее прилагательное)» в русском массовая,
+# а на боевой книге фтизиатрии не встретилась ни разу: замер её не поймал,
+# поймал критик.
+_RU_ADJ_TAIL = ("ый", "ий", "ой", "ая", "яя", "ое", "ее", "ые", "ие",
+                "ого", "его", "ому", "ему", "ым", "им", "ую", "юю",
+                "ых", "их", "ыми", "ими", "нной", "нная", "нное")
+_CYR_RE = re.compile(r"[а-яёА-ЯЁ]", re.UNICODE)
+
+
+def _defining_word(w: str) -> bool:
+    """Слово похоже на ОПРЕДЕЛЕНИЕ, а не на самостоятельный термин."""
+    low = (w or "").lower()
+    return len(low) > 4 and low.endswith(_RU_ADJ_TAIL)
+
+
+def _paren_units(text: str) -> list:
+    """Пары «слово перед скобкой → содержимое скобки»."""
+    return [(m.group(1), m.group(2)) for m in _PAREN_UNIT_RE.finditer(text or "")]
+
+
+def _head_echo(head: str, inner: str, strict: bool = False) -> bool:
+    """В скобке стоит то же слово, что и перед ней.
+
+    Сравнение НЕСИММЕТРИЧНО, и это несущее свойство. На стороне ОРИГИНАЛА
+    (strict=False) берутся любые формы: там вопрос «повторился ли автор»,
+    и на него надо отвечать щедро — «Туберкулёз (лёгочного туберкулёза)»
+    повтор, значит мы молчим. На стороне ПЕРЕВОДА (strict=True) — только
+    буквальное совпадение: находка утверждает «одно и то же слово написано
+    дважды», и морфология делала это утверждение неправдой («bacteriological
+    positivity (MTB-positive)» на боевом #119 — законная расшифровка)."""
+    h = head.lower()
+    for w in _PAREN_WORD_RE.findall(inner or ""):
+        w = w.lower()
+        if w == h:
+            return True
+        if not strict and checks_mod and checks_mod._same_word_form(w, h):
+            return True
+    return False
+
 
 def _adjacent_repeat(text: str) -> list:
     """Подряд идущие повторы: хвост из N слов равен следующим N словам.
@@ -12945,6 +13076,43 @@ def _dup_misses(seg: dict) -> list:
         for m in _SELF_GLOSS_RE.finditer(tgt):
             out.append({"kind": "dup",
                         "text": "слово поясняет само себя: «" + m.group(0) + "»"})
+        # Вторая форма — фраза со своим же головным словом в скобке. Ловится
+        # ТОЛЬКО когда оригинал показывает, что понятий там было два (см.
+        # комментарий у _PAREN_UNIT_RE): без этого условия правило кричало бы
+        # на законное «prevalence (point prevalence)».
+        src_units = _paren_units(src)
+        # В оригинале скобка должна нести ОДИН термин, а не перечисление
+        # и не пояснение фразой: «социально-экономические условия (бедность,
+        # скученность проживания, миграция)» переводом «conditions (poverty,
+        # overcrowded living conditions, migration)» ничего не схлопывает —
+        # головное слово там законно входит в один из перечисленных членов.
+        # Правило измерено на КИРИЛЛИЧЕСКОМ оригинале (RU→EN, боевая книга)
+        # и там же работает: закон `DOMAIN_RULES` — нет замера для этого
+        # письма, молчим, а не срабатываем наугад.
+        src_solo = [(h, i) for h, i in src_units
+                    if len(_PAREN_WORD_RE.findall(i)) == 1
+                    and _CYR_RE.search(i) and not _defining_word(i.strip())]
+        if _self_gloss_head() and src_solo \
+                and not any(_head_echo(h, i) for h, i in src_units):
+            src_inner = {i.strip().lower() for _, i in src_units}
+            # Спаны, уже названные точным правилом: «case prevalence (case
+            # prevalence)» иначе давало бы ДВЕ находки на один дефект — и
+            # раздувало бы счётчик `self_dup`, по которому идёт откат.
+            exact_spans = [m.span() for m in _SELF_GLOSS_RE.finditer(tgt)]
+            for m in _PAREN_UNIT_RE.finditer(tgt):
+                head, inner = m.group(1), m.group(2)
+                if inner.strip().lower() == head.lower():
+                    continue        # точный повтор — находка выше, не дважды
+                if inner.strip().lower() in src_inner:
+                    continue        # скобку не переводили: цитата, сокращение
+                if len(_PAREN_WORD_RE.findall(inner)) > SELF_GLOSS_INNER_MAX:
+                    continue        # длинная скобка — пояснение, а не повтор
+                if any(a <= m.start() and m.end() <= b for a, b in exact_spans):
+                    continue        # об этом уже сказало точное правило
+                if _head_echo(head, inner, strict=True):
+                    out.append({"kind": "dup",
+                                "text": "слово поясняет само себя: «"
+                                        + m.group(0) + "»"})
     return out
 
 
@@ -13611,6 +13779,23 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         why.append("повторов в тексте стало больше "
                    + str(before["dup"]) + " → " + str(after["dup"])
                    + " — термин дописан вместо замены")
+    # Самоповтор сверяется ПОИМЁННО, а не числом, и это не придирка к форме
+    # записи. Боевой #128: правка сняла один самоповтор и внесла другой
+    # («Prevalence (prevalence)» → «Prevalence (case prevalence)»), счёт
+    # остался «1 → 1», и ни одна сверка по числу не сработала бы. Та же
+    # асимметрия, что у `hard_now` и у объективной находки в `_review_veto`:
+    # повтор, которого в прежнем тексте не было, внесли МЫ, и отвечаем
+    # за него мы. Счётчик `self_dup` рядом остаётся — он ловит рост числа.
+    _dup_before = {f["text"].lower() for f in _dup_misses(
+        {"source": seg.get("source"), "target": old_target})}
+    # Сравниваем в НИЖНЕМ регистре: штатная подгонка начертания (`_case_fit`)
+    # идёт до оценки, и «Prevalence (…)» против «prevalence (…)» читалось бы
+    # как новый самоповтор — откат и клеймо за правку, которой не было.
+    _dup_new = [f["text"] for f in _dup_misses(seg)
+                if f["text"].lower() not in _dup_before]
+    if _dup_new:
+        better = False
+        why.append("правка внесла повтор: " + "; ".join(sorted(_dup_new)[:2]))
     if after["term_case"] > before["term_case"]:
         better = False
         why.append("приказных терминов не в начертании оригинала стало больше "
@@ -13902,6 +14087,15 @@ REVIEW_OK = "ok"            # перевод годится, варианта м
 REVIEW_ABOVE = "above"      # вариант есть, но оценка выше порога — не дефект
 REVIEW_SUSPECT = "suspect"  # повреждён сам оригинал, чинить догадкой нельзя
 REVIEW_VETOED = "veto"      # кандидат не прошёл объективные сверки
+# Кандидат ГОДЕН, а сегмент заверил человек: правку держит недостающее
+# РАЗРЕШЕНИЕ, а не суждение о качестве. Разница несущая — остальные коды
+# закрывают вопрос («вариант хуже», «оригинал битый»), а этот его открывает
+# и адресует человеку. Раньше кода тут не было вовсе: `_apply_review` молча
+# возвращал False, в записи оставались `applied: false` и пустое `veto`,
+# и на экране это выглядело как «ревизия прочитала, претензий нет».
+# Боевой #128: 02.09 ревизия дала оценку 2 и готовый «Prevalence (morbidity)»,
+# заверенный текст остался с «soreness», и понять это было неоткуда.
+REVIEW_CONFIRMED = "confirmed"
 # Вердикты, записанные ДО появления кода, читаются по литералу причины.
 # Строки точные: их писал наш код, они лежат в боевых данных, и
 # переформулировать их задним числом нельзя — тот же закон, что
@@ -13921,6 +14115,44 @@ def _review_code(rv: dict) -> Optional[str]:
     """Код решения ревизии. Одно место на всех, кто его спрашивает: разойдись
     чтение старых записей по копиям — корзины показывали бы разное."""
     return rv.get("code") or _REVIEW_CODE_LEGACY.get(rv.get("skipped") or "")
+
+
+def _review_held(seg: dict) -> bool:
+    """Правку держит ЗАВЕРЕНИЕ человека, а не суждение о качестве.
+
+    Близнец `_review_hold` отвечает про ЗАПИСЬ («правку держало заверение»),
+    а этот — про запись И статус («держит ПРЯМО СЕЙЧАС»). Кто кого зовёт:
+    подстановка, отбор `apply_saved` и слот `prev` — `_review_hold` (им важно,
+    можно ли ставить и что не потерять), корзина `/analysis`, признак
+    `review.held` для браузера и счётчики отчёта — этот (им важно, звать ли
+    человека). Возьмёшь не тот близнец — либо запрёшь совет на сегменте
+    со снятой подписью, либо позовёшь человека туда, где решать уже нечего.
+
+    Записи ПРЕЖНЕГО кода читаются по смыслу, а не по коду: до появления
+    `REVIEW_CONFIRMED` отказ не оставлял следа вовсе (`veto: []`, ни `skipped`,
+    ни `code`), и таких вердиктов на боевом проекте целый прогон. Отличить их
+    от «сухого» кандидата, ждущего `apply_saved`, можно ровно статусом
+    сегмента: на заверенном машина правку не поставит НИКОГДА без разрешения,
+    значит вердикт с готовым кандидатом там и есть удержанный. Миграции
+    поэтому не нужно — читаем, а не переписываем чужие данные."""
+    return _review_hold(seg) and seg.get("status") == "confirmed"
+
+
+def _review_hold(seg: dict) -> bool:
+    """Отказ ПО ЗАПИСИ: правку держало заверение, а не качество кандидата.
+
+    Отдельно от `_review_held` ровно из-за одного случая: человек снял
+    заверение сам. Текст при этом не меняется, вердикт не устаревает — и по
+    единому предикату сегмент оказался бы заперт навсегда: подставлять
+    отказались бы (`_apply_review`), а корзина уже не показывала бы его,
+    потому что заверения нет. Удержание сняли — правку ставим свободно."""
+    rv = seg.get("review") or {}
+    if not rv.get("candidate") or rv.get("applied") or rv.get("undone"):
+        return False
+    code = _review_code(rv)
+    if code == REVIEW_CONFIRMED:
+        return True
+    return not code and seg.get("status") == "confirmed"
 
 
 REVIEW_VETO_LABELS = {
@@ -14132,6 +14364,13 @@ def _review_veto(seg: dict, project: Optional[dict], candidate: str) -> list:
     probe["target"] = candidate
     after = _repair_scores(probe, project, doc_skip)
     bad = [k for k in REVIEW_FREE_KEYS if (after.get(k) or 0) > (before.get(k) or 0)]
+    # Самоповтор — ПОИМЁННО, а не числом: размен «сняли один, внесли другой»
+    # проходит сравнением «1 → 1». Ровно так боевой #128 получил
+    # «Prevalence (case prevalence)» взамен «Prevalence (prevalence)».
+    _dup_had = {f["text"].lower() for f in _dup_misses(seg)}
+    if "self_dup" not in bad and any(f["text"].lower() not in _dup_had
+                                     for f in _dup_misses(probe)):
+        bad.append("self_dup")
     if checks_mod:
         # Область и пара языков — из ПРОЕКТА. Без них `rules_for` берёт
         # medical RU→EN по умолчанию, то есть на немецком проекте маркеры
@@ -14175,9 +14414,63 @@ def _review_ask(seg: dict, project: dict, model: Optional[str] = None) -> Option
         return None
 
 
+# Знаки, которых у ТЕРМИНА не бывает: скобка, перечисление, косая черта.
+# Пара с ними — строка документа, а не словарная запись: «Распространённость
+# (болезненность) → Prevalence (morbidity)» в промпте перевода встала бы
+# подсказкой целиком, вместе со скобками.
+_TERM_SHAPE_BAD = re.compile(r"[()\[\]{};,/]")
+
+
+def _queue_review_term(seg: dict, project: dict, cand: str) -> None:
+    """Совет ревизии, который держит заверение, — кандидатом в очередь.
+
+    Зачем: запись ревизии на сегменте ОДНА, и следующий заход её перезаписывает
+    (боевой #128 так потерял «morbidity»). Очередь — единственная память
+    системы о терминах, и несогласие обязано доехать туда, где по нему примут
+    решение один раз на весь документ.
+
+    В глоссарий отсюда не пишется НИЧЕГО (инвариант 8): это карточка, приказ
+    даёт человек. Ворота узкие и намеренно: КОРОТКИЙ сегмент целиком (та же
+    форма, что у `_harvest_terms`) и никаких знаков перечисления — иначе
+    в очередь поедут куски фраз, а `TERM_QUEUE_MAX` вытеснит ими настоящие
+    находки сбора терминологии.
+
+    Голос считается как у `audit` (нужны двое) и подписи человека НЕ получает:
+    донор здесь — заверенный сегмент, а предлагаемый текст человек как раз
+    не принял (см. `_auto_verdict`)."""
+    src = (seg.get("source") or "").strip()
+    tgt = (cand or "").strip()
+    if not src or not tgt:
+        return
+    if not (1 <= len(src.split()) <= 4) or len(tgt.split()) > 8:
+        return
+    if src.endswith((".", "!", "?", ":", ";")):
+        return
+    if _TERM_SHAPE_BAD.search(src) or _TERM_SHAPE_BAD.search(tgt):
+        return
+    _sc = _project_scope(project)
+    try:
+        # `wasTgt` НЕ пишем, и это не мелочь. `_stale_words_of` перебирает всю
+        # очередь без фильтра по виду и считает `wasTgt` «забракованным
+        # проверкой словом, которое всё ещё стоит в тексте». У нашей карточки
+        # это НЫНЕШНИЙ перевод, то есть совпадение гарантировано: бесплатная
+        # корзина `human.staleFindings` начала бы врать, а шаг «сверка
+        # терминов» платил бы арбитру за фантом на каждом прогоне. Прежний
+        # текст и так виден в `sampleTgt`.
+        _queue_term("review", src, tgt,
+                    project=project.get("id"), segment=seg.get("id"),
+                    lang=_sc[0], domain=_sc[1], tenant=_sc[2], via="auto",
+                    note="ревизия предложила другой перевод заверенного сегмента",
+                    sampleSrc=src[:240], sampleTgt=tgt[:240])
+    except Exception as e:                                      # pragma: no cover
+        # Очередь — побочная польза, а не смысл шага: её сбой не должен
+        # ронять вердикт, за который уже заплачено.
+        print(f"[backend] очередь из ревизии seg#{seg.get('id')}: {e}", file=sys.stderr)
+
+
 def _run_segment_review(seg: dict, project: dict, model: Optional[str] = None,
                         apply: bool = True, include_confirmed: bool = False,
-                        res: Optional[dict] = None) -> dict:
+                        res: Optional[dict] = None, queue_terms: bool = True) -> dict:
     """Один заход ревизии: вердикт, бесплатные сверки кандидата и подстановка.
 
     Вердикт кладётся на сегмент по хешу текста, который в нём СЕЙЧАС стоит —
@@ -14228,6 +14521,13 @@ def _run_segment_review(seg: dict, project: dict, model: Optional[str] = None,
         veto = _review_veto(seg, project, cand)
         if veto:
             why, code = "не прошёл сверку", REVIEW_VETOED
+        elif seg.get("status") == "confirmed" and not include_confirmed:
+            # Кандидат ГОДЕН, но текст заверил человек. Ветка стоит ПОСЛЕ
+            # вето намеренно: вето — суждение о качестве кандидата, и о нём
+            # надо говорить первым; «заверено» получает только та правка,
+            # которая прошла все объективные сверки, — то есть ровно та,
+            # ради которой человека и зовут в корзину.
+            why, code = "заверено человеком", REVIEW_CONFIRMED
     if cand:
         rec["candidate"] = cand
     rec["veto"] = veto
@@ -14235,7 +14535,32 @@ def _run_segment_review(seg: dict, project: dict, model: Optional[str] = None,
         rec["skipped"] = why
         rec["code"] = code
     rec["target_hash"] = _text_hash(old)
+    # Несогласие, которое НЕ БЫЛО поставлено, новый вердикт не стирает.
+    # Запись ревизии на сегменте одна, и до этой строки следующий заход
+    # уносил готовый совет вместе с оценкой: на боевом #128 так исчез
+    # «Prevalence (morbidity)» — вердикт от 02.09 переписали 07.09, и в базе
+    # не осталось ни следа, только почасовой бэкап. Слот РОВНО ОДИН и только
+    # для удержанного заверением совета (`_review_held`): у отклонённого
+    # сверкой хранить нечего, а вес документа проекта переписывается при
+    # каждом сохранении.
+    _held_prev = seg.get("review") or {}
+    if _review_hold(seg) and _held_prev.get("candidate") != cand:
+        rec["prev"] = {"candidate": _held_prev["candidate"],
+                       "score": _held_prev.get("score"),
+                       "at": _held_prev.get("at"),
+                       # ХЕШ, а не готовый ответ «тот же текст»: булево
+                       # замерзает, а текст меняется дальше — и совет к прежней
+                       # версии показывался бы как действующий. Свежесть
+                       # считает `_segment_for_client` на каждом показе.
+                       "forHash": _held_prev.get("target_hash")}
+    elif _held_prev.get("prev"):
+        rec["prev"] = _held_prev["prev"]     # слот один: старое не множим
     seg["review"] = rec
+    # В очередь — только на БОЕВОМ заходе. Карточка не кэш вердикта: она
+    # занимает место у потолка `TERM_QUEUE_MAX` и вытесняет чужие находки,
+    # а сухой просмотр по определению ничего не меняет.
+    if code == REVIEW_CONFIRMED and queue_terms:
+        _queue_review_term(seg, project, cand)
     if cand and not why and apply:
         _apply_review(seg, include_confirmed)
     return {"ok": True, "applied": rec["applied"], "review": rec,
@@ -14257,10 +14582,31 @@ def _apply_review(seg: dict, include_confirmed: bool = False) -> bool:
     подключение шага к прогону, кнопка на сегменте — молча снял бы
     `confirmedBy`. Правило должно жить рядом с `_replace_target`."""
     rv = seg.get("review") or {}
-    if not rv.get("candidate") or rv.get("skipped") or rv.get("applied"):
+    if not rv.get("candidate") or rv.get("applied") or rv.get("undone"):
         return False
-    if seg.get("status") == "confirmed" and not include_confirmed:
+    # `skipped` запрещает подстановку — КРОМЕ отказа по заверению: тот не про
+    # качество кандидата, а про недостающее разрешение, и с разрешением
+    # правку ставят. Без этой развилки запись, помеченная REVIEW_CONFIRMED,
+    # не применилась бы уже НИКОГДА — ни `apply_saved`, ни прогоном
+    # с `rv_confirmed`: ранний выход по `skipped` стоит раньше всех проверок.
+    if _review_hold(seg):
+        # Подпись на месте — нужно разрешение; подпись сняли — держать нечем.
+        if seg.get("status") == "confirmed" and not include_confirmed:
+            return False
+    elif rv.get("skipped"):
         return False
+    if seg.get("status") == "confirmed":
+        if not include_confirmed:
+            return False
+        # След ответственного не теряем: `_replace_target` сейчас снимет
+        # `confirmedBy`, и без этой записи не ответить, чью подпись
+        # переписала машина (инвариант 14 — след лежит НА ЗАПИСИ).
+        rv["heldBy"] = {"user": seg.get("confirmedBy"),
+                        "role": seg.get("confirmedRole"),
+                        "at": seg.get("confirmedAt")}
+    # Отказ снят разрешением — след о нём уносим в запись, а не стираем.
+    if rv.pop("skipped", None):
+        rv["heldCode"] = rv.pop("code", None)
     rv["from"] = seg.get("target") or ""
     # Провайдер — модель РЕВИЗОРА, а не прежнего переводчика: текст целиком
     # написала она. Соврав здесь, мы ломаем защиту «обратный перевод делает
@@ -14312,6 +14658,15 @@ class ReviewRequest(BaseModel):
     # Переписывать заверенное человеком. Как у ремонта — только по явному
     # разрешению на ЭТОТ запуск.
     include_confirmed: bool = False
+    # ЧИТАТЬ заверенное, не переписывая. Отдельный флаг, потому что решения
+    # разные и цена разная: «прочитай и скажи» стоит вызова на сегмент,
+    # «перепиши» отменяет подпись человека. Прежде второго варианта не было
+    # вовсе — заверенные не спрашивались НИКОГДА, и довод стоял в коде:
+    # «показать совет негде, значит это платный совет в никуда». Теперь есть
+    # куда (корзина `human.reviewConfirmed` и карточка сегмента), поэтому
+    # запрет снят, но остался РАЗРЕШЕНИЕМ: деньги тратит владелец, а не автор
+    # кода. Разрешение переписывать подразумевает и чтение.
+    ask_confirmed: bool = False
     # Метка отката. Задаёт её ПРОГОН — одну на всю задачу, чтобы сотни порций
     # писали в одну копию и весь прогон откатывался одной командой.
     stamp: Optional[str] = None
@@ -14345,19 +14700,30 @@ def _review_pick(project: dict, req: ReviewRequest) -> tuple:
         got = [s for s in segs
                if (s.get("review") or {}).get("candidate")
                and not (s.get("review") or {}).get("applied")
-               and not (s.get("review") or {}).get("skipped")
+               # `skipped` — это решения (вето, оценка выше порога, битый
+               # оригинал), а не очередь. КРОМЕ отказа по заверению: там
+               # решение как раз не вынесено, ждут разрешения человека, —
+               # и без этой оговорки корзина «ревизия настаивает» не имела
+               # бы ни одного способа осушиться.
+               and (not (s.get("review") or {}).get("skipped") or _review_hold(s))
                # Откачено человеком — не предлагаем снова: он уже ответил.
                and not (s.get("review") or {}).get("undone")
                and not _review_stale(s)]
-        return got, len(got)
-    if not req.include_confirmed:
-        # Заверенное человеком не спрашиваем ВОВСЕ, а не спрашиваем и потом
-        # отбрасываем правку. Применить вердикт к такому сегменту нечем
-        # (`_apply_review` откажет), а показать его человеку пока негде —
-        # значит это платный совет в никуда, тот же перерасход, от которого
-        # заведён `_repair_futile`. Нужен вердикт — разрешите и правку: это
-        # один тумблер. Разбор состава (`_plan_step`) читает то же правило
-        # и называет причину вслух, иначе план обещал бы работу, которой
+        # Потолок соблюдается и здесь: на каждый сегмент идут два прохода
+        # `_repair_scores` (`_verified_hits` ~13 мс), и «применить всю корзину»
+        # одним запросом держало бы единственного воркера десятки секунд.
+        # Остаток называется числом — как и везде.
+        return got[:max(0, req.limit)], len(got)
+    if not (req.include_confirmed or req.ask_confirmed):
+        # Заверенное человеком по умолчанию не спрашиваем — но теперь это
+        # вопрос ДЕНЕГ, а не бессмысленности. Прежний довод («показать совет
+        # негде») снят: удержанный совет виден в корзине `human.reviewConfirmed`
+        # и в карточке сегмента, и применяется одной командой. Осталась цена:
+        # вызов на каждый заверенный сегмент, и повторно после каждой правки
+        # человека (`_review_stale` смотрит на текст). Поэтому два разных
+        # разрешения: `ask_confirmed` — прочитать и сказать, `include_confirmed`
+        # — ещё и переписать. Разбор состава (`_plan_step`) читает ТЕ ЖЕ два
+        # флага и называет причину вслух, иначе план обещал бы работу, которой
         # не будет.
         segs = [s for s in segs if s.get("status") != "confirmed"]
     if not req.refresh:
@@ -14381,6 +14747,35 @@ def _review_pick(project: dict, req: ReviewRequest) -> tuple:
             if i < len(pool) and len(out) < max(0, req.limit):
                 out.append(pool[i])
     return out, len(ready) + len(rest)
+
+
+class ReviewApplyRequest(BaseModel):
+    segment_ids: Optional[List[int]] = None
+    dry_run: bool = True
+    # Переписать ЗАВЕРЕННОЕ человеком: ровно то, ради чего эта дверь и нужна —
+    # применить совет, который держит подпись. Разрешение на ОДИН запрос.
+    include_confirmed: bool = False
+
+
+@app.post("/api/projects/{pid}/review/apply")
+def apply_review_saved(pid: int, req: ReviewApplyRequest = ReviewApplyRequest()):
+    """Применить УЖЕ ОПЛАЧЕННЫЕ вердикты ревизии. Модель не зовётся вовсе.
+
+    Отдельным путём, а не флагом на общем: `_PAID` ловит `/review` целиком
+    и на исчерпанном лимите отвечает 402 — а подстановка готового текста
+    денег не стоит и по инварианту 15 обязана работать. Тот же закон, по
+    которому бесплатны откаты, пересчёт и `/term-case`.
+
+    Вся работа — в `review_project` с `apply_saved`: одна ветка на обе двери,
+    иначе «применить» с экрана и «применить» прогоном оставляли бы сегмент
+    в разных состояниях."""
+    # Своя проверка организации, а не «сделает вложенный вызов»: горло
+    # к проекту по номеру одно (инвариант 11), и обработчик с {pid} обязан
+    # звать его сам — это и сторожит tests/test_routes.py.
+    get_project(pid)
+    return review_project(pid, ReviewRequest(
+        apply_saved=True, segment_ids=req.segment_ids, dry_run=req.dry_run,
+        include_confirmed=req.include_confirmed, limit=REVIEW_LIMIT_MAX))
 
 
 @app.post("/api/projects/{pid}/review")
@@ -14425,6 +14820,11 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
     spent = [0.0]
     answered = failed = 0
     proposed, suspect, vetoed, samples, skipped_confirmed = [], [], {}, [], []
+    # Советы, которые держит ЗАВЕРЕНИЕ: кандидат прошёл все объективные
+    # сверки, но текст подписан человеком. Своим числом, а не внутри
+    # «пропущено»: это не пропущенная работа, а работа СДЕЛАННАЯ и ждущая
+    # решения — ровно то, за чем человека зовут в корзину.
+    held = []
     ready, buckets = [], {"9-10": 0, "8": 0, "5-7": 0, "0-4": 0}
     # Вызовы модели идут ПАРАЛЛЕЛЬНО (вызов — это ожидание сети, а не
     # процессора), а пишет результаты основной поток — контракт `_run_parallel`.
@@ -14461,16 +14861,29 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
                     vetoed[k] = vetoed.get(k, 0) + 1
             elif seg.get("status") == "confirmed" and not req.include_confirmed:
                 skipped_confirmed.append(seg["id"])
+                held.append(seg["id"])
             else:
                 ready.append(seg)
             if len(samples) < 25:
+                # Причина показывается и здесь. Прежде предпросмотр
+                # `apply_saved` писал `skipped: None` всем подряд, и запись,
+                # которую тут же отложат как заверенную, выглядела в нём
+                # готовой к применению.
                 samples.append({"id": seg["id"], "score": s,
                                 "issues": rv.get("issues") or [],
-                                "willApply": seg in ready, "skipped": None, "veto": [],
+                                "willApply": seg in ready,
+                                "skipped": None if seg in ready else rv.get("skipped"),
+                                "veto": rv.get("veto") or [],
                                 "was": (seg.get("target") or "")[:220],
                                 "now": (rv.get("candidate") or "")[:220]})
             continue
-        out = _run_segment_review(seg, project, req.model, apply=False, res=ans)
+        # Разрешение обязано доехать СЮДА: без него `_run_segment_review`
+        # пометит заверенный сегмент кодом «заверено человеком», `ready`
+        # окажется пустым, и прогон с `rv_confirmed` не применил бы НИ ОДНОЙ
+        # правки — то есть существующее разрешение молча перестало бы работать.
+        out = _run_segment_review(seg, project, req.model, apply=False, res=ans,
+                                  include_confirmed=req.include_confirmed,
+                                  queue_terms=not req.dry_run)
         spent[0] += out.get("cost") or 0.0
         if not out.get("ok"):
             failed += 1
@@ -14485,11 +14898,21 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
             proposed.append(seg["id"])
         for k in rv.get("veto") or []:
             vetoed[k] = vetoed.get(k, 0) + 1
+        # Совет ГОДЕН, но текст заверил человек: правку держит разрешение,
+        # а не качество. Своим списком — за ним и придёт человек.
+        #
+        # С РАЗРЕШЕНИЕМ сюда не заходим: правка ставится ниже, и назвать такой
+        # сегмент «пропущенным заверенным» значит спрятать в отчёте самое
+        # разрушительное действие прогона — снятую подпись человека.
+        if not req.include_confirmed and _review_held(seg):
+            held.append(seg["id"])
+            skipped_confirmed.append(seg["id"])
         if out.get("ready"):
             # Второй рубеж у самого `_replace_target`: без разрешения
             # заверенное не переписываем. В обычном заходе сюда не доходят —
-            # `_review_pick` отсекает их раньше и денег на них не тратит;
-            # ветка работает для `apply_saved`, где вердикты уже лежат.
+            # `_run_segment_review` пометил бы такой вердикт кодом
+            # REVIEW_CONFIRMED и `ready` не отдал; ветка работает
+            # для `apply_saved`, где вердикты уже лежат.
             if seg.get("status") == "confirmed" and not req.include_confirmed:
                 skipped_confirmed.append(seg["id"])
             else:
@@ -14523,6 +14946,9 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
             "capped": max(0, total - len(todo)),
             "proposed": len(proposed), "wouldApply": len(ready), "applied": applied,
             "skippedConfirmed": skipped_confirmed,
+            # Готовые советы для ЗАВЕРЕННЫХ сегментов: работа сделана,
+            # ждёт разрешения человека. Отдельно от «пропущено».
+            "held": held,
             "sourceSuspect": suspect, "vetoed": vetoed, "scores": buckets,
             "cost": round(spent[0], 4),
             "stamp": stamp, "samples": samples}
@@ -18758,6 +19184,10 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
     # Разрешение ревизии трогать заверенное — своё. Разбор ОБЯЗАН читать
     # именно его, иначе строка обещает одно, а шаг делает другое.
     rv_confirmed = bool(params.get("rv_confirmed"))
+    # ЧИТАТЬ заверенное — отдельное разрешение (см. ReviewRequest.ask_confirmed).
+    # Разрешение переписывать подразумевает и чтение: иначе строка обещала бы
+    # пропуск там, где отбор сегмент возьмёт.
+    rv_ask_confirmed = bool(params.get("rv_ask_confirmed")) or rv_confirmed
     note = None
 
     for seg in scope:
@@ -18853,12 +19283,12 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
             # Прочитай мы `fix_confirmed` — галочка в строке РЕМОНТА
             # заставила бы строку ревизии обещать все заверенные сегменты
             # проекта, а шаг их не взял бы.
-            if seg.get("status") == "confirmed" and not rv_confirmed:
-                # Вердикт получить можно, но ПРАВКИ не будет: без разрешения
-                # заверенное не переписывают. Платить за совет, который некуда
-                # применить, — тот же перерасход, от которого заведён
-                # `_repair_futile`. Разбор обязан сказать это вслух.
-                skip("заверено человеком — правка не применится")
+            if seg.get("status") == "confirmed" and not rv_ask_confirmed:
+                # Без разрешения заверенное не читаем вовсе: вызов на каждый
+                # такой сегмент стоит денег, а повторяется он после каждой
+                # правки человека. Разбор обязан сказать это вслух — и назвать
+                # тумблер, которым это открывается.
+                skip("заверено человеком — нужен тумблер «читать заверенные»")
             elif rv.get("undone"):
                 # Человек откатил правку: спрашивать заново значит предлагать
                 # ему то же самое второй раз за его же деньги.
@@ -19028,6 +19458,10 @@ class RunPlanRequest(BaseModel):
     # разных решения означала бы, что человек, разрешивший точечный ремонт,
     # молча разрешил и переписывание заверенного текста.
     rv_confirmed: bool = False
+    # Читать заверенное, не переписывая. Поле ОБЯЗАНО быть здесь: pydantic
+    # лишнее выбрасывает молча, и без него смета считалась бы без заверенных,
+    # пока шаг их спрашивает.
+    rv_ask_confirmed: bool = False
     use_judge: bool = False
     # Судья и выше потолка зоны — разовое разрешение прогона, как
     # include_confirmed. Осушает корзину «смысл не читал никто».
@@ -19366,6 +19800,7 @@ def _job_chunk_full(pid: int, chunk: list, params: dict) -> dict:
         # То же и для разрешения ревизии: страховка от будущего читателя,
         # который прочтёт чужой флаг и молча расширит себе права.
         sub["rv_confirmed"] = bool(params.get("rv_confirmed")) if st == "review" else False
+        sub["rv_ask_confirmed"] = bool(params.get("rv_ask_confirmed")) if st == "review" else False
         if st == "translate":
             # Уже переведённое не переводим заново: составной прогон гоняют
             # по всему проекту, и force затирал бы готовые переводы.
@@ -19488,6 +19923,10 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
             # на точечную починку не должно означать разрешения на
             # переписывание заверенного целиком.
             include_confirmed=bool(params.get("rv_confirmed")),
+            # Прочитать заверенное — своё разрешение, и разбор состава читает
+            # его же (`_plan_step`): без этой строки план обещал бы сегменты,
+            # которых отбор не возьмёт.
+            ask_confirmed=bool(params.get("rv_ask_confirmed")),
             stamp=params.get("review_stamp")))
         # done — ОТВЕЧЕННЫЕ, без провалов. Складывать провалы сюда нельзя:
         # `_job_chunk_full` роняет прогон по условию «done == 0 и ошибок
@@ -19505,6 +19944,9 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
                 "suspect": len(r.get("sourceSuspect") or []),
                 "errors": r.get("failed", 0),
                 "skipped_confirmed": len(r.get("skippedConfirmed") or []),
+                # Совет готов, а текст заверен: ждёт решения человека.
+                # Своим счётчиком — «пропущено» про это не отвечает.
+                "review_held": len(r.get("held") or []),
                 # Метка — СТРОКА, и счётчики её не складывают (первое непустое
                 # значение побеждает): без неё человек не знает, чем отменить
                 # прогон, переписавший сотни сегментов.

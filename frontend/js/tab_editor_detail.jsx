@@ -387,7 +387,9 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
       React.createElement("div", { className: "row between", style: { gap: 10, flexWrap: "wrap" } },
         React.createElement("span", { className: "label", style: { margin: 0 } },
           seg.review.sourceSuspect ? TR("Ревизия: похоже, повреждён сам оригинал")
-            : seg.review.applied ? TR("Ревизия исправила перевод") : TR("Ревизия прочитала пару")),
+            : seg.review.applied ? TR("Ревизия исправила перевод")
+            : seg.review.held ? TR("Ревизия предлагает правку — текст заверен вами")
+            : TR("Ревизия прочитала пару")),
         React.createElement("span", { className: "dim", style: { fontSize: 11.5 } },
           TR("оценка ") + seg.review.score + "/10"
           + (seg.review.model ? " · " + seg.review.model : "")
@@ -416,6 +418,17 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
         TR("Правка не поставлена: ") + TRS(seg.review.skipped)
         + ((seg.review.vetoLabels || []).length
             ? " (" + seg.review.vetoLabels.map(TRS).join(", ") + ")" : "")),
+      /* Прежний совет, который НЕ поставили. Запись ревизии на сегменте одна,
+         и следующий вердикт её перезаписывает: без этого блока несогласие
+         системы с подписью человека исчезало молча (боевой #128 — «Prevalence
+         (morbidity)» пропал вместе с записью). Показываем честно, к тому ли
+         тексту он относился. */
+      seg.review.prev && seg.review.prev.candidate && React.createElement("div",
+        { className: "dim", style: { fontSize: 12, marginTop: 6, lineHeight: 1.5 } },
+        TR("Прежний совет ревизии"),
+        seg.review.prev.score != null ? TR(" (оценка ") + seg.review.prev.score + "/10)" : "",
+        ": ", seg.review.prev.candidate,
+        seg.review.prev.sameText ? "" : TR(" — к прежней версии перевода")),
       seg.review.undone && React.createElement("div",
         { style: { fontSize: 12, marginTop: 6, color: "var(--c-warning)" } },
         TR("Правка откачена человеком — повторно предлагаться не будет."))),

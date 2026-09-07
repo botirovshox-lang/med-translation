@@ -336,5 +336,38 @@ check("abbreviations, and punctuation exactly as in the source" not in tr,
 
 
 print()
+print("=== 7. Размен одного самоповтора на другой — не работа ===")
+
+# Боевой #128 первой половиной: ремонт чинил находку termcheck («soreness»
+# неверно) и получил «Prevalence (prevalence)» — самоповтор, которого в тексте
+# не было. Счётчик `self_dup` вырос 0 → 1, но сверялся он только на заходе
+# «одни бесплатные находки», и правку приняли. Снимать её пришлось вторым
+# платным шагом.
+seg = seg_of("Распространённость (болезненность)", "Prevalence (soreness)")
+seg["termcheck"] = {"findings": [{"tgt_term": "soreness", "suggestion": "prevalence",
+                                  "severity": "critical", "why": "не тот смысл"}],
+                    "severity": "critical", "model": "m",
+                    "target_hash": main._text_hash("Prevalence (soreness)")}
+proj = project_of([seg])
+stub("Prevalence (prevalence)", [])
+r = main._run_segment_repair(seg, proj)
+check(r.get("applied") is False,
+      "правка, внёсшая самоповтор, откатывается — даже сняв заказанную находку")
+check(seg["target"] == "Prevalence (soreness)", "в сегменте остался прежний текст")
+check("внесла повтор" in (seg["repair"].get("reason") or ""),
+      "и причина названа: %s" % (seg["repair"].get("reason") or ""))
+
+seg2 = seg_of("Распространённость (болезненность)", "Prevalence (soreness)")
+seg2["termcheck"] = {"findings": [{"tgt_term": "soreness", "suggestion": "morbidity",
+                                   "severity": "critical", "why": "не тот смысл"}],
+                     "severity": "critical", "model": "m",
+                     "target_hash": main._text_hash("Prevalence (soreness)")}
+proj2 = project_of([seg2])
+stub("Prevalence (morbidity)", [])
+r2 = main._run_segment_repair(seg2, proj2)
+check(r2.get("applied") is True, "верная правка принимается")
+check(seg2["target"] == "Prevalence (morbidity)", "и стоит в сегменте")
+
+print()
 print("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail))
 sys.exit(1 if fail else 0)

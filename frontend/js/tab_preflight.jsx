@@ -39,6 +39,13 @@ function analysisHumanGroups(s) {
   const ctxKeys = new Set(ctxWrong.map(rkey));
   const disputes = (h.termcheckDisputes || []).filter(d => !ctxKeys.has(rkey(d)));
   const fix = [
+    /* Ревизия НАСТАИВАЕТ: готовый вариант прошёл все объективные сверки,
+       и держит его только подпись человека. Стоит первой строкой намеренно —
+       это единственная строка, где работа уже сделана и оплачена, а нужно
+       ровно одно нажатие. */
+    row("reviewConfirmed", TR("Ревизия предлагает правку заверенного"),
+      TR("вариант прошёл объективные сверки, но текст заверил человек — прочтите и примените, подпись снимется"),
+      h.reviewConfirmed, "var(--c-warning)"),
     row("reviewFlagged", TR("Ревизия нашла проблему, но текст не тронула"),
       TR("сверка не пустила правку либо модель не дала варианта — оценка, замечания и предложенный текст в карточке сегмента"),
       h.reviewFlagged, "var(--c-warning)"),
@@ -128,6 +135,54 @@ function WorkSummary({ summary, store, toast, onReload }) {
      и пересчёта баллов: сначала разбор, потом подтверждение, потом применение;
      копия для отката уходит в data/backups/. */
   const [accBusy, setAccBusy] = useState(false);
+  const [rvBusy, setRvBusy] = useState(false);
+
+  /* Применить советы ревизии, которые держит ЗАВЕРЕНИЕ. Вызовов модели нет:
+     вердикты уже оплачены и лежат на сегментах, сверки пересчитываются
+     бесплатно на сервере. Дверь своя (`/review/apply`), а не общий `/review`:
+     тот в `_PAID`, и на исчерпанном лимите подстановка готового текста
+     отвечала бы 402 — прямо против правила «лимит режет деньги, а не работу».
+     Подпись человека при этом СНИМАЕТСЯ, поэтому спрашиваем прямо. */
+  const applyHeldReview = (ids) => {
+    if (!window.API || rvBusy || !(ids || []).length) return;
+    setRvBusy(true);
+    window.API.safeCall(() => window.API.applyReview(store.activeProject.id,
+        { segment_ids: ids, dry_run: true, include_confirmed: true }))
+      .then(dry => {
+        if (!dry || !dry.ok) { setRvBusy(false); toast.error(TR("Не удалось посчитать"), TR("Сервер не ответил.")); return; }
+        if (!dry.wouldApply) { setRvBusy(false); toast.info(TR("Применять нечего"), TR("Советы устарели или уже применены.")); return; }
+        /* Потолок называется числом: за один запрос сервер берёт не больше
+           REVIEW_LIMIT_MAX, и молчаливое усечение неотличимо от «работа
+           кончилась» — тот же закон, что у `capped` в остальных пачках. */
+        const rest = dry.capped || 0;
+        const ok = window.confirm(
+          TR("Поставить готовые варианты ревизии в ") + dry.wouldApply + TR(" сегментах?") + "\n\n"
+          + TR("Вызовов модели нет — текст уже написан и прошёл объективные сверки.") + "\n"
+          + TR("Это ЗАВЕРЕННЫЕ сегменты: прежний текст уйдёт в «прошлый перевод», статус станет «требует проверки», а отметка «подтвердил человек» снимется.") + "\n"
+          + (rest ? TR("За один раз применяется не больше ") + dry.wouldApply
+                    + TR(", остальные ") + rest + TR(" — следующим нажатием.") + "\n" : "")
+          + "\n" + TR("Откат есть: копия уйдёт в data/backups/, метку скажу после применения."));
+        if (!ok) { setRvBusy(false); return; }
+        window.API.safeCall(() => window.API.applyReview(store.activeProject.id,
+            { segment_ids: ids, dry_run: false, include_confirmed: true }))
+          .then(async res => {
+            setRvBusy(false);
+            if (!res || !res.ok) { toast.error(TR("Не удалось применить"), TR("Сервер отказал.")); return; }
+            /* Тянем ТОЛЬКО правленые сегменты: проект весит мегабайты,
+               а в браузере иначе останется прежний текст — и первое же
+               «Сохранить» в карточке вернуло бы его поверх принятого. */
+            if (ids.length && window.API.fetchSegments) {
+              const got = await window.API.safeCall(
+                () => window.API.fetchSegments(store.activeProject.id, ids));
+              (got && got.segments || []).forEach(
+                sg => store.updateSegment(store.activeProject.id, sg.id, sg));
+            }
+            toast.success(TR("Применено советов: ") + res.applied,
+              TR("Откат — по метке ") + (res.stamp || "—"));
+            if (onReload) onReload();
+          });
+      });
+  };
   const acceptAll = () => {
     if (!window.API || accBusy) return;
     setAccBusy(true);
@@ -356,6 +411,10 @@ function WorkSummary({ summary, store, toast, onReload }) {
               ? React.createElement(Btn, { variant: "ghost", size: "sm", icon: "check",
                   disabled: accBusy, onClick: acceptAll },
                   accBusy ? TR("Принимаем…") : TR("Принять все"))
+              : r.key === "reviewConfirmed"
+              ? React.createElement(Btn, { variant: "ghost", size: "sm", icon: "check",
+                  disabled: rvBusy, onClick: () => applyHeldReview(r.ids) },
+                  rvBusy ? TR("Применяем…") : TR("Применить советы"))
               : null })),
           g.rows.length > HUMAN_GROUP_TOP && React.createElement("div", { className: "dim",
               style: { fontSize: 12.5, padding: "4px 0 6px", cursor: "pointer" },

@@ -560,6 +560,12 @@ function TabEditor({ store, toast }) {
      НЕ живёт и гаснет при смене проекта: это разрешение на один прогон,
      а не настройка. */
   const [rvConfirmed, setRvConfirmed] = useState(false);
+  /* Читать заверенные, НЕ переписывая. Разрешение на один прогон, как
+     и соседнее: в localStorage не живёт и гаснет со сменой проекта.
+     Отдельно от `rvConfirmed`, потому что решения разные — «скажи, что
+     не так» и «перепиши сам»; цена у первого меньше, а подпись человека
+     оно не трогает вовсе. */
+  const [rvAskConfirmed, setRvAskConfirmed] = useState(false);
   // То же самое, но для переперевода (шаг «Перевод», solo-запуск): без него
   // подтверждённые сегменты не показываются даже в разбивке «переведено
   // через» — их вообще не с чем перевести повторно, пока человек явно не
@@ -807,7 +813,7 @@ function TabEditor({ store, toast }) {
 
   // Смена проекта гасит разрешение: заверял сегменты человек в ТОМ проекте,
   // и переносить на новый разрешение их переписать нельзя.
-  useEffect(() => { setRpFixConfirmed(false); setRvConfirmed(false); }, [project && project.id]);
+  useEffect(() => { setRpFixConfirmed(false); setRvConfirmed(false); setRvAskConfirmed(false); }, [project && project.id]);
   useEffect(() => { setRtFixConfirmed(false); }, [project && project.id]);
 
   useEffect(() => { setTcGroupPick(null); }, [tcModel, store.segmentFilter, checkedSegs.size]);
@@ -957,7 +963,7 @@ function TabEditor({ store, toast }) {
     project && project.id, gptModel, bcModel, tcModel, tcxModel, rpModel, rvModel, bcJudge,
     fullSteps ? Array.from(fullSteps).sort().join(",") : "*",
     rpGroupPick ? Array.from(rpGroupPick).sort().join(",") : "*",
-    rpFixConfirmed ? "rc" : "", rvConfirmed ? "vc" : "",
+    rpFixConfirmed ? "rc" : "", rvConfirmed ? "vc" : "", rvAskConfirmed ? "va" : "",
     scopeFp, planFp,
     job ? job.id + ":" + job.status : "",
   ].join("|");
@@ -984,6 +990,7 @@ function TabEditor({ store, toast }) {
       // чинившихся — значит человек просит второй заход.
       retry: !!(rpGroupPick && (rpGroupPick.has("applied") || rpGroupPick.has("rejected"))),
       include_confirmed: rpFixConfirmed, rv_confirmed: rvConfirmed,
+      rv_ask_confirmed: rvAskConfirmed,
     })).then(async res => {
       if (!alive) return;
       setPlanBusy(false);
@@ -1686,7 +1693,7 @@ function TabEditor({ store, toast }) {
     const ids = new Set((plan && plan.ids) || []);
     const targets = project.segments.filter(s => ids.has(s.id));
     startJob("review", targets,
-      { model: rvModel || null, rv_confirmed: rvConfirmed },
+      { model: rvModel || null, rv_confirmed: rvConfirmed, rv_ask_confirmed: rvAskConfirmed },
       TR("Ревизовать нечего: в выборке нет переведённых сегментов, ")
       + TR("либо все уже ревизованы этим переводом."),
       estimateRun("review", targets, rvModelInfo));
@@ -2062,10 +2069,15 @@ function TabEditor({ store, toast }) {
               confirmedInScope
                 ? confirmedInScope + TR(" заверенных в выборке")
                 : TR("в выборке нет заверенных сегментов"))),
-          React.createElement(Switch, { on: rvConfirmed, label: TR("Ревизовать заверенные"),
-            onClick: () => setRvConfirmed(v => !v) })),
+          React.createElement("div", { className: "row", style: { gap: 8, alignItems: "center" } },
+            React.createElement(Switch, { on: rvAskConfirmed, label: TR("Читать заверенные"),
+              onClick: () => setRvAskConfirmed(v => !v) }),
+            React.createElement(Switch, { on: rvConfirmed, label: TR("Ревизовать заверенные"),
+              onClick: () => setRvConfirmed(v => !v) }))),
         rvConfirmed && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
-          TR("С переписанных снимется отметка «подтвердил человек» — их придётся заверить заново."))),
+          TR("С переписанных снимется отметка «подтвердил человек» — их придётся заверить заново.")),
+        rvAskConfirmed && !rvConfirmed && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
+          TR("Текст заверенных не изменится: годный вариант ляжет в «Анализ» строкой «Ревизия предлагает правку заверенного», применять его вам."))),
       soloNote: TR("Один вызов на сегмент. Правка ставится, только если оценка ")
         + TR("не выше порога И кандидат прошёл бесплатные сверки: числа, единицы, ")
         + TR("отрицание, сторона, утверждённые термины, регистр, письмо, повторы. ")
@@ -2238,6 +2250,7 @@ function TabEditor({ store, toast }) {
       // СВОЁ: «правь по находкам» и «перечитай и перепиши целиком» — разные
       // решения, и одна галочка на оба означала бы молчаливое расширение.
       include_confirmed: rpFixConfirmed, rv_confirmed: rvConfirmed,
+      rv_ask_confirmed: rvAskConfirmed,
     }, TR("В выбранных сегментах нечего делать."), fullEst);
     if (!started) return;
     // Проект и время создания — часть опознания снимка (см. runStepRows):
@@ -2356,6 +2369,7 @@ function TabEditor({ store, toast }) {
           checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf),
             est: fullEst, modelWarn: modelWarn,
           rvConfirmed: rvConfirmed, rvConfirmedCount: confirmedInScope,
+          rvAskConfirmed: rvAskConfirmed,
           fixConfirmed: rpFixConfirmed, fixConfirmedCount: rpConfirmedWaiting,
           models: gptModels, disabled: !!job }),
         // Одобрение терминов и то, что из него следует, — расхождения готовых
@@ -2874,7 +2888,7 @@ function StepRow({ row, on, onToggle, open, onOpen, disabled, models }) {
 
 function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize,
                        checked, filtered, est, modelWarn, models, disabled,
-                       rvConfirmed, rvConfirmedCount,
+                       rvConfirmed, rvConfirmedCount, rvAskConfirmed,
                        openStep, onOpenStep, planBusy, planReady,
                        fixConfirmed, fixConfirmedCount }) {
   const anyWork = rows.some(r => picked.has(r.key) && r.planEst && r.planEst.count > 0);
@@ -2935,6 +2949,18 @@ function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize
       rvConfirmedCount ? " — " + rvConfirmedCount + TR(" заверенных в выборке; ")
                        : TR(" — в выборке таких сейчас нет; "),
       TR("с переписанных снимется отметка «подтвердил человек». Выключается в строке «Ревизия».")),
+    /* Разрешение ЧИТАТЬ заверенные тоже видно у главной кнопки: оно взводится
+       в свёрнутой строке «Ревизия», а стоит вызова на каждый заверенный
+       сегмент выборки. Тот же закон, что у двух баннеров выше: взведённое
+       разрешение, которого не видно, — это трата, о которой не сказали. */
+    rvAskConfirmed && !rvConfirmed && React.createElement("div", {
+      style: { fontSize: 11.5, lineHeight: 1.5, padding: "7px 9px", borderRadius: "var(--r-md)",
+               background: "var(--bg-sunken)", border: "1px solid var(--border)",
+               color: "var(--text-2)" } },
+      React.createElement("b", null, TR("Ревизия прочитает и заверенные")),
+      rvConfirmedCount ? " — " + rvConfirmedCount + TR(" заверенных в выборке; ")
+                       : TR(" — в выборке таких сейчас нет; "),
+      TR("текст их не изменится: годные варианты уйдут в «Анализ», применять их вам.")),
 
     // Во время прогона цифры показывает полоса наверху — она залипающая и
     // видна всегда. Второй прогресс-бар здесь только повторял бы её и уезжал
@@ -3257,7 +3283,7 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
                     рядом с настоящим и расходились с экраном на записях без
                     поля `code`. */
                  color: seg.review.applied ? "var(--c-success)"
-                   : (seg.review.sourceSuspect || seg.review.flagged)
+                   : (seg.review.sourceSuspect || seg.review.flagged || seg.review.held)
                      ? "var(--c-warning)" : "var(--text-3)" },
         title: TR("Ревизия: оценка ") + seg.review.score + "/10"
           + (seg.review.applied ? TR("\nТекст переписан. Было: ") + (seg.review.from || "") : "")

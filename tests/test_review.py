@@ -741,6 +741,189 @@ vs["backcheck"]["judge"]["divergences"] = ["другая дисциплина"]
 check(any(f["kind"] == "judge" for f in main._repair_findings(vs)),
       "устаревший вердикт ревизии (текст правили после) не защищает")
 
+# ────── 12. Заверенное: ревизия НАСТАИВАЕТ, а не молчит ──────
+# Боевой #128. 02.09 ревизия дала оценку 2 и готовый «Prevalence (morbidity)»,
+# сегмент был заверен человеком за пять часов до этого, и правку не поставили —
+# ПРАВИЛЬНО. Неправильным было другое: отказ не оставил следа (`veto: []`,
+# ни `skipped`, ни `code`), на экране это выглядело как «прочитала, претензий
+# нет», а следующий вердикт стёр совет вместе с оценкой.
+print()
+print("=== 12. Заверенный сегмент: отказ записан, совет не потерян ===")
+
+ANSWER = {"score": 3, "issues": ["калька"], "fixed": "Closed pneumothorax is temporary."}
+proj, seg = build([seg_of(1, status="confirmed", confirmedBy="u1", confirmedAt="t1",
+                          confirmedRole="translator")])
+out = main._run_segment_review(seg, proj)
+rv = seg["review"]
+check(rv.get("code") == main.REVIEW_CONFIRMED, "причина отказа записана КОДОМ")
+check(rv.get("skipped") == "заверено человеком", "и словами — для карточки")
+check(rv.get("candidate"), "готовый совет остался в записи")
+check(seg["target"] == TGT and seg["status"] == "confirmed",
+      "текст и подпись человека не тронуты")
+check(out.get("ready") is False, "в применение такой сегмент не идёт")
+check(main._review_held(seg), "предикат «держит заверение» это видит")
+
+# Отказ по заверению стоит ПОСЛЕ вето: сначала говорим о качестве кандидата.
+ANSWER = {"score": 3, "issues": ["числа"], "fixed": "Closed pneumothorax in 99 cases."}
+proj_v, seg_v = build([seg_of(1, src="Больных 5.", tgt="There are 5 patients.",
+                              status="confirmed", confirmedBy="u1")])
+main._run_segment_review(seg_v, proj_v)
+check(main._review_code(seg_v["review"]) == main.REVIEW_VETOED,
+      "негодный кандидат назван негодным, а не «заверено»")
+
+# Вердикт ПРЕЖНЕГО кода: ни skipped, ни code — читается по статусу сегмента.
+legacy = seg_of(2, status="confirmed", confirmedBy="u1", confirmedRole="editor",
+                confirmedAt="t2")
+legacy["review"] = {"score": 2.0, "candidate": "Prevalence (morbidity)", "applied": False,
+                    "veto": [], "model": "m", "v": main.REVIEW_VERSION,
+                    "target_hash": main._text_hash(TGT.strip()),
+                    "source_hash": main._text_hash(SRC.strip())}
+check(main._review_held(legacy), "вердикт прежнего кода тоже читается как удержанный")
+
+# Применение: без разрешения — нет, с разрешением — да, и след остаётся.
+check(main._apply_review(legacy) is False, "без разрешения правка не ставится")
+check(main._apply_review(legacy, include_confirmed=True) is True,
+      "с разрешением — ставится: отказ был про права, а не про качество")
+check(legacy["target"] == "Prevalence (morbidity)", "текст подставлен")
+check(legacy.get("confirmedBy") is None and legacy["status"] == "review",
+      "подпись снята, статус — «требует проверки»")
+check((legacy["review"].get("heldBy") or {}).get("user") == "u1",
+      "чью подпись переписали — записано НА ЗАПИСИ, а не только в журнале")
+
+# Кандидат, который держит заверение, доступен `apply_saved`: иначе корзину
+# нечем осушить — сухой прогон вердикт уже записал, платить второй раз незачем.
+held2 = seg_of(3, status="confirmed", confirmedBy="u1")
+held2["review"] = {"score": 4.0, "candidate": "Closed pneumothorax.", "applied": False,
+                   "skipped": "заверено человеком", "code": main.REVIEW_CONFIRMED,
+                   "veto": [], "model": "m", "v": main.REVIEW_VERSION,
+                   "target_hash": main._text_hash(TGT.strip()),
+                   "source_hash": main._text_hash(SRC.strip())}
+proj_s, _ = build([held2, seg_of(4)])
+got, _t = main._review_pick(proj_s, main.ReviewRequest(apply_saved=True))
+check([s["id"] for s in got] == [3], "apply_saved видит удержанный заверением совет")
+
+# Спрашивать заверенные — СВОЁ разрешение, и разбор состава читает его же.
+pair = [seg_of(5, status="confirmed", confirmedBy="u1"), seg_of(6)]
+proj_a, _ = build(pair)
+got, _t = main._review_pick(proj_a, main.ReviewRequest(limit=99))
+check([s["id"] for s in got] == [6], "по умолчанию заверенные не спрашиваются — это деньги")
+plan_on = main._plan_step(proj_a, "review", {"rv_ask_confirmed": True},
+                          list(proj_a["segments"]), set(), set())
+got_on, _t = main._review_pick(proj_a, main.ReviewRequest(limit=99, ask_confirmed=True))
+check(sorted(plan_on.get("ids") or []) == sorted(s["id"] for s in got_on) == [5, 6],
+      "с разрешением план и отбор берут одних и тех же: %r против %r"
+      % (plan_on.get("ids"), [s["id"] for s in got_on]))
+
+# Несогласие не стирается новым вердиктом.
+keep = seg_of(7, status="confirmed", confirmedBy="u1")
+keep["review"] = {"score": 2.0, "candidate": "Prevalence (morbidity)", "applied": False,
+                  "skipped": "заверено человеком", "code": main.REVIEW_CONFIRMED,
+                  "veto": [], "model": "m", "v": main.REVIEW_VERSION, "at": "02.09",
+                  "target_hash": main._text_hash(TGT.strip()),
+                  "source_hash": main._text_hash(SRC.strip())}
+proj_k, _ = build([keep])
+ANSWER = {"score": 4, "issues": ["иначе"], "fixed": "Closed pneumothorax stays."}
+main._run_segment_review(keep, proj_k)
+check((keep["review"].get("prev") or {}).get("candidate") == "Prevalence (morbidity)",
+      "прежний удержанный совет сохранён — он и пропадал молча")
+check((keep["review"].get("prev") or {}).get("forHash") == main._text_hash(TGT.strip()),
+      "в записи лежит ХЕШ текста, к которому совет относился, а не готовое «да»")
+_cl = main._segment_for_client(keep)
+check((_cl["review"].get("prev") or {}).get("sameText") is True,
+      "а «тот же текст» считается при показе — иначе булево замерзает "
+      "и устаревший совет выдавался бы за действующий")
+
+# Корзина «Анализа» и признак для браузера считаются ОДНИМ предикатом.
+row = main._analysis_row(held2, False, 90)
+check(row["reviewConfirmed"] is True and row["reviewFlagged"] is False,
+      "удержанный совет — своя корзина, а не «нашла и не тронула»")
+
+# ────── 13. Размен одного самоповтора на другой ──────
+print()
+print("=== 13. Самоповтор сверяется ПОИМЁННО, а не числом ===")
+dup = seg_of(8, src="Распространённость (болезненность)", tgt="Prevalence (prevalence)")
+proj_d, _ = build([dup])
+veto = main._review_veto(dup, proj_d, "Prevalence (case prevalence)")
+check("self_dup" in veto,
+      "правка, снявшая один самоповтор и внёсшая другой, не проходит счётом 1 → 1")
+check("self_dup" not in main._review_veto(dup, proj_d, "Prevalence (morbidity)"),
+      "а верная правка проходит")
+
+# ────── 14. Что нашёл критик диффа ──────
+print()
+print("=== 14. Границы удержания: отчёт, снятая подпись, очередь ===")
+
+# Прогон С РАЗРЕШЕНИЕМ не должен звать «пропущенным» сегмент, который он же
+# переписал: иначе отчёт прячет снятую подпись человека за словом «пропущено».
+ANSWER = {"score": 3, "issues": ["калька"], "fixed": "Closed pneumothorax is temporary."}
+proj, seg = build([seg_of(1, status="confirmed", confirmedBy="u1")])
+r = main.review_project(1, main.ReviewRequest(limit=10, sample="all", dry_run=False,
+                                              include_confirmed=True))
+check(r["applied"] == 1, "с разрешением правка поставлена")
+check(r["held"] == [] and r["skippedConfirmed"] == [],
+      "и в «ждёт решения»/«пропущено» она НЕ попала: %r / %r"
+      % (r["held"], r["skippedConfirmed"]))
+check(seg.get("confirmedBy") is None, "подпись снята — это и есть событие отчёта")
+
+# Человек снял заверение сам: держать правку больше нечем.
+free = seg_of(2, tgt=TGT, status="review")
+free["review"] = {"score": 4.0, "candidate": "Closed pneumothorax.", "applied": False,
+                  "skipped": "заверено человеком", "code": main.REVIEW_CONFIRMED,
+                  "veto": [], "model": "m", "v": main.REVIEW_VERSION,
+                  "target_hash": main._text_hash(TGT.strip()),
+                  "source_hash": main._text_hash(SRC.strip())}
+check(main._review_held(free) is False,
+      "снятое заверение — уже не «настаивает на заверенном»")
+check(main._apply_review(free) is True,
+      "и правка ставится без разрешения: держать нечего")
+check(free["target"] == "Closed pneumothorax.", "текст подставлен")
+
+# Карточка очереди НЕ отравляет бесплатную корзину «забракованное слово».
+proj_q, seg_q = build([seg_of(3, src="Бактериовыделение", tgt="Bacillary excretion",
+                              status="confirmed", confirmedBy="u1")])
+main._queue_review_term(seg_q, proj_q, "Bacteriological positivity")
+card = [c for c in main._term_queue() if c.get("kind") == "review"]
+check(len(card) == 1, "короткая пара без скобок в очередь попадает")
+check(not card[0].get("wasTgt"),
+      "но `wasTgt` в ней НЕ пишется: `_stale_words_of` считает его словом, "
+      "забракованным проверкой, и звал бы арбитра на фантом каждым прогоном")
+check(main._stale_words_of(proj_q) == {},
+      "бесплатная корзина «забракованное слово осталось» осталась пустой")
+
+# Ворота: строка документа со скобками термином не бывает.
+before = len(main._term_queue())
+seg_b = seg_of(4, src="Распространённость (болезненность)", tgt="Prevalence (soreness)",
+               status="confirmed", confirmedBy="u1")
+main._queue_review_term(seg_b, proj_q, "Prevalence (morbidity)")
+check(len(main._term_queue()) == before, "пара со скобками в очередь не идёт")
+
+# Сухой прогон очередь не занимает: карточка — не кэш вердикта.
+proj_d, seg_d = build([seg_of(5, src="Бактериовыделение", tgt="Bacillary excretion",
+                              status="confirmed", confirmedBy="u1")])
+ANSWER = {"score": 3, "issues": ["иначе"], "fixed": "Bacteriological positivity"}
+main._run_segment_review(seg_d, proj_d, queue_terms=False)
+check([c for c in main._term_queue() if c.get("kind") == "review"] == [],
+      "сухой заход мест у потолка очереди не занимает")
+
+# Приказом такая карточка не становится ни при каком согласии сегментов.
+pol = main._auto_policy("medical")
+cardA = {"kind": "review", "src": "бактериовыделение", "tgt": "bacteriological positivity",
+         "segments": ["1:3"], "lang": "RU→EN", "domain": "medical", "status": "pending"}
+ctx = main._auto_context([cardA], pol)
+act, why_ = main._auto_verdict(cardA, ctx)
+check(act == "wait",
+      "совет ревизии с одним донором ждёт данных, а не идёт в глоссарий: %r/%r"
+      % (act, why_))
+
+# Бесплатная дверь остаётся бесплатной: подстановка готового текста
+# не зовёт модель, значит на исчерпанном лимите обязана работать.
+check(not any(m == "POST" and rx.search("/api/projects/7/review/apply")
+              for m, rx in main._PAID),
+      "/review/apply не в платных путях")
+check(any(m == "POST" and rx.search("/api/projects/7/review")
+          for m, rx in main._PAID),
+      "а сам /review — платный, как и был")
+
 if fail:
     print("ПРОВАЛЕНО: " + str(len(fail)))
     for f in fail:

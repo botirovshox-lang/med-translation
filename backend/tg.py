@@ -56,17 +56,26 @@ def enabled() -> bool:
     return bool(BOT_TOKEN)
 
 
-def _post(method: str, payload: dict, token: str = "") -> dict:
+def _post(method: str, payload: dict, token: str = "", timeout: int = 0) -> dict:
     """Один запрос к Telegram. Возвращает разобранный ответ либо
-    {"ok": False, "error": ...} — исключение наружу не выпускаем."""
+    {"ok": False, "error": ...} — исключение наружу не выпускаем.
+
+    Потолок по времени задаётся явно, потому что у ДЛИННОГО опроса
+    (`getUpdates` с `timeout`) Telegram держит соединение молча до минуты:
+    сокет, закрытый раньше, рвёт каждый заход, и журнал забивается
+    «read operation timed out» при исправно работающем боте. Ждать надо
+    дольше, чем ждёт сам Telegram."""
     tok = token or BOT_TOKEN
     if not tok:
         return {"ok": False, "error": "нет TELEGRAM_BOT_TOKEN"}
+    wait = timeout or TIMEOUT
+    if not timeout and isinstance(payload.get("timeout"), int):
+        wait = payload["timeout"] + 10
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(API % (tok, method), data=data,
                                  headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        with urllib.request.urlopen(req, timeout=wait) as r:
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         body = ""

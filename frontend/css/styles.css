@@ -198,7 +198,7 @@ a { color: var(--c-primary); }
 :root[data-theme="dark"] ::selection { background: rgba(143,174,220,0.34); }
 
 /* Smooth, calm theme transition (user-triggered, not auto) */
-body, .card, .header, .tabbar, .panel, input, select, textarea {
+body, .card, .side, .topbar, .panel, input, select, textarea {
   transition: background-color .18s ease, border-color .18s ease, color .18s ease;
 }
 /* Suppress transitions during theme swap so var() colors repaint instantly
@@ -224,56 +224,9 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible) { outline: non
    ============================================================ */
 .app { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 
-.header {
-  height: 52px; flex: 0 0 52px;
-  display: flex; align-items: center; gap: var(--sp-md);
-  padding: 0 var(--sp-lg);
-  background: var(--header-bg);
-  border-bottom: 1px solid var(--border);
-  z-index: 30;
-}
-.header .brand { display: flex; align-items: center; gap: 10px; }
-.header .brand-mark {
-  width: 26px; height: 26px; border-radius: 7px;
-  display: grid; place-items: center;
-  background: var(--btn); color: var(--btn-ink); flex: 0 0 26px;
-}
-.header .brand-title { font-weight: 600; font-size: 14px; letter-spacing: -.15px; line-height: 1.15; }
-.header .brand-sub { font-size: 11px; color: var(--text-3); letter-spacing: .3px; }
-.header .spacer { flex: 1; }
-.header .h-actions { display: flex; align-items: center; gap: 6px; }
-
-.tabbar {
-  flex: 0 0 auto;
-  display: flex; align-items: stretch; gap: 2px;
-  padding: 0 var(--sp-md);
-  background: var(--header-bg);
-  border-bottom: 1px solid var(--border);
-  overflow-x: auto; scrollbar-width: none;
-  z-index: 20;
-}
-.tabbar::-webkit-scrollbar { display: none; }
-.tab {
-  display: inline-flex; align-items: center; gap: 8px;
-  padding: 0 14px; height: 42px;
-  white-space: nowrap;
-  color: var(--text-2); font-weight: 500; font-size: 14px;
-  border-bottom: 2px solid transparent;
-  border-radius: 8px 8px 0 0;
-  transition: background-color .15s ease, color .15s ease;
-}
-.tab:hover { background: var(--bg-hover); color: var(--text); }
-/* Подчёркивание цветное, а не чёрное: чёрное на экране ровно одно —
-   главная кнопка. «Где я» и «что нажать» не должны спорить весом. */
-.tab.active { color: var(--text); border-bottom-color: var(--c-primary); font-weight: 600; }
-.tab .tab-count {
-  font-size: 11px; font-weight: 500; padding: 1px 7px; border-radius: 999px;
-  background: var(--bg-sunken); color: var(--text-2);
-}
-/* У активной вкладки счётчик тоже активный: одинаковая плашка у активной
-   и неактивной означала, что состояния нет. */
-.tab.active .tab-count { background: var(--c-primary-soft); color: var(--st-trans-fg); }
-
+/* Прежние .header и .tabbar удалены вместе со своими компонентами:
+   их заменили .side и .topbar выше. Мёртвые правила опасны не весом —
+   следующий аудит считает их контраст и предлагает чинить то, чего нет. */
 .main { flex: 1; min-height: 0; overflow: auto; }
 .page { max-width: 1200px; margin: 0 auto; padding: var(--sp-xl) var(--sp-lg) var(--sp-3xl); }
 .page-wide { max-width: 1480px; }
@@ -290,6 +243,73 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible) { outline: non
 /* Капс кричал на каждом блоке, но обнулять признаки метки целиком нельзя:
    без них она равна обычной серой подписи. Разрядка и вес — вместо капса. */
 .eyebrow { font-size: 12px; font-weight: 600; letter-spacing: .6px; text-transform: none; color: var(--text-3); margin-bottom: 8px; }
+
+/* ============================================================
+   Оболочка: боковое меню + тонкая шапка
+   Девять вкладок в строку не помещались и уезжали в горизонтальную
+   прокрутку — половина экранов была не видна. Колонка держит их все,
+   а ниже 900 px сама ложится лентой: разметка одна на оба случая.
+   ============================================================ */
+.shell { display: grid; grid-template-columns: 232px minmax(0, 1fr); height: 100%; min-height: 0; }
+.shell-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+.side {
+  border-right: 1px solid var(--border); background: var(--header-bg);
+  padding: 14px 10px; display: flex; flex-direction: column; gap: 18px;
+  overflow-y: auto; min-height: 0;
+}
+.side-brand { display: flex; align-items: center; gap: 9px; padding: 2px 8px; font-weight: 600; font-size: 14px; letter-spacing: -.15px; }
+.side-mark { width: 26px; height: 26px; border-radius: 7px; background: var(--btn); color: var(--btn-ink); display: grid; place-items: center; flex: 0 0 26px; }
+.org-chip { display: flex; align-items: center; gap: 9px; padding: 7px 9px; border: 1px solid var(--border); border-radius: var(--r-sm); font-size: 13px; font-weight: 500; color: var(--text); background: var(--card); }
+.org-chip-sel { padding: 4px 6px 4px 9px; }
+.org-chip .select { border: 0; background: none; padding: 2px 4px; height: 26px; font-size: 13px; font-weight: 500; }
+.org-dot { width: 15px; height: 15px; border-radius: 50%; flex: 0 0 15px; background: conic-gradient(#C9743B, #D9B45C, #5C7F5A, #4E6FA8, #C9743B); }
+
+.grp { display: flex; flex-direction: column; gap: 1px; }
+.grp > h3 { font-size: 11.5px; font-weight: 500; color: var(--text-3); padding: 0 9px 6px; margin: 0; }
+.navi {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 8px 9px; border-radius: var(--r-sm); border: 1px solid transparent;
+  background: none; color: var(--text-2); font-size: 13.5px; text-align: left;
+  transition: background-color .12s ease, color .12s ease;
+}
+.navi:hover { background: var(--bg-hover); color: var(--text); }
+.navi.on { background: var(--bg-sunken); color: var(--text); font-weight: 600; }
+.navi .ic, .navi svg { opacity: .6; flex: 0 0 auto; }
+.navi.on .ic, .navi.on svg { opacity: 1; }
+.navi-t { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.navi-n { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: var(--r-pill); background: var(--bg-sunken); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.navi.on .navi-n { background: var(--c-primary-soft); color: var(--st-trans-fg); }
+
+.side-foot { margin-top: auto; border-top: 1px solid var(--border); padding: 12px 9px 2px; display: flex; flex-direction: column; gap: 7px; }
+.sf-row { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-3); }
+.sf-row b { color: var(--text-2); font-weight: 600; font-variant-numeric: tabular-nums; }
+.sf-meter { height: 4px; border-radius: 3px; background: var(--bg-sunken); overflow: hidden; }
+.sf-meter i { display: block; height: 100%; background: var(--c-primary); }
+
+.topbar {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+  padding: 9px var(--sp-lg); border-bottom: 1px solid var(--border);
+  background: var(--header-bg); z-index: 20;
+}
+.crumb { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-3); min-width: 0; }
+.crumb b { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.crumb-sep { color: var(--border-strong); }
+.tb-right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+
+@media (max-width: 900px) {
+  .shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .side {
+    flex-direction: row; align-items: center; gap: 4px; overflow-x: auto; overflow-y: hidden;
+    border-right: 0; border-bottom: 1px solid var(--border); padding: 8px 12px; scrollbar-width: none;
+  }
+  .side::-webkit-scrollbar { display: none; }
+  .side-brand, .side-foot, .grp > h3, .org-chip { display: none; }
+  .grp { flex-direction: row; gap: 4px; }
+  .navi { width: auto; padding: 7px 11px; }
+  .navi-t { white-space: nowrap; }
+  .topbar { padding: 8px var(--sp-md); }
+}
 
 /* ============================================================
    Buttons

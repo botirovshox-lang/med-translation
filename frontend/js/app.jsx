@@ -25,6 +25,10 @@ function useStore(authed) {
   const [teams, setTeams] = useState([]);
   const [tenant, setTenant] = useState(null);
   const [invites, setInvites] = useState([]);
+  /* Страницы — то, чем организация меряет свою работу. Сервер их уже
+     отдаёт в /api/auth/me, браузер до сих пор выбрасывал. */
+  const [caps, setCaps] = useState(null);
+  const [usage, setUsage] = useState(null);
   useEffect(() => {
     if (!authed || !window.API || !window.API.me) return;
     let cancelled = false;
@@ -32,6 +36,7 @@ function useStore(authed) {
       if (cancelled || !r || !r.me) return;
       setMe(r.me); setCan(r.can || { owner: false, super: false });
       setTeams(r.teams || []); setTenant(r.tenant || null); setInvites(r.invites || []);
+      setCaps(r.caps || null); setUsage(r.usage || null);
       /* Источник правды про язык — ЗАПИСЬ ПОЛЬЗОВАТЕЛЯ: он переезжает на
          другой компьютер вместе с человеком. localStorage — только кэш,
          чтобы экран ВХОДА не мигал чужим языком. Разошлись — верим серверу
@@ -190,7 +195,7 @@ function useStore(authed) {
       setSegmentFilterState(f);
     },
     goToSegment: (id) => { window._mcat_sf = null; setSegmentFilterState(null); setGotoSegId(id); setTab("editor"); },
-    teams, tenant, invites,
+    teams, tenant, invites, caps, usage,
     clearGotoSeg: () => setGotoSegId(null),
   };
 }
@@ -358,12 +363,6 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
   );
 }
 
-/* ---------- Header ---------- */
-/* Переключатель рабочего пространства. Показывается ТОЛЬКО когда команд
-   больше одной: у человека с одной командой это была бы кнопка, которая
-   ничего не делает. Переключение — запрос к серверу и перезагрузка: меняются
-   проекты, глоссарий, память переводов и расход, и оставить на экране
-   прежние данные значило бы показать чужую команду под именем новой. */
 function TeamSwitcher({ store }) {
   const teams = store.teams || [];
   if (teams.length < 2) return null;
@@ -416,45 +415,115 @@ function Header({ store, theme, onToggleTheme, onLogout, onSearch }) {
    местах: глоссарий и память — обе справочные базы одной области; «Анализ»
    и «QA» — обе про «что не так и во что обойдётся», просто до и после прогона.
    Бэклог и статистика — командные инструменты, они уехали внутрь «Анализа». */
+/* group — колонка бокового меню. Порядок групп: сначала работа над текстом,
+   потом файлы и настройки, потом служебное. */
 const TABS = [
-  { key: "import", label: TR("Импорт"), icon: "upload" },
-  { key: "editor", label: TR("Редактор"), icon: "edit" },
-  { key: "glossary", label: TR("Знания"), icon: "book" },
-  { key: "preflight", label: TR("Анализ"), icon: "target" },
-  { key: "export", label: TR("Экспорт"), icon: "download" },
+  { key: "import", label: TR("Импорт"), icon: "upload", group: "files" },
+  { key: "editor", label: TR("Редактор"), icon: "edit", group: "work" },
+  { key: "glossary", label: TR("Знания"), icon: "book", group: "work" },
+  { key: "preflight", label: TR("Анализ"), icon: "target", group: "work" },
+  { key: "export", label: TR("Экспорт"), icon: "download", group: "work" },
   /* Профиль — ВСЕМ, и это не мелочь: до него у переводчика не было ни
      одного экрана про себя, включая язык, на котором с ним разговаривают. */
-  { key: "profile", label: TR("Профиль"), icon: "user" },
-  { key: "org", label: TR("Организация"), icon: "settings", owner: true },
+  { key: "profile", label: TR("Профиль"), icon: "user", group: "files" },
+  { key: "org", label: TR("Организация"), icon: "settings", owner: true, group: "files" },
   /* Админка открывается только с нестандартного адреса (window.ADMIN_ENTRY
      ставит сервер на /console-…), а не с главной — и только super. */
-  { key: "admin", label: TR("Админ"), icon: "settings", super: true, entry: true },
+  { key: "admin", label: TR("Админ"), icon: "settings", super: true, entry: true, group: "sys" },
 ];
-function TabBar({ store }) {
+const TAB_GROUPS = [["work", TR("Работа")], ["files", TR("Файлы")], ["sys", TR("Служебное")]];
+/* Счётчик у пункта меню. Вынесен из TabBar: его читают и меню, и крошки. */
+function tabBadge(store, k, counts) {
+  if (k === "profile") return (store.invites && store.invites.length) || null;
+  if (!counts) return null;
+  if (k === "editor") return counts.all;
+  if (k === "preflight") return counts.failed + counts.qa || null;
+  if (k === "glossary") return store.glossary.length;
+  return null;
+}
+function visibleTabs(store) {
+  return TABS.filter(t => (!t.owner || (store.can && store.can.owner))
+    && (!t.super || (store.can && store.can.super))
+    && (!t.entry || window.ADMIN_ENTRY));
+}
+
+/* Боковое меню. Заменило верхнюю ленту вкладок: пунктов девять, они не
+   помещались в строку на ноутбуке и уезжали в горизонтальную прокрутку —
+   то есть половину экранов не было видно. Ниже 900 px колонка сама
+   ложится лентой (см. styles.css), поэтому разметка одна на оба случая. */
+function Sidebar({ store, theme, onToggleTheme, onLogout }) {
   const counts = store.activeProject ? store.statusCounts(store.activeProject) : null;
-  const badgeFor = (k) => {
-    if (k === "profile") return (store.invites && store.invites.length) || null;
-    if (!counts) return null;
-    if (k === "editor") return counts.all;
-    // На «Анализе» теперь живут и открытые замечания: показываем их, а не
-    // общее число сегментов — вкладка про то, что требует внимания.
-    if (k === "preflight") return counts.failed + counts.qa || null;
-    if (k === "glossary") return store.glossary.length;
-    /* Приглашение, о котором не сказали, — это приглашение, которого нет:
-       человек не пойдёт в профиль просто так. Значок стоит и без проекта,
-       поэтому считается ДО проверки counts. */
-    return null;
-  };
-  return React.createElement("nav", { className: "tabbar", role: "tablist" },
-    TABS.filter(t => (!t.owner || (store.can && store.can.owner)) && (!t.super || (store.can && store.can.super))
-                  && (!t.entry || window.ADMIN_ENTRY)).map(t => {
-      const b = badgeFor(t.key);
-      return React.createElement("button", { key: t.key, className: "tab" + (store.tab === t.key ? " active" : ""),
-        role: "tab", "aria-selected": store.tab === t.key, onClick: () => store.go(t.key) },
-        React.createElement(Icon, { name: t.icon, size: 17 }), t.label,
-        b != null && React.createElement("span", { className: "tab-count" }, b));
-    })
-  );
+  const tabs = visibleTabs(store);
+  const caps = store.caps || null, usage = store.usage || null;
+  /* Полоса страниц — только когда потолок ВЫДАН. Без него «0 из 0» читалось
+     бы как «всё кончилось», а это «без потолка». */
+  const limited = caps && caps.pagesLimited && caps.maxPages > 0;
+  const used = usage ? (usage.pages || 0) : 0;
+  const left = limited ? Math.max(0, caps.maxPages - used) : null;
+  return React.createElement("aside", { className: "side" },
+    React.createElement("div", { className: "side-brand" },
+      React.createElement("span", { className: "side-mark" }, React.createElement(Icon, { name: "globe", size: 15 })),
+      store.brand || "CAT Translator"),
+    React.createElement(TeamChip, { store }),
+    TAB_GROUPS.map(([g, title]) => {
+      const items = tabs.filter(t => (t.group || "work") === g);
+      if (!items.length) return null;
+      return React.createElement("nav", { className: "grp", key: g, role: "tablist", "aria-label": title },
+        React.createElement("h3", null, title),
+        items.map(t => {
+          const b = tabBadge(store, t.key, counts);
+          return React.createElement("button", { key: t.key, className: "navi" + (store.tab === t.key ? " on" : ""),
+            role: "tab", "aria-selected": store.tab === t.key, onClick: () => store.go(t.key) },
+            React.createElement(Icon, { name: t.icon, size: 15 }),
+            React.createElement("span", { className: "navi-t" }, t.label),
+            b != null && React.createElement("span", { className: "navi-n" }, b));
+        }));
+    }),
+    limited && React.createElement("div", { className: "side-foot" },
+      React.createElement("div", { className: "sf-row" },
+        React.createElement("span", null, TR("Страницы")),
+        React.createElement("b", null, left + TR(" осталось"))),
+      React.createElement("div", { className: "sf-meter" },
+        React.createElement("i", { style: { width: Math.min(100, used / caps.maxPages * 100) + "%" } }))));
+}
+
+/* Организация в шапке меню. Команд больше одной — переключатель, одна —
+   просто подпись: пустой список выбора выглядит сломанным. */
+function TeamChip({ store }) {
+  const teams = store.teams || [];
+  const name = (store.tenant && store.tenant.name) || "";
+  if (teams.length < 2) {
+    return name ? React.createElement("div", { className: "org-chip" },
+      React.createElement("span", { className: "org-dot" }), name) : null;
+  }
+  return React.createElement("div", { className: "org-chip org-chip-sel" },
+    React.createElement("span", { className: "org-dot" }),
+    React.createElement(TeamSwitcher, { store }));
+}
+
+/* Тонкая шапка: где я (крошки) и действия про себя. Всё, что про документ,
+   живёт на самих экранах. */
+function Topbar({ store, theme, onToggleTheme, onLogout, onSearch }) {
+  const tab = TABS.filter(t => t.key === store.tab)[0];
+  const proj = store.activeProject;
+  return React.createElement("header", { className: "topbar" },
+    React.createElement("div", { className: "crumb" },
+      React.createElement("span", null, tab ? tab.label : TR("Редактор")),
+      proj && React.createElement("span", { className: "crumb-sep" }, "/"),
+      proj && React.createElement("b", null, proj.title)),
+    React.createElement("div", { className: "tb-right" },
+      React.createElement(IconBtn, { icon: "search", label: TR("Поиск"), sm: true, onClick: onSearch }),
+      React.createElement(ThemeToggle, { theme, onToggle: onToggleTheme }),
+      React.createElement("button", {
+        className: "iconbtn sm", title: (store.me.name || "") + (store.can && store.can.role ? " · " + roleLabel(store.can.role) : ""),
+        "aria-label": TR("Профиль"), onClick: () => store.go("profile"),
+        style: { position: "relative", padding: 0, background: "none", border: "none", cursor: "pointer" } },
+        React.createElement(Avatar, { person: store.me, size: 28 }),
+        store.invites && store.invites.length > 0 && React.createElement("span", {
+          style: { position: "absolute", top: -2, right: -2, minWidth: 16, height: 16, borderRadius: 8,
+                   background: "var(--c-danger)", color: "var(--text-on-accent)", fontSize: 10, fontWeight: 700,
+                   lineHeight: "16px", textAlign: "center", padding: "0 3px" } }, store.invites.length)),
+      React.createElement(IconBtn, { icon: "logout", label: TR("Выйти"), sm: true, onClick: onLogout })));
 }
 
 /* ---------- Search palette ---------- */
@@ -531,18 +600,19 @@ function App() {
   };
   const Active = tabMap[store.tab] || TabEditor;
 
-  return React.createElement("div", { className: "app" },
-    React.createElement(Header, { store, theme, onToggleTheme: toggleTheme,
-      /* Перезагрузка после выхода: иначе документы клиента остаются в памяти вкладки. */
-      onLogout: () => {
-        const done = () => window.location.reload();
-        if (window.API) window.API.logout().then(done, done); else done();
-      },
-      onSearch: () => setSearch(true) }),
-    React.createElement(TabBar, { store }),
-    React.createElement("main", { className: "main" },
-      React.createElement(Boundary, { key: store.tab },
-        React.createElement(Active, { store, toast, theme, onToggleTheme: toggleTheme }))),
+  /* Перезагрузка после выхода: иначе документы клиента остаются в памяти вкладки. */
+  const logout = () => {
+    const done = () => window.location.reload();
+    if (window.API) window.API.logout().then(done, done); else done();
+  };
+  return React.createElement("div", { className: "shell" },
+    React.createElement(Sidebar, { store, theme, onToggleTheme: toggleTheme, onLogout: logout }),
+    React.createElement("div", { className: "shell-main" },
+      React.createElement(Topbar, { store, theme, onToggleTheme: toggleTheme, onLogout: logout,
+        onSearch: () => setSearch(true) }),
+      React.createElement("main", { className: "main" },
+        React.createElement(Boundary, { key: store.tab },
+          React.createElement(Active, { store, toast, theme, onToggleTheme: toggleTheme })))),
     search && React.createElement(SearchPalette, { store, onClose: () => setSearch(false) })
   );
 }

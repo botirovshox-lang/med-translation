@@ -60,17 +60,29 @@ check(rep["repeatBlocks"] == 1 and rep["chars"] == len("ЗаголовокЗаг
       "повтор посчитан отдельной строкой, но из объёма НЕ вычтен")
 
 print("=== 2. Норма страницы ===")
-check(textcount.norm_for("RU")["chars"] == 1800, "RU — 1800 знаков (канон СНГ)")
+nr = textcount.norm_for("RU")
+check(nr["unit"] == "words" and nr["perPage"] == 250 and nr["chars"] == 1800,
+      "RU — страница 250 слов, справочно 1800 знаков (канон СНГ)")
+check(textcount.norm_for("XX")["unit"] == "words" and textcount.norm_for("XX")["source"] == "default",
+      "язык не из таблицы — всё равно по словам, источник назван default")
+check(textcount.amount_of({"words": 10, "chars": 70}, nr) == 10, "делятся слова")
 check(textcount.norm_for("EN")["chars"] == 1500, "EN — 1500 знаков")
-check(textcount.norm_for("ZH")["chars"] == 400 and textcount.norm_for("ZH")["spaceless"],
-      "ZH — 400 знаков, письмо без пробелов")
+nz = textcount.norm_for("ZH")
+check(nz["chars"] == 400 and nz["spaceless"] and nz["unit"] == "chars" and nz["perPage"] == 400,
+      "ZH — 400 знаков, письмо без пробелов: единица — знаки")
+check(textcount.amount_of({"words": 1, "chars": 800}, nz) == 800, "у письма без пробелов делятся знаки")
 check(textcount.norm_for("RU")["source"] == "table", "источник нормы назван: table")
-check(textcount.norm_for("RU", {"RU": 1667})["chars"] == 1667
-      and textcount.norm_for("RU", {"RU": 1667})["source"] == "tenant",
-      "переопределение организации сильнее таблицы и помечено tenant")
+check(textcount.norm_for("ZH", {"ZH": 350})["perPage"] == 350
+      and textcount.norm_for("ZH", {"ZH": 350})["source"] == "tenant",
+      "норма в знаках организации сильнее таблицы и помечена tenant")
+check(textcount.norm_for("RU", {"RU": 1667})["perPage"] == 250,
+      "норма в знаках для языка с пробелами не читается: там делят слова")
+check(textcount.norm_for("RU", None, 300)["perPage"] == 300
+      and textcount.norm_for("RU", None, 300)["source"] == "tenant",
+      "своё число слов на страницу — сильнее базиса и помечено tenant")
 unknown = textcount.norm_for("QQ")
-check(unknown["source"] == "default" and unknown["basis"] == "assumed",
-      "языка нет в таблице — число по умолчанию помечено как догадка")
+check(unknown["source"] == "default" and unknown["unit"] == "words" and unknown["perPage"] == 250,
+      "языка нет в таблице — всё равно 250 слов, но источник назван default (человек предупреждён)")
 check(all(r.get("chars") for r in textcount.norms()["rows"].values()),
       "у каждой строки таблицы есть норма")
 
@@ -142,6 +154,55 @@ try:
 except ImportError:
     check(True, "python-docx не установлен — проверка docx пропущена")
 
+print("=== 5a. Прогоны и табуляции: пробел на границе не теряется ===")
+import zipfile
+
+
+def _pkg(files):
+    b = io.BytesIO()
+    with zipfile.ZipFile(b, "w") as z:
+        for n, c in files.items():
+            z.writestr(n, c)
+    return b.getvalue()
+
+
+# Абзац, разрезанный оформлением на три прогона: «Жирное » + «слово» + « стоит».
+# Поштучный счёт кусков терял пробел на каждой границе после normalize.
+RUNS = ["Жирное ", "слово", " стоит и\tтабуляция."]
+REF = textcount.normalize("".join(RUNS))
+pptx = _pkg({"ppt/slides/slide1.xml":
+             '<p:sld xmlns:a="a" xmlns:p="p"><p:txBody><a:p>' +
+             "".join("<a:r><a:t>%s</a:t></a:r>" % r for r in RUNS) +
+             '</a:p><a:p><a:r><a:t>Вторая</a:t></a:r><a:br/><a:r><a:t>строка</a:t></a:r></a:p></p:txBody></p:sld>'})
+b = [textcount.normalize(x) for x in textcount.extract("s.pptx", pptx)["blocks"]]
+check(b == [REF, "Вторая строка"], "pptx: прогоны склеены по абзацу, разрыв строки — пробел (%r)" % b)
+fdocx = _pkg({"word/document.xml":
+              '<w:document xmlns:w="w"><w:body><w:p>' +
+              "".join('<w:r><w:t xml:space="preserve">%s</w:t></w:r>' % r for r in RUNS) +
+              '</w:p><w:p><w:r><w:t>и</w:t><w:tab/><w:t>таб</w:t></w:r></w:p><w:p w:rsidR="1"/></w:body></w:document>'})
+b = [textcount.normalize(x) for x in textcount.extract("s.docx", fdocx)["blocks"]]
+check(b == [REF, "и таб"], "docx без python-docx: прогоны по абзацу, <w:tab/> — пробел, пустой абзац не кусок (%r)" % b)
+xlsx = _pkg({"xl/sharedStrings.xml":
+             '<sst><si><t>Просто</t></si><si><r><t xml:space="preserve">Жирное </t></r><r><t>слово</t></r></si></sst>',
+             "xl/worksheets/sheet1.xml":
+             '<worksheet><sheetData><row><c t="inlineStr"><is><t>Вст</t></is></c></row></sheetData></worksheet>'})
+b = textcount.extract("s.xlsx", xlsx)["blocks"]
+check(b == ["Просто", "Жирное слово", "Вст"], "xlsx: rich-text ячейка — одна строка, пробел цел (%r)" % b)
+try:
+    from docx import Document
+    doc = Document()
+    para = doc.add_paragraph()
+    para.add_run("Жирное ")
+    para.add_run("слово").bold = True
+    para.add_run(" стоит и\tтабуляция.")     # python-docx делает из \t элемент <w:tab/>
+    buf = io.BytesIO(); doc.save(buf)
+    b = main._docx_bill_paragraphs(buf.getvalue())
+    check(b == [REF], "docx через python-docx: <w:tab/> между словами — пробел, а не склейка (%r)" % b)
+    b2 = main._docx_paragraphs(buf.getvalue())
+    check(b2 == [REF], "и в сегмент импорта тот же текст — смета и проект считают одно")
+except ImportError:
+    check(True, "python-docx не установлен — проверка пропущена")
+
 print("=== 6. Цена: не задана — это отказ, а не ноль ===")
 card = {**main.PRICING_DEFAULTS}
 check(main._rate_for(card, "RU", "EN")["price"] is None, "пустая карточка не даёт цены")
@@ -193,6 +254,81 @@ check(q["basis"] == "file" and q["norm"]["chars"] == 1800 and q["rate"]["price"]
       "норма языка исходника и цена пары применены")
 check(q["total"] == main._money(q["pages"]["billed"], 12.5) and "÷" in q["formula"],
       "сумма сходится с расчётом, и расчёт показан строкой")
+print("=== 7a. Скан: PDF без текстового слоя — предложение, затем оценка по выборке ===")
+
+
+def _scan_pdf(n_pages: int) -> bytes:
+    """PDF из n страниц, на каждой одна картинка и ни одного знака текста."""
+    img = bytes([200, 200, 200] * 16)
+    objs = ["<< /Type /Catalog /Pages 2 0 R >>", None,
+            "<< /Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB "
+            "/BitsPerComponent 8 /Length %d >>\nstream\n" % len(img)]
+    pages, body = [], "q 200 0 0 200 50 500 cm /Im0 Do Q"
+    for _ in range(n_pages):
+        pages.append(len(objs) + 1)
+        objs.append("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents %d 0 R "
+                    "/Resources << /XObject << /Im0 3 0 R >> >> >>" % (len(objs) + 2))
+        objs.append("<< /Length %d >>\nstream\n%s\nendstream" % (len(body), body))
+    objs[1] = "<< /Type /Pages /Kids [%s] /Count %d >>" % (" ".join("%d 0 R" % k for k in pages), n_pages)
+    out, offs = b"%PDF-1.4\n", []
+    for i, o in enumerate(objs, 1):
+        offs.append(len(out))
+        chunk = ("%d 0 obj\n%s" % (i, o)).encode("latin-1")
+        if i == 3:
+            chunk += img + b"\nendstream"
+        out += chunk + b"\nendobj\n"
+    xref = len(out)
+    out += ("xref\n0 %d\n0000000000 65535 f \n" % (len(objs) + 1)).encode()
+    out += b"".join(("%010d 00000 n \n" % o).encode() for o in offs)
+    out += ("trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (len(objs) + 1, xref)).encode()
+    return out
+
+
+try:
+    import pypdf  # noqa: F401
+    scan = _scan_pdf(10)
+    r = c.post("/api/quote", headers=H(A), files={"file": ("scan.pdf", scan, "application/pdf")},
+               data={"src": "RU", "tgt": "EN"})
+    j = r.json()
+    check(r.status_code == 200 and j.get("counts") is None and j["scan"]["pages"] == 10
+          and j["scan"]["sample"] == min(10, textcount.SCAN_SAMPLE_PAGES),
+          "скан не отказ: страниц 10, предложена выборка, знаков не выдумано (%s)" % r.status_code)
+    check(j["scan"].get("est") is not None, "цена чтения выборки посчитана сервером")
+    asked = []
+
+    def fake_read(jpeg, mdl, src_lang):
+        asked.append(len(jpeg))
+        return "Слово " * 50 + "\nВторой абзац из пяти слов ещё."
+    real = main._scan_read_page
+    main._scan_read_page = fake_read
+    try:
+        r = c.post("/api/quote/scan", headers=H(A), files={"file": ("scan.pdf", scan, "application/pdf")},
+                   data={"src": "RU", "tgt": "EN"})
+    finally:
+        main._scan_read_page = real
+    j = r.json()
+    k = min(10, textcount.SCAN_SAMPLE_PAGES)
+    check(r.status_code == 200 and len(asked) == k, "прочитано ровно столько страниц, сколько в выборке (%s, %d)" % (r.status_code, len(asked)))
+    check(j["basis"] == "scan" and j["counts"]["words"] == 56 * 10 and j["formula"].startswith("≈"),
+          "объём умножен на долю (56 слов × 10 стр.), формула помечена «≈» (%s)" % j.get("counts"))
+    check(j["scan"]["read"] and len(j["scan"]["read"]) == k and j["pages"]["exact"] == round(560 / 250, 3),
+          "прочитанные страницы названы, страницы — по словам (%s)" % j["pages"])
+    check(any("ОЦЕНКА" in n for n in j["notes"]), "в примечаниях сказано, что это оценка")
+    main._scan_read_page = lambda *a: None
+    try:
+        r = c.post("/api/quote/scan", headers=H(A), files={"file": ("scan.pdf", scan, "application/pdf")},
+                   data={"src": "RU", "tgt": "EN"})
+    finally:
+        main._scan_read_page = real
+    check(r.status_code == 502, "модель не ответила ни по одной странице — 502, а не смета на ноль (%d)" % r.status_code)
+    r = c.post("/api/quote/scan", headers=H(A), files={"file": ("doc.txt", body, "text/plain")},
+               data={"src": "RU", "tgt": "EN"})
+    check(r.status_code == 400, "файл с текстом на скан-смету не берётся: 400 (%d)" % r.status_code)
+    check(any(m == "POST" and rx.search("/api/quote/scan") for m, rx in main._PAID),
+          "чтение скана — платный путь (_PAID)")
+except ImportError:
+    check(True, "pypdf не установлен — проверка скана пропущена")
+
 r = c.post("/api/quote", headers=H(A), files={"file": ("x.tiff", b"II*\x00", "image/tiff")},
            data={"src": "RU", "tgt": "EN"})
 check(r.status_code == 415, "нечитаемый формат — 415, а не смета на ноль (%d)" % r.status_code)

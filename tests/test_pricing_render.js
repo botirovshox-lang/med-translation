@@ -154,7 +154,7 @@ check(card.indexOf("1800") !== -1 && card.indexOf("1500") !== -1,
       "нормы показаны те, что пришли с сервера");
 check(card.indexOf("ноль — это не цена") !== -1,
       "строка без цены предупреждена ДО нажатия, а не выброшена молча");
-check(card.indexOf("знаков ИСХОДНИКА") !== -1, "сказано, от чего считается страница");
+check(card.indexOf("слов ИСХОДНИКА") !== -1, "сказано, от чего считается страница");
 
 const src = fs.readFileSync(path.join(root, "tab_org.jsx"), "utf8");
 check(!/norms\s*=\s*\{[^}]*1800/.test(src) && src.indexOf("chars: 1800") === -1,

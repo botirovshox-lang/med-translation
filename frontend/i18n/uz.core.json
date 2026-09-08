@@ -203,8 +203,6 @@
   "Загрузите файл Word, чтобы создать новый проект перевода. Документ автоматически разбивается на сегменты с сохранением форматирования.": "Yangi tarjima loyihasi yaratish uchun Word faylini yuklang. Hujjat formatlash saqlangan holda segmentlarga avtomatik bo'linadi.",
   "Задайте цену за страницу во вкладке «Организация» — до этого сумму показать нечем.": "Sahifa narxini «Tashkilot» bo'limida belgilang — undan oldin summani ko'rsatishning imkoni yo'q.",
   "Задаёт терминологию в промптах перевода и проверки. Меняется только для новых проектов.": "Tarjima va tekshiruv promptlaridagi atamashunoslikni belgilaydi. Faqat yangi loyihalar uchun o'zgaradi.",
-  "Знаки исходника с пробелами делятся на норму страницы для языка оригинала. Цену за страницу задаёт владелец организации.": "Asl matnning probel bilan belgilari asl til uchun sahifa me'yoriga bo'linadi. Sahifa narxini tashkilot egasi belgilaydi.",
-  "Знаков": "Belgilar",
   "Знаков с пробелами": "Probel bilan belgilar",
   "Импорт документа": "Hujjat importi",
   "История смет · ": "Hisob-kitoblar tarixi · ",
@@ -262,5 +260,14 @@
   ". Загружаемые документы обрабатываются языковой моделью стороннего поставщика.": ". Yuklangan hujjatlar uchinchi tomon yetkazib beruvchisining til modeli tomonidan qayta ishlanadi.",
   "Оферта": "Oferta",
   "Персональные данные": "Shaxsiy ma'lumotlar",
-  "редактор": "muharrir"
+  "редактор": "muharrir",
+  "Страница — 250 слов исходника (у письма без пробелов — знаки по норме языка). Цену за страницу задаёт владелец организации.": "Sahifa — asl matnning 250 so'zi (probelsiz yozuvda — til me'yori bo'yicha belgilar). Sahifa narxini tashkilot egasi belgilaydi.",
+  "Это скан: ": "Bu skan: ",
+  " стр. без текстового слоя. Объём можно оценить по выборке страниц; точный счёт — после распознавания.": " sahifa matn qatlamisiz. Hajmni sahifalar tanlamasi bo'yicha baholash mumkin; aniq hisob — tanib olishdan keyin.",
+  "Читаем…": "O'qilmoqda…",
+  "Оценить по выборке из ": "Tanlama bo'yicha baholash: ",
+  " стр.": " sahifa",
+  "зрячая модель ": "ko'ruvchi model ",
+  "Оценка по выборке": "Tanlama bo'yicha baho",
+  " слов": " so'z"
 }

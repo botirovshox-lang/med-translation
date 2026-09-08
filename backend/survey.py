@@ -369,10 +369,10 @@ APPLY = {
 
         {"id": "doc", "type": "one", "req": 1,
          "ru": {"q": "Есть настоящий документ на 20–30 страниц, который и так надо перевести?",
-                "s": "Страница — 1800 знаков. Тест на своём тексте показывает в разы больше, "
+                "s": "Страница — 250 слов. Тест на своём тексте показывает в разы больше, "
                      "чем на учебном."},
          "uz": {"q": "Shundoq ham tarjima qilish kerak bo'lgan 20–30 sahifalik haqiqiy hujjat bormi?",
-                "s": "Sahifa — 1800 belgi. O'z matningizda sinov o'quv matnidan ko'ra ancha ko'p "
+                "s": "Sahifa — 250 so'z. O'z matningizda sinov o'quv matnidan ko'ra ancha ko'p "
                      "narsani ko'rsatadi."},
          "opts": [{"v": "yes", "ru": "Да, принесу свой", "uz": "Ha, o'zimnikini olib kelaman"},
                   {"v": "nda", "ru": "Есть, но он конфиденциальный", "uz": "Bor, lekin u maxfiy"},
@@ -583,9 +583,9 @@ DEBRIEF = {
 
         {"id": "price", "type": "one", "req": 1,
          "ru": {"q": "Если бы платили сами — сколько это стоит за страницу?",
-                "s": "Страница — 1800 знаков исходника."},
+                "s": "Страница — 250 слов исходника."},
          "uz": {"q": "O'zingiz to'laganingizda — bir sahifa qancha turadi?",
-                "s": "Sahifa — asl matnning 1800 belgisi."},
+                "s": "Sahifa — asl matnning 250 so'zi."},
          "opts": [{"v": "0", "ru": "Не платил(а) бы", "uz": "To'lamagan bo'lardim"},
                   {"v": "0.5", "ru": "до $0.5", "uz": "$0.5 gacha"},
                   {"v": "1", "ru": "$0.5–1", "uz": "$0.5–1"},

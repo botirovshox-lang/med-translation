@@ -281,6 +281,7 @@ function OrgPricing({ toast }) {
     default: card.default === "" || card.default == null ? null : Number(card.default),
     clearDefault: card.default === "" || card.default == null,
     minPages: Number(card.minPages || 0),
+    wordsPerPage: card.wordsPerPage == null || String(card.wordsPerPage).trim() === "" ? 0 : Number(card.wordsPerPage),
     roundTo: Number(card.roundTo || 0),
     rates: rates.filter(r => r.src && r.tgt && String(r.price).trim() !== "" && Number(r.price) > 0)
       .map(r => ({ src: r.src, tgt: r.tgt, price: Number(r.price) })),
@@ -293,8 +294,8 @@ function OrgPricing({ toast }) {
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Цены за страницу")),
     React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 13 } },
-      TR("Страница — условная переводческая: столько знаков ИСХОДНИКА с пробелами, сколько задано нормой языка. ")
-      + TR("Смета считается по этим числам во вкладке «Импорт»: там видно знаки, страницы и сумму по файлу.")),
+      TR("Страница — условная переводческая: 250 слов ИСХОДНИКА, одинаково для всех языков (свою норму задайте ниже); у письма без пробелов — знаки по норме языка. ")
+      + TR("Смета считается по этим числам во вкладке «Импорт»: там видно слова, знаки, страницы и сумму по файлу.")),
     React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
       React.createElement(Field, { label: TR("Валюта (ISO: USD, EUR, UZS)") },
         React.createElement(Input, { value: card.currency || "", onChange: (e) => set("currency", e.target.value.toUpperCase()) })),
@@ -306,7 +307,11 @@ function OrgPricing({ toast }) {
           onChange: (e) => set("minPages", e.target.value) })),
       React.createElement(Field, { label: TR("Округление, страниц (0 — без округления)") },
         React.createElement(Input, { type: "number", step: "0.1", min: "0", max: "1", value: card.roundTo,
-          onChange: (e) => set("roundTo", e.target.value) }))),
+          onChange: (e) => set("roundTo", e.target.value) })),
+      React.createElement(Field, { label: TR("Слов в странице (пусто — 250, базис сервиса)") },
+        React.createElement(Input, { type: "number", step: "10", min: "50", max: "2000",
+          value: card.wordsPerPage == null ? "" : card.wordsPerPage,
+          onChange: (e) => set("wordsPerPage", e.target.value) }))),
 
     React.createElement("div", { className: "eyebrow", style: { margin: "6px 0 0" } }, TR("Цены по парам языков")),
     React.createElement("table", { className: "tbl" },
@@ -324,9 +329,11 @@ function OrgPricing({ toast }) {
 
     React.createElement("div", { className: "eyebrow", style: { margin: "6px 0 0" } }, TR("Норма страницы")),
     React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 13 } },
-      TR("По умолчанию берётся из таблицы сервиса (базис — 250 слов на страницу; ")
-      + (norms ? TR("русский ") + (norms.rows.find(x => x.lang === "RU") || {}).chars + TR(" знаков, английский ")
-        + (norms.rows.find(x => x.lang === "EN") || {}).chars + TR(" знаков") : "") + "). "
+      TR("Норма в знаках действует только для письма без пробелов между словами (китайский, японский, тайский, кхмерский, бирманский")
+      + (norms ? TR("; китайский — ") + (norms.rows.find(x => x.lang === "ZH") || {}).chars + TR(" знаков") : "") + "). "
+      + TR("Для остальных языков страница — слова (поле «Слов в странице» выше); справочно: ")
+      + (norms ? TR("русский ") + (norms.rows.find(x => x.lang === "RU") || {}).chars + TR(" знаков ≈ 250 слов, английский ")
+        + (norms.rows.find(x => x.lang === "EN") || {}).chars + TR(" знаков") : "") + ". "
       + TR("Договор с клиентом может называть другое число — задайте его здесь, и смета пойдёт по нему.")),
     normRows.length > 0 && React.createElement("table", { className: "tbl" },
       React.createElement("thead", null, React.createElement("tr", null,
@@ -345,7 +352,7 @@ function OrgPricing({ toast }) {
       React.createElement(Btn, {
         variant: "ghost", size: "sm",
         onClick: () => {
-          const code = (prompt(TR("Код языка исходника (две буквы, например RU):")) || "").trim().toUpperCase();
+          const code = (prompt(TR("Код языка исходника с письмом без пробелов (две буквы, например ZH):")) || "").trim().toUpperCase();
           if (!code) return;
           const row = norms && norms.rows.find(x => x.lang === code);
           set("norms", { ...(card.norms || {}), [code]: row ? row.chars : (norms ? norms.default : 1800) });

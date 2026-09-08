@@ -231,12 +231,15 @@
     /* Файл никуда не сохраняется — ни на диск, ни в состояние: это только
        расчёт. Ошибки разные и разбираются по коду: 413 — файл велик,
        415 — формат не разбираем, 503 — нечем прочитать. */
-    quoteFile: async (file, src, tgt) => {
+    // Смета по файлу — бесплатно; скан — выборка страниц зрячей моделью, платно.
+    quoteFile: (file, src, tgt) => API.quoteUpload("/quote", file, src, tgt),
+    quoteScan: (file, src, tgt) => API.quoteUpload("/quote/scan", file, src, tgt),
+    quoteUpload: async (path, file, src, tgt) => {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("src", src || "RU");
       fd.append("tgt", tgt || "EN");
-      const r = await fetch(BASE + "/quote", { method: "POST", body: fd, headers: authHeaders({}) });
+      const r = await fetch(BASE + path, { method: "POST", body: fd, headers: authHeaders({}) });
       if (r.status === 401) onUnauthorized();
       const data = await r.json().catch(() => ({}));
       if (!r.ok) { const e = new Error(data.detail || data.error || (TR("Не посчитано: ") + r.status)); e.status = r.status; throw e; }

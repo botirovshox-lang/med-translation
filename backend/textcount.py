@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import html as _html
 import io
+import os
 import json
 import re
 import unicodedata
@@ -70,28 +71,43 @@ def norms() -> dict:
     return out
 
 
-def norm_for(lang: str, overrides: Optional[dict] = None) -> dict:
-    """Сколько знаков идёт за страницу для ЭТОГО языка исходника.
+def norm_for(lang: str, overrides: Optional[dict] = None,
+             words_per_page: Optional[int] = None) -> dict:
+    """Норма страницы для языка ИСХОДНИКА и ЕДИНИЦА, в которой она задана.
 
-    Порядок: переопределение организации → таблица → default. Откуда взято
-    число, говорится словом (`source`): «взяли по умолчанию» человек обязан
-    видеть, иначе он примет догадку за норму своего языка."""
+    Единица — СЛОВА (`basis.wordsPerPage`, 250 на страницу), одна на все языки:
+    работа переводчика соразмерна числу слов, а не букв, а норма в знаках была
+    лишь пересчётом тех же 250 слов через среднюю длину слова языка — и на
+    учебнике с длинными словами давала на 16% больше страниц, чем слова.
+    Знаки остаются ТОЛЬКО у письма без пробелов (`spaceless`): там слова нечем
+    считать, и норма задана прямо в знаках по отраслевой договорённости.
+    `overrides` — {язык: знаков} организации, действует для письма без
+    пробелов; `words_per_page` — её же число слов на страницу. `chars`
+    у словесной нормы — справочный пересчёт («≈ столько знаков»), а `perPage` —
+    то, на что делят. Откуда взято число, говорится словом (`source`)."""
     code = (lang or "").strip().upper()
     t = norms()
-    unit = "chars_with_spaces"    # величина, которую делят на норму — названа всегда
-    if overrides:
-        v = overrides.get(code) or overrides.get(code.lower())
-        if v:
-            return {"lang": code, "chars": int(v), "source": "tenant", "unit": unit,
-                    "spaceless": False, "basis": "tenant"}
     row = t["rows"].get(code)
-    if row:
-        return {"lang": code, "chars": int(row["chars"]), "source": "table", "unit": unit,
-                "spaceless": bool(row.get("spaceless")), "basis": row.get("basis")}
-    # Языка нет в таблице — число взято по умолчанию, и ответ обязан сказать
-    # это словом: догадка, поданная как расчёт, и есть враньё в смете.
-    return {"lang": code, "chars": t["default"], "source": "default", "unit": unit,
-            "spaceless": False, "basis": "assumed"}
+    if row and row.get("spaceless"):
+        v = (overrides or {}).get(code) or (overrides or {}).get(code.lower())
+        if v:
+            return {"lang": code, "unit": "chars", "perPage": int(v), "chars": int(v),
+                    "source": "tenant", "spaceless": True, "basis": "tenant"}
+        return {"lang": code, "unit": "chars", "perPage": int(row["chars"]),
+                "chars": int(row["chars"]), "source": "table", "spaceless": True,
+                "basis": row.get("basis")}
+    wpp = int(words_per_page) if words_per_page else int((t["basis"] or {}).get("wordsPerPage") or 250)
+    return {"lang": code, "unit": "words", "perPage": wpp, "wordsPerPage": wpp,
+            "chars": int(row["chars"]) if row else t["default"],
+            # Языка нет в таблице — слова считаются всё равно, но человек обязан
+            # знать: если это письмо без пробелов, счёт слов там бессмыслен.
+            "source": "tenant" if words_per_page else ("table" if row else "default"),
+            "spaceless": False, "basis": "tenant" if words_per_page else "words"}
+
+
+def amount_of(counts: dict, norm: dict) -> int:
+    """Что делить на норму: слова, а у письма без пробелов — знаки."""
+    return int(counts["words"] if norm.get("unit") == "words" else counts["chars"])
 
 
 # ─── Счёт знаков ────────────────────────────────────────────────────
@@ -140,13 +156,13 @@ def count_blocks(blocks: list) -> dict:
             "repeatChars": min(repeat_chars, chars)}
 
 
-def pages_of(chars: int, norm_chars: int, min_pages: float = 1.0,
+def pages_of(amount: int, per_page: int, min_pages: float = 1.0,
              round_to: float = 0.1) -> dict:
     """Страницы: точные и к оплате. Округление и минимум — условия продавца,
     поэтому они ПАРАМЕТРЫ, а не зашитые числа, и оба уезжают в ответ: сумма,
     посчитанная по невидимому правилу, не проверяется человеком никак."""
-    norm_chars = max(1, int(norm_chars or 1))
-    exact = chars / float(norm_chars)
+    per_page = max(1, int(per_page or 1))
+    exact = amount / float(per_page)
     step = float(round_to or 0)
     if step > 0:
         # ceil со страховкой от двоичной погрешности: 1800 знаков при норме
@@ -156,7 +172,7 @@ def pages_of(chars: int, norm_chars: int, min_pages: float = 1.0,
         billed = exact
     billed = max(float(min_pages or 0), billed)
     return {"exact": round(exact, 3), "billed": round(billed + 1e-9, 3),
-            "normChars": norm_chars, "minPages": float(min_pages or 0),
+            "perPage": per_page, "minPages": float(min_pages or 0),
             "roundTo": step}
 
 
@@ -171,6 +187,16 @@ class NotAvailable(Exception):
     Отдельно от `Unsupported` намеренно: «мы такое не считаем» и «на сервере
     не хватает модуля» — разные ответы (415 и 503) и разные действия. Тот же
     закон, что у отсутствующего ключа OpenAI: причина называется вслух."""
+
+
+class Scan(Unsupported):
+    """PDF без текстового слоя: страниц знаем, текста — нет. Отказ от счёта
+    остаётся (наследует Unsupported), но число страниц уезжает вызывающему:
+    по нему считают выборку для распознавания."""
+
+    def __init__(self, msg: str, pages: int):
+        super().__init__(msg)
+        self.pages = pages
 
 
 class TooBig(Exception):
@@ -237,10 +263,24 @@ def _blocks_from_plain(text: str, ext: str) -> list:
     return text.splitlines()
 
 
-def _zip_xml_texts(zf: zipfile.ZipFile, names: list, tag: str) -> list:
-    """Тексты одного тега из перечисленных частей пакета. Разбор регуляркой,
-    а не деревом: нам нужен только текст, а части бывают на десятки мегабайт."""
-    rx = re.compile(r"(?s)<(?:[a-zA-Z0-9]+:)?%s(?:\s[^>]*)?>(.*?)</(?:[a-zA-Z0-9]+:)?%s>" % (tag, tag))
+def _zip_xml_texts(zf: zipfile.ZipFile, names: list, tag: str,
+                   unit: str = "p", breaks: tuple = ("tab", "ptab", "br", "cr")) -> list:
+    """Тексты одного тега из перечисленных частей пакета, СКЛЕЕННЫЕ по абзацу.
+
+    Разбор регуляркой, а не деревом: нам нужен только текст, а части бывают
+    на десятки мегабайт. Куски `t` нельзя отдавать поштучно: Word и PowerPoint
+    режут абзац на прогоны по оформлению («Жирное », «слово», « стоит…»),
+    и каждый кусок, посчитанный отдельно, теряет пробел на границе после
+    `normalize` — по знаку на каждое выделение, то есть занижение молча.
+    Поэтому часть режется по ОТКРЫВАЮЩЕМУ тегу абзаца (`unit`: `w:p`/`a:p`,
+    у xlsx — строка `si`/`is`), а закрывающие не ищутся: вложенный абзац
+    (надпись внутри абзаца) при парном поиске уносил бы хвост внешнего.
+    `breaks` — табуляция и разрыв строки: не текст, но делят слова, без них
+    «и<tab>табуляцией» склеивается в одно слово. Каждый становится пробелом."""
+    rx_t = re.compile(r"(?s)<(?:[a-zA-Z0-9]+:)?%s(?:\s[^>]*)?>(.*?)</(?:[a-zA-Z0-9]+:)?%s>" % (tag, tag))
+    rx_unit = re.compile(r"<(?:[a-zA-Z0-9]+:)?(?:%s)(?:\s[^>]*)?>" % unit)
+    rx_brk = (re.compile(r"<(?:[a-zA-Z0-9]+:)?(?:%s)(?:\s[^>]*)?/?>" % "|".join(breaks))
+              if breaks else None)
     out = []
     for n in names:
         try:
@@ -249,8 +289,12 @@ def _zip_xml_texts(zf: zipfile.ZipFile, names: list, tag: str) -> list:
             body = zf.read(n).decode("utf-8", errors="replace")
         except KeyError:
             continue
-        for m in rx.finditer(body):
-            out.append(_html.unescape(_TAG_RE.sub("", m.group(1))))
+        if rx_brk is not None:
+            body = rx_brk.sub("<%s> </%s>" % (tag, tag), body)
+        for chunk in rx_unit.split(body):
+            texts = [_html.unescape(_TAG_RE.sub("", m.group(1))) for m in rx_t.finditer(chunk)]
+            if texts:
+                out.append("".join(texts))
     return out
 
 
@@ -269,8 +313,9 @@ def _blocks_from_zip(ext: str, content: bytes, notes: list) -> list:
     names = zf.namelist()
     if ext == ".xlsx":
         # sharedStrings — общий пул строк книги; inline-строки лежат в листах.
-        blocks = _zip_xml_texts(zf, ["xl/sharedStrings.xml"], "t")
-        blocks += _zip_xml_texts(zf, [n for n in names if n.startswith("xl/worksheets/")], "t")
+        blocks = _zip_xml_texts(zf, ["xl/sharedStrings.xml"], "t", unit="si|is", breaks=())
+        blocks += _zip_xml_texts(zf, [n for n in names if n.startswith("xl/worksheets/")], "t",
+                                 unit="si|is", breaks=())
         notes.append("Формулы и числа в счёт не идут — считается только текст ячеек.")
         return blocks
     if ext == ".pptx":
@@ -362,16 +407,50 @@ def _pdf_blocks(content: bytes, notes: list) -> list:
     except Exception as e:
         raise Unsupported("PDF не читается: %s" % e)
     if not any(normalize(b) for b in blocks):
-        raise Unsupported("В PDF нет текстового слоя — это скан. Объём такого файла "
-                          "считается только после распознавания.")
+        raise Scan("В PDF нет текстового слоя — это скан. Объём такого файла "
+                   "считается только после распознавания.", len(reader.pages))
     notes.append("PDF: текст извлечён из текстового слоя; надписи внутри картинок "
                  "в счёт не идут.")
     return blocks
 
 
+SCAN_SAMPLE_PAGES = int(os.environ.get("SCAN_SAMPLE_PAGES", "6"))
+
+
+def sample_indices(n_pages: int, k: int) -> list:
+    """Номера страниц выборки — k штук, разложенных по документу равномерно
+    (первая и последняя страницы книги — титул и выходные данные, середина
+    интервалов честнее краёв)."""
+    n = max(0, int(n_pages))
+    k = max(1, min(int(k or 1), n)) if n else 0
+    return sorted({int((i + 0.5) * n / k) for i in range(k)})
+
+
+def pdf_page_images(content: bytes, indices: list) -> list:
+    """[(номер страницы, bytes картинки | None)] — самая крупная картинка каждой
+    из запрошенных страниц. Без рендера: у скана страница и есть картинка,
+    и pypdf достаёт её как лежит. Нечитаемая (кодек без декодера) или пустая
+    страница — None, а не пропуск: число ответов равно числу запрошенных."""
+    from pypdf import PdfReader          # type: ignore
+    reader = PdfReader(io.BytesIO(content))
+    out = []
+    for i in indices:
+        best = None
+        try:
+            for im in reader.pages[i].images:
+                w, h = im.image.size
+                if best is None or w * h > best[0]:
+                    best = (w * h, im.data)
+        except Exception:
+            best = None
+        out.append((i, best[1] if best else None))
+    return out
+
+
 def measure(filename: str, content: bytes, lang: str, overrides: Optional[dict] = None,
             min_pages: float = 1.0, round_to: float = 0.1,
-            docx_paragraphs: Optional[Callable[[bytes], list]] = None) -> dict:
+            docx_paragraphs: Optional[Callable[[bytes], list]] = None,
+            words_per_page: Optional[int] = None) -> dict:
     """Полный ответ по файлу: объём, норма, страницы. Цены здесь нет намеренно —
     она приходит из ценовой карточки организации, и смешивать «сколько тут
     знаков» с «сколько это стоит» в одной функции значит однажды посчитать
@@ -387,10 +466,10 @@ def measure(filename: str, content: bytes, lang: str, overrides: Optional[dict] 
     if got["kind"] in ("csv", "tsv"):
         got["notes"].append("Заголовки столбцов и разделители посчитаны как текст: "
                             "что переводить в таблице, решает человек.")
-    norm = norm_for(lang, overrides)
+    norm = norm_for(lang, overrides, words_per_page)
     if norm["spaceless"]:
         got["notes"].append("В этом письме слова не отделяются пробелами — норма задана "
                             "прямо в знаках, счёт слов там условен.")
     return {"file": filename, "kind": got["kind"], "notes": got["notes"],
             "counts": counts, "norm": norm,
-            "pages": pages_of(counts["chars"], norm["chars"], min_pages, round_to)}
+            "pages": pages_of(amount_of(counts, norm), norm["perPage"], min_pages, round_to)}

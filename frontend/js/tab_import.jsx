@@ -14,6 +14,17 @@ function ImpQuote({ file, src, tgt, toast, onSaved }) {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   useEffect(() => { setRes(null); setErr(""); }, [file && file.name, src, tgt]);
+  const runScan = async () => {
+    // Скан: платное чтение выборки страниц зрячей моделью — по отдельной кнопке,
+    // после того как человек увидел, сколько страниц и почём.
+    setBusy(true); setErr("");
+    try {
+      const r = await window.API.quoteScan(file.raw, src, tgt);
+      setRes(r);
+      if (r && r.saved && onSaved) onSaved();
+    } catch (e) { setErr(e.message || String(e)); }
+    setBusy(false);
+  };
   const run = async () => {
     if (!file || !file.raw) { toast.error(TR("Файл не выбран"), TR("Выберите файл, чтобы посчитать объём")); return; }
     setBusy(true); setErr("");
@@ -34,16 +45,24 @@ function ImpQuote({ file, src, tgt, toast, onSaved }) {
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
     React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Объём и стоимость")),
     React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 13 } },
-      TR("Знаки исходника с пробелами делятся на норму страницы для языка оригинала. Цену за страницу задаёт владелец организации.")),
+      TR("Страница — 250 слов исходника (у письма без пробелов — знаки по норме языка). Цену за страницу задаёт владелец организации.")),
     React.createElement("div", null,
       React.createElement(Btn, { variant: "ghost", disabled: !file || busy, onClick: run },
         busy ? TR("Считаем…") : TR("Посчитать объём и стоимость"))),
     err && React.createElement("div", { className: "dim", style: { color: "var(--c-danger)", fontSize: 13 } }, err),
-    res && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6, fontSize: 14 } },
+    res && res.scan && !res.counts && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6, fontSize: 14 } },
+      React.createElement("div", null, TR("Это скан: ") + res.scan.pages + TR(" стр. без текстового слоя. Объём можно оценить по выборке страниц; точный счёт — после распознавания.")),
+      React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
+        React.createElement(Btn, { variant: "ghost", disabled: busy, onClick: runScan },
+          busy ? TR("Читаем…") : TR("Оценить по выборке из ") + res.scan.sample + TR(" стр.")),
+        !costHidden() && res.scan.est != null && React.createElement("span", { className: "dim", style: { fontSize: 12 } },
+          TR("зрячая модель ") + res.scan.model + " · ≈ $" + Number(res.scan.est).toFixed(3)))),
+    res && res.counts && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6, fontSize: 14 } },
+      res.scan && row(TR("Оценка по выборке"), res.scan.read.length + TR(" из ") + res.scan.pages + TR(" стр.")),
+      row(TR("Слов"), res.counts.words.toLocaleString("ru-RU")),
       row(TR("Знаков с пробелами"), res.counts.chars.toLocaleString("ru-RU")),
       row(TR("Без пробелов"), res.counts.charsNoSpaces.toLocaleString("ru-RU")),
-      row(TR("Слов"), res.counts.words.toLocaleString("ru-RU")),
-      row(TR("Норма страницы (") + res.norm.lang + ")", res.norm.chars + TR(" знаков")
+      row(TR("Норма страницы (") + res.norm.lang + ")", res.norm.perPage + (res.norm.unit === "words" ? TR(" слов") : TR(" знаков"))
         + (res.norm.source === "tenant" ? TR(" · ваша") : res.norm.source === "default" ? TR(" · по умолчанию") : "")),
       row(TR("Страниц"), res.pages.exact + TR(" → к оплате ") + res.pages.billed),
       row(TR("Цена страницы"), res.rate.price == null ? TR("не задана")
@@ -96,14 +115,14 @@ function ImpQuoteHistory({ reloadKey, toast, canOwner }) {
       TR("Числа сохранены такими, какими их посчитали тогда: смена прайса старые сметы не трогает.")),
     React.createElement("div", { style: { overflowX: "auto" } }, React.createElement("table", { className: "tbl" },
       React.createElement("thead", null, React.createElement("tr", null,
-        [TR("Дата"), TR("Файл"), TR("Пара"), TR("Знаков"), TR("Страниц"), TR("Цена"), TR("Итого"), TR("Состояние"), ""].map((h, i) =>
+        [TR("Дата"), TR("Файл"), TR("Пара"), TR("Слов"), TR("Страниц"), TR("Цена"), TR("Итого"), TR("Состояние"), ""].map((h, i) =>
           React.createElement("th", { key: i }, h)))),
       React.createElement("tbody", null, shown.map(q => React.createElement("tr", { key: q.id, title: q.formula || "" },
         React.createElement("td", { style: { whiteSpace: "nowrap" } }, q.at),
         React.createElement("td", null, q.file || "—", q.count > 1 ? React.createElement("span", { className: "dim" }, TR(" · считали ") + q.count + TR(" раз")) : null),
         React.createElement("td", null, q.src + "→" + q.tgt),
-        React.createElement("td", null, Number(q.chars).toLocaleString("ru-RU")),
-        React.createElement("td", null, q.pagesBilled),
+        React.createElement("td", null, q.words == null ? "—" : Number(q.words).toLocaleString("ru-RU")),
+        React.createElement("td", null, (q.basis === "scan" ? "≈ " : "") + q.pagesBilled),
         React.createElement("td", null, q.pricePerPage == null ? "—" : q.pricePerPage + " " + q.currency),
         React.createElement("td", null, React.createElement("b", null,
           q.total == null ? TR("цена не задана") : Number(q.total).toLocaleString("ru-RU") + " " + q.currency)),

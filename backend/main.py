@@ -1615,6 +1615,7 @@ _PAID = [
     ("POST", re.compile(r"/api/segments/\d+/\d+/(translate|backcheck|termcheck|repair|medical-qa|checks)$")),
     ("POST", re.compile(r"/api/term-queue/\d+/explain$")),
     ("POST", re.compile(r"/api/glossary/audit$")),
+    ("POST", re.compile(r"/api/quote/scan$")),     # зрячая модель читает выборку страниц скана
 ]
 
 
@@ -4289,15 +4290,18 @@ def _quote_of(counts: dict, src: str, tgt: str, card: dict, basis: str,
     на одном документе расходятся (импорт выбрасывает чисто цифровые абзацы
     и склеивает соседние повторы), и подать их под одним именем значило бы
     показать человеку две разные суммы за одну работу без объяснения."""
-    norm = textcount.norm_for(src, card.get("norms"))
+    norm = textcount.norm_for(src, card.get("norms"), card.get("wordsPerPage"))
     notes = list(notes or [])
     if norm["source"] == "default":
         # Оговорка живёт ЗДЕСЬ, а не только в textcount.measure: смету
-        # по сегментам проекта считают мимо measure, и там догадка о норме
-        # молчала бы — то есть в деньгах.
-        notes.append("Нормы для языка %s в таблице нет — взята норма по умолчанию (%d знаков). "
-                     "Задайте свою в ценовой карточке." % (norm["lang"] or "?", norm["chars"]))
-    pages = textcount.pages_of(counts["chars"], norm["chars"],
+        # по сегментам проекта считают мимо measure, и там догадка молчала
+        # бы — то есть в деньгах. Слова считаются у любого языка, но письмо
+        # без пробелов их не имеет — там нужна норма в знаках.
+        notes.append("Языка %s нет в таблице норм — считаем по словам, %d на страницу. Если это "
+                     "письмо без пробелов между словами, задайте норму в знаках в ценовой карточке."
+                     % (norm["lang"] or "?", norm["perPage"]))
+    amount = textcount.amount_of(counts, norm)
+    pages = textcount.pages_of(amount, norm["perPage"],
                                card.get("minPages", 1.0), card.get("roundTo", 0.1))
     rate = _rate_for(card, src, tgt)
     total = _money(pages["billed"], rate["price"])
@@ -4306,8 +4310,12 @@ def _quote_of(counts: dict, src: str, tgt: str, card: dict, basis: str,
             "total": total, "pricingUpdated": card.get("updated"), "notes": notes,
             # Расчёт строкой — чтобы человек мог проверить сумму глазами,
             # а не верить ей на слово.
-            "formula": "%d знаков с пробелами ÷ %d = %s стр.; к оплате %s стр. × %s %s = %s"
-                       % (counts["chars"], norm["chars"], pages["exact"], pages["billed"],
+            # Единица названа в самой строке: слова, а у письма без пробелов —
+            # знаки; скан — оценка по выборке, и «≈» стоит перед числом.
+            "formula": "%s%d %s ÷ %d = %s стр.; к оплате %s стр. × %s %s = %s"
+                       % ("≈ " if basis == "scan" else "", amount,
+                          "слов" if norm["unit"] == "words" else "знаков",
+                          norm["perPage"], pages["exact"], pages["billed"],
                           rate["price"] if rate["price"] is not None else "—",
                           card.get("currency") or "USD",
                           total if total is not None else "цена не задана")}
@@ -4329,13 +4337,13 @@ def _docx_bill_paragraphs(content: bytes) -> list:
     out = []
     for p in _docx_flat_paragraphs(doc):
         slots, _full, _dropped = _para_slots(p, _qn)
-        out.append(_docx_clean("".join((t.text or "") for t, _sig in slots)))
+        out.append(_docx_clean(_slots_text(p, slots, _qn)))
     return out
 
 
 def _measure_kwargs(card: dict) -> dict:
     return {"overrides": card.get("norms"), "min_pages": card.get("minPages", 1.0),
-            "round_to": card.get("roundTo", 0.1),
+            "round_to": card.get("roundTo", 0.1), "words_per_page": card.get("wordsPerPage"),
             "docx_paragraphs": _docx_bill_paragraphs}
 
 
@@ -4361,7 +4369,8 @@ class PricingBody(BaseModel):
     default: Optional[float] = None       # цена страницы для пар без своей строки
     clearDefault: bool = False            # снять общую цену (None ≠ 0)
     rates: Optional[List[RateRow]] = None
-    norms: Optional[dict] = None          # переопределение нормы: {"RU": 1800}
+    norms: Optional[dict] = None          # норма в ЗНАКАХ для письма без пробелов: {"ZH": 400}
+    wordsPerPage: Optional[int] = None    # своя норма в словах; 0 — вернуть базис сервиса
     minPages: Optional[float] = None
     roundTo: Optional[float] = None
 
@@ -4435,6 +4444,13 @@ def save_pricing(req: PricingBody, request: Request):
                                     % (code, NORM_MIN, NORM_MAX))
             norms[code] = n
         card["norms"] = norms
+    if req.wordsPerPage is not None:
+        if int(req.wordsPerPage) == 0:
+            card.pop("wordsPerPage", None)
+        elif not (50 <= int(req.wordsPerPage) <= 2000):
+            raise HTTPException(400, "Слов на страницу: 50…2000 (базис сервиса — 250)")
+        else:
+            card["wordsPerPage"] = int(req.wordsPerPage)
     if req.minPages is not None:
         if not (0 <= req.minPages <= 100):
             raise HTTPException(400, "Минимальный заказ: 0…100 страниц")
@@ -4478,6 +4494,12 @@ async def quote_file(request: Request, file: UploadFile = File(...),
     try:
         m = await run_in_threadpool(textcount.measure, file.filename or "", content,
                                     src, **_measure_kwargs(card))
+    except textcount.Scan as e:
+        # Скан — не отказ, а другой путь: текста нет, страницы есть. Считать
+        # тут нечего, зато можно назвать цену вопроса — сколько страниц
+        # прочитает зрячая модель по выборке и во что это обойдётся.
+        return {"ok": True, "file": file.filename or "", "kind": "pdf", "counts": None,
+                "notes": [str(e)], "scan": _scan_offer(e.pages)}
     except (textcount.Unsupported, textcount.NotAvailable, textcount.TooBig) as e:
         raise _count_error(e)
     q = _quote_of(m["counts"], src, tgt, card, "file", m["notes"])
@@ -4489,6 +4511,155 @@ async def quote_file(request: Request, file: UploadFile = File(...),
         saved = _quote_save(q, file.filename or "", m["kind"], sha)
     return {"ok": True, "file": m["file"], "kind": m["kind"], **q,
             "saved": saved, "supported": textcount.SUPPORTED_EXT}
+
+
+SCAN_PAGE_MAX_SIDE = int(os.environ.get("SCAN_PAGE_MAX_SIDE", "2000"))
+SCAN_OUT_TOKENS = 1200     # плотная страница ≈ 3000 знаков ≈ столько токенов ответа
+
+
+def _scan_offer(pages: int) -> dict:
+    """Что предложить на скан: сколько страниц прочитать и почём. Цена —
+    по той же таблице, по которой спишется факт; в упрощённом режиме
+    организации сумма и модель не показываются (инвариант 22)."""
+    k = min(textcount.SCAN_SAMPLE_PAGES, int(pages))
+    mdl = _resolve_model(IMAGE_READ_MODEL)
+    tin = k * (_image_tokens(SCAN_PAGE_MAX_SIDE, int(SCAN_PAGE_MAX_SIDE * 1.4)) + 120)
+    est = _usage_cost(mdl["id"], tin, k * SCAN_OUT_TOKENS)
+    return {"pages": int(pages), "sample": k,
+            "model": None if _hide_cost() else mdl["id"],
+            "est": None if _hide_cost() else est}
+
+
+def _scan_page_jpeg(raw: bytes) -> Optional[tuple]:
+    """(JPEG для модели, (w, h)) — страница скана, ужатая до SCAN_PAGE_MAX_SIDE
+    по большей стороне: полноразмерный скан в 300 dpi модели незачем."""
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(raw))
+        im.load()
+        if im.mode not in ("RGB", "L"):
+            im = im.convert("RGB")
+        w, h = im.size
+        k = max(w, h) / float(SCAN_PAGE_MAX_SIDE)
+        if k > 1:
+            im = im.resize((max(1, int(w / k)), max(1, int(h / k))))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=85)
+        return buf.getvalue(), im.size
+    except Exception as e:
+        print("[backend] страница скана не открылась: %s" % e, file=sys.stderr)
+        return None
+
+
+def _scan_read_page(jpeg: bytes, mdl: dict, src_lang: str) -> Optional[str]:
+    """Весь текст страницы скана — зрячей моделью, один вызов на страницу.
+    None — «не прочитали» (сеть, отказ), и это не «текста нет»: пустая
+    страница отвечает пустой строкой."""
+    import base64
+    import openai
+    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=120,
+                           max_retries=1)
+    system = ("You transcribe scanned document pages. Output ONLY the text printed on the page, "
+              "verbatim and complete, in reading order, one paragraph per line, in its original "
+              "language (source language code: %s). Keep numbers, punctuation and word spacing. "
+              "No commentary, no translation, no markdown. If the page has no text, output nothing."
+              % src_lang)
+    extra = ({"max_completion_tokens": 8192} if mdl["api"] == "modern"
+             else {"max_tokens": 4000, "temperature": 0})
+    try:
+        resp = client.chat.completions.create(
+            model=mdl["id"],
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": [
+                          {"type": "image_url",
+                           "image_url": {"url": "data:image/jpeg;base64," +
+                                         base64.b64encode(jpeg).decode(), "detail": "high"}}]}],
+            **extra)
+        _note_usage("ocr", mdl["id"], resp)
+        return (resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        print("[backend] чтение страницы скана не удалось: %s" % e, file=sys.stderr)
+        return None
+
+
+def _scan_quote(content: bytes, filename: str, src: str, tgt: str, card: dict,
+                sample: int = 0) -> dict:
+    """Смета скана по выборке страниц: чтение — зрячей моделью, объём умножается
+    на долю прочитанного. Отдельно от обработчика, чтобы проверяться тестом
+    с подменённым чтением, как все сборщики запросов к модели."""
+    try:
+        textcount.extract(filename, content)
+    except textcount.Scan as e:
+        total = e.pages
+    else:
+        raise HTTPException(400, "У файла есть текстовый слой — считайте обычной сметой, она бесплатна")
+    k = min(int(sample) if sample else textcount.SCAN_SAMPLE_PAGES, total)
+    idx = textcount.sample_indices(total, k)
+    pages = textcount.pdf_page_images(content, idx)
+    mdl = _resolve_model(IMAGE_READ_MODEL)
+
+    def read(item):
+        i, raw = item
+        prep = _scan_page_jpeg(raw) if raw else None
+        return i, (_scan_read_page(prep[0], mdl, src) if prep else None)
+
+    got = _run_parallel(pages, read)
+    read_pages = [(i, t) for i, t in got if t is not None]
+    unread = [i + 1 for i, t in got if t is None]
+    if not read_pages:
+        raise HTTPException(502, "Ни одна из %d страниц выборки не прочиталась: страницы без "
+                                 "картинки или модель не ответила" % len(got))
+    per_page = [textcount.count_blocks(t.splitlines()) for _i, t in read_pages]
+    n = len(read_pages)
+    words = [c["words"] for c in per_page]
+    factor = total / float(n)
+    counts = {"chars": int(round(sum(c["chars"] for c in per_page) * factor)),
+              "charsNoSpaces": int(round(sum(c["charsNoSpaces"] for c in per_page) * factor)),
+              "words": int(round(sum(words) * factor)),
+              "blocks": int(round(sum(c["blocks"] for c in per_page) * factor)),
+              "repeatBlocks": 0, "repeatChars": 0}
+    notes = ["Скан: текстового слоя нет. Прочитано %d стр. из %d (№ %s), объём умножен на %d/%d — "
+             "это ОЦЕНКА, а не точный счёт; повторы не считались."
+             % (n, total, ", ".join(str(i + 1) for i, _t in read_pages), total, n),
+             "Слов на прочитанной странице: от %d до %d." % (min(words), max(words))]
+    if unread:
+        notes.append("Не прочитались страницы № %s — в оценку не вошли."
+                     % ", ".join(str(i) for i in unread))
+    q = _quote_of(counts, src, tgt, card, "scan", notes)
+    q["scan"] = {"pages": total, "read": [i + 1 for i, _t in read_pages], "unread": unread,
+                 "wordsPerPage": words, "model": None if _hide_cost() else mdl["id"]}
+    return q
+
+
+@app.post("/api/quote/scan")
+async def quote_scan(request: Request, file: UploadFile = File(...),
+                     src: str = Form("RU"), tgt: str = Form("EN"),
+                     save: bool = Form(True), sample: int = Form(0)):
+    """Объём СКАНА — PDF без текстового слоя — по ВЫБОРКЕ страниц.
+
+    Читать всю книгу ради сметы дорого и долго (страница — вызов зрячей
+    модели), а смета — оценка до заказа. Поэтому читаются `sample` страниц,
+    разложенных по документу равномерно, и объём умножается на долю. Ответ
+    называет это ОЦЕНКОЙ везде: в `basis: scan`, в «≈» формулы, в примечаниях
+    с разбросом слов по прочитанным страницам. Платно — строка в `_PAID`,
+    поэтому `/api/quote` на скане не читает ничего сам, а только предлагает."""
+    _current_user(request)
+    src, tgt = _check_lang_pair(src, tgt)
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > textcount.MAX_BYTES * 1.1:
+        raise HTTPException(413, "Файл больше %d МБ — разберите его по частям"
+                            % (textcount.MAX_BYTES // 1024 // 1024))
+    content = await file.read()
+    card = _pricing_of()
+    try:
+        q = await run_in_threadpool(_scan_quote, content, file.filename or "", src, tgt, card, sample)
+    except (textcount.Unsupported, textcount.NotAvailable, textcount.TooBig) as e:
+        raise _count_error(e)
+    saved = None
+    if save:
+        sha = hashlib.sha256(content).hexdigest()[:16]
+        saved = _quote_save(q, file.filename or "", "pdf-scan", sha)
+    return {"ok": True, "file": file.filename or "", "kind": "pdf-scan", **q, "saved": saved}
 
 
 @app.get("/api/projects/{pid}/quote")
@@ -4581,6 +4752,7 @@ def _quote_save(q: dict, filename: str, kind: str, sha: str) -> dict:
            "src": q["src"], "tgt": q["tgt"],
            "chars": q["counts"]["chars"], "charsNoSpaces": q["counts"]["charsNoSpaces"],
            "words": q["counts"]["words"], "repeatChars": q["counts"]["repeatChars"],
+           "unit": q["norm"]["unit"], "perPage": q["norm"]["perPage"], "basis": q["basis"],
            "normChars": q["norm"]["chars"], "normSource": q["norm"]["source"],
            "pagesExact": q["pages"]["exact"], "pagesBilled": q["pages"]["billed"],
            "minPages": q["pages"]["minPages"], "roundTo": q["pages"]["roundTo"],
@@ -5985,6 +6157,25 @@ def _docx_flat_parts(doc) -> list:
     return out
 
 
+def _slots_text(p, slots, qn) -> str:
+    """Текст слотов абзаца с разделителями. `<w:tab/>`, `<w:br/>`, `<w:cr/>` —
+    не текст, и в слоты они не входят, но слова они ДЕЛЯТ: без них
+    «и<tab>табуляцией» склеивалось в одно слово — и в сегмент, и в счёт
+    знаков. Каждый становится пробелом; `_docx_clean` схлопнет повторы."""
+    seps = {qn("w:tab"), qn("w:ptab"), qn("w:br"), qn("w:cr")}
+    want = {id(t) for t, _sig in slots}
+    parts, pending = [], False
+    for el in p.iter():
+        if el.tag in seps:
+            pending = True
+        elif el.tag == qn("w:t") and id(el) in want:
+            if pending and parts:
+                parts.append(" ")
+            pending = False
+            parts.append(el.text or "")
+    return "".join(parts)
+
+
 def _docx_paragraph_texts(content: bytes) -> list:
     """[(текст, куда встанет перевод; полный текст абзаца)] по КАЖДОМУ абзацу
     в порядке разбора — включая те, что в сегменты не пойдут. Индекс в этом
@@ -6011,7 +6202,7 @@ def _docx_paragraph_texts(content: bytes) -> list:
         # Полный текст — ровно так, как склеивал ПРЕЖНИЙ импорт: весь .//w:t,
         # включая вложенные надписи. Сегменты старых проектов равны ему буква
         # в букву, и привязка исходника узнаёт их без потерь.
-        out.append((_docx_clean("".join((t.text or "") for t, _sig in slots)),
+        out.append((_docx_clean(_slots_text(p, slots, _qn)),
                     _docx_clean("".join(t.text for t in p.iter(_qn("w:t")) if t.text))))
     return out
 
@@ -6310,8 +6501,9 @@ def _pages_exact(blocks: list, lang: str, card: dict) -> float:
     """Точные страницы по списку абзацев — тем же счётом, что смета
     (`count_blocks` + норма организации из карточки цен + `pages_of`)."""
     counts = textcount.count_blocks(blocks)
-    norm = textcount.norm_for(lang, card.get("norms"))
-    return float(textcount.pages_of(counts["chars"], norm["chars"], 0, card.get("roundTo", 0.1))["exact"])
+    norm = textcount.norm_for(lang, card.get("norms"), card.get("wordsPerPage"))
+    return float(textcount.pages_of(textcount.amount_of(counts, norm), norm["perPage"],
+                                    0, card.get("roundTo", 0.1))["exact"])
 
 
 def _project_pages(p: dict, card: dict) -> float:
@@ -6402,6 +6594,7 @@ async def upload_project(
         "deadline": "",
         "fileName": file.filename,
         "pages": pages,
+        "pagesUnit": "words",
         "sourceSha": sha,
         "segments": [
             {
@@ -8980,6 +9173,37 @@ def _auto_policy(domain_id: Optional[str]) -> dict:
 # внутри миграции читает лимиты слов той же политикой, что и _auto_verdict.
 _TERM_QUEUE_MIGRATED = _migrate_term_queue(STATE)
 _migrate_ui_lang()
+
+
+def _migrate_pages_unit() -> int:
+    """Объём проекта, записанный при импорте в страницах ПО ЗНАКАМ, считается
+    заново в страницах ПО СЛОВАМ — один раз, по сегментам проекта, с меткой
+    `pagesUnit`. Счётчик списанных страниц организации (`pagesUsed`)
+    не трогается: это деньги, уже проведённые по прежней норме, и переписывать
+    их задним числом нельзя — след остаётся в `pagesLog`. Пишет только API:
+    воркер перечитывает документ проекта перед прогоном и не должен быть
+    вторым писателем при старте."""
+    if IS_WORKER:
+        return 0
+    n = 0
+    for p in STATE.get("projects") or []:
+        if p.get("pages") is None or p.get("pagesUnit") == "words":
+            continue
+        card = _pricing_of(p.get("tenant") or "default")
+        p["pages"] = round(_pages_exact([sg.get("source") or "" for sg in p.get("segments") or []],
+                                        p.get("src") or "RU", card), 3)
+        p["pagesUnit"] = "words"
+        n += 1
+    if n:
+        try:
+            save_state(STATE)
+        except Exception as e:      # старт важнее: пересчёт повторится при следующем
+            print("[backend] пересчёт объёма не сохранён: %s" % e, file=sys.stderr)
+        print("[backend] объём %d проектов пересчитан в страницы по словам" % n, file=sys.stderr)
+    return n
+
+
+_migrate_pages_unit()
 # Занятость очереди — в журнал при старте. О потолке узнавали только из строки
 # «выброшено N», то есть уже после потери находок.
 try:

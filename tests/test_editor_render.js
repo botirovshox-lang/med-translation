@@ -218,6 +218,10 @@ const storeStub = {
   segmentFilter: null,
   statusCounts: () => ({ all: 7, new: 1, translated: 4, qa: 0, confirmed: 1, failed: 0, review: 1 }),
   setSegmentFilter() {}, gotoSegId: null, refreshProject() {}, projects: [project],
+  /* Устройство прогона — шаги, модели, состав и цена — показывается только
+     системному администратору. Разделы ниже проверяют именно ЭТОТ вид;
+     простой вид (одна кнопка) проверяется разделом 18. */
+  can: { owner: true, super: true, role: "owner" },
 };
 const toast = { info() {}, warning() {}, error() {}, success() {} };
 
@@ -963,6 +967,29 @@ try {
         "возврат работает: снова порядок документа");
   project.segments = project.segments.filter(s => s.id !== 2692);
   store.removeItem("mcat_seg_order");
+
+  console.log("\n=== 18. Два рубежа: устройство прогона и смета ===");
+  /* Устройство (шаги, модели, состав) — системному администратору: выбирать
+     модель тому, кто не знает целевого языка, нечем. А СМЕТА — тому, кто
+     платит: у владельца это единственное число, по которому он решает,
+     запускать ли книгу. Рубежи РАЗНЫЕ, и тест сторожит именно это. */
+  hookIdx = 0;
+  const out18 = [];
+  walk(TabEditor({ store: Object.assign({}, storeStub, { can: { owner: true, super: false, role: "owner" } }), toast }), 0, out18);
+  const t18 = out18.join("\n");
+  check(t18.indexOf("Перевести и проверить") !== -1, "владелец: главная кнопка на месте");
+  check(t18.indexOf("\u2248 цена") === -1, "владелец: колонки цены по шагам нет");
+  check(t18.indexOf("Модель") === -1, "владелец: выбора моделей нет");
+  check(t18.indexOf("Ориентировочно") !== -1, "владелец: общая смета ОСТАЁТСЯ — он платит");
+  check(t18.indexOf("Переведу, перечитаю") !== -1, "вместо устройства — обещание словами");
+  check(t18.indexOf("в работу пойдут") !== -1, "сколько строк уйдёт в работу — сказано");
+
+  hookIdx = 0;
+  const out18b = [];
+  walk(TabEditor({ store: Object.assign({}, storeStub, { can: { owner: false, super: false, role: "translator" } }), toast }), 0, out18b);
+  const t18b = out18b.join("\n");
+  check(t18b.indexOf("Перевести и проверить") !== -1, "переводчик: кнопка на месте");
+  check(t18b.indexOf("Ориентировочно") === -1, "переводчик: сметы нет — деньги не его дело");
 
   console.log("\n" + (fail.length ? "ПРОВАЛЕНО: " + fail.join("; ") : "ВСЁ ПРОШЛО"));
   process.exit(fail.length ? 1 : 0);

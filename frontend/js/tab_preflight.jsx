@@ -855,7 +855,14 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
 }
 
 /* Карточка «под ключ»: полоса готовности и три корзины с процентами. */
-function TurnkeySummary({ summary, store, toast, onReload }) {
+function qWord(n) {
+  const d = n % 100, e = n % 10;
+  if (d > 4 && d < 21) return TR("вопросов");
+  if (e === 1) return TR("вопрос");
+  if (e > 1 && e < 5) return TR("вопроса");
+  return TR("вопросов");
+}
+function TurnkeySummary({ summary, store, toast, onReload, onQuestions }) {
   const tk = summary.turnkey;
   const total = summary.total || 0;
   const ready = tk.ready || [], machine = tk.machine || [], human = tk.human || [];
@@ -865,6 +872,10 @@ function TurnkeySummary({ summary, store, toast, onReload }) {
      насколько позволяет исходник, и бить им по проценту перевода нечестно. */
   const groups = analysisHumanGroups(summary);
   const srcN = (groups.find(g => g.key === "source") || { n: 0 }).n;
+  /* Человеку нечего делать с числом «116 строк»: он решает ВОПРОСЫ, а одно
+     решение закрывает десятки строк. Считаем виды вопросов — ровно те строки,
+     что показаны ниже в группах. */
+  const qCount = groups.reduce((a, g) => a + g.rows.length, 0);
   const [panel, setPanel] = useState(false);
   /* Разбор прогона держит РОДИТЕЛЬ, а не панель. Панель монтируется по
      нажатию, и её собственный useEffect гонял бы /run-plan на каждое
@@ -918,19 +929,47 @@ function TurnkeySummary({ summary, store, toast, onReload }) {
       React.createElement(InfoTip, { title: TR("Три корзины"),
         body: TR("Каждый сегмент проекта ровно в одной корзине, суммы сходятся с общим числом — считает сервер теми же правилами, что и сам прогон.\n\n«Готово» — переведено, проверено, открытых вопросов нет.\n\n«Возьмёт прогон» — кнопка «Перевести и доделать»: перевод, проверки, судья (включая бесспорные по разовому разрешению), ремонт по находкам.\n\n«Нужно ваше решение» — то, что прогон не решает по построению: споры с глоссарием, заверенные сегменты с находками, откаченные правки. Команды — в «Подробностях» ниже.\n\nЛюбая строка открывает редактор с этими сегментами.") })),
     React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column" } },
-      React.createElement("div", { className: "row between", style: { alignItems: "baseline", paddingBottom: 8 } },
-        React.createElement("span", { style: { fontWeight: 650 } }, TR("Готовность")),
-        React.createElement("div", { style: { textAlign: "right" } },
-          React.createElement("b", { style: { fontSize: 26, fontVariantNumeric: "tabular-nums" } },
+      /* Наверху — ответ, а не устройство: крупный процент, одна полоса и две
+         кнопки. Средняя корзина («доделает машина») намеренно показана
+         КНОПКОЙ, а не третьим числом: это не состояние текста, а невыполненная
+         работа. Приплюсуй её к готовому — человек скачает недоделанный файл;
+         приплюсуй к вопросам — напугаешь работой, которой у него нет.
+         Суммы при этом сходятся: готово + кнопка + вопросы = всё. */
+      React.createElement("div", { className: "row between", style: { alignItems: "baseline" } },
+        React.createElement("div", null,
+          React.createElement("b", { style: { fontSize: 34, letterSpacing: "-.02em", fontVariantNumeric: "tabular-nums" } },
             tkPct(ready.length, total)),
-          React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
-            ready.length + TR(" из ") + total + TR(" сегментов")
-            + (srcN ? TR(" · ") + srcN + TR(" ждут правки оригинала") : "")))),
+          React.createElement("span", { className: "dim", style: { fontSize: 13, marginLeft: 10 } },
+            TR("готово"))),
+        React.createElement("span", { className: "dim", style: { fontSize: 12.5 } },
+          ready.length + TR(" из ") + total + TR(" строк")
+          + (srcN ? TR(" · ") + srcN + TR(" ждут правки оригинала") : ""))),
       React.createElement("div", { style: { display: "flex", height: 12, borderRadius: 6,
-        overflow: "hidden", background: "var(--bg-sunken)", marginBottom: 6 } },
+        overflow: "hidden", background: "var(--bg-sunken)", margin: "10px 0 6px" } },
         seg(ready.length, "var(--c-success)"),
         seg(machine.length, "var(--c-primary)"),
         seg(human.length, "var(--c-warning)")),
+      /* Три цвета без подписей — украшение. Легенда обязательна. */
+      React.createElement("div", { className: "dim row row-wrap", style: { fontSize: 11.5, gap: 14, paddingBottom: 12 } },
+        React.createElement("span", null, React.createElement("i", { style: { display: "inline-block", width: 7, height: 7, borderRadius: 2, background: "var(--c-success)", marginRight: 6 } }), TR("готово")),
+        React.createElement("span", null, React.createElement("i", { style: { display: "inline-block", width: 7, height: 7, borderRadius: 2, background: "var(--c-primary)", marginRight: 6 } }), TR("доделаю сама")),
+        React.createElement("span", null, React.createElement("i", { style: { display: "inline-block", width: 7, height: 7, borderRadius: 2, background: "var(--c-warning)", marginRight: 6 } }), TR("спрошу вас"))),
+      React.createElement("div", { className: "row row-wrap", style: { gap: 10, paddingBottom: 4 } },
+        React.createElement("div", { style: { flex: "1 1 260px", fontSize: 13.5, lineHeight: 1.5 } },
+          machine.length
+            ? React.createElement("span", null, TR("Я доделаю сама "),
+                React.createElement("b", null, machine.length + TR(" строк")), TR(". "))
+            : React.createElement("span", null, TR("Машине здесь делать больше нечего. ")),
+          qCount
+            ? React.createElement("span", null, TR("Без вас не решу — "),
+                React.createElement("b", null, qCount + TR(" ") + qWord(qCount)),
+                " (" + human.length + TR(" строк") + ").")
+            : React.createElement("span", null, TR("Вопросов к вам нет."))),
+        React.createElement(Btn, { variant: "primary", icon: "zap", disabled: !machine.length,
+          onClick: () => setPanel(p => !p) }, TR("Доделать сама")),
+        React.createElement(Btn, { variant: "secondary", icon: "target", disabled: !qCount,
+          onClick: () => { if (onQuestions) onQuestions(); } },
+          TR("Ответить на вопросы") + (qCount ? " · " + qCount : ""))),
       React.createElement(AnalysisRow, { store, toast, total, ids: ready,
         label: TR("Готово к сдаче"), color: "var(--c-success)",
         hint: TR("переведено и проверено, открытых вопросов нет") }),
@@ -1222,16 +1261,19 @@ function TabAnalysis({ store, toast }) {
   return React.createElement("div", { className: "page page-wide" },
     React.createElement("div", { className: "row between page-head", style: { alignItems: "flex-end" } },
       React.createElement("div", null,
-        React.createElement("h1", null, TR("Анализ")),
+        React.createElement("h1", null, TR("Что получилось")),
         React.createElement("p", { className: "lead", style: { marginBottom: 0 } },
-          TR("Что сейчас с переводом — и одна кнопка, чтобы довести его до готовности."))),
+          TR("Сколько готово, что я доделаю сама и о чём спрошу вас."))),
       React.createElement(Btn, { variant: "secondary", icon: "download",
         onClick: () => store.go("export") }, TR("Экспорт перевода"))),
     !summary && React.createElement("div", { className: "dim", style: { fontSize: 13 } }, TR("Считаем итог…")),
     React.createElement(CoverageCard, { project }),
     React.createElement(StyleCard, { project, toast }),
     React.createElement(TermlistCard, { project, toast }),
-    tk && React.createElement(TurnkeySummary, { summary, store, toast, onReload: reload }),
+    tk && React.createElement(TurnkeySummary, { summary, store, toast, onReload: reload,
+      /* «Ответить на вопросы» раскрывает подробности: команды по каждому
+         вопросу живут там, и вести человека в пустоту нельзя. */
+      onQuestions: () => setDetails(true) }),
     summary && !tk && React.createElement("div", { className: "dim", style: { fontSize: 13, marginBottom: 10 } },
       TR("Сервер прежней версии — корзин «под ключ» нет, ниже подробный итог.")),
     summary && tk && React.createElement("div", { style: { margin: "6px 0 14px" } },

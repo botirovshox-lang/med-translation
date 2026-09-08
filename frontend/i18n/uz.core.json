@@ -277,5 +277,8 @@
   "Файлы": "Fayllar",
   "Служебное": "Xizmat",
   "Страницы": "Sahifalar",
-  " осталось": " qoldi"
+  " осталось": " qoldi",
+  "одна кнопка на весь путь": "butun yo‘lga bitta tugma",
+  "Считаю, что нужно сделать…": "Nima qilish kerakligini hisoblayapman…",
+  "Переведу, перечитаю, проверю тремя способами и починю найденное. Считает сервер — настраивать нечего.": "Tarjima qilaman, qayta o‘qiyman, uch xil usulda tekshiraman va topilganini tuzataman. Hammasini server hisoblaydi — sozlash shart emas."
 }

@@ -301,7 +301,7 @@ function ImagesCard({ project, store, toast }) {
                 b.by && b.by !== "model" && React.createElement("span", { className: "dim", style: { fontSize: 11 } },
                   b.by === "human" ? TR("ваше решение") : TR("по согласию картинок")),
                 (b.text || "").trim() && React.createElement(Btn, { variant: "ghost", size: "sm", disabled: dropBusy,
-                  onClick: () => restore(b) }, TR("Это текст документа")))),
+                  onClick: () => restore(b) }, TR("Это из книги")))),
             crops[b.part + ":" + b.block] && React.createElement("img", {
               src: crops[b.part + ":" + b.block], alt: TR("Надпись на картинке"),
               style: { maxWidth: "100%", borderRadius: 4, display: "block" } })))),
@@ -439,7 +439,7 @@ function TabExport({ store, toast }) {
      «Подтверждено», и без второй строки оно читается как условие. */
   const translated = project.segments.filter(s => (s.target || "").trim()).length;
   const untranslated = project.segments.length - translated;
-  const fmtLabel = fmt === "docx_layout" ? TR("DOCX 1в1") : fmt.toUpperCase();
+  const fmtLabel = fmt === "docx_layout" ? TR("как оригинал") : fmt.toUpperCase();
   const doExport = async () => {
     setBusy(true);
     let result = null;
@@ -482,18 +482,21 @@ function TabExport({ store, toast }) {
   };
   // Описания честные: обычный DOCX собирается ЗАНОВО и оформления исходника
   // не переносит вовсе — карточка годами обещала обратное.
+  /* Формат называется тем, ЧТО ЧЕЛОВЕК ПОЛУЧИТ, а не своим расширением:
+     «DOCX 1в1» ничего не говорит тому, кто первый раз видит программу.
+     Расширение осталось — мелким, в скобках, для тех, кому оно нужно. */
   const formats = [
-    ["docx_layout", TR("DOCX 1\u04321 \u2014 как оригинал"),
-     srcDoc ? TR("Перевод подставляется в исходный файл: шрифты, картинки, таблицы, колонтитулы и выделения внутри абзаца на месте")
-            : TR("Нужен исходный .docx — приложите его ниже"), "file"],
-    ["docx", TR("DOCX — новый файл"), TR("Собирается с нуля: таблица оригинал/перевод либо перевод абзацами. Оформление исходника не переносится"), "file"],
+    ["docx_layout", TR("Такой же файл, только на другом языке (.docx)"),
+     srcDoc ? TR("Те же картинки, таблицы и вид. Даже надписи на картинках переведены")
+            : TR("Нужен тот самый файл, из которого делали перевод — приложите его ниже"), "file"],
+    ["docx", TR("Просто текст (.docx)"), TR("Новый файл: только слова. Картинки и вид исходника не переносятся"), "file"],
     // PDF собирается ИЗ «как оригинал» сторонним конвертером, поэтому и
     // выглядит так же. Нет конвертера на сервере — говорим об этом прямо,
     // а не показываем кнопку, которая кончится отказом.
     ["pdf", "PDF", pdfReady
       ? TR("Тот же документ «как оригинал», собранный в PDF: вёрстка, картинки и колонтитулы на месте")
       : TR("На сервере нет конвертера — используйте DOCX"), "file"],
-    ["xlsx", "Excel", TR("Таблица: оригинал и перевод по столбцам"), "columns"],
+    ["xlsx", TR("Таблица (.xlsx)"), TR("Слева как было, справа как стало — удобно сравнивать"), "columns"],
   ];
 
   return React.createElement("div", { className: "page" },
@@ -507,7 +510,7 @@ function TabExport({ store, toast }) {
     React.createElement("div", { className: "grid", style: { gridTemplateColumns: "1.4fr 1fr", gap: 24, alignItems: "start" } },
       React.createElement("div", { className: "col", style: { gap: 32 } },
         React.createElement("div", null,
-          React.createElement("h2", { className: "section-title" }, TR("Формат файла")),
+          React.createElement("h2", { className: "section-title" }, TR("Что вам прислать")),
           React.createElement("div", { className: "col", style: { gap: 10 } },
             formats.map(([v, t, d, ic]) => React.createElement("label", {
               key: v, className: "card card-pad row", style: { gap: 14, cursor: "pointer", borderColor: fmt === v ? "var(--c-primary)" : "var(--border)", boxShadow: fmt === v ? "0 0 0 3px var(--ring)" : "none" },
@@ -553,7 +556,7 @@ function TabExport({ store, toast }) {
         React.createElement(ImagesCard, { project, store, toast }),
 
         React.createElement("div", null,
-          React.createElement("h2", { className: "section-title" }, TR("Что включить")),
+          React.createElement("h2", { className: "section-title" }, TR("Что положить в файл")),
           React.createElement("div", { className: "card card-pad col", style: { gap: 16 } },
             React.createElement(Checkbox, { checked: opts.source, onChange: () => toggle("source") }, TR("Оригинал в примечаниях")),
             React.createElement(Checkbox, { checked: opts.notes, onChange: () => toggle("notes") }, TR("Заметки переводчика")),

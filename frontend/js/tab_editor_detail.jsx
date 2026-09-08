@@ -271,11 +271,14 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
            подпись, а «нет букв языка оригинала» — латинское название вида.
            Значит решает человек, а система обязана слушаться и помнить. */
         React.createElement("div", { className: "row between", style: { gap: 8 } },
+          /* «Надпись аппарата» — термин: на томограмме он понятен, на схеме
+             или в таблице бессмыслен. Человек может ответить только на один
+             вопрос — это текст книги или нет, — и кнопка спрашивает ровно его. */
           React.createElement("span", { className: "dim", style: { fontSize: 11.5 } },
-            TR("не текст документа?")),
+            TR("фамилия, дата, настройки прибора — такое не переводим")),
           React.createElement(Btn, { variant: "ghost", size: "sm", disabled: overlayBusy,
             onClick: markOverlay },
-            overlayBusy ? TR("Убираем…") : TR("Это надпись аппарата")))),
+            overlayBusy ? TR("Убираем…") : TR("Это не из книги")))),
       React.createElement("div", { className: "card", style: { padding: 12, background: "var(--bg-sunken)", lineHeight: 1.55, fontSize: 14 } }, seg.source)
     ),
 
@@ -516,7 +519,11 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
             React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5 } }, tmHit.target))
         : React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, TR("Точных совпадений в памяти переводов нет."))),
     infoPanel === "back" && React.createElement("div", { className: "tm-pop" },
-      React.createElement("span", { className: "label", style: { margin: 0 } }, TR("Обратный перевод (EN → RU)")),
+      /* Единственное место, где человек без целевого языка может проверить
+         работу. Название «Обратный перевод (EN → RU)» ему ничего не говорит. */
+      React.createElement("span", { className: "label", style: { margin: 0 } }, TR("Что это значит по-русски")),
+      React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: -4 } },
+        TR("сравните с оригиналом — смысл тот же?")),
 
       // Процент соответствия и почему он такой
       seg.backcheck && seg.backcheck.score != null && React.createElement("div", {

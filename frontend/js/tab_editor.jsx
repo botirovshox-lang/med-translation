@@ -525,6 +525,10 @@ function TabEditor({ store, toast }) {
   const [impactConfirmed, setImpactConfirmed] = useState(false);  // трогать ли подтверждённые
   const [tkSum, setTkSum] = useState(null);       // корзины «под ключ» с сервера (/analysis) для карточки «Анализ»
   const [bcJudge, setBcJudge] = useState(false);          // LLM-судья для средней зоны
+  /* Кому показывать устройство прогона. Признак читается в двух местах —
+     в панели и при запуске, — поэтому живёт одной переменной: разойдись они,
+     экран показывал бы одно, а кнопка делала другое. */
+  const expertUI = !!(store.can && store.can.super);
   const [judgeModel, setJudgeModel] = useState(() => {
     try { return localStorage.getItem(JUDGE_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
@@ -2237,11 +2241,20 @@ function TabEditor({ store, toast }) {
     // должна говорить не только «сделано», но и «осталось».
     const planned = {};
     steps.forEach(k => { planned[k] = (fullStepTargets[k] || []).length; });
+    /* Спрятанная настройка обязана иметь ЧЕСТНОЕ умолчание, иначе кнопка
+       делает не то, что обещает экран «Что получилось»: корзина «доделаю
+       сама» посчитана сервером под use_judge + judge_all, и прогон без них
+       не осушит её НИКОГДА (инвариант «параметры кнопки отдаёт сервер»).
+       Модели при этом свои не подставляем: пустой выбор означает «возьми
+       свою по умолчанию», и решает сервер — тем же кодом, которым работает. */
     const started = await startJob("full", fullRunIds, {
       steps,
-      model: gptModel, bc_model: bcModel, tc_model: tcModel, tcx_model: tcxModel,
-      rp_model: rpModel, rv_model: rvModel,
-      use_judge: bcJudge, judge_model: judgeModel || null,
+      model: expertUI ? gptModel : null, bc_model: expertUI ? bcModel : null,
+      tc_model: expertUI ? tcModel : null, tcx_model: expertUI ? tcxModel : null,
+      rp_model: expertUI ? rpModel : null, rv_model: expertUI ? rvModel : null,
+      use_judge: expertUI ? bcJudge : true,
+      judge_all: expertUI ? undefined : true,
+      judge_model: expertUI ? (judgeModel || null) : null,
       // Тот же retry, что и у карточки ремонта: карточка выше посчитала
       // и оценила сегменты по этому же правилу, и разойтись они не должны.
       retry: repairRetry(),
@@ -2371,7 +2384,16 @@ function TabEditor({ store, toast }) {
           rvConfirmed: rvConfirmed, rvConfirmedCount: confirmedInScope,
           rvAskConfirmed: rvAskConfirmed,
           fixConfirmed: rpFixConfirmed, fixConfirmedCount: rpConfirmedWaiting,
-          models: gptModels, disabled: !!job }),
+          models: gptModels, disabled: !!job,
+          /* Два РАЗНЫХ рубежа, и путать их нельзя. Устройство прогона (шаги,
+             модели, состав) — системному администратору: выбирать модель
+             человеку, который не знает целевого языка, нечем, а ошибка стоит
+             денег. А СМЕТА — тому, кто платит: отобрать у владельца
+             единственное число, по которому он решает, запускать ли книгу,
+             значит сделать хуже, а не проще. */
+          expert: expertUI,
+          showCost: !!(store.can && (store.can.owner || store.can.super)),
+          onFixConfirmed: setRpFixConfirmed }),
         // Одобрение терминов и то, что из него следует, — расхождения готовых
         // переводов с одобренным. Один сюжет, но две СОСЕДНИЕ колонки: одна
         // под другой карточка соответствия уезжала под сгиб, а смотрят на неё
@@ -2764,10 +2786,16 @@ function RunStrip({ job, steps, onStop }) {
      Прогон, уступивший исполнителя, снова показывается «в очереди» —
      и это правда: он ждёт своей следующей порции. Сделанное при этом
      сохранено, и счётчик «N из M» не откатывается. */
-  const ahead = job.status === "queued" && job.queueAhead != null ? job.queueAhead : null;
+  /* Человеку не показываем НОМЕР в очереди: он ничего не может с ним сделать,
+     а «впереди трое» читается как «сервис занят другими». Но и время не
+     выдумываем — придуманное число и есть враньё.
+     Различаем два разных «queued»: задача, УСТУПИВШАЯ исполнителя между
+     порциями (инвариант 21), уже работает и часть сделала — ей нельзя
+     говорить «ещё не начинал». */
   const phase = job.stopping ? TR("останавливается")
     : job.status === "queued"
-      ? (ahead ? TR("в очереди, впереди ") + ahead : TR("в очереди, следующий"))
+      ? (job.done > 0 ? TR("продолжу сразу после чужой порции")
+                      : TR("идёт другой прогон, начну сразу после него"))
     : TR("идёт на сервере");
   const unknown = steps.length > 0 && steps.every(st => st.total == null);
   return React.createElement("div", { className: "run-strip" },
@@ -2886,11 +2914,16 @@ function StepRow({ row, on, onToggle, open, onOpen, disabled, models }) {
   ];
 }
 
+/* expert — показывать ли устройство прогона: шаги, модели, состав и цену.
+   Их видит системный администратор. Владельцу и переводчику остаётся одна
+   кнопка: выбирать модель шага человеку, который не знает целевого языка,
+   всё равно нечем, а ошибка в этом выборе стоит денег. Работа при этом
+   идёт та же самая — состав и модели по-прежнему считает сервер. */
 function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize,
                        checked, filtered, est, modelWarn, models, disabled,
                        rvConfirmed, rvConfirmedCount, rvAskConfirmed,
                        openStep, onOpenStep, planBusy, planReady,
-                       fixConfirmed, fixConfirmedCount }) {
+                       fixConfirmed, fixConfirmedCount, expert, showCost, onFixConfirmed }) {
   const anyWork = rows.some(r => picked.has(r.key) && r.planEst && r.planEst.count > 0);
   const head = (text, right) => React.createElement("div", {
     key: "h-" + text, className: "dim",
@@ -2907,27 +2940,45 @@ function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize
           React.createElement("div", { style: { fontWeight: 650, fontSize: 14, display: "flex", alignItems: "center" } }, TR("Перевести и проверить"),
             React.createElement(InfoTip, { title: TR("Что делает эта кнопка"), body: FULL_RUN_TIP })),
           React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
-            TR("шаги идут по порядку, у каждого своя модель")))),
+            expert ? TR("шаги идут по порядку, у каждого своя модель")
+                   : TR("одна кнопка на весь путь")))),
       React.createElement("span", { className: "dim", style: { fontSize: 11.5 } },
         TR("в работу пойдут ") + scopeSize + TR(" сегм.")
         + (checked > 0 ? TR(" · по галочкам") : filtered ? TR(" · по фильтру") : ""))),
 
-    modelWarn && React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.5, color: "var(--c-warning)", background: "var(--bg-sunken)", padding: "8px 11px", borderRadius: 8 } },
+    expert && modelWarn && React.createElement("div", { style: { fontSize: 12.5, lineHeight: 1.5, color: "var(--c-warning)", background: "var(--bg-sunken)", padding: "8px 11px", borderRadius: 8 } },
       modelWarn),
 
-    React.createElement("div", { style: { display: "grid", gridTemplateColumns: "minmax(170px,1fr) auto auto auto auto", columnGap: 12, alignItems: "center" } },
+    expert && React.createElement("div", { style: { display: "grid", gridTemplateColumns: "minmax(170px,1fr) auto auto auto auto", columnGap: 12, alignItems: "center" } },
       head(TR("Шаг")), head(TR("Модель")), head(TR("Сегм."), true), head(TR("≈ цена"), true), head(" "),
       rows.map(r => StepRow({
         row: r, on: picked.has(r.key), onToggle, models, disabled,
         open: openStep === r.key, onOpen: onOpenStep }))),
 
-    React.createElement(EstLine, { est }),
-    React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: -6 } },
-      planBusy ? TR("Считаем состав…")
+    (expert || showCost) && React.createElement(EstLine, { est }),
+    React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: expert ? -6 : 0 } },
+      planBusy ? TR("Считаю, что нужно сделать…")
         : !planReady ? TR("Состав прогона не получен от сервера — запуск вслепую не даём.")
-        // Полностью это объяснено в подсказке у названия. Здесь коротко:
-        // блок стоит в колонке, и абзац мелким текстом занимал в ней пять строк.
-        : TR("Состав и смету посчитал сервер тем же кодом, который потом и работает.")),
+        : expert ? TR("Состав и смету посчитал сервер тем же кодом, который потом и работает.")
+        /* Человеку — не устройство, а обещание: что именно произойдёт. */
+        : TR("Переведу, перечитаю, проверю тремя способами и починю найденное. Считает сервер — настраивать нечего.")),
+
+    /* В простом виде строк шагов нет, а вместе с ними исчезла бы и ЕДИНСТВЕННАЯ
+       дверь к разрешению «чинить подтверждённые» — тогда корзину «подтверждено,
+       но есть находки» нечем осушить, а баннер ниже ссылался бы на строку,
+       которой человек не видит. Поэтому в простом виде разрешение стоит здесь,
+       названное словами человека, а не именем флага. */
+    !expert && onFixConfirmed && React.createElement("label", {
+      className: "check", style: { fontSize: 12.5, alignItems: "flex-start", gap: 9 } },
+      React.createElement("input", { type: "checkbox", checked: !!fixConfirmed,
+        onChange: (e) => onFixConfirmed(e.target.checked) }),
+      React.createElement("span", { className: "box" }, React.createElement(Icon, { name: "check", size: 13 })),
+      React.createElement("span", null,
+        TR("Исправлять и те строки, где я поставил галочку"),
+        React.createElement("span", { className: "dim", style: { display: "block", fontSize: 11.5, lineHeight: 1.5 } },
+          fixConfirmedCount
+            ? fixConfirmedCount + TR(" таких строк с находками. С исправленных галочка снимется.")
+            : TR("сейчас таких строк нет. С исправленных галочка снимется.")))),
 
     // Взведённое разрешение трогать заверенное человеком видно У КНОПКИ, а не
     // только в раскрытой строке ремонта. Иначе последствие — снятые отметки
@@ -2940,7 +2991,8 @@ function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize
       React.createElement("b", { style: { color: "var(--c-warning)" } }, TR("Ремонт возьмёт и подтверждённые")),
       fixConfirmedCount ? " — " + fixConfirmedCount + TR(" заверенных сегментов с находками; ")
                         : TR(" — в выборке таких сейчас нет; "),
-      TR("с исправленных снимется отметка «подтвердил человек». Выключается в строке «Ремонт».")),
+      TR("с исправленных снимется отметка «подтвердил человек». ")
+      + (expert ? TR("Выключается в строке «Ремонт».") : TR("Выключается галочкой выше."))),
     rvConfirmed && React.createElement("div", {
       style: { fontSize: 11.5, lineHeight: 1.5, padding: "7px 9px", borderRadius: "var(--r-md)",
                background: "var(--bg-sunken)", border: "1px solid var(--c-warning)",

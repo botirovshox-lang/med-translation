@@ -45,7 +45,6 @@
   "Не удалось принять вариант": "Variantni qabul qilib bo'lmadi",
   "Нет перевода для проверки.": "Tekshirish uchun tarjima yo'q.",
   "Обнаружены проблемы — необходим человеческий просмотр.": "Muammolar topildi — odam ko'rigi kerak.",
-  "Обратный перевод (EN → RU)": "Teskari tarjima (EN → RU)",
   "Оригинал в буфере обмена.": "Asl matn buferga ko'chirildi.",
   "Отправить": "Yuborish",
   "Оценка стоимости перевода": "Tarjima narxini baholash",
@@ -105,13 +104,11 @@
   "Финальный статус. Добавлен в TM. Будет в экспорте.": "Yakuniy holat. TM'ga qo'shildi. Eksportga tushadi.",
   "Чат": "Chat",
   "Чиним…": "Tuzatilmoqda…",
-  "Это надпись аппарата": "Bu apparat yozuvi",
   "без вызова модели": "modelga murojaatsiz",
   "высокий": "yuqori",
   "заверил: ": "tasdiqladi: ",
   "критический": "kritik",
   "маршрут обработки (инфо)": "ishlov yo'nalishi (ma'lumot)",
-  "не текст документа?": "hujjat matni emasmi?",
   "нет ответа": "javob yo'q",
   "низкий": "past",
   "средний": "o'rta",
@@ -130,5 +127,9 @@
   "человек (до учёта авторов)": "inson (mualliflar hisobga olinguncha)",
   "Заверение снято": "Tasdiq olib tashlandi",
   " · правкой текста": " · matn tahriri bilan",
-  "Правил: ": "Tahrirladi: "
+  "Правил: ": "Tahrirladi: ",
+  "фамилия, дата, настройки прибора — такое не переводим": "familiya, sana, asbob sozlamalari — bularni tarjima qilmaymiz",
+  "Это не из книги": "Bu kitobdan emas",
+  "Что это значит по-русски": "Bu ruschada nimani anglatadi",
+  "сравните с оригиналом — смысл тот же?": "asl matn bilan solishtiring — ma'no o‘shami?"
 }

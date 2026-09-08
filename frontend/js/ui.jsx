@@ -237,9 +237,20 @@ function Ring({ value, size = 140, stroke = 12, color = "var(--c-primary)", labe
 }
 function Spinner({ lg }) { return React.createElement("div", { className: "spinner" + (lg ? " lg" : "") }); }
 
+/* Цвет кружка приходит из данных (у каждого человека свой), поэтому цвет
+   букв на нём выбирается ПО ЯРКОСТИ фона, а не константой: белые инициалы
+   на светло-оранжевом давали контраст 2.1:1 — имя не прочесть. */
+function inkOn(bg) {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(String(bg || "").trim());
+  if (!m) return "var(--text-on-accent)";
+  const n = parseInt(m[1], 16);
+  const lin = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+  const L = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
+  return (1.05 / (L + 0.05)) >= ((L + 0.05) / 0.05) ? "#FFFFFF" : "#171614";
+}
 function Avatar({ person, size = 30 }) {
   return React.createElement("span", { className: "avatar", title: person.name,
-    style: { background: person.color, width: size, height: size, fontSize: size * 0.4 } }, person.initials);
+    style: { background: person.color, color: inkOn(person.color), width: size, height: size, fontSize: size * 0.4 } }, person.initials);
 }
 /* Роли — ОДНА подпись на все экраны и ОДИН список в селектах: пары кнопок
    «→ владелец / → переводчик» в четырёх файлах разошлись бы первой же новой
@@ -371,7 +382,7 @@ const ROUTE_INFO = {
 const RISK_INFO = {
   low: { label: TR("Низкий"), range: TR("≤ 8 слов"), color: "var(--c-success)",
     tip: TR("Короткие сегменты: заголовки, метаданные, простые предложения.\nНазначается по длине исходного текста, а не по содержанию.\nПовторный перевод эту величину НЕ меняет — она описывает оригинал.\nНа выбор движка больше не влияет: переводит всё выбранная модель.") },
-  medium: { label: TR("Средний"), range: TR("9–30 слов"), color: "#ca8a04",
+  medium: { label: TR("Средний"), range: TR("9–30 слов"), color: "var(--c-warning)",
     tip: TR("Сегменты средней длины: обычный текст, описания.\nНазначается по длине исходного текста, а не по содержанию.\nПовторный перевод эту величину НЕ меняет — она описывает оригинал.\n→ Маршрут: GPT_REQUIRED.") },
   high: { label: TR("Высокий"), range: TR("> 30 слов"), color: "var(--c-warning)",
     tip: TR("Длинные сегменты: сложные конструкции, выше шанс потерять смысл.\nНазначается по длине исходного текста, а не по содержанию.\nПовторный перевод эту величину НЕ меняет — она описывает оригинал.\n→ Маршрут: GPT_WITH_GLOSSARY_REQUIRED.") },

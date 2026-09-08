@@ -269,5 +269,8 @@
   " стр.": " sahifa",
   "зрячая модель ": "ko'ruvchi model ",
   "Оценка по выборке": "Tanlama bo'yicha baho",
-  " слов": " so'z"
+  " слов": " so'z",
+  "Этот экран не открылся": "Bu ekran ochilmadi",
+  "Работа не потеряна: всё сделанное сохранено на сервере. Откройте другую вкладку или обновите страницу.": "Ish yo‘qolmadi: bajarilgan hamma narsa serverda saqlangan. Boshqa bo‘limni oching yoki sahifani yangilang.",
+  "Обновить страницу": "Sahifani yangilash"
 }

@@ -510,7 +510,7 @@ function TabExport({ store, toast }) {
           React.createElement("h2", { className: "section-title" }, TR("Формат файла")),
           React.createElement("div", { className: "col", style: { gap: 10 } },
             formats.map(([v, t, d, ic]) => React.createElement("label", {
-              key: v, className: "card card-pad row", style: { gap: 14, cursor: "pointer", borderColor: fmt === v ? "var(--c-primary)" : "var(--border)", boxShadow: fmt === v ? "0 0 0 3px var(--ring)" : "var(--shadow-sm)" },
+              key: v, className: "card card-pad row", style: { gap: 14, cursor: "pointer", borderColor: fmt === v ? "var(--c-primary)" : "var(--border)", boxShadow: fmt === v ? "0 0 0 3px var(--ring)" : "none" },
               onClick: () => setFmt(v) },
               React.createElement(Radio, { name: "fmt", checked: fmt === v, onChange: () => setFmt(v) }),
               React.createElement("span", { style: { width: 38, height: 38, borderRadius: 9, background: "var(--bg-sunken)", color: "var(--c-primary)", display: "grid", placeItems: "center" } },

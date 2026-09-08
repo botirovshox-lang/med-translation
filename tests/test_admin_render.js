@@ -42,6 +42,10 @@ for (const f of fs.readdirSync(root).filter(n => /\.jsx?$/.test(n)).sort()) {
 /* 2. Рендер «Админа» ------------------------------------------------------ */
 const hooks = []; let hookIdx = 0; const effects = [];
 const React = {
+  /* Рамка падения (Boundary в app.jsx) — классовый компонент: у хуков
+     аналога componentDidCatch нет. Заглушке достаточно пустого класса,
+     иначе 'class extends undefined' роняет загрузку файла целиком. */
+  Component: class Component { constructor(props) { this.props = props; } },
   createElement(type, props, ...children) {
     const kids = [];
     (function flat(list) {

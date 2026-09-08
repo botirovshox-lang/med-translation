@@ -47,6 +47,7 @@ import threading
 from pathlib import Path
 from typing import Optional, Any, List
 import io
+import mimetypes
 import html as _html_mod
 import unicodedata
 from datetime import datetime
@@ -21169,6 +21170,11 @@ def admin_batch_update(bid: str, req: BatchIn, request: Request):
 # Mounted last so /api/* takes precedence.
 # ─────────────────────────────────────────────────────────────────────
 if FRONTEND_DIR.exists():
+    # .jsx питон не знает и отдаёт как application/octet-stream. Тип неверный
+    # сам по себе, но дорого другое: nginx сжимает по СПИСКУ типов, и мегабайт
+    # кода фронтенда уезжал клиенту несжатым при включённом gzip. Строка
+    # обязана стоять ДО mount: StaticFiles берёт тип через mimetypes.
+    mimetypes.add_type("text/javascript", ".jsx")
     app.mount("/css", StaticFiles(directory=str(FRONTEND_DIR / "css")), name="css")
     app.mount("/js", StaticFiles(directory=str(FRONTEND_DIR / "js")), name="js")
     app.mount("/screens", StaticFiles(directory=str(FRONTEND_DIR / "screens")), name="screens")

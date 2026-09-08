@@ -1,0 +1,2524 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<!-- ПРОТОТИП. В приложение не подключён. Открывается двойным кликом. -->
+<title>Перевод в одну кнопку</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;450;500;600&display=swap" />
+<style>
+  /* ── токены: светлая тема по умолчанию ─────────────────────── */
+  :root{
+    --bg:#FFFFFF; --panel:#F7F6F4; --panel-2:#FBFAF9; --line:#E9E7E2; --line-2:#DCD9D3;
+    --ink:#171614; --ink-2:#42403B; --muted:#6E6B64; --faint:#9B978E;
+    --btn:#111110; --btn-ink:#FFFFFF;
+    --accent:#4E6FA8; --accent-soft:#EDF1F8;
+    --ok:#2C6A4A; --ok-soft:#E9F2EC;
+    --warn:#8A6014; --warn-soft:#F8F0DE;
+    --bad:#B3272E; --bad-soft:#F9E8E9;
+    --ui:"Inter",-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --pad:clamp(14px,2.2vw,30px);
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#0E0E0D; --panel:#171716; --panel-2:#131312; --line:#26251F; --line-2:#33322B;
+      --ink:#F2F1EC; --ink-2:#C9C6BE; --muted:#948F86; --faint:#726E66;
+      --btn:#F2F1EC; --btn-ink:#131312;
+      --accent:#8FAEDC; --accent-soft:#1A212B;
+      --ok:#7CC49A; --ok-soft:#152119;
+      --warn:#D9AC69; --warn-soft:#241D11;
+      --bad:#EA9598; --bad-soft:#2A1819;
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0E0E0D; --panel:#171716; --panel-2:#131312; --line:#26251F; --line-2:#33322B;
+    --ink:#F2F1EC; --ink-2:#C9C6BE; --muted:#948F86; --faint:#726E66;
+    --btn:#F2F1EC; --btn-ink:#131312;
+    --accent:#8FAEDC; --accent-soft:#1A212B;
+    --ok:#7CC49A; --ok-soft:#152119;
+    --warn:#D9AC69; --warn-soft:#241D11;
+    --bad:#EA9598; --bad-soft:#2A1819;
+  }
+
+  *{box-sizing:border-box;min-width:0}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--ui);font-size:14px;
+       line-height:1.45;-webkit-font-smoothing:antialiased}
+  button,input,textarea{font:inherit;color:inherit}
+  h1,h2,h3,p{margin:0}
+  .num{font-variant-numeric:tabular-nums}
+  .i{width:16px;height:16px;flex:none;fill:none;stroke:currentColor;stroke-width:1.5;
+     stroke-linecap:round;stroke-linejoin:round}
+  .i.lg{width:20px;height:20px}
+  .app{display:grid;grid-template-columns:224px minmax(0,1fr);min-height:100vh}
+
+  /* ── боковая колонка ───────────────────────────────────────── */
+  .side{border-right:1px solid var(--line);padding:14px 10px;display:flex;flex-direction:column;
+        gap:20px;position:sticky;top:0;height:100vh;background:var(--bg)}
+  .brand{display:flex;align-items:center;gap:8px;padding:2px 8px;font-weight:600;letter-spacing:-.015em}
+  .brand i{width:16px;height:16px;border-radius:4px;background:var(--btn);display:block}
+  .org{display:flex;align-items:center;gap:9px;padding:7px 9px;border:1px solid var(--line);
+       border-radius:8px;background:var(--bg);cursor:pointer;font-size:13px}
+  .org:hover{border-color:var(--line-2)}
+  .org i{width:15px;height:15px;border-radius:50%;flex:none;
+         background:conic-gradient(#C9743B,#D9B45C,#5C7F5A,#4E6FA8,#C9743B)}
+  .org b{font-weight:500}
+  .grp{display:flex;flex-direction:column;gap:1px}
+  .grp h3{font-size:11px;color:var(--faint);font-weight:450;padding:0 9px 6px}
+  .nav{display:flex;align-items:center;gap:10px;padding:8px 9px;border-radius:7px;color:var(--ink-2);
+       cursor:pointer;border:0;background:none;width:100%;text-align:left;font-size:13.5px}
+  .nav:hover{background:var(--panel)}
+  .nav[aria-current="true"]{background:var(--panel);color:var(--ink);font-weight:500}
+  .nav .i{opacity:.55}
+  .nav[aria-current="true"] .i{opacity:1}
+  .nav b{margin-left:auto;font-weight:500;font-size:11px;padding:1px 6px;border-radius:10px;
+         background:var(--bad-soft);color:var(--bad)}
+  .foot{margin-top:auto;display:flex;flex-direction:column;gap:6px;padding:0 9px}
+  .foot .l{display:flex;justify-content:space-between;font-size:11.5px;color:var(--muted)}
+  .meter{height:3px;border-radius:2px;background:var(--panel);overflow:hidden}
+  .meter i{display:block;height:100%;background:var(--accent)}
+
+  /* ── верх ──────────────────────────────────────────────────── */
+  .main{min-width:0;display:flex;flex-direction:column}
+  .top{display:flex;align-items:center;gap:10px;padding:10px var(--pad);border-bottom:1px solid var(--line);
+       position:sticky;top:0;background:var(--bg);z-index:6;flex-wrap:wrap}
+  .crumb{font-size:13px;color:var(--muted)}
+  .crumb b{color:var(--ink);font-weight:500}
+  .top .right{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .seg{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+  .seg button{border:0;background:var(--bg);padding:5px 10px;font-size:12px;color:var(--muted);cursor:pointer}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button[aria-pressed="true"]{background:var(--panel);color:var(--ink)}
+  .pill{border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:5px 10px;
+        font-size:12.5px;color:var(--ink-2);cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  .pill:hover{border-color:var(--line-2)}
+  .ava{cursor:pointer;width:25px;height:25px;border-radius:50%;border:1px solid var(--line);background:var(--panel);
+       display:grid;place-items:center;font-size:11px;color:var(--muted);flex:none}
+  .mnav{display:none;gap:6px;padding:8px var(--pad);border-bottom:1px solid var(--line);
+        overflow-x:auto;position:sticky;top:47px;background:var(--bg);z-index:5}
+  .mnav button{white-space:nowrap}
+  .wrap{padding:clamp(18px,2.4vw,30px) var(--pad) 72px;width:100%;max-width:1120px;margin:0 auto}
+  .wrap.wide{max-width:1560px}
+  /* блоки в колонки: воздух остаётся, но строка не тянется через весь монитор */
+  .duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px;align-items:start}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px}
+  .tcard{padding:14px 16px;display:flex;flex-direction:column;gap:9px}
+  .tcard .acts{display:flex;gap:8px;margin-top:auto;flex-wrap:wrap}
+  .ask-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(250px,320px);gap:14px;align-items:start}
+  .opt.box{border:1px solid var(--line);border-radius:10px;flex-direction:column;gap:8px}
+  .opt.box[aria-checked="true"]{border-color:var(--line-2);background:var(--panel-2)}
+  @media (max-width:1000px){.ask-grid{grid-template-columns:1fr}}
+
+  /* ── типографика ───────────────────────────────────────────── */
+  .h1{font-size:clamp(20px,2.1vw,26px);font-weight:600;letter-spacing:-.02em;text-wrap:balance}
+  .h2{font-size:14.5px;font-weight:600;letter-spacing:-.01em}
+  .lead{color:var(--muted);font-size:13.5px;max-width:70ch}
+  .eyebrow{font-size:11.5px;color:var(--faint)}
+  .sect{display:flex;flex-direction:column;gap:12px;margin-top:clamp(18px,2.2vw,28px)}
+  .head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .col{display:flex;flex-direction:column;min-width:0}
+  .hide{display:none!important}
+  .grow{flex:1 1 240px}
+
+  /* ── карточки, кнопки, чипы ────────────────────────────────── */
+  .card{background:var(--bg);border:1px solid var(--line);border-radius:10px}
+  .pad{padding:16px 18px}
+  .btn{border:1px solid transparent;border-radius:7px;padding:7px 14px;font-size:13.5px;font-weight:500;
+       cursor:pointer;background:var(--btn);color:var(--btn-ink);white-space:nowrap;
+       display:inline-flex;align-items:center;gap:7px}
+  .btn:hover{opacity:.86}
+  .btn.big{padding:12px 22px;font-size:15px;border-radius:9px}
+  .btn.sec{background:var(--bg);color:var(--ink);border-color:var(--line-2)}
+  .btn.sec:hover{background:var(--panel);opacity:1}
+  .btn.ghost{background:transparent;color:var(--muted);border-color:transparent;padding:7px 9px}
+  .btn.ghost:hover{color:var(--ink);background:var(--panel);opacity:1}
+  .btn.sm{padding:5px 10px;font-size:12.5px}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  .iconbtn{border:1px solid var(--line);background:var(--bg);border-radius:7px;width:31px;height:31px;
+           display:grid;place-items:center;cursor:pointer;color:var(--ink-2)}
+  .iconbtn:hover{border-color:var(--line-2);color:var(--ink)}
+  :where(button,[tabindex],summary,textarea):focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  .chip{font-size:11.5px;font-weight:500;padding:2px 8px;border-radius:10px;white-space:nowrap;
+        background:var(--panel);color:var(--muted)}
+  .chip.bad{background:var(--bad-soft);color:var(--bad)}
+  .chip.warn{background:var(--warn-soft);color:var(--warn)}
+  .chip.ok{background:var(--ok-soft);color:var(--ok)}
+  .chip.info{background:var(--accent-soft);color:var(--accent)}
+  .dot{width:6px;height:6px;border-radius:2px;display:inline-block;margin-right:7px;flex:none}
+  .d-ok{background:var(--ok)}.d-mach{background:var(--accent)}.d-hum{background:var(--bad)}
+
+  /* ── карточки состояния (кликабельные) ─────────────────────── */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}
+  .st-card{border:1px solid var(--line);border-radius:10px;background:var(--bg);padding:14px 16px;
+           display:flex;flex-direction:column;gap:9px;cursor:pointer;text-align:left;font-family:inherit;
+           transition:border-color .15s}
+  .st-card:hover{border-color:var(--line-2);background:var(--panel-2)}
+  .st-card .t{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+  .st-card .badge{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;flex:none}
+  .st-card .v{font-size:clamp(24px,2.6vw,30px);font-weight:500;letter-spacing:-.03em;line-height:1.05;
+              font-variant-numeric:tabular-nums}
+  .st-card .s{font-size:12.5px;color:var(--faint)}
+  .st-card .go{display:flex;align-items:center;gap:6px;margin-top:auto;padding-top:4px}
+  .b-ok{background:var(--ok-soft);color:var(--ok)}
+  .b-mach{background:var(--accent-soft);color:var(--accent)}
+  .b-hum{background:var(--bad-soft);color:var(--bad)}
+  .b-mine{background:var(--panel);color:var(--muted)}
+  .strip{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 16px;border:1px solid var(--line);
+         border-radius:10px}
+  .stack{display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--panel);
+         flex:1 1 220px;min-width:160px}
+  .stack i{display:block;transition:width .5s ease}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);align-items:center}
+  .legend b{color:var(--ink);font-weight:500}
+
+  /* ── тумблер про ручные правки ─────────────────────────────── */
+  .sw{display:flex;gap:12px;align-items:flex-start;padding:13px 16px;border:1px solid var(--line);
+      border-radius:10px}
+  .sw .box{width:34px;height:20px;border-radius:11px;background:var(--line-2);flex:none;position:relative;
+           cursor:pointer;border:0;transition:background .18s;margin-top:1px}
+  .sw .box::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;
+                  background:var(--bg);transition:transform .18s}
+  .sw .box[aria-checked="true"]{background:var(--btn)}
+  .sw .box[aria-checked="true"]::after{transform:translateX(14px)}
+  .sw .t{font-weight:500;font-size:13.5px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .sw .s{font-size:12.5px;color:var(--muted);max-width:78ch;margin-top:3px}
+
+  /* ── фазы ──────────────────────────────────────────────────── */
+  .phase{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--line)}
+  .phase:first-child{border-top:0;padding-top:4px}
+  .ring{width:16px;height:16px;border-radius:50%;border:1.6px solid var(--line-2);flex:none;margin-top:2px}
+  .phase.done .ring{background:var(--ok);border-color:var(--ok)}
+  .phase.now .ring{border-color:var(--accent);border-right-color:transparent;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){.phase.now .ring{animation:none}.stack i,.bar i{transition:none}}
+  .phase .pt{font-weight:500;font-size:13.5px}
+  .phase .ps{font-size:12.5px;color:var(--muted)}
+  .phase .pn{margin-left:auto;font-size:12px;color:var(--faint);white-space:nowrap;
+             font-variant-numeric:tabular-nums}
+  .bar{height:4px;border-radius:2px;background:var(--panel);overflow:hidden}
+  .bar i{display:block;height:100%;background:var(--btn);transition:width .4s ease}
+
+  /* ── редактор ──────────────────────────────────────────────── */
+  .ed{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,352px);gap:14px;align-items:start}
+  .ed-list{border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .ed-head,.srow{display:grid;grid-template-columns:30px 52px minmax(0,1.1fr) minmax(0,1fr) 152px;gap:12px}
+  .ed-head{padding:9px 14px;font-size:11.5px;color:var(--faint);border-bottom:1px solid var(--line);
+           background:var(--panel-2)}
+  .srow{padding:11px 14px;border-top:1px solid var(--line);cursor:pointer;align-items:start;
+        background:var(--bg);text-align:left;width:100%}
+  .srow:first-child{border-top:0}
+  .srow:hover{background:var(--panel-2)}
+  .srow[aria-selected="true"]{background:var(--panel)}
+  .srow .id{font-size:11.5px;color:var(--faint);font-variant-numeric:tabular-nums;padding-top:2px}
+  .srow .tx{font-size:13.5px;line-height:1.42;overflow-wrap:anywhere;display:-webkit-box;
+            -webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .srow .tx.tgt{color:var(--ink-2)}
+  .srow .st{display:flex;justify-content:flex-end;align-items:center;gap:8px}
+  .empty{padding:26px 16px;text-align:center;color:var(--muted);font-size:13.5px}
+  .panel{position:sticky;top:66px;display:flex;flex-direction:column;gap:12px}
+  .pane{border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .pane .ph{display:flex;align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid var(--line)}
+  .pane .ph .l{font-size:11.5px;color:var(--faint);display:flex;align-items:center;gap:7px}
+  .field{padding:12px 14px;border-bottom:1px solid var(--line)}
+  .field:last-child{border-bottom:0}
+  .field .l{font-size:11.5px;color:var(--faint);margin-bottom:5px}
+  .field .v{font-size:14.5px;line-height:1.5;overflow-wrap:anywhere}
+  .field .v.quiet{color:var(--muted)}
+  textarea.tgt{width:100%;border:1px solid var(--line);border-radius:7px;padding:9px 10px;resize:vertical;
+               min-height:84px;font-size:14.5px;line-height:1.5;background:var(--panel-2);color:var(--ink)}
+  textarea.tgt:focus{background:var(--bg);border-color:var(--line-2);outline:none}
+  .hint{display:flex;gap:9px;align-items:baseline;padding:9px 14px;border-top:1px solid var(--line);
+        font-size:13px}
+  .hint:first-of-type{border-top:0}
+  .hint .a{color:var(--ink);overflow-wrap:anywhere}
+  .hint .b{color:var(--muted);overflow-wrap:anywhere}
+  .hint .g{margin-left:auto;font-size:11.5px;color:var(--faint);white-space:nowrap}
+  .pane-foot{display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--line);align-items:center;
+             flex-wrap:wrap}
+  .filters{display:flex;gap:7px;flex-wrap:wrap;align-items:center}
+  .fbtn{border:1px solid var(--line);background:var(--bg);border-radius:7px;padding:6px 11px;font-size:12.5px;
+        color:var(--muted);cursor:pointer;display:inline-flex;align-items:center;gap:7px}
+  .fbtn[aria-pressed="true"]{background:var(--panel);color:var(--ink);border-color:var(--line-2)}
+  .fbtn span{color:var(--faint);font-variant-numeric:tabular-nums}
+
+  /* ── вопросы ───────────────────────────────────────────────── */
+  .q-head{display:flex;align-items:center;gap:10px;padding:15px 18px 10px;flex-wrap:wrap}
+  .q-title{font-size:clamp(15px,1.5vw,17px);font-weight:600;letter-spacing:-.015em;padding:0 18px 14px;
+           text-wrap:balance}
+  .ev{display:grid;grid-template-columns:minmax(120px,168px) minmax(0,1fr);gap:14px;padding:11px 18px;
+      border-top:1px solid var(--line)}
+  .ev .l{font-size:11.5px;color:var(--faint);padding-top:2px}
+  .ev .t{font-size:14.5px;line-height:1.5;overflow-wrap:anywhere}
+  .ev .t mark{background:var(--warn-soft);color:var(--warn);border-radius:3px;padding:0 3px;font-weight:500}
+  .ev .t mark.bad{background:var(--bad-soft);color:var(--bad)}
+  .ev .t mark.ok{background:var(--ok-soft);color:var(--ok)}
+  .q-foot{display:flex;align-items:center;gap:9px;padding:14px 18px;border-top:1px solid var(--line);
+          flex-wrap:wrap}
+  details.why{font-size:12.5px;padding:0 18px 15px}
+  details.why summary{cursor:pointer;list-style:none;color:var(--accent);width:fit-content}
+  details.why summary::-webkit-details-marker{display:none}
+  details.why p{padding-top:8px;max-width:72ch;color:var(--muted)}
+  .qrow{display:flex;align-items:center;gap:11px;padding:11px 18px;border-top:1px solid var(--line);
+        font-size:13.5px;flex-wrap:wrap}
+  .qrow:first-child{border-top:0}
+  .qrow .n{font-size:11.5px;color:var(--faint);width:14px;font-variant-numeric:tabular-nums}
+  .qrow .g{margin-left:auto;font-size:11.5px;color:var(--faint);white-space:nowrap}
+  .qrow.done .txt{text-decoration:line-through;color:var(--faint)}
+
+  /* ── экспорт, словарь, список ──────────────────────────────── */
+  .opt{display:flex;gap:12px;align-items:flex-start;padding:14px 18px;border-top:1px solid var(--line);
+       cursor:pointer;text-align:left;width:100%;background:none;border-left:0;border-right:0;border-bottom:0;
+       font-family:inherit}
+  .opt:first-of-type{border-top:0}
+  .opt:hover{background:var(--panel-2)}
+  .opt .r{width:17px;height:17px;border-radius:50%;border:1.5px solid var(--line-2);flex:none;margin-top:2px;
+          display:grid;place-items:center}
+  .opt[aria-checked="true"] .r{border-color:var(--btn)}
+  .opt[aria-checked="true"] .r::after{content:"";width:9px;height:9px;border-radius:50%;background:var(--btn)}
+  .opt .t{font-weight:500;font-size:13.5px}
+  .opt .s{font-size:12.5px;color:var(--muted);margin-top:2px}
+  .trow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;padding:13px 18px;
+        border-top:1px solid var(--line)}
+  .trow:first-child{border-top:0}
+  .pair{font-size:14.5px;overflow-wrap:anywhere}
+  .pair i{font-style:normal;color:var(--faint);padding:0 7px}
+  .note{font-size:12px;color:var(--muted);margin-top:3px;max-width:70ch}
+  .lrow{display:grid;grid-template-columns:minmax(0,1fr) 120px 110px 70px;gap:12px;align-items:center;
+        padding:13px 18px;border-top:1px solid var(--line);font-size:13.5px}
+  .lrow:first-child{border-top:0}
+  .lrow .nm{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lrow .nm span{display:block;font-weight:400;font-size:11.5px;color:var(--faint)}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+  .tile{border:1px solid var(--line);border-radius:10px;background:var(--bg);overflow:hidden;cursor:pointer;
+        text-align:left;padding:0;font-family:inherit}
+  .tile:hover{border-color:var(--line-2)}
+  .tile .art{height:104px;background:var(--panel);display:grid;place-items:center;padding:16px}
+  .tile .cap{padding:11px 13px;font-size:13.5px;font-weight:500;color:var(--ink)}
+  .tile .cap span{display:block;font-weight:400;color:var(--muted);font-size:12px;margin-top:2px}
+  /* вход и регистрация */
+  .auth{position:fixed;inset:0;background:var(--bg);z-index:20;overflow:auto;display:grid;
+        place-items:center;padding:28px 18px}
+  .auth-card{width:100%;max-width:392px;display:flex;flex-direction:column;gap:15px}
+  .auth-brand{display:flex;align-items:center;gap:9px;font-weight:600;letter-spacing:-.015em;font-size:15px}
+  .auth-brand i{width:18px;height:18px;border-radius:5px;background:var(--btn);display:block}
+  .inp{width:100%;border:1px solid var(--line);border-radius:8px;padding:9px 11px;background:var(--bg);
+       font-size:14px;color:var(--ink)}
+  .inp:focus{outline:none;border-color:var(--line-2)}
+  .lbl{font-size:12.5px;color:var(--muted);margin-bottom:5px;display:block}
+  .checkline{display:flex;gap:9px;align-items:flex-start;font-size:12.5px;color:var(--ink-2);
+             line-height:1.5;cursor:pointer}
+  .fine{font-size:11.5px;color:var(--faint);line-height:1.5}
+  .linkbtn{border:0;background:none;color:var(--accent);cursor:pointer;padding:0;font-size:13px}
+  .linkbtn:hover{text-decoration:underline}
+  .authsplit{display:flex;align-items:center;gap:10px;color:var(--faint);font-size:12px}
+  .authsplit::before,.authsplit::after{content:"";height:1px;background:var(--line);flex:1}
+  /* складные блоки в карточке строки: панель не должна быть длиннее списка */
+  .pane>summary{display:flex;align-items:center;gap:8px;padding:11px 14px;cursor:pointer;
+                list-style:none;border-bottom:0}
+  .pane>summary::-webkit-details-marker{display:none}
+  .pane>summary::after{content:"";width:6px;height:6px;border-right:1.4px solid var(--faint);
+                       border-bottom:1.4px solid var(--faint);transform:rotate(45deg);
+                       margin-left:auto;margin-right:2px;transition:transform .15s}
+  .pane[open]>summary{border-bottom:1px solid var(--line)}
+  .pane[open]>summary::after{transform:rotate(-135deg);margin-top:4px}
+  .pane>summary .cnt{margin-left:auto;font-size:11.5px;color:var(--faint)}
+  .pane>summary::after{margin-left:8px}
+  /* окно вопроса: то, что уносит строку из книги, спрашиваем прямо */
+  .modal{position:fixed;inset:0;z-index:30;display:grid;place-items:center;padding:20px;
+         background:rgba(23,22,20,.42)}
+  .modal-card{background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:20px;
+              width:100%;max-width:430px;display:flex;flex-direction:column;gap:12px}
+  .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:var(--btn);
+         color:var(--btn-ink);padding:9px 15px;border-radius:8px;font-size:13px;opacity:0;
+         pointer-events:none;transition:opacity .2s;z-index:9;max-width:92vw;text-align:center}
+  .toast.on{opacity:1}
+
+  /* поиск и переход по номеру — над таблицей, как в настоящем редакторе */
+  .sbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .sfield{display:flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:8px;
+          padding:6px 10px;background:var(--bg);flex:1 1 240px;min-width:190px;color:var(--faint)}
+  .sfield input{border:0;background:none;outline:none;flex:1;min-width:0;font-size:13.5px;color:var(--ink)}
+  .sfield:focus-within{border-color:var(--line-2)}
+  .jump{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:8px;
+        padding:6px 10px;background:var(--bg);width:104px;color:var(--faint)}
+  .jump input{border:0;background:none;outline:none;width:100%;font-size:13.5px;color:var(--ink);
+              font-variant-numeric:tabular-nums}
+  select.sel{border:1px solid var(--line);border-radius:8px;padding:6px 9px;background:var(--bg);
+             font-size:13px;color:var(--ink-2);cursor:pointer}
+  mark{background:var(--warn-soft);color:var(--warn);border-radius:3px;padding:0 2px}
+  /* галочка прямо в строке */
+  .rowact{width:27px;height:27px;border-radius:7px;border:1px solid var(--line);background:var(--bg);
+          display:grid;place-items:center;cursor:pointer;color:var(--muted);flex:none}
+  .rowact:hover{color:var(--ink);border-color:var(--line-2)}
+  .rowact.on{color:var(--ok);background:var(--ok-soft);border-color:transparent}
+  .rowact.go{color:var(--btn-ink);background:var(--btn);border-color:transparent}
+  .rasm{display:block;margin-top:4px;font-size:10.5px;line-height:1.4;padding:1px 5px;
+         border-radius:5px;background:var(--accent-soft);color:var(--accent);width:fit-content}
+  /* выбор нескольких строк */
+  input[type=checkbox]{width:15px;height:15px;accent-color:var(--btn);cursor:pointer;margin:1px 0 0}
+  .bbar{display:flex;align-items:center;gap:9px;padding:10px 14px;border:1px solid var(--line-2);
+        border-radius:10px;background:var(--panel);flex-wrap:wrap}
+  .bbar b{font-weight:500}
+  /* страницы списка */
+  .pager{display:flex;align-items:center;gap:9px;padding:11px 14px;border-top:1px solid var(--line);
+         font-size:12.5px;color:var(--muted);flex-wrap:wrap}
+  .pager .of{color:var(--ink);font-weight:500;font-variant-numeric:tabular-nums}
+  .pager .jump{width:74px;padding:4px 8px}
+  .pgbtn{border:1px solid var(--line);background:var(--bg);border-radius:7px;width:28px;height:28px;
+         display:grid;place-items:center;cursor:pointer;color:var(--ink-2)}
+  .pgbtn:hover:not(:disabled){border-color:var(--line-2)}
+  .pgbtn:disabled{opacity:.35;cursor:not-allowed}
+  .pgbtn .i{transform:none}
+  .pgbtn.prev .i{transform:rotate(180deg)}
+  /* загрузка файла */
+  .drop{border:1.6px dashed var(--line-2);border-radius:12px;background:var(--panel-2);padding:34px 20px;
+        display:flex;flex-direction:column;align-items:center;gap:12px;text-align:center}
+  .drop .big{font-size:16px;font-weight:500}
+  .kvrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px}
+  .kvrow .k{font-size:12px;color:var(--muted)}
+  .kvrow .v{font-size:19px;font-weight:500;font-variant-numeric:tabular-nums;margin-top:2px}
+  /* таблицы служебных экранов */
+  .arow{display:grid;gap:12px;align-items:center;padding:11px 16px;border-top:1px solid var(--line);
+        font-size:13px}
+  .arow:first-child{border-top:0}
+  .arow.hd{background:var(--panel-2);color:var(--faint);font-size:11.5px}
+  .arow .nm{font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .arow .n{font-variant-numeric:tabular-nums}
+  .arow .acts{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+  .t-org{grid-template-columns:minmax(0,1.3fr) 68px 132px 88px 104px minmax(0,1.2fr)}
+  .t-usr{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 116px 118px minmax(0,auto)}
+  .t-run{grid-template-columns:96px minmax(0,1fr) 88px 88px 86px}
+  .t-log{grid-template-columns:118px 126px minmax(0,1fr)}
+  .t-bill{grid-template-columns:104px minmax(0,1fr) 76px 128px 122px minmax(0,auto)}
+  @media (max-width:1000px){
+    .t-org,.t-usr,.t-run,.t-log,.t-bill{grid-template-columns:minmax(0,1fr) auto}
+    .arow .hm{display:none}
+    .arow.hd{display:none}
+  }
+  .logrow{display:grid;grid-template-columns:110px minmax(0,1fr) 96px 96px;gap:12px;padding:11px 16px;
+          border-top:1px solid var(--line);font-size:13px;align-items:center}
+  .logrow:first-child{border-top:0}
+  .logrow .n{font-variant-numeric:tabular-nums;text-align:right}
+  .logrow .plus{color:var(--ok)}
+  .logrow .minus{color:var(--ink-2)}
+  .morerow{display:flex;align-items:center;gap:10px;padding:11px 14px;border-top:1px solid var(--line);
+           font-size:12.5px;color:var(--faint);flex-wrap:wrap}
+  @media (max-width:1180px){
+    .ed{grid-template-columns:1fr}
+    .panel{position:static;order:-1}
+  }
+  @media (max-width:900px){
+    .app{grid-template-columns:1fr}
+    .side{display:none}
+    .mnav{display:flex}
+    .ed-head{display:none}
+    .ed-head,.srow{grid-template-columns:26px 40px minmax(0,1fr) auto}
+    .srow .tx.tgt{display:none}
+    .logrow{grid-template-columns:minmax(0,1fr) 84px}
+    .logrow .d,.logrow .rest{display:none}
+    .ev{grid-template-columns:1fr;gap:3px}
+    .lrow{grid-template-columns:minmax(0,1fr) auto}
+    .lrow .pr,.lrow .st{display:none}
+  }
+  @media (max-width:620px){
+    .top{padding-top:8px;padding-bottom:8px}
+    .seg{order:3}
+    .st-card .v{font-size:26px}
+  }
+</style>
+
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="M3 8.6l3.4 3.4L13 4.6"/></symbol>
+  <symbol id="i-sync" viewBox="0 0 16 16"><path d="M13.2 8a5.2 5.2 0 1 1-1.7-3.9"/><path d="M13.4 2.4V5H10.8"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 4.8v3.6"/><path d="M8 10.9v.3"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 16 16"><rect x="3.4" y="7" width="9.2" height="6.4" rx="1.6"/><path d="M5.8 7V5.5a2.2 2.2 0 0 1 4.4 0V7"/></symbol>
+  <symbol id="i-down" viewBox="0 0 16 16"><path d="M8 2.8v7.4"/><path d="M5 7.4L8 10.4l3-3"/><path d="M3.2 13.2h9.6"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 16 16"><path d="M4 2.4h5l3 3v8.2H4z"/><path d="M6.2 8.4h3.6M6.2 10.8h3.6"/></symbol>
+  <symbol id="i-list" viewBox="0 0 16 16"><path d="M3 4.6h10M3 8h10M3 11.4h6.5"/></symbol>
+  <symbol id="i-book" viewBox="0 0 16 16"><rect x="3" y="2.8" width="10" height="10.4" rx="1.6"/><path d="M6 2.8v10.4"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 16 16"><path d="M2.6 4.4h4.2l1.2 1.6h5.4v6.6H2.6z"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 16 16"><path d="M3.4 8h9"/><path d="M9 4.6L12.4 8 9 11.4"/></symbol>
+  <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3.4l7.5 4.6L5 12.6z"/></symbol>
+  <symbol id="i-okc" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2"/><path d="M5.3 8.2l1.9 1.9 3.5-4"/></symbol>
+  <symbol id="i-find" viewBox="0 0 16 16"><circle cx="7.2" cy="7.2" r="4.4"/><path d="M10.5 10.5l3 3"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5.4" y="5.4" width="7.2" height="7.6" rx="1.4"/><path d="M10.2 3.4H4.8a1.4 1.4 0 0 0-1.4 1.4v5.4"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 16 16"><path d="M3.4 8a5 5 0 1 0 1.6-3.7"/><path d="M2.6 2.6v3h3"/></symbol>
+  <symbol id="i-user" viewBox="0 0 16 16"><circle cx="8" cy="5.6" r="2.6"/><path d="M3.2 13.4a4.8 4.8 0 0 1 9.6 0"/></symbol>
+  <symbol id="i-coin" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8"/><path d="M8 4.8v6.4M6.2 6.4h3a1.3 1.3 0 0 1 0 2.6H6.8a1.3 1.3 0 0 0 0 2.6h3"/></symbol>
+  <symbol id="i-out" viewBox="0 0 16 16"><path d="M9.6 3.4H4.2v9.2h5.4"/><path d="M7.8 8h6"/><path d="M11.6 5.8L13.8 8l-2.2 2.2"/></symbol>
+  <symbol id="i-img" viewBox="0 0 16 16"><rect x="2.6" y="3.4" width="10.8" height="9.2" rx="1.4"/><path d="M2.6 10.6l3-2.6 3.4 2.8 2-1.6 2.4 2"/></symbol>
+</svg>
+
+<div class="app">
+  <aside class="side">
+    <div class="brand"><i></i>Translate</div>
+    <button class="org"><i></i><b>Медиздат</b></button>
+
+    <nav class="grp">
+      <h3>Работа</h3>
+      <button class="nav" data-go="run" aria-current="true"><svg class="i"><use href="#i-doc"/></svg>Перевод</button>
+      <button class="nav" data-go="ask"><svg class="i"><use href="#i-alert"/></svg>Вопросы<b id="nav-ask">5</b></button>
+      <button class="nav" data-go="terms"><svg class="i"><use href="#i-book"/></svg>Словарь<b id="nav-terms">6</b></button>
+      <button class="nav" data-go="images"><svg class="i"><use href="#i-img"/></svg>Картинки
+        <b style="background:var(--accent-soft);color:var(--accent)">41</b></button>
+      <button class="nav" data-go="export"><svg class="i"><use href="#i-down"/></svg>Экспорт</button>
+    </nav>
+
+    <nav class="grp">
+      <h3>Файлы</h3>
+      <button class="nav" data-go="home"><svg class="i"><use href="#i-folder"/></svg>Все переводы</button>
+      <button class="nav" data-go="pages"><svg class="i"><use href="#i-coin"/></svg>Лимиты</button>
+      <button class="nav" data-go="bills"><svg class="i"><use href="#i-coin"/></svg>Счета</button>
+      <button class="nav" data-go="profile"><svg class="i"><use href="#i-user"/></svg>Профиль</button>
+    </nav>
+
+    <nav class="grp">
+      <h3>Служебное</h3>
+      <button class="nav" data-go="admin"><svg class="i"><use href="#i-list"/></svg>Админка
+        <b style="background:var(--panel);color:var(--muted)">мы</b></button>
+    </nav>
+
+    <button class="foot" data-go="pages" style="border:0;background:none;cursor:pointer;text-align:left">
+      <div class="l"><span>Лимиты</span><span class="num">760 страниц</span></div>
+      <div class="meter"><i style="width:38%"></i></div>
+    </button>
+  </aside>
+
+  <div class="main">
+    <header class="top">
+      <div class="crumb">Перевод / <b id="crumb">Фтизиатрия. Учебник</b></div>
+      <div class="right">
+        <div class="seg" role="group" aria-label="Состояние демо">
+          <button data-demo="fresh">до</button>
+          <button data-demo="running">во время</button>
+          <button data-demo="done" aria-pressed="true">после</button>
+        </div>
+        <button class="pill" id="theme">Тёмная</button>
+        <button class="pill" id="show-auth">Экран входа</button>
+        <button class="ava" data-go="profile" title="Профиль" aria-label="Профиль">Ш</button>
+      </div>
+    </header>
+
+    <nav class="mnav">
+      <button class="pill" data-go="run"><svg class="i"><use href="#i-doc"/></svg>Перевод</button>
+      <button class="pill" data-go="ask"><svg class="i"><use href="#i-alert"/></svg>Вопросы</button>
+      <button class="pill" data-go="terms"><svg class="i"><use href="#i-book"/></svg>Словарь</button>
+      <button class="pill" data-go="images"><svg class="i"><use href="#i-img"/></svg>Картинки</button>
+      <button class="pill" data-go="export"><svg class="i"><use href="#i-down"/></svg>Экспорт</button>
+      <button class="pill" data-go="home"><svg class="i"><use href="#i-folder"/></svg>Файлы</button>
+      <button class="pill" data-go="pages"><svg class="i"><use href="#i-coin"/></svg>Лимиты</button>
+      <button class="pill" data-go="bills"><svg class="i"><use href="#i-coin"/></svg>Счета</button>
+      <button class="pill" data-go="profile"><svg class="i"><use href="#i-user"/></svg>Профиль</button>
+      <button class="pill" data-go="admin"><svg class="i"><use href="#i-list"/></svg>Админка</button>
+    </nav>
+
+    <!-- ═════════════ ГЛАВНАЯ: сводка + редактор ═════════════ -->
+    <main class="wrap wide" id="scr-run">
+      <div class="head">
+        <div class="col grow" style="gap:5px">
+          <h1 class="h1">Фтизиатрия. Учебник</h1>
+          <p class="lead">Книга на <b style="font-weight:500">324 страницы</b>. Была по-русски &mdash;
+            станет по-английски.</p>
+        </div>
+        <div class="row" style="margin-left:auto">
+          <button class="iconbtn" data-go="export" title="Скачать файл" aria-label="Скачать файл">
+            <svg class="i"><use href="#i-down"/></svg></button>
+          <button class="pill">Заменить файл</button>
+          <button class="pill">Языки</button>
+        </div>
+      </div>
+
+      <!-- до перевода -->
+      <div class="sect" data-state="fresh">
+        <div class="card pad" style="display:flex;flex-direction:column;gap:16px;align-items:flex-start">
+          <div class="col" style="gap:5px">
+            <h2 class="h2">Можно начинать</h2>
+            <p class="lead">Нажмите кнопку &mdash; и всё. Я переведу, потом сама перечитаю,
+              потом проверю и исправлю ошибки. Ничего выбирать не надо.</p>
+          </div>
+          <button class="btn big" id="btn-start"><svg class="i lg"><use href="#i-play"/></svg>Перевести</button>
+          <details class="why" style="padding:0">
+            <summary>А что ты будешь делать?</summary>
+            <p>Сначала переведу. Потом прочитаю свой перевод ещё раз и поправлю, что не нравится.
+              Потом переведу обратно на русский и сравню с тем, как было. Потом проверю все важные
+              слова. Потом починю то, что нашла. И в конце пересчитаю все цифры.
+              Проверяет всегда не тот, кто переводил, &mdash; так честнее.</p>
+          </details>
+        </div>
+      </div>
+
+      <!-- идёт -->
+      <div class="sect hide" data-state="running">
+        <div class="card">
+          <div class="pad" style="display:flex;flex-direction:column;gap:12px">
+            <div class="head">
+              <div class="col" style="gap:2px">
+                <h2 class="h2">Перевожу</h2>
+                <p class="lead" id="run-sub">Можно закрыть страницу и пойти пить чай. Я не остановлюсь.</p>
+              </div>
+              <button class="btn sec" style="margin-left:auto" id="btn-stop">Остановить</button>
+            </div>
+            <div class="row" style="gap:16px">
+              <span class="num" id="run-pct"
+                    style="font-size:32px;font-weight:500;letter-spacing:-.03em;line-height:1">6%</span>
+              <div class="col">
+                <span id="run-eta" style="font-weight:500">осталось примерно 40 минут</span>
+                <span class="lead" id="run-done">160 из 2 711 строк</span>
+              </div>
+            </div>
+            <div class="bar"><i id="run-bar" style="width:6%"></i></div>
+          </div>
+          <div class="pad" style="padding-top:0">
+            <div class="phase now"><span class="ring"></span>
+              <div class="col"><span class="pt">Перевожу</span>
+                <span class="ps">пишу перевод, потом читаю его ещё раз</span></div>
+              <span class="pn" id="ph-0">160 / 2 711</span></div>
+            <div class="phase"><span class="ring"></span>
+              <div class="col"><span class="pt">Проверяю</span>
+                <span class="ps">перевожу обратно на русский и сравниваю с тем, как было</span></div>
+              <span class="pn" id="ph-1">ждёт</span></div>
+            <div class="phase"><span class="ring"></span>
+              <div class="col"><span class="pt">Исправляю</span>
+                <span class="ps">чиню то, что нашла, и проверяю ещё раз</span></div>
+              <span class="pn" id="ph-2">ждёт</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- после: четыре кликабельных блока -->
+      <div class="sect hide" data-state="done">
+        <div class="cards">
+          <button class="st-card" data-filter="ok">
+            <span class="t"><span class="badge b-ok"><svg class="i"><use href="#i-check"/></svg></span>Тут всё хорошо</span>
+            <span class="v" id="m-ready">2 348</span>
+            <span class="s">тут всё хорошо</span>
+            <span class="go"><span class="chip">показать</span></span>
+          </button>
+
+          <button class="st-card" data-filter="mach">
+            <span class="t"><span class="badge b-mach"><svg class="i"><use href="#i-sync"/></svg></span>Доделаю сама</span>
+            <span class="v" id="m-mach">247</span>
+            <span class="s">сделаю сама, вам делать нечего</span>
+            <span class="go"><span class="btn sm" id="btn-more">Доделать</span><span class="chip">показать</span></span>
+          </button>
+
+          <button class="st-card" data-filter="ask">
+            <span class="t"><span class="badge b-hum"><svg class="i"><use href="#i-alert"/></svg></span>Спрошу у вас</span>
+            <span class="v" id="m-hum">116</span>
+            <span class="s" id="m-hum-d">5 вопросов</span>
+            <span class="go"><span class="btn sm" data-go="ask">Разобрать</span><span class="chip">показать</span></span>
+          </button>
+
+          <button class="st-card" data-filter="mine">
+            <span class="t"><span class="badge b-mine"><svg class="i"><use href="#i-lock"/></svg></span>Ваши слова</span>
+            <span class="v" id="m-mine">14</span>
+            <span class="s">я их не трогаю</span>
+            <span class="go"><span class="chip">показать</span></span>
+          </button>
+        </div>
+
+        <div class="duo">
+        <div class="strip">
+          <span class="num" style="font-size:15px;font-weight:500">86,6%</span>
+          <div class="stack">
+            <i class="d-ok" id="bar-ok" style="width:86.6%"></i>
+            <i class="d-mach" id="bar-mach" style="width:9.1%"></i>
+            <i class="d-hum" id="bar-hum" style="width:4.3%"></i>
+          </div>
+          <div class="legend">
+            <span><i class="dot d-ok"></i>Готово <b class="num" id="lg-ready">2 348</b></span>
+            <span><i class="dot d-mach"></i>Машина <b class="num" id="lg-mach">247</b></span>
+            <span><i class="dot d-hum"></i>Вы <b class="num" id="lg-hum">116</b></span>
+          </div>
+        </div>
+
+        <div class="sw">
+          <button class="box" id="sw-mine" role="switch" aria-checked="false"
+                  aria-label="Разрешить машине править мои правки"></button>
+          <div>
+            <div class="t"><svg class="i"><use href="#i-lock"/></svg>
+              <span id="sw-title">Я не трогаю то, что вы написали</span>
+              <span class="chip" id="mine-n">14 строк</span></div>
+            <div class="s">Если вы что-то поправили сами или сказали «хорошо» — я это не переписываю.
+              Только смотрю. Хотите, чтобы я поправила и это тоже? Включите кнопочку.
+              <b style="font-weight:500;color:var(--ink-2)">Но одно я поправлю всегда:</b>
+              если потерялась цифра, «мг» или словечко «не» — это точно ошибка. Тогда исправлю
+              и покажу вам, что было не так.</div>
+          </div>
+        </div>
+        <div class="sw">
+          <svg class="i lg" style="margin-top:2px;color:var(--accent)"><use href="#i-img"/></svg>
+          <div style="flex:1">
+            <div class="t">На картинках нашлось 41 надпись <span class="chip info">переведены</span></div>
+            <div class="s">Это подписи под рисунками и схемы — обычный перевод их не видит,
+              потому что это картинка, а не текст.
+              <button class="btn ghost sm" data-go="images" style="padding:0 4px">Посмотреть их</button></div>
+          </div>
+        </div>
+        </div>
+      </div>
+
+      <!-- редактор прямо здесь -->
+      <div class="sect" id="ed-sect">
+        <div class="head">
+          <h2 class="h2">Весь текст</h2>
+          <div class="filters" id="filters"></div>
+          <span class="eyebrow" style="margin-left:auto" id="ed-count"></span>
+        </div>
+        <div class="sbar">
+          <span class="jump" title="Введите номер строки — покажу её">
+            <b style="font-weight:500">№</b>
+            <input id="ed-jump" inputmode="numeric" placeholder="1349" aria-label="Номер строки" /></span>
+          <button class="iconbtn" id="ed-jump-go" title="Показать эту строку"
+                  aria-label="Показать эту строку"><svg class="i"><use href="#i-arrow"/></svg></button>
+          <span class="sfield"><svg class="i"><use href="#i-find"/></svg>
+            <input id="ed-q" placeholder="Найти слово в тексте…" aria-label="Найти слово" /></span>
+          <select class="sel" id="ed-scope" aria-label="Где искать">
+            <option value="all">везде</option>
+            <option value="src">как было</option>
+            <option value="tgt">как стало</option>
+          </select>
+          <button class="iconbtn hide" id="ed-clear" title="Стереть"
+                  aria-label="Стереть поиск">&times;</button>
+          <span class="eyebrow" id="ed-found"></span>
+        </div>
+        <div class="bbar hide" id="ed-batch">
+          <input type="checkbox" id="cb-mini" checked aria-label="Снять выбор" />
+          <b id="ed-picked">Выбрано 0</b>
+          <button class="btn sm" data-bulk="ok">Отметить «всё хорошо»</button>
+          <button class="btn sec sm" data-bulk="tr">Перевести заново</button>
+          <button class="btn ghost sm" data-bulk="none">Снять выбор</button>
+        </div>
+        <div class="ed">
+          <div class="ed-list">
+            <div class="ed-head"><span><input type="checkbox" id="cb-all"
+                aria-label="Выбрать все строки на этой странице" /></span>
+              <span>№</span><span>Как было</span><span>Как стало</span>
+              <span style="text-align:right">Что тут</span></div>
+            <div id="ed-rows"></div>
+            <div class="pager" id="ed-pager"></div>
+          </div>
+          <div class="panel" id="ed-panel"></div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ═════════════ ВОПРОСЫ ═════════════ -->
+    <main class="wrap hide" id="scr-ask">
+      <div class="head">
+        <div class="col" style="gap:5px">
+          <h1 class="h1">Вопросы к вам</h1>
+          <p class="lead">Английский знать не надо. Я перевела свой перевод обратно на русский.
+            Просто сравните две строчки: смысл тот же &mdash; значит всё хорошо.</p>
+        </div>
+        <div class="col" style="margin-left:auto;text-align:right">
+          <span class="eyebrow">Осталось</span>
+          <span class="num" style="font-size:25px" id="ask-left">5</span>
+        </div>
+      </div>
+      <div class="sect">
+        <div class="bar"><i id="ask-bar" style="width:0%"></i></div>
+        <div class="ask-grid">
+          <div id="q-host"></div>
+          <div class="card">
+            <div style="padding:13px 16px 9px" class="eyebrow">Все вопросы</div>
+            <div id="q-queue"></div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ═════════════ СЛОВАРЬ ═════════════ -->
+    <main class="wrap hide" id="scr-terms">
+      <div class="col" style="gap:5px">
+        <h1 class="h1">Словарь книги</h1>
+        <p class="lead">Это слова, которые в книге встречаются много раз. Я хочу писать их всегда
+          одинаково. Скажите, правильно ли я их поняла.</p>
+      </div>
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Спрашиваю про них</span>
+          <span class="chip warn" id="t-left">6</span></div>
+        <div class="sbar">
+          <span class="sfield"><svg class="i"><use href="#i-find"/></svg>
+            <input id="t-q" placeholder="Найти слово в словаре…" aria-label="Найти слово" /></span>
+          <button class="btn sec sm" id="t-add">+ Добавить своё слово</button>
+          <button class="btn ghost sm" data-glo="auto">Разложи лёгкие сама</button>
+          <button class="btn ghost sm" data-glo="check">Перечитай словарь</button>
+        </div>
+        <div class="sw">
+          <svg class="i lg" style="margin-top:2px;color:var(--accent)"><use href="#i-sync"/></svg>
+          <div style="flex:1"><div class="t">Вчера я сама разложила 34 слова
+              <span class="chip">подсказками</span></div>
+            <div class="s">Сама я слово только подсказываю — приказом оно становится, когда «да»
+              сказали вы. Если пачка вам не нравится, верну всё разом, одной кнопкой.</div></div>
+          <button class="btn ghost sm" data-glo="undo">Отменить пачку</button>
+        </div>
+        <div class="grid2" id="t-host"></div>
+      </div>
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Целые фразы, которые я запомнила</span>
+          <span class="lead">Встретится такая же — переведу мгновенно и бесплатно</span></div>
+        <div class="grid2">
+          <div class="card tcard"><div class="pair">Проба Манту с 2 ТЕ.</div>
+            <div class="note">Mantoux test with 2 TU. &middot; вы подтвердили 4 сентября</div>
+            <div class="acts"><span class="chip ok">точь-в-точь</span></div></div>
+          <div class="card tcard"><div class="pair">Изониазид 600 мг в сутки внутрь.</div>
+            <div class="note">Isoniazid 600 mg daily by mouth. &middot; вы подтвердили 4 сентября</div>
+            <div class="acts"><span class="chip">похоже на 94%</span></div></div>
+          <div class="card tcard"><div class="pair">Рентгенография органов грудной клетки.</div>
+            <div class="note">Chest X-ray. &middot; из прошлой книги</div>
+            <div class="acts"><span class="chip ok">точь-в-точь</span></div></div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Про эти уже договорились</span>
+          <span class="lead">1 307 слов. Их я проверяю сама в каждой строчке</span></div>
+        <div class="grid2" id="t-done"></div>
+      </div>
+    </main>
+
+    <!-- ═════════════ ЭКСПОРТ ═════════════ -->
+    <main class="wrap hide" id="scr-export">
+      <div class="col" style="gap:5px">
+        <h1 class="h1">Экспорт</h1>
+        <p class="lead">Файл можно забрать когда захотите: перевод в нём весь, целиком.
+          Строчки, про которые я ещё спрашиваю, тоже будут &mdash; с тем переводом, что есть сейчас.</p>
+      </div>
+
+      <div class="sect">
+        <div class="grid2" id="fmt-host" role="radiogroup" aria-label="Формат файла"></div>
+        <div class="head">
+          <button class="btn big" id="btn-dl"><svg class="i lg"><use href="#i-down"/></svg>Скачать файл</button>
+          <span class="lead" id="dl-note">Готово 86,6%. Ещё 116 строк ждут вас</span>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Что положить в файл</span></div>
+        <div class="duo">
+          <div class="sw">
+            <button class="box" role="switch" aria-checked="true" data-sw="img"
+                    aria-label="Вписывать перевод в картинки"></button>
+            <div><div class="t">Вписать перевод прямо в картинки</div>
+              <div class="s">В книге 162 картинки, на 41 из них есть надписи — я их прочитала
+                и перевела. Где фон сложный (снимок, рентген), не буду портить картинку:
+                подпишу перевод строчкой под ней.</div></div>
+          </div>
+          <div class="sw">
+            <button class="box" role="switch" aria-checked="false" data-sw="src"
+                    aria-label="Показывать оригинал рядом"></button>
+            <div><div class="t">Оригинал рядом с переводом</div>
+              <div class="s">Пригодится, если файл будет читать тот, кто знает оба языка.
+                Обычно это не нужно.</div></div>
+          </div>
+        </div>
+        <div class="card pad row" style="gap:12px;flex-wrap:wrap">
+          <svg class="i lg" style="color:var(--ok)"><use href="#i-check"/></svg>
+          <div class="col"><span style="font-weight:500">Ваш файл у меня цел</span>
+            <span class="lead">Поэтому и получится «такой же, только по-английски»:
+              я не собираю документ заново, а вписываю перевод в ваш.</span></div>
+          <button class="btn ghost sm" style="margin-left:auto" id="src-replace">Заменить файл</button>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Что уже скачивали</span></div>
+        <div class="card">
+          <div class="lrow"><div class="nm">Фтизиатрия. Учебник<span>как оригинал &middot; .docx</span></div>
+            <div class="pr" style="color:var(--muted)">6 сентября</div>
+            <div class="st" style="color:var(--muted)">18,4 МБ</div>
+            <div style="text-align:right"><button class="btn ghost" title="Скачать" aria-label="Скачать">
+              <svg class="i"><use href="#i-down"/></svg></button></div></div>
+          <div class="lrow"><div class="nm">Фтизиатрия. Учебник<span>таблица &middot; .xlsx</span></div>
+            <div class="pr" style="color:var(--muted)">4 сентября</div>
+            <div class="st" style="color:var(--muted)">1,2 МБ</div>
+            <div style="text-align:right"><button class="btn ghost" title="Скачать" aria-label="Скачать">
+              <svg class="i"><use href="#i-down"/></svg></button></div></div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ═════════════ СТРАНИЦЫ (лимит) ═════════════ -->
+    <main class="wrap hide" id="scr-pages">
+      <div class="col" style="gap:5px">
+        <h1 class="h1">Лимиты</h1>
+        <p class="lead">Мы считаем работу страницами. Одна страница — это примерно 1800 знаков,
+          как в обычном договоре. Сколько страниц в файле — столько и спишется.</p>
+      </div>
+
+      <div class="sect">
+        <div class="card pad">
+          <div class="kvrow">
+            <div><div class="k">Вам выдано</div><div class="v">2 000</div></div>
+            <div><div class="k">Уже потратили</div><div class="v">1 240</div></div>
+            <div><div class="k">Осталось</div><div class="v" style="color:var(--ok)">760</div></div>
+            <div><div class="k">Хватит примерно на</div><div class="v">2 книги</div></div>
+          </div>
+          <div class="meter" style="margin-top:14px;height:6px"><i style="width:38%"></i></div>
+        </div>
+        <div class="duo">
+          <div class="sw">
+            <svg class="i lg" style="margin-top:2px;color:var(--ok)"><use href="#i-check"/></svg>
+            <div><div class="t">Один и тот же файл дважды не стоит ничего</div>
+              <div class="s">Загрузили книгу, потом загрузили её же ещё раз на тот же язык —
+                страницы спишутся только в первый раз.</div></div>
+          </div>
+          <div class="sw">
+            <svg class="i lg" style="margin-top:2px;color:var(--muted)"><use href="#i-alert"/></svg>
+            <div><div class="t">Удалить перевод — страницы не вернутся</div>
+              <div class="s">Работа уже сделана, поэтому счётчик назад не идёт.
+                Если страницы кончились, попросите добавить.</div></div>
+          </div>
+        </div>
+        <div class="head">
+          <button class="btn" id="btn-ask-pages">Попросить ещё страниц</button>
+          <span class="lead">Добавляет их тот, кто выдал вам доступ</span>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Сколько вы берёте со своих заказчиков</span></div>
+        <div class="card pad" style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
+          <label class="col" style="gap:5px"><span class="lbl" style="margin:0">Цена за страницу</span>
+            <input class="inp" style="width:150px" value="45 000" /></label>
+          <label class="col" style="gap:5px"><span class="lbl" style="margin:0">Деньги</span>
+            <select class="sel"><option>сум</option><option>доллары</option><option>рубли</option></select></label>
+          <label class="col" style="gap:5px"><span class="lbl" style="margin:0">Меньше не берём</span>
+            <input class="inp" style="width:130px" value="5 страниц" /></label>
+          <button class="btn sec" id="price-save">Сохранить</button>
+          <span class="lead" style="flex:1 1 220px">Эта цена нужна только для счёта заказчику.
+            К вашим лимитам она не относится.</span>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Куда ушли страницы</span></div>
+        <div class="card">
+          <div class="logrow"><span class="d" style="color:var(--muted)">7 сентября</span>
+            <span>Фтизиатрия. Учебник — тот же файл ещё раз</span>
+            <span class="n minus">0</span><span class="n rest" style="color:var(--muted)">760</span></div>
+          <div class="logrow"><span class="d" style="color:var(--muted)">3 сентября</span>
+            <span>Фтизиатрия. Учебник</span>
+            <span class="n minus">−324</span><span class="n rest" style="color:var(--muted)">760</span></div>
+          <div class="logrow"><span class="d" style="color:var(--muted)">1 сентября</span>
+            <span>Инструкция к анализатору</span>
+            <span class="n minus">−48</span><span class="n rest" style="color:var(--muted)">1 084</span></div>
+          <div class="logrow"><span class="d" style="color:var(--muted)">28 августа</span>
+            <span>Вам добавили страниц</span>
+            <span class="n plus">+1 000</span><span class="n rest" style="color:var(--muted)">1 132</span></div>
+          <div class="logrow"><span class="d" style="color:var(--muted)">12 августа</span>
+            <span>Начало работы</span>
+            <span class="n plus">+1 000</span><span class="n rest" style="color:var(--muted)">1 000</span></div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ═════════════ ПРОФИЛЬ И КОМАНДА ═════════════ -->
+    <main class="wrap hide" id="scr-profile">
+      <div class="col" style="gap:5px">
+        <h1 class="h1">Профиль</h1>
+        <p class="lead">Тут всё про вас: как вас зовут, на каком языке с вами разговаривать
+          и кто ещё работает над вашими книгами.</p>
+      </div>
+
+      <div class="sect">
+        <div class="duo">
+          <div class="card pad" style="display:flex;flex-direction:column;gap:12px">
+            <span class="eyebrow">Про вас</span>
+            <div><span class="lbl">Как вас зовут</span><input class="inp" value="Шохрух" /></div>
+            <div><span class="lbl">Почта</span><input class="inp" value="doctor@medizdat.uz" /></div>
+            <button class="btn sec" id="prof-save" style="align-self:flex-start">Сохранить</button>
+          </div>
+
+          <div class="card pad" style="display:flex;flex-direction:column;gap:12px">
+            <span class="eyebrow">Пароль</span>
+            <div><span class="lbl">Нынешний пароль</span>
+              <input class="inp" type="password" placeholder="тот, которым вы вошли" /></div>
+            <div><span class="lbl">Новый пароль</span>
+              <input class="inp" type="password" placeholder="не короче 8 знаков" /></div>
+            <div class="fine">Спрашиваем нынешний, чтобы никто чужой не поменял пароль,
+              если вы забыли выйти на чужом компьютере.</div>
+            <button class="btn sec" id="pass-save" style="align-self:flex-start">Поменять пароль</button>
+          </div>
+        </div>
+
+        <div class="card pad" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">
+          <span class="eyebrow">Язык, на котором я с вами говорю</span>
+          <div class="seg" style="margin-left:auto">
+            <button data-lang="ru" aria-pressed="true">Русский</button>
+            <button data-lang="uz">O‘zbekcha</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Кто работает вместе с вами</span>
+          <span class="chip">Медиздат &middot; вы главный</span></div>
+        <div class="grid2">
+          <div class="card tcard"><div class="pair">Шохрух <i>&middot;</i> вы</div>
+            <div class="note">Всё можно: и переводить, и решать про слова, и звать других</div>
+            <div class="acts"><span class="chip ok">главный</span></div></div>
+          <div class="card tcard"><div class="pair">Ева <i>&middot;</i> eva@medizdat.uz</div>
+            <div class="note">Переводит и отвечает на вопросы</div>
+            <div class="acts"><span class="chip">переводчик</span>
+              <button class="btn ghost sm" data-kick="Ева">Убрать</button></div></div>
+          <div class="card tcard"><div class="pair">Марина <i>&middot;</i> marina@medizdat.uz</div>
+            <div class="note">Переводит и отвечает на вопросы</div>
+            <div class="acts"><span class="chip">переводчик</span>
+              <button class="btn ghost sm" data-kick="Марина">Убрать</button></div></div>
+        </div>
+        <div class="card pad" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <label class="col" style="gap:5px;flex:1 1 240px">
+            <span class="lbl" style="margin:0">Позвать коллегу</span>
+            <input class="inp" placeholder="его почта" id="inv-mail" /></label>
+          <button class="btn" id="inv-send">Позвать</button>
+          <span class="lead" style="flex:1 1 240px">Он уже должен быть зарегистрирован —
+            и сам решит, войти к вам или нет.</span>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Вас позвали</span></div>
+        <div class="card pad" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <svg class="i lg" style="color:var(--muted)"><use href="#i-user"/></svg>
+          <div class="col"><span style="font-weight:500">«Тошкент Мед» зовёт вас переводчиком</span>
+            <span class="lead">Позвали 5 сентября. Свои книги останутся при вас.</span></div>
+          <div class="row" style="margin-left:auto">
+            <button class="btn sec sm" id="inv-yes">Войти к ним</button>
+            <button class="btn ghost sm" id="inv-no">Отказаться</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <button class="btn sec" id="prof-out" style="align-self:flex-start">
+          <svg class="i"><use href="#i-out"/></svg>Выйти</button>
+      </div>
+    </main>
+
+    <!-- ═════════════ НАДПИСИ НА КАРТИНКАХ ═════════════ -->
+    <main class="wrap hide" id="scr-images">
+      <div class="col" style="gap:5px">
+        <h1 class="h1">Надписи на картинках</h1>
+        <p class="lead">Часть текста в книге нарисована прямо на картинках: подписи под рисунками,
+          схемы, куски сканов. Для обычного перевода это просто картинка — он их не видит.
+          Поэтому я смотрю на картинки отдельно.</p>
+      </div>
+
+      <div class="sect">
+        <div class="card pad">
+          <div class="kvrow">
+            <div><div class="k">Картинок в книге</div><div class="v">162</div></div>
+            <div><div class="k">С надписями</div><div class="v">41</div></div>
+            <div><div class="k">Надписей нашла</div><div class="v">230</div></div>
+            <div><div class="k">Не смогла прочитать</div><div class="v">3</div></div>
+          </div>
+          <div class="row" style="margin-top:14px">
+            <button class="btn" id="img-run"><svg class="i"><use href="#i-play"/></svg>Прочитать заново</button>
+            <span class="lead">Займёт минут 20. Уже прочитанное второй раз не читаю.</span>
+          </div>
+          <div class="hide" id="img-prog" style="margin-top:12px">
+            <div class="row" style="gap:14px">
+              <span class="num" id="img-pct" style="font-size:24px;font-weight:500">0%</span>
+              <span class="lead" id="img-sub">смотрю картинку 1 из 162</span>
+            </div>
+            <div class="bar" style="margin-top:8px"><i id="img-bar" style="width:0%"></i></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="filters">
+          <button class="fbtn" data-img="use" aria-pressed="true">Перевожу<span>41</span></button>
+          <button class="fbtn" data-img="skip">Не перевожу<span>189</span></button>
+          <button class="fbtn" data-img="bad">Не смогла прочитать<span>3</span></button>
+        </div>
+        <div class="grid2" id="img-host"></div>
+        <p class="note">На снимках часто написано то, что к книге отношения не имеет:
+          фамилия врача, дата съёмки, настройки аппарата — «kV 120», «004.43cm».
+          Такое я в перевод не беру. Если я ошиблась и убрала нужное — верните,
+          я запомню ваше решение и больше не трону.</p>
+      </div>
+    </main>
+
+    <!-- ═════════════ СЧЕТА ═════════════ -->
+    <main class="wrap hide" id="scr-bills">
+      <div class="col" style="gap:5px">
+        <h1 class="h1">Счета</h1>
+        <p class="lead">Считаем по страницам исходника: сколько страниц в книге — столько
+          и в счёте. Цену за страницу вы задаёте на
+          <button class="linkbtn" data-go="pages">«Лимитах»</button>.</p>
+      </div>
+
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Посчитать заказ</span></div>
+        <div class="card">
+          <div class="pad" style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end">
+            <label class="col" style="gap:5px;flex:1 1 240px"><span class="lbl" style="margin:0">Какая книга</span>
+              <select class="sel" id="bill-book">
+                <option>Фтизиатрия. Учебник — 324 страницы</option>
+                <option>Договор поставки №44 — 12 страниц</option>
+                <option>Инструкция к анализатору — 48 страниц</option>
+              </select></label>
+            <label class="col" style="gap:5px"><span class="lbl" style="margin:0">Цена за страницу</span>
+              <input class="inp" style="width:130px" value="45 000" readonly /></label>
+            <div class="col" style="gap:2px"><span class="lbl" style="margin:0">Получается</span>
+              <span style="font-size:22px;font-weight:500" class="num" id="bill-sum">14 580 000 сум</span></div>
+            <button class="btn" id="bill-save">Сохранить смету</button>
+          </div>
+          <div class="sw" style="border:0;border-top:1px solid var(--line);border-radius:0">
+            <svg class="i lg" style="margin-top:2px;color:var(--accent)"><use href="#i-check"/></svg>
+            <div><div class="t">Числа в смете замрут</div>
+              <div class="s">Поменяете завтра цену — в этой смете останется 45 000. Человек
+                посчитал сегодня, платит через неделю и должен увидеть те же цифры.
+                Новая цена — это новая смета.</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Что уже посчитали</span></div>
+        <div class="card">
+          <div class="arow hd t-bill"><span>Когда</span><span>Книга</span><span>Стр.</span>
+            <span>Сумма</span><span>Что с ней</span><span></span></div>
+          <div class="arow t-bill"><span class="hm" style="color:var(--muted)">7 сентября</span>
+            <span class="nm">Фтизиатрия. Учебник</span><span class="n hm">324</span>
+            <span class="n">14 580 000 сум</span><span><span class="chip warn">счёт выставлен</span></span>
+            <span class="acts"><button class="btn sec sm" data-bill="paid">Оплачено</button>
+              <button class="btn ghost sm" data-bill="pdf">Счёт</button></span></div>
+          <div class="arow t-bill"><span class="hm" style="color:var(--muted)">2 сентября</span>
+            <span class="nm">Инструкция к анализатору</span><span class="n hm">48</span>
+            <span class="n">2 160 000 сум</span><span><span class="chip ok">оплачено</span></span>
+            <span class="acts"><button class="btn ghost sm" data-bill="pdf">Счёт</button></span></div>
+          <div class="arow t-bill"><span class="hm" style="color:var(--muted)">28 августа</span>
+            <span class="nm">Договор поставки №44</span><span class="n hm">12</span>
+            <span class="n">540 000 сум</span><span><span class="chip">черновик</span></span>
+            <span class="acts"><button class="btn sec sm" data-bill="send">Выставить счёт</button></span></div>
+        </div>
+        <p class="note">Кто и когда объявил счёт оплаченным — записывается. Это вопрос денег,
+          и стереть такую запись нельзя.</p>
+      </div>
+    </main>
+
+    <!-- ═════════════ АДМИНКА ═════════════ -->
+    <main class="wrap wide hide" id="scr-admin">
+      <div class="head">
+        <div class="col" style="gap:5px">
+          <h1 class="h1">Админка</h1>
+          <p class="lead">Служебный экран: организации, люди, расход, журнал и тест-группа.
+            Клиенты его не видят.</p>
+        </div>
+        <div class="row" style="margin-left:auto">
+          <span class="chip ok">ключ OpenAI на месте</span>
+          <span class="chip">работает 12 дней</span>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="card pad">
+          <div class="kvrow">
+            <div><div class="k">Организаций</div><div class="v">12</div></div>
+            <div><div class="k">Людей</div><div class="v">34</div></div>
+            <div><div class="k">Книг в работе</div><div class="v">87</div></div>
+            <div><div class="k">Строк переведено</div><div class="v">214 300</div></div>
+            <div><div class="k">Расход за сентябрь</div><div class="v">$412</div></div>
+            <div><div class="k">С запуска процесса</div><div class="v">$38</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Организации</span>
+          <button class="btn sec sm" data-adm="org-new" style="margin-left:auto">Завести организацию</button></div>
+        <div class="card">
+          <div class="arow hd t-org"><span>Название</span><span>Людей</span><span>Страницы</span>
+            <span>Лимит $</span><span>Режим</span><span></span></div>
+          <div class="arow t-org"><span class="nm">Медиздат</span><span class="n hm">3</span>
+            <span class="n hm">1 240 / 2 000</span><span class="n hm">50</span>
+            <span class="hm"><span class="chip">обычный</span></span>
+            <span class="acts"><button class="btn sec sm" data-adm="pages">Пополнить</button>
+              <button class="btn ghost sm" data-adm="limit">Лимит</button>
+              <button class="btn ghost sm" data-adm="simple">Простой режим</button>
+              <button class="btn ghost sm" data-adm="models">Модели</button></span></div>
+          <div class="arow t-org"><span class="nm">Тошкент Мед</span><span class="n hm">8</span>
+            <span class="n hm">640 / 1 000</span><span class="n hm">120</span>
+            <span class="hm"><span class="chip info">простой</span></span>
+            <span class="acts"><button class="btn sec sm" data-adm="pages">Пополнить</button>
+              <button class="btn ghost sm" data-adm="limit">Лимит</button>
+              <button class="btn ghost sm" data-adm="simple">Обычный режим</button>
+              <button class="btn ghost sm" data-adm="models">Модели</button></span></div>
+          <div class="arow t-org"><span class="nm">Фарм-перевод</span><span class="n hm">2</span>
+            <span class="n hm">98 / 100</span><span class="n hm">—</span>
+            <span class="hm"><span class="chip">обычный</span></span>
+            <span class="acts"><button class="btn sec sm" data-adm="pages">Пополнить</button>
+              <button class="btn ghost sm" data-adm="limit">Лимит</button>
+              <button class="btn ghost sm" data-adm="del">Удалить</button></span></div>
+        </div>
+        <p class="note">Страницы — предоплата: пополняем, а списывает их загрузка файла.
+          Счётчик назад не идёт, удаление книги страницы не возвращает.</p>
+      </div>
+
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Люди</span>
+          <button class="btn sec sm" data-adm="user-new" style="margin-left:auto">Добавить человека</button></div>
+        <div class="card">
+          <div class="arow hd t-usr"><span>Логин</span><span>Имя</span><span>Роль</span>
+            <span>Организация</span><span></span></div>
+          <div class="arow t-usr"><span class="nm">admin</span><span class="hm">Шохрух</span>
+            <span class="hm"><span class="chip ok">владелец</span></span>
+            <span class="hm" style="color:var(--muted)">Медиздат</span>
+            <span class="acts"><button class="btn ghost sm" data-adm="pass">Сменить пароль</button></span></div>
+          <div class="arow t-usr"><span class="nm">eva</span><span class="hm">Ева</span>
+            <span class="hm"><span class="chip">переводчик</span></span>
+            <span class="hm" style="color:var(--muted)">Медиздат</span>
+            <span class="acts"><button class="btn ghost sm" data-adm="pass">Сменить пароль</button>
+              <button class="btn ghost sm" data-adm="user-del">Удалить</button></span></div>
+          <div class="arow t-usr"><span class="nm">tm_owner</span><span class="hm">Азиза</span>
+            <span class="hm"><span class="chip ok">владелец</span></span>
+            <span class="hm" style="color:var(--muted)">Тошкент Мед</span>
+            <span class="acts"><button class="btn ghost sm" data-adm="pass">Сменить пароль</button>
+              <button class="btn ghost sm" data-adm="user-del">Удалить</button></span></div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Прогоны: смета против факта</span>
+          <span class="lead">По этой разнице калибруется смета под кнопкой</span></div>
+        <div class="card">
+          <div class="arow hd t-run"><span>Прогон</span><span>Книга</span><span>Смета</span>
+            <span>Факт</span><span>Разница</span></div>
+          <div class="arow t-run"><span class="n">№ 214</span><span class="nm">Фтизиатрия. Учебник</span>
+            <span class="n hm">$14,80</span><span class="n hm">$15,22</span>
+            <span class="n" style="color:var(--warn)">+3%</span></div>
+          <div class="arow t-run"><span class="n">№ 213</span><span class="nm">Инструкция к анализатору</span>
+            <span class="n hm">$2,10</span><span class="n hm">$1,94</span>
+            <span class="n" style="color:var(--ok)">−8%</span></div>
+          <div class="arow t-run"><span class="n">№ 212</span><span class="nm">Фтизиатрия. Учебник</span>
+            <span class="n hm">$9,40</span><span class="n hm">$9,38</span>
+            <span class="n" style="color:var(--ok)">0%</span></div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="duo">
+          <div class="col" style="gap:12px">
+            <span class="eyebrow">Журнал: кто что сделал</span>
+            <div class="card">
+              <div class="arow t-log"><span class="hm" style="color:var(--muted)">7 сен, 13:40</span>
+                <span class="nm hm">Ева · Медиздат</span><span>заверила 12 строк</span></div>
+              <div class="arow t-log"><span class="hm" style="color:var(--muted)">7 сен, 12:05</span>
+                <span class="nm hm">Шохрух · Медиздат</span><span>понизил запись «Бактериовыделение»</span></div>
+              <div class="arow t-log"><span class="hm" style="color:var(--muted)">6 сен, 18:20</span>
+                <span class="nm hm">Азиза · Тошкент Мед</span><span>загрузила книгу на 210 страниц</span></div>
+              <div class="arow t-log"><span class="hm" style="color:var(--muted)">6 сен, 09:11</span>
+                <span class="nm hm">мы</span><span>пополнили Медиздату 1 000 страниц</span></div>
+            </div>
+          </div>
+          <div class="col" style="gap:12px">
+            <span class="eyebrow">Кто когда заходил</span>
+            <div class="card">
+              <div class="arow t-log"><span class="hm" style="color:var(--muted)">7 сен, 13:38</span>
+                <span class="nm hm">eva</span><span><span class="chip ok">вход</span></span></div>
+              <div class="arow t-log"><span class="hm" style="color:var(--muted)">7 сен, 09:02</span>
+                <span class="nm hm">admin</span><span><span class="chip ok">вход</span></span></div>
+              <div class="arow t-log"><span class="hm" style="color:var(--muted)">6 сен, 22:47</span>
+                <span class="nm hm">неизвестный</span><span><span class="chip bad">отказ</span></span></div>
+              <div class="arow t-log"><span class="hm" style="color:var(--muted)">5 сен</span>
+                <span class="nm hm">tm_owner</span><span style="color:var(--faint)">ни разу</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Тест-группа</span>
+          <button class="btn sec sm" data-adm="set-new" style="margin-left:auto">Новый набор</button></div>
+        <div class="duo">
+          <div class="card pad" style="display:flex;flex-direction:column;gap:10px">
+            <div class="row"><span style="font-weight:500">Набор «Сентябрь»</span>
+              <span class="chip ok" style="margin-left:auto">идёт набор</span></div>
+            <div class="kvrow">
+              <div><div class="k">Мест</div><div class="v">20</div></div>
+              <div><div class="k">Заняли</div><div class="v">14</div></div>
+              <div><div class="k">Анкет</div><div class="v">11</div></div>
+            </div>
+            <div class="row"><button class="btn sec sm" data-adm="seats">Изменить мест</button>
+              <button class="btn ghost sm" data-adm="close">Закрыть набор</button></div>
+          </div>
+          <div class="card pad" style="display:flex;flex-direction:column;gap:10px">
+            <div class="row"><span style="font-weight:500">Бот в Telegram</span>
+              <span class="chip ok" style="margin-left:auto">на связи</span></div>
+            <div class="lead">Приносит анкеты и заявки. Пока набор закрыт — вежливо отвечает
+              «мест нет» и доступ не выдаёт.</div>
+            <div class="row"><button class="btn ghost sm" data-adm="survey">Смотреть анкеты</button>
+              <button class="btn ghost sm" data-adm="testers">Тестировщики</button></div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ═════════════ ВСЕ ПЕРЕВОДЫ ═════════════ -->
+    <main class="wrap hide" id="scr-home">
+      <h1 class="h1">Что нужно перевести?</h1>
+
+      <div class="sect" id="imp-drop">
+        <div class="drop">
+          <svg class="i" style="width:30px;height:30px;color:var(--faint)"><use href="#i-doc"/></svg>
+          <div class="big">Перетащите файл сюда</div>
+          <div class="lead" style="text-align:center">Word, Excel, PDF или фото страницы.<br />
+            Я сама увижу, на каком языке текст, и сколько в нём страниц.</div>
+          <button class="btn big" id="imp-pick">Выбрать файл</button>
+          <div class="eyebrow">В вашем лимите осталось 760 страниц</div>
+        </div>
+      </div>
+
+      <div class="sect hide" id="imp-card">
+        <div class="card">
+          <div class="pad row" style="gap:12px">
+            <svg class="i lg" style="color:var(--muted)"><use href="#i-doc"/></svg>
+            <div class="col"><span style="font-weight:500">Фтизиатрия. Учебник.docx</span>
+              <span class="lead">324 страницы &middot; 18,4 МБ &middot; 162 картинки</span></div>
+            <button class="btn ghost sm" id="imp-cancel" style="margin-left:auto">Убрать</button>
+          </div>
+          <div class="pad" style="border-top:1px solid var(--line);display:flex;gap:14px;flex-wrap:wrap">
+            <label class="col" style="gap:5px;flex:1 1 200px"><span class="eyebrow">Как назовём</span>
+              <input class="inp" value="Фтизиатрия. Учебник" /></label>
+            <label class="col" style="gap:5px"><span class="eyebrow">Текст на языке</span>
+              <select class="sel"><option>русский — я так вижу</option><option>английский</option>
+                <option>узбекский</option></select></label>
+            <label class="col" style="gap:5px"><span class="eyebrow">Перевести на</span>
+              <select class="sel"><option>английский</option><option>узбекский</option>
+                <option>русский</option></select></label>
+            <label class="col" style="gap:5px"><span class="eyebrow">О чём книга</span>
+              <select class="sel"><option>медицина</option><option>договоры и законы</option>
+                <option>техника</option><option>обычный текст</option></select></label>
+          </div>
+          <div class="sw" style="border:0;border-top:1px solid var(--line);border-radius:0">
+            <svg class="i lg" style="margin-top:2px;color:var(--accent)"><use href="#i-book"/></svg>
+            <div><div class="t">Спишется 324 страницы, останется 436</div>
+              <div class="s">Если загрузите этот же файл ещё раз — второй раз ничего не спишется.
+                <button class="btn ghost sm" data-go="pages" style="padding:0 4px">Посмотреть лимиты</button></div></div>
+          </div>
+          <div class="pad row" style="border-top:1px solid var(--line)">
+            <button class="btn big" id="imp-go">Перевести</button>
+            <span class="lead">Займёт примерно 40 минут. Можно закрыть страницу.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <div class="head"><span class="eyebrow">Или начните с готового образца</span></div>
+        <div class="tiles">
+          <button class="tile">
+            <div class="art">
+              <svg viewBox="0 0 200 72" width="100%" height="72" aria-hidden="true">
+                <rect x="46" y="4" width="52" height="64" rx="3" fill="var(--bg)" stroke="var(--line-2)"/>
+                <rect x="54" y="14" width="36" height="3" rx="1.5" fill="var(--line-2)"/>
+                <rect x="54" y="22" width="30" height="3" rx="1.5" fill="var(--line)"/>
+                <rect x="54" y="30" width="36" height="3" rx="1.5" fill="var(--line)"/>
+                <path d="M104 36h13" stroke="var(--accent)" stroke-width="1.6"/>
+                <path d="M113 32.5l4.5 3.5-4.5 3.5" fill="none" stroke="var(--accent)" stroke-width="1.6"/>
+                <rect x="124" y="4" width="52" height="64" rx="3" fill="var(--bg)" stroke="var(--accent)"/>
+                <rect x="132" y="14" width="36" height="3" rx="1.5" fill="var(--accent)" opacity=".65"/>
+                <rect x="132" y="22" width="30" height="3" rx="1.5" fill="var(--accent)" opacity=".3"/>
+                <rect x="132" y="30" width="36" height="3" rx="1.5" fill="var(--accent)" opacity=".3"/>
+              </svg>
+            </div>
+            <div class="cap">Файл Word<span>вернём точно такой же на вид</span></div>
+          </button>
+          <button class="tile">
+            <div class="art">
+              <svg viewBox="0 0 200 72" width="100%" height="72" aria-hidden="true">
+                <rect x="30" y="8" width="140" height="56" rx="3" fill="var(--bg)" stroke="var(--line-2)"/>
+                <path d="M30 24h140M30 40h140M30 56h140M100 8v56" stroke="var(--line)"/>
+                <rect x="36" y="14" width="40" height="4" rx="2" fill="var(--line-2)"/>
+                <rect x="106" y="30" width="40" height="4" rx="2" fill="var(--accent)" opacity=".5"/>
+                <rect x="106" y="46" width="30" height="4" rx="2" fill="var(--accent)" opacity=".5"/>
+              </svg>
+            </div>
+            <div class="cap">Таблица Excel<span>клеточка в клеточку</span></div>
+          </button>
+          <button class="tile">
+            <div class="art">
+              <svg viewBox="0 0 200 72" width="100%" height="72" aria-hidden="true">
+                <rect x="52" y="10" width="96" height="52" rx="6" fill="var(--bg)" stroke="var(--line-2)"/>
+                <rect x="64" y="24" width="60" height="4" rx="2" fill="var(--line-2)"/>
+                <rect x="64" y="34" width="72" height="4" rx="2" fill="var(--line)"/>
+                <rect x="64" y="44" width="40" height="4" rx="2" fill="var(--line)"/>
+              </svg>
+            </div>
+            <div class="cap">Просто текст<span>вставьте сюда — переведу</span></div>
+          </button>
+        </div>
+        <div class="row">
+          <button class="pill">PDF</button>
+          <button class="pill">Скан или фото</button>
+          <button class="pill">Сайт по ссылке</button>
+        </div>
+      </div>
+      <div class="sect">
+        <div class="head"><h2 class="h2">Недавние</h2></div>
+        <div class="card">
+          <div class="lrow" data-go="run" tabindex="0" role="button">
+            <div class="nm">Фтизиатрия. Учебник<span>324 страницы &middot; файл Word</span></div>
+            <div class="pr" style="color:var(--muted)">рус &rarr; англ</div>
+            <div class="st"><span class="chip warn">5 вопросов</span></div>
+            <div class="num" style="text-align:right">86,6%</div>
+          </div>
+          <div class="lrow">
+            <div class="nm">Договор поставки №44<span>12 страниц &middot; .docx</span></div>
+            <div class="pr" style="color:var(--muted)">рус &rarr; узб</div>
+            <div class="st"><span class="chip ok">готово</span></div>
+            <div class="num" style="text-align:right">100%</div>
+          </div>
+          <div class="lrow">
+            <div class="nm">Инструкция к анализатору<span>48 страниц &middot; .pdf</span></div>
+            <div class="pr" style="color:var(--muted)">англ &rarr; рус</div>
+            <div class="st"><span class="chip info">идёт перевод</span></div>
+            <div class="num" style="text-align:right">41%</div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ═════════════ ВХОД И РЕГИСТРАЦИЯ ═════════════ -->
+<div class="auth hide" id="auth">
+  <div class="auth-card">
+    <div class="auth-brand"><i></i>Translate</div>
+
+    <!-- вход -->
+    <div id="auth-in">
+      <div class="col" style="gap:5px;margin-bottom:15px">
+        <h1 class="h1">С возвращением</h1>
+        <p class="lead">Введите почту и пароль — и продолжим с того места, где остановились.</p>
+      </div>
+      <div class="col" style="gap:12px">
+        <div><span class="lbl">Почта</span>
+          <input class="inp" type="email" value="doctor@medizdat.uz" autocomplete="username" /></div>
+        <div><span class="lbl">Пароль</span>
+          <input class="inp" type="password" value="parol12345" autocomplete="current-password" /></div>
+        <button class="btn big" id="auth-go" style="justify-content:center">Войти</button>
+        <div class="row" style="justify-content:space-between">
+          <button class="linkbtn" id="auth-forgot">Забыли пароль?</button>
+          <button class="linkbtn" id="to-reg">Меня тут ещё нет</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- регистрация -->
+    <div id="auth-up" class="hide">
+      <div class="col" style="gap:5px;margin-bottom:15px">
+        <h1 class="h1">Давайте познакомимся</h1>
+        <p class="lead">Дадим 30 страниц бесплатно — попробуйте на своём файле.</p>
+      </div>
+      <div class="col" style="gap:12px">
+        <div><span class="lbl">Как вас зовут</span>
+          <input class="inp" placeholder="Шохрух" /></div>
+        <div><span class="lbl">Почта</span>
+          <input class="inp" type="email" placeholder="you@mail.uz" autocomplete="username" /></div>
+        <div><span class="lbl">Придумайте пароль</span>
+          <input class="inp" type="password" placeholder="не короче 8 знаков" autocomplete="new-password" />
+          <div class="fine" style="margin-top:5px">Запишите его где-нибудь. Мы пароль не видим.</div></div>
+
+        <label class="checkline"><input type="checkbox" id="auth-accept" />
+          <span>Я прочитал(а) <button class="linkbtn" type="button">договор</button> и
+            <button class="linkbtn" type="button">как вы храните мои данные</button>, и согласен(на).</span></label>
+
+        <div class="fine">Важное простыми словами: текст, который вы загружаете, уходит на проверку
+          в языковую модель (OpenAI, США). Без этого перевести не получится. Всё это написано
+          в договоре — мы не прячем.</div>
+
+        <button class="btn big" id="auth-create" style="justify-content:center" disabled>Создать аккаунт</button>
+        <div class="row" style="justify-content:center">
+          <button class="linkbtn" id="to-in">У меня уже есть аккаунт</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="authsplit">язык</div>
+    <div class="row" style="justify-content:center">
+      <div class="seg">
+        <button data-lang="ru" aria-pressed="true">Русский</button>
+        <button data-lang="uz">O‘zbekcha</button>
+      </div>
+      <button class="pill" id="auth-theme">Тёмная</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal hide" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-t">
+  <div class="modal-card">
+    <h2 class="h2" id="modal-t" style="font-size:17px">Вопрос</h2>
+    <p class="lead" id="modal-s"></p>
+    <div class="row" style="justify-content:flex-end;gap:8px">
+      <button class="btn ghost" id="modal-no">Нет, оставить</button>
+      <button class="btn" id="modal-yes">Да</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (s, r) { return (r || document).querySelector(s); };
+  var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+  var nf = function (n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " "); };
+  var esc = function (s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;"); };
+  var plural = function (n, a, b, c) {
+    var d = n % 100, e = n % 10;
+    return n + " " + (d > 4 && d < 21 ? c : e === 1 ? a : e > 1 && e < 5 ? b : c);
+  };
+  var icon = function (n) { return '<svg class="i"><use href="#i-' + n + '"/></svg>'; };
+  /* Метка строки с картинки. Коротко и на языке интерфейса. */
+  var uiLang = "ru";
+  function RASM() { return uiLang === "uz" ? "Rasm" : "Рис."; }
+
+  /* ── тема: светлая по умолчанию ────────────────────────────── */
+  var theme = "light";
+  try { theme = localStorage.getItem("tr-theme") || "light"; } catch (e) {}
+  function applyTheme(t) {
+    theme = t;
+    document.documentElement.setAttribute("data-theme", t);
+    $("#theme").textContent = t === "dark" ? "Светлая" : "Тёмная";
+    try { localStorage.setItem("tr-theme", t); } catch (e) {}
+  }
+  applyTheme(theme);
+  $("#theme").addEventListener("click", function () { applyTheme(theme === "dark" ? "light" : "dark"); });
+
+  /* Окно вопроса. Своё, а не системное: в нём видно, о какой надписи речь. */
+  var askCb = null;
+  function ask(title, text, yes, cb) {
+    $("#modal-t").textContent = title;
+    $("#modal-s").textContent = text;
+    $("#modal-s").style.whiteSpace = "pre-line";
+    $("#modal-yes").textContent = yes;
+    askCb = cb;
+    $("#modal").classList.remove("hide");
+  }
+  function askClose() { $("#modal").classList.add("hide"); askCb = null; }
+
+  function toast(msg) {
+    var t = $("#toast"); t.textContent = msg; t.classList.add("on");
+    clearTimeout(toast._t); toast._t = setTimeout(function () { t.classList.remove("on"); }, 2600);
+  }
+
+  /* ── данные ────────────────────────────────────────────────── */
+  var TOTAL = 2711;
+  var st = { ready: 2348, mach: 247, hum: 116, mine: 14, allowMine: false, run: "done" };
+
+  var SEGS = [
+    { id: 1341, src: "Туберкулёма — инкапсулированный казеозный фокус диаметром более 1 см.",
+      tgt: "A tuberculoma is an encapsulated caseous focus more than 1 cm in diameter.",
+      back: "Туберкулёма — это инкапсулированный казеозный очаг диаметром более 1 см.",
+      state: "ok", terms: [["туберкулёма", "tuberculoma", "обязательно"]], tm: null, notes: [] },
+    { id: 1344, src: "Микобактерии сохраняют жизнеспособность в высохшей мокроте до 12 месяцев.",
+      tgt: "Mycobacteria remain viable in dried sputum for up to 12 months.",
+      back: "Микобактерии остаются жизнеспособными в высушенной мокроте до 12 месяцев.",
+      state: "mach", terms: [["микобактерии", "mycobacteria", "обязательно"]], tm: null,
+      notes: [["info", "Перевела, но ещё не проверила. Сделаю сама."]] },
+    { id: 1349, src: "Изониазид 300 мг в сутки внутрь.",
+      tgt: "Isoniazid 300 daily by mouth.", back: "Изониазид 300 в сутки внутрь.",
+      state: "bad", mine: true,
+      terms: [["изониазид", "isoniazid", "обязательно"]],
+      tm: ["Изониазид 600 мг в сутки внутрь.", "Isoniazid 600 mg daily by mouth.", "94%"],
+      notes: [["bad", "Было «300 мг», стало просто «300». Потерялись «мг»."],
+              ["bad", "Вы говорили «хорошо», но я убрала галочку: цифры не сходятся."]] },
+    { id: 1352, src: "Прекращение бактериовыделения достигнуто к 4-му месяцу.",
+      tgt: "Cessation of bacillary excretion achieved by month 4.",
+      back: "Прекращение бактериовыделения достигнуто к 4 месяцу.",
+      state: "warn", terms: [["бактериовыделение", "bacillary excretion", "всегда так"]], tm: null,
+      swap: ["bacillary excretion", "bacteriological conversion"],
+      notes: [["warn", "Проверка говорит, что так по-английски не пишут. Спрошу у вас — вопрос 2."]] },
+    { id: 1357, src: "Стенка каверны состоит из трёх слоёв.",
+      tgt: "The cavity wall has three layers.", back: "Стенка каверны имеет три слоя.",
+      state: "mach", terms: [["каверна", "cavity", "обязательно"]], tm: null,
+      notes: [["info", "Нашла тут неточное слово. Починю сама."]] },
+    { id: 1360, src: "Выделяют:", tgt: "The following are distinguished:",
+      back: "Выделяются следующие:", state: "ok", terms: [], tm: null, notes: [] },
+    { id: 1361, src: "— очаговый туберкулёз лёгких;", tgt: "— focal pulmonary tuberculosis;",
+      back: "— очаговый туберкулёз лёгких;", state: "ok",
+      terms: [["очаговый туберкулёз", "focal tuberculosis", "обязательно"]], tm: null, notes: [] },
+    { id: 1367, src: "Рентгенологически определяется округлая тень с чёткими контурами.",
+      tgt: "Radiologically, a rounded opacity with well-defined margins is seen.",
+      back: "Рентгенологически видна округлая тень с чётко очерченными краями.",
+      state: "mine", mine: true, terms: [["тень", "opacity", "не обязательно"]], tm: null,
+      prev: "Radiologically, a round shadow with clear contours is determined.",
+      notes: [["ok", "Это писали вы. Я тут ничего не меняю."]] },
+    { id: 1372, src: "Лечение искусственным пневмотораксом прекращено.",
+      tgt: "Artificial pneumothorax treatment is closed.",
+      back: "Лечение искусственным пневмотораксом закрыто.", state: "warn",
+      terms: [["искусственный пневмоторакс", "artificial pneumothorax", "обязательно"]], tm: null,
+      notes: [["warn", "Придумала вариант получше. Покажу — вопрос 4."]] },
+    { id: 1380, src: "Проба Манту с 2 ТЕ ППД-Л.", tgt: "Mantoux test with 2 TU PPD-L.",
+      back: "Проба Манту с 2 ТЕ ППД-Л.", state: "ok",
+      terms: [["проба Манту", "Mantoux test", "обязательно"], ["ППД-Л", "PPD-L", "обязательно"]],
+      tm: ["Проба Манту с 2 ТЕ.", "Mantoux test with 2 TU.", "88%"], notes: [] },
+    { id: 1384, src: "2) 2HSЕ/10HE", tgt: "2) 2HSЕ/10HE", back: "2) 2HSЕ/10HE", state: "bad",
+      terms: [], tm: null,
+      notes: [["bad", "Тут сломан сам текст книги: русская буква попала в английское слово — вопрос 5."]] },
+    { id: 1395, src: "Прогноз при своевременном лечении благоприятный.", tgt: "", back: "",
+      state: "new", terms: [], tm: null,
+      notes: [["info", "Эту строчку я ещё не переводила. Нажмите значок ▷ — переведу."]] },
+    { id: 2692, src: "Рис. 12. Каверна в верхней доле правого лёгкого.",
+      tgt: "Fig. 12. Cavity in the upper lobe of the right lung.",
+      back: "Рис. 12. Каверна в верхней доле правого лёгкого.",
+      state: "ok", img: true, terms: [["каверна", "cavity", "всегда так"]], tm: null,
+      notes: [["ok", "Эти слова были нарисованы прямо на картинке. Я их разглядела и перевела."]] },
+    { id: 2693, src: "Диссеминированный (милиарный) туберкулёз",
+      tgt: "Disseminated (miliary) tuberculosis",
+      back: "Диссеминированный (милиарный) туберкулёз",
+      state: "ok", img: true, terms: [["туберкулёз", "tuberculosis", "всегда так"]], tm: null,
+      notes: [["ok", "Подпись под рисунком — была нарисована на картинке."]] },
+    { id: 2694, src: "1 — очаг; 2 — капсула; 3 — зона перифокального воспаления",
+      tgt: "1 — focus; 2 — capsule; 3 — perifocal inflammation zone",
+      back: "1 — очаг; 2 — капсула; 3 — зона перифокального воспаления",
+      state: "mach", img: true, terms: [], tm: null,
+      notes: [["info", "Надпись со схемы. Перевела, ещё проверю."]] },
+    { id: 1390, src: "Массивное бактериовыделение (МБТ+) подтверждено посевом.",
+      tgt: "Massive bacillary excretion (MBT+) confirmed by culture.",
+      back: "Массивное бактериовыделение (МБТ+) подтверждено посевом.", state: "warn",
+      terms: [["бактериовыделение", "bacillary excretion", "обязательно"]], tm: null,
+      notes: [["warn", "Это слово я написала в книге двумя способами. Спрошу, какой оставить — вопрос 1."]] }
+  ];
+
+  var CHIP = { ok: ["ok", "хорошо"], mach: ["info", "доделаю"], new: ["", "ещё не перевела"],
+               warn: ["warn", "спрошу"], bad: ["bad", "спрошу"], mine: ["", "ваше"] };
+
+  var QUESTIONS = [
+    { tag: "Одно слово, а написано по-разному", sev: "warn", segs: 86,
+      title: "Одно и то же слово я написала двумя способами. Какой оставить?",
+      rows: [["Как было", "…массивное <mark>бактериовыделение (МБТ+)</mark> подтверждено посевом."],
+             ["Как стало", "в 37 местах <mark class=\"bad\">MBT</mark> &middot; в 49 местах <mark class=\"ok\">MTB</mark>"],
+             ["Что это значит", "…массивное бактериовыделение (МБТ+) подтверждено посевом."]],
+      why: "В 49 местах проверка сказала: правильно MTB — так пишут врачи по-английски. А в 37 местах осталось MBT: это просто русские буквы, переписанные латиницей. Каждая моя проверка смотрит только на свою строчку и всю книгу сразу не видит. Поэтому спрашиваю вас.",
+      a: ["Везде писать MTB", "Везде писать MBT"], note: "Одно нажатие — 86 строк." },
+    { tag: "Спорю с вашим словом", sev: "warn", segs: 27,
+      title: "Вы велели писать «bacillary excretion». Проверка говорит, что так не пишут.",
+      rows: [["Как было", "Прекращение <mark>бактериовыделения</mark> достигнуто к 4-му месяцу."],
+             ["Ваше слово", "Cessation of <mark class=\"bad\">bacillary excretion</mark> achieved by month 4."],
+             ["Проверка хочет", "<mark class=\"ok\">bacteriological conversion</mark> — так это называют врачи-англичане."],
+             ["Что это значит", "Прекращение бактериовыделения достигнуто к 4 месяцу."]],
+      why: "Это ваше слово: вы велели писать так везде. Сама я его поменять не могу и не буду — иначе получится, что машина спорит с человеком. Скажите просто: кто прав, вы или проверка.",
+      a: ["Слушать проверку", "Оставить моё слово"], note: "Одно решение — сразу 27 строк." },
+    { tag: "Я убрала вашу галочку", sev: "bad", segs: 1,
+      title: "Вы сказали «хорошо», а в переводе потерялись «мг».",
+      rows: [["Как было", "Изониазид <mark>300 мг</mark> в сутки внутрь."],
+             ["Как стало", "Isoniazid <mark class=\"bad\">300</mark> daily by mouth."],
+             ["Что это значит", "Изониазид 300 в сутки внутрь. <b>А чего 300?</b>"]],
+      why: "Цифры и «мг» я считаю сама, безо всяких умных программ: они или сходятся, или нет. Тут не сходятся. Это лекарство, и ошибиться нельзя, поэтому я убрала галочку и показываю вам. Ваш старый текст я сохранила, он никуда не пропал.",
+      a: ["Вернуть «300 mg»", "Оставить как есть"], note: "Строка 1349." },
+    { tag: "Придумала получше", sev: "info", segs: 1,
+      title: "Перевод правильный, но звучит не по-английски. Поменять?",
+      rows: [["Как было", "Лечение искусственным пневмотораксом прекращено."],
+             ["Как стало", "<mark class=\"bad\">Artificial pneumothorax treatment is closed.</mark> — тут «closed» как «дверь закрыта»"],
+             ["Хочу написать", "<mark class=\"ok\">Artificial pneumothorax therapy was discontinued.</mark>"],
+             ["Что это значит", "Лечение искусственным пневмотораксом прекратили."]],
+      why: "Все другие проверки смотрят на отдельные слова, а эта читает всю фразу целиком. Она и заметила, что фраза кривая. Новый вариант уже написан. Сама менять не стала: старый тоже не ошибка, тут дело вкуса — а вкус ваш.",
+      a: ["Давай новый", "Оставить как есть"], note: "Строка 1372." },
+    { tag: "Тут сломан сам текст", sev: "bad", segs: 1,
+      title: "В книге в этом месте непонятный кусочек. Переводить нечего.",
+      rows: [["Как было", "2) 2HS<mark class=\"bad\">Е</mark>/10HE"],
+             ["Что не так", "Вот эта буква «Е» — русская, а вокруг неё английские. Так вышло, когда книгу фотографировали."],
+             ["Как стало", "2) 2HSЕ/10HE — оставила как есть"]],
+      why: "Я умею переводить слова, но не умею угадывать, что тут было написано на самом деле. Пока вы не поправите книгу, помочь ничем не могу. Зато честно об этом говорю.",
+      a: ["Поправлю сам", "Оставить как есть"], note: "Строка 1384." }
+  ];
+
+  var TERMS = [
+    { src: "анизакидоз", tgt: "Anisakis", note: "Это болезнь. А Anisakis — червячок, из-за которого болеют. Это разное." },
+    { src: "пиопневмоторакс", tgt: "pyopneumothorax", note: "Три разных места в книге перевела одинаково. Похоже, верно." },
+    { src: "туберкулёма лёгких", tgt: "pulmonary tuberculoma", note: "Точно так же написано в книжке для врачей." },
+    { src: "посев и ТЛЧ", tgt: "culture and drug susceptibility testing", note: "Это встретится в книге ещё 18 раз." },
+    { src: "ППД-Л", tgt: "PPD-L", note: "Так это и пишут врачи по-английски." },
+    { src: "клинику", tgt: "clinical practice", note: "«Внедрено в клинику» — да. «Направлен в клинику» — уже нет. Подходит не всегда." }
+  ];
+
+  var FORMATS = [
+    ["layout", "Такой же файл, только по-английски", "Всё на своих местах: те же картинки, те же таблицы, тот же вид. Даже надписи на картинках переведены."],
+    ["plain", "Просто текст", "Только слова. Без картинок и красоты."],
+    ["xlsx", "Таблица", "Слева как было, справа как стало. Удобно сравнивать."]
+  ];
+  var fmt = "layout";
+
+  /* ── навигация ─────────────────────────────────────────────── */
+  var SCREENS = { run: "#scr-run", ask: "#scr-ask", terms: "#scr-terms",
+                  export: "#scr-export", home: "#scr-home", pages: "#scr-pages",
+                  profile: "#scr-profile", bills: "#scr-bills", admin: "#scr-admin",
+                  images: "#scr-images" };
+  var CRUMB = { run: "Фтизиатрия. Учебник", ask: "Вопросы к вам", terms: "Словарь книги",
+                export: "Экспорт", home: "Новый перевод", pages: "Мои лимиты",
+                profile: "Профиль", bills: "Счета клиентам", admin: "Админка",
+                images: "Надписи на картинках" };
+  function go(name) {
+    Object.keys(SCREENS).forEach(function (k) { $(SCREENS[k]).classList.toggle("hide", k !== name); });
+    $$(".nav").forEach(function (b) { b.setAttribute("aria-current", String(b.dataset.go === name)); });
+    $("#crumb").textContent = CRUMB[name];
+    window.scrollTo(0, 0);
+  }
+  document.addEventListener("click", function (e) {
+    var el = e.target.closest("[data-go]");
+    if (el) { e.stopPropagation(); go(el.dataset.go); }
+  });
+
+  /* ── состояния прогона ─────────────────────────────────────── */
+  var sim = null;
+  function setRun(kind) {
+    st.run = kind;
+    $$("[data-state]").forEach(function (s) { s.classList.toggle("hide", s.dataset.state !== kind); });
+    $$(".seg [data-demo]").forEach(function (p) {
+      p.setAttribute("aria-pressed", String(p.dataset.demo === kind));
+    });
+    $("#ed-sect").classList.toggle("hide", kind === "fresh");
+  }
+  $$(".seg [data-demo]").forEach(function (p) {
+    p.addEventListener("click", function () { go("run"); stop(); setRun(p.dataset.demo); });
+  });
+  function stop() { if (sim) { clearInterval(sim); sim = null; } }
+  $("#btn-start").addEventListener("click", function () {
+    setRun("running");
+    var pct = 5;
+    stop();
+    sim = setInterval(function () {
+      pct = Math.min(100, pct + 3.5);
+      $("#run-bar").style.width = pct + "%";
+      $("#run-pct").textContent = Math.round(pct) + "%";
+      var left = Math.max(1, Math.round((100 - pct) * 0.42));
+      $("#run-eta").textContent = pct >= 100 ? "готово"
+        : "осталось примерно " + plural(left, "минута", "минуты", "минут");
+      $("#run-done").textContent = nf(Math.round(pct / 100 * TOTAL)) + " из 2 711 строк";
+      var ph = pct < 45 ? 0 : pct < 80 ? 1 : 2;
+      $$(".phase").forEach(function (el, i) {
+        el.classList.toggle("done", i < ph);
+        el.classList.toggle("now", i === ph && pct < 100);
+        var n = $("#ph-" + i);
+        if (i < ph) { n.textContent = "2 711 / 2 711"; }
+        else if (i === ph) {
+          n.textContent = i === 0 ? nf(Math.round(pct / 100 * TOTAL)) + " / 2 711"
+            : i === 1 ? "проверяет" : "247 правок";
+        }
+      });
+      $("#run-sub").textContent = pct < 100
+        ? "Можно закрыть страницу — я не остановлюсь."
+        : "Всё, закончила.";
+      if (pct >= 100) { stop(); setRun("done"); toast("Готово! Осталось 5 вопросов"); }
+    }, 650);
+  });
+  $("#btn-stop").addEventListener("click", function () { stop(); setRun("done"); toast("Остановилась. Что успела — сохранила"); });
+
+  /* «Доделать» внутри карточки: действие, а не переход по фильтру */
+  $("#btn-more").addEventListener("click", function (e) {
+    e.stopPropagation();
+    if (!st.mach) { toast("Мне тут больше нечего делать"); return; }
+    var n = st.mach;
+    st.ready += n; st.mach = 0;
+    SEGS.forEach(function (s) { if (s.state === "mach") { s.state = "ok"; s.notes = []; } });
+    paint(); renderFilters(); renderRows(); renderPanel();
+    toast(st.allowMine ? "Доделала " + plural(n, "строку", "строки", "строк") + ", и ваши тоже"
+                       : "Доделала " + plural(n, "строку", "строки", "строк") + ". Ваше не трогала");
+  });
+
+  /* тумблер про ручные правки */
+  $("#sw-mine").addEventListener("click", function () {
+    st.allowMine = !st.allowMine;
+    this.setAttribute("aria-checked", String(st.allowMine));
+    $("#sw-title").textContent = st.allowMine ? "Машина перепишет и ваши правки"
+                                              : "Ваши правки машина не трогает";
+    $("#mine-n").className = st.allowMine ? "chip bad" : "chip";
+    toast(st.allowMine ? "Хорошо, в этот раз поправлю и ваше" : "Больше не трогаю ваше");
+  });
+
+  /* ── сводка ────────────────────────────────────────────────── */
+  function paint() {
+    var pct = st.ready / TOTAL * 100;
+    $("#m-ready").textContent = nf(st.ready);
+    $("#m-mach").textContent = nf(st.mach);
+    $("#m-hum").textContent = nf(st.hum);
+    $("#m-mine").textContent = nf(st.mine);
+    $("#lg-ready").textContent = nf(st.ready);
+    $("#lg-mach").textContent = nf(st.mach);
+    $("#lg-hum").textContent = nf(st.hum);
+    $("#bar-ok").style.width = pct + "%";
+    $("#bar-mach").style.width = (st.mach / TOTAL * 100) + "%";
+    $("#bar-hum").style.width = (st.hum / TOTAL * 100) + "%";
+    $$(".strip .num")[0].textContent = pct.toFixed(1).replace(".", ",") + "%";
+    $("#mine-n").textContent = plural(st.mine, "строка", "строки", "строк");
+    var left = QUESTIONS.filter(function (q) { return !q.done; }).length;
+    $("#nav-ask").textContent = left;
+    $("#nav-ask").style.display = left ? "" : "none";
+    $("#ask-left").textContent = left;
+    $("#ask-bar").style.width = ((QUESTIONS.length - left) / QUESTIONS.length * 100) + "%";
+    $("#m-hum-d").textContent = left ? plural(left, "вопрос", "вопроса", "вопросов") : "вопросов больше нет";
+    $("#dl-note").textContent = "Готово " + pct.toFixed(1).replace(".", ",") + "%"
+      + (st.hum ? ". Ещё " + plural(st.hum, "строка ждёт", "строки ждут", "строк ждут") + " вас"
+                : ". Всё готово!");
+  }
+
+  /* ── редактор ──────────────────────────────────────────────── */
+  var sel = 1349, filter = "all";
+  var picked = {}, page = 1, PAGE = 12;
+  function pickedIds() { return Object.keys(picked).filter(function (k) { return picked[k]; }); }
+  var FILTERS = [
+    ["all", "Всё", null, function () { return true; }],
+    ["ok", "Хорошо", "check", function (s) { return s.state === "ok"; }],
+    ["mach", "Доделаю сама", "sync", function (s) { return s.state === "mach" || s.state === "new"; }],
+    ["ask", "Спрошу у вас", "alert", function (s) { return s.state === "warn" || s.state === "bad"; }],
+    ["mine", "Ваше", "lock", function (s) { return !!s.mine; }]
+  ];
+  function fdef(k) { return FILTERS.filter(function (x) { return x[0] === k; })[0]; }
+  var query = "", scope = "all";
+  function hit(s) {
+    if (!query) { return true; }
+    var q = query.toLowerCase();
+    var a = scope !== "tgt" && s.src.toLowerCase().indexOf(q) >= 0;
+    var b = scope !== "src" && (s.tgt || "").toLowerCase().indexOf(q) >= 0;
+    return !!(a || b);
+  }
+  /* Строки идут в порядке книги. Номер у надписи с картинки больше соседних:
+     её завели позже всех, а стоит она на своём месте — рядом со своим рисунком.
+     Поэтому у такой строки стоит короткая метка «Рис.» / «Rasm». */
+  function shown() { return SEGS.filter(fdef(filter)[3]).filter(hit); }
+  function pageCount() { return Math.max(1, Math.ceil(shown().length / PAGE)); }
+  function pageRows() {
+    var l = shown();
+    if (page > pageCount()) { page = pageCount(); }
+    return l.slice((page - 1) * PAGE, page * PAGE);
+  }
+  /* Подсветка найденного: сначала экранируем, потом ищем — иначе разметка
+     сломается на тексте со скобками и стрелками. */
+  function hl(t, on) {
+    var e = esc(t || "");
+    if (!query || !on) { return e; }
+    var q = esc(query).toLowerCase(), le = e.toLowerCase(), out = "", i = 0, k;
+    while (q && (k = le.indexOf(q, i)) >= 0) {
+      out += e.slice(i, k) + '<mark>' + e.slice(k, k + q.length) + '</mark>';
+      i = k + q.length;
+    }
+    return out + e.slice(i);
+  }
+  function renderFilters() {
+    $("#filters").innerHTML = FILTERS.map(function (f) {
+      return '<button class="fbtn" data-f="' + f[0] + '" aria-pressed="' + (f[0] === filter) + '">'
+        + (f[2] ? icon(f[2]) : "") + f[1] + '<span>' + SEGS.filter(f[3]).length + '</span></button>';
+    }).join("");
+    $("#ed-count").textContent = "видно " + shown().length + " строк из 2 711";
+    $("#ed-found").textContent = query
+      ? (shown().length ? "нашлось: " + shown().length : "ничего не нашлось") : "";
+    $("#ed-clear").classList.toggle("hide", !query);
+  }
+  function renderRows() {
+    var all = shown(), list = pageRows();
+    renderBatch();
+    if (!all.length) {
+      $("#ed-rows").innerHTML = '<div class="empty">Тут пусто. И это хорошо!</div>';
+      $("#ed-pager").innerHTML = "";
+      return;
+    }
+    $("#ed-rows").innerHTML = list.map(function (s) {
+      var c = CHIP[s.mine && s.state === "mine" ? "mine" : s.state];
+      /* Кнопка прямо в строке — как в настоящем редакторе: непереведённую
+         переводим, готовую отмечаем галочкой, а зелёную галочку можно снять. */
+      var act = s.state === "new"
+        ? '<button class="rowact go" data-act="tr" data-id="' + s.id + '" title="Перевести эту строчку" aria-label="Перевести">' + icon("play") + '</button>'
+        : s.mine
+          ? '<button class="rowact on" data-act="undo" data-id="' + s.id + '" title="Убрать галочку" aria-label="Убрать галочку">' + icon("okc") + '</button>'
+          : '<button class="rowact" data-act="ok" data-id="' + s.id + '" title="Тут всё хорошо" aria-label="Тут всё хорошо">' + icon("check") + '</button>';
+      return '<div class="srow" data-seg="' + s.id + '" role="button" tabindex="0" aria-selected="'
+        + (s.id === sel) + '">'
+        + '<span><input type="checkbox" data-cb="' + s.id + '"' + (picked[s.id] ? " checked" : "")
+        + ' aria-label="Выбрать строку ' + s.id + '" /></span>'
+        + '<span class="id">' + s.id
+        + (s.img ? '<span class="rasm" title="Надпись с картинки: номер больше соседних, потому что её нашли позже, а стоит она рядом со своим рисунком">'
+            + RASM() + '</span>' : '')
+        + '</span>'
+        + '<span class="tx">' + hl(s.src, scope !== "tgt") + '</span>'
+        + '<span class="tx tgt">' + (s.tgt ? hl(s.tgt, scope !== "src") : '—') + '</span>'
+        + '<span class="st"><span class="chip ' + c[0] + '">' + c[1] + '</span>' + act + '</span></div>';
+    }).join("");
+    renderPager(all.length);
+    var box = $("#cb-all");
+    if (box) {
+      box.checked = list.length > 0 && list.every(function (s) { return picked[s.id]; });
+    }
+  }
+
+  /* Страницы: как в настоящем редакторе — стрелки, номер и поле «перейти». */
+  function renderPager(total) {
+    var last = pageCount(), from = (page - 1) * PAGE + 1, to = Math.min(page * PAGE, total);
+    $("#ed-pager").innerHTML =
+      '<button class="pgbtn prev" data-pg="prev"' + (page <= 1 ? " disabled" : "")
+      + ' title="Назад" aria-label="Назад">' + icon("arrow") + '</button>'
+      + '<span class="of">' + page + ' / ' + last + '</span>'
+      + '<button class="pgbtn" data-pg="next"' + (page >= last ? " disabled" : "")
+      + ' title="Вперёд" aria-label="Вперёд">' + icon("arrow") + '</button>'
+      + '<span>строки ' + from + '—' + to + ' из ' + total + '</span>'
+      + '<span class="jump" style="margin-left:auto" title="Номер страницы">'
+      + '<b style="font-weight:500">стр.</b>'
+      + '<input id="ed-page" inputmode="numeric" placeholder="' + page + '" aria-label="Номер страницы" /></span>'
+      + '<button class="pgbtn" data-pg="go" title="Перейти к странице" aria-label="Перейти к странице">'
+      + icon("arrow") + '</button>';
+  }
+
+  function renderBatch() {
+    var n = pickedIds().length;
+    $("#ed-batch").classList.toggle("hide", !n);
+    $("#cb-mini").checked = true;
+    $("#ed-picked").textContent = "Выбрано " + plural(n, "строка", "строки", "строк");
+  }
+  function renderPanel() {
+    var list = shown();
+    var s = SEGS.filter(function (x) { return x.id === sel; })[0];
+    if (!s || list.indexOf(s) < 0) { s = list[0]; sel = s ? s.id : sel; }
+    if (!s) {
+      $("#ed-panel").innerHTML = '<div class="pane"><div class="empty">Нажмите на строчку слева</div></div>';
+      return;
+    }
+    var c = CHIP[s.mine && s.state === "mine" ? "mine" : s.state];
+    var terms = s.terms.length ? s.terms.map(function (t) {
+      return '<div class="hint"><span class="a">' + esc(t[0]) + '</span>'
+        + '<span class="b">&rarr; ' + esc(t[1]) + '</span><span class="g">' + t[2] + '</span></div>';
+    }).join("") : '<div class="hint"><span class="b">Тут нет особых слов</span></div>';
+    var tm = s.tm
+      ? '<div class="hint" style="flex-direction:column;align-items:stretch;gap:3px">'
+        + '<div class="row" style="gap:8px"><span class="b" style="font-size:12px">почти такое же — ' + s.tm[2] + '</span>'
+        + '<button class="btn ghost sm" style="margin-left:auto">Взять это</button></div>'
+        + '<span class="a">' + esc(s.tm[0]) + '</span><span class="b">' + esc(s.tm[1]) + '</span></div>'
+      : '<div class="hint"><span class="b">Такого раньше не было</span></div>';
+    var notes = s.notes.length ? s.notes.map(function (n) {
+      var col = n[0] === "bad" ? "var(--bad)" : n[0] === "warn" ? "var(--warn)"
+        : n[0] === "info" ? "var(--accent)" : "var(--ok)";
+      return '<div class="hint"><i class="dot" style="background:' + col + ';margin-top:6px"></i>'
+        + '<span class="b" style="color:var(--ink-2)">' + esc(n[1]) + '</span></div>';
+    }).join("") : '<div class="hint"><span class="b">Всё хорошо, ничего не заметила</span></div>';
+
+    $("#ed-panel").innerHTML =
+      '<div class="pane">'
+      + '<div class="ph"><span class="l">Строка ' + s.id + '</span>'
+      + (s.img ? '<span class="chip info">' + RASM() + '</span>' : '')
+      + '<span class="chip ' + c[0] + '" style="margin-left:auto">' + c[1] + '</span></div>'
+      + '<div class="field"><div class="row" style="gap:8px"><div class="l" style="margin:0">Как было</div>'
+      + '<button class="btn ghost sm" id="ed-copy" style="margin-left:auto">' + icon("copy") + 'Скопировать</button></div>'
+      + '<div class="v" style="margin-top:5px">' + esc(s.src) + '</div>'
+      + (s.img ? '<div class="l" style="margin:6px 0 0">' + icon("img")
+          + ' это было нарисовано на картинке</div>' : '')
+      + '</div>'
+      + '<div class="field"><div class="l">Как стало</div>'
+      + '<textarea class="tgt" id="ed-tgt" placeholder="Пока пусто — нажмите «Перевести»">' + esc(s.tgt) + '</textarea>'
+      + (s.prev ? '<div class="row" style="gap:8px;margin-top:7px"><span class="l" style="margin:0">до вашей правки было: «'
+          + esc(s.prev) + '»</span><button class="btn ghost sm" id="ed-undo" style="margin-left:auto">'
+          + icon("undo") + 'Вернуть как было</button></div>' : '')
+      + '</div>'
+      + '<div class="field"><div class="l">Что это значит по-русски</div>'
+      + '<div class="v quiet">' + esc(s.back) + '</div>'
+      + '<div class="l" style="margin:6px 0 0">сравните с «Как было» — смысл тот же?</div></div>'
+      + '<div class="pane-foot">'
+      + (s.state === "new"
+          ? '<button class="btn" id="ed-tr">' + icon("play") + 'Перевести</button>'
+          : '<button class="btn" id="ed-ok">' + icon("check") + 'Всё хорошо</button>')
+      + '<button class="btn ghost" id="ed-recheck">' + icon("sync") + 'Проверить ещё раз</button>'
+      + '<button class="btn ghost" id="ed-next">Дальше' + icon("arrow") + '</button>'
+      + (s.mine ? '<span class="g" style="margin-left:auto;font-size:11.5px;color:var(--faint)">не трону</span>' : '')
+      + '</div></div>'
+      /* Складные блоки: раскрыто только то, где действительно что-то есть, —
+         иначе панель вытягивается вдвое длиннее списка и справа висит пустота. */
+      + '<details class="pane"' + (s.notes.length ? " open" : "") + '>'
+      + '<summary class="ph"><span class="l">' + icon("alert") + 'Что я заметила</span>'
+      + '<span class="cnt">' + (s.notes.length || "нет") + '</span></summary>' + notes
+      + (s.swap ? '<div class="hint"><button class="btn sec sm" id="ed-swap">Поставить «'
+          + esc(s.swap[1]) + '»</button></div>' : '') + '</details>'
+      + '<details class="pane"><summary class="ph"><span class="l">' + icon("book") + 'Важные слова тут</span>'
+      + '<span class="cnt">' + (s.terms.length || "нет") + '</span></summary>' + terms + '</details>'
+      + '<details class="pane"><summary class="ph"><span class="l">' + icon("list") + 'Похожее уже было</span>'
+      + '<span class="cnt">' + (s.tm ? s.tm[2] : "нет") + '</span></summary>' + tm + '</details>'
+      + '<details class="pane"' + (s.note ? " open" : "") + '>'
+      + '<summary class="ph"><span class="l">' + icon("doc") + 'Записка для себя</span>'
+      + '<span class="cnt">' + (s.note ? "есть" : "пусто") + '</span></summary>'
+      + '<div class="field" style="border:0"><textarea class="tgt" id="ed-note" style="min-height:54px" '
+      + 'placeholder="Например: спросить у Марины про дозировку">' + esc(s.note || "") + '</textarea>'
+      + '<button class="btn ghost sm" id="ed-note-save" style="margin-top:7px">Сохранить записку</button></div></details>';
+
+    var ta = $("#ed-tgt");
+    ta.addEventListener("input", function () {
+      s.tgt = ta.value;
+      if (!s.mine) { s.mine = true; s.state = "mine"; st.mine += 1; paint(); renderFilters(); }
+      renderRows();
+    });
+    var okBtn = $("#ed-ok");
+    if (okBtn) {
+      okBtn.addEventListener("click", function () { markOk(s); });
+    }
+    var trBtn = $("#ed-tr");
+    if (trBtn) {
+      trBtn.addEventListener("click", function () { translateOne(s); });
+    }
+    $("#ed-copy").addEventListener("click", function () {
+      try { navigator.clipboard.writeText(s.src); } catch (err) {}
+      toast("Скопировала. Теперь можно вставить куда угодно");
+    });
+    $("#ed-recheck").addEventListener("click", function () {
+      toast("Хорошо, проверю эту строчку ещё раз");
+    });
+    var undoBtn = $("#ed-undo");
+    if (undoBtn) {
+      undoBtn.addEventListener("click", function () {
+        s.tgt = s.prev; s.prev = null;
+        renderRows(); renderPanel();
+        toast("Вернула как было");
+      });
+    }
+    var swapBtn = $("#ed-swap");
+    if (swapBtn) {
+      swapBtn.addEventListener("click", function () {
+        s.prev = s.tgt;
+        s.tgt = s.tgt.split(s.swap[0]).join(s.swap[1]);
+        s.swap = null; s.notes = [["ok", "Слово поменяли. Можно ставить галочку."]];
+        renderRows(); renderPanel();
+        toast("Поменяла слово. Проверьте и нажмите «Всё хорошо»");
+      });
+    }
+    $("#ed-note-save").addEventListener("click", function () {
+      s.note = $("#ed-note").value;
+      toast(s.note ? "Записку сохранила" : "Записку убрала");
+    });
+    $("#ed-next").addEventListener("click", function () {
+      var l = shown(), i = 0;
+      l.forEach(function (x, k) { if (x.id === sel) { i = k; } });
+      sel = l[Math.min(i + 1, l.length - 1)].id;
+      renderRows(); renderPanel();
+    });
+  }
+  function bulk(kind) {
+    var ids = pickedIds();
+    if (!ids.length) { return; }
+    var n = 0;
+    ids.forEach(function (id) {
+      var s = byId(id);
+      if (!s) { return; }
+      if (kind === "ok") {
+        if (!s.mine) { s.mine = true; st.mine += 1; }
+        s.state = "mine"; n += 1;
+      } else if (kind === "tr") {
+        s.state = "mach"; s.mine = false;
+        s.notes = [["info", "Перевожу заново. Скоро покажу."]];
+        n += 1;
+      }
+    });
+    picked = {};
+    renderFilters(); renderRows(); renderPanel(); paint();
+    toast(kind === "ok" ? "Отметила «всё хорошо» у " + plural(n, "строки", "строк", "строк")
+                        : "Перевожу заново " + plural(n, "строку", "строки", "строк"));
+  }
+
+  function markOk(s) {
+    if (!s.mine) { s.mine = true; st.mine += 1; }
+    s.state = "mine";
+    renderFilters(); renderRows(); renderPanel(); paint();
+    toast("Записала. Эту строчку больше не трогаю");
+  }
+  function unmark(s) {
+    if (s.mine) { s.mine = false; st.mine = Math.max(0, st.mine - 1); }
+    s.state = "ok";
+    renderFilters(); renderRows(); renderPanel(); paint();
+    toast("Галочку убрала. Могу снова эту строчку трогать");
+  }
+  function translateOne(s) {
+    s.tgt = "The prognosis is favourable if treatment starts on time.";
+    s.back = "Прогноз благоприятный, если лечение начать вовремя.";
+    s.state = "mach";
+    s.notes = [["info", "Перевела. Ещё проверю — и станет «хорошо»."]];
+    renderFilters(); renderRows(); renderPanel();
+    toast("Перевела эту строчку");
+  }
+  function byId(id) { return SEGS.filter(function (x) { return x.id === +id; })[0]; }
+  function goToRow(id) {
+    var s = byId(id);
+    if (!s) { toast("Такой строчки нет. Попробуйте другой номер"); return; }
+    filter = "all"; query = ""; $("#ed-q").value = "";
+    page = Math.floor(shown().indexOf(s) / PAGE) + 1;
+    sel = s.id;
+    renderFilters(); renderRows(); renderPanel();
+    var row = document.querySelector('[data-seg="' + s.id + '"]');
+    if (row) { row.scrollIntoView({ behavior: "smooth", block: "center" }); }
+    toast("Показываю строчку " + s.id);
+  }
+  document.addEventListener("change", function (e) {
+    var cb = e.target.closest("[data-cb]");
+    if (cb) {
+      picked[cb.dataset.cb] = cb.checked;
+      renderBatch();
+      return;
+    }
+    if (e.target.id === "cb-all") {
+      pageRows().forEach(function (s) { picked[s.id] = e.target.checked; });
+      renderRows();
+      return;
+    }
+    if (e.target.id === "cb-mini" && !e.target.checked) { picked = {}; renderRows(); }
+  });
+
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-bulk]");
+    if (b) {
+      if (b.dataset.bulk === "none") { picked = {}; renderRows(); return; }
+      bulk(b.dataset.bulk);
+      return;
+    }
+    var p = e.target.closest("[data-pg]");
+    if (!p) { return; }
+    if (p.dataset.pg === "prev") { page = Math.max(1, page - 1); }
+    else if (p.dataset.pg === "next") { page = Math.min(pageCount(), page + 1); }
+    else {
+      var v = parseInt($("#ed-page").value, 10);
+      if (!v || v < 1 || v > pageCount()) { toast("Такой страницы нет. Их всего " + pageCount()); return; }
+      page = v;
+    }
+    renderRows(); renderPanel();
+    $("#ed-sect").scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+
+  $("#ed-jump-go").addEventListener("click", function () { goToRow($("#ed-jump").value); });
+  $("#ed-jump").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") { goToRow(this.value); }
+  });
+  $("#ed-q").addEventListener("input", function () {
+    query = this.value.trim(); page = 1;
+    renderFilters(); renderRows(); renderPanel();
+  });
+  $("#ed-scope").addEventListener("change", function () {
+    scope = this.value;
+    renderFilters(); renderRows(); renderPanel();
+  });
+  $("#ed-clear").addEventListener("click", function () {
+    query = ""; $("#ed-q").value = "";
+    renderFilters(); renderRows(); renderPanel();
+  });
+
+  function setFilter(f, scroll) {
+    filter = f; page = 1;
+    renderFilters(); renderRows(); renderPanel();
+    if (scroll) {
+      var el = $("#ed-sect");
+      el.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
+
+  document.addEventListener("click", function (e) {
+    if (e.target.closest("[data-go]")) { return; }
+    var f = e.target.closest("[data-f]");
+    if (f) { setFilter(f.dataset.f, false); return; }
+    var card = e.target.closest("[data-filter]");
+    if (card) { go("run"); setFilter(card.dataset.filter, true); return; }
+    if (e.target.closest("[data-cb]") || e.target.id === "cb-all") { return; }
+    var a = e.target.closest("[data-act]");
+    if (a) {
+      var seg = byId(a.dataset.id);
+      if (seg) {
+        if (a.dataset.act === "ok") { markOk(seg); }
+        else if (a.dataset.act === "undo") { unmark(seg); }
+        else { translateOne(seg); }
+      }
+      return;
+    }
+    var r = e.target.closest("[data-seg]");
+    if (r) {
+      sel = +r.dataset.seg; renderRows(); renderPanel();
+      if (window.matchMedia("(max-width:1180px)").matches) {
+        $("#ed-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Enter") { return; }
+    var r = e.target.closest && e.target.closest("[data-seg]");
+    if (r) { sel = +r.dataset.seg; renderRows(); renderPanel(); }
+  });
+
+  /* ── вопросы ───────────────────────────────────────────────── */
+  function qCard(q, idx) {
+    var rows = q.rows.map(function (r) {
+      return '<div class="ev"><div class="l">' + r[0] + '</div><div class="t">' + r[1] + '</div></div>';
+    }).join("");
+    return '<div class="card" style="margin-bottom:14px">'
+      + '<div class="q-head"><span class="chip ' + q.sev + '">' + q.tag + '</span>'
+      + '<span style="margin-left:auto;color:var(--faint);font-size:12px">ответите — станет хорошо в '
+      + plural(q.segs, "строке", "строках", "строках") + '</span></div>'
+      + '<h2 class="q-title">' + q.title + '</h2>' + rows
+      + '<div class="q-foot"><button class="btn" data-ans="' + idx + '" data-pick="0">' + q.a[0] + '</button>'
+      + '<button class="btn sec" data-ans="' + idx + '" data-pick="1">' + q.a[1] + '</button>'
+      + '<button class="btn ghost" data-filter="ask">Показать в книге</button>'
+      + '<span style="margin-left:auto;color:var(--faint);font-size:12px">' + q.note + '</span></div>'
+      + '<details class="why"><summary>А почему ты сама не решила?</summary><p>' + q.why + '</p></details></div>';
+  }
+  function renderAsk() {
+    var open = -1;
+    QUESTIONS.forEach(function (q, i) { if (open < 0 && !q.done) { open = i; } });
+    $("#q-host").innerHTML = open >= 0 ? qCard(QUESTIONS[open], open)
+      : '<div class="card pad" style="display:flex;gap:12px;align-items:center;margin-bottom:14px;flex-wrap:wrap">'
+        + '<span class="chip ok">готово</span><div class="col">'
+        + '<span style="font-weight:500">Вопросов больше нет</span>'
+        + '<span class="lead">Всё готово. Можно забирать файл.</span></div>'
+        + '<button class="btn" data-go="export" style="margin-left:auto">К файлу</button></div>';
+    $("#q-queue").innerHTML = QUESTIONS.map(function (q, i) {
+      return '<div class="qrow' + (q.done ? " done" : "") + '"><span class="n">' + (i + 1) + '</span>'
+        + (q.done ? '<span class="chip ok">решено</span>'
+                  : '<span class="chip ' + q.sev + '">' + (i === open ? "сейчас" : "ждёт") + '</span>')
+        + '<span class="txt">' + q.tag + '</span><span class="g">' + q.segs + ' абз.</span></div>';
+    }).join("");
+  }
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-ans]");
+    if (!b) { return; }
+    var q = QUESTIONS[+b.dataset.ans];
+    q.done = true;
+    st.hum = Math.max(0, st.hum - q.segs);
+    st.ready += q.segs;
+    renderAsk(); paint();
+    toast(b.dataset.pick === "0" ? "Готово! Поправила " + plural(q.segs, "строку", "строки", "строк")
+                                 : "Хорошо, оставляем как есть");
+  });
+
+  /* ── словарь ───────────────────────────────────────────────── */
+  var ACCEPTED = [
+    { src: "туберкулёма", tgt: "tuberculoma", note: "142 места. Вы сказали «да»", hard: true },
+    { src: "очаг Гона", tgt: "Ghon focus", note: "31 место. Взяла из книжки для врачей", hard: true },
+    { src: "задний", tgt: "rear", note: "Пришло из большого списка. Могу написать и по-другому", hard: false }
+  ];
+  var tq = "";
+  function tHit(t) {
+    if (!tq) { return true; }
+    var q = tq.toLowerCase();
+    return t.src.toLowerCase().indexOf(q) >= 0 || t.tgt.toLowerCase().indexOf(q) >= 0;
+  }
+  function renderTerms() {
+    $("#t-done").innerHTML = ACCEPTED.filter(tHit).map(function (t) {
+      return '<div class="card tcard"><div class="pair">' + esc(t.src) + '<i>&rarr;</i>' + esc(t.tgt) + '</div>'
+        + '<div class="note">' + esc(t.note) + '</div>'
+        + '<div class="acts"><span class="chip ' + (t.hard ? "ok" : "") + '">'
+        + (t.hard ? "всегда так" : "не обязательно") + '</span></div></div>';
+    }).join("") || '<div class="note" style="padding:4px 2px">Ничего не нашлось</div>';
+    $("#t-host").innerHTML = TERMS.filter(tHit).map(function (t, i) {
+      return '<div class="card tcard"><div class="pair">' + esc(t.src) + '<i>&rarr;</i>' + esc(t.tgt) + '</div>'
+        + '<div class="note">' + esc(t.note) + '</div>'
+        + '<div class="acts"><button class="btn sec sm" data-t="' + i + '" data-ok="1">Да, правильно</button>'
+        + '<button class="btn ghost sm" data-t="' + i + '" data-ok="0">Нет, не то</button></div></div>';
+    }).join("") || '<div class="note" style="padding:4px 2px">Ничего не нашлось</div>';
+    $("#t-left").textContent = TERMS.length;
+    $("#nav-terms").textContent = TERMS.length;
+    $("#nav-terms").style.display = TERMS.length ? "" : "none";
+  }
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-t]");
+    if (!b) { return; }
+    var vis = TERMS.filter(tHit);
+    var t = vis[+b.dataset.t];
+    TERMS.splice(TERMS.indexOf(t), 1);
+    if (b.dataset.ok === "1") { ACCEPTED.unshift({ src: t.src, tgt: t.tgt, note: "Вы сказали «да»", hard: true }); }
+    renderTerms();
+    toast(b.dataset.ok === "1" ? "Запомнила: всегда пишу «" + t.tgt + "»"
+                               : "Хорошо, так писать не буду");
+  });
+
+  /* ── экспорт ───────────────────────────────────────────────── */
+  function renderFmt() {
+    $("#fmt-host").innerHTML = FORMATS.map(function (f) {
+      return '<button class="opt box" data-fmt="' + f[0] + '" role="radio" aria-checked="' + (f[0] === fmt) + '">'
+        + '<span class="row" style="gap:9px"><span class="r"></span>'
+        + '<span class="t">' + f[1] + '</span></span>'
+        + '<span class="s">' + f[2] + '</span></button>';
+    }).join("");
+  }
+  document.addEventListener("click", function (e) {
+    var o = e.target.closest("[data-fmt]");
+    if (o) { fmt = o.dataset.fmt; renderFmt(); }
+  });
+  $("#btn-dl").addEventListener("click", function () {
+    toast("Собираю файл. Скоро будет готов");
+  });
+
+  /* Надписи на картинках: своё окно, свои решения. Отсев делает модель
+     и ошибается в обе стороны, поэтому решение человека запоминается. */
+  var IMG = {
+    use: [
+      { id: 2692, t: "Рис. 12. Каверна в верхней доле правого лёгкого.",
+        e: "Fig. 12. Cavity in the upper lobe of the right lung.", by: "Картинка 12 · рис. под текстом" },
+      { id: 2693, t: "Диссеминированный (милиарный) туберкулёз",
+        e: "Disseminated (miliary) tuberculosis", by: "Картинка 47 · подпись под рисунком" },
+      { id: 2694, t: "1 — очаг; 2 — капсула; 3 — зона перифокального воспаления",
+        e: "1 — focus; 2 — capsule; 3 — perifocal inflammation zone", by: "Картинка 61 · схема" }
+    ],
+    skip: [
+      { t: "IPAP DOKTOR HAKIMOV M", e: "", by: "Это подпись аппарата — решила я" },
+      { t: "kV 120.0 mA: 283", e: "", by: "Это подпись аппарата — решила я" },
+      { t: "LINEAR DISTANCE: 004.43cm", e: "", by: "Это подпись аппарата — решили вы" }
+    ],
+    bad: [
+      { t: "не разобрать: слишком мелко", e: "", by: "Картинка 877×542, буквы 8 пикселей" },
+      { t: "не разобрать: тень поверх текста", e: "", by: "" },
+      { t: "не разобрать: рукописная подпись", e: "", by: "" }
+    ]
+  };
+  var imgTab = "use", USE_BASE = 38, SKIP_BASE = 186;
+  function imgCount(k) {
+    return IMG[k].length + (k === "use" ? USE_BASE : k === "skip" ? SKIP_BASE : 0);
+  }
+  function renderImages() {
+    var list = IMG[imgTab];
+    $$("[data-img]").forEach(function (b) {
+      var c = b.querySelector("span");
+      if (c) { c.textContent = imgCount(b.dataset.img); }
+    });
+    $("#img-host").innerHTML = list.map(function (x, i) {
+      var act = imgTab === "use"
+        ? '<button class="btn sec sm" data-imgo="' + x.id + '">Показать в тексте</button>'
+          + '<button class="btn ghost sm" data-imga="skip" data-i="' + i + '">Убрать из перевода</button>'
+        : imgTab === "skip"
+          ? '<button class="btn sec sm" data-imga="use" data-i="' + i + '">Вернуть в перевод</button>'
+          : '<button class="btn ghost sm" data-imga="open" data-i="' + i + '">Открыть картинку</button>';
+      return '<div class="card tcard">'
+        + '<svg viewBox="0 0 260 74" width="100%" height="74" aria-hidden="true" '
+        + 'style="background:var(--panel);border-radius:8px">'
+        + '<rect x="8" y="8" width="80" height="58" rx="4" fill="var(--line)" />'
+        + '<circle cx="48" cy="34" r="15" fill="var(--panel-2)" />'
+        + '<rect x="100" y="20" width="140" height="7" rx="3.5" fill="var(--line-2)" />'
+        + '<rect x="100" y="34" width="112" height="7" rx="3.5" fill="var(--line)" />'
+        + '<rect x="100" y="48" width="126" height="7" rx="3.5" fill="var(--line)" /></svg>'
+        + (x.id ? '<div class="note" style="margin:0">строка ' + x.id + ' в тексте</div>' : "")
+        + '<div class="pair" style="font-size:14px">' + esc(x.t) + '</div>'
+        + (x.e ? '<div class="note" style="color:var(--ink-2)">' + esc(x.e) + '</div>' : "")
+        + (x.by ? '<div class="note">' + esc(x.by) + '</div>' : "")
+        + '<div class="acts">' + act + '</div></div>';
+    }).join("");
+  }
+  document.addEventListener("click", function (e) {
+    var t = e.target.closest("[data-img]");
+    if (t) {
+      imgTab = t.dataset.img;
+      $$("[data-img]").forEach(function (x) {
+        x.setAttribute("aria-pressed", String(x.dataset.img === imgTab));
+      });
+      renderImages();
+      return;
+    }
+    var o = e.target.closest("[data-imgo]");
+    if (o) {
+      go("run");
+      goToRow(o.dataset.imgo);
+      return;
+    }
+    var a = e.target.closest("[data-imga]");
+    if (a) {
+      if (a.dataset.imga === "open") { toast("Это макет. В программе откроется сама картинка"); return; }
+      if (a.dataset.imga === "skip") {
+        var seg = IMG.use[+a.dataset.i];
+        ask("Убрать эту надпись из перевода?",
+            "«" + seg.t + "»\n\nСтрока " + seg.id + " пропадёт из текста книги, "
+            + "и в готовом файле её не будет. Так делают с тем, что напечатал сам аппарат: "
+            + "фамилия врача, дата, настройки.\n\nПередумаете — верну её на вкладке «Не перевожу».",
+            "Да, убрать", function () { imgMove(a.dataset.imga, +a.dataset.i); });
+        return;
+      }
+      var from = a.dataset.imga === "skip" ? "use" : "skip";
+      imgMove(a.dataset.imga, +a.dataset.i);
+      return;
+    }
+    var g = e.target.closest("[data-glo]");
+    if (!g) { return; }
+    toast(g.dataset.glo === "auto" ? "Разложила 12 лёгких слов — подсказками, не приказом"
+      : g.dataset.glo === "check" ? "Перечитала словарь: 3 слова кажутся мне спорными — они в вопросах"
+      : "Вернула всю пачку. Словарь как был");
+  });
+
+  function imgMove(to, i) {
+    var from = to === "skip" ? "use" : "skip";
+    var x = IMG[from].splice(i, 1)[0];
+      if (to === "skip") {
+        /* Убрали надпись — уходит и строка из текста: подписи аппарата
+           (фамилия врача, «kV 120») в переводе не место. */
+        var i = -1;
+        SEGS.forEach(function (g, k) { if (g.id === x.id) { i = k; } });
+        if (i >= 0) { SEGS.splice(i, 1); }
+        x.by = "Это подпись аппарата — решили вы";
+        toast("Убрала. Строка " + x.id + " из текста тоже ушла");
+      } else {
+        /* Вернули — строка заводится заново и встаёт рядом со своей
+           картинкой, а номер получает самый большой: она заведена позже всех. */
+        var mx = 0, last = 0;
+        SEGS.forEach(function (g, k) { if (g.id > mx) { mx = g.id; } if (g.img) { last = k; } });
+        x.id = mx + 1;
+        SEGS.splice(last + 1, 0, { id: x.id, src: x.t, tgt: "", back: "", state: "new",
+          img: true, terms: [], tm: null,
+          notes: [["info", "Вы сказали, что это текст книги. Перевести её?"]] });
+        x.by = "Это текст книги — решили вы";
+        toast("Вернула. Завела строку " + x.id + " рядом с её картинкой");
+      }
+    IMG[to].unshift(x);
+    renderImages(); renderFilters(); renderRows(); renderPanel(); paint();
+  }
+  $("#img-run").addEventListener("click", function () {
+    var p = 0;
+    $("#img-prog").classList.remove("hide");
+    var t = setInterval(function () {
+      p = Math.min(100, p + 7);
+      $("#img-bar").style.width = p + "%";
+      $("#img-pct").textContent = Math.round(p) + "%";
+      $("#img-sub").textContent = p < 100
+        ? "смотрю картинку " + Math.round(p / 100 * 162) + " из 162"
+        : "готово — новых надписей не нашлось";
+      if (p >= 100) { clearInterval(t); toast("Прочитала все картинки"); }
+    }, 260);
+  });
+
+  /* Счета и админка. */
+  var BOOK_PAGES = [324, 12, 48], PRICE = 45000;
+  function money(n) { return nf(n) + " сум"; }
+  $("#bill-book").addEventListener("change", function () {
+    $("#bill-sum").textContent = money(BOOK_PAGES[this.selectedIndex] * PRICE);
+  });
+  $("#bill-save").addEventListener("click", function () {
+    toast("Смета сохранена. Числа в ней больше не изменятся");
+  });
+  var BILL_MSG = { paid: "Отметила: оплачено. Записала, кто и когда",
+                   send: "Счёт выставлен. Скачать можно кнопкой «Счёт»",
+                   pdf: "Собираю счёт в PDF" };
+  var ADM_MSG = {
+    "org-new": "Завела организацию. Дала ей 30 страниц на пробу",
+    pages: "Пополнила страницы. Списывать их будет загрузка файлов",
+    limit: "Месячный лимит обновлён. Он режет деньги, а не работу",
+    simple: "Режим переключён: суммы и названия моделей в этой организации спрятаны",
+    models: "Назначила модели по шагам — клиент их не выбирает",
+    del: "Организация удалена. Членства сняты, приглашения закрыты",
+    "user-new": "Человек заведён. Пароль показала один раз",
+    pass: "Новый пароль выдан",
+    "user-del": "Учётная запись удалена, её сессии закрыты",
+    "set-new": "Новый набор открыт",
+    seats: "Число мест изменено",
+    close: "Набор закрыт. Бот отвечает «мест нет»",
+    survey: "Открываю анкеты",
+    testers: "Открываю список тестировщиков"
+  };
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-bill]");
+    if (b) { toast(BILL_MSG[b.dataset.bill]); return; }
+    var a = e.target.closest("[data-adm]");
+    if (a) { toast(ADM_MSG[a.dataset.adm] || "Готово"); }
+  });
+
+  /* Профиль, команда, лимиты, состав файла. */
+  $("#prof-save").addEventListener("click", function () { toast("Имя сохранила"); });
+  $("#pass-save").addEventListener("click", function () { toast("Пароль поменяла. Никого не выгоняю — вы остаётесь тут"); });
+  $("#price-save").addEventListener("click", function () { toast("Цену сохранила. В счёте будет 45 000 сум за страницу"); });
+  $("#inv-send").addEventListener("click", function () {
+    var m = $("#inv-mail").value.trim();
+    toast(m ? "Позвала " + m + ". Он ответит сам" : "Напишите почту коллеги");
+  });
+  $("#inv-yes").addEventListener("click", function () { toast("Вы теперь и в «Тошкент Мед». Переключиться можно сверху слева"); });
+  $("#inv-no").addEventListener("click", function () { toast("Отказались. Больше не спрошу"); });
+  $("#prof-out").addEventListener("click", function () {
+    $("#auth").classList.remove("hide");
+    toast("Вы вышли. Заходите ещё");
+  });
+  $("#src-replace").addEventListener("click", function () { toast("Это макет. В программе тут можно приложить другой файл"); });
+  document.addEventListener("click", function (e) {
+    var k = e.target.closest("[data-kick]");
+    if (k) { toast(k.dataset.kick + " больше не видит ваши книги"); return; }
+    var w = e.target.closest("[data-sw]");
+    if (!w) { return; }
+    var on = w.getAttribute("aria-checked") !== "true";
+    w.setAttribute("aria-checked", String(on));
+    toast(w.dataset.sw === "img"
+      ? (on ? "Впишу перевод в картинки" : "Картинки не трону — подпишу перевод под ними")
+      : (on ? "Положу оригинал рядом" : "В файле будет только перевод"));
+  });
+
+  /* Вход и регистрация. Кнопка «Создать аккаунт» не работает без галочки —
+     согласие проверяет и сервер, а не только браузер. */
+  function authMode(mode) {
+    $("#auth-in").classList.toggle("hide", mode !== "in");
+    $("#auth-up").classList.toggle("hide", mode !== "up");
+  }
+  $("#show-auth").addEventListener("click", function () {
+    $("#auth").classList.remove("hide");
+    authMode("in");
+    window.scrollTo(0, 0);
+  });
+  $("#to-reg").addEventListener("click", function () { authMode("up"); });
+  $("#to-in").addEventListener("click", function () { authMode("in"); });
+  $("#auth-accept").addEventListener("change", function () {
+    $("#auth-create").disabled = !this.checked;
+  });
+  $("#auth-forgot").addEventListener("click", function () {
+    toast("Отправлю письмо со ссылкой на смену пароля");
+  });
+  $("#auth-go").addEventListener("click", function () {
+    $("#auth").classList.add("hide");
+    go("run");
+    toast("Здравствуйте! Продолжаем с того же места");
+  });
+  $("#auth-create").addEventListener("click", function () {
+    $("#auth").classList.add("hide");
+    go("home");
+    toast("Готово! Дали 30 страниц — загрузите файл");
+  });
+  $("#auth-theme").addEventListener("click", function () {
+    applyTheme(theme === "dark" ? "light" : "dark");
+    $("#auth-theme").textContent = theme === "dark" ? "Светлая" : "Тёмная";
+  });
+  $$("[data-lang]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      uiLang = b.dataset.lang;
+      $$("[data-lang]").forEach(function (x) {
+        x.setAttribute("aria-pressed", String(x.dataset.lang === uiLang));
+      });
+      renderRows(); renderPanel();
+      toast(uiLang === "uz" ? "Til o‘zgardi: o‘zbekcha" : "Язык интерфейса: русский");
+    });
+  });
+
+  /* Загрузка файла: выбрали — показали, что спишется, и только потом кнопка. */
+  $("#imp-pick").addEventListener("click", function () {
+    $("#imp-drop").classList.add("hide");
+    $("#imp-card").classList.remove("hide");
+    toast("Посмотрела файл: 324 страницы, текст по-русски");
+  });
+  $("#imp-cancel").addEventListener("click", function () {
+    $("#imp-card").classList.add("hide");
+    $("#imp-drop").classList.remove("hide");
+  });
+  $("#imp-go").addEventListener("click", function () {
+    $("#imp-card").classList.add("hide");
+    $("#imp-drop").classList.remove("hide");
+    go("run"); stop(); setRun("fresh");
+    toast("Файл загружен. Нажмите «Перевести»");
+  });
+  $("#btn-ask-pages").addEventListener("click", function () {
+    toast("Попросила. Вам ответят, когда добавят страницы");
+  });
+
+  $("#t-q").addEventListener("input", function () { tq = this.value.trim(); renderTerms(); });
+  $("#t-add").addEventListener("click", function () {
+    toast("Это макет. В программе тут откроется окошко «своё слово»");
+  });
+
+  $("#modal-no").addEventListener("click", askClose);
+  $("#modal").addEventListener("click", function (e) { if (e.target === this) { askClose(); } });
+  $("#modal-yes").addEventListener("click", function () {
+    var cb = askCb;
+    askClose();
+    if (cb) { cb(); }
+  });
+
+  renderImages();
+  renderFilters(); renderRows(); renderPanel(); renderAsk(); renderTerms(); renderFmt();
+  paint(); setRun("done");
+})();
+</script>
+
+</body>
+</html>

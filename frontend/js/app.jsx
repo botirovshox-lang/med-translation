@@ -198,7 +198,10 @@ function useStore(authed) {
 /* ---------- Theme ---------- */
 function useTheme() {
   const [theme, setTheme] = useState(() => {
-    try { return localStorage.getItem("mct-theme") || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"); }
+    /* По умолчанию СВЕТЛАЯ, а не системная: инструмент открывают в рабочий
+       день рядом с бумажным оригиналом, и тёмный лист рядом с белой бумагой
+       читается хуже. Свой выбор человека сильнее и живёт в localStorage. */
+    try { return localStorage.getItem("mct-theme") || "light"; }
     catch (e) { return "light"; }
   });
   useEffect(() => {
@@ -396,13 +399,13 @@ function Header({ store, theme, onToggleTheme, onLogout, onSearch }) {
       /* Аватар — дверь в профиль, а не украшение: единственный экран, где
          человек меняет язык, пароль и отвечает на приглашения. */
       React.createElement("button", {
-        className: "icon-btn", title: (store.me.name || "") + (store.can && store.can.role ? " · " + roleLabel(store.can.role) : ""),
+        className: "iconbtn", title: (store.me.name || "") + (store.can && store.can.role ? " · " + roleLabel(store.can.role) : ""),
         "aria-label": TR("Профиль"), onClick: () => store.go("profile"),
         style: { position: "relative", padding: 0, background: "none", border: "none", cursor: "pointer" } },
         React.createElement(Avatar, { person: store.me, size: 32 }),
         store.invites && store.invites.length > 0 && React.createElement("span", {
           style: { position: "absolute", top: -2, right: -2, minWidth: 16, height: 16, borderRadius: 8,
-                   background: "var(--c-danger)", color: "#fff", fontSize: 10, fontWeight: 700,
+                   background: "var(--c-danger)", color: "var(--text-on-accent)", fontSize: 10, fontWeight: 700,
                    lineHeight: "16px", textAlign: "center", padding: "0 3px" } }, store.invites.length)),
       React.createElement(IconBtn, { icon: "logout", label: TR("Выйти"), onClick: onLogout }))
   );
@@ -475,6 +478,27 @@ function SearchPalette({ store, onClose }) {
 }
 
 /* ---------- Root App ---------- */
+/* Экран падения. React в production-сборке не печатает стек компонента,
+   а белый экран — известный способ падения этого фронтенда (совпавшее имя
+   верхнего уровня, забытый хук). Без этой рамки диагностика на боевом
+   сервере сводится к «Minified React error #130». */
+class Boundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err: err }; }
+  componentDidCatch(err, info) {
+    try { console.error("[ui]", err, info && info.componentStack); } catch (e) {}
+  }
+  render() {
+    if (!this.state.err) return this.props.children;
+    return React.createElement("div", { className: "page" },
+      React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12, alignItems: "flex-start" } },
+        React.createElement("h2", { className: "section-title", style: { margin: 0 } }, TR("Этот экран не открылся")),
+        React.createElement("p", { className: "dim" }, TR("Работа не потеряна: всё сделанное сохранено на сервере. Откройте другую вкладку или обновите страницу.")),
+        React.createElement("code", { className: "tt-code", style: { whiteSpace: "pre-wrap" } }, String(this.state.err && this.state.err.message || this.state.err)),
+        React.createElement("button", { className: "btn btn-primary", onClick: () => window.location.reload() }, TR("Обновить страницу"))));
+  }
+}
+
 function App() {
   /* Токен в sessionStorage переживает F5, но не закрытие вкладки. */
   const [authed, setAuthed] = useState(() => !!(window.API && window.API.hasToken()));
@@ -517,7 +541,8 @@ function App() {
       onSearch: () => setSearch(true) }),
     React.createElement(TabBar, { store }),
     React.createElement("main", { className: "main" },
-      React.createElement(Active, { store, toast, theme, onToggleTheme: toggleTheme })),
+      React.createElement(Boundary, { key: store.tab },
+        React.createElement(Active, { store, toast, theme, onToggleTheme: toggleTheme }))),
     search && React.createElement(SearchPalette, { store, onClose: () => setSearch(false) })
   );
 }

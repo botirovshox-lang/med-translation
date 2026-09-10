@@ -157,7 +157,7 @@ function Expander({ title, icon, right, defaultOpen = false, children }) {
       React.createElement(Icon, { name: "chevR", size: 18, className: "chev" }),
       React.createElement("span", { className: "ex-title" },
         icon && React.createElement(Icon, { name: icon, size: 17 }), title),
-      right && React.createElement("span", { className: "dim", style: { fontSize: 13, fontWeight: 600 } }, right)
+      right && React.createElement("span", { className: "dim", style: { fontSize: 13, fontWeight: 500 } }, right)
     ),
     open && React.createElement("div", { className: "expander-body" }, children)
   );
@@ -248,9 +248,15 @@ function inkOn(bg) {
   const L = 0.2126 * lin((n >> 16) & 255) + 0.7152 * lin((n >> 8) & 255) + 0.0722 * lin(n & 255);
   return (1.05 / (L + 0.05)) >= ((L + 0.05) / 0.05) ? "#FFFFFF" : "#171614";
 }
-function Avatar({ person, size = 30 }) {
-  return React.createElement("span", { className: "avatar", title: person.name,
-    style: { background: person.color, color: inkOn(person.color), width: size, height: size, fontSize: size * 0.4 } }, person.initials);
+/* plain — аватар в шапке, как .ava в макете: без личного цвета, в рамке
+   на подложке (цвет ставит CSS). Цвет человека остаётся в списках команды,
+   где он и нужен — там он различает людей, а в шапке человек один. */
+function Avatar({ person, size = 30, plain = false }) {
+  const style = plain
+    ? { width: size, height: size }
+    : { background: person.color, color: inkOn(person.color), width: size, height: size, fontSize: size * 0.4 };
+  return React.createElement("span", { className: "avatar" + (plain ? " avatar-plain" : ""), title: person.name, style },
+    person.initials);
 }
 /* Роли — ОДНА подпись на все экраны и ОДИН список в селектах: пары кнопок
    «→ владелец / → переводчик» в четырёх файлах разошлись бы первой же новой

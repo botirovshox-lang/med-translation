@@ -319,7 +319,11 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
   return React.createElement("div", { className: "auth-wrap" },
     React.createElement("div", { className: "auth-theme" }, React.createElement(ThemeToggle, { theme, onToggle: onToggleTheme })),
     React.createElement("form", { className: "auth-card", onSubmit: submit, style: shake ? { animation: "pop .1s, shake .4s" } : null },
-      React.createElement("div", { className: "auth-logo" }, React.createElement(Icon, { name: "globe", size: 28 })),
+      /* Марка с названием — строка .auth-brand макета, а не одинокий значок:
+         название сервиса на экране входа берётся с сервера (APP_BRAND). */
+      React.createElement("div", { className: "auth-brand" },
+        React.createElement("span", { className: "auth-logo" }, React.createElement(Icon, { name: "globe", size: 11 })),
+        info.brand || "CAT Translator"),
       React.createElement("h1", null, title),
       React.createElement("p", { className: "auth-sub" }, sub),
       React.createElement("div", { className: "col", style: { gap: 4 } }, rows),
@@ -404,7 +408,7 @@ function Header({ store, theme, onToggleTheme, onLogout, onSearch }) {
         React.createElement(Avatar, { person: store.me, size: 32 }),
         store.invites && store.invites.length > 0 && React.createElement("span", {
           style: { position: "absolute", top: -2, right: -2, minWidth: 16, height: 16, borderRadius: 8,
-                   background: "var(--c-danger)", color: "var(--text-on-accent)", fontSize: 10, fontWeight: 700,
+                   background: "var(--c-danger)", color: "var(--text-on-accent)", fontSize: 10, fontWeight: 600,
                    lineHeight: "16px", textAlign: "center", padding: "0 3px" } }, store.invites.length)),
       React.createElement(IconBtn, { icon: "logout", label: TR("Выйти"), onClick: onLogout }))
   );
@@ -518,10 +522,10 @@ function Topbar({ store, theme, onToggleTheme, onLogout, onSearch }) {
         className: "iconbtn sm", title: (store.me.name || "") + (store.can && store.can.role ? " · " + roleLabel(store.can.role) : ""),
         "aria-label": TR("Профиль"), onClick: () => store.go("profile"),
         style: { position: "relative", padding: 0, background: "none", border: "none", cursor: "pointer" } },
-        React.createElement(Avatar, { person: store.me, size: 28 }),
+        React.createElement(Avatar, { person: store.me, size: 26, plain: true }),
         store.invites && store.invites.length > 0 && React.createElement("span", {
           style: { position: "absolute", top: -2, right: -2, minWidth: 16, height: 16, borderRadius: 8,
-                   background: "var(--c-danger)", color: "var(--text-on-accent)", fontSize: 10, fontWeight: 700,
+                   background: "var(--c-danger)", color: "var(--text-on-accent)", fontSize: 10, fontWeight: 600,
                    lineHeight: "16px", textAlign: "center", padding: "0 3px" } }, store.invites.length)),
       React.createElement(IconBtn, { icon: "logout", label: TR("Выйти"), sm: true, onClick: onLogout })));
 }

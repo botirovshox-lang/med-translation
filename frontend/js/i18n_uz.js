@@ -547,7 +547,6 @@ window.I18N.register("uz", {
  "Высокая": "Yuqori",
  "Высокий": "Yuqori",
  "Высокий риск": "Yuqori xavf",
- "Высота таблицы": "Jadval balandligi",
  "Выставляется отдельно, автоматическим анализом по длине не назначается.\nТребует ручной проверки.\n→ Маршрут: HUMAN_REVIEW_REQUIRED.": "Alohida qo'yiladi, uzunlik bo'yicha avtomatik tahlil buni belgilamaydi.\nQo'lda tekshirishni talab qiladi.\n→ Yo'nalish: HUMAN_REVIEW_REQUIRED.",
  "Где искать": "Qayerdan qidirish",
  "Где используется": "Qayerda ishlatiladi",

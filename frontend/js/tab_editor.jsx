@@ -465,7 +465,6 @@ function TabEditor({ store, toast }) {
      фильтра распознанное растворяется среди двух с половиной тысяч строк,
      а проверять его надо отдельно — там своя цена ошибки. */
   const [originFilter, setOriginFilter] = useState("all");
-  const [height, setHeight] = useState(440);
   const [selId, setSelId] = useState(project ? (project.segments[0] && project.segments[0].id) : null);
   const [busy, setBusy] = useState({});       // {segId: 'translate'|'qa'}
   const [batchRun, setBatchRun] = useState(null); // {engine, done, total} — производное от job
@@ -2314,34 +2313,23 @@ function TabEditor({ store, toast }) {
           React.createElement(LangPair, { src: project.src, tgt: project.tgt })
         ),
         React.createElement("div", { className: "row", style: { gap: 8 } },
-          React.createElement("span", { className: "dim", style: { fontSize: 13 } }, TR("Высота таблицы")),
-          React.createElement("input", { type: "range", min: 320, max: 720, step: 20, value: height,
-            onChange: (e) => setHeight(Number(e.target.value)), style: { width: 130 }, "aria-label": TR("Высота таблицы") }),
-          React.createElement(IconBtn, { icon: "filter", label: TR("Доп. фильтры"), sm: true, active: showFilters, onClick: () => setShowFilters(s => !s) })
-        )
-      ),
-      React.createElement("div", { className: "row between row-wrap" },
-        (expertUI || showFilters || !tkSum) && React.createElement("div", { className: "segmented" },
-          filterDefs.map(([v, l, n]) => React.createElement("button", { key: v, className: filter === v ? "on" : "", onClick: () => setFilter(v) },
-            l, React.createElement("span", { className: "cnt" }, n)))
-        ),
-        // «Выбрать все N по фильтру» — без неё выбор всех сегментов под текущим
-        // фильтром (например, всех переведённых Google) means тыкать чекбокс на
-        // каждой из PAGE_SIZE-страниц вручную: при 2670 сегментах и странице
-        // по 10 штук это сотни кликов. Список берём из filtered — он уже
-        // учитывает статус/риск/поиск/фильтр из «Анализа», и именно на нём
-        // потом строится разбивка «Переводить заново» по движку-донору.
         checkedSegs.size > 0
           ? React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setCheckedSegs(new Set()) },
               TR("Снять выбор (") + checkedSegs.size + ")")
           : filtered.length > 0 && React.createElement(Btn, { variant: "ghost", size: "sm",
               onClick: () => setCheckedSegs(new Set(filtered.map(s => s.id))) },
               TR("Выбрать все ") + filtered.length + (inZone ? TR(" в зоне")
-                : (filter !== "all" || query || activeFilter ? TR(" по фильтру") : "")))
-        // Поиска здесь больше нет: он один и стоит над таблицей, рядом
-        // с переходом по номеру. Два поля на одно состояние — это два места,
-        // где его ищут, и лишняя высота у залипающей панели, из-за которой
-        // таблицу видно хуже.
+                : (filter !== "all" || query || activeFilter ? TR(" по фильтру") : ""))),
+          React.createElement(IconBtn, { icon: "filter", label: TR("Доп. фильтры"), sm: true, active: showFilters, onClick: () => setShowFilters(s => !s) })
+        )
+      ),
+      /* Статусные вкладки — под «Доп. фильтры» у всех: в макете над таблицей
+         стоят только корзины. Без сводки (до первого прогона) они нужны. */
+      (showFilters || !tkSum) && React.createElement("div", { className: "row between row-wrap" },
+        React.createElement("div", { className: "segmented" },
+          filterDefs.map(([v, l, n]) => React.createElement("button", { key: v, className: filter === v ? "on" : "", onClick: () => setFilter(v) },
+            l, React.createElement("span", { className: "cnt" }, n)))
+        )
       ),
       showFilters && React.createElement("div", { className: "row row-wrap", style: { gap: 14, padding: "4px 2px" } },
         React.createElement(Select, { value: riskFilter, onChange: (e) => setRiskFilter(e.target.value), style: { width: 200 } },
@@ -2544,7 +2532,7 @@ function TabEditor({ store, toast }) {
           )
         ),
         React.createElement("div", { className: "table-wrap" },
-          React.createElement("div", { className: "tbl-scroll", style: { maxHeight: height } },
+          React.createElement("div", { className: "tbl-scroll" },
             React.createElement("table", { className: "tbl" },
               React.createElement("thead", null, React.createElement("tr", null,
                 React.createElement("th", { style: { width: 36, textAlign: "center" } },
@@ -2587,13 +2575,6 @@ function TabEditor({ store, toast }) {
           React.createElement(EmptyState, { icon: "filter", title: TR("Нет сегментов по фильтру"),
             sub: query ? "«" + query + TR("» не найдено — ") + scopeOpts.find(o => o[0] === scope)[1].toLowerCase() + TR(". Смените область поиска или очистите запрос.")
                        : TR("Измените фильтр статуса или поиск.") })),
-        React.createElement("div", { className: "row", style: { gap: 16, marginTop: 12, fontSize: 12, color: "var(--text-3)", flexWrap: "wrap" } },
-          React.createElement(LegendDot, { color: "var(--st-new-fg)", label: TR("Новый") }),
-          React.createElement(LegendDot, { color: "var(--c-primary)", label: TR("Переведён") }),
-          React.createElement(LegendDot, { color: "var(--c-warning)", label: "QA" }),
-          React.createElement(LegendDot, { color: "var(--c-success)", label: TR("Подтверждён") }),
-          React.createElement(LegendDot, { color: "var(--c-error)", label: TR("Ошибка") })
-        ),
         filtered.length > 0 && totalPages > 1 && React.createElement(Pagination, { page: curPage, totalPages, onGo: setPage }),
         React.createElement(StatusBar, {
           segShown: filtered.length, segTotal: project.segments.length,

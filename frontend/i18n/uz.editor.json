@@ -375,7 +375,6 @@
  "Состав прогона не получен от сервера — запуск вслепую не даём.": "Ishlov tarkibi serverdan olinmadi — ko'r-ko'rona ishga tushirishga yo'l qo'ymaymiz.",
  "Среди них подтверждённых: ": "Ular orasida tasdiqlanganlari: ",
  "Средний риск": "O'rtacha xavf",
- "Статус": "Holat",
  "Статус сброшен": "Holat tashlandi",
  "Столько сегментов расходится с глоссарием.": "Shuncha segment lug'atga mos kelmaydi.",
  "Судья": "Hakam",
@@ -535,5 +534,13 @@
  "сейчас таких строк нет. С исправленных галочка снимется.": "hozir bunday qator yo‘q. Tuzatilganidan belgi olib tashlanadi.",
  "с исправленных снимется отметка «подтвердил человек». ": "tuzatilganlaridan «odam tasdiqladi» belgisi olinadi. ",
  "Выключается галочкой выше.": "Yuqoridagi belgi bilan o‘chiriladi.",
- "Выключается в строке «Ремонт».": "«Ta'mirlash» qatorida o‘chiriladi."
+ "Выключается в строке «Ремонт».": "«Ta'mirlash» qatorida o‘chiriladi.",
+ "Устройство прогона: шаги, модели, смета": "Ishning tuzilishi: qadamlar, modellar, smeta",
+ "Как было · ": "Qanday edi · ",
+ "Как стало · ": "Qanday bo‘ldi · ",
+ "Что тут": "Bu yerda nima",
+ "Готово": "Tayyor",
+ "Машина": "Mashina",
+ "Вы": "Siz",
+ "Заверено": "Tasdiqlangan"
 }

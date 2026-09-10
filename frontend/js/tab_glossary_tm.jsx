@@ -944,9 +944,9 @@ function TabGlossary({ store, toast }) {
 
   return React.createElement("div", { className: "page page-wide" },
     React.createElement("div", { className: "page-head" },
-      React.createElement("h1", null, TR("Глоссарий"),
+      React.createElement("h1", null, TR("Словарь книги"),
         React.createElement(InfoTip, { title: TR("Глоссарий"), body: TR("База утверждённых терминов организации с переводами. Используется для инъекции в GPT-промпт и проверки консистентности в QA.") })),
-      React.createElement("p", { className: "lead" }, TR("Утверждённая терминология организации. Совпадения автоматически подсказываются в редакторе сегментов."))),
+      React.createElement("p", { className: "lead" }, TR("Слова, которые встречаются много раз. Я хочу писать их всегда одинаково — скажите, правильно ли я их поняла."))),
 
     React.createElement(AutoApprovePanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
     React.createElement(GlossaryAuditPanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
@@ -1151,9 +1151,9 @@ function TabTM({ store, toast }) {
   });
   return React.createElement("div", { className: "page page-wide" },
     React.createElement("div", { className: "page-head" },
-      React.createElement("h1", null, TR("Память переводов"),
+      React.createElement("h1", null, TR("Целые фразы, которые я запомнила"),
         React.createElement(InfoTip, { title: TR("Память переводов (TM)"), body: TR("База подтверждённых пар (оригинал → перевод). Используется для поиска точных и нечётких совпадений в новых проектах. Экономит токены.") })),
-      React.createElement("p", { className: "lead" }, TR("Подтверждённые пары из предыдущих проектов. Точные совпадения подставляются автоматически и не тарифицируются."))),
+      React.createElement("p", { className: "lead" }, TR("Встретится такая же фраза — переведу мгновенно и бесплатно."))),
     React.createElement("div", { className: "row between row-wrap", style: { marginBottom: 18, gap: 12 } },
       React.createElement(SearchInput, { value: query, onChange: (e) => setQuery(e.target.value),
         placeholder: scope === "src" ? TR("Поиск по оригиналу (RU)…") : scope === "tgt" ? TR("Поиск по переводу (EN)…") : TR("Поиск в памяти переводов…") }),

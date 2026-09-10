@@ -506,12 +506,6 @@ function WorkSummary({ summary, store, toast, onReload }) {
 
 /* Доля от целого для строк корзин. Один знак после запятой, «100%» без
    хвоста: 2314 из 2670 — это 86.7%, а не 87. */
-function tkPct(n, total) {
-  if (!total) return "0%";
-  const p = n / total * 100;
-  const s = p.toFixed(1);
-  return (s.endsWith(".0") ? s.slice(0, -2) : s) + "%";
-}
 
 /* Строка с числом сегментов — ОДНА на весь экран: и корзины «под ключ»,
    и подробный итог ниже. Клик открывает редактор с этими сегментами: цифра,
@@ -862,29 +856,6 @@ function qWord(n) {
   if (e > 1 && e < 5) return TR("вопроса");
   return TR("вопросов");
 }
-/* Карточка корзины. Поведение — то же, что у строки: клик ведёт в редактор
-   с этими сегментами. Цифра без возможности на неё посмотреть бесполезна. */
-function BucketCard({ label, hint, ids, total, tone, action, store, toast, dim }) {
-  const count = (ids || []).length;
-  const clickable = count > 0;
-  const go = () => {
-    if (!clickable) return;
-    store.setSegmentFilter(ids);
-    store.go("editor");
-    toast.info(label, count + TR(" сегментов"));
-  };
-  return React.createElement("div", {
-    className: "st-card st-" + tone + (dim ? " st-dim" : "") + (clickable ? "" : " st-empty"),
-    onClick: clickable ? go : null, role: clickable ? "button" : null,
-    tabIndex: clickable ? 0 : null,
-    onKeyDown: clickable ? ((e) => { if (e.key === "Enter") go(); }) : null },
-    React.createElement("div", { className: "st-label" }, label),
-    React.createElement("div", { className: "st-num" }, count,
-      total ? React.createElement("span", { className: "st-pct" }, tkPct(count, total)) : null),
-    React.createElement("div", { className: "st-hint" }, hint),
-    action ? React.createElement("div", { className: "st-act" }, action) : null);
-}
-
 function TurnkeySummary({ summary, store, toast, onReload, onQuestions }) {
   const tk = summary.turnkey;
   const total = summary.total || 0;

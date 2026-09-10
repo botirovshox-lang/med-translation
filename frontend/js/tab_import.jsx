@@ -198,7 +198,7 @@ function TabImport({ store, toast }) {
 
   return React.createElement("div", { className: "page" },
     React.createElement("div", { className: "page-head" },
-      React.createElement("h1", null, TR("Импорт документа")),
+      React.createElement("h1", null, TR("Что нужно перевести?")),
       React.createElement("p", { className: "lead" }, TR("Загрузите файл Word, чтобы создать новый проект перевода. Документ автоматически разбивается на сегменты с сохранением форматирования."))
     ),
 

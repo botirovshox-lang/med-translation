@@ -43,7 +43,6 @@
   "Заменить": "Almashtirish",
   "Заметки переводчика": "Tarjimon eslatmalari",
   "Исходник приложен": "Asl fayl biriktirilgan",
-  "Исходный документ": "Asl hujjat",
   "Ищем надписи": "Yozuvlar qidirilmoqda",
   "К входных": "K kirish",
   "Картинки не читаются": "Rasmlar o'qilmayapti",
@@ -94,7 +93,6 @@
   "Спрашиваем сервер, что известно про картинки…": "Serverdan rasmlar haqida nima ma'lumligi so'ralmoqda…",
   "Ссылки на глоссарий": "Lug'atga havolalar",
   "Стали сегментами": "Segmentga aylandi",
-  "Текст на картинках": "Rasmlardagi matn",
   "Убрать и забыть прочитанное": "Olib tashlash va o'qilganini unutish",
   "Убрать сегменты": "Segmentlarni olib tashlash",
   "Уйдут подписью под картинкой": "Rasm ostida izoh bo'lib chiqadi",
@@ -164,5 +162,8 @@
   "Слева как было, справа как стало — удобно сравнивать": "Chapda qanday edi, o‘ngda qanday bo‘ldi — solishtirish qulay",
   "как оригинал": "asl nusxadagidek",
   "Что вам прислать": "Sizga nima yuboray",
-  "Что положить в файл": "Faylga nima solay"
+  "Что положить в файл": "Faylga nima solay",
+  "Скачать перевод": "Tarjimani yuklab olish",
+  "Надписи на картинках": "Rasmlardagi yozuvlar",
+  "Ваш файл": "Sizning faylingiz"
 }

@@ -529,6 +529,10 @@ function TabEditor({ store, toast }) {
      в панели и при запуске, — поэтому живёт одной переменной: разойдись они,
      экран показывал бы одно, а кнопка делала другое. */
   const expertUI = !!(store.can && store.can.super);
+  /* Устройство прогона свёрнуто и у администратора: главная отвечает
+     на вопрос «что с переводом», а не «как он устроен». */
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [bucket, setBucket] = useState(null);
   const [judgeModel, setJudgeModel] = useState(() => {
     try { return localStorage.getItem(JUDGE_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
@@ -2317,7 +2321,18 @@ function TabEditor({ store, toast }) {
         )
       ),
       React.createElement("div", { className: "row between row-wrap" },
-        React.createElement("div", { className: "segmented" },
+        /* Фильтры-корзины — те же множества, что карточки наверху (ids
+           с сервера), а не свой пересчёт статусов. Статусные фильтры
+           остаются под «Доп. фильтры» и у администратора. */
+        tkSum && React.createElement("div", { className: "segmented" },
+          [["all", TR("Все"), null], ["ready", TR("Готово"), tkSum.turnkey.ready],
+           ["machine", TR("Машина"), tkSum.turnkey.machine], ["human", TR("Вы"), tkSum.turnkey.human],
+           ["mine", TR("Заверено"), tkSum.turnkey.confirmed || []]].map(([k, l, ids]) =>
+            React.createElement("button", { key: k,
+              className: (k === "all" ? !store.segmentFilter : (bucket === k && !!store.segmentFilter)) ? "on" : "",
+              onClick: () => { store.setSegmentFilter(k === "all" ? null : ids); setBucket(k === "all" ? null : k); setPage(1); } },
+              l, ids && React.createElement("span", { className: "cnt" }, ids.length)))),
+        (expertUI || showFilters || !tkSum) && React.createElement("div", { className: "segmented" },
           filterDefs.map(([v, l, n]) => React.createElement("button", { key: v, className: filter === v ? "on" : "", onClick: () => setFilter(v) },
             l, React.createElement("span", { className: "cnt" }, n)))
         ),
@@ -2371,7 +2386,28 @@ function TabEditor({ store, toast }) {
     // и до второй кнопки приходилось листать. Узко — не значит меньше: состав
     // и причины в строках шагов остались целиком.
     React.createElement("div", { className: "editor-main", style: { paddingBottom: 0 } },
-      React.createElement("div", { className: "run-decks" },
+      tkSum && React.createElement(EditorHomeSummary, { sum: tkSum, store, toast,
+        onDrill: (ids, key) => { store.setSegmentFilter(ids); setBucket(key); setPage(1); } }),
+      /* Одна кнопка — всем. Полный разбор шагов, моделей и сметы для
+         администратора лежит ниже свёрткой: он нужен раз в неделю,
+         а кнопка — каждый день. */
+      expertUI && React.createElement(FullRunCard, {
+        running: job && job.kind === "full" ? job : null,
+        onRun: runFullJob, onStop: stopJob,
+        rows: fullRunRows, picked: pickedFull, onToggle: toggleFullStep,
+        scopeSize: fullRunIds.length, planBusy: planBusy, planReady: !!runPlan,
+        openStep: openStep, onOpenStep: setOpenStep,
+        checked: checkedSegs.size, filtered: !!(store.segmentFilter || window._mcat_sf),
+        est: fullEst, modelWarn: modelWarn,
+        rvConfirmed: rvConfirmed, rvConfirmedCount: confirmedInScope, rvAskConfirmed: rvAskConfirmed,
+        fixConfirmed: rpFixConfirmed, fixConfirmedCount: rpConfirmedWaiting,
+        models: gptModels, disabled: !!job, expert: false, showCost: true,
+        onFixConfirmed: setRpFixConfirmed }),
+      expertUI && React.createElement("button", { className: "btn btn-ghost btn-sm",
+        style: { alignSelf: "flex-start", margin: "6px 0 10px" }, onClick: () => setSetupOpen(o => !o) },
+        (setupOpen ? "▾ " : "▸ ") + TR("Устройство прогона: шаги, модели, смета")),
+      React.createElement("div", { className: "run-decks",
+        style: expertUI && !setupOpen ? { display: "none" } : null },
         React.createElement(FullRunCard, {
           running: job && job.kind === "full" ? job : null,
           onRun: runFullJob, onStop: stopJob,
@@ -2526,10 +2562,10 @@ function TabEditor({ store, toast }) {
                     }
                   })
                 ),
-                React.createElement("th", { className: "col-id" }, "#"),
-                React.createElement("th", null, TR("Оригинал · ") + (project.src || "")),
-                React.createElement("th", null, TR("Перевод · ") + (project.tgt || "")),
-                React.createElement("th", { style: { width: 132 } }, TR("Статус")),
+                React.createElement("th", { className: "col-id" }, "№"),
+                React.createElement("th", null, TR("Как было · ") + (project.src || "")),
+                React.createElement("th", null, TR("Как стало · ") + (project.tgt || "")),
+                React.createElement("th", { style: { width: 132 } }, TR("Что тут")),
                 React.createElement("th", { style: { width: 76 },
                   title: TR("Ремонт, находки по терминам, back-check") }, TR("Проверки")),
                 React.createElement("th", { style: { width: 56 } }, "")
@@ -3207,6 +3243,42 @@ function RunGroups({ title, tip, groups, pickedGroups, onToggleGroup }) {
    разбор и ручные команды — на самой вкладке. Долю считает tkPct из
    tab_preflight.jsx (все .jsx живут в одной глобальной области); запасной
    расчёт — для тестов, которые грузят только этот файл. */
+/* Сводка макета: крупный процент, полоса трёх цветов с легендой и четыре
+   карточки корзин. Числа — те же turnkey с сервера, что и на «Что
+   получилось»; клик по карточке фильтрует таблицу ниже. */
+function EditorHomeSummary({ sum, store, toast, onDrill }) {
+  const tk = sum.turnkey, total = sum.total || 0;
+  const ready = tk.ready || [], machine = tk.machine || [], human = tk.human || [];
+  const seg = (n, color) => (total > 0 && n > 0)
+    ? React.createElement("i", { style: { display: "block", width: (n / total * 100) + "%", background: color } }) : null;
+  const card = (ids, key, tone, label, hint, dim) => React.createElement("div", {
+    className: "st-card st-" + tone + (dim ? " st-dim" : "") + (ids.length ? "" : " st-empty"),
+    role: "button", tabIndex: 0, onClick: () => ids.length && onDrill(ids, key),
+    onKeyDown: (e) => { if (e.key === "Enter" && ids.length) onDrill(ids, key); } },
+    React.createElement("div", { className: "st-label" }, label),
+    React.createElement("div", { className: "st-num" }, ids.length,
+      dim ? null : React.createElement("span", { className: "st-pct" }, tkPct(ids.length, total))),
+    React.createElement("div", { className: "st-hint" }, hint));
+  return React.createElement("div", { className: "home-sum" },
+    React.createElement("div", { className: "row between", style: { alignItems: "baseline" } },
+      React.createElement("div", null,
+        React.createElement("b", { className: "home-pct" }, tkPct(ready.length, total)),
+        React.createElement("span", { className: "dim", style: { marginLeft: 10 } }, TR("готово"))),
+      React.createElement("span", { className: "dim", style: { fontSize: 12.5 } },
+        ready.length + TR(" из ") + total + TR(" строк"))),
+    React.createElement("div", { className: "home-stack" },
+      seg(ready.length, "var(--c-success)"), seg(machine.length, "var(--c-primary)"), seg(human.length, "var(--c-warning)")),
+    React.createElement("div", { className: "dim row row-wrap home-legend" },
+      React.createElement("span", null, React.createElement("i", { style: { background: "var(--c-success)" } }), TR("готово")),
+      React.createElement("span", null, React.createElement("i", { style: { background: "var(--c-primary)" } }), TR("доделаю сама")),
+      React.createElement("span", null, React.createElement("i", { style: { background: "var(--c-warning)" } }), TR("спрошу вас"))),
+    React.createElement("div", { className: "st-cards" },
+      card(ready, "ready", "ok", TR("Готово к сдаче"), TR("переведено и проверено, открытых вопросов нет")),
+      card(machine, "machine", "mach", TR("Возьмёт ближайший прогон"), TR("перевод, проверки, судья и ремонт по находкам")),
+      card(human, "human", "hum", TR("Нужно ваше решение"), TR("прогон это не решит — состав и команды в «Подробностях»")),
+      card(tk.confirmed || [], "mine", "mine", TR("Заверено вручную"), TR("входит в корзины выше"), true)));
+}
+
 function EditorAnalysisCard({ sum, onDrill, onOpen }) {
   const tk = sum.turnkey;
   const total = sum.total || 0;

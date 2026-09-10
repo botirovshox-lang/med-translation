@@ -218,7 +218,7 @@ function ImagesCard({ project, store, toast }) {
       value));
 
   return React.createElement("div", null,
-    React.createElement("h2", { className: "section-title" }, TR("Текст на картинках")),
+    React.createElement("h2", { className: "section-title" }, TR("Надписи на картинках")),
     React.createElement("div", { className: "card card-pad col", style: { gap: 12 } },
       React.createElement("div", { style: { fontSize: 13, lineHeight: 1.55 } },
         TR("Подписи под рисунками и схемы впечатаны в картинки: абзаца у них нет, "),
@@ -501,7 +501,7 @@ function TabExport({ store, toast }) {
 
   return React.createElement("div", { className: "page" },
     React.createElement("div", { className: "page-head" },
-      React.createElement("h1", null, TR("Экспорт")),
+      React.createElement("h1", null, TR("Скачать перевод")),
       React.createElement("p", { className: "lead" },
         TR("Соберите готовый документ по проекту «") + project.title + TR("». В файл идёт всё, ")
         + TR("что переведено, независимо от статуса; сегменты без перевода остаются ")
@@ -527,7 +527,7 @@ function TabExport({ store, toast }) {
               : TR("«DOCX 1в1» сохраняет оформление оригинала. Остальные форматы собираются с нуля."))
         ),
         React.createElement("div", null,
-          React.createElement("h2", { className: "section-title" }, TR("Исходный документ")),
+          React.createElement("h2", { className: "section-title" }, TR("Ваш файл")),
           React.createElement("div", { className: "card card-pad col", style: { gap: 12 } },
             srcDoc
               ? React.createElement("div", { className: "row between", style: { gap: 12, flexWrap: "wrap" } },

@@ -51,7 +51,6 @@
   "Вход": "Kirish",
   "Вы вошли в систему.": "Tizimga kirdingiz.",
   "Выйти": "Chiqish",
-  "Глоссарий": "Lug'at",
   "Добро пожаловать": "Xush kelibsiz",
   "Если такая почта у нас есть, письмо с кодом уже ушло.": "Agar bunday pochta bizda bo'lsa, kodli xat allaqachon yuborildi.",
   "Забыли пароль?": "Parolni unutdingizmi?",
@@ -95,7 +94,6 @@
   "Система перевода документов с проверками": "Tekshiruvli hujjat tarjimasi tizimi",
   "Сменить пароль": "Parolni almashtirish",
   "Создать организацию": "Tashkilot yaratish",
-  "Экспорт": "Eksport",
   "вашу почту": "pochtangizga",
   "напр. Бюро переводов": "masalan, Tarjima byurosi",
   "необязательно": "majburiy emas",
@@ -204,7 +202,6 @@
   "Задайте цену за страницу во вкладке «Организация» — до этого сумму показать нечем.": "Sahifa narxini «Tashkilot» bo'limida belgilang — undan oldin summani ko'rsatishning imkoni yo'q.",
   "Задаёт терминологию в промптах перевода и проверки. Меняется только для новых проектов.": "Tarjima va tekshiruv promptlaridagi atamashunoslikni belgilaydi. Faqat yangi loyihalar uchun o'zgaradi.",
   "Знаков с пробелами": "Probel bilan belgilar",
-  "Импорт документа": "Hujjat importi",
   "История смет · ": "Hisob-kitoblar tarixi · ",
   "Итого": "Jami",
   "Медицина": "Tibbiyot",
@@ -280,5 +277,9 @@
   " осталось": " qoldi",
   "одна кнопка на весь путь": "butun yo‘lga bitta tugma",
   "Считаю, что нужно сделать…": "Nima qilish kerakligini hisoblayapman…",
-  "Переведу, перечитаю, проверю тремя способами и починю найденное. Считает сервер — настраивать нечего.": "Tarjima qilaman, qayta o‘qiyman, uch xil usulda tekshiraman va topilganini tuzataman. Hammasini server hisoblaydi — sozlash shart emas."
+  "Переведу, перечитаю, проверю тремя способами и починю найденное. Считает сервер — настраивать нечего.": "Tarjima qilaman, qayta o‘qiyman, uch xil usulda tekshiraman va topilganini tuzataman. Hammasini server hisoblaydi — sozlash shart emas.",
+  "Что нужно перевести?": "Nimani tarjima qilish kerak?",
+  "Экспорт": "Eksport",
+  "Глоссарий": "Lug‘at",
+  "Память переводов": "Tarjima xotirasi"
 }

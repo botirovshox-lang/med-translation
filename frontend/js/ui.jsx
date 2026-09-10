@@ -458,4 +458,39 @@ Object.assign(window, {
   ProgressBar, Ring, Spinner, Avatar, EmptyState, LangPair, LEGACY_DOMAIN,
   fmtCost, InfoTip, ROUTE_INFO, RISK_INFO, RouteLabel, RiskLabel,
   BC_BANDS_FALLBACK, setBcBands, bcBands, bcBandColor, bcScoreColor,
+  tkPct, BucketCard,
 });
+
+/* Корзины «под ключ» — общий кит редактора и экрана «Что получилось»:
+   одна карточка, одна доля в процентах. Второй расчёт разошёлся бы. */
+function tkPct(n, total) {
+  if (!total) return "0%";
+  const p = n / total * 100;
+  const s = p.toFixed(1);
+  return (s.endsWith(".0") ? s.slice(0, -2) : s) + "%";
+}
+
+/* Карточка корзины. Поведение — то же, что у строки: клик ведёт в редактор
+   с этими сегментами. Цифра без возможности на неё посмотреть бесполезна. */
+function BucketCard({ label, hint, ids, total, tone, action, store, toast, dim }) {
+  const count = (ids || []).length;
+  const clickable = count > 0;
+  const go = () => {
+    if (!clickable) return;
+    store.setSegmentFilter(ids);
+    store.go("editor");
+    toast.info(label, count + TR(" сегментов"));
+  };
+  return React.createElement("div", {
+    className: "st-card st-" + tone + (dim ? " st-dim" : "") + (clickable ? "" : " st-empty"),
+    onClick: clickable ? go : null, role: clickable ? "button" : null,
+    tabIndex: clickable ? 0 : null,
+    onKeyDown: clickable ? ((e) => { if (e.key === "Enter") go(); }) : null },
+    React.createElement("div", { className: "st-label" }, label),
+    React.createElement("div", { className: "st-num" }, count,
+      total ? React.createElement("span", { className: "st-pct" }, tkPct(count, total)) : null),
+    React.createElement("div", { className: "st-hint" }, hint),
+    action ? React.createElement("div", { className: "st-act" }, action) : null);
+}
+
+

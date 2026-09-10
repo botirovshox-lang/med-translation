@@ -436,15 +436,24 @@ const TABS = [
   { key: "admin", label: TR("Админ"), icon: "settings", super: true, entry: true, group: "sys" },
 ];
 const TAB_GROUPS = [["work", TR("Работа")], ["files", TR("Файлы")], ["sys", TR("Служебное")]];
-/* Счётчик у пункта меню. Вынесен из TabBar: его читают и меню, и крошки. */
+/* Счётчик пункта меню: число и его ПРИРОДА. «Ждёт вас» красится красным
+   (.navi-n.todo), «сколько всего» — тихой пилюлей. Это разные вопросы:
+   2692 сегмента и 150 записей словаря — размер работы, с которым делать
+   нечего, а 5 вопросов — то, без чего перевод не сдать. Одним цветом они
+   спорят за внимание, и выигрывает тот, у кого число больше.
+   Читает это одно меню (Sidebar): в крошки счётчик уехал вместе с прежней
+   лентой вкладок, и обещать двух читателей больше нечем. */
 function tabBadge(store, k, counts) {
-  if (k === "profile") return (store.invites && store.invites.length) || null;
+  if (k === "profile") return todoBadge((store.invites && store.invites.length) || null);
   if (!counts) return null;
   if (k === "editor") return counts.all;
-  if (k === "preflight") return counts.failed + counts.qa || null;
+  if (k === "preflight") return todoBadge(counts.failed + counts.qa || null);
   if (k === "glossary") return store.glossary.length;
   return null;
 }
+/* Обёртка, а не второй возврат: tabBadge зовут в одном месте, и «ноль
+   вопросов» обязан остаться null — пустая красная пилюля хуже отсутствующей. */
+function todoBadge(n) { return n ? { n: n, todo: true } : null; }
 function visibleTabs(store) {
   return TABS.filter(t => (!t.owner || (store.can && store.can.owner))
     && (!t.super || (store.can && store.can.super))
@@ -480,7 +489,8 @@ function Sidebar({ store, theme, onToggleTheme, onLogout }) {
             role: "tab", "aria-selected": store.tab === t.key, onClick: () => store.go(t.key) },
             React.createElement(Icon, { name: t.icon, size: 15 }),
             React.createElement("span", { className: "navi-t" }, t.label),
-            b != null && React.createElement("span", { className: "navi-n" }, b));
+            b != null && React.createElement("span",
+              { className: "navi-n" + (b.todo ? " todo" : "") }, b.todo ? b.n : b));
         }));
     }),
     limited && React.createElement("div", { className: "side-foot" },

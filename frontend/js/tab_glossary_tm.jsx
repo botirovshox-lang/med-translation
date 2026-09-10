@@ -697,7 +697,7 @@ function TermQueue({ store, toast, version }) {
         TR("Почему ждут — нажмите, чтобы отобрать:")),
       groups.map(g => React.createElement("div", { key: g.reason, className: "row between", style: { gap: 10, fontSize: 12.5, padding: "3px 0" } },
         React.createElement("span", {
-          style: { cursor: "pointer", fontWeight: only === g.reason ? 650 : 400,
+          style: { cursor: "pointer", fontWeight: only === g.reason ? 600 : 400,
                    color: g.reason === "ready" ? "var(--c-success)" : "var(--text-2)" },
           onClick: () => {
             const next = only === g.reason ? null : g.reason;

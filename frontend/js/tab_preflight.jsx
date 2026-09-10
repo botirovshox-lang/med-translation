@@ -1441,7 +1441,7 @@ function StatRow({ label, note, count, color, onDrill, bold }) {
     onClick: clickable ? onDrill : undefined,
     title: clickable ? TR("Открыть эти сегменты в редакторе") : TR("Нет таких сегментов") },
     React.createElement("div", { className: "row", style: { gap: 8, minWidth: 0 } },
-      React.createElement("span", { style: { fontSize: 13, fontWeight: bold ? 700 : 500, color: color || "var(--text)" } }, label),
+      React.createElement("span", { style: { fontSize: 13, fontWeight: bold ? 600 : 500, color: color || "var(--text)" } }, label),
       note && React.createElement("span", { className: "dim", style: { fontSize: 12 } }, note)),
     React.createElement("b", { className: "tnum", style: { fontSize: 13, color: color || "var(--text)" } }, count));
 }

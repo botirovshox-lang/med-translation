@@ -62,7 +62,7 @@ const ICONS = {
   sliders: "M4 21v-7|M4 10V3|M12 21v-9|M12 8V3|M20 21v-5|M20 12V3|M1 14h6|M9 8h6|M17 16h6",
 };
 
-function Icon({ name, size = 18, stroke = 2, className = "", style }) {
+function Icon({ name, size = 18, stroke = 2.25, className = "", style }) {
   const d = ICONS[name];
   if (!d) return null;
   const parts = d.split("|");
@@ -476,6 +476,12 @@ function tkPct(n, total) {
   return (s.endsWith(".0") ? s.slice(0, -2) : s) + "%";
 }
 
+/* Значок корзины — тот же, что у карточек на «Что получилось»: корзины там
+   и здесь одни и те же (turnkey с сервера), и различать их на двух экранах
+   разными приметами значит заставить человека узнавать их дважды. Ключ —
+   тот же tone, которым красится подложка значка (.st-ok / .st-mach / …). */
+const BUCKET_ICON = { ok: "checkCircle", mach: "repeat", hum: "alert", mine: "lock" };
+
 /* Карточка корзины. Поведение — то же, что у строки: клик ведёт в редактор
    с этими сегментами. Цифра без возможности на неё посмотреть бесполезна. */
 function BucketCard({ label, hint, ids, total, tone, action, store, toast, dim }) {
@@ -492,7 +498,10 @@ function BucketCard({ label, hint, ids, total, tone, action, store, toast, dim }
     onClick: clickable ? go : null, role: clickable ? "button" : null,
     tabIndex: clickable ? 0 : null,
     onKeyDown: clickable ? ((e) => { if (e.key === "Enter") go(); }) : null },
-    React.createElement("div", { className: "st-label" }, label),
+    React.createElement("div", { className: "st-top" },
+      BUCKET_ICON[tone] && React.createElement("span", { className: "st-badge" },
+        React.createElement(Icon, { name: BUCKET_ICON[tone], size: 14 })),
+      React.createElement("span", { className: "st-label" }, label)),
     React.createElement("div", { className: "st-num" }, count,
       total ? React.createElement("span", { className: "st-pct" }, tkPct(count, total)) : null),
     React.createElement("div", { className: "st-hint" }, hint),

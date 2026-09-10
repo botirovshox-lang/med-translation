@@ -862,6 +862,29 @@ function qWord(n) {
   if (e > 1 && e < 5) return TR("вопроса");
   return TR("вопросов");
 }
+/* Карточка корзины. Поведение — то же, что у строки: клик ведёт в редактор
+   с этими сегментами. Цифра без возможности на неё посмотреть бесполезна. */
+function BucketCard({ label, hint, ids, total, tone, action, store, toast, dim }) {
+  const count = (ids || []).length;
+  const clickable = count > 0;
+  const go = () => {
+    if (!clickable) return;
+    store.setSegmentFilter(ids);
+    store.go("editor");
+    toast.info(label, count + TR(" сегментов"));
+  };
+  return React.createElement("div", {
+    className: "st-card st-" + tone + (dim ? " st-dim" : "") + (clickable ? "" : " st-empty"),
+    onClick: clickable ? go : null, role: clickable ? "button" : null,
+    tabIndex: clickable ? 0 : null,
+    onKeyDown: clickable ? ((e) => { if (e.key === "Enter") go(); }) : null },
+    React.createElement("div", { className: "st-label" }, label),
+    React.createElement("div", { className: "st-num" }, count,
+      total ? React.createElement("span", { className: "st-pct" }, tkPct(count, total)) : null),
+    React.createElement("div", { className: "st-hint" }, hint),
+    action ? React.createElement("div", { className: "st-act" }, action) : null);
+}
+
 function TurnkeySummary({ summary, store, toast, onReload, onQuestions }) {
   const tk = summary.turnkey;
   const total = summary.total || 0;
@@ -970,17 +993,23 @@ function TurnkeySummary({ summary, store, toast, onReload, onQuestions }) {
         React.createElement(Btn, { variant: "secondary", icon: "target", disabled: !qCount,
           onClick: () => { if (onQuestions) onQuestions(); } },
           TR("Ответить на вопросы") + (qCount ? " · " + qCount : ""))),
-      React.createElement(AnalysisRow, { store, toast, total, ids: ready,
-        label: TR("Готово к сдаче"), color: "var(--c-success)",
-        hint: TR("переведено и проверено, открытых вопросов нет") }),
-      React.createElement(AnalysisRow, { store, toast, total, ids: machine,
-        label: TR("Возьмёт ближайший прогон"), color: "var(--c-primary)",
-        hint: TR("перевод, проверки, судья и ремонт по находкам"),
-        action: React.createElement(Btn, { variant: "primary", size: "sm", icon: "zap",
-          onClick: () => setPanel(p => !p) }, TR("Перевести и доделать")) }),
-      React.createElement(AnalysisRow, { store, toast, total, ids: human,
-        label: TR("Нужно ваше решение"), color: "var(--c-warning)",
-        hint: TR("прогон это не решит — состав и команды в «Подробностях»") }),
+      /* Три корзины — КАРТОЧКАМИ: строкой они читались как список, а это
+         три разных места, куда человек идёт с разными намерениями. Надписи,
+         числа и клик прежние (тот же drill в редактор), поэтому словарь
+         не тронут. Четвёртая карточка — срез «заверено вручную»: он входит
+         в корзины выше и потому приглушён, но работа человека обязана быть
+         видна числом. */
+      React.createElement("div", { className: "st-cards" },
+        React.createElement(BucketCard, { store, toast, total, ids: ready, tone: "ok",
+          label: TR("Готово к сдаче"), hint: TR("переведено и проверено, открытых вопросов нет") }),
+        React.createElement(BucketCard, { store, toast, total, ids: machine, tone: "mach",
+          label: TR("Возьмёт ближайший прогон"), hint: TR("перевод, проверки, судья и ремонт по находкам"),
+          action: React.createElement(Btn, { variant: "primary", size: "sm", icon: "zap",
+            onClick: (e) => { e.stopPropagation(); setPanel(p => !p); } }, TR("Перевести и доделать")) }),
+        React.createElement(BucketCard, { store, toast, total, ids: human, tone: "hum",
+          label: TR("Нужно ваше решение"), hint: TR("прогон это не решит — состав и команды в «Подробностях»") }),
+        React.createElement(BucketCard, { store, toast, ids: tk.confirmed || [], tone: "mine", dim: true,
+          label: TR("Заверено вручную"), hint: TR("входит в корзины выше") })),
       groups.filter(g => g.n > 0).map(g => React.createElement(AnalysisRow, {
         key: g.key, store, toast, ids: g.ids, n: g.n, dim: true,
         total: g.key === "records" ? undefined : total,
@@ -991,9 +1020,7 @@ function TurnkeySummary({ summary, store, toast, onReload, onQuestions }) {
          подтверждение не меняло на этом экране ничего. Та же AnalysisRow
          (правило клика живёт в одном месте), только приглушённая (`dim`).
          Старый сервер поля не отдаёт — строки просто нет. */
-      (tk.confirmed || []).length > 0 && React.createElement(AnalysisRow, {
-        store, toast, total, ids: tk.confirmed, dim: true,
-        label: TR("Заверено вручную"), hint: TR("входит в корзины выше") }),
+
       /* Претензии слепых измерителей (балл back-check, одиночное мнение
          termcheck) снял свежий вердикт ревизии — сегменты в «Готово».
          Срезом, а не молча: снятое без следа неотличимо от потерянного. */

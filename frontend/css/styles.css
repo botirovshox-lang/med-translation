@@ -312,6 +312,30 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible) { outline: non
 }
 
 /* ============================================================
+   Корзины «под ключ» карточками (экран «Что получилось»)
+   ============================================================ */
+.st-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; padding: 4px 0 14px; }
+.st-card {
+  border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--card);
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 6px;
+  border-top: 3px solid var(--border-strong);
+  transition: border-color .12s ease, background-color .12s ease;
+}
+.st-card:not(.st-empty) { cursor: pointer; }
+.st-card:not(.st-empty):hover { background: var(--bg-hover); }
+.st-card.st-ok { border-top-color: var(--c-success); }
+.st-card.st-mach { border-top-color: var(--c-primary); }
+.st-card.st-hum { border-top-color: var(--c-warning); }
+.st-card.st-mine { border-top-color: var(--border-strong); }
+.st-card.st-empty { opacity: .55; }
+.st-label { font-size: 12.5px; color: var(--text-2); font-weight: 500; }
+.st-num { font-size: 26px; font-weight: 500; letter-spacing: -.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.st-pct { font-size: 12.5px; color: var(--text-3); font-weight: 450; margin-left: 8px; }
+.st-hint { font-size: 11.5px; color: var(--text-3); line-height: 1.45; }
+.st-act { margin-top: auto; padding-top: 6px; }
+.st-card.st-dim .st-num { font-size: 20px; color: var(--text-2); }
+
+/* ============================================================
    Buttons
    ============================================================ */
 .btn {

@@ -783,6 +783,28 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
 @media (max-width: 1520px) { .run-decks { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); } }
 @media (max-width: 1180px) { .run-decks { grid-template-columns: minmax(0, 1fr); } }
 
+/* «Словарь книги»: три служебные панели — колонками (те же пороги, что
+   у .run-decks), карточки очереди — сеткой. align-items: start обязателен:
+   иначе короткая панель растягивается до высоты соседней. */
+.kb-decks {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-md); align-items: start; margin-bottom: 14px;
+}
+@media (max-width: 1520px) { .kb-decks { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 1180px) { .kb-decks { grid-template-columns: minmax(0, 1fr); } }
+.kb-cands { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 10px; align-items: start; }
+@media (max-width: 640px) { .kb-cands { grid-template-columns: minmax(0, 1fr); } }
+
+/* «Профиль»: слева «про меня», справа команды с таблицами. Сетки полей
+   внутри узкой колонки (.grid-2 имени, .grid-3 пароля) складываются
+   в одну: их медиазапросы смотрят на окно, а не на колонку в 380px. */
+.profile-cols {
+  display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
+  gap: 16px; align-items: start;
+}
+.profile-cols .profile-me .grid-2, .profile-cols .profile-me .grid-3 { grid-template-columns: 1fr; }
+@media (max-width: 1180px) { .profile-cols { grid-template-columns: minmax(0, 1fr); } }
+
 /* Поиск и переход по номеру — прямо над таблицей: от залипающей панели её
    отделяют два блока запуска высотой в экран. Маленькая строка стоит над
    колонкой «#» и по ширине равна двум первым колонкам таблицы (36 px чекбокса

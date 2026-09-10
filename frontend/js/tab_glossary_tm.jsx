@@ -112,7 +112,7 @@ function GlossaryPurgePanel({ store, toast, onDone }) {
     onDone && onDone();
   };
 
-  return React.createElement("div", { className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 } },
+  return React.createElement("div", { className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 10 } },
     React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
       React.createElement("div", { className: "row", style: { gap: 8 } },
         React.createElement(Icon, { name: "close", size: 16, style: { color: "var(--c-error)" } }),
@@ -280,7 +280,7 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
       + (kind === "del" ? "" : TR(" · модель вправе её игнорировать")) + tail);
     onDone && onDone();
   };
-  return React.createElement("div", { className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 } },
+  return React.createElement("div", { className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 10 } },
     React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
       React.createElement("div", { className: "row", style: { gap: 8 } },
         React.createElement(Icon, { name: "book", size: 16, style: { color: "var(--c-warning)" } }),
@@ -344,7 +344,7 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
     res && !bad.length && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
       TR("Расхождений смысла не найдено.")),
 
-    bad.length > 0 && React.createElement("div", { className: "col", style: { gap: 5 } },
+    bad.length > 0 && React.createElement("div", { className: "col", style: { gap: 5, maxHeight: 260, overflow: "auto" } },
       bad.slice(0, CAP).map((b, i) => React.createElement("div", {
         key: i, className: "row between row-wrap", style: { gap: 10, fontSize: 12.5, padding: "3px 0" } },
         React.createElement("span", null,
@@ -471,7 +471,7 @@ function AutoApprovePanel({ store, toast, onDone }) {
   // Запрет области — отдельное поле с сервера: он снимается ДО учёта
   // разрешения, поэтому тумблер не исчезает от того, что его включили.
   const banned = !!(preview && preview.policy && preview.policy.domainBanned);
-  return React.createElement("div", { className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 } },
+  return React.createElement("div", { className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 10 } },
     React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
       React.createElement("div", { className: "row", style: { gap: 8 } },
         React.createElement(Icon, { name: "zap", size: 16, style: { color: "var(--c-primary)" } }),
@@ -719,6 +719,10 @@ function TermQueue({ store, toast, version }) {
         + TR("с другим переводом, вопрос задастся заново."))),
 
     open && React.createElement("div", { className: "col", style: { gap: 10, marginTop: 14 } },
+      // Карточки — сеткой, а не столбиком: на широкой странице влезают три
+      // в ряд. Обёрнуты ТОЛЬКО карточки: «Показать ещё» и пустое сообщение
+      // остаются снаружи, иначе они стали бы ячейками сетки.
+      React.createElement("div", { className: "kb-cands" },
       items.filter(c => !only || c.why === only).map(c => {
         const [label, icon, color] = CAND_KIND[c.kind] || [TR("Кандидат"), "info", "var(--text-2)"];
         return React.createElement("div", { key: c.id, className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 8 } },
@@ -827,7 +831,7 @@ function TermQueue({ store, toast, version }) {
               onClick: () => explain(c) },
               explained[c.id] && explained[c.id].loading ? TR("Разбираем…")
                 : explained[c.id] ? TR("Разобрать заново") : TR("Что это значит?"))));
-      }),
+      })),
       total > items.length && React.createElement(Btn, {
         variant: "ghost", size: "sm", onClick: () => { const n = limit + QUEUE_PAGE; setLimit(n); load(n); } },
         TR("Показать ещё ") + Math.min(QUEUE_PAGE, total - items.length) + TR(" из ") + (total - items.length)),
@@ -948,9 +952,13 @@ function TabGlossary({ store, toast }) {
         React.createElement(InfoTip, { title: TR("Глоссарий"), body: TR("База утверждённых терминов организации с переводами. Используется для инъекции в GPT-промпт и проверки консистентности в QA.") })),
       React.createElement("p", { className: "lead" }, TR("Слова, которые встречаются много раз. Я хочу писать их всегда одинаково — скажите, правильно ли я их поняла."))),
 
-    React.createElement(AutoApprovePanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
-    React.createElement(GlossaryAuditPanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
-    React.createElement(GlossaryPurgePanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
+    // Три служебные панели — колонками, как блоки запуска на главной
+    // (`.run-decks`): стопкой во всю ширину они читались строчками
+    // по полторы тысячи пикселей, и до очереди приходилось листать.
+    React.createElement("div", { className: "kb-decks" },
+      React.createElement(AutoApprovePanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
+      React.createElement(GlossaryAuditPanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
+      React.createElement(GlossaryPurgePanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) })),
 
     React.createElement(TermQueue, { store, toast, version: queueVersion }),
 

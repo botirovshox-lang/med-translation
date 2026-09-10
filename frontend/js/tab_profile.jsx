@@ -303,12 +303,19 @@ function TabProfile({ store, toast, theme, onToggleTheme }) {
       React.createElement("h1", null, TR("Профиль")),
       React.createElement("p", { className: "lead" },
         TR("Ваши данные, язык интерфейса и команды. Команда — это рабочее пространство: свои проекты, глоссарий и память переводов."))),
-    React.createElement("div", { className: "col", style: { gap: 16 } },
-      React.createElement(ProfileInvites, { data, onChange: load, toast }),
-      React.createElement(ProfileIdentity, { data, onSaved, toast, theme, onToggleTheme }),
-      React.createElement(ProfileTeams, { data, onChange: load, toast }),
-      React.createElement(ProfileMembers, { data, toast }),
-      React.createElement(ProfilePassword, { toast })));
+    // Приглашения — над колонками во всю ширину: это вопрос, который ждёт
+    // ответа, и на узком экране он не должен уезжать под пароль.
+    React.createElement(ProfileInvites, { data, onChange: load, toast }),
+    // Две колонки: слева «про меня» (учётная запись, пароль), справа
+    // команды и состав — у них таблицы, им нужна ширина. Ниже 1180px
+    // колонки складываются в одну, и учётная запись остаётся выше.
+    React.createElement("div", { className: "profile-cols" },
+      React.createElement("div", { className: "col profile-me", style: { gap: 16 } },
+        React.createElement(ProfileIdentity, { data, onSaved, toast, theme, onToggleTheme }),
+        React.createElement(ProfilePassword, { toast })),
+      React.createElement("div", { className: "col profile-teams", style: { gap: 16 } },
+        React.createElement(ProfileTeams, { data, onChange: load, toast }),
+        React.createElement(ProfileMembers, { data, toast }))));
 }
 
 window.TabProfile = TabProfile;

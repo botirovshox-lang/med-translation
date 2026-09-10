@@ -563,6 +563,7 @@ for t in tests/test_*.py; do .venv/bin/python "$t" | tail -1; done   # 40 наб
 node tests/test_editor_render.js                                    # фронтенд без браузера
 node tests/test_i18n.js                                             # словарь: полнота и честность
 node tests/test_profile_render.js                                   # профиль и команды
+node tests/test_knowledge_render.js                                 # «Словарь книги»: панели и очередь
 node tests/test_segment_card.js                                     # карточка сегмента
 python tools/i18n_build.py                                          # словарь пересобран из JSON
 node tests/test_export_render.js                                    # экран экспорта

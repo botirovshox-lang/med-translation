@@ -61,7 +61,7 @@ function ProfileIdentity({ data, onSaved, toast, theme, onToggleTheme }) {
     React.createElement("div", { className: "row", style: { gap: 14, alignItems: "center" } },
       React.createElement(Avatar, { person: me, size: 48 }),
       React.createElement("div", null,
-        React.createElement("div", { style: { fontWeight: 700, fontSize: 16 } }, me.name || me.login),
+        React.createElement("div", { style: { fontWeight: 600, fontSize: 15 } }, me.name || me.login),
         React.createElement("div", { className: "dim", style: { fontSize: 13 } },
           me.email || TR("почта не указана"),
           me.email && !me.emailVerified ? " · " + TR("не подтверждена") : ""))),
@@ -75,12 +75,15 @@ function ProfileIdentity({ data, onSaved, toast, theme, onToggleTheme }) {
         TR("Сохранить имя"))),
 
     React.createElement("div", { className: "eyebrow", style: { margin: "6px 0 0" } }, TR("Язык интерфейса")),
+    /* Выбор языка — переключатель .seg, как в макете: он говорит «на каком
+       языке с вами сейчас разговаривают», а не «нажмите сюда». Чёрная заливка
+       на экране одна, и она у «Сохранить имя». */
     React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
-      langs.map(l => React.createElement(Btn, {
-        key: l.code, size: "sm",
-        variant: (window.I18N && window.I18N.lang) === l.code ? "primary" : "ghost",
-        onClick: () => setLang(l.code),
-      }, l.native))),
+      React.createElement("div", { className: "seg" },
+        langs.map(l => React.createElement("button", {
+          key: l.code, "aria-pressed": (window.I18N && window.I18N.lang) === l.code,
+          onClick: () => setLang(l.code),
+        }, l.native)))),
     React.createElement("p", { className: "dim", style: { fontSize: 12, margin: 0 } },
       TR("После смены языка страница перезагрузится: часть надписей собирается один раз при загрузке.")),
 
@@ -197,7 +200,7 @@ function ProfileTeams({ data, onChange, toast }) {
         [TR("Команда"), TR("Моя роль"), TR("Участников"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
       React.createElement("tbody", null, teams.map(t => React.createElement("tr", { key: t.id },
         React.createElement("td", null,
-          React.createElement("span", { style: { fontWeight: t.id === active ? 700 : 400 } }, t.name),
+          React.createElement("span", { style: { fontWeight: t.id === active ? 600 : 400 } }, t.name),
           t.id === active && React.createElement("span", { className: "dim", style: { marginLeft: 8, fontSize: 12 } }, TR("· сейчас здесь")),
           t.home && React.createElement("span", { className: "dim", style: { marginLeft: 8, fontSize: 12 } }, TR("· домашняя"))),
         React.createElement("td", null, roleLabel(t.role)),

@@ -116,7 +116,7 @@ function GlossaryPurgePanel({ store, toast, onDone }) {
     React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
       React.createElement("div", { className: "row", style: { gap: 8 } },
         React.createElement(Icon, { name: "close", size: 16, style: { color: "var(--c-error)" } }),
-        React.createElement("span", { style: { fontWeight: 650, fontSize: 14 } }, TR("Вынести массовый импорт")),
+        React.createElement("span", { style: { fontWeight: 500, fontSize: 14 } }, TR("Вынести массовый импорт")),
         React.createElement(InfoTip, { title: TR("Что произойдёт"), body: TR("Массовый импорт лежит в глоссарии уровнем «подсказка»: он уходит в промпт с пометкой «не проверено, часть неверна» и прямым разрешением его игнорировать. На уже готовый перевод вынос не влияет НИЧЕМ — расхождения и ремонт считаются только по записям уровня «приказ».\n\nМеняется одно: чем модель воспользуется при СЛЕДУЮЩЕМ переводе. Вместе с мусором уходит и сырьё: подсказка поднимается до приказа, когда несколько независимых чистых сегментов сойдутся на одном переводе.\n\nЗаписи, которых касался человек (одобрение кандидата, ручная правка, откат понижения), не выносятся никогда — сколько таких, сказано в отчёте. Вынесенное целиком уходит файлом в data/backups и возвращается откатом.") })),
       React.createElement("span", { className: "dim", style: { fontSize: 12 } },
         alsoOrders ? TR("уровень «приказ» · без следа решения человека")
@@ -284,7 +284,7 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
     React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
       React.createElement("div", { className: "row", style: { gap: 8 } },
         React.createElement(Icon, { name: "book", size: 16, style: { color: "var(--c-warning)" } }),
-        React.createElement("span", { style: { fontWeight: 650, fontSize: 14 } }, TR("Сверка смысла записей")),
+        React.createElement("span", { style: { fontWeight: 500, fontSize: 14 } }, TR("Сверка смысла записей")),
         React.createElement(InfoTip, { title: TR("Зачем это нужно"), body: TR("Приказная запись глоссария заставляет модель писать именно этот перевод и служит основанием для ремонта. Ни одна другая проверка не спрашивает, ТО ЖЕ ли это понятие: корпус подтверждает лишь, что строка в языке существует, проверка терминов — что термин настоящий, согласие сегментов — что модель повторяет себя. «Анизакидоз → Anisakis» (болезнь против рода паразита) проходит их все.\n\nНаходка ПОНИЖАЕТСЯ до подсказки, а не удаляется: перевод остаётся на месте, запись остаётся видна, но перестаёт приказывать модели и гнать ремонт.\n\nЗаписи со следом решения человека (одобрение кандидата, ручная правка) не понижаются никогда — только помечаются. Своё предположение машина вправе пересмотреть, чужое решение — нет.") })),
       React.createElement("span", { className: "dim", style: { fontSize: 12 } },
         res ? TR("спрошено: ") + res.checked + TR(" · из памяти: ") + (res.cached || 0)
@@ -475,7 +475,7 @@ function AutoApprovePanel({ store, toast, onDone }) {
     React.createElement("div", { className: "row between row-wrap", style: { gap: 10 } },
       React.createElement("div", { className: "row", style: { gap: 8 } },
         React.createElement(Icon, { name: "zap", size: 16, style: { color: "var(--c-primary)" } }),
-        React.createElement("span", { style: { fontWeight: 650, fontSize: 14 } }, TR("Автоодобрение однозначных")),
+        React.createElement("span", { style: { fontWeight: 500, fontSize: 14 } }, TR("Автоодобрение однозначных")),
         React.createElement(InfoTip, { title: TR("Что считается однозначным"),
           body: TR("Пара попадает в глоссарий сама, только если: у термина ровно один вариант перевода в очереди; та же пара пришла из нескольких независимых сегментов ИЛИ сегмент подтвердил человек; сегменты-доноры прошли back-check и проверку терминологии чисто; пара не спорит с проверенной записью.\n\nПо умолчанию запись уходит уровнем «подсказка» — модель вправе её игнорировать. Приказом («use these exact translations») запись становится от человека или от трёх независимых чистых сегментов, а в медицине, фармацевтике и юриспруденции — только от человека.\n\nПравила не зависят от языка и тематики: считаются согласие источников и оценки других прогонов, а не мнение той модели, что делала перевод.") })),
       React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("область: ") + scopeText)),
@@ -681,7 +681,7 @@ function TermQueue({ store, toast, version }) {
     React.createElement("div", { className: "row between", style: { cursor: "pointer" }, onClick: () => setOpen(o => !o) },
       React.createElement("div", { className: "row", style: { gap: 10 } },
         React.createElement(Icon, { name: open ? "chevD" : "chevR", size: 16 }),
-        React.createElement("h3", { style: { margin: 0, fontSize: 16 } }, TR("Кандидаты в глоссарий")),
+        React.createElement("h3", { style: { margin: 0, fontSize: 15 } }, TR("Кандидаты в глоссарий")),
         React.createElement(Badge, { variant: "review" }, total),
         // Молчаливых потолков не бывает: показали часть — сказали, какую.
         total > items.length && React.createElement("span", { className: "dim", style: { fontSize: 12 } },
@@ -850,12 +850,15 @@ function TermQueue({ store, toast, version }) {
 function TabKnowledge({ store, toast }) {
   const [side, setSide] = useState("glossary");
   return React.createElement("div", null,
+    /* Две базы — переключатель .seg, а не пара кнопок: чёрная заливка
+       на экране означает «главное действие», и вкладка её занимать не вправе. */
     React.createElement("div", { className: "row", style: { gap: 8, padding: "18px 24px 0" } },
-      [["glossary", TR("Глоссарий"), store.glossary.length],
-       ["tm", TR("Память переводов"), (store.tm || []).length]].map(([key, label, n]) =>
-        React.createElement(Btn, {
-          key, variant: side === key ? "primary" : "ghost", size: "sm",
-          onClick: () => setSide(key) }, label + " · " + n))),
+      React.createElement("div", { className: "seg", role: "tablist" },
+        [["glossary", TR("Глоссарий"), store.glossary.length],
+         ["tm", TR("Память переводов"), (store.tm || []).length]].map(([key, label, n]) =>
+          React.createElement("button", {
+            key, role: "tab", "aria-pressed": side === key, "aria-selected": side === key,
+            onClick: () => setSide(key) }, label + " · " + n)))),
     React.createElement(side === "glossary" ? TabGlossary : TabTM, { store, toast }));
 }
 

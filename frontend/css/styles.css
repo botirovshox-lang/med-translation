@@ -98,16 +98,18 @@
   --sp-lg: 24px; --sp-xl: 32px; --sp-2xl: 48px; --sp-3xl: 64px;
 
   /* Radii */
-  --r-sm: 8px; --r-md: 8px; --r-lg: 10px; --r-pill: 999px;
+  --r-sm: 7px; --r-md: 8px; --r-lg: 10px; --r-pill: 999px;
 
   /* Type */
   --font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   /* Шкала: рабочее место переводчика, а не лендинг. Тело 15px — на нём
      читают текст документа весь день; ступени между уровнями сохранены
      (28/20/16/15), иначе иерархию нести нечем: теней нет. */
-  --fs-h1: 28px; --fs-h2: 20px; --fs-h3: 16px;
-  --fs-body: 15px; --fs-sm: 13px; --fs-xs: 12px;
-  --lh-body: 1.55; --lh-ui: 1.4;
+  /* Шкала макета (артефакт): 14px тело, 24/18/15 заголовки. Заказчик
+     выбрал её глазами на прототипе — это его решение, не наше. */
+  --fs-h1: 24px; --fs-h2: 18px; --fs-h3: 15px;
+  --fs-body: 14px; --fs-sm: 13px; --fs-xs: 11.5px;
+  --lh-body: 1.5; --lh-ui: 1.4;
 }
 
 /* ---------- Tokens: Dark ---------- */
@@ -232,7 +234,7 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible) { outline: non
 .page-wide { max-width: 1480px; }
 
 .page-head { margin-bottom: var(--sp-xl); }
-.page-head h1 { font-size: var(--fs-h1); font-weight: 600; letter-spacing: -.5px; }
+.page-head h1 { font-size: var(--fs-h1); font-weight: 600; letter-spacing: -.02em; }
 .page-head .lead { color: var(--text-2); margin-top: 6px; max-width: 70ch; }
 
 .section { margin-bottom: var(--sp-2xl); }
@@ -339,15 +341,42 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible) { outline: non
 .st-hint { font-size: 11.5px; color: var(--text-3); line-height: 1.45; }
 .st-act { margin-top: auto; padding-top: 6px; }
 .st-card.st-dim .st-num { font-size: 20px; color: var(--text-2); }
+.st-top { display: flex; align-items: center; gap: 8px; }
+.st-badge { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; flex: 0 0 26px; }
+.st-ok .st-badge { background: var(--st-conf-bg); color: var(--c-success); }
+.st-mach .st-badge { background: var(--c-primary-soft); color: var(--c-primary); }
+.st-hum .st-badge { background: var(--st-fail-bg); color: var(--c-error); }
+.st-mine .st-badge { background: var(--bg-sunken); color: var(--text-2); }
+.st-go { margin-top: auto; padding-top: 4px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.st-chip { font-size: 11.5px; font-weight: 500; padding: 2px 8px; border-radius: var(--r-pill); background: var(--bg-sunken); color: var(--text-2); }
+/* полоса и тумблер — рядом, как в макете */
+.duo { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; align-items: start; }
+.home-strip { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--r-lg); }
+.home-strip .home-stack { flex: 1 1 200px; min-width: 140px; height: 6px; }
+.sw { display: flex; gap: 12px; align-items: flex-start; padding: 13px 16px; border: 1px solid var(--border); border-radius: var(--r-lg); }
+.sw .box { width: 34px; height: 20px; border-radius: 11px; background: var(--border-strong); flex: none; position: relative; cursor: pointer; border: 0; transition: background .18s; margin-top: 1px; }
+.sw .box::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--card); transition: transform .18s; }
+.sw .box[aria-checked="true"] { background: var(--btn); }
+.sw .box[aria-checked="true"]::after { transform: translateX(14px); }
+.sw .t { font-weight: 500; font-size: 13.5px; }
+.sw .s { font-size: 12.5px; color: var(--text-3); margin-top: 3px; max-width: 70ch; line-height: 1.5; }
+.home-note { font-size: 12.5px; color: var(--text-3); line-height: 1.5; display: flex; gap: 14px; flex-wrap: wrap; }
+/* фильтры-пилюли над таблицей */
+.ed-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 4px 0 10px; }
+.ed-head h2 { font-size: 14.5px; font-weight: 600; margin: 0; }
+.filters { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; }
+.fbtn { border: 1px solid var(--border); background: var(--card); border-radius: 7px; padding: 6px 11px; font-size: 12.5px; color: var(--text-2); cursor: pointer; display: inline-flex; align-items: center; gap: 7px; }
+.fbtn[aria-pressed="true"] { background: var(--bg-sunken); color: var(--text); border-color: var(--border-strong); }
+.fbtn span { color: var(--text-3); font-variant-numeric: tabular-nums; }
 
 /* ============================================================
    Buttons
    ============================================================ */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  height: 38px; padding: 0 16px; min-width: 0;
+  height: 36px; padding: 0 15px; min-width: 0;
   border-radius: var(--r-sm);
-  font-weight: 500; font-size: 14px; letter-spacing: 0;
+  font-weight: 500; font-size: 13.5px; letter-spacing: 0;
   transition: background-color .15s ease, box-shadow .15s ease, border-color .15s ease, transform .05s ease;
   white-space: nowrap;
 }
@@ -403,7 +432,7 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible) { outline: non
      когда «поднято» всё, не поднято ничего. */
   box-shadow: none;
 }
-.card-pad { padding: 20px; }
+.card-pad { padding: 16px 18px; }
 .card-pad-sm { padding: 14px 16px; }   /* блоки в узкой колонке: 24px по кругу съедали её треть */
 .card-hover { transition: box-shadow .15s ease, transform .15s ease, border-color .15s ease; }
 .card-hover:hover { border-color: var(--border-strong); background: var(--bg-hover); }

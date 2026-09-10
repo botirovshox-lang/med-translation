@@ -973,10 +973,23 @@ try {
      модель тому, кто не знает целевого языка, нечем. А СМЕТА — тому, кто
      платит: у владельца это единственное число, по которому он решает,
      запускать ли книгу. Рубежи РАЗНЫЕ, и тест сторожит именно это. */
-  hookIdx = 0;
-  const out18 = [];
-  walk(TabEditor({ store: Object.assign({}, storeStub, { can: { owner: true, super: false, role: "owner" } }), toast }), 0, out18);
-  const t18 = out18.join("\n");
+  /* Состояние хуков живёт между разделами (заглушка), и после раздела
+     с идущим прогоном кнопка была бы «Остановить». Раздел 18 — про
+     свежий экран: хуки сбрасываются, прогонов нет, а разбор состава
+     и корзины собираются заново первым проходом эффектов. */
+  global.API.listJobs = async () => ({ active: [], jobs: [] });
+  const fresh = async (can) => {
+    const st = Object.assign({}, storeStub, { can });
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    TabEditor({ store: st, toast });
+    effects.forEach(fn => { try { fn(); } catch (e) {} });
+    for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+    hookIdx = 0; effects.length = 0;
+    const out = [];
+    walk(TabEditor({ store: st, toast }), 0, out);
+    return out.join("\n");
+  };
+  const t18 = await fresh({ owner: true, super: false, role: "owner" });
   check(t18.indexOf("Перевести и проверить") !== -1, "владелец: главная кнопка на месте");
   check(t18.indexOf("\u2248 цена") === -1, "владелец: колонки цены по шагам нет");
   check(t18.indexOf("Модель") === -1, "владелец: выбора моделей нет");
@@ -984,10 +997,8 @@ try {
   check(t18.indexOf("Переведу, перечитаю") !== -1, "вместо устройства — обещание словами");
   check(t18.indexOf("в работу пойдут") !== -1, "сколько строк уйдёт в работу — сказано");
 
-  hookIdx = 0;
-  const out18b = [];
-  walk(TabEditor({ store: Object.assign({}, storeStub, { can: { owner: false, super: false, role: "translator" } }), toast }), 0, out18b);
-  const t18b = out18b.join("\n");
+  check(t18.indexOf("Готово к сдаче") !== -1, "владелец: сводка с корзинами наверху");
+  const t18b = await fresh({ owner: false, super: false, role: "translator" });
   check(t18b.indexOf("Перевести и проверить") !== -1, "переводчик: кнопка на месте");
   check(t18b.indexOf("Ориентировочно") === -1, "переводчик: сметы нет — деньги не его дело");
 

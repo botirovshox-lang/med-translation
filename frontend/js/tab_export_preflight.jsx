@@ -519,7 +519,7 @@ function TabExport({ store, toast }) {
               React.createElement("span", { style: { width: 38, height: 38, borderRadius: 9, background: "var(--bg-sunken)", color: "var(--c-primary)", display: "grid", placeItems: "center" } },
                 React.createElement(Icon, { name: ic, size: 19 })),
               React.createElement("div", null,
-                React.createElement("div", { style: { fontWeight: 650 } }, t),
+                React.createElement("div", { style: { fontWeight: 500 } }, t),
                 React.createElement("div", { className: "dim", style: { fontSize: 13 } }, d))))),
           React.createElement("p", { className: "hint", style: { marginTop: 10 } },
             srcDoc && fmt !== "docx_layout"
@@ -534,7 +534,7 @@ function TabExport({ store, toast }) {
                   React.createElement("div", { style: { minWidth: 0 } },
                     React.createElement("div", { className: "row", style: { gap: 8 } },
                       React.createElement(Icon, { name: "checkCircle", size: 16, style: { color: "var(--c-success)" } }),
-                      React.createElement("span", { style: { fontWeight: 650 } }, srcDoc.file)),
+                      React.createElement("span", { style: { fontWeight: 500 } }, srcDoc.file)),
                     React.createElement("div", { className: "dim", style: { fontSize: 12.5, marginTop: 3 } },
                       TR("приложен ") + (srcDoc.at || "") + TR(" · абзацев: ") + srcDoc.paras
                         + TR(" · с переводом связано сегментов: ") + srcDoc.segments)),
@@ -582,7 +582,7 @@ function TabExport({ store, toast }) {
                  : TR("Скачать ") + fmtLabel)
         ),
         React.createElement("div", null,
-          React.createElement("h2", { className: "section-title", style: { fontSize: 17 } }, TR("Недавние экспорты")),
+          React.createElement("h2", { className: "section-title" }, TR("Недавние экспорты")),
           React.createElement("div", { className: "col", style: { gap: 8 } },
             store.exportHistory.map((e, i) => React.createElement("div", { key: i, className: "card row between", style: { padding: "12px 14px" } },
               React.createElement("div", { className: "row", style: { gap: 10, minWidth: 0 } },

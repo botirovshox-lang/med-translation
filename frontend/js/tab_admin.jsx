@@ -14,7 +14,7 @@ function fmtBytes(b) { return b == null ? "—" : b > 1e6 ? (b / 1e6).toFixed(1)
 function AdminStat({ label, value, warn }) {
   return React.createElement("div", { className: "card card-pad", style: { minWidth: 150 } },
     React.createElement("div", { className: "eyebrow", style: { margin: "0 0 4px" } }, label),
-    React.createElement("div", { style: { fontSize: 20, fontWeight: 600, color: warn ? "var(--c-danger)" : undefined } }, value));
+    React.createElement("div", { style: { fontSize: 22, fontWeight: 500, letterSpacing: "-.02em", color: warn ? "var(--c-danger)" : undefined } }, value));
 }
 
 /* Потолок как текст: 0 и пусто — «без потолка». Своё значение организации

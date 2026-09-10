@@ -221,11 +221,11 @@ function TabImport({ store, toast }) {
             file
               ? React.createElement("div", null,
                   React.createElement(Icon, { name: "file", size: 36, className: "dz-ic", style: { color: "var(--c-success)" } }),
-                  React.createElement("div", { style: { fontWeight: 650, fontSize: 16 } }, file.name),
+                  React.createElement("div", { style: { fontWeight: 500, fontSize: 15 } }, file.name),
                   React.createElement("div", { className: "dim", style: { marginTop: 4 } }, file.size + TR(" · нажмите, чтобы заменить")))
               : React.createElement("div", null,
                   React.createElement(Icon, { name: "upload", size: 36, className: "dz-ic" }),
-                  React.createElement("div", { style: { fontWeight: 650, fontSize: 16 } }, TR("Перетащите DOCX сюда")),
+                  React.createElement("div", { style: { fontWeight: 500, fontSize: 15 } }, TR("Перетащите DOCX сюда")),
                   React.createElement("div", { className: "dim", style: { marginTop: 4 } }, TR("или нажмите для выбора файла")))
           )
         ),
@@ -290,7 +290,7 @@ function ProjectCard({ project, store, toast }) {
     React.createElement("div", { className: "card card-pad card-hover", style: { display: "flex", flexDirection: "column", gap: 14 } },
       React.createElement("div", { className: "row between", style: { alignItems: "flex-start" } },
         React.createElement("div", { style: { minWidth: 0 } },
-          React.createElement("div", { style: { fontWeight: 700, fontSize: 16, letterSpacing: "-.2px" } }, project.title),
+          React.createElement("div", { style: { fontWeight: 600, fontSize: 15, letterSpacing: "-.2px" } }, project.title),
           React.createElement("div", { className: "dim", style: { fontSize: 13, marginTop: 2 } }, project.titleEn)),
         React.createElement("span", { className: "badge " + bcls }, blab)
       ),
@@ -301,7 +301,7 @@ function ProjectCard({ project, store, toast }) {
       React.createElement("div", null,
         React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
           React.createElement("span", { className: "muted" }, TR("Подтверждено")),
-          React.createElement("span", { style: { fontWeight: 700 } }, pct + "%")),
+          React.createElement("span", { style: { fontWeight: 600 } }, pct + "%")),
         React.createElement(ProgressBar, { value: pct })
       ),
       React.createElement("div", { className: "row between", style: { marginTop: 2 } },

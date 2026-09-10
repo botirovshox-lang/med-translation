@@ -2309,7 +2309,7 @@ function TabEditor({ store, toast }) {
       React.createElement("div", { className: "row between row-wrap" },
         React.createElement("div", { className: "row", style: { gap: 10 } },
           React.createElement(Icon, { name: "folder", size: 18, style: { color: "var(--c-primary)" } }),
-          React.createElement(Select, { value: project.id, onChange: (e) => store.openProject(Number(e.target.value)), style: { width: "auto", minWidth: 280, fontWeight: 600 } },
+          React.createElement(Select, { value: project.id, onChange: (e) => store.openProject(Number(e.target.value)), style: { width: "auto", minWidth: 280, fontWeight: 500 } },
             store.projects.map(p => React.createElement("option", { key: p.id, value: p.id }, "#" + p.id + " — " + p.title))),
           React.createElement(LangPair, { src: project.src, tgt: project.tgt })
         ),
@@ -2972,7 +2972,7 @@ function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize
         React.createElement("span", { style: { width: 30, height: 30, borderRadius: 8, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-primary)", flex: "0 0 30px" } },
           React.createElement(Icon, { name: "zap", size: 17 })),
         React.createElement("div", null,
-          React.createElement("div", { style: { fontWeight: 650, fontSize: 14, display: "flex", alignItems: "center" } }, TR("Перевести и проверить"),
+          React.createElement("div", { style: { fontWeight: 500, fontSize: 14, display: "flex", alignItems: "center" } }, TR("Перевести и проверить"),
             React.createElement(InfoTip, { title: TR("Что делает эта кнопка"), body: FULL_RUN_TIP })),
           React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
             expert ? TR("шаги идут по порядку, у каждого своя модель")
@@ -3095,12 +3095,12 @@ function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
         React.createElement("span", { style: { width: 30, height: 30, borderRadius: 8, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-success)", flex: "0 0 30px" } },
           React.createElement(Icon, { name: "check", size: 17 })),
         React.createElement("div", null,
-          React.createElement("div", { style: { fontWeight: 650, fontSize: 14, display: "flex", alignItems: "center" } }, TR("Одобрить и применить"),
+          React.createElement("div", { style: { fontWeight: 500, fontSize: 14, display: "flex", alignItems: "center" } }, TR("Одобрить и применить"),
             React.createElement(InfoTip, { title: TR("Что делает эта кнопка"),
               body: TR("Однозначные термины уходят в глоссарий пачкой, а затем сегменты чинятся по ним: расхождение с утверждённым термином — такая же находка ремонта, как потерянный термин или расхождение чисел.\n\nЧто считается однозначным: у термина ровно один вариант перевода; пара пришла из нескольких независимых сегментов, прошедших back-check и проверку терминов чисто; перевод встречается в текстах целевого языка.\n\nПриказом («use these exact translations») запись становится от человека, от трёх независимых чистых сегментов или от совпадения с ВЫВЕРЕННЫМ отраслевым справочником. У справочника есть уровень: краудсорсный (например выгрузка Wikidata) приказа в одиночку не даёт — он идёт подтверждающим голосом рядом с согласием сегментов и корпусом целевого языка. В медицине, фармацевтике и юриспруденции ни согласия сегментов, ни краудсорсного справочника для приказа НЕ хватает: там приказ даёт человек или выверенный справочник.\n\nЛюбую пачку можно откатить целиком в «Глоссарии».") })),
           React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
             TR("термины в глоссарий → ремонт по ним → перепроверка")))),
-      React.createElement("span", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 17, color: ready ? "var(--c-success)" : "var(--text-3)" } },
+      React.createElement("span", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 500, fontSize: 17, color: ready ? "var(--c-success)" : "var(--text-3)" } },
         ready)),
 
     // Чем проверялись термины. Покрытие по парам языков очень разное, и разницу
@@ -3190,7 +3190,7 @@ function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
        с прошлого расчёта. */
     impact && React.createElement("div", { className: "col",
       style: { gap: 7, borderTop: "1px solid var(--border)", paddingTop: 9 } },
-      React.createElement("div", { style: { fontSize: 12.5, fontWeight: 650, display: "flex", alignItems: "center" } },
+      React.createElement("div", { style: { fontSize: 12.5, fontWeight: 500, display: "flex", alignItems: "center" } },
         TR("Соответствие глоссарию"),
         React.createElement(InfoTip, { title: TR("Расхождения с одобренными терминами"),
           body: TR("Одобренный термин влияет только на будущие переводы — уже готовые сегменты сами не меняются. Здесь собраны все сегменты проекта, где термин есть в оригинале, а утверждённого варианта в переводе нет.\n\nСчитается только по проверенным записям глоссария: автоимпорт модель вправе игнорировать, требовать соответствия ему нельзя.\n\nДешёвый путь — ремонт по находкам (кнопка выше). «Перевести заново» переводит эти сегменты целиком, уже с новым термином в промпте, — дороже, зато берёт и застрявшие. Подтверждённые по умолчанию не трогаются; с галочкой они тоже переводятся заново, прежний текст сохраняется для отката, а статус становится «Требует проверки».\n\nРазбор по терминам и начертание — на вкладке «Анализ».") })),
@@ -3332,12 +3332,12 @@ function EditorAnalysisCard({ sum, onDrill, onOpen }) {
         React.createElement("span", { style: { width: 30, height: 30, borderRadius: 8, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-primary)", flex: "0 0 30px" } },
           React.createElement(Icon, { name: "target", size: 17 })),
         React.createElement("div", null,
-          React.createElement("div", { style: { fontWeight: 650, fontSize: 14, display: "flex", alignItems: "center" } }, TR("Анализ"),
+          React.createElement("div", { style: { fontWeight: 500, fontSize: 14, display: "flex", alignItems: "center" } }, TR("Анализ"),
             React.createElement(InfoTip, { title: TR("Три корзины"),
               body: TR("Каждый сегмент проекта ровно в одной корзине, суммы сходятся с общим числом — считает сервер теми же правилами, что и сам прогон.\n\n«Готово к сдаче» — переведено, проверено, открытых вопросов нет.\n\n«Возьмёт ближайший прогон» — закроет кнопка «Перевести и проверить».\n\n«Нужно ваше решение» — то, что прогон не решает по построению: споры с глоссарием, заверенные сегменты с находками, откаченные правки. Команды — на вкладке «Анализ».\n\nЛюбая строка фильтрует таблицу ниже.") })),
           React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
             TR("что сейчас с переводом")))),
-      React.createElement("span", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 700, fontSize: 17,
+      React.createElement("span", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 500, fontSize: 17,
         color: ready.length ? "var(--c-success)" : "var(--text-3)" } },
         pct(ready.length))),
     React.createElement("div", { style: { display: "flex", height: 10, borderRadius: 5,
@@ -3411,7 +3411,7 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
     React.createElement("td", null,
       // Процент соответствия обратного перевода: цифра + причина в подсказке
       seg.repair && seg.repair.applied && React.createElement("div", {
-        style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap", color: "var(--c-success)" },
+        style: { fontSize: 11, fontWeight: 500, marginTop: 4, whiteSpace: "nowrap", color: "var(--c-success)" },
         title: TR("Автоматически исправлено ") + (seg.repair.at || "")
           + TR("\nБыло: ") + (seg.repair.from || "")
           + TR("\nПричины: ") + (seg.repair.issues || []).map(TRS).join("; "),
@@ -3425,7 +3425,7 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
          `stale` считает СЕРВЕР (`_review_stale`) — он знает и про версию
          вопросов, и про правку оригинала; браузеру этого не вычислить. */
       seg.review && React.createElement("div", {
-        style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap",
+        style: { fontSize: 11, fontWeight: 500, marginTop: 4, whiteSpace: "nowrap",
                  opacity: seg.review.stale ? 0.5 : 1,
                  /* Исход считает СЕРВЕР (`review.flagged`) — тем же правилом,
                     что корзина «Ревизия нашла проблему» на «Анализе». Свой
@@ -3443,7 +3443,7 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
       }, (seg.review.stale ? "≈ " : "") + (seg.review.applied ? TR("✓ ревизия")
           : TR("ревизия: ") + seg.review.score)),
       seg.termcheck && (seg.termcheck.findings || []).length > 0 && React.createElement("div", {
-        style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap",
+        style: { fontSize: 11, fontWeight: 500, marginTop: 4, whiteSpace: "nowrap",
                  color: seg.termcheck.severity === "critical" ? "var(--c-error)"
                    : seg.termcheck.severity === "major" ? "var(--c-warning)" : "var(--text-3)" },
         title: TR("Терминология: ") + seg.termcheck.findings.map(f =>
@@ -3451,7 +3451,7 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
           + (seg.termcheck.stale ? TR("\n\nПеревод менялся после проверки — данные устарели.") : ""),
       }, (seg.termcheck.stale ? "≈ " : "") + TR("термин: ") + seg.termcheck.findings.length),
       seg.backcheck && seg.backcheck.score != null && React.createElement("div", {
-        style: { fontSize: 11, fontWeight: 700, marginTop: 4, whiteSpace: "nowrap",
+        style: { fontSize: 11, fontWeight: 500, marginTop: 4, whiteSpace: "nowrap",
                  color: window.bcScoreColor(seg.backcheck.score) },
         title: TR("Соответствие обратного перевода: ") + seg.backcheck.score + "%"
           + ((seg.backcheck.reasons || []).length ? "\n" + seg.backcheck.reasons.map(TRS).join("; ") : "")

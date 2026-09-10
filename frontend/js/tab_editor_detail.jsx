@@ -232,7 +232,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
   return React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 16 } },
     React.createElement("div", { className: "row between" },
       React.createElement("div", null,
-        React.createElement("div", { style: { fontWeight: 700, fontSize: 16 } }, TR("Сегмент #") + seg.id),
+        React.createElement("div", { style: { fontWeight: 600, fontSize: 15 } }, TR("Сегмент #") + seg.id),
         React.createElement("div", { className: "dim", style: { fontSize: 12 } }, idx + TR(" из ") + project.segments.length)),
       React.createElement("div", { className: "row", style: { gap: 2 } },
         React.createElement(StatusBadge, { status: seg.status }),
@@ -294,13 +294,19 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
     ),
 
     // actions
+    /* Заливка ОДНА на карточку, и её получает то действие, которое здесь
+       и сейчас главное: пусто — «Перевести», есть перевод — «Подтвердить»
+       (так же решает макет). Прежде обе кнопки были залиты, да ещё разными
+       цветами: «Перевести» фиолетовым (--c-purple — цвет МАРШРУТА GPT
+       в таблице, кнопкой он не бывает нигде) и «Подтвердить» зелёным.
+       Три заливки на четыре кнопки — это отсутствие главной. */
     React.createElement("div", { className: "grid grid-2", style: { gap: 8 } },
       // Кнопка одна: движок один — выбранная модель. Раньше рядом стояла
       // «Google», и половина сегментов уходила в бесплатный переводчик.
-      React.createElement(Btn, { variant: "primary", size: "sm", icon: "cpu", disabled: busy, onClick: () => onTranslate(), style: { background: "var(--c-purple)" } }, TR("Перевести")),
+      React.createElement(Btn, { variant: draft.trim() ? "secondary" : "primary", size: "sm", icon: "cpu", disabled: busy, onClick: () => onTranslate() }, TR("Перевести")),
       React.createElement(Btn, { variant: "secondary", size: "sm", icon: "shield", disabled: busy, onClick: onChecks }, TR("Проверки")),
       React.createElement(Btn, { variant: "secondary", size: "sm", icon: "shield", disabled: busy, onClick: onQA }, "Quick QA"),
-      React.createElement(Btn, { variant: "success", size: "sm", icon: "check", disabled: busy, onClick: () => onConfirm(draft) }, TR("Подтвердить"))
+      React.createElement(Btn, { variant: draft.trim() ? "primary" : "secondary", size: "sm", icon: "check", disabled: busy, onClick: () => onConfirm(draft) }, TR("Подтвердить"))
     ),
 
     // compact secondary actions (MemSource-style)
@@ -528,7 +534,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
       // Процент соответствия и почему он такой
       seg.backcheck && seg.backcheck.score != null && React.createElement("div", {
         className: "row between", style: { marginBottom: 6, gap: 10, flexWrap: "wrap" } },
-        React.createElement("span", { style: { fontSize: 18, fontWeight: 750,
+        React.createElement("span", { style: { fontSize: 18, fontWeight: 500,
           color: window.bcScoreColor(seg.backcheck.score) } },
           seg.backcheck.score + TR("% соответствия")),
         React.createElement("span", { className: "dim", style: { fontSize: 11.5 } },
@@ -641,13 +647,13 @@ function QAPane({ seg, qaResult }) {
           q.detected_by && React.createElement("span", { className: "badge badge-soft" }, q.detected_by)),
         fragment && React.createElement("div", { className: "mono", style: { fontSize: 12, marginBottom: 5, color: "var(--text-2)" } }, fragment),
         React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5 } }, msg),
-        suggestion && React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5, marginTop: 6, color: "var(--c-primary)", fontWeight: 650 } }, "Use: " + suggestion));
+        suggestion && React.createElement("div", { style: { fontSize: 13, lineHeight: 1.5, marginTop: 6, color: "var(--c-primary)", fontWeight: 500 } }, "Use: " + suggestion));
     }),
     (seg.term_candidates || []).length > 0 && React.createElement("div", { className: "card", style: { padding: 12, background: "var(--bg-sunken)" } },
       React.createElement("div", { className: "label", style: { marginBottom: 8 } }, "Pending term candidates"),
       seg.term_candidates.map((c, i) => React.createElement("div", { key: i, className: "row between", style: { gap: 8, fontSize: 13, padding: "6px 0", borderTop: i ? "1px solid var(--border)" : "none" } },
         React.createElement("span", null, c.bad_en || c.source_phrase || "candidate"),
-        React.createElement("span", { style: { color: "var(--c-primary)", fontWeight: 650 } }, c.preferred_en || "review"))))
+        React.createElement("span", { style: { color: "var(--c-primary)", fontWeight: 500 } }, c.preferred_en || "review"))))
   );
 }
 

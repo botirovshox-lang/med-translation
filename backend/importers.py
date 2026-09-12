@@ -190,9 +190,13 @@ def html_paragraphs(text: str) -> list:
             elif tag in ("tr", "table"):
                 self.cell = 0
                 self.flush()
-            elif tag in _HTML_BLOCK and not self.cell:
-                # Блочный тег внутри ячейки строку таблицы не рвёт: строка — один абзац.
-                self.flush()
+            elif tag in _HTML_BLOCK:
+                # Блочный тег внутри ячейки строку таблицы не рвёт (строка —
+                # один абзац), но слова делит: «<p>а</p><p>б</p>» — не «аб».
+                if self.cell:
+                    self.buf.append(" ")
+                else:
+                    self.flush()
 
         def handle_endtag(self, tag):
             if tag in _HTML_SKIP:
@@ -204,8 +208,11 @@ def html_paragraphs(text: str) -> list:
             elif tag in ("tr", "table"):
                 self.cell = 0
                 self.flush()
-            elif tag in _HTML_BLOCK and not self.cell:
-                self.flush()
+            elif tag in _HTML_BLOCK:
+                if self.cell:
+                    self.buf.append(" ")
+                else:
+                    self.flush()
 
         def handle_data(self, data):
             if not self.skip:

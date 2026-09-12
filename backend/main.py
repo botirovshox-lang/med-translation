@@ -7391,9 +7391,10 @@ except ImportError:                                   # pragma: no cover
     from backend import importers                      # type: ignore
 
 REIMPORT_MATCH_MIN = float(os.environ.get("REIMPORT_MATCH_MIN", "0.5"))
-_PARSE_CACHE: dict = {}          # sha исходного файла -> (время, разбор)
+_PARSE_CACHE: dict = {}          # (sha исходника, расширение) -> (время, разбор)
 _PARSE_CACHE_TTL = 600           # проба и загрузка идут подряд: не разбирать дважды
 _PARSE_CACHE_MAX = 6
+_PARSE_LOCK = threading.Lock()   # чистка и поиск старейшего итерируют dict, а пробы идут параллельно
 
 
 def _parse_upload(filename: str, content: bytes) -> dict:
@@ -7407,9 +7408,10 @@ def _parse_upload(filename: str, content: bytes) -> dict:
     sha = hashlib.sha1(content).hexdigest()
     ext = importers.ext_of(filename or "")
     now = time.time()
-    for k in [k for k, v in _PARSE_CACHE.items() if now - v[0] >= _PARSE_CACHE_TTL]:
-        _PARSE_CACHE.pop(k, None)
-    hit = _PARSE_CACHE.get((sha, ext))
+    with _PARSE_LOCK:
+        for k in [k for k, v in _PARSE_CACHE.items() if now - v[0] >= _PARSE_CACHE_TTL]:
+            _PARSE_CACHE.pop(k, None)
+        hit = _PARSE_CACHE.get((sha, ext))
     if hit:
         out = dict(hit[1])
         if out.get("docx") is None:
@@ -7422,13 +7424,14 @@ def _parse_upload(filename: str, content: bytes) -> dict:
     out = {"sha": sha, "docx": conv["docx"], "kind": conv["kind"], "note": conv.get("note"),
            "converted": bool(conv.get("converted")), "texts": texts, "paras": paras,
            "full": full, "units": _docx_units(paras, full)}
-    if len(_PARSE_CACHE) >= _PARSE_CACHE_MAX:
-        oldest = min(_PARSE_CACHE, key=lambda k: _PARSE_CACHE[k][0])
-        _PARSE_CACHE.pop(oldest, None)
     cached = dict(out)
     if not out["converted"]:
         cached["docx"] = None
-    _PARSE_CACHE[(sha, ext)] = (now, cached)
+    with _PARSE_LOCK:
+        if len(_PARSE_CACHE) >= _PARSE_CACHE_MAX:
+            oldest = min(_PARSE_CACHE, key=lambda k: _PARSE_CACHE[k][0])
+            _PARSE_CACHE.pop(oldest, None)
+        _PARSE_CACHE[(sha, ext)] = (now, cached)
     return out
 
 
@@ -7495,13 +7498,15 @@ def _diff_units(project: dict, units: list, full: Optional[list] = None) -> tupl
     old = _text_segments(project)
     old_keys = [_match_key(s.get("source")) for s in old]
     old_set = set(old_keys)
-    new_keys = []
+    new_keys, alts = [], []
     for text, idxs in units:
         k = _match_key(text)
-        if k not in old_set and full:
-            alt = [_match_key(full[i]) for i in idxs if i < len(full)]
+        alt = [_match_key(full[i]) for i in idxs if i < len(full)] if full else []
+        alt = [a for a in dict.fromkeys(alt) if a != k]
+        if k not in old_set:
             k = next((a for a in alt if a in old_set), k)
         new_keys.append(k)
+        alts.append(alt)
     sm = difflib.SequenceMatcher(None, old_keys, new_keys, autojunk=False)
     plan: list = [None] * len(units)
     used: set = set()
@@ -7520,11 +7525,17 @@ def _diff_units(project: dict, units: list, full: Optional[list] = None) -> tupl
             spare.setdefault(k, []).append(i)
     for j, item in enumerate(plan):
         if item and item[0] == "new":
-            lst = spare.get(new_keys[j])
-            if lst:
-                i = lst.pop(0)
-                plan[j] = ("moved", old[i])
-                used.add(i)
+            # Сначала ключ слота, потом запасные: строка оглавления «Глава 1»
+            # у старого импорта хранится как «Глава 1 85», а слот совпадает
+            # с заголовком в теле — без запасных ключей она уезжала бы
+            # в «удалено» при загрузке того же файла.
+            for key in [new_keys[j]] + alts[j]:
+                lst = spare.get(key)
+                if lst:
+                    i = lst.pop(0)
+                    plan[j] = ("moved", old[i])
+                    used.add(i)
+                    break
     removed = [old[i] for i in range(len(old)) if i not in used]
     return plan, removed
 
@@ -7661,11 +7672,23 @@ async def reimport_project(pid: int, file: UploadFile = File(...), dry_run: bool
            "kind": parsed["kind"], "note": parsed["note"]}
     if dry_run:
         return out
+    # Всё тяжёлое — второй диф, снимок на 5 МБ, копия исходника на 20 МБ,
+    # save_state — в потоке: в event loop под локом это секунды простоя
+    # ЕДИНСТВЕННОГО воркера для всех. Контекст сессии в поток доезжает.
+    done = await run_in_threadpool(_reimport_apply, pid, parsed, content,
+                                   file.filename or "", title)
+    out.update(done)
+    return out
+
+
+def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title: str) -> dict:
+    """Замена файла: под `_SAVE_LOCK`, с проектом, взятым ЗАНОВО (см. докстроку
+    `reimport_project`). Возвращает числа для ответа."""
+    project = get_project(pid)
     tid = _tenant_of(project)
     src_lang = project.get("src") or "RU"
     card = _pricing_of(tid)
-    all_pages = await run_in_threadpool(_import_volume, parsed["paras"], src_lang, card, tid)
-
+    all_pages = _import_volume(parsed["paras"], src_lang, card, tid)
     with _SAVE_LOCK:
         # Заново: объект, охранник и план — см. докстроку.
         project = get_project(pid)
@@ -7683,11 +7706,13 @@ async def reimport_project(pid: int, file: UploadFile = File(...), dry_run: bool
         while _reimport_backup_paths(stamp)["json"].exists():
             stamp += "-1"
         paths = _reimport_backup_paths(stamp)
+        # `title` — в снимок только когда замена его меняет: иначе откат
+        # затирал бы переименование, сделанное после замены.
+        keys = ["pages", "pagesUnit", "sourceSha", "fileName", "sourceDocx", "importKind",
+                "importNote", "reimport"] + (["title"] if title.strip() else [])
         snap = {"project": pid, "stamp": stamp, "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "segments": project.get("segments") or [],
-                "fields": {k: project.get(k) for k in ("pages", "pagesUnit", "sourceSha", "fileName",
-                                                      "sourceDocx", "importKind", "importNote", "reimport",
-                                                      "title")}}
+                "fields": {k: project.get(k) for k in keys}}
         docx_path, map_path = _source_paths(pid)
         orig = _orig_existing(pid)
         # Копия ДО правки и ДО списания: неудачная запись иначе оставила бы
@@ -7715,17 +7740,17 @@ async def reimport_project(pid: int, file: UploadFile = File(...), dry_run: bool
         next_id = max((s.get("id") or 0 for s in project.get("segments") or []), default=0) + 1
         new_segments, pairs, added_ids = [], [], []
         for u, item in enumerate(plan):
-            text, idxs = parsed["units"][u]
+            text_, idxs = parsed["units"][u]
             if item and item[0] in ("keep", "moved"):
                 seg = item[1]
                 # Ключ терпим к регистру и пробелам, а текст — нет: заголовок,
                 # ставший капсом, обязан прийти в сегмент, иначе проверки
                 # регистра сверяют перевод с устаревшим оригиналом.
-                if text != seg.get("source"):
-                    seg["source"] = text
-                    seg["wordCount"] = len(text.split())
+                if text_ != seg.get("source"):
+                    seg["source"] = text_
+                    seg["wordCount"] = len(text_.split())
             else:
-                seg = _new_segment(next_id, text)
+                seg = _new_segment(next_id, text_)
                 next_id += 1
                 added_ids.append(seg["id"])
             new_segments.append(seg)
@@ -7735,7 +7760,7 @@ async def reimport_project(pid: int, file: UploadFile = File(...), dry_run: bool
         project["pages"] = all_pages
         project["pagesUnit"] = "words"
         project["sourceSha"] = parsed["sha"]
-        project["fileName"] = file.filename
+        project["fileName"] = filename
         project["importKind"] = parsed["kind"]
         if parsed.get("note"):
             project["importNote"] = parsed["note"]
@@ -7746,17 +7771,19 @@ async def reimport_project(pid: int, file: UploadFile = File(...), dry_run: bool
         project["reimport"] = {"stamp": stamp, "at": snap["at"], "kept": counts["kept"],
                                "moved": counts["moved"], "added": counts["added"],
                                "removed": counts["removed"], "images": len(images),
-                               "file": file.filename, "addedIds": added_ids}
+                               "file": filename, "addedIds": added_ids}
         _PROJECTS_VER[0] += 1
         save_state(STATE)
     _tenants_changed()
     try:
-        # Карта картинок старого файла к новому не относится (копия — в бэкапе):
-        # без этого `_store_source_docx` перенёс бы её как есть.
-        map_path.unlink(missing_ok=True)
-        _store_source_docx(project, parsed["docx"], file.filename, pairs, len(parsed["paras"]))
+        # Карта картинок ПЕРЕНОСИТСЯ (`_store_source_docx` берёт `images`
+        # из прежней карты): в ней прочитанный за деньги текст по sha картинки
+        # и решения человека по надпечаткам. Сегменты картинок при этом
+        # сняты — разбор заведёт их заново у новых якорей, а за уже
+        # прочитанные картинки не заплатит.
+        _store_source_docx(project, parsed["docx"], filename, pairs, len(parsed["paras"]))
         if parsed["converted"]:
-            _store_original(pid, file.filename or "", content)
+            _store_original(pid, filename, content)
         else:
             for old in SOURCE_DIR.glob("%d.orig.*" % pid):
                 old.unlink(missing_ok=True)
@@ -7765,10 +7792,10 @@ async def reimport_project(pid: int, file: UploadFile = File(...), dry_run: bool
     save_state(STATE)
     _audit("project.reimport", project=pid, stamp=stamp, added=counts["added"],
            removed=counts["removed"], kept=counts["kept"], images=len(images))
-    out.update(counts)
-    out.update({"stamp": stamp, "addedIds": added_ids, "pagesDebited": round(float(added_pages), 3),
-                "imagesRemoved": len(images)})
-    return out
+    done = dict(counts)
+    done.update({"stamp": stamp, "addedIds": added_ids, "pagesDebited": round(float(added_pages), 3),
+                 "imagesRemoved": len(images)})
+    return done
 
 
 def _reimport_touched(project: dict, snap: dict) -> list:
@@ -7779,17 +7806,23 @@ def _reimport_touched(project: dict, snap: dict) -> list:
     не трогала, кроме `source`), добавленный — с пустым."""
     before = {s["id"]: s for s in snap.get("segments") or []}
     added = set((project.get("reimport") or {}).get("addedIds") or [])
+    # Отпечаток по СОДЕРЖИМОМУ, а не по перечню полей (урок `_analysis_seg_fp`):
+    # судья, дописанный в готовый back-check, сверка терминов, комментарии —
+    # перечень отставал бы от них. `source`/`wordCount` замена меняет сама.
     def fp(s):
-        return (s.get("target") or "", s.get("status"), (s.get("backcheck") or {}).get("target_hash"),
-                (s.get("termcheck") or {}).get("target_hash"), (s.get("repair") or {}).get("source_hash"),
-                json.dumps(s.get("review") or {}, sort_keys=True, ensure_ascii=False),
-                s.get("confirmedBy"))
+        body = {k: v for k, v in s.items() if k not in ("source", "wordCount", "risk")}
+        return json.dumps(body, sort_keys=True, ensure_ascii=False, default=str)
     out = []
     for s in project.get("segments") or []:
         if s["id"] in added:
             if (s.get("target") or "").strip() or s.get("status") not in (None, "new"):
                 out.append(s["id"])
-        elif s["id"] in before and fp(s) != fp(before[s["id"]]):
+        elif s["id"] in before:
+            if fp(s) != fp(before[s["id"]]):
+                out.append(s["id"])
+        else:
+            # Не из снимка и не из добавленных: сегмент, заведённый ПОСЛЕ
+            # замены (разбор картинок) — работа, которую откат унёс бы.
             out.append(s["id"])
     return out
 
@@ -8741,6 +8774,12 @@ def _job_images(job: dict) -> None:
         prev = known.get(name) or {}
         rec = dict(prev) if prev.get("sha") == sha and prev.get("blocks") is not None \
             else {"part": name, "sha": sha}
+        # Якорный абзац — свежий на КАЖДОМ заходе, а не только при обнаружении:
+        # после замены файла запись переносится, а номера абзацев в новом
+        # документе другие — по старым восстановление сажало бы строку не туда.
+        if rec.get("blocks") is not None and anchors.get(name) and rec.get("paras") != anchors.get(name):
+            rec["paras"] = anchors.get(name) or []
+            map_dirty = True
         if rec.get("blocks") is None:
             lines = image_text.detect_lines(blob)
             if lines is None:

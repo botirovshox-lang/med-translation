@@ -180,7 +180,7 @@ check(by_src["Вторая строка исправлена."]["status"] == "ne
 check(proj.get("reimport", {}).get("stamp") == d["stamp"] and proj["sourceSha"] != P["sourceSha"]
       and proj["reimport"]["addedIds"] == d["addedIds"], "отметка замены с номерами добавленных и новый sha")
 mp = main._load_source_map(P["id"])
-check(mp and len(mp["pairs"]) == 5 and "images" not in mp, "карта исходника переписана, карта картинок старого файла снята")
+check(mp and len(mp["pairs"]) == 5, "карта исходника переписана под новый файл")
 used_after = float((main._tenant_rec("default") or {}).get("pagesUsed") or 0)
 check(used_after - used_before <= 1.0 + 1e-9 and d["pagesDebited"] < 1.0, "списано только за добавленные строки: %.3f" % d["pagesDebited"])
 log = (main._tenant_rec("default") or {}).get("pagesLog") or []

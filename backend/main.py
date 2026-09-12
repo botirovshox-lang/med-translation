@@ -36,6 +36,7 @@ Run:
 """
 import os
 import re
+import shutil
 import sys
 import json
 import time
@@ -661,17 +662,30 @@ def _project_by_id(pid) -> Optional[dict]:
     return None
 
 
+_PROJECTS_VER = [0]              # растёт при подмене документа проекта (_apply_doc)
+_FID_MAP: list = [None, {}]      # (ключ списка проектов, {номер файла: номер папки})
+
+
+def _fid_map() -> dict:
+    """{файл → папка} — считается заново, когда список проектов сменился
+    (другой объект, другая длина, чужой документ). `_fid` зовётся на каждого
+    кандидата глоссария в `_get_context`, и линейный скан там — лишний."""
+    lst = STATE.get("projects") or []
+    key = (id(lst), len(lst), _PROJECTS_VER[0])
+    if _FID_MAP[0] != key:
+        _FID_MAP[1] = {p.get("id"): (p["folder"] if isinstance(p.get("folder"), int) else p.get("id"))
+                       for p in lst}
+        _FID_MAP[0] = key
+    return _FID_MAP[1]
+
+
 def _fid(v):
     """Номер папки по номеру файла ИЛИ папки. Файл без поля `folder` — своя
     папка с тем же номером; чужой файлу номер (новая папка) возвращается
     как есть: счётчик у файлов и папок общий, и число читается однозначно."""
     if not isinstance(v, int):
         return None
-    p = _project_by_id(v)
-    if p is None:
-        return v
-    f = p.get("folder")
-    return f if isinstance(f, int) else v
+    return _fid_map().get(v, v)
 
 
 def _folder_by_id(fid) -> Optional[dict]:
@@ -685,7 +699,10 @@ def _folder_by_id(fid) -> Optional[dict]:
 
 
 def _virtual_folder(p: dict) -> dict:
-    return {"id": p["id"], "title": p.get("title") or "", "src": p.get("src") or "RU",
+    # Номер — папки файла (`_fid`): у файла с полем `folder` без записи
+    # (рассинхрон документов, восстановление из копии) папка иначе получала
+    # бы номер файла, и сам файл не находился бы ни в одной папке.
+    return {"id": _fid(p["id"]), "title": p.get("title") or "", "src": p.get("src") or "RU",
             "tgt": p.get("tgt") or "EN", "domain": p.get("domain") or LEGACY_DOMAIN,
             "tenant": _tenant_of(p), "created": p.get("created") or "", "virtual": True}
 
@@ -811,9 +828,14 @@ def _dict_order(fid) -> dict:
 
 
 def _set_folder_domain(fid: int, domain: str) -> None:
+    files = _folder_files(fid)
+    # Охранник — для КАЖДОГО файла и до первой правки: прогон на соседнем
+    # файле иначе получил бы запись документа из-под API (DocConflict).
+    for p in files:
+        _guard_project_write(p["id"])
     f = _materialize_folder(fid)
     f["domain"] = domain
-    for p in _folder_files(fid):
+    for p in files:
         p["domain"] = domain
     _invalidate_gloss_index()
 
@@ -823,10 +845,12 @@ def _delete_project_record(pid: int) -> None:
     и удаления папки целиком: две копии однажды разошлись бы в том,
     что считать «удалить»."""
     STATE["projects"] = [p for p in STATE["projects"] if p["id"] != pid]
+    _PROJECTS_VER[0] += 1
+    _reimport_cleanup(pid)            # копии замен файла — вместе с файлом
     # Исходник уходит вместе с проектом. Учебник весит 21 МБ, и оставлять его
     # на диске после удаления значит копить мусор, который никто уже не найдёт:
     # имя файла — номер проекта, а проекта больше нет.
-    for path in _source_paths(pid):
+    for path in list(_source_paths(pid)) + list(SOURCE_DIR.glob("%d.orig.*" % pid)):
         try:
             path.unlink(missing_ok=True)
         except OSError as e:
@@ -939,7 +963,10 @@ def _default_dict_id(tenant: Optional[str] = None) -> str:
     словарь, если он есть (так знание первого клиента остаётся одним
     целым), иначе в общий."""
     t = tenant or _current_tenant()
-    return DICT_LEGACY if DICT_LEGACY in _virtual_dicts(t) else DICT_MAIN
+    # Настоящие И виртуальные: переименованный «old» — настоящая запись,
+    # и по одним виртуальным он выглядел бы исчезнувшим — новое знание
+    # первого клиента уехало бы в «main», а правки заводили бы дубли.
+    return DICT_LEGACY if DICT_LEGACY in _dict_ids(t) else DICT_MAIN
 
 
 def _new_dict(title: str, domain: Optional[str] = None, tenant: Optional[str] = None) -> dict:
@@ -963,14 +990,21 @@ def _dicts_for_new_folder(dicts, new_title, domain) -> Optional[list]:
     if dicts is None and not (new_title or "").strip():
         return None
     known = _dict_ids()
+    # Проверка ДО записи: отказ 400 иначе оставлял бы заведённый словарь
+    # в памяти без save_state.
+    for did in dicts or []:
+        if did not in known:
+            raise HTTPException(400, "Неизвестный словарь: %r" % did)
     out = []
     if (new_title or "").strip():
         out.append(_new_dict(new_title, domain)["id"])
     for did in dicts or []:
-        if did not in known:
-            raise HTTPException(400, "Неизвестный словарь: %r" % did)
         if did not in out:
             out.append(did)
+    if not out:
+        # Папке без словаря некуда писать знание: новый термин уехал бы
+        # в словарь организации, которого папка не видит.
+        raise HTTPException(400, "Выберите хотя бы один словарь или заведите новый")
     return out
 
 
@@ -986,7 +1020,7 @@ def _write_dict_for(pid, tenant: Optional[str] = None) -> str:
 def _cand_dict(c: dict) -> str:
     """Словарь карточки очереди: свой либо словарь её файла (старые карточки)."""
     d = c.get("dict")
-    return d if isinstance(d, str) and d else _write_dict_for(c.get("project"), _tenant_of(c))
+    return d if isinstance(d, str) and d else _write_dict_for(_gproj(c), _tenant_of(c))
 
 
 def _dict_id_ok(did: Optional[str]) -> Optional[str]:
@@ -1033,6 +1067,9 @@ def _gproj(entry: dict):
 
     Число приводится к номеру ПАПКИ (`_fid`): у старых записей там номер
     файла, и он же — номер его виртуальной папки."""
+    f = entry.get("folder")
+    if isinstance(f, int):
+        return f                     # карточка очереди помнит папку сама
     v = entry.get("project")
     return _fid(v) if isinstance(v, int) else None
 
@@ -3310,6 +3347,7 @@ def _apply_doc(key: str, doc) -> None:
         if key.startswith("projects:"):
             pid = int(key.split(":", 1)[1])
             lst = STATE["projects"]
+            _PROJECTS_VER[0] += 1        # карта файл→папка пересчитается
             for i, pr in enumerate(lst):
                 if pr["id"] == pid:
                     if doc is None:
@@ -4402,6 +4440,7 @@ def set_project_domain(pid: int, req: ProjectDomainRequest):
     # Область — свойство ПАПКИ: у всех файлов проекта состав приказных
     # терминов один, и разъехаться им нельзя.
     _set_folder_domain(_fid(pid), dom["id"])
+    _folders_changed()                  # папка могла материализоваться
     n_hard = sum(1 for g in STATE["glossary"]
                  if _scope_of(g) == _project_scope(project) and _hit_tier(g) == GLOSSARY_TIER_HARD)
     _audit("project.domain", project=pid, domain=dom["id"], prev=prev)
@@ -5387,12 +5426,9 @@ async def import_glossary(request: Request, file: UploadFile = File(...),
     # Куда: в названный словарь, в НОВЫЙ (заводится только при записи —
     # сухой прогон ничего не создаёт) либо в словарь организации по умолчанию.
     did = _dict_id_ok(dict_id) if dict_id else None
-    if did is None and (new_dict or "").strip():
-        did = None if dry_run else _new_dict(new_dict, scope[1])["id"]
-        fresh_dict = True
-    else:
-        fresh_dict = False
-        did = did or _default_dict_id()
+    fresh_dict = did is None and bool((new_dict or "").strip())
+    if did is None and not fresh_dict:
+        did = _default_dict_id()
     # Повтор — только среди ОБЩИХ записей ТОГО ЖЕ словаря: импорт в чистый
     # словарь иначе пропускал бы каждый термин, что есть в старом («уже
     # есть»), и чистый словарь оставался бы пустым по всем общим терминам.
@@ -5428,6 +5464,13 @@ async def import_glossary(request: Request, file: UploadFile = File(...),
            "dict": did, "newDict": bool(fresh_dict),
            "sample": [{"src": a["src"], "tgt": a["tgt"]} for a in added[:10]]}
     if not dry_run and added:
+        if fresh_dict:
+            # Словарь заводится ЗДЕСЬ, а не до разбора строк: файл из пустых
+            # строк иначе оставлял бы словарь-сироту без save_state.
+            did = _new_dict(new_dict, scope[1])["id"]
+            for a in added:
+                a["dict"] = did
+            out["dict"] = did
         STATE["glossary"][0:0] = added
         _audit("glossary.import", file=file.filename, added=len(added), tier=tier)
         _invalidate_gloss_index()
@@ -6565,6 +6608,7 @@ def create_project(req: CreateProjectRequest):
     if folder is not None:
         new_project["folder"] = folder["id"]
     STATE["projects"].insert(0, new_project)
+    _PROJECTS_VER[0] += 1
     save_state(STATE)
     if folder is not None:
         _folders_changed()
@@ -6627,12 +6671,15 @@ def update_folder(fid: int, req: FolderPatch):
     f = _materialize_folder(get_folder(fid)["id"])
     changed = []
     if req.title is not None and req.title.strip():
-        f["title"] = req.title.strip()
         # У файла-папки название одно на двоих: файл без записи папки
-        # показывался бы под старым именем.
-        for p in _folder_files(fid):
-            if not isinstance(p.get("folder"), int):
-                p["title"] = f["title"]
+        # показывался бы под старым именем. Файл — документ проекта, значит
+        # под охранником прогона.
+        own = [p for p in _folder_files(fid) if not isinstance(p.get("folder"), int)]
+        for p in own:
+            _guard_project_write(p["id"])
+        f["title"] = req.title.strip()
+        for p in own:
+            p["title"] = f["title"]
         changed.append("title")
     if req.domain is not None:
         dom = _resolve_domain(req.domain)
@@ -6641,7 +6688,11 @@ def update_folder(fid: int, req: FolderPatch):
         _set_folder_domain(fid, dom["id"])
         changed.append("domain")
     if req.dicts is not None or (req.newDict or "").strip():
-        base = req.dicts if req.dicts is not None else (f.get("dicts") or [])
+        cur = f.get("dicts")
+        # Папка без списка видит все словари: новый словарь добавляется
+        # к ним, а не заменяет — иначе она молча потеряла бы остальные.
+        base = (req.dicts if req.dicts is not None
+                else (cur if isinstance(cur, list) else [d["id"] for d in _tenant_dicts()]))
         f["dicts"] = _dicts_for_new_folder(base, req.newDict, f.get("domain")) or []
         # Подключённые словари — часть «чего требует глоссарий от сегмента»:
         # кэш требований (`_HITS_CACHE`) и отчёты считаются от поколения
@@ -7087,16 +7138,20 @@ def _pages_topup(tid: str, pages: float, note: Optional[str]) -> None:
         _pages_log(rec, "credit", pages, note=note)
 
 
-def _pages_debit(tid: str, pages: float, key: str, project_id: int, title: str) -> float:
+def _pages_debit(tid: str, pages: float, key: str, project_id: int, title: str,
+                 debit_pages: Optional[float] = None, kind: Optional[str] = None) -> float:
     """Проверить лимит и списать страницы за импорт ОДНИМ блоком под локом;
-    возвращает списанное (0 при повторе файла). 402 — ничего не записано."""
+    возвращает списанное (0 при повторе файла). 402 — ничего не записано.
+    `pages` — объём ФАЙЛА (он идёт в `filesSeen` и в журнал), `debit_pages` —
+    сколько списать, если не весь файл (повторный импорт платит только
+    за добавленные строки)."""
     with _SAVE_LOCK:
         rec = _tenant_rec(tid)
         if rec is None:
             return 0.0
         seen = rec.get("filesSeen") or {}
         repeat = key in seen
-        debit = 0.0 if repeat else float(pages)
+        debit = 0.0 if repeat else float(pages if debit_pages is None else debit_pages)
         caps, usage = _tenant_caps(tid), _tenant_usage(tid)
         if caps["pagesLimited"] and usage["pages"] + debit > caps["maxPages"]:
             raise HTTPException(402, "В организации списано %.1f стр., с этим файлом %.1f при лимите %g: пополните лимит у администратора"
@@ -7113,7 +7168,7 @@ def _pages_debit(tid: str, pages: float, key: str, project_id: int, title: str) 
         while len(seen) > FILES_SEEN_MAX:
             del seen[next(iter(seen))]
         rec["filesSeen"] = seen
-        _pages_log(rec, "repeat" if repeat else "debit", debit, project=project_id, title=title,
+        _pages_log(rec, "repeat" if repeat else (kind or "debit"), debit, project=project_id, title=title,
                    filePages=round(float(pages), 3))
         return debit
 
@@ -7194,7 +7249,9 @@ async def upload_project(
     domain = _resolve_domain(domain)["id"]
     # Файл в СУЩЕСТВУЮЩИЙ проект наследует его пару и область: у проекта они
     # одни на все файлы (один словарь, один прайс).
-    target_folder = _folder_target(folder)
+    # Читаем папку (пара, область) сразу, а ЗАВОДИМ её запись только после
+    # потолков и разбора: отказ 402/413/415 иначе оставлял бы запись в памяти.
+    target_folder = get_folder(folder) if folder is not None else None
     if target_folder is not None:
         src, tgt, domain = target_folder["src"], target_folder["tgt"], target_folder["domain"]
     try:
@@ -7222,7 +7279,13 @@ async def upload_project(
     # Разбор и отбор — общие с привязкой исходника к готовому проекту
     # (_docx_paragraphs / _docx_units): две копии правил однажды разошлись бы,
     # и перевод при выгрузке встал бы не в те абзацы.
-    texts = await run_in_threadpool(_docx_paragraph_texts, content)
+    # Чужой формат (Excel, PDF, HTML, картинка) сначала становится .docx —
+    # см. backend/importers.py; проба того же файла его уже разобрала (кэш).
+    try:
+        parsed = await run_in_threadpool(_parse_upload, file.filename or "", content)
+    except (textcount.Unsupported, textcount.TooBig, textcount.NotAvailable) as e:
+        raise _format_error(e)
+    docx_content, texts = parsed["docx"], parsed["texts"]
     paras = [t for t, _full in texts]
     card = _pricing_of()                     # ContextVar — здесь, не в потоке
     pages = await run_in_threadpool(_import_volume, paras, src, card, tid)
@@ -7230,10 +7293,12 @@ async def upload_project(
         raise HTTPException(413, "Файл на %.1f стр. больше потолка на проект (%g стр.): разбейте документ" % (pages, caps["filePages"]))
     # Лимит страниц проверяет и списывает `_pages_debit` — одним блоком под
     # локом, ниже, когда проект собран: до этого 402 ничего не оставляет.
-    sha = hashlib.sha1(content).hexdigest()
-    units = _docx_units(paras, [f for _t, f in texts])
+    sha = parsed["sha"]                 # отпечаток ИСХОДНОГО файла, а не собранного .docx
+    units = parsed["units"]
     deduped = [t for t, _ in units]
 
+    if target_folder is not None:
+        target_folder = _materialize_folder(target_folder["id"])
     new_id = _next_id()
     proj_title = title or file.filename.rsplit(".", 1)[0]
     new_project = {
@@ -7250,6 +7315,7 @@ async def upload_project(
         "pages": pages,
         "pagesUnit": "words",
         "sourceSha": sha,
+        "importKind": parsed["kind"],
         "segments": [
             {
                 "id": i + 1,
@@ -7268,6 +7334,8 @@ async def upload_project(
     }
     if target_folder is not None:
         new_project["folder"] = target_folder["id"]
+    if parsed.get("note"):
+        new_project["importNote"] = parsed["note"]
     # Исходник храним сразу: без него экспорт «как в оригинале» невозможен
     # в принципе, а второй раз тот же файл человек может и не найти.
     # Ошибка записи не роняет импорт: сегменты разобраны, переводить можно,
@@ -7279,18 +7347,507 @@ async def upload_project(
     with _SAVE_LOCK:
         _pages_debit(tid, pages, "%s:%s→%s" % (sha, src, tgt), new_id, proj_title)
         STATE["projects"].insert(0, new_project)
+        _PROJECTS_VER[0] += 1
         save_state(STATE)
     _tenants_changed()                  # после save_state: эпоху поднимает записанный документ
     if target_folder is not None:
         _folders_changed()
     try:
         pairs = [[i, u + 1] for u, (_t, idxs) in enumerate(units) for i in idxs]
-        _store_source_docx(new_project, content, file.filename, pairs, len(paras))
+        _store_source_docx(new_project, docx_content, file.filename, pairs, len(paras))
+        if parsed["converted"]:
+            _store_original(new_id, file.filename or "", content)
     except Exception as e:
         print("[backend] исходник проекта %s не сохранён: %s" % (new_id, e),
               file=sys.stderr)
     save_state(STATE)                   # отметка исходника на проекте
     return new_project
+
+
+# ─── Импорт любого формата и повторный импорт того же файла ───────────
+# Формат: чужой файл сначала превращается в .docx (`importers.to_docx`),
+# дальше идёт штатной дорогой — см. докстроку backend/importers.py. Оригинал
+# хранится рядом с исходником (`{pid}.orig.<ext>`): выгрузки 1в1 для него
+# пока нет, но когда появится, ей будет во что писать.
+#
+# Повторный импорт: человек правит документ и присылает его снова. Заводить
+# новый файл — терять оплаченный перевод неизменившихся строк, а заменять
+# текст сегментов по номерам — сажать переводы на чужие строки. Поэтому
+# сначала ПРОБА (`/api/projects/probe`, ничего не пишет): тот же файл
+# (sha) или похожий на новую редакцию (`REIMPORT_MATCH_MIN` совпавших строк
+# по `difflib`). Затем — по решению человека — `/reimport`: совпавшие
+# сегменты остаются целиком (перевод, статусы, проверки, номер), новые
+# заводятся на своём месте, исчезнувшие уходят в копию для отката.
+# Диф — `difflib.SequenceMatcher` по ключам текста, а не два указателя
+# с окном (`_map_source_to_segments`): вставка большого куска и перестановка
+# абзацев там рассинхронизируют хвост, и весь он уехал бы в «удалено».
+# Переставленный абзац узнаётся по ключу среди неиспользованных старых —
+# это перемещение, а не удаление с новой строкой.
+import difflib
+
+try:
+    import importers
+except ImportError:                                   # pragma: no cover
+    from backend import importers                      # type: ignore
+
+REIMPORT_MATCH_MIN = float(os.environ.get("REIMPORT_MATCH_MIN", "0.5"))
+_PARSE_CACHE: dict = {}          # sha исходного файла -> (время, разбор)
+_PARSE_CACHE_TTL = 600           # проба и загрузка идут подряд: не разбирать дважды
+_PARSE_CACHE_MAX = 6
+
+
+def _parse_upload(filename: str, content: bytes) -> dict:
+    """Разбор присланного файла: {sha, docx, kind, note, converted, texts,
+    paras, full, units}. Кэш по (sha исходника, расширение) — проба
+    и загрузка того же файла идут подряд, и 20-мегабайтный пакет незачем
+    разбирать дважды; расширение в ключе потому, что разбор от него зависит
+    (те же байты как .txt и как .html — разные абзацы). Собранный .docx
+    хранится только у ПРЕВРАЩЁННЫХ файлов: у .docx он равен присланному.
+    Ошибки формата — исключения textcount: вызывающий даёт им код."""
+    sha = hashlib.sha1(content).hexdigest()
+    ext = importers.ext_of(filename or "")
+    now = time.time()
+    for k in [k for k, v in _PARSE_CACHE.items() if now - v[0] >= _PARSE_CACHE_TTL]:
+        _PARSE_CACHE.pop(k, None)
+    hit = _PARSE_CACHE.get((sha, ext))
+    if hit:
+        out = dict(hit[1])
+        if out.get("docx") is None:
+            out["docx"] = content
+        return out
+    conv = importers.to_docx(filename or "", content)
+    texts = _docx_paragraph_texts(conv["docx"])
+    paras = [t for t, _full in texts]
+    full = [f for _t, f in texts]
+    out = {"sha": sha, "docx": conv["docx"], "kind": conv["kind"], "note": conv.get("note"),
+           "converted": bool(conv.get("converted")), "texts": texts, "paras": paras,
+           "full": full, "units": _docx_units(paras, full)}
+    if len(_PARSE_CACHE) >= _PARSE_CACHE_MAX:
+        oldest = min(_PARSE_CACHE, key=lambda k: _PARSE_CACHE[k][0])
+        _PARSE_CACHE.pop(oldest, None)
+    cached = dict(out)
+    if not out["converted"]:
+        cached["docx"] = None
+    _PARSE_CACHE[(sha, ext)] = (now, cached)
+    return out
+
+
+def _format_error(e: Exception) -> HTTPException:
+    """Код отказа по виду ошибки формата: 413 — велик, 503 — нечем прочитать,
+    415 — не формат. Текст — причина словами, человеку нужно знать, что
+    делать с ЕГО файлом."""
+    if isinstance(e, textcount.TooBig):
+        return HTTPException(413, str(e))
+    if isinstance(e, textcount.NotAvailable):
+        return HTTPException(503, str(e))
+    return HTTPException(415, str(e))
+
+
+def _orig_path(pid: int, filename: str) -> Path:
+    ext = importers.ext_of(filename or "") or ".bin"
+    return SOURCE_DIR / ("%d.orig%s" % (pid, ext))
+
+
+def _orig_existing(pid: int) -> Optional[Path]:
+    got = sorted(SOURCE_DIR.glob("%d.orig.*" % pid))
+    return got[0] if got else None
+
+
+def _store_original(pid: int, filename: str, content: bytes) -> None:
+    """Оригинал не-docx файла — рядом с исходником. Ошибка не роняет импорт:
+    сегменты уже разобраны, а оригинал нужен только будущей выгрузке 1в1."""
+    try:
+        SOURCE_DIR.mkdir(parents=True, exist_ok=True)
+        for old in SOURCE_DIR.glob("%d.orig.*" % pid):
+            old.unlink(missing_ok=True)
+        p = _orig_path(pid, filename)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_bytes(content)
+        os.replace(str(tmp), str(p))
+    except Exception as e:
+        print("[backend] оригинал проекта %s не сохранён: %s" % (pid, e), file=sys.stderr)
+
+
+def _text_segments(project: dict) -> list:
+    """Сегменты абзацев — без распознанных на картинках: у тех якорь другой."""
+    return [s for s in project.get("segments") or []
+            if (s.get("origin") or {}).get("kind") != "image"]
+
+
+def _image_segments(project: dict) -> list:
+    return [s for s in project.get("segments") or []
+            if (s.get("origin") or {}).get("kind") == "image"]
+
+
+def _diff_units(project: dict, units: list, full: Optional[list] = None) -> tuple:
+    """(план по новым единицам, исчезнувшие сегменты).
+
+    План — список пар (op, seg|None) по единицам нового файла: keep —
+    сегмент на месте, moved — тот же текст стоял в другом месте (переезд,
+    перевод остаётся), new — строки раньше не было. Ключ — `_match_key`,
+    как у привязки исходника: та же нормализация пробелов и регистра.
+
+    `full` — ПОЛНЫЙ текст абзацев: сегменты проектов прежнего импорта равны
+    ему (с номером страницы из поля, с вложенными надписями), а не тексту
+    слотов; без запасного ключа все строки оглавления учебника уезжали бы
+    в «удалено» даже при загрузке того же самого файла — ровно как
+    у `_map_source_to_segments`."""
+    old = _text_segments(project)
+    old_keys = [_match_key(s.get("source")) for s in old]
+    old_set = set(old_keys)
+    new_keys = []
+    for text, idxs in units:
+        k = _match_key(text)
+        if k not in old_set and full:
+            alt = [_match_key(full[i]) for i in idxs if i < len(full)]
+            k = next((a for a in alt if a in old_set), k)
+        new_keys.append(k)
+    sm = difflib.SequenceMatcher(None, old_keys, new_keys, autojunk=False)
+    plan: list = [None] * len(units)
+    used: set = set()
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            for k in range(i2 - i1):
+                plan[j1 + k] = ("keep", old[i1 + k])
+                used.add(i1 + k)
+        elif tag in ("replace", "insert"):
+            for j in range(j1, j2):
+                plan[j] = ("new", None)
+    # Переезды: новая единица с ключом неиспользованного старого сегмента.
+    spare: dict = {}
+    for i, k in enumerate(old_keys):
+        if i not in used:
+            spare.setdefault(k, []).append(i)
+    for j, item in enumerate(plan):
+        if item and item[0] == "new":
+            lst = spare.get(new_keys[j])
+            if lst:
+                i = lst.pop(0)
+                plan[j] = ("moved", old[i])
+                used.add(i)
+    removed = [old[i] for i in range(len(old)) if i not in used]
+    return plan, removed
+
+
+def _diff_counts(project: dict, units: list, full: Optional[list] = None,
+                 plan_removed: Optional[tuple] = None) -> dict:
+    plan, removed = plan_removed or _diff_units(project, units, full)
+    return {"kept": sum(1 for p in plan if p and p[0] == "keep"),
+            "moved": sum(1 for p in plan if p and p[0] == "moved"),
+            "added": sum(1 for p in plan if p and p[0] == "new"),
+            "removed": len(removed), "total": len(_text_segments(project)),
+            "removedConfirmed": sum(1 for s in removed if s.get("status") == "confirmed"),
+            "images": len(_image_segments(project)),
+            "units": len(units),
+            "removedSample": [(s.get("source") or "")[:80] for s in removed[:5]],
+            "addedSample": [units[j][0][:80] for j, p in enumerate(plan) if p and p[0] == "new"][:5]}
+
+
+def _looks_like_new_version(counts: dict) -> bool:
+    """«Похоже на новую редакцию»: совпало не меньше доли и от СТАРОГО файла,
+    и от НОВОГО, и не меньше трёх строк. Порог только от старого делал файл
+    из трёх заголовков похожим на любую книгу с этими заголовками — и одним
+    нажатием книга заменялась бы тремя строками."""
+    same = counts["kept"] + counts["moved"]
+    return (same >= 3 and same >= REIMPORT_MATCH_MIN * max(1, counts["total"])
+            and same >= REIMPORT_MATCH_MIN * max(1, counts["units"]))
+
+
+@app.post("/api/projects/probe")
+async def probe_upload(request: Request, file: UploadFile = File(...),
+                       folder: Optional[int] = Form(None)):
+    """Что это за файл: уже есть (sha) или похож на новую редакцию файла
+    проекта. Ничего не пишет и денег не стоит. Сравнивается с файлами
+    названной папки, без папки — со всеми файлами организации."""
+    content = await file.read()
+    try:
+        parsed = await run_in_threadpool(_parse_upload, file.filename or "", content)
+    except (textcount.Unsupported, textcount.TooBig, textcount.NotAvailable) as e:
+        raise _format_error(e)
+    if folder is not None:
+        get_folder(folder)                   # чужая папка → 404
+        pool = _folder_files(folder)
+    else:
+        pool = _tenant_projects()
+    exact, similar = [], []
+    for p in pool:
+        if p.get("sourceSha") == parsed["sha"]:
+            exact.append({"id": p["id"], "title": p.get("title"), "folder": _fid(p["id"])})
+            continue
+        if not _text_segments(p) or not parsed["units"]:
+            continue
+        c = await run_in_threadpool(_diff_counts, p, parsed["units"], parsed["full"])
+        if _looks_like_new_version(c):
+            similar.append({"id": p["id"], "title": p.get("title"), "folder": _fid(p["id"]),
+                            "matched": c["kept"] + c["moved"],
+                            **{k: c[k] for k in ("total", "units", "added", "removed", "moved",
+                                                 "removedConfirmed", "images")}})
+    similar.sort(key=lambda x: -x["matched"])
+    return {"ok": True, "sha": parsed["sha"], "kind": parsed["kind"], "note": parsed["note"],
+            "converted": parsed["converted"], "units": len(parsed["units"]),
+            "exact": exact, "similar": similar[:3]}
+
+
+REIMPORT_DIR = DATA_DIR / "backups"
+
+
+def _reimport_backup_paths(stamp: str) -> dict:
+    base = REIMPORT_DIR / ("reimport-" + stamp)
+    return {"json": base.with_name(base.name + ".json"),
+            "docx": base.with_name(base.name + ".docx"),
+            "map": base.with_name(base.name + ".map.json")}
+
+
+def _reimport_backup_orig(stamp: str, pid: int) -> Optional[Path]:
+    got = sorted(REIMPORT_DIR.glob("reimport-%s.orig.*" % stamp))
+    return got[0] if got else None
+
+
+def _reimport_cleanup(pid: int) -> None:
+    """Копии замен файла — вместе с файлом: имя копии начинается с его номера."""
+    try:
+        for f in REIMPORT_DIR.glob("reimport-%d-*" % pid):
+            f.unlink(missing_ok=True)
+    except Exception as e:
+        print("[backend] копии замен проекта %s не удалены: %s" % (pid, e), file=sys.stderr)
+
+
+def _new_segment(sid: int, text: str) -> dict:
+    """Сегмент абзаца — тем же составом полей, что при импорте."""
+    n = len(text.split())
+    return {"id": sid, "source": text, "target": "", "status": "new", "comments": [], "qa": [],
+            "wordCount": n, "risk": "high" if n > 30 else "medium" if n > 8 else "low",
+            "route": "GPT_REQUIRED", "tm": None}
+
+
+@app.post("/api/projects/{pid}/reimport")
+async def reimport_project(pid: int, file: UploadFile = File(...), dry_run: bool = Form(True),
+                           title: str = Form("")):
+    """Заменить файл проекта его новой редакцией, сохранив перевод там, где
+    текст не изменился. `dry_run` по умолчанию — сначала числа, потом запись.
+
+    Правила массовых команд: копия прежнего состояния (сегменты, объём,
+    исходник, карта, оригинал) уходит в `data/backups/reimport-{pid}-{stamp}.*`
+    ДО первой правки и возвращается `/reimport/{stamp}/undo`; заверенное
+    человеком не трогается — оно либо совпало и осталось, либо исчезло
+    из документа (и названо числом ДО записи, `removedConfirmed`). Страницы
+    списываются только за ДОБАВЛЕННЫЕ строки.
+
+    Сегменты, распознанные на картинках, уходят в копию вместе с исчезнувшими:
+    их якорь — часть пакета СТАРОГО .docx, в новом файле частей с такими
+    именами может не быть или в них другие картинки. Разбор надписей нового
+    файла заводит их заново, и за уже прочитанные картинки (тот же sha)
+    он не платит.
+
+    Проект берётся ЗАНОВО под локом после всех `await`: за время разбора
+    файла мидлварь могла подтянуть документ проекта из базы (`_apply_doc`),
+    и правки по старому объекту ушли бы в никуда, а исходник на диске уже
+    был бы переписан."""
+    get_project(pid)                     # чужой → 404 до чтения файла
+    _guard_project_write(pid)
+    if _job_busy(pid, "images"):
+        raise HTTPException(409, "Идёт разбор картинок — дождитесь конца или остановите его")
+    content = await file.read()
+    try:
+        parsed = await run_in_threadpool(_parse_upload, file.filename or "", content)
+    except (textcount.Unsupported, textcount.TooBig, textcount.NotAvailable) as e:
+        raise _format_error(e)
+    if not parsed["units"]:
+        raise HTTPException(415, "В новом файле нет ни одной строки текста — редакцией файла он быть не может")
+    project = get_project(pid)
+    plan_removed = await run_in_threadpool(_diff_units, project, parsed["units"], parsed["full"])
+    counts = _diff_counts(project, parsed["units"], parsed["full"], plan_removed)
+    out = {"ok": True, "dryRun": dry_run, "project": pid, **counts,
+           "kind": parsed["kind"], "note": parsed["note"]}
+    if dry_run:
+        return out
+    tid = _tenant_of(project)
+    src_lang = project.get("src") or "RU"
+    card = _pricing_of(tid)
+    all_pages = await run_in_threadpool(_import_volume, parsed["paras"], src_lang, card, tid)
+
+    with _SAVE_LOCK:
+        # Заново: объект, охранник и план — см. докстроку.
+        project = get_project(pid)
+        _guard_project_write(pid)
+        if _job_busy(pid, "images"):
+            raise HTTPException(409, "Идёт разбор картинок — дождитесь конца или остановите его")
+        plan, removed = _diff_units(project, parsed["units"], parsed["full"])
+        counts = _diff_counts(project, parsed["units"], parsed["full"], (plan, removed))
+        added_texts = [parsed["units"][j][0] for j, p in enumerate(plan) if p and p[0] == "new"]
+        added_pages = _pages_exact(added_texts, src_lang, card) if added_texts else 0.0
+        images = _image_segments(project)
+
+        stamp = "%d-%s" % (pid, datetime.now().strftime("%Y%m%d-%H%M%S"))
+        REIMPORT_DIR.mkdir(parents=True, exist_ok=True)
+        while _reimport_backup_paths(stamp)["json"].exists():
+            stamp += "-1"
+        paths = _reimport_backup_paths(stamp)
+        snap = {"project": pid, "stamp": stamp, "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "segments": project.get("segments") or [],
+                "fields": {k: project.get(k) for k in ("pages", "pagesUnit", "sourceSha", "fileName",
+                                                      "sourceDocx", "importKind", "importNote", "reimport",
+                                                      "title")}}
+        docx_path, map_path = _source_paths(pid)
+        orig = _orig_existing(pid)
+        # Копия ДО правки и ДО списания: неудачная запись иначе оставила бы
+        # в памяти изменения, откатить которые уже нечем.
+        try:
+            paths["json"].write_text(json.dumps(snap, ensure_ascii=False), encoding="utf-8")
+            if docx_path.exists():
+                shutil.copyfile(str(docx_path), str(paths["docx"]))
+            if map_path.exists():
+                shutil.copyfile(str(map_path), str(paths["map"]))
+            if orig is not None:
+                shutil.copyfile(str(orig), str(REIMPORT_DIR / ("reimport-%s.orig%s" % (stamp, orig.suffix))))
+        except Exception as e:
+            raise HTTPException(500, "Не удалось сохранить копию для отката — замена отменена: %s" % e)
+        try:
+            _pages_debit(tid, all_pages, "%s:%s→%s" % (parsed["sha"], src_lang, project.get("tgt") or "EN"),
+                         pid, project.get("title") or "", debit_pages=added_pages, kind="reimport")
+        except HTTPException:
+            for p_ in paths.values():          # 402: копия-сирота не нужна
+                p_.unlink(missing_ok=True)
+            o_ = _reimport_backup_orig(stamp, pid)
+            if o_ is not None:
+                o_.unlink(missing_ok=True)
+            raise
+        next_id = max((s.get("id") or 0 for s in project.get("segments") or []), default=0) + 1
+        new_segments, pairs, added_ids = [], [], []
+        for u, item in enumerate(plan):
+            text, idxs = parsed["units"][u]
+            if item and item[0] in ("keep", "moved"):
+                seg = item[1]
+                # Ключ терпим к регистру и пробелам, а текст — нет: заголовок,
+                # ставший капсом, обязан прийти в сегмент, иначе проверки
+                # регистра сверяют перевод с устаревшим оригиналом.
+                if text != seg.get("source"):
+                    seg["source"] = text
+                    seg["wordCount"] = len(text.split())
+            else:
+                seg = _new_segment(next_id, text)
+                next_id += 1
+                added_ids.append(seg["id"])
+            new_segments.append(seg)
+            for i in idxs:
+                pairs.append([i, seg["id"]])
+        project["segments"] = new_segments
+        project["pages"] = all_pages
+        project["pagesUnit"] = "words"
+        project["sourceSha"] = parsed["sha"]
+        project["fileName"] = file.filename
+        project["importKind"] = parsed["kind"]
+        if parsed.get("note"):
+            project["importNote"] = parsed["note"]
+        else:
+            project.pop("importNote", None)
+        if title.strip():
+            project["title"] = title.strip()
+        project["reimport"] = {"stamp": stamp, "at": snap["at"], "kept": counts["kept"],
+                               "moved": counts["moved"], "added": counts["added"],
+                               "removed": counts["removed"], "images": len(images),
+                               "file": file.filename, "addedIds": added_ids}
+        _PROJECTS_VER[0] += 1
+        save_state(STATE)
+    _tenants_changed()
+    try:
+        # Карта картинок старого файла к новому не относится (копия — в бэкапе):
+        # без этого `_store_source_docx` перенёс бы её как есть.
+        map_path.unlink(missing_ok=True)
+        _store_source_docx(project, parsed["docx"], file.filename, pairs, len(parsed["paras"]))
+        if parsed["converted"]:
+            _store_original(pid, file.filename or "", content)
+        else:
+            for old in SOURCE_DIR.glob("%d.orig.*" % pid):
+                old.unlink(missing_ok=True)
+    except Exception as e:
+        print("[backend] исходник проекта %s после замены не сохранён: %s" % (pid, e), file=sys.stderr)
+    save_state(STATE)
+    _audit("project.reimport", project=pid, stamp=stamp, added=counts["added"],
+           removed=counts["removed"], kept=counts["kept"], images=len(images))
+    out.update(counts)
+    out.update({"stamp": stamp, "addedIds": added_ids, "pagesDebited": round(float(added_pages), 3),
+                "imagesRemoved": len(images)})
+    return out
+
+
+def _reimport_touched(project: dict, snap: dict) -> list:
+    """Сегменты, изменённые ПОСЛЕ замены: сравнение со снимком, а не по
+    отметкам времени — перевод, ремонт, back-check и ревизия отметок
+    на сегменте не ставят, и откат по времени молча выбросил бы оплаченный
+    прогон. Сохранённый сегмент сравнивается с собой в снимке (замена его
+    не трогала, кроме `source`), добавленный — с пустым."""
+    before = {s["id"]: s for s in snap.get("segments") or []}
+    added = set((project.get("reimport") or {}).get("addedIds") or [])
+    def fp(s):
+        return (s.get("target") or "", s.get("status"), (s.get("backcheck") or {}).get("target_hash"),
+                (s.get("termcheck") or {}).get("target_hash"), (s.get("repair") or {}).get("source_hash"),
+                json.dumps(s.get("review") or {}, sort_keys=True, ensure_ascii=False),
+                s.get("confirmedBy"))
+    out = []
+    for s in project.get("segments") or []:
+        if s["id"] in added:
+            if (s.get("target") or "").strip() or s.get("status") not in (None, "new"):
+                out.append(s["id"])
+        elif s["id"] in before and fp(s) != fp(before[s["id"]]):
+            out.append(s["id"])
+    return out
+
+
+@app.post("/api/projects/{pid}/reimport/{stamp}/undo")
+def undo_reimport(pid: int, stamp: str, force: bool = False):
+    """Вернуть прежнюю редакцию файла целиком: сегменты, объём, исходник,
+    оригинал. Правки и прогоны ПОСЛЕ замены откат унёс бы — поэтому при
+    их наличии отвечает 409 с числом, а идёт только с `force`."""
+    project = get_project(pid)
+    _guard_project_write(pid)
+    if _job_busy(pid, "images"):
+        raise HTTPException(409, "Идёт разбор картинок — дождитесь конца или остановите его")
+    if not _STAMP_RE.fullmatch(stamp or ""):
+        raise HTTPException(400, "Неверная метка отката")
+    paths = _reimport_backup_paths(stamp)
+    if not paths["json"].exists():
+        raise HTTPException(404, "Копия для отката не найдена")
+    try:
+        snap = json.loads(paths["json"].read_text(encoding="utf-8"))
+    except Exception as e:
+        raise HTTPException(500, "Копия для отката не читается: " + str(e))
+    if snap.get("project") != pid:
+        raise HTTPException(400, "Эта копия относится к другому проекту")
+    mark = project.get("reimport") or {}
+    if mark.get("stamp") != stamp:
+        raise HTTPException(409, "Файл заменялся ещё раз после этой копии — откатывайте последнюю замену")
+    touched = _reimport_touched(project, snap)
+    if touched and not force:
+        raise HTTPException(409, "После замены менялись %d сегментов (правки или прогон) — откат унёс бы "
+                                 "эту работу. Подтвердите откат явно." % len(touched))
+    with _SAVE_LOCK:
+        project = get_project(pid)
+        project["segments"] = snap.get("segments") or []
+        for k, v in (snap.get("fields") or {}).items():
+            if v is None:
+                project.pop(k, None)
+            else:
+                project[k] = v
+        _PROJECTS_VER[0] += 1
+        save_state(STATE)
+    docx_path, map_path = _source_paths(pid)
+    try:
+        if paths["docx"].exists():
+            shutil.copyfile(str(paths["docx"]), str(docx_path))
+        if paths["map"].exists():
+            shutil.copyfile(str(paths["map"]), str(map_path))
+        else:
+            map_path.unlink(missing_ok=True)
+        for old in SOURCE_DIR.glob("%d.orig.*" % pid):
+            old.unlink(missing_ok=True)
+        o_ = _reimport_backup_orig(stamp, pid)
+        if o_ is not None:
+            shutil.copyfile(str(o_), str(SOURCE_DIR / ("%d.orig%s" % (pid, o_.suffix))))
+    except Exception as e:
+        print("[backend] исходник проекта %s при откате не восстановлен: %s" % (pid, e), file=sys.stderr)
+    _audit("project.reimport.undo", project=pid, stamp=stamp, touched=len(touched))
+    return {"ok": True, "segments": len(project["segments"]), "touched": len(touched)}
 
 
 # ─── Привязка исходника к УЖЕ существующему проекту ─────────────────
@@ -8906,9 +9463,15 @@ def _queue_term_locked(kind, src, tgt, src_n, tgt_n, now, extra):
             "status": "pending", "hits": 1, "at": now,
             "segments": [donor] if donor else []}
     cand.update(extra)
+    # Папка — отдельным полем: `project` карточки — номер ФАЙЛА (по нему
+    # вместе с `segment` узнают донора), а файл могут удалить и номер
+    # переиспользовать — карточка уехала бы к чужому проекту.
+    if isinstance(extra.get("project"), int):
+        cand["folder"] = _fid(extra["project"])
     # Словарь ставится ОДИН раз здесь, а не в шести сборщиках карточек:
     # куда пишется знание файла, знает его папка (`_write_dict_for`).
-    cand.setdefault("dict", _write_dict_for(extra.get("project")))
+    # Организация — из карточки, не из контекста (инвариант 11).
+    cand.setdefault("dict", _write_dict_for(extra.get("project"), extra.get("tenant")))
     return _queue_insert(cand)
 
 
@@ -8963,7 +9526,13 @@ def _gloss_by_src() -> dict:
                 # уровня организации (импорт, вынос, аудит).
                 k = _norm_key(g.get("src"))
                 built.setdefault((_scope_of(g), _gproj(g), _dict_of(g), k), g)
-                built.setdefault((_scope_of(g), _gproj(g), "*", k), g)
+                # «*» — сильнейшая по рангу, а не первая по списку: у папки
+                # без списка словарей промпт выбирает рангом, и поиск записи
+                # обязан выбрать ту же (`_gloss_precedence` при пустом порядке).
+                star = (_scope_of(g), _gproj(g), "*", k)
+                cur = built.get(star)
+                if cur is None or _hit_rank(g) > _hit_rank(cur):
+                    built[star] = g
             _GLOSS_BY_SRC = built
         # Возвращаем локальную ссылку: параллельный _invalidate_gloss_index()
         # обнуляет глобал, и вызывающий получил бы None вместо словаря.
@@ -10003,7 +10572,9 @@ def _auto_context(pending: list, pol: dict) -> dict:
         # проекта B, и автоодобрение по проектам не работало бы никогда.
         k = _norm_key(g.get("src"))
         gloss.setdefault((_scope_of(g), _gproj(g), _dict_of(g), k), g)
-        gloss.setdefault((_scope_of(g), _gproj(g), "*", k), g)
+        star = (_scope_of(g), _gproj(g), "*", k)
+        if star not in gloss or _hit_rank(g) > _hit_rank(gloss[star]):
+            gloss[star] = g
     return {"variants": _auto_variants(pending), "segs": segs, "gloss": gloss, "pol": pol}
 
 
@@ -10833,7 +11404,9 @@ def _note_term_disputes(seg: dict, project: Optional[dict]) -> int:
             # _get_context отдаёт КОПИИ записей (в них подмешан контекст поиска),
             # поэтому метку надо ставить настоящей записи глоссария — иначе она
             # уходит во временный словарь и пропадает вместе с ним.
-            entry = _glossary_entry(h.get("src"), scope, _gproj(h))
+            # Словарь — часть адреса: без него метка легла бы на первую
+            # запись с таким термином, а не на ту, что дала требование.
+            entry = _glossary_entry(h.get("src"), scope, project.get("id"), did=_dict_of(h))
             if entry is None:
                 continue
             entry["disputed"] = int(entry.get("disputed") or 0) + 1

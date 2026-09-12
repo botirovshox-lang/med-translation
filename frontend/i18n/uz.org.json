@@ -282,5 +282,6 @@
  "Код языка исходника с письмом без пробелов (две буквы, например ZH):": "Probelsiz yozuvli asl til kodi (ikki harf, masalan ZH):",
  "Новый словарь…": "Yangi lug'at…",
  "В какой словарь": "Qaysi lug'atga",
- "напр. Словарь клиента": "mas. Mijoz lug'ati"
+ "напр. Словарь клиента": "mas. Mijoz lug'ati",
+ "новая версия файла, за добавленные строки": "faylning yangi versiyasi, qo'shilgan qatorlar uchun"
 }

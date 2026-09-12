@@ -84,8 +84,12 @@ for (const [f, src] of [["i18n.js", fs.readFileSync(path.join(root, "i18n.js"), 
 
 const toast = { info() {}, warning() {}, error() {}, success() {} };
 const store = {
-  glossary: [{ src: "плевра", tgt: "pleura", cat: "Anatomy", freq: 3, conf: "high", tier: "verified" }],
+  glossary: [{ src: "плевра", tgt: "pleura", cat: "Anatomy", freq: 3, conf: "high", tier: "verified", dict: "d1" }],
   tm: [], activeProject: { id: 1, src: "RU", tgt: "EN", domain: "medical" },
+  /* Словари организации и папка открытого файла: колонка «Словарь», фильтр
+     и поле в окне термина рисуются только при них. */
+  dicts: [{ id: "d1", title: "Словарь учебника", count: 1 }, { id: "old", title: "Старый словарь", count: 1307 }],
+  activeFolder: { id: 1, title: "Учебник", files: [1], dicts: ["d1", "old"] },
   saveTerm() {}, deleteTerm() {}, deleteTM() {}, go() {}, openProject() {}, setSegmentFilter() {},
 };
 

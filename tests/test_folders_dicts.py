@@ -30,7 +30,7 @@ API адресует его по номеру. Контейнер заведён
 
 Ни одного вызова модели, файл состояния не пишется.
 """
-import os, sys
+import io, os, sys
 os.environ["APP_PASSWORD"] = "folders-pass-1"
 os.environ["AUTHORITY_CORPUS"] = "0"
 sys.path.insert(0, "backend")
@@ -206,6 +206,126 @@ check(r.status_code == 200 and r.json()["filesRemoved"] == 2
 r = c.post("/api/folders/101", headers=H(A), json={"title": "Фтизиатрия"})
 check(r.status_code == 200 and main._folder_by_id(101) is not None and BOOK["title"] == "Фтизиатрия",
       "переименование виртуальной папки заводит запись и переименовывает файл-папку")
+
+print("\n=== 11. Словарь по умолчанию переживает переименование «old» ===")
+check(main._default_dict_id("default") == "old", "«old» стал настоящей записью, но остался словарём по умолчанию")
+check(main._write_dict_for(101) == "old", "папка без списка пишет в «old»")
+
+print("\n=== 12. Метка спора ложится на запись ТОГО словаря, что дал требование ===")
+F2 = c.post("/api/folders", headers=H(A), json={"title": "Иск", "src": "RU", "tgt": "EN",
+                                               "domain": "medical", "newDict": "Словарь иска"}).json()
+D3 = F2["dicts"][0]
+P3 = c.post("/api/projects", headers=H(A), json={"title": "Иск 1", "folder": F2["id"]}).json()
+P4 = c.post("/api/projects", headers=H(A), json={"title": "Иск 2", "folder": F2["id"]}).json()
+c.post("/api/folders/%d" % F2["id"], headers=H(A), json={"dicts": [D3, "old"]})
+g_side = term("сторона", "side", dict=D3)
+g_old = next(x for x in main.STATE["glossary"] if x.get("src") == "сторона" and main._dict_of(x) == "old")
+seg = {"id": 1, "source": "сторона договора", "target": "the side of the contract",
+       "termcheck": {"findings": [{"tgt_term": "side", "severity": "major", "issue": "неверный термин"}]}}
+n = main._note_term_disputes(seg, P3)
+check(n == 1 and g_side.get("disputed") == 1 and not g_old.get("disputed"),
+      "спор помечен на записи словаря иска, старая не тронута: %s/%s" % (g_side.get("disputed"), g_old.get("disputed")))
+
+print("\n=== 13. Смена области на все файлы папки — под охранником прогона ===")
+# Охранник работает только при внешнем воркере (в одном процессе правки и
+# прогон сериализует сам процесс) — включаем его на время проверки.
+main._JOBS[9001] = {"id": 9001, "project": P4["id"], "status": "running", "kind": "full", "tenant": "default"}
+_ext = main.EXTERNAL_WORKER
+main.EXTERNAL_WORKER = True
+st3, st4 = main._project_by_id(P3["id"]), main._project_by_id(P4["id"])
+try:
+    r = c.post("/api/folders/%d" % F2["id"], headers=H(A), json={"domain": "legal"})
+    check(r.status_code == 409 and st3["domain"] == "medical", "прогон на соседнем файле → 409, область не тронута")
+    r = c.post("/api/projects/%d/domain" % P3["id"], headers=H(A), json={"domain": "legal"})
+    check(r.status_code == 409, "…и через /domain файла — тоже 409")
+finally:
+    main._JOBS.pop(9001, None)
+    main.EXTERNAL_WORKER = _ext
+r = c.post("/api/folders/%d" % F2["id"], headers=H(A), json={"domain": "legal"})
+check(r.status_code == 200 and st3["domain"] == "legal" and st4["domain"] == "legal", "без прогона область сменилась у обоих файлов")
+
+print("\n=== 14. Импорт пустого файла в новый словарь не заводит словарь ===")
+n_dicts = len(c.get("/api/dicts", headers=H(A)).json()["dicts"])
+r = c.post("/api/glossary/import", headers=H(A), files={"file": ("empty.tsv", b"src\ttgt\n\t\n")},
+           data={"lang": "RU→EN", "domain": "medical", "tier": "auto", "dry_run": "false", "new_dict": "Сирота"})
+check(r.status_code == 200 and r.json()["added"] == 0
+      and len(c.get("/api/dicts", headers=H(A)).json()["dicts"]) == n_dicts, "добавлено 0, словарей столько же")
+
+print("\n=== 15. Папка без единого словаря — отказ ===")
+r = c.post("/api/folders", headers=H(A), json={"title": "Пусто", "src": "RU", "tgt": "EN", "domain": "general", "dicts": []})
+check(r.status_code == 400, "создание с dicts: [] → 400")
+r = c.post("/api/folders/%d" % F2["id"], headers=H(A), json={"dicts": []})
+check(r.status_code == 400 and main._folder_by_id(F2["id"])["dicts"] == [D3, "old"], "правка на [] → 400, список прежний")
+r = c.post("/api/folders", headers=H(A), json={"title": "Чужой словарь", "src": "RU", "tgt": "EN", "domain": "general",
+                                              "dicts": ["nope"], "newDict": "Не должен появиться"})
+check(r.status_code == 400 and not any(d["title"] == "Не должен появиться" for d in c.get("/api/dicts", headers=H(A)).json()["dicts"]),
+      "неизвестный словарь → 400, новый не заведён")
+
+print("\n=== 16. Карточка очереди помнит папку, а не только файл ===")
+cand2 = main._queue_term("segment", "ответчик", "defendant", project=P4["id"], segment=2,
+                         lang="RU→EN", domain="legal", tenant="default", via="confirmed")
+check(cand2 and cand2.get("folder") == F2["id"] and cand2.get("project") == P4["id"], "folder = папка, project = файл")
+check(main._gproj(cand2) == F2["id"] and main._cand_dict(cand2) == D3, "папка и словарь читаются с карточки")
+main._delete_project_record(P4["id"])
+check(main._gproj(cand2) == F2["id"], "после удаления файла карточка не оторвалась от папки")
+
+print("\n=== 17. Файл с полем folder без записи папки не теряется ===")
+main.STATE["projects"].append({"id": 555, "tenant": "default", "title": "Сирота", "src": "RU", "tgt": "EN",
+                               "domain": "general", "folder": 777, "segments": []})
+fl = {f["id"]: f for f in c.get("/api/folders", headers=H(A)).json()["folders"]}
+check(main._fid(555) == 777 and 777 in fl and fl[777]["files"] == [555] and fl[777].get("virtual"),
+      "папка 777 виртуальная, файл 555 в ней")
+check(c.get("/api/folders/777", headers=H(A)).status_code == 200, "GET /api/folders/777 — 200")
+main.STATE["projects"] = [p for p in main.STATE["projects"] if p["id"] != 555]
+
+print("\n=== 18. Загрузка файла в папку наследует её пару и область ===")
+from docx import Document as _Doc
+_d = _Doc(); _d.add_paragraph("Первый абзац документа."); _d.add_paragraph("Второй абзац документа.")
+_b = io.BytesIO(); _d.save(_b)
+r = c.post("/api/projects/upload", headers=H(A), files={"file": ("doc.docx", _b.getvalue())},
+           data={"title": "Загруженный", "src": "DE", "tgt": "FR", "domain": "general", "folder": str(F2["id"])})
+UP = r.json()
+check(r.status_code == 200 and UP["folder"] == F2["id"] and (UP["src"], UP["tgt"], UP["domain"]) == ("RU", "EN", "legal")
+      and len(UP["segments"]) == 2, "загруженный файл — в папке, с её парой и областью: %s" % r.status_code)
+
+print("\n=== 19. Память переводов — знание папки ===")
+main._tm_upsert("исходник X", "перевод X", P3)
+tm = next(t for t in main.STATE["tm"] if t.get("src") == "исходник X")
+check(tm.get("project") == F2["id"], "пара TM несёт номер папки")
+check(main._get_context("исходник X", True, UP)[1] is not None, "соседний файл папки получает пару")
+check(main._get_context("исходник X", True, BOOK)[1] is None, "учебник — нет")
+
+print("\n=== 20. Правка записи из второго словаря не заводит дубль в первом ===")
+# Браузер шлёт `project` только у проектной записи (общая правится без него),
+# а словарь — всегда: без `dictId` правка общей записи нашла бы запись
+# ПЕРВОГО словаря папки и переписала бы её.
+n_before = sum(1 for x in main.STATE["glossary"] if x.get("src") == "сторона")
+r = c.post("/api/glossary", headers=H(A), json={"src": "сторона", "tgt": "party!", "cat": "Term", "lang": "RU→EN",
+                                               "domain": "medical", "dictId": "old", "isNew": False})
+check(r.status_code == 200 and g_old["tgt"] == "party!" and g_side["tgt"] == "side"
+      and sum(1 for x in main.STATE["glossary"] if x.get("src") == "сторона") == n_before,
+      "запись «old» правится на месте, запись первого словаря и число записей прежние")
+r = c.post("/api/glossary", headers=H(A), json={"src": "сторона", "tgt": "side!", "cat": "Term", "lang": "RU→EN",
+                                               "domain": "medical", "dictId": D3, "isNew": False})
+check(r.status_code == 200 and g_side["tgt"] == "side!" and g_old["tgt"] == "party!", "…и наоборот")
+
+print("\n=== 21. Удаление пустого словаря отключает его от папок ===")
+DX = c.post("/api/dicts", headers=H(A), json={"title": "Пустой"}).json()["dict"]["id"]
+c.post("/api/folders/%d" % F2["id"], headers=H(A), json={"dicts": [D3, "old", DX]})
+r = c.delete("/api/dicts/%s" % DX, headers=H(A))
+check(r.status_code == 200 and main._folder_by_id(F2["id"])["dicts"] == [D3, "old"], "словарь удалён и отключён")
+
+print("\n=== 22. Папка переживает удаление последнего файла ===")
+for pid_ in (P3["id"], UP["id"]):
+    c.delete("/api/projects/%d" % pid_, headers=H(A))
+fl = {f["id"]: f for f in c.get("/api/folders", headers=H(A)).json()["folders"]}
+check(F2["id"] in fl and fl[F2["id"]]["files"] == [] and not fl[F2["id"]].get("virtual"), "настоящая папка осталась, файлов ноль")
+
+print("\n=== 23. Папка без списка словарей: промпт и поиск выбирают одну запись ===")
+term("плевра", "pleura-old", tier="auto")
+term("плевра", "pleura", tier="verified", dict=D3)
+check(hits("плевра", BOOK) == [("плевра", "pleura")], "промпт: приказ сильнее подсказки")
+check(main._glossary_entry("плевра", ("RU→EN", "medical"), 101)["tgt"] == "pleura", "поиск записи — та же")
 
 print("\n=== 10. Правила проверок у своей области — по её шаблону ===")
 check(main._rules_domain({"id": "med-2", "base": "medical"}) == "medical", "своя область → base")

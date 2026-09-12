@@ -138,7 +138,8 @@ function AdminTenants({ ov, toast, onChange }) {
    Вид записи и служебные пометки — КОДЫ, подпись даёт браузер (закон CLEAN_*). */
 function pagesKindLabel(k) {
   return k === "credit" ? TR("пополнение") : k === "repeat" ? TR("повтор файла, без списания")
-    : k === "init" ? TR("стартовый объём по проектам") : TR("списание");
+    : k === "init" ? TR("стартовый объём по проектам")
+    : k === "reimport" ? TR("новая версия файла, за добавленные строки") : TR("списание");
 }
 function pagesNoteLabel(n) { return n === "env" ? TR("стартовый лимит из окружения") : (n || ""); }
 function AdminPagesLog({ log }) {

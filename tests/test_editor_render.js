@@ -218,6 +218,8 @@ const storeStub = {
   segmentFilter: null,
   statusCounts: () => ({ all: 7, new: 1, translated: 4, qa: 0, confirmed: 1, failed: 0, review: 1 }),
   setSegmentFilter() {}, gotoSegId: null, refreshProject() {}, projects: [project],
+  /* Папки проектов: файл в настоящей папке — optgroup, файл без папки — хвост списка. */
+  folders: [{ id: 900, title: "Договор", files: [project.id] }, { id: 901, title: "Пусто", files: [] }],
   /* Устройство прогона — шаги, модели, состав и цена — показывается только
      системному администратору. Разделы ниже проверяют именно ЭТОТ вид;
      простой вид (одна кнопка) проверяется разделом 18. */

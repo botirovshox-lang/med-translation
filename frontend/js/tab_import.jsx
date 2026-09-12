@@ -161,8 +161,28 @@ function TabImport({ store, toast }) {
     });
   }, []);
   const folder = store.viewFolder != null ? (store.folders || []).find(f => f.id === store.viewFolder) : null;
-  if (folder) return React.createElement(ImpFolderView, { folder, store, toast, meta });
+  /* key — номер папки: состояние блока словарей (отмеченные, «не сохранено»)
+     иначе переехало бы из папки A в папку B при переходе без списка. */
+  if (folder) return React.createElement(ImpFolderView, { key: folder.id, folder, store, toast, meta });
   return React.createElement(ImpFolderList, { store, toast, meta });
+}
+
+/* Языки в списке: сначала частые (в том порядке, в каком их ищут глазами),
+   потом все остальные по алфавиту. Каталог — с сервера, здесь только порядок
+   показа: семьдесят языков по алфавиту прячут русский и английский в середине. */
+const IMP_POPULAR_LANGS = ["RU", "EN", "UZ", "ZH", "ES", "AR", "FR", "DE", "TR", "KK", "KO", "JA", "PT", "IT", "HI"];
+function impLangOptions(langs) {
+  const by = {};
+  (langs || []).forEach(([v, l]) => { by[v] = l; });
+  const top = IMP_POPULAR_LANGS.filter(v => by[v]).map(v => [v, by[v]]);
+  const seen = new Set(top.map(x => x[0]));
+  const rest = (langs || []).filter(([v]) => !seen.has(v));
+  const opt = ([v, l]) => React.createElement("option", { key: v, value: v }, l);
+  if (!rest.length || !top.length) return (langs || []).map(opt);
+  return [
+    React.createElement("optgroup", { key: "top", label: TR("Частые") }, top.map(opt)),
+    React.createElement("optgroup", { key: "rest", label: TR("Все языки") }, rest.map(opt)),
+  ];
 }
 
 function impDomainLabel(meta, id) {
@@ -268,8 +288,8 @@ function ImpNewFolder({ store, toast, meta, onClose }) {
     React.createElement(Field, { label: TR("Название проекта") },
       React.createElement(Input, { value: title, autoFocus: true, placeholder: TR("напр. Договор поставки"), onChange: (e) => setTitle(e.target.value) })),
     React.createElement("div", { className: "grid grid-2" },
-      React.createElement(Field, { label: TR("Язык оригинала") }, React.createElement(Select, { value: src, onChange: (e) => setSrc(e.target.value) }, opt(meta.langs))),
-      React.createElement(Field, { label: TR("Язык перевода") }, React.createElement(Select, { value: tgt, onChange: (e) => setTgt(e.target.value) }, opt(meta.langs)))),
+      React.createElement(Field, { label: TR("Язык оригинала") }, React.createElement(Select, { value: src, onChange: (e) => setSrc(e.target.value) }, impLangOptions(meta.langs))),
+      React.createElement(Field, { label: TR("Язык перевода") }, React.createElement(Select, { value: tgt, onChange: (e) => setTgt(e.target.value) }, impLangOptions(meta.langs)))),
     src === tgt && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, TR("Язык оригинала и язык перевода совпадают.")),
     React.createElement(Field, { label: TR("Тема"), hint: TR("Подсказывает переводчику-модели, о чём документ. У всех файлов проекта тема одна.") },
       React.createElement(Select, { value: domain, onChange: (e) => setDomain(e.target.value) }, opt(meta.domains))),
@@ -342,30 +362,65 @@ function ImpFolderView({ folder, store, toast, meta }) {
         React.createElement("span", { className: "dim" }, st.files.length + TR(" файлов · ") + st.total + TR(" строк · ") + st.done + TR(" подтверждено")))));
 }
 
+/* Все форматы, которые принимает импорт. Список — зеркало backend/importers.py
+   (SUPPORTED_EXT); браузер только подсказывает диалогу выбора файла, решает
+   сервер (415 с причиной). */
+const IMP_ACCEPT = ".docx,.xlsx,.pptx,.odt,.ods,.odp,.pdf,.txt,.md,.markdown,.csv,.tsv,.html,.htm,.xml,.json,.rtf,.srt,.vtt,.po,.log,.yml,.yaml,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.gif";
+
 function ImpFileCard({ project, store, toast }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
   const counts = store.statusCounts(project);
   const total = project.segments.length;
   const done = counts.confirmed;
   const pct = total ? Math.round((done / total) * 100) : 0;
   const handleDelete = () => { store.deleteProject(project.id); toast.warning(TR("Файл удалён"), project.title); };
+  /* Картинка или скан: строк нет, пока не прочитан текст с картинок (платно).
+     Кнопка ведёт на экран «Скачать» — там живёт разбор надписей со сметой
+     и ходом работы; второй такой экран заводить нельзя. */
+  const pictures = (project.importKind === "image" || project.importKind === "scan") && total === 0;
+  const undoReimport = async () => {
+    const m = project.reimport;
+    if (!m || !confirm(TR("Вернуть прежнюю версию файла «") + project.title + TR("»? Строки, добавленные новой версией, исчезнут; перевод прежних вернётся."))) return;
+    setBusy(true);
+    try {
+      let r;
+      try { r = await window.API.undoReimport(project.id, m.stamp, false); }
+      catch (e) {
+        if (e.status !== 409 || !confirm((e.message || "") + " " + TR("Откатить всё равно?"))) throw e;
+        r = await window.API.undoReimport(project.id, m.stamp, true);
+      }
+      const fresh = await window.API.getProject(project.id);
+      if (fresh) store.replaceProject(fresh);
+      toast.success(TR("Прежняя версия возвращена"), r.segments + TR(" строк"));
+    } catch (e) { toast.error(TR("Не возвращена"), e.message || String(e)); }
+    setBusy(false);
+  };
   return React.createElement(React.Fragment, null,
     React.createElement("div", { className: "card card-pad card-hover", style: { display: "flex", flexDirection: "column", gap: 12 } },
       React.createElement("div", { className: "row between", style: { alignItems: "flex-start", gap: 8 } },
         React.createElement("div", { style: { minWidth: 0, fontWeight: 600, fontSize: 15, letterSpacing: "-.2px", overflow: "hidden", textOverflow: "ellipsis" } },
-          React.createElement(Icon, { name: "file", size: 14, style: { verticalAlign: "-2px", marginRight: 6, color: "var(--c-primary)" } }), project.title),
+          React.createElement(Icon, { name: pictures ? "image" : "file", size: 14, style: { verticalAlign: "-2px", marginRight: 6, color: "var(--c-primary)" } }), project.title),
         React.createElement(IconBtn, { icon: "trash", label: TR("Удалить файл"), sm: true, onClick: (e) => { e.stopPropagation(); setConfirmDelete(true); } })),
       React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
         React.createElement(Badge, { icon: "list" }, total + " " + impPlural(total, TR("строка"), TR("строки"), TR("строк"))),
-        project.sourceDocx && React.createElement(Badge, { icon: "checkCircle" }, TR("вернём в том же виде"))),
-      React.createElement("div", null,
-        React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
-          React.createElement("span", { className: "muted" }, TR("Готово")),
-          React.createElement("span", { style: { fontWeight: 600 } }, pct + "%")),
-        React.createElement(ProgressBar, { value: pct })),
-      React.createElement("div", { className: "row", style: { gap: 8 } },
-        React.createElement(Btn, { variant: "primary", size: "sm", icon: "edit", onClick: () => store.openProject(project.id) }, TR("Переводить")),
-        React.createElement(Btn, { variant: "ghost", size: "sm", icon: "download", onClick: () => { store.openProject(project.id); store.go("export"); } }, TR("Скачать")))),
+        project.sourceDocx && !project.importKind && React.createElement(Badge, { icon: "checkCircle" }, TR("вернём в том же виде")),
+        project.importKind && project.importKind !== "docx" && React.createElement(Badge, { icon: "file" }, TR("вернём как Word")),
+        project.reimport && React.createElement(Badge, { icon: "repeat" }, TR("обновлён ") + project.reimport.at)),
+      project.importNote && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TRS(project.importNote)),
+      pictures
+        ? React.createElement("div", { className: "dim", style: { fontSize: 13 } }, TR("Текст на картинках ещё не прочитан."))
+        : React.createElement("div", null,
+            React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
+              React.createElement("span", { className: "muted" }, TR("Готово")),
+              React.createElement("span", { style: { fontWeight: 600 } }, pct + "%")),
+            React.createElement(ProgressBar, { value: pct })),
+      React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
+        pictures
+          ? React.createElement(Btn, { variant: "primary", size: "sm", icon: "image", onClick: () => { store.openProject(project.id); store.go("export"); } }, TR("Прочитать текст с картинок"))
+          : React.createElement(Btn, { variant: "primary", size: "sm", icon: "edit", onClick: () => store.openProject(project.id) }, TR("Переводить")),
+        React.createElement(Btn, { variant: "ghost", size: "sm", icon: "download", onClick: () => { store.openProject(project.id); store.go("export"); } }, TR("Скачать")),
+        project.reimport && React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", disabled: busy, onClick: undoReimport }, TR("Вернуть прежнюю версию")))),
     confirmDelete && React.createElement(Modal, {
       title: TR("Удалить файл?"), icon: "trash", onClose: () => setConfirmDelete(false),
       footer: React.createElement(React.Fragment, null,
@@ -377,15 +432,39 @@ function ImpFileCard({ project, store, toast }) {
         React.createElement("span", { className: "dim" }, total + TR(" строк · ") + done + TR(" подтверждено")))));
 }
 
-/* Добавить файл в проект: пара и тема берутся у проекта. */
+/* Добавить файл в проект: пара и тема берутся у проекта.
+   Сначала ПРОБА (сервер, бесплатно): тот же файл уже есть? похож на новую
+   версию файла проекта? Тогда человек выбирает — обновить прежний файл
+   (перевод неизменившихся строк остаётся) или положить новым. */
 function ImpAddFile({ folder, store, toast }) {
   const [dragging, setDragging] = useState(false);
   const [file, setFile] = useState(null);
   const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
+  const [probe, setProbe] = useState(null);      // ответ /api/projects/probe
+  const [probing, setProbing] = useState(false);
   const fileRef = useRef(null);
-  const pickFile = (f) => { if (!f) return; setFile({ name: f.name, size: (f.size / 1024).toFixed(0) + TR(" КБ"), raw: f }); if (!title) setTitle(f.name.replace(/\.[^.]+$/, "")); };
+  const probeSeq = useRef(0);
+  /* Номер запроса: выбрал файл A, сразу B — ответ A может прийти позже
+     и лечь на B. Устаревший ответ выбрасывается. */
+  const runProbe = async (raw) => {
+    const seq = ++probeSeq.current;
+    setProbing(true); setProbe(null);
+    let res;
+    try { res = await window.API.probeUpload(raw, folder.id); }
+    catch (e) { res = { error: e.message || String(e) }; }
+    if (seq !== probeSeq.current) return;
+    setProbe(res);
+    setProbing(false);
+  };
+  const pickFile = (f) => {
+    if (!f) return;
+    setFile({ name: f.name, size: (f.size / 1024).toFixed(0) + TR(" КБ"), raw: f });
+    if (!title) setTitle(f.name.replace(/\.[^.]+$/, ""));
+    runProbe(f);
+  };
   const onDrop = (e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) pickFile(f); };
+  const reset = () => { setFile(null); setTitle(""); setProbe(null); };
   const create = async () => {
     if (!file || !file.raw) { toast.error(TR("Файл не выбран"), TR("Выберите файл")); return; }
     setBusy(true);
@@ -395,12 +474,36 @@ function ImpAddFile({ folder, store, toast }) {
       store.addProject(project);
       /* Виртуальная папка после второго файла стала настоящей записью. */
       store.patchFolder(folder.id, { virtual: false });
-      setFile(null); setTitle("");
-      toast.success(TR("Файл добавлен"), project.segments.length + TR(" строк готовы к переводу."));
+      reset();
+      toast.success(TR("Файл добавлен"), project.segments.length + TR(" строк готовы к переводу.")
+        + (project.importNote ? " " + project.importNote : ""));
       store.openProject(project.id);
     } catch (e) { toast.error(TR("Файл не добавлен"), e.message || TR("Не удалось разобрать файл")); }
     setBusy(false);
   };
+  const update = async (target) => {
+    if (!file || !file.raw) return;
+    /* Заверенное человеком и распознанное на картинках уходит в копию —
+       это названо числом ДО записи, а не после. */
+    const warn = [];
+    if (target.removedConfirmed) warn.push(TR("исчезнет заверённых человеком строк: ") + target.removedConfirmed);
+    if (target.images) warn.push(TR("строки с картинок придётся прочитать заново: ") + target.images);
+    if (warn.length && !confirm(TR("Обновить файл «") + target.title + "»? " + warn.join("; ") + ". "
+        + TR("Прежняя версия сохранится, вернуть можно с карточки файла."))) return;
+    setBusy(true);
+    try {
+      const r = await window.API.reimport(target.id, file.raw, false);
+      const fresh = await window.API.getProject(target.id);
+      if (fresh) store.replaceProject(fresh);
+      reset();
+      toast.success(TR("Файл обновлён"), TR("Осталось ") + (r.kept + r.moved) + TR(" строк, новых ") + r.added
+        + TR(", исчезло ") + r.removed + TR(". Прежняя версия сохранена — вернуть можно с карточки файла."));
+      store.openProject(target.id);
+    } catch (e) { toast.error(TR("Файл не обновлён"), e.message || String(e)); }
+    setBusy(false);
+  };
+  const exact = probe && probe.exact && probe.exact[0];
+  const similar = probe && probe.similar && probe.similar[0];
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
     React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Добавить файл")),
     React.createElement("div", {
@@ -408,7 +511,7 @@ function ImpAddFile({ folder, store, toast }) {
       onDragOver: (e) => { e.preventDefault(); setDragging(true); }, onDragLeave: () => setDragging(false), onDrop,
       onClick: () => fileRef.current && fileRef.current.click(), role: "button", tabIndex: 0,
       onKeyDown: (e) => { if (e.key === "Enter") fileRef.current.click(); } },
-      React.createElement("input", { ref: fileRef, type: "file", accept: ".docx", hidden: true, onChange: (e) => pickFile(e.target.files[0]) }),
+      React.createElement("input", { ref: fileRef, type: "file", accept: IMP_ACCEPT, hidden: true, onChange: (e) => pickFile(e.target.files[0]) }),
       file
         ? React.createElement("div", null,
             React.createElement(Icon, { name: "file", size: 28, className: "dz-ic", style: { color: "var(--c-success)" } }),
@@ -416,12 +519,28 @@ function ImpAddFile({ folder, store, toast }) {
             React.createElement("div", { className: "dim", style: { marginTop: 2, fontSize: 12 } }, file.size + TR(" · нажмите, чтобы заменить")))
         : React.createElement("div", null,
             React.createElement(Icon, { name: "upload", size: 28, className: "dz-ic" }),
-            React.createElement("div", { style: { fontWeight: 500, fontSize: 14 } }, TR("Перетащите файл Word сюда")),
-            React.createElement("div", { className: "dim", style: { marginTop: 2, fontSize: 12 } }, TR("или нажмите, чтобы выбрать")))),
-    file && React.createElement(Input, { value: title, placeholder: TR("Название файла"), onChange: (e) => setTitle(e.target.value) }),
-    React.createElement(Btn, { variant: "primary", icon: busy ? null : "plus", disabled: !file || busy, onClick: create },
+            React.createElement("div", { style: { fontWeight: 500, fontSize: 14 } }, TR("Перетащите файл сюда")),
+            React.createElement("div", { className: "dim", style: { marginTop: 2, fontSize: 12 } }, TR("Word, Excel, PowerPoint, PDF, HTML, текст или картинка")))),
+    probing && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TR("Смотрим, что за файл…")),
+    probe && probe.error && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, probe.error),
+    exact && React.createElement("div", { className: "card card-pad-sm", style: { background: "var(--bg-sunken)", fontSize: 13 } },
+      TR("Этот файл уже есть в проекте: «") + exact.title + TR("». Второй раз он не нужен."),
+      React.createElement("div", { className: "row", style: { gap: 8, marginTop: 8 } },
+        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "edit", onClick: () => store.openProject(exact.id) }, TR("Открыть его")),
+        React.createElement(Btn, { variant: "ghost", size: "sm", onClick: reset }, TR("Выбрать другой файл")))),
+    !exact && similar && React.createElement("div", { className: "card card-pad-sm", style: { background: "var(--bg-sunken)", fontSize: 13 } },
+      TR("Похоже на новую версию файла «") + similar.title + TR("»: совпало ") + similar.matched + TR(" из ") + similar.total
+        + TR(" строк, новых ") + similar.added + TR(", исчезнет ") + similar.removed + ".",
+      React.createElement("div", { className: "row", style: { gap: 8, marginTop: 8, flexWrap: "wrap" } },
+        React.createElement(Btn, { variant: "primary", size: "sm", icon: "repeat", disabled: busy, onClick: () => update(similar) }, TR("Обновить «") + similar.title + "»"),
+        React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy, onClick: create }, TR("Добавить как новый файл")))),
+    /* Пометка сервера о формате — русская фраза нашего кода: переводится
+       подстановкой TRS() из серверной таблицы, как все detail. */
+    probe && !probe.error && probe.note && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TRS(probe.note)),
+    file && !exact && React.createElement(Input, { value: title, placeholder: TR("Название файла"), onChange: (e) => setTitle(e.target.value) }),
+    !exact && !similar && React.createElement(Btn, { variant: "primary", icon: busy ? null : "plus", disabled: !file || busy || probing, onClick: create },
       busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), TR("Загружаем…")) : TR("Добавить в проект")),
-    file && React.createElement(ImpQuote, { file, src: folder.src, tgt: folder.tgt, toast }));
+    file && !exact && React.createElement(ImpQuote, { file, src: folder.src, tgt: folder.tgt, toast }));
 }
 
 /* Словари проекта: какие подключены и куда пишутся новые слова.
@@ -432,6 +551,11 @@ function ImpFolderDicts({ folder, store, toast }) {
   const [picked, setPicked] = useState(current === null ? all.map(d => d.id) : current);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
+  /* Список словарей организации приезжает позже первого кадра, а папка
+     может смениться: отмеченные пересчитываются по папке и по списку. */
+  useEffect(() => {
+    if (!dirty) setPicked(current === null ? all.map(d => d.id) : current);
+  }, [folder.id, all.length, current === null ? "all" : current.join(",")]);
   const pair = folder.src + "→" + folder.tgt;
   const toggle = (id) => { setPicked(p => p.indexOf(id) >= 0 ? p.filter(x => x !== id) : p.concat([id])); setDirty(true); };
   const moveUp = (id) => { setPicked(p => { const i = p.indexOf(id); if (i <= 0) return p; const q = p.slice(); q.splice(i, 1); q.splice(i - 1, 0, id); return q; }); setDirty(true); };

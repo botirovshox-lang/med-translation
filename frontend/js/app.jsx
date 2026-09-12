@@ -193,6 +193,10 @@ function useStore(authed) {
   const openProject = (id) => { setActiveId(id); setTab("editor"); };
   const replaceProjectSegments = (pid, segments) =>
     setProjects(ps => ps.map(p => p.id !== pid ? p : { ...p, segments }));
+  /* Файл целиком с сервера — после замены его новой версией: меняются
+     и сегменты, и объём, и отметка исходника. */
+  const replaceProject = (project) =>
+    setProjects(ps => ps.some(p => p.id === project.id) ? ps.map(p => p.id !== project.id ? p : project) : [project, ...ps]);
   const deleteProject = (id) => {
     setProjects(ps => ps.filter(p => p.id !== id));
     setFolders(fs => fs.map(f => (f.files || []).indexOf(id) < 0 ? f : { ...f, files: f.files.filter(x => x !== id) })
@@ -233,7 +237,7 @@ function useStore(authed) {
     addFolder, patchFolder, removeFolder,
     exportHistory, team: [], me, can, brand, apiReady, setGlossary,
     segmentFilter, gotoSegId,
-    go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, patchProject, openProject, deleteProject, replaceProjectSegments, saveTerm, deleteTerm, deleteTM,
+    go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, patchProject, openProject, deleteProject, replaceProjectSegments, replaceProject, saveTerm, deleteTerm, deleteTM,
     setExportHistory,
     setSegmentFilter: (ids) => {
       const f = ids && ids.length ? new Set(ids) : null;

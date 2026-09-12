@@ -5,7 +5,7 @@ pydantic>=2.0.0
 python-multipart>=0.0.6
 
 # Optional: import existing modules if available (not required)
-# python-docx>=0.8.11
+python-docx>=1.1   # импорт и экспорт .docx: без него upload_project отвечает 500
 # openai>=1.0.0
 # google-cloud-translate>=3.8.0
 

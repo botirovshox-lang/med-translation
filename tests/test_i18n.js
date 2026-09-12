@@ -99,7 +99,7 @@ console.log("=== 2b. Сообщения сервера ===");
 /* checks.py здесь ОБЯЗАН быть: причины балла back-check и вердикт
    судьи пишутся там, и без него проверка молчала бы ровно про те
    объяснения, которые человек читает чаще всего. */
-const backend = ["backend/main.py", "backend/checks.py",
+const backend = ["backend/main.py", "backend/checks.py", "backend/importers.py",
                  "backend/textcount.py", "backend/store.py"]
   .filter(f => fs.existsSync(f))
   .map(f => fs.readFileSync(f, "utf8")).join("\n")

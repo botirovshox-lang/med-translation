@@ -201,6 +201,32 @@
     createDict:    (body)                   => call("POST",   "/dicts", body),
     updateDict:    (did, body)              => call("POST",   `/dicts/${encodeURIComponent(did)}`, body),
     deleteDict:    (did)                    => call("DELETE", `/dicts/${encodeURIComponent(did)}`),
+    /* Проба файла: тот же уже есть? похож на новую версию файла проекта?
+       Ничего не пишет и денег не стоит. */
+    probeUpload: async (file, folder) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      if (folder != null) fd.append("folder", String(folder));
+      const r = await fetch((window.API_BASE || "") + "/api/projects/probe",
+                            { method: "POST", body: fd, headers: authHeaders({}) });
+      if (r.status === 401) onUnauthorized();
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { const d = data.detail || data.error || ""; const e = new Error(typeof d === "string" && d ? TRS(d) : "Probe failed: " + r.status); e.status = r.status; throw e; }
+      return data;
+    },
+    /* Заменить файл его новой версией: перевод неизменившихся строк остаётся. */
+    reimport: async (pid, file, dryRun) => {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("dry_run", dryRun ? "true" : "false");
+      const r = await fetch((window.API_BASE || "") + "/api/projects/" + pid + "/reimport",
+                            { method: "POST", body: fd, headers: authHeaders({}) });
+      if (r.status === 401) onUnauthorized();
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) { const d = data.detail || data.error || ""; const e = new Error(typeof d === "string" && d ? TRS(d) : "Reimport failed: " + r.status); e.status = r.status; throw e; }
+      return data;
+    },
+    undoReimport:  (pid, stamp, force)      => call("POST", `/projects/${pid}/reimport/${stamp}/undo` + (force ? "?force=true" : ""), {}),
     /* `folder` — папка, в которую кладётся файл: он наследует её пару
        и область. Без папки файл сам себе папка. */
     uploadProject: async (file, title, src, tgt, domain, folder) => {

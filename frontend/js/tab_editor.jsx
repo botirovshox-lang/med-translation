@@ -2334,13 +2334,22 @@ function TabEditor({ store, toast }) {
           /* Файлы — по проектам (папкам): одинаковые названия глав в разных
              проектах иначе неразличимы. Файл без папки — сам себе проект. */
           React.createElement(Select, { value: project.id, onChange: (e) => store.openProject(Number(e.target.value)), style: { width: "auto", minWidth: 280, fontWeight: 500 } },
-            (store.folders && store.folders.length ? store.folders : [{ id: 0, title: "", files: store.projects.map(p => p.id), virtual: true }])
-              .map(f => {
+            (() => {
+              const folders = store.folders || [];
+              const opt = (p) => React.createElement("option", { key: p.id, value: p.id }, "#" + p.id + " — " + p.title);
+              const seen = new Set();
+              const groups = folders.map(f => {
                 const files = (f.files || []).map(id => store.projects.find(p => p.id === id)).filter(Boolean);
+                files.forEach(p => seen.add(p.id));
                 if (!files.length) return null;
-                const opts = files.map(p => React.createElement("option", { key: p.id, value: p.id }, "#" + p.id + " — " + p.title));
-                return f.virtual ? opts : React.createElement("optgroup", { key: "f" + f.id, label: f.title }, opts);
-              })),
+                return f.virtual ? files.map(opt) : React.createElement("optgroup", { key: "f" + f.id, label: f.title }, files.map(opt));
+              });
+              /* Файлы, которых нет ни в одной папке (сервер о них ещё не знает,
+                 папка потерялась) — хвостом: пропавший из списка файл выглядит
+                 удалённым. */
+              const loose = store.projects.filter(p => !seen.has(p.id)).map(opt);
+              return groups.concat(loose);
+            })()),
           React.createElement(LangPair, { src: project.src, tgt: project.tgt })
         ),
         React.createElement("div", { className: "row", style: { gap: 8 } },

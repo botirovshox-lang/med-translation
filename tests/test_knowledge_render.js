@@ -142,11 +142,31 @@ const inGrid = grids[0] ? grids[0].children : [];
 check(inGrid.length === 2 && inGrid.every(n => cls(n).split(" ").includes("card")),
   "внутри сетки ровно две карточки");
 const gridText = texts(grids[0]).join(" | ");
-// Перевод кандидата лежит в поле ввода (value), текстом виден только оригинал.
+// В режиме просмотра и оригинал, и перевод видны текстом (см. 2a).
 check(gridText.includes("каверна 1") && gridText.includes("каверна 2"), "карточки — те самые кандидаты");
 const qt = texts(q).join(" | ");
 check(qt.includes("Показать ещё"), "«Показать ещё» есть при total > items");
 check(!gridText.includes("Показать ещё"), "«Показать ещё» стоит СНАРУЖИ сетки");
+
+/* 2a. Карточка с готовым переводом: две кнопки, поле правки скрыто */
+console.log("\n[2a] карточка с переводом отвечается двумя кнопками");
+check(gridText.includes("Верно") && gridText.includes("Не то") && !gridText.includes("В глоссарий"),
+  "в режиме просмотра — «Верно» и «Не то», без «В глоссарий»");
+check(gridText.includes("cavity 1"), "перевод виден текстом, а не в поле");
+const inputs = (n) => find(n, x => x.type === "input" && cls(x) === "input");
+check(inputs(grids[0]).length === 0, "поля ввода в режиме просмотра нет");
+// «Не то» переводит карточку в режим правки: поле и прежние кнопки.
+// editing — ПОСЛЕДНИЙ хук TermQueue (индекс 12): хук, добавленный раньше него, сдвинул бы этот индекс.
+hooks[12] = { 1: true };
+hookIdx = 0;
+const q2 = TermQueue({ store, toast, version: 0 });
+const cards2 = find(q2, n => cls(n) === "kb-cands")[0].children;
+const t2 = texts(cards2[0]).join(" | ");
+check(t2.includes("В глоссарий") && t2.includes("Отклонить") && !t2.includes("Верно"),
+  "после «Не то» — «В глоссарий» / «Отклонить» и поле ввода");
+check(inputs(cards2[0]).length === 1, "поле ввода открыто");
+check(texts(cards2[1]).join(" | ").includes("Верно"), "соседняя карточка осталась в режиме просмотра");
+hooks[12] = {};
 
 hooks = []; hookIdx = 0;
 // Ноль показанных при total > 0: так выглядит страница после отклонения

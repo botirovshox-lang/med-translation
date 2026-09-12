@@ -260,7 +260,6 @@
   "область: ": "soha: ",
   "обратно: ": "orqaga: ",
   "перевод": "tarjima",
-  "по частоте · одобрено: ": "chastota bo'yicha · ma'qullandi: ",
   "подсказка": "maslahat",
   "подсказкой: ": "maslahat sifatida: ",
   "показаны ": "ko'rsatildi ",
@@ -310,5 +309,12 @@
   "Словарь книги": "Kitob lug‘ati",
   "Слова, которые встречаются много раз. Я хочу писать их всегда одинаково — скажите, правильно ли я их поняла.": "Ko‘p uchraydigan so‘zlar. Ularni doim bir xil yozmoqchiman — to‘g‘ri tushunganimni ayting.",
   "Целые фразы, которые я запомнила": "Eslab qolgan butun jumlalarim",
-  "Встретится такая же фраза — переведу мгновенно и бесплатно.": "Xuddi shunday jumla uchrasa — darhol va bepul tarjima qilaman."
+  "Встретится такая же фраза — переведу мгновенно и бесплатно.": "Xuddi shunday jumla uchrasa — darhol va bepul tarjima qilaman.",
+  "затронет строк: ": "qatorlarga ta'sir qiladi: ",
+  "Верно": "To'g'ri",
+  "Откроется поле: впишите верный перевод или отклоните кандидата": "Maydon ochiladi: to'g'ri tarjimani yozing yoki nomzodni rad eting",
+  "Не то": "Unday emas",
+  "по охвату": "qamrov bo'yicha",
+  "по частоте": "chastota bo'yicha",
+  " · одобрено: ": " · ma'qullandi: "
 }

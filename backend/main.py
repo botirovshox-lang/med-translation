@@ -8261,7 +8261,13 @@ def _tgt_has_term(target: str, term: str) -> bool:
     """Есть ли глоссарный перевод в готовом переводе. Терпимо к числу и
     артиклям: сверяем по началам слов, иначе «lymph nodes» не найдёт
     «lymph node» и очередь захлебнётся ложными конфликтами."""
-    tn, mn = _norm_key(target), _norm_key(term)
+    return _tgt_norm_has(_norm_key(target), term)
+
+
+def _tgt_norm_has(tn: str, term: str) -> bool:
+    """То же по УЖЕ нормализованному переводу: проход по сегментам сверяет
+    один target с десятками кандидатов, нормализовать его каждый раз незачем."""
+    mn = _norm_key(term)
     if not mn:
         return True
     if mn in tn:
@@ -8585,10 +8591,71 @@ def propagate_segment(pid: int, sid: int, req: PropagateRequest = PropagateReque
 
 
 # ─── Очередь кандидатов в глоссарий ──────────────────────────────────
+_CAND_IMPACT_CACHE: dict = {}       # pid → (отпечаток, {cid: строк})
+
+
+def _cand_impacts(project: dict, cands: list) -> dict:
+    """Охват кандидата — сколько строк проекта приведёт в порядок ответ на него:
+    термин в оригинале есть, а этого перевода в переводе нет (у конфликта
+    перевода ещё нет — считаются все строки с термином). Заверенные человеком
+    не считаются: без разрешения их не трогают ни рассылка, ни ремонт
+    (инвариант 9), и обещать «починит» про них нельзя.
+    По этому числу очередь и сортируется: «встречалось 27 раз» — про частоту,
+    а слово может стоять 27 раз в одном абзаце, тогда как редкое, поправленное
+    записью, приведёт в порядок сотню строк по всей книге.
+    Проход ПО СЕГМЕНТАМ через индекс по первому слову — как `_used_term_ids`:
+    поштучно это сотни карточек × тысячи сегментов регулярками на единственном
+    воркере. Кэш — по содержимому сегментов и списку пар, БЕЗ поколения
+    глоссария: его бампит каждое одобрение, и очередь пересчитывалась бы
+    целиком на каждый клик в ней же."""
+    pid = project.get("id")
+    body = chr(10).join(str(s.get("id")) + "|" + (s.get("status") or "") + "|"
+                        + (s.get("source") or "") + "|" + (s.get("target") or "")
+                        for s in project.get("segments", ()))
+    pairs = json.dumps([(c.get("id"), c.get("src"), c.get("tgt")) for c in cands],
+                       ensure_ascii=False)
+    fp = hashlib.sha1((body + chr(10) + "#" + pairs).encode("utf-8")).hexdigest()
+    cached = _CAND_IMPACT_CACHE.get(pid)
+    if cached and cached[0] == fp:
+        return cached[1]
+    idx: dict = {}
+    for c in cands:
+        for k in _entry_keys(c.get("src") or ""):
+            idx.setdefault(k, []).append(c)
+    out = {c.get("id"): 0 for c in cands}
+    for seg in project.get("segments", ()):
+        text = seg.get("source") or ""
+        if not text or not idx or seg.get("status") == "confirmed":
+            continue
+        target = seg.get("target") or ""
+        tn = None                       # нормализуется один раз и лениво
+        seen: set = set()
+        for k in _text_keys(text):
+            for c in idx.get(k, ()):
+                if c.get("id") in seen:
+                    continue
+                seen.add(c.get("id"))
+                if not _term_match(c["src"], text, _src_lang(c)):
+                    continue
+                tgt = (c.get("tgt") or "").strip()
+                if tgt:
+                    if not target:
+                        continue
+                    if tn is None:
+                        tn = _norm_key(target)
+                    if _tgt_norm_has(tn, tgt):
+                        continue
+                out[c.get("id")] += 1
+    _CAND_IMPACT_CACHE[pid] = (fp, out)
+    return out
+
+
 @app.get("/api/term-queue")
 def list_term_queue(status: str = "pending", limit: int = 200, offset: int = 0,
                     project: Optional[int] = None):
-    """Кандидаты, отсортированные по частоте: сверху то, что мешает чаще всего.
+    """Кандидаты, отсортированные по ОХВАТУ (`_cand_impacts`), затем по частоте:
+    сверху то, чей ответ приведёт в порядок больше строк. Без проекта охват
+    не считается — порядок по частоте.
 
     Вместе с карточками отдаём РАЗБОР: почему автоматика не берёт каждую и
     сколько таких же. Без него очередь на четыреста штук — стена одинаковых
@@ -8601,17 +8668,20 @@ def list_term_queue(status: str = "pending", limit: int = 200, offset: int = 0,
         counts[st] = counts.get(st, 0) + 1
     if status and status != "all":
         items = [c for c in items if c.get("status", "pending") == status]
-    items = sorted(items, key=lambda c: (-c.get("hits", 1), -c.get("id", 0)))
 
-    groups, reason_of = [], {}
-    if project:
+    groups, reason_of, impacts = [], {}, {}
+    project_obj = get_project(project) if project else None
+    if project_obj:
         # Область применяем ко ВСЕМУ ответу, а не только к разбору: иначе
         # значок показывает одно число, сумма групп другое, а карточки чужой
         # языковой пары висят без причины и пропадают под любым фильтром.
-        scope = _project_scope(get_project(project))
+        scope = _project_scope(project_obj)
         items = [c for c in items if _scope_of(c) == scope]
-    if status == "pending" and items and project:
-        project_obj = get_project(project)
+        impacts = _cand_impacts(project_obj,
+                                [c for c in items if c.get("status", "pending") == "pending"])
+    items = sorted(items, key=lambda c: (-(impacts.get(c.get("id")) or 0),
+                                         -c.get("hits", 1), -c.get("id", 0)))
+    if status == "pending" and items and project_obj:
         pol = _auto_policy(project_obj.get("domain"))
         ctx = _auto_context(items, pol)
         ctx["corpus"] = {}          # без сети: это список, а не прогон
@@ -8640,7 +8710,8 @@ def list_term_queue(status: str = "pending", limit: int = 200, offset: int = 0,
     out = items[offset:offset + limit]
     return {"total": len(items), "counts": counts,
             "groups": groups,
-            "items": [{**c, "why": reason_of.get(c["id"])} for c in out]}
+            "items": [{**c, "why": reason_of.get(c["id"]),
+                       "impact": impacts.get(c.get("id"))} for c in out]}
 
 
 class BulkDecision(BaseModel):

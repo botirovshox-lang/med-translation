@@ -523,6 +523,16 @@ function TabEditor({ store, toast }) {
   const [impactBusy, setImpactBusy] = useState(false);
   const [impactConfirmed, setImpactConfirmed] = useState(false);  // трогать ли подтверждённые
   const [tkSum, setTkSum] = useState(null);       // корзины «под ключ» с сервера (/analysis) для карточки «Анализ»
+  /* Те же корзины — для слова в колонке «Что тут» у каждой строки. Set, а не
+     includes: 2700 строк на рендер. Нет ответа — индекса нет, и чип пуст. */
+  // Номер запроса: ответы приходят не по порядку, и поздний СТАРЫЙ затирал бы
+  // свежий — слово в строке показывало бы состояние до правки.
+  const tkReq = useRef(0), impReq = useRef(0);
+  const tkIndex = useMemo(() => {
+    const t = tkSum && tkSum.turnkey;
+    const S = (a) => new Set(a || []);
+    return t ? { ready: S(t.ready), machine: S(t.machine), human: S(t.human) } : null;
+  }, [tkSum]);
   const [bcJudge, setBcJudge] = useState(false);          // LLM-судья для средней зоны
   /* Кому показывать устройство прогона. Признак читается в двух местах —
      в панели и при запуске, — поэтому живёт одной переменной: разойдись они,
@@ -750,8 +760,10 @@ function TabEditor({ store, toast }) {
     if (!window.API || !window.API.glossaryImpact || !project) return;
     setImpactBusy(true);
     const before = impact ? impact.segments.length : null;
+    const my = ++impReq.current;
     const res = await window.API.safeCall(() => window.API.glossaryImpact(project.id, !!byHand));
     setImpactBusy(false);
+    if (my !== impReq.current) return;      // ответ отстал от более позднего запроса
     if (!res || !res.ok) {
       if (byHand) toast.error(TR("Пересчёт не выполнен"), TR("Сервер не ответил."));
       return;
@@ -794,9 +806,12 @@ function TabEditor({ store, toast }) {
     const started = project.segments.some(s => (s.status || "new") !== "new");
     if (!started && !afterRun) return;
     const pid = project.id;
+    const my = ++tkReq.current;
     const res = await window.API.safeCall(() => window.API.analysis(pid));
-    // Сверка id — как у loadAutoPreview: ответ мог доехать после смены проекта.
-    if (res && res.ok && res.turnkey && store.activeProject && store.activeProject.id === pid) {
+    // Сверка id — как у loadAutoPreview: ответ мог доехать после смены проекта;
+    // сверка номера — отставший ответ не ложится поверх свежего.
+    if (res && res.ok && res.turnkey && my === tkReq.current
+        && store.activeProject && store.activeProject.id === pid) {
       setTkSum(res);
     }
   };
@@ -811,6 +826,11 @@ function TabEditor({ store, toast }) {
      Соответствие глоссарию тянем тем же движением: подтверждение меняет
      в нём срез «из них подтверждённых». */
   const refreshAfterHand = () => { loadAnalysis(true); loadImpact(); };
+  /* Только корзины — для одиночных действий над сегментом (перевод, проверки,
+     правки из карточки). /analysis пересчитывает лишь изменившееся, а
+     /glossary-impact — полный проход по проекту: десять переводов строк
+     подряд не должны стоить десяти проходов на единственном воркере. */
+  const refreshBuckets = () => loadAnalysis(true);
 
   // Один эффект на оба: разрешение выводится из id проекта (см. ordersFor),
   // поэтому лишнего прохода при смене проекта не будет. Цифра на кнопке
@@ -1154,11 +1174,13 @@ function TabEditor({ store, toast }) {
       result = await window.API.safeCall(() => window.API.translate(project.id, seg.id, force, gptModel));
     }
     if (result && result.segment) {
-      store.updateSegment(project.id, seg.id, {
+      // Перезапрос корзин — ПОСЛЕ записи на сервер (updateSegment возвращает
+      // промис): слово в строке считается по ним.
+      Promise.resolve(store.updateSegment(project.id, seg.id, {
         target: result.segment.target,
         status: result.segment.status,
         route: result.segment.route,
-      });
+      })).then(refreshBuckets);
       const label = gptModelInfo ? gptModelInfo.label : TR("модель");
       const src = result.source === "TM" ? TR(" (из TM)") : result.usedRealApi ? "" : TR(" (демо)");
       toast.success(TR("Сегмент переведён"), label + TR(" · сегмент #") + seg.id + src);
@@ -1178,7 +1200,8 @@ function TabEditor({ store, toast }) {
       result = await window.API.safeCall(() => window.API.qa(project.id, seg.id));
     }
     if (result && result.segment) {
-      store.updateSegment(project.id, seg.id, { status: result.segment.status, qa: result.segment.qa });
+      Promise.resolve(store.updateSegment(project.id, seg.id, { status: result.segment.status, qa: result.segment.qa }))
+        .then(refreshBuckets);
       const n = (result.issues || []).length;
       if (n === 0) toast.info(TR("Проверка QA завершена"), TR("Сегмент #") + seg.id + TR(" — замечаний не найдено."));
       else toast.warning("QA: " + n + TR(" замечан."), TR("Сегмент #") + seg.id);
@@ -1201,7 +1224,7 @@ function TabEditor({ store, toast }) {
       result = await window.API.safeCall(() => window.API.runChecks(project.id, seg.id));
     }
     if (result && result.segment) {
-      store.updateSegment(project.id, seg.id, {
+      Promise.resolve(store.updateSegment(project.id, seg.id, {
         status: result.segment.status,
         qa: result.segment.qa || [],
         qa_result: result.segment.qa_result,
@@ -1212,7 +1235,7 @@ function TabEditor({ store, toast }) {
         risk: result.segment.risk,
         backtranslated_ru: result.segment.backtranslated_ru,
         engine_qa: result.segment.engine_qa,
-      });
+      })).then(refreshBuckets);
       const qa = result.qa_result || result.segment.qa_result || {};
       const color = qa.risk_color || result.segment.risk_color || "green";
       const score = qa.risk_score != null ? qa.risk_score : result.segment.risk_score;
@@ -2552,15 +2575,14 @@ function TabEditor({ store, toast }) {
                 React.createElement("th", { className: "col-id" }, "№"),
                 React.createElement("th", null, TR("Как было · ") + (project.src || "")),
                 React.createElement("th", null, TR("Как стало · ") + (project.tgt || "")),
-                React.createElement("th", { style: { width: 132 } }, TR("Что тут")),
-                React.createElement("th", { style: { width: 76 },
-                  title: TR("Ремонт, находки по терминам, back-check") }, TR("Проверки")),
+                React.createElement("th", { style: { width: 118 } }, TR("Что тут")),
                 React.createElement("th", { style: { width: 56 } }, "")
               )),
               React.createElement("tbody", null,
                 paged.map(s => React.createElement(SegRow, {
                   key: s.id, seg: s, selected: s.id === selId, busy: busy[s.id],
                   checked: checkedSegs.has(s.id), models: gptModels,
+                  chip: ROW_CHIP[rowChipCode(s, tkIndex)],
                   hlSrc: scope !== "tgt" ? query : "", hlTgt: scope !== "src" ? query : "",
                   onCheck: (e) => { e.stopPropagation(); setCheckedSegs(prev => { const n = new Set(prev); n.has(s.id) ? n.delete(s.id) : n.add(s.id); return n; }); },
                   onSelect: () => setSelId(s.id),
@@ -2588,6 +2610,10 @@ function TabEditor({ store, toast }) {
         selected
           ? React.createElement(SegDetail, { key: selected.id, seg: selected, project, store, toast, busy: busy[selected.id],
               onTranslate: () => doTranslate(selected, true), onQA: () => doQA(selected), onChecks: () => doChecks(selected), onConfirm: (draftTarget) => doConfirm(selected, draftTarget),
+              // Любая правка сегмента из карточки меняет корзины, а по ним —
+              // слово в строке таблицы и карточка «Анализ»: перезапрос тот же,
+              // что после заверения.
+              onChanged: refreshBuckets,
               bcModels: gptModels, bcModel: bcModel, onBcModel: pickBcModel,
               bcJudge: bcJudge, judgeModel: judgeModel,
               tcModel: tcModel, rpModel: rpModel, tcActionable: tcActionable })
@@ -3342,7 +3368,36 @@ function EditorAnalysisCard({ sum, onDrill, onOpen }) {
         TR("Открыть «Анализ»"))));
 }
 
-function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, onConfirm, onRevert, models, hlSrc, hlTgt }) {
+/* Слово в колонке «Что тут». Код строки выводится из корзин /analysis
+   (`tkIndex` в TabEditor): их считает СЕРВЕР теми же предикатами, что и
+   прогон, — таблица и экран «Что получилось» не могут разойтись. Браузер
+   ничего не выводит сам: сегмент, которого нет ни в одной корзине (ответ
+   ещё не пришёл или устарел), остаётся без слова — «хорошо» по умолчанию
+   было бы самой лестной и самой опасной ошибкой. Чипы «ремонт», «термин: N»,
+   «ревизия», процент back-check из строки ушли: всё это показывает карточка
+   сегмента, а таблице нужен один ответ на вопрос «что с этой строкой».
+   Сменить словарь (например, на оценку «плохо / хорошо / отлично») — поменять
+   только эту таблицу: [класс badge, слово, подсказка]. */
+const ROW_CHIP = {
+  new:  ["new",        TR("ещё не перевела"), TR("Перевода ещё нет — кнопка справа переведёт эту строку.")],
+  ask:  ["review",     TR("спрошу"),          TR("Нужно ваше решение: находка, которую машина сама не закроет. Откройте строку — карточка скажет, что именно.")],
+  mach: ["translated", TR("доделаю"),         TR("Возьмёт ближайший прогон: проверит или починит.")],
+  mine: ["soft",       TR("ваше"),            TR("Вы заверили этот перевод. Без вашего разрешения машина его не перепишет.")],
+  ok:   ["confirmed",  TR("хорошо"),          TR("Проверки пройдены, открытых находок нет.")],
+};
+function rowChipCode(seg, idx) {
+  if ((seg.status || "new") === "new" || !seg.target) return "new";
+  if (!idx) return null;
+  // Порядок — как у корзин сервера: «нужен человек» сильнее «возьмёт прогон»,
+  // а заверенное с объективной находкой остаётся работой машины.
+  if (idx.human.has(seg.id)) return "ask";
+  if (idx.machine.has(seg.id)) return "mach";
+  if (seg.status === "confirmed") return "mine";
+  if (idx.ready.has(seg.id)) return "ok";
+  return null;
+}
+
+function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, onConfirm, onRevert, models, hlSrc, hlTgt, chip }) {
   const prov = providerOf(seg);
   const provText = providerLabel(prov, models);
   const revertable = seg.status === "confirmed" || seg.status === "failed";
@@ -3374,70 +3429,13 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
     React.createElement("td", { className: "src-cell" }, markHits(seg.source, hlSrc)),
     React.createElement("td", { className: seg.target ? "tgt-cell" : "tgt-cell tgt-empty" },
       seg.target ? markHits(seg.target, hlTgt) : TR("— не переведено —")),
-    React.createElement("td", null,
-      React.createElement(StatusBadge, { status: seg.status }),
-      provText && React.createElement("div", {
-        className: "dim",
-        style: { fontSize: 10.5, marginTop: 3, whiteSpace: "nowrap", opacity: prov.exact ? 0.85 : 0.55 },
-        title: prov.exact
-          ? TR("Переведено: ") + provText
-          : TR("Переведено предположительно через ") + provText + TR(" — сегмент переведён до того, как система начала записывать движок точно"),
-      }, (prov.exact ? "" : "≈ ") + provText)),
-    // Колонка проверок. Чипа TM здесь больше нет: tmScore писался единожды
-    // нулём при импорте и не обновлялся ничем, то есть колонка показывала
-    // красный ноль всем сегментам всех проектов всегда. Постоянный ложный
-    // показатель хуже отсутствующего — по нему делают выводы о памяти
-    // переводов, которых он не подтверждает. Реальные совпадения TM видны
-    // в карточке сегмента (вкладка «TM»), где берутся из store.tm.
-    React.createElement("td", null,
-      // Процент соответствия обратного перевода: цифра + причина в подсказке
-      seg.repair && seg.repair.applied && React.createElement("div", {
-        style: { fontSize: 11, fontWeight: 500, marginTop: 4, whiteSpace: "nowrap", color: "var(--c-success)" },
-        title: TR("Автоматически исправлено ") + (seg.repair.at || "")
-          + TR("\nБыло: ") + (seg.repair.from || "")
-          + TR("\nПричины: ") + (seg.repair.issues || []).map(TRS).join("; "),
-      }, TR("✓ ремонт")),
-      /* Что ревизия уже прошла — прямо в таблице. Без этого «пройденные
-         участки» видно только числом в строке прогона («98 уже ревизован»),
-         а какие именно — никак: при прогоне частями это и есть главный
-         вопрос. Три исхода различаются цветом, потому что действия у них
-         разные: переписано (смотреть, что стало), нашла и не тронула
-         (решать человеку), прочитано и претензий нет.
-         `stale` считает СЕРВЕР (`_review_stale`) — он знает и про версию
-         вопросов, и про правку оригинала; браузеру этого не вычислить. */
-      seg.review && React.createElement("div", {
-        style: { fontSize: 11, fontWeight: 500, marginTop: 4, whiteSpace: "nowrap",
-                 opacity: seg.review.stale ? 0.5 : 1,
-                 /* Исход считает СЕРВЕР (`review.flagged`) — тем же правилом,
-                    что корзина «Ревизия нашла проблему» на «Анализе». Свой
-                    порог и своё чтение кода в браузере были вторым правилом
-                    рядом с настоящим и расходились с экраном на записях без
-                    поля `code`. */
-                 color: seg.review.applied ? "var(--c-success)"
-                   : (seg.review.sourceSuspect || seg.review.flagged || seg.review.held)
-                     ? "var(--c-warning)" : "var(--text-3)" },
-        title: TR("Ревизия: оценка ") + seg.review.score + "/10"
-          + (seg.review.applied ? TR("\nТекст переписан. Было: ") + (seg.review.from || "") : "")
-          + (seg.review.skipped ? TR("\nПравка не поставлена: ") + TRS(seg.review.skipped) : "")
-          + ((seg.review.issues || []).length ? "\n" + seg.review.issues.map(TRS).join("; ") : "")
-          + (seg.review.stale ? TR("\n\nТекст менялся после ревизии — данные устарели.") : ""),
-      }, (seg.review.stale ? "≈ " : "") + (seg.review.applied ? TR("✓ ревизия")
-          : TR("ревизия: ") + seg.review.score)),
-      seg.termcheck && (seg.termcheck.findings || []).length > 0 && React.createElement("div", {
-        style: { fontSize: 11, fontWeight: 500, marginTop: 4, whiteSpace: "nowrap",
-                 color: seg.termcheck.severity === "critical" ? "var(--c-error)"
-                   : seg.termcheck.severity === "major" ? "var(--c-warning)" : "var(--text-3)" },
-        title: TR("Терминология: ") + seg.termcheck.findings.map(f =>
-          f.tgt_term + (f.suggestion ? " → " + f.suggestion : "") + (f.why ? " (" + TRS(f.why) + ")" : "")).join("\n")
-          + (seg.termcheck.stale ? TR("\n\nПеревод менялся после проверки — данные устарели.") : ""),
-      }, (seg.termcheck.stale ? "≈ " : "") + TR("термин: ") + seg.termcheck.findings.length),
-      seg.backcheck && seg.backcheck.score != null && React.createElement("div", {
-        style: { fontSize: 11, fontWeight: 500, marginTop: 4, whiteSpace: "nowrap",
-                 color: window.bcScoreColor(seg.backcheck.score) },
-        title: TR("Соответствие обратного перевода: ") + seg.backcheck.score + "%"
-          + ((seg.backcheck.reasons || []).length ? "\n" + seg.backcheck.reasons.map(TRS).join("; ") : "")
-          + TR("\nОбратный перевод: ") + (seg.backcheck.back || ""),
-      }, "↩ " + seg.backcheck.score + "%")),
+    // Одно слово о строке (см. ROW_CHIP). Движок перевода — в подсказке:
+    // на экране он занимал строку под статусом, а нужен только эксперту.
+    React.createElement("td", { className: "chip-cell" },
+      chip && React.createElement("span", {
+        className: "badge badge-" + chip[0],
+        title: chip[2] + (provText ? "\n" + TR("Переведено: ") + (prov.exact ? "" : "≈ ") + provText : ""),
+      }, chip[1])),
     React.createElement("td", { onClick: (e) => e.stopPropagation() }, actionCell)
   );
 }

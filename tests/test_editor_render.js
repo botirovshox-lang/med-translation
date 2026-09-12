@@ -285,6 +285,31 @@ try {
   check(text.indexOf("Отдельные прогоны") === -1,
         "свёрнутого блока «Отдельные прогоны» больше нет — искать галочки негде");
 
+  console.log("\n=== 2a. Колонка «Что тут»: одно слово по корзинам сервера ===");
+  // Слово берётся из корзин /analysis (стаб выше: ready [1,2,5], machine [3,6],
+  // human [7], seg 4 — ни в одной, seg 5 заверён, seg 6 не переведён).
+  // Браузер ничего не выводит сам: чего нет в корзинах — без слова.
+  const chips = {}, ths = [];
+  (function findCells(n) {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) return n.forEach(findCells);
+    const p = n.props || {};
+    if (n.type === "th") ths.push((n.children || []).filter(c => typeof c === "string").join(""));
+    if (n.type === "tr" && p["data-seg"] != null) {
+      const cell = (n.children || []).find(c => c && c.props && c.props.className === "chip-cell");
+      const badge = cell && (cell.children || []).find(c => c && c.props);
+      chips[p["data-seg"]] = badge ? (badge.children || []).join("") : "";
+    }
+    (n.children || []).forEach(findCells);
+  })(el);
+  const want = { 1: "хорошо", 2: "хорошо", 3: "доделаю", 4: "", 5: "ваше", 6: "ещё не перевела", 7: "спрошу" };
+  for (const id of Object.keys(want))
+    check(chips[id] === want[id], "строка " + id + ": «" + want[id] + "», а не «" + chips[id] + "»");
+  check(ths.indexOf("Проверки") === -1 && ths.indexOf("Что тут") !== -1,
+        "колонки «Проверки» нет, «Что тут» есть");
+  check(text.indexOf("↩ ") === -1 && text.indexOf("ревизия:") === -1,
+        "чипов проверок и процента back-check в таблице нет");
+
   // ── Раскрываем строку так, как это сделал бы человек: жмём шеврон ──
   const found = [];
   (function find(n) {

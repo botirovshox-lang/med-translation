@@ -1,11 +1,15 @@
 ﻿/* ============================================================
    Segment detail panel (editor right sidebar)
    ============================================================ */
-function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChecks, onConfirm, bcModels, bcModel, onBcModel, bcJudge, judgeModel, tcModel, rpModel,
+function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChecks, onConfirm, onChanged, bcModels, bcModel, onBcModel, bcJudge, judgeModel, tcModel, rpModel,
                      // Уровни находок termcheck, по которым работает ремонт.
                      // Приходят сверху, а сверху — с сервера: список в двух
                      // местах литералом уже расходился с _repair_findings.
                      tcActionable = ["critical", "major", "minor"] }) {
+  /* Любая запись в сегмент из карточки меняет корзины /analysis, а по ним —
+     слово в строке таблицы и карточка «Анализ». Родитель перезапрашивает их
+     тем же движением, что после заверения (onChanged = refreshAfterHand). */
+  const touch = (patch) => Promise.resolve(store.updateSegment(project.id, seg.id, patch)).then(() => { if (onChanged) onChanged(); });
   const [tab, setTab] = useState("context");
   const [draft, setDraft] = useState(seg.target || "");
   const [comment, setComment] = useState("");
@@ -37,6 +41,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
     const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
     if (fresh && fresh.segments && store.replaceProjectSegments) {
       store.replaceProjectSegments(project.id, fresh.segments);
+      if (onChanged) onChanged();
     }
     toast.success(TR("Убрано"), TR("Надпись помечена аппаратной — следующий разбор её не заведёт.")
       + (r.hadTarget ? TR(" Вместе с сегментом ушёл перевод: ") + r.hadTarget : ""));
@@ -61,7 +66,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
   }, [seg.id, fromImage, project.id]);
 
   const saveDraft = () => {
-    store.updateSegment(project.id, seg.id, { target: draft, status: seg.status === "new" ? "translated" : seg.status });
+    touch({ target: draft, status: seg.status === "new" ? "translated" : seg.status });
     toast.success(TR("Сохранено"), TR("Перевод сегмента #") + seg.id + TR(" обновлён."));
   };
   const copySrc = () => { navigator.clipboard && navigator.clipboard.writeText(seg.source); toast.info(TR("Скопировано"), TR("Оригинал в буфере обмена.")); };
@@ -102,7 +107,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
     window.API.safeCall(() => window.API.termcheck(project.id, seg.id, tcModel)).then(res => {
       setTermBusy(false);
       if (!res || !res.ok) { toast.error(TR("Проверка не удалась"), TR("Модель не ответила или нет ключа OpenAI.")); return; }
-      store.updateSegment(project.id, seg.id, { termcheck: { ...res.termcheck, stale: false } });
+      touch({ termcheck: { ...res.termcheck, stale: false } });
       const n = (res.termcheck.findings || []).length;
       if (res.skipped) toast.info(TR("Проверять нечего"), res.skipped);
       else if (n) toast.warning(TR("Замечания по терминам"), n + TR(" шт. · предложения замены ушли в «Глоссарий → Кандидаты»"));
@@ -120,12 +125,13 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
       setRepairBusy(false);
       if (!res || !res.ok) { toast.error(TR("Ремонт не удался"), TR("Модель не ответила или нет ключа OpenAI.")); return; }
       if (!res.applied) {
-        store.updateSegment(project.id, seg.id, { repair: { ...res.repair, tried: true } });
+        touch({ repair: { ...res.repair, tried: true } });
         toast.warning(TR("Правка откачена"), TRS((res.repair && res.repair.reason) || "") || TR("Не стало лучше — текст оставлен прежним."));
         return;
       }
       window.API.safeCall(() => window.API.getProject(project.id)).then(fresh => {
         if (fresh && fresh.segments) store.replaceProjectSegments(project.id, fresh.segments);
+        if (onChanged) onChanged();   // текст, статус и находки сменились разом
       });
       toast.success(TR("Сегмент исправлен"), TR("Статус «Требует проверки» — подтвердите вручную."));
     });
@@ -150,7 +156,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
         if (!res || !res.ok || !res.applied) { toast.error(TR("Не удалось применить"), (res && res.error) || TR("Сервер отказал — обновите страницу.")); return; }
         const now = draft.split(a.tgt).join(a.use);
         setDraft(now);
-        store.updateSegment(project.id, seg.id, { target: now, status: "review", ctxAdvice: null,
+        touch({ target: now, status: "review", ctxAdvice: null,
           termCtxApplied: { src: a.src, tgt: a.tgt, use: a.use, from: seg.target, by: "human" } });
         toast.success(TR("Подставлено: ") + a.use,
           TR("Проверки устарели вместе с текстом — сегмент пойдёт в ближайший прогон. Запись глоссария не тронута."));
@@ -166,7 +172,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
       /* Кладём ОДИН сегмент, а не тянем проект: на 2670 строках это 5 МБ ради
          одной изменившейся строки (то же правило, что у /term-case). Сервер
          вернул его уже с производными stale/tried — считать их тут нечем. */
-      if (res.segment) store.updateSegment(project.id, seg.id, res.segment);
+      if (res.segment) touch(res.segment);
       toast.success(TR("Вариант принят"),
         TR("Проверки устарели вместе с текстом — сегмент пойдёт в ближайший прогон."));
     });
@@ -200,7 +206,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
       if (res && res.ok) {
         setBackResult(res.back);
         // Подтягиваем оценку в локальный state, чтобы процент сразу встал в строке
-        if (res.backcheck) store.updateSegment(project.id, seg.id, { backcheck: res.backcheck, backtranslated_ru: res.back });
+        if (res.backcheck) touch({ backcheck: res.backcheck, backtranslated_ru: res.back });
       } else {
         setBackResult(TR("Ошибка: ") + (res && res.error ? res.error : TR("нет ответа")));
       }

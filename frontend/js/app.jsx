@@ -99,8 +99,11 @@ function useStore(authed) {
     }
     _patchLocal(pid, sid, patch);
     // Sync to backend (best-effort)
+    // Промис записи возвращаем: карточка сегмента после правки перезапрашивает
+    // корзины /analysis, и спросить их раньше, чем сервер получил текст,
+    // значило бы получить ответ о прежнем переводе.
     if (window.API && patch && (patch.target !== undefined || patch.status !== undefined)) {
-      window.API.safeCall(() => window.API.update(pid, sid, {
+      return window.API.safeCall(() => window.API.update(pid, sid, {
         target: patch.target, status: patch.status,
       })).then(r => {
         /* Сервер вправе ответить ДРУГИМ статусом: правка заверенного текста
@@ -114,6 +117,7 @@ function useStore(authed) {
                                   unconfirmed: r.segment.unconfirmed, prevTarget: r.segment.prevTarget });
       });
     }
+    return Promise.resolve();
   };
 
   const addComment = (pid, sid, text) => {

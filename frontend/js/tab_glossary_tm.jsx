@@ -641,6 +641,12 @@ function TermQueue({ store, toast, version }) {
   /* Замечание судьи по карточке: {cid: {kind, text}}. Живёт до решения —
      одобрение вопреки ему идёт вторым нажатием, уже осознанным. */
   const [warned, setWarned] = useState({});
+  /* Карточка с готовым переводом отвечается двумя кнопками — «Верно» и
+     «Не то»; поле правки открывается вторым нажатием, возражением судьи или
+     выбором варианта из разбора. Хук объявлен ПОСЛЕДНИМ: тест адресует
+     хуки по индексу. */
+  const [editing, setEditing] = useState({});
+  const openEdit = (cid) => setEditing(e => ({ ...e, [cid]: true }));
 
   const approve = async (c, confirm) => {
     const tgt = (drafts[c.id] !== undefined ? drafts[c.id] : c.tgt || "").trim();
@@ -653,6 +659,7 @@ function TermQueue({ store, toast, version }) {
     // на самой карточке: тост уедет, а решение принимать здесь.
     if (res.warning) {
       setWarned(w => ({ ...w, [c.id]: res.warning }));
+      openEdit(c.id);          // исправлять надо в поле — оно должно быть видно
       toast.warning(TR("Проверьте перед одобрением"), res.warning.text);
       return;
     }
@@ -689,7 +696,7 @@ function TermQueue({ store, toast, version }) {
         React.createElement(InfoTip, { title: TR("Откуда берутся кандидаты"),
           body: TR("Система учится на подтверждённых сегментах: расхождение с глоссарием, короткий сегмент-термин, извлечение моделью. Ни один кандидат не попадает в глоссарий сам — глоссарий уходит в промпт как правило, и автопополнение закрепляло бы ошибки перевода.") })),
       React.createElement("span", { className: "dim", style: { fontSize: 12 } },
-        TR("по частоте · одобрено: ") + (counts.approved || 0) + TR(" · отклонено: ") + (counts.rejected || 0))),
+        (store.activeProject ? TR("по охвату") : TR("по частоте")) + TR(" · одобрено: ") + (counts.approved || 0) + TR(" · отклонено: ") + (counts.rejected || 0))),
 
     // Разбор очереди по причинам: сразу видно, где работа человека, а где мусор.
     open && groups.length > 0 && React.createElement("div", { className: "col", style: { gap: 5, marginTop: 12 } },
@@ -730,7 +737,13 @@ function TermQueue({ store, toast, version }) {
             React.createElement("div", { className: "row", style: { gap: 8 } },
               React.createElement(Icon, { name: icon, size: 15, style: { color } }),
               React.createElement("span", { style: { fontSize: 12, color, fontWeight: 600 } }, label),
-              c.hits > 1 && React.createElement(Badge, { variant: "soft" }, TR("встречалось ") + c.hits + "×")),
+              /* Охват считает СЕРВЕР: сколько строк проекта приведёт в порядок
+                 ответ. По нему же очередь и отсортирована — частота («встречалось
+                 27×») про другое: слово может стоять 27 раз в одном абзаце. */
+              c.impact > 0
+                ? React.createElement(Badge, { variant: "soft" },
+                    TR("затронет строк: ") + c.impact)
+                : c.hits > 1 && React.createElement(Badge, { variant: "soft" }, TR("встречалось ") + c.hits + "×")),
             React.createElement("span", { className: "dim", style: { fontSize: 12 } },
               (c.lang ? c.lang + " · " : "") +
               (c.project ? TR("проект #") + c.project : "") +
@@ -741,7 +754,9 @@ function TermQueue({ store, toast, version }) {
           React.createElement("div", { className: "row row-wrap", style: { gap: 10, alignItems: "center" } },
             React.createElement("span", { style: { fontWeight: 600 } }, c.src),
             React.createElement(Icon, { name: "chevR", size: 14, style: { color: "var(--text-3)" } }),
-            React.createElement(Input, {
+            (c.tgt || "").trim() && !editing[c.id] && !warned[c.id]
+              ? React.createElement("span", { style: { fontWeight: 500 } }, c.tgt)
+              : React.createElement(Input, {
               value: drafts[c.id] !== undefined ? drafts[c.id] : (c.tgt || ""),
               placeholder: c.kind === "conflict" ? TR("верный перевод") : TR("перевод"),
               onChange: (e) => setDrafts(d => ({ ...d, [c.id]: e.target.value })),
@@ -781,7 +796,7 @@ function TermQueue({ store, toast, version }) {
               TR("Что означает каждый вариант — выберите по смыслу:")),
             explained[c.id].variants.map((v, i) => React.createElement("div", {
               key: i, className: "card", style: { padding: "8px 11px", background: "var(--bg)", cursor: "pointer", display: "flex", flexDirection: "column", gap: 3 },
-              onClick: () => setDrafts(d => ({ ...d, [c.id]: v.tgt })) },
+              onClick: () => { setDrafts(d => ({ ...d, [c.id]: v.tgt })); openEdit(c.id); } },
               React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
                 React.createElement("span", { style: { fontWeight: 600 } }, v.tgt),
                 React.createElement("span", { className: "row", style: { gap: 6 } },
@@ -821,10 +836,16 @@ function TermQueue({ store, toast, version }) {
                   + TR("или отклоните кандидата."))),
 
           React.createElement("div", { className: "row row-wrap", style: { gap: 8 } },
-            React.createElement(Btn, { variant: "primary", size: "sm", icon: "check", disabled: busy === c.id,
-              onClick: () => approve(c, !!warned[c.id]) },
-              warned[c.id] ? TR("Всё равно одобрить") : TR("В глоссарий")),
-            React.createElement(Btn, { variant: "ghost", size: "sm", icon: "close", disabled: busy === c.id, onClick: () => reject(c) }, TR("Отклонить")),
+            (c.tgt || "").trim() && !editing[c.id] && !warned[c.id]
+              ? [React.createElement(Btn, { key: "yes", variant: "primary", size: "sm", icon: "check", disabled: busy === c.id,
+                   onClick: () => approve(c, false) }, TR("Верно")),
+                 React.createElement(Btn, { key: "no", variant: "ghost", size: "sm", icon: "close", disabled: busy === c.id,
+                   title: TR("Откроется поле: впишите верный перевод или отклоните кандидата"),
+                   onClick: () => openEdit(c.id) }, TR("Не то"))]
+              : [React.createElement(Btn, { key: "ok", variant: "primary", size: "sm", icon: "check", disabled: busy === c.id,
+                   onClick: () => approve(c, !!warned[c.id]) },
+                   warned[c.id] ? TR("Всё равно одобрить") : TR("В глоссарий")),
+                 React.createElement(Btn, { key: "rej", variant: "ghost", size: "sm", icon: "close", disabled: busy === c.id, onClick: () => reject(c) }, TR("Отклонить"))],
             React.createElement(Btn, {
               variant: "secondary", size: "sm", icon: "book",
               disabled: busy === c.id || (explained[c.id] && explained[c.id].loading),

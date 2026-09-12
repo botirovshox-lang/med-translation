@@ -1,5 +1,5 @@
 /* ============================================================
-   Tab: Import DOCX — create projects from Word documents
+   Tab: Projects — folders with files; quote lives here too
    ============================================================ */
 /* ── Смета: знаки, страницы, деньги ─────────────────────────────────
    Считает СЕРВЕР (/api/quote): и знаки, и норму страницы, и сумму. Браузер
@@ -138,191 +138,347 @@ function ImpQuoteHistory({ reloadKey, toast, canOwner }) {
         open ? TR("Свернуть") : TR("Показать все ") + rows.length)));
 }
 
+/* ============================================================
+   Экран «Проекты»
+   Проект — папка с файлами одного заказа: одна пара языков, одна область,
+   свои словари. Файл внутри открывается в «Переводе». Файл без папки сервер
+   отдаёт как папку с тем же номером (`virtual`) — так живут файлы, заведённые
+   до появления папок, и править их можно как настоящие.
+   Имена компонентов — с префиксом Imp: все .jsx живут в одной области.
+   ============================================================ */
 function TabImport({ store, toast }) {
-  const [dragging, setDragging] = useState(false);
-  const [file, setFile] = useState(null);      // { name, size, raw: File }
+  const [meta, setMeta] = useState({ langs: [["RU", TR("Русский")], ["EN", TR("Английский")]],
+                                     domains: [["general", TR("Общая")]], domainDefault: "general" });
+  // Каталоги языков и областей живут на сервере — хардкодить нельзя.
+  useEffect(() => {
+    window.API && window.API.safeCall(() => window.API.models()).then(res => {
+      if (!res) return;
+      setMeta({
+        langs: res.languages && res.languages.length ? res.languages.map(l => [l.code, l.ru + " · " + l.native]) : meta.langs,
+        domains: res.domains && res.domains.length ? res.domains.map(d => [d.id, d.label]) : meta.domains,
+        domainDefault: res.domainDefault || "general",
+      });
+    });
+  }, []);
+  const folder = store.viewFolder != null ? (store.folders || []).find(f => f.id === store.viewFolder) : null;
+  if (folder) return React.createElement(ImpFolderView, { folder, store, toast, meta });
+  return React.createElement(ImpFolderList, { store, toast, meta });
+}
+
+function impDomainLabel(meta, id) {
+  const hit = (meta.domains || []).find(d => d[0] === (id || LEGACY_DOMAIN));
+  return hit ? hit[1] : (id || LEGACY_DOMAIN);
+}
+function impFolderStats(store, folder) {
+  const files = (folder.files || []).map(id => (store.projects || []).find(p => p.id === id)).filter(Boolean);
+  let total = 0, done = 0;
+  files.forEach(p => { const c = store.statusCounts(p); total += c.all; done += c.confirmed; });
+  return { files, total, done, pct: total ? Math.round(done / total * 100) : 0 };
+}
+/* Словари папки: список id либо null — «все словари организации» (папка
+   заведена до словарей). Показывать это надо честно, а не как пустоту. */
+function impFolderDicts(folder) {
+  return Array.isArray(folder.dicts) ? folder.dicts : null;
+}
+
+/* ---------- Список проектов ---------- */
+function ImpFolderList({ store, toast, meta }) {
+  const [creating, setCreating] = useState(false);
+  const folders = store.folders || [];
+  return React.createElement("div", { className: "page" },
+    React.createElement("div", { className: "row between row-wrap page-head", style: { alignItems: "flex-end", gap: 12 } },
+      React.createElement("div", null,
+        React.createElement("h1", null, TR("Проекты")),
+        React.createElement("p", { className: "lead" }, TR("Проект — это папка с файлами одного заказа: одна пара языков, одна тема и свои словари. Откройте проект, чтобы добавить файл или начать перевод."))),
+      React.createElement(Btn, { variant: "primary", icon: "plus", onClick: () => setCreating(true) }, TR("Новый проект"))),
+    folders.length === 0
+      ? React.createElement(EmptyState, { icon: "folder", title: TR("Проектов пока нет"),
+          sub: TR("Создайте проект и положите в него первый файл."),
+          action: React.createElement(Btn, { variant: "primary", icon: "plus", onClick: () => setCreating(true) }, TR("Новый проект")) })
+      : React.createElement("div", { className: "grid grid-3" },
+          folders.map(f => React.createElement(ImpFolderCard, { key: f.id, folder: f, store, meta }))),
+    React.createElement("div", { className: "section", style: { marginTop: 24 } },
+      React.createElement(ImpQuoteHistory, { reloadKey: 0, toast, canOwner: !!(store.can && store.can.owner) })),
+    creating && React.createElement(ImpNewFolder, { store, toast, meta, onClose: () => setCreating(false) }));
+}
+
+function ImpFolderCard({ folder, store, meta }) {
+  const st = impFolderStats(store, folder);
+  const dl = impFolderDicts(folder);
+  const dictNames = dl === null ? [TR("все словари")]
+    : dl.map(id => ((store.dicts || []).find(d => d.id === id) || {}).title || id);
+  return React.createElement("div", { className: "card card-pad card-hover", style: { display: "flex", flexDirection: "column", gap: 12, cursor: "pointer" },
+      onClick: () => store.openFolder(folder.id) },
+    React.createElement("div", { style: { fontWeight: 600, fontSize: 15, letterSpacing: "-.2px" } }, folder.title || TR("Без названия")),
+    React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
+      React.createElement(LangPair, { src: folder.src, tgt: folder.tgt }),
+      React.createElement(Badge, { icon: "file" }, st.files.length + " " + impPlural(st.files.length, TR("файл"), TR("файла"), TR("файлов"))),
+      React.createElement(Badge, null, impDomainLabel(meta, folder.domain))),
+    React.createElement("div", null,
+      React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
+        React.createElement("span", { className: "muted" }, TR("Готово")),
+        React.createElement("span", { style: { fontWeight: 600 } }, st.pct + "%")),
+      React.createElement(ProgressBar, { value: st.pct })),
+    React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+      React.createElement(Icon, { name: "book", size: 12 }), " ", dictNames.join(", ") || TR("без словарей")),
+    React.createElement("div", null,
+      React.createElement(Btn, { variant: "secondary", size: "sm", icon: "folder", onClick: (e) => { e.stopPropagation(); store.openFolder(folder.id); } }, TR("Открыть"))));
+}
+
+function impPlural(n, one, few, many) {
+  const m10 = n % 10, m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
+  return many;
+}
+
+/* ---------- Новый проект ---------- */
+function ImpNewFolder({ store, toast, meta, onClose }) {
   const [title, setTitle] = useState("");
   const [src, setSrc] = useState("RU");
   const [tgt, setTgt] = useState("EN");
-  const [domain, setDomain] = useState("general");   // область: от неё зависят промпты перевода и проверки
-  const [domains, setDomains] = useState([["medical", TR("Медицина")]]);
-  // Каталог языков — тоже с сервера: пара проекта может быть любой.
-  const [langs, setLangs] = useState([["RU", TR("Русский")], ["EN", TR("Английский")]]);
-  const [creating, setCreating] = useState(false);
-  const [quoted, setQuoted] = useState(0);   // счётчик сохранённых смет: им обновляется история
-  const [progress, setProgress] = useState("");
-  const fileRef = useRef(null);
-
-  // Каталог областей живёт на сервере (DOMAINS в main.py) — хардкодить нельзя
-  useEffect(() => {
-    window.API && window.API.safeCall(() => window.API.models()).then(res => {
-      if (res && res.domains && res.domains.length) {
-        setDomains(res.domains.map(d => [d.id, d.label]));
-        setDomain(res.domainDefault || res.domains[0].id);
-      }
-      if (res && res.languages && res.languages.length)
-        setLangs(res.languages.map(l => [l.code, l.ru + " · " + l.native]));
-    });
-  }, []);
-
-  const pickFile = (f) => {
-    if (!f) return;
-    setFile({ name: f.name, size: (f.size / 1024).toFixed(0) + TR(" КБ"), raw: f });
-    if (!title) setTitle(f.name.replace(/\.[^.]+$/, ""));
-  };
-  const onDrop = (e) => {
-    e.preventDefault(); setDragging(false);
-    const f = e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) pickFile(f);
-  };
+  const [domain, setDomain] = useState(meta.domainDefault || "general");
+  const [ownDict, setOwnDict] = useState(true);       // завести свой словарь
+  const [dictName, setDictName] = useState("");
+  const [picked, setPicked] = useState([]);           // существующие словари, в порядке выбора
+  const [busy, setBusy] = useState(false);
+  const dicts = store.dicts || [];
+  const toggle = (id) => setPicked(p => p.indexOf(id) >= 0 ? p.filter(x => x !== id) : p.concat([id]));
+  const pair = src + "→" + tgt;
   const create = async () => {
-    if (!file || !file.raw) { toast.error(TR("Файл не выбран"), TR("Выберите .docx файл")); return; }
-    setCreating(true);
-    setProgress(TR("Загружаем файл…"));
+    if (src === tgt) { toast.error(TR("Языки совпадают"), TR("Выберите разные языки оригинала и перевода.")); return; }
+    setBusy(true);
     try {
-      const project = await window.API.uploadProject(file.raw, title || file.name.replace(/\.[^.]+$/, ""), src, tgt, domain);
-      setProgress("");
-      setCreating(false);
-      store.addProject(project);
-      toast.success(TR("Проект создан"), project.segments.length + TR(" сегментов готовы к переводу."));
-      store.openProject(project.id);
-    } catch (e) {
-      setProgress("");
-      setCreating(false);
-      toast.error(TR("Ошибка импорта"), e.message || TR("Не удалось разобрать файл"));
-    }
+      const r = await window.API.createFolder({ title: title || TR("Новый проект"), src, tgt, domain,
+        dicts: picked, newDict: ownDict ? (dictName || title || TR("Словарь проекта")) : null });
+      store.addFolder(r);
+      // Словари организации изменились (появился новый) — перечитать список.
+      window.API.safeCall(() => window.API.listDicts()).then(d => { if (d && d.dicts && store.setDicts) store.setDicts(d.dicts); });
+      toast.success(TR("Проект создан"), r.title);
+      onClose();
+      store.openFolder(r.id);
+    } catch (e) { toast.error(TR("Проект не создан"), e.message || String(e)); }
+    setBusy(false);
   };
-
-  const langOpts = langs;
-  const pairBad = src === tgt;
-
-  return React.createElement("div", { className: "page" },
-    React.createElement("div", { className: "page-head" },
-      React.createElement("h1", null, TR("Что нужно перевести?")),
-      React.createElement("p", { className: "lead" }, TR("Загрузите файл Word, чтобы создать новый проект перевода. Документ автоматически разбивается на сегменты с сохранением форматирования."))
-    ),
-
-    // Section 1: upload
-    React.createElement("div", { className: "section" },
-      React.createElement("div", { className: "grid", style: { gridTemplateColumns: "1.3fr 1fr", gap: 24, alignItems: "start" } },
-        React.createElement("div", null,
-          React.createElement("div", { className: "eyebrow" }, TR("Шаг 1 — Файл")),
-          React.createElement("div", {
-            className: "dropzone" + (dragging ? " drag" : ""),
-            onDragOver: (e) => { e.preventDefault(); setDragging(true); },
-            onDragLeave: () => setDragging(false),
-            onDrop,
-            onClick: () => fileRef.current && fileRef.current.click(),
-            role: "button", tabIndex: 0,
-            onKeyDown: (e) => { if (e.key === "Enter") fileRef.current.click(); },
-          },
-            React.createElement("input", { ref: fileRef, type: "file", accept: ".docx", hidden: true,
-              onChange: (e) => pickFile(e.target.files[0]) }),
-            file
-              ? React.createElement("div", null,
-                  React.createElement(Icon, { name: "file", size: 36, className: "dz-ic", style: { color: "var(--c-success)" } }),
-                  React.createElement("div", { style: { fontWeight: 500, fontSize: 15 } }, file.name),
-                  React.createElement("div", { className: "dim", style: { marginTop: 4 } }, file.size + TR(" · нажмите, чтобы заменить")))
-              : React.createElement("div", null,
-                  React.createElement(Icon, { name: "upload", size: 36, className: "dz-ic" }),
-                  React.createElement("div", { style: { fontWeight: 500, fontSize: 15 } }, TR("Перетащите DOCX сюда")),
-                  React.createElement("div", { className: "dim", style: { marginTop: 4 } }, TR("или нажмите для выбора файла")))
-          )
-        ),
-        React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 18 } },
-          React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Шаг 2 — Параметры")),
-          React.createElement(Field, { label: TR("Название проекта") },
-            React.createElement(Input, { value: title, placeholder: TR("напр. Договор поставки"), onChange: (e) => setTitle(e.target.value) })),
-          React.createElement("div", { className: "grid grid-2" },
-            React.createElement(Field, { label: TR("Язык оригинала") },
-              React.createElement(Select, { value: src, onChange: (e) => setSrc(e.target.value) },
-                langOpts.map(([v, l]) => React.createElement("option", { key: v, value: v }, l)))),
-            React.createElement(Field, { label: TR("Язык перевода") },
-              React.createElement(Select, { value: tgt, onChange: (e) => setTgt(e.target.value) },
-                langOpts.map(([v, l]) => React.createElement("option", { key: v, value: v }, l))))
-          ),
-          pairBad && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } },
-            TR("Язык оригинала и язык перевода совпадают.")),
-          React.createElement(Field, { label: TR("Предметная область"),
-            hint: TR("Задаёт терминологию в промптах перевода и проверки. Меняется только для новых проектов.") },
-            React.createElement(Select, { value: domain, onChange: (e) => setDomain(e.target.value) },
-              domains.map(([v, l]) => React.createElement("option", { key: v, value: v }, l)))),
-          React.createElement(Btn, { variant: "primary", icon: creating ? null : "arrowR", disabled: !file || !file.raw || creating, onClick: create },
-            creating ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), progress || TR("Загрузка…")) : TR("Создать проект"))
-        )
-      ),
-      // Смета стоит РЯДОМ с выбором файла и пары: считается она по языку
-      // исходника и по прайсу организации, и оба уже выбраны выше.
-      React.createElement("div", { style: { marginTop: 20, maxWidth: 560 } },
-        React.createElement(ImpQuote, { file, src, tgt, toast, onSaved: () => setQuoted(quoted + 1) })),
-      React.createElement("div", { style: { marginTop: 16 } },
-        React.createElement(ImpQuoteHistory, { reloadKey: quoted, toast, canOwner: !!(store.can && store.can.owner) }))
-    ),
-
-    // Section 2: existing projects
-    React.createElement("div", { className: "section" },
-      React.createElement("div", { className: "row between", style: { marginBottom: 16 } },
-        React.createElement("h2", { className: "section-title", style: { margin: 0 } }, TR("Ваши проекты")),
-        React.createElement("span", { className: "dim" }, store.projects.length + TR(" всего"))
-      ),
-      React.createElement("div", { className: "grid grid-3" },
-        store.projects.map(p => React.createElement(ProjectCard, { key: p.id, project: p, store, toast }))
-      )
-    )
-  );
+  const opt = (arr) => arr.map(([v, l]) => React.createElement("option", { key: v, value: v }, l));
+  return React.createElement(Modal, { title: TR("Новый проект"), icon: "folder", onClose, width: 640,
+    footer: React.createElement(React.Fragment, null,
+      React.createElement(Btn, { variant: "ghost", onClick: onClose }, TR("Отмена")),
+      React.createElement(Btn, { variant: "primary", icon: "check", disabled: busy || src === tgt, onClick: create }, TR("Создать"))) },
+    React.createElement(Field, { label: TR("Название проекта") },
+      React.createElement(Input, { value: title, autoFocus: true, placeholder: TR("напр. Договор поставки"), onChange: (e) => setTitle(e.target.value) })),
+    React.createElement("div", { className: "grid grid-2" },
+      React.createElement(Field, { label: TR("Язык оригинала") }, React.createElement(Select, { value: src, onChange: (e) => setSrc(e.target.value) }, opt(meta.langs))),
+      React.createElement(Field, { label: TR("Язык перевода") }, React.createElement(Select, { value: tgt, onChange: (e) => setTgt(e.target.value) }, opt(meta.langs)))),
+    src === tgt && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, TR("Язык оригинала и язык перевода совпадают.")),
+    React.createElement(Field, { label: TR("Тема"), hint: TR("Подсказывает переводчику-модели, о чём документ. У всех файлов проекта тема одна.") },
+      React.createElement(Select, { value: domain, onChange: (e) => setDomain(e.target.value) }, opt(meta.domains))),
+    React.createElement(Field, { label: TR("Словари проекта"),
+      hint: TR("Слова, которые надо переводить всегда одинаково. Новые слова проекта попадут в первый словарь из списка.") },
+      React.createElement("div", { className: "col", style: { gap: 8 } },
+        React.createElement(Checkbox, { checked: ownDict, onChange: (e) => setOwnDict(e.target.checked) }, TR("Завести свой словарь для этого проекта")),
+        ownDict && React.createElement(Input, { value: dictName, placeholder: title ? TR("Словарь: ") + title : TR("Название словаря"), onChange: (e) => setDictName(e.target.value) }),
+        dicts.length > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12, marginTop: 4 } }, TR("Подключить уже существующие:")),
+        dicts.map(d => React.createElement(Checkbox, { key: d.id, checked: picked.indexOf(d.id) >= 0, onChange: () => toggle(d.id) },
+          d.title + " · " + (d.count || 0) + " " + impPlural(d.count || 0, TR("слово"), TR("слова"), TR("слов"))
+          + (d.pairs && d.pairs[pair] ? "" : (d.count ? TR(" · для пары ") + pair + TR(" слов нет") : "")))))));
 }
 
-function ProjectCard({ project, store, toast }) {
+/* ---------- Папка: файлы, словари, настройки ---------- */
+function ImpFolderView({ folder, store, toast, meta }) {
+  const st = impFolderStats(store, folder);
+  const canOwner = !!(store.can && store.can.owner);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const rename = async () => {
+    const t = prompt(TR("Название проекта"), folder.title || "");
+    if (t == null || !t.trim() || t.trim() === folder.title) return;
+    try {
+      const r = await window.API.updateFolder(folder.id, { title: t.trim() });
+      store.patchFolder(folder.id, { title: r.title, virtual: false });
+      /* Файл-папка носит то же имя: сервер переименовал и его. */
+      if (folder.virtual) store.patchProject(folder.id, { title: r.title });
+      toast.success(TR("Переименовано"), r.title);
+    } catch (e) { toast.error(TR("Не переименовано"), e.message || String(e)); }
+  };
+  const remove = async () => {
+    try {
+      await window.API.deleteFolder(folder.id, true);
+      store.removeFolder(folder.id);
+      toast.warning(TR("Проект удалён"), folder.title);
+      store.setViewFolder(null);
+    } catch (e) { toast.error(TR("Не удалён"), e.message || String(e)); }
+  };
+  return React.createElement("div", { className: "page" },
+    React.createElement("div", { className: "page-head" },
+      React.createElement("button", { className: "linklike dim", style: { fontSize: 13, marginBottom: 6 }, onClick: () => store.setViewFolder(null) }, "← " + TR("Все проекты")),
+      React.createElement("div", { className: "row between row-wrap", style: { alignItems: "flex-end", gap: 12 } },
+        React.createElement("div", null,
+          React.createElement("h1", null, folder.title || TR("Без названия"), " ",
+            React.createElement(IconBtn, { icon: "edit", label: TR("Переименовать"), sm: true, onClick: rename })),
+          React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap", marginTop: 6 } },
+            React.createElement(LangPair, { src: folder.src, tgt: folder.tgt }),
+            React.createElement(Badge, null, impDomainLabel(meta, folder.domain)),
+            React.createElement(Badge, { icon: "file" }, st.files.length + " " + impPlural(st.files.length, TR("файл"), TR("файла"), TR("файлов"))),
+            st.total > 0 && React.createElement(Badge, { icon: "check" }, TR("готово ") + st.pct + "%"))),
+        canOwner && React.createElement(Btn, { variant: "ghost", size: "sm", icon: "trash", onClick: () => setConfirmDelete(true) }, TR("Удалить проект")))),
+
+    React.createElement("div", { className: "section" },
+      React.createElement("h2", { className: "section-title" }, TR("Файлы")),
+      React.createElement("div", { className: "grid grid-3" },
+        st.files.map(p => React.createElement(ImpFileCard, { key: p.id, project: p, store, toast })),
+        React.createElement(ImpAddFile, { folder, store, toast }))),
+
+    React.createElement("div", { className: "section" },
+      React.createElement(ImpFolderDicts, { folder, store, toast })),
+
+    confirmDelete && React.createElement(Modal, {
+      title: TR("Удалить проект?"), icon: "trash", onClose: () => setConfirmDelete(false),
+      footer: React.createElement(React.Fragment, null,
+        React.createElement(Btn, { variant: "ghost", onClick: () => setConfirmDelete(false) }, TR("Отмена")),
+        React.createElement(Btn, { variant: "danger", icon: "trash", onClick: remove }, TR("Удалить всё"))) },
+      React.createElement("p", { style: { margin: 0 } },
+        TR("Проект «"), React.createElement("strong", null, folder.title), TR("» и все его файлы будут удалены безвозвратно."),
+        React.createElement("br", null),
+        React.createElement("span", { className: "dim" }, st.files.length + TR(" файлов · ") + st.total + TR(" строк · ") + st.done + TR(" подтверждено")))));
+}
+
+function ImpFileCard({ project, store, toast }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const counts = store.statusCounts(project);
   const total = project.segments.length;
   const done = counts.confirmed;
   const pct = total ? Math.round((done / total) * 100) : 0;
-  const statusMap = { in_progress: ["badge-review", TR("В работе")], review: ["badge-qa", TR("На проверке")], done: ["badge-confirmed", TR("Завершён")] };
-  const [bcls, blab] = statusMap[project.status] || statusMap.in_progress;
-
-  const handleDelete = () => {
-    store.deleteProject(project.id);
-    toast.warning(TR("Проект удалён"), project.title);
-  };
-
+  const handleDelete = () => { store.deleteProject(project.id); toast.warning(TR("Файл удалён"), project.title); };
   return React.createElement(React.Fragment, null,
-    React.createElement("div", { className: "card card-pad card-hover", style: { display: "flex", flexDirection: "column", gap: 14 } },
-      React.createElement("div", { className: "row between", style: { alignItems: "flex-start" } },
-        React.createElement("div", { style: { minWidth: 0 } },
-          React.createElement("div", { style: { fontWeight: 600, fontSize: 15, letterSpacing: "-.2px" } }, project.title),
-          React.createElement("div", { className: "dim", style: { fontSize: 13, marginTop: 2 } }, project.titleEn)),
-        React.createElement("span", { className: "badge " + bcls }, blab)
-      ),
+    React.createElement("div", { className: "card card-pad card-hover", style: { display: "flex", flexDirection: "column", gap: 12 } },
+      React.createElement("div", { className: "row between", style: { alignItems: "flex-start", gap: 8 } },
+        React.createElement("div", { style: { minWidth: 0, fontWeight: 600, fontSize: 15, letterSpacing: "-.2px", overflow: "hidden", textOverflow: "ellipsis" } },
+          React.createElement(Icon, { name: "file", size: 14, style: { verticalAlign: "-2px", marginRight: 6, color: "var(--c-primary)" } }), project.title),
+        React.createElement(IconBtn, { icon: "trash", label: TR("Удалить файл"), sm: true, onClick: (e) => { e.stopPropagation(); setConfirmDelete(true); } })),
       React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
-        React.createElement(Badge, { icon: "list" }, total + TR(" сегментов")),
-        React.createElement(LangPair, { src: project.src, tgt: project.tgt })
-      ),
+        React.createElement(Badge, { icon: "list" }, total + " " + impPlural(total, TR("строка"), TR("строки"), TR("строк"))),
+        project.sourceDocx && React.createElement(Badge, { icon: "checkCircle" }, TR("вернём в том же виде"))),
       React.createElement("div", null,
         React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
-          React.createElement("span", { className: "muted" }, TR("Подтверждено")),
+          React.createElement("span", { className: "muted" }, TR("Готово")),
           React.createElement("span", { style: { fontWeight: 600 } }, pct + "%")),
-        React.createElement(ProgressBar, { value: pct })
-      ),
-      React.createElement("div", { className: "row between", style: { marginTop: 2 } },
-        React.createElement("div", { className: "row", style: { gap: 8 } },
-          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "edit", onClick: () => store.openProject(project.id) }, TR("Открыть")),
-          React.createElement(Btn, { variant: "ghost", size: "sm", icon: "download", onClick: () => { store.openProject(project.id); store.go("export"); } }, TR("Экспорт"))
-        ),
-        React.createElement(IconBtn, { icon: "trash", label: TR("Удалить проект"), sm: true, onClick: (e) => { e.stopPropagation(); setConfirmDelete(true); } })
-      )
-    ),
+        React.createElement(ProgressBar, { value: pct })),
+      React.createElement("div", { className: "row", style: { gap: 8 } },
+        React.createElement(Btn, { variant: "primary", size: "sm", icon: "edit", onClick: () => store.openProject(project.id) }, TR("Переводить")),
+        React.createElement(Btn, { variant: "ghost", size: "sm", icon: "download", onClick: () => { store.openProject(project.id); store.go("export"); } }, TR("Скачать")))),
     confirmDelete && React.createElement(Modal, {
-      title: TR("Удалить проект?"), icon: "trash", onClose: () => setConfirmDelete(false),
+      title: TR("Удалить файл?"), icon: "trash", onClose: () => setConfirmDelete(false),
       footer: React.createElement(React.Fragment, null,
         React.createElement(Btn, { variant: "ghost", onClick: () => setConfirmDelete(false) }, TR("Отмена")),
-        React.createElement(Btn, { variant: "danger", icon: "trash", onClick: handleDelete }, TR("Удалить")))
-    },
+        React.createElement(Btn, { variant: "danger", icon: "trash", onClick: handleDelete }, TR("Удалить"))) },
       React.createElement("p", { style: { margin: 0 } },
-        TR("Проект «"), React.createElement("strong", null, project.title), TR("» будет удалён безвозвратно. "),
+        TR("Файл «"), React.createElement("strong", null, project.title), TR("» будет удалён безвозвратно. "),
         React.createElement("br", null),
-        React.createElement("span", { className: "dim" }, total + TR(" сегментов · ") + done + TR(" подтверждено")))
-    )
-  );
+        React.createElement("span", { className: "dim" }, total + TR(" строк · ") + done + TR(" подтверждено")))));
+}
+
+/* Добавить файл в проект: пара и тема берутся у проекта. */
+function ImpAddFile({ folder, store, toast }) {
+  const [dragging, setDragging] = useState(false);
+  const [file, setFile] = useState(null);
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+  const pickFile = (f) => { if (!f) return; setFile({ name: f.name, size: (f.size / 1024).toFixed(0) + TR(" КБ"), raw: f }); if (!title) setTitle(f.name.replace(/\.[^.]+$/, "")); };
+  const onDrop = (e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) pickFile(f); };
+  const create = async () => {
+    if (!file || !file.raw) { toast.error(TR("Файл не выбран"), TR("Выберите файл")); return; }
+    setBusy(true);
+    try {
+      const project = await window.API.uploadProject(file.raw, title || file.name.replace(/\.[^.]+$/, ""),
+                                                    folder.src, folder.tgt, folder.domain, folder.id);
+      store.addProject(project);
+      /* Виртуальная папка после второго файла стала настоящей записью. */
+      store.patchFolder(folder.id, { virtual: false });
+      setFile(null); setTitle("");
+      toast.success(TR("Файл добавлен"), project.segments.length + TR(" строк готовы к переводу."));
+      store.openProject(project.id);
+    } catch (e) { toast.error(TR("Файл не добавлен"), e.message || TR("Не удалось разобрать файл")); }
+    setBusy(false);
+  };
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
+    React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Добавить файл")),
+    React.createElement("div", {
+      className: "dropzone" + (dragging ? " drag" : ""), style: { padding: 18 },
+      onDragOver: (e) => { e.preventDefault(); setDragging(true); }, onDragLeave: () => setDragging(false), onDrop,
+      onClick: () => fileRef.current && fileRef.current.click(), role: "button", tabIndex: 0,
+      onKeyDown: (e) => { if (e.key === "Enter") fileRef.current.click(); } },
+      React.createElement("input", { ref: fileRef, type: "file", accept: ".docx", hidden: true, onChange: (e) => pickFile(e.target.files[0]) }),
+      file
+        ? React.createElement("div", null,
+            React.createElement(Icon, { name: "file", size: 28, className: "dz-ic", style: { color: "var(--c-success)" } }),
+            React.createElement("div", { style: { fontWeight: 500, fontSize: 14 } }, file.name),
+            React.createElement("div", { className: "dim", style: { marginTop: 2, fontSize: 12 } }, file.size + TR(" · нажмите, чтобы заменить")))
+        : React.createElement("div", null,
+            React.createElement(Icon, { name: "upload", size: 28, className: "dz-ic" }),
+            React.createElement("div", { style: { fontWeight: 500, fontSize: 14 } }, TR("Перетащите файл Word сюда")),
+            React.createElement("div", { className: "dim", style: { marginTop: 2, fontSize: 12 } }, TR("или нажмите, чтобы выбрать")))),
+    file && React.createElement(Input, { value: title, placeholder: TR("Название файла"), onChange: (e) => setTitle(e.target.value) }),
+    React.createElement(Btn, { variant: "primary", icon: busy ? null : "plus", disabled: !file || busy, onClick: create },
+      busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), TR("Загружаем…")) : TR("Добавить в проект")),
+    file && React.createElement(ImpQuote, { file, src: folder.src, tgt: folder.tgt, toast }));
+}
+
+/* Словари проекта: какие подключены и куда пишутся новые слова.
+   Порядок в списке — очерёдность: первый сильнее, туда идут новые слова. */
+function ImpFolderDicts({ folder, store, toast }) {
+  const all = store.dicts || [];
+  const current = impFolderDicts(folder);
+  const [picked, setPicked] = useState(current === null ? all.map(d => d.id) : current);
+  const [dirty, setDirty] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const pair = folder.src + "→" + folder.tgt;
+  const toggle = (id) => { setPicked(p => p.indexOf(id) >= 0 ? p.filter(x => x !== id) : p.concat([id])); setDirty(true); };
+  const moveUp = (id) => { setPicked(p => { const i = p.indexOf(id); if (i <= 0) return p; const q = p.slice(); q.splice(i, 1); q.splice(i - 1, 0, id); return q; }); setDirty(true); };
+  const save = async (list) => {
+    setBusy(true);
+    try {
+      const r = await window.API.updateFolder(folder.id, { dicts: list });
+      store.patchFolder(folder.id, { dicts: r.dicts, virtual: false });
+      setPicked(r.dicts); setDirty(false);
+      toast.success(TR("Словари проекта сохранены"), r.dicts.length + " " + impPlural(r.dicts.length, TR("словарь"), TR("словаря"), TR("словарей")));
+    } catch (e) { toast.error(TR("Не сохранено"), e.message || String(e)); }
+    setBusy(false);
+  };
+  const addNew = async () => {
+    const name = prompt(TR("Название нового словаря"), TR("Словарь: ") + (folder.title || ""));
+    if (name == null || !name.trim()) return;
+    setBusy(true);
+    try {
+      const r = await window.API.createDict({ title: name.trim(), domain: folder.domain });
+      if (store.setDicts) store.setDicts(all.concat([r.dict]));
+      // Новый словарь — первым: новые слова проекта идут туда.
+      await save([r.dict.id].concat(picked.filter(x => x !== r.dict.id)));
+    } catch (e) { toast.error(TR("Словарь не создан"), e.message || String(e)); }
+    setBusy(false);
+  };
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
+    React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+      React.createElement("h2", { className: "section-title", style: { margin: 0 } }, TR("Словари проекта")),
+      React.createElement("div", { className: "row", style: { gap: 8 } },
+        React.createElement(Btn, { variant: "ghost", size: "sm", icon: "plus", disabled: busy, onClick: addNew }, TR("Новый словарь")),
+        dirty && React.createElement(Btn, { variant: "primary", size: "sm", icon: "check", disabled: busy, onClick: () => save(picked) }, TR("Сохранить")))),
+    React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 13 } },
+      TR("Отмеченные словари подсказывают перевод слов в этом проекте. Новые слова проекта попадают в первый словарь списка.")),
+    current === null && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+      TR("Пока подключены все словари организации — так было до появления словарей. Снимите лишние и сохраните.")),
+    all.length === 0 && React.createElement("div", { className: "dim", style: { fontSize: 13 } }, TR("Словарей пока нет — заведите первый.")),
+    React.createElement("div", { className: "col", style: { gap: 6 } },
+      picked.map((id, i) => {
+        const d = all.find(x => x.id === id) || { id, title: id, count: 0, pairs: {} };
+        return React.createElement("div", { key: id, className: "row", style: { gap: 8, alignItems: "center" } },
+          React.createElement(Checkbox, { checked: true, onChange: () => toggle(id) },
+            d.title + " · " + (d.count || 0) + " " + impPlural(d.count || 0, TR("слово"), TR("слова"), TR("слов"))),
+          i === 0 && React.createElement("span", { className: "st-chip" }, TR("сюда пишутся новые слова")),
+          i > 0 && React.createElement("button", { className: "linklike dim", style: { fontSize: 12 }, onClick: () => moveUp(id) }, TR("выше")),
+          d.count > 0 && !(d.pairs || {})[pair] && React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("для пары ") + pair + TR(" слов нет")));
+      }),
+      all.filter(d => picked.indexOf(d.id) < 0).map(d => React.createElement(Checkbox, { key: d.id, checked: false, onChange: () => toggle(d.id) },
+        d.title + " · " + (d.count || 0) + " " + impPlural(d.count || 0, TR("слово"), TR("слова"), TR("слов"))))));
 }
 window.TabImport = TabImport;

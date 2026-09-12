@@ -180,7 +180,7 @@ if HAVE_DOCX:
               "потолок страниц на файл → 413: %s" % r.text[:110])
         main.IMPORT_MAX_PAGES, main.TENANT_MAX_PROJECTS = 0, 1          # у acme уже есть проект
         r = up()
-        check(r.status_code == 402 and "проектов" in r.json().get("detail", ""), "потолок проектов → 402: %s" % r.text[:110])
+        check(r.status_code == 402 and "файлов" in r.json().get("detail", ""), "потолок проектов → 402: %s" % r.text[:110])
         main.TENANT_MAX_PROJECTS, main.TENANT_MAX_PAGES = 0, 0.01
         r = up()
         check(r.status_code == 402 and " стр." in r.json().get("detail", ""),

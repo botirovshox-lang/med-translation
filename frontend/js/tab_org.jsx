@@ -66,6 +66,11 @@ function OrgGlossaryImport({ store, toast }) {
   const [tgt, setTgt] = useState("EN");
   const [domain, setDomain] = useState("general");
   const [tier, setTier] = useState("auto");
+  /* В какой словарь: «новый» (название) либо существующий. Файл клиента —
+     свой словарь, а не куча со старым импортом: потом его подключают
+     к проекту по имени. */
+  const [dictId, setDictId] = useState("");
+  const [newDict, setNewDict] = useState("");
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
@@ -79,17 +84,23 @@ function OrgGlossaryImport({ store, toast }) {
     if (!file) return;
     setBusy(true);
     try {
-      const r = await window.API.importGlossary(file, src + "→" + tgt, domain, tier, dry);
+      const r = await window.API.importGlossary(file, src + "→" + tgt, domain, tier, dry,
+                                                dictId === "__new" ? "" : dictId, dictId === "__new" ? newDict : "");
       setPreview(r);
       if (!dry) {
         toast.success(TR("Импортировано"), r.added + TR(" записей"));
-        // Список глоссария в браузере — 150 верхних записей; подтянуть заново.
-        window.API.safeCall(() => window.API.seed()).then(d => { if (d && d.glossary && store.setGlossary) store.setGlossary(d.glossary); });
+        // Список глоссария и словари в браузере — подтянуть заново.
+        window.API.safeCall(() => window.API.seed()).then(d => {
+          if (d && d.glossary && store.setGlossary) store.setGlossary(d.glossary);
+          if (d && d.dicts && store.setDicts) store.setDicts(d.dicts);
+        });
       }
     } catch (e) { toast.error(TR("Импорт"), e.message || String(e)); }
     setBusy(false);
   };
   const opt = (arr) => arr.map(([v, l]) => React.createElement("option", { key: v, value: v }, l));
+  const dictOpts = [["", TR("Словарь по умолчанию")], ["__new", TR("Новый словарь…")]]
+    .concat((store.dicts || []).map(d => [d.id, d.title + " · " + (d.count || 0)]));
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Импорт глоссария (TSV / CSV)")),
     React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } },
@@ -101,10 +112,14 @@ function OrgGlossaryImport({ store, toast }) {
       React.createElement(Field, { label: TR("Предметная область") }, React.createElement(Select, { value: domain, onChange: (e) => setDomain(e.target.value) }, opt(domains))),
       React.createElement(Field, { label: TR("Уровень") }, React.createElement(Select, { value: tier, onChange: (e) => setTier(e.target.value) },
         React.createElement("option", { value: "auto" }, TR("Подсказка (модель вправе игнорировать)")),
-        React.createElement("option", { value: "verified" }, TR("Приказ (выверенный словарь)"))))),
+        React.createElement("option", { value: "verified" }, TR("Приказ (выверенный словарь)")))),
+      React.createElement(Field, { label: TR("В какой словарь") },
+        React.createElement(Select, { value: dictId, onChange: (e) => setDictId(e.target.value) }, opt(dictOpts))),
+      dictId === "__new" && React.createElement(Field, { label: TR("Название нового словаря") },
+        React.createElement(Input, { value: newDict, placeholder: TR("напр. Словарь клиента"), onChange: (e) => setNewDict(e.target.value) }))),
     React.createElement("div", { className: "row", style: { gap: 8 } },
-      React.createElement(Btn, { variant: "secondary", disabled: !file || busy || src === tgt, onClick: () => run(true) }, TR("Проверить")),
-      React.createElement(Btn, { variant: "primary", disabled: !file || busy || !preview || !preview.dryRun || !preview.added, onClick: () => run(false) },
+      React.createElement(Btn, { variant: "secondary", disabled: !file || busy || src === tgt || (dictId === "__new" && !newDict.trim()), onClick: () => run(true) }, TR("Проверить")),
+      React.createElement(Btn, { variant: "primary", disabled: !file || busy || !preview || !preview.dryRun || !preview.added || (dictId === "__new" && !newDict.trim()), onClick: () => run(false) },
         preview && preview.dryRun ? TR("Импортировать ") + preview.added : TR("Импортировать"))),
     preview && React.createElement("div", { style: { fontSize: 13 } },
       React.createElement("div", null, TR("Строк: ") + preview.rows + TR(" · добавится: ") + preview.added + TR(" · повторов: ") + preview.skippedDup + TR(" · пустых/битых: ") + preview.skippedBad + (preview.header ? TR(" · заголовок распознан") : TR(" · без заголовка: первые две колонки"))),

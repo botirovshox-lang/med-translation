@@ -8,7 +8,9 @@ const QUEUE_PAGE = 25;
 
 // Поиск с выбором стороны: русский термин или английский перевод.
 // «ё» приравнена к «е»: в русских текстах их пишут вперемешку.
-const PAIR_SCOPES = [["all", TR("Везде")], ["src", TR("Оригинал (RU)")], ["tgt", TR("Перевод (EN)")]];
+// Без кодов языков в подписи: пара у проекта любая, а константа считается
+// один раз при загрузке файла.
+const PAIR_SCOPES = [["all", TR("Везде")], ["src", TR("Оригинал")], ["tgt", TR("Перевод")]];
 function pairNorm(t) { return (t || "").toLowerCase().replace(/ё/g, TR("е")); }
 function pairMatches(row, q, scope) {
   const needle = pairNorm(q);
@@ -892,6 +894,14 @@ function TabGlossary({ store, toast }) {
   const [allTerms, setAllTerms] = useState(store.glossary);
   const [loaded, setLoaded] = useState(false);
   const [page, setPage] = useState(0);
+  /* Словарь: пусто — все словари организации. У записи словарь считает
+     сервер (`dict`), здесь только фильтр и колонка. */
+  const [dictSel, setDictSel] = useState("");
+  const dicts = store.dicts || [];
+  const dictTitle = (id) => ((dicts.find(d => d.id === id) || {}).title) || id || "";
+  /* Куда пишутся новые слова открытого проекта: первый словарь его папки. */
+  const folder = store.activeFolder || null;
+  const writeDict = folder && Array.isArray(folder.dicts) && folder.dicts.length ? folder.dicts[0] : "";
   // Автоодобрение и откат меняют и очередь, и сам глоссарий — обоим нужен
   // общий сигнал «перечитай», иначе таблица показывает вчерашний список.
   const [queueVersion, setQueueVersion] = useState(0);
@@ -905,11 +915,12 @@ function TabGlossary({ store, toast }) {
   }, [queueVersion]);
 
   // Reset page on filter change
-  useEffect(() => { setPage(0); }, [query, scope, cat, sort]);
+  useEffect(() => { setPage(0); }, [query, scope, cat, sort, dictSel]);
 
   const cats = ["all"].concat(
     Array.from(new Set(allTerms.map(g => g.cat).filter(Boolean))).sort());
   let rows = allTerms.filter(g => {
+    if (dictSel && (g.dict || "old") !== dictSel) return false;
     if (cat !== "all" && g.cat !== cat) return false;
     if (query && !pairMatches(g, query, scope)) return false;
     return true;
@@ -990,6 +1001,9 @@ function TabGlossary({ store, toast }) {
       React.createElement(SearchInput, { value: query, onChange: (e) => setQuery(e.target.value),
         placeholder: scope === "src" ? TR("Поиск по термину (RU)…") : scope === "tgt" ? TR("Поиск по переводу (EN)…") : TR("Поиск по глоссарию…") }),
       React.createElement("div", { className: "row", style: { gap: 8 } },
+        dicts.length > 0 && React.createElement(Select, { value: dictSel, onChange: (e) => setDictSel(e.target.value), style: { width: "auto" }, "aria-label": TR("Словарь") },
+          React.createElement("option", { value: "" }, TR("Все словари")),
+          dicts.map(d => React.createElement("option", { key: d.id, value: d.id }, d.title + " · " + (d.count || 0)))),
         React.createElement(ScopeSelect, { value: scope, onChange: (e) => setScope(e.target.value) }),
         React.createElement(Select, { value: cat, onChange: (e) => setCat(e.target.value), style: { width: "auto" } },
           cats.map(c => React.createElement("option", { key: c, value: c }, c === "all" ? TR("Все категории") : c))),
@@ -1005,7 +1019,9 @@ function TabGlossary({ store, toast }) {
       React.createElement("div", { className: "tbl-scroll" },
         React.createElement("table", { className: "tbl" },
           React.createElement("thead", null, React.createElement("tr", null,
-            React.createElement("th", null, TR("Термин (RU)")), React.createElement("th", null, TR("Перевод (EN)")),
+            React.createElement("th", null, TR("Термин") + " (" + ((store.activeProject || {}).src || "RU") + ")"),
+            React.createElement("th", null, TR("Перевод") + " (" + ((store.activeProject || {}).tgt || "EN") + ")"),
+            dicts.length > 0 && React.createElement("th", { style: { width: 160 } }, TR("Словарь")),
             React.createElement("th", { style: { width: 150 } }, TR("Категория"), React.createElement(InfoTip, { title: TR("Категория"), body: TR("Anatomy (анатомия), Dosage (дозировки), Disease (заболевания), Device (медтехника), Procedure (процедуры) и др.") })),
             React.createElement("th", { style: { width: 120 } }, TR("Частота"), React.createElement(InfoTip, { title: TR("Частота"), body: TR("Сколько раз термин встречался в проектах.") })),
             React.createElement("th", { style: { width: 150 } }, TR("Достоверность"), React.createElement(InfoTip, { title: TR("Уверенность"), body: TR("High — проверен экспертом, Medium — авто-извлечён, Low — требует проверки.") })), React.createElement("th", { style: { width: 96 } }, ""))),
@@ -1029,6 +1045,7 @@ function TabGlossary({ store, toast }) {
                   g.project != null && React.createElement("span", { className: "badge soft", style: { fontSize: 11, marginLeft: 8, whiteSpace: "nowrap" },
                     title: TR("Запись работает только в этом проекте. «Расширить» сделает её правилом всей организации.") },
                     TR("проект ") + g.project)),
+                dicts.length > 0 && React.createElement("td", { className: "dim", style: { fontSize: 12 } }, dictTitle(g.dict || "old")),
                 React.createElement("td", null, React.createElement(Badge, { variant: "soft" }, g.cat)),
                 React.createElement("td", { className: "tnum dim" }, g.freq + "×"),
                 React.createElement("td", null, React.createElement("span", { className: "badge " + cls }, lab)),
@@ -1060,6 +1077,7 @@ function TabGlossary({ store, toast }) {
     ),
 
     modal && React.createElement(TermModal, { term: modal === "add" ? null : modal,
+      dicts, writeDict,
       scope: store.activeProject
         ? { lang: store.activeProject.src + "→" + store.activeProject.tgt,
             domain: store.activeProject.domain || LEGACY_DOMAIN }
@@ -1116,12 +1134,16 @@ function TermUsage({ src, oldTgt, newTgt, lang, domain }) {
   );
 }
 
-function TermModal({ term, onClose, onSave, scope }) {
+function TermModal({ term, onClose, onSave, scope, dicts, writeDict }) {
   const [src, setSrc] = useState(term ? term.src : "");
   const [tgt, setTgt] = useState(term ? term.tgt : "");
   const [cat, setCat] = useState(term ? term.cat : "Term");
   const [note, setNote] = useState(term ? term.note : "");
   const [conf, setConf] = useState(term ? term.conf : "high");
+  /* Словарь новой записи: по умолчанию тот, куда пишет открытый проект.
+     У существующей записи словарь не меняется — он часть её адреса. */
+  const [dictId, setDictId] = useState(term ? (term.dict || "old") : (writeDict || ""));
+  const dictList = dicts || [];
   const cats = ["Term", "Anatomy", "Cardiology", "Disease", "Dosage", "Symptom", "Lab", "Vitals", "Regulatory", "Document", "Device"];
   return React.createElement(Modal, {
     title: term ? TR("Редактировать термин") : TR("Новый термин"), icon: "book", onClose,
@@ -1137,9 +1159,16 @@ function TermModal({ term, onClose, onSave, scope }) {
         // заводила бы рядом общий дубль, а проектная оставалась бы сильнее.
         onClick: () => onSave({ src, tgt, cat, note, conf, freq: term ? term.freq : 1,
                                 project: term && term.project != null ? term.project : undefined,
+                                dictId: dictId || undefined, dict: dictId || undefined,
                                 lang: term ? term.lang : (scope || {}).lang || null,
                                 domain: term ? term.domain : (scope || {}).domain || null }, !term) }, TR("Сохранить")))
   },
+    dictList.length > 0 && React.createElement(Field, { label: TR("Словарь") },
+      term
+        ? React.createElement("div", { className: "dim", style: { fontSize: 13 } }, ((dictList.find(d => d.id === dictId) || {}).title) || dictId)
+        : React.createElement(Select, { value: dictId, onChange: (e) => setDictId(e.target.value) },
+            React.createElement("option", { value: "" }, TR("Словарь по умолчанию")),
+            dictList.map(d => React.createElement("option", { key: d.id, value: d.id }, d.title)))),
     React.createElement("div", { className: "grid grid-2" },
       React.createElement(Field, { label: TR("Термин (русский)") }, React.createElement(Input, { value: src, onChange: (e) => setSrc(e.target.value), placeholder: TR("напр. стеноз") })),
       React.createElement(Field, { label: TR("Перевод (английский)") }, React.createElement(Input, { value: tgt, onChange: (e) => setTgt(e.target.value), placeholder: "e.g. stenosis" }))),

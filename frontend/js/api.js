@@ -185,18 +185,32 @@
     downloadUrl: (url) => url + (url.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(getToken()),
 
     /* lang/domain сужают выдачу до области проекта — той, что уходит в промпт. */
-    listGlossary:  (q, cat, limit, offset, lang, domain) => call("GET", `/glossary?q=${encodeURIComponent(q||"")}&cat=${encodeURIComponent(cat||"")}&limit=${limit||200}&offset=${offset||0}&lang=${encodeURIComponent(lang||"")}&domain=${encodeURIComponent(domain||"")}`),
+    listGlossary:  (q, cat, limit, offset, lang, domain, dictId) => call("GET", `/glossary?q=${encodeURIComponent(q||"")}&cat=${encodeURIComponent(cat||"")}&limit=${limit||200}&offset=${offset||0}&lang=${encodeURIComponent(lang||"")}&domain=${encodeURIComponent(domain||"")}&dictId=${encodeURIComponent(dictId||"")}`),
     listProjects:  ()                       => call("GET",    "/projects"),
     getProject:    (pid)                    => call("GET",    `/projects/${pid}`),
     createProject: (info)                   => call("POST",   "/projects",                          info),
     deleteProject: (pid)                    => call("DELETE", `/projects/${pid}`),
-    uploadProject: async (file, title, src, tgt, domain) => {
+    /* Папки проектов (на экране — «Проект», внутри — файлы) и словари.
+       Файл без папки — сам себе папка с тем же номером: сервер отдаёт
+       такую папку как `virtual`, править её можно как настоящую. */
+    listFolders:   ()                       => call("GET",    "/folders"),
+    createFolder:  (body)                   => call("POST",   "/folders", body),
+    updateFolder:  (fid, body)              => call("POST",   `/folders/${fid}`, body),
+    deleteFolder:  (fid, force)             => call("DELETE", `/folders/${fid}` + (force ? "?force=true" : "")),
+    listDicts:     ()                       => call("GET",    "/dicts"),
+    createDict:    (body)                   => call("POST",   "/dicts", body),
+    updateDict:    (did, body)              => call("POST",   `/dicts/${encodeURIComponent(did)}`, body),
+    deleteDict:    (did)                    => call("DELETE", `/dicts/${encodeURIComponent(did)}`),
+    /* `folder` — папка, в которую кладётся файл: он наследует её пару
+       и область. Без папки файл сам себе папка. */
+    uploadProject: async (file, title, src, tgt, domain, folder) => {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("title", title || "");
       fd.append("src",   src  || "RU");
       fd.append("tgt",   tgt  || "EN");
       fd.append("domain", domain || "medical");
+      if (folder != null) fd.append("folder", String(folder));
       const r = await fetch((window.API_BASE || "") + "/api/projects/upload",
                             { method: "POST", body: fd, headers: authHeaders({}) });
       if (r.status === 401) onUnauthorized();
@@ -245,13 +259,18 @@
       if (!r.ok) { const e = new Error(data.detail || data.error || (TR("Не посчитано: ") + r.status)); e.status = r.status; throw e; }
       return data;
     },
-    importGlossary: async (file, lang, domain, tier, dryRun) => {
+    /* `dictId` — в какой словарь; `newDict` — название НОВОГО (заводится
+       при записи, не при сухом прогоне). Ни того ни другого — словарь
+       организации по умолчанию. */
+    importGlossary: async (file, lang, domain, tier, dryRun, dictId, newDict) => {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("lang", lang || "");
       fd.append("domain", domain || "");
       fd.append("tier", tier || "auto");
       fd.append("dry_run", dryRun ? "true" : "false");
+      fd.append("dict_id", dictId || "");
+      fd.append("new_dict", newDict || "");
       const r = await fetch(BASE + "/glossary/import", { method: "POST", body: fd, headers: authHeaders({}) });
       if (r.status === 401) onUnauthorized();
       const data = await r.json().catch(() => ({}));
@@ -413,7 +432,8 @@
     /* Область обязательна: без неё удаление уносит однофамильца из другой пары языков. */
     // `project` — видимость записи, которую видел человек: проектная либо общая.
     // Без него удаление/понижение уносило бы все тёзки сквозь проекты.
-    deleteTerm:    (src, lang, domain, project) => call("DELETE", `/glossary?src=${encodeURIComponent(src)}&lang=${encodeURIComponent(lang||"")}&domain=${encodeURIComponent(domain||"")}` + (project != null ? `&project=${project}` : "")),
+    // `dictId` — словарь записи: тёзка в другом подключённом словаре иначе ушла бы вместе с ней.
+    deleteTerm:    (src, lang, domain, project, dictId) => call("DELETE", `/glossary?src=${encodeURIComponent(src)}&lang=${encodeURIComponent(lang||"")}&domain=${encodeURIComponent(domain||"")}` + (project != null ? `&project=${project}` : "") + (dictId ? `&dictId=${encodeURIComponent(dictId)}` : "")),
     /* Понижение приказа до подсказки: намерение, обратное правке (там «правка
        руками = приказ»), поэтому отдельной дверью. */
     demoteTerm:    (src, lang, domain, project) => call("POST",   "/glossary/demote", { src, lang: lang || "", domain: domain || "", project: project != null ? project : null }),

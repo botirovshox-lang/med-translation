@@ -126,7 +126,6 @@
   "Одобрено автоматически: ": "Avtomatik ma'qullandi: ",
   "Одобрить пачкой можно только то, что подтверждено, — это делает ": "To'plam bilan faqat tasdiqlanganini ma'qullash mumkin — buni ",
   "Одобряем…": "Ma'qullanmoqda…",
-  "Оригинал (RU)": "Asl matn (RU)",
   "Осталось неспрошенных: ": "So'ralmaganlar qoldi: ",
   "Останется человеку — почему:": "Odamga qoladi — nega:",
   "Откат не выполнен": "Qaytarish bajarilmadi",
@@ -140,7 +139,6 @@
   "Пара попадает в глоссарий сама, только если: у термина ровно один вариант перевода в очереди; та же пара пришла из нескольких независимых сегментов ИЛИ сегмент подтвердил человек; сегменты-доноры прошли back-check и проверку терминологии чисто; пара не спорит с проверенной записью.\n\nПо умолчанию запись уходит уровнем «подсказка» — модель вправе её игнорировать. Приказом («use these exact translations») запись становится от человека или от трёх независимых чистых сегментов, а в медицине, фармацевтике и юриспруденции — только от человека.\n\nПравила не зависят от языка и тематики: считаются согласие источников и оценки других прогонов, а не мнение той модели, что делала перевод.": "Juftlik lug'atga o'zi faqat quyidagi hollarda tushadi: navbatda atamaning aynan bitta tarjima varianti bor; xuddi shu juftlik bir necha mustaqil segmentdan kelgan YOKI segmentni odam tasdiqlagan; donor segmentlar teskari tarjima va atamashunoslik tekshiruvidan toza o'tgan; juftlik tekshirilgan yozuvga zid emas.\n\nStandart holda yozuv «maslahat» darajasida ketadi — model uni e'tiborsiz qoldirishi mumkin. «Buyruq» («use these exact translations») darajasini yozuv odamdan yoki uchta mustaqil toza segmentdan oladi, tibbiyot, farmatsevtika va huquqda esa — faqat odamdan.\n\nQoidalar til va mavzuga bog'liq emas: tarjimani qilgan modelning fikri emas, manbalar roziligi va boshqa ishlovlar baholari hisobga olinadi.",
   "Пара языков и тематика, в которых запись видна при переводе": "Yozuv tarjimada ko'rinadigan til juftligi va mavzu",
   "Пачка #": "To'plam #",
-  "Перевод (EN)": "Tarjima (EN)",
   "Перевод (английский)": "Tarjima (ingliz)",
   "Переспрашиваем…": "Qayta so'ralmoqda…",
   "Переспросить все ": "Hammasini qayta so'rash: ",
@@ -209,7 +207,6 @@
   "Судья: перевод означает другое": "Hakam: tarjima boshqa narsani anglatadi",
   "Судья: правилом на весь документ не годится": "Hakam: butun hujjat uchun qoida bo'la olmaydi",
   "Термин": "Atama",
-  "Термин (RU)": "Atama (RU)",
   "Термин (русский)": "Atama (rus)",
   "Термин добавлен": "Atama qo'shildi",
   "Термин добавлен в глоссарий": "Atama lug'atga qo'shildi",
@@ -316,5 +313,9 @@
   "Не то": "Unday emas",
   "по охвату": "qamrov bo'yicha",
   "по частоте": "chastota bo'yicha",
-  " · одобрено: ": " · ma'qullandi: "
+  " · одобрено: ": " · ma'qullandi: ",
+  "Оригинал": "Asl matn",
+  "Словарь": "Lug'at",
+  "Все словари": "Barcha lug'atlar",
+  "Словарь по умолчанию": "Standart lug'at"
 }

@@ -279,5 +279,8 @@
  "; китайский — ": "; xitoy — ",
  "Для остальных языков страница — слова (поле «Слов в странице» выше); справочно: ": "Qolgan tillar uchun sahifa — so'zlar (yuqoridagi «Sahifadagi so'zlar» maydoni); ma'lumot uchun: ",
  " знаков ≈ 250 слов, английский ": " belgi ≈ 250 so'z, ingliz ",
- "Код языка исходника с письмом без пробелов (две буквы, например ZH):": "Probelsiz yozuvli asl til kodi (ikki harf, masalan ZH):"
+ "Код языка исходника с письмом без пробелов (две буквы, например ZH):": "Probelsiz yozuvli asl til kodi (ikki harf, masalan ZH):",
+ "Новый словарь…": "Yangi lug'at…",
+ "В какой словарь": "Qaysi lug'atga",
+ "напр. Словарь клиента": "mas. Mijoz lug'ati"
 }

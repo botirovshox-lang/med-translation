@@ -621,27 +621,440 @@ def _scope_of(entry: dict) -> tuple:
             _tenant_of(entry))
 
 
+# ─── Папки проектов: на экране «проект», внутри — файлы ────────────────
+# Прежний «проект» бэкенда — это ОДИН файл (сегменты, исходник, страницы),
+# и весь API адресует его как `/api/projects/{pid}`. Человеку нужен проект
+# с НЕСКОЛЬКИМИ файлами: договор из пяти приложений, учебник по главам.
+# Переименовывать сто с лишним маршрутов и ключи данных ради этого нельзя
+# (боевые данные, тесты изоляции, задачи прогонов адресуют pid), поэтому
+# контейнер заведён РЯДОМ: `STATE["folders"]` — папка проекта, у файла
+# появляется поле `folder`. В интерфейсе папка называется «Проект», прежний
+# проект — «Файл».
+#
+# ЗАКОН МИГРАЦИИ: файл БЕЗ поля `folder` — сам себе папка с ТЕМ ЖЕ номером
+# (`_fid`), а её запись ВИРТУАЛЬНА (`_virtual_folder`) — собирается из файла,
+# пока не понадобится настоящая (второй файл, переименование, словари:
+# `_materialize_folder` заводит запись с тем же номером). Документы проектов
+# при этом не переписываются: у учебника документ 5 МБ, а внешний воркер
+# пишет его во время прогона.
+#
+# Номера файлов и папок выдаёт ОДИН счётчик (`_next_id`): у знания
+# (глоссарий, TM, карточки очереди) поле `project` хранит номер ПАПКИ —
+# у старых записей это номер файла, и он же номер его виртуальной папки,
+# то есть число читается однозначно.
+#
+# Пара языков и область живут НА ПАПКЕ, файл наследует их при загрузке
+# (и хранит свои копии: весь код читает src/tgt/domain с файла). Разная
+# пара — другой проект: одна папка = один словарь, один прайс, одна область.
+#
+# Документ `folders` пишет только API; воркер перечитывает его по эпохе
+# `doc:folders` (`_folders_changed`) — тот же приём, что у `tenants`.
+
+def _folders() -> list:
+    return STATE.setdefault("folders", [])
+
+
+def _project_by_id(pid) -> Optional[dict]:
+    for p in STATE.get("projects") or []:
+        if p.get("id") == pid:
+            return p
+    return None
+
+
+def _fid(v):
+    """Номер папки по номеру файла ИЛИ папки. Файл без поля `folder` — своя
+    папка с тем же номером; чужой файлу номер (новая папка) возвращается
+    как есть: счётчик у файлов и папок общий, и число читается однозначно."""
+    if not isinstance(v, int):
+        return None
+    p = _project_by_id(v)
+    if p is None:
+        return v
+    f = p.get("folder")
+    return f if isinstance(f, int) else v
+
+
+def _folder_by_id(fid) -> Optional[dict]:
+    """НАСТОЯЩАЯ запись папки либо None (виртуальная или нет такой)."""
+    if not isinstance(fid, int):
+        return None
+    for f in _folders():
+        if f.get("id") == fid:
+            return f
+    return None
+
+
+def _virtual_folder(p: dict) -> dict:
+    return {"id": p["id"], "title": p.get("title") or "", "src": p.get("src") or "RU",
+            "tgt": p.get("tgt") or "EN", "domain": p.get("domain") or LEGACY_DOMAIN,
+            "tenant": _tenant_of(p), "created": p.get("created") or "", "virtual": True}
+
+
+def _folder_of(project: Optional[dict]) -> Optional[dict]:
+    """Папка файла: настоящая запись либо виртуальная. None только без файла."""
+    if not project:
+        return None
+    fid = _fid(project.get("id"))
+    return _folder_by_id(fid) or _virtual_folder(project)
+
+
+def _tenant_folders(tenant: Optional[str] = None) -> list:
+    """Папки организации: настоящие записи и виртуальные — по файлам без
+    записи. Новые первыми (номера растут со временем)."""
+    t = tenant or _current_tenant()
+    real = [f for f in _folders() if _tenant_of(f) == t]
+    have = {f["id"] for f in real}
+    out = list(real)
+    for p in STATE.get("projects") or []:
+        if _tenant_of(p) != t:
+            continue
+        fid = _fid(p["id"])
+        if fid not in have:
+            have.add(fid)
+            out.append(_virtual_folder(p))
+    return sorted(out, key=lambda f: -(f.get("id") or 0))
+
+
+def get_folder(fid: int) -> dict:
+    """Единственное горло к папке по номеру. Чужой организации — 404,
+    а не 403: 403 подтверждал бы, что папка с таким номером существует."""
+    for f in _tenant_folders():
+        if f.get("id") == fid:
+            return f
+    raise HTTPException(404, f"Folder {fid} not found")
+
+
+def _folder_files(fid: int) -> list:
+    """Файлы папки своей организации: с полем `folder` либо сам файл-папка."""
+    return [p for p in _tenant_projects() if _fid(p["id"]) == fid]
+
+
+def _folder_public(f: dict) -> dict:
+    """Папка для браузера — вместе с номерами файлов. Сами файлы браузер
+    уже держит (`/api/seed` → projects), второй раз слать их незачем."""
+    t = _tenant_of(f)
+    files = [p["id"] for p in STATE.get("projects") or []
+             if _tenant_of(p) == t and _fid(p["id"]) == f.get("id")]
+    return {**f, "files": files}
+
+
+def _next_id() -> int:
+    """Следующий номер для файла ИЛИ папки — один ряд на обоих."""
+    m = max((p.get("id") or 0 for p in STATE.get("projects") or []), default=0)
+    return max(m, max((f.get("id") or 0 for f in _folders()), default=0)) + 1
+
+
+def _new_folder(title: str, src: str, tgt: str, domain: str,
+                tenant: Optional[str] = None, dicts=None) -> dict:
+    """Настоящая запись папки. `dicts` — подключённые словари; None означает
+    «поле не задано» и читается как «все словари организации» (закон
+    миграции) — так папки, заведённые до словарей, ведут себя как прежде."""
+    f = {"id": _next_id(), "title": (title or "").strip() or "Новый проект",
+         "src": src, "tgt": tgt, "domain": domain,
+         "tenant": tenant or _current_tenant(),
+         "created": datetime.now().strftime("%Y-%m-%d")}
+    if dicts is not None:
+        f["dicts"] = list(dicts)
+    _folders().append(f)
+    return f
+
+
+def _materialize_folder(fid: int) -> dict:
+    """Настоящая запись для папки `fid` своей организации: есть — она,
+    виртуальная — заводится с ТЕМ ЖЕ номером (файл не переписывается:
+    без поля `folder` он и так читается как файл этой папки)."""
+    real = _folder_by_id(fid)
+    if real is not None:
+        if _tenant_of(real) != _current_tenant():
+            raise HTTPException(404, f"Folder {fid} not found")
+        return real
+    v = get_folder(fid)                    # виртуальная своей организации либо 404
+    rec = {k: v[k] for k in ("id", "title", "src", "tgt", "domain", "tenant", "created")}
+    _folders().append(rec)
+    return rec
+
+
+def _folder_target(fid: Optional[int]) -> Optional[dict]:
+    """Папка, в которую кладётся новый файл: None — файл сам себе папка."""
+    if fid is None:
+        return None
+    return _materialize_folder(fid)
+
+
+def _folders_changed() -> None:
+    """Поднять эпоху `doc:folders`: внешний воркер читает папку файла
+    (подключённые словари) в потоках прогона, и без эпохи видел бы её
+    такой, какой она была на старте процесса. См. `_tenants_changed`."""
+    try:
+        if hasattr(STORE, "bump_epoch"):
+            STORE.bump_epoch("doc:folders")
+    except Exception as e:
+        print(f"[backend] папки: эпоха не поднята: {e}", file=sys.stderr)
+
+
+def _folder_dict_list(fid) -> Optional[list]:
+    """Подключённые словари папки В ПОРЯДКЕ подключения; None — все
+    (виртуальная папка или запись без поля `dicts`)."""
+    f = _folder_by_id(fid)
+    dl = (f or {}).get("dicts")
+    return list(dl) if isinstance(dl, list) else None
+
+
+def _folder_dicts(fid) -> Optional[set]:
+    dl = _folder_dict_list(fid)
+    return set(dl) if dl is not None else None
+
+
+def _dict_order(fid) -> dict:
+    dl = _folder_dict_list(fid) or []
+    return {d: i for i, d in enumerate(dl)}
+
+
+def _set_folder_domain(fid: int, domain: str) -> None:
+    f = _materialize_folder(fid)
+    f["domain"] = domain
+    for p in _folder_files(fid):
+        p["domain"] = domain
+    _invalidate_gloss_index()
+
+
+def _delete_project_record(pid: int) -> None:
+    """Снять файл-проект и его исходник с диска. Общее для удаления файла
+    и удаления папки целиком: две копии однажды разошлись бы в том,
+    что считать «удалить»."""
+    STATE["projects"] = [p for p in STATE["projects"] if p["id"] != pid]
+    # Исходник уходит вместе с проектом. Учебник весит 21 МБ, и оставлять его
+    # на диске после удаления значит копить мусор, который никто уже не найдёт:
+    # имя файла — номер проекта, а проекта больше нет.
+    for path in _source_paths(pid):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            print("[backend] исходник проекта %s не удалён: %s" % (pid, e),
+                  file=sys.stderr)
+
+
+# ─── Именованные словари: какой глоссарий использует проект ────────────
+# До этого действовало всё, что попадало в область (пара, тематика,
+# организация): и словарь клиента, и массовый автоимпорт, и приказы,
+# доставшиеся записям по умолчанию миграции. Отключить лишнее было нельзя —
+# только вынести. Теперь у записи есть СЛОВАРЬ (`entry["dict"]`, строковый
+# id), у папки — список подключённых (`folder["dicts"]`), и ПЕРВЫЙ в списке —
+# куда пишется новое знание проекта (`_write_dict_for`). Остальные — только
+# чтение: писатели ищут запись в первом, а запись из второго словаря нашлась
+# бы и переписалась (справочник клиента!) — см. `_glossary_entry(did=)`.
+#
+# ЗАКОН МИГРАЦИИ (тот же, что у lang/domain/tenant/project): запись БЕЗ поля
+# принадлежит ОДНОМУ старому словарю организации (`DICT_LEGACY`), без
+# разбиения по происхождению — `origin` меняют писатели (автоодобрение,
+# откат пачки), и словарь, выведенный из него, прыгал бы. Десять тысяч строк
+# боевого глоссария не переписываются; сама запись-словарь для них
+# ВИРТУАЛЬНА (`_virtual_dicts`), пока человек её не переименует.
+# Папка БЕЗ поля `dicts` читается как «все словари организации» — папки
+# первого клиента ведут себя в точности как прежде. Новая папка из
+# интерфейса всегда несёт список (и по умолчанию — свой новый словарь).
+#
+# Поле называется `dict`, а не `gid`: `gid` — идентификатор СТРОКИ
+# хранилища (`store._ensure_ids`), он занят.
+
+DICT_LEGACY = "old"            # всё, что было до разделения на словари
+DICT_MAIN = "main"             # словарь по умолчанию у организации без старого
+_DICT_TITLES = {DICT_LEGACY: "Старый словарь (всё, что было до разделения)",
+                DICT_MAIN: "Общий словарь"}
+_DICT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,60}$")
+
+
+def _dicts() -> list:
+    return STATE.setdefault("dicts", [])
+
+
+def _dict_of(entry: dict) -> str:
+    d = entry.get("dict")
+    return d if isinstance(d, str) and d else DICT_LEGACY
+
+
+_VIRTUAL_DICTS: dict = {}      # tenant -> (поколение глоссария, {id: запись})
+
+
+def _virtual_dicts(tenant: str) -> dict:
+    """Словари, у которых нет записи, но есть записи глоссария: считаются
+    по глоссарию один раз на поколение."""
+    got = _VIRTUAL_DICTS.get(tenant)
+    if got is not None and got[0] == _GLOSS_EPOCH[0]:
+        return got[1]
+    real = {d.get("id") for d in _dicts() if _tenant_of(d) == tenant}
+    out: dict = {}
+    for g in STATE.get("glossary") or []:
+        if _tenant_of(g) != tenant:
+            continue
+        did = _dict_of(g)
+        if did in real:
+            continue
+        rec = out.get(did)
+        if rec is None:
+            rec = out[did] = {"id": did, "title": _DICT_TITLES.get(did, did), "tenant": tenant,
+                              "domain": None, "virtual": True, "count": 0}
+        rec["count"] += 1
+    _VIRTUAL_DICTS[tenant] = (_GLOSS_EPOCH[0], out)
+    return out
+
+
+def _tenant_dicts(tenant: Optional[str] = None) -> list:
+    """Словари организации: настоящие записи, затем виртуальные. У каждого —
+    число записей, а `pairs` — по парам языков: словарь RU→EN, подключённый
+    к RU→DE проекту, иначе молча мёртв."""
+    t = tenant or _current_tenant()
+    real = [d for d in _dicts() if _tenant_of(d) == t]
+    counts: dict = {}
+    pairs: dict = {}
+    for g in STATE.get("glossary") or []:
+        if _tenant_of(g) != t:
+            continue
+        did = _dict_of(g)
+        counts[did] = counts.get(did, 0) + 1
+        lp = pairs.setdefault(did, {})
+        lang = _scope_of(g)[0]
+        lp[lang] = lp.get(lang, 0) + 1
+    out = [{**d, "count": counts.get(d["id"], 0), "pairs": pairs.get(d["id"], {})} for d in real]
+    out.extend({**v, "count": counts.get(v["id"], 0), "pairs": pairs.get(v["id"], {})}
+               for v in _virtual_dicts(t).values())
+    return out
+
+
+def _dict_ids(tenant: Optional[str] = None) -> set:
+    return {d["id"] for d in _tenant_dicts(tenant)}
+
+
+def get_dict(did: str) -> dict:
+    """Словарь по id — только своей организации (виртуальный тоже годится).
+    Чужой или несуществующий — 404."""
+    for d in _tenant_dicts():
+        if d["id"] == did:
+            return d
+    raise HTTPException(404, "Словарь не найден")
+
+
+def _default_dict_id(tenant: Optional[str] = None) -> str:
+    """Куда пишется знание, когда папка словаря не назвала: в старый
+    словарь, если он есть (так знание первого клиента остаётся одним
+    целым), иначе в общий."""
+    t = tenant or _current_tenant()
+    return DICT_LEGACY if DICT_LEGACY in _virtual_dicts(t) else DICT_MAIN
+
+
+def _new_dict(title: str, domain: Optional[str] = None, tenant: Optional[str] = None) -> dict:
+    """Настоящая запись словаря. Номер — глобальный (`d<N>`)."""
+    n = 0
+    for d in _dicts():
+        m = re.fullmatch(r"d(\d+)", d.get("id") or "")
+        if m:
+            n = max(n, int(m.group(1)))
+    rec = {"id": "d%d" % (n + 1), "title": (title or "").strip() or "Новый словарь",
+           "tenant": tenant or _current_tenant(), "domain": domain or None,
+           "created": datetime.now().strftime("%Y-%m-%d")}
+    _dicts().append(rec)
+    return rec
+
+
+def _dicts_for_new_folder(dicts, new_title, domain) -> Optional[list]:
+    """Список словарей папки по запросу: новый (если назван) идёт ПЕРВЫМ —
+    туда ложится новое знание проекта. None — поле не задано, папка читается
+    как «все словари организации» (закон миграции)."""
+    if dicts is None and not (new_title or "").strip():
+        return None
+    known = _dict_ids()
+    out = []
+    if (new_title or "").strip():
+        out.append(_new_dict(new_title, domain)["id"])
+    for did in dicts or []:
+        if did not in known:
+            raise HTTPException(400, "Неизвестный словарь: %r" % did)
+        if did not in out:
+            out.append(did)
+    return out
+
+
+def _write_dict_for(pid, tenant: Optional[str] = None) -> str:
+    """Куда пишется новое знание файла: первый подключённый словарь его
+    папки; без списка — словарь организации по умолчанию."""
+    dl = _folder_dict_list(_fid(pid)) if pid is not None else None
+    if dl:
+        return dl[0]
+    return _default_dict_id(tenant)
+
+
+def _cand_dict(c: dict) -> str:
+    """Словарь карточки очереди: свой либо словарь её файла (старые карточки)."""
+    d = c.get("dict")
+    return d if isinstance(d, str) and d else _write_dict_for(c.get("project"), _tenant_of(c))
+
+
+def _dict_id_ok(did: Optional[str]) -> Optional[str]:
+    """Проверить id словаря из запроса: свой либо пусто."""
+    if not did:
+        return None
+    if did not in _dict_ids():
+        raise HTTPException(400, "Неизвестный словарь: %r" % did)
+    return did
+
+
+def _ctx_known(gloss: dict, cand: dict, scope: tuple, key: str) -> Optional[dict]:
+    """Запись глоссария для кандидата в индексе автоодобрения — той же
+    очерёдностью, что `_glossary_entry`: своя, потом подключённые словари."""
+    fid = _gproj(cand)
+    if fid is not None:
+        own = gloss.get((scope, fid, "*", key))
+        if own is not None:
+            return own
+    dl = _folder_dict_list(fid) if fid is not None else None
+    if dl is None:
+        return gloss.get((scope, None, "*", key))
+    for d in dl:
+        e = gloss.get((scope, None, d, key))
+        if e is not None:
+            return e
+    return None
+
+
+def _gloss_precedence(h: dict, order: dict) -> tuple:
+    """Кто сильнее на одну форму: проектная запись, потом словарь, подключённый
+    раньше, потом ранг записи. ОДНА очерёдность на промпт и на поиск."""
+    return (1 if _gproj(h) is not None else 0,
+            -order.get(_dict_of(h), 10 ** 6), _hit_rank(h))
+
+
 def _gproj(entry: dict):
-    """Проект, которому принадлежит знание, либо None — вся организация.
+    """Папка проекта, которой принадлежит знание, либо None — вся организация.
 
     Поля НЕТ у всего, что заведено до этой правки, и читается это как «знание
     организации» — тот же закон миграции, что у `lang`, `domain` и `tenant`:
     боевые данные не переписываются, а читаются по-старому. Иначе выкат
-    обнулил бы работающий глоссарий первого клиента одним движением."""
+    обнулил бы работающий глоссарий первого клиента одним движением.
+
+    Число приводится к номеру ПАПКИ (`_fid`): у старых записей там номер
+    файла, и он же — номер его виртуальной папки."""
     v = entry.get("project")
-    return v if isinstance(v, int) else None
+    return _fid(v) if isinstance(v, int) else None
 
 
-def _entry_here(entry: dict, pid) -> bool:
-    """Применимо ли знание к ЭТОМУ проекту.
+def _entry_here(entry: dict, fid, dicts: Optional[set] = None) -> bool:
+    """Применимо ли знание к папке `fid` (номер папки, см. `_fid`).
 
     Проектное знание соседу не видно НИ ОДНИМ путём: ни промптом
     (`_get_context`), ни требованием (`_verified_hits`). Второе не менее
     важно первого — по требованиям считаются нарушения и ходит ремонт,
     и запись, невидимая в промпте, но требуемая проверкой, дала бы вечное
-    «расходится с глоссарием», которое нечем закрыть."""
+    «расходится с глоссарием», которое нечем закрыть.
+
+    Общее знание применимо, когда его словарь ПОДКЛЮЧЁН к папке (`dicts`,
+    см. `_folder_dicts`; None — подключены все). У памяти переводов словаря
+    нет — ей `dicts` не передают."""
     own = _gproj(entry)
-    return own is None or own == pid
+    if own is not None:
+        return own == fid
+    if dicts is None:
+        return True
+    return _dict_of(entry) in dicts
 
 
 def _project_scope(project: Optional[dict]) -> tuple:
@@ -757,6 +1170,11 @@ def _get_context(text: str, with_tm: bool = True, project: Optional[dict] = None
                 candidates.append(g)
     scope = _project_scope(project)
     pid = (project or {}).get("id")
+    # Папка файла решает, ЧТО применимо: подключённые словари и знание
+    # проекта. Считается один раз на вызов — кандидатов десятки на сегмент.
+    fid = _fid(pid)
+    dicts = _folder_dicts(fid)
+    order = _dict_order(fid)
     for g in candidates:
         src = g.get("src", "")
         if not src:
@@ -768,7 +1186,7 @@ def _get_context(text: str, with_tm: bool = True, project: Optional[dict] = None
         # Знание соседнего проекта сюда не идёт: у медицинского учебника и
         # у договора «сторона» и «показание» значат разное, и общий словарь
         # превращает это в спор, которого никто не заказывал.
-        if not _entry_here(g, pid):
+        if not _entry_here(g, fid, dicts):
             continue
         # Язык берём у САМОЙ записи: от него зависит таблица окончаний,
         # а записи чужой языковой пары сюда и не доходят (проверка выше).
@@ -784,8 +1202,11 @@ def _get_context(text: str, with_tm: bool = True, project: Optional[dict] = None
         # Проектная запись сильнее общей: она и заведена затем, чтобы
         # переопределить общее правило именно здесь. Ранг решает только
         # между записями одного уровня видимости.
-        if key not in best or (_gproj(h) is not None, _hit_rank(h)) > (
-                _gproj(best[key]) is not None, _hit_rank(best[key])):
+        # Очерёдность ОДНА на промпт и на поиск записи (`_glossary_entry`):
+        # проектная → порядок подключения словаря → ранг. Разойдись они —
+        # карточку гасила бы запись одного словаря, а требование считалось бы
+        # по записи другого: вечное «расходится с глоссарием» без вопроса.
+        if key not in best or _gloss_precedence(h, order) > _gloss_precedence(best[key], order):
             best[key] = h
     # Длинные термины первыми: меньше риск перекрытия плейсхолдеров
     hits = sorted(best.values(), key=lambda x: len(x["src"]), reverse=True)[:15]
@@ -799,8 +1220,8 @@ def _get_context(text: str, with_tm: bool = True, project: Optional[dict] = None
     tm_pool = [t for t in STATE.get("tm", [])
                if t.get("src", "").strip().lower() == text.strip().lower()
                and (t.get("lang") or DEFAULT_GLOSS_LANG) == scope[0]
-               and _tenant_of(t) == scope[2] and _entry_here(t, pid)]
-    tm_hit = next((t for t in tm_pool if _gproj(t) == pid and pid is not None),
+               and _tenant_of(t) == scope[2] and _entry_here(t, fid)]
+    tm_hit = next((t for t in tm_pool if _gproj(t) == fid and fid is not None),
                   tm_pool[0] if tm_pool else None)
     return hits, tm_hit
 
@@ -953,6 +1374,20 @@ def _resolve_domain(domain_id: Optional[str]) -> dict:
             if d.get("id") == domain_id:
                 return d
     return _DOMAINS_BY_ID.get(domain_id or "") or _DOMAINS_BY_ID[LEGACY_DOMAIN]
+
+
+def _rules_domain(dom: Optional[dict]) -> str:
+    """Ключ таблицы ДЕТЕРМИНИРОВАННЫХ правил (`checks.rules_for`) для области.
+    У своей области организации это её шаблон (`base`): правила лежат
+    по встроенным областям, и своя область, заведённая копией «Медицины»,
+    без этого молча теряла подмену стороны, стиль и скип-списки —
+    как уже делает стиль (`STYLE_DOMAIN_PRESET`)."""
+    dom = dom or {}
+    return dom.get("base") or dom.get("id") or LEGACY_DOMAIN
+
+
+def _rules_domain_of(project: Optional[dict]) -> str:
+    return _rules_domain(_resolve_domain((project or {}).get("domain")))
 
 
 # ─── Каталог моделей OpenAI ──────────────────────────────────────────
@@ -2329,6 +2764,8 @@ def _session_valid(token: Optional[str]) -> bool:
 # эндпоинте нельзя — забыть можно только строку в таблице, и это видно.
 _OWNER_ONLY = [
     ("DELETE", re.compile(r"/api/projects/\d+$")),
+    ("DELETE", re.compile(r"/api/folders/\d+$")),     # папка проекта — с файлами
+    ("DELETE", re.compile(r"/api/dicts/[^/]+$")),
     ("DELETE", re.compile(r"/api/glossary$")),
     ("DELETE", re.compile(r"/api/tm$")),
     # Понижения записи и выноса здесь НЕТ по решению владельца сервиса: у обоих
@@ -2849,6 +3286,10 @@ def _sync_shared(force: bool = False) -> None:
             if coll.startswith("doc:"):
                 key = coll[4:]
                 _apply_doc(key, STORE.load_doc(key))
+                if key in ("folders", "dicts"):
+                    # Подключённые словари — часть «чего требует глоссарий»:
+                    # кэш требований воркера иначе жил бы до его рестарта.
+                    _invalidate_gloss_index()
                 print(f"[backend] {key}: перечитан после чужого прогона", file=sys.stderr)
                 continue
             items = STORE.load_rows(coll)
@@ -3958,7 +4399,9 @@ def set_project_domain(pid: int, req: ProjectDomainRequest):
     if dom["id"] != (req.domain or "").strip():
         raise HTTPException(400, "Неизвестная область: %r" % req.domain)
     prev = project.get("domain")
-    project["domain"] = dom["id"]
+    # Область — свойство ПАПКИ: у всех файлов проекта состав приказных
+    # терминов один, и разъехаться им нельзя.
+    _set_folder_domain(_fid(pid), dom["id"])
     n_hard = sum(1 for g in STATE["glossary"]
                  if _scope_of(g) == _project_scope(project) and _hit_tier(g) == GLOSSARY_TIER_HARD)
     _audit("project.domain", project=pid, domain=dom["id"], prev=prev)
@@ -4855,18 +5298,22 @@ def get_seed():
     # человека — верхний ключ уехал бы каждому вошедшему вместе с ними.
     public.pop("surveys", None)
     public.pop("testBatches", None)
+    # Папки проектов и словари — по организации: названия чужих проектов
+    # и словарей иначе уехали бы каждому вошедшему.
+    public["folders"] = [_folder_public(f) for f in _tenant_folders()]
+    public["dicts"] = _tenant_dicts()
     for key in ("exportHistory", "termQueue", "autoBatches", "runCosts", "quotes"):
         public[key] = [e for e in (STATE.get(key) or []) if _tenant_of(e) == t]
     if _hide_cost():
         # История расхода прогонов — это суммы и модели по шагам.
         public["runCosts"] = []
     return {**public, "projects": [_project_for_client(p) for p in _tenant_projects()],
-            "glossary": [g for g in STATE["glossary"] if _tenant_of(g) == t][:150]}
+            "glossary": [{**g, "dict": _dict_of(g)} for g in STATE["glossary"] if _tenant_of(g) == t][:150]}
 
 
 @app.get("/api/glossary")
 def list_glossary(q: str = "", cat: str = "", limit: int = 200, offset: int = 0,
-                  lang: str = "", domain: str = ""):
+                  lang: str = "", domain: str = "", dictId: str = ""):
     """Full glossary with optional search and pagination.
     lang/domain сужают выдачу до области проекта — той самой, что уходит
     в промпт. Без них отдаём всё: вкладка «Глоссарий» листает общий список."""
@@ -4876,19 +5323,24 @@ def list_glossary(q: str = "", cat: str = "", limit: int = 200, offset: int = 0,
         items = [t for t in items
                  if (not lang or _scope_of(t)[0] == lang)
                  and (not domain or _scope_of(t)[1] == domain)]
+    if dictId:
+        items = [t for t in items if _dict_of(t) == dictId]
     if cat and cat != "all":
         items = [t for t in items if t.get("cat") == cat]
     if q:
         ql = q.lower()
         items = [t for t in items if ql in t.get("src", "").lower() or ql in t.get("tgt", "").lower()]
     total = len(items)
-    return {"total": total, "items": items[offset:offset + limit]}
+    # Словарь записи — производное поле (у старых записей его нет):
+    # браузер показывает его колонкой и фильтрует по нему.
+    return {"total": total, "items": [{**t, "dict": _dict_of(t)} for t in items[offset:offset + limit]]}
 
 
 @app.post("/api/glossary/import")
 async def import_glossary(request: Request, file: UploadFile = File(...),
                           lang: str = Form(""), domain: str = Form(""),
-                          tier: str = Form(GLOSSARY_TIER_SOFT), dry_run: bool = Form(True)):
+                          tier: str = Form(GLOSSARY_TIER_SOFT), dry_run: bool = Form(True),
+                          dict_id: str = Form(""), new_dict: str = Form("")):
     """Словарь клиента приходит ФАЙЛОМ, а не из кода: стартовый глоссарий пуст.
 
     TSV/CSV; колонки по заголовку (src/source/original, tgt/target/translation,
@@ -4932,10 +5384,21 @@ async def import_glossary(request: Request, file: UploadFile = File(...),
     if not has_head:
         col = {"src": 0, "tgt": 1}
     body = rows[1:] if has_head else rows
-    # Повтор — только среди ОБЩИХ записей: импорт идёт в организацию, и термин,
-    # живущий лишь проектной записью, пропускать как «уже есть» нельзя.
-    existing = {_norm_key(g.get("src")) for g in STATE["glossary"]
-                if _scope_of(g) == scope and _gproj(g) is None}
+    # Куда: в названный словарь, в НОВЫЙ (заводится только при записи —
+    # сухой прогон ничего не создаёт) либо в словарь организации по умолчанию.
+    did = _dict_id_ok(dict_id) if dict_id else None
+    if did is None and (new_dict or "").strip():
+        did = None if dry_run else _new_dict(new_dict, scope[1])["id"]
+        fresh_dict = True
+    else:
+        fresh_dict = False
+        did = did or _default_dict_id()
+    # Повтор — только среди ОБЩИХ записей ТОГО ЖЕ словаря: импорт в чистый
+    # словарь иначе пропускал бы каждый термин, что есть в старом («уже
+    # есть»), и чистый словарь оставался бы пустым по всем общим терминам.
+    existing = set() if fresh_dict else {
+        _norm_key(g.get("src")) for g in STATE["glossary"]
+        if _scope_of(g) == scope and _gproj(g) is None and _dict_of(g) == did}
     today = datetime.now().strftime("%Y-%m-%d")
     added, seen, dup, bad = [], set(), 0, 0
     # Приказ подписывает владелец — на КАЖДОЙ записи, потому что дальше она
@@ -4955,13 +5418,14 @@ async def import_glossary(request: Request, file: UploadFile = File(...),
         seen.add(key)
         added.append({"src": s_, "tgt": t_, "cat": get("cat") or "Term", "freq": 1,
                       "conf": "high" if tier == GLOSSARY_TIER_HARD else "medium",
-                      "note": get("note"), "tier": tier,
+                      "note": get("note"), "tier": tier, "dict": did,
                       "origin": ("import:" + (file.filename or "file"))[:60],
                       "lang": scope[0], "domain": scope[1], "tenant": scope[2], "updated": today,
                       **signed_import})
     out = {"ok": True, "dryRun": dry_run, "rows": len(body), "added": len(added),
            "skippedDup": dup, "skippedBad": bad, "tier": tier,
            "lang": scope[0], "domain": scope[1], "header": has_head,
+           "dict": did, "newDict": bool(fresh_dict),
            "sample": [{"src": a["src"], "tgt": a["tgt"]} for a in added[:10]]}
     if not dry_run and added:
         STATE["glossary"][0:0] = added
@@ -5098,7 +5562,7 @@ def _verified_hits(source: str, project: Optional[dict]) -> list:
     # Проект — часть ключа: у двух проектов одной организации `_project_scope`
     # совпадает буква в букву, и без него требования одного уехали бы в другой
     # через кэш, минуя все фильтры.
-    key = (_project_scope(project), (project or {}).get("id"), source or "")
+    key = (_project_scope(project), _fid((project or {}).get("id")), source or "")
     got = _HITS_CACHE.get(key)
     if got is None:
         got = [h for h in _get_context(source or "", with_tm=False, project=project)[0]
@@ -5212,7 +5676,7 @@ def _coverage(project: dict) -> dict:
         silent.append({"key": "morph", "label": "Термины в косвенных формах",
                        "why": "нет таблицы окончаний для %s — термин находится только в словарной форме" % src})
     # Правила области и пары (лево/право, стиль, скип-списки).
-    rules = (checks_mod.rules_for(dom["id"], src, tgt) if checks_mod
+    rules = (checks_mod.rules_for(_rules_domain(dom), src, tgt) if checks_mod
              else {"pairs": [], "style": []})
     if rules.get("pairs") or rules.get("style"):
         works.append({"key": "domain_rules", "label": "Правила области «%s» для %s→%s (подмена стороны, стиль)" % (dom["label"], src, tgt)})
@@ -6072,30 +6536,212 @@ class CreateProjectRequest(BaseModel):
     tgt: str = "EN"
     domain: str = DEFAULT_DOMAIN
     fileName: Optional[str] = None
+    folder: Optional[int] = None    # папка проекта; пусто — файл сам себе папка
 
 @app.post("/api/projects")
 def create_project(req: CreateProjectRequest):
     src, tgt = _check_lang_pair(req.src, req.tgt)
+    domain = _resolve_domain(req.domain)["id"]
+    folder = _folder_target(req.folder)
+    if folder is not None:
+        src, tgt, domain = folder["src"], folder["tgt"], folder["domain"]
     # Номер — глобальный (один ряд на все организации: файлы исходников
-    # и якоря картинок именуются им). Сегментов у нового проекта НЕТ: прежде
-    # сюда копировались восемь сегментов первого проекта в списке — то есть
-    # текст одного клиента оказывался в проекте другого.
-    new_id = max((p["id"] for p in STATE["projects"]), default=0) + 1
+    # и якоря картинок именуются им) и ОБЩИЙ с папками (`_next_id`). Сегментов
+    # у нового проекта НЕТ: прежде сюда копировались восемь сегментов первого
+    # проекта в списке — то есть текст одного клиента оказывался в проекте другого.
+    new_id = _next_id()
     new_project = {
         "id": new_id,
         "title": req.title or "Новый проект",
         "titleEn": req.title or "New Project",
         "src": src, "tgt": tgt,
-        "domain": _resolve_domain(req.domain)["id"],
+        "domain": domain,
         "tenant": _current_tenant(),
         "status": "in_progress",
         "created": datetime.now().strftime("%Y-%m-%d"),
         "deadline": "",
         "segments": [],
     }
+    if folder is not None:
+        new_project["folder"] = folder["id"]
     STATE["projects"].insert(0, new_project)
     save_state(STATE)
+    if folder is not None:
+        _folders_changed()
     return new_project
+
+
+# ─── Папки проектов и словари: маршруты ──────────────────────────────
+# Хелперы — рядом с `_gproj`/`_entry_here` (там же, где живёт закон
+# миграции знания); здесь только двери для браузера.
+
+class FolderRequest(BaseModel):
+    title: str = ""
+    src: str = "RU"
+    tgt: str = "EN"
+    domain: str = DEFAULT_DOMAIN
+    # Словари проекта: список подключённых и, при желании, название НОВОГО —
+    # он заводится и ставится первым, то есть туда пишется новое знание.
+    # Ни того ни другого — папка читается как «все словари организации».
+    dicts: Optional[List[str]] = None
+    newDict: Optional[str] = None
+
+
+class FolderPatch(BaseModel):
+    title: Optional[str] = None
+    domain: Optional[str] = None
+    dicts: Optional[List[str]] = None
+    newDict: Optional[str] = None
+
+
+@app.get("/api/folders")
+def list_folders():
+    return {"folders": [_folder_public(f) for f in _tenant_folders()]}
+
+
+@app.get("/api/folders/{fid}")
+def get_folder_detail(fid: int):
+    return _folder_public(get_folder(fid))
+
+
+@app.post("/api/folders")
+def create_folder(req: FolderRequest):
+    src, tgt = _check_lang_pair(req.src, req.tgt)
+    dom = _resolve_domain(req.domain)
+    if dom["id"] != (req.domain or "").strip():
+        raise HTTPException(400, "Неизвестная область: %r" % req.domain)
+    dicts = _dicts_for_new_folder(req.dicts, req.newDict, dom["id"])
+    f = _new_folder(req.title, src, tgt, dom["id"], dicts=dicts)
+    _audit("folder.create", folder=f["id"], title=f["title"])
+    _invalidate_gloss_index()
+    save_state(STATE)
+    _folders_changed()
+    return _folder_public(f)
+
+
+@app.post("/api/folders/{fid}")
+def update_folder(fid: int, req: FolderPatch):
+    """Название, область и словари папки. Область меняется у ВСЕХ файлов
+    разом — состав приказных терминов у них общий, и разъехаться им нельзя.
+    Виртуальная папка при первой правке становится настоящей записью."""
+    f = _materialize_folder(get_folder(fid)["id"])
+    changed = []
+    if req.title is not None and req.title.strip():
+        f["title"] = req.title.strip()
+        # У файла-папки название одно на двоих: файл без записи папки
+        # показывался бы под старым именем.
+        for p in _folder_files(fid):
+            if not isinstance(p.get("folder"), int):
+                p["title"] = f["title"]
+        changed.append("title")
+    if req.domain is not None:
+        dom = _resolve_domain(req.domain)
+        if dom["id"] != (req.domain or "").strip():
+            raise HTTPException(400, "Неизвестная область: %r" % req.domain)
+        _set_folder_domain(fid, dom["id"])
+        changed.append("domain")
+    if req.dicts is not None or (req.newDict or "").strip():
+        base = req.dicts if req.dicts is not None else (f.get("dicts") or [])
+        f["dicts"] = _dicts_for_new_folder(base, req.newDict, f.get("domain")) or []
+        # Подключённые словари — часть «чего требует глоссарий от сегмента»:
+        # кэш требований (`_HITS_CACHE`) и отчёты считаются от поколения
+        # глоссария, значит поколение обязано сдвинуться.
+        _invalidate_gloss_index()
+        changed.append("dicts")
+    _audit("folder.update", folder=fid, changed=changed)
+    save_state(STATE)
+    _folders_changed()
+    out = _folder_public(f)
+    if "domain" in changed:
+        out["note"] = ("Область изменилась у всех файлов проекта: оценки с претензией "
+                       "«потерян термин» устарели — пересчитайте back-check (бесплатно).")
+    return out
+
+
+@app.delete("/api/folders/{fid}")
+def delete_folder(fid: int, force: bool = False):
+    """Удалить папку. С файлами — только `force`: это удаление оплаченной
+    работы, и одной кнопкой в списке оно случаться не должно."""
+    f = get_folder(fid)
+    files = _folder_files(fid)
+    if files and not force:
+        raise HTTPException(409, "В проекте %d файлов: удалите их или подтвердите удаление всего проекта"
+                            % len(files))
+    for p in files:
+        _delete_project_record(p["id"])
+    real = _folder_by_id(fid)
+    if real is not None:
+        _folders().remove(real)
+    _audit("folder.delete", folder=fid, files=len(files))
+    save_state(STATE)
+    _folders_changed()
+    return {"ok": True, "filesRemoved": len(files)}
+
+
+class DictRequest(BaseModel):
+    title: str = ""
+    domain: Optional[str] = None
+
+
+@app.get("/api/dicts")
+def list_dicts():
+    return {"dicts": _tenant_dicts()}
+
+
+@app.post("/api/dicts")
+def create_dict(req: DictRequest):
+    if not (req.title or "").strip():
+        raise HTTPException(400, "Назовите словарь")
+    dom = _resolve_domain(req.domain)["id"] if req.domain else None
+    rec = _new_dict(req.title, dom)
+    _audit("dict.create", dict=rec["id"], title=rec["title"])
+    _invalidate_gloss_index()
+    save_state(STATE)
+    _folders_changed()
+    return {"ok": True, "dict": {**rec, "count": 0, "pairs": {}}}
+
+
+@app.post("/api/dicts/{did}")
+def update_dict(did: str, req: DictRequest):
+    """Переименовать. Виртуальный словарь при этом становится настоящим:
+    заводится запись с тем же id, записи глоссария не трогаются."""
+    d = get_dict(did)
+    title = (req.title or "").strip()
+    if not title:
+        raise HTTPException(400, "Назовите словарь")
+    real = next((x for x in _dicts() if x.get("id") == did and _tenant_of(x) == _current_tenant()), None)
+    if real is None:
+        real = {"id": did, "tenant": _current_tenant(), "domain": d.get("domain"),
+                "created": datetime.now().strftime("%Y-%m-%d")}
+        _dicts().append(real)
+    real["title"] = title
+    if req.domain is not None:
+        real["domain"] = _resolve_domain(req.domain)["id"] if req.domain else None
+    _audit("dict.update", dict=did, title=title)
+    _invalidate_gloss_index()          # виртуальные словари пересобираются по поколению
+    save_state(STATE)
+    _folders_changed()
+    return {"ok": True, "dict": next(x for x in _tenant_dicts() if x["id"] == did)}
+
+
+@app.delete("/api/dicts/{did}")
+def delete_dict(did: str):
+    """Удалить ПУСТОЙ словарь и отключить его от папок. Непустой —
+    сначала вынос записей (`/api/glossary/purge` с `dictId`): массовое
+    удаление без копии и отката недопустимо."""
+    d = get_dict(did)
+    if d.get("count"):
+        raise HTTPException(409, "В словаре %d записей: сначала вынесите их (с копией для отката)"
+                            % d["count"])
+    STATE["dicts"] = [x for x in _dicts() if not (x.get("id") == did and _tenant_of(x) == _current_tenant())]
+    for f in _folders():
+        if _tenant_of(f) == _current_tenant() and isinstance(f.get("dicts"), list) and did in f["dicts"]:
+            f["dicts"] = [x for x in f["dicts"] if x != did]
+    _audit("dict.delete", dict=did)
+    _invalidate_gloss_index()
+    save_state(STATE)
+    _folders_changed()
+    return {"ok": True}
 
 
 # ─── Исходный .docx: хранение и разметка ────────────────────────────
@@ -6542,8 +7188,15 @@ async def upload_project(
     src: str = Form("RU"),
     tgt: str = Form("EN"),
     domain: str = Form(DEFAULT_DOMAIN),
+    folder: Optional[int] = Form(None),
 ):
     src, tgt = _check_lang_pair(src, tgt)
+    domain = _resolve_domain(domain)["id"]
+    # Файл в СУЩЕСТВУЮЩИЙ проект наследует его пару и область: у проекта они
+    # одни на все файлы (один словарь, один прайс).
+    target_folder = _folder_target(folder)
+    if target_folder is not None:
+        src, tgt, domain = target_folder["src"], target_folder["tgt"], target_folder["domain"]
     try:
         import docx  # noqa: F401 — проверка наличия, разбор идёт в _docx_paragraphs
     except ImportError:
@@ -6552,7 +7205,7 @@ async def upload_project(
     tid = _current_tenant()
     caps = _tenant_caps(tid)
     if caps["maxProjects"] and len(_tenant_projects()) >= caps["maxProjects"]:
-        raise HTTPException(402, "В организации уже %d проектов, а потолок %d: удалите ненужные"
+        raise HTTPException(402, "В организации уже %d файлов, а потолок %d: удалите ненужные"
                             % (len(_tenant_projects()), caps["maxProjects"]))
     # Потолки идут ДО тяжёлого разбора: сначала байты (по заголовку, потом
     # по факту), затем страницы, и только потом `_docx_paragraph_texts`.
@@ -6581,14 +7234,14 @@ async def upload_project(
     units = _docx_units(paras, [f for _t, f in texts])
     deduped = [t for t, _ in units]
 
-    new_id = max((p["id"] for p in STATE["projects"]), default=0) + 1
+    new_id = _next_id()
     proj_title = title or file.filename.rsplit(".", 1)[0]
     new_project = {
         "id": new_id,
         "title": proj_title,
         "titleEn": proj_title,
         "src": src, "tgt": tgt,
-        "domain": _resolve_domain(domain)["id"],
+        "domain": domain,
         "tenant": _current_tenant(),
         "status": "in_progress",
         "created": datetime.now().strftime("%Y-%m-%d"),
@@ -6613,6 +7266,8 @@ async def upload_project(
             for i, text in enumerate(deduped)
         ],
     }
+    if target_folder is not None:
+        new_project["folder"] = target_folder["id"]
     # Исходник храним сразу: без него экспорт «как в оригинале» невозможен
     # в принципе, а второй раз тот же файл человек может и не найти.
     # Ошибка записи не роняет импорт: сегменты разобраны, переводить можно,
@@ -6626,6 +7281,8 @@ async def upload_project(
         STATE["projects"].insert(0, new_project)
         save_state(STATE)
     _tenants_changed()                  # после save_state: эпоху поднимает записанный документ
+    if target_folder is not None:
+        _folders_changed()
     try:
         pairs = [[i, u + 1] for u, (_t, idxs) in enumerate(units) for i in idxs]
         _store_source_docx(new_project, content, file.filename, pairs, len(paras))
@@ -7778,7 +8435,8 @@ def _tm_upsert(source: str, target: str, project: dict = None) -> str:
     today = datetime.now().strftime("%Y-%m-%d")
     lang = f"{(project or {}).get('src', 'RU')}→{(project or {}).get('tgt', 'EN')}"
     tenant = _tenant_of(project) if project else _current_tenant()
-    pid = (project or {}).get("id")
+    # Пара TM — знание ПАПКИ проекта: все файлы проекта видят её.
+    pid = _fid((project or {}).get("id"))
     for t in STATE["tm"]:
         if _norm_key(t.get("src")) != key or _tenant_of(t) != tenant:
             continue
@@ -8248,6 +8906,9 @@ def _queue_term_locked(kind, src, tgt, src_n, tgt_n, now, extra):
             "status": "pending", "hits": 1, "at": now,
             "segments": [donor] if donor else []}
     cand.update(extra)
+    # Словарь ставится ОДИН раз здесь, а не в шести сборщиках карточек:
+    # куда пишется знание файла, знает его папка (`_write_dict_for`).
+    cand.setdefault("dict", _write_dict_for(extra.get("project")))
     return _queue_insert(cand)
 
 
@@ -8296,32 +8957,53 @@ def _gloss_by_src() -> dict:
                 # вторая запись про тот же термин просто не завелась бы
                 # («такая уже есть»), и два проекта не смогли бы держать
                 # разные переводы одного слова — ради чего всё и затевалось.
-                built.setdefault((_scope_of(g), _gproj(g), _norm_key(g.get("src"))), g)
+                # Словарь — часть ключа общей записи: два словаря вправе
+                # держать один термин, а выбирает между ними папка порядком
+                # подключения. Ключ «*» — «в любом словаре», для действий
+                # уровня организации (импорт, вынос, аудит).
+                k = _norm_key(g.get("src"))
+                built.setdefault((_scope_of(g), _gproj(g), _dict_of(g), k), g)
+                built.setdefault((_scope_of(g), _gproj(g), "*", k), g)
             _GLOSS_BY_SRC = built
         # Возвращаем локальную ссылку: параллельный _invalidate_gloss_index()
         # обнуляет глобал, и вызывающий получил бы None вместо словаря.
         return _GLOSS_BY_SRC
 
 
-def _glossary_entry(src: str, scope: tuple, pid=None) -> Optional[dict]:
+def _glossary_entry(src: str, scope: tuple, pid=None, did: Optional[str] = None) -> Optional[dict]:
     """Запись глоссария по термину В ПРЕДЕЛАХ области. Раньше поиск шёл по
     всему списку, и запись из чужой языковой пары выглядела как «уже есть».
 
-    `pid` — проект, если вопрос задают из него: сначала ищем ЕГО запись,
-    потом общую. Порядок именно такой, потому что проектная запись и заведена
-    затем, чтобы переопределить общее правило здесь. Без `pid` видно только
-    общее знание — это верное умолчание для действий уровня организации
-    (импорт, вынос, аудит): они не вправе трогать чужие проектные решения
-    вслепую."""
+    `pid` — файл ИЛИ папка (номер приводится `_fid`): сначала ЕЁ запись,
+    потом общие записи ПОДКЛЮЧЁННЫХ словарей в порядке подключения (папка
+    без списка — любой словарь). Порядок именно такой, потому что проектная
+    запись и заведена затем, чтобы переопределить общее правило здесь.
+    Без `pid` видно только общее знание (любого словаря) — верное умолчание
+    для действий уровня организации (импорт, вынос, аудит).
+
+    `did` — для ПИСАТЕЛЯ: общая запись ищется только в этом словаре (первом
+    подключённом). Чужой подключённый словарь — только чтение: правка нашла
+    бы запись в справочнике клиента и переписала бы его; новая запись
+    в первом словаре побеждает очерёдностью подключения."""
     if len(scope) == 2:                   # прежний вид (пара, тематика)
         scope = (scope[0], scope[1], _current_tenant())
     idx = _gloss_by_src()
     key = _norm_key(src)
-    if pid is not None:
-        own = idx.get((scope, pid, key))
+    fid = _fid(pid) if pid is not None else None
+    if fid is not None:
+        own = idx.get((scope, fid, "*", key))
         if own is not None:
             return own
-    return idx.get((scope, None, key))
+    if did is not None:
+        return idx.get((scope, None, did, key))
+    dl = _folder_dict_list(fid) if fid is not None else None
+    if dl is None:
+        return idx.get((scope, None, "*", key))
+    for d in dl:
+        e = idx.get((scope, None, d, key))
+        if e is not None:
+            return e
+    return None
 
 
 def _harvest_terms(seg: dict, project: dict, via: str = "confirmed") -> list:
@@ -8904,7 +9586,8 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     # Свою проектную запись правим, а не общую: карточка родилась в проекте,
     # и правка по ней — про него. Нет своей — правится общая (её и видел
     # человек, когда решал).
-    existing = _glossary_entry(src, scope, _gproj(cand))
+    did = _cand_dict(cand)
+    existing = _glossary_entry(src, scope, _gproj(cand), did=did)
     # Нашлась только ОБЩАЯ запись, а карточка проектная — общую не трогаем:
     # правилом для всей организации знание делает отдельное решение человека
     # (`/promote`), а не одобрение в одном проекте. Заводим проектную.
@@ -8940,6 +9623,7 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
         STATE["glossary"].insert(0, {"src": src, "tgt": tgt, "cat": cat, "freq": 1,
                                      "conf": "high", "note": "", "tier": GLOSSARY_TIER_HARD,
                                      "lang": scope[0], "domain": scope[1], "tenant": scope[2],
+                                     "dict": did,
                                      "updated": today, **mark, **born,
                                      **_signed_field("approve"),
                                      "origin": "confirmed:" + str(cand.get("segment", ""))})
@@ -9317,7 +10001,9 @@ def _auto_context(pending: list, pol: dict) -> dict:
     for g in STATE["glossary"]:
         # Проект в ключе: запись проекта A иначе «спорила» с кандидатом
         # проекта B, и автоодобрение по проектам не работало бы никогда.
-        gloss.setdefault((_scope_of(g), _gproj(g), _norm_key(g.get("src"))), g)
+        k = _norm_key(g.get("src"))
+        gloss.setdefault((_scope_of(g), _gproj(g), _dict_of(g), k), g)
+        gloss.setdefault((_scope_of(g), _gproj(g), "*", k), g)
     return {"variants": _auto_variants(pending), "segs": segs, "gloss": gloss, "pol": pol}
 
 
@@ -9400,8 +10086,7 @@ def _auto_verdict(cand: dict, ctx: dict) -> tuple:
 
     scope = _scope_of(cand)
     # Своя проектная запись, потом общая — тот же порядок, что у `_glossary_entry`.
-    known = (ctx["gloss"].get((scope, _gproj(cand), _norm_key(src)))
-             or ctx["gloss"].get((scope, None, _norm_key(src))))
+    known = _ctx_known(ctx["gloss"], cand, scope, _norm_key(src))
     if known:
         if _norm_key(known.get("tgt")) == _norm_key(tgt):
             return "close", "уже в глоссарии"
@@ -9551,7 +10236,8 @@ def _auto_write(cand: dict, tier: str, batch: int, today: str,
     scope = _scope_of(cand)
     src, tgt = cand["src"].strip(), cand["tgt"].strip()
     cat = cand.get("cat") or "Term"
-    existing = _glossary_entry(src, scope, _gproj(cand))
+    did = _cand_dict(cand)
+    existing = _glossary_entry(src, scope, _gproj(cand), did=did)
     # Общую запись машина из проекта не переписывает — см. approve_term_candidate.
     if existing is not None and _gproj(cand) is not None and _gproj(existing) != _gproj(cand):
         existing = None
@@ -9591,7 +10277,7 @@ def _auto_write(cand: dict, tier: str, batch: int, today: str,
         "conf": "high" if tier == GLOSSARY_TIER_HARD else "medium",
         "note": ("автоодобрено " + today
                  + (" (приказ по разрешению человека)" if override else "")),
-        "tier": tier,
+        "tier": tier, "dict": did,
         "lang": scope[0], "domain": scope[1], "tenant": scope[2], "updated": today,
         "autoBatch": batch, "autoCreated": True, "byOverride": bool(override),
         "origin": "auto:" + AUTO_POLICY_VERSION,
@@ -9607,7 +10293,8 @@ def _auto_write(cand: dict, tier: str, batch: int, today: str,
     # пересборки 10 000 записей на каждое одобрение.
     idx = _GLOSS_BY_SRC
     if idx is not None:
-        idx.setdefault((scope, _gproj(entry), _norm_key(src)), entry)
+        idx.setdefault((scope, _gproj(entry), did, _norm_key(src)), entry)
+        idx.setdefault((scope, _gproj(entry), "*", _norm_key(src)), entry)
     return False
 
 
@@ -10033,7 +10720,7 @@ def undo_auto_approve(batch: int):
             # СТАРЫЙ машинный вариант поверх более позднего решения — глоссарий
             # молча откатывался бы назад без единого выбора человека.
             if c.get("autoWrote"):
-                g = _glossary_entry(c.get("src") or "", _scope_of(c), _gproj(c))
+                g = _glossary_entry(c.get("src") or "", _scope_of(c), _gproj(c), did=_cand_dict(c))
                 if g is not None and g.get("autoBatch") not in (None, batch):
                     superseded += 1
                     c["note"] = ("запись перехвачена пачкой #%s — вопрос "
@@ -10217,10 +10904,12 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
         raise HTTPException(503, "Смысловая сверка требует ключ OpenAI")
     project = get_project(req.project) if req.project else None
     scope = _project_scope(project) if project else None
+    fid = _fid(req.project) if req.project is not None else None
+    dicts_here = _folder_dicts(fid) if fid is not None else None
     entries = [g for g in STATE.get("glossary", [])
                if _hard_answer(g) and _tenant_of(g) == _current_tenant()
                and (scope is None or _scope_of(g) == scope)
-               and (req.project is None or _entry_here(g, req.project))]
+               and (fid is None or _entry_here(g, fid, dicts_here))]
     if not entries:
         return {"ok": True, "dryRun": req.dry_run, "checked": 0, "capped": 0,
                 "total": 0, "bad": [], "batch": None,
@@ -11042,7 +11731,7 @@ def _rescore_backcheck(seg: dict, project: dict,
     res = checks_mod.run_backcheck(
         source, back, _hits_for_score(seg, hits),
         semantic=bc.get("semantic"),
-        domain=project.get("domain"), src_lang=project.get("src", "RU"))
+        domain=_rules_domain_of(project), src_lang=project.get("src", "RU"))
     if res.get("score") is None:                             # pragma: no cover
         return None
     judged = bool(bc.get("judged") and bc.get("judge"))
@@ -11366,7 +12055,7 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
     res = (checks_mod.run_backcheck(
         source_text, back, gloss_hits,
         semantic_fn=lambda: _semantic_similarity(source_text, back),
-        domain=project.get("domain"), src_lang=project.get("src", "RU")) if checks_mod else {})
+        domain=_rules_domain_of(project), src_lang=project.get("src", "RU")) if checks_mod else {})
 
     # Судья — только для средней зоны: наверху и внизу шкалы вопрос уже решён.
     # `judge_all` открывает ВЕРХ (потолок считает сам `_judge_zone`): выше
@@ -13541,7 +14230,9 @@ def _consistency_of(project: dict) -> list:
     Считать их на каждый сегмент нельзя: это проход по всему проекту на каждую
     пару. Отпечаток тот же, что у отчёта о соответствии, — тексты и находки."""
     pid = project.get("id")
-    fp = _text_hash("|".join(
+    # Поколение глоссария — в отпечатке: пары считаются с оглядкой на приказные
+    # записи (`_verified_hits`), а те меняются и подключением словаря.
+    fp = str(_GLOSS_EPOCH[0]) + ":" + _text_hash("|".join(
         (s.get("target") or "") + str(len(((s.get("termcheck") or {}).get("findings") or [])))
         for s in (project.get("segments") or [])))
     hit = _CONSIST_CACHE.get(pid)
@@ -14702,7 +15393,7 @@ def _review_veto(seg: dict, project: Optional[dict], candidate: str) -> list:
         # Область и пара языков — из ПРОЕКТА. Без них `rules_for` берёт
         # medical RU→EN по умолчанию, то есть на немецком проекте маркеры
         # отрицания искались бы русские, а правила направлений — чужие.
-        dom = (project or {}).get("domain")
+        dom = _rules_domain_of(project)
         src_lang, tgt_lang = ((project or {}).get("src") or "RU",
                               (project or {}).get("tgt") or "EN")
         try:
@@ -16639,9 +17330,13 @@ def _spelling_fix(text: str, want: str, protect: frozenset = frozenset()) -> tup
 def _style_protected_words(project: dict) -> frozenset:
     """Слова приказных переводов области проекта: орфография их не правит."""
     scope = _project_scope(project)
+    fid = _fid(project.get("id"))
+    dicts_here = _folder_dicts(fid)
     words = set()
     for g in STATE.get("glossary") or []:
         if g.get("tier") != GLOSSARY_TIER_HARD or _scope_of(g) != scope:
+            continue
+        if not _entry_here(g, fid, dicts_here):
             continue
         words.update(w.lower() for w in re.findall(r"[A-Za-z]{3,}", g.get("tgt") or ""))
     return frozenset(words)
@@ -17297,7 +17992,7 @@ def _segment_checks(pid: int, sid: int, run_backcheck: bool = True,
         glossary_matches=gloss_hits,
         tm_match=tm_hit,
         engine_qa="medical_qa_mvp",
-        domain=project.get("domain"),
+        domain=_rules_domain_of(project),
         src_lang=project.get("src", "RU"),
         tgt_lang=project.get("tgt", "EN"),
     )
@@ -18657,12 +19352,17 @@ class TermRequest(BaseModel):
     # Браузер шлёт то, что стояло на строке: правка проектной записи иначе
     # заводила бы рядом общий дубль, а проектная оставалась бы сильнее.
     project: Optional[int] = None
+    # Словарь записи (см. «Именованные словари»): пусто — первый словарь
+    # папки проекта либо словарь по умолчанию организации.
+    dictId: Optional[str] = None
 
 @app.post("/api/glossary")
 def save_term(req: TermRequest):
     scope = _scope(req.lang, req.domain)
-    existing = _glossary_entry(req.src, scope, req.project)
-    if existing is not None and _gproj(existing) != req.project:
+    did = _dict_id_ok(req.dictId) or _write_dict_for(req.project)
+    fid = _fid(req.project) if req.project is not None else None
+    existing = _glossary_entry(req.src, scope, req.project, did=did)
+    if existing is not None and _gproj(existing) != fid:
         existing = None                 # чужая видимость — заводим свою
     if existing is None and not (req.lang or req.domain):
         # Клиент не прислал область (правка записи из общего списка) — правим ту
@@ -18670,7 +19370,8 @@ def save_term(req: TermRequest):
         existing = next((g for g in STATE["glossary"]
                          if _norm_key(g.get("src")) == _norm_key(req.src)
                          and _tenant_of(g) == _current_tenant()
-                         and _gproj(g) == req.project), None)
+                         and _gproj(g) == fid
+                         and (not req.dictId or _dict_of(g) == did)), None)
     # Правка руками = проверенная запись: только такие идут в промпт приказом.
     if existing and not req.isNew:
         # След решения человека обязателен. Без него `_human_touched` правку
@@ -18684,11 +19385,11 @@ def save_term(req: TermRequest):
                          **_signed_field("edit")})
         _clear_auto_marks(existing)
     else:
-        fresh = {**req.dict(exclude={"isNew", "project"}), "tier": GLOSSARY_TIER_HARD,
-                 "lang": scope[0], "domain": scope[1], "tenant": scope[2],
+        fresh = {**req.dict(exclude={"isNew", "project", "dictId"}), "tier": GLOSSARY_TIER_HARD,
+                 "lang": scope[0], "domain": scope[1], "tenant": scope[2], "dict": did,
                  **_signed_field("add")}
-        if req.project is not None:
-            fresh["project"] = req.project
+        if fid is not None:
+            fresh["project"] = fid
         STATE["glossary"].insert(0, fresh)
     _audit("glossary.save", src=req.src, tgt=req.tgt)
     _invalidate_gloss_index()
@@ -18700,16 +19401,7 @@ def save_term(req: TermRequest):
 def delete_project(pid: int):
     _audit("project.delete", project=pid)
     get_project(pid)                      # чужой проект — 404, удалять нечего
-    STATE["projects"] = [p for p in STATE["projects"] if p["id"] != pid]
-    # Исходник уходит вместе с проектом. Учебник весит 21 МБ, и оставлять его
-    # на диске после удаления значит копить мусор, который никто уже не найдёт:
-    # имя файла — номер проекта, а проекта больше нет.
-    for path in _source_paths(pid):
-        try:
-            path.unlink(missing_ok=True)
-        except OSError as e:
-            print("[backend] исходник проекта %s не удалён: %s" % (pid, e),
-                  file=sys.stderr)
+    _delete_project_record(pid)
     save_state(STATE)
     return {"ok": True}
 
@@ -18830,7 +19522,7 @@ def _term_by_project(req: "TermProjectRequest", want_project: bool) -> dict:
     entry = _glossary_entry(req.src, scope, req.project if want_project else None)
     if entry is None or _tenant_of(entry) != _current_tenant():
         raise HTTPException(404, "Запись глоссария не найдена")
-    if want_project and _gproj(entry) != req.project:
+    if want_project and _gproj(entry) != _fid(req.project):
         raise HTTPException(404, "У этого проекта такой записи нет")
     return entry
 
@@ -18847,7 +19539,7 @@ def promote_term(req: TermProjectRequest):
     scope = _scope_of(entry)
     # Общая запись с тем же термином уже есть — две общие записи на один
     # ключ означали бы, что видна только первая, а продвинутая молча мертва.
-    other = _gloss_by_src().get((scope, None, _norm_key(entry.get("src"))))
+    other = _gloss_by_src().get((scope, None, _dict_of(entry), _norm_key(entry.get("src"))))
     if other is not None and other is not entry:
         raise HTTPException(409, "У организации уже есть общая запись «%s → %s»: сначала "
                                  "поправьте или удалите её" % (other.get("src"), other.get("tgt")))
@@ -18866,14 +19558,16 @@ def restrict_term(req: TermProjectRequest):
     """Вернуть знание в проект. Обратная дверь к продвижению: решение
     человека обязано быть отменяемым тем же человеком."""
     entry = _term_by_project(req, want_project=False)
-    if _gproj(entry) == req.project:
-        return {"ok": True, "term": entry.get("src"), "scope": "project", "project": req.project}
-    own = _gloss_by_src().get((_scope_of(entry), req.project, _norm_key(entry.get("src"))))
+    fid = _fid(req.project)
+    if _gproj(entry) == fid:
+        return {"ok": True, "term": entry.get("src"), "scope": "project", "project": fid}
+    own = _gloss_by_src().get((_scope_of(entry), fid, "*", _norm_key(entry.get("src"))))
     if own is not None:
         raise HTTPException(409, "У проекта уже есть своя запись «%s → %s»: она и действует"
                                  % (own.get("src"), own.get("tgt")))
     _audit("glossary.restrict", term=entry.get("src"), toProject=req.project)
-    entry["project"] = req.project
+    # Знание проекта — это знание его ПАПКИ: все файлы проекта видят его.
+    entry["project"] = fid
     entry["scopeChanged"] = {"by": _actor_id(), "role": _actor_role(),
                              "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                              "action": "restrict", "toProject": req.project}
@@ -18895,7 +19589,8 @@ def glossary_promotions(limit: int = 100):
     Пара из одного проекта сюда не идёт, сколько бы раз её там ни
     подтверждали: повтор внутри проекта — это одно решение, а не два."""
     t = _current_tenant()
-    mine = {p["id"] for p in STATE["projects"] if _tenant_of(p) == t}
+    # Знание привязано к ПАПКЕ (файл без папки — своя папка с тем же номером).
+    mine = {_fid(p["id"]) for p in STATE["projects"] if _tenant_of(p) == t}
     by_pair: dict = {}
     for g in STATE["glossary"]:
         pid = _gproj(g)
@@ -19051,7 +19746,8 @@ def revert_repairs_by_term(req: RevertRepairsRequest):
 
 
 @app.delete("/api/glossary")
-def delete_term(src: str, lang: str = "", domain: str = "", project: Optional[int] = None):
+def delete_term(src: str, lang: str = "", domain: str = "", project: Optional[int] = None,
+                dictId: str = ""):
     """Удаление — операция без отмены, поэтому область здесь трактуется строго.
     Пустые lang/domain означают область по умолчанию (так же читаются записи
     без полей), а НЕ «любую»: иначе удаление RU→EN термина уносило бы и его
@@ -19059,8 +19755,9 @@ def delete_term(src: str, lang: str = "", domain: str = "", project: Optional[in
     want = _scope(lang, domain)
     # Видимость — часть ключа: удаляется ровно та запись, которую видел
     # человек (проектная либо общая), а не все тёзки сквозь проекты.
+    fid = _fid(project) if project is not None else None
     victims = [t for t in STATE["glossary"] if t.get("src") == src and _scope_of(t) == want
-               and _gproj(t) == project]
+               and _gproj(t) == fid and (not dictId or _dict_of(t) == dictId)]
     if not victims and not (lang or domain):
         # Область не назвали и в области по умолчанию записи нет. Удаляем по
         # одному имени, только если претендент ровно один — иначе непонятно,
@@ -19068,7 +19765,8 @@ def delete_term(src: str, lang: str = "", domain: str = "", project: Optional[in
         # Только своя организация: удаление по одному имени термина иначе
         # уносило бы запись из чужого глоссария.
         same = [t for t in STATE["glossary"] if t.get("src") == src
-                and _tenant_of(t) == _current_tenant() and _gproj(t) == project]
+                and _tenant_of(t) == _current_tenant() and _gproj(t) == fid
+                and (not dictId or _dict_of(t) == dictId)]
         if len(same) == 1:
             victims = same
     if not victims:
@@ -19099,6 +19797,8 @@ def _used_term_ids() -> set:
     idx = _gloss_index()
     for p in STATE.get("projects", []):
         scope = _project_scope(p)
+        fid = _fid(p.get("id"))
+        dicts_here = _folder_dicts(fid)
         for seg in p.get("segments", ()):
             text = seg.get("source", "")
             if not text:
@@ -19110,6 +19810,7 @@ def _used_term_ids() -> set:
                         continue
                     seen.add(id(g))
                     if (_scope_of(g) == scope and g.get("src")
+                            and _entry_here(g, fid, dicts_here)
                             and _term_match(g["src"], text, _src_lang(g))):
                         used.add(id(g))
     return used
@@ -19162,6 +19863,7 @@ class GlossaryPurgeRequest(BaseModel):
     project: Optional[int] = None      # только область этого проекта
     unused_only: bool = False          # только те, что не встречаются ни в одном проекте
     multi_variant: bool = False        # только записи с НЕСКОЛЬКИМИ вариантами перевода
+    dictId: Optional[str] = None       # только этот словарь
     dry_run: bool = True
 
 
@@ -19193,6 +19895,8 @@ def purge_glossary(req: GlossaryPurgeRequest = GlossaryPurgeRequest()):
 
     # Считаем ОДИН раз на всю пачку, а не по записи: см. _used_term_ids.
     used_ids = _used_term_ids() if req.unused_only else None
+    fid = _fid(req.project) if req.project is not None else None
+    dicts_here = _folder_dicts(fid) if fid is not None else None
     matched, kept_human = [], 0
     for g in STATE.get("glossary", []):
         if _tenant_of(g) != _current_tenant():
@@ -19201,8 +19905,10 @@ def purge_glossary(req: GlossaryPurgeRequest = GlossaryPurgeRequest()):
             continue
         if scope is not None and _scope_of(g) != scope:
             continue
+        if req.dictId and _dict_of(g) != req.dictId:
+            continue
         # Чужое проектное знание выносу из другого проекта не подлежит.
-        if req.project is not None and not _entry_here(g, req.project):
+        if fid is not None and not _entry_here(g, fid, dicts_here):
             continue
         if req.multi_variant and not _multi_variant(g):
             continue
@@ -19228,6 +19934,7 @@ def purge_glossary(req: GlossaryPurgeRequest = GlossaryPurgeRequest()):
         "keptHuman": kept_human,
         "unusedOnly": req.unused_only,
         "multiVariant": bool(req.multi_variant),
+        "dict": req.dictId,
         "samples": [{"src": g.get("src"), "tgt": g.get("tgt")} for g in matched[:12]],
         # Всегда, а не только на удавшемся применении: пустой отбор при
         # dry_run=False уходил ранним return без этого ключа.
@@ -19296,10 +20003,11 @@ def undo_glossary_purge(stamp: str):
     saved = [g for g in saved if _tenant_of(g) == _current_tenant()]
     if not saved:
         raise HTTPException(404, "Копия не найдена — вернуть нечем")
-    have = {(_scope_of(g), _norm_key(g.get("src"))) for g in STATE.get("glossary", [])}
+    have = {(_scope_of(g), _gproj(g), _dict_of(g), _norm_key(g.get("src")))
+            for g in STATE.get("glossary", [])}
     back, skipped = 0, 0
     for g in saved:
-        key = (_scope_of(g), _norm_key(g.get("src")))
+        key = (_scope_of(g), _gproj(g), _dict_of(g), _norm_key(g.get("src")))
         if key in have:
             skipped += 1
             continue
@@ -19321,12 +20029,13 @@ def delete_tm(src: str, lang: str = "", project: Optional[int] = None):
     иначе уносило бы RU→DE запись того же исходника."""
     _audit("tm.delete", src=src)
     want = lang or DEFAULT_GLOSS_LANG
+    fid = _fid(project) if project is not None else None
     victims = [t for t in STATE["tm"]
                if t.get("src") == src and (t.get("lang") or DEFAULT_GLOSS_LANG) == want
-               and _tenant_of(t) == _current_tenant() and _gproj(t) == project]
+               and _tenant_of(t) == _current_tenant() and _gproj(t) == fid]
     if not victims and not lang:
         same = [t for t in STATE["tm"] if t.get("src") == src
-                and _tenant_of(t) == _current_tenant() and _gproj(t) == project]
+                and _tenant_of(t) == _current_tenant() and _gproj(t) == fid]
         if len(same) == 1:
             victims = same
     if not victims:

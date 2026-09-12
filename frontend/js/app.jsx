@@ -5,6 +5,12 @@ function useStore(authed) {
   /* Стартуем с пустого: мок data.js показывал выдуманный чужой проект,
      пока грузился /api/seed, а активным проектом стоял его номер 7. */
   const [projects, setProjects] = useState([]);
+  /* Папки проектов (на экране — «Проект») и словари организации — с сервера
+     (/api/seed). Файл без папки сервер отдаёт как папку с тем же номером
+     (`virtual`), поэтому у каждого файла папка есть всегда. */
+  const [folders, setFolders] = useState([]);
+  const [dicts, setDicts] = useState([]);
+  const [viewFolder, setViewFolder] = useState(null);   // открытая папка на экране «Проекты»
   const [glossary, setGlossary] = useState([]);
   const [tm, setTM] = useState([]);
   const [exportHistory, setExportHistory] = useState([]);
@@ -52,6 +58,11 @@ function useStore(authed) {
     return () => { cancelled = true; };
   }, [authed]);
   const activeProject = projects.find(p => p.id === activeId) || null;
+  /* Папка активного файла — по списку файлов папки. Файл, которого нет ни
+     в одной (сервер ещё не знает о нём), считается своей папкой. */
+  const folderOf = (pid) => folders.find(f => (f.files || []).indexOf(pid) >= 0)
+    || (pid != null ? { id: pid, title: (projects.find(p => p.id === pid) || {}).title || "", files: [pid], virtual: true } : null);
+  const activeFolder = activeProject ? folderOf(activeProject.id) : null;
 
   /* Hydrate from backend after login; fall back to SEED if backend unreachable.
      Ждём именно authed: без токена /api/seed отдаст 401, и в UI остались бы моки. */
@@ -61,6 +72,8 @@ function useStore(authed) {
       window.API.seed().then(d => {
         if (cancelled || !d) return;
         if (d.projects) setProjects(d.projects);
+        if (d.folders) setFolders(d.folders);
+        if (d.dicts) setDicts(d.dicts);
         if (d.glossary) setGlossary(d.glossary);
         if (d.tm) setTM(d.tm);
         if (d.exportHistory) setExportHistory(d.exportHistory);
@@ -149,7 +162,29 @@ function useStore(authed) {
     return id;
   };
 
-  const addProject = (project) => setProjects(ps => [project, ...ps.filter(p => p.id !== project.id)]);
+  const addProject = (project) => {
+    setProjects(ps => [project, ...ps.filter(p => p.id !== project.id)]);
+    /* Файл в папке — папка узнаёт о нём сразу; файл без папки — своя
+       папка с тем же номером (как её отдал бы /api/seed). */
+    setFolders(fs => {
+      const fid = project.folder != null ? project.folder : project.id;
+      if (fs.some(f => f.id === fid))
+        return fs.map(f => f.id !== fid ? f : { ...f, files: (f.files || []).indexOf(project.id) >= 0 ? f.files : [project.id, ...(f.files || [])] });
+      return [{ id: fid, title: project.title, src: project.src, tgt: project.tgt, domain: project.domain,
+                created: project.created, files: [project.id], virtual: true }, ...fs];
+    });
+  };
+  const addFolder = (folder) => setFolders(fs => [folder, ...fs.filter(f => f.id !== folder.id)]);
+  const patchFolder = (fid, patch) => setFolders(fs => fs.map(f => f.id !== fid ? f : { ...f, ...patch }));
+  const removeFolder = (fid) => {
+    const gone = folders.find(f => f.id === fid);
+    const ids = (gone && gone.files) || [];
+    setFolders(fs => fs.filter(f => f.id !== fid));
+    setProjects(ps => ps.filter(p => ids.indexOf(p.id) < 0));
+    if (ids.indexOf(activeId) >= 0) setActiveId(null);
+    if (viewFolder === fid) setViewFolder(null);
+  };
+  const openFolder = (fid) => { setViewFolder(fid); setTab("import"); };
   /* Правка полей проекта БЕЗ его перезагрузки и без изменения порядка списка:
      проект на 2670 сегментов весит 5 МБ, и тянуть его ради одной отметки
      (например, о приложенном исходнике) — мегабайты трафика на пустом месте. */
@@ -160,6 +195,9 @@ function useStore(authed) {
     setProjects(ps => ps.map(p => p.id !== pid ? p : { ...p, segments }));
   const deleteProject = (id) => {
     setProjects(ps => ps.filter(p => p.id !== id));
+    setFolders(fs => fs.map(f => (f.files || []).indexOf(id) < 0 ? f : { ...f, files: f.files.filter(x => x !== id) })
+      /* Виртуальная папка живёт ровно столько, сколько её единственный файл. */
+      .filter(f => !(f.virtual && (f.files || []).length === 0)));
     if (activeId === id) setActiveId(null);
     window.API.safeCall(() => window.API.deleteProject(id));
   };
@@ -169,7 +207,9 @@ function useStore(authed) {
      затирала бы в таблице его RU→DE тёзку, а удаление убирало бы обоих. */
   const sameEntry = (a, b) => a.src === b.src
     && (a.lang || "RU→EN") === (b.lang || "RU→EN")
-    && (a.domain || LEGACY_DOMAIN) === (b.domain || LEGACY_DOMAIN);
+    && (a.domain || LEGACY_DOMAIN) === (b.domain || LEGACY_DOMAIN)
+    /* Словарь — часть адреса записи: два словаря вправе держать один термин. */
+    && (!a.dict || !b.dict || a.dict === b.dict);
 
   const saveTerm = (term, isNew) => {
     setGlossary(g => isNew ? [term, ...g] : g.map(t => sameEntry(t, term) ? term : t));
@@ -178,7 +218,7 @@ function useStore(authed) {
 
   const deleteTerm = (term) => {
     setGlossary(g => g.filter(t => !sameEntry(t, term)));
-    if (window.API) window.API.safeCall(() => window.API.deleteTerm(term.src, term.lang, term.domain, term.project));
+    if (window.API) window.API.safeCall(() => window.API.deleteTerm(term.src, term.lang, term.domain, term.project, term.dict));
   };
 
   const deleteTM = (entry) => {
@@ -189,6 +229,8 @@ function useStore(authed) {
 
   return {
     projects, glossary, tm, activeId, activeProject, tab,
+    folders, dicts, setDicts, viewFolder, setViewFolder, openFolder, folderOf, activeFolder,
+    addFolder, patchFolder, removeFolder,
     exportHistory, team: [], me, can, brand, apiReady, setGlossary,
     segmentFilter, gotoSegId,
     go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, patchProject, openProject, deleteProject, replaceProjectSegments, saveTerm, deleteTerm, deleteTM,
@@ -425,12 +467,16 @@ function Header({ store, theme, onToggleTheme, onLogout, onSearch }) {
    Бэклог и статистика — командные инструменты, они уехали внутрь «Анализа». */
 /* group — колонка бокового меню. Порядок групп: сначала работа над текстом,
    потом файлы и настройки, потом служебное. */
+/* Названия — простыми словами, по одному действию на пункт: «Проекты»
+   (файлы и что с ними), «Перевод» (таблица), «Словари», «Проверка»
+   (что получилось), «Скачать». Ключи вкладок не меняются: на них ведут
+   ссылки изнутри страниц и сохранённое состояние. */
 const TABS = [
-  { key: "import", label: TR("Импорт"), icon: "upload", group: "files" },
-  { key: "editor", label: TR("Редактор"), icon: "edit", group: "work" },
-  { key: "glossary", label: TR("Знания"), icon: "book", group: "work" },
-  { key: "preflight", label: TR("Анализ"), icon: "target", group: "work" },
-  { key: "export", label: TR("Экспорт"), icon: "download", group: "work" },
+  { key: "import", label: TR("Проекты"), icon: "folder", group: "work" },
+  { key: "editor", label: TR("Перевод"), icon: "edit", group: "work" },
+  { key: "glossary", label: TR("Словари"), icon: "book", group: "work" },
+  { key: "preflight", label: TR("Проверка"), icon: "target", group: "work" },
+  { key: "export", label: TR("Скачать"), icon: "download", group: "work" },
   /* Профиль — ВСЕМ, и это не мелочь: до него у переводчика не было ни
      одного экрана про себя, включая язык, на котором с ним разговаривают. */
   { key: "profile", label: TR("Профиль"), icon: "user", group: "files" },
@@ -524,9 +570,15 @@ function TeamChip({ store }) {
 function Topbar({ store, theme, onToggleTheme, onLogout, onSearch }) {
   const tab = TABS.filter(t => t.key === store.tab)[0];
   const proj = store.activeProject;
+  /* Крошки: вкладка / проект / файл. Файл без папки — сам себе проект,
+     и его имя показывается один раз, а не дважды. */
+  const folder = proj && store.folderOf ? store.folderOf(proj.id) : null;
+  const showFolder = folder && !folder.virtual && folder.title && folder.title !== proj.title;
   return React.createElement("header", { className: "topbar" },
     React.createElement("div", { className: "crumb" },
-      React.createElement("span", null, tab ? tab.label : TR("Редактор")),
+      React.createElement("span", null, tab ? tab.label : TR("Перевод")),
+      showFolder && React.createElement("span", { className: "crumb-sep" }, "/"),
+      showFolder && React.createElement("span", null, folder.title),
       proj && React.createElement("span", { className: "crumb-sep" }, "/"),
       proj && React.createElement("b", null, proj.title)),
     React.createElement("div", { className: "tb-right" },

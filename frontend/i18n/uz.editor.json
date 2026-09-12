@@ -190,7 +190,6 @@
  "Исправлено ": "Tuzatildi: ",
  "К входных токенов": "K kirish tokeni",
  "К выходных": "K chiqish",
- "К импорту": "Importga",
  "К кэшированных — скидка на них тут не учтена, цифра завышена на неё)": "K keshlangan — ularga chegirma bu yerda hisobga olinmagan, raqam shunga oshirilgan)",
  "К на рассуждения": "K mulohaza uchun",
  "К основному файлу": "Asosiy faylga",
@@ -203,7 +202,6 @@
  "Нажмите, чтобы сбросить в «Новый»": "«Yangi» holatiga qaytarish uchun bosing",
  "Нажмите, чтобы снять подтверждение": "Tasdiqni olib tashlash uchun bosing",
  "Назад": "Orqaga",
- "Начните с импорта .docx: документ разобьётся на сегменты, а перевод и проверки запустятся одной кнопкой.": ".docx importidan boshlang: hujjat segmentlarga bo'linadi, tarjima va tekshiruvlar esa bitta tugma bilan ishga tushadi.",
  "Не выбрано ни одного шага": "Birorta qadam tanlanmadi",
  "Не подтверждено — можно обновить сразу: ": "Tasdiqlanmagan — darhol yangilash mumkin: ",
  "Не сейчас": "Hozir emas",
@@ -249,7 +247,6 @@
  "Ориентировочно: ": "Taxminan: ",
  "Останавливаем": "To'xtatilmoqda",
  "Останавливаем…": "To'xtatilmoqda…",
- "Откройте существующий проект или импортируйте документ.": "Mavjud loyihani oching yoki hujjat import qiling.",
  "Открыть «Анализ»": "«Tahlil»ni ochish",
  "Отмена": "Bekor qilish",
  "Отметьте хотя бы один шаг": "Kamida bitta qadamni belgilang",
@@ -319,7 +316,6 @@
  "Проверяют: ": "Tekshiradi: ",
  "Прогон идёт на сервере порциями по ": "Ishlov serverda bo'lak-bo'lak ketmoqda, har biri ",
  "Прогон уже идёт": "Ishlov allaqachon ketmoqda",
- "Проект не выбран": "Loyiha tanlanmagan",
  "Проектов пока нет": "Hozircha loyihalar yo'q",
  "Пропускать подтверждённые": "Tasdiqlanganlarni o'tkazib yuborish",
  "Пропускать подтверждённые человеком": "Odam tasdiqlaganlarini o'tkazib yuborish",
@@ -536,5 +532,9 @@
  "Вы заверили этот перевод. Без вашего разрешения машина его не перепишет.": "Siz bu tarjimani tasdiqladingiz. Ruxsatingizsiz mashina uni qayta yozmaydi.",
  "хорошо": "yaxshi",
  "Проверки пройдены, открытых находок нет.": "Tekshiruvlar o'tdi, ochiq topilmalar yo'q.",
- "Возьмёт ближайший прогон: проверит или починит.": "Yaqin ishlov oladi: tekshiradi yoki tuzatadi."
+ "Возьмёт ближайший прогон: проверит или починит.": "Yaqin ishlov oladi: tekshiradi yoki tuzatadi.",
+ "Файлов пока нет": "Hozircha fayllar yo'q",
+ "Откройте файл на экране «Проекты».": "«Loyihalar» ekranida faylni oching.",
+ "Начните с проекта: положите в него файл — он разобьётся на строки, а перевод и проверки запустятся одной кнопкой.": "Loyihadan boshlang: unga fayl qo'ying — u qatorlarga bo'linadi, tarjima va tekshiruvlar bitta tugma bilan ishga tushadi.",
+ "К проектам": "Loyihalarga"
 }

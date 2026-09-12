@@ -150,7 +150,7 @@ console.log("1. Меню: состав и права");
   const labels = items.map(n => texts(n).join(" "));
   const has = (t) => labels.some(l => l.indexOf(t) >= 0);
   check(items.length >= 7, "пунктов меню не меньше семи (сейчас " + items.length + ")");
-  ["Редактор", "Знания", "Анализ", "Экспорт", "Импорт", "Профиль"].forEach(t =>
+  ["Перевод", "Словари", "Проверка", "Скачать", "Проекты", "Профиль"].forEach(t =>
     check(has(t), "в меню есть «" + t + "»"));
   check(has("Организация"), "владелец видит «Организация»");
   check(!has("Админ"), "без служебного адреса «Админ» не показывается");
@@ -166,7 +166,7 @@ console.log("2. Активный пункт ровно один");
   const side = Sidebar({ store: makeStore({ tab: "preflight" }), theme: "light", onToggleTheme() {}, onLogout() {} });
   const on = byClass(side, "navi").filter(n => (n.props.className || "").indexOf(" on") >= 0);
   check(on.length === 1, "помечен один пункт (сейчас " + on.length + ")");
-  check(texts(on[0]).join(" ").indexOf("Анализ") >= 0, "помечен именно открытый экран");
+  check(texts(on[0]).join(" ").indexOf("Проверка") >= 0, "помечен именно открытый экран");
 }
 
 console.log("3. Счётчики те же, что были на вкладках");
@@ -197,10 +197,10 @@ console.log("3. Счётчики те же, что были на вкладка�
   });
   check(Object.keys(kind).length === 4, "пилюли нашлись у всех четырёх пунктов (сейчас "
     + Object.keys(kind).length + ")");
-  check(kind["Анализ"] === true, "замечания помечены как ждущая работа");
+  check(kind["Проверка"] === true, "замечания помечены как ждущая работа");
   check(kind["Профиль"] === true, "приглашения помечены как ждущая работа");
-  check(kind["Редактор"] === false, "число сегментов тревогой не красится");
-  check(kind["Знания"] === false, "размер глоссария тревогой не красится");
+  check(kind["Перевод"] === false, "число сегментов тревогой не красится");
+  check(kind["Словари"] === false, "размер глоссария тревогой не красится");
 }
 
 console.log("4. Полоса страниц — только при выданном потолке");
@@ -222,7 +222,7 @@ console.log("5. Шапка: крошки и двери");
   const top = Topbar({ store: makeStore({ tab: "export" }), theme: "light",
     onToggleTheme() {}, onLogout() {}, onSearch() {} });
   const t = texts(top).join(" | ");
-  check(t.indexOf("Экспорт") >= 0, "в крошках названа вкладка");
+  check(t.indexOf("Скачать") >= 0, "в крошках названа вкладка");
   check(t.indexOf("Фтизиатрия. Учебник") >= 0, "в крошках назван проект");
   ["Поиск", "Профиль", "Выйти"].forEach(x => check(t.indexOf(x) >= 0, "в шапке осталась дверь «" + x + "»"));
 

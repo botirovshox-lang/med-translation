@@ -2331,8 +2331,16 @@ function TabEditor({ store, toast }) {
       React.createElement("div", { className: "row between row-wrap" },
         React.createElement("div", { className: "row", style: { gap: 10 } },
           React.createElement(Icon, { name: "folder", size: 18, style: { color: "var(--c-primary)" } }),
+          /* Файлы — по проектам (папкам): одинаковые названия глав в разных
+             проектах иначе неразличимы. Файл без папки — сам себе проект. */
           React.createElement(Select, { value: project.id, onChange: (e) => store.openProject(Number(e.target.value)), style: { width: "auto", minWidth: 280, fontWeight: 500 } },
-            store.projects.map(p => React.createElement("option", { key: p.id, value: p.id }, "#" + p.id + " — " + p.title))),
+            (store.folders && store.folders.length ? store.folders : [{ id: 0, title: "", files: store.projects.map(p => p.id), virtual: true }])
+              .map(f => {
+                const files = (f.files || []).map(id => store.projects.find(p => p.id === id)).filter(Boolean);
+                if (!files.length) return null;
+                const opts = files.map(p => React.createElement("option", { key: p.id, value: p.id }, "#" + p.id + " — " + p.title));
+                return f.virtual ? opts : React.createElement("optgroup", { key: "f" + f.id, label: f.title }, opts);
+              })),
           React.createElement(LangPair, { src: project.src, tgt: project.tgt })
         ),
         React.createElement("div", { className: "row", style: { gap: 8 } },
@@ -3443,9 +3451,9 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
 function NoProject({ store }) {
   return React.createElement("div", { className: "page" },
     React.createElement(EmptyState, { icon: "folder",
-      title: store.projects.length ? TR("Проект не выбран") : TR("Проектов пока нет"),
-      sub: store.projects.length ? TR("Откройте существующий проект или импортируйте документ.")
-                                 : TR("Начните с импорта .docx: документ разобьётся на сегменты, а перевод и проверки запустятся одной кнопкой."),
-      action: React.createElement(Btn, { variant: "primary", icon: "upload", onClick: () => store.go("import") }, TR("К импорту")) }));
+      title: store.projects.length ? TR("Файл не выбран") : TR("Файлов пока нет"),
+      sub: store.projects.length ? TR("Откройте файл на экране «Проекты».")
+                                 : TR("Начните с проекта: положите в него файл — он разобьётся на строки, а перевод и проверки запустятся одной кнопкой."),
+      action: React.createElement(Btn, { variant: "primary", icon: "folder", onClick: () => store.go("import") }, TR("К проектам")) }));
 }
 window.TabEditor = TabEditor;

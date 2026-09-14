@@ -181,8 +181,29 @@
     domainUpdate:  (did, body)              => call("POST",   `/admin/domains/${did}`, body),
     domainDelete:  (did)                    => call("DELETE", `/admin/domains/${did}`),
     setProjectDomain: (pid, domain)         => call("POST",   `/projects/${pid}/domain`, { domain }),
-    /* Для <a href> скачивания: заголовок в ссылку не подставить, токен идёт в query. */
-    downloadUrl: (url) => url + (url.indexOf("?") >= 0 ? "&" : "?") + "token=" + encodeURIComponent(getToken()),
+    /* Скачивание файла с токеном в ЗАГОЛОВКЕ, а не в адресе. Прежняя ссылка
+       <a href="...?token=…"> оседала в access.log nginx и в истории браузера —
+       живая сессия в двух местах, которые никто не считает секретом.
+       fetch → blob → <a download>: адрес blob: одноразовый и токена не несёт. */
+    downloadFile: async (url, name) => {
+      const r = await fetch(url, { headers: authHeaders({}) });
+      if (r.status === 401) { onUnauthorized(); throw new Error(TR("Требуется вход в систему")); }
+      if (!r.ok) {
+        let msg = "";
+        try { const j = await r.json(); msg = j.detail || j.error || ""; } catch (e) {}
+        throw new Error(msg || (TR("Не удалось скачать файл") + " (" + r.status + ")"));
+      }
+      const blob = await r.blob();
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = href;
+      a.download = name || "";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 60000);
+      return true;
+    },
 
     /* lang/domain сужают выдачу до области проекта — той, что уходит в промпт. */
     listGlossary:  (q, cat, limit, offset, lang, domain, dictId) => call("GET", `/glossary?q=${encodeURIComponent(q||"")}&cat=${encodeURIComponent(cat||"")}&limit=${limit||200}&offset=${offset||0}&lang=${encodeURIComponent(lang||"")}&domain=${encodeURIComponent(domain||"")}&dictId=${encodeURIComponent(dictId||"")}`),

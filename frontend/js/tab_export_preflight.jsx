@@ -453,13 +453,13 @@ function TabExport({ store, toast }) {
     if (window.API) result = await window.API.safeCall(() => window.API.exportProject(project.id, fmt, opts.source));
     setBusy(false);
     if (result && result.ok && result.url) {
-      // Реальное скачивание: бэкенд собирает файл и отдаёт по result.url
-      const a = document.createElement("a");
-      a.href = window.API.downloadUrl(result.url);
-      a.download = result.file || (project.title + "." + fmt);
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+      // Реальное скачивание: бэкенд собирает файл и отдаёт по result.url.
+      // Токен уходит заголовком (fetch → blob), а не в адресе ссылки.
+      try {
+        await window.API.downloadFile(result.url, result.file || (project.title + "." + fmt));
+      } catch (e) {
+        toast.error(TR("Файл не скачан"), String((e && e.message) || e));
+      }
       if (store.setExportHistory) {
         store.setExportHistory(h => [{ file: result.file, when: new Date().toISOString().slice(0,16).replace("T"," "), size: result.size || "" }, ...h]);
       }

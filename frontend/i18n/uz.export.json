@@ -168,5 +168,6 @@
   "Ваш файл": "Sizning faylingiz",
   "Такой же файл в исходном виде (": "Xuddi shu fayl asl ko'rinishida (",
   "Надписи на картинках перерисованы переводом; что вписать не удалось — останется в Word-версии": "Rasmlardagi yozuvlar tarjima bilan qayta chizilgan; sig'maganlari Word-versiyasida qoladi",
-  "Тот же файл, переведены только тексты; числа, формулы и структура на месте": "O'sha fayl, faqat matnlar tarjima qilingan; raqamlar, formulalar va tuzilma joyida"
+  "Тот же файл, переведены только тексты; числа, формулы и структура на месте": "O'sha fayl, faqat matnlar tarjima qilingan; raqamlar, formulalar va tuzilma joyida",
+  "Файл не скачан": "Fayl yuklab olinmadi"
 }

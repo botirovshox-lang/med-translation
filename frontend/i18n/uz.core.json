@@ -369,5 +369,7 @@
   "Читаем текст с картинок — строки появятся сами.": "Rasmlardagi matnni o'qiyapmiz — qatorlar o'zi paydo bo'ladi.",
   "Текст с картинок читается — строки появятся сами.": "Rasmlardagi matn o'qilmoqda — qatorlar o'zi paydo bo'ladi.",
   "С какого языка": "Qaysi tildan",
-  "На какой язык": "Qaysi tilga"
+  "На какой язык": "Qaysi tilga",
+  "Не удалось скачать файл": "Faylni yuklab bo'lmadi",
+  "Требуется вход в систему": "Tizimga kirish talab qilinadi"
 }

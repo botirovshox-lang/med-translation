@@ -213,6 +213,7 @@ MAX_BYTES = 32 * 1024 * 1024        # сам файл
 MAX_UNPACKED = 256 * 1024 * 1024    # распакованный пакет: защита от zip-бомбы
 MAX_PART = 24 * 1024 * 1024         # ОДНА часть пакета: её мы разворачиваем в строку
 MAX_MEMBERS = 5000                  # частей в пакете
+MAX_XML_PART = 64 * 1024 * 1024     # одна XML-часть: lxml строит дерево в памяти
 
 
 def _decode(raw: bytes) -> tuple:
@@ -342,18 +343,31 @@ def _xlsx_cell_texts(zf: "zipfile.ZipFile", names: list) -> Optional[list]:
         return None
 
 
-def _blocks_from_zip(ext: str, content: bytes, notes: list) -> list:
+def check_zip(content: bytes) -> "zipfile.ZipFile":
+    """Потолки пакета ДО чтения: распакованный размер объявлен в самом
+    пакете, и проверить его дешевле, чем узнать о бомбе по кончившейся памяти
+    единственного воркера. Отдельной функцией, потому что те же потолки
+    нужны импорту и «приложить исходник» в main.py — иначе смета была
+    защищена, а импорт того же файла нет."""
     zf = zipfile.ZipFile(io.BytesIO(content))
     infos = zf.infolist()
-    # Потолки считаются ДО чтения: распакованный размер объявлен в самом
-    # пакете, и проверить его дешевле, чем узнать о бомбе по кончившейся памяти
-    # единственного воркера.
     if len(infos) > MAX_MEMBERS:
         raise TooBig("В пакете %d частей — больше потолка %d" % (len(infos), MAX_MEMBERS))
     total = sum(i.file_size for i in infos)
     if total > MAX_UNPACKED:
         raise TooBig("Распакованный пакет — %d МБ, потолок %d МБ"
                      % (total // 1024 // 1024, MAX_UNPACKED // 1024 // 1024))
+    # Общий потолок пакета мало что говорит об ОДНОЙ части: document.xml
+    # на 200 МБ — это гигабайты дерева lxml на единственном воркере.
+    for i in infos:
+        if i.filename.lower().endswith(".xml") and i.file_size > MAX_XML_PART:
+            raise TooBig("Часть %s — %d МБ, потолок %d МБ"
+                         % (i.filename, i.file_size // 1024 // 1024, MAX_XML_PART // 1024 // 1024))
+    return zf
+
+
+def _blocks_from_zip(ext: str, content: bytes, notes: list) -> list:
+    zf = check_zip(content)
     names = zf.namelist()
     if ext == ".xlsx":
         # ПО ЯЧЕЙКАМ, а не по пулу sharedStrings: пул хранит уникальные строки,

@@ -8,8 +8,6 @@
  "Пользователь не найден": "Foydalanuvchi topilmadi",
  "Почта не подтверждена: введите код из письма или запросите новый": "Pochta tasdiqlanmagan: xatdagi kodni kiriting yoki yangisini so'rang",
  "Неверный адрес почты": "Pochta manzili noto'g'ri",
- "Неверный код": "Kod noto'g'ri",
- "Код устарел — запросите новый": "Kod eskirdi — yangisini so'rang",
  "Слишком много попыток — запросите новый код": "Urinishlar juda ko'p — yangi kod so'rang",
  "Слишком много попыток. Повторите через 15 минут.": "Urinishlar juda ko'p. 15 daqiqadan keyin qayta urinib ko'ring.",
  "Слишком много попыток входа. Повторите через 15 минут.": "Kirish urinishlari juda ko'p. 15 daqiqadan keyin qayta urinib ko'ring.",
@@ -305,5 +303,7 @@
  "В файле ": "Faylda ",
  ": текст с них читается при загрузке в проект и тогда же добавляется к объёму.": ": ulardagi matn loyihaga yuklashda o'qiladi va o'shanda hajmga qo'shiladi.",
  "Для формата ": "Format uchun ",
- " обратной записи нет — выгружайте Word-документом": " teskari yozuv yo'q — Word hujjati sifatida yuklab oling"
+ " обратной записи нет — выгружайте Word-документом": " teskari yozuv yo'q — Word hujjati sifatida yuklab oling",
+ "Неверный или устаревший код — запросите новый": "Kod noto'g'ri yoki eskirgan — yangisini so'rang",
+ "Слишком много приглашений — повторите через час": "Takliflar juda ko'p — bir soatdan keyin qayta urinib ko'ring"
 }

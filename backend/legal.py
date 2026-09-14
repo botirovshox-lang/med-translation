@@ -13,6 +13,7 @@ VERSION — дата редакции. Она пишется в учётную �
 Тексты составлены добросовестно, но их обязан проверить юрист под конкретное
 юридическое лицо и юрисдикцию: здесь инженер, а не юридическая служба.
 """
+import html
 import os
 
 VERSION = "2026-09-01"
@@ -45,11 +46,13 @@ def missing() -> list:
 
 
 def _v(value: str, what: str) -> str:
-    return value or f'<mark class="todo">[указать: {what}]</mark>'
+    # Значение приходит из окружения и попадает в HTML как есть — экранируем:
+    # кавычка или «<» в реквизитах не должны ломать разметку документа.
+    return html.escape(value) if value else f'<mark class="todo">[указать: {what}]</mark>'
 
 
 def _brand() -> str:
-    return (os.environ.get("APP_BRAND") or "CAT Translator").strip()
+    return html.escape((os.environ.get("APP_BRAND") or "CAT Translator").strip())
 
 
 def _model_provider() -> str:

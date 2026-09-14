@@ -847,9 +847,16 @@ def _delete_project_record(pid: int) -> None:
     """Снять файл-проект и его исходник с диска. Общее для удаления файла
     и удаления папки целиком: две копии однажды разошлись бы в том,
     что считать «удалить»."""
+    gone = next((p for p in STATE["projects"] if p["id"] == pid), None)
     STATE["projects"] = [p for p in STATE["projects"] if p["id"] != pid]
     _PROJECTS_VER[0] += 1
     _reimport_cleanup(pid)            # копии замен файла — вместе с файлом
+    if gone is not None:
+        # Экспорты тоже: номера проектов переиспользуются (`max + 1`), и
+        # готовый PDF удалённого проекта достался бы новому с тем же названием.
+        import shutil
+        shutil.rmtree(str(EXPORT_DIR / re.sub(r"[^A-Za-z0-9_-]+", "_", _tenant_of(gone))
+                          / str(int(pid))), ignore_errors=True)
     # Исходник уходит вместе с проектом. Учебник весит 21 МБ, и оставлять его
     # на диске после удаления значит копить мусор, который никто уже не найдёт:
     # имя файла — номер проекта, а проекта больше нет.
@@ -2427,8 +2434,36 @@ SIGNUP_TRIAL_USD = float(os.environ.get("SIGNUP_TRIAL_USD", "0") or 0)
 SIGNUP_MAX_PER_HOUR = int(os.environ.get("SIGNUP_MAX_PER_HOUR", "5") or 5)
 CODE_TTL = int(os.environ.get("AUTH_CODE_TTL_MIN", "30")) * 60
 CODE_MAX_TRIES = 5
+# Одно сообщение на ВСЕ отказы по коду (нет такой почты / кода нет или он
+# устарел / код не тот): разные тексты отвечали на вопрос «а есть ли у вас
+# такой клиент» — по /verify и /reset, где спрашивает кто угодно из сети.
+AUTH_CODE_BAD = "Неверный или устаревший код — запросите новый"
+# Приглашения в команду называют, есть ли такая почта в сервисе (это
+# нужно владельцу), поэтому у двери есть потолок на человека в час: иначе
+# любой самозарегистрированный владелец перебирал бы клиентскую базу.
+INVITE_MAX_PER_HOUR = int(os.environ.get("INVITE_MAX_PER_HOUR", "30") or 30)
+_INVITE_HITS: dict = {}          # user id -> [время каждой попытки за час]
 _EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s.]+(\.[^@\s.]+)+$")
 _SIGNUP_FAILS: dict = {}        # ip -> [время каждой регистрации за час]
+# Отказы 409 «почта занята» считаются ОТДЕЛЬНО от регистраций: в общем
+# бакете пять чужих проб запирали бы регистрацию всему офису за одним NAT
+# на час, а без счёта эта дверь перебирала клиентскую базу без потолка.
+SIGNUP_PROBE_MAX_PER_HOUR = int(os.environ.get("SIGNUP_PROBE_MAX_PER_HOUR", "20") or 20)
+_SIGNUP_PROBES: dict = {}       # ip -> [время каждого отказа 409 за час]
+# Запросы кодов (forgot/resend) считаются КАЖДЫЙ, поэтому у них свой потолок:
+# в общем бакете с регистрацией пять «забыл пароль» из одного офиса запирали
+# бы регистрацию всему NAT на час.
+CODE_REQ_MAX_PER_HOUR = int(os.environ.get("CODE_REQ_MAX_PER_HOUR", "20") or 20)
+_CODE_REQS: dict = {}           # ip -> [время каждого запроса кода за час]
+
+
+def _code_req_blocked(ip: str) -> bool:
+    """Считает запрос и говорит, не выше ли он потолка."""
+    now = time.time()
+    hits = [t for t in _CODE_REQS.get(ip, []) if now - t < 3600]
+    hits.append(now)
+    _CODE_REQS[ip] = hits
+    return len(hits) > CODE_REQ_MAX_PER_HOUR
 
 BOOTSTRAP_LOGIN = "admin"
 # Роли — три. Право читается РАНГОМ («не ниже»): владельцу — всё, включая
@@ -2480,10 +2515,13 @@ def _hash_password(password: str, salt: Optional[str] = None) -> tuple:
 
 
 def _verify_password(user: dict, password: str) -> bool:
-    if not user or not user.get("active", True):
+    if not user:
         return False
+    # Хеш считается ДО проверки `active`: отключённая учётка, отвечавшая
+    # мгновенно, по времени отличалась и от живой, и от несуществующей.
     h, _ = _hash_password(password, user.get("salt") or "")
-    return hmac.compare_digest(h, user.get("hash") or "")
+    ok = hmac.compare_digest(h, user.get("hash") or "")
+    return ok and bool(user.get("active", True))
 
 
 def _initials(name: str) -> str:
@@ -2665,17 +2703,25 @@ def _issue_code(user: dict, kind: str) -> str:
     return code
 
 
-def _check_code(user: dict, code: str, kind: str) -> None:
+def _check_code(user: dict, code: str, kind: str, ip: str = "") -> None:
+    """Любой отказ — тем же временем (pbkdf2 и в ранней ветке) и тем же
+    счётчиком по IP, что и отказ по несуществующей почте: иначе разница
+    в миллисекундах или в коде 429 отвечала бы, есть ли такой клиент."""
     rec = user.get("authCode") or {}
     if rec.get("kind") != kind or rec.get("exp", 0) < time.time():
-        raise HTTPException(400, "Код устарел — запросите новый")
+        _hash_password((code or "").strip(), _DUMMY_SALT)
+        if ip:
+            _note_login_fail(ip)
+        raise HTTPException(400, AUTH_CODE_BAD)
     if rec.get("tries", 0) >= CODE_MAX_TRIES:
         raise HTTPException(429, "Слишком много попыток — запросите новый код")
     h, _ = _hash_password((code or "").strip(), rec.get("salt") or "")
     if not hmac.compare_digest(h, rec.get("hash") or ""):
         rec["tries"] = rec.get("tries", 0) + 1
         save_state(STATE)
-        raise HTTPException(400, "Неверный код")
+        if ip:
+            _note_login_fail(ip)
+        raise HTTPException(400, AUTH_CODE_BAD)
     user.pop("authCode", None)
 
 
@@ -2723,6 +2769,10 @@ LOGIN_FAIL_WINDOW = 15 * 60    # за это окно; потом счётчик
 
 _SESSIONS: dict = {}           # token -> {"exp", "user", "tenant", "role", "super"}
 _LOGIN_FAILS: dict = {}        # ip -> (fail_count, window_started_at)
+# Соль для «холостого» pbkdf2 при несуществующем логине: без него отказ
+# по чужому логину приходил мгновенно, а по настоящему — через 200 000
+# итераций, и по времени ответа список логинов читался снаружи.
+_DUMMY_SALT = secrets.token_hex(16)
 _AUTH_LOCK = threading.Lock()
 
 # Единственный список исключений. Всё прочее под /api/ требует токен.
@@ -2902,8 +2952,10 @@ def _token_from_request(request: Request) -> Optional[str]:
     header = request.headers.get("x-auth-token", "").strip()
     if header:
         return header
-    # Скачивание файла идёт обычной ссылкой <a href>, заголовок туда не подставить,
-    # поэтому только для этого одного пути токен допускается в query-строке.
+    # Прежний способ скачивания — ссылка <a href> с токеном в query-строке.
+    # Фронтенд так больше не ходит (fetch с заголовком → blob): адрес с токеном
+    # оседал в access.log nginx и в истории браузера. Принимается ещё релиз —
+    # ради вкладок, открытых до выката; потом снять.
     if request.url.path.endswith("/export/download"):
         return request.query_params.get("token")
     return None
@@ -2912,7 +2964,11 @@ def _token_from_request(request: Request) -> Optional[str]:
 # ─────────────────────────────────────────────────────────────────────
 # App setup
 # ─────────────────────────────────────────────────────────────────────
-app = FastAPI(title=APP_BRAND + " API", version="5.6.0")
+# Swagger/ReDoc/openapi.json выключены: это полная карта API (168 КБ) —
+# имена всех ручек, включая /api/admin/* и /api/tg/*, и их параметры, —
+# и отдавалась она без входа любому, у кого есть ссылка.
+app = FastAPI(title=APP_BRAND + " API", version="5.6.0",
+              docs_url=None, redoc_url=None, openapi_url=None)
 
 
 @app.middleware("http")
@@ -2933,6 +2989,15 @@ async def require_token(request: Request, call_next):
         sess = _session_of(_token_from_request(request))
         if sess is None:
             return JSONResponse({"ok": False, "error": "Требуется вход в систему"}, status_code=401)
+        # Отключённая организация закрыта здесь, а не только на входе:
+        # сессию пересоздаёт и смена пароля в профиле, и переключение
+        # команды, — один поиск по списку организаций дешевле, чем помнить
+        # все двери. Суперпользователя это не касается: он и отключает.
+        if not sess.get("super"):
+            trec = _tenant_rec(sess.get("tenant"))
+            if trec is not None and not trec.get("active", True):
+                return JSONResponse({"ok": False, "error": "Команда отключена администратором сервиса"},
+                                    status_code=403)
         if _owner_only(request.method, path) and sess.get("role") != "owner":
             return JSONResponse({"ok": False, "error": _ROLE_DENIED["owner"]}, status_code=403)
         if _editor_only(request.method, path) and not _role_at_least(sess.get("role"), "editor"):
@@ -2984,6 +3049,49 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Auth-Token"],
 )
+
+# Заголовки безопасности — одним местом и в репозитории, а не в nginx:
+# nginx проксирует всё как есть, и правило, живущее только в /etc, никто
+# не тестирует. CSP узкая ровно настолько, насколько позволяет фронтенд без
+# сборки: Babel standalone компилирует .jsx в браузере и вставляет результат
+# inline-скриптом (unsafe-inline; eval ему не нужен — проверено в браузере),
+# библиотеки — с unpkg.com, шрифты —
+# Google Fonts. Что она закрывает даже так: чужие скрипты с любого другого
+# хоста, вынос данных (connect-src 'self') и встраивание приложения в чужой
+# iframe (кликджекинг). CSP_POLICY=off в окружении снимает заголовок без
+# выката — на случай, если что-то на экране перестанет грузиться.
+CSP_POLICY = os.environ.get("CSP_POLICY", "").strip() or (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://unpkg.com; "
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+    "font-src 'self' data: https://fonts.gstatic.com; "
+    "img-src 'self' data: blob:; "
+    "connect-src 'self'; "
+    "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'")
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    h = resp.headers
+    h.setdefault("X-Content-Type-Options", "nosniff")
+    h.setdefault("X-Frame-Options", "DENY")
+    h.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    h.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    # CSP — только на HTML-документы: JSON ответов API он не касается,
+    # а опрос прогона идёт каждые несколько секунд.
+    if CSP_POLICY.lower() != "off" and h.get("content-type", "").startswith("text/html"):
+        h.setdefault("Content-Security-Policy", CSP_POLICY)
+    # HSTS имеет смысл только по HTTPS; TLS терминирует nginx, схему он
+    # сообщает заголовком X-Forwarded-Proto.
+    proto = (request.headers.get("x-forwarded-proto") or request.url.scheme or "").lower()
+    if proto == "https":
+        h.setdefault("Strict-Transport-Security", "max-age=31536000")
+    # Ответы API — тексты клиентов и токены; кэшу (общему прокси, истории
+    # браузера) их хранить незачем.
+    if request.url.path.startswith("/api/"):
+        h.setdefault("Cache-Control", "no-store")
+    return resp
 
 FRONTEND_DIR = ROOT / "frontend"
 DATA_DIR = ROOT / "backend" / "data"
@@ -3432,6 +3540,8 @@ def login(req: LoginRequest, request: Request):
         print("[backend] вход без логина — принят как «%s» (прежний формат)" % BOOTSTRAP_LOGIN,
               file=sys.stderr)
     user = _user_by_login(login_name)
+    if not user:
+        _hash_password(req.password, _DUMMY_SALT)   # то же время, что у настоящей сверки
     if not user or not _verify_password(user, req.password):
         _note_login_fail(ip)
         # Неудачная попытка — тоже история входа, и именно она интересна:
@@ -3452,7 +3562,23 @@ def login(req: LoginRequest, request: Request):
     if user.get("email") and not user.get("emailVerified"):
         raise HTTPException(403, "Почта не подтверждена: введите код из письма "
                                  "или запросите новый")
+    home = _tenant_rec(user.get("tenant", DEFAULT_TENANT))
+    seat = None
+    if home is not None and not home.get("active", True) and not user.get("super"):
+        # Домашняя организация отключена — человек садится в первую живую
+        # из своих команд (инвариант 18: с двумя командами он не должен
+        # терять обе); нет такой — входа нет.
+        for mship in _memberships(user)[1:]:
+            rec = _tenant_rec(mship["tenant"])
+            if rec is not None and rec.get("active", True):
+                seat = mship
+                break
+        if seat is None:
+            raise HTTPException(403, "Команда отключена администратором сервиса")
     token = _new_session(user)
+    if seat is not None:
+        with _AUTH_LOCK:
+            _SESSIONS[token]["tenant"], _SESSIONS[token]["role"] = seat["tenant"], seat["role"]
     tok = CURRENT_SESSION.set(_SESSIONS[token])
     try:
         _audit("login", ip=ip)
@@ -3500,6 +3626,19 @@ def _mail_code(user: dict, kind: str, code: str) -> bool:
     return mailer_mod.send(user["email"], subject, body) if mailer_mod else False
 
 
+def _mail_code_async(user: dict, kind: str, code: str) -> None:
+    """Письмо уходит из фонового потока. Синхронный SMTP (таймаут до 20 с)
+    делал время ответа /forgot и /resend зависимым от того, есть ли такой
+    адрес, — а обе двери публичны и обязаны отвечать одинаково."""
+    def _go():
+        try:
+            if not _mail_code(user, kind, code):
+                print("[mail] код %s для %s не отправлен" % (kind, user.get("email")), file=sys.stderr)
+        except Exception as e:
+            print("[mail] код %s для %s: %s" % (kind, user.get("email"), e), file=sys.stderr)
+    threading.Thread(target=_go, daemon=True).start()
+
+
 @app.get("/api/auth/signup-info")
 def signup_info():
     """Что показывать на экране входа: открыта ли регистрация и уходят ли
@@ -3535,6 +3674,16 @@ def register(req: RegisterRequest, request: Request):
         raise HTTPException(400, "Без согласия с офертой и политикой обработки "
                                  "персональных данных регистрация невозможна")
     if _user_by_email(email) or _user_by_login(email):
+        # Отказ честный (человеку надо войти, а не регистрироваться), но
+        # он же отвечает на вопрос «есть ли у вас такой клиент». Поэтому
+        # у проб свой потолок на адрес: перебор базы стоит не больше
+        # SIGNUP_PROBE_MAX_PER_HOUR ответов в час, дальше — 429 без ответа.
+        now = time.time()
+        probes = [x for x in _SIGNUP_PROBES.get(ip, []) if now - x < 3600]
+        probes.append(now)
+        _SIGNUP_PROBES[ip] = probes
+        if len(probes) > SIGNUP_PROBE_MAX_PER_HOUR:
+            raise HTTPException(429, "Слишком много регистраций с этого адреса. Повторите через час.")
         raise HTTPException(409, "Такая почта уже зарегистрирована — войдите или "
                                  "восстановите пароль")
     tid = _new_tenant_id(req.org or email.split("@")[0])
@@ -3576,12 +3725,15 @@ def verify_email(req: CodeRequest, request: Request):
     if _login_blocked(ip):
         raise HTTPException(429, "Слишком много попыток. Повторите через 15 минут.")
     user = _user_by_email(_check_email(req.email))
-    if not user:
+    if not user or not user.get("active", True):
+        _hash_password((req.code or "").strip(), _DUMMY_SALT)   # то же время, что у сверки кода
         _note_login_fail(ip)
-        raise HTTPException(400, "Неверный код")
-    if user.get("emailVerified"):
-        return {"ok": True, "already": True}
-    _check_code(user, req.code, "verify")
+        raise HTTPException(400, AUTH_CODE_BAD)
+    # Уже подтверждённая почта отвечает тем же отказом, что и любая другая:
+    # прежнее {"already": true} без проверки кода говорило любому, что
+    # такая учётная запись есть и она рабочая. Кода у такого человека нет
+    # (`_check_code` его и не найдёт), а фронтенд `already` не читал.
+    _check_code(user, req.code, "verify", ip)
     user["emailVerified"] = True
     token = _new_session(user)
     tok = CURRENT_SESSION.set(_SESSIONS[token])
@@ -3598,32 +3750,34 @@ def resend_code(req: CodeRequest, request: Request):
     """Повторный код подтверждения. Ответ одинаков при любом адресе:
     иначе эта дверь отвечала бы на вопрос «а есть ли у вас такой клиент»."""
     ip = _client_ip(request)
-    if _signup_blocked(ip):
+    email = _check_email(req.email)
+    if _code_req_blocked(ip):
         raise HTTPException(429, "Слишком много запросов. Повторите через час.")
-    user = _user_by_email(_check_email(req.email))
-    sent = False
-    if user and not user.get("emailVerified"):
+    # Считается КАЖДЫЙ запрос, а не только попадание, и `mailSent` наружу
+    # не уходит: и то и другое отвечало бы «есть ли у вас такой клиент».
+    user = _user_by_email(email)
+    if user and user.get("active", True) and not user.get("emailVerified"):
         code = _issue_code(user, "verify")
         save_state(STATE)
-        sent = _mail_code(user, "verify", code)
-        _SIGNUP_FAILS.setdefault(ip, []).append(time.time())
-    return {"ok": True, "mailSent": sent}
+        _mail_code_async(user, "verify", code)
+    return {"ok": True}
 
 
 @app.post("/api/auth/forgot")
 def forgot_password(req: CodeRequest, request: Request):
     ip = _client_ip(request)
-    if _signup_blocked(ip):
+    email = _check_email(req.email)
+    if _code_req_blocked(ip):
         raise HTTPException(429, "Слишком много запросов. Повторите через час.")
-    user = _user_by_email(_check_email(req.email))
-    sent = False
+    # Про существование адреса не говорим — ответ один на все случаи:
+    # ни `mailSent`, ни счётчик «только при попадании» (по 429 читалось бы
+    # то же самое), ни синхронный SMTP с его таймаутом в ответе.
+    user = _user_by_email(email)
     if user and user.get("active", True):
         code = _issue_code(user, "reset")
         save_state(STATE)
-        sent = _mail_code(user, "reset", code)
-        _SIGNUP_FAILS.setdefault(ip, []).append(time.time())
-    # Про существование адреса не говорим — ответ один на все случаи.
-    return {"ok": True, "mailSent": sent}
+        _mail_code_async(user, "reset", code)
+    return {"ok": True}
 
 
 @app.post("/api/auth/reset")
@@ -3631,12 +3785,13 @@ def reset_password(req: CodeRequest, request: Request):
     ip = _client_ip(request)
     if _login_blocked(ip):
         raise HTTPException(429, "Слишком много попыток. Повторите через 15 минут.")
+    _check_user_fields(None, req.password, None)   # ДО поиска: иначе текст отказа — оракул
     user = _user_by_email(_check_email(req.email))
-    if not user:
+    if not user or not user.get("active", True):
+        _hash_password((req.code or "").strip(), _DUMMY_SALT)   # то же время, что у сверки кода
         _note_login_fail(ip)
-        raise HTTPException(400, "Неверный код")
-    _check_user_fields(None, req.password, None)
-    _check_code(user, req.code, "reset")
+        raise HTTPException(400, AUTH_CODE_BAD)
+    _check_code(user, req.code, "reset", ip)
     user["hash"], user["salt"] = _hash_password(req.password)
     user["emailVerified"] = True        # код пришёл на эту почту — она рабочая
     with _AUTH_LOCK:                    # прежние сессии закрываем
@@ -3796,6 +3951,8 @@ def admin_user_update(uid: int, req: UserPatch, request: Request):
         if u["id"] == me["id"] and not req.active:
             raise HTTPException(400, "Нельзя отключить самого себя")
         u["active"] = bool(req.active)
+        if not u["active"]:
+            _drop_user_sessions(u["id"])     # доступ уходит сразу, а не через SESSION_TTL
     save_state(STATE)
     return {"ok": True, "user": _user_public(u)}
 
@@ -3876,6 +4033,14 @@ def _drop_user_sessions(uid: int, tenant: Optional[str] = None) -> None:
     with _AUTH_LOCK:
         for t in [t for t, s in _SESSIONS.items()
                   if s.get("user") == uid and (tenant is None or s.get("tenant") == tenant)]:
+            _SESSIONS.pop(t, None)
+
+
+def _drop_tenant_sessions(tid: str) -> None:
+    """Закрыть все сессии, работающие в этой организации: отключение
+    организации иначе действовало бы только на следующий вход."""
+    with _AUTH_LOCK:
+        for t in [t for t, s in _SESSIONS.items() if s.get("tenant") == tid]:
             _SESSIONS.pop(t, None)
 
 
@@ -4139,6 +4304,14 @@ def team_invite(tid: str, req: TeamInvite, request: Request):
     email = _check_email(req.email)
     if req.role not in ROLES:
         raise HTTPException(400, "Роль: " + " | ".join(ROLES))
+    now = time.time()
+    with _AUTH_LOCK:
+        hits = [x for x in _INVITE_HITS.get(u["id"], []) if now - x < 3600]
+        if len(hits) >= INVITE_MAX_PER_HOUR:
+            _INVITE_HITS[u["id"]] = hits
+            raise HTTPException(429, "Слишком много приглашений — повторите через час")
+        hits.append(now)          # считается КАЖДАЯ попытка, включая «такого нет»
+        _INVITE_HITS[u["id"]] = hits
     target = _user_by_email(email)
     if not target:
         raise HTTPException(404, "Такой почты в сервисе нет — человек должен "
@@ -4574,6 +4747,8 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
         rec["name"] = req.name.strip() or rec["name"]
     if req.active is not None:
         rec["active"] = bool(req.active)
+        if not rec["active"]:
+            _drop_tenant_sessions(tid)       # отключённая организация — без живых сессий
     if req.clearLimit:
         rec.pop("limitUsd", None)
     elif req.limitUsd is not None:
@@ -4819,6 +4994,7 @@ def _docx_bill_paragraphs(content: bytes) -> list:
     а объём файла от них не уменьшается."""
     from docx import Document
     from docx.oxml.ns import qn as _qn
+    _zip_guard(content)
     doc = Document(io.BytesIO(content))
     out = []
     for p in _docx_flat_paragraphs(doc):
@@ -5357,23 +5533,18 @@ def get_seed():
     """Initial data dump — glossary capped at 150 terms for performance; full list via /api/glossary."""
     # Пользователи и организации в общую выдачу НЕ идут: там хеши паролей.
     t = _current_tenant()
-    public = {k: v for k, v in STATE.items() if k not in ("users", "tenants")}
-    public.pop("audit", None)
-    public.pop("spend", None)
-    # Приглашения — почты людей из ДРУГИХ организаций. Верхний ключ уехал бы
-    # каждому вошедшему вместе с ними: `/api/seed` отдаёт всё, что не названо.
-    public.pop("invites", None)
-    # Анкеты тест-группы и наборы тестировщиков. Тот же закон, что у
-    # приглашений: в анкете лежат имя, Telegram и мнение постороннего
-    # человека — верхний ключ уехал бы каждому вошедшему вместе с ними.
-    public.pop("surveys", None)
-    public.pop("testBatches", None)
-    # Папки проектов и словари — по организации: названия чужих проектов
-    # и словарей иначе уехали бы каждому вошедшему.
+    # БЕЛЫЙ список: наружу уходит только то, что названо ниже, и только своё.
+    # Прежний чёрный («всё, кроме users/tenants/audit/…») отдавал каждому
+    # вошедшему любой НОВЫЙ верхний ключ по умолчанию — так уехали бы и цены
+    # (см. pricing в записи организации), и память переводов всех клиентов.
+    public = {}
     public["folders"] = [_folder_public(f) for f in _tenant_folders()]
     public["dicts"] = _tenant_dicts()
-    for key in ("exportHistory", "termQueue", "autoBatches", "runCosts", "quotes"):
+    # Память переводов — тексты клиентов, свои области — промпты организации:
+    # верхний ключ без фильтра уезжал каждому вошедшему целиком.
+    for key in ("exportHistory", "termQueue", "autoBatches", "runCosts", "quotes", "tm"):
         public[key] = [e for e in (STATE.get(key) or []) if _tenant_of(e) == t]
+    public["domains"] = _tenant_domains(t)
     if _hide_cost():
         # История расхода прогонов — это суммы и модели по шагам.
         public["runCosts"] = []
@@ -6940,6 +7111,24 @@ def _slots_text(p, slots, qn) -> str:
     return "".join(parts)
 
 
+def _zip_guard(content: bytes) -> None:
+    """Потолки пакета ДО разбора — те же, что у сметы (`textcount`): размер
+    файла, число частей и ОБЪЯВЛЕННЫЙ распакованный объём. Без них импорт,
+    повторный импорт и «приложить исходник» открывали .docx как есть, и
+    zip-бомба на 50 МБ разворачивалась в гигабайты в памяти единственного
+    процесса. Объявленному объёму верить можно: zipfile читает не больше,
+    чем объявлено, и на расхождении бросает ошибку."""
+    if len(content) > textcount.MAX_BYTES:
+        raise HTTPException(413, "Файл больше %d МБ — разберите его по частям"
+                            % (textcount.MAX_BYTES // 1024 // 1024))
+    try:
+        textcount.check_zip(content)
+    except textcount.TooBig as e:
+        raise HTTPException(413, str(e))
+    except Exception:
+        return          # не zip — разберётся тот, кто читает, своей ошибкой
+
+
 def _docx_paragraph_texts(content: bytes) -> list:
     """[(текст, куда встанет перевод; полный текст абзаца)] по КАЖДОМУ абзацу
     в порядке разбора — включая те, что в сегменты не пойдут. Индекс в этом
@@ -6959,6 +7148,7 @@ def _docx_paragraph_texts(content: bytes) -> list:
     с надписью у старого проекта там по-прежнему `mismatch` — как и прежде."""
     from docx import Document
     from docx.oxml.ns import qn as _qn
+    _zip_guard(content)
     doc = Document(io.BytesIO(content))
     out = []
     for p in _docx_flat_paragraphs(doc):
@@ -12628,13 +12818,22 @@ def rescore_backchecks_undo(stamp: str):
     if not path.exists():
         raise HTTPException(404, "Копия пересчёта не найдена")
     data = json.loads(path.read_text(encoding="utf-8"))
+    # Метка предсказуема (дата-время), а копия лежит вне организаций — значит
+    # по ней нельзя трогать чужие проекты: обходятся только свои, а копия без
+    # единого своего проекта для этой организации не существует (404).
+    own = {str(p.get("id")): p for p in _tenant_projects()}
+    if not any(str(k) in own for k in (data.get("projects") or {})):
+        raise HTTPException(404, "Копия пересчёта не найдена")
+    # Прогон проверяется по ВСЕМ своим проектам копии до первой записи:
+    # отказ посреди цикла оставлял бы половину проектов откаченной без отчёта.
+    for k in (data.get("projects") or {}):
+        if str(k) in own and _job_live(own[str(k)]["id"]):
+            raise HTTPException(409, "Идёт прогон — откат подождёт")
     restored, missing, skipped = 0, 0, 0
     for pid_s, saved in (data.get("projects") or {}).items():
-        project = next((p for p in STATE.get("projects", [])
-                        if str(p.get("id")) == str(pid_s)), None)
+        project = own.get(str(pid_s))
         if project is None:
-            missing += len(saved)
-            continue
+            continue            # чужой проект копии — не наш и не «пропавший»
         if _job_live(project["id"]):
             raise HTTPException(409, "Идёт прогон — откат подождёт")
         by_id = {str(s.get("id")): s for s in project.get("segments", [])}
@@ -19972,16 +20171,29 @@ def _export_docx_plain(project: dict, tmp, include_source: bool = True) -> dict:
     return {}
 
 
+def _export_path(project: dict, fmt: str) -> Path:
+    """Куда кладётся файл экспорта: `exports/<организация>/<проект>/<название>`.
+    Раньше путь строился по ОДНОМУ названию проекта, и два клиента с проектом
+    «Договор» делили один файл: готовый PDF (`ready.exists()`) уходил чужому,
+    а docx двух одновременных экспортов перезаписывал друг друга. Имя для
+    скачивания и истории — по-прежнему красивое (`path.name`), организация
+    и номер — только в пути на диске."""
+    if fmt not in EXPORT_EXT:
+        raise HTTPException(400, f"Формат {fmt} не поддерживается")
+    ext = EXPORT_EXT.get(fmt) or _original_ext(project).lstrip(".")
+    folder = (EXPORT_DIR / re.sub(r"[^A-Za-z0-9_-]+", "_", _tenant_of(project))
+              / str(int(project["id"])))
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / (_safe_filename(project["title"]) + EXPORT_SUFFIX.get(fmt, "") + "." + ext)
+
+
 def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tuple:
     """Собирает реальный файл экспорта и отчёт о том, что в него попало.
     Раньше экспорт был фиктивным — файл не создавался вовсе, только запись
     в историю."""
-    EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     if fmt not in EXPORT_EXT:
         raise HTTPException(400, f"Формат {fmt} не поддерживается")
-    ext = EXPORT_EXT.get(fmt) or _original_ext(project).lstrip(".")
-    out = EXPORT_DIR / (_safe_filename(project["title"])
-                        + EXPORT_SUFFIX.get(fmt, "") + "." + ext)
+    out = _export_path(project, fmt)
     # Пишем во временный файл и подменяем готовый одним os.replace — тем же
     # приёмом, что и save_state. Две причины, и обе не теоретические:
     #   1) экспорт учебника это 21 МБ и несколько секунд. Записанный прямо
@@ -20100,7 +20312,7 @@ def download_export(pid: int, format: str = "docx", source: bool = True):
         # PDF только что собран кнопкой «Экспорт», и собирать его снова на
         # каждое скачивание — это ещё раз до трёх минут конвертера на
         # единственном воркере. Отдаём готовый; нет его — собираем.
-        ready = EXPORT_DIR / (_safe_filename(project["title"]) + EXPORT_SUFFIX.get("pdf", "") + ".pdf")
+        ready = _export_path(project, "pdf")
         if ready.exists():
             return FileResponse(str(ready), media_type="application/pdf", filename=ready.name)
     path, _stats = _generate_export(project, fmt, include_source=source)
@@ -20829,9 +21041,12 @@ def health(request: Request):
         "checksEnabled": checks_enabled(),
         # Прежний ключ — ещё релиз: на него смотрит смоук деплоя.
         "medicalQaEnabled": checks_enabled(),
-        "projects": len(STATE["projects"]),
     }
-    if _session_valid(_token_from_request(request)):
+    sess = _session_of(_token_from_request(request))
+    if sess is not None:
+        # Число проектов — своей организации и только вошедшим: общий
+        # счётчик по всем клиентам без входа был лишним фактом наружу.
+        info["projects"] = sum(1 for p in STATE["projects"] if _tenant_of(p) == sess.get("tenant"))
         info["backendModules"] = list(_BACKEND_MODULES.keys())
         info["stateFile"] = str(STATE_FILE)
     return info
@@ -22792,7 +23007,8 @@ if FRONTEND_DIR.exists():
     mimetypes.add_type("text/javascript", ".jsx")
     app.mount("/css", StaticFiles(directory=str(FRONTEND_DIR / "css")), name="css")
     app.mount("/js", StaticFiles(directory=str(FRONTEND_DIR / "js")), name="js")
-    app.mount("/screens", StaticFiles(directory=str(FRONTEND_DIR / "screens")), name="screens")
+    # /screens (скриншоты макета) наружу больше не отдаётся: фронтенд на него
+    # не ссылается, а снимки интерфейса — это ещё и текст на экране.
 
     @app.get("/", response_class=HTMLResponse)
     def index():

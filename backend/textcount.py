@@ -298,6 +298,50 @@ def _zip_xml_texts(zf: zipfile.ZipFile, names: list, tag: str,
     return out
 
 
+_XLSX_SI_RE = re.compile(r"<si>(.*?)</si>", re.S)
+_XLSX_C_RE = re.compile(r"<c(?=[\s/>])([^>]*?)(?:/>|>(.*?)</c>)", re.S)
+_XLSX_T_RE = re.compile(r"<t(?:\s[^>]*)?>(.*?)</t>", re.S)
+
+
+def _xlsx_cell_texts(zf: "zipfile.ZipFile", names: list) -> Optional[list]:
+    """Текст КАЖДОЙ строковой ячейки книги по листам и строкам: общие строки
+    (t="s") — по номеру в пуле, inline (t="inlineStr") — из самой ячейки.
+    Формулы (t="str" с <f>) и числа не считаются. None — разбор не удался,
+    вызывающий берёт запасной счёт по пулу."""
+    try:
+        shared = []
+        if "xl/sharedStrings.xml" in names:
+            if zf.getinfo("xl/sharedStrings.xml").file_size > MAX_PART:
+                raise TooBig("sharedStrings.xml больше %d МБ" % (MAX_PART // 1024 // 1024))
+            xml = zf.read("xl/sharedStrings.xml").decode("utf-8", errors="replace")
+            for m in _XLSX_SI_RE.finditer(xml):
+                shared.append(_html.unescape("".join(_XLSX_T_RE.findall(m.group(1)))))
+        out = []
+        sheets = sorted((n for n in names if re.match(r"xl/worksheets/sheet\d+\.xml$", n)),
+                        key=lambda n: int(re.search(r"(\d+)", n).group(1)))
+        for n in sheets:
+            if zf.getinfo(n).file_size > MAX_PART:
+                raise TooBig("%s больше %d МБ" % (n, MAX_PART // 1024 // 1024))
+            xml = zf.read(n).decode("utf-8", errors="replace")
+            for m in _XLSX_C_RE.finditer(xml):
+                attrs, body = m.group(1) or "", m.group(2) or ""
+                tm = re.search(r'(?:^|\s)t="([^"]+)"', attrs)
+                kind = tm.group(1) if tm else ""
+                if kind == "s":
+                    vm = re.search(r"<v>(.*?)</v>", body, re.S)
+                    if vm and vm.group(1).strip().isdigit():
+                        i = int(vm.group(1))
+                        if i < len(shared):
+                            out.append(shared[i])
+                elif kind == "inlineStr":
+                    out.append(_html.unescape("".join(_XLSX_T_RE.findall(body))))
+        return out
+    except TooBig:
+        raise
+    except Exception:
+        return None
+
+
 def _blocks_from_zip(ext: str, content: bytes, notes: list) -> list:
     zf = zipfile.ZipFile(io.BytesIO(content))
     infos = zf.infolist()
@@ -312,10 +356,15 @@ def _blocks_from_zip(ext: str, content: bytes, notes: list) -> list:
                      % (total // 1024 // 1024, MAX_UNPACKED // 1024 // 1024))
     names = zf.namelist()
     if ext == ".xlsx":
-        # sharedStrings — общий пул строк книги; inline-строки лежат в листах.
-        blocks = _zip_xml_texts(zf, ["xl/sharedStrings.xml"], "t", unit="si|is", breaks=())
-        blocks += _zip_xml_texts(zf, [n for n in names if n.startswith("xl/worksheets/")], "t",
-                                 unit="si|is", breaks=())
+        # ПО ЯЧЕЙКАМ, а не по пулу sharedStrings: пул хранит уникальные строки,
+        # и заголовок, стоящий в пяти тысячах строк, считался бы один раз —
+        # а импорт заводит сегмент на КАЖДУЮ ячейку (обратная запись кладёт
+        # в каждую свой перевод). Смета и списание обязаны сходиться.
+        blocks = _xlsx_cell_texts(zf, names)
+        if blocks is None:
+            blocks = _zip_xml_texts(zf, ["xl/sharedStrings.xml"], "t", unit="si|is", breaks=())
+            blocks += _zip_xml_texts(zf, [n for n in names if n.startswith("xl/worksheets/")], "t",
+                                     unit="si|is", breaks=())
         notes.append("Формулы и числа в счёт не идут — считается только текст ячеек.")
         return blocks
     if ext == ".pptx":

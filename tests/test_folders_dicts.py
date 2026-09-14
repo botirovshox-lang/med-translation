@@ -108,11 +108,20 @@ r = c.post("/api/folders", headers=H(A), json={"title": "Договор", "src":
 check(r.status_code == 200, "папка «Договор» заведена")
 FID = r.json()["id"]
 check(FID == 102 and r.json()["dicts"] == ["d1"], "номер из общего ряда (102), свой словарь d1 первым")
-r = c.post("/api/projects", headers=H(A), json={"title": "Приложение 1", "src": "DE", "tgt": "FR",
+r = c.post("/api/projects", headers=H(A), json={"title": "Приложение 1", "src": "RU", "tgt": "EN",
                                                "domain": "legal", "folder": FID})
 P1 = r.json()
 check(r.status_code == 200 and P1["folder"] == FID and (P1["src"], P1["tgt"], P1["domain"]) == ("RU", "EN", "medical"),
-      "файл в папке наследует её пару и область, а не присланные")
+      "файл в папке наследует её область (тему), а не присланную")
+# Пара языков у файла СВОЯ: в одном заказе бывают договор RU→EN и приложение RU→UZ.
+r = c.post("/api/projects", headers=H(A), json={"title": "Приложение UZ", "src": "RU", "tgt": "UZ",
+                                               "domain": "legal", "folder": FID})
+PUZ = r.json()
+check(r.status_code == 200 and (PUZ["src"], PUZ["tgt"], PUZ["domain"]) == ("RU", "UZ", "medical"),
+      "второй файл папки — с другой парой, область та же")
+fl = {f["id"]: f for f in c.get("/api/folders", headers=H(A)).json()["folders"]}
+check(fl[FID]["pairs"] == ["RU→EN", "RU→UZ"], "папка называет пары своих файлов: %s" % fl[FID].get("pairs"))
+main._delete_project_record(PUZ["id"])
 check(main._fid(P1["id"]) == FID, "_fid(файл в папке) == номер папки")
 check(hits("сторона договора", P1) == [], "новая папка старого словаря НЕ видит (промпт)")
 check(req_hits("сторона договора", P1) == [], "…и не требует (ремонт/соответствие)")
@@ -278,15 +287,15 @@ check(main._fid(555) == 777 and 777 in fl and fl[777]["files"] == [555] and fl[7
 check(c.get("/api/folders/777", headers=H(A)).status_code == 200, "GET /api/folders/777 — 200")
 main.STATE["projects"] = [p for p in main.STATE["projects"] if p["id"] != 555]
 
-print("\n=== 18. Загрузка файла в папку наследует её пару и область ===")
+print("\n=== 18. Загрузка файла в папку: область папки, пара — своя ===")
 from docx import Document as _Doc
 _d = _Doc(); _d.add_paragraph("Первый абзац документа."); _d.add_paragraph("Второй абзац документа.")
 _b = io.BytesIO(); _d.save(_b)
 r = c.post("/api/projects/upload", headers=H(A), files={"file": ("doc.docx", _b.getvalue())},
-           data={"title": "Загруженный", "src": "DE", "tgt": "FR", "domain": "general", "folder": str(F2["id"])})
+           data={"title": "Загруженный", "src": "RU", "tgt": "EN", "domain": "general", "folder": str(F2["id"])})
 UP = r.json()
 check(r.status_code == 200 and UP["folder"] == F2["id"] and (UP["src"], UP["tgt"], UP["domain"]) == ("RU", "EN", "legal")
-      and len(UP["segments"]) == 2, "загруженный файл — в папке, с её парой и областью: %s" % r.status_code)
+      and len(UP["segments"]) == 2, "загруженный файл — в папке, с областью папки (своя пара — раздел 2): %s" % r.status_code)
 
 print("\n=== 19. Память переводов — знание папки ===")
 main._tm_upsert("исходник X", "перевод X", P3)

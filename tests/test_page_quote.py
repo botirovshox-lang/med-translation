@@ -185,9 +185,11 @@ check(b == [REF, "и таб"], "docx без python-docx: прогоны по а�
 xlsx = _pkg({"xl/sharedStrings.xml":
              '<sst><si><t>Просто</t></si><si><r><t xml:space="preserve">Жирное </t></r><r><t>слово</t></r></si></sst>',
              "xl/worksheets/sheet1.xml":
-             '<worksheet><sheetData><row><c t="inlineStr"><is><t>Вст</t></is></c></row></sheetData></worksheet>'})
+             '<worksheet><sheetData><row><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c>'
+             '<c r="C1" t="inlineStr"><is><t>Вст</t></is></c><c r="D1" t="s"><v>0</v></c></row></sheetData></worksheet>'})
 b = textcount.extract("s.xlsx", xlsx)["blocks"]
-check(b == ["Просто", "Жирное слово", "Вст"], "xlsx: rich-text ячейка — одна строка, пробел цел (%r)" % b)
+# По ЯЧЕЙКАМ, а не по пулу: «Просто» стоит в двух ячейках — считается дважды.
+check(b == ["Просто", "Жирное слово", "Вст", "Просто"], "xlsx: счёт по ячейкам, rich-text ячейка — одна строка, пробел цел (%r)" % b)
 try:
     from docx import Document
     doc = Document()

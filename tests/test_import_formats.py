@@ -93,13 +93,13 @@ HTML = ("<html><body><h1>Заголовок</h1><p>Абзац <b>жирный</b
         "<table><tr><td><p>А</p></td><td>Б</td></tr></table></body></html>").encode("utf-8")
 r = upload("page.html", HTML)
 check(r.status_code == 200 and [s["source"] for s in r.json()["segments"]]
-      == ["Заголовок", "Абзац жирный текст.", "Улица Ленина, 5 Ташкент", "А | Б"],
-      "html: блочные теги делят абзацы, инлайновые и <br> — нет, строка таблицы — один абзац")
+      == ["Заголовок", "Абзац жирный текст.", "Улица Ленина, 5 Ташкент"],
+      "html: блочные теги делят абзацы, инлайновые и <br> — нет; ячейки из одной буквы сегментами не становятся")
 from openpyxl import Workbook
 wb = Workbook(); ws = wb.active; ws["A1"] = "Название товара"; ws["A2"] = "Хлеб ржаной"; ws["B2"] = 12
 buf = io.BytesIO(); wb.save(buf)
 r = upload("price.xlsx", buf.getvalue())
-check(r.status_code == 200 and len(r.json()["segments"]) == 2 and "Word" in (r.json().get("importNote") or ""),
+check(r.status_code == 200 and len(r.json()["segments"]) == 2 and r.json().get("writeback") is True and "книга" in (r.json().get("importNote") or ""),
       "xlsx: текст ячеек стал строками, пометка про Word названа")
 from PIL import Image
 im = Image.new("RGB", (120, 80), "white"); b = io.BytesIO(); im.save(b, "PNG")

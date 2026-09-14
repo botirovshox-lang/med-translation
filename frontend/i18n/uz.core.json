@@ -365,5 +365,9 @@
   "исчезнет заверённых человеком строк: ": "odam tasdiqlagan qatorlar yo'qoladi: ",
   "строки с картинок придётся прочитать заново: ": "rasmlardagi qatorlarni qayta o'qish kerak bo'ladi: ",
   "Обновить файл «": "Fayl yangilansinmi: «",
-  "Прежняя версия сохранится, вернуть можно с карточки файла.": "Avvalgi versiya saqlanadi, fayl kartochkasidan qaytarish mumkin."
+  "Прежняя версия сохранится, вернуть можно с карточки файла.": "Avvalgi versiya saqlanadi, fayl kartochkasidan qaytarish mumkin.",
+  "Читаем текст с картинок — строки появятся сами.": "Rasmlardagi matnni o'qiyapmiz — qatorlar o'zi paydo bo'ladi.",
+  "Текст с картинок читается — строки появятся сами.": "Rasmlardagi matn o'qilmoqda — qatorlar o'zi paydo bo'ladi.",
+  "С какого языка": "Qaysi tildan",
+  "На какой язык": "Qaysi tilga"
 }

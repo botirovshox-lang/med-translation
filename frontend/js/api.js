@@ -203,10 +203,13 @@
     deleteDict:    (did)                    => call("DELETE", `/dicts/${encodeURIComponent(did)}`),
     /* Проба файла: тот же уже есть? похож на новую версию файла проекта?
        Ничего не пишет и денег не стоит. */
-    probeUpload: async (file, folder) => {
+    probeUpload: async (file, folder, src, tgt) => {
       const fd = new FormData();
       fd.append("file", file);
       if (folder != null) fd.append("folder", String(folder));
+      /* Пара — часть вопроса: тот же файл на другую пару — новый файл. */
+      if (src) fd.append("src", src);
+      if (tgt) fd.append("tgt", tgt);
       const r = await fetch((window.API_BASE || "") + "/api/projects/probe",
                             { method: "POST", body: fd, headers: authHeaders({}) });
       if (r.status === 401) onUnauthorized();

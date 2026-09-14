@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""Импорт файла любого поддержанного формата — ЧЕРЕЗ .docx.
+"""Импорт файла любого поддержанного формата — ЧЕРЕЗ .docx — и возврат
+перевода В ТОМ ЖЕ формате.
 
 Зачем именно так. Весь конвейер проекта стоит на .docx: разбор абзацев
 (`_docx_paragraph_texts`), якоря «абзац → сегмент», хранение исходника,
@@ -7,28 +8,47 @@
 Второй конвейер под Excel, HTML и картинки означал бы второй набор якорей,
 второй экспорт и второй разбор картинок — и все они однажды разошлись бы
 с первым. Поэтому чужой формат сначала ПРЕВРАЩАЕТСЯ в .docx, а дальше идёт
-штатной дорогой:
+штатной дорогой.
 
-  * текстовые форматы (txt, md, html, csv, xlsx, pptx, odt …) — куски текста
-    берёт `textcount.extract` — ТОТ ЖЕ разбор, что у сметы, поэтому смета
-    и число строк проекта считаются по одним кускам; каждый кусок — абзац;
-  * PDF с текстовым слоем — строки страниц склеиваются в абзацы (pypdf
-    отдаёт визуальные строки; сегмент-обрывок без контекста переводится
-    хуже); PDF-скан — картинка каждой страницы;
-  * картинки (png, jpg, webp, …) — по картинке на абзац; текст с них читает
-    штатный разбор надписей (платно, по кнопке), а не импорт.
+**Слот.** У текстовых форматов файл режется на СЛОТЫ — куски текста
+с адресом в исходнике (строка txt, ячейка csv/xlsx, абзац слайда, блочный
+пробег html). Слот i становится абзацем i собранного .docx — ВКЛЮЧАЯ пустые
+(пустой абзац): номер абзаца и есть якорь сегмента, и выброшенный пустой слот
+сдвинул бы все номера. Обратная запись (`write_back`) считает адреса заново
+ТЕМ ЖЕ кодом по хранимому оригиналу (`data/sources/{pid}.orig.<ext>`)
+и кладёт перевод абзаца i в слот i; непереведённый слот остаётся как был.
+Хранить адреса рядом незачем: разбор детерминирован, а исходник лежит.
+**Правила резки меняются**, поэтому на проекте лежит отпечаток слотов
+(`slots_sha`): разошёлся — выгрузка отказывает (400), а не кладёт переводы
+в чужие ячейки молча.
 
-Что теряется, названо честно (`note` в ответе): у Excel и PowerPoint
-раскладка листа/слайда в .docx не переносится — обратно они выгружаются
-Word-документом или таблицей Excel из сегментов, а не файлом 1в1.
-Оригинал при этом хранится рядом (`data/sources/{pid}.orig.<ext>`):
-когда появится выгрузка 1в1 для этих форматов, ей будет во что писать.
+Что теряется, названо честно (`note` при импорте):
+  * xlsx — обратная запись через openpyxl: картинки, диаграммы, фигуры
+    и примечания листа не переживают перезапись, формулы и числа не
+    трогаются, перенос строки внутри ячейки становится пробелом;
+  * html — внутри переведённого пробега инлайн-разметка (<b>, <a>) не
+    сохраняется: пробег заменяется текстом перевода; картинки и прочие
+    вставки (<img>, <iframe>, <input>…) режут пробег и остаются на месте;
+    атрибуты (title, alt) не переводятся;
+  * pptx — абзац слайда получает перевод целиком в первый прогон, выделения
+    внутри абзаца теряются; поля (номер слайда, дата) не трогаются; заметки,
+    диаграммы и SmartArt не переводятся;
+  * json/xml/po/srt/vtt/yaml/rtf/odt/ods/odp — только Word-документом:
+    построчная обратная запись сломала бы их синтаксис;
+  * картинки и скан-PDF — перевод возвращается перерисовкой надписей
+    (см. `image_text`), это делает экспорт «как в оригинале» по .docx,
+    а картинки достаются из него; pdf с текстовым слоем — PDF из .docx
+    конвертером (`topdf`), не исходный файл.
 
 Ни одного вызова модели. Потолки размера — те же, что у сметы (`textcount`).
 """
+import csv
+import hashlib
+import html as _html
 import io
 import os
 import re
+import zipfile
 from typing import Optional
 
 try:
@@ -39,6 +59,10 @@ except ImportError:                                   # pragma: no cover
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
 # Что принимаем. Смета умеет то же плюс .pdf; картинки — только здесь.
 SUPPORTED_EXT = sorted(set(textcount.SUPPORTED_EXT) | IMAGE_EXT)
+# Построчные форматы с обратной записью: строка — слот.
+LINE_EXT = {".txt", ".md", ".markdown", ".log", ""}
+# Форматы, которые умеем вернуть В ТОМ ЖЕ виде (обратной записью по слотам).
+WRITEBACK_EXT = LINE_EXT | {".csv", ".tsv", ".xlsx", ".html", ".htm", ".pptx"}
 # Строки PDF склеиваются в абзац, пока не встретится конец предложения,
 # пустая строка или потолок длины: без потолка титульный лист с сотней
 # коротких строк без точек стал бы одним абзацем на страницу.
@@ -46,6 +70,8 @@ PDF_PARA_MAX = 1200
 _PDF_END_RE = re.compile(r"[.!?…:;»”\")\]]\s*$")
 # Максимальная ширина картинки в .docx — ширина листа A4 с полями.
 _PIC_WIDTH_IN = 6.3
+# Управляющие символы, которых lxml в тексте абзаца не принимает.
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
 def ext_of(filename: str) -> str:
@@ -66,10 +92,37 @@ def kind_of(filename: str) -> str:
     return "unsupported"
 
 
+def slots_sha(slots: list) -> str:
+    """Отпечаток слотов: по нему выгрузка проверяет, что резка не изменилась."""
+    h = hashlib.sha1()
+    for s in slots:
+        h.update((s or "").encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
 def _document():
     from docx import Document  # type: ignore
     return Document()
 
+
+def _clean(s: str) -> str:
+    return _CTRL_RE.sub(" ", s or "")
+
+
+def _encoding_of(enc: str, content: bytes = b"") -> str:
+    """Кодировка исходника для обратной записи — та же, в какой он пришёл:
+    страница с <meta charset="windows-1251"> в UTF-8 показалась бы кашей.
+    «utf-8-sig» декодирует и файл без BOM — BOM пишем только туда, где он был."""
+    enc = (enc or "utf-8").replace("/lossy", "")
+    if not enc or enc == "lossy":
+        return "utf-8"
+    if enc.lower() in ("utf-8-sig", "utf_8_sig"):
+        return "utf-8-sig" if content[:3] == b"\xef\xbb\xbf" else "utf-8"
+    return enc
+
+
+# ─── Картинки ────────────────────────────────────────────────────────
 
 def _exif_upright(im):
     """Фото со смартфона лежит боком: ориентация записана в EXIF, а Word
@@ -79,6 +132,19 @@ def _exif_upright(im):
         return ImageOps.exif_transpose(im) or im
     except Exception:
         return im
+
+
+def _png_with_index(im, index: int) -> bytes:
+    """PNG с номером кадра в метаданных. python-docx ДЕДУПЛИЦИРУЕТ картинки
+    по sha1: две одинаковые страницы скана (пустые обороты — норма) дали бы
+    одну часть, и выгрузка была бы короче оригинала. Номер в tEXt делает
+    байты разными, пиксели — те же."""
+    from PIL import PngImagePlugin  # type: ignore
+    info = PngImagePlugin.PngInfo()
+    info.add_text("medcat-page", str(index))
+    out = io.BytesIO()
+    im.save(out, format="PNG", pnginfo=info)
+    return out.getvalue()
 
 
 def _to_png_or_keep(data: bytes, ext: str) -> tuple:
@@ -113,24 +179,27 @@ def _to_png_or_keep(data: bytes, ext: str) -> tuple:
 
 def _frames(data: bytes, ext: str) -> list:
     """[(bytes, ext)] — кадры многостраничного TIFF (скан книги) отдельными
-    картинками PNG; у прочих форматов — одна, как есть."""
+    картинками PNG (с номером кадра — см. `_png_with_index`); у прочих
+    форматов — одна, как есть."""
     if ext not in (".tif", ".tiff"):
         return [(data, ext)]
     try:
         from PIL import Image, ImageSequence  # type: ignore
         im = Image.open(io.BytesIO(data))
         out = []
-        for frame in ImageSequence.Iterator(im):
-            buf = io.BytesIO()
-            _exif_upright(frame.convert("RGB")).save(buf, format="PNG")
-            out.append((buf.getvalue(), ".png"))
+        for i, frame in enumerate(ImageSequence.Iterator(im)):
+            fr = _exif_upright(frame.copy())
+            if fr.mode not in ("RGB", "L", "1", "P", "RGBA"):
+                fr = fr.convert("RGB")
+            out.append((_png_with_index(fr, i), ".png"))
         return out or [(data, ext)]
     except Exception:
         return [(data, ext)]
 
 
 def images_to_docx(images: list) -> bytes:
-    """[(bytes, ext)] → .docx, по картинке на абзац."""
+    """[(bytes, ext)] → .docx, по картинке на абзац. Страницы скана приходят
+    PNG с номером в метаданных — одинаковые страницы не схлопываются."""
     from docx.shared import Inches  # type: ignore
     doc = _document()
     n = 0
@@ -151,89 +220,470 @@ def images_to_docx(images: list) -> bytes:
     return out.getvalue()
 
 
-_HTML_BLOCK = {"p", "div", "br", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "tr",
+def scan_pages_to_docx(pages: list) -> bytes:
+    """Страницы скан-PDF (bytes картинок) → .docx; каждая страница получает
+    номер в метаданных PNG, чтобы одинаковые не схлопнулись."""
+    from PIL import Image  # type: ignore
+    imgs = []
+    for i, data in enumerate(pages):
+        try:
+            im = Image.open(io.BytesIO(data))
+            im.load()
+            im = _exif_upright(im)
+            if im.mode not in ("RGB", "L", "1", "P", "RGBA"):
+                im = im.convert("RGB")
+            imgs.append((_png_with_index(im, i), ".png"))
+        except Exception:
+            continue
+    return images_to_docx(imgs)
+
+
+def images_from_docx(docx_bytes: bytes) -> list:
+    """[(имя части, bytes)] — растровые картинки пакета в порядке частей.
+    У документа, собранного `images_to_docx`, части идут image1, image2, …
+    в порядке вставки (каждая уникальна — см. `_png_with_index`); из
+    ВЫГРУЗКИ 1в1 достаём перерисованные."""
+    out = []
+    with zipfile.ZipFile(io.BytesIO(docx_bytes)) as z:
+        names = [n for n in z.namelist() if n.startswith("word/media/")]
+
+        def num(n):
+            m = re.search(r"(\d+)", n.rsplit("/", 1)[-1])
+            return int(m.group(1)) if m else 0
+        for n in sorted(names, key=num):
+            out.append((n, z.read(n)))
+    return out
+
+
+def images_to_file(images: list, ext: str) -> bytes:
+    """Картинки → файл исходного вида: одна картинка — как есть (перекодируется
+    в исходное расширение), многостраничный TIFF — обратно многостраничным
+    (режим кадра сохраняется: 1-битный факс не раздувается в RGB), скан-PDF —
+    PDF из страниц; ширина страницы — как у A4 при пикселях скана. Текстового
+    слоя у скана не было — нет и здесь."""
+    from PIL import Image  # type: ignore
+    ext = (ext or "").lower()
+    frames = [Image.open(io.BytesIO(b)) for _n, b in images if b]
+    if not frames:
+        raise textcount.Unsupported("В выгрузке нет ни одной картинки")
+    for im in frames:
+        im.load()
+    out = io.BytesIO()
+    if ext == ".pdf":
+        pages = [im.convert("RGB") if im.mode not in ("RGB", "L") else im for im in frames]
+        dpi = max(72.0, pages[0].size[0] / 8.27)        # ширина A4 в дюймах
+        pages[0].save(out, format="PDF", save_all=True, append_images=pages[1:], resolution=dpi)
+        return out.getvalue()
+    if ext in (".tif", ".tiff"):
+        pages = [im if im.mode in ("1", "L", "RGB", "P") else im.convert("RGB") for im in frames]
+        comp = "group4" if all(p.mode == "1" for p in pages) else "tiff_lzw"
+        pages[0].save(out, format="TIFF", save_all=True, append_images=pages[1:], compression=comp)
+        return out.getvalue()
+    im = frames[0]
+    fmt = {".png": "PNG", ".jpg": "JPEG", ".jpeg": "JPEG", ".webp": "WEBP", ".bmp": "BMP",
+           ".gif": "GIF"}.get(ext, "PNG")
+    if fmt == "JPEG":
+        im = im.convert("RGB")
+    elif fmt in ("BMP", "GIF") and im.mode not in ("RGB", "P", "L"):
+        im = im.convert("RGB")
+    im.save(out, format=fmt, **({"quality": 92} if fmt == "JPEG" else {}))
+    return out.getvalue()
+
+
+# ─── Слоты текстовых форматов ────────────────────────────────────────
+
+_HTML_BLOCK = {"p", "div", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "tr",
                "table", "section", "article", "header", "footer", "blockquote", "pre", "dd", "dt",
                "figcaption", "caption", "title", "hr", "form", "fieldset", "legend", "nav", "aside",
-               "main", "address", "summary", "details"}
-_HTML_SKIP = {"script", "style", "noscript", "template", "svg"}
+               "main", "address", "summary", "details", "td", "th", "thead", "tbody", "tfoot",
+               "option", "label", "button", "figure", "body", "html", "head", "dl", "menu",
+               # Вставки внутри абзаца режут пробег и остаются на месте:
+               # иначе обратная запись стёрла бы картинку вместе с диапазоном.
+               "img", "iframe", "video", "audio", "input", "select", "textarea", "object",
+               "embed", "canvas", "picture", "source", "map", "area"}
+_HTML_SKIP = {"script", "style", "noscript", "template", "svg", "math"}
 
 
-def html_paragraphs(text: str) -> list:
-    """HTML → абзацы по БЛОЧНЫМ тегам. Смета режет по любому тегу (ей всё
-    равно, где граница слова), а сегменту это не годится: «Абзац <b>жирный</b>
-    текст» разваливался бы на три строки без смысла. Ячейки строки таблицы
-    идут в один абзац через « | »."""
+def html_slots(text: str) -> list:
+    """[(текст пробега, (начало, конец))] — блочные текстовые пробеги HTML
+    с ОФФСЕТАМИ в исходной строке. Пробег — всё между двумя блочными тегами
+    (инлайн-теги внутри остаются частью пробега: «Абзац <b>жирный</b> текст»
+    — один слот, как в .docx). Ячейки таблицы — свои пробеги. Обратная
+    запись заменяет диапазон текстом перевода, и инлайн-разметка внутри
+    теряется — это названо в докстроке модуля. Оффсеты строк считаются
+    по «\\n», как считает их `HTMLParser.getpos()` (а не `splitlines`,
+    у которого границ строк больше)."""
     from html.parser import HTMLParser
 
     class P(HTMLParser):
         def __init__(self):
-            super().__init__(convert_charrefs=True)
-            self.out, self.buf, self.skip, self.cell = [], [], 0, 0
+            super().__init__(convert_charrefs=False)
+            self.out, self.skip = [], 0
+            self.run_start = None          # оффсет начала текущего пробега
+            self.has_text = False
 
-        def flush(self):
-            s = " ".join("".join(self.buf).split())
-            if s:
-                self.out.append(s)
-            self.buf = []
+        def _off(self):
+            line, col = self.getpos()
+            return self.line_off[line - 1] + col
+
+        def _cut(self, end):
+            if self.run_start is not None and self.has_text and end > self.run_start:
+                raw = self.src[self.run_start:end]
+                txt = " ".join(_html.unescape(re.sub(r"<[^>]*>", " ", raw)).split())
+                if txt:
+                    self.out.append((txt, (self.run_start, end)))
+            self.run_start = None
+            self.has_text = False
 
         def handle_starttag(self, tag, attrs):
+            off = self._off()
             if tag in _HTML_SKIP:
+                self._cut(off)
                 self.skip += 1
-            elif tag == "br":
-                # <br> — разрыв строки ВНУТРИ абзаца (в .docx это w:br), а не
-                # новый абзац: адрес в две строки остаётся одним сегментом.
-                self.buf.append(" ")
-            elif tag in ("td", "th"):
-                self.cell += 1
-                if "".join(self.buf).strip():
-                    self.buf.append(" | ")
-            elif tag in ("tr", "table"):
-                self.cell = 0
-                self.flush()
             elif tag in _HTML_BLOCK:
-                # Блочный тег внутри ячейки строку таблицы не рвёт (строка —
-                # один абзац), но слова делит: «<p>а</p><p>б</p>» — не «аб».
-                if self.cell:
-                    self.buf.append(" ")
-                else:
-                    self.flush()
+                self._cut(off)
+            elif self.run_start is None and not self.skip:
+                self.run_start = off
+
+        def handle_startendtag(self, tag, attrs):
+            self.handle_starttag(tag, attrs)
+            # Одиночная вставка (<img/>): пробег после неё начинается заново.
+            if tag in _HTML_BLOCK:
+                self.run_start = None
 
         def handle_endtag(self, tag):
+            off = self._off()
             if tag in _HTML_SKIP:
                 self.skip = max(0, self.skip - 1)
-            elif tag == "br":
-                pass
-            elif tag in ("td", "th"):
-                self.cell = max(0, self.cell - 1)
-            elif tag in ("tr", "table"):
-                self.cell = 0
-                self.flush()
+                self.run_start = None
             elif tag in _HTML_BLOCK:
-                if self.cell:
-                    self.buf.append(" ")
-                else:
-                    self.flush()
+                self._cut(off)
 
         def handle_data(self, data):
-            if not self.skip:
-                self.buf.append(data)
+            if self.skip:
+                return
+            off = self._off()
+            if self.run_start is None:
+                self.run_start = off
+            if data.strip():
+                self.has_text = True
+
+        def handle_entityref(self, name):
+            self.handle_data("&" + name + ";")
+
+        def handle_charref(self, name):
+            self.handle_data("&#" + name + ";")
+
+        def handle_comment(self, data):
+            pass
 
     p = P()
-    p.feed(text or "")
+    p.src = text or ""
+    offs, acc = [], 0
+    for line in p.src.split("\n"):
+        offs.append(acc)
+        acc += len(line) + 1
+    offs.append(acc)
+    p.line_off = offs
+    p.feed(p.src)
     p.close()
-    p.flush()
-    return p.out
+    p._cut(len(p.src))
+    # Пробег обрезается по краям до текста: заменять ведущие пробелы/переносы
+    # незачем, а сохранить их — значит сохранить отступы разметки.
+    out = []
+    for txt, (a, b) in p.out:
+        raw = p.src[a:b]
+        lead = len(raw) - len(raw.lstrip())
+        trail = len(raw) - len(raw.rstrip())
+        out.append((txt, (a + lead, b - trail)))
+    return out
 
 
-def paragraphs_to_docx(paragraphs: list) -> bytes:
+def html_paragraphs(text: str) -> list:
+    """Тексты пробегов HTML — для .docx при импорте (см. `html_slots`)."""
+    return [t for t, _rng in html_slots(text)]
+
+
+def _pptx_slide_names(z: zipfile.ZipFile) -> list:
+    """Слайды в ПОРЯДКЕ ПОКАЗА: по `p:sldIdLst` презентации через rels,
+    а не по номеру файла — после перестановки слайдов файлы не переименовываются."""
+    names = [n for n in z.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)]
+    by_num = sorted(names, key=lambda n: int(re.search(r"(\d+)", n).group(1)))
+    try:
+        pres = z.read("ppt/presentation.xml").decode("utf-8", "replace")
+        rels = z.read("ppt/_rels/presentation.xml.rels").decode("utf-8", "replace")
+        rid_to = {}
+        for m in re.finditer(r"<Relationship\b[^>]*>", rels):
+            tag = m.group(0)
+            rid = re.search(r'\bId="([^"]+)"', tag)
+            tgt = re.search(r'\bTarget="([^"]+)"', tag)
+            if rid and tgt:
+                t = tgt.group(1).lstrip("/")
+                rid_to[rid.group(1)] = t if t.startswith("ppt/") else "ppt/" + t
+        order = []
+        for m in re.finditer(r"<p:sldId\b[^>]*\br:id=\"([^\"]+)\"", pres):
+            name = rid_to.get(m.group(1))
+            if name in names and name not in order:
+                order.append(name)
+        return order + [n for n in by_num if n not in order]
+    except Exception:
+        return by_num
+
+
+_A_P_RE = re.compile(r"<a:p\b[^>]*>.*?</a:p>", re.S)
+_A_T_RE = re.compile(r"<a:t(?:\s[^>]*)?>(.*?)</a:t>|<a:t(?:\s[^>]*)?/>", re.S)
+_A_FLD_RE = re.compile(r"<a:fld\b[^>]*>.*?</a:fld>", re.S)
+
+
+def _pptx_para_text(p_xml: str) -> str:
+    """Текст абзаца без ПОЛЕЙ (номер слайда, дата): их считает PowerPoint,
+    и перевод в них исчез бы при первом открытии."""
+    body = _A_FLD_RE.sub("", p_xml)
+    parts = [_html.unescape(m.group(1) or "") for m in _A_T_RE.finditer(body)]
+    return " ".join("".join(parts).split())
+
+
+def pptx_slots(content: bytes) -> list:
+    """[(текст абзаца, (часть, номер абзаца в части))] — абзацы `<a:p>`
+    на слайдах в порядке показа (заметки к слайдам не берутся)."""
+    out = []
+    with zipfile.ZipFile(io.BytesIO(content)) as z:
+        for name in _pptx_slide_names(z):
+            xml = z.read(name).decode("utf-8", "replace")
+            for i, m in enumerate(_A_P_RE.finditer(xml)):
+                out.append((_pptx_para_text(m.group(0)), (name, i)))
+    return out
+
+
+def _pptx_write(content: bytes, repl: dict) -> bytes:
+    """repl: {(часть, номер абзаца): перевод}. Первый `<a:t>` абзаца ВНЕ поля
+    получает весь текст, остальные вне полей пустеют; поля не трогаются;
+    абзац без `<a:t>` не трогается. Прочие части пакета — байт в байт."""
+    src = zipfile.ZipFile(io.BytesIO(content))
+    parts = {k[0] for k in repl}
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename in parts:
+                xml = data.decode("utf-8", "replace")
+                counter = [0]
+
+                def fix_p(m):
+                    i = counter[0]
+                    counter[0] += 1
+                    new = repl.get((item.filename, i))
+                    if new is None:
+                        return m.group(0)
+                    p_xml = m.group(0)
+                    # Поля вырезаем на время правки и возвращаем на место.
+                    holes = []
+
+                    def keep_fld(mf):
+                        holes.append(mf.group(0))
+                        return "\x00FLD%d\x00" % (len(holes) - 1)
+                    body = _A_FLD_RE.sub(keep_fld, p_xml)
+                    first = [True]
+
+                    def fix_t(mt):
+                        if first[0]:
+                            first[0] = False
+                            return "<a:t>%s</a:t>" % _html.escape(new, quote=False)
+                        return "<a:t></a:t>"
+                    body = _A_T_RE.sub(fix_t, body)
+                    for j, h in enumerate(holes):
+                        body = body.replace("\x00FLD%d\x00" % j, h)
+                    return body
+                xml = _A_P_RE.sub(fix_p, xml)
+                data = xml.encode("utf-8")
+            dst.writestr(item, data)
+    return out.getvalue()
+
+
+def xlsx_slots(content: bytes) -> list:
+    """[(текст ячейки, (лист, координата))] — строковые ячейки без формул,
+    по листам и строкам. Числа и формулы — не текст, переводить нечего."""
+    from openpyxl import load_workbook  # type: ignore
+    wb = load_workbook(io.BytesIO(content), data_only=False)
+    out = []
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            for c in row:
+                v = c.value
+                if isinstance(v, str) and v.strip() and not v.startswith("="):
+                    out.append((v, (ws.title, c.coordinate)))
+    return out
+
+
+def _xlsx_write(content: bytes, repl: dict) -> bytes:
+    from openpyxl import load_workbook  # type: ignore
+    wb = load_workbook(io.BytesIO(content))
+    for (sheet, coord), new in repl.items():
+        try:
+            wb[sheet][coord].value = new
+        except Exception:
+            continue
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def _csv_dialect(text: str, ext: str):
+    if ext == ".tsv":
+        return "excel-tab"
+    try:
+        return csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
+    except Exception:
+        return "excel"
+
+
+def csv_slots(text: str, ext: str) -> list:
+    """[(текст ячейки, (строка, столбец))] — КАЖДАЯ ячейка (пустая тоже:
+    иначе номера ячеек уехали бы), построчно."""
+    rows = list(csv.reader(io.StringIO(text), dialect=_csv_dialect(text, ext)))
+    return [(cell, (r, c)) for r, row in enumerate(rows) for c, cell in enumerate(row)]
+
+
+def _csv_write(text: str, ext: str, repl: dict) -> str:
+    dialect = _csv_dialect(text, ext)
+    rows = list(csv.reader(io.StringIO(text), dialect=dialect))
+    for (r, c), new in repl.items():
+        if r < len(rows) and c < len(rows[r]):
+            rows[r][c] = new
+    out = io.StringIO()
+    w = csv.writer(out, dialect=dialect, lineterminator="\r\n" if "\r\n" in text[:4096] else "\n")
+    w.writerows(rows)
+    return out.getvalue()
+
+
+def line_slots(text: str) -> list:
+    """[(строка без отступа, номер)] — каждая строка файла, пустые тоже."""
+    return [(ln.strip(), i) for i, ln in enumerate(text.split("\n"))]
+
+
+def _lines_write(text: str, repl: dict) -> str:
+    """Перевод строки — на место её текста, ОТСТУП и хвост строки (\\r)
+    сохраняются: вложенные списки и код в .md иначе выровнялись бы в ноль."""
+    lines = text.split("\n")
+    out = []
+    for i, ln in enumerate(lines):
+        if i in repl:
+            body = ln.rstrip("\r")
+            lead = body[:len(body) - len(body.lstrip())]
+            out.append(lead + repl[i] + ln[len(body):])
+        else:
+            out.append(ln)
+    return "\n".join(out)
+
+
+def extract_slots(filename: str, content: bytes) -> dict:
+    """{slots: [текст], kind, note, writeback: bool, enc} — слоты текстового
+    файла. Слот i станет абзацем i собранного .docx. Форматы без обратной
+    записи отдают куски `textcount.extract` и обратно выгружаются
+    Word-документом."""
+    ext = ext_of(filename)
+    kind = ext[1:] if ext else "text"
+    if ext in LINE_EXT:
+        text, enc = textcount._decode(content)
+        if "\x00" in text[:4096]:
+            raise textcount.Unsupported("Двоичный файл: текста в нём нет. Поддерживаются: %s"
+                                        % ", ".join(SUPPORTED_EXT))
+        note = "Текст разложен по строкам; обратно выгружается таким же файлом."
+        if enc.endswith("lossy"):
+            note += " Кодировка файла не опознана — часть символов заменена."
+        return {"slots": [_clean(ln) for ln, _i in line_slots(text)], "kind": kind or "text",
+                "note": note, "writeback": True, "enc": enc}
+    if ext in (".csv", ".tsv"):
+        text, enc = textcount._decode(content)
+        return {"slots": [_clean(c) for c, _a in csv_slots(text, ext)], "kind": kind,
+                "note": "Каждая ячейка — своя строка; обратно выгружается такой же таблицей.",
+                "writeback": True, "enc": enc}
+    if ext in (".html", ".htm"):
+        text, enc = textcount._decode(content)
+        return {"slots": [_clean(t) for t, _r in html_slots(text)], "kind": kind,
+                "note": "Текст взят по блокам разметки; обратно выгружается той же страницей — "
+                        "выделения внутри абзаца (жирный, ссылки) в переводе не сохраняются.",
+                "writeback": True, "enc": enc}
+    if ext == ".xlsx":
+        try:
+            slots = [_clean(t) for t, _a in xlsx_slots(content)]
+        except Exception as e:
+            raise textcount.Unsupported("Книга Excel не читается: %s" % e)
+        return {"slots": slots, "kind": "xlsx",
+                "note": "Переводятся текстовые ячейки; числа и формулы остаются. Обратно "
+                        "выгружается такая же книга — картинки, диаграммы, фигуры и примечания "
+                        "листов при этом не сохраняются, перенос строки в ячейке становится пробелом.",
+                "writeback": True, "enc": None}
+    if ext == ".pptx":
+        if not zipfile.is_zipfile(io.BytesIO(content)):
+            raise textcount.Unsupported("Файл .pptx повреждён: это не пакет OOXML")
+        return {"slots": [_clean(t) for t, _a in pptx_slots(content)], "kind": "pptx",
+                "note": "Переводится текст слайдов; обратно выгружается та же презентация — "
+                        "выделения внутри абзаца не сохраняются, поля (номер слайда, дата) "
+                        "не трогаются, заметки, диаграммы и SmartArt не переводятся.",
+                "writeback": True, "enc": None}
+    # Остальное (json, xml, po, srt, yaml, rtf, odt/ods/odp …) — кусками
+    # сметы, без обратной записи: построчная запись сломала бы синтаксис.
+    got = textcount.extract(filename, content)
+    blocks = [_clean(b) if isinstance(b, str) else str(b) for b in got["blocks"]]
+    lost = {"ods": "раскладка листа", "odp": "раскладка слайдов", "odt": "оформление"}
+    note = ("Файл %s превращён в документ Word: %s не переносится, обратно выгружается "
+            "Word-документом." % (got["kind"], lost.get(got["kind"], "разметка")))
+    if got.get("notes"):
+        note += " " + " ".join(got["notes"])
+    return {"slots": blocks, "kind": got["kind"], "note": note, "writeback": False, "enc": None}
+
+
+def write_back(filename: str, content: bytes, translations: dict) -> bytes:
+    """Перевод в файл ИСХОДНОГО формата: translations — {номер слота: текст}.
+    Адреса слотов считаются заново по оригиналу тем же кодом, что при
+    импорте; кодировка текста — исходная. Непереведённые слоты остаются."""
+    ext = ext_of(filename)
+    if ext in (".csv", ".tsv"):
+        text, enc = textcount._decode(content)
+        addr = [a for _c, a in csv_slots(text, ext)]
+        repl = {addr[i]: t for i, t in translations.items() if 0 <= i < len(addr)}
+        return _csv_write(text, ext, repl).encode(_encoding_of(enc, content), errors="replace")
+    if ext in (".html", ".htm"):
+        text, enc = textcount._decode(content)
+        ranges = [r for _t, r in html_slots(text)]
+        pieces, pos = [], 0
+        for i, (a, b) in enumerate(ranges):
+            if i in translations and a >= pos:
+                pieces.append(text[pos:a])
+                pieces.append(_html.escape(translations[i], quote=False))
+                pos = b
+        pieces.append(text[pos:])
+        return "".join(pieces).encode(_encoding_of(enc, content), errors="xmlcharrefreplace")
+    if ext == ".xlsx":
+        addr = [a for _t, a in xlsx_slots(content)]
+        repl = {addr[i]: t for i, t in translations.items() if 0 <= i < len(addr)}
+        return _xlsx_write(content, repl)
+    if ext == ".pptx":
+        addr = [a for _t, a in pptx_slots(content)]
+        repl = {addr[i]: t for i, t in translations.items() if 0 <= i < len(addr)}
+        return _pptx_write(content, repl)
+    if ext in LINE_EXT:
+        text, enc = textcount._decode(content)
+        bom = content[:3] == b"\xef\xbb\xbf"
+        body = _lines_write(text, dict(translations)).encode(_encoding_of(enc, content), errors="replace")
+        return (b"\xef\xbb\xbf" + body) if bom and not body.startswith(b"\xef\xbb\xbf") else body
+    raise textcount.Unsupported("Для формата %s обратной записи нет — выгружайте Word-документом" % ext)
+
+
+# ─── Сборка .docx ────────────────────────────────────────────────────
+
+def paragraphs_to_docx(paragraphs: list, keep_empty: bool = False) -> bytes:
+    """Абзацы → .docx. `keep_empty` — пустой абзац на пустой слот: номер
+    абзаца и есть якорь, выброшенный пустой слот сдвинул бы все номера."""
     doc = _document()
     n = 0
     for p in paragraphs:
-        p = (p or "").strip()
-        if not p:
+        p = _clean(p or "").strip()
+        if not p and not keep_empty:
             continue
         doc.add_paragraph(p)
-        n += 1
+        n += bool(p)
     if not n:
         raise textcount.Unsupported("Из файла не извлеклось ни одного куска текста")
     out = io.BytesIO()
@@ -273,21 +723,23 @@ def pdf_to_docx(content: bytes) -> tuple:
     except textcount.Scan as s:
         pages = getattr(s, "pages", 0) or 0
         idx = list(range(pages))
-        imgs = [(data, ".png") for _i, data in textcount.pdf_page_images(content, idx) if data]
+        imgs = [data for _i, data in textcount.pdf_page_images(content, idx) if data]
         if not imgs:
             raise textcount.Unsupported("PDF-скан без извлекаемых картинок страниц — "
                                         "распечатайте его в PNG/JPG постранично")
-        return (images_to_docx(imgs), "scan",
+        return (scan_pages_to_docx(imgs), "scan",
                 "PDF без текстового слоя: %d страниц положены картинками; текст с них "
-                "читает разбор надписей (платно, по кнопке)." % len(imgs))
+                "читается автоматически. Обратно выгружается PDF из страниц с переведёнными "
+                "надписями." % len(imgs))
     paras = join_pdf_lines(lines)
     return (paragraphs_to_docx(paras), "pdf",
             "PDF: текст взят из текстового слоя, строки склеены в абзацы; "
-            "надписи внутри картинок не разобраны. Обратно выгружается Word-документом.")
+            "надписи внутри картинок не разобраны. Обратно выгружается PDF, собранный "
+            "из документа Word.")
 
 
 def to_docx(filename: str, content: bytes) -> dict:
-    """{docx: bytes, kind: str, note: str|None, converted: bool}.
+    """{docx, kind, note, converted, writeback, slotsSha}.
 
     .docx отдаётся как есть; остальное превращается. Ошибки формата —
     `textcount.Unsupported` / `TooBig` / `NotAvailable`: вызывающий
@@ -300,33 +752,22 @@ def to_docx(filename: str, content: bytes) -> dict:
     kind = kind_of(filename)
     ext = ext_of(filename)
     if kind == "docx":
-        return {"docx": content, "kind": "docx", "note": None, "converted": False}
+        return {"docx": content, "kind": "docx", "note": None, "converted": False,
+                "writeback": True, "slotsSha": None}
     if kind == "image":
         return {"docx": images_to_docx([(content, ext)]), "kind": "image", "converted": True,
-                "note": "Картинка положена в документ; текст с неё читает разбор надписей "
-                        "(платно, по кнопке). Обратно выгружается Word-документом с картинкой."}
+                "writeback": True, "slotsSha": None,
+                "note": "Картинка положена в документ; текст с неё читается автоматически. "
+                        "Обратно выгружается такая же картинка с переведёнными надписями."}
     if kind == "pdf":
         docx_bytes, k, note = pdf_to_docx(content)
-        return {"docx": docx_bytes, "kind": k, "note": note, "converted": True}
+        return {"docx": docx_bytes, "kind": k, "note": note, "converted": True,
+                "writeback": True, "slotsSha": None}
     if kind == "text":
-        got = textcount.extract(filename, content)
-        blocks = got["blocks"]
-        if got["kind"] in ("html", "htm"):
-            text, _enc = textcount._decode(content)
-            blocks = html_paragraphs(text)
-        if got["kind"] in ("csv", "tsv"):
-            # Строка таблицы — один кусок: ячейки через табуляцию остаются
-            # в одном сегменте, иначе колонки перемешаются в переводе.
-            blocks = [b.replace("\t", " | ") if isinstance(b, str) else b for b in blocks]
-        docx_bytes = paragraphs_to_docx(blocks)
-        lost = {"xlsx": "раскладка листа", "pptx": "раскладка слайдов", "ods": "раскладка листа",
-                "odp": "раскладка слайдов", "html": "разметка страницы", "htm": "разметка страницы"}
-        note = ("Файл %s превращён в документ Word: %s не переносится, обратно выгружается "
-                "Word-документом (Excel — ещё и таблицей из строк)." % (got["kind"], lost[got["kind"]])
-                if got["kind"] in lost else
-                "Текст разложен по абзацам; обратно выгружается Word-документом.")
-        if got.get("notes"):
-            note += " " + " ".join(got["notes"])
-        return {"docx": docx_bytes, "kind": got["kind"], "note": note, "converted": True}
+        got = extract_slots(filename, content)
+        docx_bytes = paragraphs_to_docx(got["slots"], keep_empty=got["writeback"])
+        return {"docx": docx_bytes, "kind": got["kind"], "note": got["note"], "converted": True,
+                "writeback": got["writeback"],
+                "slotsSha": slots_sha(got["slots"]) if got["writeback"] else None}
     raise textcount.Unsupported("Формат %s не поддерживается. Поддерживаются: %s"
                                 % (ext or "без расширения", ", ".join(SUPPORTED_EXT)))

@@ -750,9 +750,12 @@ def _folder_public(f: dict) -> dict:
     """Папка для браузера — вместе с номерами файлов. Сами файлы браузер
     уже держит (`/api/seed` → projects), второй раз слать их незачем."""
     t = _tenant_of(f)
-    files = [p["id"] for p in STATE.get("projects") or []
-             if _tenant_of(p) == t and _fid(p["id"]) == f.get("id")]
-    return {**f, "files": files}
+    own = [p for p in STATE.get("projects") or []
+           if _tenant_of(p) == t and _fid(p["id"]) == f.get("id")]
+    # Пары языков файлов папки: у папки — пара по умолчанию, у файлов —
+    # свои; браузер показывает набор, а не одну.
+    pairs = sorted({"%s→%s" % (p.get("src") or "RU", p.get("tgt") or "EN") for p in own})
+    return {**f, "files": [p["id"] for p in own], "pairs": pairs}
 
 
 def _next_id() -> int:
@@ -4974,6 +4977,27 @@ async def quote_file(request: Request, file: UploadFile = File(...),
                             % (textcount.MAX_BYTES // 1024 // 1024))
     content = await file.read()
     card = _pricing_of()
+    if importers.kind_of(file.filename or "") == "image":
+        # Картинка: текста без чтения нет, а число страниц (кадров) есть —
+        # предложение то же, что у скана: сколько прочитать и почём.
+        try:
+            from PIL import Image as _PIL
+            im = _PIL.open(io.BytesIO(content))
+            im.load()
+            frames = int(getattr(im, "n_frames", 1) or 1)
+        except Exception as e:
+            # Битая картинка — отказ с причиной, а не смета на ноль.
+            raise HTTPException(415, "Картинка не читается: %s" % e)
+        # Цена чтения — по кропам не посчитать до разбора; оценка по площади
+        # (как у скана): та же таблица цен, по которой спишется факт.
+        mdl = _resolve_model(IMAGE_READ_MODEL)
+        tin = frames * (_image_tokens(SCAN_PAGE_MAX_SIDE, int(SCAN_PAGE_MAX_SIDE * 1.4)) + 120)
+        est = _usage_cost(mdl["id"], tin, frames * SCAN_OUT_TOKENS)
+        return {"ok": True, "file": file.filename or "", "kind": "image", "counts": None,
+                "notes": ["Картинка: текст с неё читается при загрузке в проект и тогда же "
+                          "добавляется к объёму."],
+                "images": {"frames": frames, "model": None if _hide_cost() else mdl["id"],
+                           "est": None if _hide_cost() else est}}
     try:
         m = await run_in_threadpool(textcount.measure, file.filename or "", content,
                                     src, **_measure_kwargs(card))
@@ -4985,6 +5009,13 @@ async def quote_file(request: Request, file: UploadFile = File(...),
                 "notes": [str(e)], "scan": _scan_offer(e.pages)}
     except (textcount.Unsupported, textcount.NotAvailable, textcount.TooBig) as e:
         raise _count_error(e)
+    if m.get("kind") == "docx":
+        n_img = _docx_media_count(content)
+        if n_img:
+            m["notes"].append("В файле %d %s: текст с них читается при загрузке в проект "
+                              "и тогда же добавляется к объёму." % (n_img, "картинка" if n_img % 10 == 1 and n_img % 100 != 11
+                                                                    else "картинки" if 2 <= n_img % 10 <= 4 and not 12 <= n_img % 100 <= 14
+                                                                    else "картинок"))
     q = _quote_of(m["counts"], src, tgt, card, "file", m["notes"])
     saved = None
     if save:
@@ -6568,9 +6599,41 @@ def list_projects():
     return [{k: v for k, v in p.items() if k != "segments"} | {"segmentCount": len(p["segments"])} for p in _tenant_projects()]
 
 
+def _book_image_pages(project: dict) -> None:
+    """Списать страницы за текст, прочитанный с картинок, — когда его стало
+    больше, чем уже списано (`imagePagesBooked`). Считает API при показе
+    проекта: воркер документ `tenants` не пишет никогда (второй писатель
+    ломал бы счётчик), а импорт этих страниц ещё не знал. Без счётчика
+    у организации (`pagesUsed` нет) списывать нечего — объём читается
+    по живым проектам, и картиночные строки уже в нём."""
+    if IS_WORKER:
+        return
+    tid = _tenant_of(project)
+    rec = _tenant_rec(tid)
+    if rec is None or rec.get("pagesUsed") is None:
+        return
+    card = _pricing_of(tid)
+    have = _image_pages_of(project, card)
+    booked = float(project.get("imagePagesBooked") or 0.0)
+    if have - booked < 0.01:
+        return
+    with _SAVE_LOCK:
+        rec = _tenant_rec(tid)
+        if rec is None or rec.get("pagesUsed") is None:
+            return
+        delta = round(have - booked, 3)
+        rec["pagesUsed"] = round(float(rec.get("pagesUsed") or 0.0) + delta, 3)
+        _pages_log(rec, "images", delta, project=project.get("id"), title=project.get("title") or "")
+        project["imagePagesBooked"] = round(have, 3)
+        save_state(STATE)
+    _tenants_changed()
+
+
 @app.get("/api/projects/{pid}")
 def get_project_detail(pid: int):
-    return _project_for_client(get_project(pid))
+    project = get_project(pid)
+    _book_image_pages(project)
+    return _project_for_client(project)
 
 
 class CreateProjectRequest(BaseModel):
@@ -6587,7 +6650,10 @@ def create_project(req: CreateProjectRequest):
     domain = _resolve_domain(req.domain)["id"]
     folder = _folder_target(req.folder)
     if folder is not None:
-        src, tgt, domain = folder["src"], folder["tgt"], folder["domain"]
+        # Область — одна на папку (словари и промпты), а ПАРА у файла своя:
+        # в одном заказе бывают договор RU→EN и приложение RU→UZ. Пара папки —
+        # умолчание для формы, а не закон для файла.
+        domain = folder["domain"]
     # Номер — глобальный (один ряд на все организации: файлы исходников
     # и якоря картинок именуются им) и ОБЩИЙ с папками (`_next_id`). Сегментов
     # у нового проекта НЕТ: прежде сюда копировались восемь сегментов первого
@@ -7253,7 +7319,7 @@ async def upload_project(
     # потолков и разбора: отказ 402/413/415 иначе оставлял бы запись в памяти.
     target_folder = get_folder(folder) if folder is not None else None
     if target_folder is not None:
-        src, tgt, domain = target_folder["src"], target_folder["tgt"], target_folder["domain"]
+        domain = target_folder["domain"]   # пара — у файла своя, см. create_project
     try:
         import docx  # noqa: F401 — проверка наличия, разбор идёт в _docx_paragraphs
     except ImportError:
@@ -7357,6 +7423,14 @@ async def upload_project(
         _store_source_docx(new_project, docx_content, file.filename, pairs, len(paras))
         if parsed["converted"]:
             _store_original(new_id, file.filename or "", content)
+        # Вернём ли файл в том же виде: у .docx и форматов с обратной записью
+        # — да; odt/rtf и прочие — Word-документом (`writeback: false`).
+        new_project["writeback"] = bool(parsed.get("writeback", True))
+        if parsed.get("slotsSha"):
+            new_project["slotsSha"] = parsed["slotsSha"]   # сторож дрейфа резки при выгрузке
+        # Картинки читаются сами — задача ставится после записи исходника:
+        # разбор читает .docx с диска.
+        _auto_read_images(new_project, parsed["kind"])
     except Exception as e:
         print("[backend] исходник проекта %s не сохранён: %s" % (new_id, e),
               file=sys.stderr)
@@ -7422,7 +7496,8 @@ def _parse_upload(filename: str, content: bytes) -> dict:
     paras = [t for t, _full in texts]
     full = [f for _t, f in texts]
     out = {"sha": sha, "docx": conv["docx"], "kind": conv["kind"], "note": conv.get("note"),
-           "converted": bool(conv.get("converted")), "texts": texts, "paras": paras,
+           "converted": bool(conv.get("converted")), "writeback": bool(conv.get("writeback", True)),
+           "slotsSha": conv.get("slotsSha"), "texts": texts, "paras": paras,
            "full": full, "units": _docx_units(paras, full)}
     cached = dict(out)
     if not out["converted"]:
@@ -7566,7 +7641,8 @@ def _looks_like_new_version(counts: dict) -> bool:
 
 @app.post("/api/projects/probe")
 async def probe_upload(request: Request, file: UploadFile = File(...),
-                       folder: Optional[int] = Form(None)):
+                       folder: Optional[int] = Form(None),
+                       src: Optional[str] = Form(None), tgt: Optional[str] = Form(None)):
     """Что это за файл: уже есть (sha) или похож на новую редакцию файла
     проекта. Ничего не пишет и денег не стоит. Сравнивается с файлами
     названной папки, без папки — со всеми файлами организации."""
@@ -7580,6 +7656,10 @@ async def probe_upload(request: Request, file: UploadFile = File(...),
         pool = _folder_files(folder)
     else:
         pool = _tenant_projects()
+    # Пара языков — часть вопроса: тот же договор на вторую пару (RU→UZ
+    # рядом с RU→EN) — не «уже есть» и не «новая редакция», а новый файл.
+    if src and tgt:
+        pool = [p for p in pool if (p.get("src") or "RU") == src.upper() and (p.get("tgt") or "EN") == tgt.upper()]
     exact, similar = [], []
     for p in pool:
         if p.get("sourceSha") == parsed["sha"]:
@@ -7787,6 +7867,12 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
         else:
             for old in SOURCE_DIR.glob("%d.orig.*" % pid):
                 old.unlink(missing_ok=True)
+        project["writeback"] = bool(parsed.get("writeback", True))
+        if parsed.get("slotsSha"):
+            project["slotsSha"] = parsed["slotsSha"]
+        else:
+            project.pop("slotsSha", None)
+        _auto_read_images(project, parsed["kind"])   # картинки новой редакции
     except Exception as e:
         print("[backend] исходник проекта %s после замены не сохранён: %s" % (pid, e), file=sys.stderr)
     save_state(STATE)
@@ -19784,8 +19870,76 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
 # оформление у нас живёт в исходном .docx, и собирать PDF с нуля значило бы
 # потерять шрифты, таблицы, картинки и колонтитулы разом — то есть заменить
 # точную выгрузку на приблизительную.
-EXPORT_EXT = {"docx": "docx", "xlsx": "xlsx", "docx_layout": "docx", "pdf": "pdf"}
-EXPORT_SUFFIX = {"docx_layout": " 1в1"}
+EXPORT_EXT = {"docx": "docx", "xlsx": "xlsx", "docx_layout": "docx", "pdf": "pdf",
+              "original": None}          # расширение — у исходного файла проекта
+EXPORT_SUFFIX = {"docx_layout": " 1в1", "original": " перевод"}
+
+
+def _original_ext(project: dict) -> str:
+    """Расширение файла «в исходном формате»: .docx — как приложили; картинка —
+    её расширение; скан и PDF — .pdf; текстовые с обратной записью — своё;
+    остальное (odt, rtf …) — .docx: обратной записи для них нет."""
+    kind = project.get("importKind") or "docx"
+    ext = importers.ext_of(project.get("fileName") or "")
+    if kind == "docx" or project.get("writeback") is False:
+        return ".docx"
+    if kind in ("pdf", "scan"):
+        return ".pdf"
+    if kind == "image":
+        return ext if ext in importers.IMAGE_EXT else ".png"
+    return ext or ".txt"
+
+
+def _export_original(project: dict, out: Path, tmp: Path) -> dict:
+    """Перевод В ТОМ ЖЕ формате, что залили (см. backend/importers.py):
+    .docx — «как в оригинале»; PDF с текстом — PDF из него; картинка и скан —
+    перерисованные надписи из выгрузки 1в1; xlsx/pptx/html/csv/txt — обратная
+    запись по слотам в хранимый оригинал. Непереведённое остаётся на языке
+    оригинала — экспорт не судит о качестве."""
+    kind = project.get("importKind") or "docx"
+    ext = _original_ext(project)
+    if ext == ".docx":
+        return _export_docx_layout(project, tmp)
+    if ext == ".pdf" and kind == "pdf":
+        path, stats = _generate_export(project, "pdf")
+        shutil.copyfile(str(path), str(tmp))
+        return dict(stats, original="pdf")
+    if kind in ("image", "scan"):
+        inner = out.with_name(out.name + ".%s.src.docx" % secrets.token_hex(4))
+        try:
+            stats = _export_docx_layout(project, inner)
+            imgs = importers.images_from_docx(inner.read_bytes())
+        finally:
+            try:
+                inner.unlink()
+            except OSError:
+                pass
+        tmp.write_bytes(importers.images_to_file(imgs, ext))
+        return dict(stats, original=kind, images=len(imgs))
+    # Текстовые форматы: перевод по карте «абзац → сегмент» в оригинал.
+    orig = _orig_existing(project["id"])
+    data = _load_source_map(project["id"]) if project.get("sourceDocx") else None
+    if orig is None or data is None:
+        raise HTTPException(400, "Оригинал файла не сохранён — выгрузить в исходном формате "
+                                 "не из чего; доступен Word-документ")
+    if project.get("slotsSha"):
+        # Правила резки меняются; переводы по номерам абзацев в чужие ячейки
+        # класть нельзя — отказ с причиной, а не тихая порча.
+        got = importers.extract_slots(project.get("fileName") or orig.name, orig.read_bytes())
+        if importers.slots_sha(got["slots"]) != project["slotsSha"]:
+            raise HTTPException(400, "Разбор этого формата изменился с момента загрузки — "
+                                     "выгрузка в исходном виде разложила бы переводы не по тем "
+                                     "местам. Скачайте Word-документ или загрузите файл заново")
+    by_id = {s["id"]: s for s in project.get("segments") or []}
+    tr: dict = {}
+    for idx, sid in (data.get("pairs") or []):
+        seg = by_id.get(int(sid))
+        t = (seg.get("target") or "").strip() if seg else ""
+        if t:
+            tr[int(idx)] = t
+    untranslated = sum(1 for _i, sid in (data.get("pairs") or []) if int(sid) in by_id) - len(tr)
+    tmp.write_bytes(importers.write_back(project.get("fileName") or orig.name, orig.read_bytes(), tr))
+    return {"original": kind, "written": len(tr), "untranslated": max(0, untranslated)}
 
 
 def _export_docx_plain(project: dict, tmp, include_source: bool = True) -> dict:
@@ -19823,9 +19977,9 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
     Раньше экспорт был фиктивным — файл не создавался вовсе, только запись
     в историю."""
     EXPORT_DIR.mkdir(parents=True, exist_ok=True)
-    ext = EXPORT_EXT.get(fmt)
-    if not ext:
+    if fmt not in EXPORT_EXT:
         raise HTTPException(400, f"Формат {fmt} не поддерживается")
+    ext = EXPORT_EXT.get(fmt) or _original_ext(project).lstrip(".")
     out = EXPORT_DIR / (_safe_filename(project["title"])
                         + EXPORT_SUFFIX.get(fmt, "") + "." + ext)
     # Пишем во временный файл и подменяем готовый одним os.replace — тем же
@@ -19874,6 +20028,8 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
             raise HTTPException(502, str(e))
         tmp.write_bytes(pdf)
         stats = dict(stats or {}, pdfBytes=len(pdf), pdfFrom=base)
+    elif fmt == "original":
+        stats = _export_original(project, out, tmp)
     elif fmt == "docx_layout":
         stats = _export_docx_layout(project, tmp)
     elif fmt == "docx":
@@ -19934,7 +20090,12 @@ def download_export(pid: int, format: str = "docx", source: bool = True):
     project = get_project(pid)
     fmt = format.lower()
     if fmt not in EXPORT_EXT:
-        raise HTTPException(400, "Поддерживаются только docx, docx_layout, xlsx и pdf")
+        raise HTTPException(400, "Поддерживаются только docx, docx_layout, xlsx, pdf и original")
+    if fmt == "original":
+        path, _stats = _generate_export(project, fmt, include_source=source)
+        import mimetypes
+        media = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return FileResponse(str(path), media_type=media, filename=path.name)
     if fmt == "pdf":
         # PDF только что собран кнопкой «Экспорт», и собирать его снова на
         # каждое скачивание — это ещё раз до трёх минут конвертера на
@@ -21679,7 +21840,15 @@ def _job_run(job: dict):
     if kind == "images":
         # Разбор картинок не идёт по сегментам: их ещё нет — они из него
         # и рождаются. Цикл свой, но остановка, счётчики и сохранение общие.
-        _job_images(job)
+        try:
+            _job_images(job)
+        finally:
+            # Отметка «читаем» снимается при любом исходе, кроме уступки:
+            # упавшая задача иначе оставила бы её навсегда.
+            if job["status"] != "queued":
+                p_ = _project_by_id(pid)
+                if p_ is not None and p_.pop("imagesReading", None) is not None:
+                    save_state(STATE)
         if job["status"] == "queued":
             return                     # уступила исполнителя, работа не закончена
         if job["status"] == "running":
@@ -22048,6 +22217,14 @@ def create_job(pid: int, req: JobRequest):
     # Модели шагов в упрощённом режиме назначает организация, а не браузер:
     # полей выбора там нет, но прежний выбор в localStorage уехал бы в задачу.
     req.params = _forced_models(req.params)
+    job = _job_enqueue(pid, req.kind, ids, req.params)
+    return {"ok": True, "job": _job_public(job)}
+
+
+def _job_enqueue(pid: int, kind: str, ids: list, params: Optional[dict]) -> dict:
+    """Поставить задачу в очередь: общее для кнопки (`create_job`) и для
+    авточтения картинок при загрузке файла. Организация, пользователь и язык
+    — из сессии запроса (в threadpool контекст доезжает)."""
     # Билет берём ДО лока: `_next_qseq` заглядывает в очередь, а та читается
     # под тем же `_JOBS_LOCK`, который здесь и держат. Лок обычный, не
     # реентерабельный, — вложенный захват вешает обработчик намертво.
@@ -22055,14 +22232,14 @@ def create_job(pid: int, req: JobRequest):
     with _JOBS_LOCK:
         job = {
             "id": _next_job_id(),
-            "kind": req.kind, "project": pid, "status": "queued",
+            "kind": kind, "project": pid, "status": "queued",
             "tenant": _current_tenant(),
             "user": (CURRENT_SESSION.get() or {}).get("user"),
             # Язык объяснений — того, кто запустил. В поток прогона ContextVar
             # не доезжает, поэтому задача несёт его в себе (как организацию).
             "lang": _explain_lang(),
             "total": len(ids), "done": 0, "counters": {}, "error": None,
-            "params": dict(req.params or {}),
+            "params": dict(params or {}),
             "created": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "started": None, "finished": None,
             # Билет очереди: по нему исполнитель и выбирает следующую задачу.
@@ -22080,7 +22257,53 @@ def create_job(pid: int, req: JobRequest):
     else:
         _ensure_job_worker()
         _JOB_QUEUE.put(1)          # сигнал «появилась работа», выбор — по билету
-    return {"ok": True, "job": _job_public(job)}
+    return job
+
+
+def _docx_media_count(docx_bytes: bytes) -> int:
+    """Сколько растровых картинок в пакете — по именам частей, без чтения."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(io.BytesIO(docx_bytes)) as z:
+            return sum(1 for n in z.namelist() if n.startswith("word/media/")
+                       and ("." + n.rsplit(".", 1)[-1]).lower() in IMAGE_MEDIA_EXT)
+    except Exception:
+        return 0
+
+
+def _auto_read_images(project: dict, kind: str) -> Optional[int]:
+    """Текст с картинок читается САМ при загрузке файла — задачей `images`
+    (платно, зрячей моделью), а не по кнопке: человек кладёт скан и ждёт
+    строк, а не ищет, где их включить.
+
+    Только у КАРТИНКИ и СКАНА: там текста без чтения нет вовсе, и запирать
+    на время задачи нечего. У .docx с растром чтение остаётся кнопкой
+    со сметой на экране «Скачать»: книга со 158 картинками (логотипы,
+    рентген) стоила бы вызова зрячей модели на каждую загрузку, а идущая
+    задача запирает правки проекта (`_guard_project_write`).
+    Нет ключа или исчерпан лимит — задача НЕ ставится, а причина уходит
+    кодом (`imagesSkipped`: `no_key` | `limit`), иначе каждая загрузка
+    на исчерпанном лимите глушилась бы на первой картинке. Отметка
+    `imagesReading` — для карточки файла, снимается по концу задачи."""
+    if kind not in ("image", "scan"):
+        return None
+    if image_text is None or not os.environ.get("OPENAI_API_KEY"):
+        project["imagesSkipped"] = "no_key"
+        return None
+    if _spend_status(_tenant_of(project)).get("over"):
+        project["imagesSkipped"] = "limit"
+        return None
+    try:
+        job = _job_enqueue(project["id"], "images", [],
+                           {"dry_run": False, "ocr_model": None, "est_cost": 0, "auto": True})
+    except Exception as e:
+        print("[backend] авточтение картинок проекта %s не поставлено: %s" % (project.get("id"), e),
+              file=sys.stderr)
+        project["imagesSkipped"] = "error"
+        return None
+    project.pop("imagesSkipped", None)
+    project["imagesReading"] = job["id"]
+    return job["id"]
 
 
 @app.get("/api/usage")

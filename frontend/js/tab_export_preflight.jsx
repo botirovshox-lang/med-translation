@@ -384,8 +384,15 @@ function TabExport({ store, toast }) {
      Оставленный на «новом файле» переключатель молча собирал документ с нуля:
      человек прикладывал 21 МБ исходника и получал голый текст без оформления,
      причём отличить это можно было, только открыв файл. */
-  const [fmt, setFmt] = useState(
-    () => (store.activeProject && store.activeProject.sourceDocx) ? "docx_layout" : "docx");
+  /* Файл не из Word (Excel, презентация, страница, картинка, скан) по
+     умолчанию возвращается В ТОМ ЖЕ формате — «original». Для .docx это
+     и есть «как оригинал». */
+  const [fmt, setFmt] = useState(() => {
+    const p = store.activeProject;
+    if (!p) return "docx";
+    if (p.importKind && p.importKind !== "docx" && p.sourceDocx) return "original";
+    return p.sourceDocx ? "docx_layout" : "docx";
+  });
   const [opts, setOpts] = useState({ source: true, notes: true, qa: false, glossary: true });
   const [busy, setBusy] = useState(false);
   const [attaching, setAttaching] = useState(false);
@@ -485,7 +492,19 @@ function TabExport({ store, toast }) {
   /* Формат называется тем, ЧТО ЧЕЛОВЕК ПОЛУЧИТ, а не своим расширением:
      «DOCX 1в1» ничего не говорит тому, кто первый раз видит программу.
      Расширение осталось — мелким, в скобках, для тех, кому оно нужно. */
+  /* Расширение исходного файла — для подписи формата «в том же виде». */
+  const origExt = (() => {
+    const k = project.importKind;
+    if (!k || k === "docx" || project.writeback === false) return null;
+    if (k === "pdf" || k === "scan") return ".pdf";
+    const m = /\.([A-Za-z0-9]+)$/.exec(project.fileName || "");
+    return m ? "." + m[1].toLowerCase() : null;
+  })();
   const formats = [
+    ...(origExt ? [["original", TR("Такой же файл в исходном виде (") + origExt + ")",
+      (project.importKind === "image" || project.importKind === "scan")
+        ? TR("Надписи на картинках перерисованы переводом; что вписать не удалось — останется в Word-версии")
+        : TR("Тот же файл, переведены только тексты; числа, формулы и структура на месте"), "file"]] : []),
     ["docx_layout", TR("Такой же файл, только на другом языке (.docx)"),
      srcDoc ? TR("Те же картинки, таблицы и вид. Даже надписи на картинках переведены")
             : TR("Нужен тот самый файл, из которого делали перевод — приложите его ниже"), "file"],

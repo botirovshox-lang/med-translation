@@ -81,7 +81,8 @@ def export_original(pid):
     d = r.json()
     if not d.get("ok"):
         return None, d
-    path = main.EXPORT_DIR / d["file"]
+    # Экспорт лежит под организацией и номером проекта (инвариант 25).
+    path = main._export_path(main.get_project(pid), "original")
     return path, d
 
 

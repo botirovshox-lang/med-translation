@@ -536,5 +536,8 @@
  "Вы заверили этот перевод. Без вашего разрешения машина его не перепишет.": "Siz bu tarjimani tasdiqladingiz. Ruxsatingizsiz mashina uni qayta yozmaydi.",
  "хорошо": "yaxshi",
  "Проверки пройдены, открытых находок нет.": "Tekshiruvlar o'tdi, ochiq topilmalar yo'q.",
- "Возьмёт ближайший прогон: проверит или починит.": "Yaqin ishlov oladi: tekshiradi yoki tuzatadi."
+ "Возьмёт ближайший прогон: проверит или починит.": "Yaqin ishlov oladi: tekshiradi yoki tuzatadi.",
+ "Отмечены не все шаги: ": "Hamma bosqichlar belgilanmagan: ",
+ " — кнопка сделает только их.": " — tugma faqat ularni bajaradi.",
+ "Вернуть все шаги": "Barcha bosqichlarni qaytarish"
 }

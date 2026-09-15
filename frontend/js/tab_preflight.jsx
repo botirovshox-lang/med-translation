@@ -174,8 +174,7 @@ function WorkSummary({ summary, store, toast, onReload }) {
             if (ids.length && window.API.fetchSegments) {
               const got = await window.API.safeCall(
                 () => window.API.fetchSegments(store.activeProject.id, ids));
-              (got && got.segments || []).forEach(
-                sg => store.updateSegment(store.activeProject.id, sg.id, sg));
+              store.mergeServerSegments(store.activeProject.id, got && got.segments);
             }
             toast.success(TR("Применено советов: ") + res.applied,
               TR("Откат — по метке ") + (res.stamp || "—"));
@@ -217,8 +216,7 @@ function WorkSummary({ summary, store, toast, onReload }) {
             if (ids.length && window.API.fetchSegments) {
               const got = await window.API.safeCall(
                 () => window.API.fetchSegments(store.activeProject.id, ids));
-              (got && got.segments || []).forEach(
-                sg => store.updateSegment(store.activeProject.id, sg.id, sg));
+              store.mergeServerSegments(store.activeProject.id, got && got.segments);
             }
             toast.success(TR("Принято сегментов: ") + res.accepted,
               TR("Откат — по метке ") + (res.stamp || "—")
@@ -646,6 +644,18 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
   const project = store.activeProject;
   const tk = summary.turnkey;
   const mm = mods || {};
+  /* Те же ДВА рубежа, что в редакторе (инвариант 24), и путать их нельзя.
+     УСТРОЙСТВО прогона — выбор моделей, действующая модель, цена по шагам —
+     системному администратору: выбирать модель человеку, который не знает
+     целевого языка, нечем, а ошибка стоит денег. СМЕТА — тому, кто платит.
+     Панель «Анализа» рубежа роли не знала вовсе: её единственным условием
+     был тенантный `simple` (инвариант 22), то есть переводчик видел здесь
+     ровно ту таблицу моделей, которую редактор ему не показывает. Состав
+     (шаг и сколько сегментов) остаётся всем: это обещание работы, а не
+     устройство. */
+  const expert = !!(store.can && store.can.super);
+  const showCost = !!(store.can && (store.can.owner || store.can.super));
+  const showModels = expert && !costHidden();
   const [busy, setBusy] = useState(false);
   const caseIds = tk.case || [];
   const accIds = (summary.human || {}).revertedByScore || [];
@@ -708,7 +718,7 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
     const pull = async (ids) => {
       if (!ids || !ids.length || !window.API.fetchSegments) return;
       const got = await window.API.safeCall(() => window.API.fetchSegments(project.id, ids));
-      (got && got.segments || []).forEach(sg => store.updateSegment(project.id, sg.id, sg));
+      store.mergeServerSegments(project.id, got && got.segments);
     };
     let freeFixed = false;
     if (fixCase && caseIds.length) {
@@ -783,7 +793,7 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
        а селектор судьи растягивался на всю строку. Четыре колонки — шаг,
        выбор, действующая модель, состав·цена; ниже 720 px сетка складывается
        в две, и строка занимает две линии вместо четырёх столбиков. */
-    plan && React.createElement("div", { className: "tk-grid" },
+    plan && React.createElement("div", { className: showModels ? "tk-grid" : "tk-grid tk-grid-plain" },
       (plan.steps || []).map(st => {
         const row = est && est.byStep[st.step];
         const pkey = STEP_MODEL_PARAM[st.step];
@@ -792,22 +802,22 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
           /* Модель шага — выбирается тут же, а не только в редакторе; пустой
              выбор = дефолт сервера, действующая модель названа рядом. У Medical
              QA селектора нет: своей модели у неё нет, обратный перевод она
-             заказывает моделью back-check. */
-          pkey && setMod && !costHidden()
+             заказывает моделью back-check. Без устройства колонок нет вовсе:
+             пустые ячейки оставили бы полстроки дыры между шагом и составом. */
+          showModels && (pkey && setMod
             ? React.createElement(Select, { className: "select tk-select", value: mm[pkey] || "",
                 onChange: (e) => setMod(pkey, e.target.value) },
                 React.createElement("option", { value: "" }, TR("по умолчанию")),
                 (cat && cat.models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label)))
-            : React.createElement("span", { className: "dim tk-select" },
-                costHidden() ? "" : TR("модель back-check")),
-          React.createElement("span", { className: "dim tk-eff", title: costHidden() ? "" : (st.modelLabel || "") },
-            (st.modelLabel && !costHidden()) ? "→ " + st.modelLabel : ""),
+            : React.createElement("span", { className: "dim tk-select" }, TR("модель back-check"))),
+          showModels && React.createElement("span", { className: "dim tk-eff", title: st.modelLabel || "" },
+            st.modelLabel ? "→ " + st.modelLabel : ""),
           React.createElement("span", { className: "dim tk-cost" },
-            st.count + TR(" сегм.") + (row && row.cost != null && typeof fmtCost === "function"
+            st.count + TR(" сегм.") + (showModels && row && row.cost != null && typeof fmtCost === "function"
               ? " · ≈ " + fmtCost(row.cost) : "")));
       }),
       /* Судья — не шаг, а участник back-check и ремонта: та же сетка. */
-      setMod && !costHidden() && React.createElement(React.Fragment, { key: "judge" },
+      showModels && setMod && React.createElement(React.Fragment, { key: "judge" },
         React.createElement("span", { className: "tk-label" }, TR("судья")),
         React.createElement(Select, { className: "select tk-select", value: mm.judge_model || "",
           onChange: (e) => setMod("judge_model", e.target.value) },
@@ -816,14 +826,19 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
         React.createElement("span", { className: "dim tk-eff", title: TR("в back-check и перепроверке ремонта, с разрешением выше зоны") },
           TR("в back-check и ремонте, выше зоны")),
         React.createElement("span", { className: "dim tk-cost" }, ""))),
-    /* Модели, спорящие друг с другом по роли, — вслух и до нажатия. */
-    plan && modelConflicts(plan, cat, mm).map((w, i) => React.createElement("div", { key: "w" + i,
+    /* Модели, спорящие друг с другом по роли, — вслух и до нажатия. Только тому,
+       кто модели и выбирает: подсказка называет модели поимённо и просит
+       выбрать другую — тому, у кого выбора нет, это тревога без двери. */
+    plan && showModels && modelConflicts(plan, cat, mm).map((w, i) => React.createElement("div", { key: "w" + i,
       style: { fontSize: 12.5, color: "var(--c-warning)", lineHeight: 1.5 } }, "⚠ " + w)),
     plan && extra > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
       TR("В состав входят и готовые сегменты — освежить проверки (") + extra + TR(" сегм. сверх корзины).")),
-    plan && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
-      TR("Смета — нижняя граница: проверки этого же прогона могут добавить работы ремонту. ")
-      + TR("Судья идёт с разовым разрешением смотреть и бесспорные сегменты (балл выше зоны).")),
+    /* Про смету — тому, кто платит; про судью — тому, кто видит устройство. */
+    plan && ((showCost && !costHidden()) || showModels) && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
+      (showCost && !costHidden()
+        ? TR("Смета — нижняя граница: проверки этого же прогона могут добавить работы ремонту. ") : "")
+      + (showModels
+        ? TR("Судья идёт с разовым разрешением смотреть и бесспорные сегменты (балл выше зоны).") : "")),
     (caseIds.length > 0 || accIds.length > 0) && React.createElement("div", {
       style: { display: "flex", flexDirection: "column", gap: 6, paddingTop: 8,
                borderTop: "1px solid var(--border)" } },
@@ -843,7 +858,10 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
           && !(fixCase && caseIds.length) && !(fixAcc && accIds.length)),
         onClick: run },
         busy ? TR("Запускаем…")
-          : TR("Запустить") + (est && est.cost != null && typeof fmtCost === "function"
+          /* Смета на кнопке — тому, кто платит: у владельца это единственное
+             число, по которому он решает, запускать ли книгу; переводчику деньги
+             не его дело — тот же рубеж, что у EstLine в редакторе. */
+          : TR("Запустить") + (showCost && est && est.cost != null && typeof fmtCost === "function"
               ? " · ≈ " + fmtCost(est.cost) + (est.unknown ? "+" : "") : "")),
       React.createElement(Btn, { variant: "ghost", disabled: busy, onClick: onClose }, TR("Отмена"))));
 }
@@ -1511,7 +1529,7 @@ function GlossaryImpact({ project, store, toast, onDrill, T }) {
        5 МБ, и тянуть его целиком ради десятка изменившихся — трафик впустую. */
     if ((res.ids || []).length && window.API.fetchSegments && store) {
       const got = await window.API.safeCall(() => window.API.fetchSegments(project.id, res.ids));
-      (got && got.segments || []).forEach(sg => store.updateSegment(project.id, sg.id, sg));
+      store.mergeServerSegments(project.id, got && got.segments);
     }
     toast && toast.success(TR("Начертание приведено к оригиналу"),
                            res.segments + TR(" сегм. — без единого вызова модели"));

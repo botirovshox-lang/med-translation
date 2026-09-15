@@ -158,6 +158,20 @@ function useStore(authed) {
   const openProject = (id) => { setActiveId(id); setTab("editor"); };
   const replaceProjectSegments = (pid, segments) =>
     setProjects(ps => ps.map(p => p.id !== pid ? p : { ...p, segments }));
+  /* Копия СЕРВЕРА для нескольких сегментов — только в локальный state.
+     updateSegment для этого не годится: он оптимистичная правка человека
+     и шлёт текст обратно на сервер. Во время прогона сервер такую запись
+     отвергает 409 (_guard_project_write), каждый отказ считается
+     «не доехавшей правкой» (API.segEdits.failed), и сверка статусов
+     вкладки выключалась навсегда — ровно на прогоне, после которого она
+     нужнее всего. А вне прогона запись обратно устаревшей копии поверх
+     свежего текста ставила бы editedBy человеку на машинный перевод. */
+  const mergeServerSegments = (pid, segs) => {
+    if (!segs || !segs.length) return;
+    const byId = new Map(segs.map(s => [s.id, s]));
+    setProjects(ps => ps.map(p => p.id !== pid ? p : {
+      ...p, segments: p.segments.map(s => byId.has(s.id) ? { ...s, ...byId.get(s.id) } : s) }));
+  };
   const deleteProject = (id) => {
     setProjects(ps => ps.filter(p => p.id !== id));
     if (activeId === id) setActiveId(null);
@@ -191,7 +205,7 @@ function useStore(authed) {
     projects, glossary, tm, activeId, activeProject, tab,
     exportHistory, team: [], me, can, brand, apiReady, setGlossary,
     segmentFilter, gotoSegId,
-    go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, patchProject, openProject, deleteProject, replaceProjectSegments, saveTerm, deleteTerm, deleteTM,
+    go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, patchProject, openProject, deleteProject, replaceProjectSegments, mergeServerSegments, saveTerm, deleteTerm, deleteTM,
     setExportHistory,
     setSegmentFilter: (ids) => {
       const f = ids && ids.length ? new Set(ids) : null;

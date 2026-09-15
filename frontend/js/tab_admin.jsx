@@ -426,9 +426,191 @@ function AdminAudit() {
           Object.keys(r).filter(k => !["at", "tenant", "user", "login", "action"].includes(k)).map(k => k + "=" + r[k]).join(" · "))))))));
 }
 
+/* ── Модели шагов на всю систему ──────────────────────────────────────────
+   Пустое — умолчание кода. Настройка подменяет УМОЛЧАНИЕ, поэтому сильнее её
+   модель, назначенная организации в упрощённом режиме, и явный выбор в
+   редакторе. Подписи шагов — здесь, сервер отдаёт только ключи. */
+function adminStepLabel(k) {
+  const L = { translate: TR("Перевод"), review: TR("Ревизия"), backcheck: "back-check",
+    termcheck: TR("Проверка терминов"), termaudit: TR("Сверка терминов"), repair: TR("Ремонт"),
+    judge: TR("Судья"), ocr: TR("Текст на картинках"), terms: TR("Извлечение терминов"),
+    embed: TR("Эмбеддинги") };
+  return L[k] || k;
+}
+function adminModelName(models, id) {
+  const m = (models || []).find(x => x.id === id);
+  return m ? m.label : (id || "—");
+}
+function adminPrice(models, id) {
+  const m = (models || []).find(x => x.id === id);
+  return m ? "$" + m.in + " / $" + m.out : "";
+}
+function adminUsd(v) { return v == null ? "—" : "$" + Number(v).toFixed(v !== 0 && Math.abs(v) < 1 ? 4 : 2); }
+
+function AdminSystemModels({ toast, onSaved }) {
+  const [d, setD] = useState(null);
+  const [draft, setDraft] = useState({});
+  const [busy, setBusy] = useState(false);
+  const load = () => window.API.safeCall(() => window.API.systemModels()).then(r => {
+    if (!r || !r.ok) return;
+    setD(r);
+    const o = {};
+    r.steps.forEach(s => { o[s.key] = s.value || ""; });
+    setDraft(o);
+  });
+  useEffect(() => { load(); }, []);
+  if (!d) return React.createElement("div", { className: "card card-pad dim" }, TR("Загружаем модели…"));
+  const dirty = d.steps.some(s => (s.value || "") !== (draft[s.key] || ""));
+  const save = async () => {
+    setBusy(true);
+    try {
+      const r = await window.API.systemModelsSave(draft);
+      setD(r);
+      toast.success(TR("Модели сохранены"), TR("открытые вкладки увидят их после обновления страницы"));
+      if (onSaved) onSaved(r);
+    } catch (e) { toast.error(TR("Не сохранено"), e.message || String(e)); }
+    finally { setBusy(false); }
+  };
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "row between", style: { marginBottom: 8 } },
+      React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Модели шагов на всю систему")),
+      React.createElement("div", { className: "row", style: { gap: 8 } },
+        dirty && React.createElement(Btn, { variant: "ghost", size: "sm", onClick: load }, TR("Отменить")),
+        React.createElement(Btn, { size: "sm", disabled: !dirty || busy, onClick: save }, busy ? TR("Сохраняем…") : TR("Сохранить")))),
+    React.createElement("p", { className: "dim", style: { margin: "0 0 8px", fontSize: 13 } },
+      TR("Модель, которой шаг идёт, когда её не выбрали явно. Пусто — умолчание кода. Сильнее системной только модель, назначенная организации в упрощённом режиме, и явный выбор в редакторе.")),
+    React.createElement("div", { style: { overflowX: "auto" } }, React.createElement("table", { className: "tbl" },
+      React.createElement("thead", null, React.createElement("tr", null,
+        [TR("Шаг"), TR("Модель"), TR("Цена за 1M токенов, вход / выход"), TR("Действует сейчас")].map((h, i) => React.createElement("th", { key: i }, h)))),
+      React.createElement("tbody", null, d.steps.map(s => React.createElement("tr", { key: s.key },
+        React.createElement("td", null, adminStepLabel(s.key)),
+        React.createElement("td", null,
+          React.createElement("select", { className: "input", value: draft[s.key] || "", style: { maxWidth: 260 },
+            onChange: (e) => setDraft({ ...draft, [s.key]: e.target.value }) },
+            React.createElement("option", { value: "" }, TR("по умолчанию: ") + adminModelName(d.models, s.codeDefault)),
+            d.models.map(m => React.createElement("option", { key: m.id, value: m.id }, m.label)))),
+        React.createElement("td", { className: "dim" }, adminPrice(d.models, draft[s.key] || s.codeDefault)),
+        React.createElement("td", { className: "dim" }, adminModelName(d.models, s.effective))))))));
+}
+
+/* ── Виртуальный пересчёт ──────────────────────────────────────────────────
+   Те же токены журнала — по ценам выбранных моделей. Модели по умолчанию —
+   нынешние системные: вопрос «во что обошёлся бы период при этих настройках».
+   Считает сервер (ни одного вызова модели). */
+function adminLocalDay(offset) {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  const p = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+function adminSysPreset(sys) {
+  const o = {};
+  ((sys && sys.steps) || []).forEach(s => { o[s.key] = s.effective || ""; });
+  return o;
+}
+
+function AdminUsageSim({ toast, tenants, sys }) {
+  const [from, setFrom] = useState(adminLocalDay(-29));
+  const [to, setTo] = useState(adminLocalDay(0));
+  const [tenant, setTenant] = useState("");
+  const [user, setUser] = useState("");
+  const [models, setModels] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [res, setRes] = useState(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { window.API.safeCall(() => window.API.usersAll()).then(r => setUsers((r && r.users) || [])); }, []);
+  const catalog = (sys && sys.models) || [];
+  const chosen = models || adminSysPreset(sys);
+  const run = async (m) => {
+    setBusy(true);
+    try {
+      const clean = {};
+      Object.keys(m).forEach(k => { if (m[k]) clean[k] = m[k]; });
+      setRes(await window.API.usageSimulate({ dateFrom: from, dateTo: to, tenant: tenant || null, user: user || null, models: clean }));
+    } catch (e) { toast.error(TR("Не посчитано"), e.message || String(e)); }
+    finally { setBusy(false); }
+  };
+  const pick = (grp, id) => { const next = { ...chosen, [grp]: id }; setModels(next); if (res) run(next); };
+  const preset = (days) => { setFrom(adminLocalDay(-(days - 1))); setTo(adminLocalDay(0)); };
+  const shownUsers = users.filter(u => !tenant || u.tenant === tenant);
+  const t = res && res.total;
+  const delta = t ? t.sim - t.actual : 0;
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } }, TR("Виртуальный пересчёт расхода")),
+    React.createElement("p", { className: "dim", style: { margin: "0 0 10px", fontSize: 13 } },
+      TR("Сколько стоил бы расход за период, если бы шаги шли выбранными моделями. Считаются те же токены по другим ценам: без скидки на кэш и с тем же числом токенов рассуждения — это оценка, а не прогноз.")),
+    React.createElement("div", { className: "row row-wrap", style: { gap: 8, alignItems: "center" } },
+      React.createElement("input", { type: "date", className: "input", value: from, style: { maxWidth: 160 }, onChange: (e) => setFrom(e.target.value) }),
+      React.createElement("span", { className: "dim" }, "—"),
+      React.createElement("input", { type: "date", className: "input", value: to, style: { maxWidth: 160 }, onChange: (e) => setTo(e.target.value) }),
+      [[7, TR("7 дней")], [30, TR("30 дней")], [90, TR("90 дней")]].map(([n, label]) =>
+        React.createElement(Btn, { key: n, variant: "ghost", size: "sm", onClick: () => preset(n) }, label)),
+      React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => { setFrom(adminLocalDay(0).slice(0, 8) + "01"); setTo(adminLocalDay(0)); } }, TR("Этот месяц")),
+      React.createElement("select", { className: "input", value: tenant, style: { maxWidth: 200 },
+        onChange: (e) => { setTenant(e.target.value); setUser(""); } },
+        React.createElement("option", { value: "" }, TR("вся система")),
+        (tenants || []).map(x => React.createElement("option", { key: x.id, value: x.id }, x.name || x.id))),
+      React.createElement("select", { className: "input", value: user, style: { maxWidth: 220 }, onChange: (e) => setUser(e.target.value) },
+        React.createElement("option", { value: "" }, TR("все пользователи")),
+        shownUsers.map(u => React.createElement("option", { key: u.id, value: u.id }, u.login + " · " + u.tenant))),
+      React.createElement(Btn, { size: "sm", disabled: busy || !from || !to, onClick: () => run(chosen) }, busy ? TR("Считаем…") : TR("Посчитать"))),
+    res && React.createElement("div", { className: "col", style: { gap: 12, marginTop: 12 } },
+      React.createElement("div", { className: "row row-wrap", style: { gap: 10 } },
+        React.createElement(AdminStat, { label: TR("Факт"), value: adminUsd(t.actual) }),
+        React.createElement(AdminStat, { label: TR("По выбранным моделям"), value: adminUsd(t.sim) }),
+        React.createElement(AdminStat, { label: TR("Разница"),
+          value: (delta > 0 ? "+" : "") + adminUsd(delta) + (t.actual ? " · " + (delta > 0 ? "+" : "") + Math.round(delta / t.actual * 100) + "%" : ""),
+          warn: delta > 0 }),
+        React.createElement(AdminStat, { label: TR("Вызовов"), value: t.calls })),
+      React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 12 } },
+        (res.ledgerSince ? TR("Журнал токенов ведётся с ") + res.ledgerSince + ". " : TR("Журнал токенов пока пуст. "))
+        + (res.historyRows ? TR("Строк из истории прогонов в периоде: ") + res.historyRows + TR(" — у них нет автора, а одиночные вызовы туда не попадали. ") : "")
+        + (t.unpriced ? TR("Вызовов без цены в факте: ") + t.unpriced + ". " : "")),
+      React.createElement("div", { className: "row", style: { gap: 8 } },
+        React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => { const m = adminSysPreset(sys); setModels(m); run(m); } }, TR("Модели как в настройках")),
+        React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => { setModels({}); run({}); } }, TR("Без замены"))),
+      React.createElement("div", { style: { overflowX: "auto" } }, React.createElement("table", { className: "tbl" },
+        React.createElement("thead", null, React.createElement("tr", null,
+          [TR("Шаг"), TR("Вызовов"), TR("Токены вход / выход"), TR("Факт"), TR("Модель пересчёта"), TR("Пересчёт")].map((h, i) => React.createElement("th", { key: i }, h)))),
+        React.createElement("tbody", null, res.groups.map(g => React.createElement("tr", { key: g.group },
+          React.createElement("td", null, adminStepLabel(g.group)),
+          React.createElement("td", null, g.calls),
+          React.createElement("td", { className: "dim" }, g.in.toLocaleString() + " / " + g.out.toLocaleString()),
+          React.createElement("td", { title: Object.keys(g.actualModels || {}).map(id => adminModelName(catalog, id) + ": " + g.actualModels[id]).join(", ") },
+            adminUsd(g.actual), g.unpriced ? React.createElement("span", { className: "dim" }, TR(" · без цены ") + g.unpriced) : null),
+          React.createElement("td", null, g.simulable
+            ? React.createElement("select", { className: "input", value: chosen[g.group] || "", style: { maxWidth: 220 },
+                onChange: (e) => pick(g.group, e.target.value) },
+                React.createElement("option", { value: "" }, TR("как было")),
+                catalog.map(m => React.createElement("option", { key: m.id, value: m.id }, m.label + " · $" + m.in + " / $" + m.out)))
+            : React.createElement("span", { className: "dim" }, TR("не пересчитывается"))),
+          React.createElement("td", null, adminUsd(g.sim))))))),
+      res.byUser.length > 0 && React.createElement("div", { style: { overflowX: "auto", maxHeight: 320, overflowY: "auto" } },
+        React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, TR("По людям")),
+        React.createElement("table", { className: "tbl" },
+          React.createElement("thead", null, React.createElement("tr", null,
+            [TR("Человек"), TR("Организация"), TR("Вызовов"), TR("Факт"), TR("Пересчёт")].map((h, i) => React.createElement("th", { key: i }, h)))),
+          React.createElement("tbody", null, res.byUser.map(u => React.createElement("tr", { key: u.user || "-" },
+            React.createElement("td", null, u.user ? (u.login || u.user) + (u.name && u.name !== u.login ? " · " + u.name : "") : TR("без автора")),
+            React.createElement("td", { className: "dim" }, u.home || "—"),
+            React.createElement("td", null, u.calls),
+            React.createElement("td", null, adminUsd(u.actual)),
+            React.createElement("td", null, adminUsd(u.sim)))))))));
+}
+
+function AdminModelsView({ toast, tenants }) {
+  const [sys, setSys] = useState(null);
+  useEffect(() => { window.API.safeCall(() => window.API.systemModels()).then(r => { if (r && r.ok) setSys(r); }); }, []);
+  return React.createElement("div", { className: "col", style: { gap: 16 } },
+    React.createElement(AdminSystemModels, { toast, onSaved: setSys }),
+    React.createElement(AdminUsageSim, { toast, tenants, sys }));
+}
+
 function TabAdmin({ store, toast }) {
   const [ov, setOv] = useState(null);
   const [nonce, setNonce] = useState(0);
+  // Третьим хуком, после сводки: рендер-тест подкладывает сводку в hooks[0].
+  const [view, setView] = useState("summary");
   useEffect(() => {
     if (!(store.can && store.can.super)) return;
     let dead = false;
@@ -444,9 +626,17 @@ function TabAdmin({ store, toast }) {
   return React.createElement("div", { className: "page page-wide" },
     React.createElement("div", { className: "page-head" },
       React.createElement("h1", null, TR("Администрирование")),
-      React.createElement("p", { className: "lead" }, TR("Все организации, аккаунты, прогоны и расход. Обновляется каждые 10 секунд."))),
-    !ov && React.createElement("div", { className: "dim" }, TR("Загружаем сводку…")),
-    ov && React.createElement("div", { className: "col", style: { gap: 16 } },
+      React.createElement("p", { className: "lead" }, view === "models"
+        ? TR("Модели шагов на всю систему и пересчёт расхода по журналу токенов.")
+        : TR("Все организации, аккаунты, прогоны и расход. Обновляется каждые 10 секунд."))),
+    React.createElement("div", { className: "row", style: { gap: 8, marginBottom: 16 } },
+      React.createElement("div", { className: "seg", role: "tablist" },
+        [["summary", TR("Сводка")], ["models", TR("Модели и расход")]].map(([key, label]) =>
+          React.createElement("button", { key, role: "tab", "aria-pressed": view === key, "aria-selected": view === key,
+            onClick: () => setView(key) }, label)))),
+    view === "models" && React.createElement(AdminModelsView, { toast, tenants: ov ? ov.tenants : [] }),
+    view === "summary" && !ov && React.createElement("div", { className: "dim" }, TR("Загружаем сводку…")),
+    view === "summary" && ov && React.createElement("div", { className: "col", style: { gap: 16 } },
       React.createElement("div", { className: "row row-wrap", style: { gap: 10 } },
         React.createElement(AdminStat, { label: TR("Организаций"), value: ov.tenants.length }),
         React.createElement(AdminStat, { label: TR("Аккаунтов"), value: ov.tenants.reduce((a, t) => a + t.users, 0) }),

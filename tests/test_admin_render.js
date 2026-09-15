@@ -152,6 +152,35 @@ check(!!full && full.includes("Организация"), "организация
 check(!!full && full.includes("Пополнить") && full.includes("Журнал"), "кнопки учёта страниц на месте");
 check(!!full && full.includes("500"), "выданные страницы показаны");
 
+/* Вкладка «Модели и расход»: переключатель на месте, вид рисуется и до ответа
+   сервера (настройка и пересчёт грузятся своими запросами), и с ответом. */
+check(!!full && full.includes("Модели и расход"), "переключатель вкладки моделей на месте");
+function renderView(label, sys, sim) {
+  hooks.length = 0; hookIdx = 0; effects.length = 0;
+  hooks[0] = OV; hooks[2] = "models";
+  if (sys) { hooks[3] = sys; hooks[4] = sys; hooks[5] = { translate: "gpt-4o" }; }
+  // Порядок хуков: TabAdmin 0–2, AdminModelsView 3, AdminSystemModels 4–6,
+  // AdminUsageSim 7–14 (res — 13).
+  if (sim) hooks[13] = sim;
+  try { return texts(TabAdmin({ store: superStore, toast })).join(" "); }
+  catch (e) { check(false, label + " — " + e.constructor.name + ": " + e.message); return null; }
+}
+const SYS = { ok: true, groups: ["translate", "terms"],
+  models: [{ id: "gpt-4o", label: "GPT-4o", in: 2.5, out: 10 }, { id: "gpt-4o-mini", label: "GPT-4o mini", in: 0.15, out: 0.6 }],
+  steps: [{ key: "translate", value: "gpt-4o", codeDefault: "gpt-4o", effective: "gpt-4o" },
+          { key: "backcheck", value: null, codeDefault: "gpt-4o-mini", effective: "gpt-4o-mini" }] };
+const SIM = { ok: true, ledgerSince: "2026-08-01", historyRows: 2,
+  total: { calls: 3, in: 100, out: 50, actual: 1.5, sim: 0.2, unpriced: 0 },
+  groups: [{ group: "translate", calls: 2, in: 80, out: 40, actual: 1.2, sim: 0.1, unpriced: 0, simulable: true, actualModels: { "gpt-4o": 2 } },
+           { group: "embed", calls: 1, in: 20, out: 10, actual: 0.3, sim: 0.3, unpriced: 0, simulable: false, actualModels: {} }],
+  byUser: [{ user: null, calls: 3, actual: 1.5, sim: 0.2 }], byTenant: [] };
+const mEmpty = renderView("вкладка моделей до ответа", null, null);
+check(mEmpty !== null && !mEmpty.includes("Пополнить"), "вкладка моделей рисуется до ответа и без сводки");
+const mFull = renderView("вкладка моделей с ответом", SYS, SIM);
+check(!!mFull && mFull.includes("Модели шагов на всю систему") && mFull.includes("Виртуальный пересчёт расхода"),
+      "обе карточки на месте");
+check(!!mFull && mFull.includes("По выбранным моделям") && mFull.includes("без автора"), "итог пересчёта и строка без автора");
+
 /* Два правила показа: служебный адрес и роль. Пропавшая проверка открыла бы
    сводку по всем организациям с главной страницы. */
 global.ADMIN_ENTRY = false;

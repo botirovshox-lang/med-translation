@@ -153,6 +153,18 @@ class PgStore:
         " usd DOUBLE PRECISION NOT NULL DEFAULT 0,"
         " calls BIGINT NOT NULL DEFAULT 0, unpriced BIGINT NOT NULL DEFAULT 0,"
         " PRIMARY KEY (tenant, month))",
+        # Журнал токенов по дням — для виртуального пересчёта в админке
+        # («сколько стоило бы другими моделями»). Счётчик с инкрементом по той
+        # же причине, что `spend`: пишут оба процесса. uid '' — автор неизвестен,
+        # model '?' — строка перенесена из истории прогонов (там модели по шагам нет).
+        "CREATE TABLE IF NOT EXISTS usage_daily ("
+        " day TEXT NOT NULL, tenant TEXT NOT NULL, uid TEXT NOT NULL,"
+        " step TEXT NOT NULL, model TEXT NOT NULL,"
+        " calls BIGINT NOT NULL DEFAULT 0, tin BIGINT NOT NULL DEFAULT 0,"
+        " cached BIGINT NOT NULL DEFAULT 0, tout BIGINT NOT NULL DEFAULT 0,"
+        " think BIGINT NOT NULL DEFAULT 0, usd DOUBLE PRECISION NOT NULL DEFAULT 0,"
+        " unpriced BIGINT NOT NULL DEFAULT 0,"
+        " PRIMARY KEY (day, tenant, uid, step, model))",
         "CREATE TABLE IF NOT EXISTS jobs ("
         " id INTEGER PRIMARY KEY, status TEXT NOT NULL, tenant TEXT,"
         " doc JSONB NOT NULL, updated TIMESTAMPTZ NOT NULL DEFAULT now())",
@@ -164,6 +176,8 @@ class PgStore:
         self._lock = threading.Lock()
         self._hashes: dict = {}                     # ключ документа -> отпечаток
         self._vers: dict = {}                       # ключ документа -> версия при чтении
+        self._base_keys: set = set()                # документы, чей текст помним (см. keep_base)
+        self._base_text: dict = {}                  # ключ -> текст при последнем чтении/записи
         self._row_hashes = {c: {} for c in ROW_COLLECTIONS}   # coll -> {gid: отпечаток}
         self._row_seq = {c: 0 for c in ROW_COLLECTIONS}       # наибольший выданный seq
         self._epochs = {c: 0 for c in ROW_COLLECTIONS}        # поколение, которое мы видели
@@ -400,6 +414,8 @@ class PgStore:
         for key in changed:
             self._hashes[key] = texts[key][1]
             self._vers[key] = newver[key]
+            if key in self._base_keys:
+                self._base_text[key] = texts[key][0]
         for key in gone:
             self._hashes.pop(key, None)
             self._vers.pop(key, None)
@@ -466,9 +482,27 @@ class PgStore:
             self._vers.pop(key, None)
             return None
         doc = json.loads(got[0]) if isinstance(got[0], str) else got[0]
-        self._hashes[key] = _fp(_dumps(doc))
+        text = _dumps(doc)
+        self._hashes[key] = _fp(text)
         self._vers[key] = got[1]
+        if key in self._base_keys:
+            self._base_text[key] = text
         return doc
+
+    def keep_base(self, key: str, on: bool = True) -> None:
+        """Помнить ТЕКСТ документа таким, каким мы его последний раз прочли
+        или записали, — базу для трёхсторонней сверки при `DocConflict`.
+        Только для названных ключей: воркер держит так документ проекта своего
+        прогона, а копия всего состояния в памяти ему не нужна."""
+        if on:
+            self._base_keys.add(key)
+        else:
+            self._base_keys.discard(key)
+            self._base_text.pop(key, None)
+
+    def base_doc(self, key: str):
+        text = self._base_text.get(key)
+        return json.loads(text) if text is not None else None
 
     def bump_epoch(self, name: str) -> int:
         """Поднять эпоху вручную — воркер зовёт после прогона для doc:projects:N,
@@ -510,6 +544,38 @@ class PgStore:
         if not got:
             return {"usd": 0.0, "calls": 0, "unpriced": 0}
         return {"usd": float(got[0]), "calls": int(got[1]), "unpriced": int(got[2])}
+
+    # ── журнал токенов по дням ──
+    def add_usage(self, day: str, tenant: str, uid: str, step: str, model: str,
+                  calls: int, tin: int, cached: int, tout: int, think: int,
+                  usd: float, unpriced: int) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO usage_daily (day, tenant, uid, step, model, calls, tin, cached,"
+                " tout, think, usd, unpriced) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (day, tenant, uid, step, model) DO UPDATE SET "
+                " calls = usage_daily.calls + EXCLUDED.calls, tin = usage_daily.tin + EXCLUDED.tin,"
+                " cached = usage_daily.cached + EXCLUDED.cached, tout = usage_daily.tout + EXCLUDED.tout,"
+                " think = usage_daily.think + EXCLUDED.think, usd = usage_daily.usd + EXCLUDED.usd,"
+                " unpriced = usage_daily.unpriced + EXCLUDED.unpriced",
+                (day, tenant, uid, step, model, int(calls), int(tin), int(cached),
+                 int(tout), int(think), float(usd or 0), int(unpriced)))
+
+    def usage_rows(self, day_from: str, day_to: str) -> list:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT day, tenant, uid, step, model, calls, tin, cached, tout, think, usd, unpriced "
+                "FROM usage_daily WHERE day >= %s AND day <= %s", (day_from, day_to))
+            got = cur.fetchall()
+        return [{"day": r[0], "tenant": r[1], "user": r[2], "step": r[3], "model": r[4],
+                 "calls": int(r[5]), "in": int(r[6]), "cached_in": int(r[7]), "out": int(r[8]),
+                 "reasoning": int(r[9]), "cost": float(r[10]), "unpriced": int(r[11])} for r in got]
+
+    def usage_min_day(self) -> Optional[str]:
+        with self._cursor() as cur:
+            cur.execute("SELECT min(day) FROM usage_daily")
+            got = cur.fetchone()
+        return got[0] if got else None
 
     # ── прогоны ──
     def save_job(self, job: dict) -> None:

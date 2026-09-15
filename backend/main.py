@@ -558,6 +558,8 @@ def _lang_pair(project: Optional[dict]) -> str:
 DEFAULT_TENANT = "default"
 _JOB_TENANT = threading.local()      # организация фонового прогона (в его потоках)
 _JOB_LANG = threading.local()        # язык объяснений прогона (там же и по той же причине)
+_JOB_USER = threading.local()        # кто запустил прогон — для журнала токенов (там же)
+_JOB_MODELS = threading.local()      # модели шагов, замороженные на постановке задачи (там же)
 
 
 def _current_tenant() -> str:
@@ -1277,7 +1279,7 @@ def _openai_termcheck(source: str, target: str, src_lang: str, tgt_lang: str,
     import json as _json
     import openai
     dom = _resolve_domain(domain_id)
-    mdl = _resolve_model(model or TERMCHECK_DEFAULT_MODEL)
+    mdl = _resolve_model(model or _dm("termcheck"))
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
     extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
              else {"max_tokens": 700, "temperature": 0})
@@ -1323,7 +1325,7 @@ def _openai_judge(source_ru: str, back_ru: str, model: str = None,
     import json as _json
     import openai
     dom = _resolve_domain(domain_id)
-    mdl = _resolve_model(model or JUDGE_DEFAULT_MODEL)
+    mdl = _resolve_model(model or _dm("judge"))
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
     extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
              else {"max_tokens": 500, "temperature": 0})
@@ -1350,9 +1352,26 @@ def _openai_judge(source_ru: str, back_ru: str, model: str = None,
         return None
 
 
+def _dm(step: str) -> str:
+    """Модель шага ПО УМОЛЧАНИЮ — единственный способ её прочитать в коде шагов.
+
+    Системные модели правит суперпользователь в любой момент, а константы
+    умолчаний общие на процесс: прочитанные напрямую, они меняли модель ИДУЩЕГО
+    прогона на следующей же порции (у внешнего воркера — по эпохе
+    `doc:systemModels` в `_sync_shared` между порциями). Полкниги одной
+    моделью, полкниги другой, back-check вдруг той же моделью, что переводила,
+    а смета — от третьей. Поэтому в потоке прогона действует СНИМОК, взятый
+    при постановке задачи (`job["sysModels"]`), вне прогона — нынешняя
+    настройка. Правка настройки касается только задач, поставленных после неё."""
+    snap = getattr(_JOB_MODELS, "m", None)
+    if snap and snap.get(step):
+        return snap[step]
+    return globals()[_SYSTEM_MODEL_GLOBALS[step]]
+
+
 def _resolve_model(model_id: Optional[str]) -> dict:
     """Неизвестная/пустая модель → дефолт. Клиент не может подсунуть произвольную строку."""
-    return _MODELS_BY_ID.get(model_id or "") or _MODELS_BY_ID[DEFAULT_OPENAI_MODEL]
+    return _MODELS_BY_ID.get(model_id or "") or _MODELS_BY_ID[_dm("translate")]
 
 
 # ─── Учёт фактического расхода ───────────────────────────────────────────────
@@ -1503,6 +1522,73 @@ def _spend_add(tenant: str, cost: Optional[float]) -> None:
         m["usd"] = round(m["usd"] + cost, 6)
 
 
+# ─── Журнал токенов по дням: основа виртуального пересчёта ───────────
+# `spend` помнит только СУММУ по организации и месяцу, `runCosts` — сотню
+# последних прогонов без автора и без одиночных вызовов. Вопрос «сколько
+# стоило бы другими моделями за период, у всех или у одного человека» ни
+# на то, ни на другое не отвечает: нужны ТОКЕНЫ по шагу, дню и автору.
+# Деньги лимита журнал не считает — это справочник, и его сбой не должен
+# ни ронять вызов, ни подменять `spend` (поэтому в базе отката на STATE нет).
+USAGE_LEDGER_KEY = "usageDaily"          # файловое хранилище: {"день|орг|автор|шаг|модель": счётчики}
+
+
+def _current_uid() -> Optional[str]:
+    """Автор вызова: из сессии запроса, иначе — кто запустил прогон (его поток)."""
+    sess = CURRENT_SESSION.get() if "CURRENT_SESSION" in globals() else None
+    if sess and sess.get("user"):
+        return sess["user"]
+    return getattr(_JOB_USER, "id", None)
+
+
+def _ledger_write(day: str, tenant: str, uid: str, step: str, model: str, calls: int,
+                  tin: int, cached: int, tout: int, think: int, usd: float, unpriced: int) -> None:
+    if STORE.kind == "pg":
+        STORE.add_usage(day, tenant, uid, step, model, calls, tin, cached, tout, think, usd, unpriced)
+        return
+    led = STATE.setdefault(USAGE_LEDGER_KEY, {})
+    d = led.setdefault("|".join((day, tenant, uid, step, model)), _usage_leaf())
+    d["calls"] += calls
+    d["in"] += tin
+    d["cached_in"] += cached
+    d["out"] += tout
+    d["reasoning"] += think
+    d["unpriced"] += unpriced
+    d["cost"] = round(d["cost"] + (usd or 0.0), 6)
+
+
+def _ledger_add(step: str, mid: str, tin: int, cached: int, tout: int, think: int,
+                cost: Optional[float]) -> None:
+    try:
+        _ledger_write(datetime.now().strftime("%Y-%m-%d"), _current_tenant() or DEFAULT_TENANT,
+                      _current_uid() or "", step or "?", mid or "?", 1, tin, cached, tout, think,
+                      cost or 0.0, 0 if cost is not None else 1)
+    except Exception as e:
+        print(f"[backend] журнал токенов не записан ({step}/{mid}): {e}", file=sys.stderr)
+
+
+def _ledger_rows(day_from: str, day_to: str) -> list:
+    if STORE.kind == "pg":
+        return STORE.usage_rows(day_from, day_to)
+    out = []
+    for key, v in (STATE.get(USAGE_LEDGER_KEY) or {}).items():
+        parts = key.split("|")
+        if len(parts) < 5:
+            continue
+        # Автор — середина: у дня, организации, шага и модели «|» не бывает.
+        day, tenant, step, model = parts[0], parts[1], parts[-2], parts[-1]
+        if not (day_from <= day <= day_to):
+            continue
+        out.append(dict(v, day=day, tenant=tenant, user="|".join(parts[2:-2]), step=step, model=model))
+    return out
+
+
+def _ledger_min_day() -> Optional[str]:
+    if STORE.kind == "pg":
+        return STORE.usage_min_day()
+    days = [k.split("|", 1)[0] for k in (STATE.get(USAGE_LEDGER_KEY) or {})]
+    return min(days) if days else None
+
+
 def _tenant_rec(tid: str) -> Optional[dict]:
     return next((t for t in _tenants() if t.get("id") == tid), None)
 
@@ -1642,6 +1728,7 @@ def _note_usage(step: str, model_id: str, resp) -> None:
                 if bucket is not None:
                     _usage_add(bucket, step, model_id, tin, cached, tout, think, cost)
             _spend_add(_current_tenant(), cost)
+            _ledger_add(step, model_id, tin, cached, tout, think, cost)
     except Exception as e:
         print(f"[backend] учёт расхода не сработал ({step}/{model_id}): {e}", file=sys.stderr)
 
@@ -2796,6 +2883,74 @@ def _hourly_backup(state: dict):
         print(f"[backend] WARN: hourly backup failed: {e}", file=sys.stderr)
 
 
+_MISSING = object()
+
+
+def _merge_run_conflict(key: str, fresh) -> bool:
+    """Трёхсторонняя сверка документа проекта ИДУЩЕГО прогона (только воркер).
+
+    Прогон пишет проект после каждой порции, а между порциями документ может
+    переписать API: при выкате поздние миграции сохраняют все проекты разом,
+    не спрашивая, идёт ли где-то прогон. Прежнее правило «перечитать из базы»
+    выбрасывало при этом ПОРЦИЮ — оплаченные переводы и проверки, — а счётчики
+    и курсор задачи уже считали её сделанной: сегменты молча оставались
+    необработанными. Базу даёт хранилище (`keep_base`: текст документа, каким
+    воркер его последний раз прочёл или записал), поэтому решается честно:
+    изменила одна сторона — берём её, обе — побеждает прогон (охрана 409
+    закрывает ручные правки проекта на время прогона, значит «обе» — это
+    миграция поверх того же сегмента, а она повторится на следующем старте
+    API), и такие места названы в журнале. Правка идёт НА МЕСТЕ: потоки
+    порции держат ссылки на объекты сегментов."""
+    job = _ACTIVE_JOB.get("job")
+    if not IS_WORKER or not job or fresh is None or key != "projects:%s" % job.get("project"):
+        return False
+    base = STORE.base_doc(key) if hasattr(STORE, "base_doc") else None
+    local = next((p for p in STATE.get("projects") or [] if p.get("id") == job.get("project")), None)
+    if base is None or local is None:
+        return False
+    theirs, ours_kept = 0, []
+    for k in set(base) | set(fresh) | set(local):
+        if k == "segments":
+            continue
+        b, f, o = base.get(k, _MISSING), fresh.get(k, _MISSING), local.get(k, _MISSING)
+        if f == b or f == o:
+            continue
+        if o == b:
+            if f is _MISSING:
+                local.pop(k, None)
+            else:
+                local[k] = f
+            theirs += 1
+        else:
+            ours_kept.append(k)
+    bs = {sg.get("id"): sg for sg in base.get("segments") or []}
+    fs = {sg.get("id"): sg for sg in fresh.get("segments") or []}
+    segs = local.setdefault("segments", [])
+    have = set()
+    for sg in segs:
+        sid = sg.get("id")
+        have.add(sid)
+        f, b = fs.get(sid, _MISSING), bs.get(sid, _MISSING)
+        if f is _MISSING or f == b or f == sg:
+            continue
+        if sg == b:
+            sg.clear()
+            sg.update(f)
+            theirs += 1
+        else:
+            ours_kept.append("#%s" % sid)
+    for sg in fresh.get("segments") or []:
+        if sg.get("id") not in have and sg.get("id") not in bs:
+            segs.append(sg)
+            theirs += 1
+    print("[backend] конфликт документа %s во время прогона №%s слит: чужих правок %d, "
+          "спорных мест оставлено за прогоном %d%s"
+          % (key, job.get("id"), theirs, len(ours_kept),
+             (" (" + ", ".join(map(str, ours_kept[:20])) + ")") if ours_kept else ""),
+          file=sys.stderr)
+    return True
+
+
 def save_state(state: dict):
     """Атомарная запись: tmp-файл + fsync + os.replace под глобальным локом.
     Раньше файл писался напрямую — параллельные запросы могли оставить битый JSON,
@@ -2809,10 +2964,14 @@ def save_state(state: dict):
                 # документа теряются — громко; остальное сохраняется повтором.
                 # Штатно сюда не попадаем: ручные правки проекта закрыты 409
                 # на время прогона, пакетные команды такие проекты пропускают.
-                print(f"[backend] CRITICAL: конфликт документа {e.key} — "
-                      f"перечитан из базы, локальные правки этого документа потеряны",
-                      file=sys.stderr)
-                _apply_doc(e.key, STORE.load_doc(e.key))
+                # Исключение — проект ИДУЩЕГО прогона у воркера: там наши правки —
+                # оплаченная порция, и их сливаем, а не выбрасываем.
+                fresh = STORE.load_doc(e.key)
+                if not _merge_run_conflict(e.key, fresh):
+                    print(f"[backend] CRITICAL: конфликт документа {e.key} — "
+                          f"перечитан из базы, локальные правки этого документа потеряны",
+                          file=sys.stderr)
+                    _apply_doc(e.key, fresh)
                 STORE.save(state)
             _hourly_backup(state)
     except Exception as e:
@@ -2849,6 +3008,8 @@ def _sync_shared(force: bool = False) -> None:
             if coll.startswith("doc:"):
                 key = coll[4:]
                 _apply_doc(key, STORE.load_doc(key))
+                if key == "systemModels":
+                    _apply_system_models()
                 print(f"[backend] {key}: перечитан после чужого прогона", file=sys.stderr)
                 continue
             items = STORE.load_rows(coll)
@@ -4523,7 +4684,7 @@ def _scan_offer(pages: int) -> dict:
     по той же таблице, по которой спишется факт; в упрощённом режиме
     организации сумма и модель не показываются (инвариант 22)."""
     k = min(textcount.SCAN_SAMPLE_PAGES, int(pages))
-    mdl = _resolve_model(IMAGE_READ_MODEL)
+    mdl = _resolve_model(_dm("ocr"))
     tin = k * (_image_tokens(SCAN_PAGE_MAX_SIDE, int(SCAN_PAGE_MAX_SIDE * 1.4)) + 120)
     est = _usage_cost(mdl["id"], tin, k * SCAN_OUT_TOKENS)
     return {"pages": int(pages), "sample": k,
@@ -4597,7 +4758,7 @@ def _scan_quote(content: bytes, filename: str, src: str, tgt: str, card: dict,
     k = min(int(sample) if sample else textcount.SCAN_SAMPLE_PAGES, total)
     idx = textcount.sample_indices(total, k)
     pages = textcount.pdf_page_images(content, idx)
-    mdl = _resolve_model(IMAGE_READ_MODEL)
+    mdl = _resolve_model(_dm("ocr"))
 
     def read(item):
         i, raw = item
@@ -4855,6 +5016,10 @@ def get_seed():
     # человека — верхний ключ уехал бы каждому вошедшему вместе с ними.
     public.pop("surveys", None)
     public.pop("testBatches", None)
+    # Модели на всю систему — имена моделей (упрощённый режим их не показывает),
+    # журнал токенов — расход ВСЕХ организаций по людям.
+    public.pop("systemModels", None)
+    public.pop(USAGE_LEDGER_KEY, None)
     for key in ("exportHistory", "termQueue", "autoBatches", "runCosts", "quotes"):
         public[key] = [e for e in (STATE.get(key) or []) if _tenant_of(e) == t]
     if _hide_cost():
@@ -6925,7 +7090,7 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
     if image_text is None or not blocks:
         return None
     dom = _resolve_domain(domain_id)
-    mdl = _resolve_model(model or IMAGE_READ_MODEL)
+    mdl = _resolve_model(model or _dm("ocr"))
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=120,
                            max_retries=1)
     # Обзорный кадр — уменьшенный PNG, а не сырые байты части: в пакете лежат
@@ -7147,7 +7312,7 @@ def images_report(pid: int):
     ready, why = image_text.engine_ready() if image_text else (False, "модуль не собран")
     data = _load_source_map(pid) if project.get("sourceDocx") else None
     images = (data or {}).get("images") or []
-    mdl = _resolve_model(IMAGE_READ_MODEL)
+    mdl = _resolve_model(_dm("ocr"))
     tin, tout = _image_est_tokens(images)
     return {"ok": True, "engine": ready, "why": why,
             "hasSource": data is not None,
@@ -7482,7 +7647,7 @@ def _job_images(job: dict) -> None:
     for k in ("detected", "readFailed", "segments", "unreadable", "withText"):
         job["counters"].pop(k, None)
     job["counters"]["skippedFormat"] = len(other)
-    model = job["params"].get("ocr_model") or IMAGE_READ_MODEL
+    model = job["params"].get("ocr_model") or _dm("ocr")
     # Карту и состояние сохраняем ПО РАЗНЫМ поводам. Карта — файл на десятки
     # килобайт, её пишем после каждой картинки: разбор идёт минутами, и
     # остановка не должна стоить уже сделанной работы. А state.json на боевом
@@ -7507,6 +7672,12 @@ def _job_images(job: dict) -> None:
         if job["stop"]:
             job["status"] = "stopped"
             break
+        if _SHUTDOWN.is_set():
+            # Прочитанное лежит в карте по отпечатку картинки — продолжение
+            # после рестарта возьмёт его оттуда бесплатно (как у уступки).
+            flush()
+            _job_park(job)
+            return
         if _job_limit_hit(job):        # каждая картинка — вызов зрячей модели
             break
         # Уступка исполнителя между КАРТИНКАМИ. Свой цикл — свой заход:
@@ -8921,7 +9092,7 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
                          # за что уже заплатили секунду назад.
                          "disputed": int((existing or {}).get("disputed") or 0),
                          "v": MEANING_VERSION,
-                         "model": _resolve_model(JUDGE_DEFAULT_MODEL)["id"],
+                         "model": _resolve_model(_dm("judge"))["id"],
                          "at": today}}
             if verdict and verdict.get("same") is not None else {})
     if existing:
@@ -9049,7 +9220,7 @@ def explain_term_variants(cid: int, req: ExplainRequest = ExplainRequest()):
             + "\n".join("  - " + v for v in variants))
     try:
         import openai
-        mdl = _resolve_model(req.model or JUDGE_DEFAULT_MODEL)
+        mdl = _resolve_model(req.model or _dm("judge"))
         client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
         extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
                  else {"max_tokens": 900, "temperature": 0})
@@ -9097,7 +9268,7 @@ def explain_term_variants(cid: int, req: ExplainRequest = ExplainRequest()):
             "authority": _authority_match(term, v, scope),
         })
     return {"ok": True, "term": term, "variants": out, "dropped": dropped,
-            "model": _resolve_model(req.model or JUDGE_DEFAULT_MODEL)["id"]}
+            "model": _resolve_model(req.model or _dm("judge"))["id"]}
 
 
 @app.post("/api/term-queue/{cid}/reject")
@@ -9682,7 +9853,7 @@ def _openai_meaning(pairs: list, scope: tuple) -> Optional[dict]:
     )
     body = "\n".join(f"  - {a} → {b}" for a, b in pairs)
     try:
-        mdl = _resolve_model(JUDGE_DEFAULT_MODEL)
+        mdl = _resolve_model(_dm("judge"))
         client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
         extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
                  else {"max_tokens": 900, "temperature": 0})
@@ -10249,7 +10420,7 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
     todo = [g for g in entries if req.force or _meaning_stale(g)]
     verdicts, asked, capped = _meaning_check(todo, cap=max(1, min(req.limit, 2000)))
     today = datetime.now().strftime("%Y-%m-%d")
-    mdl_id = _resolve_model(JUDGE_DEFAULT_MODEL)["id"]
+    mdl_id = _resolve_model(_dm("judge"))["id"]
     def _write(g, v, flipped=False):
         g["meaning"] = {"same": bool(v["same"]), "back": v.get("back") or "",
                         "rule": v.get("rule"), "why": v.get("why") or "",
@@ -10436,7 +10607,7 @@ def _extract_terms_call(pairs: list, model: Optional[str] = None,
     import json as _json
     import openai
     dom = _resolve_domain(domain_id)
-    mdl = _resolve_model(model or DEFAULT_OPENAI_MODEL)
+    mdl = _resolve_model(model or _dm("translate"))
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
     body = "\n\n".join(f"[{i + 1}] SRC: {p[0]}\n    TGT: {p[1]}" for i, p in enumerate(pairs))
     extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
@@ -10498,7 +10669,7 @@ def _openai_edit_terms(source: str, before: str, after: str, project: dict):
     import json as _json
     import openai
     dom = _resolve_domain(project.get("domain"))
-    mdl = _resolve_model(DEFAULT_OPENAI_MODEL)
+    mdl = _resolve_model(_dm("translate"))
     src_l = (project.get("src") or "").upper() or "SRC"
     tgt_l = (project.get("tgt") or "").upper() or "TGT"
     # Таймаут 60 — младший из прецедентов проекта; без повторов: подтверждение
@@ -10695,7 +10866,7 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
             c = _queue_term("extract", item.get("src", ""), item.get("tgt", ""),
                             cat=item.get("cat", ""), wasTgt=(known or {}).get("tgt", ""),
                             lang=_sc[0], domain=_sc[1], tenant=_sc[2], via="auto",
-                            project=pid, model=_resolve_model(req.model or DEFAULT_OPENAI_MODEL)["id"])
+                            project=pid, model=_resolve_model(req.model or _dm("translate"))["id"])
             if c:
                 found.append(c)
         for sg in chunk:
@@ -10731,10 +10902,16 @@ def _run_parallel(items: list, fn):
     # человека, и один прогон даёт объяснения на двух языках вперемешку.
     tid = _current_tenant()
     lang = _explain_lang()
+    uid = _current_uid()
+    # Снимок моделей прогона — туда же: без него рабочие потоки порции читали
+    # бы нынешнюю системную настройку, и одна порция шла бы двумя моделями.
+    models = getattr(_JOB_MODELS, "m", None)
 
     def run(x):
         _JOB_TENANT.id = tid
         _JOB_LANG.code = lang
+        _JOB_USER.id = uid
+        _JOB_MODELS.m = models
         return fn(x)
     with ThreadPoolExecutor(max_workers=min(RUN_WORKERS, len(items)),
                             thread_name_prefix="mcat-run") as pool:
@@ -11291,11 +11468,11 @@ def _backcheck_model(seg: dict, requested: Optional[str]) -> str:
     вызов той же моделью: прогон платил при каждом запуске, а зачётной
     проверки не получал никогда — вечная переплата за недействительный
     результат. Совпала — берём запасную, столь же буквальную и дешёвую."""
-    mid = _resolve_model(requested or BACKCHECK_DEFAULT_MODEL)["id"]
+    mid = _resolve_model(requested or _dm("backcheck"))["id"]
     provider = seg.get("provider") or ""
     if mid != provider:
         return mid
-    for alt in (BACKCHECK_DEFAULT_MODEL, BACKCHECK_FALLBACK_MODEL):
+    for alt in (_dm("backcheck"), BACKCHECK_FALLBACK_MODEL):
         if alt != provider:
             return alt
     return mid          # недостижимо: две запасных не совпадают между собой
@@ -11551,7 +11728,7 @@ def termcheck_batch(pid: int, req: TermcheckBatchRequest):
         raise HTTPException(503, "Проверка терминологии требует ключ OpenAI")
     project = get_project(pid)
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
-    mdl_id = _resolve_model(req.model or TERMCHECK_DEFAULT_MODEL)["id"]
+    mdl_id = _resolve_model(req.model or _dm("termcheck"))["id"]
 
     candidates, skipped_cached = [], 0
     for seg in project["segments"]:
@@ -12489,7 +12666,7 @@ def _openai_term_context(seg: dict, project: dict, disputes: list,
     не поднимается — подъём перекупил бы сотни готовых вердиктов ради
     вопросов, которых им никто не задаёт."""
     import openai
-    mdl = _resolve_model(model or TERM_CONTEXT_DEFAULT_MODEL)
+    mdl = _resolve_model(model or _dm("termaudit"))
     dom = _resolve_domain(project.get("domain"))
     src_lang, tgt_lang = project.get("src", "RU"), project.get("tgt", "EN")
     system = (
@@ -13173,7 +13350,7 @@ def _repair_system(dom: dict, src_lang: str, tgt_lang: str, style: str = "") -> 
 def _openai_repair(seg: dict, project: dict, findings: list, model: Optional[str]) -> Optional[str]:
     import openai
     dom = _resolve_domain(project.get("domain"))
-    mdl = _resolve_model(model or REPAIR_DEFAULT_MODEL)
+    mdl = _resolve_model(model or _dm("repair"))
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=120, max_retries=1)
     lines = []
     for i, f in enumerate(findings, 1):
@@ -13770,7 +13947,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # Кто уже ходил на этот отпечаток. Второй заход другой моделью ДОПИСЫВАЕТ
     # её к списку, а не затирает чужую: затёртая модель снова считалась бы
     # «не пробовала», и смена моделей туда-сюда открывала бы сегмент заново.
-    mdl_planned = _resolve_model(model or REPAIR_DEFAULT_MODEL)["id"]
+    mdl_planned = _resolve_model(model or _dm("repair"))["id"]
     prev_tried = _models_tried(seg, attempt_key)
     tried_now = prev_tried if mdl_planned in prev_tried else prev_tried + [mdl_planned]
     was_confirmed = seg.get("status") == "confirmed"
@@ -14137,7 +14314,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         why.append("правка не сняла ни регистра, ни чужого письма, ни самоповтора: "
                    + str(_free(before)) + " → " + str(_free(after)))
 
-    mdl_id = _resolve_model(model or REPAIR_DEFAULT_MODEL)["id"]
+    mdl_id = _resolve_model(model or _dm("repair"))["id"]
     if not better:
         # Откат вместе с проверками: они уже пересчитаны под отвергнутый текст,
         # возвращаем те, что относились к прежнему переводу
@@ -14621,7 +14798,7 @@ def _openai_review(seg: dict, project: dict, prev_src: str, next_src: str,
                    terms: list, model: Optional[str] = None) -> Optional[dict]:
     """Один вызов на сегмент. None — вызов не удался (сегмент не трогаем)."""
     import openai
-    mdl = _resolve_model(model or REVIEW_DEFAULT_MODEL)
+    mdl = _resolve_model(model or _dm("review"))
     dom = _resolve_domain(project.get("domain"))
     src_lang, tgt_lang = project.get("src", "RU"), project.get("tgt", "EN")
     body = ("[сегмент ДО] " + (prev_src or "—") + NL +
@@ -15926,7 +16103,7 @@ def _termsheet_call(sources: list, model: Optional[str], domain_id: Optional[str
     import json as _json
     import openai
     dom = _resolve_domain(domain_id)
-    mdl = _resolve_model(model or REVIEW_DEFAULT_MODEL)
+    mdl = _resolve_model(model or _dm("review"))
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
     body = "\n\n".join(f"[{i + 1}] {t}" for i, t in enumerate(sources))
     extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
@@ -16169,7 +16346,7 @@ def _job_termsheet(job: dict) -> None:
         job["status"], job["error"] = "error", "проект не найден"
         return
     src_lang, tgt_lang = project.get("src", "RU"), project.get("tgt", "EN")
-    model = job["params"].get("model") or REVIEW_DEFAULT_MODEL
+    model = job["params"].get("model") or _dm("review")
     segs = [sg for sg in project["segments"] if (sg.get("source") or "").strip()]
     chunks = [segs[i:i + TERMSHEET_CHUNK] for i in range(0, len(segs), TERMSHEET_CHUNK)]
     job["total"], job["done"] = len(segs), 0
@@ -16187,6 +16364,13 @@ def _job_termsheet(job: dict) -> None:
         # прогресс; локальная копия `job["stop"]` там не обновляется.
         # Лимит расхода — тем же рубежом (`_job_limit_hit`): каждая пачка —
         # платный вызов, и старт «на цент ниже потолка» оплатил бы всю книгу.
+        if _SHUTDOWN.is_set():
+            # Собранное живёт в памяти и до конца не пишется (половина листа —
+            # разнобой), поэтому после рестарта лист собирается заново: цена —
+            # пачки, уже спрошенные в этом заходе. Прежние решения и вердикты
+            # по парам переживают пересбор, как и при обычном повторе.
+            _job_park(job)
+            return
         if _job_should_stop() or _job_limit_hit(job):
             job["status"] = "stopped"
             job["counters"].update({"calls": calls, "failed": failed, "stoppedAt": job["done"]})
@@ -17076,7 +17260,7 @@ def repair_batch(pid: int, req: RepairBatchRequest):
     # Разрешаем модель ТЕМ ЖЕ выражением, что _plan_step и сам заход: клеймо
     # «уже чинилось» смотрит, ходила ли на отпечаток ИМЕННО эта модель, и две
     # формулы разрешения дали бы смете один состав, а прогону другой.
-    rp_mdl = _resolve_model(req.model or REPAIR_DEFAULT_MODEL)["id"]
+    rp_mdl = _resolve_model(req.model or _dm("repair"))["id"]
     candidates = [s for s in project["segments"]
                   if (id_filter is None or s["id"] in id_filter)
                   and (req.include_confirmed or s.get("status") != "confirmed"
@@ -17132,7 +17316,7 @@ def repair_batch(pid: int, req: RepairBatchRequest):
             # Сегменты, где текст разошёлся с записью о решении. Ноль — норма,
             # не ноль — повод смотреть журнал, а не гадать по остывшим данным.
             "desync": desync,
-            "model": _resolve_model(req.model or REPAIR_DEFAULT_MODEL)["id"]}
+            "model": _resolve_model(req.model or _dm("repair"))["id"]}
 
 
 class BackcheckRequest(BaseModel):
@@ -17177,7 +17361,7 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
         raise HTTPException(503, "Back-check требует ключ OpenAI")
     project = get_project(pid)
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
-    mdl_id = _resolve_model(req.model or BACKCHECK_DEFAULT_MODEL)["id"]
+    mdl_id = _resolve_model(req.model or _dm("backcheck"))["id"]
 
     candidates = []
     skipped_cached = 0
@@ -19467,6 +19651,267 @@ def _forced_models(params: dict, tid: Optional[str] = None) -> dict:
     return out
 
 
+# ── Модели шагов на всю систему (админка → «Модели и расход») ───────────────
+# Ставит суперпользователь, лежит в `STATE["systemModels"]` ({шаг: id}).
+# Пустой шаг — умолчание из кода. Работает ПОДМЕНОЙ констант-умолчаний, а не
+# подстановкой в params: эти константы уже читают ВСЕ места выбора модели —
+# разбор состава, постановка задачи, одиночные кнопки, `/api/models` (из него
+# браузер заполняет выбор и считает смету), — и второе правило рядом с ними
+# разошлось бы с первым. Пустое значение в params при этом по-прежнему
+# значит «умолчание», поэтому семантика «явно выбранной модели» (второе мнение
+# ремонта, запасная модель back-check) не меняется.
+# Порядок силы: модель, назначенная организации (упрощённый режим) → выбор
+# в браузере (виден только системному администратору) → системная → код.
+# Второй процесс (`medcat-worker`) узнаёт о правке по эпохе `doc:systemModels`
+# в `_sync_shared`; задача при этом уже несёт то, что посчитал API.
+SYSTEM_MODEL_STEPS = ["translate", "review", "backcheck", "termcheck", "termaudit",
+                      "repair", "judge", "ocr"]
+_SYSTEM_MODEL_GLOBALS = {"translate": "DEFAULT_OPENAI_MODEL", "review": "REVIEW_DEFAULT_MODEL",
+                         "backcheck": "BACKCHECK_DEFAULT_MODEL", "termcheck": "TERMCHECK_DEFAULT_MODEL",
+                         "termaudit": "TERM_CONTEXT_DEFAULT_MODEL", "repair": "REPAIR_DEFAULT_MODEL",
+                         "judge": "JUDGE_DEFAULT_MODEL", "ocr": "IMAGE_READ_MODEL"}
+_CODE_DEFAULT_MODELS = {k: globals()[g] for k, g in _SYSTEM_MODEL_GLOBALS.items()}
+
+
+def _apply_system_models() -> None:
+    conf = STATE.get("systemModels") or {}
+    g = globals()
+    for step, name in _SYSTEM_MODEL_GLOBALS.items():
+        mid = conf.get(step)
+        # Модель, убранная из каталога, — снова умолчание кода: `_resolve_model`
+        # молча подменил бы её переводчиком по умолчанию на ЛЮБОМ шаге.
+        g[name] = mid if mid in _MODELS_BY_ID else _CODE_DEFAULT_MODELS[step]
+
+
+_apply_system_models()
+
+
+def _effective_model(step: str) -> str:
+    return globals()[_SYSTEM_MODEL_GLOBALS[step]]
+
+
+def _system_models_snapshot() -> dict:
+    """Действующие модели шагов СЕЙЧАС — снимок для новой задачи (см. `_dm`)."""
+    return {k: _effective_model(k) for k in SYSTEM_MODEL_STEPS}
+
+
+def _job_freeze_models(job: dict) -> dict:
+    """Модели прогона на (пере)запуске задачи: снимок умолчаний + проверка
+    явно выбранных моделей по НЫНЕШНЕМУ каталогу.
+
+    Задача живёт дольше кода: она переживает рестарт и выкат, а каталог моделей
+    меняется выкатом. Модель, убранная из каталога, — это `_resolve_model`,
+    молча подменяющий её ПЕРЕВОДЧИКОМ по умолчанию на любом шаге: back-check
+    пошёл бы моделью, которая переводила. Поэтому пропавшая модель заменяется
+    умолчанием СВОЕГО шага, и замена названа в задаче (`modelsReplaced`) —
+    молча сменённая модель неотличима от назначенной.
+    Задача, поставленная прежним кодом (без снимка), получает его здесь:
+    это ровно то, что она и так прочитала бы на ближайшей порции."""
+    snap = job.get("sysModels") if isinstance(job.get("sysModels"), dict) else _system_models_snapshot()
+    notes = []
+    fixed = {}
+    for k in SYSTEM_MODEL_STEPS:
+        mid = snap.get(k)
+        if mid not in _MODELS_BY_ID:
+            if mid:
+                notes.append("%s: %s → %s" % (k, mid, _CODE_DEFAULT_MODELS[k]))
+            mid = _CODE_DEFAULT_MODELS[k]
+        fixed[k] = mid
+    job["sysModels"] = fixed
+    params = job.get("params") or {}
+    for key in sorted(_MODEL_PARAM_KEYS):
+        v = params.get(key)
+        if v and v not in _MODELS_BY_ID:
+            params[key] = None
+            notes.append("%s: %s → умолчание шага" % (key, v))
+    if notes:
+        seen = job.setdefault("modelsReplaced", [])
+        seen.extend(n for n in notes if n not in seen)
+        print("[backend] job#%s: моделей больше нет в каталоге — %s"
+              % (job.get("id"), "; ".join(notes)), file=sys.stderr)
+    return fixed
+
+
+# Шаг из журнала токенов (`_note_usage`) → какая модель его делает.
+# `terms`/`edit_terms` — извлечение терминов: своей системной настройки у него
+# нет (часть мест зовёт модель судьи, часть — переводчика), выбирается только
+# в пересчёте. `embed` не пересчитывается: эмбеддинг другой моделью не делают.
+USAGE_STEP_GROUP = {"translate": "translate", "review": "review", "backcheck": "backcheck",
+                    "termcheck": "termcheck", "term_context": "termaudit", "repair": "repair",
+                    "judge": "judge", "ocr": "ocr", "terms": "terms", "edit_terms": "terms"}
+USAGE_GROUPS = SYSTEM_MODEL_STEPS + ["terms"]
+
+
+def _seed_usage_ledger() -> int:
+    """Пустой журнал наполняется из `runCosts` — один раз. Без этого пересчёт
+    за «прошлый месяц» отвечал бы нулём до тех пор, пока журнал не накопится.
+    У перенесённого нет автора (`uid ''`) и модели (`'?'`: в истории прогона
+    модели по шагам не записаны), одиночных вызовов там нет вовсе — это
+    называет ответ пересчёта (`historyRows`). Пишет только API."""
+    if IS_WORKER:
+        return 0
+    hist = STATE.get("runCosts") or []
+    if not hist:
+        return 0
+    try:
+        if _ledger_min_day():
+            return 0
+        n = 0
+        for r in hist:
+            day = str(r.get("finished") or "")[:10]
+            if not re.match(r"^\d{4}-\d{2}-\d{2}$", day):
+                continue
+            for step, v in (r.get("steps") or {}).items():
+                _ledger_write(day, r.get("tenant") or DEFAULT_TENANT, "", step or "?", "?",
+                              int(v.get("calls") or 0), int(v.get("in") or 0), 0,
+                              int(v.get("out") or 0), int(v.get("reasoning") or 0),
+                              float(v.get("cost") or 0), 0)
+                n += 1
+        if n:
+            print("[backend] журнал токенов наполнен из истории прогонов: %d строк" % n, file=sys.stderr)
+        return n
+    except Exception as e:
+        print("[backend] журнал токенов из истории не наполнен: %s" % e, file=sys.stderr)
+        return 0
+
+
+_seed_usage_ledger()
+
+
+def _super_or_403(request: Request) -> dict:
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Только суперпользователю")
+    return me
+
+
+def _catalog_brief() -> list:
+    return [{"id": m["id"], "label": m["label"], "in": m["in"], "out": m["out"],
+             "note": m.get("note") or ""} for m in OPENAI_MODELS]
+
+
+def _check_model_map(models: dict, keys: list) -> dict:
+    known = {m["id"] for m in OPENAI_MODELS}
+    wrong = [k for k in models if k not in keys]
+    if wrong:
+        raise HTTPException(400, "Неизвестный шаг: " + ", ".join(sorted(wrong)))
+    bad = [v for v in models.values() if v and v not in known]
+    if bad:
+        raise HTTPException(400, "Неизвестная модель: " + ", ".join(sorted(set(map(str, bad)))))
+    return {k: v for k, v in models.items() if v}
+
+
+class SystemModelsBody(BaseModel):
+    models: dict = {}
+
+
+@app.get("/api/admin/system-models")
+def admin_system_models(request: Request):
+    _super_or_403(request)
+    conf = STATE.get("systemModels") or {}
+    return {"ok": True, "models": _catalog_brief(), "groups": USAGE_GROUPS,
+            "steps": [{"key": k, "value": conf.get(k) or None,
+                       "codeDefault": _CODE_DEFAULT_MODELS[k], "effective": _effective_model(k)}
+                      for k in SYSTEM_MODEL_STEPS]}
+
+
+@app.post("/api/admin/system-models")
+def admin_system_models_save(req: SystemModelsBody, request: Request):
+    _super_or_403(request)
+    # Проверка ДО записи: неизвестное имя, молча положенное в настройку,
+    # обернулось бы прогоном по умолчанию при уверенности, что назначено другое.
+    clean = _check_model_map(req.models or {}, SYSTEM_MODEL_STEPS)
+    before = dict(STATE.get("systemModels") or {})
+    STATE["systemModels"] = clean
+    _apply_system_models()
+    _audit("system.models", before=before, after=clean)
+    save_state(STATE)
+    if STORE.kind == "pg":
+        try:
+            STORE.bump_epoch("doc:systemModels")
+        except Exception as e:
+            print(f"[backend] системные модели: эпоха не поднята: {e}", file=sys.stderr)
+    return admin_system_models(request)
+
+
+class UsageSimBody(BaseModel):
+    dateFrom: str
+    dateTo: str
+    tenant: Optional[str] = None
+    user: Optional[str] = None
+    models: dict = {}
+
+
+def _usage_simulate(rows: list, models: dict) -> dict:
+    """Факт и пересчёт по одним и тем же токенам. Пересчёт — те же вход и выход
+    по ценам выбранной модели, формула `_usage_cost`: без скидки на кэш и при
+    ТОМ ЖЕ числе токенов рассуждения (сколько «подумала» бы другая модель,
+    не знает никто). Группа без выбранной модели остаётся фактом."""
+    def zero():
+        return {"calls": 0, "in": 0, "cached_in": 0, "out": 0, "reasoning": 0,
+                "actual": 0.0, "sim": 0.0, "unpriced": 0}
+
+    def add(d, r, sim):
+        for k in ("calls", "in", "cached_in", "out", "reasoning", "unpriced"):
+            d[k] += int(r.get(k) or 0)
+        d["actual"] += float(r.get("cost") or 0)
+        d["sim"] += sim
+
+    groups, users, tenants, total = {}, {}, {}, zero()
+    history = 0
+    for r in rows:
+        grp = USAGE_STEP_GROUP.get(r["step"]) or r["step"]
+        mid = models.get(grp)
+        p = _model_price(mid) if mid else None
+        sim = (r["in"] / 1e6 * p["in"] + r["out"] / 1e6 * p["out"]) if p else float(r.get("cost") or 0)
+        if r.get("model") == "?":
+            history += 1
+        g = groups.setdefault(grp, dict(zero(), group=grp, model=mid if p else None,
+                                        steps=set(), actualModels={}))
+        g["steps"].add(r["step"])
+        if r.get("model") and r["model"] != "?":
+            g["actualModels"][r["model"]] = g["actualModels"].get(r["model"], 0) + int(r.get("calls") or 0)
+        add(g, r, sim)
+        add(users.setdefault(r.get("user") or "", dict(zero(), user=r.get("user") or None)), r, sim)
+        add(tenants.setdefault(r["tenant"], dict(zero(), tenant=r["tenant"])), r, sim)
+        add(total, r, sim)
+
+    def money(d):
+        d["actual"], d["sim"] = round(d["actual"], 4), round(d["sim"], 4)
+        return d
+
+    by_id = {u["id"]: u for u in _users()}
+    for u in users.values():
+        rec = by_id.get(u["user"]) or {}
+        u["login"], u["name"], u["home"] = rec.get("login"), rec.get("name"), rec.get("tenant")
+    order = {k: i for i, k in enumerate(USAGE_GROUPS)}
+    out_groups = []
+    for g in sorted(groups.values(), key=lambda g: (order.get(g["group"], 99), g["group"])):
+        g["steps"] = sorted(g["steps"])
+        g["simulable"] = g["group"] in order
+        out_groups.append(money(g))
+    return {"total": money(total), "groups": out_groups, "historyRows": history,
+            "byUser": sorted((money(u) for u in users.values()), key=lambda u: -u["actual"]),
+            "byTenant": sorted((money(t) for t in tenants.values()), key=lambda t: -t["actual"])}
+
+
+@app.post("/api/admin/usage/simulate")
+def admin_usage_simulate(req: UsageSimBody, request: Request):
+    """Виртуальный пересчёт: сколько стоил бы расход периода выбранными моделями.
+    Ни одного вызова модели — только журнал токенов и цены каталога."""
+    _super_or_403(request)
+    day = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+    if not (day.match(req.dateFrom or "") and day.match(req.dateTo or "")) or req.dateFrom > req.dateTo:
+        raise HTTPException(400, "Период задаётся датами ГГГГ-ММ-ДД, начало не позже конца")
+    models = _check_model_map(req.models or {}, USAGE_GROUPS)
+    rows = [r for r in _ledger_rows(req.dateFrom, req.dateTo)
+            if (not req.tenant or r["tenant"] == req.tenant)
+            and (not req.user or r.get("user") == req.user)]
+    return {"ok": True, "dateFrom": req.dateFrom, "dateTo": req.dateTo,
+            "tenant": req.tenant or None, "user": req.user or None,
+            "ledgerSince": _ledger_min_day(), "models": models, **_usage_simulate(rows, models)}
+
+
 # ── Разбор прогона: что он сделает и чего делать не станет ───────────────────
 # Состав и смету раньше считал браузер своими предикатами, а работу отбирал
 # сервер своими — и разойтись они были обязаны. Список сегментов у составного
@@ -19514,23 +19959,23 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
 
     mdl_id = None
     if step == "backcheck":
-        mdl_id = _resolve_model(params.get("bc_model") or BACKCHECK_DEFAULT_MODEL)["id"]
+        mdl_id = _resolve_model(params.get("bc_model") or _dm("backcheck"))["id"]
     elif step == "termcheck":
-        mdl_id = _resolve_model(params.get("tc_model") or TERMCHECK_DEFAULT_MODEL)["id"]
+        mdl_id = _resolve_model(params.get("tc_model") or _dm("termcheck"))["id"]
     elif step == "repair":
-        mdl_id = _resolve_model(params.get("rp_model") or REPAIR_DEFAULT_MODEL)["id"]
+        mdl_id = _resolve_model(params.get("rp_model") or _dm("repair"))["id"]
     elif step == "translate":
         mdl_id = _resolve_model(params.get("model"))["id"]
     elif step == "termaudit":
-        mdl_id = _resolve_model(params.get("tcx_model") or TERM_CONTEXT_DEFAULT_MODEL)["id"]
+        mdl_id = _resolve_model(params.get("tcx_model") or _dm("termaudit"))["id"]
     elif step == "review":
-        mdl_id = _resolve_model(params.get("rv_model") or REVIEW_DEFAULT_MODEL)["id"]
+        mdl_id = _resolve_model(params.get("rv_model") or _dm("review"))["id"]
     elif step == "medical_qa":
         # Своей модели у неё нет: правила детерминированные. Но обратный
         # перевод, если готового не осталось, она закажет — моделью back-check.
         # Показываем именно её: «без вызова модели» было полуправдой, из-за
         # которой шаг молча платил моделью перевода по умолчанию.
-        mdl_id = _resolve_model(params.get("bc_model") or BACKCHECK_DEFAULT_MODEL)["id"]
+        mdl_id = _resolve_model(params.get("bc_model") or _dm("backcheck"))["id"]
 
     # Забракованные слова — тем же расчётом, что шаг сверки и /analysis:
     # один раз на разбор, а не на сегмент (это проход по очереди кандидатов).
@@ -20055,6 +20500,26 @@ def _job_should_yield(job: dict) -> bool:
     return any(q["tenant"] != mine and q["id"] != job["id"] for q in _queued_jobs())
 
 
+# Сервис останавливается (выкат, рестарт): идущая задача доделывает ТЕКУЩУЮ
+# порцию, сохраняется и возвращается в очередь — а не обрывается на середине.
+# Отдельно от стоп-флага намеренно: тот ставит `stopped` и гасит сегменты
+# внутри порции, а здесь работа не отменяется, её только откладывают.
+_SHUTDOWN = threading.Event()
+JOB_SHUTDOWN_WAIT = float(os.environ.get("JOB_SHUTDOWN_WAIT", "840"))
+
+
+def _job_park(job: dict) -> None:
+    """Отложить задачу до следующего старта: статус `queued`, остаток, курсор
+    и БИЛЕТ прежние — после рестарта она продолжит первой, а не встанет
+    в хвост за теми, кого обгоняла. Расход не закрывается (`_job_execute`
+    у `queued` его не пишет): продолжение досчитает тот же `job["usage"]`."""
+    job["status"] = "queued"
+    job["parked"] = int(job.get("parked") or 0) + 1
+    print("[backend] job#%s отложен до рестарта: сделано %s из %s"
+          % (job.get("id"), job.get("done"), job.get("total")), file=sys.stderr)
+    _job_persist(job)
+
+
 def _job_yield(job: dict, remaining: list) -> None:
     """Вернуть задачу в очередь с остатком и новым билетом.
 
@@ -20063,6 +20528,7 @@ def _job_yield(job: dict, remaining: list) -> None:
     раньше встал» он снова первый. Именно смена билета и делает очередь
     круговой."""
     job["ids"] = list(remaining)
+    job["cursor"] = 0
     job["status"] = "queued"
     job["qseq"] = _next_qseq()
     job["yields"] = int(job.get("yields") or 0) + 1
@@ -20100,6 +20566,8 @@ def _job_public(job: dict) -> dict:
     out = {k: v for k, v in job.items() if k not in ("ids", "stop")}
     out.update(_queue_place(job))
     if _hide_cost():
+        out.pop("sysModels", None)
+        out.pop("modelsReplaced", None)
         if out.get("usage"):
             out["usage"] = {k: v for k, v in out["usage"].items()
                             if k not in ("cost", "models", "steps", "unpriced")}
@@ -20354,6 +20822,7 @@ def _job_run(job: dict):
     # а get_project и области считаются по ней.
     _JOB_TENANT.id = job.get("tenant") or DEFAULT_TENANT
     _JOB_LANG.code = job.get("lang") or DEFAULT_UI_LANG
+    _JOB_USER.id = job.get("user")
     chunk_size = JOB_CHUNKS[kind]
     if kind == "images":
         # Разбор картинок не идёт по сегментам: их ещё нет — они из него
@@ -20367,6 +20836,8 @@ def _job_run(job: dict):
         return
     if kind == "termsheet":
         _job_termsheet(job)
+        if job["status"] == "queued":
+            return                     # отложена остановкой сервиса
         if job["status"] == "running":
             job["status"] = "done"
         job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -20424,6 +20895,7 @@ def _job_run(job: dict):
         job["ids"] = [i for i in want if i not in set(futile)]
         job["counters"]["futile"] = len(futile)
         job["total"] = len(job["ids"])
+        job["cursor"] = 0
         job["params"]["termsApplied"] = True
         _job_persist(job)          # флаг обязан пережить уступку и рестарт
         save_state(STATE)
@@ -20440,10 +20912,19 @@ def _job_run(job: dict):
             # метки, она заведёт вторую, а первая копия останется сиротой —
             # её имени не будет ни в счётчиках, ни в отчёте.
             _job_persist(job)
-    for i in range(0, len(ids), chunk_size):
+    # Курсор — начало следующей НЕсделанной порции. Без него задача, поднятая
+    # после рестарта или выката, шла с первой порции: `done` уезжал за 100%,
+    # проверки перебирали кэш заново, а отдельный перевод (`force` у него
+    # по умолчанию) переводил готовое ЕЩЁ РАЗ — за деньги и поверх текста.
+    start = min(int(job.get("cursor") or 0), len(ids))
+    for i in range(start, len(ids), chunk_size):
         if job["stop"]:
             job["status"] = "stopped"
             break
+        # Сервис останавливается — отложить, а не оборвать (см. `_SHUTDOWN`).
+        if _SHUTDOWN.is_set():
+            _job_park(job)
+            return
         # Лимит расхода — МЕЖДУ порциями, а не только на старте: прогон книги,
         # запущенный при остатке в цент, доработал бы до конца за наш счёт.
         if _job_limit_hit(job):
@@ -20451,9 +20932,9 @@ def _job_run(job: dict):
         # Уступить исполнителя, если ждёт ЧУЖОЙ прогон. Проверка стоит перед
         # порцией, а не после: остаток считается по ещё не тронутым `ids`,
         # и уступив после — пришлось бы помнить, какая порция уже прошла.
-        # Не на первой порции: задача, уступившая до единой порции, ходила бы
-        # по кругу, не делая ничего.
-        if i and _job_should_yield(job):
+        # Не на первой порции захода: задача, уступившая до единой порции,
+        # ходила бы по кругу, не делая ничего.
+        if i > start and _job_should_yield(job):
             _job_yield(job, ids[i:])
             return
         chunk = ids[i:i + chunk_size]
@@ -20485,6 +20966,11 @@ def _job_run(job: dict):
                             job["counters"][k] = v
                     else:
                         job["counters"][k] = job["counters"].get(k, 0) + v
+                # Порция сохранена пакетным эндпоинтом (его save_state) —
+                # только ПОСЛЕ этого курсор уходит вперёд. Наоборот нельзя:
+                # рестарт между ними пропустил бы несохранённую порцию.
+                job["cursor"] = i + chunk_size
+                _job_persist(job)
                 last_err = None
                 break
             except HTTPException as e:
@@ -20534,6 +21020,8 @@ def _job_loop():
     вставала бы в хвост FIFO, а не в хвост по билету, и порядок расходился
     бы с тем, что делает база."""
     while True:
+        if _SHUTDOWN.is_set():
+            return                     # сервис останавливается: новых задач не берём
         job = _pick_queued_local()
         if job is None:
             try:
@@ -20586,6 +21074,9 @@ def _job_execute(job: dict):
             # возобновлении значит терять его длительность.
             if not job.get("started"):
                 job["started"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Модели прогона — снимок с постановки, проверенный по нынешнему
+            # каталогу (см. `_dm`, `_job_freeze_models`).
+            _JOB_MODELS.m = _job_freeze_models(job)
             _job_persist(job)
             _ACTIVE_JOB["job"] = job
             _usage_begin(job)
@@ -20606,6 +21097,7 @@ def _job_execute(job: dict):
                        job.get("done"), job.get("total"), str(e)[:300]))
         finally:
             _ACTIVE_JOB.pop("job", None)
+            _JOB_MODELS.m = None
             # Сколько находок сбор терминологии потерял на потолке очереди.
             # Ноль — норма; не ноль означает, что часть платной работы прогона
             # ушла в никуда, и человек об этом узнает из отчёта, а не из
@@ -20749,6 +21241,9 @@ def create_job(pid: int, req: JobRequest):
             # в хвост — так очередь и становится круговой.
             "qseq": qseq,
             "ids": ids, "stop": False, "recent": [],
+            # Модели шагов по умолчанию — НА МОМЕНТ ПОСТАНОВКИ: под них посчитана
+            # смета, и правка системной настройки идущий прогон не меняет (`_dm`).
+            "sysModels": _system_models_snapshot(),
         }
         _JOBS[job["id"]] = job
         _trim_jobs()
@@ -21322,3 +21817,23 @@ def _restore_jobs() -> None:
 
 
 _restore_jobs()
+
+
+@app.on_event("shutdown")
+def _finish_run_on_shutdown():
+    """Остановка сервиса (выкат, рестарт) при исполнителе В ЭТОМ процессе:
+    идущая задача доделывает текущую порцию, сохраняется и откладывается
+    (`_job_park`), новых задач поток не берёт. Ждём до `JOB_SHUTDOWN_WAIT`
+    секунд — дольше держит systemd (`TimeoutStopSec`), после чего убьёт, и
+    тогда потеряется только текущая порция: курсор задачи стоит на ней.
+    При внешнем воркере потока здесь нет — ждать нечего, его останавливает
+    свой юнит тем же порядком."""
+    _SHUTDOWN.set()
+    w = _JOB_WORKER
+    if w is None or not w.is_alive():
+        return
+    _JOB_QUEUE.put(1)
+    if _ACTIVE_JOB.get("job"):
+        print("[backend] остановка: жду конца порции прогона №%s"
+              % _ACTIVE_JOB["job"].get("id"), file=sys.stderr)
+    w.join(timeout=JOB_SHUTDOWN_WAIT)

@@ -170,6 +170,10 @@
     promotions:    ()                       => call("GET",    "/glossary/promotions"),
     logins:        (limit)                  => call("GET",    "/admin/logins?all=1&limit=" + (limit || 200)),
     runsHistory:   (limit)                  => call("GET",    "/admin/runs?all=1&limit=" + (limit || 100)),
+    // Модели шагов на всю систему и виртуальный пересчёт расхода по журналу токенов.
+    systemModels:  ()                       => call("GET",    "/admin/system-models"),
+    systemModelsSave: (models)              => call("POST",   "/admin/system-models", { models }),
+    usageSimulate: (body)                   => call("POST",   "/admin/usage/simulate", body),
     // Тест-группа: наборы с числом мест, заведённые тестировщики, анкеты.
     testing:       ()                       => call("GET",    "/admin/testing"),
     batchCreate:   (body)                   => call("POST",   "/admin/testing/batches", body),

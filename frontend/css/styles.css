@@ -852,6 +852,82 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .kb-cands { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 10px; align-items: start; }
 @media (max-width: 640px) { .kb-cands { grid-template-columns: minmax(0, 1fr); } }
 
+/* ── «Словари» и «Проверка» налегке ──────────────────────────────────
+   Человек видит вопросы, эксперт (store.can.super) — прежний экран.
+   Вертикальный ритм задаёт gap колонки .page-stack (22px), а не маргины
+   блоков: у маргинов нет соседа, и они схлопываются или удваиваются. */
+.page-stack { display: flex; flex-direction: column; gap: 22px; }
+.page-stack > .page-head { margin-bottom: 0; }
+.page-stack > .section { margin-bottom: 0; }
+
+/* полоса готовности: процент | полоса и легенда | одна кнопка */
+.ready-strip { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 26px; align-items: center;
+  padding: 18px 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); }
+.ready-pct { font-size: 44px; font-weight: 500; letter-spacing: -.04em; line-height: 1; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ready-pct small { font-size: 14px; color: var(--text-3); letter-spacing: 0; font-weight: 450; margin-left: 6px; }
+.ready-meter { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: var(--bg-sunken); }
+.ready-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--text-3); margin-top: 8px; }
+.ready-legend span { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.ready-legend i { width: 7px; height: 7px; border-radius: 2px; }
+.ready-cta { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+@media (max-width: 900px) {
+  .ready-strip { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .ready-cta { align-items: flex-start; }
+}
+
+/* список вопросов: полоса тяжести, текст, команды справа */
+.ask-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ask-head h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+.ask-head .ask-n { font-size: 13px; color: var(--c-warning); font-weight: 500; font-variant-numeric: tabular-nums; }
+.ask-head .ask-hint { margin-left: auto; font-size: 12px; color: var(--text-4); }
+.ask-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--card); }
+.ask { display: grid; grid-template-columns: 4px minmax(0, 1fr) auto; gap: 0 16px; align-items: center;
+  padding: 13px 16px 13px 0; border-bottom: 1px solid var(--border); }
+.ask:last-child { border-bottom: 0; }
+.ask-sev { align-self: stretch; border-radius: 0 3px 3px 0; background: var(--border-strong); }
+.ask-sev.warn { background: var(--c-warning); }
+.ask-sev.bad { background: var(--c-error); }
+.ask-t { font-size: 14px; color: var(--text); }
+.ask-t b { font-weight: 500; }
+.ask-m { font-size: 12.5px; color: var(--text-3); margin-top: 2px; }
+.ask-acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.ask-empty { padding: 14px 16px; font-size: 13px; color: var(--text-3); }
+@media (max-width: 900px) {
+  .ask { grid-template-columns: 4px minmax(0, 1fr); row-gap: 10px; }
+  .ask-acts { grid-column: 2; justify-content: flex-start; }
+}
+
+/* подвал экрана: что машина сделала сама и дверь к подробностям */
+.page-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; font-size: 12.5px;
+  color: var(--text-4); border-top: 1px dashed var(--border-strong); padding-top: 14px; }
+.page-foot b { color: var(--text-3); font-weight: 500; }
+.page-foot .spacer { flex: 1 1 auto; }
+
+/* «Словари»: инструменты, строка автоматики, чипы-фильтры, статус записи */
+.kb-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.kb-tools > :first-child { flex: 1 1 300px; }
+.kb-auto { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; color: var(--text-2);
+  background: var(--st-conf-bg); border-radius: 9px; padding: 9px 13px; }
+.kb-auto b { color: var(--st-conf-fg); font-weight: 600; }
+.kb-auto .btn { margin-left: auto; }
+.kb-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.kb-chip { font: inherit; font-size: 12.5px; padding: 4px 10px; border-radius: 14px; border: 1px solid var(--border);
+  color: var(--text-3); background: var(--card); cursor: pointer; font-variant-numeric: tabular-nums; }
+.kb-chip:hover { border-color: var(--border-strong); color: var(--text); }
+.kb-chip[aria-pressed="true"] { background: var(--btn); color: var(--btn-ink); border-color: var(--btn); }
+.kb-chip:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.kb-st { display: inline-block; font-size: 11.5px; border-radius: 9px; padding: 1px 8px; white-space: nowrap; }
+.kb-st.ord { background: var(--st-conf-bg); color: var(--st-conf-fg); }
+.kb-st.hint { background: var(--bg-sunken); color: var(--text-3); }
+.kb-st.proj { background: var(--c-primary-soft); color: var(--c-primary); margin-left: 6px; }
+.kb-card { border: 1px solid var(--border); border-radius: 11px; padding: 13px 14px; background: var(--bg-hover);
+  display: flex; flex-direction: column; gap: 9px; }
+.kb-card .kb-pair { font-size: 15px; line-height: 1.35; }
+.kb-card .kb-pair b { font-weight: 600; }
+.kb-card .kb-pair .kb-tgt { color: var(--c-primary); font-weight: 500; }
+.kb-card .kb-ctx { font-size: 12px; color: var(--text-3); line-height: 1.5; }
+.kb-card .kb-reach { margin-left: auto; font-size: 11.5px; color: var(--text-4); font-variant-numeric: tabular-nums; }
+
 /* «Профиль»: слева «про меня», справа команды с таблицами. Сетки полей
    внутри узкой колонки (.grid-2 имени, .grid-3 пароля) складываются
    в одну: их медиазапросы смотрят на окно, а не на колонку в 380px. */

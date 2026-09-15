@@ -6603,9 +6603,11 @@ def project_analysis(pid: int, refresh: bool = False):
             # /term-case, кнопка предлагает её отдельной галочкой.
             "case": [i for i in (impact.get("caseSegments") or ())
                      if i not in human_set],
+            # auto_terms — в конце прогона разложить однозначных кандидатов
+            # ПОДСКАЗКОЙ (`_job_auto_terms`): человеку остаются только вопросы.
             "params": {"steps": list(FULL_RUN_STEPS), "use_judge": True,
                        "judge_all": True, "retry": False,
-                       "include_confirmed": False},
+                       "include_confirmed": False, "auto_terms": True},
         },
         "clean": clean,
         "repaired": repaired,
@@ -10218,14 +10220,21 @@ def _cand_impacts(project: dict, cands: list) -> dict:
 
 @app.get("/api/term-queue")
 def list_term_queue(status: str = "pending", limit: int = 200, offset: int = 0,
-                    project: Optional[int] = None):
+                    project: Optional[int] = None, actionable: bool = False):
     """Кандидаты, отсортированные по ОХВАТУ (`_cand_impacts`), затем по частоте:
     сверху то, чей ответ приведёт в порядок больше строк. Без проекта охват
     не считается — порядок по частоте.
 
     Вместе с карточками отдаём РАЗБОР: почему автоматика не берёт каждую и
     сколько таких же. Без него очередь на четыреста штук — стена одинаковых
-    карточек, и человек не видит, что треть из них вообще не термины."""
+    карточек, и человек не видит, что треть из них вообще не термины.
+
+    `actionable` — очередь для человека, а не для эксперта: карточки, которые
+    ждут ДАННЫХ (вердикт `wait` — доноров приносят следующие прогоны) или уже
+    закрыты глоссарием (`close`), из ответа уходят, а их число называется
+    полем `waiting`. Фильтр стоит ДО среза страницы, иначе первая страница
+    из одних ждущих показывала бы пустоту при непустой очереди. Работает
+    только с проектом: без него вердиктов нет, и отсеивать нечем."""
     t = _current_tenant()
     items = [c for c in _term_queue() if _tenant_of(c) == t]
     counts = {}
@@ -10235,7 +10244,7 @@ def list_term_queue(status: str = "pending", limit: int = 200, offset: int = 0,
     if status and status != "all":
         items = [c for c in items if c.get("status", "pending") == status]
 
-    groups, reason_of, impacts = [], {}, {}
+    groups, reason_of, impacts, action_of = [], {}, {}, {}
     project_obj = get_project(project) if project else None
     if project_obj:
         # Область применяем ко ВСЕМУ ответу, а не только к разбору: иначе
@@ -10261,6 +10270,7 @@ def list_term_queue(status: str = "pending", limit: int = 200, offset: int = 0,
             else:
                 key = why or "—"
             reason_of[c["id"]] = key
+            action_of[c["id"]] = action
             b = buckets.setdefault(key, {"reason": key, "count": 0, "ids": [],
                                          # Отклонять пачкой можно не всё: см. bulk
                                          "bulk": key not in ("ready", "closed")})
@@ -10273,8 +10283,13 @@ def list_term_queue(status: str = "pending", limit: int = 200, offset: int = 0,
                                  for c in items if c["id"] in set(b["ids"])):
                 b["bulk"] = False
         groups = sorted(buckets.values(), key=lambda x: -x["count"])
+    waiting = 0
+    if actionable and action_of:
+        kept = [c for c in items if action_of.get(c["id"]) not in ("wait", "close")]
+        waiting = len(items) - len(kept)
+        items = kept
     out = items[offset:offset + limit]
-    return {"total": len(items), "counts": counts,
+    return {"total": len(items), "counts": counts, "waiting": waiting,
             "groups": groups,
             "items": [{**c, "why": reason_of.get(c["id"]),
                        "impact": impacts.get(c.get("id"))} for c in out]}
@@ -10697,6 +10712,37 @@ def reject_term_candidate(cid: int):
 # фарме и юриспруденции — только от человека: там цена приказа выше.
 AUTO_POLICY_VERSION = "v2"          # v2: внешние справочники и корпус
 AUTO_BATCH_HISTORY = 20
+
+
+def _push_auto_batch(rec: dict) -> None:
+    """Записать пачку в историю и обрезать историю ПО ОРГАНИЗАЦИИ.
+
+    Прежде запись шла без поля `tenant` (читалась как организация по
+    умолчанию — инвариант 11), а потолок был общим на сервис: пачка одного
+    клиента выталкивала из истории чужие, а вместе с историей уходил и откат
+    (`_forget_auto_batch`). С шагом автоодобрения в каждом составном прогоне
+    это означало бы потерю откатов у всех за день. Прежние записи без поля
+    читаются как `default` — закон миграции, боевые данные не переписываются."""
+    rec.setdefault("tenant", _current_tenant())
+    batches = STATE.setdefault("autoBatches", [])
+    batches.insert(0, rec)
+    seen: dict = {}
+    keep = []
+    for b in batches:
+        # Пачка прежнего кода без поля: чья она — неизвестно, а её откат
+        # живёт, пока она в истории. Считать её «организацией по умолчанию»
+        # и выталкивать значило бы молча отнять откат у чужого клиента.
+        # Таких записей конечное число (новые поле несут всегда).
+        if "tenant" not in b:
+            keep.append(b)
+            continue
+        t = _tenant_of(b)
+        seen[t] = seen.get(t, 0) + 1
+        if seen[t] > AUTO_BATCH_HISTORY:
+            _forget_auto_batch(b["id"])
+        else:
+            keep.append(b)
+    batches[:] = keep
 # Потолок корпусных запросов на один разбор очереди. Каждый — внешний HTTP;
 # 200 штук по шесть секунд таймаута в шесть потоков — это минуты, а не часы.
 AUTO_CORPUS_MAX = int(os.environ.get("AUTO_CORPUS_MAX", "200"))
@@ -11345,6 +11391,9 @@ class AutoApproveRequest(BaseModel):
     # корпус: по умолчанию только при ПРИМЕНЕНИИ. None = решить по dry_run.
     meaning: Optional[bool] = None
     limit: int = 2000
+    # Кто раскладывает: None — кнопка панели, "run" — шаг в конце составного
+    # прогона (`_job_auto_terms`). Пишется в запись пачки.
+    origin: Optional[str] = None
 
 
 @app.post("/api/term-queue/auto-approve")
@@ -11525,16 +11574,16 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
         # в очередь — автоматика без отката недопустима.
         cand.update({"status": "rejected", "autoBatch": batch, "autoWrote": False,
                      "autoNote": row["reason"], "decidedAt": today})
-    batches = STATE.setdefault("autoBatches", [])
-    batches.insert(0, {"id": batch, "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                       "counts": counts, "scope": list(scope) if scope else None,
-                       # Разрешение человека видно в истории пачек: через месяц
-                       # «откуда в медицине приказы от машины» отвечается здесь,
-                       # а не раскопками по записям глоссария.
-                       "override": bool(pol.get("humanOverride"))})
-    for gone in batches[AUTO_BATCH_HISTORY:]:
-        _forget_auto_batch(gone["id"])
-    del batches[AUTO_BATCH_HISTORY:]
+    _push_auto_batch({"id": batch, "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                      "counts": counts, "scope": list(scope) if scope else None,
+                      # Разрешение человека видно в истории пачек: через месяц
+                      # «откуда в медицине приказы от машины» отвечается здесь,
+                      # а не раскопками по записям глоссария.
+                      "override": bool(pol.get("humanOverride")),
+                      # Кто разложил: кнопка панели или шаг в конце прогона.
+                      # По этому признаку «Словари» показывают человеку ровно
+                      # пачку прогона, а не ручную пачку эксперта.
+                      **({"origin": req.origin} if req.origin else {})})
     _invalidate_gloss_index()
     save_state(STATE)
     result["batch"] = batch
@@ -11551,6 +11600,14 @@ def undo_auto_approve(batch: int):
     # понятие» и предложил бы понизить её снова, по кругу.
     # Номер пачки — общий счётчик на все организации, а откат переписывает
     # глоссарий: чужой номер → 404 (не 403: не подтверждаем, что пачка есть).
+    # Пачку мог записать ВНЕШНИЙ воркер (`_job_auto_terms` в конце прогона),
+    # а API видит её лишь после очередной сверки общих коллекций: без
+    # принудительной сверки «Откатить» сразу после прогона не нашло бы
+    # записей глоссария и молча вернуло бы «удалено 0».
+    try:
+        _sync_shared(force=True)
+    except Exception as e:
+        print(f"[backend] откат пачки #{batch}: сверка общих коллекций: {e}", file=sys.stderr)
     rec = next((b for b in STATE.get("autoBatches", []) if b.get("id") == batch), None)
     if rec is not None and _tenant_of(rec) != _current_tenant():
         raise HTTPException(404, "Пачка не найдена")
@@ -11974,13 +12031,10 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
         _IMPACT_CACHE.clear()
         _ANALYSIS_CACHE.clear()
     result["reverted"] = back
-    batches.insert(0, {"id": batch, "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-                       "kind": "audit", "scope": list(scope) if scope else None,
-                       "counts": {"verified": 0, "auto": 0, "closed": 0,
-                                  "downgraded": done, "skipped": 0}})
-    for gone in batches[AUTO_BATCH_HISTORY:]:
-        _forget_auto_batch(gone["id"])
-    del batches[AUTO_BATCH_HISTORY:]
+    _push_auto_batch({"id": batch, "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                      "kind": "audit", "scope": list(scope) if scope else None,
+                      "counts": {"verified": 0, "auto": 0, "closed": 0,
+                                 "downgraded": done, "skipped": 0}})
     _invalidate_gloss_index()
     save_state(STATE)
     result["batch"] = batch
@@ -22206,11 +22260,68 @@ def _job_run(job: dict):
             job["error"] = last_err
             break
     if job["status"] == "running":
+        _job_auto_terms(job)
         job["status"] = "done"
     # Метка резервируется файлом ДО первой правки — если правок так и не
     # случилось, убираем пустышку, чтобы каталог копий не зарастал.
     _backup_drop_empty("review", job["params"].get("review_stamp"))
     job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _job_auto_terms(job: dict) -> None:
+    """Автоодобрение однозначных кандидатов в конце СОСТАВНОГО прогона.
+
+    Зачем: на экране «Словари» человек видит только вопросы, а пачку, за
+    которую система может поручиться, раскладывает сама — тем же движком,
+    что и кнопка панели (`auto_approve_terms`), со смысловой сверкой судьёй
+    и откатом пачки. Уровень — ТОЛЬКО подсказка (`max_tier="auto"`,
+    инвариант 8): приказ по-прежнему даёт человек, и разрешение области
+    (`allow_verified`) здесь не снимается никогда.
+
+    Когда: только после того, как ВСЕ порции прошли (`status == "running"`
+    после цикла) — у остановленного, упавшего и уступившего прогона шага нет:
+    его доноры ещё не собраны. Флаг `termsAutoDone` ставится ДО вызова
+    и сохраняется в задаче: рестарт посреди записи не должен дать вторую
+    пачку. Лимит расхода проверяется своим чтением, а не `_job_limit_hit`:
+    тот объявил бы весь сделанный прогон «остановленным» из-за шага на центы.
+    Сбой шага прогон не роняет — работа над текстом уже сделана и сохранена."""
+    params = job.get("params") or {}
+    if job.get("kind") != "full" or not params.get("auto_terms") or params.get("termsAutoDone"):
+        return
+    try:
+        # Потолок владелец мог поднять посреди прогона, а внешний воркер читает
+        # его из общих коллекций — та же сверка, что в `_job_limit_hit`.
+        _sync_shared()
+        if _spend_status(job.get("tenant") or DEFAULT_TENANT).get("over"):
+            job["termsAutoSkipped"] = "limit"
+            return
+    except Exception as e:
+        print(f"[backend] job#{job.get('id')}: лимит перед автоодобрением: {e}", file=sys.stderr)
+    params["termsAutoDone"] = True
+    _job_persist(job)
+    try:
+        res = auto_approve_terms(AutoApproveRequest(
+            dry_run=False, project=job["project"], max_tier=GLOSSARY_TIER_SOFT,
+            # Корпус не спрашиваем: это до двухсот внешних запросов под
+            # троттлингом источника, то есть минуты, в которые исполнитель
+            # не уступает чужому прогону (инвариант 21). Подсказку корпус
+            # мог бы только отвести, а его вето сработает, когда запись
+            # будут поднимать до приказа (панель спрашивает его при
+            # применении). Смысловая сверка судьёй остаётся — она ограничена
+            # AUTO_MEANING_MAX и отводит ложного друга.
+            corpus=False, origin="run"))
+    except Exception as e:
+        job["termsAutoError"] = str(getattr(e, "detail", e))[:300]
+        print(f"[backend] job#{job.get('id')}: автоодобрение после прогона: {e}", file=sys.stderr)
+        return
+    c = res.get("counts") or {}
+    job["counters"]["termsAuto"] = (c.get("auto") or 0) + (c.get("verified") or 0)
+    if c.get("closed"):
+        job["counters"]["termsAutoClosed"] = c["closed"]
+    if c.get("rejectedMeaning"):
+        job["counters"]["termsAutoRejected"] = c["rejectedMeaning"]
+    if res.get("batch"):
+        job["termsAutoBatch"] = res["batch"]
 
 
 def _pick_queued_local() -> Optional[dict]:

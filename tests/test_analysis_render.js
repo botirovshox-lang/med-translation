@@ -203,7 +203,7 @@ TK.turnkey = { ready: [1, 2], machine: [3], human: [4], case: [3],
                          retry: false, include_confirmed: false } };
 TK.human.qaCritical = [4];
 let treeTk = null, okTk = true;
-try { treeTk = render(React.createElement(TurnkeySummary, { summary: TK, store, toast })); }
+try { treeTk = render(React.createElement(TurnkeySummary, { expert: true, summary:TK, store, toast })); }
 catch (e) { okTk = false; console.log("      " + e.message); }
 check(okTk, "TurnkeySummary рендерится");
 const tTk = okTk ? texts(treeTk) : [];
@@ -223,7 +223,7 @@ check(!tTk.some(s => s.indexOf("Ревизия ручается") !== -1),
 const TV = JSON.parse(JSON.stringify(TK));
 TV.turnkey.reviewVouched = [1];
 let treeTv = null;
-try { treeTv = render(React.createElement(TurnkeySummary, { summary: TV, store, toast })); }
+try { treeTv = render(React.createElement(TurnkeySummary, { expert: true, summary:TV, store, toast })); }
 catch (e) { console.log("      " + e.message); }
 check(treeTv && texts(treeTv).some(s => s.indexOf("Ревизия ручается") !== -1),
       "с полем — строка среза названа");
@@ -263,7 +263,7 @@ check(tG.some(s => s.indexOf("Машина сняла ваше подтверж�
       && !tG.some(s => s.indexOf("Забракованное слово") !== -1) && tG.some(s => s.indexOf("Ещё строк") !== -1),
       "громкая строка видна, а хвост группы спрятан под «Ещё строк»");
 let treeG2 = null;
-try { treeG2 = render(React.createElement(TurnkeySummary, { summary: GR, store, toast })); }
+try { treeG2 = render(React.createElement(TurnkeySummary, { expert: true, summary:GR, store, toast })); }
 catch (e) { console.log("      " + e.message); }
 const tG2 = treeG2 ? texts(treeG2) : [];
 check(tG2.some(s => s.indexOf("из них: править перевод") !== -1)
@@ -271,6 +271,75 @@ check(tG2.some(s => s.indexOf("из них: править перевод") !== 
       "три числа групп — в карточке «под ключ»");
 check(tG2.some(s => s.indexOf("ждут правки оригинала") !== -1),
       "подпись под готовностью называет повреждённый оригинал");
+
+// ─────────── 3e. «Проверка» человеку: полоса, одна кнопка, вопросы ───────────
+// Человек видит два блока: сколько готово (с ОДНОЙ кнопкой) и вопросы с командой
+// в самой строке. Корзины карточками и срезы «из них» — эксперту.
+console.log("\n=== 3e. Простой вид: полоса готовности и вопросы с командами ===");
+let treeS = null;
+try { treeS = render(React.createElement(TurnkeySummary, { summary: GR, store, toast })); }
+catch (e) { console.log("      " + e.message); }
+const tS = treeS ? texts(treeS) : [];
+check(tS.some(s => s.indexOf("Доделать сама · 1") === 0),
+      "одна главная кнопка «Доделать сама» с числом строк: " + tS.filter(s => s.indexOf("Доделать") !== -1).join("|"));
+check(!tS.some(s => s === "Готово к сдаче") && !tS.some(s => s.indexOf("из них:") !== -1),
+      "корзины карточками и срезы «из них» человеку не показаны");
+check(tS.some(s => s.indexOf("1 из 20 строк") !== -1), "легенда называет готовность числом строк");
+
+// Машине делать нечего, но есть заверенное с находками: кнопка обязана
+// открываться — галочка «чинить и заверенные» живёт в её панели.
+const CF = JSON.parse(JSON.stringify(GR));
+CF.turnkey.machine = []; CF.human.confirmedFindings = [9];
+let treeCF = null;
+try { treeCF = render(React.createElement(TurnkeySummary, { summary: CF, store, toast })); }
+catch (e) { console.log("      " + e.message); }
+let cfBtn = null;
+const cfSeen = [];
+(function findBtn(n) {
+  if (!n || typeof n !== "object") return;
+  if (Array.isArray(n)) { n.forEach(findBtn); return; }
+  if (n.type === "button") cfSeen.push(texts(n).join("/") + ":" + !!(n.props || {}).disabled);
+  if (n.type === "button" && texts(n).some(s => s.indexOf("Доделать сама") === 0)) cfBtn = n;
+  (n.children || []).forEach(findBtn);
+})(treeCF);
+check(cfBtn && !cfBtn.props.disabled,
+      "машинная корзина пуста, но заверенное с находками есть — «Доделать сама» открыта"
+      + (cfBtn && !cfBtn.props.disabled ? "" : " · кнопки: " + JSON.stringify(cfSeen)));
+
+const QS = JSON.parse(JSON.stringify(GR));
+QS.human.revertedByScore = [6]; QS.human.reverted = [6];
+QS.human.confirmedFindings = [9];
+QS.human.termsTotal = 3; QS.proposed = { terms: 2 };
+let treeQ = null;
+try { treeQ = render(React.createElement(CheckQuestions, { summary: QS, store, toast })); }
+catch (e) { console.log("      " + e.message); }
+const tQ = treeQ ? texts(treeQ) : [];
+const at = (sub) => tQ.findIndex(s => s.indexOf(sub) !== -1);
+check(at("Вопросы к вам") !== -1, "список вопросов назван");
+check(at("Машина сняла ваше подтверждение") !== -1 && at("Машина сняла ваше подтверждение") < at("Ревизия нашла проблему"),
+      "громкий вопрос стоит выше тихих");
+check(at("Принять все") !== -1, "«Принять все» — кнопкой в самом вопросе, а не в «Подробностях»");
+check(at("5 терминов ждут ответа") !== -1,
+      "термины: ждущие решения + готовые к одобрению = очередь «Словарей» для человека");
+check(at("с галочкой «чинить и заверенные»") !== -1,
+      "заверенные с находками ведут к двери, которую человек видит, а не к строке «Ремонт»");
+check(at("Арбитр: запись словаря не подходит здесь") !== -1 && at("Проверка спорит со словарём") !== -1
+      && at("Понизить запись") !== -1,
+      "записи словаря — по вопросу на запись, с командой понижения");
+check(at("Показать все") === -1, "десять вопросов влезают без свёртки");
+const QS2 = JSON.parse(JSON.stringify(QS));
+QS2.human.termcheckDisputes.push({ src: "x", tgt: "y", suggests: ["z"], segments: [10] });
+let treeQ2 = null;
+try { treeQ2 = render(React.createElement(CheckQuestions, { summary: QS2, store, toast })); }
+catch (e) { console.log("      " + e.message); }
+check(treeQ2 && texts(treeQ2).some(s => s.indexOf("Показать все · 11") !== -1),
+      "хвост длиннее десяти свёрнут, но число названо");
+const EMPTY = JSON.parse(JSON.stringify(BASE));
+EMPTY.turnkey = { ready: [1, 2, 3], machine: [], human: [], params: {} };
+let treeE = null;
+try { treeE = render(React.createElement(CheckQuestions, { summary: EMPTY, store, toast })); }
+catch (e) { console.log("      " + e.message); }
+check(treeE && texts(treeE).some(s => s === "Вопросов к вам нет."), "без вопросов — так и сказано");
 
 console.log("\n=== 3c. WorkSummary: критика Medical QA на подтверждённом видна ===");
 const QA = JSON.parse(JSON.stringify(BASE));
@@ -511,6 +580,37 @@ const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
         "подробный итог при этом показан");
   check(tTab.some(s => s.indexOf("Экспорт перевода") !== -1),
         "кнопка экспорта на месте");
+
+  // ─────────── 5b. Новый сервер: человеку вопросы, эксперту — подробности ───────────
+  console.log("\n=== 5b. TabAnalysis: устройство прогона — только эксперту ===");
+  const NEW = JSON.parse(JSON.stringify(QS));
+  const tabTree = async (st) => {
+    hooks = []; hookIdx = 0; effects.length = 0;
+    React.createElement(TabAnalysis, { store: st, toast });
+    effects.slice().forEach(fn => fn());
+    await new Promise(r => setImmediate(r));
+    hookIdx = 0; effects.length = 0;
+    return React.createElement(TabAnalysis, { store: st, toast });
+  };
+  global.API.analysis = async () => NEW;
+  global.API.coverage = async () => ({ ok: true, src: "RU", tgt: "EN", works: [{ key: "n", label: "числа" }],
+                                        silent: [], model: [] });
+  let tHum = [], tExp = [], ok5b = true;
+  try {
+    tHum = texts(await tabTree(Object.assign({}, storeTab, { can: { owner: true } })));
+    tExp = texts(await tabTree(Object.assign({}, storeTab, { can: { super: true } })));
+  } catch (e) { ok5b = false; console.log("      " + e.message); }
+  check(ok5b, "рендер человеку и эксперту прошёл");
+  check(tHum.some(s => s === "Проверка") && tHum.some(s => s === "Вопросы к вам"),
+        "человеку — «Проверка» и вопросы");
+  check(!tHum.some(s => s.indexOf("Подробности и ручные команды") !== -1)
+        && !tHum.some(s => s.indexOf("Проверено начисто") !== -1),
+        "а подробностей и итога из двенадцати строк у него нет");
+  check(!tHum.some(s => s.indexOf("бесплатных проверок") !== -1),
+        "покрытие пары молчит, когда молчащих проверок нет");
+  check(tHum.some(s => s.indexOf("Настройки книги") !== -1), "настройки книги (стиль, терм-лист) доступны и не эксперту");
+  check(tExp.some(s => s.indexOf("Подробности и ручные команды") !== -1),
+        "эксперту дверь к подробностям есть");
 
   console.log();
   if (fail.length) {

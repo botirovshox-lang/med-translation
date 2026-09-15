@@ -420,7 +420,7 @@
     /* Подтверждение теперь возвращает {tm, propagate, termCandidates} — см. confirm_segment */
     propagate:     (pid, sid, ids, includeConfirmed) => call("POST", `/segments/${pid}/${sid}/propagate`, { ids: ids || null, include_confirmed: !!includeConfirmed }),
     /* project — чтобы разбор «почему ждёт» считался в области проекта. */
-    termQueue:     (status, limit, pid)     => call("GET",    `/term-queue?status=${encodeURIComponent(status || "pending")}&limit=${limit || 200}${pid ? "&project=" + pid : ""}`),
+    termQueue:     (status, limit, pid, actionable) => call("GET", `/term-queue?status=${encodeURIComponent(status || "pending")}&limit=${limit || 200}${pid ? "&project=" + pid : ""}${actionable ? "&actionable=1" : ""}`),
     /* Массовым может быть только отклонение: одобрение пачкой — auto-approve. */
     bulkReject:    (ids)                    => call("POST",   "/term-queue/bulk", { ids, action: "reject" }),
     glossaryUsage: (src, limit, lang, domain) => call("GET",  `/glossary/usage?src=${encodeURIComponent(src)}&limit=${limit || 6}&lang=${encodeURIComponent(lang||"")}&domain=${encodeURIComponent(domain||"")}`),

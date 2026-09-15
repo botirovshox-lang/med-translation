@@ -103,33 +103,12 @@ function analysisHumanGroups(s) {
   ];
 }
 
-function WorkSummary({ summary, store, toast, onReload }) {
-  const s = summary;
-  /* Контекстный арбитр. Спор «проверка против утверждённого термина» машина
-     не решает по построению: ремонт по такой находке всегда откатится, потому
-     что нарушённых приказных терминов станет больше. Но человеку одного слова
-     «спор» мало — ему нужен довод. Арбитр единственный смотрит на сегмент
-     в ряду соседей и отвечает, верно ли термин передан ЗДЕСЬ.
-     Вызов платный, поэтому только по кнопке и с числом на ней: сколько
-     сегментов он ещё не видел. Вердикт кэшируется на сегменте, так что
-     повторное нажатие не платит за уже отвеченное. */
-  const [arbBusy, setArbBusy] = useState(false);
-  const [groupOpen, setGroupOpen] = useState({});
-  /* Строка итога — тот же AnalysisRow, что и у корзин «под ключ»: две копии одной
-     строки на ОДНОМ экране разъезжаются молча (см. комментарий у AnalysisRow).
-     Здесь `n` передаётся отдельно от `ids`: часть строк считает не сегменты,
-     а термины («Терминов машина решать не берётся»), и списка у них нет. */
-  const Row = (p) => React.createElement(AnalysisRow, Object.assign({ store, toast }, p));
-
-  // Считаем по РАЗНЫМ сегментам: один и тот же подтверждённый сегмент может
-  // и спорить с глоссарием, и нести находку проверок — сумма длин списков
-  // посчитала бы его дважды и завысила бы работу человека.
-  // Один раз: ниже список режется по DISPUTE_CAP и считается остаток —
-  // повторный доступ с дефолтом в четырёх местах легко рассинхронизировать.
-  const disputes = s.human.termcheckDisputes || [];
-  const disputeSegs = s.human.termcheckDisputesSegments || [];
-  const DISPUTE_CAP = 6;
-
+/* Команды по вопросам экрана «Проверка» — ОДНИ на экспертный итог
+   (WorkSummary) и на список вопросов человеку (CheckQuestions). Две копии
+   одной команды разошлись бы в предпросмотре и подтверждении, а у каждой
+   из них обязательны dry_run → подтверждение → применение → подтянуть
+   правленые сегменты. Хук, а не набор функций: у команд своё «занято». */
+function useAnalysisCommands(store, toast, onReload) {
   /* Пакетное принятие отменённых правок. Вызовов модели нет — подставляется
      уже написанный repair.candidate. Порядок тот же, что у выноса глоссария
      и пересчёта баллов: сначала разбор, потом подтверждение, потом применение;
@@ -273,6 +252,39 @@ function WorkSummary({ summary, store, toast, onReload }) {
         if (onReload) onReload();
       });
   };
+
+  return { acceptAll, accBusy, applyHeldReview, rvBusy, applyAdvice, demoteAdvised, ctxBusy };
+}
+
+function WorkSummary({ summary, store, toast, onReload }) {
+  const s = summary;
+  /* Контекстный арбитр. Спор «проверка против утверждённого термина» машина
+     не решает по построению: ремонт по такой находке всегда откатится, потому
+     что нарушённых приказных терминов станет больше. Но человеку одного слова
+     «спор» мало — ему нужен довод. Арбитр единственный смотрит на сегмент
+     в ряду соседей и отвечает, верно ли термин передан ЗДЕСЬ.
+     Вызов платный, поэтому только по кнопке и с числом на ней: сколько
+     сегментов он ещё не видел. Вердикт кэшируется на сегменте, так что
+     повторное нажатие не платит за уже отвеченное. */
+  const [arbBusy, setArbBusy] = useState(false);
+  const [groupOpen, setGroupOpen] = useState({});
+  /* Строка итога — тот же AnalysisRow, что и у корзин «под ключ»: две копии одной
+     строки на ОДНОМ экране разъезжаются молча (см. комментарий у AnalysisRow).
+     Здесь `n` передаётся отдельно от `ids`: часть строк считает не сегменты,
+     а термины («Терминов машина решать не берётся»), и списка у них нет. */
+  const Row = (p) => React.createElement(AnalysisRow, Object.assign({ store, toast }, p));
+
+  // Считаем по РАЗНЫМ сегментам: один и тот же подтверждённый сегмент может
+  // и спорить с глоссарием, и нести находку проверок — сумма длин списков
+  // посчитала бы его дважды и завысила бы работу человека.
+  // Один раз: ниже список режется по DISPUTE_CAP и считается остаток —
+  // повторный доступ с дефолтом в четырёх местах легко рассинхронизировать.
+  const disputes = s.human.termcheckDisputes || [];
+  const disputeSegs = s.human.termcheckDisputesSegments || [];
+  const DISPUTE_CAP = 6;
+
+  const { acceptAll, accBusy, applyHeldReview, rvBusy, applyAdvice, demoteAdvised, ctxBusy } =
+    useAnalysisCommands(store, toast, onReload);
 
   const arbPending = s.human.termContextPending || 0;
   const arbWrong = s.human.termContextWrong || [];
@@ -642,7 +654,8 @@ function modelConflicts(plan, cat, mods) {
   return out;
 }
 
-function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, setMod }) {
+function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, setMod,
+                    tkParams, fixConf, setFixConf, confN }) {
   const project = store.activeProject;
   const tk = summary.turnkey;
   const mm = mods || {};
@@ -738,7 +751,7 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
     // Состав берём ПОСЛЕ бесплатных правок: принятые тексты стали
     // непроверенными и обязаны попасть в этот же прогон, а не в следующий.
     const fresh = freeFixed
-      ? await window.API.safeCall(() => window.API.runPlan(project.id, tkPlanBody(tk.params, mm)))
+      ? await window.API.safeCall(() => window.API.runPlan(project.id, tkPlanBody(tkParams || tk.params, mm)))
       : plan;
     const ids = (fresh && fresh.ids) || [];
     if (!ids.length) {
@@ -751,7 +764,7 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
     // est_cost — то самое число, что человек видел на кнопке: рядом с фактом
     // оно и калибрует поправку estRatio. Модели — те же, под которые считан
     // разбор (tkPlanBody): задача с другими моделями сделала бы другую работу.
-    const params = Object.assign(tkPlanBody(tk.params, mm),
+    const params = Object.assign(tkPlanBody(tkParams || tk.params, mm),
       est && est.cost != null ? { est_cost: est.cost } : {});
     const res = await window.API.safeCall(() => window.API.createJob(project.id, "full", ids, params));
     setBusy(false);
@@ -834,6 +847,16 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
       accIds.length > 0 && React.createElement(FreeFixCheck, { on: fixAcc, setOn: setFixAcc,
         label: TR("Принять правки, отменённые только баллом (") + accIds.length + TR(" сегм.)"),
         note: TR("текст уже написан и оплачен; заверенное человеком не трогается, копия уйдёт в бэкап, этот же прогон всё перепроверит") })),
+    /* Разрешение переписать ЗАВЕРЕННОЕ — не бесплатная правка, а решение
+       человека на этот прогон (include_confirmed). Стоит отдельно и прямо над
+       кнопкой запуска: оно снимает отметки «подтвердил», и увидеть это
+       надо до нажатия. Разбор пересчитывается под него у родителя. */
+    setFixConf && confN > 0 && React.createElement("div", {
+      style: { display: "flex", flexDirection: "column", gap: 6, paddingTop: 8,
+               borderTop: "1px solid var(--border)" } },
+      React.createElement(FreeFixCheck, { on: !!fixConf, setOn: setFixConf,
+        label: TR("Чинить и заверенные вами (") + confN + TR(" сегм.)"),
+        note: TR("только по найденным ошибкам; прежний текст уйдёт в «прошлый перевод», отметка «подтвердил человек» снимется") })),
     React.createElement("div", { className: "row", style: { gap: 8, paddingTop: 4 } },
       /* Запуск гаснет, когда делать нечего ВООБЩЕ: ни состава у прогона,
          ни включённой бесплатной правки. && связывает сильнее || — скобки
@@ -848,45 +871,33 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
       React.createElement(Btn, { variant: "ghost", disabled: busy, onClick: onClose }, TR("Отмена"))));
 }
 
-/* Карточка «под ключ»: полоса готовности и три корзины с процентами. */
-function qWord(n) {
-  const d = n % 100, e = n % 10;
-  if (d > 4 && d < 21) return TR("вопросов");
-  if (e === 1) return TR("вопрос");
-  if (e > 1 && e < 5) return TR("вопроса");
-  return TR("вопросов");
-}
-function TurnkeySummary({ summary, store, toast, onReload, onQuestions }) {
+/* Полоса готовности «Проверки»: процент, полоса трёх цветов, легенда и ОДНА
+   кнопка «Доделать сама». Средняя корзина («доделает машина») показана
+   КНОПКОЙ, а не третьим числом: это не состояние текста, а невыполненная
+   работа. Суммы при этом сходятся: готово + кнопка + вопросы = всё.
+   Корзины карточками, срезы «из них» и «ревизия ручается» — эксперту
+   (`expert`, store.can.super): человеку отвечает список вопросов ниже. */
+function TurnkeySummary({ summary, store, toast, onReload, expert }) {
   const tk = summary.turnkey;
   const total = summary.total || 0;
   const ready = tk.ready || [], machine = tk.machine || [], human = tk.human || [];
-  /* Те же группы по действию, что в «Подробностях» (analysisHumanGroups):
-     три числа здесь, чтобы не идти за ними в четырнадцать строк ниже.
-     «Править оригинал» ещё и подписью под готовностью: перевод там сделан,
+  /* Те же группы по действию, что в «Подробностях» (analysisHumanGroups).
+     «Править оригинал» — подписью под готовностью: перевод там сделан,
      насколько позволяет исходник, и бить им по проценту перевода нечестно. */
   const groups = analysisHumanGroups(summary);
   const srcN = (groups.find(g => g.key === "source") || { n: 0 }).n;
-  /* Человеку нечего делать с числом «116 строк»: он решает ВОПРОСЫ, а одно
-     решение закрывает десятки строк. Считаем виды вопросов — ровно те строки,
-     что показаны ниже в группах. */
-  const qCount = groups.reduce((a, g) => a + g.rows.length, 0);
   const [panel, setPanel] = useState(false);
   /* Разбор прогона держит РОДИТЕЛЬ, а не панель. Панель монтируется по
      нажатию, и её собственный useEffect гонял бы /run-plan на каждое
-     открытие — а это пять проходов по всему проекту на ЕДИНСТВЕННОМ воркере
-     (то же, из-за чего разбор картинок и соответствие глоссарию ходят
-     в кэш). Открыл-закрыл-открыл — три полных прогона по 2670 сегментам
-     без единого изменения между ними. Здесь он считается один раз на
-     загруженный итог: сам итог перезагружается после прогона и правок,
-     то есть свежесть у них общая. */
+     открытие — а это пять проходов по всему проекту на ЕДИНСТВЕННОМ воркере.
+     Здесь он считается один раз на загруженный итог: сам итог
+     перезагружается после прогона и правок, то есть свежесть у них общая. */
   const [plan, setPlan] = useState(null);
   const [cat, setCat] = useState(null);
   /* Модели по шагам. Источник — ТЕ ЖЕ ключи localStorage, что у карточек
-     редактора (window.MODEL_LS из tab_editor.jsx): выбранное здесь видно
-     там и наоборот, второго хранилища одного выбора нет. Пустая строка —
-     «дефолт сервера»; выбор влияет и на СОСТАВ (ранг termcheck, правило
-     «проверял тот, кто переводил»), поэтому смена модели перезапрашивает
-     разбор — тем же телом, каким потом уйдёт задача (tkPlanBody). */
+     редактора (window.MODEL_LS из tab_editor.jsx): второго хранилища одного
+     выбора нет. Выбор влияет и на СОСТАВ, поэтому смена модели
+     перезапрашивает разбор — тем же телом, каким потом уйдёт задача. */
   const [mods, setMods] = useState(() => {
     const out = {}, keys = window.MODEL_LS || {};
     Object.keys(keys).forEach(k => {
@@ -902,74 +913,71 @@ function TurnkeySummary({ summary, store, toast, onReload, onQuestions }) {
       catch (e) { /* приватный режим — выбор живёт до перезагрузки */ }
     }
   };
+  /* Разрешение чинить ЗАВЕРЕННОЕ (include_confirmed) — единственная дверь
+     к корзинам «заверено, но есть находки» у того, кто не видит строки
+     «Ремонт». Разрешение на ОДИН прогон: живёт в памяти компонента, а он
+     пересоздаётся при смене проекта (key у TabAnalysis), в localStorage
+     не пишется. Разбор считается ПОД него же — иначе строка обещала бы одно,
+     а прогон делал другое. */
+  const [fixConf, setFixConf] = useState(false);
+  const runParams = Object.assign({}, tk.params, fixConf ? { include_confirmed: true } : {});
+  /* Число на галочке — из тех же групп, что и вопросы (там списки уже
+     сужены до корзины «нужен человек»): два числа об одном расходились бы. */
+  const confN = new Set([].concat.apply([], [].concat.apply([], groups.map(g => g.rows))
+    .filter(r => r.key === "confirmedFindings" || r.key === "glossaryConfirmed")
+    .map(r => r.ids))).size;
   useEffect(() => {
     if (!window.API || !store.activeProject) return;
     let dead = false;
+    /* Прежний разбор снимаем СРАЗУ: пока новый в пути, «Запустить» ушло бы
+       со старыми ids и новым include_confirmed — работа разошлась бы со сметой. */
+    setPlan(null);
     Promise.all([
-      window.API.safeCall(() => window.API.runPlan(store.activeProject.id, tkPlanBody(tk.params, mods))),
+      window.API.safeCall(() => window.API.runPlan(store.activeProject.id, tkPlanBody(runParams, mods))),
       window.API.safeCall(() => window.API.models()),
     ]).then(([p, m]) => { if (!dead) { setPlan(p || false); setCat(m || null); } });
     return () => { dead = true; };
-  }, [store.activeProject && store.activeProject.id, summary, mods]);
+  }, [store.activeProject && store.activeProject.id, summary, mods, fixConf]);
   /* Тернарник, а не `total && ...`: при total === 0 такое выражение даёт
-     ЧИСЛО 0, и React честно печатает его — в пустом проекте внутри полосы
-     появлялись три нуля. */
+     ЧИСЛО 0, и React честно печатает его. */
   const seg = (n, color) => (total > 0 && n > 0)
     ? React.createElement("div", {
         style: { width: (n / total * 100) + "%", background: color, height: "100%" } })
     : null;
-  return React.createElement("div", { className: "section" },
-    React.createElement("h2", { className: "section-title" }, TR("Перевод под ключ"),
-      React.createElement(InfoTip, { title: TR("Три корзины"),
-        body: TR("Каждый сегмент проекта ровно в одной корзине, суммы сходятся с общим числом — считает сервер теми же правилами, что и сам прогон.\n\n«Готово» — переведено, проверено, открытых вопросов нет.\n\n«Возьмёт прогон» — кнопка «Перевести и доделать»: перевод, проверки, судья (включая бесспорные по разовому разрешению), ремонт по находкам.\n\n«Нужно ваше решение» — то, что прогон не решает по построению: споры с глоссарием, заверенные сегменты с находками, откаченные правки. Команды — в «Подробностях» ниже.\n\nЛюбая строка открывает редактор с этими сегментами.") })),
-    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column" } },
-      /* Наверху — ответ, а не устройство: крупный процент, одна полоса и две
-         кнопки. Средняя корзина («доделает машина») намеренно показана
-         КНОПКОЙ, а не третьим числом: это не состояние текста, а невыполненная
-         работа. Приплюсуй её к готовому — человек скачает недоделанный файл;
-         приплюсуй к вопросам — напугаешь работой, которой у него нет.
-         Суммы при этом сходятся: готово + кнопка + вопросы = всё. */
-      React.createElement("div", { className: "row between", style: { alignItems: "baseline" } },
-        React.createElement("div", null,
-          React.createElement("b", { style: { fontSize: 34, fontWeight: 500, letterSpacing: "-.02em", fontVariantNumeric: "tabular-nums" } },
-            tkPct(ready.length, total)),
-          React.createElement("span", { className: "dim", style: { fontSize: 13, marginLeft: 10 } },
-            TR("готово"))),
-        React.createElement("span", { className: "dim", style: { fontSize: 12.5 } },
-          ready.length + TR(" из ") + total + TR(" строк")
-          + (srcN ? TR(" · ") + srcN + TR(" ждут правки оригинала") : ""))),
-      React.createElement("div", { style: { display: "flex", height: 12, borderRadius: 6,
-        overflow: "hidden", background: "var(--bg-sunken)", margin: "10px 0 6px" } },
+  const dot = (color) => React.createElement("i", { style: { background: color } });
+
+  const strip = React.createElement("div", { className: "ready-strip" },
+    React.createElement("div", { className: "ready-pct" }, tkPct(ready.length, total),
+      React.createElement("small", null, TR("готово"))),
+    React.createElement("div", null,
+      React.createElement("div", { className: "ready-meter", role: "img",
+          "aria-label": tkPct(ready.length, total) + " " + TR("готово") },
         seg(ready.length, "var(--c-success)"),
         seg(machine.length, "var(--c-primary)"),
         seg(human.length, "var(--c-warning)")),
       /* Три цвета без подписей — украшение. Легенда обязательна. */
-      React.createElement("div", { className: "dim row row-wrap", style: { fontSize: 11.5, gap: 14, paddingBottom: 12 } },
-        React.createElement("span", null, React.createElement("i", { style: { display: "inline-block", width: 7, height: 7, borderRadius: 2, background: "var(--c-success)", marginRight: 6 } }), TR("готово")),
-        React.createElement("span", null, React.createElement("i", { style: { display: "inline-block", width: 7, height: 7, borderRadius: 2, background: "var(--c-primary)", marginRight: 6 } }), TR("доделаю сама")),
-        React.createElement("span", null, React.createElement("i", { style: { display: "inline-block", width: 7, height: 7, borderRadius: 2, background: "var(--c-warning)", marginRight: 6 } }), TR("спрошу вас"))),
-      React.createElement("div", { className: "row row-wrap", style: { gap: 10, paddingBottom: 4 } },
-        React.createElement("div", { style: { flex: "1 1 260px", fontSize: 13.5, lineHeight: 1.5 } },
-          machine.length
-            ? React.createElement("span", null, TR("Я доделаю сама "),
-                React.createElement("b", null, machine.length + TR(" строк")), TR(". "))
-            : React.createElement("span", null, TR("Машине здесь делать больше нечего. ")),
-          qCount
-            ? React.createElement("span", null, TR("Без вас не решу — "),
-                React.createElement("b", null, qCount + TR(" ") + qWord(qCount)),
-                " (" + human.length + TR(" строк") + ").")
-            : React.createElement("span", null, TR("Вопросов к вам нет."))),
-        React.createElement(Btn, { variant: "primary", icon: "zap", disabled: !machine.length,
-          onClick: () => setPanel(p => !p) }, TR("Доделать сама")),
-        React.createElement(Btn, { variant: "secondary", icon: "target", disabled: !qCount,
-          onClick: () => { if (onQuestions) onQuestions(); } },
-          TR("Ответить на вопросы") + (qCount ? " · " + qCount : ""))),
-      /* Три корзины — КАРТОЧКАМИ: строкой они читались как список, а это
-         три разных места, куда человек идёт с разными намерениями. Надписи,
-         числа и клик прежние (тот же drill в редактор), поэтому словарь
-         не тронут. Четвёртая карточка — срез «заверено вручную»: он входит
-         в корзины выше и потому приглушён, но работа человека обязана быть
-         видна числом. */
+      React.createElement("div", { className: "ready-legend" },
+        React.createElement("span", null, dot("var(--c-success)"), ready.length + TR(" из ") + total + TR(" строк")),
+        React.createElement("span", null, dot("var(--c-primary)"), TR("доделаю сама") + " · " + machine.length),
+        React.createElement("span", null, dot("var(--c-warning)"), TR("спрошу вас") + " · " + human.length),
+        srcN > 0 && React.createElement("span", null, srcN + TR(" ждут правки оригинала")))),
+    React.createElement("div", { className: "ready-cta" },
+      /* Кнопка открыта и при пустой машинной корзине, если есть заверенное
+         с находками: галочка «чинить и заверенные» живёт в панели, и другой
+         двери к этой корзине у человека нет (инвариант 24). */
+      React.createElement(Btn, { variant: "primary", icon: "zap", disabled: !machine.length && !confN,
+        onClick: () => setPanel(p => !p) },
+        machine.length ? TR("Доделать сама") + " · " + machine.length + TR(" строк")
+          : confN ? TR("Доделать сама") : TR("Машине делать нечего"))));
+
+  const expertCard = expert && React.createElement("div", { className: "section" },
+    React.createElement("h2", { className: "section-title" }, TR("Перевод под ключ"),
+      React.createElement(InfoTip, { title: TR("Три корзины"),
+        body: TR("Каждый сегмент проекта ровно в одной корзине, суммы сходятся с общим числом — считает сервер теми же правилами, что и сам прогон.\n\n«Готово» — переведено, проверено, открытых вопросов нет.\n\n«Возьмёт прогон» — кнопка «Перевести и доделать»: перевод, проверки, судья (включая бесспорные по разовому разрешению), ремонт по находкам.\n\n«Нужно ваше решение» — то, что прогон не решает по построению: споры с глоссарием, заверенные сегменты с находками, откаченные правки. Команды — в «Подробностях» ниже.\n\nЛюбая строка открывает редактор с этими сегментами.") })),
+    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column" } },
+      /* Три корзины — КАРТОЧКАМИ: это три разных места, куда человек идёт
+         с разными намерениями. Четвёртая — срез «заверено вручную»: он
+         входит в корзины выше и потому приглушён. */
       React.createElement("div", { className: "st-cards" },
         React.createElement(BucketCard, { store, toast, total, ids: ready, tone: "ok",
           label: TR("Готово к сдаче"), hint: TR("переведено и проверено, открытых вопросов нет") }),
@@ -985,29 +993,130 @@ function TurnkeySummary({ summary, store, toast, onReload, onQuestions }) {
         key: g.key, store, toast, ids: g.ids, n: g.n, dim: true,
         total: g.key === "records" ? undefined : total,
         label: TR("из них: ") + g.label.charAt(0).toLowerCase() + g.label.slice(1), hint: g.hint })),
-      /* Срез поверх корзин, а не четвёртая корзина: заверенные человеком
-         входят в «Готово» (или в «Нужно ваше решение», если проверки нашли
-         находку), но работа человека обязана быть видна числом — раньше
-         подтверждение не меняло на этом экране ничего. Та же AnalysisRow
-         (правило клика живёт в одном месте), только приглушённая (`dim`).
-         Старый сервер поля не отдаёт — строки просто нет. */
-
-      /* Претензии слепых измерителей (балл back-check, одиночное мнение
-         termcheck) снял свежий вердикт ревизии — сегменты в «Готово».
-         Срезом, а не молча: снятое без следа неотличимо от потерянного. */
+      /* Претензии слепых измерителей снял свежий вердикт ревизии — сегменты
+         в «Готово». Срезом, а не молча: снятое без следа неотличимо
+         от потерянного. Старый сервер поля не отдаёт — строки нет. */
       (tk.reviewVouched || []).length > 0 && React.createElement(AnalysisRow, {
         store, toast, total, ids: tk.reviewVouched, dim: true,
         label: TR("Ревизия ручается — претензии проверок сняты"),
-        hint: TR("ревизор прочитал пару целиком и не нашёл дефекта; входит в «Готово»") })),
+        hint: TR("ревизор прочитал пару целиком и не нашёл дефекта; входит в «Готово»") })));
+
+  return React.createElement(React.Fragment, null,
+    strip,
     panel && React.createElement(RunPanel, { summary, store, toast, plan, cat, mods, setMod,
-      onClose: () => setPanel(false), onStarted: onReload }));
+      tkParams: runParams, fixConf, setFixConf, confN,
+      onClose: () => setPanel(false), onStarted: onReload }),
+    expertCard || null);
+}
+
+/* «Вопросы к вам» — то, что прогон не решит по построению, одной строкой
+   на РЕШЕНИЕ, с командой прямо в строке. Состав — те же группы по действию
+   (analysisHumanGroups), что у экспертного итога; команды — тот же хук
+   (useAnalysisCommands): предпросмотр, подтверждение и откат у них общие.
+   Громкие строки (снятое заверение, критика QA, повреждённый оригинал)
+   идут первыми, хвост длиннее ASK_TOP свёрнут, но число названо. */
+const ASK_TOP = 10;
+function CheckQuestions({ summary, store, toast, onReload }) {
+  const { acceptAll, accBusy, applyHeldReview, rvBusy, applyAdvice, demoteAdvised, ctxBusy } =
+    useAnalysisCommands(store, toast, onReload);
+  const [all, setAll] = useState(false);
+  const h = summary.human || {};
+  const groups = analysisHumanGroups(summary);
+  const open = (label, ids) => {
+    if (!ids || !ids.length) return;
+    store.setSegmentFilter(ids);
+    store.go("editor");
+    toast.info(label, ids.length + TR(" сегментов"));
+  };
+  const btn = (key, label, onClick, variant, disabled) => React.createElement(Btn,
+    { key, variant: variant || "ghost", size: "sm", disabled: !!disabled, onClick }, label);
+  /* У заверенных с находками подсказка групп ведёт к строке «Ремонт», которой
+     человек на этом экране не видит. Дверь у него — галочка «чинить
+     и заверенные» в панели «Доделать сама», и назвать надо её. */
+  const HINT = {
+    confirmedFindings: TR("вы заверили, но проверки нашли ошибки — починит «Доделать сама» с галочкой «чинить и заверенные»"),
+    glossaryConfirmed: TR("вы заверили, но перевод расходится со словарём — починит «Доделать сама» с галочкой «чинить и заверенные»"),
+  };
+  const loud = r => r.color === "var(--c-error)" ? 1 : 0;
+  const segRows = [].concat.apply([], groups.filter(g => g.key !== "records").map(g => g.rows))
+    .sort((a, b) => (loud(b) - loud(a)) || (b.n - a.n));
+  const qs = [];
+  segRows.forEach(r => {
+    const acts = [];
+    if (r.key === "revertedByScore")
+      acts.push(btn("acc", accBusy ? TR("Принимаем…") : TR("Принять все"), acceptAll, "secondary", accBusy));
+    if (r.key === "reviewConfirmed")
+      acts.push(btn("rv", rvBusy ? TR("Применяем…") : TR("Применить советы"), () => applyHeldReview(r.ids), "secondary", rvBusy));
+    if (r.ids.length) acts.push(btn("open", TR("Открыть"), () => open(r.label, r.ids)));
+    qs.push({ key: r.key, sev: loud(r) ? "bad" : "warn", title: r.label,
+              meta: r.n + TR(" строк") + " · " + (HINT[r.key] || r.hint), acts });
+  });
+  /* Термины: тот же состав, что очередь «Словарей» для человека (actionable):
+     ждущие решения плюс готовые к одобрению. Ждущие ДАННЫХ сюда не входят —
+     их дорешает прогон, и они названы в подвале. Строка стоит ДО записей:
+     записей бывают десятки, и под свёрткой она потерялась бы. */
+  const termsN = (h.termsTotal || 0) + ((summary.proposed || {}).terms || 0);
+  if (termsN > 0) qs.push({ key: "terms", sev: "warn",
+    title: termsN + TR(" терминов ждут ответа «верно / не то»"),
+    meta: TR("ответ в «Словарях» закрывает все строки с термином"),
+    acts: [btn("go", TR("Открыть Словари"), () => store.go("glossary"), "secondary")] });
+  /* Записи словаря: одно решение на ЗАПИСЬ закрывает все её строки. Запись,
+     про которую уже ответил арбитр, в спорах второй раз не считается — тот же
+     ключ, что у analysisHumanGroups. */
+  const rkey = d => ((d.src || "") + "→" + (d.tgt || "")).toLowerCase();
+  const ctxWrong = h.termContextWrong || [];
+  const ctxKeys = new Set(ctxWrong.map(rkey));
+  const disputes = (h.termcheckDisputes || []).filter(d => !ctxKeys.has(rkey(d)));
+  ctxWrong.forEach((d, i) => {
+    const segs = d.segments || [];
+    const acts = [];
+    if (d.use) acts.push(btn("apply", TR("Применить к ") + segs.length + TR(" сегм."), () => applyAdvice(d), "secondary", ctxBusy));
+    acts.push(btn("demote", TR("Понизить запись"), () => demoteAdvised(d), "ghost", ctxBusy));
+    if (segs.length) acts.push(btn("open", TR("Открыть"), () => open(d.src, segs)));
+    qs.push({ key: "ctx" + i, sev: "warn",
+      title: [TR("Арбитр: запись словаря не подходит здесь — "),
+              React.createElement("b", { key: "p" }, d.src + " → " + d.tgt)],
+      meta: (d.use ? TR("здесь верно: ") + d.use + " · " : "") + (d.why ? TRS(d.why) + " · " : "")
+            + segs.length + TR(" строк"), acts });
+  });
+  disputes.forEach((d, i) => {
+    const segs = d.segments || [];
+    const acts = [btn("demote", TR("Понизить запись"), () => demoteAdvised(d), "ghost", ctxBusy)];
+    if (segs.length) acts.push(btn("open", TR("Открыть"), () => open(d.src, segs)));
+    qs.push({ key: "disp" + i, sev: "warn",
+      title: [TR("Проверка спорит со словарём: "),
+              React.createElement("b", { key: "p" }, d.src + " → " + d.tgt)],
+      meta: TR("проверка предлагает: ") + ((d.suggests || []).join(", ") || TR("без замены"))
+            + " · " + segs.length + TR(" строк"), acts });
+  });
+  const shown = all ? qs : qs.slice(0, ASK_TOP);
+  return React.createElement("div", { className: "col", style: { gap: 12 } },
+    React.createElement("div", { className: "ask-head" },
+      React.createElement("h2", null, TR("Вопросы к вам")),
+      qs.length > 0 && React.createElement("span", { className: "ask-n" }, qs.length),
+      qs.length > 0 && React.createElement("span", { className: "ask-hint" },
+        TR("одно решение закрывает все строки в карточке"))),
+    React.createElement("div", { className: "ask-list" },
+      !qs.length && React.createElement("div", { className: "ask-empty" }, TR("Вопросов к вам нет.")),
+      shown.map(q => React.createElement("div", { key: q.key, className: "ask" },
+        React.createElement("span", { className: "ask-sev " + q.sev }),
+        React.createElement("div", null,
+          React.createElement("div", { className: "ask-t" }, q.title),
+          React.createElement("div", { className: "ask-m" }, q.meta)),
+        React.createElement("div", { className: "ask-acts" }, q.acts)))),
+    qs.length > ASK_TOP && React.createElement("div", null,
+      React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setAll(v => !v) },
+        all ? TR("Свернуть") : TR("Показать все") + " · " + qs.length)));
 }
 
 /* ---------- Что проверяется в этой паре ----------
    Закон детерминированных проверок: нет правил для пары — молчим. Но молчание
    неотличимо от успеха, пока о нём не сказано. Списки считает СЕРВЕР по тем
    же таблицам, из которых проверки берут правила; здесь только показ. */
-function CoverageCard({ project }) {
+/* `quiet` — для человека: карточка есть, только когда на паре что-то МОЛЧИТ.
+   «Всё работает» — не новость, а молчание без предупреждения неотличимо
+   от успеха. */
+function CoverageCard({ project, quiet }) {
   const [cov, setCov] = useState(null);
   const [open, setOpen] = useState(false);
   useEffect(() => {
@@ -1019,6 +1128,7 @@ function CoverageCard({ project }) {
   }, [project && project.id]);
   if (!cov) return null;
   const n = cov.silent.length;
+  if (quiet && !n) return null;
   const head = n
     ? TR("На паре ") + cov.src + " → " + cov.tgt + TR(" молчат ") + n + TR(" из ") + (n + cov.works.length) + TR(" бесплатных проверок")
     : TR("На паре ") + cov.src + " → " + cov.tgt + TR(" работают все бесплатные проверки");
@@ -1027,7 +1137,7 @@ function CoverageCard({ project }) {
     React.createElement("ul", { style: { margin: 0, paddingLeft: 18, fontSize: 13 } },
       items.map(i => React.createElement("li", { key: i.key },
         i.label, why && i.why ? React.createElement("span", { className: "dim" }, " — " + TRS(i.why)) : null))));
-  return React.createElement("div", { className: "card card-pad", style: { marginBottom: 14 } },
+  return React.createElement("div", { className: "card card-pad" },
     React.createElement("div", { className: "row between" },
       React.createElement("div", { style: { fontWeight: 600, color: n ? "var(--c-warn)" : undefined } }, head),
       React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setOpen(o => !o) },
@@ -1090,7 +1200,7 @@ function TermlistCard({ project, toast }) {
   const m = tl.measure || {};
   const disputed = (tl.entries || []).filter(e => e.status === "disputed");
   const agreed = (tl.entries || []).filter(e => e.status === "agreed");
-  return React.createElement("div", { className: "card card-pad", style: { marginBottom: 14 } },
+  return React.createElement("div", { className: "card card-pad" },
     React.createElement("div", { className: "row between" },
       React.createElement("div", null,
         React.createElement("div", { style: { fontWeight: 600 } }, TR("Терм-лист документа")),
@@ -1186,7 +1296,7 @@ function StyleCard({ project, toast }) {
   const eff = st.effective || {};
   const proj = st.project || {};
   if (!st.enabled) {
-    return React.createElement("div", { className: "card card-pad", style: { marginBottom: 14 } },
+    return React.createElement("div", { className: "card card-pad" },
       React.createElement("div", { className: "row between" },
         React.createElement("div", null,
           React.createElement("div", { style: { fontWeight: 600 } }, TR("Стайл-шит документа не включён")),
@@ -1201,7 +1311,7 @@ function StyleCard({ project, toast }) {
                                   onChange: (e) => save({ fields: { [k]: e.target.value } }) },
       OPTS[k].map(([v, l]) => React.createElement("option", { key: v, value: v }, l))));
   const abbrs = (rep && rep.abbreviations) || [];
-  return React.createElement("div", { className: "card card-pad", style: { marginBottom: 14 } },
+  return React.createElement("div", { className: "card card-pad" },
     React.createElement("div", { className: "row between" },
       React.createElement("div", { style: { fontWeight: 600 } }, TR("Стайл-шит документа")),
       React.createElement("div", { className: "row", style: { gap: 8 } },
@@ -1230,11 +1340,21 @@ function StyleCard({ project, toast }) {
         stamp ? React.createElement(Btn, { variant: "ghost", size: "sm", onClick: undo }, TR("Вернуть прежний")) : null)));
 }
 
+/* «Проверка» — экран для того, кому нужен перевод под ключ. Человек видит
+   ровно два блока: сколько готово (с одной кнопкой) и вопросы к нему.
+   Устройство прогона — корзины карточками, терм-лист, полосы back-check,
+   соответствие глоссарию, termcheck, ремонт и кнопка арбитра — эксперту
+   (store.can.super) под «Подробностями»: «пропавшая кнопка неотличима от
+   потерянной функции», поэтому команды по вопросам живут в самих вопросах.
+   Старый сервер без turnkey — подробный итог всем, как и раньше. */
 function TabAnalysis({ store, toast }) {
   const project = store.activeProject;
   const [summary, setSummary] = useState(null);
   const [sumNonce, setSumNonce] = useState(0);
   const [details, setDetails] = useState(false);
+  /* Стиль книги — одно решение на весь документ: свёрнут, но доступен всем
+     (под ролью он отнял бы настройку у владельца). */
+  const [styleOpen, setStyleOpen] = useState(false);
   useEffect(() => {
     if (!window.API || !window.API.analysis || !project) return;
     let dead = false;
@@ -1243,6 +1363,7 @@ function TabAnalysis({ store, toast }) {
     return () => { dead = true; };
   }, [project && project.id, sumNonce]);
   if (!project) return React.createElement("div", { className: "page" }, React.createElement(NoProject, { store }));
+  const expert = !!(store.can && store.can.super);
   const reload = () => setSumNonce(n => n + 1);
   const onDrill = (title, segList) => {
     const ids = (segList || []).map(s => s.id);
@@ -1254,31 +1375,53 @@ function TabAnalysis({ store, toast }) {
   const tk = summary && summary.turnkey;
   // Старый сервер без turnkey: корзин нет, честный ответ — подробный итог,
   // а не посчитанные браузером числа (второй расчёт запрещён).
-  const showDetails = details || (summary && !tk);
+  const oldServer = !!(summary && !tk);
   const segs = project.segments;
-  return React.createElement("div", { className: "page page-wide" },
+  const hs = (summary && summary.human) || {};
+  const todo = (summary && summary.todo) || {};
+  /* Что машина сделала или сделает сама — числом, а не молча: снятое без
+     следа неотличимо от потерянного. */
+  const did = [
+    tk && (tk.reviewVouched || []).length
+      ? [TR("ревизия ручается за "), tk.reviewVouched.length, TR(" строк")] : null,
+    hs.termsWaitingTotal
+      ? [TR("терминов ждут данных: "), hs.termsWaitingTotal, TR(" — дорешаются после прогонов")] : null,
+    (todo.consistency || []).length
+      ? [TR("разнобой переводов: "), todo.consistency.length, TR(" пар — выровняет прогон")] : null,
+  ].filter(Boolean);
+  return React.createElement("div", { className: "page page-stack" + (expert ? " page-wide" : "") },
     React.createElement("div", { className: "row between page-head", style: { alignItems: "flex-end" } },
       React.createElement("div", null,
-        React.createElement("h1", null, TR("Что получилось")),
+        React.createElement("h1", null, TR("Проверка")),
         React.createElement("p", { className: "lead", style: { marginBottom: 0 } },
-          TR("Сколько готово, что я доделаю сама и о чём спрошу вас."))),
+          TR("Что готово и о чём я спрошу вас."))),
       React.createElement(Btn, { variant: "secondary", icon: "download",
         onClick: () => store.go("export") }, TR("Экспорт перевода"))),
     !summary && React.createElement("div", { className: "dim", style: { fontSize: 13 } }, TR("Считаем итог…")),
-    React.createElement(CoverageCard, { project }),
-    React.createElement(StyleCard, { project, toast }),
-    React.createElement(TermlistCard, { project, toast }),
-    tk && React.createElement(TurnkeySummary, { summary, store, toast, onReload: reload,
-      /* «Ответить на вопросы» раскрывает подробности: команды по каждому
-         вопросу живут там, и вести человека в пустоту нельзя. */
-      onQuestions: () => setDetails(true) }),
-    summary && !tk && React.createElement("div", { className: "dim", style: { fontSize: 13, marginBottom: 10 } },
+    /* Молчание проверок на паре человеку показываем, только если оно ЕСТЬ:
+       «всё работает» — не новость, а «молчат три проверки» — предупреждение. */
+    React.createElement(CoverageCard, { project, quiet: !expert }),
+    tk && React.createElement(TurnkeySummary, { key: project.id, summary, store, toast,
+      onReload: reload, expert }),
+    tk && React.createElement(CheckQuestions, { summary, store, toast, onReload: reload }),
+    oldServer && React.createElement("div", { className: "dim", style: { fontSize: 13 } },
       TR("Сервер прежней версии — корзин «под ключ» нет, ниже подробный итог.")),
-    summary && tk && React.createElement("div", { style: { margin: "6px 0 14px" } },
-      React.createElement(Btn, { variant: "ghost", size: "sm",
+    summary && React.createElement("div", { className: "page-foot" },
+      did.length > 0 && React.createElement("span", null, TR("Сама после прогона:")),
+      did.map((d, i) => React.createElement("span", { key: i }, d[0], React.createElement("b", null, d[1]), d[2])),
+      React.createElement("span", { className: "spacer" }),
+      React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setStyleOpen(v => !v) },
+        styleOpen ? TR("Скрыть настройки книги") : TR("Настройки книги")),
+      expert && tk && React.createElement(Btn, { variant: "ghost", size: "sm",
         onClick: () => setDetails(d => !d) },
-        showDetails ? TR("▴ Скрыть подробности") : TR("▾ Подробности и ручные команды"))),
-    summary && showDetails && React.createElement(React.Fragment, null,
+        details ? TR("▴ Скрыть подробности") : TR("▾ Подробности и ручные команды"))),
+    /* Настройки книги — стиль и терм-лист: решения на весь документ, до
+       перевода. Свёрнуты, но доступны всем — под ролью они отняли бы
+       настройку у владельца. */
+    styleOpen && React.createElement(StyleCard, { project, toast }),
+    styleOpen && React.createElement(TermlistCard, { project, toast }),
+    summary && (oldServer || (expert && details)) && React.createElement(React.Fragment, null,
+      expert && React.createElement(CoverageCard, { project }),
       React.createElement(WorkSummary, { summary, store, toast, onReload: reload }),
       React.createElement(BackcheckBands, { segments: segs, project, onDrill, T }),
       React.createElement(GlossaryImpact, { project, store, toast, onDrill, T }),

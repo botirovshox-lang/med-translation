@@ -113,9 +113,12 @@ const cls = (n) => String((n.props || {}).className || "");
 
 /* 1. Экран собирается, панели — в сетке */
 console.log("[1] TabGlossary собирается");
+/* Служебные панели — эксперту (store.can.super). Человеку — поиск, вопросы,
+   чипы и таблица без категорий: проверяется в [1b]. */
+const storeExp = Object.assign({}, store, { can: { super: true } });
 hooks = []; hookIdx = 0;
 let tree = null, err = null;
-try { tree = TabGlossary({ store, toast }); } catch (e) { err = e; }
+try { tree = TabGlossary({ store: storeExp, toast }); } catch (e) { err = e; }
 check(!err, "рендер без исключения" + (err ? ": " + err.message : ""));
 const decks = find(tree, n => cls(n) === "kb-decks");
 check(decks.length === 1, "сетка kb-decks ровно одна");
@@ -128,6 +131,26 @@ check(find(tree, n => n.type === "table").length === 1, "таблица слов
 check(t.includes("плевра") && t.includes("pleura"), "запись словаря видна");
 check(!deckCards.some(n => n.props.style && n.props.style.marginBottom),
   "у панелей нет своего marginBottom (расстояние даёт gap сетки)");
+
+/* 1b. Человеку — без устройства */
+console.log("\n[1b] простой вид «Словарей»");
+hooks = []; hookIdx = 0;
+let treeH = null; err = null;
+try { treeH = TabGlossary({ store: Object.assign({}, store, { can: { owner: true } }), toast }); } catch (e) { err = e; }
+check(!err, "рендер без исключения" + (err ? ": " + err.message : ""));
+const tH = texts(treeH).join(" | ");
+check(find(treeH, n => cls(n) === "kb-decks").length === 0, "служебных панелей нет");
+check(find(treeH, n => cls(n) === "kb-chips").length === 1 && tH.includes("Утверждённые · 1"),
+  "фильтр — чипами с числом записей");
+check(!tH.includes("Категория") && !tH.includes("Достоверность") && tH.includes("Статус"),
+  "таблица без категорий и достоверности, со статусом");
+check(tH.includes("утверждён") && tH.includes("Словари") && tH.includes("Импорт файла"),
+  "статус записи назван, шапка «Словари», импорт — владельцу");
+check(!tH.includes("TSV"), "мёртвой кнопки TSV нет");
+hooks = []; hookIdx = 0;
+const tk = TabKnowledge({ store, toast });
+check(find(tk, n => (n.props || {}).role === "tablist").length === 0,
+  "переключателя «Память переводов» у человека нет — её ищет общий поиск");
 
 /* 2. Очередь: карточки в сетке, «Показать ещё» и пустое сообщение — снаружи */
 console.log("\n[2] карточки очереди в сетке kb-cands");
@@ -181,6 +204,24 @@ const emptyGrid = find(empty, n => cls(n) === "kb-cands");
 check(emptyGrid.length === 1 && emptyGrid[0].children.length === 0, "пустая очередь — пустая сетка");
 check(texts(empty).join(" | ").includes("Нерешённых кандидатов нет"), "пустое сообщение показано");
 check(!texts(emptyGrid[0]).join("").includes("Нерешённых"), "и стоит снаружи сетки");
+
+/* 2b. Очередь человеку: только вопросы, без разбора причин */
+console.log("\n[2b] простая очередь");
+hooks = []; hookIdx = 0;
+hooks[0] = [cand(1, "wait"), cand(2, "wait")];
+hooks[2] = false; hooks[6] = 2;
+hooks[13] = 4;                                    // waiting — после editing (12)
+let qs = null; err = null;
+try { qs = TermQueue({ store, toast, version: 0, simple: true }); } catch (e) { err = e; }
+check(!err, "простая очередь рендерится" + (err ? ": " + err.message : ""));
+const qsT = texts(qs).join(" | ");
+check(qsT.includes("Проверьте, правильно ли я поняла") && !qsT.includes("Почему ждут"),
+  "шапка-вопрос, разбора причин нет");
+check(find(qs, n => cls(n) === "kb-cands").length === 1
+  && find(qs, n => cls(n) === "card kb-card").length === 2, "карточки в той же сетке");
+check(qsT.includes("Верно") && !qsT.includes("Что это значит?"),
+  "в режиме просмотра — «Верно / Не то», без третьей кнопки");
+check(qsT.includes("Ещё 4 терминов ждут данных"), "ждущие данных названы числом");
 
 /* 3. Имена верхнего уровня не совпадают с ui.jsx */
 console.log("\n[3] имена верхнего уровня");

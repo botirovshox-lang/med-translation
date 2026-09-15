@@ -1633,6 +1633,10 @@ function TabEditor({ store, toast }) {
         // сообщения, чтобы не тонуть в перечислении шагов.
         c.suspect ? TR("оригинал под подозрением: ") + c.suspect : null,
         c.applied ? TR("исправлено ") + c.applied : null,
+        /* Автоодобрение однозначных в конце прогона (`auto_terms`): пишет
+           ПОДСКАЗКИ, и об этом сказано числом — машина тронула словарь,
+           а откатить пачку можно на экране «Словари». */
+        c.termsAuto ? TR("терминов разложено подсказкой: ") + c.termsAuto : null,
       ].filter(Boolean).join(" · ") || TR("нового ничего не потребовалось");
       const blockedMsg = c.step_skips ? TR(" · шаги пропускались (нет ключа или модуля)") : "";
       const skipConfMsg = c.skipped_confirmed ? TR(" · подтверждённых не тронуто: ") + c.skipped_confirmed : "";
@@ -2281,6 +2285,10 @@ function TabEditor({ store, toast }) {
       use_judge: expertUI ? bcJudge : true,
       judge_all: expertUI ? undefined : true,
       judge_model: expertUI ? (judgeModel || null) : null,
+      // Однозначные термины после прогона раскладываются подсказкой сами
+      // (как у кнопки «Доделать сама» — `turnkey.params.auto_terms`). Эксперт
+      // решает это панелью автоодобрения на экране «Словари».
+      auto_terms: expertUI ? undefined : true,
       // Тот же retry, что и у карточки ремонта: карточка выше посчитала
       // и оценила сегменты по этому же правилу, и разойтись они не должны.
       retry: repairRetry(),

@@ -563,7 +563,11 @@ function glossSignedTitle(sb) {
   return sb.name + (sb.role ? " · " + roleLabel(sb.role) : "") + (sb.at ? " · " + sb.at : "") + (act ? " · " + act : "");
 }
 
-function TermQueue({ store, toast, version }) {
+/* `simple` — очередь для человека (не эксперт): сервер отдаёт только вопросы
+   (`actionable`), карточка — пара, фраза, охват и «Верно / Не то», без
+   разбора причин и массового отклонения. Поток правки, возражение судьи
+   и «Что это значит?» — те же самые: это ответ на вопрос, а не устройство. */
+function TermQueue({ store, toast, version, simple }) {
   const [items, setItems] = useState([]);
   const [counts, setCounts] = useState({});
   const [loading, setLoading] = useState(true);
@@ -584,11 +588,12 @@ function TermQueue({ store, toast, version }) {
   const load = async (lim) => {
     if (!window.API) { setLoading(false); return; }
     const pid = store.activeProject && store.activeProject.id;
-    const res = await window.API.safeCall(() => window.API.termQueue("pending", lim || limit, pid));
+    const res = await window.API.safeCall(() => window.API.termQueue("pending", lim || limit, pid, !!simple));
     setItems((res && res.items) || []);
     setCounts((res && res.counts) || {});
     setGroups((res && res.groups) || []);
     setTotal((res && res.total) || 0);
+    setWaiting((res && res.waiting) || 0);
     setLoading(false);
   };
 
@@ -649,6 +654,10 @@ function TermQueue({ store, toast, version }) {
      хуки по индексу. */
   const [editing, setEditing] = useState({});
   const openEdit = (cid) => setEditing(e => ({ ...e, [cid]: true }));
+  /* Сколько карточек ждут ДАННЫХ, а не человека (ответ `actionable`). Хук
+     объявлен ПОСЛЕ `editing`: тест адресует хуки по индексу, и `editing`
+     обязан остаться двенадцатым. */
+  const [waiting, setWaiting] = useState(0);
 
   const approve = async (c, confirm) => {
     const tgt = (drafts[c.id] !== undefined ? drafts[c.id] : c.tgt || "").trim();
@@ -684,10 +693,19 @@ function TermQueue({ store, toast, version }) {
   };
 
   if (loading) return null;
-  if (!items.length && !total) return null;
+  /* Вопросов нет, но карточки ждут данных — сказать об этом числом: пустое
+     место неотличимо от «кандидатов не бывает». */
+  const waitNote = simple && waiting > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
+    TR("Ещё ") + waiting + TR(" терминов ждут данных — дорешаю сама после следующих прогонов."));
+  if (!items.length && !total) return waitNote || null;
 
-  return React.createElement("div", { className: "card card-pad", style: { marginBottom: 18 } },
-    React.createElement("div", { className: "row between", style: { cursor: "pointer" }, onClick: () => setOpen(o => !o) },
+  return React.createElement("div", simple ? { className: "col", style: { gap: 12 } }
+                                           : { className: "card card-pad", style: { marginBottom: 18 } },
+    simple && React.createElement("div", { className: "ask-head" },
+      React.createElement("h2", null, TR("Проверьте, правильно ли я поняла")),
+      React.createElement("span", { className: "ask-n" }, total),
+      React.createElement("span", { className: "ask-hint" }, TR("сначала те, что затронут больше строк"))),
+    !simple && React.createElement("div", { className: "row between", style: { cursor: "pointer" }, onClick: () => setOpen(o => !o) },
       React.createElement("div", { className: "row", style: { gap: 10 } },
         React.createElement(Icon, { name: open ? "chevD" : "chevR", size: 16 }),
         React.createElement("h3", { style: { margin: 0, fontSize: 15 } }, TR("Кандидаты в глоссарий")),
@@ -701,7 +719,7 @@ function TermQueue({ store, toast, version }) {
         (store.activeProject ? TR("по охвату") : TR("по частоте")) + TR(" · одобрено: ") + (counts.approved || 0) + TR(" · отклонено: ") + (counts.rejected || 0))),
 
     // Разбор очереди по причинам: сразу видно, где работа человека, а где мусор.
-    open && groups.length > 0 && React.createElement("div", { className: "col", style: { gap: 5, marginTop: 12 } },
+    open && !simple && groups.length > 0 && React.createElement("div", { className: "col", style: { gap: 5, marginTop: 12 } },
       React.createElement("div", { className: "dim", style: { fontSize: 12 } },
         TR("Почему ждут — нажмите, чтобы отобрать:")),
       groups.map(g => React.createElement("div", { key: g.reason, className: "row between", style: { gap: 10, fontSize: 12.5, padding: "3px 0" } },
@@ -734,8 +752,11 @@ function TermQueue({ store, toast, version }) {
       React.createElement("div", { className: "kb-cands" },
       items.filter(c => !only || c.why === only).map(c => {
         const [label, icon, color] = CAND_KIND[c.kind] || [TR("Кандидат"), "info", "var(--text-2)"];
-        return React.createElement("div", { key: c.id, className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 8 } },
-          React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+        const viewing = (c.tgt || "").trim() && !editing[c.id] && !warned[c.id];
+        return React.createElement("div", simple
+            ? { key: c.id, className: "card kb-card" }
+            : { key: c.id, className: "card", style: { padding: "12px 14px", background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 8 } },
+          !simple && React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
             React.createElement("div", { className: "row", style: { gap: 8 } },
               React.createElement(Icon, { name: icon, size: 15, style: { color } }),
               React.createElement("span", { style: { fontSize: 12, color, fontWeight: 600 } }, label),
@@ -778,7 +799,7 @@ function TermQueue({ store, toast, version }) {
 
           // Почему автоматика не берёт эту карточку. Без этого человек не
           // понимает, чего от него ждут: дорешать или дождаться проверок.
-          c.why && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+          !simple && c.why && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
             c.why === "ready" ? TR("готов к автоодобрению (до корпусной проверки)")
               : c.why === "closed" ? TR("уже есть в глоссарии")
                 : TR("ждёт человека: ") + c.why),
@@ -848,7 +869,12 @@ function TermQueue({ store, toast, version }) {
                    onClick: () => approve(c, !!warned[c.id]) },
                    warned[c.id] ? TR("Всё равно одобрить") : TR("В глоссарий")),
                  React.createElement(Btn, { key: "rej", variant: "ghost", size: "sm", icon: "close", disabled: busy === c.id, onClick: () => reject(c) }, TR("Отклонить"))],
-            React.createElement(Btn, {
+            /* Разбор смысла человеку нужен там, где он усомнился («Не то»)
+               или судья возразил, — на карточке, которую он сейчас
+               подтверждает одним нажатием, это третья кнопка без повода. */
+            simple && viewing && c.impact > 0 && React.createElement("span", { className: "kb-reach" },
+              TR("затронет строк: ") + c.impact),
+            (!simple || !viewing) && React.createElement(Btn, {
               variant: "secondary", size: "sm", icon: "book",
               disabled: busy === c.id || (explained[c.id] && explained[c.id].loading),
               onClick: () => explain(c) },
@@ -861,7 +887,8 @@ function TermQueue({ store, toast, version }) {
       !items.filter(c => !only || c.why === only).length && React.createElement(
         "div", { className: "dim", style: { fontSize: 13 } },
         only ? TR("В этой группе на загруженной странице ничего нет — нажмите «Показать ещё».")
-             : TR("Нерешённых кандидатов нет."))
+             : TR("Нерешённых кандидатов нет.")),
+      waitNote
     )
   );
 }
@@ -872,6 +899,10 @@ function TermQueue({ store, toast, version }) {
    термин взялся из одной, а перевод строки из другой, проще в одном месте. */
 function TabKnowledge({ store, toast }) {
   const [side, setSide] = useState("glossary");
+  /* Человеку — один словарь: совпадения из памяти переводов показывает поиск
+     «Словарей». Отдельная база со своими фильтрами — инструмент эксперта. */
+  if (!(store.can && store.can.super) && side === "glossary")
+    return React.createElement(TabGlossary, { store, toast, onTM: () => setSide("tm") });
   return React.createElement("div", null,
     /* Две базы — переключатель .seg, а не пара кнопок: чёрная заливка
        на экране означает «главное действие», и вкладка её занимать не вправе. */
@@ -885,7 +916,69 @@ function TabKnowledge({ store, toast }) {
     React.createElement(side === "glossary" ? TabGlossary : TabTM, { store, toast }));
 }
 
-function TabGlossary({ store, toast }) {
+/* Строка «Сама разложила N терминов» — последняя пачка, записанная ШАГОМ
+   ПРОГОНА (`origin: "run"`, `_job_auto_terms`) в области открытого проекта.
+   Ручные пачки панели и понижения аудита сюда не попадают: это решения
+   эксперта, и откатывать их отсюда значило бы отменять чужое решение.
+   Автоматика без отката недопустима, поэтому кнопка стоит рядом с числом. */
+function GlossaryAutoLine({ store, toast, version, onDone }) {
+  const [batches, setBatches] = useState([]);
+  const [busy, setBusy] = useState(false);
+  /* Откатил — строка уходит до следующего перечитывания. Иначе find тут же
+     нашёл бы ПРЕДЫДУЩУЮ пачку прогона с той же кнопкой, и второе нажатие
+     откатило бы то, о чём человек не спрашивал. */
+  const [undone, setUndone] = useState(false);
+  const project = store.activeProject;
+  useEffect(() => {
+    if (!window.API || !window.API.autoBatches) return;
+    let dead = false;
+    window.API.safeCall(() => window.API.autoBatches())
+      .then(r => { if (!dead) { setBatches((r && r.batches) || []); setUndone(false); } });
+    return () => { dead = true; };
+  }, [version, project && project.id]);
+  if (!project || undone) return null;
+  const lang = project.src + "→" + project.tgt;
+  const dom = project.domain || LEGACY_DOMAIN;
+  const b = batches.find(x => x.origin === "run" && x.kind !== "audit"
+    && Array.isArray(x.scope) && x.scope[0] === lang && x.scope[1] === dom);
+  const n = b ? ((b.counts || {}).auto || 0) + ((b.counts || {}).verified || 0) : 0;
+  if (!b || !n) return null;
+  const undo = async () => {
+    if (!window.confirm(TR("Откатить пачку #") + b.id + "?\n\n"
+      + TR("Записи, которые она завела, уйдут из словаря, заменённые вернутся, кандидаты — обратно в вопросы."))) return;
+    setBusy(true);
+    const res = await window.API.safeCall(() => window.API.undoAutoApprove(b.id));
+    setBusy(false);
+    if (!res || !res.ok) { toast.error(TR("Откат не выполнен"), TR("Сервер не ответил.")); return; }
+    setBatches(list => list.filter(x => x.id !== b.id));
+    setUndone(true);
+    toast.warning(TR("Пачка #") + b.id + TR(" откачена"),
+      TR("Удалено: ") + res.removed + TR(" · возвращено прежних: ") + res.restored +
+      TR(" · кандидатов обратно в очередь: ") + res.returned);
+    if (onDone) onDone();
+  };
+  return React.createElement("div", { className: "kb-auto" },
+    React.createElement("span", null, TR("После прогона сама разложила подсказкой "),
+      React.createElement("b", null, n), TR(" однозначных терминов — модель вправе их не слушать")),
+    React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", disabled: busy, onClick: undo },
+      busy ? TR("Откатываем…") : TR("Откатить")));
+}
+
+/* Фильтры таблицы — чипами, а не тремя выпадающими списками: у человека
+   один вопрос «какие записи обязательны», и отвечать на него надо одним
+   нажатием. Категория, сортировка и область поиска — эксперту. */
+const KB_TIER_CHIPS = [
+  ["all", TR("Все")], ["verified", TR("Утверждённые")],
+  ["auto", TR("Подсказки")], ["project", TR("Только этот проект")],
+];
+function kbTierPass(g, f) {
+  if (f === "verified") return g.tier !== "auto";
+  if (f === "auto") return g.tier === "auto";
+  if (f === "project") return g.project != null;
+  return true;
+}
+
+function TabGlossary({ store, toast, onTM }) {
   const [query, setQuery] = useState("");
   const [scope, setScope] = useState("all");
   const [cat, setCat] = useState("all");
@@ -905,6 +998,14 @@ function TabGlossary({ store, toast }) {
   // Автоодобрение и откат меняют и очередь, и сам глоссарий — обоим нужен
   // общий сигнал «перечитай», иначе таблица показывает вчерашний список.
   const [queueVersion, setQueueVersion] = useState(0);
+  const [tierF, setTierF] = useState("all");
+  /* «Обслуживание словаря» у не-эксперта: свёрнуто, но на месте. Панели —
+     команды над ДАННЫМИ (разрешение приказа, аудит, вынос, откат ручных
+     пачек), а не устройство прогона, и пропавшая дверь неотличима от
+     потерянной функции. */
+  const [maint, setMaint] = useState(false);
+  const expert = !!(store.can && store.can.super);
+  const owner = !!(store.can && (store.can.owner || store.can.super));
 
   // Load full glossary from API on mount
   useEffect(() => {
@@ -915,19 +1016,26 @@ function TabGlossary({ store, toast }) {
   }, [queueVersion]);
 
   // Reset page on filter change
-  useEffect(() => { setPage(0); }, [query, scope, cat, sort, dictSel]);
+  useEffect(() => { setPage(0); }, [query, scope, cat, sort, dictSel, tierF]);
 
   const cats = ["all"].concat(
     Array.from(new Set(allTerms.map(g => g.cat).filter(Boolean))).sort());
-  let rows = allTerms.filter(g => {
-    if (dictSel && (g.dict || "old") !== dictSel) return false;
-    if (cat !== "all" && g.cat !== cat) return false;
-    if (query && !pairMatches(g, query, scope)) return false;
+  /* Фильтры, которых человек не видит, обязаны молчать: спрятанный выбор
+     категории из прошлого захода эксперта сузил бы таблицу без единого
+     видимого признака. */
+  const byDict = allTerms.filter(g => !dictSel || (g.dict || "old") === dictSel);
+  let rows = byDict.filter(g => {
+    if (!kbTierPass(g, tierF)) return false;
+    if (expert && cat !== "all" && g.cat !== cat) return false;
+    if (query && !pairMatches(g, query, expert ? scope : "all")) return false;
     return true;
   });
-  rows = rows.slice().sort((a, b) => sort === "freq" ? (b.freq||0) - (a.freq||0) : a.src.localeCompare(b.src, "ru"));
+  rows = rows.slice().sort((a, b) => (expert && sort === "freq") ? (b.freq||0) - (a.freq||0) : a.src.localeCompare(b.src, "ru"));
   const totalPages = Math.ceil(rows.length / PAGE_SIZE);
   const pageRows = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  /* Память переводов — той же строкой поиска: у человека один вопрос «как
+     это уже переводили», и две базы для него — одна. */
+  const tmHits = query ? (store.tm || []).filter(t => pairMatches(t, query, "all")) : [];
 
   const save = (term, isNew) => {
     store.saveTerm(term, isNew);
@@ -980,40 +1088,65 @@ function TabGlossary({ store, toast }) {
   };
 
   const confMeta = { high: ["badge-confirmed", TR("Высокая")], medium: ["badge-review", TR("Средняя")], low: ["badge-failed", TR("Низкая")] };
+  /* Статус записи — ОДНОЙ ячейкой: обязательна ли она модели, кто за неё
+     отвечает и где действует. Раньше это были три пометки, разбросанные
+     по ячейке перевода. */
+  const statusCell = (g) => React.createElement("td", null,
+    g.tier === "auto"
+      ? React.createElement("span", { className: "kb-st hint",
+          title: TR("Автоимпорт, не проверено человеком. В промпт уходит подсказкой, а не жёстким правилом.") },
+          TR("подсказка"))
+      : React.createElement("span", { className: "kb-st ord", title: glossSignedTitle(g.signedBy) },
+          TR("утверждён") + (g.signedBy && g.signedBy.name ? " · " + g.signedBy.name : "")),
+    // Область действия. Показываем ТОЛЬКО проектную: «вся организация» —
+    // это отсутствие поля, то есть обычное состояние записи.
+    g.project != null && React.createElement("span", { className: "kb-st proj",
+      title: TR("Запись работает только в этом проекте. «Расширить» сделает её правилом всей организации.") },
+      TR("проект ") + g.project));
 
-  return React.createElement("div", { className: "page page-wide" },
+  return React.createElement("div", { className: "page page-stack" + (expert ? " page-wide" : "") },
     React.createElement("div", { className: "page-head" },
-      React.createElement("h1", null, TR("Словарь книги"),
-        React.createElement(InfoTip, { title: TR("Глоссарий"), body: TR("База утверждённых терминов организации с переводами. Используется для инъекции в GPT-промпт и проверки консистентности в QA.") })),
-      React.createElement("p", { className: "lead" }, TR("Слова, которые встречаются много раз. Я хочу писать их всегда одинаково — скажите, правильно ли я их поняла."))),
+      React.createElement("h1", null, TR("Словари")),
+      React.createElement("p", { className: "lead" }, TR("Слова, которые я пишу одинаково во всей книге."))),
 
-    // Три служебные панели — колонками, как блоки запуска на главной
-    // (`.run-decks`): стопкой во всю ширину они читались строчками
-    // по полторы тысячи пикселей, и до очереди приходилось листать.
-    React.createElement("div", { className: "kb-decks" },
+    // Три служебные панели — эксперту и колонками, как блоки запуска на
+    // главной (`.run-decks`). Человеку их работу делает прогон
+    // (`auto_terms`), а итог показывает строка автоматики ниже.
+    (expert || maint) && React.createElement("div", { className: "kb-decks" },
       React.createElement(AutoApprovePanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
       React.createElement(GlossaryAuditPanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) }),
       React.createElement(GlossaryPurgePanel, { store, toast, onDone: () => setQueueVersion(v => v + 1) })),
 
-    React.createElement(TermQueue, { store, toast, version: queueVersion }),
-
-    React.createElement("div", { className: "row between row-wrap", style: { marginBottom: 16, gap: 12 } },
+    React.createElement("div", { className: "kb-tools" },
       React.createElement(SearchInput, { value: query, onChange: (e) => setQuery(e.target.value),
-        placeholder: scope === "src" ? TR("Поиск по термину (RU)…") : scope === "tgt" ? TR("Поиск по переводу (EN)…") : TR("Поиск по глоссарию…") }),
-      React.createElement("div", { className: "row", style: { gap: 8 } },
-        dicts.length > 0 && React.createElement(Select, { value: dictSel, onChange: (e) => setDictSel(e.target.value), style: { width: "auto" }, "aria-label": TR("Словарь") },
-          React.createElement("option", { value: "" }, TR("Все словари")),
-          dicts.map(d => React.createElement("option", { key: d.id, value: d.id }, d.title + " · " + (d.count || 0)))),
-        React.createElement(ScopeSelect, { value: scope, onChange: (e) => setScope(e.target.value) }),
-        React.createElement(Select, { value: cat, onChange: (e) => setCat(e.target.value), style: { width: "auto" } },
-          cats.map(c => React.createElement("option", { key: c, value: c }, c === "all" ? TR("Все категории") : c))),
-        React.createElement(Select, { value: sort, onChange: (e) => setSort(e.target.value), style: { width: "auto" } },
-          React.createElement("option", { value: "freq" }, TR("По частоте")),
-          React.createElement("option", { value: "alpha" }, TR("По алфавиту"))),
-        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "download" }, "TSV"),
-        React.createElement(Btn, { variant: "primary", size: "sm", icon: "plus", onClick: () => setModal("add") }, TR("Термин"))
-      )
-    ),
+        placeholder: expert
+          ? (scope === "src" ? TR("Поиск по термину (RU)…") : scope === "tgt" ? TR("Поиск по переводу (EN)…") : TR("Поиск по глоссарию…"))
+          : TR("Найти термин или фразу из памяти переводов") }),
+      dicts.length > 0 && React.createElement(Select, { value: dictSel, onChange: (e) => setDictSel(e.target.value), style: { width: "auto" }, "aria-label": TR("Словарь") },
+        React.createElement("option", { value: "" }, TR("Все словари")),
+        dicts.map(d => React.createElement("option", { key: d.id, value: d.id }, d.title + " · " + (d.count || 0)))),
+      expert && React.createElement(ScopeSelect, { value: scope, onChange: (e) => setScope(e.target.value) }),
+      expert && React.createElement(Select, { value: cat, onChange: (e) => setCat(e.target.value), style: { width: "auto" } },
+        cats.map(c => React.createElement("option", { key: c, value: c }, c === "all" ? TR("Все категории") : c))),
+      expert && React.createElement(Select, { value: sort, onChange: (e) => setSort(e.target.value), style: { width: "auto" } },
+        React.createElement("option", { value: "freq" }, TR("По частоте")),
+        React.createElement("option", { value: "alpha" }, TR("По алфавиту"))),
+      // Импорт словаря файлом живёт на экране организации (права владельца):
+      // здесь только дверь к нему, второй копии загрузки нет.
+      owner && React.createElement(Btn, { variant: "secondary", icon: "upload", onClick: () => store.go("org") }, TR("Импорт файла")),
+      React.createElement(Btn, { variant: "primary", icon: "plus", onClick: () => setModal("add") }, TR("Добавить термин"))),
+
+    React.createElement(TermQueue, { store, toast, version: queueVersion, simple: !expert }),
+    !expert && React.createElement(GlossaryAutoLine, { store, toast, version: queueVersion,
+      onDone: () => setQueueVersion(v => v + 1) }),
+
+    React.createElement("div", { className: "kb-chips", role: "group", "aria-label": TR("Какие записи показать") },
+      KB_TIER_CHIPS
+        .filter(([key]) => key !== "project" || byDict.some(g => g.project != null))
+        .map(([key, label]) => React.createElement("button", {
+          key, type: "button", className: "kb-chip", "aria-pressed": tierF === key,
+          onClick: () => setTierF(key) },
+          label + " · " + byDict.filter(g => kbTierPass(g, key)).length))),
 
     React.createElement("div", { className: "table-wrap" },
       React.createElement("div", { className: "tbl-scroll" },
@@ -1022,33 +1155,24 @@ function TabGlossary({ store, toast }) {
             React.createElement("th", null, TR("Термин") + " (" + ((store.activeProject || {}).src || "RU") + ")"),
             React.createElement("th", null, TR("Перевод") + " (" + ((store.activeProject || {}).tgt || "EN") + ")"),
             dicts.length > 0 && React.createElement("th", { style: { width: 160 } }, TR("Словарь")),
-            React.createElement("th", { style: { width: 150 } }, TR("Категория"), React.createElement(InfoTip, { title: TR("Категория"), body: TR("Anatomy (анатомия), Dosage (дозировки), Disease (заболевания), Device (медтехника), Procedure (процедуры) и др.") })),
-            React.createElement("th", { style: { width: 120 } }, TR("Частота"), React.createElement(InfoTip, { title: TR("Частота"), body: TR("Сколько раз термин встречался в проектах.") })),
-            React.createElement("th", { style: { width: 150 } }, TR("Достоверность"), React.createElement(InfoTip, { title: TR("Уверенность"), body: TR("High — проверен экспертом, Medium — авто-извлечён, Low — требует проверки.") })), React.createElement("th", { style: { width: 96 } }, ""))),
+            React.createElement("th", { style: { width: 200 } }, TR("Статус")),
+            expert && React.createElement("th", { style: { width: 150 } }, TR("Категория"), React.createElement(InfoTip, { title: TR("Категория"), body: TR("Anatomy (анатомия), Dosage (дозировки), Disease (заболевания), Device (медтехника), Procedure (процедуры) и др.") })),
+            expert && React.createElement("th", { style: { width: 120 } }, TR("Частота"), React.createElement(InfoTip, { title: TR("Частота"), body: TR("Сколько раз термин встречался в проектах.") })),
+            expert && React.createElement("th", { style: { width: 150 } }, TR("Достоверность"), React.createElement(InfoTip, { title: TR("Уверенность"), body: TR("High — проверен экспертом, Medium — авто-извлечён, Low — требует проверки.") })),
+            React.createElement("th", { style: { width: 96 } }, ""))),
           React.createElement("tbody", null,
             pageRows.map((g, i) => { const [cls, lab] = confMeta[(g.conf || "").toLowerCase()] || confMeta.medium;
               return React.createElement("tr", { key: i, onClick: () => setModal(g) },
-                React.createElement("td", { style: { fontWeight: 600 } },
+                React.createElement("td", { style: { fontWeight: 500 } },
                   React.createElement("button", {
                     className: "linklike", onClick: (e) => openUsage(g, e),
                     title: TR("Показать сегменты, где встречается этот термин") }, g.src)),
-                React.createElement("td", { style: { color: "var(--c-primary)", fontWeight: 500 } }, g.tgt,
-                  // auto = массовый автоимпорт: модель получает такую запись подсказкой, а не правилом
-                  g.tier === "auto" && React.createElement("span", { className: "dim", style: { fontSize: 11, marginLeft: 8, whiteSpace: "nowrap" },
-                    title: TR("Автоимпорт, не проверено человеком. В промпт уходит подсказкой, а не жёстким правилом.") }, TR("авто")),
-                  // Кто отвечает за запись — рядом с переводом, подробности в подсказке.
-                  g.signedBy && g.signedBy.name && React.createElement("span", { className: "dim", style: { fontSize: 11, marginLeft: 8, whiteSpace: "nowrap" },
-                    title: glossSignedTitle(g.signedBy) }, "· " + g.signedBy.name),
-                  // Область действия записи. Показываем ТОЛЬКО проектную:
-                  // «вся организация» — это отсутствие поля, то есть обычное
-                  // состояние, и метить его значило бы пометить весь глоссарий.
-                  g.project != null && React.createElement("span", { className: "badge soft", style: { fontSize: 11, marginLeft: 8, whiteSpace: "nowrap" },
-                    title: TR("Запись работает только в этом проекте. «Расширить» сделает её правилом всей организации.") },
-                    TR("проект ") + g.project)),
+                React.createElement("td", { style: { color: "var(--c-primary)" } }, g.tgt),
                 dicts.length > 0 && React.createElement("td", { className: "dim", style: { fontSize: 12 } }, dictTitle(g.dict || "old")),
-                React.createElement("td", null, React.createElement(Badge, { variant: "soft" }, g.cat)),
-                React.createElement("td", { className: "tnum dim" }, g.freq + "×"),
-                React.createElement("td", null, React.createElement("span", { className: "badge " + cls }, lab)),
+                statusCell(g),
+                expert && React.createElement("td", null, React.createElement(Badge, { variant: "soft" }, g.cat)),
+                expert && React.createElement("td", { className: "tnum dim" }, g.freq + "×"),
+                expert && React.createElement("td", null, React.createElement("span", { className: "badge " + cls }, lab)),
                 React.createElement("td", { onClick: (e) => e.stopPropagation() },
                   React.createElement("div", { className: "row", style: { gap: 2 } },
                     React.createElement(IconBtn, { icon: "edit", label: TR("Редактировать"), sm: true, onClick: () => setModal(g) }),
@@ -1066,7 +1190,7 @@ function TabGlossary({ store, toast }) {
         )
       )
     ),
-    React.createElement("div", { className: "row between", style: { marginTop: 12 } },
+    React.createElement("div", { className: "row between" },
       React.createElement("span", { className: "dim", style: { fontSize: 13 } },
         loaded ? (TR("Показано ") + pageRows.length + TR(" из ") + rows.length + TR(" (всего ") + allTerms.length + ")") : TR("Загрузка…")),
       totalPages > 1 && React.createElement("div", { className: "row", style: { gap: 6 } },
@@ -1075,6 +1199,28 @@ function TabGlossary({ store, toast }) {
         React.createElement(Btn, { variant: "ghost", size: "sm", disabled: page >= totalPages - 1, onClick: () => setPage(p => p + 1) }, "→")
       )
     ),
+
+    tmHits.length > 0 && React.createElement("div", { className: "col", style: { gap: 8 } },
+      React.createElement("div", { className: "ask-head" },
+        React.createElement("h2", null, TR("Память переводов")),
+        React.createElement("span", { className: "ask-hint" }, TR("найдено: ") + tmHits.length)),
+      React.createElement("div", { className: "ask-list" },
+        tmHits.slice(0, 20).map((t, i) => React.createElement("div", { key: i, className: "ask" },
+          React.createElement("span", { className: "ask-sev" }),
+          React.createElement("div", null,
+            React.createElement("div", { className: "ask-t" }, t.src),
+            React.createElement("div", { className: "ask-m", style: { color: "var(--c-primary)" } }, t.tgt)),
+          React.createElement("div", { className: "ask-acts" })))),
+      tmHits.length > 20 && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
+        TR("показаны первые 20 — уточните поиск"))),
+
+    /* Двери эксперта у человека — свёрнутыми: служебные панели словаря
+       и отдельная база памяти переводов. */
+    !expert && React.createElement("div", { className: "page-foot" },
+      React.createElement("span", { className: "spacer" }),
+      onTM && React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onTM }, TR("Память переводов")),
+      React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setMaint(v => !v) },
+        maint ? TR("Скрыть обслуживание словаря") : TR("Обслуживание словаря"))),
 
     modal && React.createElement(TermModal, { term: modal === "add" ? null : modal,
       dicts, writeDict,

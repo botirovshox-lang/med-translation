@@ -374,7 +374,14 @@ global.API.termCase = async (pid, opts) => {
         samples: [{ id: 3, fixed: [{ was: "Tuberculoma", now: "tuberculoma" }] }] };
 };
 global.API.fetchSegments = async () => ({ ok: true, segments: [{ id: 3, target: "tuberculoma" }] });
-const store4 = { updateSegment: (pid, sid, sg) => patched.push([pid, sid, sg.target]) };
+// Подтянутое с сервера кладётся ЛОКАЛЬНО (mergeServerSegments), а не через
+// updateSegment: тот шлёт текст обратно на сервер. Вызов updateSegment здесь —
+// регрессия, и заглушка его засчитывает отдельно.
+const wroteBack = [];
+const store4 = {
+  mergeServerSegments: (pid, segs) => (segs || []).forEach(sg => patched.push([pid, sg.id, sg.target])),
+  updateSegment: (pid, sid, sg) => wroteBack.push([pid, sid]),
+};
 let confirmText = "";
 global.confirm = (t) => { confirmText = t; return true; };
 
@@ -443,6 +450,8 @@ const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
           "и сказано про заверенные, которых правка не касается");
     check(patched.length === 1 && patched[0][2] === "tuberculoma",
           "подтянут только правленый сегмент: " + JSON.stringify(patched));
+    check(wroteBack.length === 0,
+          "подтянутое не пишется обратно на сервер (updateSegment): " + JSON.stringify(wroteBack));
   }
 
   // ─────────── 4b. RunPanel: состав от сервера, галочки, запуск ───────────
@@ -475,9 +484,13 @@ const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
   };
   const TKP = JSON.parse(JSON.stringify(TK));
   TKP.human.revertedByScore = [4];
+  /* Устройство прогона (модели, цена по шагам) видит СИСТЕМНЫЙ
+     АДМИНИСТРАТОР — инвариант 24. Стаб без `can` говорил бы о панели
+     неправду: это вид администратора, а не всякого вошедшего. */
   const storeRun = { activeProject: { id: 1, segments: [{ id: 1, source: "аа", target: "bb" },
                                                         { id: 2, source: "вв", target: "" }] },
-                     go() {}, setSegmentFilter() {}, updateSegment() {} };
+                     can: { owner: true, super: true, role: "owner" },
+                     go() {}, setSegmentFilter() {}, updateSegment() {}, mergeServerSegments() {} };
   let treeRp = null, okRp = true;
   try {
     hooks = []; hookIdx = 0; effects.length = 0;
@@ -555,13 +568,45 @@ const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
         === JSON.stringify({ use_judge: true, judge_all: true, bc_model: "m2" }),
         "tkPlanBody: пустой выбор не уходит, выбранное — уходит");
 
+  // ─────────── 4d. Два рубежа: устройство прогона и смета ───────────
+  // Инвариант 24. Редактор этот рубеж держал с самого начала, а панель
+  // запуска на «Анализе» — нет: её единственным условием был тенантный
+  // `simple` (инвариант 22), то есть переводчик видел здесь ровно ту таблицу
+  // моделей, которую редактор ему не показывает. Состав (шаг и сколько
+  // сегментов) при этом остаётся всем: это обещание работы.
+  console.log("\n=== 4d. Устройство — админу, смета — плательщику ===");
+  const asRole = (can) => {
+    hooks = []; hookIdx = 0; effects.length = 0;
+    const st = Object.assign({}, storeRun, { can });
+    return texts(React.createElement(RunPanel, { summary: TKP, store: st, toast,
+                                                 plan: planSame, cat: catSrv,
+                                                 mods: { judge_model: "m1" },
+                                                 setMod: (k, v) => {},
+                                                 onClose() {}, onStarted() {} }));
+  };
+  const tOwn = asRole({ owner: true, super: false, role: "owner" });
+  check(tOwn.some(s => s.indexOf("Перевод") !== -1) && tOwn.some(s => s.indexOf("2 сегм.") !== -1),
+        "владелец: состав по шагам на месте");
+  check(!tOwn.some(s => s === "по умолчанию"), "владелец: выбора моделей нет");
+  check(!tOwn.some(s => s.indexOf("Модель 1") !== -1),
+        "владелец: действующая модель не названа");
+  check(!tOwn.some(s => s.indexOf("Back-check той же моделью") !== -1),
+        "владелец: подсказка о конфликте моделей не тревожит без двери");
+  check(tOwn.some(s => s.indexOf("нижняя граница") !== -1),
+        "владелец: про смету сказано — он платит");
+  const tTr = asRole({ owner: false, super: false, role: "translator" });
+  check(tTr.some(s => s.indexOf("Запустить") !== -1), "переводчик: кнопка на месте");
+  check(!tTr.some(s => s === "по умолчанию"), "переводчик: выбора моделей нет");
+  check(!tTr.some(s => s.indexOf("нижняя граница") !== -1),
+        "переводчик: сметы нет — деньги не его дело");
+
   // ─────────── 5. TabAnalysis: старый сервер без turnkey не роняет экран ───────────
   console.log("\n=== 5. TabAnalysis переживает ответ сервера без turnkey ===");
   global.API.analysis = async () => BASE;          // старый ответ, корзин нет
   global.API.runPlan = async () => ({ steps: [], ids: [], total: 0 });
   global.API.listJobs = async () => ({ active: [], jobs: [] });
   const storeTab = { activeProject: { id: 1, segments: [] }, glossary: [],
-                     go() {}, setSegmentFilter() {}, updateSegment() {},
+                     go() {}, setSegmentFilter() {}, updateSegment() {}, mergeServerSegments() {},
                      statusCounts() { return { failed: 0, qa: 0, all: 0 }; } };
   let okTab = true, treeTab = null;
   try {

@@ -1145,6 +1145,10 @@ tr.row-checked td { background: color-mix(in srgb, var(--c-primary) 8%, transpar
 .tk-grid .tk-select { width: 100%; min-width: 0; font-size: 12.5px; padding: 3px 28px 3px 8px; }
 .tk-grid .tk-eff { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tk-grid .tk-cost { white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+/* Без устройства прогона (не администратор) колонок модели и действующей
+   модели нет вовсе: пустые ячейки оставили бы полстроки дыры между шагом
+   и составом. Остаётся «шаг · сколько сегментов». */
+.tk-grid-plain { grid-template-columns: minmax(0, 1fr) auto; }
 @media (max-width: 720px) {
   /* Две колонки и ПЛОТНАЯ раскладка: dense сажает подпись модели в дыру
      рядом с названием шага, а цену — рядом с селектором. Без dense

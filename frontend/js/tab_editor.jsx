@@ -745,7 +745,9 @@ function TabEditor({ store, toast }) {
       if (!ids.length) return;
       const res = await window.API.safeCall(() => window.API.fetchSegments(project.id, ids));
       if (dead || !res || !res.segments) return;
-      res.segments.forEach(s => store.updateSegment(project.id, s.id, s));
+      // Локально, а не updateSegment: тот слал бы текст обратно, и сервер,
+      // пока идёт прогон, отвечал 409 на каждый сегмент (см. mergeServerSegments).
+      store.mergeServerSegments(project.id, res.segments);
     }, 3000);
     return () => { dead = true; clearInterval(id); };
   }, [job && job.id, job && job.status, job && (job.recent || []).join(",")]);
@@ -841,6 +843,12 @@ function TabEditor({ store, toast }) {
   // Смена проекта гасит разрешение: заверял сегменты человек в ТОМ проекте,
   // и переносить на новый разрешение их переписать нельзя.
   useEffect(() => { setRpFixConfirmed(false); setRvConfirmed(false); setRvAskConfirmed(false); }, [project && project.id]);
+  // Отмеченные шаги — выбор на ОДИН прогон, а не настройка: таблица шагов
+  // живёт в свёртке, а сводка с главной кнопкой — нет, и выбор «только
+  // перевод», оставшийся от прошлого запуска, молча превращал «Перевести
+  // и проверить» в «нечего запускать» (инвариант 24: скрытое — честным
+  // умолчанием). Поэтому гаснет при смене проекта и после запуска.
+  useEffect(() => { setFullSteps(null); }, [project && project.id]);
   useEffect(() => { setRtFixConfirmed(false); }, [project && project.id]);
 
   useEffect(() => { setTcGroupPick(null); }, [tcModel, store.segmentFilter, checkedSegs.size]);
@@ -2300,6 +2308,10 @@ function TabEditor({ store, toast }) {
       rv_ask_confirmed: rvAskConfirmed,
     }, TR("В выбранных сегментах нечего делать."), fullEst);
     if (!started) return;
+    // Выбор шагов отработал свой прогон и гаснет (см. эффект смены проекта):
+    // состав этого прогона уже в снимке ниже, а следующий запуск из сводки
+    // обязан снова означать весь путь, а не остаток спрятанных галочек.
+    setFullSteps(null);
     // Проект и время создания — часть опознания снимка (см. runStepRows):
     // одного номера мало, они начинаются заново после рестарта сервиса.
     const snap = { jobId: started.id, project: started.project,
@@ -2418,6 +2430,10 @@ function TabEditor({ store, toast }) {
         onDrill: (ids, key) => { store.setSegmentFilter(ids); setBucket(key); setPage(1); },
         running: job && job.kind === "full" ? job : null, onRun: runFullJob, onStop: stopJob,
         disabled: !!job, scopeSize: fullRunIds.length, est: fullEst,
+        // Шаги отмечены в свёртке не все — кнопка сделает только их, и это
+        // обязано быть видно у самой кнопки, а не только в свёрнутой таблице.
+        partialSteps: fullSteps && fullSteps.size < FULL_STEP_KEYS.length ? fullSteps.size : 0,
+        allSteps: FULL_STEP_KEYS.length, onAllSteps: () => setFullSteps(null),
         showCost: !!(store.can && (store.can.owner || store.can.super)),
         fixConfirmed: rpFixConfirmed, fixConfirmedCount: rpConfirmedWaiting, onFixConfirmed: setRpFixConfirmed }),
       expertUI && tkSum && React.createElement("button", { className: "btn btn-ghost btn-sm",
@@ -3278,7 +3294,8 @@ function RunGroups({ title, tip, groups, pickedGroups, onToggleGroup }) {
    карточки корзин. Числа — те же turnkey с сервера, что и на «Что
    получилось»; клик по карточке фильтрует таблицу ниже. */
 function EditorHomeSummary({ sum, store, toast, onDrill, running, onRun, onStop, disabled,
-                             scopeSize, est, showCost, fixConfirmed, fixConfirmedCount, onFixConfirmed }) {
+                             scopeSize, est, showCost, fixConfirmed, fixConfirmedCount, onFixConfirmed,
+                             partialSteps, allSteps, onAllSteps }) {
   const tk = sum.turnkey, total = sum.total || 0;
   const ready = tk.ready || [], machine = tk.machine || [], human = tk.human || [];
   const seg = (n, color) => (total > 0 && n > 0)
@@ -3334,7 +3351,13 @@ function EditorHomeSummary({ sum, store, toast, onDrill, running, onRun, onStop,
     React.createElement("div", { className: "home-note" },
       React.createElement("span", null, TR("Переведу, перечитаю, проверю тремя способами и починю найденное. Считает сервер — настраивать нечего.")),
       React.createElement("span", null, TR("в работу пойдут ") + scopeSize + TR(" сегм.")),
-      showCost && React.createElement(EstLine, { est })));
+      showCost && React.createElement(EstLine, { est })),
+    partialSteps > 0 && React.createElement("div", { className: "row row-wrap",
+      style: { gap: 10, fontSize: 12.5, color: "var(--c-warning)" } },
+      React.createElement("span", null, TR("Отмечены не все шаги: ") + partialSteps + TR(" из ") + allSteps
+        + TR(" — кнопка сделает только их.")),
+      onAllSteps && React.createElement(Btn, { variant: "secondary", size: "sm", onClick: onAllSteps },
+        TR("Вернуть все шаги"))));
 }
 
 function EditorAnalysisCard({ sum, onDrill, onOpen }) {

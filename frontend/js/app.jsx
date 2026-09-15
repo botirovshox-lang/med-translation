@@ -209,6 +209,20 @@ function useStore(authed) {
      и сегменты, и объём, и отметка исходника. */
   const replaceProject = (project) =>
     setProjects(ps => ps.some(p => p.id === project.id) ? ps.map(p => p.id !== project.id ? p : project) : [project, ...ps]);
+  /* Копия СЕРВЕРА для нескольких сегментов — только в локальный state.
+     updateSegment для этого не годится: он оптимистичная правка человека
+     и шлёт текст обратно на сервер. Во время прогона сервер такую запись
+     отвергает 409 (_guard_project_write), каждый отказ считается
+     «не доехавшей правкой» (API.segEdits.failed), и сверка статусов
+     вкладки выключалась навсегда — ровно на прогоне, после которого она
+     нужнее всего. А вне прогона запись обратно устаревшей копии поверх
+     свежего текста ставила бы editedBy человеку на машинный перевод. */
+  const mergeServerSegments = (pid, segs) => {
+    if (!segs || !segs.length) return;
+    const byId = new Map(segs.map(s => [s.id, s]));
+    setProjects(ps => ps.map(p => p.id !== pid ? p : {
+      ...p, segments: p.segments.map(s => byId.has(s.id) ? { ...s, ...byId.get(s.id) } : s) }));
+  };
   const deleteProject = (id) => {
     setProjects(ps => ps.filter(p => p.id !== id));
     setFolders(fs => fs.map(f => (f.files || []).indexOf(id) < 0 ? f : { ...f, files: f.files.filter(x => x !== id) })
@@ -250,7 +264,7 @@ function useStore(authed) {
     exportHistory, team: [], me, can, brand, apiReady, setGlossary,
     expert: !!(can && can.super && expertView), expertView, setExpertView,
     segmentFilter, gotoSegId,
-    go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, patchProject, openProject, deleteProject, replaceProjectSegments, replaceProject, saveTerm, deleteTerm, deleteTM,
+    go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, patchProject, openProject, deleteProject, replaceProjectSegments, replaceProject, mergeServerSegments, saveTerm, deleteTerm, deleteTM,
     setExportHistory,
     setSegmentFilter: (ids) => {
       const f = ids && ids.length ? new Set(ids) : null;

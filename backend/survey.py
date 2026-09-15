@@ -280,7 +280,7 @@ APPLY = {
                     "глоссарий, помнит прошлые переводы и возвращает готовый .docx в исходном "
                     "оформлении. Две недели работы на ваших настоящих текстах — и честный разбор "
                     "в конце. Бесплатно, по 20–30 страниц на человека.",
-            "facts": ["7 вопросов", "около 3 минут", "ответы уходят напрямую разработчику"],
+            "facts": ["8 вопросов", "около 3 минут", "ответы уходят напрямую разработчику"],
             "submit": "Отправить заявку",
             "sending": "Отправляем…",
             "miss": "Не хватает ответа в пункте ",
@@ -302,7 +302,7 @@ APPLY = {
                     "yuritadi, oldingi tarjimalarni eslab qoladi va tayyor .docx faylni asl "
                     "bezagida qaytaradi. Ikki hafta o'z haqiqiy matnlaringiz ustida ish — va "
                     "oxirida halol tahlil. Bepul, har bir kishiga 20–30 sahifa.",
-            "facts": ["7 ta savol", "taxminan 3 daqiqa", "javoblar to'g'ridan-to'g'ri ishlab chiquvchiga ketadi"],
+            "facts": ["8 ta savol", "taxminan 3 daqiqa", "javoblar to'g'ridan-to'g'ri ishlab chiquvchiga ketadi"],
             "submit": "Arizani yuborish",
             "sending": "Yuborilyapti…",
             "miss": "Javob yetishmayapti, band ",
@@ -379,6 +379,21 @@ APPLY = {
                   {"v": "any", "ru": "Нет, возьму любой текст для теста",
                    "uz": "Yo'q, sinov uchun istalgan matnni olaman"}]},
 
+        # Форматы спрашиваются потому, что от них зависит, что чинить первым:
+        # .docx выгружается 1в1, а скан без текстового слоя — отдельная работа.
+        {"id": "formats", "type": "group", "req": 1,
+         "ru": {"q": "В каком виде к вам обычно приходят документы?",
+                "s": "Отметьте всё, что бывает."},
+         "uz": {"q": "Hujjatlar sizga odatda qanday ko'rinishda keladi?",
+                "s": "Bo'ladigan hammasini belgilang."},
+         "parts": [
+             {"k": "kinds", "ru": "Форматы", "uz": "Formatlar", "req": 1,
+              "opts": [{"v": "docx", "ru": "Word (.docx)"},
+                       {"v": "pdf", "ru": "PDF с текстом", "uz": "Matnli PDF"},
+                       {"v": "scan", "ru": "Сканы и фото", "uz": "Skan va suratlar"},
+                       {"v": "xlsx", "ru": "Excel"},
+                       {"v": "other", "ru": "Другое", "uz": "Boshqa"}]}]},
+
         {"id": "hours", "type": "one", "req": 1,
          "ru": {"q": "Сколько часов за две недели реально сможете уделить?",
                 "s": "Честный ответ полезнее красивого: мы считаем нагрузку, а не проверяем вас."},
@@ -386,8 +401,8 @@ APPLY = {
                 "s": "Halol javob chiroylisidan foydaliroq: biz yukni hisoblaymiz, sizni "
                      "tekshirmaymiz."},
          "opts": [{"v": "lt2", "ru": "до 2 часов", "uz": "2 soatgacha"},
-                  {"v": "3-5", "ru": "3–5 часов", "uz": "3–5 soat"},
-                  {"v": "6-10", "ru": "6–10 часов", "uz": "6–10 soat"},
+                  {"v": "2-5", "ru": "2–5 часов", "uz": "2–5 soat"},
+                  {"v": "5-10", "ru": "5–10 часов", "uz": "5–10 soat"},
                   {"v": "gt10", "ru": "больше 10 часов", "uz": "10 soatdan ko'p"}]},
 
         {"id": "pain", "type": "text", "req": 1,
@@ -418,10 +433,11 @@ DEBRIEF = {
             "sub": "· разбор после теста",
             "eyebrow": "Финал теста · две недели позади",
             "h1": "Скажите честно, где мы вас подвели",
-            "lede": "Вы дошли до конца — спасибо. Дальше 15 вопросов: почти везде достаточно "
-                    "ткнуть в один вариант, писать руками надо в трёх. Хвалить не обязательно, "
-                    "ругаться — можно и нужно: именно по этим ответам мы решаем, что чинить первым.",
-            "facts": ["15 вопросов", "5–7 минут", "три вопроса со свободным текстом"],
+            "lede": "Вы дошли до конца — спасибо. Дальше 16 вопросов: почти везде достаточно "
+                    "выбрать один вариант, писать самому — в трёх, и один из них необязательный. "
+                    "Хвалить не обязательно, ругаться — можно и нужно: именно по этим ответам мы "
+                    "решаем, что чинить первым.",
+            "facts": ["16 вопросов", "5–7 минут", "три вопроса со свободным текстом"],
             "whoLabel": "Ваш Telegram",
             "whoHint": "Чтобы понять, чей это разбор, и вернуться с вопросами.",
             "submit": "Отправить разбор",
@@ -441,11 +457,11 @@ DEBRIEF = {
             "sub": "· sinovdan keyingi tahlil",
             "eyebrow": "Sinov yakuni · ikki hafta ortda qoldi",
             "h1": "Qayerda sizni ovora qilganimizni halol ayting",
-            "lede": "Oxirigacha yetdingiz — rahmat. Endi 15 ta savol: deyarli hamma joyda bitta "
-                    "variantni bosish kifoya, faqat uchtasida yozish kerak. Maqtash shart emas, "
-                    "tanqid qilish — mumkin va kerak: aynan shu javoblarga qarab nimani birinchi "
-                    "tuzatishni hal qilamiz.",
-            "facts": ["15 ta savol", "5–7 daqiqa", "uchta savolda erkin matn"],
+            "lede": "Oxirigacha yetdingiz — rahmat. Endi 16 ta savol: deyarli hamma joyda bitta "
+                    "variantni tanlash kifoya, faqat uchtasida o'zingiz yozasiz, ulardan biri "
+                    "ixtiyoriy. Maqtash shart emas, tanqid qilish — mumkin va kerak: aynan shu "
+                    "javoblarga qarab nimani birinchi tuzatishni hal qilamiz.",
+            "facts": ["16 ta savol", "5–7 daqiqa", "uchta savolda erkin matn"],
             "whoLabel": "Telegramingiz",
             "whoHint": "Bu kimning tahlili ekanini bilish va savol bilan qaytish uchun.",
             "submit": "Tahlilni yuborish",
@@ -469,8 +485,8 @@ DEBRIEF = {
          "uz": {"q": "Umuman olganda qanday o'tdi?", "lo": "azob", "hi": "hammasi oson"}},
 
         {"id": "import", "type": "one", "req": 1,
-         "ru": {"q": "Файл загрузился нормально?", "s": "Речь про .docx, который вы приносили первым."},
-         "uz": {"q": "Fayl normal yuklandimi?", "s": "Gap birinchi olib kelgan .docx faylingiz haqida."},
+         "ru": {"q": "Файл загрузился нормально?", "s": "Речь про первый файл, который вы загрузили."},
+         "uz": {"q": "Fayl normal yuklandimi?", "s": "Gap birinchi yuklagan faylingiz haqida."},
          "opts": [{"v": "ok", "ru": "Да, сразу", "uz": "Ha, darrov"},
                   {"v": "2nd", "ru": "Со второй-третьей попытки", "uz": "Ikkinchi-uchinchi urinishda"},
                   {"v": "fail", "ru": "Не загрузился — расскажу ниже", "uz": "Yuklanmadi — quyida aytaman"},
@@ -484,9 +500,9 @@ DEBRIEF = {
                 "lo": "hammasini qayta qilish kerak", "hi": "deyarli tegmadim"}},
 
         {"id": "export", "type": "one", "req": 1,
-         "ru": {"q": "Экспорт «как в оригинале» — открывали файл в Word?",
+         "ru": {"q": "Выгрузка «Такой же файл, только на другом языке» — открывали результат в Word?",
                 "s": "Заголовки, таблицы, картинки, колонтитулы: всё осталось на местах?"},
-         "uz": {"q": "«Asl nusxadagidek» eksport — faylni Word'da ochdingizmi?",
+         "uz": {"q": "«Xuddi shu fayl, faqat boshqa tilda» eksporti — natijani Word'da ochdingizmi?",
                 "s": "Sarlavhalar, jadvallar, rasmlar, kolontitullar: hammasi joyida qoldimi?"},
          "opts": [{"v": "ok", "ru": "Всё на месте", "uz": "Hammasi joyida"},
                   {"v": "minor", "ru": "Мелочи поехали", "uz": "Mayda narsalar surildi"},
@@ -494,20 +510,20 @@ DEBRIEF = {
                   {"v": "no", "ru": "Не экспортировал(а)", "uz": "Eksport qilmadim"}]},
 
         {"id": "gloss", "type": "one", "req": 1,
-         "ru": {"q": "Глоссарий: разница между «приказом» и «подсказкой» понятна?",
+         "ru": {"q": "«Знания»: разница между «приказом» и «подсказкой» понятна?",
                 "s": "Приказ система обязана соблюсти, подсказку модель вправе проигнорировать."},
-         "uz": {"q": "Lug'at: «buyruq» va «maslahat» farqi tushunarlimi?",
+         "uz": {"q": "«Bilimlar»: «buyruq» va «maslahat» farqi tushunarlimi?",
                 "s": "Buyruqni tizim bajarishi shart, maslahatni model e'tiborsiz qoldirishi mumkin."},
          "opts": [{"v": "yes", "ru": "Понял(а) сразу", "uz": "Darrov tushundim"},
                   {"v": "late", "ru": "Дошло не сразу", "uz": "Darrov emas, keyinroq"},
                   {"v": "no", "ru": "Так и не понял(а)", "uz": "Oxirigacha tushunmadim"},
-                  {"v": "skip", "ru": "Не заходил(а) в глоссарий", "uz": "Lug'atga kirmadim"}]},
+                  {"v": "skip", "ru": "Не заходил(а) в «Знания»", "uz": "«Bilimlar»ga kirmadim"}]},
 
         {"id": "terms", "type": "one", "req": 1,
          "ru": {"q": "Термины, которые система приносила на решение",
-                "s": "Очередь кандидатов: одобрить, отклонить, поправить."},
+                "s": "Карточки во вкладке «Знания»: ответить «Верно» или «Не то»."},
          "uz": {"q": "Tizim yechim uchun keltirgan atamalar",
-                "s": "Nomzodlar navbati: ma'qullash, rad etish, tuzatish."},
+                "s": "«Bilimlar» bo'limidagi kartochkalar: «To'g'ri» yoki «Unday emas» deb javob berish."},
          "opts": [{"v": "liked", "ru": "Разбирал(а) с удовольствием", "uz": "Zavq bilan ko'rib chiqdim"},
                   {"v": "many", "ru": "Слишком много, забросил(а)", "uz": "Juda ko'p, tashlab qo'ydim"},
                   {"v": "unclear", "ru": "Не понял(а), чего от меня хотят",
@@ -515,29 +531,38 @@ DEBRIEF = {
                   {"v": "skip", "ru": "Не дошёл(ла) до них", "uz": "Ularga yetib bormadim"}]},
 
         {"id": "analysis", "type": "one", "req": 1,
-         "ru": {"q": "Экран «Анализ»: после прогона было ясно, что делать дальше?",
-                "s": "Готово · Возьмёт прогон · Нужен человек."},
-         "uz": {"q": "«Tahlil» ekrani: ishlovdan keyin nima qilish kerakligi aniq bo'ldimi?",
-                "s": "Tayyor · Ishlov oladi · Odam kerak."},
-         "opts": [{"v": "yes", "ru": "Да, шёл(шла) по строкам сверху вниз",
-                   "uz": "Ha, qatorlar bo'yicha yurdim"},
+         "ru": {"q": "Экран «Что получилось»: после прогона было ясно, что делать дальше?",
+                "s": "Полоса готовности и две кнопки — «Доделать сама» и «Ответить на вопросы»."},
+         "uz": {"q": "«Nima chiqdi» ekrani: ishlovdan keyin nima qilish kerakligi aniq bo'ldimi?",
+                "s": "Tayyorlik chizig'i va ikki tugma — «O‘zim tugataman» va «Savollarga javob berish»."},
+         "opts": [{"v": "yes", "ru": "Да, шёл(шла) по кнопкам",
+                   "uz": "Ha, tugmalar bo'yicha yurdim"},
                   {"v": "half", "ru": "Понятно наполовину", "uz": "Yarmi tushunarli"},
                   {"v": "no", "ru": "Смотрел(а) и не понимал(а)", "uz": "Qaradim-u tushunmadim"},
                   {"v": "skip", "ru": "Не открывал(а)", "uz": "Ochmadim"}]},
 
         {"id": "autofix", "type": "scale", "req": 1, "from": 1, "to": 5,
-         "ru": {"q": "Система сама правит перевод — «Ремонт» и «Ревизия». Доверяете этим правкам?",
+         # «Ремонт» и «Ревизия» — названия шагов, а шаги тестировщику не видны
+         # (упрощённый режим, инвариант 24): спрашивать надо словами его экрана.
+         "ru": {"q": "Система сама правит перевод по найденным ошибкам. Доверяете этим правкам?",
+                "s": "Кнопка «Доделать сама» на экране «Что получилось».",
                 "lo": "страшно, проверял(а) каждую", "hi": "доверяю, не проверял(а)"},
-         "uz": {"q": "Tizim tarjimani o'zi tuzatadi — «Ta'mir» va «Reviziya». Bu tuzatishlarga ishonasizmi?",
+         "uz": {"q": "Tizim topilgan xatolar bo'yicha tarjimani o'zi tuzatadi. Bu tuzatishlarga ishonasizmi?",
+                "s": "«Nima chiqdi» ekranidagi «O‘zim tugataman» tugmasi.",
                 "lo": "qo'rqinchli, har birini tekshirdim", "hi": "ishonaman, tekshirmadim"}},
 
         {"id": "speed", "type": "one", "req": 1,
-         "ru": {"q": "Скорость прогонов — терпимо?"},
-         "uz": {"q": "Ishlov tezligi — chidasa bo'ladimi?"},
+         "ru": {"q": "Скорость прогонов — терпимо?",
+                "s": "Не считая ожидания в очереди — о нём следующий вопрос."},
+         "uz": {"q": "Ishlov tezligi — chidasa bo'ladimi?",
+                "s": "Navbatda kutishni hisobga olmaganda — u haqda keyingi savol."},
+         # Прежний вариант «бросал вкладку и уходил» ничего не говорил о скорости:
+         # прогон идёт на сервере, и закрыть вкладку — штатное поведение.
          "opts": [{"v": "fast", "ru": "Быстро", "uz": "Tez"},
                   {"v": "ok", "ru": "Терпимо", "uz": "Chidasa bo'ladi"},
                   {"v": "slow", "ru": "Долго, но дожидался(лась)", "uz": "Uzoq, lekin kutdim"},
-                  {"v": "left", "ru": "Бросал(а) вкладку и уходил(а)", "uz": "Oynani tashlab ketardim"}]},
+                  {"v": "gaveup", "ru": "Так долго, что бросил(а) работу",
+                   "uz": "Shunchalik uzoqki, ishni tashladim"}]},
 
         {"id": "queue", "type": "one", "req": 1,
          "ru": {"q": "Ждали, пока освободится очередь прогонов?",
@@ -562,8 +587,10 @@ DEBRIEF = {
          "uz": {"q": "Bu odatdagi usulingizga nisbatan qancha vaqt tejadi?"},
          "opts": [{"v": "worse", "ru": "Потратил(а) больше, чем обычно", "uz": "Odatdagidan ko'proq vaqt ketdi"},
                   {"v": "same", "ru": "Примерно столько же", "uz": "Taxminan bir xil"},
-                  {"v": "third", "ru": "Сэкономило до трети", "uz": "Uchdan birgacha tejadi"},
-                  {"v": "half", "ru": "Сэкономило половину и больше", "uz": "Yarmini va undan ko'pini tejadi"}]},
+                  {"v": "lt_third", "ru": "Сэкономило меньше трети", "uz": "Uchdan biridan kamini tejadi"},
+                  {"v": "third_half", "ru": "Сэкономило от трети до половины",
+                   "uz": "Uchdan biridan yarmigachasini tejadi"},
+                  {"v": "gt_half", "ru": "Сэкономило больше половины", "uz": "Yarmidan ko'pini tejadi"}]},
 
         {"id": "broke", "type": "text", "req": 1,
          "ru": {"q": "Что сломалось или бесило больше всего?",
@@ -578,7 +605,7 @@ DEBRIEF = {
                 "s": "Одна вещь, без которой вы не купите. Самый дорогой для нас ответ.",
                 "ph": "Например: без нечёткого поиска по памяти переводов я не откажусь от Trados…"},
          "uz": {"q": "Buni pulga ishlatish uchun nima yetishmayapti?",
-                "s": "Sizsiz sotib olmaydigan bitta narsa. Biz uchun eng qimmatli javob.",
+                "s": "Busiz sotib olmaydigan bitta narsa. Biz uchun eng qimmatli javob.",
                 "ph": "Masalan: tarjima xotirasida noaniq qidiruv bo'lmasa, Trados'dan voz kechmayman…"}},
 
         {"id": "price", "type": "one", "req": 1,
@@ -1115,32 +1142,36 @@ GUIDE = {
              "<b>.docx</b>. Система сама разрежет документ на сегменты — предложения и абзацы. "
              "Приносите настоящий рабочий текст: на нём видно в разы больше, чем на учебном."),
             ("Нажмите «Перевести и проверить»",
-             "Это одна кнопка на весь конвейер: перевод, ревизия, обратная проверка смысла, "
-             "сверка терминов, ремонт найденного. Вкладку можно закрыть — работа идёт на сервере, "
-             "вернётесь и увидите результат."),
-            ("Смотрите на экран «Анализ»",
-             "Три строки отвечают на вопрос «что дальше»: <b>Готово</b> — можно выгружать; "
-             "<b>Возьмёт прогон</b> — машина доделает сама, просто нажмите ещё раз; "
-             "<b>Нужен человек</b> — это к вам. Щёлкните по строке, и таблица покажет "
-             "именно эти сегменты."),
+             "Одна кнопка на всю работу: перевод, проверка смысла и терминов, исправление "
+             "найденного. Вкладку можно закрыть — работа идёт на сервере, вернётесь и увидите "
+             "результат."),
+            ("Смотрите на экран «Что получилось»",
+             "Вкладка <b>Анализ</b>. Вверху — сколько готово и две кнопки: <b>Доделать сама</b> — "
+             "машина возьмёт всё, что может закрыть без вас; <b>Ответить на вопросы</b> — то, что "
+             "без вашего решения не сдвинется. Ниже три карточки: <b>Готово к сдаче</b>, "
+             "<b>Возьмёт ближайший прогон</b>, <b>Нужно ваше решение</b>. Щёлкните по карточке — "
+             "таблица покажет именно эти строки."),
             ("Правьте перевод и подтверждайте",
              "В таблице щёлкните по сегменту. Исправили — нажмите <b>Подтвердить</b>: система "
              "запоминает вашу правку, предлагает разослать её по одинаковым местам и учится "
              "на ней. Подтверждённое машина сама не переписывает."),
-            ("Ведите глоссарий",
-             "Найденные термины ждут вашего решения в очереди. Разница простая: <b>приказ</b> "
+            ("Решайте по терминам",
+             "Вкладка <b>Знания</b>: найденные термины ждут ответа — <b>Верно</b> или <b>Не то</b>. "
+             "Разница уровней простая: <b>приказ</b> "
              "система обязана соблюсти во всём документе, <b>подсказку</b> модель вправе "
              "проигнорировать. Приказ даёт только человек. Новые термины по умолчанию живут "
              "внутри своего проекта — соседний проект чужую терминологию не подхватит, "
              "пока вы сами не разрешите."),
             ("Выгрузите результат",
-             "Вкладка <b>Экспорт</b>, формат <b>«как в оригинале»</b>: вы получите тот же .docx "
+             "Вкладка <b>Экспорт</b>, формат <b>«Такой же файл, только на другом языке»</b>: "
+             "вы получите тот же .docx "
              "с вашим переводом — заголовки, таблицы, картинки и колонтитулы останутся на местах."),
         ],
         "notes": [
             "<b>Очередь.</b> Исполнитель прогонов один на всех, но очередь у каждого своя: "
             "задачи идут по кругу между участниками, и длинная книга соседа не задержит вашу "
-            "страницу. Пока задача ждёт, в полосе прогона видно, сколько человек впереди.",
+            "страницу. Номера в очереди и выдуманного времени не будет: пока задача ждёт, "
+            "в полосе прогона так и сказано.",
             "<b>Если что-то сломалось</b> — не чините обходными путями, а запишите: что нажали, "
             "что ожидали, что получилось. Именно это нам и нужно от теста. В конце попросим "
             "заполнить короткий разбор.",
@@ -1163,33 +1194,37 @@ GUIDE = {
              "o'zi bo'lib beradi. Haqiqiy ish matningizni olib keling: unda o'quv matnidan ancha "
              "ko'p narsa ko'rinadi."),
             ("«Tarjima qilish va tekshirish» tugmasini bosing",
-             "Bu butun konveyer uchun bitta tugma: tarjima, reviziya, ma'noni teskari tekshirish, "
-             "atamalarni solishtirish, topilganini ta'mirlash. Oynani yopsangiz ham bo'ladi — ish "
-             "serverda ketadi, qaytganingizda natijani ko'rasiz."),
-            ("«Tahlil» ekraniga qarang",
-             "Uch qator «keyin nima?» degan savolga javob beradi: <b>Tayyor</b> — yuklab olsa "
-             "bo'ladi; <b>Ishlov oladi</b> — mashina o'zi tugatadi, yana bir marta bosing; "
-             "<b>Odam kerak</b> — bu sizga. Qatorni bosing, jadval aynan shu segmentlarni ko'rsatadi."),
+             "Butun ish uchun bitta tugma: tarjima, ma'no va atamalarni tekshirish, topilganini "
+             "tuzatish. Oynani yopsangiz ham bo'ladi — ish serverda ketadi, qaytganingizda "
+             "natijani ko'rasiz."),
+            ("«Nima chiqdi» ekraniga qarang",
+             "<b>Tahlil</b> bo'limi. Tepada — qanchasi tayyor va ikki tugma: <b>O‘zim tugataman</b> — "
+             "mashina sizsiz yopa oladigan hammasini oladi; <b>Savollarga javob berish</b> — "
+             "qaroringizsiz siljimaydigan narsalar. Pastda uchta kartochka: <b>Topshirishga tayyor</b>, "
+             "<b>Eng yaqin ishlov oladi</b>, <b>Sizning qaroringiz kerak</b>. Kartochkani bosing — "
+             "jadval aynan shu qatorlarni ko'rsatadi."),
             ("Tarjimani tuzating va tasdiqlang",
              "Jadvalda segmentni bosing. Tuzatdingizmi — <b>Tasdiqlash</b>ni bosing: tizim "
              "tuzatishingizni eslab qoladi, uni bir xil joylarga tarqatishni taklif qiladi va "
              "undan o'rganadi. Tasdiqlanganini mashina o'zi qayta yozmaydi."),
-            ("Lug'atni yuriting",
-             "Topilgan atamalar navbatda sizning qaroringizni kutadi. Farqi oddiy: <b>buyruq</b>ni "
+            ("Atamalar bo'yicha qaror qiling",
+             "<b>Bilimlar</b> bo'limi: topilgan atamalar javobingizni kutadi — <b>To'g'ri</b> yoki "
+             "<b>Unday emas</b>. Darajalar farqi oddiy: <b>buyruq</b>ni "
              "tizim butun hujjatda bajarishi shart, <b>maslahat</b>ni model e'tiborsiz qoldirishi "
              "mumkin. Buyruqni faqat odam beradi. Yangi atamalar sukut bo'yicha o'z loyihasi "
              "ichida yashaydi — qo'shni loyiha o'zga terminologiyani siz ruxsat bermaguningizcha "
              "olmaydi."),
             ("Natijani yuklab oling",
-             "<b>Eksport</b> bo'limi, <b>«asl nusxadagidek»</b> formati: o'sha .docx faylni "
+             "<b>Eksport</b> bo'limi, <b>«Xuddi shu fayl, faqat boshqa tilda»</b> formati: "
+             "o'sha .docx faylni "
              "tarjimangiz bilan olasiz — sarlavhalar, jadvallar, rasmlar va kolontitullar "
              "joyida qoladi."),
         ],
         "notes": [
             "<b>Navbat.</b> Ishlov ijrochisi hammaga bitta, lekin navbat har kimda o'ziniki: "
             "vazifalar ishtirokchilar orasida navbatma-navbat ketadi va qo'shningizning uzun "
-            "kitobi sizning sahifangizni ushlab qolmaydi. Vazifa kutayotganda ishlov chizig'ida "
-            "oldingizda necha kishi borligi ko'rinadi.",
+            "kitobi sizning sahifangizni ushlab qolmaydi. Navbat raqami va to'qib chiqarilgan "
+            "vaqt bo'lmaydi: vazifa kutayotganda ishlov chizig'ida shunday deb yoziladi.",
             "<b>Biror narsa buzilsa</b> — chetlab o'tishga urinmang, yozib qo'ying: nimani "
             "bosdingiz, nimani kutdingiz, nima chiqdi. Sinovdan bizga aynan shu kerak. Oxirida "
             "qisqa tahlilni to'ldirishni so'raymiz.",

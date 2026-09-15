@@ -11,6 +11,7 @@ API только ставит задачу в таблицу `jobs`; здесь 
 Работает ТОЛЬКО с базой: у файла второй процесс запрещён (инвариант 1).
 """
 import os
+import signal
 import sys
 import time
 
@@ -25,14 +26,27 @@ except ImportError:
 POLL_SECONDS = float(os.environ.get("WORKER_POLL_SECONDS", "2"))
 
 
+def _on_term(signum, _frame) -> None:
+    """SIGTERM от systemd (выкат, рестарт): прогон НЕ обрывается. Идущая
+    порция доделывается и сохраняется, задача откладывается в очередь со своим
+    курсором и билетом (`main._job_park`), и процесс выходит. Убить по SIGKILL
+    systemd вправе только через `TimeoutStopSec` — тогда теряется лишь текущая
+    порция, курсор задачи стоит на ней."""
+    if not main._SHUTDOWN.is_set():
+        print(f"[worker] сигнал {signum}: доделываю порцию и выхожу", file=sys.stderr)
+    main._SHUTDOWN.set()
+
+
 def run() -> None:
     if main.STORE.kind != "pg":
         raise SystemExit("medcat-worker работает только с DATABASE_URL (PostgreSQL)")
+    signal.signal(signal.SIGTERM, _on_term)
+    signal.signal(signal.SIGINT, _on_term)
     stale = main.STORE.reset_running_jobs()
     if stale:
         print(f"[worker] оборванные рестартом прогоны снова в очереди: {stale}", file=sys.stderr)
     print("[worker] запущен, жду задачи", file=sys.stderr)
-    while True:
+    while not main._SHUTDOWN.is_set():
         try:
             job = main.STORE.claim_job()
         except Exception as e:
@@ -48,6 +62,9 @@ def run() -> None:
         job.setdefault("counters", {})
         # Свежий документ проекта: наша копия могла отстать от правок в API.
         key = "projects:%d" % job["project"]
+        # Помнить текст документа проекта: при конфликте с API (миграция
+        # на выкате) порция сливается трёхсторонне, а не выбрасывается.
+        main.STORE.keep_base(key)
         try:
             main._apply_doc(key, main.STORE.load_doc(key))
         except Exception as e:
@@ -55,7 +72,10 @@ def run() -> None:
         main._JOBS[job["id"]] = job
         print(f"[worker] прогон №{job['id']} ({job.get('kind')}) по проекту {job['project']}",
               file=sys.stderr)
-        main._job_execute(job)
+        try:
+            main._job_execute(job)
+        finally:
+            main.STORE.keep_base(key, False)
         try:
             # Готовый проект — в API: он перечитает документ по этой эпохе.
             # Поднимаем и у УСТУПИВШЕЙ задачи: сделанные ею сегменты уже
@@ -70,6 +90,7 @@ def run() -> None:
                   file=sys.stderr)
         else:
             print(f"[worker] прогон №{job['id']} завершён: {job.get('status')}", file=sys.stderr)
+    print("[worker] остановлен штатно", file=sys.stderr)
 
 
 if __name__ == "__main__":

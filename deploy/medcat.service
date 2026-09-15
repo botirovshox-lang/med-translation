@@ -18,6 +18,9 @@ ExecStart=/opt/med-translation/.venv/bin/uvicorn backend.main:app \
     --host 127.0.0.1 --port 8000 --workers 1
 Restart=always
 RestartSec=3
+# Без внешнего воркера прогон идёт в этом процессе: остановка ждёт конца
+# текущей порции (JOB_SHUTDOWN_WAIT). С воркером API выходит сразу.
+TimeoutStopSec=900
 StandardOutput=journal
 StandardError=journal
 

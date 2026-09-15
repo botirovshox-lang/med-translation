@@ -18,6 +18,10 @@ Environment=MEDCAT_ROLE=worker
 ExecStart=/opt/med-translation/.venv/bin/python -m backend.worker
 Restart=always
 RestartSec=5
+# SIGTERM: воркер доделывает текущую порцию, откладывает задачу в очередь
+# и выходит сам. Порция ремонта — минуты; убивать раньше значит платить
+# за вызовы и выбрасывать их результат.
+TimeoutStopSec=900
 MemoryMax=1800M
 ProtectSystem=full
 ReadWritePaths=/opt/med-translation/backend/data

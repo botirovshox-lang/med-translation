@@ -1363,7 +1363,10 @@ function TabAnalysis({ store, toast }) {
     return () => { dead = true; };
   }, [project && project.id, sumNonce]);
   if (!project) return React.createElement("div", { className: "page" }, React.createElement(NoProject, { store }));
-  const expert = !!(store.can && store.can.super);
+  /* Экспертный вид — выбор суперпользователя (`store.expert`), по умолчанию
+     выключен: простой экран видят все, включая владельца сервиса. */
+  const expert = !!store.expert;
+  const canExpert = !!(store.can && store.can.super);
   const reload = () => setSumNonce(n => n + 1);
   const onDrill = (title, segList) => {
     const ids = (segList || []).map(s => s.id);
@@ -1414,7 +1417,10 @@ function TabAnalysis({ store, toast }) {
         styleOpen ? TR("Скрыть настройки книги") : TR("Настройки книги")),
       expert && tk && React.createElement(Btn, { variant: "ghost", size: "sm",
         onClick: () => setDetails(d => !d) },
-        details ? TR("▴ Скрыть подробности") : TR("▾ Подробности и ручные команды"))),
+        details ? TR("▴ Скрыть подробности") : TR("▾ Подробности и ручные команды")),
+      canExpert && store.setExpertView && React.createElement(Btn, { variant: "ghost", size: "sm",
+        onClick: () => store.setExpertView(!store.expertView) },
+        store.expertView ? TR("Простой вид") : TR("Вид эксперта"))),
     /* Настройки книги — стиль и терм-лист: решения на весь документ, до
        перевода. Свёрнуты, но доступны всем — под ролью они отняли бы
        настройку у владельца. */

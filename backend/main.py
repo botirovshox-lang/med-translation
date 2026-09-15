@@ -5561,10 +5561,45 @@ def logout(request: Request):
     return {"ok": True}
 
 
+try:
+    import orjson as _orjson
+except Exception:          # нет модуля — тот же ответ стандартным json, медленнее
+    _orjson = None
+
+
+def _json_bytes(obj, label: str = "", t0: Optional[float] = None) -> Response:
+    """Ответ готовыми байтами — для ТЯЖЁЛЫХ выдач (`/seed`, проект целиком).
+
+    FastAPI прогоняет возвращённый словарь через `jsonable_encoder`: рекурсивный
+    обход на Python каждого узла. На книге в 2700 сегментов это десятки
+    мегабайт узлов и секунды единственного воркера на КАЖДУЮ загрузку экрана,
+    хотя данные и так готовы к сериализации — они из JSON-хранилища. `orjson`
+    кодирует тот же объём за сотые доли секунды; нет модуля или встретился
+    ключ не-строка — стандартный `json` с `default=str`, ответ тот же.
+    `label` и `t0` — строка в журнал о времени сборки и кодирования: без неё
+    «почему экран грузится две секунды» отвечается догадкой."""
+    t1 = time.time()
+    body = None
+    if _orjson is not None:
+        try:
+            body = _orjson.dumps(obj, option=_orjson.OPT_NON_STR_KEYS)
+        except Exception:
+            body = None
+    if body is None:
+        body = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
+    if label and t0 is not None:
+        build, enc = t1 - t0, time.time() - t1
+        if build + enc > 0.3:
+            print(f"[backend] {label}: сборка {build:.2f} с, кодирование {enc:.2f} с, "
+                  f"{len(body) // 1024} кБ", file=sys.stderr)
+    return Response(content=body, media_type="application/json")
+
+
 @app.get("/api/seed")
 def get_seed():
     """Initial data dump — glossary capped at 150 terms for performance; full list via /api/glossary."""
     # Пользователи и организации в общую выдачу НЕ идут: там хеши паролей.
+    t0 = time.time()
     t = _current_tenant()
     # БЕЛЫЙ список: наружу уходит только то, что названо ниже, и только своё.
     # Прежний чёрный («всё, кроме users/tenants/audit/…») отдавал каждому
@@ -5581,8 +5616,9 @@ def get_seed():
     if _hide_cost():
         # История расхода прогонов — это суммы и модели по шагам.
         public["runCosts"] = []
-    return {**public, "projects": [_project_for_client(p) for p in _tenant_projects()],
-            "glossary": [{**g, "dict": _dict_of(g)} for g in STATE["glossary"] if _tenant_of(g) == t][:150]}
+    return _json_bytes({**public, "projects": [_project_for_client(p) for p in _tenant_projects()],
+                        "glossary": [{**g, "dict": _dict_of(g)} for g in STATE["glossary"] if _tenant_of(g) == t][:150]},
+                       "seed", t0)
 
 
 @app.get("/api/glossary")
@@ -6837,9 +6873,10 @@ def _book_image_pages(project: dict) -> None:
 
 @app.get("/api/projects/{pid}")
 def get_project_detail(pid: int):
+    t0 = time.time()
     project = get_project(pid)
     _book_image_pages(project)
-    return _project_for_client(project)
+    return _json_bytes(_project_for_client(project), "project %s" % pid, t0)
 
 
 class CreateProjectRequest(BaseModel):
@@ -12622,11 +12659,30 @@ def _segment_for_client(seg: dict) -> dict:
             and (code == REVIEW_VETOED
                  or (code == REVIEW_OK and rv.get("score") is not None
                      and rv["score"] <= REVIEW_FLAG_SCORE)))
+    # Обратный перевод верхним полем браузер не читает (карточка берёт его
+    # из back-check), а на книге это почти мегабайт в каждой загрузке.
+    out.pop("backtranslated_ru", None)
     if qa:
         # Тот же признак и у Medical QA: без него карточка прогона показывала
         # весь проект и после того, как всё уже проверено. Хеш sha1 браузеру
         # не посчитать, поэтому производную считаем здесь.
-        out["qa_result"] = {**qa, "stale": qa.get("target_hash") != cur_trimmed}
+        #
+        # Наружу — БЕЛЫМ списком ровно того, что читает карточка (QAPane):
+        # запись Medical QA несёт упаковку контекста промпта, разбор
+        # переводчика и копии списков, и на боевой книге это 11 из 21 МБ
+        # ответа — половина времени каждой загрузки экрана на данные, которых
+        # браузер не открывает никогда. В хранилище запись остаётся целой.
+        style = qa.get("medical_style_qa") or {}
+        back = qa.get("literal_backcheck") or {}
+        out["qa_result"] = {
+            "risk_color": qa.get("risk_color"), "risk_score": qa.get("risk_score"),
+            "routing": {"route": (qa.get("routing") or {}).get("route")},
+            "medical_style_qa": ({"corrected_translation": style.get("corrected_translation")}
+                                 if isinstance(style, dict) and style.get("corrected_translation") else {}),
+            "literal_backcheck": ({"backtranslated_ru": back.get("backtranslated_ru")}
+                                  if isinstance(back, dict) and back.get("backtranslated_ru") else {}),
+            "target_hash": qa.get("target_hash"),
+            "stale": qa.get("target_hash") != cur_trimmed}
     if rp:
         # `acceptable` считает СЕРВЕР по той же причине, что и `tried`: правило
         # «отмену держал только балл, а термины стали чище» разобрано в

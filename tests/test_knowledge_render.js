@@ -115,7 +115,7 @@ const cls = (n) => String((n.props || {}).className || "");
 console.log("[1] TabGlossary собирается");
 /* Служебные панели — эксперту (store.can.super). Человеку — поиск, вопросы,
    чипы и таблица без категорий: проверяется в [1b]. */
-const storeExp = Object.assign({}, store, { can: { super: true } });
+const storeExp = Object.assign({}, store, { can: { super: true }, expert: true, expertView: true });
 hooks = []; hookIdx = 0;
 let tree = null, err = null;
 try { tree = TabGlossary({ store: storeExp, toast }); } catch (e) { err = e; }

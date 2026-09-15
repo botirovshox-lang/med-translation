@@ -24,6 +24,18 @@ function useStore(authed) {
      какие кнопки показывать. Право СДЕЛАТЬ проверяет сервер. */
   const [me, setMe] = useState({ name: TR("Вы"), initials: TR("ВЫ"), color: "var(--c-primary)", role: "translator" });
   const [can, setCan] = useState({ owner: false, super: false });
+  /* Вид эксперта на «Словарях» и «Проверке» — ВЫБОР суперпользователя, а не
+     следствие роли: владелец сервиса тоже работает с книгой как человек,
+     и прежние экраны с панелями должны открываться по его просьбе, а не
+     вместо простых. Выбор показа, а не разрешение — поэтому localStorage. */
+  const [expertView, setExpertViewState] = useState(() => {
+    try { return localStorage.getItem("medcat.expertView") === "1"; } catch (e) { return false; }
+  });
+  const setExpertView = (v) => {
+    setExpertViewState(!!v);
+    try { v ? localStorage.setItem("medcat.expertView", "1") : localStorage.removeItem("medcat.expertView"); }
+    catch (e) { /* приватный режим — выбор живёт до перезагрузки */ }
+  };
   const [brand, setBrand] = useState(() => authCachedBrand() || "CAT Translator");
   /* Команды и приглашения нужны ШАПКЕ: переключатель рабочего пространства
      и счётчик «вас куда-то зовут». Приезжают тем же /auth/me — второй
@@ -236,6 +248,7 @@ function useStore(authed) {
     folders, dicts, setDicts, viewFolder, setViewFolder, openFolder, folderOf, activeFolder,
     addFolder, patchFolder, removeFolder,
     exportHistory, team: [], me, can, brand, apiReady, setGlossary,
+    expert: !!(can && can.super && expertView), expertView, setExpertView,
     segmentFilter, gotoSegId,
     go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, patchProject, openProject, deleteProject, replaceProjectSegments, replaceProject, saveTerm, deleteTerm, deleteTM,
     setExportHistory,

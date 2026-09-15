@@ -901,7 +901,7 @@ function TabKnowledge({ store, toast }) {
   const [side, setSide] = useState("glossary");
   /* Человеку — один словарь: совпадения из памяти переводов показывает поиск
      «Словарей». Отдельная база со своими фильтрами — инструмент эксперта. */
-  if (!(store.can && store.can.super) && side === "glossary")
+  if (!store.expert && side === "glossary")
     return React.createElement(TabGlossary, { store, toast, onTM: () => setSide("tm") });
   return React.createElement("div", null,
     /* Две базы — переключатель .seg, а не пара кнопок: чёрная заливка
@@ -1004,7 +1004,9 @@ function TabGlossary({ store, toast, onTM }) {
      пачек), а не устройство прогона, и пропавшая дверь неотличима от
      потерянной функции. */
   const [maint, setMaint] = useState(false);
-  const expert = !!(store.can && store.can.super);
+  /* Экспертный вид — выбор суперпользователя (`store.expert`), а не роль. */
+  const expert = !!store.expert;
+  const canExpert = !!(store.can && store.can.super);
   const owner = !!(store.can && (store.can.owner || store.can.super));
 
   // Load full glossary from API on mount
@@ -1216,11 +1218,14 @@ function TabGlossary({ store, toast, onTM }) {
 
     /* Двери эксперта у человека — свёрнутыми: служебные панели словаря
        и отдельная база памяти переводов. */
-    !expert && React.createElement("div", { className: "page-foot" },
+    (!expert || canExpert) && React.createElement("div", { className: "page-foot" },
       React.createElement("span", { className: "spacer" }),
-      onTM && React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onTM }, TR("Память переводов")),
-      React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setMaint(v => !v) },
-        maint ? TR("Скрыть обслуживание словаря") : TR("Обслуживание словаря"))),
+      !expert && onTM && React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onTM }, TR("Память переводов")),
+      !expert && React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setMaint(v => !v) },
+        maint ? TR("Скрыть обслуживание словаря") : TR("Обслуживание словаря")),
+      canExpert && store.setExpertView && React.createElement(Btn, { variant: "ghost", size: "sm",
+        onClick: () => store.setExpertView(!store.expertView) },
+        store.expertView ? TR("Простой вид") : TR("Вид эксперта"))),
 
     modal && React.createElement(TermModal, { term: modal === "add" ? null : modal,
       dicts, writeDict,

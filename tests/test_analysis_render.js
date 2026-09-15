@@ -598,7 +598,7 @@ const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
   let tHum = [], tExp = [], ok5b = true;
   try {
     tHum = texts(await tabTree(Object.assign({}, storeTab, { can: { owner: true } })));
-    tExp = texts(await tabTree(Object.assign({}, storeTab, { can: { super: true } })));
+    tExp = texts(await tabTree(Object.assign({}, storeTab, { can: { super: true }, expert: true, expertView: true })));
   } catch (e) { ok5b = false; console.log("      " + e.message); }
   check(ok5b, "рендер человеку и эксперту прошёл");
   check(tHum.some(s => s === "Проверка") && tHum.some(s => s === "Вопросы к вам"),

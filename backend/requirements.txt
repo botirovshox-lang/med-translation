@@ -3,6 +3,7 @@ fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
 pydantic>=2.0.0
 python-multipart>=0.0.6
+orjson>=3.9   # тяжёлые выдачи (/api/seed, проект) готовыми байтами; без него — json, медленнее
 
 # Optional: import existing modules if available (not required)
 python-docx>=1.1   # импорт и экспорт .docx: без него upload_project отвечает 500

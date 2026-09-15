@@ -24,7 +24,7 @@ function useStore(authed) {
      какие кнопки показывать. Право СДЕЛАТЬ проверяет сервер. */
   const [me, setMe] = useState({ name: TR("Вы"), initials: TR("ВЫ"), color: "var(--c-primary)", role: "translator" });
   const [can, setCan] = useState({ owner: false, super: false });
-  const [brand, setBrand] = useState("CAT Translator");
+  const [brand, setBrand] = useState(() => authCachedBrand() || "CAT Translator");
   /* Команды и приглашения нужны ШАПКЕ: переключатель рабочего пространства
      и счётчик «вас куда-то зовут». Приезжают тем же /auth/me — второй
      запрос ради двух чисел не нужен. */
@@ -53,7 +53,7 @@ function useStore(authed) {
       if (window.ADMIN_ENTRY && r.can && r.can.super) setTab("admin");
     });
     window.API.safeCall(() => window.API.models()).then(r => {
-      if (!cancelled && r && r.brand) setBrand(r.brand);
+      if (!cancelled && r && r.brand) { setBrand(r.brand); authRememberBrand(r.brand); }
     });
     return () => { cancelled = true; };
   }, [authed]);
@@ -274,13 +274,25 @@ function ThemeToggle({ theme, onToggle }) {
 }
 
 /* ---------- Auth screen ---------- */
+/* Название сервиса (APP_BRAND) кэшируется в localStorage — как язык
+   интерфейса и по той же причине: первый кадр рисуется раньше ответа
+   сервера, и без кэша каждый заход начинался бы с чужого названия.
+   Источник правды — сервер: пришёл ответ — переписываем. */
+const AUTH_BRAND_LS = "mct-brand";
+function authCachedBrand() {
+  try { return localStorage.getItem(AUTH_BRAND_LS) || ""; } catch (e) { return ""; }
+}
+function authRememberBrand(b) {
+  try { if (b) localStorage.setItem(AUTH_BRAND_LS, b); } catch (e) { /* приватное окно */ }
+}
+
 function AuthScreen({ onLogin, theme, onToggleTheme }) {
   /* Четыре состояния одной двери: вход, регистрация, код из письма,
      восстановление пароля. Регистрация показывается, только если сервер
      говорит, что она открыта (/auth/signup-info) — выключенная кнопка,
      ведущая в 403, хуже отсутствующей. */
   const [mode, setMode] = useState("login");   // login | register | verify | forgot | reset
-  const [info, setInfo] = useState({ signup: false, mail: false, brand: "CAT Translator", trialUsd: 0 });
+  const [info, setInfo] = useState({ signup: false, mail: false, brand: authCachedBrand() || "CAT Translator", trialUsd: 0 });
   const [f, setF] = useState({ login: "", password: "", email: "", org: "", name: "", code: "" });
   const [accepted, setAccepted] = useState(false);
   const [err, setErr] = useState("");
@@ -288,7 +300,9 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
   const [shake, setShake] = useState(false);
   const [busy, setBusy] = useState(false);
   useEffect(() => {
-    window.API && window.API.safeCall(() => window.API.signupInfo()).then(r => r && setInfo(r));
+    window.API && window.API.safeCall(() => window.API.signupInfo()).then(r => {
+      if (r) { setInfo(r); authRememberBrand(r.brand); }
+    });
   }, []);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const bad = (m) => { setErr(m); setShake(true); setTimeout(() => setShake(false), 400); };
@@ -403,7 +417,7 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
                                forgot: TR("Прислать код"), reset: TR("Сменить пароль") }[mode])),
       React.createElement("div", { className: "row row-wrap", style: { gap: 14, marginTop: 14, justifyContent: "center" } },
         mode !== "login" && link(TR("← Ко входу"), "login"),
-        mode === "login" && info.signup && link(TR("Создать организацию"), "register"),
+        mode === "login" && info.signup && link(TR("Зарегистрироваться"), "register"),
         mode === "login" && link(TR("Забыли пароль?"), "forgot"),
         mode === "verify" && React.createElement("button", {
           type: "button", style: { background: "none", border: 0, color: "var(--c-primary)", cursor: "pointer", fontSize: 13, padding: 0 },

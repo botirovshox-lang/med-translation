@@ -3602,23 +3602,38 @@ class RegisterRequest(BaseModel):
     org: str = ""
     name: str = ""
     accept: bool = False        # согласие с офертой и политикой ПДн
+    uiLang: str = ""            # язык экрана, на котором заполнялась форма
 
 
 class CodeRequest(BaseModel):
     email: str
     code: str = ""
     password: str = ""
+    uiLang: str = ""            # язык экрана, с которого попросили код
 
 
-def _mail_lang(user: dict) -> str:
+def _asked_lang(lang: str) -> str:
+    """Язык экрана, с которого пришёл запрос, — если система его знает;
+    иначе пусто. Чужой код дальше не пропускаем: в `mail_texts` его нет,
+    и письмо молча ушло бы на языке по умолчанию таблицы."""
+    lang = (lang or "").strip().lower()
+    return lang if lang in UI_LANGS else ""
+
+
+def _mail_lang(user: dict, asked: str = "") -> str:
     """Язык письма — язык ПОЛУЧАТЕЛЯ, а не отправителя и не сервера.
     Письмо уходит мимо браузера, и подставить перевод на границе показа,
-    как везде, здесь некому."""
-    return (user or {}).get("uiLang") or DEFAULT_UI_LANG
+    как везде, здесь некому.
+
+    Сильнее записи — язык экрана, с которого человек ТОЛЬКО ЧТО попросил
+    код (`asked`): письмо он читает сейчас и на том языке, на котором
+    читал экран. Записанный `uiLang` мог остаться умолчанием кода — так
+    регистрация с русского экрана получала письмо по-узбекски."""
+    return _asked_lang(asked) or (user or {}).get("uiLang") or DEFAULT_UI_LANG
 
 
-def _mail_code(user: dict, kind: str, code: str) -> bool:
-    lang = _mail_lang(user)
+def _mail_code(user: dict, kind: str, code: str, lang: str = "") -> bool:
+    lang = _mail_lang(user, lang)
     key = "verify" if kind == "verify" else "reset"
     subject = mail_texts.text(lang, key + ".subject", brand=APP_BRAND, code=code)
     body = mail_texts.text(lang, key + ".body", brand=APP_BRAND, code=code,
@@ -3626,13 +3641,15 @@ def _mail_code(user: dict, kind: str, code: str) -> bool:
     return mailer_mod.send(user["email"], subject, body) if mailer_mod else False
 
 
-def _mail_code_async(user: dict, kind: str, code: str) -> None:
+def _mail_code_async(user: dict, kind: str, code: str, lang: str = "") -> None:
     """Письмо уходит из фонового потока. Синхронный SMTP (таймаут до 20 с)
     делал время ответа /forgot и /resend зависимым от того, есть ли такой
-    адрес, — а обе двери публичны и обязаны отвечать одинаково."""
+    адрес, — а обе двери публичны и обязаны отвечать одинаково. У /register
+    причина другая: экран стоял на «Минуту…» всё время разговора с почтовым
+    сервером, и человек принимал это за зависание."""
     def _go():
         try:
-            if not _mail_code(user, kind, code):
+            if not _mail_code(user, kind, code, lang):
                 print("[mail] код %s для %s не отправлен" % (kind, user.get("email")), file=sys.stderr)
         except Exception as e:
             print("[mail] код %s для %s: %s" % (kind, user.get("email"), e), file=sys.stderr)
@@ -3696,12 +3713,19 @@ def register(req: RegisterRequest, request: Request):
         tenant["limitUsd"] = SIGNUP_TRIAL_USD
     _tenants().append(tenant)
     h, salt = _hash_password(req.password)
+    # Язык экрана регистрации — выбор человека: форму он заполнял на нём,
+    # и на нём же ему приходит письмо и открывается система после кода.
+    # След `uiLangSet` обязателен: без него `_migrate_ui_lang` на ближайшем
+    # старте вернул бы запись к DEFAULT_UI_LANG.
+    lang = _asked_lang(req.uiLang)
     user = {"id": max((x["id"] for x in _users()), default=0) + 1, "tenant": tid,
             "login": email, "email": email, "emailVerified": False,
             "hash": h, "salt": salt, "role": "owner", "name": (req.name or "").strip() or email.split("@")[0],
-            "active": True, "uiLang": DEFAULT_UI_LANG, "created": today,
+            "active": True, "uiLang": lang or DEFAULT_UI_LANG, "created": today,
             "acceptedTerms": {"version": (legal_mod.VERSION if legal_mod else ""),
                               "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ip": ip}}
+    if lang:
+        user["uiLangSet"] = True
     _users().append(user)
     code = _issue_code(user, "verify")
     _SIGNUP_FAILS.setdefault(ip, []).append(time.time())
@@ -3711,7 +3735,13 @@ def register(req: RegisterRequest, request: Request):
     finally:
         CURRENT_SESSION.reset(tok)
     save_state(STATE)
-    sent = _mail_code(user, "verify", code)
+    # Письмо — из фонового потока, как у /resend и /forgot. `mailSent` теперь
+    # значит «почта настроена, письмо поставлено»: сбой самой отправки уходит
+    # в журнал строкой `[mail]`, а на экране кода есть «Прислать код заново».
+    # Ненастроенная почта по-прежнему отвечает false — и код, как раньше,
+    # печатается в журнал сервиса.
+    sent = bool(mailer_mod and mailer_mod.configured())
+    _mail_code_async(user, "verify", code, lang)
     return {"ok": True, "email": email, "tenant": tid, "mailSent": sent,
             "next": "verify",
             "note": ("Код отправлен на почту." if sent else
@@ -3759,7 +3789,10 @@ def resend_code(req: CodeRequest, request: Request):
     if user and user.get("active", True) and not user.get("emailVerified"):
         code = _issue_code(user, "verify")
         save_state(STATE)
-        _mail_code_async(user, "verify", code)
+        # Язык письма — язык экрана запроса, но в запись он НЕ пишется:
+        # дверь публичная, и менять настройки чужой учётной записи по
+        # запросу без пароля нельзя.
+        _mail_code_async(user, "verify", code, req.uiLang)
     return {"ok": True}
 
 
@@ -3776,7 +3809,7 @@ def forgot_password(req: CodeRequest, request: Request):
     if user and user.get("active", True):
         code = _issue_code(user, "reset")
         save_state(STATE)
-        _mail_code_async(user, "reset", code)
+        _mail_code_async(user, "reset", code, req.uiLang)   # язык экрана; запись не трогаем
     return {"ok": True}
 
 

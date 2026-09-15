@@ -103,6 +103,10 @@
     }
   }
 
+  function uiLangNow() {
+    return (window.I18N && window.I18N.lang) || "";
+  }
+
   window.API = {
     /* busy — правка сегмента ещё в пути, failed — хоть одна не доехала,
        ticket — отпечаток «начато:закончено». См. комментарий у счётчиков выше. */
@@ -112,9 +116,12 @@
     health:        ()                       => call("GET",    "/health"),
     seed:          ()                       => call("GET",    "/seed"),
     signupInfo:    ()                       => call("GET",    "/auth/signup-info"),
-    register:      (body)                   => call("POST",   "/auth/register", body),
-    resendCode:    (email)                  => call("POST",   "/auth/resend", { email }),
-    forgotPassword:(email)                  => call("POST",   "/auth/forgot", { email }),
+    /* Язык экрана уходит с каждым запросом кода: письмо идёт мимо браузера,
+       и перевести его на границе показа некому — язык выбирает сервер,
+       и выбирать ему не из чего, кроме того, что мы пришлём. */
+    register:      (body)                   => call("POST",   "/auth/register", Object.assign({ uiLang: uiLangNow() }, body)),
+    resendCode:    (email)                  => call("POST",   "/auth/resend", { email, uiLang: uiLangNow() }),
+    forgotPassword:(email)                  => call("POST",   "/auth/forgot", { email, uiLang: uiLangNow() }),
     verifyEmail: async (email, code) => {
       const r = await call("POST", "/auth/verify", { email, code });
       if (r && r.token) setToken(r.token);

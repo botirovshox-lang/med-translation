@@ -154,5 +154,68 @@ r = c.post("/api/admin/users", headers=H(A), json={"login": "dup", "password": "
                                                    "email": "petrov@acme.io"})
 check(r.status_code == 409, "занятая почта — 409")
 
+print("=== 8. Язык письма — язык экрана, с которого попросили код ===")
+# Боевой случай: регистрация с русского экрана, а письмо пришло по-узбекски —
+# запись заводилась с DEFAULT_UI_LANG, и язык экрана сервер не знал вовсе.
+import time
+mails = []
+_orig_mail_code = main._mail_code
+main._mail_code = lambda user, kind, code, lang="": mails.append(
+    (user["email"], kind, main._mail_lang(user, lang))) or True
+
+
+def mail_lang_to(email, kind):
+    """Письмо уходит из фонового потока — ждём его, а не угадываем."""
+    for _ in range(150):
+        hit = [m for m in mails if m[0] == email and m[1] == kind]
+        if hit:
+            return hit[-1][2]
+        time.sleep(0.02)
+    return None
+
+
+def fresh_limits():
+    main._SIGNUP_FAILS.clear(); main._SIGNUP_PROBES.clear(); main._CODE_REQS.clear()
+
+
+fresh_limits()
+r = c.post("/api/auth/register", json={"email": "ru@lang.io", "password": "long-enough-1",
+                                       "accept": True, "uiLang": "ru"})
+u = main._user_by_email("ru@lang.io")
+check(r.status_code == 200 and u["uiLang"] == "ru" and u.get("uiLangSet"),
+      "регистрация с русского экрана: язык записан как выбор человека")
+check(mail_lang_to("ru@lang.io", "verify") == "ru", "и письмо с кодом — по-русски")
+main._migrate_ui_lang()
+check(main._user_by_email("ru@lang.io")["uiLang"] == "ru",
+      "поздняя миграция при старте этот выбор не сбрасывает")
+
+fresh_limits()
+r = c.post("/api/auth/register", json={"email": "plain@lang.io", "password": "long-enough-1", "accept": True})
+u = main._user_by_email("plain@lang.io")
+check(r.status_code == 200 and u["uiLang"] == main.DEFAULT_UI_LANG and not u.get("uiLangSet"),
+      "без языка экрана — умолчание сервиса и без следа выбора")
+check(mail_lang_to("plain@lang.io", "verify") == main.DEFAULT_UI_LANG, "письмо — на языке по умолчанию")
+
+fresh_limits()
+r = c.post("/api/auth/register", json={"email": "xx@lang.io", "password": "long-enough-1",
+                                       "accept": True, "uiLang": "xx"})
+u = main._user_by_email("xx@lang.io")
+check(r.status_code == 200 and u["uiLang"] == main.DEFAULT_UI_LANG and not u.get("uiLangSet"),
+      "неизвестный язык не записывается и выбором не считается")
+
+fresh_limits(); mails.clear()
+c.post("/api/auth/resend", json={"email": "plain@lang.io", "uiLang": "ru"})
+check(mail_lang_to("plain@lang.io", "verify") == "ru", "повторный код — на языке экрана запроса")
+check(main._user_by_email("plain@lang.io")["uiLang"] == main.DEFAULT_UI_LANG,
+      "а язык учётной записи публичная дверь не меняет")
+main._user_by_email("plain@lang.io")["emailVerified"] = True
+fresh_limits()
+c.post("/api/auth/forgot", json={"email": "plain@lang.io", "uiLang": "ru"})
+check(mail_lang_to("plain@lang.io", "reset") == "ru", "код сброса пароля — тоже на языке экрана")
+fresh_limits()
+c.post("/api/auth/forgot", json={"email": "ru@lang.io"})
+check(mail_lang_to("ru@lang.io", "reset") == "ru", "запрос без языка экрана — язык учётной записи")
+main._mail_code = _orig_mail_code
+
 print()
 print("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail))

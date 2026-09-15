@@ -1555,7 +1555,6 @@ window.I18N.register("uz", {
  "Создано ": "Yaratildi ",
  "Создать": "Yaratish",
  "Создать на основе:": "Asosida yaratish:",
- "Создать организацию": "Tashkilot yaratish",
  "Соответствие глоссарию": "Lug'atga muvofiqlik",
  "Соответствие обратного перевода": "Teskari tarjima muvofiqligi",
  "Соответствие одобренным терминам": "Ma'qullangan atamalarga muvofiqlik",

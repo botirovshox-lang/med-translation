@@ -10960,6 +10960,46 @@ def _migrate_pages_unit() -> int:
 
 
 _migrate_pages_unit()
+
+
+WARM_DELAY_SECONDS = float(os.environ.get("WARM_DELAY_SECONDS", "2"))
+
+
+def _warm_caches() -> None:
+    """Прогреть дорогие кэши экранов сразу после старта API.
+
+    Первый заход после рестарта считал всё с нуля: разбор проекта (`/analysis`
+    → подбор приказных записей по всей книге) — 6 с, охват очереди терминов —
+    2,5 с, и человек, открывший «Проверку» сразу после выката, смотрел на
+    «Считаем итог…». Следующие заходы — 0,25 с: слои кэша живут в процессе.
+    Поэтому считаем их сами, фоновым потоком, до первого человека.
+    Организация — в `_JOB_TENANT` (ContextVar сессии в поток не доезжает),
+    сбой по одному проекту не мешает остальным и ничего не пишет."""
+    time.sleep(WARM_DELAY_SECONDS)
+    t0, n = time.time(), 0
+    for p in list(STATE.get("projects") or []):
+        if not p.get("segments"):
+            continue
+        _JOB_TENANT.id = p.get("tenant") or DEFAULT_TENANT
+        try:
+            project_analysis(p["id"])
+            list_term_queue(project=p["id"], limit=25, actionable=True)
+            n += 1
+        except Exception as e:
+            print(f"[backend] прогрев проекта {p.get('id')}: {e}", file=sys.stderr)
+    _JOB_TENANT.id = None
+    print(f"[backend] кэши прогреты: {n} проектов за {time.time() - t0:.1f} с", file=sys.stderr)
+
+
+@app.on_event("startup")
+def _warm_on_startup():
+    # Только процесс API и только когда его поднимает сервер: тесты импортируют
+    # модуль без старта приложения, воркер прогонов экранов не показывает.
+    if IS_WORKER or os.environ.get("WARM_CACHES", "1") == "0":
+        return
+    threading.Thread(target=_warm_caches, name="mcat-warm", daemon=True).start()
+
+
 # Занятость очереди — в журнал при старте. О потолке узнавали только из строки
 # «выброшено N», то есть уже после потери находок.
 try:

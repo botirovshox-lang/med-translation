@@ -250,23 +250,30 @@ console.log("7. Экран входа: выбор языка интерфейс�
   const reloads = [];
   global.location = { reload() { reloads.push(1); } };
   const auth = AuthScreen({ onLogin() {}, theme: "light", onToggleTheme() {} });
-  const seg = byClass(auth, "seg")[0];
-  check(!!seg, "на экране входа есть переключатель языка");
-  const btns = seg ? seg.children : [];
-  check(btns.length === window.I18N.langs.length, "в переключателе все языки системы");
-  check(btns.some(b => b.props["aria-pressed"] === true), "нынешний язык помечен");
-  check(btns.every(b => b.props.type === "button"), "кнопки языка форму не отправляют");
+  const box = byClass(auth, "auth-langs")[0];
+  check(!!box, "на экране входа есть выбор языка");
+  const sel = byClass(auth, "select")[0];
+  check(!!sel, "выбор — списком: языков будет больше двух, а ряд кнопок при росте ломает вёрстку");
+  const opts = sel ? sel.children : [];
+  check(opts.length === window.I18N.langs.length, "в списке все языки системы");
+  check(sel && sel.props.value === window.I18N.lang, "нынешний язык выбран в списке");
+  check(!!(sel && sel.props["aria-label"]), "у списка есть имя для читалки");
+  /* Название языка — НА НЁМ САМОМ и НЕ ПЕРЕВЕДЁННОЕ: дверь ищет тот, кто
+     нынешних надписей не читает, и «Узбекский» ему ничего не скажет. */
+  check(opts.every(o => o.children.join("") === window.I18N.label(o.props.value)),
+        "язык назван на себе самом, а не переведён");
+  check(opts.every(o => o.props.lang === o.props.value), "у строки списка свой lang — читалка произнесёт верно");
 
   /* Выбор обязан оставить СЛЕД: без него api.js не отличит решение человека
      от языка прошлого хозяина общего компьютера и не унесёт выбор на запись —
      первый же /auth/me вернул бы прежний язык. */
   const was = window.I18N.lang;
-  const other = btns.find(b => b.props["aria-pressed"] !== true);
+  const other = opts.find(o => o.props.value !== was).props.value;
   localStorage.removeItem("mct-lang-picked");
-  other.props.onClick();
+  sel.props.onChange({ target: { value: other } });
   check(window.I18N.pickedLang() && window.I18N.pickedLang() !== was,
         "выбор языка записан следом для входа");
-  check(window.I18N.lang !== was, "язык экрана сменился");
+  check(window.I18N.lang === other, "язык экрана сменился на выбранный");
   check(reloads.length === 1, "смена языка перезагружает страницу");
   window.I18N.clearPicked();
   check(window.I18N.pickedLang() === "", "след снимается — второй вход чужой язык не унесёт");

@@ -1064,10 +1064,23 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .auth-card .linklike { text-decoration: none; }
 .auth-card .linklike:hover { text-decoration: underline; }
 .auth-foot { text-align: left; font-size: 11.5px; color: var(--text-4); margin-top: 18px; line-height: 1.5; }
-/* Угол экрана входа: язык и тема. Ряд, а не два фиксированных блока —
-   у языка ширина меняется вместе с надписями, и второй блок пришлось бы
-   отодвигать на глаз. */
-.auth-theme { position: fixed; top: 18px; right: 18px; display: flex; align-items: center; gap: 8px; }
+.auth-theme { position: fixed; top: 18px; right: 18px; }
+
+/* Выбор языка интерфейса — ПОД подписью и по центру, одинаково на телефоне
+   и на мониторе. Список, а не ряд кнопок: языков будет больше двух, а ряд
+   при росте переносится на вторую строку и двигает всё под собой. Ширина
+   по содержимому (не 100%, как у поля в форме): это не поле ввода, а подпись
+   «на каком языке с вами разговаривают», и растянутый во всю карточку
+   он читался бы как ещё одна строка формы. */
+.auth-langs { display: flex; justify-content: center; align-items: center; gap: 7px; margin-top: 16px; }
+.auth-langs .al-ic { display: inline-flex; color: var(--text-4); }
+.auth-langs .select {
+  width: auto; max-width: 100%; height: 30px; padding: 3px 28px 3px 8px;
+  font-size: 12.5px; color: var(--text-3); background-color: transparent;
+  border-color: transparent; background-position: right 8px center;
+}
+.auth-langs .select:hover { border-color: var(--border); color: var(--text); }
+.auth-langs .select:focus { border-color: var(--border-strong); background-color: var(--bg); }
 
 /* Upload dropzone */
 .dropzone {

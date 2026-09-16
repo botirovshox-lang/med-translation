@@ -318,21 +318,52 @@ function authRememberBrand(b) {
    видит незнакомый экран, нечем его переключить — вкладка «Профиль» лежит
    за входом, а пароль он вводит на языке, которого может не знать.
 
+   Стоит ПОД подписью и по центру — одинаково на телефоне и на мониторе.
+   В углу его искали бы глазами: экран входа читается сверху вниз (марка →
+   заголовок → поля → кнопка), и переключатель в этой цепочке не участвует,
+   а нужен ровно тому, кто не понимает надписей.
+
+   Три решения, и все три — про РОСТ числа языков:
+
+   1) СПИСОК, а не кнопки в ряд и не флаги. Два языка встают в ряд, пять уже
+      переносятся на вторую строку и двигают всё под собой, а на телефоне ряд
+      кнопок с длинными названиями («O‘zbekcha (lotin)») не помещается вовсе.
+      Список занимает одну строку при любом числе языков, а на телефоне
+      открывается системным выбором, к которому человек привык. Флаг же —
+      это страна, а не язык: у английского их два десятка, а показывать
+      русский язык флагом России на узбекском рынке — политика вместо
+      интерфейса. Тот же довод, по которому флагов нет у пары ДОКУМЕНТА
+      (сторож «эмодзи-флагов нет» в tests/test_editor_render.js).
+
+   2) НАЗВАНИЕ ЯЗЫКА — НА НЁМ САМОМ (`native`, «O‘zbekcha (lotin)»,
+      «Русский»), и переводить его нельзя НИКОГДА. Смысл двери в том, что
+      её находит человек, который нынешних надписей НЕ ЧИТАЕТ: «Узбекский»
+      в русском списке ему ничего не говорит, а «O‘zbekcha» он узнаёт.
+      Поэтому названия живут в `i18n.js` строками, а не ключами TR().
+
+   3) У каждой строки свой `lang`: экранная читалка обязана произнести
+      «Русский» по-русски, а не по буквам узбекского. Значок глобуса —
+      подпись для того, кто не читает ни одной строки списка, и он
+      от читалки скрыт (`Icon` ставит `aria-hidden` сам): название языка
+      в списке уже есть, и повторять его значком нечем.
+
    Выбор ведёт себя как везде: пишется в localStorage и перезагружает
    страницу (правило 3 в i18n.js — часть надписей считается один раз при
    загрузке файла), а удачный вход уносит его НА ЗАПИСЬ пользователя, чтобы
-   /auth/me не перекрыл выбор прежним языком. Переключатель — .seg, а не
-   чёрная кнопка: он отвечает на вопрос «на каком языке с вами сейчас
-   разговаривают», а не «нажмите сюда». */
+   /auth/me не перекрыл выбор прежним языком. */
 function AuthLangPick() {
   const langs = (window.I18N && window.I18N.langs) || [];
   if (langs.length < 2) return null;
-  const now = window.I18N.lang;
-  return React.createElement("div", { className: "seg", role: "group", "aria-label": TR("Язык интерфейса") },
-    langs.map(l => React.createElement("button", {
-      key: l.code, type: "button", "aria-pressed": now === l.code, title: l.native,
-      onClick: () => { window.I18N.markPicked(l.code); window.I18N.setLang(l.code); },
-    }, l.label)));
+  return React.createElement("div", { className: "auth-langs" },
+    React.createElement("span", { className: "al-ic" }, React.createElement(Icon, { name: "globe", size: 14 })),
+    React.createElement("select", {
+      className: "select", value: window.I18N.lang, "aria-label": TR("Язык интерфейса"),
+      onChange: (e) => {
+        const code = e.target.value;
+        window.I18N.markPicked(code);
+        window.I18N.setLang(code);
+      },
+    }, langs.map(l => React.createElement("option", { key: l.code, value: l.code, lang: l.code }, l.native))));
 }
 
 function AuthScreen({ onLogin, theme, onToggleTheme }) {
@@ -397,7 +428,7 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
   const title = { login: TR("Вход"), register: TR("Регистрация"), verify: TR("Код из письма"),
                   forgot: TR("Восстановление пароля"), reset: TR("Новый пароль") }[mode];
   const sub = {
-    login: TR("Система перевода документов с проверками"),
+    login: TR("Крутой перевод в один клик!"),
     register: TR("Своя организация: проекты, глоссарий и память переводов видите только вы"),
     verify: TR("Мы отправили шестизначный код на ") + (f.email || TR("вашу почту")),
     forgot: TR("Пришлём код на почту, которой вы регистрировались"),
@@ -430,9 +461,7 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
   }, label);
 
   return React.createElement("div", { className: "auth-wrap" },
-    React.createElement("div", { className: "auth-theme" },
-      React.createElement(AuthLangPick, null),
-      React.createElement(ThemeToggle, { theme, onToggle: onToggleTheme })),
+    React.createElement("div", { className: "auth-theme" }, React.createElement(ThemeToggle, { theme, onToggle: onToggleTheme })),
     React.createElement("form", { className: "auth-card", onSubmit: submit, style: shake ? { animation: "pop .1s, shake .4s" } : null },
       /* Марка с названием — строка .auth-brand макета, а не одинокий значок:
          название сервиса на экране входа берётся с сервера (APP_BRAND). */
@@ -477,7 +506,8 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
       React.createElement("p", { className: "auth-foot" },
         React.createElement("a", { href: "/terms", target: "_blank", rel: "noopener" }, TR("Оферта")),
         " · ",
-        React.createElement("a", { href: "/privacy", target: "_blank", rel: "noopener" }, TR("Персональные данные")))
+        React.createElement("a", { href: "/privacy", target: "_blank", rel: "noopener" }, TR("Персональные данные"))),
+      React.createElement(AuthLangPick, null)
     )
   );
 }

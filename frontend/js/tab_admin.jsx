@@ -462,6 +462,17 @@ function AdminSystemModels({ toast, onSaved }) {
   useEffect(() => { load(); }, []);
   if (!d) return React.createElement("div", { className: "card card-pad dim" }, TR("Загружаем модели…"));
   const dirty = d.steps.some(s => (s.value || "") !== (draft[s.key] || ""));
+  /* Спор моделей по РОЛИ — тем же правилом, что в панели запуска
+     (`modelRoleConflicts` в ui.jsx). Считается по ЧЕРНОВИКУ, а не по тому,
+     что действует: человек решает прямо сейчас, и узнать о споре он должен
+     до «Сохранить», а не после. Пустой выбор раскрыт в умолчание КОДА —
+     иначе спор двух шагов, оба оставленных «по умолчанию», был бы не виден,
+     хотя работать они будут одной моделью (в таблице это и стоит справа). */
+  const eff = {};
+  d.steps.forEach(s => { eff[s.key] = draft[s.key] || s.codeDefault || ""; });
+  const conflicts = modelRoleConflicts(eff, (id) => adminModelName(d.models, id));
+  const disputed = {};
+  conflicts.forEach(c => c.steps.forEach(k => { disputed[k] = true; }));
   const save = async () => {
     setBusy(true);
     try {
@@ -480,11 +491,19 @@ function AdminSystemModels({ toast, onSaved }) {
         React.createElement(Btn, { size: "sm", disabled: !dirty || busy, onClick: save }, busy ? TR("Сохраняем…") : TR("Сохранить")))),
     React.createElement("p", { className: "dim", style: { margin: "0 0 8px", fontSize: 13 } },
       TR("Модель, которой шаг идёт, когда её не выбрали явно. Пусто — умолчание кода. Сильнее системной только модель, назначенная организации в упрощённом режиме, и явный выбор в редакторе.")),
+    /* Спор называется вслух и ДО сохранения: назначенные здесь модели уходят
+       умолчанием всем организациям сразу, и цена ошибки выше, чем у выбора
+       на один прогон. Сохранить это не мешает — бывает, что так и надо. */
+    conflicts.length > 0 && React.createElement("div", { className: "col", style: { gap: 4, margin: "0 0 10px" } },
+      conflicts.map((c, i) => React.createElement("div", { key: "c" + i,
+        style: { fontSize: 12.5, color: "var(--c-warning)", lineHeight: 1.5 } }, "⚠ " + c.text))),
     React.createElement("div", { style: { overflowX: "auto" } }, React.createElement("table", { className: "tbl" },
       React.createElement("thead", null, React.createElement("tr", null,
         [TR("Шаг"), TR("Модель"), TR("Цена за 1M токенов, вход / выход"), TR("Действует сейчас")].map((h, i) => React.createElement("th", { key: i }, h)))),
       React.createElement("tbody", null, d.steps.map(s => React.createElement("tr", { key: s.key },
-        React.createElement("td", null, adminStepLabel(s.key)),
+        React.createElement("td", null, adminStepLabel(s.key),
+          disputed[s.key] && React.createElement("span", { style: { color: "var(--c-warning)" },
+            title: TR("Эта модель спорит по роли с моделью другого шага — см. предупреждение над таблицей") }, " ⚠")),
         React.createElement("td", null,
           React.createElement("select", { className: "input", value: draft[s.key] || "", style: { maxWidth: 260 },
             onChange: (e) => setDraft({ ...draft, [s.key]: e.target.value }) },

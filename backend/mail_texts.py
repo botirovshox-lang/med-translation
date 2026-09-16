@@ -60,6 +60,27 @@ TEXTS = {
             "Agar taklif kutmagan bo'lsangiz, hech narsa qilish shart emas."
         ),
     },
+    "en": {
+        "verify.subject": "{brand}: confirmation code {code}",
+        "verify.body": (
+            "Email confirmation code: {code}\n\n"
+            "It is valid for {minutes} minutes. If you did not create "
+            "a {brand} account, simply ignore this message."
+        ),
+        "reset.subject": "{brand}: password reset code {code}",
+        "reset.body": (
+            "Password reset code: {code}\n\n"
+            "It is valid for {minutes} minutes. If you did not ask to change "
+            "your password, no action is needed — the password stays as it is."
+        ),
+        "invite.subject": "{brand}: invitation to the “{team}” team",
+        "invite.body": (
+            "{who} invites you to the “{team}” team.\n\n"
+            "Sign in to {brand} and open Profile — the invitation is waiting "
+            "there, you can accept or decline it.\n\n"
+            "If you were not expecting an invitation, no action is needed."
+        ),
+    },
 }
 
 DEFAULT = "ru"

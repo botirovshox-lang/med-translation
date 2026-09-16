@@ -607,49 +607,20 @@ const STEP_MODEL_PARAM = { translate: "model", backcheck: "bc_model",
                            repair: "rp_model", review: "rv_model" };
 
 /* Подсказки о моделях, которые противоречат друг другу по РОЛИ, а не
-   по силе. Считается по ДЕЙСТВУЮЩИМ моделям — тем, что сервер назвал
-   в разборе (plan.steps[].model): выбор «по умолчанию» тоже может
-   совпасть с моделью перевода, и молчать о нём нельзя. */
+   по силе. Само правило — ОДНО на все экраны (`modelRoleConflicts` в ui.jsx):
+   ту же пару шагов разбирает админка, где эти модели назначают на всю систему.
+   Здесь только «что считать действующей моделью»: то, что сервер назвал
+   в разборе (plan.steps[].model), — выбор «по умолчанию» тоже может совпасть
+   с моделью перевода, и молчать о нём нельзя. */
 function modelConflicts(plan, cat, mods) {
   const eff = {};
   (plan && plan.steps || []).forEach(st => { eff[st.step] = st.model; });
+  eff.judge = (mods && mods.judge_model) || (cat && cat.judgeDefault) || "";
   const label = (id) => {
     const m = (cat && cat.models || []).find(x => x.id === id);
     return m ? m.label : (id || "?");
   };
-  const judge = (mods && mods.judge_model) || (cat && cat.judgeDefault) || "";
-  const out = [];
-  if (eff.translate && eff.backcheck && eff.translate === eff.backcheck) {
-    out.push(TR("Back-check той же моделью, что и перевод (") + label(eff.translate)
-      + TR("): проверка себя — не проверка. На таких сегментах сервер сам возьмёт ")
-      + TR("запасную модель, и смета поплывёт; выберите другую."));
-  }
-  /* Ревизия пишет ОКОНЧАТЕЛЬНЫЙ текст и становится провайдером сегмента,
-     поэтому back-check её моделью — это проверка себя ровно в том же смысле,
-     что и back-check моделью перевода: сервер уйдёт на запасную модель. */
-  if (eff.review && eff.backcheck && eff.review === eff.backcheck) {
-    out.push(TR("Back-check той же моделью, что и ревизия (") + label(eff.review)
-      + TR("): ревизия пишет текст, и проверять его собой — не проверка. ")
-      + TR("Сервер возьмёт запасную модель, и смета поплывёт; выберите другую."));
-  }
-  if (eff.review && eff.translate && eff.review === eff.translate) {
-    out.push(TR("Ревизия той же моделью, что и перевод (") + label(eff.translate)
-      + TR("): она перечитывает собственный перевод и находит в нём меньше."));
-  }
-  [["termcheck", TR("Проверка терминов")], ["termaudit", TR("Сверка терминов")],
-   ["repair", TR("Ремонт")]].forEach(([stp, name]) => {
-    if (eff.translate && eff[stp] && eff[stp] === eff.translate) {
-      out.push(name + TR(" той же моделью, что и перевод (") + label(eff.translate)
-        + TR("): она правит и судит по собственному пониманию текста — ")
-        + TR("независимости, на которой стоит автоодобрение терминов, нет."));
-    }
-  });
-  if (judge && eff.backcheck && judge === eff.backcheck) {
-    out.push(TR("Судья и обратный перевод одной моделью (") + label(judge)
-      + TR("): судье нужна сильная, обратному переводу — буквальная, которая ")
-      + TR("не чинит ошибки на лету. Одна на обе роли плоха в одной из них."));
-  }
-  return out;
+  return modelRoleConflicts(eff, label).map(c => c.text);
 }
 
 function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, setMod,

@@ -585,7 +585,7 @@ def _current_tenant() -> str:
 #
 # Язык берётся у ТОГО, КТО ЗАПУСТИЛ работу: у запроса — из сессии, у прогона —
 # из задачи (ContextVar в рабочие потоки не доезжает, ровно как организация).
-EXPLAIN_LANG_NAME = {"ru": "Russian", "uz": "Uzbek (Latin script)"}
+EXPLAIN_LANG_NAME = {"ru": "Russian", "uz": "Uzbek (Latin script)", "en": "English"}
 
 
 def _explain_lang() -> str:
@@ -2574,7 +2574,7 @@ def _role_at_least(role: Optional[str], need: str) -> bool:
 # и человек увидит пустые надписи вместо русских.
 # По умолчанию — узбекская латиница: сервис продаётся в Узбекистане.
 # Кто выбрал русский, тот его и видит: `uiLang` у него записан явно.
-UI_LANGS = ("uz", "ru")
+UI_LANGS = ("uz", "ru", "en")
 DEFAULT_UI_LANG = os.environ.get("DEFAULT_UI_LANG", "uz").strip().lower() or "uz"
 if DEFAULT_UI_LANG not in UI_LANGS:
     DEFAULT_UI_LANG = "uz"

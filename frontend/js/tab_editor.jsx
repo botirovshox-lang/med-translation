@@ -320,7 +320,7 @@ function providerLabel(p, models) {
 // Поиск по сегментам. Регистр не важен, «ё» и «е» считаются одной буквой:
 // в русских текстах они пишутся вперемешку, и точный поиск иначе врёт.
 const SEARCH_SCOPES = ["all", "src", "tgt"];
-function normText(t) { return (t || "").toLowerCase().replace(/ё/g, TR("е")); }
+function normText(t) { return (t || "").toLowerCase().replace(/ё/g, "е"); }
 
 function segMatches(seg, q, scope) {
   const needle = normText(q);

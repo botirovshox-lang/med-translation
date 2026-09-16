@@ -293,6 +293,7 @@
  "Модели шагов на всю систему": "Butun tizim uchun bosqich modellari",
  "Отменить": "Bekor qilish",
  "Модель, которой шаг идёт, когда её не выбрали явно. Пусто — умолчание кода. Сильнее системной только модель, назначенная организации в упрощённом режиме, и явный выбор в редакторе.": "Aniq tanlanmaganda bosqich ishlaydigan model. Bo'sh — koddagi standart. Tizimnikidan faqat soddalashtirilgan rejimda tashkilotga belgilangan model va muharrirdagi aniq tanlov kuchliroq.",
+ "Эта модель спорит по роли с моделью другого шага — см. предупреждение над таблицей": "Bu model boshqa bosqich modeli bilan rol bo'yicha ziddiyatda — jadval ustidagi ogohlantirishga qarang",
  "Цена за 1M токенов, вход / выход": "1M token narxi, kirish / chiqish",
  "Действует сейчас": "Hozir amalda",
  "по умолчанию: ": "standart: ",

@@ -1,5 +1,5 @@
 /* ============================================================
-   Узбекский словарь интерфейса (латиница).
+   Словарь интерфейса: узбекский (латиница).
 
    СОБРАН из frontend/i18n/uz.*.json — правь ИХ и пересобирай:
 
@@ -1809,6 +1809,7 @@ window.I18N.register("uz", {
  "Экспорт не выполнен": "Eksport bajarilmadi",
  "Экспорт перевода": "Tarjima eksporti",
  "Эмбеддинги": "Embeddinglar",
+ "Эта модель спорит по роли с моделью другого шага — см. предупреждение над таблицей": "Bu model boshqa bosqich modeli bilan rol bo'yicha ziddiyatda — jadval ustidagi ogohlantirishga qarang",
  "Эталон терминологии (по-английски)": "Atamashunoslik etaloni (ingliz tilida)",
  "Эти записи одобрили вы, поэтому машина их не трогает. Отметьте, ": "Bu yozuvlarni siz ma'qullagansiz, shuning uchun mashina ularga tegmaydi. Tekshiruvga ",
  "Это ЗАВЕРЕННЫЕ сегменты: прежний текст уйдёт в «прошлый перевод», статус станет «требует проверки», а отметка «подтвердил человек» снимется.": "Bular TASDIQLANGAN segmentlar: avvalgi matn «oldingi tarjima»ga o'tadi, holat «tekshiruv talab qiladi» bo'ladi, «odam tasdiqladi» belgisi esa olib tashlanadi.",
@@ -1911,7 +1912,6 @@ window.I18N.register("uz", {
  "доделаю сама": "o‘zim tugataman",
  "домашняя запись": "uy hisobi",
  "другое понятие или нечитаемый фрагмент": "boshqa tushuncha yoki o'qib bo'lmaydigan parcha",
- "е": "e",
  "если согласны со сверкой и хотите понизить их пачкой.": "qo'shilsangiz va ularni to'plam bilan pasaytirmoqchi bo'lsangiz, belgilang.",
  "есть": "bor",
  "есть в справочнике": "ma'lumotnomada bor",

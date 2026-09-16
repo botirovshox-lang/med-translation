@@ -11,7 +11,7 @@ const QUEUE_PAGE = 25;
 // Без кодов языков в подписи: пара у проекта любая, а константа считается
 // один раз при загрузке файла.
 const PAIR_SCOPES = [["all", TR("Везде")], ["src", TR("Оригинал")], ["tgt", TR("Перевод")]];
-function pairNorm(t) { return (t || "").toLowerCase().replace(/ё/g, TR("е")); }
+function pairNorm(t) { return (t || "").toLowerCase().replace(/ё/g, "е"); }
 function pairMatches(row, q, scope) {
   const needle = pairNorm(q);
   if (!needle) return true;

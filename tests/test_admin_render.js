@@ -155,10 +155,10 @@ check(!!full && full.includes("500"), "выданные страницы пок�
 /* Вкладка «Модели и расход»: переключатель на месте, вид рисуется и до ответа
    сервера (настройка и пересчёт грузятся своими запросами), и с ответом. */
 check(!!full && full.includes("Модели и расход"), "переключатель вкладки моделей на месте");
-function renderView(label, sys, sim) {
+function renderView(label, sys, sim, draft) {
   hooks.length = 0; hookIdx = 0; effects.length = 0;
   hooks[0] = OV; hooks[2] = "models";
-  if (sys) { hooks[3] = sys; hooks[4] = sys; hooks[5] = { translate: "gpt-4o" }; }
+  if (sys) { hooks[3] = sys; hooks[4] = sys; hooks[5] = draft || { translate: "gpt-4o" }; }
   // Порядок хуков: TabAdmin 0–2, AdminModelsView 3, AdminSystemModels 4–6,
   // AdminUsageSim 7–14 (res — 13).
   if (sim) hooks[13] = sim;
@@ -180,6 +180,26 @@ const mFull = renderView("вкладка моделей с ответом", SYS,
 check(!!mFull && mFull.includes("Модели шагов на всю систему") && mFull.includes("Виртуальный пересчёт расхода"),
       "обе карточки на месте");
 check(!!mFull && mFull.includes("По выбранным моделям") && mFull.includes("без автора"), "итог пересчёта и строка без автора");
+
+/* Спор моделей по РОЛИ назван вслух и ДО сохранения: назначенная здесь модель
+   уходит умолчанием ВСЕМ организациям сразу, и цена ошибки выше, чем у выбора
+   на один прогон. Правило одно с панелью запуска (`modelRoleConflicts`
+   в ui.jsx): две копии дали бы два разных ответа на один и тот же выбор —
+   ровно то расхождение, ради которого состав прогона считает сервер. */
+check(!!mFull && !mFull.includes("Back-check той же моделью"),
+      "при разных моделях о споре не врёт");
+const SYS_CONF = Object.assign({}, SYS, { steps: [
+  { key: "translate", value: "gpt-4o", codeDefault: "gpt-4o", effective: "gpt-4o" },
+  { key: "backcheck", value: "gpt-4o", codeDefault: "gpt-4o-mini", effective: "gpt-4o" },
+  { key: "judge", value: null, codeDefault: "gpt-4o", effective: "gpt-4o" }] });
+const mConf = renderView("вкладка моделей со спором", SYS_CONF, SIM,
+                         { translate: "gpt-4o", backcheck: "gpt-4o", judge: "" });
+check(!!mConf && mConf.includes("Back-check той же моделью, что и перевод"),
+      "проверка себя названа предупреждением");
+check(!!mConf && mConf.includes("Судья и обратный перевод одной моделью"),
+      "пустой выбор раскрыт в умолчание кода — спор судьи с back-check виден");
+check(!!mConf && mConf.includes("спорит по роли"),
+      "спорящая строка отмечена в самой таблице, а не только словами");
 
 /* Два правила показа: служебный адрес и роль. Пропавшая проверка открыла бы
    сводку по всем организациям с главной страницы. */

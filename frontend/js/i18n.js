@@ -38,9 +38,15 @@
 (function () {
   var LS_KEY = "mct-lang";
   var PICK_KEY = "mct-lang-picked";   // язык, ВЫБРАННЫЙ руками до входа
+  /* Языки интерфейса. Название языка — НА НЁМ САМОМ и НЕ переводится:
+     переключатель ищет тот, кто нынешних надписей не читает, и «Узбекский»
+     в русском списке ему не поможет, а «O‘zbekcha» он узнаёт.
+     `label` и `native` различались, пока у узбекского стояла приписка
+     «(lotin)»; она убрана — латиница видна по самому слову. */
   var LANGS = [
-    { code: "uz", label: "O‘zbekcha", native: "O‘zbekcha (lotin)" },
+    { code: "uz", label: "O‘zbekcha", native: "O‘zbekcha" },
     { code: "ru", label: "Русский", native: "Русский" },
+    { code: "en", label: "English", native: "English" },
   ];
   var DEFAULT_LANG = "uz";
   var catalogs = {};                 // код языка -> { "русская строка": "перевод" }

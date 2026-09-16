@@ -87,7 +87,7 @@ for (const f of ["i18n.js", "ui.jsx", "tab_export_preflight.jsx"]) {
 
 const toast = { info() {}, warning() {}, error() {}, success() {} };
 
-function render(sourceDocx) {
+function render(sourceDocx, can) {
   hooks.length = 0;
   hookIdx = 0;
   const project = {
@@ -103,6 +103,9 @@ function render(sourceDocx) {
   if (sourceDocx) project.sourceDocx = sourceDocx;
   const storeStub = {
     activeProject: project, projects: [project], exportHistory: [],
+    // Имя модели и её выбор — устройство (modelsShown в ui.jsx): по умолчанию
+    // на экране их нет, суперпользователю они возвращаются.
+    can: can || { owner: false, super: false },
     statusCounts: () => ({ all: 3, new: 1, translated: 1, qa: 0, confirmed: 1, failed: 0, review: 0 }),
     patchProject() {}, go() {},
   };
@@ -147,13 +150,21 @@ check(withsrc.indexOf("Спрашиваем сервер") !== -1,
 check(withsrc.indexOf("надписей нет") === -1 && withsrc.indexOf("Разбор ещё не делался") === -1,
       "и не выдаёт незнание за пустой результат");
 check(withsrc.indexOf("Найти надписи") !== -1, "есть кнопка поиска надписей");
-// Чем читать — решается на месте, рядом с кнопкой. Пока каталог моделей
-// не приехал, экран говорит об этом, а не молчит.
-check(withsrc.indexOf("Модель чтения") !== -1, "модель чтения выбирается здесь же");
-check(withsrc.indexOf("каталог моделей не загрузился") !== -1,
-      "без каталога сказано, что читать будет модель по умолчанию");
+// Имя модели — устройство системы, и человеку оно не показывается НИГДЕ
+// (modelsShown в ui.jsx). Работа при этом остаётся: кнопка «Найти надписи»
+// на месте, а модель сервер подставит свою — скрытая настройка обязана
+// иметь честное умолчание (инвариант 24).
+check(withsrc.indexOf("Модель чтения") === -1, "человеку выбор модели не показывается");
+check(withsrc.indexOf("каталог моделей не загрузился") === -1,
+      "и устройство разбора ему не пересказывается");
 check(withsrc.indexOf("перевод уходит подписью под картинкой") !== -1,
       "сказано, что на снимке перевод пойдёт подписью, а не заплаткой");
+// Чем читать — решается на месте, рядом с кнопкой, но только у эксперта.
+const withsrcSu = render({ file: "book.docx", at: "2026-08-25 10:00", paras: 3346, segments: 2670 },
+                         { owner: true, super: true });
+check(withsrcSu.indexOf("Модель чтения") !== -1, "суперпользователю модель чтения выбирается здесь же");
+check(withsrcSu.indexOf("каталог моделей не загрузился") !== -1,
+      "без каталога сказано, что читать будет модель по умолчанию");
 
 // ── что именно попадёт в файл ───────────────────────────────────────
 // Прежняя подпись обещала «из подтверждённых сегментов» — неправда для обоих

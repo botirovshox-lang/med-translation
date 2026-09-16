@@ -9,7 +9,7 @@
    Формат считаем любой, какой умеем разобрать; проект пока создаётся только
    из .docx — поэтому смету можно взять и по файлу, который импортировать
    нельзя. */
-function ImpQuote({ file, src, tgt, toast, onSaved }) {
+function ImpQuote({ file, src, tgt, toast, onSaved, store }) {
   const [res, setRes] = useState(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -55,8 +55,11 @@ function ImpQuote({ file, src, tgt, toast, onSaved }) {
       React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" } },
         React.createElement(Btn, { variant: "ghost", disabled: busy, onClick: runScan },
           busy ? TR("Читаем…") : TR("Оценить по выборке из ") + res.scan.sample + TR(" стр.")),
+        /* Цена выборки — деньги, и она остаётся тому, кто платит. Имя
+           зрячей модели — устройство (см. modelsShown в ui.jsx). */
         !costHidden() && res.scan.est != null && React.createElement("span", { className: "dim", style: { fontSize: 12 } },
-          TR("зрячая модель ") + res.scan.model + " · ≈ $" + Number(res.scan.est).toFixed(3)))),
+          (modelsShown(store) ? TR("зрячая модель ") + res.scan.model + " · " : "")
+          + "≈ $" + Number(res.scan.est).toFixed(3)))),
     res && res.counts && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6, fontSize: 14 } },
       res.scan && row(TR("Оценка по выборке"), res.scan.read.length + TR(" из ") + res.scan.pages + TR(" стр.")),
       row(TR("Слов"), res.counts.words.toLocaleString("ru-RU")),
@@ -574,7 +577,7 @@ function ImpAddFile({ folder, store, toast, meta }) {
     file && !exact && src === tgt && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, TR("Язык оригинала и язык перевода совпадают.")),
     !exact && !similar && React.createElement(Btn, { variant: "primary", icon: busy ? null : "plus", disabled: !file || busy || probing || src === tgt, onClick: create },
       busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), TR("Загружаем…")) : TR("Добавить в проект")),
-    file && !exact && React.createElement(ImpQuote, { file, src, tgt, toast }));
+    file && !exact && React.createElement(ImpQuote, { file, src, tgt, toast, store }));
 }
 
 /* Словари проекта: какие подключены и куда пишутся новые слова.

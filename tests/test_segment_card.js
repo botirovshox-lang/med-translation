@@ -206,6 +206,28 @@ delete storeStub.can;
 check(asTranslator.indexOf("Подтвердить") !== -1, "кнопка «Подтвердить» есть у любой роли: заверяет каждый, след — подпись");
 
 console.log("");
+console.log("=== 8. Имя модели человеку не показывается ===");
+/* Имя модели — УСТРОЙСТВО системы (инвариант 24, modelsShown в ui.jsx):
+   человек решений по нему не принимает, а на экране оно выглядит утечкой
+   внутренностей. Карточка сегмента была последним местом, где оно стояло
+   у всех подряд: «оценка 6/10 · gpt-5.6-terra · 2026-09-16 13:11». Время
+   при этом остаётся — оно отвечает на вопрос «когда смотрели». */
+const withModels = Object.assign({}, BASE, {
+  review: { score: 6, issues: [], applied: false, model: "gpt-5.6-terra", at: "2026-09-16 13:11" },
+  backcheck: { score: 88, model: "gpt-5.6-sol", at: "2026-09-16 13:05", reasons: [] },
+  termcheck: { findings: [], model: "gpt-5.6-terra", at: "2026-09-16 13:07", stale: false },
+});
+const plainUser = render(withModels);
+check(plainUser.indexOf("gpt-5.6") === -1, "ни в одной карточке имени модели нет");
+check(plainUser.indexOf("2026-09-16 13:11") !== -1, "…а время осталось и не начинается с разделителя");
+check(plainUser.split("\n").every(l => l[0] !== "·"), "ни одна подпись не начинается с висячего разделителя");
+/* Эксперту устройство возвращается: он по нему и принимает решения. */
+storeStub.can = { owner: true, super: true };
+const asSuper = render(withModels);
+delete storeStub.can;
+check(asSuper.indexOf("gpt-5.6-terra") !== -1, "системному администратору модель названа");
+
+console.log("");
 if (fail.length) {
   console.log("ПРОВАЛЕНО: " + fail.length);
   fail.forEach(f => console.log("  - " + f));

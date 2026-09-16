@@ -101,10 +101,14 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
     if (seg.termcheck && !seg.termcheck.stale) return;
     runTerms();
   };
+  /* Выбор модели спрятан (см. modelsShown) — в запрос уходит null, и сервер
+     берёт свою: скрытая настройка обязана иметь ЧЕСТНОЕ умолчание, иначе
+     работа молча идёт по забытому в localStorage значению. */
+  const pickModel = (id) => (modelsShown(store) ? (id || null) : null);
   const runTerms = () => {
     if (termBusy || !window.API) return;
     setTermBusy(true);
-    window.API.safeCall(() => window.API.termcheck(project.id, seg.id, tcModel)).then(res => {
+    window.API.safeCall(() => window.API.termcheck(project.id, seg.id, pickModel(tcModel))).then(res => {
       setTermBusy(false);
       if (!res || !res.ok) { toast.error(TR("Проверка не удалась"), TR("Модель не ответила или нет ключа OpenAI.")); return; }
       touch({ termcheck: { ...res.termcheck, stale: false } });
@@ -120,8 +124,8 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
     if (repairBusy || !window.API) return;
     setRepairBusy(true);
     window.API.safeCall(() => window.API.repair(project.id, seg.id, {
-      model: rpModel || null, bc_model: bcModel || null, tc_model: tcModel || null,
-      use_judge: !!bcJudge, judge_model: judgeModel || null })).then(res => {
+      model: pickModel(rpModel), bc_model: pickModel(bcModel), tc_model: pickModel(tcModel),
+      use_judge: !!bcJudge, judge_model: pickModel(judgeModel) })).then(res => {
       setRepairBusy(false);
       if (!res || !res.ok) { toast.error(TR("Ремонт не удался"), TR("Модель не ответила или нет ключа OpenAI.")); return; }
       if (!res.applied) {
@@ -202,7 +206,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
   const runBack = (model) => {
     if (!seg.target) { setBackResult("no_target"); return; }
     setBackResult("loading");
-    window.API && window.API.backcheck(project.id, seg.id, model, bcJudge, judgeModel).then(res => {
+    window.API && window.API.backcheck(project.id, seg.id, model, bcJudge, pickModel(judgeModel)).then(res => {
       if (res && res.ok) {
         setBackResult(res.back);
         // Подтягиваем оценку в локальный state, чтобы процент сразу встал в строке
@@ -362,9 +366,12 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
                 f.why && React.createElement("div", { className: "dim", style: { fontSize: 12, lineHeight: 1.5 } }, TRS(f.why)),
                 f.suggestion && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check",
                   onClick: () => { setDraft(draft.split(f.tgt_term).join(f.suggestion)); toast.info(TR("Подставлено в черновик"), TR("Проверьте и сохраните.")); } }, TR("Заменить в тексте")))),
+              /* «Без вызова модели» — это про работу (проверять было нечего),
+                 и остаётся всем. Имя модели — устройство (см. modelsShown). */
               React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
-                (seg.termcheck.model === "skip" ? TR("без вызова модели") : seg.termcheck.model || "")
-                + (seg.termcheck.at ? " · " + seg.termcheck.at : "")))),
+                metaLine([seg.termcheck.model === "skip" ? TR("без вызова модели")
+                            : (modelsShown(store) ? seg.termcheck.model : ""),
+                          seg.termcheck.at])))),
 
     /* Совет арбитра, который есть чем исполнить. Стоит ОТДЕЛЬНОЙ карточкой,
        а не подсказкой при наведении: подсказку не видно и не нажать, а тут
@@ -406,9 +413,8 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
             : seg.review.held ? TR("Ревизия предлагает правку — текст заверен вами")
             : TR("Ревизия прочитала пару")),
         React.createElement("span", { className: "dim", style: { fontSize: 11.5 } },
-          TR("оценка ") + seg.review.score + "/10"
-          + (seg.review.model ? " · " + seg.review.model : "")
-          + (seg.review.at ? " · " + seg.review.at : ""))),
+          metaLine([TR("оценка ") + seg.review.score + "/10",
+                    modelsShown(store) ? seg.review.model : "", seg.review.at]))),
       seg.review.stale && React.createElement("div",
         { className: "dim", style: { fontSize: 12, marginTop: 4, lineHeight: 1.5 } },
         TR("Текст менялся после ревизии — сказанное ниже относится к прежней версии.")),
@@ -544,7 +550,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
           color: window.bcScoreColor(seg.backcheck.score) } },
           seg.backcheck.score + TR("% соответствия")),
         React.createElement("span", { className: "dim", style: { fontSize: 11.5 } },
-          (seg.backcheck.model || "") + (seg.backcheck.at ? " · " + seg.backcheck.at : ""))),
+          metaLine([modelsShown(store) ? seg.backcheck.model : "", seg.backcheck.at]))),
       seg.backcheck && (seg.backcheck.reasons || []).length > 0 && React.createElement("div", {
         className: "dim", style: { fontSize: 12, marginBottom: 8, lineHeight: 1.5 } },
         TR("Причины: ") + seg.backcheck.reasons.map(TRS).join("; ")),
@@ -557,16 +563,20 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
             ? React.createElement("div", { className: "tmrow", style: { fontSize: 13, lineHeight: 1.5 } }, backResult)
             : React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, TR("Нет перевода для проверки.")),
 
-      // Выбор модели для штучной перепроверки
-      bcModels && bcModels.length > 0 && React.createElement("div", {
+      /* Штучная перепроверка. Выбор модели — устройство прогона, и человеку
+         его не показываем (см. modelsShown). Скрытая настройка обязана иметь
+         ЧЕСТНОЕ умолчание (инвариант 24): в запрос уходит null — сервер берёт
+         свою модель, а не забытое в localStorage значение. Кнопка при этом
+         остаётся: перепроверить пару — это работа, а не устройство. */
+      React.createElement("div", {
         className: "row", style: { gap: 8, marginTop: 10, flexWrap: "wrap" } },
-        React.createElement(Select, {
+        modelsShown(store) && bcModels && bcModels.length > 0 && React.createElement(Select, {
           value: bcModel || "", disabled: backResult === "loading", style: { flex: 1, minWidth: 150 },
           onChange: (e) => onBcModel && onBcModel(e.target.value),
         }, bcModels.map(m => React.createElement("option", { key: m.id, value: m.id }, m.label))),
         React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat",
           disabled: backResult === "loading" || !seg.target,
-          onClick: () => runBack(bcModel) }, TR("Проверить заново")))),
+          onClick: () => runBack(pickModel(bcModel)) }, TR("Проверить заново")))),
 
     React.createElement("div", { className: "divider" }),
 

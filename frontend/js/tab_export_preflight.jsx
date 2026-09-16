@@ -109,7 +109,10 @@ function ImagesCard({ project, store, toast }) {
     /* Смету отдаём серверу вместе с задачей: без неё факт не с чем сравнить,
        и поправка estRatio прогоны картинок не увидит никогда. */
     const r = await window.API.safeCall(() => window.API.createJob(pid, "images", [],
-      { dry_run: !!dry, ocr_model: ocrModel || null, est_cost: est || 0 }));
+      /* Выбор модели спрятан (см. modelsShown) — в задачу уходит null,
+         и сервер берёт свою: скрытая настройка обязана иметь ЧЕСТНОЕ
+         умолчание, иначе работа молча идёт по забытому в localStorage. */
+      { dry_run: !!dry, ocr_model: (modelsShown(store) && ocrModel) || null, est_cost: est || 0 }));
     setBusy(false);
     if (!r || !r.ok) { toast.error(TR("Разбор не запущен"), TR("Сервер отказал.")); return; }
     setJob(r.job);
@@ -322,21 +325,22 @@ function ImagesCard({ project, store, toast }) {
          разбора: цена за миллион токенов ничего не говорит человеку о том,
          во что обойдётся вот эта книга. */
       !running && project.sourceDocx && !forgetOpen && React.createElement("div", { className: "col", style: { gap: 6 } },
-        // Упрощённый режим: ни выбора модели, ни её имени. Модель разбора
-        // назначает организация, и сервер подставит назначенную (`ocr_model`
-        // входит в _MODEL_PARAM_KEYS) — выбор из localStorage сюда не уедет.
-        !costHidden() && React.createElement("div", { className: "row between", style: { gap: 10 } },
+        // Имя модели и её выбор — устройство прогона (см. modelsShown
+        // в ui.jsx): в упрощённом режиме их назначает организация, а вне его
+        // человеку выбирать нечем. Сервер подставит свою (`ocr_model` входит
+        // в _MODEL_PARAM_KEYS) — выбор из localStorage сюда не уедет.
+        modelsShown(store) && React.createElement("div", { className: "row between", style: { gap: 10 } },
           React.createElement("span", { className: "muted", style: { fontSize: 13 } }, TR("Модель чтения")),
           React.createElement(Select, {
             value: useModel, style: { width: 260 },
             onChange: (e) => pickModel(e.target.value) },
             models.map(m => React.createElement("option", { key: m.id, value: m.id },
               m.label + (estOf(m.id) ? " — ~$" + estOf(m.id).toFixed(2) : ""))))),
-        mInfo && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+        modelsShown(store) && mInfo && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
           costHidden() ? "" : TR("цена модели: вход $") + mInfo.in + TR(" · выход $") + mInfo.out + TR(" за 1М токенов")
           + (rep && rep.estTokens && rep.estTokens.in
               ? TR(" · в этом разборе ≈ ") + Math.round(rep.estTokens.in / 1000) + TR("К входных") : "")),
-        !models.length && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+        modelsShown(store) && !models.length && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
           TR("каталог моделей не загрузился — читать будет модель по умолчанию"))),
 
       !running && project.sourceDocx && !forgetOpen
@@ -368,7 +372,8 @@ function ImagesCard({ project, store, toast }) {
             onClick: () => setForgetOpen(false) }, TR("Отмена")))),
 
       rep && rep.at && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-        TR("разбор: ") + rep.at + TR(" · по умолчанию: ") + (rep.model || "")
+        TR("разбор: ") + rep.at
+        + (modelsShown(store) ? TR(" · по умолчанию: ") + (rep.model || "") : "")
         + ((rep.skipped && rep.skipped.length)
             ? TR(" · нерастровых картинок пропущено: ") + rep.skipped.length : ""))));
 }

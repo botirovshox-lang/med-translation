@@ -836,9 +836,14 @@ function TermQueue({ store, toast, version, simple }) {
               v.usage && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TR("употребление: ") + v.usage))),
             explained[c.id].dropped > 0 && React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
               TR("Показаны первые 6 вариантов, ещё ") + explained[c.id].dropped + TR(" не разобрано.")),
+            /* Имя модели — устройство (см. modelsShown в ui.jsx): человеку
+               важно, что вариант разобрала машина и его надо проверить,
+               а не то, какая именно. */
             React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
-              TR("Нажмите на вариант — он подставится в поле выше. Разобрала модель ")
-              + (explained[c.id].model || "") + TR("; проверьте, что смысл совпадает с оригиналом."))),
+              modelsShown(store)
+                ? TR("Нажмите на вариант — он подставится в поле выше. Разобрала модель ")
+                  + (explained[c.id].model || "") + TR("; проверьте, что смысл совпадает с оригиналом.")
+                : TR("Нажмите на вариант — он подставится в поле выше; проверьте, что смысл совпадает с оригиналом."))),
 
           warned[c.id] && React.createElement("div", {
             className: "col", style: { gap: 3, padding: "8px 11px", borderRadius: 8,

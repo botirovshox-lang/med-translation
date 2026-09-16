@@ -668,7 +668,10 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
      устройство. */
   const expert = !!(store.can && store.can.super);
   const showCost = !!(store.can && (store.can.owner || store.can.super));
-  const showModels = expert && !costHidden();
+  /* Называются ли модели — ОДНО правило на все экраны (modelsShown в ui.jsx):
+     копия предиката здесь разошлась бы с карточкой сегмента и импортом, а
+     разойтись ей нельзя — пропущенное место и есть утечка. */
+  const showModels = modelsShown(store);
   const [busy, setBusy] = useState(false);
   const caseIds = tk.case || [];
   const accIds = (summary.human || {}).revertedByScore || [];

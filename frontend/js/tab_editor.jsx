@@ -2623,6 +2623,10 @@ function TabEditor({ store, toast }) {
                 paged.map(s => React.createElement(SegRow, {
                   key: s.id, seg: s, selected: s.id === selId, busy: busy[s.id],
                   checked: checkedSegs.has(s.id), models: gptModels,
+                  /* Имя модели в подсказке строки — устройство прогона
+                     (см. modelsShown в ui.jsx). Строка не знает хранилища,
+                     поэтому признак приходит пропом, а не считается на месте. */
+                  showModel: modelsShown(store),
                   chip: ROW_CHIP[rowChipCode(s, tkIndex)],
                   hlSrc: scope !== "tgt" ? query : "", hlTgt: scope !== "src" ? query : "",
                   onCheck: (e) => { e.stopPropagation(); setCheckedSegs(prev => { const n = new Set(prev); n.has(s.id) ? n.delete(s.id) : n.add(s.id); return n; }); },
@@ -2674,7 +2678,10 @@ function TabEditor({ store, toast }) {
           React.createElement("div", { className: "row between" },
             React.createElement("span", { className: "muted" }, TR("Сегментов")),
             React.createElement("b", null, batchPlan.targets.length)),
-          React.createElement("div", { className: "row between" },
+          /* Имя модели — устройство прогона (см. modelsShown в ui.jsx).
+             Человеку строки нет вовсе: «по умолчанию» вместо имени было бы
+             ответом на вопрос, которого он не задавал. */
+          modelsShown(store) && React.createElement("div", { className: "row between" },
             React.createElement("span", { className: "muted" }, TR("Модель")),
             React.createElement("b", null, gptModelInfo ? gptModelInfo.label : TR("по умолчанию"))),
           React.createElement("div", { className: "row between" },
@@ -2697,8 +2704,10 @@ function TabEditor({ store, toast }) {
           })(),
 
           // Чем эти сегменты переведены сейчас — чтобы было видно, что именно
-          // перегоняется и не уходит ли на повтор уже сделанное нужной моделью
-          (() => {
+          // перегоняется и не уходит ли на повтор уже сделанное нужной моделью.
+          // Разбивка ИМЕНАМИ МОДЕЛЕЙ и есть её содержание, поэтому человеку
+          // она не показывается целиком (см. modelsShown в ui.jsx).
+          modelsShown(store) && (() => {
             const by = {};
             batchPlan.targets.forEach(s => {
               const l = providerLabel(providerOf(s), gptModels) || TR("ещё не переведён");
@@ -3445,9 +3454,11 @@ function rowChipCode(seg, idx) {
   return null;
 }
 
-function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, onConfirm, onRevert, models, hlSrc, hlTgt, chip }) {
+function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, onConfirm, onRevert, models, hlSrc, hlTgt, chip, showModel }) {
   const prov = providerOf(seg);
-  const provText = providerLabel(prov, models);
+  /* «TM» моделью не является — это ответ на вопрос «откуда взялся перевод»,
+     и он остаётся всем. Имя модели не показываем никому, кроме эксперта. */
+  const provText = (showModel || (prov && prov.id === "tm")) ? providerLabel(prov, models) : null;
   const revertable = seg.status === "confirmed" || seg.status === "failed";
   const actionCell = busy
     ? React.createElement("div", { style: { display: "grid", placeItems: "center" } }, React.createElement(Spinner, null))

@@ -844,6 +844,7 @@ window.I18N.register("uz", {
  "Надпись помечена аппаратной — следующий разбор её не заведёт.": "Yozuv apparat yozuvi deb belgilandi — keyingi tahlil uni qo'shmaydi.",
  "Нажмите «Разобрать», чтобы узнать, сколько оценок посчитано прежними правилами": "Nechta baho eski qoidalar bo'yicha hisoblanganini bilish uchun «Tahlil qilish»ni bosing",
  "Нажмите на вариант — он подставится в поле выше. Разобрала модель ": "Variantni bosing — u yuqoridagi maydonga qo'yiladi. Tahlil qilgan model: ",
+ "Нажмите на вариант — он подставится в поле выше; проверьте, что смысл совпадает с оригиналом.": "Variantni bosing — u yuqoridagi maydonga qo'yiladi; ma'no asl matnga mos kelishini tekshiring.",
  "Нажмите на строку — покажем кусок картинки. Вернуть можно любую надпись: ": "Qatorni bosing — rasm bo'lagini ko'rsatamiz. Istalgan yozuvni qaytarish mumkin: ",
  "Нажмите, чтобы сбросить в «Новый»": "«Yangi» holatiga qaytarish uchun bosing",
  "Нажмите, чтобы снять подтверждение": "Tasdiqni olib tashlash uchun bosing",

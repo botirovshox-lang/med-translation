@@ -757,7 +757,13 @@ function App() {
     return () => window.removeEventListener("mct-auth-expired", h);
   }, []);
 
-  if (!authed) return React.createElement(AuthScreen, { onLogin: () => { setAuthed(true); toast.success(TR("Добро пожаловать"), TR("Вы вошли в систему.")); }, theme, onToggleTheme: toggleTheme });
+  /* Вход ждёт ВКЛАДОК: на экране входа их не грузили (см. tabsReady ниже),
+     а первый же кадр после входа рисует уже вкладку. Обычно ждать нечего:
+     файлы едут фоном с самой загрузки, пока человек набирает пароль. */
+  if (!authed) return React.createElement(AuthScreen, { onLogin: () => {
+    const enter = () => { setAuthed(true); toast.success(TR("Добро пожаловать"), TR("Вы вошли в систему.")); };
+    tabsReady().then(enter, enter);
+  }, theme, onToggleTheme: toggleTheme });
 
   // Старые ключи оставлены живыми: на них ведут ссылки изнутри страниц
   // (например «показать сегменты с термином») и сохранённое состояние вкладки.
@@ -787,4 +793,30 @@ function App() {
 }
 
 function Root() { return React.createElement(ToastProvider, null, React.createElement(App, null)); }
-ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(Root, null));
+
+/* Файлы вкладок грузит загрузчик из index.html и только по требованию:
+   больше мегабайта кода, из которого на экране входа не нужен ни один байт.
+   Загрузчика нет вовсе в тестах рендера (они выполняют файлы напрямую) —
+   тогда ждать нечего. */
+function tabsReady() {
+  return (window.BOOT && window.BOOT.tabs()) || Promise.resolve();
+}
+
+/* Рисуем СРАЗУ, когда впереди экран входа, и только после вкладок,
+   когда токен уже есть: там первый же кадр — рабочая вкладка, а не дверь.
+   Ошибка загрузки тоже ведёт к показу: белый экран молча хуже рамки падения. */
+function mountApp() {
+  ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(Root, null));
+}
+if (window.API && window.API.hasToken()) {
+  tabsReady().then(mountApp, mountApp);
+} else {
+  mountApp();
+  /* Вкладки трогаются после события load, а не сразу: на медленной сети
+     мегабайт вкладок отнимает канал у самого экрана входа — того единственного,
+     что человек сейчас ждёт. Зависнуть на этом нельзя: не случись load вовсе
+     (зависшая картинка, оборванный шрифт) — их всё равно потребует кнопка входа
+     (tabsReady идемпотентен), то есть позднее на секунды, а не никогда. */
+  if (document.readyState === "complete") setTimeout(tabsReady, 0);
+  else window.addEventListener("load", () => setTimeout(tabsReady, 0), { once: true });
+}

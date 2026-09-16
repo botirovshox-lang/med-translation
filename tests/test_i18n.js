@@ -40,10 +40,28 @@ const root = process.argv[2] || "frontend/js";
 global.window = global;
 global.localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
 (0, eval)(fs.readFileSync(path.join(root, "i18n.js"), "utf8"));
-/* Файлы словарей грузятся ВСЕ, какие есть рядом: так же их подключает
-   index.html, и забытый тег там виден здесь несобранным языком. */
+/* Словарь каждого языка лежит ДВУМЯ файлами: `i18n_uz.js` — надписи экрана
+   входа (их переводят ui.jsx, app.jsx и api.js) плюс вся таблица сервера,
+   `i18n_uz.rest.js` — всё остальное, оно едет вместе с вкладками. Полнота
+   спрашивается с их СУММЫ: человек в конце концов видит оба.
+   Забытый язык виден здесь несобранным — сборщик выводит языки из имён
+   частей, а загрузчик index.html из кода языка, и списка нет нигде. */
+const BOOT_DICT = {};          // язык -> надписи, приехавшие с экраном входа
 for (const f of fs.readdirSync(root)) {
-  if (/^i18n_[a-z]{2}\.js$/.test(f)) (0, eval)(fs.readFileSync(path.join(root, f), "utf8"));
+  const m = /^i18n_([a-z]{2})(\.rest)?\.js$/.exec(f);
+  if (!m) continue;
+  if (!m[2]) {
+    /* Первый файл читаем ОТДЕЛЬНО: ниже проверяется, что всё нужное
+       экрану входа лежит именно в нём, а не приедет через минуту. */
+    const seen = {};
+    const real = window.I18N.register;
+    window.I18N.register = (code, table) => { Object.assign(seen, table || {}); return real(code, table); };
+    (0, eval)(fs.readFileSync(path.join(root, f), "utf8"));
+    window.I18N.register = real;
+    BOOT_DICT[m[1]] = seen;
+  } else {
+    (0, eval)(fs.readFileSync(path.join(root, f), "utf8"));
+  }
 }
 
 /* Ключи из кода — тем же чтением исходников, что и сборщик словаря.
@@ -248,6 +266,65 @@ check(wrappedCodes.length === 0,
       "коды причин и данные сравниваются с данными сервера и переводом не обёрнуты" +
       (wrappedCodes.length ? " — обёрнуты " + wrappedCodes.length + ":" : ""));
 wrappedCodes.forEach(x => console.log("       ! " + x));
+
+/* ── 7. Загрузчик index.html знает тот же язык, что и i18n.js ────────────
+   Словарь грузится РОВНО ОДИН — тот, на котором будет экран (два по 280 КБ
+   каждому входящему — это секунда на медленной сети ни за что). А решает,
+   КАКОЙ именно, загрузчик в index.html: ему приходится читать localStorage
+   САМОМУ — спросить i18n.js можно только после того, как тот загружен,
+   а это лишнее ожидание ровно перед самым тяжёлым файлом страницы.
+   Три константы поэтому живут В ДВУХ местах, и расхождение молчаливое:
+   человек получит экран на русском (словарь не тот) либо запрос в никуда. */
+console.log("\n=== 7. Загрузчик index.html — те же константы, что у i18n.js ===");
+const HTML = fs.readFileSync("frontend/index.html", "utf8");
+const I18N_SRC = fs.readFileSync(path.join(root, "i18n.js"), "utf8");
+function htmlConst(name) {
+  const m = HTML.match(new RegExp("var " + name + '\\s*=\\s*"([^"]*)"'));
+  return m ? m[1] : null;
+}
+const lsKey = (I18N_SRC.match(/var LS_KEY = "([^"]+)"/) || [])[1];
+check(lsKey && htmlConst("LS_KEY") === lsKey,
+      "ключ хранилища совпадает: " + htmlConst("LS_KEY") + " = " + lsKey);
+check(htmlConst("DEFAULT_LANG") === window.I18N.default,
+      "язык по умолчанию совпадает: " + htmlConst("DEFAULT_LANG") + " = " + window.I18N.default);
+/* Язык КЛЮЧЕЙ — единственный объявленный язык БЕЗ файла словаря. */
+const noDict = window.I18N.langs.map(l => l.code)
+  .filter(c => !fs.existsSync(path.join(root, "i18n_" + c + ".js")));
+check(noDict.length === 1 && htmlConst("KEY_LANG") === noDict[0],
+      "язык ключей (словаря нет) назван верно: " + htmlConst("KEY_LANG") + " = " + noDict.join(","));
+/* Адрес словаря ВЫЧИСЛЯЕТСЯ, и новый язык больше не требует тега в index.html —
+   забыть его стало негде. А жёсткий тег вернул бы второй словарь всем входящим. */
+check(!/src="js\/i18n_[a-z]{2}\.js/.test(HTML),
+      "словарь не подключён жёстким тегом ни один");
+
+/* Надпись, нужная экрану входа, но уехавшая во ВТОРОЙ файл, — это русская
+   строка на узбекском экране до самого входа. Состав первого файла считает
+   сборщик по тем же исходникам (tools/i18n_build.py, boot_keys), здесь —
+   сверка результата: разойдись они, никто бы не заметил. */
+console.log("\n=== 7б. Экран входа переведён ПЕРВЫМ файлом ===");
+const BOOT_SRC = ["ui.jsx", "app.jsx", "api.js"];
+const bootKeys = new Set();
+for (const f of BOOT_SRC) {
+  const src = fs.readFileSync(path.join(root, f), "utf8");
+  for (const m of src.matchAll(/\bTR\(\s*"((?:[^"\\]|\\.)*)"/g)) {
+    bootKeys.add(JSON.parse('"' + m[1] + '"'));
+  }
+}
+check(bootKeys.size > 0, "надписи экрана входа найдены в коде: " + bootKeys.size);
+for (const code of Object.keys(BOOT_DICT)) {
+  const late = [...bootKeys].filter(k => BOOT_DICT[code][k] === undefined);
+  check(late.length === 0,
+        code + ": всё, что переводит экран входа, лежит в первом файле"
+        + (late.length ? " — опоздали " + late.length + ": " + JSON.stringify(late[0]).slice(0, 50) : ""));
+}
+/* И наоборот: второй файл не должен тащить то, что уже приехало первым. */
+for (const code of Object.keys(BOOT_DICT)) {
+  const restPath = path.join(root, "i18n_" + code + ".rest.js");
+  const rest = fs.readFileSync(restPath, "utf8");
+  const dup = [...bootKeys].filter(k => rest.includes(JSON.stringify(k) + ":"));
+  check(dup.length === 0, code + ": второй файл не повторяет надписи первого"
+        + (dup.length ? " — повторов " + dup.length : ""));
+}
 
 console.log();
 if (fail.length) {

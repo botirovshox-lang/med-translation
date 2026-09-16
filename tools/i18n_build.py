@@ -20,6 +20,14 @@ import json, os, glob, sys, re
 
 SRC = os.path.join("frontend", "i18n")
 OUT = os.path.join("frontend", "js", "i18n_%s.js")
+OUT_REST = os.path.join("frontend", "js", "i18n_%s.rest.js")
+
+# Файлы, которые выполняются ДО первого кадра (их список — в загрузчике
+# frontend/index.html). Всё, что они переводят, обязано приехать вместе
+# с ними; остальное ждёт вкладок.
+BOOT_FILES = [os.path.join("frontend", "js", f)
+              for f in ("ui.jsx", "app.jsx", "api.js")]
+TR_CALL = re.compile(r'\bTR\(\s*"((?:[^"\\]|\\.)*)"')
 
 # Терминология по языкам — держать её единой по всему интерфейсу.
 # Лежит в ШАПКЕ собранного файла, потому что читают её там же, где правят
@@ -81,6 +89,29 @@ def languages():
     return sorted(codes)
 
 
+def boot_keys():
+    """Надписи, нужные ЭКРАНУ ВХОДА, — выведенные из исходников, а не списком.
+
+    Словарь на 2273 строки весит 80 КБ в сжатом виде и грузится ПЕРЕД первым
+    кадром (надписи верхнего уровня зовут TR при выполнении файла), то есть
+    человек ждёт словарь всех девяти вкладок ради экрана с двумя полями.
+    Поэтому файла два: `i18n_<код>.js` — то, что переводят ui.jsx, app.jsx
+    и api.js, `i18n_<код>.rest.js` — всё прочее, и он едет вместе с вкладками.
+
+    Список ВЫВОДИТСЯ, а не пишется руками, и это несущее свойство: новая
+    надпись в app.jsx попадает в первый файл сама. Список руками означал бы
+    русскую строку на узбекском экране входа при первой же правке — дефект
+    без единого признака поломки в коде.
+    """
+    keys = set()
+    for path in BOOT_FILES:
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        for m in TR_CALL.finditer(src):
+            keys.add(json.loads('"' + m.group(1) + '"'))
+    return keys
+
+
 def build(code):
     parts = sorted(glob.glob(os.path.join(SRC, code + ".*.json")))
     if not parts:
@@ -103,18 +134,30 @@ def build(code):
         for k, p in dupes:
             print("  %s  (%s)" % (k[:60], p))
         return 1
-    out = OUT % code
-    with open(out, "w", encoding="utf-8", newline="") as fh:
-        fh.write(HEAD % {"code": code, "name": NAMES.get(code, code),
-                         "terms": TERMS.get(code, "     —")})
-        fh.write("window.I18N.register(\"%s\", " % code)
-        fh.write(json.dumps(table, ensure_ascii=False, indent=1, sort_keys=True))
-        fh.write(");\n\n")
-        fh.write("window.I18N.registerServer(\"%s\", " % code)
-        fh.write(json.dumps(server, ensure_ascii=False, indent=1, sort_keys=True))
-        fh.write(");\n")
-    print("%s: %d надписей + %d кусков сервера из %d частей → %s"
-          % (code, len(table), len(server), len(parts), out))
+    boot = boot_keys()
+    head = {k: v for k, v in table.items() if k in boot}
+    rest = {k: v for k, v in table.items() if k not in boot}
+
+    def dump(path, title, tbl, srv):
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(HEAD % {"code": code, "name": title,
+                             "terms": TERMS.get(code, "     —")})
+            fh.write("window.I18N.register(\"%s\", " % code)
+            fh.write(json.dumps(tbl, ensure_ascii=False, indent=1, sort_keys=True))
+            fh.write(");\n")
+            if srv is not None:
+                fh.write("\nwindow.I18N.registerServer(\"%s\", " % code)
+                fh.write(json.dumps(srv, ensure_ascii=False, indent=1, sort_keys=True))
+                fh.write(");\n")
+
+    # Таблица СЕРВЕРА уходит в первый файл целиком: её читает TRS() в api.js,
+    # и первое же сообщение, которое видит человек, — отказ входа.
+    dump(OUT % code, NAMES.get(code, code) + ", экран входа", head, server)
+    dump(OUT_REST % code, NAMES.get(code, code) + ", вкладки", rest, None)
+    print("%s: %d надписей (%d к экрану входа + %d к вкладкам) + %d кусков сервера"
+          " из %d частей → %s + %s"
+          % (code, len(table), len(head), len(rest), len(server), len(parts),
+             OUT % code, OUT_REST % code))
     return 0
 
 

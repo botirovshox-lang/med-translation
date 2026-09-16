@@ -82,6 +82,10 @@ global.createContext = createContext; global.useContext = useContext;
 global.localStorage = mem;
 global.sessionStorage = mem;
 global.window = global;
+/* Браузерные крючки самого окна: app.jsx вешает на load загрузку вкладок.
+   В заглушке window === global, и без этих двух строк выполнение файла падает. */
+global.addEventListener = () => {};
+global.removeEventListener = () => {};
 global.document = { addEventListener() {}, removeEventListener() {}, querySelector() { return null; } };
 global.API = {
   safeCall: async (fn) => fn(),

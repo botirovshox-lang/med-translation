@@ -19,7 +19,7 @@
      в отключённую домашнюю организацию сажает в живую команду.
 Ни одного вызова модели, файл состояния не пишется.
 """
-import io, json, os, sys, tempfile, zipfile
+import io, json, os, re, sys, tempfile, zipfile
 from pathlib import Path
 os.environ["APP_PASSWORD"] = "boot-password-1"
 os.environ["AUTHORITY_CORPUS"] = "0"
@@ -67,8 +67,34 @@ check("strict-origin" in (h.get("referrer-policy") or ""), "Referrer-Policy")
 csp = h.get("content-security-policy") or ""
 check("frame-ancestors 'none'" in csp and "connect-src 'self'" in csp and "object-src 'none'" in csp,
       "CSP на HTML: frame-ancestors/connect-src/object-src")
-check("https://unpkg.com" in csp and "fonts.googleapis.com" in csp and "fonts.gstatic.com" in csp,
-      "CSP разрешает ровно те чужие хосты, что грузит index.html")
+# Список хостов не перечисляется руками, а ВЫВОДИТСЯ из самой страницы:
+# перечень в тесте разошёлся бы с правдой первой же правкой фронтенда — и либо
+# запретил бы нужное (белый экран), либо молча оставил открытым ненужное.
+_html = open("frontend/index.html", encoding="utf-8").read()
+_page_hosts = set(re.findall(r'(?:src|href)="https?://([^/"]+)', _html))
+_csp_hosts = set(re.findall(r"https?://([^\s;'\"]+)", csp))
+check(_page_hosts <= _csp_hosts,
+      "CSP разрешает все чужие хосты, что грузит index.html"
+      + (": не хватает " + ", ".join(sorted(_page_hosts - _csp_hosts)) if _page_hosts - _csp_hosts else ""))
+check(_csp_hosts <= _page_hosts,
+      "CSP не разрешает лишних хостов"
+      + (": лишние " + ", ".join(sorted(_csp_hosts - _page_hosts)) if _csp_hosts - _page_hosts else ""))
+# React и шрифт переехали в frontend/vendor, Babel убран совсем: на критическом
+# пути не осталось ни одного чужого DNS и TLS — ни ради скорости, ни ради того,
+# что чужая авария больше не закрывает наш вход.
+check(not _page_hosts, "чужих хостов на критическом пути нет вовсе")
+
+print("=== 2б. Кэш статики ===")
+# Вечный кэш законен только потому, что в адресе стоит ОТПЕЧАТОК файлов:
+# правка меняет адрес. Адрес без отпечатка ничего не обещает — и не кэшируется.
+_cc = c.get("/js/i18n.js?v=deadbeef").headers.get("cache-control") or ""
+check("immutable" in _cc and "max-age=31536000" in _cc, "/js/*?v= — вечный кэш")
+check("immutable" not in (c.get("/js/i18n.js").headers.get("cache-control") or ""),
+      "тот же файл без ?v= навечно НЕ кэшируется")
+check("no-cache" in (c.get("/").headers.get("cache-control") or ""),
+      "сама страница сверяется всегда: в ней живёт отпечаток остальных")
+check("__V__" not in r.text and re.search(r'styles\.css\?v=[0-9a-f]{6,}', r.text),
+      "отпечаток подставлен в страницу")
 check("strict-transport-security" not in h, "HSTS по http не ставится")
 hs = c.get("/", headers={"X-Forwarded-Proto": "https"}).headers
 check("max-age=" in (hs.get("strict-transport-security") or ""), "HSTS по https (X-Forwarded-Proto) стоит")

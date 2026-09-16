@@ -3139,22 +3139,33 @@ app.add_middleware(
 
 # Заголовки безопасности — одним местом и в репозитории, а не в nginx:
 # nginx проксирует всё как есть, и правило, живущее только в /etc, никто
-# не тестирует. CSP узкая ровно настолько, насколько позволяет фронтенд без
-# сборки: Babel standalone компилирует .jsx в браузере и вставляет результат
-# inline-скриптом (unsafe-inline; eval ему не нужен — проверено в браузере),
-# библиотеки — с unpkg.com, шрифты —
-# Google Fonts. Что она закрывает даже так: чужие скрипты с любого другого
-# хоста, вынос данных (connect-src 'self') и встраивание приложения в чужой
-# iframe (кликджекинг). CSP_POLICY=off в окружении снимает заголовок без
-# выката — на случай, если что-то на экране перестанет грузиться.
+# не тестирует.
+#
+# ЧУЖИХ ХОСТОВ В НЕЙ БОЛЬШЕ НЕТ, и это не ужесточение ради ужесточения,
+# а следствие скорости: React и шрифт переехали к нам (frontend/vendor),
+# а Babel standalone убран совсем — файлы .jsx самого JSX не содержали никогда
+# (везде React.createElement), то есть три мегабайта и секунды работы уходили
+# на перевод стрелок в ES5. `unsafe-inline` для скриптов остаётся: в конце
+# index.html стоит загрузчик (выбор языка и порядок файлов); eval не нужен
+# и теперь точно никому. Что закрывает: чужие скрипты с ЛЮБОГО хоста,
+# вынос данных (connect-src 'self') и встраивание приложения в чужой iframe.
+# CSP_POLICY=off в окружении снимает заголовок без выката — на случай,
+# если что-то на экране перестанет грузиться. Что чужих хостов нет ни в CSP,
+# ни в index.html — сторожит tests/test_hardening.py.
 CSP_POLICY = os.environ.get("CSP_POLICY", "").strip() or (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' https://unpkg.com; "
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-    "font-src 'self' data: https://fonts.gstatic.com; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "font-src 'self' data:; "
     "img-src 'self' data: blob:; "
     "connect-src 'self'; "
     "frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'")
+
+
+# Пути, которые вправе кэшироваться навечно при `?v=`. Список БЕЛЫЙ: под `?v=`
+# может прийти любой адрес, а вечный кэш на ответе с чужим текстом — это чужой
+# текст, застрявший в браузере навечно.
+_STATIC_PREFIXES = re.compile(r"^/(js|css|vendor)/")
 
 
 @app.middleware("http")
@@ -3178,6 +3189,20 @@ async def _security_headers(request: Request, call_next):
     # браузера) их хранить незачем.
     if request.url.path.startswith("/api/"):
         h.setdefault("Cache-Control", "no-store")
+    # Статика С ОТПЕЧАТКОМ в адресе (`?v=`) не меняется никогда: правленный
+    # файл приезжает ПОД ДРУГИМ адресом (отпечаток считает `_asset_version`).
+    # Без этой строки каждая загрузка шла в сеть за каждым файлом спрашивать
+    # «не поменялся ли» — полтора десятка обращений и сотни миллисекунд на КАЖДОМ
+    # открытии экрана и КАЖДОЙ смене языка (она перезагружает страницу).
+    # Без `?v=` — обычная сверка по ETag: адрес без отпечатка ничего не обещает.
+    elif request.query_params.get("v") and _STATIC_PREFIXES.match(request.url.path):
+        h.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+    # Шрифт спрашивает НЕ страница, а styles.css, и подставить туда `?v=` некому:
+    # это обычный файл на диске. Поэтому версию несёт САМО ИМЯ (`inter-v20-…`):
+    # другая версия шрифта — другое имя и другой адрес. Заменить файл шрифта,
+    # НЕ переименовав, нельзя — у людей останется старый на год.
+    elif request.url.path.startswith("/vendor/fonts/"):
+        h.setdefault("Cache-Control", "public, max-age=31536000, immutable")
     return resp
 
 FRONTEND_DIR = ROOT / "frontend"
@@ -23759,6 +23784,37 @@ def admin_batch_update(bid: str, req: BatchIn, request: Request):
 # Static file serving (the React design)
 # Mounted last so /api/* takes precedence.
 # ─────────────────────────────────────────────────────────────────────
+def _asset_version() -> str:
+    """Отпечаток ВСЕГО, что грузит страница: имя + размер + время правки.
+
+    Он и стоит в `?v=` у каждого адреса. Раньше версию били РУКАМИ в двенадцати
+    строках index.html, и забытая означала старый код из кэша у всех — именно
+    поэтому на статике нельзя было ставить вечный кэш. Считается на КАЖДЫЙ запрос
+    страницы (это три десятка stat и доли миллисекунды, а страницу открывают редко),
+    а не при старте: кэш версии означал бы, что правка без рестарта не видна никому.
+    """
+    h = hashlib.sha1()
+    for sub in ("js", "css", "vendor"):
+        d = FRONTEND_DIR / sub
+        if not d.is_dir():
+            continue
+        for f in sorted(d.iterdir()):
+            if not f.is_file():
+                continue
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            h.update(("%s|%d|%d;" % (f.name, st.st_size, int(st.st_mtime))).encode())
+    return h.hexdigest()[:12]
+
+
+def _index_html() -> str:
+    """index.html с подставленной версией статики."""
+    raw = (FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+    return raw.replace("__V__", _asset_version())
+
+
 if FRONTEND_DIR.exists():
     # .jsx питон не знает и отдаёт как application/octet-stream. Тип неверный
     # сам по себе, но дорого другое: nginx сжимает по СПИСКУ типов, и мегабайт
@@ -23767,12 +23823,18 @@ if FRONTEND_DIR.exists():
     mimetypes.add_type("text/javascript", ".jsx")
     app.mount("/css", StaticFiles(directory=str(FRONTEND_DIR / "css")), name="css")
     app.mount("/js", StaticFiles(directory=str(FRONTEND_DIR / "js")), name="js")
+    # React и шрифт лежат У НАС, а не на unpkg.com и fonts.gstatic.com: чужой хост
+    # на критическом пути — это ещё один DNS и ещё одно TLS-рукопожатие до первого
+    # кадра (из Узбекистана — сотни миллисекунд) и чужая авария в нашем
+    # входе. Файлы React те же байт в байт — сверены по SRI, который стоял в index.html.
+    if (FRONTEND_DIR / "vendor").exists():
+        app.mount("/vendor", StaticFiles(directory=str(FRONTEND_DIR / "vendor")), name="vendor")
     # /screens (скриншоты макета) наружу больше не отдаётся: фронтенд на него
     # не ссылается, а снимки интерфейса — это ещё и текст на экране.
 
     @app.get("/", response_class=HTMLResponse)
     def index():
-        return FileResponse(str(FRONTEND_DIR / "index.html"))
+        return HTMLResponse(_index_html(), headers={"Cache-Control": "no-cache"})
 
     # Вход в админку — по нестандартному адресу, а не /admin. Адрес — из
     # ADMIN_PATH в окружении, иначе выводится из APP_PASSWORD (стабилен для

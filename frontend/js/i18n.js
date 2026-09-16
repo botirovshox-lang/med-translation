@@ -37,6 +37,7 @@
    ============================================================ */
 (function () {
   var LS_KEY = "mct-lang";
+  var PICK_KEY = "mct-lang-picked";   // язык, ВЫБРАННЫЙ руками до входа
   var LANGS = [
     { code: "uz", label: "O‘zbekcha", native: "O‘zbekcha (lotin)" },
     { code: "ru", label: "Русский", native: "Русский" },
@@ -149,6 +150,24 @@
       markDocument();
       if (!same && !silent) window.location.reload();
       return true;
+    },
+    /* Выбор, сделанный на экране ВХОДА, записать некуда: учётной записи
+       ещё нет, а спросить сервер не у кого. Он живёт здесь до первого
+       удачного входа, и тогда api.js уносит его НА ЗАПИСЬ пользователя
+       (`uiLangSet`) — тот же след решения человека, что в глоссарии.
+
+       Отдельный ключ, а не «язык в кэше», потому что кэш есть ВСЕГДА:
+       на общем компьютере в нём лежит язык прошлого хозяина, и переписывать
+       им язык чужой учётной записи нельзя. Пишется ровно там, где человек
+       нажал кнопку. */
+    markPicked: function (code) {
+      try { window.localStorage.setItem(PICK_KEY, code); } catch (e) { /* приватное окно */ }
+    },
+    pickedLang: function () {
+      try { return window.localStorage.getItem(PICK_KEY) || ""; } catch (e) { return ""; }
+    },
+    clearPicked: function () {
+      try { window.localStorage.removeItem(PICK_KEY); } catch (e) { /* приватное окно */ }
     },
     /* Чего не хватает в словаре — списком, для отладки из консоли.
        Молчаливая дыра в переводе неотличима от «так и задумано». */

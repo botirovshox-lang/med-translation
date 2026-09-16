@@ -313,6 +313,28 @@ function authRememberBrand(b) {
   try { if (b) localStorage.setItem(AUTH_BRAND_LS, b); } catch (e) { /* приватное окно */ }
 }
 
+/* Язык интерфейса на экране ВХОДА. Нужен потому, что до входа язык берётся
+   из кэша браузера либо из умолчания сервиса (узбекский): человеку, который
+   видит незнакомый экран, нечем его переключить — вкладка «Профиль» лежит
+   за входом, а пароль он вводит на языке, которого может не знать.
+
+   Выбор ведёт себя как везде: пишется в localStorage и перезагружает
+   страницу (правило 3 в i18n.js — часть надписей считается один раз при
+   загрузке файла), а удачный вход уносит его НА ЗАПИСЬ пользователя, чтобы
+   /auth/me не перекрыл выбор прежним языком. Переключатель — .seg, а не
+   чёрная кнопка: он отвечает на вопрос «на каком языке с вами сейчас
+   разговаривают», а не «нажмите сюда». */
+function AuthLangPick() {
+  const langs = (window.I18N && window.I18N.langs) || [];
+  if (langs.length < 2) return null;
+  const now = window.I18N.lang;
+  return React.createElement("div", { className: "seg", role: "group", "aria-label": TR("Язык интерфейса") },
+    langs.map(l => React.createElement("button", {
+      key: l.code, type: "button", "aria-pressed": now === l.code, title: l.native,
+      onClick: () => { window.I18N.markPicked(l.code); window.I18N.setLang(l.code); },
+    }, l.label)));
+}
+
 function AuthScreen({ onLogin, theme, onToggleTheme }) {
   /* Четыре состояния одной двери: вход, регистрация, код из письма,
      восстановление пароля. Регистрация показывается, только если сервер
@@ -408,7 +430,9 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
   }, label);
 
   return React.createElement("div", { className: "auth-wrap" },
-    React.createElement("div", { className: "auth-theme" }, React.createElement(ThemeToggle, { theme, onToggle: onToggleTheme })),
+    React.createElement("div", { className: "auth-theme" },
+      React.createElement(AuthLangPick, null),
+      React.createElement(ThemeToggle, { theme, onToggle: onToggleTheme })),
     React.createElement("form", { className: "auth-card", onSubmit: submit, style: shake ? { animation: "pop .1s, shake .4s" } : null },
       /* Марка с названием — строка .auth-brand макета, а не одинокий значок:
          название сервиса на экране входа берётся с сервера (APP_BRAND). */

@@ -1064,7 +1064,10 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .auth-card .linklike { text-decoration: none; }
 .auth-card .linklike:hover { text-decoration: underline; }
 .auth-foot { text-align: left; font-size: 11.5px; color: var(--text-4); margin-top: 18px; line-height: 1.5; }
-.auth-theme { position: fixed; top: 18px; right: 18px; }
+/* Угол экрана входа: язык и тема. Ряд, а не два фиксированных блока —
+   у языка ширина меняется вместе с надписями, и второй блок пришлось бы
+   отодвигать на глаз. */
+.auth-theme { position: fixed; top: 18px; right: 18px; display: flex; align-items: center; gap: 8px; }
 
 /* Upload dropzone */
 .dropzone {

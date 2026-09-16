@@ -122,20 +122,34 @@
     register:      (body)                   => call("POST",   "/auth/register", Object.assign({ uiLang: uiLangNow() }, body)),
     resendCode:    (email)                  => call("POST",   "/auth/resend", { email, uiLang: uiLangNow() }),
     forgotPassword:(email)                  => call("POST",   "/auth/forgot", { email, uiLang: uiLangNow() }),
+    /* Эти две двери — тоже вход, и язык экрана до них уже доехал своим
+       путём (регистрация записала его при заведении записи). Отметку выбора
+       снимаем здесь же: она сделала свою работу, а оставленная — уедет
+       на чужую запись при следующем входе с этого компьютера. */
     verifyEmail: async (email, code) => {
       const r = await call("POST", "/auth/verify", { email, code });
-      if (r && r.token) setToken(r.token);
+      if (r && r.token) { setToken(r.token); if (window.I18N) window.I18N.clearPicked(); }
       return r;
     },
     resetPassword: async (email, code, password) => {
       const r = await call("POST", "/auth/reset", { email, code, password });
-      if (r && r.token) setToken(r.token);
+      if (r && r.token) { setToken(r.token); if (window.I18N) window.I18N.clearPicked(); }
       return r;
     },
+    /* Язык, ВЫБРАННЫЙ руками на экране входа, уезжает вместе с паролем:
+       записать его раньше было некуда (учётной записи ещё нет), а после
+       входа поздно — источник правды про язык это запись пользователя,
+       и она перекрыла бы выбор на первом же /auth/me.
+       Шлём только настоящий выбор (`pickedLang`), а не язык из кэша:
+       на общем компьютере в кэше лежит язык прошлого хозяина, и переписывать
+       им язык чужой учётной записи нельзя. Отметка снимается по удачному
+       входу — выбор уже лежит на записи. */
     login: async (login, password) => {
-      const r = await call("POST", "/auth/login", { login: login || "", password });
+      const picked = (window.I18N && window.I18N.pickedLang()) || "";
+      const r = await call("POST", "/auth/login", { login: login || "", password, uiLang: picked });
       if (!r || !r.token) throw new Error(TR("Сервер не выдал токен сессии"));
       setToken(r.token);
+      if (window.I18N) window.I18N.clearPicked();
       return r;
     },
     logout: async () => {

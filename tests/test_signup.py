@@ -218,4 +218,45 @@ check(mail_lang_to("ru@lang.io", "reset") == "ru", "запрос без язык
 main._mail_code = _orig_mail_code
 
 print()
+print("=== Язык, выбранный на ЭКРАНЕ ВХОДА ===")
+# До входа человеку негде переключить язык, кроме самого экрана входа:
+# «Профиль» лежит ЗА дверью. А источник правды про язык — запись
+# пользователя, и она перекрывает выбор на первом же /auth/me. Значит выбор
+# обязан доехать до записи вместе с паролем — со следом `uiLangSet`,
+# иначе `_migrate_ui_lang` вернёт умолчание на ближайшем старте.
+main._LOGIN_FAILS.clear()
+pw = "long-enough-1"
+u = main._user_by_email("plain@lang.io")
+u["uiLang"] = main.DEFAULT_UI_LANG
+u.pop("uiLangSet", None)
+r = c.post("/api/auth/login", json={"login": "plain@lang.io", "password": pw, "uiLang": "ru"})
+u = main._user_by_email("plain@lang.io")
+check(r.status_code == 200 and u["uiLang"] == "ru" and u.get("uiLangSet"),
+      "вход с выбранным языком: выбор лёг на запись как решение человека")
+check(main._SESSIONS[r.json()["token"]]["uiLang"] == "ru",
+      "и в сессию тоже — модель пишет объяснения на нём же, не дожидаясь перелогина")
+main._migrate_ui_lang()
+check(main._user_by_email("plain@lang.io")["uiLang"] == "ru",
+      "поздняя миграция при старте этот выбор не сбрасывает")
+
+r = c.post("/api/auth/login", json={"login": "plain@lang.io", "password": pw})
+check(r.status_code == 200 and main._user_by_email("plain@lang.io")["uiLang"] == "ru",
+      "вход без выбора язык записи не трогает: кэш браузера — не решение человека")
+r = c.post("/api/auth/login", json={"login": "plain@lang.io", "password": pw, "uiLang": "xx"})
+check(r.status_code == 200 and main._user_by_email("plain@lang.io")["uiLang"] == "ru",
+      "язык, которого у нас нет, не записывается")
+
+main._LOGIN_FAILS.clear()
+r = c.post("/api/auth/login", json={"login": "plain@lang.io", "password": "wrong-pass", "uiLang": "uz"})
+check(r.status_code == 401 and main._user_by_email("plain@lang.io")["uiLang"] == "ru",
+      "неудачная попытка входа записи не касается")
+main._LOGIN_FAILS.clear()
+
+# У двери мы ещё не знаем, чья это запись: выбор там — предположение
+# о человеке. Решение о СЕБЕ он принимает в «Профиле», и дверь его не трогает.
+r = c.post("/api/auth/login", json={"login": "plain@lang.io", "password": pw, "uiLang": "uz"})
+check(r.status_code == 200 and main._user_by_email("plain@lang.io")["uiLang"] == "ru",
+      "выбор у двери не отменяет языка, выбранного в «Профиле»")
+
+print()
 print("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail))

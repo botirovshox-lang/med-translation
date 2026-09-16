@@ -944,6 +944,39 @@ function TabEditor({ store, toast }) {
     if (project && !project.segments.find(s => s.id === selId)) setSelId(project.segments[0] && project.segments[0].id);
   }, [project && project.id]);
 
+  /* Узкий экран: карточка сегмента стоит ПОД таблицей (порог 1100 px
+     в styles.css), и нажатие на строку читается как «ничего не произошло» —
+     ответ уехал вниз за край.
+     Прокрутка висит на САМОМ нажатии, а не на эффекте по selId, и это
+     несущее свойство: эффект не срабатывает, когда повторно жмут УЖЕ
+     выбранную строку (selId не изменился — а перечитать карточку просят
+     именно так), зато флажок «выбрали рукой» оставался бы взведённым
+     до следующей смены selId — то есть до смены страницы, перехода
+     по номеру или выборки с «Проверки», где сегмент выбирает не человек
+     и где своя прокрутка (к строке зоны). Тогда экран уезжал бы вниз
+     в ответ на чужое действие, а зону соседей перебивало бы карточкой.
+     Кадр ожидания нужен: карточка рисуется тем же коммитом, что и выбор. */
+  const sideRef = useRef(null);
+  const showSideCard = () => {
+    try {
+      if (window.innerWidth > 1100) return;       // карточка и так рядом с таблицей
+      const go = () => {
+        const el = sideRef.current;
+        if (!el || !el.scrollIntoView) return;
+        /* Отступ — по НАСТОЯЩЕЙ высоте залипающей панели: она переменная
+           (раскрытые фильтры, полоса идущего прогона), и зашитое число
+           закрывало бы верх карточки ровно в те минуты, когда на него
+           и смотрят. Постоянное значение остаётся в styles.css запасным. */
+        try {
+          const bar = document.querySelector(".editor-toolbar");
+          if (bar) el.style.scrollMarginTop = Math.round(bar.getBoundingClientRect().height + 8) + "px";
+        } catch (e) { /* нет DOM — остаётся значение из styles.css */ }
+        el.scrollIntoView({ block: "start", behavior: "smooth" });
+      };
+      if (window.requestAnimationFrame) window.requestAnimationFrame(go); else go();
+    } catch (e) { /* вне браузера (тест рендера) — не страшно */ }
+  };
+
   // Navigate to a specific segment (from drill-down)
   useEffect(() => {
     if (!store.gotoSegId || !project) return;
@@ -2349,11 +2382,13 @@ function TabEditor({ store, toast }) {
     // ---- Toolbar ----
     React.createElement("div", { className: "editor-toolbar" },
       React.createElement("div", { className: "row between row-wrap" },
-        React.createElement("div", { className: "row", style: { gap: 10 } },
+        /* Группа выбора файла ТЯНЕТСЯ и СЖИМАЕТСЯ: в 360 px список с жёсткими
+           280 px выталкивал за край экрана и себя, и пару языков рядом. */
+        React.createElement("div", { className: "row", style: { gap: 10, minWidth: 0, flex: "1 1 260px" } },
           React.createElement(Icon, { name: "folder", size: 18, style: { color: "var(--c-primary)" } }),
           /* Файлы — по проектам (папкам): одинаковые названия глав в разных
              проектах иначе неразличимы. Файл без папки — сам себе проект. */
-          React.createElement(Select, { value: project.id, onChange: (e) => store.openProject(Number(e.target.value)), style: { width: "auto", minWidth: 280, fontWeight: 500 } },
+          React.createElement(Select, { value: project.id, onChange: (e) => store.openProject(Number(e.target.value)), style: { width: "auto", minWidth: 0, flex: "1 1 200px", maxWidth: 420, fontWeight: 500 } },
             (() => {
               const folders = store.folders || [];
               const opt = (p) => React.createElement("option", { key: p.id, value: p.id }, "#" + p.id + " — " + p.title);
@@ -2392,10 +2427,10 @@ function TabEditor({ store, toast }) {
         )
       ),
       showFilters && React.createElement("div", { className: "row row-wrap", style: { gap: 14, padding: "4px 2px" } },
-        React.createElement(Select, { value: riskFilter, onChange: (e) => setRiskFilter(e.target.value), style: { width: 200 } },
+        React.createElement(Select, { value: riskFilter, onChange: (e) => setRiskFilter(e.target.value), style: { flex: "1 1 180px", minWidth: 0, maxWidth: 220 } },
           [["all", TR("Любой риск")], ["low", TR("Низкий риск")], ["medium", TR("Средний риск")], ["high", TR("Высокий риск")], ["critical", TR("Критический риск")]]
             .map(([v, l]) => React.createElement("option", { key: v, value: v }, l))),
-        React.createElement(Select, { value: originFilter, onChange: (e) => setOriginFilter(e.target.value), style: { width: 220 } },
+        React.createElement(Select, { value: originFilter, onChange: (e) => setOriginFilter(e.target.value), style: { flex: "1 1 200px", minWidth: 0, maxWidth: 240 } },
           [["all", TR("Любой источник")], ["para", TR("Из абзацев документа")], ["image", TR("Из надписей на картинках")]]
             .map(([v, l]) => React.createElement("option", { key: v, value: v }, l)))
       ),
@@ -2630,7 +2665,7 @@ function TabEditor({ store, toast }) {
                   chip: ROW_CHIP[rowChipCode(s, tkIndex)],
                   hlSrc: scope !== "tgt" ? query : "", hlTgt: scope !== "src" ? query : "",
                   onCheck: (e) => { e.stopPropagation(); setCheckedSegs(prev => { const n = new Set(prev); n.has(s.id) ? n.delete(s.id) : n.add(s.id); return n; }); },
-                  onSelect: () => setSelId(s.id),
+                  onSelect: () => { setSelId(s.id); showSideCard(); },
                   onTranslate: () => doTranslate(s),
                   onConfirm: () => doConfirm(s), onRevert: () => doRevert(s),
                 }))
@@ -2651,7 +2686,7 @@ function TabEditor({ store, toast }) {
       ),
 
       // ---- Detail sidebar ----
-      React.createElement("div", { className: "editor-side" },
+      React.createElement("div", { className: "editor-side", ref: sideRef },
         selected
           ? React.createElement(SegDetail, { key: selected.id, seg: selected, project, store, toast, busy: busy[selected.id],
               onTranslate: () => doTranslate(selected, true), onQA: () => doQA(selected), onChecks: () => doChecks(selected), onConfirm: (draftTarget) => doConfirm(selected, draftTarget),

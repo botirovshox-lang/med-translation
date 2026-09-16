@@ -531,7 +531,10 @@ function TabExport({ store, toast }) {
         + TR("что переведено, независимо от статуса; сегменты без перевода остаются ")
         + TR("на языке оригинала."))),
 
-    React.createElement("div", { className: "grid", style: { gridTemplateColumns: "1.4fr 1fr", gap: 24, alignItems: "start" } },
+    /* Две колонки — «что прислать» и «что внутри», — но только пока экран
+       их держит: жёсткие «1.4fr 1fr» на телефоне давали две колонки шириной
+       в полтора слова. Порог и раскладка живут в styles.css (.export-cols). */
+    React.createElement("div", { className: "grid export-cols" },
       React.createElement("div", { className: "col", style: { gap: 32 } },
         React.createElement("div", null,
           React.createElement("h2", { className: "section-title" }, TR("Что вам прислать")),

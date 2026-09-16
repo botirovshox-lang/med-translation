@@ -1537,8 +1537,8 @@ function BackcheckBands({ segments, project, onDrill, T }) {
                 onClick: () => list.length && onDrill(b.label, list),
                 title: list.length ? TR("Открыть эти сегменты в редакторе") : TR("Нет сегментов в этой полосе") },
                 React.createElement("span", { className: "mono", style: { width: 72, fontSize: 13, fontWeight: 600, color: window.bcBandColor(b.color) } }, b.label),
-                React.createElement("span", { className: "dim", style: { width: 190, fontSize: 12.5 } }, b.note),
-                React.createElement("div", { style: { flex: 1, height: 10, background: "var(--bg-sunken)", borderRadius: 5, overflow: "hidden" } },
+                React.createElement("span", { className: "dim", style: { flex: "1 1 150px", maxWidth: 190, minWidth: 0, fontSize: 12.5 } }, b.note),
+                React.createElement("div", { style: { flex: "2 1 120px", height: 10, background: "var(--bg-sunken)", borderRadius: 5, overflow: "hidden" } },
                   React.createElement("div", { style: { width: pct + "%", height: "100%", background: window.bcBandColor(b.color) } })),
                 React.createElement("b", { className: "tnum", style: { width: 56, textAlign: "right", fontSize: 13 } }, list.length)
               );

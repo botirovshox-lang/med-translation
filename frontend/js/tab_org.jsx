@@ -29,7 +29,7 @@ function OrgUsers({ toast }) {
   };
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 14 } },
     React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Пользователи")),
-    React.createElement("table", { className: "tbl" },
+    React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
       React.createElement("thead", null, React.createElement("tr", null,
         [TR("Логин"), TR("Имя"), TR("Роль"), TR("Состояние"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
       React.createElement("tbody", null, users.map(u => React.createElement("tr", { key: u.id },
@@ -43,7 +43,7 @@ function OrgUsers({ toast }) {
             onChange: (r) => r !== u.role && patch(u, { role: r }, TR("Роль изменена")) }),
           React.createElement(Btn, { variant: "ghost", size: "sm",
             onClick: () => patch(u, { active: !u.active }, u.active ? TR("Отключён") : TR("Включён")) },
-            u.active ? TR("Отключить") : TR("Включить"))))))),
+            u.active ? TR("Отключить") : TR("Включить")))))))),
     React.createElement("div", { className: "eyebrow", style: { margin: "6px 0 0" } }, TR("Новый пользователь")),
     React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
       React.createElement(Field, { label: TR("Логин") },
@@ -180,12 +180,12 @@ function OrgDomains({ toast }) {
     React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Предметные области")),
     React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } },
       TR("Встроенные области — шаблон. Своя область задаёт, кем модель себя считает при переводе, что считать эталоном терминологии, что извлекать в глоссарий и какие категории терминов есть. «Приказ только от человека» — защита от самоодобрения глоссария в незнакомой области.")),
-    data.domains.length > 0 && React.createElement("table", { className: "tbl" },
+    data.domains.length > 0 && React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
       React.createElement("tbody", null, data.domains.map(d => React.createElement("tr", { key: d.id },
         React.createElement("td", null, React.createElement("b", null, d.label), " ", React.createElement("span", { className: "dim" }, d.id + TR(" · шаблон: ") + d.base + (d.strict ? TR(" · приказ только от человека") : ""))),
         React.createElement("td", { style: { whiteSpace: "nowrap", textAlign: "right" } },
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setEdit({ ...d, cats: (d.cats || []).join(", ") }) }, TR("Править")),
-          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => del(d) }, TR("Удалить"))))))),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => del(d) }, TR("Удалить")))))))),
     !edit && React.createElement("div", { className: "row row-wrap", style: { gap: 6 } },
       React.createElement("span", { className: "dim", style: { fontSize: 13 } }, TR("Создать на основе:")),
       data.builtin.map(b => React.createElement(Btn, { key: b.id, variant: "secondary", size: "sm", onClick: () => setEdit(fromBase(b)) }, b.label))),
@@ -233,7 +233,7 @@ function SuperTenants({ toast }) {
   };
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Организации (администратор сервиса)")),
-    React.createElement("table", { className: "tbl" },
+    React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
       React.createElement("thead", null, React.createElement("tr", null,
         [TR("Организация"), TR("Расход за месяц"), TR("Лимит"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
       React.createElement("tbody", null, tenants.map(t => React.createElement("tr", { key: t.id },
@@ -242,7 +242,7 @@ function SuperTenants({ toast }) {
           costHidden() ? "" : "$" + Number((t.spend && t.spend.spentUsd) || 0).toFixed(2) + TR(" · вызовов ") + ((t.spend && t.spend.calls) || 0)),
         React.createElement("td", null, costHidden() ? "" : (t.limitUsd != null ? "$" + Number(t.limitUsd).toFixed(2) : "—")),
         React.createElement("td", { style: { textAlign: "right" } },
-          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLimit(t) }, TR("Лимит"))))))),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLimit(t) }, TR("Лимит")))))))),
     React.createElement("div", { className: "eyebrow", style: { margin: "6px 0 0" } }, TR("Новая организация")),
     React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
       React.createElement(Field, { label: TR("Идентификатор (a-z, 0-9, дефис)") }, React.createElement(Input, { value: form.id, onChange: (e) => setForm({ ...form, id: e.target.value }) })),
@@ -330,7 +330,7 @@ function OrgPricing({ toast }) {
           onChange: (e) => set("wordsPerPage", e.target.value) }))),
 
     React.createElement("div", { className: "eyebrow", style: { margin: "6px 0 0" } }, TR("Цены по парам языков")),
-    React.createElement("table", { className: "tbl" },
+    React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
       React.createElement("thead", null, React.createElement("tr", null,
         [TR("Исходник"), TR("Перевод"), TR("Цена за страницу"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
       React.createElement("tbody", null, rates.map((r, i) => React.createElement("tr", { key: i },
@@ -339,7 +339,7 @@ function OrgPricing({ toast }) {
         React.createElement("td", null, React.createElement(Input, { type: "number", step: "0.01", min: "0", value: r.price,
           onChange: (e) => setRate(i, "price", e.target.value) })),
         React.createElement("td", { style: { textAlign: "right" } },
-          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => set("rates", rates.filter((_x, j) => j !== i)) }, TR("Убрать"))))))),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => set("rates", rates.filter((_x, j) => j !== i)) }, TR("Убрать")))))))),
     React.createElement("div", null,
       React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => set("rates", rates.concat([{ src: "RU", tgt: "EN", price: 0 }])) }, TR("Добавить пару"))),
 
@@ -351,7 +351,7 @@ function OrgPricing({ toast }) {
       + (norms ? TR("русский ") + (norms.rows.find(x => x.lang === "RU") || {}).chars + TR(" знаков ≈ 250 слов, английский ")
         + (norms.rows.find(x => x.lang === "EN") || {}).chars + TR(" знаков") : "") + ". "
       + TR("Договор с клиентом может называть другое число — задайте его здесь, и смета пойдёт по нему.")),
-    normRows.length > 0 && React.createElement("table", { className: "tbl" },
+    normRows.length > 0 && React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
       React.createElement("thead", null, React.createElement("tr", null,
         [TR("Язык исходника"), TR("Знаков в странице"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
       React.createElement("tbody", null, normRows.map(code => React.createElement("tr", { key: code },
@@ -363,7 +363,7 @@ function OrgPricing({ toast }) {
           React.createElement(Btn, {
             variant: "ghost", size: "sm",
             onClick: () => { const n = { ...card.norms }; delete n[code]; set("norms", n); }
-          }, TR("Вернуть норму сервиса"))))))),
+          }, TR("Вернуть норму сервиса")))))))),
     React.createElement("div", null,
       React.createElement(Btn, {
         variant: "ghost", size: "sm",

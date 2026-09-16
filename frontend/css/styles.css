@@ -348,7 +348,7 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible) { outline: non
 .home-stack { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--bg-sunken); flex: 1 1 220px; min-width: 160px; }
 .home-legend { font-size: 12.5px; gap: 16px; color: var(--text-3); }
 .home-legend i { display: inline-block; width: 6px; height: 6px; border-radius: 2px; margin-right: 7px; }
-.st-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.st-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr)); gap: 12px; }
 /* Карточка корзины — .st-card макета: ровная рамка без цветного канта
    (корзину различает значок), под курсором рамка потемнее и подложка. */
 .st-card {
@@ -374,7 +374,7 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible) { outline: non
 .st-go { margin-top: auto; padding-top: 4px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .st-chip { font-size: 11.5px; font-weight: 500; padding: 2px 8px; border-radius: 10px; background: var(--bg-sunken); color: var(--text-3); }
 /* полоса и тумблер — рядом, как в макете */
-.duo { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; align-items: start; }
+.duo { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(340px, 100%), 1fr)); gap: 12px; align-items: start; }
 .home-strip { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--r-lg); }
 .sw { display: flex; gap: 12px; align-items: flex-start; padding: 13px 16px; border: 1px solid var(--border); border-radius: var(--r-lg); }
 .sw .box { width: 34px; height: 20px; border-radius: 11px; background: var(--border-strong); flex: none; position: relative; cursor: pointer; border: 0; transition: background .18s; margin-top: 1px; }
@@ -849,7 +849,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 }
 @media (max-width: 1520px) { .kb-decks { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 1180px) { .kb-decks { grid-template-columns: minmax(0, 1fr); } }
-.kb-cands { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 10px; align-items: start; }
+.kb-cands { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr)); gap: 10px; align-items: start; }
 @media (max-width: 640px) { .kb-cands { grid-template-columns: minmax(0, 1fr); } }
 
 /* ── «Словари» и «Проверка» налегке ──────────────────────────────────
@@ -1175,3 +1175,201 @@ tr.row-checked td { background: color-mix(in srgb, var(--c-primary) 8%, transpar
   .tk-grid .tk-eff { grid-column: 2; text-align: right; max-width: 45vw; }
   .tk-grid .tk-cost { grid-column: 2; padding-bottom: 6px; }
 }
+
+/* ============================================================
+   Резиновая вёрстка: окно любой ширины и телефон
+   ------------------------------------------------------------
+   Экраны системы уже складываются по порогам (1520 / 1180 / 1100 / 900 /
+   720 / 640) — эта часть закрывает то, что от ширины НЕ зависит и потому
+   в те пороги не попало: палец вместо курсора, зум поля в iOS, окно
+   и уведомления во весь экран, таблица сегментов, которую на телефоне
+   незачем возить вбок. Правила стоят ПОСЛЕДНИМИ намеренно: они правят
+   готовые компоненты, а не заводят свои, и при равной силе побеждает
+   то, что ниже.
+   ============================================================ */
+
+/* Длинное слово рвётся, а не выпирает за край страницы. Термин, адрес
+   файла и латинское название вида шире колонки на телефоне обычное дело,
+   а перенос по слогам браузер сделать не может — без этого одна строка
+   растягивает экран целиком, и горизонтально ездит ВСЯ страница. */
+body { overflow-wrap: break-word; }
+
+/* Таблица в карточке: на широком экране не меняется НИЧЕГО (шапка таблицы
+   залипает при прокрутке страницы, а свой контейнер прокрутки отрезал бы её
+   от этой прокрутки), на узком — таблица ездит вбок внутри себя. Иначе вбок
+   едет ВСЯ страница: шесть колонок в 360 px не помещаются никогда.
+   Отдельно от `.tbl-scroll`: тот прокручивается всегда и стоит там, где
+   таблица и так живёт в своей рамке (глоссарий, сегменты). */
+.tbl-fit { min-width: 0; }
+@media (max-width: 900px) { .tbl-fit { overflow-x: auto; } }
+
+/* Прокрутка к карточке сегмента (нажали строку на узком экране) идёт под
+   ЗАЛИПАЮЩУЮ панель прогона: без отступа верх карточки — номер строки
+   и статус — оказывается под ней. Панель бывает выше (раскрытые фильтры,
+   полоса идущего прогона), поэтому берём с запасом. */
+.editor-side { scroll-margin-top: 96px; }
+
+/* Подсказка висит на fixed-координатах, посчитанных от значка: у края
+   экрана она вылезала наружу вместе со страницей. */
+.tooltip { max-width: min(320px, calc(100vw - 24px)); }
+
+/* ---------- Палец вместо курсора ----------
+   Цель в 28 px промахивается пальцем, и промах на этих экранах стоит
+   дорого: рядом с «Подтвердить» стоит «Перевести заново». Растёт только
+   ВЫСОТА и поля — подписи, вес и цвета остаются макетными, потому что
+   речь про попадание, а не про облик. Признак — не ширина окна (планшет
+   в ландшафте шире ноутбука), но и не один только грубый указатель:
+   у ноутбука с сенсорным экраном ОСНОВНОЙ указатель точный, а `hover: none`
+   бывает только там, где наводить нечем, — то есть ровно на телефоне
+   и планшете. Облик широких экранов при этом не меняется. */
+@media (pointer: coarse) and (hover: none) {
+  .btn { height: 40px; padding: 0 16px; }
+  .btn-sm { height: 34px; padding: 0 12px; }
+  .btn-lg { height: 50px; }
+  .iconbtn { width: 38px; height: 38px; }
+  .iconbtn.sm { width: 34px; height: 34px; }
+  .status-cell-btn { width: 36px; height: 36px; }
+  .fbtn, .segmented button { padding: 9px 13px; }
+  .kb-chip { padding: 7px 12px; }
+  .seg button { padding: 9px 13px; }
+  .navi { padding: 11px 10px; }
+  .page-num { min-width: 34px; height: 34px; }
+  input[type="checkbox"] { width: 18px; height: 18px; }
+  .check .box, .radio .ring { width: 20px; height: 20px; flex-basis: 20px; }
+}
+
+/* ---------- Телефон ---------- */
+@media (max-width: 640px) {
+  /* Поле мельче 16 px заставляет iOS Safari ПРИБЛИЗИТЬ страницу при входе
+     в него, и обратно она сама не возвращается: человек дописывает перевод
+     на экране, увеличенном вдвое, и не видит соседних строк. Лечится
+     единственным известным способом — кеглем поля. !important здесь
+     не украшение: часть полей несёт размер инлайновым стилем из .jsx
+     (панели прогона), а инлайн сильнее любого селектора. */
+  input, select, textarea,
+  .input, .select, .textarea, .tk-grid .tk-select { font-size: 16px !important; }
+
+  /* Переносится ряд «две группы по КРАЯМ»: на мониторе между ними пустое
+     место, на телефоне второй группе места нет вовсе, и она уходит за край.
+     Обычный `.row` не трогаем намеренно — в системе он значит «в строку»
+     и противопоставлен `.row-wrap` (там перенос попросили явно); сделай
+     перенос общим — и полосы шкалы back-check оторвутся от своих подписей:
+     перенос считается по БАЗИСУ, до всякого сжатия. */
+  .row.between { flex-wrap: wrap; }
+
+  /* Поля страницы и панелей — по 14 px: на 360 px каждый лишний пиксель
+     поля отнимается у текста, ради которого экран и открыли. */
+  .editor-toolbar { padding: 8px 14px; gap: 8px; }
+  .editor-main { padding-left: 14px; padding-right: 14px; }
+  .editor-body { padding: 14px 14px 40px; gap: 12px; }
+  .editor-body .editor-main { padding: 0; }
+  .card-pad { padding: 14px; }
+  /* Карточка сегмента на телефоне — рабочее место переводчика: поля по кругу
+     отнимали у поля перевода пятую часть ширины, а высота в три строки
+     не показывает и одного абзаца. */
+  .editor-side { padding: 14px; }
+  .textarea { min-height: 120px; }
+  .ready-strip { padding: 14px; }
+  .ready-pct { font-size: 34px; }
+  .ask { padding-right: 12px; }
+  .page-stack { gap: 16px; }
+
+  /* Окно — листом снизу: на телефоне оно занимает экран целиком, а палец
+     до нижнего края достаёт, до середины — нет. Скругление сверху и
+     отсутствие нижней рамки говорят, откуда лист выехал. */
+  .overlay { padding: 0; align-items: end; justify-items: stretch; }
+  .modal { max-width: none; max-height: 92vh; max-height: 92dvh; border-radius: 14px 14px 0 0; border-bottom: 0; }
+  .modal-body { padding: 16px; }
+  .modal-head, .modal-foot { padding: 14px 16px; }
+  /* Кнопки окна стоят у самой кромки экрана, а там полоса-индикатор
+     и панель браузера: без отступа по безопасной зоне «Применить»
+     и «Откатить» оказываются под ними. */
+  .modal-foot { flex-wrap: wrap; padding-bottom: calc(14px + env(safe-area-inset-bottom)); }
+  .modal-foot .btn { flex: 1 1 auto; }
+
+  /* Уведомление в 360 px шириной у края экрана в 360 px — это уведомление,
+     от которого видно половину. */
+  .toasts { left: 10px; right: 10px; bottom: calc(10px + env(safe-area-inset-bottom)); width: auto; max-width: none; }
+}
+
+/* ---------- Таблица сегментов на телефоне ----------
+   Шесть колонок в 360 px не помещаются никак: с горизонтальной лентой
+   оригинал и перевод видны по очереди, а сравнить их — единственное, зачем
+   эту таблицу открывают. Поэтому строка раскладывается СВЕРХУ ВНИЗ:
+   служебная шапка (галочка, номер, слово о строке, действие), под ней
+   оригинал, под ним перевод с отчёркиванием слева.
+   Разметка при этом не трогается: порядок ячеек в `SegRow` постоянный
+   (шесть штук, без colspan), и раскладка держится на их номерах. */
+@media (max-width: 700px) {
+  /* Шапку НЕ прячем: в первой ячейке живёт «отметить все на странице»
+     (без неё пакетные команды на телефоне недоступны вовсе), а «Как было ·
+     RU» и «Как стало · EN» — единственная подпись, по которой в карточке
+     отличают оригинал от перевода. Остальные заголовки убираем: их колонок
+     в карточке нет. */
+  .editor-body table.tbl, .editor-body .tbl thead, .editor-body .tbl thead tr,
+  .editor-body .tbl tbody { display: block; width: 100%; }
+  /* Шапка переносится: обе подписи идут `white-space: nowrap` (это правило
+     колонок), и в 360 px пара «Как было · RU» + «Как стало · EN» в одну
+     строку не встаёт — без переноса она вылезла бы за край. */
+  .editor-body .tbl thead tr { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 0 13px; }
+  .editor-body .tbl thead th { padding: 8px 0; width: auto; }
+  /* Поля строки держит сама строка, а не первая ячейка: ширина у неё
+     задана ИНЛАЙНОМ (36 px в .jsx, и селектором её не перебить), и поле
+     внутри отнималось бы у чекбокса — под палец он 18 px. */
+  .editor-body .tbl thead th:first-child { min-width: 36px; }
+  .editor-body .tbl thead th:nth-child(2),
+  .editor-body .tbl thead th:nth-child(5),
+  .editor-body .tbl thead th:nth-child(6) { display: none; }
+  .editor-body .tbl tbody tr {
+    display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto;
+    gap: 7px 10px; padding: 11px 13px; border-bottom: 1px solid var(--border);
+  }
+  .editor-body .tbl tbody tr:last-child { border-bottom: 0; }
+  /* Отметку галочкой красит ЯЧЕЙКА (tr.row-checked td), а ячейки тут стали
+     блоками без полей: подложка ложилась бы тремя пятнами по тексту, между
+     которыми белые зазоры строки. Красим строку — как это делает «выбрана». */
+  .editor-body .tbl tbody tr.row-checked { background: color-mix(in srgb, var(--c-primary) 8%, transparent); }
+  .editor-body .tbl tbody tr.row-checked td { background: none !important; }
+  .editor-body .tbl tbody td { display: block; padding: 0; border: 0; }
+  /* Место каждой ячейки названо явно, все шесть: при смешанном размещении
+     (часть ячеек со своей строкой, часть — самотёком) браузер ставит
+     оставшиеся куда придётся, и порядок зависел бы от того, какая ячейка
+     в этот раз пустая. */
+  .editor-body .tbl tbody td:nth-child(1) { grid-column: 1; grid-row: 1; }
+  .editor-body .tbl tbody td:nth-child(2) { grid-column: 2; grid-row: 1; width: auto; padding-top: 0; }
+  .editor-body .tbl tbody td:nth-child(5) { grid-column: 3; grid-row: 1; justify-self: end; }
+  .editor-body .tbl tbody td:nth-child(6) { grid-column: 4; grid-row: 1; }
+  .editor-body .tbl tbody td:nth-child(3) { grid-column: 1 / -1; grid-row: 2; }
+  .editor-body .tbl tbody td:nth-child(4) {
+    grid-column: 1 / -1; grid-row: 3;
+    padding-left: 11px; border-left: 2px solid var(--border);
+  }
+  /* Поиск съезжает на свою строку: не шириной в 100% (у поля она задана
+     инлайном — `flex: 1` в SearchInput, и селектором её не перебить),
+     а нижним пределом. Поле номера НЕ сужаем: в книге бывает пять цифр,
+     а кегль на телефоне поднят до 16 px — в узком поле номер обрезался бы
+     прямо при вводе. */
+  .table-head .search { min-width: 190px; }
+}
+
+/* ---------- Оболочка на узком экране ----------
+   Ниже 900 px меню ложится лентой (см. выше). Пряталось в ней всё, что
+   не пункт меню, — вместе с ПЕРЕКЛЮЧАТЕЛЕМ КОМАНДЫ: человек, состоящий
+   в двух организациях, с телефона не мог перейти во вторую вовсе, а её
+   глоссарий и проекты и есть его работа. Подпись организации (когда
+   команда одна и переключать нечего) прячется по-прежнему: она ничего
+   не делает и занимает половину ленты. */
+@media (max-width: 900px) {
+  .side { padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
+  .side .org-chip-sel { display: flex; flex: 0 0 auto; }
+  /* Высота коробки задана под кегль 13 px, а на телефоне поле крупнее
+     (см. правило против зума iOS) — жёсткие 26 px подрезали бы выносные. */
+  .side .org-chip-sel .select { max-width: 150px; height: auto; min-height: 30px; }
+  .navi { flex: 0 0 auto; }
+}
+
+/* Экран «Скачать перевод»: слева выбор формата, справа состав файла.
+   Порог — 980 px: ниже правая колонка сжимается до нечитаемого столбца
+   слов, а состав файла читают сверху вниз ничуть не хуже. */
+.export-cols { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+@media (max-width: 980px) { .export-cols { grid-template-columns: minmax(0, 1fr); gap: 20px; } }

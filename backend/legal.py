@@ -261,14 +261,17 @@ def page(kind: str) -> str:
   }}
   body {{ background:var(--bg); color:var(--ink); margin:0;
          font:16px/1.65 -apple-system, "Segoe UI", system-ui, sans-serif; }}
-  .wrap {{ max-width:ic; max-width:78ch; margin:0 auto; padding:40px 24px 80px; }}
-  h1 {{ font-size:27px; line-height:1.25; margin:0 0 4px; }}
+  /* Поля от ширины окна: на телефоне 24 px по кругу отнимали у строки
+     седьмую часть, а читают эту страницу чаще всего именно с телефона —
+     по ссылке из формы регистрации. */
+  .wrap {{ max-width:78ch; margin:0 auto; padding:clamp(22px,4vw,40px) clamp(14px,4vw,24px) 64px; }}
+  h1 {{ font-size:clamp(22px,5vw,27px); line-height:1.25; margin:0 0 4px; }}
   h2 {{ font-size:18px; margin:34px 0 8px; }}
   p {{ margin:0 0 12px; }}
   .ver {{ color:var(--dim); font-size:14px; margin-bottom:24px; }}
   a {{ color:var(--accent); }}
-  .nav {{ display:flex; gap:18px; padding-bottom:18px; border-bottom:1px solid var(--rule);
-          margin-bottom:28px; font-size:14px; }}
+  .nav {{ display:flex; flex-wrap:wrap; gap:10px 18px; padding-bottom:18px;
+          border-bottom:1px solid var(--rule); margin-bottom:28px; font-size:14px; }}
   .warn {{ background:var(--warn); color:var(--warnink); padding:14px 16px;
            border-radius:4px; margin:0 0 24px; font-size:14px; }}
   mark.todo {{ background:transparent; color:var(--accent); font-weight:600; }}

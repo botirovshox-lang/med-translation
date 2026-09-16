@@ -195,7 +195,7 @@ function ProfileTeams({ data, onChange, toast }) {
   };
 
   return React.createElement(ProfileCard, { title: TR("Мои команды"), icon: "folder" },
-    React.createElement("table", { className: "tbl" },
+    React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
       React.createElement("thead", null, React.createElement("tr", null,
         [TR("Команда"), TR("Моя роль"), TR("Участников"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
       React.createElement("tbody", null, teams.map(t => React.createElement("tr", { key: t.id },
@@ -207,7 +207,7 @@ function ProfileTeams({ data, onChange, toast }) {
         React.createElement("td", null, t.members),
         React.createElement("td", { style: { whiteSpace: "nowrap" } },
           t.id !== active && React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy, onClick: () => switchTo(t) }, TR("Перейти")),
-          !t.home && React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy, onClick: () => leave(t) }, TR("Выйти"))))))),
+          !t.home && React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy, onClick: () => leave(t) }, TR("Выйти")))))))),
 
     React.createElement("div", { className: "eyebrow", style: { margin: "6px 0 0" } }, TR("Новая команда")),
     data.canCreateTeam
@@ -252,7 +252,7 @@ function ProfileMembers({ data, toast }) {
   };
 
   return React.createElement(ProfileCard, { title: TR("Участники команды") + " · " + (det.team ? det.team.name : ""), icon: "user" },
-    React.createElement("table", { className: "tbl" },
+    React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
       React.createElement("thead", null, React.createElement("tr", null,
         [TR("Имя"), TR("Почта"), TR("Роль"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
       React.createElement("tbody", null, det.members.map(u => React.createElement("tr", { key: u.id },
@@ -270,7 +270,7 @@ function ProfileMembers({ data, toast }) {
             onChange: (r) => r !== u.role && member(u, { role: r }, TR("Роль изменена")) }),
           owner && !u.home && React.createElement(Btn, { variant: "ghost", size: "sm",
             onClick: () => member(u, { remove: true }, TR("Исключён")) }, TR("Исключить")),
-          u.home && React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("домашняя запись"))))))),
+          u.home && React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("домашняя запись")))))))),
 
     owner && React.createElement("div", { className: "eyebrow", style: { margin: "6px 0 0" } }, TR("Пригласить по почте")),
     owner && React.createElement("div", { className: "row", style: { gap: 10, alignItems: "flex-end", flexWrap: "wrap" } },

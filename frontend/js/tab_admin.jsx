@@ -144,12 +144,12 @@ function pagesKindLabel(k) {
 function pagesNoteLabel(n) { return n === "env" ? TR("стартовый лимит из окружения") : (n || ""); }
 function AdminPagesLog({ log }) {
   if (!log || !log.length) return React.createElement("div", { className: "dim" }, TR("Журнал страниц пуст"));
-  return React.createElement("table", { className: "tbl", style: { fontSize: 12 } },
+  return React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl", style: { fontSize: 12 } },
     React.createElement("tbody", null, log.slice().reverse().map((e, i) => React.createElement("tr", { key: i },
       React.createElement("td", null, e.at),
       React.createElement("td", null, pagesKindLabel(e.kind)),
       React.createElement("td", { style: { textAlign: "right" } }, (e.pages > 0 && e.kind === "credit" ? "+" : "") + e.pages),
-      React.createElement("td", { className: "dim" }, [e.title, pagesNoteLabel(e.note), e.name].filter(Boolean).join(" · "))))));
+      React.createElement("td", { className: "dim" }, [e.title, pagesNoteLabel(e.note), e.name].filter(Boolean).join(" · ")))))));
 }
 
 function AdminUsers({ toast, tenants }) {

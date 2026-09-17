@@ -199,6 +199,7 @@
     testing:       ()                       => call("GET",    "/admin/testing"),
     batchCreate:   (body)                   => call("POST",   "/admin/testing/batches", body),
     batchUpdate:   (bid, body)              => call("POST",   `/admin/testing/batches/${encodeURIComponent(bid)}`, body),
+    surveyDelete:  (sid)                    => call("DELETE", `/admin/testing/surveys/${encodeURIComponent(sid)}`),
     tenantDelete:  (tid)                    => call("DELETE", `/admin/tenants/${tid}`),
     audit:         (limit)                  => call("GET",    "/admin/audit?limit=" + (limit || 200)),
     domains:       ()                       => call("GET",    "/admin/domains"),

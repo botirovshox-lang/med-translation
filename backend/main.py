@@ -23842,6 +23842,14 @@ class BatchIn(BaseModel):
     pages: Optional[float] = None
     limitUsd: Optional[float] = None
     active: Optional[bool] = None
+    # Выданное место возвращается ТОЛЬКО правкой этого счётчика, а не
+    # поднятием лимита: лимит — сколько людей мы зовём, `issued` — сколько
+    # доступов ушло. Пробный доступ, выданный самим владельцем, занимал
+    # место настоящего тестировщика, и лечилось это лимитом «4 места»,
+    # то есть враньём в том самом числе, по которому бот решает, звать ли
+    # ещё людей. Доступ при этом НЕ отзывается: учётная запись живёт
+    # своей жизнью, и снос её — отдельное решение.
+    issued: Optional[int] = None
 
 
 @app.get("/api/admin/testing")
@@ -23902,6 +23910,13 @@ def admin_batch_update(bid: str, req: BatchIn, request: Request):
     b = next((x for x in _test_batches() if x["id"] == bid), None)
     if not b:
         raise HTTPException(404, "Набор не найден")
+    if req.issued is not None:
+        if req.issued < 0:
+            raise HTTPException(400, "Выдано не может быть отрицательным")
+        b["issued"] = int(req.issued)
+        # След в журнале обязателен: возврат места ничем не отличается
+        # от «мест не выдавали вовсе», а отличать надо — доступ-то выдан.
+        _audit("testbatch.issued", batch=bid, issued=b["issued"])
     if req.limit is not None:
         if req.limit < 0:
             raise HTTPException(400, "Число мест не может быть отрицательным")
@@ -23923,6 +23938,29 @@ def admin_batch_update(bid: str, req: BatchIn, request: Request):
     _audit("testbatch.update", batch=bid, limit=b.get("limit"), active=b.get("active"))
     save_state(STATE)
     return {"ok": True, "batch": b}
+
+
+@app.delete("/api/admin/testing/surveys/{sid}")
+def admin_survey_delete(sid: int, request: Request):
+    """Убрать анкету. Нужна ровно для пробных отправок: страницы публичные,
+    и первым их заполняет сам владелец, проверяя, что письмо доходит. Без
+    этой двери пробная заявка оставалась в данных до вытеснения кольцом
+    `SURVEY_MAX` и считалась наравне с настоящими.
+
+    Отката нет намеренно: анкета — не работа системы, а присланный текст,
+    и держать её копию в бэкапе значило бы хранить чужие контакты дважды.
+    Зато есть след в журнале — кто и что убрал."""
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Анкеты убирает только суперпользователь")
+    lst = _surveys()
+    rec = next((s for s in lst if s.get("id") == sid), None)
+    if not rec:
+        raise HTTPException(404, "Анкета не найдена")
+    lst.remove(rec)
+    _audit("survey.delete", survey=sid, form=rec.get("form"), ref=rec.get("ref"))
+    save_state(STATE)
+    return {"ok": True, "id": sid, "left": len(lst)}
 
 
 # ─────────────────────────────────────────────────────────────────────

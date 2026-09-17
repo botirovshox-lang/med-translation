@@ -269,6 +269,20 @@ function AdminTesting({ toast }) {
     try { await window.API.batchUpdate(b.id, body); toast.success(msg, b.name || b.id); reload(); }
     catch (e) { toast.error(TR("Не изменено"), e.message || String(e)); }
   };
+  // Возврат выданного места. Отдельно от «Мест» намеренно: лимит — сколько
+  // людей мы зовём, «выдано» — сколько доступов ушло. Пробный доступ,
+  // выданный владельцем себе, лечился бы поднятием лимита — то есть враньём
+  // в числе, по которому бот решает, звать ли ещё людей.
+  const setIssued = (b) => {
+    const v = prompt(TR("Сколько мест уже выдано в наборе «") + (b.name || b.id) + TR("»? Доступы при этом не отзываются."), String(b.issued || 0));
+    if (v === null || v.trim() === "") return;
+    patch(b, { issued: Number(v) }, TR("Выдано изменено"));
+  };
+  const dropSurvey = async (s) => {
+    if (!confirm(TR("Убрать анкету от ") + (s.who || s.ref || "—") + TR("? Отката нет."))) return;
+    try { await window.API.surveyDelete(s.id); toast.success(TR("Анкета убрана"), s.who || s.ref || ("#" + s.id)); reload(); }
+    catch (e) { toast.error(TR("Не убрана"), e.message || String(e)); }
+  };
   const setLimit = (b) => {
     const v = prompt(TR("Сколько мест в наборе «") + (b.name || b.id) + TR("»? Выдано уже ") + (b.issued || 0) + ":", String(b.limit || 0));
     if (v === null || v.trim() === "") return;
@@ -296,6 +310,7 @@ function AdminTesting({ toast }) {
         React.createElement("td", null, b.active ? TR("идёт набор") : TR("закрыт")),
         React.createElement("td", { style: { textAlign: "right", whiteSpace: "nowrap" } },
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLimit(b) }, TR("Мест")),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setIssued(b) }, TR("Выдано")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => patch(b, { active: !b.active }, b.active ? TR("Набор закрыт") : TR("Набор открыт")) },
             b.active ? TR("Закрыть") : TR("Открыть")))))))),
     d.testers.length > 0 && React.createElement("div", { style: { overflowX: "auto", marginTop: 12 } },
@@ -321,8 +336,9 @@ function AdminTesting({ toast }) {
             React.createElement("td", null, s.form === "apply" ? TR("заявка") : TR("разбор")),
             React.createElement("td", null, s.who || s.ref || "—"),
             React.createElement("td", null, (s.lang || "").toUpperCase()),
-            React.createElement("td", { style: { textAlign: "right" } },
-              React.createElement("a", { className: "link", href: "/t/a/" + s.token, target: "_blank", rel: "noopener" }, TR("Открыть лист"))))))))));
+            React.createElement("td", { style: { textAlign: "right", whiteSpace: "nowrap" } },
+              React.createElement("a", { className: "link", href: "/t/a/" + s.token, target: "_blank", rel: "noopener" }, TR("Открыть лист")),
+              React.createElement(Btn, { variant: "ghost", size: "sm", style: { marginLeft: 8 }, onClick: () => dropSurvey(s) }, TR("Убрать"))))))))));
 }
 
 function AdminJobs({ ov, toast, onChange }) {

@@ -252,5 +252,33 @@ check(len(ov["surveys"]) >= 2, "анкеты в списке")
 check(all("answers" not in s for s in ov["surveys"]),
       "в списке только шапки анкет, ответы — по ссылке")
 
+print("\n=== 11. Пробную анкету можно убрать, выданное место — вернуть ===")
+# Страницы публичные, и первым их заполняет САМ владелец, проверяя доставку.
+# Без этих двух дверей пробная отправка считалась наравне с настоящими,
+# а пробный доступ занимал место живого тестировщика.
+before = len(main.STATE["surveys"])
+sid = main.STATE["surveys"][0]["id"]
+check(c.delete("/api/admin/testing/surveys/%d" % sid).status_code == 401,
+      "убрать анкету без входа нельзя")
+r = c.delete("/api/admin/testing/surveys/%d" % sid, headers=H)
+check(r.status_code == 200 and len(main.STATE["surveys"]) == before - 1,
+      "суперпользователь убирает анкету")
+check(c.delete("/api/admin/testing/surveys/%d" % sid, headers=H).status_code == 404,
+      "второй раз ту же — 404")
+
+b = main.STATE["testBatches"][0]
+b["limit"], b["issued"] = 3, 1
+r = c.post("/api/admin/testing/batches/%s" % b["id"], json={"issued": 0}, headers=H)
+check(r.status_code == 200 and b["issued"] == 0, "выданное место возвращается в набор")
+check(main._batch_free(b) == 3, "свободных мест снова три")
+check(c.post("/api/admin/testing/batches/%s" % b["id"],
+             json={"issued": -1}, headers=H).status_code == 400,
+      "отрицательное «выдано» — 400")
+# Лимит по-прежнему нельзя опустить ниже выданного: правка «выдано» не должна
+# ломать защиту, ради которой этот пол и стоит.
+b["issued"] = 2
+c.post("/api/admin/testing/batches/%s" % b["id"], json={"limit": 1}, headers=H)
+check(b["limit"] == 2, "лимит ниже выданного не опускается")
+
 print("\n" + ("ПРОВАЛЕНО: " + "; ".join(fail) if fail else "ВСЁ ПРОШЛО"))
 sys.exit(1 if fail else 0)

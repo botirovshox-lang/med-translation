@@ -32,6 +32,11 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
   const fromImage = !!(seg.origin && seg.origin.kind === "image");
   const [cropUrl, setCropUrl] = useState(null);
   const [overlayBusy, setOverlayBusy] = useState(false);
+  /* «Подробности» — устройство проверки: память переводов, обратный перевод,
+     маршрут, риск, цена строки. Свёрнуто по умолчанию: карточка отвечает
+     на три вопроса (что в книге · что я написала · что мне не нравится),
+     и десять кнопок рядом с ними мешают увидеть эти три. */
+  const [moreOpen, setMoreOpen] = useState(false);
   const markOverlay = async () => {
     if (!window.API || !window.API.imageMarkOverlay) return;
     setOverlayBusy(true);
@@ -265,7 +270,12 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
         TR("Правил: ") + seg.editedByName + (seg.editedAt ? " · " + seg.editedAt : ""))),
 
     // source
+    /* Три зоны сверху вниз, и порядок несущий: сначала что в книге (у сегмента
+       с картинки — сам кусок картинки, проверить распознанное иначе нечем),
+       потом что написала машина, потом что ей не нравится. */
     React.createElement("div", null,
+      React.createElement("div", { className: "seg-zone-t" },
+        React.createElement("i", null, "1"), TR("Что в книге")),
       React.createElement("div", { className: "row between", style: { marginBottom: 6 } },
         React.createElement("span", { className: "label" },
           fromImage ? TR("🖼 Оригинал (текст на картинке)") : TR("Оригинал · ") + (project.src || "")),
@@ -294,6 +304,8 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
 
     // translation
     React.createElement("div", null,
+      React.createElement("div", { className: "seg-zone-t" },
+        React.createElement("i", null, "2"), TR("Что я написала")),
       React.createElement("div", { className: "label", style: { marginBottom: 6 } }, TR("Перевод · ") + (project.tgt || "")),
       /* dir="auto": направление письма браузер берёт из самого текста — арабский
          и иврит выравниваются справа без каталога языков в браузере. */
@@ -319,27 +331,13 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
       React.createElement(Btn, { variant: draft.trim() ? "primary" : "secondary", size: "sm", icon: "check", disabled: busy, onClick: () => onConfirm(draft) }, TR("Подтвердить"))
     ),
 
-    // compact secondary actions (MemSource-style)
-    React.createElement("div", { className: "mini-actions" },
-      React.createElement("button", { className: "mini-btn" + (infoPanel === "tm" ? " on" : ""), onClick: () => toggleInfo("tm") },
-        React.createElement(Icon, { name: "search", size: 14 }), "Find TM"),
-      React.createElement("button", { className: "mini-btn" + (infoPanel === "back" ? " on" : ""), onClick: openBack },
-        React.createElement(Icon, { name: "repeat", size: 14 }), "Back check"),
-      React.createElement("button", { className: "mini-btn" + (infoPanel === "terms" ? " on" : ""), onClick: openTerms,
-        title: TR("Проверка терминологии: нормальные ли термины целевого языка") },
-        React.createElement(Icon, { name: "book", size: 14 }), TR("Термины"),
-        termFindings.length > 0 && React.createElement("span", { className: "mb-val", style: { color: "var(--c-warning)" } }, termFindings.length)),
-      canRepair && React.createElement("button", { className: "mini-btn", onClick: runRepair, disabled: repairBusy,
-        title: TR("Переписать перевод по найденным замечаниям и перепроверить") },
-        React.createElement(Icon, { name: "repeat", size: 14 }), repairBusy ? TR("Чиним…") : TR("Починить")),
-      React.createElement("button", { className: "mini-btn" + (infoPanel === "route" ? " on" : ""), onClick: () => toggleInfo("route") },
-        React.createElement(Icon, { name: "target", size: 14 }), "Route"),
-      React.createElement("button", { className: "mini-btn" + (infoPanel === "risk" ? " on" : ""), onClick: () => toggleInfo("risk") },
-        React.createElement(Icon, { name: "warn", size: 14 }), "Risk"),
-      React.createElement("span", { className: "mini-btn readonly", title: TR("Оценка стоимости перевода") },
-        React.createElement(Icon, { name: "zap", size: 14 }), "Est: ", React.createElement("span", { className: "mb-val" }, fmtCost(estCost)))
-    ),
-
+    /* Зона 3. Находки — жалобы, а не термины: что машине не нравится
+       в этом переводе. Ниже идут карточки ревизии, арбитра, ремонта
+       и проверки терминов — каждая со своей командой. */
+    (termFindings.length > 0 || (seg.ctxAdvice || []).length > 0 || seg.review
+      || seg.confirmWithdrawn || seg.repair || seg.termCtxApplied)
+      && React.createElement("div", { className: "seg-zone-t" },
+        React.createElement("i", null, "3"), TR("Что мне не нравится")),
     infoPanel === "terms" && React.createElement("div", { className: "tm-pop" },
       React.createElement("div", { className: "row between" },
         React.createElement("span", { className: "label", style: { margin: 0 } }, TR("Терминология перевода")),
@@ -580,7 +578,39 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
 
     React.createElement("div", { className: "divider" }),
 
+    // «Подробности»: устройство проверки. Кнопки не удалены — пропавшая кнопка
+    // неотличима от потерянной функции, — но и не стоят рядом с переводом.
+    React.createElement("div", { className: "row", style: { marginTop: 2 } },
+      React.createElement(Btn, { variant: "ghost", size: "sm",
+        onClick: () => setMoreOpen(v => !v) },
+        moreOpen ? TR("▴ Скрыть подробности") : TR("▾ Подробности"))),
+    moreOpen && React.createElement(React.Fragment, null,
+    // compact secondary actions (MemSource-style)
+    React.createElement("div", { className: "mini-actions" },
+      React.createElement("button", { className: "mini-btn" + (infoPanel === "tm" ? " on" : ""), onClick: () => toggleInfo("tm") },
+        React.createElement(Icon, { name: "search", size: 14 }), "Find TM"),
+      React.createElement("button", { className: "mini-btn" + (infoPanel === "back" ? " on" : ""), onClick: openBack },
+        React.createElement(Icon, { name: "repeat", size: 14 }), "Back check"),
+      React.createElement("button", { className: "mini-btn" + (infoPanel === "terms" ? " on" : ""), onClick: openTerms,
+        title: TR("Проверка терминологии: нормальные ли термины целевого языка") },
+        React.createElement(Icon, { name: "book", size: 14 }), TR("Термины"),
+        termFindings.length > 0 && React.createElement("span", { className: "mb-val", style: { color: "var(--c-warning)" } }, termFindings.length)),
+      canRepair && React.createElement("button", { className: "mini-btn", onClick: runRepair, disabled: repairBusy,
+        title: TR("Переписать перевод по найденным замечаниям и перепроверить") },
+        React.createElement(Icon, { name: "repeat", size: 14 }), repairBusy ? TR("Чиним…") : TR("Починить")),
+      React.createElement("button", { className: "mini-btn" + (infoPanel === "route" ? " on" : ""), onClick: () => toggleInfo("route") },
+        React.createElement(Icon, { name: "target", size: 14 }), "Route"),
+      React.createElement("button", { className: "mini-btn" + (infoPanel === "risk" ? " on" : ""), onClick: () => toggleInfo("risk") },
+        React.createElement(Icon, { name: "warn", size: 14 }), "Risk"),
+      React.createElement("span", { className: "mini-btn readonly", title: TR("Оценка стоимости перевода") },
+        React.createElement(Icon, { name: "zap", size: 14 }), "Est: ", React.createElement("span", { className: "mb-val" }, fmtCost(estCost)))
+    ),
+
     // minitabs
+    /* Вкладки и их содержимое — ОДНИМ куском внутри свёртки. Порознь под
+       свёрнутыми «Подробностями» оставалась панель контекста с «Риском»
+       и маршрутом — то самое устройство, которое прятали, — а вкладок,
+       чтобы её переключить, видно не было. */
     React.createElement("div", { className: "minitabs" },
       minitabs.map(([v, l]) => React.createElement("button", { key: v, className: tab === v ? "on" : "", onClick: () => setTab(v) }, l))),
 
@@ -589,7 +619,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
       tab === "tm" && React.createElement(TMPane, { tmHit, onApply: (t) => { setDraft(t); toast.info(TR("Применено из TM")); } }),
       tab === "qa" && React.createElement(QAPane, { seg, qaResult }),
       tab === "comments" && React.createElement(CommentPane, { seg, store, comment, setComment, addComment })
-    )
+    ))
   );
 }
 

@@ -916,21 +916,63 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .ask-head h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
 .ask-head .ask-n { font-size: 13px; color: var(--c-warning); font-weight: 500; font-variant-numeric: tabular-nums; }
 .ask-head .ask-hint { margin-left: auto; font-size: 12px; color: var(--text-4); }
+/* Таблица вопросов: полоса тяжести · что не так · где · ваш ответ · сколько
+   изменится. Сетка ОДНА на шапку и на строки — колонки иначе разъезжаются,
+   и список читается как сломанный. Числа — tabular-nums, иначе правая
+   колонка пляшет на каждой строке. */
 .ask-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--card); }
-.ask { display: grid; grid-template-columns: 4px minmax(0, 1fr) auto; gap: 0 16px; align-items: center;
-  padding: 13px 16px 13px 0; border-bottom: 1px solid var(--border); }
+.ask { display: grid; grid-template-columns: 4px minmax(0, 1.6fr) minmax(0, .9fr) auto minmax(0, 104px);
+  gap: 0 16px; align-items: center;
+  padding: 15px 16px 15px 0; border-bottom: 1px solid var(--border); }
 .ask:last-child { border-bottom: 0; }
+.ask-hd { padding-top: 10px; padding-bottom: 10px; background: var(--bg-sunken);
+  font-size: 11.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-4); }
+.ask-hd .ask-cell, .ask-hd .ask-where, .ask-hd .ask-acts, .ask-hd .ask-scope { font-size: inherit; color: inherit; }
+/* «Сколько изменится» в 104px не помещается: переносим, а не режем. */
+.ask-hd .ask-scope { white-space: normal; }
 .ask-sev { align-self: stretch; border-radius: 0 3px 3px 0; background: var(--border-strong); }
 .ask-sev.warn { background: var(--c-warning); }
 .ask-sev.bad { background: var(--c-error); }
-.ask-t { font-size: 14px; color: var(--text); }
+.ask-cell { min-width: 0; }
+.ask-t { font-size: 14px; color: var(--text); line-height: 1.4; }
 .ask-t b { font-weight: 500; }
-.ask-m { font-size: 12.5px; color: var(--text-3); margin-top: 2px; }
+.ask-m { font-size: 12.5px; color: var(--text-3); margin-top: 3px; line-height: 1.45; }
+.ask-where { min-width: 0; font-size: 12.5px; color: var(--text-3); line-height: 1.45;
+  font-variant-numeric: tabular-nums; }
+/* Пара «было → надо» — чипом по ширине текста, а не заливкой всей колонки:
+   грид-элемент блокифицируется, поэтому ширину держит сам чип внутри. */
+.ask-where.frag > span { color: var(--text-2); background: var(--bg-sunken);
+  border-radius: 6px; padding: 5px 8px; display: inline-block; }
 .ask-acts { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.ask-scope { text-align: right; font-size: 12.5px; color: var(--text-2); white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
+.ask-quiet .ask-t { color: var(--text-2); }
 .ask-empty { padding: 14px 16px; font-size: 13px; color: var(--text-3); }
-@media (max-width: 900px) {
-  .ask { grid-template-columns: 4px minmax(0, 1fr); row-gap: 10px; }
-  .ask-acts { grid-column: 2; justify-content: flex-start; }
+/* Снятая отметка «проверено» — извещение, а не вопрос: над таблицей и красным
+   (инвариант 14: отмена решения человека обязана быть видна). */
+/* Карточка сегмента: подпись зоны. Три зоны отвечают на три вопроса —
+   что в книге, что я написала, что мне не нравится. */
+.seg-zone-t { display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  font-size: 11px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--text-4); }
+.seg-zone-t i { width: 17px; height: 17px; border-radius: 50%; background: var(--bg-sunken);
+  color: var(--text-3); display: grid; place-items: center; font-style: normal;
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0; }
+.ask-alarm { display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  flex-wrap: wrap; padding: 14px 16px; border-radius: 12px;
+  background: var(--st-fail-bg); border: 1px solid transparent; }
+.ask-alarm-t { font-size: 14px; font-weight: 600; color: var(--c-error); }
+/* Стопка на просмотр: те же строки, но тише и без колонки ответа. */
+.ask-stack { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.ask-stack-h { display: flex; align-items: baseline; gap: 10px; font-size: 13px; color: var(--text-3); }
+.ask-stack-h .ask-n { color: var(--text-4); font-weight: 500; }
+/* Порог тот же, где складывается остальной экран (.run-decks, .kb-decks):
+   иначе на 1000px таблица ещё в строку, а блоки запуска уже в колонку,
+   и на две текстовые колонки остаётся полсотни пикселей. */
+@media (max-width: 1180px) {
+  .ask { grid-template-columns: 4px minmax(0, 1fr); row-gap: 8px; padding-right: 12px; }
+  .ask-hd { display: none; }
+  .ask-sev { grid-row: 1 / -1; }
+  .ask-where, .ask-acts, .ask-scope { grid-column: 2; justify-content: flex-start; text-align: left; }
 }
 
 /* подвал экрана: что машина сделала сама и дверь к подробностям */

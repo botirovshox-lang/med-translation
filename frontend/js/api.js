@@ -428,6 +428,12 @@
     // бы 402 за работу, которая денег не стоит.
     applyReview:       (pid, opts)          => call("POST", `/projects/${pid}/review/apply`, opts || {}),
     undoAcceptRepair:  (pid, stamp)         => call("POST", `/projects/${pid}/repair/accept/${stamp}/undo`, {}),
+    /* Журнал решений и откат по метке. До него метка копии называлась один
+       раз всплывающей подсказкой — то есть откат был только у того, кто успел
+       её переписать. Денег не стоит: чтение журнала и возврат своего же текста
+       в `_PAID` не входят. */
+    decisions:         (pid)                => call("GET",  `/projects/${pid}/decisions`),
+    undoReview:        (pid, stamp)         => call("POST", `/projects/${pid}/review/${stamp}/undo`, {}),
 
     /* Фоновые прогоны: клиент только ставит задачу и смотрит прогресс */
     // Разбор прогона до запуска. Состав считает сервер тем же кодом, который

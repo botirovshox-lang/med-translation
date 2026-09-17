@@ -6291,6 +6291,13 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int) -> dict:
         return row
     if s.get("confirmWithdrawn"):
         row["withdrawn"] = True
+        # Значения, которые разошлись (`_override_values`). Экран говорит
+        # не «разошлись числа», а «в книге 300, назад вернулось 30»: без
+        # значений человеку нечего проверить глазами. У записей прежних
+        # прогонов поля нет — тогда остаётся общая фраза, а не выдумка.
+        # В отпечаток строки поле входит через сам `confirmWithdrawn`
+        # (см. `_analysis_seg_fp`).
+        row["withdrawnVals"] = list(s["confirmWithdrawn"].get("values") or [])[:1]
         if s.get("status") != "confirmed":
             row["withdrawnOpen"] = True
     _bc = s.get("backcheck") or {}
@@ -6510,6 +6517,7 @@ def project_analysis(pid: int, refresh: bool = False):
     # человек поставил отметку, машина её отменила — он должен об этом узнать
     # и увидеть доказательство, а не обнаружить пропажу случайно.
     withdrawn: list = []
+    withdrawn_why: list = []   # пара примеров с числами — их показывает «Проверка»
     # Сегменты, которые НИКТО не проверял по существу. Две разные причины,
     # и обе нельзя показывать как «чисто»:
     #   • балл выше потолка зоны судьи — детерминированные проверки довольны,
@@ -6585,6 +6593,8 @@ def project_analysis(pid: int, refresh: bool = False):
             continue
         if row["withdrawn"]:
             withdrawn.append(sid)
+            if row.get("withdrawnVals") and len(withdrawn_why) < 2:
+                withdrawn_why.append({"id": sid, "vals": row["withdrawnVals"]})
             if row["withdrawnOpen"]:
                 withdrawn_open.add(sid)
         if row["unjudgedBlind"]:
@@ -6926,6 +6936,9 @@ def project_analysis(pid: int, refresh: bool = False):
             "confirmedFindings": confirmed_findings,
             # Машина сняла заверение человека — с доказательством на сегменте.
             "confirmWithdrawn": withdrawn,
+            # …и пара примеров с самими значениями: «расхождение чисел» без
+            # чисел человеку нечем проверить.
+            "confirmWithdrawnWhy": withdrawn_why,
             # Список терминов, а не сегментов: вопрос здесь про ЗАПИСЬ
             # глоссария («правильна ли она»), и отвечать на него посегментно
             # значит задать один и тот же вопрос десятки раз.
@@ -13652,6 +13665,48 @@ CONFIRM_OVERRIDE_REASONS = ("расхождение чисел", "расхожд
                             "инверсия отрицания", "подмена на противоположное")
 
 
+def _override_values(seg: dict) -> list:
+    """Сами значения, которые разошлись: [{"what": "числа", "src": "300", "back": "30"}].
+
+    «Расхождение чисел» без чисел человеку нечем проверить — он идёт искать
+    их глазами по абзацу. Считаем ЗДЕСЬ, а не в `reasons`: текст причины
+    уходит в промпт ремонта дословно (стрелка между двумя числами читается
+    там как приказ заменить одно другим — на дозировке это опасно), входит
+    в отпечаток захода `_repair_attempt_key` (изменился текст — сегмент снова
+    уедет в платный ремонт) и сверяется подстрокой в пяти местах. Пара
+    «оригинал → обратный перевод» уже лежит в записи, разбор бесплатный
+    и локальный; не вышло — молчим, выдуманных цифр не показываем.
+    Берём ТОЛЬКО числа и единицы: у подмены стороны во фрагменте лежит
+    служебная метка правила («left/right»), а у отрицания фрагментов нет
+    вовсе — показывать это человеку нечего."""
+    if checks_mod is None:
+        return []
+    bc = seg.get("backcheck") or {}
+    back = bc.get("back") or ""
+    src = seg.get("source") or ""
+    if not back or not src:
+        return []
+    # Код, а не фраза: подписи живут в словаре браузера (закон CLEAN_*).
+    WHAT = {"backcheck_number_mismatch": "numbers", "backcheck_unit_mismatch": "units"}
+    out = []
+    try:
+        issues, _lost = checks_mod.backcheck_issues(src, back)
+        for i in issues:
+            what = WHAT.get(i.get("type"))
+            if not what:
+                continue
+            a_ = (i.get("source_fragment") or "").strip()
+            b_ = (i.get("target_fragment") or "").strip()
+            # Пустая сторона означает «разбор не узнал», а не «пропало»:
+            # прочерк читался бы как факт, которого нет.
+            if not a_ or not b_:
+                continue
+            out.append({"what": what, "src": a_, "back": b_})
+    except Exception as e:
+        print(f"[backend] значения расхождения не посчитаны: {e}", file=sys.stderr)
+    return out[:2]
+
+
 def _confirm_override(seg: dict) -> list:
     """Доказательства, которые сильнее заверения человеком.
 
@@ -16222,7 +16277,8 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         seg["confirmWithdrawn"] = {
             "by": seg.get("confirmedBy"), "at": seg.get("confirmedAt"),
             "withdrawnAt": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "evidence": override_ev, "was": old_target}
+            "evidence": override_ev, "values": _override_values(seg),
+            "was": old_target}
     seg["prevTarget"] = old_target
     seg["status"] = "review"          # заверяет человек, автоправка себя не подтверждает
     # Чинили заверенный перевод — отметка «подтвердил человек» относилась к
@@ -17255,6 +17311,13 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
         # текстов клиента, то есть ровно то событие, ради которого журнал есть.
         if applied:
             _audit("review.apply", project=pid, count=applied, stamp=stamp)
+            # Журнал решений ЧЕЛОВЕКА: прогон зовёт `review_project` порциями
+            # по пять сегментов с ОДНОЙ меткой, и запись на каждую порцию
+            # вытолкнула бы из кольца всё, ради чего журнал заведён, а «Отменить ·
+            # 2 сегм.» откатывало бы весь прогон. Сессии в потоке прогона нет
+            # (инвариант 11) — по ней и отличаем.
+            if CURRENT_SESSION.get(None):
+                _decision_log(project, "review", stamp, applied)
         _IMPACT_CACHE.pop(pid, None)
         _ANALYSIS_CACHE.pop(pid, None)
         save_state(STATE)
@@ -17278,6 +17341,10 @@ def undo_review(pid: int, stamp: str):
     """Вернуть тексты до ревизии — только там, где стоит именно её текст:
     правили после, значит откат затёр бы чужую работу."""
     project = get_project(pid)
+    # Откат идёт теперь в один клик из журнала решений, и нажатый во время
+    # прогона он ушёл бы в `_merge_run_conflict`, где при споре побеждает
+    # прогон, — то есть пропал бы молча. Охранник отвечает 409 и говорит.
+    _guard_project_write(pid)
     data = _read_backup("review", pid, stamp)
     by_id = {sg["id"]: sg for sg in project["segments"]}
     restored, changed_since = [], []
@@ -17318,6 +17385,7 @@ def undo_review(pid: int, stamp: str):
         seg["review"] = rv
         restored.append(seg["id"])
     if restored:
+        _decision_undone(project, "review", stamp)
         _IMPACT_CACHE.pop(pid, None)
         _ANALYSIS_CACHE.pop(pid, None)
         save_state(STATE)
@@ -17468,6 +17536,39 @@ _BACKUP_LOCK = threading.RLock()
 # иначе `{"stamp": "abc"}` создаёт копию, которую `_read_backup` откажется
 # открывать, — то есть массовая правка текста без действующего отката.
 _STAMP_RE = re.compile(r"[0-9-]{8,24}$")
+
+
+DECISIONS_MAX = 50
+
+
+def _decision_log(project: dict, kind: str, stamp: str, count: int, note: str = "") -> None:
+    """Журнал решений проекта — кольцо на `project["decisions"]`.
+
+    Без него отката в интерфейсе НЕТ: метка копии называлась один раз,
+    всплывающей подсказкой, и закрытая подсказка уносила её навсегда.
+    Пишем ТОЛЬКО то, у чего есть дверь отката (`kind` → путь `/…/undo`):
+    кнопка «Отменить», которая ничего не отменяет, хуже её отсутствия.
+    Кольцо на ПРОЕКТЕ, а не общее: метка чужого проекта отвечает 400
+    (`_read_backup` сверяет номер), и показывать её тут значило бы
+    предлагать заведомо неисполнимое."""
+    log = project.setdefault("decisions", [])
+    log.insert(0, {"kind": kind, "stamp": stamp, "count": int(count or 0),
+                   "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                   "by": _actor_id(), "name": _user_label(_actor_id()),
+                   "role": _actor_role(), "note": note, "undone": False})
+    del log[DECISIONS_MAX:]
+
+
+def _decision_undone(project: dict, kind: str, stamp: str) -> None:
+    """Метка отката: запись остаётся видна, но «Отменить» у неё гаснет.
+
+    Сверяем И вид: метка уникальна ВНУТРИ вида (`_backup_stamp` кладёт файл
+    под именем «вид-метка»), поэтому две команды разных видов в одну секунду
+    получают одинаковую метку. По одной метке мы погасили бы кнопку у той
+    команды, которую никто не отменял."""
+    for d in project.get("decisions") or []:
+        if d.get("stamp") == stamp and d.get("kind") == kind:
+            d["undone"] = True
 
 
 def _backup_stamp(kind: str) -> str:
@@ -17744,6 +17845,12 @@ def accept_repair_candidates(pid: int, req: RepairAcceptBatchRequest = RepairAcc
         raise HTTPException(500, "Не удалось сохранить копию для отката — применение отменено")
     for sg in matched:
         _apply_repair_candidate(sg)
+    # Журнала у этой команды не было вовсе — самая массовая перезапись текстов
+    # клиента уходила в историю без единой строки. Пишем ДО сохранения: упади
+    # процесс между ними, тексты были бы переписаны, а метки отката человеку
+    # взять негде — ровно та беда, ради которой журнал и заведён.
+    _audit("repair.accept", project=pid, count=len(matched), stamp=stamp)
+    _decision_log(project, "repair", stamp, len(matched))
     _IMPACT_CACHE.pop(pid, None)
     _ANALYSIS_CACHE.pop(pid, None)
     save_state(STATE)
@@ -17763,6 +17870,10 @@ def undo_accept_repair_candidates(pid: int, stamp: str):
     затирать её откатом нельзя. Тот же закон, что у `_repair_tried` в
     `_revert_repairs`. Неподходящие названы поимённо."""
     project = get_project(pid)
+    # Откат идёт теперь в один клик из журнала решений, и нажатый во время
+    # прогона он ушёл бы в `_merge_run_conflict`, где при споре побеждает
+    # прогон, — то есть пропал бы молча. Охранник отвечает 409 и говорит.
+    _guard_project_write(pid)
     # Метку из URL подставлять в путь как есть нельзя — то же правило и та же
     # проверка, что у откатов пересчёта баллов и выноса глоссария.
     if not re.fullmatch(r"[0-9-]{8,24}", stamp or ""):
@@ -17801,10 +17912,26 @@ def undo_accept_repair_candidates(pid: int, stamp: str):
         seg["repair"] = snap["repair"]
         restored.append(seg["id"])
     if restored:
+        _decision_undone(project, "repair", stamp)
         _IMPACT_CACHE.pop(pid, None)
         _ANALYSIS_CACHE.pop(pid, None)
         save_state(STATE)
     return {"ok": True, "restored": restored, "changedSince": changed_since}
+
+
+@app.get("/api/projects/{pid}/decisions")
+def list_decisions(pid: int):
+    """Журнал решений проекта: что человек применил и чем это откатить.
+
+    Заведён потому, что отката в интерфейсе фактически НЕ БЫЛО: метка копии
+    называлась один раз всплывающей подсказкой, и закрытая подсказка уносила
+    её навсегда — «откат есть» превращалось в «откат есть у того, кто успел
+    переписать метку». Список отдаётся ТОЛЬКО по своему проекту (`get_project`,
+    чужой → 404) и только для команд, у которых дверь отката существует.
+    Денег не стоит и в `_PAID` не входит: чтение журнала и возврат своего же
+    текста — не работа модели (инвариант 15)."""
+    project = get_project(pid)
+    return {"ok": True, "decisions": list(project.get("decisions") or [])[:DECISIONS_MAX]}
 
 
 
@@ -18873,6 +19000,7 @@ def style_check(pid: int, req: StyleCheckRequest):
         sg["styleApplied"] = {"from": was, "changes": f["changes"], "by": "human", "at": at}
     _IMPACT_CACHE.pop(pid, None)
     _ANALYSIS_CACHE.pop(pid, None)
+    _decision_log(project, "style", stamp, len(todo))
     save_state(STATE)
     _audit("style.apply", project=pid, count=len(todo), spelling=rep_["want"], stamp=stamp)
     print(f"[backend] стайл-шит: орфография исправлена в {len(todo)} сегм. (проект {pid}), "
@@ -18920,6 +19048,8 @@ def undo_style_check(pid: int, stamp: str):
     _IMPACT_CACHE.pop(pid, None)
     _ANALYSIS_CACHE.pop(pid, None)
     save_state(STATE)
+    if restored:
+        _decision_undone(project, "style", stamp)
     _audit("style.undo", project=pid, stamp=stamp, restored=len(restored))
     return {"ok": True, "restored": len(restored), "ids": restored, "changedSince": changed_since}
 
@@ -18996,6 +19126,7 @@ def apply_term_context(pid: int, req: TermContextApplyRequest):
                                 "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
     _IMPACT_CACHE.pop(pid, None)
     _ANALYSIS_CACHE.pop(pid, None)
+    _decision_log(project, "termctx", stamp, len(matched), req.src or "")
     save_state(STATE)
     _audit("term_context.apply", project=pid, count=len(matched), src=req.src, use=req.use, stamp=stamp)
     print(f"[backend] совет арбитра применён: {len(matched)} сегм. (проект {pid}), "
@@ -19010,6 +19141,10 @@ def undo_apply_term_context(pid: int, stamp: str):
     """Вернуть тексты до подстановки совета. Только там, где стоит именно
     наш текст: правили после — чужую работу откатом не затираем."""
     project = get_project(pid)
+    # Откат идёт теперь в один клик из журнала решений, и нажатый во время
+    # прогона он ушёл бы в `_merge_run_conflict`, где при споре побеждает
+    # прогон, — то есть пропал бы молча. Охранник отвечает 409 и говорит.
+    _guard_project_write(pid)
     if not re.fullmatch(r"[0-9-]{8,24}", stamp or ""):
         raise HTTPException(400, "Неверная метка отката")
     path = PURGE_DIR / ("term-ctx-" + stamp + ".json")
@@ -19044,6 +19179,7 @@ def undo_apply_term_context(pid: int, stamp: str):
         seg.pop("termCtxApplied", None)
         restored.append(seg["id"])
     if restored:
+        _decision_undone(project, "termctx", stamp)
         _IMPACT_CACHE.pop(pid, None)
         _ANALYSIS_CACHE.pop(pid, None)
         save_state(STATE)

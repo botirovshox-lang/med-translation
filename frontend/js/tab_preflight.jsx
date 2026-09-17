@@ -1001,13 +1001,115 @@ function TurnkeySummary({ summary, store, toast, onReload, expert }) {
     expertCard || null);
 }
 
-/* «Вопросы к вам» — то, что прогон не решит по построению, одной строкой
-   на РЕШЕНИЕ, с командой прямо в строке. Состав — те же группы по действию
-   (analysisHumanGroups), что у экспертного итога; команды — тот же хук
-   (useAnalysisCommands): предпросмотр, подтверждение и откат у них общие.
-   Громкие строки (снятое заверение, критика QA, повреждённый оригинал)
-   идут первыми, хвост длиннее ASK_TOP свёрнут, но число названо. */
+/* Журнал решений: что применили и чем это откатить.
+
+   До него отката в интерфейсе фактически не было — метка копии называлась
+   один раз всплывающей подсказкой, и закрытая подсказка уносила её навсегда.
+   Список даёт сервер (`GET /decisions`, кольцо на проекте), откат идёт теми же
+   эндпоинтами, что и раньше; откаченная запись остаётся видна и гаснет —
+   пропавшая строка выглядела бы так, будто решения и не было.
+   Показываются ТОЛЬКО команды, у которых дверь отката существует: кнопка
+   «Отменить», которая ничего не отменяет, хуже её отсутствия. */
+const DEC_UNDO = {
+  repair: (pid, st) => window.API.undoAcceptRepair(pid, st),
+  review: (pid, st) => window.API.undoReview(pid, st),
+  termctx: (pid, st) => window.API.termContextUndo(pid, st),
+  style: (pid, st) => window.API.styleUndo(pid, st),
+};
+const DEC_LABEL = {
+  repair: TR("Приняли готовые тексты"),
+  review: TR("Поставили советы ревизии"),
+  termctx: TR("Подставили совет по термину"),
+  style: TR("Исправили орфографию"),
+};
+function CheckLog({ project, store, toast, onReload }) {
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState("");
+  const load = () => {
+    if (!window.API || !window.API.decisions || !project) return;
+    window.API.safeCall(() => window.API.decisions(project.id))
+      .then(r => { if (r && r.ok) setRows(r.decisions || []); });
+  };
+  useEffect(() => { setRows(null); load(); }, [project && project.id]);
+  if (!rows || !rows.length) return null;
+  const undo = (d) => {
+    const fn = DEC_UNDO[d.kind];
+    if (!fn || busy) return;
+    if (!window.confirm(TR("Вернуть как было? Это отменит: ")
+        + (DEC_LABEL[d.kind] || d.kind) + " · " + d.count + TR(" сегм.")
+        + "\n\n" + TR("Строки, которые правили ПОСЛЕ, не трогаем — их назову числом."))) return;
+    setBusy(d.stamp);
+    window.API.safeCall(() => fn(project.id, d.stamp)).then(async (r) => {
+      setBusy("");
+      if (!r || !r.ok) { toast.error(TR("Не удалось отменить"), TR("Сервер отказал.")); return; }
+      const back = (r.restored || []).length;
+      const kept = (r.changedSince || []).length;
+      toast.success(TR("Вернули как было: ") + back + TR(" сегм."),
+        kept ? TR("правленых после не трогали: ") + kept : "");
+      /* Вернувшиеся тексты тянем поимённо: проект весит мегабайты, а в браузере
+         иначе остался бы текст, которого на сервере уже нет. */
+      if (back && window.API.fetchSegments) {
+        const got = await window.API.safeCall(
+          () => window.API.fetchSegments(project.id, r.restored));
+        store.mergeServerSegments(project.id, got && got.segments);
+      }
+      load();
+      if (onReload) onReload();
+    });
+  };
+  return React.createElement("div", { className: "ask-stack" },
+    React.createElement("div", { className: "ask-stack-h" },
+      React.createElement("span", null, TR("Журнал решений")),
+      React.createElement("span", { className: "ask-n" }, TR("отменить можно любое"))),
+    React.createElement("div", { className: "ask-list" },
+      rows.map((d, i) => React.createElement("div", { key: d.stamp + ":" + i, className: "ask ask-quiet" },
+        React.createElement("span", { className: "ask-sev" }),
+        React.createElement("div", { className: "ask-cell" },
+          React.createElement("div", { className: "ask-t" }, DEC_LABEL[d.kind] || d.kind),
+          React.createElement("div", { className: "ask-m" },
+            (d.name ? d.name + " · " : "") + d.at + (d.note ? " · " + d.note : ""))),
+        React.createElement("div", { className: "ask-where" }, d.undone ? TR("уже отменено") : ""),
+        React.createElement("div", { className: "ask-acts" },
+          !d.undone && DEC_UNDO[d.kind] && React.createElement(Btn,
+            { variant: "ghost", size: "sm", disabled: busy === d.stamp, onClick: () => undo(d) },
+            busy === d.stamp ? TR("Отменяем…") : TR("Отменить"))),
+        React.createElement("div", { className: "ask-scope" }, d.count + TR(" сегм."))))));
+}
+
+/* «Вопросы к вам» — ТАБЛИЦА из четырёх колонок: что не так · где · ваш ответ ·
+   сколько изменится. Выровнена сеткой (`.ask-list` + `.ask`): строки разной
+   длины без колонок читаются как разъехавшийся список, и это была первая
+   жалоба на экран.
+   Состав — те же группы по действию (analysisHumanGroups), команды — тот же
+   хук (useAnalysisCommands): предпросмотр, подтверждение и откат у них общие.
+   **Раскладка идёт по ФАКТУ наличия команды, а не по списку ключей.** Строка,
+   у которой есть что нажать, — вопрос и стоит в таблице; строка, у которой
+   есть только «Открыть», — не вопрос: ответа у неё нет, и колонка «ваш ответ»
+   стояла бы пустой. Такие уходят вниз, в «Просмотреть глазами». Список ключей
+   разошёлся бы с `analysisHumanGroups` первой же правкой политики, а потерянная
+   строка означает сегменты, которых на экране нет вовсе, — то есть картину
+   благополучнее, чем есть.
+   Два исхода стоят особняком: снятая отметка «проверено» идёт ПОЛОСОЙ НАД
+   таблицей (это извещение, а не вопрос, и по инварианту 14 оно обязано быть
+   громким), повреждённый оригинал — своей строкой внизу: там правят книгу,
+   а не перевод, и в общую стопку «просмотрите» он не годится.
+   Заголовки здесь СВОИ (`ASK_TITLE`): «ревизия», «судья», «back-check» —
+   имена деталей внутри, и на первом экране их быть не должно (инвариант 32).
+   У экспертного итога (`WorkSummary`) заголовки те же, что были. */
 const ASK_TOP = 10;
+const ASK_TITLE = {
+  reviewConfirmed: TR("Я перечитала эти строки и предлагаю другой перевод"),
+  reviewFlagged: TR("Вижу проблему, но починить не смогла"),
+  weak: TR("Перевела обратно — вышло другое"),
+  reverted: TR("Пробовала исправить, вышло хуже — оставила как было"),
+  revertedByScore: TR("Готовый текст ждёт вашего «да»"),
+  staleFindings: TR("Слово, которое я забраковала, осталось в тексте"),
+  confirmWithdrawn: TR("Я поправила строки, которые вы отметили как проверенные"),
+  glossaryConfirmed: TR("Вы отметили строки, а перевод спорит со словарём"),
+  confirmedFindings: TR("Вы отметили строки как проверенные, а я нашла ошибку"),
+  qaCritical: TR("Вы отметили строки, а в них критичное замечание"),
+  sourceSuspect: TR("Похоже, в книге испорчен сам текст"),
+};
 function CheckQuestions({ summary, store, toast, onReload }) {
   const { acceptAll, accBusy, applyHeldReview, rvBusy, applyAdvice, demoteAdvised, ctxBusy } =
     useAnalysisCommands(store, toast, onReload);
@@ -1029,32 +1131,59 @@ function CheckQuestions({ summary, store, toast, onReload }) {
     confirmedFindings: TR("вы заверили, но проверки нашли ошибки — починит «Доделать сама» с галочкой «чинить и заверенные»"),
     glossaryConfirmed: TR("вы заверили, но перевод расходится со словарём — починит «Доделать сама» с галочкой «чинить и заверенные»"),
   };
+  /* «Где» — адрес, а не пересказ: номер строки человек видит в таблице
+     редактора, и по нему же работает переход по номеру. Больше двух номеров
+     не называем: адрес из десяти чисел перестаёт быть адресом. */
+  const whereSegs = (ids) => {
+    const a = ids || [];
+    if (!a.length) return "";
+    if (a.length === 1) return TR("строка ") + a[0];
+    return TR("строки ") + a.slice(0, 2).join(", ")
+      + (a.length > 2 ? TR(" и ещё, всего: ") + a.length : "");
+  };
   const loud = r => r.color === "var(--c-error)" ? 1 : 0;
+  /* Группа `records` (термины, споры со словарём, вердикты арбитра) ниже
+     разбирается ПОШТУЧНО — по строке на запись, с её командой. Пустить её
+     сюда значит показать те же три решения дважды: сырой строкой без кнопок
+     и разобранной с кнопками. */
   const segRows = [].concat.apply([], groups.filter(g => g.key !== "records").map(g => g.rows))
     .sort((a, b) => (loud(b) - loud(a)) || (b.n - a.n));
-  const qs = [];
+  const qs = [], stack = [];
+  let alarm = null, source = null;
   segRows.forEach(r => {
-    const acts = [];
+    const title = ASK_TITLE[r.key] || r.label;
+    const meta = HINT[r.key] || r.hint;
+    /* Команда — то, что РЕШАЕТ. «Открыть» решением не является: она уводит
+       смотреть, и строка с одной этой кнопкой вопросом не считается. */
+    const cmds = [];
     if (r.key === "revertedByScore")
-      acts.push(btn("acc", accBusy ? TR("Принимаем…") : TR("Принять все"), acceptAll, "secondary", accBusy));
+      cmds.push(btn("acc", accBusy ? TR("Принимаем…") : TR("Принять все"), acceptAll, "secondary", accBusy));
     if (r.key === "reviewConfirmed")
-      acts.push(btn("rv", rvBusy ? TR("Применяем…") : TR("Применить советы"), () => applyHeldReview(r.ids), "secondary", rvBusy));
-    if (r.ids.length) acts.push(btn("open", TR("Открыть"), () => open(r.label, r.ids)));
-    qs.push({ key: r.key, sev: loud(r) ? "bad" : "warn", title: r.label,
-              meta: r.n + TR(" строк") + " · " + (HINT[r.key] || r.hint), acts });
+      cmds.push(btn("rv", rvBusy ? TR("Применяем…") : TR("Применить советы"), () => applyHeldReview(r.ids), "secondary", rvBusy));
+    const item = { key: r.key, sev: loud(r) ? "bad" : "warn", title, meta,
+                   where: whereSegs(r.ids), ids: r.ids,
+                   scope: r.n + TR(" строк"), acts: cmds.slice() };
+    if (r.ids.length) item.acts.push(btn("open", TR("Открыть"), () => open(title, r.ids)));
+    if (r.key === "confirmWithdrawn") { alarm = item; return; }
+    if (r.key === "sourceSuspect") { source = item; return; }
+    if (cmds.length) qs.push(item); else stack.push(item);
   });
   /* Термины: тот же состав, что очередь «Словарей» для человека (actionable):
      ждущие решения плюс готовые к одобрению. Ждущие ДАННЫХ сюда не входят —
-     их дорешает прогон, и они названы в подвале. Строка стоит ДО записей:
-     записей бывают десятки, и под свёрткой она потерялась бы. */
+     их дорешает прогон, и они названы в подвале. В колонке охвата стоит число
+     РЕШЕНИЙ, а не строк: сколько строк документа закроет ответ по термину,
+     `/analysis` не считает, и написать там «строк» значило бы соврать. */
   const termsN = (h.termsTotal || 0) + ((summary.proposed || {}).terms || 0);
   if (termsN > 0) qs.push({ key: "terms", sev: "warn",
     title: termsN + TR(" терминов ждут ответа «верно / не то»"),
-    meta: TR("ответ в «Словарях» закрывает все строки с термином"),
+    meta: TR("ответ в «Словарях» закрывает все строки с термином"), where: "",
+    scope: termsN + TR(" решений"),
     acts: [btn("go", TR("Открыть Словари"), () => store.go("glossary"), "secondary")] });
   /* Записи словаря: одно решение на ЗАПИСЬ закрывает все её строки. Запись,
      про которую уже ответил арбитр, в спорах второй раз не считается — тот же
-     ключ, что у analysisHumanGroups. */
+     ключ, что у analysisHumanGroups. Сама пара и есть «где»: кусок текста
+     человеку, который целевого языка не знает, ничего не скажет, а пара
+     «было → надо» читается на любом языке. */
   const rkey = d => ((d.src || "") + "→" + (d.tgt || "")).toLowerCase();
   const ctxWrong = h.termContextWrong || [];
   const ctxKeys = new Set(ctxWrong.map(rkey));
@@ -1066,39 +1195,95 @@ function CheckQuestions({ summary, store, toast, onReload }) {
     acts.push(btn("demote", TR("Понизить запись"), () => demoteAdvised(d), "ghost", ctxBusy));
     if (segs.length) acts.push(btn("open", TR("Открыть"), () => open(d.src, segs)));
     qs.push({ key: "ctx" + i, sev: "warn",
-      title: [TR("Арбитр: запись словаря не подходит здесь — "),
-              React.createElement("b", { key: "p" }, d.src + " → " + d.tgt)],
-      meta: (d.use ? TR("здесь верно: ") + d.use + " · " : "") + (d.why ? TRS(d.why) + " · " : "")
-            + segs.length + TR(" строк"), acts });
+      title: TR("Арбитр: запись словаря не подходит здесь"),
+      meta: [d.use ? TR("здесь верно: ") + d.use : "", d.why ? TRS(d.why) : ""]
+        .filter(Boolean).join(" · "),
+      where: d.src + " → " + d.tgt, frag: true,
+      scope: segs.length + TR(" строк"), acts });
   });
   disputes.forEach((d, i) => {
     const segs = d.segments || [];
     const acts = [btn("demote", TR("Понизить запись"), () => demoteAdvised(d), "ghost", ctxBusy)];
     if (segs.length) acts.push(btn("open", TR("Открыть"), () => open(d.src, segs)));
     qs.push({ key: "disp" + i, sev: "warn",
-      title: [TR("Проверка спорит со словарём: "),
-              React.createElement("b", { key: "p" }, d.src + " → " + d.tgt)],
-      meta: TR("проверка предлагает: ") + ((d.suggests || []).join(", ") || TR("без замены"))
-            + " · " + segs.length + TR(" строк"), acts });
+      title: TR("Проверка спорит со словарём"),
+      meta: TR("проверка предлагает: ") + ((d.suggests || []).join(", ") || TR("без замены")),
+      where: d.src + " → " + d.tgt, frag: true,
+      scope: segs.length + TR(" строк"), acts });
   });
+  /* Что именно разошлось — со значениями, если сервер их посчитал
+     (`_override_values`). «Расхождение чисел» без чисел человеку нечем
+     проверить: он идёт искать их глазами по абзацу. У записей прежних
+     прогонов значений нет — тогда общая фраза, а не выдуманные цифры.
+     Подписи по КОДУ (`numbers`/`units`), а не по фразе сервера: тот же
+     закон, что у `CLEAN_*`. */
+  const VAL_WHAT = { numbers: TR("числа"), units: TR("единицы") };
+  const wvals = [].concat.apply([], (h.confirmWithdrawnWhy || []).map(w => w.vals || []));
+  const alarmWhy = wvals.length
+    ? wvals.slice(0, 2).map(v => (VAL_WHAT[v.what] || v.what) + TR(": в книге ")
+        + v.src + TR(", назад вернулось ") + v.back).join(" · ")
+      + TR(" — это важнее отметки «проверено»")
+    : TR("разошлись числа, единицы или отрицание — это важнее отметки; что именно нашлось, видно в самой строке");
   const shown = all ? qs : qs.slice(0, ASK_TOP);
+  const stackIds = new Set();
+  stack.forEach(i => (i.ids || []).forEach(x => stackIds.add(x)));
+  const askRow = (q, quiet) => React.createElement("div",
+    { key: q.key, className: "ask" + (quiet ? " ask-quiet" : "") },
+    React.createElement("span", { className: "ask-sev " + q.sev }),
+    React.createElement("div", { className: "ask-cell" },
+      React.createElement("div", { className: "ask-t" }, q.title),
+      q.meta && React.createElement("div", { className: "ask-m" }, q.meta)),
+    React.createElement("div", { className: "ask-where" + (q.frag ? " frag" : "") },
+      q.frag ? React.createElement("span", null, q.where || "") : (q.where || "")),
+    React.createElement("div", { className: "ask-acts" }, q.acts),
+    React.createElement("div", { className: "ask-scope" }, q.scope || ""));
   return React.createElement("div", { className: "col", style: { gap: 12 } },
     React.createElement("div", { className: "ask-head" },
       React.createElement("h2", null, TR("Вопросы к вам")),
-      qs.length > 0 && React.createElement("span", { className: "ask-n" }, qs.length),
+      (qs.length + (alarm ? 1 : 0)) > 0 && React.createElement("span", { className: "ask-n" },
+        qs.length + (alarm ? 1 : 0)),
       qs.length > 0 && React.createElement("span", { className: "ask-hint" },
         TR("одно решение закрывает все строки в карточке"))),
+    /* Снятая отметка «проверено» — полосой НАД таблицей и с числом впереди:
+       главное здесь не то, что машина сделала с отметкой, а что именно
+       разошлось. Доказательство лежит в карточке сегмента. */
+    alarm && React.createElement("div", { className: "ask-alarm" },
+      React.createElement("div", null,
+        React.createElement("div", { className: "ask-alarm-t" }, alarm.title),
+        /* С самими значениями, если сервер их дал: «расхождение чисел» без
+           чисел человеку нечем проверить. У записей прежних прогонов значений
+           нет — тогда остаётся общая фраза, а не выдуманные цифры. */
+        React.createElement("div", { className: "ask-m" }, alarmWhy)),
+      React.createElement("div", { className: "ask-acts" }, alarm.acts)),
     React.createElement("div", { className: "ask-list" },
-      !qs.length && React.createElement("div", { className: "ask-empty" }, TR("Вопросов к вам нет.")),
-      shown.map(q => React.createElement("div", { key: q.key, className: "ask" },
-        React.createElement("span", { className: "ask-sev " + q.sev }),
-        React.createElement("div", null,
-          React.createElement("div", { className: "ask-t" }, q.title),
-          React.createElement("div", { className: "ask-m" }, q.meta)),
-        React.createElement("div", { className: "ask-acts" }, q.acts)))),
+      !qs.length && !alarm && React.createElement("div", { className: "ask-empty" }, TR("Вопросов к вам нет.")),
+      qs.length > 0 && React.createElement("div", { className: "ask ask-hd" },
+        React.createElement("span", null),
+        React.createElement("div", { className: "ask-cell" }, TR("Что не так")),
+        React.createElement("div", { className: "ask-where" }, TR("Где")),
+        React.createElement("div", { className: "ask-acts" }, TR("Ваш ответ")),
+        React.createElement("div", { className: "ask-scope" }, TR("Сколько изменится"))),
+      shown.map(q => askRow(q, false))),
     qs.length > ASK_TOP && React.createElement("div", null,
       React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setAll(v => !v) },
-        all ? TR("Свернуть") : TR("Показать все") + " · " + qs.length)));
+        all ? TR("Свернуть") : TR("Показать все") + " · " + qs.length)),
+    /* Строки, у которых общего решения нет: это не вопрос, а стопка
+       на просмотр. Прятать их нельзя — сегменты, пропавшие с экрана,
+       выглядят благополучием, — но и спрашивать про них нечего, поэтому
+       список тише и без колонки ответа. */
+    stack.length > 0 && React.createElement("div", { className: "ask-stack" },
+      React.createElement("div", { className: "ask-stack-h" },
+        React.createElement("span", null, TR("Просмотреть глазами")),
+        React.createElement("span", { className: "ask-n" }, stackIds.size + TR(" строк"))),
+      React.createElement("div", { className: "ask-list" },
+        stack.map(q => askRow(q, true)))),
+    /* Повреждённый оригинал — единственная строка, где машина бессильна
+       по построению: чинят не перевод, а книгу. */
+    source && React.createElement("div", { className: "ask-stack" },
+      React.createElement("div", { className: "ask-list" },
+        askRow({ key: "src", sev: "bad", title: source.title,
+                 meta: TR("перевод здесь не поможет — нужен исправленный файл"),
+                 where: source.where, scope: source.scope, acts: source.acts }, true))));
 }
 
 /* ---------- Что проверяется в этой паре ----------
@@ -1399,6 +1584,9 @@ function TabAnalysis({ store, toast }) {
     tk && React.createElement(TurnkeySummary, { key: project.id, summary, store, toast,
       onReload: reload, expert }),
     tk && React.createElement(CheckQuestions, { summary, store, toast, onReload: reload }),
+    /* Журнал решений — под вопросами: сначала «что делать», потом «что уже
+       сделали и чем это вернуть». Компонент сам молчит, когда решений нет. */
+    React.createElement(CheckLog, { project, store, toast, onReload: reload }),
     oldServer && React.createElement("div", { className: "dim", style: { fontSize: 13 } },
       TR("Сервер прежней версии — корзин «под ключ» нет, ниже подробный итог.")),
     summary && React.createElement("div", { className: "page-foot" },

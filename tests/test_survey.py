@@ -121,9 +121,17 @@ check("Азиз" not in json.dumps(seed, ensure_ascii=False), "имени из �
 main.STATE["surveys"] = []
 
 print("\n=== 5. Приём анкеты: потолки на месте ===")
-body = {"form": "apply", "lang": "ru", "answers": answers, "consent": {"data": True}}
+body = {"form": "apply", "lang": "ru", "answers": answers,
+        "consent": {"data": True, "call": True}}
 r = c.post("/api/public/survey", json=body)
 check(r.status_code == 200 and r.json().get("token"), "анкета принята без входа в систему")
+# Обязательное согласие — условие участия, и держится оно на СЕРВЕРЕ:
+# отправка мимо формы обошла бы галочку в браузере.
+for k in ("data", "call"):
+    without = dict(body, consent={j: True for j in ("data", "call") if j != k})
+    check(c.post("/api/public/survey", json=without).status_code == 400,
+          "заявка без обязательного согласия «%s» — 400" % k)
+main._SURVEY_HITS.clear()
 token = r.json()["token"]
 check(c.get("/t/a/" + token).status_code == 200, "лист по выданной ссылке открывается")
 check(c.get("/t/a/нет-такого").status_code == 404, "чужая ссылка — 404")

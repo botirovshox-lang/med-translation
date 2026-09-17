@@ -23615,6 +23615,15 @@ def public_survey(req: SurveyIn, request: Request):
     body = json.dumps({"a": req.answers, "c": req.consent}, ensure_ascii=False)
     if len(body) > SURVEY_BODY_MAX:
         raise HTTPException(413, "Ответы слишком длинные")
+    # Обязательное согласие проверяет СЕРВЕР, а не только галочка в браузере
+    # (тот же закон, что у согласия с офертой при регистрации). Согласия
+    # здесь — условия участия: звонок в конце теста и понимание того, что
+    # текст уходит поставщику моделей. Отправка мимо формы обошла бы оба.
+    form = survey_mod.FORMS[req.form]
+    miss = [c["k"] for c in (form.get("consent") or [])
+            if c.get("req") and not (req.consent or {}).get(c["k"])]
+    if miss:
+        raise HTTPException(400, "Не отмечено обязательное согласие")
     rec = {
         "id": max((s.get("id") or 0 for s in _surveys()), default=0) + 1,
         "token": secrets.token_urlsafe(16),

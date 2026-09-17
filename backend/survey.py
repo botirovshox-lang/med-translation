@@ -279,7 +279,7 @@ APPLY = {
             "lede": "SimpleTranslate — CAT-система: переводит документ целиком, ведёт ваш "
                     "глоссарий, помнит прошлые переводы и возвращает готовый .docx в исходном "
                     "оформлении. Две недели работы на ваших настоящих текстах — и честный разбор "
-                    "в конце. Бесплатно, по 20–30 страниц на человека.",
+                    "в конце. Бесплатно, по 30 страниц на человека.",
             "facts": ["8 вопросов", "около 3 минут", "ответы уходят напрямую разработчику"],
             "submit": "Отправить заявку",
             "sending": "Отправляем…",
@@ -301,7 +301,7 @@ APPLY = {
             "lede": "SimpleTranslate — CAT-tizim: hujjatni butunlay tarjima qiladi, lug'atingizni "
                     "yuritadi, oldingi tarjimalarni eslab qoladi va tayyor .docx faylni asl "
                     "bezagida qaytaradi. Ikki hafta o'z haqiqiy matnlaringiz ustida ish — va "
-                    "oxirida halol tahlil. Bepul, har bir kishiga 20–30 sahifa.",
+                    "oxirida halol tahlil. Bepul, har bir kishiga 30 sahifa.",
             "facts": ["8 ta savol", "taxminan 3 daqiqa", "javoblar to'g'ridan-to'g'ri ishlab chiquvchiga ketadi"],
             "submit": "Arizani yuborish",
             "sending": "Yuborilyapti…",
@@ -368,10 +368,10 @@ APPLY = {
                   {"v": "none", "ru": "Впервые слышу", "uz": "Birinchi marta eshityapman"}]},
 
         {"id": "doc", "type": "one", "req": 1,
-         "ru": {"q": "Есть настоящий документ на 20–30 страниц, который и так надо перевести?",
+         "ru": {"q": "Есть настоящий документ примерно на 30 страниц, который и так надо перевести?",
                 "s": "Страница — 250 слов. Тест на своём тексте показывает в разы больше, "
                      "чем на учебном."},
-         "uz": {"q": "Shundoq ham tarjima qilish kerak bo'lgan 20–30 sahifalik haqiqiy hujjat bormi?",
+         "uz": {"q": "Shundoq ham tarjima qilish kerak bo'lgan taxminan 30 sahifalik haqiqiy hujjat bormi?",
                 "s": "Sahifa — 250 so'z. O'z matningizda sinov o'quv matnidan ko'ra ancha ko'p "
                      "narsani ko'rsatadi."},
          "opts": [{"v": "yes", "ru": "Да, принесу свой", "uz": "Ha, o'zimnikini olib kelaman"},
@@ -414,9 +414,12 @@ APPLY = {
                 "ph": "Masalan: buyurtmachi PDF yuboradi, bezakni esa qo'lda qaytadan yig'ishga to'g'ri keladi…"}},
     ],
     "consent": [
-        {"k": "call", "req": 0,
-         "ru": "Готов(а) в конце теста созвониться на 15 минут",
-         "uz": "Sinov oxirida 15 daqiqa gaplashishga tayyorman"},
+        # Звонок — УСЛОВИЕ участия, а не пожелание: тест оплачивается
+        # страницами, и цена им — разговор. Необязательная галочка означала
+        # бы, что мы отдаём страницы и узнаём об отказе постфактум.
+        {"k": "call", "req": 1,
+         "ru": "Готов(а) в конце теста созвониться на 10–15 минут",
+         "uz": "Sinov oxirida 10–15 daqiqa gaplashishga tayyorman"},
         {"k": "data", "req": 1,
          "ru": "Понимаю, что текст документа уходит на обработку поставщику языковых моделей "
                "(OpenAI, США), и не буду загружать то, что нельзя туда отправлять",

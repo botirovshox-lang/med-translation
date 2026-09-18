@@ -526,7 +526,7 @@ const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
      неправду: это вид администратора, а не всякого вошедшего. */
   const storeRun = { activeProject: { id: 1, segments: [{ id: 1, source: "аа", target: "bb" },
                                                         { id: 2, source: "вв", target: "" }] },
-                     can: { owner: true, super: true, role: "owner" },
+                     can: { owner: true, super: true, role: "owner" }, expert: true,
                      go() {}, setSegmentFilter() {}, updateSegment() {}, mergeServerSegments() {} };
   let treeRp = null, okRp = true;
   try {

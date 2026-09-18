@@ -497,28 +497,50 @@ function TabEditor({ store, toast }) {
   const staleFetch = useRef(null);
   const [revertTarget, setRevertTarget] = useState(null);
   const [propagateAsk, setPropagateAsk] = useState(null);  // предложение разослать перевод по повторам
+  /* Кому показывать устройство прогона — `store.expert`: суперпользователь
+     С ВКЛЮЧЁННЫМ «Видом эксперта» (инвариант 28), а не любой суперпользователь.
+     Признак читается и в панели, и при запуске, — поэтому одной переменной:
+     разойдись они, экран показывал бы одно, а кнопка делала другое. */
+  const expertUI = !!store.expert;
   const [gptModels, setGptModels] = useState([]);          // каталог с ценами из /api/models
-  const [gptModel, setGptModel] = useState(() => {
+  const [gptModelPick, setGptModel] = useState(() => {
     try { return localStorage.getItem(GPT_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
   const [batchPlan, setBatchPlan] = useState(null);        // смета перед запуском GPT-пакета
   const [retranslate, setRetranslate] = useState(false);   // перегнать заново уже переведённые
   const [providerPick, setProviderPick] = useState(null);  // Set<ключ группы> | null = по умолчанию
-  const [bcModel, setBcModel] = useState(() => {
+  const [bcModelPick, setBcModel] = useState(() => {
     try { return localStorage.getItem(BC_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
-  const [tcModel, setTcModel] = useState(() => {
+  const [tcModelPick, setTcModel] = useState(() => {
     try { return localStorage.getItem(TC_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
-  const [tcxModel, setTcxModel] = useState(() => {
+  const [tcxModelPick, setTcxModel] = useState(() => {
     try { return localStorage.getItem(TCX_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
-  const [rpModel, setRpModel] = useState(() => {
+  const [rpModelPick, setRpModel] = useState(() => {
     try { return localStorage.getItem(RP_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
-  const [rvModel, setRvModel] = useState(() => {
+  const [rvModelPick, setRvModel] = useState(() => {
     try { return localStorage.getItem(RV_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
+  /* Выбор моделей из localStorage действует ТОЛЬКО в виде эксперта: там же
+     его и видно. Спрятанный выбор уезжал в задачу молча — боевой прогон 18.09
+     переводил книгу моделью, выбранной в браузере когда-то раньше, мимо
+     системной настройки в админке, и смета тоже считалась по ней. Скрытая
+     настройка обязана иметь честное умолчание (инвариант 24): пусто — модель
+     выбирает сервер по «Моделям шагов». */
+  /* Не эксперту — умолчание КАТАЛОГА (`/api/models` отдаёт системные модели
+     шагов из админки): на нём считается смета и сверяется est_cost с остатком
+     лимита. Пустая строка ломала бы смету одиночных кнопок, а модель при этом
+     та же, которую сервер взял бы сам. */
+  const [catDef, setCatDef] = useState({});
+  const gptModel = expertUI ? gptModelPick : (catDef.default || "");
+  const bcModel = expertUI ? bcModelPick : (catDef.backcheckDefault || catDef.default || "");
+  const tcModel = expertUI ? tcModelPick : (catDef.termcheckDefault || catDef.default || "");
+  const tcxModel = expertUI ? tcxModelPick : (catDef.termauditDefault || catDef.default || "");
+  const rpModel = expertUI ? rpModelPick : (catDef.repairDefault || catDef.default || "");
+  const rvModel = expertUI ? rvModelPick : (catDef.reviewDefault || catDef.default || "");
   const [impact, setImpact] = useState(null);     // сегменты, не соответствующие одобренным терминам
   const [impactBusy, setImpactBusy] = useState(false);
   const [impactConfirmed, setImpactConfirmed] = useState(false);  // трогать ли подтверждённые
@@ -533,18 +555,22 @@ function TabEditor({ store, toast }) {
     const S = (a) => new Set(a || []);
     return t ? { ready: S(t.ready), machine: S(t.machine), human: S(t.human) } : null;
   }, [tkSum]);
-  const [bcJudge, setBcJudge] = useState(false);          // LLM-судья для средней зоны
+  const [bcJudgePick, setBcJudge] = useState(false);      // LLM-судья для средней зоны
+  /* Тумблер судьи виден только эксперту; спрятанный — включён, как в задаче
+     (`use_judge: true, judge_all: true`): иначе разбор состава и смета
+     считались без судьи, а прогон шёл с ним (инвариант 24). */
+  const bcJudge = expertUI ? bcJudgePick : true;
   /* Кому показывать устройство прогона. Признак читается в двух местах —
      в панели и при запуске, — поэтому живёт одной переменной: разойдись они,
      экран показывал бы одно, а кнопка делала другое. */
-  const expertUI = !!(store.can && store.can.super);
   /* Устройство прогона свёрнуто и у администратора: главная отвечает
      на вопрос «что с переводом», а не «как он устроен». */
   const [setupOpen, setSetupOpen] = useState(false);
   const [bucket, setBucket] = useState(null);
-  const [judgeModel, setJudgeModel] = useState(() => {
+  const [judgeModelPick, setJudgeModel] = useState(() => {
     try { return localStorage.getItem(JUDGE_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
+  const judgeModel = expertUI ? judgeModelPick : (catDef.judgeDefault || catDef.default || "");
   const [judgeZone, setJudgeZone] = useState([50, 97]);
   // Уровни находок termcheck, по которым работает ремонт. Приходят с сервера
   // (/api/models → termcheckActionable): держать их здесь литералом значит
@@ -613,6 +639,7 @@ function TabEditor({ store, toast }) {
     window.API.safeCall(() => window.API.models()).then(d => {
       if (!d || !d.models) return;
       setGptModels(d.models);
+      setCatDef(d);
       setGptModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.default || ""));
       setBcModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.backcheckDefault || d.default || ""));
       setJudgeModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.judgeDefault || d.default || ""));
@@ -1029,6 +1056,7 @@ function TabEditor({ store, toast }) {
     ? currentIdSet.size + ":" + Array.from(currentIdSet).reduce((a, i) => a + i, 0) : "all";
   const planKey = [
     project && project.id, gptModel, bcModel, tcModel, tcxModel, rpModel, rvModel, bcJudge,
+    expertUI ? "x" : "",
     fullSteps ? Array.from(fullSteps).sort().join(",") : "*",
     rpGroupPick ? Array.from(rpGroupPick).sort().join(",") : "*",
     rpFixConfirmed ? "rc" : "", rvConfirmed ? "vc" : "", rvAskConfirmed ? "va" : "",
@@ -1053,7 +1081,7 @@ function TabEditor({ store, toast }) {
       segment_ids: ids,
       model: gptModel, bc_model: bcModel, tc_model: tcModel, rp_model: rpModel,
       tcx_model: tcxModel, rv_model: rvModel,
-      use_judge: bcJudge,
+      use_judge: bcJudge, judge_all: expertUI ? undefined : true,
       // Тот же признак, что и у карточки ремонта: отмечены группы уже
       // чинившихся — значит человек просит второй заход.
       retry: !!(rpGroupPick && (rpGroupPick.has("applied") || rpGroupPick.has("rejected"))),
@@ -2865,7 +2893,7 @@ function LegendDot({ color, label }) {
    и шаги составного прогона отдельными значками.
 
    Про шаги здесь говорится ровно то, что известно достоверно. Счётчики
-   приходят с сервера порциями по пять сегментов, поэтому «сделано» у шага —
+   приходят с сервера порциями (по RUN_WORKERS сегментов), поэтому «сделано» у шага —
    это факт, а не оценка браузера. Галочка означает «шаг взял всё, что ему
    отвёл разбор», и ничего больше. Подсветить один «текущий» шаг нельзя:
    каждая порция проходит все выбранные шаги по очереди, так что незакрытые

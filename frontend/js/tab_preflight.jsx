@@ -627,7 +627,11 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
                     tkParams, fixConf, setFixConf, confN }) {
   const project = store.activeProject;
   const tk = summary.turnkey;
-  const mm = mods || {};
+  /* Выбор моделей из браузера — только в виде эксперта, где его видно
+     (инвариант 24: скрытая настройка — честное умолчание). Иначе в задачу
+     молча уезжала модель, выбранная когда-то в редакторе, мимо «Моделей
+     шагов» в админке, — и смета считалась по ней же. */
+  const mm = store.expert ? (mods || {}) : {};
   /* Те же ДВА рубежа, что в редакторе (инвариант 24), и путать их нельзя.
      УСТРОЙСТВО прогона — выбор моделей, действующая модель, цена по шагам —
      системному администратору: выбирать модель человеку, который не знает
@@ -637,7 +641,7 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
      ровно ту таблицу моделей, которую редактор ему не показывает. Состав
      (шаг и сколько сегментов) остаётся всем: это обещание работы, а не
      устройство. */
-  const expert = !!(store.can && store.can.super);
+  const expert = !!store.expert;
   const showCost = !!(store.can && (store.can.owner || store.can.super));
   /* Называются ли модели — ОДНО правило на все экраны (modelsShown в ui.jsx):
      копия предиката здесь разошлась бы с карточкой сегмента и импортом, а
@@ -925,11 +929,11 @@ function TurnkeySummary({ summary, store, toast, onReload, expert }) {
        со старыми ids и новым include_confirmed — работа разошлась бы со сметой. */
     setPlan(null);
     Promise.all([
-      window.API.safeCall(() => window.API.runPlan(store.activeProject.id, tkPlanBody(runParams, mods))),
+      window.API.safeCall(() => window.API.runPlan(store.activeProject.id, tkPlanBody(runParams, store.expert ? mods : null))),
       window.API.safeCall(() => window.API.models()),
     ]).then(([p, m]) => { if (!dead) { setPlan(p || false); setCat(m || null); } });
     return () => { dead = true; };
-  }, [store.activeProject && store.activeProject.id, summary, mods, fixConf]);
+  }, [store.activeProject && store.activeProject.id, summary, mods, fixConf, store.expert]);
   /* Тернарник, а не `total && ...`: при total === 0 такое выражение даёт
      ЧИСЛО 0, и React честно печатает его. */
   const seg = (n, color) => (total > 0 && n > 0)

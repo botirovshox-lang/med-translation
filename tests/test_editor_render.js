@@ -222,8 +222,10 @@ const storeStub = {
   folders: [{ id: 900, title: "Договор", files: [project.id] }, { id: 901, title: "Пусто", files: [] }],
   /* Устройство прогона — шаги, модели, состав и цена — показывается только
      системному администратору. Разделы ниже проверяют именно ЭТОТ вид;
-     простой вид (одна кнопка) проверяется разделом 18. */
-  can: { owner: true, super: true, role: "owner" },
+     простой вид (одна кнопка) проверяется разделом 18. Экспертный вид —
+     суперпользователь С ВКЛЮЧЁННЫМ переключателем (`store.expert`, как
+     в app.jsx), а не всякий суперпользователь. */
+  can: { owner: true, super: true, role: "owner" }, expert: true,
 };
 const toast = { info() {}, warning() {}, error() {}, success() {} };
 
@@ -1006,7 +1008,7 @@ try {
      и корзины собираются заново первым проходом эффектов. */
   global.API.listJobs = async () => ({ active: [], jobs: [] });
   const fresh = async (can) => {
-    const st = Object.assign({}, storeStub, { can });
+    const st = Object.assign({}, storeStub, { can, expert: false });
     hooks.length = 0; hookIdx = 0; effects.length = 0;
     TabEditor({ store: st, toast });
     effects.forEach(fn => { try { fn(); } catch (e) {} });
@@ -1025,6 +1027,13 @@ try {
   check(t18.indexOf("в работу пойдут") !== -1, "сколько строк уйдёт в работу — сказано");
 
   check(t18.indexOf("Готово к сдаче") !== -1, "владелец: сводка с корзинами наверху");
+  /* Суперпользователь БЕЗ «Вида эксперта» — тот же простой экран. Прежде
+     редактор считал экспертом любого суперпользователя, и выбор модели,
+     сохранённый в браузере когда-то раньше, уезжал в задачу молча: боевой
+     прогон 18.09 переводил книгу не той моделью, что стоит в админке. */
+  const t18s = await fresh({ owner: true, super: true, role: "owner" });
+  check(t18s.indexOf("Модель") === -1 && t18s.indexOf("Переведу, перечитаю") !== -1,
+        "суперпользователь без вида эксперта: простой экран, выбора моделей нет");
   const t18b = await fresh({ owner: false, super: false, role: "translator" });
   check(t18b.indexOf("Перевести и проверить") !== -1, "переводчик: кнопка на месте");
   check(t18b.indexOf("Ориентировочно") === -1, "переводчик: сметы нет — деньги не его дело");

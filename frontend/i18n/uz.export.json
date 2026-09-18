@@ -169,5 +169,7 @@
   "Такой же файл в исходном виде (": "Xuddi shu fayl asl ko'rinishida (",
   "Надписи на картинках перерисованы переводом; что вписать не удалось — останется в Word-версии": "Rasmlardagi yozuvlar tarjima bilan qayta chizilgan; sig'maganlari Word-versiyasida qoladi",
   "Тот же файл, переведены только тексты; числа, формулы и структура на месте": "O'sha fayl, faqat matnlar tarjima qilingan; raqamlar, formulalar va tuzilma joyida",
-  "Файл не скачан": "Fayl yuklab olinmadi"
+  "Файл не скачан": "Fayl yuklab olinmadi",
+  "Лимит расхода организации исчерпан: разбор остановлен, прочитанное сохранено. Продолжить можно, когда лимит поднимут; прочитанные картинки второй раз не оплачиваются.": "Tashkilotning xarajat limiti tugadi: tahlil to'xtatildi, o'qilganlar saqlandi. Limit oshirilgach davom ettirish mumkin; o'qilgan rasmlar uchun qayta to'lanmaydi.",
+  "У сервиса закончился баланс у поставщика моделей: разбор остановлен, прочитанное сохранено. Мы уже знаем об этом; продолжить можно, когда баланс пополнят.": "Xizmatning model yetkazib beruvchidagi balansi tugadi: tahlil to'xtatildi, o'qilganlar saqlandi. Biz bundan xabardormiz; balans to'ldirilgach davom ettirish mumkin."
 }

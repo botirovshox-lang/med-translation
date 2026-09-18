@@ -169,5 +169,7 @@
  "Такой же файл в исходном виде (": "The same file in its original form (",
  "Надписи на картинках перерисованы переводом; что вписать не удалось — останется в Word-версии": "Labels on images are redrawn with the translation; what could not be written stays in the Word version",
  "Тот же файл, переведены только тексты; числа, формулы и структура на месте": "The same file with only the texts translated; numbers, formulas and structure are in place",
- "Файл не скачан": "The file was not downloaded"
+ "Файл не скачан": "The file was not downloaded",
+ "Лимит расхода организации исчерпан: разбор остановлен, прочитанное сохранено. Продолжить можно, когда лимит поднимут; прочитанные картинки второй раз не оплачиваются.": "The organization's spending limit is exhausted: parsing was stopped, what was read is saved. You can continue once the limit is raised; pictures already read are not paid for again.",
+ "У сервиса закончился баланс у поставщика моделей: разбор остановлен, прочитанное сохранено. Мы уже знаем об этом; продолжить можно, когда баланс пополнят.": "The service's balance with the model provider has run out: parsing was stopped, what was read is saved. We already know about it; you can continue once the balance is topped up."
 }

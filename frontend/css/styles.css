@@ -1121,6 +1121,11 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
    ============================================================ */
 .pbar { height: 8px; background: var(--bg-sunken); border-radius: 999px; overflow: hidden; }
 .pbar > span { display: block; height: 100%; background: var(--c-primary); border-radius: 999px; transition: width .4s ease; }
+/* Стадия без счёта: сервер занят, но сколько осталось — не знает. Полоса
+   бежит без числа, чтобы не выдумывать процент (см. ImpProgress). */
+.pbar.pbar-indet > span { width: 35%; animation: pbar-indet 1.3s ease-in-out infinite; }
+@keyframes pbar-indet { 0% { transform: translateX(-100%); } 100% { transform: translateX(300%); } }
+@media (prefers-reduced-motion: reduce) { .pbar.pbar-indet > span { animation: none; width: 100%; opacity: .45; } }
 .spinner { width: 20px; height: 20px; border-radius: 50%; border: 2.5px solid var(--ring); border-top-color: var(--c-primary); animation: spin 1s linear infinite; }
 .spinner.lg { width: 40px; height: 40px; border-width: 4px; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -1291,6 +1296,17 @@ body { overflow-wrap: break-word; }
    экрана она вылезала наружу вместе со страницей. */
 .tooltip { max-width: min(320px, calc(100vw - 24px)); }
 
+/* Спор моделей по роли в админке: подсвечены ровно спорящие строки,
+   пара выбранного предупреждения — сильнее (AdminSystemModels). */
+.tbl tr.adm-dispute > td { background: color-mix(in srgb, var(--c-warning) 9%, transparent); }
+.tbl tr.adm-dispute.on > td { background: color-mix(in srgb, var(--c-warning) 22%, transparent); }
+.tbl tr.adm-dispute.on > td:first-child { box-shadow: inset 3px 0 0 var(--c-warning); }
+.input.adm-dispute-input { border-color: var(--c-warning); }
+.adm-conflict { cursor: pointer; border-radius: 6px; padding: 2px 6px; margin: 0 -6px; }
+.adm-conflict:hover, .adm-conflict.on { background: color-mix(in srgb, var(--c-warning) 14%, transparent); }
+.adm-conflict:focus-visible { outline: 2px solid var(--c-warning); outline-offset: 1px; }
+
+
 /* ---------- Палец вместо курсора ----------
    Цель в 28 px промахивается пальцем, и промах на этих экранах стоит
    дорого: рядом с «Подтвердить» стоит «Перевести заново». Растёт только
@@ -1451,3 +1467,4 @@ body { overflow-wrap: break-word; }
    слов, а состав файла читают сверху вниз ничуть не хуже. */
 .export-cols { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 24px; align-items: start; }
 @media (max-width: 980px) { .export-cols { grid-template-columns: minmax(0, 1fr); gap: 20px; } }
+

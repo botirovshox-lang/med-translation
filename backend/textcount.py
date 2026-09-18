@@ -28,8 +28,11 @@ import io
 import os
 import json
 import re
+import sys
+import threading
 import unicodedata
 import zipfile
+from collections import OrderedDict
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -453,10 +456,110 @@ def extract(filename: str, content: bytes,
 SOFT_HYPHEN = "\u00ad"
 
 
-def _pdf_pages(content: bytes, notes: list) -> list:
-    """Строки текстового слоя ПО СТРАНИЦАМ (список списков): границы страниц
-    нужны импорту — по ним снимаются колонтитулы и номера. PDF читаем только настоящей библиотекой. Нет её — говорим об этом,
-    а не возвращаем пустоту: пустой список неотличим от «в файле нет текста»."""
+# ─── Ход долгого разбора ────────────────────────────────────────────
+# Разбор книги идёт секунды, а запрос у браузера один: без хода работы
+# человек видит застывшую кнопку и жмёт её снова. Обработчик кладёт сюда
+# функцию `cb(stage, done, total)` на время СВОЕГО потока (threading.local:
+# разборы идут параллельно, и чужой ход не должен попадать в чужую полосу).
+_PROGRESS = threading.local()
+
+
+def set_progress(cb: Optional[Callable]) -> None:
+    _PROGRESS.cb = cb
+
+
+def progress(stage: str, done: int = 0, total: int = 0) -> None:
+    cb = getattr(_PROGRESS, "cb", None)
+    if cb is None:
+        return
+    try:
+        cb(stage, done, total)
+    except Exception:
+        pass                       # показ хода не вправе ронять разбор
+
+
+# Страницы PDF кэшируются ПО СОДЕРЖИМОМУ: проба, смета и загрузка того же
+# файла идут подряд, и каждая читала книгу заново (31 с на 378 страниц,
+# трижды). Ответ — либо строки страниц, либо число страниц скана.
+_PAGES_CACHE: "OrderedDict[str, tuple]" = OrderedDict()
+_PAGES_CACHE_MAX = 4
+_PAGES_LOCK = threading.Lock()
+PDF_PARALLEL_MIN_PAGES = int(os.environ.get("PDF_PARALLEL_MIN_PAGES", "24"))
+PDF_WORKERS = max(1, int(os.environ.get("PDF_WORKERS", str(min(4, os.cpu_count() or 1)))))
+PDF_WORKER_TIMEOUT = int(os.environ.get("PDF_WORKER_TIMEOUT", "600"))
+
+
+def _pdf_extract_parallel(content: bytes, n_pages: int, workers: int) -> Optional[list]:
+    """Строки страниц — несколькими процессами (`pdfpages_worker.py`), каждый
+    берёт свой непрерывный кусок книги. None — не вышло (нет python, упал
+    ребёнок, таймаут): тогда вызывающий читает сам, по-старому. Молча
+    половину книги не теряем: ответ либо полный, либо None."""
+    import subprocess
+    script = str(Path(__file__).with_name("pdfpages_worker.py"))
+    step = -(-n_pages // workers)
+    ranges = [(a, min(a + step, n_pages)) for a in range(0, n_pages, step)]
+    pages: list = [None] * n_pages
+    done = [0]
+    lock = threading.Lock()
+    failed = []
+    cb = getattr(_PROGRESS, "cb", None)
+
+    def run(a: int, b: int) -> None:
+        try:
+            proc = subprocess.Popen([sys.executable, script, str(a), str(b)],
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE)
+        except Exception as e:
+            failed.append(str(e))
+            return
+        timer = threading.Timer(PDF_WORKER_TIMEOUT, proc.kill)
+        timer.start()
+        try:
+            err_box: list = []
+            # stderr читаем отдельно: заполненный канал ошибок остановил бы
+            # ребёнка, а родитель ждал бы его stdout вечно.
+            t_err = threading.Thread(target=lambda: err_box.append(proc.stderr.read()), daemon=True)
+            t_err.start()
+            try:
+                proc.stdin.write(content)
+                proc.stdin.close()
+            except Exception as e:
+                failed.append(str(e))
+            for raw in proc.stdout:
+                try:
+                    i, lines = json.loads(raw)
+                except Exception:
+                    continue
+                pages[i] = lines
+                with lock:
+                    done[0] += 1
+                    n = done[0]
+                if cb is not None:
+                    try:
+                        cb("read", n, n_pages)
+                    except Exception:
+                        pass
+            proc.wait()
+            t_err.join(timeout=5)
+            if proc.returncode != 0:
+                failed.append((b"".join(err_box) or b"").decode("utf-8", "replace")[:300])
+        finally:
+            timer.cancel()
+
+    threads = [threading.Thread(target=run, args=r, daemon=True) for r in ranges]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    if failed or any(p is None for p in pages):
+        print("[textcount] параллельное чтение PDF не удалось (%s) — читаю в одном процессе"
+              % "; ".join(x for x in failed if x)[:300], file=sys.stderr)
+        return None
+    return pages
+
+
+def _pdf_read_pages(content: bytes) -> tuple:
+    """("ok", строки страниц) или ("scan", число страниц). Без кэша."""
     try:
         from pypdf import PdfReader          # type: ignore
     except ImportError:
@@ -468,15 +571,53 @@ def _pdf_pages(content: bytes, notes: list) -> list:
                                "библиотеки.")
     try:
         reader = PdfReader(io.BytesIO(content))
-        pages = [(page.extract_text() or "").splitlines() for page in reader.pages]
+        n = len(reader.pages)
+        pages = None
+        if n >= PDF_PARALLEL_MIN_PAGES and PDF_WORKERS > 1:
+            pages = _pdf_extract_parallel(content, n, min(PDF_WORKERS, n))
+        if pages is None:
+            pages = []
+            for k, page in enumerate(reader.pages):
+                pages.append((page.extract_text() or "").splitlines())
+                progress("read", k + 1, n)
+    except (NotAvailable,):
+        raise
     except Exception as e:
         raise Unsupported("PDF не читается: %s" % e)
     if not any(normalize(b) for ls in pages for b in ls):
+        return ("scan", n)
+    return ("ok", pages)
+
+
+def _pdf_pages(content: bytes, notes: list) -> list:
+    """Строки текстового слоя ПО СТРАНИЦАМ (список списков): границы страниц
+    нужны импорту — по ним снимаются колонтитулы и номера. PDF читаем только настоящей библиотекой. Нет её — говорим об этом,
+    а не возвращаем пустоту: пустой список неотличим от «в файле нет текста».
+
+    Большая книга читается несколькими процессами, а ответ кэшируется по
+    содержимому: проба, смета и загрузка того же файла идут подряд. Наружу
+    уходит КОПИЯ: чистка правит строки на месте."""
+    import hashlib
+    key = hashlib.sha1(content).hexdigest()
+    with _PAGES_LOCK:
+        hit = _PAGES_CACHE.get(key)
+        if hit is not None:
+            _PAGES_CACHE.move_to_end(key)
+    if hit is None:
+        hit = _pdf_read_pages(content)
+        with _PAGES_LOCK:
+            _PAGES_CACHE[key] = hit
+            while len(_PAGES_CACHE) > _PAGES_CACHE_MAX:
+                _PAGES_CACHE.popitem(last=False)
+    else:
+        n = hit[1] if hit[0] == "scan" else len(hit[1])
+        progress("read", n, n)
+    if hit[0] == "scan":
         raise Scan("В PDF нет текстового слоя — это скан. Объём такого файла "
-                   "считается только после распознавания.", len(reader.pages))
+                   "считается только после распознавания.", hit[1])
     notes.append("PDF: текст извлечён из текстового слоя; надписи внутри картинок "
                  "в счёт не идут.")
-    return pages
+    return [list(ls) for ls in hit[1]]
 
 
 def _pdf_blocks(content: bytes, notes: list) -> list:

@@ -2239,6 +2239,56 @@ def _job_limit_hit(job: dict) -> bool:
     job["counters"]["limitStop"] = 1
     return True
 
+# ─── Кончился баланс у ПОСТАВЩИКА моделей ────────────────────────────
+# Это другой случай, чем лимит организации (`_job_limit_hit`): лимит — наш
+# потолок для клиента, а здесь пуст НАШ счёт у поставщика, и отказывает
+# каждый вызов у всех. Прежде прогон видел «порция целиком завершилась
+# ошибкой», повторял её трижды с паузой и падал в `error` с английской
+# строкой провайдера — человек читал это как поломку своего файла. Теперь
+# признак узнаётся по тексту ошибки поставщика, прогон ОСТАНАВЛИВАЕТСЯ
+# (`stopped`, код `provider_quota` — браузер переводит сам), сделанное
+# сохранено, владельцу сервиса уходит сообщение. Повторы бессмысленны:
+# деньги от ожидания не появятся.
+_QUOTA_MARKERS = ("insufficient_quota", "exceeded your current quota", "billing_hard_limit",
+                  "billing hard limit", "account is not active", "check your plan and billing")
+JOB_STOP_PROVIDER_QUOTA = ("У поставщика моделей закончился баланс сервиса: прогон остановлен, "
+                           "сделанное сохранено")
+_PROVIDER_ERR = {"text": "", "at": 0.0}
+
+
+def _is_quota_error(text) -> bool:
+    t = str(text or "").lower()
+    return any(m in t for m in _QUOTA_MARKERS)
+
+
+def _note_provider_error(e) -> None:
+    """Запомнить последнюю ошибку поставщика: вызовы, которые глотают
+    исключение и отвечают None (чтение картинок), иначе не сказали бы,
+    ПОЧЕМУ не прочиталось."""
+    _PROVIDER_ERR["text"] = str(e)[:500]
+    _PROVIDER_ERR["at"] = time.time()
+
+
+def _quota_recent(window: float = 120.0) -> bool:
+    return (time.time() - _PROVIDER_ERR["at"] < window) and _is_quota_error(_PROVIDER_ERR["text"])
+
+
+def _job_quota_stop(job: dict) -> None:
+    job["status"] = "stopped"
+    job["stopReason"] = "provider_quota"
+    job["error"] = JOB_STOP_PROVIDER_QUOTA
+    job["counters"]["quotaStop"] = 1
+    if tg_mod:
+        tg_mod.notify_admin_async(
+            "🔴 Кончился баланс у поставщика моделей: прогон №%s организации «%s» "
+            "остановлен на %s из %s. Пополните счёт." % (job.get("id"), _tenant_of(job),
+                                                        job.get("done"), job.get("total")))
+
+
+class _ProviderQuota(RuntimeError):
+    pass
+
+
 # Что стоит денег: платные команды по путям. Таблица здесь, а не флаг
 # на каждом обработчике — как `_OWNER_ONLY`: одна точка, забыть строку видно.
 _PAID = [
@@ -5322,6 +5372,63 @@ def _docx_bill_paragraphs(content: bytes) -> list:
     return out
 
 
+# ─── Ход разбора присланного файла ──────────────────────────────────
+# Проба, смета и загрузка книги идут секундами одним запросом, и без хода
+# работы человек видит застывшую кнопку. Браузер шлёт с файлом свой ключ
+# (`progress`), разбор в потоке пишет сюда стадию и счёт страниц
+# (`textcount.progress`), браузер опрашивает `/api/upload-progress/{ключ}`.
+# Числа — настоящие: прочитано N страниц из M, сравнено N файлов из M;
+# у стадии без счёта (сборка документа) числа нет, и полоса там не врёт
+# процентом, а говорит, чем занята.
+_UPLOAD_PROGRESS: dict = {}
+_UPLOAD_PROGRESS_LOCK = threading.Lock()
+_UPLOAD_PROGRESS_TTL = 900
+_PROGRESS_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+def _progress_cb(token: str):
+    """Функция хода для этого ключа или None. Организация пишется в запись:
+    чужой ключ отвечает пустотой, а не ходом чужого файла."""
+    if not token or not _PROGRESS_KEY_RE.match(token):
+        return None
+    tid = _current_tenant()
+    now = time.time()
+    with _UPLOAD_PROGRESS_LOCK:
+        for k in [k for k, v in _UPLOAD_PROGRESS.items() if now - v["at"] > _UPLOAD_PROGRESS_TTL]:
+            _UPLOAD_PROGRESS.pop(k, None)
+        _UPLOAD_PROGRESS[token] = {"stage": "start", "done": 0, "total": 0, "at": now, "tenant": tid}
+
+    def cb(stage: str, done: int = 0, total: int = 0) -> None:
+        with _UPLOAD_PROGRESS_LOCK:
+            rec = _UPLOAD_PROGRESS.get(token)
+            if rec is not None:
+                rec.update(stage=stage, done=int(done or 0), total=int(total or 0), at=time.time())
+    return cb
+
+
+def _with_progress(cb, fn, *args, **kwargs):
+    """Вызов `fn` в потоке разбора с функцией хода на время вызова: ход
+    хранится в threading.local потока, и чужой разбор его не увидит."""
+    textcount.set_progress(cb)
+    try:
+        return fn(*args, **kwargs)
+    finally:
+        textcount.set_progress(None)
+
+
+@app.get("/api/upload-progress/{token}")
+def upload_progress(token: str):
+    """Стадия разбора файла по ключу браузера: {stage, done, total}. Нет
+    записи (не начат, чужой, давно кончился) — stage: null, а не ошибка:
+    опрос начинается раньше, чем файл долетел до сервера."""
+    tid = _current_tenant()
+    with _UPLOAD_PROGRESS_LOCK:
+        rec = _UPLOAD_PROGRESS.get(token)
+        if rec is None or rec.get("tenant") != tid:
+            return {"stage": None, "done": 0, "total": 0}
+        return {"stage": rec["stage"], "done": rec["done"], "total": rec["total"]}
+
+
 def _measure_kwargs(card: dict) -> dict:
     return {"overrides": card.get("norms"), "min_pages": card.get("minPages", 1.0),
             "round_to": card.get("roundTo", 0.1), "words_per_page": card.get("wordsPerPage"),
@@ -5452,7 +5559,7 @@ def save_pricing(req: PricingBody, request: Request):
 @app.post("/api/quote")
 async def quote_file(request: Request, file: UploadFile = File(...),
                      src: str = Form("RU"), tgt: str = Form("EN"),
-                     save: bool = Form(True)):
+                     save: bool = Form(True), progress: str = Form("")):
     """Сколько знаков, страниц и денег в ЭТОМ файле — до всякого импорта.
 
     Файл никуда не сохраняется — писать можно только в `data/`, и незачем:
@@ -5494,8 +5601,8 @@ async def quote_file(request: Request, file: UploadFile = File(...),
                 "images": {"frames": frames, "model": None if _hide_cost() else mdl["id"],
                            "est": None if _hide_cost() else est}}
     try:
-        m = await run_in_threadpool(textcount.measure, file.filename or "", content,
-                                    src, **_measure_kwargs(card))
+        m = await run_in_threadpool(_with_progress, _progress_cb(progress), textcount.measure,
+                                    file.filename or "", content, src, **_measure_kwargs(card))
     except textcount.Scan as e:
         # Скан — не отказ, а другой путь: текста нет, страницы есть. Считать
         # тут нечего, зато можно назвать цену вопроса — сколько страниц
@@ -7899,6 +8006,7 @@ async def upload_project(
     tgt: str = Form("EN"),
     domain: str = Form(DEFAULT_DOMAIN),
     folder: Optional[int] = Form(None),
+    progress: str = Form(""),
 ):
     src, tgt = _check_lang_pair(src, tgt)
     domain = _resolve_domain(domain)["id"]
@@ -7937,7 +8045,8 @@ async def upload_project(
     # Чужой формат (Excel, PDF, HTML, картинка) сначала становится .docx —
     # см. backend/importers.py; проба того же файла его уже разобрала (кэш).
     try:
-        parsed = await run_in_threadpool(_parse_upload, file.filename or "", content)
+        parsed = await run_in_threadpool(_with_progress, _progress_cb(progress), _parse_upload,
+                                         file.filename or "", content)
     except (textcount.Unsupported, textcount.TooBig, textcount.NotAvailable) as e:
         raise _format_error(e)
     docx_content, texts = parsed["docx"], parsed["texts"]
@@ -8081,6 +8190,7 @@ def _parse_upload(filename: str, content: bytes) -> dict:
             out["docx"] = content
         return out
     conv = importers.to_docx(filename or "", content)
+    textcount.progress("paras")
     texts = _docx_paragraph_texts(conv["docx"])
     paras = [t for t, _full in texts]
     full = [f for _t, f in texts]
@@ -8219,6 +8329,23 @@ def _diff_counts(project: dict, units: list, full: Optional[list] = None,
             "addedSample": [units[j][0][:80] for j, p in enumerate(plan) if p and p[0] == "new"][:5]}
 
 
+def _diff_possible(project: dict, units: list, full: Optional[list] = None) -> bool:
+    """Верхняя граница «совпало» без difflib: новая единица может совпасть
+    со старым сегментом, только если её ключ (или запасной) есть среди
+    старых ключей, и совпавших не больше, чем старых сегментов. Не дотягивает
+    граница до порога `_looks_like_new_version` — не дотянет и диф."""
+    old = _text_segments(project)
+    old_keys = {_match_key(s.get("source")) for s in old}
+    hit = 0
+    for text, idxs in units:
+        if _match_key(text) in old_keys or (full and any(
+                i < len(full) and _match_key(full[i]) in old_keys for i in idxs)):
+            hit += 1
+    same = min(hit, len(old))
+    return _looks_like_new_version({"kept": same, "moved": 0, "total": len(old),
+                                    "units": len(units)})
+
+
 def _looks_like_new_version(counts: dict) -> bool:
     """«Похоже на новую редакцию»: совпало не меньше доли и от СТАРОГО файла,
     и от НОВОГО, и не меньше трёх строк. Порог только от старого делал файл
@@ -8232,13 +8359,15 @@ def _looks_like_new_version(counts: dict) -> bool:
 @app.post("/api/projects/probe")
 async def probe_upload(request: Request, file: UploadFile = File(...),
                        folder: Optional[int] = Form(None),
-                       src: Optional[str] = Form(None), tgt: Optional[str] = Form(None)):
+                       src: Optional[str] = Form(None), tgt: Optional[str] = Form(None),
+                       progress: str = Form("")):
     """Что это за файл: уже есть (sha) или похож на новую редакцию файла
     проекта. Ничего не пишет и денег не стоит. Сравнивается с файлами
     названной папки, без папки — со всеми файлами организации."""
     content = await file.read()
+    cb = _progress_cb(progress)
     try:
-        parsed = await run_in_threadpool(_parse_upload, file.filename or "", content)
+        parsed = await run_in_threadpool(_with_progress, cb, _parse_upload, file.filename or "", content)
     except (textcount.Unsupported, textcount.TooBig, textcount.NotAvailable) as e:
         raise _format_error(e)
     if folder is not None:
@@ -8251,11 +8380,18 @@ async def probe_upload(request: Request, file: UploadFile = File(...),
     if src and tgt:
         pool = [p for p in pool if (p.get("src") or "RU") == src.upper() and (p.get("tgt") or "EN") == tgt.upper()]
     exact, similar = [], []
-    for p in pool:
+    for n_done, p in enumerate(pool):
+        if cb:
+            cb("compare", n_done, len(pool))
         if p.get("sourceSha") == parsed["sha"]:
             exact.append({"id": p["id"], "title": p.get("title"), "folder": _fid(p["id"])})
             continue
         if not _text_segments(p) or not parsed["units"]:
+            continue
+        # Дешёвый отсев до difflib: совпасть может не больше строк, чем
+        # общих ключей у двух файлов. Не набирается порог даже так — диф
+        # (квадратичный на книге) не нужен, ответ «не похоже» тот же.
+        if not _diff_possible(p, parsed["units"], parsed["full"]):
             continue
         c = await run_in_threadpool(_diff_counts, p, parsed["units"], parsed["full"])
         if _looks_like_new_version(c):
@@ -8689,6 +8825,8 @@ IMAGE_MEDIA_EXT = {".png", ".jpeg", ".jpg", ".gif", ".bmp", ".tif", ".tiff"}
 # два-три десятка блоков, и складывать их в один запрос — это картинка
 # на несколько мегабайт в теле и ответ, в котором модель теряет нумерацию.
 IMAGE_READ_MAX_BLOCKS = 8
+# Картинок в пачке разбора: их надписи читаются моделью разом (`_job_images`).
+IMAGE_BATCH = max(1, int(os.environ.get("IMAGE_BATCH", "6")))
 # Модель чтения: та же, что по умолчанию у перевода, либо названная в
 # окружении. Выбора на экране пока нет — и обещать его комментарием нельзя;
 # задача принимает `ocr_model`, так что появится он правкой одной строки
@@ -8890,6 +9028,7 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
         raw = (resp.choices[0].message.content or "").strip()
         why = getattr(resp.choices[0], "finish_reason", "") or ""
     except Exception as e:
+        _note_provider_error(e)
         print("[backend] чтение картинки не удалось: %s" % e, file=sys.stderr)
         return None
     items = _image_read_parse(raw)
@@ -9427,7 +9566,17 @@ def _job_images(job: dict) -> None:
         data["imagesTotal"] = len(names)
         _save_source_map(pid, data)
 
-    for name in names:
+    # Картинки идут ПАЧКАМИ (`IMAGE_BATCH`): поиск строк — по очереди (это
+    # процессор, у движка свои потоки), а чтение надписей моделью — разом на
+    # всю пачку (`_run_parallel`): вызов модели — ожидание сети, и по одному
+    # он занимал почти всё время разбора. Порядок документа при этом держится:
+    # сегменты заводит основной поток, картинка за картинкой, после чтения.
+    # Цена названа: стоп, лимит и уступка проверяются между ПАЧКАМИ, то есть
+    # после остановки дочитывается текущая пачка.
+    src_lang = project.get("src") or "RU"
+    domain_id = project.get("domain")
+    pos = 0
+    while pos < len(names):
         if job["stop"]:
             job["status"] = "stopped"
             break
@@ -9439,7 +9588,7 @@ def _job_images(job: dict) -> None:
             return
         if _job_limit_hit(job):        # каждая картинка — вызов зрячей модели
             break
-        # Уступка исполнителя между КАРТИНКАМИ. Свой цикл — свой заход:
+        # Уступка исполнителя между ПАЧКАМИ. Свой цикл — свой заход:
         # разбор полутора сотен картинок идёт минутами, и без этого в самом
         # типичном сценарии тест-группы очередь не работала бы вовсе, хотя
         # обещана. Списка сегментов у этого вида задачи нет, и возобновлять
@@ -9452,112 +9601,155 @@ def _job_images(job: dict) -> None:
         # recent — это id сегментов, их ждёт /segments/fetch у редактора.
         # Имя части в этом поле давало 422 каждые три секунды.
         job["recent"] = []
-        blob = raster[name]
-        sha = hashlib.sha1(blob).hexdigest()
-        prev = known.get(name) or {}
-        rec = dict(prev) if prev.get("sha") == sha and prev.get("blocks") is not None \
-            else {"part": name, "sha": sha}
-        # Якорный абзац — свежий на КАЖДОМ заходе, а не только при обнаружении:
-        # после замены файла запись переносится, а номера абзацев в новом
-        # документе другие — по старым восстановление сажало бы строку не туда.
-        if rec.get("blocks") is not None and anchors.get(name) and rec.get("paras") != anchors.get(name):
-            rec["paras"] = anchors.get(name) or []
-            map_dirty = True
-        if rec.get("blocks") is None:
-            lines = image_text.detect_lines(blob)
-            if lines is None:
-                # Битый файл, незнакомый формат, векторный метафайл. Это «не
-                # знаю» про ОДНУ картинку: записать сюда пустой список значило
-                # бы объявить, что надписей в ней нет. Разбор идёт дальше —
-                # ронять из-за одной картинки полтораста остальных незачем.
-                rec["unreadable"] = True
-                rec.pop("blocks", None)
+        batch = names[pos:pos + IMAGE_BATCH]
+
+        # 1. ПОИСК СТРОК — по очереди. Результат выровнен по пачке:
+        # (имя, картинка, запись); у нечитаемой — запись с `unreadable`.
+        work = []
+        for name in batch:
+            if job["stop"] and work:
+                break                  # остаток пачки — следующему заходу
+            blob = raster[name]
+            sha = hashlib.sha1(blob).hexdigest()
+            prev = known.get(name) or {}
+            rec = dict(prev) if prev.get("sha") == sha and prev.get("blocks") is not None \
+                else {"part": name, "sha": sha}
+            # Якорный абзац — свежий на КАЖДОМ заходе, а не только при обнаружении:
+            # после замены файла запись переносится, а номера абзацев в новом
+            # документе другие — по старым восстановление сажало бы строку не туда.
+            if rec.get("blocks") is not None and anchors.get(name) and rec.get("paras") != anchors.get(name):
+                rec["paras"] = anchors.get(name) or []
+                map_dirty = True
+            if rec.get("blocks") is None:
+                job["phase"] = "detect"
+                lines = image_text.detect_lines(blob)
+                if lines is None:
+                    # Битый файл, незнакомый формат, векторный метафайл. Это «не
+                    # знаю» про ОДНУ картинку: записать сюда пустой список значило
+                    # бы объявить, что надписей в ней нет. Разбор идёт дальше —
+                    # ронять из-за одной картинки полтораста остальных незачем.
+                    rec["unreadable"] = True
+                    rec.pop("blocks", None)
+                    work.append((name, blob, rec))
+                    continue
+                rec.pop("unreadable", None)
+                rec["blocks"] = image_text.group_blocks(lines)
+                try:
+                    from PIL import Image as _PIL
+                    rec["w"], rec["h"] = _PIL.open(io.BytesIO(blob)).size
+                except Exception:
+                    rec["w"] = rec["h"] = 0
+                rec["paras"] = anchors.get(name) or []
+                job["counters"]["detected"] = job["counters"].get("detected", 0) + 1
+                map_dirty = True
+            work.append((name, blob, rec))
+        pos += len(work)
+
+        # 2. ЧТЕНИЕ — разом на всю пачку. Спрашиваем только про блоки, о которых
+        # ещё не спрашивали: разбор кэширован по sha картинки, и повторный
+        # заход не платит за то, что уже прочитано.
+        if not dry and not job["stop"]:
+            tasks = []
+            for _name, blob, rec in work:
+                if rec.get("unreadable"):
+                    continue
+                todo = [i for i, b in enumerate(rec["blocks"]) if "text" not in b]
+                for start in range(0, len(todo), IMAGE_READ_MAX_BLOCKS):
+                    tasks.append((blob, rec, todo[start:start + IMAGE_READ_MAX_BLOCKS]))
+            if tasks:
+                job["phase"] = "read"
+
+                def ask(task):
+                    blob_, rec_, idx_ = task
+                    if job["stop"]:
+                        return "stopped"
+                    try:
+                        return _openai_read_image(blob_, [rec_["blocks"][i] for i in idx_],
+                                                  src_lang, domain_id, model)
+                    except Exception as e:
+                        print("[backend] чтение картинки %s: %s" % (rec_.get("part"), e), file=sys.stderr)
+                        return None
+                answers = _run_parallel(tasks, ask)
+                if all(a is None for a in answers) and _quota_recent():
+                    # Ни одна надпись пачки не прочиталась, и поставщик говорит,
+                    # что счёт пуст: дальше каждая картинка ответила бы тем же.
+                    # Найденные строки сохраняем (карта), чтение — следующему заходу.
+                    for _name, _blob, rec in work:
+                        out.append(rec)
+                        job["done"] += 1
+                    flush()
+                    _job_quota_stop(job)
+                    break
+                for (_blob, rec, part_idx), got in zip(tasks, answers):
+                    if got == "stopped":
+                        continue               # не спрашивали — останется на следующий заход
+                    if got is None:
+                        # Не спросили — блок остаётся нерешённым. Записать сюда
+                        # пустоту значило бы навсегда закрыть картинку от чтения.
+                        job["counters"]["readFailed"] = job["counters"].get("readFailed", 0) + 1
+                        continue
+                    blocks = rec["blocks"]
+                    for k, i in enumerate(part_idx):
+                        ans = got[k] if k < len(got) else None
+                        if ans is None:
+                            continue
+                        b = blocks[i]
+                        b["text"] = ans["text"]
+                        b["reader"] = ans["model"]
+                        if ans["overlay"]:
+                            b["skip"] = "overlay"
+                        elif image_text.is_noise(ans["text"]):
+                            b["skip"] = "noise"
+                        else:
+                            b.pop("skip", None)
+                        map_dirty = True
+
+        # 3. СЕГМЕНТЫ — по документу, картинка за картинкой. Только то, что
+        # прочитано, не является надпечаткой аппарата и не шум. Уже заведённые
+        # не задваиваются: карта помнит номер.
+        made = []
+        for name, blob, rec in work:
+            if rec.get("unreadable"):
                 out.append(rec)
                 job["counters"]["unreadable"] = job["counters"].get("unreadable", 0) + 1
                 job["done"] += 1
-                flush()
-                map_dirty = False
+                map_dirty = True
                 continue
-            rec.pop("unreadable", None)
-            rec["blocks"] = image_text.group_blocks(lines)
-            try:
-                from PIL import Image as _PIL
-                rec["w"], rec["h"] = _PIL.open(io.BytesIO(blob)).size
-            except Exception:
-                rec["w"] = rec["h"] = 0
-            rec["paras"] = anchors.get(name) or []
-            job["counters"]["detected"] = job["counters"].get("detected", 0) + 1
-            map_dirty = True
-        blocks = rec["blocks"]
-        if blocks:
-            job["counters"]["withText"] = job["counters"].get("withText", 0) + 1
-
-        # ЧТЕНИЕ. Спрашиваем только про блоки, о которых ещё не спрашивали:
-        # разбор кэширован по sha картинки, и повторный заход не платит
-        # за то, что уже прочитано.
-        todo = [i for i, b in enumerate(blocks) if "text" not in b]
-        if todo and not dry:
-            for start in range(0, len(todo), IMAGE_READ_MAX_BLOCKS):
-                if job["stop"]:
-                    break
-                part_idx = todo[start:start + IMAGE_READ_MAX_BLOCKS]
-                got = _openai_read_image(blob, [blocks[i] for i in part_idx],
-                                         project.get("src") or "RU",
-                                         project.get("domain"), model)
-                if got is None:
-                    # Не спросили — блок остаётся нерешённым. Записать сюда
-                    # пустоту значило бы навсегда закрыть картинку от чтения.
-                    job["counters"]["readFailed"] = job["counters"].get("readFailed", 0) + 1
-                    continue
-                for k, i in enumerate(part_idx):
-                    ans = got[k]
-                    if ans is None:
+            blocks = rec["blocks"]
+            if blocks:
+                job["counters"]["withText"] = job["counters"].get("withText", 0) + 1
+            if not dry:
+                by_id = {s["id"]: s for s in project["segments"]}
+                anchor = _image_anchor_sid(data, anchors.get(name) or [])
+                after = placed_after.get(anchor)
+                for i, b in enumerate(blocks):
+                    if b.get("skip") or not (b.get("text") or "").strip():
                         continue
-                    b = blocks[i]
-                    b["text"] = ans["text"]
-                    b["reader"] = ans["model"]
-                    if ans["overlay"]:
-                        b["skip"] = "overlay"
-                    elif image_text.is_noise(ans["text"]):
-                        b["skip"] = "noise"
-                    else:
-                        b.pop("skip", None)
-                    map_dirty = True
-
-        # СЕГМЕНТЫ. Только то, что прочитано, не является надпечаткой аппарата
-        # и не шум. Уже заведённые не задваиваются: карта помнит номер.
-        if not dry:
-            by_id = {s["id"]: s for s in project["segments"]}
-            anchor = _image_anchor_sid(data, anchors.get(name) or [])
-            after = placed_after.get(anchor)
-            made = []
-            for i, b in enumerate(blocks):
-                if b.get("skip") or not (b.get("text") or "").strip():
-                    continue
-                have = _image_seg_of(by_id, b, name, i)
-                if have is not None:
-                    after = have["id"]
-                    continue
-                nid = max((s["id"] for s in project["segments"]), default=0) + 1
-                seg = _image_new_segment(b["text"].strip(), name, i, nid)
-                _image_place_segment(project, seg, anchor, after)
-                b["seg"] = nid
-                after = nid
-                made.append(nid)
-                map_dirty = segs_dirty = True
-                job["counters"]["segments"] = job["counters"].get("segments", 0) + 1
-            if after is not None:
-                placed_after[anchor] = after
-            if made:
-                job["recent"] = made
-        out.append(rec)
-        job["done"] += 1
+                    have = _image_seg_of(by_id, b, name, i)
+                    if have is not None:
+                        after = have["id"]
+                        continue
+                    nid = max((s["id"] for s in project["segments"]), default=0) + 1
+                    seg = _image_new_segment(b["text"].strip(), name, i, nid)
+                    _image_place_segment(project, seg, anchor, after)
+                    b["seg"] = nid
+                    after = nid
+                    made.append(nid)
+                    map_dirty = segs_dirty = True
+                    job["counters"]["segments"] = job["counters"].get("segments", 0) + 1
+                if after is not None:
+                    placed_after[anchor] = after
+            out.append(rec)
+            job["done"] += 1
+        if made:
+            job["recent"] = made
         if map_dirty:
             flush()
             map_dirty = False
         if segs_dirty:
             save_state(STATE)
             segs_dirty = False
+    job.pop("phase", None)
     if not dry:
         # Согласие между картинками — последний бесплатный фильтр перед тем,
         # как человек увидит список.
@@ -20206,6 +20398,7 @@ def batch_translate(pid: int, req: BatchRequest):
                                             model=req.model,
                                             prev_src=prev_src, next_src=next_src)
         except Exception as e:
+            _note_provider_error(e)      # в `errors` уходят только номера — причину помним здесь
             print(f"[backend] batch error seg#{seg['id']}: {e}", file=sys.stderr)
             return {"key": key, "error": str(e)}
         if not translation:
@@ -23420,6 +23613,8 @@ def _job_run(job: dict):
                 # ошибку каждого сегмента по отдельности, и без этой проверки
                 # прогон рапортовал бы «готово» с нулевым результатом.
                 if counters.get("done", 0) == 0 and counters.get("errors", 0) >= len(chunk):
+                    if _is_quota_error(counters.get("why")) or _quota_recent():
+                        raise _ProviderQuota(counters.get("why"))
                     # С причиной от провайдера: «проверьте ключи и связь» звучит
                     # одинаково и для кончившихся денег, и для отозванного ключа,
                     # и для оборванной сети — а действия у них разные.
@@ -23449,11 +23644,19 @@ def _job_run(job: dict):
                 # 503 (нет ключа) или 404 — повторять бессмысленно
                 last_err = f"{e.status_code}: {e.detail}"
                 break
+            except _ProviderQuota as e:
+                # Пуст счёт у поставщика — ждать и повторять бессмысленно.
+                print(f"[backend] job#{job['id']} остановлен: баланс поставщика ({e})", file=sys.stderr)
+                last_err = "quota"
+                break
             except Exception as e:
                 last_err = str(e)
                 print(f"[backend] job#{job['id']} chunk failed ({attempt + 1}): {e}", file=sys.stderr)
                 if attempt < JOB_CHUNK_RETRIES:
                     time.sleep(JOB_RETRY_PAUSE)
+        if last_err == "quota":
+            _job_quota_stop(job)
+            break
         if last_err:
             job["status"] = "error"
             job["error"] = last_err

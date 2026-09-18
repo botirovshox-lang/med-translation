@@ -9,36 +9,91 @@
    Формат считаем любой, какой умеем разобрать; проект пока создаётся только
    из .docx — поэтому смету можно взять и по файлу, который импортировать
    нельзя. */
-function ImpQuote({ file, src, tgt, toast, onSaved, store }) {
-  const [res, setRes] = useState(null);
+/* ── Ход разбора файла ─────────────────────────────────────────────
+   Книга разбирается секундами, и застывшая кнопка неотличима от зависшей.
+   Показываем то, что ЗНАЕМ: процент отправки файла (его считает браузер),
+   затем стадию сервера — «прочитано N страниц из M», «сравнено N файлов
+   из M». У стадии без счёта (чистка текста, сборка документа) процента
+   нет — полоса бежит без числа, а подпись говорит, чем занят сервер:
+   выдуманный процент был бы враньём. */
+const IMP_STAGE = {
+  upload: TR("Отправляем файл"),
+  start: TR("Файл на сервере, начинаем разбор"),
+  read: TR("Читаем страницы"),
+  clean: TR("Чистим текст: переносы, колонтитулы, номера страниц"),
+  build: TR("Собираем документ"),
+  pictures: TR("Готовим страницы-картинки"),
+  paras: TR("Делим текст на строки"),
+  compare: TR("Сравниваем с файлами проекта"),
+};
+
+function ImpProgress({ p }) {
+  const ph = (p && p.phase) || "upload";
+  const counted = !!(p && p.total > 0);
+  const pct = counted ? Math.round(p.done / p.total * 100) : null;
+  const label = (IMP_STAGE[ph] || IMP_STAGE.start)
+    + (counted && ph === "upload" ? " · " + pct + "%"
+      : counted ? ": " + p.done + TR(" из ") + p.total : "…");
+  return React.createElement("div", { className: "col", style: { gap: 4 } },
+    React.createElement("div", { className: "dim", style: { fontSize: 12 } }, label),
+    counted
+      ? React.createElement(ProgressBar, { value: pct })
+      : React.createElement("div", { className: "pbar pbar-indet" }, React.createElement("span", null)));
+}
+
+/* Черновик добавления файла — ПО ПАПКЕ, в памяти вкладки браузера.
+   Состояние компонента умирает вместе с ним: ушёл на «Скачать» и вернулся —
+   и выбранный файл, и ответ пробы, и посчитанная смета пропадали, хотя
+   смета книги стоила полминуты ожидания. Объект файла живёт здесь же
+   (на диск его не положить: браузер не даёт). Перезагрузка страницы
+   черновик сбрасывает — это честно, файла у браузера больше нет. */
+const IMP_DRAFTS = {};
+function impDraft(fid) {
+  if (!IMP_DRAFTS[fid]) IMP_DRAFTS[fid] = {};
+  return IMP_DRAFTS[fid];
+}
+
+function ImpQuote({ file, src, tgt, toast, onSaved, store, draft }) {
+  /* Смета живёт в черновике папки (`draft`, см. IMP_DRAFTS): ушёл на другую
+     вкладку и вернулся — посчитанное на месте, а не «посчитайте ещё раз». */
+  const [res, setRes] = useState(draft && draft.quote || null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => { setRes(null); setErr(""); }, [file && file.name, src, tgt]);
+  const [prog, setProg] = useState(null);
+  /* Сброс — только когда файл или пара ДРУГИЕ, чем у посчитанной сметы:
+     эффект срабатывает и на возврате к вкладке, и сбрасывать там нечего. */
+  const qKey = (file && file.name) + "|" + src + "|" + tgt;
+  useEffect(() => {
+    if (draft && draft.quoteKey === qKey) return;
+    setRes(null); setErr("");
+    if (draft) { draft.quote = null; draft.quoteKey = null; }
+  }, [qKey]);
+  const keep = (r) => { setRes(r); if (draft) { draft.quote = r; draft.quoteKey = r ? qKey : null; } };
   const runScan = async () => {
     // Скан: платное чтение выборки страниц зрячей моделью — по отдельной кнопке,
     // после того как человек увидел, сколько страниц и почём.
-    setBusy(true); setErr("");
+    setBusy(true); setErr(""); setProg(null);
     try {
-      const r = await window.API.quoteScan(file.raw, src, tgt);
-      setRes(r);
+      const r = await window.API.quoteScan(file.raw, src, tgt, setProg);
+      keep(r);
       if (r && r.saved && onSaved) onSaved();
     } catch (e) { setErr(e.message || String(e)); }
-    setBusy(false);
+    setBusy(false); setProg(null);
   };
   const run = async () => {
     if (!file || !file.raw) { toast.error(TR("Файл не выбран"), TR("Выберите файл, чтобы посчитать объём")); return; }
-    setBusy(true); setErr("");
+    setBusy(true); setErr(""); setProg(null);
     try {
-      const r = await window.API.quoteFile(file.raw, src, tgt);
-      setRes(r);
+      const r = await window.API.quoteFile(file.raw, src, tgt, setProg);
+      keep(r);
       if (r && r.saved && onSaved) onSaved();
     } catch (e) {
-      setRes(null);
+      keep(null);
       // Причина отказа называется словами: «не посчитали» без причины —
       // это предложение гадать, что не так с файлом.
       setErr(e.message || String(e));
     }
-    setBusy(false);
+    setBusy(false); setProg(null);
   };
   const row = (k, v) => React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12 } },
     React.createElement("span", { className: "dim" }, k), React.createElement("b", null, v));
@@ -49,6 +104,7 @@ function ImpQuote({ file, src, tgt, toast, onSaved, store }) {
     React.createElement("div", null,
       React.createElement(Btn, { variant: "ghost", disabled: !file || busy, onClick: run },
         busy ? TR("Считаем…") : TR("Посчитать объём и стоимость"))),
+    busy && React.createElement(ImpProgress, { p: prog }),
     err && React.createElement("div", { className: "dim", style: { color: "var(--c-danger)", fontSize: 13 } }, err),
     res && res.scan && !res.counts && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6, fontSize: 14 } },
       React.createElement("div", null, TR("Это скан: ") + res.scan.pages + TR(" стр. без текстового слоя. Объём можно оценить по выборке страниц; точный счёт — после распознавания.")),
@@ -398,6 +454,26 @@ function ImpFileCard({ project, store, toast }) {
      разбор надписей со сметой и ходом работы; второй экран заводить нельзя. */
   const pictures = (project.importKind === "image" || project.importKind === "scan") && total === 0;
   const reading = !!project.imagesReading && total === 0;
+  /* Ход чтения — с сервера, пока задача жива: «читаем…» без чисел на книге
+     со сканом — это минуты неизвестности. Задача кончилась — карточка
+     тянет файл заново: строки с картинок завела задача, а не этот экран. */
+  const [imgJob, setImgJob] = useState(null);
+  useEffect(() => {
+    if (!reading || !window.API || !window.API.listJobs) return;
+    let dead = false;
+    const tick = async () => {
+      const res = await window.API.safeCall(() => window.API.listJobs(project.id));
+      if (dead || !res) return;
+      const live = (res.active || []).find(x => x.kind === "images");
+      if (live) { setImgJob(live); return; }
+      setImgJob(null);
+      const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
+      if (!dead && fresh && store.replaceProject) store.replaceProject(fresh);
+    };
+    tick();
+    const t = setInterval(tick, 3000);
+    return () => { dead = true; clearInterval(t); };
+  }, [reading, project.id]);
   /* В том же ли виде вернём файл: сервер знает по формату (`writeback`). */
   const sameShape = project.sourceDocx && project.writeback !== false;
   const undoReimport = async () => {
@@ -432,7 +508,8 @@ function ImpFileCard({ project, store, toast }) {
       project.importNote && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TRS(project.importNote)),
       pictures
         ? React.createElement("div", { className: "dim", style: { fontSize: 13 } },
-            reading ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), " ", TR("Читаем текст с картинок — строки появятся сами."))
+            reading ? (imgJob ? React.createElement(ImagesJobLine, { job: imgJob })
+                              : React.createElement(React.Fragment, null, React.createElement(Spinner, null), " ", TR("Читаем текст с картинок — строки появятся сами.")))
                     : TR("Текст на картинках ещё не прочитан."))
         : React.createElement("div", null,
             React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
@@ -462,27 +539,49 @@ function ImpFileCard({ project, store, toast }) {
    на новую версию файла проекта? Тогда человек выбирает — обновить прежний
    файл (перевод неизменившихся строк остаётся) или положить новым. */
 function ImpAddFile({ folder, store, toast, meta }) {
+  const draft = impDraft(folder.id);
   const [dragging, setDragging] = useState(false);
-  const [file, setFile] = useState(null);
-  const [title, setTitle] = useState("");
-  const [src, setSrc] = useState(folder.src || "RU");
-  const [tgt, setTgt] = useState(folder.tgt || "EN");
+  const [file, setFile] = useState(draft.file || null);
+  const [title, setTitle] = useState(draft.title || "");
+  const [src, setSrc] = useState(draft.src || folder.src || "RU");
+  const [tgt, setTgt] = useState(draft.tgt || folder.tgt || "EN");
   const [busy, setBusy] = useState(false);
-  const [probe, setProbe] = useState(null);      // ответ /api/projects/probe
-  const [probing, setProbing] = useState(false);
+  const [probe, setProbe] = useState(draft.probe || null);      // ответ /api/projects/probe
+  const [probing, setProbing] = useState(!!draft.probing);
+  const [prog, setProg] = useState(null);        // ход пробы или загрузки
   const fileRef = useRef(null);
-  const probeSeq = useRef(0);
+  /* Черновик — зеркало видимого: всё, что человек выбрал, переживает уход
+     с вкладки. Ответ пробы, пришедший ПОСЛЕ ухода, пишет в черновик сам
+     запрос (ниже), и экран подхватывает его на возврате. */
+  useEffect(() => { draft.file = file; draft.title = title; draft.src = src; draft.tgt = tgt; },
+    [file, title, src, tgt]);
+  /* Вернулись, пока проба ещё шла: ответ ляжет в черновик — ждём его. */
+  useEffect(() => {
+    if (!draft.probing || !draft.pending) return;
+    let alive = true;
+    const seq = draft.seq;
+    draft.pending.then(() => { if (alive && draft.seq === seq) { setProbe(draft.probe); setProbing(false); } });
+    return () => { alive = false; };
+  }, []);
   /* Номер запроса: выбрал файл A, сразу B — ответ A может прийти позже
-     и лечь на B. Устаревший ответ выбрасывается. */
+     и лечь на B. Устаревший ответ выбрасывается. Номер живёт в черновике,
+     а не в ref: ref умирает вместе с экраном, черновик — нет. */
   const runProbe = async (raw, s, t) => {
-    const seq = ++probeSeq.current;
-    setProbing(true); setProbe(null);
+    const seq = (draft.seq || 0) + 1;
+    draft.seq = seq;
+    setProbing(true); setProbe(null); setProg(null);
+    draft.probing = true; draft.probe = null;
+    const req = window.API.probeUpload(raw, folder.id, s || src, t || tgt,
+      (p) => { if (draft.seq === seq) setProg(p); });
     let res;
-    try { res = await window.API.probeUpload(raw, folder.id, s || src, t || tgt); }
+    draft.pending = req.then(r => { if (draft.seq === seq) { draft.probe = r; draft.probing = false; } },
+      e => { if (draft.seq === seq) { draft.probe = { error: e.message || String(e) }; draft.probing = false; } });
+    try { res = await req; }
     catch (e) { res = { error: e.message || String(e) }; }
-    if (seq !== probeSeq.current) return;
+    if (seq !== draft.seq) return;
     setProbe(res);
     setProbing(false);
+    setProg(null);
   };
   const pickFile = (f) => {
     if (!f) return;
@@ -493,14 +592,19 @@ function ImpAddFile({ folder, store, toast, meta }) {
   /* Смена пары меняет ответ пробы (тот же файл на другую пару — новый файл). */
   const changePair = (s, t) => { setSrc(s); setTgt(t); if (file && file.raw) runProbe(file.raw, s, t); };
   const onDrop = (e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) pickFile(f); };
-  const reset = () => { setFile(null); setTitle(""); setProbe(null); };
+  const reset = () => {
+    setFile(null); setTitle(""); setProbe(null); setProbing(false);
+    draft.seq = (draft.seq || 0) + 1;
+    Object.assign(draft, { file: null, title: "", probe: null, probing: false, pending: null,
+                           quote: null, quoteKey: null });
+  };
   const create = async () => {
     if (!file || !file.raw) { toast.error(TR("Файл не выбран"), TR("Выберите файл")); return; }
     if (src === tgt) { toast.error(TR("Языки совпадают"), TR("Выберите разные языки оригинала и перевода.")); return; }
-    setBusy(true);
+    setBusy(true); setProg(null);
     try {
       const project = await window.API.uploadProject(file.raw, title || file.name.replace(/\.[^.]+$/, ""),
-                                                    src, tgt, folder.domain, folder.id);
+                                                    src, tgt, folder.domain, folder.id, setProg);
       store.addProject(project);
       /* Виртуальная папка после второго файла стала настоящей записью. */
       store.patchFolder(folder.id, { virtual: false });
@@ -554,7 +658,9 @@ function ImpAddFile({ folder, store, toast, meta }) {
             React.createElement(Icon, { name: "upload", size: 28, className: "dz-ic" }),
             React.createElement("div", { style: { fontWeight: 500, fontSize: 14 } }, TR("Перетащите файл сюда")),
             React.createElement("div", { className: "dim", style: { marginTop: 2, fontSize: 12 } }, TR("Word, Excel, PowerPoint, PDF, HTML, текст или картинка")))),
-    probing && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TR("Смотрим, что за файл…")),
+    probing && React.createElement("div", { className: "col", style: { gap: 4 } },
+      React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TR("Смотрим, что за файл…")),
+      React.createElement(ImpProgress, { p: prog })),
     probe && probe.error && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, probe.error),
     exact && React.createElement("div", { className: "card card-pad-sm", style: { background: "var(--bg-sunken)", fontSize: 13 } },
       TR("Этот файл уже есть в проекте: «") + exact.title + TR("». Второй раз он не нужен."),
@@ -577,7 +683,8 @@ function ImpAddFile({ folder, store, toast, meta }) {
     file && !exact && src === tgt && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, TR("Язык оригинала и язык перевода совпадают.")),
     !exact && !similar && React.createElement(Btn, { variant: "primary", icon: busy ? null : "plus", disabled: !file || busy || probing || src === tgt, onClick: create },
       busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), TR("Загружаем…")) : TR("Добавить в проект")),
-    file && !exact && React.createElement(ImpQuote, { file, src, tgt, toast, store }));
+    busy && React.createElement(ImpProgress, { p: prog }),
+    file && !exact && React.createElement(ImpQuote, { file, src, tgt, toast, store, draft }));
 }
 
 /* Словари проекта: какие подключены и куда пишутся новые слова.

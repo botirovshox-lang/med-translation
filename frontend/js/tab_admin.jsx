@@ -468,6 +468,11 @@ function AdminSystemModels({ toast, onSaved }) {
   const [d, setD] = useState(null);
   const [draft, setDraft] = useState({});
   const [busy, setBusy] = useState(false);
+  /* Какое предупреждение сейчас в фокусе (наведение или клик): его пара
+     строк выделяется сильнее остальных спорящих. Клик держит выделение,
+     наведение — пока мышь на строке предупреждения. */
+  const [hot, setHot] = useState(null);
+  const [pinned, setPinned] = useState(null);
   const load = () => window.API.safeCall(() => window.API.systemModels()).then(r => {
     if (!r || !r.ok) return;
     setD(r);
@@ -487,8 +492,16 @@ function AdminSystemModels({ toast, onSaved }) {
   const eff = {};
   d.steps.forEach(s => { eff[s.key] = draft[s.key] || s.codeDefault || ""; });
   const conflicts = modelRoleConflicts(eff, (id) => adminModelName(d.models, id));
+  /* Для каждой строки — С КЕМ она спорит: человеку нужно видеть не только
+     «здесь что-то не так», но и какую строку менять. Подсвечиваются ровно
+     спорящие строки, а у строки сказано, с каким шагом у неё одна модель. */
   const disputed = {};
-  conflicts.forEach(c => c.steps.forEach(k => { disputed[k] = true; }));
+  conflicts.forEach(c => c.steps.forEach(k => {
+    const other = c.steps.filter(x => x !== k);
+    disputed[k] = (disputed[k] || []).concat(other.filter(x => (disputed[k] || []).indexOf(x) < 0));
+  }));
+  const focus = pinned != null ? pinned : hot;
+  const focusSteps = (focus != null && conflicts[focus]) ? conflicts[focus].steps : [];
   const save = async () => {
     setBusy(true);
     try {
@@ -511,17 +524,30 @@ function AdminSystemModels({ toast, onSaved }) {
        умолчанием всем организациям сразу, и цена ошибки выше, чем у выбора
        на один прогон. Сохранить это не мешает — бывает, что так и надо. */
     conflicts.length > 0 && React.createElement("div", { className: "col", style: { gap: 4, margin: "0 0 10px" } },
+      React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+        TR("Спорящие строки подсвечены в таблице. Наведите на предупреждение или нажмите его — выделится ровно его пара строк.")),
       conflicts.map((c, i) => React.createElement("div", { key: "c" + i,
-        style: { fontSize: 12.5, color: "var(--c-warning)", lineHeight: 1.5 } }, "⚠ " + c.text))),
+        className: "adm-conflict" + (focus === i ? " on" : ""),
+        role: "button", tabIndex: 0,
+        onMouseEnter: () => setHot(i), onMouseLeave: () => setHot(null),
+        onFocus: () => setHot(i), onBlur: () => setHot(null),
+        onClick: () => setPinned(pinned === i ? null : i),
+        onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPinned(pinned === i ? null : i); } },
+        style: { fontSize: 12.5, color: "var(--c-warning)", lineHeight: 1.5 } },
+        "⚠ " + c.text))),
     React.createElement("div", { style: { overflowX: "auto" } }, React.createElement("table", { className: "tbl" },
       React.createElement("thead", null, React.createElement("tr", null,
         [TR("Шаг"), TR("Модель"), TR("Цена за 1M токенов, вход / выход"), TR("Действует сейчас")].map((h, i) => React.createElement("th", { key: i }, h)))),
-      React.createElement("tbody", null, d.steps.map(s => React.createElement("tr", { key: s.key },
+      React.createElement("tbody", null, d.steps.map(s => React.createElement("tr", { key: s.key,
+          className: disputed[s.key] ? ("adm-dispute" + (focusSteps.indexOf(s.key) >= 0 ? " on" : "")) : undefined },
         React.createElement("td", null, adminStepLabel(s.key),
           disputed[s.key] && React.createElement("span", { style: { color: "var(--c-warning)" },
-            title: TR("Эта модель спорит по роли с моделью другого шага — см. предупреждение над таблицей") }, " ⚠")),
+            title: TR("Эта модель спорит по роли с моделью другого шага — см. предупреждение над таблицей") }, " ⚠"),
+          disputed[s.key] && React.createElement("div", { style: { fontSize: 11.5, color: "var(--c-warning)", marginTop: 2 } },
+            TR("та же модель, что у: ") + disputed[s.key].map(adminStepLabel).join(", "))),
         React.createElement("td", null,
-          React.createElement("select", { className: "input", value: draft[s.key] || "", style: { maxWidth: 260 },
+          React.createElement("select", { className: "input" + (disputed[s.key] ? " adm-dispute-input" : ""),
+            value: draft[s.key] || "", style: { maxWidth: 260 },
             onChange: (e) => setDraft({ ...draft, [s.key]: e.target.value }) },
             React.createElement("option", { value: "" }, TR("по умолчанию: ") + adminModelName(d.models, s.codeDefault)),
             d.models.map(m => React.createElement("option", { key: m.id, value: m.id }, m.label)))),

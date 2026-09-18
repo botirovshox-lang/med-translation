@@ -29,6 +29,7 @@
    ============================================================ */
 window.I18N.register("en", {
  " и ": " and ",
+ " из ": " of ",
  " осталось": " left",
  " сегментов": " segments",
  " той же моделью, что и перевод (": " with the same model as the translation (",
@@ -83,7 +84,7 @@ window.I18N.register("en", {
  "Мы отправили шестизначный код на ": "We have sent a six-digit code to ",
  "На проверке": "Under review",
  "Название организации": "Organization name",
- "Не посчитано: ": "Not counted: ",
+ "Не посчитано": "Not counted",
  "Не удалось скачать файл": "Could not download the file",
  "Неверный логин или пароль": "Wrong login or password",
  "Незначительные расхождения": "Minor divergences",
@@ -164,7 +165,11 @@ window.I18N.register("en", {
  "вашу почту": "your email",
  "владелец": "owner",
  "вручную": "manually",
+ "готовим картинки": "preparing the pictures",
  "запасную модель, и смета поплывёт; выберите другую.": "a fallback model itself, and the estimate will drift; choose another one.",
+ "идёт другой прогон, начну сразу после него": "another run is under way, I will start right after it",
+ "ищем строки на картинках": "finding text lines in the pictures",
+ "картинка ": "image ",
  "напр. Бюро переводов": "e.g. Translation Agency",
  "не чинит ошибки на лету. Одна на обе роли плоха в одной из них.": "does not fix errors on the fly. One model for both roles is bad at one of them.",
  "независимости, на которой стоит автоодобрение терминов, нет.": "the independence that term auto-approval rests on is gone.",
@@ -172,8 +177,11 @@ window.I18N.register("en", {
  "оферту": "the offer",
  "переводчик": "translator",
  "политику обработки персональных данных": "the personal data processing policy",
+ "продолжу сразу после чужой порции": "I will continue right after somebody else’s chunk",
  "редактор": "editor",
+ "сервер недоступен": "server unavailable",
  "только что": "just now",
+ "читаем надписи": "reading the captions",
  "← Ко входу": "← Back to sign-in",
  "≤ 8 слов": "≤ 8 words"
 });

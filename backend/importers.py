@@ -753,6 +753,7 @@ def pdf_to_docx(content: bytes) -> tuple:
         pages = textcount._pdf_pages(content, notes)
     except textcount.Scan as s:
         pages_n = getattr(s, "pages", 0) or 0
+        textcount.progress("pictures")
         idx = list(range(pages_n))
         imgs = [data for _i, data in textcount.pdf_page_pictures(content, idx) if data]
         if not imgs:
@@ -762,7 +763,9 @@ def pdf_to_docx(content: bytes) -> tuple:
                 "PDF без текстового слоя: %d страниц положены картинками; текст с них "
                 "читается автоматически. Обратно выгружается PDF из страниц с переведёнными "
                 "надписями." % len(imgs), len(imgs))
+    textcount.progress("clean")
     res = pdftext.clean(pages)
+    textcount.progress("build")
     page_images: dict = {}
     if res["imagePages"]:
         try:

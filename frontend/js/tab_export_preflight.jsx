@@ -84,9 +84,17 @@ function ImagesCard({ project, store, toast }) {
         return;
       }
       const c = done.counters || {};
+      /* Остановка по лимиту — своим словом: иначе она неотличима от нажатой
+         кнопки, и человек не узнает, что продолжить можно только после
+         пополнения. Код причины — `stopReason`, текст собирает браузер. */
+      const limitNote = done.stopReason === "limit"
+        ? TR("Лимит расхода организации исчерпан: разбор остановлен, прочитанное сохранено. Продолжить можно, когда лимит поднимут; прочитанные картинки второй раз не оплачиваются.") + " "
+        : done.stopReason === "provider_quota"
+          ? TR("У сервиса закончился баланс у поставщика моделей: разбор остановлен, прочитанное сохранено. Мы уже знаем об этом; продолжить можно, когда баланс пополнят.") + " "
+          : "";
       if (done.status === "error") toast.error(TR("Разбор картинок прерван"), done.error || "");
-      else toast.success(done.status === "stopped" ? TR("Разбор остановлен") : TR("Разбор картинок закончен"),
-        TR("картинок: ") + (done.done || 0) + TR(" из ") + (done.total || 0)
+      else toast[limitNote ? "warning" : "success"](done.status === "stopped" ? TR("Разбор остановлен") : TR("Разбор картинок закончен"),
+        limitNote + TR("картинок: ") + (done.done || 0) + TR(" из ") + (done.total || 0)
         + TR(" · надписей всего: ") + (c.blocks || 0)
         + (c.segments ? TR(" · сегментов заведено: ") + c.segments : "")
         + (c.readFailed ? TR(" · не прочитано вызовов: ") + c.readFailed : "")
@@ -313,10 +321,7 @@ function ImagesCard({ project, store, toast }) {
           + TR("отсев делает модель, и ошибается она в обе стороны."))),
 
       running && React.createElement("div", { className: "col", style: { gap: 8 } },
-        React.createElement("div", { className: "row", style: { gap: 8 } },
-          React.createElement(Spinner, null),
-          React.createElement("span", { style: { fontSize: 13 } },
-            TR("картинка ") + (job.done || 0) + TR(" из ") + (job.total || 0))),
+        React.createElement(ImagesJobLine, { job }),
         React.createElement(Btn, { variant: "secondary", size: "sm",
           onClick: () => window.API.safeCall(() => window.API.stopJob(job.id)) },
           TR("Остановить"))),

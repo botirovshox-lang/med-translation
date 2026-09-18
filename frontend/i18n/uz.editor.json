@@ -539,5 +539,6 @@
  "терминов разложено подсказкой: ": "maslahat sifatida joylangan atamalar: ",
  "Отмечены не все шаги: ": "Hamma bosqichlar belgilanmagan: ",
  " — кнопка сделает только их.": " — tugma faqat ularni bajaradi.",
- "Вернуть все шаги": "Barcha bosqichlarni qaytarish"
+ "Вернуть все шаги": "Barcha bosqichlarni qaytarish",
+ "У сервиса закончился баланс у поставщика моделей: прогон остановлен, сделанное сохранено. Мы уже знаем об этом; остальные сегменты возьмёт следующий прогон, когда баланс пополнят.": "Xizmatning model yetkazib beruvchidagi balansi tugadi: ishlov to'xtatildi, bajarilgan saqlandi. Biz bundan xabardormiz; qolgan segmentlarni balans to'ldirilgach keyingi ishlov oladi."
 }

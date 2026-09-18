@@ -538,7 +538,31 @@ function modelRoleConflicts(eff, label) {
   return out;
 }
 
+/* Ход разбора картинок — одна строка на двух экранах (карточка файла
+   и «Скачать»): две копии разошлись бы в словах об одном и том же.
+   Числа — сервера: картинка N из M и чем занят (`job.phase`: ищет строки
+   или читает надписи). Задача в очереди номера не показывает и время
+   не выдумывает (инвариант 24); уступившая — уже работает. */
+function ImagesJobLine({ job }) {
+  const total = job.total || 0, done = job.done || 0;
+  const queued = job.status === "queued";
+  const what = job.phase === "read" ? TR("читаем надписи")
+    : job.phase === "detect" ? TR("ищем строки на картинках") : "";
+  const text = queued
+    ? (done > 0 ? TR("продолжу сразу после чужой порции")
+                : TR("идёт другой прогон, начну сразу после него"))
+    : total ? TR("картинка ") + done + TR(" из ") + total + (what ? " · " + what : "")
+    : TR("готовим картинки");
+  return React.createElement("div", { className: "col", style: { gap: 6 } },
+    React.createElement("div", { className: "row", style: { gap: 8, fontSize: 13 } },
+      React.createElement(Spinner, null), React.createElement("span", null, text)),
+    total && !queued
+      ? React.createElement(ProgressBar, { value: Math.round(done / total * 100) })
+      : React.createElement("div", { className: "pbar pbar-indet" }, React.createElement("span", null)));
+}
+
 Object.assign(window, {
+  ImagesJobLine,
   Icon, Btn, IconBtn, StatusBadge, Badge, STATUS_META,
   Field, Input, Textarea, Select, SearchInput, Checkbox, Radio, Switch,
   Expander, Modal, ToastProvider, useToast,

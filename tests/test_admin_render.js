@@ -163,9 +163,9 @@ function renderView(label, sys, sim, draft) {
   hooks.length = 0; hookIdx = 0; effects.length = 0;
   hooks[0] = OV; hooks[2] = "models";
   if (sys) { hooks[3] = sys; hooks[4] = sys; hooks[5] = draft || { translate: "gpt-4o" }; }
-  // Порядок хуков: TabAdmin 0–2, AdminModelsView 3, AdminSystemModels 4–6,
-  // AdminUsageSim 7–14 (res — 13).
-  if (sim) hooks[13] = sim;
+  // Порядок хуков: TabAdmin 0–2, AdminModelsView 3, AdminSystemModels 4–8
+  // (7–8 — какое предупреждение спора в фокусе), AdminUsageSim 9–16 (res — 15).
+  if (sim) hooks[15] = sim;
   try { return texts(TabAdmin({ store: superStore, toast })).join(" "); }
   catch (e) { check(false, label + " — " + e.constructor.name + ": " + e.message); return null; }
 }
@@ -204,6 +204,10 @@ check(!!mConf && mConf.includes("Судья и обратный перевод �
       "пустой выбор раскрыт в умолчание кода — спор судьи с back-check виден");
 check(!!mConf && mConf.includes("спорит по роли"),
       "спорящая строка отмечена в самой таблице, а не только словами");
+/* Подсвечиваются ровно спорящие строки, и у каждой сказано, С КЕМ она
+   спорит: «здесь что-то не так» без адреса заставляет искать пару глазами. */
+check(!!mConf && mConf.includes("та же модель, что у: Перевод") && mConf.includes("та же модель, что у: back-check"),
+      "у спорящей строки названа её пара");
 
 /* Два правила показа: служебный адрес и роль. Пропавшая проверка открыла бы
    сводку по всем организациям с главной страницы. */

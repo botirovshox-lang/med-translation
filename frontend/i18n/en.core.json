@@ -1,6 +1,5 @@
 {
  "_": "Ядро: вход, шапка, вкладки, общий UI-кит, профиль, импорт. Ключ — русская строка из кода, значение — узбекская латиница. Пробелы по краям ключа ОБЯЗАНЫ сохраняться в переводе: строки склеиваются с числами и именами.",
- "Не посчитано: ": "Not counted: ",
  "Сервер не выдал токен сессии": "The server did not issue a session token",
  "9–30 слов": "9–30 words",
  "> 30 слов": "> 30 words",
@@ -370,5 +369,9 @@
  "С какого языка": "From which language",
  "На какой язык": "Into which language",
  "Не удалось скачать файл": "Could not download the file",
- "Требуется вход в систему": "You need to sign in"
+ "Требуется вход в систему": "You need to sign in",
+ "сервер недоступен": "server unavailable",
+ "читаем надписи": "reading the captions",
+ "ищем строки на картинках": "finding text lines in the pictures",
+ "готовим картинки": "preparing the pictures"
 }

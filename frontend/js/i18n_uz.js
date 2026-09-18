@@ -29,6 +29,7 @@
    ============================================================ */
 window.I18N.register("uz", {
  " и ": " va ",
+ " из ": " / ",
  " осталось": " qoldi",
  " сегментов": " segment",
  " той же моделью, что и перевод (": " tarjima bilan bir xil model (",
@@ -83,7 +84,7 @@ window.I18N.register("uz", {
  "Мы отправили шестизначный код на ": "Olti xonali kodni yubordik: ",
  "На проверке": "Tekshiruvda",
  "Название организации": "Tashkilot nomi",
- "Не посчитано: ": "Hisoblanmadi: ",
+ "Не посчитано": "Hisoblanmadi",
  "Не удалось скачать файл": "Faylni yuklab bo'lmadi",
  "Неверный логин или пароль": "Login yoki parol noto'g'ri",
  "Незначительные расхождения": "Arzimas farqlar",
@@ -164,7 +165,11 @@ window.I18N.register("uz", {
  "вашу почту": "pochtangizga",
  "владелец": "egasi",
  "вручную": "qo'lda",
+ "готовим картинки": "rasmlarni tayyorlayapmiz",
  "запасную модель, и смета поплывёт; выберите другую.": "zaxira modelni oladi va hisob-kitob o'zgaradi; boshqasini tanlang.",
+ "идёт другой прогон, начну сразу после него": "boshqa ish ketyapti, u tugagach darhol boshlayman",
+ "ищем строки на картинках": "rasmlarda qatorlarni qidiryapmiz",
+ "картинка ": "rasm ",
  "напр. Бюро переводов": "masalan, Tarjima byurosi",
  "не чинит ошибки на лету. Одна на обе роли плоха в одной из них.": "xatolarni yo'l-yo'lakay tuzatmaydigani. Ikkala rol uchun bitta model biri uchun yomon.",
  "независимости, на которой стоит автоодобрение терминов, нет.": "atamalarni avtoma'qullash tayanadigan mustaqillik yo'qoladi.",
@@ -172,8 +177,11 @@ window.I18N.register("uz", {
  "оферту": "oferta",
  "переводчик": "tarjimon",
  "политику обработки персональных данных": "shaxsiy ma'lumotlarni qayta ishlash siyosati",
+ "продолжу сразу после чужой порции": "birovning ulushidan keyin darhol davom etaman",
  "редактор": "muharrir",
+ "сервер недоступен": "server bilan aloqa yo'q",
  "только что": "hozirgina",
+ "читаем надписи": "yozuvlarni o'qiyapmiz",
  "← Ко входу": "← Kirishga",
  "≤ 8 слов": "≤ 8 so'z"
 });

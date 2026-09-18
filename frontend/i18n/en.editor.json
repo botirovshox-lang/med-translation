@@ -539,5 +539,6 @@
  "терминов разложено подсказкой: ": "terms sorted out as hints: ",
  "Отмечены не все шаги: ": "Not all the steps are ticked: ",
  " — кнопка сделает только их.": " — the button will do only those.",
- "Вернуть все шаги": "Restore all the steps"
+ "Вернуть все шаги": "Restore all the steps",
+ "У сервиса закончился баланс у поставщика моделей: прогон остановлен, сделанное сохранено. Мы уже знаем об этом; остальные сегменты возьмёт следующий прогон, когда баланс пополнят.": "The service's balance with the model provider has run out: the run was stopped, completed work is saved. We already know about it; the next run will pick up the remaining segments once the balance is topped up."
 }

@@ -21,6 +21,60 @@
     if (t) h["Authorization"] = "Bearer " + t;
     return h;
   }
+  /* Файл на сервер с ходом работы. fetch не умеет сказать, сколько байт
+     уже ушло, поэтому здесь XHR: пока файл летит — настоящий процент
+     передачи; долетел — браузер опрашивает стадию разбора по своему ключу
+     (`/upload-progress/{ключ}`, сервер пишет туда «прочитано N страниц
+     из M»). onProgress({phase, done, total}); phase — "upload" или стадия
+     сервера. Без onProgress ключ не шлётся и опроса нет. */
+  function progressKey() {
+    const a = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let k = "";
+    for (let i = 0; i < 24; i++) k += a[Math.floor(Math.random() * a.length)];
+    return k;
+  }
+  function postForm(path, fd, onProgress, failLabel) {
+    let key = null, timer = null, finished = false;
+    if (onProgress) { key = progressKey(); fd.append("progress", key); }
+    const report = (p) => { if (!finished && onProgress) { try { onProgress(p); } catch (e) {} } };
+    const poll = async () => {
+      try {
+        const r = await fetch(BASE + "/upload-progress/" + key, { headers: authHeaders({}) });
+        const j = r.ok ? await r.json() : null;
+        if (j && j.stage) report({ phase: j.stage, done: j.done || 0, total: j.total || 0 });
+      } catch (e) {}
+    };
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", BASE + path);
+      const h = authHeaders({});
+      Object.keys(h).forEach(k => xhr.setRequestHeader(k, h[k]));
+      if (onProgress) {
+        xhr.upload.onprogress = (e) => { if (e.lengthComputable) report({ phase: "upload", done: e.loaded, total: e.total }); };
+        xhr.upload.onload = () => {
+          report({ phase: "start", done: 0, total: 0 });
+          if (!timer) { timer = setInterval(poll, 700); poll(); }
+        };
+      }
+      const stop = () => { finished = true; if (timer) clearInterval(timer); timer = null; };
+      xhr.onload = () => {
+        stop();
+        if (xhr.status === 401) onUnauthorized();
+        let data = {};
+        try { data = JSON.parse(xhr.responseText || "{}"); } catch (e) { data = {}; }
+        if (xhr.status < 200 || xhr.status >= 300) {
+          const d = data.detail || data.error || "";
+          const err = new Error(typeof d === "string" && d ? TRS(d) : failLabel + ": " + xhr.status);
+          err.status = xhr.status;
+          reject(err);
+          return;
+        }
+        resolve(data);
+      };
+      xhr.onerror = () => { stop(); const e = new Error(failLabel + ": " + TR("сервер недоступен")); e.status = 0; reject(e); };
+      xhr.send(fd);
+    });
+  }
   /* Упрощённый режим организации: ни сумм, ни выбора моделей на экране.
      Признак приходит с сервера (hideCost у /api/models и /api/auth/me) и
      кэшируется в localStorage — как язык интерфейса и по той же причине:
@@ -250,19 +304,14 @@
     deleteDict:    (did)                    => call("DELETE", `/dicts/${encodeURIComponent(did)}`),
     /* Проба файла: тот же уже есть? похож на новую версию файла проекта?
        Ничего не пишет и денег не стоит. */
-    probeUpload: async (file, folder, src, tgt) => {
+    probeUpload: (file, folder, src, tgt, onProgress) => {
       const fd = new FormData();
       fd.append("file", file);
       if (folder != null) fd.append("folder", String(folder));
       /* Пара — часть вопроса: тот же файл на другую пару — новый файл. */
       if (src) fd.append("src", src);
       if (tgt) fd.append("tgt", tgt);
-      const r = await fetch((window.API_BASE || "") + "/api/projects/probe",
-                            { method: "POST", body: fd, headers: authHeaders({}) });
-      if (r.status === 401) onUnauthorized();
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) { const d = data.detail || data.error || ""; const e = new Error(typeof d === "string" && d ? TRS(d) : "Probe failed: " + r.status); e.status = r.status; throw e; }
-      return data;
+      return postForm("/projects/probe", fd, onProgress, "Probe failed");
     },
     /* Заменить файл его новой версией: перевод неизменившихся строк остаётся. */
     reimport: async (pid, file, dryRun) => {
@@ -279,7 +328,7 @@
     undoReimport:  (pid, stamp, force)      => call("POST", `/projects/${pid}/reimport/${stamp}/undo` + (force ? "?force=true" : ""), {}),
     /* `folder` — папка, в которую кладётся файл: он наследует её пару
        и область. Без папки файл сам себе папка. */
-    uploadProject: async (file, title, src, tgt, domain, folder) => {
+    uploadProject: (file, title, src, tgt, domain, folder, onProgress) => {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("title", title || "");
@@ -287,18 +336,9 @@
       fd.append("tgt",   tgt  || "EN");
       fd.append("domain", domain || "medical");
       if (folder != null) fd.append("folder", String(folder));
-      const r = await fetch((window.API_BASE || "") + "/api/projects/upload",
-                            { method: "POST", body: fd, headers: authHeaders({}) });
-      if (r.status === 401) onUnauthorized();
-      if (!r.ok) {
-        // Отказ импорта (потолки страниц/проектов, размер файла) — текст
-        // сервера, и переводится он там же, где все detail: через TRS().
-        const t = await r.text().catch(() => "");
-        let d = ""; try { d = JSON.parse(t).detail || ""; } catch (e) { d = ""; }
-        const err = new Error(typeof d === "string" && d ? TRS(d) : "Upload failed: " + r.status + " " + t);
-        err.status = r.status; throw err;
-      }
-      return r.json();
+      // Отказ импорта (потолки страниц/проектов, размер файла) — текст
+      // сервера, и переводится он там же, где все detail: через TRS().
+      return postForm("/projects/upload", fd, onProgress, "Upload failed");
     },
 
     // Признак «денег на экране нет» ставится ЗДЕСЬ, в одной точке на всех
@@ -322,18 +362,14 @@
        расчёт. Ошибки разные и разбираются по коду: 413 — файл велик,
        415 — формат не разбираем, 503 — нечем прочитать. */
     // Смета по файлу — бесплатно; скан — выборка страниц зрячей моделью, платно.
-    quoteFile: (file, src, tgt) => API.quoteUpload("/quote", file, src, tgt),
-    quoteScan: (file, src, tgt) => API.quoteUpload("/quote/scan", file, src, tgt),
-    quoteUpload: async (path, file, src, tgt) => {
+    quoteFile: (file, src, tgt, onProgress) => API.quoteUpload("/quote", file, src, tgt, onProgress),
+    quoteScan: (file, src, tgt, onProgress) => API.quoteUpload("/quote/scan", file, src, tgt, onProgress),
+    quoteUpload: (path, file, src, tgt, onProgress) => {
       const fd = new FormData();
       fd.append("file", file);
       fd.append("src", src || "RU");
       fd.append("tgt", tgt || "EN");
-      const r = await fetch(BASE + path, { method: "POST", body: fd, headers: authHeaders({}) });
-      if (r.status === 401) onUnauthorized();
-      const data = await r.json().catch(() => ({}));
-      if (!r.ok) { const e = new Error(data.detail || data.error || (TR("Не посчитано: ") + r.status)); e.status = r.status; throw e; }
-      return data;
+      return postForm(path, fd, onProgress, TR("Не посчитано"));
     },
     /* `dictId` — в какой словарь; `newDict` — название НОВОГО (заводится
        при записи, не при сухом прогоне). Ни того ни другого — словарь

@@ -334,5 +334,15 @@
   "удалил из памяти": "deleted from the memory",
   "удалил проект": "deleted a project",
   "цена за страницу применится к новым сметам": "the price per page will apply to new estimates",
-  "экспорт": "export"
+  "экспорт": "export",
+  "Спорящие строки подсвечены в таблице. Наведите на предупреждение или нажмите его — выделится ровно его пара строк.": "Conflicting rows are highlighted in the table. Hover over a warning or click it to highlight exactly its pair of rows.",
+  "та же модель, что у: ": "same model as: ",
+  "Отправляем файл": "Uploading the file",
+  "Файл на сервере, начинаем разбор": "File is on the server, starting to parse",
+  "Читаем страницы": "Reading pages",
+  "Чистим текст: переносы, колонтитулы, номера страниц": "Cleaning the text: hyphenation, running heads, page numbers",
+  "Собираем документ": "Assembling the document",
+  "Готовим страницы-картинки": "Preparing page images",
+  "Делим текст на строки": "Splitting the text into lines",
+  "Сравниваем с файлами проекта": "Comparing with the project's files"
 }

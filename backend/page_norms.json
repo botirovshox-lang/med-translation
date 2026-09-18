@@ -566,8 +566,16 @@
       "lang": "UZ",
       "chars": 1800,
       "wordLen": 6.3,
-      "ru": "Узбекский",
-      "en": "Uzbek",
+      "ru": "Узбекский (латиница)",
+      "en": "Uzbek (Latin)",
+      "basis": "derived"
+    },
+    {
+      "lang": "UZ-CYRL",
+      "chars": 1800,
+      "wordLen": 6.3,
+      "ru": "Узбекский (кириллица)",
+      "en": "Uzbek (Cyrillic)",
       "basis": "derived"
     },
     {

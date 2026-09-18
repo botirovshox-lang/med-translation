@@ -53,8 +53,10 @@ from typing import Optional
 
 try:
     import textcount
+    import pdftext
 except ImportError:                                   # pragma: no cover
     from . import textcount                            # type: ignore
+    from . import pdftext                              # type: ignore
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
 # Что принимаем. Смета умеет то же плюс .pdf; картинки — только здесь.
@@ -692,50 +694,111 @@ def paragraphs_to_docx(paragraphs: list, keep_empty: bool = False) -> bytes:
 
 
 def join_pdf_lines(lines: list) -> list:
-    """Визуальные строки PDF → абзацы. Конец абзаца — конец предложения,
-    пустая строка или потолок длины. Перенос слова по дефису в конце
-    строки снимается («тубер-» + «кулёз» → «туберкулёз»)."""
-    out, buf = [], ""
-    for raw in lines:
-        line = (raw or "").strip()
-        if not line:
-            if buf:
-                out.append(buf)
-                buf = ""
+    """Визуальные строки PDF → абзацы (см. `pdftext.join_lines`): конец
+    абзаца — конец предложения, пустая строка, заголовок или потолок длины;
+    перенос слова снимается — мягкий всегда, дефисный при строчной дальше."""
+    return pdftext.join_lines(lines)
+
+
+def mixed_to_docx(items: list, page_images: dict) -> tuple:
+    """[("p", текст) | ("img", номер страницы, строки-запасной вариант)] → (.docx, число
+    страниц, легших картинками). Страница, у которой картинку из PDF достать
+    не удалось, кладётся своими строками: потерять её молча нельзя."""
+    from docx.shared import Inches  # type: ignore
+    from PIL import Image  # type: ignore
+    doc = _document()
+    n_text = n_img = 0
+    for it in items:
+        if it[0] == "p":
+            t = _clean(it[1] or "").strip()
+            if t:
+                doc.add_paragraph(t)
+                n_text += 1
             continue
-        if buf.endswith("-") and line[:1].islower():
-            buf = buf[:-1] + line
-        else:
-            buf = (buf + " " + line) if buf else line
-        if _PDF_END_RE.search(buf) or len(buf) >= PDF_PARA_MAX:
-            out.append(buf)
-            buf = ""
-    if buf:
-        out.append(buf)
-    return out
+        idx = it[1]
+        data = page_images.get(idx)
+        placed = False
+        if data:
+            try:
+                im = Image.open(io.BytesIO(data))
+                im.load()
+                im = _exif_upright(im)
+                if im.mode not in ("RGB", "L", "1", "P", "RGBA"):
+                    im = im.convert("RGB")
+                doc.add_picture(io.BytesIO(_png_with_index(im, idx)), width=Inches(_PIC_WIDTH_IN))
+                n_img += 1
+                placed = True
+            except Exception:
+                placed = False
+        if not placed:
+            for line in (it[2] if len(it) > 2 else []) or []:
+                t = _clean(line or "").strip()
+                if t:
+                    doc.add_paragraph(t)
+                    n_text += 1
+    if not n_text and not n_img:
+        raise textcount.Unsupported("Из файла не извлеклось ни одного куска текста")
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue(), n_img
 
 
 def pdf_to_docx(content: bytes) -> tuple:
-    """(.docx, kind, note). Текстовый слой → абзацы; скан → картинки страниц."""
+    """(.docx, kind, note, страниц-картинок). Текстовый слой → абзацы через
+    чистку `pdftext` (переносы, колонтитулы, номера, мусор, буквицы);
+    страница с ненадёжным слоем — картинкой под чтение зрячей моделью;
+    скан целиком → картинки страниц."""
     notes: list = []
     try:
-        lines = textcount._pdf_blocks(content, notes)
+        pages = textcount._pdf_pages(content, notes)
     except textcount.Scan as s:
-        pages = getattr(s, "pages", 0) or 0
-        idx = list(range(pages))
-        imgs = [data for _i, data in textcount.pdf_page_images(content, idx) if data]
+        pages_n = getattr(s, "pages", 0) or 0
+        idx = list(range(pages_n))
+        imgs = [data for _i, data in textcount.pdf_page_pictures(content, idx) if data]
         if not imgs:
             raise textcount.Unsupported("PDF-скан без извлекаемых картинок страниц — "
                                         "распечатайте его в PNG/JPG постранично")
         return (scan_pages_to_docx(imgs), "scan",
                 "PDF без текстового слоя: %d страниц положены картинками; текст с них "
                 "читается автоматически. Обратно выгружается PDF из страниц с переведёнными "
-                "надписями." % len(imgs))
-    paras = join_pdf_lines(lines)
-    return (paragraphs_to_docx(paras), "pdf",
-            "PDF: текст взят из текстового слоя, строки склеены в абзацы; "
-            "надписи внутри картинок не разобраны. Обратно выгружается PDF, собранный "
-            "из документа Word.")
+                "надписями." % len(imgs), len(imgs))
+    res = pdftext.clean(pages)
+    page_images: dict = {}
+    if res["imagePages"]:
+        try:
+            # Отрисованная страница, а без рендера — только вложенная картинка
+            # размером со страницу: у цифрового PDF крупнейшая картинка —
+            # логотип, и текст страницы за ним потерялся бы.
+            for i, data in textcount.pdf_page_pictures(content, res["imagePages"], full_page=True):
+                if data:
+                    page_images[i] = data
+        except Exception:
+            page_images = {}
+    docx_bytes, n_img = mixed_to_docx(res["items"], page_images)
+    n_text_fallback = len(res["imagePages"]) - n_img
+    r = res["report"]
+    removed = []
+    if r.get("softHyphens") or r.get("hyphensJoined"):
+        removed.append("переносов слов %d" % (r.get("softHyphens", 0) + r.get("hyphensJoined", 0)))
+    if r.get("runningHeads"):
+        removed.append("колонтитулов %d" % r["runningHeads"])
+    if r.get("pageNumbers"):
+        removed.append("номеров страниц %d" % r["pageNumbers"])
+    if r.get("ornaments") or r.get("junkLines"):
+        removed.append("строк мусора распознавания %d" % (r.get("ornaments", 0) + r.get("junkLines", 0)))
+    if r.get("dropCaps"):
+        removed.append("восстановлено буквиц %d" % r["dropCaps"])
+    note = ("PDF: текст взят из текстового слоя, строки склеены в абзацы"
+            + ("; снято: " + ", ".join(removed) if removed else "") + ".")
+    if n_img:
+        note += (" Страниц с ненадёжным текстовым слоем положено картинками: %d — "
+                 "текст с них читается автоматически." % n_img)
+    if n_text_fallback > 0:
+        note += (" Страниц с ненадёжным слоем без картинки страницы оставлено текстом "
+                 "как есть: %d." % n_text_fallback)
+    note += (" Надписи внутри остальных картинок не разобраны. Обратно выгружается PDF, "
+             "собранный из документа Word.")
+    return (docx_bytes, "pdf", note, n_img)
 
 
 def to_docx(filename: str, content: bytes) -> dict:
@@ -760,9 +823,12 @@ def to_docx(filename: str, content: bytes) -> dict:
                 "note": "Картинка положена в документ; текст с неё читается автоматически. "
                         "Обратно выгружается такая же картинка с переведёнными надписями."}
     if kind == "pdf":
-        docx_bytes, k, note = pdf_to_docx(content)
+        docx_bytes, k, note, n_img = pdf_to_docx(content)
         return {"docx": docx_bytes, "kind": k, "note": note, "converted": True,
-                "writeback": True, "slotsSha": None}
+                "writeback": True, "slotsSha": None,
+                # Страницы, легшие картинками из-за ненадёжного слоя: по ним
+                # `_auto_read_images` ставит чтение и у PDF с текстом.
+                "imagePages": n_img if k == "pdf" else 0}
     if kind == "text":
         got = extract_slots(filename, content)
         docx_bytes = paragraphs_to_docx(got["slots"], keep_empty=got["writeback"])

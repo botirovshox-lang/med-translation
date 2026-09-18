@@ -173,7 +173,7 @@ function TabImport({ store, toast }) {
 /* Языки в списке: сначала частые (в том порядке, в каком их ищут глазами),
    потом все остальные по алфавиту. Каталог — с сервера, здесь только порядок
    показа: семьдесят языков по алфавиту прячут русский и английский в середине. */
-const IMP_POPULAR_LANGS = ["RU", "EN", "UZ", "ZH", "ES", "AR", "FR", "DE", "TR", "KK", "KO", "JA", "PT", "IT", "HI"];
+const IMP_POPULAR_LANGS = ["RU", "EN", "UZ", "UZ-CYRL", "ZH", "ES", "AR", "FR", "DE", "TR", "KK", "KO", "JA", "PT", "IT", "HI"];
 function impLangOptions(langs) {
   const by = {};
   (langs || []).forEach(([v, l]) => { by[v] = l; });

@@ -114,7 +114,16 @@ _PATTERN_CACHE_MAX = 20000
 # «2HRE» — «2HREZ», а это разные рецепторы, вирусы и схемы лечения. Дефис
 # и апостроф в границу НЕ входят намеренно: «БЦЖ» обязан находиться
 # в «БЦЖ-вакцина», а «patient» — в «patient's».
-_LETTERS = "а-яёА-ЯЁa-zA-ZÀ-ÖØ-öø-ÿ"
+# Кириллица — не только русская. Узбекская (ўқғҳ), казахская (әіңөүұһ),
+# киргизская (ңөү), таджикская (ӣӯҷ), украинская и белорусская (іїєґў),
+# сербская и македонская (ђјљњћџѓќѕ) буквы лежат в том же блоке Юникода,
+# и класс «а-яё» рвал на них слово: «соғлиқ» читался как «со», «лиқ» —
+# то есть граница слова стояла ПОСРЕДИ слова, и термин находился внутри
+# чужого. Одна константа на все классы: разойдись они — индекс глоссария
+# считал бы ключи по одним буквам, а границы — по другим.
+_CYR_EXT = "ўқғҳӯӣҷәіңөүұһїєґђјљњћџѓќѕ"
+_CYR_EXT_ALL = _CYR_EXT + _CYR_EXT.upper()
+_LETTERS = "а-яёА-ЯЁ" + _CYR_EXT_ALL + "a-zA-ZÀ-ÖØ-öø-ÿ"
 _DIGITS = "0-9"
 
 
@@ -252,7 +261,7 @@ _WHOLE_WORD_LANGS = frozenset(("RU",))
 # обрывается на середине слова. Латинский класс с диакритикой — иначе
 # «Lungenentzündung» и «pneumonía» рвались бы на умлауте и ударении.
 _SCRIPTS = (
-    ("cyr", "а-яёА-ЯЁ"),
+    ("cyr", "а-яёА-ЯЁ" + _CYR_EXT_ALL),
     ("lat", "A-Za-zÀ-ÖØ-öø-ÿ"),
 )
 _SCRIPT_CLASS = dict(_SCRIPTS)
@@ -1163,7 +1172,7 @@ def _text_keys(text: str) -> set:
     # Класс тот же, что у _LETTERS: без диакритики индекс разрезал бы «Ärzte»
     # на «rzte», а ключ записи — «ärzt», и записи немецкого, французского
     # и испанского не находились бы ВООБЩЕ, сколько ни настраивай окончания.
-    for w in _re.findall(r"[а-яёa-zà-öø-ÿ0-9]+", (text or "").lower()):
+    for w in _re.findall("[а-яё" + _CYR_EXT + "a-zà-öø-ÿ0-9]+", (text or "").lower()):
         # Короткие записи («ЭКГ», «КТ») лежат в корзине целого слова
         keys.update(w[:n] for n in (1, 2, 3, 4) if len(w) >= n)
     return keys
@@ -1388,6 +1397,62 @@ def _load_languages() -> list:
 
 LANGUAGES = _load_languages()
 _LANG_BY_CODE = {l["code"]: l for l in LANGUAGES}
+
+
+def _lang_prompt(code: str) -> str:
+    """Как язык называется МОДЕЛИ в промптах.
+
+    В промпт уходит код проекта («RU», «EN») — модель его читает. Но код
+    молчит про ПИСЬМО: «UZ» не говорит, латиница это или кириллица, и модель
+    решает сама — на узбекском рынке это половина заказов не тем алфавитом.
+    Поэтому у записи каталога с двусмысленным кодом есть поле `prompt`
+    («Uzbek (Cyrillic script, never Latin)»), и сюда идёт оно. Без поля
+    возвращается код КАК ЕСТЬ, байт в байт: промпты termcheck, судьи,
+    ревизии и арбитра версионированы, и переименование «EN» → «English»
+    на всех парах перекупило бы тысячи оплаченных вердиктов ради
+    косметики. Двусмысленный код — ровно два узбекских, там и работает."""
+    c = (code or "").strip()
+    info = _LANG_BY_CODE.get(c.upper()) or {}
+    return info.get("prompt") or c
+
+
+# Правила ЯЗЫКА ПЕРЕВОДА — данными (`backend/lang_rules.json`), не кодом:
+# орфография и грамматика для промптов и признаки для детерминированных
+# проверок. Файл, а не словарь в коде, потому что правила правятся чаще
+# релизов и человеком, который знает язык, а не код. Ни одно поле
+# не обязательно: нет правил для языка — промпт байт в байт прежний,
+# проверки молчат (закон DOMAIN_RULES).
+def _load_lang_rules() -> dict:
+    try:
+        with open(ROOT / "backend" / "lang_rules.json", encoding="utf-8") as f:
+            rules = json.load(f).get("rules") or {}
+    except Exception as e:
+        print(f"[backend] WARN: lang_rules.json не прочитан: {e}", file=sys.stderr)
+        rules = {}
+    return {str(k).upper(): v for k, v in rules.items() if isinstance(v, dict)}
+
+
+_LANG_RULES = _load_lang_rules()
+
+
+def _lang_rule(code: str) -> dict:
+    return _LANG_RULES.get((code or "").strip().upper()) or {}
+
+
+def _lang_conventions(code: str) -> str:
+    """Блок правил языка перевода для промптов перевода, ремонта и ревизии.
+
+    Пусто — промпт байт в байт прежний: блок появляется только у языков,
+    описанных в lang_rules.json, поэтому версии вердиктов остальных пар
+    не трогаются. Стоит РЯДОМ со стайл-шитом документа и слабее приказа
+    глоссария по той же причине, что и он."""
+    r = _lang_rule(code)
+    lines = [str(x).strip() for x in (r.get("conventions") or []) if str(x).strip()]
+    if not lines:
+        return ""
+    return ("TARGET LANGUAGE CONVENTIONS (" + (r.get("name") or code) + "), apply always; "
+            "approved glossary terms take precedence:\n"
+            + "\n".join("- " + l for l in lines) + "\n")
 
 
 def _check_lang_pair(src: str, tgt: str) -> tuple:
@@ -1700,6 +1765,7 @@ def _judge_system(domain: dict, src_lang: str) -> str:
     """Промпт судьи. Раньше он был зашито медицинским и русским: «Ты —
     медицинский редактор», примеры про лимфаденит, «текст на русском».
     Для юридического проекта на немецкий это мешало, а не помогало."""
+    src_lang = _lang_prompt(src_lang)
     return (
         "Ты — редактор перевода, специализация: " + domain["label"].lower() + ". "
         "Тебе дают исходный текст (язык: " + src_lang + ") и его ОБРАТНЫЙ перевод "
@@ -1729,6 +1795,7 @@ TERMCHECK_SEVERITY = ["critical", "major", "minor"]
 
 
 def _termcheck_system(domain: dict, src_lang: str, tgt_lang: str) -> str:
+    src_lang, tgt_lang = _lang_prompt(src_lang), _lang_prompt(tgt_lang)
     return (
         "You are a terminology reviewer for " + domain["en"] + " translations from "
         + src_lang + " into " + tgt_lang + ".\n"
@@ -2290,6 +2357,10 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
     проверить тестом без обращения к модели: от того, каким уровнем уходит
     запись глоссария — приказом или подсказкой, — зависит, повторит ли модель
     чужую ошибку, а такое нельзя оставлять без проверки."""
+    # Язык — именем для модели, когда код двусмыслен (см. _lang_prompt);
+    # для остальных пар строка байт в байт прежняя.
+    tgt_code = tgt
+    src, tgt = _lang_prompt(src), _lang_prompt(tgt)
     if literal:
         system = (
             f"Translate the following text from {src} to {tgt} as literally as possible. "
@@ -2343,6 +2414,12 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         # Пусто — промпт байт в байт прежний, версии вердиктов не трогаются.
         if style:
             system += "\n" + style
+        # Правила языка перевода (lang_rules.json) — тем же путём и с той же
+        # оговоркой: нет правил — нет блока. В обратный перевод не идут:
+        # он отражает текст, а не пишет его.
+        conv = _lang_conventions(tgt_code)
+        if conv:
+            system += "\n" + conv
     hard = [h for h in (gloss_hits or []) if _hit_tier(h) == GLOSSARY_TIER_HARD]
     # Подсказки автоимпорта в промпт НЕ уходят — см. блок ниже, где раньше
     # стоял их список. Отбор оставлен: по нему считается строка журнала.
@@ -5495,7 +5572,7 @@ def _scan_read_page(jpeg: bytes, mdl: dict, src_lang: str) -> Optional[str]:
               "verbatim and complete, in reading order, one paragraph per line, in its original "
               "language (source language code: %s). Keep numbers, punctuation and word spacing. "
               "No commentary, no translation, no markdown. If the page has no text, output nothing."
-              % src_lang)
+              % _lang_prompt(src_lang))
     extra = ({"max_completion_tokens": 8192} if mdl["api"] == "modern"
              else {"max_tokens": 4000, "temperature": 0})
     try:
@@ -5527,7 +5604,7 @@ def _scan_quote(content: bytes, filename: str, src: str, tgt: str, card: dict,
         raise HTTPException(400, "У файла есть текстовый слой — считайте обычной сметой, она бесплатна")
     k = min(int(sample) if sample else textcount.SCAN_SAMPLE_PAGES, total)
     idx = textcount.sample_indices(total, k)
-    pages = textcount.pdf_page_images(content, idx)
+    pages = textcount.pdf_page_pictures(content, idx)
     mdl = _resolve_model(_dm("ocr"))
 
     def read(item):
@@ -6036,7 +6113,7 @@ def fetch_segments(pid: int, req: SegmentsFetchRequest):
     каждые несколько секунд — это мегабайты трафика и подвисающая таблица."""
     project = get_project(pid)
     wanted = set(req.ids[:1000])
-    return {"ok": True, "segments": [_segment_for_client(s) for s in list(project["segments"])
+    return {"ok": True, "segments": [_segment_for_client(s, project) for s in list(project["segments"])
                                      if s.get("id") in wanted]}
 
 
@@ -6192,6 +6269,17 @@ def _coverage(project: dict) -> dict:
         {"key": "dup", "label": "Самоповтор текста"},
         {"key": "consist", "label": "Единство терминологии по документу"},
     ]
+    # Письмо и алфавит языка перевода — по каталогу (`letters`): у языка
+    # с ДВУМЯ письменностями иначе не поймать перевод не тем алфавитом.
+    # У языка с одним письмом строки нет вовсе — ни в «работает», ни
+    # в «молчит»: там чужое письмо в переводе ловит `script` строкой выше
+    # (письмо ОРИГИНАЛА), а «молчит» здесь значило бы, что проверке есть
+    # что делать и она не делает, — неправда.
+    if _alphabet_active({"tgt": tgt}):
+        works.append({"key": "alphabet", "label": "Письмо и алфавит языка перевода (%s)" % tgt})
+    if _lang_rule(tgt).get("conventions"):
+        works.append({"key": "conventions",
+                      "label": "Правила орфографии и грамматики языка перевода в промптах (%s)" % tgt})
     # Морфологический подбор терминов — по таблице окончаний языка оригинала.
     if src in _LANG_ENDINGS:
         works.append({"key": "morph", "label": "Термины в косвенных формах (морфология %s)" % src})
@@ -6269,7 +6357,8 @@ def _analysis_seg_fp(s: dict) -> str:
 _ANALYSIS_ROWS: dict = {}
 
 
-def _analysis_row(s: dict, gloss_bad: bool, min_score: int) -> dict:
+def _analysis_row(s: dict, gloss_bad: bool, min_score: int,
+                  project: Optional[dict] = None) -> dict:
     """Разбор ОДНОГО сегмента для экрана «Анализ»: в какие корзины он идёт.
 
     Вынесено из общего прохода ради кэша по содержимому (`_ANALYSIS_ROWS`),
@@ -6392,7 +6481,7 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int) -> dict:
         # текст написан и оплачен, лежит в repair.candidate и ждёт одного
         # нажатия. В общей корзине они выглядят безнадёжными и потому
         # не разбираются никогда.
-        if _repair_score_vetoed(s):
+        if _repair_score_vetoed(s, project):
             row["scoreVetoed"] = True
     # Только неподтверждённые: подтверждённые с находками пакетный ремонт
     # без явного разрешения не трогает, и обещать «это починится само»
@@ -6585,8 +6674,11 @@ def project_analysis(pid: int, refresh: bool = False):
         sid = s["id"]
         key = (seg_fp.get(sid), sid in gloss_bad, pol["backcheck_min"])
         got = rows_prev.get(sid)
+        # Проект — ради пары языков (сверка кандидата наследства); кэш строк
+        # и так свой у каждого проекта (`_ANALYSIS_ROWS[pid]`), в ключ пара
+        # не входит: у проекта она не меняется.
         row = got[1] if got and got[0] == key else _analysis_row(
-            s, sid in gloss_bad, pol["backcheck_min"])
+            s, sid in gloss_bad, pol["backcheck_min"], project)
         rows_new[sid] = (key, row)
         if row["untranslated"]:
             untranslated.append(sid)
@@ -6824,6 +6916,19 @@ def project_analysis(pid: int, refresh: bool = False):
     machine_set.update(override_ids)
     machine_set.update(impact["pending"])
     machine_set.update(_consist_ids)
+    # Перевод не тем письмом (латиница вместо узбекской кириллицы) — работа
+    # прогона: находка есть только с проектом, поэтому список — отсюда.
+    # У заверённого — человеку, как разнобой: без разрешения его не тронут.
+    _alpha_ids = _alphabet_ids(project)
+    human_set.update((_alpha_ids & confirmed_ids) - override_ids)
+    # Совпавший отпечаток захода прогон не берёт (тот же предикат, что
+    # у `clamped` выше и у `_plan_step`): такой сегмент — человеку, иначе
+    # «доделаю сама N» держало бы число, которое не осушится никогда.
+    _by_id = {sg["id"]: sg for sg in project.get("segments") or []}
+    _alpha_clamped = {i for i in _alpha_ids
+                      if i in _by_id and _repair_clamped(_by_id[i], _repair_findings(_by_id[i], None))}
+    human_set.update(_alpha_clamped - override_ids)
+    machine_set.update(_alpha_ids - _alpha_clamped)
     # caseSegments заверенных сюда попадают, но human_set их уже забрал:
     # фолбэк `[{"kind": "gloss"}]` по `gloss_bad` заводит их в
     # `confirmed_findings` выше. Вычитание ниже и есть страховка от того,
@@ -7914,7 +8019,7 @@ async def upload_project(
             new_project["slotsSha"] = parsed["slotsSha"]   # сторож дрейфа резки при выгрузке
         # Картинки читаются сами — задача ставится после записи исходника:
         # разбор читает .docx с диска.
-        _auto_read_images(new_project, parsed["kind"])
+        _auto_read_images(new_project, parsed["kind"], parsed.get("imagePages") or 0)
     except Exception as e:
         print("[backend] исходник проекта %s не сохранён: %s" % (new_id, e),
               file=sys.stderr)
@@ -7980,6 +8085,7 @@ def _parse_upload(filename: str, content: bytes) -> dict:
     paras = [t for t, _full in texts]
     full = [f for _t, f in texts]
     out = {"sha": sha, "docx": conv["docx"], "kind": conv["kind"], "note": conv.get("note"),
+           "imagePages": int(conv.get("imagePages") or 0),
            "converted": bool(conv.get("converted")), "writeback": bool(conv.get("writeback", True)),
            "slotsSha": conv.get("slotsSha"), "texts": texts, "paras": paras,
            "full": full, "units": _docx_units(paras, full)}
@@ -8356,7 +8462,7 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
             project["slotsSha"] = parsed["slotsSha"]
         else:
             project.pop("slotsSha", None)
-        _auto_read_images(project, parsed["kind"])   # картинки новой редакции
+        _auto_read_images(project, parsed["kind"], parsed.get("imagePages") or 0)   # картинки новой редакции
     except Exception as e:
         print("[backend] исходник проекта %s после замены не сохранён: %s" % (pid, e), file=sys.stderr)
     save_state(STATE)
@@ -8678,6 +8784,7 @@ def _image_read_system(dom: dict, src_lang: str) -> str:
     («KARIMOV SH.», «DEPTH:14cm», «kV 120.0»). Переводить их незачем, а тащить
     в сегменты, память переводов и очередь терминов нельзя тем более —
     это персональные данные, и попав в TM они разъедутся по чужим проектам."""
+    src_lang = _lang_prompt(src_lang)
     return (
         "You read text that is printed INSIDE an illustration of a "
         + dom["en"] + " document. The document language is " + src_lang + ".\n"
@@ -9722,6 +9829,10 @@ _TERM_NOT_TERM = [0]
 # Кириллическое слово целиком: по нему из общего набора служебных слов
 # отбираются русские.
 _CYR_WORD_RE = re.compile(r"[а-яё]+")
+# «В тексте есть слова»: три буквы подряд, кириллица (с буквами соседних
+# алфавитов — см. _CYR_EXT) или латиница. Не Юникод целиком намеренно:
+# «IFN-γ» и «38 °C» словами не являются.
+_WORDS_RE = re.compile("[A-Za-zА-Яа-яЁё" + _CYR_EXT_ALL + "]{3}")
 
 
 def _head_word(text: str) -> str:
@@ -10230,7 +10341,7 @@ def _harvest_terms(seg: dict, project: dict, via: str = "confirmed") -> list:
         term_tgt = target.strip().strip(" .,;:")
         # Числа и обозначения («38,5 °C», «IFN-γ») терминами не бывают: пара
         # без букв — это не словарная запись, а строка документа.
-        if re.search(r"[A-Za-zА-Яа-яЁё]{3}", term_src) and re.search(r"[A-Za-zА-Яа-яЁё]{3}", term_tgt):
+        if _WORDS_RE.search(term_src) and _WORDS_RE.search(term_tgt):
             known = _glossary_entry(term_src, scope, project.get("id"))
             if not (known and _norm_key(known.get("tgt")) == _norm_key(term_tgt)):
                 c = _queue_term("segment", term_src, term_tgt,
@@ -10910,6 +11021,7 @@ def explain_term_variants(cid: int, req: ExplainRequest = ExplainRequest()):
         raise HTTPException(400, "Нечего сравнивать: у термина нет ни одного варианта перевода")
 
     dom = _resolve_domain(scope[1])
+    src_lang, tgt_lang = _lang_prompt(src_lang), _lang_prompt(tgt_lang)
     system = (
         f"You are a {dom['expert']}. The user does NOT speak {tgt_lang} and must choose "
         f"between candidate {tgt_lang} translations of a {src_lang} term by MEANING.\n\n"
@@ -11618,6 +11730,7 @@ def _openai_meaning(pairs: list, scope: tuple) -> Optional[dict]:
     src_lang, tgt_lang = ((authorities_mod.source_lang(scope[0]),
                            authorities_mod.target_lang(scope[0])) if authorities_mod
                           else (scope[0].split("→")[0], scope[0].split("→")[-1]))
+    src_lang, tgt_lang = _lang_prompt(src_lang), _lang_prompt(tgt_lang)
     dom = _resolve_domain(scope[1])
     system = (
         f"You are a {dom['expert']}. For each pair below decide whether the {tgt_lang} "
@@ -12445,6 +12558,7 @@ def _edit_terms_prompt(src_lang: str, tgt_lang: str, domain: dict) -> str:
     оригинал сегмента, а лишние сотни токенов на каждое подтверждение —
     расход без измеримой пользы. Свободного текста в ответе нет, поэтому
     язык объяснений (`_explain_lang_name`) сюда не протаскивается."""
+    src_lang, tgt_lang = _lang_prompt(src_lang), _lang_prompt(tgt_lang)
     return (
         "You extract " + domain["en"] + " terminology that a HUMAN translator corrected.\n"
         "You are given the source text (" + src_lang + "), a DRAFT translation (" + tgt_lang + ")\n"
@@ -12468,8 +12582,8 @@ def _openai_edit_terms(source: str, before: str, after: str, project: dict):
     import openai
     dom = _resolve_domain(project.get("domain"))
     mdl = _resolve_model(_dm("translate"))
-    src_l = (project.get("src") or "").upper() or "SRC"
-    tgt_l = (project.get("tgt") or "").upper() or "TGT"
+    src_l = _lang_prompt((project.get("src") or "").upper() or "SRC")
+    tgt_l = _lang_prompt((project.get("tgt") or "").upper() or "TGT")
     # Таймаут 60 — младший из прецедентов проекта; без повторов: подтверждение
     # ждёт этот ответ, и вторая попытка удвоила бы паузу человеку.
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"),
@@ -12845,7 +12959,7 @@ def _backcheck_cached(seg: dict, mdl_id: str, use_judge: bool,
     return not _judge_pending(seg, judge_all)
 
 
-def _segment_for_client(seg: dict) -> dict:
+def _segment_for_client(seg: dict, project: Optional[dict] = None) -> dict:
     """Сегмент с производными признаками stale/tried. Хеши считаются здесь:
     браузеру sha1 не пересчитать, а без них он не отличит устаревшую проверку
     от актуальной."""
@@ -12969,7 +13083,7 @@ def _segment_for_client(seg: dict) -> dict:
                          # врала бы, текст как раз менялся.
                          "retryable": bool(rp.get("retryable")
                                            and rp.get("attemptHash") == cur),
-                         "acceptable": _repair_score_vetoed(seg)}
+                         "acceptable": _repair_score_vetoed(seg, project)}
     # Советы арбитра, которые есть чем исполнить, — признак для кнопки
     # «Применить» в карточке сегмента. Считает сервер (см. `_ctx_advices`).
     if out.get("termContext"):
@@ -12981,7 +13095,7 @@ def _segment_for_client(seg: dict) -> dict:
 
 def _project_for_client(project: dict) -> dict:
     """Копия проекта с производными признаками у каждого сегмента."""
-    return {**project, "segments": [_segment_for_client(s) for s in list(project["segments"])]}
+    return {**project, "segments": [_segment_for_client(s, project) for s in list(project["segments"])]}
 
 
 # ── Бесплатный пересчёт сохранённых оценок back-check ────────────────
@@ -13458,7 +13572,7 @@ def _termcheck_trivial(source: str, target: str) -> Optional[str]:
     """Сегменты, где проверять нечего, — без вызова модели.
     Терминов не бывает там, где нет слов; а совпадение перевода с оригиналом
     (числа, латинские обозначения, «IFN-γ») — это не терминологическая ошибка."""
-    if not re.search(r"[A-Za-zА-Яа-яЁё]{3}", target or ""):
+    if not _WORDS_RE.search(target or ""):
         return "в переводе нет слов — только числа или обозначения"
     if _norm_key(source) == _norm_key(target):
         return "перевод совпадает с оригиналом — переводить нечего"
@@ -14367,6 +14481,261 @@ def _translit_misses(seg: dict, project: Optional[dict] = None) -> list:
     return out
 
 
+# Письмо и алфавит ЯЗЫКА ПЕРЕВОДА.
+#
+# `_script_misses` строкой выше ловит буквы письма ОРИГИНАЛА в переводе и
+# молчит, когда письменности совпали, — и это правильно: на RU→UZ-CYRL
+# кириллица общая, претензия к кириллической букве была бы выдумана. Но у
+# языка с двумя письменностями есть ДРУГАЯ беда, которую не видит никто:
+# модель, спрошенная про узбекский, отвечает латиницей — привычной ей
+# и большей частью корпуса, — а заказ был на кириллицу. Балл back-check
+# на таком переводе честный (обратный перевод с латиницы ничем не хуже),
+# termcheck доволен (термины настоящие), глоссарий доволен, письмо ОРИГИНАЛА
+# не сохранилось — всё чисто, а документ клиенту не годится целиком.
+#
+# Второй случай мельче, но того же рода: перевод кириллицей, но РУССКОЙ —
+# «щ» и «ы» в узбекском алфавите отсутствуют (35 букв, 1956 год), и слово
+# с ними — либо русское слово, оставленное как есть, либо русская орфография
+# заимствования. Слово, стоящее в ОРИГИНАЛЕ буква в букву (фамилия, название,
+# цитата), находкой не считается: его переносят, а не переводят.
+#
+# Знание берётся из КАТАЛОГА (`script`, `letters`), а не из пары в коде:
+# нет алфавита у языка — проверка молчит (закон DOMAIN_RULES). Дублирования
+# с `_script_misses` нет по построению: письмо, совпавшее с письмом
+# ОРИГИНАЛА, здесь не рассматривается — про него уже сказано там.
+#
+# Проекта требует (язык перевода лежит на нём), поэтому в отпечаток захода
+# (`_repair_attempt_key`, он считается без проекта) не входит; в состав
+# прогона и корзину разбора доезжает СПИСКОМ id — `_alphabet_ids`, тем же
+# приёмом, что `consist_ids` у разнобоя: разбор зовёт `_repair_findings`
+# без проекта ради скорости, и без списка обещал бы меньше работы, чем
+# сделает прогон. В отличие от транслитерации сокращения это НАХОДКА, а не
+# только счётчик: модели есть что исполнить («перепиши кириллицей») и есть
+# что предъявить человеку (слова поимённо).
+_ALPHABET_LIST_MAX = 6
+# Имя письма — человеку, а не Юникоду: «ожидается cyrillic» пятилетний тест
+# не проходит. Чего нет в таблице — строчными как есть.
+_SCRIPT_RU = {"CYRILLIC": "кириллица", "LATIN": "латиница", "GREEK": "греческое письмо",
+              "ARABIC": "арабское письмо", "HEBREW": "иврит", "HAN": "иероглифы",
+              "ARMENIAN": "армянское письмо", "GEORGIAN": "грузинское письмо"}
+_ALPHA_STRIP = "()[].,;:«»\"'…!?—–“”„‘’"
+# Буквы, одинаковые на вид в кириллице и латинице: слово, где буквы одного
+# письма — сплошь такие, набрано с подменой («пaциент» с латинской a).
+_HOMOGLYPH_CYR = set("аеорсухАВЕКМНОРСТХіІ")
+_HOMOGLYPH_LAT = set("aeopcyxABEKMHOPCTXiI")
+_APOS_IN_WORD_RE = re.compile(r"[^\W\d_][\'’ʼʻ`´][^\W\d_]")
+
+
+def _script_ru(name: str) -> str:
+    return _SCRIPT_RU.get(name or "", (name or "").lower())
+
+
+def _alphabet_info(project: Optional[dict]) -> tuple:
+    """(письмо, алфавит строчными) языка перевода или ("", "")."""
+    info = _LANG_BY_CODE.get(((project or {}).get("tgt") or "").upper()) or {}
+    return (info.get("script") or "", (info.get("letters") or "").lower())
+
+
+def _alphabet_active(project: Optional[dict]) -> bool:
+    """Есть ли у языка перевода чем проверять письмо: алфавит в каталоге ИЛИ
+    правила в lang_rules.json. ОДИН предикат на находку, список id для состава
+    прогона и разбора и строку покрытия: разойдись они — смета обещала бы
+    одно, а прогон делал другое (казахский: правила есть, алфавита нет)."""
+    if not project:
+        return False
+    want, letters = _alphabet_info(project)
+    return bool(want and (letters or _lang_rule((project.get("tgt") or "").upper())))
+
+
+def _text_script_by_words(text: str) -> str:
+    """Письмо ТЕКСТА — по большинству СЛОВ (не букв): «COVID-19 и ВИЧ.» —
+    кириллический оригинал, хотя латинских букв в нём больше."""
+    counts: dict = {}
+    for raw in text.split():
+        sc = _word_script_of(raw)
+        if sc:
+            counts[sc] = counts.get(sc, 0) + 1
+    if not counts:
+        return ""
+    return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
+
+def _word_script_of(word: str) -> str:
+    """Письмо СЛОВА — по большинству его букв («CYRILLIC», «LATIN», «»)."""
+    counts: dict = {}
+    for ch in word:
+        sc = _script_of(ch)
+        if sc:
+            counts[sc] = counts.get(sc, 0) + 1
+    if not counts:
+        return ""
+    return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
+
+def _alphabet_misses(seg: dict, project: Optional[dict] = None) -> list:
+    """Письмо, алфавит и орфографические признаки ЯЗЫКА ПЕРЕВОДА.
+
+    Четыре находки, все kind="script", все бесплатные:
+    1) перевод не тем письмом — большинство СЛОВ (не букв: латинское
+       название вида и МНН препарата — законные вкрапления) набрано
+       чужим письмом, и таких слов не меньше двух;
+    2) буквы вне алфавита языка (`letters` каталога): «щётка», «аниқланды»;
+    3) правила языка (lang_rules.json): апостроф внутри слова там, где
+       разделитель — ъ; длинный текст без единой из букв, без которых
+       язык не пишется (ў қ ғ ҳ — набрано русской раскладкой);
+    4) смешение письменностей внутри слова омоглифами («пaциент») — только
+       когда письмо оригинала и перевода одно: иначе об этом уже сказал
+       `_script_misses`.
+    Слово, ПЕРЕНЕСЁННОЕ из оригинала (фамилия, цитата, латинское название),
+    ни в одной находке не участвует; слово капсом (аббревиатура), с цифрой
+    или дефисом внутри — в решении о письме не участвует тоже."""
+    if not _alphabet_active(project):
+        return []
+    tgt_code = (project.get("tgt") or "").upper()
+    want, letters = _alphabet_info(project)
+    rule = _lang_rule(tgt_code)
+    src = (seg.get("source") or "").strip()
+    tgt = (seg.get("target") or "").strip()
+    if not tgt:
+        return []
+    s_script = _text_script_by_words(src)
+    src_words = {w.strip(_ALPHA_STRIP).lower() for w in src.split()}
+    src_words.discard("")
+
+    def carried(word: str) -> bool:
+        # Слово ПЕРЕНЕСЕНО из оригинала, а не переведено: фамилия, название,
+        # цитата. Сравнение не побуквенное, а по ОБЩЕМУ НАЧАЛУ: в русском
+        # оригинале имя стоит в косвенном падеже («метод Щукина»), в переводе
+        # — в словарной форме или с суффиксом («Щукин усули», «Щукиннинг»),
+        # и точное совпадение его не узнало бы. Общее начало — от четырёх
+        # букв и не короче, чем более короткое из слов без двух букв.
+        wl = word.lower()
+        if wl in src_words:
+            return True
+        for sw in src_words:
+            n = min(len(wl), len(sw))
+            if n < 4:
+                continue
+            cp = 0
+            while cp < n and wl[cp] == sw[cp]:
+                cp += 1
+            if cp >= 4 and cp >= n - 2:
+                return True
+        return False
+
+    # `carried()` стоит O(слов × слов оригинала), поэтому зовётся только
+    # для слов-КАНДИДАТОВ на находку, а не для каждого слова перевода:
+    # на книге в 2700 строк разница — секунды единственного воркера.
+    distinct = (rule.get("distinctive") or "").lower()
+    min_words = int(rule.get("distinctive_min_words") or 0)
+    apos_rule = rule.get("apostrophe_in_word") is False
+    homo_rule = s_script == want and want in ("CYRILLIC", "LATIN")
+    raw_words = [w for w in (r.strip(_ALPHA_STRIP) for r in tgt.split())
+                 if w and any(ch.isalpha() for ch in w)]
+    if not raw_words:
+        return []
+
+    def suspicious(w: str) -> bool:
+        sc = _word_script_of(w)
+        if sc and sc != want:
+            return True                                     # чужое письмо
+        if letters and any(_script_of(c) == want and c.lower() not in letters for c in w):
+            return True                                     # буква вне алфавита
+        if apos_rule and _APOS_IN_WORD_RE.search(w):
+            return True
+        if homo_rule and "-" not in w and any(_script_of(c) == "LATIN" for c in w) \
+                and any(_script_of(c) == "CYRILLIC" for c in w):
+            return True
+        return False
+
+    words = [w for w in raw_words if not (suspicious(w) and carried(w))]
+    if not words:
+        return []
+    out: list = []
+
+    # 1) Письмо — по словам. Аббревиатуры (капс), слова с цифрой или дефисом
+    #    внутри («MDR-TB», «COVID-19», «IFN-γ») письмо перевода не выдают.
+    plain = [w for w in words
+             if not any(ch.isdigit() for ch in w) and "-" not in w
+             and not (len(w) >= 2 and w.upper() == w)]
+    other = [w for w in plain if _word_script_of(w) not in ("", want)]
+    if len(other) >= 2 and len(other) > len(plain) - len(other):
+        have = _word_script_of(" ".join(other))
+        if have != s_script:            # своё письмо оригинала — забота _script_misses
+            out.append({"kind": "script",
+                        "text": "перевод набран не тем письмом: ожидается "
+                                + _script_ru(want) + ", а большинство слов — "
+                                + _script_ru(have)})
+            return out                  # остальное на таком тексте — шум
+
+    def named(items: list) -> str:
+        return (", ".join("«" + w + "»" for w in items[:_ALPHABET_LIST_MAX])
+                + (" и ещё " + str(len(items) - _ALPHABET_LIST_MAX)
+                   if len(items) > _ALPHABET_LIST_MAX else ""))
+
+    own = [w for w in words if _word_script_of(w) == want]
+    # 2) Буквы вне алфавита языка перевода.
+    if letters:
+        bad = [w for w in own if any(_script_of(c) == want and c.lower() not in letters for c in w)]
+        bad = list(dict.fromkeys(bad))
+        if bad:
+            out.append({"kind": "script",
+                        "text": "буквы вне алфавита языка перевода: " + named(bad)})
+    # 3) Правила языка из lang_rules.json.
+    if apos_rule:
+        apos = list(dict.fromkeys(w for w in own if _APOS_IN_WORD_RE.search(w)))
+        if apos:
+            out.append({"kind": "script",
+                        "text": "апостроф внутри слова, в этом письме так не пишут: "
+                                + named(apos)})
+    if distinct and min_words and len(own) >= min_words:
+        if not any(c.lower() in distinct for w in own for c in w):
+            out.append({"kind": "script",
+                        "text": "в переводе нет ни одной из букв "
+                                + " ".join(distinct)
+                                + " — похоже, набрано буквами соседнего языка"})
+    # 4) Омоглифы: одно слово двумя письменностями. Только при общем письме
+    #    оригинала и перевода — иначе это находка _script_misses.
+    if homo_rule:
+        mixed = []
+        for w in words:
+            for part in w.split("-"):
+                cyr = [c for c in part if _script_of(c) == "CYRILLIC"]
+                lat = [c for c in part if _script_of(c) == "LATIN"]
+                if not cyr or not lat:
+                    continue
+                minority = lat if len(lat) <= len(cyr) else cyr
+                pool = _HOMOGLYPH_LAT if minority is lat else _HOMOGLYPH_CYR
+                if all(c in pool for c in minority):
+                    mixed.append(w)
+                    break
+        if mixed:
+            out.append({"kind": "script",
+                        "text": "в слове смешаны письменности: " + named(mixed)})
+    return out
+
+
+_ALPHA_IDS_CACHE: dict = {}
+
+
+def _alphabet_ids(project: Optional[dict]) -> set:
+    """Сегменты с находкой письма/алфавита — списком для состава прогона
+    и корзин разбора (см. комментарий выше). Кэш по содержимому сегментов
+    (id + перевод + оригинал) и языку перевода: разбор состава зовётся
+    на каждую смену модели, а проход по книге — секунды."""
+    if not _alphabet_active(project):
+        return set()
+    segs = project.get("segments") or []
+    fp = hash(((project.get("tgt") or "").upper(),
+               tuple((sg.get("id"), sg.get("source") or "", sg.get("target") or "") for sg in segs)))
+    got = _ALPHA_IDS_CACHE.get(project.get("id"))
+    if got and got[0] == fp:
+        return set(got[1])
+    ids = {sg["id"] for sg in segs if _alphabet_misses(sg, project)}
+    _ALPHA_IDS_CACHE[project.get("id")] = (fp, frozenset(ids))
+    return ids
+
+
 # ── Контекстный арбитр спорного термина ──────────────────────────────
 # Проверки смотрят на сегмент в одиночку, а термин живёт в ряду: «туберкулёз
 # лёгких» обратный перевод возвращает как «лёгочный туберкулёз», и по словам
@@ -14536,7 +14905,8 @@ def _openai_term_context(seg: dict, project: dict, disputes: list,
     import openai
     mdl = _resolve_model(model or _dm("termaudit"))
     dom = _resolve_domain(project.get("domain"))
-    src_lang, tgt_lang = project.get("src", "RU"), project.get("tgt", "EN")
+    src_lang, tgt_lang = (_lang_prompt(project.get("src", "RU")),
+                          _lang_prompt(project.get("tgt", "EN")))
     system = (
         "Ты — редактор перевода, специализация: " + dom["label"].lower() + ". "
         "Тебе дают три подряд идущих сегмента документа (язык: " + src_lang + "), "
@@ -14808,7 +15178,11 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     # перевесит. В `_repair_scores` оно остаётся: ремонт, ЛОМАЮЩИЙ начертание,
     # обязан откатиться.
     items = (_gloss_misses(seg, project) + _consist_misses(seg, project)
-             + _case_misses(seg) + _script_misses(seg) + _dup_misses(seg))
+             + _case_misses(seg) + _script_misses(seg) + _dup_misses(seg)
+             # Письмо и алфавит ЯЗЫКА ПЕРЕВОДА (латиница вместо узбекской
+             # кириллицы): с проектом — находка, без проекта — доезжает
+             # списком `_alphabet_ids`, как разнобой.
+             + _alphabet_misses(seg, project))
     # Транслитерации сокращения здесь НЕТ, и это не забывчивость.
     # Находка обязана быть исполнимой и видимой одинаково всем: `_plan_step`
     # и /analysis зовут этот расчёт БЕЗ проекта (ради скорости), а правило
@@ -15110,7 +15484,7 @@ def _repair_futile(seg: dict, project: Optional[dict] = None) -> bool:
     return was == {f["text"] for f in _repair_findings(seg, project)}
 
 
-def _repair_score_vetoed(seg: dict) -> bool:
+def _repair_score_vetoed(seg: dict, project: Optional[dict] = None) -> bool:
     """Правку отменил ТОЛЬКО упавший балл back-check, а термины она почистила.
 
     Это разбор НАСЛЕДСТВА, а не действующая ветка: нынешний `_run_segment_repair`
@@ -15163,8 +15537,14 @@ def _repair_score_vetoed(seg: dict) -> bool:
     # DOMAIN_RULES, если правил для пары языков нет: тот же закон, молчим.
     if checks_mod:
         try:
+            # Пара и область — ПРОЕКТА: с умолчанием RU→EN на узбекской цели
+            # маркеры отрицания искались бы английские, и любой оригинал
+            # с «не» давал бы фантомное «отрицание потерялось».
+            _kw = ({"domain": _rules_domain_of(project),
+                    "src_lang": project.get("src") or "RU",
+                    "tgt_lang": project.get("tgt") or "EN"} if project else {})
             bad = checks_mod.deterministic_issues(
-                seg.get("source") or "", rp.get("candidate") or "")
+                seg.get("source") or "", rp.get("candidate") or "", **_kw)
             if any(i.get("type") in checks_mod.BACKCHECK_HARD_TYPES
                    or i.get("type") in ("number_unit_dosage_mismatch", "negation_shift")
                    for i in (bad or [])):
@@ -15187,6 +15567,8 @@ def _repairable(seg: dict, allow_tried: bool = False, project: Optional[dict] = 
 
 
 def _repair_system(dom: dict, src_lang: str, tgt_lang: str, style: str = "") -> str:
+    conv = _lang_conventions(tgt_lang)
+    src_lang, tgt_lang = _lang_prompt(src_lang), _lang_prompt(tgt_lang)
     return (
         "You are a senior " + dom["expert"] + ". You are given a SOURCE text in " + src_lang
         + ", its TRANSLATION into " + tgt_lang + ", and a list of ISSUES found by quality control.\n\n"
@@ -15212,6 +15594,7 @@ def _repair_system(dom: dict, src_lang: str, tgt_lang: str, style: str = "") -> 
         "   abbreviation letter by letter in the target script — an issue saying that an\n"
         "   abbreviation was changed does NOT ask you to do that.\n"
         + ("\n" + style if style else "")
+        + ("\n" + conv if conv else "")
     )
 
 
@@ -15694,6 +16077,9 @@ def _repair_scores(seg: dict, project: Optional[dict] = None,
         "case": len(_case_misses(seg)),
         # И буквы чужого письма — тоже бесплатно и тоже всегда.
         "script": len(_script_misses(seg)),
+        # Письмо и алфавит языка перевода: правка по другой претензии
+        # не вправе вернуть латиницу в кириллический перевод.
+        "alphabet": len(_alphabet_misses(seg, project)),
         # Транслитерация сокращения. Сверяется ВСЕГДА и по той же причине,
         # что глоссарий и регистр: не стоит ни одного вызова, а поймать
         # подмену больше нечем — балл back-check на транслитерации РАСТЁТ
@@ -16142,6 +16528,10 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         better = False
         why.append("сокращений передано побуквенно стало больше "
                    + str(before["translit"]) + " → " + str(after["translit"]))
+    if after.get("alphabet", 0) > before.get("alphabet", 0):
+        better = False
+        why.append("букв вне письма языка перевода стало больше "
+                   + str(before.get("alphabet", 0)) + " → " + str(after.get("alphabet", 0)))
     if after.get("doc", 0) > before.get("doc", 0):
         better = False
         why.append("пар терм-листа документа нарушено больше "
@@ -16178,7 +16568,12 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # ни балл, ни termcheck не пересчитывались, глоссарию нарушать нечего,
     # и «не стало хуже» засчитало бы успехом любой переписанный текст.
     # Считаем их вместе: размен регистра на кириллицу — не работа.
-    _free = lambda d: d["case"] + d["script"] + d["term_case"] + d["dup"] + d["self_dup"]
+    # «alphabet» здесь ОБЯЗАТЕЛЕН: заход только по находке письма (модель
+    # ответила латиницей, единственная претензия — алфавит) иначе не
+    # принимался бы никогда — сумма 0 → 0 читалась бы как «не сняла ничего»,
+    # верная правка откатывалась, а сегмент запирался клеймом захода.
+    _free = lambda d: (d["case"] + d["script"] + d["term_case"] + d["dup"] + d["self_dup"]
+                       + d.get("alphabet", 0))
     if only_free and _free(after) >= _free(before):
         better = False
         why.append("правка не сняла ни регистра, ни чужого письма, ни самоповтора: "
@@ -16440,7 +16835,7 @@ REVIEW_APPLY_LABEL = ("%g" % REVIEW_APPLY_MAX)
 # нет намеренно: первый меряет не то, вторые потребовали бы вызовов модели,
 # ради отказа от которых шаг и заведён.
 REVIEW_FREE_KEYS = ("gloss", "case", "script", "dup", "self_dup", "term_case",
-                    "doc", "translit")
+                    "doc", "translit", "alphabet")
 # Оценка, ниже которой сегмент зовёт человека, даже если правки не было.
 # Отдельно от REVIEW_APPLY_MAX намеренно: тот отвечает на вопрос «когда машина
 # правит сама», а этот — «когда звать человека», и двигают их по разным
@@ -16538,6 +16933,7 @@ REVIEW_VETO_LABELS = {
     "self_dup": "самоповторов больше",
     "term_case": "приказных терминов не в начертании оригинала больше",
     "translit": "сокращений передано побуквенно больше",
+    "alphabet": "букв вне письма языка перевода больше",
     "hard": "расхождение чисел, единиц или отрицания",
 }
 
@@ -16545,6 +16941,8 @@ REVIEW_VETO_LABELS = {
 def _review_system(domain: dict, src_lang: str, tgt_lang: str, style: str = "") -> str:
     """Промпт ревизора. Отдельно от вызова — чтобы его гонял тест настоящим
     кодом: от формулировки зависит, что попадёт в текст клиента."""
+    conv = _lang_conventions(tgt_lang)
+    src_lang, tgt_lang = _lang_prompt(src_lang), _lang_prompt(tgt_lang)
     return (
         "Ты — редактор перевода, специализация: " + domain["label"].lower() + ". "
         "Тебе дают сегмент документа (язык: " + src_lang + "), его перевод "
@@ -16566,7 +16964,8 @@ def _review_system(domain: dict, src_lang: str, tgt_lang: str, style: str = "") 
         "Если ПОВРЕЖДЁН САМ ОРИГИНАЛ (обрывок, ошибка распознавания, "
         "бессвязная фраза) — поставь source_suspect: true и не чини перевод "
         "догадкой: пусть это увидит человек.\n\n"
-        + (style + "\n" if style else "") +
+        + (style + "\n" if style else "")
+        + (conv + "\n" if conv else "") +
         "Верни ТОЛЬКО JSON, без пояснений:\n"
         '{"score": 0-10, "source_suspect": false, '
         '"issues": ["короткая фраза на ' + _explain_lang_name() + '"], '
@@ -16671,7 +17070,8 @@ def _openai_review(seg: dict, project: dict, prev_src: str, next_src: str,
     import openai
     mdl = _resolve_model(model or _dm("review"))
     dom = _resolve_domain(project.get("domain"))
-    src_lang, tgt_lang = project.get("src", "RU"), project.get("tgt", "EN")
+    src_lang, tgt_lang = (_lang_prompt(project.get("src", "RU")),
+                          _lang_prompt(project.get("tgt", "EN")))
     body = ("[сегмент ДО] " + (prev_src or "—") + NL +
             ">>> [этот сегмент] " + (seg.get("source") or "") + NL +
             "[сегмент ПОСЛЕ] " + (next_src or "—") + NL + NL +
@@ -17738,7 +18138,7 @@ def accept_repair_candidate(pid: int, sid: int):
     и пачка называет его числом до применения."""
     _guard_project_write(pid)
     seg = get_segment(pid, sid)
-    if not _repair_score_vetoed(seg):
+    if not _repair_score_vetoed(seg, get_project(pid)):
         raise HTTPException(400, "У сегмента нет отменённой баллом правки, "
                                  "которую можно принять")
     was = _apply_repair_candidate(seg)
@@ -17747,7 +18147,7 @@ def accept_repair_candidate(pid: int, sid: int):
     _ANALYSIS_CACHE.pop(pid, None)
     save_state(STATE)
     return {"ok": True, "target": cand, "prev": was,
-            "segment": _segment_for_client(seg)}
+            "segment": _segment_for_client(seg, get_project(pid))}
 
 
 class RepairAcceptBatchRequest(BaseModel):
@@ -17800,7 +18200,7 @@ def accept_repair_candidates(pid: int, req: RepairAcceptBatchRequest = RepairAcc
     for seg in project["segments"]:
         if ids is not None and seg["id"] not in ids:
             continue
-        if not _repair_score_vetoed(seg):
+        if not _repair_score_vetoed(seg, project):
             continue
         if not (_repair_findings(seg) or seg["id"] in gloss_bad):
             continue
@@ -18021,6 +18421,7 @@ TERMLIST_PROMPT_MAX = 15
 
 def _termsheet_system(domain: dict, src_lang: str, tgt_lang: str) -> str:
     """Промпт терм-листа. Отдельно от вызова — проверяется тестом настоящим кодом."""
+    src_lang, tgt_lang = _lang_prompt(src_lang), _lang_prompt(tgt_lang)
     return (
         "You prepare a bilingual TERM SHEET for translating a " + domain["en"] + " document\n"
         "from " + src_lang + " to " + tgt_lang + ". You are given SOURCE segments only.\n"
@@ -22384,6 +22785,9 @@ def run_plan(pid: int, req: RunPlanRequest):
     if "repair" in steps:
         for _pr in _consistency_of(project):
             consist_ids.update(_pr["segments"])
+        # Письмо и алфавит языка перевода — тем же списком и по той же
+        # причине (см. _alphabet_misses): без проекта находки нет.
+        consist_ids.update(_alphabet_ids(project))
     # Сегменты, где есть что сверять, берём из того же кэшированного отчёта.
     # Считать `_verified_hits` заново — 13 мс на сегмент, то есть сорок секунд
     # заблокированного воркера на каждый разбор; ровно та беда, из-за которой
@@ -23407,13 +23811,16 @@ def _docx_media_count(docx_bytes: bytes) -> int:
         return 0
 
 
-def _auto_read_images(project: dict, kind: str) -> Optional[int]:
+def _auto_read_images(project: dict, kind: str, image_pages: int = 0) -> Optional[int]:
     """Текст с картинок читается САМ при загрузке файла — задачей `images`
     (платно, зрячей моделью), а не по кнопке: человек кладёт скан и ждёт
     строк, а не ищет, где их включить.
 
-    Только у КАРТИНКИ и СКАНА: там текста без чтения нет вовсе, и запирать
-    на время задачи нечего. У .docx с растром чтение остаётся кнопкой
+    У КАРТИНКИ и СКАНА: там текста без чтения нет вовсе, и запирать
+    на время задачи нечего. И у PDF с текстовым слоем, часть страниц которого
+    (обложка, титул) легла картинками из-за ненадёжного слоя (`pdftext`):
+    цена названа — до конца задачи правки проекта отвечают 409, а задача
+    ждёт своей очереди (инвариант 21). У .docx с растром чтение остаётся кнопкой
     со сметой на экране «Скачать»: книга со 158 картинками (логотипы,
     рентген) стоила бы вызова зрячей модели на каждую загрузку, а идущая
     задача запирает правки проекта (`_guard_project_write`).
@@ -23421,7 +23828,10 @@ def _auto_read_images(project: dict, kind: str) -> Optional[int]:
     кодом (`imagesSkipped`: `no_key` | `limit`), иначе каждая загрузка
     на исчерпанном лимите глушилась бы на первой картинке. Отметка
     `imagesReading` — для карточки файла, снимается по концу задачи."""
-    if kind not in ("image", "scan"):
+    # PDF с текстовым слоем, у которого часть страниц (обложка, титул) легла
+    # картинками из-за ненадёжного слоя (`pdftext`), — тот же случай: текста
+    # с этих страниц без чтения нет, и запирать на время задачи нечего.
+    if kind not in ("image", "scan") and not image_pages:
         return None
     if image_text is None or not os.environ.get("OPENAI_API_KEY"):
         project["imagesSkipped"] = "no_key"

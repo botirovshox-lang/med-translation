@@ -1,0 +1,56 @@
+{
+  "_comment": "Правила ЯЗЫКА ПЕРЕВОДА — данными, не кодом. Ключ — код языка из languages.json. Поля читают два места: ПРОМПТЫ (перевод, ремонт, ревизия — `_lang_conventions`) и ДЕТЕРМИНИРОВАННЫЕ проверки (`_alphabet_misses`). Ни одно поле не обязательно: чего нет — того проверка не делает и промпт не говорит (закон DOMAIN_RULES: нет правил — молчим). Поля: `name` — как язык зовётся в заголовке блока промпта; `conventions` — список правил орфографии и грамматики для модели, по-английски (промпты английские), про то, что модель делает НЕ ТАК без напоминания; `apostrophe_in_word` — false: апостроф внутри слова этого письма — ошибка (в кириллице разделитель — ъ); `distinctive` — буквы, без которых текст на этом языке не бывает (нет ни одной на `distinctive_min_words` словах — набрано буквами соседнего языка: русская раскладка без ў қ ғ ҳ); `distinctive_min_words` — с какой длины спрашивать (порог консервативный: короткая фраза законно обходится без них). Пороги и списки НЕ измерены на боевом переводе — переводов на эти языки в системе ещё нет; правила взяты из орфографии языка, и первое же расхождение с боевыми данными правится здесь, а не в коде.",
+  "rules": {
+    "UZ-CYRL": {
+      "name": "Uzbek Cyrillic",
+      "conventions": [
+        "Write ONLY in the Uzbek Cyrillic alphabet (35 letters: а б в г д е ё ж з и й к л м н о п р с т у ф х ц ч ш ъ ь э ю я ў қ ғ ҳ). Never answer in Latin script, not even for a single word that has an Uzbek Cyrillic form.",
+        "ў, қ, ғ, ҳ are separate letters: never substitute у, к, г, х for them (ўзбек, қон, ғоя, ҳаво; not узбек, кон, гоя, хаво).",
+        "The separating sign is ъ (айириш белгиси): маъно, таъсир, шеър, эълон, масъул. Never put an apostrophe inside a Cyrillic word.",
+        "э is written at the beginning of a word and after a vowel (эълон, поэма, дуэт); after a consonant write е. ё is always written as ё, never as е.",
+        "щ and ы are not Uzbek letters. Established loanwords keep their Uzbek Cyrillic spelling (цирк, витамин, прополис, аптека).",
+        "Uzbek is SOV and agglutinative: rebuild the sentence, do not mirror Russian word order; after a numeral the noun stays singular (икки киши, беш дона); possession is marked with the suffix (асаларининг маҳсулоти).",
+        "Suffixes join Latin-script abbreviations and numbers with a hyphen (COVID-19-га, DNK-нинг); after a Cyrillic word or abbreviation they are written together (ЖССТнинг, 2006 йилда)."
+      ],
+      "apostrophe_in_word": false,
+      "distinctive": "ўқғҳ",
+      "distinctive_min_words": 20
+    },
+    "UZ": {
+      "name": "Uzbek Latin",
+      "conventions": [
+        "Write ONLY in the Uzbek Latin alphabet; never answer in Cyrillic.",
+        "oʻ and gʻ are written with the turned comma ʻ (U+02BB), the glottal stop with the modifier apostrophe ʼ (U+02BC): oʻzbek, gʻoya, maʼno, taʼsir. Do not use a straight ' or the letters ö/ğ.",
+        "sh, ch, ng are digraphs; the letters c and w occur only in foreign names.",
+        "Uzbek is SOV and agglutinative: rebuild the sentence, do not mirror Russian word order; after a numeral the noun stays singular (ikki kishi)."
+      ]
+    },
+    "KK": {
+      "name": "Kazakh",
+      "conventions": [
+        "Write in the Kazakh Cyrillic alphabet: ә, і, ң, ғ, ү, ұ, қ, ө, һ are separate letters — never substitute а, и, н, г, у, к, о, х for them."
+      ],
+      "apostrophe_in_word": false,
+      "distinctive": "әіңғүұқөһ",
+      "distinctive_min_words": 20
+    },
+    "KY": {
+      "name": "Kyrgyz",
+      "conventions": [
+        "Write in the Kyrgyz Cyrillic alphabet: ң, ө, ү are separate letters — never substitute н, о, у for them."
+      ],
+      "apostrophe_in_word": false,
+      "distinctive": "ңөү",
+      "distinctive_min_words": 25
+    },
+    "TG": {
+      "name": "Tajik",
+      "conventions": [
+        "Write in the Tajik Cyrillic alphabet: ӣ, ӯ, қ, ғ, ҳ, ҷ are separate letters — never substitute и, у, к, г, х, ч for them."
+      ],
+      "apostrophe_in_word": false,
+      "distinctive": "ӣӯқғҳҷ",
+      "distinctive_min_words": 20
+    }
+  }
+}

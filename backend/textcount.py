@@ -450,8 +450,12 @@ def extract(filename: str, content: bytes,
                       % (ext or "без расширения", ", ".join(SUPPORTED_EXT)))
 
 
-def _pdf_blocks(content: bytes, notes: list) -> list:
-    """PDF читаем только настоящей библиотекой. Нет её — говорим об этом,
+SOFT_HYPHEN = "\u00ad"
+
+
+def _pdf_pages(content: bytes, notes: list) -> list:
+    """Строки текстового слоя ПО СТРАНИЦАМ (список списков): границы страниц
+    нужны импорту — по ним снимаются колонтитулы и номера. PDF читаем только настоящей библиотекой. Нет её — говорим об этом,
     а не возвращаем пустоту: пустой список неотличим от «в файле нет текста»."""
     try:
         from pypdf import PdfReader          # type: ignore
@@ -464,17 +468,37 @@ def _pdf_blocks(content: bytes, notes: list) -> list:
                                "библиотеки.")
     try:
         reader = PdfReader(io.BytesIO(content))
-        blocks = []
-        for page in reader.pages:
-            blocks.extend((page.extract_text() or "").splitlines())
+        pages = [(page.extract_text() or "").splitlines() for page in reader.pages]
     except Exception as e:
         raise Unsupported("PDF не читается: %s" % e)
-    if not any(normalize(b) for b in blocks):
+    if not any(normalize(b) for ls in pages for b in ls):
         raise Scan("В PDF нет текстового слоя — это скан. Объём такого файла "
                    "считается только после распознавания.", len(reader.pages))
     notes.append("PDF: текст извлечён из текстового слоя; надписи внутри картинок "
                  "в счёт не идут.")
-    return blocks
+    return pages
+
+
+def _pdf_blocks(content: bytes, notes: list) -> list:
+    """Строки текстового слоя ОДНИМ списком — для сметы. Мягкий перенос
+    (U+00AD) на конце строки склеивается со следующей: разрезанное им слово
+    иначе считалось бы двумя словами — на боевой книге 3576 таких переносов,
+    то есть страницы к оплате завышались на каждом абзаце. Остальная чистка
+    (колонтитулы, номера страниц, мусор) здесь НЕ делается: смета молча
+    не вычитает ничего, а импорт называет снятое числом."""
+    blocks: list = []
+    for ls in _pdf_pages(content, notes):
+        buf = ""
+        for line in ls:
+            if buf.rstrip().endswith(SOFT_HYPHEN):
+                buf = buf.rstrip()[:-1] + line.lstrip()
+            else:
+                if buf:
+                    blocks.append(buf)
+                buf = line
+        if buf:
+            blocks.append(buf)
+    return [b.replace(SOFT_HYPHEN, "") for b in blocks]
 
 
 SCAN_SAMPLE_PAGES = int(os.environ.get("SCAN_SAMPLE_PAGES", "6"))
@@ -489,19 +513,85 @@ def sample_indices(n_pages: int, k: int) -> list:
     return sorted({int((i + 0.5) * n / k) for i in range(k)})
 
 
-def pdf_page_images(content: bytes, indices: list) -> list:
+PAGE_IMAGE_ASPECT_TOL = 0.12
+PAGE_RENDER_DPI = int(os.environ.get("PAGE_RENDER_DPI", "144"))
+
+
+def pdf_render_pages(content: bytes, indices: list, dpi: int = 0) -> Optional[list]:
+    """[(номер страницы, PNG bytes | None)] — страницы, ОТРИСОВАННЫЕ целиком
+    (pypdfium2). None вместо списка — рендера нет (модуль не поставлен):
+    вызывающий берёт вложенную картинку. Зачем рендер, если у скана страница
+    и есть картинка: у многослойного скана (DjVu-в-PDF, обложка боевой книги)
+    страница — это ФОН + маска с текстом + цветной слой, и крупнейшая
+    вложенная картинка (фон) несёт только заголовок, а мелкий текст лежит
+    в маске. Отдать зрячей модели фон значит прочитать половину. Рендер
+    собирает слои так, как их видит читатель."""
+    try:
+        import pypdfium2 as pdfium      # type: ignore
+    except ImportError:
+        return None
+    out = []
+    try:
+        pdf = pdfium.PdfDocument(io.BytesIO(content))
+    except Exception:
+        return None
+    scale = float(dpi or PAGE_RENDER_DPI) / 72.0
+    for i in indices:
+        data = None
+        try:
+            page = pdf[i]
+            im = page.render(scale=scale).to_pil()
+            buf = io.BytesIO()
+            im.convert("RGB").save(buf, format="PNG", optimize=False)
+            data = buf.getvalue()
+            page.close()
+        except Exception:
+            data = None
+        out.append((i, data))
+    try:
+        pdf.close()
+    except Exception:
+        pass
+    return out
+
+
+def pdf_page_pictures(content: bytes, indices: list, full_page: bool = False) -> list:
+    """Картинка каждой запрошенной страницы: отрисованная, если есть рендер,
+    иначе вложенная (`pdf_page_images`). Один вход для скана, для страниц
+    с ненадёжным текстовым слоем и для выборки сметы — чтобы «страница
+    как картинка» везде значила одно и то же."""
+    rendered = pdf_render_pages(content, indices)
+    if rendered is not None and any(d for _i, d in rendered):
+        return rendered
+    return pdf_page_images(content, indices, full_page=full_page)
+
+
+def pdf_page_images(content: bytes, indices: list, full_page: bool = False) -> list:
     """[(номер страницы, bytes картинки | None)] — самая крупная картинка каждой
     из запрошенных страниц. Без рендера: у скана страница и есть картинка,
     и pypdf достаёт её как лежит. Нечитаемая (кодек без декодера) или пустая
-    страница — None, а не пропуск: число ответов равно числу запрошенных."""
+    страница — None, а не пропуск: число ответов равно числу запрошенных.
+
+    `full_page=True` — годится только картинка РАЗМЕРОМ СО СТРАНИЦУ (пропорции
+    как у mediabox): у PDF с текстовым слоем самая крупная картинка страницы —
+    это логотип или рисунок, и положить его вместо страницы значило бы
+    выбросить её текст и отправить логотип зрячей модели за деньги."""
     from pypdf import PdfReader          # type: ignore
     reader = PdfReader(io.BytesIO(content))
     out = []
     for i in indices:
         best = None
         try:
-            for im in reader.pages[i].images:
+            page = reader.pages[i]
+            try:
+                pw, ph = float(page.mediabox.width), float(page.mediabox.height)
+            except Exception:
+                pw = ph = 0.0
+            for im in page.images:
                 w, h = im.image.size
+                if full_page and pw and ph and w and h:
+                    if abs((w / h) - (pw / ph)) > PAGE_IMAGE_ASPECT_TOL * (pw / ph):
+                        continue
                 if best is None or w * h > best[0]:
                     best = (w * h, im.data)
         except Exception:

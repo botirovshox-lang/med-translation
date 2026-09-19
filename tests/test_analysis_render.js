@@ -694,6 +694,42 @@ const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
   check(tExp.some(s => s.indexOf("Подробности и ручные команды") !== -1),
         "эксперту дверь к подробностям есть");
 
+  // ─────────── 5c. Правила документа ───────────
+  console.log("\n=== 5c. GuideCard: правила документа ===");
+  const guideTree = async (st, answer) => {
+    hooks = []; hookIdx = 0; effects.length = 0;
+    global.API.guide = async () => answer;
+    React.createElement(GuideCard, { project: { id: 1 }, store: st, toast });
+    effects.slice().forEach(fn => fn());
+    await new Promise(r => setImmediate(r));
+    hookIdx = 0; effects.length = 0;
+    return React.createElement(GuideCard, { project: { id: 1 }, store: st, toast });
+  };
+  const G0 = { ok: true, built: false, rules: [], active: 0, ready: 5, min: 20, minPairs: 3, tgt: "UZ", orgLang: [] };
+  const G1 = { ok: true, built: true, builtBy: "auto", sample: 25, rules: [
+      { id: 1, text: "Address the reader formally (siz).", kind: "lang", on: true, by: "model" },
+      { id: 2, text: "Use «guillemets».", kind: "doc", on: false, by: "human" }],
+    active: 1, ready: 25, min: 20, minPairs: 3, tgt: "UZ", orgLang: ["Keep oʻ with U+02BB."] };
+  // Старый сервер без /guide: карточка молчит, а не роняет экран.
+  const G_OLD = null;
+  let g0 = [], g1own = [], g1tr = [], okG = true, oldTree = "x";
+  try {
+    g0 = texts(await guideTree({ can: {} }, G0));
+    g1own = texts(await guideTree({ can: { owner: true } }, G1));
+    g1tr = texts(await guideTree({ can: {} }, G1));
+    oldTree = await guideTree({ can: {} }, G_OLD);
+  } catch (e) { okG = false; console.log("      " + e.message); }
+  check(okG, "рендер карточки прошёл");
+  check(g0.some(s => s.indexOf("Соберутся сами") !== -1) && g0.some(s => s === "Собрать сейчас"),
+        "до сбора: сказано, когда соберутся сами, и есть кнопка");
+  check(g1own.some(s => s.indexOf("Собраны сами по первым") !== -1) && g1own.some(s => s === "Пересобрать"),
+        "после сбора: откуда правила и кнопка пересборки");
+  check(g1own.some(s => s === "Во все книги") && !g1tr.some(s => s === "Во все книги"),
+        "перенос правила языка в организацию — только владельцу");
+  check(g1own.some(s => s.indexOf("Правила языка организации") !== -1) && g1own.some(s => s === "Keep oʻ with U+02BB."),
+        "правила языка организации видны");
+  check(oldTree === null, "старый сервер без правил — карточки нет, экран цел");
+
   console.log();
   if (fail.length) {
     console.log("ПРОВАЛЕНО: " + fail.length);

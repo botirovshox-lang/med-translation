@@ -1445,14 +1445,32 @@ def _lang_conventions(code: str) -> str:
     Пусто — промпт байт в байт прежний: блок появляется только у языков,
     описанных в lang_rules.json, поэтому версии вердиктов остальных пар
     не трогаются. Стоит РЯДОМ со стайл-шитом документа и слабее приказа
-    глоссария по той же причине, что и он."""
+    глоссария по той же причине, что и он.
+
+    К правилам файла добавляются правила ОРГАНИЗАЦИИ для этого языка
+    (`tenant["langRules"][код]`): их выводит из первого перевода сборщик
+    правил документа (`_guide_build`), а переносит в организацию человек.
+    Файл — то, что знает о языке разработчик; организация — то, что узнала
+    на своих книгах. Нет ни того, ни другого — блока нет."""
     r = _lang_rule(code)
     lines = [str(x).strip() for x in (r.get("conventions") or []) if str(x).strip()]
+    lines += [x for x in _org_lang_rules(code) if x not in lines]
     if not lines:
         return ""
     return ("TARGET LANGUAGE CONVENTIONS (" + (r.get("name") or code) + "), apply always; "
             "approved glossary terms take precedence:\n"
             + "\n".join("- " + l for l in lines) + "\n")
+
+
+def _org_lang_rules(code: str, tid: Optional[str] = None) -> list:
+    """Правила языка, сохранённые организацией. Организация — текущего
+    запроса или прогона (`_current_tenant` видит и поток задачи)."""
+    try:
+        rec = _tenant_rec(tid or _current_tenant()) or {}
+    except Exception:
+        return []
+    got = (rec.get("langRules") or {}).get((code or "").strip().upper()) or []
+    return [str(x).strip() for x in got if str(x).strip()]
 
 
 def _check_lang_pair(src: str, tgt: str) -> tuple:
@@ -3093,6 +3111,9 @@ _OWNER_ONLY = [
     # то же право, что импорт приказом. Возврат в проект (сужение) — любому.
     ("POST",   re.compile(r"/api/glossary/promote$")),
     ("POST",   re.compile(r"/api/style$")),
+    # Правила языка организации действуют во ВСЕХ её книгах — то же право,
+    # что стайл-шит организации.
+    ("POST",   re.compile(r"/api/lang-rules/[^/]+$")),
     ("POST",   re.compile(r"/api/quotes/\d+$")),
     ("DELETE", re.compile(r"/api/quotes/\d+$")),
     ("*",      re.compile(r"/api/admin/")),
@@ -19266,7 +19287,15 @@ def _style_fp(project: dict) -> str:
 
 
 def _style_block(project: Optional[dict]) -> str:
-    """Блок STYLE SHEET для промптов. Пусто, пока стайл-шит не включён."""
+    """Всё, что документ велит соблюдать по форме, — одним куском для
+    промптов перевода, ревизии и ремонта: стайл-шит (выборы из списка)
+    и правила документа, выведенные из его первого перевода (`_guide_block`).
+    Нет ни того, ни другого — пусто, промпт байт в байт прежний."""
+    return _style_sheet_block(project) + _guide_block(project)
+
+
+def _style_sheet_block(project: Optional[dict]) -> str:
+    """Блок STYLE SHEET. Пусто, пока стайл-шит не включён."""
     eff = _style_effective(project or {}) if project else None
     if not eff:
         return ""
@@ -19670,6 +19699,426 @@ def undo_style_check(pid: int, stamp: str):
         _decision_undone(project, "style", stamp)
     _audit("style.undo", project=pid, stamp=stamp, restored=len(restored))
     return {"ok": True, "restored": len(restored), "ids": restored, "changedSince": changed_since}
+
+
+# ── Правила документа (выводятся из первого перевода) ─────────────────
+# Стайл-шит выше — ВЫБОРЫ из закрытого списка, и они про английский и журналы.
+# Документу на любую пару и тему нужно другое: как в ЭТОЙ книге обращаются
+# к читателю, какие кавычки и тире, как пишутся числа, даты, единицы, имена,
+# заголовки и списки, какие орфографические решения приняты в языке перевода.
+# Это видно только по готовому переводу, поэтому правила выводит модель
+# ОДНИМ вызовом из первых переведённых сегментов (`_guide_build`): сам —
+# на прогоне с переводом, как только готово GUIDE_MIN_SEGMENTS строк
+# (`_guide_auto`), или по кнопке. Человек правит, выключает, дописывает.
+#
+# Границы, без которых правила вредили бы:
+# - только ФОРМА. Термины решают глоссарий и терм-лист, смысл — автор
+#   (правило 9 промпта перевода). Правило «переводи X как Y» здесь
+#   закрепило бы собственную ошибку модели по всей книге — ровно то,
+#   от чего инвариант 8 бережёт глоссарий;
+# - слабее глоссария и общих правил (так сказано в блоке);
+# - пересборка не трогает правил, которых касался человек (`by: human`),
+#   и не возвращает удалённых им (`dropped`);
+# - в обратный перевод и проверки блок не идёт: он живёт в `_style_block`.
+# Вердикты ревизии правила НЕ устаревают — ни автосбор, ни кнопка, ни правка
+# человеком, и это отличие от стайл-шита намеренное. Пересборка почти всегда
+# меняет формулировки, флажок меняет блок — и каждое такое касание стоило бы
+# повторной ревизии всей книги. Правила про форму, ревизор и без них видит
+# смысл; новые правила действуют на то, что переводится и проверяется дальше.
+# Правило про сам ЯЗЫК (`kind: "lang"`) человек может перенести в правила
+# языка организации (`/api/lang-rules/{код}`): тогда оно действует во всех
+# книгах на этот язык через `_lang_conventions`.
+GUIDE_VERSION = "1"
+GUIDE_MIN_SEGMENTS = int(os.environ.get("GUIDE_MIN_SEGMENTS", "20"))
+GUIDE_MIN_PAIRS = 3             # меньше — правила не из чего выводить
+GUIDE_SAMPLE_MAX = 40           # пар в выборке
+GUIDE_SAMPLE_CHARS = 14000      # потолок текста выборки: один вызов, не книга
+GUIDE_RULES_MAX = 15            # правил из одного сбора
+GUIDE_LIST_MAX = 40             # правил на документ вместе с ручными
+GUIDE_RULE_CHARS = 300
+GUIDE_DROPPED_MAX = 200
+GUIDE_KINDS = ("doc", "lang")
+GUIDE_AUTO_FAILS = 2            # неудачных автосборов на проект — дальше только кнопкой
+LANG_RULES_MAX = 40
+
+
+def _guide(project: Optional[dict]) -> Optional[dict]:
+    g = (project or {}).get("guide")
+    return g if isinstance(g, dict) else None
+
+
+def _guide_rules_on(project: Optional[dict]) -> list:
+    g = _guide(project)
+    if not g or g.get("off"):
+        return []
+    # Правило, перенесённое в организацию, уже стоит в блоке языка —
+    # второй раз в промпт оно не идёт.
+    org = set(_org_lang_rules(project.get("tgt") or "", project.get("tenant")))
+    return [r for r in (g.get("rules") or []) if r.get("on") and (r.get("text") or "").strip()
+            and " ".join(r["text"].split()) not in org]
+
+
+def _guide_block(project: Optional[dict]) -> str:
+    rules = _guide_rules_on(project)
+    if not rules:
+        return ""
+    return ("DOCUMENT CONVENTIONS — how THIS document is translated; keep them consistent in every\n"
+            "segment. They govern form only, never meaning or terminology; the approved glossary\n"
+            "and the general rules take precedence:\n"
+            + "".join("- " + r["text"].strip() + "\n" for r in rules))
+
+
+def _guide_fp(project: dict) -> str:
+    blk = _guide_block(project)
+    return _text_hash(blk) if blk else ""
+
+
+def _guide_sample(project: dict) -> list:
+    """Пары для вывода правил: сперва заверенные человеком (они — образец),
+    потом по порядку документа; в промпт — в порядке документа."""
+    segs = project.get("segments") or []
+    order = {s.get("id"): i for i, s in enumerate(segs)}
+    done = [s for s in segs if (s.get("source") or "").strip() and (s.get("target") or "").strip()]
+    pick, total = [], 0
+    for s in ([s for s in done if s.get("status") == "confirmed"]
+              + [s for s in done if s.get("status") != "confirmed"]):
+        if len(pick) >= GUIDE_SAMPLE_MAX:
+            break
+        size = min(len(s["source"]), 1200) + min(len(s["target"]), 1500)
+        if pick and total + size > GUIDE_SAMPLE_CHARS:
+            continue
+        pick.append(s)
+        total += size
+    return sorted(pick, key=lambda s: order.get(s.get("id"), 0))
+
+
+def _guide_system(domain: dict, src_lang: str, tgt_lang: str, known: str) -> str:
+    """Промпт сборщика правил. Отдельно от вызова — гоняется тестом настоящим кодом."""
+    src_lang, tgt_lang = _lang_prompt(src_lang), _lang_prompt(tgt_lang)
+    return (
+        "You write a short CONVENTIONS SHEET for translating ONE " + domain["en"] + " document\n"
+        "from " + src_lang + " to " + tgt_lang + ". You get numbered pairs SOURCE / TRANSLATION taken\n"
+        "from this document. State the conventions a translator of the REST of the document must\n"
+        "keep so that the whole text reads as one: register and tone; form of address to the reader;\n"
+        "quotation marks, dashes and other punctuation; numbers, dates, units, decimal separator;\n"
+        "how abbreviations are handled; headings, lists and captions; the SYSTEM used for personal\n"
+        "names and titles (e.g. which transliteration); spelling choices of " + tgt_lang + " itself\n"
+        "(letters, apostrophes, hyphens, capitalisation).\n\n"
+        "RULES:\n"
+        "1. FORM only. NEVER terminology, never meaning, never facts. NO individual word, name or\n"
+        "   abbreviation mappings ('translate X as Y', 'write WHO as ...'): state the pattern only.\n"
+        "2. Each rule is one imperative sentence in English, at most 30 words, concrete; add a\n"
+        "   short example in " + tgt_lang + " when it helps.\n"
+        "3. Only what the pairs actually show. Skip what any competent translator does anyway and\n"
+        "   skip what the conventions already in force (below) say.\n"
+        "4. Where the pairs are inconsistent, choose the variant that is correct in " + tgt_lang + "\n"
+        "   and state it as the rule.\n"
+        '5. "kind": "lang" for a rule about ' + tgt_lang + ' itself that would hold in any document;\n'
+        '   "doc" for a choice specific to this document.\n'
+        "6. At most " + str(GUIDE_RULES_MAX) + " rules. Return ONLY a JSON array, no prose:\n"
+        '   [{"text": "...", "kind": "doc"}]. Return [] if nothing is worth saying.\n'
+        + ("\nAlready in force — do not repeat:\n" + known.strip() + "\n" if known.strip() else "")
+    )
+
+
+def _guide_clean(items) -> list:
+    out, seen = [], set()
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict):
+            continue
+        text = " ".join(str(it.get("text") or "").split())
+        if not text or len(text) > GUIDE_RULE_CHARS:
+            continue
+        key = _norm_key(text)
+        if key in seen:
+            continue
+        seen.add(key)
+        kind = it.get("kind") if it.get("kind") in GUIDE_KINDS else "doc"
+        out.append({"text": text, "kind": kind})
+        if len(out) >= GUIDE_RULES_MAX:
+            break
+    return out
+
+
+def _guide_call(project: dict, pairs: list, model: Optional[str] = None) -> Optional[list]:
+    """Один вызов на документ. None — вызов не состоялся (это НЕ «правил нет»)."""
+    import json as _json
+    import openai
+    dom = _resolve_domain(project.get("domain"))
+    mdl = _resolve_model(model or _dm("review"))
+    # «Уже действует» — и правила человека: иначе пересборка выдала бы их
+    # пересказ, и в промпте встали бы два правила об одном.
+    mine = [r["text"] for r in ((_guide(project) or {}).get("rules") or []) if r.get("by") == "human"]
+    known = (_style_sheet_block(project) + _lang_conventions(project.get("tgt") or "")
+             + "".join("- " + t + "\n" for t in mine))
+    body = "\n\n".join("[%d] SOURCE: %s\n    TRANSLATION: %s"
+                       % (i + 1, s["source"].strip()[:1200], s["target"].strip()[:1500])
+                       for i, s in enumerate(pairs))
+    extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
+             else {"max_tokens": 1500, "temperature": 0})
+    try:
+        client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=120, max_retries=1)
+        resp = client.chat.completions.create(
+            model=mdl["id"],
+            messages=[{"role": "system", "content": _guide_system(dom, project.get("src") or "",
+                                                                  project.get("tgt") or "", known)},
+                      {"role": "user", "content": body}],
+            **extra)
+        _note_usage("guide", mdl["id"], resp)
+        raw = (resp.choices[0].message.content or "").strip()
+        lo, hi = raw.find("["), raw.rfind("]")
+        if lo == -1 or hi <= lo:
+            return None
+        return _guide_clean(_json.loads(raw[lo:hi + 1]))
+    except Exception as e:
+        print(f"[backend] правила документа: вызов не удался: {e}", file=sys.stderr)
+        return None
+
+
+def _guide_build(project: dict, how: str, model: Optional[str] = None) -> dict:
+    """Собрать правила. Правила человека остаются, машинные заменяются."""
+    pairs = _guide_sample(project)
+    if len(pairs) < GUIDE_MIN_PAIRS:
+        return {"ok": False, "why": "few", "pairs": len(pairs)}
+    items = _guide_call(project, pairs, model)
+    if items is None:
+        return {"ok": False, "why": "error", "pairs": len(pairs)}
+    g = dict(_guide(project) or {})
+    old = g.get("rules") or []
+    keep = [r for r in old if r.get("by") == "human"]
+    skip = {_norm_key(r.get("text") or "") for r in keep} | set(g.get("dropped") or [])
+    nid = max((int(r.get("id") or 0) for r in old), default=0) + 1
+    at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    new = []
+    for it in items:
+        if _norm_key(it["text"]) in skip or len(keep) + len(new) >= GUIDE_LIST_MAX:
+            continue
+        new.append({"id": nid, "text": it["text"], "kind": it["kind"], "on": True, "by": "model", "at": at})
+        nid += 1
+    g.update({"v": GUIDE_VERSION, "rules": keep + new, "builtAt": at, "builtBy": how,
+              "sample": len(pairs)})
+    project["guide"] = g
+    return {"ok": True, "added": len(new), "kept": len(keep), "pairs": len(pairs)}
+
+
+def _guide_auto(job: dict, final: bool = False) -> None:
+    """Автосбор на прогоне с переводом: один раз, как только готово
+    GUIDE_MIN_SEGMENTS строк (или в конце прогона — с тем, что есть).
+    Флаг `guideTried` ставится ДО вызова и сохраняется в задаче: рестарт
+    и уступка не купят сбор второй раз. Проект, где правила уже есть или
+    выключены (`guide` лежит на проекте), не трогается. Сбой прогон
+    не роняет: перевод от правил не зависит."""
+    # setdefault, а не `get(...) or {}`: у пустых params флаг лёг бы
+    # во временный словарь, и следующая порция купила бы сбор снова.
+    params = job.setdefault("params", {})
+    kind = job.get("kind")
+    if params.get("guideTried"):
+        return
+    if kind == "full":
+        if "translate" not in set(params.get("steps") or FULL_RUN_STEPS):
+            return
+    elif kind != "translate":
+        return
+    project = _project_by_id(job["project"])
+    if project is None or int(project.get("guideFails") or 0) >= GUIDE_AUTO_FAILS:
+        return
+    ready = sum(1 for s in project.get("segments") or []
+                if (s.get("source") or "").strip() and (s.get("target") or "").strip())
+    g = _guide(project)
+    if g is not None:
+        # Одна поправка: правила, собранные на пробных строках короткого
+        # прогона, пересобираются один раз, когда строк стало достаточно, —
+        # если человек их не трогал. Иначе пять пробных строк решали бы
+        # правила книги навсегда.
+        weak = (g.get("builtBy") == "auto" and int(g.get("sample") or 0) < GUIDE_MIN_SEGMENTS
+                and not g.get("off") and not g.get("dropped")
+                and not any(r.get("by") == "human" for r in g.get("rules") or []))
+        if not weak or ready < GUIDE_MIN_SEGMENTS:
+            return
+    elif ready < (GUIDE_MIN_PAIRS if final else GUIDE_MIN_SEGMENTS):
+        return
+    try:
+        if _spend_status(job.get("tenant") or DEFAULT_TENANT).get("over"):
+            return
+    except Exception as e:
+        print(f"[backend] job#{job.get('id')}: лимит перед правилами документа: {e}", file=sys.stderr)
+    params["guideTried"] = True
+    _job_persist(job)
+    try:
+        res = _guide_build(project, "auto")
+    except Exception as e:
+        print(f"[backend] job#{job.get('id')}: правила документа: {e}", file=sys.stderr)
+        return
+    if res.get("ok"):
+        project.pop("guideFails", None)
+        job["counters"]["guideRules"] = res["added"]
+    else:
+        job["guideSkipped"] = res.get("why")
+        if res.get("why") == "error":
+            # Счёт неудач на ПРОЕКТЕ: без потолка каждый новый прогон
+            # покупал бы ещё один вызов, который снова не состоится.
+            project["guideFails"] = int(project.get("guideFails") or 0) + 1
+    save_state(STATE)
+
+
+def _guide_state(project: dict) -> dict:
+    g = _guide(project) or {}
+    tgt = (project.get("tgt") or "").strip().upper()
+    ready = sum(1 for s in project.get("segments") or []
+                if (s.get("source") or "").strip() and (s.get("target") or "").strip())
+    return {"ok": True, "built": bool(g.get("builtAt")), "builtAt": g.get("builtAt"),
+            "builtBy": g.get("builtBy"), "sample": g.get("sample") or 0, "off": bool(g.get("off")),
+            "rules": [{k: r.get(k) for k in ("id", "text", "kind", "on", "by", "at")}
+                      for r in (g.get("rules") or [])],
+            "active": len(_guide_rules_on(project)), "ready": ready,
+            "min": GUIDE_MIN_SEGMENTS, "minPairs": GUIDE_MIN_PAIRS, "max": GUIDE_LIST_MAX,
+            "tgt": tgt, "orgLang": _org_lang_rules(tgt, project.get("tenant")),
+            "fileLang": [str(x) for x in (_lang_rule(tgt).get("conventions") or [])],
+            "block": _guide_block(project)}
+
+
+def _guide_merge(g: dict, incoming: list) -> list:
+    """Новый список правил от человека. Нетронутое правило остаётся как было
+    (с автором-машиной), изменённое и новое — за человеком; удалённое
+    машинное запоминается, чтобы пересборка его не вернула."""
+    if not isinstance(incoming, list) or len(incoming) > GUIDE_LIST_MAX:
+        raise HTTPException(400, "Правил больше %d — сократите список" % GUIDE_LIST_MAX)
+    old = {r.get("id"): r for r in (g.get("rules") or [])}
+    nid = max((int(k or 0) for k in old), default=0) + 1
+    at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    out, kept_ids, edited = [], set(), []
+    for it in incoming:
+        if not isinstance(it, dict):
+            raise HTTPException(400, "Правило — объект {text, kind, on}")
+        text = " ".join(str(it.get("text") or "").split())
+        if not text:
+            continue
+        if len(text) > GUIDE_RULE_CHARS:
+            raise HTTPException(400, "Правило длиннее %d знаков" % GUIDE_RULE_CHARS)
+        kind = it.get("kind") if it.get("kind") in GUIDE_KINDS else "doc"
+        on = bool(it.get("on", True))
+        prev = old.get(it.get("id")) if isinstance(it.get("id"), int) else None
+        if prev is not None and prev.get("id") in kept_ids:
+            prev = None
+        if prev is not None:
+            kept_ids.add(prev.get("id"))
+            if prev.get("text") == text and prev.get("kind") == kind and bool(prev.get("on")) == on:
+                out.append(prev)
+                continue
+            if prev.get("by") == "model" and prev.get("text") != text:
+                # Исправленное машинное: прежний текст пересборка не вернёт.
+                edited.append(_norm_key(prev.get("text") or ""))
+        out.append({"id": prev["id"] if prev is not None else nid, "text": text, "kind": kind,
+                    "on": on, "by": "human", "at": at})
+        if prev is None:
+            nid += 1
+    dropped = list(g.get("dropped") or [])
+    gone = [_norm_key(r.get("text") or "") for rid, r in old.items()
+            if rid not in kept_ids and r.get("by") == "model"]
+    for key in gone + edited:
+        if key and key not in dropped:
+            dropped.append(key)
+    g["dropped"] = dropped[-GUIDE_DROPPED_MAX:]
+    return out
+
+
+class GuideBody(BaseModel):
+    rules: Optional[list] = None
+    off: Optional[bool] = None
+
+
+class LangRulesBody(BaseModel):
+    rules: List[str] = []
+
+
+@app.get("/api/projects/{pid}/guide")
+def get_project_guide(pid: int):
+    return _guide_state(get_project(pid))
+
+
+@app.post("/api/projects/{pid}/guide/build")
+def build_project_guide(pid: int):
+    """Собрать (пересобрать) правила документа по кнопке: один платный вызов.
+    Правила человека остаются. Вердикты ревизии не устаревают (см. выше)."""
+    _guard_project_write(pid)
+    project = get_project(pid)
+    if _spend_status().get("over"):
+        raise HTTPException(402, "Лимит расхода организации исчерпан")
+    res = _guide_build(project, "human")
+    if not res["ok"]:
+        if res["why"] == "few":
+            raise HTTPException(400, "Переведено слишком мало строк: нужно хотя бы %d" % GUIDE_MIN_PAIRS)
+        raise HTTPException(502, "Модель не ответила — правила не собраны, прежние на месте")
+    project.pop("guideFails", None)
+    save_state(STATE)
+    _audit("guide.build", project=pid, added=res["added"], kept=res["kept"])
+    return {**_guide_state(project), "added": res["added"]}
+
+
+@app.post("/api/projects/{pid}/guide")
+def set_project_guide(pid: int, req: GuideBody):
+    """Правка правил человеком: список целиком и/или выключатель."""
+    _guard_project_write(pid)
+    project = get_project(pid)
+    before = _guide_fp(project)
+    g = dict(_guide(project) or {})
+    if req.rules is not None:
+        g["rules"] = _guide_merge(g, req.rules)
+    if req.off is not None:
+        if req.off:
+            g["off"] = True
+        else:
+            g.pop("off", None)
+    # Лежит на проекте даже пустым: выключенный или вычищенный человеком
+    # документ автосбор больше не трогает.
+    project["guide"] = g
+    after = _guide_fp(project)
+    save_state(STATE)
+    _audit("guide.edit", project=pid, rules=len(g.get("rules") or []), off=bool(g.get("off")))
+    return {**_guide_state(project), "changed": after != before}
+
+
+@app.post("/api/lang-rules/{code}")
+def set_org_lang_rules(code: str, req: LangRulesBody, request: Request):
+    """Правила языка организации — список целиком. Правит ВЛАДЕЛЕЦ
+    (`_OWNER_ONLY`): правило действует во всех книгах организации на этот
+    язык. Вердикты ревизии не устаревают — по той же причине, что у правил
+    документа: перечитывать ради этого все книги значит платить дважды."""
+    _current_user(request)
+    c = (code or "").strip().upper()
+    if c not in _LANG_BY_CODE:
+        raise HTTPException(400, "Неизвестный код языка: " + str(code))
+    rules, seen = [], set()
+    for x in req.rules or []:
+        t = " ".join(str(x or "").split())
+        if not t:
+            continue
+        if len(t) > GUIDE_RULE_CHARS:
+            raise HTTPException(400, "Правило длиннее %d знаков" % GUIDE_RULE_CHARS)
+        if t not in seen:
+            seen.add(t)
+            rules.append(t)
+    if len(rules) > LANG_RULES_MAX:
+        raise HTTPException(400, "Правил больше %d — сократите список" % LANG_RULES_MAX)
+    rec = _tenant_rec(_current_tenant())
+    if not rec:
+        raise HTTPException(404, "Записи вашей организации нет в базе — правила сохранять некуда.")
+    lr = dict(rec.get("langRules") or {})
+    if rules:
+        lr[c] = rules
+    else:
+        lr.pop(c, None)
+    rec["langRules"] = lr
+    save_state(STATE)
+    # Как у стайл-шита организации: без эпохи внешний воркер до рестарта
+    # переводил бы по прежним правилам.
+    try:
+        if hasattr(STORE, "bump_epoch"):
+            STORE.bump_epoch("doc:tenants")
+    except Exception as e:
+        print(f"[backend] правила языка: эпоха не поднята: {e}", file=sys.stderr)
+    _audit("langrules.org", lang=c, count=len(rules))
+    return {"ok": True, "lang": c, "rules": rules}
 
 
 @app.post("/api/projects/{pid}/term-context/apply")
@@ -22426,7 +22875,9 @@ def _job_freeze_models(job: dict) -> dict:
 # в пересчёте. `embed` не пересчитывается: эмбеддинг другой моделью не делают.
 USAGE_STEP_GROUP = {"translate": "translate", "review": "review", "backcheck": "backcheck",
                     "termcheck": "termcheck", "term_context": "termaudit", "repair": "repair",
-                    "judge": "judge", "ocr": "ocr", "terms": "terms", "edit_terms": "terms"}
+                    "judge": "judge", "ocr": "ocr", "terms": "terms", "edit_terms": "terms",
+                    # Правила документа зовут модель ревизии (`_guide_call`).
+                    "guide": "review"}
 USAGE_GROUPS = SYSTEM_MODEL_STEPS + ["terms"]
 
 
@@ -23695,6 +24146,9 @@ def _job_run(job: dict):
             job["status"] = "error"
             job["error"] = last_err
             break
+        # Правила документа — как только первых строк хватает: следующие
+        # порции переводятся уже по ним.
+        _guide_auto(job)
     # Остановку просили, а порций не осталось (курсор уже в конце: стоп после
     # последней порции или подъём после рестарта) — цикл до проверки стопа
     # не дошёл бы, и прогон позвал бы шаг словаря. Остановленный прогон
@@ -23702,6 +24156,8 @@ def _job_run(job: dict):
     if job["status"] == "running" and job["stop"]:
         job["status"] = "stopped"
     if job["status"] == "running":
+        # Короткий документ до порога не дорос — правила из того, что есть.
+        _guide_auto(job, final=True)
         _job_auto_terms(job)
         job["status"] = "done"
     # Метка резервируется файлом ДО первой правки — если правок так и не

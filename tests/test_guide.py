@@ -130,6 +130,12 @@ check(not r2["changed"], "то же самое ещё раз — ничего н
 check(main._norm_key("Use «guillemets» for quotations.") in p["guide"]["dropped"],
       "исправленное машинное запомнено: пересборка не вернёт прежний текст")
 try:
+    main.set_project_guide(1, main.GuideBody(rules=[], base="2000-01-01 00:00"))
+    check(False, "устаревшая карточка — 409")
+except main.HTTPException as e:
+    check(e.status_code == 409 and len(main.get_project_guide(1)["rules"]) == 3,
+          "устаревшая карточка — 409, правила не тронуты")
+try:
     main.set_project_guide(1, main.GuideBody(rules=[{"text": "y" * 500}]))
     check(False, "длинное правило отвергнуто")
 except main.HTTPException as e:
@@ -151,6 +157,7 @@ check("Use «guillemets» for quotations." not in texts,
 check("Keep chapter numbers in Roman numerals." in SENT["system"],
       "правила человека названы сборщику как уже действующие")
 check("NO individual word, name or" in SENT["system"], "промпт запрещает подмену отдельных слов и имён")
+check("never convert,\n   round or change a value" in SENT["system"], "и пересчёт чисел и единиц")
 SENT["fail"] = True
 try:
     main.build_project_guide(1)
@@ -197,6 +204,10 @@ check(SENT["n"] == n0 + 3 and "guide" in p, "составной прогон с 
 p = build(n=25, guide={"off": True})
 main._guide_auto({"id": 12, "kind": "translate", "project": 1, "tenant": "default", "params": {}, "counters": {}})
 check(SENT["n"] == n0 + 3, "выключенные человеком правила автосбор не трогает")
+p = build(n=5)
+main.set_project_guide(1, main.GuideBody(off=True))
+main.set_project_guide(1, main.GuideBody(off=False))
+check("guide" not in p, "выключили и включили до первого сбора — автосбор не умер")
 # Слабые правила с пробного прогона пересобираются один раз.
 p = build(n=4)
 main._guide_auto({"id": 13, "kind": "translate", "project": 1, "tenant": "default", "params": {}, "counters": {}}, final=True)
@@ -214,6 +225,35 @@ for s in p["segments"][:25]:
     s["target"] = s["target"] or "Tarjima."
 main._guide_auto({"id": 17, "kind": "translate", "project": 1, "tenant": "default", "params": {}, "counters": {}})
 check(p["guide"]["sample"] == 4, "правила, которых касался человек, автосбор не пересобирает")
+# Книга абзацами: выборку режет потолок текста (11 пар), а готовых строк
+# сотни — это НЕ слабые правила, и прогоны их не пересобирают.
+p = build(n=0)
+p["segments"] = [{"id": i, "source": "С" * 600, "target": "T" * 650, "status": "review"} for i in range(1, 201)]
+k0 = SENT["n"]
+for jid in range(30, 35):
+    main._guide_auto({"id": jid, "kind": "translate", "project": 1, "tenant": "default", "params": {}, "counters": {}})
+check(SENT["n"] == k0 + 1 and p["guide"]["sample"] < 20 and p["guide"]["ready"] == 200,
+      "длинные абзацы: пять прогонов — один сбор (выборка %d, готово %d)" % (p["guide"]["sample"], p["guide"]["ready"]))
+# Пересборка слабых — ровно один раз, даже если выборка и после неё мала.
+p = build(n=4)
+main._guide_auto({"id": 40, "kind": "translate", "project": 1, "tenant": "default", "params": {}, "counters": {}}, final=True)
+for s in p["segments"]:
+    s["target"] = "T" * 650
+    s["source"] = "С" * 600
+k0 = SENT["n"]
+for jid in range(41, 45):
+    main._guide_auto({"id": jid, "kind": "translate", "project": 1, "tenant": "default", "params": {}, "counters": {}})
+check(SENT["n"] == k0 + 1 and p["guide"].get("rebuilt"), "слабые правила пересобраны ровно один раз")
+# Сбой внутри шага прогон не роняет.
+p = build(n=25)
+real = main._guide_build
+main._guide_build = lambda *a, **k: 1 / 0
+try:
+    main._guide_auto({"id": 50, "kind": "translate", "project": 1, "tenant": "default", "params": {}, "counters": {}})
+    check(True, "исключение внутри шага поймано — прогон не падает")
+except Exception as e:
+    check(False, "исключение внутри шага поймано — прогон не падает: %s" % e)
+main._guide_build = real
 # Потолок неудач.
 p = build(n=25)
 SENT["fail"] = True

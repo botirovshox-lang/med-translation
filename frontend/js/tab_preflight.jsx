@@ -1523,13 +1523,12 @@ function GuideCard({ project, store, toast }) {
     setAdd("");
   };
   const orgLang = g.orgLang || [];
-  const saveLang = (rules) => {
-    setBusy(true);
-    Promise.resolve().then(() => window.API.setLangRules(g.tgt, rules)).then(r => {
-      setBusy(false);
-      if (r && r.ok) { setG(s => ({ ...s, orgLang: r.rules })); toast(TR("Правила языка организации сохранены")); }
-    }, e => { setBusy(false); toast(TR("Не получилось: ") + ((e && e.message) || "")); });
-  };
+  const norm = (t) => String(t || "").split(/\s+/).filter(Boolean).join(" ");
+  /* После переноса правило уходит из блока документа (оно уже в блоке
+     языка) — число «в промпте» считает сервер, поэтому перечитываем. */
+  const saveLang = (rules) => run(() => window.API.setLangRules(g.tgt, rules)
+    .then(r => (r && r.ok ? window.API.guide(project.id) : r)),
+    () => TR("Правила языка организации сохранены"));
   const head = g.built
     ? (g.builtBy === "auto" ? TR("Собраны сами по первым ") : TR("Собраны по кнопке по ")) + g.sample + TR(" строкам")
       + " · " + TR("в промпте: ") + g.active + (g.off ? " · " + TR("выключены") : "")
@@ -1559,10 +1558,12 @@ function GuideCard({ project, store, toast }) {
           onChange: (e) => setRule(i, { kind: e.target.value }) },
           React.createElement("option", { value: "doc" }, TR("книга")),
           React.createElement("option", { value: "lang" }, TR("язык"))),
-        owner && r.kind === "lang" && r.text.trim() && orgLang.indexOf(r.text.trim()) === -1
+        /* Переносится только СОХРАНЁННОЕ правило: несохранённый текст ушёл бы
+           в организацию, а в документе осталась бы прежняя версия — два блока. */
+        owner && r.kind === "lang" && r.id && !dirty && norm(r.text) && orgLang.indexOf(norm(r.text)) === -1
           ? React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy,
               title: TR("Правило будет действовать во всех книгах организации на этот язык"),
-              onClick: () => saveLang(orgLang.concat([r.text.trim()])) }, TR("Во все книги")) : null,
+              onClick: () => saveLang(orgLang.concat([norm(r.text)])) }, TR("Во все книги")) : null,
         React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy, title: TR("Удалить"),
           onClick: () => setDraft(d => d.filter((_, j) => j !== i)) }, "×")))) : null,
     React.createElement("div", { className: "row", style: { gap: 8, marginTop: 10, flexWrap: "wrap" } },
@@ -1571,7 +1572,7 @@ function GuideCard({ project, store, toast }) {
         onChange: (e) => setAdd(e.target.value), onKeyDown: (e) => { if (e.key === "Enter") addRule(); } }),
       React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy || !add.trim(), onClick: addRule }, TR("Добавить")),
       dirty ? React.createElement(Btn, { variant: "primary", size: "sm", disabled: busy,
-        onClick: () => save({ rules: draft }) }, TR("Сохранить правила")) : null,
+        onClick: () => save({ rules: draft, base: g.builtAt || "" }) }, TR("Сохранить правила")) : null,
       dirty ? React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy,
         onClick: () => setDraft((g.rules || []).map(x => ({ ...x }))) }, TR("Отменить")) : null),
     orgLang.length ? React.createElement("div", { style: { marginTop: 12, fontSize: 13 } },

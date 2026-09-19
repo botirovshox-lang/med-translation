@@ -20428,6 +20428,8 @@ def _guide_system(domain: dict, src_lang: str, tgt_lang: str, known: str) -> str
         "RULES:\n"
         "1. FORM only. NEVER terminology, never meaning, never facts. NO individual word, name or\n"
         "   abbreviation mappings ('translate X as Y', 'write WHO as ...'): state the pattern only.\n"
+        "   Rules about numbers, dates and units govern their WRITING only — never convert,\n"
+        "   round or change a value or a unit.\n"
         "2. Each rule is one imperative sentence in English, at most 30 words, concrete; add a\n"
         "   short example in " + tgt_lang + " when it helps.\n"
         "3. Only what the pairs actually show. Skip what any competent translator does anyway and\n"
@@ -20516,8 +20518,13 @@ def _guide_build(project: dict, how: str, model: Optional[str] = None) -> dict:
             continue
         new.append({"id": nid, "text": it["text"], "kind": it["kind"], "on": True, "by": "model", "at": at})
         nid += 1
+    # `ready` — сколько строк было готово при сборе. Не `sample`: выборку
+    # режет потолок текста, и на книге абзацами она остаётся в 10–14 пар
+    # при сотнях готовых строк — «слабыми» такие правила не бывают.
+    ready = sum(1 for s in project.get("segments") or []
+                if (s.get("source") or "").strip() and (s.get("target") or "").strip())
     g.update({"v": GUIDE_VERSION, "rules": keep + new, "builtAt": at, "builtBy": how,
-              "sample": len(pairs)})
+              "sample": len(pairs), "ready": ready})
     project["guide"] = g
     return {"ok": True, "added": len(new), "kept": len(keep), "pairs": len(pairs)}
 
@@ -20529,6 +20536,15 @@ def _guide_auto(job: dict, final: bool = False) -> None:
     и уступка не купят сбор второй раз. Проект, где правила уже есть или
     выключены (`guide` лежит на проекте), не трогается. Сбой прогон
     не роняет: перевод от правил не зависит."""
+    # Шаг зовётся после КАЖДОЙ порции, вне её try: любое исключение здесь
+    # уронило бы готовый прогон в «ошибку». Поэтому обёрнут целиком.
+    try:
+        _guide_auto_step(job, final)
+    except Exception as e:
+        print(f"[backend] job#{job.get('id')}: правила документа: {e}", file=sys.stderr)
+
+
+def _guide_auto_step(job: dict, final: bool) -> None:
     # setdefault, а не `get(...) or {}`: у пустых params флаг лёг бы
     # во временный словарь, и следующая порция купила бы сбор снова.
     params = job.setdefault("params", {})
@@ -20543,20 +20559,24 @@ def _guide_auto(job: dict, final: bool = False) -> None:
     project = _project_by_id(job["project"])
     if project is None or int(project.get("guideFails") or 0) >= GUIDE_AUTO_FAILS:
         return
-    ready = sum(1 for s in project.get("segments") or []
-                if (s.get("source") or "").strip() and (s.get("target") or "").strip())
     g = _guide(project)
+    weak = False
     if g is not None:
         # Одна поправка: правила, собранные на пробных строках короткого
-        # прогона, пересобираются один раз, когда строк стало достаточно, —
-        # если человек их не трогал. Иначе пять пробных строк решали бы
-        # правила книги навсегда.
-        weak = (g.get("builtBy") == "auto" and int(g.get("sample") or 0) < GUIDE_MIN_SEGMENTS
+        # прогона, пересобираются ОДИН раз (`rebuilt`), когда строк стало
+        # достаточно, — если человек их не трогал. Иначе пять пробных строк
+        # решали бы правила книги навсегда. Мера — готовые строки при сборе
+        # (`ready`), у записей до этого поля — `sample`.
+        weak = (g.get("builtBy") == "auto" and not g.get("rebuilt")
+                and int(g.get("ready", g.get("sample")) or 0) < GUIDE_MIN_SEGMENTS
                 and not g.get("off") and not g.get("dropped")
                 and not any(r.get("by") == "human" for r in g.get("rules") or []))
-        if not weak or ready < GUIDE_MIN_SEGMENTS:
+        if not weak:
             return
-    elif ready < (GUIDE_MIN_PAIRS if final else GUIDE_MIN_SEGMENTS):
+    # Дешёвые отказы выше, счёт строк — последним: шаг зовётся каждую порцию.
+    ready = sum(1 for s in project.get("segments") or []
+                if (s.get("source") or "").strip() and (s.get("target") or "").strip())
+    if ready < (GUIDE_MIN_SEGMENTS if weak or not final else GUIDE_MIN_PAIRS):
         return
     try:
         if _spend_status(job.get("tenant") or DEFAULT_TENANT).get("over"):
@@ -20572,6 +20592,8 @@ def _guide_auto(job: dict, final: bool = False) -> None:
         return
     if res.get("ok"):
         project.pop("guideFails", None)
+        if weak:
+            project["guide"]["rebuilt"] = True
         job["counters"]["guideRules"] = res["added"]
     else:
         job["guideSkipped"] = res.get("why")
@@ -20646,6 +20668,10 @@ def _guide_merge(g: dict, incoming: list) -> list:
 class GuideBody(BaseModel):
     rules: Optional[list] = None
     off: Optional[bool] = None
+    # `builtAt` правил, которые человек видел. Не совпал — правила за это
+    # время пересобрал прогон, и сохранение списка затёрло бы их (машинные
+    # ушли бы в `dropped`, прежние вернулись «от человека»). None — не проверять.
+    base: Optional[str] = None
 
 
 class LangRulesBody(BaseModel):
@@ -20683,6 +20709,8 @@ def set_project_guide(pid: int, req: GuideBody):
     project = get_project(pid)
     before = _guide_fp(project)
     g = dict(_guide(project) or {})
+    if req.rules is not None and req.base is not None and req.base != (g.get("builtAt") or ""):
+        raise HTTPException(409, "Правила пересобраны, пока вы их правили: откройте заново — ваши правки не сохранены")
     if req.rules is not None:
         g["rules"] = _guide_merge(g, req.rules)
     if req.off is not None:
@@ -20691,8 +20719,14 @@ def set_project_guide(pid: int, req: GuideBody):
         else:
             g.pop("off", None)
     # Лежит на проекте даже пустым: выключенный или вычищенный человеком
-    # документ автосбор больше не трогает.
-    project["guide"] = g
+    # документ автосбор больше не трогает. Исключение — след, в котором
+    # нет ничего: ни сбора, ни правил, ни удалённых, ни выключателя
+    # (выключили и тут же включили до первого сбора). Такой снимаем,
+    # иначе автосбор молча умер бы навсегда.
+    if not (g.get("builtAt") or g.get("rules") or g.get("dropped") or g.get("off")):
+        project.pop("guide", None)
+    else:
+        project["guide"] = g
     after = _guide_fp(project)
     save_state(STATE)
     _audit("guide.edit", project=pid, rules=len(g.get("rules") or []), off=bool(g.get("off")))

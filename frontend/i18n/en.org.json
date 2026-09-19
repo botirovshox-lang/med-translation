@@ -347,5 +347,20 @@
   "Сравниваем с файлами проекта": "Comparing with the project's files",
   "Ключ Anthropic": "Anthropic key",
   "нет": "no",
-  "Кросс-проверка терм-листа": "Term sheet cross-check"
+  "Кросс-проверка терм-листа": "Term sheet cross-check",
+  "Сколько раз строку можно перевести заново для «": "How many times a line may be re-translated for «",
+  ", 0 — запрещено):": ", 0 — forbidden):",
+  "Сколько раз можно перевести заново весь файл (пусто — по умолчанию ": "How many times the whole file may be re-translated (empty — default ",
+  ", 0 — только администратор сервиса):": ", 0 — service administrator only):",
+  "Предел перевода заново обновлён": "Re-translation limit updated",
+  "перевод заново: строка ≤ ": "re-translation: line ≤ ",
+  ", весь файл ≤ ": ", whole file ≤ ",
+  "Заново ★": "Again ★",
+  "Заново": "Again",
+  " · удалён": " · deleted",
+  "Идут сейчас": "Running now",
+  "Проект": "Project",
+  "Прогонов": "Runs",
+  "Факт $ по проекту": "Actual $ per project",
+  "Смета / факт": "Estimate / actual"
 }

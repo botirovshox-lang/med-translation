@@ -347,5 +347,20 @@
   "Сравниваем с файлами проекта": "Loyiha fayllari bilan solishtiryapmiz",
   "Ключ Anthropic": "Anthropic kaliti",
   "нет": "yo'q",
-  "Кросс-проверка терм-листа": "Atamalar ro'yxatini boshqa model bilan tekshirish"
+  "Кросс-проверка терм-листа": "Atamalar ro'yxatini boshqa model bilan tekshirish",
+  "Сколько раз строку можно перевести заново для «": "Qatorni necha marta qaytadan tarjima qilish mumkin — «",
+  ", 0 — запрещено):": ", 0 — taqiqlangan):",
+  "Сколько раз можно перевести заново весь файл (пусто — по умолчанию ": "Butun faylni necha marta qaytadan tarjima qilish mumkin (bo'sh — sukut bo'yicha ",
+  ", 0 — только администратор сервиса):": ", 0 — faqat xizmat administratori):",
+  "Предел перевода заново обновлён": "Qayta tarjima chegarasi yangilandi",
+  "перевод заново: строка ≤ ": "qayta tarjima: qator ≤ ",
+  ", весь файл ≤ ": ", butun fayl ≤ ",
+  "Заново ★": "Qayta ★",
+  "Заново": "Qayta",
+  " · удалён": " · o'chirilgan",
+  "Идут сейчас": "Hozir ishlayapti",
+  "Проект": "Loyiha",
+  "Прогонов": "Ishga tushirishlar",
+  "Факт $ по проекту": "Loyiha bo'yicha haqiqiy $",
+  "Смета / факт": "Smeta / fakt"
 }

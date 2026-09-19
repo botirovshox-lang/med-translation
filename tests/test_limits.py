@@ -71,6 +71,11 @@ paid = [("POST", "/api/projects/%d/jobs" % pid, {"kind": "full", "ids": [1]}),
         ("POST", "/api/segments/%d/1/translate" % pid, {}),
         ("POST", "/api/segments/%d/1/backcheck" % pid, {}),
         ("POST", "/api/projects/%d/batch" % pid, {}),
+        # Ремонт и проверки пачкой зовут модель (ремонт; обратный перевод
+        # проверок) — прежде `_PAID` их не знал, и лимит обходился ими.
+        ("POST", "/api/projects/%d/repair/batch" % pid, {}),
+        ("POST", "/api/projects/%d/checks/batch" % pid, {}),
+        ("POST", "/api/projects/%d/medical-qa/batch" % pid, {}),
         ("POST", "/api/glossary/audit", {})]
 for m, path, body in paid:
     r = c.request(m, path, headers=H(B), json=body)
@@ -86,6 +91,33 @@ free = [("POST", "/api/projects/%d/run-plan" % pid, {"steps": ["translate"]}),
 for m, path, body in free:
     r = c.request(m, path, headers=H(B), **({"json": body} if body is not None else {}))
     check(r.status_code != 402, "%s → не 402 (%d)" % (path, r.status_code))
+
+# Судья у одобрения и автоодобрения: путь бесплатный (принятие кандидатов
+# работает на исчерпанном лимите), платность — по телу. Одобрение идёт без
+# сверки с пометкой, автоодобрение со сверкой — 402, без сверки — работает.
+judge_calls = []
+orig_meaning, orig_verdict = main._openai_meaning, main._auto_verdict
+main._openai_meaning = lambda *a, **k: judge_calls.append(a) or {}
+main._auto_verdict = lambda cand, ctx: ("auto", "тест")
+_sc = main._project_scope(proj)
+cand = {"id": 90001, "kind": "extract", "src": "лимит", "tgt": "limit", "status": "pending",
+        "lang": _sc[0], "domain": _sc[1], "tenant": "acme", "project": pid}
+main.STATE.setdefault("termQueue", []).append(cand)
+try:
+    r = c.post("/api/term-queue/auto-approve", headers=H(B),
+               json={"dry_run": True, "meaning": True, "project": pid})
+    check(r.status_code == 402 and "spend" in r.json() and not judge_calls,
+          "автоодобрение со сверкой судьёй на исчерпанном лимите → 402, судья не звался: %d" % r.status_code)
+    r = c.post("/api/term-queue/auto-approve", headers=H(B),
+               json={"dry_run": True, "meaning": False, "project": pid})
+    check(r.status_code == 200, "автоодобрение без сверки — работает: %d" % r.status_code)
+    r = c.post("/api/term-queue/90001/approve", headers=H(B), json={})
+    check(r.status_code == 200 and r.json().get("written") and r.json().get("meaningSkipped") == "limit"
+          and not judge_calls, "одобрение человеком на исчерпанном лимите — без судьи, пропуск назван: %s" % r.text[:160])
+finally:
+    main._openai_meaning, main._auto_verdict = orig_meaning, orig_verdict
+    main.STATE["termQueue"] = [c_ for c_ in main.STATE["termQueue"] if c_.get("id") != 90001]
+    main.STATE["glossary"] = [g for g in main.STATE.get("glossary") or [] if g.get("src") != "лимит"]
 
 print("=== 4. Снятие лимита ===")
 r = c.post("/api/admin/tenants/acme", headers=H(A), json={"clearLimit": True})
@@ -221,14 +253,33 @@ if HAVE_DOCX:
         check(me["usage"]["used"] > used0 and me["usage"]["left"] is not None, "списано, остаток виден: %s" % me["usage"])
         used1 = me["usage"]["used"]
         r = up()
+        me = c.get("/api/auth/me", headers=H(B)).json()
+        # Тот же файл на ту же пару при ЖИВОМ проекте — 409 с адресом готового:
+        # второй проект по нему был бы бесплатным переводом заново.
+        check(r.status_code == 409 and ("№%d" % p2) in r.json().get("detail", "")
+              and "повторным импортом" in r.json().get("detail", "") and me["usage"]["used"] == used1,
+              "повтор того же файла при живом проекте → 409 с номером проекта, ничего не списано: %s" % r.text[:160])
+        r = c.post("/api/projects/upload", headers=H(B), files={"file": ("t.docx", raw, MIME)},
+                   data={"src": "RU", "tgt": "UZ"})
         p3 = r.json()["id"] if r.status_code == 200 else None
+        check(r.status_code == 200, "тот же файл на ДРУГУЮ пару — новый файл: %s" % r.text[:120])
+        # Объём в ответе округлён до 0,1 стр., а файл — сотые доли: сверяем
+        # точный счётчик записи и журнал.
+        exact = lambda: next(t for t in main.STATE["tenants"] if t["id"] == "acme")["pagesUsed"]
         me = c.get("/api/auth/me", headers=H(B)).json()
-        check(r.status_code == 200 and me["usage"]["used"] == used1 and me["pagesLog"][-1]["kind"] == "repeat",
-              "повтор того же файла: проект заведён, списано 0, в журнале repeat")
-        if p3:
-            c.request("DELETE", "/api/projects/%d" % p3, headers=H(B))
+        used2 = exact()
+        check(me["pagesLog"][-1]["kind"] == "debit" and me["pagesLog"][-1]["pages"] > 0,
+              "другая пара списана как новый перевод: %s" % me["pagesLog"][-1])
+        c.request("DELETE", "/api/projects/%d" % p2, headers=H(B))
+        check(exact() == used2, "удаление проекта счётчик не уменьшает")
+        r = up()
+        p4 = r.json()["id"] if r.status_code == 200 else None
         me = c.get("/api/auth/me", headers=H(B)).json()
-        check(me["usage"]["used"] == used1, "удаление проекта счётчик не уменьшает")
+        check(r.status_code == 200 and exact() > used2 and me["pagesLog"][-1]["kind"] == "debit",
+              "файл удалённого проекта загружен снова — списан как новый: %s" % me["pagesLog"][-1])
+        for p_ in (p3, p4):
+            if p_:
+                c.request("DELETE", "/api/projects/%d" % p_, headers=H(B))
         kinds = [e["kind"] for e in me["pagesLog"]]
         check(kinds[0] == "init" and kinds.count("credit") == 3 and "debit" in kinds, "журнал: init, три пополнения, списание: %s" % kinds)
         ov = c.get("/api/admin/overview", headers=H(A)).json()
@@ -247,8 +298,8 @@ if HAVE_DOCX:
         ub = mb["usage"]["used"]
         r = c.post("/api/projects/upload", headers=H(BT), files={"file": ("t.docx", raw, MIME)}, data={"src": "RU", "tgt": "EN"})
         mb = c.get("/api/auth/me", headers=H(BT)).json()
-        check(r.status_code == 200 and mb["usage"]["used"] == ub and mb["pagesLog"][-1]["kind"] == "repeat",
-              "повтор у организации на лимите из окружения: списано 0 и объём не вырос")
+        check(r.status_code == 409 and mb["usage"]["used"] == ub,
+              "повтор у организации на лимите из окружения: 409, объём не вырос")
         main.STATE["projects"] = [p for p in main.STATE["projects"] if main._tenant_of(p) != "beta"]
         main.TENANT_MAX_PAGES = 0
         r = c.post("/api/admin/tenants/acme", headers=H(A), json={"addPages": 500, "clearMaxProjects": True})
@@ -265,3 +316,4 @@ else:
 
 main.STATE["projects"] = [p for p in main.STATE["projects"] if p["id"] != pid]
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
+sys.exit(1 if fail else 0)

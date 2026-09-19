@@ -201,7 +201,15 @@ im = Image.new("RGB", (120, 80), "white"); b = io.BytesIO(); im.save(b, "PNG")
 r = upload("scan.png", b.getvalue()); PI = r.json()
 check(r.status_code == 200 and PI.get("imagesSkipped") == "no_key" and not calls, "без ключа: задачи нет, причина no_key")
 os.environ["OPENAI_API_KEY"] = "test-key"
-r = upload("scan2.png", b.getvalue()); PI2 = r.json()
+
+
+def png_other(w):
+    # Другой файл, а не тот же: тот же файл на ту же пару при живом проекте —
+    # 409 (`_refuse_duplicate_upload`), а здесь проверяется авточтение.
+    o = io.BytesIO(); Image.new("RGB", (w, 80), "white").save(o, "PNG"); return o.getvalue()
+
+
+r = upload("scan2.png", png_other(121)); PI2 = r.json()
 check(r.status_code == 200 and calls and calls[-1][1] == "images" and calls[-1][2].get("auto") and PI2.get("imagesReading") == 9001,
       "с ключом: задача images поставлена, отметка «читаем» на файле")
 from docx import Document as _Doc
@@ -216,7 +224,7 @@ tenant["limitUsd"] = 0.01; tenant.setdefault("spend", {})
 main._spend_add("default", 5.0) if hasattr(main, "_spend_add") else None
 st = main._spend_status("default")
 if st.get("over"):
-    r = upload("scan3.png", b.getvalue())
+    r = upload("scan3.png", png_other(122))
     check(r.json().get("imagesSkipped") == "limit" and len(calls) == n_before, "исчерпан лимит: задачи нет, причина limit")
 else:
     check(True, "лимит в тесте не воспроизвёлся — пропущено")

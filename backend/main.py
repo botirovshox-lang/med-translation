@@ -570,6 +570,7 @@ _JOB_TENANT = threading.local()      # организация фонового �
 _JOB_LANG = threading.local()        # язык объяснений прогона (там же и по той же причине)
 _JOB_USER = threading.local()        # кто запустил прогон — для журнала токенов (там же)
 _JOB_MODELS = threading.local()      # модели шагов, замороженные на постановке задачи (там же)
+_JOB_PROJECT = threading.local()     # проект прогона — на него ложится расход (там же)
 
 
 def _current_tenant() -> str:
@@ -2251,6 +2252,78 @@ def _spend_add(tenant: str, cost: Optional[float]) -> None:
         m["usd"] = round(m["usd"] + cost, 6)
 
 
+# ─── Факт расхода по ПРОЕКТУ ─────────────────────────────────────────
+# `runCosts` помнит сотню последних прогонов, а одиночные кнопки карточки
+# (перевод, back-check, ремонт) проекта не несут вовсе — вопрос «сколько
+# на самом деле стоил этот файл» не отвечался ничем. Счётчик живёт НЕ
+# в документе проекта: во время прогона тот пишет воркер, а одиночные
+# вызовы — API, и снимок из двух процессов терял бы приращения (DocConflict).
+# Поэтому тот же приём, что у `spend`: в базе — таблица-счётчик
+# с инкрементом (`project_spend`), в файле — `STATE["projectSpend"]`.
+# Прогоны (`runs`) и пары «смета — факт» (`estUsd`/`estActualUsd`,
+# только у прогонов со сметой) — туда же: смету сравнивают с фактом ТЕХ ЖЕ
+# прогонов, иначе отношение врало бы на одиночных кнопках.
+PROJECT_SPEND_KEY = "projectSpend"      # файловое хранилище: {"орг|проект": счётчики}
+
+
+def _usage_project() -> Optional[int]:
+    """Проект, на который ложится текущий вызов модели: запрос — из пути,
+    прогон — из задачи. None — вызов вне проекта (очередь терминов, смета)."""
+    pid = _USAGE_PROJECT.get() if "_USAGE_PROJECT" in globals() else None
+    if pid is None:
+        pid = getattr(_JOB_PROJECT, "id", None)
+    return pid
+
+
+def _proj_spend_add(tenant: str, pid: Optional[int], cost: Optional[float] = None,
+                    calls: int = 0, runs: int = 0, est: Optional[float] = None,
+                    est_actual: Optional[float] = None, bulk: int = 0) -> None:
+    """Приращение счётчика проекта. Сбой учёта вызов не роняет: это справочник,
+    деньги лимита считает `spend`. `bulk` — переводы заново всего файла
+    (`_retranslate_bulk_check`)."""
+    if pid is None:
+        return
+    tenant = tenant or DEFAULT_TENANT
+    unpriced = 1 if (calls and cost is None) else 0
+    try:
+        if STORE.kind == "pg":
+            STORE.add_project_spend(tenant, int(pid), float(cost or 0), int(calls), unpriced,
+                                    int(runs), float(est or 0), float(est_actual or 0), int(bulk))
+            return
+        d = STATE.setdefault(PROJECT_SPEND_KEY, {}).setdefault(
+            "%s|%s" % (tenant, int(pid)),
+            {"usd": 0.0, "calls": 0, "unpriced": 0, "runs": 0, "estUsd": 0.0, "estActualUsd": 0.0})
+        d["usd"] = round(d["usd"] + float(cost or 0), 6)
+        d["calls"] += int(calls)
+        d["unpriced"] += unpriced
+        d["runs"] += int(runs)
+        d["estUsd"] = round(d["estUsd"] + float(est or 0), 6)
+        d["estActualUsd"] = round(d["estActualUsd"] + float(est_actual or 0), 6)
+        d["bulk"] = int(d.get("bulk") or 0) + int(bulk)
+    except Exception as e:
+        print(f"[backend] расход проекта {pid} не записан: {e}", file=sys.stderr)
+
+
+def _proj_spend_rows(tenant: Optional[str] = None) -> list:
+    """[{tenant, project, usd, calls, unpriced, runs, estUsd, estActualUsd}]."""
+    if STORE.kind == "pg":
+        try:
+            return STORE.project_spend_rows(tenant)
+        except Exception as e:
+            print(f"[backend] расход по проектам не прочитан: {e}", file=sys.stderr)
+            return []
+    out = []
+    for key, v in (STATE.get(PROJECT_SPEND_KEY) or {}).items():
+        t, _, p = key.rpartition("|")
+        if tenant is not None and t != tenant:
+            continue
+        try:
+            out.append(dict(v, tenant=t, project=int(p)))
+        except ValueError:
+            continue
+    return out
+
+
 # ─── Журнал токенов по дням: основа виртуального пересчёта ───────────
 # `spend` помнит только СУММУ по организации и месяцу, `runCosts` — сотню
 # последних прогонов без автора и без одиночных вызовов. Вопрос «сколько
@@ -2480,6 +2553,15 @@ _PAID = [
     # он не зовёт, а запирать возврат к прежнему тексту на исчерпанном лимите
     # значило бы держать клиента в заложниках у его же счёта.
     ("POST", re.compile(r"/api/projects/\d+/(batch|extract-terms|term-context|review|termcheck/batch|backcheck/batch|images/scan)$")),
+    # Ремонт пачкой зовёт модель ремонта, проверки пачкой — обратный перевод
+    # (`_segment_checks`); без этих строк исчерпанный лимит обходился ими.
+    # `/review/apply` сюда НЕ входит: он ставит уже оплаченные вердикты
+    # (`apply_saved`), модель не зовёт. Одобрение кандидата и автоодобрение
+    # зовут судью, но путём их не запереть (инвариант 15: принятие
+    # кандидатов работает на исчерпанном лимите) — там свой рубеж
+    # в обработчике (`_spend_status`): судья пропускается или 402 по телу
+    # (`_limit_402`).
+    ("POST", re.compile(r"/api/projects/\d+/(repair/batch|checks/batch|medical-qa/batch)$")),
     ("POST", re.compile(r"/api/segments/\d+/\d+/(translate|backcheck|termcheck|repair|medical-qa|checks)$")),
     ("POST", re.compile(r"/api/term-queue/\d+/explain$")),
     ("POST", re.compile(r"/api/glossary/audit$")),
@@ -2509,6 +2591,7 @@ def _note_usage(step: str, model_id: str, resp) -> None:
                 if bucket is not None:
                     _usage_add(bucket, step, model_id, tin, cached, tout, think, cost)
             _spend_add(_current_tenant(), cost)
+            _proj_spend_add(_current_tenant(), _usage_project(), cost, calls=1)
             _ledger_add(step, model_id, tin, cached, tout, think, cost)
     except Exception as e:
         print(f"[backend] учёт расхода не сработал ({step}/{model_id}): {e}", file=sys.stderr)
@@ -2551,6 +2634,17 @@ def _usage_end(job: dict) -> None:
         hist = STATE.setdefault("runCosts", [])
         hist.append(rec)
         del hist[:-RUN_COST_HISTORY]
+        # Пара «смета — факт» по проекту: `runCosts` кольцевой, а сравнение
+        # по файлу нужно за всю его жизнь. Факт каждого вызова уже лёг
+        # в счётчик проекта в `_note_usage`; здесь — только пара.
+        if rec["est"] is not None and job.get("project") is not None:
+            try:
+                est = float(rec["est"])
+            except (TypeError, ValueError):
+                est = None
+            if est is not None:
+                _proj_spend_add(rec["tenant"], job.get("project"), est=est,
+                                est_actual=u["cost"])
     except Exception as e:
         print(f"[backend] расход прогона не записан: {e}", file=sys.stderr)
 
@@ -2913,6 +3007,13 @@ print(f"[backend] админка: /{ADMIN_PATH}", file=sys.stderr)
 # организацию в себе и выставлять её сама.
 CURRENT_SESSION: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar(
     "session", default=None)
+# Проект, на который ложится расход вызова модели (`_note_usage` →
+# `_proj_spend_add`). У запроса — из пути `/api/(projects|segments)/{pid}`
+# (мидварь), у прогона — из задачи (`_JOB_PROJECT`, по той же причине, что
+# организация: ContextVar в рабочие потоки не доезжает).
+_USAGE_PROJECT: "contextvars.ContextVar[Optional[int]]" = contextvars.ContextVar(
+    "usage_project", default=None)
+_USAGE_PID_RX = re.compile(r"^/api/(?:projects|segments)/(\d+)(?:/|$)")
 
 
 def _hash_password(password: str, salt: Optional[str] = None) -> tuple:
@@ -3382,6 +3483,23 @@ app = FastAPI(title=APP_BRAND + " API", version="5.6.0",
               docs_url=None, redoc_url=None, openapi_url=None)
 
 
+def _limit_402(st: dict, tenant: Optional[str]) -> JSONResponse:
+    """Отказ «лимит исчерпан» — одним текстом у мидвари (`_PAID`) и у
+    обработчиков, чья платность зависит от ТЕЛА запроса (автоодобрение
+    со сверкой судьёй): путём их не отличить от бесплатного вызова."""
+    if _tenant_simple(tenant):
+        return JSONResponse({"ok": False, "error":
+            "Месячный лимит организации исчерпан: обратитесь к администратору. "
+            "Бесплатные команды (правка начертания, откаты, пересчёт, экспорт) "
+            "работают; лимит сбрасывается 1-го числа.",
+            "spend": _spend_public(st, tenant)}, status_code=402)
+    return JSONResponse({"ok": False, "error":
+        "Месячный лимит расхода организации исчерпан: $%.2f из $%.2f. Бесплатные команды "
+        "(правка начертания, откаты, пересчёт, экспорт) работают; лимит сбрасывается "
+        "1-го числа." % (st["spentUsd"], float(st["limitUsd"])), "spend": st},
+        status_code=402)
+
+
 @app.middleware("http")
 async def require_token(request: Request, call_next):
     """Одна точка проверки: новый /api/* эндпоинт защищён автоматически."""
@@ -3416,24 +3534,20 @@ async def require_token(request: Request, call_next):
         if _is_paid(request.method, path):
             st = _spend_status(sess.get("tenant"))
             if st["over"]:
-                if _tenant_simple(sess.get("tenant")):
-                    return JSONResponse({"ok": False, "error":
-                        "Месячный лимит организации исчерпан: обратитесь к администратору. "
-                        "Бесплатные команды (правка начертания, откаты, пересчёт, экспорт) "
-                        "работают; лимит сбрасывается 1-го числа.",
-                        "spend": _spend_public(st, sess.get("tenant"))}, status_code=402)
-                return JSONResponse({"ok": False, "error":
-                    "Месячный лимит расхода организации исчерпан: $%.2f из $%.2f. Бесплатные команды "
-                    "(правка начертания, откаты, пересчёт, экспорт) работают; лимит сбрасывается "
-                    "1-го числа." % (st["spentUsd"], float(st["limitUsd"])), "spend": st},
-                    status_code=402)
+                return _limit_402(st, sess.get("tenant"))
         request.state.session = sess
         tok = CURRENT_SESSION.set(sess)
+        # Проект запроса — для учёта расхода по проекту (`_note_usage`):
+        # одиночные кнопки идут мимо задачи, и без этой метки их деньги
+        # не легли бы ни на какой проект.
+        mp = _USAGE_PID_RX.match(path)
+        ptok = _USAGE_PROJECT.set(int(mp.group(1)) if mp else None)
         try:
             if STORE.kind == "pg":
                 await run_in_threadpool(_sync_shared)
             return await call_next(request)
         finally:
+            _USAGE_PROJECT.reset(ptok)
             CURRENT_SESSION.reset(tok)
     return await call_next(request)
 
@@ -5057,17 +5171,54 @@ def admin_runs(request: Request, limit: int = 100, all: bool = False):
     if _hide_cost() and not all:
         return {"ok": True, "runs": [], "hidden": True, "totalUsd": None,
                 "estRatio": None, "estRuns": 0, "kept": RUN_COST_HISTORY}
-    rows = [r for r in reversed(STATE.get("runCosts") or [])
+    names = {(_tenant_of(p), p["id"]): (p.get("title") or p.get("fileName") or "")
+             for p in STATE.get("projects") or []}
+
+    def pname(tenant, pid):
+        # Удалённый проект имени не имеет, но его деньги остаются: строку
+        # не выбрасываем, а называем номером.
+        return names.get((tenant, pid)) if pid is not None else None
+
+    rows = [dict(r, projectName=pname(_tenant_of(r), r.get("project")))
+            for r in reversed(STATE.get("runCosts") or [])
             if all or _tenant_of(r) == t][:max(1, min(limit, 500))]
     priced = [r for r in rows if r.get("est") and r.get("cost")]
     total = sum(float(r.get("cost") or 0) for r in rows)
+    # Итог ПО ПРОЕКТУ — из счётчика `project_spend` (`_proj_spend_add`):
+    # в нём и одиночные кнопки, и прогоны старше кольца `runCosts`.
+    by_project = []
+    for r in _proj_spend_rows(None if all else t):
+        by_project.append({
+            "tenant": r["tenant"], "project": r["project"],
+            "projectName": pname(r["tenant"], r["project"]),
+            "deleted": (r["tenant"], r["project"]) not in names,
+            "usd": round(r["usd"], 4), "calls": r["calls"], "unpriced": r["unpriced"],
+            "runs": r["runs"],
+            "estUsd": round(r["estUsd"], 4), "estActualUsd": round(r["estActualUsd"], 4),
+            "estRatio": (round(r["estUsd"] / r["estActualUsd"], 2) if r["estActualUsd"] else None)})
+    by_project.sort(key=lambda x: -x["usd"])
+    # Идущие прогоны — ЖИВЫМ счётчиком задачи: в `runCosts` они попадут
+    # только по концу, а смотреть, сколько уходит сейчас, надо сейчас.
+    _refresh_jobs_from_db()
+    live = []
+    for j in sorted(_JOBS.values(), key=lambda x: x["id"], reverse=True):
+        if j.get("status") not in ("queued", "running") or not (all or _tenant_of(j) == t):
+            continue
+        u = j.get("usage") or {}
+        live.append({"job": j["id"], "kind": j.get("kind"), "status": j.get("status"),
+                     "tenant": _tenant_of(j), "project": j.get("project"),
+                     "projectName": pname(_tenant_of(j), j.get("project")),
+                     "done": j.get("done"), "total": j.get("total"),
+                     "est": (j.get("params") or {}).get("est_cost"),
+                     "cost": round(float(u.get("cost") or 0), 4), "calls": u.get("calls") or 0})
     # Сумма ПОКАЗАННЫХ прогонов, а не всего расхода: строки урезаны `limit`,
     # и подписать это «всего» значило бы менять денежное число от того,
     # сколько строк попросили.
     return {"ok": True, "runs": rows, "shownUsd": round(total, 4),
             "estRatio": (round(sum(r["est"] for r in priced) / sum(r["cost"] for r in priced), 2)
                          if priced and sum(r["cost"] for r in priced) else None),
-            "estRuns": len(priced), "kept": RUN_COST_HISTORY}
+            "estRuns": len(priced), "kept": RUN_COST_HISTORY,
+            "byProject": by_project, "live": live}
 
 
 _DOMAIN_FIELDS = ("label", "en", "expert", "terminology", "extract", "examples")
@@ -5299,6 +5450,12 @@ class TenantPatch(BaseModel):
     # {шаг: id модели}, ключи — ключи FULL_STEP_MODEL. Пустое значение
     # означает «модель шага по умолчанию».
     models: Optional[dict] = None
+    # Перевод заново (см. `_retranslate_limit`): сколько раз строку можно
+    # перевести поверх готового текста (0 — запрещено) и сколько раз — весь
+    # файл. clearRetranslate — вернуть оба к умолчанию сервиса.
+    retranslateLimit: Optional[int] = None
+    retranslateBulk: Optional[int] = None
+    clearRetranslate: bool = False
 
 
 @app.post("/api/admin/tenants/{tid}")
@@ -5309,6 +5466,8 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
     rec = _tenant_rec(tid)
     if not rec:
         raise HTTPException(404, "Организация не найдена")
+    if any(v is not None and v < 0 for v in (req.retranslateLimit, req.retranslateBulk)):
+        raise HTTPException(400, "Предел перевода заново не может быть отрицательным")
     if req.name is not None:
         rec["name"] = req.name.strip() or rec["name"]
     if req.active is not None:
@@ -5345,8 +5504,16 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
         if wrong:
             raise HTTPException(400, "Неизвестный шаг: " + ", ".join(sorted(wrong)))
         rec["models"] = {k: v for k, v in req.models.items() if v}
+    if req.clearRetranslate:
+        rec.pop("retranslateLimit", None)
+        rec.pop("retranslateBulk", None)
+    if req.retranslateLimit is not None:
+        rec["retranslateLimit"] = int(req.retranslateLimit)
+    if req.retranslateBulk is not None:
+        rec["retranslateBulk"] = int(req.retranslateBulk)
     _audit("tenant.update", tenant_target=tid, limitUsd=rec.get("limitUsd"),
-           addPages=req.addPages, pagesCredit=rec.get("pagesCredit"), maxProjects=rec.get("maxProjects"))
+           addPages=req.addPages, pagesCredit=rec.get("pagesCredit"), maxProjects=rec.get("maxProjects"),
+           retranslateLimit=rec.get("retranslateLimit"), retranslateBulk=rec.get("retranslateBulk"))
     save_state(STATE)
     _tenants_changed()
     return {"ok": True, "tenant": _tenant_admin_view(rec), "spend": _spend_status(tid),
@@ -7260,9 +7427,15 @@ def project_analysis(pid: int, refresh: bool = False):
     # иначе цифра на экране разошлась бы с тем, что произойдёт по нажатию.
     pending = [c for c in _term_queue() if c.get("status", "pending") == "pending"
                and _scope_of(c) == scope]
+    # Контекст — по всей области: соперничающие варианты других проектов —
+    # законное свидетельство (единственность варианта, доноры). А СЧИТАЕМ
+    # только свои карточки и карточки уровня организации: чужой проект той же
+    # пары иначе раздувал число на экране, а кнопка (`auto_approve_terms`
+    # с `project`) раскладывает ровно такой же срез.
     ctx = _auto_context(pending, pol)
+    mine = _fid(pid)
     ready, need_human, need_wait = 0, {}, {}
-    for cand in pending:
+    for cand in (c for c in pending if _gproj(c) in (None, mine)):
         action, reason = _auto_verdict(cand, ctx)
         if action in (GLOSSARY_TIER_HARD, GLOSSARY_TIER_SOFT):
             ready += 1
@@ -7482,8 +7655,18 @@ def _book_image_pages(project: dict) -> None:
     проекта: воркер документ `tenants` не пишет никогда (второй писатель
     ломал бы счётчик), а импорт этих страниц ещё не знал. Без счётчика
     у организации (`pagesUsed` нет) списывать нечего — объём читается
-    по живым проектам, и картиночные строки уже в нём."""
+    по живым проектам, и картиночные строки уже в нём.
+
+    Отметка — ВЫСШАЯ ТОЧКА (`imagePagesBooked` не опускается): снятые
+    сегменты (`/images/forget`, надпечатка, согласие, повторный импорт)
+    и заведённые заново тем же разбором не списываются второй раз, а удаление
+    ничего не возвращает. Поэтому её же зовут ПЕРЕД каждым снятием картиночных
+    строк и перед удалением файла: иначе прочитанное, но ни разу не показанное
+    уходило бы бесплатно. Пока проект держит прогон внешнего воркера, документ
+    проекта не пишем (DocConflict) — спишется при следующем показе."""
     if IS_WORKER:
+        return
+    if EXTERNAL_WORKER and _active_job_for(project.get("id")):
         return
     tid = _tenant_of(project)
     rec = _tenant_rec(tid)
@@ -7662,7 +7845,12 @@ def delete_folder(fid: int, force: bool = False):
     if files and not force:
         raise HTTPException(409, "В проекте %d файлов: удалите их или подтвердите удаление всего проекта"
                             % len(files))
+    # Охранник — для каждого файла ДО первого удаления, и страницы с картинок
+    # списываются до него же (см. `delete_project`).
     for p in files:
+        _guard_project_write(p["id"])
+    for p in files:
+        _book_image_pages(p)
         _delete_project_record(p["id"])
     real = _folder_by_id(fid)
     if real is not None:
@@ -7978,7 +8166,10 @@ TENANT_MAX_PROJECTS = int(os.environ.get("TENANT_MAX_PROJECTS", "0") or 0)
 
 def _cap_defaults() -> dict:
     """Потолки из окружения — значения ПО УМОЛЧАНИЮ для организаций без своих."""
-    return {"filePages": IMPORT_MAX_PAGES, "maxPages": TENANT_MAX_PAGES, "maxProjects": TENANT_MAX_PROJECTS}
+    return {"filePages": IMPORT_MAX_PAGES, "maxPages": TENANT_MAX_PAGES, "maxProjects": TENANT_MAX_PROJECTS,
+            # Умолчания перевода заново — чтобы админка показала действующее
+            # число у организации без своего (`_retranslate_limit`).
+            "retranslateLimit": RETRANSLATE_LIMIT, "retranslateBulk": RETRANSLATE_BULK}
 
 
 # Учёт в СТРАНИЦАХ — предоплата, а не потолок по живым проектам:
@@ -7987,11 +8178,13 @@ def _cap_defaults() -> dict:
 #   `pagesUsed`   — списано, НИКОГДА не уменьшается: удаление проекта его
 #                   не трогает, иначе «импорт → перевод → выгрузка → удаление
 #                   → импорт заново» обходил бы лимит бесплатно;
-#   `filesSeen`   — {sha1 файла + пара языков: страницы}: повтор того же
-#                   файла на ту же пару списывает ноль (три нажатия «импорт»
-#                   — не три заказа, закон смет); на другую пару — новый
-#                   перевод, списывается; пересохранённый Word'ом файл —
-#                   другой sha, спишется (названо, не чинится);
+#   `filesSeen`   — {sha1 файла + пара языков: страницы} — след, а не
+#                   скидка: тот же файл на ту же пару при ЖИВОМ проекте —
+#                   409 (`_refuse_duplicate_upload`, дорога — открыть готовый
+#                   или повторный импорт), при удалённом — списывается как
+#                   новый (`always`): бесплатный повтор был бесплатным
+#                   переводом заново. На другую пару — новый перевод;
+#                   пересохранённый Word'ом файл — другой sha (названо);
 #   `pagesLog`    — журнал для людей (init / credit / debit / repeat: когда,
 #                   кто, сколько, какой проект), хвост PAGES_LOG_MAX; источник
 #                   правды — счётчики, журнал — след.
@@ -8033,15 +8226,13 @@ _PAGES_CACHE: dict = {}
 
 def _image_pages_of(p: dict, card: dict) -> float:
     """Страницы текста, распознанного на картинках, — ПО ФАКТУ существующих
-    сегментов (`origin.kind == "image"`), а не счётчиком: сегменты картинок
-    снимают (`/images/forget`, надпечатка, согласие) и заводят заново, и счётчик
-    рос бы каждым заходом. Без кэша: ключ по длине списка устаревал бы на паре
-    «снять один, вернуть другой», а число входит в проверку лимита; текстов
-    здесь десятки, счёт дешёв. У проекта без `pages` (объём по сегментам) они
-    уже внутри `_project_pages` — второй раз не считаются. Обратная сторона
-    названа: это объём по ЖИВЫМ проектам, и удалённый проект уносит свои
-    картиночные страницы из «списано» — единственная часть учёта, которую
-    удаление возвращает (доли страницы на книгу)."""
+    сегментов (`origin.kind == "image"`). Без кэша: ключ по длине списка
+    устаревал бы на паре «снять один, вернуть другой», а число входит
+    в проверку лимита; текстов здесь десятки, счёт дешёв. У проекта без
+    `pages` (объём по сегментам) они уже внутри `_project_pages` — второй
+    раз не считаются. Со счётчиком организации это лишь «сколько есть
+    сейчас»: списывает `_book_image_pages` сверх высшей точки
+    `imagePagesBooked`, поэтому снятие и удаление страниц не возвращают."""
     if p.get("pages") is None:
         return 0.0
     texts = [sg.get("source") or "" for sg in p.get("segments") or []
@@ -8102,18 +8293,20 @@ def _pages_topup(tid: str, pages: float, note: Optional[str]) -> None:
 
 
 def _pages_debit(tid: str, pages: float, key: str, project_id: int, title: str,
-                 debit_pages: Optional[float] = None, kind: Optional[str] = None) -> float:
+                 debit_pages: Optional[float] = None, kind: Optional[str] = None,
+                 always: bool = False) -> float:
     """Проверить лимит и списать страницы за импорт ОДНИМ блоком под локом;
     возвращает списанное (0 при повторе файла). 402 — ничего не записано.
     `pages` — объём ФАЙЛА (он идёт в `filesSeen` и в журнал), `debit_pages` —
     сколько списать, если не весь файл (повторный импорт платит только
-    за добавленные строки)."""
+    за добавленные строки). `always` — не смотреть в `filesSeen`: повторному
+    импорту цену называет диф с нынешним файлом, а не история sha."""
     with _SAVE_LOCK:
         rec = _tenant_rec(tid)
         if rec is None:
             return 0.0
         seen = rec.get("filesSeen") or {}
-        repeat = key in seen
+        repeat = key in seen and not always
         debit = 0.0 if repeat else float(pages if debit_pages is None else debit_pages)
         caps, usage = _tenant_caps(tid), _tenant_usage(tid)
         if caps["pagesLimited"] and usage["pages"] + debit > caps["maxPages"]:
@@ -8153,7 +8346,15 @@ def _tenant_usage(tid: str) -> dict:
     card = _pricing_of(tid)
     mine = [p for p in STATE["projects"] if _tenant_of(p) == tid]
     used = round(_pages_used(rec, tid, card), 1)
-    img = round(sum(_image_pages_of(p, card) for p in mine), 1)
+    if rec.get("pagesUsed") is not None:
+        # Со счётчиком картиночные страницы ложатся в `pagesUsed`
+        # (`_book_image_pages`); здесь — только ещё НЕ списанное сверх
+        # отметки. Прежде живой объём прибавлялся к счётчику целиком: списанное
+        # считалось дважды, а удалённый проект свои страницы возвращал.
+        img = round(sum(max(0.0, _image_pages_of(p, card) - float(p.get("imagePagesBooked") or 0.0))
+                        for p in mine), 1)
+    else:
+        img = round(sum(_image_pages_of(p, card) for p in mine), 1)
     caps = _tenant_caps(tid)
     total = round(used + img, 1)
     return {"pages": total, "used": used, "imagePages": img, "projects": len(mine),
@@ -8196,6 +8397,20 @@ def _import_volume(paras: list, lang: str, card: dict, tid: str) -> float:
     списание потом идёт синхронно под локом и считает объём по кэшу."""
     _tenant_usage(tid)
     return _pages_exact(paras, lang, card)
+
+
+def _refuse_duplicate_upload(sha: str, src: str, tgt: str) -> None:
+    """Тот же файл на ту же пару при ЖИВОМ проекте организации — 409, а не
+    новый проект: второй проект по нему был бы бесплатным переводом заново
+    (прежде `filesSeen` списывал повтору ноль). Дорога для него одна —
+    открыть готовый или заменить файл повторным импортом. Проект удалён —
+    файл списывается как новый: удаление страниц не возвращает."""
+    dup = next((p for p in _tenant_projects() if p.get("sourceSha") == sha
+                and (p.get("src") or "RU") == src and (p.get("tgt") or "EN") == tgt), None)
+    if dup is not None:
+        raise HTTPException(409, "Этот файл уже загружен на ту же пару языков: «%s» (№%d). "
+                                 "Откройте его или замените файл повторным импортом"
+                            % (dup.get("title") or "", dup["id"]))
 
 
 @app.post("/api/projects/upload")
@@ -8259,6 +8474,7 @@ async def upload_project(
     # Лимит страниц проверяет и списывает `_pages_debit` — одним блоком под
     # локом, ниже, когда проект собран: до этого 402 ничего не оставляет.
     sha = parsed["sha"]                 # отпечаток ИСХОДНОГО файла, а не собранного .docx
+    _refuse_duplicate_upload(sha, src, tgt)     # до разбора единиц и до списания
     units = parsed["units"]
     deduped = [t for t, _ in units]
 
@@ -8310,7 +8526,10 @@ async def upload_project(
     # подменяет `STATE["tenants"]` целиком, и списание пропало бы молча.
     # Отказ 402 идёт до вставки и до файла исходника — сирот не остаётся.
     with _SAVE_LOCK:
-        _pages_debit(tid, pages, "%s:%s→%s" % (sha, src, tgt), new_id, proj_title)
+        # Второй раз — под локом: две загрузки одного файла подряд иначе
+        # обе прошли бы проверку выше, пока шёл разбор.
+        _refuse_duplicate_upload(sha, src, tgt)
+        _pages_debit(tid, pages, "%s:%s→%s" % (sha, src, tgt), new_id, proj_title, always=True)
         STATE["projects"].insert(0, new_project)
         _PROJECTS_VER[0] += 1
         save_state(STATE)
@@ -8630,6 +8849,17 @@ def _reimport_cleanup(pid: int) -> None:
         print("[backend] копии замен проекта %s не удалены: %s" % (pid, e), file=sys.stderr)
 
 
+# Что снимается с сегмента, когда под его номером встала ДРУГАЯ строка
+# оригинала (повторный импорт): всё это — вердикты и следы про прежний текст.
+_RESET_ON_SOURCE_CHANGE = (
+    "_extract_hash", "backcheck", "backtranslated_ru", "confirmedAt", "confirmedBy",
+    "confirmedRole", "confirmWithdrawn", "docTerms", "editedAt", "editedBy", "editedFrom",
+    "editedToHash", "engine_qa", "extracted_hash", "medical_qa_enabled", "propagatedFrom",
+    "provider", "qa_issues", "qa_result", "repair", "review", "risk_color", "risk_score",
+    "styleApplied", "term_candidates", "termcheck", "termContext", "termCtxApplied",
+    "unconfirmed")
+
+
 def _new_segment(sid: int, text: str) -> dict:
     """Сегмент абзаца — тем же составом полей, что при импорте."""
     n = len(text.split())
@@ -8696,6 +8926,10 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
     src_lang = project.get("src") or "RU"
     card = _pricing_of(tid)
     all_pages = _import_volume(parsed["paras"], src_lang, card, tid)
+    # Сегменты картинок уходят в копию — прочитанное с них списывается ДО
+    # этого (высшая точка `imagePagesBooked`): заведённые заново по новому
+    # файлу второй раз не спишутся, а снятые не вернут страниц.
+    _book_image_pages(project)
     with _SAVE_LOCK:
         # Заново: объект, охранник и план — см. докстроку.
         project = get_project(pid)
@@ -8705,6 +8939,21 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
         plan, removed = _diff_units(project, parsed["units"], parsed["full"])
         counts = _diff_counts(project, parsed["units"], parsed["full"], (plan, removed))
         added_texts = [parsed["units"][j][0] for j, p in enumerate(plan) if p and p[0] == "new"]
+        # Совпавший сегмент, чей текст разошёлся с новым НЕ регистром и
+        # пробелами и НЕ записью того же абзаца (полный текст старого
+        # импорта), — это другая строка: перевод к ней не относится. Диф так
+        # не совпадает по построению (ключ — тот же текст), поэтому это страж
+        # на будущие правки `_diff_units`: оставить перевод под изменённым
+        # оригиналом значило бы бесплатно перевести новый текст старой ценой.
+        changed = set()
+        for j, p in enumerate(plan):
+            if p and p[0] in ("keep", "moved"):
+                text_, idxs = parsed["units"][j]
+                same = {_match_key(text_)} | {_match_key(parsed["full"][i]) for i in idxs
+                                               if parsed["full"] and i < len(parsed["full"])}
+                if _match_key(p[1].get("source")) not in same:
+                    changed.add(j)
+                    added_texts.append(text_)
         added_pages = _pages_exact(added_texts, src_lang, card) if added_texts else 0.0
         images = _image_segments(project)
 
@@ -8735,8 +8984,13 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
         except Exception as e:
             raise HTTPException(500, "Не удалось сохранить копию для отката — замена отменена: %s" % e)
         try:
+            # `always`: цена замены — ДОБАВЛЕННОЕ к нынешнему файлу, а не «видели
+            # ли этот sha». Иначе «редакция A → B → снова A» возвращала бы
+            # строки A непереведёнными и бесплатными: sha A уже в `filesSeen`.
+            # Тот же файл, что лежит сейчас, добавляет ноль — и стоит ноль.
             _pages_debit(tid, all_pages, "%s:%s→%s" % (parsed["sha"], src_lang, project.get("tgt") or "EN"),
-                         pid, project.get("title") or "", debit_pages=added_pages, kind="reimport")
+                         pid, project.get("title") or "", debit_pages=added_pages, kind="reimport",
+                         always=True)
         except HTTPException:
             for p_ in paths.values():          # 402: копия-сирота не нужна
                 p_.unlink(missing_ok=True)
@@ -8748,7 +9002,21 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
         new_segments, pairs, added_ids = [], [], []
         for u, item in enumerate(plan):
             text_, idxs = parsed["units"][u]
-            if item and item[0] in ("keep", "moved"):
+            if item and item[0] in ("keep", "moved") and u in changed:
+                # Другая строка под тем же номером: перевод и проверки
+                # к ней не относятся. Номер сохраняем, прежний перевод —
+                # в `prevTarget` (как у `_replace_target`), страницы
+                # за строку уже в `added_pages`.
+                seg = item[1]
+                if (seg.get("target") or "").strip():
+                    seg["prevTarget"] = seg.get("target")
+                notes = seg.get("comments") or []      # обсуждение строки — людям, не вердикт
+                seg.update(_new_segment(seg["id"], text_))
+                seg["comments"] = notes
+                for k in _RESET_ON_SOURCE_CHANGE:
+                    seg.pop(k, None)
+                added_ids.append(seg["id"])
+            elif item and item[0] in ("keep", "moved"):
                 seg = item[1]
                 # Ключ терпим к регистру и пробелам, а текст — нет: заголовок,
                 # ставший капсом, обязан прийти в сегмент, иначе проверки
@@ -8778,6 +9046,7 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
         project["reimport"] = {"stamp": stamp, "at": snap["at"], "kept": counts["kept"],
                                "moved": counts["moved"], "added": counts["added"],
                                "removed": counts["removed"], "images": len(images),
+                               "changed": len(changed),
                                "file": filename, "addedIds": added_ids}
         _PROJECTS_VER[0] += 1
         save_state(STATE)
@@ -8959,6 +9228,7 @@ async def attach_source(pid: int, file: UploadFile = File(...), force: bool = Fo
     Переводы, проверки и статусы не трогаются вообще: пишется только файл
     и карта абзацев рядом с ним."""
     project = get_project(pid)
+    _guard_project_write(pid)
     if _job_busy(pid, "images"):
         # Разбор держит копию карты в памяти и переписывает файл после каждой
         # картинки: новая привязка легла бы под его следующее сохранение,
@@ -9506,6 +9776,7 @@ def image_restore_block(pid: int, req: ImageRestoreRequest):
     есть откат: решение машины, которое человек не может отменить, — это
     не помощь, а приговор."""
     project = get_project(pid)
+    _guard_project_write(pid)
     if _job_busy(pid, "images"):
         raise HTTPException(409, "Идёт разбор картинок — дождитесь конца")
     data = _load_source_map(pid) if project.get("sourceDocx") else None
@@ -9549,6 +9820,9 @@ def image_restore_block(pid: int, req: ImageRestoreRequest):
     b["seg"] = nid
     _save_source_map(pid, data)
     save_state(STATE)
+    # Сегмент из картинки заведён — страницы за него списываются сразу
+    # (сверх высшей точки: возвращённая надпись, уже оплаченная, — ноль).
+    _book_image_pages(project)
     return {"ok": True, "segment": nid, "created": True,
             "stats": _image_stats(data.get("images") or [],
                                   data.get("imagesTotal") or 0)}
@@ -9575,11 +9849,14 @@ def images_forget(pid: int, req: ImagesForgetRequest):
     при этом остаётся (см. `wipe`) — повторный заход заведёт сегменты заново
     и ничего не заплатит."""
     project = get_project(pid)
+    _guard_project_write(pid)
     if _job_busy(pid, "images"):
         # Задача переписывает ту же карту и держит её копию в памяти: наша
         # правка легла бы под её следующее сохранение и пропала молча.
         raise HTTPException(409, "Идёт разбор картинок — дождитесь конца "
                                  "или остановите его")
+    # Снятые строки страниц не возвращают: прочитанное списывается ДО снятия.
+    _book_image_pages(project)
     data = _load_source_map(pid) if project.get("sourceDocx") else None
     kept, removed = [], []
     for s in list(project["segments"]):
@@ -9673,12 +9950,18 @@ def image_mark_overlay(pid: int, sid: int):
     вида. Значит решает человек, а система обязана СЛУШАТЬСЯ и ПОМНИТЬ: метка
     ложится на блок, и следующий разбор сегмент не заведёт заново."""
     project = get_project(pid)
+    _guard_project_write(pid)
     if _job_busy(pid, "images"):
         raise HTTPException(409, "Идёт разбор картинок — дождитесь конца")
     seg = next((x for x in project["segments"] if x["id"] == sid), None)
     origin = (seg or {}).get("origin") or {}
     if seg is None or origin.get("kind") != "image":
         raise HTTPException(404, "Сегмент #%d пришёл не из картинки" % sid)
+    if (seg.get("target") or "").strip():
+        # Переведённую строку объявить «надписью аппарата» — не способ
+        # вернуть страницы: списываем прочитанное ДО снятия. Непереведённую
+        # надпечатку (ошибку разбора) не списываем — работы по ней не было.
+        _book_image_pages(project)
     data = _load_source_map(pid) if project.get("sourceDocx") else None
     if data is None:
         raise HTTPException(404, "К проекту не приложен исходный .docx")
@@ -10003,6 +10286,12 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
 
     _key_gate(req.model, "Перевод требует ключ OpenAI: бесплатного движка "
                          "в системе больше нет")
+    # Перевод ЗАНОВО поверх готового текста — в пределах организации
+    # (см. «Перевод ЗАНОВО» у `_retranslate_limit`); первый перевод не считается.
+    limit = _retranslate_limit()
+    if _retranslate_blocked(seg, limit):
+        raise HTTPException(409, _retranslate_refusal(limit))
+    old_target = seg.get("target") or ""
     try:
         prev_src, next_src = _neighbours(project, seg)
         translation = _openai_translate(src_text, project["src"], project["tgt"],
@@ -10028,6 +10317,7 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
         seg.pop("docTerms", None)
 
     _replace_target(seg, translation, _resolve_model(req.model)["id"], "GPT_REQUIRED")
+    _retranslate_note(seg, old_target)
     save_state(STATE)
     return {"ok": True, "segment": seg, "usedRealApi": True}
 
@@ -10035,6 +10325,11 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
 @app.post("/api/segments/{pid}/{sid}/qa")
 def qa_segment(pid: int, sid: int):
     seg = get_segment(pid, sid)
+    _guard_project_write(pid)
+    if not (seg.get("target") or "").strip():
+        # Проверять нечего, и статус «qa» на пустом переводе прятал строку
+        # от прогона (см. `_needs_translation`) — ничего не пишем.
+        return {"ok": True, "segment": seg, "issues": [], "skipped": "empty"}
     # Simple local QA checks
     qa_issues = []
     src, tgt = seg["source"], seg.get("target", "")
@@ -10051,7 +10346,10 @@ def qa_segment(pid: int, sid: int):
                           "msg": "Перевод более чем в 3 раза длиннее оригинала."})
 
     seg["qa"] = qa_issues
-    seg["status"] = "qa"
+    if seg.get("status") != "confirmed":
+        # Заверенное не понижаем: подпись снимает только `_withdraw_confirmation`
+        # со следом, а не побочный эффект проверки.
+        seg["status"] = "qa"
     save_state(STATE)
     return {"ok": True, "segment": seg, "issues": qa_issues}
 
@@ -10883,6 +11181,11 @@ def confirm_segment(pid: int, sid: int):
     _guard_project_write(pid)
     seg = get_segment(pid, sid)
     project = get_project(pid)
+    if not (seg.get("target") or "").strip():
+        # Заверить пустоту — значит закрыть строку от прогона навсегда
+        # (`_needs_translation` заверенное не берёт), а в выгрузку она ушла бы
+        # на языке оригинала с подписью человека.
+        raise HTTPException(400, "Перевода нет — заверять нечего: сначала переведите строку")
     seg["status"] = "confirmed"
     # Отметка о человеке нужна именно здесь: `confirmed` в проекте есть и на
     # старых сегментах, которые так пометило точное совпадение с TM (сейчас
@@ -11267,9 +11570,17 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     # понятие и годится ли пара правилом. «Не знаю» (нет ключа, сбой вызова)
     # не блокирует — тот же закон, что у корпуса.
     verdict = None
+    # Исчерпанный лимит судью пропускает, а решение человека — нет: принятие
+    # кандидатов работает на исчерпанном лимите (инвариант 15), поэтому путь
+    # не в `_PAID`, а «не знаю» от пропущенной сверки не блокирует — тот же
+    # закон, что у сбоя вызова. Пропуск назван в ответе (`meaningSkipped`).
+    meaning_skipped = None
     if not req.confirm and _provider_ready(_dm("judge")):
-        got = _openai_meaning([(src, tgt)], scope)
-        verdict = (got or {}).get((_norm_key(src), _norm_key(tgt)))
+        if _spend_status().get("over"):
+            meaning_skipped = "limit"
+        else:
+            got = _openai_meaning([(src, tgt)], scope)
+            verdict = (got or {}).get((_norm_key(src), _norm_key(tgt)))
     if verdict and (verdict.get("same") is False or verdict.get("rule") is False):
         # В глоссарий НИЧЕГО не пишем и кандидата не решаем: человек ещё
         # не видел замечания, а значит и решения пока нет.
@@ -11334,7 +11645,7 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     _invalidate_gloss_index()
     save_state(STATE)
     return {"ok": True, "written": True, "candidate": cand,
-            "replaced": bool(existing), "closed": closed}
+            "replaced": bool(existing), "closed": closed, "meaningSkipped": meaning_skipped}
 
 
 class ExplainRequest(BaseModel):
@@ -12267,6 +12578,12 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
                and (scope is None or _scope_of(c) == scope)]
     ctx = _auto_context(pending, pol)
 
+    # Контекст — вся область (варианты соседних проектов — свидетельство),
+    # а раскладываем с проектом только своё и уровня организации: то же
+    # число, что показывает «Проверка» (`project_analysis`).
+    if req.project:
+        mine = _fid(req.project)
+        pending = [c for c in pending if _gproj(c) in (None, mine)]
     considered = pending[:max(1, min(req.limit, 5000))]
 
     # Корпус спрашиваем ТОЛЬКО про тех, кто иначе прошёл бы: это внешний
@@ -12310,6 +12627,14 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
     use_meaning = (not req.dry_run) if req.meaning is None else bool(req.meaning)
     meaning, meaning_asked, meaning_capped = {}, 0, 0
     if prelim and use_meaning and _provider_ready(_dm("judge")):
+        # Сверка судьёй — платная, а путь `/auto-approve` в `_PAID` нет
+        # (разбор без сверки бесплатен, инвариант 15): рубеж здесь, по телу.
+        # Только у запроса человека: шаг прогона проверяет лимит сам
+        # (`_job_auto_terms`, `_job_limit_hit`), и сессии в его потоке нет.
+        if CURRENT_SESSION.get() is not None:
+            st = _spend_status()
+            if st["over"]:
+                return _limit_402(st, _current_tenant())
         meaning, meaning_asked, meaning_capped = _meaning_check(prelim)
 
     picked, closed, mrejected, skipped = [], [], [], {}
@@ -13123,6 +13448,7 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
     блокирующие вызовы модели (см. batch_translate)."""
     _key_gate(req.model or _dm("translate"), "Извлечение терминов требует ключ OpenAI")
     project = get_project(pid)
+    _guard_project_write(pid)     # проект во время прогона — у воркера (инвариант 2)
     segs = [s for s in project["segments"]
             if s.get("status") == "confirmed" and (s.get("target") or "").strip()]
     if req.segment_ids:
@@ -13204,12 +13530,16 @@ def _run_parallel(items: list, fn):
     # Снимок моделей прогона — туда же: без него рабочие потоки порции читали
     # бы нынешнюю системную настройку, и одна порция шла бы двумя моделями.
     models = getattr(_JOB_MODELS, "m", None)
+    # Проект — для учёта расхода по проекту; у запроса он лежит в ContextVar,
+    # который в потоки пула не доезжает.
+    upid = _usage_project()
 
     def run(x):
         _JOB_TENANT.id = tid
         _JOB_LANG.code = lang
         _JOB_USER.id = uid
         _JOB_MODELS.m = models
+        _JOB_PROJECT.id = upid
         return fn(x)
     with ThreadPoolExecutor(max_workers=min(RUN_WORKERS, len(items)),
                             thread_name_prefix="mcat-run") as pool:
@@ -14030,6 +14360,7 @@ def termcheck_segment(pid: int, sid: int, req: TermcheckRequest = TermcheckReque
     """Обычный def: внутри блокирующий вызов модели (см. batch_translate)."""
     _key_gate(req.model or _dm("termcheck"), "Проверка терминологии требует ключ OpenAI")
     seg = get_segment(pid, sid)
+    _guard_project_write(pid)     # проект во время прогона — у воркера (инвариант 2)
     project = get_project(pid)
     result = _run_segment_termcheck(seg, project, req.model)
     if result.get("ok"):
@@ -14051,6 +14382,7 @@ def termcheck_batch(pid: int, req: TermcheckBatchRequest):
     запрос не жил дольше таймаута прокси."""
     _key_gate(req.model or _dm("termcheck"), "Проверка терминологии требует ключ OpenAI")
     project = get_project(pid)
+    _guard_project_write(pid)     # проект во время прогона — у воркера (инвариант 2)
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
     mdl_id = _resolve_model(req.model or _dm("termcheck"))["id"]
 
@@ -18205,6 +18537,7 @@ def term_context(pid: int, req: TermContextRequest = TermContextRequest()):
     терминов в нём ни было."""
     _key_gate(req.model or _dm("termaudit"), "Арбитр требует ключ OpenAI")
     project = get_project(pid)
+    _guard_project_write(pid)     # проект во время прогона — у воркера (инвариант 2)
     ids = set(req.segment_ids) if req.segment_ids is not None else None
     # Забракованные слова сверяются в режиме полной сверки (штатный шаг):
     # точечный разбор спора — про конкретную запись глоссария, и подмешивать
@@ -20565,6 +20898,7 @@ def repair_batch(pid: int, req: RepairBatchRequest):
     это самый дорогой прогон в системе."""
     _key_gate(req.model or _dm("repair"), "Ремонт требует ключ OpenAI")
     project = get_project(pid)
+    _guard_project_write(pid)     # проект во время прогона — у воркера (инвариант 2)
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
     # Разрешаем модель ТЕМ ЖЕ выражением, что _plan_step и сам заход: клеймо
     # «уже чинилось» смотрит, ходила ли на отпечаток ИМЕННО эта модель, и две
@@ -20639,6 +20973,7 @@ def backcheck_segment(pid: int, sid: int, req: BackcheckRequest = BackcheckReque
     """Обратный перевод target → язык оригинала + оценка соответствия.
     Обычный def: внутри блокирующий вызов модели (см. batch_translate)."""
     seg = get_segment(pid, sid)
+    _guard_project_write(pid)     # проект во время прогона — у воркера (инвариант 2)
     project = get_project(pid)
     result = _run_segment_backcheck(seg, project, req.model, req.use_judge, req.judge_model)
     if result.get("ok"):
@@ -20668,6 +21003,7 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
     # прогон принимает их за «порция целиком провалилась».
     _key_gate(req.model or _dm("backcheck"), "Back-check требует ключ OpenAI")
     project = get_project(pid)
+    _guard_project_write(pid)     # проект во время прогона — у воркера (инвариант 2)
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
     mdl_id = _resolve_model(req.model or _dm("backcheck"))["id"]
 
@@ -20744,6 +21080,25 @@ class ChecksRequest(BaseModel):
     bc_model: Optional[str] = None
 
 
+def _checks_buy_back(project: dict) -> bool:
+    """Стоит ли на паре проекта покупать обратный перевод ради проверок.
+
+    Обратный перевод нужен проверкам ради правил пары (подмена стороны,
+    `checks.rules_for`) и отрицания (маркеры обоих языков). Правила написаны
+    только для RU→EN; на паре, где нет ни их, ни маркеров отрицания, вызов
+    платный, а находок из него не будет. Один предикат на шаг и на разбор
+    состава (`_plan_step`), иначе смета называла бы модель, которую шаг
+    не позовёт."""
+    if not checks_mod:
+        return False
+    if not (hasattr(checks_mod, "rules_for") and hasattr(checks_mod, "negation_markers")):
+        return True               # модуль без таблицы правил — прежнее поведение
+    src, tgt = project.get("src") or "RU", project.get("tgt") or "EN"
+    if checks_mod.rules_for(_rules_domain_of(project), src, tgt) is not getattr(checks_mod, "EMPTY_RULES", None):
+        return True
+    return bool(checks_mod.negation_markers(src)) and bool(checks_mod.negation_markers(tgt))
+
+
 def _segment_checks(pid: int, sid: int, run_backcheck: bool = True,
                         bc_model: Optional[str] = None) -> dict:
     if not checks_mod:
@@ -20758,6 +21113,17 @@ def _segment_checks(pid: int, sid: int, run_backcheck: bool = True,
 
     gloss_hits, tm_hit = _get_context(source_text, project=project)
     back = seg.get("backtranslated_ru", "")
+    # На паре без правил обратный перевод не покупаем: сравнивать его не
+    # с чем, а языконезависимые проверки (числа, единицы, глоссарий) идут
+    # по паре «оригинал — перевод» бесплатно. Отказ намеренный, поэтому
+    # отметка текста ставится и без обратного перевода — иначе шаг
+    # возвращался бы в каждый прогон.
+    pair_skip = run_backcheck and not _checks_buy_back(project)
+    if pair_skip:
+        run_backcheck = False
+        fresh = seg.get("backcheck") or {}
+        back = (fresh.get("back") if fresh.get("back")
+                and fresh.get("target_hash") == _text_hash(target_text) else "")
 
     if run_backcheck and checks_enabled():
         fresh = seg.get("backcheck") or {}
@@ -20803,8 +21169,10 @@ def _segment_checks(pid: int, sid: int, run_backcheck: bool = True,
     # Но ставим отметку ТОЛЬКО если проверка была полной: без обратного перевода
     # часть находок не считается вовсе, и закэшировать такой результат значит
     # закрыть сегмент от нормальной проверки навсегда.
-    if (back or "").strip():
+    if (back or "").strip() or pair_skip:
         qa_result["target_hash"] = _text_hash(target_text)
+    if pair_skip:
+        qa_result["backcheckSkipped"] = "pair"      # не покупали намеренно: правил пары нет
     seg["qa_result"] = qa_result
     seg["qa_issues"] = qa_result["qa_issues"]
     seg["qa"] = qa_result["ui_issues"]
@@ -20865,6 +21233,7 @@ class ChecksBatchRequest(BaseModel):
 @app.post("/api/projects/{pid}/medical-qa/batch")
 def batch_checks(pid: int, req: ChecksBatchRequest = ChecksBatchRequest()):
     project = get_project(pid)
+    _guard_project_write(pid)     # проект во время прогона — у воркера (инвариант 2)
     id_filter = set(req.segment_ids) if req.segment_ids else None
     candidates = [
         s for s in project["segments"]
@@ -20995,6 +21364,12 @@ def update_segment(pid: int, sid: int, req: UpdateSegmentRequest):
             seg["status"] = "translated"
     if req.status and not want_confirm:
         seg["status"] = req.status
+    if not (seg.get("target") or "").strip() and seg.get("status") != "confirmed":
+        # Стёртый перевод — это «не переведён», какой бы статус ни прислал
+        # браузер: иначе строка с пустым текстом и статусом «переведено»
+        # не попадала ни в один прогон (`_needs_translation`) и уезжала
+        # в выгрузку на языке оригинала.
+        seg["status"] = "new"
     if req.comment:
         seg.setdefault("comments", []).append({
             "author": req.commentAuthor or {"name": "Вы", "initials": "ВЫ", "color": "#2c7be5"},
@@ -21002,7 +21377,10 @@ def update_segment(pid: int, sid: int, req: UpdateSegmentRequest):
             "text": req.comment,
         })
     save_state(STATE)
-    return {"ok": True, "segment": seg}
+    # Для браузера — с производными признаками (`stale` проверок, имена
+    # ответственных): сырой сегмент не говорил, что проверки к новому
+    # тексту больше не относятся.
+    return {"ok": True, "segment": _segment_for_client(seg, get_project(pid))}
 
 
 def _needs_translation(seg: dict) -> bool:
@@ -21019,9 +21397,101 @@ def _needs_translation(seg: dict) -> bool:
     сегмент не трогает (инвариант №4), и без повтора он остался бы в корзине
     «возьмёт прогон» навсегда, а прогон честно отвечал бы «нечего делать».
     `failed` с НЕПУСТЫМ переводом не берём: там лежит прежний текст, и его
-    судьба — вопрос проверок, а не молчаливого переперевода."""
+    судьба — вопрос проверок, а не молчаливого переперевода.
+
+    ЛЮБОЙ статус с пустым переводом, кроме заверенного, — тоже «не
+    переведён»: человек стёр текст, а статус остался `translated`/`qa`
+    (так писали `update_segment` и `/qa` до правки). Предикатом, а не
+    миграцией: старые данные чинятся без переписывания документов.
+    Заверенный пустой не берём — подпись человека машина не снимает."""
     st = seg.get("status")
-    return st == "new" or (st == "failed" and not (seg.get("target") or "").strip())
+    return st == "new" or (not (seg.get("target") or "").strip() and st != "confirmed")
+
+
+# ─── Перевод ЗАНОВО: предел на строку и на весь файл ─────────────────
+# Полный прогон переводит строку один раз (`_needs_translation`), готовое
+# и совпавшее с памятью не покупает. Неограниченный расход — только
+# перевод ЗАНОВО поверх готового текста: одиночная кнопка, пакет с `force`
+# и выбранными строками, задача `translate` (её `force` по умолчанию —
+# `_job_chunk`). Поэтому:
+#   • у строки счётчик `seg["retranslations"]` — растёт, только когда
+#     прежний текст был непустым (первый перевод — не «заново»); лежит
+#     в документе проекта, как всё про сегмент: пишет тот, кто документом
+#     владеет (воркер во время прогона, API — вне его, `_guard_project_write`);
+#   • предел — `tenant["retranslateLimit"]` (0 — запрещено, нет поля —
+#     RETRANSLATE_LIMIT), ставит суперпользователь; выше предела одиночная
+#     кнопка отвечает 409 словами, пакет пропускает строку поимённо
+#     (`skipped_limit`);
+#   • перевод заново ВСЕГО файла (большая часть выбранного уже переведена)
+#     — только суперпользователю или в пределах `tenant["retranslateBulk"]`
+#     раз на файл. Счёт — в таблице-счётчике `project_spend.bulk`, а не
+#     в документе проекта: задачу ставит API, а документ в это время может
+#     держать воркер (DocConflict), и не в документе `tenants` — его пишет
+#     только API, но счётчик на файл там рос бы без конца.
+# Суперпользователь предела не имеет: он чинит чужие файлы по жалобе.
+RETRANSLATE_LIMIT = int(os.environ.get("RETRANSLATE_LIMIT", "") or 3)
+RETRANSLATE_BULK = int(os.environ.get("RETRANSLATE_BULK", "") or 1)
+RETRANSLATE_BULK_SHARE = 0.5     # «весь файл» — не меньше половины переведённого
+RETRANSLATE_BULK_MIN = 20        # и не меньше стольких строк: десяток — это точечная правка
+
+
+def _actor_is_super() -> bool:
+    """Суперпользователь ли тот, кто запустил работу: у запроса — из сессии,
+    у прогона — по записи того, кто ставил задачу (сессии в потоке нет)."""
+    sess = CURRENT_SESSION.get()
+    if sess is not None:
+        return bool(sess.get("super"))
+    uid = getattr(_JOB_USER, "id", None)
+    return bool(uid is not None and any(u.get("id") == uid and u.get("super") for u in _users()))
+
+
+def _retranslate_limit(tid: Optional[str] = None) -> Optional[int]:
+    """Сколько раз строку можно перевести заново; None — без предела."""
+    if _actor_is_super():
+        return None
+    rec = _tenant_rec(tid or _current_tenant()) or {}
+    v = rec.get("retranslateLimit")
+    return int(v) if v is not None else RETRANSLATE_LIMIT
+
+
+def _retranslate_blocked(seg: dict, limit: Optional[int]) -> bool:
+    return (limit is not None and bool((seg.get("target") or "").strip())
+            and int(seg.get("retranslations") or 0) >= limit)
+
+
+def _retranslate_note(seg: dict, old_target: str) -> None:
+    """Засчитать перевод заново — только поверх НЕПУСТОГО прежнего текста."""
+    if (old_target or "").strip():
+        seg["retranslations"] = int(seg.get("retranslations") or 0) + 1
+
+
+def _retranslate_refusal(limit: int) -> str:
+    if limit <= 0:
+        return ("Перевод заново в организации выключен: поправьте текст руками "
+                "или обратитесь к администратору сервиса")
+    return ("Строку уже переводили заново %d раз — это предел организации. Поправьте "
+            "текст руками или обратитесь к администратору сервиса" % limit)
+
+
+def _retranslate_bulk_check(project: dict, ids: list, include_confirmed: bool) -> bool:
+    """Перевод заново ВСЕГО файла: отказ 409 выше квоты; True — засчитать."""
+    have = [s for s in project["segments"] if (s.get("target") or "").strip()]
+    wanted = set(ids)
+    again = [s for s in have if s["id"] in wanted
+             and (include_confirmed or s.get("status") != "confirmed")]
+    if len(again) < RETRANSLATE_BULK_MIN or len(again) < RETRANSLATE_BULK_SHARE * len(have):
+        return False
+    if _actor_is_super():
+        return False
+    rec = _tenant_rec(_tenant_of(project)) or {}
+    quota = int(rec["retranslateBulk"]) if rec.get("retranslateBulk") is not None else RETRANSLATE_BULK
+    used = next((r.get("bulk", 0) for r in _proj_spend_rows(_tenant_of(project))
+                 if r["project"] == project["id"]), 0)
+    if used >= quota:
+        raise HTTPException(409, "Файл уже переводили заново целиком (%d из %d раз): "
+                                 "выберите отдельные строки или обратитесь к администратору сервиса"
+                            % (used, quota))
+    return True
 
 
 class BatchRequest(BaseModel):
@@ -21041,6 +21511,7 @@ def batch_translate(pid: int, req: BatchRequest):
     # в async def они вешали единственный event loop uvicorn на всё время пакета —
     # сервер не отвечал даже на GET /api/projects/{pid} сразу после батча.
     project = get_project(pid)
+    _guard_project_write(pid)     # проект во время прогона — у воркера (инвариант 2)
     # is not None, а не truthy: пустой список — это «не выбрано ничего», и переводить
     # в этом случае надо ноль сегментов, а не весь проект.
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
@@ -21054,12 +21525,21 @@ def batch_translate(pid: int, req: BatchRequest):
         skipped_confirmed = ([s["id"] for s in project["segments"]
                               if s["id"] in id_filter and s["status"] == "confirmed"]
                              if not req.include_confirmed else [])
+        # Перевод заново выше предела организации — мимо, поимённо
+        # (`skipped_limit`), а не отказом всей порции: остальные строки
+        # выбора законны. См. «Перевод ЗАНОВО» у `_retranslate_limit`.
+        rt_limit = _retranslate_limit()
+        skipped_limit = [s["id"] for s in all_targets if _retranslate_blocked(s, rt_limit)]
+        if skipped_limit:
+            _over = set(skipped_limit)
+            all_targets = [s for s in all_targets if s["id"] not in _over]
     else:
         # Предикат общий с разбором прогона — см. _needs_translation.
         all_targets = [s for s in project["segments"]
                        if _needs_translation(s)
                        and (id_filter is None or s["id"] in id_filter)]
         skipped_confirmed = []
+        skipped_limit = []
     done_by_src: dict = {}
     if not req.force:
         for s0 in project["segments"]:
@@ -21205,6 +21685,7 @@ def batch_translate(pid: int, req: BatchRequest):
                 sg.pop("confirmedBy", None)
                 sg.pop("confirmedAt", None)
                 sg.pop("confirmedRole", None)
+            _retranslate_note(sg, sg.get("target") or "")
             sg["target"] = res["text"]
             sg["status"] = "review" if was_confirmed else "translated"
             sg["provider"] = res["provider"]
@@ -21223,6 +21704,8 @@ def batch_translate(pid: int, req: BatchRequest):
         # Молчаливых потолков не бывает: сегменты, отсеянные как подтверждённые,
         # называем поимённо — иначе прогон рапортует «готово» и ничего не делает.
         "skipped_confirmed": skipped_confirmed,
+        # Перевод заново выше предела организации — тоже поимённо.
+        "skipped_limit": skipped_limit,
         "model": _resolve_model(req.model)["id"],
     }
 
@@ -21233,17 +21716,21 @@ def run_preflight(pid: int):
     segs = project["segments"]
     total = len(segs)
 
-    # Assign risk + route to every segment that lacks them
-    for s in segs:
-        if not s.get("risk"):
-            words = len(s["source"].split())
-            s["risk"] = "high" if words > 30 else "medium" if words > 8 else "low"
-        if not s.get("route"):
-            s["route"] = "GPT_REQUIRED"
-        if s.get("tm") is None:
-            s["tm"] = None
-
-    save_state(STATE)
+    # Дозаполнение умолчаний — запись в документ проекта; пока его держит
+    # прогон внешнего воркера, не пишем (DocConflict), а считаем по тому, что
+    # есть: отчёт от этого не меняется, умолчания допишет следующий заход.
+    # 409 здесь был бы хуже — экран отчёта открывают и во время прогона.
+    if not (EXTERNAL_WORKER and not IS_WORKER and _active_job_for(pid)):
+        # Assign risk + route to every segment that lacks them
+        for s in segs:
+            if not s.get("risk"):
+                words = len(s["source"].split())
+                s["risk"] = "high" if words > 30 else "medium" if words > 8 else "low"
+            if not s.get("route"):
+                s["route"] = "GPT_REQUIRED"
+            if s.get("tm") is None:
+                s["tm"] = None
+        save_state(STATE)
 
     routes: dict = {}
     for s in segs:
@@ -22286,7 +22773,13 @@ def save_term(req: TermRequest):
 @app.delete("/api/projects/{pid}")
 def delete_project(pid: int):
     _audit("project.delete", project=pid)
-    get_project(pid)                      # чужой проект — 404, удалять нечего
+    project = get_project(pid)            # чужой проект — 404, удалять нечего
+    # Прогон внешнего воркера держит документ проекта и после удаления
+    # записал бы его обратно — файл воскрес бы посреди списка.
+    _guard_project_write(pid)
+    # Прочитанное с картинок, но ещё не списанное, списывается ДО удаления:
+    # иначе «прочитать скан → выгрузить → удалить» уносило бы страницы даром.
+    _book_image_pages(project)
     _delete_project_record(pid)
     save_state(STATE)
     return {"ok": True}
@@ -23404,8 +23897,11 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
         # Своей модели у неё нет: правила детерминированные. Но обратный
         # перевод, если готового не осталось, она закажет — моделью back-check.
         # Показываем именно её: «без вызова модели» было полуправдой, из-за
-        # которой шаг молча платил моделью перевода по умолчанию.
-        mdl_id = _resolve_model(params.get("bc_model") or _dm("backcheck"))["id"]
+        # которой шаг молча платил моделью перевода по умолчанию. На паре
+        # без правил обратный перевод не покупается (`_checks_buy_back`) —
+        # тогда и модели нет.
+        if _checks_buy_back(project):
+            mdl_id = _resolve_model(params.get("bc_model") or _dm("backcheck"))["id"]
 
     # Забракованные слова — тем же расчётом, что шаг сверки и /analysis:
     # один раз на разбор, а не на сегмент (это проход по очереди кандидатов).
@@ -24147,7 +24643,9 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
             include_confirmed=bool(params.get("include_confirmed"))))
         return {"done": r["count"], "tm_hits": r.get("tm_hits", 0),
                 "duplicates": r.get("duplicates", 0), "errors": len(r.get("errors", [])),
-                "why": _first_error(r), "skipped_confirmed": len(r.get("skipped_confirmed", []))}
+                "why": _first_error(r), "skipped_confirmed": len(r.get("skipped_confirmed", [])),
+                # Перевод заново выше предела организации (`_retranslate_limit`).
+                "skipped_limit": len(r.get("skipped_limit", []))}
     if kind == "backcheck":
         r = backcheck_batch(pid, BackcheckBatchRequest(
             segment_ids=chunk, limit=n, model=params.get("model"),
@@ -24256,6 +24754,7 @@ def _job_run(job: dict):
     _JOB_TENANT.id = job.get("tenant") or DEFAULT_TENANT
     _JOB_LANG.code = job.get("lang") or DEFAULT_UI_LANG
     _JOB_USER.id = job.get("user")
+    _JOB_PROJECT.id = pid              # расход прогона — на его проект
     chunk_size = JOB_CHUNKS[kind]
     if kind == "images":
         # Разбор картинок не идёт по сегментам: их ещё нет — они из него
@@ -24269,6 +24768,16 @@ def _job_run(job: dict):
                 p_ = _project_by_id(pid)
                 if p_ is not None and p_.pop("imagesReading", None) is not None:
                     save_state(STATE)
+                # Страницы за прочитанное — сразу по концу разбора, когда
+                # прогон идёт в процессе API (документ `tenants` пишет он).
+                # Внешний воркер `tenants` не пишет: там списывает API при
+                # показе проекта или перед снятием строк (`_book_image_pages`).
+                if p_ is not None and not IS_WORKER:
+                    try:
+                        _book_image_pages(p_)
+                    except Exception as e:
+                        print(f"[backend] job#{job.get('id')}: страницы картинок не списаны: {e}",
+                              file=sys.stderr)
         if job["status"] == "queued":
             return                     # уступила исполнителя, работа не закончена
         if job["status"] == "running":
@@ -24710,10 +25219,14 @@ def create_job(pid: int, req: JobRequest):
     """Поставить прогон в очередь. Клиенту достаточно отдать список сегментов —
     дальше страница может быть закрыта, сервер доведёт работу до конца."""
     _audit("job.create", project=pid, kind=req.kind)
-    get_project(pid)                        # 404, если проекта нет
+    project = get_project(pid)              # 404, если проекта нет
     if req.kind not in JOB_KINDS:
         raise HTTPException(400, "Неизвестный тип прогона: " + req.kind)
     ids = list(dict.fromkeys(req.segment_ids))
+    # Перевод заново ВСЕГО файла — только суперпользователю или в квоте
+    # организации (`_retranslate_bulk_check`); засчитывается при постановке.
+    bulk = (req.kind == "translate" and bool((req.params or {}).get("force", True))
+            and _retranslate_bulk_check(project, ids, bool((req.params or {}).get("include_confirmed"))))
     # apply_terms сам считает состав после одобрения терминов — до него список
     # сегментов ещё неизвестен, и требовать его от клиента бессмысленно.
     if not ids and req.kind not in ("apply_terms", "images", "termsheet"):
@@ -24739,6 +25252,8 @@ def create_job(pid: int, req: JobRequest):
     # полей выбора там нет, но прежний выбор в localStorage уехал бы в задачу.
     req.params = _forced_models(req.params)
     job = _job_enqueue(pid, req.kind, ids, req.params)
+    if bulk:
+        _proj_spend_add(job["tenant"], pid, bulk=1)
     return {"ok": True, "job": _job_public(job)}
 
 
@@ -24775,6 +25290,10 @@ def _job_enqueue(pid: int, kind: str, ids: list, params: Optional[dict]) -> dict
         _JOBS[job["id"]] = job
         _trim_jobs()
     _job_persist(job)
+    # Счёт прогонов по проекту — счётчиком хранилища, а не полем документа
+    # проекта: документ во время прогона пишет воркер, и приращение API
+    # в нём ушло бы в DocConflict (см. `_proj_spend_add`).
+    _proj_spend_add(job["tenant"], pid, runs=1)
     if EXTERNAL_WORKER:
         # Задачу заберёт medcat-worker из таблицы jobs (claim_job).
         pass

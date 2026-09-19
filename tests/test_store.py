@@ -94,6 +94,14 @@ class FakeCur:
         elif s.startswith("SELECT usd, calls, unpriced"):
             got = self.conn.spend.get((params[0], params[1]))
             self._one = got
+        elif s.startswith("INSERT INTO project_spend"):
+            # Подражаем ON CONFLICT … SET x = x + EXCLUDED.x: приращение, а не снимок.
+            t, pr, *vals = params
+            cur0 = self.conn.pspend.get((t, pr), [0] * len(vals))
+            self.conn.pspend[(t, pr)] = [a + b for a, b in zip(cur0, vals)]
+        elif s.startswith("SELECT tenant, project, usd"):
+            self._rows = [(t, pr, *v) for (t, pr), v in sorted(self.conn.pspend.items())
+                          if not params or t == params[0]]
         elif s.startswith("INSERT INTO jobs"):
             jid, status, tenant, project, text = params
             self.conn.jobs[jid] = (status, project, text, tenant)
@@ -153,7 +161,7 @@ class FakeConn:
     closed = False
     def __init__(self):
         self.log, self.docs, self.rows, self.epochs, self.jobs, self.spend = [], {}, {}, {}, {}, {}
-        self.vers = {}
+        self.vers, self.pspend = {}, {}
     def cursor(self): return FakeCur(self)
     def commit(self): pass
     def rollback(self): pass
@@ -222,6 +230,18 @@ pg.add_spend("acme", "2026-08", None)
 m = pg.get_spend("acme", "2026-08")
 check(m["usd"] == 0.5 and m["calls"] == 2 and m["unpriced"] == 1, "инкременты сложились: %s" % m)
 check(pg.get_spend("acme", "2026-09") == {"usd": 0.0, "calls": 0, "unpriced": 0}, "пустой месяц — нули")
+
+print("=== 4c. Расход по проекту — тот же счётчик с инкрементом ===")
+# Одиночные кнопки пишет API, прогоны — воркер: снимок в документе проекта
+# терял бы приращения (DocConflict), поэтому таблица, как у `spend`.
+pg.add_project_spend("acme", 7, 0.5, 1, 0, 0, 0, 0)
+pg.add_project_spend("acme", 7, 0.25, 1, 0, 1, 0.4, 0.3, 1)
+pg.add_project_spend("beta", 8, 1.0, 1, 0, 0, 0, 0)
+rows = pg.project_spend_rows("acme")
+check(len(rows) == 1 and rows[0]["project"] == 7 and rows[0]["usd"] == 0.75 and rows[0]["calls"] == 2
+      and rows[0]["runs"] == 1 and rows[0]["bulk"] == 1 and rows[0]["estUsd"] == 0.4,
+      "приращения сложились, чужая организация не видна: %s" % rows)
+check(len(pg.project_spend_rows()) == 2, "без организации — все строки (админка суперпользователя)")
 
 print("=== 5. Очередь прогонов ===")
 pg.save_job({"id": 5, "kind": "full", "status": "running", "tenant": "t", "ids": [1, 2], "stop": False})

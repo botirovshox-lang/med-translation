@@ -165,6 +165,20 @@ class PgStore:
         " think BIGINT NOT NULL DEFAULT 0, usd DOUBLE PRECISION NOT NULL DEFAULT 0,"
         " unpriced BIGINT NOT NULL DEFAULT 0,"
         " PRIMARY KEY (day, tenant, uid, step, model))",
+        # Факт расхода по ПРОЕКТУ (админка «Прогоны»): счётчик с инкрементом
+        # по той же причине, что `spend`, — одиночные вызовы пишет API,
+        # прогоны — воркер. В документ проекта его класть нельзя: во время
+        # прогона документ принадлежит воркеру, и приращение API ушло бы
+        # в DocConflict. Строка переживает удаление проекта — это деньги.
+        "CREATE TABLE IF NOT EXISTS project_spend ("
+        " tenant TEXT NOT NULL, project INTEGER NOT NULL,"
+        " usd DOUBLE PRECISION NOT NULL DEFAULT 0,"
+        " calls BIGINT NOT NULL DEFAULT 0, unpriced BIGINT NOT NULL DEFAULT 0,"
+        " runs BIGINT NOT NULL DEFAULT 0,"
+        " est_usd DOUBLE PRECISION NOT NULL DEFAULT 0,"
+        " est_actual_usd DOUBLE PRECISION NOT NULL DEFAULT 0,"
+        " bulk BIGINT NOT NULL DEFAULT 0,"
+        " PRIMARY KEY (tenant, project))",
         "CREATE TABLE IF NOT EXISTS jobs ("
         " id INTEGER PRIMARY KEY, status TEXT NOT NULL, tenant TEXT,"
         " doc JSONB NOT NULL, updated TIMESTAMPTZ NOT NULL DEFAULT now())",
@@ -544,6 +558,38 @@ class PgStore:
         if not got:
             return {"usd": 0.0, "calls": 0, "unpriced": 0}
         return {"usd": float(got[0]), "calls": int(got[1]), "unpriced": int(got[2])}
+
+    # ── расход по проекту: тот же счётчик с инкрементом ──
+    def add_project_spend(self, tenant: str, project: int, usd: float, calls: int,
+                          unpriced: int, runs: int, est_usd: float, est_actual_usd: float,
+                          bulk: int = 0) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO project_spend (tenant, project, usd, calls, unpriced, runs,"
+                " est_usd, est_actual_usd, bulk) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (tenant, project) DO UPDATE SET "
+                " usd = project_spend.usd + EXCLUDED.usd,"
+                " calls = project_spend.calls + EXCLUDED.calls,"
+                " unpriced = project_spend.unpriced + EXCLUDED.unpriced,"
+                " runs = project_spend.runs + EXCLUDED.runs,"
+                " est_usd = project_spend.est_usd + EXCLUDED.est_usd,"
+                " est_actual_usd = project_spend.est_actual_usd + EXCLUDED.est_actual_usd,"
+                " bulk = project_spend.bulk + EXCLUDED.bulk",
+                (tenant, int(project), float(usd or 0), int(calls), int(unpriced), int(runs),
+                 float(est_usd or 0), float(est_actual_usd or 0), int(bulk)))
+
+    def project_spend_rows(self, tenant: Optional[str] = None) -> list:
+        with self._cursor() as cur:
+            q = ("SELECT tenant, project, usd, calls, unpriced, runs, est_usd, est_actual_usd, bulk "
+                 "FROM project_spend")
+            if tenant is None:
+                cur.execute(q)
+            else:
+                cur.execute(q + " WHERE tenant = %s", (tenant,))
+            got = cur.fetchall()
+        return [{"tenant": r[0], "project": int(r[1]), "usd": float(r[2]), "calls": int(r[3]),
+                 "unpriced": int(r[4]), "runs": int(r[5]), "estUsd": float(r[6]),
+                 "estActualUsd": float(r[7]), "bulk": int(r[8])} for r in got]
 
     # ── журнал токенов по дням ──
     def add_usage(self, day: str, tenant: str, uid: str, step: str, model: str,

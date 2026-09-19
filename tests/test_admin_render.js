@@ -209,6 +209,30 @@ check(!!mConf && mConf.includes("спорит по роли"),
 check(!!mConf && mConf.includes("та же модель, что у: Перевод") && mConf.includes("та же модель, что у: back-check"),
       "у спорящей строки названа её пара");
 
+/* «Прогоны»: факт по ПРОЕКТУ (счётчик сервера — и одиночные кнопки, и прогоны
+   старше кольца runCosts), живые прогоны и имя проекта в строке прогона. */
+const RUNS = { ok: true, shownUsd: 1.5, estRatio: 1.2, estRuns: 1, kept: 100,
+  runs: [{ job: 5, kind: "full", tenant: "acme", project: 4, projectName: "Учебник", finished: "2026-09-19 10:00",
+           segments: 10, est: 0.5, cost: 0.25, calls: 3 }],
+  byProject: [{ tenant: "acme", project: 4, projectName: "Учебник", deleted: false, usd: 1.25, calls: 7,
+                unpriced: 0, runs: 3, estUsd: 0.5, estActualUsd: 0.25, estRatio: 2 },
+              { tenant: "acme", project: 9, projectName: null, deleted: true, usd: 0.1, calls: 1,
+                unpriced: 0, runs: 1, estUsd: 0, estActualUsd: 0, estRatio: null }],
+  live: [{ job: 42, kind: "full", status: "running", tenant: "acme", project: 4, projectName: "Учебник",
+           done: 3, total: 10, est: 0.4, cost: 0.1234, calls: 2 }] };
+hooks.length = 0; hookIdx = 0; effects.length = 0; hooks[0] = RUNS;
+let runsTxt = null;
+try { runsTxt = texts(AdminRuns()).join(" "); } catch (e) { check(false, "AdminRuns — " + e.message); }
+check(!!runsTxt && runsTxt.includes("Проект") && runsTxt.includes("Прогонов") && runsTxt.includes("Факт $ по проекту"),
+      "колонки расхода по проекту на месте");
+check(!!runsTxt && runsTxt.includes("Учебник · №4") && runsTxt.includes("$1.250"), "проект назван, факт по проекту показан");
+check(!!runsTxt && runsTxt.includes("№9 · удалён"), "удалённый проект назван номером, деньги не пропали");
+check(!!runsTxt && runsTxt.includes("Идут сейчас") && runsTxt.includes("$0.123"), "идущий прогон — живым счётчиком");
+check(!!runsTxt && runsTxt.includes("всего $1.50"), "итог показанных прогонов берётся из shownUsd");
+const runsSrc = fs.readFileSync(path.join(root, "tab_admin.jsx"), "utf8");
+check(/setInterval\([\s\S]{0,200}visibilityState[\s\S]{0,200}RUNS_REFRESH_MS/.test(runsSrc) && /RUNS_REFRESH_MS = 10000/.test(runsSrc),
+      "карточка обновляется сама раз в 10 с, пока вкладка на экране");
+
 /* Два правила показа: служебный адрес и роль. Пропавшая проверка открыла бы
    сводку по всем организациям с главной страницы. */
 global.ADMIN_ENTRY = false;

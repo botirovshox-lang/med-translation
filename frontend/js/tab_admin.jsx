@@ -64,6 +64,25 @@ function AdminTenants({ ov, toast, onChange }) {
     try { await window.API.tenantUpdate(t.id, body); toast.success(TR("Потолки обновлены"), t.name); onChange(); }
     catch (e) { toast.error(TR("Не обновлены"), e.message || String(e)); }
   };
+  /* Перевод ЗАНОВО поверх готового текста: предел на строку (0 — запрещено)
+     и сколько раз можно перевести заново весь файл. Пусто — умолчание сервиса
+     (ov.capDefaults). Суперпользователя предел не касается. */
+  const setRetranslate = async (t) => {
+    const d = ov.capDefaults || {};
+    const a = prompt(TR("Сколько раз строку можно перевести заново для «") + t.name + TR("» (пусто — по умолчанию ")
+      + (d.retranslateLimit != null ? d.retranslateLimit : "—") + TR(", 0 — запрещено):"),
+      t.retranslateLimit != null ? t.retranslateLimit : "");
+    if (a === null) return;
+    const b = prompt(TR("Сколько раз можно перевести заново весь файл (пусто — по умолчанию ")
+      + (d.retranslateBulk != null ? d.retranslateBulk : "—") + TR(", 0 — только администратор сервиса):"),
+      t.retranslateBulk != null ? t.retranslateBulk : "");
+    if (b === null) return;
+    const body = (a.trim() === "" && b.trim() === "") ? { clearRetranslate: true } : {};
+    if (a.trim() !== "") body.retranslateLimit = Number(a);
+    if (b.trim() !== "") body.retranslateBulk = Number(b);
+    try { await window.API.tenantUpdate(t.id, body); toast.success(TR("Предел перевода заново обновлён"), t.name); onChange(); }
+    catch (e) { toast.error(TR("Не обновлён"), e.message || String(e)); }
+  };
   const toggle = async (t) => {
     try { await window.API.tenantUpdate(t.id, { active: !t.active }); toast.success(t.active ? TR("Отключена") : TR("Включена"), t.name); onChange(); }
     catch (e) { toast.error(TR("Не удалось"), e.message || String(e)); }
@@ -124,6 +143,10 @@ function AdminTenants({ ov, toast, onChange }) {
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLimit(t) }, TR("Лимит")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => topUp(t) }, TR("Пополнить")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setCaps(t) }, TR("Потолки")),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setRetranslate(t),
+            title: TR("перевод заново: строка ≤ ") + (t.retranslateLimit != null ? t.retranslateLimit : (ov.capDefaults || {}).retranslateLimit)
+              + TR(", весь файл ≤ ") + (t.retranslateBulk != null ? t.retranslateBulk : (ov.capDefaults || {}).retranslateBulk) },
+            (t.retranslateLimit != null || t.retranslateBulk != null) ? TR("Заново ★") : TR("Заново")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLogFor(logFor === t.id ? null : t.id) }, TR("Журнал")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => simpleMode(t),
             title: t.simple ? TR("сейчас: без сумм и моделей на экране") : TR("сейчас: обычный режим") },
@@ -402,28 +425,73 @@ function AdminLogins() {
 /* История прогонов с ФАКТИЧЕСКОЙ суммой. Берётся из runCosts, а не из
    списка задач: задачи живут в памяти процесса и теряются при рестарте,
    а расход терять нельзя — по нему калибруется смета. */
+/* Расход ПО ПРОЕКТУ — счётчиком сервера (`byProject`): в нём и одиночные
+   кнопки, и прогоны старше кольца runCosts. Идущие прогоны — живым счётчиком
+   задачи (`live`). Карточка обновляется сама раз в 10 с, пока вкладка
+   на экране: смотреть, сколько уходит сейчас, надо сейчас. */
+const RUNS_REFRESH_MS = 10000;
+function adminProjectName(r) {
+  if (r.project == null) return "—";
+  return (r.projectName ? r.projectName + " · " : "") + "№" + r.project
+    + (r.deleted ? TR(" · удалён") : "");
+}
 function AdminRuns() {
   const [d, setD] = useState(null);
-  useEffect(() => { window.API.safeCall(() => window.API.runsHistory(100)).then(r => setD(r && r.ok ? r : null)); }, []);
+  useEffect(() => {
+    let alive = true;
+    const load = () => window.API.safeCall(() => window.API.runsHistory(100))
+      .then(r => { if (alive && r && r.ok) setD(r); });
+    load();
+    const t = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      load();
+    }, RUNS_REFRESH_MS);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
   if (!d) return null;
+  const byProject = d.byProject || [], live = d.live || [];
+  const money = (v) => v != null ? "$" + Number(v).toFixed(3) : "—";
   return React.createElement("div", { className: "card card-pad" },
     React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
-      TR("Прогоны с расходом · ") + d.runs.length + TR(" · всего $") + Number(d.totalUsd || 0).toFixed(2)
+      TR("Прогоны с расходом · ") + d.runs.length + TR(" · всего $") + Number(d.shownUsd || 0).toFixed(2)
       + (d.estRatio ? TR(" · смета в среднем в ") + d.estRatio + TR(" раза от факта (по ") + d.estRuns + TR(" прогонам)") : "")),
+    live.length > 0 && React.createElement("div", { style: { margin: "0 0 12px", overflowX: "auto" } },
+      React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, TR("Идут сейчас")),
+      React.createElement("table", { className: "tbl" },
+        React.createElement("tbody", null, live.map(j => React.createElement("tr", { key: j.job },
+          React.createElement("td", null, "№" + j.job + " · " + j.kind + " · " + j.status),
+          React.createElement("td", null, j.tenant),
+          React.createElement("td", null, adminProjectName(j)),
+          React.createElement("td", null, (j.done || 0) + "/" + (j.total || 0)),
+          React.createElement("td", { className: "dim" }, j.est != null ? money(j.est) : "—"),
+          React.createElement("td", null, money(j.cost))))))),
+    byProject.length > 0 && React.createElement("div", { style: { maxHeight: 300, overflow: "auto", margin: "0 0 12px" } },
+      React.createElement("table", { className: "tbl" },
+        React.createElement("thead", null, React.createElement("tr", null,
+          [TR("Организация"), TR("Проект"), TR("Прогонов"), TR("Факт $ по проекту"), TR("Вызовов"), TR("Смета / факт")].map((h, i) => React.createElement("th", { key: i }, h)))),
+        React.createElement("tbody", null, byProject.map((r, i) => React.createElement("tr", { key: i },
+          React.createElement("td", null, r.tenant),
+          React.createElement("td", null, adminProjectName(r)),
+          React.createElement("td", null, r.runs),
+          React.createElement("td", null, money(r.usd),
+            r.unpriced ? React.createElement("span", { className: "dim", title: TR("вызовы, цена которых неизвестна") }, TR(" · без цены ") + r.unpriced) : null),
+          React.createElement("td", { className: "dim" }, r.calls),
+          React.createElement("td", { className: "dim" }, r.estActualUsd ? money(r.estUsd) + " / " + money(r.estActualUsd) : "—")))))),
     d.runs.length === 0 && React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } },
       TR("Прогонов с расходом ещё не было.")),
     React.createElement("div", { style: { maxHeight: 340, overflow: "auto" } },
       React.createElement("table", { className: "tbl" },
         React.createElement("thead", null, React.createElement("tr", null,
-          [TR("Когда"), TR("Организация"), TR("Прогон"), TR("Сегментов"), TR("Смета"), TR("Факт"), TR("Вызовов")].map((h, i) => React.createElement("th", { key: i }, h)))),
+          [TR("Когда"), TR("Организация"), TR("Проект"), TR("Прогон"), TR("Сегментов"), TR("Смета"), TR("Факт"), TR("Вызовов")].map((h, i) => React.createElement("th", { key: i }, h)))),
         React.createElement("tbody", null, d.runs.map((r, i) => React.createElement("tr", { key: i },
           React.createElement("td", { className: "dim", style: { whiteSpace: "nowrap", fontSize: 12 } }, r.finished || ""),
           React.createElement("td", null, r.tenant),
+          React.createElement("td", null, adminProjectName(r)),
           React.createElement("td", null, "№" + r.job + " · " + r.kind
             + (r.status && r.status !== "done" ? " · " + r.status : "")),
           React.createElement("td", null, r.segments != null ? r.segments : "—"),
-          React.createElement("td", { className: "dim" }, r.est != null ? "$" + Number(r.est).toFixed(3) : "—"),
-          React.createElement("td", null, r.cost != null ? "$" + Number(r.cost).toFixed(3) : "—",
+          React.createElement("td", { className: "dim" }, money(r.est)),
+          React.createElement("td", null, money(r.cost),
             r.unpriced ? React.createElement("span", { className: "dim", title: TR("вызовы, цена которых неизвестна") }, TR(" · без цены ") + r.unpriced) : null),
           React.createElement("td", { className: "dim" }, r.calls)))))));
 }

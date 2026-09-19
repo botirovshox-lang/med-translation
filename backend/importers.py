@@ -20,7 +20,9 @@
 Хранить адреса рядом незачем: разбор детерминирован, а исходник лежит.
 **Правила резки меняются**, поэтому на проекте лежит отпечаток слотов
 (`slots_sha`): разошёлся — выгрузка отказывает (400), а не кладёт переводы
-в чужие ячейки молча.
+в чужие ячейки молча. Сменённое правило резки получает номер (`SLOT_RULE`),
+а прежнее остаётся: отпечаток старого проекта сходится с прежним правилом,
+и им же выгрузка раскладывает переводы (`slots_rule_for`).
 
 Что теряется, названо честно (`note` при импорте):
   * xlsx — обратная запись через openpyxl: картинки, диаграммы, фигуры
@@ -92,6 +94,18 @@ def kind_of(filename: str) -> str:
     if ext in textcount.TEXT_EXT or ext in textcount.ZIP_EXT or not ext:
         return "text"
     return "unsupported"
+
+
+# Версия ПРАВИЛА резки слотов. 1 — прежнее: у html каждый тег — пробел,
+# у pptx `<a:br/>` ничего не давал и мягкий перенос оставался в тексте;
+# 2 — текущее (`_html_run_text`, `_pptx_para_text`). Отпечаток `slotsSha`
+# старого проекта снят правилом 1, и без версий выгрузка «как в оригинале»
+# у него отказывала бы 400 навсегда: повторная заливка того же файла — 409
+# дубликата, а повторный импорт — новые платные сегменты там, где текст
+# слота сменился. Поэтому выгрузка подбирает правило по отпечатку
+# (`slots_rule_for`) и тем же правилом кладёт переводы (`write_back`).
+SLOT_RULE = 2
+SLOT_RULES = (2, 1)             # порядок перебора: сначала текущее
 
 
 def slots_sha(slots: list) -> str:
@@ -310,21 +324,22 @@ _HTML_BR_RE = re.compile(r"<br\b[^>]*>", re.I)
 _HTML_ANY_TAG_RE = re.compile(r"<!--.*?-->|<[^>]*>", re.S)
 
 
-def _html_run_text(raw: str) -> str:
+def _html_run_text(raw: str, rule: int = SLOT_RULE) -> str:
     """Текст пробега так, как его видит читатель страницы: инлайн-тег — не
     пробел («полн<b>ый</b>» — одно слово, «H<sub>2</sub>O» — «H2O»,
     «<a>ссылка</a>.» — без пробела перед точкой), `<br>` — пробел, мягкий
-    перенос (`&shy;`, `<wbr>`) в тексте не остаётся. Прежде каждый тег
-    становился пробелом и резал слова посередине. Правило резки поменялось —
-    у проектов, где такое было, сторож `slots_sha` откажет в выгрузке
-    «как в оригинале» до повторного импорта (громко, а не в чужие места)."""
+    перенос (`&shy;`, `<wbr>`) в тексте не остаётся. Прежде (правило 1)
+    каждый тег становился пробелом и резал слова посередине; правило 1
+    оставлено для проектов, залитых до смены (см. `SLOT_RULE`)."""
+    if rule < 2:
+        return " ".join(_html.unescape(re.sub(r"<[^>]*>", " ", raw)).split())
     s = _HTML_BR_RE.sub(" ", raw)
     s = _HTML_ANY_TAG_RE.sub("", s)
     s = _html.unescape(s).replace("­", "")
     return " ".join(s.split())
 
 
-def html_slots(text: str) -> list:
+def html_slots(text: str, rule: int = SLOT_RULE) -> list:
     """[(текст пробега, (начало, конец))] — блочные текстовые пробеги HTML
     с ОФФСЕТАМИ в исходной строке. Пробег — всё между двумя блочными тегами
     (инлайн-теги внутри остаются частью пробега: «Абзац <b>жирный</b> текст»
@@ -349,7 +364,7 @@ def html_slots(text: str) -> list:
         def _cut(self, end):
             if self.run_start is not None and self.has_text and end > self.run_start:
                 raw = self.src[self.run_start:end]
-                txt = _html_run_text(raw)
+                txt = _html_run_text(raw, rule)
                 if txt:
                     self.out.append((txt, (self.run_start, end)))
             self.run_start = None
@@ -456,18 +471,22 @@ _A_FLD_RE = re.compile(r"<a:fld\b[^>]*>.*?</a:fld>", re.S)
 _A_BR_RE = re.compile(r"<a:br\b[^>]*/>|<a:br\b[^>]*>.*?</a:br>", re.S)
 
 
-def _pptx_para_text(p_xml: str) -> str:
+def _pptx_para_text(p_xml: str, rule: int = SLOT_RULE) -> str:
     """Текст абзаца без ПОЛЕЙ (номер слайда, дата): их считает PowerPoint,
     и перевод в них исчез бы при первом открытии. Разрыв строки внутри
     абзаца (`<a:br/>`, Shift+Enter) — пробел: без него последнее слово
     одной строки слипалось с первым следующей («ТашкентУзбекистан»).
-    Мягкий перенос в тексте не остаётся."""
+    Мягкий перенос в тексте не остаётся. Правило 1 (до смены, см.
+    `SLOT_RULE`) — без того и другого."""
+    if rule < 2:
+        parts = [_html.unescape(m.group(1) or "") for m in _A_T_RE.finditer(_A_FLD_RE.sub("", p_xml))]
+        return " ".join("".join(parts).split())
     body = _A_BR_RE.sub("<a:t> </a:t>", _A_FLD_RE.sub("", p_xml))
     parts = [_html.unescape(m.group(1) or "") for m in _A_T_RE.finditer(body)]
     return " ".join("".join(parts).replace("­", "").split())
 
 
-def pptx_slots(content: bytes) -> list:
+def pptx_slots(content: bytes, rule: int = SLOT_RULE) -> list:
     """[(текст абзаца, (часть, номер абзаца в части))] — абзацы `<a:p>`
     на слайдах в порядке показа (заметки к слайдам не берутся)."""
     out = []
@@ -475,7 +494,7 @@ def pptx_slots(content: bytes) -> list:
         for name in _pptx_slide_names(z):
             xml = z.read(name).decode("utf-8", "replace")
             for i, m in enumerate(_A_P_RE.finditer(xml)):
-                out.append((_pptx_para_text(m.group(0)), (name, i)))
+                out.append((_pptx_para_text(m.group(0), rule), (name, i)))
     return out
 
 
@@ -600,11 +619,12 @@ def _lines_write(text: str, repl: dict) -> str:
     return "\n".join(out)
 
 
-def extract_slots(filename: str, content: bytes) -> dict:
+def extract_slots(filename: str, content: bytes, rule: int = SLOT_RULE) -> dict:
     """{slots: [текст], kind, note, writeback: bool, enc} — слоты текстового
     файла. Слот i станет абзацем i собранного .docx. Форматы без обратной
     записи отдают куски `textcount.extract` и обратно выгружаются
-    Word-документом."""
+    Word-документом. `rule` — версия правила резки (`SLOT_RULE`), нужна
+    только выгрузке старых проектов."""
     ext = ext_of(filename)
     kind = ext[1:] if ext else "text"
     if ext in LINE_EXT:
@@ -624,7 +644,7 @@ def extract_slots(filename: str, content: bytes) -> dict:
                 "writeback": True, "enc": enc}
     if ext in (".html", ".htm"):
         text, enc = textcount._decode(content)
-        return {"slots": [_clean(t) for t, _r in html_slots(text)], "kind": kind,
+        return {"slots": [_clean(t) for t, _r in html_slots(text, rule)], "kind": kind,
                 "note": "Текст взят по блокам разметки; обратно выгружается той же страницей — "
                         "выделения внутри абзаца (жирный, ссылки) в переводе не сохраняются.",
                 "writeback": True, "enc": enc}
@@ -641,7 +661,7 @@ def extract_slots(filename: str, content: bytes) -> dict:
     if ext == ".pptx":
         if not zipfile.is_zipfile(io.BytesIO(content)):
             raise textcount.Unsupported("Файл .pptx повреждён: это не пакет OOXML")
-        return {"slots": [_clean(t) for t, _a in pptx_slots(content)], "kind": "pptx",
+        return {"slots": [_clean(t) for t, _a in pptx_slots(content, rule)], "kind": "pptx",
                 "note": "Переводится текст слайдов; обратно выгружается та же презентация — "
                         "выделения внутри абзаца не сохраняются, поля (номер слайда, дата) "
                         "не трогаются, заметки, диаграммы и SmartArt не переводятся.",
@@ -658,10 +678,25 @@ def extract_slots(filename: str, content: bytes) -> dict:
     return {"slots": blocks, "kind": got["kind"], "note": note, "writeback": False, "enc": None}
 
 
-def write_back(filename: str, content: bytes, translations: dict) -> bytes:
+def slots_rule_for(filename: str, content: bytes, sha: str) -> Optional[int]:
+    """Версия правила резки, которой снят отпечаток `sha` проекта, или None —
+    ни одна не сходится (файл или разбор изменились так, что номера слотов
+    уже не те). Правила перебираются от текущего: у файла без различий
+    между ними отпечатки совпадают, и берётся текущее."""
+    for rule in SLOT_RULES:
+        if slots_sha(extract_slots(filename, content, rule)["slots"]) == sha:
+            return rule
+        if ext_of(filename) not in (".html", ".htm", ".pptx"):
+            break                       # у прочих форматов правило одно
+    return None
+
+
+def write_back(filename: str, content: bytes, translations: dict, rule: int = SLOT_RULE) -> bytes:
     """Перевод в файл ИСХОДНОГО формата: translations — {номер слота: текст}.
     Адреса слотов считаются заново по оригиналу тем же кодом, что при
-    импорте; кодировка текста — исходная. Непереведённые слоты остаются."""
+    импорте, и тем же правилом резки (`rule`, см. `slots_rule_for`): от
+    правила у html зависит, какой пробег пуст и выпадает из счёта.
+    Кодировка текста — исходная. Непереведённые слоты остаются."""
     ext = ext_of(filename)
     if ext in (".csv", ".tsv"):
         text, enc = textcount._decode(content)
@@ -670,7 +705,7 @@ def write_back(filename: str, content: bytes, translations: dict) -> bytes:
         return _csv_write(text, ext, repl).encode(_encoding_of(enc, content), errors="replace")
     if ext in (".html", ".htm"):
         text, enc = textcount._decode(content)
-        ranges = [r for _t, r in html_slots(text)]
+        ranges = [r for _t, r in html_slots(text, rule)]
         pieces, pos = [], 0
         for i, (a, b) in enumerate(ranges):
             if i in translations and a >= pos:

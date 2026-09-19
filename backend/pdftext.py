@@ -34,7 +34,9 @@
 """
 from __future__ import annotations
 
+import bisect
 import difflib
+import functools
 import re
 import statistics
 import unicodedata
@@ -237,6 +239,8 @@ def _is_noise_line(line: str) -> bool:
         return False
     if any(_token_kind(t) == "word" for t in toks):
         return False
+    if _PARAGRAPH_NO_RE.match(line.strip()):
+        return False                    # «§ 5» — номер параграфа, а не знак мусора
     if any(c in _ORNAMENT_CHARS for c in line):
         return True
     if any(c.isdigit() for c in line) and _NUM_LINE_RE.match(line):
@@ -340,15 +344,28 @@ def _fold(s: str) -> str:
     return "".join(c for c in s.lower() if c.isalnum())
 
 
-def _similar(a: str, b: str) -> float:
-    # Регистр — часть строки и здесь: заголовок раздела КАПСОМ на его
-    # титульной странице — не колонтитул строчными (см. `running_heads`).
-    if _is_caps_heading(a) != _is_caps_heading(b):
-        return 0.0
-    fa, fb = _fold(a), _fold(b)
-    if not fa or not fb or abs(len(fa) - len(fb)) > 0.25 * max(len(fa), len(fb)):
-        return 0.0
-    return difflib.SequenceMatcher(None, fa, fb, autojunk=False).ratio()
+@functools.lru_cache(maxsize=65536)
+def _sig(s: str) -> tuple:
+    """(КАПСОМ ли, сложенная строка, её буквы счётом) — одна строка
+    сравнивается со многими, считать это заново на каждую пару незачем."""
+    f = _fold(s)
+    return _is_caps_heading(s), f, Counter(f)
+
+
+def _similar_enough(a: str, b: str, thr: float = HEAD_FUZZY) -> bool:
+    """Строки похожи не меньше чем на `thr` (доля совпавших букв и цифр).
+    Регистр — часть строки и здесь: заголовок раздела КАПСОМ на его
+    титульной странице — не колонтитул строчными (см. `running_heads`).
+    Строки, чья длина разнится больше чем на четверть, не сравниваются.
+    Дешёвая оценка сверху (общий набор букв) идёт вперёд: полный
+    SequenceMatcher нужен только парам, которые могут дотянуть."""
+    ca, fa, na = _sig(a)
+    cb, fb, nb = _sig(b)
+    if ca != cb or not fa or not fb or abs(len(fa) - len(fb)) > 0.25 * max(len(fa), len(fb)):
+        return False
+    if 2.0 * sum((na & nb).values()) / (len(fa) + len(fb)) < thr:
+        return False
+    return difflib.SequenceMatcher(None, fa, fb, autojunk=False).ratio() >= thr
 
 
 def _in_frame(l: str, known: set) -> bool:
@@ -362,7 +379,7 @@ def _in_frame(l: str, known: set) -> bool:
         return True
     if len(_fold(l)) < HEAD_FUZZY_MIN:
         return False
-    return any(_similar(l, h) >= HEAD_FUZZY for h in known)
+    return any(_similar_enough(l, h) for h in known)
 
 
 def _strip_page_frame(lines: list, heads: set, feet: set, report: dict) -> list:
@@ -397,6 +414,9 @@ def _strip_page_frame(lines: list, heads: set, feet: set, report: dict) -> list:
     return ls
 
 
+_HYPHEN_DUP_RE = re.compile(r"([^\W\d_][-‐‑])\s+[-‐‑]\s*$")
+
+
 def _clean_line(line: str, report: dict):
     """Строка без мусора распознавания либо None, если она вся мусор."""
     if _is_ornament(line):
@@ -409,14 +429,22 @@ def _clean_line(line: str, report: dict):
         report["borderLines"] += 1
         return None
     line = _strip_border_edges(line, report)
+    # «межребер- -»: за переносом слова распознаватель поставил лишнюю
+    # черточку, и перенос не склеивался («межребер- ная»).
+    line = _HYPHEN_DUP_RE.sub(r"\1", line)
     s = _UNDERSCORE_RE.sub(" ", line)
     if not any(c in _ORNAMENT_CHARS for c in s):
         return s.strip() or None       # нечего снимать — строка как есть (с двойными пробелами)
     # Одиночные знаки мусора между словами («^лучше», ««■») — снимаем
     # только те, что стоят отдельным токеном или на краю слова.
     toks = []
-    for t in s.split():
+    split = s.split()
+    for k, t in enumerate(split):
         core = t.strip("".join(_ORNAMENT_CHARS))
+        if ((t in ("§", "§§") and k + 1 < len(split) and split[k + 1][:1].isdigit())
+                or re.match(r"§+\d", t)):
+            toks.append(t)             # «§ 5» — знак параграфа перед номером, не мусор
+            continue
         if not core and all(c in _ORNAMENT_CHARS for c in t):
             if t.startswith(("•", "♦", "■", "●")) and len(t) == 1 and not toks:
                 toks.append(t)         # маркер списка в начале строки
@@ -602,7 +630,29 @@ def _multi_column(recs: list) -> bool:
             s = max(a["s"], b["s"], 1.0)
             if abs(a["y"] - b["y"]) < 0.5 * s and abs(a["x0"] - b["x0"]) > 5 * s:
                 return True
-    return False
+    # Колонки с разным интерлиньяжем (или сдвинутые на полстроки) на одной
+    # высоте не встречаются. Тогда — по краям: начала длинных строк делятся
+    # на две группы с разрывом больше пяти кеглей, в каждой не меньше трёх
+    # строк, группы идут на одной высоте, и левая КОНЧАЕТСЯ до начала
+    # правой. Последнее отличает колонки от эпиграфа и врезки справа: строки
+    # тела над ними доходят до правого поля, то есть заходят на их место.
+    if len(long_) < 6:
+        return False
+    xs = sorted(long_, key=lambda r: r["x0"])
+    s = statistics.median(r["s"] for r in long_) or 1.0
+    gap, k = max((xs[i + 1]["x0"] - xs[i]["x0"], i + 1) for i in range(len(xs) - 1))
+    if gap <= 5 * s:
+        return False
+    left, right = xs[:k], xs[k:]
+    if len(left) < 3 or len(right) < 3:
+        return False
+    r_x0 = min(r["x0"] for r in right)
+    if sum(1 for r in left if r["x1"] > r_x0 - 0.5 * s) > 0.1 * len(left):
+        return False
+    lo = max(min(r["y"] for r in left), min(r["y"] for r in right))
+    hi = min(max(r["y"] for r in left), max(r["y"] for r in right))
+    span = min(max(r["y"] for r in g) - min(r["y"] for r in g) for g in (left, right))
+    return hi - lo >= 0.5 * span > 0
 
 
 def _reading_order(recs: list) -> list:
@@ -674,20 +724,56 @@ def _bands(recs: list, st: dict) -> tuple:
     return band(idx, HEAD_WINDOW), band(idx[::-1], FOOT_WINDOW)
 
 
-def _cluster_add(clusters: list, text: str, page: int, size: float) -> None:
-    for c in clusters:
-        if c["rep"] == text or _similar(c["rep"], text) >= HEAD_FUZZY:
-            c["pages"].add(page)
-            c["sizes"].append(size)
-            return
-    clusters.append({"rep": text, "pages": {page}, "sizes": [size]})
+# Кандидатов в колонтитул, встреченных пока по разу, нечётко сравниваем
+# только с последними столькими: у книги, где на каждой странице своя
+# строка в полосе (заголовок раздела, подпись), каждый новый кандидат
+# сравнивался со всеми прежними — 1000 страниц разбирались больше минуты.
+# Колонтитул повторяется на соседних страницах и из одиночек уходит сразу.
+CLUSTER_SINGLES_MAX = 50
 
 
-def _cluster_hit(clusters: list, text: str, size: float) -> bool:
-    for c in clusters:
-        if len(c["pages"]) < HEAD_MIN_PAGES:
+def _clusters() -> dict:
+    """Кластеры строк полос: список, точный индекс по тексту и индекс
+    по длине сложенной строки (`_similar_enough` не сравнивает строки, чья длина
+    разнится больше чем на четверть, — их и не перебираем)."""
+    return {"list": [], "exact": {}, "bylen": {}}
+
+
+def _cluster_near(cl: dict, text: str) -> list:
+    n = len(_fold(text))
+    out = []
+    for m in range(int(0.75 * n), int(n / 0.75) + 2):
+        out.extend(cl["bylen"].get(m, ()))
+    return out
+
+
+def _cluster_add(cl: dict, text: str, page: int, size: float) -> None:
+    c = cl["exact"].get(text)
+    if c is None:
+        near = _cluster_near(cl, text)
+        many = sorted((x for x in near if len(x["pages"]) > 1), key=lambda x: -len(x["pages"]))
+        singles = sorted((x for x in near if len(x["pages"]) == 1), key=lambda x: -x["n"])
+        c = next((x for x in many[:CLUSTER_SINGLES_MAX] + singles[:CLUSTER_SINGLES_MAX]
+                  if _similar_enough(x["rep"], text)), None)
+        if c is None:
+            c = {"rep": text, "pages": set(), "sizes": [], "n": len(cl["list"])}
+            cl["list"].append(c)
+            cl["bylen"].setdefault(len(_fold(text)), []).append(c)
+        cl["exact"][text] = c
+    c["pages"].add(page)
+    c["sizes"].append(size)
+
+
+def _cluster_reps(cl: dict) -> set:
+    return {c["rep"] for c in cl["list"] if len(c["pages"]) >= HEAD_MIN_PAGES}
+
+
+def _cluster_hit(cl: dict, text: str, size: float) -> bool:
+    own = cl["exact"].get(text)             # строка уже в кластере — сравнивать незачем
+    for c in [own] + [x for x in _cluster_near(cl, text) if x is not own]:
+        if c is None or len(c["pages"]) < HEAD_MIN_PAGES:
             continue
-        if c["rep"] == text or _similar(c["rep"], text) >= HEAD_FUZZY:
+        if c is own or c["rep"] == text or _similar_enough(c["rep"], text):
             med = statistics.median(c["sizes"])
             if not med or abs(size - med) <= 0.25 * med:
                 return True
@@ -895,54 +981,104 @@ def _label_like(t: str) -> bool:
     return len(t) <= 12 or (len(t) <= LABEL_MAX_LEN and len(t.split()) <= 2)
 
 
-def _plain_page_fixes(entries: list, next_gid, hyphenated: set = frozenset()) -> None:
-    """Страницы без геометрии: вставки у границы страницы узнаются по
-    переносу. Слово, разрезанное дефисом на конце страницы, продолжается
-    строчной буквой; если между половинами стоит что-то, начатое с заглавной
-    (врезка внизу страницы: «кон-» / «В продаже на рынках…» / «систенцию»),
-    или короткие метки в начале следующей (метки рисунка «НК4», «Рис. 7»),
-    это вставка, а не продолжение. Только перенос по дефису: у открытого
-    конца без дефиса строка с заглавной бывает и продолжением («по методу»
-    / «Иванова»), и переставлять её было бы порчей."""
+def _joins_to_word(left_line: str, right_line: str, words, stems=()) -> bool:
+    """Строка `right_line` — продолжение слова, перенесённого в конце
+    `left_line`: половинки дают слово, которое документ знает целиком
+    («одно-» / «го курса» — «одного»), либо вторая половина нигде в
+    документе словом не стоит, кроме этого места, а начало склейки —
+    основа знакомого слова («под-» / «вергается»: «подвергаться» в книге
+    есть, «подвергается» — нет). `stems` — слова документа по алфавиту.
+    Частое слово («под-» / «что…») и чужая основа («под-» / «места»)
+    продолжением не считаются."""
+    if not words:
+        return False
+    left = re.findall(r"[^\W\d_]+$", left_line.rstrip().rstrip("-" + SOFT))
+    right = re.findall(r"^[^\W\d_]+", right_line)
+    if not (left and right):
+        return False
+    joined = (left[0] + right[0]).lower()
+    if words.get(joined, 0) >= 1:
+        return True
+    if len(right[0]) < 3 or words.get(right[0].lower(), 0) > 1:
+        return False
+    stem = joined[:len(left[0]) + 3]
+    k = bisect.bisect_left(stems, stem)
+    return k < len(stems) and stems[k].startswith(stem)
+
+
+def _plain_page_fixes(entries: list, next_gid, hyphenated: set = frozenset(), words=None) -> None:
+    """Вставки у границы страницы узнаются по переносу. Слово, разрезанное
+    дефисом на конце страницы, продолжается строчной буквой; если между
+    половинами стоит что-то, начатое с заглавной (врезка внизу страницы:
+    «кон-» / «В продаже на рынках…» / «систенцию»; врезка вверху следующей:
+    «под-» / «Важно не количество…» / «вергается»), или короткие метки
+    в начале следующей (метки рисунка «НК4», «Рис. 7»), это вставка, а не
+    продолжение. Только перенос по дефису: у открытого конца без дефиса
+    строка с заглавной бывает и продолжением («по методу» / «Иванова»),
+    и переставлять её было бы порчей.
+
+    На странице С ГЕОМЕТРИЕЙ врезка обычно узнаётся по месту, и сюда
+    доходят только строки, которые геометрия врезкой не признала (врезка
+    без рамки с рваным правым краем, боевая стр. 303). Там тот же разбор
+    идёт с подтверждением словарём (`words`): половинки через врезку
+    должны дать слово, которое в документе есть."""
     pages: list = []                  # [(номер страницы, [индексы потока]), …]
     for k, e in enumerate(entries):
         if e["role"] == "page":
             pages.append((e["pg"], [], e["geo"]))
         elif pages and e["role"] == "f":
             pages[-1][1].append(k)
+    stems = sorted(words) if words else []
     for (_p, cur, cur_geo), (_q, nxt, _ng) in zip(pages, pages[1:]):
         if not cur or not nxt:
             continue
         texts = [entries[k]["t"] for k in cur]
-        # Хвост страницы после последнего переноса — врезка (только без геометрии:
-        # с ней врезка узнаётся по месту).
-        if not cur_geo:
-            # Перенос СЛОВА: буква перед дефисом («кон-»), а не диапазон
-            # («на 2-» / «3 см»), и за ним строка с заглавной БУКВЫ. Переносы
-            # внутри самой врезки («покупате-» / «лю») продолжаются строчной
-            # и точкой разрыва не считаются; составное слово документа
-            # («Санкт-» / «Петербург») — тоже.
-            def breaks_here(j):
-                t, nx = texts[j].rstrip(), texts[j + 1]
-                if not (_WORD_BREAK_RE.search(t) and nx[:1].isupper()):
-                    return False
-                left = re.findall(r"[^\W\d_]+$", t.rstrip("-" + SOFT))
-                right = re.findall(r"^[^\W\d_]+", nx)
-                return not (left and right and (left[0] + "-" + right[0]).lower() in hyphenated)
-            h = max((j for j in range(max(0, len(texts) - 12), len(texts) - 1) if breaks_here(j)),
-                    default=None)
-            if h is not None and _starts_lower(entries[nxt[0]]["t"]):
-                gid = next_gid()
-                for j in range(h + 1, len(texts)):
-                    entries[cur[j]]["role"], entries[cur[j]]["gid"] = "a", gid
-                texts = texts[:h + 1]
+        cont = entries[nxt[0]]["t"]
+
+        # Перенос СЛОВА: буква перед дефисом («кон-»), а не диапазон
+        # («на 2-» / «3 см»), и за ним строка с заглавной БУКВЫ. Переносы
+        # внутри самой врезки («покупате-» / «лю») продолжаются строчной
+        # и точкой разрыва не считаются; составное слово документа
+        # («Санкт-» / «Петербург») — тоже.
+        def breaks_here(j):
+            t, nx = texts[j].rstrip(), texts[j + 1]
+            if not (_WORD_BREAK_RE.search(t) and nx[:1].isupper()):
+                return False
+            left = re.findall(r"[^\W\d_]+$", t.rstrip("-" + SOFT))
+            right = re.findall(r"^[^\W\d_]+", nx)
+            return not (left and right and (left[0] + "-" + right[0]).lower() in hyphenated)
+        h = max((j for j in range(max(0, len(texts) - 12), len(texts) - 1) if breaks_here(j)),
+                default=None)
+        if (h is not None and _starts_lower(cont)
+                and (not cur_geo or _joins_to_word(texts[h], cont, words, stems))):
+            gid = next_gid()
+            for j in range(h + 1, len(texts)):
+                entries[cur[j]]["role"], entries[cur[j]]["gid"] = "a", gid
+            texts = texts[:h + 1]
+        if not (texts and _WORD_BREAK_RE.search(texts[-1].rstrip())):
+            continue
+        lead_ = [entries[k]["t"] for k in nxt[:7]]
+        j = next((j for j, t in enumerate(lead_) if _starts_lower(t)), None)
+        if not j:
+            continue
         # Метки в начале следующей страницы перед продолжением слова.
-        if texts and _WORD_BREAK_RE.search(texts[-1].rstrip()):
-            lead_ = [entries[k]["t"] for k in nxt[:7]]
-            j = next((j for j, t in enumerate(lead_) if _starts_lower(t)), None)
-            if j and all(_label_like(t) for t in lead_[:j]):
+        if all(_label_like(t) for t in lead_[:j]):
+            for k in nxt[:j]:
+                entries[k]["role"], entries[k]["gid"] = "a", next_gid()
+            continue
+        # Врезка вверху следующей страницы: начата заглавной, а за ней —
+        # вторая половина слова. Строки врезки длинные и сами бывают начаты
+        # строчной («места, куда…»), поэтому продолжение ищется словарём.
+        # Строка перед продолжением должна быть закончена: если она сама
+        # кончается переносом, строчная за ней — ЕЁ продолжение.
+        if lead_[0][:1].isupper():
+            j = next((j for j in range(1, len(lead_)) if _starts_lower(lead_[j])
+                      and not lead_[j - 1].rstrip().endswith(("-", SOFT))
+                      and _joins_to_word(texts[-1], lead_[j], words, stems)), None)
+            if j:
+                gid = next_gid()
                 for k in nxt[:j]:
-                    entries[k]["role"], entries[k]["gid"] = "a", next_gid()
+                    entries[k]["role"], entries[k]["gid"] = "a", gid
 
 
 def _assemble(entries: list, median_len: float) -> list:
@@ -1012,6 +1148,48 @@ def _assemble(entries: list, median_len: float) -> list:
     return out
 
 
+_PARAGRAPH_NO_RE = re.compile(r"^§+\s*\d{1,4}[.)]?$")
+
+
+def _big_short_kept(t: str, words: Counter) -> bool:
+    """Крупная короткая строка — заголовок, а не украшение: номер (арабский
+    или римский: «IV», «I»), параграф («§ 5») либо слово, которое документ
+    знает и помимо этой строки («Яд», «Мёд»). «ЧР’», «ш», «!Ч 1» — ни то,
+    ни другое: это распознанный узор."""
+    t = t.strip()
+    if _NUM_LINE_RE.match(t) or _PARAGRAPH_NO_RE.match(t):
+        return True
+    w = t.strip(".,:;!?«»\"'()")
+    return len(w) >= 2 and w.isalpha() and words.get(w.lower(), 0) >= 2
+
+
+def _dropcap_join(d: dict, recs: list, words: Counter) -> bool:
+    """Буквица, сохранившаяся в слое: ОДНА заглавная буква слева от строк,
+    которые она начинает, встаёт в начало первой из них, если та начата
+    строчной. Слитно или через пробел — решает словарь документа, как
+    у `restore_dropcaps`: «О» + «стрый» — «Острый» (обрубок редок, слово
+    есть), а «В» + «начале» — «В начале» (обрубок — частое слово, слитного
+    «вначале» столько нет, а «в» — слово). True — буква пристроена."""
+    t = d["t"].strip()
+    if not (len(t) == 1 and t.isalpha() and t.isupper()):
+        return False
+    right_of = [r for r in recs if r is not d and r["x0"] >= d["x0"]
+                and d["y"] - 0.2 * d["s"] <= r["y"] <= d["y"] + 1.2 * d["s"]]
+    if not right_of:
+        return False
+    first = max(right_of, key=lambda r: r["y"])
+    if not _starts_lower(first["t"]):
+        return False
+    m = re.match(r"[^\W\d_]+", first["t"])
+    stub = m.group(0).lower() if m else ""
+    n_stub, n_join = words.get(stub, 0), words.get(t.lower() + stub, 0)
+    if stub and not (n_join and n_join >= n_stub) and n_stub > 2 and words.get(t.lower(), 0):
+        first["t"] = t + " " + first["t"]
+    else:
+        first["t"] = t + first["t"]
+    return True
+
+
 def clean(pages: list, geom: "list | None" = None) -> dict:
     """Страницы (список списков строк) → {items, report}.
 
@@ -1046,22 +1224,21 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                 kept.append(r)
         # Украшение, распознанное буквами: одна-три буквы кеглем вдвое больше
         # основного («ЧР’» кеглем 30, «ш» кеглем 46 над первой строкой
-        # страницы). Заголовком оно не бывает, а вставкой — разрывает слово.
+        # страницы). Вставкой оно разрывает слово. Но крупная короткая
+        # строка бывает и заголовком — «IV», «I», «§ 5», «Яд», «Мёд»: номер
+        # и слово, которое документ знает, остаются (`_big_short_kept`).
         st = _page_stats(kept)
-        deco = [r for r in kept if r["s"] >= 2 * st["body_s"] and len(_letters(r["t"])) <= 3]
-        for d in deco:
-            # Буквица, сохранившаяся в слое: одна заглавная слева от строк,
-            # которые она начинает, — встаёт в начало первой из них.
-            if len(d["t"]) == 1 and d["t"].isupper():
-                right_of = [r for r in kept if r is not d and r["x0"] >= d["x0"]
-                            and d["y"] - 0.2 * d["s"] <= r["y"] <= d["y"] + 1.2 * d["s"]]
-                if right_of:
-                    first = max(right_of, key=lambda r: r["y"])
-                    if _starts_lower(first["t"]):
-                        first["t"] = d["t"] + first["t"]
-                        report["dropCaps"] += 1
-                        continue
-            report["ornaments"] += 1
+        deco = []
+        for d in kept:
+            if d["s"] < 2 * st["body_s"] or len(_letters(d["t"])) > 3:
+                continue
+            if _dropcap_join(d, kept, words):
+                report["dropCaps"] += 1
+            elif _big_short_kept(d["t"], words):
+                continue                        # заголовок — дальше роли решат
+            else:
+                report["ornaments"] += 1
+            deco.append(d)
         if deco:
             kept = [r for r in kept if not any(r is d for d in deco)]
         multi = _multi_column(kept)
@@ -1073,8 +1250,8 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
 
     # Проход 2: колонтитулы по месту и повтору — нечётко, потому что
     # распознаватель читает их на каждой странице заново.
-    hc: list = []
-    fc: list = []
+    hc = _clusters()
+    fc = _clusters()
     for i, pg in laid.items():
         for k in pg["top"]:
             t = _norm_line(pg["recs"][k]["t"])
@@ -1084,8 +1261,29 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
             t = _norm_line(pg["recs"][k]["t"])
             if _frame_candidate(t):
                 _cluster_add(fc, t, i, pg["recs"][k]["s"])
-    geo_heads = {c["rep"] for c in hc if len(c["pages"]) >= HEAD_MIN_PAGES}
-    geo_feet = {c["rep"] for c in fc if len(c["pages"]) >= HEAD_MIN_PAGES}
+    geo_heads = _cluster_reps(hc)
+    geo_feet = _cluster_reps(fc)
+    # Высота, на которой в нижней полосе стоят номера страниц: одинокая
+    # короткая строка там же — номер, распознанный с ошибкой («зов» вместо
+    # «308» кеглем 15 на боевой стр. 303): иначе крупный кегль делал его
+    # заголовком посреди абзаца, разорванного переносом.
+    num_ys = sorted(pg["recs"][k]["y"] for pg in laid.values() for k in pg["bottom"]
+                    if _NUM_LINE_RE.match(_norm_line(pg["recs"][k]["t"])))
+    num_band = None
+    if len(num_ys) >= HEAD_MIN_PAGES:
+        leads = sorted(pg["st"]["lead"] for pg in laid.values())
+        tol = 0.5 * leads[len(leads) // 2]
+        num_band = (num_ys[int(0.1 * (len(num_ys) - 1))] - tol, num_ys[int(0.9 * (len(num_ys) - 1))] + tol)
+
+    def big_number(r: dict, st: dict) -> bool:
+        # Номер кеглем вдвое больше тела — номер ГЛАВЫ («IV»), а не страницы:
+        # прежде его снимало правило украшений, теперь он заголовок.
+        return r["s"] >= 2 * st["body_s"] and bool(_NUM_LINE_RE.match(_norm_line(r["t"])))
+
+    def garbled_number(r: dict) -> bool:
+        t = _norm_line(r["t"])
+        return (num_band is not None and 2 <= len(t) <= 4 and len(t.split()) == 1
+                and num_band[0] <= r["y"] <= num_band[1])
 
     gid_box = [0]
 
@@ -1099,7 +1297,7 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
     def flush_lines():
         if not entries:
             return
-        _plain_page_fixes(entries, next_gid, hyphenated)
+        _plain_page_fixes(entries, next_gid, hyphenated, words)
         buf_lines = _assemble(entries, median_len)
         entries.clear()
         if any(buf_lines):
@@ -1142,7 +1340,10 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                         or _cluster_hit(clusters, _norm_line(recs[k]["t"]), recs[k]["s"]))]
             for k in band:
                 t = _norm_line(recs[k]["t"])
-                if _NUM_LINE_RE.match(t):
+                if big_number(recs[k], pg["st"]):
+                    continue
+                if _NUM_LINE_RE.match(t) or (band is pg["bottom"] and len(band) == 1
+                                             and garbled_number(recs[k])):
                     report["pageNumbers"] += 1
                     drop.add(k)
                 elif k in hit or (hit and _frame_candidate(t)):
@@ -1164,6 +1365,8 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                 if k in drop:
                     continue
                 t = _norm_line(recs[k]["t"])
+                if big_number(recs[k], pg["st"]):
+                    break
                 if _NUM_LINE_RE.match(t):
                     report["pageNumbers"] += 1
                 elif _frame_candidate(t) and _in_frame(t, known):

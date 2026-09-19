@@ -173,6 +173,36 @@ check(path.suffix == ".pptx" and "<a:t>[Заголовок слайда]</a:t>" 
       and '<a:fld id="x" type="slidenum"><a:t>2</a:t></a:fld><a:r><a:t>[страница]</a:t>' in s2 and media == b"PNGDATA",
       "pptx: перевод в первый прогон, поле не тронуто, медиа байт в байт")
 
+print("\n=== 1б. Проект, залитый до смены правила резки, выгружается ===")
+# Правило резки html сменилось (тег внутри слова больше не пробел). Проект,
+# залитый раньше, хранит отпечаток ПРЕЖНЕГО правила: выгрузка узнаёт его
+# и раскладывает переводы им же — а не 400 навсегда (повторная заливка
+# того же файла — 409 дубликата).
+HTML_OLD = "<html><body><p>Полн<b>ый</b> курс</p><p>Второй<br>абзац</p></body></html>".encode("utf-8")
+r = upload("legacy.html", HTML_OLD); PL = r.json()
+live(PL["id"])["slotsSha"] = importers.slots_sha(importers.extract_slots("legacy.html", HTML_OLD, rule=1)["slots"])
+translate_all(PL["id"])
+path, d = export_original(PL["id"])
+out = path.read_text(encoding="utf-8") if path else ""
+check(path is not None and "<p>[Полный курс]</p>" in out and "<p>[Второй абзац]</p>" in out,
+      "html правила 1: выгрузка есть, переводы на местах: %s" % (d.get("error") or out[:120]))
+SLIDE_BR = ('<?xml version="1.0"?><p:sld xmlns:a="a" xmlns:p="p"><p:txBody>'
+            '<a:p><a:r><a:t>Ташкент</a:t></a:r><a:br/><a:r><a:t>Узбекистан</a:t></a:r></a:p></p:txBody></p:sld>')
+b = io.BytesIO()
+with zipfile.ZipFile(b, "w") as z:
+    z.writestr("[Content_Types].xml", "<Types/>")
+    z.writestr("ppt/slides/slide1.xml", SLIDE_BR)
+PPTX_OLD = b.getvalue()
+r = upload("legacy.pptx", PPTX_OLD); PQ = r.json()
+live(PQ["id"])["slotsSha"] = importers.slots_sha(importers.extract_slots("legacy.pptx", PPTX_OLD, rule=1)["slots"])
+translate_all(PQ["id"])
+path, d = export_original(PQ["id"])
+ok = False
+if path is not None:
+    with zipfile.ZipFile(io.BytesIO(path.read_bytes())) as z:
+        ok = "<a:t>[Ташкент Узбекистан]</a:t>" in z.read("ppt/slides/slide1.xml").decode("utf-8")
+check(ok, "pptx правила 1: выгрузка есть, перевод на месте: %s" % (d.get("error") or ""))
+
 print("\n=== 2. Отпечаток слотов: подменённый оригинал → 400 ===")
 orig_path = main._orig_existing(PH["id"])
 orig_path.write_bytes("<html><body><p>Совсем другой</p></body></html>".encode("utf-8"))

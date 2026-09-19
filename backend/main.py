@@ -22690,11 +22690,14 @@ def _export_original(project: dict, out: Path, tmp: Path) -> dict:
     if orig is None or data is None:
         raise HTTPException(400, "Оригинал файла не сохранён — выгрузить в исходном формате "
                                  "не из чего; доступен Word-документ")
+    rule = importers.SLOT_RULE
     if project.get("slotsSha"):
         # Правила резки меняются; переводы по номерам абзацев в чужие ячейки
-        # класть нельзя — отказ с причиной, а не тихая порча.
-        got = importers.extract_slots(project.get("fileName") or orig.name, orig.read_bytes())
-        if importers.slots_sha(got["slots"]) != project["slotsSha"]:
+        # класть нельзя — отказ с причиной, а не тихая порча. Проект, залитый
+        # при прежнем правиле, узнаётся по отпечатку и выгружается им же.
+        rule = importers.slots_rule_for(project.get("fileName") or orig.name, orig.read_bytes(),
+                                        project["slotsSha"])
+        if rule is None:
             raise HTTPException(400, "Разбор этого формата изменился с момента загрузки — "
                                      "выгрузка в исходном виде разложила бы переводы не по тем "
                                      "местам. Скачайте Word-документ или загрузите файл заново")
@@ -22706,7 +22709,8 @@ def _export_original(project: dict, out: Path, tmp: Path) -> dict:
         if t:
             tr[int(idx)] = t
     untranslated = sum(1 for _i, sid in (data.get("pairs") or []) if int(sid) in by_id) - len(tr)
-    tmp.write_bytes(importers.write_back(project.get("fileName") or orig.name, orig.read_bytes(), tr))
+    tmp.write_bytes(importers.write_back(project.get("fileName") or orig.name, orig.read_bytes(), tr,
+                                         rule=rule))
     return {"original": kind, "written": len(tr), "untranslated": max(0, untranslated)}
 
 

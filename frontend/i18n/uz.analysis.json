@@ -207,7 +207,6 @@
   "Посчитано прежними правилами: ": "Eski qoidalar bo'yicha hisoblangan: ",
   "Потеря термина": "Atama yo'qolgan",
   "Почему термины остались человеку: ": "Nega atamalar odamga qoldi: ",
-  "Починить их: вкладка «Редактор» → карточка «Одобрение терминов» → ": "Ularni tuzatish: «Muharrir» bo'limi → «Atamalarni ma'qullash» kartochkasi → ",
   "Правила подсчёта меняются, а хеш перевода сторожит только текст — запись, посчитанная по-старому, считается свежей вечно и сама не пересчитается.\n\nПересчёт бесплатный: обратный перевод, оригинал и вердикт судьи лежат в самой записи, ни одного вызова модели он не делает.\n\nСперва разбор — он ничего не меняет и показывает числа. Прежние записи уходят копией в data/backups и возвращаются откатом.": "Hisoblash qoidalari o'zgaradi, tarjima xeshi esa faqat matnni qo'riqlaydi — eski usulda hisoblangan yozuv abadiy yangi hisoblanadi va o'zi qayta hisoblanmaydi.\n\nQayta hisoblash bepul: teskari tarjima, asl matn va hakam hukmi yozuvning o'zida yotadi, u birorta modelga murojaat qilmaydi.\n\nAvval tahlil — u hech narsani o'zgartirmaydi va raqamlarni ko'rsatadi. Eski yozuvlar nusxa bo'lib data/backups ichiga ketadi va qaytarish bilan tiklanadi.",
   "Правим…": "Tuzatilmoqda…",
   "Правка записи готовый текст сама не меняет — это отдельная команда.": "Yozuvni tahrirlash tayyor matnni o'zi o'zgartirmaydi — bu alohida buyruq.",
@@ -249,7 +248,6 @@
   "Ремонт: откачено": "Ta'mir: qaytarildi",
   "С замечаниями": "Kamchiliklar bilan",
   "С замечаниями проверок": "Tekshiruv kamchiliklari bilan",
-  "Сегменты, где термин есть в оригинале, а утверждённого перевода в готовом тексте нет.\n\nОдобрение термина влияет только на будущие переводы — уже сделанные сами не меняются, поэтому после правок глоссария этот список и появляется.\n\nСчитается только по проверенным записям: автоимпорт модель вправе игнорировать.\n\nПереперевести пакетом можно в Редакторе — секция «Соответствие глоссарию» в карточке «Одобрить и применить».": "Atama asl matnda bor, tayyor matnda esa tasdiqlangan tarjimasi yo'q segmentlar.\n\nAtamani ma'qullash faqat kelajakdagi tarjimalarga ta'sir qiladi — allaqachon qilinganlari o'zi o'zgarmaydi, shuning uchun lug'at tahrirlaridan keyin shu ro'yxat paydo bo'ladi.\n\nFaqat tekshirilgan yozuvlar bo'yicha hisoblanadi: avtoimportni model e'tiborsiz qoldirishi mumkin.\n\nPaket bilan qayta tarjima qilishni Muharrirda — «Ma'qullash va qo'llash» kartochkasidagi «Lug'atga muvofiqlik» bo'limida bajarish mumkin.",
   "Сервер отказал": "Server rad etdi",
   "Сервер прежней версии — корзин «под ключ» нет, ниже подробный итог.": "Server eski versiyada — «tayyor holda» savatlari yo'q, quyida batafsil natija.",
   "Смета — нижняя граница: проверки этого же прогона могут добавить работы ремонту. ": "Hisob-kitob — quyi chegara: shu ishlovning tekshiruvlari ta'mirga ish qo'shishi mumkin. ",
@@ -282,7 +280,6 @@
   "Что сделает прогон": "Ishlov nima qiladi",
   "Что сейчас с переводом": "Tarjima hozir qanday holatda",
   "Экспорт перевода": "Tarjima eksporti",
-  "балл этого не отменяет: на экране «Анализ» такой сегмент считается готовым": "ball buni bekor qilmaydi: «Tahlil» ekranida bunday segment tayyor hisoblanadi",
   "балл back-check упал, но термины стали чище — текст уже написан и оплачен": "teskari tarjima balli tushdi, lekin atamalar tozalandi — matn allaqachon yozilgan va to'langan",
   "без замены": "almashtirishsiz",
   "в ": "— ",
@@ -443,5 +440,13 @@
   "Что готово и о чём я спрошу вас.": "Nima tayyor va sizdan nimani so'rayman.",
   "Сама после прогона:": "Ishga tushirishdan keyin o'zim:",
   "Скрыть настройки книги": "Kitob sozlamalarini yashirish",
-  "Настройки книги": "Kitob sozlamalari"
+  "Настройки книги": "Kitob sozlamalari",
+  "Починить их: вкладка «Редактор» → карточка «Термины глоссария» → ": "Ularni tuzatish: «Muharrir» bo'limi → «Lug'at atamalari» kartochkasi → ",
+  "Сегменты, где термин есть в оригинале, а утверждённого перевода в готовом тексте нет.\n\nОдобрение термина влияет только на будущие переводы — уже сделанные сами не меняются, поэтому после правок глоссария этот список и появляется.\n\nСчитается только по проверенным записям: автоимпорт модель вправе игнорировать.\n\nПочинить их можно в Редакторе — кнопкой «Применить к N сегм.» в карточке «Термины глоссария».": "Atama asl matnda bor, tayyor matnda esa tasdiqlangan tarjimasi yo'q segmentlar.\n\nAtamani ma'qullash faqat kelajakdagi tarjimalarga ta'sir qiladi — allaqachon qilinganlari o'zi o'zgarmaydi, shuning uchun lug'at tahrirlaridan keyin shu ro'yxat paydo bo'ladi.\n\nFaqat tekshirilgan yozuvlar bo'yicha hisoblanadi: avtoimportni model e'tiborsiz qoldirishi mumkin.\n\nUlarni Muharrirda — «Lug'at atamalari» kartochkasidagi «N ta segmentga qo'llash» tugmasi bilan tuzatish mumkin.",
+  "балл этого не отменяет: на экране «Проверка» такой сегмент считается готовым": "ball buni bekor qilmaydi: «Tekshiruv» ekranida bunday segment tayyor hisoblanadi",
+  "Пересчитано: было ": "Qayta hisoblandi: edi ",
+  "Пересчёт не выполнен": "Qayta hisoblash bajarilmadi",
+  "Расхождений стало больше на ": "Farqlar ko'paydi: ",
+  "Расхождений стало меньше на ": "Farqlar kamaydi: ",
+  "Столько сегментов расходится с глоссарием.": "Shuncha segment lug'atga mos kelmaydi."
 }

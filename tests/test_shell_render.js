@@ -284,5 +284,31 @@ console.log("7. Экран входа: выбор языка интерфейс�
   window.I18N.setLang(was, true);
 }
 
+console.log("\n=== 10. Смена проекта снимает выборку сегментов ===");
+/* Номера сегментов у каждого проекта свои: выборка и слова подсветки,
+   пережившие смену проекта, показали бы в новом проекте чужие строки с чужими
+   словами. Открытие ТОГО ЖЕ проекта выборку не трогает — так в редактор
+   приходят со «Словарей» (openProject, затем setSegmentFilter). */
+{
+  hooks.length = 0; effects.length = 0;
+  const run = () => { hookIdx = 0; return useStore(false); };
+  run().openProject(7);
+  run().setSegmentFilter([3, 4], { terms: ["кашель"], label: "x", bucket: "human" });
+  let s = run();
+  check(s.segmentFilter && s.segmentFilter.size === 2 && s.segmentFilterMeta && s.segmentFilterMeta.terms[0] === "кашель",
+        "выборка ставится вместе со словами и корзиной");
+  s.openProject(7);
+  s = run();
+  check(s.segmentFilter && s.segmentFilter.size === 2, "тот же проект — выборка на месте");
+  s.openProject(8);
+  s = run();
+  check(s.segmentFilter === null && s.segmentFilterMeta === null && !window._mcat_sf && !window._mcat_sfm,
+        "другой проект — выборка и слова сняты, мост для первого кадра тоже");
+  s.setSegmentFilter([1]);
+  s = run();
+  check(s.segmentFilter && s.segmentFilter.size === 1 && s.segmentFilterMeta === null,
+        "прежний вызов без слов работает как раньше");
+}
+
 console.log(fail.length ? "\nПРОВАЛЫ: " + fail.length + "\n" + fail.join("\n") : "\nВСЁ ПРОШЛО");
 process.exit(fail.length ? 1 : 0);

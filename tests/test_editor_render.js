@@ -518,28 +518,167 @@ try {
   check(t9.indexOf("осталось") === -1, "чужой снимок к прогону не прилип");
   check(t9.indexOf("прогон запущен не из этой вкладки") !== -1, "и об этом сказано прямо");
 
-  console.log("\n=== 10. Ноль расхождений с глоссарием не уносит секцию ===");
-  // Заглушка отдаёт ПУСТОЙ отчёт — ровно то состояние, в котором прежняя
-  // отдельная карточка не отрисовывалась вовсе. Теперь это секция внутри
-  // «Одобрить и применить», но закон тот же: пропади она — пропала бы
-  // «Пересчитать», то есть единственный способ убедиться, что ноль
-  // настоящий, а не остался с прошлого расчёта.
-  check(text.indexOf("Соответствие глоссарию") !== -1,
-        "секция на месте и при нуле");
-  check(text.indexOf("Пересчитать") !== -1,
-        "и «Пересчитать» вместе с ней");
-  check(/Все переводы соответствуют утверждённым терминам/.test(text),
-        "ноль назван словами, а не пустотой");
-  check(text.indexOf("Перевести заново (0)") !== -1,
-        "кнопка честно показывает ноль, а не исчезает");
+  console.log("\n=== 10. «Термины глоссария»: команда, а не второй отчёт ===");
+  // Разбор соответствия глоссарию (списки, «Пересчитать», «Перевести заново»)
+  // живёт на «Проверке» — в редакторе он только повторял его. Кнопка
+  // одобрения стоит, только когда есть что применять: заглушка отдаёт пустой
+  // отчёт и пустой разбор автоодобрения — карточки нет вовсе.
+  check(text.indexOf("Соответствие глоссарию") === -1,
+        "секции соответствия в редакторе больше нет");
+  check(text.indexOf("Пересчитать") === -1 && text.indexOf("Перевести заново") === -1,
+        "и её «Пересчитать» / «Перевести заново» тоже");
+  check(text.indexOf("Нечего применять") === -1 && text.indexOf("и применить") === -1,
+        "применять нечего — ни кнопки, ни пустой рамки «Нечего применять»");
+  {
+    const saved = global.API;
+    global.API = Object.assign({}, saved, {
+      autoApprove: async () => ({ ok: true, counts: { auto: 2, verified: 1, skipped: 0 } }),
+      glossaryImpact: async () => ({ ok: true, terms: [], segments: [3, 4], pending: [3, 4], confirmed: [], futile: [4] }),
+    });
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    TabEditor({ store: storeStub, toast });
+    effects.forEach(fn => { try { fn(); } catch (e) {} });
+    for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+    hookIdx = 0; effects.length = 0;
+    const o10 = []; walk(TabEditor({ store: storeStub, toast }), 0, o10);
+    const t10 = o10.join("\n");
+    check(t10.indexOf("Одобрить 3 и применить") !== -1,
+          "есть что одобрить — кнопка «Одобрить N и применить» на месте");
+    check(t10.indexOf("ремонт не возьмёт — их правит человек") !== -1,
+          "застрявшие названы одной строкой, а не абзацем");
+    check(t10.indexOf("Соответствие глоссарию") === -1, "и секция соответствия не вернулась");
+    global.API = saved;
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    TabEditor({ store: storeStub, toast });
+    effects.forEach(fn => { try { fn(); } catch (e) {} });
+    for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+  }
 
-  console.log("\n=== 10a. Карточка «Анализ» стоит в блоках запуска ===");
-  // Корзины считает СЕРВЕР (/analysis) — карточка их только показывает,
-  // рядом с кнопками, которые эти корзины осушают.
+  console.log("\n=== 10a. Корзины в редакторе — ОДИН набор ===");
+  // Прежде корзины рисовались трижды: плитки, карточка «Анализ» в блоках
+  // запуска и кнопки-фильтры над таблицей. Остались плитки (с кнопкой
+  // «Показать N сегм. →») и фильтры над таблицей, которые они зажигают.
   for (const m of ["Готово к сдаче", "Возьмёт ближайший прогон", "Нужно ваше решение"])
-    check(text.indexOf(m) !== -1, "корзина: " + m);
-  check(text.indexOf("Открыть «Анализ»") !== -1, "и есть переход на вкладку «Анализ»");
-  check(text.indexOf("заверено вручную") !== -1, "срез «заверено вручную» показан числом");
+    check(text.split(m).length - 1 === 1, "корзина «" + m + "» нарисована один раз");
+  check(text.indexOf("Открыть «Анализ»") === -1 && text.indexOf("Анализ") === -1,
+        "карточки «Анализ» больше нет, и слова «Анализ» в редакторе тоже");
+  check(text.indexOf("Разобрать на «Проверке»") !== -1, "у «Нужно ваше решение» — переход на «Проверку»");
+  const btnText = (n) => (n.children || []).map(c => typeof c === "object" ? "" : String(c)).join("");
+  const findAll = (n, pred, out) => {
+    out = out || [];
+    if (!n || typeof n !== "object") return out;
+    if (Array.isArray(n)) { n.forEach(c => findAll(c, pred, out)); return out; }
+    if (pred(n)) out.push(n);
+    (n.children || []).forEach(c => findAll(c, pred, out));
+    return out;
+  };
+  {
+    const calls = [];
+    const st = Object.assign({}, storeStub, {
+      setSegmentFilter(ids, meta) {
+        calls.push([ids, meta]);
+        st.segmentFilter = ids && ids.length ? new Set(ids) : null;
+        st.segmentFilterMeta = st.segmentFilter ? (meta || null) : null;
+      },
+    });
+    hookIdx = 0; effects.length = 0;
+    const e1 = TabEditor({ store: st, toast });
+    const show = findAll(e1, n => n.type === "button" && /^Показать \d+ сегм\. →$/.test(btnText(n)));
+    check(show.length === 4, "у каждой плитки — кнопка «Показать N сегм. →» (" + show.length + ")");
+    const readyBtn = show.find(n => btnText(n) === "Показать 3 сегм. →");
+    check(!!readyBtn, "число на кнопке — размер корзины «Готово» (3)");
+    if (readyBtn) readyBtn.props.onClick();
+    check(calls.length === 1 && calls[0][0].join(",") === "1,2,5" && calls[0][1] && calls[0][1].bucket === "ready",
+          "кнопка фильтрует таблицу выборкой корзины и называет корзину");
+    hookIdx = 0; effects.length = 0;
+    const e2 = TabEditor({ store: st, toast });
+    const chip = findAll(e2, n => n.type === "button" && n.props["data-bucket"] === "ready")[0];
+    check(!!chip && chip.props["aria-pressed"] === true, "над таблицей зажглась кнопка-фильтр «Готово»");
+    const all = findAll(e2, n => n.type === "button" && n.props["data-bucket"] === "all")[0];
+    check(!!all && all.props["aria-pressed"] === false, "а «Все» погасла");
+    const tile = findAll(e2, n => n.props && n.props["data-bucket"] === "ready" && /st-card/.test(n.props.className || ""))[0];
+    check(!!tile && / st-on/.test(tile.props.className), "и плитка «Готово» выделена");
+    check(findAll(e2, n => n.type === "tr" && n.props["data-seg"] != null).map(n => n.props["data-seg"]).join(",") === "1,2,5",
+          "в таблице ровно сегменты корзины");
+    // Выборка с «Проверки» (BucketCard) несёт ту же корзину — горит та же кнопка.
+    st.setSegmentFilter([7], { bucket: "human", label: "Нужно ваше решение" });
+    hookIdx = 0; effects.length = 0;
+    const e3 = TabEditor({ store: st, toast });
+    const hum = findAll(e3, n => n.type === "button" && n.props["data-bucket"] === "human")[0];
+    check(!!hum && hum.props["aria-pressed"] === true, "выборка с «Проверки» зажигает кнопку своей корзины");
+  }
+  hookIdx = 0; effects.length = 0;
+
+  console.log("\n=== 10b. Карточка сегмента — только по нажатию ===");
+  // Прежде справа всегда стояла колонка 300–352 px, даже с «Сегмент не
+  // выбран». Теперь колонки нет, пока карточку не открыли.
+  {
+    let detail = null;
+    const realDetail = global.SegDetail;
+    global.SegDetail = (p) => { detail = p; return null; };
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    TabEditor({ store: storeStub, toast });
+    effects.forEach(fn => { try { fn(); } catch (e) {} });
+    for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+    hookIdx = 0; effects.length = 0;
+    const b1 = TabEditor({ store: storeStub, toast });
+    const body1 = findAll(b1, n => /^editor-body/.test((n.props || {}).className || ""))[0];
+    check(!!body1 && body1.props.className === "editor-body", "сразу после открытия колонки карточки нет — таблица во всю ширину");
+    check(!findCls(b1, "editor-side") && detail === null, "и пустой рамки «Сегмент не выбран» тоже");
+    check(text.indexOf("Сегмент не выбран") === -1, "надпись «Сегмент не выбран» ушла");
+    const row2 = findAll(b1, n => n.type === "tr" && n.props["data-seg"] === 2)[0];
+    row2.props.onClick();
+    hookIdx = 0; effects.length = 0;
+    const b2 = TabEditor({ store: storeStub, toast });
+    const body2 = findAll(b2, n => /^editor-body/.test((n.props || {}).className || ""))[0];
+    check(!!body2 && body2.props.className === "editor-body has-side", "нажали строку — колонка карточки появилась");
+    check(!!findCls(b2, "editor-side") && detail && detail.seg.id === 2, "и в ней карточка нажатого сегмента");
+    check(detail && typeof detail.onClose === "function", "у карточки есть «×»");
+    detail.onClose();
+    detail = null;
+    hookIdx = 0; effects.length = 0;
+    const b3 = TabEditor({ store: storeStub, toast });
+    check(!findCls(b3, "editor-side") && detail === null, "«×» закрывает карточку и отдаёт ширину таблице");
+
+    console.log("\n=== 10c. Переход с «Проверки» приносит слова ===");
+    // Выборка с «Проверки» несёт термин и варианты перевода: они горят
+    // в строках таблицы (без учёта регистра, безопасно для скобок и точек),
+    // а карточка первого сегмента выборки открывается сама — с теми же словами.
+    const st = Object.assign({}, storeStub, {
+      segmentFilter: new Set([3, 4]),
+      segmentFilterMeta: { terms: ["КАШЕЛЬ", "cough 3", "(x+"], label: "Термин: кашель" },
+    });
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    TabEditor({ store: st, toast });
+    effects.forEach(fn => { try { fn(); } catch (e) {} });
+    for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+    hookIdx = 0; effects.length = 0;
+    const c1 = TabEditor({ store: st, toast });
+    check(detail && detail.seg.id === 3, "карточка первого сегмента выборки открылась сама (" + (detail && detail.seg.id) + ")");
+    check(detail && (detail.hlTerms || []).join("|") === "КАШЕЛЬ|cough 3|(x+", "и получила слова для подсветки");
+    const tr3 = findAll(c1, n => n.type === "tr" && n.props["data-seg"] === 3)[0];
+    const marks = (cls) => findAll(findAll(tr3, n => n.props && n.props.className === cls), n => n.type === "mark")
+      .map(m => (m.children || []).join(""));
+    check(marks("src-cell").join("|") === "кашель", "в оригинале горит термин, регистр не важен (" + marks("src-cell").join("|") + ")");
+    check(marks("tgt-cell").join("|") === "cough 3", "в переводе горит вариант перевода (" + marks("tgt-cell").join("|") + ")");
+    const o10c = []; walk(c1, 0, o10c);
+    check(o10c.join("\n").indexOf("проверить:") !== -1, "полоса фильтра называет слова для проверки");
+    global.SegDetail = realDetail;
+  }
+  hooks.length = 0; hookIdx = 0; effects.length = 0;
+  TabEditor({ store: storeStub, toast });
+  effects.forEach(fn => { try { fn(); } catch (e) {} });
+  for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+
+  console.log("\n=== 10d. markTerms: несколько слов, без регулярок ===");
+  const mt = (s, t) => { const r = markTerms(s, t); return Array.isArray(r)
+    ? r.map(x => typeof x === "string" ? x : "[" + x.children.join("") + "]").join("") : r; };
+  check(mt("Кашель и кашель", ["кашель"]) === "[Кашель] и [кашель]", "все вхождения, регистр не важен");
+  check(mt("артериальное давление", ["давление", "артериальное давление"]) === "[артериальное давление]",
+        "пересечения сливаются в одну метку");
+  check(mt("доза (мг) и а.b", ["(мг)", "а.b", "[", "*"]) === "доза [(мг)] и [а.b]", "скобки и точки ищутся буквально");
+  check(mt("Ёлка", ["елка"]) === "[Ёлка]", "«ё» и «е» — одна буква");
+  check(mt("текст", []) === "текст" && mt("", ["x"]) === "", "без слов — текст как есть");
 
   console.log("\n=== 11. Поиск над таблицей и переход к сегменту по номеру ===");
   // Зона — окно в ZONE_HALF (10) строк в каждую сторону. На семи сегментах она
@@ -835,7 +974,7 @@ try {
         "и о втором с тем же номером — тоже (" + afterFirst + " → " + said.list.length + ")");
   global.API = baseAPI;
 
-  console.log("\n=== 14. До первого прогона карточки «Анализ» нет ===");
+  console.log("\n=== 14. До первого прогона сводки корзин нет ===");
   // Проект из одних «новых»: корзины тривиальны, и нагружать ими интерфейс
   // (и единственный воркер запросом /analysis) незачем. Карточка появляется
   // после первого прогона либо когда в проекте уже есть переведённое.

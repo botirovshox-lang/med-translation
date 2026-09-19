@@ -207,7 +207,6 @@
  "Посчитано прежними правилами: ": "Counted by the old rules: ",
  "Потеря термина": "A lost term",
  "Почему термины остались человеку: ": "Why the terms were left to a human: ",
- "Починить их: вкладка «Редактор» → карточка «Одобрение терминов» → ": "Fix them: the “Editor” tab → the “Term approval” card → ",
  "Правила подсчёта меняются, а хеш перевода сторожит только текст — запись, посчитанная по-старому, считается свежей вечно и сама не пересчитается.\n\nПересчёт бесплатный: обратный перевод, оригинал и вердикт судьи лежат в самой записи, ни одного вызова модели он не делает.\n\nСперва разбор — он ничего не меняет и показывает числа. Прежние записи уходят копией в data/backups и возвращаются откатом.": "The counting rules change, while the hash of the translation only guards the text — an entry counted the old way is considered fresh forever and will never recount itself.\n\nRecounting is free: the back-translation, the source and the judge’s verdict are in the entry itself, and it makes no model calls at all.\n\nFirst the analysis — it changes nothing and shows the numbers. The previous entries go as a copy into data/backups and come back with a rollback.",
  "Правим…": "Fixing…",
  "Правка записи готовый текст сама не меняет — это отдельная команда.": "Editing an entry does not change the finished text by itself — that is a separate command.",
@@ -249,7 +248,6 @@
  "Ремонт: откачено": "Repair: rolled back",
  "С замечаниями": "With issues",
  "С замечаниями проверок": "With findings from the checks",
- "Сегменты, где термин есть в оригинале, а утверждённого перевода в готовом тексте нет.\n\nОдобрение термина влияет только на будущие переводы — уже сделанные сами не меняются, поэтому после правок глоссария этот список и появляется.\n\nСчитается только по проверенным записям: автоимпорт модель вправе игнорировать.\n\nПереперевести пакетом можно в Редакторе — секция «Соответствие глоссарию» в карточке «Одобрить и применить».": "Segments where the term is in the source but the approved translation is not in the finished text.\n\nApproving a term affects only future translations — the ones already made do not change by themselves, which is why this list appears after glossary edits.\n\nIt is counted only from verified entries: the model may ignore the auto-import.\n\nYou can re-translate them as a batch in the Editor — the “Glossary compliance” section in the “Approve and apply” card.",
  "Сервер отказал": "The server refused",
  "Сервер прежней версии — корзин «под ключ» нет, ниже подробный итог.": "An older version of the server — there are no turnkey baskets, the detailed result is below.",
  "Смета — нижняя граница: проверки этого же прогона могут добавить работы ремонту. ": "The estimate is a lower bound: the checks of this same run may add work for the repair. ",
@@ -282,7 +280,6 @@
  "Что сделает прогон": "What the run will do",
  "Что сейчас с переводом": "Where the translation stands now",
  "Экспорт перевода": "Export the translation",
- "балл этого не отменяет: на экране «Анализ» такой сегмент считается готовым": "the score does not cancel this: on the “Analysis” screen such a segment counts as done",
  "балл back-check упал, но термины стали чище — текст уже написан и оплачен": "the back-check score dropped, but the terms got cleaner — the text is already written and paid for",
  "без замены": "no replacement",
  "в ": "in ",
@@ -443,5 +440,13 @@
  "Что готово и о чём я спрошу вас.": "What is done and what I will ask you about.",
  "Сама после прогона:": "By myself after the run:",
  "Скрыть настройки книги": "Hide the book settings",
- "Настройки книги": "Book settings"
+ "Настройки книги": "Book settings",
+ "Починить их: вкладка «Редактор» → карточка «Термины глоссария» → ": "Fix them: the “Editor” tab → the “Glossary terms” card → ",
+ "Сегменты, где термин есть в оригинале, а утверждённого перевода в готовом тексте нет.\n\nОдобрение термина влияет только на будущие переводы — уже сделанные сами не меняются, поэтому после правок глоссария этот список и появляется.\n\nСчитается только по проверенным записям: автоимпорт модель вправе игнорировать.\n\nПочинить их можно в Редакторе — кнопкой «Применить к N сегм.» в карточке «Термины глоссария».": "Segments where the term is in the source but the approved translation is not in the finished text.\n\nApproving a term affects only future translations — the ones already made do not change by themselves, which is why this list appears after glossary edits.\n\nIt is counted only from verified entries: the model may ignore the auto-import.\n\nYou can fix them in the Editor — with the “Apply to N segm.” button in the “Glossary terms” card.",
+ "балл этого не отменяет: на экране «Проверка» такой сегмент считается готовым": "the score does not cancel this: on the “Check” screen such a segment counts as done",
+ "Пересчитано: было ": "Recounted: it was ",
+ "Пересчёт не выполнен": "The recount was not done",
+ "Расхождений стало больше на ": "There are more divergences by ",
+ "Расхождений стало меньше на ": "There are fewer divergences by ",
+ "Столько сегментов расходится с глоссарием.": "That is how many segments diverge from the glossary."
 }

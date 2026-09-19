@@ -694,6 +694,92 @@ const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
   check(tExp.some(s => s.indexOf("Подробности и ручные команды") !== -1),
         "эксперту дверь к подробностям есть");
 
+  // ─────────── 6. Смена проекта: чужое не показывается и поздним ответом не ложится ───────────
+  /* Экран «Проверка» при смене проекта не пересоздаётся. Прежде карточки
+     держали ответ прошлого проекта: до прихода нового стояли чужая пара
+     языков и чужой итог, а запоздавший ответ по старому проекту ложился
+     поверх свежего. Эффекты здесь запускаются руками, и cleanup заглушка
+     не зовёт — ровно худший случай: защищает только номер проекта. */
+  console.log("\n=== 6. Смена проекта на «Проверке» ===");
+  let releaseOld = null;
+  global.API.coverage = (pid) => pid === 1
+    ? new Promise(r => { releaseOld = () => r({ ok: true, src: "RU", tgt: "EN", works: [], silent: [{ key: "x", label: "x" }], model: [] }); })
+    : Promise.resolve({ ok: true, src: "RU", tgt: "UZ", works: [], silent: [{ key: "y", label: "y" }], model: [] });
+  const covTree = (pid) => { hookIdx = 0; return React.createElement(CoverageCard, { project: { id: pid } }); };
+  hooks = []; effects.length = 0;
+  covTree(1);
+  effects.slice().forEach(fn => fn());          // запрос по проекту 1 ушёл и висит
+  effects.length = 0;
+  covTree(2);                                    // человек переключил проект
+  effects.slice().forEach(fn => fn());          // запрос по проекту 2 — быстрый
+  await new Promise(r => setImmediate(r));
+  if (releaseOld) releaseOld();                  // ответ по проекту 1 приходит ПОЗЖЕ
+  await new Promise(r => setImmediate(r));
+  const tCov = texts(covTree(2)).join(" | ");
+  check(tCov.indexOf("RU → UZ") !== -1 && tCov.indexOf("RU → EN") === -1,
+        "поздний ответ прошлого проекта не лёг поверх нынешнего (" + tCov.slice(0, 60) + ")");
+  // Сброс без ожидания: у проекта 3 ответа ещё нет — чужая пара не стоит ни мгновения.
+  const tCov3 = texts(covTree(3)).join(" | ");
+  check(tCov3.indexOf("RU → UZ") === -1, "у нового проекта до ответа карточки нет, а не чужая пара");
+
+  global.API.analysis = async (pid) => (pid === 1 ? NEW : null);
+  const stA = Object.assign({}, storeTab, { can: { owner: true }, activeProject: { id: 1, segments: [] } });
+  hooks = []; hookIdx = 0; effects.length = 0;
+  React.createElement(TabAnalysis, { store: stA, toast });
+  effects.slice().forEach(fn => fn());
+  await new Promise(r => setImmediate(r));
+  hookIdx = 0; effects.length = 0;
+  const tA1 = texts(React.createElement(TabAnalysis, { store: stA, toast }));
+  check(tA1.some(s => s === "Вопросы к вам"), "итог проекта 1 показан");
+  stA.activeProject = { id: 2, segments: [] };
+  hookIdx = 0; effects.length = 0;
+  const tA2 = texts(React.createElement(TabAnalysis, { store: stA, toast }));
+  check(!tA2.some(s => s === "Вопросы к вам") && tA2.some(s => s.indexOf("Считаем итог") !== -1),
+        "после смены проекта чужой итог сброшен сразу — «Считаем итог…», а не вопросы проекта 1");
+
+  // ─────────── 7. Переход в редактор несёт слова и корзину ───────────
+  /* setSegmentFilter(ids, {terms, label, bucket}): слова спорной записи
+     (термин и варианты перевода) редактор подсвечивает, корзина зажигает
+     свою кнопку-фильтр. Прежде уезжал голый список номеров. */
+  console.log("\n=== 7. Переход в редактор: слова и корзина ===");
+  const sent = [];
+  const storeRec = Object.assign({}, store, { setSegmentFilter: (ids, meta) => sent.push([ids, meta || null]) });
+  const DQ = JSON.parse(JSON.stringify(BASE));
+  DQ.human.termcheckDisputes = [{ src: "кашель", tgt: "cough", suggests: ["tussis"], segments: [5] }];
+  DQ.human.termcheckDisputesSegments = [5];
+  DQ.turnkey = { ready: [], machine: [], human: [5], params: {} };
+  const qTree = render(React.createElement(CheckQuestions, { summary: DQ, store: storeRec, toast }));
+  const opens = [];
+  (function findOpen(n) {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) return n.forEach(findOpen);
+    if (n.type === "button" && texts(n).some(s => s === "Открыть")) opens.push(n);
+    (n.children || []).forEach(findOpen);
+  })(qTree);
+  opens.forEach(b => b.props.onClick());
+  const disp = sent.find(c => c[0].join() === "5");
+  check(!!disp && disp[1] && (disp[1].terms || []).join("|") === "кашель|cough|tussis",
+        "«Открыть» у спора со словарём несёт термин и все варианты перевода: "
+        + JSON.stringify(disp && disp[1]));
+  sent.length = 0;
+  const wTree = render(React.createElement(WorkSummary, { summary: DQ, store: storeRec, toast }));
+  const gOpen = [];
+  (function findOpen(n) {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) return n.forEach(findOpen);
+    if (n.type === "button" && texts(n).some(s => s === "Открыть")) gOpen.push(n);
+    (n.children || []).forEach(findOpen);
+  })(wTree);
+  gOpen.forEach(b => b.props.onClick());
+  check(sent.some(c => c[1] && (c[1].terms || []).indexOf("tussis") !== -1),
+        "и «Открыть» у группы «Решить про записи глоссария» — тоже");
+  sent.length = 0;
+  const bc = render(React.createElement(BucketCard, { store: storeRec, toast, ids: [1, 2], tone: "hum",
+                                                     label: "Нужно ваше решение", hint: "" }));
+  bc.props.onClick();
+  check(sent.length === 1 && sent[0][1] && sent[0][1].bucket === "human",
+        "карточка корзины на «Проверке» передаёт корзину — в редакторе зажжётся её кнопка");
+
   console.log();
   if (fail.length) {
     console.log("ПРОВАЛЕНО: " + fail.length);

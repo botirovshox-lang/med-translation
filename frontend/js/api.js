@@ -330,6 +330,9 @@
       return data;
     },
     undoReimport:  (pid, stamp, force)      => call("POST", `/projects/${pid}/reimport/${stamp}/undo` + (force ? "?force=true" : ""), {}),
+    /* Пересобрать строки файла из его исходника по нынешним правилам разбора:
+       сначала числа (`dryRun`), потом запись. Бесплатно; откат — как у замены. */
+    resegment:     (pid, dryRun)            => call("POST", `/projects/${pid}/resegment`, { dry_run: !!dryRun }),
     /* `folder` — папка, в которую кладётся файл: он наследует её пару
        и область. Без папки файл сам себе папка. */
     uploadProject: (file, title, src, tgt, domain, folder, onProgress) => {

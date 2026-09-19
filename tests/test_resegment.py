@@ -140,6 +140,36 @@ check(r.status_code == 200, "откат штатным откатом замен
 check([s["source"] for s in live(pid)["segments"]] == [s["source"] for s in old]
       and all(s["target"].startswith("UZ:") for s in live(pid)["segments"]), "откат вернул прежние сегменты с переводом")
 
+print("=== 4b. Кнопка «Пересобрать строки» (POST /resegment) ===")
+live(pid)["parseRules"] = pdftext.RULES_VERSION - 1
+g = c.get("/api/projects/%d" % pid, headers=H(A)).json()
+check(g.get("parseOutdated") is True, "файл нарезан прежними правилами — экран об этом знает")
+r = c.post("/api/projects/%d/resegment" % pid, headers=H(A), json={})
+j = r.json()
+check(r.status_code == 200 and j["dryRun"] and j["changed"] > 0 and j["samples"] and not j["nothing"],
+      "по умолчанию — числа и примеры: %s" % {k: j.get(k) for k in ("changed", "new", "removed", "kept")})
+check(json.dumps(live(pid)["segments"], sort_keys=True) == json.dumps(old, sort_keys=True), "сухой прогон через API ничего не записал")
+main._JOBS[999002] = {"id": 999002, "project": pid, "kind": "translate", "status": "queued"}
+r = c.post("/api/projects/%d/resegment" % pid, headers=H(A), json={"dry_run": False})
+main._JOBS.pop(999002, None)
+check(r.status_code == 409, "ждущий прогон — 409: %s" % r.status_code)
+calls.clear()
+r = c.post("/api/projects/%d/resegment" % pid, headers=H(A), json={"dry_run": False})
+j = r.json()
+p = live(pid)
+check(r.status_code == 200 and j.get("stamp") and any(s.get("prevTarget") for s in p["segments"]),
+      "запись: строки пересобраны, прежний перевод подсказкой: %s" % r.text[:160])
+check(calls == [] and p.get("pages") == pages_before, "через API страницы тоже не списываются")
+g = c.get("/api/projects/%d" % pid, headers=H(A)).json()
+check(g.get("parseOutdated") is False and p.get("parseRules") == pdftext.RULES_VERSION,
+      "после пересборки файл нарезан нынешними правилами")
+r = c.post("/api/projects/%d/resegment" % pid, headers=H(A), json={"dry_run": False})
+check(r.status_code == 200 and r.json()["nothing"] and not r.json().get("stamp"),
+      "повторная пересборка — «менять нечего», без новой копии")
+r = c.post("/api/projects/%d/reimport/%s/undo" % (pid, j["stamp"]), headers=H(A))
+check(r.status_code == 200 and live(pid).get("parseRules") == pdftext.RULES_VERSION - 1,
+      "откат возвращает и прежнюю отметку правил: %s" % r.status_code)
+
 print("=== 5. Исходник ===")
 for f in main.SOURCE_DIR.glob("%d.orig.*" % pid):
     f.unlink()

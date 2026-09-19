@@ -43,15 +43,10 @@
 Код возврата: 0 — готово (или сухой прогон), 1 — отказ с причиной.
 """
 import argparse
-import hashlib
-import io
 import json
 import os
 import re
 import sys
-import zipfile
-from contextlib import contextmanager
-from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -76,16 +71,6 @@ def load_main():
     sys.path.insert(0, str(ROOT / "backend"))
     import main  # noqa: E402
     return main
-
-
-@contextmanager
-def patched(obj, name, value):
-    old = getattr(obj, name)
-    setattr(obj, name, value)
-    try:
-        yield
-    finally:
-        setattr(obj, name, old)
 
 
 def find_project(main, pid: int) -> dict:
@@ -126,147 +111,10 @@ def _words(t: str) -> set:
     return set(re.findall(r"\w+", (t or "").lower()))
 
 
-def plan_of(main, project: dict, parsed: dict) -> dict:
-    """План пересборки: что остаётся, что меняется (и из каких старых
-    сегментов), что новое, что уходит. Тот же диф, что у замены файла."""
-    units, full = parsed["units"], parsed["full"]
-    old = main._text_segments(project)
-    plan, removed = main._diff_units(project, units, full)
-    pos = {id(s): i for i, s in enumerate(old)}
-    removed_ids = {id(s) for s in removed}
-    # Старые позиции «якорей» (оставшихся на месте) слева и справа от каждой
-    # новой единицы: окно старых сегментов между ними — кандидаты «того же места».
-    keep_pos = [pos[id(p[1])] if p and p[0] == "keep" else None for p in plan]
-    changed, new = {}, []
-    used = set()
-    for j, item in enumerate(plan):
-        if not item or item[0] != "new":
-            continue
-        lo = next((keep_pos[k] for k in range(j - 1, -1, -1) if keep_pos[k] is not None), -1)
-        hi = next((keep_pos[k] for k in range(j + 1, len(plan)) if keep_pos[k] is not None), len(old))
-        w_new = _words(units[j][0])
-        got = []
-        for i in range(lo + 1, hi):
-            s = old[i]
-            if id(s) not in removed_ids:
-                continue
-            w_old = _words(s.get("source"))
-            if w_new and w_old and len(w_new & w_old) >= PREV_OVERLAP * min(len(w_new), len(w_old)):
-                got.append(s)
-        if got:
-            changed[j] = got
-            used.update(id(s) for s in got)
-        else:
-            new.append(j)
-    gone = [s for s in removed if id(s) not in used]
-    counts = {"kept": sum(1 for p in plan if p and p[0] in ("keep", "moved")),
-              "changed": len(changed), "new": len(new), "removed": len(gone),
-              "removedTranslated": sum(1 for s in gone if (s.get("target") or "").strip()),
-              "changedFromTranslated": sum(1 for j, ss in changed.items()
-                                           if any((s.get("target") or "").strip() for s in ss)),
-              "oldSegments": len(old), "newUnits": len(units),
-              "images": len(main._image_segments(project))}
-    return {"plan": plan, "removed": removed, "changed": changed, "new": new, "gone": gone,
-            "counts": counts}
-
-
-def _media(docx_bytes: bytes) -> dict:
-    try:
-        with zipfile.ZipFile(io.BytesIO(docx_bytes)) as z:
-            return {n: hashlib.sha1(z.read(n)).hexdigest() for n in z.namelist()
-                    if n.startswith("word/media/")}
-    except Exception:
-        return {}
-
-
-def apply_plan(main, pid: int, parsed: dict, content: bytes, filename: str, pl: dict) -> dict:
-    """Запись: замена файла без списания, `prevTarget` у изменившихся,
-    картинки на месте, если не изменились."""
-    project = main.get_project(pid)
-    main._guard_project_write(pid)
-    jid = main._active_job_for(pid)
-    if not jid:
-        try:
-            jid = main.STORE.active_job_for(pid)     # таблица задач базы (у файла — пусто)
-        except Exception as e:
-            raise Refuse("Не проверить, идёт ли прогон по проекту: %s" % e)
-    if jid or main._job_busy(pid, "images"):
-        raise Refuse("По проекту идёт или ждёт прогон №%s — пересборка подождёт его конца" % jid)
-    keep_fields = {k: project.get(k) for k in ("pages", "pagesUnit")}
-    docx_path, _map = main._source_paths(pid)
-    old_docx = docx_path.read_bytes() if docx_path.exists() else b""
-    images_same = bool(old_docx) and _media(old_docx) == _media(parsed["docx"])
-    old_order = list(project.get("segments") or [])
-    img_segs = [s for s in old_order if (s.get("origin") or {}).get("kind") == "image"]
-    with patched(main, "_pages_debit", lambda *a, **k: 0.0), \
-            patched(main, "_auto_read_images", lambda *a, **k: None):
-        done = main._reimport_apply(pid, parsed, content, filename, "")
-    project = main.get_project(pid)
-    by_id = {s["id"]: s for s in project["segments"]}
-    # Номер сегмента — по ИНДЕКСУ ПЛАНА (`unitIds`: сегмент каждой единицы
-    # новой редакции по порядку). Склейка «новые единицы × addedIds» была
-    # хрупкой: в addedIds стоят и изменившиеся на месте сегменты, и одна
-    # такая строка сдвигала все подсказки на соседей.
-    unit_ids = list(done.get("unitIds") or [])
-    for j, olds in pl["changed"].items():
-        seg = by_id.get(unit_ids[j]) if j < len(unit_ids) else None
-        if seg is None:
-            continue
-        # Поля — те же, что у ядра и карточки сегмента (`prevTarget`,
-        # `_replace_target`); прежний оригинал — `prevSource`. Счётчик
-        # перевода заново у новой строки чистый: это другой оригинал
-        # (`_mt_before`), а готовый текст — подсказка, не перевод.
-        tg = [s.get("target") for s in olds if (s.get("target") or "").strip()]
-        if tg:
-            seg["prevTarget"] = "\n".join(tg)
-        seg["prevSource"] = "\n".join(s.get("source") or "" for s in olds)
-        seg.pop("retranslations", None)
-        seg.pop("mtDone", None)
-    restored = 0
-    if img_segs and images_same:
-        # Картинки те же — их сегменты и карта картинок (перенесена
-        # `_store_source_docx`) остаются в силе: ставим каждый за тот
-        # текстовый сегмент, за которым он стоял, если тот уцелел.
-        segs = project["segments"]
-        live = {s["id"] for s in segs}
-        prev_text = None
-        anchor_of = {}
-        for s in old_order:
-            if (s.get("origin") or {}).get("kind") == "image":
-                anchor_of[s["id"]] = prev_text
-            else:
-                prev_text = s["id"] if s["id"] in live else prev_text
-        last = {}
-        for s in img_segs:
-            if s["id"] in live:
-                continue
-            a = anchor_of.get(s["id"])
-            if a is None and last.get(None) is None:
-                segs.insert(0, s)                    # картинка в самом начале документа
-            else:
-                main._image_place_segment(project, s, a, last.get(a))
-            last[a] = s["id"]
-            live.add(s["id"])
-            restored += 1
-        if project.get("reimport"):
-            project["reimport"]["images"] = 0
-    project.update(keep_fields)
-    project["resegment"] = {"at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "stamp": done.get("stamp"), **pl["counts"],
-                            "imagesKept": restored}
-    main._PROJECTS_VER[0] += 1
-    main.save_state(main.STATE)
-    if getattr(main.STORE, "kind", "") == "pg":
-        main.STORE.bump_epoch("doc:projects:%d" % pid)   # API перечитает проект
-    main._audit("project.resegment", project=pid, stamp=done.get("stamp"),
-                changed=pl["counts"]["changed"], added=pl["counts"]["new"],
-                removed=pl["counts"]["removed"], kept=pl["counts"]["kept"])
-    return {"stamp": done.get("stamp"), "imagesKept": restored,
-            "imagesRemoved": 0 if restored else done.get("imagesRemoved", 0)}
-
-
 def resegment(main, pid: int, file_arg=None, apply=False, offline=False) -> dict:
-    """Весь путь инструмента; бросает `Refuse` с причиной."""
+    """Весь путь инструмента; бросает `Refuse` с причиной. Ядро — то же,
+    что у кнопки «Пересобрать строки» (`main._resegment_plan` /
+    `main._resegment_apply`): две копии правила разошлись бы."""
     if apply and getattr(main.STORE, "kind", "file") != "pg" and not offline:
         raise Refuse("Хранилище — файл state.json: второй пишущий процесс рядом с сервисом "
                      "затёр бы его запись (инвариант 1). Остановите сервис и повторите "
@@ -279,24 +127,30 @@ def resegment(main, pid: int, file_arg=None, apply=False, offline=False) -> dict
             raise Refuse("Документ проекта не перечитан из базы: %s" % e)
     project = find_project(main, pid)
     filename, content, where = source_of(main, project, file_arg)
-    # Разбор того же файла мог остаться в кэше приложения со старыми
-    # правилами — пересобираем заново.
-    with main._PARSE_LOCK:
-        main._PARSE_CACHE.pop((hashlib.sha1(content).hexdigest(), main.importers.ext_of(filename)), None)
     try:
-        parsed = main._parse_upload(filename, content)
+        parsed = main._resegment_parse(filename, content)
     except Exception as e:
         raise Refuse("Исходник не разобрался (%s): %s" % (where, e))
     if not parsed["units"]:
         raise Refuse("В исходнике не нашлось ни одной строки текста — пересобирать нечего")
-    pl = plan_of(main, project, parsed)
+    pl = main._resegment_plan(project, parsed)
     out = {"project": pid, "file": where, "kind": parsed["kind"], "dryRun": not apply,
-           **pl["counts"],
-           "samples": [{"old": [s.get("source") for s in pl["changed"][j]][:3],
-                        "new": parsed["units"][j][0]} for j in list(pl["changed"])[:5]],
-           "removedSample": [s.get("source") for s in pl["gone"][:5]]}
+           **pl["counts"], "samples": pl["samples"], "removedSample": pl["removedSample"]}
     if apply:
-        out.update(apply_plan(main, pid, parsed, content, filename, pl))
+        # Процесс инструмента — с ролью worker: зеркало задач пустое, поэтому
+        # идущий прогон спрашивается прямо у таблицы задач базы.
+        jid = main._active_job_for(pid)
+        if not jid:
+            try:
+                jid = main.STORE.active_job_for(pid)
+            except Exception as e:
+                raise Refuse("Не проверить, идёт ли прогон по проекту: %s" % e)
+        if jid or main._job_busy(pid, "images"):
+            raise Refuse("По проекту идёт или ждёт прогон №%s — пересборка подождёт его конца" % jid)
+        try:
+            out.update(main._resegment_apply(pid, parsed, content, filename, pl))
+        except main.HTTPException as e:
+            raise Refuse(str(e.detail))
     return out
 
 

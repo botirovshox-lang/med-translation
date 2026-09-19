@@ -337,5 +337,8 @@
  "Перевода нет — заверять нечего: сначала переведите строку": "Tarjima yo'q — tasdiqlash uchun hech narsa yo'q: avval qatorni tarjima qiling",
  "Предел перевода заново не может быть отрицательным": "Qayta tarjima chegarasi manfiy bo'lishi mumkin emas",
  "Этот файл уже загружен на ту же пару языков. Откройте готовый проект или замените файл повторным импортом": "Bu fayl xuddi shu til juftligi uchun allaqachon yuklangan. Tayyor loyihani oching yoki faylni qayta import orqali almashtiring",
- "Правила документа требуют ключ OpenAI": "Hujjat qoidalari uchun OpenAI kaliti kerak"
+ "Правила документа требуют ключ OpenAI": "Hujjat qoidalari uchun OpenAI kaliti kerak",
+ "По файлу идёт или ждёт прогон — пересборка подождёт его конца": "Fayl bo'yicha ish ketmoqda yoki navbatda — qayta yig'ish uning tugashini kutadi",
+ "У файла нет сохранённого исходника — пересобрать строки нечем": "Faylning saqlangan asl nusxasi yo'q — satrlarni qayta yig'ishning iloji yo'q",
+ "В исходнике не нашлось ни одной строки текста — пересобирать нечего": "Asl nusxada birorta ham matn satri topilmadi — qayta yig'adigan narsa yo'q"
 }

@@ -337,5 +337,8 @@
  "Перевода нет — заверять нечего: сначала переведите строку": "There is no translation to certify: translate the line first",
  "Предел перевода заново не может быть отрицательным": "The re-translation limit cannot be negative",
  "Этот файл уже загружен на ту же пару языков. Откройте готовый проект или замените файл повторным импортом": "This file is already uploaded for the same language pair. Open the existing project or replace the file via re-import",
- "Правила документа требуют ключ OpenAI": "Document conventions require an OpenAI key"
+ "Правила документа требуют ключ OpenAI": "Document conventions require an OpenAI key",
+ "По файлу идёт или ждёт прогон — пересборка подождёт его конца": "A run is in progress or queued for this file — rebuilding will wait until it ends",
+ "У файла нет сохранённого исходника — пересобрать строки нечем": "The file has no stored original — there is nothing to rebuild the lines from",
+ "В исходнике не нашлось ни одной строки текста — пересобирать нечего": "No text lines were found in the original — nothing to rebuild"
 }

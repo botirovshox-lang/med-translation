@@ -8536,6 +8536,7 @@ async def upload_project(
         "pagesUnit": "words",
         "sourceSha": sha,
         "importKind": parsed["kind"],
+        "parseRules": parsed.get("parseRules"),
         "segments": [
             {
                 "id": i + 1,
@@ -8628,6 +8629,14 @@ _PARSE_CACHE_MAX = 6
 _PARSE_LOCK = threading.Lock()   # чистка и поиск старейшего итерируют dict, а пробы идут параллельно
 
 
+def _parse_rules(kind: str) -> Optional[int]:
+    """Версия правил разбора, которыми нарезан файл этого вида (`parseRules`
+    на проекте). Своя версия пока только у PDF: его разбор (`pdftext`)
+    меняется чаще всех, и проект, нарезанный прежними правилами, экран
+    предлагает пересобрать (`/resegment`)."""
+    return getattr(importers.pdftext, "RULES_VERSION", None) if kind == "pdf" else None
+
+
 def _parse_upload(filename: str, content: bytes) -> dict:
     """Разбор присланного файла: {sha, docx, kind, note, converted, texts,
     paras, full, units}. Кэш по (sha исходника, расширение) — проба
@@ -8657,7 +8666,8 @@ def _parse_upload(filename: str, content: bytes) -> dict:
            "imagePages": int(conv.get("imagePages") or 0),
            "converted": bool(conv.get("converted")), "writeback": bool(conv.get("writeback", True)),
            "slotsSha": conv.get("slotsSha"), "texts": texts, "paras": paras,
-           "full": full, "units": _docx_units(paras, full)}
+           "full": full, "units": _docx_units(paras, full),
+           "parseRules": _parse_rules(conv["kind"])}
     cached = dict(out)
     if not out["converted"]:
         cached["docx"] = None
@@ -8966,9 +8976,15 @@ async def reimport_project(pid: int, file: UploadFile = File(...), dry_run: bool
     return out
 
 
-def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title: str) -> dict:
+def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title: str,
+                    debit: bool = True, read_images: bool = True) -> dict:
     """Замена файла: под `_SAVE_LOCK`, с проектом, взятым ЗАНОВО (см. докстроку
-    `reimport_project`). Возвращает числа для ответа."""
+    `reimport_project`). Возвращает числа для ответа.
+
+    `debit=False` — пересборка по новым правилам разбора (`_resegment_apply`):
+    это наша переделка, а не новая работа клиента — страницы не списываются,
+    объём проекта остаётся прежним. `read_images=False` — не ставить чтение
+    картинок: пересборка возвращает прежние сегменты картинок сама."""
     project = get_project(pid)
     tid = _tenant_of(project)
     src_lang = project.get("src") or "RU"
@@ -9013,7 +9029,7 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
         # `title` — в снимок только когда замена его меняет: иначе откат
         # затирал бы переименование, сделанное после замены.
         keys = ["pages", "pagesUnit", "sourceSha", "fileName", "sourceDocx", "importKind",
-                "importNote", "reimport"] + (["title"] if title.strip() else [])
+                "importNote", "reimport", "parseRules", "resegment"] + (["title"] if title.strip() else [])
         snap = {"project": pid, "stamp": stamp, "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "segments": project.get("segments") or [],
                 "fields": {k: project.get(k) for k in keys}}
@@ -9032,6 +9048,8 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
         except Exception as e:
             raise HTTPException(500, "Не удалось сохранить копию для отката — замена отменена: %s" % e)
         try:
+            if not debit:
+                raise _NoDebit
             # `always`: цена замены — ДОБАВЛЕННОЕ к нынешнему файлу, а не «видели
             # ли этот sha». Иначе «редакция A → B → снова A» возвращала бы
             # строки A непереведёнными и бесплатными: sha A уже в `filesSeen`.
@@ -9039,6 +9057,8 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
             _pages_debit(tid, all_pages, "%s:%s→%s" % (parsed["sha"], src_lang, project.get("tgt") or "EN"),
                          pid, project.get("title") or "", debit_pages=added_pages, kind="reimport",
                          always=True)
+        except _NoDebit:
+            added_pages = 0.0
         except HTTPException:
             for p_ in paths.values():          # 402: копия-сирота не нужна
                 p_.unlink(missing_ok=True)
@@ -9080,9 +9100,11 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
             for i in idxs:
                 pairs.append([i, seg["id"]])
         project["segments"] = new_segments
-        project["pages"] = all_pages
-        project["pagesUnit"] = "words"
+        if debit:
+            project["pages"] = all_pages
+            project["pagesUnit"] = "words"
         project["sourceSha"] = parsed["sha"]
+        project["parseRules"] = parsed.get("parseRules")
         project["fileName"] = filename
         project["importKind"] = parsed["kind"]
         if parsed.get("note"):
@@ -9116,7 +9138,8 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
             project["slotsSha"] = parsed["slotsSha"]
         else:
             project.pop("slotsSha", None)
-        _auto_read_images(project, parsed["kind"], parsed.get("imagePages") or 0)   # картинки новой редакции
+        if read_images:
+            _auto_read_images(project, parsed["kind"], parsed.get("imagePages") or 0)   # картинки новой редакции
     except Exception as e:
         print("[backend] исходник проекта %s после замены не сохранён: %s" % (pid, e), file=sys.stderr)
     save_state(STATE)
@@ -9130,6 +9153,10 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
                  # подсказки по индексу плана, а не угадывает склейкой списков.
                  "unitIds": [s["id"] for s in new_segments]})
     return done
+
+
+class _NoDebit(Exception):
+    """Пересборка по новым правилам: списание страниц пропускается."""
 
 
 def _reimport_touched(project: dict, snap: dict) -> list:
@@ -9215,6 +9242,245 @@ def undo_reimport(pid: int, stamp: str, force: bool = False):
         print("[backend] исходник проекта %s при откате не восстановлен: %s" % (pid, e), file=sys.stderr)
     _audit("project.reimport.undo", project=pid, stamp=stamp, touched=len(touched))
     return {"ok": True, "segments": len(project["segments"]), "touched": len(touched)}
+
+
+# ─── Пересборка строк файла по нынешним правилам разбора ────────────
+# Правила разбора меняются (PDF: колонтитулы, врезки, номера страниц, перенос
+# через стык страниц — `pdftext`), а проект, загруженный раньше, хранит
+# строки, нарезанные прежними правилами: «…«по- 68» и «лис» — крепость…»
+# так и остаются двумя сегментами с номером страницы внутри. Загружать файл
+# заново — терять оплаченный перевод неизменившихся строк. Пересборка — та же
+# замена файла (`_reimport_apply`), только файлом служит ХРАНИМЫЙ исходник
+# проекта, и:
+#   * страницы не списываются, объём проекта прежний — это наша переделка,
+#     а не новая работа клиента;
+#   * строка, текст которой не изменился, остаётся целиком (перевод, статус,
+#     проверки); изменившаяся заводится заново, а перевод перекрывавшихся
+#     старых строк кладётся подсказкой в `prevTarget` (их текст — в
+#     `prevSource`): карточка сегмента покажет «Прежний перевод» с кнопкой
+#     «Вставить» — без вызова модели;
+#   * сегменты картинок остаются, если картинки собранного .docx те же;
+#   * копия и откат — те же, что у замены файла (`/reimport/{stamp}/undo`).
+# Дверь для человека — `POST /api/projects/{pid}/resegment` (сначала числа,
+# потом запись); для сервера — `tools/resegment_project.py`. Ядро одно.
+RESEG_PREV_OVERLAP = 0.5     # доля общих слов от меньшего: «то же место» старой строки
+
+
+def _resegment_has_source(project: dict) -> bool:
+    """Есть чем пересобирать: хранимый оригинал (у превращённых форматов)
+    либо сам .docx."""
+    pid = project.get("id")
+    if pid is None:
+        return False
+    if _orig_existing(pid) is not None:
+        return True
+    name = (project.get("fileName") or "").lower()
+    return name.endswith(".docx") and _source_paths(pid)[0].exists()
+
+
+def _resegment_source(project: dict):
+    """(имя файла, байты) хранимого исходника или None."""
+    pid = project["id"]
+    orig = _orig_existing(pid)
+    name = project.get("fileName") or ""
+    if orig is not None:
+        ext = orig.suffix.lower()
+        if not name.lower().endswith(ext):
+            name = "source" + ext
+        return name, orig.read_bytes()
+    docx_path, _map = _source_paths(pid)
+    if docx_path.exists() and (name.lower().endswith(".docx") or not project.get("importKind")
+                               or project.get("importKind") == "docx"):
+        return (name if name.lower().endswith(".docx") else "source.docx"), docx_path.read_bytes()
+    return None
+
+
+def _reseg_words(t: str) -> set:
+    return set(re.findall(r"\w+", (t or "").lower()))
+
+
+def _resegment_plan(project: dict, parsed: dict) -> dict:
+    """Что остаётся, что меняется (и из каких старых строк), что новое,
+    что уходит. Тот же диф, что у замены файла; «то же место» новой строки —
+    старые строки между соседними уцелевшими, с общими словами."""
+    units, full = parsed["units"], parsed["full"]
+    old = _text_segments(project)
+    plan, removed = _diff_units(project, units, full)
+    pos = {id(s): i for i, s in enumerate(old)}
+    removed_ids = {id(s) for s in removed}
+    keep_pos = [pos.get(id(p[1])) if p and p[0] == "keep" else None for p in plan]
+    changed, new, used = {}, [], set()
+    for j, item in enumerate(plan):
+        if not item or item[0] != "new":
+            continue
+        lo = next((keep_pos[k] for k in range(j - 1, -1, -1) if keep_pos[k] is not None), -1)
+        hi = next((keep_pos[k] for k in range(j + 1, len(plan)) if keep_pos[k] is not None), len(old))
+        w_new = _reseg_words(units[j][0])
+        got = []
+        for i in range(lo + 1, hi):
+            s = old[i]
+            if id(s) not in removed_ids:
+                continue
+            w_old = _reseg_words(s.get("source"))
+            if w_new and w_old and len(w_new & w_old) >= RESEG_PREV_OVERLAP * min(len(w_new), len(w_old)):
+                got.append(s)
+        if got:
+            changed[j] = got
+            used.update(id(s) for s in got)
+        else:
+            new.append(j)
+    gone = [s for s in removed if id(s) not in used]
+    counts = {"kept": sum(1 for p in plan if p and p[0] in ("keep", "moved")),
+              "changed": len(changed), "new": len(new), "removed": len(gone),
+              "removedTranslated": sum(1 for s in gone if (s.get("target") or "").strip()),
+              "removedConfirmed": sum(1 for s in removed if s.get("status") == "confirmed"),
+              "changedFromTranslated": sum(1 for ss in changed.values()
+                                           if any((s.get("target") or "").strip() for s in ss)),
+              "oldSegments": len(old), "newUnits": len(units),
+              "images": len(_image_segments(project))}
+    samples = [{"old": [s.get("source") for s in changed[j]][:3], "new": units[j][0]}
+               for j in list(changed)[:5]]
+    return {"plan": plan, "removed": removed, "changed": changed, "new": new, "gone": gone,
+            "counts": counts, "samples": samples,
+            "removedSample": [s.get("source") for s in gone[:5]]}
+
+
+def _docx_media(docx_bytes: bytes) -> dict:
+    import zipfile
+    try:
+        with zipfile.ZipFile(io.BytesIO(docx_bytes)) as z:
+            return {n: hashlib.sha1(z.read(n)).hexdigest() for n in z.namelist()
+                    if n.startswith("word/media/")}
+    except Exception:
+        return {}
+
+
+def _resegment_parse(filename: str, content: bytes) -> dict:
+    """Разбор ЗАНОВО: кэш мог остаться от прежних правил."""
+    with _PARSE_LOCK:
+        _PARSE_CACHE.pop((hashlib.sha1(content).hexdigest(), importers.ext_of(filename)), None)
+    return _parse_upload(filename, content)
+
+
+def _resegment_apply(pid: int, parsed: dict, content: bytes, filename: str, pl: dict) -> dict:
+    """Запись: замена файла без списания, `prevTarget` у изменившихся,
+    картинки на месте, если не изменились."""
+    project = get_project(pid)
+    _guard_project_write(pid)
+    if _active_job_for(pid) or _job_busy(pid, "images"):
+        raise HTTPException(409, "По файлу идёт или ждёт прогон — пересборка подождёт его конца")
+    keep_fields = {k: project.get(k) for k in ("pages", "pagesUnit")}
+    docx_path, _map = _source_paths(pid)
+    old_docx = docx_path.read_bytes() if docx_path.exists() else b""
+    images_same = bool(old_docx) and _docx_media(old_docx) == _docx_media(parsed["docx"])
+    old_order = list(project.get("segments") or [])
+    img_segs = [s for s in old_order if (s.get("origin") or {}).get("kind") == "image"]
+    done = _reimport_apply(pid, parsed, content, filename, "", debit=False, read_images=False)
+    restored = 0
+    with _SAVE_LOCK:
+        project = get_project(pid)
+        by_id = {s["id"]: s for s in project["segments"]}
+        # Номер сегмента — по ИНДЕКСУ ПЛАНА (`unitIds`), а не склейкой списков:
+        # одна изменившаяся на месте строка сдвигала бы все подсказки.
+        unit_ids = list(done.get("unitIds") or [])
+        for j, olds in pl["changed"].items():
+            seg = by_id.get(unit_ids[j]) if j < len(unit_ids) else None
+            if seg is None:
+                continue
+            tg = [s.get("target") for s in olds if (s.get("target") or "").strip()]
+            if tg:
+                seg["prevTarget"] = "\n".join(tg)
+            seg["prevSource"] = "\n".join(s.get("source") or "" for s in olds)
+            # Другой оригинал — перевод впервые (`_mt_before`); готовый текст —
+            # подсказка, а не перевод.
+            seg.pop("retranslations", None)
+            seg.pop("mtDone", None)
+        if img_segs and images_same:
+            # Картинки те же — их сегменты и карта картинок (перенесена
+            # `_store_source_docx`) в силе: каждый встаёт за тот текстовый
+            # сегмент, за которым стоял, если тот уцелел.
+            segs = project["segments"]
+            live = {s["id"] for s in segs}
+            prev_text = None
+            anchor_of = {}
+            for s in old_order:
+                if (s.get("origin") or {}).get("kind") == "image":
+                    anchor_of[s["id"]] = prev_text
+                else:
+                    prev_text = s["id"] if s["id"] in live else prev_text
+            last = {}
+            for s in img_segs:
+                if s["id"] in live:
+                    continue
+                a = anchor_of.get(s["id"])
+                if a is None and last.get(None) is None:
+                    segs.insert(0, s)
+                else:
+                    _image_place_segment(project, s, a, last.get(a))
+                last[a] = s["id"]
+                live.add(s["id"])
+                restored += 1
+            if project.get("reimport"):
+                project["reimport"]["images"] = 0
+        project.update(keep_fields)
+        project["resegment"] = {"at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "stamp": done.get("stamp"), **pl["counts"], "imagesKept": restored}
+        if project.get("reimport"):
+            project["reimport"]["kind"] = "resegment"
+        _PROJECTS_VER[0] += 1
+        save_state(STATE)
+    if getattr(STORE, "kind", "") == "pg" and IS_WORKER:
+        STORE.bump_epoch("doc:projects:%d" % pid)     # инструмент: API перечитает проект
+    _audit("project.resegment", project=pid, stamp=done.get("stamp"),
+           changed=pl["counts"]["changed"], added=pl["counts"]["new"],
+           removed=pl["counts"]["removed"], kept=pl["counts"]["kept"])
+    return {"stamp": done.get("stamp"), "imagesKept": restored,
+            "imagesRemoved": 0 if restored else done.get("imagesRemoved", 0)}
+
+
+class ResegmentRequest(BaseModel):
+    dry_run: bool = True
+
+
+@app.post("/api/projects/{pid}/resegment")
+async def resegment_project(pid: int, req: ResegmentRequest):
+    """Пересобрать строки файла из его хранимого исходника по нынешним
+    правилам разбора. `dry_run` по умолчанию: сначала числа и примеры
+    («было двумя строками — станет одной»), потом запись. Бесплатно:
+    модель не зовётся, страницы не списываются. Откат — прежней дверью
+    замены файла (`/reimport/{stamp}/undo`)."""
+    project = get_project(pid)
+    _guard_project_write(pid)
+    if _active_job_for(pid) or _job_busy(pid, "images"):
+        raise HTTPException(409, "По файлу идёт или ждёт прогон — пересборка подождёт его конца")
+    src = _resegment_source(project)
+    if src is None:
+        raise HTTPException(409, "У файла нет сохранённого исходника — пересобрать строки нечем")
+    filename, content = src
+    try:
+        parsed = await run_in_threadpool(_resegment_parse, filename, content)
+    except (textcount.Unsupported, textcount.TooBig, textcount.NotAvailable) as e:
+        raise _format_error(e)
+    if not parsed["units"]:
+        raise HTTPException(415, "В исходнике не нашлось ни одной строки текста — пересобирать нечего")
+    project = get_project(pid)
+    pl = await run_in_threadpool(_resegment_plan, project, parsed)
+    c = pl["counts"]
+    out = {"ok": True, "dryRun": req.dry_run, "project": pid, "kind": parsed["kind"],
+           **c, "samples": pl["samples"], "removedSample": pl["removedSample"],
+           "nothing": not (c["changed"] or c["new"] or c["removed"])}
+    if req.dry_run:
+        return out
+    if out["nothing"]:
+        # Строки те же — отметить правила, без копии и отката впустую.
+        with _SAVE_LOCK:
+            project = get_project(pid)
+            project["parseRules"] = parsed.get("parseRules")
+            _PROJECTS_VER[0] += 1
+            save_state(STATE)
+        return out
+    out.update(await run_in_threadpool(_resegment_apply, pid, parsed, content, filename, pl))
+    return out
 
 
 # ─── Привязка исходника к УЖЕ существующему проекту ─────────────────
@@ -13862,8 +14128,14 @@ def _segment_for_client(seg: dict, project: Optional[dict] = None) -> dict:
 
 
 def _project_for_client(project: dict) -> dict:
-    """Копия проекта с производными признаками у каждого сегмента."""
-    return {**project, "segments": [_segment_for_client(s, project) for s in list(project["segments"])]}
+    """Копия проекта с производными признаками у каждого сегмента.
+    `parseOutdated` — файл нарезан прежними правилами разбора, и хранимый
+    исходник позволяет пересобрать его строки (`/resegment`)."""
+    out = {**project, "segments": [_segment_for_client(s, project) for s in list(project["segments"])]}
+    cur = _parse_rules(project.get("importKind") or "")
+    out["parseOutdated"] = bool(cur and (project.get("parseRules") or 0) < cur
+                                and _resegment_has_source(project))
+    return out
 
 
 # ── Бесплатный пересчёт сохранённых оценок back-check ────────────────

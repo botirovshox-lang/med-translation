@@ -44,6 +44,13 @@ from collections import Counter
 
 SOFT = "­"
 
+# Версия правил разбора. Пишется на проект при импорте (`parseRules`),
+# и проект, нарезанный правилами постарше, экран предлагает пересобрать
+# из хранимого исходника (`/api/projects/{pid}/resegment`). Меняешь правила
+# так, что меняются абзацы, — поднимай: 1 — построчный разбор, 2 — по
+# геометрии, 3 — обрывки у края, «по-»/«лис», метки врезок, разворот.
+RULES_VERSION = 3
+
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
 # Номер страницы: число либо НАСТОЯЩЕЕ римское число (не «mild», «civil»,
@@ -93,6 +100,12 @@ HEADING_LEN_SHARE = 0.55
 # решает словарь документа.
 _HYPHEN_RIGHT = frozenset(("то", "либо", "нибудь", "ка", "таки", "де", "с"))
 _HYPHEN_LEFT = frozenset(("по", "кое", "кой", "во", "в"))
+# «по-» и «во-/в-» держат дефис только перед НАРЕЧНОЙ формой: «по-моему»,
+# «по-русски», «по-лисьи», «во-первых», «в-третьих». Иначе это перенос
+# слова: «по-» / «лис» на стыке страниц (боевая стр. 67–68) — «полис»,
+# а не «по-лис».
+_HYPHEN_LEFT_FORM = {"по": re.compile(r"(?:ому|ему|ски|цки|ьи)$"),
+                     "во": re.compile(r"(?:ых|их)$"), "в": re.compile(r"(?:ых|их)$")}
 
 
 def _letters(tok: str) -> list:
@@ -379,7 +392,31 @@ def _in_frame(l: str, known: set) -> bool:
         return True
     if len(_fold(l)) < HEAD_FUZZY_MIN:
         return False
-    return any(_similar_enough(l, h) for h in known)
+    return any(_similar_enough(l, h) for h in known) or _heads_spread(l, known)
+
+
+def _heads_spread(l: str, known: set) -> bool:
+    """Строка — колонтитулы РАЗВОРОТА: две страницы отсканированы одним
+    листом, и распознаватель прочёл оба колонтитула одной строкой
+    («% Лекарство из. улья Лекарство из улья», боевая стр. 52). Нечёткое
+    сравнение такое не узнаёт — строка вдвое длиннее. Узнаём по вхождению:
+    известный колонтитул стоит в строке целиком, а остаток — обрывок
+    (не больше четырёх букв) либо его же искажённая копия."""
+    f = _fold(l)
+    caps = _is_caps_heading(l)
+    for h in known:
+        fh = _fold(h)
+        # Регистр — часть строки, как у `_similar_enough`: заголовок главы
+        # «АПИТОКСИНОТЕРАПИЯ» колонтитулом «Апитоксинотерапия —» не бывает.
+        if (len(fh) < HEAD_FUZZY_MIN or fh not in f or len(f) > 2.5 * len(fh)
+                or caps != _is_caps_heading(h)):
+            continue
+        rest = f.replace(fh, "", 1)
+        if sum(1 for c in rest if c.isalpha()) <= 4:
+            return True
+        if difflib.SequenceMatcher(None, rest, fh, autojunk=False).ratio() >= 0.7:
+            return True
+    return False
 
 
 def _strip_page_frame(lines: list, heads: set, feet: set, report: dict) -> list:
@@ -508,8 +545,11 @@ def join_lines(lines: list, hyphenated: set = frozenset(), median_len: float = 0
             left = re.findall(r"[^\W\d_]+$", buf[:-1])
             right = re.findall(r"^[^\W\d_]+", line)
             compound = (left[0] + "-" + right[0]).lower() if left and right else ""
-            particle = bool(left and right and (right[0].lower() in _HYPHEN_RIGHT
-                                                or left[0].lower() in _HYPHEN_LEFT))
+            lw = left[0].lower() if left else ""
+            particle = bool(left and right and (
+                right[0].lower() in _HYPHEN_RIGHT
+                or (lw in _HYPHEN_LEFT and (lw not in _HYPHEN_LEFT_FORM
+                                            or _HYPHEN_LEFT_FORM[lw].search(right[0].lower())))))
             if compound and (compound in hyphenated or particle):
                 buf = buf + line            # «научно-обоснованный», «кто-то» — дефис свой
             else:
@@ -1190,6 +1230,109 @@ def _dropcap_join(d: dict, recs: list, words: Counter) -> bool:
     return True
 
 
+def _edge_scrap(t: str, words: Counter) -> bool:
+    """Обрывок у края страницы: строка в один-два знака без цифр, не слово
+    документа. Это распознанный кусок рисунка или виньетки («Ш» под номером
+    страницы на боевой стр. 67, «Ш» под колонтитулом на стр. 79): оставленный,
+    он вставал посреди абзаца, разорванного страницей («быстро Ш
+    затвердевает»), а номер страницы за ним переставал быть крайним и
+    вклеивался в текст («по- 68 лис»). Спрашивается только у края — среди
+    колонтитула, номера и первой/последней строки."""
+    t = t.strip()
+    if not t or len(t) > 2 or any(c.isdigit() for c in t):
+        return False
+    if len(t) == 1:
+        return True
+    w = t.strip(".,:;!?«»\"'()").lower()
+    return not (len(w) == 2 and w.isalpha() and words.get(w, 0) >= 3)
+
+
+# Метка врезки («На заметку») повторяется по книге, и распознаватель
+# обкладывает её обрывками значка: «* Usj На заметку», «На заметку $ ууфф»,
+# «jl|? На заметку». ЯДРО короткой строки — она сама без мусорных токенов
+# по краям; ядро, встреченное не меньше чем на LABEL_CORE_MIN строках, —
+# метка, и строка заменяется ядром.
+LABEL_CORE_MIN = 3
+LABEL_MAX_TOKENS = 6
+
+
+def _junk_token(tok: str, words: Counter) -> bool:
+    """Мусорный токен края метки: одиночный знак, знаки узора внутри
+    («jl|?»), короткое «слово», которого документ почти не знает («Usj»,
+    «ууфф»). Числа мусором не считаются никогда."""
+    if len(tok) == 1:
+        return True
+    if any(c.isdigit() for c in tok):
+        return False
+    core = tok.strip(".,:;!?«»\"'()")
+    if not core:
+        return any(c in _ORNAMENT_CHARS for c in tok)     # «(!).» — знаки текста, не мусор
+    if any(c in _ORNAMENT_CHARS for c in core):
+        return True
+    if not core.isalpha():
+        return False
+    return len(core) <= 4 and words.get(core.lower(), 0) <= 2
+
+
+def _label_core(t: str, words: Counter) -> str:
+    toks = t.split()
+    if not toks or len(toks) > LABEL_MAX_TOKENS or len(t) > 48:
+        return t
+    a, b = 0, len(toks)
+    while a < b and _junk_token(toks[a], words):
+        a += 1
+    while b > a and _junk_token(toks[b - 1], words):
+        b -= 1
+    core = " ".join(toks[a:b])
+    return core if len(_letters(core)) >= 4 else t
+
+
+def _label_shape(core: str) -> bool:
+    """Метка — фраза из двух-шести слов с заглавной, без цифр: «На заметку»,
+    «Лекарство из улья». Одно слово («меда.», «печени.») меткой не бывает —
+    это конец строки текста, и срезать перед ним «шего» или «и» значило бы
+    испортить фразу («хорошего меда» → «хоромеда»)."""
+    toks = core.split()
+    return (2 <= len(toks) <= LABEL_MAX_TOKENS and core[:1].isupper()
+            and not any(c.isdigit() for c in core))
+
+
+def _fix_labels(laid: dict, words: Counter, report: Counter) -> None:
+    """Метки врезок — без мусора по краям и без двойника рядом
+    (значок и подпись распознаны дважды: «* Usj На заметку» и «На заметку $»
+    на одной высоте боевой стр. 9 давали два абзаца). Меткой считается
+    фраза, которая сама по себе, без мусора, стоит отдельной строкой
+    не меньше чем LABEL_CORE_MIN раз."""
+    alone: Counter = Counter()
+    for pg in laid.values():
+        for r in pg["recs"]:
+            if _label_shape(r["t"]):
+                alone[r["t"]] += 1
+    labels = {c for c, n in alone.items() if n >= LABEL_CORE_MIN}
+    if not labels:
+        return
+    for pg in laid.values():
+        recs = pg["recs"]
+        for r in recs:
+            c = _label_core(r["t"], words)
+            if c != r["t"] and c in labels:
+                r["t"] = c
+                report["labelJunk"] += 1
+        out = []
+        for r in recs:
+            s = max(r["s"], 1.0)
+            if r["t"] in labels and any(
+                    o["t"] == r["t"] and abs(o["y"] - r["y"]) < 0.5 * s
+                    and o["x0"] <= r["x1"] + 2 * s and r["x0"] <= o["x1"] + 2 * s for o in out):
+                report["labelJunk"] += 1
+                continue
+            out.append(r)
+        if len(out) != len(recs):
+            pg["recs"] = out
+            pg["st"] = _page_stats(out)
+            pg["top"], pg["bottom"] = _bands(out, pg["st"])
+
+
 def clean(pages: list, geom: "list | None" = None) -> dict:
     """Страницы (список списков строк) → {items, report}.
 
@@ -1247,6 +1390,8 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
         st = _page_stats(kept)
         top, bottom = _bands(kept, st)
         laid[i] = {"recs": kept, "st": st, "top": top, "bottom": bottom, "multi": multi}
+
+    _fix_labels(laid, words, report)
 
     # Проход 2: колонтитулы по месту и повтору — нечётко, потому что
     # распознаватель читает их на каждой странице заново.
@@ -1334,6 +1479,13 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
             continue
         recs = pg["recs"]
         drop = set()
+
+        def alone(k, recs=recs):
+            # Обрывок — один на своей высоте: «а» рядом с «3» в адресе
+            # «ул. Довженко, 3 а» — часть строки, а не кусок рисунка.
+            s = max(recs[k]["s"], 1.0)
+            return not any(j != k and abs(recs[j]["y"] - recs[k]["y"]) < 0.5 * s
+                           for j in range(len(recs)))
         for band, known, clusters in ((pg["top"], heads | geo_heads, hc), (pg["bottom"], feet | geo_feet, fc)):
             hit = [k for k in band if _frame_candidate(_norm_line(recs[k]["t"]))
                    and (_in_frame(_norm_line(recs[k]["t"]), known)
@@ -1342,7 +1494,10 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                 t = _norm_line(recs[k]["t"])
                 if big_number(recs[k], pg["st"]):
                     continue
-                if _NUM_LINE_RE.match(t) or (band is pg["bottom"] and len(band) == 1
+                if _edge_scrap(t, words) and alone(k):
+                    report["ornaments"] += 1
+                    drop.add(k)
+                elif _NUM_LINE_RE.match(t) or (band is pg["bottom"] and len(band) == 1
                                              and garbled_number(recs[k])):
                     report["pageNumbers"] += 1
                     drop.add(k)
@@ -1367,7 +1522,9 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                 t = _norm_line(recs[k]["t"])
                 if big_number(recs[k], pg["st"]):
                     break
-                if _NUM_LINE_RE.match(t):
+                if _edge_scrap(t, words) and alone(k):
+                    report["ornaments"] += 1
+                elif _NUM_LINE_RE.match(t):
                     report["pageNumbers"] += 1
                 elif _frame_candidate(t) and _in_frame(t, known):
                     report["runningHeads"] += 1

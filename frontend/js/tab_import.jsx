@@ -498,6 +498,37 @@ function ImpFileCard({ project, store, toast }) {
     } catch (e) { toast.error(TR("Не возвращена"), e.message || String(e)); }
     setBusy(false);
   };
+  /* Пересборка строк по нынешним правилам разбора (`parseOutdated`: файл
+     нарезан прежними). Сначала сервер называет, что изменится, — ничего
+     не пишет; запись только по второму нажатию. Бесплатно: модель не зовётся,
+     страницы не списываются; откат — «Вернуть прежнюю версию». */
+  const [reseg, setReseg] = useState(null);
+  const refreshProject = async () => {
+    const fresh = await window.API.getProject(project.id);
+    if (fresh) store.replaceProject(fresh);
+  };
+  const checkReseg = async () => {
+    setBusy(true);
+    try {
+      const r = await window.API.resegment(project.id, true);
+      if (r.nothing) {
+        await window.API.resegment(project.id, false);     // отметить правила — полоса уйдёт
+        await refreshProject();
+        toast.success(TR("Строки уже нарезаны верно"), TR("Менять нечего"));
+      } else setReseg(r);
+    } catch (e) { toast.error(TR("Не проверено"), e.message || String(e)); }
+    setBusy(false);
+  };
+  const applyReseg = async () => {
+    setBusy(true);
+    try {
+      const r = await window.API.resegment(project.id, false);
+      await refreshProject();
+      setReseg(null);
+      toast.success(TR("Строки пересобраны"), r.changed + r.new + TR(" пересобрано · ") + r.kept + TR(" без изменений"));
+    } catch (e) { toast.error(TR("Не пересобрано"), e.message || String(e)); }
+    setBusy(false);
+  };
   return React.createElement(React.Fragment, null,
     React.createElement("div", { className: "card card-pad card-hover", style: { display: "flex", flexDirection: "column", gap: 12 } },
       React.createElement("div", { className: "row between", style: { alignItems: "flex-start", gap: 8 } },
@@ -511,6 +542,10 @@ function ImpFileCard({ project, store, toast }) {
         project.sourceDocx && project.writeback === false && React.createElement(Badge, { icon: "file" }, TR("вернём как Word")),
         project.reimport && React.createElement(Badge, { icon: "repeat" }, TR("обновлён ") + project.reimport.at)),
       project.importNote && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TRS(project.importNote)),
+      project.parseOutdated && React.createElement("div", { className: "row between row-wrap",
+          style: { gap: 8, padding: "8px 10px", borderRadius: 8, background: "var(--c-primary-soft)", fontSize: 13 } },
+        React.createElement("span", null, TR("Чтение файла улучшено: строки можно собрать заново — точнее по абзацам и страницам.")),
+        React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", disabled: busy, onClick: checkReseg }, TR("Проверить строки"))),
       pictures
         ? React.createElement("div", { className: "dim", style: { fontSize: 13 } },
             reading ? (imgJob ? React.createElement(ImagesJobLine, { job: imgJob })
@@ -527,6 +562,22 @@ function ImpFileCard({ project, store, toast }) {
           : React.createElement(Btn, { variant: "primary", size: "sm", icon: "edit", onClick: () => store.openProject(project.id) }, TR("Переводить")),
         React.createElement(Btn, { variant: "ghost", size: "sm", icon: "download", onClick: () => { store.openProject(project.id); store.go("export"); } }, TR("Скачать")),
         project.reimport && React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", disabled: busy, onClick: undoReimport }, TR("Вернуть прежнюю версию")))),
+    reseg && React.createElement(Modal, {
+      title: TR("Собрать строки заново?"), icon: "repeat", onClose: () => setReseg(null),
+      footer: React.createElement(React.Fragment, null,
+        React.createElement(Btn, { variant: "ghost", onClick: () => setReseg(null) }, TR("Отмена")),
+        React.createElement(Btn, { variant: "primary", icon: "repeat", disabled: busy, onClick: applyReseg }, TR("Собрать заново"))) },
+      React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8, fontSize: 14 } },
+        React.createElement("div", null, TR("Без изменений: "), React.createElement("strong", null, reseg.kept), TR(" строк — перевод останется.")),
+        React.createElement("div", null, TR("Соберутся заново: "), React.createElement("strong", null, reseg.changed + reseg.new),
+          reseg.changedFromTranslated ? TR(" — прежний перевод будет подсказкой в карточке строки, переведутся при следующем запуске.") : "."),
+        reseg.removed > 0 && React.createElement("div", null, TR("Уйдут как мусор чтения: "), React.createElement("strong", null, reseg.removed),
+          TR(" (номера страниц, колонтитулы, обрывки).")),
+        (reseg.samples || []).slice(0, 3).map((s, i) => React.createElement("div", { key: i, className: "card card-pad-sm", style: { fontSize: 12 } },
+          React.createElement("div", { className: "dim" }, TR("Было: "), (s.old || []).map(x => "«" + (x || "").slice(0, 90) + "»").join(" + ")),
+          React.createElement("div", null, TR("Станет: "), "«" + (s.new || "").slice(0, 180) + "»"))),
+        React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+          TR("Бесплатно. Вернуть можно кнопкой «Вернуть прежнюю версию».")))),
     confirmDelete && React.createElement(Modal, {
       title: TR("Удалить файл?"), icon: "trash", onClose: () => setConfirmDelete(false),
       footer: React.createElement(React.Fragment, null,

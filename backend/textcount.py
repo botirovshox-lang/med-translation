@@ -253,12 +253,13 @@ def _cue_blocks(text: str) -> list:
     и курсива (<v Анна>, <i>) снимается."""
     out, cur = [], []
     skip = False
+    timed = False                             # в этом блоке уже была строка времени
     for raw in text.splitlines():
         line = raw.strip()
         if not line:
             if cur:
                 out.append(" ".join(cur))
-            cur, skip = [], False
+            cur, skip, timed = [], False, False
             continue
         if skip:
             continue
@@ -266,7 +267,16 @@ def _cue_blocks(text: str) -> list:
             skip = True                       # шапка и служебные блоки VTT — до пустой строки
             continue
         if _CUE_TIME_RE.match(line):
-            cur = []                          # всё до времени в этой реплике — её номер/имя
+            if timed:
+                # Реплики без пустой строки между ними (так пишут иные
+                # конвертеры): накопленное — текст ПРЕДЫДУЩЕЙ реплики, и
+                # только номер в его хвосте — номер этой. Сброс без записи
+                # терял бы текст всех реплик, кроме последней.
+                if cur and cur[-1].isdigit():
+                    cur.pop()
+                if cur:
+                    out.append(" ".join(cur))
+            cur, timed = [], True             # до первого времени блока — номер/имя реплики
             continue
         if not cur and line.isdigit():
             continue
@@ -316,6 +326,10 @@ def _rtf_paragraphs(text: str) -> list:
     def para():
         flush_bytes()
         t = " ".join("".join(buf).split())
+        # Знак вне BMP (эмодзи) RTF пишет ПАРОЙ суррогатов `\u-10179?\u-8704?`:
+        # по отдельности это одинокие половинки, и первый же encode("utf-8")
+        # падал. Пары собираются, одинокая половинка — знак замены.
+        t = t.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
         if t:
             out.append(t)
         buf.clear()
@@ -354,11 +368,15 @@ def _rtf_paragraphs(text: str) -> list:
                 flush_bytes()
                 buf.append(" ")
             elif word == "uc":
-                uc = int(num or 1)
+                uc = max(0, min(int(num or 1), 16))
             elif word == "u":
                 flush_bytes()
                 n = int(num or 0)
-                buf.append(chr(n + 65536 if n < 0 else n))
+                n = n + 65536 if n < 0 else n
+                # По спецификации N — 16-битное со знаком; что вне Юникода
+                # (`香9999`, `\u-99999`) — не знак, а порча файла: пропускаем.
+                if 0 < n <= 0x10FFFF:
+                    buf.append(chr(n))
                 skip_chars = uc
             elif word in ("emdash", "endash"):
                 flush_bytes()
@@ -438,7 +456,12 @@ def _blocks_from_plain(text: str, ext: str) -> list:
         text = _html.unescape(_TAG_RE.sub("\n", text))
     elif ext == ".rtf":
         if text.lstrip().startswith("{\\rtf"):
-            return _rtf_paragraphs(text)
+            # Разборщик маленький, а RTF бывает какой угодно: любой его сбой —
+            # прежний грубый разбор ниже, а не 500 на смете и импорте.
+            try:
+                return _rtf_paragraphs(text)
+            except Exception:
+                pass
         text = _RTF_CTRL_RE.sub(" ", text)
     elif ext in (".srt", ".vtt"):
         return _cue_blocks(text)
@@ -576,7 +599,9 @@ def _odf_blocks(raw: bytes) -> Optional[list]:
             tag = e.tag
             if not top:
                 if tag == T + "s":
-                    buf.append(" " * int(e.get(T + "c", "1") or 1))
+                    # Повтор пробела `c` — ОДИН пробел: пробелы всё равно
+                    # схлопываются ниже, а `c="999999999"` строил бы гигабайт.
+                    buf.append(" ")
                 elif tag in (T + "tab", T + "line-break"):
                     buf.append(" ")
                 elif tag in (T + "note", T + "p", T + "h") or tag.endswith("}frame"):
@@ -608,7 +633,12 @@ def _odf_blocks(raw: bytes) -> Optional[list]:
         for ch in e:
             block(ch)
 
-    block(body)
+    # Обход рекурсивный: вложенность в тысячи уровней (порча или бомба) —
+    # RecursionError, и тогда, как и при любом сбое разбора, прежний разбор.
+    try:
+        block(body)
+    except Exception:
+        return None
     return out
 
 

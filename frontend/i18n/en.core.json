@@ -39,7 +39,6 @@
  "Требуется OpenAI GPT с инъекцией глоссария в промпт. Применяется для сегментов с большим количеством терминов (3+) или с риском HIGH.": "OpenAI GPT with the glossary injected into the prompt is required. Used for segments with many terms (3+) or with HIGH risk.",
  "admin или you@mail.com": "admin or you@mail.com",
  "Админ": "Admin",
- "Анализ": "Analysis",
  "ВЫ": "YOU",
  "Вы": "You",
  "Ваше имя": "Your name",

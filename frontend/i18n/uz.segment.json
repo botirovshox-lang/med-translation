@@ -35,7 +35,6 @@
   "Контекст": "Kontekst",
   "Копировать": "Nusxalash",
   "Кусок картинки не загрузился — проверить распознанное нечем.": "Rasm bo'lagi yuklanmadi — tanilganini tekshirishning imkoni yo'q.",
-  "Меняется только эта строка; запись глоссария остаётся. Все сегменты с тем же советом — на «Анализе».": "Faqat shu qator o'zgaradi; lug'at yozuvi qoladi. Xuddi shu maslahatli barcha segmentlar «Tahlil»da.",
   "Модель не ответила или нет ключа OpenAI.": "Model javob bermadi yoki OpenAI kaliti yo'q.",
   "Модель разбирает термины…": "Model atamalarni tahlil qilmoqda…",
   "Надпись на картинке": "Rasmdagi yozuv",
@@ -135,5 +134,9 @@
   "фамилия, дата, настройки прибора — такое не переводим": "familiya, sana, asbob sozlamalari — bularni tarjima qilmaymiz",
   "Это не из книги": "Bu kitobdan emas",
   "Что это значит по-русски": "Bu ruschada nimani anglatadi",
-  "сравните с оригиналом — смысл тот же?": "asl matn bilan solishtiring — ma'no o‘shami?"
+  "сравните с оригиналом — смысл тот же?": "asl matn bilan solishtiring — ma'no o‘shami?",
+  "Закрыть карточку": "Kartochkani yopish",
+  "Меняется только эта строка; запись глоссария остаётся. Все сегменты с тем же советом — на «Проверке».": "Faqat shu qator o'zgaradi; lug'at yozuvi qoladi. Xuddi shu maslahatli barcha segmentlar «Tekshiruv»da.",
+  "Проверить слова: ": "So'zlarni tekshiring: ",
+  "Устарел — перевод изменился. Пересчитайте кнопкой «Проверить заново».": "Eskirgan — tarjima o'zgargan. «Qayta tekshirish» tugmasi bilan qayta hisoblang."
 }

@@ -227,6 +227,89 @@ const asSuper = render(withModels);
 delete storeStub.can;
 check(asSuper.indexOf("gpt-5.6-terra") !== -1, "системному администратору модель названа");
 
+/* Дальше — действия в карточке: жмём кнопки так, как это сделал бы человек,
+   и перерисовываем. Состояние хуков сбрасывается перед каждым сюжетом:
+   заглушка useState помнит черновик прошлого сегмента. */
+const textOf = (n) => {
+  const out = [];
+  (function walk(x) {
+    if (x === null || x === undefined || x === false || x === true) return;
+    if (Array.isArray(x)) return x.forEach(walk);
+    if (typeof x === "string" || typeof x === "number") { out.push(String(x)); return; }
+    const p = x.props || {};
+    ["title", "label", "aria-label", "placeholder"].forEach(k => { if (p[k]) out.push(String(p[k])); });
+    (x.children || []).forEach(walk);
+  })(n);
+  return out.join("\n");
+};
+const findAll = (n, pred, out) => {
+  out = out || [];
+  if (!n || typeof n !== "object") return out;
+  if (Array.isArray(n)) { n.forEach(c => findAll(c, pred, out)); return out; }
+  if (pred(n)) out.push(n);
+  (n.children || []).forEach(c => findAll(c, pred, out));
+  return out;
+};
+const btn = (tree, label) => findAll(tree, n => n.type === "button"
+  && (n.children || []).some(c => typeof c === "string" && c.indexOf(label) !== -1))[0];
+const draw = (seg, extra) => { hookIdx = 0;
+  return SegDetail(Object.assign({ seg, project, store: storeStub, toast, models: [] }, extra || {})); };
+
+console.log("");
+console.log("=== 9. Обратный перевод к прежнему тексту назван устаревшим ===");
+// Сохранённый ответ показывается без нового вызова модели — но если перевод
+// с тех пор менялся, выдавать его за нынешний нельзя.
+const openBackPanel = (seg) => {
+  hooks.length = 0;
+  btn(draw(seg), "Подробности").props.onClick();
+  btn(draw(seg), "Back check").props.onClick();
+  return draw(seg);
+};
+const bcStaleSeg = Object.assign({}, BASE, {
+  backcheck: { score: 70, back: "Старый обратный перевод.", stale: true, reasons: [] } });
+const tStale = textOf(openBackPanel(bcStaleSeg));
+check(tStale.indexOf("Старый обратный перевод.") !== -1, "сохранённый ответ показан без вызова модели");
+check(tStale.indexOf("Устарел — перевод изменился") !== -1, "и назван устаревшим");
+check(tStale.indexOf("Проверить заново") !== -1, "рядом — кнопка пересчёта");
+const tFresh = textOf(openBackPanel(Object.assign({}, bcStaleSeg,
+  { backcheck: Object.assign({}, bcStaleSeg.backcheck, { stale: false }) })));
+check(tFresh.indexOf("Старый обратный перевод.") !== -1 && tFresh.indexOf("Устарел") === -1,
+      "свежий ответ пометки не получает");
+
+console.log("");
+console.log("=== 10. Стёртый перевод сохраняется как «Новый» ===");
+const saved = [];
+storeStub.updateSegment = (pid, id, patch) => { saved.push(patch); };
+const saveWith = (seg, text) => {
+  hooks.length = 0; saved.length = 0;
+  const t = draw(seg);
+  findAll(t, n => n.type === "textarea")[0].props.onChange({ target: { value: text } });
+  btn(draw(seg), "Сохранить").props.onClick();
+  return saved[0] || {};
+};
+check(saveWith(Object.assign({}, BASE), "").status === "new",
+      "пустой черновик уходит со статусом «new», а не «translated»");
+check(saveWith(Object.assign({}, BASE), "   ").status === "new", "пробелы — тоже пусто");
+check(saveWith(Object.assign({}, BASE, { status: "new", target: "" }), "Open pneumothorax.").status === "translated",
+      "вписанный в новый сегмент текст — «translated», как и было");
+storeStub.updateSegment = () => {};
+
+console.log("");
+console.log("=== 11. Слова из «Проверки» горят в карточке ===");
+hooks.length = 0;
+const hlTree = draw(Object.assign({}, BASE), { hlTerms: ["Пневмоторакс", "pneumothorax"], onClose() {} });
+const srcCard = findAll(hlTree, n => /seg-src/.test((n.props || {}).className || ""))[0];
+const srcMarks = findAll(srcCard, n => n.type === "mark").map(m => m.children.join(""));
+check(srcMarks.join("|") === "пневмоторакс", "в оригинале подсвечен термин, регистр не важен (" + srcMarks.join("|") + ")");
+const tgtHl = findAll(hlTree, n => (n.props || {}).className === "seg-tgt-hl")[0];
+check(!!tgtHl && findAll(tgtHl, n => n.type === "mark").map(m => m.children.join("")).join("|") === "pneumothorax",
+      "под полем перевода — перевод с подсвеченным вариантом");
+check(textOf(hlTree).indexOf("Проверить слова: ") !== -1, "и слова названы строкой");
+check(!!findAll(hlTree, n => n.type === "button" && n.props["aria-label"] === "Закрыть карточку")[0],
+      "у карточки есть «×»");
+hooks.length = 0;
+check(textOf(draw(Object.assign({}, BASE))).indexOf("Проверить слова") === -1, "без выборки строки слов нет");
+
 console.log("");
 if (fail.length) {
   console.log("ПРОВАЛЕНО: " + fail.length);

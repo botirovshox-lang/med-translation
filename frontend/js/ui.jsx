@@ -569,8 +569,47 @@ Object.assign(window, {
   ProgressBar, Ring, Spinner, Avatar, EmptyState, LangPair, LEGACY_DOMAIN,
   fmtCost, InfoTip, ROUTE_INFO, RISK_INFO, RouteLabel, RiskLabel,
   BC_BANDS_FALLBACK, setBcBands, bcBands, bcBandColor, bcScoreColor,
-  tkPct, BucketCard, modelRoleConflicts,
+  tkPct, BucketCard, modelRoleConflicts, markTerms,
 });
+
+/* Подсветка нескольких слов сразу: выборка с «Проверки» приносит термин
+   оригинала и варианты перевода, и все они должны гореть и в строке
+   таблицы, и в карточке сегмента. Ищем indexOf, а не регуляркой: в терминах
+   бывают скобки, точки и плюсы, и собранный из них RegExp падал бы или
+   находил не то. Регистр и «ё/е» не важны — как у поиска редактора; обе
+   замены сохраняют длину строки, поэтому индексы годятся для исходного
+   текста. Разъехалась длина — отдаём текст без подсветки, а не криво. */
+function markTerms(text, terms) {
+  const src = text || "";
+  const norm = (t) => String(t == null ? "" : t).toLowerCase().replace(/ё/g, "е");
+  const needles = (Array.isArray(terms) ? terms : [terms])
+    .map(t => norm(t).trim()).filter(Boolean);
+  if (!needles.length || !src) return src;
+  const hay = norm(src);
+  if (hay.length !== src.length) return src;
+  const marks = [];
+  needles.forEach(n => {
+    for (let i = hay.indexOf(n); i !== -1; i = hay.indexOf(n, i + 1)) marks.push([i, i + n.length]);
+  });
+  if (!marks.length) return src;
+  // Пересечения сливаем: «артериальное давление» и «давление» дают ОДНУ метку.
+  marks.sort((a, b) => (a[0] - b[0]) || (b[1] - a[1]));
+  const merged = [];
+  marks.forEach(m => {
+    const last = merged[merged.length - 1];
+    if (last && m[0] <= last[1]) last[1] = Math.max(last[1], m[1]);
+    else merged.push([m[0], m[1]]);
+  });
+  const out = [];
+  let at = 0;
+  merged.forEach(([s, e], k) => {
+    if (s > at) out.push(src.slice(at, s));
+    out.push(React.createElement("mark", { key: k, className: "hl" }, src.slice(s, e)));
+    at = e;
+  });
+  if (at < src.length) out.push(src.slice(at));
+  return out;
+}
 
 /* Корзины «под ключ» — общий кит редактора и экрана «Что получилось»:
    одна карточка, одна доля в процентах. Второй расчёт разошёлся бы. */
@@ -589,12 +628,16 @@ const BUCKET_ICON = { ok: "checkCircle", mach: "repeat", hum: "alert", mine: "lo
 
 /* Карточка корзины. Поведение — то же, что у строки: клик ведёт в редактор
    с этими сегментами. Цифра без возможности на неё посмотреть бесполезна. */
+/* Корзина, которую карточка зажигает в редакторе: над таблицей стоят
+   те же четыре кнопки-фильтра, и пришедший с «Проверки» человек должен
+   видеть нажатой ту, чью выборку ему показали, а не «Все». */
+const BUCKET_KEY = { ok: "ready", mach: "machine", hum: "human", mine: "mine" };
 function BucketCard({ label, hint, ids, total, tone, action, store, toast, dim }) {
   const count = (ids || []).length;
   const clickable = count > 0;
   const go = () => {
     if (!clickable) return;
-    store.setSegmentFilter(ids);
+    store.setSegmentFilter(ids, { bucket: BUCKET_KEY[tone] || null, label });
     store.go("editor");
     toast.info(label, count + TR(" сегментов"));
   };

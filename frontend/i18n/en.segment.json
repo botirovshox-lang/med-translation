@@ -35,7 +35,6 @@
  "Контекст": "Context",
  "Копировать": "Copy",
  "Кусок картинки не загрузился — проверить распознанное нечем.": "The image crop did not load — there is nothing to check the recognised text against.",
- "Меняется только эта строка; запись глоссария остаётся. Все сегменты с тем же советом — на «Анализе».": "Only this line changes; the glossary entry stays. All segments with the same advice are on “Check”.",
  "Модель не ответила или нет ключа OpenAI.": "The model did not answer, or there is no OpenAI key.",
  "Модель разбирает термины…": "The model is going through the terms…",
  "Надпись на картинке": "Text on the image",
@@ -135,5 +134,9 @@
  "фамилия, дата, настройки прибора — такое не переводим": "surname, date, device settings — we do not translate such things",
  "Это не из книги": "Not from the book",
  "Что это значит по-русски": "What this means in Russian",
- "сравните с оригиналом — смысл тот же?": "compare with the source — is the meaning the same?"
+ "сравните с оригиналом — смысл тот же?": "compare with the source — is the meaning the same?",
+ "Закрыть карточку": "Close the card",
+ "Меняется только эта строка; запись глоссария остаётся. Все сегменты с тем же советом — на «Проверке».": "Only this line changes; the glossary entry stays. All segments with the same advice are on “Check”.",
+ "Проверить слова: ": "Check the words: ",
+ "Устарел — перевод изменился. Пересчитайте кнопкой «Проверить заново».": "Outdated — the translation has changed. Recompute it with “Check again”."
 }

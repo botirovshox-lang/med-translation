@@ -113,5 +113,18 @@ console.log("5. Страница объявляет себя резиновой"
   check(/user-scalable=no|maximum-scale=1/.test(HTML) === false, "зум пальцами не запрещён");
 }
 
+console.log("6. Колонка карточки сегмента — только пока карточка открыта");
+{
+  /* Прежде сетка редактора держала 300–352 px справа всегда, даже с пустой
+     рамкой «Сегмент не выбран». Теперь колонка есть только у .has-side,
+     а на узком экране (≤ 1100 px) карточка встаёт под таблицу и с ней. */
+  const base = /\.editor-body\s*\{[^}]*grid-template-columns:\s*([^;]+);/.exec(CSS);
+  check(!!base && base[1].trim() === "minmax(0, 1fr)", "без карточки таблица во всю ширину: " + (base ? base[1] : "?"));
+  check(/\.editor-body\.has-side\s*\{\s*grid-template-columns:\s*minmax\(0, 1fr\) minmax\(300px, 352px\)/.test(CSS),
+        "с открытой карточкой — колонка 300–352 px");
+  check(/@media \(max-width: 1100px\) \{ \.editor-body, \.editor-body\.has-side \{ grid-template-columns: 1fr; \}/.test(CSS),
+        "на узком экране карточка под таблицей и с открытой колонкой");
+}
+
 console.log(fail.length ? "\nПРОВАЛЕНО: " + fail.length : "\nВСЁ ПРОШЛО");
 process.exit(fail.length ? 1 : 0);

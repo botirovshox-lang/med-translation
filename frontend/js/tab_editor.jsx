@@ -27,7 +27,7 @@ const TC_MODEL_LS_KEY = "mcat_termcheck_model";
 const TCX_MODEL_LS_KEY = "mcat_termaudit_model";
 const RP_MODEL_LS_KEY = "mcat_repair_model";
 const RV_MODEL_LS_KEY = "mcat_review_model";
-/* Один источник ключей для панели «Анализа»: она читает и пишет ТЕ ЖЕ выборы
+/* Один источник ключей для панели «Проверки»: она читает и пишет ТЕ ЖЕ выборы
    моделей, что и карточки редактора. Свои литералы там завели бы второе
    хранилище того же выбора — модель, сменённая на одном экране, молча
    не доехала бы до другого. Имена параметров = имена полей run-plan. */
@@ -330,24 +330,11 @@ function segMatches(seg, q, scope) {
   return inSrc || inTgt;
 }
 
-// Подсветка совпадений. normText сохраняет длину строки (ё→е и lowercase —
-// один символ в один), поэтому индексы из нормализованной строки годятся для
-// исходной. Если длина всё же разъехалась — отдаём текст без подсветки.
+// Подсветка совпадений: q — строка поиска ИЛИ список слов (поиск плюс слова
+// из выборки «Проверки»). Сама разметка — markTerms из ui.jsx, одна на
+// таблицу и карточку сегмента: без регулярок, без учёта регистра и «ё/е».
 function markHits(text, q) {
-  const src = text || "";
-  const needle = normText(q);
-  if (!needle) return src;
-  const hay = normText(src);
-  if (hay.length !== src.length || !hay.includes(needle)) return src;
-  const out = [];
-  let i = 0, key = 0;
-  for (let idx = hay.indexOf(needle); idx !== -1; idx = hay.indexOf(needle, i)) {
-    if (idx > i) out.push(src.slice(i, idx));
-    out.push(React.createElement("mark", { key: key++, className: "hl" }, src.slice(idx, idx + needle.length)));
-    i = idx + needle.length;
-  }
-  if (i < src.length) out.push(src.slice(i));
-  return out;
+  return markTerms(text, q);
 }
 
 // ── Группировка «что уже прогонялось» ────────────────────────────────
@@ -465,7 +452,10 @@ function TabEditor({ store, toast }) {
      фильтра распознанное растворяется среди двух с половиной тысяч строк,
      а проверять его надо отдельно — там своя цена ошибки. */
   const [originFilter, setOriginFilter] = useState("all");
-  const [selId, setSelId] = useState(project ? (project.segments[0] && project.segments[0].id) : null);
+  /* Карточка сегмента открывается НАЖАТИЕМ на строку (или переходом
+     с «Проверки»), а не сама: выбранный по умолчанию первый сегмент держал
+     справа панель в треть экрана даже тогда, когда человеку нужна таблица. */
+  const [selId, setSelId] = useState(null);
   const [busy, setBusy] = useState({});       // {segId: 'translate'|'qa'}
   const [batchRun, setBatchRun] = useState(null); // {engine, done, total} — производное от job
   const [job, setJob] = useState(null);           // активный серверный прогон
@@ -542,9 +532,8 @@ function TabEditor({ store, toast }) {
   const rpModel = expertUI ? rpModelPick : (catDef.repairDefault || catDef.default || "");
   const rvModel = expertUI ? rvModelPick : (catDef.reviewDefault || catDef.default || "");
   const [impact, setImpact] = useState(null);     // сегменты, не соответствующие одобренным терминам
-  const [impactBusy, setImpactBusy] = useState(false);
   const [impactConfirmed, setImpactConfirmed] = useState(false);  // трогать ли подтверждённые
-  const [tkSum, setTkSum] = useState(null);       // корзины «под ключ» с сервера (/analysis) для карточки «Анализ»
+  const [tkSum, setTkSum] = useState(null);       // корзины «под ключ» с сервера (/analysis) для сводки корзин
   /* Те же корзины — для слова в колонке «Что тут» у каждой строки. Set, а не
      includes: 2700 строк на рендер. Нет ответа — индекса нет, и чип пуст. */
   // Номер запроса: ответы приходят не по порядку, и поздний СТАРЫЙ затирал бы
@@ -566,7 +555,6 @@ function TabEditor({ store, toast }) {
   /* Устройство прогона свёрнуто и у администратора: главная отвечает
      на вопрос «что с переводом», а не «как он устроен». */
   const [setupOpen, setSetupOpen] = useState(false);
-  const [bucket, setBucket] = useState(null);
   const [judgeModelPick, setJudgeModel] = useState(() => {
     try { return localStorage.getItem(JUDGE_MODEL_LS_KEY) || ""; } catch (e) { return ""; }
   });
@@ -782,30 +770,17 @@ function TabEditor({ store, toast }) {
   // Расхождения с одобренными терминами считает сервер тем же матчером, что и
   // инъекция в промпт. Пересчитываем при смене проекта и после каждого прогона:
   // одобрили термин и перевели заново — счётчик должен упасть сам.
-  /* byHand — нажали «Пересчитать» руками. Тогда отвечаем словами: расчёт
-     идёт доли секунды, и «нажал, ничего не произошло» неотличимо от сломанной
-     кнопки. Сравниваем с прежним числом — «столько же» это тоже ответ. */
-  const loadImpact = async (byHand) => {
+  /* Здесь отчёт нужен только как состав для «Одобрить и применить» (сколько
+     сегментов починит ремонт по уже утверждённым терминам). Сам разбор
+     соответствия — со списками, «Пересчитать» и «Перевести заново» — живёт
+     на «Проверке» (GlossaryImpact): второй экземпляр в редакторе лишь
+     повторял его. */
+  const loadImpact = async () => {
     if (!window.API || !window.API.glossaryImpact || !project) return;
-    setImpactBusy(true);
-    const before = impact ? impact.segments.length : null;
     const my = ++impReq.current;
-    const res = await window.API.safeCall(() => window.API.glossaryImpact(project.id, !!byHand));
-    setImpactBusy(false);
+    const res = await window.API.safeCall(() => window.API.glossaryImpact(project.id, false));
     if (my !== impReq.current) return;      // ответ отстал от более позднего запроса
-    if (!res || !res.ok) {
-      if (byHand) toast.error(TR("Пересчёт не выполнен"), TR("Сервер не ответил."));
-      return;
-    }
-    setImpact(res);
-    if (!byHand) return;
-    const now = res.segments.length;
-    if (before === null || before === now)
-      toast.info(TR("Пересчитано: ") + now, TR("Столько сегментов расходится с глоссарием."));
-    else
-      toast.success(TR("Пересчитано: было ") + before + TR(", стало ") + now,
-        now < before ? TR("Расхождений стало меньше на ") + (before - now)
-                     : TR("Расхождений стало больше на ") + (now - before));
+    if (res && res.ok) setImpact(res);
   };
   // Разбор автоодобрения в режиме «показать»: сервер считает вердикты и
   // возвращает, что попадёт и чем подтверждено. Ничего не меняет и не стоит
@@ -822,7 +797,7 @@ function TabEditor({ store, toast }) {
       setAutoPreview(res);
     }
   };
-  /* Корзины «под ключ» для карточки «Анализ» в блоках запуска. Считает СЕРВЕР
+  /* Корзины «под ключ» для сводки над таблицей. Считает СЕРВЕР
      (/analysis → turnkey) теми же предикатами, что и прогон, — браузер числа
      не повторяет: второй расчёт однажды разошёлся бы с работой. До первого
      перевода карточки нет и запрос не идёт: в проекте из одних «новых»
@@ -847,7 +822,7 @@ function TabEditor({ store, toast }) {
   useEffect(() => { setTkSum(null); loadAnalysis(); }, [project && project.id]);
   /* Человек изменил состояние сегмента руками (подтвердил, снял отметку).
      Пересчитывать это обязана та же сторона, что и после прогона: корзины
-     считает СЕРВЕР, и без запроса карточка «Анализ» держала бы доподтверждённые
+     считает СЕРВЕР, и без запроса сводка корзин держала бы доподтверждённые
      цифры до перезагрузки страницы — то есть звала бы доделывать работу,
      которую человек только что сделал. Раньше это стоило секунд единственного
      воркера, теперь разбор пересчитывает только изменившиеся сегменты
@@ -967,9 +942,8 @@ function TabEditor({ store, toast }) {
     } catch (e) { /* вне браузера (тест рендера) — не страшно */ }
   }, [zone]);
 
-  useEffect(() => {
-    if (project && !project.segments.find(s => s.id === selId)) setSelId(project.segments[0] && project.segments[0].id);
-  }, [project && project.id]);
+  // Смена проекта закрывает карточку: номер сегмента в другом проекте — другая строка.
+  useEffect(() => { setSelId(null); }, [project && project.id]);
 
   /* Узкий экран: карточка сегмента стоит ПОД таблицей (порог 1100 px
      в styles.css), и нажатие на строку читается как «ничего не произошло» —
@@ -1021,6 +995,25 @@ function TabEditor({ store, toast }) {
     setPage(Math.floor(idx / PAGE_SIZE) + 1);
     setSelId(id);
   }, [store.gotoSegId]);
+
+  /* Переход с «Проверки» со словами для проверки: человек пришёл смотреть
+     КОНКРЕТНОЕ место, и карточка первого сегмента выборки открывается сама —
+     с теми же словами, подсвеченными в оригинале и переводе. Объявлен ПОСЛЕ
+     гашения флажка перехода: флажок взводится здесь и бережёт выбор от
+     сброса по смене страницы (фильтр только что вернул её на первую).
+     Выборка без слов (корзины) карточку не открывает — там смотрят таблицу. */
+  useEffect(() => {
+    const f = store.segmentFilter || window._mcat_sf || null;
+    const m = f ? (store.segmentFilterMeta || window._mcat_sfm || null) : null;
+    if (!project || !f || !m || !(m.terms || []).length) return;
+    const first = project.segments.find(s => f.has(s.id));
+    if (!first) return;
+    /* Флажок — только если следующий коммит точно будет (сменится выбор или
+       страница): иначе он остался бы взведённым и съел бы чужой сброс. */
+    if (first.id === selId && page === 1) return;
+    jumpRef.current = true;
+    setSelId(first.id);
+  }, [store.segmentFilter, project && project.id]);
 
   // Приоритет выборки: чекбоксы > активный фильтр анализа > весь проект.
   // Считается ДО раннего return: от выборки зависит разбор прогона ниже,
@@ -1163,6 +1156,13 @@ function TabEditor({ store, toast }) {
 
   const counts = store.statusCounts(project);
   const activeFilter = store.segmentFilter || window._mcat_sf || null;
+  /* Приложение к выборке (app.jsx → setSegmentFilter(ids, meta)): корзина,
+     чья кнопка-фильтр горит, и слова, которые подсвечиваются в таблице
+     и в карточке. Без выборки его нет — гаснут вместе. */
+  const sfMeta = activeFilter ? (store.segmentFilterMeta || window._mcat_sfm || null) : null;
+  const bucket = (sfMeta && sfMeta.bucket) || null;
+  const hlTerms = (sfMeta && sfMeta.terms) || [];
+  const drillBucket = (ids, key, label) => { store.setSegmentFilter(ids, { bucket: key, label }); setPage(1); };
   /* Зона — окно вокруг введённого номера. Прочий отбор она отменяет
      намеренно: просили показать соседей ЦЕЛИКОМ, а не тех из них, кто уцелел
      после фильтра. Центр ищется ПО НОМЕРУ, а не запоминается индексом:
@@ -1221,7 +1221,7 @@ function TabEditor({ store, toast }) {
     if (riskFilter !== "all") { setRiskFilter("all"); dropped.push(TR("фильтр риска")); }
     if (originFilter !== "all") { setOriginFilter("all"); dropped.push(TR("фильтр источника")); }
     if (query) { setQuery(""); dropped.push(TR("поиск")); }
-    if (activeFilter) { window._mcat_sf = null; store.setSegmentFilter(null); dropped.push(TR("выборку из анализа")); }
+    if (activeFilter) { window._mcat_sf = null; store.setSegmentFilter(null); dropped.push(TR("выборку сегментов")); }
     jumpRef.current = true;
     setZone(n);
     setSelId(n);
@@ -1530,8 +1530,12 @@ function TabEditor({ store, toast }) {
       // переводом — это «не переведён» (ошибка перевода сегмент не тронула),
       // и без него кнопка слала бы force=false со списком БЕЗ таких
       // сегментов — сервер бы их взял, а браузер не дал.
+      // Пустой перевод при любом статусе, кроме заверенного, — тоже «не
+      // переведён»: стёртый руками текст оставался «Переведён» с пустой
+      // строкой, и ни прогон, ни эта кнопка его не брали (сервер теперь
+      // сбрасывает такой статус сам; предикат тот же, что у него).
       targets = segs.filter(s => (s.status === "new"
-          || (s.status === "failed" && !(s.target || "").trim()))
+          || (s.status !== "confirmed" && !(s.target || "").trim()))
         && (!idSet || idSet.has(s.id)));
     }
     return { targets, explicit, selectionSize: idSet ? idSet.size : 0 };
@@ -1734,7 +1738,7 @@ function TabEditor({ store, toast }) {
         TR("Исправлено ") + c.applied + TR(" сегментов") + revMsg + errMsg + lossMsg + costMsg + TR(" · статус «Требует проверки», подтвердите вручную"));
       else toast.warning(TR("Ничего не исправлено"), TR("Ни один вариант не улучшил оценку — все откачены.") + errMsg + costMsg);
     } else if (j.kind === "backcheck") {
-      toast.success(TR("Back-check завершён"), j.done + TR(" сегментов проверено") + dupMsg + errMsg + costMsg + TR(" · разбивка в Анализе"));
+      toast.success(TR("Back-check завершён"), j.done + TR(" сегментов проверено") + dupMsg + errMsg + costMsg + TR(" · разбивка на «Проверке»"));
     } else if (j.kind === "review") {
       toast.success(TR("Ревизия завершена"),
         j.done + TR(" сегментов прочитано") + revMsgFull
@@ -1743,20 +1747,6 @@ function TabEditor({ store, toast }) {
     } else {
       toast.success(name + TR(" завершён"), j.done + TR(" сегментов обработано") + errMsg);
     }
-  };
-
-  // Переперевод сегментов, где перевод расходится с одобренными терминами.
-  // Это обычный пакетный перевод с force: сегменты уже переведены, и без force
-  // отбор по статусу их бы отбросил. include_confirmed передаём отдельно: без
-  // него сервер молча выбрасывал подтверждённые, и галочка ничего не делала.
-  const runImpactRetranslate = () => {
-    if (!impact) return;
-    const ids = new Set(impactConfirmed ? impact.segments : impact.pending);
-    startJob("translate", project.segments.filter(s => ids.has(s.id)),
-      // via помечает, ЧЬЯ это задача: прогон один и тот же («перевод»),
-      // но прогресс должен зажечься на той карточке, с которой его запустили.
-      { force: true, model: gptModel, include_confirmed: !!impactConfirmed, via: "impact" },
-      TR("Все переводы уже соответствуют одобренным терминам."));
   };
 
   const stopJob = async () => {
@@ -2136,7 +2126,7 @@ function TabEditor({ store, toast }) {
             React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600 } }, TR("Переводить заново уже переведённые")),
             React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
               (currentIdSet ? TR("Применится к текущей выборке")
-                            : TR("Применится ко всему проекту — сузить можно галочками в таблице или фильтром из Анализа")))),
+                            : TR("Применится ко всему проекту — сузить можно галочками в таблице или фильтром с «Проверки»")))),
           React.createElement(Switch, { on: retranslate, label: TR("Переводить заново"),
             onClick: () => setRetranslate(v => !v) })),
         // Подтверждённые — отдельная, более дорогая по последствиям галочка:
@@ -2182,7 +2172,7 @@ function TabEditor({ store, toast }) {
         rvConfirmed && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
           TR("С переписанных снимется отметка «подтвердил человек» — их придётся заверить заново.")),
         rvAskConfirmed && !rvConfirmed && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
-          TR("Текст заверенных не изменится: годный вариант ляжет в «Анализ» строкой «Ревизия предлагает правку заверенного», применять его вам."))),
+          TR("Текст заверенных не изменится: годный вариант ляжет на «Проверку» строкой «Ревизия предлагает правку заверенного», применять его вам."))),
       soloNote: TR("Один вызов на сегмент. Правка ставится, только если оценка ")
         + TR("не выше порога И кандидат прошёл бесплатные сверки: числа, единицы, ")
         + TR("отрицание, сторона, утверждённые термины, регистр, письмо, повторы. ")
@@ -2249,7 +2239,7 @@ function TabEditor({ store, toast }) {
       running: batchRun && batchRun.engine === "termaudit" ? batchRun : null,
       soloNote: TR("Один вызов на сегмент, сколько бы утверждённых терминов в нём ")
         + TR("ни было. Вердикт «передан верно» СНИМАЕТ претензию: ремонт по ней ")
-        + TR("больше не пойдёт. «Передан неверно» уходит человеку на экран «Анализ» ")
+        + TR("больше не пойдёт. «Передан неверно» уходит человеку на экран «Проверка» ")
         + TR("— это вопрос к записи глоссария, а не к строке."),
     },
     {
@@ -2477,8 +2467,14 @@ function TabEditor({ store, toast }) {
       React.createElement("div", { className: "card", style: { padding: "8px 14px", background: "var(--bg-sunken)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 } },
         React.createElement("div", { className: "row", style: { gap: 8 } },
           React.createElement(Icon, { name: "filter", size: 15, style: { color: "var(--c-primary)" } }),
-          React.createElement("span", { style: { fontSize: 13, fontWeight: 600 } }, TR("Фильтр: ") + activeFilter.size + TR(" сегментов из анализа"))),
-        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "x", onClick: () => { window._mcat_sf = null; store.setSegmentFilter(null); } }, TR("К основному файлу"))
+          React.createElement("span", { style: { fontSize: 13, fontWeight: 600 } },
+            TR("Фильтр: ") + activeFilter.size + TR(" сегм.") + (sfMeta && sfMeta.label ? " · " + sfMeta.label : "")),
+          // Слова, ради которых выборка открыта, — те же, что горят в строках.
+          hlTerms.length > 0 && React.createElement("span", { style: { fontSize: 12.5 } },
+            React.createElement("span", { className: "dim" }, TR("проверить: ")),
+            hlTerms.map((t, i) => React.createElement(React.Fragment, { key: i },
+              i ? ", " : "", React.createElement("mark", { className: "hl" }, t))))),
+        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "x", onClick: () => store.setSegmentFilter(null) }, TR("К основному файлу"))
       )
     ),
 
@@ -2492,7 +2488,7 @@ function TabEditor({ store, toast }) {
          полоса и тумблер рядом. Одна кнопка — всем, включая администратора;
          полный разбор шагов, моделей и сметы у него лежит свёрткой ниже. */
       tkSum && React.createElement(EditorHomeSummary, { sum: tkSum, store, toast,
-        onDrill: (ids, key) => { store.setSegmentFilter(ids); setBucket(key); setPage(1); },
+        onDrill: drillBucket, bucket: activeFilter ? bucket : null,
         running: job && job.kind === "full" ? job : null, onRun: runFullJob, onStop: stopJob,
         disabled: !!job, scopeSize: fullRunIds.length, est: fullEst,
         // Шаги отмечены в свёртке не все — кнопка сделает только их, и это
@@ -2530,14 +2526,13 @@ function TabEditor({ store, toast }) {
           expert: expertUI,
           showCost: !!(store.can && (store.can.owner || store.can.super)),
           onFixConfirmed: setRpFixConfirmed }),
-        // Одобрение терминов и то, что из него следует, — расхождения готовых
-        // переводов с одобренным. Один сюжет, но две СОСЕДНИЕ колонки: одна
-        // под другой карточка соответствия уезжала под сгиб, а смотрят на неё
-        // сразу после одобрения.
+        // Одобрение терминов и ремонт по ним. Разбор соответствия глоссарию
+        // (списки, «Пересчитать», «Перевести заново») — на «Проверке»:
+        // здесь только команда и её состав.
         React.createElement(ApplyTermsCard, {
           running: job && job.kind === "apply_terms" ? job : null,
           onRun: runApplyTerms, onStop: stopJob, disabled: !!job,
-          preview: autoPreview, sources: autoPreview && autoPreview.sources,
+          preview: autoPreview,
           includeConfirmed: impactConfirmed,
           onIncludeConfirmed: () => setImpactConfirmed(v => !v),
           confirmedCount: impact ? impact.confirmed.length : 0,
@@ -2550,30 +2545,13 @@ function TabEditor({ store, toast }) {
             ? (impactConfirmed ? impact.segments : impact.pending)
                 .filter(i => (impact.futile || []).indexOf(i) === -1).length : 0,
           futileSegs: impact ? (impact.futile || []).length : 0,
-          // Соответствие глоссарию живёт секцией ЭТОЙ карточки, а не отдельной
-          // колонкой: списки «По терминам» и начертание — на вкладке «Анализ»,
-          // здесь остались команды, которых больше нигде нет («Пересчитать»
-          // с refresh и «Перевести заново»). Секция не прячется при нуле —
-          // вместе с ней исчезал бы «Пересчитать», единственный способ
-          // убедиться, что ноль настоящий, а не остался с прошлого расчёта.
-          impact: impact, impactBusy: impactBusy,
-          onImpactRefresh: () => loadImpact(true),
-          onRetranslate: runImpactRetranslate,
-          onDrill: (ids) => { store.setSegmentFilter(ids); setPage(1); },
-          retEst: impact ? estimateRun("translate", project.segments.filter(s =>
-            new Set(impactConfirmed ? impact.segments : impact.pending).has(s.id)), gptModelInfo) : null,
-          retRunning: !!(batchRun && batchRun.engine === "translate" && job && job.params && job.params.via === "impact") }),
-        // «Анализ» — те же три корзины, что на одноимённой вкладке, только
-        // рядом с кнопками, которые их осушают. Появляется ПОСЛЕ первого
-        // прогона (см. loadAnalysis): в проекте из одних «новых» корзины
-        // тривиальны. Числа считает сервер — браузер их не повторяет.
-        tkSum && React.createElement(EditorAnalysisCard, {
-          sum: tkSum,
-          onDrill: (ids) => { store.setSegmentFilter(ids); setPage(1); },
-          onOpen: () => store.go("preflight") }))),
+          onFutile: impact && (impact.futile || []).length
+            ? () => { store.setSegmentFilter(impact.futile, { label: TR("ремонт не возьмёт") }); setPage(1); } : null }))),
 
     // ---- Body: table + detail ----
-    React.createElement("div", { className: "editor-body" },
+    /* Колонка карточки есть, только пока карточка открыта: закрыта — таблица
+       во всю ширину, а не рядом с пустой рамкой «Сегмент не выбран». */
+    React.createElement("div", { className: "editor-body" + (selected ? " has-side" : "") },
       React.createElement("div", { className: "editor-main" },
         /* Поиск и переход по номеру — прямо над таблицей, и поиск тут
            единственный. Раньше он жил в залипающей панели, то есть за двумя
@@ -2583,16 +2561,18 @@ function TabEditor({ store, toast }) {
            по русскому тексту бессмысленно и наоборот. */
         /* Фильтры-корзины — те же множества, что карточки наверху (ids
            с сервера), а не свой пересчёт статусов. Стоят у таблицы,
-           потому что фильтруют её; статусные — под «Доп. фильтры». */
+           потому что фильтруют её; статусные — под «Доп. фильтры».
+           Нажатая — та, чья выборка сейчас в таблице, откуда бы её ни
+           выбрали: здесь, кнопкой карточки или с «Проверки» (sfMeta.bucket). */
         tkSum && React.createElement("div", { className: "ed-head" },
           React.createElement("h2", null, TR("Весь текст")),
           React.createElement("div", { className: "filters" },
             [["all", TR("Все"), null, null], ["ready", TR("Готово"), tkSum.turnkey.ready, "checkCircle"],
              ["machine", TR("Машина"), tkSum.turnkey.machine, "repeat"], ["human", TR("Вы"), tkSum.turnkey.human, "alert"],
              ["mine", TR("Заверено"), tkSum.turnkey.confirmed || [], "lock"]].map(([k, l, ids, ic]) =>
-              React.createElement("button", { key: k, className: "fbtn",
-                "aria-pressed": k === "all" ? !store.segmentFilter : (bucket === k && !!store.segmentFilter),
-                onClick: () => { store.setSegmentFilter(k === "all" ? null : ids); setBucket(k === "all" ? null : k); setPage(1); } },
+              React.createElement("button", { key: k, className: "fbtn", "data-bucket": k,
+                "aria-pressed": k === "all" ? !activeFilter : (bucket === k && !!activeFilter),
+                onClick: () => { if (k === "all") store.setSegmentFilter(null); else drillBucket(ids, k, l); setPage(1); } },
                 ic && React.createElement(Icon, { name: ic, size: 13 }), l,
                 ids && React.createElement("span", null, ids.length)))),
           React.createElement("span", { className: "dim", style: { marginLeft: "auto", fontSize: 12 } },
@@ -2693,7 +2673,10 @@ function TabEditor({ store, toast }) {
                      поэтому признак приходит пропом, а не считается на месте. */
                   showModel: modelsShown(store),
                   chip: ROW_CHIP[rowChipCode(s, tkIndex)],
-                  hlSrc: scope !== "tgt" ? query : "", hlTgt: scope !== "src" ? query : "",
+                  // Поиск и слова выборки горят вместе: слова «Проверки» — в обеих
+                  // колонках (там и термин оригинала, и варианты перевода).
+                  hlSrc: [scope !== "tgt" ? query : ""].concat(hlTerms),
+                  hlTgt: [scope !== "src" ? query : ""].concat(hlTerms),
                   onCheck: (e) => { e.stopPropagation(); setCheckedSegs(prev => { const n = new Set(prev); n.has(s.id) ? n.delete(s.id) : n.add(s.id); return n; }); },
                   onSelect: () => { setSelId(s.id); showSideCard(); },
                   onTranslate: () => doTranslate(s),
@@ -2716,18 +2699,17 @@ function TabEditor({ store, toast }) {
       ),
 
       // ---- Detail sidebar ----
-      React.createElement("div", { className: "editor-side", ref: sideRef },
-        selected
-          ? React.createElement(SegDetail, { key: selected.id, seg: selected, project, store, toast, busy: busy[selected.id],
-              onTranslate: () => doTranslate(selected, true), onQA: () => doQA(selected), onChecks: () => doChecks(selected), onConfirm: (draftTarget) => doConfirm(selected, draftTarget),
-              // Любая правка сегмента из карточки меняет корзины, а по ним —
-              // слово в строке таблицы и карточка «Анализ»: перезапрос тот же,
-              // что после заверения.
-              onChanged: refreshBuckets,
-              bcModels: gptModels, bcModel: bcModel, onBcModel: pickBcModel,
-              bcJudge: bcJudge, judgeModel: judgeModel,
-              tcModel: tcModel, rpModel: rpModel, tcActionable: tcActionable })
-          : React.createElement(EmptyState, { icon: "edit", title: TR("Сегмент не выбран"), sub: TR("Выберите строку в таблице.") })
+      selected && React.createElement("div", { className: "editor-side", ref: sideRef },
+        React.createElement(SegDetail, { key: selected.id, seg: selected, project, store, toast, busy: busy[selected.id],
+          onTranslate: () => doTranslate(selected, true), onQA: () => doQA(selected), onChecks: () => doChecks(selected), onConfirm: (draftTarget) => doConfirm(selected, draftTarget),
+          // Любая правка сегмента из карточки меняет корзины, а по ним —
+          // слово в строке таблицы и сводку корзин: перезапрос тот же,
+          // что после заверения.
+          onChanged: refreshBuckets,
+          bcModels: gptModels, bcModel: bcModel, onBcModel: pickBcModel,
+          bcJudge: bcJudge, judgeModel: judgeModel,
+          tcModel: tcModel, rpModel: rpModel, tcActionable: tcActionable,
+          hlTerms: hlTerms, onClose: () => setSelId(null) })
       )
     ),
 
@@ -3169,7 +3151,7 @@ function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize
       React.createElement("b", null, TR("Ревизия прочитает и заверенные")),
       rvConfirmedCount ? " — " + rvConfirmedCount + TR(" заверенных в выборке; ")
                        : TR(" — в выборке таких сейчас нет; "),
-      TR("текст их не изменится: годные варианты уйдут в «Анализ», применять их вам.")),
+      TR("текст их не изменится: годные варианты уйдут на «Проверку», применять их вам.")),
 
     // Во время прогона цифры показывает полоса наверху — она залипающая и
     // видна всегда. Второй прогресс-бар здесь только повторял бы её и уезжал
@@ -3192,24 +3174,25 @@ function FullRunCard({ running, onRun, onStop, rows, picked, onToggle, scopeSize
 /* Второй клик конвейера. Одобряет однозначные термины пачкой и тут же чинит
    ими сегменты. Состав сегментов не выбирается намеренно: пока термины не
    одобрены, неизвестно, какие сегменты с ними разойдутся — список считает
-   сервер сразу после одобрения. */
-function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
+   сервер сразу после одобрения.
+   Карточка — команда, а не отчёт: кнопка стоит, только когда есть что
+   применять, объяснение — одной строкой. Разбор соответствия глоссарию
+   («Расходятся с глоссарием», «Пересчитать», «Перевести заново») живёт
+   на «Проверке» (GlossaryImpact) и здесь больше не повторяется. */
+function ApplyTermsCard({ running, onRun, onStop, disabled, preview,
                           includeConfirmed, onIncludeConfirmed, confirmedCount,
-                          orders, onOrders, pendingSegs, futileSegs,
-                          impact, impactBusy, onImpactRefresh, onRetranslate,
-                          onDrill, retEst, retRunning }) {
+                          orders, onOrders, pendingSegs, futileSegs, onFutile }) {
   const c = preview && preview.counts;
-  // Состав «Перевести заново»: тот же выбор «трогать ли подтверждённые»,
-  // что и у ремонта, — одна галочка на оба пути, состояние у них общее.
-  const retTargets = impact ? (includeConfirmed ? impact.segments : impact.pending) : [];
   // Запрет области сервер присылает отдельным полем: он снимается ДО учёта
   // разрешения, поэтому тумблер не исчезает от того, что его включили.
-  // Выводить его в браузере из allow_verified + humanOverride + cap_soft
-  // значило бы держать второй источник правды рядом с AUTO_APPROVE_BY_DOMAIN.
   const banned = !!(preview && preview.policy && preview.policy.domainBanned);
   const ready = c ? (c.auto || 0) + (c.verified || 0) : 0;
-  const dicts = (sources && sources.dictionaries) || [];
-  const corpus = sources && sources.corpus;
+  /* Одобрять нечего — это НЕ значит «работы нет»: расхождения с уже
+     утверждёнными терминами чинит та же задача. Поэтому работа — сумма. */
+  const work = ready + (pendingSegs || 0);
+  // Нечего применять и нечего переключать — карточки нет вовсе: пустая
+  // рамка с «Нечего применять» только занимала место рядом с таблицей.
+  if (!running && !work && !banned) return null;
   return React.createElement("div", { className: "card card-pad-sm", style: { display: "flex", flexDirection: "column", gap: 10, borderLeft: "3px solid var(--c-success)" } },
 
     React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
@@ -3217,37 +3200,11 @@ function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
         React.createElement("span", { style: { width: 30, height: 30, borderRadius: 8, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-success)", flex: "0 0 30px" } },
           React.createElement(Icon, { name: "check", size: 17 })),
         React.createElement("div", null,
-          React.createElement("div", { style: { fontWeight: 500, fontSize: 14, display: "flex", alignItems: "center" } }, TR("Одобрить и применить"),
-            React.createElement(InfoTip, { title: TR("Что делает эта кнопка"),
-              body: TR("Однозначные термины уходят в глоссарий пачкой, а затем сегменты чинятся по ним: расхождение с утверждённым термином — такая же находка ремонта, как потерянный термин или расхождение чисел.\n\nЧто считается однозначным: у термина ровно один вариант перевода; пара пришла из нескольких независимых сегментов, прошедших back-check и проверку терминов чисто; перевод встречается в текстах целевого языка.\n\nПриказом («use these exact translations») запись становится от человека, от трёх независимых чистых сегментов или от совпадения с ВЫВЕРЕННЫМ отраслевым справочником. У справочника есть уровень: краудсорсный (например выгрузка Wikidata) приказа в одиночку не даёт — он идёт подтверждающим голосом рядом с согласием сегментов и корпусом целевого языка. В медицине, фармацевтике и юриспруденции ни согласия сегментов, ни краудсорсного справочника для приказа НЕ хватает: там приказ даёт человек или выверенный справочник.\n\nЛюбую пачку можно откатить целиком в «Глоссарии».") })),
+          React.createElement("div", { style: { fontWeight: 500, fontSize: 14 } }, TR("Термины глоссария")),
           React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
-            TR("термины в глоссарий → ремонт по ним → перепроверка")))),
-      React.createElement("span", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 500, fontSize: 17, color: ready ? "var(--c-success)" : "var(--text-3)" } },
+            TR("однозначные — в глоссарий, сегменты чинятся по ним; пачка откатывается в «Глоссарии»")))),
+      React.createElement("span", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 500, fontSize: 17, color: work ? "var(--c-success)" : "var(--text-3)" } },
         ready)),
-
-    // Чем проверялись термины. Покрытие по парам языков очень разное, и разницу
-    // честнее назвать, чем дать пользователю обнаружить её на своих текстах.
-    React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.55 } },
-      TR("Проверяют: "),
-      dicts.length
-        ? dicts.map(d => d.label + " (" + d.terms
-            + (d.tier === "verified" ? TR(", приказ") : TR(", голос")) + ")").join(" · ")
-        : TR("справочников для этой пары языков нет"),
-      corpus ? TR(" · корпус ") + corpus.label : TR(" · корпус недоступен"),
-      preview && preview.corpusSkipped
-        ? TR(" · сверх потолка не проверено: ") + preview.corpusSkipped : ""),
-
-    // Цифра выше посчитана ДО обращения к корпусу: спрашивать его при каждом
-    // открытии проекта — это минута ожидания на лимитах источника. При нажатии
-    // он отработает, и часть кандидатов может отсеяться как отсутствующие
-    // в целевом языке. Обещать больше, чем сделаем, нельзя.
-    preview && (preview.corpusPending || preview.meaningPending) && React.createElement("div",
-      { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
-      TR("Это верхняя оценка: при нажатии термины пройдут ")
-      + [preview.corpusPending && corpus ? TR("проверку по ") + corpus.label : null,
-         preview.meaningPending ? TR("смысловую сверку судьёй (то же ли понятие)") : null]
-        .filter(Boolean).join(TR(" и "))
-      + TR(" — кальки и ложные друзья будут отклонены, а не записаны.")),
 
     c && c.skipped > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
       TR("останется человеку: "), React.createElement("b", null, c.skipped),
@@ -3259,17 +3216,8 @@ function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
 
     // Разрешение на приказы — только там, где область их запрещает, и только
     // на этот запуск (см. панель в «Знаниях»: то же правило, тот же откат).
-    banned && React.createElement("div", { className: "col", style: { gap: 3 } },
-      React.createElement(Checkbox, { checked: !!orders, onChange: onOrders },
-        TR("Приказы по согласию сегментов")),
-      React.createElement("div", { className: "dim", style: { fontSize: 11, lineHeight: 1.5 } },
-        orders
-          ? TR("Запрет области снят на этот запуск: согласие независимых чистых ")
-            + TR("сегментов даст приказ. Каждый такой термин пройдёт смысловую ")
-            + TR("сверку судьёй; пачка откатывается целиком в «Глоссарии».")
-          : TR("Сейчас приказ в этой области даёт только человек или выверенный ")
-            + TR("справочник — однозначные уходят подсказкой, которую модель ")
-            + TR("вправе игнорировать."))),
+    banned && React.createElement(Checkbox, { checked: !!orders, onChange: onOrders },
+      TR("Приказы по согласию сегментов")),
 
     // Счёт — на полосе наверху, здесь только название текущей половины работы:
     // пока список сегментов не посчитан, идёт запись терминов в глоссарий.
@@ -3278,72 +3226,16 @@ function ApplyTermsCard({ running, onRun, onStop, disabled, preview, sources,
           React.createElement("span", { className: "muted", style: { fontSize: 12 } },
             running.total ? TR("Применяем к сегментам…") : TR("Одобряем термины…")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop }, TR("Остановить")))
-      : React.createElement(Btn, { variant: "primary", icon: "check", onClick: onRun,
-          // Одобрять нечего — это НЕ значит «работы нет»: расхождения с уже
-          // утверждёнными терминами чинит та же задача, и это единственный
-          // дешёвый путь. Запирая кнопку на нуле терминов, интерфейс оставлял
-          // человеку только переперевод — вдвое дороже и без проверок.
-          disabled: disabled || (!ready && !pendingSegs) },
+      : work > 0 && React.createElement(Btn, { variant: "primary", icon: "check", onClick: onRun, disabled: disabled },
           ready ? TR("Одобрить ") + ready + TR(" и применить")
-            : pendingSegs ? TR("Применить к ") + pendingSegs + TR(" сегм.")
-              : TR("Нечего применять")),
-    !ready && pendingSegs > 0 && !running && React.createElement("div",
-      { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
-      TR("Новых однозначных терминов нет, но ") + pendingSegs + TR(" сегм. расходятся ")
-      + TR("с уже утверждёнными — их починит ремонт.")),
-    // Молчаливого отсева не бывает: если часть работы не пойдёт, сказать
-    // почему — иначе человек жмёт кнопку по кругу и не понимает, отчего
-    // список не пустеет.
+            : TR("Применить к ") + pendingSegs + TR(" сегм."))
+    ,
+    // Молчаливого отсева не бывает: часть работы не пойдёт — сказать об этом
+    // одной строкой, и строка ведёт к этим сегментам.
     futileSegs > 0 && !running && React.createElement("div",
-      { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5,
-                                   cursor: onDrill && impact ? "pointer" : "default" },
-        title: TR("Показать эти сегменты"),
-        onClick: onDrill && impact ? () => onDrill(impact.futile || []) : null },
-      TR("Ещё ") + futileSegs + TR(" сегм. расходятся, но ремонт их не возьмёт: тот же ")
-      + TR("текст с теми же претензиями он уже проходил, и заход вернёт то же ")
-      + TR("самое. Их правит человек, «Перевести заново» ниже — либо смените ")
-      + TR("модель ремонта.")),
-
-    /* ── Соответствие глоссарию ── Прежде отдельная карточка в третьей
-       колонке; списки «По терминам» и начертание живут на вкладке «Анализ»,
-       а здесь остались команды, которых больше нигде нет. Секция живёт
-       и при нуле расхождений: пряча её, мы уносили бы «Пересчитать» —
-       единственный способ убедиться, что ноль настоящий, а не остался
-       с прошлого расчёта. */
-    impact && React.createElement("div", { className: "col",
-      style: { gap: 7, borderTop: "1px solid var(--border)", paddingTop: 9 } },
-      React.createElement("div", { style: { fontSize: 12.5, fontWeight: 500, display: "flex", alignItems: "center" } },
-        TR("Соответствие глоссарию"),
-        React.createElement(InfoTip, { title: TR("Расхождения с одобренными терминами"),
-          body: TR("Одобренный термин влияет только на будущие переводы — уже готовые сегменты сами не меняются. Здесь собраны все сегменты проекта, где термин есть в оригинале, а утверждённого варианта в переводе нет.\n\nСчитается только по проверенным записям глоссария: автоимпорт модель вправе игнорировать, требовать соответствия ему нельзя.\n\nДешёвый путь — ремонт по находкам (кнопка выше). «Перевести заново» переводит эти сегменты целиком, уже с новым термином в промпте, — дороже, зато берёт и застрявшие. Подтверждённые по умолчанию не трогаются; с галочкой они тоже переводятся заново, прежний текст сохраняется для отката, а статус становится «Требует проверки».\n\nРазбор по терминам и начертание — на вкладке «Анализ».") })),
-      React.createElement("div", { className: "row between",
-        style: { fontSize: 12.5, cursor: impact.segments.length && onDrill ? "pointer" : "default" },
-        onClick: impact.segments.length && onDrill ? () => onDrill(impact.segments) : null,
-        title: impact.segments.length ? TR("Показать эти сегменты") : undefined },
-        React.createElement("span", { style: { fontWeight: 600,
-          color: impact.segments.length ? "var(--c-warning)" : undefined } }, TR("Расходятся с глоссарием")),
-        React.createElement("b", null, impact.segments.length)),
-      impact.confirmed.length > 0 && React.createElement("div", { className: "row between",
-        style: { fontSize: 12, cursor: onDrill ? "pointer" : "default" },
-        onClick: onDrill ? () => onDrill(impact.confirmed) : null,
-        title: TR("Показать эти сегменты") },
-        React.createElement("span", { className: "dim" }, TR("из них подтверждено")),
-        React.createElement("b", { className: "dim" }, impact.confirmed.length)),
-      impact.terms.length === 0 && React.createElement("div",
-        { className: "dim", style: { fontSize: 12, lineHeight: 1.55 } },
-        TR("Все переводы соответствуют утверждённым терминам. Ноль бывает и после ")
-        + TR("понижения записей сверкой смысла: требовать соответствия подсказке ")
-        + TR("нельзя, поэтому она из расчёта уходит.")),
-      retTargets.length > 0 && retEst && React.createElement(EstLine, { est: retEst }),
-      retRunning
-        ? React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TR("Идёт перевод…"))
-        : React.createElement("div", { className: "row between" },
-            React.createElement("button", { className: "linklike", style: { fontSize: 12 },
-              onClick: onImpactRefresh, disabled: impactBusy },
-              impactBusy ? TR("Считаем…") : TR("Пересчитать")),
-            React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat",
-              onClick: onRetranslate, disabled: disabled || !retTargets.length },
-              TR("Перевести заново (") + retTargets.length + ")"))));
+      { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5, cursor: onFutile ? "pointer" : "default" },
+        title: TR("Показать эти сегменты"), onClick: onFutile },
+      TR("Ещё ") + futileSegs + TR(" сегм. ремонт не возьмёт — их правит человек.")));
 }
 
 // Блок «что прогонять»: группы по состоянию прошлых прогонов с количеством.
@@ -3358,35 +3250,35 @@ function RunGroups({ title, tip, groups, pickedGroups, onToggleGroup }) {
       React.createElement("b", { style: { fontSize: 12.5 } }, g.count))));
 }
 
-/* Итог «под ключ» рядом с кнопками, которые его меняют. Только показ:
-   корзины пришли с сервера (/analysis → turnkey) — те же и тем же расчётом,
-   что на вкладке «Анализ». Клик по строке фильтрует таблицу ниже, полный
-   разбор и ручные команды — на самой вкладке. Долю считает tkPct из
-   tab_preflight.jsx (все .jsx живут в одной глобальной области); запасной
-   расчёт — для тестов, которые грузят только этот файл. */
-/* Сводка макета: крупный процент, полоса трёх цветов с легендой и четыре
-   карточки корзин. Числа — те же turnkey с сервера, что и на «Что
-   получилось»; клик по карточке фильтрует таблицу ниже. */
-function EditorHomeSummary({ sum, store, toast, onDrill, running, onRun, onStop, disabled,
+/* Сводка корзин «под ключ» — ЕДИНСТВЕННЫЙ их набор в редакторе. Прежде
+   корзины рисовались трижды: эти плитки, отдельная карточка «Анализ» в блоках
+   запуска и кнопки-фильтры над таблицей, — и три места с одними числами
+   читались как три разных вопроса. Теперь плитки стоят в ряд, у каждой одно
+   явное действие «Показать N сегм. →»: оно фильтрует таблицу и зажигает
+   ту же кнопку-фильтр над ней (onDrill → setSegmentFilter с bucket), а
+   плитка, чья выборка в таблице, выделена. Числа — turnkey с сервера (тем
+   же расчётом, что на «Проверке»); долю считает tkPct из ui.jsx. */
+function EditorHomeSummary({ sum, store, toast, onDrill, bucket, running, onRun, onStop, disabled,
                              scopeSize, est, showCost, fixConfirmed, fixConfirmedCount, onFixConfirmed,
                              partialSteps, allSteps, onAllSteps }) {
   const tk = sum.turnkey, total = sum.total || 0;
   const ready = tk.ready || [], machine = tk.machine || [], human = tk.human || [];
   const seg = (n, color) => (total > 0 && n > 0)
     ? React.createElement("i", { style: { display: "block", width: (n / total * 100) + "%", background: color } }) : null;
-  const stop = (e) => e.stopPropagation();
   const card = (ids, key, tone, icon, label, hint, dim, action) => React.createElement("div", {
-    className: "st-card st-" + tone + (dim ? " st-dim" : "") + (ids.length ? "" : " st-empty"),
-    role: "button", tabIndex: 0, onClick: () => ids.length && onDrill(ids, key),
-    onKeyDown: (e) => { if (e.key === "Enter" && ids.length) onDrill(ids, key); } },
+    className: "st-card st-" + tone + (dim ? " st-dim" : "") + (ids.length ? "" : " st-empty")
+      + (bucket === key ? " st-on" : ""), "data-bucket": key },
     React.createElement("div", { className: "st-top" },
       React.createElement("span", { className: "st-badge" }, React.createElement(Icon, { name: icon, size: 14 })),
       React.createElement("span", { className: "st-label" }, label)),
     React.createElement("div", { className: "st-num" }, ids.length,
       dim ? null : React.createElement("span", { className: "st-pct" }, tkPct(ids.length, total))),
     React.createElement("div", { className: "st-hint" }, hint),
-    React.createElement("div", { className: "st-go", onClick: stop },
-      action, ids.length ? React.createElement("span", { className: "st-chip" }, TR("смотреть")) : null));
+    React.createElement("div", { className: "st-go" },
+      ids.length > 0 && React.createElement(Btn, { variant: "ghost", size: "sm",
+        "aria-pressed": bucket === key, onClick: () => onDrill(ids, key, label) },
+        TR("Показать ") + ids.length + TR(" сегм. →")),
+      action));
   /* Кнопка прогона — внутри карточки «возьмёт прогон»: это её действие.
      Остановка идёт той же кнопкой, а не второй. */
   const runBtn = running
@@ -3395,11 +3287,14 @@ function EditorHomeSummary({ sum, store, toast, onDrill, running, onRun, onStop,
     : React.createElement(Btn, { variant: "primary", size: "sm", icon: "zap", onClick: onRun, disabled: disabled },
         TR("Перевести и проверить"));
   return React.createElement("div", { className: "home-sum" },
-    React.createElement("div", { className: "st-cards" },
+    React.createElement("div", { className: "st-cards st-row" },
       card(ready, "ready", "ok", "checkCircle", TR("Готово к сдаче"), TR("переведено и проверено, открытых вопросов нет")),
       card(machine, "machine", "mach", "repeat", TR("Возьмёт ближайший прогон"), TR("перевод, проверки, судья и ремонт по находкам"), false, runBtn),
-      card(human, "human", "hum", "alert", TR("Нужно ваше решение"), TR("прогон это не решит — состав и команды в «Подробностях»"), false,
-        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "target", onClick: () => store.go("preflight") }, TR("Разобрать"))),
+      /* Единственное, что было только в прежней карточке «Анализ», — зачем
+         эта корзина человеку: прогон её не осушит по построению. Сказано
+         той же строкой подсказки, команды — на «Проверке». */
+      card(human, "human", "hum", "alert", TR("Нужно ваше решение"), TR("споры с глоссарием, заверенное с находками, откаченные правки — прогон это не решит"), false,
+        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "target", onClick: () => store.go("preflight") }, TR("Разобрать на «Проверке»"))),
       card(tk.confirmed || [], "mine", "mine", "lock", TR("Заверено вручную"), TR("входит в корзины выше"), true)),
     React.createElement("div", { className: "duo" },
       React.createElement("div", { className: "home-strip" },
@@ -3407,7 +3302,8 @@ function EditorHomeSummary({ sum, store, toast, onDrill, running, onRun, onStop,
         React.createElement("div", { className: "home-stack" },
           seg(ready.length, "var(--c-success)"), seg(machine.length, "var(--c-primary)"), seg(human.length, "var(--c-warning)")),
         React.createElement("div", { className: "dim row row-wrap home-legend" },
-          React.createElement("span", null, React.createElement("i", { style: { background: "var(--c-success)" } }), TR("готово")),
+          React.createElement("span", null, React.createElement("i", { style: { background: "var(--c-success)" } }),
+            TR("готово") + " · " + ready.length + TR(" из ") + total),
           React.createElement("span", null, React.createElement("i", { style: { background: "var(--c-primary)" } }), TR("доделаю сама")),
           React.createElement("span", null, React.createElement("i", { style: { background: "var(--c-warning)" } }), TR("спрошу вас")))),
       /* Разрешение чинить заверенное — тумблером у сводки, названное
@@ -3432,62 +3328,6 @@ function EditorHomeSummary({ sum, store, toast, onDrill, running, onRun, onStop,
         + TR(" — кнопка сделает только их.")),
       onAllSteps && React.createElement(Btn, { variant: "secondary", size: "sm", onClick: onAllSteps },
         TR("Вернуть все шаги"))));
-}
-
-function EditorAnalysisCard({ sum, onDrill, onOpen }) {
-  const tk = sum.turnkey;
-  const total = sum.total || 0;
-  const ready = tk.ready || [], machine = tk.machine || [], human = tk.human || [];
-  const pct = (n) => typeof tkPct === "function" ? tkPct(n, total)
-    : (total ? Math.round(n / total * 100) + "%" : "0%");
-  // Тернарник, а не `total && …`: при нуле выражение даёт ЧИСЛО 0, и React
-  // честно его печатает (тот же урок, что у полосы в TurnkeySummary).
-  const bar = (n, color) => (total > 0 && n > 0)
-    ? React.createElement("div", { style: { width: (n / total * 100) + "%", background: color, height: "100%" } })
-    : null;
-  const row = (label, ids, color, hint) => React.createElement("div", {
-    className: "row between",
-    style: { fontSize: 12.5, gap: 8, cursor: ids.length && onDrill ? "pointer" : "default" },
-    onClick: ids.length && onDrill ? () => onDrill(ids) : null,
-    title: hint },
-    React.createElement("span", { style: { fontWeight: 600, color: color } }, label),
-    React.createElement("span", { className: "row", style: { gap: 8, alignItems: "baseline" } },
-      React.createElement("b", { style: { fontVariantNumeric: "tabular-nums" } }, ids.length),
-      React.createElement("span", { className: "dim", style: { fontSize: 11.5, minWidth: 40,
-        textAlign: "right", fontVariantNumeric: "tabular-nums" } }, pct(ids.length))));
-  return React.createElement("div", { className: "card card-pad-sm", style: { display: "flex", flexDirection: "column", gap: 10 } },
-    React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
-      React.createElement("div", { className: "row", style: { gap: 9 } },
-        React.createElement("span", { style: { width: 30, height: 30, borderRadius: 8, display: "grid", placeItems: "center", background: "var(--bg-sunken)", color: "var(--c-primary)", flex: "0 0 30px" } },
-          React.createElement(Icon, { name: "target", size: 17 })),
-        React.createElement("div", null,
-          React.createElement("div", { style: { fontWeight: 500, fontSize: 14, display: "flex", alignItems: "center" } }, TR("Анализ"),
-            React.createElement(InfoTip, { title: TR("Три корзины"),
-              body: TR("Каждый сегмент проекта ровно в одной корзине, суммы сходятся с общим числом — считает сервер теми же правилами, что и сам прогон.\n\n«Готово к сдаче» — переведено, проверено, открытых вопросов нет.\n\n«Возьмёт ближайший прогон» — закроет кнопка «Перевести и проверить».\n\n«Нужно ваше решение» — то, что прогон не решает по построению: споры с глоссарием, заверенные сегменты с находками, откаченные правки. Команды — на вкладке «Анализ».\n\nЛюбая строка фильтрует таблицу ниже.") })),
-          React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
-            TR("что сейчас с переводом")))),
-      React.createElement("span", { style: { fontVariantNumeric: "tabular-nums", fontWeight: 500, fontSize: 17,
-        color: ready.length ? "var(--c-success)" : "var(--text-3)" } },
-        pct(ready.length))),
-    React.createElement("div", { style: { display: "flex", height: 10, borderRadius: 5,
-      overflow: "hidden", background: "var(--bg-sunken)" } },
-      bar(ready.length, "var(--c-success)"),
-      bar(machine.length, "var(--c-primary)"),
-      bar(human.length, "var(--c-warning)")),
-    row(TR("Готово к сдаче"), ready, "var(--c-success)", TR("переведено и проверено, открытых вопросов нет")),
-    row(TR("Возьмёт ближайший прогон"), machine, "var(--c-primary)", TR("перевод, проверки, судья и ремонт по находкам")),
-    row(TR("Нужно ваше решение"), human, "var(--c-warning)", TR("прогон это не решит — состав и команды на вкладке «Анализ»")),
-    (tk.confirmed || []).length > 0 && React.createElement("div", { className: "dim row between",
-      style: { fontSize: 11.5, cursor: onDrill ? "pointer" : "default" },
-      onClick: onDrill ? () => onDrill(tk.confirmed) : null,
-      title: TR("входит в корзины выше") },
-      React.createElement("span", null, TR("заверено вручную")),
-      React.createElement("b", null, tk.confirmed.length)),
-    React.createElement("div", { className: "row between", style: { gap: 8 } },
-      React.createElement("span", { className: "dim", style: { fontSize: 11.5 } },
-        ready.length + TR(" из ") + total + TR(" сегм. готово")),
-      React.createElement(Btn, { variant: "secondary", size: "sm", icon: "target", onClick: onOpen },
-        TR("Открыть «Анализ»"))));
 }
 
 /* Слово в колонке «Что тут». Код строки выводится из корзин /analysis
@@ -3527,7 +3367,9 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
   const revertable = seg.status === "confirmed" || seg.status === "failed";
   const actionCell = busy
     ? React.createElement("div", { style: { display: "grid", placeItems: "center" } }, React.createElement(Spinner, null))
-    : seg.status === "new"
+    // Пустой перевод без заверения — «не переведён» при любом статусе
+    // (тот же предикат, что у кнопки пакетного перевода и у сервера).
+    : (seg.status === "new" || (seg.status !== "confirmed" && !(seg.target || "").trim()))
       ? React.createElement(IconBtn, { icon: "globe", label: TR("Перевести"), sm: true, onClick: onTranslate })
       : seg.status === "confirmed"
         ? React.createElement("button", { className: "status-cell-btn revertable", title: TR("Нажмите, чтобы снять подтверждение"), "aria-label": TR("Снять подтверждение"), onClick: onRevert },

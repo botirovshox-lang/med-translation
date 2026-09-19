@@ -14,6 +14,42 @@
    внутри группы — по убыванию числа. Чистая функция без JSX: кнопки
    привязывает по `key` тот, кто рисует. Старый сервер без `human.weak`
    переживается — поля читаются с запасом. */
+/* Состояние карточки, которое принадлежит ПРОЕКТУ. Экран «Проверка» при смене
+   проекта не пересоздаётся, и прежний useState держал ответ чужого проекта:
+   до прихода нового на экране стояли чужая пара языков, чужой стиль и чужие
+   числа, а поздний ответ по старому проекту ложился поверх свежего. Здесь
+   значение хранится вместе с номером проекта: чужое не показывается сразу
+   (сброс без эффекта и без мигания), а ответ, пришедший для проекта, который
+   уже не открыт, отбрасывается. put(pid, v) — v может быть функцией от
+   прежнего значения ЭТОГО проекта. */
+function useProjectData(project) {
+  const pid = project ? project.id : null;
+  const cur = useRef(pid);
+  cur.current = pid;
+  const [box, setBox] = useState(null);
+  const value = box && box.pid === pid ? box.v : null;
+  const put = (forPid, v) => {
+    if (forPid !== cur.current) return;
+    setBox(b => ({ pid: forPid, v: typeof v === "function" ? v(b && b.pid === forPid ? b.v : null) : v }));
+  };
+  return [value, put];
+}
+
+/* Слова, которые надо проверить глазами, — из записей глоссария, о которых
+   спор: термин оригинала и все варианты перевода (что стоит, что предлагает
+   проверка, что советует арбитр). Уходят в редактор вместе с выборкой
+   (setSegmentFilter(ids, {terms})) и подсвечиваются в строках и карточке. */
+function recordTerms(recs) {
+  const out = [];
+  const add = (t) => { const s = String(t || "").trim(); if (s && out.indexOf(s) === -1) out.push(s); };
+  (recs || []).forEach(d => {
+    add(d.src); add(d.tgt); add(d.use); add(d.was); add(d.want);
+    (d.suggests || []).forEach(add);
+    (d.words || []).forEach(add);
+  });
+  return out;
+}
+
 const HUMAN_GROUP_TOP = 3;
 function analysisHumanGroups(s) {
   const h = (s && s.human) || {}, t = (s && s.todo) || {};
@@ -26,9 +62,9 @@ function analysisHumanGroups(s) {
      turnkey — без фильтра. */
   const within = s && s.turnkey && Array.isArray(s.turnkey.human) ? new Set(s.turnkey.human) : null;
   const inside = ids => within ? (ids || []).filter(i => within.has(i)) : (ids || []);
-  const row = (key, label, hint, ids, color, n) => {
+  const row = (key, label, hint, ids, color, n, terms) => {
     const got = inside(ids);
-    return { key, label, hint, ids: got, color, n: n != null ? n : got.length };
+    return { key, label, hint, ids: got, color, n: n != null ? n : got.length, terms: terms || [] };
   };
   const byScore = h.revertedByScore || [];
   const ctxWrong = h.termContextWrong || [];
@@ -56,7 +92,8 @@ function analysisHumanGroups(s) {
     row("revertedByScore", TR("Ремонт отменил верную правку — текст готов"),
       TR("балл back-check упал, но термины стали чище — текст уже написан и оплачен"), byScore, "var(--c-warning)"),
     row("staleFindings", TR("Забракованное слово осталось в тексте"),
-      TR("termcheck отверг эту формулировку, а потом передумал — а слово на месте"), h.staleFindings, "var(--c-warning)"),
+      TR("termcheck отверг эту формулировку, а потом передумал — а слово на месте"), h.staleFindings, "var(--c-warning)",
+      null, recordTerms(h.staleFindingWords)),
     row("confirmWithdrawn", TR("Машина сняла ваше подтверждение"),
       TR("расхождение чисел, единиц или отрицания — это сильнее заверения; доказательство в карточке сегмента"),
       h.confirmWithdrawn, "var(--c-error)"),
@@ -75,9 +112,10 @@ function analysisHumanGroups(s) {
   const records = [
     row("disputes", TR("Проверка спорит с утверждённым термином"),
       TR("ремонт это не починит — решать вам: неверна запись или проверка"),
-      h.termcheckDisputesSegments, "var(--c-warning)", disputes.length),
+      h.termcheckDisputesSegments, "var(--c-warning)", disputes.length, recordTerms(disputes)),
     row("ctxWrong", TR("Арбитр считает запись неверной для документа"),
-      TR("довод и готовый вариант — ниже"), flat(ctxWrong, "segments"), "var(--c-warning)", ctxWrong.length),
+      TR("довод и готовый вариант — ниже"), flat(ctxWrong, "segments"), "var(--c-warning)", ctxWrong.length,
+      recordTerms(ctxWrong)),
     /* Разнобоя здесь НЕТ: сервер кладёт его в корзину МАШИНЫ (к человеку
        уходят только заверенные), и в итог «нужен человек» он не входит —
        строка с парами живёт ниже групп, как и раньше. */
@@ -93,7 +131,9 @@ function analysisHumanGroups(s) {
     const seen = new Set();
     live.forEach(r => r.ids.forEach(i => seen.add(i)));
     const ids = Array.from(seen);
-    return { key, label, hint, rows: live, ids, color: "var(--c-warning)",
+    const terms = [];
+    live.forEach(r => (r.terms || []).forEach(t => { if (terms.indexOf(t) === -1) terms.push(t); }));
+    return { key, label, hint, rows: live, ids, terms, color: "var(--c-warning)",
              n: byRecords ? live.reduce((a, r) => a + r.n, 0) : ids.length };
   };
   return [
@@ -403,7 +443,7 @@ function WorkSummary({ summary, store, toast, onReload }) {
         const open = !!groupOpen[g.key];
         const shown = open ? g.rows : g.rows.slice(0, HUMAN_GROUP_TOP);
         const go = () => {
-          store.setSegmentFilter(g.ids); store.go("editor");
+          store.setSegmentFilter(g.ids, { terms: g.terms, label: g.label }); store.go("editor");
           toast.info(g.label, g.ids.length + TR(" сегментов"));
         };
         return React.createElement(React.Fragment, { key: g.key },
@@ -416,7 +456,7 @@ function WorkSummary({ summary, store, toast, onReload }) {
               g.ids.length > 0 && React.createElement(Btn, { variant: "ghost", size: "sm", icon: "search", onClick: go }, TR("Открыть")),
               React.createElement("b", { style: { fontVariantNumeric: "tabular-nums", color: g.color } }, g.n))),
           shown.map(r => React.createElement(Row, {
-            key: r.key, label: r.label, hint: r.hint, ids: r.ids, n: r.n, color: r.color,
+            key: r.key, label: r.label, hint: r.hint, ids: r.ids, n: r.n, color: r.color, terms: r.terms,
             action: r.key === "revertedByScore"
               ? React.createElement(Btn, { variant: "ghost", size: "sm", icon: "check",
                   disabled: accBusy, onClick: acceptAll },
@@ -444,6 +484,7 @@ function WorkSummary({ summary, store, toast, onReload }) {
         label: TR("Один оборот переведён по-разному"),
         n: (s.todo.consistency || []).length,
         ids: [].concat.apply([], (s.todo.consistency || []).map(c => c.segments || [])),
+        terms: recordTerms(s.todo.consistency),
         color: "var(--c-warning)",
         hint: TR("termcheck забраковал вариант в одном месте — остальные места видны только так") }),
       (s.todo.consistency || []).length > 0 && React.createElement(
@@ -504,7 +545,7 @@ function WorkSummary({ summary, store, toast, onReload }) {
         s.human.terms.slice(0, 4).map(t => t.count + "× " + t.reason).join(" · "))));
 }
 
-/* «Анализ» — экран для того, кому нужен перевод под ключ. Один вопрос, три
+/* «Проверка» — экран для того, кому нужен перевод под ключ. Один вопрос, три
    числа и две кнопки: сколько готово, что возьмёт прогон и что требует
    решения человека. Корзины считает СЕРВЕР (/analysis → turnkey) теми же
    предикатами, что и сам прогон, — второй расчёт в браузере однажды
@@ -527,12 +568,13 @@ function WorkSummary({ summary, store, toast, onReload }) {
    ключ»), без него только число (подробный итог, где часть строк считает
    термины, а не сегменты). `n` можно передать отдельно от `ids` — ровно для
    таких строк без списка. */
-function AnalysisRow({ label, hint, ids, n, total, color, action, store, toast, dim }) {
+function AnalysisRow({ label, hint, ids, n, total, color, action, store, toast, dim, terms, bucket }) {
   const count = n != null ? n : (ids || []).length;
   const clickable = !!(ids && ids.length);
   const go = () => {
     if (!clickable) return;
-    store.setSegmentFilter(ids);
+    // Слова строки (если она про записи глоссария) едут вместе с выборкой.
+    store.setSegmentFilter(ids, { terms: terms || [], label, bucket: bucket || null });
     store.go("editor");
     toast.info(label, ids.length + TR(" сегментов"));
   };
@@ -986,7 +1028,7 @@ function TurnkeySummary({ summary, store, toast, onReload, expert }) {
         React.createElement(BucketCard, { store, toast, ids: tk.confirmed || [], tone: "mine", dim: true,
           label: TR("Заверено вручную"), hint: TR("входит в корзины выше") })),
       groups.filter(g => g.n > 0).map(g => React.createElement(AnalysisRow, {
-        key: g.key, store, toast, ids: g.ids, n: g.n, dim: true,
+        key: g.key, store, toast, ids: g.ids, n: g.n, dim: true, terms: g.terms,
         total: g.key === "records" ? undefined : total,
         label: TR("из них: ") + g.label.charAt(0).toLowerCase() + g.label.slice(1), hint: g.hint })),
       /* Претензии слепых измерителей снял свежий вердикт ревизии — сегменты
@@ -1027,14 +1069,16 @@ const DEC_LABEL = {
   style: TR("Исправили орфографию"),
 };
 function CheckLog({ project, store, toast, onReload }) {
-  const [rows, setRows] = useState(null);
+  // Журнал — ПРОЕКТА: «Отменить» по строке чужого журнала откатывал бы не то.
+  const [rows, putRows] = useProjectData(project);
   const [busy, setBusy] = useState("");
   const load = () => {
     if (!window.API || !window.API.decisions || !project) return;
-    window.API.safeCall(() => window.API.decisions(project.id))
-      .then(r => { if (r && r.ok) setRows(r.decisions || []); });
+    const pid = project.id;
+    window.API.safeCall(() => window.API.decisions(pid))
+      .then(r => { if (r && r.ok) putRows(pid, r.decisions || []); });
   };
-  useEffect(() => { setRows(null); load(); }, [project && project.id]);
+  useEffect(() => { load(); }, [project && project.id]);
   if (!rows || !rows.length) return null;
   const undo = (d) => {
     const fn = DEC_UNDO[d.kind];
@@ -1120,9 +1164,11 @@ function CheckQuestions({ summary, store, toast, onReload }) {
   const [all, setAll] = useState(false);
   const h = summary.human || {};
   const groups = analysisHumanGroups(summary);
-  const open = (label, ids) => {
+  /* terms — слова записи (термин и варианты перевода): без них человек
+     приходил в редактор к десятку строк и искал спорное слово глазами. */
+  const open = (label, ids, terms) => {
     if (!ids || !ids.length) return;
-    store.setSegmentFilter(ids);
+    store.setSegmentFilter(ids, { terms: terms || [], label });
     store.go("editor");
     toast.info(label, ids.length + TR(" сегментов"));
   };
@@ -1167,7 +1213,7 @@ function CheckQuestions({ summary, store, toast, onReload }) {
     const item = { key: r.key, sev: loud(r) ? "bad" : "warn", title, meta,
                    where: whereSegs(r.ids), ids: r.ids,
                    scope: r.n + TR(" строк"), acts: cmds.slice() };
-    if (r.ids.length) item.acts.push(btn("open", TR("Открыть"), () => open(title, r.ids)));
+    if (r.ids.length) item.acts.push(btn("open", TR("Открыть"), () => open(title, r.ids, r.terms)));
     if (r.key === "confirmWithdrawn") { alarm = item; return; }
     if (r.key === "sourceSuspect") { source = item; return; }
     if (cmds.length) qs.push(item); else stack.push(item);
@@ -1197,7 +1243,7 @@ function CheckQuestions({ summary, store, toast, onReload }) {
     const acts = [];
     if (d.use) acts.push(btn("apply", TR("Применить к ") + segs.length + TR(" сегм."), () => applyAdvice(d), "secondary", ctxBusy));
     acts.push(btn("demote", TR("Понизить запись"), () => demoteAdvised(d), "ghost", ctxBusy));
-    if (segs.length) acts.push(btn("open", TR("Открыть"), () => open(d.src, segs)));
+    if (segs.length) acts.push(btn("open", TR("Открыть"), () => open(d.src, segs, recordTerms([d]))));
     qs.push({ key: "ctx" + i, sev: "warn",
       title: TR("Арбитр: запись словаря не подходит здесь"),
       meta: [d.use ? TR("здесь верно: ") + d.use : "", d.why ? TRS(d.why) : ""]
@@ -1208,7 +1254,7 @@ function CheckQuestions({ summary, store, toast, onReload }) {
   disputes.forEach((d, i) => {
     const segs = d.segments || [];
     const acts = [btn("demote", TR("Понизить запись"), () => demoteAdvised(d), "ghost", ctxBusy)];
-    if (segs.length) acts.push(btn("open", TR("Открыть"), () => open(d.src, segs)));
+    if (segs.length) acts.push(btn("open", TR("Открыть"), () => open(d.src, segs, recordTerms([d]))));
     qs.push({ key: "disp" + i, sev: "warn",
       title: TR("Проверка спорит со словарём"),
       meta: TR("проверка предлагает: ") + ((d.suggests || []).join(", ") || TR("без замены")),
@@ -1298,13 +1344,15 @@ function CheckQuestions({ summary, store, toast, onReload }) {
    «Всё работает» — не новость, а молчание без предупреждения неотличимо
    от успеха. */
 function CoverageCard({ project, quiet }) {
-  const [cov, setCov] = useState(null);
+  // Пара языков — ПРОЕКТА: после смены проекта чужая пара не стоит ни мгновения.
+  const [cov, putCov] = useProjectData(project);
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!window.API || !window.API.coverage || !project) return;
     let dead = false;
-    window.API.safeCall(() => window.API.coverage(project.id))
-      .then(r => { if (!dead && r && r.ok) setCov(r); });
+    const pid = project.id;
+    window.API.safeCall(() => window.API.coverage(pid))
+      .then(r => { if (!dead && r && r.ok) putCov(pid, r); });
     return () => { dead = true; };
   }, [project && project.id]);
   if (!cov) return null;
@@ -1337,13 +1385,16 @@ function CoverageCard({ project, quiet }) {
 // задача `termsheet`; в промпт уходит только по тумблеру, и рядом стоит замер
 // вреда — тот же счёт, каким похоронили подсказки автоимпорта.
 function TermlistCard({ project, toast }) {
-  const [tl, setTl] = useState(null);
+  // Терм-лист — ПРОЕКТА (useProjectData): чужой список не стоит на экране и не ложится поздним ответом.
+  const pid = project ? project.id : null;
+  const [tl, putTl] = useProjectData(project);
+  const setTl = (v) => putTl(pid, v);
   const [busy, setBusy] = useState(false);
   const [jobId, setJobId] = useState(null);
   const [showAll, setShowAll] = useState(false);
   const load = () => {
     if (!window.API || !window.API.termlist || !project) return Promise.resolve();
-    return window.API.safeCall(() => window.API.termlist(project.id)).then(r => { if (r && r.ok) setTl(r); });
+    return window.API.safeCall(() => window.API.termlist(pid)).then(r => { if (r && r.ok) setTl(r); });
   };
   useEffect(() => { setTl(null); setJobId(null); load(); }, [project && project.id]);
   useEffect(() => {
@@ -1427,15 +1478,20 @@ function TermlistCard({ project, toast }) {
 }
 
 function StyleCard({ project, toast }) {
-  const [st, setSt] = useState(null);
+  /* Всё — состояние ПРОЕКТА (useProjectData). Метка отката особенно:
+     «Вернуть прежний» с меткой прошлого проекта ушёл бы откатывать чужую
+     правку в нынешний. */
+  const pid = project ? project.id : null;
+  const [st, putSt] = useProjectData(project);
   const [busy, setBusy] = useState(false);
-  const [rep, setRep] = useState(null);
-  const [stamp, setStamp] = useState(null);
+  const [rep, putRep] = useProjectData(project);
+  const [stamp, putStamp] = useProjectData(project);
+  const setSt = (v) => putSt(pid, v), setRep = (v) => putRep(pid, v), setStamp = (v) => putStamp(pid, v);
   useEffect(() => {
     if (!window.API || !window.API.style || !project) return;
     let dead = false;
     setRep(null); setStamp(null);
-    window.API.safeCall(() => window.API.style(project.id))
+    window.API.safeCall(() => window.API.style(pid))
       .then(r => { if (!dead && r && r.ok) setSt(r); });
     return () => { dead = true; };
   }, [project && project.id]);
@@ -1530,7 +1586,8 @@ function StyleCard({ project, toast }) {
    Старый сервер без turnkey — подробный итог всем, как и раньше. */
 function TabAnalysis({ store, toast }) {
   const project = store.activeProject;
-  const [summary, setSummary] = useState(null);
+  // Итог — ПРОЕКТА: чужой не показывается и поздним ответом не ложится (useProjectData).
+  const [summary, putSummary] = useProjectData(project);
   const [sumNonce, setSumNonce] = useState(0);
   const [details, setDetails] = useState(false);
   /* Стиль книги — одно решение на весь документ: свёрнут, но доступен всем
@@ -1539,8 +1596,9 @@ function TabAnalysis({ store, toast }) {
   useEffect(() => {
     if (!window.API || !window.API.analysis || !project) return;
     let dead = false;
-    window.API.safeCall(() => window.API.analysis(project.id))
-      .then(r => { if (!dead && r && r.ok) setSummary(r); });
+    const pid = project.id;
+    window.API.safeCall(() => window.API.analysis(pid))
+      .then(r => { if (!dead && r && r.ok) putSummary(pid, r); });
     return () => { dead = true; };
   }, [project && project.id, sumNonce]);
   if (!project) return React.createElement("div", { className: "page" }, React.createElement(NoProject, { store }));
@@ -1549,10 +1607,10 @@ function TabAnalysis({ store, toast }) {
   const expert = !!store.expert;
   const canExpert = !!(store.can && store.can.super);
   const reload = () => setSumNonce(n => n + 1);
-  const onDrill = (title, segList) => {
+  const onDrill = (title, segList, terms) => {
     const ids = (segList || []).map(s => s.id);
     if (!ids.length) return;
-    store.setSegmentFilter(ids);
+    store.setSegmentFilter(ids, { terms: (terms || []).filter(Boolean), label: title });
     store.go("editor");
   };
   const T = (title, body, code) => React.createElement(InfoTip, { title, body, code });
@@ -1632,15 +1690,17 @@ function BackcheckBands({ segments, project, onDrill, T }) {
   // посчитанная прежними правилами, считается свежей вечно и сама
   // не пересчитается. Порядок как у выноса глоссария: сперва разбор (ничего
   // не меняет и показывает числа), потом решение человека.
-  const [resc, setResc] = useState(null);
+  // Разбор — ПРОЕКТА: «Пересчитать N» с числом чужого проекта не показываем.
+  const [resc, putResc] = useProjectData(project);
   const [rescBusy, setRescBusy] = useState(false);
 
   const rescore = (apply) => {
     if (!window.API || !window.API.rescoreBackchecks || !project) return;
     setRescBusy(true);
-    window.API.safeCall(() => window.API.rescoreBackchecks(project.id, !apply)).then(r => {
+    const pid = project.id;
+    window.API.safeCall(() => window.API.rescoreBackchecks(pid, !apply)).then(r => {
       setRescBusy(false);
-      if (r && r.ok) setResc(r);
+      if (r && r.ok) putResc(pid, r);
     });
   };
   useEffect(() => {
@@ -1748,7 +1808,7 @@ function BackcheckBands({ segments, project, onDrill, T }) {
           React.createElement("span", { style: { fontSize: 13, fontWeight: 600, color: "var(--c-success)" } },
             TR("Из них заверено человеком")),
           React.createElement("p", { className: "muted", style: { marginTop: 2, fontSize: 12.5 } },
-            TR("балл этого не отменяет: на экране «Анализ» такой сегмент считается готовым"))),
+            TR("балл этого не отменяет: на экране «Проверка» такой сегмент считается готовым"))),
         React.createElement("b", { className: "tnum", style: { fontSize: 13 } }, bcConfirmed.length)),
 
       termLost.length > 0 && React.createElement("div", {
@@ -1784,22 +1844,41 @@ function StatRow({ label, note, count, color, onDrill, bold }) {
    ============================================================ */
 // Одобрение термина не переписывает готовые переводы. Этот блок показывает,
 // где они разошлись с глоссарием, и открывает такие сегменты в редакторе —
-// сам переперевод запускается там, секцией «Соответствие глоссарию»
-// в карточке «Одобрить и применить».
+// сама починка запускается там, кнопкой «Применить к N сегм.» в карточке
+// «Термины глоссария» (ремонт по утверждённым терминам).
 function GlossaryImpact({ project, store, toast, onDrill, T }) {
-  const [data, setData] = useState(null);
+  const [data, putData] = useProjectData(project);    // отчёт ПРОЕКТА, см. useProjectData
   const [busy, setBusy] = useState(false);
   const [fixing, setFixing] = useState(false);
 
-  const load = () => {
+  /* byHand — нажали «Пересчитать». Тогда с refresh=true (отчёт кэширован по
+     отпечатку проекта, и без него нажатие вернуло бы прежнее) и ответ
+     словами: расчёт идёт доли секунды, и молчаливое нажатие неотличимо от
+     сломанной кнопки. Прежде это делала копия секции в редакторе; она ушла,
+     дверь осталась здесь. */
+  const load = (byHand) => {
     if (!window.API || !window.API.glossaryImpact || !project) return;
     setBusy(true);
-    window.API.safeCall(() => window.API.glossaryImpact(project.id)).then(r => {
+    const pid = project.id;
+    const before = data ? data.segments.length : null;
+    window.API.safeCall(() => window.API.glossaryImpact(pid, !!byHand)).then(r => {
       setBusy(false);
-      if (r && r.ok) setData(r);
+      if (!r || !r.ok) {
+        if (byHand && toast) toast.error(TR("Пересчёт не выполнен"), TR("Сервер не ответил."));
+        return;
+      }
+      putData(pid, r);
+      if (!byHand || !toast) return;
+      const now = r.segments.length;
+      if (before === null || before === now)
+        toast.info(TR("Пересчитано: ") + now, TR("Столько сегментов расходится с глоссарием."));
+      else
+        toast.success(TR("Пересчитано: было ") + before + TR(", стало ") + now,
+          now < before ? TR("Расхождений стало меньше на ") + (before - now)
+                       : TR("Расхождений стало больше на ") + (now - before));
     });
   };
-  useEffect(() => { setData(null); load(); }, [project && project.id]);
+  useEffect(() => { load(); }, [project && project.id]);
 
   const segsById = new Map((project ? project.segments : []).map(s => [s.id, s]));
   const pick = (ids) => (ids || []).map(id => segsById.get(id)).filter(Boolean);
@@ -1857,7 +1936,7 @@ function GlossaryImpact({ project, store, toast, onDrill, T }) {
         React.createElement("div", null,
           React.createElement("h3", { style: { fontSize: 15, fontWeight: 600 } }, TR("Соответствие глоссарию"),
             T(TR("Соответствие одобренным терминам"),
-              TR("Сегменты, где термин есть в оригинале, а утверждённого перевода в готовом тексте нет.\n\nОдобрение термина влияет только на будущие переводы — уже сделанные сами не меняются, поэтому после правок глоссария этот список и появляется.\n\nСчитается только по проверенным записям: автоимпорт модель вправе игнорировать.\n\nПереперевести пакетом можно в Редакторе — секция «Соответствие глоссарию» в карточке «Одобрить и применить»."))),
+              TR("Сегменты, где термин есть в оригинале, а утверждённого перевода в готовом тексте нет.\n\nОдобрение термина влияет только на будущие переводы — уже сделанные сами не меняются, поэтому после правок глоссария этот список и появляется.\n\nСчитается только по проверенным записям: автоимпорт модель вправе игнорировать.\n\nПочинить их можно в Редакторе — кнопкой «Применить к N сегм.» в карточке «Термины глоссария»."))),
           React.createElement("p", { className: "muted", style: { marginTop: 6, fontSize: 14 } },
             busy ? TR("Считаем…") : !data ? "—"
               : data.segments.length ? TR("Расходятся с глоссарием: ") + data.segments.length + TR(" сегм. по ") + data.terms.length + TR(" терминам")
@@ -1866,7 +1945,7 @@ function GlossaryImpact({ project, store, toast, onDrill, T }) {
           data && (data.caseSegments || []).length > 0 && React.createElement(Btn, {
             variant: "primary", size: "sm", icon: "edit", disabled: fixing || busy, onClick: fixCase },
             fixing ? TR("Правим…") : TR("Привести начертание")),
-          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", disabled: busy, onClick: load }, TR("Пересчитать")))),
+          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", disabled: busy, onClick: () => load(true) }, TR("Пересчитать")))),
 
       /* Отдельной строкой, а не вперемешку с расхождениями выше: там термина
          в переводе НЕТ вовсе и нужен платный переперевод, здесь он есть, но
@@ -1893,7 +1972,7 @@ function GlossaryImpact({ project, store, toast, onDrill, T }) {
            Поэтому здесь — указание, а не вторая кнопка. */
         data.pending.length > 0 && React.createElement("div",
           { className: "dim", style: { fontSize: 12, lineHeight: 1.5, paddingTop: 8 } },
-          TR("Починить их: вкладка «Редактор» → карточка «Одобрение терминов» → ")
+          TR("Починить их: вкладка «Редактор» → карточка «Термины глоссария» → ")
           + TR("кнопка «Применить к ") + data.pending.length + TR(" сегм.». ")
           + TR("Правка записи готовый текст сама не меняет — это отдельная команда."))),
 
@@ -1901,7 +1980,7 @@ function GlossaryImpact({ project, store, toast, onDrill, T }) {
         React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, marginBottom: 6 } }, TR("По терминам")),
         data.terms.slice(0, 10).map((t, i) => React.createElement("div", {
           key: i, className: "row between", style: { padding: "3px 0", fontSize: 13, cursor: "pointer" },
-          onClick: () => onDrill(TR("Термин: ") + t.src, pick(t.segments)),
+          onClick: () => onDrill(TR("Термин: ") + t.src, pick(t.segments), [t.src, t.tgt, t.prevTgt]),
           title: TR("Открыть сегменты с этим термином") },
           React.createElement("div", { className: "row", style: { gap: 8, minWidth: 0, flexWrap: "wrap" } },
             React.createElement("span", null, t.src),
@@ -1980,7 +2059,7 @@ function TermcheckSummary({ segments, onDrill, T }) {
         topTerms.map((t, i) => React.createElement("div", {
           key: i, className: "row between",
           style: { padding: "3px 0", cursor: "pointer", fontSize: 13 },
-          onClick: () => onDrill(TR("Термин: ") + t.term, t.segs),
+          onClick: () => onDrill(TR("Термин: ") + t.term, t.segs, [t.term, t.suggestion]),
           title: TR("Открыть сегменты с этим термином") },
           React.createElement("div", { className: "row", style: { gap: 8, minWidth: 0, flexWrap: "wrap" } },
             React.createElement("s", { style: { color: "var(--c-error)" } }, t.term),

@@ -5,9 +5,15 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
                      // Уровни находок termcheck, по которым работает ремонт.
                      // Приходят сверху, а сверху — с сервера: список в двух
                      // местах литералом уже расходился с _repair_findings.
-                     tcActionable = ["critical", "major", "minor"] }) {
+                     tcActionable = ["critical", "major", "minor"],
+                     // Слова из выборки «Проверки» (термин и варианты перевода):
+                     // ради них человека сюда и привели, и искать их глазами
+                     // по абзацу он не должен.
+                     hlTerms = null,
+                     // × в шапке: закрыть карточку и отдать таблице всю ширину.
+                     onClose = null }) {
   /* Любая запись в сегмент из карточки меняет корзины /analysis, а по ним —
-     слово в строке таблицы и карточка «Анализ». Родитель перезапрашивает их
+     слово в строке таблицы и сводку корзин. Родитель перезапрашивает их
      тем же движением, что после заверения (onChanged = refreshAfterHand). */
   const touch = (patch) => Promise.resolve(store.updateSegment(project.id, seg.id, patch)).then(() => { if (onChanged) onChanged(); });
   const [tab, setTab] = useState("context");
@@ -24,6 +30,10 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
 
   useEffect(() => { setDraft(seg.target || ""); setInfoPanel(null); setBackResult(null); setTermBusy(false); setRepairBusy(false); }, [seg.id]);
   useEffect(() => { setDraft(seg.target || ""); }, [seg.target, seg.status]);
+  /* Обратный перевод — про КОНКРЕТНЫЙ текст. Сменился перевод (правка,
+     ремонт, прогон) — показанный ответ относится к прежнему, и держать его
+     на экране как нынешний значит заверять новый текст старой проверкой. */
+  useEffect(() => { setBackResult(null); }, [seg.target]);
 
   /* Сегмент, пришедший из картинки, человеку нечем проверить: он видит строку
      текста и не может знать, то ли это, что нарисовано. Поэтому над оригиналом
@@ -71,7 +81,12 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
   }, [seg.id, fromImage, project.id]);
 
   const saveDraft = () => {
-    touch({ target: draft, status: seg.status === "new" ? "translated" : seg.status });
+    /* Стёртый перевод — это «Новый», а не «Переведён»: иначе пустая строка
+       числилась переведённой, прогон её обходил, а экспорт отдавал пустоту.
+       Сервер сбрасывает статус и сам — здесь то же правило, чтобы таблица
+       не показывала другое до ответа. */
+    const empty = !draft.trim();
+    touch({ target: draft, status: empty ? "new" : (seg.status === "new" ? "translated" : seg.status) });
     toast.success(TR("Сохранено"), TR("Перевод сегмента #") + seg.id + TR(" обновлён."));
   };
   const copySrc = () => { navigator.clipboard && navigator.clipboard.writeText(seg.source); toast.info(TR("Скопировано"), TR("Оригинал в буфере обмена.")); };
@@ -223,12 +238,21 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
   };
   const openBack = () => {
     toggleInfo("back");
-    // Уже посчитанный back-check показываем без нового вызова модели
+    /* Уже посчитанный back-check показываем без нового вызова модели —
+       и устаревший тоже, но с пометкой (backStale ниже): молча перезапускать
+       платную проверку по одному открытию панели нельзя, а выдавать старый
+       ответ за нынешний — тем более. */
     if (infoPanel !== "back" && backResult == null) {
       if (seg.backcheck && seg.backcheck.back) { setBackResult(seg.backcheck.back); return; }
       runBack(bcModel);
     }
   };
+  // Показан сохранённый ответ, а перевод с тех пор менялся.
+  const backStale = !!(seg.backcheck && seg.backcheck.stale);
+  const backShownStale = backStale && backResult === seg.backcheck.back;
+  const terms = (hlTerms || []).filter(Boolean);
+  const hl = (text) => (terms.length && typeof markTerms === "function") ? markTerms(text, terms) : text;
+  const normT = (t) => String(t || "").toLowerCase().replace(/ё/g, "е");
 
   const minitabs = [
     ["context", TR("Контекст")], ["tm", "TM" + (tmHit ? " (1)" : "")],
@@ -251,7 +275,8 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
         React.createElement("div", { className: "dim", style: { fontSize: 12 } }, idx + TR(" из ") + project.segments.length)),
       React.createElement("div", { className: "row", style: { gap: 2 } },
         React.createElement(StatusBadge, { status: seg.status }),
-        React.createElement(InfoTip, { title: (STATUS_TIP[seg.status] || STATUS_TIP.new)[0], body: (STATUS_TIP[seg.status] || STATUS_TIP.new)[1] }))
+        React.createElement(InfoTip, { title: (STATUS_TIP[seg.status] || STATUS_TIP.new)[0], body: (STATUS_TIP[seg.status] || STATUS_TIP.new)[1] }),
+        onClose && React.createElement(IconBtn, { icon: "close", label: TR("Закрыть карточку"), sm: true, onClick: onClose }))
     ),
     /* Кто отвечает за этот текст: подпись заверившего (имя по id даёт
        сервер — `confirmedByName`), роль на момент подписи и кто правил
@@ -299,7 +324,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
           React.createElement(Btn, { variant: "ghost", size: "sm", disabled: overlayBusy,
             onClick: markOverlay },
             overlayBusy ? TR("Убираем…") : TR("Это не из книги")))),
-      React.createElement("div", { className: "card", style: { padding: 12, background: "var(--bg-sunken)", lineHeight: 1.55, fontSize: 14 } }, seg.source)
+      React.createElement("div", { className: "card seg-src", style: { padding: 12, background: "var(--bg-sunken)", lineHeight: 1.55, fontSize: 14 } }, hl(seg.source))
     ),
 
     // translation
@@ -312,7 +337,21 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
       React.createElement(Textarea, { value: draft, onChange: (e) => setDraft(e.target.value), placeholder: TR("Введите перевод…"), dir: "auto", style: { minHeight: 120 } }),
       React.createElement("div", { className: "row between", style: { marginTop: 8 } },
         React.createElement("span", { className: "dim", style: { fontSize: 12 } }, words + TR(" слов · ") + draft.length + TR(" симв.")),
-        dirty && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check", onClick: saveDraft }, TR("Сохранить")))
+        dirty && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check", onClick: saveDraft }, TR("Сохранить"))),
+      /* В поле ввода подсветку не нарисовать, поэтому слова из «Проверки»
+         стоят под ним: горит то, что есть в переводе, и сам перевод
+         с подсветкой — ровно на то место человек и должен посмотреть. */
+      terms.length > 0 && React.createElement("div", { className: "seg-terms" },
+        React.createElement("div", null,
+          React.createElement("span", { className: "dim" }, TR("Проверить слова: ")),
+          terms.map((t, i) => {
+            const inTgt = normT(draft).indexOf(normT(t).trim()) !== -1;
+            return React.createElement(React.Fragment, { key: i },
+              i ? ", " : "",
+              inTgt ? React.createElement("mark", { className: "hl" }, t)
+                    : React.createElement("span", { className: "dim" }, t));
+          })),
+        draft.trim() && hl(draft) !== draft && React.createElement("div", { className: "seg-tgt-hl", dir: "auto" }, hl(draft)))
     ),
 
     // actions
@@ -388,7 +427,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
           disabled: ctxBusy, onClick: () => applyAdvice(a) },
           ctxBusy ? TR("Подставляем…") : TR("Применить в этом сегменте")))),
       React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: 6 } },
-        TR("Меняется только эта строка; запись глоссария остаётся. Все сегменты с тем же советом — на «Анализе»."))),
+        TR("Меняется только эта строка; запись глоссария остаётся. Все сегменты с тем же советом — на «Проверке»."))),
     seg.termCtxApplied && React.createElement("div",
       { style: { fontSize: 12.5, color: "var(--c-success)", marginTop: 6 } },
       TR("Совет арбитра применён: ") + seg.termCtxApplied.tgt + " → " + seg.termCtxApplied.use
@@ -540,10 +579,15 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
       React.createElement("span", { className: "label", style: { margin: 0 } }, TR("Что это значит по-русски")),
       React.createElement("div", { className: "dim", style: { fontSize: 11.5, marginTop: -4 } },
         TR("сравните с оригиналом — смысл тот же?")),
+      /* Сохранённый ответ относится к ПРЕЖНЕМУ переводу. Показываем его — он
+         оплачен и может пригодиться, — но названным устаревшим и рядом
+         с кнопкой пересчёта ниже: процент и причины тоже про тот текст. */
+      backShownStale && React.createElement("div", { className: "bc-stale" },
+        TR("Устарел — перевод изменился. Пересчитайте кнопкой «Проверить заново».")),
 
       // Процент соответствия и почему он такой
       seg.backcheck && seg.backcheck.score != null && React.createElement("div", {
-        className: "row between", style: { marginBottom: 6, gap: 10, flexWrap: "wrap" } },
+        className: "row between", style: { marginBottom: 6, gap: 10, flexWrap: "wrap", opacity: backStale ? 0.55 : 1 } },
         React.createElement("span", { style: { fontSize: 18, fontWeight: 500,
           color: window.bcScoreColor(seg.backcheck.score) } },
           seg.backcheck.score + TR("% соответствия")),
@@ -558,7 +602,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
         : backResult === "no_target"
           ? React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, TR("Сначала переведите сегмент."))
           : backResult
-            ? React.createElement("div", { className: "tmrow", style: { fontSize: 13, lineHeight: 1.5 } }, backResult)
+            ? React.createElement("div", { className: "tmrow" + (backShownStale ? " is-stale" : ""), style: { fontSize: 13, lineHeight: 1.5 } }, backResult)
             : React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, TR("Нет перевода для проверки.")),
 
       /* Штучная перепроверка. Выбор модели — устройство прогона, и человеку

@@ -18,6 +18,10 @@ function useStore(authed) {
   const [tab, setTab] = useState("editor");
   const [apiReady, setApiReady] = useState(false);
   const [segmentFilter, setSegmentFilterState] = useState(null); // Set<id> | null
+  /* Что к выборке прилагается: слова, которые надо проверить (термин
+     и варианты перевода — редактор их подсвечивает), подпись и корзина,
+     чью кнопку-фильтр зажечь. Живёт и гаснет ВМЕСТЕ с выборкой. */
+  const [segmentFilterMeta, setSegmentFilterMeta] = useState(null); // {terms, label, bucket} | null
   const [gotoSegId, setGotoSegId] = useState(null);
 
   /* Кто я — с сервера (/api/auth/me), а не заглушка: аватар, роль и то,
@@ -202,7 +206,18 @@ function useStore(authed) {
      (например, о приложенном исходнике) — мегабайты трафика на пустом месте. */
   const patchProject = (pid, patch) =>
     setProjects(ps => ps.map(p => p.id !== pid ? p : { ...p, ...patch }));
-  const openProject = (id) => { setActiveId(id); setTab("editor"); };
+  /* Выборка сегментов — номера ЭТОГО проекта: в другом те же номера значат
+     другие строки, и фильтр с подсветкой, пережившие смену проекта, показали
+     бы чужую выборку с чужими словами. Кто открывает проект с выборкой
+     (переход из «Словарей»), ставит её ПОСЛЕ openProject. */
+  const clearSegmentFilter = () => {
+    window._mcat_sf = null; window._mcat_sfm = null;
+    setSegmentFilterState(null); setSegmentFilterMeta(null);
+  };
+  const openProject = (id) => {
+    if (id !== activeId) clearSegmentFilter();
+    setActiveId(id); setTab("editor");
+  };
   const replaceProjectSegments = (pid, segments) =>
     setProjects(ps => ps.map(p => p.id !== pid ? p : { ...p, segments }));
   /* Файл целиком с сервера — после замены его новой версией: меняются
@@ -263,15 +278,20 @@ function useStore(authed) {
     addFolder, patchFolder, removeFolder,
     exportHistory, team: [], me, can, brand, apiReady, setGlossary,
     expert: !!(can && can.super && expertView), expertView, setExpertView,
-    segmentFilter, gotoSegId,
+    segmentFilter, segmentFilterMeta, gotoSegId,
     go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, patchProject, openProject, deleteProject, replaceProjectSegments, replaceProject, mergeServerSegments, saveTerm, deleteTerm, deleteTM,
     setExportHistory,
-    setSegmentFilter: (ids) => {
+    /* meta — необязательный {terms, label, bucket}: прежний вызов с одними
+       номерами работает как раньше, только без подсветки. */
+    setSegmentFilter: (ids, meta) => {
       const f = ids && ids.length ? new Set(ids) : null;
+      const m = f && meta ? meta : null;
       window._mcat_sf = f; // synchronous bridge for TabEditor first render
+      window._mcat_sfm = m;
       setSegmentFilterState(f);
+      setSegmentFilterMeta(m);
     },
-    goToSegment: (id) => { window._mcat_sf = null; setSegmentFilterState(null); setGotoSegId(id); setTab("editor"); },
+    goToSegment: (id) => { clearSegmentFilter(); setGotoSegId(id); setTab("editor"); },
     teams, tenant, invites, caps, usage,
     clearGotoSeg: () => setGotoSegId(null),
   };

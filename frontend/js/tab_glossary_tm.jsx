@@ -1088,7 +1088,8 @@ function TabGlossary({ store, toast, onTM }) {
     const active = store.activeProject;
     const pick = (active && res.projects.find(x => x.id === active.id)) || best;
     if (!active || active.id !== pick.id) store.openProject(pick.id);
-    store.setSegmentFilter(pick.segments);
+    // Сам термин и его перевод едут вместе с выборкой — редактор их подсветит.
+    store.setSegmentFilter(pick.segments, { terms: [term.src, term.tgt].filter(Boolean), label: term.src });
     store.go("editor");
     toast.info(TR("Показаны сегменты с термином"), "«" + term.src + "» — " + pick.segments.length
       + TR(" сегм.") + (pick.violating.length ? TR(" · перевод расходится с глоссарием: ") + pick.violating.length : ""));

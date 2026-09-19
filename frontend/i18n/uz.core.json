@@ -39,7 +39,6 @@
   "Требуется OpenAI GPT с инъекцией глоссария в промпт. Применяется для сегментов с большим количеством терминов (3+) или с риском HIGH.": "Promptga lug'at qo'shilgan OpenAI GPT kerak. Tibbiy atamalari ko'p (3+) yoki xavfi HIGH bo'lgan segmentlar uchun qo'llanadi.",
   "admin или you@mail.com": "admin yoki you@mail.com",
   "Админ": "Admin",
-  "Анализ": "Tahlil",
   "ВЫ": "SIZ",
   "Вы": "Siz",
   "Ваше имя": "Ismingiz",

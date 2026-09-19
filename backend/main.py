@@ -2458,6 +2458,19 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         f"   stays in lower case. Apply {tgt} rules on top of that (proper nouns, nationalities\n"
         "   and months are capitalised even where the source writes them small), but NEVER open\n"
         "   a sentence with a lower-case letter and never shout a word the source does not shout.\n"
+        # Верность автору. Точность перевода и научная точность — разные
+        # задачи: переводчик передаёт то, что написал автор, а сомнительное
+        # утверждение («пчела пролетает 65 км в час») проверяет редактор по
+        # первоисточнику. Модель же охотно «улучшает»: поправит цифру, смягчит
+        # утверждение, допишет пояснение — и ошибка автора исчезает из текста
+        # молча, вместе с поводом её проверить. Естественный оборот вместо
+        # кальки при этом разрешён: запрещён новый СМЫСЛ, а не новые слова.
+        "9. Translate what the author wrote — no more, no less. Do NOT add, drop, explain,\n"
+        "   soften or strengthen anything, and do NOT correct facts, figures or claims, even\n"
+        "   if they look wrong or outdated: keep them as the source states them.\n"
+        f"   Natural {tgt} wording instead of a word-for-word calque is expected; new meaning is not.\n"
+        "   Style-sheet and language conventions below (register, spelling, abbreviations) are\n"
+        "   form, not meaning — apply them.\n"
         )
         # Стайл-шит документа (`_style_block`) — только в обычный перевод,
         # никогда в обратный: тот обязан ОТРАЖАТЬ текст, а не причёсывать его.
@@ -17154,6 +17167,15 @@ def _review_system(domain: dict, src_lang: str, tgt_lang: str, style: str = "") 
         "согласованы с заказчиком. Считаешь такой термин неверным — скажи это "
         "в issues и оставь его в fixed как есть.\n"
         "Числа, единицы, даты и отрицания переноси из оригинала точно.\n"
+        # То же правило верности автору, что в промпте перевода: ревизор
+        # переписывает сегмент целиком и мог бы «поправить» факт автора.
+        # REVIEW_VERSION не поднят намеренно: вопрос и шкала те же, и старые
+        # вердикты не врут — перепроверка всей книги стоила бы денег впустую.
+        "Не добавляй и не убирай смысл, не исправляй факты, цифры и утверждения "
+        "автора, даже если они кажутся неверными или устаревшими: это задача "
+        "редактора по первоисточнику, а не переводчика. За верно переданное "
+        "сомнительное утверждение оценку НЕ снижай; перевод, «поправивший» "
+        "автора, — ошибка.\n"
         "Соседние сегменты — только обстановка, их перевод не оценивай "
         "и в fixed не включай.\n\n"
         "Если ПОВРЕЖДЁН САМ ОРИГИНАЛ (обрывок, ошибка распознавания, "

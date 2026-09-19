@@ -344,5 +344,8 @@
   "Собираем документ": "Assembling the document",
   "Готовим страницы-картинки": "Preparing page images",
   "Делим текст на строки": "Splitting the text into lines",
-  "Сравниваем с файлами проекта": "Comparing with the project's files"
+  "Сравниваем с файлами проекта": "Comparing with the project's files",
+  "Ключ Anthropic": "Anthropic key",
+  "нет": "no",
+  "Кросс-проверка терм-листа": "Term sheet cross-check"
 }

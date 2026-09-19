@@ -373,5 +373,6 @@
  "сервер недоступен": "server unavailable",
  "читаем надписи": "reading the captions",
  "ищем строки на картинках": "finding text lines in the pictures",
- "готовим картинки": "preparing the pictures"
+ "готовим картинки": "preparing the pictures",
+  " — нет ключа": " — no key"
 }

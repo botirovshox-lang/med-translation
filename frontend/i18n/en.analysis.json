@@ -443,5 +443,7 @@
  "Что готово и о чём я спрошу вас.": "What is done and what I will ask you about.",
  "Сама после прогона:": "By myself after the run:",
  "Скрыть настройки книги": "Hide the book settings",
- "Настройки книги": "Book settings"
+ "Настройки книги": "Book settings",
+  "Кросс-проверка терм-листа той же моделью, что и ревизия (": "Term sheet cross-check with the same model as the revision (",
+  "): лист составляет модель ревизии, и сверять его ею же сервер не станет.": "): the sheet is built by the revision model, and the server will not check it with the same model."
 }

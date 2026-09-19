@@ -16,7 +16,7 @@ VERSION — дата редакции. Она пишется в учётную �
 import html
 import os
 
-VERSION = "2026-09-01"
+VERSION = "2026-09-19"
 
 _FIELDS = (
     ("entity", "LEGAL_ENTITY", "наименование исполнителя"),
@@ -56,7 +56,17 @@ def _brand() -> str:
 
 
 def _model_provider() -> str:
-    return (os.environ.get("MODEL_PROVIDER_NAME") or "OpenAI, США").strip()
+    """Кому уходит текст документов. Явное MODEL_PROVIDER_NAME сильнее всего;
+    иначе — список по ключам, заданным в окружении: второй поставщик (Anthropic)
+    назван, как только у сервиса есть его ключ, — молчать о трансграничной
+    передаче второму получателю нельзя."""
+    named = (os.environ.get("MODEL_PROVIDER_NAME") or "").strip()
+    if named:
+        return named
+    out = ["OpenAI, США"]
+    if (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
+        out.append("Anthropic, США")
+    return "; ".join(out)
 
 
 def terms_html() -> str:
@@ -193,7 +203,7 @@ def privacy_html() -> str:
 и проверок.</p>
 
 <h2>5. Передача третьим лицам и трансграничная передача</h2>
-<p>5.1. <b>Текст документов передаётся поставщику языковых моделей
+<p>5.1. <b>Текст документов передаётся поставщикам языковых моделей
 ({_model_provider()}) для выполнения перевода и автоматических проверок.</b>
 Это означает передачу данных за пределы страны нахождения пользователя.
 Загружая документ, пользователь соглашается с такой передачей; если она

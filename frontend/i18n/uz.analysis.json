@@ -443,5 +443,7 @@
   "Что готово и о чём я спрошу вас.": "Nima tayyor va sizdan nimani so'rayman.",
   "Сама после прогона:": "Ishga tushirishdan keyin o'zim:",
   "Скрыть настройки книги": "Kitob sozlamalarini yashirish",
-  "Настройки книги": "Kitob sozlamalari"
+  "Настройки книги": "Kitob sozlamalari",
+  "Кросс-проверка терм-листа той же моделью, что и ревизия (": "Atamalar ro'yxatini tahrir bilan bir xil model bilan tekshirish (",
+  "): лист составляет модель ревизии, и сверять его ею же сервер не станет.": "): ro'yxatni tahrir modeli tuzadi, va server uni o'sha model bilan tekshirmaydi."
 }

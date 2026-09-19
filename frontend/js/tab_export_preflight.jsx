@@ -339,8 +339,9 @@ function ImagesCard({ project, store, toast }) {
           React.createElement(Select, {
             value: useModel, style: { width: 260 },
             onChange: (e) => pickModel(e.target.value) },
-            models.map(m => React.createElement("option", { key: m.id, value: m.id },
-              m.label + (estOf(m.id) ? " — ~$" + estOf(m.id).toFixed(2) : ""))))),
+            models.map(m => React.createElement("option", { key: m.id, value: m.id, disabled: m.ready === false },
+              m.label + (m.ready === false ? TR(" — нет ключа")
+                : estOf(m.id) ? " — ~$" + estOf(m.id).toFixed(2) : ""))))),
         modelsShown(store) && mInfo && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
           costHidden() ? "" : TR("цена модели: вход $") + mInfo.in + TR(" · выход $") + mInfo.out + TR(" за 1М токенов")
           + (rep && rep.estTokens && rep.estTokens.in

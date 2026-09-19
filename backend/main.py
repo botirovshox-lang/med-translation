@@ -1519,6 +1519,18 @@ OPENAI_MODELS = [
     {"id": "gpt-4.1",       "label": "GPT-4.1",       "in": 2.00, "out": 8.00,  "api": "classic", "note": ""},
     {"id": "gpt-4o",        "label": "GPT-4o",        "in": 2.50, "out": 10.00, "api": "classic", "note": "По умолчанию"},
     {"id": "gpt-4o-mini",   "label": "GPT-4o mini",   "in": 0.15, "out": 0.60,  "api": "classic", "note": "Самая дешёвая"},
+    # Второй поставщик — Anthropic (Claude). Цены — platform.claude.com/docs/about-claude/pricing,
+    # сверено 24.06.2026. "api": "anthropic" — другой протокол (Messages API): вызов идёт
+    # через _llm_client, который отдаёт ответ в форме OpenAI, поэтому места вызова
+    # и учёт расхода (_note_usage) одни на обоих поставщиков.
+    # "effort" — у Opus 5 / Sonnet 5 думание включено по умолчанию и считается
+    # в выходных токенах; «low» держит его коротким на наших коротких задачах
+    # (ответ JSON, перевод абзаца). Сэмплинг (temperature) эти две модели
+    # отвергают 400 — _AnthropicChat его не шлёт. "sampling" — модель его
+    # принимает (Haiku 4.5), и тогда temperature места вызова доезжает как есть.
+    {"id": "claude-opus-5",   "label": "Claude Opus 5",    "in": 5.00, "out": 25.00, "api": "anthropic", "effort": "low", "note": "Anthropic, флагман"},
+    {"id": "claude-sonnet-5", "label": "Claude Sonnet 5",  "in": 2.00, "out": 10.00, "api": "anthropic", "effort": "low", "note": "Anthropic, баланс качества и цены"},
+    {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "in": 1.00, "out": 5.00, "api": "anthropic", "sampling": True, "note": "Anthropic, быстрая"},
 ]
 DEFAULT_OPENAI_MODEL = "gpt-4o"
 
@@ -1526,6 +1538,158 @@ DEFAULT_OPENAI_MODEL = "gpt-4o"
 # выглядит как чужой продукт. Отдаётся через /api/models.
 APP_BRAND = os.environ.get("APP_BRAND", "").strip() or "CAT Translator"
 _MODELS_BY_ID = {m["id"]: m for m in OPENAI_MODELS}
+
+
+# ─── Поставщики моделей ──────────────────────────────────────────────
+# Поставщик выводится из каталога ("api"), а не из имени модели: правило
+# «модели и цены живут только в OPENAI_MODELS» касается и того, кто их
+# продаёт. Ключ каждого — в окружении (/etc/medcat/env). Эмбеддинги
+# back-check остаются у OpenAI при любом выборе: другой моделью их не делают.
+import types as _types
+
+LLM_PROVIDER_KEYS = {"openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}
+LLM_PROVIDER_LABELS = {"openai": "OpenAI", "anthropic": "Anthropic"}
+
+
+def _provider_of(model) -> str:
+    m = model if isinstance(model, dict) else _MODELS_BY_ID.get(model or "")
+    return "anthropic" if (m or {}).get("api") == "anthropic" else "openai"
+
+
+def _provider_ready(model=None) -> bool:
+    """Есть ли ключ у поставщика ЭТОЙ модели. Пустая/неизвестная модель —
+    переводчик по умолчанию (как у `_resolve_model`)."""
+    if model is None or (not isinstance(model, dict) and model not in _MODELS_BY_ID):
+        model = _resolve_model(model if isinstance(model, str) else None)
+    return bool(os.environ.get(LLM_PROVIDER_KEYS[_provider_of(model)]))
+
+
+def _no_key_text(model, msg: str) -> str:
+    """Текст отказа «нет ключа». `msg` — прежний текст про OpenAI (он же ключ
+    перевода интерфейса); для Claude отказ честно называет Anthropic, а не
+    «нет ключа OpenAI» при живом ключе OpenAI."""
+    m = model if isinstance(model, dict) else _resolve_model(model)
+    if _provider_of(m) == "anthropic":
+        return "Нет ключа Anthropic: модель " + m["label"] + " недоступна"
+    return msg
+
+
+def _key_gate(model, msg: str) -> None:
+    """503 до работы, если у поставщика модели нет ключа."""
+    if not _provider_ready(model):
+        raise HTTPException(503, _no_key_text(model, msg))
+
+
+# Потолок ответа думающей модели: думание идёт в тот же max_tokens, и лимит,
+# рассчитанный на один ответ (500–1500 у мест вызова), обрывал бы JSON
+# на середине. Платят за написанное, а не за потолок.
+ANTHROPIC_THINKING_MIN_TOKENS = 4096
+_ANTHROPIC_STOP = {"end_turn": "stop", "stop_sequence": "stop", "max_tokens": "length",
+                   "tool_use": "tool_calls", "pause_turn": "length"}
+
+
+def _anthropic_part(p):
+    """Часть сообщения в форме OpenAI → блок Messages API. Картинка приходит
+    data-URL (так её собирают все зрячие места вызова) — в base64-источник."""
+    if isinstance(p, str):
+        return {"type": "text", "text": p}
+    if p.get("type") == "image_url":
+        url = ((p.get("image_url") or {}).get("url") or "")
+        m = re.match(r"data:([^;,]+);base64,(.*)$", url, re.S)
+        if m:
+            return {"type": "image", "source": {"type": "base64", "media_type": m.group(1),
+                                                "data": m.group(2)}}
+        return {"type": "image", "source": {"type": "url", "url": url}}
+    return {"type": "text", "text": p.get("text") or ""}
+
+
+def _json_body(text: str) -> str:
+    """Тело JSON из ответа модели: без ```json-обёртки и прозы вокруг.
+    Нужен там, где место вызова просило response_format json_object и
+    разбирает ответ строгим json.loads: у Messages API такого флага нет."""
+    t = (text or "").strip()
+    t = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", t).strip()
+    lo, hi = t.find("{"), t.rfind("}")
+    return t[lo:hi + 1] if 0 <= lo < hi else t
+
+
+class _AnthropicChat:
+    """Клиент Anthropic под видом `openai.OpenAI`: `.chat.completions.create`
+    принимает то же, что шлют места вызова, и отдаёт ответ в форме OpenAI
+    (choices[0].message.content, finish_reason, usage.prompt_tokens /
+    completion_tokens). Поэтому тринадцать мест вызова, разбор ответов
+    и `_note_usage` не знают, какой поставщик ответил.
+
+    prompt_tokens = вход + чтение кэша + запись кэша: все три — входные токены,
+    за которые выставлен счёт, и учёт считает их по цене входа каталога (так
+    же, как кэш OpenAI — без скидки, см. `_usage_cost`)."""
+
+    def __init__(self, client, entry: dict):
+        self._client, self._m = client, entry
+        self.chat = _types.SimpleNamespace(completions=_types.SimpleNamespace(create=self.create))
+
+    def create(self, model: str, messages: list, **kw):
+        # Из параметров Chat Completions доезжает только потолок ответа.
+        # temperature/top_p/seed Opus 5 и Sonnet 5 отвергают 400, у
+        # response_format пары в Messages API нет — их смысл у нас один
+        # («отвечай ровно, JSON»), и промпты говорят его словами.
+        system ="\n\n".join(m["content"] if isinstance(m.get("content"), str)
+                             else "".join(_anthropic_part(p).get("text", "") for p in m["content"])
+                             for m in messages if m.get("role") == "system")
+        conv = []
+        for m in messages:
+            if m.get("role") == "system":
+                continue
+            c = m.get("content")
+            conv.append({"role": m["role"],
+                         "content": c if isinstance(c, str) else [_anthropic_part(p) for p in c]})
+        limit = int(kw.get("max_completion_tokens") or kw.get("max_tokens") or 1024)
+        args = {"model": model, "max_tokens": limit, "messages": conv}
+        if system:
+            args["system"] = system
+        if self._m.get("effort"):
+            args["max_tokens"] = max(limit * 2, ANTHROPIC_THINKING_MIN_TOKENS)
+            args["output_config"] = {"effort": self._m["effort"]}
+        elif self._m.get("sampling") and kw.get("temperature") is not None:
+            # В типизированных параметрах SDK 1.x temperature нет (новые
+            # модели его отвергают), а Haiku 4.5 принимает — телом запроса.
+            args["extra_body"] = {"temperature": kw["temperature"]}
+        resp = self._client.messages.create(**args)
+        stop = getattr(resp, "stop_reason", None)
+        if stop == "refusal":
+            # Отказ — сбой вызова, а не пустой перевод: место вызова обязано
+            # ответить ошибкой и сегмент не трогать (инвариант 4).
+            raise RuntimeError("модель отказалась отвечать (stop_reason=refusal)")
+        text = "".join(getattr(b, "text", "") or "" for b in (resp.content or [])
+                       if getattr(b, "type", "") == "text")
+        if (kw.get("response_format") or {}).get("type") == "json_object":
+            text = _json_body(text)
+        u = getattr(resp, "usage", None)
+        tin, tout = _usage_field(u, "input_tokens"), _usage_field(u, "output_tokens")
+        cr, cw = _usage_field(u, "cache_read_input_tokens"), _usage_field(u, "cache_creation_input_tokens")
+        NS = _types.SimpleNamespace
+        return NS(id=getattr(resp, "id", ""), model=model,
+                  choices=[NS(index=0, finish_reason=_ANTHROPIC_STOP.get(stop, "stop"),
+                              message=NS(role="assistant", content=text))],
+                  usage=NS(prompt_tokens=tin + cr + cw, completion_tokens=tout,
+                           total_tokens=tin + cr + cw + tout,
+                           prompt_tokens_details=NS(cached_tokens=cr),
+                           completion_tokens_details=NS(reasoning_tokens=0)))
+
+
+def _llm_client(model, timeout: float = 90, max_retries: int = 1):
+    """Клиент под поставщика модели. Импорт SDK — в момент вызова, а не
+    модуля: тесты подменяют sys.modules["openai"] / ["anthropic"], и сервис
+    без одного из SDK живёт, пока его модель не выбрана."""
+    m = model if isinstance(model, dict) else _resolve_model(model)
+    if _provider_of(m) == "anthropic":
+        import anthropic
+        return _AnthropicChat(anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"),
+                                                  timeout=timeout, max_retries=max_retries), m)
+    import openai
+    return openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=timeout,
+                         max_retries=max_retries)
+
 
 # ── Справочник силы моделей ──────────────────────────────────────────────────
 # Нужен для одного решения: вправе ли проверка одной моделью перезаписать
@@ -1826,10 +1990,9 @@ def _openai_termcheck(source: str, target: str, src_lang: str, tgt_lang: str,
                       domain_id: Optional[str] = None, model: str = None) -> Optional[dict]:
     """Разбор перевода моделью. None — вызов не удался (сегмент не трогаем)."""
     import json as _json
-    import openai
     dom = _resolve_domain(domain_id)
     mdl = _resolve_model(model or _dm("termcheck"))
-    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
+    client = _llm_client(mdl, timeout=90, max_retries=1)
     extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
              else {"max_tokens": 700, "temperature": 0})
     try:
@@ -1872,10 +2035,9 @@ def _openai_judge(source_ru: str, back_ru: str, model: str = None,
                   domain_id: Optional[str] = None, src_lang: str = "RU") -> Optional[dict]:
     """Вердикт модели по паре «оригинал / обратный перевод»."""
     import json as _json
-    import openai
     dom = _resolve_domain(domain_id)
     mdl = _resolve_model(model or _dm("judge"))
-    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
+    client = _llm_client(mdl, timeout=90, max_retries=1)
     extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
              else {"max_tokens": 500, "temperature": 0})
     try:
@@ -2250,7 +2412,9 @@ def _job_limit_hit(job: dict) -> bool:
 # сохранено, владельцу сервиса уходит сообщение. Повторы бессмысленны:
 # деньги от ожидания не появятся.
 _QUOTA_MARKERS = ("insufficient_quota", "exceeded your current quota", "billing_hard_limit",
-                  "billing hard limit", "account is not active", "check your plan and billing")
+                  "billing hard limit", "account is not active", "check your plan and billing",
+                  # Anthropic: «Your credit balance is too low to access the Anthropic API»
+                  "credit balance is too low")
 JOB_STOP_PROVIDER_QUOTA = ("У поставщика моделей закончился баланс сервиса: прогон остановлен, "
                            "сделанное сохранено")
 _PROVIDER_ERR = {"text": "", "at": 0.0}
@@ -2582,10 +2746,9 @@ def _openai_translate(text: str, src: str, tgt: str,
     правильный русский, маскируя ровно ту ошибку, которую back-check ищет.
     Поэтому в этом режиме требуем дословности и запрещаем править термины,
     а глоссарий и TM не подсовываем вовсе — иначе модель подгонит ответ под них."""
-    import openai
     mdl = _resolve_model(model)
     # timeout + retries: зависший вызов не должен блокировать поток бесконечно
-    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=2)
+    client = _llm_client(mdl, timeout=90, max_retries=2)
     system = _translate_system(src, tgt, gloss_hits, tm_context, literal, domain, mdl,
                                prev_src, next_src, "" if literal else style)
     extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
@@ -5197,12 +5360,14 @@ def admin_overview(request: Request):
             "process": {"uptimeSec": int(time.time() - _SERVER_STARTED), "usage": proc,
                         "stateBytes": state_bytes, "sessions": len(_SESSIONS),
                         "openaiKey": bool(os.environ.get("OPENAI_API_KEY")),
+                        "anthropicKey": bool(os.environ.get("ANTHROPIC_API_KEY")),
                         "version": "5.6.0", "termQueue": len(_term_queue()),
                         "auditRows": len(STATE.get("audit") or [])},
             "capDefaults": _cap_defaults(),
             # Список моделей — чтобы админка могла назначить модель шага
             # организации в упрощённом режиме, не спрашивая каталог отдельно.
-            "models": [{"id": m["id"], "label": m["label"]} for m in OPENAI_MODELS],
+            "models": [{"id": m["id"], "label": m["label"], "ready": _provider_ready(m)}
+                       for m in OPENAI_MODELS],
             "steps": FULL_STEP_MODEL,
             "month": _month_key()}
 
@@ -5672,9 +5837,7 @@ def _scan_read_page(jpeg: bytes, mdl: dict, src_lang: str) -> Optional[str]:
     None — «не прочитали» (сеть, отказ), и это не «текста нет»: пустая
     страница отвечает пустой строкой."""
     import base64
-    import openai
-    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=120,
-                           max_retries=1)
+    client = _llm_client(mdl, timeout=120, max_retries=1)
     system = ("You transcribe scanned document pages. Output ONLY the text printed on the page, "
               "verbatim and complete, in reading order, one paragraph per line, in its original "
               "language (source language code: %s). Keep numbers, punctuation and word spacing. "
@@ -7213,7 +7376,10 @@ def list_models():
     return {
         # Ранг приклеивается здесь, а не хранится в OPENAI_MODELS: он живёт
         # в отдельном справочнике, который правят без деплоя (см. model_rank).
-        "models": [dict(m, rank=model_rank(m["id"])) for m in OPENAI_MODELS],
+        # `ready` — есть ли ключ у поставщика модели: модель без ключа видна
+        # (цена нужна смете), но выбрать её браузер не даёт — вызов упал бы.
+        "models": [dict(m, rank=model_rank(m["id"]), provider=_provider_of(m),
+                        ready=_provider_ready(m)) for m in OPENAI_MODELS],
         # Модели, которых нет в списке выбора, но которые стоят денег
         # (эмбеддинги back-check). Смета обязана брать их цену отсюда:
         # цифра в .jsx — это второй прайс-лист рядом с настоящим.
@@ -7254,7 +7420,8 @@ def list_models():
         # разошлось бы с medical_qa молча.
         "backcheckMinStems": getattr(checks_mod, "BACKCHECK_MIN_STEMS", 3) if checks_mod else 3,
         "backcheckBands": getattr(checks_mod, "BACKCHECK_BANDS", []) if checks_mod else [],
-        "available": bool(os.environ.get("OPENAI_API_KEY")),
+        # Доступен ли перевод: ключ у поставщика ТОЙ модели, которой он пойдёт.
+        "available": _provider_ready(_dm("translate")),
         "brand": APP_BRAND,
         # Упрощённый режим организации: браузер не рисует ни сумм, ни выбора
         # моделей. Цены при этом в ответе ОСТАЮТСЯ — по ним считается смета,
@@ -8983,13 +9150,11 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
     обязан оставить блок нерешённым, а не объявить картинку пустой."""
     import json as _json
     import base64
-    import openai
     if image_text is None or not blocks:
         return None
     dom = _resolve_domain(domain_id)
     mdl = _resolve_model(model or _dm("ocr"))
-    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=120,
-                           max_retries=1)
+    client = _llm_client(mdl, timeout=120, max_retries=1)
     # Обзорный кадр — уменьшенный PNG, а не сырые байты части: в пакете лежат
     # и jpeg, и gif, и tiff, а уходили они объявленные как image/png.
     over = image_text.preview(img_bytes)
@@ -9524,8 +9689,9 @@ def _job_images(job: dict) -> None:
     if data is None:
         raise RuntimeError("К проекту не приложен исходный .docx — "
                            "искать текст не в чем")
-    if not dry and not os.environ.get("OPENAI_API_KEY"):
-        raise RuntimeError("Чтение текста требует ключ OpenAI")
+    if not dry and not _provider_ready(job["params"].get("ocr_model") or _dm("ocr")):
+        raise RuntimeError(_no_key_text(job["params"].get("ocr_model") or _dm("ocr"),
+                                        "Чтение текста требует ключ OpenAI"))
 
     content = Path(data["path"]).read_bytes()
     raster, other = _docx_media(content)
@@ -9801,9 +9967,8 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
         save_state(STATE)
         return {"ok": True, "segment": seg, "usedRealApi": False, "source": "TM"}
 
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise HTTPException(503, "Перевод требует ключ OpenAI: бесплатного движка "
-                                 "в системе больше нет")
+    _key_gate(req.model, "Перевод требует ключ OpenAI: бесплатного движка "
+                         "в системе больше нет")
     try:
         prev_src, next_src = _neighbours(project, seg)
         translation = _openai_translate(src_text, project["src"], project["tgt"],
@@ -11068,7 +11233,7 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     # понятие и годится ли пара правилом. «Не знаю» (нет ключа, сбой вызова)
     # не блокирует — тот же закон, что у корпуса.
     verdict = None
-    if not req.confirm and os.environ.get("OPENAI_API_KEY"):
+    if not req.confirm and _provider_ready(_dm("judge")):
         got = _openai_meaning([(src, tgt)], scope)
         verdict = (got or {}).get((_norm_key(src), _norm_key(tgt)))
     if verdict and (verdict.get("same") is False or verdict.get("rule") is False):
@@ -11161,8 +11326,7 @@ def explain_term_variants(cid: int, req: ExplainRequest = ExplainRequest()):
     Человек сравнивает РУССКОЕ с РУССКИМ и выбирает смысл, а не строку.
 
     Вызов платный, поэтому только по кнопке и только на конкретную карточку."""
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise HTTPException(503, "Разбор вариантов требует ключ OpenAI")
+    _key_gate(req.model or _dm("judge"), "Разбор вариантов требует ключ OpenAI")
     cand = next((c for c in _term_queue() if c.get("id") == cid
                  and _tenant_of(c) == _current_tenant()), None)
     if not cand:
@@ -11233,9 +11397,8 @@ def explain_term_variants(cid: int, req: ExplainRequest = ExplainRequest()):
             + f"Candidate {tgt_lang} translations:\n"
             + "\n".join("  - " + v for v in variants))
     try:
-        import openai
         mdl = _resolve_model(req.model or _dm("judge"))
-        client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
+        client = _llm_client(mdl, timeout=90, max_retries=1)
         extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
                  else {"max_tokens": 900, "temperature": 0})
         resp = client.chat.completions.create(
@@ -11918,7 +12081,6 @@ def _openai_meaning(pairs: list, scope: tuple) -> Optional[dict]:
     "why": почему правилом не годится, НА ЯЗЫКЕ ОРИГИНАЛА}} или None при сбое.
     None — это «не знаю», и по тому же закону, что attested() у корпуса,
     он не одобряет и не блокирует."""
-    import openai
     src_lang, tgt_lang = ((authorities_mod.source_lang(scope[0]),
                            authorities_mod.target_lang(scope[0])) if authorities_mod
                           else (scope[0].split("→")[0], scope[0].split("→")[-1]))
@@ -11945,7 +12107,7 @@ def _openai_meaning(pairs: list, scope: tuple) -> Optional[dict]:
     body = "\n".join(f"  - {a} → {b}" for a, b in pairs)
     try:
         mdl = _resolve_model(_dm("judge"))
-        client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
+        client = _llm_client(mdl, timeout=90, max_retries=1)
         extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
                  else {"max_tokens": 900, "temperature": 0})
         resp = client.chat.completions.create(
@@ -12113,7 +12275,7 @@ def auto_approve_terms(req: AutoApproveRequest = AutoApproveRequest()):
     # не блокирует — тот же закон, что у attested().
     use_meaning = (not req.dry_run) if req.meaning is None else bool(req.meaning)
     meaning, meaning_asked, meaning_capped = {}, 0, 0
-    if prelim and use_meaning and os.environ.get("OPENAI_API_KEY"):
+    if prelim and use_meaning and _provider_ready(_dm("judge")):
         meaning, meaning_asked, meaning_capped = _meaning_check(prelim)
 
     picked, closed, mrejected, skipped = [], [], [], {}
@@ -12488,8 +12650,7 @@ def audit_glossary(req: GlossaryAuditRequest = GlossaryAuditRequest()):
     Порядок проверки — по вреду: сначала те, что уже расходятся с переводом
     в этом проекте (их применяет ремонт), потом остальные. Потолок обрежет
     хвост, а не голову."""
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise HTTPException(503, "Смысловая сверка требует ключ OpenAI")
+    _key_gate(_dm("judge"), "Смысловая сверка требует ключ OpenAI")
     project = get_project(req.project) if req.project else None
     scope = _project_scope(project) if project else None
     fid = _fid(req.project) if req.project is not None else None
@@ -12708,10 +12869,9 @@ def _extract_terms_call(pairs: list, model: Optional[str] = None,
                         domain_id: Optional[str] = None) -> list:
     """Один вызов модели на пачку сегментов. Возвращает список пар или []."""
     import json as _json
-    import openai
     dom = _resolve_domain(domain_id)
     mdl = _resolve_model(model or _dm("translate"))
-    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
+    client = _llm_client(mdl, timeout=90, max_retries=1)
     body = "\n\n".join(f"[{i + 1}] SRC: {p[0]}\n    TGT: {p[1]}" for i, p in enumerate(pairs))
     extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
              else {"max_tokens": 1500, "temperature": 0})
@@ -12771,15 +12931,13 @@ def _openai_edit_terms(source: str, before: str, after: str, project: dict):
     """Один вызов модели про одну правку. None — СБОЙ, а не «пар нет»:
     вызывающий обязан назвать причину, молчаливый пропуск запрещён."""
     import json as _json
-    import openai
     dom = _resolve_domain(project.get("domain"))
     mdl = _resolve_model(_dm("translate"))
     src_l = _lang_prompt((project.get("src") or "").upper() or "SRC")
     tgt_l = _lang_prompt((project.get("tgt") or "").upper() or "TGT")
     # Таймаут 60 — младший из прецедентов проекта; без повторов: подтверждение
     # ждёт этот ответ, и вторая попытка удвоила бы паузу человеку.
-    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"),
-                           timeout=60, max_retries=0)
+    client = _llm_client(mdl, timeout=60, max_retries=0)
     cut = 2000     # сегмент столько не занимает; это страховка, не норма
     body = ("SOURCE (" + src_l + "): " + (source or "")[:cut]
             + "\n\nDRAFT (" + tgt_l + "): " + (before or "")[:cut]
@@ -12871,7 +13029,7 @@ def _harvest_edited_terms(seg: dict, project: dict) -> dict:
         return out
     if _norm_key(before) == _norm_key(target):
         return out
-    if not os.environ.get("OPENAI_API_KEY"):
+    if not _provider_ready(_dm("translate")):
         out["skipped"] = "no_key"
         return out
     if _spend_status().get("over"):
@@ -12929,8 +13087,7 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
     """Достаёт терминологические пары из подтверждённых сегментов проекта.
     Кладёт их в очередь кандидатов, а не в глоссарий. Обычный def: внутри
     блокирующие вызовы модели (см. batch_translate)."""
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise HTTPException(503, "Извлечение терминов требует ключ OpenAI")
+    _key_gate(req.model or _dm("translate"), "Извлечение терминов требует ключ OpenAI")
     project = get_project(pid)
     segs = [s for s in project["segments"]
             if s.get("status") == "confirmed" and (s.get("target") or "").strip()]
@@ -13837,8 +13994,7 @@ class TermcheckRequest(BaseModel):
 @app.post("/api/segments/{pid}/{sid}/termcheck")
 def termcheck_segment(pid: int, sid: int, req: TermcheckRequest = TermcheckRequest()):
     """Обычный def: внутри блокирующий вызов модели (см. batch_translate)."""
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise HTTPException(503, "Проверка терминологии требует ключ OpenAI")
+    _key_gate(req.model or _dm("termcheck"), "Проверка терминологии требует ключ OpenAI")
     seg = get_segment(pid, sid)
     project = get_project(pid)
     result = _run_segment_termcheck(seg, project, req.model)
@@ -13859,8 +14015,7 @@ class TermcheckBatchRequest(BaseModel):
 def termcheck_batch(pid: int, req: TermcheckBatchRequest):
     """Порционно, как back-check: клиент гоняет порции по 10, чтобы один
     запрос не жил дольше таймаута прокси."""
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise HTTPException(503, "Проверка терминологии требует ключ OpenAI")
+    _key_gate(req.model or _dm("termcheck"), "Проверка терминологии требует ключ OpenAI")
     project = get_project(pid)
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
     mdl_id = _resolve_model(req.model or _dm("termcheck"))["id"]
@@ -15097,7 +15252,6 @@ def _openai_term_context(seg: dict, project: dict, disputes: list,
     для остальных сегментов промпт байт в байт прежний и TERM_CONTEXT_VERSION
     не поднимается — подъём перекупил бы сотни готовых вердиктов ради
     вопросов, которых им никто не задаёт."""
-    import openai
     mdl = _resolve_model(model or _dm("termaudit"))
     dom = _resolve_domain(project.get("domain"))
     src_lang, tgt_lang = (_lang_prompt(project.get("src", "RU")),
@@ -15156,7 +15310,7 @@ def _openai_term_context(seg: dict, project: dict, disputes: list,
     if stale:
         body += (NL + NL + "Забракованные проверкой слова перевода:" + NL
                  + NL.join("  - " + w for w in stale))
-    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=2)
+    client = _llm_client(mdl, timeout=90, max_retries=2)
     extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
              else {"max_tokens": 700, "temperature": 0.0})
     try:
@@ -15794,10 +15948,9 @@ def _repair_system(dom: dict, src_lang: str, tgt_lang: str, style: str = "") -> 
 
 
 def _openai_repair(seg: dict, project: dict, findings: list, model: Optional[str]) -> Optional[str]:
-    import openai
     dom = _resolve_domain(project.get("domain"))
     mdl = _resolve_model(model or _dm("repair"))
-    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=120, max_retries=1)
+    client = _llm_client(mdl, timeout=120, max_retries=1)
     lines = []
     for i, f in enumerate(findings, 1):
         lines.append(str(i) + ". " + f["text"])
@@ -17262,7 +17415,6 @@ def _review_vouches(seg: dict) -> bool:
 def _openai_review(seg: dict, project: dict, prev_src: str, next_src: str,
                    terms: list, model: Optional[str] = None) -> Optional[dict]:
     """Один вызов на сегмент. None — вызов не удался (сегмент не трогаем)."""
-    import openai
     mdl = _resolve_model(model or _dm("review"))
     dom = _resolve_domain(project.get("domain"))
     src_lang, tgt_lang = (_lang_prompt(project.get("src", "RU")),
@@ -17280,7 +17432,7 @@ def _openai_review(seg: dict, project: dict, prev_src: str, next_src: str,
         body += (NL + "Терм-лист документа (согласован машиной, не приказ; при споре "
                  "сильнее утверждённые термины): "
                  + "; ".join(h["src"] + " → " + h["tgt"] for h in doc))
-    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
+    client = _llm_client(mdl, timeout=90, max_retries=1)
     extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
              else {"max_tokens": 900, "temperature": 0})
     try:
@@ -17766,8 +17918,8 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
     входа для точечного запуска и для `apply_saved`.
 
     Платный: строка в `_PAID` обязательна, иначе шаг бесплатен для клиента."""
-    if not req.apply_saved and not os.environ.get("OPENAI_API_KEY"):
-        raise HTTPException(503, "Ревизия требует ключ OpenAI")
+    if not req.apply_saved:
+        _key_gate(req.model or _dm("review"), "Ревизия требует ключ OpenAI")
     if req.sample not in REVIEW_SAMPLES:
         # Молча считать опечатку за «all» нельзя: это ровно та выборка, против
         # которой заведён `mixed`, и человек не узнал бы, что мерил не то.
@@ -18008,8 +18160,7 @@ def term_context(pid: int, req: TermContextRequest = TermContextRequest()):
     на сегменте и устаревает вместе с текстом (`_term_context_stale`), как
     back-check и termcheck. Считается ОДИН вызов на сегмент, сколько бы спорных
     терминов в нём ни было."""
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise HTTPException(503, "Арбитр требует ключ OpenAI")
+    _key_gate(req.model or _dm("termaudit"), "Арбитр требует ключ OpenAI")
     project = get_project(pid)
     ids = set(req.segment_ids) if req.segment_ids is not None else None
     # Забракованные слова сверяются в режиме полной сверки (штатный шаг):
@@ -18108,8 +18259,7 @@ class RepairRequest(BaseModel):
 @app.post("/api/segments/{pid}/{sid}/repair")
 def repair_segment(pid: int, sid: int, req: RepairRequest = RepairRequest()):
     _guard_project_write(pid)
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise HTTPException(503, "Ремонт требует ключ OpenAI")
+    _key_gate(req.model or _dm("repair"), "Ремонт требует ключ OpenAI")
     seg = get_segment(pid, sid)
     project = get_project(pid)
     result = _run_segment_repair(seg, project, req.model, req.bc_model, req.tc_model,
@@ -18639,10 +18789,9 @@ def _termsheet_call(sources: list, model: Optional[str], domain_id: Optional[str
                     src_lang: str, tgt_lang: str) -> list:
     """Один вызов на порцию оригиналов. Возвращает список пар или []."""
     import json as _json
-    import openai
     dom = _resolve_domain(domain_id)
     mdl = _resolve_model(model or _dm("review"))
-    client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=90, max_retries=1)
+    client = _llm_client(mdl, timeout=90, max_retries=1)
     body = "\n\n".join(f"[{i + 1}] {t}" for i, t in enumerate(sources))
     extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
              else {"max_tokens": 1500, "temperature": 0})
@@ -18826,6 +18975,141 @@ def _termlist_dispute(project: Optional[dict], src: str, why: str) -> bool:
             _TERMLIST_INDEX.pop(project["id"], None)
             return True
     return False
+
+
+# ── Кросс-проверка терм-листа ДРУГОЙ моделью (termcross) ──────────────
+# Сверка смысла судит пару той же семьёй вопросов, какой её и придумали, и
+# на терминах, где у языка два живых слова, молчит: «громкоговоритель» у
+# одной модели — «karnay», у другой — «ovozkuchaytirgich», и обе пары
+# «то же понятие». Кто из них принят в отрасли, решает человек, но узнать
+# о развилке он должен ДО того, как пара уйдёт в промпт всей книги.
+# Поэтому после сбора ВТОРАЯ модель (по умолчанию — другого поставщика)
+# переводит ТОЛЬКО согласованные машиной термины списком: термин + короткий
+# кусок оригинала, один вызов на порцию, без сегментов целиком — это
+# сотни токенов на весь лист, а не на сегмент. Расхождение — `_termlist_dispute`:
+# пара уходит из промпта и ждёт человека; решения человека не трогаются.
+# Ответ второй модели кэшируется на листе по (модель, термин) и переживает
+# пересбор: один и тот же термин дважды не покупается. Шаг НЕ входит
+# в FULL_RUN_STEPS — он часть сбора терм-листа, а не прогона сегментов.
+TERMCROSS_DEFAULT_MODEL = os.environ.get("TERMCROSS_MODEL", "claude-sonnet-5")
+TERMCROSS_VERSION = "1"           # правишь промпт — поднимай: кэш прежних ответов протухнет
+TERMCROSS_CHUNK = 60              # терминов на вызов
+TERMCROSS_CTX = 160               # символов оригинала вокруг термина
+
+
+def _termcross_system(domain: dict, src_lang: str, tgt_lang: str) -> str:
+    """Промпт второй модели. Отдельно от вызова — проверяется тестом."""
+    src_lang, tgt_lang = _lang_prompt(src_lang), _lang_prompt(tgt_lang)
+    return (
+        "You are a terminologist for " + domain["en"] + " translation from " + src_lang
+        + " into " + tgt_lang + ".\n"
+        "For each numbered " + src_lang + " term give the standard " + tgt_lang + " term used in "
+        + domain["en"] + " publications. The context fragment only disambiguates the meaning.\n"
+        "Give the dictionary form, never a word-by-word calque or a transliteration.\n"
+        'Return ONLY JSON, no prose: {"terms": [{"i": 1, "tgt": "..."}]}. '
+        'If you do not know the term, return "tgt": "".'
+    )
+
+
+def _termcross_call(items: list, model: str, domain_id: Optional[str],
+                    src_lang: str, tgt_lang: str) -> Optional[dict]:
+    """Один вызов на порцию [(термин, контекст)]. {номер с 0: перевод} либо
+    None — вызов не состоялся (и это не «модель не знает»)."""
+    dom = _resolve_domain(domain_id)
+    mdl = _resolve_model(model)
+    client = _llm_client(mdl, timeout=90, max_retries=1)
+    body = "\n".join("[%d] %s" % (i + 1, s) + (" — context: " + c if c else "")
+                     for i, (s, c) in enumerate(items))
+    extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
+             else {"max_tokens": 200 + 30 * len(items), "temperature": 0})
+    try:
+        resp = client.chat.completions.create(
+            model=mdl["id"],
+            messages=[{"role": "system", "content": _termcross_system(dom, src_lang, tgt_lang)},
+                      {"role": "user", "content": body}],
+            **extra)
+        _note_usage("termcross", mdl["id"], resp)
+        data = json.loads(_json_body(resp.choices[0].message.content or "") or "{}")
+        out = {}
+        for it in (data.get("terms") or []):
+            try:
+                i = int(it.get("i")) - 1
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if 0 <= i < len(items):
+                out[i] = (it.get("tgt") or "").strip()
+        return out
+    except Exception as e:
+        _note_provider_error(e)
+        print("[backend] кросс-проверка терминов: вызов не удался: %s" % e, file=sys.stderr)
+        return None
+
+
+def _termcross_ctx(project: dict, e: dict) -> str:
+    """Кусок оригинала вокруг первого вхождения термина — чтобы вторая
+    модель знала, о каком из значений речь, и не читала сегмент целиком."""
+    head = _norm_key(e.get("src"))[:5]
+    for sg in project.get("segments") or []:
+        src = sg.get("source") or ""
+        if head and head not in _norm_key(src):
+            continue
+        form = _term_match(e["src"], src, _src_lang(e))
+        if form:
+            at = src.find(form)
+            lo = max(0, at - TERMCROSS_CTX // 2)
+            return " ".join(src[lo:lo + TERMCROSS_CTX].split())
+    return ""
+
+
+def _termcross(project: dict, first_model: Optional[str]) -> dict:
+    """Кросс-проверка согласованных машиной пар листа второй моделью.
+    Счётчики — в задачу терм-листа; пропуск назван причиной, а не тишиной."""
+    tl = project.get("termlist") or {}
+    ents = [e for e in (tl.get("entries") or [])
+            if e.get("status") == "agreed" and e.get("by") != "human"]
+    if not ents:
+        return {}
+    mdl = _resolve_model(_dm("termcross"))
+    first = _resolve_model(first_model)["id"]
+    if mdl["id"] == first:
+        # Проверка моделью, которая лист и составила, — не проверка.
+        print("[backend] кросс-проверка терминов пропущена: та же модель, что у листа (%s)"
+              % first, file=sys.stderr)
+        return {"crossSkipped": "same_model"}
+    if not _provider_ready(mdl):
+        print("[backend] кросс-проверка терминов пропущена: нет ключа %s для %s"
+              % (LLM_PROVIDER_LABELS[_provider_of(mdl)], mdl["id"]), file=sys.stderr)
+        return {"crossSkipped": "no_key"}
+    cache = tl.setdefault("cross", {}).setdefault(mdl["id"], {})
+    ask = [e for e in ents if (cache.get(_norm_key(e["src"])) or {}).get("v") != TERMCROSS_VERSION]
+    chunks = [ask[i:i + TERMCROSS_CHUNK] for i in range(0, len(ask), TERMCROSS_CHUNK)]
+
+    def work(chunk):
+        return _termcross_call([(e["src"], _termcross_ctx(project, e)) for e in chunk], mdl["id"],
+                               project.get("domain"), project.get("src", "RU"), project.get("tgt", "EN"))
+
+    failed = 0
+    got = _run_parallel(chunks, work) if chunks else []
+    disputed = 0
+    with _SAVE_LOCK:
+        for chunk, ans in zip(chunks, got):
+            if ans is None:
+                failed += 1
+                continue
+            for i, e in enumerate(chunk):
+                cache[_norm_key(e["src"])] = {"tgt": ans.get(i, ""), "v": TERMCROSS_VERSION}
+        for e in ents:
+            c = cache.get(_norm_key(e["src"]))
+            if not c or c.get("v") != TERMCROSS_VERSION:
+                continue        # вызов упал — «не знаю», пара остаётся как была
+            alt = c.get("tgt") or ""
+            same = None if not alt else _term_forms_overlap(alt, e["tgt"])
+            e.setdefault("gates", {})["cross"] = {"model": mdl["id"], "tgt": alt, "same": same}
+            if same is False and _termlist_dispute(
+                    project, e["src"], "другая модель (" + mdl["label"] + ") переводит иначе: " + alt):
+                disputed += 1
+    return {"crossAsked": len(ask), "crossCached": len(ents) - len(ask),
+            "crossDisputed": disputed, "crossFailed": failed}
 
 
 def _termlist_measure(project: dict) -> dict:
@@ -19068,10 +19352,14 @@ def _job_termsheet(job: dict) -> None:
                                "model": _resolve_model(model)["id"], "strict": _termlist_strict(project),
                                "use": bool(cur.get("use", False)),
                                "acceptedBy": cur.get("acceptedBy"), "acceptedAt": cur.get("acceptedAt"),
+                               # Кэш ответов второй модели (termcross) переживает пересбор.
+                               "cross": cur.get("cross") or {},
                                "entries": entries}
         _TERMLIST_INDEX.pop(pid, None)
+    cross = _termcross(project, model)
     job["counters"].update({"calls": calls, "failed": failed, "terms": len(entries),
-                            "meaningCapped": capped, **corpus_n, **_termlist_counts(entries)})
+                            "meaningCapped": capped, **corpus_n, **cross,
+                            **_termlist_counts(entries)})
     if failed:
         project["termlist"]["partial"] = failed
     _ANALYSIS_CACHE.pop(pid, None)
@@ -19804,8 +20092,7 @@ class RepairBatchRequest(BaseModel):
 def repair_batch(pid: int, req: RepairBatchRequest):
     """Порция маленькая (5): на сегмент уходит вызов ремонта плюс перепроверка,
     это самый дорогой прогон в системе."""
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise HTTPException(503, "Ремонт требует ключ OpenAI")
+    _key_gate(req.model or _dm("repair"), "Ремонт требует ключ OpenAI")
     project = get_project(pid)
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
     # Разрешаем модель ТЕМ ЖЕ выражением, что _plan_step и сам заход: клеймо
@@ -19905,11 +20192,10 @@ class BackcheckBatchRequest(BaseModel):
 def backcheck_batch(pid: int, req: BackcheckBatchRequest):
     """Пакетный back-check. Порционный, как и пакетный перевод: клиент гоняет
     порции по 10, поэтому один запрос не живёт дольше таймаута прокси."""
-    if not os.environ.get("OPENAI_API_KEY"):
-        # 503 отдаём до работы, как это делают termcheck и ремонт: иначе
-        # обратный перевод вырождается в посегментные ошибки, и составной
-        # прогон принимает их за «порция целиком провалилась».
-        raise HTTPException(503, "Back-check требует ключ OpenAI")
+    # 503 отдаём до работы, как это делают termcheck и ремонт: иначе
+    # обратный перевод вырождается в посегментные ошибки, и составной
+    # прогон принимает их за «порция целиком провалилась».
+    _key_gate(req.model or _dm("backcheck"), "Back-check требует ключ OpenAI")
     project = get_project(pid)
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
     mdl_id = _resolve_model(req.model or _dm("backcheck"))["id"]
@@ -20329,12 +20615,12 @@ def batch_translate(pid: int, req: BatchRequest):
         if _tm_trusted(_get_context(sg["source"], project=project)[1]):
             return True
         return _norm_key(sg["source"]) in done_by_src
-    if (all_targets and not os.environ.get("OPENAI_API_KEY")
+    if (all_targets and not _provider_ready(req.model)
             and not all(_free(s) for s in all_targets)):
         # 503 до работы, как у termcheck, back-check и ремонта: иначе отсутствие
         # ключа вырождается в посегментные ошибки, и составной прогон принимает
         # их за «порция целиком провалилась» вместо «шаг недоступен».
-        raise HTTPException(503, "Перевод требует ключ OpenAI")
+        raise HTTPException(503, _no_key_text(req.model, "Перевод требует ключ OpenAI"))
     # Потолок на порцию: один HTTP-запрос не должен жить дольше proxy_read_timeout (1800s)
     # в nginx. При ~5-6 с на сегмент 100 штук — это ~10 минут, с большим запасом.
     limit = max(1, min(req.limit, 100))
@@ -22330,12 +22616,15 @@ def _forced_models(params: dict, tid: Optional[str] = None) -> dict:
 # в браузере (виден только системному администратору) → системная → код.
 # Второй процесс (`medcat-worker`) узнаёт о правке по эпохе `doc:systemModels`
 # в `_sync_shared`; задача при этом уже несёт то, что посчитал API.
+# `termcross` — вторая модель, сверяющая терм-лист (см. _termcross): своя
+# строка, потому что её смысл — быть ДРУГОЙ моделью, чем та, что лист составила.
 SYSTEM_MODEL_STEPS = ["translate", "review", "backcheck", "termcheck", "termaudit",
-                      "repair", "judge", "ocr"]
+                      "repair", "judge", "ocr", "termcross"]
 _SYSTEM_MODEL_GLOBALS = {"translate": "DEFAULT_OPENAI_MODEL", "review": "REVIEW_DEFAULT_MODEL",
                          "backcheck": "BACKCHECK_DEFAULT_MODEL", "termcheck": "TERMCHECK_DEFAULT_MODEL",
                          "termaudit": "TERM_CONTEXT_DEFAULT_MODEL", "repair": "REPAIR_DEFAULT_MODEL",
-                         "judge": "JUDGE_DEFAULT_MODEL", "ocr": "IMAGE_READ_MODEL"}
+                         "judge": "JUDGE_DEFAULT_MODEL", "ocr": "IMAGE_READ_MODEL",
+                         "termcross": "TERMCROSS_DEFAULT_MODEL"}
 _CODE_DEFAULT_MODELS = {k: globals()[g] for k, g in _SYSTEM_MODEL_GLOBALS.items()}
 
 
@@ -22404,7 +22693,8 @@ def _job_freeze_models(job: dict) -> dict:
 # в пересчёте. `embed` не пересчитывается: эмбеддинг другой моделью не делают.
 USAGE_STEP_GROUP = {"translate": "translate", "review": "review", "backcheck": "backcheck",
                     "termcheck": "termcheck", "term_context": "termaudit", "repair": "repair",
-                    "judge": "judge", "ocr": "ocr", "terms": "terms", "edit_terms": "terms"}
+                    "judge": "judge", "ocr": "ocr", "terms": "terms", "edit_terms": "terms",
+                    "termcross": "termcross"}
 USAGE_GROUPS = SYSTEM_MODEL_STEPS + ["terms"]
 
 
@@ -22453,7 +22743,8 @@ def _super_or_403(request: Request) -> dict:
 
 def _catalog_brief() -> list:
     return [{"id": m["id"], "label": m["label"], "in": m["in"], "out": m["out"],
-             "note": m.get("note") or ""} for m in OPENAI_MODELS]
+             "note": m.get("note") or "", "provider": _provider_of(m),
+             "ready": _provider_ready(m)} for m in OPENAI_MODELS]
 
 
 def _check_model_map(models: dict, keys: list) -> dict:
@@ -24048,7 +24339,7 @@ def _auto_read_images(project: dict, kind: str, image_pages: int = 0) -> Optiona
     # с этих страниц без чтения нет, и запирать на время задачи нечего.
     if kind not in ("image", "scan") and not image_pages:
         return None
-    if image_text is None or not os.environ.get("OPENAI_API_KEY"):
+    if image_text is None or not _provider_ready(_dm("ocr")):
         project["imagesSkipped"] = "no_key"
         return None
     if _spend_status(_tenant_of(project)).get("over"):

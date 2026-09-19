@@ -140,6 +140,11 @@ function useStore(authed) {
                                   confirmedAt: r.segment.confirmedAt, confirmedRole: r.segment.confirmedRole,
                                   confirmedByName: r.segment.confirmedByName,
                                   unconfirmed: r.segment.unconfirmed, prevTarget: r.segment.prevTarget });
+        /* Признак stale проверок сервер считает по хешу текста (`_segment_for_client`)
+           — его ответ точнее догадки выше: вернули прежний текст — проверки снова свежие. */
+        if (r && r.segment && patch.target !== undefined)
+          _patchLocal(pid, sid, { backcheck: r.segment.backcheck, termcheck: r.segment.termcheck,
+                                  qa_result: r.segment.qa_result });
       });
     }
     return Promise.resolve();

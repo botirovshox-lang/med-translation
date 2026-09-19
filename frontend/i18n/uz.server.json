@@ -326,5 +326,15 @@
  " Страниц с ненадёжным текстовым слоем положено картинками: ": " Matn qatlami ishonchsiz sahifalar rasm sifatida qo'yildi: ",
  " — текст с них читается автоматически.": " — ulardagi matn avtomatik o'qiladi.",
  " Надписи внутри остальных картинок не разобраны. Обратно выгружается PDF, собранный из документа Word.": " Qolgan rasmlar ichidagi yozuvlar ajratilmagan. Qaytarib Word hujjatidan yig'ilgan PDF yuklanadi.",
- " Страниц с ненадёжным слоем без картинки страницы оставлено текстом как есть: ": " Sahifa rasmi bo'lmagan ishonchsiz qatlamli sahifalar matn holida qoldirildi: "
+ " Страниц с ненадёжным слоем без картинки страницы оставлено текстом как есть: ": " Sahifa rasmi bo'lmagan ishonchsiz qatlamli sahifalar matn holida qoldirildi: ",
+ "Этот файл уже загружен на ту же пару языков: «": "Bu fayl xuddi shu til juftligi uchun allaqachon yuklangan: «",
+ "» (№": "» (№",
+ "). Откройте его или замените файл повторным импортом": "). Uni oching yoki faylni qayta import bilan almashtiring",
+ "Строку уже переводили заново ": "Qator allaqachon qaytadan tarjima qilingan: ",
+ " раз — это предел организации. Поправьте текст руками или обратитесь к администратору сервиса": " marta — bu tashkilot chegarasi. Matnni qo'lda tuzating yoki xizmat administratoriga murojaat qiling",
+ "Перевод заново в организации выключен: поправьте текст руками или обратитесь к администратору сервиса": "Tashkilotda qayta tarjima o'chirilgan: matnni qo'lda tuzating yoki xizmat administratoriga murojaat qiling",
+ "Файл уже переводили заново целиком (": "Fayl allaqachon butunlay qayta tarjima qilingan (",
+ " раз): выберите отдельные строки или обратитесь к администратору сервиса": " marta): alohida qatorlarni tanlang yoki xizmat administratoriga murojaat qiling",
+ "Перевода нет — заверять нечего: сначала переведите строку": "Tarjima yo'q — tasdiqlash uchun hech narsa yo'q: avval qatorni tarjima qiling",
+ "Предел перевода заново не может быть отрицательным": "Qayta tarjima chegarasi manfiy bo'lishi mumkin emas"
 }

@@ -237,14 +237,213 @@ _SRT_TIME_RE = re.compile(r"^\s*(\d+\s*$|[\d:,.\->\s]+$)")
 _RTF_CTRL_RE = re.compile(r"\\[a-zA-Z]+-?\d* ?|[{}]|\\\n")
 
 
+# Строка времени субтитра: «00:00:01,000 --> 00:00:03,500» и у VTT — с
+# настройками реплики за ней («align:start position:10%»).
+_CUE_TIME_RE = re.compile(r"^\s*(?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3}\s*-->\s*(?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3}")
+_CUE_TAG_RE = re.compile(r"</?(?:[bciu]|v|lang|ruby|rt|font)(?:[ .][^>]*)?>|<\d{2}:[\d:.]+>", re.I)
+
+
+def _cue_blocks(text: str) -> list:
+    """Субтитры: РЕПЛИКА — один кусок. Строки внутри реплики — это перенос
+    для экрана, а не конец фразы: «Мы ещё не знали, что / всё кончится
+    иначе» по строкам переводилось бы двумя обрывками. Реплики между собой
+    не склеиваются: реплика — единица времени, и фраза, растянутая на две
+    реплики, так и остаётся двумя кусками. Номер реплики, строка времени,
+    заголовок WEBVTT и блоки NOTE/STYLE/REGION — не текст; разметка голоса
+    и курсива (<v Анна>, <i>) снимается."""
+    out, cur = [], []
+    skip = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            if cur:
+                out.append(" ".join(cur))
+            cur, skip = [], False
+            continue
+        if skip:
+            continue
+        if not cur and (line.upper().startswith("WEBVTT") or line.split(" ")[0] in ("NOTE", "STYLE", "REGION")):
+            skip = True                       # шапка и служебные блоки VTT — до пустой строки
+            continue
+        if _CUE_TIME_RE.match(line):
+            cur = []                          # всё до времени в этой реплике — её номер/имя
+            continue
+        if not cur and line.isdigit():
+            continue
+        t = _html.unescape(_CUE_TAG_RE.sub("", line)).strip()
+        if t:
+            cur.append(t)
+    if cur:
+        out.append(" ".join(cur))
+    return out
+
+
+_RTF_SKIP_DEST = {"fonttbl", "colortbl", "stylesheet", "info", "pict", "object", "header", "footer",
+                  "headerl", "headerr", "headerf", "footerl", "footerr", "footerf", "listtable",
+                  "listoverridetable", "rsidtbl", "generator", "xmlnstbl", "themedata", "colorschememapping",
+                  "latentstyles", "datastore", "fldinst", "bkmkstart", "bkmkend", "revtbl", "pgdsctbl"}
+_RTF_TOKEN_RE = re.compile(r"\\([a-zA-Z]+)(-?\d+)? ?|\\'([0-9a-fA-F]{2})|\\(.)|([{}])|([^\\{}]+)", re.S)
+
+
+def _rtf_paragraphs(text: str) -> list:
+    """Текст RTF по АБЗАЦАМ. Прежний разбор снимал управляющие слова
+    регуляркой, и это ломало сегменты трижды: абзацы делились по переводам
+    строки ИСХОДНИКА (редактор переносит RTF-код где придётся, посреди
+    фразы), а не по `\\par`; кириллица в `\\'e0` и `\\u1072` оставалась
+    кодами; таблица шрифтов и стилей шла в текст. Здесь — маленький
+    разборщик: группы, пропуск служебных групп, `\\'hh` в кодировке
+    документа (`\\ansicpg`), `\\uN` с пропуском замены (`\\ucN`), мягкий
+    перенос `\\-` снимается, неразрывный дефис `\\_` — дефис."""
+    enc = "cp1252"
+    m = re.search(r"\\ansicpg(\d+)", text)
+    if m:
+        enc = "cp" + m.group(1)
+    out: list = []
+    buf: list = []
+    pend = bytearray()
+    stack: list = []                  # (skip, uc) на входе в группу
+    skip, uc, skip_chars = False, 1, 0
+    star = False
+
+    def flush_bytes():
+        if pend:
+            try:
+                buf.append(bytes(pend).decode(enc, errors="replace"))
+            except LookupError:
+                buf.append(bytes(pend).decode("cp1252", errors="replace"))
+            pend.clear()
+
+    def para():
+        flush_bytes()
+        t = " ".join("".join(buf).split())
+        if t:
+            out.append(t)
+        buf.clear()
+
+    for m in _RTF_TOKEN_RE.finditer(text):
+        word, num, hexb, sym, brace, plain = m.groups()
+        if brace == "{":
+            stack.append((skip, uc))
+            star = False
+            continue
+        if brace == "}":
+            flush_bytes()
+            skip, uc = stack.pop() if stack else (False, 1)
+            continue
+        if skip_chars and (plain is not None or hexb is not None or sym is not None):
+            # Замена после \uN: один «знак» — байт \'hh, символ или буква.
+            if plain is not None:
+                n = min(skip_chars, len(plain))
+                plain = plain[n:]
+                skip_chars -= n
+                if not plain:
+                    continue
+            else:
+                skip_chars -= 1
+                continue
+        if word is not None:
+            if star or word in _RTF_SKIP_DEST:
+                skip = True
+                star = False
+                continue
+            if skip:
+                continue
+            if word in ("par", "sect", "page", "row"):
+                para()
+            elif word in ("line", "tab", "cell"):
+                flush_bytes()
+                buf.append(" ")
+            elif word == "uc":
+                uc = int(num or 1)
+            elif word == "u":
+                flush_bytes()
+                n = int(num or 0)
+                buf.append(chr(n + 65536 if n < 0 else n))
+                skip_chars = uc
+            elif word in ("emdash", "endash"):
+                flush_bytes()
+                buf.append("—" if word == "emdash" else "–")
+            elif word in ("lquote", "rquote", "ldblquote", "rdblquote"):
+                flush_bytes()
+                buf.append({"lquote": "‘", "rquote": "’", "ldblquote": "“", "rdblquote": "”"}[word])
+            continue
+        if sym is not None:
+            if sym == "*":
+                star = True
+                continue
+            if skip:
+                continue
+            if sym in "\\{}":
+                flush_bytes()
+                buf.append(sym)
+            elif sym == "~":
+                flush_bytes()
+                buf.append(" ")
+            elif sym == "_":
+                flush_bytes()
+                buf.append("-")
+            elif sym in "\r\n":
+                para()                        # «\» с переводом строки — это \par
+            # «\-» — мягкий перенос: в тексте его нет
+            continue
+        if skip:
+            continue
+        if hexb is not None:
+            pend.append(int(hexb, 16))
+            continue
+        if plain is not None:
+            flush_bytes()
+            buf.append(plain.replace("\r", "").replace("\n", ""))
+    para()
+    return out
+
+
+_PO_STR_RE = re.compile(r'^\s*(msgid|msgid_plural|msgstr(?:\[\d+\])?|msgctxt)\s+"(.*)"\s*$')
+_PO_CONT_RE = re.compile(r'^\s*"(.*)"\s*$')
+
+
+def _po_blocks(text: str) -> list:
+    """Каталог gettext: переводить нужно ИСХОДНЫЕ строки (msgid и
+    msgid_plural), а не строки файла: `msgid "Hello"` по строкам давало
+    сегмент вместе с ключевым словом и кавычками, а длинная строка,
+    разбитая на продолжения `"…"`, — по сегменту на кусок. Шапка (пустой
+    msgid) и комментарии — не текст."""
+    out, key, val = [], None, []
+
+    def done():
+        if key in ("msgid", "msgid_plural"):
+            s = re.sub(r"\\(.)", lambda m: {"n": "\n", "t": "\t"}.get(m.group(1), m.group(1)), "".join(val))
+            if s.strip():
+                out.append(s)
+
+    for line in text.splitlines():
+        m = _PO_STR_RE.match(line)
+        if m:
+            done()
+            key, val = m.group(1), [m.group(2)]
+            continue
+        m = _PO_CONT_RE.match(line)
+        if m and key:
+            val.append(m.group(1))
+            continue
+        done()
+        key, val = None, []
+    done()
+    return out
+
+
 def _blocks_from_plain(text: str, ext: str) -> list:
     if ext in (".html", ".htm", ".xml"):
         text = _SCRIPT_RE.sub(" ", text)
         text = _html.unescape(_TAG_RE.sub("\n", text))
     elif ext == ".rtf":
+        if text.lstrip().startswith("{\\rtf"):
+            return _rtf_paragraphs(text)
         text = _RTF_CTRL_RE.sub(" ", text)
     elif ext in (".srt", ".vtt"):
-        text = "\n".join(l for l in text.splitlines() if not _SRT_TIME_RE.match(l))
+        return _cue_blocks(text)
+    elif ext == ".po":
+        return _po_blocks(text)
     elif ext == ".json":
         # Считаем ТОЛЬКО строковые значения: ключи и скобки — разметка, а не
         # текст к переводу; развалившийся JSON считаем как простой текст.
@@ -346,6 +545,73 @@ def _xlsx_cell_texts(zf: "zipfile.ZipFile", names: list) -> Optional[list]:
         return None
 
 
+_ODF_TEXT = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+_ODF_OFFICE = "urn:oasis:names:tc:opendocument:xmlns:office:1.0"
+
+
+def _odf_blocks(raw: bytes) -> Optional[list]:
+    """Абзацы ODF (odt/ods/odp) по элементам `text:p` и `text:h`. Прежний
+    разбор ставил перевод строки на КАЖДЫЙ тег, и выделение внутри абзаца
+    («Абзац <text:span>жирный</text:span> текст») резало его на три
+    сегмента, а `<text:s/>` (повтор пробела) склеивал слова. Здесь инлайн
+    (span, a, s, tab, line-break, мягкий разрыв страницы) — часть абзаца;
+    сноска и надпись внутри абзаца — свои абзацы ПОСЛЕ него; комментарии
+    рецензента не текст. None — XML не разобрался (тогда прежний разбор)."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(raw)
+    except Exception:
+        return None
+    T, O = "{%s}" % _ODF_TEXT, "{%s}" % _ODF_OFFICE
+    body = root.find(O + "body")
+    if body is None:
+        return None
+    out: list = []
+
+    def para(el) -> None:
+        buf: list = []
+        later: list = []                  # сноски, надписи — после абзаца
+
+        def walk(e, top=False):
+            tag = e.tag
+            if not top:
+                if tag == T + "s":
+                    buf.append(" " * int(e.get(T + "c", "1") or 1))
+                elif tag in (T + "tab", T + "line-break"):
+                    buf.append(" ")
+                elif tag in (T + "note", T + "p", T + "h") or tag.endswith("}frame"):
+                    later.append(e)
+                    buf.append(e.tail or "")
+                    return
+                elif tag in (O + "annotation", O + "annotation-end", T + "bookmark-ref"):
+                    buf.append(e.tail or "")
+                    return
+            if e.text and tag != T + "s":
+                buf.append(e.text)
+            for ch in e:
+                walk(ch)
+            if not top:
+                buf.append(e.tail or "")
+        walk(el, top=True)
+        t = " ".join("".join(buf).replace("­", "").split())
+        if t:
+            out.append(t)
+        for e in later:
+            block(e)
+
+    def block(e) -> None:
+        if e.tag in (T + "p", T + "h"):
+            para(e)
+            return
+        if e.tag in (O + "annotation",):
+            return
+        for ch in e:
+            block(ch)
+
+    block(body)
+    return out
+
+
 def check_zip(content: bytes) -> "zipfile.ZipFile":
     """Потолки пакета ДО чтения: распакованный размер объявлен в самом
     пакете, и проверить его дешевле, чем узнать о бомбе по кончившейся памяти
@@ -391,7 +657,11 @@ def _blocks_from_zip(ext: str, content: bytes, notes: list) -> list:
     if ext in (".odt", ".ods", ".odp"):
         if zf.getinfo("content.xml").file_size > MAX_PART:
             raise TooBig("content.xml больше %d МБ" % (MAX_PART // 1024 // 1024))
-        body = zf.read("content.xml").decode("utf-8", errors="replace")
+        raw = zf.read("content.xml")
+        got = _odf_blocks(raw)
+        if got is not None:
+            return got
+        body = raw.decode("utf-8", errors="replace")
         body = re.sub(r"(?s)<office:(automatic-)?styles.*?</office:(automatic-)?styles>", " ", body)
         return [_html.unescape(x) for x in _TAG_RE.sub("\n", body).splitlines()]
     # .docx: запасной разбор — без python-docx. Колонтитулы включены (их
@@ -499,6 +769,7 @@ def _pdf_extract_parallel(content: bytes, n_pages: int, workers: int) -> Optiona
     step = -(-n_pages // workers)
     ranges = [(a, min(a + step, n_pages)) for a in range(0, n_pages, step)]
     pages: list = [None] * n_pages
+    geoms: list = [None] * n_pages
     done = [0]
     lock = threading.Lock()
     failed = []
@@ -527,10 +798,12 @@ def _pdf_extract_parallel(content: bytes, n_pages: int, workers: int) -> Optiona
                 failed.append(str(e))
             for raw in proc.stdout:
                 try:
-                    i, lines = json.loads(raw)
+                    row = json.loads(raw)
+                    i, lines = row[0], row[1]
                 except Exception:
                     continue
                 pages[i] = lines
+                geoms[i] = row[2] if len(row) > 2 else None
                 with lock:
                     done[0] += 1
                     n = done[0]
@@ -555,11 +828,26 @@ def _pdf_extract_parallel(content: bytes, n_pages: int, workers: int) -> Optiona
         print("[textcount] параллельное чтение PDF не удалось (%s) — читаю в одном процессе"
               % "; ".join(x for x in failed if x)[:300], file=sys.stderr)
         return None
-    return pages
+    return pages, geoms
+
+
+def _page_lines(page) -> tuple:
+    """(строки, геометрия | None) страницы — тем же кодом, что у дочерних
+    процессов (`pdfpages_worker.page_lines`): чтение в одном процессе и
+    в четырёх обязано давать одно и то же."""
+    try:
+        try:
+            import pdfpages_worker as _pw        # type: ignore
+        except ImportError:
+            from . import pdfpages_worker as _pw  # type: ignore
+        return _pw.page_lines(page)
+    except Exception:
+        return (page.extract_text() or "").splitlines(), None
 
 
 def _pdf_read_pages(content: bytes) -> tuple:
-    """("ok", строки страниц) или ("scan", число страниц). Без кэша."""
+    """("ok", строки страниц, геометрия страниц) или ("scan", число страниц).
+    Без кэша."""
     try:
         from pypdf import PdfReader          # type: ignore
     except ImportError:
@@ -572,21 +860,25 @@ def _pdf_read_pages(content: bytes) -> tuple:
     try:
         reader = PdfReader(io.BytesIO(content))
         n = len(reader.pages)
-        pages = None
+        got = None
         if n >= PDF_PARALLEL_MIN_PAGES and PDF_WORKERS > 1:
-            pages = _pdf_extract_parallel(content, n, min(PDF_WORKERS, n))
-        if pages is None:
-            pages = []
+            got = _pdf_extract_parallel(content, n, min(PDF_WORKERS, n))
+        if got is None:
+            pages, geoms = [], []
             for k, page in enumerate(reader.pages):
-                pages.append((page.extract_text() or "").splitlines())
+                ls, g = _page_lines(page)
+                pages.append(ls)
+                geoms.append(g)
                 progress("read", k + 1, n)
+        else:
+            pages, geoms = got
     except (NotAvailable,):
         raise
     except Exception as e:
         raise Unsupported("PDF не читается: %s" % e)
     if not any(normalize(b) for ls in pages for b in ls):
         return ("scan", n)
-    return ("ok", pages)
+    return ("ok", pages, geoms)
 
 
 def _pdf_pages(content: bytes, notes: list) -> list:
@@ -597,6 +889,12 @@ def _pdf_pages(content: bytes, notes: list) -> list:
     Большая книга читается несколькими процессами, а ответ кэшируется по
     содержимому: проба, смета и загрузка того же файла идут подряд. Наружу
     уходит КОПИЯ: чистка правит строки на месте."""
+    return _pdf_pages_geom(content, notes)[0]
+
+
+def _pdf_pages_geom(content: bytes, notes: list) -> tuple:
+    """(строки по страницам, геометрия по страницам) — см. `_pdf_pages`;
+    геометрия страницы — `pdfpages_worker.page_lines` или None."""
     import hashlib
     key = hashlib.sha1(content).hexdigest()
     with _PAGES_LOCK:
@@ -617,7 +915,8 @@ def _pdf_pages(content: bytes, notes: list) -> list:
                    "считается только после распознавания.", hit[1])
     notes.append("PDF: текст извлечён из текстового слоя; надписи внутри картинок "
                  "в счёт не идут.")
-    return [list(ls) for ls in hit[1]]
+    geoms = hit[2] if len(hit) > 2 else [None] * len(hit[1])
+    return [list(ls) for ls in hit[1]], list(geoms)
 
 
 def _pdf_blocks(content: bytes, notes: list) -> list:

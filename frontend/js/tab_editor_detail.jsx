@@ -615,7 +615,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
         modelsShown(store) && bcModels && bcModels.length > 0 && React.createElement(Select, {
           value: bcModel || "", disabled: backResult === "loading", style: { flex: 1, minWidth: 150 },
           onChange: (e) => onBcModel && onBcModel(e.target.value),
-        }, bcModels.map(m => React.createElement("option", { key: m.id, value: m.id }, m.label))),
+        }, bcModels.map(m => React.createElement("option", { key: m.id, value: m.id, disabled: m.ready === false }, m.label + (m.ready === false ? TR(" — нет ключа") : "")))),
         React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat",
           disabled: backResult === "loading" || !seg.target,
           onClick: () => runBack(pickModel(bcModel)) }, TR("Проверить заново")))),

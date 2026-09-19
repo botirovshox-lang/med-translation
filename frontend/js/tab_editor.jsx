@@ -150,7 +150,9 @@ const REVIEW_FIX_SHARE = 0.25;
 let AUX_PRICES = {}, EMBED_MODEL_ID = "";
 function embedPrice() { return ((AUX_PRICES[EMBED_MODEL_ID] || {}).in) || 0; }
 
-function reasoning(model) { return model && model.api === "modern" ? REASONING_MULT : 1; }
+/* У Claude Opus 5 / Sonnet 5 думание включено всегда (в каталоге у них
+   `effort`), и его токены тоже идут в оплачиваемый вывод. */
+function reasoning(model) { return model && (model.api === "modern" || model.effort) ? REASONING_MULT : 1; }
 
 function priceOf(model, tokIn, tokOut) {
   /* Ждём ОБЪЕКТ модели, а не её id: передашь строку — `model.in` окажется
@@ -2203,7 +2205,7 @@ function TabEditor({ store, toast }) {
           React.createElement("div", { className: "row", style: { gap: 8 } },
             bcJudge && !costHidden() && React.createElement(Select, { value: judgeModel || "", disabled: !!job,
               onChange: (e) => pickJudgeModel(e.target.value), style: { fontSize: 12.5, maxWidth: 170 } },
-              gptModels.map(m => React.createElement("option", { key: m.id, value: m.id }, m.label))),
+              gptModels.map(m => React.createElement("option", { key: m.id, value: m.id, disabled: m.ready === false }, m.label + (m.ready === false ? TR(" — нет ключа") : "")))),
             React.createElement(Switch, { on: bcJudge, label: TR("Судья"), onClick: () => setBcJudge(v => !v) }))),
         React.createElement("div", { className: "row between", style: { gap: 12 } },
           React.createElement("div", { style: { fontSize: 12.5 } }, TR("Пропускать подтверждённые человеком"),
@@ -3017,7 +3019,7 @@ function StepRow({ row, on, onToggle, open, onOpen, disabled, models }) {
             value: row.modelId || "", disabled: disabled,
             onChange: (e) => row.onModel(e.target.value),
             style: { fontSize: 12.5, maxWidth: 200 } },
-            (models || []).map(m => React.createElement("option", { key: m.id, value: m.id }, m.label)))
+            (models || []).map(m => React.createElement("option", { key: m.id, value: m.id, disabled: m.ready === false }, m.label + (m.ready === false ? TR(" — нет ключа") : ""))))
         : React.createElement("span", { className: "dim", style: { fontSize: 12 } }, row.modelNote)),
     React.createElement("div", { key: row.key + "-n", style: cell({ textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 600, fontSize: 13, opacity: on ? 1 : 0.5, color: (est && est.count) ? "var(--text-1)" : "var(--text-3)" }) },
       est && est.count ? est.count : "—"),

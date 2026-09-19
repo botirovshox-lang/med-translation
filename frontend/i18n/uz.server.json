@@ -326,5 +326,7 @@
  " Страниц с ненадёжным текстовым слоем положено картинками: ": " Matn qatlami ishonchsiz sahifalar rasm sifatida qo'yildi: ",
  " — текст с них читается автоматически.": " — ulardagi matn avtomatik o'qiladi.",
  " Надписи внутри остальных картинок не разобраны. Обратно выгружается PDF, собранный из документа Word.": " Qolgan rasmlar ichidagi yozuvlar ajratilmagan. Qaytarib Word hujjatidan yig'ilgan PDF yuklanadi.",
- " Страниц с ненадёжным слоем без картинки страницы оставлено текстом как есть: ": " Sahifa rasmi bo'lmagan ishonchsiz qatlamli sahifalar matn holida qoldirildi: "
+ " Страниц с ненадёжным слоем без картинки страницы оставлено текстом как есть: ": " Sahifa rasmi bo'lmagan ishonchsiz qatlamli sahifalar matn holida qoldirildi: ",
+ "Нет ключа Anthropic: модель ": "Anthropic kaliti yo'q: model ",
+ " недоступна": " mavjud emas"
 }

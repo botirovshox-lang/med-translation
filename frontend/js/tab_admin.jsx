@@ -451,7 +451,7 @@ function adminStepLabel(k) {
   const L = { translate: TR("Перевод"), review: TR("Ревизия"), backcheck: "back-check",
     termcheck: TR("Проверка терминов"), termaudit: TR("Сверка терминов"), repair: TR("Ремонт"),
     judge: TR("Судья"), ocr: TR("Текст на картинках"), terms: TR("Извлечение терминов"),
-    embed: TR("Эмбеддинги") };
+    termcross: TR("Кросс-проверка терм-листа"), embed: TR("Эмбеддинги") };
   return L[k] || k;
 }
 function adminModelName(models, id) {
@@ -550,7 +550,7 @@ function AdminSystemModels({ toast, onSaved }) {
             value: draft[s.key] || "", style: { maxWidth: 260 },
             onChange: (e) => setDraft({ ...draft, [s.key]: e.target.value }) },
             React.createElement("option", { value: "" }, TR("по умолчанию: ") + adminModelName(d.models, s.codeDefault)),
-            d.models.map(m => React.createElement("option", { key: m.id, value: m.id }, m.label)))),
+            d.models.map(m => React.createElement("option", { key: m.id, value: m.id, disabled: m.ready === false }, m.label + (m.ready === false ? TR(" — нет ключа") : ""))))),
         React.createElement("td", { className: "dim" }, adminPrice(d.models, draft[s.key] || s.codeDefault)),
         React.createElement("td", { className: "dim" }, adminModelName(d.models, s.effective))))))));
 }
@@ -708,6 +708,9 @@ function TabAdmin({ store, toast }) {
         React.createElement(AdminStat, { label: "state.json", value: fmtBytes(pr.stateBytes) }),
         React.createElement(AdminStat, { label: TR("Сессий"), value: pr.sessions }),
         React.createElement(AdminStat, { label: TR("Ключ OpenAI"), value: pr.openaiKey ? TR("есть") : TR("НЕТ"), warn: !pr.openaiKey }),
+        /* Второй поставщик необязателен: без ключа Anthropic просто недоступны
+           модели Claude, поэтому «нет» здесь не тревога. */
+        React.createElement(AdminStat, { label: TR("Ключ Anthropic"), value: pr.anthropicKey ? TR("есть") : TR("нет") }),
         React.createElement(AdminStat, { label: TR("Очередь терминов"), value: pr.termQueue })),
       React.createElement(AdminJobs, { ov, toast, onChange: reload }),
       React.createElement(AdminTenants, { ov, toast, onChange: reload }),

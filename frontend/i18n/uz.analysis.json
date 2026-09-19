@@ -448,5 +448,7 @@
   "Пересчёт не выполнен": "Qayta hisoblash bajarilmadi",
   "Расхождений стало больше на ": "Farqlar ko'paydi: ",
   "Расхождений стало меньше на ": "Farqlar kamaydi: ",
-  "Столько сегментов расходится с глоссарием.": "Shuncha segment lug'atga mos kelmaydi."
+  "Столько сегментов расходится с глоссарием.": "Shuncha segment lug'atga mos kelmaydi.",
+  "Кросс-проверка терм-листа той же моделью, что и ревизия (": "Atamalar ro'yxatini tahrir bilan bir xil model bilan tekshirish (",
+  "): лист составляет модель ревизии, и сверять его ею же сервер не станет.": "): ro'yxatni tahrir modeli tuzadi, va server uni o'sha model bilan tekshirmaydi."
 }

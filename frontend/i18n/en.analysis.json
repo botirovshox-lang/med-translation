@@ -448,5 +448,7 @@
  "Пересчёт не выполнен": "The recount was not done",
  "Расхождений стало больше на ": "There are more divergences by ",
  "Расхождений стало меньше на ": "There are fewer divergences by ",
- "Столько сегментов расходится с глоссарием.": "That is how many segments diverge from the glossary."
+ "Столько сегментов расходится с глоссарием.": "That is how many segments diverge from the glossary.",
+  "Кросс-проверка терм-листа той же моделью, что и ревизия (": "Term sheet cross-check with the same model as the revision (",
+  "): лист составляет модель ревизии, и сверять его ею же сервер не станет.": "): the sheet is built by the revision model, and the server will not check it with the same model."
 }

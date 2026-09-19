@@ -344,5 +344,8 @@
   "Собираем документ": "Hujjatni yig'yapmiz",
   "Готовим страницы-картинки": "Rasm-sahifalarni tayyorlayapmiz",
   "Делим текст на строки": "Matnni qatorlarga bo'lyapmiz",
-  "Сравниваем с файлами проекта": "Loyiha fayllari bilan solishtiryapmiz"
+  "Сравниваем с файлами проекта": "Loyiha fayllari bilan solishtiryapmiz",
+  "Ключ Anthropic": "Anthropic kaliti",
+  "нет": "yo'q",
+  "Кросс-проверка терм-листа": "Atamalar ro'yxatini boshqa model bilan tekshirish"
 }

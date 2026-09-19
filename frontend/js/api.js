@@ -516,6 +516,12 @@
     setStyle:      (pid, body)              => call("POST",   `/projects/${pid}/style`, body || {}),
     styleCheck:    (pid, body)              => call("POST",   `/projects/${pid}/style-check`, body || {}),
     styleUndo:     (pid, stamp)             => call("POST",   `/projects/${pid}/style-check/${stamp}/undo`, {}),
+    /* Правила документа: выводятся из первого перевода (один платный вызов),
+       правятся человеком. `buildGuide` — платный, остальное бесплатно. */
+    guide:         (pid)                    => call("GET",    `/projects/${pid}/guide`),
+    setGuide:      (pid, body)              => call("POST",   `/projects/${pid}/guide`, body || {}),
+    buildGuide:    (pid)                    => call("POST",   `/projects/${pid}/guide/build`, {}),
+    setLangRules:  (code, rules)            => call("POST",   `/lang-rules/${encodeURIComponent(code)}`, { rules }),
     orgStyle:      ()                       => call("GET",    `/style`),
     setOrgStyle:   (fields)                 => call("POST",   `/style`, { fields }),
     /* Контекстный арбитр спорного термина: смотрит сегмент ДО, этот и ПОСЛЕ.

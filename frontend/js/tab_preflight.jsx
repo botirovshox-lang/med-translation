@@ -1477,6 +1477,111 @@ function TermlistCard({ project, toast }) {
         TR("Согласовано: ") + agreed.slice(0, 12).map(e => e.src + " → " + e.tgt).join("; ") + (agreed.length > 12 ? " …" : "")) : null));
 }
 
+// Правила документа: как переведена ЭТА книга — обращение, кавычки, числа,
+// имена, заголовки, орфография языка перевода. Выводятся сами из первых
+// переведённых строк (один вызов модели на прогоне, `_guide_auto`) или по
+// кнопке; человек правит, выключает и дописывает. Правило про сам язык
+// владелец переносит в организацию — оно действует во всех книгах на этот язык.
+function GuideCard({ project, store, toast }) {
+  const [g, setG] = useState(null);
+  const [draft, setDraft] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [add, setAdd] = useState("");
+  const owner = !!(store && store.can && store.can.owner);
+  const take = (r) => { setG(r); setDraft((r.rules || []).map(x => ({ ...x }))); };
+  useEffect(() => {
+    if (!window.API || !window.API.guide || !project) return;
+    let dead = false;
+    setG(null); setAdd("");
+    window.API.safeCall(() => window.API.guide(project.id)).then(r => { if (!dead && r && r.ok) take(r); });
+    return () => { dead = true; };
+  }, [project && project.id]);
+  if (!g) return null;
+  const same = (a, b) => a.text === b.text && a.kind === b.kind && !!a.on === !!b.on;
+  const dirty = draft.length !== (g.rules || []).length || draft.some((r, i) => !same(r, g.rules[i]));
+  /* Не safeCall: тот глотает ошибку молча, а здесь отказ — это ответ
+     человеку (идёт прогон — 409, кончился лимит — 402, модель не ответила — 502). */
+  const run = (fn, msg) => {
+    setBusy(true);
+    Promise.resolve().then(fn).then(r => {
+      setBusy(false);
+      if (!r || !r.ok) return;
+      take(r);
+      if (msg) toast(msg(r));
+    }, e => { setBusy(false); toast(TR("Не получилось: ") + ((e && e.message) || "")); });
+  };
+  const save = (body) => run(() => window.API.setGuide(project.id, body));
+  const build = () => {
+    if (!window.confirm(TR("Собрать правила по переведённым строкам? Один платный вызов модели. Правила, которые вы правили или добавили, останутся."))) return;
+    run(() => window.API.buildGuide(project.id), r => TR("Правил добавлено: ") + (r.added || 0));
+  };
+  const setRule = (i, patch) => setDraft(d => d.map((r, j) => j === i ? { ...r, ...patch } : r));
+  const addRule = () => {
+    const t = add.trim();
+    if (!t) return;
+    setDraft(d => d.concat([{ text: t, kind: "doc", on: true }]));
+    setAdd("");
+  };
+  const orgLang = g.orgLang || [];
+  const saveLang = (rules) => {
+    setBusy(true);
+    Promise.resolve().then(() => window.API.setLangRules(g.tgt, rules)).then(r => {
+      setBusy(false);
+      if (r && r.ok) { setG(s => ({ ...s, orgLang: r.rules })); toast(TR("Правила языка организации сохранены")); }
+    }, e => { setBusy(false); toast(TR("Не получилось: ") + ((e && e.message) || "")); });
+  };
+  const head = g.built
+    ? (g.builtBy === "auto" ? TR("Собраны сами по первым ") : TR("Собраны по кнопке по ")) + g.sample + TR(" строкам")
+      + " · " + TR("в промпте: ") + g.active + (g.off ? " · " + TR("выключены") : "")
+    : (g.rules || []).length
+      ? TR("Правила записаны вручную") + " · " + TR("в промпте: ") + g.active
+      : TR("Соберутся сами, когда будет переведено ") + g.min + TR(" строк (сейчас ") + g.ready + TR("). Или соберите сейчас.");
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "row between", style: { gap: 8, flexWrap: "wrap" } },
+      React.createElement("div", { style: { minWidth: 0 } },
+        React.createElement("div", { style: { fontWeight: 600 } }, TR("Правила документа")),
+        React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+          TR("Как переведена эта книга: обращение к читателю, кавычки, числа, имена, заголовки, орфография. Только форма — термины решает словарь."))),
+      React.createElement("div", { className: "row", style: { gap: 8 } },
+        React.createElement(Btn, { variant: g.built ? "ghost" : "secondary", size: "sm",
+          disabled: busy || dirty || g.ready < g.minPairs, onClick: build },
+          g.built ? TR("Пересобрать") : TR("Собрать сейчас")),
+        (g.rules || []).length ? React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy || dirty,
+          onClick: () => save({ off: !g.off }) }, g.off ? TR("Включить") : TR("Отключить")) : null)),
+    React.createElement("div", { className: "dim", style: { fontSize: 13, marginTop: 6 } }, head),
+    draft.length ? React.createElement("div", { style: { marginTop: 10, display: "flex", flexDirection: "column", gap: 6 } },
+      draft.map((r, i) => React.createElement("div", { key: r.id || ("n" + i), className: "row", style: { gap: 8, alignItems: "center", flexWrap: "wrap" } },
+        React.createElement("input", { type: "checkbox", checked: !!r.on, disabled: busy, title: TR("В промпте"),
+          onChange: (e) => setRule(i, { on: e.target.checked }) }),
+        React.createElement(Input, { value: r.text, disabled: busy, style: { flex: "1 1 260px", minWidth: 0 },
+          onChange: (e) => setRule(i, { text: e.target.value }) }),
+        React.createElement(Select, { value: r.kind || "doc", disabled: busy, style: { width: "auto" },
+          onChange: (e) => setRule(i, { kind: e.target.value }) },
+          React.createElement("option", { value: "doc" }, TR("книга")),
+          React.createElement("option", { value: "lang" }, TR("язык"))),
+        owner && r.kind === "lang" && r.text.trim() && orgLang.indexOf(r.text.trim()) === -1
+          ? React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy,
+              title: TR("Правило будет действовать во всех книгах организации на этот язык"),
+              onClick: () => saveLang(orgLang.concat([r.text.trim()])) }, TR("Во все книги")) : null,
+        React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy, title: TR("Удалить"),
+          onClick: () => setDraft(d => d.filter((_, j) => j !== i)) }, "×")))) : null,
+    React.createElement("div", { className: "row", style: { gap: 8, marginTop: 10, flexWrap: "wrap" } },
+      React.createElement(Input, { value: add, disabled: busy, placeholder: TR("Своё правило, например: к читателю — на «вы»"),
+        style: { flex: "1 1 260px", minWidth: 0 },
+        onChange: (e) => setAdd(e.target.value), onKeyDown: (e) => { if (e.key === "Enter") addRule(); } }),
+      React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy || !add.trim(), onClick: addRule }, TR("Добавить")),
+      dirty ? React.createElement(Btn, { variant: "primary", size: "sm", disabled: busy,
+        onClick: () => save({ rules: draft }) }, TR("Сохранить правила")) : null,
+      dirty ? React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy,
+        onClick: () => setDraft((g.rules || []).map(x => ({ ...x }))) }, TR("Отменить")) : null),
+    orgLang.length ? React.createElement("div", { style: { marginTop: 12, fontSize: 13 } },
+      React.createElement("div", { className: "eyebrow" }, TR("Правила языка организации — во всех книгах на ") + g.tgt),
+      orgLang.map((t, i) => React.createElement("div", { key: i, className: "row", style: { gap: 8, alignItems: "center", marginTop: 4 } },
+        React.createElement("span", { style: { flex: 1, minWidth: 0 } }, t),
+        owner ? React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy, title: TR("Удалить"),
+          onClick: () => saveLang(orgLang.filter((_, j) => j !== i)) }, "×") : null))) : null);
+}
+
 function StyleCard({ project, toast }) {
   /* Всё — состояние ПРОЕКТА (useProjectData). Метка отката особенно:
      «Вернуть прежний» с меткой прошлого проекта ушёл бы откатывать чужую
@@ -1666,6 +1771,7 @@ function TabAnalysis({ store, toast }) {
     /* Настройки книги — стиль и терм-лист: решения на весь документ, до
        перевода. Свёрнуты, но доступны всем — под ролью они отняли бы
        настройку у владельца. */
+    styleOpen && React.createElement(GuideCard, { project, store, toast }),
     styleOpen && React.createElement(StyleCard, { project, toast }),
     styleOpen && React.createElement(TermlistCard, { project, toast }),
     summary && (oldServer || (expert && details)) && React.createElement(React.Fragment, null,

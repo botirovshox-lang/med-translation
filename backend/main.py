@@ -9330,6 +9330,31 @@ def _resegment_plan(project: dict, parsed: dict) -> dict:
         else:
             new.append(j)
     gone = [s for s in removed if id(s) not in used]
+    # Строка текста, не нашедшая места в окне, чаще всего переехала: врезка
+    # встала отдельно, хвост абзаца — за стык страницы («лей- Наблюдения
+    # показали…» теперь продолжает «Этот кустарник…»). Её текст — в новом
+    # абзаце, и её перевод должен стать его подсказкой, а не пропасть. Ищем
+    # по всем пересобранным абзацам: тот, где лежит большая часть её слов.
+    pool = list(changed) + new
+    pool_words = {j: _reseg_words(units[j][0]) for j in pool}
+    still = []
+    for s in gone:
+        w_old = _reseg_words(s.get("source"))
+        best, best_share = None, 0.0
+        if len(w_old) >= 4:
+            for j in pool:
+                share = len(w_old & pool_words[j]) / len(w_old)
+                if share > best_share:
+                    best, best_share = j, share
+        if best is not None and best_share >= RESEG_PREV_OVERLAP:
+            changed.setdefault(best, []).append(s)
+            if best in new:
+                new.remove(best)
+        else:
+            still.append(s)
+    for j in changed:
+        changed[j].sort(key=lambda s: pos.get(id(s), 0))
+    gone = still
     counts = {"kept": sum(1 for p in plan if p and p[0] in ("keep", "moved")),
               "changed": len(changed), "new": len(new), "removed": len(gone),
               "removedTranslated": sum(1 for s in gone if (s.get("target") or "").strip()),

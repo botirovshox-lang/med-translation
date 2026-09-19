@@ -1,7 +1,7 @@
 {
  "_": "Редактор: таблица сегментов, составной прогон, шаги, одобрение терминов, соответствие глоссарию, полоса прогона.",
  "Номера идут не по возрастанию: ": "The numbers do not go in ascending order: ",
- " строк(и). Сегменты, распознанные на картинках, заводятся позже всех и номер получают по счёту заведения, а в таблице стоят на месте своей картинки в документе.": " line(s). Segments recognised on images are created last of all and get their number by the order of creation, while in the table they stand in the place of their image in the document.",
+ " строк(и). Сегменты, распознанные на картинках, и строки, разрезанные вручную, заводятся позже остальных и номер получают по счёту заведения, а в таблице стоят на своём месте в документе.": " line(s). Segments recognised on images and lines split by hand are created after the rest and get their number by the order of creation, while in the table they stand in their place in the document.",
  "Ревизия прочитает и заверенные": "The review will read the confirmed ones too",
  "Сортировать по номеру": "Sort by number",
  "Порядок: по номеру сегмента. Строки идут не так, как идёт документ, — соседние строки соседями в тексте не являются.": "Order: by segment number. The rows do not follow the document — neighbouring rows are not neighbours in the text.",

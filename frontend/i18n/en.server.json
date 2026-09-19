@@ -340,5 +340,21 @@
  "Правила документа требуют ключ OpenAI": "Document conventions require an OpenAI key",
  "По файлу идёт или ждёт прогон — пересборка подождёт его конца": "A run is in progress or queued for this file — rebuilding will wait until it ends",
  "У файла нет сохранённого исходника — пересобрать строки нечем": "The file has no stored original — there is nothing to rebuild the lines from",
- "В исходнике не нашлось ни одной строки текста — пересобирать нечего": "No text lines were found in the original — nothing to rebuild"
+ "В исходнике не нашлось ни одной строки текста — пересобирать нечего": "No text lines were found in the original — nothing to rebuild",
+ "По файлу идёт или ждёт прогон — границы строк подождут его конца": "A run is in progress or queued for this file — line boundaries will wait until it ends",
+ "В этом формате строка — это строка или ячейка файла: склейка оставила бы в нём пустое место. Разрезать строку можно": "In this format a line is a line or cell of the file: joining would leave an empty place in it. Splitting is possible",
+ "Сегмент не найден": "Segment not found",
+ "Строку с картинки склеивать нельзя: её место — рамка на картинке": "A line from an image cannot be joined: its place is a frame on the image",
+ "Это последняя строка файла — склеивать не с чем": "This is the last line of the file — nothing to join with",
+ "Строка стоит в документе в нескольких местах (повтор) — её границы не меняются": "The line stands in several places of the document (a repeat) — its boundaries do not change",
+ "Следующая строка делит абзац с другой строкой — сначала склейте их": "The next line shares a paragraph with another line — join those first",
+ "Эта строка не склеивалась": "This line was not joined",
+ "Копия до склейки не найдена": "The copy from before the join was not found",
+ "Файл после склейки заменялся или пересобирался — вернуть строки нельзя": "The file was replaced or rebuilt after the join — the lines cannot be restored",
+ "Номер второй строки уже занят — вернуть строки нельзя": "The second line's number is taken — the lines cannot be restored",
+ "Склеенную строку правили после склейки — правка пропадёт. Подтвердите явно": "The joined line was edited after the join — the edit will be lost. Confirm explicitly",
+ "Строку с картинки резать нельзя: её место — рамка на картинке": "A line from an image cannot be split: its place is a frame on the image",
+ "Место разреза — внутри текста, и обе части не пустые": "The cut point is inside the text, and both parts are not empty",
+ "Место разреза перевода — внутри текста, и обе части не пустые": "The cut point of the translation is inside the text, and both parts are not empty",
+ "Строка склеена из нескольких абзацев — сначала разъедините её": "The line is joined from several paragraphs — separate it first"
 }

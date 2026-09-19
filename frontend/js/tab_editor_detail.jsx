@@ -351,6 +351,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
         seg.prevSource && React.createElement("div", { className: "dim", style: { fontSize: 12, marginBottom: 4, whiteSpace: "pre-wrap" } },
           TR("Был к оригиналу: ") + seg.prevSource),
         React.createElement("div", { dir: "auto", style: { whiteSpace: "pre-wrap" } }, seg.prevTarget)),
+      React.createElement(SegBoundary, { seg, project, store, toast, onChanged }),
       /* В поле ввода подсветку не нарисовать, поэтому слова из «Проверки»
          стоят под ним: горит то, что есть в переводе, и сам перевод
          с подсветкой — ровно на то место человек и должен посмотреть. */
@@ -781,3 +782,70 @@ function CommentPane({ seg, store, comment, setComment, addComment }) {
 }
 window.SegDetail = SegDetail;
 
+
+/* Границы строки руками: разбор файла иногда режет абзац на две строки
+   (стык страниц, врезка) или склеивает два в один. Модель не зовётся;
+   склеенную строку можно разъединить, разрезанную — склеить обратно.
+   Строки с картинок не трогаются: их место — рамка на картинке. */
+function SegBoundary({ seg, project, store, toast, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [splitOpen, setSplitOpen] = useState(false);
+  const srcRef = useRef(null);
+  const tgtRef = useRef(null);
+  if (!seg || (seg.origin && seg.origin.kind === "image")) return null;
+  const reload = async () => {
+    const fresh = await window.API.getProject(project.id);
+    if (fresh && store.replaceProject) store.replaceProject(fresh);
+    if (onChanged) onChanged();
+  };
+  const run = async (fn, okTitle) => {
+    setBusy(true);
+    try { await fn(); await reload(); toast.success(okTitle, ""); }
+    catch (e) { toast.error(TR("Не получилось"), e.message || String(e)); }
+    setBusy(false);
+  };
+  const merge = () => {
+    if (!confirm(TR("Склеить эту строку со следующей? Перевод склеится тоже — посмотрите на стык."))) return;
+    run(() => window.API.mergeNext(project.id, seg.id), TR("Строки склеены"));
+  };
+  const unmerge = () => run(async () => {
+    try { await window.API.unmerge(project.id, seg.id, false); }
+    catch (e) {
+      if (e.status !== 409 || !confirm((e.message || "") + " " + TR("Вернуть всё равно?"))) throw e;
+      await window.API.unmerge(project.id, seg.id, true);
+    }
+  }, TR("Строки разъединены"));
+  const split = () => {
+    const src = seg.source || "", tgt = seg.target || "";
+    /* Курсор браузер считает в единицах UTF-16, сервер режет по символам:
+       переводим, иначе на символах вне основной плоскости разрез съедет. */
+    const cp = (s, i) => Array.from(s.slice(0, i)).length;
+    const rawAt = srcRef.current ? srcRef.current.selectionStart : 0;
+    const rawT = tgtRef.current && tgt ? tgtRef.current.selectionStart : null;
+    const at = cp(src, rawAt), srcLen = Array.from(src).length;
+    if (!(at > 0 && at < srcLen)) { toast.warning(TR("Поставьте курсор в оригинале туда, где резать"), ""); return; }
+    const tAt = rawT === null ? null : cp(tgt, rawT);
+    const targetAt = tAt !== null && tAt > 0 && tAt < Array.from(tgt).length ? tAt : null;
+    setSplitOpen(false);
+    run(() => window.API.splitSegment(project.id, seg.id, at, targetAt), TR("Строка разрезана"));
+  };
+  const merged = seg.boundary && seg.boundary.kind === "merge";
+  return React.createElement("div", { className: "row row-wrap", style: { gap: 6, marginTop: 8, alignItems: "center" } },
+    React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("Границы строки:")),
+    React.createElement(Btn, { variant: "ghost", size: "sm", icon: "link", disabled: busy, onClick: merge }, TR("Склеить со следующей")),
+    React.createElement(Btn, { variant: "ghost", size: "sm", icon: "scissors", disabled: busy, onClick: () => setSplitOpen(true) }, TR("Разрезать…")),
+    merged && React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", disabled: busy, onClick: unmerge }, TR("Разъединить")),
+    splitOpen && React.createElement(Modal, {
+      title: TR("Разрезать строку"), icon: "scissors", onClose: () => setSplitOpen(false),
+      footer: React.createElement(React.Fragment, null,
+        React.createElement(Btn, { variant: "ghost", onClick: () => setSplitOpen(false) }, TR("Отмена")),
+        React.createElement(Btn, { variant: "primary", icon: "scissors", onClick: split }, TR("Разрезать"))) },
+      React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } },
+        React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+          TR("Поставьте курсор туда, где кончается первая строка. В переводе — по желанию: не поставите, перевод станет подсказкой у обеих строк.")),
+        React.createElement("div", { className: "label" }, TR("Оригинал")),
+        React.createElement("textarea", { className: "textarea", ref: srcRef, readOnly: true, defaultValue: seg.source || "", style: { minHeight: 90 } }),
+        seg.target && React.createElement("div", { className: "label" }, TR("Перевод")),
+        seg.target && React.createElement("textarea", { className: "textarea", ref: tgtRef, readOnly: true, dir: "auto", defaultValue: seg.target, style: { minHeight: 90 } }))));
+}
+window.SegBoundary = SegBoundary;

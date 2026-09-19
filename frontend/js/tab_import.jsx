@@ -571,6 +571,8 @@ function ImpFileCard({ project, store, toast }) {
         React.createElement("div", null, TR("Без изменений: "), React.createElement("strong", null, reseg.kept), TR(" строк — перевод останется.")),
         React.createElement("div", null, TR("Соберутся заново: "), React.createElement("strong", null, reseg.changed + reseg.new),
           reseg.changedFromTranslated ? TR(" — прежний перевод будет подсказкой в карточке строки, переведутся при следующем запуске.") : "."),
+        reseg.manualEdits > 0 && React.createElement("div", null, TR("Склеено и разрезано вручную: "),
+          React.createElement("strong", null, reseg.manualEdits), TR(" — соберутся заново по правилам.")),
         reseg.removed > 0 && React.createElement("div", null, TR("Уйдут как мусор чтения: "), React.createElement("strong", null, reseg.removed),
           TR(" (номера страниц, колонтитулы, обрывки).")),
         (reseg.samples || []).slice(0, 3).map((s, i) => React.createElement("div", { key: i, className: "card card-pad-sm", style: { fontSize: 12 } },

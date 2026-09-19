@@ -340,5 +340,21 @@
  "Правила документа требуют ключ OpenAI": "Hujjat qoidalari uchun OpenAI kaliti kerak",
  "По файлу идёт или ждёт прогон — пересборка подождёт его конца": "Fayl bo'yicha ish ketmoqda yoki navbatda — qayta yig'ish uning tugashini kutadi",
  "У файла нет сохранённого исходника — пересобрать строки нечем": "Faylning saqlangan asl nusxasi yo'q — satrlarni qayta yig'ishning iloji yo'q",
- "В исходнике не нашлось ни одной строки текста — пересобирать нечего": "Asl nusxada birorta ham matn satri topilmadi — qayta yig'adigan narsa yo'q"
+ "В исходнике не нашлось ни одной строки текста — пересобирать нечего": "Asl nusxada birorta ham matn satri topilmadi — qayta yig'adigan narsa yo'q",
+ "По файлу идёт или ждёт прогон — границы строк подождут его конца": "Fayl bo'yicha ish ketmoqda yoki navbatda — satr chegaralari uning tugashini kutadi",
+ "В этом формате строка — это строка или ячейка файла: склейка оставила бы в нём пустое место. Разрезать строку можно": "Bu formatda satr — faylning qatori yoki katagi: birlashtirish unda bo'sh joy qoldiradi. Satrni bo'lish mumkin",
+ "Сегмент не найден": "Segment topilmadi",
+ "Строку с картинки склеивать нельзя: её место — рамка на картинке": "Rasmdagi satrni birlashtirib bo'lmaydi: uning joyi — rasmdagi ramka",
+ "Это последняя строка файла — склеивать не с чем": "Bu faylning oxirgi satri — birlashtiradigan narsa yo'q",
+ "Строка стоит в документе в нескольких местах (повтор) — её границы не меняются": "Satr hujjatda bir necha joyda turadi (takror) — uning chegaralari o'zgarmaydi",
+ "Следующая строка делит абзац с другой строкой — сначала склейте их": "Keyingi satr xatboshini boshqa satr bilan bo'lishadi — avval ularni birlashtiring",
+ "Эта строка не склеивалась": "Bu satr birlashtirilmagan",
+ "Копия до склейки не найдена": "Birlashtirishdan oldingi nusxa topilmadi",
+ "Файл после склейки заменялся или пересобирался — вернуть строки нельзя": "Birlashtirishdan keyin fayl almashtirilgan yoki qayta yig'ilgan — satrlarni qaytarib bo'lmaydi",
+ "Номер второй строки уже занят — вернуть строки нельзя": "Ikkinchi satr raqami band — satrlarni qaytarib bo'lmaydi",
+ "Склеенную строку правили после склейки — правка пропадёт. Подтвердите явно": "Birlashtirilgan satr keyin tahrirlangan — tahrir yo'qoladi. Aniq tasdiqlang",
+ "Строку с картинки резать нельзя: её место — рамка на картинке": "Rasmdagi satrni bo'lib bo'lmaydi: uning joyi — rasmdagi ramka",
+ "Место разреза — внутри текста, и обе части не пустые": "Kesish joyi — matn ichida, va ikkala qism bo'sh emas",
+ "Место разреза перевода — внутри текста, и обе части не пустые": "Tarjimani kesish joyi — matn ichida, va ikkala qism bo'sh emas",
+ "Строка склеена из нескольких абзацев — сначала разъедините её": "Satr bir necha xatboshidan birlashtirilgan — avval uni ajrating"
 }

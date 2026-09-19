@@ -1,7 +1,7 @@
 {
  "_": "Редактор: таблица сегментов, составной прогон, шаги, одобрение терминов, соответствие глоссарию, полоса прогона.",
  "Номера идут не по возрастанию: ": "Raqamlar o'sish tartibida emas: ",
- " строк(и). Сегменты, распознанные на картинках, заводятся позже всех и номер получают по счёту заведения, а в таблице стоят на месте своей картинки в документе.": " ta qator. Rasmlardan o'qilgan segmentlar hammadan keyin yaratiladi va raqamni yaratilish tartibida oladi, jadvalda esa hujjatdagi o'z rasmi o'rnida turadi.",
+ " строк(и). Сегменты, распознанные на картинках, и строки, разрезанные вручную, заводятся позже остальных и номер получают по счёту заведения, а в таблице стоят на своём месте в документе.": " ta qator. Rasmlardan o'qilgan segmentlar va qo'lda bo'lingan satrlar boshqalardan keyin yaratiladi va raqamni yaratilish tartibida oladi, jadvalda esa hujjatdagi o'z o'rnida turadi.",
  "Ревизия прочитает и заверенные": "Reviziya tasdiqlanganlarni ham o'qiydi",
  "Сортировать по номеру": "Raqam bo'yicha saralash",
  "Порядок: по номеру сегмента. Строки идут не так, как идёт документ, — соседние строки соседями в тексте не являются.": "Tartib: segment raqami bo'yicha. Qatorlar hujjat tartibida emas — yonma-yon qatorlar matnda qo'shni emas.",

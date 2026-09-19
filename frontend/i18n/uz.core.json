@@ -392,5 +392,21 @@
   "Уйдут как мусор чтения: ": "O'qish chiqindisi sifatida olib tashlanadi: ",
   " (номера страниц, колонтитулы, обрывки).": " (sahifa raqamlari, kolontitullar, parchalar).",
   "Станет: ": "Bo'ladi: ",
-  "Бесплатно. Вернуть можно кнопкой «Вернуть прежнюю версию».": "Bepul. «Avvalgi versiyani qaytarish» tugmasi bilan qaytarish mumkin."
+  "Бесплатно. Вернуть можно кнопкой «Вернуть прежнюю версию».": "Bepul. «Avvalgi versiyani qaytarish» tugmasi bilan qaytarish mumkin.",
+  "Не получилось": "Bo'lmadi",
+  "Склеить эту строку со следующей? Перевод склеится тоже — посмотрите на стык.": "Bu satr keyingisi bilan birlashtirilsinmi? Tarjima ham birlashadi — ulanish joyiga qarab chiqing.",
+  "Строки склеены": "Satrlar birlashtirildi",
+  "Вернуть всё равно?": "Baribir qaytarilsinmi?",
+  "Строки разъединены": "Satrlar ajratildi",
+  "Поставьте курсор в оригинале туда, где резать": "Asl matnda kursorni kesiladigan joyga qo'ying",
+  "Строка разрезана": "Satr bo'lindi",
+  "Границы строки:": "Satr chegaralari:",
+  "Склеить со следующей": "Keyingisi bilan birlashtirish",
+  "Разрезать…": "Bo'lish…",
+  "Разъединить": "Ajratish",
+  "Разрезать строку": "Satrni bo'lish",
+  "Разрезать": "Bo'lish",
+  "Поставьте курсор туда, где кончается первая строка. В переводе — по желанию: не поставите, перевод станет подсказкой у обеих строк.": "Kursorni birinchi satr tugaydigan joyga qo'ying. Tarjimada — xohishga ko'ra: qo'ymasangiz, tarjima ikkala satrda maslahat bo'lib qoladi.",
+  "Склеено и разрезано вручную: ": "Qo'lda birlashtirilgan va bo'lingan: ",
+  " — соберутся заново по правилам.": " — qoidalar bo'yicha qaytadan yig'iladi."
 }

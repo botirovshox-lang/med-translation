@@ -392,5 +392,21 @@
  "Уйдут как мусор чтения: ": "Removed as reading debris: ",
  " (номера страниц, колонтитулы, обрывки).": " (page numbers, running heads, fragments).",
  "Станет: ": "Becomes: ",
- "Бесплатно. Вернуть можно кнопкой «Вернуть прежнюю версию».": "Free. You can undo it with “Restore previous version”."
+ "Бесплатно. Вернуть можно кнопкой «Вернуть прежнюю версию».": "Free. You can undo it with “Restore previous version”.",
+ "Не получилось": "Did not work",
+ "Склеить эту строку со следующей? Перевод склеится тоже — посмотрите на стык.": "Join this line with the next one? The translation is joined too — check the seam.",
+ "Строки склеены": "Lines joined",
+ "Вернуть всё равно?": "Restore anyway?",
+ "Строки разъединены": "Lines separated",
+ "Поставьте курсор в оригинале туда, где резать": "Put the cursor in the original where to cut",
+ "Строка разрезана": "Line split",
+ "Границы строки:": "Line boundaries:",
+ "Склеить со следующей": "Join with next",
+ "Разрезать…": "Split…",
+ "Разъединить": "Separate",
+ "Разрезать строку": "Split the line",
+ "Разрезать": "Split",
+ "Поставьте курсор туда, где кончается первая строка. В переводе — по желанию: не поставите, перевод станет подсказкой у обеих строк.": "Put the cursor where the first line ends. In the translation it is optional: if you don't, the translation becomes a hint on both lines.",
+ "Склеено и разрезано вручную: ": "Joined and split by hand: ",
+ " — соберутся заново по правилам.": " — they will be rebuilt by the rules."
 }

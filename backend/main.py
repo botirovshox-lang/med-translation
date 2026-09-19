@@ -8915,7 +8915,10 @@ _RESET_ON_SOURCE_CHANGE = (
     "unconfirmed",
     # Предел перевода заново (`_mt_before`) — про ЭТОТ оригинал: другая
     # строка под тем же номером переводится впервые, прежний текст — в prevTarget.
-    "retranslations", "mtDone")
+    "retranslations", "mtDone",
+    # Ручная правка границ (`merge-next`/`split`) — про ТУ нарезку файла:
+    # после замены или пересборки её копия и номера абзацев ни к чему.
+    "boundary")
 
 
 def _new_segment(sid: int, text: str) -> dict:
@@ -9066,7 +9069,7 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
             if o_ is not None:
                 o_.unlink(missing_ok=True)
             raise
-        next_id = max((s.get("id") or 0 for s in project.get("segments") or []), default=0) + 1
+        next_id = _next_seg_id(project)
         new_segments, pairs, added_ids = [], [], []
         for u, item in enumerate(plan):
             text_, idxs = parsed["units"][u]
@@ -9086,6 +9089,7 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
                 added_ids.append(seg["id"])
             elif item and item[0] in ("keep", "moved"):
                 seg = item[1]
+                seg.pop("boundary", None)          # нарезка файла сменилась — откатывать нечего
                 # Ключ терпим к регистру и пробелам, а текст — нет: заголовок,
                 # ставший капсом, обязан прийти в сегмент, иначе проверки
                 # регистра сверяют перевод с устаревшим оригиналом.
@@ -9100,6 +9104,7 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
             for i in idxs:
                 pairs.append([i, seg["id"]])
         project["segments"] = new_segments
+        project["segSeq"] = max(int(project.get("segSeq") or 0), next_id - 1)
         if debit:
             project["pages"] = all_pages
             project["pagesUnit"] = "words"
@@ -9362,7 +9367,10 @@ def _resegment_plan(project: dict, parsed: dict) -> dict:
               "changedFromTranslated": sum(1 for ss in changed.values()
                                            if any((s.get("target") or "").strip() for s in ss)),
               "oldSegments": len(old), "newUnits": len(units),
-              "images": len(_image_segments(project))}
+              "images": len(_image_segments(project)),
+              # Склеенные и разрезанные руками строки пересборка не узнаёт:
+              # их текст не равен ни одному абзацу, и они соберутся заново.
+              "manualEdits": sum(1 for s in old if s.get("boundary"))}
     samples = [{"old": [s.get("source") for s in changed[j]][:3], "new": units[j][0]}
                for j in list(changed)[:5]]
     return {"plan": plan, "removed": removed, "changed": changed, "new": new, "gone": gone,
@@ -9506,6 +9514,372 @@ async def resegment_project(pid: int, req: ResegmentRequest):
         return out
     out.update(await run_in_threadpool(_resegment_apply, pid, parsed, content, filename, pl))
     return out
+
+
+# ─── Границы строк руками: склеить со следующей, разрезать, разъединить ─
+# Разбор файла режет абзац на две строки (стык страниц, врезка, обрывок
+# распознавания) или склеивает два абзаца в один. Пересборка по правилам
+# (`/resegment`) чинит то, что правила знают; остальное правит человек —
+# без вызова модели. Это единственные, кроме повторного импорта, двери,
+# меняющие `seg["source"]`, и поэтому правила у них строгие:
+#   * оригинал — склейка текстов как есть (перенос слова «по-»/«лис»
+#     снимается: дефис на конце + строчная дальше), ни буквы сверх;
+#   * перевод склеенной строки — склейка переводов, статус review (это
+#     черновик, на стыке надо посмотреть), вердикты сняты (`_RESET_ON_SOURCE_CHANGE`),
+#     подпись человека снята `_withdraw_confirmation` ДО сброса — иначе
+#     сброс стёр бы след снятия (`unconfirmed`), инвариант 14;
+#   * счётчик перевода заново НАСЛЕДУЕТСЯ (максимум частей), а не
+#     обнуляется: «разрезал → склеил» иначе обнулял бы предел (инвариант 33);
+#   * номер новой строки — из монотонного счётчика проекта (`_next_seg_id`):
+#     номер удалённой строки не достаётся новой, иначе ссылки «pid:sid»
+#     в очереди терминов и отметки прогонов указали бы на чужую строку;
+#   * выгрузка 1в1: абзац склеенной строки-хвоста (`tails` в карте исходника)
+#     очищается, весь перевод встаёт в абзац головы; абзац, который делят
+#     несколько строк (разрезка), получает склейку их переводов — и только
+#     когда переведены все части (иначе он остаётся оригиналом целиком);
+#   * у форматов с обратной записью (`slotsSha`: txt/csv/xlsx/pptx/html)
+#     строка — это строка или ячейка файла: склейка оставила бы в нём пустое
+#     место, поэтому там только разрезка;
+#   * идущий прогон держит ссылки на сегменты — 409, проверка ещё раз под локом.
+BOUNDARY_DIR = REIMPORT_DIR
+# Копия до склейки лежит рядом с копиями замен файла (`reimport-{pid}-…`):
+# удаление файла уносит её тем же `_reimport_cleanup`.
+_BOUNDARY_STAMP_RE = re.compile(r"\d{1,9}-merge-[0-9-]{8,24}$")
+
+
+def _boundary_file_mark(project: dict) -> list:
+    """Отпечаток исходника: замена, пересборка и повторная привязка
+    исходника (`/source` — меняет `sourceDocx.at`) меняют его."""
+    return [project.get("sourceSha"), (project.get("reimport") or {}).get("stamp"),
+            (project.get("sourceDocx") or {}).get("at") if isinstance(project.get("sourceDocx"), dict) else None]
+
+
+def _next_seg_id(project: dict) -> int:
+    """Номер новой строки: больше всех, что были, а не только тех, что есть."""
+    n = max(max((int(s.get("id") or 0) for s in project.get("segments") or []), default=0),
+            int(project.get("segSeq") or 0)) + 1
+    project["segSeq"] = n
+    return n
+
+
+def _boundary_guard(pid: int) -> None:
+    if _active_job_for(pid) or _job_busy(pid, "images"):
+        raise HTTPException(409, "По файлу идёт или ждёт прогон — границы строк подождут его конца")
+
+
+def _spaceless(lang: str) -> bool:
+    """Письмо без пробелов между словами (ZH, JA, TH…) — по таблице норм."""
+    try:
+        return bool(((textcount.norms().get("rows") or {}).get((lang or "").upper()) or {}).get("spaceless"))
+    except Exception:
+        return False
+
+
+def _join_text(a: str, b: str, lang: str = "") -> str:
+    """Склейка двух кусков: перенос слова («по-» + «лис…») снимается,
+    иначе — через пробел (у письма без пробелов — слитно)."""
+    a = (a or "").rstrip()
+    b = (b or "").lstrip()
+    if not a or not b:
+        return a or b
+    if a[-1] in "-­" and len(a) > 1 and a[-2].isalpha() and b[:1].islower():
+        return a[:-1] + b
+    return a + ("" if _spaceless(lang) else " ") + b
+
+
+def _is_image_seg(s: dict) -> bool:
+    return (s.get("origin") or {}).get("kind") == "image"
+
+
+def _boundary_reset(seg: dict, how: str, parts: list) -> None:
+    """Другой оригинал: подпись снята со следом, вердикты сняты, счётчик
+    перевода заново — наследство частей."""
+    if seg.get("confirmedBy") is None:
+        # Заверена была другая часть (вторая строка склейки): её подпись
+        # уходит вместе с ней, и след снятия ложится на склеенную строку.
+        signed = next((p for p in parts if p is not seg and p.get("confirmedBy") is not None), None)
+        if signed is not None:
+            for k in ("confirmedBy", "confirmedAt", "confirmedRole"):
+                if signed.get(k) is not None:
+                    seg[k] = signed[k]
+    _withdraw_confirmation(seg, how)
+    unconf = seg.get("unconfirmed")
+    for k in _RESET_ON_SOURCE_CHANGE:
+        if k not in ("retranslations", "mtDone"):
+            seg.pop(k, None)
+    if unconf:
+        seg["unconfirmed"] = unconf
+    rt = max((int(p.get("retranslations") or 0) for p in parts), default=0)
+    if rt:
+        seg["retranslations"] = rt
+    else:
+        seg.pop("retranslations", None)
+    if any(p.get("mtDone") for p in parts):
+        seg["mtDone"] = True
+    else:
+        seg.pop("mtDone", None)
+    seg["qa"] = []
+    seg["wordCount"] = len((seg.get("source") or "").split())
+
+
+def _boundary_backup(pid: int, kind: str, payload: dict) -> str:
+    stamp = "%d-%s-%s" % (pid, kind, datetime.now().strftime("%Y%m%d-%H%M%S"))
+    BOUNDARY_DIR.mkdir(parents=True, exist_ok=True)
+    while (BOUNDARY_DIR / ("reimport-%s.json" % stamp)).exists():
+        stamp += "-1"
+    path = BOUNDARY_DIR / ("reimport-%s.json" % stamp)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    os.replace(str(tmp), str(path))
+    return stamp
+
+
+def _seg_pairs(data: Optional[dict], sid: int) -> list:
+    return [int(i) for i, s in ((data or {}).get("pairs") or []) if int(s) == sid]
+
+
+def _para_groups(data: dict) -> list:
+    """[(номер абзаца, [строки абзаца по порядку])] в порядке карты."""
+    order, groups = [], {}
+    for idx, sid in data.get("pairs") or []:
+        idx, sid = int(idx), int(sid)
+        if idx not in groups:
+            groups[idx] = []
+            order.append(idx)
+        if sid not in groups[idx]:
+            groups[idx].append(sid)
+    return [(i, groups[i]) for i in order]
+
+
+@app.post("/api/segments/{pid}/{sid}/merge-next")
+def merge_segment_next(pid: int, sid: int):
+    """Склеить строку со СЛЕДУЮЩЕЙ строкой текста (строки картинок
+    пропускаются и не склеиваются). Бесплатно; откат — `/unmerge`."""
+    project = get_project(pid)
+    _guard_project_write(pid)
+    _boundary_guard(pid)
+    if project.get("slotsSha"):
+        raise HTTPException(400, "В этом формате строка — это строка или ячейка файла: склейка оставила бы "
+                                 "в нём пустое место. Разрезать строку можно")
+    with _SAVE_LOCK:
+        project = get_project(pid)
+        _boundary_guard(pid)
+        segs = project["segments"]
+        i = next((k for k, s in enumerate(segs) if s["id"] == sid), None)
+        if i is None:
+            raise HTTPException(404, "Сегмент не найден")
+        s1 = segs[i]
+        if _is_image_seg(s1):
+            raise HTTPException(400, "Строку с картинки склеивать нельзя: её место — рамка на картинке")
+        j = next((k for k in range(i + 1, len(segs)) if not _is_image_seg(segs[k])), None)
+        if j is None:
+            raise HTTPException(400, "Это последняя строка файла — склеивать не с чем")
+        s2 = segs[j]
+        data = _load_source_map(pid)
+        tails = {int(x) for x in ((data or {}).get("tails") or [])}
+        p1, p2 = _seg_pairs(data, s1["id"]), _seg_pairs(data, s2["id"])
+        if data and (len([x for x in p1 if x not in tails]) > 1 or len([x for x in p2 if x not in tails]) > 1):
+            raise HTTPException(400, "Строка стоит в документе в нескольких местах (повтор) — её границы не меняются")
+        if data:
+            for idx in p2:
+                others = [int(s) for k, s in data.get("pairs") or [] if int(k) == idx
+                          and int(s) not in (s1["id"], s2["id"])]
+                if others:
+                    raise HTTPException(400, "Следующая строка делит абзац с другой строкой — сначала склейте их")
+        payload = {"kind": "merge", "project": pid, "s1": json.loads(json.dumps(s1)),
+                   "s2": json.loads(json.dumps(s2)), "pos2": j - i,
+                   "pairs": [[x, s1["id"]] for x in p1] + [[x, s2["id"]] for x in p2],
+                   "tails": sorted(tails), "file": _boundary_file_mark(project)}
+        stamp = _boundary_backup(pid, "merge", payload)
+        src_old = [s1.get("source") or "", s2.get("source") or ""]
+        src = _join_text(src_old[0], src_old[1], project.get("src") or "")
+        t1, t2 = (s1.get("target") or "").strip(), (s2.get("target") or "").strip()
+        tgt_join = _join_text(t1, t2, project.get("tgt") or "")
+        comments = list(s1.get("comments") or []) + list(s2.get("comments") or [])
+        _boundary_reset(s1, "merge", [s1, s2])
+        s1["source"] = src
+        s1["comments"] = comments
+        s1.pop("prevTarget", None)
+        s1.pop("prevSource", None)
+        if t1 and t2:
+            s1["target"], s1["status"] = tgt_join, "review"
+        else:
+            # Переведена только одна часть: склейка выдала бы перевод половины
+            # за перевод всей строки, и выгрузка потеряла бы вторую половину
+            # целиком (хвост очищается). Строка — новая, готовое — подсказкой.
+            s1["target"], s1["status"] = "", "new"
+            if tgt_join:
+                s1["prevTarget"] = tgt_join
+                s1["prevSource"] = "\n".join(src_old)
+        s1["wordCount"] = len(src.split())
+        added_tails = [k for k in p2 if k not in p1 and k not in tails]
+        s1["boundary"] = {"kind": "merge", "stamp": stamp, "sid2": s2["id"],
+                          "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                          "addedTails": added_tails,
+                          "hash": _text_hash(src + "\n" + (s1.get("target") or ""))}
+        del segs[j]
+        if data:
+            pairs = []
+            for k, s in data.get("pairs") or []:
+                k, s = int(k), int(s)
+                if s == s2["id"]:
+                    if k in p1:
+                        continue                        # части одного абзаца — снова одна строка
+                    tails.add(k)
+                    s = s1["id"]
+                if [k, s] not in pairs:
+                    pairs.append([k, s])
+            data["pairs"] = pairs
+            data["tails"] = sorted(tails)
+            data["at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _PROJECTS_VER[0] += 1
+        save_state(STATE)
+        # Карта — ПОСЛЕ состояния: упади сохранение, карта не ушла бы вперёд
+        # сегментов (хвост без склеенной строки стёр бы текст в выгрузке).
+        if data:
+            _save_source_map(pid, data)
+    _audit("segment.merge", project=pid, segment=sid, removed=s2["id"], stamp=stamp)
+    return {"ok": True, "segment": _segment_for_client(s1, project), "removed": s2["id"]}
+
+
+@app.post("/api/segments/{pid}/{sid}/unmerge")
+def unmerge_segment(pid: int, sid: int, force: bool = False):
+    """Вернуть две строки, как они были до склейки. Правили склеенную строку
+    после склейки — 409 (правка пропала бы); `force` — вернуть всё равно."""
+    get_project(pid)
+    _guard_project_write(pid)
+    _boundary_guard(pid)
+    with _SAVE_LOCK:
+        project = get_project(pid)
+        _boundary_guard(pid)
+        segs = project["segments"]
+        i = next((k for k, s in enumerate(segs) if s["id"] == sid), None)
+        if i is None:
+            raise HTTPException(404, "Сегмент не найден")
+        s1 = segs[i]
+        mark = s1.get("boundary") or {}
+        if mark.get("kind") != "merge":
+            raise HTTPException(400, "Эта строка не склеивалась")
+        path = BOUNDARY_DIR / ("reimport-%s.json" % mark.get("stamp", ""))
+        if not _BOUNDARY_STAMP_RE.fullmatch(mark.get("stamp") or "") or not path.exists():
+            raise HTTPException(404, "Копия до склейки не найдена")
+        snap = json.loads(path.read_text(encoding="utf-8"))
+        if snap.get("project") != pid:
+            raise HTTPException(400, "Эта копия относится к другому проекту")
+        data = _load_source_map(pid)
+        # Номера абзацев в копии — от ТОГО исходника; замена или пересборка
+        # файла после склейки их обесценила.
+        if snap.get("file") != _boundary_file_mark(project):
+            raise HTTPException(409, "Файл после склейки заменялся или пересобирался — вернуть строки нельзя")
+        if any(s["id"] == snap["s2"]["id"] for s in segs):
+            raise HTTPException(409, "Номер второй строки уже занят — вернуть строки нельзя")
+        if _text_hash((s1.get("source") or "") + "\n" + (s1.get("target") or "")) != mark.get("hash") and not force:
+            raise HTTPException(409, "Склеенную строку правили после склейки — правка пропадёт. Подтвердите явно")
+        # Перевод заново, сделанный ПОСЛЕ склейки, у частей не пропадает:
+        # иначе «склеил → перевёл → разъединил» обнулял бы предел (инвариант 33).
+        rt = int(s1.get("retranslations") or 0)
+        for part in (snap["s1"], snap["s2"]):
+            if rt > int(part.get("retranslations") or 0):
+                part["retranslations"] = rt
+            if s1.get("mtDone"):
+                part["mtDone"] = True
+        segs[i] = snap["s1"]
+        # На своё место: между частями могли стоять строки картинок.
+        segs.insert(min(i + int(snap.get("pos2") or 1), len(segs)), snap["s2"])
+        if data:
+            ids = {snap["s1"]["id"], snap["s2"]["id"]}
+            pairs = [[int(k), int(s)] for k, s in data.get("pairs") or [] if int(s) not in ids]
+            pairs.extend(snap.get("pairs") or [])
+            pairs.sort(key=lambda x: (x[0], 0 if x[1] == snap["s1"]["id"] else 1))
+            data["pairs"] = pairs
+            # Снимаются только хвосты ЭТОЙ склейки: чужие (склейки после неё)
+            # остаются, иначе их абзацы получили бы перевод второй раз.
+            added = {int(x) for x in (mark.get("addedTails") or [])}
+            data["tails"] = sorted({int(x) for x in (data.get("tails") or [])} - added)
+            data["at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _PROJECTS_VER[0] += 1
+        save_state(STATE)
+        if data:
+            _save_source_map(pid, data)
+    _audit("segment.unmerge", project=pid, segment=sid)
+    return {"ok": True, "segments": [_segment_for_client(snap["s1"], project),
+                                     _segment_for_client(snap["s2"], project)]}
+
+
+class SplitSegmentRequest(BaseModel):
+    at: int
+    target_at: Optional[int] = None
+
+
+@app.post("/api/segments/{pid}/{sid}/split")
+def split_segment(pid: int, sid: int, req: SplitSegmentRequest):
+    """Разрезать строку в месте `at` оригинала. `target_at` — место в
+    переводе: задано — перевод режется там же; нет — обе части пустые,
+    прежний перевод — подсказкой «Прежний перевод» у обеих. Вернуть —
+    «Склеить со следующей»."""
+    get_project(pid)
+    _guard_project_write(pid)
+    _boundary_guard(pid)
+    with _SAVE_LOCK:
+        project = get_project(pid)
+        _boundary_guard(pid)
+        segs = project["segments"]
+        i = next((k for k, s in enumerate(segs) if s["id"] == sid), None)
+        if i is None:
+            raise HTTPException(404, "Сегмент не найден")
+        s1 = segs[i]
+        if _is_image_seg(s1):
+            raise HTTPException(400, "Строку с картинки резать нельзя: её место — рамка на картинке")
+        src = s1.get("source") or ""
+        ok = 0 < req.at < len(src)
+        a, b = (src[:req.at].strip(), src[req.at:].strip()) if ok else ("", "")
+        if not a or not b:
+            raise HTTPException(400, "Место разреза — внутри текста, и обе части не пустые")
+        tgt = s1.get("target") or ""
+        ta = tb = ""
+        if req.target_at is not None:
+            if not (0 < req.target_at < len(tgt)) or not tgt[:req.target_at].strip() or not tgt[req.target_at:].strip():
+                raise HTTPException(400, "Место разреза перевода — внутри текста, и обе части не пустые")
+            ta, tb = tgt[:req.target_at].strip(), tgt[req.target_at:].strip()
+        data = _load_source_map(pid)
+        tails = {int(x) for x in ((data or {}).get("tails") or [])}
+        p1 = _seg_pairs(data, sid)
+        if any(x in tails for x in p1):
+            raise HTTPException(400, "Строка склеена из нескольких абзацев — сначала разъедините её")
+        if len(p1) > 1:
+            raise HTTPException(400, "Строка стоит в документе в нескольких местах (повтор) — её границы не меняются")
+        old = json.loads(json.dumps(s1))
+        nid = _next_seg_id(project)
+        s2 = _new_segment(nid, b)
+        _boundary_reset(s1, "split", [old])
+        _boundary_reset(s2, "split", [old])
+        s1["source"], s1["wordCount"] = a, len(a.split())
+        if req.target_at is not None:
+            s1["target"], s2["target"] = ta, tb
+            s1["status"] = s2["status"] = "review"
+        else:
+            s1["target"] = s2["target"] = ""
+            s1["status"] = s2["status"] = "new"
+            if tgt.strip():
+                s1["prevTarget"] = s2["prevTarget"] = tgt
+                s1["prevSource"] = s2["prevSource"] = src
+        s1["boundary"] = {"kind": "split", "into": nid, "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+        s2["boundary"] = {"kind": "split", "from": sid, "at": s1["boundary"]["at"]}
+        segs.insert(i + 1, s2)
+        if data and p1:
+            pairs = []
+            for k, s in data.get("pairs") or []:
+                pairs.append([int(k), int(s)])
+                if int(s) == sid:
+                    pairs.append([int(k), nid])
+            data["pairs"] = pairs
+            data["at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _PROJECTS_VER[0] += 1
+        save_state(STATE)
+        if data and p1:
+            _save_source_map(pid, data)
+    _audit("segment.split", project=pid, segment=sid, into=nid)
+    return {"ok": True, "segments": [_segment_for_client(s1, project), _segment_for_client(s2, project)]}
 
 
 # ─── Привязка исходника к УЖЕ существующему проекту ─────────────────
@@ -10145,7 +10519,7 @@ def image_restore_block(pid: int, req: ImageRestoreRequest):
         from docx import Document
         anchors = _docx_image_anchors(Document(io.BytesIO(Path(data["path"]).read_bytes())))
         paras = anchors.get(req.part) or []
-    nid = max((s["id"] for s in project["segments"]), default=0) + 1
+    nid = _next_seg_id(project)
     seg = _image_new_segment(text, req.part, req.block, nid)
     # Встаём ЗА своими же соседями по картинке, а не перед ними: иначе
     # у возвращённого сегмента в промпте перевода окажутся чужие соседи,
@@ -10555,7 +10929,7 @@ def _job_images(job: dict) -> None:
                     if have is not None:
                         after = have["id"]
                         continue
-                    nid = max((s["id"] for s in project["segments"]), default=0) + 1
+                    nid = _next_seg_id(project)
                     seg = _image_new_segment(b["text"].strip(), name, i, nid)
                     _image_place_segment(project, seg, anchor, after)
                     b["seg"] = nid
@@ -22872,28 +23246,49 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
              # оглавление и номера страниц уже под перевод.
              "fields_refreshed": 0}
     shown = 0
-    for idx, sid in data.get("pairs") or []:
-        seg = by_id.get(sid)
-        if seg is None or idx >= len(all_p):
+    # Границы строк, поправленные руками (`merge-next`/`split`): абзац-хвост
+    # склеенной строки очищается — её перевод целиком встаёт в абзац головы;
+    # абзац, который делят несколько строк, получает склейку их переводов,
+    # и только когда переведены ВСЕ части: иначе он остаётся оригиналом
+    # целиком, а не наполовину.
+    tails = {int(x) for x in (data.get("tails") or [])}
+    groups = _para_groups(data)
+    heads = {s for idx, sids in groups if idx in tails for s in sids}
+    written_sids: set = set()
+    stats["merged"] = 0
+    # Хвосты — ПОСЛЕ голов: абзац-хвост очищается, только если абзац его
+    # строки действительно записан (иначе текст хвоста пропал бы вовсе).
+    for idx, sids in [g for g in groups if g[0] not in tails] + [g for g in groups if g[0] in tails]:
+        parts = [by_id.get(s) for s in sids]
+        sid = sids[0]
+        if any(x is None for x in parts) or idx >= len(all_p):
             # Сегмент удалили после привязки — абзац остаётся на языке оригинала.
             stats["lost"] += 1
             continue
-        target = (seg.get("target") or "").strip()
-        if not target:
+        if idx in tails:
+            if all(s in written_sids for s in sids):
+                slots, _full, _dropped = _para_slots(all_p[idx], qn)
+                if slots:
+                    _write_para(slots, "")
+                    stats["merged"] += 1
+            continue
+        targets = [(x.get("target") or "").strip() for x in parts]
+        if not all(targets):
             stats["untranslated"] += 1
             continue
+        target = " ".join(targets)
         slots, full, dropped = _para_slots(all_p[idx], qn)
         if not slots:
             # Весь текст абзаца лежит в поле или скрыт — вписывать некуда.
             stats["noslot"] += 1
             continue
-        source = seg.get("source") or ""
+        source = " ".join((x.get("source") or "") for x in parts)
         skey = _match_key(source)
         # Сегмент СТАРОГО импорта равен полному тексту абзаца (с номером
         # страницы из поля), нового — тексту слотов. Хвост-номер снимается
         # только у старого: у нового его в сегменте нет по построению.
         same_full = _match_key(full) == skey
-        same = same_full or _match_key(
+        same = any(s in heads for s in sids) or same_full or _match_key(
             "".join((t.text or "") for t, _sig in slots)) == skey
         dropped = dropped.strip()
         if same_full and dropped and target.rstrip().endswith(dropped):
@@ -22918,6 +23313,7 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
         stats["inline"] += 1 if split else 0
         stats["approx"] += 1 if approx else 0
         stats["written"] += 1
+        written_sids.update(sids)
 
     # Картинки идут ПОСЛЕ абзацев и только теперь: подписи, которые здесь
     # добавляются, сдвигают абзацы, а `all_p` уже разобран по номерам.
@@ -23000,12 +23396,19 @@ def _export_original(project: dict, out: Path, tmp: Path) -> dict:
                                      "местам. Скачайте Word-документ или загрузите файл заново")
     by_id = {s["id"]: s for s in project.get("segments") or []}
     tr: dict = {}
-    for idx, sid in (data.get("pairs") or []):
-        seg = by_id.get(int(sid))
-        t = (seg.get("target") or "").strip() if seg else ""
-        if t:
-            tr[int(idx)] = t
-    untranslated = sum(1 for _i, sid in (data.get("pairs") or []) if int(sid) in by_id) - len(tr)
+    # Слот, который делят строки после ручной разрезки, получает склейку их
+    # переводов — только когда переведены все части (склейки у этих
+    # форматов нет: строка — это строка или ячейка файла).
+    untranslated = 0
+    for idx, sids in _para_groups(data):
+        parts = [by_id.get(int(s)) for s in sids]
+        if any(x is None for x in parts):
+            continue
+        ts = [(x.get("target") or "").strip() for x in parts]
+        if all(ts):
+            tr[int(idx)] = " ".join(ts)
+        else:
+            untranslated += 1
     tmp.write_bytes(importers.write_back(project.get("fileName") or orig.name, orig.read_bytes(), tr,
                                          rule=rule))
     return {"original": kind, "written": len(tr), "untranslated": max(0, untranslated)}

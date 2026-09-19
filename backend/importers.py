@@ -306,6 +306,24 @@ _HTML_BLOCK = {"p", "div", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6",
 _HTML_SKIP = {"script", "style", "noscript", "template", "svg", "math"}
 
 
+_HTML_BR_RE = re.compile(r"<br\b[^>]*>", re.I)
+_HTML_ANY_TAG_RE = re.compile(r"<!--.*?-->|<[^>]*>", re.S)
+
+
+def _html_run_text(raw: str) -> str:
+    """Текст пробега так, как его видит читатель страницы: инлайн-тег — не
+    пробел («полн<b>ый</b>» — одно слово, «H<sub>2</sub>O» — «H2O»,
+    «<a>ссылка</a>.» — без пробела перед точкой), `<br>` — пробел, мягкий
+    перенос (`&shy;`, `<wbr>`) в тексте не остаётся. Прежде каждый тег
+    становился пробелом и резал слова посередине. Правило резки поменялось —
+    у проектов, где такое было, сторож `slots_sha` откажет в выгрузке
+    «как в оригинале» до повторного импорта (громко, а не в чужие места)."""
+    s = _HTML_BR_RE.sub(" ", raw)
+    s = _HTML_ANY_TAG_RE.sub("", s)
+    s = _html.unescape(s).replace("­", "")
+    return " ".join(s.split())
+
+
 def html_slots(text: str) -> list:
     """[(текст пробега, (начало, конец))] — блочные текстовые пробеги HTML
     с ОФФСЕТАМИ в исходной строке. Пробег — всё между двумя блочными тегами
@@ -331,7 +349,7 @@ def html_slots(text: str) -> list:
         def _cut(self, end):
             if self.run_start is not None and self.has_text and end > self.run_start:
                 raw = self.src[self.run_start:end]
-                txt = " ".join(_html.unescape(re.sub(r"<[^>]*>", " ", raw)).split())
+                txt = _html_run_text(raw)
                 if txt:
                     self.out.append((txt, (self.run_start, end)))
             self.run_start = None
@@ -435,14 +453,18 @@ def _pptx_slide_names(z: zipfile.ZipFile) -> list:
 _A_P_RE = re.compile(r"<a:p\b[^>]*>.*?</a:p>", re.S)
 _A_T_RE = re.compile(r"<a:t(?:\s[^>]*)?>(.*?)</a:t>|<a:t(?:\s[^>]*)?/>", re.S)
 _A_FLD_RE = re.compile(r"<a:fld\b[^>]*>.*?</a:fld>", re.S)
+_A_BR_RE = re.compile(r"<a:br\b[^>]*/>|<a:br\b[^>]*>.*?</a:br>", re.S)
 
 
 def _pptx_para_text(p_xml: str) -> str:
     """Текст абзаца без ПОЛЕЙ (номер слайда, дата): их считает PowerPoint,
-    и перевод в них исчез бы при первом открытии."""
-    body = _A_FLD_RE.sub("", p_xml)
+    и перевод в них исчез бы при первом открытии. Разрыв строки внутри
+    абзаца (`<a:br/>`, Shift+Enter) — пробел: без него последнее слово
+    одной строки слипалось с первым следующей («ТашкентУзбекистан»).
+    Мягкий перенос в тексте не остаётся."""
+    body = _A_BR_RE.sub("<a:t> </a:t>", _A_FLD_RE.sub("", p_xml))
     parts = [_html.unescape(m.group(1) or "") for m in _A_T_RE.finditer(body)]
-    return " ".join("".join(parts).split())
+    return " ".join("".join(parts).replace("­", "").split())
 
 
 def pptx_slots(content: bytes) -> list:
@@ -750,7 +772,7 @@ def pdf_to_docx(content: bytes) -> tuple:
     скан целиком → картинки страниц."""
     notes: list = []
     try:
-        pages = textcount._pdf_pages(content, notes)
+        pages, geoms = textcount._pdf_pages_geom(content, notes)
     except textcount.Scan as s:
         pages_n = getattr(s, "pages", 0) or 0
         textcount.progress("pictures")
@@ -764,7 +786,7 @@ def pdf_to_docx(content: bytes) -> tuple:
                 "читается автоматически. Обратно выгружается PDF из страниц с переведёнными "
                 "надписями." % len(imgs), len(imgs))
     textcount.progress("clean")
-    res = pdftext.clean(pages)
+    res = pdftext.clean(pages, geom=geoms)
     textcount.progress("build")
     page_images: dict = {}
     if res["imagePages"]:
@@ -787,8 +809,9 @@ def pdf_to_docx(content: bytes) -> tuple:
         removed.append("колонтитулов %d" % r["runningHeads"])
     if r.get("pageNumbers"):
         removed.append("номеров страниц %d" % r["pageNumbers"])
-    if r.get("ornaments") or r.get("junkLines"):
-        removed.append("строк мусора распознавания %d" % (r.get("ornaments", 0) + r.get("junkLines", 0)))
+    junk = r.get("ornaments", 0) + r.get("junkLines", 0) + r.get("borderLines", 0)
+    if junk:
+        removed.append("строк мусора распознавания %d" % junk)
     if r.get("dropCaps"):
         removed.append("восстановлено буквиц %d" % r["dropCaps"])
     note = ("PDF: текст взят из текстового слоя, строки склеены в абзацы"

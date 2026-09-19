@@ -1,41 +1,9 @@
-# click.simpletranslate.me — лендинг, индексируется целиком.
-# AI-краулеры разрешены явно: цитируемость в ChatGPT/Claude/Perplexity/Gemini
-# держится на том, что их боты страницу видят. Пары «поиск / обучение»
-# различаются: OAI-SearchBot и Claude-SearchBot — цитаты в поиске,
-# GPTBot и ClaudeBot — обучение; Googlebot — поиск и AI Overviews,
-# Google-Extended — только Gemini. Разрешены все.
+# click.simpletranslate.me — закрыт от индексации и обхода целиком.
+# Раньше лендинг был открыт всем поисковым и AI-краулерам (SEO/GEO), теперь
+# закрыт по решению владельца. Один запрет для всех user-agent'ов покрывает
+# и обычный поиск, и AI-боты (GPTBot, ClaudeBot, PerplexityBot, Googlebot и пр.),
+# и служебные файлы (/sitemap.xml, /llms.txt, /pricing.md).
 User-agent: *
-Allow: /
+Disallow: /
 
-User-agent: GPTBot
-Allow: /
-User-agent: OAI-SearchBot
-Allow: /
-User-agent: ChatGPT-User
-Allow: /
-User-agent: ClaudeBot
-Allow: /
-User-agent: Claude-SearchBot
-Allow: /
-User-agent: Claude-User
-Allow: /
-User-agent: anthropic-ai
-Allow: /
-User-agent: PerplexityBot
-Allow: /
-User-agent: Google-Extended
-Allow: /
-User-agent: GoogleOther
-Allow: /
-User-agent: Applebot-Extended
-Allow: /
-User-agent: Amazonbot
-Allow: /
-User-agent: FacebookBot
-Allow: /
-User-agent: YandexBot
-Allow: /
-
-Content-Signal: search=yes, ai-retrieval=yes, ai-train=yes
-
-Sitemap: https://click.simpletranslate.me/sitemap.xml
+Content-Signal: search=no, ai-retrieval=no, ai-train=no

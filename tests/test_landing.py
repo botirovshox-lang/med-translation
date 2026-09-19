@@ -18,9 +18,10 @@
      ровно один H1, canonical и robots в самом HTML (краулеры JS не выполняют).
   6. Определение «SimpleTranslate — это …» стоит в первых 60 словах текста,
      а селекторы speakable существуют на странице.
-  7. robots.txt называет sitemap и разрешает поисковых ботов AI-платформ;
-     sitemap валиден и содержит страницу и pricing.md; llms.txt начинается
-     с H1 и цитаты, длина в допуске 30–200 строк.
+  7. robots.txt закрывает сайт целиком (Disallow: / для всех, ни одного Allow):
+     лендинг снят с индексации и обхода по решению владельца; sitemap всё ещё
+     валиден и содержит страницу и pricing.md (генерится сборкой, но перекрыт
+     robots); llms.txt начинается с H1 и цитаты, длина в допуске 30–200 строк.
   8. Тела кнопок без «→» и эмодзи (правила craft floor), все якоря `#…`
      ведут на существующие id, цена «от $0.5» есть в тексте страницы.
 
@@ -68,7 +69,7 @@ check(120 <= len(desc) <= 160, f"description {len(desc)} знаков, надо 
 check(not desc.startswith(title), "description начинается с title слово в слово")
 check(html.count("<h1") == 1, "H1 не ровно один")
 check('<link rel="canonical" href="https://click.simpletranslate.me/">' in html, "canonical не самоссылающийся")
-check('<meta name="robots" content="index,follow' in html, "robots meta нет в HTML")
+check('<meta name="robots" content="noindex' in html, "robots meta должен быть noindex — сайт закрыт от индексации")
 check('<html lang="ru">' in html, "lang=ru нет")
 for tag in ("og:title", "og:description", "og:image", "og:url", "og:site_name", "twitter:card"):
     check(f'"{tag}"' in html, f"нет {tag}")
@@ -116,12 +117,10 @@ check("от $0.5" in page_text, "«от $0.5» не найдено в текст
 main_text = text_of(re.search(r"<main.*?</main>", html, re.S).group(0))
 check("SimpleTranslate — это" in " ".join(main_text.split()[:60]), "определения «SimpleTranslate — это» нет в первых 60 словах")
 
-# 7. robots / llms
+# 7. robots / llms — сайт закрыт целиком
 robots = (ROOT / "landing" / "robots.txt").read_text(encoding="utf-8")
-check("Sitemap: https://click.simpletranslate.me/sitemap.xml" in robots, "robots.txt без Sitemap")
-for ua in ("OAI-SearchBot", "Claude-SearchBot", "PerplexityBot", "GPTBot", "ClaudeBot", "Google-Extended"):
-    check(f"User-agent: {ua}\nAllow: /" in robots, f"robots.txt не разрешает {ua}")
-check("Disallow" not in robots, "robots.txt что-то запрещает")
+check("User-agent: *" in robots and "Disallow: /" in robots, "robots.txt не закрывает сайт целиком (нужно User-agent: * + Disallow: /)")
+check("Allow: /" not in robots, "robots.txt всё ещё что-то разрешает — сайт должен быть закрыт от ботов")
 llms = (ROOT / "landing" / "llms.txt").read_text(encoding="utf-8").splitlines()
 check(llms[0].startswith("# "), "llms.txt не начинается с H1")
 check(llms[2].startswith("> ") and len(llms[2]) < 260, "llms.txt: вторая строка не цитата")

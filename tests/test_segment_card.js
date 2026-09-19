@@ -311,6 +311,36 @@ hooks.length = 0;
 check(textOf(draw(Object.assign({}, BASE))).indexOf("Проверить слова") === -1, "без выборки строки слов нет");
 
 console.log("");
+console.log("=== 12. Пустое не заверяется; прежний перевод — подсказка с «Вставить» ===");
+/* «Подтвердить» на пустом черновике погашена: сервер отвечает 400, а раньше
+   браузер всё равно ставил «подтверждено» и хвалил тостом. */
+hooks.length = 0;
+const emptySeg = Object.assign({}, BASE, { target: "", status: "new" });
+const confirmBtn = btn(draw(emptySeg), "Подтвердить");
+check(!!confirmBtn && confirmBtn.props.disabled === true, "пустой черновик — «Подтвердить» погашена");
+hooks.length = 0;
+check(btn(draw(Object.assign({}, BASE)), "Подтвердить").props.disabled === false, "с переводом — доступна");
+/* prevTarget (смена оригинала, пересегментация) — только для чтения, и
+   «Вставить» кладёт его в черновик без вызова модели и без записи. */
+let wrote = 0;
+storeStub.updateSegment = () => { wrote++; };
+const prevSeg = Object.assign({}, emptySeg, { prevTarget: "Old closed pneumothorax.", prevSource: "Закрытый пневмоторакс слева." });
+hooks.length = 0;
+const pv = draw(prevSeg);
+check(textOf(pv).indexOf("Прежний перевод") !== -1 && textOf(pv).indexOf("Old closed pneumothorax.") !== -1
+      && textOf(pv).indexOf("Закрытый пневмоторакс слева.") !== -1, "прежний перевод и его оригинал показаны");
+btn(pv, "Вставить").props.onClick();
+const after = draw(prevSeg);
+const ta = findAll(after, n => n.props && n.props.placeholder === "Введите перевод…")[0];
+check(ta && ta.props.value === "Old closed pneumothorax.", "«Вставить» положил прежний перевод в черновик");
+check(wrote === 0, "и ничего не записал на сервер");
+check(textOf(after).indexOf("Прежний перевод") === -1, "совпавший с черновиком — подсказка скрыта");
+check(btn(after, "Подтвердить").props.disabled === false, "черновик не пуст — можно заверить");
+storeStub.updateSegment = () => {};
+hooks.length = 0;
+check(textOf(draw(Object.assign({}, BASE))).indexOf("Прежний перевод") === -1, "без prevTarget подсказки нет");
+
+console.log("");
 if (fail.length) {
   console.log("ПРОВАЛЕНО: " + fail.length);
   fail.forEach(f => console.log("  - " + f));

@@ -8,7 +8,7 @@
   2. с файлом state.json запись без --offline — отказ (второй пишущий
      процесс рядом с сервисом затёр бы его запись); идущий прогон — отказ;
   3. запись: неизменившиеся сегменты сохраняют перевод, статус и проверки;
-     изменившиеся — новые, пустые, прежний перевод в `prev_target`;
+     изменившиеся — новые, пустые, прежний перевод в `prevTarget`;
      страницы не списываются, объём проекта прежний;
   4. откат — штатный откат замены файла;
   5. нет сохранённого оригинала — отказ с подсказкой `--file`, с файлом — идёт.
@@ -110,15 +110,24 @@ kept = [s for s in segs if s["source"] in by_src and s["id"] == by_src[s["source
 check(kept and all(s["target"] == by_src[s["source"]]["target"] and s["status"] == "confirmed"
                    and s.get("qa") == by_src[s["source"]]["qa"] for s in kept),
       "неизменившиеся (%d) — с переводом, статусом и проверками" % len(kept))
-chg = [s for s in segs if s.get("prev_target")]
-check(chg and all(s["status"] == "new" and not s["target"] and s["prev_target"].startswith("UZ:") for s in chg),
-      "изменившиеся (%d) — новые, пустые, прежний перевод в prev_target" % len(chg))
+chg = [s for s in segs if s.get("prevTarget")]
+check(chg and all(s["status"] == "new" and not s["target"] and s["prevTarget"].startswith("UZ:") for s in chg),
+      "изменившиеся (%d) — новые, пустые, прежний перевод в prevTarget" % len(chg))
 check(any("ниже 20 °С консистенцию" in s["source"] for s in segs)
       and any("взято немало высокоэффективных" in s["source"] for s in segs)
       and not any("кон- " in s["source"] or "выди них" in s["source"] for s in segs),
       "сегменты — по новым правилам")
 glued = next(s for s in chg if "консистенцию" in s["source"])
-check("кон-" in glued.get("prev_source", ""), "prev_source показывает, из чего был собран прежний перевод")
+check("кон-" in glued.get("prevSource", ""), "prevSource показывает, из чего был собран прежний перевод")
+# Подсказка лежит у СВОЕЙ строки (по индексу плана, а не склейкой списков):
+# прежний оригинал перекрывается с новым по словам, как и отбирал план.
+check(all(len(rs._words(s["source"]) & rs._words(s["prevSource"]))
+          >= rs.PREV_OVERLAP * min(len(rs._words(s["source"])), len(rs._words(s["prevSource"])))
+          for s in chg), "каждая подсказка — у той строки, с которой перекрывается")
+check(not any("prev_target" in s or "prev_source" in s for s in segs),
+      "полей prev_target/prev_source нет — только имена ядра и карточки")
+check(not any(s.get("retranslations") or s.get("mtDone") for s in chg),
+      "у пересобранной строки счётчик перевода заново чистый: оригинал другой")
 check(calls == [] and p.get("pages") == pages_before, "страницы не списывались, объём проекта прежний")
 check((p.get("resegment") or {}).get("stamp") == res["stamp"] and (p.get("reimport") or {}).get("stamp") == res["stamp"],
       "отметка пересборки и копия для отката на проекте")

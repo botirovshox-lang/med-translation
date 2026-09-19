@@ -16,7 +16,7 @@
     и регистр не в счёт), остаётся целиком — перевод, статус, проверки;
   * сегмент, текст которого изменился, заводится заново (статус new, перевод
     пуст), а прежний перевод перекрывавшихся старых сегментов кладётся
-    в `prev_target` (и их текст — в `prev_source`), чтобы человек собрал
+    в `prevTarget` (и их текст — в `prevSource`), чтобы человек собрал
     новый перевод из готового, а не переводил заново;
   * сегменты с картинок остаются на месте, если картинки собранного .docx
     не изменились (те же части пакета, те же байты); иначе — как у замены
@@ -180,7 +180,7 @@ def _media(docx_bytes: bytes) -> dict:
 
 
 def apply_plan(main, pid: int, parsed: dict, content: bytes, filename: str, pl: dict) -> dict:
-    """Запись: замена файла без списания, `prev_target` у изменившихся,
+    """Запись: замена файла без списания, `prevTarget` у изменившихся,
     картинки на месте, если не изменились."""
     project = main.get_project(pid)
     main._guard_project_write(pid)
@@ -203,17 +203,25 @@ def apply_plan(main, pid: int, parsed: dict, content: bytes, filename: str, pl: 
         done = main._reimport_apply(pid, parsed, content, filename, "")
     project = main.get_project(pid)
     by_id = {s["id"]: s for s in project["segments"]}
-    added = list(done.get("addedIds") or [])
-    new_js = [j for j, p in enumerate(pl["plan"]) if p and p[0] == "new"]
-    for j, sid in zip(new_js, added):
-        olds = pl["changed"].get(j)
-        seg = by_id.get(sid)
-        if not olds or seg is None:
+    # Номер сегмента — по ИНДЕКСУ ПЛАНА (`unitIds`: сегмент каждой единицы
+    # новой редакции по порядку). Склейка «новые единицы × addedIds» была
+    # хрупкой: в addedIds стоят и изменившиеся на месте сегменты, и одна
+    # такая строка сдвигала все подсказки на соседей.
+    unit_ids = list(done.get("unitIds") or [])
+    for j, olds in pl["changed"].items():
+        seg = by_id.get(unit_ids[j]) if j < len(unit_ids) else None
+        if seg is None:
             continue
+        # Поля — те же, что у ядра и карточки сегмента (`prevTarget`,
+        # `_replace_target`); прежний оригинал — `prevSource`. Счётчик
+        # перевода заново у новой строки чистый: это другой оригинал
+        # (`_mt_before`), а готовый текст — подсказка, не перевод.
         tg = [s.get("target") for s in olds if (s.get("target") or "").strip()]
         if tg:
-            seg["prev_target"] = "\n".join(tg)
-        seg["prev_source"] = "\n".join(s.get("source") or "" for s in olds)
+            seg["prevTarget"] = "\n".join(tg)
+        seg["prevSource"] = "\n".join(s.get("source") or "" for s in olds)
+        seg.pop("retranslations", None)
+        seg.pop("mtDone", None)
     restored = 0
     if img_segs and images_same:
         # Картинки те же — их сегменты и карта картинок (перенесена
@@ -317,7 +325,7 @@ def main_cli(argv=None) -> int:
     print("Проект %d, исходник %s (%s)" % (res["project"], res["file"], res["kind"]))
     print("  было сегментов: %d, станет единиц: %d" % (res["oldSegments"], res["newUnits"]))
     print("  без изменений (перевод и статус остаются): %d" % res["kept"])
-    print("  изменились (перевод обнулён, прежний — в prev_target): %d, из них с переводом: %d"
+    print("  изменились (перевод обнулён, прежний — в prevTarget): %d, из них с переводом: %d"
           % (res["changed"], res["changedFromTranslated"]))
     print("  новые: %d" % res["new"])
     print("  ушли без замены: %d, из них с переводом: %d" % (res["removed"], res["removedTranslated"]))

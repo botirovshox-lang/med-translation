@@ -348,9 +348,7 @@
   "Перетащите файл сюда": "Faylni shu yerga tashlang",
   "Word, Excel, PowerPoint, PDF, HTML, текст или картинка": "Word, Excel, PowerPoint, PDF, HTML, matn yoki rasm",
   "Смотрим, что за файл…": "Qanday fayl ekanini ko'ryapmiz…",
-  "Этот файл уже есть в проекте: «": "Bu fayl loyihada allaqachon bor: «",
   "». Второй раз он не нужен.": "». Ikkinchi marta kerak emas.",
-  "Открыть его": "Uni ochish",
   "Выбрать другой файл": "Boshqa fayl tanlash",
   "Похоже на новую версию файла «": "Faylning yangi versiyasiga o'xshaydi: «",
   "»: совпало ": "»: mos keldi ",
@@ -373,5 +371,7 @@
   "читаем надписи": "yozuvlarni o'qiyapmiz",
   "ищем строки на картинках": "rasmlarda qatorlarni qidiryapmiz",
   "готовим картинки": "rasmlarni tayyorlayapmiz",
-  " — нет ключа": " — kalit yo'q"
+  " — нет ключа": " — kalit yo'q",
+  "Этот файл уже загружен на эту пару языков: «": "Bu fayl ushbu til juftligi uchun allaqachon yuklangan: «",
+  "Открыть проект": "Loyihani ochish"
 }

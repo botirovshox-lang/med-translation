@@ -66,6 +66,9 @@
           const d = data.detail || data.error || "";
           const err = new Error(typeof d === "string" && d ? TRS(d) : failLabel + ": " + xhr.status);
           err.status = xhr.status;
+          /* Поля отказа (409 дубля: code, project) — экрану, чтобы предложить
+             «Открыть проект», а не разбирать текст сообщения. */
+          err.data = data;
           reject(err);
           return;
         }
@@ -130,14 +133,15 @@
            (его строки лежат в боевых данных и разбираются подстрокой), а
            человеку показывать «API POST /… failed: 402 {"error":…}» нельзя:
            это не сообщение, а свалка. Достаём причину и переводим ЕЁ. */
-        let detail = "";
-        try { const j = JSON.parse(text); detail = j.detail || j.error || ""; }
+        let detail = "", data = null;
+        try { data = JSON.parse(text); detail = data.detail || data.error || ""; }
         catch (e) { detail = ""; }
         if (typeof detail !== "string") detail = "";
         const err = new Error(detail ? TRS(detail)
                                      : `API ${method} ${path} failed: ${r.status} ${text}`);
         err.status = r.status;
         err.detail = detail;
+        err.data = data;
         throw err;
       }
       return await r.json();

@@ -496,5 +496,15 @@
  "проверить: ": "check: ",
  "ремонт не возьмёт": "the repair will not take",
  "споры с глоссарием, заверенное с находками, откаченные правки — прогон это не решит": "disputes with the glossary, confirmed segments with findings, rolled-back edits — a run will not resolve this",
- "текст их не изменится: годные варианты уйдут на «Проверку», применять их вам.": "their text will not change: the suitable versions will go to “Check”, and applying them is up to you."
+ "текст их не изменится: годные варианты уйдут на «Проверку», применять их вам.": "their text will not change: the suitable versions will go to “Check”, and applying them is up to you.",
+ "Модель без ключа заменена умолчанием": "A model without a key was replaced by the default",
+ ": у поставщика нет ключа — выбор сброшен на модель шага по умолчанию.": ": the provider has no key — the choice was reset to the step's default model.",
+ " не изменён: ": " was not changed: ",
+ "Не подтверждено": "Not confirmed",
+ ": пустой перевод подтвердить нельзя.": ": an empty translation cannot be confirmed.",
+ " · не переведено заново (предел организации): ": " · not re-translated (organization limit): ",
+ "Прежний перевод": "Previous translation",
+ "Вставить": "Insert",
+ "Был к оригиналу: ": "It was for the source: ",
+ "Пустой перевод подтвердить нельзя": "An empty translation cannot be confirmed"
 }

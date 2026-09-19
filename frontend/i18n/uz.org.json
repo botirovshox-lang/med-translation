@@ -362,5 +362,6 @@
   "Проект": "Loyiha",
   "Прогонов": "Ishga tushirishlar",
   "Факт $ по проекту": "Loyiha bo'yicha haqiqiy $",
-  "Смета / факт": "Smeta / fakt"
+  "Смета / факт": "Smeta / fakt",
+  "Нужно целое число от 0 или пусто.": "0 dan boshlab butun son kiriting yoki bo'sh qoldiring."
 }

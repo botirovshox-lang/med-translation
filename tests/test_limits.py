@@ -74,12 +74,30 @@ paid = [("POST", "/api/projects/%d/jobs" % pid, {"kind": "full", "ids": [1]}),
         # Ремонт и проверки пачкой зовут модель (ремонт; обратный перевод
         # проверок) — прежде `_PAID` их не знал, и лимит обходился ими.
         ("POST", "/api/projects/%d/repair/batch" % pid, {}),
-        ("POST", "/api/projects/%d/checks/batch" % pid, {}),
-        ("POST", "/api/projects/%d/medical-qa/batch" % pid, {}),
         ("POST", "/api/glossary/audit", {})]
 for m, path, body in paid:
     r = c.request(m, path, headers=H(B), json=body)
     check(r.status_code == 402 and "spend" in r.json(), "%s → 402" % path)
+# Проверки пачкой платны ТОЛЬКО обратным переводом: 402 — когда порция его
+# купит, а без покупки (нечего проверять / обратный перевод к тексту готов)
+# они работают и на исчерпанном лимите.
+for path in ("/api/projects/%d/checks/batch" % pid, "/api/projects/%d/medical-qa/batch" % pid):
+    r = c.post(path, headers=H(B), json={})
+    check(r.status_code != 402, "%s без переведённых строк — бесплатно, не 402 (%d)" % (path, r.status_code))
+seg1 = proj["segments"][0]
+seg1.update({"target": "Test.", "status": "translated"})
+if main.checks_mod and main.checks_enabled() and main._checks_buy_back(proj):
+    for path in ("/api/projects/%d/checks/batch" % pid, "/api/projects/%d/medical-qa/batch" % pid):
+        r = c.post(path, headers=H(B), json={})
+        check(r.status_code == 402 and "spend" in r.json(), "%s купит обратный перевод → 402" % path)
+    seg1["backcheck"] = {"back": "Тест.", "target_hash": main._text_hash("Test.")}
+    r = c.post("/api/projects/%d/checks/batch" % pid, headers=H(B), json={})
+    check(r.status_code == 200, "обратный перевод к тексту готов — проверки идут на исчерпанном лимите: %d" % r.status_code)
+seg1.update({"target": "", "status": "new"})
+for k in ("backcheck", "qa_result", "qa_issues", "qa", "term_candidates", "risk_score", "risk_color",
+          "engine_qa", "medical_qa_enabled", "backtranslated_ru"):
+    seg1.pop(k, None)
+seg1["qa"] = []
 free = [("POST", "/api/projects/%d/run-plan" % pid, {"steps": ["translate"]}),
         ("POST", "/api/projects/%d/term-case" % pid, {}),
         ("POST", "/api/projects/%d/backcheck/rescore" % pid, {}),
@@ -256,9 +274,24 @@ if HAVE_DOCX:
         me = c.get("/api/auth/me", headers=H(B)).json()
         # Тот же файл на ту же пару при ЖИВОМ проекте — 409 с адресом готового:
         # второй проект по нему был бы бесплатным переводом заново.
-        check(r.status_code == 409 and ("№%d" % p2) in r.json().get("detail", "")
-              and "повторным импортом" in r.json().get("detail", "") and me["usage"]["used"] == used1,
-              "повтор того же файла при живом проекте → 409 с номером проекта, ничего не списано: %s" % r.text[:160])
+        # Номер и имя — ПОЛЯМИ ответа (экран предлагает «Открыть проект»),
+        # а текст отказа постоянный: имя клиента внутри ключа перевода
+        # сделало бы его непереводимым.
+        j409 = r.json() if r.status_code == 409 else {}
+        check(r.status_code == 409 and j409.get("code") == "duplicate"
+              and (j409.get("project") or {}).get("id") == p2 and (j409.get("project") or {}).get("title") == "t"
+              and j409.get("detail") == main.DUPLICATE_UPLOAD_MSG and me["usage"]["used"] == used1,
+              "повтор того же файла при живом проекте → 409 с полями проекта, ничего не списано: %s" % r.text[:160])
+        # Проба — той же меркой, по ВСЕЙ организации: дубль в соседней папке
+        # ей виден, хотя «похожие» ищутся в пределах папки.
+        fr = c.post("/api/folders", headers=H(B), json={"title": "Другая", "src": "RU", "tgt": "EN"})
+        if fr.status_code == 200 and fr.json().get("id") is not None:
+            pr = c.post("/api/projects/probe", headers=H(B), files={"file": ("t.docx", raw, MIME)},
+                        data={"src": "RU", "tgt": "EN", "folder": str(fr.json()["id"])})
+            check(pr.status_code == 200 and any(e["id"] == p2 for e in pr.json().get("exact") or []),
+                  "проба в другой папке видит дубль организации: %s" % pr.text[:160])
+        else:
+            print("  (папка не создана — проба по папке пропущена: %s)" % fr.text[:100])
         r = c.post("/api/projects/upload", headers=H(B), files={"file": ("t.docx", raw, MIME)},
                    data={"src": "RU", "tgt": "UZ"})
         p3 = r.json()["id"] if r.status_code == 200 else None

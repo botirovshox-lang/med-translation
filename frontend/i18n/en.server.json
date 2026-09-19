@@ -329,14 +329,13 @@
  " Страниц с ненадёжным слоем без картинки страницы оставлено текстом как есть: ": " Pages with an unreliable layer and no page image were left as text: ",
  "Нет ключа Anthropic: модель ": "No Anthropic key: model ",
  " недоступна": " is unavailable",
- "Этот файл уже загружен на ту же пару языков: «": "This file is already uploaded for the same language pair: «",
- "» (№": "» (#",
- "). Откройте его или замените файл повторным импортом": "). Open it or replace the file via re-import",
  "Строку уже переводили заново ": "The line has already been re-translated ",
  " раз — это предел организации. Поправьте текст руками или обратитесь к администратору сервиса": " times — the organisation's limit. Edit the text by hand or contact the service administrator",
  "Перевод заново в организации выключен: поправьте текст руками или обратитесь к администратору сервиса": "Re-translation is disabled for the organisation: edit the text by hand or contact the service administrator",
  "Файл уже переводили заново целиком (": "The whole file has already been re-translated (",
  " раз): выберите отдельные строки или обратитесь к администратору сервиса": " times): pick individual lines or contact the service administrator",
  "Перевода нет — заверять нечего: сначала переведите строку": "There is no translation to certify: translate the line first",
- "Предел перевода заново не может быть отрицательным": "The re-translation limit cannot be negative"
+ "Предел перевода заново не может быть отрицательным": "The re-translation limit cannot be negative",
+ "Этот файл уже загружен на ту же пару языков. Откройте готовый проект или замените файл повторным импортом": "This file is already uploaded for the same language pair. Open the existing project or replace the file via re-import",
+ "Правила документа требуют ключ OpenAI": "Document conventions require an OpenAI key"
 }

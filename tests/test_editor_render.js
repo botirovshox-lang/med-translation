@@ -1177,6 +1177,79 @@ try {
   check(t18b.indexOf("Перевести и проверить") !== -1, "переводчик: кнопка на месте");
   check(t18b.indexOf("Ориентировочно") === -1, "переводчик: сметы нет — деньги не его дело");
 
+  console.log("\n=== 19. Отказ сервера — словами сервера, экран не врёт ===");
+  /* Подтверждение пустого (400) и перевод выше предела (409) шли через
+     safeCall: первое ставило «подтверждено» и хвалило тостом, второе
+     говорило «сервер недоступен». */
+  {
+    let detail = null;
+    const realDetail = global.SegDetail;
+    global.SegDetail = (p) => { detail = p; return null; };
+    const upd = [], errs = [], oks = [];
+    const st = Object.assign({}, storeStub, { updateSegment: (pid, sid, patch) => { upd.push(patch); } });
+    const tst = { info() {}, warning() {}, error: (t, m) => errs.push(t + " | " + m), success: (t) => oks.push(t) };
+    const rerender = async () => {
+      hookIdx = 0; effects.length = 0;
+      const el = TabEditor({ store: st, toast: tst });
+      return el;
+    };
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    TabEditor({ store: st, toast: tst });
+    effects.forEach(fn => { try { fn(); } catch (e) {} });
+    for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+    const pick = async (sid) => {
+      const b = await rerender();
+      findAll(b, n => n.type === "tr" && n.props["data-seg"] === sid)[0].props.onClick();
+      await rerender();
+      return detail;
+    };
+    let confirmCalls = 0;
+    global.API.confirm = async () => { confirmCalls++; const e = new Error("Пустой перевод не подтверждается"); e.status = 400; throw e; };
+    let d6 = await pick(6);                       // сегмент 6 — пустой перевод
+    await d6.onConfirm("");
+    check(confirmCalls === 0 && !upd.some(p => p.status === "confirmed") && errs.length === 1 && !oks.length,
+          "пустое: сервер не спрошен, «подтверждено» не поставлено, ошибка названа: " + errs.join(" / "));
+    errs.length = 0;
+    const d2 = await pick(2);
+    await d2.onConfirm(d2.seg.target);
+    check(confirmCalls === 1 && !upd.some(p => p.status === "confirmed") && errs.length === 1
+          && errs[0].indexOf("Пустой перевод не подтверждается") !== -1 && !oks.length,
+          "отказ сервера: статус не тронут, тост словами сервера: " + errs.join(" / "));
+    errs.length = 0;
+    global.API.translate = async () => { const e = new Error("Строку уже переводили заново 3 раз — это предел организации."); e.status = 409; throw e; };
+    await d2.onTranslate();
+    check(errs.length === 1 && errs[0].indexOf("предел организации") !== -1 && errs[0].indexOf("Сервер недоступен") === -1,
+          "409 предела перевода заново — словами сервера, а не «сервер недоступен»: " + errs.join(" / "));
+
+    console.log("\n=== 20. Сохранённая модель без ключа не уезжает в работу ===");
+    /* Выбор из localStorage, у поставщика которого ключа больше нет
+       (`ready: false`): сбрасывается на умолчание шага, и эксперту это
+       сказано тостом, а в вызов уходит умолчание. */
+    store.setItem("mcat_gpt_model", "claude-x");
+    const realModels = global.API.models;
+    global.API.models = async () => {
+      const d = await realModels();
+      d.models = d.models.concat([{ id: "claude-x", label: "Claude X", in: 1, out: 5, api: "anthropic", ready: false }]);
+      return d;
+    };
+    const warns = [];
+    tst.warning = (t, m) => warns.push(t + " | " + m);
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    TabEditor({ store: st, toast: tst });
+    effects.forEach(fn => { try { fn(); } catch (e) {} });
+    for (let i = 0; i < 20; i++) await new Promise(r => setImmediate(r));
+    let sentModel = null;
+    global.API.translate = async (pid, sid, force, model) => { sentModel = model; return { segment: { target: "x", status: "translated" } }; };
+    const d2b = await pick(2);
+    await d2b.onTranslate();
+    check(sentModel === "gpt-4o", "в перевод ушло умолчание, а не модель без ключа: " + sentModel);
+    check(warns.some(w => w.indexOf("Модель без ключа заменена умолчанием") !== -1 && w.indexOf("Claude X") !== -1),
+          "эксперту сказано, какая модель сброшена: " + warns.join(" / "));
+    global.API.models = realModels;
+    store.removeItem("mcat_gpt_model");
+    global.SegDetail = realDetail;
+  }
+
   console.log("\n" + (fail.length ? "ПРОВАЛЕНО: " + fail.join("; ") : "ВСЁ ПРОШЛО"));
   process.exit(fail.length ? 1 : 0);
 } catch (e) {

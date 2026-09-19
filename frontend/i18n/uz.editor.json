@@ -496,5 +496,15 @@
  "проверить: ": "tekshirish: ",
  "ремонт не возьмёт": "ta'mir olmaydi",
  "споры с глоссарием, заверенное с находками, откаченные правки — прогон это не решит": "lug'at bilan bahslar, topilmali tasdiqlanganlar, qaytarilgan tuzatishlar — buni ishlov hal qilmaydi",
- "текст их не изменится: годные варианты уйдут на «Проверку», применять их вам.": "ularning matni o'zgarmaydi: yaroqli variantlar «Tekshiruv»ga tushadi, ularni qo'llash sizning ixtiyoringizda."
+ "текст их не изменится: годные варианты уйдут на «Проверку», применять их вам.": "ularning matni o'zgarmaydi: yaroqli variantlar «Tekshiruv»ga tushadi, ularni qo'llash sizning ixtiyoringizda.",
+ "Модель без ключа заменена умолчанием": "Kalitsiz model standart model bilan almashtirildi",
+ ": у поставщика нет ключа — выбор сброшен на модель шага по умолчанию.": ": yetkazib beruvchining kaliti yo'q — tanlov bosqichning standart modeliga qaytarildi.",
+ " не изменён: ": " o'zgartirilmadi: ",
+ "Не подтверждено": "Tasdiqlanmadi",
+ ": пустой перевод подтвердить нельзя.": ": bo'sh tarjimani tasdiqlab bo'lmaydi.",
+ " · не переведено заново (предел организации): ": " · qayta tarjima qilinmadi (tashkilot chegarasi): ",
+ "Прежний перевод": "Oldingi tarjima",
+ "Вставить": "Qo'yish",
+ "Был к оригиналу: ": "Quyidagi asl matn uchun edi: ",
+ "Пустой перевод подтвердить нельзя": "Bo'sh tarjimani tasdiqlab bo'lmaydi"
 }

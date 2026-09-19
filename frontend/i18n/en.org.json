@@ -362,5 +362,6 @@
   "Проект": "Project",
   "Прогонов": "Runs",
   "Факт $ по проекту": "Actual $ per project",
-  "Смета / факт": "Estimate / actual"
+  "Смета / факт": "Estimate / actual",
+  "Нужно целое число от 0 или пусто.": "Enter a whole number from 0, or leave it empty."
 }

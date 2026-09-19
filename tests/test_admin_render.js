@@ -243,5 +243,39 @@ const notSuper = render({ can: { owner: true, super: false }, tab: "admin", go()
                         "рендер не суперпользователю", OV);
 check(!!notSuper && !notSuper.includes("Пополнить"), "не суперпользователю содержимого нет");
 
+/* «Заново» (предел перевода заново): целое ≥ 0 или пусто. NaN и минус
+   на сервер не уходят — опечатка называется здесь. */
+{
+  const sent = [], errs = [];
+  const tstA = { info() {}, warning() {}, success() {}, error: (t, m) => errs.push(m) };
+  global.API.tenantUpdate = (tid, body) => { sent.push(body); return Promise.resolve({ ok: true }); };
+  hooks.length = 0; hookIdx = 0; effects.length = 0; hooks[0] = OV;
+  let again = null;
+  try {
+    const tree = TabAdmin({ store: superStore, toast: tstA });
+    (function walk(n) {
+      if (again || !n || typeof n !== "object") return;
+      if (Array.isArray(n)) return n.forEach(walk);
+      if (n.type === "button" && (n.children || []).some(c => c === "Заново")) { again = n; return; }
+      (n.children || []).forEach(walk);
+    })(tree);
+  } catch (e) { check(false, "рендер для «Заново» — " + e.message); }
+  check(!!again, "кнопка «Заново» у организации есть");
+  if (again) {
+    for (const bad of [["abc", ""], ["-1", ""], ["", "1.5"]]) {
+      const q = bad.slice();
+      global.prompt = () => q.shift();
+      again.props.onClick();
+    }
+    check(sent.length === 0 && errs.length === 3, "NaN, минус и дробь не отправлены, каждая названа: " + errs.length);
+    const q = ["2", ""];
+    global.prompt = () => q.shift();
+    again.props.onClick();
+    check(sent.length === 1 && sent[0].retranslateLimit === 2 && !("retranslateBulk" in sent[0]),
+          "целое уходит числом: " + JSON.stringify(sent[0]));
+    global.prompt = () => null;
+  }
+}
+
 console.log(fail.length ? "\nПРОВАЛЕНО: " + fail.length : "\nВсё сошлось");
 process.exit(fail.length ? 1 : 0);

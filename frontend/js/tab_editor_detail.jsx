@@ -27,6 +27,8 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
   const idx = project.segments.findIndex(s => s.id === seg.id) + 1;
   const words = (draft.trim() ? draft.trim().split(/\s+/).length : 0);
   const dirty = draft !== (seg.target || "");
+  const prevHint = typeof seg.prevTarget === "string" && seg.prevTarget.trim() !== ""
+    && seg.prevTarget !== draft;
 
   useEffect(() => { setDraft(seg.target || ""); setInfoPanel(null); setBackResult(null); setTermBusy(false); setRepairBusy(false); }, [seg.id]);
   useEffect(() => { setDraft(seg.target || ""); }, [seg.target, seg.status]);
@@ -338,6 +340,17 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
       React.createElement("div", { className: "row between", style: { marginTop: 8 } },
         React.createElement("span", { className: "dim", style: { fontSize: 12 } }, words + TR(" слов · ") + draft.length + TR(" симв.")),
         dirty && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "check", onClick: saveDraft }, TR("Сохранить"))),
+      /* Прежний перевод строки (`prevTarget`): его оставляют смена оригинала
+         (повторный импорт, пересегментация) и перезапись заверенного. Только
+         подсказка для чтения; «Вставить» кладёт его в черновик — без вызова
+         модели и без записи, сохраняет человек сам. */
+      prevHint && React.createElement("div", { className: "card card-pad-sm", style: { marginTop: 8, background: "var(--bg-sunken)", fontSize: 13 } },
+        React.createElement("div", { className: "row between", style: { gap: 8, marginBottom: 4 } },
+          React.createElement("span", { className: "label", style: { margin: 0 } }, TR("Прежний перевод")),
+          React.createElement(Btn, { variant: "ghost", size: "sm", icon: "copy", onClick: () => setDraft(seg.prevTarget) }, TR("Вставить"))),
+        seg.prevSource && React.createElement("div", { className: "dim", style: { fontSize: 12, marginBottom: 4, whiteSpace: "pre-wrap" } },
+          TR("Был к оригиналу: ") + seg.prevSource),
+        React.createElement("div", { dir: "auto", style: { whiteSpace: "pre-wrap" } }, seg.prevTarget)),
       /* В поле ввода подсветку не нарисовать, поэтому слова из «Проверки»
          стоят под ним: горит то, что есть в переводе, и сам перевод
          с подсветкой — ровно на то место человек и должен посмотреть. */
@@ -367,7 +380,9 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
       React.createElement(Btn, { variant: draft.trim() ? "secondary" : "primary", size: "sm", icon: "cpu", disabled: busy, onClick: () => onTranslate() }, TR("Перевести")),
       React.createElement(Btn, { variant: "secondary", size: "sm", icon: "shield", disabled: busy, onClick: onChecks }, TR("Проверки")),
       React.createElement(Btn, { variant: "secondary", size: "sm", icon: "shield", disabled: busy, onClick: onQA }, "Quick QA"),
-      React.createElement(Btn, { variant: draft.trim() ? "primary" : "secondary", size: "sm", icon: "check", disabled: busy, onClick: () => onConfirm(draft) }, TR("Подтвердить"))
+      /* Пустое заверить нельзя (сервер — 400): кнопка погашена, а не хвалит тостом. */
+      React.createElement(Btn, { variant: draft.trim() ? "primary" : "secondary", size: "sm", icon: "check", disabled: busy || !draft.trim(),
+        title: draft.trim() ? undefined : TR("Пустой перевод подтвердить нельзя"), onClick: () => onConfirm(draft) }, TR("Подтвердить"))
     ),
 
     /* Зона 3. Находки — жалобы, а не термины: что машине не нравится

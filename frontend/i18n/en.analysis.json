@@ -449,8 +449,8 @@
  "Расхождений стало больше на ": "There are more divergences by ",
  "Расхождений стало меньше на ": "There are fewer divergences by ",
  "Столько сегментов расходится с глоссарием.": "That is how many segments diverge from the glossary.",
-  "Кросс-проверка терм-листа той же моделью, что и ревизия (": "Term sheet cross-check with the same model as the revision (",
-  "): лист составляет модель ревизии, и сверять его ею же сервер не станет.": "): the sheet is built by the revision model, and the server will not check it with the same model.",
+ "Кросс-проверка терм-листа той же моделью, что и ревизия (": "Term sheet cross-check with the same model as the revision (",
+ "): лист составляет модель ревизии, и сверять его ею же сервер не станет.": "): the sheet is built by the revision model, and the server will not check it with the same model.",
  "Собрать правила по переведённым строкам? Один платный вызов модели. Правила, которые вы правили или добавили, останутся.": "Collect the rules from the translated lines? One paid model call. Rules you edited or added will stay.",
  "Правил добавлено: ": "Rules added: ",
  "Правила языка организации сохранены": "Organisation language rules saved",
@@ -474,5 +474,6 @@
  "Добавить": "Add",
  "Сохранить правила": "Save rules",
  "Правила языка организации — во всех книгах на ": "Organisation language rules — in all books in ",
- "Не получилось: ": "Failed: "
+ "Не получилось: ": "Failed: ",
+ "Терм-лист записан, сверка второй моделью остановлена": "The term list is saved; the check by the second model was stopped"
 }

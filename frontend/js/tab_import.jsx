@@ -447,7 +447,12 @@ function ImpFileCard({ project, store, toast }) {
   const total = project.segments.length;
   const done = counts.confirmed;
   const pct = total ? Math.round((done / total) * 100) : 0;
-  const handleDelete = () => { store.deleteProject(project.id); toast.warning(TR("Файл удалён"), project.title); };
+  /* Удаление ждёт ответа сервера: отказ (идёт прогон — 409) называется его
+     словами, файл остаётся в списке. */
+  const handleDelete = () => Promise.resolve(store.deleteProject(project.id)).then(r => {
+    if (r && r.ok === false) { setConfirmDelete(false); toast.error(TR("Не удалён"), r.error || ""); }
+    else toast.warning(TR("Файл удалён"), project.title);
+  });
   /* Картинка или скан: строк нет, пока не прочитан текст с картинок. Чтение
      сервер запускает сам при загрузке (`imagesReading`); если задачи нет
      (ключа не было, лимит), кнопка ведёт на экран «Скачать» — там живёт
@@ -615,7 +620,17 @@ function ImpAddFile({ folder, store, toast, meta }) {
         + (project.imagesReading ? " " + TR("Текст с картинок читается — строки появятся сами.") : "")
         + (project.importNote ? " " + TRS(project.importNote) : ""));
       store.openProject(project.id);
-    } catch (e) { toast.error(TR("Файл не добавлен"), e.message || TR("Не удалось разобрать файл")); }
+    } catch (e) {
+      toast.error(TR("Файл не добавлен"), e.message || TR("Не удалось разобрать файл"));
+      /* Дубль (409): какой проект — полями ответа, не текстом. Кладём его
+         в «уже есть» — та же карточка, что у пробы, с кнопкой «Открыть проект». */
+      const dup = e && e.status === 409 && e.data && e.data.code === "duplicate" && e.data.project;
+      if (dup && dup.id != null) {
+        const p = Object.assign({}, probe || {}, { exact: [dup] });
+        draft.probe = p;
+        setProbe(p);
+      }
+    }
     setBusy(false);
   };
   const update = async (target) => {
@@ -663,9 +678,9 @@ function ImpAddFile({ folder, store, toast, meta }) {
       React.createElement(ImpProgress, { p: prog })),
     probe && probe.error && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, probe.error),
     exact && React.createElement("div", { className: "card card-pad-sm", style: { background: "var(--bg-sunken)", fontSize: 13 } },
-      TR("Этот файл уже есть в проекте: «") + exact.title + TR("». Второй раз он не нужен."),
+      TR("Этот файл уже загружен на эту пару языков: «") + exact.title + TR("». Второй раз он не нужен."),
       React.createElement("div", { className: "row", style: { gap: 8, marginTop: 8 } },
-        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "edit", onClick: () => store.openProject(exact.id) }, TR("Открыть его")),
+        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "edit", onClick: () => store.openProject(exact.id) }, TR("Открыть проект")),
         React.createElement(Btn, { variant: "ghost", size: "sm", onClick: reset }, TR("Выбрать другой файл")))),
     !exact && similar && React.createElement("div", { className: "card card-pad-sm", style: { background: "var(--bg-sunken)", fontSize: 13 } },
       TR("Похоже на новую версию файла «") + similar.title + TR("»: совпало ") + similar.matched + TR(" из ") + similar.total

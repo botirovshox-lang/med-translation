@@ -816,6 +816,60 @@ const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
         "правила языка организации видны");
   check(oldTree === null, "старый сервер без правил — карточки нет, экран цел");
 
+  // ─────────── 5d. Поздний ответ после смены проекта ───────────
+  /* Сбор правил и постановка терм-листа идут секунды; человек за это время
+     переключает проект. Ответ прежнего проекта не имеет права лечь в новый:
+     ни правилами, ни номером задачи (иначе опрос искал бы чужую задачу вечно). */
+  console.log("\n=== 5d. Поздний ответ не ложится в другой проект ===");
+  const findBtn = (tree, label) => {
+    let hit = null;
+    (function walk(n) {
+      if (hit || !n || typeof n !== "object") return;
+      if (Array.isArray(n)) return n.forEach(walk);
+      if (n.type === "button" && texts(n).some(s => s === label)) { hit = n; return; }
+      (n.children || []).forEach(walk);
+    })(tree);
+    return hit;
+  };
+  const flush = () => new Promise(r => setImmediate(r));
+  global.confirm = () => true;
+  let lateOk = true, g2 = [], t2 = [];
+  try {
+    hooks = []; hookIdx = 0; effects.length = 0;
+    const G_P2 = Object.assign({}, G0, { rules: [], ready: 5 });
+    global.API.guide = async (pid) => (pid === 1 ? G1 : G_P2);
+    const draw = (pid) => { hookIdx = 0; effects.length = 0;
+      return React.createElement(GuideCard, { project: { id: pid }, store: { can: {} }, toast }); };
+    draw(1); effects.slice().forEach(fn => fn()); await flush();
+    let release;
+    global.API.buildGuide = () => new Promise(r => { release = () => r(Object.assign({}, G1, {
+      rules: [{ id: 9, text: "LATE RULE OF PROJECT ONE", kind: "doc", on: true, by: "model" }], added: 1 })); });
+    findBtn(draw(1), "Пересобрать").props.onClick();
+    draw(2); effects.slice().forEach(fn => fn()); await flush();   // человек ушёл в проект 2
+    release(); await flush();
+    g2 = texts(draw(2));
+  } catch (e) { lateOk = false; console.log("      " + e.message); }
+  check(lateOk, "рендер с поздним ответом прошёл");
+  check(!g2.some(s => s.indexOf("LATE RULE") !== -1) && g2.some(s => s === "Собрать сейчас"),
+        "правила, собранные для проекта 1, в карточку проекта 2 не легли");
+  try {
+    hooks = []; hookIdx = 0; effects.length = 0;
+    const TL = { ok: true, built: false, counts: {}, entries: [], measure: {} };
+    global.API.termlist = async () => TL;
+    global.API.listJobs = async () => ({ jobs: [] });
+    const drawT = (pid) => { hookIdx = 0; effects.length = 0;
+      return React.createElement(TermlistCard, { project: { id: pid }, toast }); };
+    drawT(1); effects.slice().forEach(fn => fn()); await flush();
+    let releaseJob;
+    global.API.createJob = () => new Promise(r => { releaseJob = () => r({ ok: true, job: { id: 77, total: 5 } }); });
+    findBtn(drawT(1), "Собрать терм-лист").props.onClick();
+    drawT(2); effects.slice().forEach(fn => fn()); await flush();
+    releaseJob(); await flush();
+    t2 = texts(drawT(2));
+  } catch (e) { lateOk = false; console.log("      " + e.message); }
+  check(t2.some(s => s === "Собрать терм-лист") && !t2.some(s => s === "собирается…"),
+        "задача терм-листа проекта 1 не повисла «собирается…» в проекте 2");
+
   console.log();
   if (fail.length) {
     console.log("ПРОВАЛЕНО: " + fail.length);

@@ -106,9 +106,22 @@ r = c.post("/api/segments/%d/2/translate" % pid, headers=H(B), json={"force": Tr
 check(r.status_code == 409 and "предел" in r.json().get("detail", "") and len(calls) == n_calls,
       "выше предела — 409 словами, модель не звалась: %s" % r.text[:120])
 seg1 = p["segments"][0]
-seg1.update({"target": "", "status": "new"}); seg1.pop("retranslations", None)
+seg1.update({"target": "", "status": "new"})
+for k in ("retranslations", "mtDone", "provider"):
+    seg1.pop(k, None)                              # строка, которую модель ещё не переводила
 r = c.post("/api/segments/%d/1/translate" % pid, headers=H(B), json={"force": True})
-check(r.status_code == 200 and not seg1.get("retranslations"), "первый перевод пустой строки — не «заново»")
+check(r.status_code == 200 and not seg1.get("retranslations") and seg1.get("mtDone"),
+      "первый перевод пустой строки — не «заново», но след перевода моделью остался")
+# «Стёр — перевёл» — тоже заново: предел считается по ИСТОРИИ строки,
+# а не по нынешнему тексту (иначе при пределе 0 это повторялось бы без конца).
+seg1.update({"target": "", "status": "new"})
+r = c.post("/api/segments/%d/1/translate" % pid, headers=H(B), json={"force": True})
+check(r.status_code == 200 and seg1.get("retranslations") == 1,
+      "стёртая и переведённая снова строка засчитана: %s" % seg1.get("retranslations"))
+# Прежние данные без флага: модель каталога в provider — тоже след.
+check(main._mt_before({"target": "", "provider": main._dm("translate")})
+      and not main._mt_before({"target": "", "provider": main.PROVIDER_TM})
+      and not main._mt_before({"target": ""}), "история: флаг, счётчик или модель в provider")
 r = c.post("/api/projects/%d/batch" % pid, headers=H(B), json={"segment_ids": [1, 2], "force": True})
 check(r.status_code == 200 and r.json()["skipped_limit"] == [2] and 1 in r.json()["translated"],
       "пакет пропускает строку выше предела поимённо, остальные переводит: %s" % r.json().get("skipped_limit"))
@@ -116,6 +129,15 @@ r = c.post("/api/admin/tenants/acme", headers=H(A), json={"retranslateLimit": 0}
 check(r.status_code == 200 and r.json()["tenant"]["retranslateLimit"] == 0, "предел ставит суперпользователь")
 r = c.post("/api/segments/%d/1/translate" % pid, headers=H(B), json={"force": True})
 check(r.status_code == 409 and "выключен" in r.json().get("detail", ""), "0 — перевод заново запрещён")
+n_calls = len(calls)
+seg1.update({"target": "", "status": "new"})
+r = c.post("/api/segments/%d/1/translate" % pid, headers=H(B), json={"force": True})
+check(r.status_code == 409 and len(calls) == n_calls,
+      "при пределе 0 «стёр — перевёл» не обходит запрет: %d" % r.status_code)
+r = c.post("/api/projects/%d/batch" % pid, headers=H(B), json={"segment_ids": [1], "limit": 10})
+check(r.status_code == 200 and r.json()["skipped_limit"] == [1] and len(calls) == n_calls,
+      "и пакет без force стёртую строку не переводит заново: %s" % r.json().get("skipped_limit"))
+seg1.update({"target": "Line 1 about treatment.", "status": "translated"})
 r = c.post("/api/admin/tenants/acme", headers=H(B), json={"retranslateLimit": 99})
 check(r.status_code == 403, "владелец себе предел не поднимает")
 r = c.post("/api/admin/tenants/acme", headers=H(A), json={"retranslateLimit": -1})
@@ -149,6 +171,25 @@ if r.status_code == 200:
 row = next(x for x in main._proj_spend_rows("acme") if x["project"] == bpid)
 check(row["bulk"] == 1 and row["runs"] == 2, "счётчики файла в хранилище: весь файл 1, прогонов 2: %s" % row)
 main.EXTERNAL_WORKER = ew
+# Тот же файл пакетом `force` по кусочкам: ни одна порция не «весь файл»,
+# но накопленный выбор — да, и квота файла уже израсходована задачей выше.
+calls.clear()
+main._BULK_TALLY.clear()
+seen = []
+for lo in range(0, 30, 10):
+    r = c.post("/api/projects/%d/batch" % bpid, headers=H(B),
+               json={"segment_ids": ids[lo:lo + 10], "force": True, "limit": 10})
+    seen.append(r.status_code)
+check(seen[0] == 200 and 409 in seen and "целиком" in r.json().get("detail", ""),
+      "пакет кусками до «всего файла» упирается в квоту файла: %s" % seen)
+b2pid, b2p = new_project(n=30, title="bulk2")
+main._BULK_TALLY.clear()
+seen = [c.post("/api/projects/%d/batch" % b2pid, headers=H(B),
+               json={"segment_ids": list(range(lo + 1, lo + 11)), "force": True, "limit": 10}).status_code
+        for lo in range(0, 30, 10)]
+row2 = next(x for x in main._proj_spend_rows("acme") if x["project"] == b2pid)
+check(seen == [200, 200, 200] and row2.get("bulk") == 1,
+      "у файла в квоте кусочный перевод заново засчитан ОДИН раз: %s %s" % (seen, row2))
 
 print("=== 3. Проверки на паре без правил обратный перевод не покупают ===")
 upid, up_ = new_project("RU", "UZ", n=1, title="uz")

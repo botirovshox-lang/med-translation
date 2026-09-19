@@ -630,16 +630,37 @@ function TabEditor({ store, toast }) {
       if (!d || !d.models) return;
       setGptModels(d.models);
       setCatDef(d);
-      setGptModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.default || ""));
-      setBcModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.backcheckDefault || d.default || ""));
-      setJudgeModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.judgeDefault || d.default || ""));
-      setTcModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.termcheckDefault || d.default || ""));
-      setRpModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.repairDefault || d.default || ""));
+      /* Сохранённый выбор годится, только если модель есть в каталоге И у её
+         поставщика есть ключ (`ready`). Ключ сняли — модель видна, но вызов
+         упал бы «нет ключа»: выбор сбрасывается на умолчание шага, и об этом
+         сказано тостом (молча сменённая модель неотличима от назначенной).
+         Сервер делает то же для задачи (`_job_freeze_models`). */
+      const keep = (cur, def) => {
+        const m = cur ? d.models.find(x => x.id === cur) : null;
+        return m && m.ready !== false ? cur : def;
+      };
+      /* Список сброшенных — по выбору, прочитанному при открытии экрана
+         (эффект разовый, в замыкании — значения из localStorage). */
+      const dropped = [];
+      [gptModelPick, bcModelPick, judgeModelPick, tcModelPick, rpModelPick, tcxModelPick, rvModelPick]
+        .forEach(id => {
+          const m = id ? d.models.find(x => x.id === id) : null;
+          if (m && m.ready === false && dropped.indexOf(m.label) === -1) dropped.push(m.label);
+        });
+      setGptModel(cur => keep(cur, d.default || ""));
+      setBcModel(cur => keep(cur, d.backcheckDefault || d.default || ""));
+      setJudgeModel(cur => keep(cur, d.judgeDefault || d.default || ""));
+      setTcModel(cur => keep(cur, d.termcheckDefault || d.default || ""));
+      setRpModel(cur => keep(cur, d.repairDefault || d.default || ""));
       // Сверка терминов сюда не попадала, и её выбор оставался пустым: список
       // моделей рисовался без выбранной строки, а цены у шага не было вовсе —
       // от одного такого шага смета ГЛАВНОЙ кнопки становилась прочерком.
-      setTcxModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.termauditDefault || d.default || ""));
-      setRvModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : (d.reviewDefault || d.default || ""));
+      setTcxModel(cur => keep(cur, d.termauditDefault || d.default || ""));
+      setRvModel(cur => keep(cur, d.reviewDefault || d.default || ""));
+      // Тост — только эксперту: остальным выбор не виден и в задачу не едет.
+      if (dropped.length && expertUI)
+        toast.warning(TR("Модель без ключа заменена умолчанием"),
+          dropped.join(", ") + TR(": у поставщика нет ключа — выбор сброшен на модель шага по умолчанию."));
       AUX_PRICES = d.aux || {};
       EMBED_MODEL_ID = d.embedModel || "";
       // Полосы кладём в общее место: по ним красят балл и эта таблица,
@@ -1240,9 +1261,13 @@ function TabEditor({ store, toast }) {
   const doTranslate = async (seg, force = false) => {
     if (busy[seg.id]) return;
     setSegBusy(seg.id, "translate");
-    let result = null;
+    let result = null, why = null;
     if (window.API) {
-      result = await window.API.safeCall(() => window.API.translate(project.id, seg.id, force, gptModel));
+      /* Не safeCall: отказ сервера — ответ человеку (409 — предел перевода
+         заново или идёт прогон, 503 — нет ключа, 402 — лимит). Под safeCall
+         всё это читалось как «сервер недоступен». */
+      try { result = await window.API.translate(project.id, seg.id, force, gptModel); }
+      catch (e) { why = e && e.status ? (e.message || "") : null; }
     }
     if (result && result.segment) {
       // Перезапрос корзин — ПОСЛЕ записи на сервер (updateSegment возвращает
@@ -1258,7 +1283,9 @@ function TabEditor({ store, toast }) {
     } else {
       // НЕ подставляем демо-заглушку в перевод: сегмент остаётся как был,
       // пользователь видит честную ошибку и может повторить попытку.
-      toast.error(TR("Перевод не выполнен"), TR("Сегмент #") + seg.id + TR(" не изменён. Сервер недоступен или движки перевода вернули ошибку — попробуйте ещё раз."));
+      toast.error(TR("Перевод не выполнен"), why
+        ? TR("Сегмент #") + seg.id + TR(" не изменён: ") + why
+        : TR("Сегмент #") + seg.id + TR(" не изменён. Сервер недоступен или движки перевода вернули ошибку — попробуйте ещё раз."));
     }
     clearBusy(seg.id);
   };
@@ -1321,12 +1348,27 @@ function TabEditor({ store, toast }) {
   };
 
   const doConfirm = async (seg, draftTarget) => {
+    /* Заверить пустоту нельзя: сервер отвечает 400, а прежде safeCall глотал
+       отказ, строка всё равно становилась «подтверждённой» на экране и тост
+       хвалил. Теперь отказ называется словами сервера и статус не трогается. */
+    const text = draftTarget !== undefined ? draftTarget : seg.target;
+    if (!String(text || "").trim()) {
+      toast.error(TR("Не подтверждено"), TR("Сегмент #") + seg.id + TR(": пустой перевод подтвердить нельзя."));
+      return;
+    }
     // Если передан отредактированный черновик — сначала сохранить его на сервере
     if (draftTarget !== undefined && draftTarget !== seg.target) {
       if (window.API) await window.API.safeCall(() => window.API.update(project.id, seg.id, { target: draftTarget }));
       store.updateSegment(project.id, seg.id, { target: draftTarget });
     }
-    const res = window.API ? await window.API.safeCall(() => window.API.confirm(project.id, seg.id)) : null;
+    let res = null;
+    if (window.API) {
+      try { res = await window.API.confirm(project.id, seg.id); }
+      catch (e) {
+        toast.error(TR("Не подтверждено"), TR("Сегмент #") + seg.id + ": " + ((e && e.message) || TR("сервер недоступен")));
+        return;
+      }
+    }
     store.updateSegment(project.id, seg.id, { status: "confirmed" });
     // Что именно система выучила — говорим вслух: молчаливое обучение в
     // рабочем инструменте пугает сильнее, чем отсутствие обучения.
@@ -1717,8 +1759,9 @@ function TabEditor({ store, toast }) {
       ].filter(Boolean).join(" · ") || TR("нового ничего не потребовалось");
       const blockedMsg = c.step_skips ? TR(" · шаги пропускались (нет ключа или модуля)") : "";
       const skipConfMsg = c.skipped_confirmed ? TR(" · подтверждённых не тронуто: ") + c.skipped_confirmed : "";
+      const limitMsg = c.skipped_limit ? TR(" · не переведено заново (предел организации): ") + c.skipped_limit : "";
       toast.success(TR("Перевод и проверка завершены"),
-        j.done + TR(" сегментов пройдено · ") + part + dupMsg + skipConfMsg + blockedMsg + errMsg
+        j.done + TR(" сегментов пройдено · ") + part + dupMsg + skipConfMsg + limitMsg + blockedMsg + errMsg
         + (c.flagged ? TR(" · замечания в ") + c.flagged : "") + lossMsg + costMsg);
       return;
     }
@@ -1727,7 +1770,10 @@ function TabEditor({ store, toast }) {
       // Пропущенные подтверждённые называем вслух: иначе «переведено 0» выглядит
       // как поломка, хотя сервер просто не тронул заверенное человеком.
       const skipMsg = c.skipped_confirmed ? TR(" · пропущено подтверждённых: ") + c.skipped_confirmed : "";
-      toast.success(TR("Перевод завершён"), j.done + TR(" сегментов переведено") + tmMsg + dupMsg + skipMsg + errMsg + costMsg);
+      // Строки выше предела перевода заново сервер пропускает поимённо —
+      // молча это выглядело бы как «переведено меньше, чем выбрано».
+      const limitMsg = c.skipped_limit ? TR(" · не переведено заново (предел организации): ") + c.skipped_limit : "";
+      toast.success(TR("Перевод завершён"), j.done + TR(" сегментов переведено") + tmMsg + dupMsg + skipMsg + limitMsg + errMsg + costMsg);
     } else if (j.kind === "termcheck") {
       const skipMsg = c.skipped_trivial ? TR(" · без вызова модели: ") + c.skipped_trivial : "";
       if (c.flagged) toast.warning(TR("Проверка терминологии завершена"),

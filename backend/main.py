@@ -1675,25 +1675,30 @@ class _AnthropicChat:
             args["extra_body"] = {"temperature": kw["temperature"]}
         resp = self._client.messages.create(**args)
         stop = getattr(resp, "stop_reason", None)
+        u = getattr(resp, "usage", None)
+        tin, tout = _usage_field(u, "input_tokens"), _usage_field(u, "output_tokens")
+        cr, cw = _usage_field(u, "cache_read_input_tokens"), _usage_field(u, "cache_creation_input_tokens")
+        NS = _types.SimpleNamespace
+        usage = NS(prompt_tokens=tin + cr + cw, completion_tokens=tout,
+                   total_tokens=tin + cr + cw + tout,
+                   prompt_tokens_details=NS(cached_tokens=cr),
+                   completion_tokens_details=NS(reasoning_tokens=0))
         if stop == "refusal":
             # Отказ — сбой вызова, а не пустой перевод: место вызова обязано
-            # ответить ошибкой и сегмент не трогать (инвариант 4).
+            # ответить ошибкой и сегмент не трогать (инвариант 4). Но токены
+            # отказа выставлены в счёт — записываем их здесь, до исключения:
+            # место вызова зовёт `_note_usage` только на удачном ответе,
+            # и без этой строки отказы уходили бы мимо лимита и сметы.
+            _note_usage("refusal", self._m.get("id") or model, NS(usage=usage))
             raise RuntimeError("модель отказалась отвечать (stop_reason=refusal)")
         text = "".join(getattr(b, "text", "") or "" for b in (resp.content or [])
                        if getattr(b, "type", "") == "text")
         if (kw.get("response_format") or {}).get("type") == "json_object":
             text = _json_body(text)
-        u = getattr(resp, "usage", None)
-        tin, tout = _usage_field(u, "input_tokens"), _usage_field(u, "output_tokens")
-        cr, cw = _usage_field(u, "cache_read_input_tokens"), _usage_field(u, "cache_creation_input_tokens")
-        NS = _types.SimpleNamespace
         return NS(id=getattr(resp, "id", ""), model=model,
                   choices=[NS(index=0, finish_reason=_ANTHROPIC_STOP.get(stop, "stop"),
                               message=NS(role="assistant", content=text))],
-                  usage=NS(prompt_tokens=tin + cr + cw, completion_tokens=tout,
-                           total_tokens=tin + cr + cw + tout,
-                           prompt_tokens_details=NS(cached_tokens=cr),
-                           completion_tokens_details=NS(reasoning_tokens=0)))
+                  usage=usage)
 
 
 def _llm_client(model, timeout: float = 90, max_retries: int = 1):
@@ -2553,15 +2558,19 @@ _PAID = [
     # он не зовёт, а запирать возврат к прежнему тексту на исчерпанном лимите
     # значило бы держать клиента в заложниках у его же счёта.
     ("POST", re.compile(r"/api/projects/\d+/(batch|extract-terms|term-context|review|termcheck/batch|backcheck/batch|images/scan)$")),
-    # Ремонт пачкой зовёт модель ремонта, проверки пачкой — обратный перевод
-    # (`_segment_checks`); без этих строк исчерпанный лимит обходился ими.
+    # Ремонт пачкой зовёт модель ремонта; без этой строки исчерпанный лимит
+    # обходился им. Проверки пачкой (`checks/batch`, `medical-qa/batch`)
+    # здесь НЕТ: платен у них только обратный перевод, а на паре без правил
+    # (`_checks_buy_back`) и при готовом обратном переводе они бесплатны —
+    # путь 402 запирал бы бесплатную работу. Рубеж — в обработчике
+    # (`batch_checks`), по составу: 402, только если покупка будет.
     # `/review/apply` сюда НЕ входит: он ставит уже оплаченные вердикты
     # (`apply_saved`), модель не зовёт. Одобрение кандидата и автоодобрение
     # зовут судью, но путём их не запереть (инвариант 15: принятие
     # кандидатов работает на исчерпанном лимите) — там свой рубеж
     # в обработчике (`_spend_status`): судья пропускается или 402 по телу
     # (`_limit_402`).
-    ("POST", re.compile(r"/api/projects/\d+/(repair/batch|checks/batch|medical-qa/batch)$")),
+    ("POST", re.compile(r"/api/projects/\d+/repair/batch$")),
     ("POST", re.compile(r"/api/segments/\d+/\d+/(translate|backcheck|termcheck|repair|medical-qa|checks)$")),
     ("POST", re.compile(r"/api/term-queue/\d+/explain$")),
     ("POST", re.compile(r"/api/glossary/audit$")),
@@ -7628,7 +7637,10 @@ def list_models():
         "backcheckMinStems": getattr(checks_mod, "BACKCHECK_MIN_STEMS", 3) if checks_mod else 3,
         "backcheckBands": getattr(checks_mod, "BACKCHECK_BANDS", []) if checks_mod else [],
         # Доступен ли перевод: ключ у поставщика ТОЙ модели, которой он пойдёт.
-        "available": _provider_ready(_dm("translate")),
+        # В упрощённом режиме это модель, назначенная ОРГАНИЗАЦИИ
+        # (`_forced_models`), а не системная: у организации на Claude без
+        # ключа Anthropic перевод недоступен при живом ключе OpenAI.
+        "available": _provider_ready(_forced_models({}).get("model") or _dm("translate")),
         "brand": APP_BRAND,
         # Упрощённый режим организации: браузер не рисует ни сумм, ни выбора
         # моделей. Цены при этом в ответе ОСТАЮТСЯ — по ним считается смета,
@@ -8405,12 +8417,39 @@ def _refuse_duplicate_upload(sha: str, src: str, tgt: str) -> None:
     (прежде `filesSeen` списывал повтору ноль). Дорога для него одна —
     открыть готовый или заменить файл повторным импортом. Проект удалён —
     файл списывается как новый: удаление страниц не возвращает."""
-    dup = next((p for p in _tenant_projects() if p.get("sourceSha") == sha
-                and (p.get("src") or "RU") == src and (p.get("tgt") or "EN") == tgt), None)
+    dup = next(iter(_duplicate_uploads(sha, src, tgt)), None)
     if dup is not None:
-        raise HTTPException(409, "Этот файл уже загружен на ту же пару языков: «%s» (№%d). "
-                                 "Откройте его или замените файл повторным импортом"
-                            % (dup.get("title") or "", dup["id"]))
+        raise _DuplicateUpload(dup)
+
+
+def _duplicate_uploads(sha: str, src: Optional[str], tgt: Optional[str]) -> list:
+    """Живые проекты организации с тем же файлом (и той же парой, если она
+    названа). Одно правило на отказ загрузки и на пробу: проба, смотревшая
+    только в текущую папку, молчала о дубле из соседней — а загрузка потом
+    отвечала 409, и человек узнавал о дубле уже после выбора пары и папки."""
+    return [p for p in _tenant_projects() if p.get("sourceSha") == sha
+            and (not src or (p.get("src") or "RU") == src.upper())
+            and (not tgt or (p.get("tgt") or "EN") == tgt.upper())]
+
+
+# Текст отказа — постоянный ключ перевода (`TRS()` в браузере), БЕЗ имени
+# проекта внутри: имя клиента в ключе сделало бы его непереводимым. Какой
+# проект — полями ответа (`project`), по ним экран предлагает «Открыть проект».
+DUPLICATE_UPLOAD_MSG = ("Этот файл уже загружен на ту же пару языков. "
+                        "Откройте готовый проект или замените файл повторным импортом")
+
+
+class _DuplicateUpload(Exception):
+    def __init__(self, project: dict):
+        super().__init__(DUPLICATE_UPLOAD_MSG)
+        self.project = {"id": project["id"], "title": project.get("title") or "",
+                        "folder": _fid(project["id"])}
+
+
+@app.exception_handler(_DuplicateUpload)
+async def _duplicate_upload_response(request: Request, exc: _DuplicateUpload):
+    return JSONResponse({"detail": DUPLICATE_UPLOAD_MSG, "code": "duplicate",
+                         "project": exc.project}, status_code=409)
 
 
 @app.post("/api/projects/upload")
@@ -8799,12 +8838,18 @@ async def probe_upload(request: Request, file: UploadFile = File(...),
     # рядом с RU→EN) — не «уже есть» и не «новая редакция», а новый файл.
     if src and tgt:
         pool = [p for p in pool if (p.get("src") or "RU") == src.upper() and (p.get("tgt") or "EN") == tgt.upper()]
-    exact, similar = [], []
+    # «Уже есть» — по ВСЕЙ организации, той же меркой, что и отказ загрузки
+    # (`_duplicate_uploads`): дубль в соседней папке загрузка всё равно
+    # отвергнет 409, и проба обязана сказать о нём заранее, с номером проекта.
+    # «Похоже на новую редакцию» остаётся в пределах папки.
+    exact = [{"id": p["id"], "title": p.get("title"), "folder": _fid(p["id"])}
+             for p in _duplicate_uploads(parsed["sha"], src, tgt)]
+    same = {e["id"] for e in exact}
+    similar = []
     for n_done, p in enumerate(pool):
         if cb:
             cb("compare", n_done, len(pool))
-        if p.get("sourceSha") == parsed["sha"]:
-            exact.append({"id": p["id"], "title": p.get("title"), "folder": _fid(p["id"])})
+        if p["id"] in same or p.get("sourceSha") == parsed["sha"]:
             continue
         if not _text_segments(p) or not parsed["units"]:
             continue
@@ -8857,7 +8902,10 @@ _RESET_ON_SOURCE_CHANGE = (
     "editedToHash", "engine_qa", "extracted_hash", "medical_qa_enabled", "propagatedFrom",
     "provider", "qa_issues", "qa_result", "repair", "review", "risk_color", "risk_score",
     "styleApplied", "term_candidates", "termcheck", "termContext", "termCtxApplied",
-    "unconfirmed")
+    "unconfirmed",
+    # Предел перевода заново (`_mt_before`) — про ЭТОТ оригинал: другая
+    # строка под тем же номером переводится впервые, прежний текст — в prevTarget.
+    "retranslations", "mtDone")
 
 
 def _new_segment(sid: int, text: str) -> dict:
@@ -9076,7 +9124,11 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
            removed=counts["removed"], kept=counts["kept"], images=len(images))
     done = dict(counts)
     done.update({"stamp": stamp, "addedIds": added_ids, "pagesDebited": round(float(added_pages), 3),
-                 "imagesRemoved": len(images)})
+                 "imagesRemoved": len(images),
+                 # Номер сегмента КАЖДОЙ единицы новой редакции, по порядку
+                 # плана: пересегментация (tools/resegment_project.py) кладёт
+                 # подсказки по индексу плана, а не угадывает склейкой списков.
+                 "unitIds": [s["id"] for s in new_segments]})
     return done
 
 
@@ -10291,7 +10343,7 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
     limit = _retranslate_limit()
     if _retranslate_blocked(seg, limit):
         raise HTTPException(409, _retranslate_refusal(limit))
-    old_target = seg.get("target") or ""
+    again = _mt_before(seg)             # до записи: `_replace_target` сменит provider
     try:
         prev_src, next_src = _neighbours(project, seg)
         translation = _openai_translate(src_text, project["src"], project["tgt"],
@@ -10317,7 +10369,7 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
         seg.pop("docTerms", None)
 
     _replace_target(seg, translation, _resolve_model(req.model)["id"], "GPT_REQUIRED")
-    _retranslate_note(seg, old_target)
+    _retranslate_note(seg, again)
     save_state(STATE)
     return {"ok": True, "segment": seg, "usedRealApi": True}
 
@@ -19437,9 +19489,12 @@ def _termcross_ctx(project: dict, e: dict) -> str:
     return ""
 
 
-def _termcross(project: dict, first_model: Optional[str]) -> dict:
+def _termcross(project: dict, first_model: Optional[str], job: Optional[dict] = None) -> dict:
     """Кросс-проверка согласованных машиной пар листа второй моделью.
-    Счётчики — в задачу терм-листа; пропуск назван причиной, а не тишиной."""
+    Счётчики — в задачу терм-листа; пропуск назван причиной, а не тишиной.
+    С задачей — тот же рубеж, что у сбора листа: стоп-флаг и лимит расхода
+    (`_job_limit_hit`) перед каждой пачкой вызовов. Без него исчерпанный
+    на сборе лимит не мешал второй модели платить за весь лист."""
     tl = project.get("termlist") or {}
     ents = [e for e in (tl.get("entries") or [])
             if e.get("status") == "agreed" and e.get("by") != "human"]
@@ -19465,7 +19520,18 @@ def _termcross(project: dict, first_model: Optional[str]) -> dict:
                                project.get("domain"), project.get("src", "RU"), project.get("tgt", "EN"))
 
     failed = 0
-    got = _run_parallel(chunks, work) if chunks else []
+    got, skipped = [], None
+    step = max(1, RUN_WORKERS * 2)
+    for i in range(0, len(chunks), step):
+        if job is not None:
+            if _job_should_stop():
+                job["status"], skipped = "stopped", "stopped"
+                break
+            if _job_limit_hit(job):
+                skipped = "limit"
+                break
+        got.extend(_run_parallel(chunks[i:i + step], work))
+    chunks = chunks[:len(got)]      # не спрошенные пачки — «не знаю», пары как были
     disputed = 0
     with _SAVE_LOCK:
         for chunk, ans in zip(chunks, got):
@@ -19484,8 +19550,11 @@ def _termcross(project: dict, first_model: Optional[str]) -> dict:
             if same is False and _termlist_dispute(
                     project, e["src"], "другая модель (" + mdl["label"] + ") переводит иначе: " + alt):
                 disputed += 1
-    return {"crossAsked": len(ask), "crossCached": len(ents) - len(ask),
-            "crossDisputed": disputed, "crossFailed": failed}
+    out = {"crossAsked": sum(len(c) for c in chunks), "crossCached": len(ents) - len(ask),
+           "crossDisputed": disputed, "crossFailed": failed}
+    if skipped:
+        out["crossSkipped"] = skipped
+    return out
 
 
 def _termlist_measure(project: dict) -> dict:
@@ -19732,7 +19801,7 @@ def _job_termsheet(job: dict) -> None:
                                "cross": cur.get("cross") or {},
                                "entries": entries}
         _TERMLIST_INDEX.pop(pid, None)
-    cross = _termcross(project, model)
+    cross = _termcross(project, model, job)
     job["counters"].update({"calls": calls, "failed": failed, "terms": len(entries),
                             "meaningCapped": capped, **corpus_n, **cross,
                             **_termlist_counts(entries)})
@@ -20466,7 +20535,6 @@ def _guide_clean(items) -> list:
 def _guide_call(project: dict, pairs: list, model: Optional[str] = None) -> Optional[list]:
     """Один вызов на документ. None — вызов не состоялся (это НЕ «правил нет»)."""
     import json as _json
-    import openai
     dom = _resolve_domain(project.get("domain"))
     mdl = _resolve_model(model or _dm("review"))
     # «Уже действует» — и правила человека: иначе пересборка выдала бы их
@@ -20480,7 +20548,10 @@ def _guide_call(project: dict, pairs: list, model: Optional[str] = None) -> Opti
     extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
              else {"max_tokens": 1500, "temperature": 0})
     try:
-        client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=120, max_retries=1)
+        # Через `_llm_client`, а не openai.OpenAI: модель правил — модель
+        # проверки, и при Claude в этой роли прямой клиент OpenAI получал
+        # чужое имя модели и сбор правил не удавался никогда (инвариант 6).
+        client = _llm_client(mdl, timeout=120, max_retries=1)
         resp = client.chat.completions.create(
             model=mdl["id"],
             messages=[{"role": "system", "content": _guide_system(dom, project.get("src") or "",
@@ -20583,6 +20654,10 @@ def _guide_auto_step(job: dict, final: bool) -> None:
             return
     except Exception as e:
         print(f"[backend] job#{job.get('id')}: лимит перед правилами документа: {e}", file=sys.stderr)
+    # Нет ключа у поставщика модели правил — вызов заведомо не состоится:
+    # не тратим на него ни попытку (`guideTried`), ни счёт неудач проекта.
+    if not _provider_ready(_dm("review")):
+        return
     params["guideTried"] = True
     _job_persist(job)
     try:
@@ -20691,6 +20766,9 @@ def build_project_guide(pid: int):
     project = get_project(pid)
     if _spend_status().get("over"):
         raise HTTPException(402, "Лимит расхода организации исчерпан")
+    # Ключ — ПО МОДЕЛИ правил (модель проверки): при Claude в этой роли
+    # и без ключа Anthropic честный 503 до вызова, а не «модель не ответила».
+    _key_gate(_dm("review"), "Правила документа требуют ключ OpenAI")
     res = _guide_build(project, "human")
     if not res["ok"]:
         if res["why"] == "few":
@@ -21285,6 +21363,18 @@ def batch_checks(pid: int, req: ChecksBatchRequest = ChecksBatchRequest()):
                       if _check_stale(s.get("qa_result"), s.get("target"))]
         skipped_cached = before - len(candidates)
     targets = candidates[:req.limit]
+    # Лимит — по СОСТАВУ, а не путём (см. `_PAID`): 402 только если порция
+    # купит обратный перевод — он нужен, пара его покупает и готового
+    # к нынешнему тексту нет. Только у запроса: прогон проверяет лимит сам.
+    if (CURRENT_SESSION.get() is not None and req.run_backcheck and checks_enabled()
+            and _checks_buy_back(project)
+            and any(not ((s.get("backcheck") or {}).get("back")
+                         and (s.get("backcheck") or {}).get("target_hash")
+                         == _text_hash((s.get("target") or "").strip()))
+                    for s in targets)):
+        st = _spend_status()
+        if st["over"]:
+            return _limit_402(st, _current_tenant())
     processed = []
     errors = []
     def _qa_one(seg):
@@ -21488,15 +21578,35 @@ def _retranslate_limit(tid: Optional[str] = None) -> Optional[int]:
     return int(v) if v is not None else RETRANSLATE_LIMIT
 
 
+def _mt_before(seg: dict) -> bool:
+    """Переводила ли строку модель РАНЬШЕ — по истории, а не по нынешнему
+    тексту. Мерить «заново» непустым текстом было дырой: пустой перевод
+    снова «новый» (`_needs_translation`), и «стёр — перевёл» повторялось
+    без конца даже при пределе 0. Поэтому след — флаг `mtDone` (ставит
+    `_retranslate_note` на каждом переводе моделью), счётчик, модель
+    каталога в `provider` (строки, переведённые до флага) и, как прежде,
+    непустой текст (перевод поверх готового — заново, кто бы его ни писал).
+    Смена ОРИГИНАЛА (повторный импорт, пересегментация) снимает и флаг,
+    и счётчик (`_RESET_ON_SOURCE_CHANGE`, tools/resegment_project.py):
+    другая строка — законный первый перевод, а прежний текст остаётся
+    подсказкой в `prevTarget`."""
+    return (bool(seg.get("mtDone")) or int(seg.get("retranslations") or 0) > 0
+            or (seg.get("provider") or "") in _MODELS_BY_ID
+            or bool((seg.get("target") or "").strip()))
+
+
 def _retranslate_blocked(seg: dict, limit: Optional[int]) -> bool:
-    return (limit is not None and bool((seg.get("target") or "").strip())
+    return (limit is not None and _mt_before(seg)
             and int(seg.get("retranslations") or 0) >= limit)
 
 
-def _retranslate_note(seg: dict, old_target: str) -> None:
-    """Засчитать перевод заново — только поверх НЕПУСТОГО прежнего текста."""
-    if (old_target or "").strip():
+def _retranslate_note(seg: dict, again: bool) -> None:
+    """Засчитать перевод моделью. `again` — `_mt_before(seg)`, снятый ДО
+    записи нового текста: первый перевод строки бесплатен для предела,
+    каждый следующий засчитывается, какой бы текст ни лежал перед ним."""
+    if again:
         seg["retranslations"] = int(seg.get("retranslations") or 0) + 1
+    seg["mtDone"] = True
 
 
 def _retranslate_refusal(limit: int) -> str:
@@ -21526,6 +21636,32 @@ def _retranslate_bulk_check(project: dict, ids: list, include_confirmed: bool) -
                                  "выберите отдельные строки или обратитесь к администратору сервиса"
                             % (used, quota))
     return True
+
+
+# Накопленный выбор пакетов `force` по проекту: {pid: {"ids", "at", "counted"}}.
+# В памяти процесса API (пакеты запросом идут только через него, инвариант 1);
+# окно — час тишины: «весь файл по кусочкам» идёт подряд, а точечные правки
+# через день — уже другая работа. Рестарт окно обнуляет — это цена одного
+# лишнего захода, а не дыра: квота на файл ниже всё равно считается счётчиком.
+_BULK_TALLY: dict = {}
+BULK_TALLY_WINDOW = 3600
+
+
+def _bulk_tally(project: dict, ids: set, include_confirmed: bool) -> None:
+    """Правило `_retranslate_bulk_check` на выборе, накопленном за окно:
+    дотянул до «весь файл» — квота засчитывается ОДИН раз на окно или 409
+    до всякой работы."""
+    now = time.time()
+    pid = project["id"]
+    t = _BULK_TALLY.get(pid)
+    if t is None or now - t["at"] > BULK_TALLY_WINDOW:
+        t = {"ids": set(), "at": now, "counted": False}
+    union = t["ids"] | set(ids or ())
+    if not t["counted"] and _retranslate_bulk_check(project, list(union), include_confirmed):
+        _proj_spend_add(_tenant_of(project), pid, bulk=1)
+        t["counted"] = True
+    t["ids"], t["at"] = union, now
+    _BULK_TALLY[pid] = t
 
 
 class BatchRequest(BaseModel):
@@ -21559,21 +21695,20 @@ def batch_translate(pid: int, req: BatchRequest):
         skipped_confirmed = ([s["id"] for s in project["segments"]
                               if s["id"] in id_filter and s["status"] == "confirmed"]
                              if not req.include_confirmed else [])
-        # Перевод заново выше предела организации — мимо, поимённо
-        # (`skipped_limit`), а не отказом всей порции: остальные строки
-        # выбора законны. См. «Перевод ЗАНОВО» у `_retranslate_limit`.
-        rt_limit = _retranslate_limit()
-        skipped_limit = [s["id"] for s in all_targets if _retranslate_blocked(s, rt_limit)]
-        if skipped_limit:
-            _over = set(skipped_limit)
-            all_targets = [s for s in all_targets if s["id"] not in _over]
+        # Перевод заново ВСЕГО файла кусками: квота файла (`_retranslate_bulk_check`)
+        # стояла только у задачи, и тот же файл, присланный сюда порциями
+        # по десятку строк, её обходил — ни одна порция не «весь файл».
+        # Поэтому у ЗАПРОСА (у задачи сессии нет — её квоту засчитал
+        # `create_job`) выбор копится по проекту (`_bulk_tally`), и правило
+        # то же самое, но на накопленном.
+        if CURRENT_SESSION.get() is not None:
+            _bulk_tally(project, id_filter, req.include_confirmed)
     else:
         # Предикат общий с разбором прогона — см. _needs_translation.
         all_targets = [s for s in project["segments"]
                        if _needs_translation(s)
                        and (id_filter is None or s["id"] in id_filter)]
         skipped_confirmed = []
-        skipped_limit = []
     done_by_src: dict = {}
     if not req.force:
         for s0 in project["segments"]:
@@ -21600,6 +21735,18 @@ def batch_translate(pid: int, req: BatchRequest):
         if _tm_trusted(_get_context(sg["source"], project=project)[1]):
             return True
         return _norm_key(sg["source"]) in done_by_src
+    # Перевод заново выше предела организации — мимо, поимённо
+    # (`skipped_limit`), а не отказом всей порции: остальные строки
+    # выбора законны. См. «Перевод ЗАНОВО» у `_retranslate_limit`. Обе
+    # ветки, а не только `force`: стёртая строка снова «не переведена»
+    # и шла бы прогоном без счёта. Бесплатное (память, повтор готового —
+    # без `force`) пределом не режется: модель его не переводит.
+    rt_limit = _retranslate_limit()
+    skipped_limit = [s["id"] for s in all_targets if _retranslate_blocked(s, rt_limit)
+                     and (req.force or not _free(s))]
+    if skipped_limit:
+        _over = set(skipped_limit)
+        all_targets = [s for s in all_targets if s["id"] not in _over]
     if (all_targets and not _provider_ready(req.model)
             and not all(_free(s) for s in all_targets)):
         # 503 до работы, как у termcheck, back-check и ремонта: иначе отсутствие
@@ -21719,7 +21866,7 @@ def batch_translate(pid: int, req: BatchRequest):
                 sg.pop("confirmedBy", None)
                 sg.pop("confirmedAt", None)
                 sg.pop("confirmedRole", None)
-            _retranslate_note(sg, sg.get("target") or "")
+            _retranslate_note(sg, _mt_before(sg))    # до записи текста и provider
             sg["target"] = res["text"]
             sg["status"] = "review" if was_confirmed else "translated"
             sg["provider"] = res["provider"]
@@ -23672,15 +23819,27 @@ def _job_freeze_models(job: dict) -> dict:
         fixed[k] = mid
     job["sysModels"] = fixed
     params = job.get("params") or {}
+    step_of = {v: k for k, v in FULL_STEP_MODEL.items()}
+    step_of.update({"judge_model": "judge", "ocr_model": "ocr"})
     for key in sorted(_MODEL_PARAM_KEYS):
         v = params.get(key)
         if v and v not in _MODELS_BY_ID:
             params[key] = None
             notes.append("%s: %s → умолчание шага" % (key, v))
+        elif (v and not _provider_ready(v) and step_of.get(key) in fixed
+              and _provider_ready(fixed[step_of[key]])):
+            # Выбор, сохранённый в браузере, пока у поставщика был ключ: ключ
+            # сняли — модель видна, но недоступна (`ready: false`). Без замены
+            # каждый вызов шага падал бы «нет ключа», и прогон проходил бы
+            # вхолостую. Умолчание шага — с тем же следом, что и пропавшая модель,
+            # и только если у НЕГО ключ есть: иначе замена ничего не даёт.
+            params[key] = None
+            notes.append("%s: %s → умолчание шага (нет ключа %s)"
+                         % (key, v, LLM_PROVIDER_LABELS[_provider_of(v)]))
     if notes:
         seen = job.setdefault("modelsReplaced", [])
         seen.extend(n for n in notes if n not in seen)
-        print("[backend] job#%s: моделей больше нет в каталоге — %s"
+        print("[backend] job#%s: модели заменены умолчанием (нет в каталоге или нет ключа) — %s"
               % (job.get("id"), "; ".join(notes)), file=sys.stderr)
     return fixed
 

@@ -77,6 +77,11 @@ function AdminTenants({ ov, toast, onChange }) {
       + (d.retranslateBulk != null ? d.retranslateBulk : "—") + TR(", 0 — только администратор сервиса):"),
       t.retranslateBulk != null ? t.retranslateBulk : "");
     if (b === null) return;
+    /* Целое ≥ 0 или пусто — проверка до отправки. Number("abc") — NaN, а NaN
+       в JSON уезжает как null: опечатка превращалась в непонятный отказ
+       сервера или в «не задано», вместо того чтобы быть названной здесь. */
+    const bad = [a, b].some(v => v.trim() !== "" && !/^\d+$/.test(v.trim()));
+    if (bad) { toast.error(TR("Не обновлён"), TR("Нужно целое число от 0 или пусто.")); return; }
     const body = (a.trim() === "" && b.trim() === "") ? { clearRetranslate: true } : {};
     if (a.trim() !== "") body.retranslateLimit = Number(a);
     if (b.trim() !== "") body.retranslateBulk = Number(b);

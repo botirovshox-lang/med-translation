@@ -57,7 +57,9 @@ function ImagesCard({ project, store, toast }) {
     window.API.safeCall(() => window.API.models()).then(d => {
       if (!d || !d.models) return;
       setModels(d.models);
-      setOcrModel(cur => (cur && d.models.some(m => m.id === cur)) ? cur : "");
+      /* Модель без ключа поставщика (`ready: false`) — тоже «нет выбора»:
+         иначе сохранённый выбор уезжал бы в задачу и чтение падало «нет ключа». */
+      setOcrModel(cur => (cur && d.models.some(m => m.id === cur && m.ready !== false)) ? cur : "");
     });
   }, []);
 

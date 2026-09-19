@@ -348,9 +348,7 @@
  "Перетащите файл сюда": "Drag a file here",
  "Word, Excel, PowerPoint, PDF, HTML, текст или картинка": "Word, Excel, PowerPoint, PDF, HTML, text or an image",
  "Смотрим, что за файл…": "Looking at what the file is…",
- "Этот файл уже есть в проекте: «": "This file is already in the project: “",
  "». Второй раз он не нужен.": "”. There is no need for it twice.",
- "Открыть его": "Open it",
  "Выбрать другой файл": "Choose another file",
  "Похоже на новую версию файла «": "Looks like a new version of the file “",
  "»: совпало ": "”: matched ",
@@ -373,5 +371,7 @@
  "читаем надписи": "reading the captions",
  "ищем строки на картинках": "finding text lines in the pictures",
  "готовим картинки": "preparing the pictures",
-  " — нет ключа": " — no key"
+ " — нет ключа": " — no key",
+ "Этот файл уже загружен на эту пару языков: «": "This file is already uploaded for this language pair: “",
+ "Открыть проект": "Open the project"
 }

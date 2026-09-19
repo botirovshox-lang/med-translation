@@ -52,7 +52,7 @@ CROSS = {}          # термин → ответ второй модели
 
 def _reply(kw):
     body = kw["messages"][0]["content"]
-    if isinstance(body, str) and body.startswith("[1] "):
+    if isinstance(body, str) and body.startswith("[1] ") and "CONVENTIONS" not in (kw.get("system") or ""):
         # Кросс-проверка: отвечаем по списку терминов из тела запроса.
         out = []
         for line in body.split("\n"):
@@ -271,6 +271,86 @@ check(len(CALLS) == n3 + 1 and ents and ents[0]["status"] == "disputed",
 check(job["counters"].get("crossDisputed") == 1 and "cross" in proj["termlist"], "счётчики задачи и кэш на листе")
 main._job_termsheet(job)
 check(len(CALLS) == n3 + 1, "пересбор листа кэш не теряет — термин не покупается дважды")
+
+print("(8) termcross: стоп-флаг и лимит расхода — до вызова")
+CROSS.update({"пульс": "puls"})
+for why, hit in (("stopped", "stop"), ("limit", "limit")):
+    proj = project_of([entry("пульс", "puls")])
+    jb = {"id": 8, "project": 1, "kind": "termsheet", "params": {}, "counters": {},
+          "tenant": "default", "status": "running", "stop": hit == "stop"}
+    orig = (main._job_should_stop, main._spend_status)
+    main._job_should_stop = lambda: hit == "stop"
+    main._spend_status = lambda t=None: {"over": hit == "limit"}
+    n4 = len(CALLS)
+    try:
+        got = main._termcross(proj, "gpt-5.6-terra", jb)
+    finally:
+        main._job_should_stop, main._spend_status = orig
+    check(len(CALLS) == n4 and got.get("crossSkipped") == why and jb["status"] == "stopped"
+          and got.get("crossAsked") == 0, "%s: вторая модель не звалась, пропуск назван: %s" % (why, got))
+
+print("(9) отказ модели: расход записан до исключения")
+main._USAGE_TOTAL = main._usage_zero()
+REPLY["stop"] = "refusal"
+try:
+    main._llm_client("claude-opus-5").chat.completions.create(
+        model="claude-opus-5", messages=[{"role": "user", "content": "u"}], max_tokens=10)
+    check(False, "отказ — исключение")
+except RuntimeError:
+    pass
+REPLY["stop"] = "end_turn"
+rf = main._USAGE_TOTAL["steps"].get("refusal") or {}
+check(rf.get("calls") == 1 and rf.get("in") == 130 and rf.get("cost", 0) > 0,
+      "токены отказа легли в учёт шагом refusal: %s" % rf)
+
+print("(10) правила документа — через `_llm_client` модели проверки")
+guide_proj = {"id": 1, "title": "P", "src": "RU", "tgt": "EN", "domain": "general", "tenant": "default",
+              "segments": [{"id": i, "source": "Строка %d." % i, "target": "Line %d." % i, "status": "translated"}
+                           for i in range(1, 6)]}
+REPLY["text"] = '[{"text": "Use the serial comma.", "kind": "doc"}]'
+n5, o5 = len(CALLS), len(OPENAI_CALLS)
+rules = main._guide_call(guide_proj, guide_proj["segments"], "claude-sonnet-5")
+check(rules and rules[0]["text"] == "Use the serial comma." and len(CALLS) == n5 + 1 and len(OPENAI_CALLS) == o5,
+      "модель Claude — вызов ушёл в Anthropic, не в OpenAI: %s" % rules)
+os.environ.pop("ANTHROPIC_API_KEY", None)
+_rv = main.REVIEW_DEFAULT_MODEL
+main.REVIEW_DEFAULT_MODEL = "claude-sonnet-5"
+try:
+    main.STATE = {"projects": [guide_proj], "glossary": [], "tm": [], "termQueue": [], "exportHistory": [], "team": []}
+    try:
+        main.build_project_guide(1)
+        check(False, "без ключа Anthropic — 503")
+    except main.HTTPException as e:
+        check(e.status_code == 503 and "Anthropic" in str(e.detail), "кнопка: 503 по модели правил: %s" % e.detail)
+    gj = {"id": 9, "project": 1, "kind": "translate", "params": {}, "counters": {}, "tenant": "default"}
+    n6 = len(CALLS)
+    main._guide_auto_step(gj, final=True)
+    check(not gj["params"].get("guideTried") and len(CALLS) == n6 and not guide_proj.get("guideFails"),
+          "автосбор без ключа: ни попытки, ни счёта неудач")
+finally:
+    main.REVIEW_DEFAULT_MODEL = _rv
+os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test"
+
+print("(11) /api/models: доступность по модели, назначенной организации")
+os.environ.pop("ANTHROPIC_API_KEY", None)
+_fm = main._forced_models
+main._forced_models = lambda params, tid=None: dict(params or {}, model="claude-opus-5")
+try:
+    check(main.list_models()["available"] is False, "организации назначен Claude без ключа — перевод недоступен")
+finally:
+    main._forced_models = _fm
+check(main.list_models()["available"] is True, "без назначения — по системной модели (OpenAI, ключ есть)")
+
+print("(12) выбранная модель без ключа — умолчание шага в задаче, замена названа")
+jb = {"id": 12, "params": {"model": "claude-opus-5", "bc_model": "gpt-4o"}}
+main._job_freeze_models(jb)
+check(jb["params"]["model"] is None and jb["params"]["bc_model"] == "gpt-4o"
+      and any("нет ключа" in n for n in jb.get("modelsReplaced") or []),
+      "Claude без ключа → умолчание шага, живой выбор не тронут: %s" % jb.get("modelsReplaced"))
+os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test"
+jb = {"id": 13, "params": {"model": "claude-opus-5"}}
+main._job_freeze_models(jb)
+check(jb["params"]["model"] == "claude-opus-5", "с ключом выбор остаётся")
 
 print()
 if fail:

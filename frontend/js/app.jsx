@@ -243,13 +243,21 @@ function useStore(authed) {
     setProjects(ps => ps.map(p => p.id !== pid ? p : {
       ...p, segments: p.segments.map(s => byId.has(s.id) ? { ...s, ...byId.get(s.id) } : s) }));
   };
-  const deleteProject = (id) => {
+  /* Сначала сервер, потом экран. Прежде файл пропадал из списка сразу,
+     а отказ сервера (409 — идёт прогон) глотал safeCall: на экране файла
+     нет, на сервере он есть и вернётся при следующей загрузке. Отказ
+     отдаём вызвавшему словами сервера; 404 — файла и так нет, убираем. */
+  const deleteProject = async (id) => {
+    if (window.API && window.API.deleteProject) {
+      try { await window.API.deleteProject(id); }
+      catch (e) { if (e && e.status !== 404) return { ok: false, error: (e && e.message) || "" }; }
+    }
     setProjects(ps => ps.filter(p => p.id !== id));
     setFolders(fs => fs.map(f => (f.files || []).indexOf(id) < 0 ? f : { ...f, files: f.files.filter(x => x !== id) })
       /* Виртуальная папка живёт ровно столько, сколько её единственный файл. */
       .filter(f => !(f.virtual && (f.files || []).length === 0)));
     if (activeId === id) setActiveId(null);
-    window.API.safeCall(() => window.API.deleteProject(id));
+    return { ok: true };
   };
 
   /* Записи с одинаковым src, но разной областью — теперь норма, поэтому

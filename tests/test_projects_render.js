@@ -180,6 +180,55 @@ console.log("\n[5] Имена верхнего уровня");
   check(!impSrc.includes("function ProjectCard("), "прежний ProjectCard убран (имя без префикса экрана)");
 }
 
+(async () => {
+console.log("\n[6] Удаление файла ждёт сервер: отказ назван, файл не пропал");
+{
+  /* Прежде файл уходил с экрана сразу, а отказ сервера (409 — идёт прогон)
+     глотал safeCall: на экране пусто, на сервере файл жив. */
+  hooks = []; hookIdx = 0;
+  hooks[0] = true;                                   // окно «Удалить файл?» открыто
+  const errs = [], warns = [];
+  const tst = { info() {}, success() {}, warning: (t) => warns.push(t), error: (t, m) => errs.push(t + " | " + m) };
+  const st = makeStore({ deleteProject: async () => ({ ok: false, error: "Идёт прогон — дождитесь конца" }) });
+  const tree = ImpFileCard({ project: projects[1], store: st, toast: tst });
+  const del = find(tree, n => n.type === "button" && texts(n).join("") === "Удалить")[0];
+  await del.props.onClick();
+  check(errs.length === 1 && errs[0].indexOf("Идёт прогон") !== -1 && !warns.length,
+        "отказ сервера — ошибкой его словами, «Файл удалён» не сказано: " + errs.join(" / "));
+}
+
+console.log("\n[7] Дубль при загрузке (409): «Открыть проект» по полям ответа");
+{
+  const d = impDraft(102);
+  d.file = { name: "t.docx", size: "1 КБ", raw: { name: "t.docx" } };
+  d.probe = { ok: true, exact: [], similar: [] };
+  const errs = [];
+  const tst = { info() {}, success() {}, warning() {}, error: (t, m) => errs.push(t + " | " + m) };
+  const opened = [];
+  const st = makeStore({ openProject: (id) => opened.push(id) });
+  global.API.uploadProject = async () => {
+    const e = new Error("Этот файл уже загружен на ту же пару языков. Откройте готовый проект или замените файл повторным импортом");
+    e.status = 409;
+    e.data = { code: "duplicate", project: { id: 104, title: "Приложение 2", folder: 102 } };
+    throw e;
+  };
+  hooks = []; hookIdx = 0;
+  const folder = folders[0];
+  const meta = { langs: [["RU", "Русский"], ["EN", "Английский"]] };
+  let tree = ImpAddFile({ folder, store: st, toast: tst, meta });
+  await find(tree, n => n.type === "button" && texts(n).join("").indexOf("Добавить в проект") !== -1)[0].props.onClick();
+  hookIdx = 0;
+  tree = ImpAddFile({ folder, store: st, toast: tst, meta });
+  const t = texts(tree).join(" | ");
+  check(errs.length === 1 && errs[0].indexOf("повторным импортом") !== -1, "ошибка названа словами сервера");
+  check(t.indexOf("Приложение 2") !== -1, "проект-дубль назван по полю ответа, а не по тексту");
+  const open = find(tree, n => n.type === "button" && texts(n).join("") === "Открыть проект")[0];
+  check(!!open, "есть кнопка «Открыть проект»");
+  if (open) open.props.onClick();
+  check(opened.join() === "104", "она открывает проект-дубль: " + opened.join());
+}
+
 console.log("");
 if (fail.length) { console.log("ПРОВАЛЕНО " + fail.length + ":"); fail.forEach(f => console.log("  - " + f)); process.exit(1); }
 console.log("ВСЁ ПРОШЛО");
+})();

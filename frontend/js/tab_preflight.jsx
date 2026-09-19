@@ -666,7 +666,7 @@ function modelConflicts(plan, cat, mods) {
 }
 
 function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, setMod,
-                    tkParams, fixConf, setFixConf, confN }) {
+                    tkParams, fixConf, setFixConf, confN, modsDropped }) {
   const project = store.activeProject;
   const tk = summary.turnkey;
   /* Выбор моделей из браузера — только в виде эксперта, где его видно
@@ -864,6 +864,9 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
        выбрать другую — тому, у кого выбора нет, это тревога без двери. */
     plan && showModels && modelConflicts(plan, cat, mm).map((w, i) => React.createElement("div", { key: "w" + i,
       style: { fontSize: 12.5, color: "var(--c-warning)", lineHeight: 1.5 } }, "⚠ " + w)),
+    showModels && modsDropped && modsDropped.length > 0 && React.createElement("div", {
+      style: { fontSize: 12.5, color: "var(--c-warning)", lineHeight: 1.5 } },
+      "⚠ " + modsDropped.join(", ") + TR(": у поставщика нет ключа — выбор сброшен на модель шага по умолчанию.")),
     plan && extra > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
       TR("В состав входят и готовые сегменты — освежить проверки (") + extra + TR(" сегм. сверх корзины).")),
     /* Про смету — тому, кто платит; про судью — тому, кто видит устройство. */
@@ -976,6 +979,24 @@ function TurnkeySummary({ summary, store, toast, onReload, expert }) {
     ]).then(([p, m]) => { if (!dead) { setPlan(p || false); setCat(m || null); } });
     return () => { dead = true; };
   }, [store.activeProject && store.activeProject.id, summary, mods, fixConf, store.expert]);
+  /* Сохранённая модель, у поставщика которой больше нет ключа (`ready: false`),
+     в разбор и задачу не едет: выбор шага сбрасывается на «по умолчанию»,
+     а над сеткой сказано, какие модели сброшены. Сервер делает то же
+     (`_job_freeze_models`), здесь — чтобы смета и экран не обещали модель,
+     которой прогон не пойдёт. */
+  const [modsDropped, setModsDropped] = useState([]);
+  useEffect(() => {
+    if (!cat || !cat.models) return;
+    const bad = {}, names = [];
+    Object.keys(mods).forEach(k => {
+      const m = mods[k] ? cat.models.find(x => x.id === mods[k]) : null;
+      if (m && m.ready === false) { bad[k] = ""; if (names.indexOf(m.label) === -1) names.push(m.label); }
+    });
+    if (names.length) {
+      setMods(v => Object.assign({}, v, bad));
+      setModsDropped(names);
+    }
+  }, [cat]);
   /* Тернарник, а не `total && ...`: при total === 0 такое выражение даёт
      ЧИСЛО 0, и React честно печатает его. */
   const seg = (n, color) => (total > 0 && n > 0)
@@ -1042,7 +1063,7 @@ function TurnkeySummary({ summary, store, toast, onReload, expert }) {
   return React.createElement(React.Fragment, null,
     strip,
     panel && React.createElement(RunPanel, { summary, store, toast, plan, cat, mods, setMod,
-      tkParams: runParams, fixConf, setFixConf, confN,
+      tkParams: runParams, fixConf, setFixConf, confN, modsDropped,
       onClose: () => setPanel(false), onStarted: onReload }),
     expertCard || null);
 }
@@ -1390,43 +1411,58 @@ function TermlistCard({ project, toast }) {
   const [tl, putTl] = useProjectData(project);
   const setTl = (v) => putTl(pid, v);
   const [busy, setBusy] = useState(false);
-  const [jobId, setJobId] = useState(null);
+  /* Номер задачи сбора — тоже ПРОЕКТА: поздний ответ постановки, пришедший
+     после переключения, иначе сажал чужую задачу в новый проект, и опрос
+     искал её в чужом списке задач вечно. */
+  const [jobId, putJobId] = useProjectData(project);
+  const pidRef = useRef(pid);
+  pidRef.current = pid;
   const [showAll, setShowAll] = useState(false);
-  const load = () => {
-    if (!window.API || !window.API.termlist || !project) return Promise.resolve();
-    return window.API.safeCall(() => window.API.termlist(pid)).then(r => { if (r && r.ok) setTl(r); });
+  const load = (forPid = pid) => {
+    if (!window.API || !window.API.termlist || forPid == null) return Promise.resolve();
+    return window.API.safeCall(() => window.API.termlist(forPid)).then(r => { if (r && r.ok) putTl(forPid, r); });
   };
-  useEffect(() => { setTl(null); setJobId(null); load(); }, [project && project.id]);
+  useEffect(() => { setTl(null); setBusy(false); load(); }, [project && project.id]);
   useEffect(() => {
     if (!jobId || !window.API || !window.API.listJobs) return;
     let dead = false;
+    const at = pid;
     const t = setInterval(() => {
-      window.API.safeCall(() => window.API.listJobs(project.id)).then(r => {
+      window.API.safeCall(() => window.API.listJobs(at)).then(r => {
         if (dead || !r) return;
         const j = (r.jobs || []).find(x => x.id === jobId);
         if (j && ["done", "error", "stopped"].indexOf(j.status) !== -1) {
-          setJobId(null); load();
+          putJobId(at, null); load(at);
           const c = j.counters || {};
           if (j.status === "error") toast(TR("Сбор терм-листа не удался: ") + (j.error || ""));
+          /* Остановка на сверке второй моделью (`crossSkipped`) — лист уже
+             записан, не хватает только сверки: сказать «не записан» — соврать. */
+          else if (j.status === "stopped" && c.crossSkipped) toast(TR("Терм-лист записан, сверка второй моделью остановлена"));
           else if (j.status === "stopped") toast(TR("Сбор остановлен: список не записан, вызовов оплачено ") + (c.calls || 0));
         }
       });
     }, 4000);
     return () => { dead = true; clearInterval(t); };
-  }, [jobId]);
+  }, [jobId, pid]);
   if (!tl) return null;
   const build = () => {
+    const at = pid;
     setBusy(true);
-    window.API.safeCall(() => window.API.createJob(project.id, "termsheet", [], {})).then(r => {
+    window.API.safeCall(() => window.API.createJob(at, "termsheet", [], {})).then(r => {
+      if (at !== pidRef.current) return;       // проект сменился — задача не этого экрана
       setBusy(false);
       if (!r || !r.ok) return;
-      setJobId(r.job.id);
+      putJobId(at, r.job.id);
       toast(TR("Терм-лист собирается: ") + (r.job.total || "") + TR(" сегм."));
     });
   };
   const post = (body) => {
+    const at = pid;
     setBusy(true);
-    window.API.safeCall(() => window.API.setTermlist(project.id, body)).then(r => { setBusy(false); if (r && r.ok) setTl(r); });
+    window.API.safeCall(() => window.API.setTermlist(at, body)).then(r => {
+      if (at !== pidRef.current) return;
+      setBusy(false); if (r && r.ok) putTl(at, r);
+    });
   };
   const c = tl.counts || {};
   const m = tl.measure || {};
@@ -1483,17 +1519,32 @@ function TermlistCard({ project, toast }) {
 // кнопке; человек правит, выключает и дописывает. Правило про сам язык
 // владелец переносит в организацию — оно действует во всех книгах на этот язык.
 function GuideCard({ project, store, toast }) {
-  const [g, setG] = useState(null);
-  const [draft, setDraft] = useState([]);
+  /* Правила и черновик — ПРОЕКТА (useProjectData). Ответ, пришедший после
+     переключения на другой проект (сбор правил — вызов модели, секунды),
+     лёг бы в чужую карточку, а черновик прошлого проекта «Сохранить»
+     отправил бы в новый. Номер проекта запоминается при отправке: ответ
+     для проекта, который уже не открыт, отбрасывается целиком — и данные,
+     и тост, и снятие «занято». */
+  const pid = project ? project.id : null;
+  const [g, putG] = useProjectData(project);
+  const [draftV, putDraft] = useProjectData(project);
+  const draft = draftV || [];
   const [busy, setBusy] = useState(false);
   const [add, setAdd] = useState("");
   const owner = !!(store && store.can && store.can.owner);
-  const take = (r) => { setG(r); setDraft((r.rules || []).map(x => ({ ...x }))); };
+  const pidRef = useRef(pid);
+  pidRef.current = pid;
+  const setDraft = (v) => putDraft(pid, typeof v === "function" ? (prev => v(prev || [])) : v);
+  const take = (forPid, r) => {
+    putG(forPid, r);
+    putDraft(forPid, (r.rules || []).map(x => ({ ...x })));
+  };
   useEffect(() => {
+    setAdd(""); setBusy(false);
     if (!window.API || !window.API.guide || !project) return;
     let dead = false;
-    setG(null); setAdd("");
-    window.API.safeCall(() => window.API.guide(project.id)).then(r => { if (!dead && r && r.ok) take(r); });
+    const at = project.id;
+    window.API.safeCall(() => window.API.guide(at)).then(r => { if (!dead && r && r.ok) take(at, r); });
     return () => { dead = true; };
   }, [project && project.id]);
   if (!g) return null;
@@ -1502,13 +1553,18 @@ function GuideCard({ project, store, toast }) {
   /* Не safeCall: тот глотает ошибку молча, а здесь отказ — это ответ
      человеку (идёт прогон — 409, кончился лимит — 402, модель не ответила — 502). */
   const run = (fn, msg) => {
+    const at = pidRef.current;
     setBusy(true);
     Promise.resolve().then(fn).then(r => {
+      if (pidRef.current !== at) return;      // проект сменился — ответ не наш
       setBusy(false);
       if (!r || !r.ok) return;
-      take(r);
+      take(at, r);
       if (msg) toast(msg(r));
-    }, e => { setBusy(false); toast(TR("Не получилось: ") + ((e && e.message) || "")); });
+    }, e => {
+      if (pidRef.current !== at) return;
+      setBusy(false); toast(TR("Не получилось: ") + ((e && e.message) || ""));
+    });
   };
   const save = (body) => run(() => window.API.setGuide(project.id, body));
   const build = () => {

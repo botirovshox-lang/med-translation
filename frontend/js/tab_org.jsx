@@ -208,7 +208,8 @@ function OrgDomains({ toast }) {
 function orgPagesKind(k) {
   return k === "credit" ? TR("пополнение") : k === "repeat" ? TR("повтор файла, без списания")
     : k === "init" ? TR("стартовый объём по проектам")
-    : k === "reimport" ? TR("новая версия файла, за добавленные строки") : TR("списание");
+    : k === "reimport" ? TR("новая версия файла, за добавленные строки")
+    : k === "edit" ? TR("дописано руками сверх файла") : TR("списание");
 }
 function orgPagesNote(n) { return n === "env" ? TR("стартовый лимит из окружения") : n; }
 
@@ -410,6 +411,7 @@ function TabOrg({ store, toast }) {
       info.usage && React.createElement("div", { style: { marginTop: 6 } },
         TR("Страниц списано: ") + info.usage.used
         + (info.usage.imagePages ? TR(" · на картинках: ") + info.usage.imagePages : "")
+        + (info.usage.handPages ? TR(" · дописано руками: ") + info.usage.handPages : "")
         + (info.usage.left != null ? TR(" · всего ") + info.usage.pages + TR(" из ") + info.caps.maxPages + TR(" · осталось ") + info.usage.left : "")
         + TR(" · проектов: ") + info.usage.projects
         + (info.caps && info.caps.maxProjects ? TR(" из ") + info.caps.maxProjects : "")),

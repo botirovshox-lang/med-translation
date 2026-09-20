@@ -5182,6 +5182,17 @@ def admin_runs(request: Request, limit: int = 100, all: bool = False):
                 "estRatio": None, "estRuns": 0, "kept": RUN_COST_HISTORY}
     names = {(_tenant_of(p), p["id"]): (p.get("title") or p.get("fileName") or "")
              for p in STATE.get("projects") or []}
+    # Объём проекта в СТРАНИЦАХ — рядом с расходом на модели: это два числа
+    # про одни и те же деньги с разных сторон (сколько нам заплатили и сколько
+    # мы потратили), и врозь они не сравниваются. Порог «столько-то долларов
+    # на страницу» здесь НЕ стоит и прогон не останавливает: выбирать его надо
+    # по боевым числам, а числа сначала надо увидеть.
+    pages = {}
+    for p in STATE.get("projects") or []:
+        try:
+            pages[(_tenant_of(p), p["id"])] = round(_project_pages(p, _pricing_of(_tenant_of(p))), 1)
+        except Exception:
+            pass
 
     def pname(tenant, pid):
         # Удалённый проект имени не имеет, но его деньги остаются: строку
@@ -5204,7 +5215,10 @@ def admin_runs(request: Request, limit: int = 100, all: bool = False):
             "usd": round(r["usd"], 4), "calls": r["calls"], "unpriced": r["unpriced"],
             "runs": r["runs"],
             "estUsd": round(r["estUsd"], 4), "estActualUsd": round(r["estActualUsd"], 4),
-            "estRatio": (round(r["estUsd"] / r["estActualUsd"], 2) if r["estActualUsd"] else None)})
+            "estRatio": (round(r["estUsd"] / r["estActualUsd"], 2) if r["estActualUsd"] else None),
+            "pages": pages.get((r["tenant"], r["project"])),
+            "usdPerPage": (round(r["usd"] / pages[(r["tenant"], r["project"])], 4)
+                           if pages.get((r["tenant"], r["project"])) else None)})
     by_project.sort(key=lambda x: -x["usd"])
     # Идущие прогоны — ЖИВЫМ счётчиком задачи: в `runCosts` они попадут
     # только по концу, а смотреть, сколько уходит сейчас, надо сейчас.
@@ -8354,6 +8368,169 @@ def _pages_debit(tid: str, pages: float, key: str, project_id: int, title: str,
         return debit
 
 
+# ─── Дописанное РУКАМИ: объём, за который никто не платил ────────────
+# Страница — мера ЗАКАЗА, и до сих пор она равнялась объёму ФАЙЛА: списывает
+# импорт (`_pages_debit`), замена файла — за добавленные строки, текст
+# с картинок — `_book_image_pages`. Правка оригинала руками
+# (`edit_segment_source`) в эту меру не входила ВООБЩЕ, а потолок у неё —
+# `SOURCE_EDIT_MAX` знаков НА СТРОКУ. То есть файл в одну страницу с десятью
+# строками превращался в сотню страниц перевода по цене одной, и ни один
+# счётчик об этом не говорил.
+#
+# Считается это ПРИРАЩЕНИЕМ в момент правки, а не пересчётом состояния
+# проекта, и это несущее свойство. Высшая точка (как `imagePagesBooked`
+# у картинок) здесь НЕ годится: текст картинок производен от файла, его
+# нельзя насчитать больше, чем он есть, а ручной текст произвольный
+# и ЗАМЕНЯЕМЫЙ. «Раздул на сто страниц → пересобрал строки (`/resegment`
+# бесплатен и снимает `sourceEdited`) → раздул другими ста» давало бы
+# при высшей точке ноль к списанию — то есть ровно ту утечку, которую
+# закрываем. По той же причине нельзя считать от `sourceEdited.from`:
+# это поле снимают и `_boundary_reset` (склейка, разрезка), и замена файла,
+# и пересборка (`_RESET_ON_SOURCE_CHANGE`).
+#
+# Поэтому два МОНОТОННЫХ счётчика в документе проекта (пишет тот, кто
+# документом владеет: API вне прогона, `_guard_project_write` стоит):
+#   `handPages`       — всего дописано руками; только рост, сокращение текста
+#                       страниц не возвращает — тот же закон, что у снятых
+#                       картинок и у `pagesUsed`;
+#   `handPagesBooked` — сколько из этого уже списано организации.
+# Разница — бесплатный допуск. Он обязан быть: инвариант 26 прямо называет
+# дефектом «исправление опечатки стоило бы денег», а починка распознавания —
+# это и есть то, ради чего правка оригинала заведена. И объём её считается
+# в СЛОВАХ, поэтому расклейка слипшегося слова («словослово» → «слово слово»)
+# — это «дописал», а обратная склейка страниц не возвращает: счёт растёт
+# в одну сторону ровно на самой частой ручной работе. Отсюда три числа,
+# и каждое отвечает за свой случай:
+#   доля (`SHARE`) — книга длиннее, и починки в ней больше;
+#   низ (`FREE_MIN`) — на короткой книге доля выродилась бы в ноль;
+#   верх — ПОЛОВИНА объёма самого файла: иначе файл в одну страницу давал бы
+#     двести процентов своего объёма даром, а потолка на число проектов
+#     по умолчанию нет — «залить сто однострочников» вернуло бы ту же
+#     утечку, нарезанную по две страницы.
+HAND_PAGES_FREE_MIN = float(os.environ.get("HAND_PAGES_FREE_MIN", "") or 2.0)
+HAND_PAGES_FREE_SHARE = float(os.environ.get("HAND_PAGES_FREE_SHARE", "") or 0.02)
+HAND_PAGES_FREE_CAP = float(os.environ.get("HAND_PAGES_FREE_CAP", "") or 0.5)
+# Отказ 402 — только на КРУПНОЙ правке и только при исчерпанном лимите.
+# Вписать потерянную цифру человек обязан мочь всегда, иначе лимит режет
+# работу, а не деньги (инвариант 15); мелкая правка проходит и в минус,
+# а долг виден владельцу числом и строкой журнала. Полстраницы — это
+# ~125 слов: столько не «дописывают», столько вставляют.
+HAND_PAGES_REFUSE_MIN = float(os.environ.get("HAND_PAGES_REFUSE_MIN", "") or 0.5)
+# С какой суммы о списании РАЗГОВАРИВАЮТ с человеком. Допуск когда-нибудь
+# кончится, и без этого порога редактор на вычитке книги получал бы
+# блокирующий вопрос «правка дописывает 0.004 стр.» на каждую строку —
+# это «один вопрос в фокусе» наоборот (инвариант 32), и человек начнёт жать
+# «да» не читая. Порог ОДИН на вопрос и на надпись, и живёт он на сервере:
+# копия в `.jsx` разошлась бы, и браузер спрашивал бы не про то, что списано.
+HAND_PAGES_ASK_MIN = float(os.environ.get("HAND_PAGES_ASK_MIN", "") or 0.1)
+
+
+def _hand_free_pages(project: dict, card: dict) -> float:
+    """Бесплатный допуск ручной правки для этого проекта — доля объёма, но
+    не меньше `HAND_PAGES_FREE_MIN` и не больше половины самого файла."""
+    pages = _project_pages(project, card)
+    return min(max(HAND_PAGES_FREE_MIN, pages * HAND_PAGES_FREE_SHARE),
+               pages * HAND_PAGES_FREE_CAP)
+
+
+def _hand_pages_quote(project: dict, tid: str, card: dict, seg: dict, new: str) -> dict:
+    """Что даст эта правка: сколько дописано и сколько из этого к списанию.
+    Ничего не меняет — числа называются ДО нажатия (`dry_run` отдаёт их
+    браузеру), на них же стоит рубеж 402, и ими же отчитывается тост.
+    Счёт — тем же `_pages_exact`, что смета и импорт: два счёта одного
+    объёма разошлись бы.
+
+    Прирост меряется от ВЫСШЕЙ ТОЧКИ СТРОКИ (`seg["handPeak"]`), а не от
+    нынешнего текста: иначе «вставил абзац не туда → стёр → вставил верный»
+    платило бы дважды за один и тот же текст — типовая работа редактора.
+    Утечки это не открывает: высшая точка у КАЖДОЙ строки своя, а счётчики
+    проекта монотонны, поэтому «раздул одну → пересобрал → раздул другую»
+    по-прежнему платит оба раза.
+
+    `debit` ЧЕСТНЫЙ: организации без действующего лимита списывать некуда
+    (`pagesLimited`), и называть там сумму значило бы отчитаться о деньгах,
+    которых никто не взял. Рубеж 402, запись и отчёт читают одно число."""
+    lang = project.get("src") or "RU"
+    now = _pages_exact([new], lang, card)
+    base = max(float(seg.get("handPeak") or 0.0),
+               _pages_exact([seg.get("source") or ""], lang, card))
+    grew = max(0.0, now - base)
+    free = _hand_free_pages(project, card)
+    total = float(project.get("handPages") or 0.0) + grew
+    owe = max(0.0, total - free)
+    debit = max(0.0, owe - float(project.get("handPagesBooked") or 0.0))
+    if not _tenant_caps(tid)["pagesLimited"]:
+        debit = 0.0
+    return {"add": round(grew, 3), "debit": round(debit, 3),
+            "total": round(total, 3), "free": round(free, 1),
+            "ask": debit >= HAND_PAGES_ASK_MIN,
+            "peak": round(max(base, now), 3)}
+
+
+def _hand_pages_book(project: dict, tid: str, seg: dict, quote: dict) -> bool:
+    """Записать приращение. Лок держит вызывающий (`_SAVE_LOCK`
+    реентерабельный); возвращает True, если тронут документ `tenants`
+    (тогда вызывающий поднимает его эпоху).
+
+    Порядок мутаций несущий: `handPagesBooked` («долг погашен») растёт ТОЛЬКО
+    после удачной записи в организацию. Вырасти он раньше — и у организации
+    без счётчика долг списывался бы в никуда: `pagesUsed` не менялся,
+    а второй раз это уже не взять. Тот же порядок у `_book_image_pages`,
+    и он там не случаен.
+    Счётчик организации заводится первым списанием при действующем лимите —
+    ровно как в `_pages_debit`: иначе рубеж 402 и запись стояли бы на разных
+    условиях, то есть лимит резал бы работу, не беря денег (инвариант 15).
+
+    Ворот `IS_WORKER` / `_active_job_for`, какие есть у `_book_image_pages`,
+    здесь нет намеренно: единственный вызывающий — `edit_segment_source`,
+    а он закрыт и `_guard_project_write`, и `_boundary_guard`. Появится
+    второй (шаг прогона, пакетная команда) — ворота обязаны появиться
+    вместе с ним: документ `tenants` пишет ТОЛЬКО API (инвариант 27)."""
+    if quote["add"] <= 0:
+        return False
+    seg["handPeak"] = quote["peak"]
+    project["handPages"] = round(float(project.get("handPages") or 0.0) + quote["add"], 3)
+    if quote["debit"] <= 0:
+        return False
+    rec = _tenant_rec(tid)
+    if rec is None:
+        return False
+    if _tenant_caps(tid)["pagesLimited"]:
+        _pages_init(rec, tid)
+    if rec.get("pagesUsed") is None:
+        return False
+    rec["pagesUsed"] = round(float(rec["pagesUsed"]) + quote["debit"], 3)
+    project["handPagesBooked"] = round(
+        float(project.get("handPagesBooked") or 0.0) + quote["debit"], 3)
+    _pages_log(rec, "edit", quote["debit"], project=project.get("id"),
+               title=project.get("title") or "")
+    return True
+
+
+def _hand_pages_guard(project: dict, tid: str, quote: dict) -> None:
+    """402 до всякой мутации — но только когда правка КРУПНАЯ и лимит уже
+    выбран. Порядок проверок несущий: сначала размер правки, потом лимит.
+    Наоборот — и организация с исчерпанным лимитом не смогла бы вписать
+    потерянную цифру, то есть починка распознавания встала бы намертво;
+    `_tenant_usage` к тому же греет объём по всем проектам, а мы уже под
+    локом — звать его на каждую опечатку нельзя."""
+    if quote["debit"] < HAND_PAGES_REFUSE_MIN:
+        return
+    caps = _tenant_caps(tid)
+    if not caps["pagesLimited"]:
+        return
+    usage = _tenant_usage(tid)
+    if usage["pages"] + quote["debit"] <= caps["maxPages"]:
+        return
+    # Куски фразы лежат в `uz.server.json`/`en.server.json` — их собирает
+    # `TRS()` (инвариант 17). Хвост ": пополните лимит у администратора"
+    # там уже есть и общий с `_pages_debit`: разойдись формулировки, половина
+    # предложения осталась бы русской посреди узбекской.
+    raise HTTPException(402, "Правка дописывает к файлу %.1f стр., а свободных осталось "
+                             "%.1f: пополните лимит у администратора"
+                        % (quote["debit"], max(0.0, caps["maxPages"] - usage["pages"])))
+
+
 def _tenant_admin_view(t: dict) -> dict:
     """Запись организации для админки: без прайса (не наше дело), без
     `filesSeen` (отпечатки — служебное) и с ХВОСТОМ журнала, а не всем."""
@@ -8380,9 +8557,18 @@ def _tenant_usage(tid: str) -> dict:
                         for p in mine), 1)
     else:
         img = round(sum(_image_pages_of(p, card) for p in mine), 1)
+    # Дописанное руками (`handPages`) — СПРАВКА, а не слагаемое: списывается
+    # оно приращением в момент правки (`_hand_pages_book`), то есть уже сидит
+    # в `used`, а незанятый бесплатный допуск платным не станет никогда.
+    # Прибавь его к `total` — и остаток лимита уехал бы вниз на допуск,
+    # который никто не собирается брать. Число показывается отдельной строкой:
+    # рубеж ловит только то, что мы предусмотрели, а цифру человек читает
+    # глазами и видит то, чего мы не предусмотрели.
+    hand = round(sum(float(p.get("handPages") or 0.0) for p in mine), 1)
     caps = _tenant_caps(tid)
     total = round(used + img, 1)
-    return {"pages": total, "used": used, "imagePages": img, "projects": len(mine),
+    return {"pages": total, "used": used, "imagePages": img, "handPages": hand,
+            "projects": len(mine),
             "credit": caps["own"]["maxPages"],
             "left": round(max(0.0, caps["maxPages"] - total), 1) if caps["pagesLimited"] else None,
             "counter": rec.get("pagesUsed") is not None}
@@ -22312,8 +22498,13 @@ class SegmentSourceRequest(BaseModel):
 
 @app.post("/api/segments/{pid}/{sid}/source")
 def edit_segment_source(pid: int, sid: int, req: SegmentSourceRequest):
-    """Правка оригинала строки человеком. Модель не зовётся, страницы
-    не списываются: объёма файла правка не добавила."""
+    """Правка оригинала строки человеком. Модель не зовётся.
+
+    Объём, ДОПИСАННЫЙ сверх файла, списывается в страницы организации
+    (`_hand_pages_quote`/`_hand_pages_book`): страница — мера заказа, а правка
+    руками умеет добавить работы больше, чем было в оплаченном файле.
+    Починка распознавания при этом остаётся бесплатной — на неё стоит
+    допуск, и мелкая правка не отказывается даже при исчерпанном лимите."""
     get_project(pid)
     _guard_project_write(pid)
     _boundary_guard(pid)
@@ -22322,6 +22513,7 @@ def edit_segment_source(pid: int, sid: int, req: SegmentSourceRequest):
         raise HTTPException(400, "Оригинал не может быть пустым")
     if len(new) > SOURCE_EDIT_MAX:
         raise HTTPException(400, "Строка слишком длинная — разрежьте её")
+    _hand_free_pages(get_project(pid), _pricing_of(_tenant_of(get_project(pid))))
     with _SAVE_LOCK:
         project = get_project(pid)
         _boundary_guard(pid)
@@ -22337,9 +22529,14 @@ def edit_segment_source(pid: int, sid: int, req: SegmentSourceRequest):
         old = seg.get("source") or ""
         ratio = _source_similarity(old, new)
         mode = "fix" if ratio >= SOURCE_EDIT_KEEP else "new"
+        # Цена правки называется ДО нажатия: `dry_run` отдаёт те же числа,
+        # по которым потом спишется, — считает их один и тот же вызов.
+        tid = _tenant_of(project)
+        quote = _hand_pages_quote(project, tid, _pricing_of(tid), seg, new)
         if req.dry_run or old == new:
             return {"ok": True, "mode": mode, "ratio": round(ratio, 3), "applied": False,
-                    "wasConfirmed": seg.get("status") == "confirmed"}
+                    "wasConfirmed": seg.get("status") == "confirmed", "pages": quote}
+        _hand_pages_guard(project, tid, quote)
         if mode == "new":
             if (seg.get("target") or "").strip():
                 seg["prevTarget"] = seg.get("target") or ""
@@ -22383,13 +22580,19 @@ def edit_segment_source(pid: int, sid: int, req: SegmentSourceRequest):
         seg["sourceEdited"] = {"from": prev_from or old, "by": _actor_id(),
                                "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                                "mode": mode}
+        # True — тронут документ `tenants`, а не «списано»: путать нельзя,
+        # на этом стоит и след в журнале действий, и надпись в браузере.
+        tenants_touched = _hand_pages_book(project, tid, seg, quote)
         _PROJECTS_VER[0] += 1
         _IMPACT_CACHE.pop(pid, None)
         _CONSIST_CACHE.pop(pid, None)
         save_state(STATE)
-    _audit("segment.source", project=pid, segment=sid, mode=mode)
+    if tenants_touched:
+        _tenants_changed()
+    _audit("segment.source", project=pid, segment=sid, mode=mode,
+           pages=quote["debit"] or None)
     return {"ok": True, "mode": mode, "ratio": round(ratio, 3), "applied": True,
-            "segment": _segment_for_client(seg, project)}
+            "pages": quote, "segment": _segment_for_client(seg, project)}
 
 
 class UpdateSegmentRequest(BaseModel):

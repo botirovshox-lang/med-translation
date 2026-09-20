@@ -274,6 +274,164 @@ check(main._source_similarity(PARAS[0], PARAS[0].replace("1/3", "1/4")) >= main.
 check(main._source_similarity(PARAS[0], PARAS[3]) < main.SOURCE_EDIT_KEEP, "другой абзац — другая строка")
 
 print("")
+print("=== 7. Дописанное РУКАМИ — это страницы, и они списываются ===")
+# Страница — мера ЗАКАЗА, и до этой правки она равнялась объёму ФАЙЛА. Правка
+# оригинала объёма не добавляла вовсе, а потолок у неё — 20 000 знаков НА
+# СТРОКУ: файл в одну страницу с десятью строками превращался в сотню страниц
+# перевода по цене одной. Считаем приращением в момент правки — высшая точка
+# ПРОЕКТА (как у картинок) здесь не годится, см. комментарий у `_hand_pages_quote`.
+TID = main.DEFAULT_TENANT
+rec = main._tenant_rec(TID)
+check(rec is not None, "запись организации есть")
+rec["pagesCredit"] = 1000.0
+rec["pagesUsed"] = 0.0
+rec["pagesLog"] = []
+Q = live(pid)
+Q["handPages"] = 0.0
+Q["handPagesBooked"] = 0.0
+Q["pages"] = 40.0                       # книга на 40 страниц: допуск = 2 стр.
+CARD = main._pricing_of(TID)
+main._PAGES_CACHE.clear()
+
+WORD = "слово%d"
+BIG = " ".join([WORD % i for i in range(1200)])        # ~4.8 страницы
+
+
+def edit(i, text, dry=False):
+    return c.post("/api/segments/%d/%d/source" % (pid, ids[i]), headers=H(A),
+                  json={"source": text, "dry_run": dry})
+
+
+def used():
+    return float(main._tenant_rec(TID).get("pagesUsed") or 0.0)
+
+
+def grown(i, words):
+    """Тот же оригинал плюс столько слов — проверяемый прирост объёма."""
+    return (live(pid)["segments"][i]["source"] or "") + " " + " ".join(WORD % k for k in range(words))
+
+
+check(abs(main._hand_free_pages(live(pid), CARD) - 2.0) < 0.01,
+      "допуск на книге в 40 стр. — низ, а не доля: %s" % main._hand_free_pages(live(pid), CARD))
+tiny = dict(live(pid), pages=1.0)
+check(main._hand_free_pages(tiny, CARD) == 0.5,
+      "на файле в одну страницу допуск не больше половины файла: %s" % main._hand_free_pages(tiny, CARD))
+
+# Починка бесплатна — ради неё дверь и заведена (инвариант 26 прямо называет
+# дефектом «исправление опечатки стоило бы денег»).
+r = edit(1, PARAS[1].replace("*/", "1/3"), dry=True)
+check(r.status_code == 200 and r.json()["pages"]["debit"] == 0,
+      "сухой прогон: починка опечатки не стоит ничего: %s" % r.text[:150])
+check(used() == 0.0 and float(live(pid).get("handPages") or 0) == 0.0,
+      "сухой прогон не тронул ни организацию, ни счётчик проекта")
+r = edit(1, PARAS[1].replace("*/", "1/3"))
+check(r.status_code == 200 and r.json()["pages"]["debit"] == 0, "починка применена даром")
+check(used() == 0.0, "страницы за починку не списаны")
+
+# Дописанное В ПРЕДЕЛАХ допуска тоже даром — но уже КОПИТСЯ.
+r = edit(1, grown(1, 200))          # +0.8 стр., допуск 2
+check(r.status_code == 200 and r.json()["pages"]["add"] > 0.7, "дописано 200 слов")
+check(r.json()["pages"]["debit"] == 0, "в пределах допуска — даром: %s" % r.json()["pages"])
+check(used() == 0.0, "и ничего не списано")
+check(float(live(pid)["handPages"]) > 0.7, "но счётчик дописанного растёт: %s" % live(pid)["handPages"])
+
+# Дописанное СВЕРХ допуска — списывается, и ровно сверх него.
+before, hand_before = used(), float(live(pid)["handPages"])
+r = edit(0, BIG)
+check(r.status_code == 200, "крупная правка применена: %s %s" % (r.status_code, r.text[:120]))
+paid1 = r.json()["pages"]["debit"]
+check(paid1 > 0, "за дописанное списано: %s" % paid1)
+check(abs((used() - before) - paid1) < 0.01,
+      "счётчик организации вырос ровно на списанное: %s → %s" % (before, used()))
+check(abs(float(live(pid)["handPages"]) - float(live(pid)["handPagesBooked"]) - 2.0) < 0.05,
+      "бесплатным осталось ровно допуск: дописано %s, погашено %s"
+      % (live(pid)["handPages"], live(pid)["handPagesBooked"]))
+log = [e for e in main._tenant_rec(TID)["pagesLog"] if e["kind"] == "edit"]
+check(len(log) == 1 and log[0]["project"] == pid, "в журнале страниц строка `edit`: %s" % log[:1])
+
+print("")
+print("=== 7а. Туда-обратно платится ОДИН раз, а новая строка — снова ===")
+# Высшая точка у КАЖДОЙ строки своя (`seg["handPeak"]`): «вставил абзац
+# не туда → стёр → вставил верный» — типовая работа редактора, и платить
+# за неё дважды нельзя.
+before = used()
+r = edit(0, PARAS[0])                                   # стёрли дописанное
+check(r.status_code == 200 and r.json()["pages"]["add"] == 0, "сокращение ничего не дописало")
+check(used() == before, "и ничего не вернуло — счётчики монотонны")
+r = edit(0, BIG)                                        # вписали то же заново
+check(r.status_code == 200 and r.json()["pages"]["debit"] == 0,
+      "тот же объём в той же строке второй раз не оплачивается: %s" % r.json()["pages"])
+check(used() == before, "счётчик организации не сдвинулся")
+
+# А вот ДРУГАЯ строка — новый объём, и он платный, даже если след правки
+# стёрт пересборкой (`_boundary_reset`, замена файла, `/resegment` снимают
+# `sourceEdited`): счёт идёт приращением, а не пересчётом состояния.
+for sg in live(pid)["segments"]:
+    sg.pop("sourceEdited", None)
+before = used()
+r = edit(2, BIG)
+check(r.status_code == 200 and r.json()["pages"]["debit"] > 4,
+      "другая строка списана ЗАНОВО, а не прощена: %s" % r.json()["pages"])
+check(used() - before > 4, "счётчик организации вырос второй раз")
+
+print("")
+print("=== 7б. Лимит режет деньги, а не работу ===")
+# Исчерпанный лимит запирает КРУПНУЮ правку (это покупка объёма), но НЕ
+# починку: вписать потерянную цифру человек обязан мочь всегда, иначе
+# оплаченная книга остаётся с браком распознавания навсегда.
+rec = main._tenant_rec(TID)
+rec["pagesCredit"] = round(main._tenant_usage(TID)["pages"], 3)      # остатка нет
+snap = (used(), float(live(pid)["handPages"]), float(live(pid)["handPagesBooked"]))
+src3 = live(pid)["segments"][3]["source"]
+r = edit(3, BIG)
+check(r.status_code == 402, "крупная правка при исчерпанном лимите — 402: %s" % r.status_code)
+check("пополните лимит у администратора" in r.text, "отказ называет, что делать: %s" % r.text[:160])
+check(live(pid)["segments"][3]["source"] == src3, "и ничего не записал")
+check((used(), float(live(pid)["handPages"]), float(live(pid)["handPagesBooked"])) == snap,
+      "402 не сдвинул ни одного счётчика")
+r = edit(3, grown(3, 3))
+check(r.status_code == 200, "а мелкая правка при исчерпанном лимите проходит: %s %s"
+      % (r.status_code, r.text[:120]))
+check(r.json()["pages"]["debit"] > 0 and not r.json()["pages"]["ask"],
+      "она уходит в минус молча: о долях страницы человека не спрашивают: %s" % r.json()["pages"])
+
+# Рубеж отказа — РАЗМЕР правки, а не сам факт списания.
+rec["pagesCredit"] = 100000.0
+small = main._hand_pages_quote(live(pid), TID, CARD, live(pid)["segments"][3], grown(3, 100))
+big = main._hand_pages_quote(live(pid), TID, CARD, live(pid)["segments"][3], grown(3, 200))
+check(0 < small["debit"] < main.HAND_PAGES_REFUSE_MIN <= big["debit"],
+      "100 слов ниже рубежа отказа, 200 — выше: %s / %s" % (small["debit"], big["debit"]))
+check(big["ask"] and not main._hand_pages_quote(
+          live(pid), TID, CARD, live(pid)["segments"][3], grown(3, 5))["ask"],
+      "а разговаривают с человеком с `HAND_PAGES_ASK_MIN`, это другой порог")
+
+print("")
+print("=== 7в. Без действующего лимита списывать некуда — и долг не гасится ===")
+# Организация без счётчика (`pagesUsed`) и без выданных страниц не ограничена
+# ничем: там нечего списывать. Прежняя версия в этом случае растила
+# `handPagesBooked` («долг погашен»), ничего не списав, — и взять его второй
+# раз было уже нельзя. Рубеж 402, запись и отчёт обязаны стоять на ОДНОМ
+# условии, иначе лимит режет работу, не беря денег (инвариант 15).
+rec.pop("pagesCredit", None)
+rec.pop("pagesUsed", None)
+save_max, main.TENANT_MAX_PAGES = main.TENANT_MAX_PAGES, 0
+free_pid = live(pid)
+free_pid["handPages"], free_pid["handPagesBooked"] = 0.0, 0.0
+for sg in free_pid["segments"]:
+    sg.pop("handPeak", None)
+r = edit(3, BIG + " ещё")
+check(r.status_code == 200, "правка без лимита проходит: %s" % r.status_code)
+check(r.json()["pages"]["debit"] == 0, "и суммы не называет — брать её некому: %s" % r.json()["pages"])
+check(float(live(pid)["handPagesBooked"]) == 0.0,
+      "долг не объявлен погашенным: %s" % live(pid)["handPagesBooked"])
+check(float(live(pid)["handPages"]) > 4, "а сам объём записан — его видно владельцу")
+main.TENANT_MAX_PAGES = save_max
+rec["pagesCredit"] = 100000.0
+rec["pagesUsed"] = 0.0
+check(main._tenant_usage(TID)["handPages"] > 4,
+      "дописанное руками видно отдельной строкой: %s" % main._tenant_usage(TID)["handPages"])
+
+print("")
 if fail:
     print("ПРОВАЛЕНО: %d" % len(fail))
     for f in fail:

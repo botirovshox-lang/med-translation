@@ -167,7 +167,8 @@ function AdminTenants({ ov, toast, onChange }) {
 function pagesKindLabel(k) {
   return k === "credit" ? TR("пополнение") : k === "repeat" ? TR("повтор файла, без списания")
     : k === "init" ? TR("стартовый объём по проектам")
-    : k === "reimport" ? TR("новая версия файла, за добавленные строки") : TR("списание");
+    : k === "reimport" ? TR("новая версия файла, за добавленные строки")
+    : k === "edit" ? TR("дописано руками сверх файла") : TR("списание");
 }
 function pagesNoteLabel(n) { return n === "env" ? TR("стартовый лимит из окружения") : (n || ""); }
 function AdminPagesLog({ log }) {
@@ -473,13 +474,18 @@ function AdminRuns() {
     byProject.length > 0 && React.createElement("div", { style: { maxHeight: 300, overflow: "auto", margin: "0 0 12px" } },
       React.createElement("table", { className: "tbl" },
         React.createElement("thead", null, React.createElement("tr", null,
-          [TR("Организация"), TR("Проект"), TR("Прогонов"), TR("Факт $ по проекту"), TR("Вызовов"), TR("Смета / факт")].map((h, i) => React.createElement("th", { key: i }, h)))),
+          [TR("Организация"), TR("Проект"), TR("Прогонов"), TR("Факт $ по проекту"), TR("$ на страницу"), TR("Вызовов"), TR("Смета / факт")].map((h, i) => React.createElement("th", { key: i }, h)))),
         React.createElement("tbody", null, byProject.map((r, i) => React.createElement("tr", { key: i },
           React.createElement("td", null, r.tenant),
           React.createElement("td", null, adminProjectName(r)),
           React.createElement("td", null, r.runs),
           React.createElement("td", null, money(r.usd),
             r.unpriced ? React.createElement("span", { className: "dim", title: TR("вызовы, цена которых неизвестна") }, TR(" · без цены ") + r.unpriced) : null),
+          /* Расход на СТРАНИЦУ ЗАКАЗА: слева — сколько мы потратили,
+             справа — за сколько продано. Порога тут нет и прогон он
+             не останавливает: ставку выбирают по боевым числам. */
+          React.createElement("td", { className: "dim", title: r.pages ? TR("страниц в проекте: ") + r.pages : "" },
+            r.usdPerPage != null ? money(r.usdPerPage) : "—"),
           React.createElement("td", { className: "dim" }, r.calls),
           React.createElement("td", { className: "dim" }, r.estActualUsd ? money(r.estUsd) + " / " + money(r.estActualUsd) : "—")))))),
     d.runs.length === 0 && React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } },

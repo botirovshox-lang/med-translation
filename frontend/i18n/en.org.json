@@ -363,5 +363,9 @@
   "Прогонов": "Runs",
   "Факт $ по проекту": "Actual $ per project",
   "Смета / факт": "Estimate / actual",
-  "Нужно целое число от 0 или пусто.": "Enter a whole number from 0, or leave it empty."
+  "Нужно целое число от 0 или пусто.": "Enter a whole number from 0, or leave it empty.",
+  "дописано руками сверх файла": "added by hand beyond the file",
+  " · дописано руками: ": " · added by hand: ",
+  "$ на страницу": "$ per page",
+  "страниц в проекте: ": "pages in the project: "
 }

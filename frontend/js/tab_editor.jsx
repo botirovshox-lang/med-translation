@@ -1475,10 +1475,21 @@ function TabEditor({ store, toast }) {
     let probe = null;
     try { probe = await window.API.editSource(project.id, seg.id, now, true); }
     catch (e) { setEditBusy(false); toast.error(TR("Не получилось"), e.message || String(e)); return; }
-    /* Сильная правка = другая строка, и перевод по ней сброшен. Говорим это
-       ДО записи: человек правил опечатку, а не заказывал новый перевод. */
-    if (probe && probe.mode === "new"
-        && !confirm(TR("Оригинал изменён сильно — строка считается новой: перевод уйдёт в подсказку «Прежний перевод», проверки снимутся. Продолжить?"))) {
+    /* Последствия правки называются ДО записи, и ВОПРОС ОДИН на все:
+       сильная правка сбрасывает перевод, а дописанный сверх файла объём
+       спишется в страницы организации (`pages.debit` считает сервер — тем же
+       расчётом, каким потом спишет). Правка, ничего не дописавшая, вопросов
+       не задаёт вовсе: починка распознавания бесплатна, и спрашивать о ней
+       значит пугать человека там, где ничего не происходит. */
+    const warn = [];
+    if (probe && probe.mode === "new")
+      warn.push(TR("Оригинал изменён сильно — строка считается новой: перевод уйдёт в подсказку «Прежний перевод», проверки снимутся."));
+    /* Спрашиваем не про всякую копейку: признак `ask` считает СЕРВЕР
+       (`HAND_PAGES_ASK_MIN`) — копия правила здесь разошлась бы с тем,
+       что списано на самом деле. */
+    if (probe && probe.pages && probe.pages.ask)
+      warn.push(TR("Правка дописывает к файлу ") + probe.pages.debit.toFixed(1) + TR(" стр. — они спишутся из лимита организации."));
+    if (warn.length && !confirm(warn.join("\n\n") + "\n\n" + TR("Продолжить?"))) {
       setEditBusy(false); return;
     }
     let res = null;
@@ -1487,10 +1498,12 @@ function TabEditor({ store, toast }) {
     if (res && res.segment) store.mergeServerSegments(project.id, [res.segment]);
     closeEdit();
     refreshAfterHand();
+    const billed = res && res.pages && res.pages.ask
+      ? TR(" Списано ") + res.pages.debit.toFixed(1) + TR(" стр.") : "";
     if (res && res.mode === "new")
-      toast.warning(TR("Оригинал заменён"), TR("Строка считается новой — переведите её заново."));
+      toast.warning(TR("Оригинал заменён"), TR("Строка считается новой — переведите её заново.") + billed);
     else
-      toast.success(TR("Оригинал поправлен"), TR("Проверки пары помечены устаревшими — их пересчитает ближайший прогон."));
+      toast.success(TR("Оригинал поправлен"), TR("Проверки пары помечены устаревшими — их пересчитает ближайший прогон.") + billed);
   };
 
   const doRevert = async (seg) => {

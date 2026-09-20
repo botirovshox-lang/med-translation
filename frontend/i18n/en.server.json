@@ -359,5 +359,7 @@
  "термин «": "the term “",
  "утверждённый перевод термина «": "the approved translation of the term “",
  "часть текста не совпала дословно": "part of the text did not match word for word",
- "…»), а оригинал — с заглавной": "…”), while the source starts with a capital"
+ "…»), а оригинал — с заглавной": "…”), while the source starts with a capital",
+ "Правка дописывает к файлу ": "The edit adds ",
+ " стр., а свободных осталось ": " page(s) to the file, and only "
 }

@@ -52,7 +52,7 @@
  "Обнаружены проблемы — необходим человеческий просмотр.": "Muammolar topildi — odam ko'rigi kerak.",
  "Оригинал в буфере обмена.": "Asl matn buferga ko'chirildi.",
  "Оригинал заменён": "Asl matn almashtirildi",
- "Оригинал изменён сильно — строка считается новой: перевод уйдёт в подсказку «Прежний перевод», проверки снимутся. Продолжить?": "Asl matn kuchli o‘zgartirildi — qator yangi hisoblanadi: tarjima «Oldingi tarjima» eslatmasiga o‘tadi, tekshiruvlar olib tashlanadi. Davom etilsinmi?",
+ "Оригинал изменён сильно — строка считается новой: перевод уйдёт в подсказку «Прежний перевод», проверки снимутся.": "Asl matn kuchli o‘zgartirildi — qator yangi hisoblanadi: tarjima «Oldingi tarjima» eslatmasiga o‘tadi, tekshiruvlar olib tashlanadi.",
  "Оригинал не может быть пустым.": "Asl matn bo‘sh bo‘lishi mumkin emas.",
  "Оригинал поправлен": "Asl matn to‘g‘rilandi",
  "Отправить": "Yuborish",
@@ -147,5 +147,9 @@
  "фамилия, дата, настройки прибора — такое не переводим": "familiya, sana, asbob sozlamalari — bularni tarjima qilmaymiz",
  "человек (до учёта авторов)": "inson (mualliflar hisobga olinguncha)",
  "▾ Подробности": "▾ Tafsilotlar",
- "🖼 Оригинал (текст на картинке)": "🖼 Asl matn (rasmdagi matn)"
+ "🖼 Оригинал (текст на картинке)": "🖼 Asl matn (rasmdagi matn)",
+ "Правка дописывает к файлу ": "Bu tahrir faylga ",
+ " стр. — они спишутся из лимита организации.": " sahifa qo‘shadi — ular tashkilot chegarasidan yechiladi.",
+ "Продолжить?": "Davom etilsinmi?",
+ " Списано ": " Yechildi "
 }

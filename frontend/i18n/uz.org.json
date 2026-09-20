@@ -363,5 +363,9 @@
   "Прогонов": "Ishga tushirishlar",
   "Факт $ по проекту": "Loyiha bo'yicha haqiqiy $",
   "Смета / факт": "Smeta / fakt",
-  "Нужно целое число от 0 или пусто.": "0 dan boshlab butun son kiriting yoki bo'sh qoldiring."
+  "Нужно целое число от 0 или пусто.": "0 dan boshlab butun son kiriting yoki bo'sh qoldiring.",
+  "дописано руками сверх файла": "fayldan tashqari qo‘lda qo‘shilgan",
+  " · дописано руками: ": " · qo‘lda qo‘shilgan: ",
+  "$ на страницу": "sahifasiga $",
+  "страниц в проекте: ": "loyihadagi sahifalar: "
 }

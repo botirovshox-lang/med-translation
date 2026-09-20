@@ -52,7 +52,7 @@
  "Обнаружены проблемы — необходим человеческий просмотр.": "Problems found — a human review is needed.",
  "Оригинал в буфере обмена.": "The source is in the clipboard.",
  "Оригинал заменён": "Source replaced",
- "Оригинал изменён сильно — строка считается новой: перевод уйдёт в подсказку «Прежний перевод», проверки снимутся. Продолжить?": "The source changed a lot — the line counts as new: the translation moves to the “Previous translation” hint and checks are cleared. Continue?",
+ "Оригинал изменён сильно — строка считается новой: перевод уйдёт в подсказку «Прежний перевод», проверки снимутся.": "The source changed a lot — the line counts as new: the translation moves to the “Previous translation” hint and checks are cleared.",
  "Оригинал не может быть пустым.": "The source cannot be empty.",
  "Оригинал поправлен": "Source corrected",
  "Отправить": "Send",
@@ -147,5 +147,9 @@
  "фамилия, дата, настройки прибора — такое не переводим": "surname, date, device settings — we do not translate such things",
  "человек (до учёта авторов)": "a human (before authors were tracked)",
  "▾ Подробности": "▾ Details",
- "🖼 Оригинал (текст на картинке)": "🖼 Source (text on the image)"
+ "🖼 Оригинал (текст на картинке)": "🖼 Source (text on the image)",
+ "Правка дописывает к файлу ": "This edit adds ",
+ " стр. — они спишутся из лимита организации.": " page(s) to the file — they come out of the organisation's page limit.",
+ "Продолжить?": "Continue?",
+ " Списано ": " Charged "
 }

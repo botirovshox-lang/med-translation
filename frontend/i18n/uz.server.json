@@ -359,5 +359,7 @@
  "термин «": "atama «",
  "утверждённый перевод термина «": "atamaning tasdiqlangan tarjimasi «",
  "часть текста не совпала дословно": "matnning bir qismi so'zma-so'z mos kelmadi",
- "…»), а оригинал — с заглавной": "…»), asl matn esa bosh harf bilan"
+ "…»), а оригинал — с заглавной": "…»), asl matn esa bosh harf bilan",
+ "Правка дописывает к файлу ": "Tahrir faylga ",
+ " стр., а свободных осталось ": " sahifa qo‘shadi, bo‘sh qolgani esa "
 }

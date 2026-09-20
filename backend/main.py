@@ -25554,9 +25554,49 @@ def _pdf_image_boxes(project: dict, data: dict) -> list:
                 "page": page, "frac": 1, "image": 1, "style": "", "indent": 0.0,
                 "x0": x0 / w, "x1": x1 / w, "top": y0 / h, "bottom": y1 / h,
                 "size": line_h / h, "lead": ((y1 - y0) / rows) / h}]})
+    out, nested = _drop_nested_labels(out)
+    if nested:
+        skipped["nested"] = nested
     if skipped:
         print("[backend] PDF 1в1: надписей пропущено %s" % skipped, file=sys.stderr)
     return out
+
+
+def _drop_nested_labels(items: list) -> tuple:
+    """(рамки без вложенных повторов, сколько снято).
+
+    Разбор надписей иногда отдаёт ОДИН кусок дважды: рамку целиком
+    и её часть («Все о медолечении и пчелоужалении» и «о медолечении
+    и пчелоужалении» на обложке боевой книги). В .docx это безобидно —
+    обе надписи перерисовываются каждая в своей рамке поверх своего же
+    текста. В PDF они печатаются поверх ФОТОГРАФИИ, и два перевода
+    ложатся друг на друга крест-накрест.
+
+    Правило узкое: рамка лежит ВНУТРИ другой (с допуском в пиксель),
+    и её текст — часть текста той, большей. Иначе не трогаем: вложенная
+    рамка с ДРУГИМ текстом — это законная подпись внутри схемы."""
+    keep, dropped = [], 0
+    for i, it in enumerate(items):
+        b = (it.get("boxes") or [{}])[0]
+        t = _norm_key((it.get("text") or ""))
+        drop = False
+        for k, other in enumerate(items):
+            if k == i:
+                continue
+            o = (other.get("boxes") or [{}])[0]
+            if o.get("page") != b.get("page"):
+                continue
+            inside = (o["x0"] - 0.002 <= b["x0"] and b["x1"] <= o["x1"] + 0.002
+                      and o["top"] - 0.002 <= b["top"] and b["bottom"] <= o["bottom"] + 0.002)
+            bigger = (o["x1"] - o["x0"]) * (o["bottom"] - o["top"]) >                      (b["x1"] - b["x0"]) * (b["bottom"] - b["top"])
+            if inside and bigger and t and t in _norm_key(other.get("text") or ""):
+                drop = True
+                break
+        if drop:
+            dropped += 1
+        else:
+            keep.append(it)
+    return keep, dropped
 
 
 def _export_pdf_layout(project: dict, tmp: Path) -> Optional[dict]:

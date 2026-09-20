@@ -270,6 +270,21 @@ wide = [dict(tight[0], image=0, top=540.0)]   # высоты хватает на
 size2, _l, per2, _f = layout_pdf._fit("Александр Лазебний", wide, _pm.stringWidth, FONTS[""])
 check(size2 > size, "у текстовой рамки правило другое — там есть поля: %.1f против %.1f" % (size2, size))
 
+print("=== 9б. Заливка идёт ДО текста, вся разом ===")
+# Рамки надписей с картинки законно пересекаются (стилизованная обложка),
+# и заливка второй стирала бы уже написанный перевод первой — с отчётом
+# «обе написаны». Тот же закон, что в `image_text.render_target`.
+over = [{"text": "Асалари", "boxes": [{"page": 0, "frac": 1, "image": 1, "style": "",
+                                       "indent": 0.0, "x0": 0.1, "x1": 0.6, "top": 0.30,
+                                       "bottom": 0.36, "size": 0.02, "lead": 0.025}]},
+        {"text": "дорихонаси", "boxes": [{"page": 0, "frac": 1, "image": 1, "style": "",
+                                          "indent": 0.0, "x0": 0.15, "x1": 0.7, "top": 0.33,
+                                          "bottom": 0.40, "size": 0.02, "lead": 0.025}]}]
+out, st = layout_pdf.build(PDF, {"boxes": {}}, {}, extra=over)
+txt = __import__("pypdf").PdfReader(io.BytesIO(out)).pages[0].extract_text() or ""
+check("Асалари" in txt and "дорихонаси" in txt,
+      "обе надписи на месте: заливка соседней рамки не стёрла уже написанное")
+
 print("=== 10. Рамка долями листа раскрывается в точки страницы ===")
 class _MB:
     left, bottom, width, height = 0.0, 0.0, 400.0, 600.0

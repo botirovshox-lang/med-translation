@@ -117,6 +117,9 @@ FILL_STRIPS = 10
 GLYPH_MISS_MAX = int(os.environ.get("LAYOUT_GLYPH_MISS_MAX", "3"))
 # Какой процентиль яркости полосы считать бумагой (буквы — тёмный хвост).
 PAPER_Q = 0.75
+# У надписи НА КАРТИНКЕ «бумага» — сама фотография: высокий процентиль берёт
+# её блик и кладёт белую заплатку посреди жёлтой обложки. Там фон — медиана.
+PAPER_Q_IMAGE = float(os.environ.get("LAYOUT_PAPER_Q_IMAGE", "0.5"))
 # Докуда раздвигать закраску по краске: доля ширины рамки и потолок в пунктах.
 # Оба нужны: у короткого заголовка доля вырождается в ничто, а у абзаца
 # во всю полосу — в пол-страницы.
@@ -381,7 +384,7 @@ def _ink_box(sample, box: dict, pad: float, paper: float) -> tuple:
     return x0, x1
 
 
-def _strip_colors(sample, box: dict, pad: float, n: int, x0f=None, x1f=None) -> list:
+def _strip_colors(sample, box: dict, pad: float, n: int, x0f=None, x1f=None, q: float = PAPER_Q) -> list:
     """Цвет бумаги полосами поперёк рамки — по САМОЙ странице под ней.
 
     Меряем не вокруг рамки, а внутри: у книги, снятой со сканера, бумага
@@ -416,7 +419,7 @@ def _strip_colors(sample, box: dict, pad: float, n: int, x0f=None, x1f=None) -> 
         col = []
         for ch in range(3):
             vals = sorted(p[ch] for p in data)
-            col.append(vals[min(len(vals) - 1, int(PAPER_Q * len(vals)))] / 255.0)
+            col.append(vals[min(len(vals) - 1, int(q * len(vals)))] / 255.0)
         out.append(tuple(col))
     return out
 
@@ -548,7 +551,13 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
         sample = sampler.page(pg)
         for b in live_boxes[pg]:
             pad = PAD_SHARE * max(b["size"], 1.0)
-            colors = _strip_colors(sample, b, pad, FILL_STRIPS)
+            # На бумаге буквы — тёмный хвост, и бумага это высокий процентиль
+            # яркости. На КАРТИНКЕ «бумага» — сама фотография, и высокий
+            # процентиль берёт её блик: белая заплатка посреди жёлтой обложки.
+            # Там правильный ответ — медиана: фон занимает больше места,
+            # чем буквы.
+            q = PAPER_Q_IMAGE if b.get("image") else PAPER_Q
+            colors = _strip_colors(sample, b, pad, FILL_STRIPS, q=q)
             paper = max(sum(col) / 3.0 for col in colors) if colors else 1.0
             if b.get("image"):
                 # Надпись СО СТРАНИЦЫ-КАРТИНКИ по краске не раздвигается:
@@ -561,7 +570,7 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
             if x1 - x0 > b["x1"] - b["x0"] + 0.5:
                 # Рамка поехала по краске — и цвет бумаги надо мерить
                 # по НОВОЙ ширине, иначе полосы лягут не на своё место.
-                colors = _strip_colors(sample, b, pad, FILL_STRIPS, x0, x1)
+                colors = _strip_colors(sample, b, pad, FILL_STRIPS, x0, x1, q=q)
             # Рамка ТЕПЕРЬ такая: по ней и раскладывается перевод. Строка
             # оригинала начиналась там, где стоит её краска, — значит там же
             # начинается и перевод.
@@ -622,27 +631,35 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
             continue
         mb = page.mediabox
         c.setPageSize((float(mb.width), float(mb.height)))
-        for _idx, boxes, per_box, size, lead, font in plan:
-            for n, (b, lines) in enumerate(zip(boxes, per_box)):
-                if int(b["page"]) != i:
-                    continue
-                # Закраска идёт и у ПУСТОЙ рамки: перевод мог целиком влезть
-                # в первую половину абзаца, а во второй остался бы оригинал —
-                # рядом с готовым переводом того же абзаца.
-                colors, paper, pad = b.get("_fill") or ([(1.0, 1.0, 1.0)] * FILL_STRIPS, 1.0,
-                                                        PAD_SHARE * max(b["size"], 1.0))
-                _fill_box(c, b, pad, colors)
-                if not lines:
-                    continue
-                # Чёрным по тёмному не читается: на обложке и на тёмной
-                # плашке перевод печатается светлым. Цвет берётся у самой
-                # бумаги под рамкой — там же, где и закраска.
-                c.setFillColorRGB(*((1, 1, 1) if paper < DARK_PAPER else (0, 0, 0)))
-                c.setFont(font, size)
-                y = b["top"] - 0.85 * size
-                for k, line in enumerate(lines):
-                    c.drawString(b["x0"] + (b["indent"] if (k == 0 and n == 0) else 0.0), y, line)
-                    y -= lead
+        # ЗАЛИВКА идёт первой и вся разом, а текст — вторым проходом.
+        # Рамки надписей с картинки законно пересекаются (заголовок над двумя
+        # колонками, стилизованная обложка), и заливка второй рамки стирала бы
+        # уже написанный перевод первой — с отчётом «обе написаны». Тот же
+        # закон, что в `image_text.render_target`.
+        here = [(b, lines, size, lead, font, n)
+                for _idx, boxes, per_box, size, lead, font in plan
+                for n, (b, lines) in enumerate(zip(boxes, per_box))
+                if int(b["page"]) == i]
+        for b, _lines, _size, _lead, _font, _n in here:
+            # Закраска идёт и у ПУСТОЙ рамки: перевод мог целиком влезть
+            # в первую половину абзаца, а во второй остался бы оригинал —
+            # рядом с готовым переводом того же абзаца.
+            colors, _paper, pad = b.get("_fill") or ([(1.0, 1.0, 1.0)] * FILL_STRIPS, 1.0,
+                                                     PAD_SHARE * max(b["size"], 1.0))
+            _fill_box(c, b, pad, colors)
+        for b, lines, size, lead, font, n in here:
+            paper = (b.get("_fill") or (None, 1.0, None))[1]
+            if not lines:
+                continue
+            # Чёрным по тёмному не читается: на обложке и на тёмной плашке
+            # перевод печатается светлым. Цвет берётся у самой бумаги под
+            # рамкой — там же, где и закраска.
+            c.setFillColorRGB(*((1, 1, 1) if paper < DARK_PAPER else (0, 0, 0)))
+            c.setFont(font, size)
+            y = b["top"] - 0.85 * size
+            for k, line in enumerate(lines):
+                c.drawString(b["x0"] + (b["indent"] if (k == 0 and n == 0) else 0.0), y, line)
+                y -= lead
         order.append(drawn)
         drawn += 1
         c.showPage()

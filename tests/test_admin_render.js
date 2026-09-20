@@ -336,5 +336,66 @@ check(!!notSuper && !notSuper.includes("Пополнить"), "не суперп
   check(metRender(null) !== null, "вкладка рисуется до ответа сервера");
 }
 
+/* ---------- Вкладка «Возможности» ----------
+   Экран отвечает на вопрос «где сервис упирается в себя»: во что упёрлись
+   люди, чего у нас нет и докуда они доходят. Сторожим ровно то, что ломается
+   молча: код тупика обязан превратиться во фразу (забудь строку в
+   `oppBlockText` — и владелец увидит `dead.writeback`), Парето обязан
+   отделить «браться сейчас» от хвоста, а отказ — превратиться в «нёс файл —
+   файл больше потолка», потому что «413 POST /projects/upload» владельцу
+   сервиса не говорит ничего. */
+{
+  const OPP = {
+    ok: true, days: 7, from: "2026-09-14", to: "2026-09-20", live: false, at: "12:30:05",
+    blocked: [
+      { code: "cap.filePages413", n: 80, kind: "money", share: 0.8, cum: 0.8, vital: true,
+        items: [], who: [{ tenant: "acme", n: 80 }] },
+      { code: "cap.format415", n: 15, kind: "money", share: 0.15, cum: 0.95, vital: false,
+        items: [{ name: "pdf", n: 12 }, { name: "epub", n: 3 }], who: [] },
+      { code: "dead.writeback", n: 5, kind: "money", share: 0.05, cum: 1, vital: false,
+        items: [{ name: "odt", n: 5 }], who: [] },
+    ],
+    errors: [{ code: "413 POST /projects/upload", route: "POST /projects/upload",
+               act: "upload", status: 413, n: 5, share: 1, cum: 1, vital: true }],
+    funnel: { steps: [{ code: "upload", n: 15 }, { code: "run", n: 9 }, { code: "export", n: 4 }],
+              byExt: [{ name: "pdf", n: 10 }], byKind: [{ name: "full", n: 9 }],
+              dropRun: 6, dropExport: 5, conv: 0.267 },
+    waste: [{ code: "repairReverted", n: 31 }], provider: [],
+    money: [{ kind: "money", code: "pagesLow", tenant: "acme", name: "Акме", n: 12 }],
+    quotes: { byStatus: {}, total: 0, currency: "USD", conversion: null },
+    paretoShare: 0.8, eventsPending: 0,
+  };
+  const oppRender = (d) => {
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    hooks[0] = OV; hooks[2] = "chances";
+    // Порядок хуков: TabAdmin 0–2, дальше TabChances: days(3), d(4), busy(5), auto(6).
+    hooks[3] = 7; hooks[4] = d; hooks[5] = false; hooks[6] = true;
+    try { return texts(TabAdmin({ store: superStore, toast })).join(" "); }
+    catch (e) { check(false, "рендер «Возможностей» — " + e.constructor.name + ": " + e.message); return null; }
+  };
+  const opp = oppRender(OPP);
+  check(!!opp && opp.includes("Возможности"), "переключатель новой вкладки на месте");
+  check(!!opp && !/\bcap\.\w+|\bdead\.\w+/.test(opp),
+        "код тупика на экран не выходит: у каждого есть фраза");
+  check(!!opp && opp.includes("80") && opp.includes("от всех") && opp.includes("накопл."),
+        "доля и накопленная доля видны: без них список не говорит, за что браться");
+  check(!!opp && opp.includes("Ниже — хвост"),
+        "хвост Парето отделён от жизненно важного меньшинства");
+  check(!!opp && opp.includes("pdf×12"), "улики названы поимённо");
+  check(!!opp && opp.includes("нёс файл") && opp.includes("файл больше потолка"),
+        "отказ переведён на человеческий: маршрут и код владельцу ничего не говорят");
+  check(!!opp && opp.includes("принесли файл") && opp.includes("забрали перевод"),
+        "воронка названа словами");
+  check(!!opp && opp.includes("Это не когорта"),
+        "оговорка про когорту не спрятана: иначе числа прочтут как путь одного человека");
+  check(!!opp && opp.includes("Живое обновление"), "живое обновление можно выключить");
+  check(!!opp && opp.includes("Деньги по организациям") && opp.includes("Акме"),
+        "денежные подсказки по организациям на месте");
+  const bare = oppRender(Object.assign({}, OPP, { blocked: [], errors: [], money: [] }));
+  check(!!bare && bare.includes("За период никто ни во что не упёрся"),
+        "пустой ответ — это ответ, а не пустой экран");
+  check(oppRender(null) !== null, "вкладка рисуется до ответа сервера");
+}
+
 console.log(fail.length ? "\nПРОВАЛЕНО: " + fail.length : "\nВсё сошлось");
 process.exit(fail.length ? 1 : 0);

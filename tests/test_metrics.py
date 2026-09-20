@@ -32,12 +32,21 @@
   9. Сводка выводит подсказки с ЧИСЛОМ и организацией, а суточный текст
      собирается по-русски на сервере (он уходит мимо браузера — в Telegram
      и ИИ-агенту, подставить перевод на границе показа там некому).
+  9а. ТУПИК считается в месте отказа и обязан иметь вид (деньги/потеря/
+     поломка) и фразу — в суточном тексте и на экране. Новая точка отказа
+     без них — это код на экране владельца и молчание в сводке, поэтому
+     список берётся из самого `main.py`, а не переписывается в тест.
+  9б. Парето отмечает меньшинство ВКЛЮЧИТЕЛЬНО: сумма отмеченного обязана
+     дотягивать до обещанных 80%, иначе полоса обещает одно, а показывает
+     другое.
  10. Файловое хранилище подрезается по дням: `state.json` не вправе расти
      без границы.
 
 Ни одного вызова модели, боевой файл состояния не пишется.
 """
+import io
 import os
+import re
 import sys
 import json
 import threading
@@ -276,6 +285,120 @@ main.metrics_mod.KEYS_MAX = was
 dropped = next((r["n"] for r in rows if r["code"] == "metrics.dropped"), 0)
 check(len(rows) <= 6 and dropped >= 30,
       "переполнение буфера названо числом, а не съедено молча: снято %s" % dropped)
+
+
+print("=== 11. Тупик считается В МЕСТЕ отказа ===")
+# Формат выгрузки, которого у нас нет, — это не шум, а план разработки.
+# Считаем его там же, где отказываем: по коду ответа (200 с ok: false)
+# отличить его от успеха нельзя.
+main.metrics_mod.reset()
+main.STATE["projects"] = [{"id": 1, "title": "Книга", "tenant": "acme",
+                           "src": "RU", "tgt": "EN", "segments": []}]
+rx = c.post("/api/projects/1/export", headers=H(O), json={"format": "srt"})
+codes = {r["code"]: r for r in main.metrics_mod.take()}
+check(rx.status_code == 200 and rx.json().get("ok") is False, "формата нет — отказ словами")
+check("dead.exportFormat:srt" in codes, "спрос на формат посчитан: " + str(sorted(codes)))
+check(codes.get("dead.exportFormat:srt", {}).get("tenant") == "acme",
+      "тупик несёт организацию: без неё его некому продать")
+check("funnel.export" in codes, "шаг воронки посчитан там же")
+
+print("=== 11б. Каждый тупик из кода имеет вид и фразу ===")
+# Новая точка отказа без вида и без фразы — это код на экране владельца
+# и молчание в суточной сводке. Список берётся из САМОГО main.py, а не
+# переписывается сюда руками: переписанный разошёлся бы с кодом.
+src_main = io.open("backend/main.py", encoding="utf-8").read()
+emitted = set(re.findall(r'_ev\("((?:cap|dead)\.[A-Za-z0-9]+)', src_main))
+check(emitted, "коды тупиков найдены в исходнике: " + str(len(emitted)))
+no_kind = sorted(c0 for c0 in emitted if c0 not in main.BLOCK_KIND)
+check(not no_kind, "у каждого тупика есть вид (money/loss/fix): " + str(no_kind))
+no_word = sorted(c0 for c0 in main.BLOCK_KIND if c0 not in main.METRICS_BLOCK_TEXT)
+check(not no_word, "у каждого тупика есть фраза для суточной сводки: " + str(no_word))
+jsx = io.open("frontend/js/tab_admin.jsx", encoding="utf-8").read()
+no_ui = sorted(c0 for c0 in main.BLOCK_KIND if ('case "%s":' % c0) not in jsx)
+check(not no_ui, "у каждого тупика есть фраза на экране: " + str(no_ui))
+check(set(main.BLOCK_KIND.values()) <= {"money", "loss", "fix"},
+      "вид тупика — из закрытого набора")
+
+print("=== 11в. Парето: доли, накопленная и «жизненно важное меньшинство» ===")
+day = main.metrics_mod.today()
+
+
+def row(code, n, tenant="acme"):
+    return {"day": day, "tenant": tenant, "code": code, "n": n,
+            "ms_sum": 0.0, "ms_max": 0.0, "slow": 0}
+
+
+ev = main._metrics_events([
+    row("cap.filePages413", 80), row("cap.format415:pdf", 12),
+    row("cap.format415:epub", 3), row("dead.writeback:odt", 4, "beta"),
+    row("dead.scan", 1),
+    row("funnel.upload:pdf", 10), row("funnel.upload:docx", 5),
+    row("funnel.run:full", 9), row("funnel.export", 4),
+    row("err:413 POST /projects/upload", 5),
+    row("err:404 GET /projects/{pid}", 1),
+])
+blocked = main._blocked_rows(ev)
+by = {b["code"]: b for b in blocked}
+check(by["cap.format415"]["n"] == 15,
+      "улики собраны в ОДНУ работу: формат — это одна строка, а pdf и epub — доводы к ней")
+check([i["name"] for i in by["cap.format415"]["items"]] == ["pdf", "epub"],
+      "улики названы поимённо и по убыванию")
+check(by["dead.writeback"]["who"][0]["tenant"] == "beta", "тупик знает, кто в него упёрся")
+check(abs(sum(b["share"] for b in blocked) - 1.0) < 1e-6, "доли складываются в единицу")
+check(blocked[-1]["cum"] == 1.0, "накопленная доля доходит до единицы")
+check(sum(b["share"] for b in blocked if b["vital"]) >= main.PARETO_SHARE,
+      "отмеченное меньшинство ДЕЙСТВИТЕЛЬНО даёт обещанные 80%: "
+      "строка, пересёкшая порог, входит в него")
+check([b["code"] for b in blocked] == sorted(
+      [b["code"] for b in blocked], key=lambda k: (-by[k]["n"], k)),
+      "порядок устойчив: при равных числах строки не прыгают между обновлениями")
+check(by["cap.filePages413"]["kind"] == "money" and by["dead.scan"]["kind"] == "money",
+      "спрос помечен деньгами, а не поломкой")
+
+print("=== 11г. Отказ разобран на «что делал» и «почему не вышло» ===")
+errs = {e["route"]: e for e in main._metrics_errors(ev)}
+check(errs["POST /projects/upload"]["act"] == "upload" and
+      errs["POST /projects/upload"]["status"] == 413,
+      "маршрут переведён в действие человека: " + str(errs["POST /projects/upload"]))
+check(errs["GET /projects/{pid}"]["act"] == "project", "общее правило маршрута работает")
+check(main._act_of("POST /projects/{pid}/images/read") == "images",
+      "частное правило сильнее общего: иначе всё стало бы «проектом»")
+
+print("=== 11д. Воронка: не когорта, но вопрос денежный ===")
+f = main._funnel_view(ev.get("funnelRaw") or {})
+steps = {s["code"]: s["n"] for s in f["steps"]}
+check(steps == {"upload": 15, "run": 9, "export": 4}, "шаги сложены: " + str(steps))
+check(f["dropRun"] == 6 and f["dropExport"] == 5, "потери между шагами названы числом")
+check(f["conv"] == round(4 / 15, 3), "доля дошедших до выгрузки посчитана")
+check([x["name"] for x in f["byExt"]] == ["pdf", "docx"], "видно, какой формат нам несут")
+check(main._funnel_view({})["conv"] is None,
+      "нет загрузок — доля НЕ НОЛЬ, а «не знаю»: ноль читался бы как «никто не дошёл»")
+
+print("=== 11е. Дверь «Возможности» ===")
+r403 = c.get("/api/admin/opportunities", headers=H(O))
+check(r403.status_code == 403, "клиенту метрики не отдаются")
+main.metrics_mod.reset()
+main.STATE[main.EVENTS_KEY] = {}
+main._events_file_add([row("cap.filePages413", 9), row("funnel.upload:pdf", 3)])
+full = c.get("/api/admin/opportunities?days=7", headers=H(S)).json()
+lite = c.get("/api/admin/opportunities?days=7&live=1", headers=H(S)).json()
+check(full["ok"] and full["blocked"] and full["blocked"][0]["n"] == 9,
+      "тупики доехали до двери")
+check(full["money"] is not None and lite["money"] is None,
+      "лёгкая дверь организации НЕ обходит: воркер один, а экран опрашивается")
+check(lite["blocked"] == full["blocked"], "счётчики у обеих дверей одни и те же")
+check(full["at"] and full["live"] is False and lite["live"] is True,
+      "ответ говорит, живой он или полный, и когда посчитан")
+check(all("|" not in json.dumps(b, ensure_ascii=False) for b in full["blocked"]),
+      "наружу уходят разобранные коды, а не ключи хранилища")
+
+print("=== 11ж. Тупики и воронка попали в суточный текст ===")
+d2 = c.get("/api/admin/metrics/digest?days=1", headers=H(S)).json()
+check("ТУПИКИ" in d2["text"], "раздел тупиков есть: " + d2["text"][:80])
+check("Воронка за период" in d2["text"], "воронка названа словами")
+check("cap.filePages413" not in d2["text"], "в тексте фраза, а не код события")
+check("None" not in d2["text"] and "%(" not in d2["text"],
+      "ни одного невыполненного шаблона: " + d2["text"][:160])
 
 
 print()

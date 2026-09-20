@@ -1372,7 +1372,22 @@ body { overflow-wrap: break-word; }
    и переносы в ней несущие. */
 .met-pre { white-space: pre-wrap; font-size: 12.5px; line-height: 1.5; margin: 0;
            max-height: 460px; overflow: auto; }
-@media (max-width: 640px) { .met-num { min-width: 48px; font-size: 16px; } }
+/* Парето на экране «Возможности»: число, полоса доли и фраза одной сеткой.
+   Хвост (ниже 80%) приглушён — разница между «браться сейчас» и «браться
+   последним» должна быть видна без чтения чисел. */
+.opp-row { display: grid; grid-template-columns: 64px minmax(80px, 18%) 1fr; gap: 10px;
+           align-items: baseline; line-height: 1.45; }
+.opp-row .met-bar { align-self: center; }
+.opp-row.tail { opacity: .62; }
+.opp-cut { border-top: 1px dashed var(--c-border); padding-top: 8px; margin-top: 2px; }
+.opp-steps { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.opp-step { border: 1px solid var(--c-border); border-radius: 10px; padding: 8px 12px; }
+.opp-step b { display: block; font-size: 20px; line-height: 1.2; }
+@media (max-width: 640px) { .met-num { min-width: 48px; font-size: 16px; }
+  /* На телефоне полоса уезжает под строку: колонка в 18% от 360 px — это
+     65 пикселей, на которых доля не читается. */
+  .opp-row { grid-template-columns: 52px 1fr; }
+  .opp-row .met-bar { grid-column: 1 / -1; order: 2; } }
 
 /* ---------- Палец вместо курсора ----------
    Цель в 28 px промахивается пальцем, и промах на этих экранах стоит

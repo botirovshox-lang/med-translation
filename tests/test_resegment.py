@@ -183,6 +183,33 @@ path.write_bytes(PDF)
 res = rs.resegment(main, pid, file_arg=str(path))
 check(res["dryRun"] and res["changed"] > 0 and res["file"] == str(path), "с --file — сухой прогон по названному файлу")
 
+print("=== 6. Примеры «было → станет»: связная группа, а не строка против строки ===")
+# Прежний разбор склеил страницу в ОДИН абзац, нынешний делит его на два.
+# Примерами по новой строке это выглядит как два одинаковых «Было» — ровно
+# так и было прочитано на боевой книге («ощущение, что показывает не то»).
+fake = {"id": 9001, "segments": [
+    {"id": 1, "source": "Заголовок главы"},
+    {"id": 2, "source": "альфа бета гамма дельта эпсилон дзета"}]}
+units = [("Заголовок главы", [0]), ("альфа бета гамма", [1]), ("дельта эпсилон дзета", [2])]
+pl = main._resegment_plan(fake, {"units": units, "full": [u[0] for u in units]})
+sm = pl["samples"]
+check(len(sm) == 1, "одна старая строка на две новые — ОДИН пример, а не два: %d" % len(sm))
+check(sm and sm[0]["old"] == ["альфа бета гамма дельта эпсилон дзета"]
+      and sm[0]["new"] == ["альфа бета гамма", "дельта эпсилон дзета"]
+      and sm[0]["oldCount"] == 1 and sm[0]["newCount"] == 2,
+      "в примере обе новые строки и одна старая: %s" % sm[:1])
+check(pl["counts"]["changed"] == 2 and pl["counts"]["kept"] == 1,
+      "числа прежние: пересобираются две строки, одна на месте")
+fake2 = {"id": 9002, "segments": [
+    {"id": 1, "source": "Заголовок главы"},
+    {"id": 2, "source": "альфа бета гамма"},
+    {"id": 3, "source": "дельта эпсилон дзета"}]}
+units2 = [("Заголовок главы", [0]), ("альфа бета гамма дельта эпсилон дзета", [1])]
+pl2 = main._resegment_plan(fake2, {"units": units2, "full": [u[0] for u in units2]})
+check(len(pl2["samples"]) == 1 and pl2["samples"][0]["oldCount"] == 2
+      and pl2["samples"][0]["newCount"] == 1,
+      "две старые в одну новую — тоже один пример: %s" % pl2["samples"])
+
 print()
 if fail:
     print("FAILED: %d" % len(fail))

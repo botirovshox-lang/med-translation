@@ -30,6 +30,11 @@ function ImagesCard({ project, store, toast }) {
      надписей бывает под три сотни. Решать по голой строке текста нельзя,
      ровно за этим кроп и заведён. */
   const [crops, setCrops] = useState({});
+  /* Чтение у себя в браузере: {running, done, total, made, failed} | null.
+     Своё состояние, а не `job`: задачи на сервере тут нет вовсе — ни
+     очереди, ни воркера, ни замка на проекте. */
+  const [local, setLocal] = useState(null);
+  const localStop = useRef(false);
 
   /* Ответ принимается, только если он про ТОТ ЖЕ проект. Экран не
      размонтируется при переключении, и без этой сверки числа проекта A
@@ -131,6 +136,63 @@ function ImagesCard({ project, store, toast }) {
     toast.info(dry ? TR("Ищем надписи") : TR("Читаем надписи"),
       TR("Работа идёт на сервере — вкладку можно закрыть."));
   };
+  /* Прочитать надписи ЗДЕСЬ ЖЕ, в браузере. Ни одного вызова модели, ни
+     секунды сервера, и картинка никуда не уезжает. Читает хуже зрячей
+     модели — поэтому это предложение, и сказано об этом рядом с кнопкой.
+     Порциями, а не по одной картинке: карту абзацев сервер считает разбором
+     всего .docx, и запрос на картинку означал бы полтораста таких разборов. */
+  const readLocal = async () => {
+    if (!window.LocalOCR || !window.API) return;
+    localStop.current = false;
+    setLocal({ running: true, done: 0, total: 0, made: 0, failed: 0 });
+    const list = await window.API.safeCall(() => window.API.imagesParts(pid));
+    if (!list || !list.ok) {
+      setLocal(null);
+      toast.error(TR("Не удалось"), TR("Сервер не отдал список картинок."));
+      return;
+    }
+    const todo = (list.parts || []).filter(p => !p.done);
+    if (!todo.length) {
+      setLocal(null);
+      toast.info(TR("Нечего читать"), TR("Все картинки уже разобраны."));
+      return;
+    }
+    let made = 0, failed = 0, done = 0, chunk = [];
+    const flush = async (final) => {
+      if (!chunk.length && !final) return;
+      const sent = chunk;
+      chunk = [];
+      const r = await window.API.safeCall(() => window.API.imagesLocal(pid, sent, final));
+      if (r && r.segments) made += r.segments.length;
+    };
+    for (const p of todo) {
+      if (localStop.current) break;
+      let lines = null;
+      try {
+        const bytes = await window.API.imagePartBytes(pid, p.part);
+        if (bytes) lines = await window.LocalOCR.read(bytes, list.src || project.src);
+      } catch (e) {
+        /* «Не смогли» и «надписей нет» — разные ответы. Такую картинку
+           серверу не отдаём вовсе: пустой список объявил бы её пустой,
+           и платное чтение к ней больше не пришло бы. */
+        lines = null;
+      }
+      done += 1;
+      if (lines) chunk.push({ part: p.part, lines }); else failed += 1;
+      setLocal({ running: true, done, total: todo.length, made, failed });
+      if (chunk.length >= 12) await flush(false);
+    }
+    await flush(true);
+    setLocal(null);
+    load(pid);
+    if (store && store.replaceProjectSegments) {
+      const fresh = await window.API.safeCall(() => window.API.getProject(pid));
+      if (fresh && fresh.segments) store.replaceProjectSegments(pid, fresh.segments);
+    }
+    toast.success(TR("Прочитано у вас"), TR("новых строк: ") + made
+      + (failed ? TR(" · картинок не разобрано: ") + failed : ""));
+  };
+
   const forget = async (wipe) => {
     setForgetOpen(false);
     closeDrop();          // список ссылается на привязку, которой сейчас не станет
@@ -363,8 +425,35 @@ function ImagesCard({ project, store, toast }) {
         React.createElement(Btn, { variant: "primary", size: "sm", icon: "sparkles",
           disabled: busy || !st || !st.pending, onClick: () => start(false) },
           TR("Прочитать и завести сегменты") + (est && !costHidden() ? " (~$" + est.toFixed(2) + ")" : "")),
+        /* Бесплатное чтение стоит РЯДОМ с платным, а не вместо него: оно
+           читает хуже, и выбор — человека. Кнопки нет вовсе, когда браузер
+           не умеет WebAssembly или для языка оригинала у нас нет
+           распознавалки: настройка без работы не показывается. */
+        window.LocalOCR && window.LocalOCR.can(project.src)
+          && React.createElement(Btn, { variant: "secondary", size: "sm",
+            disabled: busy || !!(local && local.running) || !st || !st.pending,
+            onClick: readLocal }, TR("Прочитать у себя — бесплатно")),
         st && st.segments > 0 && React.createElement(Btn, { variant: "ghost", size: "sm",
           disabled: busy, onClick: () => setForgetOpen(true) }, TR("Забыть распознанное"))),
+
+      /* Ход чтения у себя. Проценты тут настоящие: картинки пересчитаны,
+         и врать нечему. */
+      local && local.running && React.createElement("div", { className: "col", style: { gap: 6 } },
+        React.createElement("div", { className: "row between", style: { gap: 10 } },
+          React.createElement("span", { style: { fontSize: 13 } },
+            TR("Читаю у вас: ") + local.done + TR(" из ") + (local.total || "?")
+            + (local.made ? TR(" · строк заведено: ") + local.made : "")),
+          React.createElement(Btn, { variant: "ghost", size: "sm",
+            onClick: () => { localStop.current = true; } }, TR("Остановить"))),
+        React.createElement("div", { className: "pbar" },
+          React.createElement("span", { style: {
+            width: (local.total ? Math.round(local.done * 100 / local.total) : 0) + "%" } }))),
+
+      !running && project.sourceDocx && !forgetOpen && !(local && local.running)
+        && window.LocalOCR && window.LocalOCR.can(project.src)
+        && React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
+          TR("«У себя» читает ваш компьютер: картинка никуда не отправляется и денег это не стоит. ")
+          + TR("Читает хуже и не отличает надписи аппарата (фамилии, даты) от текста книги — просмотрите список. Первый раз скачается около 21 МБ.")),
 
       /* Отката у этой команды нет, поэтому спрашиваем до, а не рассказываем
          после. Два разных действия и разная цена: сегменты заводятся заново

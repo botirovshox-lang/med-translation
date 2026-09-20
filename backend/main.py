@@ -3798,15 +3798,19 @@ app.add_middleware(
 # а Babel standalone убран совсем — файлы .jsx самого JSX не содержали никогда
 # (везде React.createElement), то есть три мегабайта и секунды работы уходили
 # на перевод стрелок в ES5. `unsafe-inline` для скриптов остаётся: в конце
-# index.html стоит загрузчик (выбор языка и порядок файлов); eval не нужен
-# и теперь точно никому. Что закрывает: чужие скрипты с ЛЮБОГО хоста,
+# index.html стоит загрузчик (выбор языка и порядок файлов); `eval` по-прежнему
+# запрещён. `wasm-unsafe-eval` — это НЕ он: директива разрешает собрать
+# WebAssembly и не разрешает выполнить ни одной строки JS из текста. Нужна она
+# чтению надписей у себя в браузере (`frontend/js/ocr_local.js`): без неё
+# исполнитель тензоров не поднимется вовсе, а с `unsafe-eval` мы открыли бы
+# ровно то, чего избегали — выполнение кода из строки. Что закрывает: чужие скрипты с ЛЮБОГО хоста,
 # вынос данных (connect-src 'self') и встраивание приложения в чужой iframe.
 # CSP_POLICY=off в окружении снимает заголовок без выката — на случай,
 # если что-то на экране перестанет грузиться. Что чужих хостов нет ни в CSP,
 # ни в index.html — сторожит tests/test_hardening.py.
 CSP_POLICY = os.environ.get("CSP_POLICY", "").strip() or (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline'; "
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; "
     "style-src 'self' 'unsafe-inline'; "
     "font-src 'self' data:; "
     "img-src 'self' data: blob:; "
@@ -6162,11 +6166,14 @@ def _metrics_events(rows: list) -> dict:
     """Разложить счётчики событий по смыслу кода.
 
     Коды разбираются ПО ПРЕФИКСУ, а не по списку: `api:` — маршрут,
-    `err:` — отказ, `cap:` — упёрлись в потолок, `waste:` — сожжённая
-    работа, `provider:` — поставщик моделей. Список кодов в коде разбора
-    разошёлся бы с местами, где их ставят, при первой же новой строке."""
+    `err:` — отказ, `cap.` — упёрлись в НАШ потолок, `dead.` — пришли
+    за работой, которой у нас НЕТ, `funnel.` — шаг воронки, `waste.` —
+    сожжённая работа, `provider.` — поставщик моделей. Список кодов
+    в коде разбора разошёлся бы с местами, где их ставят, при первой же
+    новой строке."""
     routes, errs, caps, waste, prov = {}, {}, {}, {}, {}
-    by_tenant_caps = {}
+    dead, funnel = {}, {}
+    by_tenant_caps, by_tenant_dead = {}, {}
     for r in rows:
         code, n = r["code"], r.get("n") or 0
         if code.startswith("api:"):
@@ -6187,6 +6194,15 @@ def _metrics_events(rows: list) -> dict:
             waste[code[6:]] = waste.get(code[6:], 0) + n
         elif code.startswith("provider."):
             prov[code[9:]] = prov.get(code[9:], 0) + n
+        elif code.startswith("dead."):
+            # Тупик. От `cap.` отличается тем, чем лечится: там стоит НАШ
+            # потолок и поднимают его деньгами, а тут не написан код.
+            dead[code[5:]] = dead.get(code[5:], 0) + n
+            t = r.get("tenant") or ""
+            by_tenant_dead.setdefault(t, {})
+            by_tenant_dead[t][code[5:]] = by_tenant_dead[t].get(code[5:], 0) + n
+        elif code.startswith("funnel."):
+            funnel[code[7:]] = funnel.get(code[7:], 0) + n
     for d in routes.values():
         d["avgMs"] = round(d["ms"] / d["n"], 1) if d["n"] else 0.0
         d["msMax"] = round(d["msMax"], 1)
@@ -6203,7 +6219,11 @@ def _metrics_events(rows: list) -> dict:
             "waste": sorted([{"code": k, "n": v} for k, v in waste.items()],
                             key=lambda d: -d["n"]),
             "provider": sorted([{"code": k, "n": v} for k, v in prov.items()],
-                               key=lambda d: -d["n"])}
+                               key=lambda d: -d["n"]),
+            "dead": sorted([{"code": k, "n": v} for k, v in dead.items()],
+                           key=lambda d: -d["n"]),
+            "deadByTenant": by_tenant_dead,
+            "funnelRaw": funnel}
 
 
 # Порог «организация молчит»: дней без единого прогона при живом остатке
@@ -6319,6 +6339,185 @@ def _metrics_hints(days: int, tenants: list, ev: dict, quotes: dict) -> list:
     return out
 
 
+# ─── Парето: за что браться первым ──────────────────────────────────
+# Список из сорока отказов не говорит, что делать. Тот же список,
+# упорядоченный по числу и размеченный НАКОПЛЕННОЙ долей, говорит прямо:
+# вот эти три строки и есть четыре пятых всех отказов. Ради этого разметка
+# и заведена — не ради красивой полосы.
+PARETO_SHARE = float(os.environ.get("METRICS_PARETO_SHARE", "0.8"))
+
+
+def _pareto(rows: list, key: str = "n") -> list:
+    """Доля и накопленная доля каждой строки; `vital` — то самое
+    «жизненно важное меньшинство».
+
+    `vital` ставится ВКЛЮЧИТЕЛЬНО на строку, которая порог пересекла:
+    сними её — и сумма отмеченного окажется МЕНЬШЕ обещанных 80%, то есть
+    полоса обещала бы одно, а показывала другое. Строки с нулём не
+    участвуют вовсе: ноль не занимает доли и не требует работы.
+
+    Порядок при равных числах — по коду: иначе два соседних обновления
+    экрана меняли бы строки местами на ровном месте."""
+    got = sorted([r for r in rows if (r.get(key) or 0) > 0],
+                 key=lambda r: (-(r.get(key) or 0), str(r.get("code") or "")))
+    total = float(sum(r[key] for r in got))
+    run = 0.0
+    for r in got:
+        before = run
+        run += r[key]
+        r["share"] = round(r[key] / total, 4) if total else 0.0
+        r["cum"] = round(run / total, 4) if total else 0.0
+        r["vital"] = bool(total) and before < total * PARETO_SHARE
+    return got
+
+
+# ─── Тупики: во что упёрлись и чего у нас нет ────────────────────────
+# Два разных отказа, и путать их нельзя. `cap.*` — НАШ потолок: работа
+# есть, но клиенту её не отдали (мало страниц, велик файл, исчерпан
+# лимит), и лечится это деньгами. `dead.*` — ненаписанный код: человек
+# пришёл за тем, чего у нас нет вовсе (формат, обратная запись, PDF-слой
+# без шрифта, чтение скана), и лечится это работой. Первый список — счёт
+# к оплате, второй — план разработки.
+#
+# Вид (`money` | `loss` | `fix`) лежит ЗДЕСЬ, при разборе, а не в месте
+# события: там у нас на руках ровно код и организация, а «это деньги или
+# это поломка» — суждение, и оно обязано быть ОДНО на экран, на суточный
+# текст и на всё будущее.
+BLOCK_KIND = {
+    "cap.filePages413": "money",    # принесли книгу толще потолка — прямой спрос
+    "cap.bytes413": "money",
+    "cap.pages402": "money",
+    "cap.projects402": "money",
+    "cap.spend402": "money",
+    "cap.format415": "money",       # ровно список «какой импорт писать следующим»
+    "cap.noReader503": "fix",       # формат знаем, библиотеки на сервере нет
+    "cap.duplicate409": "fix",      # человек не нашёл свой же готовый проект
+    "dead.exportFormat": "money",
+    "dead.writeback": "money",      # просили «как в оригинале», отдали Word
+    "dead.pdfLayout503": "fix",
+    "dead.slotsDrift400": "fix",
+    "dead.images": "loss",
+    "dead.scan": "money",
+    "dead.retranslateOne": "money",
+    "dead.retranslateBulk": "money",
+    "dead.sourceGrow409": "fix",
+    "dead.budget402": "loss",
+}
+
+
+def _blocked_rows(ev: dict) -> list:
+    """Тупики ОДНИМ списком с Парето.
+
+    Подробность кода (расширение файла, причина пропуска) отделяется
+    от основания: «формат, которого у нас нет» — это ОДНА работа, а `pdf`
+    и `odt` внутри неё — улики к ней, а не две разные строки. Разведи их
+    по строкам — и Парето посчитал бы доли от раздробленного, то есть
+    ни одна настоящая работа не попала бы в «жизненно важное меньшинство»."""
+    got: dict = {}
+    for src, prefix, by_t in (("caps", "cap.", ev.get("capsByTenant") or {}),
+                              ("dead", "dead.", ev.get("deadByTenant") or {})):
+        for row in (ev.get(src) or []):
+            base, _, detail = str(row["code"]).partition(":")
+            d = got.setdefault(prefix + base,
+                               {"code": prefix + base, "n": 0, "items": {}, "who": {}})
+            d["n"] += row["n"]
+            if detail:
+                d["items"][detail] = d["items"].get(detail, 0) + row["n"]
+            for t, codes in by_t.items():
+                if codes.get(row["code"]):
+                    d["who"][t] = d["who"].get(t, 0) + codes[row["code"]]
+    out = []
+    for d in got.values():
+        who = sorted(d["who"].items(), key=lambda x: -x[1])[:5]
+        items = sorted(d["items"].items(), key=lambda x: -x[1])[:6]
+        out.append({"code": d["code"], "n": d["n"],
+                    "kind": BLOCK_KIND.get(d["code"], "fix"),
+                    "items": [{"name": k, "n": v} for k, v in items],
+                    "who": [{"tenant": t or DEFAULT_TENANT, "n": n} for t, n in who]})
+    return _pareto(out)
+
+
+# Что человек ДЕЛАЛ, когда получил отказ. Маршрут «POST /projects/{pid}/export»
+# владельцу сервиса не говорит ничего, а «забирал перевод» говорит. Ключ —
+# кусок шаблона маршрута, ответ — код действия из ЗАКРЫТОГО набора: свободной
+# строке не место ни в коде события, ни в названии действия.
+# Порядок несущий — побеждает ПЕРВОЕ совпадение, поэтому частное («/images»)
+# стоит выше общего («/projects»).
+_ACT_RULES = (
+    ("/auth", "auth"), ("/admin", "admin"), ("/teams", "team"), ("/profile", "profile"),
+    ("/quote", "quote"), ("/pricing", "quote"),
+    ("/upload", "upload"), ("/probe", "upload"),
+    ("/reimport", "reimport"), ("/resegment", "reimport"), ("/source", "reimport"),
+    ("/export", "export"), ("/images", "images"),
+    ("/jobs", "run"), ("/batch", "run"), ("/run-plan", "run"),
+    ("/glossary", "glossary"), ("/dicts", "glossary"), ("/term", "terms"), ("/tm", "tm"),
+    ("/segments", "segment"), ("/folders", "project"), ("/projects", "project"),
+)
+
+
+def _act_of(route: str) -> str:
+    r = str(route or "")
+    for part, act in _ACT_RULES:
+        if part in r:
+            return act
+    return "other"
+
+
+def _metrics_errors(ev: dict) -> list:
+    """Отказы, разобранные на «что человек делал» и «почему не вышло».
+
+    Само по себе «err:413 POST /projects/upload» — строка для разработчика.
+    Владельцу сервиса нужен ответ на другой вопрос: сколько раз человек нёс
+    нам файл и ушёл ни с чем. Фразу собирает БРАУЗЕР по двум кодам
+    (действие и причина отказа) — инвариант 17; сервер называет коды
+    и число, потому что перевод живёт на границе показа."""
+    out = []
+    for e in (ev.get("errors") or []):
+        code = str(e["code"])
+        status, _, route = code.partition(" ")
+        out.append({"code": code, "route": route, "act": _act_of(route),
+                    "status": int(status) if status.isdigit() else 0, "n": e["n"]})
+    return _pareto(out)
+
+
+def _funnel_view(raw: dict) -> dict:
+    """Воронка «принёс файл → запустил прогон → забрал перевод».
+
+    Оговорка названа вслух и в ответе не прячется: это НЕ когорта.
+    Считаются события периода, а не путь одного человека: файл могли
+    принести вчера, а выгрузить сегодня, и «выгрузок больше загрузок»
+    на коротком окне — законный ответ, а не ошибка. Вопрос, на который
+    она отвечает, другой и такой же денежный: сколько принесённых файлов
+    так и не дошли до выгрузки.
+
+    Разбивка по расширению — ровно список «какой формат нам несут»,
+    по виду прогона — «за какой работой к нам приходят»."""
+    def top(d):
+        return sorted([{"name": k, "n": v} for k, v in d.items()],
+                      key=lambda x: -x["n"])[:8]
+    ups = {k.split(":", 1)[1]: v for k, v in raw.items() if k.startswith("upload:")}
+    runs = {k.split(":", 1)[1]: v for k, v in raw.items() if k.startswith("run:")}
+    u, r, e = sum(ups.values()), sum(runs.values()), int(raw.get("export") or 0)
+    return {"steps": [{"code": "upload", "n": u}, {"code": "run", "n": r},
+                      {"code": "export", "n": e}],
+            "byExt": top(ups), "byKind": top(runs),
+            "dropRun": max(u - r, 0), "dropExport": max(r - e, 0),
+            "conv": (round(float(e) / u, 3) if u else None)}
+
+
+# Формат, который у нас попросили на выгрузке. Пришёл он ИЗ ЗАПРОСА,
+# поэтому в код события уходит только из закрытого списка: иначе имя
+# ключа задавал бы посторонний, и таблица событий стала бы логом.
+_EXPORT_ASKED = frozenset((
+    "pdf", "docx", "xlsx", "docx_layout", "original", "html", "txt", "csv", "md",
+    "odt", "rtf", "pptx", "srt", "vtt", "tmx", "xliff", "xlf", "json", "xml", "po", "yaml"))
+
+
+def _fmt_code(fmt: str) -> str:
+    f = str(fmt or "").lower()[:12]
+    return f if f in _EXPORT_ASKED else "other"
+
+
 @app.get("/api/admin/metrics")
 def admin_metrics(request: Request, days: int = 7):
     """Сводка для владельца сервиса. Ни одного вызова модели.
@@ -6345,10 +6544,63 @@ def admin_metrics(request: Request, days: int = 7):
         "quotes": quotes,
         "routes": ev["routes"], "slow": ev["slow"], "errors": ev["errors"],
         "capCodes": ev["caps"], "waste": ev["waste"], "provider": ev["provider"],
+        # Тупики и воронка считаются из ТЕХ ЖЕ событий, что уже прочитаны:
+        # второй проход по таблице ради двух списков был бы платой без товара.
+        "blocked": _blocked_rows(ev),
+        "funnel": _funnel_view(ev.get("funnelRaw") or {}),
         "hints": _metrics_hints(days, tenants, ev, quotes),
         "eventsPending": (metrics_mod.pending() if metrics_mod else 0),
         "store": STORE.kind,
     }, "admin/metrics", t0)
+
+
+# ─── «Возможности»: тупики, воронка и Парето живым экраном ───────────
+# Отдельная дверь от `/api/admin/metrics`, и не ради красоты. Сводка
+# обходит организации и проекты (`_tenant_usage` на каждую), а воркер
+# у нас ОДИН: опрашивать её каждые несколько секунд значило бы держать
+# сервис ради экрана — ровно то, от чего инвариант 34 велел обновлять
+# метрики по нажатию. Поэтому дверей две, и они разной цены:
+#   * `live=1` — только счётчики событий: чтение таблицы за период, без
+#     обхода организаций и проектов. Ею и опрашивают;
+#   * `live=0` — то же плюс денежные подсказки по организациям. Ею
+#     открывают экран и жмут «Обновить».
+# Свежесть при этом НАСТОЯЩАЯ, а не «раз в минуту»: `_events_rows`
+# сливает буфер принудительно, то есть событие, случившееся секунду
+# назад, в ответе уже есть.
+@app.get("/api/admin/opportunities")
+def admin_opportunities(request: Request, days: int = 7, live: int = 0):
+    """Где сервис упирается в себя: во что упёрлись люди, чего у нас нет,
+    докуда они доходят и какие отказы дают четыре пятых всех отказов.
+
+    Ни одного вызова модели. Ни одного байта текста клиента: только коды
+    из закрытых наборов, числа и идентификаторы организаций."""
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Метрики — только суперпользователю")
+    t0 = time.time()
+    day_from, day_to, days = _metrics_day_range(days)
+    ev = _metrics_events(_events_rows(day_from, day_to))
+    quotes = _metrics_quotes(day_from)
+    money = None
+    if not live:
+        tenants = _metrics_tenants(day_from, ev.get("capsByTenant") or {})
+        # Денежные подсказки ПО ОРГАНИЗАЦИЯМ. Те, что считаются из потолков
+        # (упёрлись в размер, кончились страницы, просили чужой формат),
+        # сюда не идут: они уже стоят в `blocked` строкой с долей, и два
+        # счётчика одного факта на одном экране однажды разойдутся.
+        money = [h for h in _metrics_hints(days, tenants, ev, quotes)
+                 if h.get("tenant") or h["code"] == "invoicedUnpaid"]
+    return _json_bytes({
+        "ok": True, "days": days, "from": day_from, "to": day_to,
+        "live": bool(live), "at": datetime.now().strftime("%H:%M:%S"),
+        "blocked": _blocked_rows(ev),
+        "errors": _metrics_errors(ev),
+        "funnel": _funnel_view(ev.get("funnelRaw") or {}),
+        "waste": ev["waste"], "provider": ev["provider"],
+        "money": money,
+        "paretoShare": PARETO_SHARE,
+        "eventsPending": (metrics_mod.pending() if metrics_mod else 0),
+    }, "admin/opportunities", t0)
 
 
 # ─── Суточная сводка словами: владельцу в Telegram и ИИ-агенту ───────
@@ -6386,6 +6638,29 @@ METRICS_HINT_TEXT = {
              "Это кандидат на отдельный тариф.",
     "http5xx": "Ошибки сервера: %(n)d (%(route)s). Отказ в обслуживании.",
     "slowRoute": "Медленно: %(route)s отвечает в среднем %(n)d мс на %(calls)d вызовов.",
+}
+# Тупик словами — для суточного текста. Браузер собирает свою фразу
+# по коду (инвариант 17), а этот текст уходит МИМО браузера — в Telegram
+# и в ленту ИИ-агента, и подставить перевод на границе показа там некому.
+METRICS_BLOCK_TEXT = {
+    "cap.filePages413": "файл толще потолка страниц — не взяли",
+    "cap.bytes413": "файл тяжелее потолка в мегабайтах — не взяли",
+    "cap.pages402": "кончились выданные страницы",
+    "cap.projects402": "упёрлись в потолок числа проектов",
+    "cap.spend402": "исчерпан месячный лимит расхода",
+    "cap.format415": "принесли формат, которого мы не читаем",
+    "cap.noReader503": "формат знаем, а библиотеки на сервере нет",
+    "cap.duplicate409": "несли тот же файл второй раз — не нашли свой готовый",
+    "dead.exportFormat": "просили формат выгрузки, которого у нас нет",
+    "dead.writeback": "просили «как в оригинале», формат этого не умеет — отдали Word",
+    "dead.pdfLayout503": "PDF «как в оригинале» не собрался: нет шрифта или библиотеки",
+    "dead.slotsDrift400": "выгрузка 1в1 отказала: правила разбора файла изменились",
+    "dead.images": "чтение надписей с картинок не запустилось",
+    "dead.scan": "принесли скан: объём считаем выборкой, а не целиком",
+    "dead.retranslateOne": "строк не дали перевести заново: предел организации",
+    "dead.retranslateBulk": "файл не дали перевести заново целиком: квота",
+    "dead.sourceGrow409": "правка оригинала выросла больше потолка",
+    "dead.budget402": "прогон не пустили: потолок расхода на страницу файла",
 }
 METRICS_WASTE_TEXT = {
     "repairReverted": "правок ремонта откатилось",
@@ -6464,6 +6739,28 @@ def _metrics_digest_text(d: dict) -> str:
         L.append(title)
         for h in mine[:12]:
             L.append("• " + _hint_line(h))
+    blocked = [b for b in (d.get("blocked") or []) if b.get("vital")]
+    if blocked:
+        L.append("")
+        L.append("ТУПИКИ (эти строки дают 80% всех отказов)")
+        for b in blocked[:8]:
+            line = "• %d (%d%%) — %s" % (b["n"], round(b["share"] * 100),
+                                         METRICS_BLOCK_TEXT.get(b["code"], b["code"]))
+            if b.get("items"):
+                line += ": " + ", ".join("%s×%d" % (i["name"], i["n"]) for i in b["items"])
+            if b.get("who"):
+                line += ". Кто: " + ", ".join("%s (%d)" % (w["tenant"], w["n"])
+                                              for w in b["who"])
+            L.append(line)
+    f = d.get("funnel") or {}
+    steps = {x["code"]: x["n"] for x in (f.get("steps") or [])}
+    if steps.get("upload") or steps.get("export"):
+        L.append("")
+        L.append("Воронка за период: принесли файлов %d, запустили прогонов %d, "
+                 "забрали перевод %d раз%s."
+                 % (steps.get("upload", 0), steps.get("run", 0), steps.get("export", 0),
+                    "" if f.get("conv") is None
+                    else " — до выгрузки доходит %d%%" % round(f["conv"] * 100)))
     top = [t for t in (d.get("tenants") or []) if t.get("spendUsd")][:5]
     if top:
         L.append("")
@@ -6914,6 +7211,7 @@ async def quote_file(request: Request, file: UploadFile = File(...),
         # Скан — не отказ, а другой путь: текста нет, страницы есть. Считать
         # тут нечего, зато можно назвать цену вопроса — сколько страниц
         # прочитает зрячая модель по выборке и во что это обойдётся.
+        _ev("dead.scan")
         return {"ok": True, "file": file.filename or "", "kind": "pdf", "counts": None,
                 "notes": [str(e)], "scan": _scan_offer(e.pages)}
     except (textcount.Unsupported, textcount.NotAvailable, textcount.TooBig) as e:
@@ -10631,8 +10929,37 @@ def _resegment_plan(project: dict, parsed: dict) -> dict:
               # файла, то есть сотрёт вписанную им цифру. Молчать об этом
               # нельзя — ради этой правки кнопка пересборки и появилась.
               "manualEdits": sum(1 for s in old if s.get("boundary") or s.get("sourceEdited"))}
-    samples = [{"old": [s.get("source") for s in changed[j]][:3], "new": units[j][0]}
-               for j in list(changed)[:5]]
+    # Одна старая строка ложится в НЕСКОЛЬКО новых (прежний разбор склеил
+    # страницу в один абзац), и наоборот. Парами такое показывать нельзя:
+    # человек видит два примера с одинаковым «Было» и читает это как поломку
+    # — ровно так и было прочитано на боевой книге. Поэтому пример — СВЯЗНАЯ
+    # группа «что было → чем станет» целиком, а не строка против строки.
+    linked = {}
+    for j, olds in changed.items():
+        for s in olds:
+            linked.setdefault(id(s), (s, []))[1].append(j)
+    seen, groups = set(), []
+    for j0 in changed:
+        if j0 in seen:
+            continue
+        stack, js, oids = [j0], [], []
+        while stack:
+            j = stack.pop()
+            if j in seen:
+                continue
+            seen.add(j)
+            js.append(j)
+            for s in changed[j]:
+                if id(s) in oids:
+                    continue
+                oids.append(id(s))
+                stack.extend(k for k in linked[id(s)][1] if k not in seen)
+        groups.append((sorted(js), oids))
+    groups.sort(key=lambda g: g[0][0])
+    samples = [{"old": [linked[o][0].get("source") for o in oids][:3],
+                "new": [units[j][0] for j in js][:3],
+                "oldCount": len(oids), "newCount": len(js)}
+               for js, oids in groups[:5]]
     return {"plan": plan, "removed": removed, "changed": changed, "new": new, "gone": gone,
             "counts": counts, "samples": samples,
             "removedSample": [s.get("source") for s in gone[:5]]}
@@ -11709,6 +12036,199 @@ def image_crop(pid: int, seg: int = 0, part: str = "", block: int = 0):
                     headers={"Cache-Control": "private, max-age=86400"})
 
 
+# ── Чтение надписей У СЕБЯ В БРАУЗЕРЕ ───────────────────────────────
+# Зачем это есть. Сегодня текст с картинок читает зрячая модель, и у этого
+# две цены, обе неочевидные. Первая — ВОРКЕР: поиск строк идёт на сервере,
+# движок держит сотни мегабайт, воркер один (инвариант 1), и на время
+# разбора проект заперт (409). Вторая — юридическая: на снимках боевого
+# учебника лежат фамилии врачей, даты исследования и настройки томографа,
+# и всё это уезжает за границу поставщику модели — тот самый главный риск,
+# который называет политика.
+#
+# Браузер умеет то же самое сам: те же модели PaddleOCR в ONNX. Текст при
+# этом не покидает компьютер человека, а сервер не тратит ни секунды и
+# ни цента. Цена названа честно и в интерфейсе: локальная распознавалка
+# читает ХУЖЕ зрячей модели (замер авторов модели — 81.6% строк без единой
+# ошибки), поэтому это не замена, а ПРЕДЛОЖЕНИЕ. Спрашивать тут законно:
+# на картинке написан ОРИГИНАЛ, то есть язык, который человек знает, —
+# в отличие от перевода (инвариант 32).
+#
+# Рамки и текст приходят СНАРУЖИ, поэтому здесь они данные, а не решение:
+# плоскость фона, склейка кусков, сборка в блоки, отсев шума и заведение
+# сегментов считаются тем же кодом, что и при серверном разборе
+# (`image_text.lines_from`).
+IMAGE_LOCAL_MAX_PARTS = int(os.environ.get("IMAGE_LOCAL_MAX_PARTS", "50"))
+IMAGE_LOCAL_MAX_LINES = int(os.environ.get("IMAGE_LOCAL_MAX_LINES", "500"))
+IMAGE_LOCAL_MAX_CHARS = int(os.environ.get("IMAGE_LOCAL_MAX_CHARS", "500"))
+# Что отдаём браузеру картинкой. Список закрытый, и это не формальность:
+# отдать со СВОЕГО происхождения SVG значит отдать скрипт, который побежит
+# рядом с токеном сессии в хранилище браузера. Растровые части и так
+# отбирает `IMAGE_MEDIA_EXT`, здесь — второй рубеж и заодно честный тип.
+IMAGE_SERVE_TYPE = {".png": "image/png", ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg", ".gif": "image/gif",
+                    ".bmp": "image/bmp", ".tif": "image/tiff",
+                    ".tiff": "image/tiff", ".webp": "image/webp"}
+
+# Карта «часть → номера абзацев» стоит разбора всего .docx (у боевого
+# учебника это 22 МБ и 2700 абзацев), а браузер шлёт прочитанное порциями.
+# Держим ОДНУ последнюю карту, ключ — путь и отпечаток файла: подменили
+# исходник — ключ другой, и карта считается заново.
+_IMG_ANCHOR_CACHE: dict = {}
+
+
+def _image_anchors_cached(path) -> dict:
+    st = Path(path).stat()
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    if _IMG_ANCHOR_CACHE.get("key") == key:
+        return _IMG_ANCHOR_CACHE["val"]
+    from docx import Document
+    val = _docx_image_anchors(Document(str(path)))
+    _IMG_ANCHOR_CACHE.clear()
+    _IMG_ANCHOR_CACHE.update(key=key, val=val)
+    return val
+
+
+def _image_source_or_404(pid: int) -> dict:
+    project = get_project(pid)
+    if image_text is None:
+        raise HTTPException(503, "Работа с картинками недоступна: модуль не собран")
+    data = _load_source_map(pid) if project.get("sourceDocx") else None
+    if data is None:
+        raise HTTPException(404, "К проекту не приложен исходный .docx")
+    return data
+
+
+@app.get("/api/projects/{pid}/images/parts")
+def images_parts(pid: int):
+    """Список картинок проекта по порядку документа — что читать у себя.
+
+    Уже разобранные помечены `done`: повторный заход не переделывает
+    сделанного, ровно как серверный разбор не платит за прочитанное."""
+    project = get_project(pid)
+    data = _image_source_or_404(pid)
+    raster, other = _docx_media(Path(data["path"]).read_bytes())
+    anchors = _image_anchors_cached(data["path"])
+    names = sorted(raster, key=lambda n: (min(anchors.get(n) or [10 ** 9]), n))
+    known = {im.get("part"): im for im in (data.get("images") or [])}
+    ok, why = image_text.engine_ready_pixels()
+    return {"ok": True, "pixels": ok, "why": why,
+            "src": project.get("src") or "RU", "skipped": other,
+            "parts": [{"part": n,
+                       "done": (known.get(n) or {}).get("blocks") is not None,
+                       "bytes": len(raster[n])} for n in names]}
+
+
+@app.get("/api/projects/{pid}/images/part")
+def image_part(pid: int, part: str = ""):
+    """Сама картинка — браузеру, чтобы прочитать её у себя."""
+    get_project(pid)          # чужой проект — 404 (инвариант 11), до всякой работы
+    data = _image_source_or_404(pid)
+    ext = ("." + part.rsplit(".", 1)[-1]).lower() if "." in part else ""
+    if not part.startswith("word/media/") or ext not in IMAGE_SERVE_TYPE:
+        raise HTTPException(404, "Такой картинки в исходнике нет")
+    blob = _docx_media_part(data["path"], part)
+    if blob is None:
+        raise HTTPException(404, "Картинки %s в исходнике больше нет" % part)
+    return Response(content=blob, media_type=IMAGE_SERVE_TYPE[ext],
+                    headers={"Cache-Control": "private, max-age=86400"})
+
+
+class ImagesLocalRequest(BaseModel):
+    # Порциями, а не по одной: карта абзацев стоит разбора всего .docx,
+    # и один запрос на картинку означал бы полтораста таких разборов.
+    items: list = []          # [{part, lines: [{box, conf, text}]}]
+    final: bool = False       # последняя порция — согласовать картинки между собой
+
+
+@app.post("/api/projects/{pid}/images/local")
+def images_local(pid: int, req: ImagesLocalRequest):
+    """Принять надписи, прочитанные в браузере. Ни одного вызова модели."""
+    _guard_project_write(pid)
+    project = get_project(pid)
+    data = _image_source_or_404(pid)
+    ok, why = image_text.engine_ready_pixels()
+    if not ok:
+        raise HTTPException(503, "Разбор картинок недоступен: " + why)
+    items = (req.items or [])[:IMAGE_LOCAL_MAX_PARTS]
+    anchors = _image_anchors_cached(data["path"])
+    known = {im.get("part"): im for im in (data.get("images") or [])}
+    made, saved, skipped = [], 0, []
+    by_id = {s["id"]: s for s in project["segments"]}
+    for it in items:
+        part = str((it or {}).get("part") or "")
+        if not part.startswith("word/media/") or part not in anchors and part not in known:
+            skipped.append({"part": part, "why": "unknown"})
+            continue
+        prev = known.get(part) or {}
+        if prev.get("blocks") is not None:
+            # Уже разобрана. Перезапись стёрла бы и прочитанное, и решения
+            # человека по надпечаткам — их снимает только «забыть надписи».
+            skipped.append({"part": part, "why": "done"})
+            continue
+        blob = _docx_media_part(data["path"], part)
+        if blob is None:
+            skipped.append({"part": part, "why": "gone"})
+            continue
+        raw = []
+        for l in ((it.get("lines") or [])[:IMAGE_LOCAL_MAX_LINES]):
+            if not isinstance(l, dict):
+                continue
+            raw.append({"box": l.get("box"), "conf": l.get("conf"),
+                        "text": str(l.get("text") or "")[:IMAGE_LOCAL_MAX_CHARS]})
+        got = image_text.lines_from(blob, raw)
+        if got is None:
+            # «Не знаю» про ОДНУ картинку: записать сюда пустой список значило
+            # бы объявить, что надписей в ней нет.
+            rec = {"part": part, "sha": hashlib.sha1(blob).hexdigest(), "unreadable": True,
+                   "paras": anchors.get(part) or []}
+            known[part] = rec
+            skipped.append({"part": part, "why": "unreadable"})
+            continue
+        lines, w, h = got
+        blocks = image_text.group_blocks(lines)
+        for b in blocks:
+            b["by"] = "local"
+            b["reader"] = "browser"
+            if image_text.is_noise(b.get("text") or ""):
+                b["skip"] = "noise"
+        rec = {"part": part, "sha": hashlib.sha1(blob).hexdigest(), "blocks": blocks,
+               "w": w, "h": h, "paras": anchors.get(part) or []}
+        known[part] = rec
+        saved += 1
+        anchor = _image_anchor_sid(data, rec["paras"])
+        after = None
+        for i, b in enumerate(blocks):
+            if b.get("skip") or not (b.get("text") or "").strip():
+                continue
+            nid = _next_seg_id(project)
+            seg = _image_new_segment(b["text"].strip(), part, i, nid)
+            _image_place_segment(project, seg, anchor, after)
+            by_id[nid] = seg
+            b["seg"] = nid
+            after = nid
+            made.append(nid)
+    # Порядок картинок в карте — по документу, как его держит серверный разбор.
+    order = sorted(known, key=lambda n: (min(anchors.get(n) or [10 ** 9]), n))
+    data["images"] = [known[n] for n in order]
+    data["imagesAt"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    moved = 0
+    if req.final:
+        # Согласие между картинками — последний бесплатный фильтр перед тем,
+        # как человек увидит список. Гоняем один раз на всю работу: он
+        # смотрит картинки друг против друга, и звать его на каждую порцию
+        # значило бы считать одно и то же по кругу.
+        moved, _dropped = _image_harmonize(data, project)
+    _save_source_map(pid, data)
+    save_state(STATE)
+    # Страницы за прочитанный с картинок текст списываются здесь же
+    # (инвариант 27): читал браузер, но текст встал в документ клиента.
+    _book_image_pages(project)
+    return {"ok": True, "saved": saved, "segments": made, "harmonized": moved,
+            "skipped": skipped,
+            "stats": _image_stats(data.get("images") or [],
+                                  data.get("imagesTotal") or len(order))}
+
+
 @app.get("/api/projects/{pid}/images/blocks")
 def images_blocks(pid: int, skip: str = "", limit: int = 400):
     """Найденные надписи списком: что отсеяно и почему.
@@ -12272,6 +12792,7 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
     # (см. «Перевод ЗАНОВО» у `_retranslate_limit`); первый перевод не считается.
     limit = _retranslate_limit()
     if _retranslate_blocked(seg, limit):
+        _ev("dead.retranslateOne")
         raise HTTPException(409, _retranslate_refusal(limit))
     again = _mt_before(seg)             # до записи: `_replace_target` сменит provider
     try:
@@ -23612,6 +24133,7 @@ def edit_segment_source(pid: int, sid: int, req: SegmentSourceRequest):
                     "wasConfirmed": seg.get("status") == "confirmed", "pages": quote,
                     "tooBig": too_big, "maxLen": grow_max}
         if too_big and not req.force:
+            _ev("dead.sourceGrow409", _tenant_of(project))
             raise HTTPException(409, "Строка вырастает с %d знаков до %d — это не поправка, "
                                      "а новый текст. Подтвердите, что вписываете его "
                                      "намеренно, или загрузите файл новой редакцией."
@@ -23860,6 +24382,7 @@ def _retranslate_bulk_check(project: dict, ids: list, include_confirmed: bool) -
     used = next((r.get("bulk", 0) for r in _proj_spend_rows(_tenant_of(project))
                  if r["project"] == project["id"]), 0)
     if used >= quota:
+        _ev("dead.retranslateBulk", _tenant_of(project))
         raise HTTPException(409, "Файл уже переводили заново целиком (%d из %d раз): "
                                  "выберите отдельные строки или обратитесь к администратору сервиса"
                             % (used, quota))
@@ -23973,6 +24496,7 @@ def batch_translate(pid: int, req: BatchRequest):
     skipped_limit = [s["id"] for s in all_targets if _retranslate_blocked(s, rt_limit)
                      and (req.force or not _free(s))]
     if skipped_limit:
+        _ev("dead.retranslateOne", None, len(skipped_limit))
         _over = set(skipped_limit)
         all_targets = [s for s in all_targets if s["id"] not in _over]
     if (all_targets and not _provider_ready(req.model)
@@ -24673,6 +25197,9 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
                 stats["img_flat"] += 1
             elif why == "tiny_font":
                 stats["img_font"] += 1
+            elif why == "vertical":
+                # Надпись в оригинале шла сверху вниз: перевод ушёл подписью.
+                stats["img_vertical"] += 1
             else:
                 stats["img_failed"] += 1
             captions.append(items[r["i"]]["text"])
@@ -24800,6 +25327,7 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
              # готовый файл.
              "img_parts": 0, "img_repainted": 0, "img_captioned": 0,
              "img_untranslated": 0, "img_flat": 0, "img_font": 0,
+             "img_vertical": 0,
              "img_failed": 0, "img_lost": 0, "img_stale": 0, "img_noseg": 0,
              # Полей, помеченных к пересчёту: по ним Word пересоберёт
              # оглавление и номера страниц уже под перевод.
@@ -24969,6 +25497,7 @@ def _export_pdf_layout(project: dict, tmp: Path) -> Optional[dict]:
         return None
     ok, why = layout_pdf_mod.available()
     if not ok:
+        _ev("dead.pdfLayout503", _tenant_of(project))
         raise HTTPException(503, "Выгрузка «как в оригинале» для PDF недоступна: %s. "
                                  "Доступен Word-документ и PDF из него" % why)
     try:
@@ -25029,6 +25558,7 @@ def _export_original(project: dict, out: Path, tmp: Path) -> dict:
         rule = importers.slots_rule_for(project.get("fileName") or orig.name, orig.read_bytes(),
                                         project["slotsSha"])
         if rule is None:
+            _ev("dead.slotsDrift400", _tenant_of(project))
             raise HTTPException(400, "Разбор этого формата изменился с момента загрузки — "
                                      "выгрузка в исходном виде разложила бы переводы не по тем "
                                      "местам. Скачайте Word-документ или загрузите файл заново")
@@ -25104,6 +25634,12 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
     в историю."""
     if fmt not in EXPORT_EXT:
         raise HTTPException(400, f"Формат {fmt} не поддерживается")
+    if fmt == "original" and project.get("writeback") is False:
+        # Просили «как в оригинале», а обратной записи у формата нет —
+        # отдаём Word. Отказа нет, работа сделана наполовину, и молчать
+        # об этом нельзя: это ровно список форматов, которым обратную
+        # запись стоит написать следующей.
+        _ev("dead.writeback:" + _ext_code(project.get("fileName") or ""), _tenant_of(project))
     out = _export_path(project, fmt)
     # Пишем во временный файл и подменяем готовый одним os.replace — тем же
     # приёмом, что и save_state. Две причины, и обе не теоретические:
@@ -25180,6 +25716,9 @@ def export_project(pid: int, req: ExportRequest):
     project = get_project(pid)
     fmt = req.format.lower()
     if fmt not in EXPORT_EXT:
+        # Спрос на формат, которого у нас нет, — это план разработки,
+        # а не шум: считаем его там же, где отказываем.
+        _ev("dead.exportFormat:" + _fmt_code(fmt))
         return {"ok": False,
                 "error": f"Формат {fmt.upper()} пока не поддерживается — выберите DOCX или Excel."}
     try:
@@ -27785,6 +28324,7 @@ def create_job(pid: int, req: JobRequest):
     # не произошло» вместо внятного отказа.
     _b = _project_budget(_tenant_of(project), pid)
     if _b and _b["over"]:
+        _ev("dead.budget402", _tenant_of(project))
         raise HTTPException(402, JOB_BUDGET_402 % (_b["usd"], _b["cap"], _b["pages"]))
     est = (req.params or {}).get("est_cost")
     if isinstance(est, (int, float)) and est > 0:
@@ -27887,9 +28427,11 @@ def _auto_read_images(project: dict, kind: str, image_pages: int = 0) -> Optiona
         return None
     if image_text is None or not _provider_ready(_dm("ocr")):
         project["imagesSkipped"] = "no_key"
+        _ev("dead.images:no_key", _tenant_of(project))
         return None
     if _spend_status(_tenant_of(project)).get("over"):
         project["imagesSkipped"] = "limit"
+        _ev("dead.images:limit", _tenant_of(project))
         return None
     try:
         job = _job_enqueue(project["id"], "images", [],
@@ -27898,6 +28440,7 @@ def _auto_read_images(project: dict, kind: str, image_pages: int = 0) -> Optiona
         print("[backend] авточтение картинок проекта %s не поставлено: %s" % (project.get("id"), e),
               file=sys.stderr)
         project["imagesSkipped"] = "error"
+        _ev("dead.images:error", _tenant_of(project))
         return None
     project.pop("imagesSkipped", None)
     project["imagesReading"] = job["id"]
@@ -28443,14 +28986,23 @@ def _asset_version() -> str:
         d = FRONTEND_DIR / sub
         if not d.is_dir():
             continue
-        for f in sorted(d.iterdir()):
+        # Обход РЕКУРСИВНЫЙ, и это не украшение: в `vendor/` появились
+        # подкаталоги (`ocr/` — исполнитель и модели чтения у себя), а их
+        # адреса мы сами помечаем этим же `?v=` и отдаём как `immutable`
+        # на год. Пропусти их отпечаток — и подменённая модель не доедет
+        # до вернувшегося человека НИКОГДА, а пара «модель + словарь»,
+        # наполовину взятая из кэша, читает текст сдвинутым по алфавиту
+        # и без единой ошибки на экране. Ключ — путь ОТ frontend/, чтобы
+        # одноимённые файлы из разных папок не схлопнулись.
+        for f in sorted(d.rglob("*")):
             if not f.is_file():
                 continue
             try:
                 st = f.stat()
             except OSError:
                 continue
-            h.update(("%s|%d|%d;" % (f.name, st.st_size, int(st.st_mtime))).encode())
+            h.update(("%s|%d|%d;" % (f.relative_to(FRONTEND_DIR).as_posix(),
+                                     st.st_size, int(st.st_mtime))).encode())
     return h.hexdigest()[:12]
 
 

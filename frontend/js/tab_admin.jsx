@@ -1031,6 +1031,256 @@ function TabMetrics({ toast }) {
     m && React.createElement(MetTech, { m }));
 }
 
+/* ---------- Вкладка «Возможности» ----------
+   Отвечает на вопрос «где сервис упирается в себя»: во что упёрлись люди,
+   чего у нас нет вовсе, докуда они доходят и какие отказы дают четыре пятых
+   всех отказов. Отдельно от «Метрик» потому, что вопрос другой: там —
+   «что происходит», здесь — «что построить и кому продать».
+
+   Три решения, которые легко потерять молча:
+   1) числа и КОДЫ считает сервер, фразу собирает браузер (инвариант 17).
+      Забытая строка в `oppBlockText` выводит на экран сам код — сторожит
+      tests/test_admin_render.js;
+   2) живое обновление ходит в ЛЁГКУЮ дверь (`live=1`): тяжёлая обходит
+      организации и проекты, а воркер у нас один — опрашивать её каждые
+      15 секунд значило бы держать сервис ради экрана;
+   3) денежные подсказки по организациям приходят только с полного ответа,
+      и живое обновление их НЕ СТИРАЕТ: пропавшая с экрана строка
+      неотличима от решённой задачи. */
+const OPP_LIVE_MS = 15000;
+
+/* Тупик словами. Ключ словаря — сама русская строка, поэтому число в неё
+   не входит: оно рисуется отдельным элементом. */
+function oppBlockText(code) {
+  switch (code) {
+    case "cap.filePages413": return TR("раз файл не взяли: он толще потолка страниц. Это спрос на большие документы — потолок поднимается платно");
+    case "cap.bytes413": return TR("раз файл не взяли: он тяжелее потолка в мегабайтах");
+    case "cap.pages402": return TR("раз кончились выданные страницы — пора предлагать пакет");
+    case "cap.projects402": return TR("раз упёрлись в потолок числа проектов");
+    case "cap.spend402": return TR("раз исчерпан месячный лимит расхода");
+    case "cap.format415": return TR("раз принесли формат, которого мы не читаем — это список, какой импорт писать следующим");
+    case "cap.noReader503": return TR("раз формат мы знаем, а библиотеки на сервере нет — чинится установкой");
+    case "cap.duplicate409": return TR("раз несли тот же файл второй раз: человек не нашёл свой же готовый проект");
+    case "dead.exportFormat": return TR("раз просили формат выгрузки, которого у нас нет");
+    case "dead.writeback": return TR("раз просили «как в оригинале», а формат этого не умеет — отдали Word");
+    case "dead.pdfLayout503": return TR("раз PDF «как в оригинале» не собрался: нет шрифта или библиотеки на сервере");
+    case "dead.slotsDrift400": return TR("раз выгрузка 1в1 отказала: правила разбора файла изменились с момента загрузки");
+    case "dead.images": return TR("раз чтение надписей с картинок не запустилось");
+    case "dead.scan": return TR("раз принесли скан: объём мы считаем выборкой, а не целиком");
+    case "dead.retranslateOne": return TR("строк не дали перевести заново: предел организации");
+    case "dead.retranslateBulk": return TR("раз файл не дали перевести заново целиком: квота");
+    case "dead.sourceGrow409": return TR("раз правка оригинала выросла больше потолка");
+    case "dead.budget402": return TR("раз прогон не пустили: потолок расхода на страницу файла");
+    default: return code;
+  }
+}
+
+/* Что человек ДЕЛАЛ и ПОЧЕМУ не вышло — две закрытые таблицы, а не разбор
+   маршрута в браузере: маршрут приходит с сервера строкой и переводу
+   не подлежит, а «нёс файл» переводится и читается человеком. */
+function oppActText(act) {
+  switch (act) {
+    case "upload": return TR("нёс файл");
+    case "reimport": return TR("менял или пересобирал файл");
+    case "export": return TR("забирал перевод");
+    case "run": return TR("запускал прогон");
+    case "quote": return TR("считал смету");
+    case "glossary": return TR("правил словарь");
+    case "terms": return TR("решал по терминам");
+    case "tm": return TR("смотрел память переводов");
+    case "images": return TR("читал надписи с картинок");
+    case "segment": return TR("правил строку");
+    case "project": return TR("открывал проект или папку");
+    case "auth": return TR("входил");
+    case "team": return TR("работал с командой");
+    case "profile": return TR("менял свой профиль");
+    case "admin": return TR("смотрел админку");
+    default: return TR("прочее");
+  }
+}
+
+function oppWhyText(status) {
+  switch (status) {
+    case 400: return TR("мы не поняли запрос");
+    case 401: return TR("вход просрочен");
+    case 402: return TR("кончились деньги или страницы");
+    case 403: return TR("не хватило прав");
+    case 404: return TR("не нашли — или это чужое");
+    case 409: return TR("занято: такое уже есть либо идёт прогон");
+    case 413: return TR("файл больше потолка");
+    case 415: return TR("формат мы не читаем");
+    case 422: return TR("запрос не сошёлся с формой — это наша ошибка");
+    case 429: return TR("просили слишком часто");
+    case 500: return TR("сломались мы");
+    case 503: return TR("нечем сделать: нет библиотеки или ключа");
+    default: return TR("отказ");
+  }
+}
+
+function oppPct(v) { return Math.round((v || 0) * 100) + "%"; }
+
+function OppBar({ share, vital }) {
+  return React.createElement("div", { className: "met-bar" },
+    React.createElement("i", {
+      style: { width: Math.max(2, Math.round((share || 0) * 100)) + "%",
+               opacity: vital ? 1 : 0.45 },
+    }));
+}
+
+/* Список с Парето: число, полоса доли, фраза и накопленная доля. Строки
+   ниже порога отделены чертой и приглушены — разница между «браться
+   сейчас» и «браться последним» должна быть видна без чтения чисел. */
+function OppRows({ rows, text, kind }) {
+  let cut = false;
+  return React.createElement("div", { className: "col", style: { gap: 8 } },
+    rows.map((r, i) => {
+      const tail = !r.vital;
+      const first = tail && !cut;
+      if (tail) cut = true;
+      return React.createElement("div", { key: i, className: "col", style: { gap: 6 } },
+        first ? React.createElement("div", { className: "opp-cut dim", style: { fontSize: 12 } },
+          TR("Ниже — хвост: мелочи, за которые браться последними")) : null,
+        React.createElement("div", { className: "opp-row" + (tail ? " tail" : "") },
+          React.createElement("b", { className: "met-num " + (MET_KIND[kind(r)] || "bad") }, r.n),
+          React.createElement(OppBar, { share: r.share, vital: r.vital }),
+          React.createElement("span", null, text(r),
+            React.createElement("span", { className: "dim" },
+              " · " + oppPct(r.share) + TR(" от всех") + " · " + TR("накопл. ") + oppPct(r.cum)))));
+    }));
+}
+
+function OppBlocked({ d }) {
+  const rows = d.blocked || [];
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+      TR("Тупики: во что упёрлись и чего у нас нет")),
+    React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "0 0 10px" } },
+      TR("Верхние строки до 80% — та самая работа, которая закроет четыре пятых всех отказов. Зелёные можно продать, красные надо чинить.")),
+    rows.length === 0
+      ? React.createElement("p", { className: "dim", style: { margin: 0 } },
+        TR("За период никто ни во что не упёрся. Это ответ, а не пустой экран."))
+      : React.createElement(OppRows, {
+        rows, kind: r => r.kind,
+        text: r => React.createElement("span", null, oppBlockText(r.code),
+          (r.items || []).length ? React.createElement("span", { className: "dim" },
+            " — " + r.items.map(i => i.name + "×" + i.n).join(", ")) : null,
+          (r.who || []).length ? React.createElement("span", { className: "dim" },
+            " · " + TR("кто: ") + r.who.map(w => w.tenant + " (" + w.n + ")").join(", ")) : null),
+      }));
+}
+
+function OppErrors({ d }) {
+  const rows = d.errors || [];
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+      TR("Отказы понятными словами")),
+    rows.length === 0
+      ? React.createElement("p", { className: "dim", style: { margin: 0 } },
+        TR("Отказов за период не было."))
+      : React.createElement(OppRows, {
+        rows, kind: r => (r.status >= 500 ? "fix" : r.status === 402 || r.status === 413 ? "money" : "loss"),
+        text: r => React.createElement("span", null,
+          oppActText(r.act) + " — " + oppWhyText(r.status),
+          React.createElement("span", { className: "dim" }, " · " + r.status + " " + r.route)),
+      }));
+}
+
+function OppFunnel({ d }) {
+  const f = d.funnel || {};
+  const steps = f.steps || [];
+  const label = { upload: TR("принесли файл"), run: TR("запустили прогон"),
+                  export: TR("забрали перевод") };
+  if (!steps.some(s => s.n)) return null;
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+      TR("Докуда доходят")),
+    React.createElement("div", { className: "opp-steps" },
+      steps.map((s, i) => React.createElement(React.Fragment, { key: s.code },
+        i ? React.createElement("span", { className: "dim" }, "→") : null,
+        React.createElement("div", { className: "opp-step" },
+          React.createElement("b", null, s.n),
+          React.createElement("span", { className: "dim" }, label[s.code] || s.code)))),
+      f.conv != null ? React.createElement("span", { className: "dim", style: { marginLeft: 6 } },
+        TR("доходит до выгрузки ") + oppPct(f.conv)) : null),
+    React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "10px 0 0" } },
+      TR("Это не когорта: считаются события периода, а не путь одного человека — файл могли принести вчера, а выгрузить сегодня. Вопрос, на который она отвечает: сколько принесённых файлов так и не дошли до выгрузки.")),
+    (f.byExt || []).length ? React.createElement("p", { style: { margin: "8px 0 0", fontSize: 13 } },
+      TR("Что нам несут: ") + f.byExt.map(x => x.name + "×" + x.n).join(", ")) : null,
+    (f.byKind || []).length ? React.createElement("p", { style: { margin: "4px 0 0", fontSize: 13 } },
+      TR("За какой работой приходят: ") + f.byKind.map(x => x.name + "×" + x.n).join(", ")) : null);
+}
+
+/* Деньги по организациям и сожжённая работа рисуются той же карточкой
+   подсказки, что и на «Метриках» (`MetHint`): два вида одной строки
+   разошлись бы первой же правкой. */
+function OppMoney({ d }) {
+  const money = d.money || [];
+  const burnt = (d.waste || []).map(w => ({ kind: "loss", code: "waste:" + w.code, n: w.n }))
+    .concat((d.provider || []).map(p => ({ kind: "fix", code: "provider:" + p.code, n: p.n })));
+  if (!money.length && !burnt.length) return null;
+  return React.createElement("div", { className: "col", style: { gap: 12 } },
+    money.length ? React.createElement("div", { className: "card card-pad" },
+      React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+        TR("Деньги по организациям")),
+      React.createElement("ul", { className: "met-list" },
+        money.map((h, i) => React.createElement(MetHint, { key: i, h })))) : null,
+    burnt.length ? React.createElement("div", { className: "card card-pad" },
+      React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+        TR("Сожжено: за это заплачено, а работы нет")),
+      React.createElement("ul", { className: "met-list" },
+        burnt.map((h, i) => React.createElement(MetHint, { key: i, h })))) : null);
+}
+
+function TabChances({ toast }) {
+  const [days, setDays] = useState(7);
+  const [d, setD] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [auto, setAuto] = useState(true);
+  const load = (dd, live) => {
+    if (!live) setBusy(true);
+    return window.API.safeCall(() => window.API.adminChances(dd, live))
+      .then(r => {
+        if (!r || !r.ok) return;
+        // Лёгкий ответ денежных подсказок не несёт — оставляем прежние,
+        // иначе живое обновление стирало бы их каждые 15 секунд.
+        setD(prev => (r.money == null && prev && prev.money
+          ? Object.assign({}, r, { money: prev.money }) : r));
+      })
+      .finally(() => { if (!live) setBusy(false); });
+  };
+  useEffect(() => { load(days, 0); }, [days]);
+  useEffect(() => {
+    if (!auto) return;
+    let dead = false;
+    const h = setInterval(() => {
+      // Вкладка в фоне — не будим единственный воркер ради экрана,
+      // которого никто не смотрит.
+      if (!dead && !(window.document && window.document.hidden)) load(days, 1);
+    }, OPP_LIVE_MS);
+    return () => { dead = true; clearInterval(h); };
+  }, [auto, days]);
+  return React.createElement("div", { className: "col", style: { gap: 16 } },
+    React.createElement("div", { className: "row row-wrap", style: { gap: 8 } },
+      React.createElement("div", { className: "seg", role: "tablist" },
+        MET_DAYS.map(x => React.createElement("button", {
+          key: x, role: "tab", "aria-pressed": days === x, "aria-selected": days === x,
+          onClick: () => setDays(x),
+        }, x + TR(" дн.")))),
+      React.createElement("button", { className: "btn", disabled: busy, onClick: () => load(days, 0) },
+        TR("Обновить")),
+      React.createElement("label", { className: "row", style: { gap: 6, alignSelf: "center", fontSize: 13 } },
+        React.createElement("input", { type: "checkbox", checked: auto,
+          onChange: e => setAuto(e.target.checked) }),
+        TR("Живое обновление")),
+      d ? React.createElement("span", { className: "dim", style: { alignSelf: "center", fontSize: 12 } },
+        d.from + " — " + d.to + TR(" · обновлено ") + d.at) : null),
+    !d && React.createElement("div", { className: "dim" }, TR("Считаем…")),
+    d && React.createElement(OppFunnel, { d }),
+    d && React.createElement(OppBlocked, { d }),
+    d && React.createElement(OppMoney, { d }),
+    d && React.createElement(OppErrors, { d }));
+}
+
 function TabAdmin({ store, toast }) {
   const [ov, setOv] = useState(null);
   const [nonce, setNonce] = useState(0);
@@ -1053,15 +1303,19 @@ function TabAdmin({ store, toast }) {
       React.createElement("h1", null, TR("Администрирование")),
       React.createElement("p", { className: "lead" }, view === "models"
         ? TR("Модели шагов на всю систему и пересчёт расхода по журналу токенов.")
-        : view === "metrics"
-          ? TR("Где теряются деньги, где их можно заработать и что чинить. Считается по журналу событий, расходу и сметам; вызовов модели нет.")
+        : view === "chances"
+          ? TR("Куда люди упираются, чего им не хватило и что из этого можно продать. Считается по журналу событий; вызовов модели нет.")
+          : view === "metrics"
+            ? TR("Где теряются деньги, где их можно заработать и что чинить. Считается по журналу событий, расходу и сметам; вызовов модели нет.")
           : TR("Все организации, аккаунты, прогоны и расход. Обновляется каждые 10 секунд."))),
     React.createElement("div", { className: "row", style: { gap: 8, marginBottom: 16 } },
       React.createElement("div", { className: "seg", role: "tablist" },
-        [["summary", TR("Сводка")], ["metrics", TR("Метрики")], ["models", TR("Модели и расход")]].map(([key, label]) =>
+        [["summary", TR("Сводка")], ["chances", TR("Возможности")], ["metrics", TR("Метрики")],
+         ["models", TR("Модели и расход")]].map(([key, label]) =>
           React.createElement("button", { key, role: "tab", "aria-pressed": view === key, "aria-selected": view === key,
             onClick: () => setView(key) }, label)))),
     view === "models" && React.createElement(AdminModelsView, { toast, tenants: ov ? ov.tenants : [] }),
+    view === "chances" && React.createElement(TabChances, { toast }),
     view === "metrics" && React.createElement(TabMetrics, { toast }),
     view === "summary" && !ov && React.createElement("div", { className: "dim" }, TR("Загружаем сводку…")),
     view === "summary" && ov && React.createElement("div", { className: "col", style: { gap: 16 } },

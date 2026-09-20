@@ -325,6 +325,22 @@ function impPlural(n, one, few, many) {
   return many;
 }
 
+/* Пример «было → станет» в окне пересборки строк. Сервер отдаёт СПИСКИ
+   (одна старая строка ложится в несколько новых и наоборот), и обрезка
+   обязана быть ВИДНА: текст, обрубленный посреди слова без «…», читается
+   как потерянный кусок книги — ровно так и было прочитано. Режем по
+   границе слова, чтобы обрывок не выглядел опечаткой. */
+function impCut(v, n) {
+  const list = (v == null ? [] : [].concat(v)).map(x => String(x || ""));
+  return list.map(t => {
+    if (t.length <= n) return "«" + t + "»";
+    let cut = t.slice(0, n);
+    const sp = cut.lastIndexOf(" ");
+    if (sp > n * 0.6) cut = cut.slice(0, sp);
+    return "«" + cut.replace(/[\s,.;:-]+$/, "") + "…»";
+  }).join(" + ");
+}
+
 /* ---------- Новый проект ---------- */
 function ImpNewFolder({ store, toast, meta, onClose }) {
   const [title, setTitle] = useState("");
@@ -576,8 +592,8 @@ function ImpFileCard({ project, store, toast }) {
         reseg.removed > 0 && React.createElement("div", null, TR("Уйдут как мусор чтения: "), React.createElement("strong", null, reseg.removed),
           TR(" (номера страниц, колонтитулы, обрывки).")),
         (reseg.samples || []).slice(0, 3).map((s, i) => React.createElement("div", { key: i, className: "card card-pad-sm", style: { fontSize: 12 } },
-          React.createElement("div", { className: "dim" }, TR("Было: "), (s.old || []).map(x => "«" + (x || "").slice(0, 90) + "»").join(" + ")),
-          React.createElement("div", null, TR("Станет: "), "«" + (s.new || "").slice(0, 180) + "»"))),
+          React.createElement("div", { className: "dim" }, TR("Было: "), impCut(s.old, 110)),
+          React.createElement("div", null, TR("Станет: "), impCut(s.new, 110)))),
         React.createElement("div", { className: "dim", style: { fontSize: 12 } },
           TR("Бесплатно. Вернуть можно кнопкой «Вернуть прежнюю версию».")))),
     confirmDelete && React.createElement(Modal, {

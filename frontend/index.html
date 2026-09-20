@@ -80,7 +80,10 @@
       if (lang !== KEY_LANG) TABS.push("js/i18n_" + lang + ".rest.js");
       TABS = TABS.concat(["js/tab_import.jsx", "js/tab_editor_detail.jsx", "js/tab_editor.jsx",
                   "js/tab_glossary_tm.jsx", "js/tab_export_preflight.jsx", "js/tab_preflight.jsx",
-                  "js/tab_org.jsx", "js/tab_profile.jsx", "js/tab_admin.jsx"]);
+                  "js/tab_org.jsx", "js/tab_profile.jsx", "js/tab_admin.jsx",
+                  /* Чтение надписей у себя. Сам файл маленький; исполнитель
+                     тензоров и модели (21 МБ) качаются только по нажатию. */
+                  "js/ocr_local.js"]);
 
       /* async = false у вставленного скриптом тега значит «качай параллельно,
          ВЫПОЛНЯЙ по порядку». Порядок тут несущий (см. пункт 3 выше). */
@@ -102,6 +105,10 @@
       window.BOOT = {
         /* Идемпотентно: зовут и загрузчик, и кнопка входа. */
         tabs: function () { return tabs || (tabs = load(TABS)); },
+        /* Отпечаток файлов — наружу. Его спрашивает чтение надписей
+           в браузере: модели и исполнителя оно качает САМО, а значит само
+           же обязано поставить `?v=`, иначе они застрянут в кэше старыми. */
+        v: V,
       };
       load(core);
     })();

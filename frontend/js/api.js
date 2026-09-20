@@ -262,6 +262,7 @@
        модели — считается по журналу событий, расходу и сметам. */
     adminMetrics:  (days)                   => call("GET",    "/admin/metrics?days=" + (days || 7)),
     /* Та же сводка словами: себе в Telegram и своему ИИ-агенту. */
+    adminChances:  (days, live)             => call("GET",    "/admin/opportunities?days=" + (days || 7) + (live ? "&live=1" : "")),
     adminDigest:   (days)                   => call("GET",    "/admin/metrics/digest?days=" + (days || 1)),
     adminDigestSend: (days)                 => call("POST",   "/admin/metrics/digest/send?days=" + (days || 1)),
     // Тест-группа: наборы с числом мест, заведённые тестировщики, анкеты.
@@ -479,6 +480,20 @@
       if (!r.ok) return null;
       return URL.createObjectURL(await r.blob());
     },
+
+    /* Чтение надписей У СЕБЯ: список картинок, сама картинка и приём
+       прочитанного. Ни один из трёх вызовов не стоит денег — модель тут
+       не участвует вовсе, а текст с картинки не уезжает за границу. */
+    imagesParts:   (pid)                    => call("GET",    `/projects/${pid}/images/parts`),
+    imagePartBytes: async (pid, part) => {
+      const r = await fetch(`${BASE}/projects/${pid}/images/part?part=${encodeURIComponent(part)}`,
+        { headers: authHeaders({}) });
+      if (r.status === 401) onUnauthorized();
+      if (!r.ok) return null;
+      return await r.arrayBuffer();
+    },
+    imagesLocal:   (pid, items, final)      => call("POST",   `/projects/${pid}/images/local`,
+                                                    { items, final: !!final }),
 
     termcheck:     (pid, sid, model)        => call("POST", `/segments/${pid}/${sid}/termcheck`, { model: model || null }),
     repair:        (pid, sid, opts)         => call("POST", `/segments/${pid}/${sid}/repair`, opts || {}),

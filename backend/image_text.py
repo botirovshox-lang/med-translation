@@ -55,6 +55,17 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent
 
+
+class EngineAnswer(Exception):
+    """Движок ответил в форме, которой мы не знаем. Отдельным классом,
+    потому что ответ на это — «не знаю», а не «надписей нет»."""
+
+
+class TooBig(Exception):
+    """Картинка больше потолка площади. Отдельным классом, а не общим
+    Exception: вызывающие ловят широко, и без имени этот отказ не отличить
+    от битого файла ни в журнале, ни в отчёте."""
+
 # ── Пороги ───────────────────────────────────────────────────────────
 # Ниже этой уверенности детектора строку не считаем найденной.
 IMG_MIN_CONF = float(os.environ.get("IMG_MIN_CONF", "0.6"))
@@ -107,6 +118,48 @@ IMG_DUP_COVER = float(os.environ.get("IMG_DUP_COVER", "0.7"))
 # чужой. `_clip` молча прижимает координаты к краю, и перевод, посчитанный
 # для рамки 400×300, оказался бы написан в углу 145×113 с отчётом «готово».
 IMG_BOX_KEEP = 0.8
+# Надпись, которая в оригинале идёт СВЕРХУ ВНИЗ (корешок книги, подпись вдоль
+# оси схемы), — рамка в одну строку, которая выше своей ширины. Перевод мы
+# пишем горизонтально, и в такой рамке он рассыпается в столбик обрубков:
+# на обложке «Пчелиной аптеки» рамка 84x377 приняла «Руҳоний Александр
+# Лазебный», а рамка 25x124 — фразу из восьми слов. Повернуть текст мы
+# не вправе: рамка описывает МЕСТО на картинке, а под каким углом стоят
+# буквы, детектор не сообщает. Поэтому такой блок уходит подписью под
+# картинкой — тот же закон, что у пёстрого фона и нечитаемого кегля.
+# Порог не 1.0: короткая метка схемы («А», «Яд») бывает чуть выше своей
+# ширины, оставаясь обычной горизонтальной надписью.
+IMG_VERT_RATIO = float(os.environ.get("IMG_VERT_RATIO", "1.5"))
+# Потолок по ПЛОЩАДИ входной картинки. Картинка приходит из чужого файла,
+# а воркер uvicorn один (инвариант 1): развёрнутый в память растр — это
+# память всего сервиса, и кончится она у всех сразу. Сжатый вес тут ничего
+# не значит: одна часть пакета у `textcount.check_zip` вправе весить 24 МБ,
+# а ровный PNG сжимается в тысячу раз — 20000x20000 это 400 Мпкс и 1.2 ГБ
+# в RGB, плюс столько же копией в numpy. Потолки на УВЕЛИЧЕНИЕ
+# (`IMG_DETECT_MAX_MPX`, `IMG_SCALE_MAX_MPX`) тут не помогают: они меряют
+# результат масштабирования, а гигабайт съедает уже сам декод. Своя защита
+# Pillow (`MAX_IMAGE_PIXELS`) срабатывает лишь ВДВОЕ выше своего порога,
+# и снять её волен любой сторонний пакет в том же процессе — поэтому
+# размер спрашиваем сами и до декода.
+IMG_MAX_MPX = float(os.environ.get("IMG_MAX_MPX", "80"))
+# Поиск строк БЕЗ чтения. Распознавалку движка мы выбрасываем (текст читает
+# зрячая модель), но платим за неё временем на каждой картинке и дважды —
+# проходом как есть и увеличенным. Почему не включено по умолчанию: нынешний
+# порог `IMG_MIN_CONF` — это уверенность ЧТЕНИЯ, и без чтения его место
+# занимает `IMG_BOX_THRESH` у самого детектора. Числа у них разные, а закон
+# модуля — «найденное прежним разбором обязано остаться найденным»,
+# и проверяется он замером на боевых картинках (`tools/ocr_bench.py`),
+# а не рассуждением. Замерили — включайте.
+IMG_DET_ONLY = os.environ.get("IMG_DET_ONLY", "") == "1"
+# Порог самого детектора (DB). Не задан — движок берёт своё умолчание.
+IMG_BOX_THRESH = os.environ.get("IMG_BOX_THRESH", "")
+# Свои модели движка. Родная распознавалка знает китайский и английский,
+# а PaddleOCR выкладывает отдельную кириллическую (`cyrillic_*_rec`) в ONNX:
+# ПУТЯМИ её можно подставить без единой правки кода. Нужна она не вместо
+# зрячей модели (на «пиопневмотораксе» локальная читает заметно хуже),
+# а рядом: бесплатное второе мнение о том, что написано в рамке.
+IMG_DET_MODEL = os.environ.get("IMG_DET_MODEL", "")
+IMG_REC_MODEL = os.environ.get("IMG_REC_MODEL", "")
+IMG_REC_KEYS = os.environ.get("IMG_REC_KEYS", "")
 
 # Формат части пакета менять нельзя (см. шапку модуля).
 _SAVE = {"JPEG": {"quality": 90, "subsampling": 0},
@@ -180,7 +233,18 @@ def _engine():
         if _ENGINE is None and not _ENGINE_ERR:
             try:
                 from rapidocr_onnxruntime import RapidOCR
-                _ENGINE = RapidOCR()
+                cfg = {}
+                if IMG_DET_MODEL:
+                    cfg["det_model_path"] = IMG_DET_MODEL
+                if IMG_REC_MODEL:
+                    cfg["rec_model_path"] = IMG_REC_MODEL
+                if IMG_REC_KEYS:
+                    cfg["rec_keys_path"] = IMG_REC_KEYS
+                # Порог детектора конструктору НЕ отдаём: у rapidocr 1.2 он там
+                # молча пропадает (проверено — `box_thresh` остаётся 0.5),
+                # а действует только переданный самому вызову. Настройка,
+                # которая ничего не делает, хуже её отсутствия.
+                _ENGINE = RapidOCR(**cfg)
             except Exception as e:
                 _ENGINE_ERR = str(e)
                 print("[image_text] движок не поднялся: %s" % e, file=sys.stderr)
@@ -194,6 +258,88 @@ def release_engine() -> None:
     global _ENGINE
     with _ENGINE_LOCK:
         _ENGINE = None
+
+
+def _open(img_bytes: bytes):
+    """Открыть картинку, отказав ДО декода, если она непомерна.
+
+    `Image.open` читает только заголовок — размер известен раньше, чем под
+    растр выделена память, и на этом стоит вся проверка. Дальше по коду
+    декод идёт через `.convert(...)`, а он памяти уже не жалеет."""
+    im = Image.open(io.BytesIO(img_bytes))
+    w, h = im.size
+    if w * h > IMG_MAX_MPX * 1e6:
+        raise TooBig("картинка %dx%d — больше потолка %g Мпкс"
+                     % (w, h, IMG_MAX_MPX))
+    return im
+
+
+def _text_of(l: dict) -> str:
+    return (l.get("text") or "").strip()
+
+
+def _text_same(k: dict, l: dict) -> None:
+    """Одна и та же строка, увиденная дважды: берём ту версию, что длиннее.
+
+    Весь этот текст — работа ЧТЕНИЯ, а серверный разбор на этом шаге текста
+    не имеет вовсе (его читает модель уже по готовым блокам), поэтому здесь
+    всё пусто и ничего не происходит. Нужно это чтению в браузере: оно
+    отдаёт текст сразу по строкам, и потерять его на склейке значит потерять
+    надпись — молча, с отчётом «прочитано»."""
+    if len(_text_of(l)) > len(_text_of(k)):
+        k["text"] = l["text"]
+
+
+def _text_join(k: dict, l: dict) -> None:
+    """Два КУСКА одной строки: слева направо, перенос по дефису снимается."""
+    a, b = _text_of(k), _text_of(l)
+    if not a or not b:
+        if a or b:
+            k["text"] = a or b
+        return
+    if k["box"][0] > l["box"][0]:
+        a, b = b, a
+    k["text"] = (a[:-1] + b) if a.endswith("-") and b[:1].islower() else (a + " " + b)
+
+
+def _block_text(lines: list) -> str:
+    """Текст блока — строки сверху вниз. Перенос по дефису снимается: подпись
+    под рисунком разбита на «сооб-щения», и без склейки в сегмент уедет
+    обрубок, по которому потом работают и перевод, и глоссарий."""
+    out = ""
+    for l in sorted(lines, key=lambda x: (x["box"][1], x["box"][0])):
+        t = _text_of(l)
+        if not t:
+            continue
+        if not out:
+            out = t
+        elif out.endswith("-") and t[:1].islower():
+            out = out[:-1] + t
+        else:
+            out += " " + t
+    return out
+
+
+def _conf_best(a, b):
+    """Лучшая из двух уверенностей. «Не знаю» (None) числа не перебивает."""
+    vals = [v for v in (a, b) if v is not None]
+    return round(max(vals), 3) if vals else None
+
+
+def _conf_worst(a, b):
+    """Худшая. «Не знаю» хуже любого числа: выдать за уверенность то, чего
+    не мерили, значит соврать ровно там, где на число смотрит человек."""
+    if a is None or b is None:
+        return None
+    return round(min(a, b), 3)
+
+
+def _conf_all(lines: list):
+    """Худшая по списку строк — по тому же правилу."""
+    vals = [l.get("conf") for l in lines]
+    if not vals or any(v is None for v in vals):
+        return None
+    return round(min(vals), 3)
 
 
 def _clip(box, w: int, h: int) -> tuple:
@@ -245,8 +391,13 @@ def detect_lines(img_bytes: bytes) -> Optional[list]:
     if eng is None:
         return None
     try:
-        im = Image.open(io.BytesIO(img_bytes))
+        im = _open(img_bytes)
         arr = _np.asarray(im.convert("RGB"))
+    except TooBig as e:
+        # Отдельной веткой: «непомерная» и «битая» — разные причины, и в
+        # журнале их надо различать, иначе потолок не с чем сверить.
+        print("[image_text] картинка не смотрится: %s" % e, file=sys.stderr)
+        return None
     except Exception as e:
         print("[image_text] картинка не читается: %s" % e, file=sys.stderr)
         return None
@@ -256,7 +407,11 @@ def detect_lines(img_bytes: bytes) -> Optional[list]:
     # боевой image100.png две рамки с 0.62 и 0.64 пропали совсем. Значит
     # заменять один взгляд другим нельзя, можно только сложить: найденное
     # прежним разбором обязано остаться найденным.
-    found = _detect_boxes(eng, arr, 1)
+    try:
+        found = _detect_boxes(eng, arr, 1)
+    except EngineAnswer as e:
+        print("[image_text] %s" % e, file=sys.stderr)
+        return None
     k = _detect_scale(im.width, im.height)
     if k > 1:
         try:
@@ -281,21 +436,142 @@ def detect_lines(img_bytes: bytes) -> Optional[list]:
     return out
 
 
+def lines_from(img_bytes: bytes, raw: list) -> Optional[list]:
+    """Строки, найденные НЕ нами, — в том же виде, в каком их отдаёт
+    `detect_lines`. (список, ширина, высота) или None.
+
+    Нужно это чтению в браузере: там считаются рамки и текст, а всё
+    остальное обязано считаться здесь и тем же кодом. Две причины, и обе
+    несущие. Плоскость фона (`flat`) — решение «можно ли стереть надпись
+    и написать поверх перевод»; поверить в этом чужому слову значит
+    разрешить заплатку поверх рентгенограммы по слову того, кто снимка
+    не видел. А склейка кусков (`_dedupe_boxes`/`_join_pieces`) измерена
+    на боевых картинках, и вторая её копия в браузере разошлась бы с этой
+    первой же правкой.
+
+    Рамки приходят снаружи, поэтому каждая прижимается к картинке, а
+    вырожденные выбрасываются: `_clip` молча ставит угол, и надпись,
+    посчитанная для рамки 400x300, оказалась бы написана в углу 1x1."""
+    ok, _why = engine_ready_pixels()
+    if not ok:
+        return None
+    try:
+        im = _open(img_bytes)
+        arr = _np.asarray(im.convert("RGB"))
+    except Exception as e:
+        print("[image_text] картинка не читается: %s" % e, file=sys.stderr)
+        return None
+    h, w = arr.shape[0], arr.shape[1]
+    lines = []
+    for r in (raw or []):
+        # Разбор ЦЕЛИКОМ в try, и `OverflowError` назван отдельно: это
+        # клиентский JSON, где `Infinity` — законное число для `float()`
+        # и срыв для `int()`. Одна кривая строка не вправе уронить порцию
+        # из полусотни картинок.
+        try:
+            x0, y0, x1, y1 = _clip([float(v) for v in r["box"]], w, h)
+            conf = r.get("conf")
+            conf = round(float(conf), 3) if conf is not None else None
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            continue
+        lines.append({"box": [x0, y0, x1, y1], "conf": conf, "flat": 0.0,
+                      "text": str(r.get("text") or "")})
+    out = _join_pieces(_dedupe_boxes(lines))
+    for l in out:
+        l["flat"] = round(flatness(arr, l["box"]), 3)
+    out.sort(key=lambda l: (l["box"][1], l["box"][0]))
+    return out, w, h
+
+
+def engine_ready_pixels() -> tuple:
+    """Готовность к работе С ПИКСЕЛЯМИ — без движка поиска строк.
+
+    Отдельно от `engine_ready`, потому что вопросы разные: чтению в браузере
+    движок на сервере не нужен вовсе, а Pillow и numpy нужны всегда. Одна
+    проверка на двоих отказывала бы серверу в приёме чужих строк из-за
+    отсутствия onnxruntime, которым он не собирался пользоваться."""
+    if Image is None:
+        return False, "не установлен Pillow"
+    if _np is None:
+        return False, "не установлен numpy"
+    return True, ""
+
+
 def _detect_boxes(eng, arr, k: int) -> list:
     """Рамки одного прохода, ВСЕГДА в исходных пикселях: по рамке потом стирают,
     пишут и режут кроп — в увеличенных координатах она попала бы мимо."""
-    res, _elapse = eng(arr)
-    out = []
+    kw = {}
+    if IMG_BOX_THRESH:
+        kw["box_thresh"] = float(IMG_BOX_THRESH)
+    if IMG_DET_ONLY:
+        kw.update(use_det=True, use_cls=False, use_rec=False)
+    res, _elapse = eng(arr, **kw) if kw else eng(arr)
+    if IMG_DET_ONLY:
+        _warn_if_read_anyway(res)
+    out, bad = [], 0
     for item in (res or []):
-        pts, _text, score = item[0], item[1], float(item[2])
+        pts, score = _unpack(item)
+        if pts is None:
+            bad += 1
+            continue
+        if score is not None and score < IMG_MIN_CONF:
+            continue
         xs = [p[0] for p in pts]
         ys = [p[1] for p in pts]
         box = [int(min(xs) / k), int(min(ys) / k),
                int(max(xs) / k), int(max(ys) / k)]
-        if score < IMG_MIN_CONF or box[2] - box[0] < 4 or box[3] - box[1] < 4:
+        if box[2] - box[0] < 4 or box[3] - box[1] < 4:
             continue
-        out.append({"box": box, "conf": round(score, 3), "flat": 0.0})
+        out.append({"box": box,
+                    "conf": round(score, 3) if score is not None else None,
+                    "flat": 0.0})
+    # Движок ответил, а разобрать не вышло НИ ОДНОЙ записи — это смена формы
+    # ответа (другая версия пакета), а не картинка без надписей. Разница
+    # несущая: пустой список объявит картинку прочитанной навсегда, и платное
+    # чтение к ней больше не придёт.
+    if bad and not out:
+        raise EngineAnswer("ответ движка не разобран: %d записей" % bad)
     return out
+
+
+_DET_ONLY_WARNED = False
+
+
+def _warn_if_read_anyway(res) -> None:
+    """Сказать вслух, если движок пропустил просьбу искать БЕЗ чтения.
+
+    У rapidocr до 1.3 никаких `use_rec` нет вовсе: лишние слова уходят
+    в `**kwargs` и тихо пропадают, а чтение идёт как шло. Наружу это
+    выглядит как включённая настройка, которая не работает, — и узнать
+    об этом неоткуда. Отличаем по ОТВЕТУ: пришла уверенность чтения —
+    значит читали."""
+    global _DET_ONLY_WARNED
+    if _DET_ONLY_WARNED or not res:
+        return
+    _DET_ONLY_WARNED = True
+    if _unpack(res[0])[1] is not None:
+        print("[image_text] IMG_DET_ONLY=1, но движок всё равно читает: "
+              "нужен rapidocr-onnxruntime 1.3 и новее", file=sys.stderr)
+
+
+def _unpack(item):
+    """(четыре угла, уверенность чтения | None) из ответа движка.
+
+    Ответ приходит в двух видах, и это не прихоть: полный проход отдаёт
+    (рамка, текст, уверенность), а поиск без чтения — голую рамку, потому
+    что читать было нечего. Уверенности там нет вовсе, и подставить вместо
+    неё число нельзя: по нему склеивают строки и его же показывают человеку
+    в списке отсеянного."""
+    try:
+        if len(item) >= 3 and not isinstance(item[1], (list, tuple)):
+            return item[0], float(item[2])
+        if len(item) == 4 and isinstance(item[0], (list, tuple)):
+            return item, None
+    except (TypeError, IndexError, ValueError):
+        pass
+    return None, None
 
 
 def _dedupe_boxes(lines: list) -> list:
@@ -317,7 +593,8 @@ def _dedupe_boxes(lines: list) -> list:
                     * max(0, min(y1, ky1) - max(y0, ky0)))
             if over >= IMG_DUP_COVER * area:
                 # Уверенность берём лучшую: строку видели дважды.
-                k["conf"] = round(max(k["conf"], l["conf"]), 3)
+                k["conf"] = _conf_best(k["conf"], l["conf"])
+                _text_same(k, l)
                 dup = True
                 break
             # Проходы режут строку по-разному, и рамки расходятся не вложением,
@@ -326,8 +603,13 @@ def _dedupe_boxes(lines: list) -> list:
             # он будет прочитан дважды, переведён дважды и дважды написан
             # поверх картинки при выгрузке. Это одна строка, и рамка у неё одна.
             if over > 0 and _same_line(k, l):
+                # Текст склеиваем ДО того, как рамка стала общей: порядок
+                # кусков читается по их левым краям, а у общей рамки левый
+                # край уже самый левый — и правый кусок навсегда оказывался
+                # первым («исследовании с рентгенологическим»).
+                _text_join(k, l)
                 k["box"] = [min(kx0, x0), min(ky0, y0), max(kx1, x1), max(ky1, y1)]
-                k["conf"] = round(min(k["conf"], l["conf"]), 3)
+                k["conf"] = _conf_worst(k["conf"], l["conf"])
                 dup = True
                 break
         if not dup:
@@ -504,13 +786,16 @@ def _join_pieces(lines: list) -> list:
             # IMG_JOIN_TIGHT высоты межколонником не бывает.
             if gap > IMG_JOIN_TIGHT * h and not _written_across(lines, cur, ln, h):
                 continue
+            # Текст — ДО правки рамки: порядок кусков читается по левым
+            # краям, а общая рамка этот порядок стирает.
+            _text_join(cur, ln)
             cur["box"] = [min(cur["box"][0], ln["box"][0]),
                           min(cur["box"][1], ln["box"][1]),
                           max(cur["box"][2], ln["box"][2]),
                           max(cur["box"][3], ln["box"][3])]
             # Худшее из двух — как у блока: склеенная строка не может быть
             # надёжнее самого сомнительного своего куска.
-            cur["conf"] = min(cur["conf"], ln["conf"])
+            cur["conf"] = _conf_worst(cur["conf"], ln["conf"])
             cur["flat"] = min(cur["flat"], ln["flat"])
             joined = True
             break
@@ -568,9 +853,16 @@ def group_blocks(lines: list) -> list:
                     # из пяти строк заезжали на снимок сверху и на соседний
                     # абзац снизу — с отчётом «написано».
                     "lineH": int(round(b["lineH"])),
-                    "conf": round(min(l["conf"] for l in b["lines"]), 3),
+                    "conf": _conf_all(b["lines"]),
                     "flat": round(min(l["flat"] for l in b["lines"]), 3),
                     "align": _align_of(b["lines"])})
+        # Ключ `text` появляется ТОЛЬКО когда строки его несут. Пустая строка
+        # тут была бы не безобидной: разбор картинок спрашивает модель ровно
+        # про те блоки, у которых ключа нет (`"text" not in b`), — поставь его
+        # всегда, и серверное чтение не спросит НИ ОДНОГО блока, отчитавшись
+        # «прочитано».
+        if any(_text_of(l) for l in b["lines"]):
+            out[-1]["text"] = _block_text(b["lines"])
     out.sort(key=lambda b: (b["box"][1], b["box"][0]))
     return out
 
@@ -609,7 +901,7 @@ def crop(img_bytes: bytes, box: list, pad: float = 0.25,
     if x1 <= x0 or y1 <= y0:
         return None                # вырожденная рамка: показывать нечего
     try:
-        im = Image.open(io.BytesIO(img_bytes))
+        im = _open(img_bytes)
         im = im.convert("RGBA") if _has_alpha(im) else im.convert("RGB")
     except Exception:
         return None
@@ -633,7 +925,7 @@ def preview(img_bytes: bytes, max_side: int = 768) -> Optional[bytes]:
     if Image is None:
         return None
     try:
-        im = Image.open(io.BytesIO(img_bytes))
+        im = _open(img_bytes)
         im = im.convert("RGBA") if _has_alpha(im) else im.convert("RGB")
     except Exception:
         return None
@@ -700,9 +992,15 @@ def _fill_and_ink(arr, box) -> tuple:
             tuple(int(round(v)) for v in ink))
 
 
-def _wrap(draw, text: str, font, width: float) -> list:
+def _wrap(draw, text: str, font, width: float, split: bool = True) -> list:
     """Перевод по строкам рамки. Слово длиннее строки (длинный термин, ссылка)
-    режется посимвольно: иначе оно молча вылезет за рамку."""
+    режется посимвольно: иначе оно молча вылезет за рамку.
+
+    `split=False` — резать слова НЕЛЬЗЯ, и тогда строка шире рамки остаётся
+    длинной: это ответ «при таком кегле текст сюда не ложится», и его читает
+    `_fit`, уменьшая кегль. Резка посимвольно там, где её никто не проверяет,
+    даёт «Алек/сандр» поперёк обложки — текст формально в рамке, а прочесть
+    его нельзя."""
     lines, cur = [], ""
     for word in (text or "").split():
         probe = (cur + " " + word).strip()
@@ -711,7 +1009,7 @@ def _wrap(draw, text: str, font, width: float) -> list:
         else:
             lines.append(cur)
             cur = word
-        while draw.textlength(cur, font=font) > width and len(cur) > 1:
+        while split and draw.textlength(cur, font=font) > width and len(cur) > 1:
             keep = len(cur)
             while keep > 1 and draw.textlength(cur[:keep], font=font) > width:
                 keep -= 1
@@ -723,15 +1021,23 @@ def _wrap(draw, text: str, font, width: float) -> list:
 
 
 def _fit(draw, text: str, fpath: str, w: float, h: float, hi: int) -> tuple:
-    """Самый крупный кегль, при котором перевод целиком влезает в рамку.
-    Двоичным поиском: перебор по одному кеглю — это сотни раскладок текста
-    на каждую картинку."""
+    """Самый крупный кегль, при котором перевод целиком влезает в рамку
+    ЦЕЛЫМИ СЛОВАМИ. Двоичным поиском: перебор по одному кеглю — это сотни
+    раскладок текста на каждую картинку.
+
+    Слова не рвутся (`split=False`), и это не косметика: раскладка с резкой
+    «влезает» при любом кегле, поэтому двоичный поиск выбирал САМЫЙ КРУПНЫЙ —
+    и в рамке шириной 84 px «Руҳоний Александр Лазебный» вставало кеглем 48
+    в семь обрубков. Без резки та же рамка честно отвечает «кегль 13» либо
+    не отвечает вовсе, и блок уходит подписью под картинкой. Ни одна строка
+    при этом за рамку не выходит — за это отвечает проверка ширины ниже,
+    а не сама резка."""
     best = (None, [], 0, 0)
     lo = 4
     while lo <= hi:
         mid = (lo + hi) // 2
         font = ImageFont.truetype(fpath, mid)
-        rows = _wrap(draw, text, font, w)
+        rows = _wrap(draw, text, font, w, split=False)
         step = mid * 1.22
         if step * len(rows) <= h and all(draw.textlength(r, font=font) <= w for r in rows):
             best = (font, rows, step, mid)
@@ -797,7 +1103,9 @@ def render_target(img_bytes: bytes, items: list) -> tuple:
     if fpath is None:
         return _refuse(items, "no_font")
     try:
-        im = Image.open(io.BytesIO(img_bytes))
+        im = _open(img_bytes)
+        # Непомерная картинка прилетит сюда `TooBig`, и её текст уйдёт
+        # в причину отказа `open:…` — по каждому блоку, как и положено.
         fmt = (im.format or "").upper()
         info = dict(im.info or {})
         orig_mode = im.mode
@@ -824,6 +1132,11 @@ def render_target(img_bytes: bytes, items: list) -> tuple:
         box = it.get("box") or [0, 0, 0, 0]
         if not text:
             report.append({"i": i, "ok": False, "why": "empty"})
+            continue
+        bw0, bh0 = box[2] - box[0], box[3] - box[1]
+        if bw0 > 0 and (it.get("rows") or 1) <= 1 and bh0 >= bw0 * IMG_VERT_RATIO:
+            # Надпись оригинала шла сверху вниз (`IMG_VERT_RATIO`).
+            report.append({"i": i, "ok": False, "why": "vertical"})
             continue
         pad_y = _pad_for(box, it.get("lineH"), it.get("rows"), 0.14)
         pad_x = _pad_for(box, it.get("lineH"), it.get("rows"), 0.10)

@@ -603,6 +603,60 @@ check(stats2["img_untranslated"] == 1 and stats2["img_repainted"] == 0,
       "непереведённая надпись остаётся на языке оригинала и посчитана: %s"
       % {k: stats2[k] for k in ("img_untranslated", "img_repainted")})
 
+print("\n── чтение у себя в браузере ──")
+# Рамки и текст приходят СНАРУЖИ: плоскость фона, склейка, отсев шума
+# и заведение сегментов обязаны считаться тут же и тем же кодом, каким
+# их считает серверный разбор.
+data = main._load_source_map(1)
+data["images"] = []                       # чистая карта: читаем заново
+main._save_source_map(1, data)
+for _seg in [x for x in project["segments"]
+             if (x.get("origin") or {}).get("kind") == "image"]:
+    project["segments"].remove(_seg)
+part = sorted(main._docx_media(content)[0])[0]
+
+
+def local(items, final=True):
+    return main.images_local(1, main.ImagesLocalRequest(items=items, final=final))
+
+
+res = local([{"part": part, "lines": [
+    {"box": [24, 20, 460, 60], "conf": 0.94, "text": "Рис. 1. Схема лёгких"},
+    {"box": [330, 100, 470, 126], "conf": 0.9, "text": "KARIMOV SH."},
+    {"box": [24, 165, 170, 190], "conf": 0.9, "text": "25.03.2008"}]}])
+check(res["saved"] == 1, "картинка принята: %s" % res["saved"])
+made = [x for x in project["segments"] if x["id"] in res["segments"]]
+check(any("Схема лёгких" in x["source"] for x in made),
+      "подпись стала сегментом: %s" % [x["source"] for x in made])
+check(not any(x["source"] == "25.03.2008" for x in made),
+      "дата сегментом НЕ стала — это шум, а не текст документа")
+blocks = main._load_source_map(1)["images"][0]["blocks"]
+check(any(b.get("skip") == "noise" for b in blocks),
+      "шум помечен, а не выброшен молча: %s" % [b.get("skip") for b in blocks])
+check(all(b.get("by") == "local" for b in blocks),
+      "на блоке видно, КТО читал: %s" % [b.get("by") for b in blocks])
+check(all(b.get("flat") is not None for b in blocks),
+      "плоскость фона посчитана ЗДЕСЬ, по пикселям, а не принята на слово")
+
+again = local([{"part": part, "lines": [{"box": [24, 20, 460, 60], "text": "другое"}]}])
+check(again["saved"] == 0 and again["skipped"][0]["why"] == "done",
+      "разобранную картинку повторно не переписываем: %s" % again["skipped"])
+alien = local([{"part": "word/media/../../etc/passwd", "lines": []}])
+check(alien["saved"] == 0 and alien["skipped"][0]["why"] == "unknown",
+      "чужое имя части отвергнуто: %s" % alien["skipped"])
+
+# Потолки: строки приходят из браузера, то есть снаружи.
+data = main._load_source_map(1)
+data["images"] = []
+main._save_source_map(1, data)
+res2 = local([{"part": part, "lines":
+               [{"box": [10, 10, 200, 40], "conf": 0.9, "text": "x" * 4000}] * 4000}])
+kept = main._load_source_map(1)["images"][0].get("blocks") or []
+check(res2["saved"] == 1 and len(kept) <= main.IMAGE_LOCAL_MAX_LINES,
+      "число строк подрезано потолком: %d" % len(kept))
+check(all(len(b.get("text") or "") <= main.IMAGE_LOCAL_MAX_CHARS * 2 for b in kept),
+      "длина текста подрезана потолком")
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

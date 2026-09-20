@@ -708,6 +708,23 @@ _BROKEN_FRACTION_RE = re.compile(r"^[*^]*\d*/\d*[*^]*$")
 # Одинокий юникодный над/подстрочник без основы: «²» отдельным словом.
 _SCRIPT_CHARS_RE = re.compile(r"[²³¹⁰-₟]")
 _LONE_SCRIPT_RE = re.compile(r"^[²³¹⁰-₟]+$")
+# Список ЗНАКОВ — один на систему, из разделов Юникода (см. `pdftext`):
+# интеграл, корень, сумма, произведение, знаки сравнения, стрелки.
+# Две таблицы разошлись бы первой же правкой, и тогда чистка снимала бы
+# знак, про который проверка думает, что он на месте.
+from pdftext import MATH_CHAR_RE
+# Знаки, которым ОБЯЗАН быть операнд: двусторонние («5 ± 2», «a ≤ b») и
+# приставочные («√2»). Сюда НЕ входят ∫, ∑, ∞ и стрелки: формула со знаком
+# интеграла законно стоит отдельной строкой, а стрелка — в схеме.
+_MATH_BINARY = frozenset("+×÷±∓=<>≤≥≠≈≡−⋅")
+_MATH_PREFIX = frozenset("√∛∜")
+_TRIM = ".,;:!?()[]{}«»\"'"
+# Степень или индекс с операндом по обе стороны: «2^3», «x^n».
+_POWER_OK_RE = re.compile(r"[^\W_]\^[^\W_]")
+
+
+def _has_operand(tok):
+    return any(c.isalnum() for c in tok or "")
 
 
 def broken_math(source):
@@ -719,12 +736,39 @@ def broken_math(source):
     s = source or ""
     # Дешёвые ворота: дробная черта и знаки-обломки редки, а функция зовётся
     # на каждый сегмент книги. Нет ни одного — дальше не смотрим.
-    if "/" not in s and "*" not in s and "^" not in s and not _SCRIPT_CHARS_RE.search(s):
+    if ("/" not in s and "*" not in s and "^" not in s
+            and not _SCRIPT_CHARS_RE.search(s) and not MATH_CHAR_RE.search(s)):
         return []
     out = []
-    for tok in s.split():
-        t = tok.strip(".,;:!?()[]{}«»\"'")
+    toks = s.split()
+    for n, tok in enumerate(toks):
+        t = tok.strip(_TRIM)
         if not t:
+            continue
+        # Степень или индекс, потерявшие операнд: «2^», «час^,», «^3».
+        # Знак стоит, а числа при нём нет — распознаватель его потерял.
+        if "^" in t and not _POWER_OK_RE.search(t):
+            out.append(t)
+            if len(out) >= 8:
+                break
+            continue
+        # Знак, которому ОБЯЗАН быть операнд, остался один: «±» без числа,
+        # «√» без подкоренного. Спрашиваем соседей: «5 ± 2» и «√ 2» законны,
+        # а знак среди слов, у которого по обе стороны нет ни цифры, ни
+        # буквы, — обломок формулы, которую распознаватель не дочитал.
+        if len(t) == 1 and (t in _MATH_BINARY or t in _MATH_PREFIX):
+            before = _has_operand(toks[n - 1].strip(_TRIM)) if n else False
+            after = _has_operand(toks[n + 1].strip(_TRIM)) if n + 1 < len(toks) else False
+            if not (after if t in _MATH_PREFIX else (before or after)):
+                out.append(t)
+                if len(out) >= 8:
+                    break
+            continue
+        # Корень, у которого подкоренное выражение оторвалось: «…√» на конце.
+        if t[-1] in _MATH_PREFIX:
+            out.append(t)
+            if len(out) >= 8:
+                break
             continue
         if _LONE_SCRIPT_RE.match(t):
             out.append(t)

@@ -44,14 +44,46 @@ from collections import Counter
 
 SOFT = "­"
 
+# ─── Знаки математики: ОДИН список на систему ────────────────────────
+# Берётся не рукописным перечнем, а РАЗДЕЛАМИ Юникода: «Mathematical
+# Operators» (U+2200–U+22FF) целиком — там и интеграл ∫, и корень √, и
+# сумма ∑, и произведение ∏, и бесконечность ∞, и знаки сравнения ≤ ≥ ≠ ≈;
+# плюс «Supplemental Mathematical Operators» (U+2A00–U+2AFF), «Miscellaneous
+# Mathematical Symbols» (U+27C0–U+27EF), стрелки (U+2190–U+21FF), дробная
+# черта U+2044 и одиночные ASCII/Latin-1 знаки, которые Юникод относит к тому
+# же классу Sm (+ < = > ~ | ± × ÷), плюс градус, штрих и промилле.
+# Перечислять знаки руками нельзя: первый же забытый («∛», «⨌», «≢») вёл бы
+# себя не как знак, а как украшение — и снимался бы молча.
+#
+# Этот список читает и `checks.broken_math` (повреждённая формула): две
+# таблицы разошлись бы первой же правкой, а тогда чистка снимала бы знак,
+# про который проверка думает, что он на месте.
+MATH_CHAR_RE = re.compile(
+    "[+<=>~|"
+    "\u00b1\u00d7\u00f7"                    # ± × ÷
+    "\u00b0\u2030\u2031\u2032\u2033\u2034"   # ° ‰ ‱ ′ ″ ‴
+    "\u2044"                                  # ⁄ дробная черта
+    "\u2190-\u21ff"                          # стрелки
+    "\u2200-\u22ff"                          # операторы: ∫ √ ∑ ∏ ∞ ≤ ≥ ≠ ≈ ∂ ∇ ∈
+    "\u27c0-\u27ef"
+    "\u2a00-\u2aff]")
+# Операторы, у которых предел пишется НАД и ПОД знаком: их пределы бывают
+# буквами («∫ₐᵇ», «∑ₙ₌₁»), а короткий буквенный кусок сам по себе — это
+# обрывок рисунка у края страницы (`_edge_scrap`), и забирать его нельзя.
+MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
+                           "\u2211\u220f\u2210\u2a0b\u2a0c")
+
 # Версия правил разбора. Пишется на проект при импорте (`parseRules`),
 # и проект, нарезанный правилами постарше, экран предлагает пересобрать
 # из хранимого исходника (`/api/projects/{pid}/resegment`). Меняешь правила
 # так, что меняются абзацы, — поднимай: 1 — построчный разбор, 2 — по
 # геометрии, 3 — обрывки у края, «по-»/«лис», метки врезок, разворот,
 # 4 — над- и подстрочные куски (дроби, степени, индексы) на своём месте
-# и повреждённый знак математики, который больше не снимается орнаментом.
-RULES_VERSION = 4
+# и повреждённый знак математики, который больше не снимается орнаментом,
+# 5 — знаки математики по списку Юникода: интеграл, корень, сумма, знаки
+# сравнения; их пределы-буквы, крупный знак не считается украшением,
+# а знак у числа («±0,5», «<5») не снимается с края токена.
+RULES_VERSION = 5
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -466,11 +498,40 @@ _HYPHEN_DUP_RE = re.compile(r"([^\W\d_][-‐‑])\s+[-‐‑]\s*$")
 # «#12», «<308>», «|1» чистятся, как чистились: там знак не работает знаком.
 _MATH_MARKS = frozenset("*^")
 _MATH_NEAR_RE = re.compile(r"[*^](?=[0-9/])|(?<=[0-9/])[*^]")
+_ORN_STR = "".join(_ORNAMENT_CHARS)
+# Знак, который Юникод считает математическим, а книга — почти никогда:
+# «|» в отсканированной книге это граница таблицы, а не модуль числа.
+# Замер на боевой книге: «|» встречается 4 раза, и все четыре — обрывки.
+_MATH_NOT = frozenset("|")
+# Обёртка парой — разметка или мусор распознавания («<308>»), а не
+# «меньше 308»: у сравнения второй скобки не бывает.
+_WRAP_PAIRS = (("<", ">"), ("{", "}"))
 
 
 def _math_token(t: str) -> bool:
-    return bool(_MATH_NEAR_RE.search(t)) and all(
-        c in _MATH_MARKS or c not in _ORNAMENT_CHARS for c in t)
+    """Токен работает ЗНАКОМ, а не украшением, — чистить его нельзя.
+
+    Два случая. Первый — повреждённый над/подстрочник: распознаватель ставит
+    «*» или «^» на месте числителя дроби и степени («*/», «2*»).
+    Второй — знак при ЧИСЛЕ: «±0,5», «<5», «>100», «~50», «≤37». Все они
+    стоят в `_ORNAMENT_CHARS`, а `strip` снимает знак с края токена — то есть
+    «±0,5» превращалось в «0,5», а «<5» в «5». Это не мусор, а смысл, и
+    меняется он на противоположный.
+
+    Что НЕ защищаем и почему: токен без цифры (там знак чаще украшение —
+    сноска «режима*», обрывок «■ЧР’»), «|» (граница таблицы) и токен,
+    обёрнутый парой скобок («<308>» — разметка, а не сравнение)."""
+    if _MATH_NEAR_RE.search(t) and all(c in _MATH_MARKS or c not in _ORNAMENT_CHARS for c in t):
+        return True
+    if not any(c.isdigit() for c in t):
+        return False
+    for a, b in _WRAP_PAIRS:
+        if t.startswith(a) and t.endswith(b):
+            return False
+    edge = t[:len(t) - len(t.lstrip(_ORN_STR))] + t[len(t.rstrip(_ORN_STR)):]
+    return bool(edge) and all(
+        c in _MATH_MARKS or (bool(MATH_CHAR_RE.search(c)) and c not in _MATH_NOT)
+        for c in edge)
 
 
 def _clean_line(line: str, report: dict):
@@ -529,14 +590,32 @@ SCRIPT_MAX_CHARS = 6
 SCRIPT_SIZE_SHARE = 0.85     # кусок мельче строки, к которой его приклеивают
 SCRIPT_DY_SHARE = 0.9        # и ближе к ней, чем межстрочный (тот от 1.15 em)
 SCRIPT_BASE_DY = 0.15        # «та же базовая линия»
+SCRIPT_MATH_SIZE_MAX = 2.5   # знак математики бывает крупнее строки
 SCRIPT_GAP_SHARE = 1.5       # и рядом по горизонтали
 SCRIPT_SPACE_SHARE = 0.25    # зазор, начиная с которого между кусками ПРОБЕЛ
 _SCRIPT_CHAR_RE = re.compile(r"[0-9²³¹⁰-₟]")
 
 
-def _script_piece(r: dict) -> bool:
+def _short_piece(r: dict) -> bool:
     t = (r.get("t") or "").strip()
-    return 0 < len(t) <= SCRIPT_MAX_CHARS and bool(_SCRIPT_CHAR_RE.search(t))
+    return 0 < len(t) <= SCRIPT_MAX_CHARS
+
+
+def _math_piece(r: dict) -> bool:
+    """Кусок со ЗНАКОМ математики: интеграл, корень, сумма, ±, ≤, стрелка.
+    Такой знак бывает КРУПНЕЕ строки (высокий ∫, широкий √), поэтому мерку
+    «мельче строки» к нему не прикладывают."""
+    return _short_piece(r) and bool(MATH_CHAR_RE.search(r.get("t") or ""))
+
+
+def _script_piece(r: dict) -> bool:
+    return _short_piece(r) and bool(_SCRIPT_CHAR_RE.search(r.get("t") or "")
+                                    or MATH_CHAR_RE.search(r.get("t") or ""))
+
+
+def _limit_base(b: dict) -> bool:
+    """Строка с оператором, у которого предел пишется над и под знаком."""
+    return any(c in MATH_LIMIT_OPS for c in (b.get("t") or ""))
 
 
 def _hgap(a: dict, b: dict) -> float:
@@ -577,11 +656,26 @@ def _join_scripts(recs: list, report: dict) -> list:
 
     joined = 0
     for i, f in enumerate(recs):
-        if f["s"] <= 0 or not _script_piece(f):
+        if f["s"] <= 0:
             continue
+        sure = _script_piece(f)
+        # Предел интеграла или суммы бывает БУКВОЙ («∫ₐᵇ», «∑ₙ»), и цифры
+        # в таком куске нет. Пускаем его только к строке с таким оператором:
+        # без этой оговорки в строку уезжал бы обрывок рисунка у края
+        # страницы, ради которого заведён `_edge_scrap`.
+        limit = not sure and _short_piece(f)
+        if not sure and not limit:
+            continue
+        math = _math_piece(f)
         best = None
         for j, b in enumerate(recs):
-            if j == i or b["s"] <= 0 or f["s"] > SCRIPT_SIZE_SHARE * b["s"]:
+            if j == i or b["s"] <= 0:
+                continue
+            if limit and not _limit_base(b):
+                continue
+            # Знак математики вправе быть КРУПНЕЕ строки (высокий интеграл);
+            # остальным куском может быть только над/подстрочник — мельче.
+            if f["s"] > (SCRIPT_MATH_SIZE_MAX if math else SCRIPT_SIZE_SHARE) * b["s"]:
                 continue
             dy = abs(f["y"] - b["y"])
             if not 0 < dy <= SCRIPT_DY_SHARE * b["s"]:
@@ -1542,6 +1636,8 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
         for d in kept:
             if d["s"] < 2 * st["body_s"] or len(_letters(d["t"])) > 3:
                 continue
+            if MATH_CHAR_RE.search(d["t"]):
+                continue            # крупный ∫ или √ — знак, а не украшение
             if _dropcap_join(d, kept, words):
                 report["dropCaps"] += 1
             elif _big_short_kept(d["t"], words):

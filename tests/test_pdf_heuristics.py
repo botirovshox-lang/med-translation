@@ -56,7 +56,22 @@ def run(pages):
     ls = [p[0] for p in pages]
     gs = [p[1] for p in pages]
     res = pdftext.clean(ls, geom=gs)
-    return [it[1] for it in res["items"] if it[0] == "p"], res["report"]
+    # Колонтитулы теперь тоже абзацы — но ОТДЕЛЬНЫЕ, с рамками `repeat`
+    # (одна надпись на всю книгу). Из текста страницы они по-прежнему сняты,
+    # поэтому проверки тела их не видят.
+    return ([it[1] for it in res["items"] if it[0] == "p" and not _repeat(it)],
+            res["report"])
+
+
+def _repeat(it) -> bool:
+    return bool(len(it) > 2 and it[2] and (it[2][0] or {}).get("repeat"))
+
+
+def heads_of(pages):
+    ls = [p[0] for p in pages]
+    gs = [p[1] for p in pages]
+    res = pdftext.clean(ls, geom=gs)
+    return [it[1] for it in res["items"] if it[0] == "p" and _repeat(it)]
 
 
 def filler(num):
@@ -171,6 +186,9 @@ spread = page([("% Лекарство из. улья Лекарство из у�
               + [("52 53", 200, 40, 10, 230)], box=(0, 0, 800, 600))
 P, rep = run(pp + [spread, page([("АПИТОКСИНОТЕРАПИЯ ЛЕКАРСТВО ИЗ УЛЬЯ", 60, 575, 14, 330)] + body_lines(20))])
 check(not any("Лекарство из" in p for p in P), "колонтитулы разворота сняты: %s" % [p[:40] for p in P if "улья" in p])
+hh = heads_of(pp + [spread, page([("АПИТОКСИНОТЕРАПИЯ ЛЕКАРСТВО ИЗ УЛЬЯ", 60, 575, 14, 330)] + body_lines(20))])
+check(any("Лекарство из улья" in h for h in hh),
+      "…и при этом стали переводимым абзацем — одним на всю книгу: %s" % hh)
 check(any("АПИТОКСИНОТЕРАПИЯ" in p for p in P), "заголовок КАПСОМ колонтитулом не считается")
 
 print("=== D. Колонтитулы: тысяча страниц со своей строкой в полосе ===")

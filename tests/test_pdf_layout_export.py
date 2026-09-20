@@ -203,5 +203,69 @@ try:
 finally:
     shutil.rmtree(str(TMP), ignore_errors=True)
 
-print("\n" + ("ALL OK" if not fail else "FAILED: %d" % len(fail)))
+
+print("=== 7. Закраска считается ПО КРАСКЕ, а не по рамке ===")
+# Боевой дефект: конец строки в текстовом слое — ОЦЕНКА по средней ширине
+# знака, и справа от перевода оставался хвост оригинала («…таҳлили еда»).
+from PIL import Image, ImageDraw
+
+def sample_with(bar):
+    """Снимок страницы 200×100 (1 пиксель = 1 пункт): белая бумага и чёрная
+    полоса `bar` = (x0, x1) на высоте рамки."""
+    im = Image.new("RGB", (200, 100), (255, 255, 255))
+    d = ImageDraw.Draw(im)
+    d.rectangle([bar[0], 40, bar[1], 60], fill=(10, 10, 10))
+    return (im, 1.0, [0.0, 0.0, 0.0, 0.0], im.convert("L"))
+
+BOX = {"page": 0, "x0": 20.0, "x1": 60.0, "top": 60.0, "bottom": 40.0,
+       "size": 10.0, "lead": 12.0, "indent": 0.0, "style": ""}
+x0, x1 = layout_pdf._ink_box(sample_with((20, 85)), dict(BOX), 1.8, 1.0)
+check(x1 >= 84, "хвост оригинала, которого не увидел текстовый слой, накрыт: %.1f" % x1)
+x0, x1 = layout_pdf._ink_box(sample_with((20, 60)), dict(BOX), 1.8, 1.0)
+check(x1 < 70, "рамка без хвоста не раздувается: %.1f" % x1)
+# Соседняя колонка стоит за настоящим пробелом (шире межсловного) — туда
+# закраска не заезжает: там чужой текст, и стереть его нельзя.
+im = Image.new("RGB", (200, 100), (255, 255, 255))
+ImageDraw.Draw(im).rectangle([20, 40, 55, 60], fill=(10, 10, 10))
+ImageDraw.Draw(im).rectangle([120, 40, 190, 60], fill=(10, 10, 10))
+x0, x1 = layout_pdf._ink_box((im, 1.0, [0, 0, 0, 0], im.convert("L")), dict(BOX), 1.8, 1.0)
+check(x1 < 100, "через межколонник закраска не переходит: %.1f" % x1)
+x0, x1 = layout_pdf._ink_box(None, dict(BOX), 1.8, 1.0)
+check((x0, x1) == (20.0, 60.0), "нет снимка страницы — рамка остаётся как есть")
+
+print("=== 8. Колонтитул: один текст в КАЖДОЙ своей рамке ===")
+head_boxes = [{"page": 0, "x0": 40.0, "x1": 200.0, "top": 575.0, "bottom": 563.0,
+               "size": 9.0, "lead": 11.0, "indent": 0.0, "style": "", "repeat": 1},
+              {"page": 1, "x0": 40.0, "x1": 200.0, "top": 575.0, "bottom": 563.0,
+               "size": 9.0, "lead": 11.0, "indent": 0.0, "style": "", "repeat": 1}]
+out, st = layout_pdf.build(PDF, {"boxes": {"0": head_boxes}}, {0: "Асалари дорихонаси"})
+txt = [(p.extract_text() or "") for p in __import__("pypdf").PdfReader(io.BytesIO(out)).pages]
+check(all("Асалари дорихонаси" in t for t in txt),
+      "надпись напечатана на обеих своих страницах целиком, а не поделена между ними")
+check(st["repeated"] == 1 and st["repeatBoxes"] == 2 and st["paragraphs"] == 1,
+      "и посчитана ОДНИМ решением переводчика: %s" % {k: st[k] for k in ("repeated", "repeatBoxes", "paragraphs")})
+
+print("=== 9. Надпись со страницы-картинки печатается наравне с абзацем ===")
+extra = [{"text": "Асал билан даволаш", "boxes": [{
+    "page": 1, "frac": 1, "image": 1, "style": "", "indent": 0.0,
+    "x0": 0.1, "x1": 0.8, "top": 0.2, "bottom": 0.3, "size": 0.03, "lead": 0.035}]}]
+out, st = layout_pdf.build(PDF, {"boxes": {}}, {}, extra=extra)
+txt = [(p.extract_text() or "") for p in __import__("pypdf").PdfReader(io.BytesIO(out)).pages]
+check("Асал билан даволаш" in txt[1] and "Асал билан даволаш" not in txt[0],
+      "перевод встал на свою страницу — ту, где картинка")
+check(st["imageBoxes"] == 1 and st["paragraphs"] == 1, "и назван числом: %s" % st["imageBoxes"])
+
+print("=== 10. Рамка долями листа раскрывается в точки страницы ===")
+class _MB:
+    left, bottom, width, height = 0.0, 0.0, 400.0, 600.0
+b = {"x0": 0.25, "x1": 0.75, "top": 0.1, "bottom": 0.2, "size": 0.02, "lead": 0.025, "frac": 1}
+layout_pdf._unfrac(b, _MB())
+check(b["x0"] == 100.0 and b["x1"] == 300.0, "доли ширины — в точки: %s" % [b["x0"], b["x1"]])
+check(b["top"] == 540.0 and b["bottom"] == 480.0,
+      "ось y у картинки смотрит вниз, у PDF — вверх: %s" % [b["top"], b["bottom"]])
+check(b["size"] == 12.0 and b["lead"] == 15.0, "кегль и межстрочный — доли высоты листа")
+
+print(("ALL OK" if not fail else "FAILED: %d" % len(fail)))
+for f in fail:
+    print(" -", f)
 sys.exit(1 if fail else 0)

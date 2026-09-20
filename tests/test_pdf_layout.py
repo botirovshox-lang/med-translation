@@ -35,8 +35,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pdf_fixture import PDF, HEAD_B2
 
 
+def head_para(it) -> bool:
+    """Колонтитул — тоже абзац, но с рамками `repeat`: одна надпись на всю
+    книгу, печатается в каждую свою рамку. Из текста страницы он снят,
+    как и снимался, поэтому проверки тела его не видят."""
+    return bool(len(it) > 2 and it[2] and (it[2][0] or {}).get("repeat"))
+
+
 def paras_of(res):
-    return [it[1] for it in res["items"] if it[0] == "p"]
+    return [it[1] for it in res["items"] if it[0] == "p" and not head_para(it)]
+
+
+def heads_of(res):
+    return [it[1] for it in res["items"] if it[0] == "p" and head_para(it)]
 
 
 print("=== 1. Геометрия строк достаётся тем же pypdf, строки те же ===")
@@ -104,6 +115,16 @@ check(not any("Апцтоксинотерапия" in p or "Лекарство �
 from collections import Counter
 letters = lambda ps: Counter(c for p in ps for c in p if c.isalpha())
 check(letters(P) == letters(P2), "с геометрией и без — те же буквы (ничего не потеряно)")
+
+print("=== 2б. Колонтитул — переводимый абзац, один на всю книгу ===")
+H = heads_of(res)
+check(any("Лекарство из улья" in h for h in H), "колонтитул стал абзацем: %s" % H)
+hb = [it[2] for it in res["items"] if it[0] == "p" and head_para(it)
+      and "Лекарство из улья" in it[1]][0]
+check(len(hb) >= 2 and all(b.get("repeat") for b in hb) and len({b["page"] for b in hb}) == len(hb),
+      "рамка на каждой своей странице, и все помечены `repeat`: %s" % [b["page"] for b in hb])
+check(len(H) == len(set(H)), "одна надпись — один абзац, а не по одному на страницу: %s" % H)
+check(res["report"].get("headParagraphs") == len(H), "число сказано в отчёте")
 
 print("=== 4. Частные правила ===")
 for s in ("---— хххх", "————", "= = = = =", "- - - - -", "V-----------------------", "_____ xxxx"):
@@ -242,7 +263,8 @@ print("=== 5. Импорт PDF целиком: абзацы .docx ===")
 docx, kind, note, n_img, _lay = importers.pdf_to_docx(PDF)
 from docx import Document
 dp = [p.text for p in Document(io.BytesIO(docx)).paragraphs if p.text.strip()]
-check(kind == "pdf" and dp == P, "в .docx ровно абзацы чистки с геометрией")
+check(kind == "pdf" and dp == P + H,
+      "в .docx ровно абзацы чистки, а колонтитулы книги — в хвосте (их переводят один раз)")
 check("мусора" in note, "рамка врезки названа в отчёте как снятый мусор: %s" % note)
 
 print()

@@ -25473,6 +25473,73 @@ def _layout_texts(project: dict, data: dict) -> dict:
     return texts
 
 
+def _png_page_index(blob: bytes) -> Optional[int]:
+    """Номер страницы PDF, записанный в саму картинку при импорте
+    (`importers._png_with_index`). Другого следа у неё нет: в карте картинок
+    лежит имя части пакета, а не страница, — и без этого номера перевод
+    надписи с обложки некуда положить."""
+    try:
+        from PIL import Image  # type: ignore
+        im = Image.open(io.BytesIO(blob))
+        v = (im.info or {}).get("medcat-page")
+        return int(v) if v is not None else None
+    except Exception:
+        return None
+
+
+def _pdf_image_boxes(project: dict, data: dict) -> list:
+    """Надписи со страниц-КАРТИНОК — рамками для выгрузки PDF «как в оригинале».
+
+    Обложка и страницы с негодным текстовым слоем кладутся в документ
+    картинками, а их текст читает разбор надписей — и до сих пор этот текст
+    доезжал только до .docx: в PDF страница оставалась своя, то есть русская.
+    Рамка блока считана в ПИКСЕЛЯХ картинки, поэтому наружу уходит долями
+    листа (`frac`), а в точки её переводит тот, кто держит сам PDF.
+
+    Правила те же, что у `_export_images`: блок без перевода не трогается,
+    подменённая картинка (`sha`) не трогается тоже — перевод по чужим
+    координатам это заплатка посреди снимка."""
+    images = (data.get("images") or []) if image_text is not None else []
+    if not images:
+        return []
+    try:
+        from docx import Document
+    except ImportError:
+        return []
+    try:
+        doc = Document(str(data["path"]))
+    except Exception:
+        return []
+    parts = {str(p.partname).lstrip("/"): p for p in doc.part.package.iter_parts()}
+    by_id = {s["id"]: s for s in project.get("segments") or []}
+    out: list = []
+    for im in images:
+        part = parts.get(im.get("part"))
+        if part is None or not im.get("w") or not im.get("h"):
+            continue
+        if im.get("sha") and hashlib.sha1(part.blob).hexdigest() != im["sha"]:
+            continue
+        page = _png_page_index(part.blob)
+        if page is None:
+            continue
+        w, h = float(im["w"]), float(im["h"])
+        for i, b in enumerate(im.get("blocks") or []):
+            if b.get("skip"):
+                continue
+            seg = _image_seg_of(by_id, b, im.get("part"), i)
+            text = ((seg or {}).get("target") or "").strip()
+            if not text:
+                continue
+            x0, y0, x1, y1 = b["box"]
+            rows = max(1, int(b.get("rows") or 1))
+            line_h = float(b.get("lineH") or ((y1 - y0) / rows))
+            out.append({"text": text, "boxes": [{
+                "page": page, "frac": 1, "image": 1, "style": "", "indent": 0.0,
+                "x0": x0 / w, "x1": x1 / w, "top": y0 / h, "bottom": y1 / h,
+                "size": line_h / h, "lead": ((y1 - y0) / rows) / h}]})
+    return out
+
+
 def _export_pdf_layout(project: dict, tmp: Path) -> Optional[dict]:
     """PDF «как в оригинале»: слой с переводом поверх исходных страниц.
 
@@ -25502,7 +25569,8 @@ def _export_pdf_layout(project: dict, tmp: Path) -> Optional[dict]:
                                  "Доступен Word-документ и PDF из него" % why)
     try:
         pdf, stats = layout_pdf_mod.build(orig.read_bytes(), layout,
-                                          _layout_texts(project, data))
+                                          _layout_texts(project, data),
+                                          extra=_pdf_image_boxes(project, data))
     except layout_pdf_mod.NotAvailable as e:
         raise HTTPException(503, "Выгрузка «как в оригинале» для PDF не собралась: %s. "
                                  "Доступен Word-документ и PDF из него" % e)

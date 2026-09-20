@@ -34,11 +34,22 @@ Word, а печать этого документа даёт ровный пот
    процентилю яркости (`_strip_colors`). Нечем мерить (нет рендера) —
    белый, и это считается числом (`nocolor`), а не замалчивается.
 
+ЧЕТВЁРТОЕ ПРАВИЛО: **закраска считается ПО КРАСКЕ, а не по рамке.**
+Рамка абзаца считается по текстовому слою, а конец строки в нём —
+ОЦЕНКА по средней ширине знака (см. `pdfpages_worker._geometry`): у книги
+из распознавателя она врёт на несколько знаков, и справа от перевода
+оставался хвост оригинала («Асалнинг энг оддий таҳлили *еда*»). Поэтому
+перед закраской рамка раздвигается по самой странице: пока в её полосе
+сразу за краем стоит краска, край едет дальше (`_ink_box`), и
+останавливается на первом настоящем пробеле. Ошибиться в эту сторону
+безопасно: закрашиваем бумагу цветом этой же бумаги.
+
 ЧЕГО ЭТА ДОРОГА НЕ УМЕЕТ, и это названо, а не умолчано:
-  • колонтитулы и номера страниц остаются на языке оригинала (при импорте
-    они снимаются и сегментами не становятся — переводить нечего);
   • страница с повёрнутым `/Rotate` не трогается вовсе;
-  • текст внутри рисунков живёт своей дорогой (разбор картинок);
+  • текст внутри рисунков, стоящих НА текстовой странице, живёт своей
+    дорогой (разбор картинок): его рамки считаны в пикселях картинки,
+    а не в точках страницы. Текст страниц-КАРТИНОК (обложка, скан) сюда
+    приходит рамками (`extra`) и печатается наравне с абзацами;
   • **прежний текст остаётся ПОД закраской**: мы кладём слой поверх
     страницы, а не переписываем её содержимое. На глаз его нет, но
     «скопировать текст» из готового файла отдаст и его тоже. У книги,
@@ -84,9 +95,12 @@ FONT_NAME = "LayoutBody"
 FIT_STEP = 0.97
 MIN_SIZE_SHARE = float(os.environ.get("LAYOUT_MIN_SIZE_SHARE", "0.55"))
 MIN_SIZE_PT = 5.0
-# Разрешение, на котором меряется цвет бумаги: нам нужен не рисунок,
-# а средний цвет кольца вокруг рамки.
-SAMPLE_DPI = int(os.environ.get("LAYOUT_SAMPLE_DPI", "36"))
+# Разрешение, на котором меряется бумага и краска. Страница рисуется ПО ОДНОЙ
+# и тут же забывается (`_Sampler`), поэтому разрешение можно держать выше:
+# прежние 36 точек на дюйм — это полпикселя на типографский пункт, и хвост
+# оригинала в три знака (`еда`) на нём почти не виден. Все страницы разом
+# держать в памяти нельзя: книга в 378 страниц — это сотни мегабайт.
+SAMPLE_DPI = int(os.environ.get("LAYOUT_SAMPLE_DPI", "72"))
 # Запас закраски вокруг рамки, в долях кегля: засечки и выносные элементы
 # выходят за базовые линии, а рамка считалась по ним.
 PAD_SHARE = 0.18
@@ -98,6 +112,19 @@ FILL_STRIPS = 10
 GLYPH_MISS_MAX = int(os.environ.get("LAYOUT_GLYPH_MISS_MAX", "3"))
 # Какой процентиль яркости полосы считать бумагой (буквы — тёмный хвост).
 PAPER_Q = 0.75
+# Докуда раздвигать закраску по краске: доля ширины рамки и потолок в пунктах.
+# Оба нужны: у короткого заголовка доля вырождается в ничто, а у абзаца
+# во всю полосу — в пол-страницы.
+INK_EXPAND_SHARE = float(os.environ.get("LAYOUT_INK_EXPAND", "0.6"))
+INK_EXPAND_MAX = float(os.environ.get("LAYOUT_INK_EXPAND_MAX", "140"))
+# Какой пробел считать настоящим (в долях кегля): пробел между словами уже
+# него, межколонник — шире. Ошибка в меньшую сторону оставляет хвост
+# оригинала, в большую — заезжает в соседнюю колонку.
+INK_GAP_SHARE = float(os.environ.get("LAYOUT_INK_GAP", "0.9"))
+# Насколько темнее бумаги считать краской.
+INK_DARK = float(os.environ.get("LAYOUT_INK_DARK", "0.82"))
+# Ниже этой яркости бумага считается тёмной, и перевод печатается светлым.
+DARK_PAPER = float(os.environ.get("LAYOUT_DARK_PAPER", "0.45"))
 
 
 class NotAvailable(Exception):
@@ -196,23 +223,52 @@ def _fit(text: str, boxes: list, sw, font: str) -> tuple:
         size *= FIT_STEP
 
 
-def _page_samples(pdf_bytes: bytes, pages: list) -> dict:
-    """{страница: (картинка, масштаб)} в низком разрешении — только чтобы
-    померить цвет бумаги. Нет рендера — пустой ответ: закраска будет белой,
-    и это считается числом, а не замалчивается."""
-    try:
-        import pypdfium2 as pdfium
-        from PIL import Image  # noqa: F401
-    except ImportError:
-        return {}
-    try:
-        doc = pdfium.PdfDocument(io.BytesIO(pdf_bytes))
-    except Exception:
-        return {}
-    out, scale = {}, SAMPLE_DPI / 72.0
-    for i in pages:
+def _unfrac(b: dict, mb) -> None:
+    """Рамка, названная долями листа, — в точки страницы, на месте.
+
+    Доли считаны по картинке страницы: x — слева направо, y — СВЕРХУ вниз,
+    как у пикселей; в PDF ось y смотрит вверх, поэтому верх и низ меняются
+    местами. Кегль и межстрочный — доли ВЫСОТЫ листа."""
+    x, y = float(mb.left), float(mb.bottom)
+    w, h = float(mb.width), float(mb.height)
+    b["x0"], b["x1"] = x + b["x0"] * w, x + b["x1"] * w
+    b["top"], b["bottom"] = y + (1.0 - b["top"]) * h, y + (1.0 - b["bottom"]) * h
+    b["size"], b["lead"] = max(1.0, b["size"] * h), max(1.0, b["lead"] * h)
+    b["frac"] = 0
+
+
+class _Sampler:
+    """Отрисованная страница — по ОДНОЙ за раз.
+
+    Раньше все нужные страницы рисовались разом и лежали в памяти до конца
+    сборки: на книге в 378 страниц это сотни мегабайт у единственного
+    воркера, и ровно поэтому разрешение держали нищим. Страницы обходятся
+    по порядку, значит помнить надо одну: снимок отдаётся по номеру,
+    прошлый забывается. Нет рендера — снимков нет вовсе, закраска будет
+    белой, и это считается числом (`nocolor`), а не замалчивается."""
+
+    def __init__(self, pdf_bytes: bytes):
+        self.doc = None
+        self.scale = SAMPLE_DPI / 72.0
+        self.cur: tuple = (None, None)
+        self.missed: set = set()
         try:
-            page = doc[i]
+            import pypdfium2 as pdfium
+            from PIL import Image  # noqa: F401
+            self.doc = pdfium.PdfDocument(io.BytesIO(pdf_bytes))
+        except Exception:
+            self.doc = None
+
+    def page(self, i: int):
+        """(картинка, масштаб, CropBox) | None."""
+        if self.cur[0] == i:
+            return self.cur[1]
+        if self.doc is None:
+            self.missed.add(i)
+            return None
+        sample = None
+        try:
+            page = self.doc[i]
             # Начало отсчёта у отрисованной страницы — её CropBox, а рамки
             # абзацев лежат в координатах самого PDF (MediaBox). У печатной
             # вёрстки с вылетами это разные прямоугольники, и цвет бумаги
@@ -221,14 +277,96 @@ def _page_samples(pdf_bytes: bytes, pages: list) -> dict:
                 cb = [float(v) for v in page.get_cropbox()]
             except Exception:
                 cb = [0.0, 0.0, 0.0, 0.0]
-            out[i] = (page.render(scale=scale).to_pil().convert("RGB"), scale, cb)
+            im = page.render(scale=self.scale).to_pil().convert("RGB")
+            sample = (im, self.scale, cb, im.convert("L"))
             page.close()
         except Exception:
-            continue
-    return out
+            sample = None
+        if sample is None:
+            self.missed.add(i)
+        self.cur = (i, sample)
+        return sample
 
 
-def _strip_colors(sample, box: dict, pad: float, n: int) -> list:
+def _col_mins(gray, x0: int, x1: int, y0: int, y1: int) -> list:
+    """Самый тёмный пиксель каждого столбца полосы. По столбцам, а не по
+    средней яркости: тонкая буква на светлой бумаге даёт среднее «почти
+    бумага», и хвост оригинала остался бы незакрашенным."""
+    x0, x1 = max(0, int(x0)), min(gray.size[0], int(x1))
+    y0, y1 = max(0, int(y0)), min(gray.size[1], int(y1))
+    w, h = x1 - x0, y1 - y0
+    if w < 1 or h < 1:
+        return []
+    data = gray.crop((x0, y0, x1, y1)).tobytes()
+    try:
+        import numpy as np
+        return np.frombuffer(data, dtype=np.uint8).reshape(h, w).min(axis=0).tolist()
+    except Exception:
+        out = [255] * w
+        for r in range(h):
+            row = data[r * w:(r + 1) * w]
+            for c in range(w):
+                if row[c] < out[c]:
+                    out[c] = row[c]
+        return out
+
+
+def _ink_box(sample, box: dict, pad: float, paper: float) -> tuple:
+    """(x0, x1) закраски, раздвинутые по КРАСКЕ страницы.
+
+    Конец строки в текстовом слое — оценка по средней ширине знака, и у книги
+    из распознавателя она врёт: справа от перевода оставался хвост оригинала.
+    Смотрим на саму страницу: идём от края рамки наружу, пока в её полосе
+    стоит краска, и останавливаемся на первом настоящем пробеле
+    (`INK_GAP_SHARE` кегля — шире межсловного и уже межколонника).
+    Ошибиться в эту сторону безопасно: мы закрашиваем бумагу цветом
+    этой же бумаги."""
+    x0, x1 = box["x0"], box["x1"]
+    if not sample:
+        return x0, x1
+    im, scale, cb, gray = sample
+    W, H = im.size
+    size = max(box.get("size") or 10.0, 1.0)
+    ytop = H - (box["top"] + pad - cb[1]) * scale
+    ybot = H - (box["bottom"] - pad - cb[1]) * scale
+    y0, y1 = int(min(ytop, ybot)), int(max(ytop, ybot)) + 1
+    if y1 - y0 < 2:
+        return x0, x1
+    dark = INK_DARK * paper * 255.0
+    # Потолок раздвижки: доля ширины рамки, но не меньше нескольких кеглей —
+    # у короткого заголовка доля вырождается в ничто, а хвост у него ровно
+    # такой же («Кириш *ие*»).
+    limit = max(1, int(min(max(INK_EXPAND_SHARE * (x1 - x0), 4 * size),
+                           INK_EXPAND_MAX) * scale))
+    gap = max(1, int(round(INK_GAP_SHARE * size * scale)))
+    left = (x0 - pad - cb[0]) * scale
+    right = (x1 + pad - cb[0]) * scale
+    # Вправо: столбцы от правого края наружу.
+    mins = _col_mins(gray, right, right + limit, y0, y1)
+    run, reach = 0, 0
+    for k, v in enumerate(mins):
+        if v < dark:
+            run, reach = 0, k + 1
+        else:
+            run += 1
+            if run >= gap:
+                break
+    x1 = x1 + reach / scale if reach else x1
+    # Влево: столбцы от левого края наружу, то есть справа налево.
+    mins = _col_mins(gray, left - limit, left, y0, y1)
+    run, reach = 0, 0
+    for k, v in enumerate(reversed(mins)):
+        if v < dark:
+            run, reach = 0, k + 1
+        else:
+            run += 1
+            if run >= gap:
+                break
+    x0 = x0 - reach / scale if reach else x0
+    return x0, x1
+
+
+def _strip_colors(sample, box: dict, pad: float, n: int, x0f=None, x1f=None) -> list:
     """Цвет бумаги полосами поперёк рамки — по САМОЙ странице под ней.
 
     Меряем не вокруг рамки, а внутри: у книги, снятой со сканера, бумага
@@ -240,9 +378,11 @@ def _strip_colors(sample, box: dict, pad: float, n: int) -> list:
     """
     if not sample:
         return [(1.0, 1.0, 1.0)] * n
-    im, scale, cb = sample
+    im, scale, cb = sample[0], sample[1], sample[2]
     W, H = im.size
-    x0, x1 = (box["x0"] - pad - cb[0]) * scale, (box["x1"] + pad - cb[0]) * scale
+    bx0 = box["x0"] if x0f is None else x0f
+    bx1 = box["x1"] if x1f is None else x1f
+    x0, x1 = (bx0 - pad - cb[0]) * scale, (bx1 + pad - cb[0]) * scale
     y0 = H - (box["top"] + pad - cb[1]) * scale
     y1 = H - (box["bottom"] - pad - cb[1]) * scale
     step = max(1.0, (x1 - x0) / n)
@@ -266,11 +406,15 @@ def _strip_colors(sample, box: dict, pad: float, n: int) -> list:
     return out
 
 
-def _fill_box(c, box: dict, pad: float, colors: list):
+def _fill_box(c, box: dict, pad: float, colors: list, x0f=None, x1f=None):
     """Закраска рамки полосами. Полосы кладутся с нахлёстом внутрь, но
-    НЕ ЗА правый край: вылезший кусок виден на поле прямоугольником."""
-    x0, y0 = box["x0"] - pad, box["bottom"] - pad
-    w, h = (box["x1"] - box["x0"]) + 2 * pad, (box["top"] - box["bottom"]) + 2 * pad
+    НЕ ЗА правый край: вылезший кусок виден на поле прямоугольником.
+    `x0f`/`x1f` — края, раздвинутые по краске (`_ink_box`): закрашиваем
+    то, что на странице НАПЕЧАТАНО, а не то, что насчитал текстовый слой."""
+    bx0 = box["x0"] if x0f is None else x0f
+    bx1 = box["x1"] if x1f is None else x1f
+    x0, y0 = bx0 - pad, box["bottom"] - pad
+    w, h = (bx1 - bx0) + 2 * pad, (box["top"] - box["bottom"]) + 2 * pad
     n = max(1, len(colors))
     step = w / float(n)
     for k, col in enumerate(colors):
@@ -308,9 +452,21 @@ def _missing_glyphs(fonts: dict, texts: dict) -> int:
     return miss
 
 
-def build(pdf_bytes: bytes, layout: dict, texts: dict) -> tuple:
-    """(PDF, отчёт). `layout` — {"boxes": {номер абзаца: [рамки]}},
-    `texts` — {номер абзаца: перевод}. Абзац без перевода не трогается."""
+def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = None) -> tuple:
+    """(PDF, отчёт).
+
+    `layout` — {"boxes": {номер абзаца: [рамки]}}, `texts` — {номер абзаца:
+    перевод}. Абзац без перевода не трогается.
+
+    `extra` — [{"text": …, "boxes": […]}]: рамки, у которых номера абзаца
+    нет вовсе. Ими приходит текст страниц-КАРТИНОК (обложка, скан): его
+    рамки считал разбор надписей, и в раскладку текстового слоя им не
+    попасть по построению. Печатаются наравне с абзацами.
+
+    Рамка с `repeat` — ОДИН И ТОТ ЖЕ текст на каждой своей странице
+    (колонтитул), а не продолжение абзаца: разложить его по рамкам, как
+    абзац, значило бы напечатать первую половину названия книги на одной
+    странице, а вторую — на следующей."""
     ok, why = available()
     if not ok:
         raise NotAvailable(why)
@@ -319,7 +475,10 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict) -> tuple:
     from pypdf import PdfReader, PdfWriter
     fonts = _register_fonts()
     sw = pdfmetrics.stringWidth
-    miss = _missing_glyphs(fonts, texts)
+    all_texts = dict(texts)
+    for k, it in enumerate(extra or []):
+        all_texts["x%d" % k] = it.get("text") or ""
+    miss = _missing_glyphs(fonts, all_texts)
     if miss > GLYPH_MISS_MAX:
         raise NotAvailable("шрифт %s не знает %d знаков перевода — письменность "
                            "целевого языка в нём отсутствует; задайте LAYOUT_FONT"
@@ -328,6 +487,10 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict) -> tuple:
     reader = PdfReader(io.BytesIO(pdf_bytes))
     stats = {"pages": len(reader.pages), "paragraphs": 0, "shrunk": 0,
              "overflow": 0, "nocolor": 0, "rotated": 0, "bold": 0, "italic": 0,
+             # Колонтитулы (одна надпись на многих страницах) и надписи
+             # со страниц-картинок: обе дороги молчали до сих пор, и обе
+             # оставляли на готовой книге русские строки.
+             "repeated": 0, "repeatBoxes": 0, "imageBoxes": 0,
              "glyphMiss": miss}
 
     # Повёрнутая страница: наш слой лёг бы боком. Оставляем её оригиналом —
@@ -341,37 +504,95 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict) -> tuple:
         except Exception:
             pass
 
+    jobs = [(int(key), (texts.get(int(key)) or "").strip(), boxes)
+            for key, boxes in (layout.get("boxes") or {}).items()]
+    jobs += [("x%d" % k, (it.get("text") or "").strip(), it.get("boxes") or [])
+             for k, it in enumerate(extra or [])]
+    # Рамка надписи со страницы-картинки считана в ПИКСЕЛЯХ этой картинки,
+    # и перевести её в точки страницы может только тот, кто держит сам PDF:
+    # приходит она долями листа (`frac`), раскрывается здесь.
+    for _idx, _t, boxes in jobs:
+        for b in boxes:
+            if b.get("frac") and 0 <= int(b["page"]) < len(reader.pages):
+                _unfrac(b, reader.pages[int(b["page"])].mediabox)
+
+    # ПЕРВЫЙ ПРОХОД: меряем бумагу и краску — по одной странице за раз
+    # (страница рисуется и тут же забывается). Меряем ДО раскладки, потому
+    # что раздвинутая по краске рамка шире, а в ширину рамки укладывается
+    # перевод: померив после, мы разложили бы текст по неверной ширине.
+    sampler = _Sampler(pdf_bytes)
+    live_boxes: dict = {}
+    for idx, text, boxes in jobs:
+        if not text or not boxes:
+            continue
+        for b in boxes:
+            pg = int(b["page"])
+            if pg not in skip:
+                live_boxes.setdefault(pg, []).append(b)
+    for pg in sorted(live_boxes):
+        sample = sampler.page(pg)
+        for b in live_boxes[pg]:
+            pad = PAD_SHARE * max(b["size"], 1.0)
+            colors = _strip_colors(sample, b, pad, FILL_STRIPS)
+            paper = max(sum(col) / 3.0 for col in colors) if colors else 1.0
+            if b.get("image"):
+                # Надпись СО СТРАНИЦЫ-КАРТИНКИ по краске не раздвигается:
+                # её рамку мерил разбор картинок по самой картинке, она точна,
+                # а на обложке «краска» — это фотография, и раздвижение
+                # закрасило бы её до потолка.
+                x0, x1 = b["x0"], b["x1"]
+            else:
+                x0, x1 = _ink_box(sample, b, pad, paper)
+            if x1 - x0 > b["x1"] - b["x0"] + 0.5:
+                # Рамка поехала по краске — и цвет бумаги надо мерить
+                # по НОВОЙ ширине, иначе полосы лягут не на своё место.
+                colors = _strip_colors(sample, b, pad, FILL_STRIPS, x0, x1)
+            # Рамка ТЕПЕРЬ такая: по ней и раскладывается перевод. Строка
+            # оригинала начиналась там, где стоит её краска, — значит там же
+            # начинается и перевод.
+            # Отступ первой строки считался ОТ ПРЕЖНЕГО края: рамка уехала
+            # влево — отступ на столько же вырос, иначе красная строка
+            # оригинала превратилась бы в ровный край.
+            b["indent"] = max(0.0, b.get("indent") or 0.0) + max(0.0, b["x0"] - x0)
+            b["x0"], b["x1"] = x0, x1
+            b["_fill"] = (colors, paper, pad)
+
     # Раскладка считается ПО АБЗАЦУ, один раз, а не на каждой его странице:
     # абзац бывает разорван концом страницы, и счёт «на страницу» удваивал
     # и работу в отчёте, и честное число не влезших.
     plan: list = []
     pages_used: set = set()
-    for key, boxes in (layout.get("boxes") or {}).items():
-        idx = int(key)
-        text = (texts.get(idx) or "").strip()
+    for idx, text, boxes in jobs:
         if not text or not boxes:
             continue
-        if any(int(b["page"]) in skip for b in boxes):
-            stats["rotated"] += 1
-            continue
-        style = boxes[0].get("style") or ""
-        font = fonts.get(style) or fonts[""]
-        size, lead, per_box, fits = _fit(text, boxes, sw, font)
+        live = [b for b in boxes if int(b["page"]) not in skip]
+        if len(live) != len(boxes):
+            # У повторяющейся надписи повёрнутая страница отнимает ОДНУ
+            # рамку, а не всю работу: на остальных её печатать можно.
+            if not (boxes and boxes[0].get("repeat")) or not live:
+                stats["rotated"] += 1
+                continue
+        groups = [[b] for b in live] if live[0].get("repeat") else [live]
         stats["paragraphs"] += 1
+        style = live[0].get("style") or ""
         stats["bold"] += 1 if "b" in style else 0
         stats["italic"] += 1 if "i" in style else 0
-        if size < max(b["size"] for b in boxes) - 0.01:
-            stats["shrunk"] += 1
-        if not fits:
-            stats["overflow"] += 1
-        plan.append((idx, boxes, per_box, size, lead, font))
-        pages_used.update(int(b["page"]) for b in boxes)
+        if live[0].get("repeat"):
+            stats["repeated"] += 1
+            stats["repeatBoxes"] += len(groups)
+        if live[0].get("image"):
+            stats["imageBoxes"] += len(live)
+        shrunk = over = False
+        for grp in groups:
+            font = fonts.get(grp[0].get("style") or "") or fonts[""]
+            size, lead, per_box, fits = _fit(text, grp, sw, font)
+            shrunk = shrunk or size < max(b["size"] for b in grp) - 0.01
+            over = over or not fits
+            plan.append((idx, grp, per_box, size, lead, font))
+            pages_used.update(int(b["page"]) for b in grp)
+        stats["shrunk"] += 1 if shrunk else 0
+        stats["overflow"] += 1 if over else 0
 
-    samples = _page_samples(pdf_bytes, sorted(pages_used))
-    # Не измерена бумага ровно там, где её не отрисовали: закраска будет белой,
-    # и число сказано. Считать «всё или ничего» нельзя — часть страниц может
-    # не отрисоваться, и отчёт тогда врал бы про остальные.
-    stats["nocolor"] = len([i for i in pages_used if i not in samples])
 
     # Слой на ВСЕ страницы — одним документом, а не по одному на страницу:
     # reportlab встраивает шрифт в каждый собранный файл, и на книге это
@@ -393,11 +614,15 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict) -> tuple:
                 # Закраска идёт и у ПУСТОЙ рамки: перевод мог целиком влезть
                 # в первую половину абзаца, а во второй остался бы оригинал —
                 # рядом с готовым переводом того же абзаца.
-                pad = PAD_SHARE * max(b["size"], 1.0)
-                _fill_box(c, b, pad, _strip_colors(samples.get(i), b, pad, FILL_STRIPS))
+                colors, paper, pad = b.get("_fill") or ([(1.0, 1.0, 1.0)] * FILL_STRIPS, 1.0,
+                                                        PAD_SHARE * max(b["size"], 1.0))
+                _fill_box(c, b, pad, colors)
                 if not lines:
                     continue
-                c.setFillColorRGB(0, 0, 0)
+                # Чёрным по тёмному не читается: на обложке и на тёмной
+                # плашке перевод печатается светлым. Цвет берётся у самой
+                # бумаги под рамкой — там же, где и закраска.
+                c.setFillColorRGB(*((1, 1, 1) if paper < DARK_PAPER else (0, 0, 0)))
                 c.setFont(font, size)
                 y = b["top"] - 0.85 * size
                 for k, line in enumerate(lines):
@@ -407,6 +632,10 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict) -> tuple:
         drawn += 1
         c.showPage()
     c.save()
+    # Не измерена бумага ровно там, где её не отрисовали: закраска вышла
+    # белой, и число сказано. Считать «всё или ничего» нельзя — часть
+    # страниц может не отрисоваться, и отчёт тогда врал бы про остальные.
+    stats["nocolor"] = len(sampler.missed & pages_used)
     buf.seek(0)
     overlay = PdfReader(buf)
     writer = PdfWriter()

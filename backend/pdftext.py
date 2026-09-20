@@ -86,7 +86,7 @@ MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
 # 6 — рисунки внутри страницы переносятся в документ вырезкой из неё:
 # абзацев это не меняет, но состав документа меняет, и пересобрать
 # прежние проекты надо кнопкой «Чтение файла улучшено».
-RULES_VERSION = 6
+RULES_VERSION = 7
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -1824,6 +1824,61 @@ def _para_boxes(entries: list, base: str = "") -> "list | None":
     return out
 
 
+def _head_hit(hits: list, band: str, clusters: dict, text: str, rec: dict, page: int) -> None:
+    """Снятая строка колонтитула — в копилку, с местом и ключом.
+
+    Ключ — представитель КЛАСТЕРА, а не сама строка: распознаватель читает
+    колонтитул заново на каждой странице и врёт по-разному
+    («Апитоксинотерапия —», «Лпитоксииотератш —»), и по букве они были бы
+    двумя сотнями разных надписей. Полоса (верх/низ) входит в ключ: одна
+    и та же надпись сверху и снизу — два разных места на листе."""
+    c = clusters["exact"].get(text) if clusters else None
+    hits.append(((band, c["rep"] if c else text), text,
+                 (page, rec["x0"], rec["y"], rec["x1"], rec["s"], rec.get("st") or "")))
+
+
+def _head_paragraphs(hits: list, base: str = "") -> list:
+    """Колонтитулы книги — [(текст, рамки)], по одной записи на РАЗНУЮ надпись.
+
+    ЗАЧЕМ. Бегущий заголовок снимается со страницы правилами полосы и в текст
+    не попадает — значит сегментом не становится, значит не переводится,
+    значит на готовой книге остаётся русская строка НА КАЖДОЙ странице.
+    В выгрузке .docx его и не было (мы собираем документ заново), а в PDF
+    «как в оригинале» страница остаётся своя — и колонтитул вместе с ней.
+
+    ОДНА надпись на всю книгу, а не по одной на страницу: это одно решение
+    переводчика, и спрашивать его двести раз значит не спрашивать вовсе.
+    Поэтому рамки помечены `repeat` — выгрузка печатает В КАЖДУЮ один и тот
+    же текст, а не раскладывает абзац по страницам.
+
+    Что НЕ становится абзацем: номера страниц (переводить нечего), мусор
+    распознавания и надпись, встреченная реже `HEAD_MIN_PAGES` страниц, —
+    со страницы она снимается, как и снималась, просто не переводится.
+    Иначе в книгу поехали бы обрывки, за которые человеку платить."""
+    groups: dict = {}
+    for key, text, geo in hits:
+        g = groups.setdefault(key, {"texts": Counter(), "geo": {}})
+        g["texts"][text] += 1
+        # По одной рамке на страницу: тот же колонтитул сверху и снизу одной
+        # страницы слился бы в рамку во весь лист, и закраска съела бы текст.
+        g["geo"].setdefault(geo[0], geo)
+    out = []
+    for key in sorted(groups, key=lambda k: (str(k[0]), str(k[1]))):
+        g = groups[key]
+        if len(g["geo"]) < HEAD_MIN_PAGES:
+            continue
+        text = g["texts"].most_common(1)[0][0]
+        if not _frame_candidate(text):
+            continue
+        boxes = _para_boxes([{"geo": x, "t": text} for x in g["geo"].values()], base)
+        if not boxes:
+            continue
+        for b in boxes:
+            b["repeat"] = 1
+        out.append((text, boxes))
+    return out
+
+
 def clean(pages: list, geom: "list | None" = None) -> dict:
     """Страницы (список списков строк) → {items, report}.
 
@@ -1939,6 +1994,7 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
         return gid_box[0]
 
     items = []
+    head_hits: list = []        # (ключ, текст, место) снятых колонтитулов
     entries: list = []
     figs_seen: list = []        # (номер страницы, рамка в долях) по номеру метки
     layout: list = []           # рамки абзаца на страницах — по одной записи на «p»
@@ -2017,7 +2073,8 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
             s = max(recs[k]["s"], 1.0)
             return not any(j != k and abs(recs[j]["y"] - recs[k]["y"]) < 0.5 * s
                            for j in range(len(recs)))
-        for band, known, clusters in ((pg["top"], heads | geo_heads, hc), (pg["bottom"], feet | geo_feet, fc)):
+        for bname, band, known, clusters in (("t", pg["top"], heads | geo_heads, hc),
+                                             ("b", pg["bottom"], feet | geo_feet, fc)):
             hit = [k for k in band if _frame_candidate(_norm_line(recs[k]["t"]))
                    and (_in_frame(_norm_line(recs[k]["t"]), known)
                         or _cluster_hit(clusters, _norm_line(recs[k]["t"]), recs[k]["s"]))]
@@ -2037,14 +2094,15 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                     # колонтитул целиком: вторую его строку распознаватель
                     # иногда искажает до неузнаваемости («Лпитоксииотератш —»).
                     report["runningHeads"] += 1
+                    _head_hit(head_hits, bname, clusters, t, recs[k], i)
                     drop.add(k)
         # Колонтитул и номер у самого края — и без пробела после них (плотная
         # вёрстка, мусор распознавания в полосе). Снизу — только номер
         # и нижний колонтитул, узнанный ПО МЕСТУ (`geo_feet`): последняя
         # строка текста, повторённая на нескольких страницах, по одному
         # счёту строк выглядит нижним колонтитулом, а она — текст.
-        for order, known in ((range(len(recs)), heads | geo_heads),
-                             (range(len(recs) - 1, -1, -1), geo_feet)):
+        for bname, order, known, clusters in (("t", range(len(recs)), heads | geo_heads, hc),
+                                              ("b", range(len(recs) - 1, -1, -1), geo_feet, fc)):
             for n_, k in enumerate(order):
                 if n_ >= HEAD_WINDOW:
                     break
@@ -2059,6 +2117,7 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                     report["pageNumbers"] += 1
                 elif _frame_candidate(t) and _in_frame(t, known):
                     report["runningHeads"] += 1
+                    _head_hit(head_hits, bname, clusters, t, recs[k], i)
                 else:
                     break
                 drop.add(k)
@@ -2097,6 +2156,12 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                             # Место строки — для выгрузки «как в оригинале».
                             "geo": (i, r["x0"], r["y"], r["x1"], r["s"], r.get("st") or "")})
     flush_lines()
+    # Колонтитулы — ПОСЛЕ текста: они относятся ко всей книге, а не к месту
+    # в ней, и вставленные в поток разорвали бы абзац на своей странице.
+    for text, boxes in _head_paragraphs(head_hits, base_style):
+        items.append(("p", text, boxes))
+        layout.append(boxes)
+        report["headParagraphs"] += 1
     report["imagePages"] = len(unreliable)
     report["paragraphs"] = sum(1 for it in items if it[0] == "p")
     return {"items": items, "imagePages": sorted(unreliable), "report": dict(report),

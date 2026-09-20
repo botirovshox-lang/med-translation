@@ -1526,6 +1526,7 @@ node tests/test_profile_render.js                                   # профи
 node tests/test_knowledge_render.js                                 # «Словарь книги»: панели и очередь
 node tests/test_segment_card.js                                     # карточка сегмента
 node tests/test_ocr_local.js                                        # чтение надписей у себя в браузере
+node tests/test_ocr_browser.js                                      # то же, но в НАСТОЯЩЕМ браузере (нет Chrome — пропустит)
 node tests/test_responsive.js                                       # резиновая вёрстка: телефон и узкое окно
 python tools/i18n_build.py                                          # словарь пересобран из JSON
 node tests/test_export_render.js                                    # экран экспорта

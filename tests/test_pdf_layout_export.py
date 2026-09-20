@@ -95,10 +95,50 @@ else:
     check(HEAD in text0, "колонтитул оригинала не тронут")
     check("Отвар из меда" in text0, "абзац без перевода остался оригиналом")
 
+print("=== 3б. Хвост абзаца на второй странице закрашивается ===")
+if ok:
+    boxes = {str(i): b for i, (p, b) in enumerate(zip(paras, lay)) if b}
+    j = next(i for i, (p, _b) in enumerate(zip(paras, lay)) if p[1].startswith("Отвар"))
+    # Перевод КОРОЧЕ оригинала: он целиком влезает в первую рамку, и вторая
+    # остаётся пустой — но оригинал из неё обязан быть стёрт, иначе рядом
+    # с готовым переводом на следующей странице торчит русский хвост.
+    out2, st2 = layout_pdf.build(PDF, {"boxes": boxes}, {j: "Коротко."})
+    # Проверяем ГЛАЗАМИ страницы, а не выдачей extract_text: закраска
+    # накрывает оригинал, но из содержимого страницы его не вынимает —
+    # текстовый слой остаётся под ней (см. докстроку layout_pdf).
+    try:
+        import pypdfium2 as pdfium
+        def ink(doc_bytes, box):
+            d = pdfium.PdfDocument(io.BytesIO(doc_bytes))
+            im = d[1].render(scale=1.0).to_pil().convert("L")
+            w, h = im.size
+            crop = im.crop((int(box["x0"]), int(h - box["top"]),
+                            int(box["x1"]), int(h - box["bottom"])))
+            px = list(crop.getdata())
+            return sum(1 for v in px if v < 128) / float(len(px) or 1)
+        tail = [b for b in lay[j] if b["page"] == 1][0]
+        check(ink(PDF, tail) > 0.01 and ink(out2, tail) < 0.002,
+              "хвост абзаца на второй странице закрашен: было %.3f, стало %.3f"
+              % (ink(PDF, tail), ink(out2, tail)))
+    except ImportError:
+        print("   pypdfium2 не установлен — закраска не проверялась")
+    check(st2["paragraphs"] == 1,
+          "абзац на двух страницах посчитан ОДИН раз: %s" % st2["paragraphs"])
+    check(st2["overflow"] == 0 and st2["shrunk"] == 0,
+          "короткий перевод не считается ни вжатым, ни вылезшим: %s" % st2)
+
 print("=== 4. Начертание — относительно основного в документе ===")
 check(pdftext._rel_style("b", "b") == "" and pdftext._rel_style("bi", "b") == "i",
       "весь текст книги, помеченный Bold, остаётся обычным, а курсив в нём виден")
 check(pdftext._rel_style("b", "") == "b", "а в обычном документе полужирный виден")
+
+print("=== 4а. Шрифт без нужной письменности — отказ, а не квадраты ===")
+if ok:
+    try:
+        layout_pdf.build(PDF, {"boxes": {"0": lay[0]}}, {0: "文書の翻訳です。" * 3})
+        check(False, "письменность, которой нет в шрифте, обязана отказать")
+    except layout_pdf.NotAvailable as e:
+        check("знаков" in str(e), "отказ называет причину: %s" % str(e)[:80])
 
 print("=== 5. Отказ без библиотеки — словами ===")
 was = layout_pdf.FONT_CANDIDATES

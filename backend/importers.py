@@ -794,28 +794,43 @@ def mixed_to_docx(items: list, page_images: dict, figures: "dict | None" = None)
                 im = Image.open(io.BytesIO(data))
                 im.load()
                 w_in = min(_PIC_WIDTH_IN, max(1.2, im.size[0] / float(textcount.FIG_RENDER_DPI)))
+            except Exception:
+                continue
+            try:
+                # Абзац считается, даже если картинка НЕ вставилась: python-docx
+                # заводит абзац первым делом и при отказе оставляет его в
+                # документе. Не посчитать его — сдвинуть номера всех следующих,
+                # то есть посадить переводы выгрузки 1в1 на чужие абзацы.
                 doc.add_picture(io.BytesIO(data), width=Inches(w_in))
-                n_para += 1        # картинка — тоже абзац: номера не должны съехать
                 n_fig += 1
             except Exception:
                 pass
+            n_para += 1
             continue
         idx = it[1]
         data = page_images.get(idx)
         placed = False
         if data:
+            pic = None
             try:
                 im = Image.open(io.BytesIO(data))
                 im.load()
                 im = _exif_upright(im)
                 if im.mode not in ("RGB", "L", "1", "P", "RGBA"):
                     im = im.convert("RGB")
-                doc.add_picture(io.BytesIO(_png_with_index(im, idx)), width=Inches(_PIC_WIDTH_IN))
-                n_img += 1
-                n_para += 1
-                placed = True
+                pic = _png_with_index(im, idx)
             except Exception:
-                placed = False
+                pic = None
+            if pic is not None:
+                try:
+                    doc.add_picture(io.BytesIO(pic), width=Inches(_PIC_WIDTH_IN))
+                    n_img += 1
+                    placed = True
+                except Exception:
+                    placed = False
+                # Абзац остаётся в документе при любом исходе вставки —
+                # см. выше: несосчитанный сдвинул бы номера всех следующих.
+                n_para += 1
         if not placed:
             for line in (it[2] if len(it) > 2 else []) or []:
                 t = _clean(line or "").strip()

@@ -985,6 +985,31 @@ def sample_indices(n_pages: int, k: int) -> list:
 
 PAGE_IMAGE_ASPECT_TOL = 0.12
 PAGE_RENDER_DPI = int(os.environ.get("PAGE_RENDER_DPI", "144"))
+# Потолок по площади ОДНОЙ отрисованной страницы. Размер страницы задаёт сам
+# файл (MediaBox), и по стандарту сторона доходит до 14400 пунктов — 200
+# дюймов: при 144 DPI это 28800x28800, 829 Мпкс и больше двух гигабайт
+# растра на страницу. Файл при этом весит килобайты, так что ни потолок
+# байтов, ни потолок страниц такого не ловят, а воркер один (инвариант 1) —
+# память кончится у всего сервиса разом.
+#
+# Отказывать тут нельзя: страницу надо прочитать, какой бы она ни была, —
+# поэтому не отвергаем, а рисуем МЕЛЬЧЕ. Разрешение падает, сервис стоит;
+# на обычной книге (A4 при 144 DPI — 1.4 Мпкс) не срабатывает никогда.
+PAGE_RENDER_MAX_MPX = float(os.environ.get("PAGE_RENDER_MAX_MPX", "40"))
+
+
+def _render_scale(page, dpi: float) -> float:
+    """Во сколько раз рисовать страницу, чтобы уложиться в потолок площади."""
+    scale = float(dpi) / 72.0
+    try:
+        w, h = page.get_size()
+    except Exception:
+        return scale            # размера не знаем — рисуем как просили
+    cap = PAGE_RENDER_MAX_MPX * 1e6
+    px = (w * scale) * (h * scale)
+    if cap > 0 and px > cap:
+        scale *= (cap / px) ** 0.5
+    return max(0.05, scale)
 
 
 def pdf_render_pages(content: bytes, indices: list, dpi: int = 0) -> Optional[list]:
@@ -1005,12 +1030,12 @@ def pdf_render_pages(content: bytes, indices: list, dpi: int = 0) -> Optional[li
         pdf = pdfium.PdfDocument(io.BytesIO(content))
     except Exception:
         return None
-    scale = float(dpi or PAGE_RENDER_DPI) / 72.0
+    want = float(dpi or PAGE_RENDER_DPI)
     for i in indices:
         data = None
         try:
             page = pdf[i]
-            im = page.render(scale=scale).to_pil()
+            im = page.render(scale=_render_scale(page, want)).to_pil()
             buf = io.BytesIO()
             im.convert("RGB").save(buf, format="PNG", optimize=False)
             data = buf.getvalue()
@@ -1058,6 +1083,36 @@ def _has_ink(crop) -> bool:
         return True          # не смогли померить — не выбрасываем
 
 
+def _box_shift(page) -> "tuple | None":
+    """Как перевести долю MediaBox в долю ОТРИСОВАННОЙ страницы.
+
+    None — коробки совпадают (обычный случай), и пересчитывать нечего.
+    Иначе (dx, dy, kx, ky): pdfium рисует CropBox, а места строк и рисунков
+    наш разбор считает от MediaBox — у печатной вёрстки с вылетами это
+    разные прямоугольники, и вырезка ушла бы мимо."""
+    try:
+        mb = [float(v) for v in page.get_mediabox()]
+        cb = [float(v) for v in page.get_cropbox()]
+    except Exception:
+        return None
+    if all(abs(mb[k] - cb[k]) < 0.5 for k in range(4)):
+        return None
+    mw, mh = max(1e-6, mb[2] - mb[0]), max(1e-6, mb[3] - mb[1])
+    cw, ch = max(1e-6, cb[2] - cb[0]), max(1e-6, cb[3] - cb[1])
+    # Доля MediaBox → точка → доля CropBox. По вертикали доли идут СВЕРХУ
+    # вниз, поэтому отсчёт ведётся от верхнего края коробки.
+    return ((mb[0] - cb[0]) / cw, (cb[3] - mb[3]) / ch, mw / cw, mh / ch)
+
+
+def _shift_frac(frac, shift) -> tuple:
+    x0, y0, x1, y1 = (float(v) for v in frac)
+    if shift:
+        dx, dy, kx, ky = shift
+        x0, x1 = dx + x0 * kx, dx + x1 * kx
+        y0, y1 = dy + y0 * ky, dy + y1 * ky
+    return tuple(max(0.0, min(1.0, v)) for v in (x0, y0, x1, y1))
+
+
 def pdf_crop_figures(content: bytes, boxes: list, dpi: int = 0) -> tuple:
     """({(страница, рамка): PNG/JPEG}, {blank}) — вырезки из отрисованных страниц.
 
@@ -1086,18 +1141,24 @@ def pdf_crop_figures(content: bytes, boxes: list, dpi: int = 0) -> tuple:
         pdf = pdfium.PdfDocument(io.BytesIO(content))
     except Exception:
         return {}, stats
-    scale = float(dpi or FIG_RENDER_DPI) / 72.0
+    want = float(dpi or FIG_RENDER_DPI)
     for i in sorted(by_page):
         try:
             page = pdf[i]
-            im = page.render(scale=scale).to_pil().convert("RGB")
+            # Рамки рисунков приходят ДОЛЯМИ листа и режутся по размеру
+            # отрисованной картинки, поэтому подрезанный масштаб их не двигает.
+            im = page.render(scale=_render_scale(page, want)).to_pil().convert("RGB")
+            # Доля считана от MediaBox (её отдаёт разбор через pypdf), а рисует
+            # pdfium по CropBox: у печатной вёрстки с вылетами это разные
+            # прямоугольники, и без пересчёта вырезался бы кусок мимо рисунка.
+            shift = _box_shift(page)
             page.close()
         except Exception:
             continue
         w, h = im.size
         for frac in by_page[i]:
             try:
-                x0, y0, x1, y1 = (max(0.0, min(1.0, float(v))) for v in frac)
+                x0, y0, x1, y1 = _shift_frac(frac, shift)
                 px = (int(x0 * w), int(y0 * h), max(1, int(x1 * w)), max(1, int(y1 * h)))
                 if px[2] - px[0] < 8 or px[3] - px[1] < 8:
                     continue

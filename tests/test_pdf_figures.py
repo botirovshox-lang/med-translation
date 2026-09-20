@@ -133,5 +133,43 @@ else:
     print("   pypdfium2 не установлен — вырезка не проверялась (на сервере ставится из requirements)")
 check(all(t in xml for t in ("Рис. 3", TEXT_B[0][:20])), "текст страницы не потерян")
 
+print("\n\u2500\u2500 \u043f\u043e\u0442\u043e\u043b\u043e\u043a \u043e\u0442\u0440\u0438\u0441\u043e\u0432\u043a\u0438 \u2500\u2500")
+# Размер страницы задаёт сам файл (MediaBox до 14400 пунктов — 200 дюймов),
+# и при 144 DPI это 829 Мпкс на страницу в файле весом в килобайты: ни потолок
+# байтов, ни потолок страниц такого не ловят, а воркер один. Отказывать
+# нельзя — страницу надо прочитать, — поэтому рисуем мельче.
+
+
+class _Page:
+    def __init__(self, w, h):
+        self.wh = (w, h)
+
+    def get_size(self):
+        return self.wh
+
+
+def _mpx(page, dpi):
+    k = textcount._render_scale(page, dpi)
+    w, h = page.get_size()
+    return (w * k) * (h * k) / 1e6
+
+
+check(abs(textcount._render_scale(_Page(595, 842), 144) - 2.0) < 1e-9,
+      "обычная A4 рисуется как просили — потолок в неё не вмешивается")
+check(_mpx(_Page(14400, 14400), 144) <= textcount.PAGE_RENDER_MAX_MPX + 0.01,
+      "страница 200x200 дюймов подрезана до потолка: %.1f Мпкс"
+      % _mpx(_Page(14400, 14400), 144))
+check(textcount._render_scale(_Page(14400, 14400), 144) > 0,
+      "подрезка даёт положительный масштаб, а не ноль")
+
+
+class _NoSize:
+    def get_size(self):
+        raise RuntimeError("no size")
+
+
+check(abs(textcount._render_scale(_NoSize(), 144) - 2.0) < 1e-9,
+      "размера не знаем — рисуем как просили, а не отказываемся")
+
 print("\n" + ("ALL OK" if not fail else "FAILED: %d" % len(fail)))
 sys.exit(1 if fail else 0)

@@ -24948,9 +24948,16 @@ def _layout_texts(project: dict, data: dict) -> dict:
 def _export_pdf_layout(project: dict, tmp: Path) -> Optional[dict]:
     """PDF «как в оригинале»: слой с переводом поверх исходных страниц.
 
-    None — этой дорогой не выгрузить (нет раскладки, файла или библиотеки);
-    вызывающий берёт прежнюю (печать собранного Word-документа). Молча
-    подменять одно другим нельзя, поэтому причина уезжает в отчёт."""
+    None — у ЭТОГО проекта такой выгрузки нет: раскладку пишет разбор файла,
+    и у проекта, залитого до неё (или без хранимого оригинала), её просто
+    неоткуда взять. Тогда вызывающий печатает собранный Word-документ,
+    как печатал раньше.
+
+    А вот когда раскладка ЕСТЬ, а собрать нечем (не поставлен reportlab,
+    нет шрифта с нужной письменностью) — это 503 со словами, а не тихая
+    подмена: человек просил перевод «как в оригинале», и отдать ему вместо
+    этого ровный поток абзацев, ничего не сказав, нельзя (инвариант 4).
+    Лечится установкой, а не молчанием."""
     if not layout_pdf_mod:
         return None
     data = _load_source_map(project["id"]) if project.get("sourceDocx") else None
@@ -24962,9 +24969,14 @@ def _export_pdf_layout(project: dict, tmp: Path) -> Optional[dict]:
         return None
     ok, why = layout_pdf_mod.available()
     if not ok:
-        raise HTTPException(503, "Выгрузка «как в оригинале» для PDF недоступна: %s" % why)
-    pdf, stats = layout_pdf_mod.build(orig.read_bytes(), layout,
-                                      _layout_texts(project, data))
+        raise HTTPException(503, "Выгрузка «как в оригинале» для PDF недоступна: %s. "
+                                 "Доступен Word-документ и PDF из него" % why)
+    try:
+        pdf, stats = layout_pdf_mod.build(orig.read_bytes(), layout,
+                                          _layout_texts(project, data))
+    except layout_pdf_mod.NotAvailable as e:
+        raise HTTPException(503, "Выгрузка «как в оригинале» для PDF не собралась: %s. "
+                                 "Доступен Word-документ и PDF из него" % e)
     tmp.write_bytes(pdf)
     return dict(stats, original="pdf", layout=True)
 
@@ -24980,9 +24992,11 @@ def _export_original(project: dict, out: Path, tmp: Path) -> dict:
     if ext == ".docx":
         return _export_docx_layout(project, tmp)
     if ext == ".pdf" and kind == "pdf":
-        # Сперва честная выгрузка 1в1 — перевод НА МЕСТЕ оригинала; её нет
-        # (старый проект без раскладки, нет библиотеки) — печатаем собранный
-        # Word-документ, как раньше, и говорим об этом в отчёте.
+        # Сперва честная выгрузка 1в1 — перевод НА МЕСТЕ оригинала. Её нет
+        # у проекта, залитого до появления раскладки: печатаем собранный
+        # Word-документ, как раньше, и говорим об этом в отчёте (`layout`).
+        # А «есть раскладка, но нечем собрать» — это 503 из `_export_pdf_layout`,
+        # а не тихая подмена одного другим.
         stats = _export_pdf_layout(project, tmp)
         if stats is not None:
             return stats

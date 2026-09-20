@@ -34,11 +34,18 @@ Word, а печать этого документа даёт ровный пот
    процентилю яркости (`_strip_colors`). Нечем мерить (нет рендера) —
    белый, и это считается числом (`nocolor`), а не замалчивается.
 
-ЧЕГО ЭТА ДОРОГА НЕ УМЕЕТ, и это названо, а не умолчано: колонтитулы и номера
-страниц остаются на языке оригинала (при импорте они снимаются и сегментами
-не становятся — переводить нечего); страница с повёрнутым `/Rotate`
-не трогается вовсе; текст внутри рисунков живёт своей дорогой (разбор
-картинок).
+ЧЕГО ЭТА ДОРОГА НЕ УМЕЕТ, и это названо, а не умолчано:
+  • колонтитулы и номера страниц остаются на языке оригинала (при импорте
+    они снимаются и сегментами не становятся — переводить нечего);
+  • страница с повёрнутым `/Rotate` не трогается вовсе;
+  • текст внутри рисунков живёт своей дорогой (разбор картинок);
+  • **прежний текст остаётся ПОД закраской**: мы кладём слой поверх
+    страницы, а не переписываем её содержимое. На глаз его нет, но
+    «скопировать текст» из готового файла отдаст и его тоже. У книги,
+    снятой со сканера, это невидимый слой распознавателя — там это
+    безразлично; у цифрового PDF копия будет смешанной. Вынимать чужие
+    операторы из содержимого страницы значит переписывать файл клиента
+    ради того, чего не видно, — цена выше пользы.
 """
 
 import io
@@ -85,6 +92,10 @@ SAMPLE_DPI = int(os.environ.get("LAYOUT_SAMPLE_DPI", "36"))
 PAD_SHARE = 0.18
 # На сколько полос режется закраска поперёк страницы.
 FILL_STRIPS = 10
+# Сколько разных знаков перевода шрифт вправе не знать. Ноль был бы слишком
+# строг: в тексте попадается редкий символ, который нарисуется квадратом,
+# и ронять из-за него всю выгрузку незачем.
+GLYPH_MISS_MAX = int(os.environ.get("LAYOUT_GLYPH_MISS_MAX", "3"))
 # Какой процентиль яркости полосы считать бумагой (буквы — тёмный хвост).
 PAPER_Q = 0.75
 
@@ -202,7 +213,15 @@ def _page_samples(pdf_bytes: bytes, pages: list) -> dict:
     for i in pages:
         try:
             page = doc[i]
-            out[i] = (page.render(scale=scale).to_pil().convert("RGB"), scale)
+            # Начало отсчёта у отрисованной страницы — её CropBox, а рамки
+            # абзацев лежат в координатах самого PDF (MediaBox). У печатной
+            # вёрстки с вылетами это разные прямоугольники, и цвет бумаги
+            # мерился бы не под тем абзацем.
+            try:
+                cb = [float(v) for v in page.get_cropbox()]
+            except Exception:
+                cb = [0.0, 0.0, 0.0, 0.0]
+            out[i] = (page.render(scale=scale).to_pil().convert("RGB"), scale, cb)
             page.close()
         except Exception:
             continue
@@ -221,11 +240,11 @@ def _strip_colors(sample, box: dict, pad: float, n: int) -> list:
     """
     if not sample:
         return [(1.0, 1.0, 1.0)] * n
-    im, scale = sample
+    im, scale, cb = sample
     W, H = im.size
-    x0, x1 = (box["x0"] - pad) * scale, (box["x1"] + pad) * scale
-    y0 = H - (box["top"] + pad) * scale
-    y1 = H - (box["bottom"] - pad) * scale
+    x0, x1 = (box["x0"] - pad - cb[0]) * scale, (box["x1"] + pad - cb[0]) * scale
+    y0 = H - (box["top"] + pad - cb[1]) * scale
+    y1 = H - (box["bottom"] - pad - cb[1]) * scale
     step = max(1.0, (x1 - x0) / n)
     out = []
     for k in range(n):
@@ -261,6 +280,34 @@ def _fill_box(c, box: dict, pad: float, colors: list):
         c.rect(left, y0, right - left, h, stroke=0, fill=1)
 
 
+def _missing_glyphs(fonts: dict, texts: dict) -> int:
+    """Сколько РАЗНЫХ знаков перевода шрифт не знает.
+
+    Файл шрифта на диске есть — это ещё не значит, что в нём есть
+    письменность целевого языка: у DejaVu нет ни арабского, ни китайского,
+    и страница вышла бы из пустых квадратов. Спрашиваем сам шрифт."""
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        face = pdfmetrics.getFont(fonts.get("") or FONT_NAME).face
+    except Exception:
+        return 0                 # спросить не у кого — не выдумываем отказ
+    chars = set()
+    for t in texts.values():
+        chars.update(t or "")
+        if len(chars) > 2000:
+            break
+    miss = 0
+    for ch in chars:
+        if ch.isspace():
+            continue
+        try:
+            if not face.charToGlyph.get(ord(ch)):
+                miss += 1
+        except Exception:
+            return 0
+    return miss
+
+
 def build(pdf_bytes: bytes, layout: dict, texts: dict) -> tuple:
     """(PDF, отчёт). `layout` — {"boxes": {номер абзаца: [рамки]}},
     `texts` — {номер абзаца: перевод}. Абзац без перевода не трогается."""
@@ -272,23 +319,59 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict) -> tuple:
     from pypdf import PdfReader, PdfWriter
     fonts = _register_fonts()
     sw = pdfmetrics.stringWidth
+    miss = _missing_glyphs(fonts, texts)
+    if miss > GLYPH_MISS_MAX:
+        raise NotAvailable("шрифт %s не знает %d знаков перевода — письменность "
+                           "целевого языка в нём отсутствует; задайте LAYOUT_FONT"
+                           % (os.path.basename(font_path("")), miss))
 
-    by_page: dict = {}
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    stats = {"pages": len(reader.pages), "paragraphs": 0, "shrunk": 0,
+             "overflow": 0, "nocolor": 0, "rotated": 0, "bold": 0, "italic": 0,
+             "glyphMiss": miss}
+
+    # Повёрнутая страница: наш слой лёг бы боком. Оставляем её оригиналом —
+    # это честнее испорченной. Решается ДО раскладки: абзац, чья вторая
+    # половина попала на такую страницу, не должен считаться сделанным.
+    skip = set()
+    for i, page in enumerate(reader.pages):
+        try:
+            if int(page.get("/Rotate") or 0) % 360:
+                skip.add(i)
+        except Exception:
+            pass
+
+    # Раскладка считается ПО АБЗАЦУ, один раз, а не на каждой его странице:
+    # абзац бывает разорван концом страницы, и счёт «на страницу» удваивал
+    # и работу в отчёте, и честное число не влезших.
+    plan: list = []
+    pages_used: set = set()
     for key, boxes in (layout.get("boxes") or {}).items():
         idx = int(key)
         text = (texts.get(idx) or "").strip()
         if not text or not boxes:
             continue
-        for b in boxes:
-            by_page.setdefault(int(b["page"]), []).append((idx, text, boxes))
+        if any(int(b["page"]) in skip for b in boxes):
+            stats["rotated"] += 1
+            continue
+        style = boxes[0].get("style") or ""
+        font = fonts.get(style) or fonts[""]
+        size, lead, per_box, fits = _fit(text, boxes, sw, font)
+        stats["paragraphs"] += 1
+        stats["bold"] += 1 if "b" in style else 0
+        stats["italic"] += 1 if "i" in style else 0
+        if size < max(b["size"] for b in boxes) - 0.01:
+            stats["shrunk"] += 1
+        if not fits:
+            stats["overflow"] += 1
+        plan.append((idx, boxes, per_box, size, lead, font))
+        pages_used.update(int(b["page"]) for b in boxes)
 
-    reader = PdfReader(io.BytesIO(pdf_bytes))
-    stats = {"pages": len(reader.pages), "paragraphs": 0, "shrunk": 0,
-             "overflow": 0, "nocolor": 0, "rotated": 0,
-             "bold": 0, "italic": 0}
-    samples = _page_samples(pdf_bytes, sorted(by_page))
-    if not samples and by_page:
-        stats["nocolor"] = len(by_page)
+    samples = _page_samples(pdf_bytes, sorted(pages_used))
+    # Не измерена бумага ровно там, где её не отрисовали: закраска будет белой,
+    # и число сказано. Считать «всё или ничего» нельзя — часть страниц может
+    # не отрисоваться, и отчёт тогда врал бы про остальные.
+    stats["nocolor"] = len([i for i in pages_used if i not in samples])
 
     # Слой на ВСЕ страницы — одним документом, а не по одному на страницу:
     # reportlab встраивает шрифт в каждый собранный файл, и на книге это
@@ -296,50 +379,32 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict) -> tuple:
     buf = io.BytesIO()
     c = canvas.Canvas(buf)
     order: list = []
+    drawn = 0
     for i, page in enumerate(reader.pages):
-        todo = by_page.get(i) or []
-        if todo:
-            try:
-                rot = int(page.get("/Rotate") or 0) % 360
-            except Exception:
-                rot = 0
-            if rot:
-                # Повёрнутая страница: наш слой лёг бы боком. Оставляем её
-                # оригиналом — это честнее испорченной.
-                stats["rotated"] += 1
-                todo = []
-        if not todo:
+        if i not in pages_used:
             order.append(None)
             continue
         mb = page.mediabox
         c.setPageSize((float(mb.width), float(mb.height)))
-        seen = set()
-        for idx, text, boxes in todo:
-            if idx in seen:
-                continue
-            seen.add(idx)
-            font = fonts.get((boxes[0].get("style") or "")) or fonts[""]
-            size, lead, per_box, fits = _fit(text, boxes, sw, font)
-            stats["paragraphs"] += 1
-            st = boxes[0].get("style") or ""
-            stats["bold"] += 1 if "b" in st else 0
-            stats["italic"] += 1 if "i" in st else 0
-            if size < max(b["size"] for b in boxes) - 0.01:
-                stats["shrunk"] += 1
-            if not fits:
-                stats["overflow"] += 1
+        for _idx, boxes, per_box, size, lead, font in plan:
             for n, (b, lines) in enumerate(zip(boxes, per_box)):
-                if int(b["page"]) != i or not lines:
+                if int(b["page"]) != i:
                     continue
+                # Закраска идёт и у ПУСТОЙ рамки: перевод мог целиком влезть
+                # в первую половину абзаца, а во второй остался бы оригинал —
+                # рядом с готовым переводом того же абзаца.
                 pad = PAD_SHARE * max(b["size"], 1.0)
                 _fill_box(c, b, pad, _strip_colors(samples.get(i), b, pad, FILL_STRIPS))
+                if not lines:
+                    continue
                 c.setFillColorRGB(0, 0, 0)
                 c.setFont(font, size)
                 y = b["top"] - 0.85 * size
                 for k, line in enumerate(lines):
                     c.drawString(b["x0"] + (b["indent"] if (k == 0 and n == 0) else 0.0), y, line)
                     y -= lead
-        order.append(len(order) - order.count(None))
+        order.append(drawn)
+        drawn += 1
         c.showPage()
     c.save()
     buf.seek(0)

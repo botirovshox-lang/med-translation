@@ -1025,6 +1025,105 @@ def pdf_render_pages(content: bytes, indices: list, dpi: int = 0) -> Optional[li
     return out
 
 
+# Рисунок внутри страницы вырезается из ОТРИСОВАННОЙ страницы, а не
+# достаётся картинкой-объектом: у многослойного скана один рисунок разложен
+# на слои (фон, маска), и вложенный объект несёт половину изображения,
+# а подписи внутри рисунка лежат в слое страницы. Рендер собирает всё так,
+# как это видит читатель. Разрешение — своё: страница целиком идёт зрячей
+# модели (там важен размер запроса), а рисунок ложится в документ.
+FIG_RENDER_DPI = int(os.environ.get("FIG_RENDER_DPI", "150"))
+# Вырезка крупнее этого веса пересохраняется JPEG: штриховой рисунок PNG
+# жмёт лучше, фотография — хуже в разы, а книга их не различает.
+FIG_PNG_MAX = int(os.environ.get("FIG_PNG_MAX", "180000"))
+FIG_JPEG_Q = int(os.environ.get("FIG_JPEG_Q", "85"))
+# Доля точек темнее бумаги, начиная с которой вырезка считается рисунком.
+FIG_INK_MIN = float(os.environ.get("FIG_INK_MIN", "0.015"))
+FIG_INK_DARK = 0.7          # «темнее бумаги» — вот во столько раз
+
+
+def _has_ink(crop) -> bool:
+    """Есть ли в вырезке чернила. Бумага — высокий процентиль яркости
+    (у скана она жёлтая, а не белая), чернила — всё, что заметно темнее."""
+    try:
+        g = crop.convert("L")
+        if g.size[0] * g.size[1] > 400000:
+            g.thumbnail((640, 640))
+        vals = sorted(g.getdata())
+        if not vals:
+            return False
+        paper = vals[int(0.75 * (len(vals) - 1))]
+        dark = sum(1 for v in vals if v < FIG_INK_DARK * paper)
+        return dark >= FIG_INK_MIN * len(vals)
+    except Exception:
+        return True          # не смогли померить — не выбрасываем
+
+
+def pdf_crop_figures(content: bytes, boxes: list, dpi: int = 0) -> tuple:
+    """({(страница, рамка): PNG/JPEG}, {blank}) — вырезки из отрисованных страниц.
+
+    `boxes` — [(номер страницы, (x0, y0, x1, y1) в ДОЛЯХ листа от левого
+    верхнего угла)]. Страница отрисовывается ОДИН раз на все свои рисунки:
+    рендер книги постранично — это минуты единственного воркера.
+    Нет рендера (модуль не поставлен) — пустой ответ, а не исключение:
+    документ соберётся без рисунков, как собирался раньше.
+
+    ПУСТАЯ ВЫРЕЗКА НЕ ВОЗВРАЩАЕТСЯ. У книги, снятой со сканера, отдельными
+    картинками лежат край переплёта и стол, и по размеру они проходят за
+    рисунок — а в документ едут тёмным лоскутом. Отличает их не геометрия,
+    а содержимое: у рисунка есть ЧЕРНИЛА (`FIG_INK_MIN` точек темнее бумаги),
+    у лоскута их нет. Считается там же, где уже есть пиксели."""
+    try:
+        import pypdfium2 as pdfium      # type: ignore
+        from PIL import Image           # noqa: F401
+    except ImportError:
+        return {}, {"blank": 0}
+    by_page: dict = {}
+    for i, frac in boxes:
+        by_page.setdefault(int(i), []).append(tuple(frac))
+    out: dict = {}
+    stats = {"blank": 0}
+    try:
+        pdf = pdfium.PdfDocument(io.BytesIO(content))
+    except Exception:
+        return {}, stats
+    scale = float(dpi or FIG_RENDER_DPI) / 72.0
+    for i in sorted(by_page):
+        try:
+            page = pdf[i]
+            im = page.render(scale=scale).to_pil().convert("RGB")
+            page.close()
+        except Exception:
+            continue
+        w, h = im.size
+        for frac in by_page[i]:
+            try:
+                x0, y0, x1, y1 = (max(0.0, min(1.0, float(v))) for v in frac)
+                px = (int(x0 * w), int(y0 * h), max(1, int(x1 * w)), max(1, int(y1 * h)))
+                if px[2] - px[0] < 8 or px[3] - px[1] < 8:
+                    continue
+                crop = im.crop(px)
+                if not _has_ink(crop):
+                    stats["blank"] += 1
+                    continue
+                buf = io.BytesIO()
+                crop.save(buf, format="PNG", optimize=True)
+                data = buf.getvalue()
+                if len(data) > FIG_PNG_MAX:
+                    buf = io.BytesIO()
+                    crop.save(buf, format="JPEG", quality=FIG_JPEG_Q, optimize=True)
+                    if buf.tell() < len(data):
+                        data = buf.getvalue()
+                out[(i, frac)] = data
+            except Exception:
+                continue
+        im.close()
+    try:
+        pdf.close()
+    except Exception:
+        pass
+    return out, stats
+
+
 def pdf_page_pictures(content: bytes, indices: list, full_page: bool = False) -> list:
     """Картинка каждой запрошенной страницы: отрисованная, если есть рендер,
     иначе вложенная (`pdf_page_images`). Один вход для скана, для страниц

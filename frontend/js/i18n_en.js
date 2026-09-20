@@ -192,7 +192,7 @@ window.I18N.registerServer("en", {
  " (бесплатной строки в прайсе не бывает — уберите строку)": " (there is no free row in a price list — remove the row)",
  " (снять цену — пустым полем)": " (clear the price with an empty field)",
  " МБ — разберите его по частям": " MB — split it into parts",
- " Надписи внутри остальных картинок не разобраны. Обратно выгружается PDF, собранный из документа Word.": " Text inside the other pictures is not parsed. The export is a PDF built from the Word document.",
+ " Надписи внутри картинок не разобраны. Обратно выгружается PDF, собранный из документа Word.": " Text inside pictures is not parsed. The export is a PDF built from the Word document.",
  " Страниц с ненадёжным слоем без картинки страницы оставлено текстом как есть: ": " Pages with an unreliable layer and no page image were left as text: ",
  " Страниц с ненадёжным текстовым слоем положено картинками: ": " Pages with an unreliable text layer placed as images: ",
  " больше остатка лимита $": " is more than the remaining limit $",

@@ -539,8 +539,10 @@ const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
   const tRp = okRp ? texts(treeRp) : [];
   check(tRp.some(s => s.indexOf("Перевод") !== -1) && tRp.some(s => s.indexOf("2 сегм.") !== -1),
         "шаги и их состав показаны числом от сервера");
-  check(tRp.some(s => s.indexOf("Модель 1") !== -1),
-        "и модель шага названа — её выбирает сервер, а не браузер");
+  /* Имя модели не называется никому, включая системного
+     администратора (modelsShown в ui.jsx): назначают модели в админке. */
+  check(!tRp.some(s => s.indexOf("Модель 1") !== -1),
+        "и модель шага не названа никому");
   check(tRp.some(s => s.indexOf("Привести начертание") !== -1)
         && tRp.some(s => s.indexOf("Принять правки") !== -1),
         "бесплатные правки названы отдельными галочками, а не спрятаны в кнопке");
@@ -592,14 +594,15 @@ const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
   } catch (e) { okMd = false; console.log("      " + e.message); }
   check(okMd, "RunPanel рендерится с выбором моделей");
   const tMd = okMd ? texts(treeMd) : [];
-  check(tMd.filter(s => s === "по умолчанию").length >= 3,
-        "у шагов и судьи есть выбор с пунктом «по умолчанию»");
-  check(tMd.some(s => s.indexOf("Back-check той же моделью, что и перевод") !== -1),
-        "проверка себя названа предупреждением");
-  check(tMd.some(s => s.indexOf("Судья и обратный перевод одной моделью") !== -1),
-        "судья = модель обратного перевода — тоже");
-  check(!tMd.some(s => s.indexOf("Ремонт той же моделью") !== -1),
-        "а про ремонт (другая модель) не врёт");
+  /* Выбора модели на экране больше нет (modelsShown), и вместе с ним
+     уходят предупреждения о споре моделей по роли: они были подсказкой
+     К ВЫБОРУ, и без выбора человеку по ним делать нечего. Расходиться
+     моделям теперь негде: их назначает админка одним местом. */
+  check(tMd.filter(s => s === "по умолчанию").length === 0,
+        "выбора модели у шагов и судьи нет");
+  check(!tMd.some(s => s.indexOf("той же моделью") !== -1)
+        && !tMd.some(s => s.indexOf("одной моделью") !== -1),
+        "и предупреждений о споре моделей тоже");
   check(JSON.stringify(tkPlanBody({ use_judge: true, judge_all: true },
                                   { bc_model: "m2", tc_model: "" }))
         === JSON.stringify({ use_judge: true, judge_all: true, bc_model: "m2" }),

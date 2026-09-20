@@ -84,12 +84,17 @@ def run() -> None:
             main.STORE.bump_epoch("doc:" + key)
         except Exception as e:
             print(f"[worker] эпоха проекта не поднята: {e}", file=sys.stderr)
+        # Счётчики событий прогона — наружу сразу по его концу: в простое
+        # воркер спит, и без этого сводка узнавала бы о ночной работе
+        # только со следующим прогоном.
+        main._metrics_flush(force=True)
         if job.get("status") == "queued":
             print(f"[worker] прогон №{job['id']} уступил очередь: сделано "
                   f"{job.get('done')} из {job.get('total')}, остаток вернулся в очередь",
                   file=sys.stderr)
         else:
             print(f"[worker] прогон №{job['id']} завершён: {job.get('status')}", file=sys.stderr)
+    main._metrics_flush(force=True)
     print("[worker] остановлен штатно", file=sys.stderr)
 
 

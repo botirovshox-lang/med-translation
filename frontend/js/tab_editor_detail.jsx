@@ -1,6 +1,31 @@
 ﻿/* ============================================================
    Segment detail panel (editor right sidebar)
    ============================================================ */
+/* Почему строка ждёт решения человека: код с сервера → фраза на языке
+   человека. Подпись даёт браузер, а не сервер (закон `CLEAN_*`): иначе на
+   узбекском экране стояла бы русская строка. Имена шагов (back-check,
+   termcheck, ремонт, отпечаток) сюда не пишутся — человеку нужно
+   знать, что сделать, а не кто из шагов пожаловался.
+   Новый код в `_ask` на сервере ОБЯЗАН получить здесь строку. */
+const ASK_WHY = {
+  confirmedFindings: TR("Вы заверили этот перевод, а проверки нашли в нём замечания."),
+  glossaryConfirmed: TR("Перевод расходится со словарём, но заверен вами — без вашего разрешения машина его не трогает."),
+  qaCritical: TR("Проверка нашла серьёзное расхождение в заверенном вами тексте."),
+  sourceSuspect: TR("Похоже, повреждён сам оригинал: пока он не выправлен, чинить перевод нечем."),
+  reviewFlagged: TR("Проверка считает перевод дефектным, но сама его не правила."),
+  reviewConfirmed: TR("Есть готовая правка для заверенного вами текста — поставить её можете только вы."),
+  termcheckDispute: TR("Проверка спорит со словарной записью: либо неверна запись, либо неверна проверка."),
+  staleFinding: TR("В тексте осталось слово, которое проверка раньше забраковала."),
+  confirmWithdrawn: TR("С этого перевода снята ваша отметка — посмотрите, что нашли."),
+  termContextWrong: TR("Похоже, в этом месте неверна сама словарная запись."),
+  reverted: TR("Машина пробовала починить эту строку и откатила свою правку."),
+  futile: TR("Тот же заход машины ничего не изменит — дальше решаете вы."),
+  clamped: TR("Машина уже заходила сюда с тем же вопросом и ничего не добилась."),
+  weak: TR("Перевод плохо сошёлся с оригиналом при проверке, и сама машина больше ничего тут не сделает."),
+  consistency: TR("Тот же оборот в книге переведён по-разному, а эту строку вы заверили."),
+  alphabet: TR("Перевод набран не тем письмом или не теми буквами."),
+};
+
 function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChecks, onConfirm, onChanged, bcModels, bcModel, onBcModel, bcJudge, judgeModel, tcModel, rpModel,
                      /* Текст правится в САМОЙ таблице (одно место на экран),
                         поэтому карточка не держит черновика вовсе. Всё, что
@@ -18,6 +43,11 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
                      // ради них человека сюда и привели, и искать их глазами
                      // по абзацу он не должен.
                      hlTerms = null,
+                     /* Почему эта строка ждёт решения человека — кодами с сервера
+                        (`turnkey.why`). Без этого карточка молчала ровно там, где
+                        строка обещала объяснение: балл, отпечаток захода, разнобой,
+                        спор про запись словаря на самом сегменте не видны ничем. */
+                     askWhy = null,
                      // × в шапке: закрыть карточку и отдать таблице всю ширину.
                      onClose = null }) {
   /* Любая запись в сегмент из карточки меняет корзины /analysis, а по ним —
@@ -382,9 +412,23 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
        в этом переводе. Ниже идут карточки ревизии, арбитра, ремонта
        и проверки терминов — каждая со своей командой. */
     (termFindings.length > 0 || (seg.ctxAdvice || []).length > 0 || seg.review
-      || seg.confirmWithdrawn || seg.repair || seg.termCtxApplied)
+      || seg.confirmWithdrawn || seg.repair || seg.termCtxApplied
+      || (askWhy && askWhy.length))
       && React.createElement("div", { className: "seg-zone-t" },
         React.createElement("i", null, "!"), TR("Что мне не нравится")),
+    /* Первой строкой зоны — ПРИЧИНА, по которой строка вообще попала
+       к человеку. Карточки ниже отвечают на свои узкие вопросы и про
+       корзину не знают ничего: сегмент с вердиктом ревизии «править нечего»
+       и словом «спрошу» в строке выглядел сломанным экраном. */
+    askWhy && askWhy.length > 0 && React.createElement("div",
+      { className: "tm-pop", style: { marginTop: 8, borderLeft: "3px solid var(--c-warning)" } },
+      React.createElement("div", { className: "label", style: { margin: 0 } },
+        TR("Нужно ваше решение")),
+      React.createElement("ul",
+        { style: { margin: "6px 0 0", paddingLeft: 18, fontSize: 12.5, lineHeight: 1.5 } },
+        askWhy.map((w, i) => React.createElement("li", { key: i },
+          ASK_WHY[w.code] || TR("есть открытый вопрос по этой строке"),
+          w.note && React.createElement("span", { className: "dim" }, " — " + TRS(w.note)))))),
     /* Порядок зоны 3 несущий: РЕВИЗИЯ первой. Она единственная читает пару
        целиком и сразу говорит, что не так и как надо, — остальные карточки
        отвечают на узкие вопросы. Человек, открывший строку из-за жалобы,
@@ -776,6 +820,7 @@ function CommentPane({ seg, store, comment, setComment, addComment }) {
       React.createElement(Btn, { variant: "secondary", size: "sm", icon: "send", onClick: addComment, disabled: !comment.trim() }, TR("Отправить")))
   );
 }
+window.ASK_WHY = ASK_WHY;
 window.SegDetail = SegDetail;
 
 

@@ -225,11 +225,13 @@ const plainUser = render(withModels);
 check(plainUser.indexOf("gpt-5.6") === -1, "ни в одной карточке имени модели нет");
 check(plainUser.indexOf("2026-09-16 13:11") !== -1, "…а время осталось и не начинается с разделителя");
 check(plainUser.split("\n").every(l => l[0] !== "·"), "ни одна подпись не начинается с висячего разделителя");
-/* Эксперту устройство возвращается: он по нему и принимает решения. */
+/* Исключений БОЛЬШЕ НЕТ (modelsShown в ui.jsx): имя модели не показывается
+   и системному администратору: с книгой он работает наравне со всеми и показывает
+   этот экран клиентам. Назначают модели в админке (инвариант 30). */
 storeStub.can = { owner: true, super: true };
 const asSuper = render(withModels);
 delete storeStub.can;
-check(asSuper.indexOf("gpt-5.6-terra") !== -1, "системному администратору модель названа");
+check(asSuper.indexOf("gpt-5.6") === -1, "и системному администратору модель тоже не названа");
 
 /* Дальше — действия в карточке: жмём кнопки так, как это сделал бы человек,
    и перерисовываем. Состояние хуков сбрасывается перед каждым сюжетом:
@@ -363,6 +365,36 @@ const order = textOf(draw(Object.assign({}, BASE, {
 const pos = (t) => order.indexOf(t);
 check(pos("Ревизия") !== -1 && pos("Ревизия") < pos("Арбитр:"), "ревизия выше арбитра");
 check(pos("Ревизия") < pos("Автоматический ремонт"), "и выше ремонта");
+
+console.log("");
+console.log("=== 12. «Спрошу» без объяснения — сломанный экран ===");
+/* Подсказка чипа обещает: «откройте строку — карточка скажет, что
+   именно». Боевой #83: сегмент стоял в корзине человека со слабым
+   баллом, а в карточке был только вердикт ревизии «править нечего».
+   Причина приходит КОДОМ с сервера (`turnkey.why`), подпись — здесь. */
+hooks.length = 0; hookIdx = 0;
+const askOut = [];
+(function walk(n) {
+  if (n === null || n === undefined || n === false || n === true) return;
+  if (Array.isArray(n)) return n.forEach(walk);
+  if (typeof n === "string" || typeof n === "number") { askOut.push(String(n)); return; }
+  if (typeof n === "object") ((n.children) || []).forEach(walk);
+})(SegDetail({ seg: Object.assign({}, BASE, {
+    review: { score: 8, applied: false, at: "2026-09-18 22:48", issues: [] } }),
+  project, store: storeStub, toast, models: [], onClose() {},
+  askWhy: [{ code: "weak", note: "балл ниже порога" }, { code: "clamped" }] }));
+const askTxt = askOut.join("\n");
+check(askTxt.indexOf("Нужно ваше решение") !== -1, "причина названа своим блоком");
+check(askTxt.indexOf(ASK_WHY.weak) !== -1 && askTxt.indexOf(ASK_WHY.clamped) !== -1,
+      "и каждый код переведён в фразу");
+check(askTxt.indexOf("балл ниже порога") !== -1, "а пояснение сервера показано рядом");
+/* Коды `_ask` и подписи ASK_WHY обязаны сходиться: код без строки
+   даёт на экране отговорку «есть открытый вопрос» вместо ответа. */
+const srvCodes = (fs.readFileSync(path.join(__dirname, "..", "backend", "main.py"), "utf8")
+  .match(/_ask\("([a-zA-Z]+)"/g) || []).map(m => m.slice(6, -1));
+check(srvCodes.length >= 10, "коды причин найдены в сервере: " + srvCodes.length);
+const noLabel = srvCodes.filter(c => !ASK_WHY[c]);
+check(noLabel.length === 0, "у каждого кода сервера есть подпись: " + noLabel.join(", "));
 
 console.log("");
 if (fail.length) {

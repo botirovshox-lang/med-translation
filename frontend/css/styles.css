@@ -1353,6 +1353,27 @@ body { overflow-wrap: break-word; }
 .adm-conflict:focus-visible { outline: 2px solid var(--c-warning); outline-offset: 1px; }
 
 
+/* ---------- Метрики (админка) ----------
+   Экран читается сверху вниз и по ЧИСЛАМ: цифра стоит слева крупно
+   и цветом вида (заработать / теряем / чинить), фраза — справа обычным
+   кеглем. Обратный порядок («длинная фраза, а число где-то в ней»)
+   заставляет читать всё подряд, а здесь нужно скользить взглядом
+   по цифрам и останавливаться на крупной. */
+.met-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.met-hint { display: flex; gap: 10px; align-items: baseline; line-height: 1.45; }
+.met-num { font-size: 18px; font-weight: 700; min-width: 64px; text-align: right; flex: none; }
+.met-num.ok { color: var(--c-success); }
+.met-num.warn { color: var(--c-warning); }
+.met-num.bad { color: var(--c-error); }
+/* Полоса доли расхода по шагу: сравнение глазами вместо чтения чисел. */
+.met-bar { background: var(--c-border); border-radius: 4px; height: 8px; overflow: hidden; }
+.met-bar > i { display: block; height: 100%; background: var(--c-primary); }
+/* Сводка словами — моноширинным: её копируют целиком в Telegram и агенту,
+   и переносы в ней несущие. */
+.met-pre { white-space: pre-wrap; font-size: 12.5px; line-height: 1.5; margin: 0;
+           max-height: 460px; overflow: auto; }
+@media (max-width: 640px) { .met-num { min-width: 48px; font-size: 16px; } }
+
 /* ---------- Палец вместо курсора ----------
    Цель в 28 px промахивается пальцем, и промах на этих экранах стоит
    дорого: рядом с «Подтвердить» стоит «Перевести заново». Растёт только

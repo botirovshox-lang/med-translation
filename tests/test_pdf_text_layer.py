@@ -203,8 +203,10 @@ print("=== 3. Сборка .docx: абзацы и страницы-картин�
 from PIL import Image
 buf = io.BytesIO()
 Image.new("RGB", (40, 60), "white").save(buf, format="PNG")
-docx, n_img = importers.mixed_to_docx([("img", 0, ["мусор"]), ("p", "Первый абзац."), ("img", 3, ["резерв"]),
-                                       ("p", "Второй абзац.")], {0: buf.getvalue()})
+docx, built = importers.mixed_to_docx([("img", 0, ["мусор"]), ("p", "Первый абзац."),
+                                       ("img", 3, ["резерв"]), ("p", "Второй абзац.")],
+                                      {0: buf.getvalue()})
+n_img = built["images"]
 check(n_img == 1 and docx[:2] == b"PK", "картинка вставлена там, где она есть; .docx собран")
 import zipfile
 with zipfile.ZipFile(io.BytesIO(docx)) as z:

@@ -673,7 +673,8 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
      (инвариант 24: скрытая настройка — честное умолчание). Иначе в задачу
      молча уезжала модель, выбранная когда-то в редакторе, мимо «Моделей
      шагов» в админке, — и смета считалась по ней же. */
-  const mm = store.expert ? (mods || {}) : {};
+  // Выбор моделей действует там же, где он ВИДЕН (modelsShown в ui.jsx).
+  const mm = modelsShown(store) ? (mods || {}) : {};
   /* Те же ДВА рубежа, что в редакторе (инвариант 24), и путать их нельзя.
      УСТРОЙСТВО прогона — выбор моделей, действующая модель, цена по шагам —
      системному администратору: выбирать модель человеку, который не знает
@@ -974,7 +975,7 @@ function TurnkeySummary({ summary, store, toast, onReload, expert }) {
        со старыми ids и новым include_confirmed — работа разошлась бы со сметой. */
     setPlan(null);
     Promise.all([
-      window.API.safeCall(() => window.API.runPlan(store.activeProject.id, tkPlanBody(runParams, store.expert ? mods : null))),
+      window.API.safeCall(() => window.API.runPlan(store.activeProject.id, tkPlanBody(runParams, modelsShown(store) ? mods : null))),
       window.API.safeCall(() => window.API.models()),
     ]).then(([p, m]) => { if (!dead) { setPlan(p || false); setCat(m || null); } });
     return () => { dead = true; };

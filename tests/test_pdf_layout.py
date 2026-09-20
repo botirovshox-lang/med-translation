@@ -239,7 +239,7 @@ check(pdftext._clean_line("мусор <308> и |1 и #12", _C()) == "мусор 
 check(pdftext._clean_line("* * *", _C()) is None, "орнамент «* * *» по-прежнему снимается целиком")
 
 print("=== 5. Импорт PDF целиком: абзацы .docx ===")
-docx, kind, note, n_img = importers.pdf_to_docx(PDF)
+docx, kind, note, n_img, _lay = importers.pdf_to_docx(PDF)
 from docx import Document
 dp = [p.text for p in Document(io.BytesIO(docx)).paragraphs if p.text.strip()]
 check(kind == "pdf" and dp == P, "в .docx ровно абзацы чистки с геометрией")

@@ -192,7 +192,7 @@ window.I18N.registerServer("uz", {
  " (бесплатной строки в прайсе не бывает — уберите строку)": " (narxlarda bepul qator bo'lmaydi — qatorni olib tashlang)",
  " (снять цену — пустым полем)": " (narxni olib tashlash — bo'sh maydon bilan)",
  " МБ — разберите его по частям": " MB dan katta — uni bo'laklab tahlil qiling",
- " Надписи внутри остальных картинок не разобраны. Обратно выгружается PDF, собранный из документа Word.": " Qolgan rasmlar ichidagi yozuvlar ajratilmagan. Qaytarib Word hujjatidan yig'ilgan PDF yuklanadi.",
+ " Надписи внутри картинок не разобраны. Обратно выгружается PDF, собранный из документа Word.": " Rasmlar ichidagi yozuvlar ajratilmagan. Qaytarib Word hujjatidan yig'ilgan PDF yuklanadi.",
  " Страниц с ненадёжным слоем без картинки страницы оставлено текстом как есть: ": " Sahifa rasmi bo'lmagan ishonchsiz qatlamli sahifalar matn holida qoldirildi: ",
  " Страниц с ненадёжным текстовым слоем положено картинками: ": " Matn qatlami ishonchsiz sahifalar rasm sifatida qo'yildi: ",
  " больше остатка лимита $": " chegara qoldig'i $",

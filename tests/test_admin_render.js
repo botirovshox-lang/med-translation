@@ -277,5 +277,64 @@ check(!!notSuper && !notSuper.includes("Пополнить"), "не суперп
   }
 }
 
+/* ---------- Вкладка «Метрики» ----------
+   Экран отвечает на вопрос владельца («где теряем, где заработать»), а не
+   показывает счётчики, поэтому сторожим ровно это: подсказка приходит КОДОМ
+   и числом, а фразу к ней собирает браузер. Забудь строку в `metHintText` —
+   на экране встанет сам код (`bigFiles`), и заметит это клиент, а не мы.
+   Плюс два правила показа: пустой ответ — это ОТВЕТ («находок нет»), а не
+   пустой экран, и техническое (маршруты, скорость) лежит под «Подробностями». */
+{
+  const MET = {
+    ok: true, days: 7, from: "2026-09-14", to: "2026-09-20",
+    spendUsd: 12.5, calls: 300,
+    steps: [{ step: "translate", usd: 10, calls: 200, in: 1, out: 1 },
+            { step: "backcheck", usd: 2.5, calls: 100, in: 1, out: 1 }],
+    tenants: [{ id: "acme", name: "Акме", active: true, users: 2, projects: 3,
+                pages: 200, pagesCredit: 500, pagesLeft: 20, spendUsd: 12.5, runs: 9,
+                costPerPage: 0.0625, pricePerPage: 4, currency: "USD", margin: 0.98,
+                estUsd: 10, estActualUsd: 12.5, estRatio: 0.8, lastRun: "2026-09-19",
+                idleDays: 1, caps: {} }],
+    quotes: { byStatus: { new: { n: 1, total: 100 }, invoiced: { n: 2, total: 800 },
+                          paid: { n: 1, total: 300 } }, total: 4, currency: "USD", conversion: 0.33 },
+    routes: [{ route: "GET /seed", n: 40, avgMs: 120.5, msMax: 900, slow: 0 }],
+    slow: [{ route: "GET /projects/{pid}", n: 12, avgMs: 1400, msMax: 2200, slow: 7 }],
+    errors: [{ code: "402 POST /projects/{pid}/jobs", n: 3 }],
+    capCodes: [{ code: "filePages413", n: 9 }],
+    waste: [{ code: "repairReverted", n: 31 }],
+    provider: [{ code: "rate", n: 5 }],
+    hints: [{ kind: "money", code: "bigFiles", n: 9, who: [{ tenant: "acme", n: 9 }] },
+            { kind: "money", code: "invoicedUnpaid", n: 2, total: 800, currency: "USD" },
+            { kind: "loss", code: "thinMargin", tenant: "acme", name: "Акме", n: 0.2,
+              cost: 0.06, price: 4 },
+            { kind: "fix", code: "provider:rate", n: 5 }],
+    eventsPending: 0, store: "file",
+  };
+  const metRender = (m, days) => {
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    hooks[0] = OV; hooks[2] = "metrics";
+    // Порядок хуков: TabAdmin 0–2, дальше TabMetrics: days(3), m(4), busy(5).
+    hooks[3] = days || 7; hooks[4] = m; hooks[5] = false;
+    try { return texts(TabAdmin({ store: superStore, toast })).join(" "); }
+    catch (e) { check(false, "рендер «Метрик» — " + e.constructor.name + ": " + e.message); return null; }
+  };
+  const met = metRender(MET);
+  check(!!met && met.includes("Метрики"), "переключатель вкладки метрик на месте");
+  check(!!met && met.includes("Деньги на столе") && met.includes("Теряем") && met.includes("Чинить"),
+        "три вида подсказок названы словами");
+  check(!!met && met.includes("9") && met.includes("acme"),
+        "подсказка несёт число и организацию — без них её нечем продать");
+  check(!!met && !/\bbigFiles\b/.test(met) && !/\bthinMargin\b/.test(met) && !/\bprovider:rate\b/.test(met),
+        "код подсказки на экран не выходит: у каждого есть фраза");
+  check(!!met && met.includes("Себест./стр."), "себестоимость страницы в таблице организаций");
+  check(!!met && met.includes("Технические подробности: маршруты, скорость, ошибки"),
+        "техническое убрано под «Подробности», а не смешано с деньгами");
+  check(!!met && met.includes("Прислать в Telegram"), "сводку словами можно отправить себе");
+  const empty = metRender(Object.assign({}, MET, { hints: [] }));
+  check(!!empty && empty.includes("Ни одной находки за период"),
+        "пустой ответ — это ответ, а не пустой экран");
+  check(metRender(null) !== null, "вкладка рисуется до ответа сервера");
+}
+
 console.log(fail.length ? "\nПРОВАЛЕНО: " + fail.length : "\nВсё сошлось");
 process.exit(fail.length ? 1 : 0);

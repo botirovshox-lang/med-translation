@@ -527,12 +527,16 @@ function TabEditor({ store, toast }) {
      лимита. Пустая строка ломала бы смету одиночных кнопок, а модель при этом
      та же, которую сервер взял бы сам. */
   const [catDef, setCatDef] = useState({});
-  const gptModel = expertUI ? gptModelPick : (catDef.default || "");
-  const bcModel = expertUI ? bcModelPick : (catDef.backcheckDefault || catDef.default || "");
-  const tcModel = expertUI ? tcModelPick : (catDef.termcheckDefault || catDef.default || "");
-  const tcxModel = expertUI ? tcxModelPick : (catDef.termauditDefault || catDef.default || "");
-  const rpModel = expertUI ? rpModelPick : (catDef.repairDefault || catDef.default || "");
-  const rvModel = expertUI ? rvModelPick : (catDef.reviewDefault || catDef.default || "");
+  /* Выбор действует ровно там, где его ВИДНО (`modelsShown`), а не там,
+     где включён вид эксперта: имена моделей спрятаны от всех, и выбор
+     из localStorage уезжал бы в задачу молча — тот самый боевой прогон 18.09. */
+  const modelPick = modelsShown(store);
+  const gptModel = modelPick ? gptModelPick : (catDef.default || "");
+  const bcModel = modelPick ? bcModelPick : (catDef.backcheckDefault || catDef.default || "");
+  const tcModel = modelPick ? tcModelPick : (catDef.termcheckDefault || catDef.default || "");
+  const tcxModel = modelPick ? tcxModelPick : (catDef.termauditDefault || catDef.default || "");
+  const rpModel = modelPick ? rpModelPick : (catDef.repairDefault || catDef.default || "");
+  const rvModel = modelPick ? rvModelPick : (catDef.reviewDefault || catDef.default || "");
   const [impact, setImpact] = useState(null);     // сегменты, не соответствующие одобренным терминам
   const [impactConfirmed, setImpactConfirmed] = useState(false);  // трогать ли подтверждённые
   const [tkSum, setTkSum] = useState(null);       // корзины «под ключ» с сервера (/analysis) для сводки корзин
@@ -544,7 +548,12 @@ function TabEditor({ store, toast }) {
   const tkIndex = useMemo(() => {
     const t = tkSum && tkSum.turnkey;
     const S = (a) => new Set(a || []);
-    return t ? { ready: S(t.ready), machine: S(t.machine), human: S(t.human) } : null;
+    /* И ПОЧЕМУ каждый из них спрошен: слово «спрошу» обещает, что
+       карточка назовёт причину. Считает её СЕРВЕР тем же кодом, который
+       раздаёт корзины (`_ask` в /analysis), иначе слово и причина разошлись бы. */
+    const why = new Map();
+    ((t && t.why) || []).forEach(r => why.set(r.id, r.why || []));
+    return t ? { ready: S(t.ready), machine: S(t.machine), human: S(t.human), why } : null;
   }, [tkSum]);
   const [bcJudgePick, setBcJudge] = useState(false);      // LLM-судья для средней зоны
   /* Тумблер судьи виден только эксперту; спрятанный — включён, как в задаче
@@ -657,8 +666,10 @@ function TabEditor({ store, toast }) {
       // от одного такого шага смета ГЛАВНОЙ кнопки становилась прочерком.
       setTcxModel(cur => keep(cur, d.termauditDefault || d.default || ""));
       setRvModel(cur => keep(cur, d.reviewDefault || d.default || ""));
-      // Тост — только эксперту: остальным выбор не виден и в задачу не едет.
-      if (dropped.length && expertUI)
+      // Тост — только туда, где выбор виден: иначе он называл бы имена
+      // моделей тому, от кого их прячут, и говорил бы про выбор, который
+      // в задачу всё равно не едет.
+      if (dropped.length && modelsShown(store))
         toast.warning(TR("Модель без ключа заменена умолчанием"),
           dropped.join(", ") + TR(": у поставщика нет ключа — выбор сброшен на модель шага по умолчанию."));
       AUX_PRICES = d.aux || {};
@@ -1556,7 +1567,16 @@ function TabEditor({ store, toast }) {
       if (confirmed && !rtFixConfirmed) return;
       const p = providerOf(s);
       const key = rtGroupKey(s);
-      const label = (p ? ((p.exact ? "" : "≈ ") + providerLabel(p, gptModels)) : TR("ещё не переведён"))
+      /* Имя модели прячется (modelsShown), а вопрос остаётся: что именно
+         перегонять. Группы не сливаются — ключ ведёт отбор сегментов, и
+         слияние по подписи молча поменяло бы состав прогона. */
+      const pname = !p ? "" :
+        /* «TM» моделью не является — это ответ на вопрос «откуда взялся
+           перевод», и он остаётся всем (тот же закон, что в строке таблицы). */
+        (modelsShown(store) || p.id === "tm")
+          ? ((p.exact ? "" : "≈ ") + providerLabel(p, gptModels))
+          : TR("переведён машиной");
+      const label = (p ? pname : TR("ещё не переведён"))
         + (confirmed ? TR(" — подтверждён человеком") : "");
       const g = by.get(key) || { key, label, count: 0, exact: !!(p && p.exact), confirmed };
       g.count++;
@@ -1603,6 +1623,9 @@ function TabEditor({ store, toast }) {
       : key === "self" ? TR("проверял тот, кто переводил — это не проверка")
       : key === "nojudge" ? TR("проверено без судьи")
       : key === "unknown" ? TR("проверено (модель неизвестна)")
+      // Имя модели — устройство (modelsShown в ui.jsx). Группы при этом
+      // остаются раздельными: ключ ведёт отбор, подпись — только показ.
+      : !modelsShown(store) ? TR("уже проверено")
       : TR("проверено: ") + (providerLabel({ id: key, exact: true }, gptModels) || key);
 
   // Сколько сегментов выборки в каком состоянии проверки — для выбора галочками.
@@ -2002,6 +2025,8 @@ function TabEditor({ store, toast }) {
     if (key === "stale") return TR("перевод изменился после проверки");
     if (key === "skip") return TR("нечего проверять (без вызова модели)");
     const [kind, mdl] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
+    if (!modelsShown(store))
+      return kind === "hit" ? TR("проверено, есть замечания") : TR("проверено, замечаний нет");
     const name = mdl === "unknown" ? TR("модель неизвестна") : (providerLabel({ id: mdl, exact: true }, gptModels) || mdl);
     return (kind === "hit" ? TR("проверено, есть замечания: ") : TR("проверено, замечаний нет: ")) + name;
   };
@@ -2873,6 +2898,8 @@ function TabEditor({ store, toast }) {
           bcJudge: bcJudge, judgeModel: judgeModel,
           tcModel: tcModel, rpModel: rpModel, tcActionable: tcActionable,
           hlTerms: hlTerms,
+          /* Почему строка ждёт решения человека (кодами с сервера). */
+          askWhy: (tkIndex && tkIndex.why.get(selected.id)) || null,
           /* Текст правится в самой строке: карточка только подставляет туда
              готовый вариант (совет termcheck, прежний текст ремонта, запись
              TM, прежний перевод). Открываем поле и кладём в него текст —

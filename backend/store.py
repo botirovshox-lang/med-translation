@@ -179,6 +179,20 @@ class PgStore:
         " est_actual_usd DOUBLE PRECISION NOT NULL DEFAULT 0,"
         " bulk BIGINT NOT NULL DEFAULT 0,"
         " PRIMARY KEY (tenant, project))",
+        # Счётчики событий по дням («где теряем деньги, что чинить»):
+        # тот же закон, что у `spend` и `usage_daily` — ИНКРЕМЕНТ, а не
+        # снимок: пишут оба процесса (API и воркер), и снимок терял бы
+        # приращения. Ключ перечислим по построению (день × организация ×
+        # код из закрытого набора), поэтому таблица растёт десятками строк
+        # в день, а не строкой на запрос.
+        "CREATE TABLE IF NOT EXISTS events ("
+        " day TEXT NOT NULL, tenant TEXT NOT NULL, code TEXT NOT NULL,"
+        " n BIGINT NOT NULL DEFAULT 0,"
+        " ms_sum DOUBLE PRECISION NOT NULL DEFAULT 0,"
+        " ms_max DOUBLE PRECISION NOT NULL DEFAULT 0,"
+        " slow BIGINT NOT NULL DEFAULT 0,"
+        " PRIMARY KEY (day, tenant, code))",
+        "CREATE INDEX IF NOT EXISTS events_day ON events (day)",
         "CREATE TABLE IF NOT EXISTS jobs ("
         " id INTEGER PRIMARY KEY, status TEXT NOT NULL, tenant TEXT,"
         " doc JSONB NOT NULL, updated TIMESTAMPTZ NOT NULL DEFAULT now())",
@@ -622,6 +636,50 @@ class PgStore:
             cur.execute("SELECT min(day) FROM usage_daily")
             got = cur.fetchone()
         return got[0] if got else None
+
+    # ── счётчики событий ──
+    def add_events(self, rows: list) -> None:
+        """Пачка приращений ОДНИМ запросом.
+
+        Пачкой, а не по строке: слив идёт раз в минуту и несёт десятки
+        ключей, и отдельный round-trip на каждый — это десятки задержек
+        сети там, где хватает одной. Дубли внутри пачки исключены по
+        построению (буфер — словарь по тому же ключу), иначе ON CONFLICT
+        отказался бы править строку дважды."""
+        if not rows:
+            return
+        vals, args = [], []
+        for r in rows:
+            vals.append("(%s, %s, %s, %s, %s, %s, %s)")
+            args.extend((r["day"], r.get("tenant") or "", r["code"], int(r.get("n") or 0),
+                         float(r.get("ms_sum") or 0), float(r.get("ms_max") or 0),
+                         int(r.get("slow") or 0)))
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO events (day, tenant, code, n, ms_sum, ms_max, slow) VALUES "
+                + ", ".join(vals) +
+                " ON CONFLICT (day, tenant, code) DO UPDATE SET"
+                " n = events.n + EXCLUDED.n, ms_sum = events.ms_sum + EXCLUDED.ms_sum,"
+                " ms_max = GREATEST(events.ms_max, EXCLUDED.ms_max),"
+                " slow = events.slow + EXCLUDED.slow", args)
+
+    def events_rows(self, day_from: str, day_to: str, tenant: Optional[str] = None) -> list:
+        q = ("SELECT day, tenant, code, n, ms_sum, ms_max, slow FROM events"
+             " WHERE day >= %s AND day <= %s")
+        args = [day_from, day_to]
+        if tenant is not None:
+            q += " AND tenant = %s"
+            args.append(tenant)
+        with self._cursor() as cur:
+            cur.execute(q, args)
+            got = cur.fetchall()
+        return [{"day": r[0], "tenant": r[1], "code": r[2], "n": int(r[3]),
+                 "ms_sum": float(r[4]), "ms_max": float(r[5]), "slow": int(r[6])} for r in got]
+
+    def events_prune(self, before_day: str) -> int:
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM events WHERE day < %s", (before_day,))
+            return cur.rowcount or 0
 
     # ── прогоны ──
     def save_job(self, job: dict) -> None:

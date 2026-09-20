@@ -26,6 +26,7 @@ JSON на страницу: [номер, [строки], геометрия|null
 import io
 import json
 import statistics
+from collections import Counter
 import sys
 
 # Операторы, которыми рисуется путь; «re» — прямоугольник. Закрашенный или
@@ -52,9 +53,12 @@ def page_lines(page) -> tuple:
     """(строки, геометрия | None) одной страницы pypdf.
 
     Геометрия: {"box": [x0, y0, x1, y1] страницы, "lines": [[x0, y, кегль,
-    x1] | None на каждую строку], "figs": [[x0, y0, x1, y1] картинок],
-    "rects": [[x0, y0, x1, y1] нарисованных прямоугольников]}. y — базовая
-    линия, ось вверх, как в самом PDF. x1 — конец строки: где его показал
+    x1, начертание] | None на каждую строку], "figs": [[x0, y0, x1, y1]
+    картинок], "rects": [[x0, y0, x1, y1] нарисованных прямоугольников]}.
+    y — базовая линия, ось вверх, как в самом PDF. Начертание («», «b»,
+    «i», «bi») — из имени шрифта: распознаватель отмечает им полужирный
+    и курсив, и выгрузка «как в оригинале» иначе напечатала бы всю книгу
+    одним светлым начертанием. x1 — конец строки: где его показал
     следующий кусок той же строки — точно, иначе оценкой по числу знаков
     и ширине знака, замеренной на этой же странице. Строка без буквенных
     кусков или повёрнутая — None: гадать её место незачем."""
@@ -69,14 +73,24 @@ def page_lines(page) -> tuple:
     except Exception:
         xobjs = {}
 
-    def vt(text, cm, tm, _fd, fs):
+    def _style(fd) -> str:
+        """«b» / «i» / «bi» по имени шрифта. Имя — единственное, что о
+        начертании известно: глифы нам не видны."""
+        try:
+            name = fd if isinstance(fd, str) else (fd or {}).get("/BaseFont") or ""
+            name = str(name).lower()
+        except Exception:
+            return ""
+        return ("b" if "bold" in name or "black" in name or "heavy" in name else "") +                ("i" if "italic" in name or "oblique" in name else "")
+
+    def vt(text, cm, tm, fd, fs):
         try:
             x, y = _xy(cm, tm[4], tm[5])
             sy = abs(tm[3] * cm[3]) or abs(tm[0] * cm[0]) or 1.0
             rot = abs(tm[1]) + abs(tm[2]) > 1e-3 * (abs(tm[0]) + abs(tm[3])) or abs(cm[1]) + abs(cm[2]) > 1e-3
-            chunks.append((text or "", x, y, float(fs or 0) * sy, rot))
+            chunks.append((text or "", x, y, float(fs or 0) * sy, rot, _style(fd)))
         except Exception:
-            chunks.append((text or "", None, None, 0.0, True))
+            chunks.append((text or "", None, None, 0.0, True, ""))
 
     def vo(op, args, cm, _tm):
         try:
@@ -153,6 +167,11 @@ def _geometry(lines, out, chunks, figs, rects, page):
             continue
         first = chunks[body[0]]
         x0, y, size = first[1], first[2], first[3]
+        # Начертание строки — то, каким набрана бОльшая часть её знаков.
+        styles = Counter()
+        for k in body:
+            styles[chunks[k][5] if len(chunks[k]) > 5 else ""] += len(chunks[k][0].strip())
+        style = styles.most_common(1)[0][0] if styles else ""
         x1 = x0
         for k in ks:
             c = chunks[k]
@@ -163,7 +182,7 @@ def _geometry(lines, out, chunks, figs, rects, page):
                 x1 = max(x1, c[1] + len(piece.rstrip()) * cw * (c[3] or size))
             elif c[1] > x0:
                 x1 = max(x1, c[1])       # пробел после текста — точный конец строки
-        geo_lines.append([round(x0, 1), round(y, 1), round(size, 2), round(x1, 1)])
+        geo_lines.append([round(x0, 1), round(y, 1), round(size, 2), round(x1, 1), style])
     # Одна строка ответа — одна строка геометрии; иначе смысла в ней нет.
     if len(geo_lines) != len(lines):
         return None

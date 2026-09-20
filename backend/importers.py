@@ -757,20 +757,48 @@ def join_pdf_lines(lines: list) -> list:
     return pdftext.join_lines(lines)
 
 
-def mixed_to_docx(items: list, page_images: dict) -> tuple:
-    """[("p", текст) | ("img", номер страницы, строки-запасной вариант)] → (.docx, число
-    страниц, легших картинками). Страница, у которой картинку из PDF достать
-    не удалось, кладётся своими строками: потерять её молча нельзя."""
+def mixed_to_docx(items: list, page_images: dict, figures: "dict | None" = None) -> tuple:
+    """[("p", текст[, рамки]) | ("img", страница, строки-запасной вариант) |
+    ("fig", страница, рамка)] → (.docx, {images, figures, layout}). Страница,
+    у которой картинку из PDF достать не удалось, кладётся своими строками:
+    потерять её молча нельзя. Рисунок, который не вырезался, пропускается —
+    текст вокруг него от этого не страдает.
+
+    `layout` — {номер абзаца в .docx: рамки на страницах}: по нему выгрузка
+    «как в оригинале» возвращает перевод на то место, где стоял оригинал.
+    Номер абзаца — тот же якорь, которым связаны сегменты."""
     from docx.shared import Inches  # type: ignore
     from PIL import Image  # type: ignore
     doc = _document()
-    n_text = n_img = 0
+    figures = figures or {}
+    layout: dict = {}
+    n_text = n_img = n_fig = 0
+    n_para = 0                     # сколько абзацев уже в документе
     for it in items:
         if it[0] == "p":
             t = _clean(it[1] or "").strip()
             if t:
                 doc.add_paragraph(t)
+                if len(it) > 2 and it[2]:
+                    layout[n_para] = it[2]
+                n_para += 1
                 n_text += 1
+            continue
+        if it[0] == "fig":
+            data = figures.get((it[1], tuple(it[2])))
+            if not data:
+                continue
+            try:
+                # Своей шириной, а не во всю полосу: рисунок в книге бывает
+                # с ладонь, и растянутый на страницу он врал бы о вёрстке.
+                im = Image.open(io.BytesIO(data))
+                im.load()
+                w_in = min(_PIC_WIDTH_IN, max(1.2, im.size[0] / float(textcount.FIG_RENDER_DPI)))
+                doc.add_picture(io.BytesIO(data), width=Inches(w_in))
+                n_para += 1        # картинка — тоже абзац: номера не должны съехать
+                n_fig += 1
+            except Exception:
+                pass
             continue
         idx = it[1]
         data = page_images.get(idx)
@@ -784,6 +812,7 @@ def mixed_to_docx(items: list, page_images: dict) -> tuple:
                     im = im.convert("RGB")
                 doc.add_picture(io.BytesIO(_png_with_index(im, idx)), width=Inches(_PIC_WIDTH_IN))
                 n_img += 1
+                n_para += 1
                 placed = True
             except Exception:
                 placed = False
@@ -792,12 +821,13 @@ def mixed_to_docx(items: list, page_images: dict) -> tuple:
                 t = _clean(line or "").strip()
                 if t:
                     doc.add_paragraph(t)
+                    n_para += 1
                     n_text += 1
     if not n_text and not n_img:
         raise textcount.Unsupported("Из файла не извлеклось ни одного куска текста")
     out = io.BytesIO()
     doc.save(out)
-    return out.getvalue(), n_img
+    return out.getvalue(), {"images": n_img, "figures": n_fig, "layout": layout}
 
 
 def pdf_to_docx(content: bytes) -> tuple:
@@ -819,7 +849,7 @@ def pdf_to_docx(content: bytes) -> tuple:
         return (scan_pages_to_docx(imgs), "scan",
                 "PDF без текстового слоя: %d страниц положены картинками; текст с них "
                 "читается автоматически. Обратно выгружается PDF из страниц с переведёнными "
-                "надписями." % len(imgs), len(imgs))
+                "надписями." % len(imgs), len(imgs), None)
     textcount.progress("clean")
     res = pdftext.clean(pages, geom=geoms)
     textcount.progress("build")
@@ -834,7 +864,22 @@ def pdf_to_docx(content: bytes) -> tuple:
                     page_images[i] = data
         except Exception:
             page_images = {}
-    docx_bytes, n_img = mixed_to_docx(res["items"], page_images)
+    # Рисунки внутри страниц: вырезаются из отрисованных страниц ОДНИМ
+    # заходом — страница рисуется один раз на все свои рисунки.
+    figures: dict = {}
+    fig_stats: dict = {"blank": 0}
+    fig_boxes = [(it[1], tuple(it[2])) for it in res["items"] if it[0] == "fig"]
+    if fig_boxes:
+        textcount.progress("figures")
+        try:
+            figures, fig_stats = textcount.pdf_crop_figures(content, fig_boxes)
+        except Exception:
+            figures, fig_stats = {}, {"blank": 0}
+    docx_bytes, built = mixed_to_docx(res["items"], page_images, figures)
+    n_img, n_fig = built["images"], built["figures"]
+    # Лоскут края страницы рисунком не считается (`_has_ink`) — и это
+    # не потеря: считаем их отдельно от тех, что не вырезались.
+    n_fig_lost = len(fig_boxes) - n_fig - int(fig_stats.get("blank") or 0)
     n_text_fallback = len(res["imagePages"]) - n_img
     r = res["report"]
     removed = []
@@ -855,15 +900,22 @@ def pdf_to_docx(content: bytes) -> tuple:
         removed.append("собрано дробей и индексов %d" % r["scripts"])
     note = ("PDF: текст взят из текстового слоя, строки склеены в абзацы"
             + ("; снято: " + ", ".join(removed) if removed else "") + ".")
+    if n_fig:
+        note += " Рисунков перенесено в документ: %d." % n_fig
+    if n_fig_lost > 0:
+        # Молчать нельзя: рисунок, не попавший в документ, из выгрузки
+        # пропадёт, а подпись под ним останется.
+        note += " Рисунков не удалось вырезать: %d." % n_fig_lost
     if n_img:
         note += (" Страниц с ненадёжным текстовым слоем положено картинками: %d — "
                  "текст с них читается автоматически." % n_img)
     if n_text_fallback > 0:
         note += (" Страниц с ненадёжным слоем без картинки страницы оставлено текстом "
                  "как есть: %d." % n_text_fallback)
-    note += (" Надписи внутри остальных картинок не разобраны. Обратно выгружается PDF, "
+    note += (" Надписи внутри картинок не разобраны. Обратно выгружается PDF, "
              "собранный из документа Word.")
-    return (docx_bytes, "pdf", note, n_img)
+    return (docx_bytes, "pdf", note, n_img,
+            {"boxes": built["layout"], "pages": res.get("pageBoxes") or []})
 
 
 def to_docx(filename: str, content: bytes) -> dict:
@@ -888,9 +940,9 @@ def to_docx(filename: str, content: bytes) -> dict:
                 "note": "Картинка положена в документ; текст с неё читается автоматически. "
                         "Обратно выгружается такая же картинка с переведёнными надписями."}
     if kind == "pdf":
-        docx_bytes, k, note, n_img = pdf_to_docx(content)
+        docx_bytes, k, note, n_img, layout = pdf_to_docx(content)
         return {"docx": docx_bytes, "kind": k, "note": note, "converted": True,
-                "writeback": True, "slotsSha": None,
+                "writeback": True, "slotsSha": None, "layout": layout,
                 # Страницы, легшие картинками из-за ненадёжного слоя: по ним
                 # `_auto_read_images` ставит чтение и у PDF с текстом.
                 "imagePages": n_img if k == "pdf" else 0}

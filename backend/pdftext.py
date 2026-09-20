@@ -82,8 +82,11 @@ MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
 # и повреждённый знак математики, который больше не снимается орнаментом,
 # 5 — знаки математики по списку Юникода: интеграл, корень, сумма, знаки
 # сравнения; их пределы-буквы, крупный знак не считается украшением,
-# а знак у числа («±0,5», «<5») не снимается с края токена.
-RULES_VERSION = 5
+# а знак у числа («±0,5», «<5») не снимается с края токена,
+# 6 — рисунки внутри страницы переносятся в документ вырезкой из неё:
+# абзацев это не меняет, но состав документа меняет, и пересобрать
+# прежние проекты надо кнопкой «Чтение файла улучшено».
+RULES_VERSION = 6
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -763,23 +766,33 @@ def _is_caps_heading(line: str) -> bool:
 
 
 def join_lines(lines: list, hyphenated: set = frozenset(), median_len: float = 0.0,
-               report: dict = None) -> list:
+               report: dict = None, spans: list = None) -> list:
     """Строки → абзацы. Конец абзаца — конец предложения, короткая строка
     перед заглавной, строка КАПСОМ, маркер списка, пустая строка, потолок.
     Перенос слова снимается: мягкий — всегда, дефисный — когда продолжение
-    со строчной и такого составного слова в документе посреди строки нет."""
+    со строчной и такого составного слова в документе посреди строки нет.
+
+    `spans` — если передать список, в него ляжет по паре (первая, последняя)
+    строка на каждый абзац. Нужно выгрузке «как в оригинале»: место абзаца
+    на странице — это рамка его СТРОК, и восстановить её после склейки
+    нечем. Ответ от этого не меняется ни на знак."""
     report = report if report is not None else Counter()
     out, buf = [], ""
     buf_caps = False               # в буфере — заголовок КАПСОМ (склеивается со следующим таким же)
     n = len(lines)
+    first = [None]                 # первая строка, попавшая в буфер
 
     def flush():
         nonlocal buf, buf_caps
         if buf:
             out.append(buf)
+            if spans is not None:
+                spans.append((first[0], last[0]))
             buf = ""
+        first[0] = None
         buf_caps = False
 
+    last = [None]                  # и последняя
     for i in range(n):
         line = (lines[i] or "").strip()
         if not line:
@@ -789,6 +802,11 @@ def join_lines(lines: list, hyphenated: set = frozenset(), median_len: float = 0
         caps = _is_caps_heading(line)
         if buf and ((_BULLET_RE.match(line)) or (buf_caps != caps and not buf.endswith((SOFT, "-")))):
             flush()
+        # Строку записываем в отпечаток ПОСЛЕ возможного сброса: иначе
+        # первой строкой прежнего абзаца оказалась бы эта, уже следующая.
+        if first[0] is None:
+            first[0] = i
+        last[0] = i
         if buf.endswith(SOFT):
             buf = buf[:-1] + line
             report["softHyphens"] += 1
@@ -889,6 +907,156 @@ GEO_BAND_GAP = 1.6
 DEFER_MAX_LINES = 60
 # Подпись у рисунка: метка («НК21», «А») — не длиннее стольких знаков.
 LABEL_MAX_LEN = 24
+# Рисунок: вложенная картинка заметного размера, но не во всю страницу
+# (фон скана — тоже картинка).
+FIG_MIN_W = 0.12
+FIG_MIN_H = 0.08
+FIG_MAX_AREA = 0.85
+# Многослойный скан (MRC) режет ОДИН рисунок на несколько картинок: фон,
+# маска, цветной слой. Рамки, которые пересекаются или стоят вплотную, —
+# один рисунок: иначе он лёг бы в документ несколько раз.
+FIG_MERGE_GAP = 6.0
+# Место рисунка на странице — это СВОБОДНАЯ ПОЛОСА между строками текста,
+# а не рамка самой картинки: на скане подписи внутри рисунка («ВК21»)
+# в текстовый слой не попали и лежат ЗА её краем — обрезав по рамке, мы
+# отрезали бы их. Полосу ограничивают строки и другие картинки страницы.
+FIG_PAD = 0.3                # зазор до строки сверху, в кеглях этой строки
+FIG_PAD_BELOW = 1.15         # и снизу: там у строки ещё и выносные элементы
+FIG_EDGE = 0.02              # нет строки с этой стороны — отступ от края листа
+FIG_SIDE_GAP = 4.0           # зазор до строки, стоящей СБОКУ от рисунка
+FIG_EDGE_TOUCH = 0.05        # «у самого края листа», в долях стороны
+FIG_SLIVER_THIN = 0.2        # лоскут: узок по одной стороне…
+FIG_SLIVER_LONG = 0.8        # …и тянется почти во весь лист по другой
+FIG_COL_SHARE = 0.3          # какой долей ширины рисунок стоит в текстовой колонке
+
+
+# Метка рисунка в потоке строк: собирать абзацы и раскладывать вставки
+# умеет только `_assemble`/`join_lines`, а они работают со СТРОКАМИ.
+# Поэтому рисунок едет по ним меткой из области частного использования
+# Юникода (в тексте книги таких знаков не бывает) и превращается
+# в картинку последним шагом, когда абзацы уже собраны.
+_FIG_MARK_OPEN, _FIG_MARK_CLOSE = "", ""
+_FIG_MARK_RE = re.compile(_FIG_MARK_OPEN + r"(\d+)" + _FIG_MARK_CLOSE)
+
+
+def _fig_mark(n: int) -> str:
+    return "%s%d%s" % (_FIG_MARK_OPEN, n, _FIG_MARK_CLOSE)
+
+
+def _fig_frac(crop: list, box: list) -> list:
+    """Рамка в ДОЛЯХ страницы от левого верхнего угла. Долями, а не точками,
+    чтобы тот, кто рисует страницу, не сверял систему координат с нашей."""
+    pw, ph = max(1.0, box[2] - box[0]), max(1.0, box[3] - box[1])
+    v = [(crop[0] - box[0]) / pw, (box[3] - crop[3]) / ph,
+         (crop[2] - box[0]) / pw, (box[3] - crop[1]) / ph]
+    return [round(min(1.0, max(0.0, t)), 4) for t in v]
+
+
+def _fig_boxes(g, recs: list, merge: bool = False) -> list:
+    """Рисунки страницы: [x0, y0, x1, y1] в порядке сверху вниз.
+
+    ОДИН расчёт на две работы: по нему метки и подписи вокруг рисунка
+    становятся отдельными абзацами (`_geo_roles`), и по нему же рисунок
+    попадает в документ (`clean`). Разойдись они — подпись стояла бы
+    у рисунка, которого рядом нет.
+
+    `merge` — слить рамки, стоящие вплотную, в одну. Нужно ТОЛЬКО при
+    выкладке: многослойный скан режет один рисунок на слои, и без слияния
+    он лёг бы в документ несколько раз. Разметке ролей слияние ВРЕДИТ:
+    метка ищется у КРАЯ рисунка, а слитая рамка накрывает и текст между
+    двумя картинками — на боевой книге так разорвался абзац посреди слова
+    («лимонную кис-» / «лоту по вкусу»)."""
+    box = g.get("box") or [0, 0, 0, 0]
+    pw, ph = max(1.0, box[2] - box[0]), max(1.0, box[3] - box[1])
+    col = (min(r["x0"] for r in recs), max(r["x1"] for r in recs)) if recs else None
+    raw = []
+    for f in g.get("figs") or []:
+        w, h = f[2] - f[0], f[3] - f[1]
+        if not (w >= FIG_MIN_W * pw and h >= FIG_MIN_H * ph and w * h < FIG_MAX_AREA * pw * ph):
+            continue
+        # Полоса У КРАЯ ЛИСТА во всю его высоту (или ширину) — не рисунок,
+        # а слой самой страницы: у книги, снятой со сканера, край переплёта
+        # и стол лежат отдельной картинкой. В документ такая полоса едет
+        # тёмным лоскутом. Рисунок так не стоит: у книги есть поля.
+        edge = (f[0] - box[0] <= FIG_EDGE_TOUCH * pw or box[2] - f[2] <= FIG_EDGE_TOUCH * pw
+                or f[1] - box[1] <= FIG_EDGE_TOUCH * ph or box[3] - f[3] <= FIG_EDGE_TOUCH * ph)
+        if edge and min(w / pw, h / ph) < FIG_SLIVER_THIN and max(w / pw, h / ph) > FIG_SLIVER_LONG:
+            continue
+        # Картинка ВНЕ текстовой колонки — тоже слой страницы, а не рисунок:
+        # у книги, снятой со сканера, край переплёта и стол лежат своими
+        # картинками рядом с полем. Рисунок в книге стоит в колонке: так
+        # устроена вёрстка.
+        if col and (min(f[2], col[1]) - max(f[0], col[0])) < FIG_COL_SHARE * w:
+            continue
+        # Картинка, по которой идут строки текста (подложка, рисунок
+        # в обтекании), — не рисунок с метками: иначе каждая короткая
+        # концевая строка абзаца над ней считалась бы меткой.
+        over = sum(1 for r in recs if len(r["t"]) >= 30 and r["x0"] < f[2] and r["x1"] > f[0]
+                   and f[1] <= r["y"] <= f[3])
+        if over < 2:
+            raw.append(list(f))
+    if not merge:
+        return sorted(raw, key=lambda b: -b[3])
+    merged: list = []
+    for f in sorted(raw, key=lambda b: (-b[3], b[0])):
+        for m in merged:
+            if (f[0] <= m[2] + FIG_MERGE_GAP and m[0] <= f[2] + FIG_MERGE_GAP
+                    and f[1] <= m[3] + FIG_MERGE_GAP and m[1] <= f[3] + FIG_MERGE_GAP):
+                m[0], m[1] = min(m[0], f[0]), min(m[1], f[1])
+                m[2], m[3] = max(m[2], f[2]), max(m[3], f[3])
+                break
+        else:
+            merged.append(list(f))
+    return sorted(merged, key=lambda b: -b[3])
+
+
+def _fig_printable(crop: list, recs: list) -> bool:
+    """Годится ли вырезка в документ. Одно правило: внутри неё НЕТ строки
+    текста. Иначе в документ уехал бы кусок книги картинкой — а он уже едет
+    туда текстом, и читатель увидит его дважды, причём непереведённым.
+    Так отсеиваются орнаменты шапки: они проходят по размеру, но полоса
+    вокруг них накрывает сам колонтитул."""
+    return not any(crop[1] < r["y"] < crop[3] and r["x0"] < crop[2] and r["x1"] > crop[0]
+                   for r in recs)
+
+
+def _fig_crop(f: list, recs: list, figs: list, box: list) -> list:
+    """Что вырезать из отрисованной страницы: рамка рисунка, раздвинутая
+    до ближайших строк сверху и снизу и до краёв текстовой колонки.
+
+    Два правила, и второе выстрадано: ВВЕРХ И ВНИЗ полосу ограничивают
+    строки, стоящие НАД и ПОД рисунком, а ВШИРЬ — строки, стоящие СБОКУ
+    от него. У рисунка в половину полосы текст обтекает его справа, и
+    расширение на всю колонку накрывало текст — такой рисунок отсеивался
+    целиком (на боевой книге так пропали пять нумерованных «Рис.»).
+    Ограничивают полосу и ДРУГИЕ картинки страницы: иначе в рисунок
+    попадал орнамент шапки."""
+    ph = max(1.0, box[3] - box[1])
+    # Сначала высота: по строкам, которые стоят НАД рисунком и ПОД ним,
+    # то есть перекрываются с ним по горизонтали.
+    over_x = [r for r in recs if r["x1"] > f[0] and r["x0"] < f[2]]
+    above = [r["y"] - FIG_PAD * max(r["s"], 1.0) for r in over_x if r["y"] > f[3]]
+    above += [o[1] - FIG_MERGE_GAP for o in figs if o is not f and o[1] > f[3]
+              and o[2] > f[0] and o[0] < f[2]]
+    top = min(box[3], max(f[3], min(above))) if above else min(box[3], f[3] + FIG_EDGE * ph)
+    below = [r["y"] + FIG_PAD_BELOW * max(r["s"], 1.0) for r in over_x if r["y"] < f[1]]
+    below += [o[3] + FIG_MERGE_GAP for o in figs if o is not f and o[3] < f[1]
+              and o[2] > f[0] and o[0] < f[2]]
+    bot = max(box[1], min(f[1], max(below))) if below else max(box[1], f[1] - FIG_EDGE * ph)
+    # Теперь ширина: до края колонки, но не дальше строки, стоящей СБОКУ
+    # в этой же полосе, и не дальше чужой картинки.
+    side = [r for r in recs if bot < r["y"] < top and (r["x1"] <= f[0] or r["x0"] >= f[2])]
+    xs0 = [r["x0"] for r in recs] or [f[0]]
+    xs1 = [r["x1"] for r in recs] or [f[2]]
+    left = max([r["x1"] + FIG_SIDE_GAP for r in side if r["x1"] <= f[0]]
+               + [o[2] + FIG_SIDE_GAP for o in figs if o is not f and o[2] <= f[0]
+                  and o[1] < top and o[3] > bot]
+               + [min(f[0], min(xs0))])
+    right = min([r["x0"] - FIG_SIDE_GAP for r in side if r["x0"] >= f[2]]
+                + [o[0] - FIG_SIDE_GAP for o in figs if o is not f and o[0] >= f[2]
+                   and o[1] < top and o[3] > bot]
+                + [max(f[2], max(xs1))])
+    return [max(box[0], min(left, f[0])), bot, min(box[2], max(right, f[2])), top]
 
 
 def _geo_page(lines: list, g) -> "list | None":
@@ -913,6 +1081,11 @@ def _geo_page(lines: list, g) -> "list | None":
         # у куска в один знак конец строки считается по ширине знака.
         recs.append({"t": t, "x0": float(p[0]), "y": float(p[1]), "s": float(p[2] or 0),
                      "x1": max(float(p[3]), float(p[0])),
+                     # Начертание строки: распознаватель отмечает полужирный
+                     # и курсив именем шрифта. Нет поля (геометрия записана
+                     # прежним кодом) — «обычное», и это не ложь: мы просто
+                     # не знаем.
+                     "st": (p[4] if len(p) > 4 else "") or "",
                      "lsp": raw[:1] == " ", "rsp": raw[-1:] == " "})
     return recs
 
@@ -1117,21 +1290,9 @@ def _geo_roles(recs: list, st: dict, g: dict, next_gid) -> list:
     def short(t):
         return len(t) <= LABEL_MAX_LEN and len(t.split()) <= 3
 
-    # Рисунки: вложенная картинка заметного размера, не во всю страницу
-    # (фон скана — тоже картинка). Метки вокруг — отдельными абзацами,
-    # подпись под рисунком или над ним — тоже.
-    figs = []
-    for f in g.get("figs") or []:
-        w, h = f[2] - f[0], f[3] - f[1]
-        if not (w >= 0.12 * pw and h >= 0.08 * ph and w * h < 0.85 * pw * ph):
-            continue
-        # Картинка, по которой идут строки текста (подложка, рисунок
-        # в обтекании), — не рисунок с метками: иначе каждая короткая
-        # концевая строка абзаца над ней считалась бы меткой.
-        over = sum(1 for r in recs if len(r["t"]) >= 30 and r["x0"] < f[2] and r["x1"] > f[0]
-                   and f[1] <= r["y"] <= f[3])
-        if over < 2:
-            figs.append(f)
+    # Рисунки: метки вокруг — отдельными абзацами, подпись под рисунком
+    # или над ним — тоже. Сам список — общим расчётом (`_fig_boxes`).
+    figs = _fig_boxes(g, recs)
     m = 1.5 * bs
     for i, r in enumerate(recs):
         if not free(i):
@@ -1378,19 +1539,29 @@ def _plain_page_fixes(entries: list, next_gid, hyphenated: set = frozenset(), wo
                     entries[k]["role"], entries[k]["gid"] = "a", gid
 
 
-def _assemble(entries: list, median_len: float) -> list:
+def _assemble(entries: list, median_len: float, src: list = None) -> list:
     """Поток строк с разметкой ролей → строки для `join_lines`: вставки
     и заголовки — отдельными абзацами (пустая строка вокруг), а вставка,
     разорвавшая абзац (строка перед ней открыта, а поток после неё
-    продолжается строчной буквой), встаёт ПОСЛЕ конца этого абзаца."""
+    продолжается строчной буквой), встаёт ПОСЛЕ конца этого абзаца.
+
+    `src` — если передать список, в него ляжет запись-источник каждой
+    выданной строки (None у пустых разделителей). Нужно выгрузке
+    «как в оригинале»: по ней абзац находит своё место на странице."""
     out: list = []
     pending: list = []
     waited = [0]
 
+    def put(text, entry):
+        out.append(text)
+        if src is not None:
+            src.append(entry)
+
     def emit(block):
-        out.append("")
-        out.extend(block)
-        out.append("")
+        put("", None)
+        for e in block:
+            put(e["t"], e)
+        put("", None)
 
     def release():
         for b in pending:
@@ -1419,7 +1590,7 @@ def _assemble(entries: list, median_len: float) -> list:
         if role == "f":
             if pending and (para_ends(out[-1] if out else "", e["t"]) or waited[0] >= DEFER_MAX_LINES):
                 release()
-            out.append(e["t"])
+            put(e["t"], e)
             if pending:
                 waited[0] += 1
             i += 1
@@ -1427,7 +1598,7 @@ def _assemble(entries: list, median_len: float) -> list:
         j = i
         while j < n and entries[j]["role"] == role and entries[j]["gid"] == e["gid"]:
             j += 1
-        block = [x["t"] for x in entries[i:j]]
+        block = entries[i:j]
         if role == "a":
             k = j
             while k < n and entries[k]["role"] in ("a", "page"):
@@ -1590,12 +1761,77 @@ def _fix_labels(laid: dict, words: Counter, report: Counter) -> None:
             pg["top"], pg["bottom"] = _bands(out, pg["st"])
 
 
+def _rel_style(style: str, base: str) -> str:
+    """Начертание строки против основного: выделением считается только то,
+    чего в основном нет. Светлее основного текста не бывает — «обычное»."""
+    return ("b" if "b" in style and "b" not in base else "") +            ("i" if "i" in style and "i" not in base else "")
+
+
+def _base_style(laid: dict) -> str:
+    """Начертание, которым набран САМ документ.
+
+    Считать полужирным всё, что распознаватель назвал Bold, нельзя: у боевой
+    книги (старая печать, жирная краска) распознаватель пометил `Bold` весь
+    основной текст — 11 710 строк из 13 347, — и выгрузка напечатала бы книгу
+    целиком полужирной. Начертание имеет смысл только ОТНОСИТЕЛЬНО основного:
+    выделено то, что от него отличается."""
+    tally = Counter()
+    for pg in laid.values():
+        for r in pg.get("recs") or []:
+            tally[r.get("st") or ""] += max(1, len((r.get("t") or "").strip()))
+    return tally.most_common(1)[0][0] if tally else ""
+
+
+def _para_boxes(entries: list, base: str = "") -> "list | None":
+    """Рамки абзаца на страницах: [{page, x0, y0, x1, y1, size, lead, indent}].
+
+    Абзац бывает разорван концом страницы, поэтому рамок несколько — по одной
+    на страницу. `size` — кегль (медиана строк), `lead` — межстрочный интервал
+    этого абзаца, `indent` — отступ первой строки от левого края рамки.
+    None — у абзаца нет геометрии (страница разбиралась по строкам): выгрузка
+    «как в оригинале» такой абзац не трогает, а не гадает его место."""
+    by_page: dict = {}
+    for e in entries:
+        g = (e or {}).get("geo")
+        if not g or len(g) < 6:
+            continue
+        pg, x0, y, x1, sz, st = g
+        b = by_page.setdefault(pg, {"page": pg, "x0": x0, "y0": y, "x1": x1, "y1": y,
+                                    "sizes": [], "ys": [], "first": x0, "st": Counter()})
+        b["st"][st or ""] += max(1, len((e.get("t") or "").strip()))
+        b["x0"], b["x1"] = min(b["x0"], x0), max(b["x1"], x1)
+        b["y0"], b["y1"] = min(b["y0"], y), max(b["y1"], y)
+        b["sizes"].append(sz or 0.0)
+        b["ys"].append(y)
+    if not by_page:
+        return None
+    out = []
+    for pg in sorted(by_page, reverse=False):
+        b = by_page[pg]
+        sizes = [v for v in b["sizes"] if v > 0]
+        size = statistics.median(sizes) if sizes else 10.0
+        ys = sorted(set(b["ys"]), reverse=True)
+        gaps = [ys[k] - ys[k + 1] for k in range(len(ys) - 1)]
+        lead = statistics.median(gaps) if gaps else size * 1.2
+        # Рамка по БАЗОВЫМ линиям; вниз добавляем выносные элементы,
+        # вверх — высоту прописной: иначе верх строки оказался бы срезан.
+        out.append({"page": pg, "x0": round(b["x0"], 1), "x1": round(b["x1"], 1),
+                    "top": round(b["y1"] + 0.85 * size, 1),
+                    "bottom": round(b["y0"] - 0.25 * size, 1),
+                    "size": round(size, 2), "lead": round(lead, 2),
+                    "style": _rel_style(b["st"].most_common(1)[0][0] if b["st"] else "", base),
+                    "indent": round(b["first"] - b["x0"], 1), "lines": len(b["ys"])})
+    return out
+
+
 def clean(pages: list, geom: "list | None" = None) -> dict:
     """Страницы (список списков строк) → {items, report}.
 
-    items — [("p", текст)] и [("img", номер страницы)] в порядке документа;
-    страница с ненадёжным слоем уходит картинкой, её строки — в
-    `fallback` (на случай, если картинку из PDF достать не удалось).
+    items — [("p", текст)], [("img", номер страницы)] и [("fig", номер
+    страницы, рамка в долях листа)] в порядке документа; страница
+    с ненадёжным слоем уходит картинкой, её строки — в `fallback`
+    (на случай, если картинку из PDF достать не удалось), а рисунок
+    внутри страницы — вырезкой из неё (`_fig_crop`).
 
     `geom` — геометрия страниц (`pdfpages_worker.page_lines`), по одной на
     страницу, либо None: без неё страница идёт по строкам, как раньше."""
@@ -1655,6 +1891,9 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
         laid[i] = {"recs": kept, "st": st, "top": top, "bottom": bottom, "multi": multi}
 
     _fix_labels(laid, words, report)
+    # Начертание документа — до разбора страниц: по нему считается, что
+    # в книге выделено, а что просто её основной текст.
+    base_style = _base_style(laid)
 
     # Проход 2: колонтитулы по месту и повтору — нечётко, потому что
     # распознаватель читает их на каждой странице заново.
@@ -1701,17 +1940,46 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
 
     items = []
     entries: list = []
+    figs_seen: list = []        # (номер страницы, рамка в долях) по номеру метки
+    layout: list = []           # рамки абзаца на страницах — по одной записи на «p»
 
     def flush_lines():
         if not entries:
             return
         _plain_page_fixes(entries, next_gid, hyphenated, words)
-        buf_lines = _assemble(entries, median_len)
+        src: list = []
+        buf_lines = _assemble(entries, median_len, src)
         entries.clear()
         if any(buf_lines):
-            paras = join_lines(buf_lines, hyphenated, median_len, report)
+            spans: list = []
+            paras = join_lines(buf_lines, hyphenated, median_len, report, spans=spans)
             paras = restore_dropcaps(paras, words, report)
-            items.extend(("p", p) for p in paras if p)
+            boxes = [_para_boxes(src[a:b + 1], base_style) if a is not None else None
+                     for a, b in spans]
+            for para, place in zip(paras, boxes):
+                if not para:
+                    continue
+                if _FIG_MARK_OPEN not in para:
+                    items.append(("p", para, place))
+                    layout.append(place)
+                    continue
+                # Метка рисунка дожила до готового абзаца — разворачиваем её
+                # обратно в картинку. Текст рядом с меткой сохраняем: строка,
+                # прилипшая к ней, — это текст книги, и терять его нельзя.
+                pos = 0
+                for m in _FIG_MARK_RE.finditer(para):
+                    head = para[pos:m.start()].strip()
+                    if head:
+                        items.append(("p", head, place))
+                        layout.append(place)
+                    n = int(m.group(1))
+                    if 0 <= n < len(figs_seen):
+                        items.append(("fig",) + figs_seen[n])
+                    pos = m.end()
+                tail = para[pos:].strip()
+                if tail:
+                    items.append(("p", tail, place))
+                    layout.append(place)
 
     for i, ls in enumerate(pages):
         if i in unreliable:
@@ -1797,12 +2065,41 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
         body = [r for k, r in enumerate(recs) if k not in drop]
         roles = ([("f", None)] * len(body) if pg["multi"]
                  else _geo_roles(body, pg["st"], geom[i], next_gid))
-        for r, (role, gid) in zip(body, roles):
+        # Рисунок встаёт в поток на своё место — перед первой строкой, что
+        # стоит НИЖЕ него. Вставкой (роль «a»), а не обычной строкой: абзац,
+        # который рисунок разорвал, продолжается мимо него (`_assemble`).
+        box = (geom[i] or {}).get("box") or [0, 0, 0, 0]
+        figs = _fig_boxes(geom[i] or {}, body, merge=True)
+        spots: dict = {}
+        for f in figs:
+            # Место — перед БЛИЖАЙШЕЙ строкой под рисунком, а не перед первой
+            # по списку: на странице, где текст обтекает рисунок, порядок
+            # строк не совпадает с порядком чтения (`multi`), и «первая
+            # по списку» унесла бы рисунок в чужое место.
+            below = [(r["y"], k) for k, r in enumerate(body) if r["y"] < f[1]]
+            at = max(below)[1] if below else len(body)
+            spots.setdefault(at, []).append(f)
+        for k in range(len(body) + 1):
+            for f in spots.get(k, []):
+                crop = _fig_crop(f, recs, figs, box)
+                if not _fig_printable(crop, recs):
+                    report["figuresSkipped"] += 1
+                    continue
+                entries.append({"role": "a", "gid": next_gid(), "t": _fig_mark(len(figs_seen))})
+                figs_seen.append((i, _fig_frac(crop, box)))
+                report["figures"] += 1
+            if k >= len(body):
+                break
+            r, (role, gid) = body[k], roles[k]
             if role != "f":
                 report["insetLines" if role == "a" else "headingLines"] += 1
-            entries.append({"role": role, "gid": gid, "t": r["t"]})
+            entries.append({"role": role, "gid": gid, "t": r["t"],
+                            # Место строки — для выгрузки «как в оригинале».
+                            "geo": (i, r["x0"], r["y"], r["x1"], r["s"], r.get("st") or "")})
     flush_lines()
     report["imagePages"] = len(unreliable)
     report["paragraphs"] = sum(1 for it in items if it[0] == "p")
     return {"items": items, "imagePages": sorted(unreliable), "report": dict(report),
+            "layout": layout, "pageBoxes": [((g or {}).get("box") if isinstance(g, dict) else None)
+                                            for g in geom],
             "heads": sorted(heads | feet | geo_heads | geo_feet)}

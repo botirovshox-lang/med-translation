@@ -51,7 +51,7 @@ import io
 import mimetypes
 import html as _html_mod
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi import Response
@@ -90,6 +90,10 @@ checks_mod = _safe_import("checks")
 # Без них термин может заверить только человек — а он целевого языка может
 # и не знать. См. шапку authorities.py.
 authorities_mod = _safe_import("authorities")
+# Счётчики событий: «где теряем деньги, где можно заработать, что чинить».
+# Своим модулем, потому что учёт не вправе ни ронять вызов, ни писать
+# в state.json на каждый запрос — см. шапку backend/metrics.py.
+metrics_mod = _safe_import("metrics")
 
 # Google Translate убран из системы. Перевод делает ТОЛЬКО выбранная модель:
 # бесплатный движок не знает предметной области, игнорирует глоссарий (кроме
@@ -609,6 +613,25 @@ def _explain_lang_name() -> str:
     """Как назвать язык в промпте. Незнакомый код — русский: пустое имя
     языка модель истолкует по-своему, и объяснение придёт неизвестно на чём."""
     return EXPLAIN_LANG_NAME.get(_explain_lang()) or EXPLAIN_LANG_NAME["ru"]
+
+
+def _ev(code: str, tenant: Optional[str] = None, n: int = 1,
+        ms: Optional[float] = None) -> None:
+    """Счётчик события. Организация — та же, что у запроса или прогона,
+    поэтому сводка режется по организациям тем же законом, что и всё
+    остальное (инвариант 11).
+
+    Стоимость — словарный инкремент в памяти процесса: ни диска, ни базы,
+    ни `save_state`. Молчит при любом сбое: наблюдение не вправе мешать
+    работе. Кода в СВОБОДНОЙ форме тут быть не должно — только из закрытых
+    наборов (шаблон маршрута, код отказа, имя шага), иначе таблица событий
+    превратится в лог по строке на запрос."""
+    if metrics_mod is None:
+        return
+    try:
+        metrics_mod.ev(code, tenant if tenant is not None else _current_tenant(), n, ms)
+    except Exception:
+        pass
 
 
 def _tenant_of(obj: Optional[dict]) -> str:
@@ -1705,6 +1728,8 @@ class _AnthropicChat:
             # место вызова зовёт `_note_usage` только на удачном ответе,
             # и без этой строки отказы уходили бы мимо лимита и сметы.
             _note_usage("refusal", self._m.get("id") or model, NS(usage=usage))
+            # Отказ модели оплачен: токены выставлены в счёт, работы нет.
+            _ev("waste.refusal")
             raise RuntimeError("модель отказалась отвечать (stop_reason=refusal)")
         text = "".join(getattr(b, "text", "") or "" for b in (resp.content or [])
                        if getattr(b, "type", "") == "text")
@@ -2501,6 +2526,7 @@ def _job_limit_hit(job: dict) -> bool:
         return False
     job["status"] = "stopped"
     job["stopReason"] = "limit"
+    _ev("waste.jobStopped:limit", _tenant_of(job))
     job["error"] = JOB_STOP_LIMIT
     # Исчерпанный лимит — не поломка, но и не то, о чём узнают вовремя:
     # прогон встал посреди книги, а поднять потолок может только владелец
@@ -2630,12 +2656,33 @@ def _is_quota_error(text) -> bool:
     return any(m in t for m in _QUOTA_MARKERS)
 
 
+def _provider_err_kind(text: str) -> str:
+    """Во что обошлась ошибка поставщика. Классов четыре, и они РАЗНЫЕ
+    по смыслу: `quota` — кончились деньги на счёте сервиса (надо платить),
+    `rate` — слишком часто просим (надо ждать или поднимать лимит),
+    `timeout` — сеть, `other` — всё прочее. Одной строкой «ошибка» они
+    складывались бы в число, по которому нечего решать."""
+    t = str(text or "").lower()
+    if _is_quota_error(t):
+        return "quota"
+    if "rate limit" in t or "429" in t or "rate_limit" in t:
+        return "rate"
+    if "timeout" in t or "timed out" in t or "connection" in t:
+        return "timeout"
+    return "other"
+
+
 def _note_provider_error(e) -> None:
     """Запомнить последнюю ошибку поставщика: вызовы, которые глотают
     исключение и отвечают None (чтение картинок), иначе не сказали бы,
     ПОЧЕМУ не прочиталось."""
     _PROVIDER_ERR["text"] = str(e)[:500]
     _PROVIDER_ERR["at"] = time.time()
+    # Счётчик — здесь, в единственной точке, где ошибка поставщика уже
+    # классифицирована. Организация возьмётся сама: `_current_tenant()`
+    # читает и сессию, и поток прогона (`_JOB_TENANT`), — иначе всё
+    # уезжало бы в «default», то есть отчёт владельцу врал бы.
+    _ev("provider." + _provider_err_kind(_PROVIDER_ERR["text"]))
 
 
 def _quota_recent(window: float = 120.0) -> bool:
@@ -2645,6 +2692,7 @@ def _quota_recent(window: float = 120.0) -> bool:
 def _job_quota_stop(job: dict) -> None:
     job["status"] = "stopped"
     job["stopReason"] = "provider_quota"
+    _ev("waste.jobStopped:provider_quota", _tenant_of(job))
     job["error"] = JOB_STOP_PROVIDER_QUOTA
     job["counters"]["quotaStop"] = 1
     if tg_mod:
@@ -3649,6 +3697,10 @@ def _limit_402(st: dict, tenant: Optional[str]) -> JSONResponse:
     """Отказ «лимит исчерпан» — одним текстом у мидвари (`_PAID`) и у
     обработчиков, чья платность зависит от ТЕЛА запроса (автоодобрение
     со сверкой судьёй): путём их не отличить от бесплатного вызова."""
+    # Счётчик стоит ЗДЕСЬ, а не у кода ответа: 402 отдают и потолок проектов,
+    # и кончившиеся страницы, а это РАЗНЫЕ предложения клиенту — «поднимите
+    # лимит расхода» и «купите пакет страниц».
+    _ev("cap.spend402", tenant)
     if _tenant_simple(tenant):
         return JSONResponse({"ok": False, "error":
             "Месячный лимит организации исчерпан: обратитесь к администратору. "
@@ -3768,9 +3820,72 @@ CSP_POLICY = os.environ.get("CSP_POLICY", "").strip() or (
 _STATIC_PREFIXES = re.compile(r"^/(js|css|vendor)/")
 
 
+# ─── Замер запросов: что зовут, что отказывает, что тормозит ─────────
+# Замер живёт В ТЕЛЕ `_security_headers`, а не отдельной мидлварью, и это
+# решение про СКОРОСТЬ. Каждая `BaseHTTPMiddleware` — это своя anyio-группа
+# задач и пара потоков памяти НА КАЖДЫЙ запрос, включая полтора десятка
+# файлов статики на экране входа; четвёртый слой работал бы против замера
+# «вход за 0,2 с» (см. «Экран входа рисуется за доли секунды»). А эта
+# мидлварь уже САМАЯ ВНЕШНЯЯ и уже держит в руках и статус, и путь.
+#
+# Внешняя — свойство несущее: отказы входа (401), лимита (402) и роли (403)
+# отдаёт `require_token`, мидлварь ВНУТРЕННЯЯ, — считай мы внутри неё,
+# не увидели бы ровно тех ответов, ради которых всё заведено.
+#
+# Цена на запрос: два `perf_counter` и один-два словарных инкремента.
+# Ни диска, ни базы: буфер живёт в памяти процесса и уходит пачкой раз
+# в минуту (`_metrics_flush`), причём в threadpool — синхронный запрос
+# в базу из цикла событий держал бы ЕДИНСТВЕННЫЙ воркер для всех.
+#
+# Код события — ШАБЛОН маршрута (`/projects/{pid}`), а не адрес: в адресе
+# стоит номер проекта, и по адресам таблица выросла бы строкой на проект,
+# то есть стала бы логом. Шаблон кладёт в scope сам FastAPI при
+# сопоставлении (`child_scope["route"]`), придумывать нормализацию не надо.
+# Маршрут не нашёлся (404 сканера, статика) — кода маршрута нет вовсе,
+# только метод: имя несуществующего адреса задаёт посторонний, и класть
+# его в ключ нельзя.
+#
+# Что меряется честно: `call_next` возвращает управление на СТАРТЕ ответа,
+# поэтому отдача тела (экспорт, `FileResponse`) в `ms` не входит.
+def _metrics_note(request: Request, status: int, t0: float) -> None:
+    try:
+        ms = (time.perf_counter() - t0) * 1000.0
+        sess = getattr(request.state, "session", None)
+        tenant = (sess or {}).get("tenant") or ""
+        route = request.scope.get("route")
+        path = getattr(route, "path", None)
+        key = ("%s %s" % (request.method, path[4:] if path and path.startswith("/api") else path)
+               if path else request.method)
+        _ev("api:" + key, tenant, 1, ms)
+        if status >= 400:
+            # Строка ОДНА, с маршрутом. Второй, сводной («сколько всего
+            # таких отказов»), быть не должно: она складывается из этих
+            # при показе, а храниться два раза одно и то же не вправе —
+            # два счётчика одного числа однажды разойдутся.
+            _ev("err:%d %s" % (status, key), tenant)
+    except Exception:
+        pass
+
+
 @app.middleware("http")
 async def _security_headers(request: Request, call_next):
-    resp = await call_next(request)
+    api = request.url.path.startswith("/api/")
+    watch = api and metrics_mod is not None and metrics_mod.ENABLED
+    t0 = time.perf_counter() if watch else 0.0
+    if watch:
+        try:
+            resp = await call_next(request)
+        except Exception:
+            # Развалившийся обработчик — самое дорогое событие из возможных.
+            # Наружу это 500 мимо всех наших мидлварей (его превращает
+            # в ответ ServerErrorMiddleware, стоящий ВНЕ нашей цепочки),
+            # то есть без этой ветки самая дорогая метрика не записалась бы
+            # НИ РАЗУ.
+            _metrics_note(request, 500, t0)
+            raise
+        _metrics_note(request, resp.status_code, t0)
+    else:
+        resp = await call_next(request)
     h = resp.headers
     h.setdefault("X-Content-Type-Options", "nosniff")
     h.setdefault("X-Frame-Options", "DENY")
@@ -3803,7 +3918,12 @@ async def _security_headers(request: Request, call_next):
     # НЕ переименовав, нельзя — у людей останется старый на год.
     elif request.url.path.startswith("/vendor/fonts/"):
         h.setdefault("Cache-Control", "public, max-age=31536000, immutable")
+    # Слив накопленного — не чаще раза в минуту и ТОЛЬКО в threadpool:
+    # запись в базу из цикла событий держала бы единственный воркер.
+    if watch and metrics_mod.due(time.time()):
+        await run_in_threadpool(_metrics_flush)
     return resp
+
 
 FRONTEND_DIR = ROOT / "frontend"
 DATA_DIR = ROOT / "backend" / "data"
@@ -3833,7 +3953,136 @@ tg_mod = _safe_import("tg")
 # Нет конвертера на сервере — честный отказ, а не PDF из голого текста:
 # такой выглядел бы выгрузкой и не был бы ею (инвариант 4).
 topdf_mod = _safe_import("topdf")
+# Выгрузка PDF «как в оригинале»: перевод встаёт на место оригинала прямо
+# в исходном файле. Отдельный модуль — у него свои зависимости (reportlab,
+# шрифт с нужной письменностью), и нет их — отказываем словами.
+layout_pdf_mod = _safe_import("layout_pdf")
 STORE = _store_mod.open_store(os.environ.get("DATABASE_URL"), STATE_FILE)
+
+# ─── Слив счётчиков событий в хранилище ──────────────────────────────
+# Копится в памяти процесса (backend/metrics.py), уходит наружу ПАЧКОЙ
+# и изредка. Почему так, а не записью на событие:
+#   * с базой это один запрос в минуту вместо запроса на каждый чих;
+#   * с файлом — приращение в STATE БЕЗ `save_state`: событие не стоит
+#     перезаписи всего состояния, и накопленное ляжет на диск ближайшей
+#     штатной записью. Цена названа честно: аварийная остановка теряет
+#     последнюю минуту наблюдений. Это справочник, а не деньги клиента, —
+#     деньги считают `spend` и `pagesUsed`, и они пишутся сразу.
+EVENTS_KEY = "events"             # файловое хранилище: {"день|орг|код": счётчики}
+
+
+# Сколько дней счётчиков держит ФАЙЛОВОЕ хранилище. Две недели, а не 90,
+# как в базе, и это не разнобой, а разная цена хранения: `state.json`
+# лежит в памяти целиком и переписывается при КАЖДОЙ правке сегмента,
+# поэтому лишние десятки тысяч ключей там — это лишние мегабайты записи
+# на каждое нажатие «Подтвердить». В базе событие живёт своей строкой
+# и ничьей записи не касается.
+EVENTS_FILE_DAYS = int(os.environ.get("METRICS_FILE_DAYS", "14"))
+EVENTS_FILE_MAX = int(os.environ.get("METRICS_FILE_MAX", "4000"))
+_EVENTS_PRUNED = {"day": ""}
+
+
+def _events_file_add(rows: list) -> None:
+    """Приращение в STATE — ТОЛЬКО под `_SAVE_LOCK`.
+
+    Без лока это тихая порча сохранения: `FileStore.save` сериализует
+    состояние целиком (`json.dumps(state)`) под этим же локом, а правка
+    вложенного словаря из потока запроса в этот момент роняет сериализацию
+    («dictionary changed size during iteration»). Наружу это выглядит как
+    строка WARN в журнале и НЕСОХРАНЁННАЯ работа человека — цена, которой
+    наблюдение не стоит никогда."""
+    with _SAVE_LOCK:
+        led = STATE.setdefault(EVENTS_KEY, {})
+        for r in rows:
+            key = "|".join((r["day"], r.get("tenant") or "", r["code"]))
+            d = led.get(key)
+            if d is None:
+                d = led[key] = {"n": 0, "ms_sum": 0.0, "ms_max": 0.0, "slow": 0}
+            d["n"] += int(r.get("n") or 0)
+            d["ms_sum"] = round(d["ms_sum"] + float(r.get("ms_sum") or 0), 3)
+            d["ms_max"] = max(d["ms_max"], float(r.get("ms_max") or 0))
+            d["slow"] += int(r.get("slow") or 0)
+        # Подрезка по дням, а потом — по общему числу ключей целыми днями:
+        # иначе файл состояния растёт без границы, а наполовину подрезанный
+        # день врал бы числами.
+        edge = (datetime.now() - timedelta(days=EVENTS_FILE_DAYS)).strftime("%Y-%m-%d")
+        for key in [k for k in led if k.split("|", 1)[0] < edge]:
+            del led[key]
+        while len(led) > EVENTS_FILE_MAX:
+            oldest = min(k.split("|", 1)[0] for k in led)
+            for key in [k for k in led if k.startswith(oldest + "|")]:
+                del led[key]
+
+
+def _events_prune_db() -> None:
+    """Подрезка таблицы событий — раз в сутки, при первом сливе дня.
+    Без неё таблица растёт вечно: в базе никто её не чистит сам."""
+    day = datetime.now().strftime("%Y-%m-%d")
+    if _EVENTS_PRUNED["day"] == day:
+        return
+    _EVENTS_PRUNED["day"] = day
+    try:
+        edge = (datetime.now() - timedelta(days=metrics_mod.KEEP_DAYS)).strftime("%Y-%m-%d")
+        gone = STORE.events_prune(edge)
+        if gone:
+            print(f"[backend] счётчики событий старше {edge}: снято {gone}", file=sys.stderr)
+    except Exception as e:
+        print(f"[backend] подрезка счётчиков не удалась: {e}", file=sys.stderr)
+
+
+def _metrics_flush(force: bool = False) -> None:
+    """Забрать буфер и записать. Зовётся из горячего пути, поэтому дешёвая
+    проверка `due()` стоит ПЕРЕД забором: пустой буфер и невышедшее время —
+    это сравнение двух чисел.
+
+    Не записалось (база недоступна) — возвращаем в буфер, а не теряем."""
+    if metrics_mod is None:
+        return
+    try:
+        if not force and not metrics_mod.due(time.time()):
+            return
+        rows = metrics_mod.take()
+        if not rows:
+            return
+        try:
+            if STORE.kind == "pg":
+                STORE.add_events(rows)
+                _events_prune_db()
+            else:
+                _events_file_add(rows)
+        except Exception as e:
+            metrics_mod.put_back(rows)
+            print(f"[backend] счётчики событий не записаны: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"[backend] слив счётчиков не удался: {e}", file=sys.stderr)
+
+
+def _events_rows(day_from: str, day_to: str, tenant: Optional[str] = None) -> list:
+    """Чтение счётчиков за период. Перед чтением — принудительный слив:
+    иначе сводка не видит последней минуты, а владелец смотрит её как раз
+    после того, как что-то сломалось."""
+    _metrics_flush(force=True)
+    if STORE.kind == "pg":
+        try:
+            return STORE.events_rows(day_from, day_to, tenant)
+        except Exception as e:
+            print(f"[backend] счётчики событий не прочитаны: {e}", file=sys.stderr)
+            return []
+    out = []
+    for key, v in (STATE.get(EVENTS_KEY) or {}).items():
+        parts = key.split("|")
+        if len(parts) < 3:
+            continue
+        # Код — последняя часть: у дня и организации «|» не бывает, а вот
+        # в коде маршрута он теоретически возможен.
+        day, ten, code = parts[0], parts[1], "|".join(parts[2:])
+        if not (day_from <= day <= day_to):
+            continue
+        if tenant is not None and ten != tenant:
+            continue
+        out.append(dict(v, day=day, tenant=ten, code=code))
+    return out
+
 
 # Прогоны отдельным процессом (systemd-юнит medcat-worker, backend/worker.py):
 # API только ставит задачу в таблицу jobs, воркер забирает её claim_job
@@ -5766,6 +6015,505 @@ def admin_overview(request: Request):
             "month": _month_key()}
 
 
+# ─── Сводка «где теряем, где заработать, что чинить» ─────────────────
+# Отвечает на вопрос владельца сервиса, а не показывает сырые счётчики.
+# Источников ПЯТЬ, и четыре из них существовали и до счётчиков событий —
+# просто их никто не сводил вместе:
+#   * `project_spend` — факт расхода и пара «смета — факт» по каждому файлу;
+#   * `usage_daily`   — токены по дню, шагу, модели и автору;
+#   * записи организаций — выданные и списанные страницы, лимит расхода;
+#   * `quotes`        — сметы с состоянием (новая / выставлена / оплачена);
+#   * `events`        — то, что мы начали считать: маршруты, отказы, потолки.
+# Сводить их надо ВМЕСТЕ: «17 отказов по размеру файла» не продаётся,
+# а «организация X упёрлась 9 раз за неделю, а страниц у неё осталось
+# на два дня» — продаётся.
+METRICS_TOP = 25                    # сколько строк отдаём в каждом списке
+
+
+def _metrics_day_range(days: int) -> tuple:
+    days = max(1, min(int(days or 7), 90))
+    to = datetime.now()
+    return ((to - timedelta(days=days - 1)).strftime("%Y-%m-%d"),
+            to.strftime("%Y-%m-%d"), days)
+
+
+def _metrics_last_run() -> dict:
+    """Когда организация в последний раз что-то считала. По `runCosts`:
+    кольцо, зато переживает рестарт, а нам нужен не полный список,
+    а самая поздняя дата."""
+    out = {}
+    for r in (STATE.get("runCosts") or []):
+        t, fin = r.get("tenant") or DEFAULT_TENANT, r.get("finished") or ""
+        if fin > out.get(t, ""):
+            out[t] = fin
+    return out
+
+
+def _metrics_tenants(day_from: str, ev_by_tenant: dict) -> list:
+    """Строка на организацию: страницы, деньги, себестоимость, отток.
+
+    Себестоимость страницы (`costPerPage`) — единственное число, по которому
+    видно, что мы работаем в убыток: продаём за страницу, а тратим за токены.
+    Считается за ВСЮ жизнь файлов (`project_spend` против списанных страниц),
+    а не за период: страницы списываются один раз при импорте, а прогоны
+    по ним идут неделями — поделив недельный расход на недельные страницы,
+    получили бы бессмыслицу."""
+    spend_rows = {}
+    for r in _proj_spend_rows():
+        d = spend_rows.setdefault(r["tenant"], {"usd": 0.0, "runs": 0, "est": 0.0, "act": 0.0})
+        d["usd"] += r["usd"]
+        d["runs"] += r["runs"]
+        d["est"] += r["estUsd"]
+        d["act"] += r["estActualUsd"]
+    last = _metrics_last_run()
+    today = datetime.now().strftime("%Y-%m-%d")
+    out = []
+    for t in _tenants():
+        tid = t["id"]
+        usage, caps = _tenant_usage(tid), _tenant_caps(tid)
+        card = _pricing_of(tid)
+        sp = spend_rows.get(tid) or {"usd": 0.0, "runs": 0, "est": 0.0, "act": 0.0}
+        pages = usage["pages"]
+        # Цена страницы — ОБЩАЯ цена карточки (`default`), а не строка
+        # прайса по паре: организация может продавать десяток пар, и одного
+        # числа для «в убыток или нет» достаточно. Нет цены — None, а не
+        # ноль: ноль читался бы как «отдаём даром».
+        price = card.get("default")
+        st = _spend_status(tid)
+        cost_page = round(sp["usd"] / pages, 4) if pages else None
+        # Доля себестоимости в цене — только когда цена названа. Нет цены —
+        # None, а не ноль: ноль читался бы как «бесплатно для нас».
+        margin = (round(1 - (cost_page / float(price)), 3)
+                  if cost_page and price else None)
+        lr = last.get(tid) or ""
+        idle = None
+        if lr:
+            try:
+                idle = (datetime.now() - datetime.strptime(lr[:10], "%Y-%m-%d")).days
+            except ValueError:
+                idle = None
+        out.append({
+            "id": tid, "name": t.get("name") or tid, "active": t.get("active", True),
+            "simple": bool(t.get("simple")),
+            "users": sum(1 for u in _users() if u.get("tenant") == tid),
+            "projects": usage["projects"],
+            "pages": pages, "pagesCredit": usage["credit"], "pagesLeft": usage["left"],
+            "spendUsd": round(sp["usd"], 4), "runs": sp["runs"],
+            "limitUsd": st.get("limitUsd"), "monthUsd": st.get("spentUsd"),
+            "spendOver": st.get("over"),
+            "costPerPage": cost_page, "pricePerPage": (float(price) if price else None),
+            "currency": card.get("currency"),
+            "margin": margin,
+            "estUsd": round(sp["est"], 4), "estActualUsd": round(sp["act"], 4),
+            "estRatio": (round(sp["est"] / sp["act"], 2) if sp["act"] else None),
+            "lastRun": lr or None, "idleDays": idle,
+            "caps": ev_by_tenant.get(tid, {}),
+            "today": today,
+        })
+    out.sort(key=lambda r: -(r["spendUsd"] or 0))
+    return out
+
+
+def _metrics_quotes(day_from: str) -> dict:
+    """Сметы по состояниям — деньги, лежащие на столе.
+
+    Считается по `STATE["quotes"]`, а не отдельным счётчиком: состояние
+    сметы уже лежит на записи, и второй счётчик рядом с источником правды
+    однажды разошёлся бы с ним."""
+    box = {s: {"n": 0, "total": 0.0} for s in QUOTE_STATUSES}
+    by_cur = {}
+    for q in (STATE.get("quotes") or []):
+        st = q.get("status") or "new"
+        if st not in box:
+            continue
+        box[st]["n"] += 1
+        try:
+            box[st]["total"] += float(q.get("total") or 0)
+        except (TypeError, ValueError):
+            pass
+        by_cur[q.get("currency") or ""] = by_cur.get(q.get("currency") or "", 0) + 1
+    total_n = sum(v["n"] for v in box.values())
+    return {"byStatus": box, "total": total_n,
+            "currency": (max(by_cur, key=by_cur.get) if by_cur else ""),
+            # Конверсия — доля ОПЛАЧЕННЫХ от всех выставленных счетов.
+            # Знаменатель «все сметы» врал бы: смета считается и просто
+            # «прицениться», счёт по ней не выставляли.
+            "conversion": (round(box["paid"]["n"] / (box["paid"]["n"] + box["invoiced"]["n"]), 2)
+                           if (box["paid"]["n"] + box["invoiced"]["n"]) else None)}
+
+
+def _metrics_steps(rows: list) -> list:
+    """Расход по шагам конвейера: где именно сгорают деньги."""
+    by = {}
+    for r in rows:
+        d = by.setdefault(r["step"], {"step": r["step"], "usd": 0.0, "calls": 0,
+                                      "in": 0, "out": 0})
+        d["usd"] += r.get("cost") or 0.0
+        d["calls"] += r.get("calls") or 0
+        d["in"] += r.get("in") or 0
+        d["out"] += r.get("out") or 0
+    out = sorted(by.values(), key=lambda d: -d["usd"])
+    for d in out:
+        d["usd"] = round(d["usd"], 4)
+    return out[:METRICS_TOP]
+
+
+def _metrics_events(rows: list) -> dict:
+    """Разложить счётчики событий по смыслу кода.
+
+    Коды разбираются ПО ПРЕФИКСУ, а не по списку: `api:` — маршрут,
+    `err:` — отказ, `cap:` — упёрлись в потолок, `waste:` — сожжённая
+    работа, `provider:` — поставщик моделей. Список кодов в коде разбора
+    разошёлся бы с местами, где их ставят, при первой же новой строке."""
+    routes, errs, caps, waste, prov = {}, {}, {}, {}, {}
+    by_tenant_caps = {}
+    for r in rows:
+        code, n = r["code"], r.get("n") or 0
+        if code.startswith("api:"):
+            d = routes.setdefault(code[4:], {"route": code[4:], "n": 0, "ms": 0.0,
+                                             "msMax": 0.0, "slow": 0})
+            d["n"] += n
+            d["ms"] += r.get("ms_sum") or 0.0
+            d["msMax"] = max(d["msMax"], r.get("ms_max") or 0.0)
+            d["slow"] += r.get("slow") or 0
+        elif code.startswith("err:"):
+            errs[code[4:]] = errs.get(code[4:], 0) + n
+        elif code.startswith("cap."):
+            caps[code[4:]] = caps.get(code[4:], 0) + n
+            t = r.get("tenant") or ""
+            by_tenant_caps.setdefault(t, {})
+            by_tenant_caps[t][code[4:]] = by_tenant_caps[t].get(code[4:], 0) + n
+        elif code.startswith("waste."):
+            waste[code[6:]] = waste.get(code[6:], 0) + n
+        elif code.startswith("provider."):
+            prov[code[9:]] = prov.get(code[9:], 0) + n
+    for d in routes.values():
+        d["avgMs"] = round(d["ms"] / d["n"], 1) if d["n"] else 0.0
+        d["msMax"] = round(d["msMax"], 1)
+        d.pop("ms", None)
+    top_routes = sorted(routes.values(), key=lambda d: -d["n"])[:METRICS_TOP]
+    slow = sorted([d for d in routes.values() if d["n"] >= 5],
+                  key=lambda d: -d["avgMs"])[:METRICS_TOP]
+    return {"routes": top_routes, "slow": slow,
+            "errors": sorted([{"code": k, "n": v} for k, v in errs.items()],
+                             key=lambda d: -d["n"])[:METRICS_TOP],
+            "caps": sorted([{"code": k, "n": v} for k, v in caps.items()],
+                           key=lambda d: -d["n"]),
+            "capsByTenant": by_tenant_caps,
+            "waste": sorted([{"code": k, "n": v} for k, v in waste.items()],
+                            key=lambda d: -d["n"]),
+            "provider": sorted([{"code": k, "n": v} for k, v in prov.items()],
+                               key=lambda d: -d["n"])}
+
+
+# Порог «организация молчит»: дней без единого прогона при живом остатке
+# страниц. Две недели — это уже не пауза, а уход; раньше дёргать клиента
+# незачем, позже — поздно.
+METRICS_IDLE_DAYS = int(os.environ.get("METRICS_IDLE_DAYS", "14"))
+# Во сколько раз расход организации должен превысить медиану, чтобы это
+# был повод для отдельного тарифа, а не разброс.
+METRICS_HEAVY_X = float(os.environ.get("METRICS_HEAVY_X", "3"))
+
+
+def _metrics_hints(days: int, tenants: list, ev: dict, quotes: dict) -> list:
+    """Подсказки — правилами в коде, без единого вызова модели.
+
+    Каждая подсказка обязана нести ЧИСЛО и, где это уместно, организацию:
+    «отказали 17 раз» — наблюдение, «организация X упёрлась 9 раз за
+    неделю» — разговор с клиентом. Подсказка без числа — гадание, и такой
+    здесь быть не должно.
+
+    Виды: `money` — где заработать, `loss` — где теряем, `fix` — что
+    чинить. Экран красит их по виду, поэтому вид — КОД, а не фраза."""
+    out = []
+    caps = {d["code"]: d["n"] for d in ev.get("caps") or []}
+    by_t = ev.get("capsByTenant") or {}
+
+    def who(code):
+        got = sorted(((t, v.get(code, 0)) for t, v in by_t.items() if v.get(code)),
+                     key=lambda x: -x[1])
+        return [{"tenant": t, "n": n} for t, n in got[:5]]
+
+    if caps.get("filePages413"):
+        out.append({"kind": "money", "code": "bigFiles", "n": caps["filePages413"],
+                    "who": who("filePages413")})
+    if caps.get("bytes413"):
+        out.append({"kind": "money", "code": "heavyFiles", "n": caps["bytes413"],
+                    "who": who("bytes413")})
+    if caps.get("pages402"):
+        out.append({"kind": "money", "code": "pagesOut", "n": caps["pages402"],
+                    "who": who("pages402")})
+    if caps.get("spend402"):
+        out.append({"kind": "money", "code": "spendOut", "n": caps["spend402"],
+                    "who": who("spend402")})
+    if caps.get("duplicate409"):
+        out.append({"kind": "fix", "code": "duplicate", "n": caps["duplicate409"],
+                    "who": who("duplicate409")})
+    # Форматы, которых у нас нет: «какой импорт писать следующим» — это
+    # ровно этот список, и он считается сам.
+    fmt = sorted(((k.split(":", 1)[1], v) for k, v in caps.items()
+                  if k.startswith("format415:") or k.startswith("noReader503:")),
+                 key=lambda x: -x[1])
+    if fmt:
+        out.append({"kind": "money", "code": "formats", "n": sum(v for _, v in fmt),
+                    "items": [{"ext": e, "n": v} for e, v in fmt[:5]]})
+
+    # Деньги на столе: выставленные и неоплаченные сметы.
+    inv = (quotes.get("byStatus") or {}).get("invoiced") or {}
+    if inv.get("n"):
+        out.append({"kind": "money", "code": "invoicedUnpaid", "n": inv["n"],
+                    "total": round(inv.get("total") or 0, 2),
+                    "currency": quotes.get("currency")})
+
+    for t in tenants:
+        if not t.get("active", True):
+            continue
+        # Скоро кончатся страницы — повод продать ЗАРАНЕЕ, а не после отказа.
+        left, pages = t.get("pagesLeft"), t.get("pages") or 0
+        if left is not None and pages and left <= pages * 0.15 and left > 0:
+            out.append({"kind": "money", "code": "pagesLow", "tenant": t["id"],
+                        "name": t["name"], "n": left})
+        # Отток с предоплатой на счету — самый дешёвый возврат клиента.
+        if (t.get("idleDays") is not None and t["idleDays"] >= METRICS_IDLE_DAYS
+                and (left or 0) > 0):
+            out.append({"kind": "money", "code": "idle", "tenant": t["id"],
+                        "name": t["name"], "n": t["idleDays"]})
+        # Работаем в убыток: себестоимость съела больше половины цены.
+        if t.get("margin") is not None and t["margin"] < 0.5:
+            out.append({"kind": "loss", "code": "thinMargin", "tenant": t["id"],
+                        "name": t["name"], "n": round(t["margin"] * 100),
+                        "cost": t.get("costPerPage"), "price": t.get("pricePerPage")})
+        # Смета врёт. Занижение — мы дарим прогоны, завышение — пугаем клиента.
+        er = t.get("estRatio")
+        if er is not None and t.get("runs", 0) >= 3 and (er < 0.7 or er > 1.5):
+            out.append({"kind": "loss" if er < 0.7 else "fix", "code": "estOff",
+                        "tenant": t["id"], "name": t["name"], "n": er})
+
+    # Тяжёлые пользователи: повод для отдельного тарифа. Считается от
+    # МЕДИАНЫ, а не от среднего: среднее задаёт сам тяжёлый клиент.
+    spends = sorted(t["spendUsd"] for t in tenants if t["spendUsd"])
+    if len(spends) >= 3:
+        mid = spends[len(spends) // 2]
+        for t in tenants:
+            if mid and t["spendUsd"] >= mid * METRICS_HEAVY_X:
+                out.append({"kind": "money", "code": "heavy", "tenant": t["id"],
+                            "name": t["name"], "n": round(t["spendUsd"] / mid, 1)})
+
+    # Сожжённое: правки, за которые заплатили и которые откатились.
+    for w in (ev.get("waste") or []):
+        if w["n"]:
+            out.append({"kind": "loss", "code": "waste:" + w["code"], "n": w["n"]})
+    for p in (ev.get("provider") or []):
+        if p["n"]:
+            out.append({"kind": "fix", "code": "provider:" + p["code"], "n": p["n"]})
+
+    # Пятисотки и медленные маршруты — работа для разработчика, а не для
+    # продавца, но молчать о них нельзя: это отказ в обслуживании.
+    for e in (ev.get("errors") or []):
+        if e["code"].startswith("5"):
+            out.append({"kind": "fix", "code": "http5xx", "n": e["n"], "route": e["code"]})
+    for r in (ev.get("slow") or [])[:3]:
+        if r["avgMs"] >= metrics_mod.SLOW_MS:
+            out.append({"kind": "fix", "code": "slowRoute", "n": round(r["avgMs"]),
+                        "route": r["route"], "calls": r["n"]})
+    return out
+
+
+@app.get("/api/admin/metrics")
+def admin_metrics(request: Request, days: int = 7):
+    """Сводка для владельца сервиса. Ни одного вызова модели.
+
+    Отдаётся `_json_bytes` (инвариант 29): словарь проходит мимо
+    рекурсивного кодировщика FastAPI, и ответ собирается за сотые доли
+    секунды даже с сотней организаций."""
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Метрики — только суперпользователю")
+    t0 = time.time()
+    day_from, day_to, days = _metrics_day_range(days)
+    ev = _metrics_events(_events_rows(day_from, day_to))
+    led = _ledger_rows(day_from, day_to)
+    tenants = _metrics_tenants(day_from, ev.get("capsByTenant") or {})
+    quotes = _metrics_quotes(day_from)
+    spend = round(sum(r.get("cost") or 0.0 for r in led), 4)
+    return _json_bytes({
+        "ok": True, "days": days, "from": day_from, "to": day_to,
+        "spendUsd": spend,
+        "calls": sum(r.get("calls") or 0 for r in led),
+        "steps": _metrics_steps(led),
+        "tenants": tenants,
+        "quotes": quotes,
+        "routes": ev["routes"], "slow": ev["slow"], "errors": ev["errors"],
+        "capCodes": ev["caps"], "waste": ev["waste"], "provider": ev["provider"],
+        "hints": _metrics_hints(days, tenants, ev, quotes),
+        "eventsPending": (metrics_mod.pending() if metrics_mod else 0),
+        "store": STORE.kind,
+    }, "admin/metrics", t0)
+
+
+# ─── Суточная сводка словами: владельцу в Telegram и ИИ-агенту ───────
+# Отдельно от `/api/admin/metrics` и не «то же самое текстом». Экран
+# отвечает на вопрос «что происходит», а сводка — на вопрос «что делать
+# сегодня», и потому она КОРОТКАЯ и упорядочена по деньгам.
+#
+# Текст собирается НА СЕРВЕРЕ и по-русски, в отличие от подсказок экрана
+# (те уходят браузеру кодами и переводятся `TR()`). Причина та же, по
+# которой существует `backend/mail_texts.py`: сообщение уходит мимо
+# браузера — в Telegram или в ленту агента, — и подставить перевод
+# на границе показа там некому.
+#
+# Ни одного вызова модели. Это сводка ДЛЯ агента, а не агент.
+METRICS_HINT_TEXT = {
+    "bigFiles": "Файл не взяли — он толще потолка страниц: %(n)d раз. "
+                "Это прямой спрос на большие документы: поднимите потолок платно.",
+    "heavyFiles": "Файл не взяли — он тяжелее потолка байт: %(n)d раз.",
+    "pagesOut": "Кончились выданные страницы: %(n)d отказов. Пора предлагать пакет.",
+    "spendOut": "Исчерпан месячный лимит расхода: %(n)d отказов.",
+    "formats": "Просили формат, которого у нас нет: %(n)d раз (%(items)s). "
+               "Это список, какой импорт писать следующим.",
+    "duplicate": "Пытались загрузить тот же файл второй раз: %(n)d раз — "
+                 "людям не хватает подсказки «откройте готовый».",
+    "invoicedUnpaid": "Выставлено и не оплачено: %(n)d смет на %(total)s. "
+                      "Деньги лежат на столе.",
+    "pagesLow": "«%(name)s»: осталось %(n).1f стр. — предложите пополнение заранее.",
+    "idle": "«%(name)s»: %(n)d дней без единого прогона при неизрасходованных "
+            "страницах. Это отток с предоплатой на счету.",
+    "thinMargin": "«%(name)s»: себестоимость съедает %(rest)d%% цены страницы "
+                  "($%(cost).4f при цене %(price).2f). Работаем почти даром.",
+    "estOff": "«%(name)s»: смета расходится с фактом в %(n).2f раза. "
+              "Заниженная смета — подаренные прогоны, завышенная — отказ клиента.",
+    "heavy": "«%(name)s» тратит в %(n).1f раза больше медианы. "
+             "Это кандидат на отдельный тариф.",
+    "http5xx": "Ошибки сервера: %(n)d (%(route)s). Отказ в обслуживании.",
+    "slowRoute": "Медленно: %(route)s отвечает в среднем %(n)d мс на %(calls)d вызовов.",
+}
+METRICS_WASTE_TEXT = {
+    "repairReverted": "правок ремонта откатилось",
+    "reviewVeto": "готовых правок ревизии не прошли сверку",
+    "refusal": "отказов модели отвечать (токены оплачены)",
+    "jobStopped:limit": "прогонов остановлено лимитом",
+    "jobStopped:provider_quota": "прогонов остановлено пустым счётом поставщика",
+}
+METRICS_PROVIDER_TEXT = {
+    "quota": "кончились деньги у поставщика",
+    "rate": "слишком часто просим (rate limit)",
+    "timeout": "сеть/таймаут",
+    "other": "прочие ошибки поставщика",
+}
+
+
+def _hint_line(h: dict) -> str:
+    """Одна подсказка словами. Незнакомый код — не молчание, а честная
+    строка с кодом: подсказка, потерявшаяся между кодом и словарём,
+    выглядела бы как «всё хорошо»."""
+    code = h.get("code") or ""
+    tpl = METRICS_HINT_TEXT.get(code)
+    if code.startswith("waste:"):
+        what = METRICS_WASTE_TEXT.get(code[6:], code[6:])
+        return "Сожжено: %d %s." % (h.get("n") or 0, what)
+    if code.startswith("provider:"):
+        what = METRICS_PROVIDER_TEXT.get(code[9:], code[9:])
+        return "Поставщик моделей: %s — %d раз." % (what, h.get("n") or 0)
+    if not tpl:
+        return "%s: %s" % (code, h.get("n"))
+    d = dict(h)
+    d["items"] = ", ".join("%s×%d" % (i["ext"], i["n"]) for i in (h.get("items") or []))
+    d["total"] = "%s %s" % (h.get("total"), h.get("currency") or "")
+    if code == "thinMargin":
+        d["rest"] = round(100 - (h.get("n") or 0))
+        d["cost"] = float(h.get("cost") or 0)
+        d["price"] = float(h.get("price") or 0)
+    try:
+        line = tpl % d
+    except (KeyError, TypeError, ValueError):
+        return "%s: %s" % (code, h.get("n"))
+    who = h.get("who") or []
+    if who:
+        line += " Кто: " + ", ".join("%s (%d)" % (w["tenant"], w["n"]) for w in who)
+    return line
+
+
+# Порядок разделов — по деньгам: сначала где заработать, потом где теряем,
+# и только потом что чинить. Владелец читает сверху и до первой строки,
+# на которую готов потратить сегодняшний день.
+METRICS_KIND_TITLE = [("money", "ДЕНЬГИ НА СТОЛЕ"), ("loss", "ТЕРЯЕМ"),
+                      ("fix", "ЧИНИТЬ")]
+
+
+def _metrics_digest_text(d: dict) -> str:
+    L = []
+    L.append("Сводка за %s%s" % (d["from"], "" if d["days"] == 1 else " — " + d["to"]))
+    L.append("Расход на модели: $%.2f за %d вызовов." % (d["spendUsd"], d["calls"]))
+    q = (d["quotes"].get("byStatus") or {})
+    if d["quotes"].get("total"):
+        L.append("Сметы: новых %d, выставлено %d, оплачено %d%s."
+                 % (q.get("new", {}).get("n", 0), q.get("invoiced", {}).get("n", 0),
+                    q.get("paid", {}).get("n", 0),
+                    "" if d["quotes"].get("conversion") is None
+                    else ", конверсия %.0f%%" % (d["quotes"]["conversion"] * 100)))
+    hints = d.get("hints") or []
+    if not hints:
+        L.append("")
+        L.append("Ни одной находки: потолки никого не остановили, сметы сходятся, "
+                 "ошибок нет. Это законный ответ, а не пустая сводка.")
+    for kind, title in METRICS_KIND_TITLE:
+        mine = [h for h in hints if h.get("kind") == kind]
+        if not mine:
+            continue
+        L.append("")
+        L.append(title)
+        for h in mine[:12]:
+            L.append("• " + _hint_line(h))
+    top = [t for t in (d.get("tenants") or []) if t.get("spendUsd")][:5]
+    if top:
+        L.append("")
+        L.append("ПО ОРГАНИЗАЦИЯМ (расход за всю жизнь файлов)")
+        for t in top:
+            L.append("• %s: $%.2f, %s стр., %s стр. осталось%s"
+                     % (t["name"], t["spendUsd"], t["pages"],
+                        "—" if t["pagesLeft"] is None else t["pagesLeft"],
+                        "" if t.get("costPerPage") is None
+                        else ", себестоимость $%.4f/стр." % t["costPerPage"]))
+    return "\n".join(L)
+
+
+@app.get("/api/admin/metrics/digest")
+def admin_metrics_digest(request: Request, days: int = 1):
+    """Та же сводка словами. Для человека в Telegram и для ИИ-агента,
+    который читает её по расписанию и ищет в ней возможности.
+
+    `days=1` — вчерашние и сегодняшние сутки: именно на таком окне видно
+    «люди упёрлись вот в это вот сегодня», а не размазанное среднее."""
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Метрики — только суперпользователю")
+    d = json.loads(admin_metrics(request, days).body)
+    return {"ok": True, "days": d["days"], "from": d["from"], "to": d["to"],
+            "text": _metrics_digest_text(d)}
+
+
+@app.post("/api/admin/metrics/digest/send")
+def admin_metrics_digest_send(request: Request, days: int = 1):
+    """Прислать сводку владельцу в Telegram.
+
+    `notify_admin_async`, а НЕ прямой вызов: недоступный Telegram держал бы
+    ЕДИНСТВЕННЫЙ воркер на таймауте соединения — то есть сводка о том, что
+    сервис тормозит, сама бы его и тормозила."""
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Метрики — только суперпользователю")
+    # Проверяем НЕ наличие модуля, а наличие токена и адресата: модуль
+    # импортируется всегда, а `notify_admin_async` без них молча возвращается.
+    # Ответить «отправлено» в этом случае значит соврать — тот же закон,
+    # что у инварианта 4: отсутствие работы не маскируется успехом.
+    if not (tg_mod and getattr(tg_mod, "BOT_TOKEN", "") and getattr(tg_mod, "ADMIN_CHAT", "")):
+        raise HTTPException(503, "Telegram не настроен: нужны TELEGRAM_BOT_TOKEN "
+                                 "и TELEGRAM_ADMIN_CHAT")
+    d = json.loads(admin_metrics(request, days).body)
+    tg_mod.notify_admin_async("📊 " + _metrics_digest_text(d))
+    return {"ok": True, "sent": True}
+
+
 @app.get("/api/admin/tenants")
 def admin_tenants(request: Request):
     me = _current_user(request)
@@ -7570,26 +8318,50 @@ def project_analysis(pid: int, refresh: bool = False):
     #     repaired/nothingToCheck: разойдись копии, сегмент исчез бы с экрана
     #     совсем, а так он в худшем случае виден в не той корзине.
     human_set: set = set()
-    human_set.update(i for i in confirmed_findings if i not in override_ids)
-    human_set.update(impact["confirmed"])
-    human_set.update(qa_critical)
-    human_set.update(source_suspect)
-    human_set.update(review_flagged)
+    # ПОЧЕМУ этот сегмент спрашивают у человека. Слово «спрошу» в строке таблицы
+    # обещает «откройте строку — карточка скажет, что именно», и до этого списка
+    # обещание было пустым: половина путей в эту корзину не оставляет на самом
+    # сегменте НИ ОДНОЙ видимой находки — слабый балл, совпавший отпечаток
+    # захода ремонта, «ремонт уже не берёт», разнобой у заверенного, спор про
+    # запись глоссария. Человек видел «ревизия: править нечего» и никак
+    # не мог узнать, чего от него хотят.
+    # Отдаётся КОДОМ, а не фразой (закон `CLEAN_*`): подпись даёт браузер,
+    # иначе на узбекском экране стояла бы русская строка. `note` — объяснение,
+    # которое НАШ код уже написал по-русски (переводится `TRS()` на границе
+    # показа). Новый путь в «нужен человек» ОБЯЗАН идти через `_ask`: сегмент
+    # без причины — это снова «спрошу» без ответа.
+    human_why: dict = {}
+
+    def _ask(code: str, ids, note=None) -> None:
+        for i in ids:
+            human_set.add(i)
+            w = human_why.setdefault(i, [])
+            if not any(x["code"] == code for x in w):
+                w.append({"code": code, "note": note} if note else {"code": code})
+
+    _ask("confirmedFindings", (i for i in confirmed_findings if i not in override_ids))
+    _ask("glossaryConfirmed", impact["confirmed"])
+    _ask("qaCritical", qa_critical)
+    _ask("sourceSuspect", source_suspect)
+    _ask("reviewFlagged", review_flagged)
     # Заверенный сегмент с готовым советом — работа ЧЕЛОВЕКА: подпись снимает
     # только он. Без этой строки сегмент так и лежал бы в «готово» (заверение
     # корзины видят), то есть несогласие системы с подписью было бы не видно
     # ни одним числом — ровно то, что случилось с боевым #128.
-    human_set.update(review_confirmed)
-    human_set.update(i for d in disputed for i in d["segments"])
-    human_set.update(stale_findings)
-    human_set.update(withdrawn_open)
-    human_set.update(i for d in ctx_wrong for i in d["segments"])
-    human_set.update(reverted)
-    human_set.update(impact.get("futile") or ())
-    human_set.update(clamped_ids)
+    _ask("reviewConfirmed", review_confirmed)
+    _ask("termcheckDispute", (i for d in disputed for i in d["segments"]))
+    _ask("staleFinding", stale_findings)
+    _ask("confirmWithdrawn", withdrawn_open)
+    _ask("termContextWrong", (i for d in ctx_wrong for i in d["segments"]))
+    _ask("reverted", reverted)
+    _ask("futile", impact.get("futile") or ())
+    _ask("clamped", clamped_ids)
     # Слабый балл, который судья уже не поднимет (смотрел либо не позовут), —
     # читать глазами. Тот, куда судья ещё придёт, — работа прогона.
-    human_set.update(w["id"] for w in weak if w["id"] not in judge_ext)
+    # Причина балла у каждого своя (`CLEAN_*`), поэтому едет `note`.
+    for _w in weak:
+        if _w["id"] not in judge_ext:
+            _ask("weak", (_w["id"],), _w["why"])
 
     # Разнобой у ЗАВЕРЕННОГО сегмента — работа человека, а не прогона.
     # Ловится это только здесь: `_repair_findings` в /analysis зовётся БЕЗ
@@ -7601,7 +8373,7 @@ def project_analysis(pid: int, refresh: bool = False):
     # (`override_ids`): такие ремонт берёт и без разрешения.
     _consist_ids = {i for p in consist_pairs for i in p["segments"]}
     _consist_human = (_consist_ids & human_text_ids) - override_ids
-    human_set.update(_consist_human)
+    _ask("consistency", _consist_human)
 
     machine_set: set = set(untranslated)
     machine_set.update(unchecked)
@@ -7613,14 +8385,14 @@ def project_analysis(pid: int, refresh: bool = False):
     # прогона: находка есть только с проектом, поэтому список — отсюда.
     # У заверённого — человеку, как разнобой: без разрешения его не тронут.
     _alpha_ids = _alphabet_ids(project)
-    human_set.update((_alpha_ids & human_text_ids) - override_ids)
+    _ask("alphabet", (_alpha_ids & human_text_ids) - override_ids)
     # Совпавший отпечаток захода прогон не берёт (тот же предикат, что
     # у `clamped` выше и у `_plan_step`): такой сегмент — человеку, иначе
     # «доделаю сама N» держало бы число, которое не осушится никогда.
     _by_id = {sg["id"]: sg for sg in project.get("segments") or []}
     _alpha_clamped = {i for i in _alpha_ids
                       if i in _by_id and _repair_clamped(_by_id[i], _repair_findings(_by_id[i], None))}
-    human_set.update(_alpha_clamped - override_ids)
+    _ask("alphabet", _alpha_clamped - override_ids)
     machine_set.update(_alpha_ids - _alpha_clamped)
     # caseSegments заверенных сюда попадают, но human_set их уже забрал:
     # фолбэк `[{"kind": "gloss"}]` по `gloss_bad` заводит их в
@@ -7682,6 +8454,10 @@ def project_analysis(pid: int, refresh: bool = False):
             "ready": [i for i in _order if i in ready_set],
             "machine": [i for i in _order if i in machine_set],
             "human": [i for i in _order if i in human_set],
+            # Почему спрашивают каждый из них (см. `_ask` выше). Списком,
+            # а не словарём с числовыми ключами: `orjson` такие ключи не пишет,
+            # а строковые потребовали бы помнить про преобразование в обе стороны.
+            "why": [{"id": i, "why": human_why[i]} for i in _order if i in human_why],
             # Заверенные человеком (по статусу — тем же признаком, которым
             # раздаются корзины). Не корзина, а СРЕЗ поверх них: работа
             # человека обязана быть видна на экране числом, а не только
@@ -8318,7 +9094,7 @@ def _source_paths(pid: int) -> tuple:
 
 
 def _store_source_docx(project: dict, content: bytes, filename: str,
-                       pairs: list, paras: int) -> dict:
+                       pairs: list, paras: int, layout: Optional[dict] = None) -> dict:
     """Кладёт исходник и карту «абзац → сегмент» рядом с ним.
 
     Карта принадлежит файлу, а не состоянию проекта: state.json целиком лежит
@@ -8332,6 +9108,15 @@ def _store_source_docx(project: dict, content: bytes, filename: str,
     os.replace(str(tmp), str(docx_path))
     payload = {"file": filename, "paras": paras, "pairs": pairs,
                "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    # Раскладка страниц PDF: {номер абзаца: рамки}. Лежит тут же, рядом
+    # с картой абзацев, и по той же причине — на книге это сотни килобайт,
+    # а state.json переписывается при каждом сохранении. Нет раскладки —
+    # выгрузка «как в оригинале» для PDF недоступна, и об этом говорится
+    # вслух, а не подменяется Word-документом молча.
+    if layout and layout.get("boxes"):
+        payload["layout"] = {"boxes": {str(k): v for k, v in layout["boxes"].items()},
+                             "pages": layout.get("pages") or [],
+                             "rules": getattr(importers.pdftext, "RULES_VERSION", None)}
     # Разбор картинок ПЕРЕЖИВАЕТ повторную привязку исходника. Карта абзацев
     # и карта картинок лежат в одном файле, но пишутся из разных мест: пока
     # эта запись их не сохраняла, нажатие «Заменить» в карточке исходника
@@ -8536,6 +9321,7 @@ def _pages_debit(tid: str, pages: float, key: str, project_id: int, title: str,
         debit = 0.0 if repeat else float(pages if debit_pages is None else debit_pages)
         caps, usage = _tenant_caps(tid), _tenant_usage(tid)
         if caps["pagesLimited"] and usage["pages"] + debit > caps["maxPages"]:
+            _ev("cap.pages402", tid)
             raise HTTPException(402, "В организации списано %.1f стр., с этим файлом %.1f при лимите %g: пополните лимит у администратора"
                                 % (usage["pages"], usage["pages"] + debit, caps["maxPages"]))
         # При действующем лимите счётчик заводится и первым списанием: без него
@@ -8805,6 +9591,7 @@ def _refuse_duplicate_upload(sha: str, src: str, tgt: str) -> None:
     файл списывается как новый: удаление страниц не возвращает."""
     dup = next(iter(_duplicate_uploads(sha, src, tgt)), None)
     if dup is not None:
+        _ev("cap.duplicate409")
         raise _DuplicateUpload(dup)
 
 
@@ -8866,6 +9653,7 @@ async def upload_project(
     tid = _current_tenant()
     caps = _tenant_caps(tid)
     if caps["maxProjects"] and len(_tenant_projects()) >= caps["maxProjects"]:
+        _ev("cap.projects402", tid)
         raise HTTPException(402, "В организации уже %d файлов, а потолок %d: удалите ненужные"
                             % (len(_tenant_projects()), caps["maxProjects"]))
     # Потолки идут ДО тяжёлого разбора: сначала байты (по заголовку, потом
@@ -8873,9 +9661,11 @@ async def upload_project(
     too_big = "Файл больше %d МБ — разберите его по частям" % (textcount.MAX_BYTES // 1024 // 1024)
     declared = request.headers.get("content-length")
     if declared and declared.isdigit() and int(declared) > textcount.MAX_BYTES * 1.1:
+        _ev("cap.bytes413", tid)
         raise HTTPException(413, too_big)
     content = await file.read()
     if len(content) > textcount.MAX_BYTES:
+        _ev("cap.bytes413", tid)
         raise HTTPException(413, too_big)
     # Разбор — в threadpool: обработчик async, и распаковка 32-мегабайтного
     # пакета в event loop держала бы ЕДИНСТВЕННЫЙ воркер для всех. Разбор
@@ -8889,12 +9679,15 @@ async def upload_project(
         parsed = await run_in_threadpool(_with_progress, _progress_cb(progress), _parse_upload,
                                          file.filename or "", content)
     except (textcount.Unsupported, textcount.TooBig, textcount.NotAvailable) as e:
-        raise _format_error(e)
+        raise _format_error(e, file.filename or "")
     docx_content, texts = parsed["docx"], parsed["texts"]
     paras = [t for t, _full in texts]
     card = _pricing_of()                     # ContextVar — здесь, не в потоке
     pages = await run_in_threadpool(_import_volume, paras, src, card, tid)
     if caps["filePages"] and pages > caps["filePages"]:
+        # «Человек принёс книгу, а мы её не взяли» — самая денежная строка
+        # сводки: именно здесь видно спрос на большие файлы.
+        _ev("cap.filePages413", tid)
         raise HTTPException(413, "Файл на %.1f стр. больше потолка на проект (%g стр.): разбейте документ" % (pages, caps["filePages"]))
     # Лимит страниц проверяет и списывает `_pages_debit` — одним блоком под
     # локом, ниже, когда проект собран: до этого 402 ничего не оставляет.
@@ -8964,7 +9757,8 @@ async def upload_project(
         _folders_changed()
     try:
         pairs = [[i, u + 1] for u, (_t, idxs) in enumerate(units) for i in idxs]
-        _store_source_docx(new_project, docx_content, file.filename, pairs, len(paras))
+        _store_source_docx(new_project, docx_content, file.filename, pairs, len(paras),
+                           layout=parsed.get("layout"))
         if parsed["converted"]:
             _store_original(new_id, file.filename or "", content)
         # Вернём ли файл в том же виде: у .docx и форматов с обратной записью
@@ -8979,6 +9773,10 @@ async def upload_project(
         print("[backend] исходник проекта %s не сохранён: %s" % (new_id, e),
               file=sys.stderr)
     save_state(STATE)                   # отметка исходника на проекте
+    # Верх воронки. Формат — из закрытого списка (`_ext_code`): по нему
+    # видно, что люди НЕСУТ, а рядом `cap.format415:*` показывает, чего
+    # они несут и не получают.
+    _ev("funnel.upload:" + _ext_code(file.filename or ""), tid)
     return new_project
 
 
@@ -9053,6 +9851,9 @@ def _parse_upload(filename: str, content: bytes) -> dict:
            "converted": bool(conv.get("converted")), "writeback": bool(conv.get("writeback", True)),
            "slotsSha": conv.get("slotsSha"), "texts": texts, "paras": paras,
            "full": full, "units": _docx_units(paras, full),
+           # Раскладка страниц PDF: {номер абзаца: рамки}. Идёт дальше вместе
+           # с разбором — по ней собирается выгрузка «как в оригинале».
+           "layout": conv.get("layout"),
            "parseRules": _parse_rules(conv["kind"])}
     cached = dict(out)
     if not out["converted"]:
@@ -9065,14 +9866,36 @@ def _parse_upload(filename: str, content: bytes) -> dict:
     return out
 
 
-def _format_error(e: Exception) -> HTTPException:
+# Расширения, которые мы согласны называть в счётчике поимённо. Список
+# ЗАКРЫТЫЙ, и это не придирка: расширение приходит из имени файла, то есть
+# от постороннего, и открытый список превратил бы счётчик в лог — строка
+# на каждую выдумку загрузчика. Чужое — «other», и его число тоже видно.
+_EXT_KNOWN = {"docx", "doc", "pdf", "xlsx", "xls", "pptx", "ppt", "txt", "csv", "tsv",
+              "md", "html", "htm", "rtf", "odt", "json", "xml", "po", "srt", "vtt",
+              "yaml", "yml", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp", "zip"}
+
+
+def _ext_code(name: str) -> str:
+    ext = (str(name or "").rsplit(".", 1)[-1] or "").lower()[:8]
+    return ext if ext in _EXT_KNOWN else "other"
+
+
+def _format_error(e: Exception, name: str = "") -> HTTPException:
     """Код отказа по виду ошибки формата: 413 — велик, 503 — нечем прочитать,
     415 — не формат. Текст — причина словами, человеку нужно знать, что
-    делать с ЕГО файлом."""
+    делать с ЕГО файлом.
+
+    `name` — только ради счётчика: «какой формат у нас просят и не получают»
+    и есть ответ на вопрос, какой импорт писать следующим. Имя файла в
+    событие НЕ уходит — только расширение из закрытого списка."""
+    ext = _ext_code(name)
     if isinstance(e, textcount.TooBig):
+        _ev("cap.bytes413")
         return HTTPException(413, str(e))
     if isinstance(e, textcount.NotAvailable):
+        _ev("cap.noReader503:" + ext)
         return HTTPException(503, str(e))
+    _ev("cap.format415:" + ext)
     return HTTPException(415, str(e))
 
 
@@ -9251,7 +10074,7 @@ async def probe_upload(request: Request, file: UploadFile = File(...),
     try:
         parsed = await run_in_threadpool(_with_progress, cb, _parse_upload, file.filename or "", content)
     except (textcount.Unsupported, textcount.TooBig, textcount.NotAvailable) as e:
-        raise _format_error(e)
+        raise _format_error(e, file.filename or "")
     if folder is not None:
         get_folder(folder)                   # чужая папка → 404
         pool = _folder_files(folder)
@@ -9376,7 +10199,7 @@ async def reimport_project(pid: int, file: UploadFile = File(...), dry_run: bool
     try:
         parsed = await run_in_threadpool(_parse_upload, file.filename or "", content)
     except (textcount.Unsupported, textcount.TooBig, textcount.NotAvailable) as e:
-        raise _format_error(e)
+        raise _format_error(e, file.filename or "")
     if not parsed["units"]:
         raise HTTPException(415, "В новом файле нет ни одной строки текста — редакцией файла он быть не может")
     project = get_project(pid)
@@ -9565,7 +10388,8 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
         # и решения человека по надпечаткам. Сегменты картинок при этом
         # сняты — разбор заведёт их заново у новых якорей, а за уже
         # прочитанные картинки не заплатит.
-        _store_source_docx(project, parsed["docx"], filename, pairs, len(parsed["paras"]))
+        _store_source_docx(project, parsed["docx"], filename, pairs, len(parsed["paras"]),
+                           layout=parsed.get("layout"))
         if parsed["converted"]:
             _store_original(pid, filename, content)
         else:
@@ -9929,7 +10753,7 @@ async def resegment_project(pid: int, req: ResegmentRequest):
     try:
         parsed = await run_in_threadpool(_resegment_parse, filename, content)
     except (textcount.Unsupported, textcount.TooBig, textcount.NotAvailable) as e:
-        raise _format_error(e)
+        raise _format_error(e, filename)
     if not parsed["units"]:
         raise HTTPException(415, "В исходнике не нашлось ни одной строки текста — пересобирать нечего")
     project = get_project(pid)
@@ -18563,6 +19387,11 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         # записывается, и сегмент остаётся доступен. На боевом проекте так
         # потеряны 5 верных правок (#645: «accidental» → «casual», балл
         # не падал вовсе); при плохой сети их были бы десятки.
+        # Отменённая правка — это оплаченный вызов, который ничего не дал.
+        # Само по себе не беда (на то и приёмка), бедой это становится
+        # долей: когда откатывается половина заходов, деньги жжёт порог,
+        # а не модель, — и увидеть это можно только счётом.
+        _ev("waste.repairReverted")
         seg["repair"] = {"applied": False, "reason": "; ".join(why) or "не стало лучше",
                          "model": mdl_id, "candidate": new_target,
                          "issues": [f["text"] for f in findings], "before": before, "after": after,
@@ -19252,6 +20081,10 @@ def _run_segment_review(seg: dict, project: dict, model: Optional[str] = None,
     else:
         veto = _review_veto(seg, project, cand)
         if veto:
+            # Готовый текст, за который заплатили и который не поставили:
+            # то же, что откат ремонта, только дороже — ревизия читает пару
+            # целиком.
+            _ev("waste.reviewVeto")
             why, code = "не прошёл сверку", REVIEW_VETOED
         elif _human_text(seg) and not include_confirmed:
             # Кандидат ГОДЕН, но текст заверил человек. Ветка стоит ПОСЛЕ
@@ -24086,6 +24919,56 @@ def _original_ext(project: dict) -> str:
     return ext or ".txt"
 
 
+def _layout_texts(project: dict, data: dict) -> dict:
+    """{номер абзаца: перевод} для выгрузки PDF «как в оригинале».
+
+    Правила те же, что у .docx (`_export_docx_layout`): абзац без перевода
+    не трогается вовсе (останется оригиналом), склеенные руками строки
+    отдают свой перевод абзацу головы, а абзац-хвост очищается — но только
+    когда голова записана."""
+    by_id = {s["id"]: s for s in project.get("segments") or []}
+    tails = {int(x) for x in (data.get("tails") or [])}
+    texts, written = {}, set()
+    groups = _para_groups(data)
+    for idx, sids in [g for g in groups if g[0] not in tails]:
+        parts = [by_id.get(sid) for sid in sids]
+        if any(x is None for x in parts):
+            continue
+        targets = [(x.get("target") or "").strip() for x in parts]
+        if not all(targets):
+            continue
+        texts[int(idx)] = " ".join(targets)
+        written.update(sids)
+    for idx, sids in [g for g in groups if g[0] in tails]:
+        if all(sid in written for sid in sids):
+            texts[int(idx)] = ""        # перевод целиком встал в абзац головы
+    return texts
+
+
+def _export_pdf_layout(project: dict, tmp: Path) -> Optional[dict]:
+    """PDF «как в оригинале»: слой с переводом поверх исходных страниц.
+
+    None — этой дорогой не выгрузить (нет раскладки, файла или библиотеки);
+    вызывающий берёт прежнюю (печать собранного Word-документа). Молча
+    подменять одно другим нельзя, поэтому причина уезжает в отчёт."""
+    if not layout_pdf_mod:
+        return None
+    data = _load_source_map(project["id"]) if project.get("sourceDocx") else None
+    layout = (data or {}).get("layout") or {}
+    if not layout.get("boxes"):
+        return None
+    orig = _orig_existing(project["id"])
+    if orig is None:
+        return None
+    ok, why = layout_pdf_mod.available()
+    if not ok:
+        raise HTTPException(503, "Выгрузка «как в оригинале» для PDF недоступна: %s" % why)
+    pdf, stats = layout_pdf_mod.build(orig.read_bytes(), layout,
+                                      _layout_texts(project, data))
+    tmp.write_bytes(pdf)
+    return dict(stats, original="pdf", layout=True)
+
+
 def _export_original(project: dict, out: Path, tmp: Path) -> dict:
     """Перевод В ТОМ ЖЕ формате, что залили (см. backend/importers.py):
     .docx — «как в оригинале»; PDF с текстом — PDF из него; картинка и скан —
@@ -24097,9 +24980,15 @@ def _export_original(project: dict, out: Path, tmp: Path) -> dict:
     if ext == ".docx":
         return _export_docx_layout(project, tmp)
     if ext == ".pdf" and kind == "pdf":
+        # Сперва честная выгрузка 1в1 — перевод НА МЕСТЕ оригинала; её нет
+        # (старый проект без раскладки, нет библиотеки) — печатаем собранный
+        # Word-документ, как раньше, и говорим об этом в отчёте.
+        stats = _export_pdf_layout(project, tmp)
+        if stats is not None:
+            return stats
         path, stats = _generate_export(project, "pdf")
         shutil.copyfile(str(path), str(tmp))
-        return dict(stats, original="pdf")
+        return dict(stats, original="pdf", layout=False)
     if kind in ("image", "scan"):
         inner = out.with_name(out.name + ".%s.src.docx" % secrets.token_hex(4))
         try:
@@ -24270,6 +25159,10 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
 @app.post("/api/projects/{pid}/export")
 def export_project(pid: int, req: ExportRequest):
     _audit("project.export", project=pid, format=getattr(req, "format", None))
+    # Воронка «загрузил → посчитал → выгрузил». Выгрузка — последний шаг,
+    # и её отсутствие при живых загрузках означает, что человек ушёл
+    # с полпути; по журналу действий этого не видно — он кольцевой.
+    _ev("funnel.export")
     project = get_project(pid)
     fmt = req.format.lower()
     if fmt not in EXPORT_EXT:
@@ -25608,8 +26501,11 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
                     skip("балл выше зоны судьи — смысл прочтёт только "
                          "«Перевести и доделать»")
                 else:
-                    bm = (seg.get("backcheck") or {}).get("model")
-                    skip("уже проверен этим переводом: " + _model_label(bm))
+                    # Имя модели в причине не называется: разбор состава читает
+                    # человек, а ему имя модели не показывается НИГДЕ (инвариант 24),
+                    # а решений по нему он всё равно не принимает: выбора модели
+                    # на экране больше нет.
+                    skip("уже проверен этим переводом")
             elif (seg.get("backcheck") or {}).get("score") is None:
                 # is None, а не truthy: балл 0 — это проверенный сегмент
                 # с провальной оценкой, а не непроверенный.
@@ -25629,7 +26525,7 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
                 elif tc.get("model") == mdl_id:
                     skip("уже проверен этой моделью")
                 else:
-                    skip("уже проверен моделью не слабее: " + _model_label(tc.get("model")))
+                    skip("уже проверен проверкой не слабее нужной")
             elif not tc:
                 run("ещё не проверялся", seg)
             elif _check_stale(tc, target):
@@ -25638,10 +26534,9 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
                 # Ранга нет — утверждать «этого достаточно» не о чем. Называем
                 # модель поимённо: строка в разборе и есть подсказка, что её
                 # пора дописать в backend/model_ranks.json.
-                run("прошлая проверка моделью неизвестной силы: "
-                    + _model_label(tc.get("model")), seg)
+                run("прошлая проверка неизвестной силы", seg)
             else:
-                run("прошлая проверка слабее выбранной: " + _model_label(tc.get("model")), seg)
+                run("прошлая проверка слабее нужной", seg)
 
         elif step == "review":
             rv = seg.get("review") or {}
@@ -25749,8 +26644,7 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
                 # промпт отвечает по-своему, и это второе мнение человек
                 # заказал сам, выбрав её в панели. Прежнюю называем поимённо:
                 # без неё строка читается как повтор уже сделанного.
-                run("уже чинила %s — выбранная модель зайдёт со вторым мнением"
-                    % _model_label((seg.get("repair") or {}).get("model")), seg)
+                run("чинила другая проверка — эта зайдёт со вторым мнением", seg)
             elif _human_text(seg):
                 # Причина названа отдельно намеренно: цена у этих сегментов та же,
                 # а последствие другое — ваш текст уйдёт в «Прежний перевод»,
@@ -26928,6 +27822,7 @@ def _job_enqueue(pid: int, kind: str, ids: list, params: Optional[dict]) -> dict
             "sysModels": _system_models_snapshot(),
         }
         _JOBS[job["id"]] = job
+        _ev("funnel.run:" + str(kind or "?"), job["tenant"])
         _trim_jobs()
     _job_persist(job)
     # Счёт прогонов по проекту — счётчиком хранилища, а не полем документа
@@ -27652,6 +28547,10 @@ def _finish_run_on_shutdown():
     При внешнем воркере потока здесь нет — ждать нечего, его останавливает
     свой юнит тем же порядком."""
     _SHUTDOWN.set()
+    # Накопленные счётчики — на диск до ухода: минута наблюдений дешева,
+    # но терять её на КАЖДОМ выкате значит не видеть ровно тех суток,
+    # когда что-то выкатывали.
+    _metrics_flush(force=True)
     w = _JOB_WORKER
     if w is None or not w.is_alive():
         return

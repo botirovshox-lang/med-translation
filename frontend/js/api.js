@@ -258,6 +258,12 @@
     systemModels:  ()                       => call("GET",    "/admin/system-models"),
     systemModelsSave: (models)              => call("POST",   "/admin/system-models", { models }),
     usageSimulate: (body)                   => call("POST",   "/admin/usage/simulate", body),
+    /* Метрики: где теряем, где заработать, что чинить. Ни одного вызова
+       модели — считается по журналу событий, расходу и сметам. */
+    adminMetrics:  (days)                   => call("GET",    "/admin/metrics?days=" + (days || 7)),
+    /* Та же сводка словами: себе в Telegram и своему ИИ-агенту. */
+    adminDigest:   (days)                   => call("GET",    "/admin/metrics/digest?days=" + (days || 1)),
+    adminDigestSend: (days)                 => call("POST",   "/admin/metrics/digest/send?days=" + (days || 1)),
     // Тест-группа: наборы с числом мест, заведённые тестировщики, анкеты.
     testing:       ()                       => call("GET",    "/admin/testing"),
     batchCreate:   (body)                   => call("POST",   "/admin/testing/batches", body),

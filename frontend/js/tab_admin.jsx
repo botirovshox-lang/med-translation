@@ -773,6 +773,264 @@ function AdminModelsView({ toast, tenants }) {
     React.createElement(AdminUsageSim, { toast, tenants, sys }));
 }
 
+/* ─── Вкладка «Метрики»: где теряем, где заработать, что чинить ───────
+ *
+ * Экран отвечает на ВОПРОС, а не показывает счётчики. Порядок разделов —
+ * по деньгам: подсказки (что делать сегодня), организации (кому продавать
+ * и кто в убытке), расход по шагам, потолки; техническое — маршруты,
+ * скорость, ошибки — убрано под «Подробности», потому что это работа
+ * разработчика, а не владельца.
+ *
+ * Подсказки приходят с сервера КОДАМИ (`kind` + `code` + числа), а текст
+ * собирается здесь: правило одно, а языков у интерфейса несколько
+ * (инвариант 17). Число при этом стоит РЯДОМ с переведённой фразой,
+ * а не внутри неё: строка с подстановкой требовала бы шаблона в каждом
+ * словаре, а первый же забытый шаблон показал бы «{n}» живому человеку.
+ *
+ * Обновление — по нажатию, а не по таймеру: сводка обходит организации
+ * и проекты, а воркер у сервиса ОДИН (инвариант 1) — десятисекундный
+ * опрос этого экрана отнимал бы его у переводчиков.
+ */
+const MET_DAYS = [1, 7, 30, 90];
+
+/* Вид подсказки решает ЦВЕТ и порядок. Виды три и они разные по смыслу:
+   money — где взять деньги, loss — где они утекают, fix — где сломано. */
+const MET_KIND = { money: "ok", loss: "warn", fix: "bad" };
+
+/* Заголовок вида — ЛИТЕРАЛОМ внутри TR(), а не полем объекта: ключи словаря
+   собираются из исходника разбором `TR("…")`, и строка, доехавшая до TR()
+   переменной, не попала бы в словарь ВООБЩЕ — на узбекском экране она
+   осталась бы русской, и ни один тест этого бы не заметил. */
+function metKindTitle(kind) {
+  if (kind === "money") return TR("Деньги на столе");
+  if (kind === "loss") return TR("Теряем");
+  return TR("Чинить");
+}
+
+/* Код подсказки → фраза. Ключ словаря — сама русская строка (инвариант 17),
+   поэтому число в неё не входит: оно рисуется отдельным элементом. */
+function metHintText(code) {
+  switch (code) {
+    case "bigFiles": return TR("раз файл не взяли — он толще потолка страниц. Это спрос на большие документы: потолок можно поднять платно");
+    case "heavyFiles": return TR("раз файл не взяли — он тяжелее потолка в мегабайтах");
+    case "pagesOut": return TR("отказов «кончились выданные страницы» — пора предлагать пакет");
+    case "spendOut": return TR("отказов «исчерпан месячный лимит расхода»");
+    case "formats": return TR("раз просили формат, которого у нас нет — это список, какой импорт писать следующим");
+    case "duplicate": return TR("раз пытались загрузить тот же файл второй раз");
+    case "invoicedUnpaid": return TR("смет выставлено и не оплачено");
+    case "pagesLow": return TR("страниц осталось — предложите пополнение заранее");
+    case "idle": return TR("дней без единого прогона при неизрасходованных страницах: это отток с предоплатой на счету");
+    case "thinMargin": return TR("процентов цены страницы остаётся после себестоимости");
+    case "estOff": return TR("во столько раз смета расходится с фактом");
+    case "heavy": return TR("во столько раз больше медианы тратит эта организация — кандидат на отдельный тариф");
+    case "http5xx": return TR("ошибок сервера: отказ в обслуживании");
+    case "slowRoute": return TR("мс в среднем отвечает маршрут");
+    case "waste:repairReverted": return TR("правок ремонта откатилось — за них заплачено");
+    case "waste:reviewVeto": return TR("готовых правок ревизии не прошли сверку — за них заплачено");
+    case "waste:refusal": return TR("отказов модели отвечать: токены выставлены в счёт");
+    case "waste:jobStopped:limit": return TR("прогонов остановлено исчерпанным лимитом");
+    case "waste:jobStopped:provider_quota": return TR("прогонов остановлено пустым счётом у поставщика");
+    case "provider:quota": return TR("раз у поставщика моделей кончились деньги");
+    case "provider:rate": return TR("раз поставщик ответил «слишком часто» (rate limit)");
+    case "provider:timeout": return TR("раз поставщик не ответил: сеть или таймаут");
+    case "provider:other": return TR("прочих ошибок поставщика моделей");
+    default: return code;
+  }
+}
+
+/* Число подсказки: у доли и отношения свой вид, иначе «0.42 раза»
+   читается как ошибка, а не как отношение сметы к факту. */
+function metHintNum(h) {
+  if (h.code === "thinMargin") return Math.round(100 - (h.n || 0)) + "%";
+  if (h.code === "estOff" || h.code === "heavy") return "×" + h.n;
+  if (h.code === "pagesLow") return Number(h.n).toFixed(1);
+  return String(h.n);
+}
+
+function MetHint({ h }) {
+  const cls = MET_KIND[h.kind] || MET_KIND.fix;
+  const who = (h.who || []).map(w => w.tenant + " (" + w.n + ")").join(", ");
+  const items = (h.items || []).map(i => i.ext + "×" + i.n).join(", ");
+  return React.createElement("li", { className: "met-hint" },
+    React.createElement("b", { className: "met-num " + cls }, metHintNum(h)),
+    React.createElement("span", null, " ", metHintText(h.code),
+      h.name ? React.createElement("span", { className: "dim" }, " — " + h.name) : null,
+      h.route ? React.createElement("span", { className: "dim" }, " — " + h.route) : null,
+      items ? React.createElement("span", { className: "dim" }, " — " + items) : null,
+      h.total != null ? React.createElement("span", { className: "dim" },
+        " — " + h.total + " " + (h.currency || "")) : null,
+      who ? React.createElement("span", { className: "dim" }, " · " + TR("кто: ") + who) : null));
+}
+
+function MetHints({ m }) {
+  const hints = m.hints || [];
+  if (!hints.length)
+    return React.createElement("div", { className: "card card-pad" },
+      React.createElement("p", { className: "dim", style: { margin: 0 } },
+        TR("Ни одной находки за период: в потолки никто не упёрся, сметы сходятся, ошибок нет. Это ответ, а не пустой экран.")));
+  return React.createElement("div", { className: "col", style: { gap: 12 } },
+    Object.keys(MET_KIND).map(kind => {
+      const mine = hints.filter(h => h.kind === kind);
+      if (!mine.length) return null;
+      return React.createElement("div", { key: kind, className: "card card-pad" },
+        React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+          metKindTitle(kind)),
+        React.createElement("ul", { className: "met-list" },
+          mine.map((h, i) => React.createElement(MetHint, { key: i, h }))));
+    }));
+}
+
+function metUsd(v) { return v == null ? "—" : "$" + Number(v).toFixed(Math.abs(v) < 1 && v !== 0 ? 4 : 2); }
+
+function MetTenants({ m }) {
+  const rows = m.tenants || [];
+  if (!rows.length) return null;
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+      TR("Организации: страницы, деньги, себестоимость")),
+    React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "0 0 8px" } },
+      TR("Себестоимость страницы — расход на модели за всю жизнь файлов, делённый на списанные страницы. Это единственное число, по которому видно работу в убыток.")),
+    React.createElement("div", { style: { overflowX: "auto" } },
+      React.createElement("table", { className: "tbl" },
+        React.createElement("thead", null, React.createElement("tr", null,
+          [TR("Организация"), TR("Страниц"), TR("Остаток"), TR("Расход"), TR("Себест./стр."),
+           TR("Цена/стр."), TR("Остаётся"), TR("Смета/факт"), TR("Простой")]
+            .map((h, i) => React.createElement("th", { key: i }, h)))),
+        React.createElement("tbody", null, rows.map(t => React.createElement("tr", { key: t.id },
+          React.createElement("td", null, t.name,
+            t.active === false ? React.createElement("span", { className: "dim" }, TR(" · отключена")) : null),
+          React.createElement("td", null, t.pages),
+          React.createElement("td", { className: t.pagesLeft != null && t.pagesLeft <= 0 ? "bad" : "" },
+            t.pagesLeft == null ? "—" : t.pagesLeft),
+          React.createElement("td", null, metUsd(t.spendUsd)),
+          React.createElement("td", null, metUsd(t.costPerPage)),
+          React.createElement("td", { className: "dim" },
+            t.pricePerPage == null ? TR("не задана") : t.pricePerPage + " " + (t.currency || "")),
+          React.createElement("td", { className: t.margin != null && t.margin < 0.5 ? "bad" : "" },
+            t.margin == null ? "—" : Math.round(t.margin * 100) + "%"),
+          React.createElement("td", { className: "dim" },
+            t.estRatio == null ? "—" : "×" + t.estRatio),
+          React.createElement("td", { className: "dim" },
+            t.idleDays == null ? TR("не запускали") : t.idleDays + TR(" дн."))))))));
+}
+
+function MetSteps({ m }) {
+  const rows = m.steps || [];
+  if (!rows.length) return null;
+  const top = rows[0].usd || 0;
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+      TR("Расход по шагам за период · всего ") + metUsd(m.spendUsd)),
+    React.createElement("div", { style: { overflowX: "auto" } },
+      React.createElement("table", { className: "tbl" },
+        React.createElement("tbody", null, rows.map(r => React.createElement("tr", { key: r.step },
+          React.createElement("td", null, r.step),
+          React.createElement("td", { style: { width: "45%" } },
+            React.createElement("div", { className: "met-bar" },
+              React.createElement("i", { style: { width: (top ? Math.round(r.usd / top * 100) : 0) + "%" } }))),
+          React.createElement("td", null, metUsd(r.usd)),
+          React.createElement("td", { className: "dim" }, r.calls + TR(" выз."))))))));
+}
+
+function MetCaps({ m }) {
+  const rows = (m.capCodes || []).concat(m.waste || [], m.provider || []);
+  if (!rows.length) return null;
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+      TR("Во что упирались и что сгорело")),
+    React.createElement("div", { style: { overflowX: "auto" } },
+      React.createElement("table", { className: "tbl" },
+        React.createElement("tbody", null, rows.map((r, i) => React.createElement("tr", { key: i },
+          React.createElement("td", null, r.code),
+          React.createElement("td", null, r.n)))))));
+}
+
+function MetTech({ m }) {
+  return React.createElement("details", { className: "card card-pad" },
+    React.createElement("summary", null, TR("Технические подробности: маршруты, скорость, ошибки")),
+    React.createElement("div", { className: "col", style: { gap: 12, marginTop: 10 } },
+      React.createElement("div", null,
+        React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, TR("Чаще всего зовут")),
+        React.createElement("div", { style: { overflowX: "auto" } },
+          React.createElement("table", { className: "tbl" },
+            React.createElement("tbody", null, (m.routes || []).map((r, i) => React.createElement("tr", { key: i },
+              React.createElement("td", null, r.route),
+              React.createElement("td", null, r.n),
+              React.createElement("td", { className: "dim" }, r.avgMs + TR(" мс в среднем")),
+              React.createElement("td", { className: "dim" }, r.msMax + TR(" мс худший")))))))),
+      React.createElement("div", null,
+        React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, TR("Самые медленные")),
+        React.createElement("div", { style: { overflowX: "auto" } },
+          React.createElement("table", { className: "tbl" },
+            React.createElement("tbody", null, (m.slow || []).map((r, i) => React.createElement("tr", { key: i },
+              React.createElement("td", null, r.route),
+              React.createElement("td", null, r.avgMs + TR(" мс")),
+              React.createElement("td", { className: "dim" }, r.slow + TR(" раз дольше секунды")))))))),
+      React.createElement("div", null,
+        React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, TR("Отказы")),
+        (m.errors || []).length === 0
+          ? React.createElement("p", { className: "dim", style: { margin: 0 } }, TR("Отказов не было."))
+          : React.createElement("div", { style: { overflowX: "auto" } },
+            React.createElement("table", { className: "tbl" },
+              React.createElement("tbody", null, (m.errors || []).map((r, i) => React.createElement("tr", { key: i },
+                React.createElement("td", null, r.code),
+                React.createElement("td", null, r.n)))))))));
+}
+
+function MetDigest({ days, toast }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const load = () => window.API.safeCall(() => window.API.adminDigest(days))
+    .then(r => { if (r && r.ok) setText(r.text); });
+  const send = () => {
+    setBusy(true);
+    window.API.adminDigestSend(days)
+      .then(() => toast(TR("Сводка отправлена в Telegram")))
+      .catch(e => toast(e.message, "err"))
+      .finally(() => setBusy(false));
+  };
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+      TR("Сводка словами — себе в Telegram или своему ИИ-агенту")),
+    React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "0 0 8px" } },
+      TR("Тот же разбор, но текстом: его можно читать по утрам и скармливать агенту, который ищет в нём возможности.")),
+    React.createElement("div", { className: "row", style: { gap: 8, marginBottom: 8 } },
+      React.createElement("button", { className: "btn", onClick: load }, TR("Показать текстом")),
+      React.createElement("button", { className: "btn", disabled: busy, onClick: send }, TR("Прислать в Telegram"))),
+    text ? React.createElement("pre", { className: "met-pre" }, text) : null);
+}
+
+function TabMetrics({ toast }) {
+  const [days, setDays] = useState(7);
+  const [m, setM] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const load = (d) => {
+    setBusy(true);
+    window.API.safeCall(() => window.API.adminMetrics(d))
+      .then(r => { if (r && r.ok) setM(r); })
+      .finally(() => setBusy(false));
+  };
+  useEffect(() => { load(days); }, [days]);
+  return React.createElement("div", { className: "col", style: { gap: 16 } },
+    React.createElement("div", { className: "row row-wrap", style: { gap: 8 } },
+      React.createElement("div", { className: "seg", role: "tablist" },
+        MET_DAYS.map(d => React.createElement("button", {
+          key: d, role: "tab", "aria-pressed": days === d, "aria-selected": days === d,
+          onClick: () => setDays(d),
+        }, d + TR(" дн.")))),
+      React.createElement("button", { className: "btn", disabled: busy, onClick: () => load(days) },
+        TR("Обновить")),
+      m ? React.createElement("span", { className: "dim", style: { alignSelf: "center", fontSize: 12 } },
+        m.from + " — " + m.to) : null),
+    !m && React.createElement("div", { className: "dim" }, TR("Считаем…")),
+    m && React.createElement(MetHints, { m }),
+    m && React.createElement(MetTenants, { m }),
+    m && React.createElement(MetSteps, { m }),
+    m && React.createElement(MetCaps, { m }),
+    m && React.createElement(MetDigest, { days, toast }),
+    m && React.createElement(MetTech, { m }));
+}
+
 function TabAdmin({ store, toast }) {
   const [ov, setOv] = useState(null);
   const [nonce, setNonce] = useState(0);
@@ -795,13 +1053,16 @@ function TabAdmin({ store, toast }) {
       React.createElement("h1", null, TR("Администрирование")),
       React.createElement("p", { className: "lead" }, view === "models"
         ? TR("Модели шагов на всю систему и пересчёт расхода по журналу токенов.")
-        : TR("Все организации, аккаунты, прогоны и расход. Обновляется каждые 10 секунд."))),
+        : view === "metrics"
+          ? TR("Где теряются деньги, где их можно заработать и что чинить. Считается по журналу событий, расходу и сметам; вызовов модели нет.")
+          : TR("Все организации, аккаунты, прогоны и расход. Обновляется каждые 10 секунд."))),
     React.createElement("div", { className: "row", style: { gap: 8, marginBottom: 16 } },
       React.createElement("div", { className: "seg", role: "tablist" },
-        [["summary", TR("Сводка")], ["models", TR("Модели и расход")]].map(([key, label]) =>
+        [["summary", TR("Сводка")], ["metrics", TR("Метрики")], ["models", TR("Модели и расход")]].map(([key, label]) =>
           React.createElement("button", { key, role: "tab", "aria-pressed": view === key, "aria-selected": view === key,
             onClick: () => setView(key) }, label)))),
     view === "models" && React.createElement(AdminModelsView, { toast, tenants: ov ? ov.tenants : [] }),
+    view === "metrics" && React.createElement(TabMetrics, { toast }),
     view === "summary" && !ov && React.createElement("div", { className: "dim" }, TR("Загружаем сводку…")),
     view === "summary" && ov && React.createElement("div", { className: "col", style: { gap: 16 } },
       React.createElement("div", { className: "row row-wrap", style: { gap: 10 } },

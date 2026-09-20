@@ -205,7 +205,8 @@ def _fit(text: str, boxes: list, sw, font: str) -> tuple:
     ОДИН: разный кегль на двух половинах одного абзаца читается как брак."""
     base = max((b["size"] for b in boxes), default=10.0) or 10.0
     lead0 = max((b["lead"] for b in boxes), default=base * 1.2) or base * 1.2
-    share = MIN_SIZE_SHARE_IMAGE if boxes and boxes[0].get("image") else MIN_SIZE_SHARE
+    image = bool(boxes and boxes[0].get("image"))
+    share = MIN_SIZE_SHARE_IMAGE if image else MIN_SIZE_SHARE
     floor = max(MIN_SIZE_PT, base * share)
     size = base
     while True:
@@ -218,6 +219,14 @@ def _fit(text: str, boxes: list, sw, font: str) -> tuple:
             if k == len(boxes) - 1:
                 per_box.append(lines)
                 fits = len(lines) <= cap
+                if image and fits:
+                    # У надписи с картинки рамка обведена вокруг самих букв,
+                    # и вылезшее слово ложится не на поле страницы, а на сам
+                    # рисунок. Слово длиннее строки перенести нечем — значит
+                    # ужимаем кегль, пока не влезет. У текстовой рамки это
+                    # правило не нужно и вредно: там есть поля, а ужимать
+                    # абзац из-за одного длинного слова значит менять вёрстку.
+                    fits = all(sw(ln, font, size) <= width for ln in lines)
                 rest = ""
             else:
                 per_box.append(lines[:cap])

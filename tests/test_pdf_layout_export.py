@@ -255,6 +255,21 @@ check("Асал билан даволаш" in txt[1] and "Асал билан д
       "перевод встал на свою страницу — ту, где картинка")
 check(st["imageBoxes"] == 1 and st["paragraphs"] == 1, "и назван числом: %s" % st["imageBoxes"])
 
+print("=== 9а. Надпись с картинки ужимается по ШИРИНЕ рамки ===")
+# Боевая обложка: «Священник Александр Лазебный» уезжало за край листа —
+# слово длиннее рамки переносить нечем, а рамка обведена вокруг самих букв,
+# и вылезшее слово ложится на сам рисунок, а не на поле страницы.
+tight = [{"page": 0, "x0": 40.0, "x1": 120.0, "top": 500.0, "bottom": 470.0,
+          "size": 22.0, "lead": 24.0, "indent": 0.0, "style": "", "image": 1}]
+FONTS = layout_pdf._register_fonts()
+from reportlab.pdfbase import pdfmetrics as _pm
+size, lead, per_box, fits = layout_pdf._fit("Александр Лазебний", tight, _pm.stringWidth, FONTS[""])
+check(fits and all(_pm.stringWidth(ln, FONTS[""], size) <= 80.0 for ln in per_box[0]),
+      "кегль ужат, пока слово не влезло в рамку: %.1f, строки %s" % (size, per_box[0]))
+wide = [dict(tight[0], image=0, top=540.0)]   # высоты хватает на две строки
+size2, _l, per2, _f = layout_pdf._fit("Александр Лазебний", wide, _pm.stringWidth, FONTS[""])
+check(size2 > size, "у текстовой рамки правило другое — там есть поля: %.1f против %.1f" % (size2, size))
+
 print("=== 10. Рамка долями листа раскрывается в точки страницы ===")
 class _MB:
     left, bottom, width, height = 0.0, 0.0, 400.0, 600.0

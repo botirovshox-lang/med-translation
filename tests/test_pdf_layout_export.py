@@ -323,6 +323,36 @@ check(b["top"] == 540.0 and b["bottom"] == 480.0,
       "ось y у картинки смотрит вниз, у PDF — вверх: %s" % [b["top"], b["bottom"]])
 check(b["size"] == 12.0 and b["lead"] == 15.0, "кегль и межстрочный — доли высоты листа")
 
+print("=== 11. Каждый вызов pdfium — под общим замком ===")
+# Падает не наш код, а нативная библиотека, и вместе с ней ВЕСЬ процесс:
+# питоновского исключения тут не бывает, поймать нечем, на боевом сервере
+# это дважды уносило сервис посреди выгрузки книги. Поэтому проверка
+# механическая — забытое новое место ничем другим не видно. Список файлов
+# выводится из САМОГО кода (кто импортирует pypdfium2), а не пишется руками:
+# переписанный в тест перечень устаревает первым же новым модулем.
+import ast as _ast, re as _re
+_BACKEND = Path(__file__).resolve().parent.parent / "backend"
+_PDF_CALL = _re.compile(r"pdfium\.PdfDocument\(|(?:page|pdf|doc)\.close\(\)"
+                        r"|\.render\(|\.get_cropbox\(\)|_box_shift\(")
+_users = [f for f in sorted(_BACKEND.glob("*.py"))
+          if "import pypdfium2" in f.read_text(encoding="utf-8")]
+check(len(_users) >= 2, "файлы, зовущие pdfium, найдены по коду: %s" % [f.name for f in _users])
+for _f in _users:
+    _src = _f.read_text(encoding="utf-8")
+    _tree = _ast.parse(_src)
+    _safe = [(n.lineno, n.end_lineno) for n in _ast.walk(_tree)
+             if isinstance(n, _ast.With)
+             and any("PDFIUM_LOCK" in _ast.dump(it) for it in n.items)]
+    _bad = []
+    for _i, _line in enumerate(_src.splitlines(), 1):
+        _code = _line.strip()
+        if (not _code or _code.startswith("#") or _code.startswith("def ")
+                or not _PDF_CALL.search(_code)):
+            continue
+        if not any(a <= _i <= b for a, b in _safe):
+            _bad.append("%s:%d %s" % (_f.name, _i, _code[:60]))
+    check(not _bad, "%s: вызовы pdfium вне замка — %s" % (_f.name, _bad or "нет"))
+
 print(("ALL OK" if not fail else "FAILED: %d" % len(fail)))
 for f in fail:
     print(" -", f)

@@ -64,6 +64,14 @@ import os
 import statistics
 from pathlib import Path
 
+# Замок pdfium: он не потокобезопасен, и падает не исключением, а всем
+# процессом (см. backend/pdfium_gate.py). Импорт двумя путями — модуль
+# живёт и пакетом `backend`, и плоско (так его берут тесты).
+try:
+    from backend.pdfium_gate import LOCK as PDFIUM_LOCK
+except ImportError:                                  # pragma: no cover
+    from pdfium_gate import LOCK as PDFIUM_LOCK
+
 # Шрифт перевода. Своего у нас нет и быть не должно: нужен тот, в котором
 # есть письменность целевого языка (узбекская кириллица, казахская, любая
 # другая). Берём первый найденный из списка — на сервере это DejaVu,
@@ -275,7 +283,8 @@ class _Sampler:
         try:
             import pypdfium2 as pdfium
             from PIL import Image  # noqa: F401
-            self.doc = pdfium.PdfDocument(io.BytesIO(pdf_bytes))
+            with PDFIUM_LOCK:
+                self.doc = pdfium.PdfDocument(io.BytesIO(pdf_bytes))
         except Exception:
             self.doc = None
 
@@ -287,25 +296,43 @@ class _Sampler:
             self.missed.add(i)
             return None
         sample = None
-        try:
-            page = self.doc[i]
-            # Начало отсчёта у отрисованной страницы — её CropBox, а рамки
-            # абзацев лежат в координатах самого PDF (MediaBox). У печатной
-            # вёрстки с вылетами это разные прямоугольники, и цвет бумаги
-            # мерился бы не под тем абзацем.
+        with PDFIUM_LOCK:
             try:
-                cb = [float(v) for v in page.get_cropbox()]
+                page = self.doc[i]
+                # Начало отсчёта у отрисованной страницы — её CropBox, а рамки
+                # абзацев лежат в координатах самого PDF (MediaBox). У печатной
+                # вёрстки с вылетами это разные прямоугольники, и цвет бумаги
+                # мерился бы не под тем абзацем.
+                try:
+                    cb = [float(v) for v in page.get_cropbox()]
+                except Exception:
+                    cb = [0.0, 0.0, 0.0, 0.0]
+                im = page.render(scale=self.scale).to_pil().convert("RGB")
+                sample = (im, self.scale, cb, im.convert("L"))
+                page.close()
             except Exception:
-                cb = [0.0, 0.0, 0.0, 0.0]
-            im = page.render(scale=self.scale).to_pil().convert("RGB")
-            sample = (im, self.scale, cb, im.convert("L"))
-            page.close()
-        except Exception:
-            sample = None
+                sample = None
         if sample is None:
             self.missed.add(i)
         self.cur = (i, sample)
         return sample
+
+    def close(self):
+        """Документ закрывается ЯВНО и сразу, а не сборщиком мусора.
+
+        Брошенный документ pdfium прибирает финализатор — в произвольный
+        момент и в произвольном потоке, в том числе посреди чужой отрисовки:
+        на боевом сервере это роняло весь процесс через полминуты после
+        последнего запроса. Повторный вызов безвреден: снимок и ссылка
+        снимаются до закрытия."""
+        doc, self.doc, self.cur = self.doc, None, (None, None)
+        if doc is None:
+            return
+        with PDFIUM_LOCK:
+            try:
+                doc.close()
+            except Exception:
+                pass
 
 
 def _col_mins(gray, x0: int, x1: int, y0: int, y1: int) -> list:
@@ -554,39 +581,47 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
             pg = int(b["page"])
             if pg not in skip:
                 live_boxes.setdefault(pg, []).append(b)
-    for pg in sorted(live_boxes):
-        sample = sampler.page(pg)
-        for b in live_boxes[pg]:
-            pad = PAD_SHARE * max(b["size"], 1.0)
-            # На бумаге буквы — тёмный хвост, и бумага это высокий процентиль
-            # яркости. На КАРТИНКЕ «бумага» — сама фотография, и высокий
-            # процентиль берёт её блик: белая заплатка посреди жёлтой обложки.
-            # Там правильный ответ — медиана: фон занимает больше места,
-            # чем буквы.
-            q = PAPER_Q_IMAGE if b.get("image") else PAPER_Q
-            colors = _strip_colors(sample, b, pad, FILL_STRIPS, q=q)
-            paper = max(sum(col) / 3.0 for col in colors) if colors else 1.0
-            if b.get("image"):
-                # Надпись СО СТРАНИЦЫ-КАРТИНКИ по краске не раздвигается:
-                # её рамку мерил разбор картинок по самой картинке, она точна,
-                # а на обложке «краска» — это фотография, и раздвижение
-                # закрасило бы её до потолка.
-                x0, x1 = b["x0"], b["x1"]
-            else:
-                x0, x1 = _ink_box(sample, b, pad, paper)
-            if x1 - x0 > b["x1"] - b["x0"] + 0.5:
-                # Рамка поехала по краске — и цвет бумаги надо мерить
-                # по НОВОЙ ширине, иначе полосы лягут не на своё место.
-                colors = _strip_colors(sample, b, pad, FILL_STRIPS, x0, x1, q=q)
-            # Рамка ТЕПЕРЬ такая: по ней и раскладывается перевод. Строка
-            # оригинала начиналась там, где стоит её краска, — значит там же
-            # начинается и перевод.
-            # Отступ первой строки считался ОТ ПРЕЖНЕГО края: рамка уехала
-            # влево — отступ на столько же вырос, иначе красная строка
-            # оригинала превратилась бы в ровный край.
-            b["indent"] = max(0.0, b.get("indent") or 0.0) + max(0.0, b["x0"] - x0)
-            b["x0"], b["x1"] = x0, x1
-            b["_fill"] = (colors, paper, pad)
+    # Отрисовка идёт ПОД ЗАМКОМ и документ закрывается сразу, как только
+    # бумага померена: дальше pdfium не нужен, а брошенный документ
+    # прибирал бы сборщик мусора — в чужом потоке и посреди чужой
+    # отрисовки (см. backend/pdfium_gate.py). `finally` обязателен:
+    # сборка падает и на нашей логике, а документ пережил бы её.
+    try:
+        for pg in sorted(live_boxes):
+            sample = sampler.page(pg)
+            for b in live_boxes[pg]:
+                pad = PAD_SHARE * max(b["size"], 1.0)
+                # На бумаге буквы — тёмный хвост, и бумага это высокий процентиль
+                # яркости. На КАРТИНКЕ «бумага» — сама фотография, и высокий
+                # процентиль берёт её блик: белая заплатка посреди жёлтой обложки.
+                # Там правильный ответ — медиана: фон занимает больше места,
+                # чем буквы.
+                q = PAPER_Q_IMAGE if b.get("image") else PAPER_Q
+                colors = _strip_colors(sample, b, pad, FILL_STRIPS, q=q)
+                paper = max(sum(col) / 3.0 for col in colors) if colors else 1.0
+                if b.get("image"):
+                    # Надпись СО СТРАНИЦЫ-КАРТИНКИ по краске не раздвигается:
+                    # её рамку мерил разбор картинок по самой картинке, она точна,
+                    # а на обложке «краска» — это фотография, и раздвижение
+                    # закрасило бы её до потолка.
+                    x0, x1 = b["x0"], b["x1"]
+                else:
+                    x0, x1 = _ink_box(sample, b, pad, paper)
+                if x1 - x0 > b["x1"] - b["x0"] + 0.5:
+                    # Рамка поехала по краске — и цвет бумаги надо мерить
+                    # по НОВОЙ ширине, иначе полосы лягут не на своё место.
+                    colors = _strip_colors(sample, b, pad, FILL_STRIPS, x0, x1, q=q)
+                # Рамка ТЕПЕРЬ такая: по ней и раскладывается перевод. Строка
+                # оригинала начиналась там, где стоит её краска, — значит там же
+                # начинается и перевод.
+                # Отступ первой строки считался ОТ ПРЕЖНЕГО края: рамка уехала
+                # влево — отступ на столько же вырос, иначе красная строка
+                # оригинала превратилась бы в ровный край.
+                b["indent"] = max(0.0, b.get("indent") or 0.0) + max(0.0, b["x0"] - x0)
+                b["x0"], b["x1"] = x0, x1
+                b["_fill"] = (colors, paper, pad)
+    finally:
+        sampler.close()
 
     # Раскладка считается ПО АБЗАЦУ, один раз, а не на каждой его странице:
     # абзац бывает разорван концом страницы, и счёт «на страницу» удваивал

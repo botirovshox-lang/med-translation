@@ -412,9 +412,12 @@ button:focus:not(:focus-visible), input:focus:not(:focus-visible) { outline: non
 .st-hum .st-badge { background: var(--st-fail-bg); color: var(--c-error); }
 .st-mine .st-badge { background: var(--bg-sunken); color: var(--text-2); }
 .st-go { margin-top: auto; padding-top: 4px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-/* Плитки редактора — в один ряд: четыре корзины читаются одной строкой
-   «сколько где», а не лесенкой. Уже — по две, на телефоне — столбиком. */
-.st-cards.st-row { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+/* Плитки редактора — в один ряд: три корзины и два среза (заверено вручную,
+   не переведено) читаются одной строкой «сколько где», а не лесенкой.
+   Пять в ряд помещаются только на мониторе: ниже 1360 px — по три,
+   уже 900 px — по две, на телефоне — столбиком. */
+.st-cards.st-row { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+@media (max-width: 1360px) { .st-cards.st-row { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 900px) { .st-cards.st-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 520px) { .st-cards.st-row { grid-template-columns: minmax(0, 1fr); } }
 /* Плитка, чья выборка сейчас в таблице, — та же, что нажатая кнопка-фильтр. */

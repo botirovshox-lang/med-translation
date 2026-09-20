@@ -25885,6 +25885,16 @@ def download_export(pid: int, format: str = "docx", source: bool = True):
     if fmt not in EXPORT_EXT:
         raise HTTPException(400, "Поддерживаются только docx, docx_layout, xlsx, pdf и original")
     if fmt == "original":
+        # Как и у PDF ниже: файл только что собран кнопкой «Экспорт», и
+        # собирать его заново на каждое скачивание — это ещё раз до полутора
+        # минут раскладки на единственном воркере. Готовый отдаётся как есть;
+        # нет его — собираем. Прежде этот путь пересобирал книгу ВСЕГДА,
+        # то есть каждое скачивание стоило второй полной сборки.
+        ready = _export_path(project, "original")
+        if ready.exists():
+            import mimetypes
+            media = mimetypes.guess_type(ready.name)[0] or "application/octet-stream"
+            return FileResponse(str(ready), media_type=media, filename=ready.name)
         path, _stats = _generate_export(project, fmt, include_source=source)
         import mimetypes
         media = mimetypes.guess_type(path.name)[0] or "application/octet-stream"

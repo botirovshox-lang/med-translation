@@ -30,6 +30,15 @@ import json
 import re
 import sys
 import threading
+
+# Замок pdfium: библиотека не потокобезопасна, а падает не исключением,
+# а всем процессом — вместе с чужими запросами и идущим прогоном
+# (см. backend/pdfium_gate.py). Импорт двумя путями: модуль живёт
+# и пакетом `backend`, и плоско (так его берут тесты).
+try:
+    from backend.pdfium_gate import LOCK as PDFIUM_LOCK
+except ImportError:                                  # pragma: no cover
+    from pdfium_gate import LOCK as PDFIUM_LOCK
 import unicodedata
 import zipfile
 from collections import OrderedDict
@@ -1026,27 +1035,48 @@ def pdf_render_pages(content: bytes, indices: list, dpi: int = 0) -> Optional[li
     except ImportError:
         return None
     out = []
-    try:
-        pdf = pdfium.PdfDocument(io.BytesIO(content))
-    except Exception:
-        return None
-    want = float(dpi or PAGE_RENDER_DPI)
-    for i in indices:
-        data = None
+    # Под замком — только сам pdfium: открытие, отрисовка страницы, закрытие
+    # (см. backend/pdfium_gate.py). Кодирование PNG к нему отношения не имеет,
+    # а книга — это сотни страниц: держи замок на весь цикл, и один долгий
+    # импорт остановил бы для всех остальных и выгрузку, и смету скана,
+    # и чтение картинок. Зерно то же, что у `layout_pdf._Sampler.page`.
+    with PDFIUM_LOCK:
         try:
-            page = pdf[i]
-            im = page.render(scale=_render_scale(page, want)).to_pil()
-            buf = io.BytesIO()
-            im.convert("RGB").save(buf, format="PNG", optimize=False)
-            data = buf.getvalue()
-            page.close()
+            pdf = pdfium.PdfDocument(io.BytesIO(content))
         except Exception:
-            data = None
-        out.append((i, data))
+            return None
+    want = float(dpi or PAGE_RENDER_DPI)
     try:
-        pdf.close()
-    except Exception:
-        pass
+        for i in indices:
+            data = None
+            im = None
+            with PDFIUM_LOCK:
+                try:
+                    page = pdf[i]
+                    try:
+                        im = page.render(scale=_render_scale(page, want)).to_pil()
+                    finally:
+                        # Страница закрывается ЯВНО и при ошибке отрисовки тоже:
+                        # брошенную прибирает сборщик мусора — когда придётся
+                        # и в каком придётся потоке, то есть посреди чужой
+                        # работы с pdfium. Ровно от этого и заведён замок.
+                        page.close()
+                except Exception:
+                    im = None
+            if im is not None:
+                try:
+                    buf = io.BytesIO()
+                    im.convert("RGB").save(buf, format="PNG", optimize=False)
+                    data = buf.getvalue()
+                except Exception:
+                    data = None
+            out.append((i, data))
+    finally:
+        with PDFIUM_LOCK:
+            try:
+                pdf.close()
+            except Exception:
+                pass
     return out
 
 
@@ -1089,12 +1119,18 @@ def _box_shift(page) -> "tuple | None":
     None — коробки совпадают (обычный случай), и пересчитывать нечего.
     Иначе (dx, dy, kx, ky): pdfium рисует CropBox, а места строк и рисунков
     наш разбор считает от MediaBox — у печатной вёрстки с вылетами это
-    разные прямоугольники, и вырезка ушла бы мимо."""
-    try:
-        mb = [float(v) for v in page.get_mediabox()]
-        cb = [float(v) for v in page.get_cropbox()]
-    except Exception:
-        return None
+    разные прямоугольники, и вырезка ушла бы мимо.
+
+    Замок берётся здесь СВОЙ, хотя нынешний вызывающий уже держит его
+    (RLock, один поток — повторный захват законен): спрашивает коробки
+    у pdfium эта функция, и следующий вызывающий не обязан помнить чужое
+    правило. Сторожит раздел 11 в tests/test_pdf_layout_export.py."""
+    with PDFIUM_LOCK:
+        try:
+            mb = [float(v) for v in page.get_mediabox()]
+            cb = [float(v) for v in page.get_cropbox()]
+        except Exception:
+            return None
     if all(abs(mb[k] - cb[k]) < 0.5 for k in range(4)):
         return None
     mw, mh = max(1e-6, mb[2] - mb[0]), max(1e-6, mb[3] - mb[1])
@@ -1137,51 +1173,67 @@ def pdf_crop_figures(content: bytes, boxes: list, dpi: int = 0) -> tuple:
         by_page.setdefault(int(i), []).append(tuple(frac))
     out: dict = {}
     stats = {"blank": 0}
-    try:
-        pdf = pdfium.PdfDocument(io.BytesIO(content))
-    except Exception:
-        return {}, stats
-    want = float(dpi or FIG_RENDER_DPI)
-    for i in sorted(by_page):
+    # Под замком — ТОЛЬКО pdfium (см. backend/pdfium_gate.py): отрисовка одной
+    # страницы, а вырезка и сжатие рисунков идут уже без него. Иначе импорт
+    # книги в 378 страниц держал бы замок минутами, и всё это время любой
+    # другой клиент ждал бы выгрузки, сметы скана и чтения картинок.
+    with PDFIUM_LOCK:
         try:
-            page = pdf[i]
-            # Рамки рисунков приходят ДОЛЯМИ листа и режутся по размеру
-            # отрисованной картинки, поэтому подрезанный масштаб их не двигает.
-            im = page.render(scale=_render_scale(page, want)).to_pil().convert("RGB")
-            # Доля считана от MediaBox (её отдаёт разбор через pypdf), а рисует
-            # pdfium по CropBox: у печатной вёрстки с вылетами это разные
-            # прямоугольники, и без пересчёта вырезался бы кусок мимо рисунка.
-            shift = _box_shift(page)
-            page.close()
+            pdf = pdfium.PdfDocument(io.BytesIO(content))
         except Exception:
-            continue
-        w, h = im.size
-        for frac in by_page[i]:
-            try:
-                x0, y0, x1, y1 = _shift_frac(frac, shift)
-                px = (int(x0 * w), int(y0 * h), max(1, int(x1 * w)), max(1, int(y1 * h)))
-                if px[2] - px[0] < 8 or px[3] - px[1] < 8:
-                    continue
-                crop = im.crop(px)
-                if not _has_ink(crop):
-                    stats["blank"] += 1
-                    continue
-                buf = io.BytesIO()
-                crop.save(buf, format="PNG", optimize=True)
-                data = buf.getvalue()
-                if len(data) > FIG_PNG_MAX:
-                    buf = io.BytesIO()
-                    crop.save(buf, format="JPEG", quality=FIG_JPEG_Q, optimize=True)
-                    if buf.tell() < len(data):
-                        data = buf.getvalue()
-                out[(i, frac)] = data
-            except Exception:
-                continue
-        im.close()
+            return {}, stats
+    want = float(dpi or FIG_RENDER_DPI)
     try:
-        pdf.close()
-    except Exception:
-        pass
+        for i in sorted(by_page):
+            im = shift = None
+            with PDFIUM_LOCK:
+                try:
+                    page = pdf[i]
+                    try:
+                        # Рамки рисунков приходят ДОЛЯМИ листа и режутся по размеру
+                        # отрисованной картинки, поэтому подрезанный масштаб их не двигает.
+                        im = page.render(scale=_render_scale(page, want)).to_pil().convert("RGB")
+                        # Доля считана от MediaBox (её отдаёт разбор через pypdf), а рисует
+                        # pdfium по CropBox: у печатной вёрстки с вылетами это разные
+                        # прямоугольники, и без пересчёта вырезался бы кусок мимо рисунка.
+                        shift = _box_shift(page)
+                    finally:
+                        # Явно и при ошибке отрисовки тоже: брошенную страницу
+                        # прибирает сборщик мусора в произвольном потоке.
+                        page.close()
+                except Exception:
+                    im = None
+            if im is None:
+                continue
+            w, h = im.size
+            for frac in by_page[i]:
+                try:
+                    x0, y0, x1, y1 = _shift_frac(frac, shift)
+                    px = (int(x0 * w), int(y0 * h), max(1, int(x1 * w)), max(1, int(y1 * h)))
+                    if px[2] - px[0] < 8 or px[3] - px[1] < 8:
+                        continue
+                    crop = im.crop(px)
+                    if not _has_ink(crop):
+                        stats["blank"] += 1
+                        continue
+                    buf = io.BytesIO()
+                    crop.save(buf, format="PNG", optimize=True)
+                    data = buf.getvalue()
+                    if len(data) > FIG_PNG_MAX:
+                        buf = io.BytesIO()
+                        crop.save(buf, format="JPEG", quality=FIG_JPEG_Q, optimize=True)
+                        if buf.tell() < len(data):
+                            data = buf.getvalue()
+                    out[(i, frac)] = data
+                except Exception:
+                    continue
+            im.close()
+    finally:
+        with PDFIUM_LOCK:
+            try:
+                pdf.close()
+            except Exception:
+                pass
     return out, stats
 
 

@@ -2746,7 +2746,12 @@ function TabEditor({ store, toast }) {
           React.createElement("div", { className: "filters" },
             [["all", TR("Все"), null, null], ["ready", TR("Готово"), tkSum.turnkey.ready, "checkCircle"],
              ["machine", TR("Машина"), tkSum.turnkey.machine, "repeat"], ["human", TR("Вы"), tkSum.turnkey.human, "alert"],
-             ["mine", TR("Заверено"), tkSum.turnkey.confirmed || [], "lock"]].map(([k, l, ids, ic]) =>
+             ["mine", TR("Заверено"), tkSum.turnkey.confirmed || [], "lock"],
+             /* Срез «не переведено» — такая же кнопка, как «Заверено»: плитка
+                наверху ведёт сюда, и нажатой обязана становиться кнопка той
+                выборки, что сейчас в таблице. Без неё переход из плитки
+                фильтровал таблицу, а над ней не горела ни одна кнопка. */
+             ["untr", TR("Не переведено"), (tkSum.todo && tkSum.todo.untranslated) || [], "new"]].map(([k, l, ids, ic]) =>
               React.createElement("button", { key: k, className: "fbtn", "data-bucket": k,
                 "aria-pressed": k === "all" ? !activeFilter : (bucket === k && !!activeFilter),
                 onClick: () => { if (k === "all") store.setSegmentFilter(null); else drillBucket(ids, k, l); setPage(1); } },
@@ -3492,7 +3497,17 @@ function EditorHomeSummary({ sum, store, toast, onDrill, bucket, running, onRun,
          той же строкой подсказки, команды — на «Проверке». */
       card(human, "human", "hum", "alert", TR("Нужно ваше решение"), TR("споры с глоссарием, заверенное с находками, откаченные правки — прогон это не решит"), false,
         React.createElement(Btn, { variant: "secondary", size: "sm", icon: "target", onClick: () => store.go("preflight") }, TR("Разобрать на «Проверке»"))),
-      card(tk.confirmed || [], "mine", "mine", "lock", TR("Заверено вручную"), TR("входит в корзины выше"), true)),
+      card(tk.confirmed || [], "mine", "mine", "lock", TR("Заверено вручную"), TR("входит в корзины выше"), true),
+      /* «Не переведено» — тоже СРЕЗ поверх корзин, а не шестая корзина: строка
+         без перевода лежит в «возьмёт прогон» (а с ручной правкой — в «нужно
+         ваше решение»), и своя корзина сломала бы сумму. Число приходит
+         из `todo.untranslated` — того же `_needs_translation`, которым
+         отбирает сам прогон; считать его в браузере значило бы завести второе
+         правило рядом с настоящим. Плитка нужна затем, что «готово 58 %»
+         не отвечает на вопрос «а есть ли ещё строки, которых вообще
+         не касались»: на книге их десяток, и руками их не найти. */
+      card((sum.todo && sum.todo.untranslated) || [], "untr", "mine", "new",
+        TR("Не переведено"), TR("строки без перевода · входит в корзины выше"), true)),
     React.createElement("div", { className: "duo" },
       React.createElement("div", { className: "home-strip" },
         React.createElement("b", { className: "num", style: { fontSize: 15 } }, tkPct(ready.length, total)),

@@ -587,32 +587,43 @@ Object.assign(window, {
    находил не то. Регистр и «ё/е» не важны — как у поиска редактора; обе
    замены сохраняют длину строки, поэтому индексы годятся для исходного
    текста. Разъехалась длина — отдаём текст без подсветки, а не криво. */
-function markTerms(text, terms) {
+/* `attention` — вторым списком: слова, на которые ЖАЛУЕТСЯ проверка
+   (их считает сервер, поле `seg.attention`). Они красятся иначе, чем
+   совпадения поиска: «нашлось то, что я искал» и «здесь дефект» — разные
+   сообщения, и одним цветом они сливаются в «что-то подсвечено». */
+function markTerms(text, terms, attention) {
   const src = text || "";
   const norm = (t) => String(t == null ? "" : t).toLowerCase().replace(/ё/g, "е");
-  const needles = (Array.isArray(terms) ? terms : [terms])
+  const prep = (v) => (Array.isArray(v) ? v : v == null ? [] : [v])
     .map(t => norm(t).trim()).filter(Boolean);
-  if (!needles.length || !src) return src;
+  const needles = prep(terms), att = prep(attention);
+  if (!needles.length && !att.length) return src;
+  if (!src) return src;
   const hay = norm(src);
   if (hay.length !== src.length) return src;
   const marks = [];
-  needles.forEach(n => {
-    for (let i = hay.indexOf(n); i !== -1; i = hay.indexOf(n, i + 1)) marks.push([i, i + n.length]);
+  const scan = (list, cls) => list.forEach(n => {
+    for (let i = hay.indexOf(n); i !== -1; i = hay.indexOf(n, i + 1)) marks.push([i, i + n.length, cls]);
   });
+  scan(needles, "hl");
+  scan(att, "hl hl-att");
   if (!marks.length) return src;
   // Пересечения сливаем: «артериальное давление» и «давление» дают ОДНУ метку.
+  // Жалоба сильнее поиска: слившись, метка остаётся жалобой.
   marks.sort((a, b) => (a[0] - b[0]) || (b[1] - a[1]));
   const merged = [];
   marks.forEach(m => {
     const last = merged[merged.length - 1];
-    if (last && m[0] <= last[1]) last[1] = Math.max(last[1], m[1]);
-    else merged.push([m[0], m[1]]);
+    if (last && m[0] <= last[1]) {
+      last[1] = Math.max(last[1], m[1]);
+      if (m[2] !== "hl") last[2] = m[2];
+    } else merged.push([m[0], m[1], m[2]]);
   });
   const out = [];
   let at = 0;
-  merged.forEach(([s, e], k) => {
+  merged.forEach(([s, e, cls], k) => {
     if (s > at) out.push(src.slice(at, s));
-    out.push(React.createElement("mark", { key: k, className: "hl" }, src.slice(s, e)));
+    out.push(React.createElement("mark", { key: k, className: cls }, src.slice(s, e)));
     at = e;
   });
   if (at < src.length) out.push(src.slice(at));

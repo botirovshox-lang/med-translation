@@ -48,8 +48,10 @@ SOFT = "­"
 # и проект, нарезанный правилами постарше, экран предлагает пересобрать
 # из хранимого исходника (`/api/projects/{pid}/resegment`). Меняешь правила
 # так, что меняются абзацы, — поднимай: 1 — построчный разбор, 2 — по
-# геометрии, 3 — обрывки у края, «по-»/«лис», метки врезок, разворот.
-RULES_VERSION = 3
+# геометрии, 3 — обрывки у края, «по-»/«лис», метки врезок, разворот,
+# 4 — над- и подстрочные куски (дроби, степени, индексы) на своём месте
+# и повреждённый знак математики, который больше не снимается орнаментом.
+RULES_VERSION = 4
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -454,6 +456,23 @@ def _strip_page_frame(lines: list, heads: set, feet: set, report: dict) -> list:
 _HYPHEN_DUP_RE = re.compile(r"([^\W\d_][-‐‑])\s+[-‐‑]\s*$")
 
 
+# Знак, приклеенный к МАТЕМАТИКЕ, — не украшение, а повреждённый глиф.
+# Боевая книга (стр. 161): распознаватель прочёл надстрочную «1» дроби как
+# «*», и токен «*/» терялся целиком — `strip(_ORNAMENT_CHARS)` оставлял «/»,
+# то есть «и пить его теплым по / стакана». Снятое повреждение неотличимо
+# от исправного текста, а по нему ещё и решают, звать ли человека.
+# Класс УЗКИЙ намеренно: только «*» и «^» (их распознаватель и ставит на
+# месте над- и подстрочника) и только вплотную к цифре или дробной черте.
+# «#12», «<308>», «|1» чистятся, как чистились: там знак не работает знаком.
+_MATH_MARKS = frozenset("*^")
+_MATH_NEAR_RE = re.compile(r"[*^](?=[0-9/])|(?<=[0-9/])[*^]")
+
+
+def _math_token(t: str) -> bool:
+    return bool(_MATH_NEAR_RE.search(t)) and all(
+        c in _MATH_MARKS or c not in _ORNAMENT_CHARS for c in t)
+
+
 def _clean_line(line: str, report: dict):
     """Строка без мусора распознавания либо None, если она вся мусор."""
     if _is_ornament(line):
@@ -482,6 +501,9 @@ def _clean_line(line: str, report: dict):
                 or re.match(r"§+\d", t)):
             toks.append(t)             # «§ 5» — знак параграфа перед номером, не мусор
             continue
+        if _math_token(t):
+            toks.append(t)             # «*/», «2*» — повреждённый знак, а не украшение
+            continue
         if not core and all(c in _ORNAMENT_CHARS for c in t):
             if t.startswith(("•", "♦", "■", "●")) and len(t) == 1 and not toks:
                 toks.append(t)         # маркер списка в начале строки
@@ -489,6 +511,141 @@ def _clean_line(line: str, report: dict):
         toks.append(core or t)          # «^лучше» → «лучше»
     out = " ".join(toks).strip()
     return out or None
+
+
+# ─── Над- и подстрочные куски: дроби, степени, индексы ───────────────
+# Типограф ставит числитель дроби, степень и химический индекс ВЫШЕ или НИЖЕ
+# базовой линии строки, и pypdf при сдвиге примерно от 0.65 em РВЁТ на этом
+# месте строку: кусок становится отдельной «строкой» со своей базовой линией.
+# Дальше порядок чтения (сверху вниз) уносит его прочь: на синтетическом PDF
+# «и пить по ¹/₃ стакана» превращалось в «1 и пить по /3 стакана».
+# Правило одно на все предметы — математику, химию, биологию: «m²», «H₂O»,
+# «¹⁴C», «CD4⁺», «x₁» ломаются ровно так же.
+#
+# Кандидат УЗКИЙ намеренно: короткий кусок, в котором есть цифра или юникодный
+# над/подстрочный знак. Без цифры это не индекс, а обрывок рисунка у края
+# страницы (`_edge_scrap`), и забирать его в строку нельзя.
+SCRIPT_MAX_CHARS = 6
+SCRIPT_SIZE_SHARE = 0.85     # кусок мельче строки, к которой его приклеивают
+SCRIPT_DY_SHARE = 0.9        # и ближе к ней, чем межстрочный (тот от 1.15 em)
+SCRIPT_BASE_DY = 0.15        # «та же базовая линия»
+SCRIPT_GAP_SHARE = 1.5       # и рядом по горизонтали
+SCRIPT_SPACE_SHARE = 0.25    # зазор, начиная с которого между кусками ПРОБЕЛ
+_SCRIPT_CHAR_RE = re.compile(r"[0-9²³¹⁰-₟]")
+
+
+def _script_piece(r: dict) -> bool:
+    t = (r.get("t") or "").strip()
+    return 0 < len(t) <= SCRIPT_MAX_CHARS and bool(_SCRIPT_CHAR_RE.search(t))
+
+
+def _hgap(a: dict, b: dict) -> float:
+    """Зазор между кусками по горизонтали; отрицательный — перекрываются.
+    Над/подстрочник НИКОГДА не налезает на свою строку, поэтому перекрытие —
+    это два разных места на странице, и сливать их нельзя."""
+    if b["x0"] >= a["x1"]:
+        return b["x0"] - a["x1"]
+    if a["x0"] >= b["x1"]:
+        return a["x0"] - b["x1"]
+    return -1.0
+
+
+def _join_scripts(recs: list, report: dict) -> list:
+    """Куски, разорванные по базовой линии, — обратно в одну строку.
+
+    Сливается ТОЛЬКО то, что притянул над/подстрочник: он сам и куски его
+    строки, между которыми он стоял («и пить по » + «1» + «/3 стакана»).
+    Слияния «двух кусков на одной базовой линии» само по себе тут нет
+    намеренно: порядок чтения и сборка абзаца с ними и так справляются,
+    а x0/x1 слитой записи поехали бы — по ним считаются поля страницы,
+    колонки и роль врезки."""
+    n = len(recs)
+    if n < 2:
+        return recs
+    parent = list(range(n))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i, j):
+        a, b = find(i), find(j)
+        if a != b:
+            parent[max(a, b)] = min(a, b)
+
+    joined = 0
+    for i, f in enumerate(recs):
+        if f["s"] <= 0 or not _script_piece(f):
+            continue
+        best = None
+        for j, b in enumerate(recs):
+            if j == i or b["s"] <= 0 or f["s"] > SCRIPT_SIZE_SHARE * b["s"]:
+                continue
+            dy = abs(f["y"] - b["y"])
+            if not 0 < dy <= SCRIPT_DY_SHARE * b["s"]:
+                continue
+            gap = _hgap(f, b)
+            if gap < 0 or gap > SCRIPT_GAP_SHARE * min(f["s"], b["s"]):
+                continue
+            # Ближе по ВЕРТИКАЛИ сильнее, чем ближе по горизонтали: своя
+            # строка у над/подстрочника одна, а коротких соседних строк
+            # с маленьким зазором рядом бывает несколько.
+            if best is None or (dy, gap) < best[0]:
+                best = ((dy, gap), j)
+        if best is None:
+            continue
+        j = best[1]
+        union(i, j)
+        joined += 1
+        # Кусок той же строки по ДРУГУЮ сторону от над/подстрочника: строку
+        # разорвало надвое именно им, и без этого шага «и пить по » и
+        # «/3 стакана» остались бы двумя строками, а между ними встал бы
+        # перенос абзаца.
+        b = recs[j]
+        b_right = b["x0"] >= f["x1"]
+        for k, c in enumerate(recs):
+            if k in (i, j) or c["s"] <= 0:
+                continue
+            if abs(c["y"] - b["y"]) > SCRIPT_BASE_DY * b["s"]:
+                continue
+            if (c["x0"] >= f["x1"]) == b_right:
+                continue                 # та же сторона, что база, — другой кусок строки
+            gap = _hgap(f, c)
+            if 0 <= gap <= SCRIPT_GAP_SHARE * min(f["s"], c["s"]):
+                union(i, k)
+    if not joined:
+        return recs
+    groups: dict = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    out = []
+    for i in range(n):
+        g = groups.get(i)
+        if not g:
+            continue
+        if len(g) == 1:
+            out.append(recs[i])
+            continue
+        parts = sorted((recs[k] for k in g), key=lambda r: r["x0"])
+        base = max(parts, key=lambda r: r["s"])
+        text = parts[0]["t"]
+        prev = parts[0]
+        for pc in parts[1:]:
+            # Пробел — по зазору, и мерка берётся у КРУПНОГО куска: межсловный
+            # пробел это примерно четверть его кегля. Мерка по мелкому объявила
+            # бы пробелом стык «1» и «/3», то есть саму дробь.
+            step = SCRIPT_SPACE_SHARE * max(prev["s"], pc["s"], 1.0)
+            if (prev.get("rsp") or pc.get("lsp") or pc["x0"] - prev["x1"] >= step)                     and not text.endswith(" ") and not pc["t"].startswith(" "):
+                text += " "
+            text += pc["t"]
+            prev = pc
+        out.append({"t": text, "x0": parts[0]["x0"], "x1": max(p["x1"] for p in parts),
+                    "y": base["y"], "s": base["s"],
+                    "lsp": parts[0].get("lsp", False), "rsp": parts[-1].get("rsp", False)})
+    report["scripts"] += joined
+    return out
 
 
 def _vocab(pages: list) -> tuple:
@@ -655,8 +812,14 @@ def _geo_page(lines: list, g) -> "list | None":
             continue
         if not p or len(p) < 4:
             return None                 # строка без места — страница без геометрии
+        raw = _TAB_RE.sub(" ", l or "")
+        # Был ли у сырой строки пробел по краям: `_tidy` его снимает, а при
+        # склейке разорванной строки он единственное ТОЧНОЕ свидетельство
+        # («…площадь в м» + «2» + « измеряют так.»). Зазор по x — оценка:
+        # у куска в один знак конец строки считается по ширине знака.
         recs.append({"t": t, "x0": float(p[0]), "y": float(p[1]), "s": float(p[2] or 0),
-                     "x1": max(float(p[3]), float(p[0]))})
+                     "x1": max(float(p[3]), float(p[0])),
+                     "lsp": raw[:1] == " ", "rsp": raw[-1:] == " "})
     return recs
 
 
@@ -1365,6 +1528,10 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
             if c:
                 r["t"] = c
                 kept.append(r)
+        # Дробь, степень и химический индекс — обратно в свою строку, ДО
+        # всего остального: по местам строк считаются поля, колонки, роли
+        # и украшения, и разорванная надвое строка врала бы им всем.
+        kept = _join_scripts(kept, report)
         # Украшение, распознанное буквами: одна-три буквы кеглем вдвое больше
         # основного («ЧР’» кеглем 30, «ш» кеглем 46 над первой строкой
         # страницы). Вставкой оно разрывает слово. Но крупная короткая

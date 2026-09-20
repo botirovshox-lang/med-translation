@@ -54,6 +54,13 @@ function check(cond, label) {
 const hooks = [];
 const effects = [];
 let hookIdx = 0;
+/* Полка хуков на компонент: по 100 слотов, начиная с 1000. Сам TabEditor
+   зовётся напрямую и живёт на полке 0 — его индексы не сдвинулись. */
+const shelves = new Map();
+function shelf(fn) {
+  if (!shelves.has(fn)) shelves.set(fn, 1000 + shelves.size * 100);
+  return shelves.get(fn);
+}
 const React = {
   createElement(type, props, ...children) {
     const kids = [];
@@ -65,7 +72,19 @@ const React = {
     })(children);
     if (typeof type === "function") {
       // Дочерние компоненты вызываем по-настоящему: половина ошибок именно там.
-      return type(Object.assign({}, props, kids.length ? { children: kids } : {}));
+      // У КАЖДОГО — своя полка хуков. У настоящего React список хуков свой
+      // у каждого компонента; общий счётчик в заглушке перемешивал индексы,
+      // и хук одного компонента получал слот другого (`useRef` — значение
+      // `useState`). Полка, а не ослабленная проверка слота: иначе сдвиг
+      // порядка хуков — ошибка, ради которой этот сторож и заведён, —
+      // начал бы самозалечиваться.
+      const save = hookIdx;
+      hookIdx = shelf(type);
+      try {
+        return type(Object.assign({}, props, kids.length ? { children: kids } : {}));
+      } finally {
+        hookIdx = save;
+      }
     }
     return { type, props: props || {}, children: kids };
   },
@@ -1248,6 +1267,104 @@ try {
     global.API.models = realModels;
     store.removeItem("mcat_gpt_model");
     global.SegDetail = realDetail;
+  }
+
+  console.log("\n=== 21. Текст правится в самой строке ===");
+  /* Оригинал и перевод правятся тут же, в таблице: карточка их больше
+     не дублирует. Сюда же переехали два правила, которые раньше сторожила
+     карточка: «стёртый перевод — Новый» и «заверить вправе любая роль». */
+  {
+    const seen = [];
+    const st2 = Object.assign({}, storeStub, {
+      updateSegment: (pid, sid, patch) => { seen.push([sid, patch]); return Promise.resolve({}); },
+      mergeServerSegments() {},
+    });
+    const rowOf = (tree, id) => findAll(tree, n => n.type === "tr" && n.props["data-seg"] === id)[0];
+    const cellOf = (row, field) => findAll(row, n => n.type === "td"
+      && new RegExp(field === "src" ? "src-cell" : "tgt-cell").test((n.props || {}).className || ""))[0];
+    const draw2 = () => { hookIdx = 0; effects.length = 0; return TabEditor({ store: st2, toast }); };
+    const saveBtn = (row) => findAll(row, n => n.type === "button"
+      && (n.children || []).some(c => typeof c === "string" && c.indexOf("Сохранить") !== -1))[0];
+    const openCell = (id, field) => {
+      // Первое нажатие выбирает строку, второе — открывает поле: случайно
+      // набранный текст в чужой строке — это чужая работа.
+      rowOf(draw2(), id).props.onClick();
+      const cell = cellOf(rowOf(draw2(), id), field);
+      check(!!cell && typeof cell.props.onClick === "function",
+            "на выбранной строке ячейка «" + field + "» открывается нажатием");
+      cell.props.onClick({ stopPropagation() {} });
+      return rowOf(draw2(), id);
+    };
+    hooks.length = 0;
+    let r = openCell(1, "tgt");
+    let ta = findAll(r, n => n.type === "textarea")[0];
+    check(!!ta && ta.props.defaultValue === "complaints of cough 1", "в поле — нынешний перевод строки");
+    check(!!saveBtn(r), "рядом с полем — «Сохранить»");
+    // Текст не менялся — на сервер ничего не уходит.
+    saveBtn(r).props.onClick();
+    await new Promise(res => setImmediate(res));
+    check(seen.length === 0, "текст не менялся — на сервер ничего не ушло");
+    // Стёртый перевод уходит со статусом «Новый», а не «Переведён»: тот же
+    // предикат, что на сервере (`_needs_translation`).
+    hooks.length = 0;
+    r = openCell(1, "tgt");
+    // Поле неуправляемое (ref + defaultValue): подменяем сам ref, как это
+    // сделал бы браузер, положив туда узел с набранным текстом.
+    findAll(r, n => n.type === "textarea")[0].props.ref.current = { value: "   " };
+    saveBtn(r).props.onClick();
+    await new Promise(res => setImmediate(res));
+    check(seen.length === 1 && seen[0][1].status === "new" && seen[0][1].target === "   ",
+          "пустой текст уходит со статусом «new» (" + JSON.stringify(seen[0] || null) + ")");
+
+    // Правка ОРИГИНАЛА: сильная замена спрашивает человека ДО записи.
+    const calls = [];
+    global.API.editSource = async (pid, sid, source, dry) => {
+      calls.push([sid, source, !!dry]);
+      return { ok: true, mode: "new", ratio: 0.2, applied: !dry,
+               segment: { id: sid, source, target: "", status: "new" } };
+    };
+    let asked = null;
+    global.confirm = (t) => { asked = t; return false; };
+    hooks.length = 0;
+    r = openCell(2, "src");
+    ta = findAll(r, n => n.type === "textarea")[0];
+    check(!!ta && ta.props.defaultValue === "жалобы на кашель 2", "в поле — нынешний оригинал строки");
+    ta.props.ref.current = { value: "совсем другой текст про мёд" };
+    saveBtn(r).props.onClick();
+    await new Promise(res => setImmediate(res));
+    check(calls.length === 1 && calls[0][2] === true,
+          "сперва сухой запрос: сервер называет, чем станет строка");
+    check(asked && asked.indexOf("считается новой") !== -1,
+          "«другая строка» — спрошено ДО записи: " + (asked || "—"));
+    check(!calls.some(c => c[2] === false), "человек отказался — записи не было");
+    delete global.confirm;
+    delete global.API.editSource;
+  }
+
+  console.log("\n=== 21а. Заверяет любая роль; жалоба подсвечена ===");
+  {
+    /* «Подтвердить» стоит в строке, а не в карточке (её оттуда убрали).
+       Право заверять есть у ЛЮБОЙ роли — это решение владельца сервиса,
+       а не забывчивость (инвариант 12). */
+    const stT = Object.assign({}, storeStub, { can: { owner: false, super: false, role: "translator" }, expert: false });
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    const tT = TabEditor({ store: stT, toast });
+    const rowT = findAll(tT, n => n.type === "tr" && n.props["data-seg"] === 1)[0];
+    check(!!findAll(rowT, n => n.type === "button" && n.props["aria-label"] === "Подтвердить")[0],
+          "переводчик видит галочку заверения в строке");
+    /* Слова, на которые жалуется проверка, приходят с сервера полем
+       `attention` и горят СВОИМ классом: «нашлось то, что искал» и «здесь
+       дефект» — разные сообщения, и одним цветом они сливаются. */
+    const pj = Object.assign({}, project, { segments: project.segments.map(
+      x => x.id === 1 ? Object.assign({}, x, { attention: { src: ["кашель"], tgt: ["cough"] } }) : x) });
+    const stA = Object.assign({}, storeStub, { activeProject: pj, projects: [pj] });
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    const tA = TabEditor({ store: stA, toast });
+    const rowA = findAll(tA, n => n.type === "tr" && n.props["data-seg"] === 1)[0];
+    const att = findAll(rowA, n => n.type === "mark")
+      .map(m => (m.props.className || "") + ":" + (m.children || []).join(""));
+    check(att.join("|") === "hl hl-att:кашель|hl hl-att:cough",
+          "жалоба горит своим классом в обеих колонках (" + att.join("|") + ")");
   }
 
   console.log("\n" + (fail.length ? "ПРОВАЛЕНО: " + fail.join("; ") : "ВСЁ ПРОШЛО"));

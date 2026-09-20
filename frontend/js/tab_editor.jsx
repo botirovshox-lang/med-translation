@@ -335,8 +335,8 @@ function segMatches(seg, q, scope) {
 // Подсветка совпадений: q — строка поиска ИЛИ список слов (поиск плюс слова
 // из выборки «Проверки»). Сама разметка — markTerms из ui.jsx, одна на
 // таблицу и карточку сегмента: без регулярок, без учёта регистра и «ё/е».
-function markHits(text, q) {
-  return markTerms(text, q);
+function markHits(text, q, attention) {
+  return markTerms(text, q, attention);
 }
 
 // ── Группировка «что уже прогонялось» ────────────────────────────────
@@ -853,6 +853,14 @@ function TabEditor({ store, toast }) {
      Соответствие глоссарию тянем тем же движением: подтверждение меняет
      в нём срез «из них подтверждённых». */
   const refreshAfterHand = () => { loadAnalysis(true); loadImpact(); };
+  // Открытая правка ячейки — РОВНО ОДНА на таблицу: две открытые строки
+  // означали бы два набранных и не сохранённых текста, о которых человеку
+  // нечем напомнить.
+  const [editCell, setEditCell] = useState(null);   // {id, field} | null
+  const [editBusy, setEditBusy] = useState(false);
+  /* Ref, а не state: это след ухода из поля, и перерисовывать из-за него
+     таблицу незачем. */
+  const leftRef = useRef(null);
   /* Только корзины — для одиночных действий над сегментом (перевод, проверки,
      правки из карточки). /analysis пересчитывает лишь изменившееся, а
      /glossary-impact — полный проход по проекту: десять переводов строк
@@ -948,7 +956,10 @@ function TabEditor({ store, toast }) {
     setPage(1); setZone(null);
   }, [filter, query, scope, riskFilter, originFilter, project && project.id, store.segmentFilter]);
   useEffect(() => { setCheckedSegs(new Set()); }, [project && project.id, store.segmentFilter]);
-  useEffect(() => { if (jumpRef.current) return; setSelId(null); }, [page]);
+  /* Смена страницы уносит и открытое поле правки: строки той страницы
+     на экране больше нет. Набранный и не сохранённый текст при этом
+     не пропадает молча — уборка поля называет его вслух (noteLeftEdit). */
+  useEffect(() => { if (jumpRef.current) return; setSelId(null); setEditCell(null); }, [page]);
   // Гасим флажок перехода: без списка зависимостей — то есть после КАЖДОГО
   // коммита и обязательно после сбросов выше (порядок объявления = порядок
   // выполнения). Иначе переход, не изменивший ни фильтров, ни страницы,
@@ -966,7 +977,9 @@ function TabEditor({ store, toast }) {
   }, [zone]);
 
   // Смена проекта закрывает карточку: номер сегмента в другом проекте — другая строка.
-  useEffect(() => { setSelId(null); }, [project && project.id]);
+  // И поле правки вместе с ней: иначе в новом проекте само собой открывалось
+  // бы поле на строке с тем же номером, да ещё с текстом прежнего проекта.
+  useEffect(() => { setSelId(null); setEditCell(null); }, [project && project.id]);
 
   /* Узкий экран: карточка сегмента стоит ПОД таблицей (порог 1100 px
      в styles.css), и нажатие на строку читается как «ничего не произошло» —
@@ -1414,6 +1427,70 @@ function TabEditor({ store, toast }) {
     toast.success(TR("Перевод разослан"), res.changed.length + TR(" сегментов обновлено")
       + (res.skippedConfirmed && res.skippedConfirmed.length
           ? TR("; подтверждённых пропущено: ") + res.skippedConfirmed.length : "") + ".");
+  };
+
+  /* ─── Правка прямо в таблице ────────────────────────────────────────
+     Перевод идёт существующей дорогой (`store.updateSegment` → /update),
+     оригинал — своей (`API.editSource`). Обе ЖДУТ ответа сервера и только
+     потом зовут `refreshAfterHand`: слово в колонке «Что тут» выводится
+     из корзин /analysis, и спросить их раньше записи значит получить ответ
+     о прежнем тексте. */
+  /* Закрытие поля кнопкой — уход НАМЕРЕННЫЙ (сохранили или отменили):
+     метку ставим здесь, а снимает её уборка эффекта самого поля, которая
+     приходит позже. Обнулять её тут нельзя — тогда она не доживёт
+     до уборки, и тост вылезал бы после каждого штатного сохранения. */
+  const closeEdit = () => { leftRef.current = "done"; setEditCell(null); setEditBusy(false); };
+  /* Ушли из поля, не сохранив (нажали другую строку, сменили страницу или
+     проект): текст не выбрасываем молча — говорим о нём вслух. Вернуться
+     к строке человек может по номеру, он назван. */
+  const noteLeftEdit = (seg, field, text) => {
+    const was = leftRef.current;
+    leftRef.current = null;
+    if (was === "done" || text === undefined) return;
+    const base = String((field === "src" ? seg.source : seg.target) || "");
+    if (String(text) === base) return;
+    toast.warning(TR("Правка не сохранена"), TR("Строка #") + seg.id + TR(": набранный текст не сохранён."));
+  };
+  const saveCellEdit = async (seg, field, text) => {
+    if (editBusy) return;
+    leftRef.current = "done";          // уход намеренный — о нём не предупреждаем
+    const now = String(text == null ? "" : text);
+    if (field === "tgt") {
+      if (now === (seg.target || "")) { closeEdit(); return; }
+      setEditBusy(true);
+      /* Стёртый перевод — «Новый», а не «Переведён»: то же правило, что
+         в карточке и на сервере. Иначе пустая строка числилась бы
+         переведённой и её не брал бы ни один прогон. */
+      const empty = !now.trim();
+      await Promise.resolve(store.updateSegment(project.id, seg.id, {
+        target: now, status: empty ? "new" : (seg.status === "new" ? "translated" : seg.status) }));
+      closeEdit();
+      refreshAfterHand();
+      toast.success(TR("Сохранено"), TR("Сегмент #") + seg.id + TR(" обновлён."));
+      return;
+    }
+    if (!now.trim()) { toast.error(TR("Пусто"), TR("Оригинал не может быть пустым.")); return; }
+    if (now === (seg.source || "")) { closeEdit(); return; }
+    setEditBusy(true);
+    let probe = null;
+    try { probe = await window.API.editSource(project.id, seg.id, now, true); }
+    catch (e) { setEditBusy(false); toast.error(TR("Не получилось"), e.message || String(e)); return; }
+    /* Сильная правка = другая строка, и перевод по ней сброшен. Говорим это
+       ДО записи: человек правил опечатку, а не заказывал новый перевод. */
+    if (probe && probe.mode === "new"
+        && !confirm(TR("Оригинал изменён сильно — строка считается новой: перевод уйдёт в подсказку «Прежний перевод», проверки снимутся. Продолжить?"))) {
+      setEditBusy(false); return;
+    }
+    let res = null;
+    try { res = await window.API.editSource(project.id, seg.id, now, false); }
+    catch (e) { setEditBusy(false); toast.error(TR("Не получилось"), e.message || String(e)); return; }
+    if (res && res.segment) store.mergeServerSegments(project.id, [res.segment]);
+    closeEdit();
+    refreshAfterHand();
+    if (res && res.mode === "new")
+      toast.warning(TR("Оригинал заменён"), TR("Строка считается новой — переведите её заново."));
+    else
+      toast.success(TR("Оригинал поправлен"), TR("Проверки пары помечены устаревшими — их пересчитает ближайший прогон."));
   };
 
   const doRevert = async (seg) => {
@@ -2725,8 +2802,19 @@ function TabEditor({ store, toast }) {
                   // колонках (там и термин оригинала, и варианты перевода).
                   hlSrc: [scope !== "tgt" ? query : ""].concat(hlTerms),
                   hlTgt: [scope !== "src" ? query : ""].concat(hlTerms),
+                  editField: editCell && editCell.id === s.id && s.id === selId ? editCell.field : null,
+                  editText: editCell && editCell.id === s.id ? editCell.text : undefined,
+                  /* Номер подстановки в ключе поля: оно неуправляемое, и без
+                     пересоздания второе нажатие «Вставить» меняло бы только
+                     состояние родителя — на экране ничего, а тост хвалил бы. */
+                  editRev: editCell && editCell.id === s.id ? editCell.rev : 0,
+                  editBusy,
+                  onEdit: (field) => setEditCell({ id: s.id, field }),
+                  onEditSave: (field, text) => saveCellEdit(s, field, text),
+                  onEditCancel: closeEdit,
+                  onEditLeave: (field, t) => noteLeftEdit(s, field, t),
                   onCheck: (e) => { e.stopPropagation(); setCheckedSegs(prev => { const n = new Set(prev); n.has(s.id) ? n.delete(s.id) : n.add(s.id); return n; }); },
-                  onSelect: () => { setSelId(s.id); showSideCard(); },
+                  onSelect: () => { if (editCell && editCell.id !== s.id) closeEdit(); setSelId(s.id); showSideCard(); },
                   onTranslate: () => doTranslate(s),
                   onConfirm: () => doConfirm(s), onRevert: () => doRevert(s),
                 }))
@@ -2757,7 +2845,14 @@ function TabEditor({ store, toast }) {
           bcModels: gptModels, bcModel: bcModel, onBcModel: pickBcModel,
           bcJudge: bcJudge, judgeModel: judgeModel,
           tcModel: tcModel, rpModel: rpModel, tcActionable: tcActionable,
-          hlTerms: hlTerms, onClose: () => setSelId(null) })
+          hlTerms: hlTerms,
+          /* Текст правится в самой строке: карточка только подставляет туда
+             готовый вариант (совет termcheck, прежний текст ремонта, запись
+             TM, прежний перевод). Открываем поле и кладём в него текст —
+             сохраняет человек сам. */
+          onEditText: (field, text) => { setSelId(selected.id);
+            setEditCell(p => ({ id: selected.id, field, text, rev: ((p && p.rev) || 0) + 1 })); },
+          onClose: () => setSelId(null) })
       )
     ),
 
@@ -3407,7 +3502,43 @@ function rowChipCode(seg, idx) {
   return null;
 }
 
-function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, onConfirm, onRevert, models, hlSrc, hlTgt, chip, showModel }) {
+/* Ячейка, которую правят прямо в таблице. Textarea НЕуправляемая (ref +
+   defaultValue): состояние в родителе перерисовывало бы всю страницу таблицы
+   на каждую букву. Esc — отмена, Ctrl+Enter — сохранить; те же два действия
+   стоят кнопками, потому что клавиш на телефоне нет. */
+function SegCellEdit({ value, dir, busy, field, onSave, onCancel, onLeave }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    /* Узел берём ЗДЕСЬ и держим замыканием: React отцепляет ref хост-узла
+       раньше, чем зовёт уборку эффекта, и к уборке `ref.current` уже null —
+       наверх уезжало бы начальное значение, а не набранный текст. */
+    const el = ref.current;
+    if (el) { el.focus(); el.select(); }
+    /* Поле уносят не только кнопки: нажатие на другую строку, смена
+       страницы, смена проекта, приход прогона. Набранный и не сохранённый
+       текст пропал бы при этом молча — поэтому на размонтировании он
+       уезжает наверх, и родитель говорит о нём вслух. */
+    return () => { if (onLeave) onLeave(field, el ? el.value : value); };
+  }, []);
+  const save = () => onSave(ref.current ? ref.current.value : value);
+  return React.createElement("div", { className: "cell-edit", onClick: (e) => e.stopPropagation() },
+    React.createElement("textarea", {
+      className: "textarea cell-edit-ta", ref, defaultValue: value || "", dir: dir || "auto",
+      onKeyDown: (e) => {
+        if (e.key === "Escape") { e.preventDefault(); onCancel(); }
+        else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); }
+      } }),
+    React.createElement("div", { className: "row cell-edit-act", style: { gap: 6, marginTop: 6 } },
+      React.createElement(Btn, { variant: "primary", size: "sm", icon: "check", disabled: busy, onClick: save },
+        busy ? TR("Сохраняем…") : TR("Сохранить")),
+      React.createElement(Btn, { variant: "ghost", size: "sm", icon: "close", disabled: busy, onClick: onCancel },
+        TR("Отмена"))));
+}
+
+function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, onConfirm, onRevert, models, hlSrc, hlTgt, chip, showModel,
+                  // Правка прямо в таблице: какая ячейка этой строки открыта
+                  // ("src" | "tgt" | null) и что с ней делать.
+                  editField, editText, editRev, editBusy, onEdit, onEditSave, onEditCancel, onEditLeave }) {
   const prov = providerOf(seg);
   /* «TM» моделью не является — это ответ на вопрос «откуда взялся перевод»,
      и он остаётся всем. Имя модели не показываем никому, кроме эксперта. */
@@ -3422,7 +3553,12 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
       : seg.status === "confirmed"
         ? React.createElement("button", { className: "status-cell-btn revertable", title: TR("Нажмите, чтобы снять подтверждение"), "aria-label": TR("Снять подтверждение"), onClick: onRevert },
             React.createElement(Icon, { name: "checkCircle", size: 18, style: { color: "var(--c-success)" } }))
-        : seg.status === "failed"
+        /* `failed` с ПУСТЫМ переводом сбрасывается в «Новый»; с непустым —
+           заверяется, как любой другой. Прежде и там, и там стоял сброс, и
+           после того, как «Подтвердить» ушла из карточки, такую строку нельзя
+           было бы заверить НИГДЕ. Сброс ей и не нужен: сотрите перевод прямо
+           в строке — статус станет «Новый» тем же правилом, что на сервере. */
+        : seg.status === "failed" && !(seg.target || "").trim()
           ? React.createElement("button", { className: "status-cell-btn revertable", title: TR("Нажмите, чтобы сбросить в «Новый»"), "aria-label": TR("Сбросить статус"), onClick: onRevert },
               React.createElement(Icon, { name: "close", size: 18, style: { color: "var(--c-error)" } }))
           : React.createElement(IconBtn, { icon: "check", label: TR("Подтвердить"), sm: true, onClick: onConfirm });
@@ -3440,9 +3576,34 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
         title: TR("Распознано на картинке: номер выдан при заведении, место в таблице — по документу"),
         style: { marginLeft: 4, opacity: 0.7, verticalAlign: "middle", display: "inline-block" } },
         React.createElement(Icon, { name: "image", size: 12 }))),
-    React.createElement("td", { className: "src-cell" }, markHits(seg.source, hlSrc)),
-    React.createElement("td", { className: seg.target ? "tgt-cell" : "tgt-cell tgt-empty" },
-      seg.target ? markHits(seg.target, hlTgt) : TR("— не переведено —")),
+    /* Правка по нажатию на текст, но только на УЖЕ выбранной строке: первое
+       нажатие выбирает строку (и открывает карточку), второе — открывает
+       поле. Иначе любое движение по таблице открывало бы редактор, а случайно
+       набранный текст в чужой строке — это чужая работа. */
+    React.createElement("td", {
+      /* Класс остаётся ровно «src-cell»: по нему ищут ячейку и тесты рендера,
+         и стили. Что она правится, показывает CSS у ВЫБРАННОЙ строки
+         (`tr.selected .src-cell`) — признак в разметке для этого не нужен. */
+      className: "src-cell",
+      title: selected && !editField ? TR("Нажмите, чтобы поправить оригинал") : undefined,
+      onClick: selected && !editField ? (e) => { e.stopPropagation(); onEdit("src"); } : undefined },
+      editField === "src"
+        /* key по подставленному тексту: поле неуправляемое, и без пересоздания
+           второе нажатие «Вставить» меняло бы только состояние родителя —
+           на экране ничего, а тост хвалил бы. */
+        ? React.createElement(SegCellEdit, { key: "src:" + (editRev || 0), field: "src",
+            value: editText !== undefined ? editText : seg.source, dir: "auto", busy: editBusy,
+            onSave: (t) => onEditSave("src", t), onCancel: onEditCancel, onLeave: onEditLeave })
+        : markHits(seg.source, hlSrc, (seg.attention || {}).src)),
+    React.createElement("td", {
+      className: seg.target ? "tgt-cell" : "tgt-cell tgt-empty",
+      title: selected && !editField ? TR("Нажмите, чтобы поправить перевод") : undefined,
+      onClick: selected && !editField ? (e) => { e.stopPropagation(); onEdit("tgt"); } : undefined },
+      editField === "tgt"
+        ? React.createElement(SegCellEdit, { key: "tgt:" + (editRev || 0), field: "tgt",
+            value: editText !== undefined ? editText : seg.target, dir: "auto", busy: editBusy,
+            onSave: (t) => onEditSave("tgt", t), onCancel: onEditCancel, onLeave: onEditLeave })
+        : seg.target ? markHits(seg.target, hlTgt, (seg.attention || {}).tgt) : TR("— не переведено —")),
     // Одно слово о строке (см. ROW_CHIP). Движок перевода — в подсказке:
     // на экране он занимал строку под статусом, а нужен только эксперту.
     React.createElement("td", { className: "chip-cell" },

@@ -116,7 +116,12 @@
   let segStarted = 0, segDone = 0, segFailed = 0;
 
   async function call(method, path, body) {
-    const seg = path.lastIndexOf("/segments/", 0) === 0;
+    /* Сухой запрос ничего не меняет — правкой он не считается. Иначе его
+       отказ (409 идущего прогона, 400 пустого оригинала) навсегда взводил
+       бы `segFailed` и выключал сверку дрейфа статусов, хотя на сервере
+       не терялось ничего. */
+    const seg = path.lastIndexOf("/segments/", 0) === 0
+      && !(body && body.dry_run === true);
     if (seg) segStarted++;
     try {
       const init = { method, headers: authHeaders({}) };
@@ -412,6 +417,11 @@
     confirm:       (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/confirm`),
     revert:        (pid, sid)               => call("POST",   `/segments/${pid}/${sid}/revert`),
     update:        (pid, sid, patch)        => call("POST",   `/segments/${pid}/${sid}/update`,     patch),
+    /* Правка САМОГО оригинала. Путь под `/segments/` намеренно: по этому
+       префиксу считается «своя правка ещё не доехала до сервера» (segEdits),
+       и уедь он под /projects/, сверка статусов тянула бы весь проект
+       впустую после каждой правки. */
+    editSource:    (pid, sid, source, dry)   => call("POST",   `/segments/${pid}/${sid}/source`, { source, dry_run: !!dry }),
 
     batch:         (pid, segIds, force, limit, model) => call("POST", `/projects/${pid}/batch`, { segment_ids: segIds || null, force: !!force, limit: limit || 50, model: model || null }),
     checksBatch:(pid, segIds, bcModel)    => call("POST",   `/projects/${pid}/checks/batch`,   { segment_ids: segIds || null, run_backcheck: true, bc_model: bcModel || null }),

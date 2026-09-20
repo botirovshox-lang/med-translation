@@ -107,6 +107,8 @@
      на почти белой строке под курсором она остаётся видна. */
   --hl-bg: #F8F0DE;
   --hl-fg: #8A6014;
+  --att-bg: #FBE6E4;
+  --att-fg: #A33A2B;
   /* Псевдонимы для .jsx, писавших несуществующие имена: нерезолвящаяся
      переменная в сокращённом свойстве (border-top: 1px solid var(--c-border))
      гасит СВОЙСТВО ЦЕЛИКОМ — разделитель просто исчезал. */
@@ -194,6 +196,8 @@
   --scrim: rgba(0,0,0,0.72);
   --hl-bg: #241D11;
   --hl-fg: #D9AC69;
+  --att-bg: #2C1714;
+  --att-fg: #E39182;
   --text-1: var(--text);
   --c-warn: var(--c-warning);
   --c-border: var(--border);
@@ -844,6 +848,26 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 /* Слова из выборки «Проверки» — та же подсветка, что у поиска в таблице,
    но и в полосе фильтра, и в карточке сегмента. */
 mark.hl { background: var(--hl-bg); color: var(--hl-fg); border-radius: 3px; padding: 0 2px; font-weight: 500; }
+/* Подсветка ЖАЛОБЫ проверки — не того же цвета, что совпадение поиска:
+   «нашлось то, что я искал» и «здесь дефект» — разные сообщения, и одним
+   цветом они сливаются в «что-то подсвечено». Подчёркивание волной, а не
+   другая заливка: на телефоне заливок и так много. */
+mark.hl-att, .tbl mark.hl-att {
+  background: var(--att-bg); color: var(--att-fg);
+  text-decoration: underline wavy var(--att-fg); text-underline-offset: 3px;
+}
+/* Правка прямо в строке таблицы. Поле занимает ячейку целиком: своей ширины
+   у него нет — таблица резиновая, а жёсткая ширина от 300 px на телефоне
+   это горизонтальная прокрутка всей страницы. */
+.tbl tr.selected .src-cell, .tbl tr.selected .tgt-cell { cursor: text; }
+.tbl tr.selected .src-cell:hover, .tbl tr.selected .tgt-cell:hover {
+  box-shadow: inset 0 -1px 0 var(--border-strong, var(--border));
+}
+.cell-edit { display: block; width: 100%; }
+.cell-edit .cell-edit-ta {
+  width: 100%; min-height: 96px; font-size: 13px; line-height: 1.5; resize: vertical;
+}
+.cell-edit-act { flex-wrap: wrap; }
 .seg-terms { margin-top: 8px; font-size: 12.5px; line-height: 1.6; display: flex; flex-direction: column; gap: 6px; }
 .seg-tgt-hl { padding: 8px 10px; border-radius: var(--r-md); background: var(--bg-sunken); font-size: 13px; line-height: 1.5; }
 /* Сохранённый обратный перевод к прежнему тексту: виден, но назван устаревшим. */
@@ -1243,6 +1267,7 @@ mark.hl { background: var(--hl-bg); color: var(--hl-fg); border-radius: 3px; pad
   .hbar-row .hbar-cost { grid-column: 2; text-align: right; }
 }
 @media (max-width: 640px) {
+  .cell-edit .cell-edit-ta { font-size: 16px !important; }
   .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
   .page { padding: var(--sp-lg) var(--sp-md) var(--sp-2xl); }
   .st-num { font-size: 26px; }

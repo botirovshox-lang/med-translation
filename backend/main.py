@@ -6576,7 +6576,13 @@ def _impact_fingerprint(project: dict) -> str:
     Считаем по содержимому, а не по «версии состояния»: любой будущий код,
     поменявший перевод в обход save_state, иначе получал бы устаревший отчёт,
     а тихо устаревшая цифра «сколько переперевести» хуже её отсутствия."""
+    # Оригинал — в отпечатке: требования глоссария (`_verified_hits`),
+    # начертание терминов и сами расхождения считаются ПО НЕМУ, а человек
+    # теперь вправе его править (`/segments/{pid}/{sid}/source`). Без него
+    # отчёт после правки оригинала не пересчитался бы НИКОГДА, пока кто-то
+    # не тронет перевод, — та самая тихо устаревшая цифра.
     parts = [str(s.get("id")) + "|" + (s.get("status") or "") + "|" + (s.get("target") or "")
+             + "|" + (s.get("source") or "")
              for s in project["segments"]]
     body = chr(10).join(parts)
     return str(_GLOSS_EPOCH[0]) + ":" + hashlib.sha1(body.encode("utf-8")).hexdigest()
@@ -6906,6 +6912,13 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int,
     # после того, как исходник выправили.
     _rv = s.get("review") or {}
     if _rv.get("sourceSuspect") and not _review_stale(s):
+        row["sourceSuspect"] = True
+    # Повреждённая распознаванием формула («по */ стакана» — надстрочная «1»
+    # прочитана как «*», подстрочная «3» потеряна) — бесплатный НОМИНАТОР
+    # в ту же корзину. Отдельной строкой её заводить нельзя: вопрос один
+    # («оригинал испорчен, машина тут бессильна»), а два счётчика об одном
+    # и том же — это два места, куда человек пойдёт за одним ответом.
+    elif _source_broken(s):
         row["sourceSuspect"] = True
     # Ревизия НАШЛА проблему, а текст остался прежним. Самый ценный сигнал
     # для человека из всего, что она даёт: модель прочитала пару целиком
@@ -8742,6 +8755,22 @@ def _diff_units(project: dict, units: list, full: Optional[list] = None) -> tupl
     old = _text_segments(project)
     old_keys = [_match_key(s.get("source")) for s in old]
     old_set = set(old_keys)
+    # Строка, оригинал которой правил ЧЕЛОВЕК (вписал потерянную распознавателем
+    # цифру), в файле стоит по-прежнему СТАРЫМ текстом. Без её прежнего текста
+    # в ключах тот же самый файл объявил бы её исчезнувшей: перевод и проверки
+    # уехали бы в копию, а абзац завёлся бы заново — и за него списались бы
+    # страницы. То есть исправление опечатки стоило бы денег.
+    # Соответствие заводится ТОЛЬКО на текст, которым не занята живая
+    # строка: если в книге есть второй сегмент с тем же текстом, что был
+    # до правки, подмена увела бы его абзац к правленой строке — а сам он
+    # оказался бы «исчезнувшим», с переводом в копии и списанными страницами.
+    edited = {}
+    for k, sg in zip(old_keys, old):
+        was = (sg.get("sourceEdited") or {}).get("from")
+        wk = _match_key(was) if was else None
+        if wk and wk not in old_set:
+            edited.setdefault(wk, k)
+    old_set |= set(edited)
     new_keys, alts = [], []
     for text, idxs in units:
         k = _match_key(text)
@@ -8749,6 +8778,12 @@ def _diff_units(project: dict, units: list, full: Optional[list] = None) -> tupl
         alt = [a for a in dict.fromkeys(alt) if a != k]
         if k not in old_set:
             k = next((a for a in alt if a in old_set), k)
+        # Ключ прежнего текста — на ключ нынешней (правленой) строки: диф
+        # сравнивает списки ключей, и подменять надо именно здесь. Каждое
+        # соответствие расходуется ОДИН раз: два одинаковых абзаца в файле
+        # не могут оба быть одной и той же правленой строкой.
+        if k in edited:
+            k = edited.pop(k)
         new_keys.append(k)
         alts.append(alt)
     sm = difflib.SequenceMatcher(None, old_keys, new_keys, autojunk=False)
@@ -8805,6 +8840,11 @@ def _diff_possible(project: dict, units: list, full: Optional[list] = None) -> b
     граница до порога `_looks_like_new_version` — не дотянет и диф."""
     old = _text_segments(project)
     old_keys = {_match_key(s.get("source")) for s in old}
+    # Правленый человеком оригинал: в файле строка стоит прежним текстом
+    # (см. `_diff_units`), и без него «похоже на новую редакцию» недосчиталось
+    # бы совпадений, а родной файл был бы отвергнут как чужой.
+    old_keys |= {_match_key((s.get("sourceEdited") or {}).get("from"))
+                 for s in old if (s.get("sourceEdited") or {}).get("from")}
     hit = 0
     for text, idxs in units:
         if _match_key(text) in old_keys or (full and any(
@@ -8918,7 +8958,10 @@ _RESET_ON_SOURCE_CHANGE = (
     "retranslations", "mtDone",
     # Ручная правка границ (`merge-next`/`split`) — про ТУ нарезку файла:
     # после замены или пересборки её копия и номера абзацев ни к чему.
-    "boundary")
+    "boundary",
+    # След правки ОРИГИНАЛА человеком — про прежний текст: под номером
+    # встала другая строка, и «прежним» для неё был бы уже не тот текст.
+    "sourceEdited")
 
 
 def _new_segment(sid: int, text: str) -> dict:
@@ -9013,14 +9056,26 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
         # на будущие правки `_diff_units`: оставить перевод под изменённым
         # оригиналом значило бы бесплатно перевести новый текст старой ценой.
         changed = set()
+        # Строка, оригинал которой правил ЧЕЛОВЕК (вписал потерянную
+        # распознавателем цифру), в файле стоит по-прежнему СТАРЫМ текстом.
+        # Без сверки по нему тот же самый файл объявлял бы её «другой»:
+        # перевод уходил в prevTarget, подпись снималась, а за строку
+        # списывались страницы — то есть исправление опечатки стоило денег
+        # и оплаченного перевода.
+        edited_keep = set()
         for j, p in enumerate(plan):
             if p and p[0] in ("keep", "moved"):
                 text_, idxs = parsed["units"][j]
                 same = {_match_key(text_)} | {_match_key(parsed["full"][i]) for i in idxs
                                                if parsed["full"] and i < len(parsed["full"])}
-                if _match_key(p[1].get("source")) not in same:
-                    changed.add(j)
-                    added_texts.append(text_)
+                was = (p[1].get("sourceEdited") or {}).get("from")
+                if _match_key(p[1].get("source")) in same:
+                    continue
+                if was and _match_key(was) in same:
+                    edited_keep.add(j)     # правка человека сильнее текста файла
+                    continue
+                changed.add(j)
+                added_texts.append(text_)
         added_pages = _pages_exact(added_texts, src_lang, card) if added_texts else 0.0
         images = _image_segments(project)
 
@@ -9093,7 +9148,12 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
                 # Ключ терпим к регистру и пробелам, а текст — нет: заголовок,
                 # ставший капсом, обязан прийти в сегмент, иначе проверки
                 # регистра сверяют перевод с устаревшим оригиналом.
-                if text_ != seg.get("source"):
+                # Правку человека файл не отменяет: строка узнана по ПРЕЖНЕМУ
+                # тексту, и вернуть ей текст файла значило бы стереть
+                # вписанную им цифру — молча и на каждой перезаливке.
+                if u in edited_keep:
+                    pass
+                elif text_ != seg.get("source"):
                     seg["source"] = text_
                     seg["wordCount"] = len(text_.split())
             else:
@@ -9370,7 +9430,10 @@ def _resegment_plan(project: dict, parsed: dict) -> dict:
               "images": len(_image_segments(project)),
               # Склеенные и разрезанные руками строки пересборка не узнаёт:
               # их текст не равен ни одному абзацу, и они соберутся заново.
-              "manualEdits": sum(1 for s in old if s.get("boundary"))}
+              # Правка ОРИГИНАЛА человеком — туда же: пересборка вернёт текст
+              # файла, то есть сотрёт вписанную им цифру. Молчать об этом
+              # нельзя — ради этой правки кнопка пересборки и появилась.
+              "manualEdits": sum(1 for s in old if s.get("boundary") or s.get("sourceEdited"))}
     samples = [{"old": [s.get("source") for s in changed[j]][:3], "new": units[j][0]}
                for j in list(changed)[:5]]
     return {"plan": plan, "removed": removed, "changed": changed, "new": new, "gone": gone,
@@ -9926,7 +9989,12 @@ def _map_source_to_segments(units: list, segments: list,
             keys |= {_match_key(full[i]) for i in idxs if i < len(full)}
         hit = None
         for k in range(j, min(j + _SOURCE_LOOKAHEAD, len(segments))):
-            if _match_key(segments[k].get("source")) in keys:
+            sg = segments[k]
+            was = (sg.get("sourceEdited") or {}).get("from")
+            # Строку, чей оригинал правил человек, узнаём и по ПРЕЖНЕМУ тексту:
+            # в файле она стоит по-старому, а иначе счётчик совпадений упал бы
+            # и родной файл был бы отвергнут как чужой.
+            if _match_key(sg.get("source")) in keys or (was and _match_key(was) in keys):
                 hit = k
                 break
         if hit is None:
@@ -11765,8 +11833,15 @@ def _check_stale(check: Optional[dict], target: str) -> bool:
     Хеш ОБРЕЗАННОГО текста — ровно так его и записывают back-check, termcheck
     и Medical QA. Сравнивая с необрезанным, мы объявляли бы устаревшей свежую
     проверку любого перевода с висящим пробелом, и прогон платил бы за неё
-    заново."""
-    return (check or {}).get("target_hash") != _text_hash((target or "").strip())
+    заново.
+
+    `srcStale` — правка САМОГО оригинала человеком (`/segments/{pid}/{sid}/source`).
+    Проверка отвечает на вопрос «перевод отвечает оригиналу», и сменился там
+    оригинал или перевод — ответ одинаково перестал что-либо значить. Отметка
+    стоит РЯДОМ с хешем, а не вместо него: выломай мы хеш, вместе с «устарело»
+    погасли бы и сами находки, и вердикт судьи, и откат пересчёта."""
+    check = check or {}
+    return bool(check.get("srcStale")) or check.get("target_hash") != _text_hash((target or "").strip())
 
 
 # Уровни находок termcheck, по которым РЕМОНТ имеет право переписывать текст.
@@ -14370,7 +14445,7 @@ def _backcheck_cached(seg: dict, mdl_id: str, use_judge: bool,
     # Обрезанный текст: ровно так хеш и записывается. Сравнивая с необрезанным,
     # мы перезапускали бы платную проверку на каждом переводе с висящим пробелом,
     # а интерфейс при этом показывал бы её свежей.
-    if bc.get("target_hash") != _text_hash((seg.get("target") or "").strip()):
+    if _check_stale(bc, seg.get("target") or ""):
         return False
     # ...но проверка СВОЕЙ ЖЕ работы проверкой не является. Раз модель здесь
     # больше не сравнивается, остаётся ровно один случай, когда готовый
@@ -14421,10 +14496,10 @@ def _segment_for_client(seg: dict, project: Optional[dict] = None) -> dict:
         # два разных состава под соседними кнопками. То же правило, что у
         # _backcheck_cached, и выведено оно здесь один раз.
         out["backcheck"] = {
-            **bc, "stale": bc.get("target_hash") != cur_trimmed,
+            **bc, "stale": _check_stale(bc, out.get("target") or ""),
             "needs_judge": _judge_pending(out)}
     if tc:
-        out["termcheck"] = {**tc, "stale": tc.get("target_hash") != cur_trimmed}
+        out["termcheck"] = {**tc, "stale": _check_stale(tc, out.get("target") or "")}
     rv = out.get("review")
     if rv:
         # Свежесть считает СЕРВЕР тем же `_review_stale`, что и прогон: он
@@ -14503,7 +14578,7 @@ def _segment_for_client(seg: dict, project: Optional[dict] = None) -> dict:
             "literal_backcheck": ({"backtranslated_ru": back.get("backtranslated_ru")}
                                   if isinstance(back, dict) and back.get("backtranslated_ru") else {}),
             "target_hash": qa.get("target_hash"),
-            "stale": qa.get("target_hash") != cur_trimmed}
+            "stale": _check_stale(qa, out.get("target") or "")}
     if rp:
         # `acceptable` считает СЕРВЕР по той же причине, что и `tried`: правило
         # «отмену держал только балл, а термины стали чище» разобрано в
@@ -14523,6 +14598,33 @@ def _segment_for_client(seg: dict, project: Optional[dict] = None) -> dict:
         adv = _ctx_advices(seg)
         if adv:
             out["ctxAdvice"] = adv
+    # На что смотреть в этой строке. Считает СЕРВЕР — теми же списками, из
+    # которых берутся сами находки: повтори правило браузер, и подсветка
+    # горела бы не там, где жалоба. Поле появляется ТОЛЬКО при находках,
+    # поэтому вес выдачи проекта (инвариант 29) не растёт: у чистой строки
+    # его нет вовсе.
+    #
+    # Чего здесь НЕТ намеренно: устаревших проверок (описывают текст, которого
+    # больше нет), потерь термина, снятых арбитром (`_terms_lost_open` их уже
+    # не отдаёт), и находок termcheck ПРОТИВ приказной записи (`vsVerified`) —
+    # это спор про ЗАПИСЬ глоссария, а не дефект строки, и звать к нему
+    # человека подсветкой значит задать ему ложную дилемму.
+    att_src = _source_broken(seg)
+    if att_src:
+        out["sourceBroken"] = att_src
+    att_src = list(att_src) + _terms_lost_open(seg)
+    att_tgt = []
+    _tc = out.get("termcheck") or {}
+    if _tc and not _tc.get("stale"):
+        att_tgt += [f.get("tgt_term") for f in (_tc.get("findings") or ())
+                    if f.get("severity") in TERMCHECK_ACTIONABLE and not f.get("vsVerified")]
+    for a in (out.get("ctxAdvice") or ()):
+        att_src.append(a.get("src"))
+        att_tgt.append(a.get("tgt"))
+    att_src = [t for t in dict.fromkeys(att_src) if t]
+    att_tgt = [t for t in dict.fromkeys(att_tgt) if t]
+    if att_src or att_tgt:
+        out["attention"] = {"src": att_src, "tgt": att_tgt}
     return out
 
 
@@ -14606,6 +14708,10 @@ def _rescore_backcheck(seg: dict, project: dict,
         skipped = ("zone" if not (lo <= res["score"] <= hi)
                    else "hard" if res.get("hard") else None)
     out = dict(bc)
+    # Пересчёт идёт по НЫНЕШНЕМУ оригиналу (`source` берётся из сегмента),
+    # то есть ровно снимает отметку «оригинал правили после проверки».
+    # Бесплатно и честно: обратный перевод и косинус лежат в самой записи.
+    out.pop("srcStale", None)
     out.update({
         "score": res["score"], "band": res.get("band"), "recall": res.get("recall"),
         "semantic": res.get("semantic"), "reasons": res.get("reasons", []),
@@ -14825,7 +14931,10 @@ def rescore_backchecks_undo(stamp: str):
             # (`_repair_tried`): прежний текст возвращают, только если в
             # сегменте стоит именно тот, что клали.
             if (cur.get("at") != bc.get("at") or cur.get("back") != bc.get("back")
-                    or cur.get("target_hash") != bc.get("target_hash")):
+                    or cur.get("target_hash") != bc.get("target_hash")
+                    # Снимок сделан ДО правки оригинала: вернув его целиком,
+                    # мы объявили бы устаревший вердикт свежим.
+                    or bool(cur.get("srcStale")) != bool(bc.get("srcStale"))):
                 skipped += 1
                 continue
             seg["backcheck"] = bc
@@ -14999,7 +15108,7 @@ def _termcheck_cached(seg: dict, mdl_id: str) -> bool:
     сегментов ушла на перепроверку Terra — оплаченную и худшую по качеству.
     Обратное направление разрешено: усилить проверку можно всегда."""
     tc = seg.get("termcheck") or {}
-    if tc.get("target_hash") != _text_hash((seg.get("target") or "").strip()):
+    if _check_stale(tc, seg.get("target") or ""):
         return False
     # Пропущенный как «нечего проверять» не зависит от модели — пересчитывать нечего
     if tc.get("model") == "skip":
@@ -16226,7 +16335,7 @@ def _term_terms_of(seg: dict, project: Optional[dict],
                     "forms": [form] if form else []})
 
     bc = seg.get("backcheck") or {}
-    if bc.get("target_hash") == _text_hash(target):
+    if not _check_stale(bc, target):
         for t in (bc.get("terms_lost") or []):
             h = by_src.get(_norm_key(t))
             if h is None:
@@ -16238,7 +16347,7 @@ def _term_terms_of(seg: dict, project: Optional[dict],
             if h:
                 add(h, "не пережил обратный перевод: в обратном тексте его нет", t)
     tc = seg.get("termcheck") or {}
-    if tc.get("target_hash") == _text_hash(target):
+    if not _check_stale(tc, target):
         for f in (tc.get("findings") or []):
             if f.get("severity") not in TERMCHECK_DISPUTING:
                 continue
@@ -16267,7 +16376,13 @@ def _term_disputes_of(seg: dict, project: Optional[dict]) -> list:
 
 def _term_context_stale(seg: dict) -> bool:
     tcx = seg.get("termContext") or {}
-    return (tcx.get("target_hash") != _text_hash((seg.get("target") or "").strip())
+    # `srcStale` — правка САМОГО оригинала человеком. Вопрос арбитра —
+    # «верно ли термин передан ИМЕННО ЗДЕСЬ», то есть про оригинал; своего
+    # `source_hash` у записи нет. Оставь её свежей — вердикт «передан верно»
+    # по ПРЕЖНЕМУ оригиналу продолжал бы снимать претензию `term_lost`
+    # и гасить корзину, а шаг сверки к сегменту больше не пришёл бы.
+    return (bool(tcx.get("srcStale"))
+            or tcx.get("target_hash") != _text_hash((seg.get("target") or "").strip())
             or tcx.get("version") != TERM_CONTEXT_VERSION)
 
 
@@ -16566,6 +16681,22 @@ def _term_context_of(seg: dict) -> list:
     return [] if _term_context_stale(seg) else ((seg.get("termContext") or {}).get("terms") or [])
 
 
+def _source_broken(seg: dict) -> list:
+    """Куски ОРИГИНАЛА, где распознаватель сломал формулу (`checks.broken_math`).
+
+    Бесплатно, детерминированно и без знания языка. Ремонту это НЕ отдаётся
+    и в `_repair_scores` не входит: дефект в исходнике, а ремонт правит
+    перевод — он бы сочинял по битой книге. Вопрос человеку, и задаётся он
+    в той же корзине, где вердикт ревизии «повреждён сам оригинал»."""
+    fn = getattr(checks_mod, "broken_math", None)
+    if not fn:
+        return []
+    try:
+        return list(fn(seg.get("source") or ""))
+    except Exception:
+        return []
+
+
 def _terms_lost_open(seg: dict) -> list:
     """Приказные термины, чью потерю НИКТО ещё не снял.
 
@@ -16699,7 +16830,7 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
                       "text": "термин «" + (c.get("src") or "") + "» передан неверно"
                               + (" — " + c["why"] if c.get("why") else "")})
     bc = seg.get("backcheck") or {}
-    if bc and bc.get("target_hash") == cur:
+    if bc and not _check_stale(bc, seg.get("target") or ""):
         # По причинам берём только ОБЪЕКТИВНЫЕ (числа, единицы, отрицание,
         # подмена стороны, «обратный перевод про другое»). «Потерян термин»
         # отсюда исключён намеренно: эта претензия уже выставлена выше, строкой
@@ -16740,7 +16871,7 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     # по построению. Считается ЗДЕСЬ, а не в разборе экрана: список претензий
     # один на состав прогона, ремонт, отпечаток захода и корзины — снятое
     # в одном месте вернулось бы в другом платным заходом.
-    if tc and tc.get("target_hash") == cur and not _review_vouches(seg):
+    if tc and not _check_stale(tc, seg.get("target") or "") and not _review_vouches(seg):
         # minor входит наравне с critical/major. Раньше он не входил никуда:
         # ремонт его не брал, а _machine_clean всё равно объявлял сегмент
         # нечистым — на боевом проекте 168 сегментов висели между двумя
@@ -20026,7 +20157,7 @@ def _doc_flagged(seg: dict, project: Optional[dict] = None) -> set:
     заменивший такую пару по находке, иначе откатывался бы счётчиком «после»
     (у нового текста termcheck про исчезнувшее слово молчит) и клеймился."""
     tc = seg.get("termcheck") or {}
-    if tc.get("target_hash") != _text_hash((seg.get("target") or "").strip()):
+    if _check_stale(tc, seg.get("target") or ""):
         return set()
     words = [f.get("tgt_term") for f in (tc.get("findings") or [])
              if f.get("severity") in TERMCHECK_ACTIONABLE and f.get("tgt_term")]
@@ -20979,8 +21110,8 @@ def style_check(pid: int, req: StyleCheckRequest):
     # ДО применения — как у пачки `/repair/accept-batch`.
     stale_checks = 0
     for sg, _f in todo:
-        cur_h = _text_hash((sg.get("target") or "").strip())
-        if any((sg.get(k) or {}).get("target_hash") == cur_h for k in ("backcheck", "termcheck")) \
+        if any(sg.get(k) and not _check_stale(sg[k], sg.get("target") or "")
+               for k in ("backcheck", "termcheck")) \
                 or not _review_stale(sg):
             stale_checks += 1
     result = {"ok": True, "dryRun": req.dry_run, "spelling": rep_["want"],
@@ -22116,6 +22247,149 @@ def _note_hand_edit(seg: dict, new_target: str) -> None:
     else:
         seg.pop("editedFrom", None)
         seg.pop("editedToHash", None)
+
+
+# ─── Правка САМОГО оригинала ─────────────────────────────────────────
+# Распознаватель теряет знаки, и до сих пор исправить это было негде: после
+# импорта `seg["source"]` не менял никто, кроме ручных границ строк. А дефект
+# существует — на боевой книге текстовый слой отдал «по */ стакана» вместо
+# «по ¹/₃ стакана», и цифры в файле просто нет. Выдумать её нельзя, значит
+# вписать её должен человек, глядя в книгу.
+#
+# Насколько правка меняет строку, решает сравнение с прежним текстом:
+#   • похоже (>= SOURCE_EDIT_KEEP) — это ПОПРАВКА. Перевод, статус и подпись
+#     остаются: человек чинит начертание книги, а не пишет другую строку.
+#     Вердикты о ПАРЕ («перевод отвечает оригиналу») помечаются устаревшими
+#     — `srcStale` рядом с `target_hash`, — то есть остаются видимыми со
+#     своим счётом и причинами, но ближайший прогон посчитает их заново.
+#     Оплаченная работа не выбрасывается, а недействующая оценка не выдаётся
+#     за действующую;
+#   • не похоже — это ДРУГАЯ строка, «как за новый перевод»: прежний текст
+#     уходит в prevTarget/prevSource, вердикты сняты, подпись снята СО СЛЕДОМ,
+#     статус «новый».
+# Счётчики перевода заново (`retranslations`, `mtDone`) не сбрасываются
+# НИКОГДА — иначе предел организации (инвариант 33) снимался бы правкой одной
+# буквы в оригинале. Тот же закон, что у `_boundary_reset`: строка, пришедшая
+# из ФАЙЛА, — другая; строка, правленная человеком, — та же.
+SOURCE_EDIT_KEEP = float(os.environ.get("SOURCE_EDIT_KEEP", "") or 0.85)
+SOURCE_EDIT_MAX = 20000          # потолок от чужого запроса, не от вёрстки
+SOURCE_EDIT_MIN_CHANGE = 2       # столько знаков — всегда поправка, а не другая строка
+# Что при правке оригинала НЕ снимается: счётчики (выше), след снятой подписи
+# и ручные границы строк (их копия и хвосты в карте исходника остаются —
+# снеси метку, и откат «Разъединить» пропал бы, а выгрузка продолжила бы
+# чистить хвосты).
+_KEEP_ON_SOURCE_EDIT = ("retranslations", "mtDone", "unconfirmed", "boundary")
+
+
+def _source_similarity(old: str, new: str) -> float:
+    """Доля общего у двух вариантов оригинала, 0..1.
+
+    Дешёвые ворота стоят ПЕРЕД сравнением: длины разошлись больше чем вдвое —
+    доля по построению ниже 0.67, считать нечего. Сегмент не длиннее абзаца,
+    вызов один на нажатие человека, расхода нет."""
+    old, new = old or "", new or ""
+    if old == new:
+        return 1.0
+    if not old or not new:
+        return 0.0
+    if min(len(old), len(new)) * 2 < max(len(old), len(new)):
+        return 0.0
+    sm = difflib.SequenceMatcher(None, old, new)
+    # Правка в один-два знака — поправка при ЛЮБОЙ доле. Доля меряет
+    # относительное расстояние, а повреждение распознавания живёт как раз
+    # в коротких строках (подпись, ячейка, формула): «м2» → «м²» это
+    # ratio 0.5, то есть «другая строка», хотя человек вписал один знак.
+    hit = sum(b.size for b in sm.get_matching_blocks())
+    if max(len(old), len(new)) - hit <= SOURCE_EDIT_MIN_CHANGE:
+        return 1.0
+    return sm.ratio()
+
+
+class SegmentSourceRequest(BaseModel):
+    source: str
+    dry_run: bool = False
+
+
+@app.post("/api/segments/{pid}/{sid}/source")
+def edit_segment_source(pid: int, sid: int, req: SegmentSourceRequest):
+    """Правка оригинала строки человеком. Модель не зовётся, страницы
+    не списываются: объёма файла правка не добавила."""
+    get_project(pid)
+    _guard_project_write(pid)
+    _boundary_guard(pid)
+    new = (req.source or "").strip()
+    if not new:
+        raise HTTPException(400, "Оригинал не может быть пустым")
+    if len(new) > SOURCE_EDIT_MAX:
+        raise HTTPException(400, "Строка слишком длинная — разрежьте её")
+    with _SAVE_LOCK:
+        project = get_project(pid)
+        _boundary_guard(pid)
+        seg = next((x for x in project["segments"] if x["id"] == sid), None)
+        if seg is None:
+            raise HTTPException(404, "Сегмент не найден")
+        # Текст, который стоит в ФАЙЛЕ, — от ПЕРВОЙ правки: по нему строку
+        # узнают повторный импорт и привязка исходника. Считаем до чистки:
+        # в режиме «другая строка» след снимается вместе с вердиктами.
+        prev_from = (seg.get("sourceEdited") or {}).get("from")
+        if _is_image_seg(seg):
+            raise HTTPException(400, "Это надпись с картинки: её текст правится разбором картинок, а не здесь")
+        old = seg.get("source") or ""
+        ratio = _source_similarity(old, new)
+        mode = "fix" if ratio >= SOURCE_EDIT_KEEP else "new"
+        if req.dry_run or old == new:
+            return {"ok": True, "mode": mode, "ratio": round(ratio, 3), "applied": False,
+                    "wasConfirmed": seg.get("status") == "confirmed"}
+        if mode == "new":
+            if (seg.get("target") or "").strip():
+                seg["prevTarget"] = seg.get("target") or ""
+                seg["prevSource"] = old
+            keep = {k: seg[k] for k in _KEEP_ON_SOURCE_EDIT if k in seg}
+            if seg.get("status") == "confirmed":
+                # Подпись снимается СО СЛЕДОМ, и след переживает чистку:
+                # `unconfirmed` стоит в _RESET_ON_SOURCE_CHANGE, а молча
+                # снятая отметка неотличима от обычной правки (инвариант 14).
+                _withdraw_confirmation(seg, "srcEdit")
+                keep["unconfirmed"] = seg.get("unconfirmed")
+            for k in _RESET_ON_SOURCE_CHANGE:
+                seg.pop(k, None)
+            for k, v in keep.items():
+                if v is not None:
+                    seg[k] = v
+            seg["target"] = ""
+            seg["status"] = "new"
+            seg["qa"] = []
+        else:
+            # Поправка: проверки пары объявляем устаревшими, не выламывая
+            # `target_hash`. Ключ читают `_repair_findings`, `_rescore_backcheck`
+            # и откат пересчёта — выломав его, мы погасили бы находки, вердикт
+            # судьи и сам откат, а обещали лишь «пометить устаревшим».
+            # `termContext` — вопрос «верно ли термин передан ИМЕННО ЗДЕСЬ»,
+            # то есть про оригинал; своего `source_hash` у него нет.
+            # Оставь его свежим — вердикт «передан верно», вынесенный по
+            # ПРЕЖНЕМУ оригиналу, продолжал бы снимать претензию
+            # (`_terms_lost_open`) и гасить корзину `human.termContextWrong`.
+            # `review` помечать не надо: у него есть свой `source_hash`.
+            for k in ("backcheck", "termcheck", "qa_result", "termContext"):
+                if isinstance(seg.get(k), dict):
+                    seg[k]["srcStale"] = True
+        seg["source"] = new
+        seg["wordCount"] = len(new.split())
+        n = seg["wordCount"]
+        seg["risk"] = "high" if n > 30 else "medium" if n > 8 else "low"
+        # Прежний текст — на записи: по нему повторный импорт и привязка
+        # исходника узнают строку, которую человек правил (иначе тот же файл
+        # объявил бы её исчезнувшей и списал бы страницы за «новую»).
+        seg["sourceEdited"] = {"from": prev_from or old, "by": _actor_id(),
+                               "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                               "mode": mode}
+        _PROJECTS_VER[0] += 1
+        _IMPACT_CACHE.pop(pid, None)
+        _CONSIST_CACHE.pop(pid, None)
+        save_state(STATE)
+    _audit("segment.source", project=pid, segment=sid, mode=mode)
+    return {"ok": True, "mode": mode, "ratio": round(ratio, 3), "applied": True,
+            "segment": _segment_for_client(seg, project)}
 
 
 class UpdateSegmentRequest(BaseModel):
@@ -23284,12 +23558,21 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
             continue
         source = " ".join((x.get("source") or "") for x in parts)
         skey = _match_key(source)
+        # Оригинал, правленный ЧЕЛОВЕКОМ (вписана потерянная распознавателем
+        # цифра), с текстом абзаца не сойдётся по построению — он и не должен.
+        # Сверяем тогда по ПРЕЖНЕМУ тексту: иначе счётчик `mismatch`, заведённый
+        # как сигнал «карта села не так», рос бы от законных правок и перестал
+        # бы что-либо значить, а хвост-номер оглавления не снимался бы.
+        was = " ".join(((x.get("sourceEdited") or {}).get("from") or x.get("source") or "")
+                       for x in parts)
+        wkey = _match_key(was)
+        keys = {skey, wkey}
         # Сегмент СТАРОГО импорта равен полному тексту абзаца (с номером
         # страницы из поля), нового — тексту слотов. Хвост-номер снимается
         # только у старого: у нового его в сегменте нет по построению.
-        same_full = _match_key(full) == skey
+        same_full = _match_key(full) in keys
         same = any(s in heads for s in sids) or same_full or _match_key(
-            "".join((t.text or "") for t, _sig in slots)) == skey
+            "".join((t.text or "") for t, _sig in slots)) in keys
         dropped = dropped.strip()
         if same_full and dropped and target.rstrip().endswith(dropped):
             # Импорт склеивал весь текст абзаца подряд, поэтому номер страницы

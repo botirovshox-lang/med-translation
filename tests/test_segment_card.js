@@ -200,10 +200,14 @@ const withdrawn = render(Object.assign({}, BASE, {
 }));
 check(withdrawn.indexOf("Заверение снято") !== -1 && withdrawn.indexOf("правкой текста") !== -1,
       "снятая подпись названа, а не пропала молча");
+/* «Подтвердить» из карточки убрана: галочка стоит в самой строке таблицы,
+   и две кнопки об одном — это вопрос «в чём между ними разница». Что
+   заверять вправе ЛЮБАЯ роль, сторожит `tests/test_editor_render.js`
+   (раздел 21): проверка уехала туда же, куда уехала кнопка. */
 storeStub.can = { owner: false, super: false, role: "translator" };
 const asTranslator = render(Object.assign({}, BASE));
 delete storeStub.can;
-check(asTranslator.indexOf("Подтвердить") !== -1, "кнопка «Подтвердить» есть у любой роли: заверяет каждый, след — подпись");
+check(asTranslator.indexOf("Подтвердить") === -1, "«Подтвердить» в карточке больше нет — она в строке таблицы");
 
 console.log("");
 console.log("=== 8. Имя модели человеку не показывается ===");
@@ -277,68 +281,88 @@ check(tFresh.indexOf("Старый обратный перевод.") !== -1 && 
       "свежий ответ пометки не получает");
 
 console.log("");
-console.log("=== 10. Стёртый перевод сохраняется как «Новый» ===");
-const saved = [];
-storeStub.updateSegment = (pid, id, patch) => { saved.push(patch); };
-const saveWith = (seg, text) => {
-  hooks.length = 0; saved.length = 0;
-  const t = draw(seg);
-  findAll(t, n => n.type === "textarea")[0].props.onChange({ target: { value: text } });
-  btn(draw(seg), "Сохранить").props.onClick();
-  return saved[0] || {};
-};
-check(saveWith(Object.assign({}, BASE), "").status === "new",
-      "пустой черновик уходит со статусом «new», а не «translated»");
-check(saveWith(Object.assign({}, BASE), "   ").status === "new", "пробелы — тоже пусто");
-check(saveWith(Object.assign({}, BASE, { status: "new", target: "" }), "Open pneumothorax.").status === "translated",
-      "вписанный в новый сегмент текст — «translated», как и было");
-storeStub.updateSegment = () => {};
+console.log("=== 10. Текста в карточке больше нет — он правится в строке ===");
+/* Оригинал и перевод стояли здесь второй копией того, что видно в двух шагах
+   слева. Две копии — два места, где текст ищут глазами, и два поля, куда его
+   можно набрать. Правка переехала в саму таблицу (`SegCellEdit`), правило
+   «стёртый перевод — Новый» вместе с ней; сторожит test_editor_render.js. */
+hooks.length = 0;
+const bare = draw(Object.assign({}, BASE));
+check(findAll(bare, n => n.type === "textarea" && !(n.props || {}).readOnly).length === 0,
+      "поля перевода в карточке нет");
+check(findAll(bare, n => /seg-src/.test((n.props || {}).className || "")).length === 0,
+      "карточки оригинала в карточке нет");
+/* А кусок КАРТИНКИ остаётся: сегмент, распознанный на рисунке, человеку
+   иначе нечем проверить — в строке видно только текст. */
+hooks.length = 0;
+const imgSeg = draw(Object.assign({}, BASE, { origin: { kind: "image", part: "word/media/i1.png", block: 0 } }));
+check(textOf(imgSeg).indexOf("не переводим") !== -1, "у надписи с картинки остались сам рисунок и «Это не из книги»");
 
-console.log("");
-console.log("=== 11. Слова из «Проверки» горят в карточке ===");
+console.log("=== 11. Слова, на которые смотреть, названы и подсвечены ===");
 hooks.length = 0;
 const hlTree = draw(Object.assign({}, BASE), { hlTerms: ["Пневмоторакс", "pneumothorax"], onClose() {} });
-const srcCard = findAll(hlTree, n => /seg-src/.test((n.props || {}).className || ""))[0];
-const srcMarks = findAll(srcCard, n => n.type === "mark").map(m => m.children.join(""));
-check(srcMarks.join("|") === "пневмоторакс", "в оригинале подсвечен термин, регистр не важен (" + srcMarks.join("|") + ")");
 const tgtHl = findAll(hlTree, n => (n.props || {}).className === "seg-tgt-hl")[0];
 check(!!tgtHl && findAll(tgtHl, n => n.type === "mark").map(m => m.children.join("")).join("|") === "pneumothorax",
-      "под полем перевода — перевод с подсвеченным вариантом");
+      "перевод показан с подсвеченным вариантом");
 check(textOf(hlTree).indexOf("Проверить слова: ") !== -1, "и слова названы строкой");
 check(!!findAll(hlTree, n => n.type === "button" && n.props["aria-label"] === "Закрыть карточку")[0],
       "у карточки есть «×»");
+/* Слова берутся и БЕЗ выборки с «Проверки»: `seg.attention` считает сервер
+   теми же списками, из которых берутся находки, — иначе подсветка работала
+   бы только у того, кто пришёл по ссылке. */
 hooks.length = 0;
-check(textOf(draw(Object.assign({}, BASE))).indexOf("Проверить слова") === -1, "без выборки строки слов нет");
+const attTree = draw(Object.assign({}, BASE, { attention: { src: [], tgt: ["pneumothorax"] } }));
+check(textOf(attTree).indexOf("Проверить слова: ") !== -1, "жалоба сервера сама зажигает слова");
+hooks.length = 0;
+check(textOf(draw(Object.assign({}, BASE))).indexOf("Проверить слова") === -1, "без жалоб и выборки строки слов нет");
 
-console.log("");
-console.log("=== 12. Пустое не заверяется; прежний перевод — подсказка с «Вставить» ===");
-/* «Подтвердить» на пустом черновике погашена: сервер отвечает 400, а раньше
-   браузер всё равно ставил «подтверждено» и хвалил тостом. */
-hooks.length = 0;
-const emptySeg = Object.assign({}, BASE, { target: "", status: "new" });
-const confirmBtn = btn(draw(emptySeg), "Подтвердить");
-check(!!confirmBtn && confirmBtn.props.disabled === true, "пустой черновик — «Подтвердить» погашена");
-hooks.length = 0;
-check(btn(draw(Object.assign({}, BASE)), "Подтвердить").props.disabled === false, "с переводом — доступна");
-/* prevTarget (смена оригинала, пересегментация) — только для чтения, и
-   «Вставить» кладёт его в черновик без вызова модели и без записи. */
-let wrote = 0;
+console.log("=== 12. Прежний перевод — подсказка, «Вставить» открывает поле строки ===");
+/* prevTarget (смена оригинала, пересегментация, сильная правка оригинала) —
+   только для чтения. «Вставить» не пишет на сервер и не сочиняет: она кладёт
+   текст в поле САМОЙ строки, а сохраняет человек. */
+let wrote = 0, put = null;
 storeStub.updateSegment = () => { wrote++; };
-const prevSeg = Object.assign({}, emptySeg, { prevTarget: "Old closed pneumothorax.", prevSource: "Закрытый пневмоторакс слева." });
+const prevSeg = Object.assign({}, BASE, { target: "", status: "new",
+  prevTarget: "Old closed pneumothorax.", prevSource: "Закрытый пневмоторакс слева." });
 hooks.length = 0;
-const pv = draw(prevSeg);
+const pv = draw(prevSeg, { onEditText: (field, text) => { put = [field, text]; } });
 check(textOf(pv).indexOf("Прежний перевод") !== -1 && textOf(pv).indexOf("Old closed pneumothorax.") !== -1
       && textOf(pv).indexOf("Закрытый пневмоторакс слева.") !== -1, "прежний перевод и его оригинал показаны");
 btn(pv, "Вставить").props.onClick();
-const after = draw(prevSeg);
-const ta = findAll(after, n => n.props && n.props.placeholder === "Введите перевод…")[0];
-check(ta && ta.props.value === "Old closed pneumothorax.", "«Вставить» положил прежний перевод в черновик");
+check(put && put[0] === "tgt" && put[1] === "Old closed pneumothorax.",
+      "«Вставить» открывает поле перевода строки с прежним текстом");
 check(wrote === 0, "и ничего не записал на сервер");
-check(textOf(after).indexOf("Прежний перевод") === -1, "совпавший с черновиком — подсказка скрыта");
-check(btn(after, "Подтвердить").props.disabled === false, "черновик не пуст — можно заверить");
+/* Нет обработчика — нет и кнопки: предлагать нажатие, которое ничего
+   не делает, хуже, чем не предлагать. */
+hooks.length = 0;
+check(!btn(draw(prevSeg), "Вставить"), "без обработчика кнопки «Вставить» нет");
 storeStub.updateSegment = () => {};
 hooks.length = 0;
 check(textOf(draw(Object.assign({}, BASE))).indexOf("Прежний перевод") === -1, "без prevTarget подсказки нет");
+
+console.log("");
+console.log("=== 13. Границы строк видны, у кнопок есть подсказки ===");
+hooks.length = 0;
+const bTree = draw(Object.assign({}, BASE));
+const merge = btn(bTree, "Склеить со следующей");
+check(!!merge && /btn-secondary/.test(merge.props.className), "«Склеить со следующей» — видимая кнопка, а не бледная подпись");
+check(!!btn(bTree, "Разрезать"), "«Разрезать» на месте");
+const tips = ["Перевести", "Проверки", "Quick QA"].map(l => (btn(bTree, l) || {}).props);
+check(tips.every(p => p && p.title), "у «Перевести», «Проверки» и «Quick QA» есть подсказки");
+
+console.log("");
+console.log("=== 14. Ревизия — первой в зоне находок ===");
+/* Она единственная читает пару целиком и сразу говорит, что не так. Человек,
+   открывший строку из-за жалобы, должен увидеть жалобу, а не список терминов. */
+hooks.length = 0;
+const order = textOf(draw(Object.assign({}, BASE, {
+  review: { score: 3, at: "2026-09-04 10:00", issues: ["смысл сдвинут"], model: "m" },
+  ctxAdvice: [{ src: "пневмоторакс", tgt: "pneumatic", use: "pneumothorax", why: "не то" }],
+  repair: { applied: false, reason: "балл упал", issues: ["термин"] },
+})));
+const pos = (t) => order.indexOf(t);
+check(pos("Ревизия") !== -1 && pos("Ревизия") < pos("Арбитр:"), "ревизия выше арбитра");
+check(pos("Ревизия") < pos("Автоматический ремонт"), "и выше ремонта");
 
 console.log("");
 if (fail.length) {

@@ -849,6 +849,10 @@ def pdf_to_docx(content: bytes) -> tuple:
         removed.append("строк мусора распознавания %d" % junk)
     if r.get("dropCaps"):
         removed.append("восстановлено буквиц %d" % r["dropCaps"])
+    if r.get("scripts"):
+        # Дробь, степень, индекс: распознаватель отдаёт их отдельной «строкой»,
+        # и без склейки числитель уезжал в начало абзаца.
+        removed.append("собрано дробей и индексов %d" % r["scripts"])
     note = ("PDF: текст взят из текстового слоя, строки склеены в абзацы"
             + ("; снято: " + ", ".join(removed) if removed else "") + ".")
     if n_img:

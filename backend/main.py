@@ -25520,6 +25520,7 @@ def _pdf_image_boxes(project: dict, data: dict) -> list:
     parts = {str(p.partname).lstrip("/"): p for p in doc.part.package.iter_parts()}
     by_id = {s["id"]: s for s in project.get("segments") or []}
     out: list = []
+    skipped: dict = {}
     for im in images:
         part = parts.get(im.get("part"))
         if part is None or not im.get("w") or not im.get("h"):
@@ -25539,11 +25540,22 @@ def _pdf_image_boxes(project: dict, data: dict) -> list:
                 continue
             x0, y0, x1, y1 = b["box"]
             rows = max(1, int(b.get("rows") or 1))
+            if x1 > x0 and rows <= 1 and (y1 - y0) >= (x1 - x0) * image_text.IMG_VERT_RATIO:
+                # Надпись в оригинале шла СВЕРХУ ВНИЗ (корешок книги, подпись
+                # вдоль оси схемы) — то же правило, что у `render_target`:
+                # рамка описывает МЕСТО, а под каким углом стоят буквы,
+                # детектор не сообщает, и повернуть текст мы не вправе.
+                # Напечатанная горизонтально, такая надпись легла поперёк
+                # обложки буквами в ладонь.
+                skipped["vertical"] = skipped.get("vertical", 0) + 1
+                continue
             line_h = float(b.get("lineH") or ((y1 - y0) / rows))
             out.append({"text": text, "boxes": [{
                 "page": page, "frac": 1, "image": 1, "style": "", "indent": 0.0,
                 "x0": x0 / w, "x1": x1 / w, "top": y0 / h, "bottom": y1 / h,
                 "size": line_h / h, "lead": ((y1 - y0) / rows) / h}]})
+    if skipped:
+        print("[backend] PDF 1в1: надписей пропущено %s" % skipped, file=sys.stderr)
     return out
 
 

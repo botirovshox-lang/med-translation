@@ -94,6 +94,11 @@ FONT_NAME = "LayoutBody"
 # выход за рамку лучше, чем «влезло, но не читается».
 FIT_STEP = 0.97
 MIN_SIZE_SHARE = float(os.environ.get("LAYOUT_MIN_SIZE_SHARE", "0.55"))
+# У надписи СО СТРАНИЦЫ-КАРТИНКИ пол ниже, и это не небрежность: её рамка
+# обведена вокруг самих букв, запаса вокруг нет вовсе, а перевод длиннее
+# оригинала — на обложке «Священник Александр Лазебный» уезжало за край
+# страницы. Мелко, но целиком, лучше, чем крупно и мимо листа.
+MIN_SIZE_SHARE_IMAGE = float(os.environ.get("LAYOUT_MIN_SIZE_SHARE_IMAGE", "0.3"))
 MIN_SIZE_PT = 5.0
 # Разрешение, на котором меряется бумага и краска. Страница рисуется ПО ОДНОЙ
 # и тут же забывается (`_Sampler`), поэтому разрешение можно держать выше:
@@ -200,7 +205,8 @@ def _fit(text: str, boxes: list, sw, font: str) -> tuple:
     ОДИН: разный кегль на двух половинах одного абзаца читается как брак."""
     base = max((b["size"] for b in boxes), default=10.0) or 10.0
     lead0 = max((b["lead"] for b in boxes), default=base * 1.2) or base * 1.2
-    floor = max(MIN_SIZE_PT, base * MIN_SIZE_SHARE)
+    share = MIN_SIZE_SHARE_IMAGE if boxes and boxes[0].get("image") else MIN_SIZE_SHARE
+    floor = max(MIN_SIZE_PT, base * share)
     size = base
     while True:
         lead = lead0 * (size / base)

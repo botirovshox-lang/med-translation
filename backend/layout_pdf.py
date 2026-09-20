@@ -129,6 +129,8 @@ INK_EXPAND_MAX = float(os.environ.get("LAYOUT_INK_EXPAND_MAX", "140"))
 # него, межколонник — шире. Ошибка в меньшую сторону оставляет хвост
 # оригинала, в большую — заезжает в соседнюю колонку.
 INK_GAP_SHARE = float(os.environ.get("LAYOUT_INK_GAP", "0.9"))
+# Докуда раздвигать ВЛЕВО, в кеглях (см. `_ink_box`).
+INK_LEFT_PT = float(os.environ.get("LAYOUT_INK_LEFT", "1.5"))
 # Насколько темнее бумаги считать краской.
 INK_DARK = float(os.environ.get("LAYOUT_INK_DARK", "0.82"))
 # Ниже этой яркости бумага считается тёмной, и перевод печатается светлым.
@@ -370,8 +372,13 @@ def _ink_box(sample, box: dict, pad: float, paper: float) -> tuple:
             if run >= gap:
                 break
     x1 = x1 + reach / scale if reach else x1
-    # Влево: столбцы от левого края наружу, то есть справа налево.
-    mins = _col_mins(gray, left - limit, left, y0, y1)
+    # Влево раздвигаем куда МЕНЬШЕ, чем вправо, и это не осторожность,
+    # а устройство дефекта: ширина знака оценивается, и ошибка копится
+    # к КОНЦУ строки — начало её текстовый слой знает точно. Зато слева
+    # от заголовка в книге стоит рисованная виньетка (пчела в рамке),
+    # и щедрая раздвижка закрашивала её половину. Хватает одного знака:
+    # больше там взяться нечему.
+    mins = _col_mins(gray, left - min(limit, INK_LEFT_PT * size * scale), left, y0, y1)
     run, reach = 0, 0
     for k, v in enumerate(reversed(mins)):
         if v < dark:

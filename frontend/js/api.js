@@ -421,7 +421,7 @@
        префиксу считается «своя правка ещё не доехала до сервера» (segEdits),
        и уедь он под /projects/, сверка статусов тянула бы весь проект
        впустую после каждой правки. */
-    editSource:    (pid, sid, source, dry)   => call("POST",   `/segments/${pid}/${sid}/source`, { source, dry_run: !!dry }),
+    editSource:    (pid, sid, source, dry, force) => call("POST", `/segments/${pid}/${sid}/source`, { source, dry_run: !!dry, force: !!force }),
 
     batch:         (pid, segIds, force, limit, model) => call("POST", `/projects/${pid}/batch`, { segment_ids: segIds || null, force: !!force, limit: limit || 50, model: model || null }),
     checksBatch:(pid, segIds, bcModel)    => call("POST",   `/projects/${pid}/checks/batch`,   { segment_ids: segIds || null, run_backcheck: true, bc_model: bcModel || null }),

@@ -151,5 +151,9 @@
  "Правка дописывает к файлу ": "This edit adds ",
  " стр. — они спишутся из лимита организации.": " page(s) to the file — they come out of the organisation's page limit.",
  "Продолжить?": "Continue?",
- " Списано ": " Charged "
+ " Списано ": " Charged ",
+ "Расход по этому файлу дошёл до потолка, назначенного на страницу: прогон остановлен, сделанное сохранено. Поднимите потолок у администратора сервиса или доделайте файл по частям.": "Spending on this file reached the per-page cap: the run stopped and the work is saved. Ask the service administrator to raise the cap, or finish the file in parts.",
+ "Строка вырастает до ": "The line grows to ",
+ " знаков при пределе ": " characters, over the limit of ",
+ " — это уже не поправка, а новый текст.": " — that is a new text, not a fix."
 }

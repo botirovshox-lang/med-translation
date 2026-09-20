@@ -48,7 +48,6 @@
  " до и ": " before and ",
  " заверенных в выборке": " confirmed ones in the selection",
  " заверенных в выборке; ": " confirmed ones in the selection; ",
- " заверенных сегментов с находками ждут решения": " confirmed segments with findings are waiting for a decision",
  " заверенных сегментов с находками; ": " confirmed segments with findings; ",
  " завершён": " finished",
  " замечан.": " issues",
@@ -394,8 +393,6 @@
  "Файлов пока нет": "There are no files yet",
  "Фильтр: ": "Filter: ",
  "Чинить и подтверждённые (": "Fix the confirmed ones too (",
- "Чинить подтверждённые": "Fix the confirmed ones",
- "Чинить подтверждённые человеком": "Fix the human-confirmed ones",
  "Читать заверенные": "Read the confirmed ones",
  "Что делает эта кнопка": "What this button does",
  "Что проверять отдельным прогоном:": "What to check in a separate run:",
@@ -406,7 +403,6 @@
  "балл ": "score ",
  "больше не пойдёт. «Передан неверно» уходит человеку на экран «Проверка» ": "after it any more. “Rendered incorrectly” goes to a human on the “Check” screen ",
  "в выборке нет заверенных сегментов": "there are no confirmed segments in the selection",
- "в выборке нет заверенных сегментов с находками": "there are no confirmed segments with findings in the selection",
  "в общий прогон: ": "into the general run: ",
  "в работу пойдут ": "the work will take ",
  "ваше": "yours",
@@ -506,5 +502,9 @@
  "это проверка себя: сервер возьмёт запасную модель, и смета поплывёт.": "this is checking yourself: the server will take a fallback model, and the estimate will drift.",
  "— не переведено —": "— not translated —",
  "— это вопрос к записи глоссария, а не к строке.": "— it is a question about the glossary entry, not about the line.",
- "≈ цена": "≈ price"
+ "≈ цена": "≈ price",
+ "Чинить написанное человеком": "Fix what a human wrote",
+ "Чинить мои строки": "Fix my lines",
+ " ваших сегментов с находками ждут решения": " of your segments with findings await a decision",
+ "в выборке нет ваших сегментов с находками": "no segments of yours with findings in this selection"
 }

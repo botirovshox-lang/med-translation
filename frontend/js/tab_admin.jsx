@@ -88,6 +88,23 @@ function AdminTenants({ ov, toast, onChange }) {
     try { await window.API.tenantUpdate(t.id, body); toast.success(TR("Предел перевода заново обновлён"), t.name); onChange(); }
     catch (e) { toast.error(TR("Не обновлён"), e.message || String(e)); }
   };
+  /* Потолок НАШИХ затрат на страницу заказа (`budgetPerPage`). Настройка,
+     которую нельзя выставить из интерфейса, выключена навсегда: колонка
+     «$ на страницу» показывала бы числа, а поменять ставку было бы нечем.
+     Пусто — умолчание сервиса, 0 — выключено. */
+  const setBudget = async (t) => {
+    const d = ov.capDefaults || {};
+    const v = prompt(TR("Сколько мы готовы потратить на одну страницу заказа у «") + t.name
+      + TR("», $ (пусто — по умолчанию ") + (d.budgetPerPage != null ? d.budgetPerPage : "—")
+      + TR(", 0 — без потолка):"), t.budgetPerPage != null ? t.budgetPerPage : "");
+    if (v === null) return;
+    if (v.trim() !== "" && !/^\d+(\.\d+)?$/.test(v.trim())) {
+      toast.error(TR("Не обновлён"), TR("Нужно число от 0 или пусто.")); return;
+    }
+    const body = v.trim() === "" ? { clearBudget: true } : { budgetPerPage: Number(v) };
+    try { await window.API.tenantUpdate(t.id, body); toast.success(TR("Потолок на страницу обновлён"), t.name); onChange(); }
+    catch (e) { toast.error(TR("Не обновлён"), e.message || String(e)); }
+  };
   const toggle = async (t) => {
     try { await window.API.tenantUpdate(t.id, { active: !t.active }); toast.success(t.active ? TR("Отключена") : TR("Включена"), t.name); onChange(); }
     catch (e) { toast.error(TR("Не удалось"), e.message || String(e)); }
@@ -152,6 +169,10 @@ function AdminTenants({ ov, toast, onChange }) {
             title: TR("перевод заново: строка ≤ ") + (t.retranslateLimit != null ? t.retranslateLimit : (ov.capDefaults || {}).retranslateLimit)
               + TR(", весь файл ≤ ") + (t.retranslateBulk != null ? t.retranslateBulk : (ov.capDefaults || {}).retranslateBulk) },
             (t.retranslateLimit != null || t.retranslateBulk != null) ? TR("Заново ★") : TR("Заново")),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setBudget(t),
+            title: TR("потолок наших затрат на страницу заказа, $: ")
+              + (t.budgetPerPage != null ? t.budgetPerPage : ((ov.capDefaults || {}).budgetPerPage || 0)) },
+            t.budgetPerPage != null ? TR("$/стр. ★") : TR("$/стр.")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLogFor(logFor === t.id ? null : t.id) }, TR("Журнал")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => simpleMode(t),
             title: t.simple ? TR("сейчас: без сумм и моделей на экране") : TR("сейчас: обычный режим") },
@@ -484,8 +505,13 @@ function AdminRuns() {
           /* Расход на СТРАНИЦУ ЗАКАЗА: слева — сколько мы потратили,
              справа — за сколько продано. Порога тут нет и прогон он
              не останавливает: ставку выбирают по боевым числам. */
-          React.createElement("td", { className: "dim", title: r.pages ? TR("страниц в проекте: ") + r.pages : "" },
-            r.usdPerPage != null ? money(r.usdPerPage) : "—"),
+          /* Потолок на файл (если назначен) — тем же числом, каким прогон
+             останавливается: второй расчёт в браузере разошёлся бы с рубежом. */
+          React.createElement("td", { className: r.budget && r.budget.over ? "bad" : "dim",
+                                      title: r.pages ? TR("страниц в проекте: ") + r.pages : "" },
+            r.usdPerPage != null ? money(r.usdPerPage) : "—",
+            r.budget ? React.createElement("span", { className: "dim" },
+              TR(" из ") + money(r.budget.rate)) : null),
           React.createElement("td", { className: "dim" }, r.calls),
           React.createElement("td", { className: "dim" }, r.estActualUsd ? money(r.estUsd) + " / " + money(r.estActualUsd) : "—")))))),
     d.runs.length === 0 && React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } },

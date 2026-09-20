@@ -96,8 +96,8 @@ proj = fixture()
 plan = main.run_plan(1, main.RunPlanRequest(steps=["repair"]))
 rp = step(plan, "repair")
 check(rp["ids"] == [2], "в ремонт идёт только машинный сегмент: " + str(rp["ids"]))
-check("заверено человеком" in reasons(rp, "skips"),
-      "заверенный назван в пропусках с причиной: " + reasons(rp, "skips"))
+check("ваша строка" in reasons(rp, "skips"),
+      "работа человека названа в пропусках с причиной: " + reasons(rp, "skips"))
 check("включите" in reasons(rp, "skips"),
       "и человеку сказано, чем это включается, а не просто «нельзя»")
 
@@ -106,7 +106,7 @@ print("\n=== 2. С галочкой берётся, и сказано, чем э
 plan_on = main.run_plan(1, main.RunPlanRequest(steps=["repair"], include_confirmed=True))
 rp_on = step(plan_on, "repair")
 check(rp_on["ids"] == [1, 2], "в ремонт идут оба: " + str(rp_on["ids"]))
-check("подтверждение будет снято" in reasons(rp_on, "runs"),
+check("ваш текст будет переписан" in reasons(rp_on, "runs"),
       "последствие названо прямо в разборе: " + reasons(rp_on, "runs"))
 
 # ───────── 3. Точечность: платит только ремонт ─────────

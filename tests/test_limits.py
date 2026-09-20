@@ -347,6 +347,97 @@ if HAVE_DOCX:
 else:
     print("python-docx нет — раздел 7 пропущен")
 
+print("\n=== 8. Бюджет ПРОЕКТА: наши затраты против оплаченных страниц ===")
+# `limitUsd` меряет деньги организации за МЕСЯЦ и вопроса «не работаем ли мы
+# в минус вот на этой книге» не задаёт вовсе. Ставка «сколько мы готовы
+# потратить на страницу заказа» связывает выручку (страницы) с затратами
+# (доллары на модели). Умолчание — 0, то есть выключено; проверяем обе стороны.
+bp = main.PROJECT_BUDGET_PER_PAGE
+bt = main._tenant_rec("acme") or main._tenant_rec(main.DEFAULT_TENANT)
+btid = bt["id"] if bt.get("id") else main.DEFAULT_TENANT
+bproj = {"id": 90210, "title": "бюджетная книга", "tenant": btid, "pages": 10.0,
+         "created": "2026-09-20", "src": "RU", "tgt": "EN", "segments": []}
+main.STATE["projects"].append(bproj)
+try:
+    bt.pop("budgetPerPage", None)
+    main.PROJECT_BUDGET_PER_PAGE = 0
+    check(main._project_budget(btid, 90210) is None,
+          "ставки нет — мерить нечем, и это НЕ «в порядке», а «не знаю»")
+    job = {"id": 1, "tenant": btid, "project": 90210, "counters": {}}
+    check(main._job_budget_hit(job) is False and "stopReason" not in job,
+          "без ставки прогон не останавливается")
+
+    main.PROJECT_BUDGET_PER_PAGE = 0.5          # $0.5 на страницу → потолок $5
+    b = main._project_budget(btid, 90210)
+    check(b and b["cap"] == 5.0 and b["pages"] == 10.0,
+          "потолок считается от объёма проекта: %s" % b)
+    check(b and not b["over"], "расхода ещё нет — потолок не выбран")
+    check(main._job_budget_hit(job) is False, "и прогон идёт")
+
+    main._proj_spend_add(btid, 90210, cost=6.0, calls=1)
+    b = main._project_budget(btid, 90210)
+    check(b and b["over"], "потрачено больше потолка: %s" % b)
+    check(main._job_budget_hit(job) is True, "прогон остановлен")
+    check(job.get("status") == "stopped" and job.get("stopReason") == "budget",
+          "мягко и КОДОМ причины, а не текстом: %s / %s" % (job.get("status"), job.get("stopReason")))
+    check(job["counters"].get("budgetStop") == 1, "счётчик остановки поставлен")
+    # Рубеж в прогоне ОДИН на оба потолка: разойдись списки мест — один
+    # держал бы шаги, которых не держит другой.
+    job2 = {"id": 2, "tenant": btid, "project": 90210, "counters": {}}
+    check(main._job_money_stop(job2) is True and job2.get("stopReason") == "budget",
+          "общий рубеж `_job_money_stop` видит бюджет, а не только лимит: %s" % job2.get("stopReason"))
+    # Граница «выбран» — по >=, и она названа числом, а не «примерно».
+    main.STATE[main.PROJECT_SPEND_KEY] = {}
+    main._proj_spend_add(btid, 90210, cost=4.99, calls=1)
+    check(main._project_budget(btid, 90210)["over"] is False, "$4.99 при потолке $5 — ещё не выбран")
+    main._proj_spend_add(btid, 90210, cost=0.01, calls=1)
+    check(main._project_budget(btid, 90210)["over"] is True, "ровно $5.00 — уже выбран")
+    # Объёма нет — мерить нечем, и это «не знаю», а не «в порядке».
+    bproj["pages"] = 0.0
+    check(main._project_budget(btid, 90210) is None, "нулевой объём — None, а не «потолок не выбран»")
+    bproj["pages"] = 10.0
+    # Изоляция: чужой организации проект не виден (инвариант 11).
+    check(main._project_budget("чужая-организация", 90210) is None,
+          "проект чужой организации в расчёт не идёт")
+    # Отказ НА СТАРТЕ, а не «нажал — ничего не произошло»: на НАСТОЯЩЕМ
+    # проекте организации, иначе 404 сделал бы проверку холостой.
+    real = next((p for p in main.STATE["projects"] if p["id"] == pid), None)
+    if real is not None:
+        real_t = main._tenant_of(real)
+        rate_rec = main._tenant_rec(real_t)
+        main._proj_spend_add(real_t, pid, cost=999.0, calls=1)
+        if rate_rec is not None:
+            rate_rec["budgetPerPage"] = 0.001
+        r = c.post("/api/projects/%d/jobs" % pid, headers=H(B),
+                   json={"kind": "full", "segment_ids": [s["id"] for s in real["segments"][:1]]})
+        check(r.status_code == 402,
+              "постановка задачи при выбранном бюджете — 402, а не тихая остановка потом: %s %s"
+              % (r.status_code, r.text[:140]))
+        check("потолка" in r.text or "chegara" in r.text or "cap" in r.text,
+              "и отказ называет причину: %s" % r.text[:140])
+        if rate_rec is not None:
+            rate_rec.pop("budgetPerPage", None)
+        for k in [k for k in (main.STATE.get(main.PROJECT_SPEND_KEY) or {}) if k.endswith("|%d" % pid)]:
+            main.STATE[main.PROJECT_SPEND_KEY].pop(k, None)
+
+    # Ставка организации сильнее умолчания сервиса — её ставит суперпользователь.
+    bt["budgetPerPage"] = 10.0
+    check(main._project_budget(btid, 90210)["over"] is False,
+          "поднятая ставка организации снимает потолок: %s" % main._project_budget(btid, 90210))
+    r = c.post("/api/admin/tenants/%s" % btid, headers=H(A), json={"budgetPerPage": -1})
+    check(r.status_code == 400, "отрицательная ставка — 400: %s" % r.status_code)
+    r = c.post("/api/admin/tenants/%s" % btid, headers=H(A), json={"clearBudget": True})
+    check(r.status_code == 200 and "budgetPerPage" not in (main._tenant_rec(btid) or {}),
+          "clearBudget возвращает к умолчанию сервиса")
+finally:
+    main.PROJECT_BUDGET_PER_PAGE = bp
+    bt.pop("budgetPerPage", None)
+    main.STATE["projects"] = [p for p in main.STATE["projects"] if p["id"] != 90210]
+    # Строка расхода переживает удаление проекта (это деньги), но в тесте
+    # она мусор: следующий набор считал бы по ней.
+    for k in [k for k in (main.STATE.get(main.PROJECT_SPEND_KEY) or {}) if k.endswith("|90210")]:
+        main.STATE[main.PROJECT_SPEND_KEY].pop(k, None)
+
 main.STATE["projects"] = [p for p in main.STATE["projects"] if p["id"] != pid]
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

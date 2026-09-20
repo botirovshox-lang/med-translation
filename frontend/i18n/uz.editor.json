@@ -48,7 +48,6 @@
  " до и ": " oldin va ",
  " заверенных в выборке": " ta tasdiqlangan tanlovda",
  " заверенных в выборке; ": " ta tasdiqlangan tanlovda; ",
- " заверенных сегментов с находками ждут решения": " ta topilmali tasdiqlangan segment qaror kutmoqda",
  " заверенных сегментов с находками; ": " ta topilmali tasdiqlangan segment; ",
  " завершён": " tugadi",
  " замечан.": " kamch.",
@@ -394,8 +393,6 @@
  "Файлов пока нет": "Hozircha fayllar yo'q",
  "Фильтр: ": "Filtr: ",
  "Чинить и подтверждённые (": "Tasdiqlanganlarni ham tuzatish (",
- "Чинить подтверждённые": "Tasdiqlanganlarni tuzatish",
- "Чинить подтверждённые человеком": "Odam tasdiqlaganlarini tuzatish",
  "Читать заверенные": "Tasdiqlanganlarni o'qish",
  "Что делает эта кнопка": "Bu tugma nima qiladi",
  "Что проверять отдельным прогоном:": "Alohida ishlov bilan nimani tekshirish:",
@@ -406,7 +403,6 @@
  "балл ": "ball ",
  "больше не пойдёт. «Передан неверно» уходит человеку на экран «Проверка» ": "boshqa bormaydi. «Noto'g'ri berilgan» odamga «Tekshiruv» ekraniga ketadi ",
  "в выборке нет заверенных сегментов": "tanlovda tasdiqlangan segmentlar yo'q",
- "в выборке нет заверенных сегментов с находками": "tanlovda topilmali tasdiqlangan segmentlar yo'q",
  "в общий прогон: ": "umumiy ishlovga: ",
  "в работу пойдут ": "ishga ketadi: ",
  "ваше": "sizniki",
@@ -506,5 +502,9 @@
  "это проверка себя: сервер возьмёт запасную модель, и смета поплывёт.": "bu o'z-o'zini tekshirish: server zaxira modelni oladi va smeta suriladi.",
  "— не переведено —": "— tarjima qilinmagan —",
  "— это вопрос к записи глоссария, а не к строке.": "— bu qatorga emas, lug'at yozuviga savol.",
- "≈ цена": "≈ narx"
+ "≈ цена": "≈ narx",
+ "Чинить написанное человеком": "Odam yozganini tuzatish",
+ "Чинить мои строки": "Mening qatorlarimni tuzatish",
+ " ваших сегментов с находками ждут решения": " ta sizning qatoringiz topilma bilan qaror kutmoqda",
+ "в выборке нет ваших сегментов с находками": "tanlovda topilmasi bor sizning qatorlaringiz yo‘q"
 }

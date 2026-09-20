@@ -1291,6 +1291,18 @@ def _replace_target(seg: dict, text: str, provider: str, route: str):
     человек, прежний текст сохраняется в prevTarget, статус становится
     «требует проверки», а отметка «подтвердил человек» снимается — она
     относилась к тексту, которого больше нет."""
+    hand = _hand_written(seg) and seg.get("status") != "confirmed"
+    if hand:
+        # Разрешение переписать ручную правку дано — но выбросить набранный
+        # человеком текст нельзя: он уходит в подсказку «Прежний перевод»
+        # ровно так же, как заверенный. И след правки обязан УЕХАТЬ вместе
+        # с текстом: `editedBy` остался бы на машинной строке, а карточка
+        # писала бы «Правил: Ева» про текст, которого Ева не писала
+        # (инвариант 14 — след лежит на записи и не врёт).
+        seg["prevTarget"] = seg.get("target", "")
+        seg["prevEditedBy"] = seg.pop("editedBy", None)
+        seg.pop("editedToHash", None)
+        seg.pop("editedFrom", None)
     if seg.get("status") == "confirmed":
         seg["prevTarget"] = seg.get("target", "")
         seg.pop("confirmedBy", None)
@@ -1298,7 +1310,10 @@ def _replace_target(seg: dict, text: str, provider: str, route: str):
         seg.pop("confirmedRole", None)
         seg["status"] = "review"
     else:
-        seg["status"] = "translated"
+        # Переписали работу человека — «требует проверки», как у заверенного:
+        # иначе он не узнает об этом ниоткуда, кроме подсказки «Прежний
+        # перевод», в которую ещё надо заглянуть.
+        seg["status"] = "review" if hand else "translated"
     seg["target"] = text
     seg["provider"] = provider
     seg["route"] = route
@@ -2497,6 +2512,100 @@ def _job_limit_hit(job: dict) -> bool:
     job["counters"]["limitStop"] = 1
     return True
 
+
+# ─── Бюджет ПРОЕКТА: наши затраты против оплаченных страниц ──────────
+# `limitUsd` меряет деньги организации ЗА МЕСЯЦ, а вопрос «не работаем ли мы
+# в минус вот на этой книге» он не задаёт вовсе: страницы (выручка) и доллары
+# на модели (затраты) жили двумя не связанными счётчиками. Связь — ставка
+# «сколько мы готовы потратить на страницу заказа»:
+#   `tenant["budgetPerPage"]`, без своего — `PROJECT_BUDGET_PER_PAGE`;
+#   0 (умолчание) — ставки нет, рубеж не работает и прогон не останавливает.
+# Умолчание НОЛЬ намеренно: ставку выбирают по боевым числам, а не из головы,
+# и до первого замера остановить честный прогон дороже, чем не остановить
+# нечестный. Числа видно там же, где их считают, — админка «Прогоны»,
+# колонка «$ на страницу» (`byProject.usdPerPage`).
+# Расход берётся из СЧЁТЧИКА хранилища (`project_spend`, инвариант 33): его
+# пишут оба процесса инкрементом, в отличие от документа проекта.
+PROJECT_BUDGET_PER_PAGE = float(os.environ.get("PROJECT_BUDGET_PER_PAGE", "") or 0)
+
+
+def _budget_rate(tid: str) -> float:
+    rec = _tenant_rec(tid) or {}
+    v = rec.get("budgetPerPage")
+    return float(v) if v is not None else PROJECT_BUDGET_PER_PAGE
+
+
+def _budget_of(rate: float, usd: float, pages: float) -> Optional[dict]:
+    """Арифметика потолка одним местом: её зовут и рубеж прогона, и админка.
+    Два расчёта разошлись бы, а на экране стояло бы не то число, по которому
+    останавливают."""
+    if rate <= 0 or pages <= 0:
+        return None
+    cap = round(pages * rate, 4)
+    return {"usd": round(usd, 4), "pages": round(pages, 1), "cap": cap,
+            "rate": rate, "over": usd >= cap}
+
+
+def _project_budget(tid: str, pid: Optional[int]) -> Optional[dict]:
+    """{usd, pages, cap, over} — или None, когда мерить нечем: ставки нет,
+    проекта нет, объём неизвестен. None означает «не знаю», а не «в порядке»:
+    останавливать по невычисленному числу нельзя (закон `attested()`).
+
+    Расход и объём берутся ЗДЕСЬ, поэтому вызов стоит запроса к базе
+    (`_proj_spend_rows`) и прохода по проектам. В цикле его звать нельзя —
+    у админки «Прогоны» (обновляется раз в 10 с) это N+1 на единственном
+    воркере; там строка расхода и объём уже в руках, и считает `_budget_of`."""
+    rate = _budget_rate(tid)
+    if rate <= 0 or pid is None:
+        return None
+    p = next((x for x in STATE.get("projects") or []
+              if x.get("id") == pid and _tenant_of(x) == tid), None)
+    if p is None:
+        return None
+    try:
+        pages = _project_pages(p, _pricing_of(tid))
+    except Exception:
+        return None
+    row = next((r for r in _proj_spend_rows(tid) if r.get("project") == pid), None)
+    return _budget_of(rate, float((row or {}).get("usd") or 0.0), pages)
+
+
+JOB_BUDGET_402 = ("Расход по этому файлу уже дошёл до потолка, назначенного на страницу "
+                  "($%.2f из $%.2f на %s стр.): поднимите потолок у администратора сервиса.")
+
+
+JOB_STOP_BUDGET = ("Расход по этому файлу дошёл до потолка, назначенного на страницу: "
+                   "прогон остановлен, сделанное сохранено. Поднимите потолок "
+                   "у администратора сервиса или доделайте файл по частям.")
+
+
+def _job_budget_hit(job: dict) -> bool:
+    """Потолок расхода НА ЭТОТ ФАЙЛ выбран — мягкая остановка, как у лимита.
+    Отдельно от `_job_limit_hit`: тот про месячные деньги организации,
+    этот про один заказ, и поднимают их по разным поводам. Обе проверки
+    зовут через `_job_money_stop`, поэтому места рубежа у них одни и те же —
+    разойдись они, один потолок держал бы шаги, которых не держит другой."""
+    b = _project_budget(job.get("tenant") or DEFAULT_TENANT, job.get("project"))
+    if not b or not b["over"]:
+        return False
+    job["status"] = "stopped"
+    job["stopReason"] = "budget"
+    job["error"] = JOB_STOP_BUDGET
+    if tg_mod:
+        tg_mod.notify_admin_async(
+            "📄 Бюджет файла «%s» (проект %s, %s стр.) выбран: потрачено $%.2f при потолке $%.2f, "
+            "прогон №%s остановлен" % (_tenant_of(job), job.get("project"), b["pages"],
+                                       b["usd"], b["cap"], job.get("id")))
+    job["counters"]["budgetStop"] = 1
+    return True
+
+
+def _job_money_stop(job: dict) -> bool:
+    """Оба денежных рубежа одним вызовом. `_job_limit_hit` идёт ПЕРВЫМ:
+    он сам зовёт `_sync_shared()`, и бюджет считается уже по свежему расходу."""
+    return _job_limit_hit(job) or _job_budget_hit(job)
+
+
 # ─── Кончился баланс у ПОСТАВЩИКА моделей ────────────────────────────
 # Это другой случай, чем лимит организации (`_job_limit_hit`): лимит — наш
 # потолок для клиента, а здесь пуст НАШ счёт у поставщика, и отказывает
@@ -3080,6 +3189,50 @@ def _users() -> list:
 # переписывать подтверждённый текст, а донор глоссария потерял бы сильнейший
 # голос. Журнал — кольцо в STATE (как runCosts): AUDIT_MAX последних записей.
 AUDIT_MAX = max(500, int(os.environ.get("AUDIT_MAX", "5000")))
+
+
+def _mark_hand_written(seg: dict) -> None:
+    """Объявить нынешний текст работой человека. Зовётся там, где человек
+    берёт текст себе, не набирая его заново: снятие собственного заверения.
+    `_harvest_edited_terms` снимает хеш на подтверждении (база одноразовая),
+    и без этой отметки снятая подпись оставляла бы текст человека
+    беззащитным — следующий прогон переписал бы его без `prevTarget`."""
+    if (seg.get("target") or "").strip():
+        seg.setdefault("editedBy", _actor_id())
+        seg["editedToHash"] = _text_hash(seg.get("target") or "")
+
+
+def _hand_written(seg: dict) -> bool:
+    """В строке стоит перевод, который НАБРАЛ ЧЕЛОВЕК и ещё не заверил.
+
+    Пощада в системе была ровно одна — `status == "confirmed"`. Человек,
+    поправивший перевод в строке и не нажавший «Подтвердить», для ремонта,
+    ревизии, правки начертания и остальных пакетов был неотличим от машины:
+    следующий прогон переписывал его текст, и прежний не сохранялся даже
+    в `prevTarget` (тот пишется только заверенным). То есть работа пропадала
+    без единого следа.
+
+    Считается ХЕШЕМ, а не флагом «когда-то правили»: `_note_hand_edit` ведёт
+    `editedToHash` — «последний текст, который писал человек», — и совпадение
+    отвечает на нужный вопрос («сейчас в строке стоит его текст»), а не
+    на бесполезный. Машина написала поверх — хеш разошёлся, и защита
+    снимается сама; тот же приём, что у `_repair_tried`.
+    Подпись сильнее: у заверенного `_harvest_edited_terms` хеш снимает,
+    и такую строку закрывает `status`."""
+    # Пустая строка — не «работа человека», а «нет перевода»: иначе
+    # «стёр, чтобы перевести заново» получало бы отказ «это ваш текст»,
+    # а `_needs_translation` всё равно считает её непереведённой (инвариант 33).
+    t = seg.get("target") or ""
+    h = seg.get("editedToHash")
+    return bool(seg.get("editedBy")) and bool(h) and bool(t.strip()) and h == _text_hash(t)
+
+
+def _human_text(seg: dict) -> bool:
+    """Текст строки — работа человека: заверен подписью ЛИБО набран руками.
+    ОДИН предикат на все пакеты, `_plan_step` и корзины `/analysis`: разойдись
+    они — смета обещала бы одно, прогон делал другое, а корзина «машина
+    доделает» звала бы к сегменту, которого прогон не возьмёт."""
+    return seg.get("status") == "confirmed" or _hand_written(seg)
 
 
 def _actor() -> Optional[dict]:
@@ -5218,7 +5371,12 @@ def admin_runs(request: Request, limit: int = 100, all: bool = False):
             "estRatio": (round(r["estUsd"] / r["estActualUsd"], 2) if r["estActualUsd"] else None),
             "pages": pages.get((r["tenant"], r["project"])),
             "usdPerPage": (round(r["usd"] / pages[(r["tenant"], r["project"])], 4)
-                           if pages.get((r["tenant"], r["project"])) else None)})
+                           if pages.get((r["tenant"], r["project"])) else None),
+            # Потолок на файл — той же арифметикой, что останавливает прогон
+            # (`_budget_of`), но БЕЗ похода в базу: расход и объём уже в руках,
+            # а строк тут сотни и обновляются они раз в десять секунд.
+            "budget": _budget_of(_budget_rate(r["tenant"]), r["usd"],
+                                 pages.get((r["tenant"], r["project"])) or 0.0)})
     by_project.sort(key=lambda x: -x["usd"])
     # Идущие прогоны — ЖИВЫМ счётчиком задачи: в `runCosts` они попадут
     # только по концу, а смотреть, сколько уходит сейчас, надо сейчас.
@@ -5479,6 +5637,11 @@ class TenantPatch(BaseModel):
     retranslateLimit: Optional[int] = None
     retranslateBulk: Optional[int] = None
     clearRetranslate: bool = False
+    # Потолок наших затрат на страницу заказа (`_project_budget`): 0 —
+    # выключено, None — оставить как есть, clearBudget — вернуть к умолчанию
+    # сервиса (`PROJECT_BUDGET_PER_PAGE`).
+    budgetPerPage: Optional[float] = None
+    clearBudget: bool = False
 
 
 @app.post("/api/admin/tenants/{tid}")
@@ -5527,6 +5690,12 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
         if wrong:
             raise HTTPException(400, "Неизвестный шаг: " + ", ".join(sorted(wrong)))
         rec["models"] = {k: v for k, v in req.models.items() if v}
+    if req.budgetPerPage is not None and req.budgetPerPage < 0:
+        raise HTTPException(400, "Потолок расхода на страницу не может быть отрицательным")
+    if req.clearBudget:
+        rec.pop("budgetPerPage", None)
+    elif req.budgetPerPage is not None:
+        rec["budgetPerPage"] = float(req.budgetPerPage)
     if req.clearRetranslate:
         rec.pop("retranslateLimit", None)
         rec.pop("retranslateBulk", None)
@@ -5536,7 +5705,8 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
         rec["retranslateBulk"] = int(req.retranslateBulk)
     _audit("tenant.update", tenant_target=tid, limitUsd=rec.get("limitUsd"),
            addPages=req.addPages, pagesCredit=rec.get("pagesCredit"), maxProjects=rec.get("maxProjects"),
-           retranslateLimit=rec.get("retranslateLimit"), retranslateBulk=rec.get("retranslateBulk"))
+           retranslateLimit=rec.get("retranslateLimit"), retranslateBulk=rec.get("retranslateBulk"),
+           budgetPerPage=rec.get("budgetPerPage"))
     save_state(STATE)
     _tenants_changed()
     return {"ok": True, "tenant": _tenant_admin_view(rec), "spend": _spend_status(tid),
@@ -6718,7 +6888,10 @@ def glossary_impact(pid: int, refresh: bool = False):
                                          "segments": [], "confirmed": []})
             e["segments"].append(seg["id"])
             seg_ids.add(seg["id"])
-            if seg.get("status") == "confirmed":
+            # Тем же предикатом, что рубеж пакетов: по статусу ручные строки
+            # попадали в `pending`, то есть в `job["ids"]` кнопки «Применить
+            # к N сегм.», а ремонт их пропускал — число не осушалось никогда.
+            if _human_text(seg):
                 e["confirmed"].append(seg["id"])
                 confirmed_ids.add(seg["id"])
     terms = sorted(by_term.values(), key=lambda t: len(t["segments"]), reverse=True)
@@ -6873,6 +7046,10 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int,
            "reviewConfirmed": False,
            "reverted": False, "scoreVetoed": False, "findings": False,
            "clamped": False, "confirmedFindings": False, "override": False,
+           # Работа человека ЛЮБОГО вида: подпись или набранный руками текст.
+           # Отдельно от `confirmed`: подпись показывает срез готовности,
+           # а рубеж пакетов стоит на обоих.
+           "humanText": False,
            "bucket": None, "why": ""}
     target = (s.get("target") or "").strip()
     if not target:
@@ -6994,7 +7171,8 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int,
     # без явного разрешения не трогает, и обещать «это починится само»
     # было бы неправдой. Они уходят в свою корзину — не потому, что с ними
     # нечего делать, а потому, что решение принимает человек.
-    if open_findings and s.get("status") != "confirmed":
+    row["humanText"] = _human_text(s)
+    if open_findings and not row["humanText"]:
         row["findings"] = True
         # Тот же предикат, что у _plan_step с retry=False: совпавший
         # отпечаток захода прогон не берёт — это работа человека.
@@ -7162,6 +7340,7 @@ def project_analysis(pid: int, refresh: bool = False):
     # Заверенные человеком — нужны корзинам: без явного разрешения прогон их
     # не переписывает, значит обещать «машина доделает» про них нельзя.
     confirmed_ids: set = set()
+    human_text_ids: set = set()
     # Расхождения с глоссарием берём из отчёта, а не считаем заново: там тот же
     # расчёт на весь проект и он кэширован. Вызов _repair_findings с project
     # гонял бы _get_context на каждый сегмент — 10 секунд CPU единственного
@@ -7204,6 +7383,13 @@ def project_analysis(pid: int, refresh: bool = False):
             judge_ext.add(sid)
         if row["confirmed"]:
             confirmed_ids.add(sid)
+        if row["humanText"]:
+            # `confirmed_ids` — про ПОДПИСЬ (её показывает срез готовности),
+            # а рубеж пакетов стоит на ВСЕЙ работе человека. Списки, которые
+            # приходят мимо `_analysis_row` (разнобой, чужой алфавит), режутся
+            # этим множеством: по подписи ручная строка оставалась бы
+            # в «доделаю сама», а прогон её не берёт — число не осушится.
+            human_text_ids.add(sid)
         if row["qaCritical"]:
             qa_critical.append(sid)
         if row["sourceSuspect"]:
@@ -7414,7 +7600,7 @@ def project_analysis(pid: int, refresh: bool = False):
     # число, которое не осушится никогда. Исключение — объективная находка
     # (`override_ids`): такие ремонт берёт и без разрешения.
     _consist_ids = {i for p in consist_pairs for i in p["segments"]}
-    _consist_human = (_consist_ids & confirmed_ids) - override_ids
+    _consist_human = (_consist_ids & human_text_ids) - override_ids
     human_set.update(_consist_human)
 
     machine_set: set = set(untranslated)
@@ -7427,7 +7613,7 @@ def project_analysis(pid: int, refresh: bool = False):
     # прогона: находка есть только с проектом, поэтому список — отсюда.
     # У заверённого — человеку, как разнобой: без разрешения его не тронут.
     _alpha_ids = _alphabet_ids(project)
-    human_set.update((_alpha_ids & confirmed_ids) - override_ids)
+    human_set.update((_alpha_ids & human_text_ids) - override_ids)
     # Совпавший отпечаток захода прогон не берёт (тот же предикат, что
     # у `clamped` выше и у `_plan_step`): такой сегмент — человеку, иначе
     # «доделаю сама N» держало бы число, которое не осушится никогда.
@@ -8208,7 +8394,8 @@ def _cap_defaults() -> dict:
     return {"filePages": IMPORT_MAX_PAGES, "maxPages": TENANT_MAX_PAGES, "maxProjects": TENANT_MAX_PROJECTS,
             # Умолчания перевода заново — чтобы админка показала действующее
             # число у организации без своего (`_retranslate_limit`).
-            "retranslateLimit": RETRANSLATE_LIMIT, "retranslateBulk": RETRANSLATE_BULK}
+            "retranslateLimit": RETRANSLATE_LIMIT, "retranslateBulk": RETRANSLATE_BULK,
+            "budgetPerPage": PROJECT_BUDGET_PER_PAGE}
 
 
 # Учёт в СТРАНИЦАХ — предоплата, а не потолок по живым проектам:
@@ -11040,7 +11227,7 @@ def _job_images(job: dict) -> None:
             flush()
             _job_park(job)
             return
-        if _job_limit_hit(job):        # каждая картинка — вызов зрячей модели
+        if _job_money_stop(job):        # каждая картинка — вызов зрячей модели
             break
         # Уступка исполнителя между ПАЧКАМИ. Свой цикл — свой заход:
         # разбор полутора сотен картинок идёт минутами, и без этого в самом
@@ -12147,7 +12334,9 @@ def _identical_source_segments(project: dict, seg: dict) -> dict:
             continue
         if (s.get("target") or "").strip() == target:
             continue
-        (confirmed if s.get("status") == "confirmed" else pending).append(s["id"])
+        # `_human_text`, а не статус: молча переписать набранное руками
+        # нельзя так же, как заверенное (инвариант 9).
+        (confirmed if _human_text(s) else pending).append(s["id"])
     return {"pending": pending, "confirmed": confirmed}
 
 
@@ -14663,6 +14852,12 @@ def _segment_for_client(seg: dict, project: Optional[dict] = None) -> dict:
         out = dict(seg)          # правка из фонового потока длится микросекунды
     # Имена ответственных — для карточки: в сегменте лежит идентификатор
     # (`confirmedBy`, `editedBy`), а списка пользователей браузеру не дают.
+    # Работа человека без подписи: по ней стоит рубеж пакетов, и повторять
+    # предикат в `.jsx` нельзя — тот же закон, что у `needs_judge`
+    # и `repair.acceptable`. Поле появляется только когда оно True:
+    # вес выдачи проекта на книге в 2700 строк растить незачем.
+    if _hand_written(seg):
+        out["handWritten"] = True
     for k, name_k in (("confirmedBy", "confirmedByName"), ("editedBy", "editedByName")):
         if isinstance(out.get(k), int):
             out[name_k] = _user_label(out[k])
@@ -18514,7 +18709,7 @@ def term_case(pid: int, req: TermCaseRequest = TermCaseRequest()):
         new_text, moves = _term_case_fix(seg, project)
         if not moves:
             continue
-        if seg.get("status") == "confirmed" and not req.include_confirmed:
+        if _human_text(seg) and not req.include_confirmed:
             skipped_confirmed.append(seg["id"])
             continue
         changed.append(seg["id"])
@@ -18659,7 +18854,7 @@ def _review_held(seg: dict) -> bool:
     сегмента: на заверенном машина правку не поставит НИКОГДА без разрешения,
     значит вердикт с готовым кандидатом там и есть удержанный. Миграции
     поэтому не нужно — читаем, а не переписываем чужие данные."""
-    return _review_hold(seg) and seg.get("status") == "confirmed"
+    return _review_hold(seg) and _human_text(seg)
 
 
 def _review_hold(seg: dict) -> bool:
@@ -18676,7 +18871,7 @@ def _review_hold(seg: dict) -> bool:
     code = _review_code(rv)
     if code == REVIEW_CONFIRMED:
         return True
-    return not code and seg.get("status") == "confirmed"
+    return not code and _human_text(seg)
 
 
 REVIEW_VETO_LABELS = {
@@ -19058,7 +19253,7 @@ def _run_segment_review(seg: dict, project: dict, model: Optional[str] = None,
         veto = _review_veto(seg, project, cand)
         if veto:
             why, code = "не прошёл сверку", REVIEW_VETOED
-        elif seg.get("status") == "confirmed" and not include_confirmed:
+        elif _human_text(seg) and not include_confirmed:
             # Кандидат ГОДЕН, но текст заверил человек. Ветка стоит ПОСЛЕ
             # вето намеренно: вето — суждение о качестве кандидата, и о нём
             # надо говорить первым; «заверено» получает только та правка,
@@ -19128,11 +19323,11 @@ def _apply_review(seg: dict, include_confirmed: bool = False) -> bool:
     # с `rv_confirmed`: ранний выход по `skipped` стоит раньше всех проверок.
     if _review_hold(seg):
         # Подпись на месте — нужно разрешение; подпись сняли — держать нечем.
-        if seg.get("status") == "confirmed" and not include_confirmed:
+        if _human_text(seg) and not include_confirmed:
             return False
     elif rv.get("skipped"):
         return False
-    if seg.get("status") == "confirmed":
+    if _human_text(seg):
         if not include_confirmed:
             return False
         # След ответственного не теряем: `_replace_target` сейчас снимет
@@ -19262,7 +19457,11 @@ def _review_pick(project: dict, req: ReviewRequest) -> tuple:
         # — ещё и переписать. Разбор состава (`_plan_step`) читает ТЕ ЖЕ два
         # флага и называет причину вслух, иначе план обещал бы работу, которой
         # не будет.
-        segs = [s for s in segs if s.get("status") != "confirmed"]
+        # ТОТ ЖЕ предикат, что у `_plan_step`: по статусу отбор брал строки,
+        # которые разбор обещал пропустить, — ревизор их спрашивал (вызов
+        # модели на каждую), а применить вердикт было нечем. Платно и каждый
+        # прогон заново.
+        segs = [s for s in segs if not _human_text(s)]
     if not req.refresh:
         # `undone` читают ОБА: и разбор состава, и этот отбор. Разойдись
         # они — план говорит «пропустим», а шаг идёт в модель и платит.
@@ -19396,7 +19595,7 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
                 rv["code"] = REVIEW_VETOED
                 for k in veto:
                     vetoed[k] = vetoed.get(k, 0) + 1
-            elif seg.get("status") == "confirmed" and not req.include_confirmed:
+            elif _human_text(seg) and not req.include_confirmed:
                 skipped_confirmed.append(seg["id"])
                 held.append(seg["id"])
             else:
@@ -19450,7 +19649,7 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
             # `_run_segment_review` пометил бы такой вердикт кодом
             # REVIEW_CONFIRMED и `ready` не отдал; ветка работает
             # для `apply_saved`, где вердикты уже лежат.
-            if seg.get("status") == "confirmed" and not req.include_confirmed:
+            if _human_text(seg) and not req.include_confirmed:
                 skipped_confirmed.append(seg["id"])
             else:
                 ready.append(seg)
@@ -19965,7 +20164,7 @@ def accept_repair_candidates(pid: int, req: RepairAcceptBatchRequest = RepairAcc
             continue
         if not (_repair_findings(seg) or seg["id"] in gloss_bad):
             continue
-        if seg.get("status") == "confirmed" and not req.include_confirmed:
+        if _human_text(seg) and not req.include_confirmed:
             skipped_confirmed.append(seg["id"])
             continue
         matched.append(seg)
@@ -20515,8 +20714,11 @@ def _termcross(project: dict, first_model: Optional[str], job: Optional[dict] = 
             if _job_should_stop():
                 job["status"], skipped = "stopped", "stopped"
                 break
-            if _job_limit_hit(job):
-                skipped = "limit"
+            if _job_money_stop(job):
+                # КОД причины, а не общий «limit»: остановка по бюджету файла
+                # и по месячному лимиту организации поднимаются разными
+                # людьми и по разным поводам (закон `CLEAN_*`).
+                skipped = job.get("stopReason") or "limit"
                 break
         got.extend(_run_parallel(chunks[i:i + step], work))
     chunks = chunks[:len(got)]      # не спрошенные пачки — «не знаю», пары как были
@@ -20626,7 +20828,7 @@ def _job_termsheet(job: dict) -> None:
             # по парам переживают пересбор, как и при обычном повторе.
             _job_park(job)
             return
-        if _job_should_stop() or _job_limit_hit(job):
+        if _job_should_stop() or _job_money_stop(job):
             job["status"] = "stopped"
             job["counters"].update({"calls": calls, "failed": failed, "stoppedAt": job["done"]})
             return    # список не пишется: половина книги под листом — разнобой по построению
@@ -21287,7 +21489,7 @@ def style_check(pid: int, req: StyleCheckRequest):
     todo, skipped_confirmed = [], []
     for f in rep_["spelling"]:
         sg = by_id[f["id"]]
-        if sg.get("status") == "confirmed" and not req.include_confirmed:
+        if _human_text(sg) and not req.include_confirmed:
             skipped_confirmed.append(sg["id"])
             continue
         todo.append((sg, f))
@@ -21873,7 +22075,7 @@ def apply_term_context(pid: int, req: TermContextApplyRequest):
                     if (_norm_key(a["src"]), _norm_key(a["tgt"]), _norm_key(a["use"])) == want), None)
         if not adv:
             continue
-        if seg.get("status") == "confirmed" and not req.include_confirmed:
+        if _human_text(seg) and not req.include_confirmed:
             skipped_confirmed.append(seg["id"])
             continue
         matched.append((seg, adv))
@@ -22006,14 +22208,14 @@ def repair_batch(pid: int, req: RepairBatchRequest):
     rp_mdl = _resolve_model(req.model or _dm("repair"))["id"]
     candidates = [s for s in project["segments"]
                   if (id_filter is None or s["id"] in id_filter)
-                  and (req.include_confirmed or s.get("status") != "confirmed"
+                  and (req.include_confirmed or not _human_text(s)
                        or _confirm_override(s))
                   and _repairable(s, req.retry, project, rp_mdl)]
     # Пощада названа поимённо и БЕЗ тех, кого забрала объективная находка:
     # иначе отчёт говорил бы «не тронули», а текст был бы переписан.
     skipped_confirmed = ([s["id"] for s in project["segments"]
                           if (id_filter is None or s["id"] in id_filter)
-                          and s.get("status") == "confirmed"
+                          and _human_text(s)
                           and not _confirm_override(s)
                           and _repairable(s, req.retry, project, rp_mdl)]
                          if not req.include_confirmed else [])
@@ -22404,6 +22606,11 @@ def revert_segment(pid: int, sid: int):
     seg = get_segment(pid, sid)
     if seg["status"] == "confirmed":
         _withdraw_confirmation(seg, "revert")
+        # Подпись снята, но текст по-прежнему его: `_harvest_edited_terms`
+        # снимает хеш правки на подтверждении (база одноразовая), и без этой
+        # отметки строка оставалась бы беззащитной — следующий прогон
+        # переписал бы её, не сохранив даже `prevTarget`.
+        _mark_hand_written(seg)
         _audit("segment.unconfirm", project=pid, segment=sid)
     elif seg["status"] == "failed":
         seg["status"] = "new"
@@ -22422,17 +22629,23 @@ def _note_hand_edit(seg: dict, new_target: str) -> None:
     человеку правки машины. `editedToHash` — «последний текст, который писал
     человек»: совпал с тем, что лежит в сегменте, — цепочка правок
     не прерывалась, база жива; разошёлся — между правками писала машина,
-    и базой становится ЕЁ свежий текст. Перевод, набранный с нуля
-    (прежний target пуст), исправлением не считается: диффать его не с чем."""
+    и базой становится ЕЁ свежий текст.
+
+    Поля ДВА, и вопросы у них разные. `editedFrom` — сырьё для извлечения
+    терминов, и перевод, набранный с нуля (прежний target пуст), базой
+    не становится: диффать его не с чем. А `editedToHash` отвечает на другой
+    вопрос — «чей текст сейчас в строке» (`_hand_written`), — и он пишется
+    ВСЕГДА. Прежде он уходил вместе с базой, и самый частый вид ручной
+    работы — «человек перевёл строку сам» — оставался без защиты: прогон
+    переписывал набранное, не сохранив даже `prevTarget`."""
     prev = seg.get("target") or ""
     if seg.get("editedFrom") and seg.get("editedToHash") == _text_hash(prev):
-        seg["editedToHash"] = _text_hash(new_target or "")
+        pass
     elif prev.strip():
         seg["editedFrom"] = prev
-        seg["editedToHash"] = _text_hash(new_target or "")
     else:
         seg.pop("editedFrom", None)
-        seg.pop("editedToHash", None)
+    seg["editedToHash"] = _text_hash(new_target or "")
 
 
 # ─── Правка САМОГО оригинала ─────────────────────────────────────────
@@ -22459,6 +22672,20 @@ def _note_hand_edit(seg: dict, new_target: str) -> None:
 # из ФАЙЛА, — другая; строка, правленная человеком, — та же.
 SOURCE_EDIT_KEEP = float(os.environ.get("SOURCE_EDIT_KEEP", "") or 0.85)
 SOURCE_EDIT_MAX = 20000          # потолок от чужого запроса, не от вёрстки
+# Насколько строка вправе ВЫРАСТИ за одну правку. 20 000 знаков на строку —
+# это одиннадцать страниц, и вписать их молча нельзя: такая правка меняет
+# не начертание книги, а её состав. Но и ЗАПРЕЩАТЬ её нельзя — на странице
+# скана разбор отдаёт огрызок («Показания:») вместо абзаца на тысячу знаков,
+# и вписать туда текст можно только руками, а совет «замените файл»
+# бессмыслен: файл и есть та самая книга. Поэтому рубеж — ДВЕРЬ, а не стена:
+# 409 с кодом `too_big`, браузер спрашивает словами человека и шлёт `force`.
+# Тот же приём, что у `include_confirmed`: разрешение видно, названо
+# и дано на один раз.
+# Запас в ЗНАКАХ обязателен рядом с кратностью: строка «Рис. 7» — шесть
+# знаков, и втрое от неё это восемнадцать, то есть дописать подпись было бы
+# нельзя вовсе.
+SOURCE_EDIT_GROWTH = float(os.environ.get("SOURCE_EDIT_GROWTH", "") or 3.0)
+SOURCE_EDIT_GROW_MIN = int(os.environ.get("SOURCE_EDIT_GROW_MIN", "") or 300)
 SOURCE_EDIT_MIN_CHANGE = 2       # столько знаков — всегда поправка, а не другая строка
 # Что при правке оригинала НЕ снимается: счётчики (выше), след снятой подписи
 # и ручные границы строк (их копия и хвосты в карте исходника остаются —
@@ -22491,9 +22718,17 @@ def _source_similarity(old: str, new: str) -> float:
     return sm.ratio()
 
 
+def _source_growth_max(old: str) -> int:
+    """Сколько знаков строке позволено занять после правки БЕЗ разрешения."""
+    return int(max(len(old or "") * SOURCE_EDIT_GROWTH, len(old or "") + SOURCE_EDIT_GROW_MIN))
+
+
 class SegmentSourceRequest(BaseModel):
     source: str
     dry_run: bool = False
+    # Разрешение вписать НОВЫЙ текст, а не поправку (см. `SOURCE_EDIT_GROWTH`).
+    # Поле запроса, а не настройка: это решение на одну правку.
+    force: bool = False
 
 
 @app.post("/api/segments/{pid}/{sid}/source")
@@ -22533,9 +22768,21 @@ def edit_segment_source(pid: int, sid: int, req: SegmentSourceRequest):
         # по которым потом спишется, — считает их один и тот же вызов.
         tid = _tenant_of(project)
         quote = _hand_pages_quote(project, tid, _pricing_of(tid), seg, new)
+        # Рост строки — отдельный вопрос от денег: дописать можно и в пределах
+        # оплаченного, но строка, выросшая втрое, — это другой текст, а не
+        # починка распознавания. Сухой прогон НЕ бросает: он для того и нужен,
+        # чтобы браузер спросил заранее и одним вопросом со всем остальным.
+        grow_max = _source_growth_max(old)
+        too_big = len(new) > grow_max
         if req.dry_run or old == new:
             return {"ok": True, "mode": mode, "ratio": round(ratio, 3), "applied": False,
-                    "wasConfirmed": seg.get("status") == "confirmed", "pages": quote}
+                    "wasConfirmed": seg.get("status") == "confirmed", "pages": quote,
+                    "tooBig": too_big, "maxLen": grow_max}
+        if too_big and not req.force:
+            raise HTTPException(409, "Строка вырастает с %d знаков до %d — это не поправка, "
+                                     "а новый текст. Подтвердите, что вписываете его "
+                                     "намеренно, или загрузите файл новой редакцией."
+                                % (len(old), len(new)))
         _hand_pages_guard(project, tid, quote)
         if mode == "new":
             if (seg.get("target") or "").strip():
@@ -22590,7 +22837,7 @@ def edit_segment_source(pid: int, sid: int, req: SegmentSourceRequest):
     if tenants_touched:
         _tenants_changed()
     _audit("segment.source", project=pid, segment=sid, mode=mode,
-           pages=quote["debit"] or None)
+           pages=quote["debit"] or None, grown=True if too_big else None)
     return {"ok": True, "mode": mode, "ratio": round(ratio, 3), "applied": True,
             "pages": quote, "segment": _segment_for_client(seg, project)}
 
@@ -22770,7 +23017,7 @@ def _retranslate_bulk_check(project: dict, ids: list, include_confirmed: bool) -
     have = [s for s in project["segments"] if (s.get("target") or "").strip()]
     wanted = set(ids)
     again = [s for s in have if s["id"] in wanted
-             and (include_confirmed or s.get("status") != "confirmed")]
+             and (include_confirmed or not _human_text(s))]
     if len(again) < RETRANSLATE_BULK_MIN or len(again) < RETRANSLATE_BULK_SHARE * len(have):
         return False
     if _actor_is_super():
@@ -22839,9 +23086,9 @@ def batch_translate(pid: int, req: BatchRequest):
         # заверенный перевод нельзя. Попросил — переписываем, но с сохранением
         # прежнего текста и со статусом «требует проверки» (см. ниже).
         all_targets = [s for s in project["segments"] if s["id"] in id_filter
-                       and (req.include_confirmed or s["status"] != "confirmed")]
+                       and (req.include_confirmed or not _human_text(s))]
         skipped_confirmed = ([s["id"] for s in project["segments"]
-                              if s["id"] in id_filter and s["status"] == "confirmed"]
+                              if s["id"] in id_filter and _human_text(s)]
                              if not req.include_confirmed else [])
         # Перевод заново ВСЕГО файла кусками: квота файла (`_retranslate_bulk_check`)
         # стояла только у задачи, и тот же файл, присланный сюда порциями
@@ -23009,7 +23256,9 @@ def batch_translate(pid: int, req: BatchRequest):
             # «подтверждено». Машина не заверяет сама себя, и «подтвердил человек»
             # не должно оставаться на строке, которой человек не видел.
             was_confirmed = sg.get("status") == "confirmed"
-            if was_confirmed:
+            # Не только заверенное: набранный руками текст тоже не пропадает
+            # (тот же закон, что в `_replace_target`).
+            if was_confirmed or _hand_written(sg):
                 sg["prevTarget"] = sg.get("target", "")
                 sg.pop("confirmedBy", None)
                 sg.pop("confirmedAt", None)
@@ -25404,12 +25653,12 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
             # Прочитай мы `fix_confirmed` — галочка в строке РЕМОНТА
             # заставила бы строку ревизии обещать все заверенные сегменты
             # проекта, а шаг их не взял бы.
-            if seg.get("status") == "confirmed" and not rv_ask_confirmed:
+            if _human_text(seg) and not rv_ask_confirmed:
                 # Без разрешения заверенное не читаем вовсе: вызов на каждый
                 # такой сегмент стоит денег, а повторяется он после каждой
                 # правки человека. Разбор обязан сказать это вслух — и назвать
                 # тумблер, которым это открывается.
-                skip("заверено человеком — нужен тумблер «читать заверенные»")
+                skip("это ваша строка — нужен тумблер «читать заверенные»")
             elif rv.get("undone"):
                 # Человек откатил правку: спрашивать заново значит предлагать
                 # ему то же самое второй раз за его же деньги.
@@ -25485,10 +25734,10 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
             if (seg["id"] not in gloss_ids and seg["id"] not in (consist_ids or ())
                     and not rp_f):
                 skip("чинить нечего — находок нет")
-            elif (seg.get("status") == "confirmed" and not fix_confirmed
+            elif (_human_text(seg) and not fix_confirmed
                     and not _confirm_override(seg)):
-                skip("заверено человеком — включите «чинить подтверждённые»")
-            elif seg.get("status") == "confirmed" and not fix_confirmed:
+                skip("это ваша строка — включите «чинить мои строки»")
+            elif _human_text(seg) and not fix_confirmed:
                 # Объективная находка сильнее заверения. Причина названа
                 # отдельно: у этих сегментов последствие особое — с них
                 # снимется отметка человека, и он должен видеть, за что.
@@ -25502,10 +25751,11 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
                 # без неё строка читается как повтор уже сделанного.
                 run("уже чинила %s — выбранная модель зайдёт со вторым мнением"
                     % _model_label((seg.get("repair") or {}).get("model")), seg)
-            elif seg.get("status") == "confirmed":
+            elif _human_text(seg):
                 # Причина названа отдельно намеренно: цена у этих сегментов та же,
-                # а последствие другое — отметка «подтвердил человек» с них снимется.
-                run("есть находки, подтверждение будет снято", seg)
+                # а последствие другое — ваш текст уйдёт в «Прежний перевод»,
+                # а подпись, если она есть, снимется.
+                run("есть находки, ваш текст будет переписан", seg)
             else:
                 run("есть находки", seg)
 
@@ -26260,7 +26510,7 @@ def _job_run(job: dict):
             return
         # Лимит расхода — МЕЖДУ порциями, а не только на старте: прогон книги,
         # запущенный при остатке в цент, доработал бы до конца за наш счёт.
-        if _job_limit_hit(job):
+        if _job_money_stop(job):
             break
         # Уступить исполнителя, если ждёт ЧУЖОЙ прогон. Проверка стоит перед
         # порцией, а не после: остаток считается по ещё не тронутым `ids`,
@@ -26475,7 +26725,7 @@ def _job_execute(job: dict):
                 return
             # Лимит — ДО ветвлений по видам: у `apply_terms` одобрение с судьёй
             # и у `images` разбор зрячей моделью идут мимо цикла порций.
-            if _job_limit_hit(job):
+            if _job_money_stop(job):
                 job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 _job_persist(job)
                 return
@@ -26621,6 +26871,13 @@ def create_job(pid: int, req: JobRequest):
     # посреди работы (проверка между порциями в `_job_run`). Число клиентское —
     # то же, что уходит в историю расхода как `est_cost`, — поэтому это защита
     # от случайности, а не от умысла: жёсткий рубеж остаётся между порциями.
+    # Бюджет ФАЙЛА — тем же расчётом, что останавливает прогон между
+    # порциями. Без рубежа на старте задача вставала в очередь, доходила
+    # до `_job_execute` и тут же «stopped»: для человека это «нажал — ничего
+    # не произошло» вместо внятного отказа.
+    _b = _project_budget(_tenant_of(project), pid)
+    if _b and _b["over"]:
+        raise HTTPException(402, JOB_BUDGET_402 % (_b["usd"], _b["cap"], _b["pages"]))
     est = (req.params or {}).get("est_cost")
     if isinstance(est, (int, float)) and est > 0:
         st = _spend_status()

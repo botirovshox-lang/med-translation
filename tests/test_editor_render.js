@@ -429,10 +429,10 @@ try {
   const el4b = TabEditor({ store: storeStub, toast });
   walk(el4b, 0, out4);
   const t4 = out4.join("\n");
-  check(t4.indexOf("Чинить подтверждённые человеком") !== -1,
+  check(t4.indexOf("Чинить написанное человеком") !== -1,
         "переключатель «чинить подтверждённые» на месте");
-  check(t4.indexOf("в выборке нет заверенных сегментов с находками") !== -1,
-        "и рядом сказано, сколько заверенного ждёт починки");
+  check(t4.indexOf("в выборке нет ваших сегментов с находками") !== -1,
+        "и рядом сказано, сколько вашей работы ждёт починки");
   check(t4.indexOf("Что чинить — отметьте") !== -1,
         "прежние группы ремонта никуда не делись");
 
@@ -444,7 +444,7 @@ try {
     if (!n || typeof n !== "object" || armSwitch) return;
     if (Array.isArray(n)) return n.forEach(findSw);
     const p = n.props || {};
-    if (p.onClick && p["aria-label"] === "Чинить подтверждённые") { armSwitch = p.onClick; return; }
+    if (p.onClick && p["aria-label"] === "Чинить мои строки") { armSwitch = p.onClick; return; }
     (n.children || []).forEach(findSw);
   })(el4b);
   check(!!armSwitch, "переключатель кликабелен");

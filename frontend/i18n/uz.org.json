@@ -367,5 +367,12 @@
   "дописано руками сверх файла": "fayldan tashqari qo‘lda qo‘shilgan",
   " · дописано руками: ": " · qo‘lda qo‘shilgan: ",
   "$ на страницу": "sahifasiga $",
-  "страниц в проекте: ": "loyihadagi sahifalar: "
+  "страниц в проекте: ": "loyihadagi sahifalar: ",
+  "Сколько мы готовы потратить на одну страницу заказа у «": "«",
+  "», $ (пусто — по умолчанию ": "» uchun bir sahifaga qancha sarflashga tayyormiz, $ (bo‘sh — sukut bo‘yicha ",
+  "Нужно число от 0 или пусто.": "0 dan boshlab son yoki bo‘sh bo‘lsin.",
+  "Потолок на страницу обновлён": "Sahifa chegarasi yangilandi",
+  "потолок наших затрат на страницу заказа, $: ": "buyurtma sahifasiga sarf chegaramiz, $: ",
+  "$/стр. ★": "$/sahifa ★",
+  "$/стр.": "$/sahifa"
 }

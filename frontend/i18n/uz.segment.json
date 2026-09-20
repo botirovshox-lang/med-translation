@@ -151,5 +151,9 @@
  "Правка дописывает к файлу ": "Bu tahrir faylga ",
  " стр. — они спишутся из лимита организации.": " sahifa qo‘shadi — ular tashkilot chegarasidan yechiladi.",
  "Продолжить?": "Davom etilsinmi?",
- " Списано ": " Yechildi "
+ " Списано ": " Yechildi ",
+ "Расход по этому файлу дошёл до потолка, назначенного на страницу: прогон остановлен, сделанное сохранено. Поднимите потолок у администратора сервиса или доделайте файл по частям.": "Bu fayl bo‘yicha xarajat sahifaga belgilangan chegaraga yetdi: yurgizish to‘xtatildi, bajarilgani saqlandi. Chegarani xizmat ma’muridan ko‘tartiring yoki faylni qismlarga bo‘lib tugating.",
+ "Строка вырастает до ": "Qator ",
+ " знаков при пределе ": " belgigacha o‘sadi, chegara esa ",
+ " — это уже не поправка, а новый текст.": " — bu tuzatish emas, yangi matn."
 }

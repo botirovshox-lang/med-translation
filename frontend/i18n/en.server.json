@@ -293,7 +293,6 @@
  "в слове смешаны письменности: ": "scripts are mixed inside a word: ",
  "восстановлено буквиц ": "drop caps restored ",
  "заверено человеком": "confirmed by a human",
- "заверено человеком — нужен тумблер «читать заверенные»": "confirmed by a human — the “read the confirmed ones” switch is needed",
  "замечаний по терминам стало больше ": "there are more term issues ",
  "инверсия отрицания": "an inverted negation",
  "иное понятие": "a different concept",
@@ -361,5 +360,12 @@
  "часть текста не совпала дословно": "part of the text did not match word for word",
  "…»), а оригинал — с заглавной": "…”), while the source starts with a capital",
  "Правка дописывает к файлу ": "The edit adds ",
- " стр., а свободных осталось ": " page(s) to the file, and only "
+ " стр., а свободных осталось ": " page(s) to the file, and only ",
+ "Строка вырастает с ": "The line grows from ",
+ " знаков до ": " characters to ",
+ " — это не поправка, а новый текст. Подтвердите, что вписываете его намеренно, или загрузите файл новой редакцией.": " — that is a new text, not a fix. Confirm that you are entering it deliberately, or upload the file as a new edition.",
+ "Расход по этому файлу уже дошёл до потолка, назначенного на страницу ($": "Spending on this file has already reached the per-page cap ($",
+ " стр.): поднимите потолок у администратора сервиса.": " pages): ask the service administrator to raise the cap.",
+ "это ваша строка — нужен тумблер «читать заверенные»": "this is your line — needs the “read signed-off” switch",
+ "это ваша строка — включите «чинить мои строки»": "this is your line — turn on “fix my lines”"
 }

@@ -43,7 +43,6 @@
  "Вернули как было: ": "Restored as it was: ",
  "Вернуть как было? Это отменит: ": "Restore as it was? This undoes: ",
  "Вижу проблему, но починить не смогла": "I see a problem but could not fix it",
- "Вы отметили строки как проверенные, а я нашла ошибку": "You marked the lines as checked, and I found an error",
  "Вы отметили строки, а в них критичное замечание": "You marked the lines, and they carry a critical finding",
  "Вы отметили строки, а перевод спорит со словарём": "You marked the lines, but the translation contradicts the dictionary",
  "Вызовов модели нет — текст уже написан и прошёл объективные сверки.": "There are no model calls — the text is already written and has passed the objective checks.",
@@ -199,7 +198,6 @@
  "Подробнее": "More",
  "Подставить «": "Insert “",
  "Подставлено в ": "Inserted into ",
- "Подтверждено, но есть находки проверок": "Confirmed, but the checks have findings",
  "Подтверждено, но проверки нашли критичное": "Confirmed, but the checks found something critical",
  "Подтверждено, но спорит с глоссарием": "Confirmed, but it argues with the glossary",
  "Понизить запись": "Demote the entry",
@@ -313,7 +311,6 @@
  "перезапись только по явной команде": "overwriting only on an explicit command",
  "переписать можно только по явной галочке": "it can only be rewritten with an explicit tick",
  "попробуйте ещё раз": "try again",
- "починит «Ремонт» с галочкой «чинить подтверждённые»": "the “Repair” with the “fix confirmed ones” tick will fix it",
  "проверки прошли, но чисто не получилось": "the checks passed, but not cleanly",
  "прогон это не решит — состав и команды в «Подробностях»": "the run will not decide this — the composition and the commands are in “Details”",
  "разбор не получен — обновите страницу": "the analysis did not arrive — reload the page",
@@ -423,7 +420,6 @@
  "Чинить и заверенные вами (": "Fix the ones I confirmed too (",
  "только по найденным ошибкам; прежний текст уйдёт в «прошлый перевод», отметка «подтвердил человек» снимется": "only from the errors found; the previous text will go to “previous translation”, and the “confirmed by a human” mark will be removed",
  "Машине делать нечего": "There is nothing for the machine to do",
- "вы заверили, но проверки нашли ошибки — починит «Доделать сама» с галочкой «чинить и заверенные»": "you confirmed it, but the checks found errors — “Finish it yourself” with the “fix the confirmed ones too” tick will fix it",
  "вы заверили, но перевод расходится со словарём — починит «Доделать сама» с галочкой «чинить и заверенные»": "you confirmed it, but the translation diverges from the dictionary — “Finish it yourself” with the “fix the confirmed ones too” tick will fix it",
  " терминов ждут ответа «верно / не то»": " terms are waiting for a “correct / not right” answer",
  "ответ в «Словарях» закрывает все строки с термином": "an answer in “Dictionaries” closes every line with the term",
@@ -475,5 +471,9 @@
  "Сохранить правила": "Save rules",
  "Правила языка организации — во всех книгах на ": "Organisation language rules — in all books in ",
  "Не получилось: ": "Failed: ",
- "Терм-лист записан, сверка второй моделью остановлена": "The term list is saved; the check by the second model was stopped"
+ "Терм-лист записан, сверка второй моделью остановлена": "The term list is saved; the check by the second model was stopped",
+ "Ваша работа, но есть находки проверок": "Your work, but checks found something",
+ "починит «Ремонт» с галочкой «чинить мои строки»": "“Repair” fixes these with the “fix my lines” switch",
+ "Это ваши строки, а я нашла в них ошибку": "These are your lines, and I found an error in them",
+ "вы писали или заверяли эти строки, а проверки нашли ошибки — починит «Доделать сама» с галочкой «чинить мои строки»": "you wrote or signed off these lines and the checks found errors — “Finish it yourself” fixes them with the “fix my lines” switch"
 }

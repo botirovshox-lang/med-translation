@@ -1489,11 +1489,17 @@ function TabEditor({ store, toast }) {
        что списано на самом деле. */
     if (probe && probe.pages && probe.pages.ask)
       warn.push(TR("Правка дописывает к файлу ") + probe.pages.debit.toFixed(1) + TR(" стр. — они спишутся из лимита организации."));
+    /* Строка, выросшая втрое, — другой текст, а не починка распознавания.
+       Сервер её не пишет без разрешения (409), поэтому разрешение
+       спрашиваем тут же и шлём его следующим запросом. */
+    if (probe && probe.tooBig)
+      warn.push(TR("Строка вырастает до ") + now.length + TR(" знаков при пределе ")
+                + probe.maxLen + TR(" — это уже не поправка, а новый текст."));
     if (warn.length && !confirm(warn.join("\n\n") + "\n\n" + TR("Продолжить?"))) {
       setEditBusy(false); return;
     }
     let res = null;
-    try { res = await window.API.editSource(project.id, seg.id, now, false); }
+    try { res = await window.API.editSource(project.id, seg.id, now, false, !!(probe && probe.tooBig)); }
     catch (e) { setEditBusy(false); toast.error(TR("Не получилось"), e.message || String(e)); return; }
     if (res && res.segment) store.mergeServerSegments(project.id, [res.segment]);
     closeEdit();
@@ -1798,6 +1804,8 @@ function TabEditor({ store, toast }) {
         ? " " + TR("Лимит расхода организации исчерпан: прогон остановлен, сделанное сохранено. Остальные сегменты возьмёт следующий прогон, когда лимит поднимут или сбросят 1-го числа.")
         : j.stopReason === "provider_quota"
           ? " " + TR("У сервиса закончился баланс у поставщика моделей: прогон остановлен, сделанное сохранено. Мы уже знаем об этом; остальные сегменты возьмёт следующий прогон, когда баланс пополнят.")
+        : j.stopReason === "budget"
+          ? " " + TR("Расход по этому файлу дошёл до потолка, назначенного на страницу: прогон остановлен, сделанное сохранено. Поднимите потолок у администратора сервиса или доделайте файл по частям.")
         : (j.error ? " " + j.error : "");
       const termsMsg = c.termsApproved ? TR(" · терминов уже в глоссарии: ") + c.termsApproved : "";
       toast.warning(name + TR(": остановлено"), j.done + TR(" из ") + j.total
@@ -2071,19 +2079,25 @@ function TabEditor({ store, toast }) {
       && (tc.findings || []).some(f => tcActionable.indexOf(f.severity) !== -1);
     return !!(bcHit || tcHit || glossIds.has(s.id));
   };
+  /* Работа человека ЛЮБОГО вида: подпись или набранный руками текст.
+     Оба признака считает сервер — статус и `handWritten`. */
+  const rpHumanText = (s) => s.status === "confirmed" || !!s.handWritten;
   const rpCandidate = (s, idSet) => {
     if (idSet && !idSet.has(s.id)) return false;
-    // Подтверждённые — только по явной галочке, и ровно по тому же правилу,
+    // Работа человека — только по явной галочке, и ровно по тому же правилу,
     // что на сервере. Без этой строки счётчик и смета считали работу, которую
     // прогон молча пропускал (skipped_confirmed), — числа под кнопкой врали.
-    if (s.status === "confirmed" && !rpFixConfirmed) return false;
+    // Ручную правку узнаёт признак `handWritten` С СЕРВЕРА (`_hand_written`):
+    // повторять предикат здесь нельзя — он стоит на хеше текста, и копия
+    // разошлась бы первой же правкой (закон `needs_judge`).
+    if (rpHumanText(s) && !rpFixConfirmed) return false;
     return rpFindingHit(s, rpFixConfirmed ? impactAllIds : impactPendingIds);
   };
   // Сколько заверенного человеком ждёт починки — показываем ВСЕГДА, даже при
   // снятой галочке: иначе о запертой работе можно узнать, только случайно
   // включив переключатель.
   const rpConfirmedWaiting = project.segments.filter(s =>
-    s.status === "confirmed" && (!currentIdSet || currentIdSet.has(s.id))
+    rpHumanText(s) && (!currentIdSet || currentIdSet.has(s.id))
     && rpFindingHit(s, impactAllIds)).length;
 
   // tried приходит с бэкенда: этот же текст уже проходил через ремонт
@@ -2406,13 +2420,13 @@ function TabEditor({ store, toast }) {
         React.createElement("div", { className: "row between", style: { gap: 12, flexWrap: "wrap" } },
           React.createElement("div", { style: { minWidth: 0 } },
             React.createElement("div", { style: { fontSize: 12.5, fontWeight: 600, display: "flex", alignItems: "center" } },
-              TR("Чинить подтверждённые человеком"),
+              TR("Чинить написанное человеком"),
               React.createElement(InfoTip, { title: TR("Что произойдёт"), body: TR("Ремонт правит только по конкретным находкам и меняет минимум слов — сегмент не переводится заново, и полной цены прогона тут нет. Но прежний текст уйдёт в «прошлый перевод», статус станет «требует проверки», а отметка «подтвердил человек» снимется: она относилась к тексту, которого больше нет.\n\nЕсли после правки оценка УПАЛА, текст откатывается вместе с прежними проверками — ровные оценки правку не отменяют.\n\nУ захода, где кроме мелких замечаний по терминам ничего не было, правило строже: он принимается, только если снял хотя бы одно из тех замечаний, ради которых заходили. Иначе это размен одной придирки на другую — работа за деньги без движения к концу.\n\nГалочка действует только на этот шаг. Перевод по ней ничего не перегоняет.") })),
             React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
               rpConfirmedWaiting
-                ? rpConfirmedWaiting + TR(" заверенных сегментов с находками ждут решения")
-                : TR("в выборке нет заверенных сегментов с находками"))),
-          React.createElement(Switch, { on: rpFixConfirmed, label: TR("Чинить подтверждённые"),
+                ? rpConfirmedWaiting + TR(" ваших сегментов с находками ждут решения")
+                : TR("в выборке нет ваших сегментов с находками"))),
+          React.createElement(Switch, { on: rpFixConfirmed, label: TR("Чинить мои строки"),
             onClick: toggleRpFixConfirmed })),
         rpFixConfirmed && React.createElement("div", { className: "dim", style: { fontSize: 11.5, lineHeight: 1.5 } },
           TR("С этих сегментов снимется отметка «подтвердил человек» — их придётся заверить заново.")),

@@ -367,5 +367,12 @@
   "дописано руками сверх файла": "added by hand beyond the file",
   " · дописано руками: ": " · added by hand: ",
   "$ на страницу": "$ per page",
-  "страниц в проекте: ": "pages in the project: "
+  "страниц в проекте: ": "pages in the project: ",
+  "Сколько мы готовы потратить на одну страницу заказа у «": "How much we are willing to spend per ordered page at “",
+  "», $ (пусто — по умолчанию ": "”, $ (empty — default ",
+  "Нужно число от 0 или пусто.": "A number from 0, or empty.",
+  "Потолок на страницу обновлён": "Per-page cap updated",
+  "потолок наших затрат на страницу заказа, $: ": "our spending cap per ordered page, $: ",
+  "$/стр. ★": "$/page ★",
+  "$/стр.": "$/page"
 }

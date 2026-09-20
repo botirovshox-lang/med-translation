@@ -43,7 +43,6 @@
   "Вернули как было: ": "Avvalgi holiga qaytarildi: ",
   "Вернуть как было? Это отменит: ": "Avvalgidek qaytarilsinmi? Bu bekor qiladi: ",
   "Вижу проблему, но починить не смогла": "Muammoni ko'ryapman, lekin tuzata olmadim",
-  "Вы отметили строки как проверенные, а я нашла ошибку": "Siz qatorlarni tekshirilgan deb belgiladingiz, men esa xato topdim",
   "Вы отметили строки, а в них критичное замечание": "Siz qatorlarni belgiladingiz, ularda esa jiddiy izoh bor",
   "Вы отметили строки, а перевод спорит со словарём": "Siz qatorlarni belgiladingiz, tarjima esa lug'atga zid",
   "Вызовов модели нет — текст уже написан и прошёл объективные сверки.": "Modelga murojaat yo'q — matn allaqachon yozilgan va obyektiv tekshiruvlardan o'tgan.",
@@ -199,7 +198,6 @@
   "Подробнее": "Batafsil",
   "Подставить «": "Qo'yilsin: «",
   "Подставлено в ": "Qo'yildi: ",
-  "Подтверждено, но есть находки проверок": "Tasdiqlangan, lekin tekshiruv topilmalari bor",
   "Подтверждено, но проверки нашли критичное": "Tasdiqlangan, lekin tekshiruvlar kritik narsa topdi",
   "Подтверждено, но спорит с глоссарием": "Tasdiqlangan, lekin lug'atga zid",
   "Понизить запись": "Yozuvni pasaytirish",
@@ -313,7 +311,6 @@
   "перезапись только по явной команде": "qayta yozish faqat aniq buyruq bilan",
   "переписать можно только по явной галочке": "qayta yozish faqat aniq belgilash bilan mumkin",
   "попробуйте ещё раз": "yana urinib ko'ring",
-  "починит «Ремонт» с галочкой «чинить подтверждённые»": "«Tasdiqlanganlarni tuzatish» belgisi bilan «Ta'mir» tuzatadi",
   "проверки прошли, но чисто не получилось": "tekshiruvlar o'tdi, lekin toza chiqmadi",
   "прогон это не решит — состав и команды в «Подробностях»": "buni ishlov hal qilmaydi — tarkib va buyruqlar «Tafsilotlar»da",
   "разбор не получен — обновите страницу": "tahlil olinmadi — sahifani yangilang",
@@ -423,7 +420,6 @@
   "Чинить и заверенные вами (": "Siz tasdiqlaganlarni ham tuzatish (",
   "только по найденным ошибкам; прежний текст уйдёт в «прошлый перевод», отметка «подтвердил человек» снимется": "faqat topilgan xatolar bo'yicha; avvalgi matn «oldingi tarjima»ga o'tadi, «inson tasdiqlagan» belgisi olib tashlanadi",
   "Машине делать нечего": "Mashinaga ish yo'q",
-  "вы заверили, но проверки нашли ошибки — починит «Доделать сама» с галочкой «чинить и заверенные»": "siz tasdiqlagansiz, lekin tekshiruvlar xato topdi — «O‘zim tugataman» «tasdiqlanganlarni ham tuzatish» belgisi bilan tuzatadi",
   "вы заверили, но перевод расходится со словарём — починит «Доделать сама» с галочкой «чинить и заверенные»": "siz tasdiqlagansiz, lekin tarjima lug'atdan farq qiladi — «O‘zim tugataman» «tasdiqlanganlarni ham tuzatish» belgisi bilan tuzatadi",
   " терминов ждут ответа «верно / не то»": " ta atama «to'g'ri / noto'g'ri» javobini kutmoqda",
   "ответ в «Словарях» закрывает все строки с термином": "«Lug'atlar»dagi javob atama bor barcha qatorlarni yopadi",
@@ -475,5 +471,9 @@
   "Сохранить правила": "Qoidalarni saqlash",
   "Правила языка организации — во всех книгах на ": "Tashkilotning til qoidalari — barcha kitoblarda, til: ",
   "Не получилось: ": "Bajarilmadi: ",
-  "Терм-лист записан, сверка второй моделью остановлена": "Atamalar ro'yxati saqlandi, ikkinchi model bilan solishtirish to'xtatildi"
+  "Терм-лист записан, сверка второй моделью остановлена": "Atamalar ro'yxati saqlandi, ikkinchi model bilan solishtirish to'xtatildi",
+  "Ваша работа, но есть находки проверок": "Sizning ishingiz, lekin tekshiruvlar topdi",
+  "починит «Ремонт» с галочкой «чинить мои строки»": "«Tuzatish» «mening qatorlarimni tuzatish» belgisi bilan tuzatadi",
+  "Это ваши строки, а я нашла в них ошибку": "Bu sizning qatorlaringiz, men ularda xato topdim",
+  "вы писали или заверяли эти строки, а проверки нашли ошибки — починит «Доделать сама» с галочкой «чинить мои строки»": "siz bu qatorlarni yozgan yoki tasdiqlagansiz, tekshiruvlar esa xato topdi — «O‘zim tugataman» «mening qatorlarimni tuzatish» belgisi bilan tuzatadi"
 }

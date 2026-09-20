@@ -293,7 +293,6 @@
  "в слове смешаны письменности: ": "so'zda yozuvlar aralashgan: ",
  "восстановлено буквиц ": "tiklangan bosh harflar ",
  "заверено человеком": "odam tasdiqlagan",
- "заверено человеком — нужен тумблер «читать заверенные»": "odam tasdiqlagan — «tasdiqlanganlarni o'qish» tugmasi kerak",
  "замечаний по терминам стало больше ": "atamalar bo'yicha kamchiliklar ko'paydi: ",
  "инверсия отрицания": "inkorning teskarisi",
  "иное понятие": "boshqa tushuncha",
@@ -361,5 +360,12 @@
  "часть текста не совпала дословно": "matnning bir qismi so'zma-so'z mos kelmadi",
  "…»), а оригинал — с заглавной": "…»), asl matn esa bosh harf bilan",
  "Правка дописывает к файлу ": "Tahrir faylga ",
- " стр., а свободных осталось ": " sahifa qo‘shadi, bo‘sh qolgani esa "
+ " стр., а свободных осталось ": " sahifa qo‘shadi, bo‘sh qolgani esa ",
+ "Строка вырастает с ": "Qator ",
+ " знаков до ": " belgidan ",
+ " — это не поправка, а новый текст. Подтвердите, что вписываете его намеренно, или загрузите файл новой редакцией.": " belgigacha o‘sadi — bu tuzatish emas, yangi matn. Ataylab kiritayotganingizni tasdiqlang yoki faylni yangi tahrir sifatida yuklang.",
+ "Расход по этому файлу уже дошёл до потолка, назначенного на страницу ($": "Bu fayl bo‘yicha xarajat sahifaga belgilangan chegaraga yetdi ($",
+ " стр.): поднимите потолок у администратора сервиса.": " sahifa): chegarani xizmat ma’muridan ko‘tartiring.",
+ "это ваша строка — нужен тумблер «читать заверенные»": "bu sizning qatoringiz — «tasdiqlanganlarni o‘qish» tugmasi kerak",
+ "это ваша строка — включите «чинить мои строки»": "bu sizning qatoringiz — «mening qatorlarimni tuzatish» ni yoqing"
 }

@@ -297,9 +297,11 @@ WORD = "слово%d"
 BIG = " ".join([WORD % i for i in range(1200)])        # ~4.8 страницы
 
 
-def edit(i, text, dry=False):
+def edit(i, text, dry=False, force=True):
+    """`force` по умолчанию True: почти везде ниже мы ВПИСЫВАЕМ текст
+    намеренно, а дверь роста строки проверяется своим разделом (7г)."""
     return c.post("/api/segments/%d/%d/source" % (pid, ids[i]), headers=H(A),
-                  json={"source": text, "dry_run": dry})
+                  json={"source": text, "dry_run": dry, "force": force})
 
 
 def used():
@@ -430,6 +432,148 @@ rec["pagesCredit"] = 100000.0
 rec["pagesUsed"] = 0.0
 check(main._tenant_usage(TID)["handPages"] > 4,
       "дописанное руками видно отдельной строкой: %s" % main._tenant_usage(TID)["handPages"])
+
+print("")
+print("=== 7г. Строка, выросшая втрое, — новый текст, а не поправка ===")
+# Дверь, а не стена: на странице скана разбор отдаёт огрызок вместо абзаца,
+# и вписать туда текст можно только руками. Поэтому 409 с разрешением,
+# а не запрет, и сухой прогон о нём ПРЕДУПРЕЖДАЕТ, а не падает.
+# Строка к этому месту уже выросла прошлыми разделами — ставим короткий
+# оригинал прямо в проект: мерка роста считается от НЕГО.
+live(pid)["segments"][3]["source"] = "Показания к применению:"
+short = live(pid)["segments"][3]["source"]
+huge = short + " " + " ".join(WORD % k for k in range(300))
+r = edit(3, huge, dry=True)
+check(r.status_code == 200 and r.json()["tooBig"] is True,
+      "сухой прогон называет рост заранее: %s" % r.text[:160])
+check(r.json()["maxLen"] == main._source_growth_max(short),
+      "и называет потолок тем же числом, каким его считает сервер")
+r = edit(3, huge, force=False)
+check(r.status_code == 409, "без разрешения — 409: %s" % r.status_code)
+check(live(pid)["segments"][3]["source"] == short, "и ничего не записано")
+r = edit(3, huge, force=True)
+check(r.status_code == 200 and live(pid)["segments"][3]["source"] == huge,
+      "с разрешением — записано: %s" % r.status_code)
+# Запас в знаках: у короткой подписи «втрое» — это восемнадцать знаков,
+# и без запаса дописать её было бы нельзя вовсе.
+check(main._source_growth_max("Рис. 7") >= 300 + len("Рис. 7"),
+      "у короткой строки потолок — запас в знаках, а не кратность: %s"
+      % main._source_growth_max("Рис. 7"))
+
+print("")
+print("=== 7д. Работа человека: набранный и правленый перевод ===")
+# Пощада была одна — подпись. Человек, написавший перевод в строке и не
+# нажавший «Подтвердить», для ремонта, ревизии и остальных пакетов был
+# неотличим от машины: прогон переписывал его текст, а прежний не сохранялся
+# даже в `prevTarget`. Состояние заводим НАСТОЯЩИМ эндпоинтом: фабрикация
+# полей руками прошла бы и на сломанном коде — см. «Промпты проверяются
+# НАСТОЯЩИМ кодом» в CLAUDE.md.
+hw = ids[2]
+
+
+def set_target(sid, text, status=None):
+    body = {"target": text}
+    if status:
+        body["status"] = status
+    return c.post("/api/segments/%d/%d/update" % (pid, sid), headers=H(A), json=body)
+
+
+def seg_of(sid):
+    return next(x for x in live(pid)["segments"] if x["id"] == sid)
+
+
+# 1) Перевод, НАБРАННЫЙ с нуля (строка была пустой) — самый частый вид
+#    ручной работы, и он тоже под защитой.
+live(pid)["segments"][2]["target"] = ""
+live(pid)["segments"][2]["status"] = "new"
+live(pid)["segments"][2].pop("editedBy", None)
+live(pid)["segments"][2].pop("editedToHash", None)
+r = set_target(hw, "qo'lda yozilgan tarjima")
+check(r.status_code == 200, "перевод набран через /update: %s" % r.status_code)
+check(main._hand_written(seg_of(hw)), "набранный с нуля — работа человека")
+check(main._human_text(seg_of(hw)), "и рубеж пакетов его видит")
+
+# 2) Машина написала поверх — защита снимается САМА, а текст не пропадает.
+sg = seg_of(hw)
+main._replace_target(sg, "машинный вариант", "m", "GPT_REQUIRED")
+check(sg.get("prevTarget") == "qo'lda yozilgan tarjima",
+      "набранное ушло в «Прежний перевод»: %s" % sg.get("prevTarget"))
+check(sg.get("status") == "review", "и статус говорит «посмотри»: %s" % sg.get("status"))
+check(not main._hand_written(sg), "защита снялась сама")
+check(sg.get("editedBy") is None and sg.get("prevEditedBy") is not None,
+      "след правки уехал вместе с текстом, а не врёт про машинный: %s / %s"
+      % (sg.get("editedBy"), sg.get("prevEditedBy")))
+
+# 3) Стёртый перевод работой человека НЕ считается — иначе «стёр, чтобы
+#    перевести заново» получало бы отказ «это ваш текст» (инвариант 33).
+r = set_target(hw, "")
+check(r.status_code == 200 and not main._hand_written(seg_of(hw)),
+      "пустая строка — не работа человека")
+check(main._needs_translation(seg_of(hw)), "и она по-прежнему ждёт перевода")
+
+# 4) Рубеж ПАКЕТА на настоящей находке: ремонт ручную строку без разрешения
+#    не берёт и НАЗЫВАЕТ её, а не молчит.
+r = set_target(hw, "Tuberkulez o'pka kasalligi")
+check(r.status_code == 200, "текст набран заново")
+sg = seg_of(hw)
+th = main._text_hash((sg.get("target") or "").strip())
+sg["termcheck"] = {"target_hash": th, "model": "m", "version": 1,
+                   "findings": [{"severity": "major", "tgt_term": "Tuberkulez",
+                                 "why": "калька", "use": "Sil"}]}
+check(bool(main._repair_findings(sg)), "находка на строке есть — рубеж проверяем на работе")
+# Рубеж читаем РАЗБОРОМ СОСТАВА: он считает тем же кодом, что прогон,
+# и модель не зовёт — то есть проверка работает и без ключа.
+r = c.post("/api/projects/%d/run-plan" % pid, headers=H(A),
+           json={"segment_ids": [hw], "steps": ["repair"]})
+check(r.status_code == 200, "разбор состава ответил: %s %s" % (r.status_code, r.text[:120]))
+plan = next((x for x in (r.json().get("steps") or []) if x.get("step") == "repair"), {})
+check(plan.get("count") == 0,
+      "ремонт ручную строку БЕЗ разрешения не берёт: %s" % str(plan)[:200])
+why = " ".join(str(x) for x in (plan.get("skips") or []))
+check("ваша строка" in why or "мои строки" in why,
+      "и причина названа человеческими словами, а не молчанием: %s" % why[:160])
+# С разрешением — берёт, и это то же самое разрешение.
+r = c.post("/api/projects/%d/run-plan" % pid, headers=H(A),
+           json={"segment_ids": [hw], "steps": ["repair"], "include_confirmed": True})
+plan2 = next((x for x in (r.json().get("steps") or []) if x.get("step") == "repair"), {})
+check(plan2.get("count") == 1, "с разрешением ремонт её берёт: %s" % str(plan2)[:200])
+check(seg_of(hw).get("target") == "Tuberkulez o'pka kasalligi", "текст на месте")
+
+# 4а) Корзины: ручная строка с находкой — у ЧЕЛОВЕКА, а не у машины, и корзины
+#     остаются исчерпывающими (иначе сегмент исчезает с экрана).
+r = c.get("/api/projects/%d/analysis" % pid, headers=H(A))
+check(r.status_code == 200, "разбор посчитан: %s" % r.status_code)
+if r.status_code == 200:
+    tk = r.json().get("turnkey") or {}
+    ready, mach, hum = tk.get("ready") or [], tk.get("machine") or [], tk.get("human") or []
+    check(hw in hum, "ручная строка с находкой — у ЧЕЛОВЕКА: %s" % hum)
+    check(hw not in mach and hw not in ready,
+          "и не обещана машине и не объявлена готовой: machine=%s ready=%s" % (mach, ready))
+    check(hw not in (tk.get("confirmed") or []),
+          "срез подписи её не считает — подписи нет: %s" % tk.get("confirmed"))
+    # Корзины непересекающиеся и в сумме равны числу строк: сегмент, выпавший
+    # из всех, исчезает с экрана, а это худшая из здешних ошибок.
+    allb = ready + mach + hum
+    check(len(allb) == len(set(allb)), "корзины не пересекаются: %s" % allb)
+    check(len(allb) == len(live(pid)["segments"]),
+          "и в сумме равны числу строк: %d из %d" % (len(allb), len(live(pid)["segments"])))
+sg.pop("termcheck", None)
+
+# 5) Признак для браузера считает СЕРВЕР: копия предиката в `.jsx`
+#    разошлась бы (он стоит на хеше текста).
+r = c.get("/api/projects/%d" % pid, headers=H(A))
+row = next(x for x in r.json()["segments"] if x["id"] == hw)
+check(row.get("handWritten") is True, "handWritten уезжает браузеру: %s" % row.get("handWritten"))
+
+# 6) Снял подпись — текст остался твоим. `_harvest_edited_terms` снимает хеш
+#    на подтверждении, и без отметки строка осталась бы беззащитной.
+r = c.post("/api/segments/%d/%d/confirm" % (pid, hw), headers=H(A))
+check(r.status_code == 200, "строка заверена: %s" % r.status_code)
+check(main._human_text(seg_of(hw)), "заверенное — работа человека по статусу")
+r = c.post("/api/segments/%d/%d/revert" % (pid, hw), headers=H(A))
+check(r.status_code == 200 and seg_of(hw).get("status") != "confirmed", "подпись снята")
+check(main._hand_written(seg_of(hw)),
+      "и текст снова под защитой как ручной, а не остался голым")
 
 print("")
 if fail:

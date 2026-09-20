@@ -657,6 +657,42 @@ check(res2["saved"] == 1 and len(kept) <= main.IMAGE_LOCAL_MAX_LINES,
 check(all(len(b.get("text") or "") <= main.IMAGE_LOCAL_MAX_CHARS * 2 for b in kept),
       "длина текста подрезана потолком")
 
+print("-- пустой счёт поставщика не отнимает уже прочитанное --")
+# Боевой случай: у книги «Пчелиная аптека» после пересборки не вернулись
+# сегменты обложки — её текст был прочитан и оплачен месяцем раньше и лежал
+# в карте по отпечатку, но пачка встала на пустом счёте ДО шага «сегменты»,
+# и бесплатная работа пропала вместе с платной.
+data = main._load_source_map(1)
+rec = [im for im in data["images"] if im.get("blocks")][0]
+done = dict(rec["blocks"][0], text="Рис. 1. Схема лёгких")   # прочитан прежде
+done.pop("skip", None)
+done.pop("seg", None)
+todo = dict(done, box=[10, 120, 200, 150])                  # а этот ещё нет
+todo.pop("text", None)
+rec["blocks"] = [done, todo]                # сегменты снесены пересборкой
+main._save_source_map(1, data)
+project["segments"] = [s for s in project["segments"]
+                       if (s.get("origin") or {}).get("kind") != "image"]
+
+
+def _no_credits(*a, **k):
+    raise RuntimeError("Error code: 429 - insufficient_quota")
+
+
+orig_read, orig_quota = main._openai_read_image, main._quota_recent
+main._openai_read_image, main._quota_recent = _no_credits, lambda: True
+try:
+    qjob = new_job(dry_run=False)
+    main._job_images(qjob)
+finally:
+    main._openai_read_image, main._quota_recent = orig_read, orig_quota
+check(qjob.get("stopReason") == "provider_quota" and qjob["status"] == "stopped",
+      "прогон встал с кодом пустого счёта: %s/%s" % (qjob["status"], qjob.get("stopReason")))
+made = [s for s in project["segments"] if (s.get("origin") or {}).get("kind") == "image"]
+check(len(made) >= 1,
+      "сегменты по УЖЕ прочитанным блокам заведены, хотя счёт поставщика пуст: %d" % len(made))
+check(all((s.get("source") or "").strip() for s in made), "и у каждого есть текст надписи")
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

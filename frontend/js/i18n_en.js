@@ -58,6 +58,7 @@ window.I18N.register("en", {
  "Вход": "Sign in",
  "Вы": "You",
  "Вы вошли в систему.": "You are signed in.",
+ "Вы пришли по приглашению — оно учтётся после подтверждения почты.": "You came via an invitation — it will count once you confirm your email.",
  "Выйти": "Sign out",
  "Высокий": "High",
  "Выставляется отдельно, автоматическим анализом по длине не назначается.\nТребует ручной проверки.\n→ Маршрут: HUMAN_REVIEW_REQUIRED.": "Set separately; the automatic length analysis never assigns it.\nRequires a manual check.\n→ Route: HUMAN_REVIEW_REQUIRED.",

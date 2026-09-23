@@ -350,6 +350,34 @@ function authRememberBrand(b) {
   try { if (b) localStorage.setItem(AUTH_BRAND_LS, b); } catch (e) { /* приватное окно */ }
 }
 
+/* Код приглашения из адреса (`/?ref=...`). Это МЕТКА ПРОИСХОЖДЕНИЯ, а не
+   дверь: он ничего не открывает и никуда не пускает — человек регистрируется
+   той же формой, с почтой, паролем и согласием с офертой.
+
+   Живёт в localStorage, и это не лень: между переходом по ссылке и нажатием
+   «Зарегистрироваться» человек уходит читать оферту и политику — то есть
+   уводит страницу с адреса, где стоял `?ref=`. Без памяти код терялся бы
+   ровно у того, кто дочитал документы.
+
+   Форма проверяется ЗДЕСЬ же: код едет в тело запроса, и свободной строке
+   из адресной строки там не место. Сервер проверяет его ещё раз — это
+   удобство, а не рубеж. */
+const AUTH_REF_LS = "mct-ref";
+const AUTH_REF_RE = /^[A-Z2-9]{4,16}$/;
+function authRefCode() {
+  let got = "";
+  try {
+    const m = /[?&]ref=([^&#]+)/.exec(window.location.search || "");
+    if (m) got = decodeURIComponent(m[1]).toUpperCase().replace(/-/g, "");
+    if (got && AUTH_REF_RE.test(got)) localStorage.setItem(AUTH_REF_LS, got);
+    else got = localStorage.getItem(AUTH_REF_LS) || "";
+  } catch (e) { /* приватное окно — код просто не запомнится */ }
+  return AUTH_REF_RE.test(got) ? got : "";
+}
+function authRefUsed() {
+  try { localStorage.removeItem(AUTH_REF_LS); } catch (e) { /* приватное окно */ }
+}
+
 /* Язык интерфейса на экране ВХОДА. Нужен потому, что до входа язык берётся
    из кэша браузера либо из умолчания сервиса (узбекский): человеку, который
    видит незнакомый экран, нечем его переключить — вкладка «Профиль» лежит
@@ -436,7 +464,12 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
         onLogin();
       } else if (mode === "register") {
         const r = await window.API.register({ email: f.email, password: f.password,
-                                              org: f.org, name: f.name, accept: accepted });
+                                              org: f.org, name: f.name, accept: accepted,
+                                              // Метка происхождения. Неизвестный код сервер
+                                              // молча игнорирует: чужая или устаревшая
+                                              // ссылка не должна закрывать регистрацию.
+                                              ref: authRefCode() });
+        authRefUsed();     // код сработал — второй раз он не нужен
         setNote(r.note || TR("Код отправлен на почту."));
         setMode("verify");
       } else if (mode === "verify") {
@@ -512,6 +545,13 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
          нажмёт «Зарегистрироваться» и уйдёт ждать письма, которого не будет. */
       mode === "register" && !info.mail && React.createElement("div", { className: "dim", style: { fontSize: 12, marginTop: 8 } },
         TR("Отправка почты на сервере не настроена: код придётся взять у администратора.")),
+      /* Пришёл по приглашению — говорим об этом: иначе метка происхождения
+         работает втайне от человека, а он вправе знать, что его приход
+         кому-то засчитается. Что именно начислится — не обещаем: числа
+         программы живут на сервере и меняются, а обещание с экрана входа
+         никто потом не проверит. */
+      mode === "register" && authRefCode() && React.createElement("div", { className: "dim", style: { fontSize: 12, marginTop: 8 } },
+        TR("Вы пришли по приглашению — оно учтётся после подтверждения почты.")),
       /* Согласие — условие заключения договора: сервер откажет без него,
          поэтому и кнопка погашена. Ссылки открываются в новой вкладке,
          чтобы человек не потерял заполненную форму. */

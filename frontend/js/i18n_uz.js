@@ -58,6 +58,7 @@ window.I18N.register("uz", {
  "Вход": "Kirish",
  "Вы": "Siz",
  "Вы вошли в систему.": "Tizimga kirdingiz.",
+ "Вы пришли по приглашению — оно учтётся после подтверждения почты.": "Siz taklif orqali keldingiz — u pochtani tasdiqlaganingizdan so'ng hisobga olinadi.",
  "Выйти": "Chiqish",
  "Высокий": "Yuqori",
  "Выставляется отдельно, автоматическим анализом по длине не назначается.\nТребует ручной проверки.\n→ Маршрут: HUMAN_REVIEW_REQUIRED.": "Alohida qo'yiladi, uzunlik bo'yicha avtomatik tahlil buni belgilamaydi.\nQo'lda tekshirishni talab qiladi.\n→ Yo'nalish: HUMAN_REVIEW_REQUIRED.",

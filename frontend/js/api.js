@@ -256,6 +256,11 @@
     usersAll:      ()                       => call("GET",    "/admin/users?all=1"),
     auditAll:      (limit)                  => call("GET",    "/admin/audit?all=1&limit=" + (limit || 300)),
     tenantUpdate:  (tid, body)              => call("POST",   `/admin/tenants/${tid}`, body),
+    // Приглашения: своя ссылка — владельцу организации, числа программы —
+    // суперпользователю. Право проверяет сервер, экран его только показывает.
+    referral:      ()                       => call("GET",    "/referral"),
+    referralCfg:   ()                       => call("GET",    "/admin/referral"),
+    referralSave:  (body)                   => call("POST",   "/admin/referral", body),
     userDelete:    (uid)                    => call("DELETE", `/admin/users/${uid}`),
     // Область действия записи глоссария: знание проекта ↔ знание организации.
     promoteTerm:   (body)                   => call("POST",   "/glossary/promote", body),

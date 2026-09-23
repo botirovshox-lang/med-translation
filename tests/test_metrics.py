@@ -319,6 +319,66 @@ check(not no_ui, "у каждого тупика есть фраза на экр
 check(set(main.BLOCK_KIND.values()) <= {"money", "loss", "fix"},
       "вид тупика — из закрытого набора")
 
+print("=== 11б2. Каждая ПОДСКАЗКА из кода имеет фразу — обе ===")
+# У тупиков (`BLOCK_KIND`) сторож был, у подсказок — нет, а дыра там та же:
+# забытая строка показывает владельцу голый код на экране и в Telegram.
+# Список берётся из САМОГО main.py регуляркой, а не переписывается руками.
+hint_codes = set(re.findall(r'\{"kind": "(?:money|loss|fix)", "code": "([A-Za-z0-9]+)"', src_main))
+check(hint_codes, "коды подсказок найдены в исходнике: " + str(len(hint_codes)))
+no_srv = sorted(c0 for c0 in hint_codes if c0 not in main.METRICS_HINT_TEXT)
+check(not no_srv, "у каждой подсказки есть фраза для суточной сводки: " + str(no_srv))
+no_jsx = sorted(c0 for c0 in hint_codes if ('case "%s":' % c0) not in jsx)
+check(not no_jsx, "у каждой подсказки есть фраза на экране: " + str(no_jsx))
+
+print("=== 11б3. Затраты на РАЗБОР принесённых файлов ===")
+# Шаг сметы скана отделён от чтения картинок: это деньги ДО заказа,
+# за файл, который могут и не принести.
+check(main.USAGE_STEP_GROUP.get("scanquote") == "ocr",
+      "смета скана пересчитывается вместе с ocr, а не выпадает из пересчёта")
+check('_note_usage("scanquote"' in src_main, "смета скана пишется своим шагом")
+check('case "scanquote":' in jsx or "scanquote:" in jsx, "у шага есть подпись на экране")
+
+# Удаление файла — шаг воронки ВНИЗ, и считается в общей точке обеих дорог
+# (удаление файла и удаление папки), иначе половина удалений пропала бы.
+import inspect                                                # noqa: E402
+check('_ev("funnel.deleted"' in inspect.getsource(main._delete_project_record),
+      "удаление считается в _delete_project_record — общей точке обеих дорог")
+
+# Организация у шага воронки: без неё подсказка не называет клиента.
+def _r(code, n, tenant="acme"):
+    return {"day": main.metrics_mod.today(), "tenant": tenant, "code": code,
+            "n": n, "ms_sum": 0.0, "ms_max": 0.0, "slow": 0}
+
+
+ev2 = main._metrics_events([
+    _r("funnel.upload:pdf", 4, "acme"), _r("funnel.deleted", 4, "acme"),
+    _r("funnel.upload:pdf", 9, "bobco"), _r("funnel.run:full", 3, "bobco")])
+check(ev2.get("funnelByTenant", {}).get("acme", {}).get("upload:pdf") == 4,
+      "шаг воронки несёт организацию")
+check(ev2["funnel"]["deleted"] == 4 if "funnel" in ev2 else
+      ev2["funnelRaw"]["deleted"] == 4, "удаления сосчитаны")
+hints = main._metrics_hints(7, [{"id": "acme", "name": "ACME", "spendUsd": 0, "runs": 0},
+                                {"id": "bobco", "name": "BOBCO", "spendUsd": 0, "runs": 0}],
+                            ev2, {})
+by_code = {(h["code"], h.get("tenant")) for h in hints}
+check(("uploadChurn", "acme") in by_code, "принёс и удалил — названо с организацией")
+# Две строки об одном клиенте в одном столбце `loss` читаются как две
+# разные беды, а «принёс и не запустил» + «принёс и удалил» — самый
+# частый расклад одного и того же. Отток говорит больше (в нём и
+# принесённое, и удалённое), поэтому вторая строка не ставится.
+check(("uploadNoRun", "acme") not in by_code,
+      "при оттоке вторая строка про того же клиента не дублируется")
+check(("uploadNoRun", "bobco") not in by_code, "кто запускал прогоны — не в списке")
+# А без оттока «принёс и не запустил» обязано быть названо.
+ev4 = main._metrics_events([_r("funnel.upload:pdf", 5, "quiet")])
+h4 = {(h["code"], h.get("tenant")) for h in
+      main._metrics_hints(7, [{"id": "quiet", "name": "Q", "spendUsd": 0, "runs": 0}], ev4, {})}
+check(("uploadNoRun", "quiet") in h4, "принёс и не запустил — названо, когда оттока нет")
+# Один файл без прогона — норма первого дня, а не схема.
+ev3 = main._metrics_events([_r("funnel.upload:pdf", 1, "solo")])
+check(not [h for h in main._metrics_hints(7, [{"id": "solo", "name": "S", "spendUsd": 0, "runs": 0}], ev3, {})
+           if h["code"] == "uploadNoRun"], "один файл без прогона подсказки не рождает")
+
 print("=== 11в. Парето: доли, накопленная и «жизненно важное меньшинство» ===")
 day = main.metrics_mod.today()
 

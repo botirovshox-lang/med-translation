@@ -59,7 +59,10 @@ c = TestClient(main.app)
 H = lambda t: {"Authorization": "Bearer " + t}           # noqa: E731
 
 sent = []
-main.tg_mod.notify_admin_async = lambda text, kb=None: sent.append(text)
+# Адресат запоминается вместе с текстом: вопрос обязан уходить в чат
+# ПОДДЕРЖКИ, а не в личку владельца вперемешку с отчётами о прогонах.
+main.tg_mod.notify_admin_async = (lambda text, kb=None, chat_id=None:
+                                  sent.append({"text": text, "chat": chat_id}))
 
 
 def mkuser(login, tenant, role="owner", super=False):
@@ -102,9 +105,12 @@ r = c.post("/api/support", headers=H(anna_t), json={"text": "не грузитс
 j = r.json()
 check(r.status_code == 200 and j["msg"]["by"] == "user", "сообщение записано как своё")
 check(len(j["thread"]["msgs"]) == 1, "оно одно в диалоге")
-check(len(sent) == 1 and "не грузится PDF" in sent[0], "владельцу ушло уведомление")
-check(re.search(r"#d\d+", sent[0]) is not None, "в уведомлении есть метка треда")
-check("Ответьте на это сообщение" in sent[0], "владельцу сказано, как отвечать")
+check(len(sent) == 1 and "не грузится PDF" in sent[0]["text"], "владельцу ушло уведомление")
+check(re.search(r"#d\d+", sent[0]["text"]) is not None, "в уведомлении есть метка треда")
+check("Ответьте на это сообщение" in sent[0]["text"], "владельцу сказано, как отвечать")
+# Адресат — чат ПОДДЕРЖКИ: в личку владельца идут уведомления сервиса
+# (прогоны, лимиты, сводка), и вопрос клиента утонул бы между ними.
+check(sent[0]["chat"] == main.tg_mod.SUPPORT_CHAT, "вопрос ушёл в чат поддержки")
 
 print("=== 4. Пустое и слишком длинное ===")
 check(c.post("/api/support", headers=H(anna_t), json={"text": "   "}).status_code == 400,
@@ -121,7 +127,7 @@ check(a["id"] != b["id"], "у разных организаций разные �
 check(all("Боба" not in m["text"] for m in a["msgs"]), "чужого сообщения в своём диалоге нет")
 
 print("=== 6. Ответ владельца — по МЕТКЕ и только в свой тред ===")
-tag = re.search(r"#d(\d+)", sent[0]).group(0)
+tag = re.search(r"#d(\d+)", sent[0]["text"]).group(0)
 r = c.post("/api/tg/support/reply", headers={"X-Service-Token": main.TG_SERVICE_TOKEN or ""},
            json={"quoted": "Вопрос в поддержку " + tag, "text": "пришлите номер проекта"})
 if main.TG_SERVICE_TOKEN:
@@ -145,6 +151,120 @@ check(main.support_mod.thread_for_reply(main.STATE, "#d99999") is None,
       "метка несуществующего треда — тоже None, а не первый попавшийся")
 after = [len(t.get("msgs") or []) for t in main.support_mod.threads(main.STATE)]
 check(before == after, "ни одно сообщение не записалось")
+
+print("=== 6в. Группа поддержки: ответ уходит НУЖНОМУ человеку ===")
+# Бот — отдельный процесс, поэтому проверяем его правила напрямую, подменив
+# сеть. Вопрос ровно один: может ли ответ лечь в ЧУЖОЙ диалог.
+import importlib                                          # noqa: E402
+os.environ["TELEGRAM_SUPPORT_CHAT"] = "-1001234567890"     # группа
+os.environ["TELEGRAM_ADMIN_CHAT"] = "777"                  # личка владельца
+os.environ["TELEGRAM_BOT_TOKEN"] = "test:token"
+import backend.tg as _tg                                   # noqa: E402
+importlib.reload(_tg)
+import backend.tgbot as bot                                # noqa: E402
+importlib.reload(bot)
+
+out, posted = [], []
+bot.tg.send = lambda chat, text, kb=None, token="", preview=False, thread_id=None: (
+    out.append({"chat": chat, "text": text, "thread": thread_id}) or {"ok": True})
+bot.api = lambda m, path, body=None: (posted.append((path, body)) or
+                                      {"ok": True, "thread": 7, "user": 1})
+
+GROUP = -1001234567890
+OWNER = {"id": 777, "first_name": "Владелец"}
+STRANGER = {"id": 999, "first_name": "Коллега"}
+BOT = {"id": 42, "is_bot": True, "first_name": "bot"}
+Q = {"from": BOT,
+     "text": "\U0001f4ac \u0412\u043e\u043f\u0440\u043e\u0441 \u0432 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u0443 #d7\n\n\u0410\u043d\u043d\u0430 (acme)\n\n\u043d\u0435 \u0433\u0440\u0443\u0437\u0438\u0442\u0441\u044f PDF"}
+
+def call(msg, chat=GROUP):
+    out.clear(); posted.clear()
+    return bot.on_admin_reply(chat, msg)
+
+# 1. Владелец отвечает в группе — ответ уходит, и по МЕТКЕ, а не по чату.
+took = call({"from": OWNER, "text": "пришлите номер", "reply_to_message": Q})
+check(took and len(posted) == 1 and posted[0][0] == "/api/tg/support/reply",
+      "ответ владельца из ГРУППЫ доставлен")
+check("#d7" in (posted[0][1] or {}).get("quoted", ""),
+      "тред опознаётся по метке в цитате, а не по чату")
+
+# 2. Чужой человек в той же группе НЕ отвечает от имени поддержки.
+took = call({"from": STRANGER, "text": "а я думаю иначе", "reply_to_message": Q})
+check(took and not posted, "посторонний в группе клиенту НЕ пишет")
+check(out and "не в списке отвечающих" in out[0]["text"],
+      "и ему об этом сказано, а не молчание")
+
+# 3. Ответ на ПОДТВЕРЖДЕНИЕ бота не уходит клиенту.
+ok_msg = {"from": BOT, "text": "✅ Ответ ушёл в приложение (диалог № 7)."}
+check(not call({"from": OWNER, "text": "ага", "reply_to_message": ok_msg}),
+      "ответ на галочку бота клиенту не уходит")
+check("#d" not in ok_msg["text"], "в подтверждении нет метки — иначе оно само стало бы вопросом")
+
+# 4. Подтверждение возвращается в ТУ ЖЕ ветку чата.
+call({"from": OWNER, "text": "готово", "reply_to_message": Q, "message_thread_id": 42})
+check(out and out[0]["thread"] == 42, "подтверждение легло в ту же ветку")
+
+# 4б. Список отвечающих пуст, а ADMIN_CHAT — ГРУППА: в личку это правило
+# не лезет, иначе владелец оказался бы заперт в своём же чате, а отвечать
+# не смог бы никто.
+check(bot._may_answer("777", OWNER), "владелец отвечает из своей лички без списка")
+check(not bot._may_answer(GROUP, STRANGER), "в группе посторонний не отвечает")
+check(bot._may_answer(GROUP, OWNER), "в группе владелец отвечает — он в списке")
+
+# 5. Ветка тест-группы в группе молчит: там боевой пароль тестировщика.
+check(not bot._tester_chat({"type": "supergroup"}), "в группе меню тестировщика не рисуется")
+check(bot._tester_chat({"type": "private"}), "в личке — как раньше")
+
+# 6. Правка своего сообщения вторым ответом не становится.
+seen = []
+_real_reply = bot.on_admin_reply            # подмена ТОЛЬКО на эту проверку
+bot.on_admin_reply = lambda chat, msg: seen.append(msg) or True
+bot.handle({"chats": {}}, {"edited_message": {"chat": {"id": GROUP, "type": "supergroup"},
+                                              "from": OWNER, "text": "опечатка",
+                                              "reply_to_message": Q}})
+check(not seen, "правленое сообщение вторым ответом клиенту не уходит")
+bot.on_admin_reply = _real_reply            # дальше проверяем настоящий код
+
+print("=== 6\u0433. \u041a\u0423\u0414\u0410 \u043b\u044f\u0436\u0435\u0442 \u043e\u0442\u0432\u0435\u0442: \u043c\u0435\u0442\u043a\u0430 \u0441\u0447\u0438\u0442\u0430\u0435\u0442\u0441\u044f \u0422\u041e\u041b\u042c\u041a\u041e \u0432 \u043d\u0430\u0448\u0435\u043c \u0437\u0430\u0433\u043e\u043b\u043e\u0432\u043a\u0435 ===")
+# 6\u0432 \u0441\u0442\u043e\u0440\u043e\u0436\u0438\u0442, \u041a\u041e\u041c\u0423 \u043f\u043e\u0437\u0432\u043e\u043b\u0435\u043d\u043e \u043e\u0442\u0432\u0435\u0447\u0430\u0442\u044c. \u0417\u0434\u0435\u0441\u044c \u2014 \u041a\u0423\u0414\u0410 \u043e\u0442\u0432\u0435\u0442 \u043b\u044f\u0436\u0435\u0442, \u0438 \u044d\u0442\u043e
+# \u0434\u0440\u0443\u0433\u043e\u0439 \u0440\u0443\u0431\u0435\u0436: \u043f\u0440\u043e\u043c\u0430\u0445 \u0437\u0434\u0435\u0441\u044c \u2014 \u044d\u0442\u043e \u0447\u0443\u0436\u043e\u0439 \u0447\u0435\u043b\u043e\u0432\u0435\u043a, \u0447\u0438\u0442\u0430\u044e\u0449\u0438\u0439 \u0447\u0443\u0436\u043e\u0439 \u043e\u0442\u0432\u0435\u0442.
+st = {"support": [{"id": 3, "user": 111, "tenant": "a", "msgs": []},
+                  {"id": 7, "user": 222, "tenant": "b", "msgs": []}]}
+H7 = "\U0001f4ac \u0412\u043e\u043f\u0440\u043e\u0441 \u0432 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u0443 #d7"
+H3 = "\U0001f4ac \u0412\u043e\u043f\u0440\u043e\u0441 \u0432 \u043f\u043e\u0434\u0434\u0435\u0440\u0436\u043a\u0443 #d3"
+
+# 1. \u0412 \u0446\u0438\u0442\u0430\u0442\u0435 \u0414\u0412\u0410 \u0437\u0430\u0433\u043e\u043b\u043e\u0432\u043a\u0430 (\u0441\u043e\u0441\u0435\u0434\u043d\u0438\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f \u0441\u043a\u043b\u0435\u0438\u043b\u0438\u0441\u044c
+# \u043b\u0438\u0431\u043e \u0443\u0432\u0435\u0434\u043e\u043c\u043b\u0435\u043d\u0438\u0435 \u043f\u0440\u043e\u0446\u0438\u0442\u0438\u0440\u043e\u0432\u0430\u043b\u043e \u043f\u0440\u0435\u0436\u043d\u0435\u0435): \u043e\u0442\u0432\u0435\u0447\u0430\u044e\u0442 \u043d\u0430 \u041f\u041e\u0421\u041b\u0415\u0414\u041d\u0418\u0419.
+t = main.support_mod.thread_for_reply(st, H3 + " \u0441\u0442\u0430\u0440\u043e\u0435\n\n" + H7 + " \u0410\u043d\u043d\u0430")
+check(t is not None and t["id"] == 7,
+      "\u0434\u0432\u0435 \u043c\u0435\u0442\u043a\u0438 \u0432 \u0446\u0438\u0442\u0430\u0442\u0435 \u2014 \u0431\u0435\u0440\u0451\u043c \u0437\u0430\u0433\u043e\u043b\u043e\u0432\u043e\u043a \u0422\u041e\u0413\u041e \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f, \u043d\u0430 \u043a\u043e\u0442\u043e\u0440\u043e\u0435 \u043e\u0442\u0432\u0435\u0442\u0438\u043b\u0438")
+
+# 2. \u041c\u0435\u0442\u043a\u0430 \u0432 \u0447\u0443\u0436\u043e\u043c \u0442\u0435\u043a\u0441\u0442\u0435 (\u0443\u0447\u0430\u0441\u0442\u043d\u0438\u043a \u0433\u0440\u0443\u043f\u043f\u044b \u043b\u0438\u0431\u043e \u0441\u0430\u043c \u043a\u043b\u0438\u0435\u043d\u0442
+# \u043d\u0430\u043f\u0438\u0441\u0430\u043b "#d7") \u0440\u043e\u0443\u0442\u0435\u0440\u043e\u043c \u043d\u0435 \u0441\u0442\u0430\u043d\u043e\u0432\u0438\u0442\u0441\u044f: \u0442\u0430\u043a \u043f\u0438\u0448\u0435\u043c \u0442\u043e\u043b\u044c\u043a\u043e \u043c\u044b.
+check(main.support_mod.thread_for_reply(st, "\u0441\u043c\u043e\u0442\u0440\u0438 \u0442\u0443\u0442 #d7 \u043d\u0435\u043f\u043e\u043d\u044f\u0442\u043d\u043e") is None,
+      "\u043c\u0435\u0442\u043a\u0430 \u0432 \u0447\u0443\u0436\u043e\u043c \u0442\u0435\u043a\u0441\u0442\u0435 \u043d\u0438\u043a\u0443\u0434\u0430 \u043d\u0435 \u0432\u0435\u0434\u0451\u0442")
+check(main.support_mod.thread_for_reply(st, "\u0443 \u043c\u0435\u043d\u044f \u043e\u0448\u0438\u0431\u043a\u0430 #d3, \u043f\u043e\u043c\u043e\u0433\u0438\u0442\u0435") is None,
+      "\u0438 \u0432 \u0442\u0435\u043a\u0441\u0442\u0435 \u0441\u0430\u043c\u043e\u0433\u043e \u043a\u043b\u0438\u0435\u043d\u0442\u0430 \u0442\u043e\u0436\u0435")
+
+# 3. \u041f\u0435\u0440\u0435\u0441\u043b\u0430\u043d\u043d\u043e\u0435 \u0443\u0432\u0435\u0434\u043e\u043c\u043b\u0435\u043d\u0438\u0435 \u0438 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u0435 \u043d\u0435-\u0431\u043e\u0442\u0430 \u2014 \u043d\u0435 \u0440\u043e\u0443\u0442\u0435\u0440\u044b.
+HUMAN = {"id": 999, "is_bot": False, "first_name": "\u041a\u043e\u043b\u043b\u0435\u0433\u0430"}
+check(not call({"from": OWNER, "text": "\u043e\u0442\u0432\u0435\u0442",
+                "reply_to_message": {"from": HUMAN, "text": H7 + " \u0410\u043d\u043d\u0430"}}),
+      "\u0446\u0438\u0442\u0430\u0442\u0430 \u043d\u0435 \u043e\u0442 \u0431\u043e\u0442\u0430 \u2014 \u043d\u0435 \u043d\u0430\u0448 \u043c\u0430\u0440\u0448\u0440\u0443\u0442")
+check(not call({"from": OWNER, "text": "\u043e\u0442\u0432\u0435\u0442",
+                "reply_to_message": {"from": BOT, "forward_date": 1, "text": H7}}),
+      "\u043f\u0435\u0440\u0435\u0441\u043b\u0430\u043d\u043d\u0430\u044f \u043a\u043e\u043f\u0438\u044f \u0443\u0432\u0435\u0434\u043e\u043c\u043b\u0435\u043d\u0438\u044f \u2014 \u0442\u043e\u0436\u0435 \u043d\u0435\u0442")
+
+# 4. \u0417\u043d\u0430\u0447\u043e\u043a \u0431\u0435\u0437 \u0432\u0430\u0440\u0438\u0430\u0446\u0438\u043e\u043d\u043d\u043e\u0433\u043e \u0441\u0435\u043b\u0435\u043a\u0442\u043e\u0440\u0430 \u2014 \u0442\u043e\u0442 \u0436\u0435 \u0437\u043d\u0430\u0447\u043e\u043a.
+check(not call({"from": OWNER, "text": "\u0430\u0433\u0430",
+                "reply_to_message": {"from": BOT, "text": "\u26a0 \u041d\u0435 \u043e\u0442\u043f\u0440\u0430\u0432\u0438\u043b\u043e\u0441\u044c: #d7"}}),
+      "\u00ab\u26a0\u00bb \u0431\u0435\u0437 \u0441\u0435\u043b\u0435\u043a\u0442\u043e\u0440\u0430 \u043e\u0442\u0441\u0435\u043a\u0430\u0435\u0442\u0441\u044f \u0442\u0430\u043a \u0436\u0435, \u043a\u0430\u043a \u0441 \u043d\u0438\u043c")
+
+# Заголовок пишется и узнаётся ОДНОЙ константой: разойдись они —
+# кАЖДЫЙ ответ владельца получал бы 404 при исправном на вид сообщении.
+_probe = main.support_mod.notify_text({"id": 7}, "А", "acme", "текст")
+check(main.support_mod.thread_for_reply(st, _probe) is not None,
+      "собственное уведомление узнаётся своим же разбором")
 
 print("=== 7. Прочитано — счётчик гаснет ===")
 r = c.post("/api/support/read", headers=H(anna_t))

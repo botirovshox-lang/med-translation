@@ -885,6 +885,16 @@ def _delete_project_record(pid: int) -> None:
     gone = next((p for p in STATE["projects"] if p["id"] == pid), None)
     STATE["projects"] = [p for p in STATE["projects"] if p["id"] != pid]
     _PROJECTS_VER[0] += 1
+    if gone is not None:
+        # Шаг воронки ВНИЗ: файл принесли и унесли. Считается ЗДЕСЬ, потому
+        # что сюда сходятся обе дороги — удаление файла и удаление папки
+        # целиком; поставь счётчик в обработчике, и половина удалений
+        # не посчиталась бы. Пара «принесли — унесли» отвечает на вопрос,
+        # которого у нас не было: разбор каждого файла стоит нам времени
+        # единственного воркера, а скана и картинок — ещё и денег, и «залил
+        # → удалил → залил» жжёт их по кругу. Организация — у самого файла,
+        # а не из сессии: удалять может суперпользователь из своей.
+        _ev("funnel.deleted", _tenant_of(gone))
     _reimport_cleanup(pid)            # копии замен файла — вместе с файлом
     if gone is not None:
         # Экспорты тоже: номера проектов переиспользуются (`max + 1`), и
@@ -3962,6 +3972,10 @@ tg_mod = _safe_import("tg")
 # Диалог с поддержкой: человек пишет в приложении, владелец отвечает из
 # Telegram тем же ботом. Правила хранения переписки — в шапке модуля.
 support_mod = _safe_import("support")
+# Приглашения: кто привёл клиента, тот получает страницы. Считаются там
+# ДЕНЬГИ, и правила счёта (высшая точка, потолки, почему начисляем
+# по ПОДТВЕРЖДЁННОЙ почте) собраны в шапке модуля — читать её обязательно.
+referral_mod = _safe_import("referral")
 # Наглядная инструкция `/tutorial`: рисунки экранов, три языка, без STATE.
 tutorial_mod = _safe_import("tutorial")
 # PDF собирается сторонним конвертером из готового «как в оригинале».
@@ -4676,6 +4690,11 @@ class RegisterRequest(BaseModel):
     name: str = ""
     accept: bool = False        # согласие с офертой и политикой ПДн
     uiLang: str = ""            # язык экрана, на котором заполнялась форма
+    # Код приглашения из адреса (`/?ref=...`). Это МЕТКА ПРОИСХОЖДЕНИЯ,
+    # а не дверь: человек всё равно вводит почту, пароль и согласие.
+    # Неизвестный код молча игнорируется — чужая или устаревшая ссылка
+    # не должна закрывать регистрацию.
+    ref: str = ""
 
 
 class CodeRequest(BaseModel):
@@ -4780,6 +4799,25 @@ def register(req: RegisterRequest, request: Request):
     today = datetime.now().strftime("%Y-%m-%d")
     tenant = {"id": tid, "name": (req.org or "").strip() or email.split("@")[0],
               "created": today, "active": True, "signup": True}
+    # Метка происхождения пишется СРАЗУ и один раз, а платим по ней
+    # только после подтверждения почты (`_referral_on_verified`): организация
+    # заводится до письма, и начисление здесь раздавало бы страницы за адрес,
+    # которого никто не открывал. Код кладём как ПРИШЁЛ (нормализованным),
+    # не проверяя, есть ли такой: проверка — дело начисления, а отказ
+    # регистрации из-за чужой ссылки был бы наказанием не тому человеку.
+    if referral_mod:
+        code = referral_mod.norm_code(req.ref)
+        if code:
+            tenant["refBy"] = code
+            tenant["refAt"] = today
+            # Высшая точка заводится ВМЕСТЕ С МЕТКОЙ, а не при первой выплате.
+            # У новой организации это ноль либо стартовый лимит окружения —
+            # то есть всё, что выдадут дальше, будет честным приростом.
+            # Отложи мы seed до выплаты, и любое пополнение, сделанное
+            # раньше (например, до подтверждения почты), само оказалось бы
+            # «базой» и пропало бы из счёта: человек подтвердил почту,
+            # а процент пошёл бы только со следующей оплаты.
+            tenant["refPaid"] = float(TENANT_MAX_PAGES or 0)
     if SIGNUP_TRIAL_USD >= 0:
         # Ноль — тоже решение: платное закрыто до тех пор, пока лимит
         # не поставит администратор. Открытый кран к ключу дороже неудобства.
@@ -4844,7 +4882,16 @@ def verify_email(req: CodeRequest, request: Request):
         _audit("email.verify", email=user["email"])
     finally:
         CURRENT_SESSION.reset(tok)
+    # Бонус за приглашение — ЗДЕСЬ, а не в `register`: это единственная
+    # точка, где почта доказана. Сбой не роняет подтверждение (человек
+    # пришёл входить, а не за бонусом) — он уходит строкой в журнал.
+    paid = _referral_on_verified(user)
     save_state(STATE)
+    if paid:
+        # Эпоха документа `tenants` — иначе внешний воркер продолжил бы
+        # считать по ДОПРЕМИАЛЬНОМУ остатку: `save_state` её не поднимает
+        # (см. `_pages_topup` и `admin_tenant_update`, где этот вызов стоит).
+        _tenants_changed()
     return {"ok": True, "token": token, "expiresIn": SESSION_TTL, "me": _user_public(user)}
 
 
@@ -5632,6 +5679,14 @@ def admin_runs(request: Request, limit: int = 100, all: bool = False):
     total = sum(float(r.get("cost") or 0) for r in rows)
     # Итог ПО ПРОЕКТУ — из счётчика `project_spend` (`_proj_spend_add`):
     # в нём и одиночные кнопки, и прогоны старше кольца `runCosts`.
+    #
+    # ЧЕГО ЗДЕСЬ НЕТ И НЕ БУДЕТ: сметы скана (шаг `scanquote`). Она считается
+    # ДО того, как проект заведён, — приписывать её нечему, `_USAGE_PROJECT`
+    # там пуст по построению. Значит `usdPerPage` наших затрат на страницу
+    # слегка ЗАНИЖЕН, и это названо вслух, а не растворено в округлении:
+    # сумма сметок видна отдельной строкой шага на «Метриках», и складывать
+    # её с себестоимостью файла надо глазами. Деньги при этом не теряются —
+    # в `spend` организации и в журнале токенов они есть.
     by_project = []
     for r in _proj_spend_rows(None if all else t):
         by_project.append({
@@ -5877,12 +5932,27 @@ def admin_tenant_delete(tid: str, request: Request):
         rows = STATE.get(coll)
         if isinstance(rows, list):
             STATE[coll] = [r for r in rows if _tenant_of(r) != tid]
+    # Приглашения: метка, указывающая на удаляемую организацию, снимается.
+    # Висячая она не опасна (начисление её просто не найдёт), но молча
+    # переживает и вторую жизнь номера: `_new_tenant_id` переиспользует слаг,
+    # и организация, заведённая под тем же именем, унаследовала бы чужое
+    # происхождение вместе с уже оплаченной высшей точкой.
+    ref_orphans = 0
+    for t in _tenants():
+        if t is rec:
+            continue
+        if t.get("refBy") and t["refBy"] == rec.get("refCode"):
+            for k in ("refBy", "refAt", "refPaid", "refPaidAt", "refPaidOut"):
+                t.pop(k, None)
+            ref_orphans += 1
     _tenants().remove(rec)
     _invalidate_gloss_index()
-    _audit("tenant.delete", tenant_target=tid, users=len(users), members=orphans)
+    _audit("tenant.delete", tenant_target=tid, users=len(users), members=orphans,
+           referrals=ref_orphans)
     save_state(STATE)
     _tenants_changed()
-    return {"ok": True, "usersRemoved": len(users), "membershipsRemoved": orphans}
+    return {"ok": True, "usersRemoved": len(users), "membershipsRemoved": orphans,
+            "referralsCleared": ref_orphans}
 
 
 class TenantPatch(BaseModel):
@@ -5945,6 +6015,13 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
         raise HTTPException(400, "Потолок проектов не может быть отрицательным")
     if req.addPages:
         _pages_topup(tid, float(req.addPages), (req.note or "").strip() or None)
+        # «Оплата» в системе — это и есть пополнение страниц руками:
+        # платёжного шлюза нет, и процент приглашения считается отсюда.
+        # ПОСЛЕ пополнения, а не вместо: процент берётся с выросшего
+        # `pagesCredit`, а не с суммы, которую сюда передали (см.
+        # `_referral_on_topup` — «+100 / −100 / +100» иначе оплатилось бы
+        # дважды за одни и те же сто страниц).
+        _referral_on_topup(tid)
     if req.clearMaxProjects:
         rec.pop("maxProjects", None)
     elif req.maxProjects is not None:
@@ -6193,7 +6270,7 @@ def _metrics_events(rows: list) -> dict:
     новой строке."""
     routes, errs, caps, waste, prov = {}, {}, {}, {}, {}
     dead, funnel = {}, {}
-    by_tenant_caps, by_tenant_dead = {}, {}
+    by_tenant_caps, by_tenant_dead, by_tenant_funnel = {}, {}, {}
     for r in rows:
         code, n = r["code"], r.get("n") or 0
         if code.startswith("api:"):
@@ -6223,6 +6300,14 @@ def _metrics_events(rows: list) -> dict:
             by_tenant_dead[t][code[5:]] = by_tenant_dead[t].get(code[5:], 0) + n
         elif code.startswith("funnel."):
             funnel[code[7:]] = funnel.get(code[7:], 0) + n
+            # Организация нужна тут по той же причине, что у `cap.`/`dead.`:
+            # «файлов принесли 40, прогонов 0» — наблюдение, а «организация X
+            # принесла 12 файлов и не запустила ни одного» — разговор
+            # с клиентом. Подсказка без организации, по её же докстроке,
+            # не подсказка, а гадание.
+            t = r.get("tenant") or ""
+            by_tenant_funnel.setdefault(t, {})
+            by_tenant_funnel[t][code[7:]] = by_tenant_funnel[t].get(code[7:], 0) + n
     for d in routes.values():
         d["avgMs"] = round(d["ms"] / d["n"], 1) if d["n"] else 0.0
         d["msMax"] = round(d["msMax"], 1)
@@ -6243,7 +6328,7 @@ def _metrics_events(rows: list) -> dict:
             "dead": sorted([{"code": k, "n": v} for k, v in dead.items()],
                            key=lambda d: -d["n"]),
             "deadByTenant": by_tenant_dead,
-            "funnelRaw": funnel}
+            "funnelRaw": funnel, "funnelByTenant": by_tenant_funnel}
 
 
 # Порог «организация молчит»: дней без единого прогона при живом остатке
@@ -6253,6 +6338,19 @@ METRICS_IDLE_DAYS = int(os.environ.get("METRICS_IDLE_DAYS", "14"))
 # Во сколько раз расход организации должен превысить медиану, чтобы это
 # был повод для отдельного тарифа, а не разброс.
 METRICS_HEAVY_X = float(os.environ.get("METRICS_HEAVY_X", "3"))
+# Сколько файлов без единого прогона — уже повод для разговора. Один файл
+# без прогона это норма первого дня («залил и думаю»), а не схема; три —
+# уже разбор, оплаченный нами и никуда не пошедший.
+# Потолок на числа программы приглашений: страницы оттуда попадают прямо
+# в `pagesCredit`, и опечатка на три нуля раздаёт книгу каждому пришедшему
+# раньше, чем это заметят. Число — «сколько страниц не жалко за одного
+# приведённого клиента», и тысяча тут заведомо больше любого разумного.
+REFERRAL_PAGES_MAX = float(os.environ.get("REFERRAL_PAGES_MAX", "1000") or 1000)
+METRICS_NORUN_MIN = int(os.environ.get("METRICS_NORUN_MIN", "3"))
+# Какая доля принесённого должна быть удалена, чтобы это назвать оттоком.
+# Долей, а не числом: у большого клиента десять удалений из тысячи —
+# обычная уборка, а три из трёх — разбор впустую.
+METRICS_CHURN_SHARE = float(os.environ.get("METRICS_CHURN_SHARE", "0.8"))
 
 
 def _metrics_hints(days: int, tenants: list, ev: dict, quotes: dict) -> list:
@@ -6338,6 +6436,40 @@ def _metrics_hints(days: int, tenants: list, ev: dict, quotes: dict) -> list:
             if mid and t["spendUsd"] >= mid * METRICS_HEAVY_X:
                 out.append({"kind": "money", "code": "heavy", "tenant": t["id"],
                             "name": t["name"], "n": round(t["spendUsd"] / mid, 1)})
+
+    # ── Что стоил нам РАЗБОР принесённых файлов ──────────────────────
+    # Загрузка не бесплатна: PDF на 378 страниц — полминуты единственного
+    # воркера, скан и картинки — ещё и вызовы зрячей модели. Оплачиваем
+    # это мы, а заказом оно становится только тогда, когда человек запустит
+    # прогон. Поэтому две подсказки, и обе про ОДИН вопрос — «за чей разбор
+    # мы заплатили впустую».
+    fun_t = ev.get("funnelByTenant") or {}
+    for tid, codes in sorted(fun_t.items()):
+        ups = sum(v for k, v in codes.items() if k.startswith("upload:"))
+        runs = sum(v for k, v in codes.items() if k.startswith("run:"))
+        dels = int(codes.get("deleted") or 0)
+        name = next((t["name"] for t in tenants if t["id"] == tid), tid or DEFAULT_TENANT)
+        # Удалил почти всё, что принёс. Само по себе это законно (передумал,
+        # ошибся файлом), поэтому НЕ «мошенник», а `loss`: разбор оплачен,
+        # заказа нет. Долей, а не числом: у большого клиента десять удалений
+        # из тысячи — обычная уборка.
+        churn = ups >= METRICS_NORUN_MIN and dels >= ups * METRICS_CHURN_SHARE
+        if churn:
+            out.append({"kind": "loss", "code": "uploadChurn",
+                        "tenant": tid or DEFAULT_TENANT, "name": name,
+                        "n": dels, "of": ups})
+        # Принёс файлы и ни разу не запустил прогон. Порог в три файла —
+        # чтобы не дёргать человека, который «залил и думает»: один файл
+        # без прогона это норма первого дня, а не схема.
+        #
+        # При оттоке эта строка НЕ ставится: «принёс и не запустил» и «принёс
+        # и удалил» у одного клиента — самый частый расклад, и две строки
+        # об одном и том же в одном столбце `loss` читаются как две разные
+        # беды. Отток говорит больше (в нём и число принесённого, и число
+        # удалённого), поэтому остаётся он.
+        elif ups >= METRICS_NORUN_MIN and not runs:
+            out.append({"kind": "loss", "code": "uploadNoRun",
+                        "tenant": tid or DEFAULT_TENANT, "name": name, "n": ups})
 
     # Сожжённое: правки, за которые заплатили и которые откатились.
     for w in (ev.get("waste") or []):
@@ -6518,9 +6650,14 @@ def _funnel_view(raw: dict) -> dict:
     ups = {k.split(":", 1)[1]: v for k, v in raw.items() if k.startswith("upload:")}
     runs = {k.split(":", 1)[1]: v for k, v in raw.items() if k.startswith("run:")}
     u, r, e = sum(ups.values()), sum(runs.values()), int(raw.get("export") or 0)
+    # Удаления — не шаг воронки, а её ОТТОК, и стоят они отдельным числом
+    # именно поэтому: «принесли 40, унесли 38» — это не 2 дошедших, это
+    # разбор сорока файлов, оплаченный нами и выброшенный. Внутрь `steps`
+    # его класть нельзя — там путь вперёд, и доля дошедших считается по нему.
     return {"steps": [{"code": "upload", "n": u}, {"code": "run", "n": r},
                       {"code": "export", "n": e}],
             "byExt": top(ups), "byKind": top(runs),
+            "deleted": int(raw.get("deleted") or 0),
             "dropRun": max(u - r, 0), "dropExport": max(r - e, 0),
             "conv": (round(float(e) / u, 3) if u else None)}
 
@@ -6656,6 +6793,13 @@ METRICS_HINT_TEXT = {
               "Заниженная смета — подаренные прогоны, завышенная — отказ клиента.",
     "heavy": "«%(name)s» тратит в %(n).1f раза больше медианы. "
              "Это кандидат на отдельный тариф.",
+    "uploadNoRun": "«%(name)s»: %(n)d файлов принесли и ни одного прогона. "
+                   "Разбор каждого — время воркера, а скана и картинок — "
+                   "ещё и вызовы модели; заказом это пока не стало.",
+    "uploadChurn": "«%(name)s»: за период принесено %(of)d файлов и удалено %(n)d "
+                   "(не обязательно те же самые — считаются события периода, "
+                   "а не путь одного файла). Разбор мы уже оплатили — "
+                   "спросите, что не подошло.",
     "http5xx": "Ошибки сервера: %(n)d (%(route)s). Отказ в обслуживании.",
     "slowRoute": "Медленно: %(route)s отвечает в среднем %(n)d мс на %(calls)d вызовов.",
 }
@@ -7314,7 +7458,13 @@ def _scan_read_page(jpeg: bytes, mdl: dict, src_lang: str) -> Optional[str]:
                            "image_url": {"url": "data:image/jpeg;base64," +
                                          base64.b64encode(jpeg).decode(), "detail": "high"}}]}],
             **extra)
-        _note_usage("ocr", mdl["id"], resp)
+        # Шаг `scanquote`, а не `ocr`: модель та же (`_dm("ocr")`), но это
+        # деньги ДО заказа — за файл, который могут и не принести. Смешай их
+        # с чтением картинок оплаченной книги, и вопрос «во что нам обходятся
+        # сметы» перестанет иметь ответ. Старые строки остаются `ocr` —
+        # журнал токенов это СПРАВОЧНИК, факт о том, чем считали, и миграции
+        # он не требует.
+        _note_usage("scanquote", mdl["id"], resp)
         return (resp.choices[0].message.content or "").strip()
     except Exception as e:
         print("[backend] чтение страницы скана не удалось: %s" % e, file=sys.stderr)
@@ -9828,6 +9978,287 @@ def _tenant_admin_view(t: dict) -> dict:
     out = {k: v for k, v in t.items() if k not in ("pricing", "filesSeen", "pagesLog")}
     out["pagesLog"] = (t.get("pagesLog") or [])[-PAGES_LOG_TAIL:]
     return out
+
+
+# ─── Приглашения: кто привёл клиента, тот получает страницы ──────────
+# Правила счёта — в шапке `backend/referral.py`; здесь только то, что
+# не живёт без STATE. Дверей к начислению ДВЕ и обе идут через
+# `_referral_award`: две копии правил потолков разошлись бы первой же
+# правкой, а расходиться им нельзя — это деньги.
+
+def _ref_cfg() -> dict:
+    return referral_mod.settings(STATE) if referral_mod else {}
+
+
+def _ref_by_code(code: str):
+    """Организация по коду приглашения. Обходом, а не индексом: арендаторов
+    десятки, а индекс — структура, которую надо чинить при удалении
+    организации (и первый же неисправленный индекс отдал бы страницы
+    в несуществующую запись)."""
+    code = referral_mod.norm_code(code) if referral_mod else ""
+    if not code:
+        return None
+    return next((t for t in _tenants() if t.get("refCode") == code), None)
+
+
+def _ref_code_of(tid: str) -> str:
+    """Код организации, ЛЕНИВО. Заводится при первом запросе ссылки:
+    код, выданный всем заранее, был бы записью в боевых данных, о которой
+    никто не просил."""
+    with _SAVE_LOCK:
+        rec = _tenant_rec(tid)
+        if rec is None:
+            return ""
+        if not rec.get("refCode"):
+            taken = {t.get("refCode") for t in _tenants() if t.get("refCode")}
+            code = referral_mod.new_code(taken)
+            if not code:
+                return ""
+            rec["refCode"] = code
+        return rec["refCode"]
+
+
+def _ref_ok_invitee(rec: dict) -> bool:
+    """Годится ли эта организация в ПРИГЛАШЁННЫЕ.
+
+    Команда (`POST /api/teams`) — вторая фабрика арендаторов, и там нет
+    ни почты, ни проверки: пять команд на человека превратились бы в ферму
+    из одной учётной записи. Отключённая — тоже нет: за мёртвую запись
+    страниц не платят."""
+    return bool(rec) and not rec.get("team") and rec.get("active", True)
+
+
+def _ref_ok_party(rec: dict) -> bool:
+    """Годится ли организация в УЧАСТНИКИ программы — с любой стороны.
+
+    Команда не приглашает и не приглашается: `POST /api/teams` заводит
+    арендатора без почты и без проверки, и пять команд на человека
+    (`TEAM_MAX_PER_USER`) — это пять личностей приглашающего из одной
+    учётной записи. Запрет односторонним быть не может."""
+    return _ref_ok_invitee(rec)
+
+
+def _ref_verified(rec: dict) -> bool:
+    """Подтвердил ли кто-нибудь из ВЛАДЕЛЬЦЕВ этой организации свою почту.
+
+    Закон 2 модуля («платим по доказанной почте») обязан стоять на ОБЕИХ
+    дверях. У бонуса за регистрацию он держится на отметке `refPaidAt`,
+    а у процента отметки нет вовсе — и без этой проверки пополнение,
+    сделанное до подтверждения, платило бы за адрес, которого никто
+    не открывал.
+
+    Спрашиваем саму запись человека, а не отметку: та могла не появиться
+    и по другой причине — числа программы были нулевыми."""
+    tid = (rec or {}).get("id")
+    if not tid:
+        return False
+    return any(u.get("emailVerified") for u in _users() if u.get("tenant") == tid)
+
+
+def _ref_may_credit(rec: dict) -> bool:
+    """Можно ли этой организации начислять страницы, НЕ навредив ей.
+
+    Самый дорогой урок этой задачи. `pagesCredit` — не «сколько есть»,
+    а «сколько ВЫДАНО», и `_tenant_caps` читает его так: поля НЕТ — лимита
+    нет вовсе; поле ЕСТЬ — лимит равен ему, даже если это ноль. А
+    `_pages_topup` поле ЗАВОДИТ, начиная от `TENANT_MAX_PAGES` (по умолчанию
+    НОЛЬ).
+
+    Значит «бонус +10» организации без счётчика означал бы не «стало
+    на десять больше», а «было без потолка — стало десять»: книга на
+    пятьдесят страниц после этого отвечает 402. Подарок, запирающий
+    клиента, — худшее, что может сделать программа приглашений, и молча
+    это не отличить от поломки импорта.
+
+    Поэтому: счётчика нет И лимита из окружения нет — НЕ начисляем вовсе
+    (начислять некуда, организация и так без потолка), и это не отказ,
+    а отсутствие работы. Лимит из окружения задан — счётчик заведётся
+    от него, и прибавка будет настоящей прибавкой."""
+    return rec.get("pagesCredit") is not None or bool(TENANT_MAX_PAGES)
+
+
+def _referral_award(inviter_id: str, pages: float, why: str, invitee: dict) -> float:
+    """Начислить пригласившему. Возвращает СПИСАННОЕ число (0 — не за что).
+
+    Идёт через `_pages_topup` — ту же дверь, которой пополняет админка:
+    прямая запись в `pagesCredit` мимо неё осталась бы без строки журнала,
+    и через месяц было бы не ответить, откуда у организации страницы.
+    Сбой не роняет вызывающего (регистрация и пополнение важнее бонуса) —
+    он уходит в журнал строкой."""
+    if not (referral_mod and pages > 0):
+        return 0.0
+    try:
+        cfg = _ref_cfg()
+        if not cfg.get("enabled"):
+            return 0.0
+        rec = _tenant_rec(inviter_id)
+        if rec is None or not _ref_ok_party(rec):
+            return 0.0                     # отключённому, удалённому и команде не платим
+        if not _ref_may_credit(rec):
+            # Организация без потолка вовсе: начисление ЗАПЕРЛО бы её
+            # (см. `_ref_may_credit`). Молчим — работы нет, а не отказ.
+            _ev("ref.skip:unlimited", inviter_id)
+            return 0.0
+        give = referral_mod.cap(pages, invitee, rec.get("refEarned") or 0.0, cfg)
+        if give <= 0:
+            return 0.0
+        # Организация журнала — ПРИГЛАСИВШЕГО (запись ложится в его `pagesLog`),
+        # а сессия сейчас может быть чужая (регистрация идёт от приглашённого,
+        # пополнение — от суперпользователя). Поэтому контекст ставится явно:
+        # иначе `_actor_id` подписал бы строку не тем человеком, а `_audit`
+        # уехал бы в журнал не той организации (инвариант 11).
+        tok = CURRENT_SESSION.set({"tenant": inviter_id, "user": None, "role": "owner"})
+        try:
+            _pages_topup(inviter_id, give, "приглашение: " + why)
+            # Запись берём ЗАНОВО и под тем же локом, что и сама выдача:
+            # `_sync_shared` из чужого потока подменяет `STATE["tenants"]`
+            # целиком (`_apply_doc`), и запись, взятая до `_pages_topup`,
+            # к этому моменту может быть сиротой. Потеряйся тут `refEarned`
+            # и `refPaidOut` — потолки программы обнулились бы молча, то есть
+            # их можно было бы пробить повторением. Тот же закон, что
+            # у `_pages_debit` (инвариант 2).
+            with _SAVE_LOCK:
+                live = _tenant_rec(inviter_id) or rec
+                live["refEarned"] = round(float(live.get("refEarned") or 0.0) + give, 3)
+                live_inv = _tenant_rec(invitee.get("id") or "") or invitee
+                live_inv["refPaidOut"] = round(float(live_inv.get("refPaidOut") or 0.0) + give, 3)
+            _audit("referral.award", tenant_target=inviter_id, pages=give,
+                   invitee=invitee.get("id"), why=why)
+        finally:
+            CURRENT_SESSION.reset(tok)
+        _ev("ref.award", inviter_id)
+        return give
+    except Exception as e:
+        print("[backend] бонус приглашения не начислен (%s → %s): %s"
+              % (inviter_id, (invitee or {}).get("id"), e), file=sys.stderr)
+        return 0.0
+
+
+def _referral_on_verified(user: dict) -> bool:
+    """Почта подтверждена — вот теперь платим.
+
+    Не в `register`, и это несущее свойство: организация заводится ДО письма,
+    а `emailVerified` гейтит только вход. Начисляй мы там — страницы уходили
+    бы за POST с адресом, которого никто не открывал.
+
+    Возвращает True, если страницы действительно выданы: по этому признаку
+    вызывающий поднимает эпоху документа `tenants` (без неё внешний воркер
+    считал бы по допремиальному остатку)."""
+    if not referral_mod:
+        return False
+    try:
+        rec = _tenant_rec(user.get("tenant") or "")
+        if not _ref_ok_invitee(rec) or rec.get("refPaidAt"):
+            return False                   # второй раз по той же записи не платим
+        inviter = _ref_by_code(rec.get("refBy") or "")
+        if inviter is None or inviter.get("id") == rec.get("id"):
+            return False                   # чужой код протух либо приглашение самому себе
+        cfg = _ref_cfg()
+        if not cfg.get("enabled"):
+            return False
+        signup = float(cfg.get("signupPages") or 0)
+        welcome = float(cfg.get("welcomePages") or 0)
+        # ОТМЕТКУ СТАВИМ, ТОЛЬКО ЕСЛИ БЫЛО ЧТО ПЛАТИТЬ. Она означает
+        # «право на бонус за регистрацию ИЗРАСХОДОВАНО», и поставить её при
+        # нулевых числах значило бы сжечь это право у всех, кто пришёл ДО
+        # того, как владелец сервиса назначил цифры: включил программу
+        # назавтра — а платить уже некому. (Отличие от `termsAutoDone`,
+        # на который эта отметка похожа: тот сторожит СДЕЛАННЫЙ дорогой шаг,
+        # а здесь шага не было вовсе.)
+        if signup <= 0 and welcome <= 0:
+            return False
+        # Зато когда платить есть что — отметка идёт ДО выдачи: сбой
+        # на полпути не должен открывать дорогу второму заходу по той же паре.
+        rec["refPaidAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # База, с которой процент УЖЕ взят. Обычно её завела регистрация
+        # вместе с самой меткой; сюда мы попадаем, только если организацию
+        # пометили мимо неё (перенос данных, поддержка руками) — тогда
+        # накопленное оплатой по нашей ссылке не считается, и база берётся
+        # МАКСИМУМОМ из нынешнего остатка и умолчания сервиса. Стартовый
+        # лимит окружения оплатой не является (закон 4 модуля) — он нижняя
+        # граница, а не сама база.
+        if rec.get("refPaid") is None:
+            rec["refPaid"] = max(float(TENANT_MAX_PAGES or 0),
+                                 float(rec.get("pagesCredit") or 0.0))
+        if welcome > 0 and _ref_may_credit(rec):
+            # Приветственные — самому приглашённому, и они НЕ процент:
+            # `refPaid` двигается на их величину, иначе первая же настоящая
+            # оплата вернула бы процент и с подарка.
+            # `_ref_may_credit`: организацию без потолка начисление ЗАПЕРЛО
+            # бы на величине подарка — см. его докстроку.
+            tok = CURRENT_SESSION.set({"tenant": rec["id"], "user": user.get("id"),
+                                       "role": "owner"})
+            try:
+                _pages_topup(rec["id"], welcome, "приглашение от " + str(inviter.get("id")))
+                with _SAVE_LOCK:
+                    live = _tenant_rec(rec["id"]) or rec
+                    live["refPaid"] = round(float(live.get("refPaid") or 0.0) + welcome, 3)
+            finally:
+                CURRENT_SESSION.reset(tok)
+        given = _referral_award(inviter["id"], signup,
+                                "регистрация " + str(rec.get("id")), rec)
+        return bool(given) or welcome > 0
+    except Exception as e:
+        print("[backend] приглашение при подтверждении почты: %s" % e, file=sys.stderr)
+    return False
+
+
+def _referral_on_topup(tid: str) -> None:
+    """Пригласившему — процент от того, что ВЫДАЛИ приглашённому.
+
+    Зовётся ПОСЛЕ удачного `_pages_topup` приглашённой организации.
+    Процент берётся с высшей точки (`refPaid`), а не с суммы пополнения:
+    «+100 / −100 / +100» иначе оплатилось бы дважды за одни и те же сто
+    страниц. Отрицательное пополнение (исправление) уже начисленного
+    не отнимает — счётчик вниз не идёт."""
+    if not referral_mod:
+        return
+    try:
+        cfg = _ref_cfg()
+        if not cfg.get("enabled") or float(cfg.get("percent") or 0) <= 0:
+            return
+        rec = _tenant_rec(tid)
+        if not _ref_ok_invitee(rec) or not rec.get("refBy"):
+            return
+        # ПОЧТА ОБЯЗАНА БЫТЬ ПОДТВЕРЖДЕНА — здесь тоже, а не только у бонуса
+        # за регистрацию. Закон 2 модуля («платим по доказанной почте»)
+        # держался на отметке `refPaidAt`, которую ставит `_referral_on_verified`,
+        # а этот путь её не спрашивал: организация заводится ДО письма,
+        # и суперпользователь, пополнивший её раньше подтверждения, платил
+        # процент за адрес, которого никто не открывал. Смотрим на саму
+        # запись человека, а не на отметку: она могла не появиться и потому,
+        # что числа были нулевые (см. `_referral_on_verified`).
+        if not _ref_verified(rec):
+            return
+        inviter = _ref_by_code(rec["refBy"])
+        if inviter is None or inviter.get("id") == tid:
+            return
+        credit = float(rec.get("pagesCredit") or 0.0)
+        if rec.get("refPaid") is None:
+            # Метка без высшей точки — это организация, которую пометили
+            # МИМО регистрации: перенос данных, поддержка руками. Что у неё
+            # на счету сейчас, оплатой по нашей ссылке не является, поэтому
+            # первый заход только ЗАПОМИНАЕТ базу и не платит ничего;
+            # процент пойдёт со следующего пополнения. Заплати мы сразу —
+            # вернули бы процент со всего накопленного баланса.
+            with _SAVE_LOCK:
+                live = _tenant_rec(tid) or rec
+                live["refPaid"] = max(float(TENANT_MAX_PAGES or 0), credit)
+            return
+        due = referral_mod.award_for_topup(rec, credit, float(cfg["percent"]))
+        if due <= 0:
+            return
+        given = _referral_award(inviter["id"], due, "оплата " + tid, rec)
+        # Высшую точку двигаем ВСЕГДА, когда процент посчитан, — даже если
+        # потолок срезал выплату: иначе следующее пополнение пересчитало бы
+        # процент с того же роста заново и отдало бы срезанное по кусочкам.
+        # Под локом и по перечитанной записи — как `refEarned` (инвариант 2).
+        if given >= 0:
+            with _SAVE_LOCK:
+                live = _tenant_rec(tid) or rec
+                live["refPaid"] = round(max(float(live.get("refPaid") or 0.0), credit), 3)
+    except Exception as e:
+        print("[backend] процент приглашения не начислен (%s): %s" % (tid, e), file=sys.stderr)
 
 
 def _tenant_usage(tid: str) -> dict:
@@ -26894,6 +27325,15 @@ USAGE_STEP_GROUP = {"translate": "translate", "review": "review", "backcheck": "
                     "termcheck": "termcheck", "term_context": "termaudit", "repair": "repair",
                     "judge": "judge", "ocr": "ocr", "terms": "terms", "edit_terms": "terms",
                     "termcross": "termcross",
+                    # Смета скана — ТОТ ЖЕ выбор модели (`_dm("ocr")`), но
+                    # ДРУГИЕ деньги: это наши затраты ДО заказа, на файл,
+                    # который могут и не принести. Отдельным шагом — чтобы
+                    # «сколько стоят сметы» читалось строкой, а не смешивалось
+                    # с чтением картинок уже оплаченной книги. Группа при этом
+                    # общая с `ocr`: пересчёт «а если моделью подешевле»
+                    # обязан видеть и эти деньги (без строки шаг оказался бы
+                    # `simulable: false` и уехал бы в конец списка).
+                    "scanquote": "ocr",
                     # Правила документа зовут модель ревизии (`_guide_call`).
                     "guide": "review"}
 USAGE_GROUPS = SYSTEM_MODEL_STEPS + ["terms"]
@@ -29085,8 +29525,13 @@ def support_post(req: SupportIn, request: Request):
     if tg_mod:
         # Асинхронно: недоступный Telegram иначе держал бы единственный
         # воркер на таймауте (тот же закон, что у суточной сводки метрик).
+        # Адресат — чат ПОДДЕРЖКИ (`SUPPORT_CHAT`), а не личка владельца:
+        # отвечать на вопросы может не он один, а уведомления сервиса
+        # (прогоны, лимиты, сводка) в этом чате только мешали бы искать
+        # неотвеченное.
         tg_mod.notify_admin_async(
-            support_mod.notify_text(t, u.get("name") or u["login"], tid, text))
+            support_mod.notify_text(t, u.get("name") or u["login"], tid, text),
+            chat_id=getattr(tg_mod, "SUPPORT_CHAT", None))
     _ev("support.msg", tid)
     return {"ok": True, "msg": m, "thread": support_mod.public(t)}
 
@@ -29128,6 +29573,126 @@ def tg_support_reply(req: SupportReply):
     support_mod.add_message(t, support_mod.WHO_SUPPORT, text, req.name or "Поддержка")
     save_state(STATE)
     return {"ok": True, "thread": t.get("id"), "user": t.get("user")}
+
+
+# ─── Приглашения: ссылка владельцу и настройка сервиса ──────────────
+# Правила начисления — в шапке `backend/referral.py`. Здесь две двери:
+#   * `GET /api/referral` — своя ссылка и свой счёт, ВЛАДЕЛЬЦУ организации;
+#   * `GET|POST /api/admin/referral` — числа программы, СУПЕРПОЛЬЗОВАТЕЛЮ.
+# Ни одна не зовёт модель, поэтому в `_PAID` им не место (инвариант 15).
+
+@app.get("/api/referral")
+def referral_me(request: Request):
+    """Своя ссылка-приглашение и что она принесла.
+
+    ВЛАДЕЛЬЦУ организации, и проверка стоит в ОБРАБОТЧИКЕ, а не в таблице
+    `_OWNER_ONLY`: роль берётся из сессии (роль в АКТИВНОЙ команде —
+    инвариант 18), и рядом с деньгами её видно. Выключенная программа
+    отвечает `enabled: false`, а не 404: экран решает по ответу, а не
+    по догадке, и красной плашки у переводчика быть не должно."""
+    if not referral_mod:
+        raise HTTPException(503, "Приглашения недоступны")
+    _current_user(request)
+    tid = _current_tenant()
+    cfg = _ref_cfg()
+    if not cfg.get("enabled"):
+        return {"ok": True, "enabled": False}
+    if _actor_role() != "owner":
+        raise HTTPException(403, "Ссылка-приглашение — у владельца организации")
+    # Код заводится ЛЕНИВО, и сохраняем мы ТОЛЬКО когда он только что
+    # появился. Безусловный `save_state` здесь означал бы полную запись
+    # состояния на КАЖДОЕ открытие экрана (инвариант 2: файл целиком лежит
+    # в памяти и переписывается при каждом сохранении) — то есть чтение,
+    # превращённое в общий барьер записи.
+    had = bool((_tenant_rec(tid) or {}).get("refCode"))
+    code = _ref_code_of(tid)
+    if code and not had:
+        save_state(STATE)
+        _tenants_changed()
+    site = (getattr(tg_mod, "SITE", "") or "").rstrip("/")
+    rec = _tenant_rec(tid) or {}
+    # Кого привели. Имя организации — её собственное; текста клиента
+    # и почты тут нет, это чужая организация, а не наша запись о ней.
+    invited = [{"id": t.get("id"), "name": t.get("name") or t.get("id"),
+                "at": t.get("refAt"), "paid": round(float(t.get("refPaidOut") or 0.0), 1),
+                "active": bool(t.get("active", True))}
+               for t in _tenants() if t.get("refBy") == code and t.get("id") != tid]
+    invited.sort(key=lambda x: str(x.get("at") or ""), reverse=True)
+    return {"ok": True, "enabled": True, "code": code,
+            # Нет PUBLIC_BASE_URL — отдаём код БЕЗ ссылки и говорим об этом:
+            # «/?ref=CODE» само по себе не адрес, и показать его как ссылку
+            # значило бы дать человеку то, что не открывается.
+            "link": (site + "/?ref=" + code) if (site and code) else "",
+            "signupPages": float(cfg.get("signupPages") or 0),
+            "welcomePages": float(cfg.get("welcomePages") or 0),
+            "percent": float(cfg.get("percent") or 0),
+            "earned": round(float(rec.get("refEarned") or 0.0), 1),
+            "invited": invited[:50]}
+
+
+class ReferralPatch(BaseModel):
+    enabled: Optional[bool] = None
+    signupPages: Optional[float] = None
+    welcomePages: Optional[float] = None
+    percent: Optional[float] = None
+    maxPerInvitee: Optional[float] = None
+    maxTotal: Optional[float] = None
+
+
+@app.get("/api/admin/referral")
+def admin_referral_get(request: Request):
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Программу приглашений правит только суперпользователь")
+    if not referral_mod:
+        raise HTTPException(503, "Приглашения недоступны")
+    cfg = dict(_ref_cfg())
+    # Сколько уже раздали — число, по которому решают, работает ли программа.
+    cfg["awarded"] = round(sum(float(t.get("refEarned") or 0.0) for t in _tenants()), 1)
+    cfg["invited"] = sum(1 for t in _tenants() if t.get("refBy"))
+    return {"ok": True, "referral": cfg}
+
+
+@app.post("/api/admin/referral")
+def admin_referral_set(req: ReferralPatch, request: Request):
+    """Числа программы. СУПЕРПОЛЬЗОВАТЕЛЮ, и проверка здесь, в обработчике:
+    таблица `_OWNER_ONLY` закрывает `/api/admin/` по «не ниже владельца»,
+    а этого мало — владелец любого агентства правил бы процент себе сам.
+    Тот же порядок, что у системных моделей."""
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Программу приглашений правит только суперпользователь")
+    if not referral_mod:
+        raise HTTPException(503, "Приглашения недоступны")
+    cfg = _ref_cfg()
+    # ВСЕ проверки — до первой записи: отклонённая команда не должна
+    # оставлять половину настройки применённой.
+    nums = {"signupPages": req.signupPages, "welcomePages": req.welcomePages,
+            "percent": req.percent, "maxPerInvitee": req.maxPerInvitee,
+            "maxTotal": req.maxTotal}
+    for k, v in nums.items():
+        if v is not None and v < 0:
+            raise HTTPException(400, "Отрицательных чисел в программе приглашений не бывает")
+    if req.percent is not None and req.percent > 100:
+        raise HTTPException(400, "Процент больше 100 означал бы, что мы доплачиваем за оплату")
+    # Потолок на сами числа. Не придирка: страницы отсюда попадают прямо
+    # в `pagesCredit`, и опечатка на три нуля раздаёт книгу каждому пришедшему
+    # раньше, чем это заметят. Ровно поэтому же потолки программы
+    # (`maxPerInvitee`, `maxTotal`) исключены из проверки — у них ноль значит
+    # «без потолка», и ограничивать ОГРАНИЧИТЕЛЬ незачем.
+    for k in ("signupPages", "welcomePages"):
+        v = nums.get(k)
+        if v is not None and v > REFERRAL_PAGES_MAX:
+            raise HTTPException(400, "Больше %g стр. за одно приглашение — это опечатка, "
+                                     "а не программа" % REFERRAL_PAGES_MAX)
+    if req.enabled is not None:
+        cfg["enabled"] = bool(req.enabled)
+    for k, v in nums.items():
+        if v is not None:
+            cfg[k] = float(v)
+    _audit("referral.settings", **{k: cfg.get(k) for k in referral_mod.defaults()})
+    save_state(STATE)
+    return {"ok": True, "referral": cfg}
 
 
 @app.get("/api/admin/support")

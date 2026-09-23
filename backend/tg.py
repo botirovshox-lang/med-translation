@@ -25,6 +25,14 @@
 Отсюда договор: этот модуль умеет только слать и ничего не хранит; бот-процесс
 ходит в наш же API по HTTP служебным токеном, как обычный клиент.
 
+АДРЕСАТОВ ДВА, и они разного рода. `ADMIN_CHAT` — личка владельца, туда идут
+уведомления СЕРВИСА (упал прогон, кончился лимит, пришла анкета, суточная
+сводка): их читают, а не отвечают на них. `SUPPORT_CHAT` — чат, где ОТВЕЧАЮТ
+людям, и это может быть группа: помощник владельца тоже должен видеть вопрос.
+Смешай их — и вопрос клиента утонет между двумя отчётами о прогонах.
+Какой адресат нужен, решает ВЫЗЫВАЮЩИЙ и передаёт его сюда: этот модуль
+о поддержке ничего не знает и знать не должен.
+
 Ошибка доставки НЕ роняет вызывающего: уведомление — это удобство, а не
 работа сервиса. Молчание при этом видно в журнале, а не проглочено.
 """
@@ -43,6 +51,14 @@ API = "https://api.telegram.org/bot%s/%s"
 # полный доступ к боту, а числовой id владельца — это его личка.
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 ADMIN_CHAT = os.environ.get("TELEGRAM_ADMIN_CHAT", "").strip()
+
+# Чат ПОДДЕРЖКИ — отдельно от лички владельца, и это не удобство, а разделение
+# потоков. В `ADMIN_CHAT` идут уведомления СЕРВИСА (упал прогон, кончился
+# лимит, пришла анкета, суточная сводка); в чат поддержки — вопросы людей,
+# на которые отвечают. Слей их в один адрес — и вопрос клиента утонет
+# между двумя отчётами о прогонах, а ответить на него будет нечем.
+# Не задан — поддержка идёт туда же, куда и раньше: в личку владельца.
+SUPPORT_CHAT = (os.environ.get("TELEGRAM_SUPPORT_CHAT", "").strip() or ADMIN_CHAT)
 
 # Публичный адрес сервиса — из него собираются ссылки в сообщениях. Без него
 # ссылка была бы относительной, а в Telegram по такой не перейти.
@@ -89,31 +105,45 @@ def _post(method: str, payload: dict, token: str = "", timeout: int = 0) -> dict
 
 
 def send(chat_id, text: str, keyboard: list = None, token: str = "",
-         preview: bool = False) -> dict:
+         preview: bool = False, thread_id=None) -> dict:
     """Сообщение в чат. Текст режется по потолку Telegram (4096) — иначе
     длинная анкета не доставляется ВООБЩЕ, а молчание неотличимо от поломки.
 
     Разметку не включаем намеренно: в анкете лежит текст человека, и любая
     незакрытая звёздочка или подчёркивание в нём ломает всё сообщение.
+
+    `thread_id` — ветка чата (`message_thread_id`): в группе с темами ответ
+    обязан лечь в ТУ ЖЕ тему, откуда пришёл вопрос, иначе подтверждение
+    «ответ ушёл» встанет в общую ленту в отрыве от разговора. Мы его только
+    ВОЗВРАЩАЕМ тем же значением, которое пришло с сообщением, и сами тем
+    никогда не заводим (`createForumTopic` требует прав администратора
+    и синхронного похода в сеть — см. инвариант 1).
     """
     if not chat_id:
         return {"ok": False, "error": "нет адресата"}
     body = {"chat_id": chat_id, "text": text[:4000],
             "disable_web_page_preview": not preview}
+    if thread_id:
+        body["message_thread_id"] = thread_id
     if keyboard:
         body["reply_markup"] = {"inline_keyboard": keyboard}
     return _post("sendMessage", body, token)
 
 
-def notify_admin(text: str, keyboard: list = None) -> dict:
+def notify_admin(text: str, keyboard: list = None, chat_id=None) -> dict:
     """Уведомление владельцу сервиса. Тихо не работает только в одном
-    случае — когда не задан адресат; об этом говорим в журнал один раз."""
-    if not ADMIN_CHAT:
+    случае — когда не задан адресат; об этом говорим в журнал один раз.
+
+    `chat_id` — куда именно. По умолчанию личка владельца; поддержка шлёт
+    в `SUPPORT_CHAT`. Адресат ПЕРЕДАЁТСЯ, а не выбирается здесь по виду
+    сообщения: этот модуль умеет только слать и о поддержке знать не должен."""
+    to = chat_id or ADMIN_CHAT
+    if not to:
         return {"ok": False, "error": "нет TELEGRAM_ADMIN_CHAT"}
-    return send(ADMIN_CHAT, text, keyboard)
+    return send(to, text, keyboard)
 
 
-def notify_admin_async(text: str, keyboard: list = None) -> None:
+def notify_admin_async(text: str, keyboard: list = None, chat_id=None) -> None:
     """То же, но не задерживая обработчик запроса.
 
     Отправка — это поход в сеть на секунды. Сделай её в теле запроса — и
@@ -121,11 +151,12 @@ def notify_admin_async(text: str, keyboard: list = None) -> None:
     недоступном Telegram получает таймаут вместо «спасибо». Уведомление
     не работа сервиса, и держать ради него клиента нельзя.
     """
-    if not (BOT_TOKEN and ADMIN_CHAT):
+    to = chat_id or ADMIN_CHAT
+    if not (BOT_TOKEN and to):
         return
 
     def run():
-        r = notify_admin(text, keyboard)
+        r = notify_admin(text, keyboard, to)
         if not r.get("ok"):
             print("[tg] уведомление не доставлено: %s" % r.get("error"), file=sys.stderr)
 

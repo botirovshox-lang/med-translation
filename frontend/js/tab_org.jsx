@@ -385,6 +385,63 @@ function OrgPricing({ toast }) {
         TR("изменён ") + card.updated + (card.by ? " · " + card.by : ""))));
 }
 
+/* ---------- Приглашения: ссылка и что она принесла ----------
+   Стоит РЯДОМ СО СТРАНИЦАМИ, а не в «Профиле»: человек смотрит сюда,
+   когда думает про объём и пополнение, — там же уместна и мысль «а можно
+   получить страницы, приведя коллегу». Рядом с паролем она была бы
+   не к месту (инвариант 32: один вопрос в фокусе).
+
+   Программа выключена — карточки НЕТ ВОВСЕ: настройка, у которой сейчас
+   нет работы, на экран не выходит. Решает это ОТВЕТ сервера (`enabled`),
+   а не догадка браузера: признака рефералки нет ни в `/auth/me`, ни
+   в `/api/seed`, и рисовать карточку «на всякий случай» значило бы
+   мигать ею у всех. */
+function OrgReferral({ toast }) {
+  const [d, setD] = useState(null);
+  useEffect(() => { window.API.safeCall(() => window.API.referral()).then(r => r && setD(r)); }, []);
+  if (!d || !d.enabled) return null;
+  const copy = () => {
+    const text = d.link || d.code || "";
+    if (!text) return;
+    try {
+      if (navigator.clipboard) navigator.clipboard.writeText(text);
+      toast.success(TR("Скопировано"), text);
+    } catch (e) { toast.error(TR("Не скопировалось"), String(e)); }
+  };
+  // Числа приходят С СЕРВЕРА и в .jsx не зашиты: это настройка сервиса,
+  // и вторая копия здесь разошлась бы с той, по которой идёт начисление.
+  const rule = [
+    d.signupPages ? TR("За каждого, кто зарегистрируется и подтвердит почту, вы получаете страниц: ")
+      + d.signupPages : "",
+    d.percent ? TR("Плюс процент от страниц, которые ему выдадут: ") + d.percent + "%" : "",
+  ].filter(Boolean).join(". ");
+  return React.createElement("div", { className: "card card-pad", style: { fontSize: 13 } },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } },
+      TR("Приглашайте коллег")),
+    rule ? React.createElement("p", { style: { margin: "0 0 8px" } }, rule) : null,
+    d.welcomePages ? React.createElement("p", { className: "dim", style: { margin: "0 0 8px" } },
+      TR("Приглашённый получает при регистрации страниц: ") + d.welcomePages) : null,
+    React.createElement("div", { className: "row row-wrap", style: { gap: 8, alignItems: "center" } },
+      React.createElement("input", {
+        readOnly: true, value: d.link || d.code || "",
+        onFocus: e => e.target.select(),
+        style: { flex: "1 1 280px", minWidth: 0, fontSize: 16 } }),
+      React.createElement("button", { className: "btn", onClick: copy }, TR("Скопировать"))),
+    // Нет PUBLIC_BASE_URL — ссылки нет, и мы говорим это вслух, а не
+    // показываем «/?ref=CODE» с видом адреса, который не открывается.
+    !d.link && d.code ? React.createElement("p", { className: "dim", style: { margin: "6px 0 0" } },
+      TR("Адрес сервиса не настроен — передайте код, его вводят при регистрации.")) : null,
+    React.createElement("p", { className: "dim", style: { margin: "8px 0 0", fontSize: 12 } },
+      TR("Ссылка только отмечает, кто кого привёл: человек регистрируется сам — с почтой, паролем и согласием с офертой. Страницы начисляются после того, как он подтвердит почту.")),
+    React.createElement("div", { style: { marginTop: 8, fontWeight: 600 } },
+      TR("Заработано страниц: ") + (d.earned || 0)
+      + TR(" · пришло по ссылке: ") + ((d.invited || []).length)),
+    (d.invited || []).length ? React.createElement("div", { className: "dim", style: { marginTop: 4, fontSize: 12 } },
+      d.invited.slice(0, 10).map((x, i) => React.createElement("div", { key: i },
+        (x.at || "—") + " · " + (x.name || x.id)
+        + (x.paid ? TR(" · принёс страниц: ") + x.paid : "")))) : null);
+}
+
 function TabOrg({ store, toast }) {
   const [info, setInfo] = useState(null);
   useEffect(() => { window.API.safeCall(() => window.API.me()).then(r => r && setInfo(r)); }, []);
@@ -420,6 +477,9 @@ function TabOrg({ store, toast }) {
           e.at + " · " + orgPagesKind(e.kind) + " " + (e.kind === "credit" && e.pages > 0 ? "+" : "") + e.pages
           + (e.title ? " · " + e.title : "") + (e.note ? " · " + orgPagesNote(e.note) : ""))))),
     React.createElement("div", { className: "col", style: { gap: 16 } },
+      // Сразу под страницами: про приглашение человек думает там же,
+      // где смотрит на остаток объёма.
+      React.createElement(OrgReferral, { toast }),
       React.createElement(OrgUsers, { toast }),
       React.createElement(OrgPricing, { toast }),
       store.can && store.can.super && React.createElement(SuperTenants, { toast }),

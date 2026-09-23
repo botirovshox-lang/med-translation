@@ -322,6 +322,45 @@ def on_text(st: dict, chat_id, text: str, user: dict) -> None:
 
 
 ADMIN_CHAT = os.environ.get("TELEGRAM_ADMIN_CHAT", "").strip()
+# Чат поддержки — тот же, что у сервиса (`tg.SUPPORT_CHAT`): один адрес
+# на отправку и на приём, иначе ответы ждали бы там, куда вопросы не приходят.
+SUPPORT_CHAT = (tg.SUPPORT_CHAT or ADMIN_CHAT or "").strip()
+# Кому ПОЗВОЛЕНО отвечать от имени поддержки — числовые id через запятую.
+# Пусто — только владелец (`TELEGRAM_ADMIN_CHAT`: в личке его id и есть
+# id чата). Список нужен ровно потому, что чат поддержки может быть ГРУППОЙ:
+# «чат наш» там больше НЕ значит «пишет владелец» — написать может любой
+# участник, и его текст ушёл бы клиенту от имени поддержки.
+SUPPORT_SENDERS = {s.strip() for s in
+                   os.environ.get("TELEGRAM_SUPPORT_SENDERS", "").split(",") if s.strip()}
+# Личка владельца даёт его id ДАРОМ: в приватном чате id чата и есть id
+# человека. Но только личка — у группы id ОТРИЦАТЕЛЬНЫЙ и человеком
+# не является, и положи мы его сюда, в списке отвечающих не оказалось бы
+# ни одного живого человека: отвечать не смог бы НИКТО, включая владельца.
+if ADMIN_CHAT.lstrip("-").isdigit() and not ADMIN_CHAT.startswith("-"):
+    SUPPORT_SENDERS.add(ADMIN_CHAT)
+
+
+def _support_chat(chat_id) -> bool:
+    return bool(SUPPORT_CHAT) and str(chat_id) == SUPPORT_CHAT
+
+
+def _may_answer(chat_id, user: dict) -> bool:
+    """Вправе ли этот человек отвечать от имени поддержки.
+
+    В ЛИЧКЕ проверка не нужна и стоять не должна: туда пишет тот, чья это
+    личка, и список отвечающих там ничего не добавляет — зато пустой
+    (никто не назван, а `TELEGRAM_ADMIN_CHAT` оказался группой) он запер бы
+    владельца в его собственном чате.
+
+    В ГРУППЕ «чат наш» больше НЕ значит «пишет владелец»: написать может
+    любой участник, и его текст ушёл бы клиенту от имени поддержки. Там
+    рубеж по ОТПРАВИТЕЛЮ и обязателен; не названного человека не пускаем.
+    Список пуст — в группе не отвечает никто, и это честнее, чем пускать
+    всех: имена отвечающих задаёт владелец, а не состав чата.
+    """
+    if ADMIN_CHAT and str(chat_id) == ADMIN_CHAT and not str(chat_id).startswith("-"):
+        return True                     # личка владельца — как было до групп
+    return bool(SUPPORT_SENDERS) and str((user or {}).get("id") or "") in SUPPORT_SENDERS
 
 
 def on_admin_reply(chat_id, msg: dict) -> bool:
@@ -335,45 +374,114 @@ def on_admin_reply(chat_id, msg: dict) -> bool:
     (`support.thread_for_reply`): метка — единственная связь между перепиской
     в приложении и перепиской в мессенджере. Не нашлась — говорим об этом
     вслух: ответ, положенный в случайный диалог, прочитал бы чужой человек.
+
+    Читается `reply_to_message`, а НЕ `msg["quote"]`. Это не мелочь:
+    с Telegram 7.0 владелец вправе выделить КУСОК сообщения и ответить
+    на него — тогда в `quote.text` лежит только выделенное, и метка из него
+    пропадёт, хотя в самом сообщении она есть. Ответ уехал бы в никуда
+    (404) на ровном месте.
+
+    Рубежей ДВА, и оба нужны именно из-за группы:
+      * чат — наш (личка владельца либо чат поддержки);
+      * отправитель — из числа тех, кому позволено отвечать.
     """
-    if not ADMIN_CHAT or str(chat_id) != ADMIN_CHAT:
+    if not (_support_chat(chat_id) or (ADMIN_CHAT and str(chat_id) == ADMIN_CHAT)):
         return False
     reply = msg.get("reply_to_message") or {}
     quoted = (reply.get("text") or reply.get("caption") or "")
     if "#d" not in quoted:
         return False                       # это не ответ поддержки — пусть идёт своим путём
+    # Цитируемое сообщение обязано быть НАШИМ И НЕ ПЕРЕСЛАННЫМ.
+    #
+    # В группе метку видят все, и текст с `#d7` может написать кто угодно:
+    # участник пишет «смотри тут #d7 непонятно», владелец отвечает ЕМУ —
+    # а ответ уходит клиенту седьмого диалога как официальный. Пересланная
+    # копия старого уведомления — то же самое, только выглядит настоящей.
+    # Поэтому спрашиваем у самого Telegram, кто автор цитируемого: бот ли
+    # это и он ли его отправил здесь.
+    src = reply.get("from") or {}
+    if not src.get("is_bot"):
+        return False
+    if reply.get("forward_date") or reply.get("forward_origin") or reply.get("forward_from"):
+        return False
+    # Ответ на СВОЁ ЖЕ подтверждение боту не годится: раньше в нём стояла
+    # метка, и «ответить на галочку» отправляло текст клиенту. Метку оттуда
+    # убрали, но на старые сообщения в истории чата ответить всё ещё можно —
+    # поэтому отсекаем их и по виду. Сравнение по ПЕРВОМУ знаку без
+    # вариационного селектора: «⚠️» и «⚠» — один и тот же значок для глаза,
+    # а для `startswith` разные строки.
+    if quoted.lstrip()[:1] in ("✅", "⚠"):
+        return False
     text = (msg.get("text") or "").strip()
     if not text:
         return True
     who = msg.get("from") or {}
+    if not _may_answer(chat_id, who):
+        # Молчать нельзя: человек думает, что ответил клиенту. Но и отправлять
+        # нельзя — он не назван отвечающим.
+        tg.send(chat_id, "⚠️ Вы не в списке отвечающих: сообщение клиенту НЕ ушло.\n"
+                         "Добавьте свой id в TELEGRAM_SUPPORT_SENDERS.",
+                thread_id=msg.get("message_thread_id"))
+        return True
     r = api("POST", "/api/tg/support/reply", {
         "quoted": quoted, "text": text,
         "name": (who.get("first_name") or "").strip() or "Поддержка"})
+    # Подтверждение идёт БЕЗ метки `#d`: ответ на него самого уходил бы
+    # клиенту как новое сообщение поддержки (регулярка метки не отличает
+    # цитату вопроса от цитаты подтверждения).
     if r.get("ok"):
-        tg.send(chat_id, "✅ Ответ ушёл в приложение (диалог #d%s)." % r.get("thread"))
+        tg.send(chat_id, "✅ Ответ ушёл в приложение (диалог № %s)." % r.get("thread"),
+                thread_id=msg.get("message_thread_id"))
     else:
         tg.send(chat_id, "⚠️ Не отправилось: %s\nОтветьте именно на сообщение о вопросе."
-                % (r.get("error") or "неизвестная ошибка"))
+                % (r.get("error") or "неизвестная ошибка"),
+                thread_id=msg.get("message_thread_id"))
     return True
+
+
+def _tester_chat(msg_or_chat: dict) -> bool:
+    """Годится ли этот чат для ветки ТЕСТ-ГРУППЫ (меню, выдача доступа,
+    напоминания).
+
+    Правило одно: только ЛИЧНАЯ переписка. Ветка выдаёт боевой логин
+    и пароль (`issue_access` → `/api/tg/tester`) и потом сутками напоминает
+    «вы уже протестировали?». В группе это значит, что пароль тестировщика
+    прочитают все её участники, а напоминания пойдут в общий чат — поэтому
+    вид чата проверяется ДО разбора, а не после.
+
+    Вид берётся у самого Telegram (`chat.type`), а не сравнением id с нашими
+    переменными: чат поддержки может быть не назван (`TELEGRAM_SUPPORT_CHAT`
+    пуст), а бота могут добавить в любую другую группу — и ни одна из них
+    тест-группой не является."""
+    return (msg_or_chat.get("type") or "private") == "private"
 
 
 def handle(st: dict, upd: dict) -> None:
     if "callback_query" in upd:
         cq = upd["callback_query"]
-        chat_id = ((cq.get("message") or {}).get("chat") or {}).get("id")
+        chat = ((cq.get("message") or {}).get("chat") or {})
+        chat_id = chat.get("id")
         tg._post("answerCallbackQuery", {"callback_query_id": cq.get("id")})
-        if chat_id:
+        if chat_id and _tester_chat(chat):
             on_callback(st, chat_id, cq.get("data") or "", cq.get("from") or {})
         return
-    msg = upd.get("message") or upd.get("edited_message")
+    # Правка своего сообщения ответом НЕ считается: владелец поправил опечатку,
+    # а человек получил бы ВТОРОЕ сообщение поддержки — отозвать уже отправленное
+    # Telegram не даёт, и «исправил» превращалось бы в «написал дважды».
+    edited = upd.get("edited_message")
+    msg = upd.get("message") or edited
     if not msg:
         return
-    chat_id = (msg.get("chat") or {}).get("id")
+    chat = msg.get("chat") or {}
+    chat_id = chat.get("id")
     if not chat_id:
         return
     # Ответ владельца в поддержку — ПЕРВЫМ: он приходит обычным текстом,
     # и общий разбор ответил бы на него меню вместо доставки человеку.
-    if on_admin_reply(chat_id, msg):
+    if not edited and on_admin_reply(chat_id, msg):
+        return
+    # Всё остальное — ветка тест-группы, и она только для лички (см. выше).
+    if not _tester_chat(chat):
         return
     on_text(st, chat_id, (msg.get("text") or "").strip(), msg.get("from") or {})
 

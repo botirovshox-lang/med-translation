@@ -298,6 +298,54 @@ function AdminUserAdd({ tenants, onDone, toast }) {
 /* Тест-группа: наборы с числом мест, заведённые ботом тестировщики, анкеты.
    Лимит мест правится ЗДЕСЬ, потому что темп теста — решение владельца:
    пятерых за раз разобрать можно, пятьдесят нет. */
+/* ---------- Программа приглашений: числа сервиса ----------
+   Настройка, которую нельзя выставить из интерфейса, выключена навсегда
+   (тот же довод, что у «$/стр.»), поэтому карточка есть всегда — даже
+   когда программа выключена: включать её надо где-то.
+
+   Числа отсюда и есть источник правды для начисления; в `tab_org.jsx`
+   их только ПОКАЗЫВАЮТ, пришедшими с сервера. Вторая копия чисел в .jsx
+   разошлась бы с той, по которой платят. */
+function AdminReferral({ toast }) {
+  const [d, setD] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const load = () => window.API.safeCall(() => window.API.referralCfg())
+    .then(r => r && setD(r.referral));
+  useEffect(() => { load(); }, []);
+  if (!d) return null;
+  const save = async (body) => {
+    setBusy(true);
+    try { const r = await window.API.referralSave(body); setD(r.referral); toast.success(TR("Сохранено")); }
+    catch (e) { toast.error(TR("Не сохранено"), e.message || String(e)); }
+    setBusy(false);
+  };
+  const num = (key, label, hint) => React.createElement("label", {
+    className: "col", style: { gap: 4, flex: "1 1 170px", minWidth: 0 } },
+    React.createElement("span", { className: "dim", style: { fontSize: 12 } }, label),
+    React.createElement("input", {
+      type: "number", min: 0, step: "0.1", defaultValue: d[key],
+      style: { fontSize: 16 },
+      onBlur: e => { const v = Number(e.target.value); if (v !== d[key]) save({ [key]: v }); } }),
+    hint ? React.createElement("span", { className: "dim", style: { fontSize: 11 } }, hint) : null);
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
+    React.createElement("div", { className: "row between", style: { alignItems: "center" } },
+      React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Приглашения")),
+      React.createElement("label", { className: "row", style: { gap: 6, fontSize: 13 } },
+        React.createElement("input", { type: "checkbox", checked: !!d.enabled, disabled: busy,
+          onChange: e => save({ enabled: e.target.checked }) }),
+        TR("Программа включена"))),
+    React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 12 } },
+      TR("Страницы начисляются, когда приглашённый ПОДТВЕРДИТ почту, и процентом — когда вы пополните ему страницы. Все нули — программа не раздаёт ничего.")),
+    React.createElement("div", { className: "row row-wrap", style: { gap: 10 } },
+      num("signupPages", TR("Пригласившему за регистрацию, стр.")),
+      num("welcomePages", TR("Приглашённому при входе, стр.")),
+      num("percent", TR("% от выданных ему страниц")),
+      num("maxPerInvitee", TR("Потолок с одного, стр."), TR("0 — без потолка")),
+      num("maxTotal", TR("Потолок на организацию, стр."), TR("0 — без потолка"))),
+    React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+      TR("Уже начислено страниц: ") + (d.awarded || 0) + TR(" · пришло по ссылкам: ") + (d.invited || 0)));
+}
+
 function AdminTesting({ toast }) {
   const [d, setD] = useState(null);
   const reload = () => window.API.safeCall(() => window.API.testing()).then(r => setD(r && r.ok ? r : null));
@@ -556,6 +604,9 @@ function adminStepLabel(k) {
   const L = { translate: TR("Перевод"), review: TR("Ревизия"), backcheck: "back-check",
     termcheck: TR("Проверка терминов"), termaudit: TR("Сверка терминов"), repair: TR("Ремонт"),
     judge: TR("Судья"), ocr: TR("Текст на картинках"), terms: TR("Извлечение терминов"),
+    // Смета скана — те же деньги на ту же модель, но потраченные ДО заказа,
+    // на файл, который могут и не принести. Своей строкой именно поэтому.
+    scanquote: TR("Смета скана (до заказа)"),
     termcross: TR("Кросс-проверка терм-листа"), embed: TR("Эмбеддинги") };
   return L[k] || k;
 }
@@ -823,6 +874,11 @@ function metHintText(code) {
     case "thinMargin": return TR("процентов цены страницы остаётся после себестоимости");
     case "estOff": return TR("во столько раз смета расходится с фактом");
     case "heavy": return TR("во столько раз больше медианы тратит эта организация — кандидат на отдельный тариф");
+    case "uploadNoRun": return TR("файлов принесли и ни одного прогона не запустили: разбор каждого мы уже оплатили");
+    // Оговорка про когорту — В САМОЙ ФРАЗЕ, а не в подсказке рядом:
+    // считаются события периода, и удалить могли не то, что принесли.
+    // Без неё строка звучит обвинением, которого мы доказать не можем.
+    case "uploadChurn": return TR("принесённых файлов удалено за период (не обязательно те же самые): разбор мы оплатили, а заказом это не стало");
     case "http5xx": return TR("ошибок сервера: отказ в обслуживании");
     case "slowRoute": return TR("мс в среднем отвечает маршрут");
     case "waste:repairReverted": return TR("правок ремонта откатилось — за них заплачено");
@@ -844,6 +900,10 @@ function metHintNum(h) {
   if (h.code === "thinMargin") return Math.round(100 - (h.n || 0)) + "%";
   if (h.code === "estOff" || h.code === "heavy") return "×" + h.n;
   if (h.code === "pagesLow") return Number(h.n).toFixed(1);
+  // У оттока знаменатель НЕСУЩИЙ: «4 удалено» без «из 4 принесённых» —
+  // наблюдение, а не доля, и суточный текст на сервере говорит «из N»,
+  // то есть экран и Telegram рассказывали бы про одно число разное.
+  if (h.code === "uploadChurn" && h.of) return h.n + "/" + h.of;
   return String(h.n);
 }
 
@@ -1204,6 +1264,12 @@ function OppFunnel({ d }) {
         TR("доходит до выгрузки ") + oppPct(f.conv)) : null),
     React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "10px 0 0" } },
       TR("Это не когорта: считаются события периода, а не путь одного человека — файл могли принести вчера, а выгрузить сегодня. Вопрос, на который она отвечает: сколько принесённых файлов так и не дошли до выгрузки.")),
+    // Отток — отдельным числом, а не шагом воронки: «принесли 40, унесли 38»
+    // это не два дошедших, а разбор сорока файлов, который мы оплатили
+    // и выбросили. Внутри `steps` он испортил бы долю дошедших.
+    f.deleted ? React.createElement("p", { style: { margin: "8px 0 0", fontSize: 13 } },
+      TR("Принесли и удалили: ") + f.deleted +
+      TR(" — разбор этих файлов мы уже оплатили")) : null,
     (f.byExt || []).length ? React.createElement("p", { style: { margin: "8px 0 0", fontSize: 13 } },
       TR("Что нам несут: ") + f.byExt.map(x => x.name + "×" + x.n).join(", ")) : null,
     (f.byKind || []).length ? React.createElement("p", { style: { margin: "4px 0 0", fontSize: 13 } },
@@ -1335,6 +1401,7 @@ function TabAdmin({ store, toast }) {
       React.createElement(AdminJobs, { ov, toast, onChange: reload }),
       React.createElement(AdminTenants, { ov, toast, onChange: reload }),
       React.createElement(AdminUsers, { toast, tenants: ov.tenants }),
+      React.createElement(AdminReferral, { toast }),
       React.createElement(AdminTesting, { toast }),
       React.createElement(AdminRuns, null),
       React.createElement(AdminLogins, null),

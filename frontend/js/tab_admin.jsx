@@ -202,44 +202,6 @@ function AdminPagesLog({ log }) {
       React.createElement("td", { className: "dim" }, [e.title, pagesNoteLabel(e.note), e.name].filter(Boolean).join(" · ")))))));
 }
 
-function AdminUsers({ toast, tenants }) {
-  const [users, setUsers] = useState([]);
-  const [q, setQ] = useState("");
-  const reload = () => window.API.safeCall(() => window.API.usersAll()).then(r => setUsers((r && r.users) || []));
-  useEffect(() => { reload(); }, []);
-  const patch = async (u, body, msg) => {
-    try { await window.API.userUpdate(u.id, body); toast.success(msg, u.login); reload(); }
-    catch (e) { toast.error(TR("Не удалось"), e.message || String(e)); }
-  };
-  const remove = async (u) => {
-    if (!confirm(TR("Удалить учётную запись «") + u.login + "»?")) return;
-    try { await window.API.userDelete(u.id); toast.success(TR("Удалён"), u.login); reload(); }
-    catch (e) { toast.error(TR("Не удалён"), e.message || String(e)); }
-  };
-  const shown = users.filter(u => !q || (u.login + " " + (u.email || "") + " " + u.name + " " + u.tenant).toLowerCase().includes(q.toLowerCase()));
-  return React.createElement("div", { className: "card card-pad" },
-    React.createElement("div", { className: "row between", style: { marginBottom: 8 } },
-      React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Аккаунты · ") + users.length),
-      React.createElement("div", { className: "row", style: { gap: 8 } },
-        React.createElement(Input, { value: q, placeholder: TR("поиск: логин, имя, организация"), style: { maxWidth: 280 }, onChange: (e) => setQ(e.target.value) }),
-        React.createElement(AdminUserAdd, { tenants, toast, onDone: reload }))),
-    React.createElement("div", { style: { overflowX: "auto", maxHeight: 360, overflowY: "auto" } }, React.createElement("table", { className: "tbl" },
-      React.createElement("thead", null, React.createElement("tr", null,
-        [TR("Логин"), TR("Почта"), TR("Имя"), TR("Организация"), TR("Роль"), TR("Создан"), TR("Состояние"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
-      React.createElement("tbody", null, shown.map(u => React.createElement("tr", { key: u.id },
-        React.createElement("td", null, u.login, u.super ? React.createElement("span", { className: "dim" }, " · super") : null),
-        React.createElement("td", { className: "dim" }, (u.email || "—") + (u.email && !u.emailVerified ? TR(" · не подтверждена") : "")),
-        React.createElement("td", null, u.name),
-        React.createElement("td", null, u.tenant),
-        React.createElement("td", null, roleLabel(u.role)),
-        React.createElement("td", { className: "dim" }, u.created || ""),
-        React.createElement("td", null, u.active ? TR("активен") : TR("отключён")),
-        React.createElement("td", { style: { whiteSpace: "nowrap", textAlign: "right" } },
-          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => { const pw = prompt(TR("Новый пароль для ") + u.login + ":"); if (pw) patch(u, { password: pw }, TR("Пароль сменён")); } }, TR("Пароль")),
-          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => patch(u, { active: !u.active }, u.active ? TR("Отключён") : TR("Включён")) }, u.active ? TR("Отключить") : TR("Включить")),
-          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => remove(u) }, TR("Удалить")))))))));
-}
-
 /* Заведение учётной записи. Эндпоинт был с самого начала, кнопки не было —
    и завести человека можно было только запросом руками. Пароль предлагается
    сразу и читаемый: пустое поле «пароль» в форме для администратора кончается
@@ -1347,6 +1309,197 @@ function TabChances({ toast }) {
     d && React.createElement(OppErrors, { d }));
 }
 
+/* ---------- Роли и доступы: экран про ЛЮДЕЙ ----------
+   Сводка отвечает на вопрос «что с организациями», а этот экран — «кто эти
+   люди и что им позволено». Вопросы разные, и смешивать их в одной таблице
+   значило бы показывать деньги там, где ищут человека.
+
+   Четыре правила:
+   1) РОЛЬ правится здесь, ЛИМИТЫ — тоже отсюда, но ЧУЖОЙ дверью
+      (`/admin/tenants/{tid}`): вторая точка записи тех же чисел разошлась бы
+      с первой (тот же закон, что у цен, инвариант 6), а журнал `pagesLog`
+      ведёт только `_pages_topup`. Поэтому кнопка лимитов стоит у ОРГАНИЗАЦИИ
+      человека, а не у него самого: лимит — кошелёк организации, и «лимит Евы»
+      врал бы про то, что он у неё личный.
+   2) Роль показывается ПО КОМАНДАМ, а не одной строкой: человек бывает
+      владельцем дома и переводчиком в чужой команде (инвариант 18), и одна
+      ячейка «владелец» скрывала бы ровно то, что здесь ищут. Правим при этом
+      только ДОМАШНЮЮ: роль в чужой команде назначает её владелец
+      (`_team_owner_or_403`), и менять её отсюда значило бы обойти его решение.
+   3) Право СДЕЛАТЬ проверяет сервер. Гашение кнопки — удобство: себе роль
+      не снять и себя не отключить, и сервер отвечает тем же отказом.
+   4) Числа (страницы, расход, потолки) приходят С СЕРВЕРА: вторая копия
+      расчёта разошлась бы с той, по которой отвечает 402. */
+function accessRoleHint(role) {
+  return role === "owner"
+    ? TR("всё в СВОЕЙ организации: её люди, словари, цены, удаление проектов и папок.")
+    : role === "editor"
+      ? TR("перевод, заверение, решения по терминам. Деньги и людей не трогает.")
+      : TR("в правах равен редактору — заверяет и решает по терминам; роль идёт в след ответственного («подтвердил: Ева · переводчик»).");
+}
+
+/* Страницы организации: списано из выданного. `usage.pages` считает сервер. */
+function accessPages(t) {
+  const u = (t && t.usage) || {}, c = (t && t.caps) || {};
+  if (u.pages == null) return "—";
+  return u.pages + (c.maxPages ? " / " + c.maxPages : "");
+}
+
+function AccessUserRow({ u, t, meId, onPatch, onDelete, onLimits }) {
+  const self = u.id === meId;
+  const teams = u.teams || [];
+  // Домашняя организация всегда первая — так её отдаёт `_memberships`.
+  const home = teams.find(x => x.home) || { id: u.tenant, role: u.role, home: true };
+  const extra = teams.filter(x => !x.home);
+  return React.createElement("tr", { style: u.active ? null : { opacity: .55 } },
+    React.createElement("td", null,
+      React.createElement("b", null, u.name || u.login),
+      u.super ? React.createElement("span", { className: "dim" }, " · super") : null,
+      React.createElement("div", { className: "dim", style: { fontSize: 12 } }, u.login),
+      u.active ? null : React.createElement("div", { style: { fontSize: 12 } }, TR("отключён"))),
+    React.createElement("td", { className: "dim", style: { fontSize: 13 } },
+      u.email || "—",
+      u.email && !u.emailVerified
+        ? React.createElement("div", { style: { fontSize: 12, color: "var(--c-warn)" } }, TR("не подтверждена"))
+        : null),
+    React.createElement("td", { style: { fontSize: 13 } },
+      React.createElement("div", null, t ? (t.name || t.id) : u.tenant),
+      React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+        u.tenant
+        + (t && t.active === false ? TR(" · отключена") : "")
+        + (t && t.team ? TR(" · команда") : (t && t.signup ? TR(" · сам зарегистрировался") : "")))),
+    React.createElement("td", null,
+      React.createElement(RoleSelect, {
+        value: home.role, disabled: self, style: { maxWidth: 148 },
+        onChange: (v) => onPatch(u, { role: v }, TR("Роль изменена")) }),
+      self ? React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TR("это вы")) : null,
+      extra.length ? React.createElement("div", { className: "dim", style: { fontSize: 12, marginTop: 4 } },
+        TR("ещё в командах: ") + extra.map(x => (x.name || x.id) + " · " + roleLabel(x.role)).join(", ")) : null),
+    React.createElement("td", { className: "dim", style: { fontSize: 12 } },
+      React.createElement("div", null, u.lastLogin || TR("ни разу")),
+      React.createElement("div", null, TR("входов: ") + (u.loginCount || 0)),
+      u.created ? React.createElement("div", null, TR("заведён: ") + u.created) : null),
+    React.createElement("td", { style: { fontSize: 12 } },
+      t ? React.createElement("div", { className: "col", style: { gap: 2 } },
+        React.createElement("div", null, TR("лимит: ") + (t.limitUsd != null ? "$" + Number(t.limitUsd).toFixed(2) : TR("не задан")),
+          t.spend && t.spend.over ? React.createElement("span", { style: { color: "var(--c-danger)" } }, TR(" · исчерпан")) : null),
+        React.createElement("div", { className: "dim" }, TR("страницы: ") + accessPages(t)),
+        t.simple ? React.createElement("div", { className: "dim" }, TR("упрощённый режим")) : null)
+        : React.createElement("span", { className: "dim" }, "—")),
+    React.createElement("td", { style: { whiteSpace: "nowrap", textAlign: "right" } },
+      t ? React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => onLimits(t),
+        title: TR("лимит расхода и страницы — у организации: это её кошелёк, а не личный") }, TR("Лимиты")) : null,
+      React.createElement(Btn, { variant: "ghost", size: "sm",
+        onClick: () => { const pw = prompt(TR("Новый пароль для ") + u.login + ":"); if (pw) onPatch(u, { password: pw }, TR("Пароль сменён")); } }, TR("Пароль")),
+      React.createElement(Btn, { variant: "ghost", size: "sm", disabled: self,
+        onClick: () => onPatch(u, { active: !u.active }, u.active ? TR("Отключён") : TR("Включён")) },
+        u.active ? TR("Отключить") : TR("Включить")),
+      React.createElement(Btn, { variant: "ghost", size: "sm", disabled: self, onClick: () => onDelete(u) }, TR("Удалить"))));
+}
+
+function TabAccess({ store, toast }) {
+  const [d, setD] = useState(null);
+  const [q, setQ] = useState("");
+  const [role, setRole] = useState("");
+  const [only, setOnly] = useState("");
+  const load = () => window.API.safeCall(() => window.API.adminAccess()).then(r => r && r.ok && setD(r));
+  useEffect(() => { load(); }, []);
+  if (!d) return React.createElement("div", { className: "dim" }, TR("Загружаем людей…"));
+  /* Список берём ОДИН раз и с защитой: ответ без `users` (сбой сети, чужая
+     форма) ронял бы `d.users.length` — а это белый экран всей админки,
+     а не пустая таблица. Пустой список — тоже ответ. */
+  const all = d.users || [];
+  const meId = (store && store.me && store.me.id) || 0;
+  const byId = {};
+  (d.tenants || []).forEach(t => { byId[t.id] = t; });
+  const patch = async (u, body, msg) => {
+    try { await window.API.userUpdate(u.id, body); toast.success(msg, u.login); load(); }
+    catch (e) { toast.error(TR("Не удалось"), e.message || String(e)); }
+  };
+  const remove = async (u) => {
+    if (!confirm(TR("Удалить учётную запись «") + u.login + TR("»? Это нельзя отменить."))) return;
+    try { await window.API.userDelete(u.id); toast.success(TR("Удалён"), u.login); load(); }
+    catch (e) { toast.error(TR("Не удалён"), e.message || String(e)); }
+  };
+  /* Лимит расхода и страницы — ТОЙ ЖЕ дверью, что в сводке: одна точка записи
+     на числа, по которым сервер отвечает 402, и один журнал пополнений. */
+  const limits = async (t) => {
+    const v = prompt(TR("Месячный лимит расхода для «") + (t.name || t.id) + TR("», $ (пусто — снять):"),
+      t.limitUsd != null ? t.limitUsd : "");
+    if (v === null) return;
+    if (v.trim() !== "" && !/^\d+(\.\d+)?$/.test(v.trim())) {
+      toast.error(TR("Не обновлён"), TR("Нужно число от 0 или пусто.")); return;
+    }
+    const u = t.usage || {};
+    const p = prompt(TR("Сколько страниц ДОБАВИТЬ организации? Пусто — не трогать. Выдано ")
+      + (u.credit != null ? u.credit : fmtCap((d.capDefaults || {}).maxPages))
+      + TR(", списано ") + (u.used != null ? u.used : "—") + ":", "");
+    if (p === null) return;
+    if (p.trim() !== "" && !/^-?\d+$/.test(p.trim())) {
+      toast.error(TR("Не обновлён"), TR("Нужно целое число или пусто.")); return;
+    }
+    try {
+      await window.API.tenantUpdate(t.id, v.trim() === "" ? { clearLimit: true } : { limitUsd: Number(v) });
+      if (p.trim() !== "" && Number(p)) await window.API.tenantUpdate(t.id, { addPages: Number(p) });
+      toast.success(TR("Обновлено"), t.name || t.id); load();
+    } catch (e) { toast.error(TR("Не обновлено"), e.message || String(e)); }
+  };
+  const homeRole = (u) => (((u.teams || []).find(x => x.home) || {}).role) || u.role;
+  const users = all.filter(u => {
+    if (role && homeRole(u) !== role) return false;
+    if (only === "super" && !u.super) return false;
+    if (only === "off" && u.active) return false;
+    if (only === "unverified" && !(u.email && !u.emailVerified)) return false;
+    if (only === "never" && u.loginCount) return false;
+    if (!q) return true;
+    const t = byId[u.tenant] || {};
+    return (u.login + " " + (u.email || "") + " " + (u.name || "") + " " + u.tenant + " " + (t.name || ""))
+      .toLowerCase().includes(q.toLowerCase());
+  });
+  return React.createElement("div", { className: "col", style: { gap: 16 } },
+    React.createElement("div", { className: "row row-wrap", style: { gap: 10 } },
+      React.createElement(AdminStat, { label: TR("Людей"), value: all.length }),
+      React.createElement(AdminStat, { label: TR("Владельцев"), value: all.filter(u => homeRole(u) === "owner").length }),
+      React.createElement(AdminStat, { label: TR("Отключённых"), value: all.filter(u => !u.active).length }),
+      React.createElement(AdminStat, { label: TR("Ни разу не входили"), value: all.filter(u => !u.loginCount).length }),
+      React.createElement(AdminStat, { label: TR("Почта не подтверждена"),
+        value: all.filter(u => u.email && !u.emailVerified).length })),
+    /* Что значат роли — НА ЭКРАНЕ, а не в голове у администратора: их три,
+       и различаются они не «уровнем доступа», а тем, что каждой позволено
+       сделать с деньгами и с людьми. */
+    React.createElement("div", { className: "card card-pad" },
+      React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } }, TR("Что значит роль")),
+      React.createElement("div", { className: "col", style: { gap: 6 } },
+        ["owner", "editor", "translator"].map(r => React.createElement("div", { key: r, style: { fontSize: 13 } },
+          React.createElement("b", null, roleLabel(r)), " — ", accessRoleHint(r)))),
+      React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "8px 0 0" } },
+        TR("Владелец — это владелец СВОЕЙ организации, а не сервиса: чужих проектов, словарей и денег он не видит. Каждый, кто регистрируется сам, получает пустую организацию и становится её владельцем — отдать ему чужое такая роль не может. Администратор сервиса — отдельная отметка «super», и роль её не даёт."))),
+    React.createElement("div", { className: "card card-pad" },
+      React.createElement("div", { className: "row between row-wrap", style: { gap: 8, marginBottom: 8 } },
+        React.createElement("div", { className: "eyebrow", style: { margin: 0 } },
+          TR("Люди · ") + users.length + (users.length !== all.length ? TR(" из ") + all.length : "")),
+        React.createElement("div", { className: "row row-wrap", style: { gap: 8 } },
+          React.createElement(Input, { value: q, placeholder: TR("поиск: имя, логин, почта, организация"),
+            style: { maxWidth: 250 }, onChange: (e) => setQ(e.target.value) }),
+          React.createElement(Select, { value: role, style: { maxWidth: 150 }, onChange: (e) => setRole(e.target.value) },
+            React.createElement("option", { value: "" }, TR("любая роль")),
+            ["owner", "editor", "translator"].map(r => React.createElement("option", { key: r, value: r }, roleLabel(r)))),
+          React.createElement(Select, { value: only, style: { maxWidth: 200 }, onChange: (e) => setOnly(e.target.value) },
+            React.createElement("option", { value: "" }, TR("все")),
+            React.createElement("option", { value: "super" }, TR("администраторы сервиса")),
+            React.createElement("option", { value: "off" }, TR("отключённые")),
+            React.createElement("option", { value: "unverified" }, TR("почта не подтверждена")),
+            React.createElement("option", { value: "never" }, TR("ни разу не входили"))),
+          React.createElement(AdminUserAdd, { tenants: d.tenants, toast, onDone: load }))),
+      React.createElement("div", { style: { overflowX: "auto" } }, React.createElement("table", { className: "tbl" },
+        React.createElement("thead", null, React.createElement("tr", null,
+          [TR("Человек"), TR("Почта"), TR("Организация"), TR("Роль"), TR("Последний вход"), TR("Лимиты организации"), ""]
+            .map((h, i) => React.createElement("th", { key: i }, h)))),
+        React.createElement("tbody", null, users.map(u => React.createElement(AccessUserRow, {
+          key: u.id, u: u, t: byId[u.tenant], meId: meId,
+          onPatch: patch, onDelete: remove, onLimits: limits })))))));
+}
+
 function TabAdmin({ store, toast }) {
   const [ov, setOv] = useState(null);
   const [nonce, setNonce] = useState(0);
@@ -1367,7 +1520,9 @@ function TabAdmin({ store, toast }) {
   return React.createElement("div", { className: "page page-wide" },
     React.createElement("div", { className: "page-head" },
       React.createElement("h1", null, TR("Администрирование")),
-      React.createElement("p", { className: "lead" }, view === "models"
+      React.createElement("p", { className: "lead" }, view === "access"
+        ? TR("Кто эти люди, что им позволено и на какие деньги. Роль меняется здесь, лимиты — у организации человека.")
+        : view === "models"
         ? TR("Модели шагов на всю систему и пересчёт расхода по журналу токенов.")
         : view === "chances"
           ? TR("Куда люди упираются, чего им не хватило и что из этого можно продать. Считается по журналу событий; вызовов модели нет.")
@@ -1376,10 +1531,11 @@ function TabAdmin({ store, toast }) {
           : TR("Все организации, аккаунты, прогоны и расход. Обновляется каждые 10 секунд."))),
     React.createElement("div", { className: "row", style: { gap: 8, marginBottom: 16 } },
       React.createElement("div", { className: "seg", role: "tablist" },
-        [["summary", TR("Сводка")], ["chances", TR("Возможности")], ["metrics", TR("Метрики")],
-         ["models", TR("Модели и расход")]].map(([key, label]) =>
+        [["summary", TR("Сводка")], ["access", TR("Роли и доступы")], ["chances", TR("Возможности")],
+         ["metrics", TR("Метрики")], ["models", TR("Модели и расход")]].map(([key, label]) =>
           React.createElement("button", { key, role: "tab", "aria-pressed": view === key, "aria-selected": view === key,
             onClick: () => setView(key) }, label)))),
+    view === "access" && React.createElement(TabAccess, { store, toast }),
     view === "models" && React.createElement(AdminModelsView, { toast, tenants: ov ? ov.tenants : [] }),
     view === "chances" && React.createElement(TabChances, { toast }),
     view === "metrics" && React.createElement(TabMetrics, { toast }),
@@ -1400,7 +1556,6 @@ function TabAdmin({ store, toast }) {
         React.createElement(AdminStat, { label: TR("Очередь терминов"), value: pr.termQueue })),
       React.createElement(AdminJobs, { ov, toast, onChange: reload }),
       React.createElement(AdminTenants, { ov, toast, onChange: reload }),
-      React.createElement(AdminUsers, { toast, tenants: ov.tenants }),
       React.createElement(AdminReferral, { toast }),
       React.createElement(AdminTesting, { toast }),
       React.createElement(AdminRuns, null),

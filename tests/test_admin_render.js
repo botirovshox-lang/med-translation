@@ -397,5 +397,116 @@ check(!!notSuper && !notSuper.includes("Пополнить"), "не суперп
   check(oppRender(null) !== null, "вкладка рисуется до ответа сервера");
 }
 
+/* ---- Вкладка «Роли и доступы» -------------------------------------------
+   Экран правит РОЛЬ и показывает, что человеку позволено. Что сторожим:
+   1) вкладка есть и рисуется до ответа сервера (числа грузятся своим
+      запросом — как у «Метрик» и «Возможностей»);
+   2) роль показана ПО КОМАНДАМ: домашняя правится, чужая названа. Одна
+      ячейка «владелец» скрыла бы ровно то, ради чего экран заведён;
+   3) себе роль не снять и себя не отключить — кнопки погашены (право
+      проверяет сервер, но предлагать нельзя то, что он отвергнет);
+   4) лимиты названы числами организации, а не выдуманы браузером;
+   5) объяснение ролей на экране, и в нём сказано, что владелец — владелец
+      СВОЕЙ организации: на этот вопрос экран обязан отвечать сам. */
+{
+  const ACC = {
+    ok: true, roles: ["owner", "editor", "translator"],
+    capDefaults: { maxPages: 500, maxProjects: 0 },
+    tenants: [
+      { id: "acme", name: "Акме", active: true, signup: true, limitUsd: 12.5, simple: false,
+        caps: { maxPages: 500 }, usage: { pages: 300, used: 300, credit: 500 },
+        spend: { over: false, spentUsd: 3 } },
+      { id: "beta", name: "Бета", active: true, team: true, limitUsd: null, simple: true,
+        caps: { maxPages: 0 }, usage: { pages: 10, used: 10, credit: 0 },
+        spend: { over: true, spentUsd: 99 } },
+    ],
+    users: [
+      { id: 1, login: "admin", email: "", name: "Администратор", role: "owner", tenant: "acme",
+        super: true, active: true, emailVerified: false, loginCount: 7, lastLogin: "2026-09-20 10:00",
+        created: "2026-01-01", teams: [{ id: "acme", name: "Акме", role: "owner", home: true }] },
+      { id: 2, login: "eva@mail.ru", email: "eva@mail.ru", name: "Ева", role: "translator",
+        tenant: "acme", super: false, active: true, emailVerified: true, loginCount: 3,
+        lastLogin: "2026-09-21 09:00", created: "2026-02-02",
+        teams: [{ id: "acme", name: "Акме", role: "translator", home: true },
+                { id: "beta", name: "Бета", role: "owner", home: false }] },
+      { id: 3, login: "new@mail.ru", email: "new@mail.ru", name: "Новичок", role: "owner",
+        tenant: "beta", super: false, active: false, emailVerified: false, loginCount: 0,
+        created: "2026-09-01", teams: [{ id: "beta", name: "Бета", role: "owner", home: true }] },
+    ],
+  };
+  global.API.adminAccess = async () => ACC;
+  const accStore = { can: { owner: true, super: true }, tab: "admin", go() {}, me: { id: 1 } };
+  function accRender(data) {
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    hooks[0] = OV; hooks[2] = "access";
+    // Порядок хуков: TabAdmin 0–2, дальше TabAccess: d(3), q(4), role(5), only(6).
+    hooks[3] = data;
+    try { return texts(TabAdmin({ store: accStore, toast })).join(" "); }
+    catch (e) { check(false, "«Роли и доступы» — " + e.constructor.name + ": " + e.message); return null; }
+  }
+  const acc = accRender(ACC);
+  check(!!acc && acc.includes("Роли и доступы"), "переключатель вкладки «Роли и доступы» на месте");
+  check(accRender(null) !== null, "вкладка рисуется до ответа сервера");
+  check(!!acc && acc.includes("Ева") && acc.includes("Новичок"), "люди названы");
+  check(!!acc && acc.includes("eva@mail.ru"), "почта видна");
+  check(!!acc && acc.includes("Акме") && acc.includes("Бета"), "организация человека названа именем, а не только кодом");
+  check(!!acc && acc.includes("ещё в командах") && acc.includes("владелец"),
+        "роль в ЧУЖОЙ команде названа: одна ячейка скрыла бы второй доступ");
+  check(!!acc && acc.includes("Что значит роль") && acc.includes("владельцем"),
+        "экран сам объясняет, что владелец — владелец СВОЕЙ организации");
+  check(!!acc && acc.includes("это вы"), "себя видно: роль себе не снять");
+  check(!!acc && acc.includes("$12.50"), "лимит организации показан числом");
+  check(!!acc && acc.includes("исчерпан"), "исчерпанный лимит назван");
+  check(!!acc && acc.includes("300 / 500"), "страницы: списано из выданного");
+  check(!!acc && acc.includes("не подтверждена"), "неподтверждённая почта названа");
+  check(!!acc && acc.includes("ни разу"), "«ни разу не входил» — это ответ, а не пустота");
+  check(!!acc && acc.includes("Лимиты") && acc.includes("Пароль") && acc.includes("Отключить"),
+        "команды над человеком на месте");
+  check(!!acc && acc.includes("Добавить пользователя"), "завести человека можно отсюда");
+
+  /* Себе роль не снять и себя не отключить: сервер отвечает 400, и кнопка
+     обязана быть погашена — предлагать то, что отвергнут, нельзя. */
+  {
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    hooks[0] = OV; hooks[2] = "access"; hooks[3] = ACC;
+    const tree = TabAdmin({ store: accStore, toast });
+    /* Заглушка вызывает функциональные компоненты СРАЗУ, поэтому ни RoleSelect,
+       ни Btn в дереве не встречаются — там уже <select> и <button>. Ищем их. */
+    let selfRole = null, otherRole = null, selfOff = null, otherOff = null;
+    (function walk(n) {
+      if (!n || typeof n !== "object") return;
+      if (Array.isArray(n)) return n.forEach(walk);
+      const p = n.props || {};
+      if (n.type === "select" && (n.children || []).some(c => c && c.props && c.props.value === "owner")) {
+        if (p.disabled) selfRole = true; else otherRole = true;
+      }
+      if (n.type === "button" && (n.children || []).includes("Отключить")) {
+        if (p.disabled) selfOff = true; else otherOff = true;
+      }
+      (n.children || []).forEach(walk);
+    })(tree);
+    check(selfRole === true && otherRole === true,
+          "свою роль менять нечем, чужую — можно: гашение точечное");
+    check(selfOff === true && otherOff === true,
+          "себя не отключить, а других — можно: гашение точечное, а не на всю таблицу");
+  }
+
+  /* Ответ БЕЗ `users` не должен ронять экран. Поймано настоящим ответом
+     сервера: заглушка всегда клала список, а `d.users.length` на ответе
+     без ключа — это белый экран ВСЕЙ админки, а не пустая таблица. */
+  check(accRender({ ok: true }) !== null, "ответ без списка людей экран не роняет");
+  const bare = accRender({ ok: true, users: [], tenants: [] });
+  check(bare !== null && bare.includes("Люди · 0"), "пустой список — это ответ, а не пустой экран");
+
+  /* Людей на «Сводке» больше нет: два места, правящих одних и тех же людей,
+     разошлись бы первой же правкой. */
+  {
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    hooks[0] = OV; hooks[2] = "summary";
+    const sum = texts(TabAdmin({ store: accStore, toast })).join(" ");
+    check(!sum.includes("Аккаунты ·"), "таблица людей со «Сводки» убрана — она живёт на своей вкладке");
+  }
+}
+
 console.log(fail.length ? "\nПРОВАЛЕНО: " + fail.length : "\nВсё сошлось");
 process.exit(fail.length ? 1 : 0);

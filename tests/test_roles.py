@@ -186,5 +186,93 @@ finally:
 check(g4.get("tgt") == "focus" and (g4.get("signedBy") or {}).get("action") == "demote" and "prevSignedBy" not in g4,
       "откат пачки вернул перевод и подпись")
 
+print("=== 9. Роли и доступы: экран про людей ===")
+# Дверь суперпользователя: она отдаёт ЧУЖИЕ организации с их деньгами,
+# и владельцу своей организации там делать нечего (инвариант 11).
+r = c.get("/api/admin/access", headers=H(E))
+check(r.status_code == 403, "владельцу чужие организации не отдаются — 403")
+r = c.get("/api/admin/access", headers=H(A))
+check(r.status_code == 200 and r.json().get("ok"), "суперпользователю — 200")
+acc = r.json()
+uu = {u["login"]: u for u in acc["users"]}
+check("eva" in uu and "tim" in uu and "admin" in uu, "люди названы поимённо")
+check(all("hash" not in u and "salt" not in u for u in acc["users"]),
+      "отпечаток пароля наружу не уходит")
+check(uu["eva"]["role"] == "editor" and uu["tim"]["role"] == "translator",
+      "роль каждого названа")
+check(uu["tim"].get("teams") and uu["tim"]["teams"][0]["home"] is True,
+      "команды человека приходят, домашняя первая")
+check(uu["tim"].get("tenantName"), "организация названа ИМЕНЕМ, а не только кодом")
+t_by_id = {t["id"]: t for t in acc["tenants"]}
+check(uu["tim"]["tenant"] in t_by_id, "организация человека есть в списке организаций")
+one = t_by_id[uu["tim"]["tenant"]]
+check("caps" in one and "usage" in one and "spend" in one,
+      "потолки, объём и расход организации считает СЕРВЕР — браузер их не выводит")
+check("pricing" not in one, "прайс агентства не наше дело — его здесь нет")
+check(acc.get("capDefaults") is not None, "умолчания потолков названы: без них «пусто» нечем прочитать")
+
+print("=== 9а. Регистрация: владелец СВОЕЙ организации, и только её ===")
+# Вопрос «каждый зарегистрировавшийся — владелец?» имеет ответ «да», и это
+# не дыра: роль owner действует в ГРАНИЦАХ своей организации, а новая
+# организация пуста. Проверяем именно границу, а не саму роль.
+main.SIGNUP_ENABLED = True
+r = c.post("/api/auth/register", json={"email": "self@acme.io", "password": "self-pass-1234",
+                                       "org": "Сам себе", "accept": True})
+check(r.status_code == 200, "самостоятельная регистрация прошла")
+new_tid = r.json()["tenant"]
+nu = main._user_by_email("self@acme.io")
+check(nu["role"] == "owner" and nu["tenant"] == new_tid,
+      "новый человек — владелец СВОЕЙ новой организации")
+check(new_tid != tim["tenant"], "организация у него отдельная, а не общая с прежними")
+check(not nu.get("super"), "владелец организации — не администратор сервиса")
+nt = main._tenant_rec(new_tid)
+check(nt.get("limitUsd") == main.SIGNUP_TRIAL_USD,
+      "платное закрыто до решения администратора: лимит SIGNUP_TRIAL_USD")
+check(sum(1 for u in main._users() if u.get("tenant") == new_tid) == 1,
+      "в новой организации он один — отдавать ему чужих людей роль не может")
+# А вот и сама граница: ни админка, ни чужие проекты ему не открыты.
+nu["emailVerified"] = True
+S = login("self@acme.io", "self-pass-1234")
+check(c.get("/api/admin/access", headers=H(S)).status_code == 403,
+      "владелец своей организации в «Роли и доступы» не ходит")
+check(c.get("/api/admin/overview", headers=H(S)).status_code == 403,
+      "и в сводку сервиса тоже")
+check(c.get("/api/projects/%d" % pid, headers=H(S)).status_code == 404,
+      "чужой проект для него не существует — 404, а не 403")
+
+print("=== 9б. Роль меняется отсюда, но себе её не снять ===")
+r = c.post("/api/admin/users/%d" % tim["id"], headers=H(A), json={"role": "editor"})
+check(r.status_code == 200 and tim["role"] == "editor", "роль переводчика поднята до редактора")
+r = c.post("/api/admin/users/%d" % tim["id"], headers=H(A), json={"role": "translator"})
+check(r.status_code == 200 and tim["role"] == "translator", "и опущена обратно")
+admin_rec = main._user_by_login("admin")
+r = c.post("/api/admin/users/%d" % admin_rec["id"], headers=H(A), json={"role": "translator"})
+check(r.status_code == 400 and admin_rec["role"] == "owner",
+      "себе роль владельца не снять: иначе администратор запер бы сам себя")
+r = c.post("/api/admin/users/%d" % admin_rec["id"], headers=H(A), json={"active": False})
+check(r.status_code == 400 and admin_rec.get("active", True),
+      "и себя не отключить")
+r = c.post("/api/admin/users/%d" % tim["id"], headers=H(A), json={"role": "boss"})
+check(r.status_code == 400, "неизвестная роль — 400, а не молчаливая запись")
+
+print("=== 9в. Понижение действует СРАЗУ, а не через SESSION_TTL ===")
+# Роль лежит в сессии (`_new_session`), и без обновления живых сессий
+# понижённый владелец продолжал бы удалять проекты до 12 часов.
+c.post("/api/admin/users", headers=H(A),
+       json={"login": "boss", "password": "boss-pass-1234", "name": "Босс", "role": "owner"})
+boss = main._user_by_login("boss")
+B = login("boss", "boss-pass-1234")
+check(main._session_of(B)["role"] == "owner", "вошёл владельцем — в сессии owner")
+r = c.post("/api/admin/users/%d" % boss["id"], headers=H(A), json={"role": "translator"})
+check(r.status_code == 200 and boss["role"] == "translator", "админ понизил его до переводчика")
+check(main._session_of(B)["role"] == "translator",
+      "роль в ЖИВОЙ сессии обновилась: понижение не ждёт конца SESSION_TTL")
+check(main._session_of(B) is not None, "сессия не закрыта: меняются права, а не доступ")
+bpid = c.post("/api/projects", headers=H(A), json={"title": "Б", "src": "RU", "tgt": "EN"}).json()["id"]
+check(c.delete("/api/projects/%d" % bpid, headers=H(B)).status_code == 403,
+      "понижённый больше не удаляет проект (_OWNER_ONLY читает роль из сессии)")
+check(c.get("/api/auth/me", headers=H(B)).json()["can"]["role"] == "translator",
+      "/auth/me говорит новую роль, а не ту, с которой входили")
+
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

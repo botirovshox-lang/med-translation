@@ -254,6 +254,10 @@
     tenants:       ()                       => call("GET",    "/admin/tenants"),
     adminOverview: ()                       => call("GET",    "/admin/overview"),
     usersAll:      ()                       => call("GET",    "/admin/users?all=1"),
+    // Роли и доступы: люди с их командами и потолками их организаций.
+    // Своя дверь, а не `usersAll`: там людей отдают и владельцу своей
+    // организации, а здесь — чужие организации с их деньгами.
+    adminAccess:   ()                       => call("GET",    "/admin/access"),
     auditAll:      (limit)                  => call("GET",    "/admin/audit?all=1&limit=" + (limit || 300)),
     tenantUpdate:  (tid, body)              => call("POST",   `/admin/tenants/${tid}`, body),
     // Приглашения: своя ссылка — владельцу организации, числа программы —

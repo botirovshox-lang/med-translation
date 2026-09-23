@@ -26,7 +26,11 @@ function useStore(authed) {
 
   /* Кто я — с сервера (/api/auth/me), а не заглушка: аватар, роль и то,
      какие кнопки показывать. Право СДЕЛАТЬ проверяет сервер. */
-  const [me, setMe] = useState({ name: TR("Вы"), initials: TR("ВЫ"), color: "var(--c-primary)", role: "translator" });
+  /* Заглушка несёт tourDone: true намеренно — «пока не знаем, знакомство
+     НЕ показываем». Иначе тур на долю секунды мигает затемнением на весь
+     экран человеку, который его давно закрыл: ответ /auth/me приходит
+     позже первого кадра, и до него мы про него не знаем ничего. */
+  const [me, setMe] = useState({ name: TR("Вы"), initials: TR("ВЫ"), color: "var(--c-primary)", role: "translator", tourDone: true });
   const [can, setCan] = useState({ owner: false, super: false });
   /* Вид эксперта на «Словарях» и «Проверке» — ВЫБОР суперпользователя, а не
      следствие роли: владелец сервиса тоже работает с книгой как человек,
@@ -289,7 +293,7 @@ function useStore(authed) {
     projects, glossary, tm, activeId, activeProject, tab,
     folders, dicts, setDicts, viewFolder, setViewFolder, openFolder, folderOf, activeFolder,
     addFolder, patchFolder, removeFolder,
-    exportHistory, team: [], me, can, brand, apiReady, setGlossary,
+    exportHistory, team: [], me, setMe, can, brand, apiReady, setGlossary,
     expert: !!(can && can.super && expertView), expertView, setExpertView,
     segmentFilter, segmentFilterMeta, gotoSegId,
     go: setTab, statusCounts, updateSegment, addComment, createProject, addProject, patchProject, openProject, deleteProject, replaceProjectSegments, replaceProject, mergeServerSegments, saveTerm, deleteTerm, deleteTM,
@@ -668,6 +672,12 @@ function Sidebar({ store, theme, onToggleTheme, onLogout }) {
         items.map(t => {
           const b = tabBadge(store, t.key, counts);
           return React.createElement("button", { key: t.key, className: "navi" + (store.tab === t.key ? " on" : ""),
+            /* Метка для знакомства (onboarding.jsx): тур ищет цель ИМЕННО
+               по ней, а не по классу и не по порядку в списке. Класс —
+               про облик и меняется вместе с ним, порядок зависит от роли:
+               и то и другое однажды подсветило бы чужой пункт. Пункта
+               нет вовсе (роль не та) — шаг встанет по центру без стрелки. */
+            "data-tour": t.key,
             role: "tab", "aria-selected": store.tab === t.key, onClick: () => store.go(t.key) },
             React.createElement(Icon, { name: t.icon, size: 15 }),
             React.createElement("span", { className: "navi-t" }, t.label),
@@ -821,7 +831,14 @@ function App() {
       React.createElement("main", { className: "main" },
         React.createElement(Boundary, { key: store.tab },
           React.createElement(Active, { store, toast, theme, onToggleTheme: toggleTheme })))),
-    search && React.createElement(SearchPalette, { store, onClose: () => setSearch(false) })
+    search && React.createElement(SearchPalette, { store, onClose: () => setSearch(false) }),
+    /* Знакомство и поддержка живут ПОВЕРХ вкладок и вне их: тур показывает
+       пункты меню (вкладке они не принадлежат), а виджет поддержки обязан
+       быть виден на любом экране. Файла нет (старый кэш загрузчика) —
+       оболочка рисуется как рисовалась: пустой экран из-за виджета
+       поддержки был бы несоизмеримо хуже его отсутствия. */
+    typeof OnboardingLayer === "function"
+      && React.createElement(OnboardingLayer, { store, toast })
   );
 }
 

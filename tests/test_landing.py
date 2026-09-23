@@ -99,7 +99,8 @@ check(f'<time datetime="{lb.UPDATED}">' in html, "видимой даты обн
 sm = ET.fromstring((ROOT / "landing" / "sitemap.xml").read_text(encoding="utf-8"))
 ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 locs = [u.find("s:loc", ns).text for u in sm.findall("s:url", ns)]
-check(locs == [lb.SITE + "/", lb.SITE + "/pricing.md"], f"sitemap: {locs}")
+want = [lb.SITE + "/" + lb.LANG_DIRS[c] for c in lb.langs()] + [lb.SITE + "/pricing.md"]
+check(locs == want, f"sitemap: {locs}")
 check(all(u.find("s:lastmod", ns).text == lb.UPDATED for u in sm.findall("s:url", ns)), "lastmod ≠ UPDATED")
 
 # 4. одни цены
@@ -136,6 +137,89 @@ for a in set(re.findall(r'href="#([^"]+)"', html)):
     check(a in ids, f"якорь #{a} без цели")
 check("Примеры отзывов для макета" in page_text or "примеры отзывов" in page_text.lower(), "отзывы-примеры не помечены как примеры")
 check("click.simpletranslate.me" in (ROOT / "deploy" / "nginx-click.conf").read_text(encoding="utf-8"), "nginx-конфиг поддомена не про click")
+
+
+# ─── 9. Языки: страница на каждом, и ни одной русской строки в переводе ───
+# Забытый перевод на экране выглядит русской строкой среди узбекских,
+# и заметит её клиент, а не разработчик, — тот же закон, что у словаря
+# приложения (tests/test_i18n.js).
+for code in lb.langs():
+    path = ROOT / "landing" / (lb.LANG_DIRS[code] + "index.html")
+    check(path.exists(), f"нет собранной страницы для «{code}»")
+    if not path.exists():
+        continue
+    h = path.read_text(encoding="utf-8")
+    check(h == lb.build_index(code), f"{path.name} ({code}) отстал от landing/src")
+    check(f'<html lang="{code}">' in h, f"{code}: lang в <html> не {code}")
+    canon = f'<link rel="canonical" href="{lb.SITE}/{lb.LANG_DIRS[code]}">'
+    check(canon in h, f"{code}: canonical не самоссылающийся")
+    # hreflang — связка переводов. Нет её — поисковик считает страницы
+    # дублями, а человек не находит свой язык.
+    for other in lb.langs():
+        link = f'<link rel="alternate" hreflang="{other}" href="{lb.SITE}/{lb.LANG_DIRS[other]}">'
+        check(link in h, f"{code}: нет hreflang на «{other}»")
+    check('hreflang="x-default"' in h, f"{code}: нет x-default")
+    # Мета в своих пределах на КАЖДОМ языке: узбекская фраза длиннее
+    # русской на четверть, и предел 60 знаков она переживает не сама.
+    t = re.search(r"<title>(.*?)</title>", h).group(1)
+    d = re.search(r'<meta name="description" content="(.*?)">', h).group(1)
+    check(30 <= len(t) <= 60, f"{code}: title {len(t)} знаков, надо 30–60")
+    check(120 <= len(d) <= 160, f"{code}: description {len(d)} знаков, надо 120–160")
+    check(h.count("<h1") == 1, f"{code}: H1 не ровно один")
+    # Переключатель языка есть на каждой странице и ведёт на все остальные.
+    check('class="lang-pick"' in h, f"{code}: нет переключателя языка")
+    for other in lb.langs():
+        check(f'href="{lb.SITE}/{lb.LANG_DIRS[other]}"' in h, f"{code}: переключатель не ведёт на «{other}»")
+    # Название языка — НА НЁМ САМОМ: страницу ищет тот, кто нынешних
+    # надписей не читает.
+    for other, name in lb.LANG_NAMES.items():
+        check(f">{name}</a>" in h, f"{code}: в переключателе нет «{name}» (название языка на нём самом)")
+    # Флагов нет: флаг — это страна, а не язык (у английского их два десятка).
+    check(not re.search("[\U0001F1E6-\U0001F1FF]", h), f"{code}: эмодзи-флаг в переключателе языка")
+
+    if code == lb.KEY_LANG:
+        continue
+    # Русских строк в переводе не остаётся. Три исключения названы поимённо:
+    # подпись переключателя (она трёхъязычная по построению), «Русский»
+    # как название языка на нём самом и пример записи глоссария —
+    # настоящая пара RU→EN, которая и должна остаться русской.
+    vis = re.sub(r"<script.*?</script>|<style.*?</style>|<!--.*?-->", " ", h, flags=re.S)
+    ALLOWED = ("Til · Язык · Language", "Русский", "бактериовыделение")
+    left = []
+    for piece in re.split(r"(<[^>]+>)", vis):
+        if not re.search("[А-Яа-яЁё]", piece):
+            continue
+        if any(a in piece for a in ALLOWED):
+            continue
+        left.append(piece.strip()[:70])
+    check(not left, f"{code}: русские строки в переводе: {left[:3]}")
+
+# ─── 10. Линза: пары, цифры и метка кольца ───────────────────────────
+# Линза — это обещание «покажу перевод ИМЕННО на ваш язык», и держится
+# оно на трёх вещах: пары есть, в каждой стоят те самые числа, которые
+# обещает подпись под ней, и метка на кольце берётся из данных.
+check(len(lb.LENS_PAIRS) >= 3, "пар в линзе меньше трёх — выбирать нечего")
+for pr in lb.LENS_PAIRS:
+    for side in ("src", "tgt"):
+        text = " ".join(pr[side])
+        # Подпись под линзой обещает «120, 18–65 и 300 мг/сут сверены
+        # с оригиналом». Пара без этих чисел сделала бы её враньём ровно
+        # в том, что мы продаём.
+        for num in ("120", "18", "65", "300"):
+            check(num in text, f"пара {pr['label']}: в {side} нет числа {num}")
+        check(len(pr[side]) == len(pr["src"]), f"пара {pr['label']}: стороны разной длины")
+    check(pr["srcLang"] and pr["tgtLang"], f"пара {pr['label']} без кодов языка")
+    check(pr["code"], f"пара {pr['label']} без метки кольца")
+# Метка кольца рисуется ИЗ АТРИБУТА: зашитая в CSS `content: "EN"`
+# писала бы «EN» на узбекской паре, и поменять её из скрипта нельзя.
+css = (ROOT / "landing" / "src" / "styles.css").read_text(encoding="utf-8")
+check("content: attr(data-code)" in css, "метка кольца зашита в CSS, а не берётся из data-code")
+check('content: "EN"' not in css, "в CSS осталась зашитая метка «EN»")
+for code in lb.langs():
+    h = (ROOT / "landing" / (lb.LANG_DIRS[code] + "index.html")).read_text(encoding="utf-8")
+    check("window.LENS_PAIRS" in h, f"{code}: пары линзы не уехали на страницу")
+    check(h.count('"srcLang"') == len(lb.LENS_PAIRS), f"{code}: пар на странице не столько, сколько в сборщике")
+
 
 if FAILS:
     for f in FAILS:

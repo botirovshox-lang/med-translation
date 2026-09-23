@@ -231,6 +231,12 @@
     profileSave:   (body)                   => call("POST",   "/profile", body),
     teamSwitch:    (tenant)                 => call("POST",   "/profile/team", { tenant }),
     inviteDecide:  (iid, action)            => call("POST",   `/profile/invites/${iid}`, { action }),
+    /* Диалог с поддержкой. Ни одна из трёх дверей не зовёт модель, поэтому
+       они работают и на исчерпанном лимите: написать в поддержку человек
+       обязан мочь всегда (инвариант 15). */
+    support:       ()                       => call("GET",    "/support"),
+    supportSend:   (text)                   => call("POST",   "/support", { text }),
+    supportRead:   ()                       => call("POST",   "/support/read", {}),
     teams:         ()                       => call("GET",    "/teams"),
     teamCreate:    (name)                   => call("POST",   "/teams", { name }),
     teamDetail:    (tid)                    => call("GET",    `/teams/${encodeURIComponent(tid)}`),

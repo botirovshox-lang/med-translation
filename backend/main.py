@@ -3220,6 +3220,12 @@ def _user_public(u: dict) -> dict:
             # ли этот человек вообще» переживать вытеснение обязан. Адрес
             # НЕ отдаём: он нужен разбору происшествия, а не списку людей.
             "lastLogin": u.get("lastLogin"), "loginCount": u.get("loginCount") or 0,
+            # Знакомство пройдено. НА ЗАПИСИ, а не в localStorage: тур уехал
+            # бы вместе с человеком на другой компьютер и встречал бы его
+            # заново — тот же закон, что у языка интерфейса (инвариант 19).
+            # Отсутствие поля — «ещё не видел», и это правильное чтение:
+            # у всех, кто завёлся до тура, знакомства действительно не было.
+            "tourDone": bool(u.get("tourDone")),
             "tester": bool(u.get("tester"))}
 
 
@@ -3953,6 +3959,11 @@ legal_mod = _safe_import("legal")
 # отдельным процессом `backend/tgbot.py` — доводы в шапке `backend/tg.py`.
 survey_mod = _safe_import("survey")
 tg_mod = _safe_import("tg")
+# Диалог с поддержкой: человек пишет в приложении, владелец отвечает из
+# Telegram тем же ботом. Правила хранения переписки — в шапке модуля.
+support_mod = _safe_import("support")
+# Наглядная инструкция `/tutorial`: рисунки экранов, три языка, без STATE.
+tutorial_mod = _safe_import("tutorial")
 # PDF собирается сторонним конвертером из готового «как в оригинале».
 # Нет конвертера на сервере — честный отказ, а не PDF из голого текста:
 # такой выглядел бы выгрузкой и не был бы ею (инвариант 4).
@@ -5188,6 +5199,10 @@ class ProfilePatch(BaseModel):
     uiLang: Optional[str] = None
     password: Optional[str] = None
     currentPassword: Optional[str] = None
+    # Знакомство пройдено (или закрыто крестиком — это тоже ответ).
+    # Отдельным полем, а не вместе с именем: тур закрывают в один клик,
+    # и слать ради этого имя и язык значило бы переписать их случайно.
+    tourDone: Optional[bool] = None
 
 
 @app.get("/api/profile")
@@ -5228,6 +5243,11 @@ def profile_update(req: ProfilePatch, request: Request):
         # в глоссарии: без него не отличить выбранный язык от языка,
         # доставшегося записи по умолчанию кода (см. `_migrate_ui_lang`).
         u["uiLangSet"] = True
+    if req.tourDone is not None:
+        # Только ВПЕРЁД: пройденное знакомство само не возвращается.
+        # Показать его заново — отдельная кнопка в «Профиле», она шлёт
+        # false явно, и это решение человека, а не побочный эффект.
+        u["tourDone"] = bool(req.tourDone)
     if req.password is not None:
         _check_user_fields(None, req.password, None)
         if not _verify_password(u, req.currentPassword or ""):
@@ -28796,6 +28816,22 @@ def _survey_page(form_id: str, lang: str, ref: str, who: str = ""):
     return HTMLResponse(survey_mod.form_page(form_id, lang, pre))
 
 
+@app.get("/tutorial", response_class=HTMLResponse)
+def page_tutorial(lang: str = ""):
+    """Наглядная инструкция: куда нажимать, с рисунками экранов.
+
+    ПУБЛИЧНАЯ и статичная: ни STATE, ни сессии, ни вызовов модели —
+    на неё ведут ссылки из писем, из бота и из самого приложения,
+    и открываться она обязана до входа. Это не `/api/`, поэтому
+    в `PUBLIC_API_PATHS` ей места не нужно (как `/terms`)."""
+    if not tutorial_mod:
+        raise HTTPException(503, "Страница недоступна")
+    # Адрес сервиса берётся у `tg.SITE` — он там уже есть и собирается
+    # из PUBLIC_BASE_URL. Вторая копия той же переменной означала бы
+    # два разных адреса в письме бота и на этой странице.
+    return HTMLResponse(tutorial_mod.page(lang, getattr(tg_mod, "SITE", "")))
+
+
 @app.get("/t/apply", response_class=HTMLResponse)
 def page_apply(lang: str = "", ref: str = "", who: str = ""):
     return _survey_page("apply", lang, ref, who)
@@ -28973,6 +29009,150 @@ def tg_state():
             "batch": ({"id": b["id"], "name": b.get("name"), "free": _batch_free(b)} if b else None),
             "submitted": sorted({s.get("ref") for s in _surveys()
                                  if s.get("form") == "debrief" and s.get("ref")})}
+
+
+# ─── Диалог с поддержкой ────────────────────────────────────────────
+# Человек пишет из приложения, владелец отвечает из Telegram тем же ботом.
+# Правила хранения (кольцо, потолки, метка треда) — в `backend/support.py`.
+#
+# Двери ТРИ, и права у них разные:
+#   * `/api/support` (GET/POST) — свой диалог, любому вошедшему;
+#   * `/api/tg/support/*` — бот (закрыто `TG_SERVICE_TOKEN`, см. инвариант 23);
+#   * `/api/admin/support` — список диалогов суперпользователю.
+# Ни одна не зовёт модель, поэтому в `_PAID` им не место (инвариант 15):
+# написать в поддержку человек обязан мочь и на исчерпанном лимите.
+
+def _support_off():
+    raise HTTPException(503, "Поддержка временно недоступна")
+
+
+class SupportIn(BaseModel):
+    text: str
+
+
+@app.get("/api/support")
+def support_get(request: Request):
+    """Свой диалог. Пустой — это не ошибка, а «вы ещё не писали»."""
+    if not support_mod:
+        _support_off()
+    u = _current_user(request)
+    t = support_mod.thread_of(STATE, u["id"], _current_tenant())
+    return {"ok": True, "thread": support_mod.public(t),
+            # Есть ли кому ответить. Без бота виджет честно говорит, что
+            # ответ придёт почтой, а не молчит с видом работающего чата.
+            "live": bool(tg_mod and tg_mod.enabled())}
+
+
+@app.post("/api/support")
+def support_post(req: SupportIn, request: Request):
+    """Сообщение в поддержку. Пишется в STATE и уходит владельцу в Telegram."""
+    if not support_mod:
+        _support_off()
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Пустое сообщение")
+    if len(text) > support_mod.MSG_MAX_LEN:
+        raise HTTPException(413, "Сообщение длиннее %d знаков" % support_mod.MSG_MAX_LEN)
+    u = _current_user(request)
+    tid = _current_tenant()
+    t = support_mod.thread_of(STATE, u["id"], tid)
+    # Потолок по УЧЁТНОЙ ЗАПИСИ, а не по IP: дверь за входом, и человек
+    # известен. 429 словами — чтобы виджет сказал, а не замолчал.
+    if support_mod.too_fast(t):
+        raise HTTPException(429, "Слишком много сообщений за час — напишите чуть позже")
+    m = support_mod.add_message(t, support_mod.WHO_USER, text, u.get("name") or u["login"])
+    save_state(STATE)
+    if tg_mod:
+        # Асинхронно: недоступный Telegram иначе держал бы единственный
+        # воркер на таймауте (тот же закон, что у суточной сводки метрик).
+        tg_mod.notify_admin_async(
+            support_mod.notify_text(t, u.get("name") or u["login"], tid, text))
+    _ev("support.msg", tid)
+    return {"ok": True, "msg": m, "thread": support_mod.public(t)}
+
+
+@app.post("/api/support/read")
+def support_read(request: Request):
+    """«Я прочитал ответ» — гасит счётчик непрочитанного на значке виджета."""
+    if not support_mod:
+        _support_off()
+    u = _current_user(request)
+    t = support_mod.thread_of(STATE, u["id"], _current_tenant())
+    if t.get("unread"):
+        t["unread"] = 0
+        save_state(STATE)
+    return {"ok": True, "thread": support_mod.public(t)}
+
+
+class SupportReply(BaseModel):
+    quoted: str = ""             # текст сообщения, на которое ответил владелец
+    text: str
+    name: str = ""
+
+
+@app.post("/api/tg/support/reply")
+def tg_support_reply(req: SupportReply):
+    """Ответ владельца из Telegram. Тред опознаётся по МЕТКЕ в цитате.
+
+    Метки нет — отвечаем 404 и НЕ пишем никуда: ответ, положенный
+    в случайный диалог, прочитал бы чужой человек. Бот в этом случае
+    просит владельца ответить именно на сообщение о заявке."""
+    if not support_mod:
+        _support_off()
+    t = support_mod.thread_for_reply(STATE, req.quoted)
+    if t is None:
+        raise HTTPException(404, "Не понял, на какой диалог это ответ")
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Пустой ответ")
+    support_mod.add_message(t, support_mod.WHO_SUPPORT, text, req.name or "Поддержка")
+    save_state(STATE)
+    return {"ok": True, "thread": t.get("id"), "user": t.get("user")}
+
+
+@app.get("/api/admin/support")
+def admin_support(request: Request, thread: int = 0):
+    """Диалоги — суперпользователю. Без `thread` список, с ним переписка."""
+    if not support_mod:
+        _support_off()
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Диалоги поддержки — только суперпользователю")
+    names = {u["id"]: (u.get("name") or u["login"]) for u in _users()}
+    if thread:
+        t = support_mod.thread_by_id(STATE, thread)
+        if not t:
+            raise HTTPException(404, "Диалог не найден")
+        return {"ok": True, "thread": {**support_mod.public(t),
+                                       "userName": names.get(t.get("user"), ""),
+                                       "tenant": t.get("tenant")}}
+    rows = sorted(support_mod.threads(STATE), key=lambda x: x.get("updated") or 0, reverse=True)
+    return {"ok": True, "threads": [support_mod.admin_row(t, names.get(t.get("user"), ""))
+                                    for t in rows[:100]]}
+
+
+class SupportAdminReply(BaseModel):
+    thread: int
+    text: str
+
+
+@app.post("/api/admin/support/reply")
+def admin_support_reply(req: SupportAdminReply, request: Request):
+    """Ответ из админки — та же запись, что и у ответа из Telegram."""
+    if not support_mod:
+        _support_off()
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Ответы поддержки — только суперпользователю")
+    t = support_mod.thread_by_id(STATE, req.thread)
+    if not t:
+        raise HTTPException(404, "Диалог не найден")
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Пустой ответ")
+    support_mod.add_message(t, support_mod.WHO_SUPPORT, text, me.get("name") or me["login"])
+    save_state(STATE)
+    return {"ok": True, "thread": support_mod.public(t)}
 
 
 # ─── Админка: наборы тестировщиков ──────────────────────────────────

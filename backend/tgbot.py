@@ -321,6 +321,42 @@ def on_text(st: dict, chat_id, text: str, user: dict) -> None:
     tg.send(chat_id, t(lang, "unknown"), menu_kb(lang))
 
 
+ADMIN_CHAT = os.environ.get("TELEGRAM_ADMIN_CHAT", "").strip()
+
+
+def on_admin_reply(chat_id, msg: dict) -> bool:
+    """Ответ ВЛАДЕЛЬЦА на сообщение о вопросе в поддержку.
+
+    Возвращает True, если сообщение забрала поддержка, — тогда обычный разбор
+    текста его уже не трогает (иначе владелец получал бы в ответ на свой
+    ответ меню «выберите язык»).
+
+    Тред опознаётся по МЕТКЕ в цитируемом тексте, и решает это сервер
+    (`support.thread_for_reply`): метка — единственная связь между перепиской
+    в приложении и перепиской в мессенджере. Не нашлась — говорим об этом
+    вслух: ответ, положенный в случайный диалог, прочитал бы чужой человек.
+    """
+    if not ADMIN_CHAT or str(chat_id) != ADMIN_CHAT:
+        return False
+    reply = msg.get("reply_to_message") or {}
+    quoted = (reply.get("text") or reply.get("caption") or "")
+    if "#d" not in quoted:
+        return False                       # это не ответ поддержки — пусть идёт своим путём
+    text = (msg.get("text") or "").strip()
+    if not text:
+        return True
+    who = msg.get("from") or {}
+    r = api("POST", "/api/tg/support/reply", {
+        "quoted": quoted, "text": text,
+        "name": (who.get("first_name") or "").strip() or "Поддержка"})
+    if r.get("ok"):
+        tg.send(chat_id, "✅ Ответ ушёл в приложение (диалог #d%s)." % r.get("thread"))
+    else:
+        tg.send(chat_id, "⚠️ Не отправилось: %s\nОтветьте именно на сообщение о вопросе."
+                % (r.get("error") or "неизвестная ошибка"))
+    return True
+
+
 def handle(st: dict, upd: dict) -> None:
     if "callback_query" in upd:
         cq = upd["callback_query"]
@@ -334,6 +370,10 @@ def handle(st: dict, upd: dict) -> None:
         return
     chat_id = (msg.get("chat") or {}).get("id")
     if not chat_id:
+        return
+    # Ответ владельца в поддержку — ПЕРВЫМ: он приходит обычным текстом,
+    # и общий разбор ответил бы на него меню вместо доставки человеку.
+    if on_admin_reply(chat_id, msg):
         return
     on_text(st, chat_id, (msg.get("text") or "").strip(), msg.get("from") or {})
 

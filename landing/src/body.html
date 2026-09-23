@@ -1,12 +1,13 @@
 <header class="nav" id="nav">
   <div class="wrap">
-    <a class="logo" href="#top" aria-label="SimpleTranslate — на начало страницы"><span class="logo-mark" aria-hidden="true"></span>SimpleTranslate</a>
-    <nav class="nav-links" aria-label="Разделы">
+    <a class="logo" href="#top" aria-label="__T:SimpleTranslate — на начало страницы__"><span class="logo-mark" aria-hidden="true"></span><span class="logo-t">SimpleTranslate</span></a>
+    <nav class="nav-links" aria-label="__T:Разделы__">
       <a href="#demo">Как это работает</a>
       <a href="#pricing">Цены</a>
       <a href="#faq">Вопросы</a>
       <a href="#contact">Контакты</a>
     </nav>
+    __LANGS__
     <a class="btn btn-primary" href="https://simpletranslate.me" target="_blank" rel="noopener">Открыть сервис</a>
   </div>
 </header>
@@ -29,23 +30,18 @@
       </div>
 
       <div class="lens-wrap">
-        <div class="lens" id="lens" aria-label="Пример: наведите курсор на текст, чтобы увидеть перевод">
-          <div class="doc layer-src">
-            <p class="t">Аннотация</p>
-            <p>Цель исследования — оценить эффективность комбинированной терапии у пациентов с впервые выявленным заболеванием.</p>
-            <p>В исследование включены 120 пациентов в возрасте 18–65 лет. Доза препарата составила 300 мг/сут.</p>
-            <p>Различия между группами статистически значимы (p&nbsp;&lt;&nbsp;0,05).</p>
-          </div>
-          <div class="doc layer-tgt" aria-hidden="true">
-            <p class="t">Abstract</p>
-            <p>The aim of the study was to evaluate the efficacy of combination therapy in patients with newly diagnosed disease.</p>
-            <p>The study enrolled 120 patients aged 18–65 years. The drug dose was 300 mg/day.</p>
-            <p>The differences between the groups were statistically significant (p&nbsp;&lt;&nbsp;0.05).</p>
-          </div>
-          <div class="ring" aria-hidden="true"></div>
-          <div class="badge" aria-hidden="true">Числа 120, 18–65 и 300 мг/сут сверены с оригиналом</div>
+        <!-- Выбор пары. Кнопками, а не списком: пар четыре, они помещаются
+             в строку и на телефоне, и человек видит ВСЕ доступные сразу —
+             ради этого блок и заведён. Текст обеих сторон и метка на кольце
+             меняются вместе с выбором (см. LENS_PAIRS в скрипте внизу). -->
+        <div class="lens-pick" id="lens-pick" role="group" aria-label="__T:Язык перевода в примере__"></div>
+        <div class="lens" id="lens" aria-label="__T:Пример: наведите курсор на текст, чтобы увидеть перевод__">
+          <div class="doc layer-src" id="lens-src"></div>
+          <div class="doc layer-tgt" id="lens-tgt" aria-hidden="true"></div>
+          <div class="ring" id="lens-ring" aria-hidden="true"></div>
+          <div class="badge" aria-hidden="true">__T:Числа 120, 18–65 и 300 мг/сут сверены с оригиналом__</div>
         </div>
-        <p class="lens-hint">Наведите курсор или проведите пальцем по тексту: линза показывает перевод.</p>
+        <p class="lens-hint">__T:Наведите курсор или проведите пальцем по тексту: линза показывает перевод.__</p>
       </div>
     </div>
   </section>
@@ -81,11 +77,12 @@
           </div>
         </div>
         <div class="timeline">
-          <button class="play" id="play" aria-label="Пауза" aria-pressed="false">
+          <button class="play" id="play" aria-label="__T:Пауза__" aria-pressed="false"
+                  data-pause="__T:Пауза__" data-play="__T:Продолжить__">
             <svg id="icon-pause" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="2" y="1" width="3.5" height="12" rx="1" fill="currentColor"/><rect x="8.5" y="1" width="3.5" height="12" rx="1" fill="currentColor"/></svg>
             <svg id="icon-play" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true" hidden><path d="M3 1.5v11l9-5.5z" fill="currentColor"/></svg>
           </button>
-          <ol class="steps" id="steps" aria-label="Шаги перевода">
+          <ol class="steps" id="steps" aria-label="__T:Шаги перевода__">
             <li class="step"><div class="bar"><b></b></div><span>Загрузка</span></li>
             <li class="step"><div class="bar"><b></b></div><span>Перевод</span></li>
             <li class="step"><div class="bar"><b></b></div><span>Проверки</span></li>
@@ -348,6 +345,54 @@
   function onScroll() { nav.classList.toggle("scrolled", window.scrollY > 8); }
   window.addEventListener("scroll", onScroll, { passive: true }); onScroll();
 
+  /* ── Линза: исходник и перевод меняются вместе с выбранной парой ──
+     Пары лежат ЗДЕСЬ, а не в разметке, по двум причинам: разметка тогда
+     несла бы четыре копии одного абзаца (и все четыре уехали бы в текст
+     страницы для поисковика), а подпись на кольце («EN», «UZ») жила бы
+     в CSS через content — там её не поменять из скрипта вовсе.
+     Цифры во ВСЕХ парах одни и те же намеренно: подпись под линзой
+     обещает «120, 18–65 и 300 мг/сут сверены с оригиналом», и пример,
+     где этих чисел нет, был бы враньём ровно в том, что мы продаём. */
+  var LENS_PAIRS = window.LENS_PAIRS || [];
+  var pickBox = document.getElementById("lens-pick");
+  var srcBox = document.getElementById("lens-src"), tgtBox = document.getElementById("lens-tgt");
+  var ringEl = document.getElementById("lens-ring");
+  var pairIx = 0;
+
+  function fillDoc(box, lines) {
+    box.textContent = "";
+    lines.forEach(function (ln, i) {
+      var p = document.createElement("p");
+      if (i === 0) p.className = "t";
+      p.textContent = ln;
+      box.appendChild(p);
+    });
+  }
+  function showPair(i) {
+    var pr = LENS_PAIRS[i];
+    if (!pr) return;
+    pairIx = i;
+    fillDoc(srcBox, pr.src);
+    fillDoc(tgtBox, pr.tgt);
+    /* Подпись на кольце — ТЕКСТОМ в элементе, а не ::after из CSS:
+       из скрипта content не меняется, и кольцо вечно писало бы «EN». */
+    ringEl.setAttribute("data-code", pr.code);
+    /* Язык куска документа объявлен честно: читалка обязана произнести
+       узбекский абзац по-узбекски, а не по буквам языка страницы. */
+    srcBox.lang = pr.srcLang; tgtBox.lang = pr.tgtLang;
+    Array.prototype.forEach.call(pickBox.children, function (b, k) {
+      b.setAttribute("aria-pressed", String(k === i));
+    });
+  }
+  LENS_PAIRS.forEach(function (pr, i) {
+    var b = document.createElement("button");
+    b.type = "button"; b.className = "lp"; b.textContent = pr.label;
+    b.setAttribute("aria-pressed", "false");
+    b.addEventListener("click", function () { showPair(i); });
+    pickBox.appendChild(b);
+  });
+  if (LENS_PAIRS.length) showPair(0);
+
   var lens = document.getElementById("lens"), hover = false, t0 = performance.now();
   function setLens(x, y) { lens.style.setProperty("--x", x + "px"); lens.style.setProperty("--y", y + "px"); }
   lens.addEventListener("mousemove", function (e) { hover = true; var r = lens.getBoundingClientRect(); setLens(e.clientX - r.left, e.clientY - r.top); });
@@ -428,7 +473,7 @@
   function schedule() { idx = 0; elapsedBefore = 0; build(); run(); }
   function pause() { timers.forEach(clearTimeout); timers = []; elapsedBefore = performance.now() - startAt; }
   playBtn.addEventListener("click", function () {
-    paused = !paused; playBtn.setAttribute("aria-pressed", String(paused)); playBtn.setAttribute("aria-label", paused ? "Продолжить" : "Пауза");
+    paused = !paused; playBtn.setAttribute("aria-pressed", String(paused)); playBtn.setAttribute("aria-label", playBtn.getAttribute(paused ? "data-play" : "data-pause"));
     iPause.hidden = paused; iPlay.hidden = !paused;
     if (paused) pause(); else run();
   });

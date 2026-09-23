@@ -7,7 +7,7 @@
 работают: лимит режет деньги, а не доступ к оплаченному. Ни одного
 вызова модели, файл состояния не пишется.
 """
-import os, sys
+import os, sys, json
 os.environ["APP_PASSWORD"] = "boot-password-1"
 os.environ["AUTHORITY_CORPUS"] = "0"
 os.environ["OPENAI_API_KEY"] = "test-key"
@@ -53,9 +53,17 @@ finally:
 st = main._spend_status("acme")
 check(st["calls"] == 2 and st["unpriced"] == 1 and st["spentUsd"] > 0, "две записи, одна без цены, сумма > 0: %s" % st)
 check(main._spend_status("default")["calls"] == 0, "у другой организации — ноль")
+# Деньги видит только администратор сервиса (инвариант 22а), поэтому
+# у владельца в `spend` остаётся ОДИН факт — «лимит исчерпан или нет»:
+# без него кнопки гасли бы молча, и это читалось бы как поломка сервиса.
 me = c.get("/api/auth/me", headers=H(B)).json()
-check(me["spend"]["tenant"] == "acme" and me["spend"]["limitUsd"] is None and not me["spend"]["over"],
-      "/auth/me показывает расход, лимита нет")
+check(me["hideCost"] is True and "spentUsd" not in me["spend"] and "limitUsd" not in me["spend"],
+      "владельцу сумм не показывают: " + json.dumps(me["spend"], ensure_ascii=False))
+check(me["spend"].get("over") is False, "но факт «лимит не исчерпан» остаётся")
+# Сам расход при этом считается и виден администратору.
+me_s = c.get("/api/auth/me", headers=H(A)).json()
+check(me_s["spend"]["tenant"] == "default" and me_s["spend"]["limitUsd"] is None,
+      "/auth/me администратора показывает расход его организации")
 
 print("=== 2. Лимит ставит только super ===")
 r = c.post("/api/admin/tenants/acme", headers=H(B), json={"limitUsd": 100})
@@ -150,8 +158,11 @@ r = c.post("/api/admin/tenants/acme", headers=H(A), json={"limitUsd": 1.0})
 check(r.status_code == 200 and not r.json()["spend"]["over"], "лимит $1, расход меньше")
 body = {"kind": "backcheck", "segment_ids": [1], "params": {"est_cost": 5.0}}
 r = c.post("/api/projects/%d/jobs" % pid, headers=H(B), json=body)
-check(r.status_code == 402 and "Смета прогона" in r.json().get("detail", ""),
-      "смета $5 больше остатка → 402: %s" % r.text[:120])
+# Текст без сумм: деньги видит только администратор (инвариант 22а).
+# Но ОТКАЗ остаётся внятным — «не уместится в лимит», а не молчание.
+det = r.json().get("detail", "")
+check(r.status_code == 402 and "лимит" in det.lower() and "$" not in det,
+      "смета $5 больше остатка → 402 без сумм: %s" % r.text[:140])
 ew = main.EXTERNAL_WORKER
 main.EXTERNAL_WORKER = True                      # задачу никто не подхватит — без сети
 body["params"]["est_cost"] = 0.01

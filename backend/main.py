@@ -1636,6 +1636,12 @@ def _no_key_text(model, msg: str) -> str:
     перевода интерфейса); для Claude отказ честно называет Anthropic, а не
     «нет ключа OpenAI» при живом ключе OpenAI."""
     m = model if isinstance(model, dict) else _resolve_model(model)
+    # Поставщика и имя модели называем ТОЛЬКО суперу: это он заводит ключи
+    # и ему нужно знать, какого именно не хватает. Остальным — что случилось
+    # и что делать, без устройства (инвариант 24): человек всё равно
+    # не заводит ключи сам, он идёт к администратору сервиса.
+    if _hide_models():
+        return "Этот шаг сейчас недоступен: не настроен доступ к модели. Сообщите администратору сервиса."
     if _provider_of(m) == "anthropic":
         return "Нет ключа Anthropic: модель " + m["label"] + " недоступна"
     return msg
@@ -2488,27 +2494,222 @@ def _hide_cost() -> bool:
     место решения было одно: разойдись ответы у разных экранов — часть
     сумм осталась бы видна, и обещание «ни $ на экране» стало бы ложным.
 
-    Рубежа ДВА, и они про разное. Упрощённый режим (`simple`) стоит
-    на ОРГАНИЗАЦИИ: там сумм не видит никто, включая владельца. А роль
-    отвечает на другой вопрос — КОМУ в организации деньги вообще
-    показывают: платит за прогоны владелец, и число, по которому решают
-    «запускать ли книгу», нужно ему. Переводчику и редактору оно не нужно
-    ни для одной их задачи, а цена страницы — это ещё и то, что агентство
-    берёт со СВОЕГО клиента: знать её наёмному переводчику незачем.
+    Деньги видит ТОЛЬКО суперпользователь — администратор сервиса. Это
+    решение владельца сервиса, и оно шире прежнего: сперва рубеж стоял
+    на роли владельца организации («он платит — ему и число»), но платит
+    за модели не он, а сервис. Владельцу агентства наш расход на модели
+    не нужен ни для одной задачи, а цена страницы — та, что агентство
+    берёт со своего клиента, — на экране сервиса тоже больше не живёт.
 
-    Суперпользователь исключён, потому что деньги сервиса — его работа
-    (админка, метрики, «Модели и расход»); роль читается из СЕССИИ —
-    роль в АКТИВНОЙ команде (инвариант 18), иначе владелец-дома видел бы
-    суммы в чужой команде, где он переводчик."""
+    Упрощённый режим организации (`simple`, инвариант 22) остаётся и
+    работает ВНУТРИ этого правила: он прятал суммы и от супера, если тот
+    смотрит из такой организации.
+
+    Роли нет вовсе — это не запрос человека (прогон в чужом потоке,
+    служебный вызов): наружу такой ответ не идёт, и прятать нечего."""
     if _tenant_simple():
         return True
     sess = CURRENT_SESSION.get() or {}
     if sess.get("super"):
         return False
-    role = _actor_role()
-    # Роли нет вовсе — это не запрос человека (прогон в чужом потоке,
-    # служебный вызов), и прятать там нечего: наружу этот ответ не идёт.
-    return role is not None and role != "owner"
+    return _actor_role() is not None
+
+
+def _hide_models() -> bool:
+    """Прятать ли ИМЕНА моделей от текущего запроса. Близнец `_hide_cost`,
+    и место решения тоже ОДНО.
+
+    Рубеж не тот же самый, и путать их нельзя: деньги видит владелец (он
+    платит), а имя модели — устройство сервиса, и его не видит НИКТО, кроме
+    суперпользователя, который модели назначает (инвариант 24). До сих пор
+    это держал только браузер (`modelsShown` в `ui.jsx` → `false`), то есть
+    имена честно уезжали в ответе и читались во вкладке «Сеть» — правило
+    обещало одно, а данные говорили другое.
+
+    Роль берётся из СЕССИИ, как у `_hide_cost`. Роли нет вовсе (прогон
+    в чужом потоке, служебный вызов) — наружу этот ответ не идёт, и прятать
+    нечего: иначе сам прогон потерял бы имена моделей, которыми работает."""
+    sess = CURRENT_SESSION.get() or {}
+    if sess.get("super"):
+        return False
+    return _actor_role() is not None
+
+
+# Псевдоним модели: «m1», «m2»… Браузеру имена НЕ нужны — ему нужны ответы
+# на вопросы «та же модель или другая» (группа `self` у back-check, клеймо
+# чужого захода ремонта) и «сильнее или слабее» (ранг termcheck). Псевдоним
+# отвечает на них буква в букву и не называет ничего: сравнения в `.jsx`
+# продолжают работать, а состав прогона не меняется ни на сегмент.
+#
+# Считается от СПИСКА КАТАЛОГА, а не от хеша: хеш от id — это тот же id,
+# только подобранный по словарю из десятка известных имён за секунду.
+# Номер в каталоге такого словаря не даёт.
+_ALIAS_SKIP = ("skip", "tm", "google")   # НЕ модели: служебные ответы
+
+
+def _model_alias(mid) -> Optional[str]:
+    """id модели → «mN». Не модель (`skip`, `tm`, `google`) и пустое —
+    как есть: `skip` означает «проверять было нечего», и вырезать его
+    значит сломать счётчики «без вызова модели»."""
+    if not mid or mid in _ALIAS_SKIP:
+        return mid
+    for i, m in enumerate(OPENAI_MODELS):
+        if m["id"] == mid:
+            return "m%d" % (i + 1)
+    # Модель, пропавшая из каталога после выката. Общий «m?» на всех
+    # схлопнул бы РАЗНЫЕ старые модели в одну: `bc.model === provider`
+    # стало бы истинным там, где переводили и проверяли разные модели,
+    # и сегмент попал бы в группу «проверял сам автор» — то есть его
+    # перестали бы перепроверять. Поэтому псевдоним уникальный и
+    # устойчивый: короткий хеш от id, имени в нём нет.
+    return "m?" + hashlib.sha1((mid or "").encode("utf-8")).hexdigest()[:6]
+
+
+def _alias_models(value):
+    """Псевдонимы в готовой структуре: строка, список, поле `model`."""
+    if isinstance(value, str):
+        return _model_alias(value)
+    if isinstance(value, list):
+        return [_model_alias(v) if isinstance(v, str) else v for v in value]
+    return value
+
+
+def _dm_public(mid):
+    """Умолчание шага наружу: имя суперу, псевдоним остальным."""
+    return _model_alias(mid) if _hide_models() else mid
+
+
+def _strip_project_models(out: dict) -> None:
+    """Убрать имена моделей из ПОЛЕЙ ПРОЕКТА (правит переданный словарь).
+
+    Проект отдаётся целиком и в `/api/projects/{pid}`, и в списке
+    `/api/projects`, и в `/api/seed`. В терм-листе имена лежат ТРИЖДЫ и
+    в разных видах: `termlist.model`, `termlist.cross` — где имя модели
+    служит КЛЮЧОМ словаря, — и `gates.cross.model` на каждой записи.
+    Браузер из этого не читает ничего (`_termlist_view` отдаёт записи белым
+    списком), поэтому режем, а не псевдонимим: непрочитанное поле незачем
+    и переименовывать."""
+    if not _hide_models():
+        return
+    tl = out.get("termlist")
+    if isinstance(tl, dict):
+        tl = dict(tl)
+        tl.pop("cross", None)
+        if tl.get("model"):
+            tl["model"] = _model_alias(tl["model"])
+        if tl.get("entries"):
+            tl["entries"] = [{k: v for k, v in e.items() if k != "gates"}
+                             if isinstance(e, dict) and "gates" in e else e
+                             for e in tl["entries"]]
+        out["termlist"] = tl
+
+
+def _text_without_models(text: str) -> str:
+    """Убрать имена моделей и поставщиков из ГОТОВОГО текста.
+
+    Нужна там, где фраза сложена раньше выдачи и сохранена (`job["error"]`):
+    фильтром по имени поля такое не ловится. Список имён выводится из
+    каталога, поэтому новая модель попадает под замену сама."""
+    out = text or ""
+    for m in OPENAI_MODELS:
+        for name in (m["label"], m["id"]):
+            if name and name in out:
+                out = out.replace(name, "модель")
+    for word in ("Anthropic", "anthropic", "OpenAI", "openai"):
+        out = out.replace(word, "поставщик")
+    return out
+
+
+def _verdict_public(v):
+    """Запись проверки (`backcheck`, `termcheck`, `repair`, `review`,
+    `termContext`) наружу. Одиночные двери отдают её напрямую, мимо
+    `_segment_for_client`, поэтому псевдоним ставим и здесь — правило
+    про имена держится на ВСЕХ выходах, а не на одном самом заметном."""
+    if not _hide_models() or not isinstance(v, dict):
+        return v
+    out = v
+    if "model" in out:
+        out = {**out, "model": _model_alias(out.get("model"))}
+    if out.get("triedModels"):
+        if out is v:
+            out = dict(v)
+        out["triedModels"] = _alias_models(out["triedModels"])
+    return out
+
+
+def _cand_public(c: dict) -> dict:
+    """Карточка очереди терминов наружу. Имена моделей лежат внутри вердиктов
+    (`meaning.model` — судья сверки смысла, `explain.model` — разбор
+    вариантов), а карточка отдаётся целиком (`{**c}`). Браузер эти поля
+    не читает, поэтому режем, а не псевдонимим."""
+    if not _hide_models():
+        return c
+    out = c
+    for k in ("meaning", "explain", "termcheck"):
+        v = out.get(k)
+        if isinstance(v, dict) and "model" in v:
+            if out is c:
+                out = dict(c)
+            out[k] = {kk: vv for kk, vv in v.items() if kk != "model"}
+    # И ВЕРХНЕЕ поле: `_queue_term(..., model=…)` кладёт имя модели прямо
+    # в карточку (кандидаты `extract` и `audit`). Чистка только вложенных
+    # вердиктов промахнулась бы мимо того поля, которое там и лежит.
+    if "model" in out:
+        if out is c:
+            out = dict(c)
+        out.pop("model", None)
+    return out
+
+
+def _gloss_public(g: dict) -> dict:
+    """Запись глоссария наружу. В `meaning` лежит имя модели-судьи
+    (`meaning.model`), а запись отдаётся целиком (`{**g}`) и в `/api/seed`,
+    и в `/api/glossary`. Браузер это поле не читает — режем."""
+    if not _hide_models():
+        return g
+    m = g.get("meaning")
+    if isinstance(m, dict) and "model" in m:
+        return {**g, "meaning": {k: v for k, v in m.items() if k != "model"}}
+    return g
+
+
+def _models_public() -> list:
+    """Каталог моделей наружу.
+
+    Суперу — как есть (он их назначает). Остальным — ПСЕВДОНИМЫ без единого
+    имени: `id` и `label` становятся «mN», `note` и `provider` снимаются
+    (в них имя поставщика словами). Остаются `rank` (сильнее ли проверка)
+    и `ready` (есть ли ключ) — по ним считается СОСТАВ прогона, а не показ.
+
+    Цены (`in`/`out`) режет денежный рубеж, а не этот: их читает смета,
+    и владелец, который платит, обязан её видеть. Убери их у него — тихо
+    исчезли бы и отказ по смете на старте, и калибровка `estRatio`."""
+    hide_m, hide_c = _hide_models(), _hide_cost()
+    out = []
+    for m in OPENAI_MODELS:
+        row = dict(m, rank=model_rank(m["id"]), provider=_provider_of(m),
+                   ready=_provider_ready(m))
+        if hide_m:
+            alias = _model_alias(m["id"])
+            row["id"] = row["label"] = alias
+            row.pop("note", None)
+            row.pop("provider", None)
+            # `api` несёт ИМЯ ПОСТАВЩИКА («anthropic»), а смете от него нужен
+            # ровно один ответ — считать ли надбавку за рассуждение
+            # (`reasoning` в tab_editor.jsx). Отдаём ответ, а не имя.
+            #
+            # `effort` и `sampling` снимаем по той же причине: они есть ТОЛЬКО
+            # у моделей Anthropic, то есть сами по себе называют поставщика
+            # не хуже его имени. Ответ про надбавку уже дан полем `api`.
+            row["api"] = ("modern" if (m.get("api") == "modern" or m.get("effort"))
+                          else "plain")
+            row.pop("effort", None)
+            row.pop("sampling", None)
+        if hide_c:
+            row.pop("in", None)
+            row.pop("out", None)
+        out.append(row)
+    return out
 
 
 def _spend_status(tenant: Optional[str] = None) -> dict:
@@ -5642,7 +5843,17 @@ def admin_audit(request: Request, limit: int = 200, action: str = "", all: bool 
     t = _current_tenant()
     rows = [r for r in reversed(STATE.get("audit") or [])
             if (all or r.get("tenant") == t) and (not action or r.get("action", "").startswith(action))]
-    return {"ok": True, "items": rows[:max(1, min(limit, 1000))]}
+    rows = rows[:max(1, min(limit, 1000))]
+    # Записи журнала несут ИМЕНА МОДЕЛЕЙ (`system.models` пишет `before`
+    # и `after` назначений), а ложится такая запись в организацию супера —
+    # то есть её прочитал бы владелец той организации. Журнал читают глазами,
+    # поэтому имена не псевдонимим, а снимаем: назначения моделей видно
+    # в админке («Модели и расход»), и это её работа, а не журнала.
+    if _hide_models():
+        rows = [{k: v for k, v in r.items() if k not in ("before", "after")}
+                if str(r.get("action") or "").startswith("system.models") else r
+                for r in rows]
+    return {"ok": True, "items": rows}
 
 
 @app.get("/api/admin/logins")
@@ -7896,6 +8107,9 @@ def get_seed():
     # верхний ключ без фильтра уезжал каждому вошедшему целиком.
     for key in ("exportHistory", "termQueue", "autoBatches", "runCosts", "quotes", "tm"):
         public[key] = [e for e in (STATE.get(key) or []) if _tenant_of(e) == t]
+    # Карточки очереди несут имена моделей внутри вердиктов (`meaning.model`,
+    # `explain.model`) — та же чистка, что и у своей двери `/api/term-queue`.
+    public["termQueue"] = [_cand_public(x) for x in public["termQueue"]]
     public["domains"] = _tenant_domains(t)
     if _hide_cost():
         # История расхода прогонов — это суммы и модели по шагам.
@@ -7906,7 +8120,8 @@ def get_seed():
         # и утечка через `/seed` не имеет ни одного видимого признака.
         public["quotes"] = []
     return _json_bytes({**public, "projects": [_project_for_client(p) for p in _tenant_projects()],
-                        "glossary": [{**g, "dict": _dict_of(g)} for g in STATE["glossary"] if _tenant_of(g) == t][:150]},
+                        "glossary": [_gloss_public({**g, "dict": _dict_of(g)})
+                                     for g in STATE["glossary"] if _tenant_of(g) == t][:150]},
                        "seed", t0)
 
 
@@ -7932,7 +8147,8 @@ def list_glossary(q: str = "", cat: str = "", limit: int = 200, offset: int = 0,
     total = len(items)
     # Словарь записи — производное поле (у старых записей его нет):
     # браузер показывает его колонкой и фильтрует по нему.
-    return {"total": total, "items": [{**t, "dict": _dict_of(t)} for t in items[offset:offset + limit]]}
+    return {"total": total,
+            "items": [_gloss_public({**t, "dict": _dict_of(t)}) for t in items[offset:offset + limit]]}
 
 
 @app.post("/api/glossary/import")
@@ -9174,31 +9390,46 @@ def list_models():
         # в отдельном справочнике, который правят без деплоя (см. model_rank).
         # `ready` — есть ли ключ у поставщика модели: модель без ключа видна
         # (цена нужна смете), но выбрать её браузер не даёт — вызов упал бы.
-        "models": [dict(m, rank=model_rank(m["id"]), provider=_provider_of(m),
-                        ready=_provider_ready(m)) for m in OPENAI_MODELS],
+        #
+        # НЕ супером каталог читается ПСЕВДОНИМАМИ: `id` — «mN», `label` — то
+        # же самое, `note` и `provider` сняты (там имя поставщика словами).
+        # Выбрать модель браузер всё равно не даёт (`modelsShown` → false),
+        # а `rank` и `ready` — это ответы на вопросы «сильнее ли» и «есть ли
+        # ключ», и по ним считается состав. Цены (`in`/`out`) — по денежному
+        # рубежу: они нужны СМЕТЕ, а смету видит тот, кто платит.
+        "models": _models_public(),
         # Модели, которых нет в списке выбора, но которые стоят денег
         # (эмбеддинги back-check). Смета обязана брать их цену отсюда:
         # цифра в .jsx — это второй прайс-лист рядом с настоящим.
-        "aux": AUX_MODEL_PRICES,
-        "embedModel": EMBED_MODEL,
+        # Ключ здесь — ИМЯ модели, а значение — ЦЕНА: два рубежа сразу.
+        # Кому не показывают деньги, тому и списка платных моделей незачем:
+        # он нужен ровно смете (эмбеддинги back-check).
+        "aux": ({} if _hide_cost() else
+                ({_model_alias(k): v for k, v in AUX_MODEL_PRICES.items()}
+                 if _hide_models() else AUX_MODEL_PRICES)),
+        "embedModel": _model_alias(EMBED_MODEL) if _hide_models() else EMBED_MODEL,
         "domains": ([{"id": d["id"], "label": d["label"]} for d in DOMAINS]
                     + [{"id": d["id"], "label": d["label"], "custom": True} for d in _tenant_domains()]),
         "domainDefault": DEFAULT_DOMAIN,
         "languages": LANGUAGES,
-        "default": DEFAULT_OPENAI_MODEL,
-        "backcheckDefault": BACKCHECK_DEFAULT_MODEL,
-        "termcheckDefault": TERMCHECK_DEFAULT_MODEL,
-        "repairDefault": REPAIR_DEFAULT_MODEL,
-        "judgeDefault": JUDGE_DEFAULT_MODEL,
+        # Умолчания шагов уезжают ПСЕВДОНИМАМИ по той же причине, что каталог:
+        # браузеру они нужны, чтобы найти в каталоге строку шага и взять
+        # её цену для сметы, — а находит он её по тому же ключу, каким она
+        # в каталоге и названа. Имя при этом не звучит.
+        "default": _dm_public(DEFAULT_OPENAI_MODEL),
+        "backcheckDefault": _dm_public(BACKCHECK_DEFAULT_MODEL),
+        "termcheckDefault": _dm_public(TERMCHECK_DEFAULT_MODEL),
+        "repairDefault": _dm_public(REPAIR_DEFAULT_MODEL),
+        "judgeDefault": _dm_public(JUDGE_DEFAULT_MODEL),
         # Модель сверки терминов. Отдаётся по той же причине, что и
         # четыре соседние: браузер не знает, чем пойдёт шаг с пустым
         # выбором, — а без цены шага прочерком становится ВСЯ смета
         # главной кнопки (шаг с работой и без цены обнуляет её намеренно).
-        "termauditDefault": TERM_CONTEXT_DEFAULT_MODEL,
+        "termauditDefault": _dm_public(TERM_CONTEXT_DEFAULT_MODEL),
         # По той же причине, что и termauditDefault: браузер заполняет выбор
         # модели для КАЖДОГО ключа FULL_STEP_MODEL, а шаг с работой и без цены
         # обнуляет ВСЮ смету главной кнопки.
-        "reviewDefault": REVIEW_DEFAULT_MODEL,
+        "reviewDefault": _dm_public(REVIEW_DEFAULT_MODEL),
         # Порог, ниже которого (и при котором) ревизия правит текст. Числом
         # в .jsx он был бы вторым порогом рядом с настоящим — тот же закон,
         # что у judgeZone и backcheckBands.
@@ -9238,7 +9469,14 @@ def list_models():
 
 @app.get("/api/projects")
 def list_projects():
-    return [{k: v for k, v in p.items() if k != "segments"} | {"segmentCount": len(p["segments"])} for p in _tenant_projects()]
+    out = []
+    for p in _tenant_projects():
+        row = {k: v for k, v in p.items() if k != "segments"} | {"segmentCount": len(p["segments"])}
+        # Сегменты сюда не идут, но ПОЛЯ проекта — да, а в терм-листе лежат
+        # имена моделей (инвариант 24а). Список открывает каждый экран.
+        _strip_project_models(row)
+        out.append(row)
+    return out
 
 
 def _book_image_pages(project: dict) -> None:
@@ -12407,7 +12645,7 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
             continue
         out[i] = {"text": (item.get("text") or "").strip(),
                   "overlay": bool(item.get("overlay")),
-                  "model": mdl["id"]}
+                  "model": _dm_public(mdl["id"])}
     return out
 
 
@@ -13368,7 +13606,8 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
         _replace_target(seg, tm_hit["tgt"], PROVIDER_TM, "EXACT_TM")
         seg.pop("docTerms", None)      # промпта не было — следа быть не должно
         save_state(STATE)
-        return {"ok": True, "segment": seg, "usedRealApi": False, "source": "TM"}
+        return {"ok": True, "segment": _segment_for_client(seg, project),
+                "usedRealApi": False, "source": "TM"}
 
     _key_gate(req.model, "Перевод требует ключ OpenAI: бесплатного движка "
                          "в системе больше нет")
@@ -13406,17 +13645,19 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
     _replace_target(seg, translation, _resolve_model(req.model)["id"], "GPT_REQUIRED")
     _retranslate_note(seg, again)
     save_state(STATE)
-    return {"ok": True, "segment": seg, "usedRealApi": True}
+    return {"ok": True, "segment": _segment_for_client(seg, project), "usedRealApi": True}
 
 
 @app.post("/api/segments/{pid}/{sid}/qa")
 def qa_segment(pid: int, sid: int):
+    project = get_project(pid)          # нужен `_segment_for_client` на выдаче
     seg = get_segment(pid, sid)
     _guard_project_write(pid)
     if not (seg.get("target") or "").strip():
         # Проверять нечего, и статус «qa» на пустом переводе прятал строку
         # от прогона (см. `_needs_translation`) — ничего не пишем.
-        return {"ok": True, "segment": seg, "issues": [], "skipped": "empty"}
+        return {"ok": True, "segment": _segment_for_client(seg, project),
+                "issues": [], "skipped": "empty"}
     # Simple local QA checks
     qa_issues = []
     src, tgt = seg["source"], seg.get("target", "")
@@ -13438,7 +13679,7 @@ def qa_segment(pid: int, sid: int):
         # со следом, а не побочный эффект проверки.
         seg["status"] = "qa"
     save_state(STATE)
-    return {"ok": True, "segment": seg, "issues": qa_issues}
+    return {"ok": True, "segment": _segment_for_client(seg, project), "issues": qa_issues}
 
 
 
@@ -14309,7 +14550,8 @@ def confirm_segment(pid: int, sid: int):
         candidates += edit_harvest.pop("cards")
     same = _identical_source_segments(project, seg)
     save_state(STATE)
-    return {"ok": True, "segment": seg, "tm": tm_action, "propagate": same,
+    return {"ok": True, "segment": _segment_for_client(seg, project),
+            "tm": tm_action, "propagate": same,
             "editHarvest": edit_harvest,
             "termCandidates": [{"id": c["id"], "kind": c["kind"], "src": c["src"],
                                 "tgt": c.get("tgt", ""), "wasTgt": c.get("wasTgt", "")}
@@ -14490,8 +14732,8 @@ def list_term_queue(status: str = "pending", limit: int = 200, offset: int = 0,
     out = items[offset:offset + limit]
     return {"total": len(items), "counts": counts, "waiting": waiting,
             "groups": groups,
-            "items": [{**c, "why": reason_of.get(c["id"]),
-                       "impact": impacts.get(c.get("id"))} for c in out]}
+            "items": [_cand_public({**c, "why": reason_of.get(c["id"]),
+                                    "impact": impacts.get(c.get("id"))}) for c in out]}
 
 
 class BulkDecision(BaseModel):
@@ -14740,7 +14982,7 @@ def approve_term_candidate(cid: int, req: TermDecision = TermDecision()):
     closed = _close_same_term(cand, scope)
     _invalidate_gloss_index()
     save_state(STATE)
-    return {"ok": True, "written": True, "candidate": cand,
+    return {"ok": True, "written": True, "candidate": _cand_public(cand),
             "replaced": bool(existing), "closed": closed, "meaningSkipped": meaning_skipped}
 
 
@@ -14886,7 +15128,7 @@ def explain_term_variants(cid: int, req: ExplainRequest = ExplainRequest()):
             "authority": _authority_match(term, v, scope),
         })
     return {"ok": True, "term": term, "variants": out, "dropped": dropped,
-            "model": _resolve_model(req.model or _dm("judge"))["id"]}
+            "model": _dm_public(_resolve_model(req.model or _dm("judge"))["id"])}
 
 
 @app.post("/api/term-queue/{cid}/reject")
@@ -14900,7 +15142,7 @@ def reject_term_candidate(cid: int):
     # разобрались». Другой вариант перевода того же термина остаётся вопросом.
     _mark_decided(cand, "rejected")
     save_state(STATE)
-    return {"ok": True, "candidate": cand}
+    return {"ok": True, "candidate": _cand_public(cand)}
 
 
 # ─── Автоодобрение однозначных кандидатов ────────────────────────────
@@ -16592,7 +16834,8 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
     # «Отсеяно как не словарная запись» — отдельным числом. Молчаливый отсев
     # неотличим от «модель ничего не нашла», а платили за вызов одинаково.
     return {"ok": True, "scanned": len(segs), "skipped_cached": skipped_cached,
-            "skipped_not_terms": not_terms, "candidates": found}
+            "skipped_not_terms": not_terms,
+            "candidates": [_cand_public(x) for x in found]}
 
 
 # ─── Параллельные вызовы внутри порции ───────────────────────────────
@@ -16936,15 +17179,24 @@ def _segment_for_client(seg: dict, project: Optional[dict] = None) -> dict:
     if att_src or att_tgt:
         out["attention"] = {"src": att_src, "tgt": att_tgt}
     # Имена моделей в сегменте (`provider`, `backcheck.model`, `termcheck.model`,
-    # `repair.triedModels`, …) НЕ снимаются, и это решение, а не недосмотр.
-    # На экран они не попадают: каждое место показа спрашивает `modelsShown`
-    # (инвариант 24). Но браузер читает их ЛОГИКОЙ — группа `self`
-    # у back-check («проверял тот, кто переводил»), «без вызова модели»
-    # у termcheck, клеймо чужого захода ремонта (`triedModels`), — и от этого
-    # зависит СОСТАВ прогона. Сними их, и соло-кнопка обещала бы одно,
-    # а сервер делал другое: ровно та беда, ради которой состав считает сервер.
-    # Остаточный риск назван честно: id модели виден во вкладке «Сеть» тому,
-    # кто туда заглянет. Это устройство, а не деньги и не цена клиента.
+    # `repair.triedModels`, …) заменяются ПСЕВДОНИМАМИ, а не снимаются.
+    # Снять их нельзя: браузер читает их ЛОГИКОЙ — группа `self` у back-check
+    # («проверял тот, кто переводил»), «без вызова модели» у termcheck, клеймо
+    # чужого захода ремонта (`triedModels`), — и от этого зависит СОСТАВ
+    # прогона. Оставить нельзя тоже: на экран они не попадают (`modelsShown`),
+    # но уезжали в ОТВЕТЕ и читались во вкладке «Сеть».
+    # Псевдоним отвечает на оба вопроса браузера («та же или другая») буква
+    # в букву и не называет ничего. `skip` — не модель, он остаётся собой.
+    if _hide_models():
+        for k in ("backcheck", "termcheck", "review", "repair", "termContext"):
+            v = out.get(k)
+            if isinstance(v, dict) and "model" in v:
+                out[k] = {**v, "model": _model_alias(v.get("model"))}
+        if isinstance(out.get("repair"), dict) and out["repair"].get("triedModels"):
+            out["repair"] = {**out["repair"],
+                             "triedModels": _alias_models(out["repair"]["triedModels"])}
+        if out.get("provider"):
+            out["provider"] = _model_alias(out["provider"])
     return out
 
 
@@ -16953,6 +17205,7 @@ def _project_for_client(project: dict) -> dict:
     `parseOutdated` — файл нарезан прежними правилами разбора, и хранимый
     исходник позволяет пересобрать его строки (`/resegment`)."""
     out = {**project, "segments": [_segment_for_client(s, project) for s in list(project["segments"])]}
+    _strip_project_models(out)
     cur = _parse_rules(project.get("importKind") or "")
     out["parseOutdated"] = bool(cur and (project.get("parseRules") or 0) < cur
                                 and _resegment_has_source(project))
@@ -17414,7 +17667,7 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
     # Обе оценки на месте — можно собрать терминологию без участия человека.
     # Порядок прогонов пользователь выбирает сам, поэтому сбор висит на обоих.
     harvested = _harvest_if_clean(seg, project) if harvest else []
-    return {"ok": True, "back": back, "backcheck": seg["backcheck"],
+    return {"ok": True, "back": back, "backcheck": _verdict_public(seg["backcheck"]),
             "queued": [c["id"] for c in harvested]}
 
 
@@ -17465,7 +17718,8 @@ def _run_segment_termcheck(seg: dict, project: dict, model: Optional[str] = None
                             "domain": _resolve_domain(project.get("domain"))["id"],
                             "target_hash": _text_hash(target),
                             "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
-        return {"ok": True, "termcheck": seg["termcheck"], "queued": [], "skipped": trivial}
+        return {"ok": True, "termcheck": _verdict_public(seg["termcheck"]),
+                "queued": [], "skipped": trivial}
     res = _openai_termcheck(seg.get("source", ""), target,
                             project.get("src", "RU"), project.get("tgt", "EN"),
                             project.get("domain"), model)
@@ -17499,7 +17753,7 @@ def _run_segment_termcheck(seg: dict, project: dict, model: Optional[str] = None
     # Жалоба на приказной термин — не приговор записи, а повод переспросить
     # у сверки смысла (см. _note_term_disputes).
     disputed = _note_term_disputes(seg, project)
-    return {"ok": True, "termcheck": seg["termcheck"], "queued": queued,
+    return {"ok": True, "termcheck": _verdict_public(seg["termcheck"]), "queued": queued,
             "disputedTerms": disputed}
 
 
@@ -17599,7 +17853,8 @@ def termcheck_batch(pid: int, req: TermcheckBatchRequest):
     return {"ok": True, "processed": processed, "count": len(processed),
             "flagged": flagged, "remaining": remaining_after,
             "skipped_cached": skipped_cached, "duplicates": duplicates,
-            "skipped_trivial": skipped_trivial, "errors": errors, "model": mdl_id}
+            "skipped_trivial": skipped_trivial, "errors": errors,
+            "model": _dm_public(mdl_id)}
 
 
 # ─── Автоматический ремонт сегмента ──────────────────────────────────
@@ -18960,7 +19215,7 @@ def _run_segment_term_context(seg: dict, project: dict,
         "model": res["model"], "terms": terms,
         "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
-    return {"ok": True, "termContext": seg["termContext"]}
+    return {"ok": True, "termContext": _verdict_public(seg["termContext"])}
 
 
 def _arbiter_settled(seg: dict) -> set:
@@ -20122,7 +20377,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
                          "model": mdl_planned, "triedModels": tried_now,
                          "issues": [f["text"] for f in findings],
                          "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
-        return {"ok": True, "applied": False, "repair": seg["repair"]}
+        return {"ok": True, "applied": False, "repair": _verdict_public(seg["repair"])}
 
     # Перепроверяем ровно теми проверками, которые ругались. Лишних не гоняем.
     seg["target"] = new_target
@@ -20554,7 +20809,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
             # Вместе с отпечатком, и только с ним: несостоявшийся заход
             # (оборванная перепроверка) не в счёт — модель не «пробовала».
             seg["repair"]["triedModels"] = tried_now
-        return {"ok": True, "applied": False, "repair": seg["repair"],
+        return {"ok": True, "applied": False, "repair": _verdict_public(seg["repair"]),
                 "desync": _repair_desync(seg, old_target)}
 
     # Заверение снимаем ГРОМКО. Человек его поставил, и если машина его
@@ -20620,7 +20875,8 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
                      # с упавшим баллом и ничем не объяснённая.
                      "notes": notes,
                      "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
-    return {"ok": True, "applied": True, "repair": seg["repair"], "target": new_target,
+    return {"ok": True, "applied": True, "repair": _verdict_public(seg["repair"]),
+            "target": new_target,
             "desync": _repair_desync(seg, new_target)}
 
 
@@ -21018,7 +21274,7 @@ def _openai_review(seg: dict, project: dict, prev_src: str, next_src: str,
                        if str(x).strip()][:6],
             "fixed": (data.get("fixed") or "").strip(),
             "source_suspect": bool(data.get("source_suspect")),
-            "model": mdl["id"], "cost": cost}
+            "model": _dm_public(mdl["id"]), "cost": cost}
 
 
 def _review_veto(seg: dict, project: Optional[dict], candidate: str) -> list:
@@ -22685,8 +22941,12 @@ def _termcross(project: dict, first_model: Optional[str], job: Optional[dict] = 
             alt = c.get("tgt") or ""
             same = None if not alt else _term_forms_overlap(alt, e["tgt"])
             e.setdefault("gates", {})["cross"] = {"model": mdl["id"], "tgt": alt, "same": same}
+            # Имя модели в ТЕКСТ причины не ставится: `why` уходит браузеру
+            # (`_termlist_view`), и фильтром по имени поля такая утечка
+            # не ловится вовсе. Человеку важно «вторая модель не согласна»,
+            # а какая именно — устройство (инвариант 24).
             if same is False and _termlist_dispute(
-                    project, e["src"], "другая модель (" + mdl["label"] + ") переводит иначе: " + alt):
+                    project, e["src"], "вторая модель переводит иначе: " + alt):
                 disputed += 1
     out = {"crossAsked": sum(len(c) for c in chunks), "crossCached": len(ents) - len(ask),
            "crossDisputed": disputed, "crossFailed": failed}
@@ -22962,7 +23222,9 @@ def _termlist_view(project: dict) -> dict:
     tl = project.get("termlist") or {}
     ents = tl.get("entries") or []
     return {"ok": True, "built": bool(tl), "use": bool(tl.get("use")), "at": tl.get("at"),
-            "model": tl.get("model"), "strict": _termlist_strict(project),
+            # Имя модели, собравшей лист, наружу не идёт (инвариант 24).
+            "model": _model_alias(tl.get("model")) if _hide_models() else tl.get("model"),
+            "strict": _termlist_strict(project),
             "acceptedAt": tl.get("acceptedAt"), "active": len(_termlist_entries(project)),
             "partial": tl.get("partial") or 0,
             "pendingHuman": sum(1 for e in ents if e.get("status") == "agreed" and e.get("by") != "human"),
@@ -24209,7 +24471,7 @@ def repair_batch(pid: int, req: RepairBatchRequest):
             # Сегменты, где текст разошёлся с записью о решении. Ноль — норма,
             # не ноль — повод смотреть журнал, а не гадать по остывшим данным.
             "desync": desync,
-            "model": _resolve_model(req.model or _dm("repair"))["id"]}
+            "model": _dm_public(_resolve_model(req.model or _dm("repair"))["id"])}
 
 
 class BackcheckRequest(BaseModel):
@@ -24228,7 +24490,7 @@ def backcheck_segment(pid: int, sid: int, req: BackcheckRequest = BackcheckReque
     result = _run_segment_backcheck(seg, project, req.model, req.use_judge, req.judge_model)
     if result.get("ok"):
         save_state(STATE)
-        result["segment"] = seg
+        result["segment"] = _segment_for_client(seg, project)
     return result
 
 
@@ -24321,7 +24583,7 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
         "skipped_cached": skipped_cached,
         "duplicates": duplicates,
         "errors": errors,
-        "model": mdl_id,
+        "model": _dm_public(mdl_id),
     }
 
 
@@ -24359,7 +24621,8 @@ def _segment_checks(pid: int, sid: int, run_backcheck: bool = True,
     source_text = seg.get("source", "")
     target_text = seg.get("target", "").strip()
     if not target_text:
-        return {"ok": False, "error": "Segment is not translated yet", "segment": seg}
+        return {"ok": False, "error": "Segment is not translated yet",
+                "segment": _segment_for_client(seg, project)}
 
     gloss_hits, tm_hit = _get_context(source_text, project=project)
     back = seg.get("backtranslated_ru", "")
@@ -24452,7 +24715,8 @@ def _segment_checks(pid: int, sid: int, run_backcheck: bool = True,
     # risk_color. Раньше проверка перетирала одно другим, и сегмент, чисто
     # прошедший QA, при следующем переводе уезжал в Google вместо GPT.
 
-    return {"ok": True, "segment": seg, "qa_result": qa_result, "issues": qa_result["qa_issues"]}
+    return {"ok": True, "segment": _segment_for_client(seg, project),
+            "qa_result": qa_result, "issues": qa_result["qa_issues"]}
 
 
 # Путь назывался medical-qa; новое имя нейтрально, старое оставлено ещё
@@ -24551,6 +24815,7 @@ def batch_checks(pid: int, req: ChecksBatchRequest = ChecksBatchRequest()):
 @app.post("/api/segments/{pid}/{sid}/revert")
 def revert_segment(pid: int, sid: int):
     _guard_project_write(pid)
+    project = get_project(pid)          # нужен `_segment_for_client` на выдаче
     seg = get_segment(pid, sid)
     if seg["status"] == "confirmed":
         _withdraw_confirmation(seg, "revert")
@@ -24564,7 +24829,7 @@ def revert_segment(pid: int, sid: int):
         seg["status"] = "new"
         seg["target"] = ""
     save_state(STATE)
-    return {"ok": True, "segment": seg}
+    return {"ok": True, "segment": _segment_for_client(seg, project)}
 
 
 def _note_hand_edit(seg: dict, new_target: str) -> None:
@@ -25235,7 +25500,7 @@ def batch_translate(pid: int, req: BatchRequest):
         "skipped_confirmed": skipped_confirmed,
         # Перевод заново выше предела организации — тоже поимённо.
         "skipped_limit": skipped_limit,
-        "model": _resolve_model(req.model)["id"],
+        "model": _dm_public(_resolve_model(req.model)["id"]),
     }
 
 
@@ -27972,9 +28237,15 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
     # упрощённого режима, и мимо роли, — хотя `_job_public` те же поля
     # из задачи снимает. Состав шага (`ids`, `count`, причины) остаётся:
     # это работа, а не устройство.
-    hide = _hide_cost()
+    # Рубеж МОДЕЛЬНЫЙ, а не денежный: имя модели не видит и владелец
+    # (инвариант 24), а `_hide_cost` для него ложен. Браузеру `model` нужен,
+    # чтобы найти строку шага в каталоге и взять её цену для сметы, —
+    # псевдоним отвечает на это тем же ключом, каким модель названа
+    # в каталоге (`_models_public`). `modelLabel` — имя словами, и наружу
+    # оно не идёт вовсе.
+    hide = _hide_models()
     return {"step": step, "label": FULL_STEP_LABELS[step],
-            "model": None if hide else mdl_id,
+            "model": _model_alias(mdl_id) if hide else mdl_id,
             "modelLabel": None if hide else (_model_label(mdl_id) if mdl_id else None),
             "ids": ids, "count": len(ids), "note": note,
             "runs": fmt(runs), "skips": fmt(skips)}
@@ -28315,18 +28586,38 @@ def _job_public(job: dict) -> dict:
     не показывать."""
     out = {k: v for k, v in job.items() if k not in ("ids", "stop")}
     out.update(_queue_place(job))
-    if _hide_cost():
+    # Рубежа ДВА, и они режут РАЗНОЕ. Имена моделей (`sysModels`,
+    # `modelsReplaced`, ключи моделей в `params`, разбивка `usage.models`)
+    # не видит никто, кроме супера, — а `_hide_cost` для владельца ложен,
+    # и прежде он получал их все. Деньги (`usage.cost`, `est_cost`) —
+    # по денежному рубежу: владелец платит и обязан их видеть.
+    if _hide_models():
         out.pop("sysModels", None)
         out.pop("modelsReplaced", None)
+        # Текст ошибки СОЧИНЯЕТСЯ в потоке прогона, где роли нет и рубеж
+        # не стоит: `_no_key_text` там честно называет поставщика и модель
+        # («Нет ключа Anthropic: модель Claude Opus 5 недоступна»), текст
+        # ложится в `job["error"]` и потом отдаётся человеку, для которого
+        # рубеж стоит. Правило «прятать на выдаче» само по себе такое
+        # не ловит: имя вычислено ДО выдачи и сохранено. Поэтому чистим
+        # здесь — по тому же списку имён, что и везде.
+        if out.get("error"):
+            out["error"] = _text_without_models(str(out["error"]))
+        if out.get("usage"):
+            out["usage"] = {k: v for k, v in out["usage"].items()
+                            if k not in ("models", "steps")}
+        # `params` несёт имена ВСЕХ моделей. Статус задачи браузер опрашивает
+        # каждые пару секунд, так что это была бы самая частая утечка из всех.
+        if out.get("params"):
+            out["params"] = {k: v for k, v in out["params"].items()
+                             if k not in _MODEL_PARAM_KEYS}
+    if _hide_cost():
         if out.get("usage"):
             out["usage"] = {k: v for k, v in out["usage"].items()
                             if k not in ("cost", "models", "steps", "unpriced")}
-        # `params` несёт имена ВСЕХ моделей и смету — то есть ровно то, что
-        # соседние строки прячут. Статус задачи браузер опрашивает каждые
-        # пару секунд, так что это была бы самая частая утечка из всех.
         if out.get("params"):
             out["params"] = {k: v for k, v in out["params"].items()
-                             if k not in _MODEL_PARAM_KEYS and k != "est_cost"}
+                             if k != "est_cost"}
     return out
 
 

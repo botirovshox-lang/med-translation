@@ -685,7 +685,9 @@ function RunPanel({ summary, store, toast, onClose, onStarted, plan, cat, mods, 
      (шаг и сколько сегментов) остаётся всем: это обещание работы, а не
      устройство. */
   const expert = !!store.expert;
-  const showCost = !!(store.can && (store.can.owner || store.can.super));
+  // Тот же рубеж, что и везде: деньги показывает сервер (`costHidden`),
+  // а не роль. Иначе панель рисует смету по ценам, которых нет в ответе.
+  const showCost = !costHidden();
   /* Называются ли модели — ОДНО правило на все экраны (modelsShown в ui.jsx):
      копия предиката здесь разошлась бы с карточкой сегмента и импортом, а
      разойтись ей нельзя — пропущенное место и есть утечка. */

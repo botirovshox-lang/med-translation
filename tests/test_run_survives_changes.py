@@ -213,11 +213,26 @@ r = c.post("/api/projects/1/jobs", headers={"Authorization": "Bearer " + tok},
 j = (r.json() or {}).get("job") or {}
 check(r.status_code == 200 and (j.get("sysModels") or {}).get("repair") == "gpt-4o-mini",
       "задача несёт снимок: %s %s" % (r.status_code, j.get("sysModels")))
-real_hide = main._hide_cost
+# Имена моделей задачи прячет МОДЕЛЬНЫЙ рубеж (`_hide_models`, инвариант 24а),
+# а деньги — денежный (`_hide_cost`). Рубежа два, и они про разное: проверяем
+# каждый своей подменой, иначе тест сторожил бы не то, что чинит.
+real_models, real_cost = main._hide_models, main._hide_cost
+main._hide_models = lambda *a, **k: True
+main._hide_cost = lambda *a, **k: False
+pub = main._job_public(dict(main._JOBS[j["id"]], modelsReplaced=["x"],
+                            usage={"cost": 1.0, "calls": 2, "models": {"gpt-4o": 1}}))
+check("sysModels" not in pub and "modelsReplaced" not in pub,
+      "имён моделей задачи не видно")
+check("models" not in (pub.get("usage") or {}), "и разбивки расхода по моделям тоже")
+check((pub.get("usage") or {}).get("cost") == 1.0,
+      "а СУММА осталась: это другой рубеж, и он сейчас открыт")
+main._hide_models = lambda *a, **k: False
 main._hide_cost = lambda *a, **k: True
-pub = main._job_public(dict(main._JOBS[j["id"]], modelsReplaced=["x"]))
-check("sysModels" not in pub and "modelsReplaced" not in pub, "упрощённый режим имён моделей задачи не видит")
-main._hide_cost = real_hide
+pub2 = main._job_public(dict(main._JOBS[j["id"]],
+                             usage={"cost": 1.0, "calls": 2, "models": {"gpt-4o": 1}}))
+check("cost" not in (pub2.get("usage") or {}), "денежный рубеж снимает сумму")
+check(pub2.get("sysModels") is not None, "а имена при нём остаются — рубежи не перепутаны")
+main._hide_models, main._hide_cost = real_models, real_cost
 set_sys({})
 
 print("\nПРОВАЛЕНО: %d" % len(fail) if fail else "\nВсё сошлось")

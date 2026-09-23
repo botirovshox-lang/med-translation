@@ -1119,8 +1119,15 @@ function TabEditor({ store, toast }) {
     window.API.safeCall(() => window.API.runPlan(project.id, {
       steps: fullSteps ? FULL_STEP_KEYS.filter(k => fullSteps.has(k)) : null,
       segment_ids: ids,
-      model: gptModel, bc_model: bcModel, tc_model: tcModel, rp_model: rpModel,
-      tcx_model: tcxModel, rv_model: rvModel,
+      /* Модель шлём, ТОЛЬКО когда выбор ВИДЕН человеку (`modelPick`
+         = `modelsShown`). Иначе в этих переменных лежит ПСЕВДОНИМ каталога
+         («m3»), и сервер по нему нашёл бы не ту модель: `_resolve_model`
+         на незнакомый id молча отдаёт переводчика по умолчанию — разбор
+         состава и смета разошлись бы с прогоном без единого признака.
+         Пустое поле значит «возьми свою по умолчанию». */
+      model: modelPick ? gptModel : null, bc_model: modelPick ? bcModel : null,
+      tc_model: modelPick ? tcModel : null, rp_model: modelPick ? rpModel : null,
+      tcx_model: modelPick ? tcxModel : null, rv_model: modelPick ? rvModel : null,
       use_judge: bcJudge, judge_all: expertUI ? undefined : true,
       // Тот же признак, что и у карточки ремонта: отмечены группы уже
       // чинившихся — значит человек просит второй заход.
@@ -1736,7 +1743,9 @@ function TabEditor({ store, toast }) {
       // (см. batch_translate: force+segment_ids не значит include_confirmed) —
       // тогда счётчик «переведено: 0» на явно отмеченных сегментах выглядел бы
       // как сбой, а не как защита.
-      { force: !!hasExplicitCheck, model: gptModel, include_confirmed: retranslate && rtFixConfirmed },
+      // Спрятанный выбор — псевдоним каталога, и слать его нельзя (`modelPick`).
+      { force: !!hasExplicitCheck, model: modelPick ? gptModel : null,
+        include_confirmed: retranslate && rtFixConfirmed },
       TR("Все подходящие сегменты уже переведены."),
       estimateRun("translate", targets, gptModelInfo));
   };
@@ -1935,7 +1944,9 @@ function TabEditor({ store, toast }) {
     // иначе сервер вырезал бы из порции ровно то, что попросили перепроверить.
     const targets = project.segments.filter(s => backcheckable(s, currentIdSet));
     startJob("backcheck", targets,
-      { model: bcModel || null, use_judge: bcJudge, judge_model: judgeModel || null, skip_cached: false },
+      // Спрятанный выбор — псевдоним, слать его нельзя (см. `modelPick`).
+      { model: modelPick ? (bcModel || null) : null, use_judge: bcJudge,
+        judge_model: modelPick ? (judgeModel || null) : null, skip_cached: false },
       bcSkipConfirmed
         ? TR("В выборке нет непроверенных сегментов, кроме подтверждённых, а их вы просили пропускать.")
         : TR("В выборке нет непроверенных сегментов. Отметьте нужные группы в «Что проверять»."),
@@ -1945,7 +1956,7 @@ function TabEditor({ store, toast }) {
   const runTermcheckBatch = () => {
     const targets = project.segments.filter(s => termcheckable(s, currentIdSet));
     startJob("termcheck", targets,
-      { model: tcModel || null, skip_cached: false },
+      { model: modelPick ? (tcModel || null) : null, skip_cached: false },
       TR("Всё в выборке уже проверено этой моделью. Отметьте нужные группы в «Что проверять», чтобы прогнать заново."),
       estimateRun("termcheck", targets, tcModelInfo));
   };
@@ -1957,7 +1968,9 @@ function TabEditor({ store, toast }) {
     const ids = new Set((plan && plan.ids) || []);
     const targets = project.segments.filter(s => ids.has(s.id));
     startJob("review", targets,
-      { model: rvModel || null, rv_confirmed: rvConfirmed, rv_ask_confirmed: rvAskConfirmed },
+      // Спрятанный выбор — псевдоним каталога, слать его нельзя (`modelPick`).
+      { model: modelPick ? (rvModel || null) : null,
+        rv_confirmed: rvConfirmed, rv_ask_confirmed: rvAskConfirmed },
       TR("Ревизовать нечего: в выборке нет переведённых сегментов, ")
       + TR("либо все уже ревизованы этим переводом."),
       estimateRun("review", targets, rvModelInfo));
@@ -1970,7 +1983,7 @@ function TabEditor({ store, toast }) {
     const ids = new Set((plan && plan.ids) || []);
     const targets = project.segments.filter(s => ids.has(s.id));
     startJob("termaudit", targets,
-      { model: tcxModel || null },
+      { model: modelPick ? (tcxModel || null) : null },
       TR("Сверять нечего: в выборке нет сегментов с утверждёнными терминами, ")
       + TR("либо все уже сверены этим переводом."),
       estimateRun("termaudit", targets, tcxModelInfo));
@@ -1979,8 +1992,11 @@ function TabEditor({ store, toast }) {
   const runRepairBatch = () => {
     const targets = project.segments.filter(s => repairable(s, currentIdSet));
     startJob("repair", targets,
-      { model: rpModel || null, bc_model: bcModel || null, tc_model: tcModel || null,
-        use_judge: bcJudge, judge_model: judgeModel || null, retry: repairRetry(),
+      { model: modelPick ? (rpModel || null) : null,
+        bc_model: modelPick ? (bcModel || null) : null,
+        tc_model: modelPick ? (tcModel || null) : null,
+        use_judge: bcJudge, judge_model: modelPick ? (judgeModel || null) : null,
+        retry: repairRetry(),
         include_confirmed: rpFixConfirmed },
       rpGroups.length
         ? TR("Все сегменты с находками уже проходили ремонт. Отметьте нужные группы в «Что чинить».")
@@ -1998,7 +2014,8 @@ function TabEditor({ store, toast }) {
       // Модель обратного перевода — та же, что у back-check. Своей у Medical QA
       // нет: правила детерминированные, вызов нужен только там, где готового
       // обратного перевода не осталось.
-      { bc_model: bcModel }, TR("Нет переведённых сегментов для пакетной проверки."),
+      { bc_model: modelPick ? bcModel : null },
+      TR("Нет переведённых сегментов для пакетной проверки."),
       // Платит она только за те сегменты, у которых своего обратного перевода
       // нет: остальным его отдал back-check. Тот же фильтр, что и в soloEst.
       estimateRun("medical_qa",
@@ -2525,12 +2542,14 @@ function TabEditor({ store, toast }) {
        свою по умолчанию», и решает сервер — тем же кодом, которым работает. */
     const started = await startJob("full", fullRunIds, {
       steps,
-      model: expertUI ? gptModel : null, bc_model: expertUI ? bcModel : null,
-      tc_model: expertUI ? tcModel : null, tcx_model: expertUI ? tcxModel : null,
-      rp_model: expertUI ? rpModel : null, rv_model: expertUI ? rvModel : null,
+      // Рубеж — `modelPick` (виден ли выбор), а не `expertUI`: имена
+      // спрятаны и от эксперта, и в его переменных тоже псевдоним.
+      model: modelPick ? gptModel : null, bc_model: modelPick ? bcModel : null,
+      tc_model: modelPick ? tcModel : null, tcx_model: modelPick ? tcxModel : null,
+      rp_model: modelPick ? rpModel : null, rv_model: modelPick ? rvModel : null,
       use_judge: expertUI ? bcJudge : true,
       judge_all: expertUI ? undefined : true,
-      judge_model: expertUI ? (judgeModel || null) : null,
+      judge_model: modelPick ? (judgeModel || null) : null,
       // Однозначные термины после прогона раскладываются подсказкой сами
       // (как у кнопки «Доделать сама» — `turnkey.params.auto_terms`). Эксперт
       // решает это панелью автоодобрения на экране «Словари».
@@ -2568,8 +2587,9 @@ function TabEditor({ store, toast }) {
     const res = await window.API.safeCall(() => window.API.createJob(project.id, "apply_terms", [], {
       max_tier: null, term_limit: 2000,
       allow_verified: termOrders,
-      rp_model: rpModel, bc_model: bcModel, tc_model: tcModel,
-      use_judge: bcJudge, judge_model: judgeModel || null,
+      rp_model: modelPick ? rpModel : null, bc_model: modelPick ? bcModel : null,
+      tc_model: modelPick ? tcModel : null,
+      use_judge: bcJudge, judge_model: modelPick ? (judgeModel || null) : null,
       include_confirmed: !!impactConfirmed,
     }));
     if (!res || !res.ok) { toast.error(TR("Не удалось запустить"), TR("Сервер не принял задачу.")); return; }
@@ -2680,7 +2700,11 @@ function TabEditor({ store, toast }) {
         // обязано быть видно у самой кнопки, а не только в свёрнутой таблице.
         partialSteps: fullSteps && fullSteps.size < FULL_STEP_KEYS.length ? fullSteps.size : 0,
         allSteps: FULL_STEP_KEYS.length, onAllSteps: () => setFullSteps(null),
-        showCost: !!(store.can && (store.can.owner || store.can.super)),
+        // Смету видит тот, кому сервер шлёт деньги (инвариант 22а):
+        // рубеж один и он на сервере, а `costHidden` — его отражение.
+        // Роль здесь спрашивать нельзя: сервер вырезал цены из каталога,
+        // и панель обещала бы числа, которых ей не дали.
+        showCost: !costHidden(),
         fixConfirmed: rpFixConfirmed, fixConfirmedCount: rpConfirmedWaiting, onFixConfirmed: setRpFixConfirmed }),
       expertUI && tkSum && React.createElement("button", { className: "btn btn-ghost btn-sm",
         style: { alignSelf: "flex-start", margin: "2px 0 8px" }, onClick: () => setSetupOpen(o => !o) },
@@ -2709,7 +2733,11 @@ function TabEditor({ store, toast }) {
              единственное число, по которому он решает, запускать ли книгу,
              значит сделать хуже, а не проще. */
           expert: expertUI,
-          showCost: !!(store.can && (store.can.owner || store.can.super)),
+          // Смету видит тот, кому сервер шлёт деньги (инвариант 22а):
+        // рубеж один и он на сервере, а `costHidden` — его отражение.
+        // Роль здесь спрашивать нельзя: сервер вырезал цены из каталога,
+        // и панель обещала бы числа, которых ей не дали.
+        showCost: !costHidden(),
           onFixConfirmed: setRpFixConfirmed }),
         // Одобрение терминов и ремонт по ним. Разбор соответствия глоссарию
         // (списки, «Пересчитать», «Перевести заново») — на «Проверке»:

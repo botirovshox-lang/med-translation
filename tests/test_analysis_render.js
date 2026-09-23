@@ -616,6 +616,11 @@ const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
   // сегментов) при этом остаётся всем: это обещание работы.
   console.log("\n=== 4d. Устройство — админу, смета — плательщику ===");
   const asRole = (can) => {
+    /* Деньги прячет СЕРВЕР (`_hide_cost` → `hideCost` → `window.HIDE_COST`),
+       и панель читает этот признак, а не роль: сервер вырезает цены из
+       каталога, и считать смету не по чему. Заглушка обязана вести себя так
+       же, иначе тест сторожит роль там, где код смотрит на флаг. */
+    global.window.HIDE_COST = !(can && can.super);
     hooks = []; hookIdx = 0; effects.length = 0;
     const st = Object.assign({}, storeRun, { can });
     return texts(React.createElement(RunPanel, { summary: TKP, store: st, toast,
@@ -632,8 +637,9 @@ const props4 = { project, store: store4, toast, onDrill() {}, T: () => null };
         "владелец: действующая модель не названа");
   check(!tOwn.some(s => s.indexOf("Back-check той же моделью") !== -1),
         "владелец: подсказка о конфликте моделей не тревожит без двери");
-  check(tOwn.some(s => s.indexOf("нижняя граница") !== -1),
-        "владелец: про смету сказано — он платит");
+  // Деньги видит только администратор сервиса (инвариант 22а).
+  check(!tOwn.some(s => s.indexOf("нижняя граница") !== -1),
+        "владелец: сметы нет — деньги сервиса не его дело");
   const tTr = asRole({ owner: false, super: false, role: "translator" });
   check(tTr.some(s => s.indexOf("Запустить") !== -1), "переводчик: кнопка на месте");
   check(!tTr.some(s => s === "по умолчанию"), "переводчик: выбора моделей нет");

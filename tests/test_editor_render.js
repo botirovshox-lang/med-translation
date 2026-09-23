@@ -1025,6 +1025,38 @@ try {
   check(asked14 === 0, "и /analysis не запрашивался зря (" + asked14 + ")");
   global.API = baseAPI;
 
+  console.log("\n=== 15в. Модель не уезжает на сервер мимо рубежа ===");
+  /* Выбор модели спрятан (`modelsShown` → false), поэтому переменные
+     `gptModel`/`bcModel`/… содержат ПСЕВДОНИМ каталога («m3»), а не рабочий
+     id. Уехав на сервер, псевдоним проходит `_resolve_model` и молча
+     превращается в модель ПЕРЕВОДА по умолчанию: разбор состава и смета
+     считаются не той моделью, чем пойдёт прогон, и признаков у этого нет
+     никаких — числа выглядят правдоподобно.
+     Поэтому в тело запроса модель кладётся только под `modelPick`.
+     Сверяем ИСХОДНИК: рендер такой отправки не видит. */
+  {
+    // Проверяем ВСЕ .jsx, а не один редактор: отправку заведут там, где
+    // её удобнее написать, а рубеж обязан стоять в каждом файле.
+    const bad = [];
+    const re = /\b(?:model|bc_model|tc_model|rp_model|rv_model|tcx_model|judge_model)\s*:\s*([A-Za-z][\w]*)/g;
+    for (const f of fs.readdirSync(root).filter(x => x.endsWith(".jsx"))) {
+      const src = fs.readFileSync(path.join(root, f), "utf8");
+      let m;
+      re.lastIndex = 0;
+      while ((m = re.exec(src))) {
+        const val = m[1];
+        // Голая переменная выбора — только через modelPick/pickModel.
+        if (!/^(gptModel|bcModel|tcModel|rpModel|rvModel|tcxModel|judgeModel)$/.test(val)) continue;
+        const line = src.slice(0, m.index).split("\n").length;
+        const around = src.slice(Math.max(0, m.index - 220), m.index + 60);
+        if (around.indexOf("modelPick") === -1 && around.indexOf("pickModel") === -1)
+          bad.push(f + " (стр. " + line + "): " + m[0]);
+      }
+    }
+    check(bad.length === 0,
+          "все отправки модели идут через modelPick" + (bad.length ? ":\n       " + bad.join("\n       ") : ""));
+  }
+
   console.log("\n=== 16. Смета главной кнопки — число, а не прочерк ===");
   /* Шаг с работой и без цены обнуляет ВСЮ смету намеренно: «$0.00» под
      кнопкой, которая сделает тысячи платных вызовов, — худший вид молчания.
@@ -1171,6 +1203,10 @@ try {
      и корзины собираются заново первым проходом эффектов. */
   global.API.listJobs = async () => ({ active: [], jobs: [] });
   const fresh = async (can) => {
+    /* Деньги прячет СЕРВЕР (`_hide_cost` → `hideCost` → `window.HIDE_COST`),
+       и экран читает именно этот признак, а не роль. Заглушка обязана вести
+       себя так же, иначе тест сторожит роль там, где код смотрит на флаг. */
+    global.window.HIDE_COST = !(can && can.super);
     const st = Object.assign({}, storeStub, { can, expert: false });
     hooks.length = 0; hookIdx = 0; effects.length = 0;
     TabEditor({ store: st, toast });
@@ -1185,7 +1221,9 @@ try {
   check(t18.indexOf("Перевести и проверить") !== -1, "владелец: главная кнопка на месте");
   check(t18.indexOf("\u2248 цена") === -1, "владелец: колонки цены по шагам нет");
   check(t18.indexOf("Модель") === -1, "владелец: выбора моделей нет");
-  check(t18.indexOf("Ориентировочно") !== -1, "владелец: общая смета ОСТАЁТСЯ — он платит");
+  // Прежде смета оставалась владельцу («он платит»). Теперь деньги видит
+  // только администратор сервиса: за модели платит не агентство, а сервис.
+  check(t18.indexOf("Ориентировочно") === -1, "владелец: сметы нет — деньги сервиса не его дело");
   check(t18.indexOf("Переведу, перечитаю") !== -1, "вместо устройства — обещание словами");
   check(t18.indexOf("в работу пойдут") !== -1, "сколько строк уйдёт в работу — сказано");
 

@@ -385,11 +385,18 @@ c.post("/api/admin/tenants", headers=H(A),
        json={"id": "beta", "name": "Beta", "ownerLogin": "beta", "ownerPassword": "beta-pass-123"})
 B = c.post("/api/auth/login", json={"login": "beta", "password": "beta-pass-123"}).json()["token"]
 c.post("/api/pricing", headers=H(A), json={"default": 99, "currency": "UZS"})
-check(c.get("/api/pricing", headers=H(B)).json()["pricing"]["default"] is None,
-      "чужой прайс не виден: у B своя пустая карточка")
+# Владельцу прайс больше не ПОКАЗЫВАЮТ вовсе (инвариант 22а: деньги видит
+# только администратор сервиса), поэтому «чужого не видно» теперь проверяется
+# не через показ, а через саму запись: правка B не задевает карточку A.
+rb = c.get("/api/pricing", headers=H(B)).json()
+check(rb.get("pricing") is None and rb.get("costHidden") is True,
+      "владельцу прайс не показывается: " + json.dumps(rb.get("pricing"), ensure_ascii=False))
+check(bool(rb.get("norms")), "а норма страницы остаётся — это объём работы, не деньги")
 c.post("/api/pricing", headers=H(B), json={"default": 5})
 check(c.get("/api/pricing", headers=H(A)).json()["pricing"]["default"] == 99,
       "B правит только своё — у A цена не изменилась")
+check(float((main._tenant_rec("beta") or {}).get("pricing", {}).get("default") or 0) == 5.0,
+      "и правка B легла именно в ЕГО запись")
 me = c.get("/api/auth/me", headers=H(A)).json()
 check("pricing" not in (me.get("tenant") or {}) and set(me["tenant"]) <= {"id", "name", "active"},
       "/api/auth/me отдаёт организацию белым списком полей, без прайса")

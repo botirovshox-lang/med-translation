@@ -21,7 +21,7 @@
 
 Ни одного вызова модели, файл состояния не пишется.
 """
-import os, sys
+import os, sys, json
 os.environ["APP_PASSWORD"] = "test-sysmodels-password"
 sys.path.insert(0, "backend")
 import main
@@ -74,8 +74,20 @@ r = c.post("/api/admin/system-models", headers=H(S),
 check(r.status_code == 200, "запись принята")
 check(main.STATE["systemModels"] == {"backcheck": "gpt-4o-mini", "translate": "gpt-4.1"}, "пустой шаг не хранится")
 check(main.BACKCHECK_DEFAULT_MODEL == "gpt-4o-mini", "умолчание back-check подменено")
-m = c.get("/api/models", headers=H(O)).json()
-check(m["backcheckDefault"] == "gpt-4o-mini" and m["default"] == "gpt-4.1", "/api/models отдаёт системные модели")
+# Имена моделей наружу не идут (инвариант 24): суперу — как есть,
+# остальным — псевдонимы «mN». Проверяем ОБА ответа: что настройка
+# действует, видно по ответу супера, а что имя не утекло — по ответу
+# владельца.
+m = c.get("/api/models", headers=H(S)).json()
+check(m["backcheckDefault"] == "gpt-4o-mini" and m["default"] == "gpt-4.1",
+      "/api/models отдаёт системные модели администратору сервиса")
+mo = c.get("/api/models", headers=H(O)).json()
+check(mo["backcheckDefault"] == main._model_alias("gpt-4o-mini")
+      and mo["default"] == main._model_alias("gpt-4.1"),
+      "владельцу те же шаги приходят псевдонимами: "
+      + str((mo["backcheckDefault"], mo["default"])))
+check("gpt" not in json.dumps(mo, ensure_ascii=False).lower(),
+      "и ни одного имени модели в его ответе не осталось")
 check(main._backcheck_model({"provider": "gpt-4.1"}, None) == "gpt-4o-mini", "шаг без выбора берёт системную модель")
 steps = {s["key"]: s for s in r.json()["steps"]}
 check(steps["backcheck"]["effective"] == "gpt-4o-mini" and steps["review"]["value"] is None

@@ -2486,8 +2486,29 @@ def _tenant_simple(tid: Optional[str] = None) -> bool:
 def _hide_cost() -> bool:
     """Прятать ли деньги от ТЕКУЩЕГО запроса. Отдельной функцией, чтобы
     место решения было одно: разойдись ответы у разных экранов — часть
-    сумм осталась бы видна, и обещание «ни $ на экране» стало бы ложным."""
-    return _tenant_simple()
+    сумм осталась бы видна, и обещание «ни $ на экране» стало бы ложным.
+
+    Рубежа ДВА, и они про разное. Упрощённый режим (`simple`) стоит
+    на ОРГАНИЗАЦИИ: там сумм не видит никто, включая владельца. А роль
+    отвечает на другой вопрос — КОМУ в организации деньги вообще
+    показывают: платит за прогоны владелец, и число, по которому решают
+    «запускать ли книгу», нужно ему. Переводчику и редактору оно не нужно
+    ни для одной их задачи, а цена страницы — это ещё и то, что агентство
+    берёт со СВОЕГО клиента: знать её наёмному переводчику незачем.
+
+    Суперпользователь исключён, потому что деньги сервиса — его работа
+    (админка, метрики, «Модели и расход»); роль читается из СЕССИИ —
+    роль в АКТИВНОЙ команде (инвариант 18), иначе владелец-дома видел бы
+    суммы в чужой команде, где он переводчик."""
+    if _tenant_simple():
+        return True
+    sess = CURRENT_SESSION.get() or {}
+    if sess.get("super"):
+        return False
+    role = _actor_role()
+    # Роли нет вовсе — это не запрос человека (прогон в чужом потоке,
+    # служебный вызов), и прятать там нечего: наружу этот ответ не идёт.
+    return role is not None and role != "owner"
 
 
 def _spend_status(tenant: Optional[str] = None) -> dict:
@@ -4993,11 +5014,19 @@ def auth_me(request: Request):
     return {"ok": True, "me": _user_public(u), "tenant": tpub,
             "can": {"owner": role == "owner", "super": bool(u.get("super")), "role": role},
             "teams": _teams_of(u), "invites": _my_invites(u),
-            # Упрощённый режим организации: браузер не рисует ни сумм, ни
-            # выбора моделей. Признак идёт и отсюда, и из каталога моделей:
-            # экран входа спрашивает «кто я» раньше каталога, и без него
-            # первый кадр успел бы показать то, что обещано не показывать.
-            "hideCost": _tenant_simple(tid),
+            # Прятать ли деньги. Признак идёт и отсюда, и из каталога
+            # моделей: экран входа спрашивает «кто я» раньше каталога,
+            # и без него первый кадр успел бы показать то, что обещано
+            # не показывать.
+            #
+            # Считается ТЕМ ЖЕ предикатом, что и везде (`_hide_cost`),
+            # а не своим `_tenant_simple`: прежде эта строка знала только
+            # про упрощённый режим организации, и рубеж по роли мимо неё
+            # уезжал — `/auth/me` говорил переводчику «суммы показывать
+            # можно», пока все остальные двери их уже не отдавали.
+            # Организация и роль берутся из СЕССИИ, поэтому довода не нужно:
+            # `tid` выше — из неё же.
+            "hideCost": _hide_cost(),
             "spend": _spend_public(_spend_status(tid)),
             # Объём в СТРАНИЦАХ — то, чем организация меряет свою работу:
             # деньги (`spend`) — наши затраты на модели, страницы — её заказ.
@@ -5087,6 +5116,18 @@ def admin_user_update(uid: int, req: UserPatch, request: Request):
         if u["id"] == me["id"] and req.role != "owner":
             raise HTTPException(400, "Нельзя снять роль владельца с самого себя")
         u["role"] = req.role
+        # Роль лежит в СЕССИИ (`_new_session` кладёт её при входе), и без
+        # этой строки понижение не действовало бы до конца SESSION_TTL —
+        # до 12 часов. Замер: понижённый владелец продолжал удалять проекты
+        # (`_OWNER_ONLY` читает роль из сессии), а `/auth/me` отвечал «owner».
+        # Правим ДОМАШНЮЮ роль, поэтому и в сессиях трогаем только те, что
+        # открыты в домашней организации: роль в чужой команде назначает её
+        # владелец (инвариант 18), и снести её отсюда значило бы обойти его.
+        # Сессию не закрываем — человек остаётся работать, меняются права.
+        with _AUTH_LOCK:
+            for sess in _SESSIONS.values():
+                if sess.get("user") == u["id"] and sess.get("tenant") == u.get("tenant"):
+                    sess["role"] = req.role
     if req.password is not None:
         u["hash"], u["salt"] = _hash_password(req.password)
         # Сменили пароль — чужие сессии этого пользователя закрываются.
@@ -5850,6 +5891,51 @@ def set_project_domain(pid: int, req: ProjectDomainRequest):
     return {"ok": True, "domain": dom["id"], "prev": prev, "verifiedTerms": n_hard,
             "note": "Состав приказных терминов изменился: оценки с претензией «потерян термин» "
                     "устарели — пересчитайте back-check (бесплатно, /backcheck/rescore с force)."}
+
+
+# ─── Роли и доступы: один экран про ЛЮДЕЙ ────────────────────────────
+# Вкладка админки «Роли и доступы» спрашивает про человека то, чего нет
+# в сводке по организациям: где он состоит и какой он там роли, когда
+# заходил в последний раз и какие потолки действуют на его организацию.
+#
+# Дверь СВОЯ, а не расширение `/api/admin/users`, и причина в изоляции:
+# та отдаёт владельцу СВОИХ людей, и дописать туда чужие организации
+# с их лимитами значило бы протащить чужие деньги мимо инварианта 11.
+# Здесь рубеж прямой — только суперпользователь.
+#
+# Лимиты ПОКАЗЫВАЮТСЯ, а правятся прежней дверью `/api/admin/tenants/{tid}`:
+# вторая точка записи тех же чисел разошлась бы с первой (тот же закон,
+# что у цен, инвариант 6), а журнал `pagesLog` ведёт только `_pages_topup`.
+@app.get("/api/admin/access")
+def admin_access(request: Request):
+    """Люди сервиса с их командами и потолками их организаций.
+    Ни одного вызова модели; по сегментам не ходим."""
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Роли и доступы — только суперпользователю")
+    # Организации считаем ОДИН раз: людей десятки, а `_tenant_caps`
+    # и `_spend_status` обходят проекты — вызов на каждого человека
+    # превратил бы экран в обход STATE столько раз, сколько строк.
+    tinfo = {}
+    for t in _tenants():
+        tid = t["id"]
+        tinfo[tid] = {"id": tid, "name": t.get("name") or tid,
+                      "active": t.get("active", True),
+                      "team": bool(t.get("team")), "signup": bool(t.get("signup")),
+                      "limitUsd": t.get("limitUsd"), "simple": bool(t.get("simple")),
+                      "caps": _tenant_caps(tid), "usage": _tenant_usage(tid),
+                      "spend": _spend_status(tid)}
+    out = []
+    for u in _users():
+        pub = _user_public(u)
+        # Команды человека — тем же `_teams_of`, каким их видит он сам
+        # в «Профиле»: два расчёта «где он состоит» разошлись бы, и админка
+        # показывала бы доступ, которого нет (или молчала о том, который есть).
+        pub["teams"] = _teams_of(u)
+        pub["tenantName"] = (tinfo.get(pub["tenant"]) or {}).get("name") or pub["tenant"]
+        out.append(pub)
+    return {"ok": True, "users": out, "tenants": list(tinfo.values()),
+            "capDefaults": _cap_defaults(), "roles": list(ROLES)}
 
 
 @app.delete("/api/admin/users/{uid}")
@@ -7103,6 +7189,19 @@ def _quote_of(counts: dict, src: str, tgt: str, card: dict, basis: str,
                                card.get("minPages", 1.0), card.get("roundTo", 0.1))
     rate = _rate_for(card, src, tgt)
     total = _money(pages["billed"], rate["price"])
+    if _hide_cost():
+        # Объём остаётся, ДЕНЬГИ уходят. Переводчику надо знать, сколько
+        # работы в файле (слова, знаки, страницы, норма) — это его работа;
+        # а цена страницы — то, что агентство берёт со СВОЕГО клиента,
+        # и наёмному переводчику она не нужна ни для одной задачи.
+        # Режем на СЕРВЕРЕ, а не в `.jsx`: спрятанное только показом
+        # уезжает в браузер и видно в ответе запроса (инвариант 24).
+        # Признак `hidden` — чтобы экран сказал «не показываем», а не
+        # нарисовал «цена не задана»: это разные вещи, и вторая — враньё.
+        return {"basis": basis, "src": src, "tgt": tgt, "counts": counts,
+                "norm": norm, "pages": pages, "notes": notes,
+                "rate": None, "total": None, "currency": None,
+                "formula": None, "costHidden": True}
     return {"basis": basis, "src": src, "tgt": tgt, "counts": counts, "norm": norm,
             "pages": pages, "rate": rate, "currency": card.get("currency") or "USD",
             "total": total, "pricingUpdated": card.get("updated"), "notes": notes,
@@ -7237,12 +7336,22 @@ def get_pricing(request: Request):
 
     Норму и цены отдаёт сервер, а не хранит браузер: второй прайс-лист в `.jsx`
     — это ровно та беда, ради которой модели и их цены живут в `OPENAI_MODELS`
-    и уезжают через `/api/models`."""
+    и уезжают через `/api/models`.
+
+    **Цены — только владельцу** (`_hide_cost`), и рубеж стоит в ОБРАБОТЧИКЕ,
+    а не строкой в `_OWNER_ONLY`: та закрывает дверь целиком, а норма
+    страницы деньгами не является — по ней переводчик видит объём работы.
+    Прежде GET был открыт каждому «ради сметы», и цена, которую агентство
+    берёт со СВОЕГО клиента, уходила наёмному переводчику одним запросом."""
     _current_user(request)
     t = textcount.norms()
+    norms = {"default": t["default"], "basis": t["basis"],
+             "rows": sorted(t["rows"].values(), key=lambda r: r["lang"])}
+    if _hide_cost():
+        return {"ok": True, "tenant": _current_tenant(), "pricing": None,
+                "costHidden": True, "norms": norms}
     return {"ok": True, "tenant": _current_tenant(), "pricing": _pricing_of(),
-            "norms": {"default": t["default"], "basis": t["basis"],
-                      "rows": sorted(t["rows"].values(), key=lambda r: r["lang"])}}
+            "norms": norms}
 
 
 @app.post("/api/pricing")
@@ -7670,8 +7779,17 @@ def _quote_save(q: dict, filename: str, kind: str, sha: str) -> dict:
 def list_quotes(request: Request, limit: int = 200):
     """История смет своей организации, новые первыми. Числа отдаются такими,
     какими их посчитали тогда: пересчёт по нынешнему прайсу показал бы другую
-    сумму под тем же счётом."""
+    сумму под тем же счётом.
+
+    История — про ДЕНЬГИ целиком (цена страницы, итог, счёт выставлен
+    и оплачен), поэтому не-владельцу она не отдаётся вовсе: резать из
+    записи половину полей здесь нечего — без суммы смета перестаёт быть
+    сметой. Пустой список с признаком, а не 403: экран должен сказать
+    «не показываем», а молчаливая ошибка выглядит поломкой."""
     _current_user(request)
+    if _hide_cost():
+        return {"ok": True, "quotes": [], "total": 0, "costHidden": True,
+                "statuses": list(QUOTE_STATUSES)}
     rows = _tenant_quotes()[:max(1, min(limit, QUOTE_HISTORY_MAX))]
     return {"ok": True, "quotes": rows, "total": len(_tenant_quotes()),
             "statuses": list(QUOTE_STATUSES)}
@@ -7782,6 +7900,11 @@ def get_seed():
     if _hide_cost():
         # История расхода прогонов — это суммы и модели по шагам.
         public["runCosts"] = []
+        # История смет — цена страницы и итог: то, что агентство берёт
+        # со своего клиента. Своя дверь `/api/quotes` уже закрыта, и эта
+        # обязана закрыться вместе с ней: белый список отдаёт ключ целиком,
+        # и утечка через `/seed` не имеет ни одного видимого признака.
+        public["quotes"] = []
     return _json_bytes({**public, "projects": [_project_for_client(p) for p in _tenant_projects()],
                         "glossary": [{**g, "dict": _dict_of(g)} for g in STATE["glossary"] if _tenant_of(g) == t][:150]},
                        "seed", t0)
@@ -12445,9 +12568,12 @@ def images_report(pid: int):
             "hasSource": data is not None,
             # Модель по умолчанию — от неё пляшет выпадающий список; выбранную
             # человеком задача получает отдельным полем `ocr_model`.
-            "model": mdl["id"],
+            # Имя зрячей модели и карта {модель: цена} — устройство и деньги.
+            # Уходили мимо обоих рубежей одним ответом; работа (сколько
+            # картинок, сколько прочитано, что осталось) остаётся.
+            "model": None if _hide_cost() else mdl["id"],
             "stats": _image_stats(images, (data or {}).get("imagesTotal") or 0),
-            "est": _image_est_by_model(images),
+            "est": None if _hide_cost() else _image_est_by_model(images),
             "estTokens": {"in": tin, "out": tout},
             "at": (data or {}).get("imagesAt"),
             "skipped": (data or {}).get("imagesSkipped") or []}
@@ -16809,6 +16935,16 @@ def _segment_for_client(seg: dict, project: Optional[dict] = None) -> dict:
     att_tgt = [t for t in dict.fromkeys(att_tgt) if t]
     if att_src or att_tgt:
         out["attention"] = {"src": att_src, "tgt": att_tgt}
+    # Имена моделей в сегменте (`provider`, `backcheck.model`, `termcheck.model`,
+    # `repair.triedModels`, …) НЕ снимаются, и это решение, а не недосмотр.
+    # На экран они не попадают: каждое место показа спрашивает `modelsShown`
+    # (инвариант 24). Но браузер читает их ЛОГИКОЙ — группа `self`
+    # у back-check («проверял тот, кто переводил»), «без вызова модели»
+    # у termcheck, клеймо чужого захода ремонта (`triedModels`), — и от этого
+    # зависит СОСТАВ прогона. Сними их, и соло-кнопка обещала бы одно,
+    # а сервер делал другое: ровно та беда, ради которой состав считает сервер.
+    # Остаточный риск назван честно: id модели виден во вкладке «Сеть» тому,
+    # кто туда заглянет. Это устройство, а не деньги и не цена клиента.
     return out
 
 
@@ -27830,8 +27966,16 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
 
     fmt = lambda d: [{"reason": k, "count": v} for k, v in
                      sorted(d.items(), key=lambda kv: -kv[1])]
-    return {"step": step, "label": FULL_STEP_LABELS[step], "model": mdl_id,
-            "modelLabel": _model_label(mdl_id) if mdl_id else None,
+    # Имя модели шага нужно браузеру ровно для одного — посчитать смету
+    # (`stepModel` в tab_editor.jsx). Кому смету не показывают, тому
+    # и модель незачем: наружу она уходила мимо ОБОИХ рубежей — и мимо
+    # упрощённого режима, и мимо роли, — хотя `_job_public` те же поля
+    # из задачи снимает. Состав шага (`ids`, `count`, причины) остаётся:
+    # это работа, а не устройство.
+    hide = _hide_cost()
+    return {"step": step, "label": FULL_STEP_LABELS[step],
+            "model": None if hide else mdl_id,
+            "modelLabel": None if hide else (_model_label(mdl_id) if mdl_id else None),
             "ids": ids, "count": len(ids), "note": note,
             "runs": fmt(runs), "skips": fmt(skips)}
 

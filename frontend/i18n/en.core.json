@@ -409,5 +409,9 @@
   "черновик": "draft",
   "читаем надписи": "reading the captions",
   "← Ко входу": "← Back to sign-in",
-  "≤ 8 слов": "≤ 8 words"
+  "≤ 8 слов": "≤ 8 words",
+  "Объём файла": "File volume",
+  "Страница — 250 слов исходника (у письма без пробелов — знаки по норме языка).": "A page is 250 source words (for scripts without spaces — characters per the language norm).",
+  "Посчитать объём": "Count the volume",
+  "Стоимость видит владелец организации.": "The cost is visible to the organisation owner."
 }

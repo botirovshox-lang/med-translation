@@ -702,7 +702,10 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
         React.createElement(Icon, { name: "target", size: 14 }), "Route"),
       React.createElement("button", { className: "mini-btn" + (infoPanel === "risk" ? " on" : ""), onClick: () => toggleInfo("risk") },
         React.createElement(Icon, { name: "warn", size: 14 }), "Risk"),
-      React.createElement("span", { className: "mini-btn readonly", title: TR("Оценка стоимости перевода") },
+      /* Смета строки — деньги, и её не видит тот, кому денег не показывают.
+         `fmtCost` возвращал пустую строку, и на экране оставался ярлык
+         «Est:» с пустотой — хуже отсутствующего: выглядит как поломка. */
+      !costHidden() && React.createElement("span", { className: "mini-btn readonly", title: TR("Оценка стоимости перевода") },
         React.createElement(Icon, { name: "zap", size: 14 }), "Est: ", React.createElement("span", { className: "mb-val" }, fmtCost(estCost)))
     ),
 

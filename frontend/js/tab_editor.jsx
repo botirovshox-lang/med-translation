@@ -2378,7 +2378,10 @@ function TabEditor({ store, toast }) {
             React.createElement("div", { className: "dim", style: { fontSize: 11.5 } },
               TR("балл ") + judgeZone[0] + "–" + judgeZone[1] + TR("%, а на оригиналах короче ") + bcMinStems + TR(" слов — от 0"))),
           React.createElement("div", { className: "row", style: { gap: 8 } },
-            bcJudge && !costHidden() && React.createElement(Select, { value: judgeModel || "", disabled: !!job,
+            /* Список имён моделей прячет `modelsShown`, а не `costHidden`:
+               это устройство, а не деньги (инвариант 24). Тумблер «Судья»
+               остаётся — он про РАБОТУ, и его человек решает. */
+            bcJudge && modelsShown() && React.createElement(Select, { value: judgeModel || "", disabled: !!job,
               onChange: (e) => pickJudgeModel(e.target.value), style: { fontSize: 12.5, maxWidth: 170 } },
               gptModels.map(m => React.createElement("option", { key: m.id, value: m.id, disabled: m.ready === false }, m.label + (m.ready === false ? TR(" — нет ключа") : "")))),
             React.createElement(Switch, { on: bcJudge, label: TR("Судья"), onClick: () => setBcJudge(v => !v) }))),
@@ -2462,7 +2465,12 @@ function TabEditor({ store, toast }) {
     {
       key: "medical_qa", label: FULL_STEP_LABELS.medical_qa, hint: TR("числа и отрицания; обратный перевод берёт у back-check"),
       modelId: null, onModel: null, plan: stepPlan("medical_qa"),
-      modelNote: ((stepModel("medical_qa", bcModelInfo) || {}).label || "—") + TR(" · от back-check"),
+      /* Имя модели — через `modelsShown` (инвариант 24), а «от back-check» —
+         подпись о том, ОТКУДА шаг берёт модель: это работа, а не устройство,
+         и она остаётся. Склейка через `metaLine`, иначе убранное имя оставит
+         фразу, начинающуюся с « · ». */
+      modelNote: metaLine([modelsShown() ? ((stepModel("medical_qa", bcModelInfo) || {}).label || "—") : "",
+                           TR("от back-check")]),
       planEst: planEstOf("medical_qa", stepModel("medical_qa", bcModelInfo)),
       // Своей модели у неё нет: правила детерминированные. Платный вызов —
       // только обратный перевод и только там, где готового от back-check нет.
@@ -3209,17 +3217,22 @@ function StepRow({ row, on, onToggle, open, onOpen, disabled, models }) {
           React.createElement("span", { className: "dim", style: { fontSize: 11.5, display: "block" } },
             row.hint)))),
     React.createElement("div", { key: row.key + "-model", style: cell({ opacity: on ? 1 : 0.5 }) },
-      // Упрощённый режим: выбора моделей нет — их назначает организация,
-      // и сервер всё равно подставит назначенные (`_forced_models`).
-      // Пустая ячейка, а не «по умолчанию»: имя модели тоже прячем.
-      costHidden()
-        ? null
-        : row.onModel
+      /* Выбор модели — это СПИСОК ИМЁН, и прятать его обязан тот же
+         предикат, что прячет имя модели везде (`modelsShown`, инвариант 24),
+         а не `costHidden`: рубежи разные, и перепутанные они расходятся.
+         Так и было: в обычной организации `Select` со всеми именами
+         рисовался каждому переводчику, хотя правило обещает обратное.
+         Пустая ячейка, а не «по умолчанию»: сервер подставит модель шага
+         сам — скрытая настройка имеет честное умолчание. */
+      row.onModel && modelsShown()
         ? React.createElement(Select, {
             value: row.modelId || "", disabled: disabled,
             onChange: (e) => row.onModel(e.target.value),
             style: { fontSize: 12.5, maxWidth: 200 } },
             (models || []).map(m => React.createElement("option", { key: m.id, value: m.id, disabled: m.ready === false }, m.label + (m.ready === false ? TR(" — нет ключа") : ""))))
+        /* `modelNote` остаётся всегда: имя модели из неё уже убрано
+           (`metaLine` + `modelsShown`), а «от back-check» — это ответ
+           на вопрос «откуда шаг берёт модель», то есть работа. */
         : React.createElement("span", { className: "dim", style: { fontSize: 12 } }, row.modelNote)),
     React.createElement("div", { key: row.key + "-n", style: cell({ textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 600, fontSize: 13, opacity: on ? 1 : 0.5, color: (est && est.count) ? "var(--text-1)" : "var(--text-3)" }) },
       est && est.count ? est.count : "—"),

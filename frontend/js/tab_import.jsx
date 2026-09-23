@@ -98,12 +98,15 @@ function ImpQuote({ file, src, tgt, toast, onSaved, store, draft }) {
   const row = (k, v) => React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12 } },
     React.createElement("span", { className: "dim" }, k), React.createElement("b", null, v));
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
-    React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Объём и стоимость")),
+    React.createElement("div", { className: "eyebrow", style: { margin: 0 } },
+      costHidden() ? TR("Объём файла") : TR("Объём и стоимость")),
     React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 13 } },
-      TR("Страница — 250 слов исходника (у письма без пробелов — знаки по норме языка). Цену за страницу задаёт владелец организации.")),
+      costHidden()
+        ? TR("Страница — 250 слов исходника (у письма без пробелов — знаки по норме языка).")
+        : TR("Страница — 250 слов исходника (у письма без пробелов — знаки по норме языка). Цену за страницу задаёт владелец организации.")),
     React.createElement("div", null,
       React.createElement(Btn, { variant: "ghost", disabled: !file || busy, onClick: run },
-        busy ? TR("Считаем…") : TR("Посчитать объём и стоимость"))),
+        busy ? TR("Считаем…") : costHidden() ? TR("Посчитать объём") : TR("Посчитать объём и стоимость"))),
     busy && React.createElement(ImpProgress, { p: prog }),
     err && React.createElement("div", { className: "dim", style: { color: "var(--c-danger)", fontSize: 13 } }, err),
     res && res.scan && !res.counts && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6, fontSize: 14 } },
@@ -124,16 +127,23 @@ function ImpQuote({ file, src, tgt, toast, onSaved, store, draft }) {
       row(TR("Норма страницы (") + res.norm.lang + ")", res.norm.perPage + (res.norm.unit === "words" ? TR(" слов") : TR(" знаков"))
         + (res.norm.source === "tenant" ? TR(" · ваша") : res.norm.source === "default" ? TR(" · по умолчанию") : "")),
       row(TR("Страниц"), res.pages.exact + TR(" → к оплате ") + res.pages.billed),
-      row(TR("Цена страницы"), res.rate.price == null ? TR("не задана")
+      /* Деньги режет СЕРВЕР (`_hide_cost`), и признак приходит оттуда же:
+         не-владелец видит объём — слова, знаки, страницы, норму, — но
+         не цену страницы и не сумму. Своего условия по роли здесь нет
+         намеренно: спрятанное только показом всё равно уехало бы в ответе. */
+      !res.costHidden && row(TR("Цена страницы"), res.rate.price == null ? TR("не задана")
         : res.rate.price + " " + res.currency + (res.rate.source === "pair" ? TR(" · по паре") : TR(" · общая"))),
-      React.createElement("div", {
+      !res.costHidden && React.createElement("div", {
         style: { display: "flex", justifyContent: "space-between", borderTop: "1px solid var(--c-border)", paddingTop: 8 }
       },
         React.createElement("span", null, TR("Итого")),
         React.createElement("b", { style: { fontSize: 18 } },
           res.total == null ? TR("цена не задана") : res.total.toLocaleString("ru-RU") + " " + res.currency)),
-      res.rate.price == null && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+      !res.costHidden && res.rate.price == null && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
         TR("Задайте цену за страницу во вкладке «Организация» — до этого сумму показать нечем.")),
+      /* Молчание объясняется: пропавшая строка неотличима от поломки. */
+      res.costHidden && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+        TR("Стоимость видит владелец организации.")),
       res.counts.repeatBlocks > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
         TR("Повторов: ") + res.counts.repeatBlocks + TR(" кусков на ") + res.counts.repeatChars.toLocaleString("ru-RU")
         + TR(" знаков. Из объёма они НЕ вычтены — скидку за повторы решает продавец.")),
@@ -157,6 +167,10 @@ function ImpQuoteHistory({ reloadKey, toast, canOwner }) {
   const [open, setOpen] = useState(false);
   const load = () => window.API.safeCall(() => window.API.quotes()).then(r => r && setRows(r.quotes || []));
   useEffect(() => { load(); }, [reloadKey]);
+  /* Пусто — карточки нет. Не-владельцу сервер отдаёт пустой список
+     (`_hide_cost` в `/api/quotes`): история смет — это цена страницы
+     и итог целиком, резать из неё нечего. Рубеж на СЕРВЕРЕ, а не здесь:
+     спрятанное только показом видно в ответе запроса. */
   if (!rows || !rows.length) return null;
   const mark = async (q, status) => {
     try { await window.API.quoteMark(q.id, { status }); toast.success(TR("Смета отмечена"), IMP_QUOTE_STATUS[status]); load(); }

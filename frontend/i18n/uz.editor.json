@@ -14,7 +14,6 @@
   " · кандидатов в глоссарий выброшено (очередь полна): ": " · lug'atga nomzodlar tashlab yuborildi (navbat to'la): ",
   " · не переведено заново (предел организации): ": " · qayta tarjima qilinmadi (tashkilot chegarasi): ",
   " · оригинал под подозрением: ": " · asl matn shubha ostida: ",
-  " · от back-check": " · teskari tarjimadan",
   " · откатить пачку можно в «Глоссарии»": " · to'plamni «Lug'at»da qaytarish mumkin",
   " · откачено (не стало лучше): ": " · qaytarildi (yaxshilanmadi): ",
   " · откачено: ": " · qaytarildi: ",
@@ -512,5 +511,6 @@
   "это проверка себя: сервер возьмёт запасную модель, и смета поплывёт.": "bu o'z-o'zini tekshirish: server zaxira modelni oladi va smeta suriladi.",
   "— не переведено —": "— tarjima qilinmagan —",
   "— это вопрос к записи глоссария, а не к строке.": "— bu qatorga emas, lug'at yozuviga savol.",
-  "≈ цена": "≈ narx"
+  "≈ цена": "≈ narx",
+  "от back-check": "teskari tarjimadan"
 }

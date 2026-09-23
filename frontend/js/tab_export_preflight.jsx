@@ -425,6 +425,9 @@ function ImagesCard({ project, store, toast }) {
         React.createElement(Btn, { variant: "primary", size: "sm", icon: "sparkles",
           disabled: busy || !st || !st.pending, onClick: () => start(false) },
           TR("Прочитать и завести сегменты") + (est && !costHidden() ? " (~$" + est.toFixed(2) + ")" : "")),
+        /* Цена на кнопке уходит вместе с `costHidden()`: сервер не шлёт
+           смету тому, кому деньги не показывают (`_hide_cost`), поэтому
+           `est` у такого человека пуст, и условие срабатывает само. */
         /* Бесплатное чтение стоит РЯДОМ с платным, а не вместо него: оно
            читает хуже, и выбор — человека. Кнопки нет вовсе, когда браузер
            не умеет WebAssembly или для языка оригинала у нас нет

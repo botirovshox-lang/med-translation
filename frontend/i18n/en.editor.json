@@ -14,7 +14,6 @@
   " · кандидатов в глоссарий выброшено (очередь полна): ": " · glossary candidates dropped (the queue is full): ",
   " · не переведено заново (предел организации): ": " · not re-translated (organization limit): ",
   " · оригинал под подозрением: ": " · the source is under suspicion: ",
-  " · от back-check": " · from the back-check",
   " · откатить пачку можно в «Глоссарии»": " · the batch can be rolled back in the “Glossary”",
   " · откачено (не стало лучше): ": " · rolled back (it did not get better): ",
   " · откачено: ": " · rolled back: ",
@@ -512,5 +511,6 @@
   "это проверка себя: сервер возьмёт запасную модель, и смета поплывёт.": "this is checking yourself: the server will take a fallback model, and the estimate will drift.",
   "— не переведено —": "— not translated —",
   "— это вопрос к записи глоссария, а не к строке.": "— it is a question about the glossary entry, not about the line.",
-  "≈ цена": "≈ price"
+  "≈ цена": "≈ price",
+  "от back-check": "from the back-check"
 }

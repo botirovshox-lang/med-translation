@@ -409,5 +409,9 @@
   "черновик": "qoralama",
   "читаем надписи": "yozuvlarni o'qiyapmiz",
   "← Ко входу": "← Kirishga",
-  "≤ 8 слов": "≤ 8 so'z"
+  "≤ 8 слов": "≤ 8 so'z",
+  "Объём файла": "Fayl hajmi",
+  "Страница — 250 слов исходника (у письма без пробелов — знаки по норме языка).": "Sahifa — asl matnning 250 so‘zi (so‘zlar orasi bo‘shliqsiz yozuvda — til me’yoriga ko‘ra belgilar).",
+  "Посчитать объём": "Hajmni hisoblash",
+  "Стоимость видит владелец организации.": "Narxni tashkilot egasi ko‘radi."
 }

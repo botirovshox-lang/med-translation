@@ -248,6 +248,88 @@ check(app.includes("me, setMe,"), "setMe отдан наружу: тур обн�
 const boot = fs.readFileSync(path.join(ROOT, "frontend", "index.html"), "utf8");
 check(boot.includes("js/onboarding.jsx"), "загрузчик подключает onboarding.jsx");
 
+console.log("=== 12. Вкладка «Обучение» ===");
+/* Вкладка собирается тем же приёмом: выполняем файл с заглушкой React
+   и смотрим, что нарисовалось. Содержание приходит с сервера, поэтому
+   подсовываем ответ /api/tutorial и проверяем, что ВСЁ из него доехало
+   до разметки — молча потерянный шаг иначе виден только глазами. */
+const learnSrc = fs.readFileSync(path.join(JS, "tab_learn.jsx"), "utf8");
+const CONTENT = {
+  ok: true, lang: "ru", h1: "Обучение", lede: "Весь путь…",
+  facts: ["Пять шагов", "Без настройки"],
+  stepWord: "Шаг",
+  steps: [
+    { key: "upload", title: "Принесите файл", paras: ["Вкладка <b>Проекты</b>."],
+      svg: '<figure class="shot-wrap"><svg class="shot"></svg></figure>' },
+    { key: "run", title: "Нажмите одну кнопку", paras: ["Большая кнопка внизу."], svg: "" },
+  ],
+  faqHead: "Частые вопросы",
+  faq: [{ q: "Какие форматы?", a: "Word, PDF, Excel." }],
+  actions: { tour: "Показать знакомство заново", tourNote: "Тур по интерфейсу.",
+             support: "Написать в поддержку", supportNote: "Мы читаем всё.",
+             print: "Открыть отдельной страницей", printNote: "Для печати." },
+};
+const fired = [];
+sandbox.Expander = function Expander(p) {
+  return React.createElement("div", { className: "expander" },
+    React.createElement("button", { className: "expander-head" }, p.title), p.children);
+};
+sandbox.window.API.tutorial = () => Promise.resolve(CONTENT);
+sandbox.window.dispatchEvent = (e) => { fired.push(e && e.type); return true; };
+sandbox.Event = function (t) { this.type = t; };
+vm.runInContext(learnSrc + "\ntry { globalThis.TabLearn = TabLearn; } catch (e) {}",
+  sandbox, { filename: "tab_learn.jsx" });
+check(typeof sandbox.TabLearn === "function", "tab_learn.jsx собрался и объявил TabLearn");
+
+/* Первый кадр — до ответа сервера: «Загружаем…», а не пустота. */
+hooks = {}; hookIx = 0; effects = [];
+let ltree = sandbox.TabLearn({ store, toast });
+check(texts(ltree).join(" ").includes("Загружаем"), "пока грузится — говорит об этом");
+
+/* Ответ пришёл: hooks[0] — data, hooks[1] — failed. */
+hooks = { 0: CONTENT, 1: false }; hookIx = 0; effects = [];
+ltree = sandbox.TabLearn({ store, toast });
+const ltxt = texts(ltree).join(" ");
+check(ltxt.includes("Обучение"), "заголовок — с сервера, а не из кода вкладки");
+check(byClass(ltree, "learn-step").length === CONTENT.steps.length,
+  "нарисованы ВСЕ шаги ответа (" + CONTENT.steps.length + ")");
+check(byClass(ltree, "learn-facts").length === 1, "короткие факты показаны");
+check(byClass(ltree, "learn-act").length === 3, "три действия: тур, поддержка, печать");
+check(byClass(ltree, "learn-shot").length === 1,
+  "рисунок вставлен только там, где он есть (шаг без svg его не рисует)");
+const shot = byClass(ltree, "learn-shot")[0];
+check(shot && shot.props.dangerouslySetInnerHTML
+  && shot.props.dangerouslySetInnerHTML.__html.includes("<svg"),
+  "SVG уходит в разметку как есть — второго рисовальщика в браузере нет");
+check(byClass(ltree, "expander").length === CONTENT.faq.length,
+  "частые вопросы — общей раскрывашкой Expander, а не своей копией");
+check(ltxt.includes("Частые вопросы"), "заголовок раздела вопросов с сервера");
+
+/* Кнопки шлют СОБЫТИЯ: виджет поддержки и тур слушают их сами. */
+const acts = byClass(ltree, "learn-act").filter(n => n.type === "button");
+check(acts.length === 2, "тур и поддержка — кнопки, а печатная версия — ссылка");
+fired.length = 0;
+acts.forEach(b => b.props.onClick());
+check(fired.includes("mct-tour-open"), "кнопка тура шлёт mct-tour-open");
+check(fired.includes("mct-support-open"), "кнопка поддержки шлёт mct-support-open");
+const link = byClass(ltree, "learn-act").find(n => n.type === "a");
+check(link && link.props.href === "/tutorial", "печатная версия ведёт на /tutorial");
+check(link && link.props.rel === "noopener", "внешняя ссылка с rel=noopener");
+
+/* Сервер не ответил — говорим об этом, а не показываем пустой экран. */
+hooks = { 0: null, 1: true }; hookIx = 0; effects = [];
+ltree = sandbox.TabLearn({ store, toast });
+check(texts(ltree).join(" ").includes("Не удалось"), "сбой назван словами");
+check(byClass(ltree, "learn-step").length === 0, "и шагов при этом нет");
+
+/* Пункт меню и загрузчик. */
+check(/key:\s*"learn"/.test(app), "пункт «Обучение» есть в TABS");
+check(/learn:\s*TabLearn/.test(app), "вкладка привязана к компоненту");
+check(boot.includes("js/tab_learn.jsx"), "загрузчик подключает tab_learn.jsx");
+/* Тур обязан уметь показаться ПО ПРОСЬБЕ — иначе кнопка ничего не делает. */
+check(src.includes("mct-tour-open"), "знакомство слушает просьбу показаться заново");
+check(src.includes("mct-support-open"), "виджет поддержки слушает просьбу открыться");
+
 if (fail.length) {
   console.log("\nПРОВАЛЕНО: " + fail.length);
   fail.forEach(f => console.log("  - " + f));

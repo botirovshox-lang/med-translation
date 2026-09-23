@@ -28832,6 +28832,26 @@ def page_tutorial(lang: str = ""):
     return HTMLResponse(tutorial_mod.page(lang, getattr(tg_mod, "SITE", "")))
 
 
+@app.get("/api/tutorial")
+def api_tutorial(request: Request, lang: str = ""):
+    """Содержание инструкции для ВКЛАДКИ «Обучение».
+
+    Источник тот же, что у страницы `/tutorial` (`backend/tutorial.py`):
+    правка текста меняет оба места разом. Вторая копия в `.jsx` разошлась
+    бы с первой же правкой, а расхождение здесь значит, что инструкция
+    врёт про наш же интерфейс.
+
+    Язык берётся ИЗ СЕССИИ (`_explain_lang`), как везде: человек выбрал
+    его в «Профиле», и спрашивать второй раз незачем. Явный `lang`
+    сильнее — им пользуется переключатель на самой странице.
+
+    Модель не зовётся, STATE не читается, поэтому в `_PAID` этой двери
+    не место (инвариант 15)."""
+    if not tutorial_mod:
+        raise HTTPException(503, "Инструкция недоступна")
+    return {"ok": True, **tutorial_mod.content(lang or _explain_lang())}
+
+
 @app.get("/t/apply", response_class=HTMLResponse)
 def page_apply(lang: str = "", ref: str = "", who: str = ""):
     return _survey_page("apply", lang, ref, who)

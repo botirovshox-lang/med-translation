@@ -615,6 +615,11 @@ const TABS = [
   { key: "export", label: TR("Скачать"), icon: "download", group: "work" },
   /* Профиль — ВСЕМ, и это не мелочь: до него у переводчика не было ни
      одного экрана про себя, включая язык, на котором с ним разговаривают. */
+  /* «Обучение» — не работа над книгой, а справка о самом сервисе,
+     поэтому в группе «Файлы», а не в «Работе»: там он разбил бы цепочку
+     «Проекты → Перевод → Словари → Проверка → Скачать», которую человек
+     проходит сверху вниз. Открыт КАЖДОМУ вошедшему, как «Профиль». */
+  { key: "learn", label: TR("Обучение"), icon: "info", group: "files" },
   { key: "profile", label: TR("Профиль"), icon: "user", group: "files" },
   { key: "org", label: TR("Организация"), icon: "settings", owner: true, group: "files" },
   /* Админка открывается только с нестандартного адреса (window.ADMIN_ENTRY
@@ -814,7 +819,7 @@ function App() {
     import: TabImport, editor: TabEditor, glossary: TabKnowledge, tm: TabKnowledge,
     export: TabExport, preflight: TabAnalysis, qa: TabAnalysis,
     backlog: TabAnalysis, stats: TabAnalysis, org: TabOrg, admin: TabAdmin,
-    profile: TabProfile,
+    profile: TabProfile, learn: TabLearn,
   };
   const Active = tabMap[store.tab] || TabEditor;
 

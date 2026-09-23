@@ -222,6 +222,40 @@ keys = {lang: set(main.tutorial_mod.UI[lang]) for lang in main.tutorial_mod.LANG
 check(keys["ru"] == keys["uz"] == keys["en"],
       "надписи страницы совпадают по составу ключей во всех языках")
 
+print("=== 14в. Вкладка «Обучение»: содержание с СЕРВЕРА ===")
+# Источник один и тот же, что у страницы /tutorial: вторая копия в .jsx
+# разошлась бы первой же правкой, а расхождение значит, что инструкция
+# врёт про наш же интерфейс.
+check(c.get("/api/tutorial").status_code == 401, "/api/tutorial за входом")
+r = c.get("/api/tutorial", headers=H(anna_t))
+j = r.json()
+check(r.status_code == 200 and j["ok"], "вошедшему отдаётся")
+check(len(j["steps"]) == len(main.tutorial_mod.STEPS), "шагов столько же, сколько у страницы")
+check(all(s.get("svg") for s in j["steps"]), "у каждого шага приехал рисунок")
+check(all("var(--" in s["svg"] for s in j["steps"]),
+      "цвета в рисунке — переменными (иначе тёмная тема его не переживёт)")
+check(len(j["faq"]) >= 5, "частые вопросы есть")
+check(all(f.get("q") and f.get("a") for f in j["faq"]), "у каждого вопроса есть ответ")
+for k in ("tour", "support", "print"):
+    check(j["actions"].get(k), "действие «%s» названо" % k)
+# Язык — ИЗ СЕССИИ, а не из умолчания кода: человек выбрал его в «Профиле».
+c.post("/api/profile", headers=H(anna_t), json={"uiLang": "uz"})
+check(c.get("/api/tutorial", headers=H(anna_t)).json()["lang"] == "uz",
+      "язык берётся из сессии")
+check(c.get("/api/tutorial?lang=en", headers=H(anna_t)).json()["lang"] == "en",
+      "явный lang сильнее сессии")
+c.post("/api/profile", headers=H(anna_t), json={"uiLang": main.DEFAULT_UI_LANG})
+# Не платная: читать инструкцию человек обязан мочь и на исчерпанном лимите.
+check(not any(re.search(p, "/api/tutorial") for p in paid),
+      "/api/tutorial не в _PAID")
+# Полнота перевода вкладки — тем же правилом, что у шагов.
+miss = [(i, lang) for i, item in enumerate(main.tutorial_mod.FAQ)
+        for lang in main.tutorial_mod.LANGS if lang not in item]
+check(not miss, "у каждого вопроса есть все три языка: %s" % (miss or "—"))
+tabkeys = {lang: set(main.tutorial_mod.TAB_UI[lang]) for lang in main.tutorial_mod.LANGS}
+check(tabkeys["ru"] == tabkeys["uz"] == tabkeys["en"],
+      "надписи вкладки совпадают по составу ключей во всех языках")
+
 print("=== 15. Страница публична и не трогает STATE ===")
 before = len(main.support_mod.threads(main.STATE))
 c.get("/tutorial")                       # без единого заголовка Authorization

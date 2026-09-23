@@ -97,6 +97,7 @@ window.I18N.register("en", {
  "Новый пароль": "New password",
  "Новый пароль (от 8)": "New password (8+)",
  "Обновить страницу": "Reload the page",
+ "Обучение": "Learn",
  "Обычная перефразировка": "An ordinary paraphrase",
  "Организация": "Organization",
  "Отправка почты на сервере не настроена: код придётся взять у администратора.": "Sending email is not configured on the server: you will have to get the code from the administrator.",

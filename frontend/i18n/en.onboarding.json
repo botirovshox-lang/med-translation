@@ -20,5 +20,9 @@
   "Пропустить": "Skip",
   "Понятно": "Got it",
   "Далее": "Next",
-  "Шаг": "Step"
+  "Шаг": "Step",
+  "Обучение": "Learn",
+  "Не удалось загрузить инструкцию.": "Could not load the guide.",
+  "Открыть отдельной страницей": "Open as a separate page",
+  "Загружаем инструкцию…": "Loading the guide…"
 }

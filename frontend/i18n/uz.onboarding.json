@@ -20,5 +20,9 @@
   "Пропустить": "O'tkazib yuborish",
   "Понятно": "Tushunarli",
   "Далее": "Keyingisi",
-  "Шаг": "Qadam"
+  "Шаг": "Qadam",
+  "Обучение": "O'rganish",
+  "Не удалось загрузить инструкцию.": "Qo'llanmani yuklab bo'lmadi.",
+  "Открыть отдельной страницей": "Alohida sahifada ochish",
+  "Загружаем инструкцию…": "Qo'llanma yuklanmoqda…"
 }

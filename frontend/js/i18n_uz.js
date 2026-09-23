@@ -97,6 +97,7 @@ window.I18N.register("uz", {
  "Новый пароль": "Yangi parol",
  "Новый пароль (от 8)": "Yangi parol (8 tadan)",
  "Обновить страницу": "Sahifani yangilash",
+ "Обучение": "O'rganish",
  "Обычная перефразировка": "Odatiy qayta ifodalash",
  "Организация": "Tashkilot",
  "Отправка почты на сервере не настроена: код придётся взять у администратора.": "Serverda pochta yuborish sozlanmagan: kodni administratordan olishga to'g'ri keladi.",

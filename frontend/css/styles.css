@@ -1630,3 +1630,82 @@ body { overflow-wrap: break-word; }
      в поле и сам обратно не отдаляет (см. раздел про резиновую вёрстку). */
   .sup-form textarea { font-size: 16px; }
 }
+
+/* ---------- Вкладка «Обучение» (tab_learn.jsx) ----------
+   Содержание и рисунки приходят с сервера, облик — НАШ: те же .card,
+   те же переменные. Цвета в рисунках заданы через var(--…), поэтому
+   светлую и тёмную тему они переживают сами. */
+
+/* Три коротких факта строкой — как чипы на «Проверке». */
+.learn-facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; padding: 0; list-style: none; }
+.learn-facts li { font-size: 12.5px; color: var(--text-3);
+  padding: 5px 11px; border: 1px solid var(--border); border-radius: 999px; }
+
+/* Три действия в ряд: знакомство, поддержка, печатная версия.
+   auto-fit с min() — ниже 520 px колонка не требует ширины больше
+   контейнера (см. раздел про резиновую вёрстку). */
+.learn-acts { display: grid; gap: 10px; margin-bottom: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); }
+.learn-act { display: flex; align-items: flex-start; gap: 10px; text-align: left;
+  cursor: pointer; font: inherit; color: inherit; text-decoration: none; }
+.learn-act:focus-visible { outline: 2px solid var(--c-primary); outline-offset: 2px; }
+.learn-act-ic { flex: 0 0 auto; display: grid; place-items: center;
+  width: 30px; height: 30px; border-radius: 9px;
+  background: var(--c-primary-soft); color: var(--c-primary); }
+.learn-act-t { display: grid; gap: 2px; min-width: 0; }
+.learn-act-t b { font-size: 13.5px; font-weight: 600; }
+.learn-act-t span { font-size: 12px; color: var(--text-3); }
+
+/* Шаг: номер слева, текст и рисунок справа. Ниже 640 px номер встаёт
+   над заголовком — в узкой колонке он съедал четверть ширины. */
+.learn-step { display: grid; grid-template-columns: 40px 1fr; gap: 0 14px; align-items: start; }
+.learn-n span { display: grid; place-items: center; width: 32px; height: 32px;
+  border-radius: 50%; border: 1px solid var(--border-strong);
+  font-size: 12.5px; font-weight: 700; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.learn-body { min-width: 0; }
+.learn-kicker { margin: 0 0 2px; font-size: 11px; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--text-4); }
+.learn-step h2 { margin: 0 0 8px; font-size: 16px; font-weight: 600; }
+.learn-p { margin: 0 0 8px; font-size: 13.5px; line-height: 1.55; color: var(--text-2); max-width: 66ch; }
+.learn-p b { color: var(--text); font-weight: 600; }
+/* Рисунок схемы. Своя подложка, чтобы рамка «окна» не сливалась
+   с карточкой: в светлой теме и то и другое белое.
+   ЗДЕСЬ ЖЕ переименование переменных: SVG собирает `backend/tutorial.py`
+   в палитре анкет (--panel, --mint, --stroke…), а у приложения палитра
+   своя. Переписывать сам SVG нельзя — его же рисует страница /tutorial,
+   где палитра анкет и есть родная; поэтому имена ПЕРЕОПРЕДЕЛЯЮТСЯ
+   на нашей стороне, и обе темы работают сами. Без этого рисунок был бы
+   невидим: нерезолвящаяся переменная гасит заливку целиком. */
+.learn-shot { margin-top: 10px; padding: 10px; border-radius: var(--r-md);
+  background: var(--bg-sunken); border: 1px solid var(--border);
+  --panel: var(--bg-sunken);
+  --panel-2: var(--card);
+  --stroke: var(--border-strong);
+  --ink: var(--text);
+  --muted: var(--text-3);
+  --mint: var(--c-success);
+  --mint-ink: var(--text-on-accent);
+  --mint-soft: var(--c-primary-soft);
+  --teal: var(--c-info);
+  --violet: var(--c-purple);
+  --tan: var(--c-warning);
+  --flag: var(--c-error); }
+.learn-shot figure { margin: 0; }
+/* Рисунок во всю ширину подложки, но не шире 560 px: дальше схема
+   из пяти прямоугольников начинает выглядеть растянутой пустотой. */
+.learn-shot svg { display: block; width: 100%; max-width: 560px; height: auto; margin: 0 auto; }
+/* Подписи внутри рисунка — наши классы из tutorial.py; кегли заданы
+   тут, а не в SVG, чтобы шрифт совпадал с остальной страницей. */
+.learn-shot svg .cap { font-size: 11px; fill: var(--text-4); }
+.learn-shot svg .sub { font-size: 12px; fill: var(--text-3); }
+.learn-shot svg .mid { font-size: 14px; font-weight: 600; fill: var(--text); }
+.learn-shot svg .big { font-size: 16px; font-weight: 700; }
+.learn-shot svg .btn-t { font-size: 12px; font-weight: 600; }
+
+.learn-h2 { margin: 26px 0 10px; font-size: 17px; font-weight: 600; }
+.learn-a { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--text-2); max-width: 70ch; }
+
+@media (max-width: 640px) {
+  .learn-step { grid-template-columns: 1fr; gap: 8px; }
+  .learn-n span { width: 28px; height: 28px; }
+}

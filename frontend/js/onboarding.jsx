@@ -90,6 +90,16 @@ function SupportWidget({ store, toast }) {
     return () => { dead = true; clearTimeout(timer); };
   }, [open, waiting]);
 
+  /* Открыть виджет умеет любой экран: событие, а не проп через всю
+     оболочку. Кнопка «Написать в поддержку» стоит на вкладке «Обучение»
+     (и встанет ещё где-нибудь), а тянуть состояние виджета через App,
+     Sidebar и вкладку значило бы связать их всех ради одного нажатия. */
+  useEffect(() => {
+    const h = () => setOpen(true);
+    window.addEventListener("mct-support-open", h);
+    return () => window.removeEventListener("mct-support-open", h);
+  }, []);
+
   /* Открыли — гасим счётчик непрочитанного: человек их видит. */
   useEffect(() => {
     if (!open || !unread) return;
@@ -288,15 +298,32 @@ function WelcomeTour({ store, onDone }) {
 function OnboardingLayer({ store, toast }) {
   const me = store.me || null;
   const [done, setDone] = useState(false);
-  const show = !!me && !me.tourDone && !done;
+  /* Показ ПО ПРОСЬБЕ — отдельно от «ещё не видел». Кнопка «Показать
+     знакомство заново» на вкладке «Обучение» шлёт событие, и тур идёт
+     поверх любого экрана; сбрасывать ради этого `tourDone` на записи
+     нельзя — флаг отвечает на вопрос «видел ли человек тур», а не
+     «показываем ли его сейчас». */
+  const [asked, setAsked] = useState(false);
+  const show = asked || (!!me && !me.tourDone && !done);
+
+  useEffect(() => {
+    const h = () => { setAsked(true); setDone(false); };
+    window.addEventListener("mct-tour-open", h);
+    return () => window.removeEventListener("mct-tour-open", h);
+  }, []);
 
   const finish = () => {
+    setAsked(false);
     setDone(true);
     /* Ответ сервера не ждём и ошибку не показываем: тур закрыт в браузере
        в любом случае, а не записавшийся флаг покажет его ещё раз — это
        досадно, но не потеря работы. */
-    window.API.profileSave({ tourDone: true }).then(
-      r => { if (r && r.ok && store.setMe) store.setMe(r.me); }, () => {});
+    /* Запись трогаем только когда тур шёл САМ: повторный показ
+       по просьбе ничего не меняет — человек его и так уже видел. */
+    if (me && !me.tourDone) {
+      window.API.profileSave({ tourDone: true }).then(
+        r => { if (r && r.ok && store.setMe) store.setMe(r.me); }, () => {});
+    }
   };
 
   return React.createElement(React.Fragment, null,

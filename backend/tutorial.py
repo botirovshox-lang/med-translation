@@ -345,6 +345,200 @@ STEPS = [
     }),
 ]
 
+# ─────────────────────────────────────────────────────────────────────
+# Частые вопросы. Тот же закон, что у шагов: одно дерево на три языка,
+# забытый перевод роняет сборку, а не показывает русскую строку.
+# Тексты сведены с лендинга намеренно — человек, прочитавший обещание
+# на лендинге, обязан найти тот же ответ внутри сервиса; два разных
+# ответа на один вопрос хуже одного.
+# ─────────────────────────────────────────────────────────────────────
+
+FAQ = [
+    {
+        "ru": ("Какие форматы можно перевести?",
+               "Word (.docx), PDF, Excel, PowerPoint, HTML, текстовые файлы, картинки "
+               "и сканы. Любой формат сначала превращается в .docx, переводится, "
+               "а потом возвращается в своём. Что теряется при обратной сборке, "
+               "названо на файле до оплаты."),
+        "uz": ("Qaysi formatlarni tarjima qilish mumkin?",
+               "Word (.docx), PDF, Excel, PowerPoint, HTML, matnli fayllar, rasm "
+               "va skanlar. Har qanday format avval .docx ga aylantiriladi, tarjima "
+               "qilinadi, so‘ng o‘z formatida qaytariladi. Teskari yig‘ishda nima "
+               "yo‘qolishi to‘lovdan oldin fayl ustida aytiladi."),
+        "en": ("Which formats can be translated?",
+               "Word (.docx), PDF, Excel, PowerPoint, HTML, text files, images and "
+               "scans. Every format is first converted to .docx, translated and then "
+               "returned in its own. Whatever is lost on the way back is stated on "
+               "the file before you pay."),
+    },
+    {
+        "ru": ("Сохранится ли оформление?",
+               "Да. Перевод пишется в исходный файл, а не собирается заново: стили, "
+               "таблицы, рисунки и оглавление остаются на месте, номера страниц "
+               "пересчитывает Word. Надписи на картинках переводятся отдельно "
+               "и возвращаются на свои места."),
+        "uz": ("Hujjat ko‘rinishi saqlanadimi?",
+               "Ha. Tarjima qaytadan yig‘ilmaydi, asl faylga yoziladi: uslublar, "
+               "jadvallar, rasmlar va mundarija o‘z o‘rnida qoladi, bet raqamlarini "
+               "Word qayta hisoblaydi. Rasmlardagi yozuvlar alohida tarjima qilinib, "
+               "o‘z joyiga qaytariladi."),
+        "en": ("Will the layout be preserved?",
+               "Yes. The translation is written into the original file rather than "
+               "assembled from scratch: styles, tables, figures and the table of "
+               "contents stay in place, and Word recomputes the page numbers. "
+               "Captions inside images are translated separately and put back."),
+    },
+    {
+        "ru": ("Нужно ли знать язык перевода?",
+               "Нет. Вопросы к вам всегда стоят на вашем языке: сравнивается то, "
+               "что сказано в книге, и то, что читается обратно из перевода. "
+               "Оценивать сам перевод не требуется, а спорную строку можно отдать "
+               "коллеге в команде, который язык знает."),
+        "uz": ("Tarjima tilini bilish kerakmi?",
+               "Yo‘q. Sizga beriladigan savollar doim siz tushunadigan tilda: "
+               "kitobda aytilgan narsa va tarjimadan teskari o‘qilgan narsa "
+               "solishtiriladi. Tarjimaning o‘zini baholash talab qilinmaydi, "
+               "bahsli satrni esa tilni biladigan jamoadoshingizga berish mumkin."),
+        "en": ("Do I need to know the target language?",
+               "No. Questions to you are always in a language you know: what the "
+               "book says is compared with what reads back out of the translation. "
+               "You are not asked to judge the translation itself, and a disputed "
+               "line can be handed to a teammate who does know the language."),
+    },
+    {
+        "ru": ("Как считается страница и цена?",
+               "Страница — 250 слов исходника, одна норма для всех языков; "
+               "для письма без пробелов (китайский, японский) считаются знаки. "
+               "Смета считается по файлу до загрузки и после не меняется. "
+               "Повторная загрузка того же файла на ту же пару не списывается."),
+        "uz": ("Bet va narx qanday hisoblanadi?",
+               "Bet — asl matnning 250 so‘zi, barcha tillar uchun bitta me’yor; "
+               "probelsiz yozuv (xitoy, yapon) uchun belgilar sanaladi. Hisob-kitob "
+               "fayl bo‘yicha yuklashdan oldin qilinadi va keyin o‘zgarmaydi. "
+               "O‘sha faylni o‘sha juftlikka qayta yuklash uchun hisobdan yechilmaydi."),
+        "en": ("How are a page and the price calculated?",
+               "A page is 250 words of the source, one standard for every language; "
+               "for scripts without spaces (Chinese, Japanese) characters are counted. "
+               "The estimate is calculated from the file before the upload and does "
+               "not change. Uploading the same file again for the same pair is free."),
+    },
+    {
+        "ru": ("Сколько ждать?",
+               "Статья на 10 страниц готова за минуты, книга на 300 страниц — "
+               "за часы, а не за недели. Вкладку можно закрыть: работа идёт "
+               "на сервере, а результат будет ждать в проекте вместе со списком "
+               "вопросов, если они появились."),
+        "uz": ("Qancha kutish kerak?",
+               "10 betlik maqola daqiqalarda, 300 betlik kitob esa haftalar emas, "
+               "soatlarda tayyor bo‘ladi. Bo‘limni yopsangiz bo‘ladi: ish serverda "
+               "ketadi, natija esa savollar ro‘yxati bilan birga loyihada kutib "
+               "turadi."),
+        "en": ("How long does it take?",
+               "A 10-page article is ready in minutes, a 300-page book in hours "
+               "rather than weeks. You can close the tab: the work runs on the "
+               "server, and the result waits in the project together with a list "
+               "of questions, if any came up."),
+    },
+    {
+        "ru": ("Что происходит с моими документами?",
+               "Текст документа уходит поставщику языковой модели для перевода "
+               "и проверок; это прямо сказано в политике персональных данных. "
+               "Файлы хранятся в вашей организации и недоступны другим клиентам. "
+               "Проект можно удалить вместе с файлами в любой момент."),
+        "uz": ("Hujjatlarim bilan nima bo‘ladi?",
+               "Hujjat matni tarjima va tekshiruvlar uchun til modeli yetkazib "
+               "beruvchisiga yuboriladi; bu shaxsiy ma’lumotlar siyosatida ochiq "
+               "aytilgan. Fayllar sizning tashkilotingizda saqlanadi va boshqa "
+               "mijozlarga ochiq emas. Loyihani fayllari bilan istalgan vaqtda "
+               "o‘chirish mumkin."),
+        "en": ("What happens to my documents?",
+               "The text of the document is sent to the language model provider for "
+               "translation and checks; this is stated plainly in the privacy policy. "
+               "Files are stored inside your own organisation and are not available "
+               "to other customers. A project can be deleted with its files at any time."),
+    },
+]
+
+# Надписи вкладки «Обучение» — те, которых нет у страницы. Отдельно
+# от UI намеренно: у страницы своя шапка и свои кнопки («Открыть сервис»,
+# «На главную»), а внутри сервиса они бессмысленны — человек уже внутри.
+TAB_UI = {
+    "ru": {
+        "h1": "Обучение",
+        "lede": "Весь путь от файла до готового перевода за пять шагов. "
+                "На каждом нарисовано место экрана, куда нужно нажать.",
+        "faqHead": "Частые вопросы",
+        "tour": "Показать знакомство заново",
+        "tourNote": "Короткий тур по интерфейсу: четыре шага с подсветкой кнопок.",
+        "support": "Написать в поддержку",
+        "supportNote": "Не получается — напишите, мы читаем каждое сообщение.",
+        "print": "Открыть отдельной страницей",
+        "printNote": "Версия для печати и для коллеги, у которого ещё нет доступа.",
+        "step": "Шаг",
+    },
+    "uz": {
+        "h1": "O‘rganish",
+        "lede": "Fayldan tayyor tarjimagacha bo‘lgan butun yo‘l besh qadamda. "
+                "Har birida ekranning qaysi joyini bosish kerakligi chizilgan.",
+        "faqHead": "Ko‘p beriladigan savollar",
+        "tour": "Tanishuvni qaytadan ko‘rsatish",
+        "tourNote": "Interfeys bo‘ylab qisqa sayr: tugmalar yoritilgan to‘rt qadam.",
+        "support": "Qo‘llab-quvvatlashga yozish",
+        "supportNote": "Qiyinchilik bo‘lsa — yozing, biz har bir xabarni o‘qiymiz.",
+        "print": "Alohida sahifada ochish",
+        "printNote": "Chop etish uchun va hali ruxsati yo‘q hamkasb uchun versiya.",
+        "step": "Qadam",
+    },
+    "en": {
+        "h1": "Learn",
+        "lede": "The whole path from a file to a finished translation in five steps. "
+                "Each one shows the part of the screen you need to click.",
+        "faqHead": "Common questions",
+        "tour": "Show the intro again",
+        "tourNote": "A short tour of the interface: four steps with the buttons highlighted.",
+        "support": "Message support",
+        "supportNote": "Stuck? Write to us — we read every message.",
+        "print": "Open as a separate page",
+        "printNote": "A version to print, or to send a colleague who has no access yet.",
+        "step": "Step",
+    },
+}
+
+
+def content(lang: str = "") -> dict:
+    """Содержание инструкции для ВКЛАДКИ приложения.
+
+    Источник один и тот же — `STEPS`, `UI`, `FAQ` этого модуля, — поэтому
+    правка текста меняет и страницу `/tutorial`, и вкладку. Вторая копия
+    в `.jsx` разошлась бы с первой же правкой, а расхождение здесь значит,
+    что инструкция врёт про наш же интерфейс.
+
+    Рисунки уходят ГОТОВЫМ SVG: их собирает тот же код, что и для страницы
+    (`_shot`), и повторять построение рамок и стрелок в браузере значило бы
+    держать два рисовальщика на одну схему. Браузеру остаётся вставить
+    разметку и покрасить её своими переменными — цвета в SVG заданы через
+    `var(--…)`, поэтому в светлой и тёмной теме он живёт сам.
+    """
+    lang = _pick(lang)
+    t, tab = UI[lang], TAB_UI[lang]
+    return {
+        "lang": lang,
+        "h1": tab["h1"], "lede": tab["lede"],
+        "facts": t["facts"],
+        "stepWord": tab["step"],
+        "steps": [{"key": key, "title": byl[lang][0], "paras": byl[lang][1],
+                   "svg": _shot(key, t)}
+                  for key, byl in STEPS],
+        "faqHead": tab["faqHead"],
+        "faq": [{"q": item[lang][0], "a": item[lang][1]} for item in FAQ],
+        "actions": {
+            "tour": tab["tour"], "tourNote": tab["tourNote"],
+            "support": tab["support"], "supportNote": tab["supportNote"],
+            "print": tab["print"], "printNote": tab["printNote"],
+        },
+    }
+
+
 EXTRA_CSS = r"""
 .shot-wrap{margin:14px 0 4px;padding:0}
 svg.shot{display:block;width:100%;max-width:440px;height:auto}

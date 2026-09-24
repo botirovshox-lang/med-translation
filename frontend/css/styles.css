@@ -1765,3 +1765,22 @@ body { overflow-wrap: break-word; }
 /* Текст только для читалки экрана: номер шага и «пройден» (app.jsx). */
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+/* Линия пути между кружками шагов: от пройденного шага к следующему —
+   сплошная зелёная, от непройденного — пунктир; непройденный кружок тоже
+   пунктирный. Линия рисуется ПОД кружком пункта и доходит до кружка
+   следующего: 100% — высота пункта, 1px — зазор между пунктами, 18px —
+   диаметр кружка. Отсчёт — от края ВНУТРЕННЕГО отступа (рамка не в счёт):
+   левый край — поле (9 px) + радиус (9) − половина линии (1); по высоте
+   линия идёт от низа своего кружка (+1 px) до верха следующего (−1 px),
+   и это 100% − 16 px при любом вертикальном поле. z-index — чтобы фон
+   следующего пункта (под курсором, открытый) не съедал кончик линии. */
+.grp-work .navi { position: relative; }
+.grp-work .navi:not(:last-child)::after {
+  content: ""; position: absolute; left: 17px; top: calc(50% + 10px); z-index: 1;
+  height: calc(100% - 16px); border-left: 2px dashed var(--border-strong); pointer-events: none; }
+.grp-work .navi.step-done:not(:last-child)::after { border-left-style: solid; border-left-color: var(--c-success); }
+.step-n:not(.done) { border-style: dashed; }
+.navi.on .step-n:not(.done) { border-style: solid; }
+@media (pointer: coarse) and (hover: none) { .grp-work .navi:not(:last-child)::after { left: 18px; } }
+/* Лента и нижняя панель — линия пути там не нужна (пункты стоят в строку). */
+@media (max-width: 900px) { .grp-work .navi::after { display: none; } }

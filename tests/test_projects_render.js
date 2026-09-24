@@ -263,6 +263,21 @@ console.log("\n[7] Дубль при загрузке (409): «Открыть п
   check(opened.join() === "104", "она открывает проект-дубль: " + opened.join());
 }
 
+console.log("\n[8] Файл-картинка: чтение ведёт в «Перевод», причина названа");
+{
+  hooks = []; hookIdx = 0;
+  const opened = [], went = [];
+  const pic = { id: 110, title: "photo", src: "RU", tgt: "AR", importKind: "image", segments: [], imagesSkipped: "limit" };
+  const st = makeStore({ openProject: (id) => opened.push(id), go: (k) => went.push(k) });
+  const tree = ImpFileCard({ project: pic, store: st, toast });
+  const t = texts(tree).join(" | ");
+  check(t.indexOf("лимит расхода организации исчерпан") !== -1, "сказано, почему текст сам не прочитался");
+  const b = find(tree, n => n.type === "button" && texts(n).join("") === "Прочитать текст с картинок")[0];
+  check(!!b, "кнопка «Прочитать текст с картинок» есть");
+  if (b) b.props.onClick();
+  check(opened.join() === "110" && went.indexOf("export") < 0, "она открывает файл в «Переводе», а не на «Скачать»");
+}
+
 console.log("");
 if (fail.length) { console.log("ПРОВАЛЕНО " + fail.length + ":"); fail.forEach(f => console.log("  - " + f)); process.exit(1); }
 console.log("ВСЁ ПРОШЛО");

@@ -2709,7 +2709,15 @@ function TabEditor({ store, toast }) {
       expertUI && tkSum && React.createElement("button", { className: "btn btn-ghost btn-sm",
         style: { alignSelf: "flex-start", margin: "2px 0 8px" }, onClick: () => setSetupOpen(o => !o) },
         (setupOpen ? "▾ " : "▸ ") + TR("Устройство прогона: шаги, модели, смета")),
-      React.createElement("div", { className: "run-decks",
+      /* Файл-картинка или скан: текст живёт в картинке, и пока он не прочитан,
+         строк нет. Панель чтения стоит ЗДЕСЬ, над таблицей, — прочитанное
+         появляется в той же таблице, отдельного экрана нет. */
+      (project.importKind === "image" || project.importKind === "scan") && typeof ImagesCard === "function"
+        && React.createElement("div", { style: { marginBottom: 16 } },
+          React.createElement(ImagesCard, { project, store, toast, compact: true })),
+      /* Строк нет — запускать нечего: «Всё уже сделано» на пустом файле
+         читалось как «готово», хотя не сделано ничего. */
+      project.segments.length > 0 && React.createElement("div", { className: "run-decks",
         style: expertUI && tkSum && !setupOpen ? { display: "none" } : null },
         /* Без сводки (до первого прогона) кнопка живёт здесь; со сводкой
            она в карточке, и вторая — только у администратора в свёртке. */
@@ -2915,7 +2923,14 @@ function TabEditor({ store, toast }) {
             )
           )
         ),
-        filtered.length === 0 && React.createElement("div", { style: { padding: 20 } },
+        /* В файле нет ни одной строки — это не «фильтр», и совет «измените
+           фильтр» уводил бы искать поломку не там. */
+        project.segments.length === 0 && React.createElement("div", { style: { padding: 20 } },
+          React.createElement(EmptyState, { icon: "file", title: TR("В файле пока нет строк"),
+            sub: (project.importKind === "image" || project.importKind === "scan")
+              ? TR("Текст живёт в картинке — прочитайте его в блоке «Текст с картинки» выше, и строки появятся здесь.")
+              : TR("Файл не дал текста для перевода.") })),
+        project.segments.length > 0 && filtered.length === 0 && React.createElement("div", { style: { padding: 20 } },
           React.createElement(EmptyState, { icon: "filter", title: TR("Нет сегментов по фильтру"),
             sub: query ? "«" + query + TR("» не найдено — ") + scopeOpts.find(o => o[0] === scope)[1].toLowerCase() + TR(". Смените область поиска или очистите запрос.")
                        : TR("Измените фильтр статуса или поиск.") })),

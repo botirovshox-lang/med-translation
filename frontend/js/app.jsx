@@ -741,7 +741,8 @@ function Sidebar({ store, theme, onToggleTheme, onLogout }) {
         React.createElement("h3", null, title),
         items.map(t => {
           const b = tabBadge(store, t.key, counts);
-          return React.createElement("button", { key: t.key, className: "navi" + (store.tab === t.key ? " on" : ""),
+          return React.createElement("button", { key: t.key, className: "navi" + (store.tab === t.key ? " on" : "")
+              + (g === "work" && stepDone(store, t.key) ? " step-done" : ""),
             /* Метка для знакомства (onboarding.jsx): тур ищет цель ИМЕННО
                по ней, а не по классу и не по порядку в списке. Класс —
                про облик и меняется вместе с ним, порядок зависит от роли:

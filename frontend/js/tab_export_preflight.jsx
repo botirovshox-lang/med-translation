@@ -11,7 +11,10 @@
    человек решает, чем читать, а не проект. */
 const OCR_MODEL_LS_KEY = "mct-ocr-model";
 
-function ImagesCard({ project, store, toast }) {
+/* compact — карточка стоит в «Переводе» у файла-картинки: там человеку
+   нужны не рассуждения про экспорт 1в1, а ответ «прочитан ли текст и что
+   нажать». Длинное объяснение остаётся экрану «Скачать». */
+function ImagesCard({ project, store, toast, compact }) {
   const pid = project.id;
   const [models, setModels] = useState([]);      // каталог с ценами из /api/models
   const [ocrModel, setOcrModel] = useState(() => {
@@ -151,19 +154,30 @@ function ImagesCard({ project, store, toast }) {
       toast.error(TR("Не удалось"), TR("Сервер не отдал список картинок."));
       return;
     }
+    /* Сервер не примет прочитанное (нечем посчитать фон под строками —
+       ответ 503): сказать это ДО работы, а не отчитаться «новых строк: 0»
+       после минут распознавания. */
+    if (list.pixels === false) {
+      setLocal(null);
+      toast.error(TR("Сейчас не получится"), TR("Сервер не может принять прочитанное: ") + TRS(list.why || ""));
+      return;
+    }
     const todo = (list.parts || []).filter(p => !p.done);
     if (!todo.length) {
       setLocal(null);
       toast.info(TR("Нечего читать"), TR("Все картинки уже разобраны."));
       return;
     }
-    let made = 0, failed = 0, done = 0, chunk = [];
+    let made = 0, failed = 0, done = 0, chunk = [], lost = 0;
     const flush = async (final) => {
       if (!chunk.length && !final) return;
       const sent = chunk;
       chunk = [];
       const r = await window.API.safeCall(() => window.API.imagesLocal(pid, sent, final));
       if (r && r.segments) made += r.segments.length;
+      /* Отказ (409 — идёт прогон, 503 — нечем принять) safeCall глотает;
+         прочитанное тогда НЕ сохранено, и молчать об этом нельзя. */
+      if (!r) lost += sent.length;
     };
     for (const p of todo) {
       if (localStop.current) break;
@@ -189,7 +203,9 @@ function ImagesCard({ project, store, toast }) {
       const fresh = await window.API.safeCall(() => window.API.getProject(pid));
       if (fresh && fresh.segments) store.replaceProjectSegments(pid, fresh.segments);
     }
-    toast.success(TR("Прочитано у вас"), TR("новых строк: ") + made
+    if (lost) toast.error(TR("Прочитанное не сохранено"),
+      TR("Сервер не принял картинок: ") + lost + TR(". Попробуйте ещё раз, когда закончится идущая работа над файлом."));
+    else toast.success(TR("Прочитано у вас"), TR("новых строк: ") + made
       + (failed ? TR(" · картинок не разобрано: ") + failed : ""));
   };
 
@@ -295,9 +311,19 @@ function ImagesCard({ project, store, toast }) {
       value));
 
   return React.createElement("div", null,
-    React.createElement("h2", { className: "section-title" }, TR("Надписи на картинках")),
+    React.createElement("h2", { className: "section-title" }, compact ? TR("Текст с картинки") : TR("Надписи на картинках")),
     React.createElement("div", { className: "card card-pad col", style: { gap: 12 } },
-      React.createElement("div", { style: { fontSize: 13, lineHeight: 1.55 } },
+      /* Почему текст не прочитан САМ. Сервер записал причину кодом
+         (`imagesSkipped`), а экран молчал — человек видел пустой файл
+         без ошибки и без подсказки, что делать. */
+      project.imagesSkipped && !(rep && rep.stats && rep.stats.segments) && React.createElement("div", {
+          className: "hint", style: { color: "var(--c-warning)" } },
+        (project.imagesSkipped === "limit"
+          ? TR("Текст сам не прочитался: лимит расхода организации исчерпан. Поднять его может администратор.")
+          : TR("Текст сам не прочитался: чтение сейчас недоступно — сообщите администратору."))
+        + (window.LocalOCR && window.LocalOCR.can(project.src)
+            ? " " + TR("Бесплатно прочитать можно у себя в браузере — кнопка ниже.") : "")),
+      !compact && React.createElement("div", { style: { fontSize: 13, lineHeight: 1.55 } },
         TR("Подписи под рисунками и схемы впечатаны в картинки: абзаца у них нет, "),
         TR("и без разбора они остаются на языке оригинала. Найденные надписи становятся "),
         TR("обычными сегментами проекта, а при экспорте 1в1 перевод возвращается "),
@@ -434,7 +460,13 @@ function ImagesCard({ project, store, toast }) {
            распознавалки: настройка без работы не показывается. */
         window.LocalOCR && window.LocalOCR.can(project.src)
           && React.createElement(Btn, { variant: "secondary", size: "sm",
-            disabled: busy || !!(local && local.running) || !st || !st.pending,
+            /* Без предварительного поиска строк тоже: поиск — задача на
+               сервере, и на исчерпанном лимите она встаёт, а чтение у себя
+               денег не стоит и сервер почти не трогает. Список картинок
+               отдаёт `imagesParts`, разобранные он помечает сам. */
+            /* Пока сервер сам читает картинку (`imagesReading`), проект
+               заперт, и прочитанное у себя он отвергнет (409). */
+            disabled: busy || !!(local && local.running) || !!(st && !st.pending) || !!project.imagesReading,
             onClick: readLocal }, TR("Прочитать у себя — бесплатно")),
         st && st.segments > 0 && React.createElement(Btn, { variant: "ghost", size: "sm",
           disabled: busy, onClick: () => setForgetOpen(true) }, TR("Забыть распознанное"))),

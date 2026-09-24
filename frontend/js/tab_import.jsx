@@ -650,7 +650,11 @@ function ImpFileCard({ project, store, toast }) {
         ? React.createElement("div", { className: "dim", style: { fontSize: 13 } },
             reading ? (imgJob ? React.createElement(ImagesJobLine, { job: imgJob })
                               : React.createElement(React.Fragment, null, React.createElement(Spinner, null), " ", TR("Читаем текст с картинок — строки появятся сами.")))
-                    : TR("Текст на картинках ещё не прочитан."))
+                    : project.imagesSkipped === "limit"
+                      ? TR("Текст сам не прочитался: лимит расхода организации исчерпан.")
+                      : project.imagesSkipped
+                        ? TR("Текст сам не прочитался: чтение сейчас недоступно.")
+                        : TR("Текст на картинках ещё не прочитан."))
         : React.createElement("div", null,
             React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
               React.createElement("span", { className: "muted" }, TR("Готово")),
@@ -658,7 +662,9 @@ function ImpFileCard({ project, store, toast }) {
             React.createElement(ProgressBar, { value: pct })),
       React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
         pictures && !reading
-          ? React.createElement(Btn, { variant: "primary", size: "sm", icon: "image", onClick: () => { store.openProject(project.id); store.go("export"); } }, TR("Прочитать текст с картинок"))
+          /* Ведёт в «Перевод»: там у файла-картинки стоит панель чтения,
+             и прочитанные строки появляются в той же таблице. */
+          ? React.createElement(Btn, { variant: "primary", size: "sm", icon: "image", onClick: () => store.openProject(project.id) }, TR("Прочитать текст с картинок"))
           : React.createElement(Btn, { variant: "primary", size: "sm", icon: "edit", onClick: () => store.openProject(project.id) }, TR("Переводить")),
         React.createElement(Btn, { variant: "ghost", size: "sm", icon: "download", onClick: () => { store.openProject(project.id); store.go("export"); } }, TR("Скачать")),
         project.reimport && React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", disabled: busy, onClick: undoReimport }, TR("Вернуть прежнюю версию")))),
@@ -786,7 +792,11 @@ function ImpAddFile({ folder, store, toast, meta }) {
          появятся в файле через минуту-другую, об этом — словами. */
       toast.success(TR("Файл добавлен"), project.segments.length + TR(" строк готовы к переводу.")
         + (project.imagesReading ? " " + TR("Текст с картинок читается — строки появятся сами.") : "")
-        + (project.importNote ? " " + TRS(project.importNote) : ""));
+        /* Чтение НЕ поставлено — сказать почему; обещание importNote
+           («читается автоматически») тогда неправда, и его не показываем. */
+        + (project.imagesSkipped === "limit" ? " " + TR("Текст сам не прочитался: лимит расхода организации исчерпан.")
+          : project.imagesSkipped ? " " + TR("Текст сам не прочитался: чтение сейчас недоступно.")
+          : project.importNote ? " " + TRS(project.importNote) : ""));
       store.openProject(project.id);
     } catch (e) {
       toast.error(TR("Файл не добавлен"), e.message || TR("Не удалось разобрать файл"));

@@ -529,5 +529,19 @@
   "— выберите —": "— choose —",
   "Начать": "Start",
   "шаг ": "step ",
-  ", пройден": ", done"
+  ", пройден": ", done",
+  "В файле пока нет строк": "The file has no lines yet",
+  "Текст живёт в картинке — прочитайте его в блоке «Текст с картинки» выше, и строки появятся здесь.": "The text is inside the image — read it in the “Text from the image” block above, and the lines will appear here.",
+  "Файл не дал текста для перевода.": "The file gave no text to translate.",
+  "Текст с картинки": "Text from the image",
+  "Текст сам не прочитался: лимит расхода организации исчерпан. Поднять его может администратор.": "The text was not read automatically: the organization's spending limit is used up. An administrator can raise it.",
+  "Текст сам не прочитался: чтение сейчас недоступно — сообщите администратору.": "The text was not read automatically: reading is unavailable right now — tell the administrator.",
+  "Бесплатно прочитать можно у себя в браузере — кнопка ниже.": "You can read it for free in your browser — the button is below.",
+  "Текст сам не прочитался: лимит расхода организации исчерпан.": "The text was not read automatically: the organization's spending limit is used up.",
+  "Текст сам не прочитался: чтение сейчас недоступно.": "The text was not read automatically: reading is unavailable right now.",
+  "Сейчас не получится": "Not possible right now",
+  "Сервер не может принять прочитанное: ": "The server cannot accept the recognized text: ",
+  "Прочитанное не сохранено": "The recognized text was not saved",
+  "Сервер не принял картинок: ": "Images the server did not accept: ",
+  ". Попробуйте ещё раз, когда закончится идущая работа над файлом.": ". Try again when the current work on the file is finished."
 }

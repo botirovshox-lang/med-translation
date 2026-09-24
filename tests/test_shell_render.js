@@ -240,6 +240,17 @@ console.log("3a. Путь из пяти шагов: номера, честные
   check(m["Скачать"] === "✓", "выгрузка этого файла — «Скачать» пройден");
   m = stepMarks(makeStore({ activeProject: null }));
   check(m["Проекты"] === "1", "без файла ничего не пройдено");
+  /* Линия пути (CSS) зеленеет по классу step-done у пункта — ставится он
+     тем же stepDone, что и галочка, и только у шагов пути. */
+  const side2 = Sidebar({ store: makeStore({ activeProject: { id: 7, title: "f", segments: done } }),
+    theme: "light", onToggleTheme() {}, onLogout() {} });
+  const doneItems = byClass(side2, "step-done").map(n => (byClass(n, "navi-t")[0] || { children: [] }).children[0]);
+  check(doneItems.join(",") === "Проекты,Перевод", "класс линии пути — ровно у пройденных шагов: " + doneItems.join(","));
+  const css = fs.readFileSync(path.join(root, "..", "css", "styles.css"), "utf8");
+  check(/\.grp-work \.navi\.step-done:not\(:last-child\)::after \{[^}]*solid[^}]*--c-success/.test(css),
+        "от пройденного шага линия сплошная зелёная");
+  check(/\.grp-work \.navi:not\(:last-child\)::after \{[^}]*dashed/.test(css) && /\.step-n:not\(\.done\) \{ border-style: dashed; \}/.test(css),
+        "от непройденного — пунктир, и кружок пунктирный");
 
   const nextOf = (st) => { const b = NextStepBar({ store: st }); return b ? texts(b).join(" ") : null; };
   check((nextOf(makeStore({ tab: "editor" })) || "").indexOf("Дальше: 3 · Словари") >= 0,

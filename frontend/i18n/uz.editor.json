@@ -529,5 +529,19 @@
   "— выберите —": "— tanlang —",
   "Начать": "Boshlash",
   "шаг ": "bosqich ",
-  ", пройден": ", bajarildi"
+  ", пройден": ", bajarildi",
+  "В файле пока нет строк": "Faylda hali satrlar yo'q",
+  "Текст живёт в картинке — прочитайте его в блоке «Текст с картинки» выше, и строки появятся здесь.": "Matn rasmda — uni yuqoridagi «Rasmdagi matn» blokida o'qing, satrlar shu yerda paydo bo'ladi.",
+  "Файл не дал текста для перевода.": "Fayldan tarjima uchun matn chiqmadi.",
+  "Текст с картинки": "Rasmdagi matn",
+  "Текст сам не прочитался: лимит расхода организации исчерпан. Поднять его может администратор.": "Matn o'zi o'qilmadi: tashkilotning xarajat limiti tugagan. Uni administrator oshira oladi.",
+  "Текст сам не прочитался: чтение сейчас недоступно — сообщите администратору.": "Matn o'zi o'qilmadi: o'qish hozir mavjud emas — administratorga xabar bering.",
+  "Бесплатно прочитать можно у себя в браузере — кнопка ниже.": "Uni brauzeringizda bepul o'qish mumkin — tugma pastda.",
+  "Текст сам не прочитался: лимит расхода организации исчерпан.": "Matn o'zi o'qilmadi: tashkilotning xarajat limiti tugagan.",
+  "Текст сам не прочитался: чтение сейчас недоступно.": "Matn o'zi o'qilmadi: o'qish hozir mavjud emas.",
+  "Сейчас не получится": "Hozir imkoni yo'q",
+  "Сервер не может принять прочитанное: ": "Server o'qilganini qabul qila olmaydi: ",
+  "Прочитанное не сохранено": "O'qilgan saqlanmadi",
+  "Сервер не принял картинок: ": "Server qabul qilmagan rasmlar: ",
+  ". Попробуйте ещё раз, когда закончится идущая работа над файлом.": ". Fayl ustidagi joriy ish tugagach, yana urinib ko'ring."
 }

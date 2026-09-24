@@ -411,5 +411,11 @@
   "Объём файла": "File volume",
   "Страница — 250 слов исходника (у письма без пробелов — знаки по норме языка).": "A page is 250 source words (for scripts without spaces — characters per the language norm).",
   "Посчитать объём": "Count the volume",
-  "Стоимость видит владелец организации.": "The cost is visible to the organisation owner."
+  "Стоимость видит владелец организации.": "The cost is visible to the organisation owner.",
+  "Ваш файл ждёт: ": "Your file is waiting: ",
+  ". После входа сразу откроем его перевод.": ". We'll open its translation right after you sign in.",
+  "После входа сразу откроем перевод вашего документа.": "We'll open your document's translation right after you sign in.",
+  "Первая страница — бесплатно.": "The first page is free.",
+  "Файл с сайта: выберите язык перевода, если он не подставился, — проект заведётся сам.": "File from the website: pick the target language if it isn't filled in, and the project will be created for you.",
+  "Выберите файл ещё раз: браузер не дал передать его с сайта. Языки уже подставлены.": "Choose the file again: your browser didn't let us bring it over from the website. The languages are already set."
 }

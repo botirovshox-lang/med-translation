@@ -1,9 +1,33 @@
-# click.simpletranslate.me — закрыт от индексации и обхода целиком.
-# Раньше лендинг был открыт всем поисковым и AI-краулерам (SEO/GEO), теперь
-# закрыт по решению владельца. Один запрет для всех user-agent'ов покрывает
-# и обычный поиск, и AI-боты (GPTBot, ClaudeBot, PerplexityBot, Googlebot и пр.),
-# и служебные файлы (/sitemap.xml, /llms.txt, /pricing.md).
+# click.simpletranslate.me — собирается tools/landing_build.py (INDEXABLE).
 User-agent: *
-Disallow: /
+Allow: /
 
-Content-Signal: search=no, ai-retrieval=no, ai-train=no
+User-agent: Yandex
+Allow: /
+Clean-param: utm_source&utm_medium&utm_campaign&utm_content&utm_term&yclid&gclid&ref /
+
+User-agent: GPTBot
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-SearchBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Applebot-Extended
+Allow: /
+
+Sitemap: https://click.simpletranslate.me/sitemap.xml

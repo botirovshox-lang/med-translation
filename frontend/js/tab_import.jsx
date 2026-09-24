@@ -311,8 +311,10 @@ function ImpFolderList({ store, toast, meta }) {
         React.createElement("h1", null, TR("Проекты")),
         React.createElement("p", { className: "lead" }, TR("Проект — это папка с файлами одного заказа: одна пара языков, одна тема и свои словари. Откройте проект, чтобы добавить файл или начать перевод."))),
       React.createElement(Btn, { variant: "primary", icon: "plus", onClick: () => setCreating(true) }, TR("Новый проект"))),
-    folders.length === 0
-      ? React.createElement(ImpFirstFile, { store, toast, meta })
+    /* Файл с лендинга — первым, даже если проекты уже есть: человек нажал
+       там «Перевести» и ждёт перевода ЭТОГО файла, а не списка папок. */
+    folders.length === 0 || store.handoff
+      ? React.createElement(ImpFirstFile, { key: store.handoff ? "handoff" : "first", store, toast, meta })
       : React.createElement("div", { className: "grid grid-3" },
           folders.map(f => React.createElement(ImpFolderCard, { key: f.id, folder: f, store, meta }))),
     React.createElement("div", { className: "section", style: { marginTop: 24 } },
@@ -377,9 +379,15 @@ function impCut(v, n) {
    ImpAddFile (проба, дубль, смета) и сама добавляет файл, если проба
    не нашла вопроса к человеку. */
 function ImpFirstFile({ store, toast, meta }) {
-  const [file, setFile] = useState(null);
-  const [src, setSrc] = useState("RU");
-  const [tgt, setTgt] = useState("");
+  /* Файл и пара с лендинга (store.handoff): форма там уже задала оба
+     вопроса, и задавать их второй раз — то самое трение, которое форма
+     снимает. Код языка берётся, только если он есть в каталоге сервера:
+     лендинг собирается отдельно и мог отстать. */
+  const hf = store.handoff || null;
+  const known = (c) => !!c && (!meta || !meta.langs || meta.langs.some(l => l[0] === c));
+  const [file, setFile] = useState(hf && hf.file ? hf.file : null);
+  const [src, setSrc] = useState(hf && known(hf.src) ? hf.src : "RU");
+  const [tgt, setTgt] = useState(hf && known(hf.tgt) ? hf.tgt : "");
   const [busy, setBusy] = useState(false);
   const [dragging, setDragging] = useState(false);
   const fileRef = useRef(null);
@@ -396,11 +404,23 @@ function ImpFirstFile({ store, toast, meta }) {
         title, src, tgt, autoAdd: true });
       store.addFolder(r);
       window.API.safeCall(() => window.API.listDicts()).then(d => { if (d && d.dicts && store.setDicts) store.setDicts(d.dicts); });
+      if (hf && store.clearHandoff) store.clearHandoff();
       store.openFolder(r.id);
     } catch (e) { toast.error(TR("Проект не создан"), e.message || String(e)); }
     setBusy(false);
   };
+  /* Всё известно с лендинга — начинаем сами, один раз: человек уже нажал
+     «Перевести» там. Не хватает пары или языки совпали — ждём его выбора. */
+  const autoRef = useRef(false);
+  useEffect(() => {
+    if (autoRef.current || !hf || !file || !tgt || src === tgt) return;
+    autoRef.current = true;
+    start();
+  }, [file, tgt, src]);
   return React.createElement("div", { className: "card card-pad first-file" },
+    hf && React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+      hf.file ? TR("Файл с сайта: выберите язык перевода, если он не подставился, — проект заведётся сам.")
+              : TR("Выберите файл ещё раз: браузер не дал передать его с сайта. Языки уже подставлены.")),
     React.createElement("div", {
       className: "dropzone dropzone-big" + (dragging ? " drag" : ""),
       onDragOver: (e) => { e.preventDefault(); setDragging(true); }, onDragLeave: () => setDragging(false),

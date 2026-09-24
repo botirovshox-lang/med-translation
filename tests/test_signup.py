@@ -259,4 +259,49 @@ check(r.status_code == 200 and main._user_by_email("plain@lang.io")["uiLang"] ==
       "выбор у двери не отменяет языка, выбранного в «Профиле»")
 
 print()
+print("=== 9. Пробные страницы новой организации (форма на лендинге) ===")
+# Лендинг обещает «первая страница бесплатно». Держит обещание сервер:
+# SIGNUP_FREE_PAGES выдаётся ДВЕРЬЮ `_pages_topup` (строка журнала с
+# пометкой signup), а не прямой записью, — иначе через месяц не ответить,
+# откуда у организации страницы (инвариант 36).
+main._SIGNUP_FAILS.clear(); main._SIGNUP_PROBES.clear()
+old_free, old_trial = main.SIGNUP_FREE_PAGES, main.SIGNUP_TRIAL_USD
+main.SIGNUP_FREE_PAGES, main.SIGNUP_TRIAL_USD = 1.0, 0.3
+r = c.get("/api/auth/signup-info")
+check(r.json().get("freePages") == 1.0, "экран регистрации знает про пробную страницу")
+r = c.post("/api/auth/register", json={"email": "free@page.io", "password": "long-enough-1",
+                                       "accept": True, "ref": "ABCD2345"})
+check(r.status_code == 200, "регистрация с пробными страницами проходит")
+t = main._tenant_rec(r.json()["tenant"])
+log = t.get("pagesLog") or []
+check(t.get("pagesCredit") == 1.0 and t.get("pagesUsed") == 0,
+      "выдана ровно одна страница, списано ноль")
+check(any(e.get("kind") == "credit" and e.get("note") == "signup" for e in log),
+      "выдача видна строкой журнала с пометкой signup")
+# Процент приглашающему — с ОПЛАТЫ, а подарок сервиса оплатой не является:
+# высшая точка сдвигается на пробные страницы.
+check(float(t.get("refPaid") or 0) == float(main.TENANT_MAX_PAGES or 0) + 1.0,
+      "пробная страница не входит в базу процента приглашающему")
+main.SIGNUP_TRIAL_USD = 0
+check(c.get("/api/auth/signup-info").json().get("freePages") == 0,
+      "без лимита расхода пробные страницы не обещаются: перевести их нечем")
+main.SIGNUP_FREE_PAGES, main.SIGNUP_TRIAL_USD = old_free, old_trial
+r = c.post("/api/auth/register", json={"email": "nofree@page.io", "password": "long-enough-1", "accept": True})
+check(r.status_code == 200 and main._tenant_rec(r.json()["tenant"]).get("pagesCredit") is None,
+      "по умолчанию (0) счётчик не заводится — поведение прежнее")
+
+print()
+print("=== 10. /handoff: единственная страница, которую можно встроить, — лендингу ===")
+r = c.get("/handoff")
+csp = r.headers.get("content-security-policy") or ""
+check(r.status_code == 200 and "frame-ancestors https://click.simpletranslate.me" in csp,
+      "встраивать разрешено только лендингу")
+check("x-frame-options" not in {k.lower() for k in r.headers.keys()},
+      "X-Frame-Options DENY не перекрывает разрешение лендингу")
+check('["https://click.simpletranslate.me"]' in r.text and "__ORIGINS__" not in r.text,
+      "страница отвечает тому же источнику, что назван в frame-ancestors")
+check(c.get("/terms").headers.get("x-frame-options") == "DENY",
+      "остальные страницы по-прежнему не встраиваются")
+
+print()
 print("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail))

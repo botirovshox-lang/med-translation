@@ -65,13 +65,22 @@
 
       var lang = "";
       try { lang = window.localStorage.getItem(LS_KEY) || ""; } catch (e) { /* приватное окно */ }
+      /* Пришёл с ЛЕНДИНГА (`?lang=ru`): страница, с которой он нажал
+         «Перевести», и есть его язык. Иначе русский посетитель увидел бы
+         экран регистрации на узбекском — языке по умолчанию. Только когда
+         своего выбора в браузере нет: вернувшийся человек свой язык уже
+         выбрал, и ссылка его не переписывает. i18n.js прочтёт то же значение. */
+      if (!lang) {
+        var m = /[?&]lang=([a-z]{2})(?:&|#|$)/.exec(window.location.search || "");
+        if (m) { lang = m[1]; try { window.localStorage.setItem(LS_KEY, lang); } catch (e) { /* приватное окно */ } }
+      }
       /* Хранилище правит кто угодно, а значение идёт в АДРЕС: всё, что не
          похоже на код языка, заменяем умолчанием, а не грузим по нему файл. */
       if (!/^[a-z]{2}$/.test(lang)) lang = DEFAULT_LANG;
 
       var core = ["vendor/react.production.min.js", "vendor/react-dom.production.min.js", "js/i18n.js"];
       if (lang !== KEY_LANG) core.push("js/i18n_" + lang + ".js");
-      core.push("js/api.js", "js/ui.jsx", "js/app.jsx");
+      core.push("js/api.js", "js/handoff.js", "js/ui.jsx", "js/app.jsx");
 
       /* Остальной словарь — ПЕРВЫМ в этом списке и по той же причине,
          по какой здесь вообще важен порядок: надписи верхнего уровня

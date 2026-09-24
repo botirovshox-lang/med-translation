@@ -44,9 +44,42 @@ LANG_DIRS = {"ru": "", "uz": "uz/", "en": "en/"}
 SITE = "https://click.simpletranslate.me"
 APP = "https://simpletranslate.me"
 BRAND = "SimpleTranslate"
-UPDATED = "2026-09-17"            # ISO; меняется вместе с правкой текста
+UPDATED = "2026-09-24"            # ISO; меняется вместе с правкой текста
 PUBLISHED = "2026-09-17"
 EMAIL = "hello@simpletranslate.me"
+
+# ─── Индексация, счётчик, подтверждение прав ─────────────────────────
+# INDEXABLE — ОДНО место решения «видна ли страница поисковикам и ИИ».
+# Из него собираются и мета robots, и robots.txt: два места врозь уже
+# расходились (сайт закрыли 19.09 правкой трёх файлов). 24.09 открыт снова:
+# владелец заказал метатеги, ключевые слова и Метрику, а для закрытой
+# страницы всё это не значит ничего.
+INDEXABLE = True
+# Номер счётчика Яндекс Метрики. Пусто — счётчика на странице нет вовсе
+# (а не «счётчик с нулём»): выдуманный номер слал бы визиты в чужой счётчик.
+METRIKA_ID = ""
+# Коды подтверждения прав в Яндекс Вебмастере и Google Search Console.
+# Пусто — тега нет. Берутся из кабинетов при добавлении сайта.
+YANDEX_VERIFICATION = ""
+GOOGLE_VERIFICATION = ""
+# Ключ IndexNow (Яндекс, Bing): файл `<ключ>.txt` с самим ключом лежит
+# в корне лендинга, пинг — `python tools/landing_build.py --ping`. Ключ
+# публичный по устройству протокола: он доказывает только то, что пинг
+# шлёт хозяин сайта, и для этого должен лежать на сайте открыто.
+INDEXNOW_KEY = "5f0c9b7e2a4d4e8f9c1b6a3d7e2f4c80"
+# Бесплатный объём формы («первая страница — бесплатно»). Обещание
+# держит СЕРВЕР: SIGNUP_FREE_PAGES и SIGNUP_TRIAL_USD > 0 в /etc/medcat/env.
+# Выкатывать страницу с этим текстом без них — обещать то, чего нет.
+FREE_PAGES = 1
+# Язык оригинала в форме по умолчанию — язык страницы: его человек знает
+# (инвариант 32), и чаще всего переводит именно с него. Языка ПЕРЕВОДА
+# по умолчанию нет намеренно (см. форму в body.html).
+FORM_SRC = {"ru": "RU", "uz": "UZ", "en": "EN"}
+# Частые языки — первыми в списке, в том же порядке, что у приложения
+# (IMP_POPULAR_LANGS в tab_import.jsx): семьдесят языков по алфавиту
+# прячут русский и узбекский в середине.
+FORM_POPULAR = ["RU", "EN", "UZ", "UZ-CYRL", "ZH", "ES", "AR", "FR", "DE", "TR", "KK", "KO", "JA",
+                "PT", "IT", "HI"]
 
 MONTHS_RU = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
              "августа", "сентября", "октября", "ноября", "декабря"]
@@ -74,14 +107,17 @@ TIERS = [
 # на каждом языке отдельно и сторожатся тестом по длине.
 META = {
     "ru": {
-        "title": "Перевод документов одним кликом — SimpleTranslate",
-        "desc": "Загрузите Word, PDF или Excel и получите перевод уровня научной публикации "
-                "в том же оформлении. Обратный перевод, сверка чисел, глоссарий. От $0.5 за страницу.",
+        "title": "Перевод документов онлайн: Word, PDF | SimpleTranslate",
+        "desc": "Переведите Word, PDF, Excel и PowerPoint онлайн с сохранением форматирования. "
+                "Первая страница бесплатно, дальше от $0.5. Обратный перевод и сверка чисел.",
+        "keywords": "перевод документов онлайн, перевести документ, перевод pdf, перевод word, "
+                    "перевод с сохранением форматирования, перевод excel, перевод презентации, "
+                    "перевод научной статьи, перевод медицинских документов, перевод на узбекский",
         "locale": "ru_RU",
-        "ogTitle": "Перевод документов одним кликом — SimpleTranslate",
-        "ogDesc": "Перевод уровня научной публикации в том же оформлении: обратный перевод, "
-                  "сверка чисел и глоссарий. От $0.5 за страницу.",
-        "ogAlt": "SimpleTranslate: одним кликом — перевод уровня научной публикации, "
+        "ogTitle": "Перевод документов онлайн в один клик — SimpleTranslate",
+        "ogDesc": "Word, PDF, Excel и PowerPoint в том же оформлении: обратный перевод, "
+                  "сверка чисел и глоссарий. Первая страница бесплатно.",
+        "ogAlt": "SimpleTranslate: перевод документов онлайн в один клик, "
                  "от $0.5 за страницу",
         "ldDesc": "Перевод документов языковой моделью с проверкой каждой строки: обратный перевод, "
                   "сверка чисел и единиц, глоссарий. Word, PDF, Excel, PowerPoint и сканы "
@@ -91,14 +127,17 @@ META = {
         "unit": "страница (250 слов исходника)",
     },
     "uz": {
-        "title": "Hujjat tarjimasi bir bosishda — SimpleTranslate",
-        "desc": "Word, PDF yoki Excel yuklang va ilmiy nashr darajasidagi tarjimani "
-                "o‘sha ko‘rinishda oling. Teskari tarjima, sonlarni solishtirish, lug‘at. Bet $0.5 dan.",
+        "title": "Hujjatlarni onlayn tarjima qilish | SimpleTranslate",
+        "desc": "Word, PDF, Excel va PowerPoint fayllarini formatini saqlagan holda onlayn tarjima "
+                "qiling. Birinchi bet bepul, keyin $0.5 dan. Sonlar va lug‘at tekshiruvi.",
+        "keywords": "hujjat tarjimasi, hujjatlarni tarjima qilish, onlayn tarjima, pdf tarjima, "
+                    "word faylni tarjima qilish, rus tilidan o‘zbek tiliga tarjima, "
+                    "ingliz tiliga tarjima, ilmiy maqola tarjimasi",
         "locale": "uz_UZ",
-        "ogTitle": "Hujjat tarjimasi bir bosishda — SimpleTranslate",
-        "ogDesc": "Ilmiy nashr darajasidagi tarjima o‘sha ko‘rinishda: teskari tarjima, "
-                  "sonlarni solishtirish va lug‘at. Bet uchun $0.5 dan.",
-        "ogAlt": "SimpleTranslate: bir bosishda — ilmiy nashr darajasidagi tarjima, "
+        "ogTitle": "Hujjatlarni onlayn tarjima qilish bir bosishda — SimpleTranslate",
+        "ogDesc": "Word, PDF, Excel va PowerPoint o‘sha ko‘rinishda: teskari tarjima, "
+                  "sonlarni solishtirish va lug‘at. Birinchi bet bepul.",
+        "ogAlt": "SimpleTranslate: hujjatlarni bir bosishda onlayn tarjima qilish, "
                  "bet uchun $0.5 dan",
         "ldDesc": "Hujjatlarni til modeli bilan tarjima qilish va har bir satrni tekshirish: "
                   "teskari tarjima, son va birliklarni solishtirish, lug‘at. Word, PDF, Excel, "
@@ -108,14 +147,17 @@ META = {
         "unit": "bet (asl matnning 250 so‘zi)",
     },
     "en": {
-        "title": "One-click document translation — SimpleTranslate",
-        "desc": "Upload a Word, PDF or Excel file and get a translation fit for a journal, "
-                "in the same layout. Back-translation, number checks, glossary. From $0.5 a page.",
+        "title": "Document Translation Online, Same Layout | SimpleTranslate",
+        "desc": "Translate Word, PDF, Excel and PowerPoint files online and keep the formatting. "
+                "First page free, then from $0.5. Number checks and a glossary on every line.",
+        "keywords": "document translation online, translate pdf keep formatting, translate word document, "
+                    "translate docx, translate excel file, russian to uzbek translation, "
+                    "scientific paper translation",
         "locale": "en_US",
         "ogTitle": "One-click document translation — SimpleTranslate",
-        "ogDesc": "A translation fit for a scientific journal, in the same layout: back-translation, "
-                  "number checks and a glossary. From $0.5 per page.",
-        "ogAlt": "SimpleTranslate: one click — a translation fit for a scientific journal, "
+        "ogDesc": "Word, PDF, Excel and PowerPoint in the same layout: back-translation, "
+                  "number checks and a glossary. The first page is free.",
+        "ogAlt": "SimpleTranslate: one-click document translation online, "
                  "from $0.5 per page",
         "ldDesc": "Document translation by a language model with every line checked: back-translation, "
                   "comparison of numbers and units, a glossary. Word, PDF, Excel, PowerPoint and scans "
@@ -421,6 +463,72 @@ def lang_switch(lang):
     return "".join(out)
 
 
+def _languages():
+    """Каталог языков САМОГО СЕРВИСА (backend/languages.json): второй список
+    в лендинге разошёлся бы с ним, и форма предлагала бы пару, которой
+    приложение не знает (тогда экран «Проекты» просто не подставит её)."""
+    data = json.loads((ROOT / "backend" / "languages.json").read_text(encoding="utf-8"))
+    return data["languages"]
+
+
+# Подписи групп списка — надпись ИНТЕРФЕЙСА, а не данные, поэтому
+# на каждом языке страницы своя. Пишутся здесь, а не в словаре тела:
+# список подставляется после перевода.
+FORM_GROUPS = {"ru": ("Частые", "Все языки"), "uz": ("Ko‘p so‘raladigan", "Barcha tillar"),
+               "en": ("Popular", "All languages")}
+
+
+def lang_options(selected="", page=KEY_LANG):
+    """<option> языков. Название — НА НЁМ САМОМ (`native`): тот же закон,
+    что у переключателя языка страницы, — список читает и тот, кто языка
+    страницы не знает. Частые — отдельной группой сверху. Подставляется
+    ПОСЛЕ перевода тела: названия языков не переводятся никогда."""
+    from html import escape
+    by = {x["code"]: x for x in _languages()}
+    def opt(c):
+        x = by[c]
+        name = x.get("native") or x.get("en") or c
+        sel = ' selected' if c == selected else ''
+        return '<option value="%s" lang="%s"%s>%s</option>' % (c, c.lower(), sel, escape(name))
+    top = [c for c in FORM_POPULAR if c in by]
+    rest = sorted((c for c in by if c not in top), key=lambda c: (by[c].get("native") or c).lower())
+    g_top, g_all = FORM_GROUPS.get(page, FORM_GROUPS[KEY_LANG])
+    return ('<optgroup label="%s">%s</optgroup><optgroup label="%s">%s</optgroup>'
+            % (g_top, "".join(opt(c) for c in top), g_all, "".join(opt(c) for c in rest)))
+
+
+def head_meta(lang):
+    """Мета, которые зависят от решений выше: индексация, подтверждение прав,
+    ключевые слова. Ключевые слова Google не читает, Яндекс учитывает слабо —
+    но тег ничего не стоит, а список совпадает с ядром из docs."""
+    out = ['<meta name="robots" content="%s">'
+           % ("index, follow, max-image-preview:large, max-snippet:-1" if INDEXABLE else "noindex, nofollow")]
+    if META[lang].get("keywords"):
+        out.append('<meta name="keywords" content="%s">' % META[lang]["keywords"])
+    if YANDEX_VERIFICATION:
+        out.append('<meta name="yandex-verification" content="%s">' % YANDEX_VERIFICATION)
+    if GOOGLE_VERIFICATION:
+        out.append('<meta name="google-site-verification" content="%s">' % GOOGLE_VERIFICATION)
+    return "\n".join(out)
+
+
+def metrika():
+    """Счётчик Яндекс Метрики — стандартный код кабинета, асинхронно
+    (первому кадру он не мешает). Номера нет — нет и кода. Цели формы
+    (tr_file, tr_submit, tr_handoff_ok/fail) ставит скрипт страницы через
+    window.METRIKA_ID: их надо завести в кабинете как «JavaScript-событие»."""
+    if not METRIKA_ID:
+        return ""
+    return ('<script>window.METRIKA_ID=%(id)s;'
+            '(function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};'
+            'm[i].l=1*new Date();for(var j=0;j<document.scripts.length;j++){if(document.scripts[j].src===r){return;}}'
+            'k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)})'
+            '(window,document,"script","https://mc.yandex.ru/metrika/tag.js","ym");'
+            'ym(%(id)s,"init",{clickmap:true,trackLinks:true,accurateTrackBounce:true,webvisor:true});</script>\n'
+            '<noscript><div><img src="https://mc.yandex.ru/watch/%(id)s" style="position:absolute;left:-9999px" alt=""></div></noscript>'
+            % {"id": int(METRIKA_ID)})
+
+
 def build_index(lang=KEY_LANG):
     template = (SRC / "template.html").read_text(encoding="utf-8")
     css = (SRC / "styles.css").read_text(encoding="utf-8").rstrip("\n")
@@ -428,7 +536,10 @@ def build_index(lang=KEY_LANG):
     body = translate_body(body, lang)
     body = (body.replace("__DATE_ISO__", UPDATED)
                 .replace("__DATE_RU__", _date_of(UPDATED, lang))
-                .replace("__LANGS__", lang_switch(lang)))
+                .replace("__LANGS__", lang_switch(lang))
+                .replace("__PAGE_LANG__", lang)
+                .replace("__SRC_OPTIONS__", lang_options(FORM_SRC.get(lang, "RU"), lang))
+                .replace("__TGT_OPTIONS__", lang_options("", lang)))
     # Пары линзы уходят ПЕРЕД телом: скрипт тела читает window.LENS_PAIRS
     # при выполнении, а выполняется он в конце страницы.
     body = lens_script(lang) + "\n" + body
@@ -443,7 +554,9 @@ def build_index(lang=KEY_LANG):
             .replace("__OGDESC__", meta["ogDesc"])
             .replace("__OGALT__", meta["ogAlt"])
             .replace("__CANON__", SITE + "/" + LANG_DIRS[lang])
-            .replace("__HREFLANG__", hreflang_links(lang)))
+            .replace("__HREFLANG__", hreflang_links(lang))
+            .replace("__HEADMETA__", head_meta(lang))
+            .replace("__METRIKA__", metrika()))
     return html
 
 
@@ -522,6 +635,85 @@ def build_llms():
     return "\n".join(lines)
 
 
+# ─── Страница 404 ────────────────────────────────────────────────────
+# Одна на все языки: nginx отдаёт её на любой неизвестный адрес
+# (`error_page 404 /404.html`), и по адресу язык не угадать — «/uz/foo»
+# и «/foo» приходят одинаково. Поэтому три коротких блока, каждый на своём
+# языке и со своим `lang`, и ссылки на три главные страницы.
+# noindex обязателен: заглушка в выдаче — мусор в индексе. Код ответа —
+# настоящий 404 (его ставит nginx), а не 200: «мягкий 404» поисковик
+# считает дублем главной.
+NOT_FOUND = [
+    ("ru", "Такой страницы нет", "Возможно, ссылка устарела или в адресе опечатка.",
+     "На главную", "Перевести документ"),
+    ("uz", "Bunday sahifa yo‘q", "Havola eskirgan yoki manzilda xato bo‘lishi mumkin.",
+     "Bosh sahifaga", "Hujjatni tarjima qilish"),
+    ("en", "Page not found", "The link may be outdated, or there is a typo in the address.",
+     "Home page", "Translate a document"),
+]
+
+
+def _fonts_link():
+    """Те же шрифты, что у страницы: строка берётся ИЗ шаблона, а не
+    переписывается — сменят шрифт в шаблоне, 404 сменит его сама."""
+    tpl = (SRC / "template.html").read_text(encoding="utf-8")
+    return "".join(l + "\n" for l in tpl.splitlines() if "fonts.g" in l)
+
+
+def build_404():
+    css = (SRC / "styles.css").read_text(encoding="utf-8").rstrip("\n")
+    blocks = []
+    for code, h, p, home, go in NOT_FOUND:
+        lvl = 1 if code == KEY_LANG else 2
+        blocks.append(
+            '<section class="nf" lang="%s"><h%d>%s</h%d><p>%s</p>'
+            '<p class="nf-links"><a class="btn btn-primary" href="%s/%s#tr">%s</a>'
+            '<a class="btn btn-ghost" href="%s/%s">%s</a></p></section>'
+            % (code, lvl, h, lvl, p, SITE, LANG_DIRS[code], go, SITE, LANG_DIRS[code], home))
+    return ("<!doctype html>\n<html lang=\"ru\">\n<head>\n<meta charset=\"utf-8\">\n"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n"
+            "<title>404 — SimpleTranslate</title>\n"
+            "<meta name=\"robots\" content=\"noindex, follow\">\n"
+            "<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n"
+            + _fonts_link() +
+            "<style>\n" + css + "\n"
+            "  .nf-page { min-height: 100vh; display: grid; place-content: center; gap: 44px; padding: 48px 20px; }\n"
+            "  .nf { display: grid; gap: 12px; max-width: 34rem; padding: 0; }\n"
+            "  .nf h1, .nf h2 { font-size: clamp(1.4rem, 3vw, 2rem); }\n"
+            "  .nf p { color: var(--muted); }\n"
+            "  .nf-links { display: flex; flex-wrap: wrap; gap: 10px; }\n"
+            "</style>\n" + metrika() + "\n</head>\n<body>\n<main class=\"nf-page\">\n"
+            + '<a class="logo" href="%s/"><span class="logo-mark" aria-hidden="true"></span>'
+              '<span class="logo-t">%s</span></a>\n' % (SITE, BRAND)
+            + "\n".join(blocks) + "\n</main>\n</body>\n</html>\n")
+
+
+# ─── robots.txt ──────────────────────────────────────────────────────
+# Собирается из INDEXABLE, а не лежит руками: мета robots и robots.txt —
+# одно решение, и в двух файлах врозь оно однажды разошлось бы.
+# ИИ-краулеры названы поимённо (GEO): «User-agent: *» их тоже пускает, но
+# явная строка — ответ на вопрос «разрешили ли нас», который они задают.
+# Clean-param — правило ЯНДЕКСА: метки рекламы и приглашений не плодят
+# дубли страницы в индексе.
+AI_BOTS = ["GPTBot", "OAI-SearchBot", "ChatGPT-User", "ClaudeBot", "Claude-SearchBot",
+           "PerplexityBot", "Google-Extended", "Applebot-Extended"]
+
+
+def build_robots():
+    if not INDEXABLE:
+        return ("# Закрыт от индексации и обхода (INDEXABLE = False в tools/landing_build.py).\n"
+                "User-agent: *\nDisallow: /\n\n"
+                "Content-Signal: search=no, ai-retrieval=no, ai-train=no\n")
+    lines = ["# click.simpletranslate.me — собирается tools/landing_build.py (INDEXABLE).",
+             "User-agent: *", "Allow: /", "",
+             "User-agent: Yandex", "Allow: /",
+             "Clean-param: utm_source&utm_medium&utm_campaign&utm_content&utm_term&yclid&gclid&ref /", ""]
+    for bot in AI_BOTS:
+        lines += ["User-agent: " + bot, "Allow: /", ""]
+    lines += ["Sitemap: %s/sitemap.xml" % SITE, ""]
+    return "\n".join(lines)
+
+
 def index_path(lang):
     """Куда лёг язык. Русский — в корень (на него ведут прежние ссылки
     и он же canonical), остальные — в свою папку."""
@@ -538,8 +730,28 @@ def main():
     (OUT / "sitemap.xml").write_text(build_sitemap(), encoding="utf-8", newline="\n")
     (OUT / "pricing.md").write_text(build_pricing_md(), encoding="utf-8", newline="\n")
     (OUT / "llms.txt").write_text(build_llms(), encoding="utf-8", newline="\n")
-    print("landing: %s, sitemap.xml, pricing.md, llms.txt" % ", ".join(made))
+    (OUT / "404.html").write_text(build_404(), encoding="utf-8", newline="\n")
+    (OUT / "robots.txt").write_text(build_robots(), encoding="utf-8", newline="\n")
+    (OUT / (INDEXNOW_KEY + ".txt")).write_text(INDEXNOW_KEY, encoding="utf-8", newline="\n")
+    print("landing: %s, sitemap.xml, pricing.md, llms.txt, 404.html, robots.txt" % ", ".join(made))
+
+
+def ping_indexnow():
+    """Сообщить Яндексу (а через IndexNow — и Bing) о свежей версии страниц.
+    Зовётся руками ПОСЛЕ выката: до выката поисковик пришёл бы за старой."""
+    import urllib.request
+    urls = [SITE + "/" + LANG_DIRS[c] for c in langs()]
+    body = json.dumps({"host": SITE.split("//")[1], "key": INDEXNOW_KEY,
+                       "keyLocation": "%s/%s.txt" % (SITE, INDEXNOW_KEY), "urlList": urls}).encode()
+    rq = urllib.request.Request("https://yandex.com/indexnow", data=body,
+                                headers={"Content-Type": "application/json; charset=utf-8"})
+    with urllib.request.urlopen(rq, timeout=15) as r:
+        print("IndexNow:", r.status, ", ".join(urls))
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if "--ping" in sys.argv:
+        ping_indexnow()
+    else:
+        main()

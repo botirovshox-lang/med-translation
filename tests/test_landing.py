@@ -18,12 +18,18 @@
      ровно один H1, canonical и robots в самом HTML (краулеры JS не выполняют).
   6. Определение «SimpleTranslate — это …» стоит в первых 60 словах текста,
      а селекторы speakable существуют на странице.
-  7. robots.txt закрывает сайт целиком (Disallow: / для всех, ни одного Allow):
-     лендинг снят с индексации и обхода по решению владельца; sitemap всё ещё
-     валиден и содержит страницу и pricing.md (генерится сборкой, но перекрыт
-     robots); llms.txt начинается с H1 и цитаты, длина в допуске 30–200 строк.
+  7. robots.txt и мета robots — ОДНО решение (`INDEXABLE` в сборщике):
+     открыт — мета index, robots.txt с Allow, Sitemap и ИИ-краулерами поимённо;
+     закрыт — noindex и Disallow: / для всех. Оба файла собираются из одной
+     константы, и разойтись им нечем. llms.txt начинается с H1 и цитаты,
+     длина в допуске 30–200 строк.
   8. Тела кнопок без «→» и эмодзи (правила craft floor), все якоря `#…`
      ведут на существующие id, цена «от $0.5» есть в тексте страницы.
+ 11. Форма перевода на первом экране: настоящая <form> в приложение (работает
+     без скрипта), языки — из каталога сервиса, языка перевода по умолчанию
+     нет, файл уходит только в фрейм приложения и только его источнику.
+ 12. Страница 404 (noindex, три языка), счётчик Метрики есть ровно тогда,
+     когда задан номер, и nginx-конфиг пускает то, что страница зовёт.
 
 Ни одного вызова модели, сеть не трогается.
 """
@@ -69,7 +75,10 @@ check(120 <= len(desc) <= 160, f"description {len(desc)} знаков, надо 
 check(not desc.startswith(title), "description начинается с title слово в слово")
 check(html.count("<h1") == 1, "H1 не ровно один")
 check('<link rel="canonical" href="https://click.simpletranslate.me/">' in html, "canonical не самоссылающийся")
-check('<meta name="robots" content="noindex' in html, "robots meta должен быть noindex — сайт закрыт от индексации")
+if lb.INDEXABLE:
+    check('<meta name="robots" content="index, follow' in html, "robots meta не index, follow при INDEXABLE")
+else:
+    check('<meta name="robots" content="noindex' in html, "robots meta должен быть noindex — сайт закрыт")
 check('<html lang="ru">' in html, "lang=ru нет")
 for tag in ("og:title", "og:description", "og:image", "og:url", "og:site_name", "twitter:card"):
     check(f'"{tag}"' in html, f"нет {tag}")
@@ -118,10 +127,18 @@ check("от $0.5" in page_text, "«от $0.5» не найдено в текст
 main_text = text_of(re.search(r"<main.*?</main>", html, re.S).group(0))
 check("SimpleTranslate — это" in " ".join(main_text.split()[:60]), "определения «SimpleTranslate — это» нет в первых 60 словах")
 
-# 7. robots / llms — сайт закрыт целиком
+# 7. robots / llms — одно решение с мета robots
 robots = (ROOT / "landing" / "robots.txt").read_text(encoding="utf-8")
-check("User-agent: *" in robots and "Disallow: /" in robots, "robots.txt не закрывает сайт целиком (нужно User-agent: * + Disallow: /)")
-check("Allow: /" not in robots, "robots.txt всё ещё что-то разрешает — сайт должен быть закрыт от ботов")
+check(robots == lb.build_robots(), "robots.txt отстал от сборки")
+if lb.INDEXABLE:
+    check("Disallow: /\n" not in robots, "robots.txt закрывает сайт, а INDEXABLE = True")
+    check(f"Sitemap: {lb.SITE}/sitemap.xml" in robots, "в robots.txt нет Sitemap")
+    for bot in ("GPTBot", "ClaudeBot", "PerplexityBot", "Yandex"):
+        check(f"User-agent: {bot}" in robots, f"robots.txt не называет {bot}")
+    check("Clean-param: utm_source" in robots, "нет Clean-param для меток (Яндекс)")
+else:
+    check("User-agent: *" in robots and "Disallow: /" in robots, "robots.txt не закрывает сайт при INDEXABLE = False")
+    check("Allow: /" not in robots, "robots.txt что-то разрешает при INDEXABLE = False")
 llms = (ROOT / "landing" / "llms.txt").read_text(encoding="utf-8").splitlines()
 check(llms[0].startswith("# "), "llms.txt не начинается с H1")
 check(llms[2].startswith("> ") and len(llms[2]) < 260, "llms.txt: вторая строка не цитата")
@@ -183,7 +200,9 @@ for code in lb.langs():
     # подпись переключателя (она трёхъязычная по построению), «Русский»
     # как название языка на нём самом и пример записи глоссария —
     # настоящая пара RU→EN, которая и должна остаться русской.
-    vis = re.sub(r"<script.*?</script>|<style.*?</style>|<!--.*?-->", " ", h, flags=re.S)
+    # Список языков формы — названия НА НИХ САМИХ («Қазақша», «Русский»):
+    # его читает и тот, кто языка страницы не знает, и кириллица там законна.
+    vis = re.sub(r"<script.*?</script>|<style.*?</style>|<!--.*?-->|<select.*?</select>", " ", h, flags=re.S)
     ALLOWED = ("Til · Язык · Language", "Русский", "бактериовыделение")
     left = []
     for piece in re.split(r"(<[^>]+>)", vis):
@@ -219,6 +238,72 @@ for code in lb.langs():
     h = (ROOT / "landing" / (lb.LANG_DIRS[code] + "index.html")).read_text(encoding="utf-8")
     check("window.LENS_PAIRS" in h, f"{code}: пары линзы не уехали на страницу")
     check(h.count('"srcLang"') == len(lb.LENS_PAIRS), f"{code}: пар на странице не столько, сколько в сборщике")
+
+
+# ─── 11. Форма перевода на первом экране ─────────────────────────────
+# Форма — главное действие страницы. Она обязана работать и без скрипта
+# (настоящая форма в приложение с парой языков), и языки в ней — ровно
+# каталог сервиса: пара, которой приложение не знает, молча не подставилась
+# бы после регистрации.
+catalog = {x["code"] for x in lb._languages()}
+for code in lb.langs():
+    h = (ROOT / "landing" / (lb.LANG_DIRS[code] + "index.html")).read_text(encoding="utf-8")
+    form = re.search(r'<form class="tr".*?</form>', h, re.S)
+    check(form is not None, f"{code}: нет формы перевода")
+    if not form:
+        continue
+    f = form.group(0)
+    check(f'action="{lb.APP}/"' in f and 'method="get"' in f, f"{code}: форма не ведёт в приложение")
+    check('name="start" value="translate"' in f, f"{code}: форма не несёт start=translate")
+    check(f'name="lang" value="{code}"' in f, f"{code}: форма не передаёт язык страницы")
+    check(h.index('<form class="tr"') < h.index('id="demo"'), f"{code}: форма не на первом экране")
+    for side in ("src", "tgt"):
+        sel = re.search(r'<select name="%s".*?</select>' % side, f, re.S).group(0)
+        codes = set(re.findall(r'<option value="([^"]+)"', sel))
+        check(codes and codes <= catalog, f"{code}: в списке {side} языки вне каталога: {sorted(codes - catalog)[:3]}")
+        check(len(codes) == len(catalog), f"{code}: в списке {side} не все языки каталога")
+    tgt_sel = re.search(r'<select name="tgt".*?</select>', f, re.S).group(0)
+    # Языка ПЕРЕВОДА по умолчанию нет: неверная пара — оплаченный перевод
+    # не на тот язык, а человек нажмёт «Перевести», не глядя в список.
+    check(" selected" not in tgt_sel and '<option value="">' in tgt_sel, f"{code}: у языка перевода есть умолчание")
+    src_sel = re.search(r'<select name="src".*?</select>', f, re.S).group(0)
+    check(f'value="{lb.FORM_SRC[code]}" lang' in src_sel and " selected" in src_sel,
+          f"{code}: язык оригинала не равен языку страницы")
+    check('type="file"' in f and 'name=' not in re.search(r'<input type="file"[^>]*>', f).group(0),
+          f"{code}: поле файла с name — имя файла уехало бы в адрес")
+    for key in ("tgt", "same", "big", "busy"):
+        check(f'data-{key}="' in f, f"{code}: нет надписи ошибки data-{key}")
+    check(not lb.FREE_PAGES or "250" in f, f"{code}: форма не называет бесплатный объём")
+    # Файл уходит ТОЛЬКО фрейму приложения и только его источнику: postMessage
+    # со звёздочкой отдал бы документ человека любому, кто окажется во фрейме.
+    js = re.search(r"<script>\n\(function \(\).*?</script>", h, re.S).group(0)
+    check('postMessage({ type: "mct-handoff"' in js and "}, APP)" in js, f"{code}: файл уходит не только приложению")
+    check('ev.origin !== APP' in js, f"{code}: ответ фрейма не сверяется по источнику")
+    check('var APP = "%s"' % lb.APP in js, f"{code}: адрес приложения в скрипте разошёлся со сборщиком")
+# Приложение принимает файл той же страницей, куда его шлёт форма, и
+# отвечает только лендингу (frontend/handoff.html + LANDING_ORIGINS).
+hand = (ROOT / "frontend" / "handoff.html").read_text(encoding="utf-8")
+check("__ORIGINS__" in hand and "ALLOWED.indexOf(ev.origin) < 0" in hand, "handoff.html не сверяет источник сообщения")
+main_py = (ROOT / "backend" / "main.py").read_text(encoding="utf-8")
+check(lb.SITE in main_py and '"/handoff"' in main_py, "LANDING_ORIGINS по умолчанию не называет лендинг")
+
+# ─── 12. 404, счётчик, конфиг nginx ──────────────────────────────────
+nf = (ROOT / "landing" / "404.html").read_text(encoding="utf-8")
+check(nf == lb.build_404(), "404.html отстал от сборки")
+check('content="noindex' in nf, "404 не закрыта от индексации")
+for code in lb.langs():
+    check(f'lang="{code}"' in nf and f'href="{lb.SITE}/{lb.LANG_DIRS[code]}"' in nf, f"404 без блока «{code}»")
+conf = (ROOT / "deploy" / "nginx-click.conf").read_text(encoding="utf-8")
+check("error_page 404 /404.html" in conf, "nginx не отдаёт свою 404")
+check("frame-src" in conf and lb.APP in conf, "CSP лендинга не пускает фрейм приложения")
+check("form-action 'self' " + lb.APP in conf, "CSP лендинга не пускает форму в приложение")
+check("https://mc.yandex.ru" in conf, "CSP лендинга не пускает Метрику")
+for code in lb.langs():
+    h = (ROOT / "landing" / (lb.LANG_DIRS[code] + "index.html")).read_text(encoding="utf-8")
+    check(("mc.yandex.ru/metrika/tag.js" in h) == bool(lb.METRIKA_ID),
+          f"{code}: счётчик Метрики стоит без номера или не стоит с номером")
+check((ROOT / "landing" / (lb.INDEXNOW_KEY + ".txt")).read_text(encoding="utf-8") == lb.INDEXNOW_KEY,
+      "файл ключа IndexNow не совпадает с ключом")
 
 
 if FAILS:

@@ -191,7 +191,7 @@ function pagesKindLabel(k) {
     : k === "reimport" ? TR("новая версия файла, за добавленные строки")
     : k === "edit" ? TR("дописано руками сверх файла") : TR("списание");
 }
-function pagesNoteLabel(n) { return n === "env" ? TR("стартовый лимит из окружения") : (n || ""); }
+function pagesNoteLabel(n) { return n === "env" ? TR("стартовый лимит из окружения") : n === "signup" ? TR("пробные страницы при регистрации") : (n || ""); }
 function AdminPagesLog({ log }) {
   if (!log || !log.length) return React.createElement("div", { className: "dim" }, TR("Журнал страниц пуст"));
   return React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl", style: { fontSize: 12 } },

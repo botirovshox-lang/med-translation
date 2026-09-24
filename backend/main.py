@@ -3332,6 +3332,20 @@ if not _RAW_PASSWORD:
 SIGNUP_ENABLED = os.environ.get("SIGNUP_ENABLED", "1").strip().lower() not in ("0", "false", "no", "off")
 SIGNUP_TRIAL_USD = float(os.environ.get("SIGNUP_TRIAL_USD", "0") or 0)
 SIGNUP_MAX_PER_HOUR = int(os.environ.get("SIGNUP_MAX_PER_HOUR", "5") or 5)
+# Бесплатные страницы НОВОЙ организации — обещание формы на лендинге
+# («первая страница бесплатно»). Ноль (умолчание) — ничего не выдаётся,
+# и поведение прежнее. Выдаются дверью `_pages_topup` (строка журнала
+# `credit` с пометкой `signup`), а не прямой записью: иначе через месяц
+# не ответить, откуда у организации страницы (инвариант 36).
+# ВАЖНО: число > 0 ЗАВОДИТ счётчик, то есть организация получает потолок
+# ровно в эти страницы (pagesCredit — «сколько выдано», инвариант 36).
+# Это и есть пробный объём; но без SIGNUP_TRIAL_USD > 0 перевести его
+# всё равно нечем — лимит расхода на модели отдельный.
+SIGNUP_FREE_PAGES = max(0.0, float(os.environ.get("SIGNUP_FREE_PAGES", "0") or 0))
+# Кто вправе встроить `/handoff` и передать ему файл: лендинг. Через запятую.
+LANDING_ORIGINS = [o.strip().rstrip("/") for o in
+                   os.environ.get("LANDING_ORIGINS", "https://click.simpletranslate.me").split(",")
+                   if o.strip().startswith("https://") or o.strip().startswith("http://localhost")]
 CODE_TTL = int(os.environ.get("AUTH_CODE_TTL_MIN", "30")) * 60
 CODE_MAX_TRIES = 5
 # Одно сообщение на ВСЕ отказы по коду (нет такой почты / кода нет или он
@@ -4130,7 +4144,11 @@ async def _security_headers(request: Request, call_next):
         resp = await call_next(request)
     h = resp.headers
     h.setdefault("X-Content-Type-Options", "nosniff")
-    h.setdefault("X-Frame-Options", "DENY")
+    # `/handoff` встраивает лендинг: X-Frame-Options не умеет назвать
+    # разрешённый источник, и DENY перекрыл бы frame-ancestors страницы
+    # в браузерах, читающих оба заголовка. Рубеж там — её CSP.
+    if request.url.path != "/handoff":
+        h.setdefault("X-Frame-Options", "DENY")
     h.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     h.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
     # CSP — только на HTML-документы: JSON ответов API он не касается,
@@ -4978,6 +4996,9 @@ def signup_info():
     return {"ok": True, "signup": SIGNUP_ENABLED,
             "mail": bool(mailer_mod and mailer_mod.configured()),
             "brand": APP_BRAND, "trialUsd": SIGNUP_TRIAL_USD,
+            # Обещание пробного объёма говорит экран регистрации, только
+            # когда страницы есть И перевести их есть чем (лимит расхода).
+            "freePages": SIGNUP_FREE_PAGES if SIGNUP_TRIAL_USD > 0 else 0,
             "legal": {"version": (legal_mod.VERSION if legal_mod else ""),
                       "terms": "/terms", "privacy": "/privacy",
                       # Реквизиты не заполнены — документ ещё не работает
@@ -5060,6 +5081,14 @@ def register(req: RegisterRequest, request: Request):
     if lang:
         user["uiLangSet"] = True
     _users().append(user)
+    if SIGNUP_FREE_PAGES:
+        # Пробные страницы — после записи организации (дверь ищет её по id).
+        # Процент приглашающему с них НЕ берётся: это подарок сервиса,
+        # а не оплата клиента, — поэтому высшая точка сдвигается на них же
+        # (тот же довод, что у стартового лимита окружения, инвариант 36).
+        _pages_topup(tid, SIGNUP_FREE_PAGES, "signup")
+        if tenant.get("refBy"):
+            tenant["refPaid"] = float(tenant.get("refPaid") or 0) + SIGNUP_FREE_PAGES
     code = _issue_code(user, "verify")
     _SIGNUP_FAILS.setdefault(ip, []).append(time.time())
     tok = CURRENT_SESSION.set({"tenant": tid, "user": user["id"], "role": "owner"})
@@ -30377,6 +30406,22 @@ if FRONTEND_DIR.exists():
     # ADMIN_PATH в окружении, иначе выводится из APP_PASSWORD (стабилен для
     # установки, не угадывается) и печатается в журнал при старте. Это
     # обфускация входа, а не защита: право на /api/admin/* даёт роль super.
+    # Невидимая страница передачи файла с лендинга (см. frontend/js/handoff.js).
+    # Единственная страница приложения, которую РАЗРЕШЕНО встроить во фрейм,
+    # и только лендингу: frame-ancestors называет его поимённо, а список
+    # источников, которым страница отвечает, подставляется ТЕМ ЖЕ значением —
+    # два списка врозь однажды разошлись бы, и фрейм молча перестал бы
+    # принимать файл. Токена и данных здесь нет: страница ничего не читает
+    # с сервера и кладёт файл только в браузер самого человека.
+    @app.get("/handoff", response_class=HTMLResponse)
+    def landing_handoff():
+        html = (FRONTEND_DIR / "handoff.html").read_text(encoding="utf-8")
+        html = html.replace("__ORIGINS__", json.dumps(LANDING_ORIGINS))
+        csp = ("default-src 'none'; script-src 'self' 'unsafe-inline'; "
+               "frame-ancestors %s; base-uri 'none'; form-action 'none'"
+               % (" ".join(LANDING_ORIGINS) or "'none'"))
+        return HTMLResponse(html, headers={"Content-Security-Policy": csp, "Cache-Control": "no-cache"})
+
     @app.get("/terms", response_class=HTMLResponse)
     def legal_terms():
         if not legal_mod:

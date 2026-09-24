@@ -1,3 +1,15 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>404 — SimpleTranslate</title>
+<meta name="robots" content="noindex, follow">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap">
+<style>
   :root {
     --bg: #F5F8FC;
     --bg-2: #EDF2F9;
@@ -405,3 +417,20 @@
     .line.active .txt::after, .checks li.run .dot, .result.show { animation: none; }
     .checks li.run .dot { border-top-color: var(--accent); border-right-color: var(--accent); }
   }
+  .nf-page { min-height: 100vh; display: grid; place-content: center; gap: 44px; padding: 48px 20px; }
+  .nf { display: grid; gap: 12px; max-width: 34rem; padding: 0; }
+  .nf h1, .nf h2 { font-size: clamp(1.4rem, 3vw, 2rem); }
+  .nf p { color: var(--muted); }
+  .nf-links { display: flex; flex-wrap: wrap; gap: 10px; }
+</style>
+
+</head>
+<body>
+<main class="nf-page">
+<a class="logo" href="https://click.simpletranslate.me/"><span class="logo-mark" aria-hidden="true"></span><span class="logo-t">SimpleTranslate</span></a>
+<section class="nf" lang="ru"><h1>Такой страницы нет</h1><p>Возможно, ссылка устарела или в адресе опечатка.</p><p class="nf-links"><a class="btn btn-primary" href="https://click.simpletranslate.me/#tr">Перевести документ</a><a class="btn btn-ghost" href="https://click.simpletranslate.me/">На главную</a></p></section>
+<section class="nf" lang="uz"><h2>Bunday sahifa yo‘q</h2><p>Havola eskirgan yoki manzilda xato bo‘lishi mumkin.</p><p class="nf-links"><a class="btn btn-primary" href="https://click.simpletranslate.me/uz/#tr">Hujjatni tarjima qilish</a><a class="btn btn-ghost" href="https://click.simpletranslate.me/uz/">Bosh sahifaga</a></p></section>
+<section class="nf" lang="en"><h2>Page not found</h2><p>The link may be outdated, or there is a typo in the address.</p><p class="nf-links"><a class="btn btn-primary" href="https://click.simpletranslate.me/en/#tr">Translate a document</a><a class="btn btn-ghost" href="https://click.simpletranslate.me/en/">Home page</a></p></section>
+</main>
+</body>
+</html>

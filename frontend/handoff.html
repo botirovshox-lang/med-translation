@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>handoff</title>
+<!-- Невидимая страница: её держит во фрейме форма перевода на лендинге.
+     Принимает файл сообщением и кладёт в хранилище домена приложения —
+     см. js/handoff.js. Встраивать её разрешено ТОЛЬКО лендингу: заголовок
+     frame-ancestors ставит сервер (`/handoff` в main.py), а список
+     источников ниже подставляет он же — одно место, одно значение. -->
+</head>
+<body>
+<script src="/js/handoff.js"></script>
+<script>
+(function () {
+  var ALLOWED = __ORIGINS__;
+  window.addEventListener("message", function (ev) {
+    // Чужой источник — молчим совсем: ответ «отказано» тоже был бы ответом.
+    if (ALLOWED.indexOf(ev.origin) < 0) return;
+    var d = ev.data || {};
+    if (d.type !== "mct-handoff") return;
+    var reply = function (ok) {
+      try { ev.source.postMessage({ type: ok ? "mct-handoff-ok" : "mct-handoff-fail" }, ev.origin); }
+      catch (e) { /* окно ушло — отвечать некому */ }
+    };
+    if (!window.MCT_HANDOFF) return reply(false);
+    window.MCT_HANDOFF.put(d).then(function () { reply(true); }, function () { reply(false); });
+  });
+})();
+</script>
+</body>
+</html>

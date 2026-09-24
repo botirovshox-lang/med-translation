@@ -107,6 +107,34 @@ function useStore(authed) {
     return () => { cancelled = true; };
   }, [authed]);
 
+  /* Файл с ЛЕНДИНГА (форма «Перевести» на click.simpletranslate.me): ждёт
+     в браузере, пока человек регистрируется (см. js/handoff.js), а пара
+     языков пришла адресом. Первый экран после входа — «Проекты» с этим
+     файлом, а не пустой «Перевод»: человек нажал «Перевести» и ждёт
+     перевода, а не знакомства с меню. Файла нет (браузер не дал его
+     передать) — пара языков всё равно подставится, файл он выберет сам. */
+  const [handoff, setHandoff] = useState(null);   // {file?, name?, src, tgt} | null
+  useEffect(() => {
+    if (!authed || !apiReady) return;
+    const intent = authLandingIntent();
+    const hf = window.MCT_HANDOFF;
+    (hf ? hf.peek() : Promise.resolve(null)).then(rec => {
+      if (!rec && !intent) return;
+      setHandoff({ file: rec ? rec.file : null, name: rec ? rec.name : "",
+                   src: (rec && rec.src) || (intent && intent.src) || "",
+                   tgt: (rec && rec.tgt) || (intent && intent.tgt) || "" });
+      setViewFolder(null);
+      setTab("import");
+    });
+  }, [authed, apiReady]);
+  /* Снимается, когда проект заведён: раньше — и сбой создания (сеть, 402)
+     потерял бы файл, который человек нёс через регистрацию. */
+  const clearHandoff = () => {
+    setHandoff(null);
+    authLandingIntentUsed();
+    if (window.MCT_HANDOFF) window.MCT_HANDOFF.drop();
+  };
+
   const statusCounts = (p) => {
     const out = { all: p.segments.length, new: 0, translated: 0, qa: 0, confirmed: 0, failed: 0, review: 0 };
     p.segments.forEach(s => { out[s.status] = (out[s.status] || 0) + 1; });
@@ -292,6 +320,7 @@ function useStore(authed) {
   return {
     projects, glossary, tm, activeId, activeProject, tab,
     folders, dicts, setDicts, viewFolder, setViewFolder, openFolder, folderOf, activeFolder,
+    handoff, clearHandoff,
     addFolder, patchFolder, removeFolder,
     exportHistory, team: [], me, setMe, can, brand, apiReady, setGlossary,
     expert: !!(can && can.super && expertView), expertView, setExpertView,
@@ -378,6 +407,31 @@ function authRefUsed() {
   try { localStorage.removeItem(AUTH_REF_LS); } catch (e) { /* приватное окно */ }
 }
 
+/* Намерение с ЛЕНДИНГА: человек нажал там «Перевести» и пришёл сюда
+   адресом `/?start=translate&src=RU&tgt=EN`. Живёт в sessionStorage, а не
+   в адресе: между приходом и входом страница перезагружается (смена языка
+   экрана входа) и уходит на письмо с кодом. Коды языков проверяются тем же
+   правилом, что у передачи файла, — в адресной строке может стоять что угодно. */
+const AUTH_INTENT_SS = "mct-intent";
+function authLandingIntent() {
+  const code = (v) => (window.MCT_HANDOFF ? window.MCT_HANDOFF.code(v)
+                                          : (/^[A-Z]{2}(-[A-Z]{4})?$/.test(String(v || "").toUpperCase()) ? String(v).toUpperCase() : ""));
+  try {
+    const q = new URLSearchParams(window.location.search || "");
+    if (q.get("start") === "translate") {
+      const it = { src: code(q.get("src")), tgt: code(q.get("tgt")) };
+      sessionStorage.setItem(AUTH_INTENT_SS, JSON.stringify(it));
+      return it;
+    }
+    const raw = sessionStorage.getItem(AUTH_INTENT_SS);
+    if (raw) { const it = JSON.parse(raw) || {}; return { src: code(it.src), tgt: code(it.tgt) }; }
+  } catch (e) { /* приватное окно — намерение просто не переживёт перезагрузку */ }
+  return null;
+}
+function authLandingIntentUsed() {
+  try { sessionStorage.removeItem(AUTH_INTENT_SS); } catch (e) { /* приватное окно */ }
+}
+
 /* Язык интерфейса на экране ВХОДА. Нужен потому, что до входа язык берётся
    из кэша браузера либо из умолчания сервиса (узбекский): человеку, который
    видит незнакомый экран, нечем его переключить — вкладка «Профиль» лежит
@@ -444,10 +498,21 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
   const [note, setNote] = useState("");
   const [shake, setShake] = useState(false);
   const [busy, setBusy] = useState(false);
+  /* Пришёл с формы перевода на лендинге — у него ещё нет учётной записи
+     (иначе он бы вошёл), поэтому дверь сразу на регистрации. Вход остаётся
+     ссылкой ниже. Файл, который он выбрал, называем по имени: это ответ
+     на вопрос «а мой документ не потерялся?». */
+  const [intent] = useState(() => authLandingIntent());
+  const [waiting, setWaiting] = useState("");
   useEffect(() => {
     window.API && window.API.safeCall(() => window.API.signupInfo()).then(r => {
-      if (r) { setInfo(r); authRememberBrand(r.brand); }
+      if (r) {
+        setInfo(r); authRememberBrand(r.brand);
+        if (intent && r.signup) setMode(m => (m === "login" ? "register" : m));
+      }
     });
+    if (intent && window.MCT_HANDOFF)
+      window.MCT_HANDOFF.peek().then(rec => { if (rec && rec.name) setWaiting(rec.name); });
   }, []);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const bad = (m) => { setErr(m); setShake(true); setTimeout(() => setShake(false), 400); };
@@ -540,6 +605,14 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
         info.brand || "CAT Translator"),
       React.createElement("h1", null, title),
       React.createElement("p", { className: "auth-sub" }, sub),
+      intent && (mode === "register" || mode === "verify" || mode === "login")
+        && React.createElement("div", { className: "auth-handoff" },
+          React.createElement(Icon, { name: "file", size: 14 }),
+          React.createElement("span", null,
+            waiting ? TR("Ваш файл ждёт: ") + waiting + TR(". После входа сразу откроем его перевод.")
+                    : TR("После входа сразу откроем перевод вашего документа."),
+            info.freePages > 0 && mode === "register"
+              ? " " + TR("Первая страница — бесплатно.") : "")),
       React.createElement("div", { className: "col", style: { gap: 4 } }, rows),
       /* Почта на сервере не настроена — говорим об этом ДО того, как человек
          нажмёт «Зарегистрироваться» и уйдёт ждать письма, которого не будет. */

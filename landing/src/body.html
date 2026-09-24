@@ -16,17 +16,49 @@
   <section class="hero" aria-labelledby="h1">
     <div class="wrap">
       <div class="hero-copy">
-        <h1 id="h1">Одним кликом — перевод уровня научной публикации.</h1>
+        <h1 id="h1">Перевод документов онлайн в один клик — в том же оформлении.</h1>
         <p class="lead hero-answer"><strong>SimpleTranslate</strong> — это сервис перевода документов: Word, PDF, Excel, PowerPoint и сканы. Файл переводит языковая модель, каждую строку проверяет обратный перевод и сверка чисел, а обратно вы получаете документ в исходном оформлении. Цена — от $0.5 за страницу в 250 слов.</p>
-        <div class="hero-cta">
-          <a class="btn btn-primary btn-lg" href="https://simpletranslate.me" target="_blank" rel="noopener">Перевести документ</a>
-          <a class="btn btn-ghost btn-lg" href="#demo">Посмотреть, как это происходит</a>
-        </div>
-        <p class="price-line">Стоимость страницы — <b>от $0.5</b>. Без подписки, платите за объём.</p>
-        <div class="hero-facts">
-          <p>Смета считается до загрузки и не меняется после. Оформление файла возвращается 1 в 1.</p>
-          <p>Числа, единицы и отрицания сверяются без участия модели, поэтому такие расхождения не пропускаются.</p>
-        </div>
+        <p class="price-line">Первая страница — бесплатно, дальше <b>от $0.5</b> за страницу. Без подписки, платите за объём.</p>
+
+      </div>
+
+      <div class="hero-side">
+        <!-- Форма перевода — ГЛАВНОЕ действие страницы, как у переводчика
+             документов в поисковике: языки, файл, одна кнопка. Это настоящая
+             форма: без скрипта она уводит в приложение с парой языков
+             в адресе (файл тогда выбирается там). Со скриптом файл уезжает
+             в браузерное хранилище приложения через невидимый фрейм
+             (frontend/js/handoff.js) и ждёт человека, пока он регистрируется.
+             Языка перевода по умолчанию нет намеренно — неверная пара это
+             оплаченный перевод не на тот язык (тот же закон, что у первого
+             файла в приложении). Список языков подставляет сборщик из
+             backend/languages.json — каталога самого сервиса. -->
+        <form class="tr" id="tr" action="https://simpletranslate.me/" method="get" novalidate>
+          <input type="hidden" name="start" value="translate">
+          <input type="hidden" name="lang" value="__PAGE_LANG__">
+          <div class="tr-langs">
+            <label class="tr-lang"><span>С языка</span>
+              <select name="src" id="tr-src">__SRC_OPTIONS__</select></label>
+            <button type="button" class="tr-swap" id="tr-swap" aria-label="__T:Поменять языки местами__">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4 7h11l-3-3M16 13H5l3 3"/></svg>
+            </button>
+            <label class="tr-lang"><span>На язык</span>
+              <select name="tgt" id="tr-tgt"><option value="">— выберите —</option>__TGT_OPTIONS__</select></label>
+          </div>
+          <label class="tr-drop" id="tr-drop" for="tr-file">
+            <input type="file" id="tr-file" class="tr-file" accept=".docx,.xlsx,.pptx,.odt,.ods,.odp,.pdf,.txt,.md,.csv,.tsv,.html,.htm,.rtf,.srt,.vtt,.png,.jpg,.jpeg,.webp,.tif,.tiff">
+            <svg class="tr-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
+            <span class="tr-drop-t" id="tr-name">Перетащите документ сюда или нажмите, чтобы выбрать</span>
+            <span class="tr-drop-s">Word, PDF, Excel, PowerPoint, текст или картинка · до 32 МБ</span>
+          </label>
+          <button type="submit" class="btn btn-primary btn-lg tr-go" id="tr-go">Перевести мой файл</button>
+          <p class="tr-err" id="tr-err" role="alert" hidden
+             data-tgt="__T:Выберите, на какой язык переводить.__"
+             data-same="__T:Язык оригинала и язык перевода совпадают.__"
+             data-big="__T:Файл больше 32 МБ — сервис такой не примет.__"
+             data-busy="__T:Передаём файл…__"></p>
+          <p class="tr-note">Первая страница (250 слов) — бесплатно. Нужна только почта: регистрация займёт минуту, и перевод откроется сразу.</p>
+        </form>
       </div>
 
       <div class="lens-wrap">
@@ -344,6 +376,107 @@
   var nav = document.getElementById("nav");
   function onScroll() { nav.classList.toggle("scrolled", window.scrollY > 8); }
   window.addEventListener("scroll", onScroll, { passive: true }); onScroll();
+
+  /* ── Форма перевода: файл уезжает в приложение, пока человек регистрируется ──
+     Файл НЕ уходит на сервер: невидимый фрейм `/handoff` приложения кладёт его
+     в хранилище браузера на домене приложения (frontend/js/handoff.js), а после
+     входа экран «Проекты» подхватывает его сам. Фрейм не ответил (старый
+     браузер, запрет хранилища) — уходим всё равно: пара языков доедет
+     адресом, файл человек выберет после входа. Молчать и ждать нельзя.
+     Надписи ошибок лежат в РАЗМЕТКЕ (data-*): скрипт сборщик не переводит. */
+  var APP = "https://simpletranslate.me";
+  var MAX = 32 * 1024 * 1024;
+  var form = document.getElementById("tr"), fileIn = document.getElementById("tr-file");
+  var drop = document.getElementById("tr-drop"), nameEl = document.getElementById("tr-name");
+  var srcSel = document.getElementById("tr-src"), tgtSel = document.getElementById("tr-tgt");
+  var errEl = document.getElementById("tr-err"), goBtn = document.getElementById("tr-go");
+  var picked = null, frame = null, frameReady = null;
+  function goal(name) { try { if (window.ym && window.METRIKA_ID) window.ym(window.METRIKA_ID, "reachGoal", name); } catch (e) { /* счётчик не загрузился */ } }
+  function say(key) {
+    if (!key) { errEl.hidden = true; errEl.textContent = ""; return; }
+    errEl.textContent = errEl.getAttribute("data-" + key) || ""; errEl.hidden = false;
+  }
+  /* Фрейм поднимается, как только выбран файл: к нажатию «Перевести» он уже
+     загружен, и передача занимает доли секунды, а не секунды. */
+  function ensureFrame() {
+    if (frameReady) return frameReady;
+    frameReady = new Promise(function (ok) {
+      frame = document.createElement("iframe");
+      frame.src = APP + "/handoff";
+      frame.title = "handoff"; frame.tabIndex = -1; frame.setAttribute("aria-hidden", "true");
+      frame.style.cssText = "position:absolute;width:1px;height:1px;border:0;left:-9999px;top:0";
+      frame.onload = function () { ok(true); };
+      frame.onerror = function () { ok(false); };
+      document.body.appendChild(frame);
+      setTimeout(function () { ok(false); }, 8000);
+    });
+    return frameReady;
+  }
+  function handoff(file, src, tgt) {
+    return ensureFrame().then(function (loaded) {
+      if (!loaded || !frame.contentWindow) return false;
+      return new Promise(function (ok) {
+        var done = false;
+        function fin(v) { if (done) return; done = true; window.removeEventListener("message", on); ok(v); }
+        function on(ev) {
+          if (ev.origin !== APP || ev.source !== frame.contentWindow) return;
+          fin(!!(ev.data && ev.data.type === "mct-handoff-ok"));
+        }
+        window.addEventListener("message", on);
+        try { frame.contentWindow.postMessage({ type: "mct-handoff", file: file, src: src, tgt: tgt }, APP); }
+        catch (e) { fin(false); }
+        setTimeout(function () { fin(false); }, 6000);
+      });
+    });
+  }
+  function pick(f) {
+    if (!f) return;
+    if (f.size > MAX) { picked = null; say("big"); return; }
+    picked = f; say("");
+    nameEl.textContent = f.name;
+    drop.classList.add("has");
+    goal("tr_file");
+    ensureFrame();
+  }
+  fileIn.addEventListener("change", function () { pick(fileIn.files && fileIn.files[0]); });
+  ["dragenter", "dragover"].forEach(function (t) {
+    drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add("drag"); });
+  });
+  ["dragleave", "drop"].forEach(function (t) {
+    drop.addEventListener(t, function () { drop.classList.remove("drag"); });
+  });
+  drop.addEventListener("drop", function (e) {
+    e.preventDefault();
+    pick(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
+  });
+  document.getElementById("tr-swap").addEventListener("click", function () {
+    var s = srcSel.value, t = tgtSel.value;
+    if (!t) { tgtSel.value = s; return; }
+    srcSel.value = t; tgtSel.value = s;
+  });
+  /* Кнопка «Назад» из приложения возвращает страницу из кэша вместе
+     с погашенной кнопкой — без этого второй попытки не было бы. */
+  window.addEventListener("pageshow", function () { goBtn.disabled = false; say(""); });
+  tgtSel.addEventListener("change", function () { tgtSel.classList.remove("need"); say(""); });
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var src = srcSel.value, tgt = tgtSel.value;
+    if (!tgt) { say("tgt"); tgtSel.classList.add("need"); tgtSel.focus(); return; }
+    if (src === tgt) { say("same"); return; }
+    goal("tr_submit");
+    /* Всё, что пришло в адресе лендинга (метка приглашения, utm), едет
+       дальше: иначе приглашение с рекламной ссылки терялось бы на пороге. */
+    var q = new URLSearchParams(window.location.search);
+    q.set("start", "translate"); q.set("src", src); q.set("tgt", tgt);
+    q.set("lang", document.documentElement.lang || "ru");
+    var url = APP + "/?" + q.toString();
+    if (!picked) { window.location.href = url; return; }
+    goBtn.disabled = true; say("busy");
+    handoff(picked, src, tgt).then(function (ok) {
+      goal(ok ? "tr_handoff_ok" : "tr_handoff_fail");
+      window.location.href = url;
+    });
+  });
 
   /* ── Линза: исходник и перевод меняются вместе с выбранной парой ──
      Пары лежат ЗДЕСЬ, а не в разметке, по двум причинам: разметка тогда

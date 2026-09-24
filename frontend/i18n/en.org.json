@@ -564,5 +564,6 @@
   "Сколько страниц ДОБАВИТЬ организации? Пусто — не трогать. Выдано ": "How many pages to ADD to the organisation? Empty — leave alone. Granted ",
   "Нужно целое число или пусто.": "A whole number or empty is required.",
   "Обновлено": "Updated",
-  "Не обновлено": "Not updated"
+  "Не обновлено": "Not updated",
+  "пробные страницы при регистрации": "trial pages on sign-up"
 }

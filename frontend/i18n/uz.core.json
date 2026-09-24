@@ -411,5 +411,11 @@
   "Объём файла": "Fayl hajmi",
   "Страница — 250 слов исходника (у письма без пробелов — знаки по норме языка).": "Sahifa — asl matnning 250 so‘zi (so‘zlar orasi bo‘shliqsiz yozuvda — til me’yoriga ko‘ra belgilar).",
   "Посчитать объём": "Hajmni hisoblash",
-  "Стоимость видит владелец организации.": "Narxni tashkilot egasi ko‘radi."
+  "Стоимость видит владелец организации.": "Narxni tashkilot egasi ko‘radi.",
+  "Ваш файл ждёт: ": "Faylingiz kutmoqda: ",
+  ". После входа сразу откроем его перевод.": ". Kirganingizdan so'ng tarjimasini darhol ochamiz.",
+  "После входа сразу откроем перевод вашего документа.": "Kirganingizdan so'ng hujjatingiz tarjimasini darhol ochamiz.",
+  "Первая страница — бесплатно.": "Birinchi bet — bepul.",
+  "Файл с сайта: выберите язык перевода, если он не подставился, — проект заведётся сам.": "Saytdan kelgan fayl: tarjima tili qo'yilmagan bo'lsa, uni tanlang — loyiha o'zi yaratiladi.",
+  "Выберите файл ещё раз: браузер не дал передать его с сайта. Языки уже подставлены.": "Faylni qayta tanlang: brauzer uni saytdan o'tkazishga ruxsat bermadi. Tillar allaqachon qo'yilgan."
 }

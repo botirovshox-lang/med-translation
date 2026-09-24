@@ -216,6 +216,50 @@ console.log("\n[1a] Первый файл: одна зона, один вопр�
 }
 
 
+console.log("\n[1b] Файл с лендинга: вопросы уже заданы, второй раз их не задаём");
+{
+  /* Форма на лендинге спросила файл и язык; после регистрации экран
+     «Проекты» обязан подставить оба (store.handoff), а не спрашивать снова. */
+  const raw = { name: "Статья.docx", size: 4096 };
+  const meta = { langs: [["RU", "Русский"], ["EN", "Английский"], ["UZ", "Узбекский"]] };
+  let cleared = 0;
+  hooks = []; hookIdx = 0;
+  let tree = TabImport({ store: makeStore({ folders: [{ id: 1, title: "Старое", files: [] }], projects: [],
+    handoff: { file: raw, name: raw.name, src: "RU", tgt: "EN" } }), toast });
+  let t = texts(tree).join(" | ");
+  check(t.includes("Статья.docx"), "проекты уже есть, а файл с сайта всё равно первым на экране");
+
+  hooks = []; hookIdx = 0;
+  const made = [], opened = [];
+  global.API.createFolder = async (body) => { made.push(body); return { id: 777, title: body.title, src: body.src, tgt: body.tgt }; };
+  global.API.listDicts = async () => null;
+  const st = makeStore({ folders: [], openFolder: (id) => opened.push(id),
+    handoff: { file: raw, name: raw.name, src: "RU", tgt: "EN" }, clearHandoff: () => { cleared++; } });
+  tree = ImpFirstFile({ store: st, toast, meta });
+  t = texts(tree).join(" | ");
+  check(t.includes("Статья.docx") && t.includes("Файл с сайта"), "файл подставлен и назван «с сайта»");
+  const btn = find(tree, n => n.type === "button" && texts(n).join("") === "Начать")[0];
+  check(btn && !btn.props.disabled, "пара подставлена — кнопка открыта сразу");
+  await btn.props.onClick();
+  check(made.length === 1 && made[0].src === "RU" && made[0].tgt === "EN" && made[0].title === "Статья",
+        "проект заведён на паре с сайта");
+  check(cleared === 1 && opened.join() === "777", "передача снята только после того, как проект заведён");
+
+  /* Файл не доехал (браузер не дал хранилище) — пара всё равно подставлена,
+     и человеку сказано, что файл надо выбрать ещё раз. */
+  hooks = []; hookIdx = 0;
+  tree = ImpFirstFile({ store: makeStore({ folders: [], handoff: { file: null, src: "RU", tgt: "UZ" } }), toast, meta });
+  t = texts(tree).join(" | ");
+  check(t.includes("Выберите файл ещё раз"), "без файла — просьба выбрать его ещё раз");
+  check(hooks[2] === "UZ", "язык перевода с сайта подставлен и без файла");
+
+  /* Код, которого нет в каталоге сервера (лендинг собран отдельно и мог
+     отстать), не подставляется: пустой выбор честнее неизвестной пары. */
+  hooks = []; hookIdx = 0;
+  ImpFirstFile({ store: makeStore({ folders: [], handoff: { file: raw, src: "RU", tgt: "XX" } }), toast, meta });
+  check(hooks[2] === "", "неизвестный код языка не подставлен");
+}
+
 console.log("\n[6] Удаление файла ждёт сервер: отказ назван, файл не пропал");
 {
   /* Прежде файл уходил с экрана сразу, а отказ сервера (409 — идёт прогон)

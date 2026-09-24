@@ -564,5 +564,6 @@
   "Сколько страниц ДОБАВИТЬ организации? Пусто — не трогать. Выдано ": "Tashkilotga nechta sahifa QO‘SHISH kerak? Bo‘sh — tegmaslik. Berilgan ",
   "Нужно целое число или пусто.": "Butun son yoki bo‘sh bo‘lishi kerak.",
   "Обновлено": "Yangilandi",
-  "Не обновлено": "Yangilanmadi"
+  "Не обновлено": "Yangilanmadi",
+  "пробные страницы при регистрации": "ro'yxatdan o'tishdagi sinov betlari"
 }

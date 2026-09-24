@@ -1190,6 +1190,12 @@ mark.hl-att, .tbl mark.hl-att {
 .auth-logo svg { width: 11px; height: 11px; }
 .auth-card h1 { text-align: left; font-size: var(--fs-h1); font-weight: 600; letter-spacing: -.02em; text-wrap: balance; }
 .auth-card .auth-sub { text-align: left; color: var(--text-3); font-size: 13.5px; margin-top: 5px; margin-bottom: 15px; max-width: 70ch; }
+/* Файл с лендинга ждёт человека: строка над полями, чтобы вопрос «а мой
+   документ не потерялся?» получил ответ раньше, чем он начнёт заполнять форму. */
+.auth-handoff { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.45;
+  color: var(--text-2); background: var(--c-primary-soft, var(--bg-2, transparent)); border: 1px solid var(--border);
+  border-radius: 9px; padding: 9px 11px; margin-bottom: 14px; }
+.auth-handoff svg { flex: 0 0 auto; margin-top: 2px; color: var(--c-primary); }
 .auth-card .btn-block { height: 46px; font-size: 15px; border-radius: 9px; }
 .auth-card .input { padding: 9px 11px; font-size: 14px; }
 .auth-card .linklike { text-decoration: none; }

@@ -11,10 +11,7 @@
    человек решает, чем читать, а не проект. */
 const OCR_MODEL_LS_KEY = "mct-ocr-model";
 
-/* compact — карточка стоит в «Переводе» у файла-картинки: там человеку
-   нужны не рассуждения про экспорт 1в1, а ответ «прочитан ли текст и что
-   нажать». Длинное объяснение остаётся экрану «Скачать». */
-function ImagesCard({ project, store, toast, compact }) {
+function ImagesCard({ project, store, toast }) {
   const pid = project.id;
   const [models, setModels] = useState([]);      // каталог с ценами из /api/models
   const [ocrModel, setOcrModel] = useState(() => {
@@ -311,7 +308,7 @@ function ImagesCard({ project, store, toast, compact }) {
       value));
 
   return React.createElement("div", null,
-    React.createElement("h2", { className: "section-title" }, compact ? TR("Текст с картинки") : TR("Надписи на картинках")),
+    React.createElement("h2", { className: "section-title" }, TR("Надписи на картинках")),
     React.createElement("div", { className: "card card-pad col", style: { gap: 12 } },
       /* Почему текст не прочитан САМ. Сервер записал причину кодом
          (`imagesSkipped`), а экран молчал — человек видел пустой файл
@@ -323,7 +320,7 @@ function ImagesCard({ project, store, toast, compact }) {
           : TR("Текст сам не прочитался: чтение сейчас недоступно — сообщите администратору."))
         + (window.LocalOCR && window.LocalOCR.can(project.src)
             ? " " + TR("Бесплатно прочитать можно у себя в браузере — кнопка ниже.") : "")),
-      !compact && React.createElement("div", { style: { fontSize: 13, lineHeight: 1.55 } },
+      React.createElement("div", { style: { fontSize: 13, lineHeight: 1.55 } },
         TR("Подписи под рисунками и схемы впечатаны в картинки: абзаца у них нет, "),
         TR("и без разбора они остаются на языке оригинала. Найденные надписи становятся "),
         TR("обычными сегментами проекта, а при экспорте 1в1 перевод возвращается "),

@@ -38,7 +38,8 @@ window.MODEL_LS = { model: GPT_MODEL_LS_KEY, bc_model: BC_MODEL_LS_KEY,
 const JOB_LABELS = { translate: TR("Перевод"), backcheck: "Back-check", termcheck: TR("Проверка терминологии"),
                      termaudit: TR("Сверка терминов моделью"), review: TR("Ревизия перевода"),
                      repair: TR("Автоматический ремонт"), medical_qa: TR("Детерминированные проверки"),
-                     full: TR("Перевод и проверка"), apply_terms: TR("Одобрение и применение") };
+                     full: TR("Перевод и проверка"), apply_terms: TR("Одобрение и применение"),
+                     images: TR("Чтение текста с картинки") };
 
 // Короткие имена шагов составного прогона. Одни и те же в таблице состава и
 // в полосе прогресса: разойдись они — человек не свяжет галочку на полосе
@@ -756,7 +757,15 @@ function TabEditor({ store, toast }) {
            «Новые 25» там, где на сервере ноль. */
         const fresh = await pullProject(project.id);
         if (fresh === undefined) return;    // тянет другой заход — он и отчитается
-        if (fresh) { lastJobId.current = null; pullFails.current = 0; return; }
+        if (fresh) {
+          lastJobId.current = null; pullFails.current = 0;
+          /* Сцепка «прочитать → перевести» (EdPictureCard) решает только
+             ПОСЛЕ того, как строки забраны: задача кончается раньше, чем
+             проект доезжает, и по пустой таблице она сказала бы «текста нет». */
+          const ch = ED_PIC_CHAIN[project.id];
+          if (ch && ch.job === finished.id) { ch.phase = "pulled"; ch.ok = finished.status === "done"; setPicTick(t => t + 1); }
+          return;
+        }
         /* Не забрали. Отметку не снимаем — следующий опрос зайдёт снова, иначе
            одна моргнувшая сеть оставляет таблицу устаревшей навсегда. Но и
            бесконечно долбить самый тяжёлый эндпоинт нельзя: воркер ОДИН.
@@ -1205,6 +1214,12 @@ function TabEditor({ store, toast }) {
     });
     return () => { alive = false; };
   }, [planKey]);
+
+  /* Толчок перерисовки для сцепки «прочитать → перевести» (ED_PIC_CHAIN
+     живёт вне React). Объявлен ПОСЛЕДНИМ хуком до раннего выхода: хук ниже
+     него ломал бы порядок, когда проекта нет, а в середине списка — сдвигал
+     бы индексы, по которым тесты адресуют хуки. */
+  const [picTick, setPicTick] = useState(0);
 
   if (!project) return React.createElement(NoProject, { store });
 
@@ -2526,6 +2541,31 @@ function TabEditor({ store, toast }) {
     return null;
   })();
 
+  /* Файл-картинка: ОДНА кнопка «Перевести» = прочитать текст с картинки
+     и сразу перевести прочитанное. Чтение — задача `images` на сервере,
+     перевод — обычный составной прогон; сцепляет их браузер. Отметка
+     живёт в ED_PIC_CHAIN (вне компонента): вкладку переключили —
+     вернулись, и перевод всё равно стартует, когда строки появятся. */
+  const readAndTranslate = async () => {
+    /* Сервер уже читает картинку сам (авточтение при загрузке) — второй
+       задачи не ставим, а цепляем перевод к этой. */
+    if (job && job.kind === "images") {
+      ED_PIC_CHAIN[project.id] = { job: job.id, phase: "reading" };
+      setPicTick(t => t + 1);
+      toast.info(TR("Читаю текст с картинки"), TR("Потом сразу переведу. Вкладку можно закрыть — работа идёт на сервере."));
+      return;
+    }
+    if (job) { toast.warning(TR("Прогон уже идёт"), TR("Дождитесь окончания или остановите текущий.")); return; }
+    let res = null;
+    try {
+      res = await window.API.createJob(project.id, "images", [],
+        { dry_run: false, ocr_model: null, est_cost: 0 });
+    } catch (e) { toast.error(TR("Не удалось запустить"), (e && e.message) || TR("Сервер не принял задачу.")); return; }
+    if (!res || !res.ok) { toast.error(TR("Не удалось запустить"), TR("Сервер не принял задачу.")); return; }
+    ED_PIC_CHAIN[project.id] = { job: res.job.id, phase: "reading" };
+    setJob(res.job);
+    toast.info(TR("Читаю текст с картинки"), TR("Потом сразу переведу. Вкладку можно закрыть — работа идёт на сервере."));
+  };
   const runFullJob = async () => {
     const steps = FULL_STEP_KEYS.filter(k => pickedFull.has(k));
     if (!steps.length) { toast.warning(TR("Не выбрано ни одного шага"), TR("Отметьте хотя бы один.")); return; }
@@ -2692,7 +2732,7 @@ function TabEditor({ store, toast }) {
       /* Сводка макета: карточки корзин (кнопка прогона — внутри второй),
          полоса и тумблер рядом. Одна кнопка — всем, включая администратора;
          полный разбор шагов, моделей и сметы у него лежит свёрткой ниже. */
-      tkSum && React.createElement(EditorHomeSummary, { sum: tkSum, store, toast,
+      tkSum && project.segments.length > 0 && React.createElement(EditorHomeSummary, { sum: tkSum, store, toast,
         onDrill: drillBucket, bucket: activeFilter ? bucket : null,
         running: job && job.kind === "full" ? job : null, onRun: runFullJob, onStop: stopJob,
         disabled: !!job, scopeSize: fullRunIds.length, est: fullEst,
@@ -2712,9 +2752,9 @@ function TabEditor({ store, toast }) {
       /* Файл-картинка или скан: текст живёт в картинке, и пока он не прочитан,
          строк нет. Панель чтения стоит ЗДЕСЬ, над таблицей, — прочитанное
          появляется в той же таблице, отдельного экрана нет. */
-      (project.importKind === "image" || project.importKind === "scan") && typeof ImagesCard === "function"
-        && React.createElement("div", { style: { marginBottom: 16 } },
-          React.createElement(ImagesCard, { project, store, toast, compact: true })),
+      edIsPicture(project) && React.createElement(EdPictureCard, { project, job, toast,
+        onTranslate: readAndTranslate, onRunFull: runFullJob, tick: picTick,
+        planReady: !!runPlan && !planBusy, planCount: fullRunIds.length }),
       /* Строк нет — запускать нечего: «Всё уже сделано» на пустом файле
          читалось как «готово», хотя не сделано ничего. */
       project.segments.length > 0 && React.createElement("div", { className: "run-decks",
@@ -2928,7 +2968,7 @@ function TabEditor({ store, toast }) {
         project.segments.length === 0 && React.createElement("div", { style: { padding: 20 } },
           React.createElement(EmptyState, { icon: "file", title: TR("В файле пока нет строк"),
             sub: (project.importKind === "image" || project.importKind === "scan")
-              ? TR("Текст живёт в картинке — прочитайте его в блоке «Текст с картинки» выше, и строки появятся здесь.")
+              ? TR("Текст живёт в картинке — нажмите «Перевести» выше: прочитаю и переведу, строки появятся здесь.")
               : TR("Файл не дал текста для перевода.") })),
         project.segments.length > 0 && filtered.length === 0 && React.createElement("div", { style: { padding: 20 } },
           React.createElement(EmptyState, { icon: "filter", title: TR("Нет сегментов по фильтру"),
@@ -3171,7 +3211,9 @@ function spendTitle(sp) {
    ревизия, ремонт) в полосу не выходят (инвариант 32). «Строк» — только
    у видов, где total и есть строки: у разбора картинок это картинки. */
 const RUN_PLAIN = { full: TR("Перевожу и проверяю…"), translate: TR("Перевожу…"),
-                    apply_terms: TR("Применяю слова из словаря…") };
+                    apply_terms: TR("Применяю слова из словаря…"), images: TR("Читаю текст с картинки…") };
+/* У чтения картинок total — КАРТИНКИ, а не строки: «1 из 1 строк» врало бы. */
+const RUN_LINES = { full: 1, translate: 1, apply_terms: 1 };
 function RunStrip({ job, steps, onStop, plain }) {
   const spend = spendOf(job);
   const pct = Math.round(job.done / Math.max(1, job.total) * 100);
@@ -3204,7 +3246,7 @@ function RunStrip({ job, steps, onStop, plain }) {
           ? React.createElement("span", null, RUN_PLAIN[job.kind])
           : React.createElement("span", null, (JOB_LABELS[job.kind] || job.kind) + " — " + phase),
         React.createElement("span", { className: "rs-num" }, job.done + TR(" из ") + job.total
-          + (plain && RUN_PLAIN[job.kind] ? TR(" строк") : "")),
+          + (plain && RUN_LINES[job.kind] ? TR(" строк") : "")),
         spend && !costHidden() && React.createElement("span", { className: "rs-num", title: spendTitle(spend) },
           TR("потрачено ") + fmtCost(spend.cost)
           + (spend.est != null ? TR(" из ≈ ") + fmtCost(spend.est) : "")),
@@ -3747,6 +3789,72 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
       }, chip[1])),
     React.createElement("td", { onClick: (e) => e.stopPropagation() }, actionCell)
   );
+}
+
+/* Файл-картинка (или скан): текст живёт в картинке. */
+function edIsPicture(p) { return !!p && (p.importKind === "image" || p.importKind === "scan"); }
+/* Сцепка «прочитать → перевести» по номеру проекта (см. readAndTranslate).
+   Вне компонента: вкладка размонтируется при переключении, а сцепка обязана
+   дожить до конца чтения. На window — чтобы её видели и рендер-тесты. */
+const ED_PIC_CHAIN = window.__edPicChain || (window.__edPicChain = {});
+
+/* Плитка файла-картинки над таблицей: что внутри картинки — числами,
+   и ОДНА кнопка «Перевести», пока строк нет. Строки есть — дальше обычная
+   главная кнопка прогона; устройство разбора (модели, отсев, надпечатки)
+   живёт на «Скачать». */
+function EdPictureCard({ project, job, toast, onTranslate, onRunFull, tick, planReady, planCount }) {
+  const [rep, setRep] = useState(null);
+  const pid = project.id;
+  const nSeg = project.segments.length;
+  useEffect(() => {
+    let dead = false;
+    if (!window.API || !window.API.imagesReport) return;
+    window.API.safeCall(() => window.API.imagesReport(pid)).then(r => { if (!dead) setRep(r || null); });
+    return () => { dead = true; };
+  }, [pid, nSeg, !!job]);
+  /* Сцепка: строки забраны (phase "pulled", ставит опрос редактора) —
+     строк нет → сказать; есть → дождаться разбора состава ПОД них (старый,
+     на 0 строк, отвёл бы прогону пустой список) и запустить перевод. */
+  useEffect(() => {
+    const ch = ED_PIC_CHAIN[pid];
+    if (!ch || ch.phase !== "pulled" || job) return;
+    if (!nSeg) {
+      delete ED_PIC_CHAIN[pid];
+      if (toast) toast.warning(TR("Текст не прочитан"), TR("С картинки не пришло ни одной строки. Если причина не названа выше — попробуйте ещё раз."));
+      return;
+    }
+    if (planReady && planCount > 0) {
+      delete ED_PIC_CHAIN[pid];
+      if (onRunFull) onRunFull();
+    }
+  }, [pid, tick, !!job, nSeg, planReady, planCount]);
+  const st = (rep && rep.stats) || null;
+  const armed = !!ED_PIC_CHAIN[pid];
+  const reading = !!job && job.kind === "images";
+  /* Идёт чтение, а перевод к нему ещё не прицеплен — кнопка доступна:
+     нажатие цепляет перевод к идущему чтению. */
+  const busy = !!job && (!reading || armed);
+  const tile = (label, value) => React.createElement("div", { className: "pic-tile" },
+    React.createElement("b", null, value == null ? "—" : value),
+    React.createElement("span", null, label));
+  return React.createElement("div", { className: "card card-pad pic-card" },
+    React.createElement("div", { className: "pic-tiles" },
+      tile(TR("картинок"), st ? st.images : null),
+      tile(TR("надписей на них"), st && st.scanned ? st.blocks : null),
+      tile(TR("строк для перевода"), nSeg)),
+    nSeg === 0 && React.createElement("div", { className: "col", style: { gap: 8 } },
+      /* Почему текст не прочитался сам — кодом с сервера (`imagesSkipped`). */
+      project.imagesSkipped && !busy && React.createElement("div", { className: "hint", style: { color: "var(--c-warning)" } },
+        project.imagesSkipped === "limit"
+          ? TR("Текст сам не прочитался: лимит расхода организации исчерпан. Поднять его может администратор.")
+          : TR("Текст сам не прочитался: чтение сейчас недоступно — сообщите администратору.")),
+      React.createElement(Btn, { variant: "primary", size: "lg", icon: busy ? null : "zap",
+          disabled: busy, onClick: onTranslate },
+        reading && armed ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), TR("Читаю текст с картинки…"))
+          : busy ? TR("Идёт другая работа над файлом…") : TR("Перевести")),
+      React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
+        reading && !armed ? TR("Уже читаю текст с картинки — нажмите, и переведу сразу после.")
+          : TR("Прочитаю текст с картинки и сразу переведу."))));
 }
 
 function NoProject({ store }) {

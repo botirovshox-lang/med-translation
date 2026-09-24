@@ -1413,6 +1413,38 @@ try {
           "жалоба горит своим классом в обеих колонках (" + att.join("|") + ")");
   }
 
+  console.log("\n22. Файл-картинка: одна кнопка «Перевести» и числа по картинке");
+  {
+    const outP = [];
+    const picTree = React.createElement(EdPictureCard, {
+      project: { id: 77, importKind: "image", segments: [], imagesSkipped: "limit" }, job: null, onTranslate() {} });
+    walk(picTree, 0, outP);
+    const t = outP.join("\n");
+    const btns = findAll(picTree, n => n.type === "button");
+    check(btns.length === 1 && btnText(btns[0]).indexOf("Перевести") >= 0,
+          "строк нет — ровно одна кнопка, и это «Перевести»");
+    check(t.indexOf("строк для перевода") >= 0 && t.indexOf("картинок") >= 0, "плитки с числами по картинке");
+    check(t.indexOf("лимит расхода организации исчерпан") >= 0, "названо, почему текст сам не прочитался");
+    const busyTree = React.createElement(EdPictureCard, {
+      project: { id: 77, importKind: "image", segments: [] }, job: { kind: "images" }, onTranslate() {} });
+    const bb = findAll(busyTree, n => n.type === "button")[0];
+    check(bb && !bb.props.disabled, "идёт авточтение — «Перевести» доступна: нажатие цепляет перевод к нему");
+    window.__edPicChain[77] = { job: 5, phase: "reading" };
+    const armedTree = React.createElement(EdPictureCard, {
+      project: { id: 77, importKind: "image", segments: [] }, job: { id: 5, kind: "images" }, onTranslate() {} });
+    const ab = findAll(armedTree, n => n.type === "button")[0];
+    check(ab && ab.props.disabled, "перевод уже прицеплен — кнопка погашена, пока читается");
+    delete window.__edPicChain[77];
+    const otherTree = React.createElement(EdPictureCard, {
+      project: { id: 77, importKind: "image", segments: [] }, job: { id: 6, kind: "full" }, onTranslate() {} });
+    check(findAll(otherTree, n => n.type === "button")[0].props.disabled, "идёт другой прогон — кнопка погашена");
+    const withSegs = React.createElement(EdPictureCard, {
+      project: { id: 77, importKind: "image", segments: [{ id: 1 }] }, job: null, onTranslate() {} });
+    check(findAll(withSegs, n => n.type === "button").length === 0,
+          "строки есть — своей кнопки нет, дальше обычная главная кнопка прогона");
+    check(edIsPicture({ importKind: "scan" }) && !edIsPicture({ importKind: "docx" }), "картинка и скан — да, docx — нет");
+  }
+
   console.log("\n" + (fail.length ? "ПРОВАЛЕНО: " + fail.join("; ") : "ВСЁ ПРОШЛО"));
   process.exit(fail.length ? 1 : 0);
 } catch (e) {

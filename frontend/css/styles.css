@@ -1790,3 +1790,13 @@ body { overflow-wrap: break-word; }
 @media (pointer: coarse) and (hover: none) { .grp-work .navi:not(:last-child)::after { left: 18px; } }
 /* Лента и нижняя панель — линия пути там не нужна (пункты стоят в строку). */
 @media (max-width: 900px) { .grp-work .navi::after { display: none; } }
+/* Файл-картинка в «Переводе» (tab_editor.jsx: EdPictureCard): что внутри
+   картинки — тремя плитками, и одна кнопка. */
+.pic-card { display: flex; flex-direction: column; gap: 14px; margin-bottom: 16px; }
+.pic-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.pic-tile { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px;
+  border-radius: var(--r-md); background: var(--bg-sunken); }
+.pic-tile b { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pic-tile span { font-size: 12.5px; color: var(--text-3); }
+.pic-card .btn-lg { align-self: flex-start; }
+@media (max-width: 640px) { .pic-card .btn-lg { align-self: stretch; } }

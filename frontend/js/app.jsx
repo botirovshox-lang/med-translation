@@ -376,6 +376,9 @@ function authCachedBrand() {
   try { return localStorage.getItem(AUTH_BRAND_LS) || ""; } catch (e) { return ""; }
 }
 function authRememberBrand(b) {
+  /* Заголовок вкладки — тот же бренд, что в шапке (APP_BRAND с сервера);
+     в index.html стоит умолчание для первого кадра и превью ссылки. */
+  if (b) document.title = b;
   try { if (b) localStorage.setItem(AUTH_BRAND_LS, b); } catch (e) { /* приватное окно */ }
 }
 

@@ -508,6 +508,9 @@ function TabExport({ store, toast }) {
      то нет. Ответ приходит асинхронно, поэтому до него формат описывается
      осторожно — обещать нечего. */
   const [pdfReady, setPdfReady] = useState(false);
+  /* Остальные форматы свёрнуты: человеку нужен один — «такой же файл,
+     только на другом языке», и выбран он уже по тому, что принесли. */
+  const [allFmt, setAllFmt] = useState(false);
   useEffect(() => {
     window.API && window.API.safeCall(() => window.API.models())
       .then(d => { if (d) setPdfReady(!!d.pdfReady); });
@@ -555,6 +558,10 @@ function TabExport({ store, toast }) {
   const untranslated = project.segments.length - translated;
   const fmtLabel = fmt === "docx_layout" ? TR("как оригинал") : fmt.toUpperCase();
   const doExport = async () => {
+    /* Спросить ДО сборки, а не сказать после: «часть файла осталась
+       на языке оригинала» после скачивания — это уже отправленный клиенту брак. */
+    if (untranslated > 0 && typeof confirm === "function"
+        && !confirm(untranslated + TR(" строк ещё не переведены и останутся на языке оригинала. Всё равно скачать?"))) return;
     setBusy(true);
     let result = null;
     if (window.API) result = await window.API.safeCall(() => window.API.exportProject(project.id, fmt, opts.source));
@@ -568,7 +575,7 @@ function TabExport({ store, toast }) {
         toast.error(TR("Файл не скачан"), String((e && e.message) || e));
       }
       if (store.setExportHistory) {
-        store.setExportHistory(h => [{ file: result.file, when: new Date().toISOString().slice(0,16).replace("T"," "), size: result.size || "" }, ...h]);
+        store.setExportHistory(h => [{ project: project.id, file: result.file, when: new Date().toISOString().slice(0,16).replace("T"," "), size: result.size || "" }, ...h]);
       }
       const st = result.stats || {};
       // Про 1в1 говорим не «готово», а что именно легло в файл: сколько абзацев
@@ -641,7 +648,9 @@ function TabExport({ store, toast }) {
         React.createElement("div", null,
           React.createElement("h2", { className: "section-title" }, TR("Что вам прислать")),
           React.createElement("div", { className: "col", style: { gap: 10 } },
-            formats.map(([v, t, d, ic]) => React.createElement("label", {
+            /* «Как оригинал» без исходника видно и свёрнутым: под ним
+               сказано, что приложить, — иначе этот путь не найти. */
+            formats.filter(([v]) => allFmt || store.expert || v === fmt || (v === "docx_layout" && !srcDoc)).map(([v, t, d, ic]) => React.createElement("label", {
               key: v, className: "card card-pad row", style: { gap: 14, cursor: "pointer", borderColor: fmt === v ? "var(--c-primary)" : "var(--border)", boxShadow: fmt === v ? "0 0 0 3px var(--ring)" : "none" },
               onClick: () => setFmt(v) },
               React.createElement(Radio, { name: "fmt", checked: fmt === v, onChange: () => setFmt(v) }),
@@ -649,7 +658,9 @@ function TabExport({ store, toast }) {
                 React.createElement(Icon, { name: ic, size: 19 })),
               React.createElement("div", null,
                 React.createElement("div", { style: { fontWeight: 500 } }, t),
-                React.createElement("div", { className: "dim", style: { fontSize: 13 } }, d))))),
+                React.createElement("div", { className: "dim", style: { fontSize: 13 } }, d)))),
+            !allFmt && !store.expert && formats.length > 1 && React.createElement("div", null,
+              React.createElement(Btn, { variant: "ghost", size: "sm", icon: "chevD", "aria-expanded": false, onClick: () => setAllFmt(true) }, TR("Другой формат")))),
           React.createElement("p", { className: "hint", style: { marginTop: 10 } },
             srcDoc && fmt !== "docx_layout"
               ? TR("К проекту приложен исходник — «DOCX 1в1» сохранит его оформление. Выбранный сейчас формат соберёт документ с нуля.")

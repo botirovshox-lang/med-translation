@@ -126,5 +126,17 @@ console.log("6. Колонка карточки сегмента — тольк�
         "на узком экране карточка под таблицей и с открытой колонкой");
 }
 
+console.log("7. Телефон: пять шагов — нижняя панель, и она не мешает");
+{
+  const phone = (CSS.match(/@media \(max-width: 640px\) \{[\s\S]*?\n\}/g) || []).join("\n");
+  check(/\.side \.grp-work \{[^}]*position: fixed[^}]*bottom: 0/.test(phone), "шаги пути прибиты к низу экрана");
+  check(/\.side \.grp-work \{[^}]*safe-area-inset-bottom/.test(phone), "панель не садится на полосу жестов");
+  check(/\.main \{ padding-bottom: calc\(/.test(phone), "у прокрутки страницы место под панель — последняя строка не прячется");
+  check(/\.sup \{ bottom: calc\(/.test(phone) && /\.toasts \{ bottom: calc\(/.test(phone),
+        "кнопка поддержки и уведомления подняты над панелью");
+  check(/:has\(input:not\(\[type="checkbox"\]\):not\(\[type="radio"\]\):focus[^{]*\.side \.grp-work \{ display: none; \}/.test(phone),
+        "пока открыта клавиатура, панель не закрывает поле ввода");
+}
+
 console.log(fail.length ? "\nПРОВАЛЕНО: " + fail.length : "\nВСЁ ПРОШЛО");
 process.exit(fail.length ? 1 : 0);

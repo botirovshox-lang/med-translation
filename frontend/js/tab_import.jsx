@@ -60,6 +60,10 @@ function ImpQuote({ file, src, tgt, toast, onSaved, store, draft }) {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [prog, setProg] = useState(null);
+  /* Подробности сметы свёрнуты: человеку нужно одно число — сколько страниц
+     (и сумма, если её показывают). Слова, знаки, норма, повторы и формула —
+     под «Подробнее» (инвариант 32: объяснение не длиннее двух строк). */
+  const [more, setMore] = useState(false);
   /* Сброс — только когда файл или пара ДРУГИЕ, чем у посчитанной сметы:
      эффект срабатывает и на возврате к вкладке, и сбрасывать там нечего. */
   const qKey = (file && file.name) + "|" + src + "|" + tgt;
@@ -100,7 +104,7 @@ function ImpQuote({ file, src, tgt, toast, onSaved, store, draft }) {
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
     React.createElement("div", { className: "eyebrow", style: { margin: 0 } },
       costHidden() ? TR("Объём файла") : TR("Объём и стоимость")),
-    React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 13 } },
+    more && React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 13 } },
       costHidden()
         ? TR("Страница — 250 слов исходника (у письма без пробелов — знаки по норме языка).")
         : TR("Страница — 250 слов исходника (у письма без пробелов — знаки по норме языка). Цену за страницу задаёт владелец организации.")),
@@ -119,7 +123,16 @@ function ImpQuote({ file, src, tgt, toast, onSaved, store, draft }) {
         !costHidden() && res.scan.est != null && React.createElement("span", { className: "dim", style: { fontSize: 12 } },
           (modelsShown(store) ? TR("зрячая модель ") + res.scan.model + " · " : "")
           + "≈ $" + Number(res.scan.est).toFixed(3)))),
-    res && res.counts && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6, fontSize: 14 } },
+    /* Одна строка: страницы (≈ — только у оценки скана по выборке: у файла
+       с текстом число точное) и сумма, когда её показывают. */
+    res && res.counts && React.createElement("div", { className: "row row-wrap", style: { gap: 10, alignItems: "baseline" } },
+      React.createElement("b", { style: { fontSize: 18 } },
+        (res.scan ? "≈ " : "") + res.pages.billed + " " + TR("стр.")),
+      !res.costHidden && res.total != null && React.createElement("span", { style: { fontSize: 15 } },
+        "· " + res.total.toLocaleString("ru-RU") + " " + res.currency),
+      React.createElement(Btn, { variant: "ghost", size: "sm", "aria-expanded": more, onClick: () => setMore(!more) },
+        more ? TR("Скрыть") : TR("Подробнее"))),
+    res && res.counts && more && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6, fontSize: 14 } },
       res.scan && row(TR("Оценка по выборке"), res.scan.read.length + TR(" из ") + res.scan.pages + TR(" стр.")),
       row(TR("Слов"), res.counts.words.toLocaleString("ru-RU")),
       row(TR("Знаков с пробелами"), res.counts.chars.toLocaleString("ru-RU")),
@@ -299,9 +312,7 @@ function ImpFolderList({ store, toast, meta }) {
         React.createElement("p", { className: "lead" }, TR("Проект — это папка с файлами одного заказа: одна пара языков, одна тема и свои словари. Откройте проект, чтобы добавить файл или начать перевод."))),
       React.createElement(Btn, { variant: "primary", icon: "plus", onClick: () => setCreating(true) }, TR("Новый проект"))),
     folders.length === 0
-      ? React.createElement(EmptyState, { icon: "folder", title: TR("Проектов пока нет"),
-          sub: TR("Создайте проект и положите в него первый файл."),
-          action: React.createElement(Btn, { variant: "primary", icon: "plus", onClick: () => setCreating(true) }, TR("Новый проект")) })
+      ? React.createElement(ImpFirstFile, { store, toast, meta })
       : React.createElement("div", { className: "grid grid-3" },
           folders.map(f => React.createElement(ImpFolderCard, { key: f.id, folder: f, store, meta }))),
     React.createElement("div", { className: "section", style: { marginTop: 24 } },
@@ -353,6 +364,65 @@ function impCut(v, n) {
     if (sp > n * 0.6) cut = cut.slice(0, sp);
     return "«" + cut.replace(/[\s,.;:-]+$/, "") + "…»";
   }).join(" + ");
+}
+
+/* Первый файл — без понятия «проект». Человеку, у которого ещё ничего нет,
+   нужен ровно один ответ: «куда положить файл». Кладёт он его сюда, говорит,
+   НА КАКОЙ язык переводить (умолчания нет намеренно: RU→EN для узбекского
+   рынка чаще неверно, а неверная пара — это оплаченный перевод не на тот
+   язык), и дальше проект заводится сам: имя — имя файла, свой словарь,
+   тема по умолчанию. Папка заводится только по нажатию, а не по выбору
+   файла: повторный выбор иначе плодил бы пустые проекты. Файл уезжает
+   в черновик новой папки с отметкой autoAdd — там идёт штатная дорога
+   ImpAddFile (проба, дубль, смета) и сама добавляет файл, если проба
+   не нашла вопроса к человеку. */
+function ImpFirstFile({ store, toast, meta }) {
+  const [file, setFile] = useState(null);
+  const [src, setSrc] = useState("RU");
+  const [tgt, setTgt] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const fileRef = useRef(null);
+  const pick = (f) => { if (f) setFile(f); };
+  const start = async () => {
+    if (!file || !tgt || src === tgt) return;
+    const title = file.name.replace(/\.[^.]+$/, "") || TR("Новый проект");
+    setBusy(true);
+    try {
+      const r = await window.API.createFolder({ title, src, tgt, domain: (meta && meta.domainDefault) || "general",
+        dicts: [], newDict: title });
+      Object.assign(impDraft(r.id), {
+        file: { name: file.name, size: (file.size / 1024).toFixed(0) + TR(" КБ"), raw: file },
+        title, src, tgt, autoAdd: true });
+      store.addFolder(r);
+      window.API.safeCall(() => window.API.listDicts()).then(d => { if (d && d.dicts && store.setDicts) store.setDicts(d.dicts); });
+      store.openFolder(r.id);
+    } catch (e) { toast.error(TR("Проект не создан"), e.message || String(e)); }
+    setBusy(false);
+  };
+  return React.createElement("div", { className: "card card-pad first-file" },
+    React.createElement("div", {
+      className: "dropzone dropzone-big" + (dragging ? " drag" : ""),
+      onDragOver: (e) => { e.preventDefault(); setDragging(true); }, onDragLeave: () => setDragging(false),
+      onDrop: (e) => { e.preventDefault(); setDragging(false); pick(e.dataTransfer.files && e.dataTransfer.files[0]); },
+      onClick: () => fileRef.current && fileRef.current.click(), role: "button", tabIndex: 0,
+      onKeyDown: (e) => { if (e.key === "Enter" && fileRef.current) fileRef.current.click(); } },
+      React.createElement("input", { ref: fileRef, type: "file", accept: IMP_ACCEPT, hidden: true, onChange: (e) => pick(e.target.files[0]) }),
+      React.createElement(Icon, { name: file ? "file" : "upload", size: 36, className: "dz-ic",
+        style: file ? { color: "var(--c-success)" } : null }),
+      React.createElement("div", { style: { fontWeight: 600, fontSize: 16 } }, file ? file.name : TR("Перетащите файл сюда")),
+      React.createElement("div", { className: "dim", style: { marginTop: 4, fontSize: 13 } },
+        file ? TR("Нажмите, чтобы выбрать другой") : TR("или нажмите, чтобы выбрать · Word, Excel, PowerPoint, PDF, текст или картинка"))),
+    file && React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
+      React.createElement(Field, { label: TR("На какой язык переводим?") },
+        React.createElement(Select, { value: tgt, onChange: (e) => setTgt(e.target.value) },
+          React.createElement("option", { value: "" }, TR("— выберите —")), impLangOptions(meta && meta.langs))),
+      React.createElement(Field, { label: TR("С какого языка") },
+        React.createElement(Select, { value: src, onChange: (e) => setSrc(e.target.value) }, impLangOptions(meta && meta.langs)))),
+    file && tgt && src === tgt && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, TR("Язык оригинала и язык перевода совпадают.")),
+    file && React.createElement(Btn, { variant: "primary", size: "lg", icon: busy ? null : "check",
+        disabled: busy || !tgt || src === tgt, onClick: start },
+      busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), TR("Загружаем…")) : TR("Начать")));
 }
 
 /* ---------- Новый проект ---------- */
@@ -643,6 +713,14 @@ function ImpAddFile({ folder, store, toast, meta }) {
      запрос (ниже), и экран подхватывает его на возврате. */
   useEffect(() => { draft.file = file; draft.title = title; draft.src = src; draft.tgt = tgt; },
     [file, title, src, tgt]);
+  /* Жив ли экран: ответ пробы приходит через секунды, и добавлять файл
+     САМИМ можно только пока человек на этом экране — иначе загрузка
+     и переход в «Перевод» случились бы у него за спиной, а вернувшийся
+     экран предложил бы «Добавить» второй раз (дубль, 409). */
+  const aliveRef = useRef(true);
+  useEffect(() => () => { aliveRef.current = false; }, []);
+  /* Файл пришёл с первого экрана (ImpFirstFile) — пробу запускаем сами. */
+  useEffect(() => { if (draft.autoAdd && draft.file && draft.file.raw && !draft.probing) runProbe(draft.file.raw); }, []);
   /* Вернулись, пока проба ещё шла: ответ ляжет в черновик — ждём его. */
   useEffect(() => {
     if (!draft.probing || !draft.pending) return;
@@ -670,6 +748,13 @@ function ImpAddFile({ folder, store, toast, meta }) {
     setProbe(res);
     setProbing(false);
     setProg(null);
+    /* Первый файл (ImpFirstFile): человек уже нажал «Начать», второй кнопки
+       он не ждёт. Добавляем сами — но только когда проба не нашла вопроса
+       к нему (уже есть, похоже на новую версию, ошибка разбора). */
+    if (draft.autoAdd) {
+      draft.autoAdd = false;
+      if (aliveRef.current && res && !res.error && !(res.exact && res.exact.length) && !(res.similar && res.similar.length)) create();
+    }
   };
   const pickFile = (f) => {
     if (!f) return;

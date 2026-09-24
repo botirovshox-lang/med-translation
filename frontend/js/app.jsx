@@ -666,7 +666,31 @@ const TABS = [
      ставит сервер на /console-…), а не с главной — и только super. */
   { key: "admin", label: TR("Админ"), icon: "settings", super: true, entry: true, group: "sys" },
 ];
-const TAB_GROUPS = [["work", TR("Работа")], ["files", TR("Файлы")], ["sys", TR("Служебное")]];
+const TAB_GROUPS = [["work", TR("Шаги перевода")], ["files", TR("Файлы")], ["sys", TR("Служебное")]];
+/* Пять рабочих вкладок — это ПУТЬ, а не набор мест: номер шага вместо значка
+   и галочка у пройденного отвечают на вопрос «где я и что дальше» без чтения.
+   Галочка ставится только там, где браузер знает это честно (инвариант 32:
+   лестная неправда хуже молчания): «Словари» и «Проверка» ответа в store
+   не держат — у них галочки нет никогда, у «Проверки» остаётся красная
+   пилюля вопросов. */
+const STEP_KEYS = ["import", "editor", "glossary", "preflight", "export"];
+function stepDone(store, k) {
+  const p = store.activeProject;
+  if (!p) return false;
+  if (k === "import") return true;
+  if (k === "editor") {
+    const segs = p.segments || [];
+    return segs.length > 0 && segs.every(s => s.status === "confirmed" || (s.target || "").trim());
+  }
+  if (k === "export") return (store.exportHistory || []).some(e => e && e.project === p.id);
+  return false;
+}
+function nextStep(store) {
+  const i = STEP_KEYS.indexOf(store.tab);
+  if (i < 0 || i >= STEP_KEYS.length - 1) return null;
+  const k = STEP_KEYS[i + 1];
+  return TABS.filter(t => t.key === k)[0] || null;
+}
 /* Счётчик пункта меню: число и его ПРИРОДА. «Ждёт вас» красится красным
    (.navi-n.todo), «сколько всего» — тихой пилюлей. Это разные вопросы:
    2692 сегмента и 150 записей словаря — размер работы, с которым делать
@@ -677,9 +701,10 @@ const TAB_GROUPS = [["work", TR("Работа")], ["files", TR("Файлы")], [
 function tabBadge(store, k, counts) {
   if (k === "profile") return todoBadge((store.invites && store.invites.length) || null);
   if (!counts) return null;
-  if (k === "editor") return counts.all;
+  /* Размер работы (2711 строк, 1307 терминов) у шагов пути больше не
+     показывается: человеку с ним делать нечего, а пилюля спорила за внимание
+     с номером шага. Осталось только то, что ждёт человека. */
   if (k === "preflight") return todoBadge(counts.failed + counts.qa || null);
-  if (k === "glossary") return store.glossary.length;
   return null;
 }
 /* Обёртка, а не второй возврат: tabBadge зовут в одном месте, и «ноль
@@ -712,7 +737,7 @@ function Sidebar({ store, theme, onToggleTheme, onLogout }) {
     TAB_GROUPS.map(([g, title]) => {
       const items = tabs.filter(t => (t.group || "work") === g);
       if (!items.length) return null;
-      return React.createElement("nav", { className: "grp", key: g, role: "tablist", "aria-label": title },
+      return React.createElement("nav", { className: "grp grp-" + g, key: g, role: "tablist", "aria-label": title },
         React.createElement("h3", null, title),
         items.map(t => {
           const b = tabBadge(store, t.key, counts);
@@ -724,8 +749,16 @@ function Sidebar({ store, theme, onToggleTheme, onLogout }) {
                нет вовсе (роль не та) — шаг встанет по центру без стрелки. */
             "data-tour": t.key,
             role: "tab", "aria-selected": store.tab === t.key, onClick: () => store.go(t.key) },
-            React.createElement(Icon, { name: t.icon, size: 15 }),
+            g === "work"
+              ? React.createElement("span", { className: "step-n" + (stepDone(store, t.key) ? " done" : ""), "aria-hidden": "true" },
+                  stepDone(store, t.key) ? React.createElement(Icon, { name: "check", size: 12, stroke: 3 })
+                                         : String(STEP_KEYS.indexOf(t.key) + 1))
+              : React.createElement(Icon, { name: t.icon, size: 15 }),
             React.createElement("span", { className: "navi-t" }, t.label),
+            /* Номер и галочка скрыты от читалки как рисунок — смысл дублируем
+               текстом: «шаг 2», «пройден». */
+            g === "work" && React.createElement("span", { className: "sr-only" },
+              TR("шаг ") + (STEP_KEYS.indexOf(t.key) + 1) + (stepDone(store, t.key) ? TR(", пройден") : "")),
             b != null && React.createElement("span",
               { className: "navi-n" + (b.todo ? " todo" : "") }, b.todo ? b.n : b));
         }));
@@ -781,6 +814,22 @@ function Topbar({ store, theme, onToggleTheme, onLogout, onSearch }) {
                    background: "var(--c-danger)", color: "var(--text-on-accent)", fontSize: 10, fontWeight: 600,
                    lineHeight: "16px", textAlign: "center", padding: "0 3px" } }, store.invites.length)),
       React.createElement(IconBtn, { icon: "logout", label: TR("Выйти"), sm: true, onClick: onLogout })));
+}
+
+/* «Дальше: 3 · Словари →» внизу каждого шага пути. Одна кнопка про одно:
+   куда идти, когда здесь всё. Без открытого файла её нет — идти не с чем. */
+function NextStepBar({ store }) {
+  /* На «Проектах» её нет: там свои главные кнопки, а открытый файл может
+     быть из другой папки — «Дальше» увело бы в чужой перевод. Добавленный
+     файл и так открывается в «Переводе» сам. */
+  const n = store.activeProject && store.tab !== "import" ? nextStep(store) : null;
+  if (!n) return null;
+  return React.createElement("div", { className: "next-step" },
+    /* Тихая, а не главная: у каждого шага своя главная кнопка («Перевести
+       и проверить», «Доделать сама»), и вторая яркая спорила бы с ней
+       (инвариант 32: одна главная кнопка на экран). */
+    React.createElement(Btn, { variant: "secondary", iconRight: "chevR", onClick: () => store.go(n.key) },
+      TR("Дальше: ") + (STEP_KEYS.indexOf(n.key) + 1) + " · " + n.label));
 }
 
 /* ---------- Search palette ---------- */
@@ -875,7 +924,8 @@ function App() {
         onSearch: () => setSearch(true) }),
       React.createElement("main", { className: "main" },
         React.createElement(Boundary, { key: store.tab },
-          React.createElement(Active, { store, toast, theme, onToggleTheme: toggleTheme })))),
+          React.createElement(Active, { store, toast, theme, onToggleTheme: toggleTheme })),
+        React.createElement(NextStepBar, { store }))),
     search && React.createElement(SearchPalette, { store, onClose: () => setSearch(false) }),
     /* Знакомство и поддержка живут ПОВЕРХ вкладок и вне их: тур показывает
        пункты меню (вкладке они не принадлежат), а виджет поддержки обязан

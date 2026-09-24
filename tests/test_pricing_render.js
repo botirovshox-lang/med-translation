@@ -96,9 +96,10 @@ function text(tree) {
 }
 
 // ── Смета: сервер посчитал, экран показывает ────────────────────────
-function quoteScreen(res) {
+function quoteScreen(res, open) {
   hooks.length = 0; hookIdx = 0;
   hooks[0] = res;                      // res — первый useState в ImpQuote
+  hooks[4] = open !== false;           // more — «Подробнее» раскрыто
   return text(React.createElement(ImpQuote, {
     file: { name: "doc.docx", raw: {} }, src: "RU", tgt: "EN", toast,
   }));
@@ -122,6 +123,20 @@ check(priced.indexOf("86") !== -1 && priced.indexOf("НЕ вычтены") !== -
 check(priced.indexOf("надписи внутри картинок в счёт не идут") !== -1,
       "оговорки сервера показаны, а не проглочены");
 check(priced.indexOf("по паре") !== -1, "видно, по какой цене считали — по паре или общей");
+
+/* Свёрнутая смета — ОДНА строка: страницы и сумма, без формулы и норм. */
+const short = quoteScreen({
+  file: "doc.docx", kind: "docx", basis: "file",
+  counts: { chars: 437975, charsNoSpaces: 389037, words: 50955, blocks: 2703, repeatBlocks: 86, repeatChars: 1475 },
+  norm: { lang: "RU", perPage: 250, unit: "words", source: "table" },
+  pages: { exact: 203.8, billed: 203.9 }, rate: { price: 12.5, source: "pair" }, currency: "USD", total: 2548.75,
+  notes: ["примечание"], formula: "50955 слов ÷ 250 = 203.8 стр.",
+}, false);
+check(short.indexOf("203.9") !== -1, "свёрнуто: страницы видны одной строкой");
+check(/2.548/.test(short) && short.indexOf("USD") !== -1, "свёрнуто: сумма видна тому, кому её показывают");
+check(short.indexOf("÷") === -1 && short.indexOf("примечание") === -1 && short.indexOf("≈") === -1,
+      "свёрнуто: формулы и примечаний нет, «≈» у точного счёта нет");
+check(short.indexOf("Подробнее") !== -1, "подробности достижимы кнопкой");
 
 const unpriced = quoteScreen({
   file: "doc.txt", kind: "txt", basis: "file",

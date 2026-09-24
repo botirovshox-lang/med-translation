@@ -176,14 +176,16 @@ console.log("2. Активный пункт ровно один");
   check(texts(on[0]).join(" ").indexOf("Проверка") >= 0, "помечен именно открытый экран");
 }
 
-console.log("3. Счётчики те же, что были на вкладках");
+console.log("3. Счётчики: только то, что ждёт человека");
 {
   const side = Sidebar({ store: makeStore({ invites: [{ id: "i1" }, { id: "i2" }] }),
     theme: "light", onToggleTheme() {}, onLogout() {} });
   const nums = byClass(side, "navi-n").map(n => String(n.children[0]));
-  check(nums.indexOf("2711") >= 0, "у редактора число сегментов");
+  /* Размер работы (2711 строк, 1307 терминов) у шагов пути убран: рядом
+     с номером шага он спорил за внимание, а сделать с ним нечего. */
+  check(nums.indexOf("2711") < 0, "у перевода размера файла нет");
   check(nums.indexOf("11") >= 0, "у анализа сумма замечаний (4 + 7)");
-  check(nums.indexOf("1307") >= 0, "у знаний размер глоссария");
+  check(nums.indexOf("1307") < 0, "у словарей размера глоссария нет");
   check(nums.indexOf("2") >= 0, "у профиля число приглашений");
 
   /* Красная пилюля (.navi-n.todo) означает РАБОТУ, которая ждёт человека.
@@ -202,12 +204,49 @@ console.log("3. Счётчики те же, что были на вкладка�
     const name = (byClass(item, "navi-t")[0] || { children: [] }).children[0];
     kind[String(name)] = (pill.props.className || "").indexOf("todo") >= 0;
   });
-  check(Object.keys(kind).length === 4, "пилюли нашлись у всех четырёх пунктов (сейчас "
+  check(Object.keys(kind).length === 2, "пилюли только у двух пунктов (сейчас "
     + Object.keys(kind).length + ")");
   check(kind["Проверка"] === true, "замечания помечены как ждущая работа");
   check(kind["Профиль"] === true, "приглашения помечены как ждущая работа");
-  check(kind["Перевод"] === false, "число сегментов тревогой не красится");
-  check(kind["Словари"] === false, "размер глоссария тревогой не красится");
+}
+
+console.log("3a. Путь из пяти шагов: номера, честные галочки, «Дальше»");
+{
+  const stepMarks = (st) => {
+    const side = Sidebar({ store: st, theme: "light", onToggleTheme() {}, onLogout() {} });
+    const out = {};
+    byClass(side, "navi").forEach(item => {
+      const n = byClass(item, "step-n")[0];
+      const name = (byClass(item, "navi-t")[0] || { children: [] }).children[0];
+      if (n) out[String(name)] = (n.props.className || "").indexOf("done") >= 0 ? "✓" : String(n.children[0]);
+    });
+    return out;
+  };
+  const segs = [{ id: 1, status: "translated", target: "a" }, { id: 2, status: "new", target: "" }];
+  let m = stepMarks(makeStore({ activeProject: { id: 7, title: "f", segments: segs }, exportHistory: [] }));
+  check(Object.keys(m).length === 5, "у пяти шагов пути есть номер или галочка (сейчас " + Object.keys(m).length + ")");
+  check(m["Проекты"] === "✓", "файл открыт — первый шаг пройден");
+  check(m["Перевод"] === "2", "есть строка без перевода — у «Перевода» номер, а не галочка");
+  check(m["Словари"] === "3" && m["Проверка"] === "4",
+        "у «Словарей» и «Проверки» галочки нет никогда: браузер этого не знает");
+  check(m["Скачать"] === "5", "не скачивали — у «Скачать» номер");
+  const done = [{ id: 1, status: "translated", target: "a" }, { id: 2, status: "confirmed", target: "" }];
+  m = stepMarks(makeStore({ activeProject: { id: 7, title: "f", segments: done },
+    exportHistory: [{ project: 8, file: "x" }] }));
+  check(m["Перевод"] === "✓", "все строки переведены или заверены — «Перевод» пройден");
+  check(m["Скачать"] === "5", "выгрузка ЧУЖОГО файла галочку не ставит");
+  m = stepMarks(makeStore({ activeProject: { id: 7, title: "f", segments: done },
+    exportHistory: [{ file: "x" }, { project: 7, file: "y" }] }));
+  check(m["Скачать"] === "✓", "выгрузка этого файла — «Скачать» пройден");
+  m = stepMarks(makeStore({ activeProject: null }));
+  check(m["Проекты"] === "1", "без файла ничего не пройдено");
+
+  const nextOf = (st) => { const b = NextStepBar({ store: st }); return b ? texts(b).join(" ") : null; };
+  check((nextOf(makeStore({ tab: "editor" })) || "").indexOf("Дальше: 3 · Словари") >= 0,
+        "с «Перевода» — «Дальше: 3 · Словари»");
+  check(nextOf(makeStore({ tab: "export" })) === null, "на последнем шаге «Дальше» нет");
+  check(nextOf(makeStore({ tab: "profile" })) === null, "вне пути «Дальше» нет");
+  check(nextOf(makeStore({ tab: "editor", activeProject: null })) === null, "без файла «Дальше» нет");
 }
 
 console.log("4. Полоса страниц — только при выданном потолке");

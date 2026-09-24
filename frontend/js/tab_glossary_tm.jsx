@@ -593,7 +593,8 @@ function TermQueue({ store, toast, version, simple }) {
     setCounts((res && res.counts) || {});
     setGroups((res && res.groups) || []);
     setTotal((res && res.total) || 0);
-    setWaiting((res && res.waiting) || 0);
+    /* -1 — «сервер не ответил»: тогда и «вопросов нет» говорить нельзя. */
+    setWaiting(res ? (res.waiting || 0) : -1);
     setLoading(false);
   };
 
@@ -697,6 +698,18 @@ function TermQueue({ store, toast, version, simple }) {
      место неотличимо от «кандидатов не бывает». */
   const waitNote = simple && waiting > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
     TR("Ещё ") + waiting + TR(" терминов ждут данных — дорешаю сама после следующих прогонов."));
+  /* Вопросов нет и данных никто не ждёт — сказать это прямо и показать,
+     куда дальше: пустое место читалось как «экран не загрузился».
+     Только в простом виде, только с открытым файлом и только по ответу
+     сервера (waiting ≥ 0), иначе «вопросов нет» было бы догадкой. */
+  if (!items.length && !total && simple && waiting === 0 && store.activeProject)
+    /* Кнопки у карточки нет: «Дальше: 4 · Проверка» стоит под экраном
+       (NextStepBar), и вторая кнопка туда же была бы лишней. */
+    return React.createElement("div", { className: "card card-pad row row-wrap", style: { gap: 12, alignItems: "center" } },
+      React.createElement(Icon, { name: "checkCircle", size: 20, style: { color: "var(--c-success)" } }),
+      React.createElement("div", { style: { flex: 1, minWidth: 200 } },
+        React.createElement("b", null, TR("Вопросов по словам нет.")),
+        React.createElement("div", { className: "dim", style: { fontSize: 13 } }, TR("Можно идти дальше — к проверке."))));
   if (!items.length && !total) return waitNote || null;
 
   return React.createElement("div", simple ? { className: "col", style: { gap: 12 } }

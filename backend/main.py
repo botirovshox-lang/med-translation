@@ -26721,6 +26721,9 @@ def export_project(pid: int, req: ExportRequest):
     size_kb = max(1, path.stat().st_size // 1024)
     STATE["exportHistory"].insert(0, {
         "tenant": _current_tenant(),
+        # Номер файла — чтобы шаг «Скачать» в меню отмечался галочкой только
+        # у ЭТОГО файла; у записей без поля галочки нет (не знаем чей).
+        "project": pid,
         "file": path.name,
         "when": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "size": f"{size_kb} КБ",

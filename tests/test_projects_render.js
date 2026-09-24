@@ -181,6 +181,41 @@ console.log("\n[5] Имена верхнего уровня");
 }
 
 (async () => {
+console.log("\n[1a] Первый файл: одна зона, один вопрос, одна кнопка");
+{
+  hooks = []; hookIdx = 0;
+  let tree = TabImport({ store: makeStore({ folders: [], projects: [] }), toast });
+  let t = texts(tree).join(" | ");
+  check(t.includes("Перетащите файл сюда"), "без проектов — зона «Перетащите файл сюда»");
+  check(!t.includes("Проектов пока нет"), "вместо пустого «Проектов пока нет» — сразу куда положить файл");
+  check(!find(tree, n => n.type === "button" && texts(n).join("") === "Начать").length, "до выбора файла кнопки «Начать» нет");
+
+  /* ImpFirstFile: hooks — file, src, tgt, busy, dragging. */
+  const raw = { name: "Договор.docx", size: 2048 };
+  hooks = [raw, "RU", ""]; hookIdx = 0;
+  tree = ImpFirstFile({ store: makeStore({ folders: [] }), toast, meta: { langs: [["RU", "Русский"], ["UZ", "Узбекский"]] } });
+  t = texts(tree).join(" | ");
+  check(t.includes("На какой язык переводим?"), "спрошено, на какой язык переводим");
+  let btn = find(tree, n => n.type === "button" && texts(n).join("") === "Начать")[0];
+  check(btn && btn.props.disabled, "пока язык перевода не выбран — «Начать» погашена (умолчания нет намеренно)");
+
+  hooks = [raw, "RU", "UZ"]; hookIdx = 0;
+  const opened = [], made = [];
+  global.API.createFolder = async (body) => { made.push(body); return { id: 555, title: body.title, src: body.src, tgt: body.tgt }; };
+  global.API.listDicts = async () => null;
+  tree = ImpFirstFile({ store: makeStore({ folders: [], openFolder: (id) => opened.push(id) }), toast, meta: { langs: [] } });
+  btn = find(tree, n => n.type === "button" && texts(n).join("") === "Начать")[0];
+  check(btn && !btn.props.disabled, "язык выбран — «Начать» доступна");
+  await btn.props.onClick();
+  check(made.length === 1 && made[0].title === "Договор" && made[0].tgt === "UZ" && made[0].newDict === "Договор",
+        "проект заведён по нажатию: имя файла, выбранная пара, свой словарь");
+  check(opened.join() === "555", "и открыт");
+  const d = impDraft(555);
+  check(d.autoAdd === true && d.file && d.file.raw === raw && d.tgt === "UZ",
+        "файл и пара лежат в черновике проекта с отметкой «добавить самому»");
+}
+
+
 console.log("\n[6] Удаление файла ждёт сервер: отказ назван, файл не пропал");
 {
   /* Прежде файл уходил с экрана сразу, а отказ сервера (409 — идёт прогон)

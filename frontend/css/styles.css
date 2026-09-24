@@ -1709,3 +1709,59 @@ body { overflow-wrap: break-word; }
   .learn-step { grid-template-columns: 1fr; gap: 8px; }
   .learn-n span { width: 28px; height: 28px; }
 }
+
+/* ---------- Путь из пяти шагов (app.jsx: STEP_KEYS, stepDone, NextStepBar) ----------
+   Номер шага вместо значка и галочка у пройденного: «где я и что дальше»
+   читается без единого слова. Галочку ставит только то, что браузер знает
+   честно (см. stepDone). */
+.step-n { flex: 0 0 18px; width: 18px; height: 18px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 11px; font-weight: 600;
+  border: 1.5px solid var(--border-strong); color: var(--text-3);
+  font-variant-numeric: tabular-nums; }
+.navi.on .step-n { border-color: var(--text); color: var(--text); }
+.step-n.done { background: var(--c-success); border-color: transparent; color: var(--bg); }
+.step-n.done svg { opacity: 1; }
+/* «Дальше: …» внизу шага: по полям страницы, не липкая — липкой на телефоне
+   тесно рядом с нижней панелью шагов. */
+.next-step { padding: 0 var(--pad) 40px;
+  display: flex; justify-content: flex-end; }
+
+/* Телефон: пять шагов — нижняя панель под большой палец, остальное
+   (Обучение, Профиль, Организация, команда) — в верхней ленте. Сверху пять
+   шагов уезжали за край: на снимке с телефона от «Проверки» был виден один значок. */
+@media (max-width: 640px) {
+  .side .grp-work {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+    display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0;
+    background: var(--header-bg); border-top: 1px solid var(--border);
+    padding: 4px max(4px, env(safe-area-inset-right)) max(4px, env(safe-area-inset-bottom)) max(4px, env(safe-area-inset-left));
+  }
+  .side .grp-work .navi { flex-direction: column; gap: 3px; width: auto; min-width: 0;
+    padding: 6px 2px; font-size: 11px; text-align: center; justify-content: center; position: relative; }
+  .side .grp-work .navi-t { flex: 0 0 auto; max-width: 100%; }
+  .side .grp-work .navi-n { position: absolute; top: 2px; right: 6px; padding: 0 5px; font-size: 10px; }
+  .side .grp-work .step-n { width: 22px; height: 22px; flex-basis: 22px; font-size: 12px; }
+  /* Место под панель: и у прокрутки страницы, и у плавающих штук. */
+  .main { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
+  .sup { bottom: calc(70px + env(safe-area-inset-bottom)); }
+  .toasts { bottom: calc(76px + env(safe-area-inset-bottom)); }
+  .next-step { padding-bottom: 20px; }
+  .next-step .btn { width: 100%; justify-content: center; }
+}
+@media (max-width: 480px) {
+  .sup-panel { bottom: calc(136px + env(safe-area-inset-bottom)); max-height: 58vh; }
+}
+/* Открытая клавиатура поднимает фиксированную панель над собой, и та
+   закрывает поле, в которое человек пишет. Пока фокус в поле — панели нет. */
+@media (max-width: 640px) {
+  /* Галочки и переключатели клавиатуры не открывают — на них панель остаётся. */
+  .shell:has(input:not([type="checkbox"]):not([type="radio"]):focus, textarea:focus, select:focus, [contenteditable]:focus) .side .grp-work { display: none; }
+  .side .grp-work .navi-t { overflow: hidden; text-overflow: ellipsis; }
+}
+/* Первый файл (tab_import.jsx: ImpFirstFile): одна большая зона, дальше —
+   один вопрос про язык и одна кнопка. */
+.first-file { display: flex; flex-direction: column; gap: 14px; max-width: 640px; margin: 0 auto; }
+.dropzone.dropzone-big { padding: 44px 20px; }
+/* Текст только для читалки экрана: номер шага и «пройден» (app.jsx). */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }

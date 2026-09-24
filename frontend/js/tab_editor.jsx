@@ -2664,7 +2664,7 @@ function TabEditor({ store, toast }) {
       // залипающей панели намеренно — таблица длинная, а полоса нужна на
       // экране всё время, пока идёт работа: на ней и остановка.
       job && React.createElement(RunStrip, {
-        job: job, steps: runStepRows(job, runSnap), onStop: stopJob })
+        job: job, steps: runStepRows(job, runSnap), onStop: stopJob, plain: !expertUI })
     ),
 
     // ---- Segment filter banner ----
@@ -3151,7 +3151,13 @@ function spendTitle(sp) {
     + (sp.unpriced ? TR("\n\nВызовов по модели без цены: ") + sp.unpriced + TR(". Они в сумму НЕ входят.") : "");
 }
 
-function RunStrip({ job, steps, onStop }) {
+/* plain — человек, а не эксперт: заголовок говорит ЧТО делается его словами
+   («Перевожу и проверяю… 120 из 2700 строк»), а имена шагов (back-check,
+   ревизия, ремонт) в полосу не выходят (инвариант 32). «Строк» — только
+   у видов, где total и есть строки: у разбора картинок это картинки. */
+const RUN_PLAIN = { full: TR("Перевожу и проверяю…"), translate: TR("Перевожу…"),
+                    apply_terms: TR("Применяю слова из словаря…") };
+function RunStrip({ job, steps, onStop, plain }) {
   const spend = spendOf(job);
   const pct = Math.round(job.done / Math.max(1, job.total) * 100);
   /* Место в очереди считает СЕРВЕР (`queuePos`/`queueAhead`): исполнитель
@@ -3179,8 +3185,11 @@ function RunStrip({ job, steps, onStop }) {
     React.createElement(Spinner, null),
     React.createElement("div", { className: "rs-main" },
       React.createElement("div", { className: "rs-title" },
-        React.createElement("span", null, (JOB_LABELS[job.kind] || job.kind) + " — " + phase),
-        React.createElement("span", { className: "rs-num" }, job.done + TR(" из ") + job.total),
+        plain && RUN_PLAIN[job.kind] && !job.stopping && job.status !== "queued"
+          ? React.createElement("span", null, RUN_PLAIN[job.kind])
+          : React.createElement("span", null, (JOB_LABELS[job.kind] || job.kind) + " — " + phase),
+        React.createElement("span", { className: "rs-num" }, job.done + TR(" из ") + job.total
+          + (plain && RUN_PLAIN[job.kind] ? TR(" строк") : "")),
         spend && !costHidden() && React.createElement("span", { className: "rs-num", title: spendTitle(spend) },
           TR("потрачено ") + fmtCost(spend.cost)
           + (spend.est != null ? TR(" из ≈ ") + fmtCost(spend.est) : "")),
@@ -3190,7 +3199,7 @@ function RunStrip({ job, steps, onStop }) {
     React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop, disabled: !!job.stopping },
       job.stopping ? TR("Останавливаем…") : TR("Остановить")),
 
-    steps.length > 0 && React.createElement("div", { className: "run-steps" },
+    !plain && steps.length > 0 && React.createElement("div", { className: "run-steps" },
       steps.map(st => React.createElement("span", {
         key: st.key,
         className: "run-step " + (st.complete ? "ok" : "on"),
@@ -3731,6 +3740,7 @@ function NoProject({ store }) {
       title: store.projects.length ? TR("Файл не выбран") : TR("Файлов пока нет"),
       sub: store.projects.length ? TR("Откройте файл на экране «Проекты».")
                                  : TR("Начните с проекта: положите в него файл — он разобьётся на строки, а перевод и проверки запустятся одной кнопкой."),
-      action: React.createElement(Btn, { variant: "primary", icon: "folder", onClick: () => store.go("import") }, TR("К проектам")) }));
+      action: React.createElement(Btn, { variant: "primary", icon: "folder", onClick: () => store.go("import") },
+        store.projects.length ? TR("Открыть файл") : TR("Начать перевод")) }));
 }
 window.TabEditor = TabEditor;

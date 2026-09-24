@@ -1757,10 +1757,33 @@ class _AnthropicChat:
                   usage=usage)
 
 
+_GATE_SESSION = threading.local()     # сессия запроса в потоках `_run_parallel`
+
+
+def _llm_limit_gate() -> None:
+    """Второй рубеж лимита расхода — в ЕДИНСТВЕННОЙ точке, через которую
+    идут все вызовы чата. Первый — таблица путей `_PAID` в `require_token`,
+    и он держится на том, что сырой путь запроса совпал с регулярным
+    выражением; однажды не совпал (номер «+1» вместо «1»), и платные двери
+    переводили без лимита. Здесь пути нет, есть только факт: запрос ВОШЕДШЕГО
+    человека (прогон свой рубеж держит между порциями и сюда не заходит —
+    в его потоках сессии нет) зовёт модель на деньги организации, у которой
+    месячный лимит исчерпан. Такой вызов не делается. Двери, которые на
+    исчерпанном лимите работают без модели намеренно (одобрение без судьи,
+    извлечение правок на `/confirm`), спрашивают лимит сами раньше —
+    до этой строки они не доходят."""
+    sess = CURRENT_SESSION.get() or getattr(_GATE_SESSION, "s", None)
+    if not sess or sess.get("super"):
+        return
+    if _spend_status(sess.get("tenant"))["over"]:
+        raise HTTPException(402, "Месячный лимит расхода организации исчерпан")
+
+
 def _llm_client(model, timeout: float = 90, max_retries: int = 1):
     """Клиент под поставщика модели. Импорт SDK — в момент вызова, а не
     модуля: тесты подменяют sys.modules["openai"] / ["anthropic"], и сервис
     без одного из SDK живёт, пока его модель не выбрана."""
+    _llm_limit_gate()
     m = model if isinstance(model, dict) else _resolve_model(model)
     if _provider_of(m) == "anthropic":
         import anthropic
@@ -1961,6 +1984,7 @@ REPAIR_DEFAULT_MODEL = os.environ.get("REPAIR_MODEL", JUDGE_DEFAULT_MODEL)
 
 def _openai_embed(texts: list) -> list:
     import openai
+    _llm_limit_gate()        # эмбеддинги стоят денег так же (`AUX_MODEL_PRICES`)
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=60, max_retries=2)
     resp = client.embeddings.create(model=EMBED_MODEL, input=texts)
     _note_usage("embed", EMBED_MODEL, resp)
@@ -3657,11 +3681,80 @@ def _user_by_email(email: str) -> Optional[dict]:
     return None
 
 
+def _email_key(email: str) -> str:
+    """Ключ ЧЕЛОВЕКА за адресом: `+метка` снимается у всех, точки — у gmail
+    (там они не значат ничего), googlemail — это gmail. Нужен ровно одному:
+    одна регистрация на один почтовый ящик. Иначе `me+1@`, `me+2@`, `m.e@`
+    приходят в одну папку «Входящие» и дают сколько угодно пробных периодов
+    и приглашений самому себе (разбор 24.09.2026). Сам адрес хранится как
+    ввёл человек — письма уходят на него."""
+    e = (email or "").strip().lower()
+    if "@" not in e:
+        return e
+    local, dom = e.rsplit("@", 1)
+    local = local.split("+", 1)[0]
+    if dom in ("gmail.com", "googlemail.com"):
+        dom = "gmail.com"
+        local = local.replace(".", "")
+    return local + "@" + dom
+
+
+def _user_by_email_key(email: str) -> Optional[dict]:
+    key = _email_key(email)
+    for u in _users():
+        if u.get("email") and _email_key(u["email"]) == key:
+            return u
+    return None
+
+
+def _verify_same_box(user: dict) -> None:
+    """Подтверждение почты — момент, когда ящик получает владельца. Второй
+    подтверждённой записи на тот же ящик (`me+2@` при подтверждённом `me@`)
+    не бывает — 409; прочие неподтверждённые записи на этот ящик снимаются."""
+    key = _email_key(user.get("email") or "")
+    others = [x for x in _users() if x is not user and x.get("email")
+              and _email_key(x["email"]) == key]
+    if any(x.get("emailVerified") for x in others):
+        raise HTTPException(409, "Такая почта уже зарегистрирована — войдите или "
+                                 "восстановите пароль")
+    for x in others:
+        _drop_unverified_squatter(x, fresh_ok=True)
+
+
+def _drop_unverified_squatter(u: dict, fresh_ok: bool = False) -> bool:
+    """Регистрацию, почту которой так и не подтвердили, новая регистрация
+    на тот же ящик ЗАМЕНЯЕТ — если за ней ничего нет (ни проектов, ни других
+    людей, ни команд). Иначе кто угодно занимал чужой адрес своим паролем:
+    хозяин почты получал 409, шёл восстанавливать пароль — и работал
+    в организации, где пароль знает ещё и захватчик, а метка приглашения
+    платила ему процент со всех пополнений (разбор 24.09.2026)."""
+    if u.get("emailVerified") or u.get("super") or u.get("memberships"):
+        return False
+    # Свежую регистрацию не трогаем, пока жив её код: иначе посторонний
+    # сбивал бы чужую регистрацию, повторяя её каждую минуту.
+    if not fresh_ok and time.time() - float(u.get("registeredAt") or 0) < CODE_TTL:
+        return False
+    tid = u.get("tenant")
+    if any(x is not u and (x.get("tenant") == tid or _member_role(x, tid)) for x in _users()):
+        return False
+    if any(p.get("tenant") == tid for p in STATE.get("projects") or []):
+        return False
+    _users().remove(u)
+    rec = _tenant_rec(tid)
+    if rec is not None and rec.get("signup"):
+        _tenants().remove(rec)
+    _drop_user_sessions(u["id"])
+    return True
+
+
 def _check_email(email: str) -> str:
     e = (email or "").strip().lower()
     if not _EMAIL_RE.match(e) or len(e) > 190:
         raise HTTPException(400, "Неверный адрес почты")
     return e
+
+
+CODE_FAILS_PER_DAY = int(os.environ.get("CODE_FAILS_PER_DAY", "") or 20)
 
 
 def _issue_code(user: dict, kind: str) -> str:
@@ -3686,14 +3779,29 @@ def _check_code(user: dict, code: str, kind: str, ip: str = "") -> None:
         raise HTTPException(400, AUTH_CODE_BAD)
     if rec.get("tries", 0) >= CODE_MAX_TRIES:
         raise HTTPException(429, "Слишком много попыток — запросите новый код")
+    # Потолок неверных кодов НА УЧЁТНУЮ ЗАПИСЬ за сутки, поверх потолка на
+    # код: коды перевыпускаются через «забыл пароль», и пять попыток на
+    # каждый новый код с тысячи адресов (IPv6 даёт их без счёта) подбирали
+    # шестизначный код к чужой организации за дни (разбор 24.09.2026).
+    # Два уровня, чтобы посторонний не запирал чужой вход: с одной сети
+    # (`ip` — уже корзина /64) — `CODE_FAILS_PER_DAY`, на учётную запись
+    # всего — вдесятеро больше. Удачный ввод счёт обнуляет.
+    now = time.time()
+    fails = [f for f in (user.get("codeFails") or [])
+             if isinstance(f, list) and len(f) == 2 and now - f[0] < 86400]
+    mine = sum(1 for f in fails if f[1] == ip)
+    if mine >= CODE_FAILS_PER_DAY or len(fails) >= CODE_FAILS_PER_DAY * 10:
+        raise HTTPException(429, "Слишком много попыток — повторите завтра")
     h, _ = _hash_password((code or "").strip(), rec.get("salt") or "")
     if not hmac.compare_digest(h, rec.get("hash") or ""):
+        user["codeFails"] = (fails + [[now, ip]])[-CODE_FAILS_PER_DAY * 10:]
         rec["tries"] = rec.get("tries", 0) + 1
         save_state(STATE)
         if ip:
             _note_login_fail(ip)
         raise HTTPException(400, AUTH_CODE_BAD)
     user.pop("authCode", None)
+    user.pop("codeFails", None)
 
 
 def _signup_blocked(ip: str) -> bool:
@@ -3891,11 +3999,38 @@ def _client_ip(request: Request) -> str:
     запрос. Ровно то же и в журнале: подделанный адрес попадал в след
     неудачного входа как настоящий."""
     fwd = request.headers.get("x-forwarded-for", "")
+    ip = ""
     if fwd:
         parts = [p.strip() for p in fwd.split(",") if p.strip()]
         if parts:
-            return parts[-1]
-    return request.client.host if request.client else "?"
+            ip = parts[-1]
+    if not ip:
+        ip = request.client.host if request.client else "?"
+    return ip
+
+
+def _rate_ip(request: Request) -> str:
+    """Ключ потолков частоты — адрес, а у IPv6 — его сеть /64. Сам адрес
+    (`_client_ip`) остаётся для следа: согласие с офертой, журнал входов."""
+    return _ip_bucket(_client_ip(request))
+
+
+def _ip_bucket(ip: str) -> str:
+    """IPv6 — по сети /64, а не по адресу: провайдер выдаёт абоненту целую
+    /64, и каждый потолок частоты (вход, регистрация, коды) обходился бы
+    сменой адреса внутри своей же сети — их там 2⁶⁴ (разбор 24.09.2026)."""
+    if ":" not in ip:
+        return ip
+    try:
+        import ipaddress
+        a = ipaddress.ip_address(ip)
+        if a.version == 6 and not a.ipv4_mapped:
+            return str(ipaddress.ip_network(ip + "/64", strict=False))
+        if a.version == 6 and a.ipv4_mapped:
+            return str(a.ipv4_mapped)
+    except ValueError:
+        pass
+    return ip
 
 
 def _login_blocked(ip: str) -> bool:
@@ -3966,10 +4101,23 @@ def _limit_402(st: dict, tenant: Optional[str]) -> JSONResponse:
         status_code=402)
 
 
+# Всё, что pydantic прочтёт как целое число, кроме канонической записи цифрами.
+_NUMERIC_LOOSE = re.compile(r"^\s*[+-]?[\d_]+(?:\.0*)?\s*$")
+
 @app.middleware("http")
 async def require_token(request: Request, call_next):
     """Одна точка проверки: новый /api/* эндпоинт защищён автоматически."""
     path = request.url.path
+    # Номер в пути — ТОЛЬКО цифрами. Таблицы `_PAID` и `_OWNER_ONLY` сверяют
+    # сырой путь с `\d+`, а FastAPI превращает в `int` и «+1», « 1», «1.0»,
+    # «0_1»: `/api/projects/+5/batch` проходил мимо рубежа 402 и переводил
+    # без лимита, а `DELETE /api/projects/+5` удалял файл без роли владельца
+    # (разбор 24.09.2026). Закрываем здесь, одной строкой на все двери:
+    # правка каждого регулярного выражения оставила бы следующую дверь открытой.
+    if path.startswith("/api/") and any(
+            _NUMERIC_LOOSE.match(part) and not part.isdigit()
+            for part in path.split("/")):
+        return JSONResponse({"ok": False, "error": "Не найдено"}, status_code=404)
     # Служебные ручки бота закрыты для ВСЕХ, кроме самого бота. Обход входа
     # (`_service_call`) — это разрешение, а не ограничение: без явного отказа
     # любой вошедший (в том числе сам тестировщик) заводил бы себе новые
@@ -4834,7 +4982,8 @@ class LoginRequest(BaseModel):
 
 @app.post("/api/auth/login")
 def login(req: LoginRequest, request: Request):
-    ip = _client_ip(request)
+    ip = _rate_ip(request)
+    raw_ip = _client_ip(request)
     if _login_blocked(ip):
         raise HTTPException(429, "Слишком много попыток входа. Повторите через 15 минут.")
     _ensure_users()
@@ -4859,7 +5008,7 @@ def login(req: LoginRequest, request: Request):
         # (инвариант 14) у всех организаций разом, да ещё сложил бы чужой
         # мусор с произвольной строкой в организацию по умолчанию.
         if user is not None:
-            _audit("login.fail", _tenant=user.get("tenant"), ip=ip,
+            _audit("login.fail", _tenant=user.get("tenant"), ip=raw_ip,
                    triedLogin=login_name[:64])
         raise HTTPException(401, "Неверный логин или пароль")
     # Незавершённая регистрация — не «неверный пароль»: человек ввёл всё
@@ -4908,7 +5057,7 @@ def login(req: LoginRequest, request: Request):
             _SESSIONS[token]["tenant"], _SESSIONS[token]["role"] = seat["tenant"], seat["role"]
     tok = CURRENT_SESSION.set(_SESSIONS[token])
     try:
-        _audit("login", ip=ip)
+        _audit("login", ip=raw_ip)
     finally:
         CURRENT_SESSION.reset(tok)
     # След ПОСЛЕДНЕГО входа лежит на самой записи, а не только в журнале:
@@ -4916,7 +5065,7 @@ def login(req: LoginRequest, request: Request):
     # раз» — вопрос, ответ на который не должен вытесняться чужой работой.
     # Тот же закон, что у подписи заверения (инвариант 14).
     user["lastLogin"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    user["lastIp"] = ip
+    user["lastIp"] = raw_ip
     user["loginCount"] = int(user.get("loginCount") or 0) + 1
     save_state(STATE)
     return {"ok": True, "token": token, "expiresIn": SESSION_TTL,
@@ -5013,7 +5162,8 @@ def register(req: RegisterRequest, request: Request):
     if not SIGNUP_ENABLED:
         raise HTTPException(403, "Самостоятельная регистрация выключена — "
                                  "обратитесь к администратору сервиса")
-    ip = _client_ip(request)
+    ip = _rate_ip(request)
+    raw_ip = _client_ip(request)
     if _signup_blocked(ip):
         raise HTTPException(429, "Слишком много регистраций с этого адреса. Повторите через час.")
     _ensure_users()
@@ -5025,7 +5175,19 @@ def register(req: RegisterRequest, request: Request):
     if not req.accept:
         raise HTTPException(400, "Без согласия с офертой и политикой обработки "
                                  "персональных данных регистрация невозможна")
-    if _user_by_email(email) or _user_by_login(email):
+    old = _user_by_email(email)
+    replaced = False
+    if old is not None and not old.get("emailVerified") and _drop_unverified_squatter(old):
+        old, replaced = None, True
+    if old is None:
+        # Тот же ящик под другим написанием мешает, только если его уже
+        # ПОДТВЕРДИЛИ: неподтверждённое `victim+x@` иначе запирало бы
+        # регистрацию хозяину ящика. Кто подтвердит первым — тот и владелец
+        # (`_verify_same_box`).
+        same = _user_by_email_key(email)
+        if same is not None and same.get("emailVerified"):
+            old = same
+    if old is not None or _user_by_login(email):
         # Отказ честный (человеку надо войти, а не регистрироваться), но
         # он же отвечает на вопрос «есть ли у вас такой клиент». Поэтому
         # у проб свой потолок на адрес: перебор базы стоит не больше
@@ -5073,11 +5235,15 @@ def register(req: RegisterRequest, request: Request):
     # старте вернул бы запись к DEFAULT_UI_LANG.
     lang = _asked_lang(req.uiLang)
     user = {"id": max((x["id"] for x in _users()), default=0) + 1, "tenant": tid,
-            "login": email, "email": email, "emailVerified": False,
+            "login": email, "email": email, "emailVerified": False, "registeredAt": time.time(),
+            # Эта регистрация заменила чужую неподтверждённую: код подтверждения
+            # впустит только с ЕЁ паролем (`verify_email`).
+            **({"replacedOther": True} if replaced else {}),
             "hash": h, "salt": salt, "role": "owner", "name": (req.name or "").strip() or email.split("@")[0],
             "active": True, "uiLang": lang or DEFAULT_UI_LANG, "created": today,
             "acceptedTerms": {"version": (legal_mod.VERSION if legal_mod else ""),
-                              "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ip": ip}}
+                              "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ip": raw_ip,
+                              "net": ip}}
     if lang:
         user["uiLangSet"] = True
     _users().append(user)
@@ -5103,7 +5269,7 @@ def register(req: RegisterRequest, request: Request):
     _SIGNUP_FAILS.setdefault(ip, []).append(time.time())
     tok = CURRENT_SESSION.set({"tenant": tid, "user": user["id"], "role": "owner"})
     try:
-        _audit("signup", email=email, tenant_new=tid, ip=ip)
+        _audit("signup", email=email, tenant_new=tid, ip=raw_ip)
     finally:
         CURRENT_SESSION.reset(tok)
     save_state(STATE)
@@ -5121,9 +5287,14 @@ def register(req: RegisterRequest, request: Request):
                      "запросите его у администратора.")}
 
 
+VERIFY_REPLACED_409 = ("Регистрацию на эту почту сделали заново с другим паролем. "
+                       "Задайте свой пароль через «Забыли пароль?»")
+
+
 @app.post("/api/auth/verify")
 def verify_email(req: CodeRequest, request: Request):
-    ip = _client_ip(request)
+    ip = _rate_ip(request)
+    raw_ip = _client_ip(request)
     if _login_blocked(ip):
         raise HTTPException(429, "Слишком много попыток. Повторите через 15 минут.")
     user = _user_by_email(_check_email(req.email))
@@ -5135,7 +5306,17 @@ def verify_email(req: CodeRequest, request: Request):
     # прежнее {"already": true} без проверки кода говорило любому, что
     # такая учётная запись есть и она рабочая. Кода у такого человека нет
     # (`_check_code` его и не найдёт), а фронтенд `already` не читал.
+    if user.get("replacedOther") and not _verify_password(user, req.password or ""):
+        # Регистрацию на этот адрес заменили. Код приходит в ящик хозяина,
+        # а пароль мог выбрать посторонний, — впустить по коду значило бы
+        # отдать хозяину почты организацию, куда входит и чужой. Свой пароль
+        # хозяин задаёт через «Забыли пароль?»: сброс снимает и чужой пароль.
+        _hash_password((req.code or "").strip(), _DUMMY_SALT)
+        _note_login_fail(ip)
+        raise HTTPException(409, VERIFY_REPLACED_409)
     _check_code(user, req.code, "verify", ip)
+    _verify_same_box(user)
+    user.pop("replacedOther", None)
     user["emailVerified"] = True
     token = _new_session(user)
     tok = CURRENT_SESSION.set(_SESSIONS[token])
@@ -5160,7 +5341,8 @@ def verify_email(req: CodeRequest, request: Request):
 def resend_code(req: CodeRequest, request: Request):
     """Повторный код подтверждения. Ответ одинаков при любом адресе:
     иначе эта дверь отвечала бы на вопрос «а есть ли у вас такой клиент»."""
-    ip = _client_ip(request)
+    ip = _rate_ip(request)
+    raw_ip = _client_ip(request)
     email = _check_email(req.email)
     if _code_req_blocked(ip):
         raise HTTPException(429, "Слишком много запросов. Повторите через час.")
@@ -5179,7 +5361,8 @@ def resend_code(req: CodeRequest, request: Request):
 
 @app.post("/api/auth/forgot")
 def forgot_password(req: CodeRequest, request: Request):
-    ip = _client_ip(request)
+    ip = _rate_ip(request)
+    raw_ip = _client_ip(request)
     email = _check_email(req.email)
     if _code_req_blocked(ip):
         raise HTTPException(429, "Слишком много запросов. Повторите через час.")
@@ -5196,7 +5379,8 @@ def forgot_password(req: CodeRequest, request: Request):
 
 @app.post("/api/auth/reset")
 def reset_password(req: CodeRequest, request: Request):
-    ip = _client_ip(request)
+    ip = _rate_ip(request)
+    raw_ip = _client_ip(request)
     if _login_blocked(ip):
         raise HTTPException(429, "Слишком много попыток. Повторите через 15 минут.")
     _check_user_fields(None, req.password, None)   # ДО поиска: иначе текст отказа — оракул
@@ -5206,7 +5390,17 @@ def reset_password(req: CodeRequest, request: Request):
         _note_login_fail(ip)
         raise HTTPException(400, AUTH_CODE_BAD)
     _check_code(user, req.code, "reset", ip)
+    if not user.get("emailVerified"):
+        _verify_same_box(user)
+        # Почту подтверждают ВПЕРВЫЕ через «забыл пароль» — значит
+        # регистрацию делал не хозяин ящика (иначе он подтвердил бы её
+        # кодом): метка приглашения на такой организации — чужая, и платить
+        # по ней процент со всех будущих пополнений нельзя (разбор 24.09.2026).
+        trec = _tenant_rec(user.get("tenant") or "")
+        if trec is not None and trec.get("signup") and trec.get("refBy") and not trec.get("refPaidAt"):
+            trec.pop("refBy", None)
     user["hash"], user["salt"] = _hash_password(req.password)
+    user.pop("replacedOther", None)     # пароль теперь задал хозяин ящика
     user["emailVerified"] = True        # код пришёл на эту почту — она рабочая
     with _AUTH_LOCK:                    # прежние сессии закрываем
         for t in [t for t, sess in _SESSIONS.items() if sess["user"] == user["id"]]:
@@ -5305,14 +5499,41 @@ def _is_super(request: Request) -> bool:
     return bool((getattr(request.state, "session", None) or CURRENT_SESSION.get() or {}).get("super"))
 
 
+def _admin_home(request: Request, me: dict) -> str:
+    """Организация, чьими людьми правит этот запрос, — ДОМАШНЯЯ, и только
+    когда она же и АКТИВНА. Рубеж `_OWNER_ONLY` проверяет роль в АКТИВНОЙ
+    команде, а эти двери правят людей ДОМАШНЕЙ организации: без сверки
+    переводчик заводил свою команду (там он владелец), переключался в неё
+    и правил роли и пароли у себя дома — вплоть до пароля суперпользователя
+    организации `default` (разбор 24.09.2026)."""
+    home = me.get("tenant")
+    if not _is_super(request) and _current_tenant() != home:
+        raise HTTPException(403, "Людьми организации управляют, находясь в ней самой")
+    return home
+
+
+def _admin_target(request: Request, me: dict, uid: int) -> dict:
+    """Человек, которого правит владелец: своей организации и НЕ суперпользователь
+    (запись администратора сервиса владельцу чужих людей не принадлежит).
+    Чужой — 404, а не 403: 403 подтверждал бы существование."""
+    home = _admin_home(request, me)
+    sup = _is_super(request)
+    u = next((x for x in _users() if x["id"] == uid
+              and (sup or (x.get("tenant") == home and not x.get("super")))), None)
+    if not u:
+        raise HTTPException(404, "Пользователь не найден")
+    return u
+
+
 @app.get("/api/admin/users")
 def admin_users(request: Request, all: bool = False):
     """Владелец — своих; суперпользователь с `all=1` — всех, с организацией."""
     me = _current_user(request)
     if all and not _is_super(request):
         raise HTTPException(403, "Все пользователи — только суперпользователю")
+    home = me.get("tenant") if all else _admin_home(request, me)
     return {"ok": True, "users": [_user_public(u) for u in _users()
-                                  if all or u.get("tenant") == me.get("tenant")]}
+                                  if all or u.get("tenant") == home]}
 
 
 @app.post("/api/admin/users")
@@ -5322,7 +5543,7 @@ def admin_user_create(req: UserCreate, request: Request):
     _check_user_fields(req.login, req.password, req.role)
     if _user_by_login(req.login):
         raise HTTPException(409, "Такой логин уже есть")
-    tenant = me.get("tenant")
+    tenant = _admin_home(request, me)
     if req.tenant and req.tenant != tenant:
         if not _is_super(request):
             raise HTTPException(403, "Пользователей в другой организации заводит только суперпользователь")
@@ -5347,10 +5568,7 @@ def admin_user_create(req: UserCreate, request: Request):
 def admin_user_update(uid: int, req: UserPatch, request: Request):
     _audit("user.update", target=uid)
     me = _current_user(request)
-    u = next((x for x in _users() if x["id"] == uid
-              and (x.get("tenant") == me.get("tenant") or _is_super(request))), None)
-    if not u:
-        raise HTTPException(404, "Пользователь не найден")
+    u = _admin_target(request, me, uid)
     _check_user_fields(None, req.password, req.role)
     if req.role is not None:
         if u["id"] == me["id"] and req.role != "owner":
@@ -5654,6 +5872,9 @@ def profile_invite_decide(iid: str, req: InviteDecision, request: Request):
         if not _tenant_rec(tid):
             raise HTTPException(404, "Команда удалена")
         if _member_role(u, tid) is None:
+            if len(_memberships(u)) >= TEAM_MAX_PER_USER:
+                raise HTTPException(409, "Больше %d команд на одного человека нельзя"
+                                    % TEAM_MAX_PER_USER)
             u.setdefault("memberships", []).append(
                 {"tenant": tid, "role": inv.get("role", "translator"),
                  "since": datetime.now().strftime("%Y-%m-%d")})
@@ -5684,11 +5905,22 @@ def team_create(req: TeamCreate, request: Request):
     name = (req.name or "").strip()
     if not (2 <= len(name) <= 64):
         raise HTTPException(400, "Название команды: 2–64 символа")
-    if len(_memberships(u)) >= TEAM_MAX_PER_USER:
+    # Потолок считает и СОЗДАННЫЕ человеком команды, а не только нынешние
+    # членства: иначе «пригласить свой второй адрес владельцем → выйти →
+    # создать ещё» давало бы команд без счёта (разбор 24.09.2026).
+    created = sum(1 for t in _tenants() if t.get("team") and t.get("createdBy") == u["id"])
+    if max(len(_memberships(u)), created) >= TEAM_MAX_PER_USER:
         raise HTTPException(409, "Больше %d команд на одного человека нельзя" % TEAM_MAX_PER_USER)
     tid = _new_tenant_id(name)
+    # Команда НЕ получает пробный бюджет: ни денег, ни страниц. Пробный
+    # период — один на человека (его домашняя организация), а команда —
+    # рабочее пространство, которое наполняет администратор сервиса.
+    # Прежде каждая команда получала SIGNUP_TRIAL_USD в месяц и НЕ имела
+    # потолка страниц (`pagesCredit` не заведён) — то есть переводила файлы
+    # целиком, и пять команд на человека были пятью пробными периодами.
     _tenants().append({"id": tid, "name": name, "created": datetime.now().strftime("%Y-%m-%d"),
-                       "active": True, "team": True, "limitUsd": SIGNUP_TRIAL_USD,
+                       "active": True, "team": True, "limitUsd": 0.0,
+                       "pagesCredit": 0.0, "pagesUsed": 0.0,
                        "createdBy": u["id"]})
     u.setdefault("memberships", []).append(
         {"tenant": tid, "role": "owner", "since": datetime.now().strftime("%Y-%m-%d")})
@@ -6195,10 +6427,7 @@ def admin_user_delete(uid: int, request: Request):
     самостоятельных регистраций. Два запрета: себя и последнего владельца
     организации (иначе у неё не останется никого, кто вправе её вести)."""
     me = _current_user(request)
-    u = next((x for x in _users() if x["id"] == uid
-              and (x.get("tenant") == me.get("tenant") or _is_super(request))), None)
-    if not u:
-        raise HTTPException(404, "Пользователь не найден")
+    u = _admin_target(request, me, uid)
     if u["id"] == me["id"]:
         raise HTTPException(400, "Нельзя удалить самого себя")
     if u.get("role") == "owner":
@@ -6350,7 +6579,7 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
     if req.maxProjects is not None and req.maxProjects < 0 and not req.clearMaxProjects:
         raise HTTPException(400, "Потолок проектов не может быть отрицательным")
     if req.addPages:
-        _pages_topup(tid, float(req.addPages), (req.note or "").strip() or None)
+        _pages_topup(tid, float(req.addPages), (req.note or "").strip() or None, paid=True)
         if float(req.addPages) > 0:
             # Клиент оплатил — больше не пробный: файл сверх остатка снова
             # отвечает 402 с просьбой пополнить, а не режется фрагментом.
@@ -7854,7 +8083,10 @@ def _scan_quote(content: bytes, filename: str, src: str, tgt: str, card: dict,
         total = e.pages
     else:
         raise HTTPException(400, "У файла есть текстовый слой — считайте обычной сметой, она бесплатна")
-    k = min(int(sample) if sample else textcount.SCAN_SAMPLE_PAGES, total)
+    # Выборка — не больше двух штатных: страница скана — вызов зрячей модели,
+    # и `sample=10000` читал бы за один запрос всю книгу (разбор 24.09.2026).
+    k = min(max(1, min(int(sample), 2 * textcount.SCAN_SAMPLE_PAGES)) if sample
+            else textcount.SCAN_SAMPLE_PAGES, total)
     idx = textcount.sample_indices(total, k)
     pages = textcount.pdf_page_pictures(content, idx)
     mdl = _resolve_model(_dm("ocr"))
@@ -9601,11 +9833,17 @@ def create_project(req: CreateProjectRequest):
     # и якоря картинок именуются им) и ОБЩИЙ с папками (`_next_id`). Сегментов
     # у нового проекта НЕТ: прежде сюда копировались восемь сегментов первого
     # проекта в списке — то есть текст одного клиента оказывался в проекте другого.
+    caps = _tenant_caps(_current_tenant())
+    if caps["maxProjects"] and len(_tenant_projects()) >= caps["maxProjects"]:
+        _ev("cap.projects402", _current_tenant())
+        raise HTTPException(402, "В организации уже %d файлов, а потолок %d: удалите ненужные"
+                            % (len(_tenant_projects()), caps["maxProjects"]))
     new_id = _next_id()
     new_project = {
         "id": new_id,
         "title": req.title or "Новый проект",
         "titleEn": req.title or "New Project",
+        "createdEmpty": True,           # см. `_image_pages_of`
         "src": src, "tgt": tgt,
         "domain": domain,
         "tenant": _current_tenant(),
@@ -10125,7 +10363,13 @@ def _image_pages_of(p: dict, card: dict) -> float:
     раз не считаются. Со счётчиком организации это лишь «сколько есть
     сейчас»: списывает `_book_image_pages` сверх высшей точки
     `imagePagesBooked`, поэтому снятие и удаление страниц не возвращают."""
-    if p.get("pages") is None:
+    if p.get("pages") is None and not (
+            p.get("createdEmpty") and (_tenant_rec(_tenant_of(p)) or {}).get("pagesUsed") is not None):
+        # Исключение — пустой проект из `create_project` у организации со
+        # счётчиком: его объём по сегментам в `pagesUsed` не входил никогда
+        # (счётчик заводят загрузки), и без исключения текст с его картинок
+        # не списывался бы НИКОГДА (разбор 24.09.2026). Старые проекты без
+        # `pages` сюда не попадают: их сегменты уже сосчитаны строкой `init`.
         return 0.0
     texts = [sg.get("source") or "" for sg in p.get("segments") or []
              if (sg.get("origin") or {}).get("kind") == "image"]
@@ -10159,7 +10403,7 @@ def _pages_init(rec: dict, tid: str) -> None:
         _pages_log(rec, "init", rec["pagesUsed"])
 
 
-def _pages_topup(tid: str, pages: float, note: Optional[str]) -> None:
+def _pages_topup(tid: str, pages: float, note: Optional[str], paid: bool = False) -> None:
     """Пополнение (отрицательное — исправление). Первое пополнение заводит
     счётчик и начинается от лимита из окружения, который ложится в журнал
     отдельной строкой (`note: env`): иначе «+100» у организации с лимитом 200
@@ -10181,6 +10425,11 @@ def _pages_topup(tid: str, pages: float, note: Optional[str]) -> None:
         if fresh and TENANT_MAX_PAGES:
             _pages_log(rec, "credit", TENANT_MAX_PAGES, note="env")
         rec["pagesCredit"] = new
+        if pages > 0 and paid:
+            # Долг ручных правок гасит только ПОПОЛНЕНИЕ администратором,
+            # а не подарки (регистрация, приглашение): иначе бонус за
+            # приглашение открывал бы новый минус.
+            rec.pop("handOverdraft", None)
         _pages_log(rec, "credit", pages, note=note)
 
 
@@ -10277,6 +10526,10 @@ HAND_PAGES_REFUSE_MIN = float(os.environ.get("HAND_PAGES_REFUSE_MIN", "") or 0.5
 # «да» не читая. Порог ОДИН на вопрос и на надпись, и живёт он на сервере:
 # копия в `.jsx` разошлась бы, и браузер спрашивал бы не про то, что списано.
 HAND_PAGES_ASK_MIN = float(os.environ.get("HAND_PAGES_ASK_MIN", "") or 0.1)
+# Сколько оплаченных вариантов текста помнит строка (`seg["handPaid"]`).
+HAND_PAID_KEEP = 20
+# Сколько страниц мелкие правки вправе увести в минус при исчерпанном лимите.
+HAND_PAGES_OVERDRAFT = float(os.environ.get("HAND_PAGES_OVERDRAFT", "") or 1.0)
 
 
 def _hand_free_pages(project: dict, card: dict) -> float:
@@ -10287,7 +10540,8 @@ def _hand_free_pages(project: dict, card: dict) -> float:
                pages * HAND_PAGES_FREE_CAP)
 
 
-def _hand_pages_quote(project: dict, tid: str, card: dict, seg: dict, new: str) -> dict:
+def _hand_pages_quote(project: dict, tid: str, card: dict, seg: dict, new: str,
+                      mode: str = "fix") -> dict:
     """Что даст эта правка: сколько дописано и сколько из этого к списанию.
     Ничего не меняет — числа называются ДО нажатия (`dry_run` отдаёт их
     браузеру), на них же стоит рубеж 402, и ими же отчитывается тост.
@@ -10308,7 +10562,29 @@ def _hand_pages_quote(project: dict, tid: str, card: dict, seg: dict, new: str) 
     now = _pages_exact([new], lang, card)
     base = max(float(seg.get("handPeak") or 0.0),
                _pages_exact([seg.get("source") or ""], lang, card))
-    grew = max(0.0, now - base)
+    # «Другая строка» (`mode == "new"`) — это НОВЫЙ текст, и платится он
+    # ЦЕЛИКОМ. Мерить его от высшей точки строки нельзя: заменить оплаченный
+    # абзац чужим той же длины стоило бы ноль, и книга переводилась бы
+    # по одной оплаченной странице — вписывай кусок, переводи, вписывай
+    # следующий (разбор «перевод бесплатно», 24.09.2026). Высшая точка
+    # честна только у ПОПРАВКИ: там текст тот же, меняется начертание.
+    # Возврат к тексту, за который строка УЖЕ заплатила (текст файла либо
+    # оплаченная прежде вставка), бесплатен: «вставил не туда → стёр →
+    # вернул» — работа редактора, а не новый объём.
+    paid = set(seg.get("handPaid") or [])
+    orig = (seg.get("sourceEdited") or {}).get("from") or seg.get("source") or ""
+    paid.add(_text_hash(orig.strip()))
+    # «Другая ли строка» для ДЕНЕГ меряется не от прошлой правки, а от
+    # ОПЛАЧЕННОГО текста (файла либо последней оплаченной вставки): иначе
+    # правки по 14% «поправками» уводили бы строку к совсем другому тексту
+    # даром — десяток шагов, и абзац заменён.
+    billed_new = mode == "new" or max(
+        (_source_similarity(b, new) for b in (orig, seg.get("handBase")) if b),
+        default=1.0) < SOURCE_EDIT_KEEP
+    if _text_hash(new.strip()) in paid:
+        grew = 0.0
+    else:
+        grew = now if billed_new else max(0.0, now - base)
     free = _hand_free_pages(project, card)
     total = float(project.get("handPages") or 0.0) + grew
     owe = max(0.0, total - free)
@@ -10318,7 +10594,13 @@ def _hand_pages_quote(project: dict, tid: str, card: dict, seg: dict, new: str) 
     return {"add": round(grew, 3), "debit": round(debit, 3),
             "total": round(total, 3), "free": round(free, 1),
             "ask": debit >= HAND_PAGES_ASK_MIN,
-            "peak": round(max(base, now), 3)}
+            "peak": round(max(base, now), 3), "hash": _text_hash(new.strip()),
+            "base": new if (billed_new and grew > 0) else None}
+
+
+def _quote_public(quote: dict) -> dict:
+    """Смета правки для браузера — без служебных полей (отпечаток и сам текст)."""
+    return {k: v for k, v in quote.items() if k not in ("hash", "base", "overdraft")}
 
 
 def _hand_pages_book(project: dict, tid: str, seg: dict, quote: dict) -> bool:
@@ -10342,6 +10624,10 @@ def _hand_pages_book(project: dict, tid: str, seg: dict, quote: dict) -> bool:
     вместе с ним: документ `tenants` пишет ТОЛЬКО API (инвариант 27)."""
     if quote["add"] <= 0:
         return False
+    if quote.get("hash"):
+        seg["handPaid"] = ((seg.get("handPaid") or []) + [quote["hash"]])[-HAND_PAID_KEEP:]
+    if quote.get("base"):
+        seg["handBase"] = quote["base"]
     seg["handPeak"] = quote["peak"]
     project["handPages"] = round(float(project.get("handPages") or 0.0) + quote["add"], 3)
     if quote["debit"] <= 0:
@@ -10354,6 +10640,8 @@ def _hand_pages_book(project: dict, tid: str, seg: dict, quote: dict) -> bool:
     if rec.get("pagesUsed") is None:
         return False
     rec["pagesUsed"] = round(float(rec["pagesUsed"]) + quote["debit"], 3)
+    if quote.get("overdraft"):
+        rec["handOverdraft"] = round(float(rec.get("handOverdraft") or 0.0) + quote["overdraft"], 3)
     project["handPagesBooked"] = round(
         float(project.get("handPagesBooked") or 0.0) + quote["debit"], 3)
     _pages_log(rec, "edit", quote["debit"], project=project.get("id"),
@@ -10368,13 +10656,25 @@ def _hand_pages_guard(project: dict, tid: str, quote: dict) -> None:
     потерянную цифру, то есть починка распознавания встала бы намертво;
     `_tenant_usage` к тому же греет объём по всем проектам, а мы уже под
     локом — звать его на каждую опечатку нельзя."""
-    if quote["debit"] < HAND_PAGES_REFUSE_MIN:
+    if quote["debit"] <= 0:
         return
     caps = _tenant_caps(tid)
     if not caps["pagesLimited"]:
         return
     usage = _tenant_usage(tid)
-    if usage["pages"] + quote["debit"] <= caps["maxPages"]:
+    room = caps["maxPages"] - usage["pages"]
+    if quote["debit"] <= room:
+        return
+    # Мелкая правка проходит и в минус — но долг ручных правок ОГРАНИЧЕН
+    # (`HAND_PAGES_OVERDRAFT`, счётчик `handOverdraft` на организации; его
+    # снимает пополнение). Без потолка «мелко, но много раз» копило
+    # бесконечный минус: каждая правка ниже `HAND_PAGES_REFUSE_MIN`, и ни одна
+    # не отказывается (разбор 24.09.2026). Счётчик СВОЙ, а не «остаток
+    # лимита»: минус, набранный картинками, не должен запирать правку цифры.
+    over = quote["debit"] - max(0.0, room)
+    had = float((_tenant_rec(tid) or {}).get("handOverdraft") or 0.0)
+    if quote["debit"] < HAND_PAGES_REFUSE_MIN and had + over <= HAND_PAGES_OVERDRAFT:
+        quote["overdraft"] = round(over, 3)
         return
     # Куски фразы лежат в `uz.server.json`/`en.server.json` — их собирает
     # `TRS()` (инвариант 17). Хвост ": пополните лимит у администратора"
@@ -10547,6 +10847,28 @@ def _referral_award(inviter_id: str, pages: float, why: str, invitee: dict) -> f
         return 0.0
 
 
+def _ref_same_person(inviter_tid: str, user: dict) -> bool:
+    """Приглашение самому себе — не только «та же организация». Второй ящик
+    той же почты (`me+1@gmail.com`) и регистрация с того же адреса, что
+    у владельца пригласившей организации, — это тот же человек, и платить
+    ему за самого себя нельзя (разбор 24.09.2026). IP — улика грубая
+    (офис за одним NAT), но цена ошибки здесь — неполученный бонус,
+    а не отказ в работе."""
+    key = _email_key(user.get("email") or "")
+    at = user.get("acceptedTerms") or {}
+    ip = at.get("net") or at.get("ip")
+    for x in _users():
+        if x.get("tenant") != inviter_tid or x.get("role") != "owner":
+            continue
+        if key and x.get("email") and _email_key(x["email"]) == key:
+            return True
+        xat = x.get("acceptedTerms") or {}
+        xip = xat.get("net") or xat.get("ip")
+        if ip and xip and ip == xip:
+            return True
+    return False
+
+
 def _referral_on_verified(user: dict) -> bool:
     """Почта подтверждена — вот теперь платим.
 
@@ -10566,6 +10888,8 @@ def _referral_on_verified(user: dict) -> bool:
         inviter = _ref_by_code(rec.get("refBy") or "")
         if inviter is None or inviter.get("id") == rec.get("id"):
             return False                   # чужой код протух либо приглашение самому себе
+        if _ref_same_person(inviter.get("id"), user):
+            return False                   # тот же ящик или тот же адрес регистрации
         cfg = _ref_cfg()
         if not cfg.get("enabled"):
             return False
@@ -11585,7 +11909,8 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
         # `title` — в снимок только когда замена его меняет: иначе откат
         # затирал бы переименование, сделанное после замены.
         keys = ["pages", "pagesUnit", "sourceSha", "fileName", "sourceDocx", "importKind",
-                "importNote", "reimport", "parseRules", "resegment", "trialExcerpt"] + (["title"] if title.strip() else [])
+                "importNote", "reimport", "parseRules", "resegment", "trialExcerpt",
+                "sourceStoredSha", "sourceSameAs"] + (["title"] if title.strip() else [])
         snap = {"project": pid, "stamp": stamp, "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "segments": project.get("segments") or [],
                 "fields": {k: project.get(k) for k in keys}}
@@ -11671,6 +11996,10 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
             # (снимок выше помнит отметку, откат её вернёт).
             project.pop("trialExcerpt", None)
         project["sourceSha"] = parsed["sha"]
+        # Замена файла кладёт исходником СВОЙ файл — прежние отметки привязки
+        # к нему не относятся.
+        project.pop("sourceStoredSha", None)
+        project.pop("sourceSameAs", None)
         project["parseRules"] = parsed.get("parseRules")
         project["fileName"] = filename
         project["importKind"] = parsed["kind"]
@@ -11785,7 +12114,22 @@ def undo_reimport(pid: int, stamp: str, force: bool = False):
                                  "эту работу. Подтвердите откат явно." % len(touched))
     with _SAVE_LOCK:
         project = get_project(pid)
-        project["segments"] = snap.get("segments") or []
+        # Счёт перевода заново у строки НЕ откатывается: снимок хранит его
+        # таким, каким он был ДО замены, и «заменить тем же файлом →
+        # перевести трижды → откатить» обнулял бы предел без конца
+        # (инвариант 33, разбор 24.09.2026). Берём большее из двух.
+        now_segs = {sg["id"]: sg for sg in project.get("segments") or []}
+        restored = snap.get("segments") or []
+        for sg in restored:
+            cur = now_segs.get(sg.get("id"))
+            if not cur:
+                continue
+            rt = max(int(sg.get("retranslations") or 0), int(cur.get("retranslations") or 0))
+            if rt:
+                sg["retranslations"] = rt
+            if cur.get("mtDone"):
+                sg["mtDone"] = True
+        project["segments"] = restored
         for k, v in (snap.get("fields") or {}).items():
             if v is None:
                 project.pop(k, None)
@@ -11861,6 +12205,44 @@ def _resegment_source(project: dict):
                                or project.get("importKind") == "docx"):
         return (name if name.lower().endswith(".docx") else "source.docx"), docx_path.read_bytes()
     return None
+
+
+RESEG_OTHER_FILE_409 = ("Хранимый исходник — не тот файл, за который списаны страницы. "
+                        "Загрузите новую редакцию через «Заменить файл»")
+
+
+def _resegment_same_file(project: dict, sha: str) -> None:
+    """Пересобирать строки бесплатно можно ТОЛЬКО из того файла, за который
+    списаны страницы (`sourceSha` пишут загрузка и замена файла). Хранимый
+    исходник подменяет и привязка `/source` — она для выгрузки 1в1 и
+    объёма не списывает, а с `force` принимает любой .docx. Без этой сверки
+    «проект из одной страницы → привязать книгу → пересобрать» заводил
+    всю книгу строками без списания (разбор 24.09.2026). У проекта без
+    отпечатка (импорт до его появления) сверить не с чем — такую
+    пересборку делает администратор сервиса (`tools/resegment_project.py`)."""
+    if not project.get("sourceSha"):
+        sess = CURRENT_SESSION.get() or {}
+        if sess and not sess.get("super"):
+            raise HTTPException(409, RESEG_OTHER_FILE_409)
+        return
+    if sha not in _resegment_trusted_shas(project):
+        raise HTTPException(409, RESEG_OTHER_FILE_409)
+
+
+def _resegment_trusted_shas(project: dict) -> set:
+    """Отпечатки файлов, из которых пересборка бесплатна: оплаченный
+    (`sourceSha`) и привязанный, признанный тем же документом (`sourceSameAs`)."""
+    return {x for x in (project.get("sourceSha"), project.get("sourceSameAs")) if x}
+
+
+def _resegment_stored_trusted(project: dict) -> bool:
+    """Лежит ли исходником доверенный файл — без чтения его с диска: привязка
+    пишет отпечаток положенного (`sourceStoredSha`), а нет отметки — лежит
+    тот, что загружен (его отпечаток и есть `sourceSha`)."""
+    if not project.get("sourceSha"):
+        return False
+    stored = project.get("sourceStoredSha")
+    return not stored or stored in _resegment_trusted_shas(project)
 
 
 def _reseg_words(t: str) -> set:
@@ -12130,6 +12512,7 @@ async def resegment_project(pid: int, req: ResegmentRequest):
     if not parsed["units"]:
         raise HTTPException(415, "В исходнике не нашлось ни одной строки текста — пересобирать нечего")
     project = get_project(pid)
+    _resegment_same_file(project, parsed["sha"])
     pl = await run_in_threadpool(_resegment_plan, project, parsed)
     c = pl["counts"]
     out = {"ok": True, "dryRun": req.dry_run, "project": pid, "kind": parsed["kind"],
@@ -12619,6 +13002,17 @@ async def attach_source(pid: int, file: UploadFile = File(...), force: bool = Fo
                           "переводы по чужим абзацам." % (matched, total))}
 
     mark = _store_source_docx(project, content, file.filename, pairs, len(paras))
+    # Какой файл теперь лежит исходником — отпечатком: по нему пересборка
+    # строк решает, тот ли это документ, за который списаны страницы
+    # (`_resegment_same_file`). «Тот же документ, пересохранённый» узнаётся
+    # по строкам: совпали ВСЕ строки проекта и своих файл не добавил.
+    # У превращённых форматов пересборка читает неизменный оригинал
+    # (`{pid}.orig.<ext>`), и привязка .docx её не касается.
+    if _orig_existing(pid) is None:
+        sha = hashlib.sha1(content).hexdigest()
+        project["sourceStoredSha"] = sha
+        if total and matched == total and len(units) <= total:
+            project["sourceSameAs"] = sha
     save_state(STATE)
     return {"ok": True, "stats": stats, "sourceDocx": mark}
 
@@ -13182,6 +13576,29 @@ def image_part(pid: int, part: str = ""):
                     headers={"Cache-Control": "private, max-age=86400"})
 
 
+def _images_local_pages_gate(project: dict, items: list) -> None:
+    """Текст надписей здесь приходит ИЗ БРАУЗЕРА — то есть его пишет тот,
+    кто прислал запрос, и объём его ничем не связан с картинкой. Списание
+    (`_book_image_pages`) только копит долг и не отказывает никогда, поэтому
+    без этой проверки «картинка в пиксель + любой текст» заводил строки
+    сверх оплаченного (разбор 24.09.2026). Считаем объём присланного ДО
+    записи и отказываем, если он не помещается в выданное (с тем же малым
+    допуском в минус, что у ручной правки)."""
+    tid = _tenant_of(project)
+    caps = _tenant_caps(tid)
+    if not caps["pagesLimited"]:
+        return
+    texts = [str((ln or {}).get("text") or "")[:500]
+             for it in items if isinstance(it, dict)
+             for ln in (it.get("lines") or [])[:IMAGE_LOCAL_MAX_LINES] if isinstance(ln, dict)]
+    need = _pages_exact(texts, project.get("src") or "RU", _pricing_of(tid)) if texts else 0.0
+    used = _tenant_usage(tid)["pages"]
+    if need > 0 and used + need > caps["maxPages"] + HAND_PAGES_OVERDRAFT:
+        raise HTTPException(402, "Текст с картинок займёт %.1f стр., а свободных осталось "
+                                 "%.1f: пополните лимит у администратора"
+                            % (need, max(0.0, caps["maxPages"] - used)))
+
+
 class ImagesLocalRequest(BaseModel):
     # Порциями, а не по одной: карта абзацев стоит разбора всего .docx,
     # и один запрос на картинку означал бы полтораста таких разборов.
@@ -13202,6 +13619,10 @@ def images_local(pid: int, req: ImagesLocalRequest):
     items = (req.items or [])[:IMAGE_LOCAL_MAX_PARTS]
     anchors = _image_anchors_cached(data["path"])
     known = {im.get("part"): im for im in (data.get("images") or [])}
+    # Уже разобранные картинки повторный заход не пишет (`why: "done"`) —
+    # их надписи в счёт не идут, иначе повтор после сбоя сети получал бы 402.
+    _images_local_pages_gate(project, [it for it in items if isinstance(it, dict)
+                                       and (known.get(str(it.get("part") or "")) or {}).get("blocks") is None])
     made, saved, skipped = [], 0, []
     by_id = {s["id"]: s for s in project["segments"]}
     for it in items:
@@ -17107,8 +17528,14 @@ def _run_parallel(items: list, fn):
     # Проект — для учёта расхода по проекту; у запроса он лежит в ContextVar,
     # который в потоки пула не доезжает.
     upid = _usage_project()
+    # Сессия запроса — ТОЛЬКО для рубежа лимита в вызове модели
+    # (`_llm_limit_gate`). Саму `CURRENT_SESSION` в потоки не кладём: от неё
+    # зависит показ имён моделей (`_hide_models`), а внутри работы нужны
+    # настоящие (инвариант 24а).
+    gate_sess = CURRENT_SESSION.get() or getattr(_GATE_SESSION, "s", None)
 
     def run(x):
+        _GATE_SESSION.s = gate_sess
         _JOB_TENANT.id = tid
         _JOB_LANG.code = lang
         _JOB_USER.id = uid
@@ -17443,7 +17870,8 @@ def _project_for_client(project: dict) -> dict:
     _strip_project_models(out)
     cur = _parse_rules(project.get("importKind") or "")
     out["parseOutdated"] = bool(cur and (project.get("parseRules") or 0) < cur
-                                and _resegment_has_source(project) and not project.get("trialExcerpt"))
+                                and _resegment_has_source(project) and not project.get("trialExcerpt")
+                                and _resegment_stored_trusted(project))
     return out
 
 
@@ -22241,8 +22669,12 @@ def term_context(pid: int, req: TermContextRequest = TermContextRequest()):
             skipped += 1
             continue
         todo.append(sg)
-    capped = len(todo) > max(0, req.limit)
-    todo = todo[:max(0, req.limit)]
+    # Потолок числа вопросов за запрос: лимит расхода проверяется ОДИН раз
+    # на входе, и без потолка `limit=100000, refresh=true` покупал вердикт
+    # арбитра на всю книгу одним запросом (разбор 24.09.2026).
+    lim = max(0, min(req.limit, 100))
+    capped = len(todo) > lim
+    todo = todo[:lim]
     settled, wrong, failed = [], [], []
     # Дедупликации по паре «оригинал+перевод» здесь НЕТ намеренно, и это надо
     # сказать вслух: контракт прогонов её требует. Ответ арбитра зависит
@@ -23375,6 +23807,11 @@ def _job_termsheet(job: dict) -> None:
     # вердикт по той же паре не переспрашивается.
     cands = [{"src": e["src"], "tgt": e["tgt"], "lang": scope[0], "domain": scope[1], "tenant": scope[2]}
              for e in entries if e["status"] in ("pending", "disputed") and "meaning" not in e["gates"]]
+    # Сверка — до `TERMSHEET_MEANING_MAX` вызовов судьи, и идёт она ПОСЛЕ
+    # цикла порций, где лимит проверялся в последний раз: без этой строки
+    # лист, упёршийся в лимит, докупал бы сверку сверх него.
+    if cands and _job_money_stop(job):
+        cands = []
     verdicts, _answered, capped = _meaning_check(cands, cap=TERMSHEET_MEANING_MAX) if cands else ({}, 0, 0)
     for e in entries:
         if e["status"] not in ("pending", "disputed"):
@@ -24999,7 +25436,7 @@ def batch_checks(pid: int, req: ChecksBatchRequest = ChecksBatchRequest()):
         candidates = [s for s in candidates
                       if _check_stale(s.get("qa_result"), s.get("target"))]
         skipped_cached = before - len(candidates)
-    targets = candidates[:req.limit]
+    targets = candidates[:max(0, min(req.limit, 100))]   # потолок: см. `term_context`
     # Лимит — по СОСТАВУ, а не путём (см. `_PAID`): 402 только если порция
     # купит обратный перевод — он нужен, пара его покупает и готового
     # к нынешнему тексту нет. Только у запроса: прогон проверяет лимит сам.
@@ -25215,7 +25652,7 @@ def edit_segment_source(pid: int, sid: int, req: SegmentSourceRequest):
         # Цена правки называется ДО нажатия: `dry_run` отдаёт те же числа,
         # по которым потом спишется, — считает их один и тот же вызов.
         tid = _tenant_of(project)
-        quote = _hand_pages_quote(project, tid, _pricing_of(tid), seg, new)
+        quote = _hand_pages_quote(project, tid, _pricing_of(tid), seg, new, mode)
         # Рост строки — отдельный вопрос от денег: дописать можно и в пределах
         # оплаченного, но строка, выросшая втрое, — это другой текст, а не
         # починка распознавания. Сухой прогон НЕ бросает: он для того и нужен,
@@ -25224,7 +25661,7 @@ def edit_segment_source(pid: int, sid: int, req: SegmentSourceRequest):
         too_big = len(new) > grow_max
         if req.dry_run or old == new:
             return {"ok": True, "mode": mode, "ratio": round(ratio, 3), "applied": False,
-                    "wasConfirmed": seg.get("status") == "confirmed", "pages": quote,
+                    "wasConfirmed": seg.get("status") == "confirmed", "pages": _quote_public(quote),
                     "tooBig": too_big, "maxLen": grow_max}
         if too_big and not req.force:
             _ev("dead.sourceGrow409", _tenant_of(project))
@@ -25288,7 +25725,7 @@ def edit_segment_source(pid: int, sid: int, req: SegmentSourceRequest):
     _audit("segment.source", project=pid, segment=sid, mode=mode,
            pages=quote["debit"] or None, grown=True if too_big else None)
     return {"ok": True, "mode": mode, "ratio": round(ratio, 3), "applied": True,
-            "pages": quote, "segment": _segment_for_client(seg, project)}
+            "pages": _quote_public(quote), "segment": _segment_for_client(seg, project)}
 
 
 class UpdateSegmentRequest(BaseModel):
@@ -29886,7 +30323,8 @@ def public_survey(req: SurveyIn, request: Request):
     в таймаут страницы у того, кто честно заполнил 15 вопросов."""
     if not survey_mod or req.form not in getattr(survey_mod, "FORMS", {}):
         raise HTTPException(404, "Анкета не найдена")
-    ip = _client_ip(request)
+    ip = _rate_ip(request)
+    raw_ip = _client_ip(request)
     if _survey_throttle(ip):
         raise HTTPException(429, "Слишком много отправок с этого адреса. Попробуйте через час.")
     body = json.dumps({"a": req.answers, "c": req.consent}, ensure_ascii=False)
@@ -29908,7 +30346,7 @@ def public_survey(req: SurveyIn, request: Request):
         "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "who": (req.who or "").strip()[:120],
         "ref": (req.ref or "").strip()[:64],
-        "answers": req.answers, "consent": req.consent, "ip": ip,
+        "answers": req.answers, "consent": req.consent, "ip": raw_ip,
     }
     lst = _surveys()
     lst.append(rec)

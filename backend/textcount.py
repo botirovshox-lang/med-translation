@@ -140,6 +140,60 @@ def _is_wordish(ch: str) -> bool:
     return cat[0] in ("L", "N") or cat[0] == "M"
 
 
+# ─── Слово как мера оплаты — и почему «слово» у нас не произвольно ───
+# Страница — 250 СЛОВ, слово — кусок между пробелами. Сами по себе оба
+# правила открывали перевод почти даром (разбор 24.09.2026):
+#   * склейка слов тем, что пробелом не считается (U+200B, `_`, `.`, `/`),
+#     делала абзац в двадцать тысяч знаков ОДНИМ словом — модель же читает
+#     его как обычный текст;
+#   * китайский, японский, тайский текст, заявленный как RU или EN, давал
+#     одно «слово» на фразу: норма берётся по ЗАЯВЛЕННОМУ языку.
+# Поэтому: знаки письма без пробелов считаются словами по ИХ норме
+# (250 слов = 400 знаков у иероглифов и каны, ≈1150 у тайского, лаосского,
+# кхмерского, бирманского) — какой бы язык ни был заявлен; а у остального
+# текста слово не весит больше `LETTERS_PER_WORD_MAX` букв в СРЕДНЕМ по
+# документу. Живой текст до этого порога не доходит (русский ≈6–7 букв на
+# слово, немецкий и узбекский ≈7–8), поэтому его счёт не меняется ни на слово.
+LETTERS_PER_WORD_MAX = 10
+LONG_TOKEN = 30
+_WORDS_PER_IDEOGRAPH = 250 / 400
+_WORDS_PER_SEA_CHAR = 250 / 1150
+_ZERO_WIDTH_RE = re.compile("[​⁠﻿᠎]")
+
+
+def _spaceless_weight(ch: str) -> float:
+    o = ord(ch)
+    if (0x3040 <= o <= 0x30FF or 0x3400 <= o <= 0x9FFF or 0xF900 <= o <= 0xFAFF
+            or 0x20000 <= o <= 0x3134F):
+        return _WORDS_PER_IDEOGRAPH
+    if 0x0E00 <= o <= 0x0EFF or 0x1000 <= o <= 0x109F or 0x1780 <= o <= 0x17FF:
+        return _WORDS_PER_SEA_CHAR
+    return 0.0
+
+
+def _billable_words(norm_blocks: list) -> int:
+    words, letters, spaceless = 0, 0, 0.0
+    for b in norm_blocks:
+        for w in _ZERO_WIDTH_RE.sub(" ", b).split(" "):
+            plain = 0
+            for c in w:
+                if not _is_wordish(c):
+                    continue
+                k = _spaceless_weight(c)
+                if k:
+                    spaceless += k
+                else:
+                    plain += 1
+            if plain:
+                # Кусок длиннее любого живого слова — склейка: считаем его
+                # по `LETTERS_PER_WORD_MAX` букв за слово. Средний порог по
+                # документу ниже разбавлялся бы россыпью коротких слов.
+                words += -(-plain // LETTERS_PER_WORD_MAX) if plain > LONG_TOKEN else 1
+                letters += plain
+    plain_words = max(words, -(-letters // LETTERS_PER_WORD_MAX))
+    return int(plain_words + round(spaceless))
+
+
 def count_blocks(blocks: list) -> dict:
     """Объём по списку кусков текста (абзац, ячейка, надпись — что дал формат).
 
@@ -154,8 +208,7 @@ def count_blocks(blocks: list) -> dict:
     # полторы страницы в счёте клиенту, взявшиеся из нашего разделителя.
     chars = sum(len(b) for b in norm_blocks)
     no_spaces = sum(1 for b in norm_blocks for c in b if not c.isspace())
-    words = sum(len([w for w in b.split(" ") if any(_is_wordish(c) for c in w)])
-                for b in norm_blocks)
+    words = _billable_words(norm_blocks)
     seen, repeat_chars, repeat_blocks = set(), 0, 0
     for b in norm_blocks:
         if b in seen:

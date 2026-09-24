@@ -189,8 +189,10 @@
        путём (регистрация записала его при заведении записи). Отметку выбора
        снимаем здесь же: она сделала свою работу, а оставленная — уедет
        на чужую запись при следующем входе с этого компьютера. */
-    verifyEmail: async (email, code) => {
-      const r = await call("POST", "/auth/verify", { email, code });
+    verifyEmail: async (email, code, password) => {
+      // Пароль — только когда регистрацию на этот адрес заменили: сервер
+      // тогда впускает по коду лишь с паролем ЭТОЙ регистрации.
+      const r = await call("POST", "/auth/verify", { email, code, password: password || "" });
       if (r && r.token) { setToken(r.token); if (window.I18N) window.I18N.clearPicked(); }
       return r;
     },

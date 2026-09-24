@@ -372,5 +372,12 @@
   "По файлу идёт или ждёт прогон — дождитесь его конца": "A run for this file is in progress or queued: wait for it to finish",
   "У файла нет сохранённого исходника — загрузите файл заново": "The file's original isn't stored: upload the file again",
   "В файле переведён пробный фрагмент — пересобрать строки можно после «Перевести остальное»": "Only a trial excerpt of this file is translated: lines can be rebuilt after “Translate the rest”",
-  "В файле переведён пробный фрагмент — прочитать текст с картинок можно после «Перевести остальное»": "Only a trial excerpt of this file is translated: text in images can be read after “Translate the rest”"
+  "В файле переведён пробный фрагмент — прочитать текст с картинок можно после «Перевести остальное»": "Only a trial excerpt of this file is translated: text in images can be read after “Translate the rest”",
+  "Людьми организации управляют, находясь в ней самой": "An organization’s people are managed from inside that organization",
+  "Хранимый исходник — не тот файл, за который списаны страницы. Загрузите новую редакцию через «Заменить файл»": "The stored source is not the file the pages were charged for. Upload the new edition via “Replace file”",
+  "Месячный лимит расхода организации исчерпан": "The organization’s monthly spending limit is used up",
+  "Текст с картинок займёт ": "Text from the images adds ",
+  "Слишком много попыток — повторите завтра": "Too many attempts — try again tomorrow",
+  "Не найдено": "Not found",
+  "Регистрацию на эту почту сделали заново с другим паролем. Задайте свой пароль через «Забыли пароль?»": "This email was registered again with a different password. Set your own password via “Forgot password?”"
 }

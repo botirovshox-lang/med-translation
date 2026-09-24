@@ -541,7 +541,7 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
         setNote(r.note || TR("Код отправлен на почту."));
         setMode("verify");
       } else if (mode === "verify") {
-        await window.API.verifyEmail(f.email, f.code);
+        await window.API.verifyEmail(f.email, f.code, f.password);
         onLogin();
       } else if (mode === "forgot") {
         await window.API.forgotPassword(f.email);

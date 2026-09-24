@@ -372,5 +372,12 @@
   "По файлу идёт или ждёт прогон — дождитесь его конца": "Fayl bo'yicha ish ketmoqda yoki navbatda — tugashini kuting",
   "У файла нет сохранённого исходника — загрузите файл заново": "Faylning saqlangan asli yo'q — faylni qayta yuklang",
   "В файле переведён пробный фрагмент — пересобрать строки можно после «Перевести остальное»": "Faylda sinov bo'lagi tarjima qilingan — satrlarni «Qolganini tarjima qilish»dan keyin qayta yig'ish mumkin",
-  "В файле переведён пробный фрагмент — прочитать текст с картинок можно после «Перевести остальное»": "Faylda sinov bo'lagi tarjima qilingan — rasmlardagi matnni «Qolganini tarjima qilish»dan keyin o'qish mumkin"
+  "В файле переведён пробный фрагмент — прочитать текст с картинок можно после «Перевести остальное»": "Faylda sinov bo'lagi tarjima qilingan — rasmlardagi matnni «Qolganini tarjima qilish»dan keyin o'qish mumkin",
+  "Людьми организации управляют, находясь в ней самой": "Tashkilot odamlari shu tashkilotning o‘zida turib boshqariladi",
+  "Хранимый исходник — не тот файл, за который списаны страницы. Загрузите новую редакцию через «Заменить файл»": "Saqlangan manba sahifalari hisobdan chiqarilgan fayl emas. Yangi tahrirni «Faylni almashtirish» orqali yuklang",
+  "Месячный лимит расхода организации исчерпан": "Tashkilotning oylik xarajat chegarasi tugadi",
+  "Текст с картинок займёт ": "Rasmlardagi matn ",
+  "Слишком много попыток — повторите завтра": "Urinishlar juda ko‘p — ertaga qayta urinib ko‘ring",
+  "Не найдено": "Topilmadi",
+  "Регистрацию на эту почту сделали заново с другим паролем. Задайте свой пароль через «Забыли пароль?»": "Bu pochtaga boshqa parol bilan qayta ro‘yxatdan o‘tishgan. O‘z parolingizni «Parolni unutdingizmi?» orqali o‘rnating"
 }

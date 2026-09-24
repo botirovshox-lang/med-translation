@@ -481,7 +481,10 @@ function TabOrg({ store, toast }) {
       // Сразу под страницами: про приглашение человек думает там же,
       // где смотрит на остаток объёма.
       React.createElement(OrgReferral, { toast }),
-      React.createElement(OrgUsers, { toast }),
+      // Люди ДОМАШНЕЙ организации правятся, только когда она активна:
+      // в чужой команде сервер отвечает 403 (людей команды ведёт «Профиль»).
+      info && info.me && info.tenant && (info.me.tenant === info.tenant.id || (store.can && store.can.super))
+        && React.createElement(OrgUsers, { toast }),
       React.createElement(OrgPricing, { toast }),
       store.can && store.can.super && React.createElement(SuperTenants, { toast }),
       React.createElement(OrgDomains, { toast }),

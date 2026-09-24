@@ -363,6 +363,7 @@
     /* Пересобрать строки файла из его исходника по нынешним правилам разбора:
        сначала числа (`dryRun`), потом запись. Бесплатно; откат — как у замены. */
     resegment:     (pid, dryRun)            => call("POST", `/projects/${pid}/resegment`, { dry_run: !!dryRun }),
+    trialRest:     (pid)                    => call("POST", `/projects/${pid}/trial/rest`, {}),
     /* Границы строки руками — без вызова модели. */
     mergeNext:     (pid, sid)               => call("POST", `/segments/${pid}/${sid}/merge-next`, {}),
     unmerge:       (pid, sid, force)        => call("POST", `/segments/${pid}/${sid}/unmerge` + (force ? "?force=true" : ""), {}),

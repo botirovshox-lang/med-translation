@@ -5087,8 +5087,18 @@ def register(req: RegisterRequest, request: Request):
         # а не оплата клиента, — поэтому высшая точка сдвигается на них же
         # (тот же довод, что у стартового лимита окружения, инвариант 36).
         _pages_topup(tid, SIGNUP_FREE_PAGES, "signup")
-        if tenant.get("refBy"):
-            tenant["refPaid"] = float(tenant.get("refPaid") or 0) + SIGNUP_FREE_PAGES
+        # Поля — по ПЕРЕЧИТАННОЙ записи под локом (инвариант 36):
+        # `_sync_shared` из чужого потока подменяет `STATE["tenants"]` целиком.
+        with _SAVE_LOCK:
+            rec = _tenant_rec(tid)
+            if rec is not None:
+                # Пробная организация: больше остатка файл не отвергается,
+                # а переводится одним фрагментом (`_trial_excerpt_plan`).
+                # Снимает флаг ТОЛЬКО пополнение администратором
+                # (`admin_tenant_update`) — «клиент заплатил».
+                rec["trial"] = True
+                if rec.get("refBy"):
+                    rec["refPaid"] = float(rec.get("refPaid") or 0) + SIGNUP_FREE_PAGES
     code = _issue_code(user, "verify")
     _SIGNUP_FAILS.setdefault(ip, []).append(time.time())
     tok = CURRENT_SESSION.set({"tenant": tid, "user": user["id"], "role": "owner"})
@@ -6341,6 +6351,15 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
         raise HTTPException(400, "Потолок проектов не может быть отрицательным")
     if req.addPages:
         _pages_topup(tid, float(req.addPages), (req.note or "").strip() or None)
+        if float(req.addPages) > 0:
+            # Клиент оплатил — больше не пробный: файл сверх остатка снова
+            # отвечает 402 с просьбой пополнить, а не режется фрагментом.
+            # Флагом, а не разбором журнала: журнал кольцевой, и старое
+            # пополнение вытеснялось бы из него, возвращая «пробность».
+            with _SAVE_LOCK:
+                rec_ = _tenant_rec(tid)
+                if rec_ is not None:
+                    rec_.pop("trial", None)
         # «Оплата» в системе — это и есть пополнение страниц руками:
         # платёжного шлюза нет, и процент приглашения считается отсюда.
         # ПОСЛЕ пополнения, а не вместо: процент берётся с выросшего
@@ -6865,6 +6884,9 @@ BLOCK_KIND = {
     "cap.filePages413": "money",    # принесли книгу толще потолка — прямой спрос
     "cap.bytes413": "money",
     "cap.pages402": "money",
+    # Пробный клиент принёс файл больше подарка — перевели фрагмент.
+    # Отказа нет, но спрос тот же: человек хотел весь документ.
+    "cap.trialExcerpt": "money",
     "cap.projects402": "money",
     "cap.spend402": "money",
     "cap.format415": "money",       # ровно список «какой импорт писать следующим»
@@ -7136,6 +7158,7 @@ METRICS_BLOCK_TEXT = {
     "cap.filePages413": "файл толще потолка страниц — не взяли",
     "cap.bytes413": "файл тяжелее потолка в мегабайтах — не взяли",
     "cap.pages402": "кончились выданные страницы",
+    "cap.trialExcerpt": "пробному клиенту перевели фрагмент, а принёс он документ больше",
     "cap.projects402": "упёрлись в потолок числа проектов",
     "cap.spend402": "исчерпан месячный лимит расхода",
     "cap.format415": "принесли формат, которого мы не читаем",
@@ -10764,6 +10787,134 @@ async def _duplicate_upload_response(request: Request, exc: _DuplicateUpload):
                          "project": exc.project}, status_code=409)
 
 
+# ─── Пробный фрагмент ────────────────────────────────────────────────
+# Пробная организация (`tenant["trial"]`, ставит регистрация при
+# SIGNUP_FREE_PAGES) принесла файл больше остатка страниц. Отказ 402 здесь —
+# это человек, который пришёл с формы «Перевести» и ушёл ни с чем. Поэтому
+# объём ВСЕГО файла считается и показывается бесплатно, а в проект встаёт
+# один СЛУЧАЙНЫЙ непустой фрагмент подряд идущих строк на остаток (одна
+# страница = 250 слов, наша мера заказа), и списывается только он.
+# Остальной документ не пропадает: исходник хранится целиком, выгрузка
+# оставляет непереведённое оригиналом, а «Перевести остальное»
+# (`/trial/rest`) после пополнения дописывает строки заменой файла тем же
+# файлом — со списанием ДОБАВЛЕННЫХ страниц.
+# Что закрыто на фрагменте, чтобы остаток книги не уехал даром: пересборка
+# строк (`_trial_guard` в `/resegment` и `_resegment_plan`) и разбор
+# картинок (задача `images`, чтение в браузере): оба завели бы сегменты
+# по всему файлу. Скан и картинки фрагмента не получают вовсе — их текст
+# рождается чтением картинок, выбирать не из чего; у них прежняя дорога.
+TRIAL_EXCERPT_MIN_WORDS = 8          # «непустой» фрагмент начинается с настоящей строки
+TRIAL_EXCERPT_EPS = 0.002            # допуск на округление: граница «ровно 1.0» не даёт 402
+
+
+def _trial_unit_pages(tid: str, units: list, lang: str, card: dict) -> Optional[list]:
+    """Страницы каждой строки файла — ДО лока (тысячи вызовов `count_blocks`
+    на книге держали бы под `_SAVE_LOCK` все сохранения процесса, включая
+    порции идущего прогона). Только у пробной организации: остальным
+    незачем. Число зависит лишь от файла, поэтому считать его раньше лока
+    честно; остаток и выбор — под локом."""
+    rec = _tenant_rec(tid)
+    if not rec or not rec.get("trial") or not units:
+        return None
+    return [_pages_exact([t], lang, card) for t, _ in units]
+
+
+def _trial_cut(text: str, budget_words: int) -> str:
+    """Начало абзаца, который сам больше подарка: целыми предложениями, а если
+    первое же длиннее — целыми словами. Обрезок, а не отказ: владелец
+    требует, чтобы одна страница переводилась всегда (договор одним
+    абзацем, txt без разбивки)."""
+    words = text.split()
+    if len(words) <= budget_words:
+        return text
+    out, n = [], 0
+    for sent in re.split(r"(?<=[.!?…])\s+", text):
+        k = len(sent.split())
+        if n + k > budget_words:
+            break
+        out.append(sent)
+        n += k
+    return " ".join(out) if out else " ".join(words[:budget_words])
+
+
+def _trial_excerpt_plan(tid: str, file_pages: float, units: list, lang: str, card: dict,
+                        per: Optional[list]) -> Optional[dict]:
+    """Фрагмент для пробной организации или None (обычная дорога — списать
+    весь файл, 402 при нехватке). Зовётся ПОД `_SAVE_LOCK`, там же, где
+    `_pages_debit` проверяет лимит: две загрузки подряд иначе обе решили бы
+    по одному остатку, и вторая получила бы 402 с чужими числами.
+    `per` — страницы каждой строки, посчитанные до лока."""
+    import random
+    rec = _tenant_rec(tid)
+    if not rec or not rec.get("trial") or not units or per is None:
+        return None
+    caps = _tenant_caps(tid)
+    if not caps["pagesLimited"]:
+        return None
+    remaining = float(caps["maxPages"]) - float(_tenant_usage(tid)["pages"])
+    # Файл влезает в остаток — обычная загрузка (её `_pages_debit` и пропустит).
+    # Больше остатка хоть на сотую — фрагмент: иначе полоса «чуть больше
+    # остатка» получала бы 402 с просьбой пополнить у пробного клиента.
+    if file_pages <= remaining or remaining < 0.05:
+        return None
+    budget = remaining - TRIAL_EXCERPT_EPS
+    rng = random.SystemRandom()
+    fits = [i for i, (t, _) in enumerate(units) if per[i] <= budget and t.strip()]
+    eligible = [i for i in fits if len(units[i][0].split()) >= TRIAL_EXCERPT_MIN_WORDS] or fits
+    cut = None
+    if eligible:
+        start = rng.choice(eligible)
+        lo = hi = start
+        total = per[start]
+        while hi + 1 < len(units) and total + per[hi + 1] <= budget:
+            hi += 1
+            total += per[hi]
+        while lo - 1 >= 0 and total + per[lo - 1] <= budget:
+            lo -= 1
+            total += per[lo]
+        texts = [units[i][0] for i in range(lo, hi + 1)]
+    else:
+        # Каждый абзац больше подарка: начало одного из них, по предложениям.
+        # Слов на страницу — из той же нормы, что считает страницы.
+        big = [i for i, (t, _) in enumerate(units) if len(t.split()) >= TRIAL_EXCERPT_MIN_WORDS]
+        if not big:
+            return None
+        lo = hi = rng.choice(big)
+        words = units[lo][0].split()
+        need = max(1, int(len(words) * budget / max(per[lo], 1e-9)))
+        cut = _trial_cut(units[lo][0], need)
+        while need > 1 and _pages_exact([cut], lang, card) > budget:
+            need = int(need * 0.9)
+            cut = _trial_cut(units[lo][0], need)
+        texts = [cut]
+    pages = _pages_exact(texts, lang, card)
+    return {"from": lo, "to": hi, "totalUnits": len(units), "pages": round(pages, 3),
+            "filePages": round(float(file_pages), 3),
+            "words": sum(len(t.split()) for t in texts), "cut": cut}
+
+
+def _trial_guard(project: dict, msg: str) -> None:
+    """Команды, которые завели бы строки по ВСЕМУ файлу, на пробном фрагменте
+    закрыты: остаток книги уехал бы даром (см. «Пробный фрагмент»).
+    Тексты постоянные — ключи перевода в браузере (`TRS()`, инвариант 17)."""
+    if project.get("trialExcerpt"):
+        raise HTTPException(409, msg)
+
+
+TRIAL_RESEG_409 = ("В файле переведён пробный фрагмент — пересобрать строки можно "
+                   "после «Перевести остальное»")
+TRIAL_IMAGES_409 = ("В файле переведён пробный фрагмент — прочитать текст с картинок можно "
+                    "после «Перевести остальное»")
+
+
+def _new_segments(texts: list) -> list:
+    return [{"id": i + 1, "source": text, "target": "", "status": "new", "comments": [], "qa": [],
+             "wordCount": len(text.split()),
+             "risk": "high" if len(text.split()) > 30 else "medium" if len(text.split()) > 8 else "low",
+             "route": "GPT_REQUIRED", "tm": None}
+            for i, text in enumerate(texts)]
+
+
 @app.post("/api/projects/upload")
 async def upload_project(
     request: Request,
@@ -10834,6 +10985,12 @@ async def upload_project(
     _refuse_duplicate_upload(sha, src, tgt)     # до разбора единиц и до списания
     units = parsed["units"]
     deduped = [t for t, _ in units]
+    # Пробный фрагмент: скан и картинки его не получают (текстовых строк нет).
+    # PDF с отдельными страницами-картинками (обложка) — получает: текст
+    # фрагмента берётся из текстовых строк, а чтение картинок на фрагменте
+    # закрыто (`_trial_guard`) и авточтение ниже не ставится.
+    trial_per = (await run_in_threadpool(_trial_unit_pages, tid, units, src, card)
+                 if parsed["kind"] not in ("image", "scan") else None)
 
     if target_folder is not None:
         target_folder = _materialize_folder(target_folder["id"])
@@ -10855,21 +11012,7 @@ async def upload_project(
         "sourceSha": sha,
         "importKind": parsed["kind"],
         "parseRules": parsed.get("parseRules"),
-        "segments": [
-            {
-                "id": i + 1,
-                "source": text,
-                "target": "",
-                "status": "new",
-                "comments": [],
-                "qa": [],
-                "wordCount": len(text.split()),
-                "risk": "high" if len(text.split()) > 30 else "medium" if len(text.split()) > 8 else "low",
-                "route": "GPT_REQUIRED",
-                "tm": None,
-            }
-            for i, text in enumerate(deduped)
-        ],
+        "segments": _new_segments(deduped),
     }
     if target_folder is not None:
         new_project["folder"] = target_folder["id"]
@@ -10887,14 +11030,32 @@ async def upload_project(
         # Второй раз — под локом: две загрузки одного файла подряд иначе
         # обе прошли бы проверку выше, пока шёл разбор.
         _refuse_duplicate_upload(sha, src, tgt)
-        _pages_debit(tid, pages, "%s:%s→%s" % (sha, src, tgt), new_id, proj_title, always=True)
+        # Пробный фрагмент — тоже под локом и тоже до списания. Скан и
+        # картинки его не получают: текстовых строк у них нет (см. выше).
+        excerpt = _trial_excerpt_plan(tid, pages, units, src, card, trial_per)
+        if excerpt:
+            units = units[excerpt["from"]:excerpt["to"] + 1]
+            if excerpt.get("cut"):
+                # Начало абзаца: карты к исходнику у строки НЕТ — выгрузка 1в1
+                # иначе заменила бы весь абзац переводом его начала.
+                units = [(excerpt["cut"], [])]
+            new_project["segments"] = _new_segments([t for t, _ in units])
+            new_project["pages"] = excerpt["pages"]
+            new_project["trialExcerpt"] = excerpt
+        _pages_debit(tid, pages, "%s:%s→%s" % (sha, src, tgt), new_id, proj_title, always=True,
+                     debit_pages=excerpt["pages"] if excerpt else None,
+                     kind="excerpt" if excerpt else None)
         STATE["projects"].insert(0, new_project)
         _PROJECTS_VER[0] += 1
         save_state(STATE)
     _tenants_changed()                  # после save_state: эпоху поднимает записанный документ
     if target_folder is not None:
         _folders_changed()
+    if excerpt:
+        _ev("cap.trialExcerpt", tid)
     try:
+        # У фрагмента карта называет только ЕГО абзацы: выгрузка 1в1 пишет
+        # перевод в них, а остальной документ остаётся оригиналом.
         pairs = [[i, u + 1] for u, (_t, idxs) in enumerate(units) for i in idxs]
         _store_source_docx(new_project, docx_content, file.filename, pairs, len(paras),
                            layout=parsed.get("layout"))
@@ -10906,8 +11067,10 @@ async def upload_project(
         if parsed.get("slotsSha"):
             new_project["slotsSha"] = parsed["slotsSha"]   # сторож дрейфа резки при выгрузке
         # Картинки читаются сами — задача ставится после записи исходника:
-        # разбор читает .docx с диска.
-        _auto_read_images(new_project, parsed["kind"], parsed.get("imagePages") or 0)
+        # разбор читает .docx с диска. У фрагмента — нет: разбор идёт по всему
+        # файлу и завёл бы строки за пределами оплаченного.
+        if not excerpt:
+            _auto_read_images(new_project, parsed["kind"], parsed.get("imagePages") or 0)
     except Exception as e:
         print("[backend] исходник проекта %s не сохранён: %s" % (new_id, e),
               file=sys.stderr)
@@ -11422,7 +11585,7 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
         # `title` — в снимок только когда замена его меняет: иначе откат
         # затирал бы переименование, сделанное после замены.
         keys = ["pages", "pagesUnit", "sourceSha", "fileName", "sourceDocx", "importKind",
-                "importNote", "reimport", "parseRules", "resegment"] + (["title"] if title.strip() else [])
+                "importNote", "reimport", "parseRules", "resegment", "trialExcerpt"] + (["title"] if title.strip() else [])
         snap = {"project": pid, "stamp": stamp, "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "segments": project.get("segments") or [],
                 "fields": {k: project.get(k) for k in keys}}
@@ -11503,6 +11666,10 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
         if debit:
             project["pages"] = all_pages
             project["pagesUnit"] = "words"
+            # Замена файла со списанием заводит строки по ВСЕМУ файлу и платит
+            # за них — пробным фрагментом проект больше не является
+            # (снимок выше помнит отметку, откат её вернёт).
+            project.pop("trialExcerpt", None)
         project["sourceSha"] = parsed["sha"]
         project["parseRules"] = parsed.get("parseRules")
         project["fileName"] = filename
@@ -11704,6 +11871,7 @@ def _resegment_plan(project: dict, parsed: dict) -> dict:
     """Что остаётся, что меняется (и из каких старых строк), что новое,
     что уходит. Тот же диф, что у замены файла; «то же место» новой строки —
     старые строки между соседними уцелевшими, с общими словами."""
+    _trial_guard(project, TRIAL_RESEG_409)    # и для tools/resegment_project.py
     units, full = parsed["units"], parsed["full"]
     old = _text_segments(project)
     plan, removed = _diff_units(project, units, full)
@@ -11903,6 +12071,42 @@ class ResegmentRequest(BaseModel):
     dry_run: bool = True
 
 
+@app.post("/api/projects/{pid}/trial/rest")
+async def trial_rest(pid: int):
+    """Дописать к пробному фрагменту остальной документ — из ХРАНИМОГО
+    исходника, второй раз файл искать не надо. Это замена файла тем же
+    файлом (`_reimport_apply`): фрагмент совпадает и остаётся с переводом,
+    прочие строки заводятся заново, списываются ДОБАВЛЕННЫЕ страницы;
+    не хватает — 402 тем же текстом, что у загрузки. Откат — дверь замены
+    файла, и он возвращает отметку фрагмента (она в снимке)."""
+    project = get_project(pid)
+    if not project.get("trialExcerpt"):
+        raise HTTPException(400, "Файл переведён не фрагментом — дописывать нечего")
+    _guard_project_write(pid)
+    if _active_job_for(pid) or _job_busy(pid, "images"):
+        raise HTTPException(409, "По файлу идёт или ждёт прогон — дождитесь его конца")
+    src = _resegment_source(project)
+    if src is None:
+        raise HTTPException(409, "У файла нет сохранённого исходника — загрузите файл заново")
+    filename, content = src
+    try:
+        parsed = await run_in_threadpool(_parse_upload, filename, content)
+    except (textcount.Unsupported, textcount.TooBig, textcount.NotAvailable) as e:
+        raise _format_error(e, filename)
+    done = await run_in_threadpool(_trial_rest_apply, pid, parsed, content, filename)
+    return {"ok": True, "project": pid, **done}
+
+
+def _trial_rest_apply(pid: int, parsed: dict, content: bytes, filename: str) -> dict:
+    done = _reimport_apply(pid, parsed, content, filename, "")
+    with _SAVE_LOCK:
+        project = get_project(pid)
+        project.pop("trialExcerpt", None)     # страховка: `_reimport_apply` снимает сам
+        _PROJECTS_VER[0] += 1
+        save_state(STATE)
+    return done
+
+
 @app.post("/api/projects/{pid}/resegment")
 async def resegment_project(pid: int, req: ResegmentRequest):
     """Пересобрать строки файла из его хранимого исходника по нынешним
@@ -11912,6 +12116,7 @@ async def resegment_project(pid: int, req: ResegmentRequest):
     замены файла (`/reimport/{stamp}/undo`)."""
     project = get_project(pid)
     _guard_project_write(pid)
+    _trial_guard(project, TRIAL_RESEG_409)
     if _active_job_for(pid) or _job_busy(pid, "images"):
         raise HTTPException(409, "По файлу идёт или ждёт прогон — пересборка подождёт его конца")
     src = _resegment_source(project)
@@ -12989,6 +13194,7 @@ def images_local(pid: int, req: ImagesLocalRequest):
     """Принять надписи, прочитанные в браузере. Ни одного вызова модели."""
     _guard_project_write(pid)
     project = get_project(pid)
+    _trial_guard(project, TRIAL_IMAGES_409)
     data = _image_source_or_404(pid)
     ok, why = image_text.engine_ready_pixels()
     if not ok:
@@ -17237,7 +17443,7 @@ def _project_for_client(project: dict) -> dict:
     _strip_project_models(out)
     cur = _parse_rules(project.get("importKind") or "")
     out["parseOutdated"] = bool(cur and (project.get("parseRules") or 0) < cur
-                                and _resegment_has_source(project))
+                                and _resegment_has_source(project) and not project.get("trialExcerpt"))
     return out
 
 
@@ -29364,6 +29570,8 @@ def create_job(pid: int, req: JobRequest):
     дальше страница может быть закрыта, сервер доведёт работу до конца."""
     _audit("job.create", project=pid, kind=req.kind)
     project = get_project(pid)              # 404, если проекта нет
+    if req.kind == "images":
+        _trial_guard(project, TRIAL_IMAGES_409)
     if req.kind not in JOB_KINDS:
         raise HTTPException(400, "Неизвестный тип прогона: " + req.kind)
     ids = list(dict.fromkeys(req.segment_ids))

@@ -176,7 +176,7 @@
   "Язык оригинала и язык перевода совпадают.": "Asl til va tarjima tili bir xil.",
   "Файл больше 32 МБ — сервис такой не примет.": "Fayl 32 MB dan katta — xizmat uni qabul qilmaydi.",
   "Передаём файл…": "Fayl uzatilmoqda…",
-  "Первая страница (250 слов) — бесплатно. Нужна только почта: регистрация займёт минуту, и перевод откроется сразу.": "Birinchi bet (250 so‘z) — bepul. Faqat elektron pochta kerak: ro‘yxatdan o‘tish bir daqiqa oladi va tarjima darhol ochiladi.",
   "за страницу. Без подписки, платите за объём.": "har bir bet uchun. Obunasiz, faqat hajm uchun to‘laysiz.",
-  "Первая страница — бесплатно, дальше": "Birinchi bet — bepul, keyin"
+  "Первая страница — бесплатно, дальше": "Birinchi bet — bepul, keyin",
+  "Первая страница (250 слов) — бесплатно. Если документ больше, объём посчитаем бесплатно и переведём один случайный фрагмент в страницу. Нужна только почта: регистрация займёт минуту.": "Birinchi bet (250 so‘z) — bepul. Hujjat kattaroq bo‘lsa, hajmini bepul hisoblaymiz va bir betlik tasodifiy bo‘lakni tarjima qilamiz. Faqat elektron pochta kerak: ro‘yxatdan o‘tish bir daqiqa oladi."
 }

@@ -415,7 +415,18 @@
   "Ваш файл ждёт: ": "Your file is waiting: ",
   ". После входа сразу откроем его перевод.": ". We'll open its translation right after you sign in.",
   "После входа сразу откроем перевод вашего документа.": "We'll open your document's translation right after you sign in.",
-  "Первая страница — бесплатно.": "The first page is free.",
   "Файл с сайта: выберите язык перевода, если он не подставился, — проект заведётся сам.": "File from the website: pick the target language if it isn't filled in, and the project will be created for you.",
-  "Выберите файл ещё раз: браузер не дал передать его с сайта. Языки уже подставлены.": "Choose the file again: your browser didn't let us bring it over from the website. The languages are already set."
+  "Выберите файл ещё раз: браузер не дал передать его с сайта. Языки уже подставлены.": "Choose the file again: your browser didn't let us bring it over from the website. The languages are already set.",
+  "Первая страница — бесплатно: если документ больше, объём посчитаем бесплатно и переведём один случайный фрагмент в страницу.": "The first page is free: if the document is longer, we count its full size for free and translate one random page-sized excerpt.",
+  "Остальной документ добавлен": "The rest of the document has been added",
+  "Новые строки ждут перевода.": "The new lines are waiting to be translated.",
+  "Остальное не добавлено": "The rest was not added",
+  "Пробный фрагмент. ": "Trial excerpt. ",
+  "В документе ": "The document has ",
+  " стр.; бесплатно переводим один случайный фрагмент на ": " pages; we translate one random excerpt for free: ",
+  " стр. — строки ": " pages, lines ",
+  ". Остальной текст в выгрузке останется на языке оригинала.": ". The rest of the text stays in the original language in the download.",
+  "Перевести остальное": "Translate the rest",
+  "Добавлен пробный фрагмент": "Trial excerpt added",
+  "Документ больше бесплатной страницы: переведём один случайный фрагмент. Остальное — кнопкой «Перевести остальное» после пополнения.": "The document is longer than the free page: we'll translate one random excerpt. The rest — with “Translate the rest” after a top-up."
 }

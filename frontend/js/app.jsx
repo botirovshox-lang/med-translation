@@ -612,7 +612,7 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
             waiting ? TR("Ваш файл ждёт: ") + waiting + TR(". После входа сразу откроем его перевод.")
                     : TR("После входа сразу откроем перевод вашего документа."),
             info.freePages > 0 && mode === "register"
-              ? " " + TR("Первая страница — бесплатно.") : "")),
+              ? " " + TR("Первая страница — бесплатно: если документ больше, объём посчитаем бесплатно и переведём один случайный фрагмент в страницу.") : "")),
       React.createElement("div", { className: "col", style: { gap: 4 } }, rows),
       /* Почта на сервере не настроена — говорим об этом ДО того, как человек
          нажмёт «Зарегистрироваться» и уйдёт ждать письма, которого не будет. */
@@ -997,6 +997,8 @@ function App() {
       React.createElement(Topbar, { store, theme, onToggleTheme: toggleTheme, onLogout: logout,
         onSearch: () => setSearch(true) }),
       React.createElement("main", { className: "main" },
+        ["editor", "preflight", "qa", "backlog", "stats", "export"].indexOf(store.tab) >= 0
+          && React.createElement(TrialExcerptBar, { store, project: store.activeProject, toast }),
         React.createElement(Boundary, { key: store.tab },
           React.createElement(Active, { store, toast, theme, onToggleTheme: toggleTheme })),
         React.createElement(NextStepBar, { store }))),
@@ -1009,6 +1011,42 @@ function App() {
     typeof OnboardingLayer === "function"
       && React.createElement(OnboardingLayer, { store, toast })
   );
+}
+
+/* Пробный фрагмент (`project.trialExcerpt`, см. «Пробный фрагмент»
+   в main.py): в файле переведена одна страница из многих. Сказать это
+   обязаны ВСЕ экраны, где человек судит о готовности, — «Перевод»,
+   «Проверка», «Скачать» и карточка файла: иначе галочка шага и «100%»
+   описывали бы фрагмент, а выгрузка отдала бы документ наполовину
+   на языке оригинала без единого слова об этом. Кнопка — дописать
+   остальное из хранимого исходника (страницы спишутся за добавленное). */
+function TrialExcerptBar({ store, project, toast }) {
+  const [busy, setBusy] = useState(false);
+  const ex = project && project.trialExcerpt;
+  if (!ex) return null;
+  const num = (x) => String(Math.round((Number(x) || 0) * 10) / 10);
+  const rest = async () => {
+    setBusy(true);
+    try {
+      await window.API.trialRest(project.id);
+      const p = await window.API.getProject(project.id);
+      if (p && store.replaceProject) store.replaceProject(p);
+      toast && toast.success(TR("Остальной документ добавлен"), TR("Новые строки ждут перевода."));
+    } catch (e) {
+      toast && toast.error(TR("Остальное не добавлено"), (e && e.message) || String(e));
+    }
+    setBusy(false);
+  };
+  return React.createElement("div", { className: "row between row-wrap", role: "note",
+      style: { gap: 10, padding: "10px 12px", borderRadius: 10, marginBottom: 14, fontSize: 13,
+               background: "var(--c-warning-soft, var(--c-primary-soft))", border: "1px solid var(--border)" } },
+    React.createElement("span", { style: { minWidth: 0, flex: "1 1 320px" } },
+      React.createElement("b", null, TR("Пробный фрагмент. ")),
+      TR("В документе ") + num(ex.filePages) + TR(" стр.; бесплатно переводим один случайный фрагмент на ")
+        + num(ex.pages) + TR(" стр. — строки ") + (ex.from + 1) + "–" + (ex.to + 1) + TR(" из ") + ex.totalUnits
+        + TR(". Остальной текст в выгрузке останется на языке оригинала.")),
+    React.createElement(Btn, { variant: "secondary", size: "sm", icon: "plus", disabled: busy, onClick: rest },
+      busy ? TR("Минуту…") : TR("Перевести остальное")));
 }
 
 function Root() { return React.createElement(ToastProvider, null, React.createElement(App, null)); }

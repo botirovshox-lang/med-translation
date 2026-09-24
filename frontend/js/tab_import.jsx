@@ -662,6 +662,8 @@ function ImpFileCard({ project, store, toast }) {
         project.sourceDocx && project.writeback === false && React.createElement(Badge, { icon: "file" }, TR("вернём как Word")),
         project.reimport && React.createElement(Badge, { icon: "repeat" }, TR("обновлён ") + project.reimport.at)),
       project.importNote && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TRS(project.importNote)),
+      project.trialExcerpt && typeof TrialExcerptBar === "function"
+        && React.createElement(TrialExcerptBar, { store, project, toast }),
       project.parseOutdated && React.createElement("div", { className: "row between row-wrap",
           style: { gap: 8, padding: "8px 10px", borderRadius: 8, background: "var(--c-primary-soft)", fontSize: 13 } },
         React.createElement("span", null, TR("Чтение файла улучшено: строки можно собрать заново — точнее по абзацам и страницам.")),
@@ -808,6 +810,16 @@ function ImpAddFile({ folder, store, toast, meta }) {
       /* Виртуальная папка после второго файла стала настоящей записью. */
       store.patchFolder(folder.id, { virtual: false });
       reset();
+      /* Файл больше пробного подарка: переведётся фрагмент. Сказать это
+         СРАЗУ и предупреждением, а не «Файл добавлен»: человек ждёт весь
+         документ. Полоса с числами — на «Переводе» и на карточке файла. */
+      if (project.trialExcerpt) {
+        toast.warning(TR("Добавлен пробный фрагмент"),
+          TR("Документ больше бесплатной страницы: переведём один случайный фрагмент. Остальное — кнопкой «Перевести остальное» после пополнения."));
+        store.openProject(project.id);
+        setBusy(false);
+        return;
+      }
       /* Картинки читаются сами, сервер уже поставил задачу: строки с них
          появятся в файле через минуту-другую, об этом — словами. */
       toast.success(TR("Файл добавлен"), project.segments.length + TR(" строк готовы к переводу.")

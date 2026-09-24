@@ -415,7 +415,18 @@
   "Ваш файл ждёт: ": "Faylingiz kutmoqda: ",
   ". После входа сразу откроем его перевод.": ". Kirganingizdan so'ng tarjimasini darhol ochamiz.",
   "После входа сразу откроем перевод вашего документа.": "Kirganingizdan so'ng hujjatingiz tarjimasini darhol ochamiz.",
-  "Первая страница — бесплатно.": "Birinchi bet — bepul.",
   "Файл с сайта: выберите язык перевода, если он не подставился, — проект заведётся сам.": "Saytdan kelgan fayl: tarjima tili qo'yilmagan bo'lsa, uni tanlang — loyiha o'zi yaratiladi.",
-  "Выберите файл ещё раз: браузер не дал передать его с сайта. Языки уже подставлены.": "Faylni qayta tanlang: brauzer uni saytdan o'tkazishga ruxsat bermadi. Tillar allaqachon qo'yilgan."
+  "Выберите файл ещё раз: браузер не дал передать его с сайта. Языки уже подставлены.": "Faylni qayta tanlang: brauzer uni saytdan o'tkazishga ruxsat bermadi. Tillar allaqachon qo'yilgan.",
+  "Первая страница — бесплатно: если документ больше, объём посчитаем бесплатно и переведём один случайный фрагмент в страницу.": "Birinchi bet — bepul: hujjat kattaroq bo'lsa, hajmini bepul hisoblaymiz va bir betlik tasodifiy bo'lakni tarjima qilamiz.",
+  "Остальной документ добавлен": "Hujjatning qolgan qismi qo'shildi",
+  "Новые строки ждут перевода.": "Yangi satrlar tarjimani kutmoqda.",
+  "Остальное не добавлено": "Qolgan qism qo'shilmadi",
+  "Пробный фрагмент. ": "Sinov bo'lagi. ",
+  "В документе ": "Hujjatda ",
+  " стр.; бесплатно переводим один случайный фрагмент на ": " bet; bepul ravishda bitta tasodifiy bo'lakni tarjima qilamiz: ",
+  " стр. — строки ": " bet — satrlar ",
+  ". Остальной текст в выгрузке останется на языке оригинала.": ". Qolgan matn yuklab olinganda asl tilda qoladi.",
+  "Перевести остальное": "Qolganini tarjima qilish",
+  "Добавлен пробный фрагмент": "Sinov bo'lagi qo'shildi",
+  "Документ больше бесплатной страницы: переведём один случайный фрагмент. Остальное — кнопкой «Перевести остальное» после пополнения.": "Hujjat bepul betdan katta: bitta tasodifiy bo'lakni tarjima qilamiz. Qolganini — hisob to'ldirilgach «Qolganini tarjima qilish» tugmasi bilan."
 }

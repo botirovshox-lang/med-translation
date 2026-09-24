@@ -176,7 +176,7 @@
   "Язык оригинала и язык перевода совпадают.": "The source and target languages are the same.",
   "Файл больше 32 МБ — сервис такой не примет.": "The file is larger than 32 MB, which the service can't accept.",
   "Передаём файл…": "Handing over your file…",
-  "Первая страница (250 слов) — бесплатно. Нужна только почта: регистрация займёт минуту, и перевод откроется сразу.": "The first page (250 words) is free. All you need is an email: signing up takes a minute, and the translation opens right away.",
   "за страницу. Без подписки, платите за объём.": "per page. No subscription: you pay for the volume.",
-  "Первая страница — бесплатно, дальше": "The first page is free, then"
+  "Первая страница — бесплатно, дальше": "The first page is free, then",
+  "Первая страница (250 слов) — бесплатно. Если документ больше, объём посчитаем бесплатно и переведём один случайный фрагмент в страницу. Нужна только почта: регистрация займёт минуту.": "The first page (250 words) is free. If the document is longer, we count its full size for free and translate one random page-sized excerpt. All you need is an email: signing up takes a minute."
 }

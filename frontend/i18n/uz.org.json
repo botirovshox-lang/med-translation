@@ -565,5 +565,7 @@
   "Нужно целое число или пусто.": "Butun son yoki bo‘sh bo‘lishi kerak.",
   "Обновлено": "Yangilandi",
   "Не обновлено": "Yangilanmadi",
-  "пробные страницы при регистрации": "ro'yxatdan o'tishdagi sinov betlari"
+  "пробные страницы при регистрации": "ro'yxatdan o'tishdagi sinov betlari",
+  "пробный фрагмент: списан он, объём файла — отдельно": "sinov bo'lagi: faqat u hisobdan yechildi, fayl hajmi — alohida",
+  "раз пробному клиенту перевели фрагмент большого документа — он ждёт весь": "marta sinov mijoziga katta hujjatdan bo'lak tarjima qilindi — u butunini kutmoqda"
 }

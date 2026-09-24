@@ -565,5 +565,7 @@
   "Нужно целое число или пусто.": "A whole number or empty is required.",
   "Обновлено": "Updated",
   "Не обновлено": "Not updated",
-  "пробные страницы при регистрации": "trial pages on sign-up"
+  "пробные страницы при регистрации": "trial pages on sign-up",
+  "пробный фрагмент: списан он, объём файла — отдельно": "trial excerpt: only it was charged, the file size is shown separately",
+  "раз пробному клиенту перевели фрагмент большого документа — он ждёт весь": "times a trial customer got an excerpt of a large document — they want all of it"
 }

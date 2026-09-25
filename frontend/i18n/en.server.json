@@ -423,10 +423,12 @@
   "Субтитры в кадр впечатываем в видео до ": "We burn subtitles into videos up to ",
   " мин — обрежьте его или скачайте видео с субтитрами дорожкой": " min long: trim it or download the video with a subtitle track",
   "Предыдущий кадр ещё готовится — секунду": "The previous frame is still being drawn, one moment",
-  "Кадр не получился: ": "The frame failed: ",
   "Кадр не получился — возможно, это место за концом видео": "The frame failed: this point may be past the end of the video",
   "Исходного видео на сервере нет — загрузите его заново на карточке файла": "The original video is not on the server. Upload it again on the file card",
   "Файл ещё загружается": "The file is still uploading",
   "Впечатывать нечего: ни одна реплика ещё не переведена": "Nothing to burn in: no line is translated yet",
-  "Размер кадра не определяется": "The frame size cannot be determined"
+  "Размер кадра не определяется": "The frame size cannot be determined",
+  "Загрузка отменена": "Upload cancelled",
+  "Субтитры в кадр уже впечатываются в другое видео организации — дождитесь его": "Subtitles are already being burned into another video of your organisation: wait for it to finish",
+  "Кадр не получился — попробуйте другое место в видео": "The frame failed: try another point in the video"
 }

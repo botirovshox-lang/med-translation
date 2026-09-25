@@ -230,6 +230,33 @@ const tick = () => new Promise(r => setTimeout(r, 0));
         "сборка ушла с выбранным стилем и качеством");
   check(started && started.e === 900, "экран «Скачать» узнал задачу и оценку");
 
+  /* ── 6б. Отмена и закрытие окна во время загрузки ─────────────── */
+  console.log("=== 6б. Отмена и закрытие окна ===");
+  let deleted = null, finished = null, gotProject = null;
+  global.API = Object.assign(global.API, {
+    mediaFonts: async () => FONTS_UZC,
+    uploadMedia: (file, meta, onProg, ctl) => { ctl.token = "tokX"; upload = { ctl }; return new Promise(r => { resolveUpload = r; }); },
+    mediaUploadCancel: async (tok) => { deleted = tok; return {}; },
+    mediaFinish: async (tok, body) => { finished = tok; return { id: 88 }; },
+  });
+  let cancelled = false;
+  const p5 = Object.assign({}, props, { onCancel() { cancelled = true; }, onDone(p) { gotProject = p; } });
+  const draw5 = () => { hookIdx = 0; return React.createElement(VideoEditor, p5); };
+  hooks = []; effDeps = [];
+  tree = draw5(); await tick(); tree = draw5(); tree = draw5();
+  btn(tree, "Отменить").props.onClick();
+  check(deleted === "tokX" && upload.ctl.cancelled && cancelled, "«Отменить» посреди загрузки удаляет её на сервере");
+  hooks = []; effDeps = []; finished = null;
+  tree = draw5(); await tick(); tree = draw5(); tree = draw5();
+  btn(tree, "Подтвердить и распознать речь").props.onClick();
+  /* окно закрыли (Esc), экран размонтирован — подтверждённая загрузка
+     обязана дойти до проекта */
+  find(tree, n => n.type === "button" && n.props["aria-label"] === "Закрыть")[0].props.onClick();
+  check(!upload.ctl.stopped, "подтверждённую загрузку закрытие окна не останавливает");
+  resolveUpload({ token: "tokX" });
+  await tick(); await tick();
+  check(finished === "tokX" && gotProject && gotProject.id === 88, "«готово» ушло и после закрытия окна");
+
   /* ── 7. Экран «Скачать» ──────────────────────────────────────── */
   console.log("=== 7. Экран «Скачать» ===");
   hooks = []; effDeps = [];

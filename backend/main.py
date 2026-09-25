@@ -30788,7 +30788,8 @@ async def media_upload_chunk(token: str, request: Request, offset: int = 0):
 @app.delete("/api/media/upload/{token}")
 def media_upload_cancel(token: str):
     _media_upload_rec(token)
-    _media_upload_drop(token)
+    with _MEDIA_LOCK:
+        _media_upload_drop(token)
     return {"ok": True}
 
 
@@ -30908,7 +30909,13 @@ def media_upload_finish(token: str, req: Optional[MediaFinish] = None):
     new_id = _next_id()
     d = _media_dir(new_id)
     d.mkdir(parents=True, exist_ok=True)
-    os.replace(str(part), str(d / ("source" + rec["ext"])))
+    # Под тем же замком, что и отмена: «Отменить», нажатое во время «готово»,
+    # иначе роняло бы перенос файла 500-й, а проект с платным распознаванием
+    # заводился бы при экране «отменено».
+    with _MEDIA_LOCK:
+        if not part.exists():
+            raise HTTPException(409, "Загрузка отменена")
+        os.replace(str(part), str(d / ("source" + rec["ext"])))
     _media_upload_drop(token)
     project = {
         "id": new_id, "title": title, "titleEn": title,
@@ -31469,6 +31476,28 @@ MEDIA_BURN_MAX_MINUTES = float(os.environ.get("MEDIA_BURN_MAX_MINUTES", "120"))
 _BURN_BYTES_PER_SEC = {1080: 750_000, 720: 400_000, 480: 200_000}
 
 
+MEDIA_BURN_PER_TENANT = int(os.environ.get("MEDIA_BURN_PER_TENANT", "1"))
+
+
+def _burn_span(project: dict) -> tuple:
+    """(начало, длина) впечатывания. Распознан только ФРАГМЕНТ (страниц
+    хватило на начало, `mediaExcerpt`) — впечатывается только он: иначе
+    пробная организация, оплатившая минуту, бесплатно занимала бы сервер
+    часами перекодирования всего ролика, где субтитров нет."""
+    t0, span = _media_span(project.get("media") or {})
+    ex = (project.get("mediaExcerpt") or {}).get("sec")
+    if ex:
+        span = min(span, float(ex))
+    return t0, span
+
+
+def _burn_jobs_of(tid: str) -> list:
+    """Идущие и ждущие сборки в кадр организации (в зеркале и в базе)."""
+    _refresh_jobs_from_db(force=True)
+    return [j for j in _JOBS.values() if _tenant_of(j) == tid and j.get("kind") == "mediarender"
+            and (j.get("params") or {}).get("what") == "burn" and j.get("status") in ("queued", "running")]
+
+
 def _burn_cues(text: str, tr: dict) -> tuple:
     """(реплики для впечатывания, сколько не переведено). В кадр идёт
     ТОЛЬКО перевод: реплика на языке оригинала посреди переведённого ролика —
@@ -31496,7 +31525,7 @@ def _media_burn(job: dict, project: dict, src: Path, probe: dict, text: str, tr:
     quality = params.get("quality") if params.get("quality") in media_mod.BURN_QUALITIES else "src"
     w, h = media_mod.out_size(video, quality)
     fps = media_mod.out_fps(video)
-    t0, span_len = _media_span(project.get("media") or {})
+    t0, span_len = _burn_span(project)
     cues, untranslated = _burn_cues(text, tr)
     if not cues:
         raise RuntimeError("Впечатывать нечего: ни одна реплика ещё не переведена")
@@ -31520,25 +31549,34 @@ def _media_burn(job: dict, project: dict, src: Path, probe: dict, text: str, tr:
     job["done"] = sum(1 for n in names if have(n))
     _job_persist(job)
     first = True
-    for (a, frames), name in zip(plan, names):
-        if have(name):
-            continue
-        if not first:
-            if _SHUTDOWN.is_set():
-                _job_park(job)
-                return
-            if _job_should_stop():
-                job["status"] = "stopped"
-                return
-            if _job_should_yield(job):
-                _job_yield(job, [])
-                return
-        first = False
-        tmp = bdir / (name + ".tmp.mp4")
-        media_mod.burn_segment(src, bdir, "subs.ass", tmp, t0 + a, a, frames, span_len - a, w, h, fps)
-        os.replace(str(tmp), str(bdir / name))
-        job["done"] = sum(1 for n in names if have(n))
-        _job_persist(job)
+    try:
+        for (a, frames), name in zip(plan, names):
+            if have(name):
+                continue
+            if not first:
+                if _SHUTDOWN.is_set():
+                    _job_park(job)
+                    return
+                if _job_should_stop():
+                    job["status"] = "stopped"
+                    # Остановил человек — куски больше не нужны, а весят
+                    # гигабайты и держат общий потолок диска (507 соседям).
+                    shutil.rmtree(str(bdir), ignore_errors=True)
+                    return
+                if _job_should_yield(job):
+                    _job_yield(job, [])
+                    return
+            first = False
+            tmp = bdir / (name + ".tmp.mp4")
+            media_mod.burn_segment(src, bdir, "subs.ass", tmp, t0 + a, a, frames, span_len - a, w, h, fps)
+            os.replace(str(tmp), str(bdir / name))
+            job["done"] = sum(1 for n in names if have(n))
+            _job_persist(job)
+    except media_mod.Aborted:
+        raise                          # выкат: куски нужны продолжению
+    except Exception:
+        shutil.rmtree(str(bdir), ignore_errors=True)
+        raise
     job["phase"] = "mux"
     _job_persist(job)
     dst = out_dir / "burn.mp4"
@@ -31592,10 +31630,12 @@ def media_render(pid: int, req: MediaRenderRequest):
     if req.what in ("subs", "burn") and not m.get("video"):
         raise HTTPException(400, "В файле нет видео — скачайте субтитры файлом .srt")
     dur = float(m.get("duration") or 0)
-    _t0, span_len = _media_span(m)
+    _t0, span_len = _burn_span(project) if req.what == "burn" else _media_span(m)
     params = {"what": req.what}
     eta = None
     if req.what == "burn":
+        if len(_burn_jobs_of(_tenant_of(project))) >= MEDIA_BURN_PER_TENANT:
+            raise HTTPException(429, "Субтитры в кадр уже впечатываются в другое видео организации — дождитесь его")
         # Единственная сборка, которая перекодирует кадры: часы CPU общего
         # сервера на час видео. Потолок длины — отдельный и ниже общего.
         if span_len > MEDIA_BURN_MAX_MINUTES * 60:
@@ -31785,10 +31825,12 @@ def _media_probe_cached(path: Path) -> dict:
         if len(_MEDIA_PROBES) > 64:
             _MEDIA_PROBES.clear()
         try:
-            _MEDIA_PROBES[k] = media_mod.probe(path)
+            info = media_mod.probe(path)
         except media_mod.MediaError:
             return {}
-    return _MEDIA_PROBES[k]
+        _MEDIA_PROBES[k] = info
+        return info          # не из словаря: соседний поток мог его очистить
+    return _MEDIA_PROBES.get(k) or {}
 
 
 class MediaPreviewRequest(BaseModel):
@@ -31808,15 +31850,19 @@ def _media_preview_jpeg(src: Path, video: dict, work: Path, t0: float, t: float,
     except media_mod.MediaError as e:
         raise HTTPException(415, str(e))
     t = max(0.0, min(float(t or 0.0), max(0.0, span_len - 0.1)))
-    if not _MEDIA_PREVIEW_SEM.acquire(blocking=False):
+    work.mkdir(parents=True, exist_ok=True)       # ДО замка: сбой здесь не должен его унести
+    # Короткое ожидание, а не отказ сразу: слот один на сервис, и «занято»
+    # у соседа не должно оставлять человеку кадр прежнего стиля.
+    if not _MEDIA_PREVIEW_SEM.acquire(timeout=8):
         return JSONResponse({"ok": False, "error": "Предыдущий кадр ещё готовится — секунду"}, status_code=429)
-    work.mkdir(parents=True, exist_ok=True)
     name = "p-%s.ass" % secrets.token_hex(6)
     try:
         (work / name).write_text(media_mod.ass_document(cues, style, w, h), encoding="utf-8")
         jpg = media_mod.preview_frame(src, work, name, t0 + t, t, w, h)
     except media_mod.MediaError as e:
-        raise HTTPException(422, "Кадр не получился: %s" % str(e)[:200])
+        # Подробности — в журнал: в тексте ffmpeg лежат пути сервера.
+        print("[backend] кадр предпросмотра не получился: %s" % e, file=sys.stderr)
+        raise HTTPException(422, "Кадр не получился — попробуйте другое место в видео")
     finally:
         _MEDIA_PREVIEW_SEM.release()
         try:
@@ -31917,7 +31963,7 @@ def media_burn_info(pid: int):
         raise HTTPException(400, "Это не видео-проект")
     src = _media_source(project)
     video = (_media_probe_cached(src).get("video") if src is not None else None) or m.get("video") or {}
-    t0, span_len = _media_span(m)
+    t0, span_len = _burn_span(project)
     cues = []
     if project.get("mediaStatus") == "ready" and project.get("sourceDocx"):
         try:

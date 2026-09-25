@@ -514,14 +514,16 @@ def fake_burn_segment(src, work_dir, ass_name, dst, src_start, offset, frames, l
                   "ass": (Path(work_dir) / ass_name).read_text(encoding="utf-8")})
     Path(dst).write_bytes(b"SEG")
     if BURN_STOP_AFTER and len(BURNS) == BURN_STOP_AFTER:
-        main._JOBS[BURN_JOB[0]]["stop"] = True
+        BURN_YIELD[0] = True                   # чужая задача встала в очередь
 
 
 def fake_burn_concat(work_dir, names, src, dst, trim_start, length):
     Path(dst).write_bytes(b"BURN" + b"".join((Path(work_dir) / n).read_bytes() for n in names))
 
 
-BURN_STOP_AFTER, BURN_JOB = 1, [None]
+BURN_STOP_AFTER, BURN_JOB, BURN_YIELD = 1, [None], [False]
+_yield0 = main._job_should_yield
+main._job_should_yield = lambda job: BURN_YIELD[0]
 media.burn_segment = fake_burn_segment
 media.burn_concat = fake_burn_concat
 media.BURN_SEG_SEC = 50.0                      # 125 с → три куска
@@ -534,9 +536,11 @@ check(main._project_by_id(pid)["media"]["style"]["font"] == "dejavu-sans", "вы
 bj = main._JOBS[r.json()["job"]["id"]]
 BURN_JOB[0] = bj["id"]
 main._job_execute(bj)
-check(bj["status"] == "stopped" and len(BURNS) == 1, "стоп между кусками: %s, кусков %d" % (bj["status"], len(BURNS)))
+check(bj["status"] == "queued" and len(BURNS) == 1 and list((main.MEDIA_DIR / str(pid) / "work").glob("burn-*/seg0000.mp4")),
+      "между кусками уступила очередь, готовый кусок лежит: %s, кусков %d" % (bj["status"], len(BURNS)))
 BURN_STOP_AFTER = 0
-bj["status"], bj["stop"] = "queued", False
+BURN_YIELD[0] = False
+main._job_should_yield = _yield0
 # Продолжение идёт минуты спустя, а каждый заход сборки трогает исходник
 # (`_media_touch`, срок хранения): время правки файла уже другое.
 _touch, _tick = main._media_touch, [0]
@@ -578,6 +582,23 @@ main.MEDIA_BURN_MAX_MINUTES = 1.0
 r = c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "burn"})
 check(r.status_code == 413, "длиннее потолка впечатывания — 413")
 main.MEDIA_BURN_MAX_MINUTES = 120.0
+# Стоп человеком — куски убираются (гигабайты и общий потолок диска).
+BURNS.clear()
+sj = main._JOBS[c.post("/api/projects/%d/media/render" % pid, headers=H(B),
+                         json={"what": "burn", "style": {"size": 9}}).json()["job"]["id"]]
+r = c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "burn"})
+check(r.status_code in (409, 429), "вторая сборка в кадр той же организации не ставится: %s" % r.status_code)
+_seg0 = media.burn_segment
+media.burn_segment = lambda *a, **k: (_seg0(*a, **k), sj.update(stop=True))
+main._job_execute(sj)
+media.burn_segment = _seg0
+check(sj["status"] == "stopped" and not list((main.MEDIA_DIR / str(pid) / "work").glob("burn-*")),
+      "остановленная сборка не оставляет кусков на диске")
+# Распознан только фрагмент — впечатывается только он.
+main._project_by_id(pid)["mediaExcerpt"] = {"sec": 40.0, "of": 125.0}
+bi_ = c.get("/api/projects/%d/media/burn-info" % pid, headers=H(B)).json()
+check(bi_["span"] == 40.0, "у фрагмента впечатывается только фрагмент: %s" % bi_["span"])
+main._project_by_id(pid).pop("mediaExcerpt")
 
 # Кадр предпросмотра.
 PREV = []
@@ -816,6 +837,12 @@ else:
     check(jpg[:2] == b"\xff\xd8", "кадр предпросмотра настоящим libass")
     kf = media.keyframe_before(clip, 2.0)
     check(0.0 <= kf <= 2.0, "ключевой кадр не позже запрошенного: %s" % kf)
+    # MPEG-TS начинается не с нуля (start_time ~1,4 с): ответ — в шкале -ss.
+    ts = W / "k.ts"
+    media.run(media._ffmpeg("-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=5",
+                            "-c:v", "libx264", "-g", "10", "-keyint_min", "10", "-sc_threshold", "0", ts), timeout=120)
+    kts = media.keyframe_before(ts, 2.3)
+    check(abs(kts - 2.0) < 0.05, "ключевой кадр у MPEG-TS — от начала файла, без start_time: %s" % kts)
 
 shutil.rmtree(str(TMP), ignore_errors=True)
 print("\nПРОВАЛЕНО: %d" % len(fail) if fail else "\nВСЁ ПРОШЛО")

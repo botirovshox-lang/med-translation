@@ -555,20 +555,30 @@ def keyframe_before(src, t: float) -> float:
     пакеты около `t` (`-read_intervals`), кадры не декодируются."""
     if t <= 0.05:
         return 0.0
+    # Время кадров у ffprobe — абсолютное (с `start_time` контейнера:
+    # у MPEG-TS/AVCHD это секунда-полторы), а `-ss` ffmpeg считает от начала
+    # файла. Сравниваем и отдаём в шкале `-ss`, иначе сдвиг реплик врал бы
+    # ровно на start_time.
+    r0 = run([_bin("ffprobe") or "ffprobe", "-v", "error", "-show_entries", "format=start_time",
+              "-of", "csv=p=0", str(src)], timeout=60)
+    base = _num((r0.stdout or b"").decode("utf-8", "replace").strip().split(",")[0])
     for back in (20.0, 180.0):
         a = max(0.0, t - back)
         cmd = [_bin("ffprobe") or "ffprobe", "-v", "error", "-select_streams", "v:0", "-skip_frame", "nokey",
                "-show_entries", "frame=pts_time,best_effort_timestamp_time", "-of", "csv=p=0",
-               "-read_intervals", "%.3f%%+%.3f" % (a, t - a + 0.5), str(src)]
+               "-read_intervals", "%.3f%%+%.3f" % (base + a, t - a + 0.5), str(src)]
         r = run(cmd, timeout=120)
         best = None
         for line in (r.stdout or b"").decode("utf-8", "replace").splitlines():
             for v in line.split(","):
-                x = _num(v) if v.strip() not in ("", "N/A") else None
+                x = _num(v) - base if v.strip() not in ("", "N/A") else None
                 if x is not None and x <= t + 0.001 and (best is None or x > best):
                     best = x
         if best is not None:
             return round(max(0.0, best), 3)
+    # Ключевого кадра рядом нет: берём файл с начала. Ролик выйдет длиннее
+    # обрезки, но реплики сдвинутся на всю разницу и встанут верно.
+    print("[media] ключевой кадр до %.1f с не найден — сборка с начала файла" % t, file=sys.stderr)
     return 0.0
 
 

@@ -183,16 +183,18 @@
     let off = start.received || 0, fails = 0;
     report({ phase: "upload", done: off, total: file.size });
     while (off < file.size) {
+      if (ctl.cancelled) {
+        try { await call("DELETE", "/media/upload/" + token); } catch (e) {}
+        const e = new Error(TR("Загрузка отменена"));
+        e.cancelled = true;
+        throw e;
+      }
+      /* «Отменить» сильнее «закрыли окно»: проверяется первым, иначе
+         отменённая посреди загрузки осталась бы на сервере до суток. */
       /* Экран с загрузкой закрыли, не отменяя: загрузка на сервере остаётся
          и продолжится с того же места, когда человек выберет файл снова. */
       if (ctl.stopped) {
         const e = new Error(TR("Загрузка приостановлена"));
-        e.cancelled = true;
-        throw e;
-      }
-      if (ctl.cancelled) {
-        try { await call("DELETE", "/media/upload/" + token); } catch (e) {}
-        const e = new Error(TR("Загрузка отменена"));
         e.cancelled = true;
         throw e;
       }

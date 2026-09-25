@@ -67,12 +67,16 @@ function vidLoadFonts(fonts) {
 function useVidFonts(lang) {
   const [info, setInfo] = useState(null);
   useEffect(() => {
-    let dead = false;
-    window.API.safeCall(() => window.API.mediaFonts(lang)).then(r => {
-      if (dead || !r) return;
+    let dead = false, tries = 0;
+    /* Сбой сети — повтор, а не вечный «Загружаем шрифты…» с погашенной
+       кнопкой: без стиля видео не подтвердить. */
+    const go = () => window.API.safeCall(() => window.API.mediaFonts(lang)).then(r => {
+      if (dead) return;
+      if (!r) { tries++; setTimeout(() => { if (!dead) go(); }, Math.min(15000, 1500 * tries)); return; }
       vidLoadFonts(r.fonts);
       setInfo(r);
     });
+    go();
     return () => { dead = true; };
   }, [lang]);
   return info;
@@ -186,13 +190,21 @@ function useVidServerFrame() {
   const load = async (fn) => {
     const my = ++seq.current;
     setBusy(true); setErr("");
-    try {
-      const u = await fn();
-      if (my !== seq.current) { URL.revokeObjectURL(u); return; }
-      setUrl(u);
-    } catch (e) {
-      /* 429 — прошлый кадр ещё рисуется; следующее изменение спросит снова. */
-      if (my === seq.current && e.status !== 429) setErr(e.message || String(e));
+    for (let i = 0; ; i++) {
+      try {
+        const u = await fn();
+        if (my !== seq.current) { URL.revokeObjectURL(u); return; }
+        setUrl(u);
+        break;
+      } catch (e) {
+        if (my !== seq.current) return;
+        /* 429 — слот кадра занят (он один на сервис). Спросить ещё раз:
+           иначе на экране остался бы кадр ПРЕЖНЕГО стиля, и человек
+           подтвердил бы то, чего не видел. */
+        if (e.status === 429 && i < 5) { await new Promise(r => setTimeout(r, 1200)); continue; }
+        setErr(e.message || String(e));
+        break;
+      }
     }
     if (my === seq.current) setBusy(false);
   };
@@ -228,10 +240,16 @@ function VideoEditor({ file, meta, onCancel, onDone }) {
   const [confirmed, setConfirmed] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [finErr, setFinErr] = useState("");
+  const [attempt, setAttempt] = useState(0);
   const url = useMemo(() => URL.createObjectURL(file), [file]);
   const videoRef = useRef(null);
   const boxRef = useRef(null);
   const ctlRef = useRef(null);
+  /* То, что нужно «готово» и ПОСЛЕ закрытия окна: подтвердили — файл
+     догрузится и проект заведётся, даже если человек ушёл на другую
+     вкладку. Состояние React к тому времени уже недоступно. */
+  const live = useRef({});
+  Object.assign(live.current, { trim, style, dur });
   const box = useVidBoxSize(boxRef);
   const frame = useVidServerFrame();
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
@@ -241,15 +259,40 @@ function VideoEditor({ file, meta, onCancel, onDone }) {
   /* Загрузка стартует сразу: пока человек обрезает и выбирает шрифт,
      гигабайты уже едут. Закрыли экран, не отменяя, — загрузка на сервере
      остаётся и продолжится с того же места при повторном выборе файла. */
+  const doFinish = (tok) => {
+    const L = live.current;
+    if (L.finishing) return;
+    L.finishing = true;
+    if (L.mounted) { setFinishing(true); setFinErr(""); }
+    const full = !L.dur || (L.trim.start <= 0.05 && L.trim.end >= L.dur - 0.05);
+    window.API.mediaFinish(tok, { trim: full ? null : { start: L.trim.start, end: L.trim.end },
+      style: isAudio ? null : L.style })
+      .then(project => onDone(project))
+      .catch(e => {
+        L.finishing = false; L.confirmed = false;
+        if (L.mounted) { setFinErr(e.message || String(e)); setConfirmed(false); setFinishing(false); }
+      });
+  };
   useEffect(() => {
     const ctl = { cancelled: false, stopped: false, noFinish: true };
     ctlRef.current = ctl;
+    live.current.mounted = true;
     window.API.uploadMedia(file, { title: meta.title, src: meta.src, tgt: meta.tgt, domain: meta.domain,
-      folder: meta.folder }, (p) => { if (p && p.total) setProg(p); }, ctl)
-      .then(r => { if (!ctl.cancelled && !ctl.stopped) setToken(r.token); })
-      .catch(e => { if (!e.cancelled) setUpErr(e.message || String(e)); });
-    return () => { ctl.stopped = true; };
-  }, [file]);
+      folder: meta.folder }, (p) => { if (p && p.total && live.current.mounted) setProg(p); }, ctl)
+      .then(r => {
+        if (ctl.cancelled) return;
+        if (live.current.mounted) setToken(r.token);
+        if (live.current.confirmed) doFinish(r.token);
+      })
+      .catch(e => {
+        if (e.cancelled) return;
+        live.current.confirmed = false;
+        if (live.current.mounted) { setUpErr(e.message || String(e)); setConfirmed(false); }
+      });
+    /* Уход с экрана приостанавливает загрузку — кроме уже подтверждённой:
+       её доводим до проекта. */
+    return () => { live.current.mounted = false; if (!ctl.cancelled && !live.current.confirmed) ctl.stopped = true; };
+  }, [file, attempt]);
   /* Браузер файл не показал — длительность и кадр узнаём у сервера. */
   useEffect(() => {
     if (!token || playable !== false) return;
@@ -264,16 +307,13 @@ function VideoEditor({ file, meta, onCancel, onDone }) {
     frame.load(() => window.API.mediaUploadPreview(token, { t: t != null ? t : cur, style, text: sample }));
   };
   useEffect(() => { if (token && playable === false && style && probe) serverFrame(trim.start + 1); }, [token, probe]);
-  /* Подтвердили — и файл догрузился: «готово» с обрезкой и стилем. */
-  useEffect(() => {
-    if (!confirmed || !token || finishing) return;
-    setFinishing(true); setFinErr("");
-    const full = !dur || (trim.start <= 0.05 && trim.end >= dur - 0.05);
-    window.API.mediaFinish(token, { trim: full ? null : { start: trim.start, end: trim.end },
-      style: isAudio ? null : style })
-      .then(project => onDone(project))
-      .catch(e => { setFinErr(e.message || String(e)); setConfirmed(false); setFinishing(false); });
-  }, [confirmed, token]);
+  /* Подтвердили: файл уже здесь — «готово» сразу, иначе его позовёт
+     загрузчик, когда догрузит (см. выше). */
+  const confirm = () => {
+    setConfirmed(true);
+    live.current.confirmed = true;
+    if (token) doFinish(token);
+  };
 
   const onMeta = (e) => {
     const d = e.target.duration;
@@ -291,12 +331,17 @@ function VideoEditor({ file, meta, onCancel, onDone }) {
      с того же места, когда этот файл выберут снова. Удаляет её только
      «Отменить» — случайный Esc не должен выбрасывать гигабайты. */
   const close = () => {
-    if (ctlRef.current) ctlRef.current.stopped = true;
+    if (ctlRef.current && !live.current.confirmed) ctlRef.current.stopped = true;
     onCancel();
   };
   const cancel = () => {
-    if (ctlRef.current) ctlRef.current.cancelled = true;
-    if (token) window.API.safeCall(() => window.API.mediaUploadCancel(token));
+    const ctl = ctlRef.current;
+    live.current.confirmed = false;
+    if (ctl) ctl.cancelled = true;
+    /* Номер загрузки загрузчик кладёт в ctl сразу после старта: отменённая
+       ПОСРЕДИ загрузки тоже удаляется, а не лежит на сервере сутки. */
+    const tok = (ctl && ctl.token) || token;
+    if (tok) window.API.safeCall(() => window.API.mediaUploadCancel(tok));
     onCancel();
   };
   const pct = prog.total ? Math.round(prog.done / prog.total * 100) : 0;
@@ -323,7 +368,10 @@ function VideoEditor({ file, meta, onCancel, onDone }) {
   const footer = vidE("div", { className: "row between row-wrap", style: { gap: 10, width: "100%" } },
     vidE("div", { className: "col", style: { gap: 4, minWidth: 200, flex: "1 1 200px" } },
       upErr
-        ? vidE("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, upErr)
+        ? vidE("div", { className: "row", style: { gap: 8, alignItems: "center", flexWrap: "wrap" } },
+            vidE("span", { style: { color: "var(--c-danger)", fontSize: 13 } }, upErr),
+            vidE(Btn, { size: "sm", variant: "secondary", icon: "repeat",
+              onClick: () => { setUpErr(""); setAttempt(a => a + 1); } }, TR("Повторить")))
         : token
           ? vidE("div", { className: "dim", style: { fontSize: 13 } }, TR("Файл загружен"))
           : vidE(React.Fragment, null,
@@ -331,10 +379,10 @@ function VideoEditor({ file, meta, onCancel, onDone }) {
               vidE(ProgressBar, { value: pct })),
       finErr && vidE("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, finErr)),
     vidE("div", { className: "row", style: { gap: 8 } },
-      vidE(Btn, { variant: "ghost", onClick: cancel }, TR("Отменить")),
+      vidE(Btn, { variant: "ghost", disabled: finishing, onClick: cancel }, TR("Отменить")),
       vidE(Btn, { variant: "primary", icon: finishing ? null : "check",
         disabled: !!upErr || confirmed || finishing || (!isAudio && !style),
-        onClick: () => setConfirmed(true) },
+        onClick: confirm },
         finishing ? vidE(React.Fragment, null, vidE(Spinner, null), TR("Запускаем…"))
           : confirmed ? TR("Запустим, как только файл загрузится")
           : TR("Подтвердить и распознать речь"))));
@@ -387,9 +435,12 @@ function VidBurnDialog({ project, onClose, onStarted, toast }) {
   const [t, setT] = useState(0);
   const [busy, setBusy] = useState(false);
   const frame = useVidServerFrame();
+  const [biErr, setBiErr] = useState("");
+  const [biTry, setBiTry] = useState(0);
   useEffect(() => {
     let dead = false;
-    window.API.safeCall(() => window.API.mediaBurnInfo(pid)).then(r => {
+    setBiErr("");
+    window.API.mediaBurnInfo(pid).catch(e => { if (!dead) setBiErr(e.message || String(e)); return null; }).then(r => {
       if (dead || !r) return;
       setBi(r);
       setStyle(r.style);
@@ -397,7 +448,7 @@ function VidBurnDialog({ project, onClose, onStarted, toast }) {
       setT(first ? (first.start + first.end) / 2 : Math.min(1, r.span || 0));
     });
     return () => { dead = true; };
-  }, [pid]);
+  }, [pid, biTry]);
   /* Кадр перерисовывается сам, когда стиль или место меняются и человек
      на полсекунды остановился: запрос — это декодирование кадра сервером. */
   useEffect(() => {
@@ -435,7 +486,11 @@ function VidBurnDialog({ project, onClose, onStarted, toast }) {
     vidE(Btn, { variant: "primary", icon: "check", disabled: busy || !style || !bi || bi.tooLong || !bi.kept || !trCues.length,
       onClick: () => start(false) }, TR("Подтвердить и собрать")));
   return vidE(Modal, { title: TR("Субтитры в кадре"), icon: "sliders", width: 1040, onClose, footer },
-    !bi || !style
+    biErr
+      ? vidE("div", { className: "row", style: { gap: 8, alignItems: "center", flexWrap: "wrap" } },
+          vidE("span", { style: { color: "var(--c-danger)", fontSize: 13 } }, biErr),
+          vidE(Btn, { size: "sm", variant: "secondary", icon: "repeat", onClick: () => setBiTry(x => x + 1) }, TR("Повторить")))
+    : !bi || !style
       ? vidE("div", { className: "dim" }, vidE(Spinner, null), " ", TR("Загружаем…"))
       : vidE("div", { className: "grid", style: { gridTemplateColumns: "repeat(auto-fit, minmax(min(380px, 100%), 1fr))", gap: 18, alignItems: "start" } },
           vidE("div", { className: "col", style: { gap: 10 } },

@@ -329,5 +329,6 @@
   "Качество видео": "Video sifati",
   "Каждый кадр перерисовывается, поэтому сборка идёт дольше, чем у дорожки субтитров. Время — оценка; страницу можно закрыть, готовый файл появится здесь.": "Har bir kadr qayta chiziladi, shuning uchun yig‘ish subtitr yo‘lagiga qaraganda uzoqroq davom etadi. Vaqt — taxminiy; sahifani yopish mumkin, tayyor fayl shu yerda paydo bo‘ladi.",
   "обрезано до ": "qirqilgan: ",
-  "Дорожка субтитров и озвучка не перекодируют видео — качество как в оригинале. Субтитры в кадре перерисовывают каждый кадр (до 1080p). Готовые файлы хранятся 2 дня (собрать заново можно в любой момент), исходное видео — 14 дней после последней работы с ним.": "Subtitr yo‘lagi va ovozlashtirish videoni qayta kodlamaydi — sifat asl nusxadagidek. Kadrga yozilgan subtitrlar har bir kadrni qayta chizadi (1080p gacha). Tayyor fayllar 2 kun saqlanadi (istalgan vaqtda qayta yig‘ish mumkin), asl video — u bilan oxirgi ishlagandan keyin 14 kun."
+  "Дорожка субтитров и озвучка не перекодируют видео — качество как в оригинале. Субтитры в кадре перерисовывают каждый кадр (до 1080p). Готовые файлы хранятся 2 дня (собрать заново можно в любой момент), исходное видео — 14 дней после последней работы с ним.": "Subtitr yo‘lagi va ovozlashtirish videoni qayta kodlamaydi — sifat asl nusxadagidek. Kadrga yozilgan subtitrlar har bir kadrni qayta chizadi (1080p gacha). Tayyor fayllar 2 kun saqlanadi (istalgan vaqtda qayta yig‘ish mumkin), asl video — u bilan oxirgi ishlagandan keyin 14 kun.",
+  "Повторить": "Qayta urinish"
 }

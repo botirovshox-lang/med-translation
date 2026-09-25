@@ -68,11 +68,17 @@ function useVidFonts(lang) {
   const [info, setInfo] = useState(null);
   useEffect(() => {
     let dead = false, tries = 0;
-    /* Сбой сети — повтор, а не вечный «Загружаем шрифты…» с погашенной
-       кнопкой: без стиля видео не подтвердить. */
+    /* Сбой сети — несколько повторов, потом слова и кнопка, а не вечный
+       «Загружаем шрифты…» с погашенной кнопкой: без стиля видео
+       не подтвердить. */
     const go = () => window.API.safeCall(() => window.API.mediaFonts(lang)).then(r => {
       if (dead) return;
-      if (!r) { tries++; setTimeout(() => { if (!dead) go(); }, Math.min(15000, 1500 * tries)); return; }
+      if (!r) {
+        tries++;
+        if (tries < 5) { setTimeout(() => { if (!dead) go(); }, 1500 * tries); return; }
+        setInfo({ failed: true, retry: () => { tries = 0; setInfo(null); go(); } });
+        return;
+      }
       vidLoadFonts(r.fonts);
       setInfo(r);
     });
@@ -144,6 +150,9 @@ function VidSeg({ value, options, onChange }) {
 
 function VidStyleForm({ style, onChange, info }) {
   if (!info) return vidE("div", { className: "dim", style: { fontSize: 13 } }, vidE(Spinner, null), " ", TR("Загружаем шрифты…"));
+  if (info.failed) return vidE("div", { className: "row", style: { gap: 8, alignItems: "center", flexWrap: "wrap" } },
+    vidE("span", { style: { color: "var(--c-danger)", fontSize: 13 } }, TR("Шрифты не загрузились — проверьте связь.")),
+    vidE(Btn, { size: "sm", variant: "secondary", icon: "repeat", onClick: info.retry }, TR("Повторить")));
   const set = (k, v) => onChange(Object.assign({}, style, { [k]: v }));
   const lim = info.limits || { size: [2.5, 12], margin: [2, 30] };
   const font = (info.fonts || []).find(f => f.id === style.font);
@@ -224,7 +233,7 @@ function VidTimeInput({ label, value, onChange, max }) {
       onKeyDown: (e) => { if (e.key === "Enter") commit(); } }));
 }
 
-function VideoEditor({ file, meta, onCancel, onDone }) {
+function VideoEditor({ file, meta, onCancel, onDone, toast }) {
   const isAudio = VID_AUDIO_RE.test(file.name || "");
   const info = useVidFonts(meta.tgt);
   const [style, setStyle] = useState(null);
@@ -249,12 +258,12 @@ function VideoEditor({ file, meta, onCancel, onDone }) {
      догрузится и проект заведётся, даже если человек ушёл на другую
      вкладку. Состояние React к тому времени уже недоступно. */
   const live = useRef({});
-  Object.assign(live.current, { trim, style, dur });
+  Object.assign(live.current, { trim, style, dur, onDone, toast });
   const box = useVidBoxSize(boxRef);
   const frame = useVidServerFrame();
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
   useEffect(() => {
-    if (info && !style) { setStyle(Object.assign({}, info.style, meta.style || {})); setSample(info.sample || ""); }
+    if (info && !info.failed && !style) { setStyle(Object.assign({}, info.style, meta.style || {})); setSample(info.sample || ""); }
   }, [info]);
   /* Загрузка стартует сразу: пока человек обрезает и выбирает шрифт,
      гигабайты уже едут. Закрыли экран, не отменяя, — загрузка на сервере
@@ -267,10 +276,14 @@ function VideoEditor({ file, meta, onCancel, onDone }) {
     const full = !L.dur || (L.trim.start <= 0.05 && L.trim.end >= L.dur - 0.05);
     window.API.mediaFinish(tok, { trim: full ? null : { start: L.trim.start, end: L.trim.end },
       style: isAudio ? null : L.style })
-      .then(project => onDone(project))
+      .then(project => L.onDone(project, L.mounted))
       .catch(e => {
         L.finishing = false; L.confirmed = false;
-        if (L.mounted) { setFinErr(e.message || String(e)); setConfirmed(false); setFinishing(false); }
+        if (L.mounted) { setFinErr(e.message || String(e)); setConfirmed(false); setFinishing(false); return; }
+        /* Окно уже закрыто, а человек думает, что проект заведётся: сказать
+           вслух. Файл на сервере целиком — повторный выбор его доведёт. */
+        if (L.toast) L.toast.error(TR("Видео не добавлено"), (e.message || String(e))
+          + TR(" Выберите тот же файл ещё раз — загружать заново не придётся."));
       });
   };
   useEffect(() => {
@@ -513,7 +526,7 @@ function VidBurnDialog({ project, onClose, onStarted, toast }) {
               untranslated + TR(" реплик ещё не переведены — в кадр попадут только переведённые.")),
             bi.hdr && vidE("div", { className: "dim", style: { fontSize: 12 } },
               TR("Видео снято в HDR (10 бит): в готовом файле цвета могут стать чуть бледнее.")),
-            info && !info.covered && vidE("div", { style: { fontSize: 13, color: "var(--c-warning)" } },
+            info && !info.failed && !info.covered && vidE("div", { style: { fontSize: 13, color: "var(--c-warning)" } },
               TR("У нас нет шрифта с буквами этого языка — проверьте кадр: вместо букв могут быть квадраты.")),
             bi.tooLong && vidE("div", { style: { fontSize: 13, color: "var(--c-danger)" } },
               TR("Видео длиннее ") + bi.maxBurnMinutes + TR(" мин: в кадр впечатываем только ролики короче. Скачайте видео с субтитрами дорожкой.")),

@@ -7248,6 +7248,7 @@ BLOCK_KIND = {
     # Видео: файл тяжелее или длиннее потолка, на сервере нет места,
     # в файле нет звука (или он не читается).
     "cap.media413": "money",
+    "cap.burnBusy": "money",
     "cap.mediaDisk507": "fix",
     "dead.media415": "fix",
     "cap.filePages413": "money",    # принесли книгу толще потолка — прямой спрос
@@ -7525,6 +7526,7 @@ METRICS_HINT_TEXT = {
 # и в ленту ИИ-агента, и подставить перевод на границе показа там некому.
 METRICS_BLOCK_TEXT = {
     "cap.media413": "видео тяжелее или длиннее потолка — не взяли",
+    "cap.burnBusy": "впечатывание субтитров отложено: у организации уже идёт одно",
     "cap.mediaDisk507": "видео не взяли: на сервере не хватило места",
     "dead.media415": "видео или звук не прочитались: нет звуковой дорожки или файл повреждён",
     "cap.filePages413": "файл толще потолка страниц — не взяли",
@@ -30625,6 +30627,15 @@ def _media_sweep(now: Optional[float] = None) -> dict:
                     out["renders"] += 1
             except OSError:
                 pass
+        # Куски впечатывания, брошенные сбоем (задачи по файлу нет — проверено
+        # выше): по тому же сроку, что готовые сборки, — это гигабайты.
+        for b_ in (_media_dir(p["id"]) / "work").glob("burn-*"):
+            try:
+                if now - b_.stat().st_mtime > MEDIA_RENDER_KEEP_H * 3600:
+                    shutil.rmtree(str(b_), ignore_errors=True)
+                    out["renders"] += 1
+            except OSError:
+                pass
         src = _media_source(p)
         if src is None and (_media_dir(p["id"]) / "tts").exists():
             # Исходника нет, а кэш синтеза остался (удалён прежними правилами
@@ -30959,9 +30970,12 @@ def _media_reattach(rec: dict, part: Path, info: dict) -> dict:
                             % (int(dur), int(old)))
     d = _media_dir(project["id"])
     d.mkdir(parents=True, exist_ok=True)
-    for f in d.glob("source.*"):
-        f.unlink(missing_ok=True)
-    os.replace(str(part), str(d / ("source" + rec["ext"])))
+    with _MEDIA_LOCK:
+        if not part.exists():
+            raise HTTPException(409, "Загрузка отменена")
+        for f in d.glob("source.*"):
+            f.unlink(missing_ok=True)
+        os.replace(str(part), str(d / ("source" + rec["ext"])))
     _media_upload_drop(rec["token"])
     m = _media_public(info, rec)
     project["media"] = dict(project.get("media") or {}, **{k: m[k] for k in ("ext", "size", "video", "audio",
@@ -31477,6 +31491,7 @@ _BURN_BYTES_PER_SEC = {1080: 750_000, 720: 400_000, 480: 200_000}
 
 
 MEDIA_BURN_PER_TENANT = int(os.environ.get("MEDIA_BURN_PER_TENANT", "1"))
+_BURN_LOCK = threading.Lock()
 
 
 def _burn_span(project: dict) -> tuple:
@@ -31572,10 +31587,13 @@ def _media_burn(job: dict, project: dict, src: Path, probe: dict, text: str, tr:
             os.replace(str(tmp), str(bdir / name))
             job["done"] = sum(1 for n in names if have(n))
             _job_persist(job)
-    except media_mod.Aborted:
-        raise                          # выкат: куски нужны продолжению
     except Exception:
-        shutil.rmtree(str(bdir), ignore_errors=True)
+        # Сбой одного куска (таймаут, место, разовый отказ ffmpeg) готовые
+        # НЕ выбрасывает: повтор иначе перекодировал бы часы видео. Убирается
+        # только недописанный кусок; брошенный каталог убирает `_media_sweep`
+        # по сроку сборок. Выкат (`Aborted`) — тем более: куски нужны продолжению.
+        for t_ in bdir.glob("*.tmp.mp4"):
+            t_.unlink(missing_ok=True)
         raise
     job["phase"] = "mux"
     _job_persist(job)
@@ -31634,8 +31652,6 @@ def media_render(pid: int, req: MediaRenderRequest):
     params = {"what": req.what}
     eta = None
     if req.what == "burn":
-        if len(_burn_jobs_of(_tenant_of(project))) >= MEDIA_BURN_PER_TENANT:
-            raise HTTPException(429, "Субтитры в кадр уже впечатываются в другое видео организации — дождитесь его")
         # Единственная сборка, которая перекодирует кадры: часы CPU общего
         # сервера на час видео. Потолок длины — отдельный и ниже общего.
         if span_len > MEDIA_BURN_MAX_MINUTES * 60:
@@ -31675,7 +31691,13 @@ def media_render(pid: int, req: MediaRenderRequest):
         params["est_cost"] = round(chars / 15.0 / 60.0 * float(AUX_MODEL_PRICES[TTS_MODEL]["perMin"]), 4)
         if st.get("limitUsd") is not None and st["spentUsd"] + params["est_cost"] > float(st["limitUsd"]):
             raise HTTPException(402, "Озвучка этого видео не уместится в лимит расхода организации")
-    job = _job_enqueue(pid, "mediarender", [], params)
+    # Проверка «одна сборка на организацию» и постановка — под одним замком:
+    # два запроса разом по двум проектам иначе оба прошли бы проверку.
+    with _BURN_LOCK:
+        if req.what == "burn" and len(_burn_jobs_of(_tenant_of(project))) >= MEDIA_BURN_PER_TENANT:
+            _ev("cap.burnBusy", _tenant_of(project))
+            raise HTTPException(429, "Субтитры в кадр уже впечатываются в другое видео организации — дождитесь его")
+        job = _job_enqueue(pid, "mediarender", [], params)
     return {"ok": True, "job": _job_public(job), "etaSec": eta}
 
 
@@ -31809,6 +31831,10 @@ def admin_media_usage(request: Request, days: int = 30):
 # будет в файле, а не приближение браузера. Кадр декодирует ffmpeg в процессе
 # API, поэтому одновременно — один (занято — 429), с таймаутом и nice.
 _MEDIA_PREVIEW_SEM = threading.Semaphore(1)
+# Ждут слота не больше двух: каждый ждущий держит поток пула (их ~40 на всё
+# API), и поток запросов от ползунков иначе забил бы пул волнами по 8 с.
+_MEDIA_PREVIEW_WAIT = {"n": 0}
+_MEDIA_PREVIEW_WAIT_MAX = 2
 _MEDIA_PROBES: dict = {}
 
 
@@ -31853,7 +31879,18 @@ def _media_preview_jpeg(src: Path, video: dict, work: Path, t0: float, t: float,
     work.mkdir(parents=True, exist_ok=True)       # ДО замка: сбой здесь не должен его унести
     # Короткое ожидание, а не отказ сразу: слот один на сервис, и «занято»
     # у соседа не должно оставлять человеку кадр прежнего стиля.
-    if not _MEDIA_PREVIEW_SEM.acquire(timeout=8):
+    with _MEDIA_LOCK:
+        busy = _MEDIA_PREVIEW_WAIT["n"] >= _MEDIA_PREVIEW_WAIT_MAX
+        if not busy:
+            _MEDIA_PREVIEW_WAIT["n"] += 1
+    if busy:
+        return JSONResponse({"ok": False, "error": "Предыдущий кадр ещё готовится — секунду"}, status_code=429)
+    try:
+        got = _MEDIA_PREVIEW_SEM.acquire(timeout=8)
+    finally:
+        with _MEDIA_LOCK:
+            _MEDIA_PREVIEW_WAIT["n"] -= 1
+    if not got:
         return JSONResponse({"ok": False, "error": "Предыдущий кадр ещё готовится — секунду"}, status_code=429)
     name = "p-%s.ass" % secrets.token_hex(6)
     try:

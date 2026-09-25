@@ -858,7 +858,15 @@ function ImpAddFile({ folder, store, toast, meta }) {
   /* Видео: загрузка кусками, потом сервер сам распознаёт речь — строки
      появятся в файле без второй кнопки. */
   const createMedia = (raw) => { setVidFile(raw); };
-  const mediaDone = (project) => {
+  /* `mounted: false` — окно редактора закрыли, а подтверждённая загрузка
+     дошла до проекта позже. Тогда ни экрана, ни формы не трогаем: человек
+     мог уже открыть другое видео или уйти на другую вкладку. */
+  const mediaDone = (project, mounted) => {
+    if (mounted === false) {
+      store.addProject(project);
+      toast.success(TR("Видео загружено"), TR("Распознаём речь — строки с таймингом появятся сами."));
+      return;
+    }
     setVidFile(null);
     try {
       store.addProject(project);
@@ -987,7 +995,7 @@ function ImpAddFile({ folder, store, toast, meta }) {
       busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), TR("Загружаем…"))
         : isMedia ? TR("Дальше: обрезка и субтитры") : TR("Добавить в проект")),
     busy && React.createElement(ImpProgress, { p: prog }),
-    vidFile && React.createElement(VideoEditor, { file: vidFile, onCancel: () => setVidFile(null), onDone: mediaDone,
+    vidFile && React.createElement(VideoEditor, { file: vidFile, toast, onCancel: () => setVidFile(null), onDone: mediaDone,
       meta: { title: title || vidFile.name.replace(/[.][^.]+$/, ""), src, tgt, domain: folder.domain, folder: folder.id } }),
     file && !exact && !isMedia && React.createElement(ImpQuote, { file, src, tgt, toast, store, draft }));
 }

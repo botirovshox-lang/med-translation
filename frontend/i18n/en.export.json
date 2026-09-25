@@ -330,5 +330,9 @@
   "Каждый кадр перерисовывается, поэтому сборка идёт дольше, чем у дорожки субтитров. Время — оценка; страницу можно закрыть, готовый файл появится здесь.": "Every frame is redrawn, so building takes longer than a subtitle track. The time is an estimate; you can close the page, the finished file will appear here.",
   "обрезано до ": "trimmed to ",
   "Дорожка субтитров и озвучка не перекодируют видео — качество как в оригинале. Субтитры в кадре перерисовывают каждый кадр (до 1080p). Готовые файлы хранятся 2 дня (собрать заново можно в любой момент), исходное видео — 14 дней после последней работы с ним.": "The subtitle track and voice-over do not re-encode the video, so quality stays as in the original. Burned-in subtitles redraw every frame (up to 1080p). Finished files are kept for 2 days (you can rebuild at any time), the original video for 14 days after you last worked with it.",
-  "Повторить": "Retry"
+  "Повторить": "Retry",
+  "Видео не добавлено": "Video not added",
+  " Выберите тот же файл ещё раз — загружать заново не придётся.": " Pick the same file again — it won't need to upload again.",
+  "Шрифты не загрузились — проверьте связь.": "Fonts failed to load: check your connection.",
+  "раз впечатывание субтитров отложили: у организации уже шло одно": "times burning subtitles was postponed: the organisation already had one running"
 }

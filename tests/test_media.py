@@ -663,6 +663,11 @@ main._job_execute(main._JOBS[r.json()["job"]["id"]])
 check(SUBS and SUBS[-1]["span"] == (8.5, 61.5), "дорожкой: с ключевого кадра до конца обрезки: %s" % ((SUBS and SUBS[-1]["span"]),))
 check(SUBS and "00:00:02,000 --> 00:00:04,500" in SUBS[-1]["srt"],
       "реплики сдвинуты на разницу до ключевого кадра (0,5 → 2,0)")
+# Одна сборка в кадр на организацию разом: вторая — по ДРУГОМУ проекту — 429.
+held = main._JOBS[c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "burn"}).json()["job"]["id"]]
+r = c.post("/api/projects/%d/media/render" % TP["id"], headers=H(B), json={"what": "burn"})
+check(r.status_code == 429, "вторая сборка в кадр организации по другому видео — 429: %s" % r.status_code)
+held["status"] = "stopped"
 BURNS.clear()
 r = c.post("/api/projects/%d/media/render" % TP["id"], headers=H(B), json={"what": "burn"})
 main._job_execute(main._JOBS[r.json()["job"]["id"]])

@@ -999,6 +999,16 @@ def _letter_script(ch: str) -> str:
     return head
 
 
+# Письменности, о которых имеет смысл спрашивать. Вспомогательные буквы
+# (MODIFIER LETTER — узбекские «ʻ» и «ʼ», и прочие) письменностью не считаются:
+# их в шрифте проверяет tools/sub_fonts.py пробой латиницы, а сочти мы их
+# «неизвестной письменностью» — мерка выключалась бы у всего узбекского.
+_KNOWN_SCRIPTS = {"LATIN", "CYRILLIC", "GREEK", "ARMENIAN", "GEORGIAN", "HEBREW", "ARABIC", "DEVANAGARI",
+                  "BENGALI", "GUJARATI", "GURMUKHI", "TAMIL", "TELUGU", "THAI", "KHMER", "MYANMAR",
+                  "ETHIOPIC", "HAN", "HANGUL", "SYRIAC", "THAANA", "SINHALA", "KANNADA", "MALAYALAM",
+                  "ORIYA", "LAO", "TIBETAN", "MONGOLIAN"}
+
+
 def _covered(texts: list, scripts: set) -> bool:
     """Все ли буквы реплик — из письменностей, которые шрифт знает. Нет —
     libass возьмёт системный шрифт с другими размерами, а Pillow меряла бы
@@ -1009,7 +1019,8 @@ def _covered(texts: list, scripts: set) -> bool:
             if ch in seen or not ch.isalpha():
                 continue
             seen.add(ch)
-            if _letter_script(ch) not in scripts:
+            sc = _letter_script(ch)
+            if sc in _KNOWN_SCRIPTS and sc not in scripts:
                 return False
     return True
 

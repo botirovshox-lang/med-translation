@@ -661,6 +661,8 @@ check([l for l, _w in media.wrap_lines("300 мг препарата", _m, 90)][
       "неразрывный пробел не рвётся — как у libass")
 _ev, _rep = media.fit_cues([{"i": 1, "start": 0, "end": 3, "text": "字幕将会这样显示" * 10}], area, 1920, 1080)
 check(_rep["measured"] is False and not _rep["over"], "букв нет в шрифте — «мерить нечем», а не выдуманное «влезло»")
+_ev, _rep = media.fit_cues([{"i": 1, "start": 0, "end": 3, "text": "Subtitrlar koʻrinadi, gʻoyat qulay, maʼlumot"}], area, 1920, 1080)
+check(_rep["measured"] is True, "узбекские «ʻ» и «ʼ» мерку не выключают (боевой проект 12)")
 _words = mid.split()
 _many = [{"i": k, "start": k * 4.0, "end": k * 4.0 + 3.5, "text": " ".join(_words[: 4 + k % 12])} for k in range(1500)]
 _t = time.time()

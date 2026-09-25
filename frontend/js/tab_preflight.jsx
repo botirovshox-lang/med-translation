@@ -1648,6 +1648,74 @@ function GuideCard({ project, store, toast }) {
           onClick: () => saveLang(orgLang.filter((_, j) => j !== i)) }, "×") : null))) : null);
 }
 
+// Справка о документе: 2–3 предложения, что это за текст и для кого, — модель
+// пишет её сама до первого перевода (`_brief_auto`) и получает в промпт
+// перевода, ревизии и ремонта. Только эксперту: текст английский, и человек,
+// не знающий языка (инвариант 32), проверить его не может.
+function BriefCard({ project, toast }) {
+  const pid = project ? project.id : null;
+  const [b, putB] = useProjectData(project);
+  const [draftV, putDraft] = useProjectData(project);
+  const [busy, setBusy] = useState(false);
+  const pidRef = useRef(pid);
+  pidRef.current = pid;
+  const take = (at, r) => { putB(at, r); putDraft(at, r.text || ""); };
+  useEffect(() => {
+    setBusy(false);
+    if (!window.API || !window.API.brief || !project) return;
+    let dead = false;
+    const at = project.id;
+    window.API.safeCall(() => window.API.brief(at)).then(r => { if (!dead && r && r.ok) take(at, r); });
+    return () => { dead = true; };
+  }, [project && project.id]);
+  if (!b) return null;
+  const draft = draftV == null ? (b.text || "") : draftV;
+  const dirty = draft.trim() !== (b.text || "");
+  const run = (fn, msg) => {
+    const at = pidRef.current;
+    setBusy(true);
+    Promise.resolve().then(fn).then(r => {
+      if (pidRef.current !== at) return;
+      setBusy(false);
+      if (!r || !r.ok) return;
+      take(at, r);
+      if (msg) toast(msg);
+    }, e => {
+      if (pidRef.current !== at) return;
+      setBusy(false); toast(TR("Не получилось: ") + ((e && e.message) || ""));
+    });
+  };
+  const build = () => {
+    if (!window.confirm(TR("Собрать справку заново по оригиналу? Один платный вызов модели."))) return;
+    run(() => window.API.buildBrief(project.id), TR("Справка собрана"));
+  };
+  const head = b.off ? TR("Выключена — сама не соберётся")
+    : b.text ? (b.by === "human" ? TR("Написана вручную") : TR("Собрана сама по оригиналу")) + (b.at ? " · " + b.at : "")
+    : TR("Соберётся сама перед первым переводом");
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "row between", style: { gap: 8, flexWrap: "wrap" } },
+      React.createElement("div", { style: { minWidth: 0 } },
+        React.createElement("div", { style: { fontWeight: 600 } }, TR("Справка о документе")),
+        React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+          TR("Что это за текст и для кого — модель читает это перед каждой строкой. Не правила и не термины."))),
+      React.createElement("div", { className: "row", style: { gap: 8 } },
+        b.canBuild ? React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy || dirty, onClick: build },
+          b.text ? TR("Собрать заново") : TR("Собрать сейчас")) : null,
+        b.text ? React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy || dirty,
+          onClick: () => run(() => window.API.setBrief(project.id, { off: !b.off })) },
+          b.off ? TR("Включить") : TR("Отключить")) : null)),
+    React.createElement("div", { className: "dim", style: { fontSize: 13, marginTop: 6 } }, head),
+    React.createElement("textarea", { className: "input", rows: 3, value: draft, disabled: busy, maxLength: b.max || 400,
+      style: { width: "100%", marginTop: 8, boxSizing: "border-box" },
+      onChange: (e) => putDraft(pid, e.target.value) }),
+    dirty ? React.createElement("div", { className: "row", style: { gap: 8, marginTop: 8 } },
+      React.createElement(Btn, { variant: "primary", size: "sm", disabled: busy,
+        onClick: () => run(() => window.API.setBrief(project.id, { text: draft }), TR("Справка сохранена")) },
+        TR("Сохранить справку")),
+      React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy,
+        onClick: () => putDraft(pid, b.text || "") }, TR("Отменить"))) : null);
+}
+
 function StyleCard({ project, toast }) {
   /* Всё — состояние ПРОЕКТА (useProjectData). Метка отката особенно:
      «Вернуть прежний» с меткой прошлого проекта ушёл бы откатывать чужую
@@ -1837,6 +1905,7 @@ function TabAnalysis({ store, toast }) {
     /* Настройки книги — стиль и терм-лист: решения на весь документ, до
        перевода. Свёрнуты, но доступны всем — под ролью они отняли бы
        настройку у владельца. */
+    styleOpen && expert && React.createElement(BriefCard, { project, toast }),
     styleOpen && React.createElement(GuideCard, { project, store, toast }),
     styleOpen && React.createElement(StyleCard, { project, toast }),
     styleOpen && React.createElement(TermlistCard, { project, toast }),

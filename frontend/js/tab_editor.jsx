@@ -175,7 +175,9 @@ function estimateRun(kind, targets, model, opts) {
   let tokIn = 0, tokOut = 0, cost = null, sec = n * EST_SEC_PER_SEG;
 
   if (kind === "translate") {
-    tokIn = n * 500 + srcChars / 2.2;          // 500 ≈ системный промпт с глоссарием
+    // 500 ≈ системный промпт с глоссарием; +350 — до двух предыдущих пар
+    // «оригинал → перевод» (`_prev_pairs`) и справка о документе.
+    tokIn = n * 850 + srcChars / 2.2;
     tokOut = (srcChars / 3.5) * mult;
     cost = priceOf(model, tokIn, tokOut);
   } else if (kind === "backcheck") {

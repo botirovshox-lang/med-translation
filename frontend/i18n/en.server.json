@@ -430,5 +430,8 @@
   "Размер кадра не определяется": "The frame size cannot be determined",
   "Загрузка отменена": "Upload cancelled",
   "Субтитры в кадр уже впечатываются в другое видео организации — дождитесь его": "Subtitles are already being burned into another video of your organisation: wait for it to finish",
-  "Кадр не получился — попробуйте другое место в видео": "The frame failed: try another point in the video"
+  "Кадр не получился — попробуйте другое место в видео": "The frame failed: try another point in the video",
+  "Модель не ответила — справка не собрана": "The model did not answer — the brief was not built",
+  "В документе слишком мало текста для справки": "The document has too little text for a brief",
+  "Справка слишком длинная — сократите её": "The brief is too long — shorten it"
 }

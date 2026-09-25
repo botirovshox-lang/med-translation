@@ -477,5 +477,15 @@
   "Это ваши строки, а я нашла в них ошибку": "Bu sizning qatorlaringiz, men ularda xato topdim",
   "вы писали или заверяли эти строки, а проверки нашли ошибки — починит «Доделать сама» с галочкой «чинить мои строки»": "siz bu qatorlarni yozgan yoki tasdiqlagansiz, tekshiruvlar esa xato topdi — «O‘zim tugataman» «mening qatorlarimni tuzatish» belgisi bilan tuzatadi",
   "Термины не проверялись": "Atamalar tekshirilmagan",
-  "у субтитров — отдельной кнопкой «Проверить термины»": "subtitrlarda — alohida «Atamalarni tekshirish» tugmasi bilan"
+  "у субтитров — отдельной кнопкой «Проверить термины»": "subtitrlarda — alohida «Atamalarni tekshirish» tugmasi bilan",
+  "Собрать справку заново по оригиналу? Один платный вызов модели.": "Ma'lumotnoma asl matn bo'yicha qayta tuzilsinmi? Modelga bitta pullik murojaat.",
+  "Справка собрана": "Ma'lumotnoma tuzildi",
+  "Выключена — сама не соберётся": "O'chirilgan — o'zi tuzilmaydi",
+  "Написана вручную": "Qo'lda yozilgan",
+  "Собрана сама по оригиналу": "Asl matn bo'yicha o'zi tuzilgan",
+  "Соберётся сама перед первым переводом": "Birinchi tarjimadan oldin o'zi tuziladi",
+  "Справка о документе": "Hujjat haqida ma'lumotnoma",
+  "Что это за текст и для кого — модель читает это перед каждой строкой. Не правила и не термины.": "Bu qanday matn va kim uchun — model buni har bir qatordan oldin o'qiydi. Qoidalar ham, atamalar ham emas.",
+  "Справка сохранена": "Ma'lumotnoma saqlandi",
+  "Сохранить справку": "Ma'lumotnomani saqlash"
 }

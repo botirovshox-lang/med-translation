@@ -477,5 +477,15 @@
  "Это ваши строки, а я нашла в них ошибку": "These are your lines, and I found an error in them",
  "вы писали или заверяли эти строки, а проверки нашли ошибки — починит «Доделать сама» с галочкой «чинить мои строки»": "you wrote or signed off these lines and the checks found errors — “Finish it yourself” fixes them with the “fix my lines” switch",
  "Термины не проверялись": "Terms not checked",
- "у субтитров — отдельной кнопкой «Проверить термины»": "for subtitles, a separate “Check terms” button"
+ "у субтитров — отдельной кнопкой «Проверить термины»": "for subtitles, a separate “Check terms” button",
+ "Собрать справку заново по оригиналу? Один платный вызов модели.": "Rebuild the brief from the source? One paid model call.",
+ "Справка собрана": "Brief built",
+ "Выключена — сама не соберётся": "Turned off — will not be built automatically",
+ "Написана вручную": "Written by hand",
+ "Собрана сама по оригиналу": "Built automatically from the source",
+ "Соберётся сама перед первым переводом": "Will be built automatically before the first translation",
+ "Справка о документе": "Document brief",
+ "Что это за текст и для кого — модель читает это перед каждой строкой. Не правила и не термины.": "What the text is and who it is for — the model reads this before every line. Not rules and not terms.",
+ "Справка сохранена": "Brief saved",
+ "Сохранить справку": "Save brief"
 }

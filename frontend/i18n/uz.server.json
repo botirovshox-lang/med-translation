@@ -430,5 +430,8 @@
   "Размер кадра не определяется": "Kadr o‘lchami aniqlanmadi",
   "Загрузка отменена": "Yuklash bekor qilindi",
   "Субтитры в кадр уже впечатываются в другое видео организации — дождитесь его": "Tashkilotning boshqa videosiga subtitrlar allaqachon yozilmoqda — uni kuting",
-  "Кадр не получился — попробуйте другое место в видео": "Kadr chiqmadi — videoning boshqa joyini sinab ko‘ring"
+  "Кадр не получился — попробуйте другое место в видео": "Kadr chiqmadi — videoning boshqa joyini sinab ko‘ring",
+  "Модель не ответила — справка не собрана": "Model javob bermadi — ma'lumotnoma tuzilmadi",
+  "В документе слишком мало текста для справки": "Ma'lumotnoma uchun hujjatda matn juda kam",
+  "Справка слишком длинная — сократите её": "Ma'lumotnoma juda uzun — qisqartiring"
 }

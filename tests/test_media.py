@@ -259,7 +259,11 @@ class _OpenAI:
 sys.modules["openai"] = types.SimpleNamespace(OpenAI=_OpenAI)
 
 
-def fake_extract(src, dst, duration, limit_sec=None):
+EXTRACTS = []
+
+
+def fake_extract(src, dst, duration, limit_sec=None, start=0.0):
+    EXTRACTS.append({"limit": limit_sec, "start": start})
     Path(dst).write_bytes(b"ID3fake")
 
 
@@ -460,6 +464,191 @@ main._media_touch(proj)
 main._media_sweep()
 check(main._media_source(proj) is not None, "работа с видео продлевает хранение")
 
+print("=== 8г. Субтитры в кадре: стиль, кадр, куски ===")
+check(abs(media._ratio("64:45") - 1.4222) < 1e-3 and abs(media._ratio("30000/1001") - 29.97) < 1e-2
+      and media._ratio("0/0") == 0.0, "пропорция пикселя через двоеточие и частота дробью")
+check(media._rotation({"side_data_list": [{"rotation": -90}]}) == 270
+      and media._rotation({"tags": {"rotate": "90"}}) == 90 and media._rotation({}) == 0, "поворот к 0/90/180/270")
+vert = {"width": 1920, "height": 1080, "rotation": 90, "fps": 29.97}
+check(media.display_size(vert) == (1080, 1920) and media.out_size(vert, "720") == (720, 1280),
+      "вертикальное видео с телефона: кадр по видимому размеру, потолок по короткой стороне")
+check(media.out_size({"width": 3840, "height": 2160}, "src") == (1920, 1080), "4K сводится к 1080p")
+check(media.out_size({"width": 720, "height": 576, "sar": 1.4222}, "src") == (1024, 576), "анаморфный пиксель → 16:9")
+_odd = media.out_size({"width": 853, "height": 481}, "src")
+check(_odd[0] % 2 == 0 and _odd[1] % 2 == 0 and abs(_odd[0] - 853) <= 1 and abs(_odd[1] - 481) <= 1,
+      "стороны чётные: %s" % (_odd,))
+fps = media.out_fps(vert)
+plan = media.burn_plan(300.0, fps)
+check(len(plan) == 3 and plan[-1][1] is None and all(f == round(120 * 29.97) for _a, f in plan[:-1]),
+      "куски ровно по кадрам, хвост — остатком: %s" % plan)
+st = media.style_clean({"font": "нет-такого", "size": 99, "margin": -5, "color": "red", "bg": "box", "bold": 1})
+check(st["font"] == "noto-sans" and st["size"] == media.SIZE_MAX and st["margin"] == media.MARGIN_MIN
+      and st["color"] == "#FFFFFF" and st["bg"] == "box" and st["bold"] is True,
+      "кривой стиль чинится умолчаниями и пределами: %s" % st)
+doc = media.ass_document([{"start": 1.0, "end": 2.5, "text": "Строка {\\b1}один\nдва \\N"}],
+                         dict(st, position="top"), 1920, 1080)
+check("PlayResX: 1920" in doc and "PlayResY: 1080" in doc and ",Noto Sans," in doc, "кадр и семья шрифта в документе")
+ev = [l for l in doc.splitlines() if l.startswith("Dialogue:")]
+check(len(ev) == 1 and "{" not in ev[0].split(",,", 1)[1] and "\\b1" not in ev[0] and "один\\Nдва" in ev[0],
+      "текст перевода командой оформления не становится, перевод строки — \\N: %s" % ev)
+sty = [l for l in doc.splitlines() if l.startswith("Style:")][0].split(",")
+check(sty[15] == "3" and sty[18] == "8" and int(sty[2]) == round(media.SIZE_MAX / 100 * 1080),
+      "плашка, место сверху, кегль — доля короткой стороны: %s" % sty)
+check(media.burn_eta({"width": 1920, "height": 1080, "fps": 30}, "720", 600)
+      < media.burn_eta({"width": 1920, "height": 1080, "fps": 30}, "src", 600), "720p собирается быстрее")
+cat = media.fonts_catalog()["fonts"]
+check(len(cat) >= 3 and all((media.FONT_DIR / f[k]).exists() for f in cat for k in ("regular", "bold")),
+      "у каждого шрифта каталога есть оба файла")
+r = c.get("/api/media/fonts?lang=UZ-CYRL", headers=H(B)).json()
+check(r["covered"] and all(f["covers"] for f in r["fonts"]) and "ў" in r["sample"] and r["metrics"]["outline"],
+      "узбекская кириллица покрыта, образец на её буквах")
+r = c.get("/api/media/fonts?lang=ZH", headers=H(B)).json()
+check(not r["covered"], "иероглифов в каталоге нет — экран об этом скажет")
+
+# Сборка. ffmpeg подменён, всё остальное — настоящий код.
+BURNS = []
+
+
+def fake_burn_segment(src, work_dir, ass_name, dst, src_start, offset, frames, length, w, h, fps_):
+    BURNS.append({"ss": src_start, "off": offset, "frames": frames, "w": w, "h": h,
+                  "ass": (Path(work_dir) / ass_name).read_text(encoding="utf-8")})
+    Path(dst).write_bytes(b"SEG")
+    if BURN_STOP_AFTER and len(BURNS) == BURN_STOP_AFTER:
+        main._JOBS[BURN_JOB[0]]["stop"] = True
+
+
+def fake_burn_concat(work_dir, names, src, dst, trim_start, length):
+    Path(dst).write_bytes(b"BURN" + b"".join((Path(work_dir) / n).read_bytes() for n in names))
+
+
+BURN_STOP_AFTER, BURN_JOB = 1, [None]
+media.burn_segment = fake_burn_segment
+media.burn_concat = fake_burn_concat
+media.BURN_SEG_SEC = 50.0                      # 125 с → три куска
+proj = main._project_by_id(pid)
+proj["segments"][0]["target"] = "Good afternoon, colleagues."
+r = c.post("/api/projects/%d/media/render" % pid, headers=H(B),
+           json={"what": "burn", "quality": "720", "style": {"size": 7, "bg": "shadow", "font": "dejavu-sans"}})
+check(r.status_code == 200 and r.json().get("etaSec"), "сборка поставлена, оценка времени названа")
+check(main._project_by_id(pid)["media"]["style"]["font"] == "dejavu-sans", "выбранный стиль запомнен на проекте")
+bj = main._JOBS[r.json()["job"]["id"]]
+BURN_JOB[0] = bj["id"]
+main._job_execute(bj)
+check(bj["status"] == "stopped" and len(BURNS) == 1, "стоп между кусками: %s, кусков %d" % (bj["status"], len(BURNS)))
+BURN_STOP_AFTER = 0
+bj["status"], bj["stop"] = "queued", False
+# Продолжение идёт минуты спустя, а каждый заход сборки трогает исходник
+# (`_media_touch`, срок хранения): время правки файла уже другое.
+_touch, _tick = main._media_touch, [0]
+
+
+def _touch_later(p):
+    _tick[0] += 1
+    os.utime(str(main._media_source(p)), (time.time() - 3600 * _tick[0],) * 2)
+
+
+main._media_touch = _touch_later
+main._job_execute(bj)
+check(bj["status"] == "done" and len(BURNS) == 3, "продолжение не переделывает готовый кусок: %d" % len(BURNS))
+main._media_touch = _touch
+rb = main._project_by_id(pid)["mediaRender"].get("burn") or {}
+check(rb.get("file") == "burn.mp4" and rb.get("width") == 1280 and rb.get("height") == 720 and rb.get("quality") == "720",
+      "готово: %s" % rb)
+check(rb.get("burned") == 2 and rb.get("untranslated") == 3, "в кадр — только переведённые реплики: %s" % rb)
+a0 = BURNS[0]["ass"]
+check("Good afternoon, colleagues." in a0 and "Добрый день" not in a0 and "DejaVu Sans" in a0,
+      "документ ASS: перевод, без оригинала, выбранный шрифт")
+check([b["off"] for b in BURNS] == [0.0, 50.0, 100.0] and BURNS[1]["frames"] == 1250 and BURNS[2]["frames"] is None,
+      "куски встык по шкале результата: %s" % [(b["off"], b["frames"]) for b in BURNS])
+check(not list((main.MEDIA_DIR / str(pid) / "work").glob("burn-*")), "куски убраны после склейки")
+url = c.get("/api/projects/%d/media/link?what=burn" % pid, headers=H(B)).json()["url"]
+d = c.get(url)
+check(d.status_code == 200 and d.content.startswith(b"BURN"), "скачивание по ссылке")
+check(not main._is_paid("POST", "/api/projects/%d/media/render" % pid), "сборка в кадр денег модели не стоит")
+_money = main._job_money_stop
+main._job_money_stop = lambda job: (job.update(status="stopped", stopReason="limit") or True)
+fj = main._JOBS[c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "burn"}).json()["job"]["id"]]
+main._job_execute(fj)
+dj3 = main._JOBS[c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "dub"}).json()["job"]["id"]]
+main._job_execute(dj3)
+main._job_money_stop = _money
+check(fj["status"] == "done" and dj3["status"] == "stopped",
+      "лимит расхода держит озвучку (платно), а не сборку в кадр (модели нет): %s / %s" % (fj["status"], dj3["status"]))
+main.MEDIA_BURN_MAX_MINUTES = 1.0
+r = c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "burn"})
+check(r.status_code == 413, "длиннее потолка впечатывания — 413")
+main.MEDIA_BURN_MAX_MINUTES = 120.0
+
+# Кадр предпросмотра.
+PREV = []
+
+
+def fake_preview(src, work_dir, ass_name, src_t, offset, w, h, max_side=1280):
+    PREV.append({"t": src_t, "off": offset, "w": w, "h": h, "ass": (Path(work_dir) / ass_name).read_text(encoding="utf-8")})
+    return b"\xff\xd8JPEG"
+
+
+media.preview_frame = fake_preview
+r = c.post("/api/projects/%d/media/preview" % pid, headers=H(B), json={"t": 1.0, "style": {"size": 5}})
+check(r.status_code == 200 and r.headers["content-type"] == "image/jpeg" and r.content.startswith(b"\xff\xd8"),
+      "кадр предпросмотра — картинка")
+check("Good afternoon" in PREV[-1]["ass"] and PREV[-1]["w"] == 1920, "в кадре настоящая переведённая реплика")
+check(not list((main.MEDIA_DIR / str(pid) / "preview").glob("*.ass")), "временный документ убран")
+r = c.post("/api/projects/%d/media/preview" % pid, headers=H(B), json={"t": 40.0, "text": "Образец"})
+check(r.status_code == 200 and "Образец" in PREV[-1]["ass"], "где реплики нет — образец")
+main._MEDIA_PREVIEW_SEM.acquire()
+r = c.post("/api/projects/%d/media/preview" % pid, headers=H(B), json={"t": 1.0})
+main._MEDIA_PREVIEW_SEM.release()
+check(r.status_code == 429, "второй кадр одновременно — 429, воркер не забит")
+check(c.post("/api/projects/%d/media/preview" % pid, headers=H(A), json={"t": 1}).status_code == 404, "чужому — 404")
+bi = c.get("/api/projects/%d/media/burn-info" % pid, headers=H(B)).json()
+check(len(bi["cues"]) == 5 and sum(1 for x in bi["cues"] if x["tr"]) == 2 and bi["qualities"]["720"]["frame"] == [1280, 720]
+      and bi["qualities"]["src"]["etaSec"] > bi["qualities"]["720"]["etaSec"], "сведения для диалога сборки")
+r = c.post("/api/projects/%d/media/style" % pid, headers=H(B), json={"style": {"position": "top", "size": 1}})
+check(r.status_code == 200 and r.json()["style"]["position"] == "top" and r.json()["style"]["size"] == media.SIZE_MIN,
+      "стиль запоминается без сборки, пределы держит сервер")
+
+print("=== 8д. Обрезка: распознаётся и собирается только отрезок ===")
+dtr = os.urandom(400)
+tk = c.post("/api/media/upload", headers=H(B), json={"name": "trim.mp4", "size": len(dtr), "src": "RU", "tgt": "EN"}).json()["token"]
+c.post("/api/media/upload/%s/chunk?offset=0" % tk, headers=H(B), content=dtr)
+r = c.get("/api/media/upload/%s/probe" % tk, headers=H(B))
+check(r.status_code == 200 and r.json()["duration"] == 125.0, "заголовки до «готово» — для формата, который браузер не показал")
+r = c.post("/api/media/upload/%s/preview" % tk, headers=H(B), json={"t": 3.0})
+check(r.status_code == 200 and PREV[-1]["t"] == 3.0, "кадр с образцом до «готово»")
+r = c.post("/api/media/upload/%s/finish" % tk, headers=H(B), json={"trim": {"start": 50, "end": 50.5}})
+check(r.status_code == 400, "обрезка короче секунды — 400")
+r = c.post("/api/media/upload/%s/finish" % tk, headers=H(B),
+           json={"trim": {"start": 10, "end": 70}, "style": {"font": "noto-serif", "position": "top"}})
+check(r.status_code == 200, "«готово» с обрезкой и стилем")
+TP = r.json()
+check(TP["media"]["trim"] == {"start": 10.0, "end": 70.0} and TP["media"]["style"]["font"] == "noto-serif",
+      "обрезка и стиль из мини-редактора — на проекте")
+tj = main._JOBS[TP["jobId"]]
+for j in list(main._JOBS.values()):
+    if j["id"] != tj["id"] and j["status"] == "queued":
+        j["status"] = "stopped"
+main._job_execute(tj)
+check(EXTRACTS[-1] == {"limit": 60.0, "start": 10.0}, "звук вынут с начала обрезки и только отрезок: %s" % EXTRACTS[-1])
+tproj = main._project_by_id(TP["id"])
+for s_ in tproj["segments"]:
+    s_["target"] = "EN " + s_["source"]
+SUBS = []
+media.keyframe_before = lambda src, t: t - 1.5
+media.mux_subtitles = lambda src, srt, dst, info, lang="", span=None: (
+    SUBS.append({"span": span, "srt": Path(srt).read_text(encoding="utf-8")}), Path(dst).write_bytes(b"V"))
+r = c.post("/api/projects/%d/media/render" % TP["id"], headers=H(B), json={"what": "subs"})
+main._job_execute(main._JOBS[r.json()["job"]["id"]])
+check(SUBS and SUBS[-1]["span"] == (8.5, 61.5), "дорожкой: с ключевого кадра до конца обрезки: %s" % ((SUBS and SUBS[-1]["span"]),))
+check(SUBS and "00:00:02,000 --> 00:00:04,500" in SUBS[-1]["srt"],
+      "реплики сдвинуты на разницу до ключевого кадра (0,5 → 2,0)")
+BURNS.clear()
+r = c.post("/api/projects/%d/media/render" % TP["id"], headers=H(B), json={"what": "burn"})
+main._job_execute(main._JOBS[r.json()["job"]["id"]])
+check(BURNS and BURNS[0]["ss"] == 10.0 and BURNS[0]["off"] == 0.0 and "Noto Serif" in BURNS[0]["ass"],
+      "в кадр: с начала обрезки, стилем из мини-редактора: %s" % [(b["ss"], b["off"]) for b in BURNS])
+check(sum((b["frames"] or 0) for b in BURNS[:-1]) / 29.97 < 60.0 and len(BURNS) == 2, "длина — отрезок обрезки")
+
 print("=== 9. Удаление уносит видео ===")
 check((main.MEDIA_DIR / str(pid)).exists(), "папка видео есть")
 r = c.delete("/api/projects/%d" % pid, headers=H(B))
@@ -604,6 +793,29 @@ else:
     media.mux_dub(clip, track, dub, info, lang="eng")
     got = media.probe(dub)
     check(got["audioTracks"] == 2 and got["video"]["codec"] == "h264", "озвучка: две дорожки, видео копией")
+    # Субтитры в кадре: куски, склейка, кадр предпросмотра — настоящим libass.
+    media.BURN_SEG_SEC = 1.5
+    bw, bh = media.out_size(info["video"], "src")
+    bfps = media.out_fps(info["video"])
+    bd = W / "burn"
+    bd.mkdir()
+    (bd / "subs.ass").write_text(media.ass_document(
+        [{"start": 0.2, "end": 2.5, "text": "Субтитрлар мана шундай кўринади"}],
+        media.style_clean({"bg": "box"}), bw, bh), encoding="utf-8")
+    bplan = media.burn_plan(3.0, bfps)
+    bnames = []
+    for k, (a, frames) in enumerate(bplan):
+        bnames.append("seg%04d.mp4" % k)
+        media.burn_segment(clip, bd, "subs.ass", bd / bnames[-1], 0.5 + a, a, frames, 3.0 - a, bw, bh, bfps)
+    bout = W / "burn.mp4"
+    media.burn_concat(bd, bnames, clip, bout, 0.5, 3.0)
+    got = media.probe(bout)
+    check(len(bplan) == 2 and got["video"]["codec"] == "h264" and abs(got["duration"] - 3.0) < 0.2
+          and got["audio"] is not None, "субтитры в кадре: куски склеены, длина = отрезок, звук на месте")
+    jpg = media.preview_frame(clip, bd, "subs.ass", 1.0, 0.5, bw, bh)
+    check(jpg[:2] == b"\xff\xd8", "кадр предпросмотра настоящим libass")
+    kf = media.keyframe_before(clip, 2.0)
+    check(0.0 <= kf <= 2.0, "ключевой кадр не позже запрошенного: %s" % kf)
 
 shutil.rmtree(str(TMP), ignore_errors=True)
 print("\nПРОВАЛЕНО: %d" % len(fail) if fail else "\nВСЁ ПРОШЛО")

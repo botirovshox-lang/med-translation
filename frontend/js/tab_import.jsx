@@ -681,7 +681,11 @@ function ImpFileCard({ project, store, toast }) {
         React.createElement(LangPair, { src: project.src, tgt: project.tgt }),
         React.createElement(Badge, { icon: "list" }, total + " " + impPlural(total, TR("строка"), TR("строки"), TR("строк"))),
         media && React.createElement(Badge, { icon: "file" }, (media.video ? TR("видео") : TR("звук")) + " · " + impDuration(media.duration)
-          + (media.video && media.video.height ? " · " + media.video.width + "×" + media.video.height : "")),
+          /* Кадр — как видит зритель: у видео с телефона ширина и высота
+             записаны «лёжа», а поворот лежит пометкой. */
+          + (media.video && media.video.height ? " · " + ((media.video.rotation === 90 || media.video.rotation === 270)
+              ? media.video.height + "×" + media.video.width : media.video.width + "×" + media.video.height) : "")
+          + (media.trim ? " · " + TR("обрезано до ") + impDuration(media.trim.end - media.trim.start) : "")),
         sameShape && !media && React.createElement(Badge, { icon: "checkCircle" }, TR("вернём в том же виде")),
         project.sourceDocx && project.writeback === false && React.createElement(Badge, { icon: "file" }, TR("вернём как Word")),
         project.reimport && React.createElement(Badge, { icon: "repeat" }, TR("обновлён ") + project.reimport.at)),
@@ -777,8 +781,9 @@ function ImpAddFile({ folder, store, toast, meta }) {
   const [probing, setProbing] = useState(!!draft.probing);
   const [prog, setProg] = useState(null);        // ход пробы или загрузки
   const fileRef = useRef(null);
-  /* Отмена загрузки видео: флаг читает загрузчик между кусками. */
-  const mediaCtl = useRef(null);
+  /* Выбранное видео открывает мини-редактор (video_edit.jsx): обрезка
+     и стиль субтитров, пока файл грузится. Проект заводит его «готово». */
+  const [vidFile, setVidFile] = useState(null);
   const isMedia = !!(file && impIsMedia(file.name));
   /* Черновик — зеркало видимого: всё, что человек выбрал, переживает уход
      с вкладки. Ответ пробы, пришедший ПОСЛЕ ухода, пишет в черновик сам
@@ -852,13 +857,10 @@ function ImpAddFile({ folder, store, toast, meta }) {
   };
   /* Видео: загрузка кусками, потом сервер сам распознаёт речь — строки
      появятся в файле без второй кнопки. */
-  const createMedia = async (raw) => {
-    const ctl = { cancelled: false };
-    mediaCtl.current = ctl;
-    setBusy(true); setProg(null);
+  const createMedia = (raw) => { setVidFile(raw); };
+  const mediaDone = (project) => {
+    setVidFile(null);
     try {
-      const project = await window.API.uploadMedia(raw, {
-        title: title || raw.name.replace(/\.[^.]+$/, ""), src, tgt, domain: folder.domain, folder: folder.id }, setProg, ctl);
       store.addProject(project);
       store.patchFolder(folder.id, { virtual: false });
       reset();
@@ -867,10 +869,8 @@ function ImpAddFile({ folder, store, toast, meta }) {
         : "") + TR("Распознаём речь — строки с таймингом появятся сами."));
       store.openProject(project.id);
     } catch (e) {
-      if (!e.cancelled) toast.error(TR("Файл не добавлен"), e.message || String(e));
+      toast.error(TR("Файл не добавлен"), e.message || String(e));
     }
-    mediaCtl.current = null;
-    setBusy(false);
   };
   const create = async (rawArg) => {
     const raw = (rawArg && rawArg.name) ? rawArg : (file && file.raw);
@@ -977,17 +977,18 @@ function ImpAddFile({ folder, store, toast, meta }) {
        подстановкой TRS() из серверной таблицы, как все detail. */
     probe && !probe.error && probe.note && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TRS(probe.note)),
     isMedia && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-      TR("Видео или звук: распознаем речь с таймингом и переведём. Скачать можно субтитры, видео с субтитрами или озвучку на новом языке.")),
+      TR("Видео или звук: сначала обрежете лишнее и выберете вид субтитров, потом распознаем речь с таймингом и переведём. Скачать можно субтитры, видео с субтитрами в кадре или озвучку на новом языке.")),
     file && !exact && React.createElement(Input, { value: title, placeholder: TR("Название файла"), onChange: (e) => setTitle(e.target.value) }),
     file && !exact && meta && React.createElement("div", { className: "grid grid-2", style: { gap: 8 } },
       React.createElement(Field, { label: TR("С какого языка") }, React.createElement(Select, { value: src, onChange: (e) => changePair(e.target.value, tgt) }, impLangOptions(meta.langs))),
       React.createElement(Field, { label: TR("На какой язык") }, React.createElement(Select, { value: tgt, onChange: (e) => changePair(src, e.target.value) }, impLangOptions(meta.langs)))),
     file && !exact && src === tgt && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, TR("Язык оригинала и язык перевода совпадают.")),
     !exact && !similar && React.createElement(Btn, { variant: "primary", icon: busy ? null : "plus", disabled: !file || busy || probing || src === tgt, onClick: () => create() },
-      busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), TR("Загружаем…")) : TR("Добавить в проект")),
+      busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), TR("Загружаем…"))
+        : isMedia ? TR("Дальше: обрезка и субтитры") : TR("Добавить в проект")),
     busy && React.createElement(ImpProgress, { p: prog }),
-    busy && isMedia && React.createElement(Btn, { variant: "ghost", size: "sm", icon: "x",
-      onClick: () => { if (mediaCtl.current) mediaCtl.current.cancelled = true; } }, TR("Отменить загрузку")),
+    vidFile && React.createElement(VideoEditor, { file: vidFile, onCancel: () => setVidFile(null), onDone: mediaDone,
+      meta: { title: title || vidFile.name.replace(/[.][^.]+$/, ""), src, tgt, domain: folder.domain, folder: folder.id } }),
     file && !exact && !isMedia && React.createElement(ImpQuote, { file, src, tgt, toast, store, draft }));
 }
 

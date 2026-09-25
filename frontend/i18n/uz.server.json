@@ -383,7 +383,6 @@
   "В файле нет звуковой дорожки — распознавать нечего": "Faylda ovoz yo‘lagi yo‘q — tanib olinadigan narsa yo‘q",
   " ГБ — разрежьте видео на части": " GB dan katta — videoni qismlarga bo‘ling",
   "Видео длиннее ": "Video uzunligi ",
-  " мин — разрежьте его на части": " daqiqadan oshadi — uni qismlarga bo‘ling",
   "На сервере сейчас не хватает места для такого файла — попробуйте позже или сообщите в поддержку": "Serverda hozir bunday fayl uchun joy yetmaydi — keyinroq urinib ko‘ring yoki qo‘llab-quvvatlashga yozing",
   "Хранилище видео заполнено — попробуйте позже или сообщите в поддержку": "Video ombori to‘lgan — keyinroq urinib ko‘ring yoki qo‘llab-quvvatlashga yozing",
   " загрузки видео — дождитесь их или отмените": " ta video yuklanmoqda — ularni kuting yoki bekor qiling",
@@ -417,5 +416,17 @@
   "Речь уже распознана": "Nutq allaqachon tanilgan",
   "Часть звука не распознана (": "Ovozning bir qismi tanilmadi (",
   " кусков) — распознайте снова: ": " bo‘lak) — qayta taniting: ",
-  "Двуязычные субтитры есть только у субтитров и видео": "Ikki tilli subtitrlar faqat subtitrlar va video uchun mavjud"
+  "Двуязычные субтитры есть только у субтитров и видео": "Ikki tilli subtitrlar faqat subtitrlar va video uchun mavjud",
+  "Обрезка задана неверно": "Qirqish noto‘g‘ri berilgan",
+  "После обрезки видео короче секунды — сдвиньте начало или конец": "Qirqilgandan keyin video bir soniyadan qisqa — boshini yoki oxirini suring",
+  " мин — обрежьте его или разрежьте на части": " daqiqadan oshadi — uni qirqing yoki qismlarga bo‘ling",
+  "Субтитры в кадр впечатываем в видео до ": "Subtitrlarni kadrga faqat ",
+  " мин — обрежьте его или скачайте видео с субтитрами дорожкой": " daqiqagacha bo‘lgan videolarga yozamiz — uni qirqing yoki subtitrlar yo‘lakda bo‘lgan videoni yuklab oling",
+  "Предыдущий кадр ещё готовится — секунду": "Oldingi kadr hali tayyorlanmoqda — bir soniya",
+  "Кадр не получился: ": "Kadr chiqmadi: ",
+  "Кадр не получился — возможно, это место за концом видео": "Kadr chiqmadi — ehtimol, bu joy video oxiridan keyin",
+  "Исходного видео на сервере нет — загрузите его заново на карточке файла": "Serverda asl video yo‘q — uni fayl kartochkasida qayta yuklang",
+  "Файл ещё загружается": "Fayl hali yuklanmoqda",
+  "Впечатывать нечего: ни одна реплика ещё не переведена": "Kadrga yozadigan narsa yo‘q: birorta replika hali tarjima qilinmagan",
+  "Размер кадра не определяется": "Kadr o‘lchami aniqlanmadi"
 }

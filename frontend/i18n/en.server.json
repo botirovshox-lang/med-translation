@@ -383,7 +383,6 @@
   "В файле нет звуковой дорожки — распознавать нечего": "The file has no audio track — there is nothing to recognise",
   " ГБ — разрежьте видео на части": " GB — split the video into parts",
   "Видео длиннее ": "The video is longer than ",
-  " мин — разрежьте его на части": " min — split it into parts",
   "На сервере сейчас не хватает места для такого файла — попробуйте позже или сообщите в поддержку": "The server does not have enough space for this file right now — try later or contact support",
   "Хранилище видео заполнено — попробуйте позже или сообщите в поддержку": "Video storage is full — try later or contact support",
   " загрузки видео — дождитесь их или отмените": " video uploads are in progress — wait for them or cancel",
@@ -417,5 +416,17 @@
   "Речь уже распознана": "Speech has already been recognised",
   "Часть звука не распознана (": "Part of the audio was not recognised (",
   " кусков) — распознайте снова: ": " chunks) — recognise again: ",
-  "Двуязычные субтитры есть только у субтитров и видео": "Bilingual subtitles are only available for subtitles and video"
+  "Двуязычные субтитры есть только у субтитров и видео": "Bilingual subtitles are only available for subtitles and video",
+  "Обрезка задана неверно": "The trim is set incorrectly",
+  "После обрезки видео короче секунды — сдвиньте начало или конец": "After trimming the video is shorter than a second: move the start or the end",
+  " мин — обрежьте его или разрежьте на части": " minutes: trim it or split it into parts",
+  "Субтитры в кадр впечатываем в видео до ": "We burn subtitles into videos up to ",
+  " мин — обрежьте его или скачайте видео с субтитрами дорожкой": " min long: trim it or download the video with a subtitle track",
+  "Предыдущий кадр ещё готовится — секунду": "The previous frame is still being drawn, one moment",
+  "Кадр не получился: ": "The frame failed: ",
+  "Кадр не получился — возможно, это место за концом видео": "The frame failed: this point may be past the end of the video",
+  "Исходного видео на сервере нет — загрузите его заново на карточке файла": "The original video is not on the server. Upload it again on the file card",
+  "Файл ещё загружается": "The file is still uploading",
+  "Впечатывать нечего: ни одна реплика ещё не переведена": "Nothing to burn in: no line is translated yet",
+  "Размер кадра не определяется": "The frame size cannot be determined"
 }

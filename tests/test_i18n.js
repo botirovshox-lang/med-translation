@@ -112,7 +112,10 @@ const CYR_OK = new Set([
    судьи пишутся там, и без него проверка молчала бы ровно про те
    объяснения, которые человек читает чаще всего. */
 const backend = ["backend/main.py", "backend/checks.py", "backend/importers.py",
-                 "backend/textcount.py", "backend/store.py"]
+                 "backend/textcount.py", "backend/store.py",
+                 /* media.py: его отказы (ffmpeg, кадр предпросмотра) доходят
+                    до человека текстом ошибки сборки видео. */
+                 "backend/media.py"]
   .filter(f => fs.existsSync(f))
   .map(f => fs.readFileSync(f, "utf8")).join("\n")
   /* Питон склеивает соседние литералы сам, а длинное сообщение в исходнике

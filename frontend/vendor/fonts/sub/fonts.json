@@ -1,0 +1,50 @@
+{
+ "_comment": "Собрано tools/sub_fonts.py — руками не править: покрытие письменностей и emRatio считаются по самим файлам шрифтов.",
+ "fonts": [
+  {
+   "id": "noto-sans",
+   "name": "Noto Sans",
+   "regular": "NotoSans-Regular.ttf",
+   "bold": "NotoSans-Bold.ttf",
+   "license": "OFL-Noto.txt",
+   "emRatio": 0.6583,
+   "family": "Noto Sans",
+   "scripts": [
+    "CYRILLIC",
+    "GREEK",
+    "LATIN"
+   ]
+  },
+  {
+   "id": "dejavu-sans",
+   "name": "DejaVu Sans",
+   "regular": "DejaVuSans.ttf",
+   "bold": "DejaVuSans-Bold.ttf",
+   "license": "LICENSE-DejaVu.txt",
+   "emRatio": 0.8591,
+   "family": "DejaVu Sans",
+   "scripts": [
+    "ARMENIAN",
+    "CYRILLIC",
+    "GEORGIAN",
+    "GREEK",
+    "HEBREW",
+    "LATIN"
+   ]
+  },
+  {
+   "id": "noto-serif",
+   "name": "Noto Serif",
+   "regular": "NotoSerif-Regular.ttf",
+   "bold": "NotoSerif-Bold.ttf",
+   "license": "OFL-Noto.txt",
+   "emRatio": 0.6859,
+   "family": "Noto Serif",
+   "scripts": [
+    "CYRILLIC",
+    "GREEK",
+    "LATIN"
+   ]
+  }
+ ]
+}

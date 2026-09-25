@@ -183,6 +183,13 @@
     let off = start.received || 0, fails = 0;
     report({ phase: "upload", done: off, total: file.size });
     while (off < file.size) {
+      /* Экран с загрузкой закрыли, не отменяя: загрузка на сервере остаётся
+         и продолжится с того же места, когда человек выберет файл снова. */
+      if (ctl.stopped) {
+        const e = new Error(TR("Загрузка приостановлена"));
+        e.cancelled = true;
+        throw e;
+      }
       if (ctl.cancelled) {
         try { await call("DELETE", "/media/upload/" + token); } catch (e) {}
         const e = new Error(TR("Загрузка отменена"));
@@ -211,8 +218,27 @@
       await mediaSleep(Math.min(30000, 1000 * Math.pow(2, Math.min(fails, 5))));
       try { const s = await call("GET", "/media/upload/" + token); off = s.received; } catch (e) {}
     }
+    /* Мини-редактор видео: файл грузится, пока человек выбирает обрезку
+       и стиль, а «готово» он зовёт сам — с ними (`mediaFinish`). */
+    if (ctl.noFinish) return { token };
     report({ phase: "media", done: 0, total: 0 });
-    return call("POST", "/media/upload/" + token + "/finish", {});
+    return call("POST", "/media/upload/" + token + "/finish", ctl.finishBody || {});
+  }
+
+  /* Кадр с субтитрами в кадре — картинкой: сервер рисует его тем же фильтром,
+     что и сборку. Ответ — адрес blob:, его освобождает тот, кто показывает. */
+  async function postImage(path, body) {
+    const r = await fetch(BASE + path, { method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(body || {}) });
+    if (r.status === 401) { onUnauthorized(); throw new Error(TR("Требуется вход в систему")); }
+    if (!r.ok) {
+      let d = "";
+      try { const j = await r.json(); d = j.detail || j.error || ""; } catch (e) {}
+      const err = new Error(typeof d === "string" && d ? TRS(d) : "Preview failed: " + r.status);
+      err.status = r.status;
+      throw err;
+    }
+    return URL.createObjectURL(await r.blob());
   }
 
   function uiLangNow() {
@@ -426,7 +452,17 @@
        {project} — вернуть проекту удалённое по сроку исходное видео. */
     uploadMedia:   (file, meta, onProgress, ctl) => uploadMediaChunked(file, meta, onProgress, ctl),
     mediaVoices:   ()                       => call("GET", "/media/voices"),
-    mediaRender:   (pid, what, voice)       => call("POST", `/projects/${pid}/media/render`, { what, voice }),
+    mediaRender:   (pid, what, voice, extra) => call("POST", `/projects/${pid}/media/render`, Object.assign({ what, voice }, extra || {})),
+    /* Субтитры в кадре: шрифты (с покрытием письменности языка перевода),
+       кадр предпросмотра, сведения для диалога сборки, запомнить стиль. */
+    mediaFonts:    (lang)                   => call("GET", `/media/fonts?lang=${encodeURIComponent(lang || "")}`),
+    mediaPreview:  (pid, body)              => postImage(`/projects/${pid}/media/preview`, body),
+    mediaBurnInfo: (pid)                    => call("GET", `/projects/${pid}/media/burn-info`),
+    mediaStyle:    (pid, style)             => call("POST", `/projects/${pid}/media/style`, { style }),
+    mediaFinish:   (token, body)            => call("POST", `/media/upload/${token}/finish`, body || {}),
+    mediaUploadProbe:   (token)             => call("GET", `/media/upload/${token}/probe`),
+    mediaUploadPreview: (token, body)       => postImage(`/media/upload/${token}/preview`, body),
+    mediaUploadCancel:  (token)             => call("DELETE", `/media/upload/${token}`),
     /* Распознать речь снова (после остановки или сбоя): готовые куски не платятся. */
     mediaTranscribe: (pid)                  => call("POST", `/projects/${pid}/media/transcribe`, {}),
     /* Короткая подписанная ссылка: браузер переходит по ней сам, файл

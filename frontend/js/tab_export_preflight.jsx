@@ -559,6 +559,9 @@ function ExpMediaCard({ project, store, toast }) {
     const t = setInterval(tick, 3000);
     return () => { dead = true; clearInterval(t); };
   }, [pid]);
+  /* Субтитры в кадре собираются не кнопкой сразу, а через диалог: там стиль
+     и кадр с настоящим переводом, нарисованный сервером (video_edit.jsx). */
+  const [burnOpen, setBurnOpen] = useState(false);
   const translated = project.segments.filter(s => (s.target || "").trim()).length;
   const ready = project.mediaStatus === "ready";
   const kept = media.kept !== false;
@@ -600,16 +603,20 @@ function ExpMediaCard({ project, store, toast }) {
     setBusy(false);
   };
   const dub = rr.dub || null;
-  const line = (label, rec, what) => React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+  const burn = rr.burn || null;
+  const line = (label, rec, what, hint, onBuild) => React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
     React.createElement("div", null,
       React.createElement("div", { style: { fontWeight: 500 } }, label),
+      hint && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, hint),
       rec && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-        TR("собрано ") + rec.at + " · " + (rec.size / 1048576).toFixed(1) + TR(" МБ"))),
+        TR("собрано ") + rec.at + " · " + (rec.size / 1048576).toFixed(1) + TR(" МБ")
+        + (rec.width ? " · " + rec.width + "×" + rec.height : ""))),
     React.createElement("div", { className: "row", style: { gap: 8 } },
       rec && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "download", onClick: () => download(what) }, TR("Скачать")),
-      React.createElement(Btn, { variant: rec ? "ghost" : "primary", size: "sm", icon: "repeat",
-        disabled: busy || !!job || !ready || !kept || !translated, onClick: () => render(what) },
-        rec ? TR("Собрать заново") : TR("Собрать"))));
+      React.createElement(Btn, { variant: rec ? "ghost" : "primary", size: "sm", icon: onBuild ? "sliders" : "repeat",
+        disabled: busy || !!job || !ready || !kept || !translated, onClick: onBuild || (() => render(what)) },
+        onBuild ? (rec ? TR("Настроить и собрать заново") : TR("Настроить и собрать"))
+                : (rec ? TR("Собрать заново") : TR("Собрать")))));
   return React.createElement("div", null,
     React.createElement("h2", { className: "section-title" }, media.video ? TR("Видео") : TR("Звук")),
     React.createElement("div", { className: "card card-pad col", style: { gap: 14 } },
@@ -635,7 +642,20 @@ function ExpMediaCard({ project, store, toast }) {
         busy && prog && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
           prog.total ? TR("Отправляем файл") + " · " + Math.round(prog.done / prog.total * 100) + "%" : TR("Файл на сервере, проверяем видео"))),
       React.createElement("input", { ref: fileRef, type: "file", hidden: true, onChange: (e) => reattach(e.target.files && e.target.files[0]) }),
-      media.video && line(TR("Видео с субтитрами"), rr.subs, "subs"),
+      media.video && line(TR("Видео с субтитрами в кадре"), burn, "burn",
+        TR("Текст впечатан в картинку: виден в любом плеере и в соцсетях. Шрифт, размер и место — ваши."),
+        () => setBurnOpen(true)),
+      burn && burn.untranslated > 0 && React.createElement("div", { style: { fontSize: 13, color: "var(--c-warning)" } },
+        burn.untranslated + TR(" реплик были без перевода и в кадр не попали — переведите и соберите заново.")),
+      media.video && line(TR("Видео с субтитрами дорожкой"), rr.subs, "subs",
+        TR("Субтитры включаются в плеере; видео не перекодируется — собирается за минуты.")),
+      burnOpen && React.createElement(VidBurnDialog, { project, toast, onClose: () => setBurnOpen(false),
+        onStarted: (j, eta) => {
+          setBurnOpen(false);
+          jobRef.current = j; setJob(j);
+          toast.info(TR("Собираем видео"), (eta ? TR("Примерно ") + Math.max(1, Math.round(eta / 60)) + TR(" мин. ") : "")
+            + TR("Готовый файл появится здесь — страницу можно закрыть."));
+        } }),
       React.createElement("div", { className: "col", style: { gap: 8 } },
         line(TR("Озвучка на языке перевода"), dub, "dub"),
         React.createElement("div", { className: "row", style: { gap: 8, alignItems: "center" } },
@@ -653,7 +673,7 @@ function ExpMediaCard({ project, store, toast }) {
         React.createElement("div", { className: "dim", style: { fontSize: 12 } },
           TR("Закадровый перевод: оригинальный звук приглушается под речью. Губы с речью не совпадают; голос синтезирован."))),
       React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-        TR("Видео не перекодируется: разрешение и качество картинки остаются как в оригинале. Готовые файлы хранятся 2 дня (собрать заново можно в любой момент), исходное видео — 14 дней после последней работы с ним."))));
+        TR("Дорожка субтитров и озвучка не перекодируют видео — качество как в оригинале. Субтитры в кадре перерисовывают каждый кадр (до 1080p). Готовые файлы хранятся 2 дня (собрать заново можно в любой момент), исходное видео — 14 дней после последней работы с ним."))));
 }
 window.ExpMediaCard = ExpMediaCard;
 

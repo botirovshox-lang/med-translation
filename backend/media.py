@@ -12,9 +12,11 @@
     а не повисший процесс;
   * дорожка озвучки собирается в `numpy.memmap` НА ДИСКЕ: час речи — это
     170 МБ отсчётов, держать их в памяти единственного воркера нельзя;
-  * впечатанных (burn-in) субтитров нет намеренно: это полное перекодирование
-    видео — часы CPU на двухгигабайтном файле. Субтитры кладутся дорожкой
-    в контейнер (плееры и YouTube их показывают) и отдаются файлом .srt/.vtt.
+  * субтитры по умолчанию кладутся ДОРОЖКОЙ в контейнер (плееры и YouTube
+    их показывают) и отдаются файлом .srt/.vtt. Впечатанные в кадр (burn-in) —
+    отдельная сборка по кнопке: это полное перекодирование, и она одна
+    декодирует кадры — кусками, с потолком качества и длины (раздел
+    «Субтитры В КАДРЕ» ниже).
 
 Модуль не знает ни STATE, ни проектов, ни денег: это чистые функции над
 файлами. Модель не зовёт: распознавание и синтез — забота вызывающего
@@ -108,12 +110,16 @@ class Aborted(MediaError):
 ABORT = lambda: False                                  # noqa: E731
 
 
-def run(cmd: list, timeout: float, stdin: Optional[bytes] = None) -> subprocess.CompletedProcess:
-    """Запуск со всеми предохранителями; stdout — байты, stderr — байты."""
+def run(cmd: list, timeout: float, stdin: Optional[bytes] = None,
+        cwd=None) -> subprocess.CompletedProcess:
+    """Запуск со всеми предохранителями; stdout — байты, stderr — байты.
+    `cwd` — у впечатывания субтитров: файл .ass передаётся фильтру ИМЕНЕМ,
+    без пути (в пути фильтров двоеточие и кавычки — служебные знаки)."""
     import time as _time
     try:
         proc = subprocess.Popen(_polite(cmd), stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                cwd=str(cwd) if cwd else None)
     except OSError as e:
         raise MediaError("ffmpeg не запустился: %s" % e)
     deadline = _time.time() + timeout
@@ -151,7 +157,8 @@ def probe(path) -> dict:
     ответ (`audio: None`): отказ формулирует вызывающий."""
     cmd = [_bin("ffprobe") or "ffprobe", "-v", "error", "-print_format", "json",
            "-show_entries", "format=duration,format_name:stream=index,codec_type,codec_name,"
-           "width,height,channels,sample_rate:stream_disposition=attached_pic",
+           "width,height,channels,sample_rate,sample_aspect_ratio,avg_frame_rate,r_frame_rate,pix_fmt"
+           ":stream_disposition=attached_pic:stream_side_data=rotation:stream_tags=rotate",
            str(path)]
     r = run(cmd, timeout=60)
     try:
@@ -165,6 +172,21 @@ def probe(path) -> dict:
         kind = s.get("codec_type")
         if kind == "video" and video is None and not (s.get("disposition") or {}).get("attached_pic"):
             video = {"codec": s.get("codec_name"), "width": s.get("width"), "height": s.get("height")}
+            # Как кадр ВИДИТ зритель: телефон пишет вертикальное видео
+            # горизонтальными кадрами с пометкой поворота, у DVD пиксель
+            # не квадратный. От этого зависят размер субтитров и кадр
+            # результата, поэтому пишем, только если отличается от обычного.
+            rot = _rotation(s)
+            if rot:
+                video["rotation"] = rot
+            sar = _ratio(s.get("sample_aspect_ratio"))
+            if sar and abs(sar - 1.0) > 0.01:
+                video["sar"] = round(sar, 4)
+            fps = _ratio(s.get("avg_frame_rate")) or _ratio(s.get("r_frame_rate"))
+            if fps:
+                video["fps"] = round(fps, 3)
+            if s.get("pix_fmt"):
+                video["pixfmt"] = s.get("pix_fmt")
         elif kind == "audio":
             tracks += 1
             if audio is None:
@@ -182,13 +204,39 @@ def _num(v) -> float:
         return 0.0
 
 
+def _ratio(v) -> float:
+    """«30000/1001» → 29.97, «64:45» (пропорция пикселя пишется через
+    двоеточие) → 1.4222, «0/0» и мусор → 0."""
+    try:
+        a, _s, b = str(v or "").replace(":", "/").partition("/")
+        return float(a) / float(b) if b else float(a)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return 0.0
+
+
+def _rotation(stream: dict) -> int:
+    """Поворот при показе, приведённый к 0/90/180/270. ffmpeg 5+ пишет его
+    в side data, старые файлы — тегом rotate."""
+    deg = None
+    for sd in stream.get("side_data_list") or []:
+        if "rotation" in sd:
+            deg = _num(sd.get("rotation"))
+    if deg is None:
+        deg = _num((stream.get("tags") or {}).get("rotate"))
+    return int(round(deg / 90.0)) * 90 % 360
+
+
 # ─── Звук для распознавания ──────────────────────────────────────────
 
-def extract_audio(src, dst, duration: float, limit_sec: Optional[float] = None) -> None:
+def extract_audio(src, dst, duration: float, limit_sec: Optional[float] = None,
+                  start: float = 0.0) -> None:
     """Первая звуковая дорожка → моно 16 кГц mp3. Видео не декодируется
-    (`-vn`), поэтому время зависит от длины ролика, а не от разрешения."""
-    args = ["-i", src, "-map", "0:a:0", "-vn", "-sn", "-dn", "-ac", 1, "-ar", ASR_RATE,
-            "-c:a", "libmp3lame", "-b:a", ASR_BITRATE]
+    (`-vn`), поэтому время зависит от длины ролика, а не от разрешения.
+    `start` — начало обрезки: звук берётся С НЕГО, и время реплик сразу
+    выходит в шкале обрезанного видео (ноль = первый кадр результата)."""
+    args = (["-ss", "%.3f" % start] if start > 0 else []) + [
+        "-i", src, "-map", "0:a:0", "-vn", "-sn", "-dn", "-ac", 1, "-ar", ASR_RATE,
+        "-c:a", "libmp3lame", "-b:a", ASR_BITRATE]
     if limit_sec:
         args += ["-t", "%.3f" % limit_sec]
     run(_ffmpeg(*(args + [dst])), timeout=max(300.0, duration * 0.6))
@@ -443,7 +491,17 @@ def _vtag(info: dict, ext: str) -> list:
     return ["-tag:v", "hvc1"] if ext == ".mp4" and v.get("codec") == "hevc" else []
 
 
-def mux_subtitles(src, srt, dst, info: dict, lang: str = "") -> None:
+def _span_in(span) -> list:
+    """Входные ключи отрезка исходника: (с какой секунды, сколько). Для
+    сборок копией потока начало — КЛЮЧЕВОЙ кадр (`keyframe_before`):
+    копия не умеет начать посреди группы кадров."""
+    if not span:
+        return []
+    ss, t = span
+    return (["-ss", "%.3f" % ss] if ss > 0 else []) + (["-t", "%.3f" % t] if t else [])
+
+
+def mux_subtitles(src, srt, dst, info: dict, lang: str = "", span=None) -> None:
     """Видео + дорожка субтитров, ВСЁ копией потока. В mp4 субтитры —
     mov_text (текст), в mkv — srt. Оригинальный звук не трогается."""
     ext = Path(dst).suffix.lower()
@@ -453,7 +511,7 @@ def mux_subtitles(src, srt, dst, info: dict, lang: str = "") -> None:
     acodec = "copy"
     if ext == ".mp4" and (info.get("audio") or {}).get("codec") not in MP4_ACODECS:
         acodec = "aac"
-    args = ["-i", src, "-i", srt, "-map", "0:v:0", "-map", "0:a?", "-map", "1:0",
+    args = _span_in(span) + ["-i", src, "-i", srt, "-map", "0:v:0", "-map", "0:a?", "-map", "1:0",
             "-c:v", "copy", "-c:a", acodec, "-c:s", scodec] + _vtag(info, ext)
     if lang:
         args += ["-metadata:s:s:0", "language=" + lang]
@@ -462,7 +520,7 @@ def mux_subtitles(src, srt, dst, info: dict, lang: str = "") -> None:
     run(_ffmpeg(*(args + [dst])), timeout=max(600.0, (info.get("duration") or 0) * 0.5))
 
 
-def mux_dub(src, track_path, dst, info: dict, duck: float = 0.2, lang: str = "") -> None:
+def mux_dub(src, track_path, dst, info: dict, duck: float = 0.2, lang: str = "", span=None) -> None:
     """Закадровый перевод: оригинальный звук приглушается ПОД речью
     (sidechaincompress — пока говорит озвучка) и остаётся фоном, поверх —
     новая речь. Видео — копией потока; вторая дорожка — оригинальный звук
@@ -475,7 +533,7 @@ def mux_dub(src, track_path, dst, info: dict, duck: float = 0.2, lang: str = "")
           "[0:a:0]aresample=48000,volume=%.2f[bg];"
           "[bg][sc]sidechaincompress=threshold=0.03:ratio=6:attack=15:release=350[ducked];"
           "[ducked][voice]amix=inputs=2:normalize=0:duration=first[out]" % (0.6 + base))
-    args = ["-i", src, "-f", "s16le", "-ar", TTS_RATE, "-ac", 1, "-i", track_path,
+    args = _span_in(span) + ["-i", src, "-f", "s16le", "-ar", TTS_RATE, "-ac", 1, "-i", track_path,
             "-filter_complex", fc]
     if has_video:
         args += ["-map", "0:v:0", "-c:v", "copy"] + _vtag(info, ext)
@@ -488,6 +546,389 @@ def mux_dub(src, track_path, dst, info: dict, duck: float = 0.2, lang: str = "")
     if ext in (".mp4", ".m4a"):
         args += ["-movflags", "+faststart"]
     run(_ffmpeg(*(args + [dst])), timeout=max(900.0, (info.get("duration") or 0) * 1.0))
+
+
+def keyframe_before(src, t: float) -> float:
+    """Время ключевого кадра не позже `t`. Сборка копией потока начинается
+    только с него, и вызывающий сдвигает реплики на разницу — иначе у
+    обрезанного видео субтитры ехали бы на пару секунд. Читаются только
+    пакеты около `t` (`-read_intervals`), кадры не декодируются."""
+    if t <= 0.05:
+        return 0.0
+    for back in (20.0, 180.0):
+        a = max(0.0, t - back)
+        cmd = [_bin("ffprobe") or "ffprobe", "-v", "error", "-select_streams", "v:0", "-skip_frame", "nokey",
+               "-show_entries", "frame=pts_time,best_effort_timestamp_time", "-of", "csv=p=0",
+               "-read_intervals", "%.3f%%+%.3f" % (a, t - a + 0.5), str(src)]
+        r = run(cmd, timeout=120)
+        best = None
+        for line in (r.stdout or b"").decode("utf-8", "replace").splitlines():
+            for v in line.split(","):
+                x = _num(v) if v.strip() not in ("", "N/A") else None
+                if x is not None and x <= t + 0.001 and (best is None or x > best):
+                    best = x
+        if best is not None:
+            return round(max(0.0, best), 3)
+    return 0.0
+
+
+# ─── Субтитры В КАДРЕ (burn-in) ──────────────────────────────────────
+#
+# Единственная работа модуля, которая ДЕКОДИРУЕТ кадры: текст рисуется
+# в картинку, значит видео перекодируется целиком. Чем это ограничено:
+#   * кусками по BURN_SEG_SEC: между кусками прогон уступает очередь
+#     чужим задачам, а после рестарта продолжает с первого несделанного —
+#     каждый кусок лежит файлом;
+#   * короткая сторона кадра не больше 1080 (`BURN_QUALITIES`): 4K
+#     кодировался бы вчетверо дольше на общем сервере;
+#   * x264 veryfast, потоков BURN_THREADS, nice 19 (`_polite`).
+# Шрифты — ТЕ ЖЕ файлы, что браузер берёт для предпросмотра
+# (frontend/vendor/fonts/sub), а окончательное «как будет» показывает
+# `preview_frame` — тем же фильтром и тем же документом, что сборка.
+
+FONT_DIR = Path(__file__).resolve().parent.parent / "frontend" / "vendor" / "fonts" / "sub"
+BURN_SEG_SEC = float(os.environ.get("MEDIA_BURN_SEG_SEC", "120"))
+BURN_THREADS = max(1, int(os.environ.get("MEDIA_BURN_THREADS", "2")))
+BURN_PRESET = os.environ.get("MEDIA_BURN_PRESET", "veryfast")
+BURN_CRF = int(os.environ.get("MEDIA_BURN_CRF", "23"))
+# Сколько секунд работы на секунду видео 1080p 30 к/с. Замер на боевом
+# сервере 25.09.2026: шумный синтетический ролик (худший случай для
+# кодека), veryfast, 2 потока, nice 19 — 1,6; 720p — 0,85.
+BURN_SPEED = float(os.environ.get("MEDIA_BURN_SPEED", "1.6"))
+# Качество → потолок КОРОТКОЙ стороны кадра. «Как в оригинале» — тоже
+# с потолком: 4K на общем сервере — это часы на каждый час видео.
+BURN_QUALITIES = {"src": 1080, "720": 720, "480": 480}
+BURN_FPS_MAX = 60.0
+
+# Стиль субтитров. Размер — в процентах КОРОТКОЙ стороны кадра: так
+# вертикальное видео с телефона и горизонтальное получают одинаково
+# читаемый текст, а не текст во весь экран у вертикального.
+SUB_BG = ("outline", "shadow", "box")
+SUB_POS = ("bottom", "top")
+STYLE_DEFAULT = {"font": "noto-sans", "size": 5.5, "bold": False, "color": "#FFFFFF",
+                 "bg": "outline", "position": "bottom", "margin": 6.0}
+SIZE_MIN, SIZE_MAX = 2.5, 12.0
+MARGIN_MIN, MARGIN_MAX = 2.0, 30.0
+# Доли кегля — ОДНИ на сборку и на предпросмотр в браузере (их отдаёт
+# `/api/media/fonts`): вторая копия чисел в .jsx разошлась бы с этой.
+SUB_METRICS = {"outline": 0.07, "shadowOutline": 0.03, "shadow": 0.06, "boxPad": 0.2,
+               "marginLR": 0.06, "boxAlpha": 0.25, "shadowAlpha": 0.45}
+
+_FONTS_CACHE: dict = {"mtime": None, "data": {"fonts": []}}
+
+
+def fonts_catalog() -> dict:
+    """Каталог шрифтов субтитров (`fonts.json` рядом с файлами; собирает
+    tools/sub_fonts.py — там же считается, какие письменности шрифт
+    покрывает). Перечитывается при изменении файла."""
+    p = FONT_DIR / "fonts.json"
+    try:
+        mt = p.stat().st_mtime
+    except OSError:
+        return {"fonts": []}
+    if _FONTS_CACHE["mtime"] != mt:
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {"fonts": []}
+        _FONTS_CACHE.update(mtime=mt, data=data)
+    return _FONTS_CACHE["data"]
+
+
+def font_of(fid) -> Optional[dict]:
+    return next((f for f in fonts_catalog().get("fonts") or [] if f.get("id") == fid), None)
+
+
+# Образец субтитра на ЯЗЫКЕ ПЕРЕВОДА — для предпросмотра, пока перевода
+# нет. Нужен именно этот язык: у узбекской кириллицы «ў қ ғ ҳ», у латиницы
+# «ʻ», и проверить шрифт можно только на них. Языка нет в списке — по-английски.
+SUB_SAMPLES = {
+    "EN": "This is how your subtitles will look",
+    "RU": "Так будут выглядеть субтитры",
+    "UZ": "Subtitrlar mana shunday koʻrinadi, gʻoyat qulay",
+    "UZ-CYRL": "Субтитрлар мана шундай кўринади, ғоят қулай ҳам",
+    "KK": "Субтитрлер осылай көрінеді, өте қолайлы",
+    "KY": "Субтитрлер ушундай көрүнөт, абдан ыңгайлуу",
+    "TG": "Субтитрҳо чунин менамоянд, хеле қулай",
+    "TK": "Subtitrler şeýle görner, örän amatly",
+    "AZ": "Altyazılar belə görünəcək, çox rahatdır",
+    "TR": "Altyazılar böyle görünecek, çok kullanışlı",
+    "UK": "Так виглядатимуть субтитри, дуже зручно",
+    "BE": "Так будуць выглядаць субтытры",
+    "DE": "So werden die Untertitel aussehen",
+    "FR": "Voici à quoi ressembleront les sous-titres",
+    "ES": "Así se verán los subtítulos",
+    "IT": "Ecco come appariranno i sottotitoli",
+    "PT": "É assim que as legendas vão ficar",
+    "PL": "Tak będą wyglądać napisy",
+    "AR": "هكذا ستظهر الترجمة على الشاشة",
+    "FA": "زیرنویس‌ها این‌گونه نمایش داده می‌شوند",
+    "HE": "כך ייראו הכתוביות",
+    "ZH": "字幕将会这样显示",
+    "JA": "字幕はこのように表示されます",
+    "KO": "자막은 이렇게 표시됩니다",
+    "HI": "उपशीर्षक ऐसे दिखेंगे",
+    "EL": "Έτσι θα εμφανίζονται οι υπότιτλοι",
+    "KA": "სუბტიტრები ასე გამოჩნდება",
+    "HY": "Ենթագրերը կերևան այսպես",
+    "VI": "Phụ đề sẽ trông như thế này",
+}
+
+
+def sub_sample(lang: str) -> str:
+    return SUB_SAMPLES.get((lang or "").upper()) or SUB_SAMPLES["EN"]
+
+
+def _clamp(v, lo: float, hi: float, dflt: float) -> float:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return dflt
+    if x != x:                                   # NaN
+        return dflt
+    return round(min(hi, max(lo, x)), 2)
+
+
+def style_clean(raw) -> dict:
+    """Стиль из запроса → проверенный стиль. Неизвестное заменяется
+    умолчанием, а не отказом: стиль — оформление, и опечатка в одном поле
+    не должна стоить сборки."""
+    s = dict(STYLE_DEFAULT)
+    raw = raw if isinstance(raw, dict) else {}
+    if font_of(raw.get("font")):
+        s["font"] = raw["font"]
+    elif not font_of(s["font"]):
+        fonts = fonts_catalog().get("fonts") or []
+        if fonts:
+            s["font"] = fonts[0]["id"]
+    s["size"] = _clamp(raw.get("size", s["size"]), SIZE_MIN, SIZE_MAX, s["size"])
+    s["margin"] = _clamp(raw.get("margin", s["margin"]), MARGIN_MIN, MARGIN_MAX, s["margin"])
+    s["bold"] = bool(raw.get("bold", s["bold"]))
+    c = str(raw.get("color") or "").upper()
+    if re.fullmatch(r"#[0-9A-F]{6}", c):
+        s["color"] = c
+    if raw.get("bg") in SUB_BG:
+        s["bg"] = raw["bg"]
+    if raw.get("position") in SUB_POS:
+        s["position"] = raw["position"]
+    return s
+
+
+def display_size(video: dict) -> tuple:
+    """(ширина, высота) кадра, КАК ЕГО ВИДИТ зритель: с поворотом
+    и с квадратным пикселем."""
+    w, h = int((video or {}).get("width") or 0), int((video or {}).get("height") or 0)
+    sar = float((video or {}).get("sar") or 1.0)
+    if sar > 0 and abs(sar - 1.0) > 0.01:
+        w = int(round(w * sar))
+    if (video or {}).get("rotation") in (90, 270):
+        w, h = h, w
+    return w, h
+
+
+def _even(x: float) -> int:
+    return max(2, int(round(x / 2.0)) * 2)
+
+
+def out_size(video: dict, quality: str = "src") -> tuple:
+    """Кадр результата: видимый размер, короткая сторона не больше потолка
+    качества, обе стороны чётные (yuv420p иначе не кодируется)."""
+    w, h = display_size(video)
+    if not w or not h:
+        raise MediaError("Размер кадра не определяется")
+    cap = BURN_QUALITIES.get(quality, BURN_QUALITIES["src"])
+    short = min(w, h)
+    if short > cap:
+        k = cap / float(short)
+        w, h = w * k, h * k
+    return _even(w), _even(h)
+
+
+def out_fps(video: dict):
+    """Частота кадров результата — ПОСТОЯННАЯ (дробью, чтобы 29,97 не
+    копили расхождение), не выше 60. У телефонного видео она плавает, а
+    куски склеиваются без швов только при одинаковой постоянной частоте."""
+    from fractions import Fraction
+    f = float((video or {}).get("fps") or 0.0)
+    if not (1.0 <= f <= 240.0):
+        f = 25.0
+    return Fraction(min(f, BURN_FPS_MAX)).limit_denominator(1001)
+
+
+def is_hdr(video: dict) -> bool:
+    """10-битное видео (обычно HDR) сводится к 8 битам: цвета могут стать
+    бледнее. Это называется человеку, а не прячется."""
+    pf = str((video or {}).get("pixfmt") or "")
+    return "10" in pf or "12" in pf
+
+
+def burn_plan(length: float, fps) -> list:
+    """Куски: [(начало в шкале результата, кадров или None для хвоста)].
+    Граница — ровно на кадре: кусок в N кадров при постоянной частоте
+    длится ровно N/fps, и склейка не копит расхождения со звуком."""
+    n = max(1, int(round(BURN_SEG_SEC * float(fps))))
+    step = n / float(fps)
+    out, a = [], 0.0
+    while a < length - 0.5 / float(fps):
+        last = a + step >= length - 0.01
+        out.append((round(a, 6), None if last else n))
+        a += step
+    return out or [(0.0, None)]
+
+
+def burn_eta(video: dict, quality: str, length: float) -> float:
+    """Оценка времени сборки в секундах — по замеру (`BURN_SPEED`), не
+    обещание: на спокойной картинке быстрее, на шумной — так."""
+    try:
+        w, h = out_size(video, quality)
+    except MediaError:
+        return 0.0
+    px = (w * h) / float(1920 * 1080)
+    fps = float(out_fps(video))
+    return round(length * (0.25 + 1.35 * px) * (fps / 30.0) * (BURN_SPEED / 1.6), 1)
+
+
+def _ass_color(hexc: str, alpha: float = 0.0) -> str:
+    """«#RRGGBB» + прозрачность 0..1 → «&HAABBGGRR»."""
+    c = (hexc or "#FFFFFF").lstrip("#")
+    r, g, b = int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16)
+    return "&H%02X%02X%02X%02X" % (int(round(max(0.0, min(1.0, alpha)) * 255)), b, g, r)
+
+
+def _ass_time(t: float) -> str:
+    cs = int(round(max(0.0, t) * 100))
+    return "%d:%02d:%02d.%02d" % (cs // 360000, cs // 6000 % 60, cs // 100 % 60, cs % 100)
+
+
+def _ass_text(s: str) -> str:
+    """Текст реплики для ASS: фигурные скобки — начало команды оформления,
+    обратная косая — перевод строки. Ни то, ни другое из перевода клиента
+    командой стать не должно."""
+    s = (s or "").replace("\\", "∖").replace("{", "(").replace("}", ")")
+    return "\\N".join(x.strip() for x in s.splitlines() if x.strip())
+
+
+def style_numbers(style: dict, w: int, h: int) -> dict:
+    """Кегль, обводка, тень, поля — в пикселях кадра результата."""
+    m = SUB_METRICS
+    fs = max(8, int(round(style["size"] / 100.0 * min(w, h))))
+    if style["bg"] == "box":
+        border, outline, shadow = 3, max(2, int(round(fs * m["boxPad"]))), 0
+    elif style["bg"] == "shadow":
+        border, outline, shadow = 1, max(1, int(round(fs * m["shadowOutline"]))), max(1, int(round(fs * m["shadow"])))
+    else:
+        border, outline, shadow = 1, max(1, int(round(fs * m["outline"]))), 0
+    return {"fs": fs, "border": border, "outline": outline, "shadow": shadow,
+            "marginV": int(round(style["margin"] / 100.0 * h)), "marginLR": int(round(m["marginLR"] * w))}
+
+
+def ass_document(cues: list, style: dict, w: int, h: int) -> str:
+    """Документ ASS: один стиль, по событию на реплику. PlayRes = кадр
+    результата, поэтому кегль в пикселях — ровно тот, что посчитан."""
+    font = font_of(style.get("font")) or {}
+    family = font.get("family") or "Noto Sans"
+    n = style_numbers(style, w, h)
+    dark = style["color"].upper() in ("#000000",)
+    edge = "#FFFFFF" if dark else "#000000"
+    if style["bg"] == "box":
+        outc = backc = _ass_color(edge, SUB_METRICS["boxAlpha"])
+    else:
+        outc = _ass_color(edge)
+        backc = _ass_color(edge, SUB_METRICS["shadowAlpha"])
+    align = 8 if style["position"] == "top" else 2
+    head = [
+        "[Script Info]", "ScriptType: v4.00+", "PlayResX: %d" % w, "PlayResY: %d" % h,
+        "WrapStyle: 0", "ScaledBorderAndShadow: yes", "YCbCr Matrix: None", "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+        "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding",
+        "Style: Default,%s,%d,%s,%s,%s,%s,%d,0,0,0,100,100,0,0,%d,%d,%d,%d,%d,%d,%d,1" % (
+            family, n["fs"], _ass_color(style["color"]), _ass_color(style["color"]), outc, backc,
+            -1 if style.get("bold") else 0, n["border"], n["outline"], n["shadow"], align,
+            n["marginLR"], n["marginLR"], n["marginV"]),
+        "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"]
+    ev = []
+    for c in sorted(cues or [], key=lambda x: x["start"]):
+        text = _ass_text(c.get("text") or "")
+        if not text or c["end"] <= c["start"]:
+            continue
+        ev.append("Dialogue: 0,%s,%s,Default,,0,0,0,,%s" % (_ass_time(c["start"]), _ass_time(c["end"]), text))
+    return "\n".join(head + ev) + "\n"
+
+
+def _fpath(p) -> str:
+    """Путь в аргументе фильтра: косые вперёд, двоеточие экранировано
+    (на Windows «C:» иначе резал бы параметры), в кавычках."""
+    s = str(Path(p).resolve()).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+    return "'" + s + "'"
+
+
+def _burn_vf(ass_name: str, w: int, h: int, offset: float) -> str:
+    """Масштаб в кадр результата (поворот ffmpeg применяет сам, до фильтров),
+    квадратный пиксель, субтитры по времени шкалы РЕЗУЛЬТАТА (`offset` —
+    где в ней начинается кусок), 8 бит."""
+    return ("scale=%d:%d:flags=bicubic,setsar=1,setpts=PTS-STARTPTS+%.6f/TB,"
+            "ass=%s:fontsdir=%s,setpts=PTS-STARTPTS,format=yuv420p"
+            % (w, h, offset, ass_name, _fpath(FONT_DIR)))
+
+
+def _ffmpeg_burn(*args) -> list:
+    return [_bin("ffmpeg") or "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
+            "-threads", "1", "-filter_threads", "1"] + [str(a) for a in args]
+
+
+def burn_segment(src, work_dir, ass_name: str, dst, src_start: float, offset: float,
+                 frames: Optional[int], length: float, w: int, h: int, fps) -> None:
+    """Один кусок видео с субтитрами в кадре, без звука (звук кладётся
+    один раз на склейке). `src_start` — секунда исходника, `offset` — та
+    же точка в шкале результата (исходник минус начало обрезки)."""
+    src, dst = Path(src).resolve(), Path(dst).resolve()      # ffmpeg идёт в work_dir
+    lim = ["-frames:v", int(frames)] if frames else ["-t", "%.3f" % max(0.04, length)]
+    args = (["-ss", "%.3f" % src_start] if src_start > 0 else []) + [
+        "-i", src, "-map", "0:v:0", "-an", "-sn", "-dn",
+        "-vf", _burn_vf(ass_name, w, h, offset),
+        "-r", "%d/%d" % (fps.numerator, fps.denominator), "-fps_mode", "cfr"] + lim + [
+        "-c:v", "libx264", "-preset", BURN_PRESET, "-crf", BURN_CRF, "-pix_fmt", "yuv420p",
+        "-profile:v", "high", "-x264-params", "threads=%d:lookahead-threads=1" % BURN_THREADS,
+        "-video_track_timescale", "90000", dst]
+    seg_len = (frames / float(fps)) if frames else length
+    run(_ffmpeg_burn(*args), timeout=max(600.0, seg_len * 30.0), cwd=work_dir)
+
+
+def burn_concat(work_dir, seg_names: list, src, dst, trim_start: float, length: float) -> None:
+    """Куски — копией потока (у них одни настройки и постоянная частота),
+    звук исходника на отрезке обрезки — в aac. У видео без звука дорожки
+    просто нет (`1:a:0?`)."""
+    work_dir = Path(work_dir)
+    src, dst = Path(src).resolve(), Path(dst).resolve()
+    lst = work_dir / "segments.txt"
+    lst.write_text("".join("file '%s'\n" % n for n in seg_names), encoding="utf-8")
+    args = ["-f", "concat", "-safe", "0", "-i", lst.name] + (
+        ["-ss", "%.3f" % trim_start] if trim_start > 0 else []) + [
+        "-t", "%.3f" % length, "-i", src,
+        "-map", "0:v:0", "-map", "1:a:0?", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k",
+        "-t", "%.3f" % length, "-movflags", "+faststart", dst]
+    run(_ffmpeg(*args), timeout=max(900.0, length * 0.6), cwd=work_dir)
+
+
+def preview_frame(src, work_dir, ass_name: str, src_t: float, offset: float,
+                  w: int, h: int, max_side: int = 1280) -> bytes:
+    """Один кадр с впечатанными субтитрами — ТЕМ ЖЕ фильтром, что сборка:
+    человек подтверждает то, что получит, а не приближение браузера.
+    Большой кадр уменьшается уже ПОСЛЕ субтитров: они нарисованы в размере
+    результата, как будут в файле."""
+    src = Path(src).resolve()
+    k = min(1.0, max_side / float(max(w, h)))
+    pw, ph = _even(w * k), _even(h * k)
+    vf = _burn_vf(ass_name, w, h, offset) + (",scale=%d:%d:flags=bicubic" % (pw, ph) if k < 1.0 else "")
+    args = (["-ss", "%.3f" % src_t] if src_t > 0 else []) + [
+        "-i", src, "-map", "0:v:0", "-frames:v", 1, "-an", "-sn", "-dn", "-vf", vf,
+        "-f", "image2pipe", "-c:v", "mjpeg", "-q:v", 3, "pipe:1"]
+    r = run(_ffmpeg_burn(*args), timeout=60, cwd=work_dir)
+    if not r.stdout:
+        raise MediaError("Кадр не получился — возможно, это место за концом видео")
+    return r.stdout
 
 
 def lang3(code: str) -> str:

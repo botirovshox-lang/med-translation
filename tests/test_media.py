@@ -435,20 +435,24 @@ row = next((x for x in d.get("rows") or [] if x["tenant"] == "beta"), None)
 check(r.status_code == 200 and row is not None and row["login"] == "beta", "строка человека из beta")
 check(row and abs(row["asrMin"] - (215 + 60) / 60) < 0.1 and row["asrUsd"] > 0, "минуты распознавания выведены из суммы: %s" % row)
 check(row and row["ttsMin"] > 0 and abs(row["usd"] - row["asrUsd"] - row["ttsUsd"]) < 1e-6, "озвучка и итог")
-check(d["videos"]["beta"]["files"] == 1 and d["keep"]["sourceDays"] == 2 and d["keep"]["renderHours"] == 336,
+check(d["videos"]["beta"]["files"] == 1 and d["keep"]["sourceDays"] == 14 and d["keep"]["renderHours"] == 48,
       "видео организации и сроки хранения")
 
-print("=== 8в. Сроки: исходник — 2 дня после работы, сборки — 14 дней ===")
+print("=== 8в. Сроки: исходник — 14 дней после работы, сборки — 2 дня ===")
 src = main._media_source(proj)
-old = time.time() - 3 * 86400
-os.utime(str(src), (old, old))
 out = main.MEDIA_DIR / str(pid) / "out"
-os.utime(str(out / "subs.mp4"), (time.time() - 10 * 86400,) * 2)
-os.utime(str(out / "dub.mp4"), (time.time() - 15 * 86400,) * 2)
+os.utime(str(src), (time.time() - 10 * 86400,) * 2)
+os.utime(str(out / "subs.mp4"), (time.time() - 1 * 86400,) * 2)
+os.utime(str(out / "dub.mp4"), (time.time() - 3 * 86400,) * 2)
 main._media_sweep()
-check(main._media_source(proj) is None and proj["media"]["kept"] is False, "исходник без работы 3 дня удалён")
-check((out / "subs.mp4").exists() and not (out / "dub.mp4").exists(), "сборка 10 дней живёт, 15 дней — удалена")
-check((main.MEDIA_DIR / str(pid) / "tts").exists(), "кэш озвучки остаётся — повторная сборка не платит")
+check(main._media_source(proj) is not None, "исходник без работы 10 дней ещё живёт")
+check((out / "subs.mp4").exists() and not (out / "dub.mp4").exists(), "сборка суточная живёт, трёхдневная — удалена")
+check((main.MEDIA_DIR / str(pid) / "tts").exists(), "кэш озвучки живёт, пока жив исходник")
+old = time.time() - 15 * 86400
+os.utime(str(src), (old, old))
+main._media_sweep()
+check(main._media_source(proj) is None and proj["media"]["kept"] is False, "исходник без работы 15 дней удалён")
+check(not (main.MEDIA_DIR / str(pid) / "tts").exists(), "вместе с ним — кэш озвучки")
 (main.MEDIA_DIR / str(pid) / "source.mp4").write_bytes(b"v")
 os.utime(str(main.MEDIA_DIR / str(pid) / "source.mp4"), (old, old))
 proj["media"]["kept"] = True
@@ -460,6 +464,103 @@ print("=== 9. Удаление уносит видео ===")
 check((main.MEDIA_DIR / str(pid)).exists(), "папка видео есть")
 r = c.delete("/api/projects/%d" % pid, headers=H(B))
 check(r.status_code == 200 and not (main.MEDIA_DIR / str(pid)).exists(), "удалён проект — удалено видео")
+
+print("=== 9б. Перевод реплик ПАЧКАМИ, тайминги в редакторе ===")
+CHAT = {"calls": 0, "systems": [], "users": [], "mode": "retry_ok", "seen": set()}
+
+
+def _chat_create(model=None, messages=None, **kw):
+    CHAT["calls"] += 1
+    system, user = messages[0]["content"], messages[1]["content"]
+    CHAT["systems"].append(system)
+    CHAT["users"].append(user)
+    if "SUBTITLE MODE" in system:
+        items = json.loads(user)
+        if CHAT["mode"] == "quota":
+            raise RuntimeError("Error code: 429 - insufficient_quota")
+        lines = [{"n": it["n"], "text": "EN " + it["text"]} for it in items]
+        first = items[0]["text"]
+        if CHAT["mode"] == "retry_ok" and "номер 0 " in first and first not in CHAT["seen"]:
+            # Первый ответ на первую пачку — без третьей реплики: пачку
+            # переспрашивают, и второй ответ ровный.
+            CHAT["seen"].add(first)
+            lines = [x for x in lines if x["n"] != 3]
+        elif CHAT["mode"] == "shift":
+            # Слил реплики 2 и 3 и перенумеровал хвост — сдвиг, которого
+            # по отдельной строке не видно. Пачку брать нельзя ни разу.
+            lines = [{"n": i + 1, "text": x["text"]} for i, x in enumerate(lines[:1] + lines[2:])]
+        content = ("```json\n" + json.dumps({"lines": lines}, ensure_ascii=False) + "\n```"
+                   if CHAT["mode"] != "array" else json.dumps(lines, ensure_ascii=False))
+    else:
+        content = "EN1 " + user
+    return types.SimpleNamespace(
+        choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=content), finish_reason="stop")],
+        usage=types.SimpleNamespace(prompt_tokens=500, completion_tokens=40))
+
+
+class _OpenAIChat(_OpenAI):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.chat = types.SimpleNamespace(completions=types.SimpleNamespace(create=_chat_create))
+
+
+sys.modules["openai"] = types.SimpleNamespace(OpenAI=_OpenAIChat)
+cues20 = [{"start": i * 3.0, "end": i * 3.0 + 2.5, "text": "Реплика номер %d про лечение." % i} for i in range(20)]
+srt20 = importers.render_cues(cues20, ".srt").encode("utf-8")
+r = c.post("/api/projects/upload", headers=H(B), files={"file": ("lecture.srt", srt20, "application/x-subrip")},
+           data={"src": "RU", "tgt": "EN"})
+check(r.status_code == 200, "субтитры загружены: %s" % r.status_code)
+sp = r.json()["id"]
+r = c.post("/api/projects/%d/batch" % sp, headers=H(B), json={"limit": 50})
+got = r.json()
+check(got.get("ok") and got.get("count") == 20 and not got.get("errors"), "все 20 реплик переведены: %s" % {k: got.get(k) for k in ("count", "errors")})
+check(CHAT["calls"] == 3, "две пачки (15 + 5), неровную первую переспросили один раз: %d вызова" % CHAT["calls"])
+check(all("SUBTITLE MODE" in s for s in CHAT["systems"]), "все вызовы — пачками, поштучных нет")
+segs = main._project_by_id(sp)["segments"]
+check(all(s["target"] == "EN " + s["source"] for s in segs), "каждая реплика получила СВОЙ перевод")
+packs = [json.loads(u) for s, u in zip(CHAT["systems"], CHAT["users"]) if "SUBTITLE MODE" in s]
+check(sorted(len(p) for p in packs) == [5, 15, 15] and any(p[0] == {"n": 1, "text": segs[0]["source"]} for p in packs),
+      "в пачку уходят реплики по порядку, пачки 15 и 5")
+pj = c.get("/api/projects/%d" % sp, headers=H(B)).json()
+check(pj.get("cueTimes", {}).get(str(segs[1]["id"])) == [3.0, 5.5], "тайминг строки — в карте проекта: %s"
+      % (pj.get("cueTimes") or {}).get(str(segs[1]["id"])))
+
+
+def cue_project(name, k):
+    raw = importers.render_cues([{"start": i * 3.0, "end": i * 3.0 + 2.5, "text": "Фраза %s %d." % (name, i)}
+                                 for i in range(k)], ".srt").encode("utf-8")
+    return c.post("/api/projects/upload", headers=H(B), files={"file": (name + ".srt", raw, "application/x-subrip")},
+                  data={"src": "RU", "tgt": "EN"}).json()["id"]
+
+
+CHAT["mode"], n = "shift", CHAT["calls"]
+p2 = cue_project("shift", 5)
+got = c.post("/api/projects/%d/batch" % p2, headers=H(B), json={"limit": 50}).json()
+segs2 = main._project_by_id(p2)["segments"]
+check(CHAT["calls"] - n == 2 + 5 and all(s["target"] == "EN1 " + s["source"] for s in segs2),
+      "ответ со сдвигом отвергнут дважды — реплики переведены по одной, каждая своя (%d вызовов)" % (CHAT["calls"] - n))
+CHAT["mode"], n = "array", CHAT["calls"]
+p3 = cue_project("array", 4)
+c.post("/api/projects/%d/batch" % p3, headers=H(B), json={"limit": 50})
+check(CHAT["calls"] - n == 1 and all(s["target"] == "EN " + s["source"] for s in main._project_by_id(p3)["segments"]),
+      "ответ голым массивом тоже принимается")
+CHAT["mode"], n = "quota", CHAT["calls"]
+p4 = cue_project("quota", 6)
+got = c.post("/api/projects/%d/batch" % p4, headers=H(B), json={"limit": 50}).json()
+check(CHAT["calls"] - n == 1 and len(got.get("errors") or []) == 6,
+      "пустой счёт у поставщика: один вызов и отказ, без поштучного обстрела (%d)" % (CHAT["calls"] - n))
+CHAT["mode"] = "retry_ok"
+check(main._cue_answer('{"lines": [{"n": 1, "text": "a"}, {"n": 1, "text": "b"}]}', 2) is None
+      and main._cue_answer('{"lines": [{"n": 2, "text": "b"}, {"n": 1, "text": "a"}]}', 2) == {0: "a", 1: "b"},
+      "повтор номера — отказ, порядок записей неважен")
+
+n = CHAT["calls"]
+r = c.post("/api/projects/upload", headers=H(B), files={"file": ("notes.txt", "Первая строка.\nВторая строка.\nТретья строка.".encode("utf-8"), "text/plain")},
+           data={"src": "RU", "tgt": "EN"})
+tp = r.json()["id"]
+c.post("/api/projects/%d/batch" % tp, headers=H(B), json={"limit": 50})
+check(CHAT["calls"] - n == 3 and "cueTimes" not in c.get("/api/projects/%d" % tp, headers=H(B)).json(),
+      "обычный файл — по вызову на строку и без колонки времени")
 
 print("=== 10. Настоящий ffmpeg ===")
 import importlib

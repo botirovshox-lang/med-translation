@@ -3135,6 +3135,99 @@ def _neighbours(project: Optional[dict], seg: Optional[dict]) -> tuple:
     return (txt(i - 1), txt(i + 1))
 
 
+# Реплик субтитров в одном вызове перевода. 15 — примерно минута речи:
+# меньше — снова платим за правила промпта на каждую реплику, больше —
+# длинный ответ, и одна сбойная пачка стоит заметного куска ролика.
+CUE_BATCH = int(os.environ.get("CUE_BATCH", "15"))
+# И по объёму текста: реплики, склеенные руками, и длинные реплики .srt
+# иначе дали бы ответ длиннее потолка модели — и пачка пропала бы целиком.
+CUE_BATCH_CHARS = int(os.environ.get("CUE_BATCH_CHARS", "1800"))
+
+
+def _cue_project(project: Optional[dict]) -> bool:
+    """Проект — субтитры (видео, звук, загруженные .srt/.vtt с обратной
+    записью): его строки — реплики с таймингом."""
+    if not project:
+        return False
+    if project.get("media"):
+        return True
+    return (importers.ext_of(project.get("fileName") or "") in (".srt", ".vtt")
+            and project.get("writeback") is not False)
+
+
+# Дописка к промпту перевода в пакетном режиме. Правила выше говорят «верни
+# только перевод» — здесь это уточнено форматом: JSON по номерам реплик.
+CUE_BATCH_RULES = """
+SUBTITLE MODE: the user message is a JSON array of consecutive subtitle lines
+from one video, each {"n": number, "text": source line}. Translate EACH line on
+its own, in order, using the neighbouring lines as context. Never move words from one
+line to another and never merge or split lines: every line is shown and voiced at its
+own time. Keep each translation about as short as its source line — it is read on
+screen and spoken in the same time slot.
+Return ONLY a JSON object {"lines": [{"n": number, "text": translation}, ...]}
+with one entry for EVERY input line — no comments, no markdown.
+"""
+
+
+def _openai_translate_cues(texts: list, src: str, tgt: str, gloss_hits: list = None,
+                           model: str = None, domain: Optional[str] = None,
+                           prev_src: str = "", next_src: str = "", style: str = "") -> dict:
+    """Пачка реплик одним вызовом: {номер в пачке (с 0): перевод}. Промпт —
+    тот же `_translate_system` (правила, глоссарий, стайл, соседи до и после
+    пачки) плюс формат пачки. Реплику, которой нет в ответе, вызывающий
+    переводит отдельно — молча потерять строку субтитров нельзя."""
+    mdl = _resolve_model(model)
+    client = _llm_client(mdl, timeout=180, max_retries=2)
+    system = _translate_system(src, tgt, gloss_hits, None, False, domain, mdl,
+                               prev_src, next_src, style) + CUE_BATCH_RULES
+    extra = ({"max_completion_tokens": 12000} if mdl["api"] == "modern"
+             else {"max_tokens": 4096, "temperature": 0.1})
+    if _provider_of(mdl) != "anthropic":
+        extra["response_format"] = {"type": "json_object"}
+    user = json.dumps([{"n": i + 1, "text": t} for i, t in enumerate(texts)], ensure_ascii=False)
+    resp = client.chat.completions.create(
+        model=mdl["id"],
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+        **extra)
+    _note_usage("translate", mdl["id"], resp)
+    if getattr(resp.choices[0], "finish_reason", None) == "length":
+        return None                       # обрезанный ответ — пачки нет
+    return _cue_answer(resp.choices[0].message.content or "", len(texts))
+
+
+def _cue_answer(raw: str, n: int) -> Optional[dict]:
+    """Разбор ответа пачки: {номер (с 0): текст} — ТОЛЬКО если в ответе ровно
+    реплики 1..N, каждая один раз и непустая. Иначе None: пачку не берём
+    вовсе. Частичный ответ опаснее отказа — модель, слившая две реплики
+    и перенумеровавшая остальные, сдвигает переводы на соседние реплики,
+    и на видео текст покажется и озвучится не в своё время, а ни одна
+    проверка строки по отдельности этого не увидит."""
+    t = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", (raw or "").strip()).strip()
+    try:
+        data = json.loads(t)
+    except ValueError:
+        try:
+            data = json.loads(_json_body(t))
+        except ValueError:
+            return None
+    lines = data.get("lines") if isinstance(data, dict) else data
+    if not isinstance(lines, list) or len(lines) != n:
+        return None
+    out = {}
+    for item in lines:
+        if not isinstance(item, dict):
+            return None
+        try:
+            k = int(item.get("n")) - 1
+        except (TypeError, ValueError):
+            return None
+        txt = item.get("text")
+        if not (0 <= k < n) or k in out or not isinstance(txt, str) or not txt.strip():
+            return None
+        out[k] = txt.strip()
+    return out
+
+
 def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
                       literal: bool, domain, mdl: dict,
                       prev_src: str = "", next_src: str = "",
@@ -17933,11 +18026,58 @@ def _segment_for_client(seg: dict, project: Optional[dict] = None) -> dict:
     return out
 
 
+_CUE_TIMES_CACHE: dict = {}      # pid -> (отпечаток файлов, {sid: [начало, конец]})
+
+
+def _cue_times(project: dict) -> Optional[dict]:
+    """{номер сегмента: [начало, конец]} у проекта-субтитров — для колонки
+    тайминга в редакторе. Считается по ХРАНИМЫМ файлам (оригинал .srt + карта
+    «реплика → сегмент»), а не лежит на сегментах: склейка и разрезка строк,
+    повторный импорт и пересборка меняют карту — и тайминги следуют за ней
+    сами. Строка из нескольких реплик — от начала первой до конца последней.
+    Кэш по времени правки обоих файлов."""
+    if not _cue_project(project) or not project.get("sourceDocx"):
+        return None
+    orig = _orig_existing(project["id"])
+    mp = _source_paths(project["id"])[1]
+    if orig is None or not mp.exists():
+        return None
+    try:
+        fp = (orig.stat().st_mtime, orig.stat().st_size, mp.stat().st_mtime)
+    except OSError:
+        return None
+    hit = _CUE_TIMES_CACHE.get(project["id"])
+    if hit and hit[0] == fp:
+        return hit[1]
+    try:
+        text, _enc = textcount._decode(orig.read_bytes())
+        cues = importers.cue_list(text)
+        data = _load_source_map(project["id"]) or {}
+        out: dict = {}
+        for idx, sids in _para_groups(data):
+            c = cues[int(idx)] if 0 <= int(idx) < len(cues) else None
+            if c is None or c.get("start") is None:
+                continue
+            for s in sids:
+                was = out.get(str(int(s)))
+                out[str(int(s))] = ([min(was[0], c["start"]), max(was[1], c["end"])] if was
+                                    else [c["start"], c["end"]])
+    except Exception as e:
+        print("[backend] тайминги проекта %s не прочитаны: %s" % (project.get("id"), e), file=sys.stderr)
+        return None
+    _CUE_TIMES_CACHE[project["id"]] = (fp, out)
+    return out
+
+
 def _project_for_client(project: dict) -> dict:
     """Копия проекта с производными признаками у каждого сегмента.
     `parseOutdated` — файл нарезан прежними правилами разбора, и хранимый
-    исходник позволяет пересобрать его строки (`/resegment`)."""
+    исходник позволяет пересобрать его строки (`/resegment`). `cueTimes` —
+    тайминги реплик у проекта-субтитров (колонка в редакторе)."""
     out = {**project, "segments": [_segment_for_client(s, project) for s in list(project["segments"])]}
+    ct = _cue_times(project)
+    if ct is not None:
+        out["cueTimes"] = ct
     _strip_project_models(out)
     cur = _parse_rules(project.get("importKind") or "")
     out["parseOutdated"] = bool(cur and (project.get("parseRules") or 0) < cur
@@ -26182,7 +26322,85 @@ def batch_translate(pid: int, req: BatchRequest):
         return {"key": key, "text": translation, "provider": _resolve_model(req.model)["id"],
                 "docTerms": [h["tgt"] for h in gloss_hits if h.get("tier") == "doc"]}
 
-    for res in _run_parallel(order, _translate_group):
+    def _translate_pack(keys):
+        """Пачка реплик субтитров — ОДНИМ вызовом (`_openai_translate_cues`).
+        Реплика короткая (10–15 слов), а правила, глоссарий и соседи в промпте
+        — сотни токенов: вызов на реплику платил за них 15 раз в минуту видео.
+        Пропущенную моделью реплику не теряем — её переводит обычный вызов."""
+        if _job_should_stop():
+            return [{"key": k, "skip": True} for k in keys]
+        segs0 = [groups[k][0] for k in keys]
+        hits, seen = [], set()
+        for sg in segs0:
+            g, _tm = _get_context(sg["source"], project=project)
+            for h in g + _doc_hits(sg["source"], project, g):
+                hk = ((h.get("_form") or h.get("src") or "").lower(), h.get("tgt"), h.get("tier"))
+                if hk not in seen:
+                    seen.add(hk)
+                    hits.append(h)
+        prev_src = _neighbours(project, segs0[0])[0]
+        next_src = _neighbours(project, segs0[-1])[1]
+        got = None
+        for _try in range(2):             # неровный ответ — переспросить пачку один раз
+            try:
+                got = _openai_translate_cues([sg["source"] for sg in segs0], project["src"], project["tgt"],
+                                             domain=project.get("domain"), style=_style_block(project),
+                                             gloss_hits=hits, model=req.model,
+                                             prev_src=prev_src, next_src=next_src)
+            except Exception as e:
+                _note_provider_error(e)
+                print(f"[backend] batch cues error seg#{segs0[0]['id']}: {e}", file=sys.stderr)
+                # Пустой счёт у поставщика и исчерпанный лимит поштучные
+                # вызовы не вылечат: пятнадцать заведомо проигрышных
+                # запросов на пачку — не запасной ход, а обстрел.
+                if (isinstance(e, HTTPException) or _is_quota_error(str(e))
+                        or _quota_recent()):
+                    return [{"key": k, "error": str(getattr(e, "detail", e))} for k in keys]
+                got = None
+            if got is not None:
+                break
+        got = got or {}
+        out, prov = [], _resolve_model(req.model)["id"]
+        for i, k in enumerate(keys):
+            text = (got.get(i) or "").strip()
+            if text:
+                out.append({"key": k, "text": text, "provider": prov,
+                            "docTerms": [h["tgt"] for h in hits if h.get("tier") == "doc"
+                                         and _term_match(h.get("src") or "", segs0[i]["source"])]})
+            else:
+                out.append(_translate_group(k))       # запасной ход: реплика одна
+        return out
+
+    if _cue_project(project) and CUE_BATCH > 1:
+        # Бесплатное (память, повтор готового) — как всегда, без модели;
+        # остальное — пачками подряд идущих реплик: соседи внутри пачки и есть
+        # обстановка, в которой их надо переводить.
+        results, need = [], []
+        for key in order:
+            seg0 = groups[key][0]
+            tm_hit = _get_context(seg0["source"], project=project)[1]
+            if not req.force and _tm_trusted(tm_hit) and tm_hit.get("tgt"):
+                results.append({"key": key, "tm": True, "text": tm_hit["tgt"]})
+            elif done_by_src.get(key):
+                ready = done_by_src[key]
+                results.append({"key": key, "reuse": True, "text": ready[0], "provider": ready[2]})
+            else:
+                need.append(key)
+        packs, cur, size = [], [], 0
+        for key in need:
+            n = len(groups[key][0].get("source") or "")
+            if cur and (len(cur) >= CUE_BATCH or size + n > CUE_BATCH_CHARS):
+                packs.append(cur)
+                cur, size = [], 0
+            cur.append(key)
+            size += n
+        if cur:
+            packs.append(cur)
+        for got in _run_parallel(packs, _translate_pack):
+            results.extend(got)
+    else:
+        results = _run_parallel(order, _translate_group)
+    for res in results:
         segs = groups[res["key"]]
         if res.get("skip"):
             continue
@@ -29656,6 +29874,8 @@ def _job_run(job: dict):
     _JOB_USER.id = job.get("user")
     _JOB_PROJECT.id = pid              # расход прогона — на его проект
     chunk_size = JOB_CHUNKS[kind]
+    if kind == "translate" and _cue_project(_project_by_id(pid)):
+        chunk_size = max(chunk_size, CUE_BATCH)
     if kind in _MEDIA_KINDS:
         _job_media(job)
         return
@@ -30258,15 +30478,15 @@ MEDIA_DISK_MAX = int(float(os.environ.get("MEDIA_DISK_MAX_GB", "15")) * _GB)
 # не должен запирать коллег). Тот же файл повторно — докачка, а не новая.
 MEDIA_UPLOADS_PER_TENANT = int(os.environ.get("MEDIA_UPLOADS_PER_TENANT", "2"))
 MEDIA_UPLOAD_TTL = 24 * 3600              # брошенная загрузка живёт сутки
-# Сроки хранения. Исходное видео — самое тяжёлое и нужно ТОЛЬКО для новой
-# сборки; держим его 2 дня после ПОСЛЕДНЕЙ работы с ним (загрузка,
-# распознавание, сборка трогают отметку времени — `_media_touch`), а не
-# с загрузки: пока человек переводит и собирает, видео не пропадает,
-# брошенное уходит быстро. Готовые сборки — то, что человек скачивает
-# и пересылает, — 14 дней. Кэш синтеза (единственное, за что при повторной
-# сборке пришлось бы платить снова) живёт столько же, сколько сборки.
-MEDIA_KEEP_DAYS = float(os.environ.get("MEDIA_KEEP_DAYS", "2"))          # исходное видео
-MEDIA_RENDER_KEEP_H = float(os.environ.get("MEDIA_RENDER_KEEP_H", "336"))  # готовые сборки
+# Сроки хранения (решение владельца сервиса 25.09.2026). Исходное видео —
+# 14 дней после ПОСЛЕДНЕЙ работы с ним (загрузка, распознавание, сборка
+# трогают отметку времени — `_media_touch`): без него не собрать видео
+# заново после правки перевода. Готовые сборки — 2 дня: их скачивают сразу,
+# а собрать заново из исходника — минута без единого платного вызова.
+# Кэш синтеза (единственное, за что при повторной сборке пришлось бы
+# платить снова) живёт вместе с ИСХОДНИКОМ и уходит с ним.
+MEDIA_KEEP_DAYS = float(os.environ.get("MEDIA_KEEP_DAYS", "14"))         # исходное видео
+MEDIA_RENDER_KEEP_H = float(os.environ.get("MEDIA_RENDER_KEEP_H", "48"))  # готовые сборки
 # Оценка объёма речи ДО распознавания: ~190 слов в минуту — быстрая живая
 # речь, с запасом, — при норме 250 слов на страницу. По ней — отказ 402 или фрагмент на старте;
 # списывается потом ФАКТ по словам расшифровки.
@@ -30391,14 +30611,11 @@ def _media_sweep(now: Optional[float] = None) -> dict:
                     out["renders"] += 1
             except OSError:
                 pass
-        tts = _media_dir(p["id"]) / "tts"
-        for f in (tts.glob("*.pcm") if tts.exists() else []):
-            try:
-                if now - f.stat().st_mtime > MEDIA_RENDER_KEEP_H * 3600:
-                    f.unlink()
-            except OSError:
-                pass
         src = _media_source(p)
+        if src is None and (_media_dir(p["id"]) / "tts").exists():
+            # Исходника нет, а кэш синтеза остался (удалён прежними правилами
+            # или вручную): собрать озвучку всё равно не из чего.
+            shutil.rmtree(str(_media_dir(p["id"]) / "tts"), ignore_errors=True)
         if src is not None:
             try:
                 old = now - src.stat().st_mtime > MEDIA_KEEP_DAYS * 86400
@@ -30412,7 +30629,7 @@ def _media_sweep(now: Optional[float] = None) -> dict:
                     dirty = True
                 except OSError:
                     pass
-                for sub in ("asr", "work"):
+                for sub in ("asr", "work", "tts"):
                     shutil.rmtree(str(_media_dir(p["id"]) / sub), ignore_errors=True)
     if dirty:
         save_state(STATE)

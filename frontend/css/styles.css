@@ -702,6 +702,8 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
    темнее наведения (panel-2), и этого порядка достаточно, чтобы решение
    читалось громче подсказки. Отмеченная галочкой — синяя (см. row-checked). */
 .tbl tbody tr.selected { background: var(--bg-sunken); }
+/* Время реплики у субтитров: начало, под ним конец. */
+.tbl .col-time { width: 74px; white-space: nowrap; color: var(--text-3); font-size: 11.5px; font-variant-numeric: tabular-nums; padding-top: 13px; }
 .tbl .col-id { width: 56px; color: var(--text-4); font-size: 11.5px; font-variant-numeric: tabular-nums; font-weight: 400; padding-top: 13px; }
 .tbl .src-cell { color: var(--text); line-height: 1.42; }
 .tbl .tgt-cell { color: var(--text-2); line-height: 1.42; }
@@ -1527,6 +1529,23 @@ body { overflow-wrap: break-word; }
   .editor-body .tbl tbody td:nth-child(3) { grid-column: 1 / -1; grid-row: 2; }
   .editor-body .tbl tbody td:nth-child(4) {
     grid-column: 1 / -1; grid-row: 3;
+    padding-left: 11px; border-left: 2px solid var(--border);
+  }
+  /* Субтитры: седьмая ячейка — «Время» — стоит ТРЕТЬЕЙ, и все следующие
+     сдвинуты на одну. Время — в первой строке карточки рядом с номером,
+     одной строкой «начало конец». */
+  .editor-body .tbl.tbl-cues thead th:nth-child(3),
+  .editor-body .tbl.tbl-cues thead th:nth-child(7) { display: none; }
+  .editor-body .tbl.tbl-cues thead th:nth-child(5) { display: revert; }
+  .editor-body .tbl.tbl-cues thead th:nth-child(6) { display: none; }
+  .editor-body .tbl.tbl-cues tbody tr { grid-template-columns: auto auto auto minmax(0, 1fr) auto; }
+  .editor-body .tbl.tbl-cues tbody td:nth-child(3) { grid-column: 3; grid-row: 1; width: auto; padding-top: 0; }
+  .editor-body .tbl.tbl-cues tbody td:nth-child(3) div { display: inline; margin-right: 6px; }
+  .editor-body .tbl.tbl-cues tbody td:nth-child(6) { grid-column: 4; grid-row: 1; justify-self: end; }
+  .editor-body .tbl.tbl-cues tbody td:nth-child(7) { grid-column: 5; grid-row: 1; }
+  .editor-body .tbl.tbl-cues tbody td:nth-child(4) { grid-column: 1 / -1; grid-row: 2; padding-left: 0; border-left: 0; }
+  .editor-body .tbl.tbl-cues tbody td:nth-child(5) {
+    grid-column: 1 / -1; grid-row: 3; justify-self: stretch;
     padding-left: 11px; border-left: 2px solid var(--border);
   }
   /* Поиск съезжает на свою строку: не шириной в 100% (у поля она задана

@@ -1445,6 +1445,28 @@ try {
     check(edIsPicture({ importKind: "scan" }) && !edIsPicture({ importKind: "docx" }), "картинка и скан — да, docx — нет");
   }
 
+  /* 22. Колонка «Время» у субтитров. Седьмая ячейка стоит ТРЕТЬЕЙ (слева
+     от текста), у обычного файла ячеек по-прежнему шесть: раскладка на
+     телефоне держится на номерах ячеек (styles.css, `.tbl-cues`). */
+  {
+    console.log("\n=== 22. Колонка тайминга у субтитров ===");
+    const segT = { id: 5, source: "Добрый день", target: "Good afternoon", status: "translated" };
+    const tdsOf = (el) => (el.children || []).filter(c => c && typeof c === "object" && c.type === "td");
+    const textOf = (n) => !n ? "" : typeof n !== "object" ? String(n)
+      : Array.isArray(n) ? n.map(textOf).join(" ") : (n.children || []).map(textOf).join(" ");
+    const cueRow = SegRow({ seg: segT, cue: [63.4, 65.0], models: [], chip: null, hlSrc: [], hlTgt: [] });
+    const tds = tdsOf(cueRow);
+    check(tds.length === 7 && (tds[2].props || {}).className === "col-time",
+          "у субтитров семь ячеек, «Время» — третья (" + tds.length + ")");
+    check(/1:03\.4/.test(textOf(tds[2])) && /1:05\.0/.test(textOf(tds[2])), "начало и конец реплики: " + textOf(tds[2]));
+    const noCue = tdsOf(SegRow({ seg: segT, cue: null, models: [], chip: null, hlSrc: [], hlTgt: [] }));
+    check(noCue.length === 7 && textOf(noCue[2]).trim() === "—", "строка субтитров без реплики — прочерк");
+    const plain = tdsOf(SegRow({ seg: segT, models: [], chip: null, hlSrc: [], hlTgt: [] }));
+    check(plain.length === 6 && !plain.some(td => (td.props || {}).className === "col-time"),
+          "у обычного файла — шесть ячеек, как было");
+    check(edCueTime(3723.44) === "1:02:03.4" && edCueTime(5) === "0:05.0", "время с часами и без");
+  }
+
   console.log("\n" + (fail.length ? "ПРОВАЛЕНО: " + fail.join("; ") : "ВСЁ ПРОШЛО"));
   process.exit(fail.length ? 1 : 0);
 } catch (e) {

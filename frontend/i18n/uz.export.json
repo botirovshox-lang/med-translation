@@ -258,11 +258,12 @@
   "Всего": "Jami",
   "Субтитры: только перевод": "Subtitrlar: faqat tarjima",
   "Субтитры: оригинал + перевод": "Subtitrlar: asl matn + tarjima",
-  "Видео не перекодируется: разрешение и качество картинки остаются как в оригинале. Готовые файлы хранятся 14 дней, исходное видео — 2 дня после последней работы с ним.": "Video qayta kodlanmaydi: o‘lcham va tasvir sifati asldagidek qoladi. Tayyor fayllar 14 kun, asl video esa u bilan oxirgi ishdan keyin 2 kun saqlanadi.",
   "оригинал + перевод": "asl matn + tarjima",
   "Субтитры: только перевод (.vtt)": "Subtitrlar: faqat tarjima (.vtt)",
   "Тот же тайминг; формат для браузерных плееров и YouTube": "O‘sha vaqt belgilari; brauzer pleerlari va YouTube uchun format",
   "Субтитры: оригинал + перевод (.srt)": "Subtitrlar: asl matn + tarjima (.srt)",
   "В каждой реплике сначала оригинал, под ним перевод": "Har bir replikada avval asl matn, ostida tarjima",
-  "Субтитры: оригинал + перевод (.vtt)": "Subtitrlar: asl matn + tarjima (.vtt)"
+  "Субтитры: оригинал + перевод (.vtt)": "Subtitrlar: asl matn + tarjima (.vtt)",
+  "Видео не перекодируется: разрешение и качество картинки остаются как в оригинале. Готовые файлы хранятся 2 дня (собрать заново можно в любой момент), исходное видео — 14 дней после последней работы с ним.": "Video qayta kodlanmaydi: o‘lcham va tasvir sifati asldagidek qoladi. Tayyor fayllar 2 kun saqlanadi (istalgan vaqtda qayta yig‘ish mumkin), asl video esa u bilan oxirgi ishdan keyin 14 kun.",
+  "Время": "Vaqt"
 }

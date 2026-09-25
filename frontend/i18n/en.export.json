@@ -258,11 +258,12 @@
  "Всего": "Total",
  "Субтитры: только перевод": "Subtitles: translation only",
  "Субтитры: оригинал + перевод": "Subtitles: original + translation",
- "Видео не перекодируется: разрешение и качество картинки остаются как в оригинале. Готовые файлы хранятся 14 дней, исходное видео — 2 дня после последней работы с ним.": "The video is not re-encoded: resolution and picture quality stay as in the original. Finished files are kept for 14 days, the original video for 2 days after the last work with it.",
  "оригинал + перевод": "original + translation",
  "Субтитры: только перевод (.vtt)": "Subtitles: translation only (.vtt)",
  "Тот же тайминг; формат для браузерных плееров и YouTube": "The same timing; the format for browser players and YouTube",
  "Субтитры: оригинал + перевод (.srt)": "Subtitles: original + translation (.srt)",
  "В каждой реплике сначала оригинал, под ним перевод": "Each line shows the original first and the translation below it",
- "Субтитры: оригинал + перевод (.vtt)": "Subtitles: original + translation (.vtt)"
+ "Субтитры: оригинал + перевод (.vtt)": "Subtitles: original + translation (.vtt)",
+ "Видео не перекодируется: разрешение и качество картинки остаются как в оригинале. Готовые файлы хранятся 2 дня (собрать заново можно в любой момент), исходное видео — 14 дней после последней работы с ним.": "The video is not re-encoded: resolution and picture quality stay as in the original. Finished files are kept for 2 days (you can build them again at any time), the original video for 14 days after the last work with it.",
+ "Время": "Time"
 }

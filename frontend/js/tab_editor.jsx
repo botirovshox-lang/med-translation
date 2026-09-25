@@ -2906,9 +2906,13 @@ function TabEditor({ store, toast }) {
               } }, TR("Весь файл"))
           )
         ),
+        /* Субтитры (видео, звук, .srt/.vtt): колонка «Время» слева от
+           текста — тайминги реплик считает сервер (`project.cueTimes`).
+           Своим классом таблицы: раскладка на телефоне держится на
+           номерах ячеек, и у седьмой ячейки она своя (styles.css). */
         React.createElement("div", { className: "table-wrap" },
           React.createElement("div", { className: "tbl-scroll" },
-            React.createElement("table", { className: "tbl" },
+            React.createElement("table", { className: "tbl" + (project.cueTimes ? " tbl-cues" : "") },
               React.createElement("thead", null, React.createElement("tr", null,
                 React.createElement("th", { style: { width: 36, textAlign: "center" } },
                   React.createElement("input", { type: "checkbox",
@@ -2925,6 +2929,7 @@ function TabEditor({ store, toast }) {
                   })
                 ),
                 React.createElement("th", { className: "col-id" }, "№"),
+                project.cueTimes && React.createElement("th", { className: "col-time" }, TR("Время")),
                 React.createElement("th", null, TR("Как было · ") + (project.src || "")),
                 React.createElement("th", null, TR("Как стало · ") + (project.tgt || "")),
                 React.createElement("th", { style: { width: 118 } }, TR("Что тут")),
@@ -2933,6 +2938,7 @@ function TabEditor({ store, toast }) {
               React.createElement("tbody", null,
                 paged.map(s => React.createElement(SegRow, {
                   key: s.id, seg: s, selected: s.id === selId, busy: busy[s.id],
+                  cue: project.cueTimes ? (project.cueTimes[String(s.id)] || null) : undefined,
                   checked: checkedSegs.has(s.id), models: gptModels,
                   /* Имя модели в подсказке строки — устройство прогона
                      (см. modelsShown в ui.jsx). Строка не знает хранилища,
@@ -3711,7 +3717,16 @@ function SegCellEdit({ value, dir, busy, field, onSave, onCancel, onLeave }) {
         TR("Отмена"))));
 }
 
-function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, onConfirm, onRevert, models, hlSrc, hlTgt, chip, showModel,
+/* Время реплики: «м:сс.д», с часами — «ч:мм:сс.д». Десятые нужны: реплики
+   идут по две-три секунды, и без них соседние строки выглядели бы одинаково. */
+function edCueTime(sec) {
+  const t = Math.max(0, Math.round((sec || 0) * 10));
+  const d = t % 10, s = Math.floor(t / 10) % 60, m = Math.floor(t / 600) % 60, h = Math.floor(t / 36000);
+  const two = (n) => (n < 10 ? "0" : "") + n;
+  return (h ? h + ":" + two(m) : String(m)) + ":" + two(s) + "." + d;
+}
+
+function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, onConfirm, onRevert, models, hlSrc, hlTgt, chip, showModel, cue,
                   // Правка прямо в таблице: какая ячейка этой строки открыта
                   // ("src" | "tgt" | null) и что с ней делать.
                   editField, editText, editRev, editBusy, onEdit, onEditSave, onEditCancel, onEditLeave }) {
@@ -3752,6 +3767,13 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
         title: TR("Распознано на картинке: номер выдан при заведении, место в таблице — по документу"),
         style: { marginLeft: 4, opacity: 0.7, verticalAlign: "middle", display: "inline-block" } },
         React.createElement(Icon, { name: "image", size: 12 }))),
+    /* Колонка «Время» — только у субтитров (`cue` не undefined); у строки без
+       реплики (склеена руками поперёк, распознана с картинки) — прочерк. */
+    cue !== undefined && React.createElement("td", { className: "col-time" },
+      cue ? React.createElement(React.Fragment, null,
+              React.createElement("div", null, edCueTime(cue[0])),
+              React.createElement("div", { className: "dim" }, edCueTime(cue[1])))
+          : "—"),
     /* Правка по нажатию на текст, но только на УЖЕ выбранной строке: первое
        нажатие выбирает строку (и открывает карточку), второе — открывает
        поле. Иначе любое движение по таблице открывало бы редактор, а случайно

@@ -367,6 +367,16 @@ d = c.get(r.json()["url"], headers=H(B))
 check(r.json().get("ok") and d.content.decode().startswith("WEBVTT") and "00:00:00.500 --> 00:00:03.000\nGood afternoon" in d.content.decode(),
       "субтитры .vtt")
 
+for fmt, head, sep in (("srt_bi", "1\n00:00:00,500", ","), ("vtt_bi", "WEBVTT", ".")):
+    r = c.post("/api/projects/%d/export" % pid, headers=H(B), json={"format": fmt, "source": False})
+    d = c.get(r.json()["url"], headers=H(B)) if r.json().get("ok") else None
+    body = d.content.decode("utf-8") if d is not None else ""
+    check(r.json().get("ok") and body.startswith(head)
+          and ("00:00:00%s500 --> 00:00:03%s000\nДобрый день, коллеги.\nGood afternoon, colleagues.\n" % (sep, sep)) in body
+          and ("00:00:03%s400 --> 00:00:06%s000\nСегодня говорим о туберкулёзе.\n\n" % (sep, sep)) in body,
+          fmt + ": в реплике оригинал, под ним перевод; непереведённая — одним оригиналом")
+check("оригинал+перевод" in r.json()["file"], "имя файла говорит, что внутри")
+
 print("=== 8. Сборка видео и озвучки ===")
 r = c.post("/api/projects/%d/media/render" % pid, headers=H(A), json={"what": "dub"})
 check(r.status_code == 404, "чужому — 404")
@@ -415,6 +425,36 @@ main._job_execute(dj2)
 check(CALLS["tts"] == n, "повторная озвучка берёт реплики из кэша")
 check("onyx" not in main._media_err_text(RuntimeError("voice onyx failed on gpt-4o-mini-tts")) and
       "gpt-4o-mini-tts" not in main._media_err_text(RuntimeError("gpt-4o-mini-tts down")), "текст ошибки без имён поставщика")
+
+print("=== 8б. Расход на видео по людям — администратору ===")
+r = c.get("/api/admin/media-usage?days=30", headers=H(B))
+check(r.status_code == 403, "владельцу организации — 403: деньги видит администратор сервиса")
+r = c.get("/api/admin/media-usage?days=30", headers=H(A))
+d = r.json()
+row = next((x for x in d.get("rows") or [] if x["tenant"] == "beta"), None)
+check(r.status_code == 200 and row is not None and row["login"] == "beta", "строка человека из beta")
+check(row and abs(row["asrMin"] - (215 + 60) / 60) < 0.1 and row["asrUsd"] > 0, "минуты распознавания выведены из суммы: %s" % row)
+check(row and row["ttsMin"] > 0 and abs(row["usd"] - row["asrUsd"] - row["ttsUsd"]) < 1e-6, "озвучка и итог")
+check(d["videos"]["beta"]["files"] == 1 and d["keep"]["sourceDays"] == 2 and d["keep"]["renderHours"] == 336,
+      "видео организации и сроки хранения")
+
+print("=== 8в. Сроки: исходник — 2 дня после работы, сборки — 14 дней ===")
+src = main._media_source(proj)
+old = time.time() - 3 * 86400
+os.utime(str(src), (old, old))
+out = main.MEDIA_DIR / str(pid) / "out"
+os.utime(str(out / "subs.mp4"), (time.time() - 10 * 86400,) * 2)
+os.utime(str(out / "dub.mp4"), (time.time() - 15 * 86400,) * 2)
+main._media_sweep()
+check(main._media_source(proj) is None and proj["media"]["kept"] is False, "исходник без работы 3 дня удалён")
+check((out / "subs.mp4").exists() and not (out / "dub.mp4").exists(), "сборка 10 дней живёт, 15 дней — удалена")
+check((main.MEDIA_DIR / str(pid) / "tts").exists(), "кэш озвучки остаётся — повторная сборка не платит")
+(main.MEDIA_DIR / str(pid) / "source.mp4").write_bytes(b"v")
+os.utime(str(main.MEDIA_DIR / str(pid) / "source.mp4"), (old, old))
+proj["media"]["kept"] = True
+main._media_touch(proj)
+main._media_sweep()
+check(main._media_source(proj) is not None, "работа с видео продлевает хранение")
 
 print("=== 9. Удаление уносит видео ===")
 check((main.MEDIA_DIR / str(pid)).exists(), "папка видео есть")

@@ -323,6 +323,7 @@ window.I18N.registerServer("uz", {
  "Вы не состоите в этой команде": "Siz bu jamoada emassiz",
  "Выберите хотя бы один словарь или заведите новый": "Kamida bitta lug'at tanlang yoki yangisini oching",
  "Готового файла нет — соберите его заново": "Tayyor fayl yo‘q — uni qayta yig‘ing",
+ "Двуязычные субтитры есть только у субтитров и видео": "Ikki tilli subtitrlar faqat subtitrlar va video uchun mavjud",
  "Длительность файла не определяется — файл повреждён или не дописан": "Fayl davomiyligi aniqlanmayapti — fayl buzilgan yoki oxirigacha yozilmagan",
  "Для формата ": "Format uchun ",
  "Домашнюю организацию покинуть нельзя": "Uy tashkilotini tark etib bo'lmaydi",

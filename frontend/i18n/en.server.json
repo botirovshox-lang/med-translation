@@ -416,5 +416,6 @@
   "Распознавание не завершилось": "Recognition did not finish",
   "Речь уже распознана": "Speech has already been recognised",
   "Часть звука не распознана (": "Part of the audio was not recognised (",
-  " кусков) — распознайте снова: ": " chunks) — recognise again: "
+  " кусков) — распознайте снова: ": " chunks) — recognise again: ",
+  "Двуязычные субтитры есть только у субтитров и видео": "Bilingual subtitles are only available for subtitles and video"
 }

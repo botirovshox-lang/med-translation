@@ -779,12 +779,75 @@ function AdminUsageSim({ toast, tenants, sys }) {
             React.createElement("td", null, adminUsd(u.sim)))))))));
 }
 
+/* Расход на видео по людям. Минуты считает сервер из журнала расхода
+   (цена у звука поминутная — минуты выводятся из суммы точно); здесь только
+   показ. Автор распознавания — кто загрузил видео, озвучки — кто собрал. */
+function AdminMediaUsage() {
+  const [days, setDays] = useState(30);
+  const [d, setD] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    window.API.safeCall(() => window.API.mediaUsage(days)).then(r => { if (alive && r && r.ok) setD(r); });
+    return () => { alive = false; };
+  }, [days]);
+  const min = (v) => (v || 0).toFixed(1);
+  const who = (r) => r.name || r.login || (r.user ? r.user : TR("без автора"));
+  const t = d && d.total;
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "row between row-wrap", style: { gap: 8, margin: "0 0 8px" } },
+      React.createElement("div", { className: "eyebrow", style: { margin: 0 } },
+        TR("Видео: расход по людям") + (t ? " · " + adminUsd(t.usd) : "")),
+      React.createElement(Select, { value: String(days), onChange: (e) => setDays(Number(e.target.value)) },
+        [7, 30, 90, 365].map(n => React.createElement("option", { key: n, value: String(n) }, n + TR(" дн."))))),
+    !d ? React.createElement("div", { className: "dim", style: { fontSize: 13 } }, TR("Загружаем…"))
+    : React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "dim", style: { fontSize: 12, margin: "0 0 8px" } },
+          TR("Распознавание ") + adminUsd(d.prices.asrPerMin) + TR(" за минуту звука, озвучка ≈ ")
+          + adminUsd(d.prices.ttsPerMin) + TR(" за минуту речи. Видео на диске: ")
+          + fmtBytes(d.disk.usedBytes) + TR(" из ") + fmtBytes(d.disk.maxBytes)
+          + TR(" · исходники хранятся ") + d.keep.sourceDays + TR(" дн. после последней работы, готовые файлы — ")
+          + Math.round(d.keep.renderHours / 24) + TR(" дн.")),
+        d.rows.length === 0
+          ? React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, TR("За период расхода на видео не было."))
+          : React.createElement("div", { style: { maxHeight: 340, overflow: "auto" } },
+              React.createElement("table", { className: "tbl" },
+                React.createElement("thead", null, React.createElement("tr", null,
+                  [TR("Организация"), TR("Человек"), TR("Распознано, мин"), TR("$ распознавание"),
+                   TR("Озвучено, мин"), TR("$ озвучка"), TR("Итого $"), TR("Видео в организации"), TR("Последний день")]
+                    .map((h, i) => React.createElement("th", { key: i }, h)))),
+                React.createElement("tbody", null,
+                  d.rows.map((r, i) => {
+                    const v = d.videos[r.tenant];
+                    return React.createElement("tr", { key: i },
+                      React.createElement("td", null, r.tenant),
+                      React.createElement("td", null, who(r)),
+                      React.createElement("td", null, min(r.asrMin)),
+                      React.createElement("td", null, adminUsd(r.asrUsd)),
+                      React.createElement("td", null, min(r.ttsMin)),
+                      React.createElement("td", null, adminUsd(r.ttsUsd)),
+                      React.createElement("td", null, React.createElement("strong", null, adminUsd(r.usd)),
+                        r.unpriced ? React.createElement("span", { className: "dim", title: TR("вызовы, цена которых неизвестна") }, TR(" · без цены ") + r.unpriced) : null),
+                      React.createElement("td", { className: "dim" }, v ? v.files + TR(" шт. · ") + min(v.minutes) + TR(" мин") : "—"),
+                      React.createElement("td", { className: "dim" }, r.last || "—"));
+                  }),
+                  React.createElement("tr", null,
+                    React.createElement("td", null, React.createElement("strong", null, TR("Всего"))),
+                    React.createElement("td", null, ""),
+                    React.createElement("td", null, min(t.asrMin)),
+                    React.createElement("td", null, adminUsd(t.asrUsd)),
+                    React.createElement("td", null, min(t.ttsMin)),
+                    React.createElement("td", null, adminUsd(t.ttsUsd)),
+                    React.createElement("td", null, React.createElement("strong", null, adminUsd(t.usd))),
+                    React.createElement("td", null, ""), React.createElement("td", null, "")))))));
+}
+
 function AdminModelsView({ toast, tenants }) {
   const [sys, setSys] = useState(null);
   useEffect(() => { window.API.safeCall(() => window.API.systemModels()).then(r => { if (r && r.ok) setSys(r); }); }, []);
   return React.createElement("div", { className: "col", style: { gap: 16 } },
     React.createElement(AdminSystemModels, { toast, onSaved: setSys }),
-    React.createElement(AdminUsageSim, { toast, tenants, sys }));
+    React.createElement(AdminUsageSim, { toast, tenants, sys }),
+    React.createElement(AdminMediaUsage, null));
 }
 
 /* ─── Вкладка «Метрики»: где теряем, где заработать, что чинить ───────

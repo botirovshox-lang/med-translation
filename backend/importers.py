@@ -744,14 +744,18 @@ def render_cues(cues: list, ext: str) -> str:
     out = ["WEBVTT", ""] if vtt else []
     n = 0
     for c in cues:
-        if c.get("start") is None or c.get("end") is None or not (c.get("text") or "").strip():
+        if c.get("start") is None or c.get("end") is None \
+                or not ((c.get("text") or "").strip() or any((c.get("screen") or []))):
             continue
         n += 1
         if not vtt:
             out.append(str(n))
         sep = "." if vtt else ","
         out.append("%s --> %s" % (_stamp(c["start"], sep), _stamp(c["end"], sep)))
-        out.extend(wrap_cue(c["text"]))
+        # `screen` — готовые строки экрана (двуязычные субтитры: оригинал,
+        # под ним перевод), иначе текст реплики раскладывается сам. Не
+        # `lines`: так `cue_list` называет номера строк файла.
+        out.extend([ln for ln in c["screen"] if ln] if c.get("screen") else wrap_cue(c["text"]))
         out.append("")
     return "\n".join(out)
 

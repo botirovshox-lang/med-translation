@@ -327,6 +327,8 @@
     systemModels:  ()                       => call("GET",    "/admin/system-models"),
     systemModelsSave: (models)              => call("POST",   "/admin/system-models", { models }),
     usageSimulate: (body)                   => call("POST",   "/admin/usage/simulate", body),
+    /* Расход на видео по людям: минуты распознавания и озвучки, деньги. */
+    mediaUsage:    (days)                   => call("GET",    `/admin/media-usage?days=${days || 30}`),
     /* Метрики: где теряем, где заработать, что чинить. Ни одного вызова
        модели — считается по журналу событий, расходу и сметам. */
     adminMetrics:  (days)                   => call("GET",    "/admin/metrics?days=" + (days || 7)),

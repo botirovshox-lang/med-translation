@@ -613,9 +613,19 @@ function ExpMediaCard({ project, store, toast }) {
   return React.createElement("div", null,
     React.createElement("h2", { className: "section-title" }, media.video ? TR("Видео") : TR("Звук")),
     React.createElement("div", { className: "card card-pad col", style: { gap: 14 } },
-      React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
-        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "download", disabled: busy || !ready, onClick: () => subs("original") }, TR("Субтитры .srt")),
-        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "download", disabled: busy || !ready, onClick: () => subs("vtt") }, TR("Субтитры .vtt"))),
+      /* Субтитры с таймингом речи — двумя видами: только перевод (для
+         зрителя) и оригинал + перевод в каждой реплике (проверить перевод,
+         показать двуязычной аудитории). .srt берут почти все программы,
+         .vtt — браузерные плееры и YouTube. */
+      React.createElement("div", { className: "col", style: { gap: 8 } },
+        React.createElement("div", { className: "row row-wrap", style: { gap: 8, alignItems: "center" } },
+          React.createElement("span", { style: { fontSize: 13, minWidth: 170 } }, TR("Субтитры: только перевод")),
+          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "download", disabled: busy || !ready, onClick: () => subs("original") }, ".srt"),
+          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "download", disabled: busy || !ready, onClick: () => subs("vtt") }, ".vtt")),
+        React.createElement("div", { className: "row row-wrap", style: { gap: 8, alignItems: "center" } },
+          React.createElement("span", { style: { fontSize: 13, minWidth: 170 } }, TR("Субтитры: оригинал + перевод")),
+          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "download", disabled: busy || !ready, onClick: () => subs("srt_bi") }, ".srt"),
+          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "download", disabled: busy || !ready, onClick: () => subs("vtt_bi") }, ".vtt"))),
       !translated && ready && React.createElement("div", { className: "dim", style: { fontSize: 13 } },
         TR("Строки ещё не переведены — видео и озвучка соберутся после перевода.")),
       job && React.createElement(MediaJobLine, { job }),
@@ -643,7 +653,7 @@ function ExpMediaCard({ project, store, toast }) {
         React.createElement("div", { className: "dim", style: { fontSize: 12 } },
           TR("Закадровый перевод: оригинальный звук приглушается под речью. Губы с речью не совпадают; голос синтезирован."))),
       React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-        TR("Видео не перекодируется: разрешение и качество картинки остаются как в оригинале. Готовые файлы хранятся двое суток."))));
+        TR("Видео не перекодируется: разрешение и качество картинки остаются как в оригинале. Готовые файлы хранятся 14 дней, исходное видео — 2 дня после последней работы с ним."))));
 }
 window.ExpMediaCard = ExpMediaCard;
 
@@ -719,7 +729,10 @@ function TabExport({ store, toast }) {
      «Подтверждено», и без второй строки оно читается как условие. */
   const translated = project.segments.filter(s => (s.target || "").trim()).length;
   const untranslated = project.segments.length - translated;
-  const fmtLabel = fmt === "docx_layout" ? TR("как оригинал") : fmt.toUpperCase();
+  const fmtLabel = fmt === "docx_layout" ? TR("как оригинал")
+    : fmt === "srt_bi" ? "SRT " + TR("оригинал + перевод")
+    : fmt === "vtt_bi" ? "VTT " + TR("оригинал + перевод")
+    : fmt.toUpperCase();
   const doExport = async () => {
     /* Спросить ДО сборки, а не сказать после: «часть файла осталась
        на языке оригинала» после скачивания — это уже отправленный клиенту брак. */
@@ -783,6 +796,11 @@ function TabExport({ store, toast }) {
       : (project.importKind === "image" || project.importKind === "scan")
         ? TR("Надписи на картинках перерисованы переводом; что вписать не удалось — останется в Word-версии")
         : TR("Тот же файл, переведены только тексты; числа, формулы и структура на месте"), "file"]] : []),
+    /* Субтитры (загруженные .srt/.vtt и видео): ещё VTT и двуязычные. */
+    ...((origExt === ".srt" || origExt === ".vtt") ? [
+      ["vtt", TR("Субтитры: только перевод (.vtt)"), TR("Тот же тайминг; формат для браузерных плееров и YouTube"), "file"],
+      ["srt_bi", TR("Субтитры: оригинал + перевод (.srt)"), TR("В каждой реплике сначала оригинал, под ним перевод"), "file"],
+      ["vtt_bi", TR("Субтитры: оригинал + перевод (.vtt)"), TR("В каждой реплике сначала оригинал, под ним перевод"), "file"]] : []),
     ["docx_layout", TR("Такой же файл, только на другом языке (.docx)"),
      srcDoc ? TR("Те же картинки, таблицы и вид. Даже надписи на картинках переведены")
             : TR("Нужен тот самый файл, из которого делали перевод — приложите его ниже"), "file"],

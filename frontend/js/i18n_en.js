@@ -323,6 +323,7 @@ window.I18N.registerServer("en", {
  "Вы не состоите в этой команде": "You are not a member of this team",
  "Выберите хотя бы один словарь или заведите новый": "Choose at least one dictionary or create a new one",
  "Готового файла нет — соберите его заново": "There is no finished file — build it again",
+ "Двуязычные субтитры есть только у субтитров и видео": "Bilingual subtitles are only available for subtitles and video",
  "Длительность файла не определяется — файл повреждён или не дописан": "The file duration cannot be determined — the file is damaged or incomplete",
  "Для формата ": "For the format ",
  "Домашнюю организацию покинуть нельзя": "You cannot leave your home organization",

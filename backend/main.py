@@ -2444,7 +2444,9 @@ def _ledger_write(day: str, tenant: str, uid: str, step: str, model: str, calls:
         STORE.add_usage(day, tenant, uid, step, model, calls, tin, cached, tout, think, usd, unpriced)
         return
     led = STATE.setdefault(USAGE_LEDGER_KEY, {})
-    d = led.setdefault("|".join((day, tenant, uid, step, model)), _usage_leaf())
+    # Номер пользователя бывает числом: у базы колонка текстовая и приводит
+    # сама, а здесь `join` падал — и журнал файлового хранилища молча пустел.
+    d = led.setdefault("|".join((day, tenant, str(uid or ""), step, model)), _usage_leaf())
     d["calls"] += calls
     d["in"] += tin
     d["cached_in"] += cached
@@ -27031,8 +27033,13 @@ EXPORT_EXT = {"docx": "docx", "xlsx": "xlsx", "docx_layout": "docx", "pdf": "pdf
               "original": None,
               # Субтитры в формате WebVTT — из того же перевода, что и .srt
               # «в исходном виде»: браузерные плееры и YouTube берут VTT.
-              "vtt": "vtt"}          # расширение — у исходного файла проекта
-EXPORT_SUFFIX = {"docx_layout": " 1в1", "original": " перевод"}
+              "vtt": "vtt",
+              # Двуязычные субтитры: в каждой реплике сначала оригинал,
+              # под ним перевод — для проверки, обучения и показа
+              # двуязычной аудитории.
+              "srt_bi": "srt", "vtt_bi": "vtt"}          # расширение — у исходного файла проекта
+EXPORT_SUFFIX = {"docx_layout": " 1в1", "original": " перевод", "vtt": " перевод",
+                 "srt_bi": " оригинал+перевод", "vtt_bi": " оригинал+перевод"}
 
 
 def _original_ext(project: dict) -> str:
@@ -27425,6 +27432,19 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
             except OSError:
                 pass
         tmp.write_bytes(importers.render_cues(importers.cue_list(sub), ".vtt").encode("utf-8"))
+    elif fmt in ("srt_bi", "vtt_bi"):
+        if _original_ext(project) not in (".srt", ".vtt"):
+            raise HTTPException(400, "Двуязычные субтитры есть только у субтитров и видео")
+        try:
+            sub, tr, _data = _media_translations(project)
+        except RuntimeError as e:
+            raise HTTPException(400, str(e))
+        cues = importers.cue_list(sub)
+        out_cues = [{"start": c["start"], "end": c["end"],
+                     "screen": importers.wrap_cue(c["text"]) + (importers.wrap_cue(tr[i]) if i in tr else [])}
+                    for i, c in enumerate(cues)]
+        tmp.write_bytes(importers.render_cues(out_cues, "." + EXPORT_EXT[fmt]).encode("utf-8"))
+        stats = {"written": len(tr), "untranslated": sum(1 for i in range(len(cues)) if i not in tr)}
     elif fmt == "docx_layout":
         stats = _export_docx_layout(project, tmp)
     elif fmt == "docx":
@@ -27519,7 +27539,8 @@ def download_export(pid: int, format: str = "docx", source: bool = True):
         if ready.exists():
             return FileResponse(str(ready), media_type="application/pdf", filename=ready.name)
     path, _stats = _generate_export(project, fmt, include_source=source)
-    media = ("application/pdf" if fmt == "pdf" else "text/vtt" if fmt == "vtt" else
+    media = ("application/pdf" if fmt == "pdf" else "text/vtt" if fmt in ("vtt", "vtt_bi")
+             else "application/x-subrip" if fmt == "srt_bi" else
              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
              if fmt == "xlsx"
              else "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
@@ -28644,9 +28665,11 @@ def _usage_simulate(rows: list, models: dict) -> dict:
         d["actual"], d["sim"] = round(d["actual"], 4), round(d["sim"], 4)
         return d
 
-    by_id = {u["id"]: u for u in _users()}
+    # Ключ — СТРОКОЙ: журнал хранит автора текстом, а номер записи бывает
+    # числом; сравнение без приведения не находило ни одного имени.
+    by_id = {str(u["id"]): u for u in _users()}
     for u in users.values():
-        rec = by_id.get(u["user"]) or {}
+        rec = by_id.get(str(u["user"] or "")) or {}
         u["login"], u["name"], u["home"] = rec.get("login"), rec.get("name"), rec.get("tenant")
     order = {k: i for i, k in enumerate(USAGE_GROUPS)}
     out_groups = []
@@ -30235,8 +30258,15 @@ MEDIA_DISK_MAX = int(float(os.environ.get("MEDIA_DISK_MAX_GB", "15")) * _GB)
 # не должен запирать коллег). Тот же файл повторно — докачка, а не новая.
 MEDIA_UPLOADS_PER_TENANT = int(os.environ.get("MEDIA_UPLOADS_PER_TENANT", "2"))
 MEDIA_UPLOAD_TTL = 24 * 3600              # брошенная загрузка живёт сутки
-MEDIA_KEEP_DAYS = float(os.environ.get("MEDIA_KEEP_DAYS", "14"))       # исходное видео
-MEDIA_RENDER_KEEP_H = float(os.environ.get("MEDIA_RENDER_KEEP_H", "48"))  # готовые сборки
+# Сроки хранения. Исходное видео — самое тяжёлое и нужно ТОЛЬКО для новой
+# сборки; держим его 2 дня после ПОСЛЕДНЕЙ работы с ним (загрузка,
+# распознавание, сборка трогают отметку времени — `_media_touch`), а не
+# с загрузки: пока человек переводит и собирает, видео не пропадает,
+# брошенное уходит быстро. Готовые сборки — то, что человек скачивает
+# и пересылает, — 14 дней. Кэш синтеза (единственное, за что при повторной
+# сборке пришлось бы платить снова) живёт столько же, сколько сборки.
+MEDIA_KEEP_DAYS = float(os.environ.get("MEDIA_KEEP_DAYS", "2"))          # исходное видео
+MEDIA_RENDER_KEEP_H = float(os.environ.get("MEDIA_RENDER_KEEP_H", "336"))  # готовые сборки
 # Оценка объёма речи ДО распознавания: ~190 слов в минуту — быстрая живая
 # речь, с запасом, — при норме 250 слов на страницу. По ней — отказ 402 или фрагмент на старте;
 # списывается потом ФАКТ по словам расшифровки.
@@ -30267,6 +30297,16 @@ def _media_source(project: dict) -> Optional[Path]:
     m = project.get("media") or {}
     p = _media_dir(project["id"]) / ("source" + (m.get("ext") or ""))
     return p if p.exists() else None
+
+
+def _media_touch(project: dict) -> None:
+    """Отметить работу с исходным видео: срок хранения считается от неё."""
+    src = _media_source(project)
+    if src is not None:
+        try:
+            os.utime(str(src), None)
+        except OSError:
+            pass
 
 
 def _dir_size(path: Path) -> int:
@@ -30351,6 +30391,13 @@ def _media_sweep(now: Optional[float] = None) -> dict:
                     out["renders"] += 1
             except OSError:
                 pass
+        tts = _media_dir(p["id"]) / "tts"
+        for f in (tts.glob("*.pcm") if tts.exists() else []):
+            try:
+                if now - f.stat().st_mtime > MEDIA_RENDER_KEEP_H * 3600:
+                    f.unlink()
+            except OSError:
+                pass
         src = _media_source(p)
         if src is not None:
             try:
@@ -30365,7 +30412,7 @@ def _media_sweep(now: Optional[float] = None) -> dict:
                     dirty = True
                 except OSError:
                     pass
-                for sub in ("asr", "tts", "work"):
+                for sub in ("asr", "work"):
                     shutil.rmtree(str(_media_dir(p["id"]) / sub), ignore_errors=True)
     if dirty:
         save_state(STATE)
@@ -30833,6 +30880,7 @@ def _job_asr(job: dict) -> None:
     src = _media_source(project)
     if src is None:
         raise RuntimeError("Исходное видео не найдено на сервере — загрузите его заново")
+    _media_touch(project)
     if not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError("Распознавание речи недоступно: не задан ключ поставщика")
     d = _media_dir(pid) / "asr"
@@ -30993,6 +31041,7 @@ def _job_mediarender(job: dict) -> None:
     src = _media_source(project)
     if src is None:
         raise RuntimeError("Исходное видео удалено по сроку хранения — загрузите его заново на карточке файла")
+    _media_touch(project)
     info = dict(project.get("media") or {})
     probe = media_mod.probe(src)
     info.update({"video": probe.get("video"), "audio": probe.get("audio"), "duration": probe.get("duration")})
@@ -31230,6 +31279,73 @@ def media_download(sig: str):
             "X-Accel-Redirect": MEDIA_ACCEL_PREFIX.rstrip("/") + "/" + rel,
             "Content-Disposition": "attachment; filename*=utf-8''" + quote(name)})
     return FileResponse(str(path), media_type=ctype, filename=name)
+
+
+MEDIA_USAGE_STEPS = {"asr": "asr", "tts": "tts"}
+
+
+@app.get("/api/admin/media-usage")
+def admin_media_usage(request: Request, days: int = 30):
+    """Расход на видео по людям: минуты распознавания и озвучки и деньги за
+    них за период. Источник — журнал токенов (`usage_daily`: день ×
+    организация × автор × шаг × модель); секунд там нет, но цена у звука
+    поминутная (`perMin`), поэтому минуты выводятся из суммы ТОЧНО, а не
+    оценкой. Автор распознавания — тот, кто загрузил видео (задача несёт
+    его), озвучки — тот, кто нажал «Собрать». Только суперпользователю:
+    деньги видит администратор сервиса (инвариант 22а)."""
+    _super_or_403(request)
+    days = max(1, min(int(days or 30), 366))
+    day_to = datetime.now().strftime("%Y-%m-%d")
+    day_from = (datetime.now() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    by_id = {str(u["id"]): u for u in _users()}
+    rows, total = {}, {"asrMin": 0.0, "asrUsd": 0.0, "ttsMin": 0.0, "ttsUsd": 0.0, "calls": 0, "unpriced": 0}
+    for r in _ledger_rows(day_from, day_to):
+        kind = MEDIA_USAGE_STEPS.get(r.get("step"))
+        if not kind:
+            continue
+        per = (AUX_MODEL_PRICES.get(r.get("model")) or {}).get("perMin")
+        usd = float(r.get("cost") or 0.0)
+        minutes = usd / float(per) if per else 0.0
+        key = (r.get("tenant") or DEFAULT_TENANT, str(r.get("user") or ""))
+        rec = by_id.get(key[1]) or {}
+        row = rows.setdefault(key, {"tenant": key[0], "user": key[1] or None,
+                                    "login": rec.get("login"), "name": rec.get("name"),
+                                    "asrMin": 0.0, "asrUsd": 0.0, "ttsMin": 0.0, "ttsUsd": 0.0,
+                                    "calls": 0, "unpriced": 0, "last": ""})
+        for d in (row, total):
+            d[kind + "Min"] += minutes
+            d[kind + "Usd"] += usd
+            d["calls"] += int(r.get("calls") or 0)
+            d["unpriced"] += int(r.get("unpriced") or 0)
+        row["last"] = max(row["last"], r.get("day") or "")
+    # Сколько видео принесено и сколько в них минут — по живым проектам
+    # организации: удалённые сюда не попадают, их деньги — в строках выше.
+    videos: dict = {}
+    for p in STATE.get("projects") or []:
+        m = p.get("media")
+        if not m:
+            continue
+        v = videos.setdefault(_tenant_of(p), {"files": 0, "minutes": 0.0, "kept": 0})
+        v["files"] += 1
+        v["minutes"] += float(m.get("duration") or 0.0) / 60.0
+        v["kept"] += 1 if _media_source(p) is not None else 0
+
+    def rnd(d):
+        for k in ("asrMin", "ttsMin"):
+            d[k] = round(d[k], 1)
+        for k in ("asrUsd", "ttsUsd"):
+            d[k] = round(d[k], 4)
+        d["usd"] = round(d["asrUsd"] + d["ttsUsd"], 4)
+        return d
+    out = sorted((rnd(r) for r in rows.values()), key=lambda r: -r["usd"])
+    return {"ok": True, "days": days, "dateFrom": day_from, "dateTo": day_to,
+            "rows": out, "total": rnd(total),
+            "videos": {k: dict(v, minutes=round(v["minutes"], 1)) for k, v in videos.items()},
+            "disk": {"usedBytes": _dir_size(MEDIA_DIR) if MEDIA_DIR.exists() else 0,
+                     "maxBytes": MEDIA_DISK_MAX},
+            "keep": {"sourceDays": MEDIA_KEEP_DAYS, "renderHours": MEDIA_RENDER_KEEP_H},
+            "prices": {"asrPerMin": (AUX_MODEL_PRICES.get(ASR_MODEL) or {}).get("perMin"),
+                       "ttsPerMin": (AUX_MODEL_PRICES.get(TTS_MODEL) or {}).get("perMin")}}
 
 
 @app.get("/api/media/voices")

@@ -190,8 +190,8 @@ for s, st in zip(project["segments"], STATUSES):
     s["status"] = st
 
 out, stats = main._generate_export(project, "docx_layout")
-check(out.name.endswith(" 1в1.docx"),
-      "имя файла отличает 1в1 от обычного docx: " + out.name)
+check(out.name.endswith(" " + (project.get("tgt") or "").upper() + ".docx"),
+      "имя файла отличает 1в1 от обычного docx (код языка): " + out.name)
 
 res = Document(str(out))
 all_p = main._docx_flat_paragraphs(res)

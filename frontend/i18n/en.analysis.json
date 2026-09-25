@@ -475,5 +475,7 @@
  "Ваша работа, но есть находки проверок": "Your work, but checks found something",
  "починит «Ремонт» с галочкой «чинить мои строки»": "“Repair” fixes these with the “fix my lines” switch",
  "Это ваши строки, а я нашла в них ошибку": "These are your lines, and I found an error in them",
- "вы писали или заверяли эти строки, а проверки нашли ошибки — починит «Доделать сама» с галочкой «чинить мои строки»": "you wrote or signed off these lines and the checks found errors — “Finish it yourself” fixes them with the “fix my lines” switch"
+ "вы писали или заверяли эти строки, а проверки нашли ошибки — починит «Доделать сама» с галочкой «чинить мои строки»": "you wrote or signed off these lines and the checks found errors — “Finish it yourself” fixes them with the “fix my lines” switch",
+ "Термины не проверялись": "Terms not checked",
+ "у субтитров — отдельной кнопкой «Проверить термины»": "for subtitles, a separate “Check terms” button"
 }

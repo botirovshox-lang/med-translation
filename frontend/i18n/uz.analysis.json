@@ -475,5 +475,7 @@
   "Ваша работа, но есть находки проверок": "Sizning ishingiz, lekin tekshiruvlar topdi",
   "починит «Ремонт» с галочкой «чинить мои строки»": "«Tuzatish» «mening qatorlarimni tuzatish» belgisi bilan tuzatadi",
   "Это ваши строки, а я нашла в них ошибку": "Bu sizning qatorlaringiz, men ularda xato topdim",
-  "вы писали или заверяли эти строки, а проверки нашли ошибки — починит «Доделать сама» с галочкой «чинить мои строки»": "siz bu qatorlarni yozgan yoki tasdiqlagansiz, tekshiruvlar esa xato topdi — «O‘zim tugataman» «mening qatorlarimni tuzatish» belgisi bilan tuzatadi"
+  "вы писали или заверяли эти строки, а проверки нашли ошибки — починит «Доделать сама» с галочкой «чинить мои строки»": "siz bu qatorlarni yozgan yoki tasdiqlagansiz, tekshiruvlar esa xato topdi — «O‘zim tugataman» «mening qatorlarimni tuzatish» belgisi bilan tuzatadi",
+  "Термины не проверялись": "Atamalar tekshirilmagan",
+  "у субтитров — отдельной кнопкой «Проверить термины»": "subtitrlarda — alohida «Atamalarni tekshirish» tugmasi bilan"
 }

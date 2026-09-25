@@ -147,7 +147,6 @@
   "В проекте нет сегментов.": "Loyihada segmentlar yo'q.",
   "Введите номер сегмента — например 128.": "Segment raqamini kiriting — masalan, 128.",
   "Везде": "Hamma joyda",
-  "Вернуть все шаги": "Barcha bosqichlarni qaytarish",
   "Вернуть порядок документа": "Hujjat tartibini qaytarish",
   "Весь текст": "Butun matn",
   "Весь файл": "Butun fayl",
@@ -254,7 +253,6 @@
   "Отмена": "Bekor qilish",
   "Отметьте хотя бы один шаг": "Kamida bitta qadamni belgilang",
   "Отметьте хотя бы один.": "Kamida bittasini belgilang.",
-  "Отмечены не все шаги: ": "Hamma bosqichlar belgilanmagan: ",
   "Оценка ориентировочная: считается по объёму текста, фактический расход зависит от ответа модели. ": "Baho taxminiy: matn hajmi bo'yicha hisoblanadi, amaldagi xarajat modelning javobiga bog'liq. ",
   "Очистить поиск": "Qidiruvni tozalash",
   "Ошибка": "Xato",
@@ -553,5 +551,12 @@
   "Идёт другая работа над файлом…": "Fayl ustida boshqa ish ketmoqda…",
   "Прочитаю текст с картинки и сразу переведу.": "Rasmdagi matnni o'qib, darhol tarjima qilaman.",
   "Текст живёт в картинке — нажмите «Перевести» выше: прочитаю и переведу, строки появятся здесь.": "Matn rasmda — yuqoridagi «Tarjima qilish» tugmasini bosing: o'qib, tarjima qilaman, satrlar shu yerda paydo bo'ladi.",
-  "Уже читаю текст с картинки — нажмите, и переведу сразу после.": "Rasmdagi matnni allaqachon o'qiyapman — bosing, keyin darhol tarjima qilaman."
+  "Уже читаю текст с картинки — нажмите, и переведу сразу после.": "Rasmdagi matnni allaqachon o'qiyapman — bosing, keyin darhol tarjima qilaman.",
+  "Термины во всех строках уже проверены.": "Barcha satrlardagi atamalar allaqachon tekshirilgan.",
+  "Проверить термины в строках: ": "Atamalarni tekshiriladigan satrlar: ",
+  "Термины в субтитрах не проверялись: ": "Subtitrlardagi atamalar tekshirilmagan: ",
+  "Проверить термины": "Atamalarni tekshirish",
+  "Выбрано шагов: ": "Tanlangan bosqichlar: ",
+  "Вернуть как было": "Avvalgidek qaytarish",
+  " строк. Проверка идёт отдельной кнопкой.": " ta satr. Tekshiruv alohida tugma bilan boshlanadi."
 }

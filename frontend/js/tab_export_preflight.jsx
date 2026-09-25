@@ -654,7 +654,11 @@ function ExpMediaCard({ project, store, toast }) {
       burn && burn.untranslated > 0 && React.createElement("div", { style: { fontSize: 13, color: "var(--c-warning)" } },
         burn.untranslated + TR(" реплик были без перевода и в кадр не попали — переведите и соберите заново.")),
       media.video && line(TR("Видео с субтитрами дорожкой"), rr.subs, "subs",
-        TR("Субтитры включаются в плеере; видео не перекодируется — собирается за минуты.")),
+        TR("Видно в плеерах (VLC, «Кино и ТВ», телефон), но не в браузере, Telegram и соцсетях — там нужны субтитры в кадре.")),
+      /* Сборка до метки «показывать по умолчанию»: плееры не включали
+         дорожку сами, и скачанное видео открывалось без текста. */
+      media.video && rr.subs && !rr.subs.shown && React.createElement("div", { style: { fontSize: 13, color: "var(--c-warning)" } },
+        TR("Это видео собрано до исправления: субтитры в нём не включаются сами. Нажмите «Собрать заново».")),
       burnOpen && React.createElement(VidBurnDialog, { project, toast, store, onClose: () => setBurnOpen(false),
         onStarted: (j, eta) => {
           setBurnOpen(false);
@@ -699,7 +703,7 @@ function TabExport({ store, toast }) {
     if (p.importKind && p.importKind !== "docx" && p.sourceDocx) return "original";
     return p.sourceDocx ? "docx_layout" : "docx";
   });
-  const [opts, setOpts] = useState({ source: true, notes: true, qa: false, glossary: true });
+  const [opts, setOpts] = useState({ source: true });
   const [busy, setBusy] = useState(false);
   const [attaching, setAttaching] = useState(false);
   /* Умеет ли ЭТОТ сервер собирать PDF. Спрашиваем каталог, а не гадаем:
@@ -904,14 +908,15 @@ function TabExport({ store, toast }) {
         project.media && React.createElement(ExpMediaCard, { project, store, toast }),
         !project.media && React.createElement(ImagesCard, { project, store, toast }),
 
-        React.createElement("div", null,
+        /* В файл клиента идёт только текст: оригинал (по желанию), перевод
+           и тайминг у субтитров. Прежние галочки «Заметки переводчика»,
+           «Результаты QA», «Ссылки на глоссарий» на сервер не уходили вовсе
+           и обещали в файле внутреннюю кухню проверок. Галочка оригинала —
+           только у форматов, которые её читают. */
+        (fmt === "docx" || fmt === "xlsx" || (fmt === "pdf" && !project.sourceDocx)) && React.createElement("div", null,
           React.createElement("h2", { className: "section-title" }, TR("Что положить в файл")),
           React.createElement("div", { className: "card card-pad col", style: { gap: 16 } },
-            React.createElement(Checkbox, { checked: opts.source, onChange: () => toggle("source") }, TR("Оригинал в примечаниях")),
-            React.createElement(Checkbox, { checked: opts.notes, onChange: () => toggle("notes") }, TR("Заметки переводчика")),
-            React.createElement(Checkbox, { checked: opts.qa, onChange: () => toggle("qa") }, TR("Результаты QA")),
-            React.createElement(Checkbox, { checked: opts.glossary, onChange: () => toggle("glossary") }, TR("Ссылки на глоссарий")))
-        )
+            React.createElement(Checkbox, { checked: opts.source, onChange: () => toggle("source") }, TR("Оригинал рядом с переводом"))))
       ),
 
       React.createElement("div", { className: "col", style: { gap: 24 } },

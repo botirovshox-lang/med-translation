@@ -379,7 +379,7 @@ for fmt, head, sep in (("srt_bi", "1\n00:00:00,500", ","), ("vtt_bi", "WEBVTT", 
           and ("00:00:00%s500 --> 00:00:03%s000\nДобрый день, коллеги.\nGood afternoon, colleagues.\n" % (sep, sep)) in body
           and ("00:00:03%s400 --> 00:00:06%s000\nСегодня говорим о туберкулёзе.\n\n" % (sep, sep)) in body,
           fmt + ": в реплике оригинал, под ним перевод; непереведённая — одним оригиналом")
-check("оригинал+перевод" in r.json()["file"], "имя файла говорит, что внутри")
+check("-" in r.json()["file"].rsplit(" ", 1)[-1], "имя файла говорит, что внутри (оба языка): " + r.json()["file"])
 
 print("=== 8. Сборка видео и озвучки ===")
 r = c.post("/api/projects/%d/media/render" % pid, headers=H(A), json={"what": "dub"})

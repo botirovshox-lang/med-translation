@@ -513,6 +513,10 @@ def mux_subtitles(src, srt, dst, info: dict, lang: str = "", span=None) -> None:
         acodec = "aac"
     args = _span_in(span) + ["-i", src, "-i", srt, "-map", "0:v:0", "-map", "0:a?", "-map", "1:0",
             "-c:v", "copy", "-c:a", acodec, "-c:s", scodec] + _vtag(info, ext)
+    # Дорожка помечается «показывать по умолчанию». Без метки плееры
+    # (Кино и ТВ в Windows, телефоны, часть сборок VLC) её не включают сами,
+    # и человек, скачавший «видео с субтитрами», видел видео без текста.
+    args += ["-disposition:s:0", "default"]
     if lang:
         args += ["-metadata:s:s:0", "language=" + lang]
     if ext == ".mp4":

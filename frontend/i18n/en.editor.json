@@ -147,7 +147,6 @@
   "В проекте нет сегментов.": "There are no segments in the project.",
   "Введите номер сегмента — например 128.": "Enter a segment number — 128, for example.",
   "Везде": "Everywhere",
-  "Вернуть все шаги": "Restore all the steps",
   "Вернуть порядок документа": "Restore the document order",
   "Весь текст": "The whole text",
   "Весь файл": "The whole file",
@@ -254,7 +253,6 @@
   "Отмена": "Cancel",
   "Отметьте хотя бы один шаг": "Tick at least one step",
   "Отметьте хотя бы один.": "Tick at least one.",
-  "Отмечены не все шаги: ": "Not all the steps are ticked: ",
   "Оценка ориентировочная: считается по объёму текста, фактический расход зависит от ответа модели. ": "The estimate is approximate: it is counted from the volume of the text, while the actual spending depends on the model’s answer. ",
   "Очистить поиск": "Clear the search",
   "Ошибка": "Error",
@@ -553,5 +551,12 @@
   "Идёт другая работа над файлом…": "Other work on the file is in progress…",
   "Прочитаю текст с картинки и сразу переведу.": "I will read the text from the image and translate it right away.",
   "Текст живёт в картинке — нажмите «Перевести» выше: прочитаю и переведу, строки появятся здесь.": "The text is inside the image — press “Translate” above: I will read and translate it, and the lines will appear here.",
-  "Уже читаю текст с картинки — нажмите, и переведу сразу после.": "Already reading the text from the image — press, and I will translate right after."
+  "Уже читаю текст с картинки — нажмите, и переведу сразу после.": "Already reading the text from the image — press, and I will translate right after.",
+  "Термины во всех строках уже проверены.": "Terms in all the lines have already been checked.",
+  "Проверить термины в строках: ": "Check terms in lines: ",
+  "Термины в субтитрах не проверялись: ": "Terms in the subtitles have not been checked: ",
+  "Проверить термины": "Check terms",
+  "Выбрано шагов: ": "Steps selected: ",
+  "Вернуть как было": "Restore the default",
+  " строк. Проверка идёт отдельной кнопкой.": " lines. The check has its own button."
 }

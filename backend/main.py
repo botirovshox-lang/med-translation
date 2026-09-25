@@ -9169,9 +9169,11 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int,
             row["override"] = True
     # Корзины обязаны быть исчерпывающими: сегмент, не попавший ни в одну,
     # исчезает с экрана, и картина выглядит благополучнее, чем есть.
-    why = _machine_clean(s, min_score)
+    why = _machine_clean(s, min_score, need_tc=_terms_in_run(project) if project else True)
     if why is None:
         row["bucket"] = "clean"
+    elif why == CLEAN_TERMS_OFF:
+        row["bucket"] = "termsOff"
     elif why == CLEAN_TERMCHECK_SKIP:
         # НЕ «не проверено»: `_termcheck_trivial` сам сказал, что проверять
         # нечего — в переводе нет слов либо он совпадает с оригиналом
@@ -9291,6 +9293,7 @@ def project_analysis(pid: int, refresh: bool = False):
     # Сегменты, где проверять нечего по существу. Своя корзина, а не «не
     # проверено»: работой это не является ни сейчас, ни когда-либо.
     nothing_to_check: list = []
+    terms_off: list = []
     # Подмножество `reverted`: правку отменил только балл back-check, а термины
     # она почистила. Подмножество, а не отдельная корзина, — иначе исчерпаемость
     # держалась бы на совпадении двух предикатов в разных концах файла.
@@ -9342,7 +9345,7 @@ def project_analysis(pid: int, refresh: bool = False):
     rows_new: dict = {}
     for s in project["segments"]:
         sid = s["id"]
-        key = (seg_fp.get(sid), sid in gloss_bad, pol["backcheck_min"])
+        key = (seg_fp.get(sid), sid in gloss_bad, pol["backcheck_min"], _terms_in_run(project))
         got = rows_prev.get(sid)
         # Проект — ради пары языков (сверка кандидата наследства); кэш строк
         # и так свой у каждого проекта (`_ANALYSIS_ROWS[pid]`), в ключ пара
@@ -9402,6 +9405,8 @@ def project_analysis(pid: int, refresh: bool = False):
             clean.append(sid)
         elif row["bucket"] == "nothing":
             nothing_to_check.append(sid)
+        elif row["bucket"] == "termsOff":
+            terms_off.append(sid)
         elif row["bucket"] == "unchecked":
             unchecked.append(sid)
         elif row["bucket"] == "weak":
@@ -9709,7 +9714,7 @@ def project_analysis(pid: int, refresh: bool = False):
                      if i not in human_set],
             # auto_terms — в конце прогона разложить однозначных кандидатов
             # ПОДСКАЗКОЙ (`_job_auto_terms`): человеку остаются только вопросы.
-            "params": {"steps": list(FULL_RUN_STEPS), "use_judge": True,
+            "params": {"steps": _default_run_steps(project), "use_judge": True,
                        "judge_all": True, "retry": False,
                        "include_confirmed": False, "auto_terms": True},
         },
@@ -9726,7 +9731,11 @@ def project_analysis(pid: int, refresh: bool = False):
         # с ручательством, которого ещё ждёт судья, числился бы и готовым,
         # и работой прогона разом.
         "readyIds": sorted(i for i in ready_set
-                           if i in (set(clean) | set(repaired) | set(review_vouched))),
+                           if i in (set(clean) | set(repaired) | set(review_vouched)
+                                    | set(terms_off))),
+        # Термины у проекта вне прогона (субтитры) и эти строки не проверяли:
+        # число для кнопки «Проверить термины». Срез поверх «готово».
+        "termsOff": {"inRun": _terms_in_run(project), "unchecked": len(terms_off)},
         "machine": {"repaired": len(repaired), "reverted": len(reverted)},
         "proposed": {"terms": ready},
         "human": {
@@ -9787,7 +9796,7 @@ def project_analysis(pid: int, refresh: bool = False):
             # Применяется без вызова модели (`apply_saved` + разрешение).
             "reviewConfirmed": review_confirmed,
         },
-        "todo": {"untranslated": untranslated, "unchecked": unchecked,
+        "todo": {"untranslated": untranslated, "unchecked": unchecked, "termsOff": terms_off,
                  "findings": findings, "glossaryPending": impact["pending"],
                  "weak": [w["id"] for w in weak],
                  # Не «плохо», а «никто не смотрел». Лечится судьёй.
@@ -15240,6 +15249,11 @@ CLEAN_REPAIRED = "текст переписан автоматическим р�
 # «Проверка не делалась» — это «неизвестно», а не «плохо»: такие сегменты
 # идут в свою строку «переведено, но не проверено».
 CLEAN_UNCHECKED = (CLEAN_NO_BACKCHECK, CLEAN_NO_TERMCHECK, CLEAN_TERMCHECK_SKIP)
+# Back-check чист, а термины у этого проекта вне прогона (`_terms_in_run`) и
+# не проверялись. Свой код, а не None: «проверено начисто» обещает обе
+# проверки. В «готово» идёт, в «переведено, но не проверено» — нет: иначе
+# корзину «доделаю сама» не осушил бы ни один прогон по умолчанию.
+CLEAN_TERMS_OFF = "термины вне прогона и не проверялись"
 # Причина ТОЛЬКО для корзины /analysis, не для _machine_clean: донором глоссария
 # такой сегмент всё равно не станет (балл ниже порога — это правда), но человеку
 # «оценка ниже порога» здесь говорит неправду. На коротком оригинале лексическая
@@ -15261,7 +15275,7 @@ CLEAN_JUDGE_VS_REVIEW = "текст написала ревизия, судья 
 CLEAN_TERMLIST = "перевод подсказан терм-листом документа"
 
 
-def _machine_clean(seg: dict, min_score: int) -> Optional[str]:
+def _machine_clean(seg: dict, min_score: int, need_tc: bool = True) -> Optional[str]:
     """None, если с сегмента можно собирать терминологию без человека.
     Иначе — причина отказа (её показываем в разборе автоодобрения).
 
@@ -15277,13 +15291,21 @@ def _machine_clean(seg: dict, min_score: int) -> Optional[str]:
         return CLEAN_NO_BACKCHECK
     if bc.get("score") is None or bc["score"] < min_score:
         return f"back-check ниже {min_score}%"
+    # need_tc=False — только для РАЗДАЧИ КОРЗИН у проекта, где термины вне
+    # прогона (`_terms_in_run`): отсутствие termcheck там не работа машины.
+    # Ответ тогда CLEAN_TERMS_OFF, а не None: «проверено начисто» обещает
+    # обе проверки, и донором глоссария такой сегмент не станет (инвариант 8 —
+    # доноров зовут с need_tc=True).
+    tc_off = False
     if not tc or _check_stale(tc, target):
-        return CLEAN_NO_TERMCHECK
-    if tc.get("model") == "skip":
+        if need_tc:
+            return CLEAN_NO_TERMCHECK
+        tc_off = True
+    elif tc.get("model") == "skip":
         # «Нечего проверять» — это не «проверено и чисто». Иначе сегмент, где
         # перевод совпал с оригиналом, дарил глоссарию пару вида «X → X».
         return CLEAN_TERMCHECK_SKIP
-    if tc.get("findings"):
+    elif tc.get("findings"):
         return CLEAN_TERMCHECK_FINDINGS
     # Сверка хеша обязательна: сегмент, который однажды чинили, а потом
     # перевели заново, к ремонту уже не относится. Без неё он навсегда
@@ -15302,7 +15324,7 @@ def _machine_clean(seg: dict, min_score: int) -> Optional[str]:
         # версии вопросов пишет свежий вердикт с applied=False): текст всё
         # так же написала машина.
         return CLEAN_REPAIRED
-    return None
+    return CLEAN_TERMS_OFF if tc_off else None
 
 
 def _harvest_if_clean(seg: dict, project: dict) -> list:
@@ -27262,8 +27284,12 @@ EXPORT_EXT = {"docx": "docx", "xlsx": "xlsx", "docx_layout": "docx", "pdf": "pdf
               # под ним перевод — для проверки, обучения и показа
               # двуязычной аудитории.
               "srt_bi": "srt", "vtt_bi": "vtt"}          # расширение — у исходного файла проекта
-EXPORT_SUFFIX = {"docx_layout": " 1в1", "original": " перевод", "vtt": " перевод",
-                 "srt_bi": " оригинал+перевод", "vtt_bi": " оригинал+перевод"}
+# Хвост имени файла — пара языков, а не наше слово («1в1», «перевод»):
+# файл уходит клиенту и его заказчику, на любом языке интерфейса. Обычный
+# docx и PDF хвоста не несут; «как оригинал» и «в исходном виде» — код языка
+# перевода, двуязычные субтитры — оба кода.
+EXPORT_SUFFIX = {"docx_layout": " {tgt}", "original": " {tgt}", "vtt": " {tgt}",
+                 "srt_bi": " {src}-{tgt}", "vtt_bi": " {src}-{tgt}"}
 
 
 def _original_ext(project: dict) -> str:
@@ -27536,6 +27562,62 @@ def _export_original(project: dict, out: Path, tmp: Path) -> dict:
     return {"original": kind, "written": len(tr), "untranslated": max(0, untranslated)}
 
 
+# Заголовки таблиц в ВЫГРУЖЕННОМ файле — на языке интерфейса того, кто
+# выгружает: файл уходит мимо браузера, и перевести надписи на границе показа
+# некому (тот же закон, что у `mail_texts`). Нет языка — русский.
+EXPORT_HEADS = {
+    "ru": {"n": "№", "start": "Начало", "end": "Конец", "src": "Оригинал", "tgt": "Перевод"},
+    "uz": {"n": "№", "start": "Boshlanishi", "end": "Tugashi", "src": "Asl matn", "tgt": "Tarjima"},
+    "en": {"n": "No.", "start": "Start", "end": "End", "src": "Source", "tgt": "Translation"},
+}
+
+
+def _export_heads() -> dict:
+    return EXPORT_HEADS.get(_explain_lang()) or EXPORT_HEADS["ru"]
+
+
+def _export_rows(project: dict, include_source: bool) -> tuple:
+    """Шапка и строки ТАБЛИЧНОЙ выгрузки (xlsx и таблица «просто текст»).
+
+    В файл клиента идёт только его текст: номер строки, тайминг (у субтитров
+    и видео), оригинал и перевод. Статус, маршрут, «риск» (это длина строки),
+    модели и находки проверок — внутренняя кухня, в выгрузке им не место.
+    Номер — порядковый, а не id сегмента: у строк, распознанных на картинке,
+    id идут не по порядку, и в файле клиента это выглядело бы ошибкой."""
+    h = _export_heads()
+    times = _cue_times(project) if _cue_project(project) else None
+    head = ([h["n"]] + ([h["start"], h["end"]] if times is not None else [])
+            + ([h["src"]] if include_source else []) + [h["tgt"]])
+    rows = []
+    for i, s in enumerate(project["segments"], 1):
+        row = [i]
+        if times is not None:
+            t = times.get(str(s["id"]))
+            row += ([importers._stamp(t[0], ","), importers._stamp(t[1], ",")] if t else ["", ""])
+        if include_source:
+            row.append(s.get("source", ""))
+        row.append(s.get("target", ""))
+        rows.append(row)
+    return head, rows
+
+
+def _clean_doc_props(props, project: dict) -> None:
+    """Свойства файла — не место для нашей кухни: python-docx и openpyxl
+    пишут туда своё имя («python-docx», «generated by python-docx»), и клиент
+    видит его в «Свойствах» файла. Оставляем название проекта."""
+    for k in ("author", "creator", "last_modified_by", "lastModifiedBy",
+              "comments", "description", "keywords", "subject", "category"):
+        if hasattr(props, k):
+            try:
+                setattr(props, k, "")
+            except (ValueError, TypeError):
+                pass
+    try:
+        props.title = project.get("title") or ""
+    except (ValueError, TypeError):
+        pass
+
+
 def _export_docx_plain(project: dict, tmp, include_source: bool = True) -> dict:
     """Обычный DOCX: собирается С НУЛЯ, оформление исходника не переносит.
 
@@ -27545,19 +27627,21 @@ def _export_docx_plain(project: dict, tmp, include_source: bool = True) -> dict:
     segs = project["segments"]
     from docx import Document
     doc = Document()
+    _clean_doc_props(doc.core_properties, project)
     doc.add_heading(project["title"], level=1)
-    doc.add_paragraph(f"{project.get('src','RU')} → {project.get('tgt','EN')} · "
-                      f"сегментов: {len(segs)} · экспорт: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    if include_source:
-        table = doc.add_table(rows=1, cols=3)
+    # Только пара языков: число «сегментов» и время выгрузки — наша кухня.
+    doc.add_paragraph(f"{project.get('src','RU')} → {project.get('tgt','EN')}")
+    # Таблица — когда рядом оригинал либо у строк есть тайминг (субтитры):
+    # без времени реплика в файле субтитров бесполезна.
+    head, rows = _export_rows(project, include_source)
+    if len(head) > 2:
+        table = doc.add_table(rows=1, cols=len(head))
         table.style = "Table Grid"
-        hdr = table.rows[0].cells
-        hdr[0].text, hdr[1].text, hdr[2].text = "#", "Источник", "Перевод"
-        for s in segs:
-            row = table.add_row().cells
-            row[0].text = str(s["id"])
-            row[1].text = s.get("source", "")
-            row[2].text = s.get("target", "")
+        for c, v in zip(table.rows[0].cells, head):
+            c.text = str(v)
+        for r in rows:
+            for c, v in zip(table.add_row().cells, r):
+                c.text = str(v)
     else:
         for s in segs:
             if s.get("target"):
@@ -27579,7 +27663,14 @@ def _export_path(project: dict, fmt: str) -> Path:
     folder = (EXPORT_DIR / re.sub(r"[^A-Za-z0-9_-]+", "_", _tenant_of(project))
               / str(int(project["id"])))
     folder.mkdir(parents=True, exist_ok=True)
-    return folder / (_safe_filename(project["title"]) + EXPORT_SUFFIX.get(fmt, "") + "." + ext)
+    suf = EXPORT_SUFFIX.get(fmt, "")
+    if fmt == "original" and ext == "docx":
+        # Формат без обратной записи отдаётся Word-файлом — и «как оригинал»
+        # лёг бы в ТОТ ЖЕ путь, а готовый файл отдаётся без пересборки.
+        suf = " {src}-{tgt}"
+    tail = suf.format(src=(project.get("src") or "").upper(),
+                                             tgt=(project.get("tgt") or "").upper())
+    return folder / (_safe_filename(project["title"] + tail) + "." + ext)
 
 
 def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tuple:
@@ -27677,11 +27768,22 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
         from openpyxl import Workbook
         wb = Workbook()
         ws = wb.active
-        ws.title = "Segments"
-        ws.append(["#", "Источник", "Перевод", "Статус", "Маршрут", "Риск"])
-        for s in segs:
-            ws.append([s["id"], s.get("source", ""), s.get("target", ""),
-                       s.get("status", ""), s.get("route", ""), s.get("risk", "")])
+        # Имя листа — название проекта (слово «Segments» — наша кухня);
+        # Excel не принимает в нём []:*?/\ и больше 31 знака.
+        ws.title = ((project.get("title") or "")[:31]
+                    .translate(str.maketrans({c: "_" for c in "[]:*?/\\"})) or "Translation")
+        head, rows = _export_rows(project, include_source)
+        ws.append(head)
+        for r in rows:
+            ws.append(r)
+        # Строка, начатая «=», openpyxl сохраняет ФОРМУЛОЙ: реплика «= 5 мг»
+        # открылась бы у клиента ошибкой, а «=HYPERLINK(...)» — ссылкой.
+        # Текст клиента — всегда текст.
+        for row in ws.iter_rows():
+            for c in row:
+                if c.data_type == "f":
+                    c.data_type = "s"
+        _clean_doc_props(wb.properties, project)
         wb.save(str(tmp))
     os.replace(str(tmp), str(out))
     return out, stats
@@ -28577,6 +28679,28 @@ JOB_KINDS = set(JOB_CHUNKS)
 # расхождения с глоссарием, регистр, чужое письмо.
 FULL_RUN_STEPS = ["translate", "review", "backcheck", "termcheck", "termaudit",
                   "repair", "medical_qa"]
+# Проверка терминов у СУБТИТРОВ (видео, звук, .srt/.vtt) — отдельной кнопкой,
+# а не в прогоне по умолчанию. Реплика короткая, перевод идёт пачкой по 15
+# (вызов на пачку), а termcheck — вызовом НА РЕПЛИКУ: на видео в 500 реплик
+# он выходил дороже перевода в десятки раз, а находить в обрывке фразы
+# ему почти нечего. У документов термины — ядро работы и остаются в прогоне.
+# Порядок шагов не меняется: это ПОДМНОЖЕСТВО `FULL_RUN_STEPS`.
+TERM_STEPS = ("termcheck", "termaudit")
+
+
+def _terms_in_run(project: Optional[dict]) -> bool:
+    """Идут ли шаги терминов в прогон по умолчанию. Одно правило на всех:
+    разбор состава, задачу, `turnkey.params` и раздачу корзин."""
+    return not _cue_project(project)
+
+
+def _default_run_steps(project: Optional[dict]) -> list:
+    """Состав прогона, когда клиент не назвал шаги (`steps` пусто)."""
+    if _terms_in_run(project):
+        return list(FULL_RUN_STEPS)
+    return [s for s in FULL_RUN_STEPS if s not in TERM_STEPS]
+
+
 FULL_STEP_LABELS = {"translate": "перевод", "backcheck": "back-check",
                     "termcheck": "проверка терминов", "medical_qa": "Medical QA",
                     "termaudit": "сверка терминов", "repair": "ремонт",
@@ -29321,7 +29445,7 @@ def run_plan(pid: int, req: RunPlanRequest):
     project = get_project(pid)
     # is not None, а не truthy: пустой список — это «не выбрано ни одного шага»,
     # и разбирать надо ноль шагов, а не весь конвейер.
-    want = set(req.steps if req.steps is not None else FULL_RUN_STEPS)
+    want = set(req.steps if req.steps is not None else _default_run_steps(project))
     steps = [s for s in FULL_RUN_STEPS if s in want]
     id_filter = set(req.segment_ids) if req.segment_ids is not None else None
     scope = [s for s in project["segments"]
@@ -29380,6 +29504,10 @@ def run_plan(pid: int, req: RunPlanRequest):
         seen.update(p["ids"])
     ids = [s["id"] for s in scope if s["id"] in seen]
     return {"steps": plans, "ids": ids, "total": len(ids), "scope": len(scope),
+            # Состав по умолчанию — всегда, какие бы шаги ни спросили: по нему
+            # браузер ставит галочки и решает, «изменён ли выбор». Одно правило
+            # (`_default_run_steps`), второй копии в `.jsx` нет.
+            "defaultSteps": _default_run_steps(project),
             # Сколько сегментов у проекта на сервере. Браузер держит проект
             # с момента загрузки страницы, а прибавиться они могут где угодно
             # — например, разбором картинок с соседнего экрана. Тогда состав
@@ -29653,7 +29781,7 @@ def _job_chunk_full(pid: int, chunk: list, params: dict) -> dict:
     провалившейся: молча рапортовать «выполнено», не сделав ничего, нельзя."""
     # Порядок берём из FULL_RUN_STEPS, а не из присланного списка: клиент выбирает
     # СОСТАВ шагов, но не их очерёдность — она несущая (см. комментарий там же).
-    want = set(params.get("steps") or FULL_RUN_STEPS)
+    want = set(params.get("steps") or _default_run_steps(_project_by_id(pid)))
     steps = [s for s in FULL_RUN_STEPS if s in want]
     out = {"done": len(chunk)}
     ran, blocked = [], []
@@ -30375,6 +30503,12 @@ def create_job(pid: int, req: JobRequest):
         # apply_terms считает состав после одобрения терминов, а разбор
         # картинок — сам себе состав: сегментов из картинок ещё не существует.
         raise HTTPException(400, "Пустой список сегментов")
+    # Составной прогон без названных шагов несёт СВОЙ состав с постановки:
+    # умолчание зависит от проекта (`_default_run_steps`), и задача не должна
+    # зависеть от того, найдёт ли воркер проект, — и полоса прогона в браузере
+    # по той же записи рисует свои строки.
+    if req.kind == "full" and not (req.params or {}).get("steps"):
+        req.params = dict(req.params or {}, steps=_default_run_steps(project))
     # Отказ по СМЕТЕ на старте. Мидварь отвечает 402 только на ИСЧЕРПАННОМ
     # лимите; прогон со сметой больше остатка стартовал бы и упирался в лимит
     # посреди работы (проверка между порциями в `_job_run`). Число клиентское —
@@ -31387,7 +31521,11 @@ def _job_mediarender(job: dict) -> None:
         media_mod.mux_subtitles(src, srt_path, tmp, info, lang3, span=span)
         os.replace(str(tmp), str(dst))
         job["done"] = 1
-        _media_render_mark(project, "subs", dst, {"cues": len(cues), "translated": len(tr)})
+        # `shown: True` — дорожка помечена «показывать по умолчанию»
+        # (`media.mux_subtitles`). У сборок до этой метки её нет, и экран
+        # просит собрать заново: скачанное видео открывалось без текста.
+        _media_render_mark(project, "subs", dst, {"cues": len(cues), "translated": len(tr),
+                                                  "shown": True})
         return
     # Озвучка.
     voice = _media_voice(job["params"].get("voice") or "")

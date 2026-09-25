@@ -219,7 +219,12 @@ function estimateRun(kind, targets, model, opts) {
     sec = n * EST_SEC_PER_SEG;
   } else if (kind === "termcheck") {
     tokIn = n * 450 + (srcChars + tgtChars) / 3;
-    tokOut = n * 250 * mult;                   // короткий JSON с находками
+    /* Выход — по замеру, а не на глаз: боевой расход (usage_daily, Terra,
+       758 вызовов) — 192 токена на вызов ВМЕСТЕ с рассуждением; прежние
+       250 × 1.8 = 450 завышали смету шага в 2.3 раза, и на видео проверка
+       терминов выглядела дороже всех остальных шагов вместе. Замер на
+       книгах: у коротких реплик выход меньше, завышение там сохраняется. */
+    tokOut = n * 110 * mult;                   // короткий JSON с находками
     cost = priceOf(model, tokIn, tokOut);
   } else if (kind === "repair") {
     // Ремонт = вызов правки + перепроверка теми проверками, что ругались.
@@ -270,7 +275,8 @@ function estimateRun(kind, targets, model, opts) {
     // Один вызов на сегмент: соседи + список приказных терминов -> вердикт
     // по каждому. Соседи и есть основной вход, поэтому исходника втрое.
     tokIn = n * 350 + (srcChars * 3 + tgtChars) / 2.6;
-    tokOut = n * 200 * mult;                   // короткий JSON по терминам
+    // Замер (term_context, Terra): 190 токенов на вызов с рассуждением.
+    tokOut = n * 105 * mult;                   // короткий JSON по терминам
     cost = priceOf(model, tokIn, tokOut);
   } else if (kind === "medical_qa") {
     tokIn = n * 200 + tgtChars / 3.5;
@@ -2205,7 +2211,14 @@ function TabEditor({ store, toast }) {
   const rpWaiting = rpGroups.reduce(
     (a, g) => a + (pickedRpGroups.has(g.key) ? 0 : g.count), 0);
 
-  const pickedFull = fullSteps || new Set(FULL_STEP_KEYS);
+  /* Состав по умолчанию называет СЕРВЕР (`defaultSteps` в разборе): у
+     субтитров проверка терминов вне прогона и идёт своей кнопкой. Вторая
+     копия этого правила в браузере разошлась бы с ним первой же правкой —
+     и смета считалась бы на одни шаги, а задача ушла бы с другими. */
+  const defaultSteps = new Set((runPlan && runPlan.defaultSteps) || FULL_STEP_KEYS);
+  const pickedFull = fullSteps || defaultSteps;
+  const stepsChanged = !!fullSteps && (fullSteps.size !== defaultSteps.size
+    || Array.from(fullSteps).some(k => !defaultSteps.has(k)));
   // Состав шагов — ответ сервера, а не расчёт браузера. Пока разбор не пришёл,
   // показываем пусто и не даём запустить: обещать работу, состав которой ещё
   // не известен, значит снова разойтись со сметой.
@@ -2229,7 +2242,9 @@ function TabEditor({ store, toast }) {
      и уходит в задачу. */
   const stepModel = (key, picked) => picked
     || (planByStep[key] && gptModels.find(m => m.id === planByStep[key].model)) || null;
-  const toggleFullStep = (key) => setFullSteps(prev => {
+  // До ответа разбора умолчание неизвестно: галочка скопировала бы полный
+  // набор (с терминами у субтитров) и увела бы его в задачу.
+  const toggleFullStep = (key) => runPlan && setFullSteps(prev => {
     const next = new Set(prev || pickedFull);
     if (next.has(key)) next.delete(key); else next.add(key);
     return next;
@@ -2617,6 +2632,39 @@ function TabEditor({ store, toast }) {
     setRunSnap(snap);
   };
 
+  /* ── Проверка терминов отдельной кнопкой (субтитры) ──────────────
+     У субтитров шаги терминов вне прогона по умолчанию (`_terms_in_run`):
+     реплика короткая, перевод идёт пачкой, а проверка терминов — вызовом
+     на КАЖДУЮ реплику. Здесь только эти два шага; найденное чинит главная
+     кнопка («доделаю сама»), ремонт сюда не входит — кнопка называется
+     «проверить», а не «исправить». Состав и модели — из разбора сервера. */
+  const runTermsJob = async () => {
+    if (!window.API || job) return;
+    const plan = await window.API.safeCall(() => window.API.runPlan(project.id, {
+      steps: ["termcheck", "termaudit"], segment_ids: null,
+      tc_model: modelPick ? tcModel : null, tcx_model: modelPick ? tcxModel : null,
+    }));
+    if (!plan || !plan.steps) { toast.error(TR("Не удалось запустить"), TR("Сервер не принял задачу.")); return; }
+    const byStep = {};
+    plan.steps.forEach(p => { byStep[p.step] = p; });
+    const targetsOf = (k) => (byStep[k] ? byStep[k].ids.map(i => segById.get(i)).filter(Boolean) : []);
+    const modelOf = (k, picked) => picked
+      || (byStep[k] && gptModels.find(m => m.id === byStep[k].model)) || null;
+    const ids = plan.ids.map(i => segById.get(i)).filter(Boolean);
+    if (!ids.length) { toast.info(TR("Проверять нечего"), TR("Термины во всех строках уже проверены.")); return; }
+    const parts = [estimateRun("termcheck", targetsOf("termcheck"), modelOf("termcheck", tcModelInfo)),
+                   estimateRun("termaudit", targetsOf("termaudit"), modelOf("termaudit", tcxModelInfo))]
+      .filter(e => e.count > 0);
+    const cost = parts.some(e => e.cost == null) ? null : parts.reduce((a, e) => a + e.cost, 0);
+    const price = !costHidden() && cost != null ? " · ≈ " + fmtCost(cost) : "";
+    if (!window.confirm(TR("Проверить термины в строках: ") + ids.length + price + "?")) return;
+    await startJob("full", ids, {
+      steps: ["termcheck", "termaudit"],
+      tc_model: modelPick ? tcModel : null, tcx_model: modelPick ? tcxModel : null,
+      auto_terms: expertUI ? undefined : true,
+    }, TR("Термины во всех строках уже проверены."), { cost });
+  };
+
   /* ── Второй клик: одобрить термины и применить их к переводу ──────
      Состав сегментов здесь не выбирается и выбираться не может: пока термины
      не одобрены, неизвестно, какие сегменты с ними разойдутся. Список считает
@@ -2738,8 +2786,12 @@ function TabEditor({ store, toast }) {
         disabled: !!job, scopeSize: fullRunIds.length, est: fullEst,
         // Шаги отмечены в свёртке не все — кнопка сделает только их, и это
         // обязано быть видно у самой кнопки, а не только в свёрнутой таблице.
-        partialSteps: fullSteps && fullSteps.size < FULL_STEP_KEYS.length ? fullSteps.size : 0,
+        partialSteps: stepsChanged ? fullSteps.size : 0,
         allSteps: FULL_STEP_KEYS.length, onAllSteps: () => setFullSteps(null),
+        // Термины вне прогона (субтитры): тихая вторая кнопка, только когда
+        // есть непроверенные строки. Число — с сервера (`termsOff`).
+        termsOff: tkSum.termsOff && !tkSum.termsOff.inRun ? tkSum.termsOff.unchecked || 0 : 0,
+        onCheckTerms: runTermsJob,
         // Смету видит тот, кому сервер шлёт деньги (инвариант 22а):
         // рубеж один и он на сервере, а `costHidden` — его отражение.
         // Роль здесь спрашивать нельзя: сервер вырезал цены из каталога,
@@ -3575,7 +3627,7 @@ function RunGroups({ title, tip, groups, pickedGroups, onToggleGroup }) {
    же расчётом, что на «Проверке»); долю считает tkPct из ui.jsx. */
 function EditorHomeSummary({ sum, store, toast, onDrill, bucket, running, onRun, onStop, disabled,
                              scopeSize, est, showCost, fixConfirmed, fixConfirmedCount, onFixConfirmed,
-                             partialSteps, allSteps, onAllSteps }) {
+                             partialSteps, allSteps, onAllSteps, termsOff, onCheckTerms }) {
   const tk = sum.turnkey, total = sum.total || 0;
   const ready = tk.ready || [], machine = tk.machine || [], human = tk.human || [];
   const seg = (n, color) => (total > 0 && n > 0)
@@ -3647,12 +3699,20 @@ function EditorHomeSummary({ sum, store, toast, onDrill, bucket, running, onRun,
       React.createElement("span", null, TR("Переведу, перечитаю, проверю тремя способами и починю найденное. Считает сервер — настраивать нечего.")),
       React.createElement("span", null, TR("в работу пойдут ") + scopeSize + TR(" сегм.")),
       showCost && React.createElement(EstLine, { est })),
+    /* Субтитры: проверка терминов вне прогона — тихой второй кнопкой
+       (главная на экране одна, инвариант 32). Нечего проверять — её нет. */
+    termsOff > 0 && onCheckTerms && React.createElement("div", { className: "row row-wrap",
+      style: { gap: 10, fontSize: 12.5 } },
+      React.createElement("span", { className: "dim" },
+        TR("Термины в субтитрах не проверялись: ") + termsOff + TR(" строк. Проверка идёт отдельной кнопкой.")),
+      React.createElement(Btn, { variant: "ghost", size: "sm", icon: "target", onClick: onCheckTerms, disabled: disabled },
+        TR("Проверить термины"))),
     partialSteps > 0 && React.createElement("div", { className: "row row-wrap",
       style: { gap: 10, fontSize: 12.5, color: "var(--c-warning)" } },
-      React.createElement("span", null, TR("Отмечены не все шаги: ") + partialSteps + TR(" из ") + allSteps
+      React.createElement("span", null, TR("Выбрано шагов: ") + partialSteps + TR(" из ") + allSteps
         + TR(" — кнопка сделает только их.")),
       onAllSteps && React.createElement(Btn, { variant: "secondary", size: "sm", onClick: onAllSteps },
-        TR("Вернуть все шаги"))));
+        TR("Вернуть как было"))));
 }
 
 /* Слово в колонке «Что тут». Код строки выводится из корзин /analysis

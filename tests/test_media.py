@@ -656,6 +656,16 @@ check(rep["over"] == [5] and not ev[0].get("fs"), "режим «только п�
 wide = media.style_numbers(media.style_clean({"boxW": 100, "bg": "box"}), 1920, 1080)
 narrow = media.style_numbers(media.style_clean({"boxW": 50, "bg": "box"}), 1920, 1080)
 check(narrow["wrapW"] < wide["wrapW"] and narrow["marginLR"] >= 480, "ширина области задаёт поля сбоку")
+_m = media._meter(media.FONT_DIR / "NotoSans-Regular.ttf", 30)
+check([l for l, _w in media.wrap_lines("300 мг препарата", _m, 90)][0] == "300 мг",
+      "неразрывный пробел не рвётся — как у libass")
+_ev, _rep = media.fit_cues([{"i": 1, "start": 0, "end": 3, "text": "字幕将会这样显示" * 10}], area, 1920, 1080)
+check(_rep["measured"] is False and not _rep["over"], "букв нет в шрифте — «мерить нечем», а не выдуманное «влезло»")
+_words = mid.split()
+_many = [{"i": k, "start": k * 4.0, "end": k * 4.0 + 3.5, "text": " ".join(_words[: 4 + k % 12])} for k in range(1500)]
+_t = time.time()
+media.fit_cues(_many, media.style_clean({"boxW": 60, "maxLines": 2, "size": 6}), 1920, 1080)
+check(time.time() - _t < 20, "1500 реплик меряются за секунды, а не минуты: %.1f с" % (time.time() - _t))
 r = c.post("/api/projects/%d/media/fit" % pid, headers=H(B),
            json={"style": {"boxW": 30, "maxLines": 1, "size": 12, "fit": "none"}})
 fr = r.json()

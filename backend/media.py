@@ -857,6 +857,8 @@ def style_numbers(style: dict, w: int, h: int) -> dict:
 # строки по длине, но их ЧИСЛО то же). Кегль ASS → em в пикселях через
 # `emRatio` каталога (libass меряет кегль высотой winAscent+winDescent).
 _PIL_FONTS: dict = {}
+_METERS: dict = {}
+_LOCK_FIT = __import__("threading").Lock()
 
 
 def _pil_font(path, px: int):
@@ -870,26 +872,67 @@ def _pil_font(path, px: int):
     return f
 
 
-def wrap_lines(text: str, font, width: float) -> list:
-    """Жадный перенос по пробелам; переводы строк в тексте — жёсткие.
-    Слово шире области остаётся строкой-переростком: `_fits` её увидит."""
+class _Meter:
+    """Ширина слов одним шрифтом одного кегля — с памятью: каждое слово
+    меряется ОДИН раз, строка — сумма слов и пробелов. Мерить строку целиком
+    на каждом шаге переноса — квадратичная работа: сотня реплик считалась бы
+    минутами прямо в запросе. Кернинг через пробел ничтожен."""
+
+    def __init__(self, path, px: int, extra: float = 1.0):
+        self.font = _pil_font(path, px)
+        self.extra = extra                      # запас на синтетический жирный
+        self.words: dict = {}
+        self.space = self.font.getlength(" ") * extra
+
+    def w(self, word: str) -> float:
+        v = self.words.get(word)
+        if v is None:
+            if len(self.words) > 20000:
+                self.words.clear()
+            v = self.words[word] = self.font.getlength(word) * self.extra
+        return v
+
+
+def _meter(path, px: int, extra: float = 1.0) -> "_Meter":
+    key = (str(path), int(px), extra)
+    with _LOCK_FIT:
+        m = _METERS.get(key)
+        if m is None:
+            if len(_METERS) > 64:
+                _METERS.clear()
+            m = _METERS[key] = _Meter(path, px, extra)
+    return m
+
+
+def _words_of(para: str) -> list:
+    """Слова — по ОБЫЧНОМУ пробелу. Неразрывный (U+00A0: «300 мг») libass
+    не рвёт, и мы не рвём: иначе мерка насчитала бы строк меньше, чем
+    окажется в кадре."""
+    return [x for x in re.split(r"[ \t]+", para) if x]
+
+
+def wrap_lines(text: str, meter, width: float) -> list:
+    """Жадный перенос по пробелам → [(строка, ширина)]; переводы строк
+    в тексте — жёсткие. Слово шире области остаётся строкой-переростком."""
     out = []
     for para in (text or "").splitlines():
-        cur = ""
-        for wd in para.split():
-            cand = wd if not cur else cur + " " + wd
-            if not cur or font.getlength(cand) <= width:
-                cur = cand
+        cur, cw = [], 0.0
+        for wd in _words_of(para):
+            ww = meter.w(wd)
+            cand = cw + (meter.space if cur else 0.0) + ww
+            if not cur or cand <= width:
+                cur.append(wd)
+                cw = cand
             else:
-                out.append(cur)
-                cur = wd
+                out.append((" ".join(cur), cw))
+                cur, cw = [wd], ww
         if cur:
-            out.append(cur)
+            out.append((" ".join(cur), cw))
     return out
 
 
-def _fits(lines: list, font, width: float, max_lines: int) -> bool:
-    return len(lines) <= max_lines and all(font.getlength(l) <= width + 0.5 for l in lines)
+def _fits(lines: list, width: float, max_lines: int) -> bool:
+    return len(lines) <= max_lines and all(lw <= width + 0.5 for _l, lw in lines)
 
 
 _PUNCT_END = re.compile(r"[.!?…;:,，、。！？]$")
@@ -920,21 +963,18 @@ def _balanced_parts(words: list, k: int) -> list:
     return [" ".join(words[edges[i]:edges[i + 1]]) for i in range(len(edges) - 1) if edges[i] < edges[i + 1]]
 
 
-def _split_cue(c: dict, lines: list, max_lines: int, fits=None) -> list:
+def _split_cue(c: dict, n_lines: int, max_lines: int, fits) -> list:
     """Реплика, которая не помещается, → части поровну по длине (столько,
     сколько нужно, чтобы каждая уместилась в `max_lines` строк); время —
     пропорционально длине текста части. Если какая-то часть выходит короче
     SPLIT_MIN_SEC, делить нельзя: такую глаз не успевает прочесть."""
-    words = " ".join(lines).split()
-    need = -(-len(lines) // max_lines)
-    groups = []
-    for k in range(max(2, need), max(2, need) + 3):
+    words = _words_of(" ".join((c.get("text") or "").splitlines()))
+    need = max(2, -(-n_lines // max_lines))
+    for k in range(need, need + 3):
         groups = _balanced_parts(words, k)
-        if len(groups) == k and (fits is None or all(fits(g) for g in groups)):
+        if len(groups) == k and all(fits(g) for g in groups):
             break
     else:
-        return []
-    if len(groups) < 2:
         return []
     total = float(sum(len(g) for g in groups)) or 1.0
     dur = c["end"] - c["start"]
@@ -948,55 +988,101 @@ def _split_cue(c: dict, lines: list, max_lines: int, fits=None) -> list:
     return out
 
 
+def _letter_script(ch: str) -> str:
+    """Письменность буквы по имени в Юникоде («CYRILLIC SMALL LETTER A»
+    → CYRILLIC); иероглифы и слоговые азбуки — к своей записи каталога."""
+    import unicodedata
+    name = unicodedata.name(ch, "")
+    head = name.split(" ", 1)[0]
+    if head in ("CJK", "HIRAGANA", "KATAKANA", "IDEOGRAPHIC"):
+        return "HAN"
+    return head
+
+
+def _covered(texts: list, scripts: set) -> bool:
+    """Все ли буквы реплик — из письменностей, которые шрифт знает. Нет —
+    libass возьмёт системный шрифт с другими размерами, а Pillow меряла бы
+    пустые квадраты: «уместилось» было бы враньём."""
+    seen = set()
+    for t in texts:
+        for ch in t:
+            if ch in seen or not ch.isalpha():
+                continue
+            seen.add(ch)
+            if _letter_script(ch) not in scripts:
+                return False
+    return True
+
+
 def fit_cues(cues: list, style: dict, w: int, h: int) -> tuple:
     """(события для ASS, отчёт). Отчёт — номера реплик (`i` у реплики):
     shrunk — уменьшен шрифт, split — разделена по времени, over — не
     уместилась никак (длинное слово, слишком короткая реплика, режим none).
-    Мерить нечем (нет Pillow или шрифта) — события как есть, `measured: False`:
-    «всё поместилось» без мерки было бы враньём."""
+    Мерить нечем (нет Pillow, нет файла шрифта, буквы письменности, которой
+    в шрифте нет) — события как есть, `measured: False`: «всё поместилось»
+    без мерки было бы враньём."""
     rep = {"shrunk": [], "split": [], "over": [], "measured": False}
+    cues = list(cues or [])
     font = font_of(style.get("font")) or {}
-    name = font.get("bold") if style.get("bold") else font.get("regular")
+    name, extra = font.get("regular"), 1.0
+    if style.get("bold"):
+        if font.get("bold"):
+            name = font["bold"]
+        else:
+            extra = 1.05                         # libass дорисует жирный сам — шире
     path = FONT_DIR / name if name else None
     if not path or not path.exists():
-        return list(cues or []), rep
+        return cues, rep
+    if font.get("scripts") and not _covered([c.get("text") or "" for c in cues], set(font["scripts"])):
+        return cues, rep
     try:
         _pil_font(path, 20)
     except Exception:
-        return list(cues or []), rep
+        return cues, rep
     rep["measured"] = True
     n = style_numbers(style, w, h)
     em = float(font.get("emRatio") or 1.0)
     width, base = n["wrapW"], n["fs"]
     maxl, mode = int(style.get("maxLines") or 2), style.get("fit") or "both"
-    step = max(1, int(round(base * 0.03)))
     floor_fs = max(8, int(base * FIT_MIN_SCALE))
+
+    def meter(fs):
+        return _meter(path, round(fs * em), extra)
+
+    def fits_at(fs, text):
+        return _fits(wrap_lines(text, meter(fs), width), width, maxl)
+
     out = []
-    for c in cues or []:
+    m0 = meter(base)
+    for c in cues:
         text = c.get("text") or ""
-        f0 = _pil_font(path, round(base * em))
-        lines = wrap_lines(text, f0, width)
-        if _fits(lines, f0, width, maxl):
+        lines = wrap_lines(text, m0, width)
+        if _fits(lines, width, maxl):
             out.append(c)
             continue
         done = False
-        if mode in ("shrink", "both"):
-            fs = base - step
-            while fs >= floor_fs:
-                f = _pil_font(path, round(fs * em))
-                if _fits(wrap_lines(text, f, width), f, width, maxl):
-                    out.append(dict(c, fs=fs))
-                    rep["shrunk"].append(c.get("i"))
+        if mode in ("shrink", "both") and fits_at(floor_fs, text):
+            # Крупнейший кегль, при котором влезает, — двоичным поиском.
+            lo, hi = floor_fs, base - 1
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if fits_at(mid, text):
+                    lo = mid
+                else:
+                    hi = mid - 1
+            out.append(dict(c, fs=lo))
+            rep["shrunk"].append(c.get("i"))
+            done = True
+        if not done and mode in ("split", "both"):
+            # Сперва полным кеглем; в режиме «оба» — и уменьшенным: две
+            # части мельче лучше трёх или «не влезло».
+            for fs in ([base, floor_fs] if mode == "both" else [base]):
+                parts = _split_cue(c, len(lines), maxl, lambda g, fs=fs: fits_at(fs, g))
+                if parts:
+                    out.extend(dict(p, fs=fs) if fs != base else p for p in parts)
+                    rep["split"].append(c.get("i"))
                     done = True
                     break
-                fs -= step
-        if not done and mode in ("split", "both"):
-            fits = lambda g: _fits(wrap_lines(g, f0, width), f0, width, maxl)     # noqa: E731
-            parts = _split_cue(c, lines, maxl, fits)
-            if parts and all(fits(p["text"]) for p in parts):
-                out.extend(parts)
-                rep["split"].append(c.get("i"))
-                done = True
         if not done:
             out.append(c)
             rep["over"].append(c.get("i"))

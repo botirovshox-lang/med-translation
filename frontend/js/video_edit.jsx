@@ -122,7 +122,7 @@ function VidOverlay({ style, text, info, w, h }) {
   const edge = (style.color || "").toUpperCase() === "#000000" ? [255, 255, 255] : [0, 0, 0];
   const rgba = (a) => "rgba(" + edge.join(",") + "," + a + ")";
   const span = { fontFamily: "'" + vidFamily(font, style.bold) + "', sans-serif", fontSize: fs + "px",
-    lineHeight: 1.22, color: style.color, whiteSpace: "pre-wrap", fontWeight: 400 };
+    lineHeight: fsAss + "px", color: style.color, whiteSpace: "pre-wrap", fontWeight: 400 };
   if (style.bg === "box") {
     const pad = Math.max(2, fsAss * (m.boxPad || 0.2));
     Object.assign(span, { background: rgba(1 - (m.boxAlpha || 0.25)), padding: (pad * 0.35) + "px " + pad + "px",
@@ -147,7 +147,9 @@ function VidOverlay({ style, text, info, w, h }) {
   const edgeKey = style.position === "top" ? "top" : "bottom";
   box[edgeKey] = style.margin / 100 * h;
   const frameBox = { position: "absolute", left: (w - areaW) / 2, width: areaW, pointerEvents: "none",
-    height: (style.maxLines || 2) * fs * 1.22 + 2 * out, border: "1px dashed rgba(255,255,255,0.7)",
+    /* Строка у libass — высотой в кегль ASS (winAscent+winDescent), а не
+       в em: рамка той же высоты, что займут строки в кадре. */
+    height: (style.maxLines || 2) * fsAss + 2 * out, border: "1px dashed rgba(255,255,255,0.7)",
     outline: "1px dashed rgba(0,0,0,0.5)", borderRadius: 2 };
   frameBox[edgeKey] = style.margin / 100 * h - out;
   return vidE(React.Fragment, null,
@@ -569,7 +571,7 @@ function VidBurnDialog({ project, onClose, onStarted, toast, store }) {
               vidE(Btn, { size: "sm", variant: "ghost", iconRight: "chevR", onClick: () => jump(1) }, TR("Следующая реплика"))),
             vidE("div", { className: "dim", style: { fontSize: 12 } },
               TR("Это настоящий кадр из файла: тот же шрифт, размер и перенос строк, что будут в готовом видео.")),
-            fit && fit.measured && (fit.shrunk + fit.split === 0 && !fit.over
+            fit && fit.measured && fit.cues > 0 && (fit.shrunk + fit.split === 0 && !fit.over
               ? vidE("div", { className: "dim", style: { fontSize: 12 } }, TR("Все реплики умещаются в область."))
               : vidE("div", { className: "col", style: { gap: 4, fontSize: 13 } },
                   (fit.shrunk || fit.split) ? vidE("div", { className: "dim" },

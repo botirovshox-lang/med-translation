@@ -536,7 +536,7 @@ function VidBurnDialog({ project, onClose, onStarted, toast, store }) {
         toast.success(TR("Стиль запомнен"), TR("Соберём видео с ним, когда нажмёте «Собрать»."));
         onClose();
       } else {
-        const r = await window.API.mediaRender(pid, "burn", null, { style, quality });
+        const r = await window.API.mediaRender(pid, "burn", undefined, { style, quality });
         onStarted(r.job, r.etaSec);
       }
     } catch (e) { toast.error(saveOnly ? TR("Не сохранено") : TR("Не запущено"), e.message || String(e)); }

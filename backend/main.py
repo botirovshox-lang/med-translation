@@ -31127,16 +31127,40 @@ def _media_abort() -> bool:
 
 media_mod.ABORT = _media_abort
 
+# Отмена кнопкой прерывает САМ ffmpeg (`media.run`), а не ждёт конца куска.
+# Только в потоке своей задачи: превью кадра в API идёт тем же `media.run`,
+# и стоп-флаг чужой задачи не вправе его убивать.
+_MEDIA_TL = threading.local()
+
+
+def _media_cancel() -> bool:
+    return getattr(_MEDIA_TL, "job", None) is not None and _job_should_stop()
+
+
+media_mod.CANCEL = _media_cancel
+
 
 def _job_media(job: dict) -> None:
     """Распознавание и сборка: общий каркас — статус, парковка на выкате,
     отметка ошибки на проекте (иначе карточка вечно «распознаём»)."""
+    _MEDIA_TL.job = job
+    try:
+        _job_media_body(job)
+    finally:
+        _MEDIA_TL.job = None
+
+
+def _job_media_body(job: dict) -> None:
     pid = job["project"]
     try:
         if job["kind"] == "asr":
             _job_asr(job)
         else:
             _job_mediarender(job)
+    except media_mod.Cancelled:
+        # «Отменить»: ffmpeg убит на полуслове; недописанный файл сборки —
+        # во временном имени, готовая прежняя сборка не тронута.
+        job["status"] = "stopped"
     except media_mod.Aborted:
         _job_park(job)               # выкат: ffmpeg убит, задача продолжит после рестарта
         return
@@ -31473,6 +31497,28 @@ def _tts_clip(item: tuple) -> dict:
         return {"ok": False, "error": _media_err_text(e)}
 
 
+def _dub_place(todo, items, starts, seg_of, tr_map, shift, silent, over, counts) -> None:
+    """Укладка озвученных реплик в дорожку (вынесено, чтобы отмена на этом
+    шаге убирала файл дорожки — см. `_job_mediarender`)."""
+    for (i, c), it in zip(todo, items):
+        if not it[3].exists():
+            silent.extend(seg_of.get(i, []))       # синтез не удался и после повторов
+            continue
+        pcm = it[3].read_bytes()
+        nxt = next((s for s in starts if s > c["start"] + 0.01), None)
+        window = ((nxt - 0.08) if nxt is not None else (c["end"] + 1.5)) - c["start"]
+        window = max(window, (c["end"] or c["start"]) - c["start"])
+        tempo, verdict = media_mod.fit_tempo(media_mod.pcm_seconds(pcm), window)
+        if tempo > 1.0:
+            pcm = media_mod.atempo_pcm(pcm, tempo)
+        if verdict == "fast":
+            counts["fast"] += 1
+        elif verdict == "over":
+            over.extend(seg_of.get(i, []))
+        media_mod.add_clip(tr_map, c["start"] + shift, pcm)
+        counts["voiced"] += 1
+
+
 def _job_mediarender(job: dict) -> None:
     pid = job["project"]
     project = get_project(pid)
@@ -31583,24 +31629,15 @@ def _job_mediarender(job: dict) -> None:
     seg_of = {int(idx): [int(s) for s in sids] for idx, sids in groups}
     track = work / "dub.raw"
     tr_map = media_mod.open_track(track, span_len + shift)
-    voiced, fast, over, silent = 0, 0, [], []
-    for (i, c), it in zip(todo, items):
-        if not it[3].exists():
-            silent.extend(seg_of.get(i, []))       # синтез не удался и после повторов
-            continue
-        pcm = it[3].read_bytes()
-        nxt = next((s for s in starts if s > c["start"] + 0.01), None)
-        window = ((nxt - 0.08) if nxt is not None else (c["end"] + 1.5)) - c["start"]
-        window = max(window, (c["end"] or c["start"]) - c["start"])
-        tempo, verdict = media_mod.fit_tempo(media_mod.pcm_seconds(pcm), window)
-        if tempo > 1.0:
-            pcm = media_mod.atempo_pcm(pcm, tempo)
-        if verdict == "fast":
-            fast += 1
-        elif verdict == "over":
-            over.extend(seg_of.get(i, []))
-        media_mod.add_clip(tr_map, c["start"] + shift, pcm)
-        voiced += 1
+    over, silent, counts = [], [], {"voiced": 0, "fast": 0}
+    try:
+        _dub_place(todo, items, starts, seg_of, tr_map, shift, silent, over, counts)
+    except media_mod.Cancelled:
+        # Отменили посреди укладки: дорожка — файл во весь ролик, до сотен МБ.
+        media_mod.close_track(tr_map)
+        track.unlink(missing_ok=True)
+        raise
+    voiced, fast = counts["voiced"], counts["fast"]
     media_mod.close_track(tr_map)
     del tr_map
     job["phase"] = "mux"
@@ -31615,6 +31652,7 @@ def _job_mediarender(job: dict) -> None:
             track.unlink()
         except OSError:
             pass
+        tmp.unlink(missing_ok=True)        # отменённый или упавший mux
     _media_render_mark(project, "dub", dst, {"cues": len(cues), "voiced": voiced, "fast": fast,
                                               "silent": len(silent), "silentIds": sorted(set(silent))[:60],
                                               "over": len(over), "overIds": sorted(set(over))[:60],
@@ -31749,6 +31787,11 @@ def _media_burn(job: dict, project: dict, src: Path, probe: dict, text: str, tr:
             os.replace(str(tmp), str(bdir / name))
             job["done"] = sum(1 for n in names if have(n))
             _job_persist(job)
+    except media_mod.Cancelled:
+        # Отменил человек посреди куска — как остановка между кусками:
+        # куски больше не нужны, а весят гигабайты.
+        shutil.rmtree(str(bdir), ignore_errors=True)
+        raise
     except Exception:
         # Сбой одного куска (таймаут, место, разовый отказ ffmpeg) готовые
         # НЕ выбрасывает: повтор иначе перекодировал бы часы видео. Убирается
@@ -31761,7 +31804,11 @@ def _media_burn(job: dict, project: dict, src: Path, probe: dict, text: str, tr:
     _job_persist(job)
     dst = out_dir / "burn.mp4"
     tmp = bdir / "out.tmp.mp4"
-    media_mod.burn_concat(bdir, names, src, tmp, t0, span_len)
+    try:
+        media_mod.burn_concat(bdir, names, src, tmp, t0, span_len)
+    except media_mod.Cancelled:
+        shutil.rmtree(str(bdir), ignore_errors=True)    # отменили на склейке — куски не нужны
+        raise
     os.replace(str(tmp), str(dst))
     shutil.rmtree(str(bdir), ignore_errors=True)
     _media_render_mark(project, "burn", dst, {
@@ -31782,7 +31829,10 @@ MEDIA_WHATS = ("subs", "dub", "burn")
 
 class MediaRenderRequest(BaseModel):
     what: str                       # subs | dub | burn
-    voice: str = "f1"
+    # Пусто — голос по умолчанию. Окно «Субтитры в кадре» голоса не выбирает
+    # и слало null: при `str` это был отказ 422 — «ошибка API» на кнопке
+    # «Подтвердить и собрать».
+    voice: Optional[str] = None
     style: Optional[dict] = None    # burn: стиль субтитров (нет — сохранённый на проекте)
     quality: str = "src"            # burn: src (до 1080p) | 720 | 480
 
@@ -31848,7 +31898,7 @@ def media_render(pid: int, req: MediaRenderRequest):
         st = _spend_status()
         if st["over"]:
             return _limit_402(st, _current_tenant())
-        params["voice"] = _media_voice(req.voice)["id"]
+        params["voice"] = _media_voice(req.voice or "")["id"]
         chars = sum(len(s.get("target") or "") for s in project.get("segments") or [])
         # ~15 знаков в секунду речи — оценка, по ней только отказ на старте.
         params["est_cost"] = round(chars / 15.0 / 60.0 * float(AUX_MODEL_PRICES[TTS_MODEL]["perMin"]), 4)

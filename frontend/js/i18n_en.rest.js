@@ -1833,6 +1833,8 @@ window.I18N.register("en", {
  "Собрать": "Build",
  "Собрать заново": "Rebuild",
  "Собрать правила по переведённым строкам? Один платный вызов модели. Правила, которые вы правили или добавили, останутся.": "Collect the rules from the translated lines? One paid model call. Rules you edited or added will stay.",
+ "Собрать с озвучкой": "Build with voice-over",
+ "Собрать с озвучкой заново": "Rebuild with voice-over",
  "Собрать сейчас": "Collect now",
  "Собрать строки заново?": "Rebuild the lines?",
  "Собрать терм-лист": "Collect the term list",

@@ -604,7 +604,8 @@ function ExpMediaCard({ project, store, toast }) {
   };
   const dub = rr.dub || null;
   const burn = rr.burn || null;
-  const line = (label, rec, what, hint, onBuild) => React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+  const buildOff = busy || !!job || !ready || !kept || !translated;
+  const line = (label, rec, what, hint, onBuild, noBuild) => React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
     React.createElement("div", null,
       React.createElement("div", { style: { fontWeight: 500 } }, label),
       hint && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, hint),
@@ -613,8 +614,8 @@ function ExpMediaCard({ project, store, toast }) {
         + (rec.width ? " · " + rec.width + "×" + rec.height : ""))),
     React.createElement("div", { className: "row", style: { gap: 8 } },
       rec && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "download", onClick: () => download(what) }, TR("Скачать")),
-      React.createElement(Btn, { variant: rec ? "ghost" : "primary", size: "sm", icon: onBuild ? "sliders" : "repeat",
-        disabled: busy || !!job || !ready || !kept || !translated, onClick: onBuild || (() => render(what)) },
+      !noBuild && React.createElement(Btn, { variant: rec ? "ghost" : "primary", size: "sm", icon: onBuild ? "sliders" : "repeat",
+        disabled: buildOff, onClick: onBuild || (() => render(what)) },
         onBuild ? (rec ? TR("Настроить и собрать заново") : TR("Настроить и собрать"))
                 : (rec ? TR("Собрать заново") : TR("Собрать")))));
   return React.createElement("div", null,
@@ -635,7 +636,22 @@ function ExpMediaCard({ project, store, toast }) {
           React.createElement(Btn, { variant: "secondary", size: "sm", icon: "download", disabled: busy || !ready, onClick: () => subs("vtt_bi") }, ".vtt"))),
       !translated && ready && React.createElement("div", { className: "dim", style: { fontSize: 13 } },
         TR("Строки ещё не переведены — видео и озвучка соберутся после перевода.")),
-      job && React.createElement(MediaJobLine, { job }),
+      /* Сборка идёт в фоне и держит все кнопки — значит, её обязано быть
+         чем отменить. Сервер убивает ffmpeg на полуслове (`media.CANCEL`),
+         прежняя готовая сборка не трогается. */
+      job && React.createElement("div", { className: "col", style: { gap: 8 } },
+        React.createElement(MediaJobLine, { job }),
+        React.createElement("div", null,
+          React.createElement(Btn, { variant: "secondary", size: "sm", icon: "close", disabled: !!job.stopping,
+            onClick: async () => {
+              const r = await window.API.safeCall(() => window.API.stopJob(job.id));
+              if (!r || !r.job) return;
+              // Задача из очереди остановлена сразу — кнопки освобождаем
+              // сейчас, а не через тик опроса.
+              if (r.job.status !== "running" && r.job.status !== "queued") {
+                jobRef.current = null; setJob(null); refresh();
+              } else { jobRef.current = r.job; setJob(r.job); }
+            } }, job.stopping ? TR("Отменяем…") : TR("Отменить")))),
       !kept && React.createElement("div", { className: "col", style: { gap: 8, fontSize: 13 } },
         React.createElement("div", null, TR("Исходное видео удалено по сроку хранения. Субтитры и перевод целы; чтобы собрать видео или озвучку, загрузите тот же файл ещё раз.")),
         React.createElement(Btn, { variant: "secondary", size: "sm", icon: "upload", disabled: busy, onClick: () => fileRef.current && fileRef.current.click() }, TR("Загрузить видео снова")),
@@ -667,12 +683,18 @@ function ExpMediaCard({ project, store, toast }) {
             + TR("Готовый файл появится здесь — страницу можно закрыть."));
         } }),
       React.createElement("div", { className: "col", style: { gap: 8 } },
-        line(TR("Озвучка на языке перевода"), dub, "dub"),
+        /* Кнопка сборки озвучки — ПОД выбором голоса и со своим именем:
+           стоя в строке рядом с «Собрать» дорожки, она путалась с ней. */
+        line(TR("Озвучка на языке перевода"), dub, "dub", null, null, true),
         React.createElement("div", { className: "row", style: { gap: 8, alignItems: "center" } },
           React.createElement("span", { className: "dim", style: { fontSize: 13 } }, TR("Голос")),
           React.createElement(Select, { value: voice, onChange: (e) => setVoice(e.target.value) },
             voices.map((v, i) => React.createElement("option", { key: v.id, value: v.id },
               (v.gender === "m" ? TR("мужской") : TR("женский")) + " " + (i % 2 + 1))))),
+        React.createElement("div", null,
+          React.createElement(Btn, { variant: dub ? "ghost" : "primary", size: "sm", icon: "repeat",
+            disabled: buildOff, onClick: () => render("dub") },
+            dub ? TR("Собрать с озвучкой заново") : TR("Собрать с озвучкой"))),
         dub && dub.over > 0 && React.createElement("div", { className: "row between row-wrap", style: { gap: 8, fontSize: 13 } },
           React.createElement("span", null, dub.over + TR(" строк не уложились в тайминг даже с ускорением — сократите перевод и соберите заново.")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => {

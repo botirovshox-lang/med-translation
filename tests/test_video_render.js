@@ -279,6 +279,25 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   btn(tree, "Настроить и собрать заново").props.onClick();
   tree = draw4();
   check(texts(tree).indexOf("Субтитры в кадре") !== -1, "кнопка открывает диалог сборки");
+  check(renderCall && renderCall.voice === undefined,
+        "диалог «в кадре» не шлёт voice: null — сервер отвечал на него 422");
+  /* Озвучка собирается своей кнопкой ПОД выбором голоса: рядом с «Собрать»
+     дорожки её путали. Сборку в фоне можно отменить. */
+  const allBtns = (tr, label) => find(tr, n => n.type === "button" && texts(n).indexOf(label) !== -1);
+  check(allBtns(tree, "Собрать с озвучкой").length === 1, "у озвучки своя кнопка «Собрать с озвучкой»");
+  check(allBtns(tree, "Собрать").filter(b => texts(b).trim() === "Собрать").length === 1,
+        "голое «Собрать» осталось одно — у дорожки");
+  hooks = []; effDeps = [];
+  let stopped = null;
+  const runJob = { id: 41, kind: "mediarender", status: "running", phase: "burn", total: 4, done: 1 };
+  global.API = Object.assign(global.API, { listJobs: async () => ({ active: [runJob] }),
+    stopJob: async (jid) => { stopped = jid; return { ok: true, job: Object.assign({}, runJob, { stopping: true }) }; } });
+  tree = draw4(); await tick(); tree = draw4();
+  check(allBtns(tree, "Отменить").length === 1, "идёт сборка — есть «Отменить»");
+  check(allBtns(tree, "Собрать с озвучкой")[0].props.disabled, "а кнопки сборки погашены");
+  allBtns(tree, "Отменить")[0].props.onClick();
+  await tick(); tree = draw4();
+  check(stopped === 41 && texts(tree).indexOf("Отменяем…") !== -1, "«Отменить» останавливает задачу и говорит об этом");
 
   const imp = fs.readFileSync(path.join(root, "tab_import.jsx"), "utf8");
   check(/React\.createElement\(VideoEditor,/.test(imp), "экран загрузки открывает мини-редактор");

@@ -1833,6 +1833,8 @@ window.I18N.register("uz", {
  "Собрать": "Yig‘ish",
  "Собрать заново": "Qaytadan yig'ish",
  "Собрать правила по переведённым строкам? Один платный вызов модели. Правила, которые вы правили или добавили, останутся.": "Qoidalar tarjima qilingan satrlar bo‘yicha yig‘ilsinmi? Modelga bitta pullik so‘rov. Siz tahrirlagan yoki qo‘shgan qoidalar saqlanadi.",
+ "Собрать с озвучкой": "Ovoz bilan yig'ish",
+ "Собрать с озвучкой заново": "Ovoz bilan qaytadan yig'ish",
  "Собрать сейчас": "Hozir yig‘ish",
  "Собрать строки заново?": "Satrlar qaytadan yig'ilsinmi?",
  "Собрать терм-лист": "Termlar ro‘yxatini yig‘ish",

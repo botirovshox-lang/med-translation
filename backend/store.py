@@ -689,7 +689,15 @@ class PgStore:
                 "INSERT INTO jobs (id, status, tenant, project, doc, updated) "
                 "VALUES (%s, %s, %s, %s, %s::jsonb, now()) "
                 "ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status,"
-                " project = EXCLUDED.project, doc = EXCLUDED.doc, updated = now()",
+                " project = EXCLUDED.project,"
+                # Стоп-флаг ЛИПКИЙ: его ставит API («Отменить»), а воркер
+                # после каждого куска пишет свою копию задачи целиком — со
+                # `stop: false`, если ещё не успел прочитать флаг из базы.
+                # Без этого отмена молча пропадала. Флаг не снимает никто:
+                # у задачи он рождается ложным и становится истинным один раз.
+                " doc = CASE WHEN (jobs.doc->>'stop')::boolean IS TRUE"
+                " THEN EXCLUDED.doc || '{\"stop\": true}'::jsonb ELSE EXCLUDED.doc END,"
+                " updated = now()",
                 (job["id"], job.get("status"), job.get("tenant"), job.get("project"), _dumps(doc)))
 
     def claim_job(self) -> Optional[dict]:

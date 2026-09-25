@@ -110,6 +110,17 @@ class Aborted(MediaError):
 ABORT = lambda: False                                  # noqa: E731
 
 
+class Cancelled(MediaError):
+    """Человек нажал «Отменить»: ffmpeg убит, задача остановлена, а не
+    отложена (в отличие от `Aborted` на выкате)."""
+
+
+# Спрашивается на каждом тике ожидания ffmpeg, как `ABORT`. Без него отмена
+# доходила бы только между кусками сборки, а дорожка и сведение озвучки —
+# один вызов ffmpeg на десятки минут, и кнопка «Отменить» не значила бы ничего.
+CANCEL = lambda: False                                 # noqa: E731
+
+
 def run(cmd: list, timeout: float, stdin: Optional[bytes] = None,
         cwd=None) -> subprocess.CompletedProcess:
     """Запуск со всеми предохранителями; stdout — байты, stderr — байты.
@@ -130,9 +141,13 @@ def run(cmd: list, timeout: float, stdin: Optional[bytes] = None,
             break
         except subprocess.TimeoutExpired:
             feed = None                  # вход уже передан первым вызовом
-            if ABORT() or _time.time() > deadline:
+            ab = ABORT()
+            stop = not ab and CANCEL()
+            if ab or stop or _time.time() > deadline:
                 proc.kill()
                 proc.communicate()
+                if stop:
+                    raise Cancelled("Сборка отменена")
                 if _time.time() > deadline:
                     raise MediaError("Обработка звука не уложилась в %d с" % int(timeout))
                 raise Aborted("Работа отложена до перезапуска сервиса")

@@ -559,6 +559,7 @@ rb = main._project_by_id(pid)["mediaRender"].get("burn") or {}
 check(rb.get("file") == "burn.mp4" and rb.get("width") == 1280 and rb.get("height") == 720 and rb.get("quality") == "720",
       "готово: %s" % rb)
 check(rb.get("burned") == 2 and rb.get("untranslated") == 3, "в кадр — только переведённые реплики: %s" % rb)
+check((rb.get("fit") or {}).get("measured") and "over" in rb["fit"], "отчёт подгонки лежит у сборки: %s" % rb.get("fit"))
 a0 = BURNS[0]["ass"]
 check("Good afternoon, colleagues." in a0 and "Добрый день" not in a0 and "DejaVu Sans" in a0,
       "документ ASS: перевод, без оригинала, выбранный шрифт")
@@ -628,6 +629,40 @@ check(len(bi["cues"]) == 5 and sum(1 for x in bi["cues"] if x["tr"]) == 2 and bi
 r = c.post("/api/projects/%d/media/style" % pid, headers=H(B), json={"style": {"position": "top", "size": 1}})
 check(r.status_code == 200 and r.json()["style"]["position"] == "top" and r.json()["style"]["size"] == media.SIZE_MIN,
       "стиль запоминается без сборки, пределы держит сервер")
+
+print("=== 8г-2. Безопасная область: ширина, строки, подгонка ===")
+st = media.style_clean({"boxW": 5, "maxLines": 9, "fit": "что-то"})
+check(st["boxW"] == media.BOXW_MIN and st["maxLines"] == media.LINES_MAX and st["fit"] == "both",
+      "область держится в пределах, неизвестный режим — умолчание")
+mid = "Сегодня говорим о туберкулёзе лёгких и его лечении у взрослых пациентов в стационаре"
+area = media.style_clean({"boxW": 60, "maxLines": 1, "size": 5, "fit": "shrink"})
+ev, rep = media.fit_cues([{"i": 7, "start": 0, "end": 4, "text": mid}], area, 1920, 1080)
+base = media.style_numbers(area, 1920, 1080)["fs"]
+check(rep["measured"] and (rep["shrunk"] == [7] or rep["over"] == [7]), "длинная реплика замечена: %s" % rep)
+if rep["shrunk"]:
+    check(media.FIT_MIN_SCALE * base <= ev[0]["fs"] < base, "уменьшен, но не мельче предела: %s из %s" % (ev[0]["fs"], base))
+    doc = media.ass_document([{"i": 7, "start": 0, "end": 4, "text": mid}], area, 1920, 1080)
+    check("{\\fs%d}" % ev[0]["fs"] in doc, "уменьшенный кегль — командой только этой реплике")
+split = dict(area, fit="split")
+ev, rep = media.fit_cues([{"i": 3, "start": 10.0, "end": 16.0, "text": mid}], split, 1920, 1080)
+check(rep["split"] == [3] and len(ev) >= 2 and ev[0]["start"] == 10.0 and ev[-1]["end"] == 16.0
+      and all(abs(ev[k]["end"] - ev[k + 1]["start"]) < 1e-6 for k in range(len(ev) - 1))
+      and " ".join(e["text"] for e in ev).split() == mid.split(),
+      "разделена встык по времени, без потери слов: %s" % [(e["start"], e["end"]) for e in ev])
+ev, rep = media.fit_cues([{"i": 4, "start": 0.0, "end": 0.9, "text": mid}], split, 1920, 1080)
+check(rep["over"] == [4] and len(ev) == 1, "на части короче 0,8 с не делим — называем")
+ev, rep = media.fit_cues([{"i": 5, "start": 0, "end": 4, "text": mid}], dict(area, fit="none"), 1920, 1080)
+check(rep["over"] == [5] and not ev[0].get("fs"), "режим «только показать» ничего не меняет")
+wide = media.style_numbers(media.style_clean({"boxW": 100, "bg": "box"}), 1920, 1080)
+narrow = media.style_numbers(media.style_clean({"boxW": 50, "bg": "box"}), 1920, 1080)
+check(narrow["wrapW"] < wide["wrapW"] and narrow["marginLR"] >= 480, "ширина области задаёт поля сбоку")
+r = c.post("/api/projects/%d/media/fit" % pid, headers=H(B),
+           json={"style": {"boxW": 30, "maxLines": 1, "size": 12, "fit": "none"}})
+fr = r.json()
+long_sid = main._project_by_id(pid)["segments"][1]["id"]
+check(r.status_code == 200 and fr["measured"] and fr["over"] >= 1 and long_sid in fr["overIds"],
+      "до сборки: какие строки не влезут — номерами строк проекта: %s" % fr)
+check(c.post("/api/projects/%d/media/fit" % pid, headers=H(A), json={}).status_code == 404, "чужому — 404")
 
 print("=== 8д. Обрезка: распознаётся и собирается только отрезок ===")
 dtr = os.urandom(400)

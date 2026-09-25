@@ -31518,9 +31518,30 @@ def _burn_cues(text: str, tr: dict) -> tuple:
     ТОЛЬКО перевод: реплика на языке оригинала посреди переведённого ролика —
     это не субтитры, а брак, и молча его печатать нельзя — он называется."""
     cues = importers.cue_list(text)
-    out = [{"start": c["start"], "end": c["end"], "text": tr[i]}
+    out = [{"start": c["start"], "end": c["end"], "text": tr[i], "i": i}
            for i, c in enumerate(cues) if i in tr and c.get("start") is not None]
     return out, len(cues) - len(out)
+
+
+def _cue_seg_ids(project: dict, idxs: list) -> list:
+    """Номера реплик .srt → номера строк проекта: по ним «Показать строки»
+    открывает в редакторе ровно те, что не уместились."""
+    try:
+        data = _load_source_map(project["id"]) if project.get("sourceDocx") else None
+    except Exception:
+        data = None
+    if not data:
+        return []
+    seg_of = {int(idx): [int(x) for x in sids] for idx, sids in _para_groups(data)}
+    return sorted({sid for i in idxs if i is not None for sid in seg_of.get(int(i), [])})
+
+
+def _fit_public(project: dict, rep: dict, total: int) -> dict:
+    """Отчёт подгонки наружу: числа и строки проекта, не номера реплик."""
+    return {"measured": rep.get("measured", False), "cues": total,
+            "shrunk": len(rep["shrunk"]), "split": len(rep["split"]), "over": len(rep["over"]),
+            "overIds": _cue_seg_ids(project, rep["over"])[:200],
+            "fixedIds": _cue_seg_ids(project, rep["shrunk"] + rep["split"])[:200]}
 
 
 def _media_burn(job: dict, project: dict, src: Path, probe: dict, text: str, tr: dict,
@@ -31555,7 +31576,10 @@ def _media_burn(job: dict, project: dict, src: Path, probe: dict, text: str, tr:
         if old != bdir:
             shutil.rmtree(str(old), ignore_errors=True)     # куски прежнего стиля не нужны
     bdir.mkdir(parents=True, exist_ok=True)
-    (bdir / "subs.ass").write_text(media_mod.ass_document(cues, style, w, h), encoding="utf-8")
+    # Подгонка в безопасную область — один раз: тот же результат уходит
+    # и в документ, и в отчёт сборки.
+    fitted, fit_rep = media_mod.fit_cues(cues, style, w, h)
+    (bdir / "subs.ass").write_text(media_mod.ass_document(cues, style, w, h, fitted=fitted), encoding="utf-8")
     plan = media_mod.burn_plan(span_len, fps)
     names = ["seg%04d.mp4" % k for k in range(len(plan))]
     have = lambda n: (bdir / n).exists() and (bdir / n).stat().st_size > 0      # noqa: E731
@@ -31604,7 +31628,8 @@ def _media_burn(job: dict, project: dict, src: Path, probe: dict, text: str, tr:
     shutil.rmtree(str(bdir), ignore_errors=True)
     _media_render_mark(project, "burn", dst, {
         "cues": len(cues) + untranslated, "burned": len(cues), "untranslated": untranslated,
-        "width": w, "height": h, "quality": quality, "style": style, "hdr": media_mod.is_hdr(video)})
+        "width": w, "height": h, "quality": quality, "style": style, "hdr": media_mod.is_hdr(video),
+        "fit": _fit_public(project, fit_rep, len(cues))})
 
 
 def _media_render_mark(project: dict, what: str, dst: Path, stats: dict) -> None:
@@ -31982,10 +32007,46 @@ def media_fonts(lang: str = ""):
              for f in media_mod.fonts_catalog().get("fonts") or []]
     return {"fonts": fonts, "style": media_mod.style_clean(None), "metrics": media_mod.SUB_METRICS,
             "limits": {"size": [media_mod.SIZE_MIN, media_mod.SIZE_MAX],
-                       "margin": [media_mod.MARGIN_MIN, media_mod.MARGIN_MAX]},
+                       "margin": [media_mod.MARGIN_MIN, media_mod.MARGIN_MAX],
+                       "boxW": [media_mod.BOXW_MIN, media_mod.BOXW_MAX],
+                       "lines": [media_mod.LINES_MIN, media_mod.LINES_MAX],
+                       "minScale": media_mod.FIT_MIN_SCALE, "splitMinSec": media_mod.SPLIT_MIN_SEC},
             "qualities": [{"id": k, "short": v} for k, v in media_mod.BURN_QUALITIES.items()],
             "speed": media_mod.BURN_SPEED, "maxBurnMinutes": int(MEDIA_BURN_MAX_MINUTES),
             "sample": media_mod.sub_sample(lang), "covered": any(f["covers"] for f in fonts)}
+
+
+class MediaFitRequest(BaseModel):
+    style: Optional[dict] = None
+    quality: str = "src"
+
+
+@app.post("/api/projects/{pid}/media/fit")
+def media_fit(pid: int, req: MediaFitRequest):
+    """Что при этом стиле НЕ влезет в безопасную область — до сборки, по
+    всем переведённым репликам: сколько уменьшим, сколько разделим, какие
+    не уместятся никак (с номерами строк для «Показать строки»). Мерка —
+    тем же файлом шрифта, что у сборки; кадров и модели нет, запись нет."""
+    project = get_project(pid)
+    m = project.get("media") or {}
+    if not m:
+        raise HTTPException(400, "Это не видео-проект")
+    src = _media_source(project)
+    video = (_media_probe_cached(src).get("video") if src is not None else None) or m.get("video") or {}
+    try:
+        w, h = media_mod.out_size(video, req.quality if req.quality in media_mod.BURN_QUALITIES else "src")
+    except media_mod.MediaError as e:
+        raise HTTPException(415, str(e))
+    cues = []
+    if project.get("mediaStatus") == "ready" and project.get("sourceDocx"):
+        try:
+            text, tr, _d = _media_translations(project)
+            cues, _n = _burn_cues(text, tr)
+        except RuntimeError:
+            cues = []
+    style = media_mod.style_clean(req.style if req.style is not None else m.get("style"))
+    _fitted, rep = media_mod.fit_cues(cues, style, w, h)
+    return _fit_public(project, rep, len(cues))
 
 
 @app.get("/api/projects/{pid}/media/burn-info")

@@ -616,9 +616,20 @@ BURN_FPS_MAX = 60.0
 SUB_BG = ("outline", "shadow", "box")
 SUB_POS = ("bottom", "top")
 STYLE_DEFAULT = {"font": "noto-sans", "size": 5.5, "bold": False, "color": "#FFFFFF",
-                 "bg": "outline", "position": "bottom", "margin": 6.0}
+                 "bg": "outline", "position": "bottom", "margin": 6.0,
+                 "boxW": 90.0, "maxLines": 2, "fit": "both"}
 SIZE_MIN, SIZE_MAX = 2.5, 12.0
 MARGIN_MIN, MARGIN_MAX = 2.0, 30.0
+# Безопасная область субтитров: ширина — доля кадра, высота — число строк
+# (так её задают везде: «не больше двух строк»). Не влезает — `fit`:
+# both — сначала уменьшить шрифт (не мельче FIT_MIN_SCALE), потом разделить
+# реплику на части по времени; shrink / split — только одно из двух;
+# none — ничего не менять, только назвать, какие реплики вылезли.
+BOXW_MIN, BOXW_MAX = 30.0, 100.0
+LINES_MIN, LINES_MAX = 1, 4
+FIT_MODES = ("both", "shrink", "split", "none")
+FIT_MIN_SCALE = float(os.environ.get("MEDIA_SUB_MIN_SCALE", "0.7"))
+SPLIT_MIN_SEC = 0.8            # часть реплики короче — глаз её не успевает прочесть
 # Доли кегля — ОДНИ на сборку и на предпросмотр в браузере (их отдаёт
 # `/api/media/fonts`): вторая копия чисел в .jsx разошлась бы с этой.
 SUB_METRICS = {"outline": 0.07, "shadowOutline": 0.03, "shadow": 0.06, "boxPad": 0.2,
@@ -721,6 +732,10 @@ def style_clean(raw) -> dict:
         s["bg"] = raw["bg"]
     if raw.get("position") in SUB_POS:
         s["position"] = raw["position"]
+    s["boxW"] = _clamp(raw.get("boxW", s["boxW"]), BOXW_MIN, BOXW_MAX, s["boxW"])
+    s["maxLines"] = int(_clamp(raw.get("maxLines", s["maxLines"]), LINES_MIN, LINES_MAX, s["maxLines"]))
+    if raw.get("fit") in FIT_MODES:
+        s["fit"] = raw["fit"]
     return s
 
 
@@ -828,13 +843,174 @@ def style_numbers(style: dict, w: int, h: int) -> dict:
         border, outline, shadow = 1, max(1, int(round(fs * m["shadowOutline"]))), max(1, int(round(fs * m["shadow"])))
     else:
         border, outline, shadow = 1, max(1, int(round(fs * m["outline"]))), 0
+    # Поле сбоку — из ширины области, плюс обводка или поле плашки: они
+    # рисуются СНАРУЖИ букв, и область держит всё видимое, а не только буквы.
+    side = int(round((100.0 - float(style.get("boxW") or 100.0)) / 200.0 * w)) + outline
     return {"fs": fs, "border": border, "outline": outline, "shadow": shadow,
-            "marginV": int(round(style["margin"] / 100.0 * h)), "marginLR": int(round(m["marginLR"] * w))}
+            "marginV": int(round(style["margin"] / 100.0 * h)), "marginLR": side,
+            "wrapW": max(20, w - 2 * side)}
 
 
-def ass_document(cues: list, style: dict, w: int, h: int) -> str:
+# ─── Подгонка в безопасную область ───────────────────────────────────
+# Строки считаются ТЕМ ЖЕ файлом шрифта, что у libass, и так же: жадный
+# перенос по пробелам в ширину области (libass при WrapStyle 0 выравнивает
+# строки по длине, но их ЧИСЛО то же). Кегль ASS → em в пикселях через
+# `emRatio` каталога (libass меряет кегль высотой winAscent+winDescent).
+_PIL_FONTS: dict = {}
+
+
+def _pil_font(path, px: int):
+    key = (str(path), int(px))
+    f = _PIL_FONTS.get(key)
+    if f is None:
+        from PIL import ImageFont
+        if len(_PIL_FONTS) > 256:
+            _PIL_FONTS.clear()
+        f = _PIL_FONTS[key] = ImageFont.truetype(str(path), max(1, int(px)))
+    return f
+
+
+def wrap_lines(text: str, font, width: float) -> list:
+    """Жадный перенос по пробелам; переводы строк в тексте — жёсткие.
+    Слово шире области остаётся строкой-переростком: `_fits` её увидит."""
+    out = []
+    for para in (text or "").splitlines():
+        cur = ""
+        for wd in para.split():
+            cand = wd if not cur else cur + " " + wd
+            if not cur or font.getlength(cand) <= width:
+                cur = cand
+            else:
+                out.append(cur)
+                cur = wd
+        if cur:
+            out.append(cur)
+    return out
+
+
+def _fits(lines: list, font, width: float, max_lines: int) -> bool:
+    return len(lines) <= max_lines and all(font.getlength(l) <= width + 0.5 for l in lines)
+
+
+_PUNCT_END = re.compile(r"[.!?…;:,，、。！？]$")
+
+
+def _balanced_parts(words: list, k: int) -> list:
+    """Слова → k частей РАВНОЙ длины: граница у отметки j/k текста, а в пределах
+    пятой части длины части — после знака препинания («…sig‘maydi, | shuning…»).
+    Жадный перенос тут не годится: он оставил бы последнее слово одно,
+    и такую часть на экране не успеть прочесть."""
+    total = sum(len(w_) + 1 for w_ in words)
+    cuts, pos, acc = [], 0, 0
+    bounds = []
+    for i, w_ in enumerate(words[:-1]):
+        acc += len(w_) + 1
+        bounds.append((i + 1, acc, bool(_PUNCT_END.search(w_))))
+    for j in range(1, k):
+        target = total * j / k
+        tol = total / k * 0.2
+        cand = [b for b in bounds if b[0] > pos and abs(b[1] - target) <= tol and b[2]]
+        pool = cand or [b for b in bounds if b[0] > pos]
+        if not pool:
+            break
+        best = min(pool, key=lambda b: abs(b[1] - target))
+        cuts.append(best[0])
+        pos = best[0]
+    edges = [0] + cuts + [len(words)]
+    return [" ".join(words[edges[i]:edges[i + 1]]) for i in range(len(edges) - 1) if edges[i] < edges[i + 1]]
+
+
+def _split_cue(c: dict, lines: list, max_lines: int, fits=None) -> list:
+    """Реплика, которая не помещается, → части поровну по длине (столько,
+    сколько нужно, чтобы каждая уместилась в `max_lines` строк); время —
+    пропорционально длине текста части. Если какая-то часть выходит короче
+    SPLIT_MIN_SEC, делить нельзя: такую глаз не успевает прочесть."""
+    words = " ".join(lines).split()
+    need = -(-len(lines) // max_lines)
+    groups = []
+    for k in range(max(2, need), max(2, need) + 3):
+        groups = _balanced_parts(words, k)
+        if len(groups) == k and (fits is None or all(fits(g) for g in groups)):
+            break
+    else:
+        return []
+    if len(groups) < 2:
+        return []
+    total = float(sum(len(g) for g in groups)) or 1.0
+    dur = c["end"] - c["start"]
+    if any(dur * len(g) / total < SPLIT_MIN_SEC for g in groups):
+        return []
+    out, t = [], c["start"]
+    for k, g in enumerate(groups):
+        e = c["end"] if k == len(groups) - 1 else t + dur * len(g) / total
+        out.append(dict(c, start=round(t, 3), end=round(e, 3), text=g))
+        t = e
+    return out
+
+
+def fit_cues(cues: list, style: dict, w: int, h: int) -> tuple:
+    """(события для ASS, отчёт). Отчёт — номера реплик (`i` у реплики):
+    shrunk — уменьшен шрифт, split — разделена по времени, over — не
+    уместилась никак (длинное слово, слишком короткая реплика, режим none).
+    Мерить нечем (нет Pillow или шрифта) — события как есть, `measured: False`:
+    «всё поместилось» без мерки было бы враньём."""
+    rep = {"shrunk": [], "split": [], "over": [], "measured": False}
+    font = font_of(style.get("font")) or {}
+    name = font.get("bold") if style.get("bold") else font.get("regular")
+    path = FONT_DIR / name if name else None
+    if not path or not path.exists():
+        return list(cues or []), rep
+    try:
+        _pil_font(path, 20)
+    except Exception:
+        return list(cues or []), rep
+    rep["measured"] = True
+    n = style_numbers(style, w, h)
+    em = float(font.get("emRatio") or 1.0)
+    width, base = n["wrapW"], n["fs"]
+    maxl, mode = int(style.get("maxLines") or 2), style.get("fit") or "both"
+    step = max(1, int(round(base * 0.03)))
+    floor_fs = max(8, int(base * FIT_MIN_SCALE))
+    out = []
+    for c in cues or []:
+        text = c.get("text") or ""
+        f0 = _pil_font(path, round(base * em))
+        lines = wrap_lines(text, f0, width)
+        if _fits(lines, f0, width, maxl):
+            out.append(c)
+            continue
+        done = False
+        if mode in ("shrink", "both"):
+            fs = base - step
+            while fs >= floor_fs:
+                f = _pil_font(path, round(fs * em))
+                if _fits(wrap_lines(text, f, width), f, width, maxl):
+                    out.append(dict(c, fs=fs))
+                    rep["shrunk"].append(c.get("i"))
+                    done = True
+                    break
+                fs -= step
+        if not done and mode in ("split", "both"):
+            fits = lambda g: _fits(wrap_lines(g, f0, width), f0, width, maxl)     # noqa: E731
+            parts = _split_cue(c, lines, maxl, fits)
+            if parts and all(fits(p["text"]) for p in parts):
+                out.extend(parts)
+                rep["split"].append(c.get("i"))
+                done = True
+        if not done:
+            out.append(c)
+            rep["over"].append(c.get("i"))
+    return out, rep
+
+
+def ass_document(cues: list, style: dict, w: int, h: int, fitted: Optional[list] = None) -> str:
     """Документ ASS: один стиль, по событию на реплику. PlayRes = кадр
-    результата, поэтому кегль в пикселях — ровно тот, что посчитан."""
+    результата, поэтому кегль в пикселях — ровно тот, что посчитан.
+    Реплики сперва подгоняются в безопасную область (`fit_cues`); уже
+    подогнанные можно передать готовыми (`fitted`), чтобы не мерить дважды."""
+    if fitted is None:
+        fitted, _rep = fit_cues(cues, style, w, h)
+    cues = fitted
     font = font_of(style.get("font")) or {}
     family = font.get("family") or "Noto Sans"
     n = style_numbers(style, w, h)
@@ -863,6 +1039,8 @@ def ass_document(cues: list, style: dict, w: int, h: int) -> str:
         text = _ass_text(c.get("text") or "")
         if not text or c["end"] <= c["start"]:
             continue
+        if c.get("fs"):
+            text = r"{\fs%d}" % int(c["fs"]) + text       # уменьшенный кегль — только этой реплике
         ev.append("Dialogue: 0,%s,%s,Default,,0,0,0,,%s" % (_ass_time(c["start"]), _ass_time(c["end"]), text))
     return "\n".join(head + ev) + "\n"
 

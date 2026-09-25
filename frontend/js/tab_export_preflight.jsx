@@ -645,11 +645,17 @@ function ExpMediaCard({ project, store, toast }) {
       media.video && line(TR("Видео с субтитрами в кадре"), burn, "burn",
         TR("Текст впечатан в картинку: виден в любом плеере и в соцсетях. Шрифт, размер и место — ваши."),
         () => setBurnOpen(true)),
+      burn && burn.fit && burn.fit.over > 0 && React.createElement("div", { className: "row between row-wrap", style: { gap: 8, fontSize: 13 } },
+        React.createElement("span", { style: { color: "var(--c-warning)" } },
+          burn.fit.over + TR(" реплик вышли за область субтитров — сократите перевод и соберите заново.")),
+        React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => {
+          store.setSegmentFilter(burn.fit.overIds || [], { label: TR("Не умещаются в область субтитров") });
+          store.go("editor"); } }, TR("Показать строки"))),
       burn && burn.untranslated > 0 && React.createElement("div", { style: { fontSize: 13, color: "var(--c-warning)" } },
         burn.untranslated + TR(" реплик были без перевода и в кадр не попали — переведите и соберите заново.")),
       media.video && line(TR("Видео с субтитрами дорожкой"), rr.subs, "subs",
         TR("Субтитры включаются в плеере; видео не перекодируется — собирается за минуты.")),
-      burnOpen && React.createElement(VidBurnDialog, { project, toast, onClose: () => setBurnOpen(false),
+      burnOpen && React.createElement(VidBurnDialog, { project, toast, store, onClose: () => setBurnOpen(false),
         onStarted: (j, eta) => {
           setBurnOpen(false);
           jobRef.current = j; setJob(j);

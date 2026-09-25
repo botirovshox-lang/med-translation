@@ -174,6 +174,11 @@ const tick = () => new Promise(r => setTimeout(r, 0));
         "кегль как у libass: доля короткой стороны × emRatio (" + (span && span.props.style.fontSize) + ")");
   check(!!span && /[ўқғҳ]/.test(texts(span)), "образец на буквах языка перевода: " + (span && texts(span)));
   check(t.indexOf("Жирный") !== -1 && t.indexOf("Плашка") !== -1 && t.indexOf("Сверху") !== -1, "форма стиля на месте");
+  const area = find(tree, n => n.type === "div" && n.props["data-sub-area"])[0];
+  check(!!area && Math.abs(area.props.style.width - FONTS_UZC.style.boxW / 100 * 640) < 0.01,
+        "рамка безопасной области поверх видео — доля ширины кадра");
+  check(t.indexOf("Строк не больше") !== -1 && t.indexOf("Уменьшить, потом разделить") !== -1 && t.indexOf("Только показать") !== -1,
+        "ширина области, число строк и что делать с лишним — в форме");
   console.log("=== 4. «Подтвердить» до конца загрузки ===");
   btn(tree, "Подтвердить и распознать речь").props.onClick();
   tree = draw();
@@ -210,6 +215,7 @@ const tick = () => new Promise(r => setTimeout(r, 0));
       span: 60, trim: null, kept: true, display: [1080, 1920], hdr: true, style: FONTS_UZC.style, tooLong: false,
       maxBurnMinutes: 120, qualities: { src: { frame: [1080, 1920], etaSec: 900 }, "720": { frame: [720, 1280], etaSec: 480 } } }),
     mediaPreview: async (pid, body) => { previewBody = body; return "blob:burnframe"; },
+    mediaFit: async (pid, body) => ({ measured: true, cues: 2, shrunk: 1, split: 0, over: 1, overIds: [42], fixedIds: [7] }),
     mediaRender: async (pid, what, voice, extra) => { renderCall = { pid, what, voice, extra }; return { job: { id: 5 }, etaSec: 900 }; },
   });
   hooks = []; effDeps = [];
@@ -229,6 +235,8 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   check(renderCall && renderCall.what === "burn" && renderCall.extra.quality === "src" && renderCall.extra.style.font === FONTS_UZC.style.font,
         "сборка ушла с выбранным стилем и качеством");
   check(started && started.e === 900, "экран «Скачать» узнал задачу и оценку");
+  check(t.indexOf("Уменьшим шрифт: 1 реплик") !== -1 && t.indexOf("1 реплик не уместятся в область") !== -1,
+        "диалог называет, что уменьшим и что не влезет");
 
   /* ── 6б. Отмена и закрытие окна во время загрузки ─────────────── */
   console.log("=== 6б. Отмена и закрытие окна ===");

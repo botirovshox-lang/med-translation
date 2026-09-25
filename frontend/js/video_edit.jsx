@@ -135,10 +135,24 @@ function VidOverlay({ style, text, info, w, h }) {
       span.textShadow = sh + "px " + sh + "px 0 " + rgba(1 - (m.shadowAlpha || 0.45));
     }
   }
-  const side = (m.marginLR || 0.06) * w;
+  /* Безопасная область — как у сборки (`media.style_numbers`): ширина —
+     доля кадра, сбоку ещё обводка или поле плашки, высота — число строк.
+     Рамка пунктиром: за неё субтитр не выйдет — лишнее уменьшится или
+     разделится при сборке (точный ответ — кадр с сервера). */
+  const areaW = (style.boxW || 100) / 100 * w;
+  const out = style.bg === "box" ? Math.max(2, fsAss * (m.boxPad || 0.2))
+    : Math.max(1, fsAss * (style.bg === "shadow" ? (m.shadowOutline || 0.03) : (m.outline || 0.07)));
+  const side = (w - areaW) / 2 + out;
   const box = { position: "absolute", left: side, right: side, textAlign: "center", pointerEvents: "none" };
-  box[style.position === "top" ? "top" : "bottom"] = style.margin / 100 * h;
-  return vidE("div", { style: box }, vidE("span", { style: span }, text));
+  const edgeKey = style.position === "top" ? "top" : "bottom";
+  box[edgeKey] = style.margin / 100 * h;
+  const frameBox = { position: "absolute", left: (w - areaW) / 2, width: areaW, pointerEvents: "none",
+    height: (style.maxLines || 2) * fs * 1.22 + 2 * out, border: "1px dashed rgba(255,255,255,0.7)",
+    outline: "1px dashed rgba(0,0,0,0.5)", borderRadius: 2 };
+  frameBox[edgeKey] = style.margin / 100 * h - out;
+  return vidE(React.Fragment, null,
+    vidE("div", { style: frameBox, "data-sub-area": "1" }),
+    vidE("div", { style: box }, vidE("span", { style: span }, text)));
 }
 
 /* Кнопки-переключатели «одно из»: меньше чтения, чем у списка (инв. 32). */
@@ -186,7 +200,25 @@ function VidStyleForm({ style, onChange, info }) {
       vidE("div", { style: { flex: "1 1 160px" } },
         vidE(Field, { label: TR("Отступ от края") + " · " + style.margin + "%" },
           vidE("input", { type: "range", min: lim.margin[0], max: lim.margin[1], step: 0.5, value: style.margin,
-            style: { width: "100%" }, onChange: (e) => set("margin", parseFloat(e.target.value)) })))));
+            style: { width: "100%" }, onChange: (e) => set("margin", parseFloat(e.target.value)) })))),
+    vidE("div", { style: { fontWeight: 600, fontSize: 14, marginTop: 4 } }, TR("Область текста")),
+    vidE("div", { className: "row", style: { gap: 16, flexWrap: "wrap", alignItems: "flex-start" } },
+      vidE("div", { style: { flex: "1 1 160px" } },
+        vidE(Field, { label: TR("Ширина") + " · " + style.boxW + "%" },
+          vidE("input", { type: "range", min: (lim.boxW || [30, 100])[0], max: (lim.boxW || [30, 100])[1], step: 1,
+            value: style.boxW, style: { width: "100%" }, onChange: (e) => set("boxW", parseFloat(e.target.value)) }))),
+      vidE(Field, { label: TR("Строк не больше") },
+        vidE(VidSeg, { value: String(style.maxLines), onChange: (v) => set("maxLines", parseInt(v, 10)),
+          options: [["1", "1"], ["2", "2"], ["3", "3"], ["4", "4"]] }))),
+    vidE(Field, { label: TR("Если реплика не влезает") },
+      vidE(VidSeg, { value: style.fit, onChange: (v) => set("fit", v),
+        options: [["both", TR("Уменьшить, потом разделить")], ["shrink", TR("Уменьшить шрифт")],
+                  ["split", TR("Разделить реплику")], ["none", TR("Только показать")]] })),
+    vidE("div", { className: "dim", style: { fontSize: 12 } },
+      style.fit === "none" ? TR("Ничего не меняем — покажем, какие реплики вылезают за рамку, чтобы сократить их вручную.")
+      : TR("Шрифт уменьшаем не сильнее чем до ") + Math.round((lim.minScale || 0.7) * 100)
+        + TR("%; делим реплику на части по времени, если каждой хватает хотя бы ") + (lim.splitMinSec || 0.8)
+        + TR(" с. Что не уместится и так — покажем списком.")));
 }
 
 /* Кадр с сервера: картинка приходит адресом blob:, старый освобождается. */
@@ -439,7 +471,7 @@ function VideoEditor({ file, meta, onCancel, onDone, toast }) {
 
 /* Перед сборкой видео с субтитрами в кадре: стиль, кадр с настоящим
    переводом с сервера, качество с оценкой времени — и одна кнопка. */
-function VidBurnDialog({ project, onClose, onStarted, toast }) {
+function VidBurnDialog({ project, onClose, onStarted, toast, store }) {
   const pid = project.id;
   const info = useVidFonts(project.tgt);
   const [bi, setBi] = useState(null);
@@ -450,6 +482,7 @@ function VidBurnDialog({ project, onClose, onStarted, toast }) {
   const frame = useVidServerFrame();
   const [biErr, setBiErr] = useState("");
   const [biTry, setBiTry] = useState(0);
+  const [fit, setFit] = useState(null);
   useEffect(() => {
     let dead = false;
     setBiErr("");
@@ -469,6 +502,20 @@ function VidBurnDialog({ project, onClose, onStarted, toast }) {
     const id = setTimeout(() => frame.load(() => window.API.mediaPreview(pid, { t, style, quality })), 500);
     return () => clearTimeout(id);
   }, [style, t, quality, bi]);
+  /* Что не влезет в область при этом стиле — по ВСЕМ репликам, без кадров. */
+  useEffect(() => {
+    if (!style || !bi) return;
+    let dead = false;
+    const id = setTimeout(() => window.API.safeCall(() => window.API.mediaFit(pid, { style, quality }))
+      .then(r => { if (!dead && r) setFit(r); }), 500);
+    return () => { dead = true; clearTimeout(id); };
+  }, [style, quality, bi]);
+  const showRows = (ids, label) => {
+    if (!store || !store.setSegmentFilter) return;
+    store.setSegmentFilter(ids || [], { label });
+    onClose();
+    store.go("editor");
+  };
   const trCues = bi ? (bi.cues || []).filter(c => c.tr) : [];
   const untranslated = bi ? (bi.cues || []).length - trCues.length : 0;
   const jump = (dir) => {
@@ -522,6 +569,17 @@ function VidBurnDialog({ project, onClose, onStarted, toast }) {
               vidE(Btn, { size: "sm", variant: "ghost", iconRight: "chevR", onClick: () => jump(1) }, TR("Следующая реплика"))),
             vidE("div", { className: "dim", style: { fontSize: 12 } },
               TR("Это настоящий кадр из файла: тот же шрифт, размер и перенос строк, что будут в готовом видео.")),
+            fit && fit.measured && (fit.shrunk + fit.split === 0 && !fit.over
+              ? vidE("div", { className: "dim", style: { fontSize: 12 } }, TR("Все реплики умещаются в область."))
+              : vidE("div", { className: "col", style: { gap: 4, fontSize: 13 } },
+                  (fit.shrunk || fit.split) ? vidE("div", { className: "dim" },
+                    (fit.shrunk ? TR("Уменьшим шрифт: ") + fit.shrunk + TR(" реплик") : "")
+                    + (fit.shrunk && fit.split ? " · " : "")
+                    + (fit.split ? TR("разделим по времени: ") + fit.split : "")) : null,
+                  fit.over > 0 && vidE("div", { className: "row between row-wrap", style: { gap: 8, color: "var(--c-warning)" } },
+                    vidE("span", null, fit.over + TR(" реплик не уместятся в область — сократите перевод или выберите другой вариант.")),
+                    store && vidE(Btn, { size: "sm", variant: "ghost", onClick: () => showRows(fit.overIds, TR("Не умещаются в область субтитров")) },
+                      TR("Показать строки"))))),
             untranslated > 0 && vidE("div", { style: { fontSize: 13, color: "var(--c-warning)" } },
               untranslated + TR(" реплик ещё не переведены — в кадр попадут только переведённые.")),
             bi.hdr && vidE("div", { className: "dim", style: { fontSize: 12 } },

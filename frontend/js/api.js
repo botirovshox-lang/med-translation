@@ -460,6 +460,8 @@
     mediaFonts:    (lang)                   => call("GET", `/media/fonts?lang=${encodeURIComponent(lang || "")}`),
     mediaPreview:  (pid, body)              => postImage(`/projects/${pid}/media/preview`, body),
     mediaBurnInfo: (pid)                    => call("GET", `/projects/${pid}/media/burn-info`),
+    /* Что при этом стиле не влезет в безопасную область (без сборки). */
+    mediaFit:      (pid, body)              => call("POST", `/projects/${pid}/media/fit`, body),
     mediaStyle:    (pid, style)             => call("POST", `/projects/${pid}/media/style`, { style }),
     mediaFinish:   (token, body)            => call("POST", `/media/upload/${token}/finish`, body || {}),
     mediaUploadProbe:   (token)             => call("GET", `/media/upload/${token}/probe`),

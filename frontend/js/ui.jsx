@@ -581,8 +581,35 @@ function ImagesJobLine({ job }) {
       : React.createElement("div", { className: "pbar pbar-indet" }, React.createElement("span", null)));
 }
 
+/* Ход работы с видео: распознавание речи и сборка. Стадию называет сервер
+   (`job.phase`), счёт «N из M» — только там, где он есть (куски звука,
+   реплики озвучки): у извлечения звука и сборки видео процента нет, и
+   выдуманный был бы враньём — полоса бежит без числа. */
+function MediaJobLine({ job }) {
+  const total = job.total || 0, done = job.done || 0;
+  const queued = job.status === "queued";
+  const ph = job.phase;
+  const what = ph === "audio" ? TR("достаём звук из видео")
+    : ph === "asr" ? TR("распознаём речь")
+    : ph === "tts" ? TR("озвучиваем реплики")
+    : ph === "mix" ? TR("сводим звук")
+    : ph === "mux" ? TR("собираем видео")
+    : TR("готовим");
+  const counted = total > 1 && (ph === "asr" || ph === "tts") && !queued;
+  const text = queued
+    ? (done > 0 ? TR("продолжу сразу после чужой порции")
+                : TR("идёт другой прогон, начну сразу после него"))
+    : what + (counted ? " · " + done + TR(" из ") + total : "");
+  return React.createElement("div", { className: "col", style: { gap: 6 } },
+    React.createElement("div", { className: "row", style: { gap: 8, fontSize: 13 } },
+      React.createElement(Spinner, null), React.createElement("span", null, text)),
+    counted
+      ? React.createElement(ProgressBar, { value: Math.round(done / total * 100) })
+      : React.createElement("div", { className: "pbar pbar-indet" }, React.createElement("span", null)));
+}
+
 Object.assign(window, {
-  ImagesJobLine,
+  ImagesJobLine, MediaJobLine,
   Icon, Btn, IconBtn, StatusBadge, Badge, STATUS_META,
   Field, Input, Textarea, Select, SearchInput, Checkbox, Radio, Switch,
   Expander, Modal, ToastProvider, useToast,

@@ -513,6 +513,140 @@ window.ImagesCard = ImagesCard;
 /* ============================================================
    Tab: Export — download translated document
    ============================================================ */
+/* Видео и звук: что можно получить из распознанной речи и перевода.
+   Субтитры (.srt, .vtt) — тот же экспорт, что у любого файла; видео
+   с дорожкой субтитров и закадровый перевод собирает воркер, а скачиваются
+   они короткой подписанной ссылкой — прямым переходом, мимо памяти вкладки
+   (видео весит гигабайты). Исходное видео хранится ограниченный срок;
+   удалённое загружают заново здесь же — субтитры и перевод при этом целы. */
+function ExpMediaCard({ project, store, toast }) {
+  const pid = project.id;
+  const media = project.media || {};
+  const rr = project.mediaRender || {};
+  const [voices, setVoices] = useState([]);
+  const [voice, setVoice] = useState("f1");
+  const [job, setJob] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [prog, setProg] = useState(null);
+  const fileRef = useRef(null);
+  const jobRef = useRef(null);
+  useEffect(() => {
+    window.API && window.API.safeCall(() => window.API.mediaVoices())
+      .then(r => { if (r && r.voices) setVoices(r.voices); });
+  }, []);
+  const refresh = async () => {
+    const fresh = await window.API.safeCall(() => window.API.getProject(pid));
+    if (fresh && store.replaceProject) store.replaceProject(fresh);
+  };
+  /* Идёт ли сборка: опрос, пока задача жива; кончилась — свежий проект
+     (в нём отметка о готовом файле). */
+  useEffect(() => {
+    if (!window.API || !window.API.listJobs) return;
+    let dead = false;
+    const tick = async () => {
+      const res = await window.API.safeCall(() => window.API.listJobs(pid));
+      if (dead || !res) return;
+      const live = (res.active || []).find(x => x.kind === "mediarender") || null;
+      if (jobRef.current && !live) {
+        const last = (res.recent || res.jobs || []).find(x => x.id === jobRef.current.id);
+        if (last && last.status === "error") toast.error(TR("Не собрано"), TRS(last.error || ""));
+        refresh();
+      }
+      jobRef.current = live;
+      setJob(live);
+    };
+    tick();
+    const t = setInterval(tick, 3000);
+    return () => { dead = true; clearInterval(t); };
+  }, [pid]);
+  const translated = project.segments.filter(s => (s.target || "").trim()).length;
+  const ready = project.mediaStatus === "ready";
+  const kept = media.kept !== false;
+  const subs = async (fmt) => {
+    setBusy(true);
+    const r = await window.API.safeCall(() => window.API.exportProject(pid, fmt, false));
+    setBusy(false);
+    if (!r || !r.ok) { toast.error(TR("Не скачано"), (r && r.error) || TR("Сервер недоступен.")); return; }
+    try { await window.API.downloadFile(r.url, r.file); }
+    catch (e) { toast.error(TR("Не скачано"), String((e && e.message) || e)); }
+  };
+  const render = async (what) => {
+    setBusy(true);
+    try {
+      const r = await window.API.mediaRender(pid, what, voice);
+      jobRef.current = r.job; setJob(r.job);
+      toast.info(what === "dub" ? TR("Озвучиваем") : TR("Собираем видео"), TR("Готовый файл появится здесь — страницу можно закрыть."));
+    } catch (e) { toast.error(TR("Не запущено"), e.message || String(e)); }
+    setBusy(false);
+  };
+  const download = async (what) => {
+    try {
+      const r = await window.API.mediaLink(pid, what);
+      /* Прямой переход: браузер сам пишет файл на диск по заголовку
+         «attachment», память вкладки не занята. */
+      window.location.href = r.url;
+    } catch (e) { toast.error(TR("Не скачано"), e.message || String(e)); }
+  };
+  const reattach = async (file) => {
+    if (!file) return;
+    setBusy(true); setProg(null);
+    try {
+      await window.API.uploadMedia(file, { project: pid }, setProg);
+      await refresh();
+      toast.success(TR("Видео загружено"), TR("Можно собирать видео и озвучку."));
+    } catch (e) { if (!e.cancelled) toast.error(TR("Видео не загружено"), e.message || String(e)); }
+    if (fileRef.current) fileRef.current.value = "";
+    setProg(null);
+    setBusy(false);
+  };
+  const dub = rr.dub || null;
+  const line = (label, rec, what) => React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+    React.createElement("div", null,
+      React.createElement("div", { style: { fontWeight: 500 } }, label),
+      rec && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+        TR("собрано ") + rec.at + " · " + (rec.size / 1048576).toFixed(1) + TR(" МБ"))),
+    React.createElement("div", { className: "row", style: { gap: 8 } },
+      rec && React.createElement(Btn, { variant: "secondary", size: "sm", icon: "download", onClick: () => download(what) }, TR("Скачать")),
+      React.createElement(Btn, { variant: rec ? "ghost" : "primary", size: "sm", icon: "repeat",
+        disabled: busy || !!job || !ready || !kept || !translated, onClick: () => render(what) },
+        rec ? TR("Собрать заново") : TR("Собрать"))));
+  return React.createElement("div", null,
+    React.createElement("h2", { className: "section-title" }, media.video ? TR("Видео") : TR("Звук")),
+    React.createElement("div", { className: "card card-pad col", style: { gap: 14 } },
+      React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
+        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "download", disabled: busy || !ready, onClick: () => subs("original") }, TR("Субтитры .srt")),
+        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "download", disabled: busy || !ready, onClick: () => subs("vtt") }, TR("Субтитры .vtt"))),
+      !translated && ready && React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+        TR("Строки ещё не переведены — видео и озвучка соберутся после перевода.")),
+      job && React.createElement(MediaJobLine, { job }),
+      !kept && React.createElement("div", { className: "col", style: { gap: 8, fontSize: 13 } },
+        React.createElement("div", null, TR("Исходное видео удалено по сроку хранения. Субтитры и перевод целы; чтобы собрать видео или озвучку, загрузите тот же файл ещё раз.")),
+        React.createElement(Btn, { variant: "secondary", size: "sm", icon: "upload", disabled: busy, onClick: () => fileRef.current && fileRef.current.click() }, TR("Загрузить видео снова")),
+        busy && prog && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+          prog.total ? TR("Отправляем файл") + " · " + Math.round(prog.done / prog.total * 100) + "%" : TR("Файл на сервере, проверяем видео"))),
+      React.createElement("input", { ref: fileRef, type: "file", hidden: true, onChange: (e) => reattach(e.target.files && e.target.files[0]) }),
+      media.video && line(TR("Видео с субтитрами"), rr.subs, "subs"),
+      React.createElement("div", { className: "col", style: { gap: 8 } },
+        line(TR("Озвучка на языке перевода"), dub, "dub"),
+        React.createElement("div", { className: "row", style: { gap: 8, alignItems: "center" } },
+          React.createElement("span", { className: "dim", style: { fontSize: 13 } }, TR("Голос")),
+          React.createElement(Select, { value: voice, onChange: (e) => setVoice(e.target.value) },
+            voices.map((v, i) => React.createElement("option", { key: v.id, value: v.id },
+              (v.gender === "m" ? TR("мужской") : TR("женский")) + " " + (i % 2 + 1))))),
+        dub && dub.over > 0 && React.createElement("div", { className: "row between row-wrap", style: { gap: 8, fontSize: 13 } },
+          React.createElement("span", null, dub.over + TR(" строк не уложились в тайминг даже с ускорением — сократите перевод и соберите заново.")),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => {
+            store.setSegmentFilter(dub.overIds || [], { label: TR("Не уложились в тайминг озвучки") });
+            store.go("editor"); } }, TR("Показать строки"))),
+        dub && dub.silent > 0 && React.createElement("div", { style: { fontSize: 13, color: "var(--c-warning)" } },
+          dub.silent + TR(" строк не озвучились из-за сбоя синтеза — соберите заново.")),
+        React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+          TR("Закадровый перевод: оригинальный звук приглушается под речью. Губы с речью не совпадают; голос синтезирован."))),
+      React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+        TR("Видео не перекодируется: разрешение и качество картинки остаются как в оригинале. Готовые файлы хранятся двое суток."))));
+}
+window.ExpMediaCard = ExpMediaCard;
+
 function TabExport({ store, toast }) {
   const project = store.activeProject;
   /* Формат по умолчанию решает приложенный исходник. Приложить его и значит
@@ -644,8 +778,9 @@ function TabExport({ store, toast }) {
     return m ? "." + m[1].toLowerCase() : null;
   })();
   const formats = [
-    ...(origExt ? [["original", TR("Такой же файл в исходном виде (") + origExt + ")",
-      (project.importKind === "image" || project.importKind === "scan")
+    ...(origExt ? [["original", project.media ? TR("Субтитры с таймингом (.srt)") : TR("Такой же файл в исходном виде (") + origExt + ")",
+      project.media ? TR("Тот же тайминг, что у речи в видео; реплики переведены")
+      : (project.importKind === "image" || project.importKind === "scan")
         ? TR("Надписи на картинках перерисованы переводом; что вписать не удалось — останется в Word-версии")
         : TR("Тот же файл, переведены только тексты; числа, формулы и структура на месте"), "file"]] : []),
     ["docx_layout", TR("Такой же файл, только на другом языке (.docx)"),
@@ -695,7 +830,7 @@ function TabExport({ store, toast }) {
               ? TR("К проекту приложен исходник — «DOCX 1в1» сохранит его оформление. Выбранный сейчас формат соберёт документ с нуля.")
               : TR("«DOCX 1в1» сохраняет оформление оригинала. Остальные форматы собираются с нуля."))
         ),
-        React.createElement("div", null,
+        !project.media && React.createElement("div", null,
           React.createElement("h2", { className: "section-title" }, TR("Ваш файл")),
           React.createElement("div", { className: "card card-pad col", style: { gap: 12 } },
             srcDoc
@@ -722,7 +857,8 @@ function TabExport({ store, toast }) {
               onChange: (e) => doAttach(e.target.files && e.target.files[0], false) }))
         ),
 
-        React.createElement(ImagesCard, { project, store, toast }),
+        project.media && React.createElement(ExpMediaCard, { project, store, toast }),
+        !project.media && React.createElement(ImagesCard, { project, store, toast }),
 
         React.createElement("div", null,
           React.createElement("h2", { className: "section-title" }, TR("Что положить в файл")),

@@ -35,7 +35,9 @@
   * pptx — абзац слайда получает перевод целиком в первый прогон, выделения
     внутри абзаца теряются; поля (номер слайда, дата) не трогаются; заметки,
     диаграммы и SmartArt не переводятся;
-  * json/xml/po/srt/vtt/yaml/rtf/odt/ods/odp — только Word-документом:
+  * srt/vtt — перевод встаёт в ту же реплику, время не трогается; разметка
+    внутри реплики (курсив, цвет) не сохраняется;
+  * json/xml/po/yaml/rtf/odt/ods/odp — только Word-документом:
     построчная обратная запись сломала бы их синтаксис;
   * картинки и скан-PDF — перевод возвращается перерисовкой надписей
     (см. `image_text`), это делает экспорт «как в оригинале» по .docx,
@@ -66,7 +68,7 @@ SUPPORTED_EXT = sorted(set(textcount.SUPPORTED_EXT) | IMAGE_EXT)
 # Построчные форматы с обратной записью: строка — слот.
 LINE_EXT = {".txt", ".md", ".markdown", ".log", ""}
 # Форматы, которые умеем вернуть В ТОМ ЖЕ виде (обратной записью по слотам).
-WRITEBACK_EXT = LINE_EXT | {".csv", ".tsv", ".xlsx", ".html", ".htm", ".pptx"}
+WRITEBACK_EXT = LINE_EXT | {".csv", ".tsv", ".xlsx", ".html", ".htm", ".pptx", ".srt", ".vtt"}
 # Строки PDF склеиваются в абзац, пока не встретится конец предложения,
 # пустая строка или потолок длины: без потолка титульный лист с сотней
 # коротких строк без точек стал бы одним абзацем на страницу.
@@ -619,6 +621,141 @@ def _lines_write(text: str, repl: dict) -> str:
     return "\n".join(out)
 
 
+# ─── Субтитры: реплика — слот, время — неприкосновенно ────────────────
+# Реплика SRT/VTT — единица ВРЕМЕНИ, и перевод обязан встать в ту же
+# реплику с тем же таймингом: номер, строка времени, настройки реплики VTT
+# и шапка остаются байт в байт, меняются только строки текста. Текст слота —
+# тот же, что у сметы (`textcount._cue_blocks`: строки реплики через пробел,
+# разметка голоса и курсива снята), иначе смета и сегменты разошлись бы.
+# Из этих же реплик берёт тайминги озвучка (`media`), поэтому разбор ОДИН.
+_CUE_TIMES_RE = re.compile(r"^\s*((?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3})\s*-->\s*((?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3})")
+_BOM = b"\xef\xbb\xbf"
+CUE_LINE_CHARS = 42         # ширина строки субтитра: принятая норма ТВ и стримингов
+
+
+def cue_seconds(stamp: str) -> float:
+    """«01:02:03,450» / «02:03.450» → секунды."""
+    parts = stamp.replace(",", ".").split(":")
+    sec = 0.0
+    for p in parts:
+        sec = sec * 60 + float(p)
+    return round(sec, 3)
+
+
+def cue_list(text: str) -> list:
+    """[{text, lines: [номера строк текста], start, end}] — реплики файла
+    субтитров. Правила те же, что у `textcount._cue_blocks` (шапка и блоки
+    NOTE/STYLE/REGION — не текст; номер и имя реплики до строки времени —
+    не текст; реплики без пустой строки между ними различаются по строке
+    времени); у блока без строки времени start/end — None."""
+    out = []
+    cur, idx = [], []
+    start = end = None
+    skip = timed = False
+
+    def flush():
+        if cur:
+            out.append({"text": " ".join(cur), "lines": list(idx), "start": start, "end": end})
+
+    for n, raw in enumerate(text.split("\n")):
+        line = raw.rstrip("\r").strip()
+        if not line:
+            flush()
+            cur, idx, skip, timed = [], [], False, False
+            start = end = None
+            continue
+        if skip:
+            continue
+        if not cur and (line.upper().startswith("WEBVTT") or line.split(" ")[0] in ("NOTE", "STYLE", "REGION")):
+            skip = True
+            continue
+        m = _CUE_TIMES_RE.match(line)
+        if m:
+            if timed:
+                if cur and cur[-1].isdigit():
+                    cur.pop()
+                    idx.pop()
+                flush()
+            cur, idx, timed = [], [], True
+            start, end = cue_seconds(m.group(1)), cue_seconds(m.group(2))
+            continue
+        if not cur and line.isdigit():
+            continue
+        t = _html.unescape(textcount._CUE_TAG_RE.sub("", line)).strip()
+        if t:
+            cur.append(t)
+            idx.append(n)
+    flush()
+    return out
+
+
+def wrap_cue(text: str, width: int = CUE_LINE_CHARS) -> list:
+    """Перевод реплики — в строки экрана. До `width` знаков — одна строка;
+    длиннее — две РАВНЫЕ по длине (разрез на пробеле ближе к середине):
+    «лесенка» из длинной и короткой строки читается хуже. Письмо без
+    пробелов (иероглифы) не режется — переносит плеер."""
+    t = " ".join((text or "").split())
+    if len(t) <= width or " " not in t:
+        return [t]
+    mid = len(t) // 2
+    cut = min((i for i, ch in enumerate(t) if ch == " "), key=lambda i: abs(i - mid))
+    head, tail = t[:cut], t[cut + 1:]
+    if len(tail) > width * 1.6 and " " in tail:     # очень длинная реплика: третья строка
+        return [head] + wrap_cue(tail, width)
+    return [head, tail]
+
+
+def _cues_write(text: str, repl: dict) -> str:
+    """Перевод реплики i — на место её строк текста; время, номер, шапка
+    и настройки VTT не трогаются. Конец строки (\\r\\n) — как в исходнике."""
+    lines = text.split("\n")
+    cues = cue_list(text)
+    drop, put = set(), {}
+    for i, t in repl.items():
+        if not (0 <= i < len(cues)) or not cues[i]["lines"]:
+            continue
+        ln = cues[i]["lines"]
+        put[ln[0]] = wrap_cue(t)
+        drop.update(ln[1:])
+    out = []
+    for n, raw in enumerate(lines):
+        if n in drop:
+            continue
+        if n in put:
+            eol = "\r" if raw.endswith("\r") else ""
+            out.extend(s + eol for s in put[n])
+            continue
+        out.append(raw)
+    return "\n".join(out)
+
+
+def _stamp(sec: float, sep: str) -> str:
+    ms = int(round(max(0.0, sec) * 1000))
+    h, ms = divmod(ms, 3600000)
+    m, ms = divmod(ms, 60000)
+    s, ms = divmod(ms, 1000)
+    return "%02d:%02d:%02d%s%03d" % (h, m, s, sep, ms)
+
+
+def render_cues(cues: list, ext: str) -> str:
+    """[{start, end, text}] → текст .srt или .vtt. Реплики без времени
+    пропускаются: без времени субтитр показать негде."""
+    vtt = ext == ".vtt"
+    out = ["WEBVTT", ""] if vtt else []
+    n = 0
+    for c in cues:
+        if c.get("start") is None or c.get("end") is None or not (c.get("text") or "").strip():
+            continue
+        n += 1
+        if not vtt:
+            out.append(str(n))
+        sep = "." if vtt else ","
+        out.append("%s --> %s" % (_stamp(c["start"], sep), _stamp(c["end"], sep)))
+        out.extend(wrap_cue(c["text"]))
+        out.append("")
+    return "\n".join(out)
+
+
 def extract_slots(filename: str, content: bytes, rule: int = SLOT_RULE) -> dict:
     """{slots: [текст], kind, note, writeback: bool, enc} — слоты текстового
     файла. Слот i станет абзацем i собранного .docx. Форматы без обратной
@@ -666,7 +803,14 @@ def extract_slots(filename: str, content: bytes, rule: int = SLOT_RULE) -> dict:
                         "выделения внутри абзаца не сохраняются, поля (номер слайда, дата) "
                         "не трогаются, заметки, диаграммы и SmartArt не переводятся.",
                 "writeback": True, "enc": None}
-    # Остальное (json, xml, po, srt, yaml, rtf, odt/ods/odp …) — кусками
+    if ext in (".srt", ".vtt"):
+        text, enc = textcount._decode(content)
+        return {"slots": [_clean(c["text"]) for c in cue_list(text)], "kind": kind,
+                "note": "Реплики разобраны по времени; обратно выгружается таким же файлом субтитров "
+                        "с прежними таймингами. Разметка внутри реплики (курсив, цвет) в переводе "
+                        "не сохраняется.",
+                "writeback": True, "enc": enc}
+    # Остальное (json, xml, po, yaml, rtf, odt/ods/odp …) — кусками
     # сметы, без обратной записи: построчная запись сломала бы синтаксис.
     got = textcount.extract(filename, content)
     blocks = [_clean(b) if isinstance(b, str) else str(b) for b in got["blocks"]]
@@ -722,6 +866,11 @@ def write_back(filename: str, content: bytes, translations: dict, rule: int = SL
         addr = [a for _t, a in pptx_slots(content)]
         repl = {addr[i]: t for i, t in translations.items() if 0 <= i < len(addr)}
         return _pptx_write(content, repl)
+    if ext in (".srt", ".vtt"):
+        text, enc = textcount._decode(content)
+        bom = content[:3] == _BOM
+        body = _cues_write(text, dict(translations)).encode(_encoding_of(enc, content), errors="replace")
+        return (_BOM + body) if bom and not body.startswith(_BOM) else body
     if ext in LINE_EXT:
         text, enc = textcount._decode(content)
         bom = content[:3] == b"\xef\xbb\xbf"

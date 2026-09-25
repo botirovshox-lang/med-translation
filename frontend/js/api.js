@@ -166,6 +166,55 @@
     }
   }
 
+  /* Видео и звук — КУСКАМИ с докачкой. Файл в 2 ГБ одним запросом не пройдёт
+     ни nginx, ни память единственного воркера, а оборванная сеть на середине
+     обнулила бы полчаса загрузки. Сервер помнит, сколько принял; кусок,
+     посланный не с того места, получает 409 с этим числом — продолжаем
+     оттуда. Сбой сети — пауза и повтор (до 12 раз подряд), отказ сервера
+     по существу (размер, формат, место) — сразу ошибка. `ctl.cancelled`
+     останавливает и удаляет загрузку. */
+  function mediaSleep(ms) { return new Promise(res => setTimeout(res, ms)); }
+  async function uploadMediaChunked(file, meta, onProgress, ctl) {
+    ctl = ctl || {};
+    const report = (p) => { if (onProgress) { try { onProgress(p); } catch (e) {} } };
+    const start = await call("POST", "/media/upload", Object.assign({ name: file.name, size: file.size }, meta || {}));
+    const token = start.token, chunk = start.chunk || 8388608;
+    ctl.token = token;
+    let off = start.received || 0, fails = 0;
+    report({ phase: "upload", done: off, total: file.size });
+    while (off < file.size) {
+      if (ctl.cancelled) {
+        try { await call("DELETE", "/media/upload/" + token); } catch (e) {}
+        const e = new Error(TR("Загрузка отменена"));
+        e.cancelled = true;
+        throw e;
+      }
+      const end = Math.min(file.size, off + chunk);
+      let r = null, j = {};
+      try {
+        r = await fetch(BASE + "/media/upload/" + token + "/chunk?offset=" + off,
+          { method: "POST", headers: authHeaders({ "Content-Type": "application/octet-stream" }), body: file.slice(off, end) });
+        j = await r.json().catch(() => ({}));
+      } catch (e) { r = null; }
+      if (r && r.status === 401) { onUnauthorized(); throw new Error(TR("Сессия истекла — войдите снова")); }
+      if (r && r.ok) { off = j.received; fails = 0; report({ phase: "upload", done: off, total: file.size }); continue; }
+      if (r && r.status === 409 && typeof j.received === "number") { off = j.received; continue; }
+      if (r && r.status >= 400 && r.status < 500 && r.status !== 408 && r.status !== 429) {
+        const d = j.detail || j.error || "";
+        const e = new Error(typeof d === "string" && d ? TRS(d) : "Upload failed: " + r.status);
+        e.status = r.status;
+        throw e;
+      }
+      fails++;
+      if (fails > 12) throw new Error(TR("Сеть обрывается — загрузка остановлена. Выберите файл ещё раз: продолжим с того же места."));
+      report({ phase: "retry", done: off, total: file.size });
+      await mediaSleep(Math.min(30000, 1000 * Math.pow(2, Math.min(fails, 5))));
+      try { const s = await call("GET", "/media/upload/" + token); off = s.received; } catch (e) {}
+    }
+    report({ phase: "media", done: 0, total: 0 });
+    return call("POST", "/media/upload/" + token + "/finish", {});
+  }
+
   function uiLangNow() {
     return (window.I18N && window.I18N.lang) || "";
   }
@@ -370,6 +419,17 @@
     mergeNext:     (pid, sid)               => call("POST", `/segments/${pid}/${sid}/merge-next`, {}),
     unmerge:       (pid, sid, force)        => call("POST", `/segments/${pid}/${sid}/unmerge` + (force ? "?force=true" : ""), {}),
     splitSegment:  (pid, sid, at, targetAt) => call("POST", `/segments/${pid}/${sid}/split`, { at, target_at: targetAt }),
+    /* Видео и звук: загрузка кусками (см. uploadMediaChunked), затем сервер
+       сам распознаёт речь. meta — {title, src, tgt, domain, folder} либо
+       {project} — вернуть проекту удалённое по сроку исходное видео. */
+    uploadMedia:   (file, meta, onProgress, ctl) => uploadMediaChunked(file, meta, onProgress, ctl),
+    mediaVoices:   ()                       => call("GET", "/media/voices"),
+    mediaRender:   (pid, what, voice)       => call("POST", `/projects/${pid}/media/render`, { what, voice }),
+    /* Распознать речь снова (после остановки или сбоя): готовые куски не платятся. */
+    mediaTranscribe: (pid)                  => call("POST", `/projects/${pid}/media/transcribe`, {}),
+    /* Короткая подписанная ссылка: браузер переходит по ней сам, файл
+       на гигабайты не идёт через память вкладки. */
+    mediaLink:     (pid, what)              => call("GET", `/projects/${pid}/media/link?what=${encodeURIComponent(what)}`),
     /* `folder` — папка, в которую кладётся файл: он наследует её пару
        и область. Без папки файл сам себе папка. */
     uploadProject: (file, title, src, tgt, domain, folder, onProgress) => {

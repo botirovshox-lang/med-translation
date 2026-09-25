@@ -1095,6 +1095,9 @@ function oppBlockText(code) {
     case "dead.retranslateBulk": return TR("раз файл не дали перевести заново целиком: квота");
     case "dead.sourceGrow409": return TR("раз правка оригинала выросла больше потолка");
     case "dead.budget402": return TR("раз прогон не пустили: потолок расхода на страницу файла");
+    case "cap.media413": return TR("раз видео не взяли: тяжелее или длиннее потолка — спрос на длинные ролики");
+    case "cap.mediaDisk507": return TR("раз видео не взяли: на сервере не хватило места — нужен диск");
+    case "dead.media415": return TR("раз видео или звук не прочитались: нет звуковой дорожки или файл повреждён");
     default: return code;
   }
 }

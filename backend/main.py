@@ -905,6 +905,8 @@ def _delete_project_record(pid: int) -> None:
     # Исходник уходит вместе с проектом. Учебник весит 21 МБ, и оставлять его
     # на диске после удаления значит копить мусор, который никто уже не найдёт:
     # имя файла — номер проекта, а проекта больше нет.
+    if gone is not None and gone.get("media"):
+        shutil.rmtree(str(MEDIA_DIR / str(int(pid))), ignore_errors=True)
     for path in list(_source_paths(pid)) + list(SOURCE_DIR.glob("%d.orig.*" % pid)):
         try:
             path.unlink(missing_ok=True)
@@ -2211,7 +2213,16 @@ def _resolve_model(model_id: Optional[str]) -> dict:
 # Модели, которые человек не выбирает, но которые стоят денег. В OPENAI_MODELS
 # им не место: оттуда строится выпадающий список, и эмбеддингом никто не
 # переводит. Цена — та же единица измерения, USD за 1M токенов.
-AUX_MODEL_PRICES = {EMBED_MODEL: {"in": 0.02, "out": 0.0}}
+# Звук: распознавание речи и синтез. Цена у них не за токены, а за МИНУТУ
+# звука (`perMin`): у распознавания в ответе нет usage вовсе, у синтеза
+# ответ — сами отсчёты. Минуту считаем мы (длина куска / длина синтеза),
+# поэтому это оценка и так и называется (`_note_audio`). in/out — нули:
+# токенного счёта у них нет, а `_usage_cost` иначе назвал бы цену «неизвестной».
+ASR_MODEL = os.environ.get("ASR_MODEL", "whisper-1")
+TTS_MODEL = os.environ.get("TTS_MODEL", "gpt-4o-mini-tts")
+AUX_MODEL_PRICES = {EMBED_MODEL: {"in": 0.02, "out": 0.0},
+                    ASR_MODEL: {"in": 0.0, "out": 0.0, "perMin": 0.006},
+                    TTS_MODEL: {"in": 0.0, "out": 0.0, "perMin": 0.015}}
 
 RUN_COST_HISTORY = 100          # сколько прогонов помним в state.json
 
@@ -2988,6 +2999,12 @@ _PAID = [
     ("POST", re.compile(r"/api/term-queue/\d+/explain$")),
     ("POST", re.compile(r"/api/glossary/audit$")),
     ("POST", re.compile(r"/api/quote/scan$")),     # зрячая модель читает выборку страниц скана
+    # Видео: сборка озвучки зовёт синтез речи, но дверь одна с субтитрами
+    # дорожкой (бесплатно) — лимит проверяет обработчик по виду сборки.
+    # «Готово» у загрузки видео тоже зовёт распознавание, но в таблице его
+    # НЕТ: та же дверь возвращает проекту удалённое исходное видео, а это
+    # бесплатно (инвариант 15). Рубеж — в обработчике, для нового проекта.
+    ("POST", re.compile(r"/api/projects/\d+/media/transcribe$")),
 ]
 
 
@@ -3008,13 +3025,32 @@ def _note_usage(step: str, model_id: str, resp) -> None:
         if not (tin or tout):
             return
         cost = _usage_cost(model_id, tin, tout)
-        with _USAGE_LOCK:
-            for bucket in (_USAGE_TOTAL, _USAGE_SINK):
-                if bucket is not None:
-                    _usage_add(bucket, step, model_id, tin, cached, tout, think, cost)
-            _spend_add(_current_tenant(), cost)
-            _proj_spend_add(_current_tenant(), _usage_project(), cost, calls=1)
-            _ledger_add(step, model_id, tin, cached, tout, think, cost)
+        _note_cost(step, model_id, tin, cached, tout, think, cost)
+    except Exception as e:
+        print(f"[backend] учёт расхода не сработал ({step}/{model_id}): {e}", file=sys.stderr)
+
+
+def _note_cost(step: str, model_id: str, tin: int, cached: int, tout: int, think: int,
+               cost: Optional[float]) -> None:
+    """Общая дорога расхода: счётчик прогона, лимит организации, счёт файла,
+    журнал токенов. Одна на токенный (`_note_usage`) и поминутный
+    (`_note_audio`) учёт — две копии однажды разошлись бы, и деньги одного
+    из видов не легли бы на лимит или на бюджет файла."""
+    with _USAGE_LOCK:
+        for bucket in (_USAGE_TOTAL, _USAGE_SINK):
+            if bucket is not None:
+                _usage_add(bucket, step, model_id, tin, cached, tout, think, cost)
+        _spend_add(_current_tenant(), cost)
+        _proj_spend_add(_current_tenant(), _usage_project(), cost, calls=1)
+        _ledger_add(step, model_id, tin, cached, tout, think, cost)
+
+
+def _note_audio(step: str, model_id: str, seconds: float) -> None:
+    """Расход вызова звука по минутам (`perMin` в AUX_MODEL_PRICES)."""
+    try:
+        per = (AUX_MODEL_PRICES.get(model_id) or {}).get("perMin")
+        cost = None if per is None else max(0.0, float(seconds)) / 60.0 * float(per)
+        _note_cost(step, model_id, 0, 0, 0, 0, cost)
     except Exception as e:
         print(f"[backend] учёт расхода не сработал ({step}/{model_id}): {e}", file=sys.stderr)
 
@@ -7110,6 +7146,11 @@ def _pareto(rows: list, key: str = "n") -> list:
 # это поломка» — суждение, и оно обязано быть ОДНО на экран, на суточный
 # текст и на всё будущее.
 BLOCK_KIND = {
+    # Видео: файл тяжелее или длиннее потолка, на сервере нет места,
+    # в файле нет звука (или он не читается).
+    "cap.media413": "money",
+    "cap.mediaDisk507": "fix",
+    "dead.media415": "fix",
     "cap.filePages413": "money",    # принесли книгу толще потолка — прямой спрос
     "cap.bytes413": "money",
     "cap.pages402": "money",
@@ -7384,6 +7425,9 @@ METRICS_HINT_TEXT = {
 # по коду (инвариант 17), а этот текст уходит МИМО браузера — в Telegram
 # и в ленту ИИ-агента, и подставить перевод на границе показа там некому.
 METRICS_BLOCK_TEXT = {
+    "cap.media413": "видео тяжелее или длиннее потолка — не взяли",
+    "cap.mediaDisk507": "видео не взяли: на сервере не хватило места",
+    "dead.media415": "видео или звук не прочитались: нет звуковой дорожки или файл повреждён",
     "cap.filePages413": "файл толще потолка страниц — не взяли",
     "cap.bytes413": "файл тяжелее потолка в мегабайтах — не взяли",
     "cap.pages402": "кончились выданные страницы",
@@ -9789,16 +9833,28 @@ def _book_image_pages(project: dict) -> None:
     card = _pricing_of(tid)
     have = _image_pages_of(project, card)
     booked = float(project.get("imagePagesBooked") or 0.0)
-    if have - booked < 0.01:
+    # Речь, распознанная с видео (`mediaPages` пишет задача `asr` в воркере),
+    # списывается ЗДЕСЬ же и тем же законом высшей точки: воркер документ
+    # `tenants` не пишет, а все места, где списывается текст с картинок
+    # (показ проекта, конец задачи, перед удалением), нужны и ей.
+    m_have = float(project.get("mediaPages") or 0.0)
+    m_booked = float(project.get("mediaPagesBooked") or 0.0)
+    if have - booked < 0.01 and m_have - m_booked < 0.01:
         return
     with _SAVE_LOCK:
         rec = _tenant_rec(tid)
         if rec is None or rec.get("pagesUsed") is None:
             return
-        delta = round(have - booked, 3)
-        rec["pagesUsed"] = round(float(rec.get("pagesUsed") or 0.0) + delta, 3)
-        _pages_log(rec, "images", delta, project=project.get("id"), title=project.get("title") or "")
-        project["imagePagesBooked"] = round(have, 3)
+        if have - booked >= 0.01:
+            delta = round(have - booked, 3)
+            rec["pagesUsed"] = round(float(rec.get("pagesUsed") or 0.0) + delta, 3)
+            _pages_log(rec, "images", delta, project=project.get("id"), title=project.get("title") or "")
+            project["imagePagesBooked"] = round(have, 3)
+        if m_have - m_booked >= 0.01:
+            delta = round(m_have - m_booked, 3)
+            rec["pagesUsed"] = round(float(rec.get("pagesUsed") or 0.0) + delta, 3)
+            _pages_log(rec, "media", delta, project=project.get("id"), title=project.get("title") or "")
+            project["mediaPagesBooked"] = round(m_have, 3)
         save_state(STATE)
     _tenants_changed()
 
@@ -9807,6 +9863,7 @@ def _book_image_pages(project: dict) -> None:
 def get_project_detail(pid: int):
     t0 = time.time()
     project = get_project(pid)
+    _media_status_fix(project)
     _book_image_pages(project)
     return _json_bytes(_project_for_client(project), "project %s" % pid, t0)
 
@@ -10401,6 +10458,12 @@ def _pages_init(rec: dict, tid: str) -> None:
     if rec.get("pagesUsed") is None:
         rec["pagesUsed"] = round(_pages_used(rec, tid, _pricing_of(tid)), 3)
         _pages_log(rec, "init", rec["pagesUsed"])
+        # Речь с видео входит в объём живого проекта (`pages`), то есть уже
+        # в строке `init`: высшая точка ставится здесь же, иначе показ
+        # проекта списал бы её второй раз.
+        for p in STATE["projects"]:
+            if _tenant_of(p) == tid and p.get("mediaPages"):
+                p["mediaPagesBooked"] = max(float(p.get("mediaPagesBooked") or 0.0), float(p["mediaPages"]))
 
 
 def _pages_topup(tid: str, pages: float, note: Optional[str], paid: bool = False) -> None:
@@ -11014,8 +11077,12 @@ def _tenant_usage(tid: str) -> dict:
         # считалось дважды, а удалённый проект свои страницы возвращал.
         img = round(sum(max(0.0, _image_pages_of(p, card) - float(p.get("imagePagesBooked") or 0.0))
                         for p in mine), 1)
+        # Речь с видео, ещё не списанная (`_book_image_pages`), — тем же приёмом.
+        media = round(sum(max(0.0, float(p.get("mediaPages") or 0.0) - float(p.get("mediaPagesBooked") or 0.0))
+                          for p in mine), 1)
     else:
         img = round(sum(_image_pages_of(p, card) for p in mine), 1)
+        media = 0.0                      # без счётчика она уже в `pages` проекта (`_pages_used`)
     # Дописанное руками (`handPages`) — СПРАВКА, а не слагаемое: списывается
     # оно приращением в момент правки (`_hand_pages_book`), то есть уже сидит
     # в `used`, а незанятый бесплатный допуск платным не станет никогда.
@@ -11025,8 +11092,8 @@ def _tenant_usage(tid: str) -> dict:
     # глазами и видит то, чего мы не предусмотрели.
     hand = round(sum(float(p.get("handPages") or 0.0) for p in mine), 1)
     caps = _tenant_caps(tid)
-    total = round(used + img, 1)
-    return {"pages": total, "used": used, "imagePages": img, "handPages": hand,
+    total = round(used + img + media, 1)
+    return {"pages": total, "used": used, "imagePages": img, "mediaPages": media, "handPages": hand,
             "projects": len(mine),
             "credit": caps["own"]["maxPages"],
             "left": round(max(0.0, caps["maxPages"] - total), 1) if caps["pagesLimited"] else None,
@@ -11498,7 +11565,8 @@ def _parse_upload(filename: str, content: bytes) -> dict:
 # на каждую выдумку загрузчика. Чужое — «other», и его число тоже видно.
 _EXT_KNOWN = {"docx", "doc", "pdf", "xlsx", "xls", "pptx", "ppt", "txt", "csv", "tsv",
               "md", "html", "htm", "rtf", "odt", "json", "xml", "po", "srt", "vtt",
-              "yaml", "yml", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp", "zip"}
+              "yaml", "yml", "png", "jpg", "jpeg", "tif", "tiff", "bmp", "webp", "zip",
+              "mp4", "mov", "mkv", "webm", "avi", "m4v", "mp3", "wav", "m4a", "ogg", "flac"}
 
 
 def _ext_code(name: str) -> str:
@@ -16032,6 +16100,7 @@ def _warm_on_startup():
     if IS_WORKER or os.environ.get("WARM_CACHES", "1") == "0":
         return
     threading.Thread(target=_warm_caches, name="mcat-warm", daemon=True).start()
+    threading.Thread(target=_media_sweep_maybe, name="mcat-media-sweep", daemon=True).start()
 
 
 # Занятость очереди — в журнал при старте. О потолке узнавали только из строки
@@ -26959,7 +27028,10 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
 # потерять шрифты, таблицы, картинки и колонтитулы разом — то есть заменить
 # точную выгрузку на приблизительную.
 EXPORT_EXT = {"docx": "docx", "xlsx": "xlsx", "docx_layout": "docx", "pdf": "pdf",
-              "original": None}          # расширение — у исходного файла проекта
+              "original": None,
+              # Субтитры в формате WebVTT — из того же перевода, что и .srt
+              # «в исходном виде»: браузерные плееры и YouTube берут VTT.
+              "vtt": "vtt"}          # расширение — у исходного файла проекта
 EXPORT_SUFFIX = {"docx_layout": " 1в1", "original": " перевод"}
 
 
@@ -27340,6 +27412,19 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
         stats = dict(stats or {}, pdfBytes=len(pdf), pdfFrom=base)
     elif fmt == "original":
         stats = _export_original(project, out, tmp)
+    elif fmt == "vtt":
+        if _original_ext(project) not in (".srt", ".vtt"):
+            raise HTTPException(400, "Формат VTT есть только у субтитров и видео")
+        inner = out.with_name(out.name + ".%s.sub" % secrets.token_hex(4))
+        try:
+            stats = _export_original(project, out, inner)
+            sub, _enc = textcount._decode(inner.read_bytes())
+        finally:
+            try:
+                inner.unlink()
+            except OSError:
+                pass
+        tmp.write_bytes(importers.render_cues(importers.cue_list(sub), ".vtt").encode("utf-8"))
     elif fmt == "docx_layout":
         stats = _export_docx_layout(project, tmp)
     elif fmt == "docx":
@@ -27434,7 +27519,7 @@ def download_export(pid: int, format: str = "docx", source: bool = True):
         if ready.exists():
             return FileResponse(str(ready), media_type="application/pdf", filename=ready.name)
     path, _stats = _generate_export(project, fmt, include_source=source)
-    media = ("application/pdf" if fmt == "pdf" else
+    media = ("application/pdf" if fmt == "pdf" else "text/vtt" if fmt == "vtt" else
              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
              if fmt == "xlsx"
              else "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
@@ -28188,6 +28273,11 @@ def health(request: Request):
 import queue as _queue
 
 JOB_CHUNKS = {"translate": 10, "backcheck": 10, "termcheck": 10, "medical_qa": 10,
+              # Видео: распознавание речи и сборка (субтитры дорожкой, озвучка).
+              # Порций по сегментам у них нет — цикл свой (`_job_media`), число
+              # здесь лишь затем, что `_job_run` читает его до ветвления.
+              # Ставит их не `create_job`, а свои двери (`_MEDIA_KINDS`).
+              "asr": 1, "mediarender": 1,
               # Сверка терминов моделью: один вызов на сегмент, порция как
               # у остальных проверок.
               "termaudit": 10,
@@ -29543,6 +29633,9 @@ def _job_run(job: dict):
     _JOB_USER.id = job.get("user")
     _JOB_PROJECT.id = pid              # расход прогона — на его проект
     chunk_size = JOB_CHUNKS[kind]
+    if kind in _MEDIA_KINDS:
+        _job_media(job)
+        return
     if kind == "images":
         # Разбор картинок не идёт по сегментам: их ещё нет — они из него
         # и рождаются. Цикл свой, но остановка, счётчики и сохранение общие.
@@ -30009,7 +30102,9 @@ def create_job(pid: int, req: JobRequest):
     project = get_project(pid)              # 404, если проекта нет
     if req.kind == "images":
         _trial_guard(project, TRIAL_IMAGES_409)
-    if req.kind not in JOB_KINDS:
+    if req.kind not in JOB_KINDS or req.kind in _MEDIA_KINDS:
+        # Видео-задачи ставят свои двери: там проверки диска, звука и денег,
+        # которых у общей постановки нет.
         raise HTTPException(400, "Неизвестный тип прогона: " + req.kind)
     ids = list(dict.fromkeys(req.segment_ids))
     # Перевод заново ВСЕГО файла — только суперпользователю или в квоте
@@ -30099,6 +30194,1050 @@ def _job_enqueue(pid: int, kind: str, ids: list, params: Optional[dict]) -> dict
         _ensure_job_worker()
         _JOB_QUEUE.put(1)          # сигнал «появилась работа», выбор — по билету
     return job
+
+
+# ─── Видео и звук: речь → субтитры с таймингом → перевод → озвучка ────
+# (инвариант 38). Устройство:
+#   * файл до MEDIA_MAX_GB идёт КУСКАМИ по 8 МБ (`/api/media/upload…`) —
+#     с докачкой: браузер спрашивает, сколько принято, и шлёт дальше. Целиком
+#     в память он не попадает никогда: кусок пишется на диск в threadpool;
+#   * «готово» (`finish`) читает только заголовки файла (ffprobe), заводит
+#     ПУСТОЙ проект и ставит задачу `asr`. Проект — это файл субтитров:
+#     `fileName` — «<имя>.srt», а видео — полем `media` и файлом в
+#     data/media/{pid}/. Поэтому выгрузка «в исходном виде», повторный
+#     импорт и правка строк работают с ним как с любым .srt;
+#   * задача `asr` (воркер) вынимает звук (кадры не декодируются), режет его
+#     по паузам, распознаёт кусками (ответ каждого куска — файлом: повтор
+#     после рестарта, уступки или остановки не платит), собирает реплики,
+#     и дальше идёт ТОТ ЖЕ путь, что у загруженного .srt (`_parse_upload`);
+#   * страницы — по словам расшифровки (`mediaPages`), списывает их API
+#     в `_book_image_pages` (воркер документ `tenants` не пишет);
+#   * `mediarender` (воркер) — видео с дорожкой субтитров копией потока или
+#     закадровый перевод (синтез речи, укладка в тайминг, приглушённый
+#     оригинал). Готовое скачивается короткой подписанной ссылкой
+#     (`/media-dl/…`), а не через память браузера: 2 ГБ в blob роняют вкладку.
+import base64
+
+try:
+    import media as media_mod
+except ImportError:                                   # pragma: no cover
+    from backend import media as media_mod            # type: ignore
+
+MEDIA_DIR = DATA_DIR / "media"            # внутри ReadWritePaths systemd-юнита
+MEDIA_UPLOAD_DIR = MEDIA_DIR / "uploads"
+_GB = 1024 ** 3
+MEDIA_MAX_BYTES = int(float(os.environ.get("MEDIA_MAX_GB", "2.5")) * _GB)
+MEDIA_MAX_MINUTES = float(os.environ.get("MEDIA_MAX_MINUTES", "180"))
+MEDIA_CHUNK = 8 * 1024 * 1024             # кусок загрузки; nginx пропускает до 50 МБ
+MEDIA_DISK_RESERVE = int(float(os.environ.get("MEDIA_DISK_RESERVE_GB", "5")) * _GB)
+MEDIA_DISK_MAX = int(float(os.environ.get("MEDIA_DISK_MAX_GB", "15")) * _GB)
+# Незаконченных загрузок на ЧЕЛОВЕКА (не на организацию: чужой обрыв
+# не должен запирать коллег). Тот же файл повторно — докачка, а не новая.
+MEDIA_UPLOADS_PER_TENANT = int(os.environ.get("MEDIA_UPLOADS_PER_TENANT", "2"))
+MEDIA_UPLOAD_TTL = 24 * 3600              # брошенная загрузка живёт сутки
+MEDIA_KEEP_DAYS = float(os.environ.get("MEDIA_KEEP_DAYS", "14"))       # исходное видео
+MEDIA_RENDER_KEEP_H = float(os.environ.get("MEDIA_RENDER_KEEP_H", "48"))  # готовые сборки
+# Оценка объёма речи ДО распознавания: ~190 слов в минуту — быстрая живая
+# речь, с запасом, — при норме 250 слов на страницу. По ней — отказ 402 или фрагмент на старте;
+# списывается потом ФАКТ по словам расшифровки.
+MEDIA_PAGES_PER_MIN = float(os.environ.get("MEDIA_PAGES_PER_MIN", "0.75"))
+ASR_PARALLEL = 3
+TTS_BATCH = 8
+MEDIA_LINK_TTL = 3600
+# Ключ подписи ссылок на скачивание. Без переменной — свой на процесс:
+# рестарт гасит выданные ссылки, срок у них всё равно час.
+_MEDIA_LINK_KEY = (os.environ.get("MEDIA_LINK_SECRET") or "").encode() or secrets.token_bytes(32)
+# Прямая отдача большого файла nginx'ом (X-Accel-Redirect): без неё 2 ГБ
+# шли бы через цикл событий единственного воркера. Префикс — internal-location
+# в конфиге nginx, смотрящий на data/media/. Пусто — отдаёт приложение.
+MEDIA_ACCEL_PREFIX = os.environ.get("MEDIA_ACCEL_PREFIX", "").strip()
+_MEDIA_KINDS = {"asr", "mediarender"}
+# Голоса озвучки. Наружу — нейтральные ярлыки: имя голоса поставщика само
+# называет поставщика (инвариант 24а), а человеку нужно «мужской/женский».
+MEDIA_VOICES = [{"id": "f1", "gender": "f", "v": "coral"}, {"id": "f2", "gender": "f", "v": "nova"},
+                {"id": "m1", "gender": "m", "v": "onyx"}, {"id": "m2", "gender": "m", "v": "ash"}]
+_MEDIA_LOCK = threading.Lock()
+
+
+def _media_dir(pid: int) -> Path:
+    return MEDIA_DIR / str(int(pid))
+
+
+def _media_source(project: dict) -> Optional[Path]:
+    m = project.get("media") or {}
+    p = _media_dir(project["id"]) / ("source" + (m.get("ext") or ""))
+    return p if p.exists() else None
+
+
+def _dir_size(path: Path) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(str(path)):
+        for n in files:
+            try:
+                total += os.path.getsize(os.path.join(root, n))
+            except OSError:
+                pass
+    return total
+
+
+def _media_disk_refusal(need: int) -> Optional[str]:
+    """Хватит ли места на `need` байт: свободное место за вычетом запаса
+    сервера и общий потолок каталога видео. Причина словами или None."""
+    try:
+        free = shutil.disk_usage(str(DATA_DIR)).free
+    except OSError:
+        free = 0
+    if free - need < MEDIA_DISK_RESERVE:
+        return "На сервере сейчас не хватает места для такого файла — попробуйте позже или сообщите в поддержку"
+    if MEDIA_DIR.exists() and _dir_size(MEDIA_DIR) + need > MEDIA_DISK_MAX:
+        return "Хранилище видео заполнено — попробуйте позже или сообщите в поддержку"
+    return None
+
+
+def _media_upload_rec(token: str) -> tuple:
+    """(запись загрузки, путь .part). Чужая организация или пользователь — 404:
+    403 подтверждал бы, что такая загрузка есть."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,64}", token or ""):
+        raise HTTPException(404, "Загрузка не найдена")
+    meta = MEDIA_UPLOAD_DIR / (token + ".json")
+    try:
+        rec = json.loads(meta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise HTTPException(404, "Загрузка не найдена — начните заново")
+    if rec.get("tenant") != _current_tenant() or rec.get("user") != _current_uid():
+        raise HTTPException(404, "Загрузка не найдена")
+    return rec, MEDIA_UPLOAD_DIR / (token + ".part")
+
+
+def _media_upload_drop(token: str) -> None:
+    for ext in (".json", ".part"):
+        try:
+            (MEDIA_UPLOAD_DIR / (token + ext)).unlink()
+        except OSError:
+            pass
+
+
+def _media_sweep(now: Optional[float] = None) -> dict:
+    """Уборка: брошенные загрузки старше суток, готовые сборки старше
+    MEDIA_RENDER_KEEP_H, исходные видео старше MEDIA_KEEP_DAYS (проект
+    остаётся — субтитры и перевод живут без видео; для сборки его загружают
+    заново той же формой). Только в API: документ проекта пишет он."""
+    if IS_WORKER:
+        return {}
+    now = now or time.time()
+    out = {"uploads": 0, "renders": 0, "sources": 0}
+    if MEDIA_UPLOAD_DIR.exists():
+        for meta in MEDIA_UPLOAD_DIR.glob("*.json"):
+            try:
+                age = now - meta.stat().st_mtime
+                part = meta.with_suffix(".part")
+                if part.exists():
+                    age = min(age, now - part.stat().st_mtime)
+            except OSError:
+                continue
+            if age > MEDIA_UPLOAD_TTL:
+                _media_upload_drop(meta.stem)
+                out["uploads"] += 1
+    dirty = False
+    for p in list(STATE.get("projects") or []):
+        m = p.get("media")
+        if not m or _active_job_for(p["id"]):
+            continue
+        d = _media_dir(p["id"]) / "out"
+        for f in (d.glob("*") if d.exists() else []):
+            try:
+                if now - f.stat().st_mtime > MEDIA_RENDER_KEEP_H * 3600:
+                    f.unlink()
+                    out["renders"] += 1
+            except OSError:
+                pass
+        src = _media_source(p)
+        if src is not None:
+            try:
+                old = now - src.stat().st_mtime > MEDIA_KEEP_DAYS * 86400
+            except OSError:
+                old = False
+            if old:
+                try:
+                    src.unlink()
+                    out["sources"] += 1
+                    m["kept"] = False
+                    dirty = True
+                except OSError:
+                    pass
+                for sub in ("asr", "tts", "work"):
+                    shutil.rmtree(str(_media_dir(p["id"]) / sub), ignore_errors=True)
+    if dirty:
+        save_state(STATE)
+    return out
+
+
+_MEDIA_SWEEP_AT = {"t": 0.0}
+
+
+def _media_sweep_maybe() -> None:
+    """Уборка не чаще раза в час: её зовут загрузка, сборка и старт API."""
+    if time.time() - _MEDIA_SWEEP_AT["t"] < 3600:
+        return
+    _MEDIA_SWEEP_AT["t"] = time.time()
+    try:
+        _media_sweep()
+    except Exception as e:
+        print("[backend] уборка видео не удалась: %s" % e, file=sys.stderr)
+
+
+class MediaUploadInit(BaseModel):
+    name: str
+    size: int
+    title: str = ""
+    src: str = "RU"
+    tgt: str = "EN"
+    domain: str = DEFAULT_DOMAIN
+    folder: Optional[int] = None
+    project: Optional[int] = None   # вернуть удалённое исходное видео проекту
+
+
+@app.post("/api/media/upload")
+def media_upload_start(req: MediaUploadInit):
+    """Начать загрузку видео или звука кусками. Ничего тяжёлого: проверки
+    по объявленному размеру и расширению, место на диске, запись о загрузке."""
+    tid = _current_tenant()
+    ok, why = media_mod.available()
+    if not ok:
+        raise HTTPException(503, "Видео сейчас не принимаем: " + why)
+    ext = importers.ext_of(req.name or "")
+    if ext not in media_mod.MEDIA_EXT:
+        _ev("dead.media415", tid)
+        raise HTTPException(415, "Формат %s не поддерживается. Видео: %s; звук: %s"
+                            % (ext or "без расширения", ", ".join(sorted(media_mod.VIDEO_EXT)),
+                               ", ".join(sorted(media_mod.AUDIO_EXT))))
+    if req.size <= 0:
+        raise HTTPException(400, "Файл пустой")
+    if req.size > MEDIA_MAX_BYTES:
+        _ev("cap.media413", tid)
+        raise HTTPException(413, "Файл больше %.1f ГБ — разрежьте видео на части" % (MEDIA_MAX_BYTES / _GB))
+    if req.project is not None:
+        target = get_project(req.project)
+        if not target.get("media"):
+            raise HTTPException(400, "Это не видео-проект")
+    else:
+        _check_lang_pair(req.src, req.tgt)
+        if req.folder is not None:
+            get_folder(req.folder)
+        caps = _tenant_caps(tid)
+        if caps["maxProjects"] and len(_tenant_projects()) >= caps["maxProjects"]:
+            _ev("cap.projects402", tid)
+            raise HTTPException(402, "В организации уже %d файлов, а потолок %d: удалите ненужные"
+                                % (len(_tenant_projects()), caps["maxProjects"]))
+    MEDIA_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    _media_sweep_maybe()
+    uid = _current_uid()
+    with _MEDIA_LOCK:
+        mine = 0
+        for meta in MEDIA_UPLOAD_DIR.glob("*.json"):
+            try:
+                old = json.loads(meta.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if old.get("tenant") != tid or old.get("user") != uid:
+                continue
+            # Тот же файл (имя и размер) туда же — это ДОКАЧКА после обрыва
+            # или перезагрузки страницы: отдаём прежнюю загрузку с тем,
+            # сколько уже принято, а не заводим новую с нуля.
+            if (old.get("name") == req.name[:200] and old.get("size") == int(req.size)
+                    and old.get("project") == req.project and old.get("folder") == req.folder):
+                part = MEDIA_UPLOAD_DIR / (old["token"] + ".part")
+                old.update({"title": (req.title or old.get("title") or "")[:200], "src": req.src,
+                            "tgt": req.tgt, "domain": req.domain})
+                meta.write_text(json.dumps(old, ensure_ascii=False), encoding="utf-8")
+                return {"token": old["token"], "chunk": MEDIA_CHUNK, "size": old["size"],
+                        "received": part.stat().st_size if part.exists() else 0}
+            mine += 1
+        if mine >= MEDIA_UPLOADS_PER_TENANT:
+            raise HTTPException(429, "Уже идут %d загрузки видео — дождитесь их или отмените" % mine)
+        refusal = _media_disk_refusal(int(req.size * 1.1))
+        if refusal:
+            _ev("cap.mediaDisk507", tid)
+            raise HTTPException(507, refusal)
+        token = secrets.token_urlsafe(18)
+        rec = {"token": token, "tenant": tid, "user": _current_uid(), "name": req.name[:200],
+               "ext": ext, "size": int(req.size), "title": (req.title or "")[:200],
+               "src": req.src, "tgt": req.tgt, "domain": req.domain, "folder": req.folder,
+               "project": req.project, "created": time.time()}
+        (MEDIA_UPLOAD_DIR / (token + ".json")).write_text(json.dumps(rec, ensure_ascii=False),
+                                                          encoding="utf-8")
+        (MEDIA_UPLOAD_DIR / (token + ".part")).touch()
+    return {"token": token, "chunk": MEDIA_CHUNK, "received": 0, "size": rec["size"]}
+
+
+@app.get("/api/media/upload/{token}")
+def media_upload_status(token: str):
+    rec, part = _media_upload_rec(token)
+    return {"received": part.stat().st_size if part.exists() else 0, "size": rec["size"]}
+
+
+def _media_append(part: Path, offset: int, data: bytes) -> int:
+    with _MEDIA_LOCK:
+        have = part.stat().st_size if part.exists() else 0
+        if have != offset:
+            return -have - 1          # сигнал «не то место» с принятым размером
+        with open(str(part), "ab") as fh:
+            fh.write(data)
+        return have + len(data)
+
+
+@app.post("/api/media/upload/{token}/chunk")
+async def media_upload_chunk(token: str, request: Request, offset: int = 0):
+    """Кусок файла сырыми байтами. `offset` обязан совпасть с уже принятым:
+    иначе 409 с тем, сколько принято, — браузер продолжает оттуда. Запись
+    на диск — в threadpool: цикл событий единственного воркера не ждёт диска."""
+    rec, part = _media_upload_rec(token)
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MEDIA_CHUNK:
+        raise HTTPException(413, "Кусок больше %d МБ" % (MEDIA_CHUNK // 1024 // 1024))
+    data = await request.body()
+    if len(data) > MEDIA_CHUNK:
+        raise HTTPException(413, "Кусок больше %d МБ" % (MEDIA_CHUNK // 1024 // 1024))
+    if offset + len(data) > rec["size"]:
+        raise HTTPException(400, "Кусок выходит за объявленный размер файла")
+    got = await run_in_threadpool(_media_append, part, int(offset), data)
+    if got < 0:
+        return JSONResponse({"ok": False, "error": "Не то место файла", "received": -got - 1},
+                            status_code=409)
+    return {"received": got, "size": rec["size"]}
+
+
+@app.delete("/api/media/upload/{token}")
+def media_upload_cancel(token: str):
+    _media_upload_rec(token)
+    _media_upload_drop(token)
+    return {"ok": True}
+
+
+def _media_public(info: dict, rec: dict) -> dict:
+    v = info.get("video") or None
+    return {"name": rec["name"], "ext": rec["ext"], "size": rec["size"],
+            "duration": info.get("duration") or 0.0, "container": (info.get("container") or "")[:40],
+            "video": ({"codec": v.get("codec"), "width": v.get("width"), "height": v.get("height")}
+                      if v else None),
+            "audio": ({"codec": (info.get("audio") or {}).get("codec"),
+                       "channels": (info.get("audio") or {}).get("channels")} if info.get("audio") else None),
+            "kept": True, "uploaded": datetime.now().strftime("%Y-%m-%d %H:%M")}
+
+
+@app.post("/api/media/upload/{token}/finish")
+def media_upload_finish(token: str):
+    """Файл принят целиком: заголовки (ffprobe, секунды даже на 2 ГБ), проверки
+    звука и длины, страниц и денег, ПУСТОЙ проект и задача распознавания.
+    Возврат видео удалённому исходнику — тот же путь без нового проекта."""
+    rec, part = _media_upload_rec(token)
+    tid = _current_tenant()
+    have = part.stat().st_size if part.exists() else 0
+    if have != rec["size"]:
+        raise HTTPException(409, "Файл принят не целиком: %d из %d байт" % (have, rec["size"]))
+    try:
+        info = media_mod.probe(part)
+    except media_mod.MediaError as e:
+        _ev("dead.media415", tid)
+        raise HTTPException(415, "Файл не читается как видео или звук: %s" % e)
+    if not info.get("audio"):
+        _ev("dead.media415", tid)
+        raise HTTPException(415, "В файле нет звуковой дорожки — распознавать нечего")
+    dur = float(info.get("duration") or 0.0)
+    if dur <= 0.5:
+        _ev("dead.media415", tid)
+        raise HTTPException(415, "Длительность файла не определяется — файл повреждён или не дописан")
+    if dur > MEDIA_MAX_MINUTES * 60:
+        _ev("cap.media413", tid)
+        raise HTTPException(413, "Видео длиннее %d мин — разрежьте его на части" % int(MEDIA_MAX_MINUTES))
+    if rec.get("project") is not None:
+        return _media_reattach(rec, part, info)       # бесплатно: модель не зовётся
+    st0 = _spend_status()
+    if st0["over"]:
+        return _limit_402(st0, tid)
+    minutes = dur / 60.0
+    # Страницы: оценка ДО распознавания. Не хватает на всё видео — распознаём
+    # начало, на которое остатка хватит (не меньше минуты), и называем это.
+    limit_sec = None
+    usage = _tenant_usage(tid)
+    est_pages = minutes * MEDIA_PAGES_PER_MIN
+    if usage.get("left") is not None and usage["left"] < est_pages:
+        fit = usage["left"] / MEDIA_PAGES_PER_MIN * 60.0
+        if fit < 60.0:
+            _ev("cap.pages402", tid)
+            raise HTTPException(402, "Видео ≈ %.1f стр. текста, а осталось %.1f стр.: пополните лимит у администратора"
+                                % (est_pages, usage["left"]))
+        limit_sec = round(fit, 1)
+    # Деньги: распознавание платное, смета — по минутам.
+    est_usd = (limit_sec or dur) / 60.0 * float((AUX_MODEL_PRICES.get(ASR_MODEL) or {}).get("perMin") or 0)
+    st = _spend_status()
+    if st.get("limitUsd") is not None and st["spentUsd"] + est_usd > float(st["limitUsd"]):
+        _ev("cap.spend402", tid)
+        raise HTTPException(402, "Распознавание этого видео не уместится в лимит расхода организации")
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(503, "Распознавание речи сейчас недоступно: сообщите администратору")
+    folder = _folder_target(rec.get("folder")) if rec.get("folder") is not None else None
+    domain = folder["domain"] if folder is not None else _resolve_domain(rec.get("domain") or DEFAULT_DOMAIN)["id"]
+    base =(rec["name"].rsplit(".", 1)[0] or "video")[:120]
+    title = rec.get("title") or base
+    new_id = _next_id()
+    d = _media_dir(new_id)
+    d.mkdir(parents=True, exist_ok=True)
+    os.replace(str(part), str(d / ("source" + rec["ext"])))
+    _media_upload_drop(token)
+    project = {
+        "id": new_id, "title": title, "titleEn": title,
+        "src": rec["src"], "tgt": rec["tgt"], "domain": domain, "tenant": tid,
+        "status": "in_progress", "created": datetime.now().strftime("%Y-%m-%d"), "deadline": "",
+        # Проект — файл СУБТИТРОВ: по его имени выгрузка «в исходном виде»
+        # пишет перевод обратно в .srt, а видео живёт отдельно (`media`).
+        "fileName": base + ".srt",
+        "pages": 0.0, "pagesUnit": "words",
+        "importKind": "video" if info.get("video") else "audio",
+        "media": _media_public(info, rec),
+        "mediaStatus": "transcribing",
+        "segments": [],
+    }
+    if limit_sec:
+        project["mediaExcerpt"] = {"sec": limit_sec, "of": round(dur, 1)}
+    if folder is not None:
+        project["folder"] = folder["id"]
+    with _SAVE_LOCK:
+        STATE["projects"].insert(0, project)
+        _PROJECTS_VER[0] += 1
+        save_state(STATE)
+    if folder is not None:
+        _folders_changed()
+    job = _job_enqueue(new_id, "asr", [], {"limitSec": limit_sec, "est_cost": round(est_usd, 4)})
+    _ev("funnel.upload:" + _ext_code(rec["name"]), tid)
+    return dict(project, jobId=job["id"])
+
+
+def _media_reattach(rec: dict, part: Path, info: dict) -> dict:
+    """Исходное видео проекта удалено по сроку хранения — человек загрузил его
+    снова. Узнаём по длительности (±2%): субтитры привязаны к ТАЙМИНГУ этого
+    файла, и чужое видео получило бы реплики не в свои секунды."""
+    project = get_project(rec["project"])
+    _guard_project_write(project["id"])
+    old = float((project.get("media") or {}).get("duration") or 0)
+    dur = float(info.get("duration") or 0)
+    if old and abs(dur - old) > max(1.5, old * 0.02):
+        raise HTTPException(409, "Это другое видео: длительность %d с, а у проекта %d с"
+                            % (int(dur), int(old)))
+    d = _media_dir(project["id"])
+    d.mkdir(parents=True, exist_ok=True)
+    for f in d.glob("source.*"):
+        f.unlink(missing_ok=True)
+    os.replace(str(part), str(d / ("source" + rec["ext"])))
+    _media_upload_drop(rec["token"])
+    m = _media_public(info, rec)
+    project["media"] = dict(project.get("media") or {}, **{k: m[k] for k in ("ext", "size", "video", "audio",
+                                                                              "container", "uploaded")},
+                            kept=True, name=rec["name"])
+    save_state(STATE)
+    return project
+
+
+# ─── Задачи воркера ────────────────────────────────────────────────
+
+def _media_abort() -> bool:
+    return _SHUTDOWN.is_set()
+
+
+media_mod.ABORT = _media_abort
+
+
+def _job_media(job: dict) -> None:
+    """Распознавание и сборка: общий каркас — статус, парковка на выкате,
+    отметка ошибки на проекте (иначе карточка вечно «распознаём»)."""
+    pid = job["project"]
+    try:
+        if job["kind"] == "asr":
+            _job_asr(job)
+        else:
+            _job_mediarender(job)
+    except media_mod.Aborted:
+        _job_park(job)               # выкат: ffmpeg убит, задача продолжит после рестарта
+        return
+    except Exception as e:
+        p_ = _project_by_id(pid)
+        if p_ is not None and job["kind"] == "asr":
+            p_["mediaStatus"] = "failed"
+            p_["mediaError"] = _media_err_text(e)
+            save_state(STATE)
+        raise RuntimeError(_media_err_text(e))
+    if job["status"] == "queued":
+        return
+    if job["status"] == "running":
+        job["status"] = "done"
+    job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    p_ = _project_by_id(pid)
+    if p_ is not None and job["kind"] == "asr" and job["status"] != "done" \
+            and p_.get("mediaStatus") == "transcribing":
+        # Остановили кнопкой или лимитом: строк нет, и карточка иначе вечно
+        # показывала бы «распознаём». Распознанные куски лежат файлами —
+        # «Распознать снова» за них второй раз не платит.
+        p_["mediaStatus"] = "failed"
+        p_["mediaError"] = _media_stop_text(job)
+        save_state(STATE)
+    if p_ is not None and not IS_WORKER:
+        try:
+            _book_image_pages(p_)
+        except Exception as e:
+            print(f"[backend] job#{job.get('id')}: страницы речи не списаны: {e}", file=sys.stderr)
+
+
+def _media_stop_text(job: dict) -> str:
+    why = job.get("stopReason")
+    if why == "limit":
+        return "Распознавание остановлено: исчерпан лимит расхода организации"
+    if why == "budget":
+        return "Распознавание остановлено: потолок расхода на этот файл"
+    if why == "provider_quota":
+        return "Распознавание остановлено: у поставщика моделей закончился баланс сервиса"
+    return "Распознавание остановлено"
+
+
+def _media_status_fix(project: dict) -> None:
+    """«Распознаём», а задачи нет: её остановили до старта (лимит проверяется
+    в `_job_execute` раньше нашего каркаса), она упала или пропала вместе
+    с рестартом (у файлового хранилища задачи живут в памяти). Без этой
+    сверки карточка ждала бы строк вечно. Задача, закончившаяся «готово»,
+    не трогается: документ проекта от воркера просто ещё не доехал до API,
+    и отметка «сбой» поверх него была бы враньём."""
+    if IS_WORKER or project.get("mediaStatus") != "transcribing":
+        return
+    pid = project["id"]
+    # Зеркало задач у API подтягивается из базы лениво; после рестарта оно
+    # пустое, и без этой строки живое распознавание объявилось бы сбоем.
+    _refresh_jobs_from_db(force=True)
+    if _active_job_for(pid):
+        return
+    runs = [j for j in _JOBS.values() if j.get("project") == pid and j.get("kind") == "asr"]
+    last = max(runs, key=lambda j: j["id"]) if runs else None
+    if last is not None and last.get("status") == "done":
+        return
+    project["mediaStatus"] = "failed"
+    project["mediaError"] = (_media_stop_text(last) if last is not None and last.get("status") == "stopped"
+                             else (last or {}).get("error") or "Распознавание не завершилось")
+    save_state(STATE)
+
+
+@app.post("/api/projects/{pid}/media/transcribe")
+def media_transcribe(pid: int):
+    """Распознать речь снова: после остановки, сбоя или рестарта. Куски,
+    уже распознанные, берутся из файлов — платится только остаток."""
+    project = get_project(pid)
+    if not project.get("media"):
+        raise HTTPException(400, "Это не видео-проект")
+    _guard_project_write(pid)
+    if project.get("mediaStatus") == "ready":
+        raise HTTPException(409, "Речь уже распознана")
+    if _media_source(project) is None:
+        raise HTTPException(409, "Исходное видео удалено по сроку хранения — загрузите его заново на карточке файла")
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise HTTPException(503, "Распознавание речи сейчас недоступно: сообщите администратору")
+    st = _spend_status()
+    if st["over"]:
+        return _limit_402(st, _current_tenant())
+    ex = project.get("mediaExcerpt") or {}
+    project["mediaStatus"] = "transcribing"
+    project.pop("mediaError", None)
+    save_state(STATE)
+    job = _job_enqueue(pid, "asr", [], {"limitSec": ex.get("sec")})
+    return {"ok": True, "job": _job_public(job), "project": _project_for_client(project)}
+
+
+def _media_err_text(e: Exception) -> str:
+    """Текст ошибки для человека: без имён моделей и голосов поставщика
+    (инвариант 24а) — текст ошибки SDK называет их прямо."""
+    t = str(e)[:300]
+    for name in [ASR_MODEL, TTS_MODEL] + [v["v"] for v in MEDIA_VOICES]:
+        t = re.sub(r"\b%s\b" % re.escape(name), "…", t)
+    return t
+
+
+MEDIA_TRIES = 3                          # попыток на кусок звука / реплику озвучки
+MEDIA_RETRY_PAUSE = float(os.environ.get("MEDIA_RETRY_PAUSE", "3"))
+
+
+def _media_retry(batch: list, out: list, tries: dict) -> list:
+    """Упавшие элементы пачки — обратно в очередь, пока попытки не кончились:
+    временный отказ поставщика на одном куске трёхчасового видео не должен
+    стоить всей задачи."""
+    again = []
+    for it, r in zip(batch, out):
+        if r.get("ok"):
+            continue
+        k = str(it[0]) if isinstance(it, tuple) else str(it)      # кусок звука / текст реплики
+        tries[k] = tries.get(k, 0) + 1
+        if tries[k] < MEDIA_TRIES:
+            again.append(it)
+    return again
+
+
+def _asr_language(code: str) -> Optional[str]:
+    """Код языка для распознавания — ISO 639-1 строчными («UZ-CYRL» → «uz»)."""
+    c = (code or "").split("-")[0].lower()
+    return c if re.fullmatch(r"[a-z]{2}", c) else None
+
+
+def _asr_chunk(item: tuple) -> dict:
+    """Один кусок звука → ответ распознавания, кэш файлом рядом с куском.
+    Ловит свои ошибки сам (`_run_parallel`)."""
+    path, offset, lang, prompt = item
+    cache = Path(str(path) + ".json")
+    if cache.exists():
+        try:
+            return {"ok": True, "data": json.loads(cache.read_text(encoding="utf-8")), "offset": offset}
+        except (OSError, ValueError):
+            pass
+    try:
+        _llm_limit_gate()
+        from openai import OpenAI
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=300, max_retries=2)
+        kw = {"model": ASR_MODEL, "response_format": "verbose_json",
+              "timestamp_granularities": ["word", "segment"]}
+        if lang:
+            kw["language"] = lang
+        if prompt:
+            kw["prompt"] = prompt
+        with open(str(path), "rb") as fh:
+            resp = client.audio.transcriptions.create(file=fh, **kw)
+        data = resp if isinstance(resp, dict) else (resp.model_dump() if hasattr(resp, "model_dump") else dict(resp))
+        keep = {"duration": data.get("duration"), "language": data.get("language"),
+                "segments": [{k: s.get(k) for k in ("start", "end", "text", "no_speech_prob",
+                                                      "avg_logprob", "compression_ratio")}
+                             for s in (data.get("segments") or [])],
+                "words": [{k: w.get(k) for k in ("word", "start", "end")} for w in (data.get("words") or [])]}
+        _note_audio("asr", ASR_MODEL, float(keep.get("duration") or 0.0))
+        tmp = cache.with_name(cache.name + ".tmp")
+        tmp.write_text(json.dumps(keep, ensure_ascii=False), encoding="utf-8")
+        os.replace(str(tmp), str(cache))
+        return {"ok": True, "data": keep, "offset": offset}
+    except Exception as e:
+        _note_provider_error(e)
+        return {"ok": False, "error": _media_err_text(e), "offset": offset}
+
+
+# Подсказка письма для распознавания: модель на узбекском отвечает латиницей,
+# а оригинал проекта — кириллица (UZ-CYRL). Короткая фраза в нужном письме
+# склоняет выбор; других средств у этого поставщика нет.
+_ASR_SCRIPT_HINT = {"UZ-CYRL": "Ассалому алайкум. Бугун биз бу ҳақда гаплашамиз.",
+                    "UZ": "Assalomu alaykum. Bugun biz bu haqda gaplashamiz."}
+
+
+def _job_asr(job: dict) -> None:
+    pid = job["project"]
+    project = get_project(pid)
+    src = _media_source(project)
+    if src is None:
+        raise RuntimeError("Исходное видео не найдено на сервере — загрузите его заново")
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise RuntimeError("Распознавание речи недоступно: не задан ключ поставщика")
+    d = _media_dir(pid) / "asr"
+    d.mkdir(parents=True, exist_ok=True)
+    info = project.get("media") or {}
+    limit = job["params"].get("limitSec")
+    dur = float(limit or info.get("duration") or 0.0)
+    audio = d / "audio.mp3"
+    job["phase"] = "audio"
+    _job_persist(job)
+    if not (audio.exists() and audio.stat().st_size > 0):
+        tmp = d / "audio.tmp.mp3"
+        media_mod.extract_audio(src, tmp, float(info.get("duration") or dur), limit_sec=limit)
+        os.replace(str(tmp), str(audio))
+    pauses = media_mod.silences(audio, dur)
+    chunks = media_mod.split_audio(audio, media_mod.cut_points(dur, pauses), d / "chunks", dur)
+    lang = _asr_language(project.get("src") or "")
+    hint = _ASR_SCRIPT_HINT.get((project.get("src") or "").upper())
+    items = [(p, off, lang, hint) for p, off in chunks]
+    job["phase"] = "asr"
+    job["total"] = len(items)
+    job["done"] = sum(1 for p, *_ in items if Path(str(p) + ".json").exists())
+    _job_persist(job)
+    first = True
+    pending = list(items)
+    tries: dict = {}
+    last_err = ""
+    while pending:
+        if not first:
+            if _SHUTDOWN.is_set():
+                _job_park(job)
+                return
+            if _job_should_stop():
+                job["status"] = "stopped"
+                return
+            if _job_money_stop(job):
+                return
+            if _job_should_yield(job):
+                _job_yield(job, [])
+                return
+        first = False
+        batch, pending = pending[:ASR_PARALLEL], pending[ASR_PARALLEL:]
+        out = _run_parallel(batch, _asr_chunk)
+        pending += _media_retry(batch, out, tries)
+        bad = [r for r in out if not r["ok"]]
+        if bad:
+            last_err = bad[0]["error"]
+            if _is_quota_error(last_err):
+                raise RuntimeError(JOB_STOP_PROVIDER_QUOTA)
+            time.sleep(MEDIA_RETRY_PAUSE)          # временный отказ — дать ему пройти
+        job["done"] = sum(1 for p, *_ in items if Path(str(p) + ".json").exists())
+        job["counters"]["asrFailed"] = job["counters"].get("asrFailed", 0) + len(bad)
+        _job_persist(job)
+    missing = [p for p, *_ in items if not Path(str(p) + ".json").exists()]
+    if missing:
+        raise RuntimeError("Часть звука не распознана (%d из %d кусков) — распознайте снова: %s"
+                           % (len(missing), len(items), last_err))
+    cues = []
+    for p, off, *_ in items:
+        data = json.loads(Path(str(p) + ".json").read_text(encoding="utf-8"))
+        cues += media_mod.build_cues(data.get("segments") or [], data.get("words") or [], offset=off)
+    cues = media_mod.tidy_cues(cues)
+    _media_apply_transcript(project, cues)
+    job["counters"]["cues"] = len(cues)
+    job["phase"] = None
+    # Звук и куски больше не нужны: текст уже в проекте, а «распознать снова»
+    # у готового проекта закрыто. Место на диске общее.
+    shutil.rmtree(str(d), ignore_errors=True)
+
+
+def _media_apply_transcript(project: dict, cues: list) -> None:
+    """Реплики → проект тем же путём, что у загруженного .srt: разбор
+    (`_parse_upload`), сегменты, карта «абзац → сегмент», оригинал .srt для
+    выгрузки в исходном виде. Страницы — по словам (`mediaPages`), списывает
+    их API (`_book_image_pages`)."""
+    srt = importers.render_cues(cues, ".srt").encode("utf-8")
+    name = project["fileName"]
+    pid = project["id"]
+    if not cues:
+        project["segments"] = []
+        project["mediaStatus"] = "ready"
+        project["mediaNoSpeech"] = True
+        project["mediaPages"] = 0.0
+        save_state(STATE)
+        return
+    parsed = _parse_upload(name, srt)
+    units = parsed["units"]
+    paras = parsed["paras"]
+    card = _pricing_of(_tenant_of(project))
+    pages = _pages_exact(paras, project.get("src") or "RU", card)
+    project["segments"] = _new_segments([t for t, _ in units])
+    project["pages"] = pages
+    project["mediaPages"] = pages
+    project["writeback"] = True
+    project["slotsSha"] = parsed.get("slotsSha")
+    project["mediaStatus"] = "ready"
+    project["mediaCues"] = len(cues)
+    project.pop("mediaError", None)
+    pairs = [[i, u + 1] for u, (_t, idxs) in enumerate(units) for i in idxs]
+    _store_source_docx(project, parsed["docx"], name, pairs, len(paras))
+    _store_original(pid, name, srt)
+    save_state(STATE)
+
+
+def _media_translations(project: dict) -> tuple:
+    """(текст исходного .srt, {номер реплики: перевод}) — переведённые реплики
+    по той же карте, что у выгрузки в исходном виде (`_para_groups`): реплика
+    с непереведённой частью считается непереведённой."""
+    orig = _orig_existing(project["id"])
+    data = _load_source_map(project["id"]) if project.get("sourceDocx") else None
+    if orig is None or data is None:
+        raise RuntimeError("У проекта нет субтитров — сначала дождитесь распознавания речи")
+    by_id = {s["id"]: s for s in project.get("segments") or []}
+    tr = {}
+    for idx, sids in _para_groups(data):
+        parts = [by_id.get(int(s)) for s in sids]
+        if any(x is None for x in parts):
+            continue
+        ts = [(x.get("target") or "").strip() for x in parts]
+        if all(ts):
+            tr[int(idx)] = " ".join(ts)
+    text, _enc = textcount._decode(orig.read_bytes())
+    return text, tr, data
+
+
+def _media_voice(vid: str) -> dict:
+    return next((v for v in MEDIA_VOICES if v["id"] == vid), MEDIA_VOICES[0])
+
+
+def _tts_clip(item: tuple) -> dict:
+    """Синтез одной реплики → PCM, кэш по (модель, голос, язык, текст):
+    правка одной строки перепокупает одну реплику, а не весь ролик."""
+    text, voice, lang_name, cache = item
+    if cache.exists():
+        return {"ok": True, "pcm": cache.read_bytes()}
+    try:
+        _llm_limit_gate()
+        from openai import OpenAI
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=120, max_retries=2)
+        resp = client.audio.speech.create(
+            model=TTS_MODEL, voice=voice, input=text[:3900], response_format="pcm",
+            instructions="Read in %s as a calm, clear voice-over narrator. Natural pace." % lang_name)
+        pcm = resp.read() if hasattr(resp, "read") else (resp.content if hasattr(resp, "content") else bytes(resp))
+        _note_audio("tts", TTS_MODEL, media_mod.pcm_seconds(pcm))
+        tmp = cache.with_name(cache.name + ".tmp")
+        tmp.write_bytes(pcm)
+        os.replace(str(tmp), str(cache))
+        return {"ok": True, "pcm": pcm}
+    except Exception as e:
+        _note_provider_error(e)
+        return {"ok": False, "error": _media_err_text(e)}
+
+
+def _job_mediarender(job: dict) -> None:
+    pid = job["project"]
+    project = get_project(pid)
+    what = job["params"].get("what")
+    src = _media_source(project)
+    if src is None:
+        raise RuntimeError("Исходное видео удалено по сроку хранения — загрузите его заново на карточке файла")
+    info = dict(project.get("media") or {})
+    probe = media_mod.probe(src)
+    info.update({"video": probe.get("video"), "audio": probe.get("audio"), "duration": probe.get("duration")})
+    out_dir = _media_dir(pid) / "out"
+    work = _media_dir(pid) / "work"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    work.mkdir(parents=True, exist_ok=True)
+    text, tr, _data = _media_translations(project)
+    lang3 = media_mod.lang3(project.get("tgt") or "")
+    ext = media_mod.output_ext(probe)
+    job["phase"] = "prepare"
+    _job_persist(job)
+    if what == "subs":
+        if not probe.get("video"):
+            raise RuntimeError("В файле нет видео — скачайте субтитры файлом .srt")
+        srt_path = work / "subs.srt"
+        cues = importers.cue_list(text)
+        out_cues = [{"start": c["start"], "end": c["end"], "text": tr.get(i, c["text"])}
+                    for i, c in enumerate(cues)]
+        srt_path.write_bytes(importers.render_cues(out_cues, ".srt").encode("utf-8"))
+        job["phase"] = "mux"
+        job["total"], job["done"] = 1, 0
+        _job_persist(job)
+        dst = out_dir / ("subs" + ext)
+        tmp = work / ("subs.tmp" + ext)
+        media_mod.mux_subtitles(src, srt_path, tmp, info, lang3)
+        os.replace(str(tmp), str(dst))
+        job["done"] = 1
+        _media_render_mark(project, "subs", dst, {"cues": len(cues), "translated": len(tr)})
+        return
+    # Озвучка.
+    voice = _media_voice(job["params"].get("voice") or "")
+    lang_name = _lang_prompt(project.get("tgt") or "EN")
+    cues = importers.cue_list(text)
+    todo = [(i, c) for i, c in enumerate(cues) if i in tr and c.get("start") is not None]
+    if not todo:
+        raise RuntimeError("Озвучивать нечего: ни одна реплика ещё не переведена")
+    tts_dir = _media_dir(pid) / "tts"
+    tts_dir.mkdir(parents=True, exist_ok=True)
+
+    def key(t):
+        return tts_dir / (hashlib.sha1(("%s|%s|%s|%s" % (TTS_MODEL, voice["v"], project.get("tgt"), t))
+                                       .encode("utf-8")).hexdigest() + ".pcm")
+    items = [(tr[i], voice["v"], lang_name, key(tr[i])) for i, _c in todo]
+    job["phase"] = "tts"
+    job["total"] = len(items)
+    job["done"] = sum(1 for it in items if it[3].exists())
+    _job_persist(job)
+    pending = [it for it in items if not it[3].exists()]
+    first = True
+    tries: dict = {}
+    while pending:
+        if not first:
+            if _SHUTDOWN.is_set():
+                _job_park(job)
+                return
+            if _job_should_stop():
+                job["status"] = "stopped"
+                return
+            if _job_money_stop(job):
+                return
+            if _job_should_yield(job):
+                _job_yield(job, [])
+                return
+        first = False
+        batch, pending = pending[:TTS_BATCH], pending[TTS_BATCH:]
+        out = _run_parallel(batch, _tts_clip)
+        pending += _media_retry(batch, out, tries)
+        bad = [r for r in out if not r["ok"]]
+        if bad and _is_quota_error(bad[0]["error"]):
+            raise RuntimeError(JOB_STOP_PROVIDER_QUOTA)
+        if bad and not pending and len(bad) == len(out):
+            raise RuntimeError("Синтез речи не удался: " + bad[0]["error"])
+        if bad:
+            time.sleep(MEDIA_RETRY_PAUSE)
+        job["done"] = sum(1 for it in items if it[3].exists())
+        _job_persist(job)
+    job["phase"] = "mix"
+    _job_persist(job)
+    # Укладка в тайминг: окно реплики — до начала следующей (речь может
+    # продолжиться в паузе), длиннее — ускорение, не влезает — счётчик.
+    starts = [c["start"] for c in cues if c.get("start") is not None]
+    groups = _para_groups(_data)
+    seg_of = {int(idx): [int(s) for s in sids] for idx, sids in groups}
+    track = work / "dub.raw"
+    tr_map = media_mod.open_track(track, float(info.get("duration") or 0.0))
+    voiced, fast, over, silent = 0, 0, [], []
+    for (i, c), it in zip(todo, items):
+        if not it[3].exists():
+            silent.extend(seg_of.get(i, []))       # синтез не удался и после повторов
+            continue
+        pcm = it[3].read_bytes()
+        nxt = next((s for s in starts if s > c["start"] + 0.01), None)
+        window = ((nxt - 0.08) if nxt is not None else (c["end"] + 1.5)) - c["start"]
+        window = max(window, (c["end"] or c["start"]) - c["start"])
+        tempo, verdict = media_mod.fit_tempo(media_mod.pcm_seconds(pcm), window)
+        if tempo > 1.0:
+            pcm = media_mod.atempo_pcm(pcm, tempo)
+        if verdict == "fast":
+            fast += 1
+        elif verdict == "over":
+            over.extend(seg_of.get(i, []))
+        media_mod.add_clip(tr_map, c["start"], pcm)
+        voiced += 1
+    media_mod.close_track(tr_map)
+    del tr_map
+    job["phase"] = "mux"
+    _job_persist(job)
+    dst = out_dir / ("dub" + ext)
+    tmp = work / ("dub.tmp" + ext)
+    try:
+        media_mod.mux_dub(src, track, tmp, info, lang=lang3)
+        os.replace(str(tmp), str(dst))
+    finally:
+        try:
+            track.unlink()
+        except OSError:
+            pass
+    _media_render_mark(project, "dub", dst, {"cues": len(cues), "voiced": voiced, "fast": fast,
+                                              "silent": len(silent), "silentIds": sorted(set(silent))[:60],
+                                              "over": len(over), "overIds": sorted(set(over))[:60],
+                                              "untranslated": len(cues) - len(todo),
+                                              "voice": voice["id"]})
+
+
+def _media_render_mark(project: dict, what: str, dst: Path, stats: dict) -> None:
+    rr = project.setdefault("mediaRender", {})
+    rr[what] = dict(stats, file=dst.name, size=dst.stat().st_size,
+                    at=datetime.now().strftime("%Y-%m-%d %H:%M"))
+    save_state(STATE)
+
+
+class MediaRenderRequest(BaseModel):
+    what: str                       # subs | dub
+    voice: str = "f1"
+
+
+@app.post("/api/projects/{pid}/media/render")
+def media_render(pid: int, req: MediaRenderRequest):
+    """Собрать видео с дорожкой субтитров или закадровым переводом (задача
+    воркера). Проверки ДО очереди: место на диске, исходник, перевод, деньги."""
+    project = get_project(pid)
+    if req.what not in ("subs", "dub"):
+        raise HTTPException(400, "Неизвестная сборка")
+    m = project.get("media")
+    if not m:
+        raise HTTPException(400, "Это не видео-проект")
+    if project.get("mediaStatus") != "ready":
+        raise HTTPException(409, "Речь ещё распознаётся — дождитесь строк")
+    src = _media_source(project)
+    if src is None:
+        raise HTTPException(409, "Исходное видео удалено по сроку хранения — загрузите его заново на карточке файла")
+    if _active_job_for(pid):
+        raise HTTPException(409, "По этому файлу уже идёт работа — дождитесь её")
+    _media_sweep_maybe()
+    translated = sum(1 for s in project.get("segments") or [] if (s.get("target") or "").strip())
+    if not translated:
+        raise HTTPException(409, "Ещё нет ни одной переведённой строки")
+    if req.what == "subs" and not m.get("video"):
+        raise HTTPException(400, "В файле нет видео — скачайте субтитры файлом .srt")
+    dur = float(m.get("duration") or 0)
+    need = int(src.stat().st_size * 1.1) + (int(dur * media_mod.TTS_RATE * 2) if req.what == "dub" else 0)
+    refusal = _media_disk_refusal(need)
+    if refusal:
+        _ev("cap.mediaDisk507", _tenant_of(project))
+        raise HTTPException(507, refusal)
+    params = {"what": req.what}
+    if req.what == "dub":
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise HTTPException(503, "Озвучка сейчас недоступна: сообщите администратору")
+        st = _spend_status()
+        if st["over"]:
+            return _limit_402(st, _current_tenant())
+        params["voice"] = _media_voice(req.voice)["id"]
+        chars = sum(len(s.get("target") or "") for s in project.get("segments") or [])
+        # ~15 знаков в секунду речи — оценка, по ней только отказ на старте.
+        params["est_cost"] = round(chars / 15.0 / 60.0 * float(AUX_MODEL_PRICES[TTS_MODEL]["perMin"]), 4)
+        if st.get("limitUsd") is not None and st["spentUsd"] + params["est_cost"] > float(st["limitUsd"]):
+            raise HTTPException(402, "Озвучка этого видео не уместится в лимит расхода организации")
+    job = _job_enqueue(pid, "mediarender", [], params)
+    return {"ok": True, "job": _job_public(job)}
+
+
+def _media_sign(pid: int, what: str, tid: str, exp: int) -> str:
+    body = "%d.%s.%s.%d" % (pid, what, tid, exp)
+    mac = hmac.new(_MEDIA_LINK_KEY, body.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+    return base64.urlsafe_b64encode(body.encode("utf-8")).decode("ascii").rstrip("=") + "." + mac
+
+
+@app.get("/api/projects/{pid}/media/link")
+def media_link(pid: int, what: str = "dub"):
+    """Короткая подписанная ссылка на готовую сборку: браузер переходит по ней
+    напрямую, файл не проходит через его память (fetch → blob на 2 ГБ роняет
+    вкладку). Живёт час, выдаётся только своей организации."""
+    project = get_project(pid)
+    if what not in ("subs", "dub"):
+        raise HTTPException(400, "Неизвестная сборка")
+    rr = (project.get("mediaRender") or {}).get(what)
+    if not rr or not (_media_dir(pid) / "out" / rr["file"]).exists():
+        raise HTTPException(404, "Готового файла нет — соберите его заново")
+    exp = int(time.time()) + MEDIA_LINK_TTL
+    return {"url": "/media-dl/" + _media_sign(pid, what, _tenant_of(project), exp),
+            "file": rr["file"], "size": rr["size"], "expires": exp}
+
+
+@app.get("/media-dl/{sig}")
+def media_download(sig: str):
+    """Скачивание по подписанной ссылке. Сессии тут нет (прямой переход),
+    доступ даёт подпись: номер проекта, сборка, организация, срок."""
+    try:
+        b64, mac = sig.rsplit(".", 1)
+        body = base64.urlsafe_b64decode(b64 + "=" * (-len(b64) % 4)).decode("utf-8")
+        pid_s, what, tid, exp_s = body.split(".", 3)
+        pid, exp = int(pid_s), int(exp_s)
+    except Exception:
+        raise HTTPException(404, "Ссылка недействительна")
+    good = hmac.new(_MEDIA_LINK_KEY, body.encode("utf-8"), hashlib.sha256).hexdigest()[:32]
+    if not hmac.compare_digest(good, mac) or exp < time.time():
+        raise HTTPException(404, "Ссылка устарела — нажмите «Скачать» ещё раз")
+    project = _project_by_id(pid)
+    if project is None or _tenant_of(project) != tid:
+        raise HTTPException(404, "Файл не найден")
+    rr = (project.get("mediaRender") or {}).get(what)
+    path = _media_dir(pid) / "out" / (rr or {}).get("file", "")
+    if not rr or not path.is_file():
+        raise HTTPException(404, "Файл не найден — соберите его заново")
+    ext = path.suffix.lower()
+    name = _safe_filename(project.get("title") or "video") + (" перевод" if what == "subs" else " озвучка") + ext
+    import mimetypes
+    ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    if MEDIA_ACCEL_PREFIX:
+        from urllib.parse import quote
+        rel = path.relative_to(MEDIA_DIR).as_posix()
+        return Response(status_code=200, media_type=ctype, headers={
+            "X-Accel-Redirect": MEDIA_ACCEL_PREFIX.rstrip("/") + "/" + rel,
+            "Content-Disposition": "attachment; filename*=utf-8''" + quote(name)})
+    return FileResponse(str(path), media_type=ctype, filename=name)
+
+
+@app.get("/api/media/voices")
+def media_voices():
+    """Голоса озвучки — нейтральными ярлыками, без имён поставщика."""
+    return {"voices": [{"id": v["id"], "gender": v["gender"]} for v in MEDIA_VOICES],
+            "ready": media_mod.available()[0], "maxGb": round(MEDIA_MAX_BYTES / _GB, 1),
+            "maxMinutes": int(MEDIA_MAX_MINUTES), "chunk": MEDIA_CHUNK}
 
 
 def _docx_media_count(docx_bytes: bytes) -> int:

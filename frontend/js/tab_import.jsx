@@ -18,6 +18,8 @@
    выдуманный процент был бы враньём. */
 const IMP_STAGE = {
   upload: TR("Отправляем файл"),
+  retry: TR("Связь прервалась — продолжаем загрузку"),
+  media: TR("Файл на сервере, проверяем видео"),
   start: TR("Файл на сервере, начинаем разбор"),
   read: TR("Читаем страницы"),
   clean: TR("Чистим текст: переносы, колонтитулы, номера страниц"),
@@ -400,7 +402,7 @@ function ImpFirstFile({ store, toast, meta }) {
       const r = await window.API.createFolder({ title, src, tgt, domain: (meta && meta.domainDefault) || "general",
         dicts: [], newDict: title });
       Object.assign(impDraft(r.id), {
-        file: { name: file.name, size: (file.size / 1024).toFixed(0) + TR(" КБ"), raw: file },
+        file: { name: file.name, size: impSize(file.size), raw: file },
         title, src, tgt, autoAdd: true });
       store.addFolder(r);
       window.API.safeCall(() => window.API.listDicts()).then(d => { if (d && d.dicts && store.setDicts) store.setDicts(d.dicts); });
@@ -432,7 +434,7 @@ function ImpFirstFile({ store, toast, meta }) {
         style: file ? { color: "var(--c-success)" } : null }),
       React.createElement("div", { style: { fontWeight: 600, fontSize: 16 } }, file ? file.name : TR("Перетащите файл сюда")),
       React.createElement("div", { className: "dim", style: { marginTop: 4, fontSize: 13 } },
-        file ? TR("Нажмите, чтобы выбрать другой") : TR("или нажмите, чтобы выбрать · Word, Excel, PowerPoint, PDF, текст или картинка"))),
+        file ? TR("Нажмите, чтобы выбрать другой") : TR("или нажмите, чтобы выбрать · Word, Excel, PowerPoint, PDF, текст, картинка, видео или звук"))),
     file && React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
       React.createElement(Field, { label: TR("На какой язык переводим?") },
         React.createElement(Select, { value: tgt, onChange: (e) => setTgt(e.target.value) },
@@ -558,7 +560,23 @@ function ImpFolderView({ folder, store, toast, meta }) {
 /* Все форматы, которые принимает импорт. Список — зеркало backend/importers.py
    (SUPPORTED_EXT); браузер только подсказывает диалогу выбора файла, решает
    сервер (415 с причиной). */
-const IMP_ACCEPT = ".docx,.xlsx,.pptx,.odt,.ods,.odp,.pdf,.txt,.md,.markdown,.csv,.tsv,.html,.htm,.xml,.json,.rtf,.srt,.vtt,.po,.log,.yml,.yaml,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.gif";
+const IMP_ACCEPT = ".docx,.xlsx,.pptx,.odt,.ods,.odp,.pdf,.txt,.md,.markdown,.csv,.tsv,.html,.htm,.xml,.json,.rtf,.srt,.vtt,.po,.log,.yml,.yaml,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.gif"
+  + ",.mp4,.m4v,.mov,.mkv,.webm,.avi,.wmv,.flv,.mpg,.mpeg,.ts,.mts,.m2ts,.3gp,.ogv,.mp3,.wav,.m4a,.aac,.ogg,.oga,.opus,.flac,.wma,.amr";
+/* Видео и звук идут своей дорогой: кусками, без пробы и без сметы по файлу
+   (обе отправили бы на сервер все гигабайты одним запросом). Список — тот же,
+   что у сервера (`media.MEDIA_EXT`); решает всё равно сервер. */
+const IMP_MEDIA_RE = /\.(mp4|m4v|mov|mkv|webm|avi|wmv|flv|mpg|mpeg|ts|mts|m2ts|3gp|ogv|mp3|wav|m4a|aac|ogg|oga|opus|flac|wma|amr)$/i;
+function impIsMedia(name) { return IMP_MEDIA_RE.test(name || ""); }
+function impSize(bytes) {
+  return bytes >= 1024 * 1024 * 1024 ? (bytes / 1073741824).toFixed(2) + TR(" ГБ")
+    : bytes >= 1024 * 1024 ? (bytes / 1048576).toFixed(1) + TR(" МБ")
+    : (bytes / 1024).toFixed(0) + TR(" КБ");
+}
+function impDuration(sec) {
+  const s = Math.round(sec || 0), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  const two = (n) => (n < 10 ? "0" : "") + n;
+  return (h ? h + ":" + two(m) : m) + ":" + two(r);
+}
 
 function ImpFileCard({ project, store, toast }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -579,17 +597,21 @@ function ImpFileCard({ project, store, toast }) {
      разбор надписей со сметой и ходом работы; второй экран заводить нельзя. */
   const pictures = (project.importKind === "image" || project.importKind === "scan") && total === 0;
   const reading = !!project.imagesReading && total === 0;
+  /* Видео: строки появляются, когда воркер распознает речь. */
+  const media = project.media || null;
+  const transcribing = !!media && project.mediaStatus === "transcribing";
+  const watchKind = reading ? "images" : transcribing ? "asr" : null;
   /* Ход чтения — с сервера, пока задача жива: «читаем…» без чисел на книге
      со сканом — это минуты неизвестности. Задача кончилась — карточка
      тянет файл заново: строки с картинок завела задача, а не этот экран. */
   const [imgJob, setImgJob] = useState(null);
   useEffect(() => {
-    if (!reading || !window.API || !window.API.listJobs) return;
+    if (!watchKind || !window.API || !window.API.listJobs) return;
     let dead = false;
     const tick = async () => {
       const res = await window.API.safeCall(() => window.API.listJobs(project.id));
       if (dead || !res) return;
-      const live = (res.active || []).find(x => x.kind === "images");
+      const live = (res.active || []).find(x => x.kind === watchKind);
       if (live) { setImgJob(live); return; }
       setImgJob(null);
       const fresh = await window.API.safeCall(() => window.API.getProject(project.id));
@@ -598,7 +620,7 @@ function ImpFileCard({ project, store, toast }) {
     tick();
     const t = setInterval(tick, 3000);
     return () => { dead = true; clearInterval(t); };
-  }, [reading, project.id]);
+  }, [watchKind, project.id]);
   /* В том же ли виде вернём файл: сервер знает по формату (`writeback`). */
   const sameShape = project.sourceDocx && project.writeback !== false;
   const undoReimport = async () => {
@@ -658,7 +680,9 @@ function ImpFileCard({ project, store, toast }) {
       React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
         React.createElement(LangPair, { src: project.src, tgt: project.tgt }),
         React.createElement(Badge, { icon: "list" }, total + " " + impPlural(total, TR("строка"), TR("строки"), TR("строк"))),
-        sameShape && React.createElement(Badge, { icon: "checkCircle" }, TR("вернём в том же виде")),
+        media && React.createElement(Badge, { icon: "file" }, (media.video ? TR("видео") : TR("звук")) + " · " + impDuration(media.duration)
+          + (media.video && media.video.height ? " · " + media.video.width + "×" + media.video.height : "")),
+        sameShape && !media && React.createElement(Badge, { icon: "checkCircle" }, TR("вернём в том же виде")),
         project.sourceDocx && project.writeback === false && React.createElement(Badge, { icon: "file" }, TR("вернём как Word")),
         project.reimport && React.createElement(Badge, { icon: "repeat" }, TR("обновлён ") + project.reimport.at)),
       project.importNote && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TRS(project.importNote)),
@@ -668,7 +692,24 @@ function ImpFileCard({ project, store, toast }) {
           style: { gap: 8, padding: "8px 10px", borderRadius: 8, background: "var(--c-primary-soft)", fontSize: 13 } },
         React.createElement("span", null, TR("Чтение файла улучшено: строки можно собрать заново — точнее по абзацам и страницам.")),
         React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", disabled: busy, onClick: checkReseg }, TR("Проверить строки"))),
-      pictures
+      media && (transcribing || project.mediaStatus === "failed" || project.mediaNoSpeech)
+        ? React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+            transcribing
+              ? (imgJob ? React.createElement(MediaJobLine, { job: imgJob })
+                        : React.createElement(React.Fragment, null, React.createElement(Spinner, null), " ", TR("Распознаём речь — строки появятся сами.")))
+              : project.mediaStatus === "failed"
+                ? React.createElement("div", { className: "col", style: { gap: 8 } },
+                    React.createElement("span", null, TR("Речь не распознана: ") + TRS(project.mediaError || "")),
+                    React.createElement(Btn, { variant: "secondary", size: "sm", icon: "repeat", disabled: busy, onClick: async () => {
+                      setBusy(true);
+                      try {
+                        const r = await window.API.mediaTranscribe(project.id);
+                        if (r && r.project && store.replaceProject) store.replaceProject(r.project);
+                      } catch (e) { toast.error(TR("Не запущено"), e.message || String(e)); }
+                      setBusy(false);
+                    } }, TR("Распознать снова")))
+                : TR("Речи в файле не найдено."))
+      : pictures
         ? React.createElement("div", { className: "dim", style: { fontSize: 13 } },
             reading ? (imgJob ? React.createElement(ImagesJobLine, { job: imgJob })
                               : React.createElement(React.Fragment, null, React.createElement(Spinner, null), " ", TR("Читаем текст с картинок — строки появятся сами.")))
@@ -736,6 +777,9 @@ function ImpAddFile({ folder, store, toast, meta }) {
   const [probing, setProbing] = useState(!!draft.probing);
   const [prog, setProg] = useState(null);        // ход пробы или загрузки
   const fileRef = useRef(null);
+  /* Отмена загрузки видео: флаг читает загрузчик между кусками. */
+  const mediaCtl = useRef(null);
+  const isMedia = !!(file && impIsMedia(file.name));
   /* Черновик — зеркало видимого: всё, что человек выбрал, переживает уход
      с вкладки. Ответ пробы, пришедший ПОСЛЕ ухода, пишет в черновик сам
      запрос (ниже), и экран подхватывает его на возврате. */
@@ -761,6 +805,13 @@ function ImpAddFile({ folder, store, toast, meta }) {
      и лечь на B. Устаревший ответ выбрасывается. Номер живёт в черновике,
      а не в ref: ref умирает вместе с экраном, черновик — нет. */
   const runProbe = async (raw, s, t) => {
+    if (raw && impIsMedia(raw.name)) {
+      /* Видео не пробуем: сравнивать нечего, а проба отправила бы файл целиком. */
+      setProbe({ media: true }); setProbing(false);
+      Object.assign(draft, { probe: { media: true }, probing: false });
+      if (draft.autoAdd) { draft.autoAdd = false; if (aliveRef.current) create(raw); }
+      return;
+    }
     const seq = (draft.seq || 0) + 1;
     draft.seq = seq;
     setProbing(true); setProbe(null); setProg(null);
@@ -786,7 +837,7 @@ function ImpAddFile({ folder, store, toast, meta }) {
   };
   const pickFile = (f) => {
     if (!f) return;
-    setFile({ name: f.name, size: (f.size / 1024).toFixed(0) + TR(" КБ"), raw: f });
+    setFile({ name: f.name, size: impSize(f.size), raw: f });
     if (!title) setTitle(f.name.replace(/\.[^.]+$/, ""));
     runProbe(f);
   };
@@ -799,9 +850,33 @@ function ImpAddFile({ folder, store, toast, meta }) {
     Object.assign(draft, { file: null, title: "", probe: null, probing: false, pending: null,
                            quote: null, quoteKey: null });
   };
-  const create = async () => {
-    if (!file || !file.raw) { toast.error(TR("Файл не выбран"), TR("Выберите файл")); return; }
+  /* Видео: загрузка кусками, потом сервер сам распознаёт речь — строки
+     появятся в файле без второй кнопки. */
+  const createMedia = async (raw) => {
+    const ctl = { cancelled: false };
+    mediaCtl.current = ctl;
+    setBusy(true); setProg(null);
+    try {
+      const project = await window.API.uploadMedia(raw, {
+        title: title || raw.name.replace(/\.[^.]+$/, ""), src, tgt, domain: folder.domain, folder: folder.id }, setProg, ctl);
+      store.addProject(project);
+      store.patchFolder(folder.id, { virtual: false });
+      reset();
+      toast.success(TR("Файл загружен"), (project.mediaExcerpt
+        ? TR("Страниц хватает не на всё: распознаём начало — ") + impDuration(project.mediaExcerpt.sec) + TR(" из ") + impDuration(project.mediaExcerpt.of) + ". "
+        : "") + TR("Распознаём речь — строки с таймингом появятся сами."));
+      store.openProject(project.id);
+    } catch (e) {
+      if (!e.cancelled) toast.error(TR("Файл не добавлен"), e.message || String(e));
+    }
+    mediaCtl.current = null;
+    setBusy(false);
+  };
+  const create = async (rawArg) => {
+    const raw = (rawArg && rawArg.name) ? rawArg : (file && file.raw);
+    if (!raw) { toast.error(TR("Файл не выбран"), TR("Выберите файл")); return; }
     if (src === tgt) { toast.error(TR("Языки совпадают"), TR("Выберите разные языки оригинала и перевода.")); return; }
+    if (impIsMedia(raw.name)) return createMedia(raw);
     setBusy(true); setProg(null);
     try {
       const project = await window.API.uploadProject(file.raw, title || file.name.replace(/\.[^.]+$/, ""),
@@ -882,7 +957,7 @@ function ImpAddFile({ folder, store, toast, meta }) {
         : React.createElement("div", null,
             React.createElement(Icon, { name: "upload", size: 28, className: "dz-ic" }),
             React.createElement("div", { style: { fontWeight: 500, fontSize: 14 } }, TR("Перетащите файл сюда")),
-            React.createElement("div", { className: "dim", style: { marginTop: 2, fontSize: 12 } }, TR("Word, Excel, PowerPoint, PDF, HTML, текст или картинка")))),
+            React.createElement("div", { className: "dim", style: { marginTop: 2, fontSize: 12 } }, TR("Word, Excel, PowerPoint, PDF, HTML, текст, картинка, видео или звук")))),
     probing && React.createElement("div", { className: "col", style: { gap: 4 } },
       React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TR("Смотрим, что за файл…")),
       React.createElement(ImpProgress, { p: prog })),
@@ -897,19 +972,23 @@ function ImpAddFile({ folder, store, toast, meta }) {
         + TR(" строк, новых ") + similar.added + TR(", исчезнет ") + similar.removed + ".",
       React.createElement("div", { className: "row", style: { gap: 8, marginTop: 8, flexWrap: "wrap" } },
         React.createElement(Btn, { variant: "primary", size: "sm", icon: "repeat", disabled: busy, onClick: () => update(similar) }, TR("Обновить «") + similar.title + "»"),
-        React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy, onClick: create }, TR("Добавить как новый файл")))),
+        React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy, onClick: () => create() }, TR("Добавить как новый файл")))),
     /* Пометка сервера о формате — русская фраза нашего кода: переводится
        подстановкой TRS() из серверной таблицы, как все detail. */
     probe && !probe.error && probe.note && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TRS(probe.note)),
+    isMedia && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+      TR("Видео или звук: распознаем речь с таймингом и переведём. Скачать можно субтитры, видео с субтитрами или озвучку на новом языке.")),
     file && !exact && React.createElement(Input, { value: title, placeholder: TR("Название файла"), onChange: (e) => setTitle(e.target.value) }),
     file && !exact && meta && React.createElement("div", { className: "grid grid-2", style: { gap: 8 } },
       React.createElement(Field, { label: TR("С какого языка") }, React.createElement(Select, { value: src, onChange: (e) => changePair(e.target.value, tgt) }, impLangOptions(meta.langs))),
       React.createElement(Field, { label: TR("На какой язык") }, React.createElement(Select, { value: tgt, onChange: (e) => changePair(src, e.target.value) }, impLangOptions(meta.langs)))),
     file && !exact && src === tgt && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, TR("Язык оригинала и язык перевода совпадают.")),
-    !exact && !similar && React.createElement(Btn, { variant: "primary", icon: busy ? null : "plus", disabled: !file || busy || probing || src === tgt, onClick: create },
+    !exact && !similar && React.createElement(Btn, { variant: "primary", icon: busy ? null : "plus", disabled: !file || busy || probing || src === tgt, onClick: () => create() },
       busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), TR("Загружаем…")) : TR("Добавить в проект")),
     busy && React.createElement(ImpProgress, { p: prog }),
-    file && !exact && React.createElement(ImpQuote, { file, src, tgt, toast, store, draft }));
+    busy && isMedia && React.createElement(Btn, { variant: "ghost", size: "sm", icon: "x",
+      onClick: () => { if (mediaCtl.current) mediaCtl.current.cancelled = true; } }, TR("Отменить загрузку")),
+    file && !exact && !isMedia && React.createElement(ImpQuote, { file, src, tgt, toast, store, draft }));
 }
 
 /* Словари проекта: какие подключены и куда пишутся новые слова.

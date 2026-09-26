@@ -19730,13 +19730,18 @@ def _alphabet_info(project: Optional[dict]) -> tuple:
 
 def _alphabet_active(project: Optional[dict]) -> bool:
     """Есть ли у языка перевода чем проверять письмо: алфавит в каталоге ИЛИ
-    правила в lang_rules.json. ОДИН предикат на находку, список id для состава
-    прогона и разбора и строку покрытия: разойдись они — смета обещала бы
-    одно, а прогон делал другое (казахский: правила есть, алфавита нет)."""
+    признаки письма в lang_rules.json (`distinctive`, `apostrophe_in_word`,
+    `script_check`). ОДИН предикат на находку, список id для состава прогона
+    и разбора и строку покрытия: разойдись они — смета обещала бы одно,
+    а прогон делал другое (казахский: правила есть, алфавита нет).
+    Одни `conventions` проверку НЕ включают: это правила для промпта, и язык,
+    получивший только их, не должен молча получать новые платные находки."""
     if not project:
         return False
     want, letters = _alphabet_info(project)
-    return bool(want and (letters or _lang_rule((project.get("tgt") or "").upper())))
+    r = _lang_rule((project.get("tgt") or "").upper())
+    return bool(want and (letters or r.get("distinctive") or r.get("script_check")
+                          or r.get("apostrophe_in_word") is False))
 
 
 def _text_script_by_words(text: str) -> str:

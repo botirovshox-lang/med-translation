@@ -266,6 +266,24 @@ _var = src_main[src_main.index("The user does NOT speak {tgt_lang}") - 400:src_m
 check("_lang_prompt(src_lang), _lang_prompt(tgt_lang)" in _var, "разбор вариантов очереди называет язык именем")
 check("% _lang_prompt(src_lang))" in src_main, "чтение страницы скана называет язык именем")
 
+print("=== 10. Обращение: титул после имени, с титулом — siz ===")
+uzl = main._lang_conventions("UZ")
+check("Yusuf aka" in uzl and "not aka Yusuf" in uzl and "never sen" in uzl,
+      "UZ: «Yusuf aka», не «aka Yusuf»; с aka — только siz")
+check("Юсуф ака" in main._lang_conventions(UZC) and "never сен" in main._lang_conventions(UZC),
+      "UZ-CYRL: то же кириллицей")
+check("never add a formula the source does not have" in uzl,
+      "формула (s.a.v.) — только если она есть в оригинале (правило 9: не добавлять)")
+check("TARGET LANGUAGE CONVENTIONS (Russian)" in main._lang_conventions("RU"), "у русского правила обращения есть")
+check(not main._alphabet_active({"tgt": "RU"}) and not main._alphabet_active({"tgt": "AR"}),
+      "одни правила промпта проверку письма НЕ включают (RU, AR)")
+check(main._alphabet_active({"tgt": "UZ"}) and main._alphabet_active({"tgt": UZC})
+      and main._alphabet_active({"tgt": "KK"}), "UZ (script_check), UZ-CYRL, KK — проверка письма как была")
+for code, r in main._LANG_RULES.items():
+    for line in r.get("conventions") or []:
+        check("decimal comma" not in line.lower(),
+              "%s: правило не меняет разделитель дробей — checks._extract_numbers сравнивает числа строками" % code)
+
 print()
 if fail:
     print("FAILED: %d" % len(fail))

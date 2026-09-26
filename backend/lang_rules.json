@@ -1,5 +1,5 @@
 {
-  "_comment": "Правила ЯЗЫКА ПЕРЕВОДА — данными, не кодом. Ключ — код языка из languages.json. Поля читают два места: ПРОМПТЫ (перевод, ремонт, ревизия — `_lang_conventions`) и ДЕТЕРМИНИРОВАННЫЕ проверки (`_alphabet_misses`). Ни одно поле не обязательно: чего нет — того проверка не делает и промпт не говорит (закон DOMAIN_RULES: нет правил — молчим). Поля: `name` — как язык зовётся в заголовке блока промпта; `conventions` — список правил орфографии и грамматики для модели, по-английски (промпты английские), про то, что модель делает НЕ ТАК без напоминания; `apostrophe_in_word` — false: апостроф внутри слова этого письма — ошибка (в кириллице разделитель — ъ); `distinctive` — буквы, без которых текст на этом языке не бывает (нет ни одной на `distinctive_min_words` словах — набрано буквами соседнего языка: русская раскладка без ў қ ғ ҳ); `distinctive_min_words` — с какой длины спрашивать (порог консервативный: короткая фраза законно обходится без них). Пороги и списки НЕ измерены на боевом переводе — переводов на эти языки в системе ещё нет; правила взяты из орфографии языка, и первое же расхождение с боевыми данными правится здесь, а не в коде.",
+  "_comment": "Правила ЯЗЫКА ПЕРЕВОДА — данными, не кодом. Ключ — код языка из languages.json. Поля читают два места: ПРОМПТЫ (перевод, ремонт, ревизия — `_lang_conventions`) и ДЕТЕРМИНИРОВАННЫЕ проверки (`_alphabet_misses`). Ни одно поле не обязательно: чего нет — того проверка не делает и промпт не говорит (закон DOMAIN_RULES: нет правил — молчим). Поля: `script_check` — true: проверять письмо перевода (`_alphabet_misses`) без `letters`/`distinctive` (одни `conventions` проверку НЕ включают: язык с правилами только для промпта не должен молча получать новые платные находки); `name` — как язык зовётся в заголовке блока промпта; `conventions` — список правил орфографии и грамматики для модели, по-английски (промпты английские), про то, что модель делает НЕ ТАК без напоминания; `apostrophe_in_word` — false: апостроф внутри слова этого письма — ошибка (в кириллице разделитель — ъ); `distinctive` — буквы, без которых текст на этом языке не бывает (нет ни одной на `distinctive_min_words` словах — набрано буквами соседнего языка: русская раскладка без ў қ ғ ҳ); `distinctive_min_words` — с какой длины спрашивать (порог консервативный: короткая фраза законно обходится без них). Пороги и списки НЕ измерены на боевом переводе — переводов на эти языки в системе ещё нет; правила взяты из орфографии языка, и первое же расхождение с боевыми данными правится здесь, а не в коде.",
   "rules": {
     "UZ-CYRL": {
       "name": "Uzbek Cyrillic",
@@ -10,7 +10,11 @@
         "э is written at the beginning of a word and after a vowel (эълон, поэма, дуэт); after a consonant write е. ё is always written as ё, never as е.",
         "щ and ы are not Uzbek letters. Established loanwords keep their Uzbek Cyrillic spelling (цирк, витамин, прополис, аптека).",
         "Uzbek is SOV and agglutinative: rebuild the sentence, do not mirror Russian word order; after a numeral the noun stays singular (икки киши, беш дона); possession is marked with the suffix (асаларининг маҳсулоти).",
-        "Suffixes join Latin-script abbreviations and numbers with a hyphen (COVID-19-га, DNK-нинг); after a Cyrillic word or abbreviation they are written together (ЖССТнинг, 2006 йилда)."
+        "Suffixes join Latin-script abbreviations and numbers with a hyphen (COVID-19-га, DNK-нинг); after a Cyrillic word or abbreviation they are written together (ЖССТнинг, 2006 йилда).",
+        "Forms of address: a kinship or respect title FOLLOWS the name, never precedes it — Юсуф ака, Малика опа, Карим устоз, Анвар домла, Нодира хола (not ака Юсуф). Arabic أخي يوسف / أختي used to address someone respectfully becomes Юсуф ака / Малика опа. A vocative address is set off by commas: Юсуф ака, қалайсиз?",
+        "Politeness: anyone addressed with ака, опа, устоз, домла, хола or амаки is ALWAYS сиз — pronoun, verb and possessive agree (сиз, қалайсиз, айтинг, режаларингиз); never сен, сенинг, айт with them. Interviewers, teachers, customers, strangers and a younger person speaking to an older one also use сиз. Сен is used only where the source is clearly familiar (ты/tu/du between close friends, an older person to a child, prayer to God). When the source language has no polite/familiar distinction (Arabic, English), default to сиз for adults. Keep the register chosen for a person the same through the whole document.",
+        "Arabic and Islamic vocabulary takes its established Uzbek form: Аллоҳ, Қуръон, ҳадис, Пайғамбаримиз, иншааллоҳ, машааллоҳ, алҳамдулиллаҳ, Ассалому алайкум ва раҳматуллоҳ. When the SOURCE has ﷺ or صلى الله عليه وسلم, render it (с.а.в.); رضي الله عنه — (р.а.); never add a formula the source does not have. Personal names use their Uzbek forms: Муҳаммад, Иброҳим, Исмоил, Юсуф, Мусо, Исо, Абдуллоҳ.",
+        "Ordinal numbers take a hyphen (5-синф, 2026 йил); month names are lowercase (26 сентябрь); quotation marks are « ». Keep the digits and the decimal separator exactly as in the source."
       ],
       "apostrophe_in_word": false,
       "distinctive": "ўқғҳ",
@@ -22,13 +26,19 @@
         "Write ONLY in the Uzbek Latin alphabet; never answer in Cyrillic.",
         "oʻ and gʻ are written with the turned comma ʻ (U+02BB), the glottal stop with the modifier apostrophe ʼ (U+02BC): oʻzbek, gʻoya, maʼno, taʼsir. Do not use a straight ' or the letters ö/ğ.",
         "sh, ch, ng are digraphs; the letters c and w occur only in foreign names.",
-        "Uzbek is SOV and agglutinative: rebuild the sentence, do not mirror Russian word order; after a numeral the noun stays singular (ikki kishi)."
-      ]
+        "Uzbek is SOV and agglutinative: rebuild the sentence, do not mirror Russian word order; after a numeral the noun stays singular (ikki kishi).",
+        "Forms of address: a kinship or respect title FOLLOWS the name, never precedes it — Yusuf aka, Malika opa, Karim ustoz, Anvar domla, Nodira xola (not aka Yusuf, opa Malika). Arabic أخي يوسف / أختي used to address someone respectfully becomes Yusuf aka / Malika opa. A vocative address is set off by commas: Yusuf aka, qalaysiz?",
+        "Politeness: anyone addressed with aka, opa, ustoz, domla, xola or amaki is ALWAYS siz — pronoun, verb and possessive agree (siz, qalaysiz, ayting, rejalaringiz); never sen, sening, ayt with them. Interviewers, teachers, customers, strangers and a younger person speaking to an older one also use siz. Sen is used only where the source is clearly familiar (ты/tu/du between close friends, an older person to a child, prayer to God). When the source language has no polite/familiar distinction (Arabic, English), default to siz for adults. Keep the register chosen for a person the same through the whole document.",
+        "Arabic and Islamic vocabulary takes its established Uzbek form, not a letter-by-letter transliteration: Alloh, Qurʼon, hadis, Paygʻambarimiz, inshaalloh, mashaalloh, alhamdulillah, Assalomu alaykum va rahmatulloh. When the SOURCE has ﷺ or صلى الله عليه وسلم, render it (s.a.v.); رضي الله عنه — (r.a.); never add a formula the source does not have. Personal names use their Uzbek forms: Muhammad, Ibrohim, Ismoil, Yusuf, Muso, Iso, Abdulloh, Umar, Ali.",
+        "Ordinal numbers take a hyphen (5-sinf, 2026-yil); month names are lowercase (26-sentabr); quotation marks are « » or “ ”. Keep the digits and the decimal separator exactly as in the source."
+      ],
+      "script_check": true
     },
     "KK": {
       "name": "Kazakh",
       "conventions": [
-        "Write in the Kazakh Cyrillic alphabet: ә, і, ң, ғ, ү, ұ, қ, ө, һ are separate letters — never substitute а, и, н, г, у, к, о, х for them."
+        "Write in the Kazakh Cyrillic alphabet: ә, і, ң, ғ, ү, ұ, қ, ө, һ are separate letters — never substitute а, и, н, г, у, к, о, х for them.",
+        "Forms of address: a respect title FOLLOWS the name — Жүсіп аға, Айгүл апай, Серік ағай. Anyone addressed with such a title, by a stranger, or by a younger person speaking to an older one is сіз (сіз, айтыңыз), not сен; сен only where the source is clearly familiar. When the source has no polite/familiar distinction (Arabic, English), default to сіз for adults."
       ],
       "apostrophe_in_word": false,
       "distinctive": "әіңғүұқөһ",
@@ -37,7 +47,8 @@
     "KY": {
       "name": "Kyrgyz",
       "conventions": [
-        "Write in the Kyrgyz Cyrillic alphabet: ң, ө, ү are separate letters — never substitute н, о, у for them."
+        "Write in the Kyrgyz Cyrillic alphabet: ң, ө, ү are separate letters — never substitute н, о, у for them.",
+        "Forms of address: a respect title FOLLOWS the name — Жусуп аке, Айгүл эже, Асан агай. Anyone addressed with such a title, by a stranger, or by a younger person speaking to an older one is сиз (сиз, айтыңыз), not сен; сен only where the source is clearly familiar. When the source has no polite/familiar distinction (Arabic, English), default to сиз for adults."
       ],
       "apostrophe_in_word": false,
       "distinctive": "ңөү",
@@ -46,11 +57,85 @@
     "TG": {
       "name": "Tajik",
       "conventions": [
-        "Write in the Tajik Cyrillic alphabet: ӣ, ӯ, қ, ғ, ҳ, ҷ are separate letters — never substitute и, у, к, г, х, ч for them."
+        "Write in the Tajik Cyrillic alphabet: ӣ, ӯ, қ, ғ, ҳ, ҷ are separate letters — never substitute и, у, к, г, х, ч for them.",
+        "Forms of address: ака and апа FOLLOW the name (Юсуфака or Юсуф-ака, Малика-апа). Anyone addressed with such a title, by a stranger, or by a younger person speaking to an older one is шумо with plural verb agreement (шумо гӯед), not ту; ту only where the source is clearly familiar. When the source has no polite/familiar distinction (Arabic, English), default to шумо for adults."
       ],
       "apostrophe_in_word": false,
       "distinctive": "ӣӯқғҳҷ",
       "distinctive_min_words": 20
+    },
+    "TR": {
+      "name": "Turkish",
+      "conventions": [
+        "Forms of address: Bey, Hanım, Hoca, Abi, Abla FOLLOW the first name (Yusuf Bey, Ayşe Hanım, Ahmet Hoca); Sayın and Doktor precede it.",
+        "Bey, Hanım, Hoca, interviewers, teachers, customers and strangers take siz (siz, söyler misiniz, planlarınız); Abi and Abla are warm and may take sen. When the source has no polite/familiar distinction (Arabic, English), default to siz for adults; keep one register per person.",
+        "ı/i and İ/I are different letters: never drop the dot on İ or add one to ı; keep ç, ğ, ö, ş, ü."
+      ]
+    },
+    "AZ": {
+      "name": "Azerbaijani",
+      "conventions": [
+        "Forms of address: bəy, xanım, müəllim, müəllimə, əmi FOLLOW the first name (Yusif bəy, Leyla xanım, Kamal müəllim).",
+        "An adult addressed with a title or by an interviewer, teacher, customer or stranger is siz (siz, deyin, planlarınız), never sən. When the source has no polite/familiar distinction (Arabic, English), default to siz for adults; keep one register per person.",
+        "Write ə, not ä or e, where Azerbaijani has it; keep ç, ğ, ı, ö, ş, ü."
+      ]
+    },
+    "RU": {
+      "name": "Russian",
+      "conventions": [
+        "An adult addressed with a title, by an interviewer, teacher, customer or stranger is вы (lowercase in dialogue and general text; capital Вы only in a personal letter to one addressee). When the source has no polite/familiar distinction (Arabic, English), choose ты/вы by relationship and keep it the same through the document.",
+        "Uzbek and Tajik respect titles after a name are kept with a hyphen (Юсуф-ака, Малика-опа), not translated as «брат», «сестра».",
+        "Use «ёлочки» quotation marks and the em dash — with spaces."
+      ]
+    },
+    "AR": {
+      "name": "Arabic",
+      "conventions": [
+        "Write Modern Standard Arabic unless the source is in a dialect and dialect is the point.",
+        "Titles PRECEDE the name: الأستاذ يوسف، الدكتور أحمد، الأخ يوسف، السيد/السيدة.",
+        "Use Arabic punctuation: comma ، semicolon ؛ question mark ؟. Keep the digits exactly as in the source.",
+        "Keep religious formulas that the source has in their standard Arabic form (إن شاء الله، ما شاء الله، ﷺ); never add one the source does not have."
+      ]
+    },
+    "FA": {
+      "name": "Persian",
+      "conventions": [
+        "Use Persian letters ی and ک, never Arabic ي and ك; use the zero-width non-joiner in می‌روم, کتاب‌ها, خانه‌ای.",
+        "آقای / خانم / دکتر PRECEDE the name (آقای یوسف); the adult interlocutor is شما with plural verb agreement, not تو, unless the source is clearly familiar.",
+        "Use Persian punctuation ، ؛ ؟ and «» quotation marks. Keep the digits exactly as in the source."
+      ]
+    },
+    "DE": {
+      "name": "German",
+      "conventions": [
+        "Register: an adult addressed with a title or by an interviewer, teacher, customer or stranger is Sie, not du. When the source has no polite/familiar distinction (Arabic, English), choose by relationship and keep the same form for the same person through the whole document.",
+        "German quotation marks „…“; capitalise all nouns; formal Sie and Ihr are capitalised, du is not."
+      ]
+    },
+    "FR": {
+      "name": "French",
+      "conventions": [
+        "Register: an adult addressed with a title or by an interviewer, teacher, customer or stranger is vous, not tu. When the source has no polite/familiar distinction (Arabic, English), choose by relationship and keep the same form for the same person through the whole document.",
+        "Monsieur, Madame and Docteur precede the name; « guillemets » for quotations."
+      ]
+    },
+    "ES": {
+      "name": "Spanish",
+      "conventions": [
+        "Register: an adult addressed with a title or by an interviewer, teacher, customer or stranger is usted, not tú. When the source has no polite/familiar distinction (Arabic, English), choose by relationship and keep the same form for the same person through the whole document."
+      ]
+    },
+    "IT": {
+      "name": "Italian",
+      "conventions": [
+        "Register: an adult addressed with a title or by an interviewer, teacher, customer or stranger is Lei, not tu. When the source has no polite/familiar distinction (Arabic, English), choose by relationship and keep the same form for the same person through the whole document."
+      ]
+    },
+    "PT": {
+      "name": "Portuguese",
+      "conventions": [
+        "Register: an adult addressed with a title or by an interviewer, teacher, customer or stranger is o senhor / a senhora. When the source has no polite/familiar distinction (Arabic, English), choose by relationship and keep the same form for the same person through the whole document."
+      ]
     }
   }
 }

@@ -116,6 +116,80 @@ check(media.fit_tempo(3.0, 3.0) == (1.0, "ok") and media.fit_tempo(3.6, 3.0)[1] 
 check(media.output_ext({"video": {"codec": "h264"}}) == ".mp4" and media.output_ext({"video": {"codec": "vp9"}}) == ".mkv"
       and media.output_ext({"video": None}) == ".m4a", "контейнер результата по кодеку, без перекодирования")
 
+print("=== 2б. Строка — предложение, на экран — частями ===")
+# Боевой проект 12 (AR→UZ): распознавание отдаёт куски по дыханию, часто без
+# знаков препинания; пауза между кусками 0,02 с, между фразами 0,6–1,5 с.
+AR = [(0, 1.04, "السلام عليكم ورحمة الله"), (1.06, 3.4, "أخي يوسف كيف الحال؟"),
+      (4, 7.74, "أخي يوسف ما هي اللغة العربية بالنسبة لك؟"), (7.76, 8.64, "بالنسبة لي"),
+      (8.66, 9.84, "اللغة العربية"), (9.86, 12.18, "هي اللغة التي تفتتح بها"),
+      (12.2, 13.98, "كل العلوم الشرعية"), (14.76, 15.76, "ولذلك"), (17.22, 18.16, "بدأت"),
+      (18.18, 20.4, "دراسة هذه اللغة"), (21.46, 22.4, "جميل"), (22.42, 24.1, "ماذا كان انطباعك الأول"),
+      (24.12, 26.26, "عن اللغة العربية في البداية؟")]
+raw = [{"start": a, "end": b, "text": t} for a, b, t in AR]
+units = media.sentence_cues(raw)
+check(" ".join(u["text"] for u in units) == " ".join(t for _a, _b, t in AR),
+      "склейка не теряет и не переставляет слов")
+check(units[0]["text"] == "السلام عليكم ورحمة الله أخي يوسف كيف الحال؟" and units[0]["end"] == 3.4,
+      "короткий кусок без точки приклеен к фразе, «؟» — конец предложения")
+check(units[2]["text"].startswith("بالنسبة لي اللغة العربية هي اللغة"),
+      "обрывки одной фразы («по мне» / «арабский язык» / «это язык…») — одна строка")
+check(any(u["text"] == "جميل ماذا كان انطباعك الأول عن اللغة العربية في البداية؟" for u in units),
+      "фраза, разрезанная распознаванием на три куска, собрана целиком")
+check(len(units) == 5 and all(u["end"] - u["start"] <= media.UNIT_MAX_SEC for u in units),
+      "13 кусков → 5 строк, ни одна не длиннее потолка: %d" % len(units))
+check(all(isinstance(u.get("spans"), list) and len(u["spans"]) >= 1 for u in units),
+      "у строки — время её кусков (опорные точки пауз)")
+# Потолок: длинная речь без точек режется на самой длинной паузе, а не посреди.
+flow = [{"start": i * 2.0, "end": i * 2.0 + 1.9, "text": "слово%d ещё" % i} for i in range(12)]
+flow[5]["end"] = 10.5                  # 10,5 → 12,0: самая длинная пауза
+flow[6]["start"], flow[6]["end"] = 12.0, 13.9
+cut = media.sentence_cues(flow, max_sec=20.0, max_chars=1000)
+check(len(cut) == 2 and cut[0]["text"].endswith("слово5 ещё"),
+      "упёрлась в потолок — разрез на самой длинной паузе: %s" % [c["text"][-12:] for c in cut])
+check(media.sentence_cues([{"start": 0, "end": 1, "text": "Yes."}, {"start": 1.02, "end": 2, "text": "No."}])[0]["text"] == "Yes.",
+      "точка закрывает строку")
+check(len(media.sentence_cues([{"start": 0, "end": 1, "text": "а"}, {"start": 4, "end": 5, "text": "б"}])) == 2,
+      "пауза длиннее UNIT_PAUSE_HARD закрывает всегда")
+
+# На экран: две строки по 42 знака и не дольше 7 с; время — по длине текста.
+uz = ("Men uchun arab tili barcha shariy ilmlar ochiladigan til, shuning uchun men "
+      "bu tilni o‘rganishni boshladim va hozir ham davom etyapman")
+parts = media.display_cues([{"start": 10.0, "end": 20.0, "text": uz, "i": 7}])
+check(len(parts) >= 2 and " ".join(p["text"] for p in parts) == uz, "длинная строка — частями, текст целиком")
+check(all(p["i"] == 7 and "spans" not in p for p in parts), "номер строки переезжает в каждую часть")
+check(parts[0]["start"] == 10.0 and parts[-1]["end"] == 20.0
+      and all(parts[j]["end"] == parts[j + 1]["start"] for j in range(len(parts) - 1)),
+      "части подряд, от начала до конца строки")
+check(all(len(p["text"]) <= media.SCREEN_MAX_CHARS and p["end"] - p["start"] >= 1.0 for p in parts),
+      "часть — не длиннее двух строк и не короче секунды")
+check(parts[0]["text"].endswith(","), "граница — после запятой, если она рядом: %r" % parts[0]["text"])
+short = [{"start": 0.0, "end": 3.0, "text": "Salom, Yusuf aka!", "i": 0}]
+check(media.display_cues(short) == short, "короткая строка не делится")
+# Пауза внутри строки: часть не висит на экране в тишине.
+gap = media.display_cues([{"start": 0.0, "end": 10.0, "i": 1, "text": "Birinchi qism matni bu yerda. Ikkinchi qism.",
+                           "spans": [[0.0, 3.0], [8.0, 10.0]]}])
+check(len(gap) == 2 and gap[0]["end"] <= 3.0 and gap[1]["start"] >= 8.0,
+      "пауза 5 с внутри строки — граница частей, в тишине ничего не висит: %s"
+      % [(p["start"], p["end"]) for p in gap])
+tiny = media.display_cues([{"start": 0.0, "end": 1.5, "text": uz, "i": 2}])
+check(all(p["end"] - p["start"] >= 1.0 for p in tiny), "частей не больше, чем секунд в строке")
+bi = media.display_cues([{"start": 0.0, "end": 12.0, "text": uz, "src": " ".join(t for _a, _b, t in AR[3:7]), "i": 3}])
+check(len(bi) >= 2 and all(p.get("src") for p in bi), "двуязычные: оригинал делится на то же число частей")
+one = media.display_cues([{"start": 0.0, "end": 12.0, "text": uz, "src": "ولذلك", "i": 5}])
+check(len(one) >= 2 and one[0]["src"] == "ولذلك" and all(p["src"] == "" for p in one[1:]),
+      "оригинал из одного слова не режется по буквам — стоит в первой части")
+emp = media.display_cues([{"start": 0.0, "end": 10.0, "i": 6, "src": "",
+                           "text": "Birinchi qism matni bu yerda. Ikkinchi qism.", "spans": [[0.0, 4.0], [6.0, 10.0]]}])
+check(len(emp) == 2 and emp[0]["end"] <= 4.0 and emp[1]["start"] >= 6.0,
+      "пустой оригинал не отменяет деления по паузе")
+edge = media.display_cues([{"start": 0.0, "end": 2.2, "i": 8,
+                            "text": "Bu juda uzun gap, " + "va yana davom etadigan matn " * 4}])
+check(all(p["end"] - p["start"] >= 1.0 - 1e-6 for p in edge), "граница у запятой не делает часть короче секунды: %s"
+      % [round(p["end"] - p["start"], 2) for p in edge])
+ja = media.display_cues([{"start": 0.0, "end": 8.0, "text": "これは日本語の字幕のとても長い文章です。" * 3, "i": 4}])
+check(len(ja) >= 2 and all(len(p["text"]) <= media.SCREEN_MAX_CHARS_CJK + 1 for p in ja),
+      "письмо без пробелов — своя мерка экрана")
+
 print("=== 3. Загрузка кусками ===")
 c = TestClient(main.app)
 H = lambda t: {"Authorization": "Bearer " + t}
@@ -380,6 +454,42 @@ for fmt, head, sep in (("srt_bi", "1\n00:00:00,500", ","), ("vtt_bi", "WEBVTT", 
           and ("00:00:03%s400 --> 00:00:06%s000\nСегодня говорим о туберкулёзе.\n\n" % (sep, sep)) in body,
           fmt + ": в реплике оригинал, под ним перевод; непереведённая — одним оригиналом")
 check("-" in r.json()["file"].rsplit(" ", 1)[-1], "имя файла говорит, что внутри (оба языка): " + r.json()["file"])
+
+print("=== 7б. Видео: строка-фраза выгружается экранными частями ===")
+LONG = ("Today we will talk about tuberculosis, how it spreads between people, "
+        "which tests confirm it and how long the treatment usually takes for adults")
+proj["segments"][1]["target"] = LONG
+r = c.post("/api/projects/%d/export" % pid, headers=H(B), json={"format": "original", "source": False})
+body = c.get(r.json()["url"], headers=H(B)).content.decode("utf-8")
+got = importers.cue_list(body)
+mine = [x for x in got if x["start"] is not None and x["start"] >= 3.4 - 1e-6 and x["end"] <= 6.0 + 1e-6]
+check(len(mine) >= 2 and " ".join(x["text"] for x in mine) == LONG,
+      "длинный перевод — несколькими репликами в окне строки, текст целиком: %d" % len(mine))
+check(got[0]["text"] == "Good afternoon, colleagues." and got[0]["start"] == 0.5, "короткая строка — как была")
+r = c.post("/api/projects/%d/export" % pid, headers=H(B), json={"format": "vtt", "source": False})
+vbody = c.get(r.json()["url"], headers=H(B)).content.decode("utf-8")
+check(len(importers.cue_list(vbody)) == len(got), ".vtt — те же части, что .srt")
+text_, tr_, _d = main._media_translations(proj)
+bc, _n = main._burn_cues(proj, text_, tr_)
+seg_i = [x for x in bc if x["start"] >= 3.4 - 1e-6 and x["end"] <= 6.0 + 1e-6]
+check([(x["start"], x["end"], x["text"]) for x in seg_i] == [(x["start"], x["end"], x["text"]) for x in mine]
+      and len({x["i"] for x in seg_i}) == 1, "в кадр — те же части, что в .srt, у каждой номер строки")
+r = c.post("/api/projects/%d/export" % pid, headers=H(B), json={"format": "srt_bi", "source": False})
+bbody = c.get(r.json()["url"], headers=H(B)).content.decode("utf-8")
+check("Сегодня говорим о туберкулёзе." not in bbody and "Сегодня" in bbody and "туберкулёзе." in bbody,
+      "двуязычные: оригинал строки поделен вместе с переводом")
+check("cueSpans" not in c.get("/api/projects/%d" % pid, headers=H(B)).json(), "опорные точки браузеру не уходят")
+sys.path.insert(0, "tools")
+import regroup_cues  # noqa: E402
+new_srt, u2, n_raw = regroup_cues.regroup_srt(main, "\n".join(
+    "%d\n00:00:%02d,000 --> 00:00:%02d,900\n%s\n" % (k + 1, k, k, w)
+    for k, w in enumerate(["по мне", "арабский язык", "это язык", "всех наук."])))
+check(n_raw == 4 and len(u2) == 1 and importers.cue_list(new_srt)[0]["text"] == "по мне арабский язык это язык всех наук.",
+      "инструмент пересборки: хранимые куски → одна строка-фраза")
+# Хранимый .srt растянут старой подтяжкой: кусок 0–0,3 с стал 0–1,0 с, и пауза
+# 1,0 с выглядит паузой 0,3 с. Конец растянутого куска оценивается по тексту.
+ut = regroup_cues._untidy([{"start": 0.0, "end": 1.0, "text": "Ha"}, {"start": 1.3, "end": 4.3, "text": "x" * 40}])
+check(ut[0]["end"] == 0.3 and ut[1]["end"] == 4.3, "растяжка короткого куска снята, длинный — как был: %s" % ut)
 
 print("=== 8. Сборка видео и озвучки ===")
 r = c.post("/api/projects/%d/media/render" % pid, headers=H(A), json={"what": "dub"})
@@ -781,8 +891,12 @@ check(all("SUBTITLE MODE" in s for s in CHAT["systems"]), "все вызовы �
 segs = main._project_by_id(sp)["segments"]
 check(all(s["target"] == "EN " + s["source"] for s in segs), "каждая реплика получила СВОЙ перевод")
 packs = [json.loads(u) for s, u in zip(CHAT["systems"], CHAT["users"]) if "SUBTITLE MODE" in s]
-check(sorted(len(p) for p in packs) == [5, 15, 15] and any(p[0] == {"n": 1, "text": segs[0]["source"]} for p in packs),
+check(sorted(len(p) for p in packs) == [5, 15, 15]
+      and any(p[0].get("n") == 1 and p[0].get("text") == segs[0]["source"] for p in packs),
       "в пачку уходят реплики по порядку, пачки 15 и 5")
+# Длительность строки — бюджет длины перевода (экран и озвучка в том же окне).
+check(all(isinstance(it.get("sec"), (int, float)) and it["sec"] > 0 for p in packs for it in p),
+      "у каждой строки пачки — её длительность в секундах: %s" % packs[0][:2])
 pj = c.get("/api/projects/%d" % sp, headers=H(B)).json()
 check(pj.get("cueTimes", {}).get(str(segs[1]["id"])) == [3.0, 5.5], "тайминг строки — в карте проекта: %s"
       % (pj.get("cueTimes") or {}).get(str(segs[1]["id"])))

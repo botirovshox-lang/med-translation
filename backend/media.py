@@ -55,6 +55,35 @@ CUE_MAX_SEC = 6.0
 CUE_MAX_CHARS = 84
 CUE_MIN_SEC = 1.0
 
+# Единица перевода у распознанной речи — ПРЕДЛОЖЕНИЕ, а не кусок распознавания
+# (`sentence_cues`). Распознавание режет речь по дыханию: на арабском боевом
+# ролике — «بالنسبة لي» / «اللغة العربية» / «هي اللغة التي…», по 1–4 слова,
+# часто без знаков препинания. Переведённый в одиночку, такой обрывок теряет
+# смысл, а в языке с другим порядком слов (узбекский — глагол в конце) его
+# нельзя перевести верно В ПРИНЦИПЕ. Поэтому строка проекта — фраза целиком,
+# а на экранные куски она делится только на выходе (`display_cues`) —
+# так устроен и профессиональный перевод субтитров: сначала предложение,
+# потом сегментация по правилам языка перевода.
+UNIT_MAX_SEC = float(os.environ.get("MEDIA_UNIT_MAX_SEC", "12"))
+UNIT_MAX_CHARS = int(os.environ.get("MEDIA_UNIT_MAX_CHARS", "160"))
+# Пауза закрывает единицу, только когда в ней уже есть законченная мысль:
+# «ولذلك» (одно слово) | 1,46 с | «بدأت دراسة هذه اللغة» — одно предложение.
+UNIT_PAUSE_SOFT = float(os.environ.get("MEDIA_UNIT_PAUSE_SOFT", "0.8"))
+# Такая пауза закрывает всегда: иначе экранный кусок, время которого делится
+# по длине текста, висел бы на экране посреди тишины.
+UNIT_PAUSE_HARD = float(os.environ.get("MEDIA_UNIT_PAUSE_HARD", "2.5"))
+UNIT_DONE_WORDS, UNIT_DONE_CHARS, UNIT_DONE_SEC = 4, 24, 2.5
+# Экранный кусок на выходе: две строки по 42 знака (Netflix), не дольше 7 с;
+# у письма без пробелов — 2 × 16.
+SCREEN_MAX_CHARS = int(os.environ.get("MEDIA_SCREEN_MAX_CHARS", "84"))
+SCREEN_MAX_CHARS_CJK = 32
+SCREEN_MAX_SEC = float(os.environ.get("MEDIA_SCREEN_MAX_SEC", "7"))
+# Пауза речи, через которую экранная часть не перекидывается.
+SCREEN_GAP = float(os.environ.get("MEDIA_SCREEN_GAP", "1.0"))
+# Версия правил деления на экран: входит в отпечаток кусков сборки в кадр —
+# сменил правила, и незаконченная сборка не склеит куски разных правил.
+DISPLAY_RULES = 1
+
 # Укладка озвучки: до 1,3 раза ускорение звучит естественно, до 1,5 —
 # заметно быстро, но разборчиво; дальше — не влезает, человек сокращает.
 TEMPO_SOFT = 1.3
@@ -411,6 +440,221 @@ def tidy_cues(cues: list, min_sec: float = CUE_MIN_SEC) -> list:
             c["end"] = max(c["start"] + 0.2, nxt - 0.02)
         c["start"], c["end"] = round(c["start"], 3), round(c["end"], 3)
     return cues
+
+
+_SENT_END_RE = re.compile(r"[.!?…。！？؟۔]['\"»”’)\]]*\s*$")
+
+
+def _spaceless(text: str) -> bool:
+    """Письмо без пробелов (иероглифы, кана, тайский): мерка длины своя."""
+    t = (text or "").strip()
+    return len(t) > 12 and len(t.split()) <= max(1, len(t) // 12)
+
+
+def _unit_done(u: dict) -> bool:
+    """В единице уже есть законченная мысль (а не одно-два слова)."""
+    t = u.get("text") or ""
+    if _spaceless(t):
+        return len(t) >= 10 or u["end"] - u["start"] >= UNIT_DONE_SEC
+    return (len(t.split()) >= UNIT_DONE_WORDS or len(t) >= UNIT_DONE_CHARS
+            or u["end"] - u["start"] >= UNIT_DONE_SEC)
+
+
+def _unit_of(pieces: list) -> dict:
+    return {"start": pieces[0]["start"], "end": max(p["end"] for p in pieces),
+            "text": " ".join(p["text"] for p in pieces),
+            "spans": [[p["start"], p["end"]] for p in pieces]}
+
+
+def sentence_cues(cues: list, max_sec: float = None, max_chars: int = None) -> list:
+    """Реплики распознавания (по времени) → единицы-предложения
+    [{start, end, text, spans}]. Граница — конец предложения; пауза
+    ≥ UNIT_PAUSE_SOFT у законченной единицы; пауза ≥ UNIT_PAUSE_HARD всегда.
+    Упёрлась в потолок времени или длины — режется на САМОЙ ДЛИННОЙ паузе
+    внутри (там, скорее всего, и кончилась мысль), а не перед очередным
+    куском. `spans` — время исходных кусков: по ним экранные части потом
+    не повиснут в тишине (`display_cues`). Слова не теряются и не
+    переставляются: текст единиц подряд — это текст кусков подряд."""
+    max_sec = UNIT_MAX_SEC if max_sec is None else max_sec
+    max_chars = UNIT_MAX_CHARS if max_chars is None else max_chars
+    out, cur = [], []
+
+    def over(pcs):
+        return (len(pcs) > 1 and (pcs[-1]["end"] - pcs[0]["start"] > max_sec
+                                  or sum(len(p["text"]) + 1 for p in pcs) - 1 > max_chars))
+
+    for c in sorted((c for c in cues or [] if (c.get("text") or "").strip()), key=lambda c: c["start"]):
+        piece = {"start": float(c["start"]), "end": float(c["end"]), "text": " ".join(c["text"].split())}
+        if cur:
+            u = _unit_of(cur)
+            gap = piece["start"] - u["end"]
+            if (_SENT_END_RE.search(u["text"]) or gap >= UNIT_PAUSE_HARD
+                    or (gap >= UNIT_PAUSE_SOFT and _unit_done(u))):
+                out.append(u)
+                cur = []
+        cur.append(piece)
+        while over(cur):
+            # Режем на самой длинной паузе; при равных — ближе к концу,
+            # чтобы голова единицы была как можно полнее.
+            k = max(range(1, len(cur)), key=lambda j: (cur[j]["start"] - cur[j - 1]["end"], j))
+            out.append(_unit_of(cur[:k]))
+            cur = cur[k:]
+    if cur:
+        out.append(_unit_of(cur))
+    return out
+
+
+def _cut_words(words: list, fracs: list) -> list:
+    """Слова → части с границами у долей `fracs` (по длине текста), в пределах
+    пятой части длины части — после знака препинания. Пустых частей нет."""
+    total = sum(len(w_) + 1 for w_ in words) or 1
+    bounds, acc = [], 0
+    for i, w_ in enumerate(words[:-1]):
+        acc += len(w_) + 1
+        bounds.append((i + 1, acc, bool(_PUNCT_END.search(w_))))
+    cuts, pos, prev = [], 0, 0.0
+    for f in fracs:
+        target = total * f
+        tol = total * (f - prev) * 0.2
+        prev = f
+        free = [b for b in bounds if b[0] > pos]
+        cand = [b for b in free if abs(b[1] - target) <= tol and b[2]]
+        pool = cand or free
+        if not pool:
+            break
+        best = min(pool, key=lambda b: abs(b[1] - target))
+        cuts.append(best[0])
+        pos = best[0]
+    edges = [0] + cuts + [len(words)]
+    return [" ".join(words[edges[i]:edges[i + 1]]) for i in range(len(edges) - 1) if edges[i] < edges[i + 1]]
+
+
+def _text_parts(text: str, fracs: list) -> list:
+    """Текст → части у долей `fracs`; письмо без пробелов — по знакам.
+    Одно слово обычного письма не режется (буквы слова на двух экранах —
+    не субтитры): частей тогда меньше, и вызывающий это видит."""
+    t = " ".join((text or "").split())
+    if not fracs or not t:
+        return [t] if t else []
+    if " " in t:
+        return _cut_words(t.split(" "), fracs)
+    if not _spaceless(t):
+        return [t]
+    n = len(t)
+    edges = sorted({0, n} | {min(n, max(0, int(round(n * f)))) for f in fracs})
+    return [t[edges[i]:edges[i + 1]] for i in range(len(edges) - 1) if edges[i] < edges[i + 1]]
+
+
+def _speech_runs(start: float, end: float, spans) -> list:
+    """Отрезки речи единицы, разделённые паузами ≥ SCREEN_GAP: экранная часть
+    через такую паузу не перекидывается. Без опорных точек — вся единица."""
+    ss = sorted(([float(a), float(b)] for a, b in (spans or []) if b > a), key=lambda x: x[0])
+    ss = [[max(a, start), min(b, end)] for a, b in ss if min(b, end) > max(a, start)]
+    if not ss:
+        return [[start, end]]
+    runs = [list(ss[0])]
+    for a, b in ss[1:]:
+        if a - runs[-1][1] >= SCREEN_GAP:
+            runs.append([a, b])
+        else:
+            runs[-1][1] = max(runs[-1][1], b)
+    runs[0][0], runs[-1][1] = start, end
+    return runs
+
+
+def _screen_k(text: str, dur: float, min_sec: float) -> int:
+    cap = SCREEN_MAX_CHARS_CJK if _spaceless(text) else SCREEN_MAX_CHARS
+    k = max(1, -(-len(text) // cap), -(-int(dur * 1000) // int(SCREEN_MAX_SEC * 1000)))
+    return max(1, min(k, int(dur // min_sec))) if min_sec > 0 else k
+
+
+def _split_window(c: dict, a: float, b: float, text: str, src, min_sec: float) -> list:
+    """Одно окно речи → экранные части поровну по длине текста."""
+    dur = max(0.0, b - a)
+    k = _screen_k(text, dur, min_sec)
+    if src is not None:
+        k = max(k, min(_screen_k(src, dur, min_sec), max(1, int(dur // min_sec))))
+    while True:
+        parts = _text_parts(text, [j / k for j in range(1, k)]) if k > 1 else [text]
+        total = float(sum(len(p) for p in parts)) or 1.0
+        # Граница у знака препинания сдвигает долю на пятую часть — часть
+        # короче `min_sec` глаз не прочтёт: частей тогда на одну меньше.
+        if len(parts) < 2 or all(dur * len(p) / total >= min_sec - 1e-6 for p in parts):
+            break
+        k = len(parts) - 1
+    if src is not None:
+        srcs = _text_parts(src, [j / len(parts) for j in range(1, len(parts))]) if len(parts) > 1 else [src]
+        if len(srcs) != len(parts):
+            srcs = [src] + [""] * (len(parts) - 1)
+    total = float(sum(len(p) for p in parts)) or 1.0
+    out, t, acc = [], a, 0
+    for j, p in enumerate(parts):
+        acc += len(p)
+        e = b if j == len(parts) - 1 else a + dur * acc / total
+        piece = dict(c, start=round(t, 3), end=round(e, 3), text=p)
+        piece.pop("spans", None)
+        if src is not None:
+            piece["src"] = srcs[j]
+        out.append(piece)
+        t = e
+    return out
+
+
+def display_cues(cues: list, min_sec: float = CUE_MIN_SEC) -> list:
+    """Единицы-предложения → экранные куски субтитров (то, что видит зритель).
+    Сначала единица делится по крупным паузам речи (`spans`, пауза
+    ≥ SCREEN_GAP): текст перевода раздаётся отрезкам речи по доле их времени,
+    и ни одна часть не висит на экране в тишине. Затем отрезок длиннее двух
+    строк или SCREEN_MAX_SEC делится на равные по длине части (граница —
+    после знака препинания, если он рядом); время частей — доли окна по
+    длине ТЕКСТА части: перевод пословно речи не соответствует, и время слов
+    оригинала ему ничего не говорит. Часть не короче `min_sec`. Поля реплики
+    (`i` — её номер) переезжают в каждую часть; у реплики с `src`
+    (двуязычные субтитры) оригинал делится на то же число частей."""
+    out = []
+    for c in cues or []:
+        text = " ".join((c.get("text") or "").split())
+        if c.get("start") is None or c.get("end") is None or not text:
+            out.append(c)
+            continue
+        s0, e0 = float(c["start"]), float(c["end"])
+        src = " ".join((c.get("src") or "").split()) if c.get("src") is not None else None
+        runs = _speech_runs(s0, e0, c.get("spans"))
+        runs = [r for r in runs if r[1] - r[0] > 0] or [[s0, e0]]
+        # Раздать текст отрезкам речи по доле ВРЕМЕНИ; отрезок, которому
+        # досталось меньше секунды, сливается с соседом (читать нечего).
+        while len(runs) > 1 and min(r[1] - r[0] for r in runs) < min_sec:
+            j = min(range(len(runs)), key=lambda x: runs[x][1] - runs[x][0])
+            m = j - 1 if j == len(runs) - 1 or (j > 0 and runs[j - 1][1] - runs[j - 1][0]
+                                                  <= runs[j + 1][1] - runs[j + 1][0]) else j + 1
+            lo, hi = min(j, m), max(j, m)
+            runs[lo:hi + 1] = [[runs[lo][0], runs[hi][1]]]
+        if len(runs) > 1:
+            speech = sum(r[1] - r[0] for r in runs)
+            acc, fr = 0.0, []
+            for r in runs[:-1]:
+                acc += r[1] - r[0]
+                fr.append(acc / speech)
+            tp = _text_parts(text, fr)
+            sp = _text_parts(src, fr) if src is not None else None
+            if len(tp) != len(runs):
+                runs, tp, sp = [[s0, e0]], [text], ([src] if src is not None else None)
+            elif sp is not None and len(sp) != len(runs):
+                # Оригинал не делится так же (пуст, одно слово) — деление
+                # по паузам решает перевод, оригинал остаётся в первой части.
+                sp = [src] + [""] * (len(runs) - 1)
+        else:
+            tp, sp = [text], ([src] if src is not None else None)
+        pieces = []
+        for j, r in enumerate(runs):
+            pieces += _split_window(c, r[0], r[1], tp[j], sp[j] if sp is not None else None, min_sec)
+        if len(pieces) == 1:
+            one = dict(c)
+            one.pop("spans", None)
+            out.append(one)
+        else:
+            out.extend(pieces)
+    return out
 
 
 # ─── Озвучка ─────────────────────────────────────────────────────────

@@ -3172,11 +3172,14 @@ def _cue_project(project: Optional[dict]) -> bool:
 # только перевод» — здесь это уточнено форматом: JSON по номерам реплик.
 CUE_BATCH_RULES = """
 SUBTITLE MODE: the user message is a JSON array of consecutive subtitle lines
-from one video, each {"n": number, "text": source line}. Translate EACH line on
-its own, in order, using the neighbouring lines as context. Never move words from one
+from one video, each {"n": number, "text": source line} and, when known,
+"sec": how many seconds the line is spoken. A line is usually a whole spoken
+phrase: translate EACH line as a complete, natural sentence of the target language,
+in order, using the neighbouring lines as context. Never move words from one
 line to another and never merge or split lines: every line is shown and voiced at its
 own time. Keep each translation about as short as its source line — it is read on
-screen and spoken in the same time slot.
+screen and spoken in the same time slot; when "sec" is given, aim for at most about
+15 characters per second of it, dropping filler words before meaning.
 Return ONLY a JSON object {"lines": [{"n": number, "text": translation}, ...]}
 with one entry for EVERY input line — no comments, no markdown.
 """
@@ -3184,7 +3187,8 @@ with one entry for EVERY input line — no comments, no markdown.
 
 def _openai_translate_cues(texts: list, src: str, tgt: str, gloss_hits: list = None,
                            model: str = None, domain: Optional[str] = None,
-                           prev_src: str = "", next_src: str = "", style: str = "") -> dict:
+                           prev_src: str = "", next_src: str = "", style: str = "",
+                           secs: Optional[list] = None) -> dict:
     """Пачка реплик одним вызовом: {номер в пачке (с 0): перевод}. Промпт —
     тот же `_translate_system` (правила, глоссарий, стайл, соседи до и после
     пачки) плюс формат пачки. Реплику, которой нет в ответе, вызывающий
@@ -3197,7 +3201,11 @@ def _openai_translate_cues(texts: list, src: str, tgt: str, gloss_hits: list = N
              else {"max_tokens": 4096, "temperature": 0.1})
     if _provider_of(mdl) != "anthropic":
         extra["response_format"] = {"type": "json_object"}
-    user = json.dumps([{"n": i + 1, "text": t} for i, t in enumerate(texts)], ensure_ascii=False)
+    # Длительность строки (если известна) — бюджет длины: перевод читают
+    # на экране и озвучивают в то же окно.
+    user = json.dumps([dict({"n": i + 1, "text": t},
+                            **({"sec": secs[i]} if secs and i < len(secs) and secs[i] else {}))
+                       for i, t in enumerate(texts)], ensure_ascii=False)
     resp = client.chat.completions.create(
         model=mdl["id"],
         messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -18261,6 +18269,7 @@ def _project_for_client(project: dict) -> dict:
     исходник позволяет пересобрать его строки (`/resegment`). `cueTimes` —
     тайминги реплик у проекта-субтитров (колонка в редакторе)."""
     out = {**project, "segments": [_segment_for_client(s, project) for s in list(project["segments"])]}
+    out.pop("cueSpans", None)          # опорные точки показа — дело сервера
     ct = _cue_times(project)
     if ct is not None:
         out["cueTimes"] = ct
@@ -26788,6 +26797,15 @@ def batch_translate(pid: int, req: BatchRequest):
                 "docTerms": [h["tgt"] for h in gloss_hits if h.get("tier") == "doc"],
                 "ctxFrom": [p["id"] for p in pairs]}
 
+    # Тайминги реплик — бюджет длины перевода в пачке (`secs`); считаются
+    # один раз на вызов пакета, а не на пачку.
+    cue_times: dict = {}
+    if _cue_project(project) and CUE_BATCH > 1:
+        try:
+            cue_times = _cue_times(project) or {}
+        except Exception:
+            cue_times = {}
+
     def _translate_pack(keys):
         """Пачка реплик субтитров — ОДНИМ вызовом (`_openai_translate_cues`).
         Реплика короткая (10–15 слов), а правила, глоссарий и соседи в промпте
@@ -26806,13 +26824,15 @@ def batch_translate(pid: int, req: BatchRequest):
                     hits.append(h)
         prev_src = _neighbours(project, segs0[0])[0]
         next_src = _neighbours(project, segs0[-1])[1]
+        secs = [round(cue_times[str(sg["id"])][1] - cue_times[str(sg["id"])][0], 1)
+                if str(sg["id"]) in cue_times else None for sg in segs0]
         got = None
         for _try in range(2):             # неровный ответ — переспросить пачку один раз
             try:
                 got = _openai_translate_cues([sg["source"] for sg in segs0], project["src"], project["tgt"],
                                              domain=project.get("domain"), style=_style_block(project),
                                              gloss_hits=hits, model=req.model,
-                                             prev_src=prev_src, next_src=next_src)
+                                             prev_src=prev_src, next_src=next_src, secs=secs)
             except Exception as e:
                 _note_provider_error(e)
                 print(f"[backend] batch cues error seg#{segs0[0]['id']}: {e}", file=sys.stderr)
@@ -27965,6 +27985,20 @@ def _export_original(project: dict, out: Path, tmp: Path) -> dict:
                 pass
         tmp.write_bytes(importers.images_to_file(imgs, ext))
         return dict(stats, original=kind, images=len(imgs))
+    if project.get("media") and ext in (".srt", ".vtt"):
+        # Субтитры видео — НАШ файл (распознавание), а строка в нём — фраза:
+        # выгружаются экранные куски (`_media_screen`), те же, что в кадре
+        # и на дорожке. Обратная запись по слотам тут не годится: она
+        # оставила бы фразу одной репликой на полэкрана. Загруженный
+        # клиентом .srt (без видео) выгружается как прежде — это его нарезка.
+        try:
+            sub, tr, _data = _media_translations(project)
+        except RuntimeError as e:
+            raise HTTPException(400, str(e))
+        n_cues = sum(1 for c in importers.cue_list(sub) if c.get("start") is not None)
+        tmp.write_bytes(importers.render_cues(_media_screen(project, sub, tr, translated_only=False),
+                                              ext).encode("utf-8"))
+        return {"original": kind, "written": len(tr), "untranslated": max(0, n_cues - len(tr))}
     # Текстовые форматы: перевод по карте «абзац → сегмент» в оригинал.
     orig = _orig_existing(project["id"])
     data = _load_source_map(project["id"]) if project.get("sourceDocx") else None
@@ -28196,9 +28230,17 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
         except RuntimeError as e:
             raise HTTPException(400, str(e))
         cues = importers.cue_list(sub)
-        out_cues = [{"start": c["start"], "end": c["end"],
-                     "screen": importers.wrap_cue(c["text"]) + (importers.wrap_cue(tr[i]) if i in tr else [])}
-                    for i, c in enumerate(cues)]
+        if project.get("media"):
+            # Строка-фраза видео — экранными частями, оригинал и перевод
+            # делятся на одно и то же число частей.
+            out_cues = [{"start": c["start"], "end": c["end"],
+                         "screen": importers.wrap_cue(c["src"]) + (importers.wrap_cue(c["text"])
+                                                                   if c["i"] in tr else [])}
+                        for c in _media_screen(project, sub, tr, translated_only=False, with_src=True)]
+        else:
+            out_cues = [{"start": c["start"], "end": c["end"],
+                         "screen": importers.wrap_cue(c["text"]) + (importers.wrap_cue(tr[i]) if i in tr else [])}
+                        for i, c in enumerate(cues)]
         tmp.write_bytes(importers.render_cues(out_cues, "." + EXPORT_EXT[fmt]).encode("utf-8"))
         stats = {"written": len(tr), "untranslated": sum(1 for i in range(len(cues)) if i not in tr)}
     elif fmt == "docx_layout":
@@ -31785,7 +31827,15 @@ def _asr_chunk(item: tuple) -> dict:
 # а оригинал проекта — кириллица (UZ-CYRL). Короткая фраза в нужном письме
 # склоняет выбор; других средств у этого поставщика нет.
 _ASR_SCRIPT_HINT = {"UZ-CYRL": "Ассалому алайкум. Бугун биз бу ҳақда гаплашамиз.",
-                    "UZ": "Assalomu alaykum. Bugun biz bu haqda gaplashamiz."}
+                    "UZ": "Assalomu alaykum. Bugun biz bu haqda gaplashamiz.",
+                    # Подсказка с ЗНАКАМИ ПРЕПИНАНИЯ: без неё распознавание
+                    # арабской речи отдаёт куски без точек и вопросов, и границу
+                    # предложения (`media.sentence_cues`) приходится угадывать
+                    # по паузам. Пример, а не содержание: слов из него в ответе нет.
+                    "AR": "السلام عليكم. كيف حالك؟ الحمد لله، بخير. نبدأ الآن.",
+                    "RU": "Здравствуйте. Как дела? Хорошо, спасибо. Начнём.",
+                    "EN": "Hello. How are you? Fine, thank you. Let's begin.",
+                    "TR": "Merhaba. Nasılsınız? İyiyim, teşekkürler. Başlayalım."}
 
 
 def _job_asr(job: dict) -> None:
@@ -31860,8 +31910,11 @@ def _job_asr(job: dict) -> None:
     cues = []
     for p, off, *_ in items:
         data = json.loads(Path(str(p) + ".json").read_text(encoding="utf-8"))
-        cues += media_mod.build_cues(data.get("segments") or [], data.get("words") or [], offset=off)
-    cues = media_mod.tidy_cues(cues)
+        cues += media_mod.build_cues(data.get("segments") or [], data.get("words") or [], offset=off,
+                                     max_sec=media_mod.UNIT_MAX_SEC, max_chars=media_mod.UNIT_MAX_CHARS)
+    # Строка проекта — ПРЕДЛОЖЕНИЕ, а не кусок распознавания (инвариант 38,
+    # «Строка субтитров — фраза»): на экранные куски её делит выгрузка.
+    cues = media_mod.tidy_cues(media_mod.sentence_cues(cues))
     _media_apply_transcript(project, cues)
     job["counters"]["cues"] = len(cues)
     job["phase"] = None
@@ -31901,7 +31954,60 @@ def _media_apply_transcript(project: dict, cues: list) -> None:
     pairs = [[i, u + 1] for u, (_t, idxs) in enumerate(units) for i in idxs]
     _store_source_docx(project, parsed["docx"], name, pairs, len(paras))
     _store_original(pid, name, srt)
+    _media_store_spans(project, cues)
     save_state(STATE)
+
+
+def _cue_key(start) -> str:
+    """Ключ реплики в `cueSpans` — начало в миллисекундах, как в .srt."""
+    return str(int(round(float(start) * 1000)))
+
+
+def _media_store_spans(project: dict, cues: list) -> None:
+    """Опорные точки единиц-предложений: время исходных кусков распознавания
+    (`spans`), только у единиц с паузой внутри — по ним экранная часть
+    не повиснет в тишине (`media.display_cues`). Ключ — начало реплики:
+    склейка, разрезка и замена файла меняют реплики, и чужие точки к новой
+    реплике не пристанут (конец тоже сверяется) — она делится без них."""
+    spans = {}
+    for c in cues or []:
+        sp = c.get("spans") or []
+        if len(sp) > 1 and any(sp[j][0] - sp[j - 1][1] >= 0.5 for j in range(1, len(sp))):
+            spans[_cue_key(c["start"])] = {"e": _cue_key(c["end"]),
+                                            "s": [[round(a, 3), round(b, 3)] for a, b in sp]}
+    project["cueSpans"] = spans
+    project["cueRules"] = media_mod.DISPLAY_RULES
+
+
+def _media_units(project: dict, text: str, tr: dict, translated_only: bool = True,
+                 with_src: bool = False) -> list:
+    """Реплики хранимого .srt видео-проекта → [{start, end, text, i, spans?,
+    src?}]: перевод (или оригинал, если `translated_only` снят), номер
+    реплики и опорные точки. Это ВХОД `media.display_cues`."""
+    spans = project.get("cueSpans") or {}
+    out = []
+    for i, c in enumerate(importers.cue_list(text)):
+        if c.get("start") is None:
+            continue
+        if translated_only and i not in tr:
+            continue
+        u = {"start": c["start"], "end": c["end"], "text": tr.get(i, c["text"]), "i": i}
+        sp = spans.get(_cue_key(c["start"]))
+        if sp and sp.get("e") == _cue_key(c["end"]):
+            u["spans"] = sp.get("s")
+        if with_src:
+            u["src"] = c["text"]
+        out.append(u)
+    return out
+
+
+def _media_screen(project: dict, text: str, tr: dict, translated_only: bool = True,
+                  with_src: bool = False) -> list:
+    """Экранные куски субтитров видео-проекта: строка проекта — фраза,
+    на экран она идёт частями по правилам показа (`media.display_cues`).
+    Одна точка на все выходы — дорожку, кадр, выгрузку .srt/.vtt: разойдись
+    они, скачанный файл показывал бы не то, что впечатано в видео."""
+    return media_mod.display_cues(_media_units(project, text, tr, translated_only, with_src))
 
 
 def _media_translations(project: dict) -> tuple:
@@ -32012,8 +32118,8 @@ def _job_mediarender(job: dict) -> None:
             raise RuntimeError("В файле нет видео — скачайте субтитры файлом .srt")
         srt_path = work / "subs.srt"
         cues = importers.cue_list(text)
-        out_cues = [{"start": c["start"] + shift, "end": c["end"] + shift, "text": tr.get(i, c["text"])}
-                    for i, c in enumerate(cues)]
+        out_cues = [{"start": c["start"] + shift, "end": c["end"] + shift, "text": c["text"]}
+                    for c in _media_screen(project, text, tr, translated_only=False)]
         srt_path.write_bytes(importers.render_cues(out_cues, ".srt").encode("utf-8"))
         job["phase"] = "mux"
         job["total"], job["done"] = 1, 0
@@ -32145,14 +32251,16 @@ def _burn_jobs_of(tid: str) -> list:
             and (j.get("params") or {}).get("what") == "burn" and j.get("status") in ("queued", "running")]
 
 
-def _burn_cues(text: str, tr: dict) -> tuple:
-    """(реплики для впечатывания, сколько не переведено). В кадр идёт
-    ТОЛЬКО перевод: реплика на языке оригинала посреди переведённого ролика —
-    это не субтитры, а брак, и молча его печатать нельзя — он называется."""
+def _burn_cues(project: dict, text: str, tr: dict) -> tuple:
+    """(экранные куски для впечатывания, сколько реплик не переведено). В кадр
+    идёт ТОЛЬКО перевод: реплика на языке оригинала посреди переведённого
+    ролика — это не субтитры, а брак, и молча его печатать нельзя — он
+    называется. Строка-фраза делится на экранные части (`_media_screen`),
+    номер реплики `i` переезжает в каждую часть — отчёт подгонки называет
+    строки проекта, а не части."""
     cues = importers.cue_list(text)
-    out = [{"start": c["start"], "end": c["end"], "text": tr[i], "i": i}
-           for i, c in enumerate(cues) if i in tr and c.get("start") is not None]
-    return out, len(cues) - len(out)
+    n_tr = sum(1 for i, c in enumerate(cues) if i in tr and c.get("start") is not None)
+    return _media_screen(project, text, tr), len(cues) - n_tr
 
 
 def _cue_seg_ids(project: dict, idxs: list) -> list:
@@ -32171,7 +32279,9 @@ def _cue_seg_ids(project: dict, idxs: list) -> list:
 def _fit_public(project: dict, rep: dict, total: int) -> dict:
     """Отчёт подгонки наружу: числа и строки проекта, не номера реплик."""
     return {"measured": rep.get("measured", False), "cues": total,
-            "shrunk": len(rep["shrunk"]), "split": len(rep["split"]), "over": len(rep["over"]),
+            # Реплика-фраза идёт в кадр частями, и у частей один номер `i`:
+            # считаются строки проекта, а не части.
+            "shrunk": len(set(rep["shrunk"])), "split": len(set(rep["split"])), "over": len(set(rep["over"])),
             "overIds": _cue_seg_ids(project, rep["over"])[:200],
             "fixedIds": _cue_seg_ids(project, rep["shrunk"] + rep["split"])[:200]}
 
@@ -32194,13 +32304,13 @@ def _media_burn(job: dict, project: dict, src: Path, probe: dict, text: str, tr:
     w, h = media_mod.out_size(video, quality)
     fps = media_mod.out_fps(video)
     t0, span_len = _burn_span(project)
-    cues, untranslated = _burn_cues(text, tr)
+    cues, untranslated = _burn_cues(project, text, tr)
     if not cues:
         raise RuntimeError("Впечатывать нечего: ни одна реплика ещё не переведена")
     # Файл узнаётся по размеру и моменту ЗАГРУЗКИ, а не по времени правки:
     # то двигает `_media_touch` на каждом заходе, и продолжение после
     # уступки или рестарта выбрасывало бы все готовые куски.
-    key = hashlib.sha1(json.dumps([style, quality, w, h, str(fps), t0, span_len, cues,
+    key = hashlib.sha1(json.dumps([style, quality, w, h, str(fps), t0, span_len, cues, media_mod.DISPLAY_RULES,
                                    src.stat().st_size, (project.get("media") or {}).get("uploaded")],
                                   ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
     bdir = work / ("burn-" + key)
@@ -32270,7 +32380,7 @@ def _media_burn(job: dict, project: dict, src: Path, probe: dict, text: str, tr:
     _media_render_mark(project, "burn", dst, {
         "cues": len(cues) + untranslated, "burned": len(cues), "untranslated": untranslated,
         "width": w, "height": h, "quality": quality, "style": style, "hdr": media_mod.is_hdr(video),
-        "fit": _fit_public(project, fit_rep, len(cues))})
+        "fit": _fit_public(project, fit_rep, len({c.get("i") for c in cues}))})
 
 
 def _media_render_mark(project: dict, what: str, dst: Path, stats: dict) -> None:
@@ -32598,7 +32708,7 @@ def media_preview(pid: int, req: MediaPreviewRequest):
     if project.get("mediaStatus") == "ready" and project.get("segments"):
         try:
             text, tr, _d = _media_translations(project)
-            cues, _n = _burn_cues(text, tr)
+            cues, _n = _burn_cues(project, text, tr)
         except RuntimeError:
             cues = []
     t = float(req.t or 0.0)
@@ -32685,12 +32795,12 @@ def media_fit(pid: int, req: MediaFitRequest):
     if project.get("mediaStatus") == "ready" and project.get("sourceDocx"):
         try:
             text, tr, _d = _media_translations(project)
-            cues, _n = _burn_cues(text, tr)
+            cues, _n = _burn_cues(project, text, tr)
         except RuntimeError:
             cues = []
     style = media_mod.style_clean(req.style if req.style is not None else m.get("style"))
     _fitted, rep = media_mod.fit_cues(cues, style, w, h)
-    return _fit_public(project, rep, len(cues))
+    return _fit_public(project, rep, len({c.get("i") for c in cues}))
 
 
 @app.get("/api/projects/{pid}/media/burn-info")
@@ -32710,8 +32820,10 @@ def media_burn_info(pid: int):
     if project.get("mediaStatus") == "ready" and project.get("sourceDocx"):
         try:
             text, tr, _d = _media_translations(project)
-            cues = [{"start": c["start"], "end": c["end"], "tr": i in tr}
-                    for i, c in enumerate(importers.cue_list(text)) if c.get("start") is not None]
+            # Экранные части, как в кадре: переход «к следующей» в предпросмотре
+            # идёт по тому, что зритель увидит, а не по строкам-фразам.
+            cues = [{"start": c["start"], "end": c["end"], "tr": c["i"] in tr}
+                    for c in _media_screen(project, text, tr, translated_only=False)]
         except RuntimeError:
             cues = []
     q = {}

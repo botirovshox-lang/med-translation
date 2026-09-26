@@ -64,6 +64,10 @@ def _fp(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
+def _as_doc(v):
+    return json.loads(v) if isinstance(v, str) else v
+
+
 class FileStore:
     kind = "file"
 
@@ -127,6 +131,54 @@ class FileStore:
         return None
 
 
+class FilePayOrders:
+    """Заказы файлового хранилища — СВОИМ файлом рядом с state.json, с атомарной
+    записью и исключением при сбое: тот же закон, что у таблицы `pay_orders`
+    (колбэк оплаты обязан узнать, что заказ не записан)."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self._lock = threading.Lock()
+
+    def _load(self) -> dict:
+        if not self.path.exists():
+            return {"seq": 1000, "orders": {}}
+        return json.loads(self.path.read_text(encoding="utf-8"))
+
+    def _save(self, data: dict) -> None:
+        tmp = self.path.with_name(self.path.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(json.dumps(data, ensure_ascii=False))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self.path)
+
+    def pay_put(self, doc: dict) -> None:
+        with self._lock:
+            data = self._load()
+            data["orders"][str(int(doc["id"]))] = doc
+            self._save(data)
+
+    def pay_get(self, oid: int) -> Optional[dict]:
+        with self._lock:
+            got = self._load()["orders"].get(str(int(oid)))
+        return json.loads(json.dumps(got)) if got else None
+
+    def pay_list(self, tenant: Optional[str] = None, limit: int = 1000) -> list:
+        with self._lock:
+            orders = list(self._load()["orders"].values())
+        orders = [o for o in orders if tenant is None or o.get("tenant") == tenant]
+        orders.sort(key=lambda o: -int(o["id"]))
+        return json.loads(json.dumps(orders[:int(limit)]))
+
+    def pay_next_id(self) -> int:
+        with self._lock:
+            data = self._load()
+            data["seq"] = int(data.get("seq") or 1000) + 1
+            self._save(data)
+            return data["seq"]
+
+
 class PgStore:
     kind = "pg"
 
@@ -185,6 +237,28 @@ class PgStore:
         # приращения. Ключ перечислим по построению (день × организация ×
         # код из закрытого набора), поэтому таблица растёт десятками строк
         # в день, а не строкой на запрос.
+        # Расход по ПРОЕКТУ и ДНЮ (админка «Расход по проектам» за период):
+        # `project_spend` помнит только сумму за всё время, `usage_daily` —
+        # день без проекта. Тот же закон инкремента: пишут оба процесса.
+        # Проект 0 — вызов вне проекта (очередь терминов, смета скана).
+        "CREATE TABLE IF NOT EXISTS project_daily ("
+        " day TEXT NOT NULL, tenant TEXT NOT NULL, project INTEGER NOT NULL,"
+        " step TEXT NOT NULL,"
+        " usd DOUBLE PRECISION NOT NULL DEFAULT 0,"
+        " calls BIGINT NOT NULL DEFAULT 0, unpriced BIGINT NOT NULL DEFAULT 0,"
+        " pages DOUBLE PRECISION NOT NULL DEFAULT 0,"
+        " minutes DOUBLE PRECISION NOT NULL DEFAULT 0,"
+        " PRIMARY KEY (day, tenant, project, step))",
+        # Заказы на оплату — СВОЕЙ таблицей с прямой записью, а не документом
+        # STATE: `save_state` глотает ошибки, и колбэк платёжной системы
+        # услышал бы «зачислено» про заказ, которого в базе нет. Здесь сбой
+        # записи — исключение, и поставщик получает отказ и повторяет.
+        "CREATE TABLE IF NOT EXISTS pay_orders ("
+        " id INTEGER PRIMARY KEY, tenant TEXT NOT NULL, status TEXT NOT NULL,"
+        " doc JSONB NOT NULL, created TIMESTAMPTZ NOT NULL DEFAULT now(),"
+        " updated TIMESTAMPTZ NOT NULL DEFAULT now())",
+        "CREATE INDEX IF NOT EXISTS pay_orders_tenant ON pay_orders (tenant)",
+        "CREATE INDEX IF NOT EXISTS project_daily_day ON project_daily (day)",
         "CREATE TABLE IF NOT EXISTS events ("
         " day TEXT NOT NULL, tenant TEXT NOT NULL, code TEXT NOT NULL,"
         " n BIGINT NOT NULL DEFAULT 0,"
@@ -636,6 +710,75 @@ class PgStore:
             cur.execute("SELECT min(day) FROM usage_daily")
             got = cur.fetchone()
         return got[0] if got else None
+
+    # ── расход по проекту и дню ──
+    def add_project_daily(self, rows: list) -> None:
+        """Пачка приращений ОДНИМ запросом (буфер сливается раз в минуту)."""
+        if not rows:
+            return
+        vals, args = [], []
+        for r in rows:
+            vals.append("(%s, %s, %s, %s, %s, %s, %s, %s, %s)")
+            args.extend((r["day"], r["tenant"], int(r["project"]), r["step"], float(r.get("usd") or 0),
+                         int(r.get("calls") or 0), int(r.get("unpriced") or 0),
+                         float(r.get("pages") or 0), float(r.get("minutes") or 0)))
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO project_daily (day, tenant, project, step, usd, calls, unpriced,"
+                " pages, minutes) VALUES " + ", ".join(vals) +
+                " ON CONFLICT (day, tenant, project, step) DO UPDATE SET"
+                " usd = project_daily.usd + EXCLUDED.usd,"
+                " calls = project_daily.calls + EXCLUDED.calls,"
+                " unpriced = project_daily.unpriced + EXCLUDED.unpriced,"
+                " pages = project_daily.pages + EXCLUDED.pages,"
+                " minutes = project_daily.minutes + EXCLUDED.minutes", args)
+
+    def project_daily_rows(self, day_from: str, day_to: str) -> list:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT day, tenant, project, step, usd, calls, unpriced, pages, minutes"
+                " FROM project_daily WHERE day >= %s AND day <= %s", (day_from, day_to))
+            got = cur.fetchall()
+        return [{"day": r[0], "tenant": r[1], "project": int(r[2]), "step": r[3],
+                 "usd": float(r[4]), "calls": int(r[5]), "unpriced": int(r[6]),
+                 "pages": float(r[7]), "minutes": float(r[8])} for r in got]
+
+    def project_daily_min_day(self) -> Optional[str]:
+        with self._cursor() as cur:
+            cur.execute("SELECT min(day) FROM project_daily")
+            got = cur.fetchone()
+        return got[0] if got else None
+
+    # ── заказы на оплату ──
+    def pay_put(self, doc: dict) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO pay_orders (id, tenant, status, doc) VALUES (%s, %s, %s, %s::jsonb) "
+                "ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status, doc = EXCLUDED.doc,"
+                " updated = now()",
+                (int(doc["id"]), doc["tenant"], doc["status"], _dumps(doc)))
+
+    def pay_get(self, oid: int) -> Optional[dict]:
+        with self._cursor() as cur:
+            cur.execute("SELECT doc FROM pay_orders WHERE id = %s", (int(oid),))
+            got = cur.fetchone()
+        return _as_doc(got[0]) if got else None
+
+    def pay_list(self, tenant: Optional[str] = None, limit: int = 1000) -> list:
+        q = "SELECT doc FROM pay_orders"
+        args: list = []
+        if tenant is not None:
+            q += " WHERE tenant = %s"
+            args.append(tenant)
+        q += " ORDER BY id DESC LIMIT %s"
+        args.append(int(limit))
+        with self._cursor() as cur:
+            cur.execute(q, args)
+            got = cur.fetchall()
+        return [_as_doc(r[0]) for r in got]
+
+    def pay_next_id(self) -> int:
+        return self.next_counter("payOrder", 1000)
 
     # ── счётчики событий ──
     def add_events(self, rows: list) -> None:

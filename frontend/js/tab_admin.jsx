@@ -55,6 +55,16 @@ function AdminTenants({ ov, toast, onChange }) {
     try { await window.API.tenantUpdate(t.id, { addPages: Number(v) }); toast.success(TR("Лимит страниц пополнен"), t.name); onChange(); }
     catch (e) { toast.error(TR("Не пополнен"), e.message || String(e)); }
   };
+  /* Минуты видео (инвариант 39): первое пополнение заводит кошелёк, и видео
+     организации начинает считаться минутами, а не страницами. */
+  const topUpMin = async (t) => {
+    const m = t.minutes || {};
+    const v = prompt(TR("Сколько минут видео добавить организации «") + t.name + TR("»? Отрицательное число — исправление. ")
+      + (m.wallet ? TR("Выдано ") + m.credit + TR(", списано ") + m.used : TR("Кошелька минут ещё нет: видео идёт страницами.")) + ":", "");
+    if (v === null || v.trim() === "" || !Number(v)) return;
+    try { await window.API.tenantUpdate(t.id, { addMinutes: Number(v) }); toast.success(TR("Минуты пополнены"), t.name); onChange(); }
+    catch (e) { toast.error(TR("Не пополнены"), e.message || String(e)); }
+  };
   const setCaps = async (t) => {
     const d = ov.capDefaults || {};
     const own = (t.caps && t.caps.own) || {};
@@ -155,7 +165,8 @@ function AdminTenants({ ov, toast, onChange }) {
         React.createElement("td", null, React.createElement("b", null, t.name), " ", React.createElement("span", { className: "dim" }, t.id + (t.active === false ? TR(" · отключена") : ""))),
         React.createElement("td", null, t.activeUsers + (t.users !== t.activeUsers ? " / " + t.users : "")),
         React.createElement("td", { title: capTitle(t, "maxProjects") }, t.projects + capSuffix(t, "maxProjects")),
-        React.createElement("td", { title: pagesTitle(t) }, (t.usage ? t.usage.pages : "—") + capSuffix(t, "maxPages")),
+        React.createElement("td", { title: pagesTitle(t) }, (t.usage ? t.usage.pages : "—") + capSuffix(t, "maxPages")
+          + (t.minutes && t.minutes.wallet ? TR(" · мин ") + t.minutes.used + " / " + t.minutes.credit : "")),
         React.createElement("td", null, t.segments),
         React.createElement("td", null, t.glossary + (t.domains ? TR(" · обл. ") + t.domains : "")),
         React.createElement("td", { style: { color: t.spend.over ? "var(--c-danger)" : undefined } },
@@ -164,6 +175,7 @@ function AdminTenants({ ov, toast, onChange }) {
         React.createElement("td", { style: { whiteSpace: "nowrap", textAlign: "right" } },
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLimit(t) }, TR("Лимит")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => topUp(t) }, TR("Пополнить")),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => topUpMin(t) }, TR("Минуты")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setCaps(t) }, TR("Потолки")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setRetranslate(t),
             title: TR("перевод заново: строка ≤ ") + (t.retranslateLimit != null ? t.retranslateLimit : (ov.capDefaults || {}).retranslateLimit)
@@ -1142,6 +1154,7 @@ function oppBlockText(code) {
     case "cap.filePages413": return TR("раз файл не взяли: он толще потолка страниц. Это спрос на большие документы — потолок поднимается платно");
     case "cap.bytes413": return TR("раз файл не взяли: он тяжелее потолка в мегабайтах");
     case "cap.pages402": return TR("раз кончились выданные страницы — пора предлагать пакет");
+    case "cap.minutes402": return TR("раз кончились минуты видео — пора предлагать пакет минут");
     case "cap.trialExcerpt": return TR("раз пробному клиенту перевели фрагмент большого документа — он ждёт весь");
     case "cap.projects402": return TR("раз упёрлись в потолок числа проектов");
     case "cap.spend402": return TR("раз исчерпан месячный лимит расхода");
@@ -1569,6 +1582,224 @@ function TabAccess({ store, toast }) {
           onPatch: patch, onDelete: remove, onLimits: limits })))))));
 }
 
+/* ── Расход по проектам за период (инвариант 39) ─────────────────────
+   Деньги на модели — из счётчика «проект × день», проданные страницы
+   и минуты — из того же счётчика (пишется при списании). Период считается
+   днями СЕРВИСА: сервер отдаёт «сегодня» (`today`), и пресеты строятся от
+   него, а не от часов браузера — иначе у администратора в другом поясе
+   «сегодня» и «вчера» съехали бы на сутки. */
+function spendDay(s, add) {
+  const d = new Date(s + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + (add || 0));
+  return d.toISOString().slice(0, 10);
+}
+function spendPreset(key, today) {
+  const d = new Date(today + "T00:00:00Z");
+  const y = d.getUTCFullYear(), m = d.getUTCMonth();
+  const iso = (dt) => dt.toISOString().slice(0, 10);
+  const dow = (d.getUTCDay() + 6) % 7;                 // понедельник — 0
+  if (key === "today") return [today, today];
+  if (key === "yesterday") return [spendDay(today, -1), spendDay(today, -1)];
+  if (key === "week") return [spendDay(today, -dow), today];
+  if (key === "lastweek") return [spendDay(today, -dow - 7), spendDay(today, -dow - 1)];
+  if (key === "month") return [iso(new Date(Date.UTC(y, m, 1))), today];
+  if (key === "lastmonth") return [iso(new Date(Date.UTC(y, m - 1, 1))), iso(new Date(Date.UTC(y, m, 0)))];
+  if (key === "quarter") return [iso(new Date(Date.UTC(y, m - (m % 3), 1))), today];
+  if (key === "year") return [iso(new Date(Date.UTC(y, 0, 1))), today];
+  return null;
+}
+const SPEND_PRESETS = [["today", () => TR("Сегодня")], ["yesterday", () => TR("Вчера")],
+  ["week", () => TR("Эта неделя")], ["lastweek", () => TR("Прошлая неделя")],
+  ["month", () => TR("Этот месяц")], ["lastmonth", () => TR("Прошлый месяц")],
+  ["quarter", () => TR("Квартал")], ["year", () => TR("Год")], ["custom", () => TR("Период")]];
+
+function AdminProjectSpend() {
+  const [d, setD] = useState(null);
+  const [preset, setPreset] = useState("today");
+  const [range, setRange] = useState(["", ""]);
+  const [tenant, setTenant] = useState("");
+  const [err, setErr] = useState("");
+  const load = (from, to) => window.API.projectSpend(from, to)
+    .then(r => { setD(r); setRange([r.from, r.to]); setErr(""); })
+    .catch(e => setErr(e.message || String(e)));
+  useEffect(() => { load("", ""); }, []);
+  const pick = (key) => {
+    setPreset(key);
+    if (key === "custom" || !d) return;
+    const r = spendPreset(key, d.today);
+    if (r) load(r[0], r[1]);
+  };
+  const all = (d && d.rows) || [];
+  const rows = all.filter(r => !tenant || r.tenant === tenant);
+  const tenants = Array.from(new Set(all.map(r => r.tenant))).sort();
+  const tot = rows.reduce((a, r) => ({ usd: a.usd + r.usd, calls: a.calls + r.calls, pages: a.pages + r.pages,
+    minutes: a.minutes + r.minutes }), { usd: 0, calls: 0, pages: 0, minutes: 0 });
+  const warn = (d && d.warn) || {};
+  const name = (r) => r.project === 0 ? TR("вне проекта (очередь терминов, сметы)")
+    : r.deleted ? TR("удалён · №") + r.project : (r.projectName || "№" + r.project);
+  const kind = (r) => r.kind === "video" ? TR("видео") : r.kind === "doc" ? TR("документ") : "";
+  const life = (r) => r.lifeUsdPerPage != null
+    ? { v: adminUsd(r.lifeUsdPerPage) + TR("/стр."), hot: warn.usdPerPage && r.lifeUsdPerPage > warn.usdPerPage }
+    : r.lifeUsdPerMin != null
+      ? { v: adminUsd(r.lifeUsdPerMin) + TR("/мин"), hot: warn.usdPerMin && r.lifeUsdPerMin > warn.usdPerMin }
+      : { v: "—", hot: false };
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
+    React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Расход по проектам")),
+    React.createElement("div", { className: "seg", role: "tablist", style: { flexWrap: "wrap" } },
+      SPEND_PRESETS.map(([k, l]) => React.createElement("button", { key: k, role: "tab", "aria-pressed": preset === k,
+        "aria-selected": preset === k, onClick: () => pick(k) }, l()))),
+    React.createElement("div", { className: "row row-wrap", style: { gap: 8, alignItems: "flex-end" } },
+      preset === "custom" && React.createElement(Field, { label: TR("С") },
+        React.createElement(Input, { type: "date", value: range[0], onChange: (e) => setRange([e.target.value, range[1]]) })),
+      preset === "custom" && React.createElement(Field, { label: TR("По") },
+        React.createElement(Input, { type: "date", value: range[1], onChange: (e) => setRange([range[0], e.target.value]) })),
+      preset === "custom" && React.createElement(Btn, { variant: "primary", size: "sm", disabled: !range[0] || !range[1],
+        onClick: () => load(range[0], range[1]) }, TR("Показать")),
+      React.createElement(Field, { label: TR("Организация") },
+        React.createElement(Select, { value: tenant, onChange: (e) => setTenant(e.target.value) },
+          React.createElement("option", { value: "" }, TR("все")),
+          tenants.map(t => React.createElement("option", { key: t, value: t }, t))))),
+    err ? React.createElement("div", { className: "dim" }, err) : null,
+    !d || !d.rows ? React.createElement("div", { className: "dim", style: { fontSize: 13 } }, TR("Загружаем…"))
+    : React.createElement(React.Fragment, null,
+        React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+          d.from + " — " + d.to + TR(" (дни по времени сервиса, UTC+") + d.utcOffset + ")"
+          + (d.since ? TR(" · учёт по дням ведётся с ") + d.since : TR(" · учёт по дням ещё пуст"))
+          + TR(". Себестоимость — за всю жизнь проекта: расход и списание одного файла ложатся в разные дни.")),
+        React.createElement("div", { className: "row row-wrap", style: { gap: 10 } },
+          React.createElement(AdminStat, { label: TR("Расход на модели"), value: adminUsd(tot.usd) }),
+          React.createElement(AdminStat, { label: TR("Вызовов"), value: tot.calls }),
+          React.createElement(AdminStat, { label: TR("Продано страниц"), value: Math.round(tot.pages * 10) / 10 }),
+          React.createElement(AdminStat, { label: TR("Продано минут"), value: Math.round(tot.minutes * 10) / 10 }),
+          React.createElement(AdminStat, { label: TR("Проектов"), value: rows.filter(r => r.project !== 0).length })),
+        rows.length === 0 ? React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, TR("За период расхода не было."))
+        : React.createElement("div", { className: "tbl-fit", style: { maxHeight: 520, overflow: "auto" } },
+            React.createElement("table", { className: "tbl" },
+              React.createElement("thead", null, React.createElement("tr", null,
+                [TR("Организация"), TR("Файл"), TR("Вид"), TR("$ за период"), TR("Вызовов"), TR("Шаги"),
+                 TR("Стр. продано"), TR("Мин продано"), TR("Себестоимость")].map((h, i) => React.createElement("th", { key: i }, h)))),
+              React.createElement("tbody", null, rows.map((r, i) => {
+                const l = life(r);
+                const steps = Object.entries(r.steps || {}).slice(0, 3)
+                  .map(([k, v]) => adminStepLabel(k) + " " + adminUsd(v)).join(" · ");
+                return React.createElement("tr", { key: i },
+                  React.createElement("td", null, r.tenantName || r.tenant),
+                  React.createElement("td", { className: r.deleted || r.project === 0 ? "dim" : undefined }, name(r)),
+                  React.createElement("td", { className: "dim" }, kind(r)),
+                  React.createElement("td", null, React.createElement("strong", null, adminUsd(r.usd)),
+                    r.unpriced ? React.createElement("span", { className: "dim" }, TR(" · без цены ") + r.unpriced) : null),
+                  React.createElement("td", null, r.calls),
+                  React.createElement("td", { className: "dim", style: { fontSize: 12 } }, steps || "—"),
+                  React.createElement("td", null, r.pages ? r.pages : "—"),
+                  React.createElement("td", null, r.minutes ? r.minutes : "—"),
+                  React.createElement("td", { style: l.hot ? { color: "var(--c-danger)", fontWeight: 600 } : null,
+                    title: l.hot ? TR("себестоимость выше половины цены продажи") : undefined }, l.v));
+              }))))));
+}
+
+/* ── Оплаты: заказы, подтверждение «по счёту», настройки цен ────────── */
+function adminPayStatus(st) {
+  return st === "paid" ? TR("оплачен") : st === "cancelled" ? TR("отменён") : st === "expired" ? TR("срок истёк") : TR("ждёт оплаты");
+}
+function AdminPayments({ toast }) {
+  const [d, setD] = useState(null);
+  const [status, setStatus] = useState("");
+  const [cfg, setCfg] = useState(null);
+  const load = () => window.API.safeCall(() => window.API.adminPayments(status)).then(r => {
+    if (r && r.ok && r.config) { setD(r); setCfg(c => c || { ...r.config, pagePacks: (r.config.pagePacks || []).join(", "),
+      minutePacks: (r.config.minutePacks || []).join(", "), notes: r.config.notes || {}, methods: r.config.methods || {} }); }
+  });
+  useEffect(() => { load(); }, [status]);
+  if (!d || !cfg) return React.createElement("div", { className: "dim" }, TR("Загружаем…"));
+  const setC = (k, v) => setCfg({ ...cfg, [k]: v });
+  const save = async () => {
+    const packs = (s) => String(s || "").split(/[\s,;]+/).filter(Boolean).map(Number);
+    try {
+      const r = await window.API.adminPayConfig({ pricePage: String(cfg.pricePage), priceMinute: String(cfg.priceMinute),
+        rateUZS: String(cfg.rateUZS), rateKZT: String(cfg.rateKZT), spendShare: String(cfg.spendShare),
+        pagePacks: packs(cfg.pagePacks), minutePacks: packs(cfg.minutePacks), notes: cfg.notes, methods: cfg.methods });
+      setCfg({ ...r.config, pagePacks: r.config.pagePacks.join(", "), minutePacks: r.config.minutePacks.join(", ") });
+      toast.success(TR("Настройки оплат сохранены"));
+      load();
+    } catch (e) { toast.error(TR("Не сохранено"), e.message || String(e)); }
+  };
+  const act = async (o, what) => {
+    const note = prompt(what === "confirm"
+      ? TR("Подтвердить оплату заказа №") + o.id + " (" + payFmt(o.amount, o.currency) + TR(")? Сверьте поступление. Примечание:")
+      : TR("Отменить заказ №") + o.id + TR("? Примечание:"), "");
+    if (note === null) return;
+    try {
+      if (what === "confirm") await window.API.adminPayConfirm(o.id, note);
+      else await window.API.adminPayCancel(o.id, note);
+      toast.success(what === "confirm" ? TR("Оплата зачислена") : TR("Заказ отменён"), "№" + o.id);
+      load();
+    } catch (e) { toast.error(TR("Не выполнено"), e.message || String(e)); }
+  };
+  const pv = d.providers || {};
+  const cb = d.callbacks || {};
+  const orders = d.orders || [];
+  const F = (k, label) => React.createElement(Field, { label },
+    React.createElement(Input, { value: cfg[k] == null ? "" : cfg[k], onChange: (e) => setC(k, e.target.value) }));
+  return React.createElement("div", { className: "col", style: { gap: 16 } },
+    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
+      React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+        React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Приём оплат")),
+        React.createElement(PayAcceptStrip, null)),
+      React.createElement("div", { style: { fontSize: 13 } },
+        "Click: " + (pv.click ? TR("подключён") : TR("не подключён — ключи CLICK_* в окружении"))
+        + " · Payme: " + (pv.payme ? TR("подключён") + (pv.paymeTest ? TR(" (тестовая касса)") : "") : TR("не подключён — ключи PAYME_* в окружении"))
+        + TR(" · карта и Kaspi — по счёту") + (pv.cardLink || pv.kaspiLink ? TR(" (есть шаблон ссылки)") : "")),
+      React.createElement("div", { className: "dim", style: { fontSize: 12, wordBreak: "break-all" } },
+        TR("Адреса для кабинетов: Click Prepare ") + (cb.clickPrepare || "—") + TR(" · Complete ") + (cb.clickComplete || "—")
+        + TR(" · Payme ") + (cb.payme || "—")),
+      React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
+        F("pricePage", TR("Цена страницы, $")), F("priceMinute", TR("Цена минуты видео, $")),
+        F("rateUZS", TR("Курс: сумов за $1")), F("rateKZT", TR("Курс: тенге за $1")),
+        F("pagePacks", TR("Пакеты страниц (через запятую)")), F("minutePacks", TR("Пакеты минут (через запятую)")),
+        F("spendShare", TR("Доля оплаты в лимит расхода на модели (1 — вся сумма)"))),
+      React.createElement("div", { className: "row row-wrap", style: { gap: 12 } },
+        ["click", "payme", "card", "kaspi"].map(m => React.createElement("label", { key: m, className: "row", style: { gap: 6 } },
+          React.createElement("input", { type: "checkbox", checked: cfg.methods[m] !== false,
+            onChange: (e) => setC("methods", { ...cfg.methods, [m]: e.target.checked }) }),
+          (PAY_METHOD_LABEL[m] || (() => m))()))),
+      React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
+        ["card", "kaspi"].map(m => React.createElement(Field, { key: m, label: TR("Что сказать при оплате «по счёту»: ") + (PAY_METHOD_LABEL[m] || (() => m))() },
+          React.createElement("textarea", { className: "input", rows: 3, value: (cfg.notes || {})[m] || "",
+            onChange: (e) => setC("notes", { ...cfg.notes, [m]: e.target.value }) })))),
+      React.createElement("div", { className: "row row-wrap", style: { gap: 10, alignItems: "center" } },
+        React.createElement(Btn, { variant: "primary", onClick: save }, TR("Сохранить настройки")),
+        cfg.updated ? React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("обновлено ") + cfg.updated) : null)),
+    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
+      React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+        React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Заказы")),
+        React.createElement(Select, { value: status, onChange: (e) => setStatus(e.target.value) },
+          [["", TR("все")], ["new", TR("ждут оплаты")], ["paid", TR("оплачены")], ["cancelled", TR("отменены")], ["expired", TR("срок истёк")]]
+            .map(([v, l]) => React.createElement("option", { key: v, value: v }, l)))),
+      React.createElement("div", { className: "row row-wrap", style: { gap: 10 } },
+        Object.entries(d.totals || {}).map(([cur, t]) => React.createElement(AdminStat, { key: cur,
+          label: TR("Оплачено, ") + cur + " · " + t.orders + TR(" зак."), value: payFmt(t.amount, cur) + " ≈ " + adminUsd(Number(t.usd)) }))),
+      d.reconciled ? React.createElement("div", { className: "dim" }, TR("Сверка дозачислила заказов: ") + d.reconciled) : null,
+      orders.length === 0 ? React.createElement("p", { className: "dim", style: { margin: 0 } }, TR("Заказов нет."))
+      : React.createElement("div", { className: "tbl-fit", style: { maxHeight: 520, overflow: "auto" } },
+          React.createElement("table", { className: "tbl" },
+            React.createElement("thead", null, React.createElement("tr", null,
+              ["№", TR("Когда"), TR("Организация"), TR("Кто"), TR("Что"), TR("Сумма"), TR("Способ"), TR("Статус"), ""]
+                .map((h, i) => React.createElement("th", { key: i }, h)))),
+            React.createElement("tbody", null, orders.map(o => React.createElement("tr", { key: o.id },
+              React.createElement("td", null, o.id),
+              React.createElement("td", { className: "dim" }, o.at),
+              React.createElement("td", null, o.tenantName),
+              React.createElement("td", { className: "dim" }, o.userName || o.user || "—"),
+              React.createElement("td", null, [o.pages ? o.pages + TR(" стр.") : "", o.minutes ? o.minutes + TR(" мин") : ""].filter(Boolean).join(" + ")),
+              React.createElement("td", null, payFmt(o.amount, o.currency), React.createElement("span", { className: "dim" }, " · $" + o.usd)),
+              React.createElement("td", null, (PAY_METHOD_LABEL[o.method] || (() => o.method))() + (o.paidVia ? " → " + o.paidVia : "")),
+              React.createElement("td", { style: o.status === "paid" && !o.applied ? { color: "var(--c-danger)" } : null },
+                adminPayStatus(o.status) + (o.status === "paid" && !o.applied ? TR(" · НЕ зачислен") : "")),
+              React.createElement("td", { style: { whiteSpace: "nowrap", textAlign: "right" } },
+                o.status === "new" || o.status === "expired" ? React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => act(o, "confirm") }, TR("Подтвердить")) : null,
+                o.status === "new" ? React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => act(o, "cancel") }, TR("Отменить")) : null))))))));
+}
+
 function TabAdmin({ store, toast }) {
   const [ov, setOv] = useState(null);
   const [nonce, setNonce] = useState(0);
@@ -1593,6 +1824,10 @@ function TabAdmin({ store, toast }) {
         ? TR("Кто эти люди, что им позволено и на какие деньги. Роль меняется здесь, лимиты — у организации человека.")
         : view === "models"
         ? TR("Модели шагов на всю систему и пересчёт расхода по журналу токенов.")
+        : view === "spend"
+        ? TR("Сколько потратил каждый проект за выбранный период и сколько за это время продано страниц и минут.")
+        : view === "payments"
+        ? TR("Заказы на оплату, подтверждение оплат «по счёту», цены и курсы.")
         : view === "chances"
           ? TR("Куда люди упираются, чего им не хватило и что из этого можно продать. Считается по журналу событий; вызовов модели нет.")
           : view === "metrics"
@@ -1601,13 +1836,16 @@ function TabAdmin({ store, toast }) {
     React.createElement("div", { className: "row", style: { gap: 8, marginBottom: 16 } },
       React.createElement("div", { className: "seg", role: "tablist" },
         [["summary", TR("Сводка")], ["access", TR("Роли и доступы")], ["chances", TR("Возможности")],
-         ["metrics", TR("Метрики")], ["models", TR("Модели и расход")]].map(([key, label]) =>
+         ["metrics", TR("Метрики")], ["models", TR("Модели и расход")], ["spend", TR("Расход по проектам")],
+         ["payments", TR("Оплаты")]].map(([key, label]) =>
           React.createElement("button", { key, role: "tab", "aria-pressed": view === key, "aria-selected": view === key,
             onClick: () => setView(key) }, label)))),
     view === "access" && React.createElement(TabAccess, { store, toast }),
     view === "models" && React.createElement(AdminModelsView, { toast, tenants: ov ? ov.tenants : [] }),
     view === "chances" && React.createElement(TabChances, { toast }),
     view === "metrics" && React.createElement(TabMetrics, { toast }),
+    view === "spend" && React.createElement(AdminProjectSpend, null),
+    view === "payments" && React.createElement(AdminPayments, { toast }),
     view === "summary" && !ov && React.createElement("div", { className: "dim" }, TR("Загружаем сводку…")),
     view === "summary" && ov && React.createElement("div", { className: "col", style: { gap: 16 } },
       React.createElement("div", { className: "row row-wrap", style: { gap: 10 } },

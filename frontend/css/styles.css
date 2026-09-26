@@ -1409,6 +1409,23 @@ body { overflow-wrap: break-word; }
    у ноутбука с сенсорным экраном ОСНОВНОЙ указатель точный, а `hover: none`
    бывает только там, где наводить нечем, — то есть ровно на телефоне
    и планшете. Облик широких экранов при этом не меняется. */
+/* ---------- Оплата (pay.jsx, инвариант 39) ---------- */
+.pay-methods { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr)); gap: 8px; }
+.pay-method { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--c-border);
+  border-radius: var(--r-md); cursor: pointer; background: var(--bg-elevated); }
+.pay-method:hover { background: var(--bg-hover); }
+.pay-method.is-on { border-color: var(--c-primary); box-shadow: 0 0 0 1px var(--c-primary) inset; background: var(--c-primary-soft); }
+.pay-method input { margin: 0; }
+.pay-method-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pay-method-text .dim { font-size: 12px; }
+.pay-strip svg { flex: none; }
+.pay-card .btn.is-on { background: var(--c-primary-soft); border-color: var(--c-primary); }
+.pay-done { padding: 10px 12px; border-radius: var(--r-md); background: var(--c-primary-soft); }
+.pay-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 12px; padding: 10px 14px;
+  border-radius: var(--r-md); background: var(--bg-sunken); border: 1px solid var(--c-warning); font-size: 13px; }
+.pay-bar > span { flex: 1 1 240px; }
+.pay-bar.is-ok { border-color: var(--c-success); }
+
 @media (pointer: coarse) and (hover: none) {
   .btn { height: 40px; padding: 0 16px; }
   .btn-sm { height: 34px; padding: 0 12px; }

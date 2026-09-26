@@ -267,6 +267,25 @@ function VidTimeInput({ label, value, onChange, max }) {
       onKeyDown: (e) => { if (e.key === "Enter") commit(); } }));
 }
 
+/* Сколько минут спишется за выбранный отрезок (инвариант 39): неполная
+   минута — минута. Кошелька минут нет — видео идёт страницами, строки нет.
+   Остаток — из кэша сессии (`window._mcat_minutes`, его кладёт /auth/me):
+   своего запроса здесь нет, а решает всё равно сервер при «готово». */
+function vidMinutesLine(sec) {
+  const m = window._mcat_minutes;
+  if (!m || !m.wallet || !(sec > 0)) return null;
+  const need = Math.max(1, Math.ceil(sec / 60 - 1e-9));
+  const left = Math.max(0, Number(m.left || 0));
+  const short = left < need;
+  return vidE("div", { style: { fontSize: 12, color: short ? "var(--c-danger)" : undefined },
+    className: short ? undefined : "dim" },
+    TR("Спишется минут: ") + need + TR(" · на балансе: ") + left
+    + (short ? (left >= 1 ? TR(" — распознаем начало на ") + Math.floor(left) + TR(" мин") : TR(" — не хватает")) : ""),
+    short ? vidE("button", { className: "btn btn-ghost btn-sm", style: { marginLeft: 8 },
+      onClick: () => { try { window.dispatchEvent(new CustomEvent("mct-pay-need",
+        { detail: { kind: "minutes", need, left } })); } catch (e) {} } }, TR("Пополнить")) : null);
+}
+
 function VideoEditor({ file, meta, onCancel, onDone, toast }) {
   const isAudio = VID_AUDIO_RE.test(file.name || "");
   const info = useVidFonts(meta.tgt);
@@ -424,7 +443,8 @@ function VideoEditor({ file, meta, onCancel, onDone, toast }) {
           : vidE(React.Fragment, null,
               vidE("div", { className: "dim", style: { fontSize: 12 } }, TR("Отправляем файл") + " · " + pct + "%"),
               vidE(ProgressBar, { value: pct })),
-      finErr && vidE("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, finErr)),
+      finErr && vidE("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, finErr),
+      vidMinutesLine(dur > 0 ? len : 0)),
     vidE("div", { className: "row", style: { gap: 8 } },
       vidE(Btn, { variant: "ghost", disabled: finishing, onClick: cancel }, TR("Отменить")),
       vidE(Btn, { variant: "primary", icon: finishing ? null : "check",

@@ -54,7 +54,7 @@ import unicodedata
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
-from fastapi import Response
+from fastapi import Response, Query
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -2502,6 +2502,150 @@ def _ledger_min_day() -> Optional[str]:
     return min(days) if days else None
 
 
+# ─── Расход по ПРОЕКТУ и ДНЮ: админка «Расход по проектам» за период ──
+# `project_spend` знает сумму за всё время, журнал токенов — день без
+# проекта. Вопрос «какой проект сколько потратил вчера / за прошлую неделю»
+# не отвечается ни тем, ни другим, поэтому третий счётчик: день × организация
+# × проект × шаг, с инкрементом (пишут API и воркер). Проект 0 — вызов вне
+# проекта: без этой строки сумма по проектам не сходилась бы с расходом
+# организации, и разница выглядела бы потерей денег.
+#
+# ДЕНЬ — по времени сервиса (`BUSINESS_UTC_OFFSET`, Ташкент +5), а не по часам
+# сервера (UTC): «сегодня» в админке и в журнале — один и тот же день, иначе
+# работа с полуночи до пяти утра уезжала бы во «вчера».
+PROJECT_DAILY_KEY = "projectDaily"       # файловое хранилище: {"день|орг|проект|шаг": счётчики}
+PROJECT_DAILY_FILE_DAYS = 400            # сколько дней держит state.json без базы
+BUSINESS_UTC_OFFSET = float(os.environ.get("BUSINESS_UTC_OFFSET", "5") or 0)
+
+
+def _biz_now() -> datetime:
+    return datetime.utcnow() + timedelta(hours=BUSINESS_UTC_OFFSET)
+
+
+def _biz_day() -> str:
+    return _biz_now().strftime("%Y-%m-%d")
+
+
+# Приращения копятся БУФЕРОМ в памяти и уходят пачкой раз в минуту (как
+# счётчики событий, инвариант 34): `_note_cost` держит `_USAGE_LOCK`, и ещё
+# один синхронный запрос в базу на КАЖДЫЙ вызов модели выстроил бы в очередь
+# все рабочие потоки прогона. Не записалось — строки возвращаются в буфер.
+_PD_BUF: dict = {}
+_PD_LOCK = threading.Lock()
+_PD_LAST = {"t": time.time(), "prune": ""}
+PROJECT_DAILY_FLUSH_EVERY = float(os.environ.get("PROJECT_DAILY_FLUSH_EVERY", "60") or 60)
+
+
+def _pd_bump(tenant: str, pid: int, step: str, usd: float = 0.0, calls: int = 0,
+             unpriced: int = 0, pages: float = 0.0, minutes: float = 0.0) -> None:
+    key = (_biz_day(), tenant or DEFAULT_TENANT, int(pid or 0), step or "?")
+    with _PD_LOCK:
+        v = _PD_BUF.setdefault(key, [0.0, 0, 0, 0.0, 0.0])
+        v[0] += float(usd or 0)
+        v[1] += int(calls)
+        v[2] += int(unpriced)
+        v[3] += float(pages or 0)
+        v[4] += float(minutes or 0)
+
+
+def _proj_daily_add(step: str, cost: Optional[float]) -> None:
+    """Расход вызова модели — на «проект × день × шаг». Справочник: сбой вызов не роняет."""
+    try:
+        _pd_bump(_current_tenant(), _usage_project() or 0, step, usd=float(cost or 0), calls=1,
+                 unpriced=0 if cost is not None else 1)
+    except Exception as e:
+        print(f"[backend] расход проекта по дням не записан ({step}): {e}", file=sys.stderr)
+
+
+def _proj_daily_sold(tenant: str, pid, pages: float = 0.0, minutes: float = 0.0) -> None:
+    """Списанный с организации объём (страницы, минуты) — «продано» за день.
+    Зовётся из журналов объёма (`_pages_log`, `_minutes_log`): журналы
+    кольцевые, и период в квартал или год по ним молча обрезался бы."""
+    if pid is None or not (pages or minutes):
+        return
+    try:
+        _pd_bump(tenant, int(pid), "@sold", pages=pages, minutes=minutes)
+    except Exception as e:
+        print(f"[backend] объём проекта по дням не записан: {e}", file=sys.stderr)
+
+
+def _pd_due(now: float) -> bool:
+    return bool(_PD_BUF) and now - _PD_LAST["t"] >= PROJECT_DAILY_FLUSH_EVERY
+
+
+def _proj_daily_flush(force: bool = False) -> None:
+    try:
+        if not force and not _pd_due(time.time()):
+            return
+        with _PD_LOCK:
+            buf = dict(_PD_BUF)
+            _PD_BUF.clear()
+            _PD_LAST["t"] = time.time()
+        if not buf:
+            return
+        rows = [{"day": d, "tenant": t, "project": p, "step": st, "usd": round(v[0], 6), "calls": v[1],
+                 "unpriced": v[2], "pages": round(v[3], 4), "minutes": round(v[4], 4)}
+                for (d, t, p, st), v in buf.items()]
+        try:
+            if STORE.kind == "pg":
+                STORE.add_project_daily(rows)
+            else:
+                _proj_daily_file_add(rows)
+        except Exception as e:
+            with _PD_LOCK:
+                for k, v in buf.items():
+                    cur = _PD_BUF.setdefault(k, [0.0, 0, 0, 0.0, 0.0])
+                    for n in range(5):
+                        cur[n] += v[n]
+            print(f"[backend] расход по дням не записан: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"[backend] слив расхода по дням не удался: {e}", file=sys.stderr)
+
+
+def _proj_daily_file_add(rows: list) -> None:
+    """Файловое хранилище (стенд): под `_SAVE_LOCK` — `FileStore.save`
+    сериализует состояние целиком под ним же (инвариант 34, п. 3)."""
+    with _SAVE_LOCK:
+        led = STATE.setdefault(PROJECT_DAILY_KEY, {})
+        for r in rows:
+            d = led.setdefault("|".join((r["day"], r["tenant"], str(r["project"]), r["step"])),
+                               {"usd": 0.0, "calls": 0, "unpriced": 0, "pages": 0.0, "minutes": 0.0})
+            d["usd"] = round(d["usd"] + r["usd"], 6)
+            d["calls"] += r["calls"]
+            d["unpriced"] += r["unpriced"]
+            d["pages"] = round(d.get("pages", 0.0) + r["pages"], 4)
+            d["minutes"] = round(d.get("minutes", 0.0) + r["minutes"], 4)
+        today = _biz_day()
+        if _PD_LAST["prune"] != today:
+            _PD_LAST["prune"] = today
+            edge = (_biz_now() - timedelta(days=PROJECT_DAILY_FILE_DAYS)).strftime("%Y-%m-%d")
+            for k in [k for k in led if k.split("|", 1)[0] < edge]:
+                led.pop(k, None)
+
+
+def _proj_daily_rows(day_from: str, day_to: str) -> list:
+    _proj_daily_flush(force=True)
+    if STORE.kind == "pg":
+        return STORE.project_daily_rows(day_from, day_to)
+    out = []
+    for key, v in list((STATE.get(PROJECT_DAILY_KEY) or {}).items()):
+        parts = key.split("|")
+        if len(parts) != 4 or not (day_from <= parts[0] <= day_to):
+            continue
+        try:
+            out.append(dict(v, day=parts[0], tenant=parts[1], project=int(parts[2]), step=parts[3]))
+        except ValueError:
+            continue
+    return out
+
+
+def _proj_daily_min_day() -> Optional[str]:
+    if STORE.kind == "pg":
+        return STORE.project_daily_min_day()
+    days = [k.split("|", 1)[0] for k in (STATE.get(PROJECT_DAILY_KEY) or {})]
+    return min(days) if days else None
+
+
 def _tenant_rec(tid: str) -> Optional[dict]:
     return next((t for t in _tenants() if t.get("id") == tid), None)
 
@@ -2774,6 +2918,11 @@ def _spend_status(tenant: Optional[str] = None) -> dict:
         m = (STATE.get("spend") or {}).get(t, {}).get(_month_key()) or {"usd": 0.0, "calls": 0, "unpriced": 0}
     rec = _tenant_rec(t) or {}
     limit = rec.get("limitUsd")
+    if limit is not None:
+        # Оплата этого месяца (инвариант 39) добавляет к месячному лимиту
+        # сумму ТОГО ЖЕ месяца: навсегда поднятый лимит давал бы после одной
+        # покупки расход на модели каждый месяц — наши деньги.
+        limit = round(float(limit) + float((rec.get("payUsdMonth") or {}).get(_month_key()) or 0.0), 4)
     return {"tenant": t, "month": _month_key(), "spentUsd": round(m["usd"], 4),
             "calls": m["calls"], "unpriced": m["unpriced"], "limitUsd": limit,
             "over": bool(limit is not None and m["usd"] >= float(limit))}
@@ -3057,6 +3206,7 @@ def _note_cost(step: str, model_id: str, tin: int, cached: int, tout: int, think
                 _usage_add(bucket, step, model_id, tin, cached, tout, think, cost)
         _spend_add(_current_tenant(), cost)
         _proj_spend_add(_current_tenant(), _usage_project(), cost, calls=1)
+        _proj_daily_add(step, cost)
         _ledger_add(step, model_id, tin, cached, tout, think, cost)
 
 
@@ -3604,6 +3754,8 @@ def _openai_translate(text: str, src: str, tgt: str,
 # владельца при пустой базе пользователей (`_ensure_users`).
 # ─────────────────────────────────────────────────────────────────────
 import contextvars
+import math
+import payments as payments_mod     # протоколы Click/Payme и суммы (чистые функции)
 import mail_texts                      # тексты писем на языке получателя
 
 _RAW_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
@@ -4139,7 +4291,11 @@ PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/health",
                     # заполняет человек, у которого ещё нет учётной записи —
                     # ради неё он анкету и заполняет. Защита не входом,
                     # а потолком частоты и размера (`_survey_throttle`).
-                    "/api/public/survey"}
+                    "/api/public/survey",
+                    # Колбэки платёжных систем. Входа у поставщика нет — защита
+                    # ПОДПИСЬЮ (Click: md5 с секретом, Payme: Basic-ключ), а без
+                    # ключей в окружении дверь отвечает отказом протокола.
+                    "/api/pay/click/prepare", "/api/pay/click/complete", "/api/pay/payme"}
 
 # Служебный токен бота. Бот — ОТДЕЛЬНЫЙ процесс и ходит к нам как обычный
 # клиент, поэтому ему нужен вход. Пароль суперпользователя ему давать нельзя:
@@ -4222,6 +4378,9 @@ _OWNER_ONLY = [
     ("POST",   re.compile(r"/api/quotes/\d+$")),
     ("DELETE", re.compile(r"/api/quotes/\d+$")),
     ("*",      re.compile(r"/api/admin/")),
+    # Экран оплаты: покупает организацию её владелец. Колбэки поставщиков
+    # (`/api/pay/click/…`, `/api/pay/payme`) сюда не доходят — они публичны.
+    ("*",      re.compile(r"/api/pay(/.*)?$")),
     # Команд здесь НЕТ намеренно: таблица берёт роль из сессии — роль
     # в АКТИВНОЙ команде, — а путь /api/teams/{tid}/… называет другую.
     # Право владельца команды проверяет `_team_owner_or_403` в обработчике.
@@ -4364,12 +4523,17 @@ def _limit_402(st: dict, tenant: Optional[str]) -> JSONResponse:
             "Месячный лимит организации исчерпан: обратитесь к администратору. "
             "Бесплатные команды (правка начертания, откаты, пересчёт, экспорт) "
             "работают; лимит сбрасывается 1-го числа.",
-            "spend": _spend_public(st, tenant)}, status_code=402)
+            "spend": _spend_public(st, tenant)}, status_code=402, headers={"X-Pay-Need": "spend"})
     return JSONResponse({"ok": False, "error":
         "Месячный лимит расхода организации исчерпан: $%.2f из $%.2f. Бесплатные команды "
         "(правка начертания, откаты, пересчёт, экспорт) работают; лимит сбрасывается "
         "1-го числа." % (st["spentUsd"], float(st["limitUsd"])), "spend": st},
-        status_code=402)
+        status_code=402, headers={"X-Pay-Need": "spend"})
+
+
+# Отказ «нечем платить» помечается ЗАГОЛОВКОМ: браузер по нему предлагает
+# пополнить (полоса оплаты), а не разбирает русский текст ошибки подстрокой.
+PAY_NEED_PAGES = {"X-Pay-Need": "pages"}
 
 
 # Всё, что pydantic прочтёт как целое число, кроме канонической записи цифрами.
@@ -4603,7 +4767,7 @@ async def _security_headers(request: Request, call_next):
         h.setdefault("Cache-Control", "public, max-age=31536000, immutable")
     # Слив накопленного — не чаще раза в минуту и ТОЛЬКО в threadpool:
     # запись в базу из цикла событий держала бы единственный воркер.
-    if watch and metrics_mod.due(time.time()):
+    if (watch and metrics_mod.due(time.time())) or (api and _pd_due(time.time())):
         await run_in_threadpool(_metrics_flush)
     return resp
 
@@ -4728,6 +4892,7 @@ def _metrics_flush(force: bool = False) -> None:
     это сравнение двух чисел.
 
     Не записалось (база недоступна) — возвращаем в буфер, а не теряем."""
+    _proj_daily_flush(force)
     if metrics_mod is None:
         return
     try:
@@ -5540,6 +5705,10 @@ def register(req: RegisterRequest, request: Request):
                 rec["trial"] = True
                 if rec.get("refBy"):
                     rec["refPaid"] = float(rec.get("refPaid") or 0) + SIGNUP_FREE_PAGES
+    if SIGNUP_FREE_MINUTES:
+        # Пробные минуты видео заводят кошелёк минут (инвариант 39): без них
+        # видео пробной организации идёт страницами, как раньше.
+        _minutes_topup(tid, SIGNUP_FREE_MINUTES, "signup")
     code = _issue_code(user, "verify")
     _SIGNUP_FAILS.setdefault(ip, []).append(time.time())
     tok = CURRENT_SESSION.set({"tenant": tid, "user": user["id"], "role": "owner"})
@@ -5741,6 +5910,11 @@ def auth_me(request: Request):
             # деньги (`spend`) — наши затраты на модели, страницы — её заказ.
             "caps": _tenant_caps(tid), "usage": _tenant_usage(tid),
             "pagesLog": ((tenant or {}).get("pagesLog") or [])[-PAGES_LOG_TAIL:],
+            # Минуты видео (инвариант 39): остаток видят все — по нему мини-
+            # редактор видео говорит «хватит ли», а кнопку «Пополнить» рисует
+            # только владельцу.
+            "minutes": _tenant_minutes(tid),
+            "minutesLog": ((tenant or {}).get("minutesLog") or [])[-MINUTES_LOG_TAIL:],
             **({"adminPath": "/" + ADMIN_PATH} if u.get("super") else {})}
 
 
@@ -6528,7 +6702,96 @@ def admin_runs(request: Request, limit: int = 100, all: bool = False):
             "byProject": by_project, "live": live}
 
 
-_DOMAIN_FIELDS = ("label", "en", "expert", "terminology", "extract", "examples")
+# Какие строки журналов объёма — СПИСАНИЕ за работу (а не пополнение,
+# стартовый объём или повтор файла без списания). По ним период получает
+# «страниц/минут продано», рядом с «потрачено на модели».
+_PAGES_DEBIT_KINDS = ("debit", "excerpt", "reimport", "images", "media", "edit")
+_MIN_DEBIT_KINDS = ("debit", "excerpt", "speech")
+_DAY_RX = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+@app.get("/api/admin/project-spend")
+def admin_project_spend(request: Request, date_from: str = Query("", alias="from"),
+                        date_to: str = Query("", alias="to")):
+    """Сколько потратил каждый проект за период: деньги на модели (по шагам)
+    из счётчика «проект × день», и рядом — сколько страниц и минут за тот же
+    период СПИСАНО с организации, то есть продано. Суперпользователю: это
+    наши деньги (инвариант 22а).
+
+    Цифры за период и «себестоимость на страницу/минуту» — РАЗНЫЕ вещи, и обе
+    названы: расход и списание одного проекта могут лечь в разные дни (файл
+    загрузили во вторник, прогнали в среду), поэтому отношение за период врёт,
+    а отношение за всю жизнь проекта (`project_spend` против объёма) — нет."""
+    if not _is_super(request):
+        raise HTTPException(403, "Расход по проектам — только суперпользователю")
+    today = _biz_day()
+    d_to = date_to if _DAY_RX.match(date_to or "") else today
+    d_from = date_from if _DAY_RX.match(date_from or "") else d_to
+    if d_from > d_to:
+        d_from, d_to = d_to, d_from
+    rows: dict = {}
+
+    def row(tenant: str, pid: int) -> dict:
+        return rows.setdefault((tenant, pid), {
+            "tenant": tenant, "project": pid, "usd": 0.0, "calls": 0, "unpriced": 0,
+            "steps": {}, "pages": 0.0, "minutes": 0.0, "days": set()})
+
+    try:
+        daily = _proj_daily_rows(d_from, d_to)
+    except Exception as e:
+        print(f"[backend] расход по дням не прочитан: {e}", file=sys.stderr)
+        daily = []
+    for r in daily:
+        x = row(r["tenant"], int(r["project"]))
+        x["days"].add(r["day"])
+        if r["step"] == "@sold":
+            x["pages"] += float(r.get("pages") or 0)
+            x["minutes"] += float(r.get("minutes") or 0)
+            continue
+        x["usd"] += float(r.get("usd") or 0)
+        x["calls"] += int(r.get("calls") or 0)
+        x["unpriced"] += int(r.get("unpriced") or 0)
+        x["steps"][r["step"]] = round(x["steps"].get(r["step"], 0.0) + float(r.get("usd") or 0), 6)
+    tnames = {t.get("id"): (t.get("name") or t.get("id")) for t in _tenants()}
+    live = {(_tenant_of(p), p["id"]): p for p in STATE.get("projects") or []}
+    life = {(r["tenant"], r["project"]): r for r in _proj_spend_rows(None)}
+    out = []
+    for (tid, pid), x in rows.items():
+        p = live.get((tid, pid))
+        kind = "none" if pid == 0 else ("video" if p and p.get("media") else "doc")
+        lt = life.get((tid, pid)) or {}
+        lp = None
+        if p is not None:
+            try:
+                lp = round(_project_pages(p, _pricing_of(tid)), 1)
+            except Exception:
+                lp = None
+        lmin = (float(p.get("mediaMinBooked") or 0)
+                or float((p.get("media") or {}).get("duration") or 0) / 60.0) if p else 0.0
+        out.append({
+            "tenant": tid, "tenantName": tnames.get(tid, tid), "project": pid,
+            "projectName": (p.get("title") or p.get("fileName") or "") if p else None,
+            "deleted": pid != 0 and p is None, "kind": kind,
+            "usd": round(x["usd"], 4), "calls": x["calls"], "unpriced": x["unpriced"],
+            "steps": dict(sorted(x["steps"].items(), key=lambda kv: -kv[1])),
+            "pages": round(x["pages"], 2), "minutes": round(x["minutes"], 2),
+            "days": len(x["days"]),
+            # Себестоимость за ВСЮ жизнь проекта — см. докстроку.
+            "lifeUsd": round(float(lt.get("usd") or 0), 4),
+            "lifeUsdPerPage": (round(float(lt.get("usd") or 0) / lp, 4) if lp and kind == "doc" else None),
+            "lifeUsdPerMin": (round(float(lt.get("usd") or 0) / lmin, 4) if lmin and kind == "video" else None)})
+    out.sort(key=lambda r: (-r["usd"], -r["pages"], -r["minutes"], r["tenant"], r["project"]))
+    total = {"usd": round(sum(r["usd"] for r in out), 4), "calls": sum(r["calls"] for r in out),
+             "unpriced": sum(r["unpriced"] for r in out),
+             "pages": round(sum(r["pages"] for r in out), 2),
+             "minutes": round(sum(r["minutes"] for r in out), 2),
+             "projects": sum(1 for r in out if r["project"] != 0)}
+    return {"ok": True, "from": d_from, "to": d_to, "today": today, "rows": out, "total": total,
+            "since": _proj_daily_min_day(), "utcOffset": BUSINESS_UTC_OFFSET,
+            "warn": _pay_warn_thresholds()}
+
+
+_DOMAIN_FIELDS =("label", "en", "expert", "terminology", "extract", "examples")
 
 
 class DomainBody(BaseModel):
@@ -6805,6 +7068,8 @@ class TenantPatch(BaseModel):
     # `pagesLog`. Потолок проектов — своё число; clearMaxProjects — снять
     # и вернуться к значению из окружения (`_tenant_caps`).
     addPages: Optional[float] = None
+    # Минуты видео (инвариант 39): первое пополнение заводит кошелёк.
+    addMinutes: Optional[float] = None
     note: Optional[str] = None
     maxProjects: Optional[int] = None
     clearMaxProjects: bool = False
@@ -6853,6 +7118,8 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
     # (пополнение, применённое при отклонённом потолке проектов, — след).
     if req.maxProjects is not None and req.maxProjects < 0 and not req.clearMaxProjects:
         raise HTTPException(400, "Потолок проектов не может быть отрицательным")
+    if req.addMinutes and float(rec.get("minutesCredit") or 0.0) + float(req.addMinutes) < 0:
+        raise HTTPException(400, "Минут не может стать меньше нуля")
     if req.addPages:
         _pages_topup(tid, float(req.addPages), (req.note or "").strip() or None, paid=True)
         if float(req.addPages) > 0:
@@ -6871,6 +7138,8 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
         # `_referral_on_topup` — «+100 / −100 / +100» иначе оплатилось бы
         # дважды за одни и те же сто страниц).
         _referral_on_topup(tid)
+    if req.addMinutes:
+        _minutes_topup(tid, float(req.addMinutes), (req.note or "").strip() or None)
     if req.clearMaxProjects:
         rec.pop("maxProjects", None)
     elif req.maxProjects is not None:
@@ -6904,6 +7173,7 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
         rec["retranslateBulk"] = int(req.retranslateBulk)
     _audit("tenant.update", tenant_target=tid, limitUsd=rec.get("limitUsd"),
            addPages=req.addPages, pagesCredit=rec.get("pagesCredit"), maxProjects=rec.get("maxProjects"),
+           addMinutes=req.addMinutes, minutesCredit=rec.get("minutesCredit"),
            retranslateLimit=rec.get("retranslateLimit"), retranslateBulk=rec.get("retranslateBulk"),
            budgetPerPage=rec.get("budgetPerPage"))
     save_state(STATE)
@@ -7394,6 +7664,7 @@ BLOCK_KIND = {
     "cap.filePages413": "money",    # принесли книгу толще потолка — прямой спрос
     "cap.bytes413": "money",
     "cap.pages402": "money",
+    "cap.minutes402": "money",      # кончились минуты видео — продаётся пакетом минут
     # Пробный клиент принёс файл больше подарка — перевели фрагмент.
     # Отказа нет, но спрос тот же: человек хотел весь документ.
     "cap.trialExcerpt": "money",
@@ -7672,6 +7943,7 @@ METRICS_BLOCK_TEXT = {
     "cap.filePages413": "файл толще потолка страниц — не взяли",
     "cap.bytes413": "файл тяжелее потолка в мегабайтах — не взяли",
     "cap.pages402": "кончились выданные страницы",
+    "cap.minutes402": "кончились минуты видео",
     "cap.trialExcerpt": "пробному клиенту перевели фрагмент, а принёс он документ больше",
     "cap.projects402": "упёрлись в потолок числа проектов",
     "cap.spend402": "исчерпан месячный лимит расхода",
@@ -10076,6 +10348,7 @@ def _book_image_pages(project: dict) -> None:
         return
     if EXTERNAL_WORKER and _active_job_for(project.get("id")):
         return
+    _book_media_minutes(project)
     tid = _tenant_of(project)
     rec = _tenant_rec(tid)
     if rec is None or rec.get("pagesUsed") is None:
@@ -10087,7 +10360,7 @@ def _book_image_pages(project: dict) -> None:
     # списывается ЗДЕСЬ же и тем же законом высшей точки: воркер документ
     # `tenants` не пишет, а все места, где списывается текст с картинок
     # (показ проекта, конец задачи, перед удалением), нужны и ей.
-    m_have = float(project.get("mediaPages") or 0.0)
+    m_have = 0.0 if _media_on_minutes(project) else float(project.get("mediaPages") or 0.0)
     m_booked = float(project.get("mediaPagesBooked") or 0.0)
     if have - booked < 0.01 and m_have - m_booked < 0.01:
         return
@@ -10689,7 +10962,10 @@ def _pages_used(rec: dict, tid: str, card: dict) -> float:
     `_PAGES_CACHE`); поле не переписывается, счётчик заводит первое пополнение."""
     if rec.get("pagesUsed") is not None:
         return float(rec["pagesUsed"])
-    return sum(_project_pages(p, card) for p in STATE["projects"] if _tenant_of(p) == tid)
+    # Видео на МИНУТАХ (`mediaBill: "min"`) в страницы не входит: его речь
+    # оплачена минутами, и сложить её ещё и страницами — двойной счёт.
+    return sum(_project_pages(p, card) for p in STATE["projects"]
+               if _tenant_of(p) == tid and not _media_on_minutes(p))
 
 
 def _pages_log(rec: dict, kind: str, pages: float, **extra) -> dict:
@@ -10700,6 +10976,8 @@ def _pages_log(rec: dict, kind: str, pages: float, **extra) -> dict:
     log.append(e)
     if len(log) > PAGES_LOG_MAX:
         del log[:len(log) - PAGES_LOG_MAX]
+    if kind in _PAGES_DEBIT_KINDS and e.get("project") is not None:
+        _proj_daily_sold(rec.get("id"), e["project"], pages=e["pages"])
     return e
 
 
@@ -10712,7 +10990,7 @@ def _pages_init(rec: dict, tid: str) -> None:
         # в строке `init`: высшая точка ставится здесь же, иначе показ
         # проекта списал бы её второй раз.
         for p in STATE["projects"]:
-            if _tenant_of(p) == tid and p.get("mediaPages"):
+            if _tenant_of(p) == tid and p.get("mediaPages") and not _media_on_minutes(p):
                 p["mediaPagesBooked"] = max(float(p.get("mediaPagesBooked") or 0.0), float(p["mediaPages"]))
 
 
@@ -10766,7 +11044,8 @@ def _pages_debit(tid: str, pages: float, key: str, project_id: int, title: str,
         if caps["pagesLimited"] and usage["pages"] + debit > caps["maxPages"]:
             _ev("cap.pages402", tid)
             raise HTTPException(402, "В организации списано %.1f стр., с этим файлом %.1f при лимите %g: пополните лимит у администратора"
-                                % (usage["pages"], usage["pages"] + debit, caps["maxPages"]))
+                                % (usage["pages"], usage["pages"] + debit, caps["maxPages"]),
+                                headers=PAY_NEED_PAGES)
         # При действующем лимите счётчик заводится и первым списанием: без него
         # объём читался бы по живым проектам, и «повтор, списано 0» в журнале
         # врал бы — второй проект по тому же файлу входил бы в объём целиком.
@@ -10995,14 +11274,17 @@ def _hand_pages_guard(project: dict, tid: str, quote: dict) -> None:
     # предложения осталась бы русской посреди узбекской.
     raise HTTPException(402, "Правка дописывает к файлу %.1f стр., а свободных осталось "
                              "%.1f: пополните лимит у администратора"
-                        % (quote["debit"], max(0.0, caps["maxPages"] - usage["pages"])))
+                        % (quote["debit"], max(0.0, caps["maxPages"] - usage["pages"])), headers=PAY_NEED_PAGES)
 
 
 def _tenant_admin_view(t: dict) -> dict:
     """Запись организации для админки: без прайса (не наше дело), без
     `filesSeen` (отпечатки — служебное) и с ХВОСТОМ журнала, а не всем."""
-    out = {k: v for k, v in t.items() if k not in ("pricing", "filesSeen", "pagesLog")}
+    out = {k: v for k, v in t.items() if k not in ("pricing", "filesSeen", "pagesLog", "minutesLog",
+                                                    "payApplied")}
     out["pagesLog"] = (t.get("pagesLog") or [])[-PAGES_LOG_TAIL:]
+    out["minutesLog"] = (t.get("minutesLog") or [])[-MINUTES_LOG_TAIL:]
+    out["minutes"] = _tenant_minutes(t.get("id"))
     return out
 
 
@@ -11329,7 +11611,7 @@ def _tenant_usage(tid: str) -> dict:
                         for p in mine), 1)
         # Речь с видео, ещё не списанная (`_book_image_pages`), — тем же приёмом.
         media = round(sum(max(0.0, float(p.get("mediaPages") or 0.0) - float(p.get("mediaPagesBooked") or 0.0))
-                          for p in mine), 1)
+                          for p in mine if not _media_on_minutes(p)), 1)
     else:
         img = round(sum(_image_pages_of(p, card) for p in mine), 1)
         media = 0.0                      # без счётчика она уже в `pages` проекта (`_pages_used`)
@@ -11348,6 +11630,955 @@ def _tenant_usage(tid: str) -> dict:
             "credit": caps["own"]["maxPages"],
             "left": round(max(0.0, caps["maxPages"] - total), 1) if caps["pagesLimited"] else None,
             "counter": rec.get("pagesUsed") is not None}
+
+
+# ─── Минуты видео: свой кошелёк, а не страницы по словам ─────────────
+# Видео и звук продаются МИНУТАМИ распознаваемого отрезка: длительность
+# известна ДО работы (ffprobe), не зависит от того, сколько человек наговорил,
+# и её нельзя «раздуть» правкой. Правила (инвариант 39):
+#   * кошелёк ЕСТЬ у организации, только когда задан `minutesCredit` — его
+#     заводит первое пополнение минут (оплата или админка) либо пробные
+#     минуты регистрации (`SIGNUP_FREE_MINUTES`). Без кошелька видео
+#     по-прежнему идёт СТРАНИЦАМИ по словам расшифровки — иначе выкат запер
+#     бы видео у всех организаций, у которых минут ещё нет;
+#   * проект, заведённый при кошельке, помечается `mediaBill: "min"` и
+#     страниц за речь НЕ списывает (`_media_on_minutes` у всех читателей
+#     `mediaPages`): одна и та же речь дважды не продаётся;
+#   * списывается ДО распознавания, целыми минутами вверх, под `_SAVE_LOCK`
+#     вместе с заведением проекта; не хватает — распознаём начало на остаток
+#     (`mediaExcerpt`), меньше минуты — 402 с кодом `minutes`;
+#   * высшая точка на проекте (`mediaMinBooked`): повтор распознавания после
+#     сбоя и возврат удалённого исходника второй раз не списывают;
+#   * «пол по словам» (`MEDIA_WPM_MAX`): речь, ускоренная вдвое, распознаётся
+#     так же, а минут вдвое меньше — поэтому минут к оплате не меньше, чем
+#     слов расшифровки / MEDIA_WPM_MAX. Досписывает API после распознавания
+#     (`_book_media_minutes`), в минус — допустимо: работа уже сделана.
+SIGNUP_FREE_MINUTES = max(0.0, float(os.environ.get("SIGNUP_FREE_MINUTES", "0") or 0))
+MEDIA_WPM_MAX = max(0.0, float(os.environ.get("MEDIA_WPM_MAX", "260") or 0))
+MINUTES_LOG_MAX = 500
+MINUTES_LOG_TAIL = 30
+
+
+def _media_on_minutes(p: dict) -> bool:
+    return (p or {}).get("mediaBill") == "min"
+
+
+def _tenant_minutes(tid: str) -> dict:
+    """Кошелёк минут: {wallet, credit, used, left}. Без кошелька `left` —
+    None (минутами организация не считается, видео идёт страницами)."""
+    rec = _tenant_rec(tid) or {}
+    used = round(float(rec.get("minutesUsed") or 0.0), 2)
+    if rec.get("minutesCredit") is None:
+        return {"wallet": False, "credit": None, "used": used, "left": None}
+    credit = round(float(rec["minutesCredit"]), 2)
+    return {"wallet": True, "credit": credit, "used": used, "left": round(credit - used, 2)}
+
+
+def _minutes_log(rec: dict, kind: str, minutes: float, **extra) -> dict:
+    e = {"at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "kind": kind,
+         "minutes": round(float(minutes), 2), "by": _actor_id(), "name": _user_label(_actor_id())}
+    e.update({k: v for k, v in extra.items() if v is not None})
+    log = rec.setdefault("minutesLog", [])
+    log.append(e)
+    if len(log) > MINUTES_LOG_MAX:
+        del log[:len(log) - MINUTES_LOG_MAX]
+    if kind in _MIN_DEBIT_KINDS and e.get("project") is not None:
+        _proj_daily_sold(rec.get("id"), e["project"], minutes=e["minutes"])
+    return e
+
+
+def _minutes_topup(tid: str, minutes: float, note: Optional[str]) -> None:
+    """Единственная дверь к `minutesCredit` (тот же закон, что `_pages_topup`):
+    мимо неё пополнение осталось бы без строки журнала. Первое пополнение
+    ЗАВОДИТ кошелёк от нуля."""
+    with _SAVE_LOCK:
+        rec = _tenant_rec(tid)
+        if rec is None:
+            raise HTTPException(404, "Организация не найдена")
+        new = round(float(rec.get("minutesCredit") or 0.0) + float(minutes), 3)
+        if new < 0:
+            raise HTTPException(400, "Минут не может стать меньше нуля")
+        rec["minutesCredit"] = new
+        rec.setdefault("minutesUsed", 0.0)
+        _minutes_log(rec, "credit", minutes, note=note)
+
+
+class _MinutesShort(Exception):
+    def __init__(self, need: float, left: float):
+        super().__init__("minutes")
+        self.need, self.left = need, left
+
+
+def _minutes_402(need: float, left: float, tid: Optional[str]) -> JSONResponse:
+    _ev("cap.minutes402", tid)
+    return JSONResponse({"ok": False, "code": "minutes", "need": need, "left": max(0.0, left),
+                         "error": "На это видео нужно %g мин, на балансе %g мин: пополните минуты"
+                                  % (need, max(0.0, left))}, status_code=402, headers={"X-Pay-Need": "minutes"})
+
+
+def _minutes_debit(tid: str, minutes: float, pid: int, title: str, kind: str = "debit",
+                   check: bool = True) -> None:
+    """Списать минуты. Под `_SAVE_LOCK` по перечитанной записи (инвариант 2).
+    `check` — отказ `_MinutesShort`, если остатка нет (до работы); после
+    работы (пол по словам) списание идёт и в минус."""
+    with _SAVE_LOCK:
+        rec = _tenant_rec(tid)
+        if rec is None or rec.get("minutesCredit") is None:
+            return
+        left = float(rec["minutesCredit"]) - float(rec.get("minutesUsed") or 0.0)
+        if check and left + 1e-9 < minutes:
+            raise _MinutesShort(minutes, round(left, 2))
+        rec["minutesUsed"] = round(float(rec.get("minutesUsed") or 0.0) + float(minutes), 3)
+        _minutes_log(rec, kind, minutes, project=pid, title=title)
+
+
+def _bill_minutes(sec: float) -> int:
+    """Целые минуты вверх, не меньше одной: неполная минута — минута."""
+    return max(1, int(math.ceil(max(0.0, float(sec)) / 60.0 - 1e-9)))
+
+
+def _book_media_minutes(project: dict) -> None:
+    """Пол по словам (см. шапку): досписать минуты, если речь плотнее
+    `MEDIA_WPM_MAX` слов в минуту. Только API и только вне прогона воркера —
+    документ `tenants` пишет один процесс (инвариант 2)."""
+    if not _media_on_minutes(project) or not MEDIA_WPM_MAX:
+        return
+    if IS_WORKER or (EXTERNAL_WORKER and _active_job_for(project.get("id"))):
+        return
+    if project.get("mediaStatus") != "ready":
+        return
+    try:
+        # Письмо без пробелов (китайский, японский) считает страницы ЗНАКАМИ:
+        # слов там нечем мерить, и пол по словам брал бы лишнее.
+        if textcount.norm_for(project.get("src") or "").get("spaceless"):
+            return
+    except Exception:
+        return
+    words = float(project.get("mediaPages") or 0.0) * PAGE_WORDS_BASIS
+    need = int(math.ceil(words / MEDIA_WPM_MAX - 1e-9)) if words > 0 else 0
+    if need <= float(project.get("mediaMinBooked") or 0.0):
+        return
+    tid = _tenant_of(project)
+    with _SAVE_LOCK:
+        # Прочитать отметку и списать — ОДНИМ блоком: два параллельных показа
+        # проекта иначе оба увидели бы недостачу и списали бы её дважды.
+        booked = float(project.get("mediaMinBooked") or 0.0)
+        if need <= booked:
+            return
+        _minutes_debit(tid, need - booked, project.get("id"), project.get("title") or "", kind="speech",
+                       check=False)
+        project["mediaMinBooked"] = float(need)
+        save_state(STATE)
+    _tenants_changed()
+
+
+# ─── Приём оплат ─────────────────────────────────────────────────────
+# Что покупают: страницы и минуты видео. Цены — в долларах (как на
+# лендинге), к оплате — в валюте способа по курсу из настроек админки;
+# цена, курс и сумма ЗАМОРАЖИВАЮТСЯ в заказе. Правила (инвариант 39):
+#   * заказ живёт СВОЕЙ таблицей с прямой записью (`pay_orders`,
+#     `FilePayOrders`), а не документом STATE: `save_state` глотает ошибки,
+#     и платёжная система услышала бы «зачислено» про заказ, которого нет;
+#   * зачисление идемпотентно ДВАЖДЫ: заказ помечается `paid` в своей
+#     таблице, а организация хранит список зачисленных заказов
+#     (`payApplied`) В ТОМ ЖЕ документе, что и баланс. Пропала запись
+#     документа — пропали оба, и сверка (`_pay_reconcile`) дозачислит;
+#   * зачисление — ОДНА функция (`_pay_apply`) и тот же набор, что у
+#     пополнения администратором: `_pages_topup(paid=True)`, снятие
+#     `trial`, процент приглашения, плюс подъём денежного лимита
+#     (`limitUsd` у пробной организации — $0.30, и без подъёма оплаченные
+#     страницы нечем было бы перевести);
+#   * организация БЕЗ потолка страниц страницы не покупает: первое
+#     пополнение завело бы ей счётчик от живого объёма и заперло бы её
+#     (урок `_ref_may_credit`, инвариант 36);
+#   * возврат после оплаты — только руками: Payme на отмену выполненной
+#     транзакции получает -31007 («услуга оказана»), иначе процент
+#     приглашения остался бы у пригласившего за отменённую оплату.
+PAY_METHODS = ("click", "payme", "card", "kaspi")
+PAY_CURRENCY = {"click": "UZS", "payme": "UZS", "card": "USD", "kaspi": "KZT"}
+PAY_DEFAULTS = {"pricePage": "0.5", "priceMinute": "0.3", "rateUZS": "12700", "rateKZT": "510",
+                "pagePacks": [20, 50, 100, 300], "minutePacks": [10, 30, 60, 180],
+                "notes": {"card": "", "kaspi": ""}, "spendShare": "1.0",
+                "methods": {"click": True, "payme": True, "card": True, "kaspi": True}}
+PAY_ORDER_TTL_H = float(os.environ.get("PAY_ORDER_TTL_H", "72") or 72)
+PAY_MAX_PAGES = int(os.environ.get("PAY_MAX_PAGES", "10000") or 10000)
+PAY_MAX_MINUTES = int(os.environ.get("PAY_MAX_MINUTES", "3000") or 3000)
+PAY_OPEN_MAX = int(os.environ.get("PAY_OPEN_MAX", "10") or 10)       # неоплаченных заказов разом
+PAY_HOUR_MAX = int(os.environ.get("PAY_HOUR_MAX", "20") or 20)       # заказов в час на организацию
+PAY_MIN_UZS = 1000                                                   # меньше не принимают Click и Payme
+PAGE_WORDS_BASIS = 250
+_PAY_LOCK = threading.RLock()
+_PAY_FILE = None
+
+
+def _pays():
+    """Хранилище заказов: таблица в базе либо свой файл рядом с состоянием."""
+    global _PAY_FILE
+    if STORE.kind == "pg":
+        return STORE
+    if _PAY_FILE is None:
+        path = os.environ.get("PAY_ORDERS_FILE") or str(DATA_DIR / "pay_orders.json")
+        _PAY_FILE = _store_mod.FilePayOrders(Path(path))
+    return _PAY_FILE
+
+
+def _pay_env(name: str) -> str:
+    return (os.environ.get(name) or "").strip()
+
+
+def _pay_online(method: str) -> bool:
+    """Онлайн-способ включён, только когда заданы ВСЕ его ключи."""
+    if method == "click":
+        return bool(_pay_env("CLICK_SERVICE_ID") and _pay_env("CLICK_MERCHANT_ID") and _pay_env("CLICK_SECRET_KEY"))
+    if method == "payme":
+        return bool(_pay_env("PAYME_MERCHANT_ID") and _pay_env("PAYME_KEY"))
+    return False
+
+
+def _pay_cfg() -> dict:
+    got = STATE.get("payConfig") or {}
+    cfg = json.loads(json.dumps(PAY_DEFAULTS))
+    for k, v in got.items():
+        if k in ("notes", "methods") and isinstance(v, dict):
+            cfg[k].update(v)
+        elif k in cfg or k in ("updated", "by"):
+            cfg[k] = v
+    return cfg
+
+
+def _pay_prices(cfg: dict) -> tuple:
+    return payments_mod.dec(cfg["pricePage"]), payments_mod.dec(cfg["priceMinute"])
+
+
+def _pay_rate(cfg: dict, currency: str):
+    if currency == "UZS":
+        return payments_mod.dec(cfg["rateUZS"])
+    if currency == "KZT":
+        return payments_mod.dec(cfg["rateKZT"])
+    return None
+
+
+def _pay_money(usd, currency: str, cfg: dict) -> str:
+    """Сумма в валюте способа строкой: сумы и тенге целые (вверх), доллары — центы."""
+    rate = _pay_rate(cfg, currency)
+    if rate is None:
+        return str(payments_mod.dec(usd).quantize(Decimal("0.01")))
+    return str(payments_mod.to_local(payments_mod.dec(usd), rate))
+
+
+def _pay_payable(tid: str) -> dict:
+    """Что организация вправе купить. Страницы — только под потолком страниц
+    (см. шапку); минуты — если кошелёк есть или организация под потолком
+    страниц (первая покупка минут заведёт кошелёк)."""
+    caps = _tenant_caps(tid)
+    wallet = _tenant_minutes(tid)["wallet"]
+    return {"pages": bool(caps["pagesLimited"]), "minutes": bool(wallet or caps["pagesLimited"])}
+
+
+def _pay_quote(pages, minutes, method: str, cfg: dict, tid: str) -> dict:
+    """Сумма к оплате. Считает СЕРВЕР: цена в `.jsx` была бы вторым прайсом."""
+    if method not in PAY_METHODS or not cfg["methods"].get(method, True):
+        raise HTTPException(400, "Этот способ оплаты сейчас недоступен")
+    try:
+        pages = int(pages or 0)
+        minutes = int(minutes or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Количество — целое число")
+    if pages < 0 or minutes < 0 or (pages == 0 and minutes == 0):
+        raise HTTPException(400, "Укажите, сколько страниц или минут покупаете")
+    if pages > PAY_MAX_PAGES or minutes > PAY_MAX_MINUTES:
+        raise HTTPException(400, "Слишком большой заказ: до %d стр. и %d мин за раз — больше по договору"
+                            % (PAY_MAX_PAGES, PAY_MAX_MINUTES))
+    ok = _pay_payable(tid)
+    if pages and not ok["pages"]:
+        raise HTTPException(409, "Ваша организация работает без предоплаты страниц — оплата по договору с администратором")
+    if minutes and not ok["minutes"]:
+        raise HTTPException(409, "Ваша организация работает без предоплаты минут — оплата по договору с администратором")
+    pp, pm = _pay_prices(cfg)
+    usd = payments_mod.price_total(pages, minutes, pp, pm)
+    if usd <= 0:
+        raise HTTPException(503, "Цены не заданы: сообщите администратору")
+    currency = PAY_CURRENCY[method]
+    rate = _pay_rate(cfg, currency)
+    if rate is not None and rate <= 0:
+        raise HTTPException(503, "Курс валюты не задан: сообщите администратору")
+    amount = _pay_money(usd, currency, cfg)
+    if currency == "UZS" and int(amount) < PAY_MIN_UZS:
+        raise HTTPException(400, "Сумма меньше минимальной для этого способа — добавьте страниц или минут")
+    return {"pages": pages, "minutes": minutes, "method": method, "currency": currency,
+            "usd": str(usd), "rate": (str(rate) if rate is not None else None), "amount": amount,
+            "prices": {"page": str(pp), "minute": str(pm)}, "online": _pay_online(method)}
+
+
+def _pay_return_url(oid: int) -> str:
+    base = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    return (base + "/?pay=%d" % int(oid)) if base else ""
+
+
+def _pay_link(order: dict) -> Optional[str]:
+    """Куда вести человека платить. Онлайн-способ — ссылка поставщика; «по
+    счёту» — шаблон из окружения, если он задан, иначе ссылки нет (пришлёт
+    администратор). Сумму в шаблонную ссылку человек может поменять — такой
+    заказ администратор подтверждает, сверив поступление."""
+    if order.get("status") != "new":
+        return None
+    m = order["method"]
+    if m == "click" and _pay_online("click"):
+        return payments_mod.click_link(_pay_env("CLICK_SERVICE_ID"), _pay_env("CLICK_MERCHANT_ID"),
+                                       int(order["amount"]), order["id"], _pay_return_url(order["id"]),
+                                       _pay_env("CLICK_MERCHANT_USER_ID"))
+    if m == "payme" and _pay_online("payme"):
+        return payments_mod.payme_link(_pay_env("PAYME_MERCHANT_ID"), order["id"], int(order["amount"]),
+                                       _pay_return_url(order["id"]), test=_pay_env("PAYME_TEST") == "1")
+    tpl = _pay_env({"card": "PAY_CARD_LINK", "kaspi": "PAY_KASPI_LINK"}.get(m, ""))
+    if tpl and m in ("card", "kaspi"):
+        return (tpl.replace("{order}", str(order["id"])).replace("{amount}", str(order["amount"]))
+                .replace("{currency}", order["currency"]))
+    return None
+
+
+def _pay_public(order: dict) -> dict:
+    """Заказ наружу владельцу: без внутренностей транзакций поставщика."""
+    cfg = _pay_cfg()
+    out = {k: order.get(k) for k in ("id", "at", "pages", "minutes", "amount", "currency", "method",
+                                      "status", "paidAt", "userName")}
+    out["online"] = order["method"] in ("click", "payme") and _pay_online(order["method"])
+    out["url"] = _pay_link(order)
+    if order["method"] in ("card", "kaspi"):
+        out["note"] = (cfg["notes"].get(order["method"]) or "")
+    if order.get("status") == "new" and time.time() > float(order.get("expires") or 0):
+        out["status"] = "expired"
+    return out
+
+
+def _pay_log(order: dict, action: str, **extra) -> None:
+    order.setdefault("log", []).append(dict({"at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                             "action": action, "by": _actor_id()},
+                                            **{k: v for k, v in extra.items() if v is not None}))
+    del order["log"][:-50]
+
+
+class _PaySession:
+    """Контекст колбэка: сессии у поставщика нет, а `_audit`, `_ev` и журналы
+    читают организацию из `CURRENT_SESSION` — без подмены запись о платеже
+    легла бы в организацию по умолчанию (инвариант 11)."""
+
+    def __init__(self, tenant: str, who: str):
+        self.sess = {"tenant": tenant, "user": who, "role": "system"}
+
+    def __enter__(self):
+        self.tok = CURRENT_SESSION.set(self.sess)
+        return self
+
+    def __exit__(self, *a):
+        CURRENT_SESSION.reset(self.tok)
+
+
+def _pay_apply(order: dict) -> bool:
+    """Зачислить оплаченный заказ организации — ИДЕМПОТЕНТНО по `payApplied`
+    (см. шапку раздела). True — зачислено сейчас или раньше."""
+    oid, tid = int(order["id"]), order["tenant"]
+    rec = _tenant_rec(tid)
+    if rec is None:
+        print(f"[backend] CRITICAL: оплачен заказ {oid} организации {tid}, которой нет", file=sys.stderr)
+        return False
+    if oid in (rec.get("payApplied") or []):
+        return True
+    pages, minutes = int(order.get("pages") or 0), int(order.get("minutes") or 0)
+    _tenant_usage(tid)                       # греем объём до лока (как `_pages_topup`)
+    with _SAVE_LOCK:
+        rec = _tenant_rec(tid)
+        if rec is None or oid in (rec.get("payApplied") or []):
+            return rec is not None
+        note = "pay:%d" % oid
+        if pages:
+            if not _tenant_caps(tid)["pagesLimited"]:
+                # Потолок сняли между заказом и оплатой: сперва счётчик от
+                # живого объёма, иначе купленные страницы заперли бы организацию.
+                start = _tenant_usage(tid)["pages"]
+                _pages_topup(tid, start, "start", paid=False)
+                live = _tenant_rec(tid)
+                if live is not None:
+                    live["refPaid"] = max(float(live.get("refPaid") or 0.0), float(live.get("pagesCredit") or 0.0))
+            _pages_topup(tid, pages, note, paid=True)
+        if minutes:
+            _minutes_topup(tid, minutes, note)
+        rec = _tenant_rec(tid)
+        rec.pop("trial", None)
+        share = payments_mod.dec(_pay_cfg().get("spendShare"), "1")
+        if rec.get("limitUsd") is not None and share > 0:
+            # Прибавка к лимиту — на ТЕКУЩИЙ месяц (`_spend_status`), не навсегда.
+            by_month = rec.setdefault("payUsdMonth", {})
+            mk = _month_key()
+            by_month[mk] = round(float(by_month.get(mk) or 0.0) + float(payments_mod.dec(order["usd"]) * share), 4)
+            for k in sorted(by_month)[:-6]:
+                by_month.pop(k, None)
+        applied = rec.setdefault("payApplied", [])
+        applied.append(oid)
+        del applied[:-5000]
+        save_state(STATE)
+    _tenants_changed()
+    if pages:
+        _referral_on_topup(tid)
+    _audit("pay.paid", _tenant=tid, order=oid, pages=pages, minutes=minutes,
+           amount=order.get("amount"), currency=order.get("currency"), via=order.get("paidVia"))
+    _ev("funnel.paid:" + order["method"], tid)
+    if tg_mod:
+        tg_mod.notify_admin_async("💰 Оплата №%d: %s %s (%s) — организация «%s», %d стр., %d мин"
+                                  % (oid, order.get("amount"), order.get("currency"), order.get("paidVia"),
+                                     tid, pages, minutes))
+    return True
+
+
+def _pay_mark_paid(order: dict, via: str, **extra) -> dict:
+    """Отметить заказ оплаченным В ЕГО ТАБЛИЦЕ (сбой записи — исключение,
+    поставщик получит отказ и повторит), затем зачислить."""
+    with _PAY_LOCK:
+        cur = _pays().pay_get(order["id"]) or order
+        changed = False
+        if cur.get("status") != "paid":
+            cur["status"] = "paid"
+            cur["paidAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cur["paidVia"] = via
+            _pay_log(cur, "paid", via=via)
+            changed = True
+        if extra:
+            # Поля поставщика пишутся ВСЕГДА: иначе у заказа, уже отмеченного
+            # оплаченным, CheckTransaction/GetStatement противоречили бы Perform.
+            cur.update(extra)
+            changed = True
+        if changed:
+            _pays().pay_put(cur)
+    # Заказ уже ДОЛГОВЕЧНО оплачен: сбой зачисления — не отказ поставщику
+    # (он отменил бы платёж), а работа сверки `_pay_reconcile`.
+    try:
+        with _PaySession(cur["tenant"], "system:" + via):
+            _pay_apply(cur)
+    except Exception as e:
+        print(f"[backend] CRITICAL: заказ {cur.get('id')} оплачен, зачисление отложено до сверки: {e}",
+              file=sys.stderr)
+    return cur
+
+
+def _pay_reconcile(tid: Optional[str] = None) -> int:
+    """Дозачислить оплаченные, но не зачисленные заказы (пропавшая запись
+    документа организации, рестарт посреди зачисления). Дёшево: заказов мало."""
+    n = 0
+    try:
+        for o in _pays().pay_list(tid, 2000):
+            if o.get("status") != "paid":
+                continue
+            rec = _tenant_rec(o["tenant"])
+            if rec is None or int(o["id"]) in (rec.get("payApplied") or []):
+                continue
+            with _PaySession(o["tenant"], "system:reconcile"):
+                if _pay_apply(o):
+                    n += 1
+    except Exception as e:
+        print(f"[backend] сверка оплат не удалась: {e}", file=sys.stderr)
+    return n
+
+
+def _pay_get_own(oid: int) -> dict:
+    """Заказ своей организации; чужой — 404 (как `get_project`, инвариант 11)."""
+    o = _pays().pay_get(oid)
+    if not o or o.get("tenant") != _current_tenant():
+        raise HTTPException(404, "Заказ не найден")
+    return o
+
+
+def _pay_warn_thresholds() -> dict:
+    """Себестоимость, при которой проект подсвечивается: половина цены продажи."""
+    pp, pm = _pay_prices(_pay_cfg())
+    return {"usdPerPage": float(pp) / 2, "usdPerMin": float(pm) / 2}
+
+
+class PayOrderRequest(BaseModel):
+    pages: int = 0
+    minutes: int = 0
+    method: str = "payme"
+
+
+@app.get("/api/pay")
+def pay_state():
+    """Экран оплаты: цены в валюте каждого способа, пакеты, остатки, свои
+    заказы. Владельцу (`_OWNER_ONLY`): это цена ПОКУПКИ у сервиса, а не наш
+    расход на модели и не прайс агентства (инвариант 22а)."""
+    tid = _current_tenant()
+    _pay_reconcile(tid)
+    cfg = _pay_cfg()
+    pp, pm = _pay_prices(cfg)
+    methods = []
+    for m in PAY_METHODS:
+        if not cfg["methods"].get(m, True):
+            continue
+        cur = PAY_CURRENCY[m]
+        methods.append({"id": m, "currency": cur, "online": _pay_online(m),
+                        "page": _pay_money(pp, cur, cfg), "minute": _pay_money(pm, cur, cfg),
+                        "note": cfg["notes"].get(m) or "" if m in ("card", "kaspi") else ""})
+    orders = [_pay_public(o) for o in _pays().pay_list(tid, 20)]
+    return {"ok": True, "methods": methods, "packs": {"pages": cfg["pagePacks"], "minutes": cfg["minutePacks"]},
+            "payable": _pay_payable(tid), "usage": _tenant_usage(tid), "caps": _tenant_caps(tid),
+            "minutes": _tenant_minutes(tid), "orders": orders, "wpmMax": MEDIA_WPM_MAX,
+            "limits": {"pages": PAY_MAX_PAGES, "minutes": PAY_MAX_MINUTES}}
+
+
+@app.post("/api/pay/quote")
+def pay_quote(req: PayOrderRequest):
+    return {"ok": True, "quote": _pay_quote(req.pages, req.minutes, req.method, _pay_cfg(), _current_tenant())}
+
+
+@app.post("/api/pay/orders")
+def pay_order_create(req: PayOrderRequest):
+    """Завести заказ. Не платная дверь (оплата — как раз выход из исчерпанного
+    лимита, инвариант 15), право — владельца организации."""
+    tid = _current_tenant()
+    cfg = _pay_cfg()
+    q = _pay_quote(req.pages, req.minutes, req.method, cfg, tid)
+    now = time.time()
+    with _PAY_LOCK:
+        mine = _pays().pay_list(tid, 200)
+        open_ = [o for o in mine if o.get("status") == "new" and now < float(o.get("expires") or 0)]
+        if len(open_) >= PAY_OPEN_MAX:
+            raise HTTPException(429, "Слишком много неоплаченных заказов — отмените лишние или оплатите их")
+        if sum(1 for o in mine if now - float(o.get("ts") or 0) < 3600) >= PAY_HOUR_MAX:
+            raise HTTPException(429, "Слишком много заказов за час — попробуйте позже")
+        oid = _pays().pay_next_id()
+        me = _actor_id()
+        order = {"id": oid, "tenant": tid, "user": me, "userName": _user_label(me),
+                 "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ts": now,
+                 "expires": now + PAY_ORDER_TTL_H * 3600, "status": "new",
+                 **{k: q[k] for k in ("pages", "minutes", "method", "currency", "usd", "rate", "amount", "prices")}}
+        _pay_log(order, "created")
+        _pays().pay_put(order)
+    _audit("pay.order", order=oid, pages=q["pages"], minutes=q["minutes"], amount=q["amount"],
+           currency=q["currency"], method=q["method"])
+    _ev("funnel.payOrder:" + q["method"], tid)
+    if tg_mod and not q["online"]:
+        tg_mod.notify_admin_async("🧾 Заявка на оплату №%d (%s): %s %s — «%s», %d стр., %d мин. "
+                                  "Подтвердите в админке после поступления."
+                                  % (oid, q["method"], q["amount"], q["currency"], tid, q["pages"], q["minutes"]))
+    return {"ok": True, "order": _pay_public(order)}
+
+
+@app.get("/api/pay/orders/{oid}")
+def pay_order_get(oid: int):
+    o = _pay_get_own(oid)
+    if o.get("status") == "paid":
+        _pay_reconcile(o["tenant"])
+    return {"ok": True, "order": _pay_public(o)}
+
+
+@app.post("/api/pay/orders/{oid}/cancel")
+def pay_order_cancel(oid: int):
+    with _PAY_LOCK:
+        o = _pay_get_own(oid)
+        if o.get("status") != "new":
+            raise HTTPException(409, "Заказ уже не ждёт оплаты")
+        if (o.get("payme") or {}).get("state") == 1 or (o.get("click") or {}).get("prepared"):
+            raise HTTPException(409, "Оплата по этому заказу уже началась — дождитесь её конца")
+        o["status"] = "cancelled"
+        _pay_log(o, "cancelled")
+        _pays().pay_put(o)
+    return {"ok": True, "order": _pay_public(o)}
+
+
+# ── админка: заказы, подтверждение «по счёту», настройки ──
+class PayConfigPatch(BaseModel):
+    pricePage: Optional[str] = None
+    priceMinute: Optional[str] = None
+    rateUZS: Optional[str] = None
+    rateKZT: Optional[str] = None
+    pagePacks: Optional[list] = None
+    minutePacks: Optional[list] = None
+    notes: Optional[dict] = None
+    methods: Optional[dict] = None
+    spendShare: Optional[str] = None
+
+
+class PayAdminAction(BaseModel):
+    note: Optional[str] = None
+
+
+def _pay_admin_view(o: dict) -> dict:
+    out = dict(o)
+    out.pop("log", None)
+    out["log"] = (o.get("log") or [])[-10:]
+    if out.get("status") == "new" and time.time() > float(o.get("expires") or 0):
+        out["status"] = "expired"
+    rec = _tenant_rec(o["tenant"]) or {}
+    out["applied"] = int(o["id"]) in (rec.get("payApplied") or [])
+    out["tenantName"] = rec.get("name") or o["tenant"]
+    return out
+
+
+@app.get("/api/admin/payments")
+def admin_payments(request: Request, status: str = "", limit: int = 300):
+    if not _is_super(request):
+        raise HTTPException(403, "Оплаты — только суперпользователю")
+    fixed = _pay_reconcile()
+    rows = [_pay_admin_view(o) for o in _pays().pay_list(None, max(1, min(limit, 2000)))]
+    if status:
+        rows = [r for r in rows if r["status"] == status]
+    totals: dict = {}
+    for r in rows:
+        if r["status"] == "paid":
+            t = totals.setdefault(r["currency"], {"amount": "0", "orders": 0, "usd": "0"})
+            t["amount"] = str(payments_mod.dec(t["amount"]) + payments_mod.dec(r["amount"]))
+            t["usd"] = str(payments_mod.dec(t["usd"]) + payments_mod.dec(r["usd"]))
+            t["orders"] += 1
+    base = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    return {"ok": True, "orders": rows, "totals": totals, "config": _pay_cfg(), "reconciled": fixed,
+            "providers": {"click": _pay_online("click"), "payme": _pay_online("payme"),
+                          "paymeTest": _pay_env("PAYME_TEST") == "1",
+                          "cardLink": bool(_pay_env("PAY_CARD_LINK")), "kaspiLink": bool(_pay_env("PAY_KASPI_LINK"))},
+            "callbacks": {"clickPrepare": base + "/api/pay/click/prepare",
+                          "clickComplete": base + "/api/pay/click/complete",
+                          "payme": base + "/api/pay/payme"}}
+
+
+@app.post("/api/admin/payments/{oid}/confirm")
+def admin_payment_confirm(oid: int, req: PayAdminAction, request: Request):
+    """Оплата «по счёту» поступила — зачислить. Онлайн-заказ подтверждается
+    так же, если колбэк поставщика потерялся (деньги пришли, а статуса нет)."""
+    if not _is_super(request):
+        raise HTTPException(403, "Оплаты — только суперпользователю")
+    with _PAY_LOCK:
+        o = _pays().pay_get(oid)
+        if not o:
+            raise HTTPException(404, "Заказ не найден")
+        if o.get("status") not in ("new", "paid"):
+            raise HTTPException(409, "Заказ отменён — заведите новый")
+        pst = (o.get("payme") or {}).get("state")
+        if pst in (-1, -2):
+            raise HTTPException(409, "Транзакция Payme по заказу отменена")
+        # Оплата у поставщика ИДЁТ: подтверди руками — и отменённая им потом
+        # транзакция оставила бы страницы без денег. Ждём его ответа.
+        if o.get("status") == "new" and (pst == 1 or ((o.get("click") or {}).get("prepared")
+                                                      and not (o.get("click") or {}).get("completed"))):
+            raise HTTPException(409, "По заказу идёт оплата у платёжной системы — дождитесь её ответа")
+        if o.get("status") == "new":
+            _pay_log(o, "confirmed", note=(req.note or "").strip()[:300] or None)
+            _pays().pay_put(o)
+        o = _pay_mark_paid(o, "admin")
+    return {"ok": True, "order": _pay_admin_view(o)}
+
+
+@app.post("/api/admin/payments/{oid}/cancel")
+def admin_payment_cancel(oid: int, req: PayAdminAction, request: Request):
+    if not _is_super(request):
+        raise HTTPException(403, "Оплаты — только суперпользователю")
+    with _PAY_LOCK:
+        o = _pays().pay_get(oid)
+        if not o:
+            raise HTTPException(404, "Заказ не найден")
+        if o.get("status") != "new":
+            raise HTTPException(409, "Отменить можно только неоплаченный заказ; возврат оплаченного — "
+                                     "вручную: снимите страницы или минуты в карточке организации")
+        if (o.get("payme") or {}).get("state") == 1:
+            raise HTTPException(409, "По заказу идёт транзакция Payme — отменить её может только Payme")
+        o["status"] = "cancelled"
+        _pay_log(o, "cancelled", note=(req.note or "").strip()[:300] or None)
+        _pays().pay_put(o)
+    return {"ok": True, "order": _pay_admin_view(o)}
+
+
+@app.post("/api/admin/pay-config")
+def admin_pay_config(req: PayConfigPatch, request: Request):
+    if not _is_super(request):
+        raise HTTPException(403, "Настройки оплат — только суперпользователю")
+    cfg = _pay_cfg()
+    for k in ("pricePage", "priceMinute", "rateUZS", "rateKZT", "spendShare"):
+        v = getattr(req, k)
+        if v is None:
+            continue
+        d = payments_mod.dec(v, "-1")
+        if d < 0 or d > Decimal("100000000"):
+            raise HTTPException(400, "Неверное число: %s" % k)
+        cfg[k] = str(d)
+    for k in ("pagePacks", "minutePacks"):
+        v = getattr(req, k)
+        if v is None:
+            continue
+        try:
+            packs = sorted({int(x) for x in v if 0 < int(x) <= (PAY_MAX_PAGES if k == "pagePacks" else PAY_MAX_MINUTES)})
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Пакеты — целые числа")
+        cfg[k] = packs[:8]
+    if req.notes is not None:
+        cfg["notes"] = {m: str(req.notes.get(m) or "")[:600] for m in ("card", "kaspi")}
+    if req.methods is not None:
+        cfg["methods"] = {m: bool(req.methods.get(m, cfg["methods"].get(m, True))) for m in PAY_METHODS}
+    cfg["updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cfg["by"] = _actor_id()
+    STATE["payConfig"] = cfg
+    _audit("pay.config", **{k: cfg[k] for k in ("pricePage", "priceMinute", "rateUZS", "rateKZT")})
+    save_state(STATE)
+    return {"ok": True, "config": cfg}
+
+
+# ── колбэки поставщиков: публичные двери, защищённые подписью ──
+def _pay_order_for(raw, method: str) -> Optional[dict]:
+    """Заказ по номеру из колбэка — только своего способа: ссылку Payme
+    нельзя оплатить через Click и наоборот."""
+    try:
+        oid = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    o = _pays().pay_get(oid)
+    return o if o and o.get("method") == method else None
+
+
+def _click_handle(p: dict, complete: bool) -> dict:
+    pm = payments_mod
+    secret = _pay_env("CLICK_SECRET_KEY")
+    if not _pay_online("click"):
+        return pm.click_answer(p, pm.CLICK_REQUEST)
+    if not pm.click_sign_ok(p, secret, complete):
+        return pm.click_answer(p, pm.CLICK_SIGN)
+    if str(p.get("service_id", "")) != _pay_env("CLICK_SERVICE_ID"):
+        return pm.click_answer(p, pm.CLICK_REQUEST)
+    if str(p.get("action", "")) != ("1" if complete else "0"):
+        return pm.click_answer(p, pm.CLICK_ACTION)
+    _sync_shared()
+    with _PAY_LOCK:
+        o = _pay_order_for(p.get("merchant_trans_id"), "click")
+        if o is None:
+            return pm.click_answer(p, pm.CLICK_NO_ORDER)
+        if not pm.amount_matches(p.get("amount"), int(o["amount"])):
+            return pm.click_answer(p, pm.CLICK_AMOUNT)
+        ck = o.setdefault("click", {})
+        trans = str(p.get("click_trans_id", ""))
+        if not complete:
+            if o["status"] == "paid":
+                return pm.click_answer(p, pm.CLICK_PAID)
+            if o["status"] != "new" or time.time() > float(o.get("expires") or 0):
+                return pm.click_answer(p, pm.CLICK_CANCELLED)
+            ck.update({"trans": trans, "paydoc": str(p.get("click_paydoc_id", "")), "prepared": True})
+            _pay_log(o, "click.prepare", trans=trans)
+            _pays().pay_put(o)
+            return pm.click_answer(p, pm.CLICK_OK, merchant_prepare_id=int(o["id"]))
+        # Complete: деньги могли уже уйти, поэтому срок заказа здесь НЕ смотрим.
+        if (str(p.get("merchant_prepare_id", "")) != str(o["id"]) or not ck.get("prepared")
+                or ck.get("trans") != trans):
+            return pm.click_answer(p, pm.CLICK_NO_TRANS)
+        if o["status"] == "paid":
+            return pm.click_answer(p, pm.CLICK_PAID)
+        if o["status"] == "cancelled":
+            return pm.click_answer(p, pm.CLICK_CANCELLED)
+        try:
+            err = int(str(p.get("error", "0")))
+        except ValueError:
+            err = 0
+        if err < 0:
+            # Click сообщает, что оплата у него не прошла — заказ закрыт.
+            o["status"] = "cancelled"
+            _pay_log(o, "click.failed", error=err)
+            _pays().pay_put(o)
+            return pm.click_answer(p, pm.CLICK_CANCELLED)
+        # Под тем же замком, что и проверка статуса: два параллельных Complete
+        # (две вкладки) иначе оба ответили бы «успех» — два списания у Click.
+        try:
+            _pay_mark_paid(o, "click", click=dict(ck, completed=trans))
+        except Exception as e:
+            print(f"[backend] оплата Click по заказу {o.get('id')} не записана: {e}", file=sys.stderr)
+            return pm.click_answer(p, pm.CLICK_UPDATE)
+    return pm.click_answer(p, pm.CLICK_OK, merchant_confirm_id=int(o["id"]))
+
+
+@app.post("/api/pay/click/prepare")
+async def click_prepare(request: Request):
+    p = dict(await request.form())
+    return JSONResponse(await run_in_threadpool(_click_handle, p, False))
+
+
+@app.post("/api/pay/click/complete")
+async def click_complete(request: Request):
+    p = dict(await request.form())
+    return JSONResponse(await run_in_threadpool(_click_handle, p, True))
+
+
+_PAYME_METHODS = ("CheckPerformTransaction", "CreateTransaction", "PerformTransaction",
+                  "CancelTransaction", "CheckTransaction", "GetStatement")
+
+
+def _payme_now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _payme_check_order(req_id, params: dict, o: Optional[dict]):
+    """Общая проверка CheckPerformTransaction/CreateTransaction. None — годен."""
+    pm = payments_mod
+    if o is None:
+        return pm.payme_error(req_id, pm.PAYME_NO_ORDER, "order_id")
+    try:
+        amount = int(params.get("amount"))
+    except (TypeError, ValueError):
+        return pm.payme_error(req_id, pm.PAYME_AMOUNT)
+    if amount != int(o["amount"]) * 100:
+        return pm.payme_error(req_id, pm.PAYME_AMOUNT)
+    if o["status"] != "new" or time.time() > float(o.get("expires") or 0):
+        return pm.payme_error(req_id, pm.PAYME_ORDER_STATE, "order_id")
+    return None
+
+
+def _payme_detail(o: dict) -> Optional[dict]:
+    """Фискальные данные чека (обязательны у Payme для боевой кассы):
+    код ИКПУ и упаковки из окружения. Не заданы — поле не отдаём."""
+    ikpu = _pay_env("PAYME_IKPU")
+    if not ikpu:
+        return None
+    return {"receipt_type": 0, "items": [{
+        "title": "Перевод: %d стр., %d мин" % (int(o.get("pages") or 0), int(o.get("minutes") or 0)),
+        "price": int(o["amount"]) * 100, "count": 1, "code": ikpu,
+        "package_code": _pay_env("PAYME_PACKAGE_CODE") or "1", "vat_percent": int(_pay_env("PAYME_VAT") or 0)}]}
+
+
+def _payme_handle(body: dict, auth: Optional[str]) -> dict:
+    pm = payments_mod
+    req_id = body.get("id") if isinstance(body, dict) else None
+    if not _pay_online("payme") or not pm.payme_auth_ok(auth, _pay_env("PAYME_KEY")):
+        return pm.payme_error(req_id, pm.PAYME_AUTH)
+    if not isinstance(body, dict) or not isinstance(body.get("params"), dict):
+        return pm.payme_error(req_id, pm.PAYME_REQUEST)
+    method, params = body.get("method"), body["params"]
+    if method not in _PAYME_METHODS:
+        return pm.payme_error(req_id, pm.PAYME_METHOD)
+    _sync_shared()
+    if method == "GetStatement":
+        try:
+            a, b = int(params.get("from")), int(params.get("to"))
+        except (TypeError, ValueError):
+            return pm.payme_error(req_id, pm.PAYME_REQUEST)
+        txs = []
+        for o in _pays().pay_list(None, 100000):
+            t = o.get("payme")
+            if o.get("method") != "payme" or not t or not (a <= int(t.get("time") or 0) <= b):
+                continue
+            txs.append({"id": t["id"], "time": int(t["time"]), "amount": int(o["amount"]) * 100,
+                        "account": {"order_id": str(o["id"])}, "create_time": int(t.get("create_time") or 0),
+                        "perform_time": int(t.get("perform_time") or 0), "cancel_time": int(t.get("cancel_time") or 0),
+                        "transaction": str(o["id"]), "state": int(t.get("state") or 0),
+                        "reason": t.get("reason"), "receivers": None})
+        txs.sort(key=lambda x: x["time"])
+        return pm.payme_result(req_id, {"transactions": txs})
+    with _PAY_LOCK:
+        if method in ("CheckPerformTransaction", "CreateTransaction"):
+            o = _pay_order_for((params.get("account") or {}).get("order_id"), "payme")
+            if method == "CheckPerformTransaction":
+                bad = _payme_check_order(req_id, params, o)
+                if bad:
+                    return bad
+                if (o.get("payme") or {}).get("state") == 1:
+                    return pm.payme_error(req_id, pm.PAYME_ORDER_BUSY, "order_id")
+                res = {"allow": True}
+                det = _payme_detail(o)
+                if det:
+                    res["detail"] = det
+                return pm.payme_result(req_id, res)
+            tx_id = str(params.get("id") or "")
+            if not tx_id:
+                return pm.payme_error(req_id, pm.PAYME_REQUEST)
+            t = (o or {}).get("payme")
+            if o is not None and t and t.get("id") == tx_id:
+                if t["state"] != 1:
+                    return pm.payme_error(req_id, pm.PAYME_CANT_PERFORM)
+                if _payme_now_ms() - int(t["time"]) > pm.PAYME_TIMEOUT_MS:
+                    t.update({"state": -1, "reason": pm.PAYME_REASON_TIMEOUT, "cancel_time": _payme_now_ms()})
+                    o["status"] = "cancelled"
+                    _pay_log(o, "payme.timeout")
+                    _pays().pay_put(o)
+                    return pm.payme_error(req_id, pm.PAYME_CANT_PERFORM)
+                return pm.payme_result(req_id, {"create_time": int(t["create_time"]),
+                                                "transaction": str(o["id"]), "state": 1})
+            # Та же транзакция могла прийти к ЧУЖОМУ заказу — её id уникален у Payme.
+            other = next((x for x in _pays().pay_list(None, 100000)
+                          if (x.get("payme") or {}).get("id") == tx_id), None)
+            if other is not None and (o is None or other["id"] != o["id"]):
+                return pm.payme_error(req_id, pm.PAYME_CANT_PERFORM)
+            bad = _payme_check_order(req_id, params, o)
+            if bad:
+                return bad
+            if t and t.get("state") == 1:
+                return pm.payme_error(req_id, pm.PAYME_ORDER_BUSY, "order_id")
+            try:
+                ptime = int(params.get("time"))
+            except (TypeError, ValueError):
+                return pm.payme_error(req_id, pm.PAYME_REQUEST)
+            if _payme_now_ms() - ptime > pm.PAYME_TIMEOUT_MS:
+                return pm.payme_error(req_id, pm.PAYME_CANT_PERFORM)
+            o["payme"] = {"id": tx_id, "time": ptime, "create_time": _payme_now_ms(), "perform_time": 0,
+                          "cancel_time": 0, "state": 1, "reason": None, "our_id": o["id"]}
+            _pay_log(o, "payme.create", tx=tx_id)
+            _pays().pay_put(o)
+            return pm.payme_result(req_id, {"create_time": o["payme"]["create_time"],
+                                            "transaction": str(o["id"]), "state": 1})
+        tx_id = str(params.get("id") or "")
+        o = next((x for x in _pays().pay_list(None, 100000) if (x.get("payme") or {}).get("id") == tx_id), None) \
+            if tx_id else None
+        if o is None:
+            return pm.payme_error(req_id, pm.PAYME_NO_TRANS)
+        t = o["payme"]
+        if method == "CheckTransaction":
+            return pm.payme_result(req_id, pm.payme_tx_view(t))
+        if method == "CancelTransaction":
+            if t["state"] in (-1, -2):
+                return pm.payme_result(req_id, {"transaction": str(o["id"]), "cancel_time": int(t["cancel_time"]),
+                                                "state": int(t["state"])})
+            if t["state"] == 2:
+                # Возврат выполненной оплаты — только руками (см. шапку раздела).
+                return pm.payme_error(req_id, pm.PAYME_CANT_CANCEL)
+            try:
+                reason = int(params.get("reason"))
+            except (TypeError, ValueError):
+                reason = None
+            t.update({"state": -1, "reason": reason, "cancel_time": _payme_now_ms()})
+            if o["status"] == "new":
+                o["status"] = "cancelled"
+            _pay_log(o, "payme.cancel", reason=reason)
+            _pays().pay_put(o)
+            return pm.payme_result(req_id, {"transaction": str(o["id"]), "cancel_time": int(t["cancel_time"]),
+                                            "state": -1})
+        if method == "PerformTransaction":
+            if t["state"] == 2:
+                return pm.payme_result(req_id, {"transaction": str(o["id"]), "perform_time": int(t["perform_time"]),
+                                                "state": 2})
+            if t["state"] != 1:
+                return pm.payme_error(req_id, pm.PAYME_CANT_PERFORM)
+            if _payme_now_ms() - int(t["time"]) > pm.PAYME_TIMEOUT_MS:
+                t.update({"state": -1, "reason": pm.PAYME_REASON_TIMEOUT, "cancel_time": _payme_now_ms()})
+                o["status"] = "cancelled"
+                _pay_log(o, "payme.timeout")
+                _pays().pay_put(o)
+                return pm.payme_error(req_id, pm.PAYME_CANT_PERFORM)
+            t.update({"state": 2, "perform_time": _payme_now_ms()})
+            try:
+                o = _pay_mark_paid(o, "payme", payme=t)
+            except Exception as e:
+                print(f"[backend] оплата Payme по заказу {o.get('id')} не записана: {e}", file=sys.stderr)
+                return pm.payme_error(req_id, pm.PAYME_CANT_PERFORM)
+            return pm.payme_result(req_id, {"transaction": str(o["id"]), "perform_time": int(t["perform_time"]),
+                                            "state": 2})
+    return pm.payme_error(req_id, pm.PAYME_METHOD)
+
+
+@app.post("/api/pay/payme")
+async def payme_callback(request: Request):
+    """Payme ждёт HTTP 200 и JSON-RPC ВСЕГДА — ошибка идёт в теле."""
+    raw = await request.body()
+    try:
+        body = json.loads(raw.decode("utf-8")) if len(raw) <= 65536 else None
+    except (ValueError, UnicodeDecodeError):
+        body = None
+    if body is None:
+        return JSONResponse(payments_mod.payme_error(None, payments_mod.PAYME_PARSE))
+    try:
+        out = await run_in_threadpool(_payme_handle, body, request.headers.get("authorization"))
+    except Exception as e:
+        print(f"[backend] колбэк Payme упал: {e}", file=sys.stderr)
+        out = payments_mod.payme_error(body.get("id") if isinstance(body, dict) else None,
+                                       payments_mod.PAYME_CANT_PERFORM)
+    return JSONResponse(out)
 
 
 def _pages_exact(blocks: list, lang: str, card: dict) -> float:
@@ -13914,7 +15145,7 @@ def _images_local_pages_gate(project: dict, items: list) -> None:
     if need > 0 and used + need > caps["maxPages"] + HAND_PAGES_OVERDRAFT:
         raise HTTPException(402, "Текст с картинок займёт %.1f стр., а свободных осталось "
                                  "%.1f: пополните лимит у администратора"
-                            % (need, max(0.0, caps["maxPages"] - used)))
+                            % (need, max(0.0, caps["maxPages"] - used)), headers=PAY_NEED_PAGES)
 
 
 class ImagesLocalRequest(BaseModel):
@@ -16369,6 +17600,9 @@ def _warm_on_startup():
         return
     threading.Thread(target=_warm_caches, name="mcat-warm", daemon=True).start()
     threading.Thread(target=_media_sweep_maybe, name="mcat-media-sweep", daemon=True).start()
+    # Оплаты, отмеченные в своей таблице, но не зачисленные (рестарт посреди
+    # зачисления, пропавшая запись документа организации), — дозачислить.
+    threading.Thread(target=_pay_reconcile, name="mcat-pay-reconcile", daemon=True).start()
 
 
 # Занятость очереди — в журнал при старте. О потолке узнавали только из строки
@@ -31531,17 +32765,29 @@ def media_upload_finish(token: str, req: Optional[MediaFinish] = None):
     if st0["over"]:
         return _limit_402(st0, tid)
     minutes = span / 60.0
+    limit_sec = None
+    # Минуты (инвариант 39): у организации с кошельком минут видео продаётся
+    # МИНУТАМИ отрезка, страницы по словам не смотрим. Списание — ниже, под
+    # `_SAVE_LOCK` вместе с заведением проекта: проверка здесь — для ответа
+    # «сколько не хватает» до того, как файл переедет.
+    wallet = _tenant_minutes(tid)
+    bill_min = _bill_minutes(span) if wallet["wallet"] else 0
+    if wallet["wallet"] and wallet["left"] < bill_min:
+        fit = int(math.floor(max(0.0, wallet["left"]) + 1e-9))
+        if fit < 1:
+            return _minutes_402(bill_min, wallet["left"], tid)
+        limit_sec = float(fit * 60)
+        bill_min = fit
     # Страницы: оценка ДО распознавания. Не хватает на всё видео — распознаём
     # начало, на которое остатка хватит (не меньше минуты), и называем это.
-    limit_sec = None
     usage = _tenant_usage(tid)
     est_pages = minutes * MEDIA_PAGES_PER_MIN
-    if usage.get("left") is not None and usage["left"] < est_pages:
+    if not wallet["wallet"] and usage.get("left") is not None and usage["left"] < est_pages:
         fit = usage["left"] / MEDIA_PAGES_PER_MIN * 60.0
         if fit < 60.0:
             _ev("cap.pages402", tid)
             raise HTTPException(402, "Видео ≈ %.1f стр. текста, а осталось %.1f стр.: пополните лимит у администратора"
-                                % (est_pages, usage["left"]))
+                                % (est_pages, usage["left"]), headers=PAY_NEED_PAGES)
         limit_sec = round(fit, 1)
     # Деньги: распознавание платное, смета — по минутам.
     est_usd = (limit_sec or span) / 60.0 * float((AUX_MODEL_PRICES.get(ASR_MODEL) or {}).get("perMin") or 0)
@@ -31558,13 +32804,33 @@ def media_upload_finish(token: str, req: Optional[MediaFinish] = None):
     new_id = _next_id()
     d = _media_dir(new_id)
     d.mkdir(parents=True, exist_ok=True)
+    # Минуты — ДО переезда файла (инвариант 39): нехватка, найденная после
+    # переезда, выбросила бы загрузку в гигабайты, и после пополнения её
+    # пришлось бы качать заново. Отказ здесь оставляет загрузку целой.
+    if wallet["wallet"]:
+        try:
+            _minutes_debit(tid, bill_min, new_id, title, kind="excerpt" if limit_sec else "debit")
+        except _MinutesShort as e:
+            shutil.rmtree(str(d), ignore_errors=True)
+            return _minutes_402(e.need, e.left, tid)
     # Под тем же замком, что и отмена: «Отменить», нажатое во время «готово»,
     # иначе роняло бы перенос файла 500-й, а проект с платным распознаванием
     # заводился бы при экране «отменено».
-    with _MEDIA_LOCK:
-        if not part.exists():
-            raise HTTPException(409, "Загрузка отменена")
-        os.replace(str(part), str(d / ("source" + rec["ext"])))
+    try:
+        with _MEDIA_LOCK:
+            if not part.exists():
+                raise HTTPException(409, "Загрузка отменена")
+            os.replace(str(part), str(d / ("source" + rec["ext"])))
+    except Exception:
+        if wallet["wallet"]:
+            # Проекта не будет — списанное возвращается строкой журнала.
+            with _SAVE_LOCK:
+                r_ = _tenant_rec(tid)
+                if r_ is not None:
+                    r_["minutesUsed"] = round(max(0.0, float(r_.get("minutesUsed") or 0.0) - bill_min), 3)
+                    _minutes_log(r_, "refund", bill_min, project=new_id, title=title)
+                save_state(STATE)
+        raise
     _media_upload_drop(token)
     project = {
         "id": new_id, "title": title, "titleEn": title,
@@ -31584,6 +32850,9 @@ def media_upload_finish(token: str, req: Optional[MediaFinish] = None):
         project["mediaExcerpt"] = {"sec": limit_sec, "of": round(span, 1)}
     if folder is not None:
         project["folder"] = folder["id"]
+    if wallet["wallet"]:
+        project["mediaBill"] = "min"
+        project["mediaMinBooked"] = float(bill_min)
     with _SAVE_LOCK:
         STATE["projects"].insert(0, project)
         _PROJECTS_VER[0] += 1

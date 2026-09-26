@@ -63,6 +63,8 @@ function useStore(authed) {
       setMe(r.me); setCan(r.can || { owner: false, super: false });
       setTeams(r.teams || []); setTenant(r.tenant || null); setInvites(r.invites || []);
       setCaps(r.caps || null); setUsage(r.usage || null);
+      /* Остаток минут видео — мини-редактору видео (без своего запроса). */
+      window._mcat_minutes = r.minutes || null;
       /* Источник правды про язык — ЗАПИСЬ ПОЛЬЗОВАТЕЛЯ: он переезжает на
          другой компьютер вместе с человеком. localStorage — только кэш,
          чтобы экран ВХОДА не мигал чужим языком. Разошлись — верим серверу
@@ -1000,6 +1002,10 @@ function App() {
       React.createElement(Topbar, { store, theme, onToggleTheme: toggleTheme, onLogout: logout,
         onSearch: () => setSearch(true) }),
       React.createElement("main", { className: "main" },
+        /* Полоса «нечем платить — пополните» (pay.jsx): зажигается от отказа
+           сервера с заголовком X-Pay-Need на ЛЮБОМ экране. Файла нет —
+           оболочка рисуется как рисовалась. */
+        typeof PayNeedBar === "function" && React.createElement(PayNeedBar, { store, toast }),
         ["editor", "preflight", "qa", "backlog", "stats", "export"].indexOf(store.tab) >= 0
           && React.createElement(TrialExcerptBar, { store, project: store.activeProject, toast }),
         React.createElement(Boundary, { key: store.tab },

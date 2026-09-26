@@ -89,8 +89,11 @@ check(pub <= paths, "в списке публичных нет несущест�
 check(pub == {"/api/auth/login", "/api/auth/logout", "/api/health",
               "/api/auth/signup-info", "/api/auth/register", "/api/auth/verify",
               "/api/auth/resend", "/api/auth/forgot", "/api/auth/reset",
-              "/api/public/survey"},
-      "публичны только вход, выход, здоровье, двери регистрации и приём анкеты: " + str(sorted(pub)))
+              "/api/public/survey",
+              # Колбэки платёжных систем (инвариант 39): у поставщика нет
+              # входа, защита — подписью Click и ключом Payme в обработчике.
+              "/api/pay/click/prepare", "/api/pay/click/complete", "/api/pay/payme"},
+      "публичны только вход, выход, здоровье, двери регистрации, приём анкеты и колбэки оплаты: " + str(sorted(pub)))
 
 print("\n=== 4b. Служебная дверь бота закрыта без токена ===")
 # Бот — отдельный процесс и ходит сюда со служебным токеном. Пустой токен

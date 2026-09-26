@@ -69,6 +69,7 @@
           /* Поля отказа (409 дубля: code, project) — экрану, чтобы предложить
              «Открыть проект», а не разбирать текст сообщения. */
           err.data = data;
+          payNeed(xhr.getResponseHeader("X-Pay-Need"), data);
           reject(err);
           return;
         }
@@ -91,7 +92,16 @@
   }
 
   /* Токен истёк или процесс перезапущен → выкидываем на экран входа. */
-  function onUnauthorized() {
+  /* Отказ «нечем платить» (страницы, минуты видео, денежный лимит) сервер
+   помечает заголовком X-Pay-Need. Экран по нему предлагает пополнить —
+   полосой оплаты в оболочке (pay.jsx), а не разбором текста ошибки. */
+function payNeed(kind, data) {
+  if (!kind) return;
+  try { window.dispatchEvent(new CustomEvent("mct-pay-need", { detail: { kind, need: data && data.need, left: data && data.left } })); }
+  catch (e) { /* старый браузер без CustomEvent — полосы не будет, ошибка покажется как была */ }
+}
+
+function onUnauthorized() {
     setToken("");
     window.dispatchEvent(new Event("mct-auth-expired"));
   }
@@ -147,6 +157,7 @@
         err.status = r.status;
         err.detail = detail;
         err.data = data;
+        payNeed(r.headers.get("X-Pay-Need"), data);
         throw err;
       }
       return await r.json();
@@ -212,6 +223,7 @@
         const d = j.detail || j.error || "";
         const e = new Error(typeof d === "string" && d ? TRS(d) : "Upload failed: " + r.status);
         e.status = r.status;
+        payNeed(r.headers.get("X-Pay-Need"), j);
         throw e;
       }
       fails++;
@@ -342,6 +354,17 @@
     // Приглашения: своя ссылка — владельцу организации, числа программы —
     // суперпользователю. Право проверяет сервер, экран его только показывает.
     referral:      ()                       => call("GET",    "/referral"),
+    /* Оплата (инвариант 39): цены, заказы, статус. Суммы считает сервер. */
+    payState:      ()                       => call("GET",    "/pay"),
+    payQuote:      (body)                   => call("POST",   "/pay/quote", body),
+    payOrder:      (body)                   => call("POST",   "/pay/orders", body),
+    payOrderGet:   (oid)                    => call("GET",    `/pay/orders/${oid}`),
+    payOrderCancel:(oid)                    => call("POST",   `/pay/orders/${oid}/cancel`, {}),
+    adminPayments: (status)                 => call("GET",    `/admin/payments${status ? "?status=" + encodeURIComponent(status) : ""}`),
+    adminPayConfirm: (oid, note)            => call("POST",   `/admin/payments/${oid}/confirm`, { note: note || null }),
+    adminPayCancel:  (oid, note)            => call("POST",   `/admin/payments/${oid}/cancel`, { note: note || null }),
+    adminPayConfig:  (body)                 => call("POST",   "/admin/pay-config", body),
+    projectSpend:  (from, to)               => call("GET",    `/admin/project-spend?from=${encodeURIComponent(from || "")}&to=${encodeURIComponent(to || "")}`),
     referralCfg:   ()                       => call("GET",    "/admin/referral"),
     referralSave:  (body)                   => call("POST",   "/admin/referral", body),
     userDelete:    (uid)                    => call("DELETE", `/admin/users/${uid}`),

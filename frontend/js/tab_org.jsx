@@ -473,6 +473,10 @@ function TabOrg({ store, toast }) {
         + (info.usage.left != null ? TR(" · всего ") + info.usage.pages + TR(" из ") + info.caps.maxPages + TR(" · осталось ") + info.usage.left : "")
         + TR(" · проектов: ") + info.usage.projects
         + (info.caps && info.caps.maxProjects ? TR(" из ") + info.caps.maxProjects : "")),
+      /* Минуты видео (инвариант 39) — свой кошелёк, рядом со страницами. */
+      info.minutes && info.minutes.wallet && React.createElement("div", { style: { marginTop: 6 } },
+        TR("Минут видео: выдано ") + info.minutes.credit + TR(" · списано ") + info.minutes.used
+        + TR(" · осталось ") + info.minutes.left),
       info.pagesLog && info.pagesLog.length > 0 && React.createElement("div", { className: "dim", style: { marginTop: 4, fontSize: 12 } },
         info.pagesLog.slice().reverse().slice(0, 10).map((e, i) => React.createElement("div", { key: i },
           e.at + " · " + orgPagesKind(e.kind) + " " + (e.kind === "credit" && e.pages > 0 ? "+" : "") + e.pages
@@ -480,6 +484,8 @@ function TabOrg({ store, toast }) {
     React.createElement("div", { className: "col", style: { gap: 16 } },
       // Сразу под страницами: про приглашение человек думает там же,
       // где смотрит на остаток объёма.
+      /* Оплата — прямо под остатком: про пополнение думают, глядя на остаток. */
+      typeof PayCard === "function" && React.createElement(PayCard, { toast }),
       React.createElement(OrgReferral, { toast }),
       // Люди ДОМАШНЕЙ организации правятся, только когда она активна:
       // в чужой команде сервер отвечает 403 (людей команды ведёт «Профиль»).

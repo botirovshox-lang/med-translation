@@ -1,0 +1,99 @@
+{
+  "_about": "Нормы субтитров по языкам (инвариант 38, «Строка субтитров — фраза»). Правит человек, знающий язык, а не код. line — знаков (графем) в строке экрана, строк две; read_cps — скорость ЧТЕНИЯ (Netflix TTSG, взрослая аудитория); speak_cps — скорость РЕЧИ диктора (окно озвучки); cut — где можно резать текст: word — по пробелам, char — между знаками (иероглифы, кана), phrase — по пробелам, которые в этом письме ставятся между фразами, а не словами (тайский, кхмерский, бирманский; слово там разрезать нельзя); join — чем склеивать куски распознавания; sentence_end/clause — знаки конца предложения и паузы внутри него сверх общих; rtl — письмо справа налево. Порядок силы: default ← scripts[письменность] ← languages[код].",
+  "default": {
+    "line": 42,
+    "read_cps": 17,
+    "speak_cps": 15,
+    "cut": "word",
+    "join": " "
+  },
+  "scripts": {
+    "ARABIC": {
+      "sentence_end": "؟۔",
+      "clause": "،؛",
+      "rtl": true
+    },
+    "ARMENIAN": {
+      "sentence_end": "։",
+      "clause": "՝"
+    },
+    "BENGALI": {
+      "sentence_end": "।॥"
+    },
+    "CYRILLIC": {},
+    "DEVANAGARI": {
+      "sentence_end": "।॥"
+    },
+    "ETHIOPIC": {
+      "sentence_end": "።፧",
+      "clause": "፣፤፥፦"
+    },
+    "GEORGIAN": {},
+    "GREEK": {
+      "sentence_end": ";;"
+    },
+    "GUJARATI": {
+      "sentence_end": "।॥"
+    },
+    "GURMUKHI": {
+      "sentence_end": "।॥"
+    },
+    "HAN": {
+      "line": 16,
+      "read_cps": 9,
+      "speak_cps": 5,
+      "cut": "char",
+      "join": ""
+    },
+    "HANGUL": {
+      "line": 16,
+      "read_cps": 12,
+      "speak_cps": 7
+    },
+    "HEBREW": {
+      "rtl": true
+    },
+    "KHMER": {
+      "line": 35,
+      "read_cps": 15,
+      "speak_cps": 12,
+      "cut": "phrase",
+      "join": " ",
+      "sentence_end": "។៕"
+    },
+    "LATIN": {},
+    "MYANMAR": {
+      "line": 35,
+      "read_cps": 15,
+      "speak_cps": 12,
+      "cut": "phrase",
+      "join": " ",
+      "sentence_end": "။",
+      "clause": "၊"
+    },
+    "TAMIL": {},
+    "TELUGU": {},
+    "THAI": {
+      "line": 35,
+      "read_cps": 15,
+      "speak_cps": 12,
+      "cut": "phrase",
+      "join": " "
+    }
+  },
+  "languages": {
+    "EN": {
+      "read_cps": 20
+    },
+    "JA": {
+      "line": 13,
+      "read_cps": 4,
+      "speak_cps": 7
+    },
+    "ZH": {
+      "line": 16,
+      "read_cps": 9,
+      "speak_cps": 5
+    }
+  }
+}

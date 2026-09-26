@@ -59,13 +59,13 @@ def _untidy(raw: list) -> list:
     return out
 
 
-def regroup_srt(main, text: str) -> tuple:
+def regroup_srt(main, text: str, lang=None) -> tuple:
     """(новый .srt, единицы, сколько было кусков) — хранимые реплики → фразы."""
     media = main.media_mod
     raw = _untidy([{"start": c["start"], "end": c["end"], "text": c["text"]}
                    for c in main.importers.cue_list(text)
                    if c.get("start") is not None and (c.get("text") or "").strip()])
-    units = media.tidy_cues(media.sentence_cues(raw))
+    units = media.tidy_cues(media.sentence_cues(raw, lang=lang))
     return main.importers.render_cues(units, ".srt"), units, len(raw)
 
 
@@ -106,7 +106,7 @@ def regroup(main, pid: int, apply=False, translate=False) -> dict:
     if orig is None:
         raise Refuse("У проекта нет хранимых субтитров")
     text, _enc = main.textcount._decode(orig.read_bytes())
-    srt, units, n_raw = regroup_srt(main, text)
+    srt, units, n_raw = regroup_srt(main, text, project.get("src"))
     name = project.get("fileName") or "subs.srt"
     content = srt.encode("utf-8")
     parsed = main._resegment_parse(name, content)

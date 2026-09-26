@@ -190,6 +190,102 @@ ja = media.display_cues([{"start": 0.0, "end": 8.0, "text": "これは日本語�
 check(len(ja) >= 2 and all(len(p["text"]) <= media.SCREEN_MAX_CHARS_CJK + 1 for p in ja),
       "письмо без пробелов — своя мерка экрана")
 
+print("=== 2в. Нормы субтитров — у каждого языка системы ===")
+import unicodedata  # noqa: E402
+_cat = json.loads(Path("backend/languages.json").read_text(encoding="utf-8"))
+_langs = _cat.get("languages", _cat) if isinstance(_cat, dict) else _cat
+_norms = json.loads(Path("backend/subtitle_norms.json").read_text(encoding="utf-8"))
+check(all(x.get("script") for x in _langs), "у каждого языка каталога названа письменность")
+missing = sorted({x["script"] for x in _langs} - set(_norms["scripts"]))
+check(not missing, "у каждой письменности каталога — строка в subtitle_norms.json (пусть и пустая): %s" % missing)
+check(all(media.sub_norm(x["code"])["line"] >= 10 and media.sub_norm(x["code"])["cut"] in ("word", "char", "phrase")
+          for x in _langs), "норма находится у каждого из %d языков" % len(_langs))
+n_ja, n_zh, n_th = media.sub_norm("JA"), media.sub_norm("ZH"), media.sub_norm("TH")
+check((n_ja["line"], n_ja["read_cps"]) == (13, 4) and (n_zh["line"], n_zh["read_cps"]) == (16, 9)
+      and media.sub_norm("KO")["line"] == 16 and media.sub_norm("EN")["read_cps"] == 20
+      and media.sub_norm("RU")["line"] == 42, "нормы Netflix: JA 13/4, ZH 16/9, KO 16, EN 20 зн/с, прочие 42")
+check(n_th["cut"] == "phrase" and n_zh["cut"] == "char" and media.sub_norm("AR")["rtl"], "тайский — по фразам, иероглифы — по знакам, арабица — справа налево")
+# Русский и английский — прежнее поведение байт в байт.
+check(media.display_cues([{"start": 10.0, "end": 20.0, "text": uz, "i": 7}], lang="UZ") == parts
+      and media.sentence_cues(raw, lang="AR") == units, "с языком RU/UZ/AR — те же части и строки, что без него")
+# Иероглифы: куски склеиваются без пробелов; строка — 2×16 знаков, кинсоку.
+zh = media.sentence_cues([{"start": 0, "end": 1.2, "text": "我们今天"}, {"start": 1.22, "end": 3, "text": "讨论这个问题。"}], lang="ZH")
+check(len(zh) == 1 and zh[0]["text"] == "我们今天讨论这个问题。", "китайские куски склеены без пробела: %r" % zh[0]["text"])
+zlong = "我们今天讨论这个非常重要的问题，因为它关系到每一个人的健康和未来的生活质量。" * 2
+zp = media.display_cues([{"start": 0.0, "end": 12.0, "text": zlong, "i": 1}], lang="ZH")
+check(len(zp) >= 2 and "".join(p["text"] for p in zp) == zlong and all(media.glen(p["text"]) <= 32 for p in zp),
+      "китайская фраза — частями по 2×16 знаков, текст целиком")
+check(not any(p["text"][0] in "，。、！？」" for p in zp), "часть не начинается со знака препинания (кинсоку)")
+jp = media.display_cues([{"start": 0.0, "end": 10.0, "i": 2,
+                          "text": "これはとても大切な話です。みなさん、よく聞いてください。明日の会議について説明します。"}], lang="JA")
+check(len(jp) >= 2 and all(media.glen(p["text"]) <= 26 for p in jp) and not any(p["text"][0] in "。、っゃー" for p in jp),
+      "японская — по 2×13, кинсоку: %s" % [p["text"] for p in jp])
+zl = media.screen_lines("我们今天讨论这个非常重要的问题，因为它关系到每个人。", "ZH")
+check(len(zl) == 2 and all(media.glen(x) <= 16 * 1.6 for x in zl), "строки экрана у иероглифов переносятся по ширине языка: %s" % zl)
+# Тайский: пробел — граница фразы, слово не режется.
+th = "วันนี้เราจะพูดถึงเรื่องสำคัญมาก เกี่ยวกับสุขภาพของทุกคน และอนาคตของเด็กๆ ในชุมชนของเรา ขอให้ทุกคนตั้งใจฟัง"
+tp = media.display_cues([{"start": 0.0, "end": 10.0, "text": th, "i": 3}], lang="TH")
+check(len(tp) >= 2 and all(all(ph in th.split(" ") for ph in p["text"].split(" ")) for p in tp),
+      "тайская фраза режется только между фразами (по пробелам)")
+# Деванагари: графема не рвётся, «।» — конец предложения.
+hi = media.sentence_cues([{"start": 0, "end": 2, "text": "यह बहुत ज़रूरी है।"}, {"start": 2.02, "end": 3, "text": "आगे बढ़ते हैं"}], lang="HI")
+check(len(hi) == 2, "«।» закрывает строку хинди")
+hl = "हम आज स्वास्थ्य के बारे में बात करेंगे क्योंकि यह हर व्यक्ति के जीवन के लिए बहुत ज़रूरी है और भविष्य के लिए भी"
+hp = media.display_cues([{"start": 0.0, "end": 9.0, "text": hl, "i": 4}], lang="HI")
+check(len(hp) >= 2 and not any(unicodedata.category(p["text"][0]).startswith("M") for p in hp),
+      "хинди: часть не начинается с огласовки (графема цела)")
+check(media.glen("स्वास्थ्य") < len("स्वास्थ्य"), "длина хинди — в графемах, а не кодовых точках")
+# Свои знаки конца предложения.
+check(len(media.sentence_cues([{"start": 0, "end": 1, "text": "Այո, սա կարևոր է։"}, {"start": 1.02, "end": 2, "text": "Շարունակենք"}], lang="HY")) == 2
+      and len(media.sentence_cues([{"start": 0, "end": 1, "text": "Τι πιστεύετε;"}, {"start": 1.02, "end": 2, "text": "Ναι"}], lang="EL")) == 2
+      and len(media.sentence_cues([{"start": 0, "end": 1, "text": "First; then"}, {"start": 1.02, "end": 2, "text": "more"}], lang="EN")) == 1
+      and len(media.sentence_cues([{"start": 0, "end": 1, "text": "ይህ አስፈላጊ ነው።"}, {"start": 1.02, "end": 2, "text": "እንቀጥል"}], lang="AM")) == 2,
+      "армянское «։», греческий вопрос «;», эфиопское «።» — концы предложения; английская «;» — нет")
+ar = media.screen_lines("٣ أشياء مهمة", "AR")
+check(ar and all(x.startswith("‏") and x.endswith("‏") for x in ar), "строка арабицы обрамлена RLM (цифра в начале не перевернёт строку)")
+check(media.budget_chars(3.0, "RU") == 45 and media.budget_chars(3.0, "JA") == 12 and media.budget_chars(0, "RU") is None,
+      "бюджет длины: RU 15 зн/с (как было), JA 4 зн/с")
+# Подсказки распознаванию: у каждого языка, письмом языка, со знаком конца фразы.
+hints = json.loads(Path("backend/asr_hints.json").read_text(encoding="utf-8"))["hints"]
+check(sorted(set(x["code"] for x in _langs) - set(hints)) == [], "подсказка есть у каждого языка каталога")
+_SCRIPT_NAME = {"HAN": ("CJK", "HIRAGANA", "KATAKANA"), "HANGUL": ("HANGUL",), "ETHIOPIC": ("ETHIOPIC",)}
+bad = []
+for x in _langs:
+    h = hints[x["code"]]
+    names = _SCRIPT_NAME.get(x["script"], (x["script"],))
+    letters = [ch for ch in h if ch.isalpha()]
+    share = sum(1 for ch in letters if unicodedata.name(ch, "").startswith(names)) / max(1, len(letters))
+    ends = media._SENT_END_BASE + (media.sub_norm(x["code"]).get("sentence_end") or "")
+    if share < 0.9 or (x["script"] != "THAI" and not any(ch in ends for ch in h)):
+        bad.append((x["code"], round(share, 2)))
+check(not bad, "подсказка — письмом языка и со знаком конца фразы: %s" % bad)
+leak = media.build_cues([{"start": 0, "end": 2, "text": hints["RU"], "no_speech_prob": 0.1},
+                         {"start": 3, "end": 4, "text": "Давайте продолжим.", "no_speech_prob": 0.1},
+                         {"start": 5, "end": 6, "text": "Давайте продолжим.", "no_speech_prob": 0.5},
+                         {"start": 7, "end": 9, "text": "Да, это важно. Что вы об этом думаете?", "no_speech_prob": 0.05}],
+                        [], hint=hints["RU"])
+check([c["text"] for c in leak] == ["Давайте продолжим.", "Да, это важно. Что вы об этом думаете?"],
+      "подсказка целиком и её хвост на тишине отсеяны; уверенная речь, похожая на подсказку, — нет: %s"
+      % [c["text"] for c in leak])
+check("ʻ" in hints["UZ"] and "‘" not in hints["UZ"], "узбекская подсказка — с «ʻ» (U+02BB), как требуют правила языка")
+check(len(media.sentence_cues([{"start": 0, "end": 1, "text": "Ժամը 10:"}, {"start": 1.02, "end": 2, "text": "30-ին"}], lang="HY")) == 1,
+      "армянское «:» во времени фразу не закрывает (конец — только «։»)")
+# Графемы: не рвётся тайское «ำ», кхмерская подписная согласная, эмодзи.
+g_th = media._graphemes("สำคัญ")
+g_km = media._graphemes("ក្សត្រ")
+g_em = media._graphemes("👍🏽🇺🇿")
+check(not any(g[0] == "ำ" for g in g_th) and not any(g.endswith("្") for g in g_km) and len(g_em) == 2,
+      "графема: тайское «ำ», кхмерский коенг, тон кожи и флаг — не рвутся: %s %s %s" % (g_th, g_km, len(g_em)))
+mix = media._text_parts("我们今天讨论COVID-19疫苗的问题，这个问题非常重要", [0.5], media.sub_norm("ZH"))
+check(any("COVID-19" in p for p in mix), "латинское слово среди иероглифов пополам не режется: %s" % mix)
+old_way = media._text_parts("我们今天讨论 COVID-19 疫苗的问题，这个问题非常重要", [0.5])
+check(old_way[0].endswith("COVID-19"), "без языка — прежний порядок: есть пробелы — режем по словам")
+ru_line = "Сегодня мы поговорим о туберкулёзе, о том, как он передаётся"
+check(media.screen_lines(ru_line, "RU") == importers.wrap_cue(ru_line), "строки экрана RU — прежние, как у wrap_cue")
+os.environ["MEDIA_SCREEN_MAX_CHARS"] = "abc"
+check(media.sub_norm("RU")["line"] == 42, "мусор в MEDIA_SCREEN_MAX_CHARS не роняет выгрузку")
+del os.environ["MEDIA_SCREEN_MAX_CHARS"]
+
 print("=== 3. Загрузка кусками ===")
 c = TestClient(main.app)
 H = lambda t: {"Authorization": "Bearer " + t}
@@ -897,6 +993,9 @@ check(sorted(len(p) for p in packs) == [5, 15, 15]
 # Длительность строки — бюджет длины перевода (экран и озвучка в том же окне).
 check(all(isinstance(it.get("sec"), (int, float)) and it["sec"] > 0 for p in packs for it in p),
       "у каждой строки пачки — её длительность в секундах: %s" % packs[0][:2])
+check(all(it.get("max_chars") == media.budget_chars(it["sec"], "EN") for p in packs for it in p),
+      "и бюджет длины по норме языка перевода")
+check(all("max_chars" in s_ for s_ in CHAT["systems"] if "SUBTITLE MODE" in s_), "промпт объясняет бюджет")
 pj = c.get("/api/projects/%d" % sp, headers=H(B)).json()
 check(pj.get("cueTimes", {}).get(str(segs[1]["id"])) == [3.0, 5.5], "тайминг строки — в карте проекта: %s"
       % (pj.get("cueTimes") or {}).get(str(segs[1]["id"])))

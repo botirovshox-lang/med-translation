@@ -3173,13 +3173,14 @@ def _cue_project(project: Optional[dict]) -> bool:
 CUE_BATCH_RULES = """
 SUBTITLE MODE: the user message is a JSON array of consecutive subtitle lines
 from one video, each {"n": number, "text": source line} and, when known,
-"sec": how many seconds the line is spoken. A line is usually a whole spoken
+"sec" (how many seconds the line is spoken) and "max_chars" (the length
+budget for it in the target language). A line is usually a whole spoken
 phrase: translate EACH line as a complete, natural sentence of the target language,
 in order, using the neighbouring lines as context. Never move words from one
 line to another and never merge or split lines: every line is shown and voiced at its
 own time. Keep each translation about as short as its source line — it is read on
-screen and spoken in the same time slot; when "sec" is given, aim for at most about
-15 characters per second of it, dropping filler words before meaning.
+screen and spoken in the same time slot; when "max_chars" is given, keep the
+translation within about that many characters, dropping filler words before meaning.
 Return ONLY a JSON object {"lines": [{"n": number, "text": translation}, ...]}
 with one entry for EVERY input line — no comments, no markdown.
 """
@@ -3189,6 +3190,9 @@ def _openai_translate_cues(texts: list, src: str, tgt: str, gloss_hits: list = N
                            model: str = None, domain: Optional[str] = None,
                            prev_src: str = "", next_src: str = "", style: str = "",
                            secs: Optional[list] = None) -> dict:
+    # `max_chars` — бюджет длины строки по норме ЯЗЫКА ПЕРЕВОДА
+    # (`media.budget_chars`: меньшая из скоростей чтения и речи; у японского
+    # это 4 знака в секунду, у русского и английского — прежние 15).
     """Пачка реплик одним вызовом: {номер в пачке (с 0): перевод}. Промпт —
     тот же `_translate_system` (правила, глоссарий, стайл, соседи до и после
     пачки) плюс формат пачки. Реплику, которой нет в ответе, вызывающий
@@ -3204,7 +3208,8 @@ def _openai_translate_cues(texts: list, src: str, tgt: str, gloss_hits: list = N
     # Длительность строки (если известна) — бюджет длины: перевод читают
     # на экране и озвучивают в то же окно.
     user = json.dumps([dict({"n": i + 1, "text": t},
-                            **({"sec": secs[i]} if secs and i < len(secs) and secs[i] else {}))
+                            **({"sec": secs[i], "max_chars": media_mod.budget_chars(secs[i], tgt)}
+                               if secs and i < len(secs) and secs[i] else {}))
                        for i, t in enumerate(texts)], ensure_ascii=False)
     resp = client.chat.completions.create(
         model=mdl["id"],
@@ -28001,8 +28006,7 @@ def _export_original(project: dict, out: Path, tmp: Path) -> dict:
         except RuntimeError as e:
             raise HTTPException(400, str(e))
         n_cues = sum(1 for c in importers.cue_list(sub) if c.get("start") is not None)
-        tmp.write_bytes(importers.render_cues(_media_screen(project, sub, tr, translated_only=False),
-                                              ext).encode("utf-8"))
+        tmp.write_bytes(importers.render_cues(_media_srt(project, sub, tr), ext).encode("utf-8"))
         return {"original": kind, "written": len(tr), "untranslated": max(0, n_cues - len(tr))}
     # Текстовые форматы: перевод по карте «абзац → сегмент» в оригинал.
     orig = _orig_existing(project["id"])
@@ -28238,10 +28242,7 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
         if project.get("media"):
             # Строка-фраза видео — экранными частями, оригинал и перевод
             # делятся на одно и то же число частей.
-            out_cues = [{"start": c["start"], "end": c["end"],
-                         "screen": importers.wrap_cue(c["src"]) + (importers.wrap_cue(c["text"])
-                                                                   if c["i"] in tr else [])}
-                        for c in _media_screen(project, sub, tr, translated_only=False, with_src=True)]
+            out_cues = _media_srt(project, sub, tr, bi=True)
         else:
             out_cues = [{"start": c["start"], "end": c["end"],
                          "screen": importers.wrap_cue(c["text"]) + (importers.wrap_cue(tr[i]) if i in tr else [])}
@@ -31828,19 +31829,24 @@ def _asr_chunk(item: tuple) -> dict:
         return {"ok": False, "error": _media_err_text(e), "offset": offset}
 
 
-# Подсказка письма для распознавания: модель на узбекском отвечает латиницей,
-# а оригинал проекта — кириллица (UZ-CYRL). Короткая фраза в нужном письме
-# склоняет выбор; других средств у этого поставщика нет.
-_ASR_SCRIPT_HINT = {"UZ-CYRL": "Ассалому алайкум. Бугун биз бу ҳақда гаплашамиз.",
-                    "UZ": "Assalomu alaykum. Bugun biz bu haqda gaplashamiz.",
-                    # Подсказка с ЗНАКАМИ ПРЕПИНАНИЯ: без неё распознавание
-                    # арабской речи отдаёт куски без точек и вопросов, и границу
-                    # предложения (`media.sentence_cues`) приходится угадывать
-                    # по паузам. Пример, а не содержание: слов из него в ответе нет.
-                    "AR": "السلام عليكم. كيف حالك؟ الحمد لله، بخير. نبدأ الآن.",
-                    "RU": "Здравствуйте. Как дела? Хорошо, спасибо. Начнём.",
-                    "EN": "Hello. How are you? Fine, thank you. Let's begin.",
-                    "TR": "Merhaba. Nasılsınız? İyiyim, teşekkürler. Başlayalım."}
+# Подсказка распознаванию (параметр prompt у whisper) — по языку оригинала,
+# из backend/asr_hints.json (правит человек, знающий язык). Она задаёт
+# ПИСЬМО ответа (узбекская кириллица против латиницы) и учит ставить знаки
+# препинания: без них границу фразы (`media.sentence_cues`) приходится
+# угадывать по паузам. Протечку подсказки в текст отсеивает `build_cues`.
+_ASR_HINTS_PATH = Path(__file__).resolve().parent / "asr_hints.json"
+
+
+def _asr_hints() -> dict:
+    try:
+        return {str(k).upper(): v for k, v in
+                (json.loads(_ASR_HINTS_PATH.read_text(encoding="utf-8")).get("hints") or {}).items()
+                if isinstance(v, str) and v.strip()}
+    except (OSError, ValueError):
+        return {}
+
+
+_ASR_SCRIPT_HINT = _asr_hints()
 
 
 def _job_asr(job: dict) -> None:
@@ -31916,10 +31922,11 @@ def _job_asr(job: dict) -> None:
     for p, off, *_ in items:
         data = json.loads(Path(str(p) + ".json").read_text(encoding="utf-8"))
         cues += media_mod.build_cues(data.get("segments") or [], data.get("words") or [], offset=off,
-                                     max_sec=media_mod.UNIT_MAX_SEC, max_chars=media_mod.UNIT_MAX_CHARS)
+                                     max_sec=media_mod.UNIT_MAX_SEC, max_chars=media_mod.UNIT_MAX_CHARS,
+                                     hint=hint or "")
     # Строка проекта — ПРЕДЛОЖЕНИЕ, а не кусок распознавания (инвариант 38,
     # «Строка субтитров — фраза»): на экранные куски её делит выгрузка.
-    cues = media_mod.tidy_cues(media_mod.sentence_cues(cues))
+    cues = media_mod.tidy_cues(media_mod.sentence_cues(cues, lang=project.get("src")))
     _media_apply_transcript(project, cues)
     job["counters"]["cues"] = len(cues)
     job["phase"] = None
@@ -31996,7 +32003,10 @@ def _media_units(project: dict, text: str, tr: dict, translated_only: bool = Tru
             continue
         if translated_only and i not in tr:
             continue
-        u = {"start": c["start"], "end": c["end"], "text": tr.get(i, c["text"]), "i": i}
+        # Язык текста реплики: перевод — на языке перевода, непереведённая
+        # идёт оригиналом — его нормами и делится (`media.sub_norm`).
+        u = {"start": c["start"], "end": c["end"], "text": tr.get(i, c["text"]), "i": i,
+             "lang": project.get("tgt") if i in tr else project.get("src")}
         sp = spans.get(_cue_key(c["start"]))
         if sp and sp.get("e") == _cue_key(c["end"]):
             u["spans"] = sp.get("s")
@@ -32012,7 +32022,25 @@ def _media_screen(project: dict, text: str, tr: dict, translated_only: bool = Tr
     на экран она идёт частями по правилам показа (`media.display_cues`).
     Одна точка на все выходы — дорожку, кадр, выгрузку .srt/.vtt: разойдись
     они, скачанный файл показывал бы не то, что впечатано в видео."""
-    return media_mod.display_cues(_media_units(project, text, tr, translated_only, with_src))
+    return media_mod.display_cues(_media_units(project, text, tr, translated_only, with_src),
+                                  lang=project.get("tgt"), src_lang=project.get("src"))
+
+
+def _media_srt(project: dict, text: str, tr: dict, shift: float = 0.0, bi: bool = False) -> list:
+    """Экранные части для ФАЙЛА субтитров (.srt/.vtt, дорожка в видео):
+    со строками экрана по норме языка (`media.screen_lines`: ширина строки,
+    перенос иероглифов с кинсоку, метка RLM у письма справа налево).
+    Двуязычные — оригинал своим языком, под ним перевод своим."""
+    out = []
+    for c in _media_screen(project, text, tr, translated_only=False, with_src=bi):
+        done = c["i"] in tr
+        if bi:
+            screen = (media_mod.screen_lines(c.get("src") or "", project.get("src"))
+                      + (media_mod.screen_lines(c["text"], project.get("tgt")) if done else []))
+        else:
+            screen = media_mod.screen_lines(c["text"], c.get("lang"))
+        out.append({"start": c["start"] + shift, "end": c["end"] + shift, "text": c["text"], "screen": screen})
+    return out
 
 
 def _media_translations(project: dict) -> tuple:
@@ -32123,8 +32151,7 @@ def _job_mediarender(job: dict) -> None:
             raise RuntimeError("В файле нет видео — скачайте субтитры файлом .srt")
         srt_path = work / "subs.srt"
         cues = importers.cue_list(text)
-        out_cues = [{"start": c["start"] + shift, "end": c["end"] + shift, "text": c["text"]}
-                    for c in _media_screen(project, text, tr, translated_only=False)]
+        out_cues = _media_srt(project, text, tr, shift=shift)
         srt_path.write_bytes(importers.render_cues(out_cues, ".srt").encode("utf-8"))
         job["phase"] = "mux"
         job["total"], job["done"] = 1, 0

@@ -398,14 +398,35 @@ def _time_at(frac: float, start: float, end: float, words: list) -> float:
     return start + (end - start) * frac
 
 
+def _hint_key(text: str) -> str:
+    """Текст без регистра, пробелов и знаков препинания — для сверки
+    с подсказкой. Огласовки (категория M) остаются: без них тайский
+    и хинди сравнивались бы по согласным."""
+    import unicodedata as _ud
+    return "".join(ch for ch in (text or "").lower() if _ud.category(ch)[0] in "LNM")
+
+
 def build_cues(segments: list, words: list, offset: float = 0.0,
-               max_sec: float = CUE_MAX_SEC, max_chars: int = CUE_MAX_CHARS) -> list:
+               max_sec: float = CUE_MAX_SEC, max_chars: int = CUE_MAX_CHARS,
+               hint: str = "") -> list:
     """Фразы распознавания → реплики субтитров [{start, end, text}]. Фраза
     длиннее `max_sec`/`max_chars` делится по препинанию, а время кусков
-    берётся из отметок СЛОВ этой фразы. Смещение куска звука прибавляется."""
+    берётся из отметок СЛОВ этой фразы. Смещение куска звука прибавляется.
+    Кусок, который целиком повторяет подсказку распознаванию (`hint`) или
+    её бОльшую часть, — это она протекла в ответ на тишине, а не речь: отсеивается."""
+    hk = _hint_key(hint)
     cues = []
     for seg in segments or []:
         if _is_noise_segment(seg):
+            continue
+        sk = _hint_key(seg.get("text") or "")
+        # Протечка — это подсказка целиком; кусок её (whisper на тишине любит
+        # повторять ХВОСТ) — только когда распознавание само сомневается, что
+        # это речь. Уверенно распознанная реплика, совпавшая с частью шаблонной
+        # подсказки («Давайте продолжим»), — настоящая речь.
+        if hk and sk and sk in hk and (sk == hk or (
+                len(sk) >= 0.25 * len(hk)
+                and ((seg.get("no_speech_prob") or 0) >= 0.2 or (seg.get("avg_logprob") or 0) < -0.7))):
             continue
         s, e = float(seg.get("start") or 0), float(seg.get("end") or 0)
         text = " ".join((seg.get("text") or "").split())
@@ -442,54 +463,222 @@ def tidy_cues(cues: list, min_sec: float = CUE_MIN_SEC) -> list:
     return cues
 
 
-_SENT_END_RE = re.compile(r"[.!?…。！？؟۔]['\"»”’)\]]*\s*$")
+# ─── Нормы субтитров по языкам (backend/subtitle_norms.json) ─────────
+#
+# Языков в системе семь десятков, и одна мерка на всех врёт: японская строка
+# — 13 знаков, китайская — 16, тайский режется только между фразами, у хинди
+# конец предложения — «।», у армянского — «։», арабица пишется справа
+# налево. Нормы лежат ДАННЫМИ (правит человек, знающий язык), язык находит
+# свою письменность в каталоге languages.json. Без языка (старый вызов,
+# неизвестный код) работает прежняя эвристика — поведение не меняется.
+
+_NORMS_PATH = Path(__file__).resolve().parent / "subtitle_norms.json"
+_LANGS_PATH = Path(__file__).resolve().parent / "languages.json"
+_NORMS_CACHE: dict = {}
+
+# Общие для всех языков знаки конца предложения и паузы внутри него; своё
+# у письменности — в нормах (`sentence_end`, `clause`).
+_SENT_END_BASE = ".!?…。！？؟۔"
+_CLAUSE_BASE = ".!?…;:,，、。！？،؛；："
+# Закрывающие кавычки и скобки после конца предложения («…」», «…»»).
+_CLOSERS = "'\"»”’)\\]」』）》〉】"
+# Кинсоку: с этих знаков японская и китайская строка НЕ начинается.
+_NO_START = set("。、，．・：；？！）」』】〕〉》ーぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ々ゝゞ,.!?;:)")
+
+
+def _norm_tables() -> tuple:
+    try:
+        mt = (_NORMS_PATH.stat().st_mtime, _LANGS_PATH.stat().st_mtime)
+    except OSError:
+        return {}, {}
+    hit = _NORMS_CACHE.get("t")
+    if hit and hit[0] == mt:
+        return hit[1], hit[2]
+    try:
+        norms = json.loads(_NORMS_PATH.read_text(encoding="utf-8"))
+        cat = json.loads(_LANGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}, {}
+    langs = cat.get("languages", cat) if isinstance(cat, dict) else cat
+    scripts = {str(x.get("code") or "").upper(): x.get("script") for x in langs or [] if isinstance(x, dict)}
+    _NORMS_CACHE.clear()
+    _NORMS_CACHE["t"] = (mt, norms, scripts)
+    return norms, scripts
+
+
+def sub_norm(lang) -> Optional[dict]:
+    """Норма субтитров языка: line (графем в строке, строк две), read_cps,
+    speak_cps, cut (word | char | phrase), join, sentence_end, clause, rtl.
+    Порядок силы: default ← письменность ← язык. Нет языка — None (прежняя
+    эвристика). Неизвестный код — умолчание: 42 знака и пробелы."""
+    code = str(lang or "").upper().strip()
+    if not code:
+        return None
+    norms, scripts = _norm_tables()
+    out = {"line": 42, "read_cps": 17, "speak_cps": 15, "cut": "word", "join": " ",
+           "sentence_end": "", "clause": "", "rtl": False}
+    out.update(norms.get("default") or {})
+    # Переменная окружения правит только УМОЛЧАНИЕ (у иероглифов и тайского
+    # своя строка); мусор в ней не роняет выгрузку — берётся норма из файла.
+    try:
+        env_line = int(os.environ.get("MEDIA_SCREEN_MAX_CHARS") or 0)
+    except ValueError:
+        env_line = 0
+    if env_line:
+        out["line"] = max(8, env_line // 2)
+    script = scripts.get(code) or scripts.get(code.split("-")[0])
+    out.update((norms.get("scripts") or {}).get(script or "", {}))
+    out.update((norms.get("languages") or {}).get(code, {}))
+    out["code"], out["script"] = code, script
+    return out
+
+
+def glen(text: str) -> int:
+    """Длина в ГРАФЕМАХ: комбинирующие знаки (огласовки деванагари, тайские
+    тоны, арабские харакаты) и нулевой ширины ZWJ/ZWNJ отдельного места на
+    экране не занимают — считать их знаками значило бы завысить хинди
+    и тайский на 20–40%. У латиницы и кириллицы (NFC) — то же, что len()."""
+    import unicodedata as _ud
+    return sum(1 for ch in text or "" if not _ud.category(ch).startswith("M") and ch not in "‌‍")
+
+
+# Знаки, которые пишутся ПОСЛЕ согласной, но категорией Lo (тайские «ะ า ำ ๅ»,
+# лаосские «ະ າ ຳ»): отдельной графемой их не оторвать.
+_TRAIL_LO = set("\u0e30\u0e32\u0e33\u0e45\u0eb0\u0eb2\u0eb3")
+# Гласные, которые пишутся ПЕРЕД согласной (тайские «เ แ โ ใ ไ», лаосские):
+# после них разрезать нельзя — гласная осталась бы без своей согласной.
+_LEAD_LO = set("\u0e40\u0e41\u0e42\u0e43\u0e44\u0ec0\u0ec1\u0ec2\u0ec3\u0ec4")
+
+
+def _joins_next(prev: str) -> bool:
+    """После этой графемы следующий знак приклеивается к ней: вирама
+    (деванагари «्», кхмерский коенг «្», бирманский «္» — за ней идёт
+    ПОДПИСНАЯ согласная), ZWJ/ZWNJ, ведущая гласная, одинокий знак флага."""
+    import unicodedata as _ud
+    last = prev[-1]
+    if last in "\u200c\u200d" or last in _LEAD_LO:
+        return True
+    if _ud.category(last) == "Mn" and ("VIRAMA" in _ud.name(last, "") or "COENG" in _ud.name(last, "")):
+        return True
+    return 0x1F1E6 <= ord(last) <= 0x1F1FF and len(prev) == 1
+
+
+def _graphemes(text: str) -> list:
+    """Текст → графемы: основа плюс идущие за ней комбинирующие знаки.
+    Разрез только МЕЖДУ графемами — огласовка не отрывается от согласной,
+    подписная согласная — от вирамы, тайское «ำ» не начинает строку,
+    тон кожи эмодзи и флаг остаются целыми."""
+    import unicodedata as _ud
+    out = []
+    for ch in text or "":
+        glue = bool(out) and (_ud.category(ch).startswith("M") or ch in "\u200c\u200d"
+                              or ch in _TRAIL_LO or 0x1F3FB <= ord(ch) <= 0x1F3FF
+                              or (0x1F1E6 <= ord(ch) <= 0x1F1FF and len(out[-1]) == 1
+                                  and 0x1F1E6 <= ord(out[-1]) <= 0x1F1FF)
+                              or _joins_next(out[-1]))
+        if glue:
+            out[-1] += ch
+        else:
+            out.append(ch)
+    return out
+
+
+def _char_tokens(text: str) -> list:
+    """Графемы, но слово НЕиероглифического письма внутри («COVID-19» среди
+    иероглифов) — одним куском: латинское слово пополам не режется."""
+    import unicodedata as _ud
+    out = []
+    for g in _graphemes(text):
+        ch = g[0]
+        word = ch.isalnum() and not _ud.name(ch, "").startswith(("CJK", "HIRAGANA", "KATAKANA", "HANGUL"))
+        if word and out and out[-1][-1:].isalnum() and not _ud.name(out[-1][-1], "").startswith(
+                ("CJK", "HIRAGANA", "KATAKANA", "HANGUL")):
+            out[-1] += g
+        else:
+            out.append(g)
+    return out
+
+
+def _mode(text: str, n: Optional[dict]) -> str:
+    if n:
+        return n.get("cut") or "word"
+    return "char" if _spaceless(text) else "word"
+
+
+_RE_CACHE: dict = {}
+
+
+def _sent_re(n: Optional[dict]):
+    key = ("s", (n or {}).get("sentence_end") or "")
+    if key not in _RE_CACHE:
+        chars = _SENT_END_BASE + key[1]
+        _RE_CACHE[key] = re.compile("[" + re.escape(chars) + "][" + re.escape(_CLOSERS) + r"]*\s*$")
+    return _RE_CACHE[key]
+
+
+def _clause_re(n: Optional[dict]):
+    if not n:
+        return _PUNCT_END
+    key = ("c", (n.get("clause") or "") + (n.get("sentence_end") or ""))
+    if key not in _RE_CACHE:
+        chars = _CLAUSE_BASE + key[1]
+        _RE_CACHE[key] = re.compile("[" + re.escape(chars) + "][" + re.escape(_CLOSERS) + r"]*$")
+    return _RE_CACHE[key]
 
 
 def _spaceless(text: str) -> bool:
-    """Письмо без пробелов (иероглифы, кана, тайский): мерка длины своя."""
+    """Письмо без пробелов (иероглифы, кана, тайский): мерка длины своя.
+    Эвристика — только когда язык не назван."""
     t = (text or "").strip()
     return len(t) > 12 and len(t.split()) <= max(1, len(t) // 12)
 
 
-def _unit_done(u: dict) -> bool:
+def _unit_done(u: dict, n: Optional[dict] = None) -> bool:
     """В единице уже есть законченная мысль (а не одно-два слова)."""
     t = u.get("text") or ""
-    if _spaceless(t):
-        return len(t) >= 10 or u["end"] - u["start"] >= UNIT_DONE_SEC
-    return (len(t.split()) >= UNIT_DONE_WORDS or len(t) >= UNIT_DONE_CHARS
+    if _mode(t, n) != "word":
+        return glen(t) >= 10 or u["end"] - u["start"] >= UNIT_DONE_SEC
+    return (len(t.split()) >= UNIT_DONE_WORDS or glen(t) >= UNIT_DONE_CHARS
             or u["end"] - u["start"] >= UNIT_DONE_SEC)
 
 
-def _unit_of(pieces: list) -> dict:
+def _unit_of(pieces: list, join: str = " ") -> dict:
     return {"start": pieces[0]["start"], "end": max(p["end"] for p in pieces),
-            "text": " ".join(p["text"] for p in pieces),
+            "text": join.join(p["text"] for p in pieces),
             "spans": [[p["start"], p["end"]] for p in pieces]}
 
 
-def sentence_cues(cues: list, max_sec: float = None, max_chars: int = None) -> list:
+def sentence_cues(cues: list, max_sec: float = None, max_chars: int = None, lang=None) -> list:
     """Реплики распознавания (по времени) → единицы-предложения
-    [{start, end, text, spans}]. Граница — конец предложения; пауза
-    ≥ UNIT_PAUSE_SOFT у законченной единицы; пауза ≥ UNIT_PAUSE_HARD всегда.
-    Упёрлась в потолок времени или длины — режется на САМОЙ ДЛИННОЙ паузе
-    внутри (там, скорее всего, и кончилась мысль), а не перед очередным
-    куском. `spans` — время исходных кусков: по ним экранные части потом
-    не повиснут в тишине (`display_cues`). Слова не теряются и не
-    переставляются: текст единиц подряд — это текст кусков подряд."""
+    [{start, end, text, spans}]. Граница — конец предложения (свои знаки
+    у письменности: «।», «։», «።», «။»…); пауза ≥ UNIT_PAUSE_SOFT у
+    законченной единицы; пауза ≥ UNIT_PAUSE_HARD всегда. Упёрлась в потолок
+    времени или длины — режется на САМОЙ ДЛИННОЙ паузе внутри (там, скорее
+    всего, и кончилась мысль). Потолок длины — в графемах и масштабируется
+    по ширине строки языка (китайский — 16 из 42). Куски склеиваются по
+    норме языка: иероглифы — без пробела. `spans` — время исходных кусков:
+    по ним экранные части не повиснут в тишине (`display_cues`). Слова
+    не теряются и не переставляются. У тайского точек почти нет — граница
+    там только паузы и потолки."""
+    n = sub_norm(lang)
+    join = n.get("join", " ") if n else " "
     max_sec = UNIT_MAX_SEC if max_sec is None else max_sec
-    max_chars = UNIT_MAX_CHARS if max_chars is None else max_chars
+    if max_chars is None:
+        max_chars = int(round(UNIT_MAX_CHARS * (n["line"] / 42.0))) if n else UNIT_MAX_CHARS
+    end_re = _sent_re(n)
     out, cur = [], []
 
     def over(pcs):
         return (len(pcs) > 1 and (pcs[-1]["end"] - pcs[0]["start"] > max_sec
-                                  or sum(len(p["text"]) + 1 for p in pcs) - 1 > max_chars))
+                                  or sum(glen(p["text"]) for p in pcs) + len(join) * (len(pcs) - 1) > max_chars))
 
     for c in sorted((c for c in cues or [] if (c.get("text") or "").strip()), key=lambda c: c["start"]):
         piece = {"start": float(c["start"]), "end": float(c["end"]), "text": " ".join(c["text"].split())}
         if cur:
-            u = _unit_of(cur)
+            u = _unit_of(cur, join)
             gap = piece["start"] - u["end"]
-            if (_SENT_END_RE.search(u["text"]) or gap >= UNIT_PAUSE_HARD
-                    or (gap >= UNIT_PAUSE_SOFT and _unit_done(u))):
+            if (end_re.search(u["text"]) or gap >= UNIT_PAUSE_HARD
+                    or (gap >= UNIT_PAUSE_SOFT and _unit_done(u, n))):
                 out.append(u)
                 cur = []
         cur.append(piece)
@@ -497,21 +686,27 @@ def sentence_cues(cues: list, max_sec: float = None, max_chars: int = None) -> l
             # Режем на самой длинной паузе; при равных — ближе к концу,
             # чтобы голова единицы была как можно полнее.
             k = max(range(1, len(cur)), key=lambda j: (cur[j]["start"] - cur[j - 1]["end"], j))
-            out.append(_unit_of(cur[:k]))
+            out.append(_unit_of(cur[:k], join))
             cur = cur[k:]
     if cur:
-        out.append(_unit_of(cur))
+        out.append(_unit_of(cur, join))
     return out
 
 
-def _cut_words(words: list, fracs: list) -> list:
-    """Слова → части с границами у долей `fracs` (по длине текста), в пределах
-    пятой части длины части — после знака препинания. Пустых частей нет."""
-    total = sum(len(w_) + 1 for w_ in words) or 1
+def _cut_tokens(tokens: list, fracs: list, sep: str = " ", punct=None, no_start=None) -> list:
+    """Куски (слова или графемы) → части с границами у долей `fracs` (по длине
+    в графемах), в пределах пятой части длины части — после знака
+    препинания. Граница не ставится перед знаком из `no_start` (кинсоку).
+    Пустых частей нет."""
+    punct = punct or _PUNCT_END
+    total = sum(glen(t) + len(sep) for t in tokens) or 1
     bounds, acc = [], 0
-    for i, w_ in enumerate(words[:-1]):
-        acc += len(w_) + 1
-        bounds.append((i + 1, acc, bool(_PUNCT_END.search(w_))))
+    for i, t in enumerate(tokens[:-1]):
+        acc += glen(t) + len(sep)
+        nxt = tokens[i + 1]
+        if no_start and nxt and (nxt[0] in no_start or nxt.strip() == ""):
+            continue
+        bounds.append((i + 1, acc, bool(punct.search(t))))
     cuts, pos, prev = [], 0, 0.0
     for f in fracs:
         target = total * f
@@ -525,24 +720,41 @@ def _cut_words(words: list, fracs: list) -> list:
         best = min(pool, key=lambda b: abs(b[1] - target))
         cuts.append(best[0])
         pos = best[0]
-    edges = [0] + cuts + [len(words)]
-    return [" ".join(words[edges[i]:edges[i + 1]]) for i in range(len(edges) - 1) if edges[i] < edges[i + 1]]
+    edges = [0] + cuts + [len(tokens)]
+    parts = [sep.join(tokens[edges[i]:edges[i + 1]]).strip() for i in range(len(edges) - 1)
+             if edges[i] < edges[i + 1]]
+    return [p for p in parts if p]
 
 
-def _text_parts(text: str, fracs: list) -> list:
-    """Текст → части у долей `fracs`; письмо без пробелов — по знакам.
-    Одно слово обычного письма не режется (буквы слова на двух экранах —
-    не субтитры): частей тогда меньше, и вызывающий это видит."""
+def _cut_words(words: list, fracs: list) -> list:
+    """Слова → части (см. `_cut_tokens`)."""
+    return _cut_tokens(words, fracs, " ")
+
+
+def _text_parts(text: str, fracs: list, n: Optional[dict] = None) -> list:
+    """Текст → части у долей `fracs` по правилу письма: word — по пробелам
+    (одно слово не режется: буквы слова на двух экранах — не субтитры);
+    char — между графемами, с кинсоку и предпочтением знака препинания;
+    phrase — по пробелам (в тайском это граница фразы), а фраза без пробелов
+    — между графемами, крайним ходом. Частей бывает меньше — вызывающий
+    это видит."""
     t = " ".join((text or "").split())
     if not fracs or not t:
         return [t] if t else []
-    if " " in t:
-        return _cut_words(t.split(" "), fracs)
-    if not _spaceless(t):
+    punct = _clause_re(n)
+    if n is None:
+        # Язык не назван — прежний порядок: есть пробелы — по словам.
+        if " " in t:
+            return _cut_tokens(t.split(" "), fracs, " ", punct)
+        if not _spaceless(t):
+            return [t]
+        return _cut_tokens(_char_tokens(t), fracs, "", punct, _NO_START)
+    mode = _mode(t, n)
+    if mode == "word" or (mode == "phrase" and " " in t):
+        if " " in t:
+            return _cut_tokens(t.split(" "), fracs, " ", punct)
         return [t]
-    n = len(t)
-    edges = sorted({0, n} | {min(n, max(0, int(round(n * f)))) for f in fracs})
-    return [t[edges[i]:edges[i + 1]] for i in range(len(edges) - 1) if edges[i] < edges[i + 1]]
+    return _cut_tokens(_char_tokens(t), fracs, "", punct, _NO_START)
 
 
 def _speech_runs(start: float, end: float, spans) -> list:
@@ -562,34 +774,41 @@ def _speech_runs(start: float, end: float, spans) -> list:
     return runs
 
 
-def _screen_k(text: str, dur: float, min_sec: float) -> int:
-    cap = SCREEN_MAX_CHARS_CJK if _spaceless(text) else SCREEN_MAX_CHARS
-    k = max(1, -(-len(text) // cap), -(-int(dur * 1000) // int(SCREEN_MAX_SEC * 1000)))
+def _screen_cap(text: str, n: Optional[dict]) -> int:
+    """Графем на экранную часть: две строки языка."""
+    if n:
+        return 2 * int(n["line"])
+    return SCREEN_MAX_CHARS_CJK if _spaceless(text) else SCREEN_MAX_CHARS
+
+
+def _screen_k(text: str, dur: float, min_sec: float, n: Optional[dict] = None) -> int:
+    k = max(1, -(-glen(text) // _screen_cap(text, n)), -(-int(dur * 1000) // int(SCREEN_MAX_SEC * 1000)))
     return max(1, min(k, int(dur // min_sec))) if min_sec > 0 else k
 
 
-def _split_window(c: dict, a: float, b: float, text: str, src, min_sec: float) -> list:
+def _split_window(c: dict, a: float, b: float, text: str, src, min_sec: float,
+                  n: Optional[dict] = None, ns: Optional[dict] = None) -> list:
     """Одно окно речи → экранные части поровну по длине текста."""
     dur = max(0.0, b - a)
-    k = _screen_k(text, dur, min_sec)
+    k = _screen_k(text, dur, min_sec, n)
     if src is not None:
-        k = max(k, min(_screen_k(src, dur, min_sec), max(1, int(dur // min_sec))))
+        k = max(k, min(_screen_k(src, dur, min_sec, ns), max(1, int(dur // min_sec))))
     while True:
-        parts = _text_parts(text, [j / k for j in range(1, k)]) if k > 1 else [text]
-        total = float(sum(len(p) for p in parts)) or 1.0
+        parts = _text_parts(text, [j / k for j in range(1, k)], n) if k > 1 else [text]
+        total = float(sum(glen(p) for p in parts)) or 1.0
         # Граница у знака препинания сдвигает долю на пятую часть — часть
         # короче `min_sec` глаз не прочтёт: частей тогда на одну меньше.
-        if len(parts) < 2 or all(dur * len(p) / total >= min_sec - 1e-6 for p in parts):
+        if len(parts) < 2 or all(dur * glen(p) / total >= min_sec - 1e-6 for p in parts):
             break
         k = len(parts) - 1
     if src is not None:
-        srcs = _text_parts(src, [j / len(parts) for j in range(1, len(parts))]) if len(parts) > 1 else [src]
+        srcs = _text_parts(src, [j / len(parts) for j in range(1, len(parts))], ns) if len(parts) > 1 else [src]
         if len(srcs) != len(parts):
             srcs = [src] + [""] * (len(parts) - 1)
-    total = float(sum(len(p) for p in parts)) or 1.0
+    total = float(sum(glen(p) for p in parts)) or 1.0
     out, t, acc = [], a, 0
     for j, p in enumerate(parts):
-        acc += len(p)
+        acc += glen(p)
         e = b if j == len(parts) - 1 else a + dur * acc / total
         piece = dict(c, start=round(t, 3), end=round(e, 3), text=p)
         piece.pop("spans", None)
@@ -600,23 +819,28 @@ def _split_window(c: dict, a: float, b: float, text: str, src, min_sec: float) -
     return out
 
 
-def display_cues(cues: list, min_sec: float = CUE_MIN_SEC) -> list:
+def display_cues(cues: list, min_sec: float = CUE_MIN_SEC, lang=None, src_lang=None) -> list:
     """Единицы-предложения → экранные куски субтитров (то, что видит зритель).
     Сначала единица делится по крупным паузам речи (`spans`, пауза
     ≥ SCREEN_GAP): текст перевода раздаётся отрезкам речи по доле их времени,
     и ни одна часть не висит на экране в тишине. Затем отрезок длиннее двух
-    строк или SCREEN_MAX_SEC делится на равные по длине части (граница —
-    после знака препинания, если он рядом); время частей — доли окна по
-    длине ТЕКСТА части: перевод пословно речи не соответствует, и время слов
-    оригинала ему ничего не говорит. Часть не короче `min_sec`. Поля реплики
-    (`i` — её номер) переезжают в каждую часть; у реплики с `src`
-    (двуязычные субтитры) оригинал делится на то же число частей."""
+    строк языка (`sub_norm`: 42 знака, у китайского 16, у японского 13) или
+    SCREEN_MAX_SEC делится на равные по длине части (граница — после знака
+    препинания рядом; у иероглифов — между знаками с кинсоку, у тайского —
+    между фразами); время частей — доли окна по длине ТЕКСТА части в
+    графемах: перевод пословно речи не соответствует. Часть не короче
+    `min_sec`. Поля реплики (`i` — её номер) переезжают в каждую часть; язык
+    текста реплики — `lang` у самой реплики (непереведённая идёт на языке
+    оригинала), иначе аргумент. У реплики с `src` (двуязычные субтитры)
+    оригинал делится своим языком (`src_lang`) на то же число частей."""
+    ns = sub_norm(src_lang)
     out = []
     for c in cues or []:
         text = " ".join((c.get("text") or "").split())
         if c.get("start") is None or c.get("end") is None or not text:
             out.append(c)
             continue
+        n = sub_norm(c.get("lang") or lang)
         s0, e0 = float(c["start"]), float(c["end"])
         src = " ".join((c.get("src") or "").split()) if c.get("src") is not None else None
         runs = _speech_runs(s0, e0, c.get("spans"))
@@ -635,8 +859,8 @@ def display_cues(cues: list, min_sec: float = CUE_MIN_SEC) -> list:
             for r in runs[:-1]:
                 acc += r[1] - r[0]
                 fr.append(acc / speech)
-            tp = _text_parts(text, fr)
-            sp = _text_parts(src, fr) if src is not None else None
+            tp = _text_parts(text, fr, n)
+            sp = _text_parts(src, fr, ns) if src is not None else None
             if len(tp) != len(runs):
                 runs, tp, sp = [[s0, e0]], [text], ([src] if src is not None else None)
             elif sp is not None and len(sp) != len(runs):
@@ -647,7 +871,7 @@ def display_cues(cues: list, min_sec: float = CUE_MIN_SEC) -> list:
             tp, sp = [text], ([src] if src is not None else None)
         pieces = []
         for j, r in enumerate(runs):
-            pieces += _split_window(c, r[0], r[1], tp[j], sp[j] if sp is not None else None, min_sec)
+            pieces += _split_window(c, r[0], r[1], tp[j], sp[j] if sp is not None else None, min_sec, n, ns)
         if len(pieces) == 1:
             one = dict(c)
             one.pop("spans", None)
@@ -655,6 +879,49 @@ def display_cues(cues: list, min_sec: float = CUE_MIN_SEC) -> list:
         else:
             out.extend(pieces)
     return out
+
+
+_RLM = "‏"
+
+
+def screen_lines(text: str, lang) -> list:
+    """Строки экрана одной части для .srt/.vtt по норме языка: до `line`
+    графем — одна строка, длиннее — две равные (граница у знака препинания,
+    у иероглифов — с кинсоку), очень длинная — три. У письма справа налево
+    строка обрамлена меткой RLM: иначе строка, начатая цифрой или латиницей,
+    у плеера переворачивается. Метка в счёт длины не входит (`glen`)."""
+    n = sub_norm(lang) or sub_norm("EN")
+    t = " ".join((text or "").split())
+    width = int(n["line"])
+    if glen(t) <= width:
+        lines = [t] if t else []
+    elif n.get("cut") == "word":
+        # Письмо с пробелами — прежнее правило экрана: две РАВНЫЕ строки,
+        # разрез на пробеле ближе к середине («лесенка» читается хуже).
+        try:
+            import importers as _imp
+        except ImportError:                     # запуск как пакет backend
+            from backend import importers as _imp  # type: ignore
+        lines = _imp.wrap_cue(t, width)
+    else:
+        parts = _text_parts(t, [0.5], n)
+        if len(parts) == 2 and glen(parts[1]) > width * 1.6:
+            lines = [parts[0]] + [ln.strip(_RLM) for ln in screen_lines(parts[1], lang)]
+        else:
+            lines = parts
+    if n.get("rtl"):
+        lines = [_RLM + ln + _RLM for ln in lines]
+    return lines
+
+
+def budget_chars(sec, lang) -> Optional[int]:
+    """Сколько графем перевода уложится в строку длиной `sec`: меньшая из
+    скоростей ЧТЕНИЯ (экран) и РЕЧИ (озвучка) языка перевода — перевод
+    идёт и туда, и туда. У русского и английского — прежние 15 зн/с."""
+    if not sec or sec <= 0:
+        return None
+    n = sub_norm(lang) or sub_norm("EN")
+    return max(1, int(round(float(sec) * min(float(n["read_cps"]), float(n["speak_cps"])))))
 
 
 # ─── Озвучка ─────────────────────────────────────────────────────────

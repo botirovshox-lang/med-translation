@@ -262,6 +262,25 @@ check("ДЕНЬГИ НА СТОЛЕ" in d["text"] and "ТЕРЯЕМ" in d["text"
 check("None" not in d["text"] and "%(" not in d["text"],
       "ни одного невыполненного шаблона в тексте: " + d["text"][:120])
 
+print("=== 9в. Новые регистрации в сводке ===")
+_today = main.datetime.now().strftime("%Y-%m-%d")
+_saved_t, _saved_u = list(main._tenants()), list(main._users())
+main._tenants().extend([
+    {"id": "su-a", "name": "a", "created": _today, "signup": True},
+    {"id": "su-b", "name": "b", "created": _today, "signup": True},
+    {"id": "su-team", "name": "t", "created": _today, "signup": True, "team": True},
+    {"id": "su-old", "name": "o", "created": "2020-01-01", "signup": True}])
+main._users().extend([{"id": 90001, "tenant": "su-a", "emailVerified": True},
+                      {"id": 90002, "tenant": "su-b", "emailVerified": False}])
+su = main._metrics_signups(_today, _today)
+check(su == {"n": 2, "verified": 1},
+      "считаются свои регистрации периода, без команд и старых: %r" % su)
+d = c.get("/api/admin/metrics/digest?days=1", headers=H(S)).json()
+check("Новых регистраций: 2, почту подтвердили 1." in d["text"],
+      "строка о регистрациях есть в суточном тексте")
+main._tenants()[:] = _saved_t
+main._users()[:] = _saved_u
+
 
 print("=== 10. Файловое хранилище подрезается ===")
 main.STATE[main.EVENTS_KEY] = {}

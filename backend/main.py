@@ -8224,6 +8224,19 @@ def _fmt_code(fmt: str) -> str:
     return f if f in _EXPORT_ASKED else "other"
 
 
+def _metrics_signups(day_from: str, day_to: str) -> dict:
+    """Новые регистрации за период: организации, заведённые САМИМ человеком
+    (`tenant["signup"]`, инвариант 18а). Команды (`team`) — не регистрации:
+    их заводит уже зарегистрированный. `verified` — сколько из них
+    подтвердили почту: без этого число регистраций не отличить от ботов."""
+    ids = {t["id"] for t in _tenants()
+           if t.get("signup") and not t.get("team")
+           and day_from <= (t.get("created") or "")[:10] <= day_to}
+    verified = {u.get("tenant") for u in _users()
+                if u.get("tenant") in ids and u.get("emailVerified")}
+    return {"n": len(ids), "verified": len(verified)}
+
+
 @app.get("/api/admin/metrics")
 def admin_metrics(request: Request, days: int = 7):
     """Сводка для владельца сервиса. Ни одного вызова модели.
@@ -8248,6 +8261,7 @@ def admin_metrics(request: Request, days: int = 7):
         "steps": _metrics_steps(led),
         "tenants": tenants,
         "quotes": quotes,
+        "signups": _metrics_signups(day_from, day_to),
         "routes": ev["routes"], "slow": ev["slow"], "errors": ev["errors"],
         "capCodes": ev["caps"], "waste": ev["waste"], "provider": ev["provider"],
         # Тупики и воронка считаются из ТЕХ ЖЕ событий, что уже прочитаны:
@@ -8441,6 +8455,9 @@ def _metrics_digest_text(d: dict) -> str:
     L = []
     L.append("Сводка за %s%s" % (d["from"], "" if d["days"] == 1 else " — " + d["to"]))
     L.append("Расход на модели: $%.2f за %d вызовов." % (d["spendUsd"], d["calls"]))
+    su = d.get("signups") or {}
+    L.append("Новых регистраций: %d%s." % (
+        su.get("n", 0), ", почту подтвердили %d" % su.get("verified", 0) if su.get("n") else ""))
     q = (d["quotes"].get("byStatus") or {})
     if d["quotes"].get("total"):
         L.append("Сметы: новых %d, выставлено %d, оплачено %d%s."

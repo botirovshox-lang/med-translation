@@ -192,7 +192,6 @@
   "Готовый файл появится здесь — страницу можно закрыть.": "The finished file will appear here — you can close the page.",
   "Загрузить видео снова": "Upload the video again",
   "Загрузка отменена": "Upload cancelled",
-  "Закадровый перевод: оригинальный звук приглушается под речью. Губы с речью не совпадают; голос синтезирован.": "Voice-over: the original sound is lowered under the speech. Lips do not match the speech; the voice is synthesised.",
   "Звук": "Audio",
   "Исходное видео удалено по сроку хранения. Субтитры и перевод целы; чтобы собрать видео или озвучку, загрузите тот же файл ещё раз.": "The original video was deleted after its storage period. Subtitles and translation are intact; to build a video or voice-over, upload the same file again.",
   "Можно собирать видео и озвучку.": "You can now build the video and the voice-over.",
@@ -353,5 +352,14 @@
   " реплик не уместятся в область — сократите перевод или выберите другой вариант.": " lines will not fit the area: shorten the translation or choose another option.",
   "Видно в плеерах (VLC, «Кино и ТВ», телефон), но не в браузере, Telegram и соцсетях — там нужны субтитры в кадре.": "Shown in players (VLC, Films & TV, phone), but not in a browser, Telegram or social networks: those need subtitles burned into the picture.",
   "Это видео собрано до исправления: субтитры в нём не включаются сами. Нажмите «Собрать заново».": "This video was built before the fix: its subtitles do not switch on by themselves. Press “Rebuild”.",
-  "Оригинал рядом с переводом": "Source next to the translation"
+  "Оригинал рядом с переводом": "Source next to the translation",
+  "Закадровый перевод: под озвучкой голос оригинала убирается, музыка и шумы остаются; где озвучки нет — звучит оригинал. Губы с речью не совпадают; голос синтезирован.": "Voice-over: under the dub the original voice is removed while music and sound effects stay; where there is no dub you hear the original. Lips do not match the speech; the voice is synthetic.",
+  "Голос оригинала в этой сборке только приглушён под озвучкой, а не убран: ": "In this build the original voice is only lowered under the dub, not removed: ",
+  "на сервере не установлено отделение голоса — сообщите администратору.": "voice separation is not installed on the server — tell the administrator.",
+  "озвучки слишком много для отделения голоса за один раз — разделите видео на части.": "there is too much dubbing to separate the voice in one go — split the video into parts.",
+  "в файле нет звуковой дорожки.": "the file has no audio track.",
+  "отделение голоса не удалось — соберите заново.": "voice separation failed — build again.",
+  "отделяем голос от музыки": "separating the voice from the music",
+  "Озвучка скоро": "Dubbing coming soon",
+  "У этого языка нет родного голоса ни у одного движка синтеза — озвучка прозвучит с акцентом.": "No speech engine has a native voice for this language — the dub will sound accented."
 }

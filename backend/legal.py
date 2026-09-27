@@ -16,7 +16,7 @@ VERSION — дата редакции. Она пишется в учётную �
 import html
 import os
 
-VERSION = "2026-09-25.3"
+VERSION = "2026-09-27.1"
 
 _FIELDS = (
     ("entity", "LEGAL_ENTITY", "наименование исполнителя"),
@@ -66,6 +66,9 @@ def _model_provider() -> str:
     out = ["OpenAI, США"]
     if (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
         out.append("Anthropic, США")
+    if (os.environ.get("AZURE_SPEECH_KEY") or "").strip():
+        # Озвучка видео: текст перевода уходит синтезу речи Microsoft.
+        out.append("Microsoft (Azure Speech), США — синтез речи")
     return "; ".join(out)
 
 

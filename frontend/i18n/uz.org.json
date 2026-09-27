@@ -567,5 +567,6 @@
   "Не обновлено": "Yangilanmadi",
   "пробные страницы при регистрации": "ro'yxatdan o'tishdagi sinov betlari",
   "пробный фрагмент: списан он, объём файла — отдельно": "sinov bo'lagi: faqat u hisobdan yechildi, fayl hajmi — alohida",
-  "раз пробному клиенту перевели фрагмент большого документа — он ждёт весь": "marta sinov mijoziga katta hujjatdan bo'lak tarjima qilindi — u butunini kutmoqda"
+  "раз пробному клиенту перевели фрагмент большого документа — он ждёт весь": "marta sinov mijoziga katta hujjatdan bo'lak tarjima qilindi — u butunini kutmoqda",
+  "озвучек собрано приглушением: голос оригинала слышен под переводом": "ta ovoz berish faqat pasaytirish bilan yig‘ildi: asl ovoz tarjima ostida eshitiladi"
 }

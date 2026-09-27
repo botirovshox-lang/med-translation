@@ -1,0 +1,674 @@
+{
+ "_comment": [
+  "Голоса синтеза по языку системы (backend/languages.json). Собирает tools/voices_build.py.",
+  "azure — нейроголоса Azure Speech: локаль и голоса по полу (первый — по умолчанию).",
+  "openaiNative — языки из официального списка синтеза OpenAI: у остальных OpenAI читает с акцентом.",
+  "translit — текст перед синтезом переводится в письмо, которое читает голос (узбекская кириллица → латиница)."
+ ],
+ "openaiNative": [
+  "AF",
+  "AR",
+  "HY",
+  "AZ",
+  "BE",
+  "BS",
+  "BG",
+  "CA",
+  "ZH",
+  "HR",
+  "CS",
+  "DA",
+  "NL",
+  "EN",
+  "ET",
+  "FI",
+  "FR",
+  "GL",
+  "DE",
+  "EL",
+  "HE",
+  "HI",
+  "HU",
+  "IS",
+  "ID",
+  "IT",
+  "JA",
+  "KK",
+  "KO",
+  "LV",
+  "LT",
+  "MK",
+  "MS",
+  "NE",
+  "NO",
+  "FA",
+  "PL",
+  "PT",
+  "RO",
+  "RU",
+  "SR",
+  "SK",
+  "SL",
+  "ES",
+  "SW",
+  "SV",
+  "TA",
+  "TH",
+  "TR",
+  "UK",
+  "UR",
+  "VI",
+  "CY"
+ ],
+ "azure": {
+  "AF": {
+   "locale": "af-ZA",
+   "f": [
+    "af-ZA-AdriNeural"
+   ],
+   "m": [
+    "af-ZA-WillemNeural"
+   ]
+  },
+  "AM": {
+   "locale": "am-ET",
+   "f": [
+    "am-ET-MekdesNeural"
+   ],
+   "m": [
+    "am-ET-AmehaNeural"
+   ]
+  },
+  "AR": {
+   "locale": "ar-SA",
+   "f": [
+    "ar-SA-ZariyahNeural"
+   ],
+   "m": [
+    "ar-SA-HamedNeural"
+   ]
+  },
+  "AZ": {
+   "locale": "az-AZ",
+   "f": [
+    "az-AZ-BanuNeural"
+   ],
+   "m": [
+    "az-AZ-BabekNeural"
+   ]
+  },
+  "BG": {
+   "locale": "bg-BG",
+   "f": [
+    "bg-BG-KalinaNeural"
+   ],
+   "m": [
+    "bg-BG-BorislavNeural"
+   ]
+  },
+  "BN": {
+   "locale": "bn-BD",
+   "f": [
+    "bn-BD-NabanitaNeural"
+   ],
+   "m": [
+    "bn-BD-PradeepNeural"
+   ]
+  },
+  "BS": {
+   "locale": "bs-BA",
+   "f": [
+    "bs-BA-VesnaNeural"
+   ],
+   "m": [
+    "bs-BA-GoranNeural"
+   ]
+  },
+  "CA": {
+   "locale": "ca-ES",
+   "f": [
+    "ca-ES-JoanaNeural"
+   ],
+   "m": [
+    "ca-ES-EnricNeural"
+   ]
+  },
+  "CS": {
+   "locale": "cs-CZ",
+   "f": [
+    "cs-CZ-VlastaNeural"
+   ],
+   "m": [
+    "cs-CZ-AntoninNeural"
+   ]
+  },
+  "CY": {
+   "locale": "cy-GB",
+   "f": [
+    "cy-GB-NiaNeural"
+   ],
+   "m": [
+    "cy-GB-AledNeural"
+   ]
+  },
+  "DA": {
+   "locale": "da-DK",
+   "f": [
+    "da-DK-ChristelNeural"
+   ],
+   "m": [
+    "da-DK-JeppeNeural"
+   ]
+  },
+  "DE": {
+   "locale": "de-DE",
+   "f": [
+    "de-DE-SeraphinaMultilingualNeural",
+    "de-DE-AmalaNeural",
+    "de-DE-KatjaNeural"
+   ],
+   "m": [
+    "de-DE-FlorianMultilingualNeural",
+    "de-DE-ConradNeural",
+    "de-DE-KillianNeural"
+   ]
+  },
+  "EL": {
+   "locale": "el-GR",
+   "f": [
+    "el-GR-AthinaNeural"
+   ],
+   "m": [
+    "el-GR-NestorasNeural"
+   ]
+  },
+  "EN": {
+   "locale": "en-US",
+   "f": [
+    "en-US-AvaNeural",
+    "en-US-EmmaNeural",
+    "en-US-AnaNeural",
+    "en-US-AriaNeural",
+    "en-US-AvaMultilingualNeural",
+    "en-US-EmmaMultilingualNeural",
+    "en-US-JennyNeural",
+    "en-US-MichelleNeural"
+   ],
+   "m": [
+    "en-US-AndrewNeural",
+    "en-US-BrianNeural",
+    "en-US-AndrewMultilingualNeural",
+    "en-US-BrianMultilingualNeural",
+    "en-US-ChristopherNeural",
+    "en-US-EricNeural",
+    "en-US-GuyNeural",
+    "en-US-RogerNeural",
+    "en-US-SteffanNeural"
+   ]
+  },
+  "ES": {
+   "locale": "es-ES",
+   "f": [
+    "es-ES-XimenaNeural",
+    "es-ES-ElviraNeural"
+   ],
+   "m": [
+    "es-ES-AlvaroNeural"
+   ]
+  },
+  "ET": {
+   "locale": "et-EE",
+   "f": [
+    "et-EE-AnuNeural"
+   ],
+   "m": [
+    "et-EE-KertNeural"
+   ]
+  },
+  "FA": {
+   "locale": "fa-IR",
+   "f": [
+    "fa-IR-DilaraNeural"
+   ],
+   "m": [
+    "fa-IR-FaridNeural"
+   ]
+  },
+  "FI": {
+   "locale": "fi-FI",
+   "f": [
+    "fi-FI-NooraNeural"
+   ],
+   "m": [
+    "fi-FI-HarriNeural"
+   ]
+  },
+  "FR": {
+   "locale": "fr-FR",
+   "f": [
+    "fr-FR-VivienneMultilingualNeural",
+    "fr-FR-DeniseNeural",
+    "fr-FR-EloiseNeural"
+   ],
+   "m": [
+    "fr-FR-RemyMultilingualNeural",
+    "fr-FR-HenriNeural"
+   ]
+  },
+  "GA": {
+   "locale": "ga-IE",
+   "f": [
+    "ga-IE-OrlaNeural"
+   ],
+   "m": [
+    "ga-IE-ColmNeural"
+   ]
+  },
+  "GL": {
+   "locale": "gl-ES",
+   "f": [
+    "gl-ES-SabelaNeural"
+   ],
+   "m": [
+    "gl-ES-RoiNeural"
+   ]
+  },
+  "GU": {
+   "locale": "gu-IN",
+   "f": [
+    "gu-IN-DhwaniNeural"
+   ],
+   "m": [
+    "gu-IN-NiranjanNeural"
+   ]
+  },
+  "HE": {
+   "locale": "he-IL",
+   "f": [
+    "he-IL-HilaNeural"
+   ],
+   "m": [
+    "he-IL-AvriNeural"
+   ]
+  },
+  "HI": {
+   "locale": "hi-IN",
+   "f": [
+    "hi-IN-SwaraNeural"
+   ],
+   "m": [
+    "hi-IN-MadhurNeural"
+   ]
+  },
+  "HR": {
+   "locale": "hr-HR",
+   "f": [
+    "hr-HR-GabrijelaNeural"
+   ],
+   "m": [
+    "hr-HR-SreckoNeural"
+   ]
+  },
+  "HU": {
+   "locale": "hu-HU",
+   "f": [
+    "hu-HU-NoemiNeural"
+   ],
+   "m": [
+    "hu-HU-TamasNeural"
+   ]
+  },
+  "ID": {
+   "locale": "id-ID",
+   "f": [
+    "id-ID-GadisNeural"
+   ],
+   "m": [
+    "id-ID-ArdiNeural"
+   ]
+  },
+  "IS": {
+   "locale": "is-IS",
+   "f": [
+    "is-IS-GudrunNeural"
+   ],
+   "m": [
+    "is-IS-GunnarNeural"
+   ]
+  },
+  "IT": {
+   "locale": "it-IT",
+   "f": [
+    "it-IT-ElsaNeural",
+    "it-IT-IsabellaNeural"
+   ],
+   "m": [
+    "it-IT-GiuseppeMultilingualNeural",
+    "it-IT-DiegoNeural"
+   ]
+  },
+  "JA": {
+   "locale": "ja-JP",
+   "f": [
+    "ja-JP-NanamiNeural"
+   ],
+   "m": [
+    "ja-JP-KeitaNeural"
+   ]
+  },
+  "KA": {
+   "locale": "ka-GE",
+   "f": [
+    "ka-GE-EkaNeural"
+   ],
+   "m": [
+    "ka-GE-GiorgiNeural"
+   ]
+  },
+  "KK": {
+   "locale": "kk-KZ",
+   "f": [
+    "kk-KZ-AigulNeural"
+   ],
+   "m": [
+    "kk-KZ-DauletNeural"
+   ]
+  },
+  "KM": {
+   "locale": "km-KH",
+   "f": [
+    "km-KH-SreymomNeural"
+   ],
+   "m": [
+    "km-KH-PisethNeural"
+   ]
+  },
+  "KO": {
+   "locale": "ko-KR",
+   "f": [
+    "ko-KR-SunHiNeural"
+   ],
+   "m": [
+    "ko-KR-HyunsuMultilingualNeural",
+    "ko-KR-InJoonNeural"
+   ]
+  },
+  "LT": {
+   "locale": "lt-LT",
+   "f": [
+    "lt-LT-OnaNeural"
+   ],
+   "m": [
+    "lt-LT-LeonasNeural"
+   ]
+  },
+  "LV": {
+   "locale": "lv-LV",
+   "f": [
+    "lv-LV-EveritaNeural"
+   ],
+   "m": [
+    "lv-LV-NilsNeural"
+   ]
+  },
+  "MK": {
+   "locale": "mk-MK",
+   "f": [
+    "mk-MK-MarijaNeural"
+   ],
+   "m": [
+    "mk-MK-AleksandarNeural"
+   ]
+  },
+  "MN": {
+   "locale": "mn-MN",
+   "f": [
+    "mn-MN-YesuiNeural"
+   ],
+   "m": [
+    "mn-MN-BataaNeural"
+   ]
+  },
+  "MS": {
+   "locale": "ms-MY",
+   "f": [
+    "ms-MY-YasminNeural"
+   ],
+   "m": [
+    "ms-MY-OsmanNeural"
+   ]
+  },
+  "MT": {
+   "locale": "mt-MT",
+   "f": [
+    "mt-MT-GraceNeural"
+   ],
+   "m": [
+    "mt-MT-JosephNeural"
+   ]
+  },
+  "MY": {
+   "locale": "my-MM",
+   "f": [
+    "my-MM-NilarNeural"
+   ],
+   "m": [
+    "my-MM-ThihaNeural"
+   ]
+  },
+  "NE": {
+   "locale": "ne-NP",
+   "f": [
+    "ne-NP-HemkalaNeural"
+   ],
+   "m": [
+    "ne-NP-SagarNeural"
+   ]
+  },
+  "NL": {
+   "locale": "nl-NL",
+   "f": [
+    "nl-NL-ColetteNeural",
+    "nl-NL-FennaNeural"
+   ],
+   "m": [
+    "nl-NL-MaartenNeural"
+   ]
+  },
+  "PL": {
+   "locale": "pl-PL",
+   "f": [
+    "pl-PL-ZofiaNeural"
+   ],
+   "m": [
+    "pl-PL-MarekNeural"
+   ]
+  },
+  "PS": {
+   "locale": "ps-AF",
+   "f": [
+    "ps-AF-LatifaNeural"
+   ],
+   "m": [
+    "ps-AF-GulNawazNeural"
+   ]
+  },
+  "PT": {
+   "locale": "pt-BR",
+   "f": [
+    "pt-BR-ThalitaMultilingualNeural",
+    "pt-BR-FranciscaNeural"
+   ],
+   "m": [
+    "pt-BR-AntonioNeural"
+   ]
+  },
+  "RO": {
+   "locale": "ro-RO",
+   "f": [
+    "ro-RO-AlinaNeural"
+   ],
+   "m": [
+    "ro-RO-EmilNeural"
+   ]
+  },
+  "RU": {
+   "locale": "ru-RU",
+   "f": [
+    "ru-RU-SvetlanaNeural"
+   ],
+   "m": [
+    "ru-RU-DmitryNeural"
+   ]
+  },
+  "SK": {
+   "locale": "sk-SK",
+   "f": [
+    "sk-SK-ViktoriaNeural"
+   ],
+   "m": [
+    "sk-SK-LukasNeural"
+   ]
+  },
+  "SL": {
+   "locale": "sl-SI",
+   "f": [
+    "sl-SI-PetraNeural"
+   ],
+   "m": [
+    "sl-SI-RokNeural"
+   ]
+  },
+  "SQ": {
+   "locale": "sq-AL",
+   "f": [
+    "sq-AL-AnilaNeural"
+   ],
+   "m": [
+    "sq-AL-IlirNeural"
+   ]
+  },
+  "SR": {
+   "locale": "sr-RS",
+   "f": [
+    "sr-RS-SophieNeural"
+   ],
+   "m": [
+    "sr-RS-NicholasNeural"
+   ]
+  },
+  "SV": {
+   "locale": "sv-SE",
+   "f": [
+    "sv-SE-SofieNeural"
+   ],
+   "m": [
+    "sv-SE-MattiasNeural"
+   ]
+  },
+  "SW": {
+   "locale": "sw-KE",
+   "f": [
+    "sw-KE-ZuriNeural"
+   ],
+   "m": [
+    "sw-KE-RafikiNeural"
+   ]
+  },
+  "TA": {
+   "locale": "ta-IN",
+   "f": [
+    "ta-IN-PallaviNeural"
+   ],
+   "m": [
+    "ta-IN-ValluvarNeural"
+   ]
+  },
+  "TE": {
+   "locale": "te-IN",
+   "f": [
+    "te-IN-ShrutiNeural"
+   ],
+   "m": [
+    "te-IN-MohanNeural"
+   ]
+  },
+  "TH": {
+   "locale": "th-TH",
+   "f": [
+    "th-TH-PremwadeeNeural"
+   ],
+   "m": [
+    "th-TH-NiwatNeural"
+   ]
+  },
+  "TR": {
+   "locale": "tr-TR",
+   "f": [
+    "tr-TR-EmelNeural"
+   ],
+   "m": [
+    "tr-TR-AhmetNeural"
+   ]
+  },
+  "UK": {
+   "locale": "uk-UA",
+   "f": [
+    "uk-UA-PolinaNeural"
+   ],
+   "m": [
+    "uk-UA-OstapNeural"
+   ]
+  },
+  "UR": {
+   "locale": "ur-PK",
+   "f": [
+    "ur-PK-UzmaNeural"
+   ],
+   "m": [
+    "ur-PK-AsadNeural"
+   ]
+  },
+  "UZ": {
+   "locale": "uz-UZ",
+   "f": [
+    "uz-UZ-MadinaNeural"
+   ],
+   "m": [
+    "uz-UZ-SardorNeural"
+   ]
+  },
+  "UZ-CYRL": {
+   "locale": "uz-UZ",
+   "f": [
+    "uz-UZ-MadinaNeural"
+   ],
+   "m": [
+    "uz-UZ-SardorNeural"
+   ],
+   "translit": "uz-cyrl-latn"
+  },
+  "VI": {
+   "locale": "vi-VN",
+   "f": [
+    "vi-VN-HoaiMyNeural"
+   ],
+   "m": [
+    "vi-VN-NamMinhNeural"
+   ]
+  },
+  "ZH": {
+   "locale": "zh-CN",
+   "f": [
+    "zh-CN-XiaoxiaoNeural",
+    "zh-CN-XiaoyiNeural"
+   ],
+   "m": [
+    "zh-CN-YunjianNeural",
+    "zh-CN-YunxiNeural",
+    "zh-CN-YunxiaNeural",
+    "zh-CN-YunyangNeural"
+   ]
+  }
+ }
+}

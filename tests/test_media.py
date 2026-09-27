@@ -619,10 +619,33 @@ main.MEDIA_ACCEL_PREFIX = "/_media/"
 d = c.get(url)
 check(d.headers.get("x-accel-redirect") == "/_media/%d/out/subs.mp4" % pid, "за nginx — X-Accel-Redirect, без чтения файла")
 main.MEDIA_ACCEL_PREFIX = ""
+# Модели разделения здесь «нет», что бы ни стояло в окружении (раздел 8а
+# подставит свою подделку, раздел 10 — настоящую).
+_sa0 = media.sep_available
+media.sep_available = lambda: (False, "no_model")
 proj["segments"][1]["target"] = "Today we talk about tuberculosis and a lot of other important things in medicine."
 main.TTS_BATCH = 1                            # по реплике на пачку: проверки между пачками идут
+# Озвучка пока закрыта: владельцу организации — отказ словами на СЕРВЕРЕ,
+# голоса отвечают «dub: false» (браузер кладёт заливку «soon»).
 r = c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "dub", "voice": "m1"})
+check(r.status_code == 403 and main.MEDIA_DUB_SOON in r.text, "озвучка не администратору — 403 «скоро»: %s" % r.status_code)
+check(c.get("/api/media/voices?pid=%d" % pid, headers=H(B)).json().get("dub") is False, "голоса: собирать нельзя")
+# Задача, поставленная ДО закрытия и поднятая рестартом, до синтеза не доходит.
+_ae0 = main._actor_is_super
+main._actor_is_super = lambda: True
+old_job = main._JOBS[c.post("/api/projects/%d/media/render" % pid, headers=H(B),
+                            json={"what": "dub", "voice": "m1"}).json()["job"]["id"]]
+main._actor_is_super = lambda: False
+n0 = CALLS["tts"]
+main._job_execute(old_job)
+check(old_job["status"] == "stopped" and old_job.get("stopReason") == "soon" and CALLS["tts"] == n0,
+      "задача не администратора останавливается до платного синтеза: %s" % old_job["status"])
+main._actor_is_super = lambda: True            # дальше — администратор сервиса
+r = c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "dub", "voice": "m1"})
+check(r.json()["job"]["params"].get("ttsEngine") is None, "движок в задаче наружу не уходит (не суперу по сессии)")
 dj = main._JOBS[r.json()["job"]["id"]]
+check(dj["params"]["ttsEngine"] == "openai" and dj["params"]["voiceQuality"] == "native",
+      "движок выбран один раз на сборку и лежит в задаче: %s" % dj["params"])
 main._job_execute(dj)
 rr = main._project_by_id(pid)["mediaRender"].get("dub") or {}
 check(dj["status"] == "done" and rr.get("voiced") == 2, "озвучка собрана: %s %s" % (dj["status"], dj.get("error")))
@@ -635,6 +658,213 @@ main._job_execute(dj2)
 check(CALLS["tts"] == n, "повторная озвучка берёт реплики из кэша")
 check("onyx" not in main._media_err_text(RuntimeError("voice onyx failed on gpt-4o-mini-tts")) and
       "gpt-4o-mini-tts" not in main._media_err_text(RuntimeError("gpt-4o-mini-tts down")), "текст ошибки без имён поставщика")
+check(rr.get("bed") == "ducked" and rr.get("bedWhy") in ("no_model", "no_module"),
+      "нет модели разделения — прежнее приглушение, и отчёт это называет: %s" % rr.get("bedWhy"))
+vj = c.get("/api/media/voices", headers=H(B)).json()["voices"]
+check(vj[0]["id"] == "f0" and all("v" not in v for v in vj) and [v["n"] for v in vj if v["gender"] == "m"] == [1, 2, 3],
+      "голоса: живой по умолчанию первым, имя поставщика наружу не уходит, номер внутри пола")
+check(main._media_voice("")["v"] == "marin" and main._media_voice("m1")["v"] == "onyx",
+      "пустой выбор — голос по умолчанию; прежний ярлык значит прежний голос")
+
+print("=== 8а. Голос оригинала убирается из-под озвучки ===")
+# Маска — по клипам: клип длиннее своей строки тянет окно за собой, соседние сливаются.
+w = media.dub_mask([(1.0, 2.0), (2.4, 3.0), (10.0, 14.5)])
+check(w == [(0.7, 3.3), (9.7, 14.8)], "окна озвучки с запасом, пересекающиеся слиты: %s" % w)
+media.SEP_CHUNK_SEC = 60.0
+check(media.sep_chunks([(0.7, 3.3), (50.0, 70.0)], 0.0, 200.0) == [0, 1], "куски сетки под окнами")
+check(media.sep_chunks([(0.0, 5.0)], 118.0, 200.0) == [1, 2], "сетка — по времени ИСХОДНИКА: сдвиг обрезки")
+check(media.sep_chunks([(190.0, 260.0)], 0.0, 200.0) == [3], "окно за концом результата не считается")
+m_ = media._ramp_mask(44100, 0.0, [(0.25, 0.75)])
+check(m_[0] == 0 and m_[44100 // 2] == 1.0 and 0 < m_[int(0.26 * 44100)] < 1 and m_[-1] == 0,
+      "маска: 0 — оригинал, 1 — фон, края плавные")
+SEPCALLS = {"chunks": [], "bed": None, "mux": None}
+_orig = (_sa0, media.sep_model_path, media.separate_chunk, media.build_bed, media.mux_dub)
+
+
+def fake_separate_chunk(src, k, out_dir, model, src_len):
+    SEPCALLS["chunks"].append(k)
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    (Path(out_dir) / ("%d.flac" % k)).write_bytes(b"FLAC")
+    return Path(out_dir) / ("%d.flac" % k)
+
+
+def fake_bed(src, bed_path, origin, length, windows, chunk_dir, src_len):
+    SEPCALLS["bed"] = (origin, length, list(windows))
+    Path(bed_path).write_bytes(b"BED")
+
+
+def fake_mux_dub(src, track, dst, info, *a, **k):
+    SEPCALLS["mux"] = k.get("bed")
+    Path(dst).write_bytes(b"VIDEO")
+
+
+media.sep_available = lambda: (True, "")
+(TMP / "spleeter-model").mkdir(exist_ok=True)
+(TMP / "spleeter-model" / "accompaniment.fp16.onnx").write_bytes(b"m")
+media.sep_model_path = lambda: TMP / "spleeter-model"
+media.separate_chunk = fake_separate_chunk
+media.build_bed = fake_bed
+media.mux_dub = fake_mux_dub
+dj = main._JOBS[c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "dub", "voice": "m1"}).json()["job"]["id"]]
+main._job_execute(dj)
+rr = main._project_by_id(pid)["mediaRender"].get("dub") or {}
+check(dj["status"] == "done" and rr.get("bed") == "separated", "озвучка на подложке без голосов: %s %s" % (dj.get("error"), rr))
+check(SEPCALLS["chunks"] == [0] and SEPCALLS["mux"] is not None and not Path(SEPCALLS["mux"]).exists(),
+      "разделён только кусок под озвучкой, подложка отдана сведению и убрана: %s" % SEPCALLS["chunks"])
+ws = SEPCALLS["bed"][2]
+check(ws and ws[-1][1] > 6.0 + media.MASK_PAD - 0.01,
+      "окно — по длине КЛИПА (6 с речи, ускоренной до 1,5), а не строки: %s" % ws)
+cue0 = importers.cue_list(main._media_translations(main._project_by_id(pid))[0])[0]
+check(any(a <= cue0["start"] and b >= cue0["end"] + media.MASK_PAD - 0.01 for a, b in ws),
+      "клип короче реплики — окно всё равно до КОНЦА реплики оригинала (%s): %s" % (cue0, ws))
+wdir = main._media_dir(pid) / "work"
+check(not (wdir / "bed.raw").exists() and not (wdir / "dub.raw").exists(), "подложка и дорожка убраны после сборки")
+SEPCALLS["chunks"] = []
+main._job_execute(main._JOBS[c.post("/api/projects/%d/media/render" % pid, headers=H(B),
+                                    json={"what": "dub", "voice": "m1"}).json()["job"]["id"]])
+check(SEPCALLS["chunks"] == [], "повторная сборка берёт разделённые куски из кэша")
+# Остановка посреди разделения: готовые куски остаются, продолжение их не повторяет.
+shutil.rmtree(str(main.MEDIA_DIR / str(pid) / "sep"), ignore_errors=True)
+media.SEP_CHUNK_SEC = 2.0
+SEPCALLS["chunks"] = []
+
+
+def stopping_chunk(src, k, out_dir, model, src_len):
+    fake_separate_chunk(src, k, out_dir, model, src_len)
+    main._ACTIVE_JOB.get("job")["stop"] = True
+
+
+media.separate_chunk = stopping_chunk
+dj = main._JOBS[c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "dub", "voice": "m1"}).json()["job"]["id"]]
+main._job_execute(dj)
+first = list(SEPCALLS["chunks"])
+check(dj["status"] == "stopped" and len(first) == 1 and dj.get("phase") == "separate",
+      "стоп между кусками разделения: %s %s" % (dj["status"], first))
+check(not (wdir / "bed.raw").exists() and not (wdir / "dub.raw").exists(), "после стопа временных файлов нет")
+media.separate_chunk = fake_separate_chunk
+SEPCALLS["chunks"] = []
+dj = main._JOBS[c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "dub", "voice": "m1"}).json()["job"]["id"]]
+main._job_execute(dj)
+check(dj["status"] == "done" and SEPCALLS["chunks"] and first[0] not in SEPCALLS["chunks"],
+      "продолжение не повторяет готовый кусок: %s после %s" % (SEPCALLS["chunks"], first))
+media.SEP_CHUNK_SEC = 60.0
+# Сменили файл модели под тем же именем — куски считаются заново (другой каталог кэша).
+mf = TMP / "UVR_x.onnx"
+mf.write_bytes(b"1")
+k1 = main._dub_sep_dir(proj, main._media_source(proj), mf)
+mf.write_bytes(b"22")
+check(main._dub_sep_dir(proj, main._media_source(proj), mf) != k1, "ключ кэша помнит сам файл модели")
+
+
+def broken_chunk(*a, **k):
+    raise media.MediaError("ffmpeg отказал: boom")
+
+
+shutil.rmtree(str(main.MEDIA_DIR / str(pid) / "sep"), ignore_errors=True)
+media.separate_chunk = broken_chunk
+dj = main._JOBS[c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "dub", "voice": "m1"}).json()["job"]["id"]]
+main._job_execute(dj)
+rr = main._project_by_id(pid)["mediaRender"].get("dub") or {}
+check(dj["status"] == "done" and rr.get("bed") == "ducked" and rr.get("bedWhy") == "error" and SEPCALLS["mux"] is None,
+      "сбой разделения — сборка всё равно готова, прежним приглушением, причина названа: %s" % rr)
+main.MEDIA_SEP_MAX_MINUTES = 0.01
+media.separate_chunk = fake_separate_chunk
+dj = main._JOBS[c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "dub", "voice": "m1"}).json()["job"]["id"]]
+main._job_execute(dj)
+rr = main._project_by_id(pid)["mediaRender"].get("dub") or {}
+check(rr.get("bedWhy") == "long", "озвучки больше потолка — приглушение с причиной «длинно»")
+main.MEDIA_SEP_MAX_MINUTES = 120.0
+(media.sep_available, media.sep_model_path, media.separate_chunk, media.build_bed, media.mux_dub) = _orig
+# «Отменить» посреди куска: процесс убит, временные файлы куска убраны, FLAC нет.
+_run0, _dec0 = media.run, media.decode_pcm
+
+
+def cancel_run(cmd, timeout, stdin=None, cwd=None):
+    if any("separate_worker" in str(x) for x in cmd):
+        Path(cmd[-1]).with_name(Path(cmd[-1]).name + ".part").write_bytes(b"x")
+        raise media.Cancelled("Сборка отменена")
+    return _run0(cmd, timeout, stdin=stdin, cwd=cwd)
+
+
+import numpy as _np
+media.run = cancel_run
+media.decode_pcm = lambda src, start, length, rate=44100, channels=2: _np.zeros((2, int(length * rate)), _np.float32)
+cd = TMP / "sepcancel"
+try:
+    media.separate_chunk("x.mp4", 0, cd, TMP, 3.0)
+    check(False, "отмена должна дойти до вызывающего")
+except media.Cancelled:
+    check(sorted(p.name for p in cd.iterdir()) == [], "после отмены в каталоге кусков пусто: %s" % list(cd.iterdir()))
+media.run, media.decode_pcm = _run0, _dec0
+
+print("=== 8а-2. Язык без родного голоса у OpenAI — Azure; квота — стоп сразу ===")
+import tts_engines
+os.environ.update({"AZURE_SPEECH_KEY": "k", "AZURE_SPEECH_REGION": "westeurope"})
+proj["tgt"] = "UZ"
+AZ = {"n": 0, "mode": "ok"}
+
+
+def fake_azure(text, lang, voice, style=""):
+    AZ["n"] += 1
+    AZ["voice"], AZ["lang"] = voice, lang
+    if AZ["mode"] == "quota":
+        raise tts_engines.TtsError("Синтез: ключ отклонён или исчерпан", quota=True)
+    return b"\x01\x00" * media.TTS_RATE
+
+
+tts_engines.ENGINES["azure"].synth = fake_azure
+vv = c.get("/api/media/voices?pid=%d" % pid, headers=H(B)).json()
+check(vv["quality"] == "native" and vv["voices"][0]["id"] == "f0" and "Neural" not in json.dumps(vv),
+      "голоса узбекского — родные, ярлыками: %s" % vv)
+dj = main._JOBS[c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "dub", "voice": "m1"}).json()["job"]["id"]]
+main._job_execute(dj)
+rr = main._project_by_id(pid)["mediaRender"].get("dub") or {}
+check(dj["status"] == "done" and dj["params"]["ttsEngine"] == "azure" and AZ["voice"] == "uz-UZ-SardorNeural"
+      and rr.get("voiceQuality") == "native", "узбекский озвучен Azure, мужской голос: %s %s" % (dj.get("error"), AZ))
+cli = c.get("/api/projects/%d" % pid, headers=H(B)).json()
+check("ttsEngine" not in json.dumps((cli.get("mediaRender") or {}).get("dub") or {}), "движок в проекте наружу не уходит")
+check((dj.get("usage") or {}).get("calls", 0) >= 1, "расход Azure учтён")
+shutil.rmtree(str(main._media_dir(pid) / "tts"), ignore_errors=True)
+AZ.update(mode="quota", n=0)
+_rz = c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "dub"})
+dj = main._JOBS[_rz.json()["job"]["id"]]
+main._job_execute(dj)
+check(dj["status"] == "error" and AZ["n"] <= main.AZURE_TTS_PARALLEL,
+      "квота/ключ Azure — стоп на первой пачке, без обстрела: %s, вызовов %d" % (dj["status"], AZ["n"]))
+# «Слишком часто» — не трата попыток: три отказа подряд, и строка всё равно
+# озвучена. Отказ ОДНОЙ строки (400) — строка без озвучки, сборка готова.
+_pause0, main.MEDIA_RETRY_PAUSE = main.MEDIA_RETRY_PAUSE, 0
+seen = {}
+
+
+def flaky_azure(text, lang, voice, style=""):
+    seen[text] = seen.get(text, 0) + 1
+    if "tuberculosis" in text and seen[text] <= 4:
+        raise tts_engines.TtsError("Синтез: слишком много запросов", throttle=True, after=0)
+    if "Hello" in text or "коллеги" in text or text.startswith("Good"):
+        raise tts_engines.TtsError("Синтез отказал: HTTP 400")
+    return b"\x01\x00" * media.TTS_RATE
+
+
+shutil.rmtree(str(main._media_dir(pid) / "tts"), ignore_errors=True)
+tts_engines.ENGINES["azure"].synth = flaky_azure
+dj = main._JOBS[c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "dub"}).json()["job"]["id"]]
+main._job_execute(dj)
+rr = main._project_by_id(pid)["mediaRender"].get("dub") or {}
+tb = [k for k in seen if "tuberculosis" in k]
+check(dj["status"] == "done" and tb and seen[tb[0]] == 5 and rr.get("voiced", 0) >= 1,
+      "«слишком часто» 4 раза подряд — строка всё равно озвучена: %s %s %s" % (dj["status"], seen, rr.get("voiced")))
+bad400 = [k for k in seen if k not in tb]
+check(all(seen[k] == 1 for k in bad400) and rr.get("silent", 0) == len(bad400),
+      "отказ одной строки (400) — без повторов, строка названа, сборка готова: %s" % rr)
+main.MEDIA_RETRY_PAUSE = _pause0
+t_ = main._media_err_text(RuntimeError("HTTP 403 from westeurope.tts.speech.microsoft.com for uz-UZ-MadinaNeural (Azure)"))
+check("Neural" not in t_ and "microsoft" not in t_.lower() and "azure" not in t_.lower(), "текст ошибки без поставщика: %s" % t_)
+for k_ in ("AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"):
+    os.environ.pop(k_, None)
+proj["tgt"] = "EN"
+main._actor_is_super = _ae0
+media.mux_dub = fake_mux
 
 print("=== 8б. Расход на видео по людям — администратору ===")
 r = c.get("/api/admin/media-usage?days=30", headers=H(B))
@@ -780,8 +1010,10 @@ _money = main._job_money_stop
 main._job_money_stop = lambda job: (job.update(status="stopped", stopReason="limit") or True)
 fj = main._JOBS[c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "burn"}).json()["job"]["id"]]
 main._job_execute(fj)
+main._actor_is_super = lambda: True          # озвучка пока — только администратору
 dj3 = main._JOBS[c.post("/api/projects/%d/media/render" % pid, headers=H(B), json={"what": "dub"}).json()["job"]["id"]]
 main._job_execute(dj3)
+main._actor_is_super = _ae0
 main._job_money_stop = _money
 check(fj["status"] == "done" and dj3["status"] == "stopped",
       "лимит расхода держит озвучку (платно), а не сборку в кадр (модели нет): %s / %s" % (fj["status"], dj3["status"]))
@@ -1108,6 +1340,79 @@ else:
                             "-c:v", "libx264", "-g", "10", "-keyint_min", "10", "-sc_threshold", "0", ts), timeout=120)
     kts = media.keyframe_before(ts, 2.3)
     check(abs(kts - 2.0) < 0.05, "ключевой кадр у MPEG-TS — от начала файла, без start_time: %s" % kts)
+    # Звук в контейнере начинается позже картинки: кусок для подложки обязан
+    # начаться тишиной, иначе фон ехал бы раньше видео.
+    late = W / "late.mp4"
+    media.run(media._ffmpeg("-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=3",
+                            "-itsoffset", "0.5", "-f", "lavfi", "-i", "sine=frequency=440:duration=2.5",
+                            "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                            late), timeout=120)
+    x = media.decode_pcm(late, 0.0, 2.0)
+    head = float(abs(x[:, :int(0.4 * media.SEP_RATE)]).max())
+    body = float(abs(x[:, int(0.7 * media.SEP_RATE):]).max())
+    check(x.shape == (2, 2 * media.SEP_RATE) and head < 0.01 < body,
+          "звук с опозданием: начало — тишина, длина ровно запрошенная: %.3f / %.3f" % (head, body))
+    # Арифметика кусков и подложки — НАСТОЯЩИМ кодом, разделитель подменён
+    # процессом-«зеркалом» (фон = вход) и процессом-«тишиной» (фон = ноль).
+    # Отрезок начинается вне сетки, окно пересекает стык кусков, последний
+    # кусок короче, отрезок кончается посреди куска.
+    import numpy as np
+    noise = W / "noise.wav"
+    media.run(media._ffmpeg("-f", "lavfi", "-i", "anoisesrc=d=7.3:c=pink:r=44100:a=0.3",
+                            "-ac", 2, "-c:a", "pcm_s16le", noise), timeout=120)
+    ident, mute = W / "ident.py", W / "mute.py"
+    ident.write_text("import sys, shutil\nshutil.copyfile(sys.argv[3], sys.argv[4])\n", encoding="utf-8")
+    mute.write_text("import sys, os\nopen(sys.argv[4], 'wb').write(b'\\0' * os.path.getsize(sys.argv[3]))\n",
+                    encoding="utf-8")
+    worker0, chunk0 = media._WORKER, media.SEP_CHUNK_SEC
+    media.SEP_CHUNK_SEC = 2.0
+    origin, length = 1.3, 4.4
+    wins = [(0.5, 2.9)]                       # исходник 1,8–4,2: стыки кусков на 2,0 и 4,0
+    straight = media.decode_pcm(noise, origin, length)
+    R = media.SEP_RATE
+    for worker, name in ((ident, "ident"), (mute, "mute")):
+        media._WORKER = worker
+        cdir = W / ("sep-" + name)
+        for k in media.sep_chunks(wins, origin, length):
+            media.separate_chunk(noise, k, cdir, W, 7.3)
+        bedf = W / ("bed-" + name + ".raw")
+        media.build_bed(noise, bedf, origin, length, wins, cdir, 7.3)
+        got = np.frombuffer(bedf.read_bytes(), dtype="<i2").reshape(-1, 2).T.astype(np.float32) / 32768.0
+        check(got.shape == straight.shape, "%s: подложка ровно на отрезок %s" % (name, got.shape))
+        if name == "ident":
+            d = float(abs(got - straight).max()) * 32768
+            check(d <= 3, "зеркало: подложка = оригинал до отсчёта на стыках и концах (%.1f LSB)" % d)
+        else:
+            inside = got[:, int(0.6 * R):int(2.8 * R)]
+            outside = np.concatenate([got[:, :int(0.15 * R)], got[:, int(3.3 * R):]], axis=1)
+            ref_out = np.concatenate([straight[:, :int(0.15 * R)], straight[:, int(3.3 * R):]], axis=1)
+            check(float(abs(inside).max()) == 0.0 and float(abs(outside - ref_out).max()) * 32768 <= 3,
+                  "тишина: под окном голоса нет (и через стык кусков), вне окна — оригинал")
+        check(not [p for p in cdir.iterdir() if not p.name.endswith(".flac")], "временных файлов кусков не осталось")
+    media._WORKER, media.SEP_CHUNK_SEC = worker0, chunk0
+    mp3 = W / "a.mp3"
+    media.run(media._ffmpeg("-i", noise, "-t", 3, "-c:a", "libmp3lame", mp3), timeout=120)
+    fl = media.sep_source(mp3, W / "sep-mp3")
+    check(fl.name == "source.flac" and fl.exists() and media.sep_source(noise, W / "x") == noise,
+          "mp3 — один раз во FLAC (точный поиск), wav — как есть")
+    if media.sep_available()[0]:
+        # Настоящее разделение (модель из MEDIA_SEP_MODEL): кусок, подложка,
+        # сведение — две дорожки, видео копией, длина та же.
+        media.SEP_CHUNK_SEC = 2.0
+        wins = media.dub_mask([(0.5, 1.5)])
+        for k in media.sep_chunks(wins, 0.0, 3.0):
+            media.separate_chunk(clip, k, W / "sep", media.sep_model_path(), info["duration"])
+        check(sorted(p.name for p in (W / "sep").iterdir()) == ["0.flac"], "разделён ровно кусок под озвучкой")
+        bed = W / "bed.raw"
+        media.build_bed(clip, bed, 0.0, 3.0, wins, W / "sep", info["duration"])
+        check(bed.stat().st_size == 3 * media.SEP_RATE * 4, "подложка ровно на отрезок")
+        media.place_clips(track, info["duration"], [(0.5, pcm2)])
+        dub2 = W / "dub2.mp4"
+        media.mux_dub(clip, track, dub2, info, lang="eng", bed=bed)
+        got = media.probe(dub2)
+        check(got["audioTracks"] == 2 and got["video"]["codec"] == "h264", "озвучка на подложке: две дорожки, видео копией")
+    else:
+        print("  —    разделение пропущено: модель не установлена (MEDIA_SEP_MODEL)")
 
 shutil.rmtree(str(TMP), ignore_errors=True)
 print("\nПРОВАЛЕНО: %d" % len(fail) if fail else "\nВСЁ ПРОШЛО")

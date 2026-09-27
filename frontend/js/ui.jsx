@@ -594,11 +594,12 @@ function MediaJobLine({ job }) {
   const what = ph === "audio" ? TR("достаём звук из видео")
     : ph === "asr" ? TR("распознаём речь")
     : ph === "tts" ? TR("озвучиваем реплики")
+    : ph === "separate" ? TR("отделяем голос от музыки")
     : ph === "mix" ? TR("сводим звук")
     : ph === "mux" ? TR("собираем видео")
     : ph === "burn" ? TR("впечатываем субтитры в кадр")
     : TR("готовим");
-  const counted = total > 1 && (ph === "asr" || ph === "tts" || ph === "burn") && !queued;
+  const counted = total > 1 && (ph === "asr" || ph === "tts" || ph === "separate" || ph === "burn") && !queued;
   const text = queued
     ? (done > 0 ? TR("продолжу сразу после чужой порции")
                 : TR("идёт другой прогон, начну сразу после него"))

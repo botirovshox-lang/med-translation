@@ -521,21 +521,38 @@ window.ImagesCard = ImagesCard;
    они короткой подписанной ссылкой — прямым переходом, мимо памяти вкладки
    (видео весит гигабайты). Исходное видео хранится ограниченный срок;
    удалённое загружают заново здесь же — субтитры и перевод при этом целы. */
+/* Почему голос оригинала только приглушён — подпись к коду сервера
+   (`bedWhy`, инвариант 17: код переводит браузер). */
+function expBedWhy(code) {
+  switch (code) {
+    case "no_model": case "no_module": return TR("на сервере не установлено отделение голоса — сообщите администратору.");
+    case "long": return TR("озвучки слишком много для отделения голоса за один раз — разделите видео на части.");
+    case "no_audio": return TR("в файле нет звуковой дорожки.");
+    default: return TR("отделение голоса не удалось — соберите заново.");
+  }
+}
+
 function ExpMediaCard({ project, store, toast }) {
   const pid = project.id;
   const media = project.media || {};
   const rr = project.mediaRender || {};
   const [voices, setVoices] = useState([]);
-  const [voice, setVoice] = useState("f1");
+  /* Пусто — голос по умолчанию сервера (первый в списке): ярлык не зашит
+     здесь, иначе смена умолчания на сервере не доезжала бы до кнопки. */
+  const [voice, setVoice] = useState("");
   const [job, setJob] = useState(null);
   const [busy, setBusy] = useState(false);
   const [prog, setProg] = useState(null);
   const fileRef = useRef(null);
   const jobRef = useRef(null);
+  /* Может ли этот человек собирать озвучку (пока — только администратор
+     сервиса) и есть ли у языка перевода родной голос: отвечает СЕРВЕР.
+     Хук — после прежних: тесты адресуют хуки по номеру. */
+  const [voiceInfo, setVoiceInfo] = useState({ dub: false, quality: "native" });
   useEffect(() => {
-    window.API && window.API.safeCall(() => window.API.mediaVoices())
-      .then(r => { if (r && r.voices) setVoices(r.voices); });
-  }, []);
+    window.API && window.API.safeCall(() => window.API.mediaVoices(pid))
+      .then(r => { if (r && r.voices) { setVoices(r.voices); setVoiceInfo({ dub: !!r.dub, quality: r.quality || "native" }); } });
+  }, [pid]);
   const refresh = async () => {
     const fresh = await window.API.safeCall(() => window.API.getProject(pid));
     if (fresh && store.replaceProject) store.replaceProject(fresh);
@@ -578,9 +595,11 @@ function ExpMediaCard({ project, store, toast }) {
   const render = async (what) => {
     setBusy(true);
     try {
-      const r = await window.API.mediaRender(pid, what, voice);
+      const r = await window.API.mediaRender(pid, what, voice || (voices[0] && voices[0].id) || "");
       jobRef.current = r.job; setJob(r.job);
-      toast.info(what === "dub" ? TR("Озвучиваем") : TR("Собираем видео"), TR("Готовый файл появится здесь — страницу можно закрыть."));
+      toast.info(what === "dub" ? TR("Озвучиваем") : TR("Собираем видео"),
+        (r.etaSec ? TR("Примерно ") + Math.max(1, Math.round(r.etaSec / 60)) + TR(" мин. ") : "")
+        + TR("Готовый файл появится здесь — страницу можно закрыть."));
     } catch (e) { toast.error(TR("Не запущено"), e.message || String(e)); }
     setBusy(false);
   };
@@ -688,15 +707,23 @@ function ExpMediaCard({ project, store, toast }) {
         /* Кнопка сборки озвучки — ПОД выбором голоса и со своим именем:
            стоя в строке рядом с «Собрать» дорожки, она путалась с ней. */
         line(TR("Озвучка на языке перевода"), dub, "dub", null, null, true),
-        React.createElement("div", { className: "row", style: { gap: 8, alignItems: "center" } },
+        /* Сборка озвучки закрыта для всех, кроме администратора сервиса:
+           заливка «soon». Скачать уже собранную — можно (строка выше). */
+        React.createElement("div", { className: "soon-wrap col", style: { gap: 8 } },
+        /* Надпись «soon» — словом владельца, на всех языках одна. */
+        !voiceInfo.dub && React.createElement("div", { className: "soon-veil", "aria-label": TR("Озвучка скоро") },
+          React.createElement("span", null, "soon")),
+        voiceInfo.dub && voiceInfo.quality === "accent" && React.createElement("div", { style: { fontSize: 13, color: "var(--c-warning)" } },
+          TR("У этого языка нет родного голоса ни у одного движка синтеза — озвучка прозвучит с акцентом.")),
+        React.createElement("div", { className: "row", inert: voiceInfo.dub ? undefined : "", style: { gap: 8, alignItems: "center" } },
           React.createElement("span", { className: "dim", style: { fontSize: 13 } }, TR("Голос")),
-          React.createElement(Select, { value: voice, onChange: (e) => setVoice(e.target.value) },
+          React.createElement(Select, { value: voice || (voices[0] && voices[0].id) || "", onChange: (e) => setVoice(e.target.value) },
             voices.map((v, i) => React.createElement("option", { key: v.id, value: v.id },
-              (v.gender === "m" ? TR("мужской") : TR("женский")) + " " + (i % 2 + 1))))),
+              (v.gender === "m" ? TR("мужской") : TR("женский")) + " " + (v.n || (i % 2 + 1)))))),
         React.createElement("div", null,
           React.createElement(Btn, { variant: dub ? "ghost" : "primary", size: "sm", icon: "repeat",
-            disabled: buildOff, onClick: () => render("dub") },
-            dub ? TR("Собрать с озвучкой заново") : TR("Собрать с озвучкой"))),
+            disabled: buildOff || !voiceInfo.dub, onClick: () => render("dub") },
+            dub ? TR("Собрать с озвучкой заново") : TR("Собрать с озвучкой")))),
         dub && dub.over > 0 && React.createElement("div", { className: "row between row-wrap", style: { gap: 8, fontSize: 13 } },
           React.createElement("span", null, dub.over + TR(" строк не уложились в тайминг даже с ускорением — сократите перевод и соберите заново.")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => {
@@ -704,8 +731,12 @@ function ExpMediaCard({ project, store, toast }) {
             store.go("editor"); } }, TR("Показать строки"))),
         dub && dub.silent > 0 && React.createElement("div", { style: { fontSize: 13, color: "var(--c-warning)" } },
           dub.silent + TR(" строк не озвучились из-за сбоя синтеза — соберите заново.")),
+        /* Как ушёл голос оригинала — кодом с сервера (`bed`, `bedWhy`):
+           вынут из-под озвучки или только приглушён, и почему. */
+        dub && dub.bed === "ducked" && React.createElement("div", { style: { fontSize: 13, color: "var(--c-warning)" } },
+          TR("Голос оригинала в этой сборке только приглушён под озвучкой, а не убран: ") + expBedWhy(dub.bedWhy)),
         React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-          TR("Закадровый перевод: оригинальный звук приглушается под речью. Губы с речью не совпадают; голос синтезирован."))),
+          TR("Закадровый перевод: под озвучкой голос оригинала убирается, музыка и шумы остаются; где озвучки нет — звучит оригинал. Губы с речью не совпадают; голос синтезирован."))),
       React.createElement("div", { className: "dim", style: { fontSize: 12 } },
         TR("Дорожка субтитров и озвучка не перекодируют видео — качество как в оригинале. Субтитры в кадре перерисовывают каждый кадр (до 1080p). Готовые файлы хранятся 2 дня (собрать заново можно в любой момент), исходное видео — 14 дней после последней работы с ним."))));
 }

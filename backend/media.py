@@ -924,6 +924,306 @@ def budget_chars(sec, lang) -> Optional[int]:
     return max(1, int(round(float(sec) * min(float(n["read_cps"]), float(n["speak_cps"])))))
 
 
+# ─── Стемы: фон без голосов ──────────────────────────────────────────
+#
+# Закадровый перевод поверх оригинала слышен ДВУМЯ голосами: приглушение
+# (sidechaincompress) делает исходную речь тише, но не убирает её. Поэтому
+# там, где звучит озвучка, под неё кладётся ФОН — звук ролика, из которого
+# нейросеть вынула голоса (музыка, шумы, эффекты остаются), а везде, где
+# озвучки нет, остаётся ОРИГИНАЛ целиком: смех, вздохи, непереведённые строки
+# и звуки между репликами не пропадают. Маска — по фактически уложенным клипам
+# (`dub_mask`), а не по строкам: клип бывает длиннее своей строки.
+#
+# Разделитель — отдельный процесс (`separate_worker.py`, sherpa-onnx): вызов
+# нейросети на минуту звука не отменить посреди, у него своя копия
+# onnxruntime, и нативное падение не должно уносить сервис (урок pdfium
+# 20.09.2026). Здесь — только куски, файлы и сведение.
+#
+# Замер 27.09.2026 (4 ядра, 1 поток, музыка + русская речь с известной
+# правдой): всё, что осталось от речи в фоне, — Spleeter −7 дБ от речи,
+# UVR MDX-Net 9482 −10 дБ; время — 0,11 и 0,86 длительности. По умолчанию
+# Spleeter: в 8 раз быстрее и веса под MIT, а у весов UVR лицензия
+# не объявлена. Модель — путём в окружении: каталог Spleeter или файл UVR.
+
+SEP_RATE = 44100                 # на этом обучены обе модели
+SEP_CHUNK_SEC = float(os.environ.get("MEDIA_SEP_CHUNK_SEC", "60"))
+# Контекст по краям куска: модель видит секунду до и после, в кусок идёт
+# только середина — шва на стыке кусков нет.
+SEP_CONTEXT_SEC = 1.0
+SEP_THREADS = int(os.environ.get("MEDIA_SEP_THREADS", "1"))
+# Сколько длительности уходит на разделение (оценка для «≈ N мин» на экране).
+SEP_SPEED = float(os.environ.get("MEDIA_SEP_SPEED", "0.25"))
+# Запас вокруг клипа озвучки: отметки времени распознавания неточны на
+# десятые доли секунды, и хвост слова оригинала выглядывал бы из-под клипа.
+MASK_PAD = 0.3
+MASK_RAMP = 0.05                 # плавный переход оригинал ↔ фон
+_FRAME = 4                       # s16le стерео: байт на отсчёт обоих каналов
+_WORKER = Path(__file__).resolve().parent / "separate_worker.py"
+
+
+def sep_model_path() -> Optional[Path]:
+    """Модель разделения: каталог Spleeter (vocals + accompaniment) или файл
+    UVR MDX-Net. None — озвучка идёт прежним приглушением, отчёт это называет."""
+    p = os.environ.get("MEDIA_SEP_MODEL") or str(Path(__file__).resolve().parent / "data" / "models"
+                                                 / "sherpa-onnx-spleeter-2stems-fp16")
+    q = Path(p)
+    if q.is_dir() and (q / "accompaniment.fp16.onnx").is_file() and (q / "vocals.fp16.onnx").is_file():
+        return q
+    if q.is_file() and q.suffix == ".onnx":
+        return q
+    return None
+
+
+def sep_available() -> tuple:
+    """(можно ли отделять голоса, код причины). Код переводит браузер."""
+    if sep_model_path() is None:
+        return False, "no_model"
+    try:
+        import importlib.util
+        if importlib.util.find_spec("sherpa_onnx") is None:
+            return False, "no_module"
+    except Exception:
+        return False, "no_module"
+    return True, ""
+
+
+def decode_pcm(src, start: float, length: float, rate: int = SEP_RATE, channels: int = 2):
+    """Кусок первой звуковой дорожки → float32 (channels, n) ровно на `length`.
+    `first_pts=0` дополняет тишиной начало, если звук в контейнере начинается
+    позже картинки (MPEG-TS, .mov с правкой начала): иначе фон ехал бы раньше
+    видео. Моно размножается, 5.1 сводится — `-ac 2`."""
+    import numpy as np
+    args = (["-ss", "%.6f" % start] if start > 0 else []) + [
+        "-i", src, "-map", "0:a:0", "-vn", "-sn", "-dn", "-t", "%.6f" % length,
+        "-af", "aresample=async=1:first_pts=0",
+        "-ac", channels, "-ar", rate, "-f", "s16le", "pipe:1"]
+    r = run(_ffmpeg(*args), timeout=max(120.0, length * 2))
+    a = np.frombuffer(r.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+    n = len(a) // channels
+    x = a[:n * channels].reshape(n, channels).T
+    want = int(round(length * rate))
+    if x.shape[1] < want:                        # звук кончился раньше
+        x = np.pad(x, ((0, 0), (0, want - x.shape[1])))
+    return np.ascontiguousarray(x[:, :want])
+
+
+class PcmStream:
+    """Звук отрезка ОДНИМ потоком ffmpeg (s16le 44,1 кГц стерео), читается
+    кусками. Подложка собирается из него, а не отдельным `-ss` на каждую
+    минуту: у файлов без индекса (VBR mp3, ogg) каждый такой поиск — оценка,
+    и на стыках минут звучали бы щелчки и повторы. Между чтениями опрашиваются
+    ABORT и CANCEL, как в `run`."""
+
+    def __init__(self, src, start: float, length: float):
+        args = (["-ss", "%.6f" % start] if start > 0 else []) + [
+            "-i", src, "-map", "0:a:0", "-vn", "-sn", "-dn", "-t", "%.6f" % length,
+            "-af", "aresample=async=1:first_pts=0", "-ac", 2, "-ar", SEP_RATE, "-f", "s16le", "pipe:1"]
+        try:
+            self._p = subprocess.Popen(_polite(_ffmpeg(*args)), stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except OSError as e:
+            raise MediaError("ffmpeg не запустился: %s" % e)
+
+    def read(self, n: int):
+        """Следующие `n` отсчётов → float32 (2, n); кончился звук — тишина."""
+        import numpy as np
+        if ABORT():
+            raise Aborted("Работа отложена до перезапуска сервиса")
+        if CANCEL():
+            raise Cancelled("Сборка отменена")
+        want, buf = n * _FRAME, b""
+        while len(buf) < want:
+            part = self._p.stdout.read(want - len(buf))
+            if not part:
+                break
+            buf += part
+        if len(buf) < want and self._p.wait() != 0:
+            raise MediaError("ffmpeg не дочитал звук")
+        a = np.frombuffer(buf[:len(buf) // _FRAME * _FRAME], dtype="<i2").astype(np.float32) / 32768.0
+        x = a.reshape(-1, 2).T
+        if x.shape[1] < n:
+            x = np.pad(x, ((0, 0), (0, n - x.shape[1])))
+        return np.ascontiguousarray(x)
+
+    def close(self) -> None:
+        if self._p.poll() is None:
+            self._p.kill()
+        try:
+            self._p.communicate(timeout=10)
+        except Exception:
+            pass
+
+
+# Контейнеры, где поиск по времени — ОЦЕНКА (нет индекса): звук такого файла
+# один раз выгружается в FLAC, и дальше все куски берутся из него точно.
+_ROUGH_SEEK = {".mp3", ".ogg", ".oga", ".opus", ".wma", ".amr", ".aac"}
+
+
+def sep_source(src, cache_dir) -> Path:
+    """Файл, из которого берутся куски для разделения и подложки: сам
+    исходник либо его звук во FLAC (`_ROUGH_SEEK`), с той же шкалой времени."""
+    src = Path(src)
+    if src.suffix.lower() not in _ROUGH_SEEK:
+        return src
+    cache_dir = Path(cache_dir)
+    dst = cache_dir / "source.flac"
+    if dst.exists():
+        return dst
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    tmp = cache_dir / "source.tmp.flac"
+    try:
+        run(_ffmpeg("-i", src, "-map", "0:a:0", "-vn", "-sn", "-dn", "-af", "aresample=async=1:first_pts=0",
+                    "-ac", 2, "-ar", SEP_RATE, "-c:a", "flac", tmp), timeout=3600)
+        os.replace(str(tmp), str(dst))
+    finally:
+        tmp.unlink(missing_ok=True)
+    return dst
+
+
+def sep_model_key(model: Path) -> list:
+    """Отпечаток модели для ключа кэша: подменили файл под тем же именем —
+    куски считаются заново, а не берутся от прежней модели."""
+    f = model / "accompaniment.fp16.onnx" if model.is_dir() else model
+    st = f.stat()
+    return [model.name, st.st_size, int(st.st_mtime), SEP_CHUNK_SEC, SEP_CONTEXT_SEC]
+
+
+def dub_mask(clips: list) -> list:
+    """Окна «здесь звучит озвучка» [(начало, конец)] в секундах результата:
+    клип целиком с запасом `MASK_PAD`, пересекающиеся слиты."""
+    w = sorted((max(0.0, a - MASK_PAD), b + MASK_PAD) for a, b in clips if b > a)
+    out = []
+    for a, b in w:
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def mask_seconds(windows: list) -> float:
+    return sum(b - a for a, b in windows)
+
+
+def sep_chunks(windows: list, origin: float, length: float) -> list:
+    """Номера кусков сетки исходника, которые нужно разделить. Сетка — по
+    времени ИСХОДНИКА (кусок k = [k·C, (k+1)·C)), поэтому смена обрезки или
+    сдвиг на ключевой кадр не выбрасывают уже разделённое. `origin` — время
+    исходника, которому соответствует ноль результата; окна за концом
+    результата не считаются."""
+    ks = set()
+    for a, b in windows:
+        a, b = max(0.0, a), min(length, b)
+        if b <= a:
+            continue
+        k0 = int((origin + a) // SEP_CHUNK_SEC)
+        k1 = int((origin + b - 1e-6) // SEP_CHUNK_SEC)
+        ks.update(range(max(0, k0), k1 + 1))
+    return sorted(ks)
+
+
+def separate_chunk(src, k: int, out_dir, model: Path, src_len: float) -> Path:
+    """Фон куска k сетки → `out_dir/k.flac` (44,1 кГц стерео). Уже готовый —
+    не трогается: кэш переживает остановку, выкат и повторную сборку.
+    Отмена и выкат посреди куска убивают процесс (`run` опрашивает CANCEL
+    и ABORT раз в секунду), временные файлы убираются."""
+    import numpy as np
+    out_dir = Path(out_dir)
+    dst = out_dir / ("%d.flac" % k)
+    if dst.exists():
+        return dst
+    out_dir.mkdir(parents=True, exist_ok=True)
+    a = k * SEP_CHUNK_SEC
+    b = min(src_len, a + SEP_CHUNK_SEC)
+    lo = max(0.0, a - SEP_CONTEXT_SEC)
+    hi = min(src_len, b + SEP_CONTEXT_SEC)
+    tin, tout, tflac = (out_dir / ("%d.in.raw" % k), out_dir / ("%d.out.raw" % k),
+                        out_dir / ("%d.tmp.flac" % k))
+    try:
+        x = decode_pcm(src, lo, hi - lo)
+        tin.write_bytes((np.clip(x, -1.0, 1.0) * 32767.0).astype("<i2").T.tobytes())
+        del x
+        run([sys.executable, str(_WORKER), str(model), str(max(1, SEP_THREADS)), str(tin), str(tout)],
+            timeout=max(300.0, (hi - lo) * 12))
+        bg = np.frombuffer(tout.read_bytes(), dtype="<i2").reshape(-1, 2)
+        i0 = int(round((a - lo) * SEP_RATE))
+        n = int(round((b - a) * SEP_RATE))
+        mid = bg[i0:i0 + n]
+        if len(mid) < n:
+            mid = np.pad(mid, ((0, n - len(mid)), (0, 0)))
+        run(_ffmpeg("-f", "s16le", "-ar", SEP_RATE, "-ac", 2, "-i", "pipe:0", "-c:a", "flac", tflac),
+            timeout=300, stdin=np.ascontiguousarray(mid).tobytes())
+        os.replace(str(tflac), str(dst))
+    finally:
+        for t in (tin, tout, tout.with_name(tout.name + ".part"), tflac):
+            try:
+                t.unlink()
+            except OSError:
+                pass
+    return dst
+
+
+def _ramp_mask(n: int, t0: float, windows: list):
+    """Маска 0…1 на `n` отсчётов, начиная с секунды `t0` результата:
+    1 — озвучка (фон без голосов), 0 — оригинал; края — плавные, внутри окна."""
+    import numpy as np
+    m = np.zeros(n, dtype=np.float32)
+    r = max(1, int(MASK_RAMP * SEP_RATE))
+    for a, b in windows:
+        i = int(round((a - t0) * SEP_RATE))
+        j = int(round((b - t0) * SEP_RATE))
+        if j <= 0 or i >= n:
+            continue
+        seg = np.ones(j - i, dtype=np.float32)
+        k = min(r, (j - i) // 2)
+        if k > 0:
+            up = np.arange(k, dtype=np.float32) / k
+            seg[:k] = up
+            seg[-k:] = up[::-1]
+        lo, hi = max(0, i), min(n, j)
+        m[lo:hi] = np.maximum(m[lo:hi], seg[lo - i:hi - i])
+    return m
+
+
+def build_bed(src, bed_path, origin: float, length: float, windows: list, chunk_dir, src_len: float) -> None:
+    """Подложка под озвучку (s16le 44,1 кГц стерео, на диске): оригинал там,
+    где озвучки нет, фон без голосов — там, где есть. Кусками сетки
+    исходника: в памяти не больше минуты звука."""
+    import numpy as np
+    total = int(round(length * SEP_RATE))
+    k0 = int(origin // SEP_CHUNK_SEC)
+    k1 = int(max(origin, origin + length - 1e-6) // SEP_CHUNK_SEC)
+    written = 0
+    stream = PcmStream(src, origin, length)
+    try:
+        with open(bed_path, "wb") as f:
+            for k in range(k0, k1 + 1):
+                b = min(origin + length, (k + 1) * SEP_CHUNK_SEC)       # время исходника
+                n = min(int(round((b - origin) * SEP_RATE)), total) - written
+                if n <= 0:
+                    continue
+                a = origin + written / SEP_RATE
+                x = stream.read(n)
+                m = _ramp_mask(n, written / SEP_RATE, windows)
+                chunk = Path(chunk_dir) / ("%d.flac" % k)
+                # Куска нет только у окна, задевшего его долей отсчёта на округлении
+                # (`sep_chunks` его не взял): там звучит оригинал, а не отказ сборки.
+                if m.any() and chunk.exists():
+                    full = decode_pcm(chunk, 0.0,
+                                      max(0.0, min(SEP_CHUNK_SEC, src_len - k * SEP_CHUNK_SEC)))
+                    i0 = int(round((a - k * SEP_CHUNK_SEC) * SEP_RATE))
+                    bg = full[:, i0:i0 + n]
+                    if bg.shape[1] < n:
+                        bg = np.pad(bg, ((0, 0), (0, n - bg.shape[1])))
+                    x = x * (1.0 - m) + bg * m
+                f.write((np.clip(x, -1.0, 1.0) * 32767.0).astype("<i2").T.tobytes())
+                written += n
+            if written < total:
+                f.write(b"\0" * ((total - written) * _FRAME))
+    finally:
+        stream.close()
+
+
 # ─── Озвучка ─────────────────────────────────────────────────────────
 
 def fit_tempo(clip_sec: float, window_sec: float) -> tuple:
@@ -1050,21 +1350,35 @@ def mux_subtitles(src, srt, dst, info: dict, lang: str = "", span=None) -> None:
     run(_ffmpeg(*(args + [dst])), timeout=max(600.0, (info.get("duration") or 0) * 0.5))
 
 
-def mux_dub(src, track_path, dst, info: dict, duck: float = 0.2, lang: str = "", span=None) -> None:
-    """Закадровый перевод: оригинальный звук приглушается ПОД речью
-    (sidechaincompress — пока говорит озвучка) и остаётся фоном, поверх —
-    новая речь. Видео — копией потока; вторая дорожка — оригинальный звук
+def mux_dub(src, track_path, dst, info: dict, duck: float = 0.2, lang: str = "", span=None,
+            bed=None) -> None:
+    """Закадровый перевод. С подложкой (`bed`, `build_bed`) под озвучкой звучит
+    фон без голосов, вне её — оригинал. Без подложки (нет модели разделения,
+    слишком длинно, сбой) — прежнее: оригинал приглушается ПОД речью
+    (sidechaincompress) и слышен вторым голосом. Видео — копией потока;
+    вторая дорожка — оригинальный звук
     как был, чтобы зритель мог переключиться. У звукового файла на входе
     результат — m4a с одной дорожкой."""
     ext = Path(dst).suffix.lower()
     has_video = bool(info.get("video")) and ext != ".m4a"
     base = max(0.05, min(1.0, float(duck)))
-    fc = ("[1:a]aresample=48000,asplit=2[sc][voice];"
-          "[0:a:0]aresample=48000,volume=%.2f[bg];"
-          "[bg][sc]sidechaincompress=threshold=0.03:ratio=6:attack=15:release=350[ducked];"
-          "[ducked][voice]amix=inputs=2:normalize=0:duration=first[out]" % (0.6 + base))
-    args = _span_in(span) + ["-i", src, "-f", "s16le", "-ar", TTS_RATE, "-ac", 1, "-i", track_path,
-            "-filter_complex", fc]
+    args = _span_in(span) + ["-i", src, "-f", "s16le", "-ar", TTS_RATE, "-ac", 1, "-i", track_path]
+    if bed is not None:
+        # Подложка (`build_bed`): под озвучкой голосов в ней уже нет, поэтому
+        # сжатие мягкое — только чтобы музыка не спорила с речью; вне озвучки
+        # сжимать нечем, и там звучит оригинал как был.
+        args += ["-f", "s16le", "-ar", SEP_RATE, "-ac", 2, "-i", bed]
+        fc = ("[1:a]aresample=48000,asplit=2[sc][voice];"
+              "[2:a]aresample=48000[bg];"
+              "[bg][sc]sidechaincompress=threshold=0.05:ratio=3:attack=20:release=400[ducked];"
+              "[ducked][voice]amix=inputs=2:normalize=0:duration=first,alimiter=limit=0.95:latency=1[out]")
+    else:
+        fc = ("[1:a]aresample=48000,asplit=2[sc][voice];"
+              "[0:a:0]aresample=48000,volume=%.2f[bg];"
+              "[bg][sc]sidechaincompress=threshold=0.03:ratio=6:attack=15:release=350[ducked];"
+              "[ducked][voice]amix=inputs=2:normalize=0:duration=first,alimiter=limit=0.95:latency=1[out]"
+              % (0.6 + base))
+    args += ["-filter_complex", fc]
     if has_video:
         args += ["-map", "0:v:0", "-c:v", "copy"] + _vtag(info, ext)
     args += ["-map", "[out]", "-c:a:0", "aac", "-b:a:0", "160k"]

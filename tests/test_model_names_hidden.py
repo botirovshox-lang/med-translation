@@ -59,7 +59,15 @@ def check(cond, label):
 # а не переписываем руками: новая модель попадёт под проверку сама.
 NAMES = ([m["id"].lower() for m in main.OPENAI_MODELS]
          + [m["label"].lower() for m in main.OPENAI_MODELS]
-         + ["anthropic", "openai", "text-embedding"])
+         + ["anthropic", "openai", "text-embedding"]
+         # Синтез речи: движки и имена голосов поставщиков — тоже устройство
+         # (озвучка, инвариант 38); список — из каталога голосов.
+         + [e.lower() for e in main.tts_engines.ENGINES]
+         + [n.lower() for e in (main.tts_engines.data().get("azure") or {}).values()
+            for n in (e.get("f") or []) + (e.get("m") or [])]
+         # Голоса OpenAI («ash», «nova») сюда не входят: они — части обычных
+         # слов (hash, dashboard); их чистку сторожит tests/test_media.py.
+         + ["microsoft"])
 
 
 def leaks(obj) -> list:

@@ -457,5 +457,6 @@
   "Месячный лимит на эту функцию исчерпан: обратитесь к администратору сервиса. Лимит сбрасывается 1-го числа.": "Bu funksiya uchun oylik limit tugadi: xizmat administratoriga murojaat qiling. Limit har oyning 1-sanasida yangilanadi.",
   "Функция прогона выключена или её месячный лимит исчерпан: прогон остановлен, сделанное сохранено.": "Ishga tushirish funksiyasi o'chirilgan yoki uning oylik limiti tugagan: ishga tushirish to'xtatildi, bajarilgani saqlandi.",
   "Цены и лимиты — только суперпользователю": "Narxlar va limitlar — faqat superfoydalanuvchiga",
-  ": функция выключена или её лимит исчерпан": ": funksiya o'chirilgan yoki uning limiti tugagan"
+  ": функция выключена или её лимит исчерпан": ": funksiya o'chirilgan yoki uning limiti tugagan",
+  "Озвучка скоро будет доступна": "Ovoz berish tez orada ishga tushadi"
 }

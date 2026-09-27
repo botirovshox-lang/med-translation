@@ -457,5 +457,6 @@
   "Месячный лимит на эту функцию исчерпан: обратитесь к администратору сервиса. Лимит сбрасывается 1-го числа.": "The monthly limit for this function is used up: contact the service administrator. The limit resets on the 1st.",
   "Функция прогона выключена или её месячный лимит исчерпан: прогон остановлен, сделанное сохранено.": "A function of this run is turned off or its monthly limit is used up: the run was stopped, the work done is saved.",
   "Цены и лимиты — только суперпользователю": "Prices and limits are for the superuser only",
-  ": функция выключена или её лимит исчерпан": ": the function is turned off or its limit is used up"
+  ": функция выключена или её лимит исчерпан": ": the function is turned off or its limit is used up",
+  "Озвучка скоро будет доступна": "Dubbing will be available soon"
 }

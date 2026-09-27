@@ -921,6 +921,7 @@ function metHintText(code) {
     case "slowRoute": return TR("мс в среднем отвечает маршрут");
     case "waste:repairReverted": return TR("правок ремонта откатилось — за них заплачено");
     case "waste:reviewVeto": return TR("готовых правок ревизии не прошли сверку — за них заплачено");
+    case "waste:sepFallback": return TR("озвучек собрано приглушением: голос оригинала слышен под переводом");
     case "waste:refusal": return TR("отказов модели отвечать: токены выставлены в счёт");
     case "waste:jobStopped:limit": return TR("прогонов остановлено исчерпанным лимитом");
     case "waste:jobStopped:fnlimit": return TR("прогонов остановлено правилом функции");

@@ -2245,7 +2245,11 @@ ASR_MODEL = os.environ.get("ASR_MODEL", "whisper-1")
 TTS_MODEL = os.environ.get("TTS_MODEL", "gpt-4o-mini-tts")
 AUX_MODEL_PRICES = {EMBED_MODEL: {"in": 0.02, "out": 0.0},
                     ASR_MODEL: {"in": 0.0, "out": 0.0, "perMin": 0.006},
-                    TTS_MODEL: {"in": 0.0, "out": 0.0, "perMin": 0.015}}
+                    TTS_MODEL: {"in": 0.0, "out": 0.0, "perMin": 0.015},
+                    # Azure Speech берёт деньги за ЗНАКИ текста (иероглифы — по два),
+                    # а не за минуты: считать его минутами значило бы врать в смете.
+                    "azure-neural": {"in": 0.0, "out": 0.0,
+                                     "perChar": float(os.environ.get("AZURE_TTS_PER_MCHAR", "15")) / 1e6}}
 
 RUN_COST_HISTORY = 100          # сколько прогонов помним в state.json
 
@@ -2795,6 +2799,10 @@ def _strip_project_models(out: dict) -> None:
     и переименовывать."""
     if not _hide_models():
         return
+    rr = out.get("mediaRender")
+    if isinstance(rr, dict) and isinstance(rr.get("dub"), dict) and "ttsEngine" in rr["dub"]:
+        # Движок озвучки называет поставщика (Azure, OpenAI) — суперу, и только.
+        out["mediaRender"] = dict(rr, dub={k: v for k, v in rr["dub"].items() if k != "ttsEngine"})
     tl = out.get("termlist")
     if isinstance(tl, dict):
         tl = dict(tl)
@@ -3586,6 +3594,16 @@ def _note_audio(step: str, model_id: str, seconds: float) -> None:
     try:
         per = (AUX_MODEL_PRICES.get(model_id) or {}).get("perMin")
         cost = None if per is None else max(0.0, float(seconds)) / 60.0 * float(per)
+        _note_cost(step, model_id, 0, 0, 0, 0, cost)
+    except Exception as e:
+        print(f"[backend] учёт расхода не сработал ({step}/{model_id}): {e}", file=sys.stderr)
+
+
+def _note_chars(step: str, model_id: str, chars: int) -> None:
+    """Расход вызова, который поставщик считает ЗНАКАМИ (`perChar`)."""
+    try:
+        per = (AUX_MODEL_PRICES.get(model_id) or {}).get("perChar")
+        cost = None if per is None else max(0, int(chars)) * float(per)
         _note_cost(step, model_id, 0, 0, 0, 0, cost)
     except Exception as e:
         print(f"[backend] учёт расхода не сработал ({step}/{model_id}): {e}", file=sys.stderr)
@@ -6068,6 +6086,10 @@ def register(req: RegisterRequest, request: Request):
             "hash": h, "salt": salt, "role": "owner", "name": (req.name or "").strip() or email.split("@")[0],
             "active": True, "uiLang": lang or DEFAULT_UI_LANG, "created": today,
             "acceptedTerms": {"version": (legal_mod.VERSION if legal_mod else ""),
+                              # Получатели текста зависят от ключей в окружении,
+                              # а редакция — нет: без этой строки не ответить,
+                              # был ли назван Microsoft в день согласия.
+                              "providers": (legal_mod._model_provider() if legal_mod else ""),
                               "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "ip": raw_ip,
                               "net": ip}}
     if lang:
@@ -8363,6 +8385,7 @@ METRICS_BLOCK_TEXT = {
 METRICS_WASTE_TEXT = {
     "repairReverted": "правок ремонта откатилось",
     "reviewVeto": "готовых правок ревизии не прошли сверку",
+    "sepFallback": "озвучек собрано приглушением: голос оригинала слышен под переводом",
     "refusal": "отказов модели отвечать (токены оплачены)",
     "jobStopped:limit": "прогонов остановлено лимитом",
     "jobStopped:provider_quota": "прогонов остановлено пустым счётом поставщика",
@@ -19699,11 +19722,13 @@ def extract_terms(pid: int, req: ExtractTermsRequest = ExtractTermsRequest()):
 RUN_WORKERS = max(1, min(int(os.environ.get("RUN_WORKERS", "12")), 16))
 
 
-def _run_parallel(items: list, fn):
+def _run_parallel(items: list, fn, workers: Optional[int] = None):
     """Выполнить fn для каждого элемента, сохранив порядок результатов.
     fn обязана ловить свои исключения сама: одна упавшая пара не должна
-    ронять всю порцию."""
-    if RUN_WORKERS <= 1 or len(items) <= 1:
+    ронять всю порцию. `workers` — потолок одновременных вызовов ниже
+    общего (у бесплатного уровня Azure ~20 запросов в минуту)."""
+    cap = min(RUN_WORKERS, workers) if workers else RUN_WORKERS
+    if cap <= 1 or len(items) <= 1:
         return [fn(x) for x in items]
     from concurrent.futures import ThreadPoolExecutor
     # Организация — в рабочие потоки: они свои и thread-local не наследуют.
@@ -19733,7 +19758,7 @@ def _run_parallel(items: list, fn):
         _JOB_MODELS.m = models
         _JOB_PROJECT.id = upid
         return fn(x)
-    with ThreadPoolExecutor(max_workers=min(RUN_WORKERS, len(items)),
+    with ThreadPoolExecutor(max_workers=min(cap, len(items)),
                             thread_name_prefix="mcat-run") as pool:
         return list(pool.map(run, items))
 
@@ -32073,7 +32098,7 @@ def _job_public(job: dict) -> dict:
         # каждые пару секунд, так что это была бы самая частая утечка из всех.
         if out.get("params"):
             out["params"] = {k: v for k, v in out["params"].items()
-                             if k not in _MODEL_PARAM_KEYS}
+                             if k not in _MODEL_PARAM_KEYS and k != "ttsEngine"}
     if _hide_cost():
         if out.get("usage"):
             out["usage"] = {k: v for k, v in out["usage"].items()
@@ -32965,6 +32990,10 @@ try:
     import media as media_mod
 except ImportError:                                   # pragma: no cover
     from backend import media as media_mod            # type: ignore
+try:
+    import tts_engines
+except ImportError:                                   # pragma: no cover
+    from backend import tts_engines                   # type: ignore
 
 MEDIA_DIR = DATA_DIR / "media"            # внутри ReadWritePaths systemd-юнита
 MEDIA_UPLOAD_DIR = MEDIA_DIR / "uploads"
@@ -33004,8 +33033,28 @@ MEDIA_ACCEL_PREFIX = os.environ.get("MEDIA_ACCEL_PREFIX", "").strip()
 _MEDIA_KINDS = {"asr", "mediarender"}
 # Голоса озвучки. Наружу — нейтральные ярлыки: имя голоса поставщика само
 # называет поставщика (инвариант 24а), а человеку нужно «мужской/женский».
-MEDIA_VOICES = [{"id": "f1", "gender": "f", "v": "coral"}, {"id": "f2", "gender": "f", "v": "nova"},
-                {"id": "m1", "gender": "m", "v": "onyx"}, {"id": "m2", "gender": "m", "v": "ash"}]
+# f0/m0 — самые живые голоса модели («For best quality, we recommend marin
+# or cedar», документация поставщика); они же по умолчанию. Прежние ярлыки
+# f1…m2 значат то же, что и раньше: у проектов в params лежит ярлык, и его
+# смысл менять нельзя. `n` — номер голоса внутри пола для подписи на экране.
+MEDIA_VOICES = [{"id": "f0", "gender": "f", "v": "marin", "n": 1},
+                {"id": "m0", "gender": "m", "v": "cedar", "n": 1},
+                {"id": "f1", "gender": "f", "v": "coral", "n": 2}, {"id": "f2", "gender": "f", "v": "nova", "n": 3},
+                {"id": "m1", "gender": "m", "v": "onyx", "n": 2}, {"id": "m2", "gender": "m", "v": "ash", "n": 3}]
+# Инструкция синтеза. Версия входит в ключ кэша: иначе в одном ролике
+# звучали бы реплики, прочитанные по прежней и по новой инструкции.
+TTS_STYLE_V = 2
+# Версия правил письма перед синтезом (`tts_engines.prepare_text`): входит
+# в ключ кэша, как версия стиля, — правка транслитерации перечитывает строки.
+TTS_TRANSLIT_V = 1
+# Azure параллельно — осторожно: у бесплатного уровня ~20 запросов в минуту.
+AZURE_TTS_PARALLEL = int(os.environ.get("AZURE_TTS_PARALLEL", "2"))
+# Сколько секунд сборка терпит «слишком часто» у движка синтеза, прежде чем
+# такие строки начнут тратить обычные попытки.
+MEDIA_TTS_THROTTLE_SEC = float(os.environ.get("MEDIA_TTS_THROTTLE_SEC", "900"))
+TTS_STYLE = ("Speak %s as a native professional voice-over artist dubbing a video: natural, warm, "
+             "expressive and conversational, with the intonation of real speech rather than reading. "
+             "Follow the punctuation; keep a steady, lively pace.")
 _MEDIA_LOCK = threading.Lock()
 
 
@@ -33121,10 +33170,12 @@ def _media_sweep(now: Optional[float] = None) -> dict:
             except OSError:
                 pass
         src = _media_source(p)
-        if src is None and (_media_dir(p["id"]) / "tts").exists():
-            # Исходника нет, а кэш синтеза остался (удалён прежними правилами
-            # или вручную): собрать озвучку всё равно не из чего.
-            shutil.rmtree(str(_media_dir(p["id"]) / "tts"), ignore_errors=True)
+        if src is None:
+            # Исходника нет, а кэши синтеза и фона остались (удалены прежними
+            # правилами или вручную): собрать озвучку всё равно не из чего.
+            for sub in ("tts", "sep"):
+                if (_media_dir(p["id"]) / sub).exists():
+                    shutil.rmtree(str(_media_dir(p["id"]) / sub), ignore_errors=True)
         if src is not None:
             try:
                 old = now - src.stat().st_mtime > MEDIA_KEEP_DAYS * 86400
@@ -33138,7 +33189,7 @@ def _media_sweep(now: Optional[float] = None) -> dict:
                     dirty = True
                 except OSError:
                     pass
-                for sub in ("asr", "work", "tts"):
+                for sub in ("asr", "work", "tts", "sep"):
                     shutil.rmtree(str(_media_dir(p["id"]) / sub), ignore_errors=True)
     if dirty:
         save_state(STATE)
@@ -33654,6 +33705,14 @@ def _media_err_text(e: Exception) -> str:
     t = str(e)[:300]
     for name in [ASR_MODEL, TTS_MODEL] + [v["v"] for v in MEDIA_VOICES]:
         t = re.sub(r"\b%s\b" % re.escape(name), "…", t)
+    # Голоса Azure («uz-UZ-MadinaNeural», «sr-Latn-RS-…»): буквально по
+    # каталогу и шаблоном; адрес региона и имя поставщика.
+    for e_ in (tts_engines.data().get("azure") or {}).values():
+        for name in (e_.get("f") or []) + (e_.get("m") or []):
+            t = t.replace(name, "…")
+    t = re.sub(r"\b[a-z]{2,3}(-[A-Za-z]{2,8})+Neural\b", "…", t)
+    t = re.sub(r"[\w.-]*(tts\.speech\.microsoft\.com|cognitive\w*)[\w./-]*", "…", t, flags=re.I)
+    t = re.sub(r"\b(azure|microsoft)\b", "…", t, flags=re.I)
     return t
 
 
@@ -33960,41 +34019,71 @@ def _media_voice(vid: str) -> dict:
 
 
 def _tts_clip(item: tuple) -> dict:
-    """Синтез одной реплики → PCM, кэш по (модель, голос, язык, текст):
-    правка одной строки перепокупает одну реплику, а не весь ролик."""
-    text, voice, lang_name, cache = item
+    """Синтез одной реплики движком, выбранным на ВСЮ сборку (`_dub_route`),
+    → PCM; кэш по движку, голосу, языку, тексту и версиям стиля и письма:
+    правка одной строки перепокупает одну реплику, а не весь ролик.
+    `stop` — ключ отклонён или квота кончилась: сборку останавливаем сразу,
+    а не обстреливаем поставщика строка за строкой."""
+    text, engine_id, voice, lang, lang_name, cache = item
     if cache.exists():
         return {"ok": True, "pcm": cache.read_bytes()}
     try:
         _llm_limit_gate("tts")
-        from openai import OpenAI
-        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=120, max_retries=2)
-        resp = client.audio.speech.create(
-            model=TTS_MODEL, voice=voice, input=text[:3900], response_format="pcm",
-            instructions="Read in %s as a calm, clear voice-over narrator. Natural pace." % lang_name)
-        pcm = resp.read() if hasattr(resp, "read") else (resp.content if hasattr(resp, "content") else bytes(resp))
-        _note_audio("tts", TTS_MODEL, media_mod.pcm_seconds(pcm))
+        eng = tts_engines.ENGINES[engine_id]
+        pcm = eng.synth(text, lang, voice, TTS_STYLE % lang_name if engine_id == "openai" else "")
+        if engine_id == "azure":
+            # Счёт — по тексту, который УШЁЛ поставщику (после смены письма
+            # латиница длиннее кириллицы: «ш» → «sh»).
+            rule = ((tts_engines.data().get("azure") or {}).get((lang or "").upper()) or {}).get("translit")
+            _note_chars("tts", "azure-neural", tts_engines.billable_chars(tts_engines.prepare_text(text, rule)))
+        else:
+            _note_audio("tts", TTS_MODEL, media_mod.pcm_seconds(pcm))
         tmp = cache.with_name(cache.name + ".tmp")
         tmp.write_bytes(pcm)
         os.replace(str(tmp), str(cache))
         return {"ok": True, "pcm": pcm}
+    except tts_engines.TtsError as e:
+        return {"ok": False, "error": _media_err_text(e), "quota": e.quota, "fatal": e.fatal,
+                "throttle": e.throttle, "after": e.after, "final": not (e.retry or e.throttle)}
     except Exception as e:
         _note_provider_error(e)
         return {"ok": False, "error": _media_err_text(e)}
 
 
-def _dub_place(todo, items, starts, seg_of, tr_map, shift, silent, over, counts) -> None:
-    """Укладка озвученных реплик в дорожку (вынесено, чтобы отмена на этом
-    шаге убирала файл дорожки — см. `_job_mediarender`)."""
+def _dub_route(project: dict) -> dict:
+    """Движок озвучки для языка перевода — ОДИН на сборку: решается при
+    постановке и лежит в задаче. Выбирай его на каждой строке — и сбой Azure
+    на части строк смешал бы в одном ролике два разных голоса."""
+    return tts_engines.route(project.get("tgt") or "EN")
+
+
+def _dub_layout(todo, items, starts) -> list:
+    """Где и как ляжет каждый клип: [(i, реплика, элемент, темп, вердикт,
+    длина клипа после ускорения | None)]. Считается по РАЗМЕРУ файлов кэша,
+    без чтения отсчётов, — им же пользуются и маска подложки, и укладка:
+    разойдись они, фон без голосов лёг бы не под тот клип."""
+    out = []
     for (i, c), it in zip(todo, items):
-        if not it[3].exists():
-            silent.extend(seg_of.get(i, []))       # синтез не удался и после повторов
+        if not it[-1].exists():
+            out.append((i, c, it, 1.0, "silent", None))
             continue
-        pcm = it[3].read_bytes()
+        sec = it[-1].stat().st_size / 2.0 / media_mod.TTS_RATE
         nxt = next((s for s in starts if s > c["start"] + 0.01), None)
         window = ((nxt - 0.08) if nxt is not None else (c["end"] + 1.5)) - c["start"]
         window = max(window, (c["end"] or c["start"]) - c["start"])
-        tempo, verdict = media_mod.fit_tempo(media_mod.pcm_seconds(pcm), window)
+        tempo, verdict = media_mod.fit_tempo(sec, window)
+        out.append((i, c, it, tempo, verdict, sec / tempo))
+    return out
+
+
+def _dub_place(layout, seg_of, tr_map, shift, silent, over, counts) -> None:
+    """Укладка озвученных реплик в дорожку (вынесено, чтобы отмена на этом
+    шаге убирала файл дорожки — см. `_job_mediarender`)."""
+    for i, c, it, tempo, verdict, _ln in layout:
+        if verdict == "silent":
+            silent.extend(seg_of.get(i, []))       # синтез не удался и после повторов
+            continue
+        pcm = it[-1].read_bytes()
         if tempo > 1.0:
             pcm = media_mod.atempo_pcm(pcm, tempo)
         if verdict == "fast":
@@ -34003,6 +34092,78 @@ def _dub_place(todo, items, starts, seg_of, tr_map, shift, silent, over, counts)
             over.extend(seg_of.get(i, []))
         media_mod.add_clip(tr_map, c["start"] + shift, pcm)
         counts["voiced"] += 1
+
+
+# Подложка без голосов (`media.build_bed`): разделение — процессор общего
+# сервера, поэтому потолок по минутам ОЗВУЧКИ (не ролика): дальше — прежнее
+# приглушение, и отчёт это называет.
+MEDIA_SEP_MAX_MINUTES = float(os.environ.get("MEDIA_SEP_MAX_MINUTES", "120"))
+
+
+def _dub_sep_dir(project: dict, src: Path, model: Path) -> Path:
+    """Кэш кусков фона: живёт рядом с исходником и уходит с ним (как кэш
+    синтеза). Ключ — модель, сетка и сам файл (момент загрузки + размер):
+    загрузили файл заново — куски считаются заново."""
+    key = hashlib.sha1(json.dumps(media_mod.sep_model_key(model) + [
+        src.stat().st_size, (project.get("media") or {}).get("uploaded")]).encode("utf-8")).hexdigest()[:12]
+    return _media_dir(project["id"]) / "sep" / key
+
+
+def _dub_separate(job: dict, project: dict, src: Path, probe: dict, origin: float, length: float,
+                  windows: list):
+    """Разделить куски, над которыми зазвучит озвучка. ("separated" | "ducked",
+    код причины) — или None, если задача ушла (стоп, выкат, уступка): тогда
+    вызывающий выходит, а готовые куски лежат файлами и второй раз
+    не считаются."""
+    if not probe.get("audio"):
+        return "ducked", "no_audio"
+    ok, why = media_mod.sep_available()
+    if not ok:
+        return "ducked", why
+    if media_mod.mask_seconds(windows) > MEDIA_SEP_MAX_MINUTES * 60:
+        return "ducked", "long"
+    model = media_mod.sep_model_path()
+    cdir = _dub_sep_dir(project, src, model)
+    src_len = float(probe.get("duration") or (origin + length))
+    ks = media_mod.sep_chunks(windows, origin, length)
+    job["phase"] = "separate"
+    try:
+        # mp3/ogg без индекса: поиск по времени там — оценка, поэтому звук
+        # один раз выгружается во FLAC и все куски берутся из него.
+        sep_src = media_mod.sep_source(src, cdir)
+    except (media_mod.Cancelled, media_mod.Aborted):
+        raise
+    except media_mod.MediaError as e:
+        print("[dub] звук проекта %s не выгрузился для разделения: %s" % (project["id"], e), flush=True)
+        return "ducked", "error"
+    job["total"] = len(ks)
+    job["done"] = sum(1 for k in ks if (cdir / ("%d.flac" % k)).exists())
+    _job_persist(job)
+    first = True
+    for k in ks:
+        if (cdir / ("%d.flac" % k)).exists():
+            continue
+        if not first:
+            if _SHUTDOWN.is_set():
+                _job_park(job)
+                return None
+            if _job_should_stop():
+                job["status"] = "stopped"
+                return None
+            if _job_should_yield(job):
+                _job_yield(job, [])
+                return None
+        first = False
+        try:
+            media_mod.separate_chunk(sep_src, k, cdir, model, src_len)
+        except (media_mod.Cancelled, media_mod.Aborted):
+            raise
+        except media_mod.MediaError as e:
+            print("[dub] разделение куска %d проекта %s не удалось: %s" % (k, project["id"], e), flush=True)
+            return "ducked", "error"
+        job["done"] += 1
+        _job_persist(job)
+    return "separated", ""
 
 
 def _job_mediarender(job: dict) -> None:
@@ -34058,25 +34219,47 @@ def _job_mediarender(job: dict) -> None:
         _media_render_mark(project, "subs", dst, {"cues": len(cues), "translated": len(tr),
                                                   "shown": True})
         return
-    # Озвучка.
-    voice = _media_voice(job["params"].get("voice") or "")
-    lang_name = _lang_prompt(project.get("tgt") or "EN")
+    # Озвучка. Пока она закрыта для всех, кроме администратора сервиса
+    # (`media_render`), — и здесь тоже: задача пользователя, поставленная до
+    # выката и отложенная рестартом, иначе дошла бы до платного синтеза.
+    if not _actor_is_super():
+        job["status"] = "stopped"
+        job["stopReason"] = "soon"
+        return
+    tgt = project.get("tgt") or "EN"
+    engine_id = job["params"].get("ttsEngine") or "openai"
+    if engine_id not in tts_engines.ENGINES:
+        raise RuntimeError("Движок озвучки недоступен — соберите заново")
+    label, vname = tts_engines.voice_for(engine_id, tgt, job["params"].get("voice") or "")
+    voice = {"id": label}
+    lang_name = _lang_prompt(tgt)
     cues = importers.cue_list(text)
     todo = [(i, c) for i, c in enumerate(cues) if i in tr and c.get("start") is not None]
     if not todo:
         raise RuntimeError("Озвучивать нечего: ни одна реплика ещё не переведена")
     tts_dir = _media_dir(pid) / "tts"
     tts_dir.mkdir(parents=True, exist_ok=True)
+    translit = ((tts_engines.data().get("azure") or {}).get(tgt.upper()) or {}).get("translit") \
+        if engine_id == "azure" else ""
 
     def key(t):
-        return tts_dir / (hashlib.sha1(("%s|%s|%s|%s" % (TTS_MODEL, voice["v"], project.get("tgt"), t))
-                                       .encode("utf-8")).hexdigest() + ".pcm")
-    items = [(tr[i], voice["v"], lang_name, key(tr[i])) for i, _c in todo]
+        # Прежний ключ OpenAI сохранён буква в букву: иначе выкат перекупил бы
+        # кэш синтеза всех готовых озвучек.
+        raw = ("%s|%s|%s|%s|%d" % (TTS_MODEL, vname, tgt, t, TTS_STYLE_V) if engine_id == "openai" else
+               "%s|%s|%s|%s|%s|%d" % (engine_id, vname, tgt, t, translit or "", TTS_TRANSLIT_V))
+        return tts_dir / (hashlib.sha1(raw.encode("utf-8")).hexdigest() + ".pcm")
+    items = [(tr[i], engine_id, vname, tgt, lang_name, key(tr[i])) for i, _c in todo]
+    # Короткие реплики повторяются («Да.», «Спасибо»): синтез — один на путь
+    # кэша, иначе два вызова за одно и то же и гонка на одном .tmp.
+    uniq = {}
+    for it in items:
+        uniq.setdefault(str(it[5]), it)
     job["phase"] = "tts"
     job["total"] = len(items)
-    job["done"] = sum(1 for it in items if it[3].exists())
+    job["done"] = sum(1 for it in items if it[5].exists())
     _job_persist(job)
-    pending = [it for it in items if not it[3].exists()]
+    pending = [it for it in uniq.values() if not it[5].exists()]
+    throttle_until = time.time() + MEDIA_TTS_THROTTLE_SEC
     first = True
     tries: dict = {}
     while pending:
@@ -34094,16 +34277,23 @@ def _job_mediarender(job: dict) -> None:
                 return
         first = False
         batch, pending = pending[:TTS_BATCH], pending[TTS_BATCH:]
-        out = _run_parallel(batch, _tts_clip)
-        pending += _media_retry(batch, out, tries)
+        out = _run_parallel(batch, _tts_clip, workers=None if engine_id == "openai" else AZURE_TTS_PARALLEL)
         bad = [r for r in out if not r["ok"]]
-        if bad and _is_quota_error(bad[0]["error"]):
+        if any(r.get("quota") for r in bad) or (bad and _is_quota_error(bad[0]["error"])):
             raise RuntimeError(JOB_STOP_PROVIDER_QUOTA)
+        if any(r.get("fatal") for r in bad):
+            raise RuntimeError(next(r["error"] for r in bad if r.get("fatal")))
+        # «Слишком часто» попытку строки не съедает (у бесплатного уровня это
+        # обычное состояние), но и вечно ждать нельзя — у ожидания свой срок.
+        throttled = [it for it, r in zip(batch, out) if r.get("throttle")] if time.time() < throttle_until else []
+        rest = [(it, r) for it, r in zip(batch, out) if not (r.get("throttle") and it in throttled)
+                and not r.get("final")]
+        pending += throttled + _media_retry([x[0] for x in rest], [x[1] for x in rest], tries)
         if bad and not pending and len(bad) == len(out):
             raise RuntimeError("Синтез речи не удался: " + bad[0]["error"])
         if bad:
-            time.sleep(MEDIA_RETRY_PAUSE)
-        job["done"] = sum(1 for it in items if it[3].exists())
+            time.sleep(max([MEDIA_RETRY_PAUSE] + [float(r.get("after") or 0) for r in bad if r.get("throttle")]))
+        job["done"] = sum(1 for it in items if it[5].exists())
         _job_persist(job)
     job["phase"] = "mix"
     _job_persist(job)
@@ -34112,15 +34302,68 @@ def _job_mediarender(job: dict) -> None:
     starts = [c["start"] for c in cues if c.get("start") is not None]
     groups = _para_groups(_data)
     seg_of = {int(idx): [int(s) for s in sids] for idx, sids in groups}
+    layout = _dub_layout(todo, items, starts)
+    # Фон без голосов — ДО укладки, но ПОСЛЕ синтеза: пустой счёт или
+    # отозванный ключ всплывают за секунды, а не после часа процессора;
+    # маска берёт длины клипов из того же расчёта, что и укладка.
+    out_len = span_len + shift
+    origin = span[0] if span else 0.0
+    # Окно — от начала строки до конца КЛИПА или конца строки оригинала,
+    # что позже: озвучка короче реплики — и голос оригинала вернулся бы
+    # по концу клипа, досказывая фразу вторым голосом.
+    windows = media_mod.dub_mask([(c["start"] + shift,
+                                   max(c["start"] + ln, c.get("end") or c["start"]) + shift)
+                                  for _i, c, _it, _t, _v, ln in layout if ln])
+    bed_mode = _dub_separate(job, project, src, probe, origin, out_len, windows)
+    if bed_mode is None:
+        return
+    bed_mode, bed_why = bed_mode
+    if bed_mode == "ducked" and bed_why != "no_audio":
+        # Сколько сборок ушло приглушением: без счёта не узнать, как часто
+        # клиент получает «два голоса» вместо подложки.
+        _ev("waste.sepFallback", _tenant_of(project))
+    job["phase"] = "mix"
+    _job_persist(job)
     track = work / "dub.raw"
-    tr_map = media_mod.open_track(track, span_len + shift)
+    try:
+        _dub_mix_mux(job, project, src, probe, info, layout, seg_of, windows, bed_mode, bed_why,
+                     origin, out_len, shift, span, work, out_dir, ext, lang3, cues, todo, voice)
+    finally:
+        # Подложка и дорожка — сотни МБ на час; уйти должны при ЛЮБОМ исходе:
+        # стоп, выкат, сбой ffmpeg посреди укладки или сведения.
+        for f_ in (track, work / "bed.raw"):
+            try:
+                f_.unlink()
+            except OSError:
+                pass
+
+
+def _dub_mix_mux(job, project, src, probe, info, layout, seg_of, windows, bed_mode, bed_why,
+                 origin, out_len, shift, span, work, out_dir, ext, lang3, cues, todo, voice) -> None:
+    """Подложка → укладка клипов → сведение (файлы убирает вызывающий)."""
+    pid = project["id"]
+    bed = None
+    if bed_mode == "separated":
+        bed = work / "bed.raw"
+        try:
+            cdir = _dub_sep_dir(project, src, media_mod.sep_model_path())
+            media_mod.build_bed(media_mod.sep_source(src, cdir), bed, origin, out_len, windows, cdir,
+                                float(probe.get("duration") or (origin + out_len)))
+        except (media_mod.Cancelled, media_mod.Aborted):
+            bed.unlink(missing_ok=True)
+            raise
+        except (media_mod.MediaError, OSError, ValueError) as e:
+            print("[dub] подложка проекта %s не собралась: %s" % (pid, e), flush=True)
+            bed.unlink(missing_ok=True)
+            bed, bed_mode, bed_why = None, "ducked", "error"
+            _ev("waste.sepFallback", _tenant_of(project))
+    track = work / "dub.raw"
+    tr_map = media_mod.open_track(track, out_len)
     over, silent, counts = [], [], {"voiced": 0, "fast": 0}
     try:
-        _dub_place(todo, items, starts, seg_of, tr_map, shift, silent, over, counts)
-    except media_mod.Cancelled:
-        # Отменили посреди укладки: дорожка — файл во весь ролик, до сотен МБ.
-        media_mod.close_track(tr_map)
-        track.unlink(missing_ok=True)
+        _dub_place(layout, seg_of, tr_map, shift, silent, over, counts)
+    except BaseException:
+        media_mod.close_track(tr_map)            # файлы убирает вызывающий
         raise
     voiced, fast = counts["voiced"], counts["fast"]
     media_mod.close_track(tr_map)
@@ -34130,19 +34373,21 @@ def _job_mediarender(job: dict) -> None:
     dst = out_dir / ("dub" + ext)
     tmp = work / ("dub.tmp" + ext)
     try:
-        media_mod.mux_dub(src, track, tmp, info, lang=lang3, span=span)
+        media_mod.mux_dub(src, track, tmp, info, lang=lang3, span=span, bed=bed)
         os.replace(str(tmp), str(dst))
     finally:
-        try:
-            track.unlink()
-        except OSError:
-            pass
         tmp.unlink(missing_ok=True)        # отменённый или упавший mux
     _media_render_mark(project, "dub", dst, {"cues": len(cues), "voiced": voiced, "fast": fast,
                                               "silent": len(silent), "silentIds": sorted(set(silent))[:60],
                                               "over": len(over), "overIds": sorted(set(over))[:60],
                                               "untranslated": len(cues) - len(todo),
-                                              "voice": voice["id"]})
+                                              "voice": voice["id"],
+                                              "ttsEngine": job["params"].get("ttsEngine") or "openai",
+                                              "voiceQuality": job["params"].get("voiceQuality") or "unknown",
+                                              # Как ушёл голос оригинала: вынут из-под
+                                              # озвучки или только приглушён (и почему —
+                                              # кодом, подпись даёт браузер).
+                                              "bed": bed_mode, "bedWhy": bed_why})
 
 
 MEDIA_BURN_MAX_MINUTES = float(os.environ.get("MEDIA_BURN_MAX_MINUTES", "120"))
@@ -34314,6 +34559,8 @@ def _media_render_mark(project: dict, what: str, dst: Path, stats: dict) -> None
 
 
 MEDIA_WHATS = ("subs", "dub", "burn")
+# Текст отказа — ключ `TRS()` (uz.server.json): переводит браузер.
+MEDIA_DUB_SOON = "Озвучка скоро будет доступна"
 
 
 class MediaRenderRequest(BaseModel):
@@ -34333,6 +34580,9 @@ def media_render(pid: int, req: MediaRenderRequest):
     project = get_project(pid)
     if req.what not in MEDIA_WHATS:
         raise HTTPException(400, "Неизвестная сборка")
+    if req.what == "dub" and not _actor_is_super():
+        # Первым: ответ «скоро» не должен зависеть от места на диске и очереди.
+        raise HTTPException(403, MEDIA_DUB_SOON)
     m = project.get("media")
     if not m:
         raise HTTPException(400, "Это не видео-проект")
@@ -34377,21 +34627,46 @@ def media_render(pid: int, req: MediaRenderRequest):
         save_state(STATE)
     else:
         need = int(src.stat().st_size * 1.1) + (int(dur * media_mod.TTS_RATE * 2) if req.what == "dub" else 0)
+        if req.what == "dub" and media_mod.sep_available()[0]:
+            # Подложка во весь отрезок (сырой звук) и куски фона (FLAC, ~0,6).
+            need += int(span_len * media_mod.SEP_RATE * 4 * 1.6)
     refusal = _media_disk_refusal(need)
     if refusal:
         _ev("cap.mediaDisk507", _tenant_of(project))
         raise HTTPException(507, refusal)
     if req.what == "dub":
-        if not os.environ.get("OPENAI_API_KEY"):
+        # Озвучка пока закрыта: на экране у всех, кроме администратора
+        # сервиса, — заливка «soon», и право проверяет СЕРВЕР (инвариант 12).
+        # Скачать уже собранную озвучку можно по-прежнему: работа сделана.
+        if not _actor_is_super():
+            raise HTTPException(403, MEDIA_DUB_SOON)
+        route = _dub_route(project)
+        if not route["engine"]:
             raise HTTPException(503, "Озвучка сейчас недоступна: сообщите администратору")
         _fn_gate("speech")
         st = _spend_status()
         if st["over"]:
             return _limit_402(st, _current_tenant())
-        params["voice"] = _media_voice(req.voice or "")["id"]
-        chars = sum(len(s.get("target") or "") for s in project.get("segments") or [])
-        # ~15 знаков в секунду речи — оценка, по ней только отказ на старте.
-        params["est_cost"] = round(chars / 15.0 / 60.0 * float(AUX_MODEL_PRICES[TTS_MODEL]["perMin"]), 4)
+        params["ttsEngine"] = route["engine"]
+        params["voiceQuality"] = route["quality"]
+        params["voice"] = tts_engines.voice_for(route["engine"], project.get("tgt") or "EN", req.voice or "")[0]
+        if media_mod.sep_available()[0]:
+            # Оценка: голоса вынимаются под переведёнными строками; время
+            # строк — из распознавания. Синтез и сведение — минуты сверху.
+            ct = _cue_times(project) or {}
+            done_ = {s.get("id") for s in project.get("segments") or [] if (s.get("target") or "").strip()}
+            voiced = sum(max(0.0, float(v[1]) - float(v[0])) for k_, v in ct.items()
+                         if (int(k_) if str(k_).isdigit() else k_) in done_ and v and len(v) == 2)
+            eta = int(min(voiced or span_len, span_len) * media_mod.SEP_SPEED + 60 + span_len * 0.03)
+        texts = [s.get("target") or "" for s in project.get("segments") or []]
+        if route["engine"] == "azure":
+            # Azure выставляет ЗНАКИ, а не минуты (иероглифы — по два).
+            params["est_cost"] = round(sum(tts_engines.billable_chars(t) for t in texts)
+                                       * float(AUX_MODEL_PRICES["azure-neural"]["perChar"]), 4)
+        else:
+            # ~15 знаков в секунду речи — оценка, по ней только отказ на старте.
+            params["est_cost"] = round(sum(len(t) for t in texts) / 15.0 / 60.0
+                                       * float(AUX_MODEL_PRICES[TTS_MODEL]["perMin"]), 4)
         if st.get("limitUsd") is not None and st["spentUsd"] + params["est_cost"] > float(st["limitUsd"]):
             raise HTTPException(402, "Озвучка этого видео не уместится в лимит расхода организации")
     # Проверка «одна сборка на организацию» и постановка — под одним замком:
@@ -34780,9 +35055,19 @@ def media_style(pid: int, req: MediaStyleRequest):
 
 
 @app.get("/api/media/voices")
-def media_voices():
-    """Голоса озвучки — нейтральными ярлыками, без имён поставщика."""
-    return {"voices": [{"id": v["id"], "gender": v["gender"]} for v in MEDIA_VOICES],
+def media_voices(pid: Optional[int] = None):
+    """Голоса озвучки — нейтральными ярлыками, без имён поставщика. С номером
+    проекта — голоса ТОГО движка, который озвучит его язык, и `quality`:
+    native — родной голос, accent — у языка нет родного голоса ни у одного
+    движка, и его прочтут с акцентом (говорится ДО сборки); `dub` — можно ли
+    этому человеку собирать озвучку (пока — только администратору)."""
+    extra = {"dub": _actor_is_super()}
+    if pid is not None:
+        pv = tts_engines.public_voices(get_project(pid).get("tgt") or "EN")
+        return dict(extra, voices=pv["voices"], quality=pv["quality"],
+                    ready=media_mod.available()[0], maxGb=round(MEDIA_MAX_BYTES / _GB, 1),
+                    maxMinutes=int(MEDIA_MAX_MINUTES), chunk=MEDIA_CHUNK)
+    return {**extra, "voices": [{"id": v["id"], "gender": v["gender"], "n": v["n"]} for v in MEDIA_VOICES],
             "ready": media_mod.available()[0], "maxGb": round(MEDIA_MAX_BYTES / _GB, 1),
             "maxMinutes": int(MEDIA_MAX_MINUTES), "chunk": MEDIA_CHUNK}
 

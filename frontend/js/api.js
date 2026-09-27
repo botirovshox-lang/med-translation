@@ -485,7 +485,7 @@ function onUnauthorized() {
        сам распознаёт речь. meta — {title, src, tgt, domain, folder} либо
        {project} — вернуть проекту удалённое по сроку исходное видео. */
     uploadMedia:   (file, meta, onProgress, ctl) => uploadMediaChunked(file, meta, onProgress, ctl),
-    mediaVoices:   ()                       => call("GET", "/media/voices"),
+    mediaVoices:   (pid)                    => call("GET", "/media/voices" + (pid ? "?pid=" + pid : "")),
     mediaRender:   (pid, what, voice, extra) => call("POST", `/projects/${pid}/media/render`, Object.assign({ what, voice }, extra || {})),
     /* Субтитры в кадре: шрифты (с покрытием письменности языка перевода),
        кадр предпросмотра, сведения для диалога сборки, запомнить стиль. */

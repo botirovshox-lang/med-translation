@@ -299,6 +299,23 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   await tick(); tree = draw4();
   check(stopped === 41 && texts(tree).indexOf("Отменяем…") !== -1, "«Отменить» останавливает задачу и говорит об этом");
 
+  /* Озвучка пока закрыта: не администратору — заливка «soon» и погашенная
+     кнопка (право проверяет сервер, `dub` в ответе голосов). Администратору —
+     без заливки, и язык без родного голоса назван ДО сборки. */
+  hooks = []; effDeps = [];
+  global.API = Object.assign(global.API, { listJobs: async () => ({ active: [] }),
+    mediaVoices: async () => ({ voices: [{ id: "f0", gender: "f", n: 1 }], dub: false, quality: "native" }) });
+  tree = draw4(); await tick(); tree = draw4();
+  check(texts(tree).indexOf("soon") !== -1 && allBtns(tree, "Собрать с озвучкой")[0].props.disabled,
+        "не администратору — «soon» и кнопка озвучки погашена");
+  hooks = []; effDeps = [];
+  global.API = Object.assign(global.API, {
+    mediaVoices: async () => ({ voices: [{ id: "f0", gender: "f", n: 1 }], dub: true, quality: "accent" }) });
+  tree = draw4(); await tick(); tree = draw4();
+  check(texts(tree).indexOf("soon") === -1 && texts(tree).indexOf("с акцентом") !== -1
+        && !allBtns(tree, "Собрать с озвучкой")[0].props.disabled,
+        "администратору — без заливки, «с акцентом» названо до сборки");
+
   const imp = fs.readFileSync(path.join(root, "tab_import.jsx"), "utf8");
   check(/React\.createElement\(VideoEditor,/.test(imp), "экран загрузки открывает мини-редактор");
 

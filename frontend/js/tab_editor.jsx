@@ -1446,7 +1446,9 @@ function TabEditor({ store, toast }) {
         + TR(" — решается правкой самой записи"));
     if (eh && eh.skipped)
       learned.push(eh.skipped === "limit" ? TR("исправленные термины не разобраны: исчерпан лимит расходов")
-        : eh.skipped === "no_key" ? TR("исправленные термины не разобраны: нет ключа OpenAI")
+        /* Поставщик и модель не называются никому, кроме администратора
+           (инвариант 24а): «нет ключа OpenAI» — устройство сервиса. */
+        : eh.skipped === "no_key" ? TR("исправленные термины не разобраны: шаг сейчас недоступен — сообщите администратору")
         : eh.skipped === "fn" ? TR("исправленные термины не разобраны: функция выключена или её лимит исчерпан")
         : TR("исправленные термины не разобраны: модель не ответила"));
     toast.success(TR("Подтверждено"), TR("Сегмент #") + seg.id + (learned.length ? ". " + learned.join("; ") + "." : "."));
@@ -3072,7 +3074,9 @@ function TabEditor({ store, toast }) {
     batchPlan && (() => {
       const est = estimateBatch(batchPlan.targets, gptModelInfo);
       return React.createElement(Modal, {
-        title: TR("Запустить GPT-пакет?"), icon: "zap", onClose: () => setBatchPlan(null),
+        /* Без «GPT» в заголовке: имя поставщика — устройство сервиса
+           (инвариант 24а), человеку это «перевод пакетом». */
+        title: TR("Запустить перевод пакетом?"), icon: "zap", onClose: () => setBatchPlan(null),
         footer: React.createElement(React.Fragment, null,
           React.createElement(Btn, { variant: "ghost", onClick: () => setBatchPlan(null) }, TR("Отмена")),
           React.createElement(Btn, { variant: "primary", icon: "zap",

@@ -1775,7 +1775,7 @@ class _AnthropicChat:
 _GATE_SESSION = threading.local()     # сессия запроса в потоках `_run_parallel`
 
 
-def _llm_limit_gate() -> None:
+def _llm_limit_gate(step: Optional[str] = None) -> None:
     """Второй рубеж лимита расхода — в ЕДИНСТВЕННОЙ точке, через которую
     идут все вызовы чата. Первый — таблица путей `_PAID` в `require_token`,
     и он держится на том, что сырой путь запроса совпал с регулярным
@@ -1792,13 +1792,23 @@ def _llm_limit_gate() -> None:
         return
     if _spend_status(sess.get("tenant"))["over"]:
         raise HTTPException(402, "Месячный лимит расхода организации исчерпан")
+    # Правила функций (инвариант 40): закрытая функция и лимит человека.
+    # Шаг называет место вызова — тот же, что уйдёт в `_note_usage`.
+    fn = price_rules.fn_of_step(step or "")
+    tid = sess.get("tenant")
+    try:
+        for f in ([fn] if fn else []) + ["all"]:
+            _fn_check(f, tid, sess.get("user"), 0.0, False)
+    except FnBlocked as e:
+        raise _fn_http(e, tid)
 
 
-def _llm_client(model, timeout: float = 90, max_retries: int = 1):
+def _llm_client(model, timeout: float = 90, max_retries: int = 1, step: Optional[str] = None):
     """Клиент под поставщика модели. Импорт SDK — в момент вызова, а не
     модуля: тесты подменяют sys.modules["openai"] / ["anthropic"], и сервис
-    без одного из SDK живёт, пока его модель не выбрана."""
-    _llm_limit_gate()
+    без одного из SDK живёт, пока его модель не выбрана. `step` — шаг расхода
+    (как у `_note_usage`): по нему закрытая функция не зовёт модель."""
+    _llm_limit_gate(step)
     m = model if isinstance(model, dict) else _resolve_model(model)
     if _provider_of(m) == "anthropic":
         import anthropic
@@ -1999,7 +2009,7 @@ REPAIR_DEFAULT_MODEL = os.environ.get("REPAIR_MODEL", JUDGE_DEFAULT_MODEL)
 
 def _openai_embed(texts: list) -> list:
     import openai
-    _llm_limit_gate()        # эмбеддинги стоят денег так же (`AUX_MODEL_PRICES`)
+    _llm_limit_gate("embed")  # эмбеддинги стоят денег так же (`AUX_MODEL_PRICES`)
     client = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=60, max_retries=2)
     resp = client.embeddings.create(model=EMBED_MODEL, input=texts)
     _note_usage("embed", EMBED_MODEL, resp)
@@ -2111,7 +2121,7 @@ def _openai_termcheck(source: str, target: str, src_lang: str, tgt_lang: str,
     import json as _json
     dom = _resolve_domain(domain_id)
     mdl = _resolve_model(model or _dm("termcheck"))
-    client = _llm_client(mdl, timeout=90, max_retries=1)
+    client = _llm_client(mdl, timeout=90, step="termcheck", max_retries=1)
     extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
              else {"max_tokens": 700, "temperature": 0})
     try:
@@ -2156,7 +2166,7 @@ def _openai_judge(source_ru: str, back_ru: str, model: str = None,
     import json as _json
     dom = _resolve_domain(domain_id)
     mdl = _resolve_model(model or _dm("judge"))
-    client = _llm_client(mdl, timeout=90, max_retries=1)
+    client = _llm_client(mdl, timeout=90, step="judge", max_retries=1)
     extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
              else {"max_tokens": 500, "temperature": 0})
     try:
@@ -2483,7 +2493,7 @@ def _ledger_rows(day_from: str, day_to: str) -> list:
     if STORE.kind == "pg":
         return STORE.usage_rows(day_from, day_to)
     out = []
-    for key, v in (STATE.get(USAGE_LEDGER_KEY) or {}).items():
+    for key, v in list((STATE.get(USAGE_LEDGER_KEY) or {}).items()):
         parts = key.split("|")
         if len(parts) < 5:
             continue
@@ -3075,7 +3085,349 @@ def _job_budget_hit(job: dict) -> bool:
 def _job_money_stop(job: dict) -> bool:
     """Оба денежных рубежа одним вызовом. `_job_limit_hit` идёт ПЕРВЫМ:
     он сам зовёт `_sync_shared()`, и бюджет считается уже по свежему расходу."""
-    return _job_limit_hit(job) or _job_budget_hit(job)
+    return _job_limit_hit(job) or _job_budget_hit(job) or _job_fn_hit(job)
+
+
+# ─── Цены и лимиты по ФУНКЦИЯМ: для всех, для организации, для человека ───
+# Инвариант 40. Правила — `backend/price_rules.py` (чистые), здесь хранение,
+# счёт и рубежи. Правило лежит там же, где его хозяин:
+#   всем         — `STATE["priceRules"]` (документ, эпоха `doc:priceRules`);
+#   организации  — `tenant["fnRules"]` (документ `tenants`, эпоха `doc:tenants`);
+#   человеку     — `user["fnRules"]` (документ `users`, эпоха `doc:users`).
+# Так правило уходит вместе с записью при ЛЮБОМ удалении (админка, снос
+# организации, замена неподтверждённой регистрации), и слаг организации,
+# переиспользованный `_new_tenant_id`, чужих правил не наследует. Пишет
+# только API (админка суперпользователя); воркер перечитывает документы
+# по эпохам в `_sync_shared`. В `/api/seed` ничего из этого не уходит:
+# там белый список, а `/api/auth/me` отдаёт поля организации белым списком.
+#
+# Счёт за месяц:
+#   деньги на модели — из журнала токенов (`usage_daily`: день × организация
+#     × автор × шаг, с долларами), сведённого по функциям, с кэшем
+#     `FN_SPEND_TTL` секунд и приращением своего процесса на месте. Журнал —
+#     справочник, и его сбой значит «не знаю»: по невычисленному числу
+#     не останавливаем (закон `attested()`), а перерасход ограничен вызовами
+#     в полёте и свежестью кэша — тот же названный остаток, что у лимита
+#     организации (инвариант 15). Вызов без цены (`unpriced`) считается нулём:
+#     его денег журнал не знает;
+#   страницы и минуты — счётчиком в записи организации (`fnUsed`), который
+#     растёт в `_pages_log` / `_minutes_log` на видах СПИСАНИЯ. Человеку
+#     приписываются только списания его ДЕЙСТВИЯ (загрузка, замена файла,
+#     фрагмент): страницы картинок и речи досписываются при показе проекта
+#     кем угодно и в чужой счёт не идут — только в счёт организации.
+#     Документ `tenants` пишет только API — тот же единственный писатель,
+#     что у `pagesUsed`.
+FN_SPEND_TTL = float(os.environ.get("FN_SPEND_TTL", "") or 30)
+FN_USED_MONTHS = 3
+_FN_USER_KINDS = ("debit", "excerpt", "reimport", "edit")
+_FN_SPEND = {"month": None, "at": 0.0, "t": {}, "u": {}}
+_FN_SPEND_LOCK = threading.Lock()
+
+
+def _price_rules() -> dict:
+    r = STATE.get("priceRules")
+    return r if isinstance(r, dict) else {}
+
+
+def _user_rec(uid) -> Optional[dict]:
+    if not isinstance(uid, int):
+        return None
+    return next((u for u in _users() if u.get("id") == uid), None)
+
+
+def _fn_levels(tid: Optional[str], uid) -> list:
+    """Правила от самого точного к общему: человек, организация, все."""
+    u = _user_rec(uid)
+    t = _tenant_rec(tid) if tid else None
+    return [("user", (u or {}).get("fnRules") or {}),
+            ("tenant", (t or {}).get("fnRules") or {}),
+            ("all", _price_rules())]
+
+
+def _fn_spend_bump(tenant: str, uid, step: str, cost: Optional[float]) -> None:
+    """Приращение СВОЕГО процесса поверх кэша: иначе до обновления кэша
+    человек успевал бы тратить сверх лимита сколько угодно одиночных вызовов."""
+    if not cost:
+        return
+    fn = price_rules.fn_of_step(step)
+    with _FN_SPEND_LOCK:
+        if _FN_SPEND["month"] != _month_key():
+            return
+        t, u = _FN_SPEND["t"], _FN_SPEND["u"]
+        if fn:
+            t[(tenant, fn)] = t.get((tenant, fn), 0.0) + cost
+        if uid not in (None, "", "human"):
+            if fn:
+                u[(str(uid), fn)] = u.get((str(uid), fn), 0.0) + cost
+            u[(str(uid), "all")] = u.get((str(uid), "all"), 0.0) + cost
+
+
+def _fn_spend(force: bool = False) -> Optional[dict]:
+    """{"t": {(орг, функция): $}, "u": {(uid, функция|all): $}} за месяц.
+    None — журнал не прочитан, и прежнего счёта за этот месяц нет."""
+    m = _month_key()
+    now = time.time()
+    with _FN_SPEND_LOCK:
+        if not force and _FN_SPEND["month"] == m and now - _FN_SPEND["at"] < FN_SPEND_TTL:
+            return {"t": dict(_FN_SPEND["t"]), "u": dict(_FN_SPEND["u"])}
+    try:
+        if STORE.kind == "pg" and hasattr(STORE, "usage_sums"):
+            rows = STORE.usage_sums(m + "-01", m + "-31")
+        else:
+            rows = _ledger_rows(m + "-01", m + "-31")
+    except Exception as e:
+        print(f"[backend] расход по функциям не прочитан: {e}", file=sys.stderr)
+        with _FN_SPEND_LOCK:
+            if _FN_SPEND["month"] == m:
+                return {"t": dict(_FN_SPEND["t"]), "u": dict(_FN_SPEND["u"])}
+        return None
+    t, u = {}, {}
+    for r in rows:
+        cost = float(r.get("cost") or 0.0)
+        if not cost:
+            continue
+        fn = price_rules.fn_of_step(r.get("step"))
+        tid = r.get("tenant") or DEFAULT_TENANT
+        uid = str(r.get("user") or "")
+        if fn:
+            t[(tid, fn)] = t.get((tid, fn), 0.0) + cost
+        if uid and uid != "human":
+            if fn:
+                u[(uid, fn)] = u.get((uid, fn), 0.0) + cost
+            u[(uid, "all")] = u.get((uid, "all"), 0.0) + cost
+    with _FN_SPEND_LOCK:
+        _FN_SPEND.update(month=m, at=now, t=t, u=u)
+    return {"t": dict(t), "u": dict(u)}
+
+
+def _fn_used_add(rec: dict, fn: str, amount: float, kind: str) -> None:
+    """Страницы или минуты, списанные в этом месяце: всего и по человеку.
+    Возврат (`refund`) — со знаком минус, но не ниже нуля."""
+    if not amount:
+        return
+    try:
+        m = _month_key()
+        box = rec.setdefault("fnUsed", {})
+        for old in sorted(box)[:-FN_USED_MONTHS]:
+            if old != m:
+                box.pop(old, None)
+        slot = box.setdefault(m, {}).setdefault(fn, {})
+        keys = ["*"]
+        uid = _actor_id()
+        if isinstance(uid, int) and kind in _FN_USER_KINDS + ("refund",):
+            keys.append(str(uid))
+        for k in keys:
+            slot[k] = round(max(0.0, float(slot.get(k) or 0.0) + float(amount)), 3)
+    except Exception as e:
+        print(f"[backend] счёт {fn} за месяц не записан: {e}", file=sys.stderr)
+
+
+def _fn_used(fn: str, tid: Optional[str] = None, uid=None) -> float:
+    """Списано за месяц: организацией (`tid`) или человеком по всем его
+    командам (`uid`)."""
+    m = _month_key()
+    if tid is not None:
+        rec = _tenant_rec(tid) or {}
+        return float((((rec.get("fnUsed") or {}).get(m) or {}).get(fn) or {}).get("*") or 0.0)
+    total = 0.0
+    for rec in _tenants():
+        total += float((((rec.get("fnUsed") or {}).get(m) or {}).get(fn) or {}).get(str(uid)) or 0.0)
+    return total
+
+
+class FnBlocked(Exception):
+    """Функция закрыта правилом: `code` — fnoff | fnlimit, `who` — откуда правило."""
+
+    def __init__(self, fn: str, code: str, who: Optional[str] = None,
+                 used: Optional[float] = None, limit: Optional[float] = None):
+        super().__init__(code)
+        self.fn, self.code, self.who, self.used, self.limit = fn, code, who, used, limit
+
+
+def _fn_check(fn: str, tid: Optional[str], uid, need: float = 0.0,
+              is_super: bool = False) -> None:
+    """Рубеж функции. `need` — сколько единиц добавит действие (страницы,
+    минуты); у денег на модели 0 — тогда «выбрано» значит used >= limit.
+    Суперпользователь не ограничен ничем: он правила и ставит."""
+    if is_super or price_rules.func(fn) is None:
+        return
+    uid = uid if isinstance(uid, int) else None
+    levels = _fn_levels(tid, uid)
+    if not any(bag for _, bag in levels):
+        return
+    eff = price_rules.effective(levels, fn)
+    if eff["off"]:
+        raise FnBlocked(fn, "fnoff", eff["offFrom"])
+    if eff["tenantLimit"] is None and eff["userLimit"] is None:
+        return
+    unit = price_rules.func(fn)["unit"]
+    if unit == "usd":
+        sp = _fn_spend()
+        if sp is None:
+            return
+        if eff["tenantLimit"] is not None and tid:
+            used = sp["t"].get((tid, fn), 0.0)
+            if used >= eff["tenantLimit"]:
+                raise FnBlocked(fn, "fnlimit", eff["tenantLimitFrom"], used, eff["tenantLimit"])
+        if eff["userLimit"] is not None and uid is not None:
+            used = sp["u"].get((str(uid), fn), 0.0)
+            if used >= eff["userLimit"]:
+                raise FnBlocked(fn, "fnlimit", "user", used, eff["userLimit"])
+        return
+    if eff["tenantLimit"] is not None and tid:
+        used = _fn_used(fn, tid=tid)
+        if used + need > eff["tenantLimit"] + 1e-9 or (need <= 0 and used >= eff["tenantLimit"]):
+            raise FnBlocked(fn, "fnlimit", eff["tenantLimitFrom"], used, eff["tenantLimit"])
+    if eff["userLimit"] is not None and uid is not None:
+        used = _fn_used(fn, uid=uid)
+        if used + need > eff["userLimit"] + 1e-9 or (need <= 0 and used >= eff["userLimit"]):
+            raise FnBlocked(fn, "fnlimit", "user", used, eff["userLimit"])
+
+
+# Отказы — ПОСТОЯННЫЕ тексты (ключи `TRS()`, инвариант 17); что именно
+# закрыто, браузер читает полями `code`/`fn`. Сумм в тексте нет: деньги
+# видит только администратор сервиса (инвариант 22а).
+FN_OFF_TEXT = "Эта функция для вас выключена администратором сервиса"
+FN_LIMIT_TEXT = ("Месячный лимит на эту функцию исчерпан: обратитесь к администратору "
+                 "сервиса. Лимит сбрасывается 1-го числа.")
+
+
+def _fn_response(e: FnBlocked, tid: Optional[str], sess: Optional[dict] = None) -> JSONResponse:
+    _ev("cap.fn402", tid)
+    body = {"ok": False, "code": e.code, "fn": e.fn, "who": e.who,
+            "error": FN_OFF_TEXT if e.code == "fnoff" else FN_LIMIT_TEXT}
+    sess = sess if sess is not None else (CURRENT_SESSION.get() or {})
+    if sess.get("super") or price_rules.func(e.fn)["unit"] != "usd":
+        body.update(used=e.used, limit=e.limit)
+    return JSONResponse(body, status_code=403 if e.code == "fnoff" else 402)
+
+
+def _fn_http(e: FnBlocked, tid: Optional[str]) -> HTTPException:
+    """Отказ для обработчика и для вызова модели — исключением."""
+    _ev("cap.fn402", tid)
+    return HTTPException(403 if e.code == "fnoff" else 402,
+                         FN_OFF_TEXT if e.code == "fnoff" else FN_LIMIT_TEXT)
+
+
+def _fn_gate(fn: str, need: float = 0.0) -> None:
+    """Рубеж функции в ОБРАБОТЧИКЕ: организация и человек — из сессии."""
+    sess = CURRENT_SESSION.get() or {}
+    tid = sess.get("tenant") or _current_tenant()
+    try:
+        _fn_check(fn, tid, sess.get("user"), need, bool(sess.get("super")))
+    except FnBlocked as e:
+        raise _fn_http(e, tid)
+
+
+def _fn_actor_check(fn: str, need: float = 0.0) -> None:
+    """Рубеж там, где сессии может и не быть (списание страниц и минут):
+    человек — из сессии, а в потоке прогона — тот, кто его ставил."""
+    tid = _current_tenant()
+    try:
+        _fn_check(fn, tid, _actor_id(), need, _actor_is_super())
+    except FnBlocked as e:
+        raise _fn_http(e, tid)
+
+
+# Первый рубеж — по ПУТИ, рядом с `_PAID` и за той же строкой
+# `_NUMERIC_LOOSE`: отказ приходит до всякой работы (у `/batch` сперва
+# подстановки из памяти, у загрузки видео — перенос гигабайтов). Второй —
+# в самом вызове модели (`_llm_limit_gate(step)`): шаг назван у каждого
+# `_llm_client`, и дверь, забытая здесь, всё равно не потратит денег
+# закрытой функции. Прогоны держат свой рубеж между порциями.
+_FN_PATHS = [
+    ("POST", re.compile(r"/api/projects/\d+/batch$"), ("translate",)),
+    ("POST", re.compile(r"/api/projects/\d+/extract-terms$"), ("terms",)),
+    ("POST", re.compile(r"/api/projects/\d+/term-context$"), ("checks",)),
+    ("POST", re.compile(r"/api/projects/\d+/review$"), ("review",)),
+    ("POST", re.compile(r"/api/projects/\d+/(brief|guide)/build$"), ("review",)),
+    ("POST", re.compile(r"/api/projects/\d+/(termcheck|backcheck)/batch$"), ("checks",)),
+    ("POST", re.compile(r"/api/projects/\d+/images/scan$"), ("ocr",)),
+    ("POST", re.compile(r"/api/projects/\d+/repair/batch$"), ("repair", "checks")),
+    ("POST", re.compile(r"/api/segments/\d+/\d+/translate$"), ("translate",)),
+    ("POST", re.compile(r"/api/segments/\d+/\d+/(backcheck|termcheck|medical-qa|checks)$"), ("checks",)),
+    ("POST", re.compile(r"/api/segments/\d+/\d+/repair$"), ("repair", "checks")),
+    ("POST", re.compile(r"/api/term-queue/\d+/explain$"), ("terms",)),
+    ("POST", re.compile(r"/api/quote/scan$"), ("ocr",)),
+    ("POST", re.compile(r"/api/projects/\d+/media/transcribe$"), ("minutes", "speech")),
+    ("POST", re.compile(r"/api/glossary/audit$"), ("terms",)),
+    # Загрузка видео и сборка — НЕ здесь: та же дверь возвращает проекту
+    # удалённый исходник и собирает субтитры, а это бесплатно (инвариант 15).
+    # Рубеж — в обработчиках: начало загрузки НОВОГО файла, «готово»
+    # для нового проекта, озвучка.
+]
+
+
+def _fn_paths(method: str, path: str) -> tuple:
+    for m, rx, fns in _FN_PATHS:
+        if m == method and rx.match(path):
+            return fns
+    return ()
+
+
+def _fn_path_check(fns: tuple, sess: dict, paid: bool = True) -> Optional[JSONResponse]:
+    """Для мидвари: в пуле потоков — журнал читается из базы. «Всё вместе»
+    (деньги на модели) — только на платном пути."""
+    tid = sess.get("tenant")
+    try:
+        for fn in list(fns) + (["all"] if paid else []):
+            _fn_check(fn, tid, sess.get("user"), 0.0, bool(sess.get("super")))
+    except FnBlocked as e:
+        return _fn_response(e, tid, sess)
+    return None
+
+
+def _fn_job_blocked(fns: list, tid: str, uid, is_super: bool) -> list:
+    """Какие из функций задачи сейчас закрыты: [(функция, FnBlocked)]."""
+    out = []
+    for fn in fns:
+        try:
+            _fn_check(fn, tid, uid, 0.0, is_super)
+        except FnBlocked as e:
+            out.append((fn, e))
+    return out
+
+
+JOB_STOP_FN = ("Функция прогона выключена или её месячный лимит исчерпан: прогон "
+               "остановлен, сделанное сохранено.")
+
+
+def _job_fn_hit(job: dict) -> bool:
+    """Правило функции закрыло идущий прогон — мягкая остановка, как у лимита
+    организации. Составной прогон останавливается, только когда закрыто
+    «всё вместе» или ВСЕ его шаги: закрытый шаг он пропускает сам
+    (`_job_chunk_full`, «лимит режет деньги, а не работу» — инвариант 15)."""
+    uid = job.get("user")
+    tid = job.get("tenant") or DEFAULT_TENANT
+    levels = _fn_levels(tid, uid)
+    if not any(bag for _, bag in levels):
+        return False
+    u = _user_rec(uid)
+    is_super = bool(u and u.get("super"))
+    fns = price_rules.job_fns(job.get("kind"), job.get("params") or {})
+    hit = _fn_job_blocked(["all"], tid, uid, is_super)
+    if not hit and fns:
+        closed = _fn_job_blocked(fns, tid, uid, is_super)
+        if closed and (job.get("kind") != "full" or len(closed) == len(fns)):
+            hit = closed
+    if not hit:
+        return False
+    job["status"] = "stopped"
+    job["stopReason"] = "fnlimit"
+    job["error"] = JOB_STOP_FN
+    job.setdefault("counters", {})["fnStop"] = 1
+    _ev("waste.jobStopped:fnlimit", tid)
+    return True
+
+
+def _fn_step_closed(step: str) -> bool:
+    """Шаг составного прогона закрыт правилом функции (в потоке прогона)."""
+    fns = price_rules.JOB_FN.get(step) or []
+    if not fns:
+        return False
+    tid = _current_tenant()
+    uid = getattr(_JOB_USER, "id", None)
+    return bool(_fn_job_blocked(fns, tid, uid, _actor_is_super()))
 
 
 # ─── Кончился баланс у ПОСТАВЩИКА моделей ────────────────────────────
@@ -3223,6 +3575,10 @@ def _note_cost(step: str, model_id: str, tin: int, cached: int, tout: int, think
         _proj_spend_add(_current_tenant(), _usage_project(), cost, calls=1)
         _proj_daily_add(step, cost)
         _ledger_add(step, model_id, tin, cached, tout, think, cost)
+        try:
+            _fn_spend_bump(_current_tenant() or DEFAULT_TENANT, _current_uid(), step, cost)
+        except Exception as e:
+            print(f"[backend] счёт функций не обновлён ({step}): {e}", file=sys.stderr)
 
 
 def _note_audio(step: str, model_id: str, seconds: float) -> None:
@@ -3363,7 +3719,7 @@ def _openai_translate_cues(texts: list, src: str, tgt: str, gloss_hits: list = N
     пачки) плюс формат пачки. Реплику, которой нет в ответе, вызывающий
     переводит отдельно — молча потерять строку субтитров нельзя."""
     mdl = _resolve_model(model)
-    client = _llm_client(mdl, timeout=180, max_retries=2)
+    client = _llm_client(mdl, timeout=180, step="translate", max_retries=2)
     system = _translate_system(src, tgt, gloss_hits, None, False, domain, mdl,
                                prev_src, next_src, style) + CUE_BATCH_RULES
     extra = ({"max_completion_tokens": 12000} if mdl["api"] == "modern"
@@ -3730,7 +4086,7 @@ def _openai_translate(text: str, src: str, tgt: str,
     а глоссарий и TM не подсовываем вовсе — иначе модель подгонит ответ под них."""
     mdl = _resolve_model(model)
     # timeout + retries: зависший вызов не должен блокировать поток бесконечно
-    client = _llm_client(mdl, timeout=90, max_retries=2)
+    client = _llm_client(mdl, timeout=90, step=step or ("backcheck" if literal else "translate"), max_retries=2)
     system = _translate_system(src, tgt, gloss_hits, tm_context, literal, domain, mdl,
                                prev_src, next_src, "" if literal else style,
                                None if literal else prev_pairs)
@@ -3771,6 +4127,7 @@ def _openai_translate(text: str, src: str, tgt: str,
 import contextvars
 import math
 import payments as payments_mod     # протоколы Click/Payme и суммы (чистые функции)
+import price_rules                     # цены и лимиты по функциям (чистые правила, инвариант 40)
 import mail_texts                      # тексты писем на языке получателя
 
 _RAW_PASSWORD = os.environ.get("APP_PASSWORD", "").strip()
@@ -4599,10 +4956,18 @@ async def require_token(request: Request, call_next):
             return JSONResponse({"ok": False, "error": _ROLE_DENIED["owner"]}, status_code=403)
         if _editor_only(request.method, path) and not _role_at_least(sess.get("role"), "editor"):
             return JSONResponse({"ok": False, "error": _ROLE_DENIED["editor"]}, status_code=403)
-        if _is_paid(request.method, path):
+        paid = _is_paid(request.method, path)
+        if paid:
             st = _spend_status(sess.get("tenant"))
             if st["over"]:
                 return _limit_402(st, sess.get("tenant"), sess)
+        # Правила функций (инвариант 40) — ПОСЛЕ `_NUMERIC_LOOSE` выше:
+        # таблица сверяет сырой путь, как `_PAID`.
+        fns = _fn_paths(request.method, path)
+        if (fns or paid) and not sess.get("super"):
+            blocked = await run_in_threadpool(_fn_path_check, fns, sess, paid)
+            if blocked is not None:
+                return blocked
         request.state.session = sess
         tok = CURRENT_SESSION.set(sess)
         # Проект запроса — для учёта расхода по проекту (`_note_usage`):
@@ -7695,6 +8060,9 @@ BLOCK_KIND = {
     "cap.bytes413": "money",
     "cap.pages402": "money",
     "cap.minutes402": "money",      # кончились минуты видео — продаётся пакетом минут
+    # Правило функции (инвариант 40): выключено или месячный лимит выбран.
+    # Лимит ставит владелец сервиса — упёрся клиент, значит продаётся больше.
+    "cap.fn402": "money",
     # Пробный клиент принёс файл больше подарка — перевели фрагмент.
     # Отказа нет, но спрос тот же: человек хотел весь документ.
     "cap.trialExcerpt": "money",
@@ -7974,6 +8342,7 @@ METRICS_BLOCK_TEXT = {
     "cap.bytes413": "файл тяжелее потолка в мегабайтах — не взяли",
     "cap.pages402": "кончились выданные страницы",
     "cap.minutes402": "кончились минуты видео",
+    "cap.fn402": "упёрлись в правило функции (выключена или лимит за месяц)",
     "cap.trialExcerpt": "пробному клиенту перевели фрагмент, а принёс он документ больше",
     "cap.projects402": "упёрлись в потолок числа проектов",
     "cap.spend402": "исчерпан месячный лимит расхода",
@@ -7997,6 +8366,7 @@ METRICS_WASTE_TEXT = {
     "refusal": "отказов модели отвечать (токены оплачены)",
     "jobStopped:limit": "прогонов остановлено лимитом",
     "jobStopped:provider_quota": "прогонов остановлено пустым счётом поставщика",
+    "jobStopped:fnlimit": "прогонов остановлено правилом функции",
 }
 METRICS_PROVIDER_TEXT = {
     "quota": "кончились деньги у поставщика",
@@ -8629,7 +8999,7 @@ def _scan_read_page(jpeg: bytes, mdl: dict, src_lang: str) -> Optional[str]:
     None — «не прочитали» (сеть, отказ), и это не «текста нет»: пустая
     страница отвечает пустой строкой."""
     import base64
-    client = _llm_client(mdl, timeout=120, max_retries=1)
+    client = _llm_client(mdl, timeout=120, step="scanquote", max_retries=1)
     system = ("You transcribe scanned document pages. Output ONLY the text printed on the page, "
               "verbatim and complete, in reading order, one paragraph per line, in its original "
               "language (source language code: %s). Keep numbers, punctuation and word spacing. "
@@ -11008,6 +11378,8 @@ def _pages_log(rec: dict, kind: str, pages: float, **extra) -> dict:
         del log[:len(log) - PAGES_LOG_MAX]
     if kind in _PAGES_DEBIT_KINDS and e.get("project") is not None:
         _proj_daily_sold(rec.get("id"), e["project"], pages=e["pages"])
+    if kind in _PAGES_DEBIT_KINDS:
+        _fn_used_add(rec, "pages", e["pages"], kind)
     return e
 
 
@@ -11076,6 +11448,8 @@ def _pages_debit(tid: str, pages: float, key: str, project_id: int, title: str,
             raise HTTPException(402, "В организации списано %.1f стр., с этим файлом %.1f при лимите %g: пополните лимит у администратора"
                                 % (usage["pages"], usage["pages"] + debit, caps["maxPages"]),
                                 headers=PAY_NEED_PAGES)
+        if debit > 0:
+            _fn_actor_check("pages", debit)
         # При действующем лимите счётчик заводится и первым списанием: без него
         # объём читался бы по живым проектам, и «повтор, списано 0» в журнале
         # врал бы — второй проект по тому же файлу входил бы в объём целиком.
@@ -11280,6 +11654,10 @@ def _hand_pages_guard(project: dict, tid: str, quote: dict) -> None:
     локом — звать его на каждую опечатку нельзя."""
     if quote["debit"] <= 0:
         return
+    # Месячный лимит страниц (инвариант 40) — только на КРУПНОЙ правке:
+    # вписать потерянную цифру человек обязан мочь всегда.
+    if quote["debit"] >= HAND_PAGES_REFUSE_MIN:
+        _fn_actor_check("pages", quote["debit"])
     caps = _tenant_caps(tid)
     if not caps["pagesLimited"]:
         return
@@ -11714,6 +12092,10 @@ def _minutes_log(rec: dict, kind: str, minutes: float, **extra) -> dict:
         del log[:len(log) - MINUTES_LOG_MAX]
     if kind in _MIN_DEBIT_KINDS and e.get("project") is not None:
         _proj_daily_sold(rec.get("id"), e["project"], minutes=e["minutes"])
+    if kind in _MIN_DEBIT_KINDS:
+        _fn_used_add(rec, "minutes", e["minutes"], kind)
+    elif kind == "refund":
+        _fn_used_add(rec, "minutes", -e["minutes"], kind)
     return e
 
 
@@ -11758,6 +12140,8 @@ def _minutes_debit(tid: str, minutes: float, pid: int, title: str, kind: str = "
         left = float(rec["minutesCredit"]) - float(rec.get("minutesUsed") or 0.0)
         if check and left + 1e-9 < minutes:
             raise _MinutesShort(minutes, round(left, 2))
+        if check:
+            _fn_actor_check("minutes", minutes)
         rec["minutesUsed"] = round(float(rec.get("minutesUsed") or 0.0) + float(minutes), 3)
         _minutes_log(rec, kind, minutes, project=pid, title=title)
 
@@ -11876,8 +12260,17 @@ def _pay_cfg() -> dict:
     return cfg
 
 
-def _pay_prices(cfg: dict) -> tuple:
-    return payments_mod.dec(cfg["pricePage"]), payments_mod.dec(cfg["priceMinute"])
+def _pay_prices(cfg: dict, tid: Optional[str] = None) -> tuple:
+    """Цена страницы и минуты. Своя цена ОРГАНИЗАЦИИ (правило функции,
+    инвариант 40) сильнее общей: платит организация, и заказ ей зачисляется."""
+    pp, pm = payments_mod.dec(cfg["pricePage"]), payments_mod.dec(cfg["priceMinute"])
+    if tid:
+        levels = [("tenant", (_tenant_rec(tid) or {}).get("fnRules") or {})]
+        own = price_rules.effective(levels, "pages")["price"]
+        pp = payments_mod.dec(own) if own is not None else pp
+        own = price_rules.effective(levels, "minutes")["price"]
+        pm = payments_mod.dec(own) if own is not None else pm
+    return pp, pm
 
 
 def _pay_rate(cfg: dict, currency: str):
@@ -11924,7 +12317,7 @@ def _pay_quote(pages, minutes, method: str, cfg: dict, tid: str) -> dict:
         raise HTTPException(409, "Ваша организация работает без предоплаты страниц — оплата по договору с администратором")
     if minutes and not ok["minutes"]:
         raise HTTPException(409, "Ваша организация работает без предоплаты минут — оплата по договору с администратором")
-    pp, pm = _pay_prices(cfg)
+    pp, pm = _pay_prices(cfg, tid)
     usd = payments_mod.price_total(pages, minutes, pp, pm)
     if usd <= 0:
         raise HTTPException(503, "Цены не заданы: сообщите администратору")
@@ -12351,6 +12744,164 @@ def admin_pay_config(req: PayConfigPatch, request: Request):
     _audit("pay.config", **{k: cfg[k] for k in ("pricePage", "priceMinute", "rateUZS", "rateKZT")})
     save_state(STATE)
     return {"ok": True, "config": cfg}
+
+
+# ── админка: цены и лимиты по функциям (инвариант 40) ──
+# Право супера проверяет ОБРАБОТЧИК: `/api/admin/` в `_OWNER_ONLY` пускает
+# «не ниже владельца», и владелец любого агентства читал бы чужие правила
+# и ставил бы лимиты себе сам (тот же порядок, что у приглашений и моделей).
+def _fn_scope_view(scope: str, ident, spend: Optional[dict], cfg: dict) -> dict:
+    """Строки функций для одного уровня: своё правило, что действует
+    (и откуда), сколько истрачено в этом месяце."""
+    tid = uid = None
+    name = None
+    if scope == "tenant":
+        rec = _tenant_rec(ident)
+        if rec is None:
+            raise HTTPException(404, "Организация не найдена")
+        tid, name, own = ident, rec.get("name") or ident, rec.get("fnRules") or {}
+    elif scope == "user":
+        u = _user_rec(int(ident)) if str(ident).lstrip("-").isdigit() else None
+        if u is None:
+            raise HTTPException(404, "Пользователь не найден")
+        uid, tid = u["id"], u.get("tenant") or DEFAULT_TENANT
+        name, own = _user_label(uid), u.get("fnRules") or {}
+    else:
+        own = _price_rules()
+    levels = [("user", own)] if scope == "user" else []
+    if scope in ("user", "tenant"):
+        levels.append(("tenant", (_tenant_rec(tid) or {}).get("fnRules") or {}))
+    levels.append(("all", _price_rules()))
+    rows = []
+    for f in price_rules.FUNCS:
+        fn = f["key"]
+        ok = price_rules.allowed(scope, fn)
+        if fn == "all" and scope == "all":
+            continue
+        eff = price_rules.effective(levels, fn)
+        r = dict(own.get(fn) or {})
+        row = {"fn": fn, "own": r, "allowed": ok, "off": eff["off"], "offFrom": eff["offFrom"]}
+        if f["price"]:
+            base = cfg["pricePage"] if fn == "pages" else cfg["priceMinute"]
+            row["price"] = eff["price"] if eff["price"] is not None else str(base)
+            row["priceFrom"] = eff["priceFrom"] or "config"
+        if scope == "user":
+            row["limit"], row["limitFrom"] = eff["userLimit"], ("user" if eff["userLimit"] is not None else None)
+            row["orgLimit"] = eff["tenantLimit"]
+        else:
+            row["limit"], row["limitFrom"] = eff["tenantLimit"], eff["tenantLimitFrom"]
+        if fn == "all" and scope == "tenant":
+            st = _spend_status(tid)
+            row["limit"], row["limitFrom"] = st.get("limitUsd"), "tenantLimitUsd"
+            row["used"] = st.get("spentUsd")
+        elif f["unit"] == "usd":
+            if spend is None:
+                row["used"] = None
+            elif scope == "tenant":
+                row["used"] = round(spend["t"].get((tid, fn), 0.0), 4)
+            elif scope == "user":
+                row["used"] = round(spend["u"].get((str(uid), fn), 0.0), 4)
+            else:
+                row["used"] = round(sum(v for (t_, f_), v in spend["t"].items() if f_ == fn), 4)
+        else:
+            if scope == "tenant":
+                row["used"] = _fn_used(fn, tid=tid)
+            elif scope == "user":
+                row["used"] = _fn_used(fn, uid=uid)
+            else:
+                row["used"] = round(sum(_fn_used(fn, tid=t.get("id")) for t in _tenants()), 3)
+        rows.append(row)
+    return {"scope": scope, "id": ident, "name": name, "tenant": tid, "rows": rows}
+
+
+def _fn_rule_list() -> list:
+    """Все особые условия одним списком: кто, какая функция, что задано."""
+    out = [{"scope": "all", "id": None, "name": None, "fn": fn, "rule": r}
+           for fn, r in sorted(_price_rules().items()) if r]
+    for t in _tenants():
+        for fn, r in sorted((t.get("fnRules") or {}).items()):
+            if r:
+                out.append({"scope": "tenant", "id": t.get("id"), "name": t.get("name") or t.get("id"),
+                            "fn": fn, "rule": r})
+    for u in _users():
+        for fn, r in sorted((u.get("fnRules") or {}).items()):
+            if r:
+                out.append({"scope": "user", "id": u["id"], "name": _user_label(u["id"]),
+                            "tenant": u.get("tenant"), "fn": fn, "rule": r})
+    return out
+
+
+@app.get("/api/admin/prices")
+def admin_prices(request: Request, scope: str = "all", id: str = ""):
+    if not _is_super(request):
+        raise HTTPException(403, "Цены и лимиты — только суперпользователю")
+    if scope not in ("all", "tenant", "user"):
+        raise HTTPException(400, "Неизвестный уровень")
+    cfg = _pay_cfg()
+    spend = _fn_spend(force=True)
+    view = _fn_scope_view(scope, id or None, spend, cfg)
+    return {"ok": True, "month": _month_key(), "funcs": price_rules.FUNCS,
+            "config": {k: cfg.get(k) for k in ("pricePage", "priceMinute", "rateUZS", "rateKZT",
+                                               "pagePacks", "minutePacks", "spendShare", "updated")},
+            "spendKnown": spend is not None, "view": view, "rules": _fn_rule_list(),
+            "tenants": [{"id": t.get("id"), "name": t.get("name") or t.get("id"),
+                         "active": t.get("active", True)} for t in _tenants()],
+            "users": [{"id": u["id"], "name": _user_label(u["id"]), "login": u.get("login"),
+                       "tenant": u.get("tenant"), "super": bool(u.get("super"))} for u in _users()]}
+
+
+class PriceRulePatch(BaseModel):
+    scope: str
+    id: Optional[str] = None
+    fn: str
+    price: Optional[str] = None
+    limit: Optional[str] = None
+    off: Optional[bool] = None
+    clear: bool = False
+
+
+@app.post("/api/admin/prices")
+def admin_prices_set(req: PriceRulePatch, request: Request):
+    """Задать или снять правило функции на уровне. Поля правила заменяются
+    ЦЕЛИКОМ: пустое поле — «наследовать», ноль у лимита — «нельзя вовсе»."""
+    if not _is_super(request):
+        raise HTTPException(403, "Цены и лимиты — только суперпользователю")
+    if price_rules.func(req.fn) is None:
+        raise HTTPException(400, "Неизвестная функция")
+    rule = {}
+    if not req.clear:
+        try:
+            rule = price_rules.clean_rule(req.scope, req.fn, req.price, req.limit, req.off)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    with _SAVE_LOCK:
+        if req.scope == "all":
+            bag, epoch = STATE.setdefault("priceRules", {}), "doc:priceRules"
+        elif req.scope == "tenant":
+            rec = _tenant_rec(req.id or "")
+            if rec is None:
+                raise HTTPException(404, "Организация не найдена")
+            bag, epoch = rec.setdefault("fnRules", {}), "doc:tenants"
+        elif req.scope == "user":
+            u = _user_rec(int(req.id)) if str(req.id or "").isdigit() else None
+            if u is None:
+                raise HTTPException(404, "Пользователь не найден")
+            bag, epoch = u.setdefault("fnRules", {}), "doc:users"
+        else:
+            raise HTTPException(400, "Неизвестный уровень")
+        before = bag.get(req.fn)
+        if rule:
+            bag[req.fn] = rule
+        else:
+            bag.pop(req.fn, None)
+        _audit("prices.rule", scope=req.scope, target=req.id, fn=req.fn, before=before, after=rule or None)
+        save_state(STATE)
+    try:
+        if hasattr(STORE, "bump_epoch"):
+            STORE.bump_epoch(epoch)
+    except Exception as e:
+        print(f"[backend] цены и лимиты: эпоха не поднята: {e}", file=sys.stderr)
+    return {"ok": True, "rule": rule or None}
 
 
 # ── колбэки поставщиков: публичные двери, защищённые подписью ──
@@ -14792,7 +15343,7 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
         return None
     dom = _resolve_domain(domain_id)
     mdl = _resolve_model(model or _dm("ocr"))
-    client = _llm_client(mdl, timeout=120, max_retries=1)
+    client = _llm_client(mdl, timeout=120, step="ocr", max_retries=1)
     # Обзорный кадр — уменьшенный PNG, а не сырые байты части: в пакете лежат
     # и jpeg, и gif, и tiff, а уходили они объявленные как image/png.
     over = image_text.preview(img_bytes)
@@ -17340,7 +17891,7 @@ def explain_term_variants(cid: int, req: ExplainRequest = ExplainRequest()):
             + "\n".join("  - " + v for v in variants))
     try:
         mdl = _resolve_model(req.model or _dm("judge"))
-        client = _llm_client(mdl, timeout=90, max_retries=1)
+        client = _llm_client(mdl, timeout=90, step="terms", max_retries=1)
         extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
                  else {"max_tokens": 900, "temperature": 0})
         resp = client.chat.completions.create(
@@ -18079,7 +18630,7 @@ def _openai_meaning(pairs: list, scope: tuple) -> Optional[dict]:
     body = "\n".join(f"  - {a} → {b}" for a, b in pairs)
     try:
         mdl = _resolve_model(_dm("judge"))
-        client = _llm_client(mdl, timeout=90, max_retries=1)
+        client = _llm_client(mdl, timeout=90, step="terms", max_retries=1)
         extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
                  else {"max_tokens": 900, "temperature": 0})
         resp = client.chat.completions.create(
@@ -18857,7 +19408,7 @@ def _extract_terms_call(pairs: list, model: Optional[str] = None,
     import json as _json
     dom = _resolve_domain(domain_id)
     mdl = _resolve_model(model or _dm("translate"))
-    client = _llm_client(mdl, timeout=90, max_retries=1)
+    client = _llm_client(mdl, timeout=90, step="terms", max_retries=1)
     body = "\n\n".join(f"[{i + 1}] SRC: {p[0]}\n    TGT: {p[1]}" for i, p in enumerate(pairs))
     extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
              else {"max_tokens": 1500, "temperature": 0})
@@ -18923,7 +19474,7 @@ def _openai_edit_terms(source: str, before: str, after: str, project: dict):
     tgt_l = _lang_prompt((project.get("tgt") or "").upper() or "TGT")
     # Таймаут 60 — младший из прецедентов проекта; без повторов: подтверждение
     # ждёт этот ответ, и вторая попытка удвоила бы паузу человеку.
-    client = _llm_client(mdl, timeout=60, max_retries=0)
+    client = _llm_client(mdl, timeout=60, step="edit_terms", max_retries=0)
     cut = 2000     # сегмент столько не занимает; это страховка, не норма
     body = ("SOURCE (" + src_l + "): " + (source or "")[:cut]
             + "\n\nDRAFT (" + tgt_l + "): " + (before or "")[:cut]
@@ -19021,7 +19572,14 @@ def _harvest_edited_terms(seg: dict, project: dict) -> dict:
     if _spend_status().get("over"):
         out["skipped"] = "limit"
         return out
-    items = _openai_edit_terms(seg.get("source") or "", str(before), target, project)
+    # Правило функции (инвариант 40) — тоже пропуск с кодом: подтверждение
+    # бесплатно, и отказ вызова модели посреди него оставил бы в памяти
+    # полупроведённое заверение без сохранения.
+    try:
+        items = _openai_edit_terms(seg.get("source") or "", str(before), target, project)
+    except HTTPException:
+        out["skipped"] = "fn"
+        return out
     if items is None:
         out["skipped"] = "error"
         return out
@@ -21442,7 +22000,7 @@ def _openai_term_context(seg: dict, project: dict, disputes: list,
     if stale:
         body += (NL + NL + "Забракованные проверкой слова перевода:" + NL
                  + NL.join("  - " + w for w in stale))
-    client = _llm_client(mdl, timeout=90, max_retries=2)
+    client = _llm_client(mdl, timeout=90, step="term_context", max_retries=2)
     extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
              else {"max_tokens": 700, "temperature": 0.0})
     try:
@@ -22098,7 +22656,7 @@ def _repair_system(dom: dict, src_lang: str, tgt_lang: str, style: str = "") -> 
 def _openai_repair(seg: dict, project: dict, findings: list, model: Optional[str]) -> Optional[str]:
     dom = _resolve_domain(project.get("domain"))
     mdl = _resolve_model(model or _dm("repair"))
-    client = _llm_client(mdl, timeout=120, max_retries=1)
+    client = _llm_client(mdl, timeout=120, step="repair", max_retries=1)
     lines = []
     for i, f in enumerate(findings, 1):
         lines.append(str(i) + ". " + f["text"])
@@ -23632,7 +24190,7 @@ def _openai_review(seg: dict, project: dict, prev_src: str, next_src: str,
         body += (NL + "Терм-лист документа (согласован машиной, не приказ; при споре "
                  "сильнее утверждённые термины): "
                  + "; ".join(h["src"] + " → " + h["tgt"] for h in doc))
-    client = _llm_client(mdl, timeout=90, max_retries=1)
+    client = _llm_client(mdl, timeout=90, step="review", max_retries=1)
     extra = ({"max_completion_tokens": 2048} if mdl["api"] == "modern"
              else {"max_tokens": 900, "temperature": 0})
     try:
@@ -25006,7 +25564,7 @@ def _termsheet_call(sources: list, model: Optional[str], domain_id: Optional[str
     import json as _json
     dom = _resolve_domain(domain_id)
     mdl = _resolve_model(model or _dm("review"))
-    client = _llm_client(mdl, timeout=90, max_retries=1)
+    client = _llm_client(mdl, timeout=90, step="terms", max_retries=1)
     body = "\n\n".join(f"[{i + 1}] {t}" for i, t in enumerate(sources))
     extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
              else {"max_tokens": 1500, "temperature": 0})
@@ -25232,7 +25790,7 @@ def _termcross_call(items: list, model: str, domain_id: Optional[str],
     None — вызов не состоялся (и это не «модель не знает»)."""
     dom = _resolve_domain(domain_id)
     mdl = _resolve_model(model)
-    client = _llm_client(mdl, timeout=90, max_retries=1)
+    client = _llm_client(mdl, timeout=90, step="termcross", max_retries=1)
     body = "\n".join("[%d] %s" % (i + 1, s) + (" — context: " + c if c else "")
                      for i, (s, c) in enumerate(items))
     extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
@@ -26360,7 +26918,7 @@ def _guide_call(project: dict, pairs: list, model: Optional[str] = None) -> Opti
         # Через `_llm_client`, а не openai.OpenAI: модель правил — модель
         # проверки, и при Claude в этой роли прямой клиент OpenAI получал
         # чужое имя модели и сбор правил не удавался никогда (инвариант 6).
-        client = _llm_client(mdl, timeout=120, max_retries=1)
+        client = _llm_client(mdl, timeout=120, step="guide", max_retries=1)
         resp = client.chat.completions.create(
             model=mdl["id"],
             messages=[{"role": "system", "content": _guide_system(dom, project.get("src") or "",
@@ -26632,7 +27190,7 @@ def _brief_call(project: dict, model: Optional[str] = None) -> Optional[str]:
     extra = ({"max_completion_tokens": 1024} if mdl["api"] == "modern"
              else {"max_tokens": 300, "temperature": 0})
     try:
-        client = _llm_client(mdl, timeout=90, max_retries=1)
+        client = _llm_client(mdl, timeout=90, step="brief", max_retries=1)
         resp = client.chat.completions.create(
             model=mdl["id"],
             messages=[{"role": "system", "content": _brief_system(dom, project.get("src") or "",
@@ -31559,6 +32117,10 @@ def _job_chunk_full(pid: int, chunk: list, params: dict) -> dict:
         if st == "medical_qa" and not (checks_mod and checks_enabled()):
             blocked.append("Medical QA: модуль недоступен")
             continue
+        if _fn_step_closed(st):
+            blocked.append("%s: функция выключена или её лимит исчерпан" % FULL_STEP_LABELS[st])
+            out["fn_skips"] = out.get("fn_skips", 0) + 1
+            continue
         sub = dict(params)
         # У каждого шага своя модель: одна переводит, другие проверяют. Подшаги
         # читают её из params["model"], поэтому подставляем нужную перед вызовом —
@@ -32277,6 +32839,14 @@ def create_job(pid: int, req: JobRequest):
     # по той же записи рисует свои строки.
     if req.kind == "full" and not (req.params or {}).get("steps"):
         req.params = dict(req.params or {}, steps=_default_run_steps(project))
+    # Правила функций (инвариант 40). Составной прогон отказывает, только
+    # когда закрыты ВСЕ его шаги: закрытый шаг он пропустит сам и назовёт.
+    _sess = CURRENT_SESSION.get() or {}
+    if not _sess.get("super"):
+        _fns = price_rules.job_fns(req.kind, req.params or {})
+        _closed = _fn_job_blocked(_fns, _tenant_of(project), _sess.get("user"), False)
+        if _closed and (req.kind != "full" or len(_closed) == len(_fns)):
+            raise _fn_http(_closed[0][1], _tenant_of(project))
     # Отказ по СМЕТЕ на старте. Мидварь отвечает 402 только на ИСЧЕРПАННОМ
     # лимите; прогон со сметой больше остатка стартовал бы и упирался в лимит
     # посреди работы (проверка между порциями в `_job_run`). Число клиентское —
@@ -32627,6 +33197,9 @@ def media_upload_start(req: MediaUploadInit):
         _check_lang_pair(req.src, req.tgt)
         if req.folder is not None:
             get_folder(req.folder)
+        # Правило функции (инвариант 40) — ДО приёма гигабайтов.
+        _fn_gate("minutes")
+        _fn_gate("speech")
         caps = _tenant_caps(tid)
         if caps["maxProjects"] and len(_tenant_projects()) >= caps["maxProjects"]:
             _ev("cap.projects402", tid)
@@ -32798,6 +33371,8 @@ def media_upload_finish(token: str, req: Optional[MediaFinish] = None):
         raise HTTPException(415, "Длительность файла не определяется — файл повреждён или не дописан")
     if rec.get("project") is not None:
         return _media_reattach(rec, part, info)       # бесплатно: модель не зовётся
+    _fn_gate("minutes")
+    _fn_gate("speech")
     trim = _media_trim_clean(req.trim, dur)
     span = (trim["end"] - trim["start"]) if trim else dur
     if span > MEDIA_MAX_MINUTES * 60:
@@ -32855,6 +33430,11 @@ def media_upload_finish(token: str, req: Optional[MediaFinish] = None):
         except _MinutesShort as e:
             shutil.rmtree(str(d), ignore_errors=True)
             return _minutes_402(e.need, e.left, tid)
+        except HTTPException:
+            # Правило функции (инвариант 40) закрыло минуты: каталог
+            # под проект уже заведён, а проекта не будет.
+            shutil.rmtree(str(d), ignore_errors=True)
+            raise
     # Под тем же замком, что и отмена: «Отменить», нажатое во время «готово»,
     # иначе роняло бы перенос файла 500-й, а проект с платным распознаванием
     # заводился бы при экране «отменено».
@@ -33113,7 +33693,7 @@ def _asr_chunk(item: tuple) -> dict:
         except (OSError, ValueError):
             pass
     try:
-        _llm_limit_gate()
+        _llm_limit_gate("asr")
         from openai import OpenAI
         client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=300, max_retries=2)
         kw = {"model": ASR_MODEL, "response_format": "verbose_json",
@@ -33386,7 +33966,7 @@ def _tts_clip(item: tuple) -> dict:
     if cache.exists():
         return {"ok": True, "pcm": cache.read_bytes()}
     try:
-        _llm_limit_gate()
+        _llm_limit_gate("tts")
         from openai import OpenAI
         client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=120, max_retries=2)
         resp = client.audio.speech.create(
@@ -33804,6 +34384,7 @@ def media_render(pid: int, req: MediaRenderRequest):
     if req.what == "dub":
         if not os.environ.get("OPENAI_API_KEY"):
             raise HTTPException(503, "Озвучка сейчас недоступна: сообщите администратору")
+        _fn_gate("speech")
         st = _spend_status()
         if st["over"]:
             return _limit_402(st, _current_tenant())

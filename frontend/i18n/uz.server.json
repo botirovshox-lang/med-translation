@@ -452,5 +452,10 @@
   "На это видео нужно ": "Bu video uchun kerak: ",
   " мин, на балансе ": " daq, balansda ",
   " мин: пополните минуты": " daq: daqiqalarni to'ldiring",
-  "Расход по этому файлу уже дошёл до потолка, назначенного на страницу: поднимите потолок у администратора сервиса.": "Bu fayl bo‘yicha xarajat sahifaga belgilangan chegaraga yetdi: chegarani xizmat administratoridan ko‘tarishni so‘rang."
+  "Расход по этому файлу уже дошёл до потолка, назначенного на страницу: поднимите потолок у администратора сервиса.": "Bu fayl bo‘yicha xarajat sahifaga belgilangan chegaraga yetdi: chegarani xizmat administratoridan ko‘tarishni so‘rang.",
+  "Эта функция для вас выключена администратором сервиса": "Bu funksiya siz uchun xizmat administratori tomonidan o'chirilgan",
+  "Месячный лимит на эту функцию исчерпан: обратитесь к администратору сервиса. Лимит сбрасывается 1-го числа.": "Bu funksiya uchun oylik limit tugadi: xizmat administratoriga murojaat qiling. Limit har oyning 1-sanasida yangilanadi.",
+  "Функция прогона выключена или её месячный лимит исчерпан: прогон остановлен, сделанное сохранено.": "Ishga tushirish funksiyasi o'chirilgan yoki uning oylik limiti tugagan: ishga tushirish to'xtatildi, bajarilgani saqlandi.",
+  "Цены и лимиты — только суперпользователю": "Narxlar va limitlar — faqat superfoydalanuvchiga",
+  ": функция выключена или её лимит исчерпан": ": funksiya o'chirilgan yoki uning limiti tugagan"
 }

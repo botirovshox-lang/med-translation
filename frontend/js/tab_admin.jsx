@@ -923,6 +923,7 @@ function metHintText(code) {
     case "waste:reviewVeto": return TR("готовых правок ревизии не прошли сверку — за них заплачено");
     case "waste:refusal": return TR("отказов модели отвечать: токены выставлены в счёт");
     case "waste:jobStopped:limit": return TR("прогонов остановлено исчерпанным лимитом");
+    case "waste:jobStopped:fnlimit": return TR("прогонов остановлено правилом функции");
     case "waste:jobStopped:provider_quota": return TR("прогонов остановлено пустым счётом у поставщика");
     case "provider:quota": return TR("раз у поставщика моделей кончились деньги");
     case "provider:rate": return TR("раз поставщик ответил «слишком часто» (rate limit)");
@@ -1155,6 +1156,7 @@ function oppBlockText(code) {
     case "cap.bytes413": return TR("раз файл не взяли: он тяжелее потолка в мегабайтах");
     case "cap.pages402": return TR("раз кончились выданные страницы — пора предлагать пакет");
     case "cap.minutes402": return TR("раз кончились минуты видео — пора предлагать пакет минут");
+    case "cap.fn402": return TR("раз упёрлись в правило функции (выключена или выбран месячный лимит) — вкладка «Цены»");
     case "cap.trialExcerpt": return TR("раз пробному клиенту перевели фрагмент большого документа — он ждёт весь");
     case "cap.projects402": return TR("раз упёрлись в потолок числа проектов");
     case "cap.spend402": return TR("раз исчерпан месячный лимит расхода");
@@ -1697,7 +1699,7 @@ function AdminProjectSpend() {
               }))))));
 }
 
-/* ── Оплаты: заказы, подтверждение «по счёту», настройки цен ────────── */
+/* ── Оплаты: заказы, подтверждение «по счёту», способы оплаты ─────── */
 function adminPayStatus(st) {
   return st === "paid" ? TR("оплачен") : st === "cancelled" ? TR("отменён") : st === "expired" ? TR("срок истёк") : TR("ждёт оплаты");
 }
@@ -1713,11 +1715,10 @@ function AdminPayments({ toast }) {
   if (!d || !cfg) return React.createElement("div", { className: "dim" }, TR("Загружаем…"));
   const setC = (k, v) => setCfg({ ...cfg, [k]: v });
   const save = async () => {
-    const packs = (s) => String(s || "").split(/[\s,;]+/).filter(Boolean).map(Number);
     try {
-      const r = await window.API.adminPayConfig({ pricePage: String(cfg.pricePage), priceMinute: String(cfg.priceMinute),
-        rateUZS: String(cfg.rateUZS), rateKZT: String(cfg.rateKZT), spendShare: String(cfg.spendShare),
-        pagePacks: packs(cfg.pagePacks), minutePacks: packs(cfg.minutePacks), notes: cfg.notes, methods: cfg.methods });
+      // Цены и курсы живут на вкладке «Цены»: полная запись отсюда затирала
+      // бы их правку, сделанную там, пока эта вкладка была открыта.
+      const r = await window.API.adminPayConfig({ notes: cfg.notes, methods: cfg.methods });
       setCfg({ ...r.config, pagePacks: r.config.pagePacks.join(", "), minutePacks: r.config.minutePacks.join(", ") });
       toast.success(TR("Настройки оплат сохранены"));
       load();
@@ -1738,8 +1739,6 @@ function AdminPayments({ toast }) {
   const pv = d.providers || {};
   const cb = d.callbacks || {};
   const orders = d.orders || [];
-  const F = (k, label) => React.createElement(Field, { label },
-    React.createElement(Input, { value: cfg[k] == null ? "" : cfg[k], onChange: (e) => setC(k, e.target.value) }));
   return React.createElement("div", { className: "col", style: { gap: 16 } },
     React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
       React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
@@ -1752,11 +1751,8 @@ function AdminPayments({ toast }) {
       React.createElement("div", { className: "dim", style: { fontSize: 12, wordBreak: "break-all" } },
         TR("Адреса для кабинетов: Click Prepare ") + (cb.clickPrepare || "—") + TR(" · Complete ") + (cb.clickComplete || "—")
         + TR(" · Payme ") + (cb.payme || "—")),
-      React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
-        F("pricePage", TR("Цена страницы, $")), F("priceMinute", TR("Цена минуты видео, $")),
-        F("rateUZS", TR("Курс: сумов за $1")), F("rateKZT", TR("Курс: тенге за $1")),
-        F("pagePacks", TR("Пакеты страниц (через запятую)")), F("minutePacks", TR("Пакеты минут (через запятую)")),
-        F("spendShare", TR("Доля оплаты в лимит расхода на модели (1 — вся сумма)"))),
+      React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+        TR("Цены страницы и минуты, курсы и пакеты — на вкладке «Цены».")),
       React.createElement("div", { className: "row row-wrap", style: { gap: 12 } },
         ["click", "payme", "card", "kaspi"].map(m => React.createElement("label", { key: m, className: "row", style: { gap: 6 } },
           React.createElement("input", { type: "checkbox", checked: cfg.methods[m] !== false,
@@ -1800,6 +1796,213 @@ function AdminPayments({ toast }) {
                 o.status === "new" ? React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => act(o, "cancel") }, TR("Отменить")) : null))))))));
 }
 
+/* ── Цены: цены продажи, курсы и правила по функциям (инвариант 40) ─────
+   Правила лежат на трёх уровнях — всем, организации, человеку, — и самое
+   точное явное значение сильнее. Считает и проверяет СЕРВЕР: здесь только
+   показ и черновик строки. Подписи функций — браузерные (закон `CLEAN_*`):
+   сервер отдаёт ключи, а русская строка с сервера на узбекском экране
+   осталась бы русской. */
+function priceFnLabel(fn) {
+  switch (fn) {
+    case "pages": return TR("Перевод документов");
+    case "minutes": return TR("Видео и звук");
+    case "translate": return TR("Перевод моделью");
+    case "review": return TR("Ревизия и справка о документе");
+    case "checks": return TR("Проверки перевода");
+    case "repair": return TR("Ремонт перевода");
+    case "terms": return TR("Термины и глоссарий");
+    case "ocr": return TR("Чтение картинок и сканов");
+    case "speech": return TR("Распознавание речи и озвучка");
+    case "all": return TR("Всё вместе на модели");
+    default: return fn;
+  }
+}
+function priceUnitOf(f) { return f === "pages" ? TR(" стр.") : f === "minutes" ? TR(" мин") : ""; }
+function priceAmount(unit, fn, v) {
+  if (v == null) return "—";
+  return unit === "usd" ? adminUsd(Number(v)) : (Math.round(Number(v) * 10) / 10) + priceUnitOf(fn);
+}
+function priceFrom(src) {
+  switch (src) {
+    case "user": return TR("у человека");
+    case "tenant": return TR("у организации");
+    case "all": return TR("общее правило");
+    case "config": return TR("из цен продажи выше");
+    case "tenantLimitUsd": return TR("лимит расхода организации");
+    default: return "";
+  }
+}
+function priceRuleText(fn, unit, r) {
+  const out = [];
+  if (r.price != null) out.push(TR("цена $") + r.price + (fn === "pages" ? TR("/стр.") : TR("/мин")));
+  if (r.limit != null) out.push(TR("лимит ") + priceAmount(unit, fn, r.limit) + TR(" в месяц"));
+  if (r.off === true) out.push(TR("выключено"));
+  if (r.off === false) out.push(TR("включено"));
+  return out.join(" · ");
+}
+function priceDraftOf(own) {
+  own = own || {};
+  return { price: own.price == null ? "" : String(own.price), limit: own.limit == null ? "" : String(own.limit),
+           off: own.off === true ? "off" : own.off === false ? "on" : "" };
+}
+
+function AdminPrices({ toast }) {
+  const [d, setD] = useState(null);
+  const [pick, setPick] = useState("all");
+  const [drafts, setDrafts] = useState({});
+  const [cfg, setCfg] = useState(null);
+  const [nonce, setNonce] = useState(0);
+  const [scope, ident] = pick === "all" ? ["all", ""] : [pick.split(":")[0], pick.slice(pick.indexOf(":") + 1)];
+  useEffect(() => {
+    let dead = false;
+    window.API.safeCall(() => window.API.adminPrices(scope, ident)).then(r => {
+      if (dead || !r || !r.ok) return;
+      setD(r);
+      setDrafts({});
+      setCfg(c => c || { ...r.config, pagePacks: (r.config.pagePacks || []).join(", "),
+                                       minutePacks: (r.config.minutePacks || []).join(", ") });
+    });
+    return () => { dead = true; };
+  }, [pick, nonce]);
+  if (!d || !cfg) return React.createElement("div", { className: "dim" }, TR("Загружаем…"));
+  const reload = () => setNonce(n => n + 1);
+  const funcs = {};
+  (d.funcs || []).forEach(f => { funcs[f.key] = f; });
+  const view = d.view || { rows: [] };
+  const setC = (k, v) => setCfg({ ...cfg, [k]: v });
+  const saveCfg = async () => {
+    const packs = (s) => String(s || "").split(/[\s,;]+/).filter(Boolean).map(Number);
+    try {
+      // Только цены и курсы: способы оплаты и тексты «по счёту» правит
+      // вкладка «Оплаты», и полная запись отсюда затирала бы её правку.
+      const r = await window.API.adminPayConfig({ pricePage: String(cfg.pricePage), priceMinute: String(cfg.priceMinute),
+        rateUZS: String(cfg.rateUZS), rateKZT: String(cfg.rateKZT), spendShare: String(cfg.spendShare),
+        pagePacks: packs(cfg.pagePacks), minutePacks: packs(cfg.minutePacks) });
+      setCfg({ ...r.config, pagePacks: r.config.pagePacks.join(", "), minutePacks: r.config.minutePacks.join(", ") });
+      toast.success(TR("Цены сохранены"));
+      reload();
+    } catch (e) { toast.error(TR("Не сохранено"), e.message || String(e)); }
+  };
+  const draft = (row) => drafts[row.fn] || priceDraftOf(row.own);
+  const setDraft = (row, k, v) => setDrafts({ ...drafts, [row.fn]: { ...draft(row), [k]: v } });
+  const saveRow = async (row, clear) => {
+    const x = draft(row);
+    try {
+      await window.API.adminPriceSet({ scope, id: ident || null, fn: row.fn, clear: !!clear,
+        price: row.allowed.price && x.price !== "" ? x.price : null,
+        limit: row.allowed.limit && x.limit !== "" ? x.limit : null,
+        off: row.allowed.off && x.off ? x.off === "off" : null });
+      toast.success(clear ? TR("Правило снято") : TR("Правило сохранено"), priceFnLabel(row.fn));
+      reload();
+    } catch (e) { toast.error(TR("Не сохранено"), e.message || String(e)); }
+  };
+  const orgLimit = async () => {
+    const cur = (view.rows.find(r => r.fn === "all") || {}).limit;
+    const v = prompt(TR("Лимит расхода организации на модели, $ в месяц (пусто — без лимита):"), cur == null ? "" : String(cur));
+    if (v === null) return;
+    try {
+      await window.API.tenantUpdate(ident, v.trim() === "" ? { clearLimit: true } : { limitUsd: Number(v.replace(",", ".")) });
+      toast.success(TR("Лимит сохранён"));
+      reload();
+    } catch (e) { toast.error(TR("Не сохранено"), e.message || String(e)); }
+  };
+  const F = (k, label) => React.createElement(Field, { label },
+    React.createElement(Input, { value: cfg[k] == null ? "" : cfg[k], onChange: (e) => setC(k, e.target.value) }));
+  const tenants = d.tenants || [];
+  const users = d.users || [];
+  const tname = (tid) => (tenants.find(t => t.id === tid) || {}).name || tid;
+  const scopeName = (s, id, name) => s === "all" ? TR("Всем") : (name || id) + (s === "user" ? TR(" · человек") : TR(" · организация"));
+  const cell = (row) => {
+    const f = funcs[row.fn] || {};
+    const x = draft(row);
+    const priceCell = !f.price ? React.createElement("span", { className: "dim" }, "—")
+      : row.allowed.price ? React.createElement(Input, { value: x.price, placeholder: "$" + row.price + " · " + priceFrom(row.priceFrom),
+          style: { maxWidth: 170 }, onChange: (e) => setDraft(row, "price", e.target.value) })
+      : React.createElement("span", null, "$" + row.price, React.createElement("span", { className: "dim" }, " · " + priceFrom(row.priceFrom)));
+    const tenantAll = row.fn === "all" && scope === "tenant";
+    const limitCell = tenantAll
+      ? React.createElement("span", null, priceAmount("usd", row.fn, row.limit),
+          React.createElement("span", { className: "dim" }, row.limit == null ? TR(" · без лимита") : ""), " ",
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: orgLimit }, TR("Изменить")))
+      : row.allowed.limit ? React.createElement("div", { className: "col", style: { gap: 2 } },
+          React.createElement(Input, { value: x.limit, style: { maxWidth: 170 },
+            placeholder: row.limitFrom && row.limitFrom !== scope ? priceAmount(f.unit, row.fn, row.limit) + " · " + priceFrom(row.limitFrom) : TR("без лимита"),
+            onChange: (e) => setDraft(row, "limit", e.target.value) }),
+          scope === "user" && row.orgLimit != null
+            ? React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("и у организации: ") + priceAmount(f.unit, row.fn, row.orgLimit))
+            : null)
+      : React.createElement("span", { className: "dim" }, row.limit != null ? priceAmount(f.unit, row.fn, row.limit) + " · " + priceFrom(row.limitFrom) : "—");
+    const offCell = !row.allowed.off ? React.createElement("span", { className: "dim" }, "—")
+      : React.createElement(Select, { value: x.off, onChange: (e) => setDraft(row, "off", e.target.value) },
+          React.createElement("option", { value: "" }, (row.off && row.offFrom !== scope ? TR("наследовать (выключено, ") + priceFrom(row.offFrom) + ")" : TR("наследовать (включено)"))),
+          React.createElement("option", { value: "off" }, TR("выключить")),
+          React.createElement("option", { value: "on" }, TR("включить")));
+    const own = row.own && Object.keys(row.own).length > 0;
+    return React.createElement("tr", { key: row.fn },
+      React.createElement("td", null, React.createElement("b", null, priceFnLabel(row.fn)),
+        row.off ? React.createElement("span", { style: { color: "var(--c-danger)" } }, TR(" · выключено")) : null),
+      React.createElement("td", null, priceCell),
+      React.createElement("td", null, limitCell),
+      React.createElement("td", null, row.used == null ? React.createElement("span", { className: "dim" }, TR("не знаю")) : priceAmount(f.unit === "usd" || tenantAll ? "usd" : f.unit, row.fn, row.used)),
+      React.createElement("td", null, offCell),
+      React.createElement("td", { style: { whiteSpace: "nowrap", textAlign: "right" } },
+        tenantAll ? null : React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => saveRow(row, false) }, TR("Сохранить")),
+        own ? React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => saveRow(row, true) }, TR("Сбросить")) : null));
+  };
+  const rules = d.rules || [];
+  return React.createElement("div", { className: "col", style: { gap: 16 } },
+    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
+      React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Цены продажи и курсы — всем")),
+      React.createElement("p", { className: "dim", style: { margin: 0 } },
+        TR("Что платит клиент за страницу и минуту видео, если у его организации нет своей цены. Своя цена организации — в правилах ниже.")),
+      React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
+        F("pricePage", TR("Цена страницы, $")), F("priceMinute", TR("Цена минуты видео, $")),
+        F("rateUZS", TR("Курс: сумов за $1")), F("rateKZT", TR("Курс: тенге за $1")),
+        F("pagePacks", TR("Пакеты страниц (через запятую)")), F("minutePacks", TR("Пакеты минут (через запятую)")),
+        F("spendShare", TR("Доля оплаты в лимит расхода на модели (1 — вся сумма)"))),
+      React.createElement("div", { className: "row row-wrap", style: { gap: 10, alignItems: "center" } },
+        React.createElement(Btn, { variant: "primary", onClick: saveCfg }, TR("Сохранить цены")),
+        cfg.updated ? React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("обновлено ") + cfg.updated) : null)),
+    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
+      React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+        React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Правила по функциям")),
+        React.createElement(Select, { value: pick, onChange: (e) => setPick(e.target.value), "aria-label": TR("Для кого") },
+          React.createElement("option", { value: "all" }, TR("Всем (умолчание для каждой организации)")),
+          React.createElement("optgroup", { label: TR("Организации и команды") },
+            tenants.map(t => React.createElement("option", { key: "t" + t.id, value: "tenant:" + t.id }, t.name + (t.active ? "" : TR(" (отключена)"))))),
+          React.createElement("optgroup", { label: TR("Люди") },
+            users.filter(u => !u.super).map(u => React.createElement("option", { key: "u" + u.id, value: "user:" + u.id },
+              (u.name || u.login) + (u.login && u.name !== u.login ? " (" + u.login + ")" : "") + " · " + tname(u.tenant)))))),
+      React.createElement("p", { className: "dim", style: { margin: 0 } },
+        TR("Сильнее самое точное правило: человек, потом организация, потом «всем». Лимиты организации и человека действуют вместе. Пустое поле — как у уровня выше; 0 — нельзя вовсе. Лимиты — за календарный месяц, сбрасываются 1-го числа.")),
+      scope === "user" ? React.createElement("p", { className: "dim", style: { margin: 0 } },
+        TR("Лимит человека считает его расход во всех командах. Цена продажи у человека не задаётся: платит организация.")) : null,
+      React.createElement("p", { className: "dim", style: { margin: 0 } },
+        TR("Лимит минут действует там, где видео оплачивается минутами (у организации есть кошелёк минут); без кошелька видео идёт страницами и меряется лимитом страниц.")),
+      d.spendKnown === false ? React.createElement("p", { style: { margin: 0, color: "var(--c-danger)" } },
+        TR("Журнал расхода сейчас не прочитан: денежные лимиты не проверяются, пока он не вернётся.")) : null,
+      React.createElement("div", { className: "tbl-fit" },
+        React.createElement("table", { className: "tbl" },
+          React.createElement("thead", null, React.createElement("tr", null,
+            [TR("Функция"), TR("Цена продажи"), TR("Лимит в месяц"), TR("Израсходовано за ") + (d.month || ""), TR("Доступ"), ""]
+              .map((h, i) => React.createElement("th", { key: i }, h)))),
+          React.createElement("tbody", null, (view.rows || []).map(cell))))),
+    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
+      React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Все особые условия")),
+      rules.length === 0 ? React.createElement("p", { className: "dim", style: { margin: 0 } }, TR("Особых условий нет: всем действуют общие цены, лимиты организаций — в их записи."))
+      : React.createElement("div", { className: "tbl-fit" },
+          React.createElement("table", { className: "tbl" },
+            React.createElement("thead", null, React.createElement("tr", null,
+              [TR("Для кого"), TR("Функция"), TR("Что задано"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
+            React.createElement("tbody", null, rules.map((r, i) => React.createElement("tr", { key: i },
+              React.createElement("td", null, scopeName(r.scope, r.id, r.name)),
+              React.createElement("td", null, priceFnLabel(r.fn)),
+              React.createElement("td", null, priceRuleText(r.fn, (funcs[r.fn] || {}).unit, r.rule || {})),
+              React.createElement("td", { style: { textAlign: "right" } },
+                React.createElement(Btn, { variant: "ghost", size: "sm",
+                  onClick: () => setPick(r.scope === "all" ? "all" : r.scope + ":" + r.id) }, TR("Открыть"))))))))));
+}
+
 function TabAdmin({ store, toast }) {
   const [ov, setOv] = useState(null);
   const [nonce, setNonce] = useState(0);
@@ -1827,7 +2030,9 @@ function TabAdmin({ store, toast }) {
         : view === "spend"
         ? TR("Сколько потратил каждый проект за выбранный период и сколько за это время продано страниц и минут.")
         : view === "payments"
-        ? TR("Заказы на оплату, подтверждение оплат «по счёту», цены и курсы.")
+        ? TR("Заказы на оплату, подтверждение оплат «по счёту», способы оплаты.")
+        : view === "prices"
+        ? TR("Цены продажи, курсы и правила по функциям: всем, организации или отдельному человеку.")
         : view === "chances"
           ? TR("Куда люди упираются, чего им не хватило и что из этого можно продать. Считается по журналу событий; вызовов модели нет.")
           : view === "metrics"
@@ -1837,7 +2042,7 @@ function TabAdmin({ store, toast }) {
       React.createElement("div", { className: "seg", role: "tablist" },
         [["summary", TR("Сводка")], ["access", TR("Роли и доступы")], ["chances", TR("Возможности")],
          ["metrics", TR("Метрики")], ["models", TR("Модели и расход")], ["spend", TR("Расход по проектам")],
-         ["payments", TR("Оплаты")]].map(([key, label]) =>
+         ["prices", TR("Цены")], ["payments", TR("Оплаты")]].map(([key, label]) =>
           React.createElement("button", { key, role: "tab", "aria-pressed": view === key, "aria-selected": view === key,
             onClick: () => setView(key) }, label)))),
     view === "access" && React.createElement(TabAccess, { store, toast }),
@@ -1845,6 +2050,7 @@ function TabAdmin({ store, toast }) {
     view === "chances" && React.createElement(TabChances, { toast }),
     view === "metrics" && React.createElement(TabMetrics, { toast }),
     view === "spend" && React.createElement(AdminProjectSpend, null),
+    view === "prices" && React.createElement(AdminPrices, { toast }),
     view === "payments" && React.createElement(AdminPayments, { toast }),
     view === "summary" && !ov && React.createElement("div", { className: "dim" }, TR("Загружаем сводку…")),
     view === "summary" && ov && React.createElement("div", { className: "col", style: { gap: 16 } },

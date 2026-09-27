@@ -371,6 +371,8 @@ function onUnauthorized() {
     adminPayConfirm: (oid, note)            => call("POST",   `/admin/payments/${oid}/confirm`, { note: note || null }),
     adminPayCancel:  (oid, note)            => call("POST",   `/admin/payments/${oid}/cancel`, { note: note || null }),
     adminPayConfig:  (body)                 => call("POST",   "/admin/pay-config", body),
+    adminPrices:   (scope, id)              => call("GET",    `/admin/prices?scope=${encodeURIComponent(scope || "all")}&id=${encodeURIComponent(id || "")}`),
+    adminPriceSet: (body)                   => call("POST",   "/admin/prices", body),
     projectSpend:  (from, to)               => call("GET",    `/admin/project-spend?from=${encodeURIComponent(from || "")}&to=${encodeURIComponent(to || "")}`),
     referralCfg:   ()                       => call("GET",    "/admin/referral"),
     referralSave:  (body)                   => call("POST",   "/admin/referral", body),

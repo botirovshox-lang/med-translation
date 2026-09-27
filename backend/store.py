@@ -705,6 +705,16 @@ class PgStore:
                  "calls": int(r[5]), "in": int(r[6]), "cached_in": int(r[7]), "out": int(r[8]),
                  "reasoning": int(r[9]), "cost": float(r[10]), "unpriced": int(r[11])} for r in got]
 
+    def usage_sums(self, day_from: str, day_to: str) -> list:
+        """Доллары журнала за период, сведённые по организации, автору и шагу:
+        счёт функций (инвариант 40) не тащит построчно каждую модель и день."""
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT tenant, uid, step, sum(usd) FROM usage_daily "
+                "WHERE day >= %s AND day <= %s GROUP BY tenant, uid, step", (day_from, day_to))
+            got = cur.fetchall()
+        return [{"tenant": r[0], "user": r[1], "step": r[2], "cost": float(r[3] or 0)} for r in got]
+
     def usage_min_day(self) -> Optional[str]:
         with self._cursor() as cur:
             cur.execute("SELECT min(day) FROM usage_daily")

@@ -1,0 +1,994 @@
+{
+ "all": {
+  "ok": true,
+  "month": "2026-09",
+  "funcs": [
+   {
+    "key": "pages",
+    "label": "Перевод документов",
+    "unit": "pages",
+    "price": true,
+    "off": false
+   },
+   {
+    "key": "minutes",
+    "label": "Видео и звук",
+    "unit": "minutes",
+    "price": true,
+    "off": true
+   },
+   {
+    "key": "translate",
+    "label": "Перевод моделью",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "review",
+    "label": "Ревизия и справка о документе",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "checks",
+    "label": "Проверки перевода",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "repair",
+    "label": "Ремонт перевода",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "terms",
+    "label": "Термины и глоссарий",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "ocr",
+    "label": "Чтение картинок и сканов",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "speech",
+    "label": "Распознавание речи и озвучка",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "all",
+    "label": "Всё вместе на модели",
+    "unit": "usd",
+    "price": false,
+    "off": false
+   }
+  ],
+  "config": {
+   "pricePage": "0.5",
+   "priceMinute": "0.3",
+   "rateUZS": "12700",
+   "rateKZT": "510",
+   "pagePacks": [
+    20,
+    50,
+    100,
+    300
+   ],
+   "minutePacks": [
+    10,
+    30,
+    60,
+    180
+   ],
+   "spendShare": "1.0",
+   "updated": null
+  },
+  "spendKnown": true,
+  "view": {
+   "scope": "all",
+   "id": null,
+   "name": null,
+   "tenant": null,
+   "rows": [
+    {
+     "fn": "pages",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": false,
+      "off": false
+     },
+     "off": false,
+     "offFrom": null,
+     "price": "0.5",
+     "priceFrom": "config",
+     "limit": null,
+     "limitFrom": null,
+     "used": 6.0
+    },
+    {
+     "fn": "minutes",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": false,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "price": "0.3",
+     "priceFrom": "config",
+     "limit": null,
+     "limitFrom": null,
+     "used": 12.0
+    },
+    {
+     "fn": "translate",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "used": 0
+    },
+    {
+     "fn": "review",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "used": 0
+    },
+    {
+     "fn": "checks",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "used": 0
+    },
+    {
+     "fn": "repair",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "used": 0
+    },
+    {
+     "fn": "terms",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "used": 0
+    },
+    {
+     "fn": "ocr",
+     "own": {
+      "limit": 1.5
+     },
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": 1.5,
+     "limitFrom": "all",
+     "used": 0.8
+    },
+    {
+     "fn": "speech",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "used": 0
+    }
+   ]
+  },
+  "rules": [
+   {
+    "scope": "all",
+    "id": null,
+    "name": null,
+    "fn": "ocr",
+    "rule": {
+     "limit": 1.5
+    }
+   },
+   {
+    "scope": "tenant",
+    "id": "acme",
+    "name": "ACME",
+    "fn": "pages",
+    "rule": {
+     "price": "0.25"
+    }
+   },
+   {
+    "scope": "tenant",
+    "id": "acme",
+    "name": "ACME",
+    "fn": "review",
+    "rule": {
+     "limit": 2.0,
+     "off": true
+    }
+   },
+   {
+    "scope": "user",
+    "id": 2,
+    "name": "acme",
+    "tenant": "acme",
+    "fn": "all",
+    "rule": {
+     "limit": 7.0
+    }
+   }
+  ],
+  "tenants": [
+   {
+    "id": "default",
+    "name": "Организация",
+    "active": true
+   },
+   {
+    "id": "acme",
+    "name": "ACME",
+    "active": true
+   },
+   {
+    "id": "other",
+    "name": "OTHER",
+    "active": true
+   }
+  ],
+  "users": [
+   {
+    "id": 1,
+    "name": "Администратор",
+    "login": "admin",
+    "tenant": "default",
+    "super": true
+   },
+   {
+    "id": 2,
+    "name": "acme",
+    "login": "acme",
+    "tenant": "acme",
+    "super": false
+   },
+   {
+    "id": 3,
+    "name": "other",
+    "login": "other",
+    "tenant": "other",
+    "super": false
+   }
+  ]
+ },
+ "tenant": {
+  "ok": true,
+  "month": "2026-09",
+  "funcs": [
+   {
+    "key": "pages",
+    "label": "Перевод документов",
+    "unit": "pages",
+    "price": true,
+    "off": false
+   },
+   {
+    "key": "minutes",
+    "label": "Видео и звук",
+    "unit": "minutes",
+    "price": true,
+    "off": true
+   },
+   {
+    "key": "translate",
+    "label": "Перевод моделью",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "review",
+    "label": "Ревизия и справка о документе",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "checks",
+    "label": "Проверки перевода",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "repair",
+    "label": "Ремонт перевода",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "terms",
+    "label": "Термины и глоссарий",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "ocr",
+    "label": "Чтение картинок и сканов",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "speech",
+    "label": "Распознавание речи и озвучка",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "all",
+    "label": "Всё вместе на модели",
+    "unit": "usd",
+    "price": false,
+    "off": false
+   }
+  ],
+  "config": {
+   "pricePage": "0.5",
+   "priceMinute": "0.3",
+   "rateUZS": "12700",
+   "rateKZT": "510",
+   "pagePacks": [
+    20,
+    50,
+    100,
+    300
+   ],
+   "minutePacks": [
+    10,
+    30,
+    60,
+    180
+   ],
+   "spendShare": "1.0",
+   "updated": null
+  },
+  "spendKnown": true,
+  "view": {
+   "scope": "tenant",
+   "id": "acme",
+   "name": "ACME",
+   "tenant": "acme",
+   "rows": [
+    {
+     "fn": "pages",
+     "own": {
+      "price": "0.25"
+     },
+     "allowed": {
+      "price": true,
+      "limit": true,
+      "off": false
+     },
+     "off": false,
+     "offFrom": null,
+     "price": "0.25",
+     "priceFrom": "tenant",
+     "limit": null,
+     "limitFrom": null,
+     "used": 6.0
+    },
+    {
+     "fn": "minutes",
+     "own": {},
+     "allowed": {
+      "price": true,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "price": "0.3",
+     "priceFrom": "config",
+     "limit": null,
+     "limitFrom": null,
+     "used": 12.0
+    },
+    {
+     "fn": "translate",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "used": 0.0
+    },
+    {
+     "fn": "review",
+     "own": {
+      "limit": 2.0,
+      "off": true
+     },
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": true,
+     "offFrom": "tenant",
+     "limit": 2.0,
+     "limitFrom": "tenant",
+     "used": 0.0
+    },
+    {
+     "fn": "checks",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "used": 0.0
+    },
+    {
+     "fn": "repair",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "used": 0.0
+    },
+    {
+     "fn": "terms",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "used": 0.0
+    },
+    {
+     "fn": "ocr",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": 1.5,
+     "limitFrom": "all",
+     "used": 0.8
+    },
+    {
+     "fn": "speech",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "used": 0.0
+    },
+    {
+     "fn": "all",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": false,
+      "off": false
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": "tenantLimitUsd",
+     "used": 0.0
+    }
+   ]
+  },
+  "rules": [
+   {
+    "scope": "all",
+    "id": null,
+    "name": null,
+    "fn": "ocr",
+    "rule": {
+     "limit": 1.5
+    }
+   },
+   {
+    "scope": "tenant",
+    "id": "acme",
+    "name": "ACME",
+    "fn": "pages",
+    "rule": {
+     "price": "0.25"
+    }
+   },
+   {
+    "scope": "tenant",
+    "id": "acme",
+    "name": "ACME",
+    "fn": "review",
+    "rule": {
+     "limit": 2.0,
+     "off": true
+    }
+   },
+   {
+    "scope": "user",
+    "id": 2,
+    "name": "acme",
+    "tenant": "acme",
+    "fn": "all",
+    "rule": {
+     "limit": 7.0
+    }
+   }
+  ],
+  "tenants": [
+   {
+    "id": "default",
+    "name": "Организация",
+    "active": true
+   },
+   {
+    "id": "acme",
+    "name": "ACME",
+    "active": true
+   },
+   {
+    "id": "other",
+    "name": "OTHER",
+    "active": true
+   }
+  ],
+  "users": [
+   {
+    "id": 1,
+    "name": "Администратор",
+    "login": "admin",
+    "tenant": "default",
+    "super": true
+   },
+   {
+    "id": 2,
+    "name": "acme",
+    "login": "acme",
+    "tenant": "acme",
+    "super": false
+   },
+   {
+    "id": 3,
+    "name": "other",
+    "login": "other",
+    "tenant": "other",
+    "super": false
+   }
+  ]
+ },
+ "user": {
+  "ok": true,
+  "month": "2026-09",
+  "funcs": [
+   {
+    "key": "pages",
+    "label": "Перевод документов",
+    "unit": "pages",
+    "price": true,
+    "off": false
+   },
+   {
+    "key": "minutes",
+    "label": "Видео и звук",
+    "unit": "minutes",
+    "price": true,
+    "off": true
+   },
+   {
+    "key": "translate",
+    "label": "Перевод моделью",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "review",
+    "label": "Ревизия и справка о документе",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "checks",
+    "label": "Проверки перевода",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "repair",
+    "label": "Ремонт перевода",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "terms",
+    "label": "Термины и глоссарий",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "ocr",
+    "label": "Чтение картинок и сканов",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "speech",
+    "label": "Распознавание речи и озвучка",
+    "unit": "usd",
+    "price": false,
+    "off": true
+   },
+   {
+    "key": "all",
+    "label": "Всё вместе на модели",
+    "unit": "usd",
+    "price": false,
+    "off": false
+   }
+  ],
+  "config": {
+   "pricePage": "0.5",
+   "priceMinute": "0.3",
+   "rateUZS": "12700",
+   "rateKZT": "510",
+   "pagePacks": [
+    20,
+    50,
+    100,
+    300
+   ],
+   "minutePacks": [
+    10,
+    30,
+    60,
+    180
+   ],
+   "spendShare": "1.0",
+   "updated": null
+  },
+  "spendKnown": true,
+  "view": {
+   "scope": "user",
+   "id": "2",
+   "name": "acme",
+   "tenant": "acme",
+   "rows": [
+    {
+     "fn": "pages",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": false
+     },
+     "off": false,
+     "offFrom": null,
+     "price": "0.25",
+     "priceFrom": "tenant",
+     "limit": null,
+     "limitFrom": null,
+     "orgLimit": null,
+     "used": 6.0
+    },
+    {
+     "fn": "minutes",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "price": "0.3",
+     "priceFrom": "config",
+     "limit": null,
+     "limitFrom": null,
+     "orgLimit": null,
+     "used": 12.0
+    },
+    {
+     "fn": "translate",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "orgLimit": null,
+     "used": 0.0
+    },
+    {
+     "fn": "review",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": true,
+     "offFrom": "tenant",
+     "limit": null,
+     "limitFrom": null,
+     "orgLimit": 2.0,
+     "used": 0.0
+    },
+    {
+     "fn": "checks",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "orgLimit": null,
+     "used": 0.0
+    },
+    {
+     "fn": "repair",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "orgLimit": null,
+     "used": 0.0
+    },
+    {
+     "fn": "terms",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "orgLimit": null,
+     "used": 0.0
+    },
+    {
+     "fn": "ocr",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "orgLimit": 1.5,
+     "used": 0.8
+    },
+    {
+     "fn": "speech",
+     "own": {},
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": true
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": null,
+     "limitFrom": null,
+     "orgLimit": null,
+     "used": 0.0
+    },
+    {
+     "fn": "all",
+     "own": {
+      "limit": 7.0
+     },
+     "allowed": {
+      "price": false,
+      "limit": true,
+      "off": false
+     },
+     "off": false,
+     "offFrom": null,
+     "limit": 7.0,
+     "limitFrom": "user",
+     "orgLimit": null,
+     "used": 0.8
+    }
+   ]
+  },
+  "rules": [
+   {
+    "scope": "all",
+    "id": null,
+    "name": null,
+    "fn": "ocr",
+    "rule": {
+     "limit": 1.5
+    }
+   },
+   {
+    "scope": "tenant",
+    "id": "acme",
+    "name": "ACME",
+    "fn": "pages",
+    "rule": {
+     "price": "0.25"
+    }
+   },
+   {
+    "scope": "tenant",
+    "id": "acme",
+    "name": "ACME",
+    "fn": "review",
+    "rule": {
+     "limit": 2.0,
+     "off": true
+    }
+   },
+   {
+    "scope": "user",
+    "id": 2,
+    "name": "acme",
+    "tenant": "acme",
+    "fn": "all",
+    "rule": {
+     "limit": 7.0
+    }
+   }
+  ],
+  "tenants": [
+   {
+    "id": "default",
+    "name": "Организация",
+    "active": true
+   },
+   {
+    "id": "acme",
+    "name": "ACME",
+    "active": true
+   },
+   {
+    "id": "other",
+    "name": "OTHER",
+    "active": true
+   }
+  ],
+  "users": [
+   {
+    "id": 1,
+    "name": "Администратор",
+    "login": "admin",
+    "tenant": "default",
+    "super": true
+   },
+   {
+    "id": 2,
+    "name": "acme",
+    "login": "acme",
+    "tenant": "acme",
+    "super": false
+   },
+   {
+    "id": 3,
+    "name": "other",
+    "login": "other",
+    "tenant": "other",
+    "super": false
+   }
+  ]
+ }
+}

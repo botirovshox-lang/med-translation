@@ -159,6 +159,7 @@ check(!!full && full.includes("500"), "выданные страницы пок�
 /* Вкладка «Модели и расход»: переключатель на месте, вид рисуется и до ответа
    сервера (настройка и пересчёт грузятся своими запросами), и с ответом. */
 check(!!full && full.includes("Модели и расход"), "переключатель вкладки моделей на месте");
+check(!!full && full.includes("Цены") && full.includes("Оплаты"), "вкладка «Цены» стоит рядом с «Оплатами»");
 function renderView(label, sys, sim, draft) {
   hooks.length = 0; hookIdx = 0; effects.length = 0;
   hooks[0] = OV; hooks[2] = "models";

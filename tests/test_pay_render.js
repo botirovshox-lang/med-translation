@@ -128,10 +128,41 @@ t = draw(AdminPayments, { toast }, { 0: ap, 1: "", 2: cfg });
 check(clean(t), "без undefined и NaN");
 check(t.indexOf("Подтвердить") !== -1 || ap.orders.every(o => o.status !== "new"), "у неоплаченных — «Подтвердить»");
 check(t.indexOf("/api/pay/payme") !== -1, "адреса колбэков для кабинетов показаны");
-check(t.indexOf("Цена страницы, $") !== -1 && t.indexOf("Курс: сумов за $1") !== -1, "настройки цен и курса");
+check(t.indexOf("Цена страницы, $") === -1 && t.indexOf("на вкладке «Цены»") !== -1,
+      "цены и курсы уехали на вкладку «Цены», здесь — ссылка словами");
 check(t.indexOf("Оплачено, UZS") !== -1, "итог оплаченного по валютам");
 check(clean(draw(AdminPayments, { toast }, { 0: { ok: true }, 1: "", 2: { methods: {}, notes: {} } })),
       "ответ без заказов экран не роняет");
+
+console.log("=== 3а. Админка: цены и правила по функциям ===");
+// Ответы НАСТОЯЩЕЙ двери: фикстуру снимает и сверяет tests/test_price_rules.py.
+// Хуки AdminPrices: 0 ответ, 1 уровень, 2 черновики строк, 3 цены, 4 перезапрос.
+const PX = JSON.parse(fs.readFileSync("tests/fixtures/price_payloads.json", "utf8"));
+const pcfg = (r) => Object.assign({}, r.config, { pagePacks: (r.config.pagePacks || []).join(", "),
+  minutePacks: (r.config.minutePacks || []).join(", ") });
+for (const [k, pick] of [["all", "all"], ["tenant", "tenant:acme"], ["user", "user:" + PX.user.view.id]]) {
+  t = draw(AdminPrices, { toast }, { 0: PX[k], 1: pick, 2: {}, 3: pcfg(PX[k]), 4: 0 });
+  check(clean(t), "уровень «" + k + "»: без undefined и NaN");
+  check(t.indexOf("Цена страницы, $") !== -1 && t.indexOf("Курс: сумов за $1") !== -1, "уровень «" + k + "»: цены и курсы на месте");
+  check(t.indexOf("Перевод документов") !== -1 && t.indexOf("Видео и звук") !== -1 && t.indexOf("Проверки перевода") !== -1,
+        "уровень «" + k + "»: функции названы словами браузера");
+  check(t.indexOf("Все особые условия") !== -1 && t.indexOf("Открыть") !== -1, "уровень «" + k + "»: список особых условий");
+}
+t = draw(AdminPrices, { toast }, { 0: PX.tenant, 1: "tenant:acme", 2: {}, 3: pcfg(PX.tenant), 4: 0 });
+check(t.indexOf("Всё вместе на модели") !== -1 && t.indexOf("Изменить") !== -1,
+      "у организации «всё вместе» правится её лимитом расхода");
+check(t.indexOf("выключено") !== -1, "выключенная функция названа");
+t = draw(AdminPrices, { toast }, { 0: PX.user, 1: "user:" + PX.user.view.id, 2: {}, 3: pcfg(PX.user), 4: 0 });
+check(t.indexOf("во всех командах") !== -1, "у человека сказано, что лимит — по всем его командам");
+check(t.indexOf("Всем (умолчание для каждой организации)") !== -1 && t.indexOf("ACME") !== -1,
+      "выбор уровня: всем, организации и люди");
+check(clean(draw(AdminPrices, { toast }, { 0: { ok: true, config: {} }, 1: "all", 2: {}, 3: { }, 4: 0 })),
+      "ответ без строк экран не роняет");
+check(draw(AdminPrices, { toast }, { 0: null, 1: "all", 2: {}, 3: null, 4: 0 }).indexOf("Загружаем") !== -1,
+      "до ответа — «Загружаем»");
+const asrc = fs.readFileSync(path.join(root, "tab_admin.jsx"), "utf8");
+const payBody = asrc.slice(asrc.indexOf("function AdminPayments"), asrc.indexOf("function priceFnLabel"));
+check(!/pricePage|priceMinute|rateUZS/.test(payBody), "вкладка «Оплаты» цены не пишет — не затрёт правку с «Цен»");
 
 console.log("=== 4. Админка: расход по проектам ===");
 const ps = FX.projectSpend;

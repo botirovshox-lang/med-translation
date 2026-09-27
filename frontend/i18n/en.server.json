@@ -452,5 +452,10 @@
   "На это видео нужно ": "This video needs ",
   " мин, на балансе ": " min, balance ",
   " мин: пополните минуты": " min: top up minutes",
-  "Расход по этому файлу уже дошёл до потолка, назначенного на страницу: поднимите потолок у администратора сервиса.": "Spending on this file has already reached the per-page cap: ask the service administrator to raise the cap."
+  "Расход по этому файлу уже дошёл до потолка, назначенного на страницу: поднимите потолок у администратора сервиса.": "Spending on this file has already reached the per-page cap: ask the service administrator to raise the cap.",
+  "Эта функция для вас выключена администратором сервиса": "This function has been turned off for you by the service administrator",
+  "Месячный лимит на эту функцию исчерпан: обратитесь к администратору сервиса. Лимит сбрасывается 1-го числа.": "The monthly limit for this function is used up: contact the service administrator. The limit resets on the 1st.",
+  "Функция прогона выключена или её месячный лимит исчерпан: прогон остановлен, сделанное сохранено.": "A function of this run is turned off or its monthly limit is used up: the run was stopped, the work done is saved.",
+  "Цены и лимиты — только суперпользователю": "Prices and limits are for the superuser only",
+  ": функция выключена или её лимит исчерпан": ": the function is turned off or its limit is used up"
 }

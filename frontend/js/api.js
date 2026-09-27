@@ -15,6 +15,13 @@
       if (t) sessionStorage.setItem(TOKEN_KEY, t);
       else sessionStorage.removeItem(TOKEN_KEY);
     } catch (e) {}
+    /* Токен снят (выход или истёкшая сессия): следующий вошедший на этом
+       компьютере — не обязательно администратор, и до ответа сервера
+       суммы снова скрыты (инвариант 22а). */
+    if (!t) {
+      window.HIDE_COST = true;
+      try { localStorage.removeItem("mcat_hide_cost"); } catch (e) {}
+    }
   }
   function authHeaders(h) {
     const t = getToken();

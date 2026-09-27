@@ -489,6 +489,7 @@ window.I18N.registerServer("en", {
  "Распознавание речи сейчас недоступно: сообщите администратору": "Speech recognition is unavailable right now: tell the administrator",
  "Распознавание этого видео не уместится в лимит расхода организации": "Recognising this video will not fit into the organisation's spending limit",
  "Расход по этому файлу уже дошёл до потолка, назначенного на страницу ($": "Spending on this file has already reached the per-page cap ($",
+ "Расход по этому файлу уже дошёл до потолка, назначенного на страницу: поднимите потолок у администратора сервиса.": "Spending on this file has already reached the per-page cap: ask the service administrator to raise the cap.",
  "Регистрацию на эту почту сделали заново с другим паролем. Задайте свой пароль через «Забыли пароль?»": "This email was registered again with a different password. Set your own password via “Forgot password?”",
  "Ремонт требует ключ OpenAI": "The repair requires an OpenAI key",
  "Реплики разобраны по времени; обратно выгружается таким же файлом субтитров с прежними таймингами. Разметка внутри реплики (курсив, цвет) в переводе не сохраняется.": "Lines are split by timing; the result comes back as the same subtitle file with the original timings. Markup inside a line (italics, colour) is not kept in the translation.",

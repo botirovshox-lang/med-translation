@@ -214,7 +214,7 @@ function GlossaryAuditPanel({ store, toast, onDone }) {
     }
     setBusy("");
     if (!r || !r.ok) {
-      toast.error(TR("Сверка не выполнена"), TR("Нужен ключ OpenAI, или сервер не ответил."));
+      toast.error(TR("Сверка не выполнена"), TR("Сверка сейчас недоступна: попробуйте ещё раз или сообщите администратору."));
       return;
     }
     setRes(r);

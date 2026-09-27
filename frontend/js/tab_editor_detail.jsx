@@ -162,7 +162,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
     setTermBusy(true);
     window.API.safeCall(() => window.API.termcheck(project.id, seg.id, pickModel(tcModel))).then(res => {
       setTermBusy(false);
-      if (!res || !res.ok) { toast.error(TR("Проверка не удалась"), TR("Модель не ответила или нет ключа OpenAI.")); return; }
+      if (!res || !res.ok) { toast.error(TR("Проверка не удалась"), TR("Проверка сейчас недоступна: попробуйте ещё раз или сообщите администратору.")); return; }
       touch({ termcheck: { ...res.termcheck, stale: false } });
       const n = (res.termcheck.findings || []).length;
       if (res.skipped) toast.info(TR("Проверять нечего"), res.skipped);
@@ -179,7 +179,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
       model: pickModel(rpModel), bc_model: pickModel(bcModel), tc_model: pickModel(tcModel),
       use_judge: !!bcJudge, judge_model: pickModel(judgeModel) })).then(res => {
       setRepairBusy(false);
-      if (!res || !res.ok) { toast.error(TR("Ремонт не удался"), TR("Модель не ответила или нет ключа OpenAI.")); return; }
+      if (!res || !res.ok) { toast.error(TR("Ремонт не удался"), TR("Проверка сейчас недоступна: попробуйте ещё раз или сообщите администратору.")); return; }
       if (!res.applied) {
         touch({ repair: { ...res.repair, tried: true } });
         toast.warning(TR("Правка откачена"), TRS((res.repair && res.repair.reason) || "") || TR("Не стало лучше — текст оставлен прежним."));
@@ -608,7 +608,7 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
                             : (modelsShown(store) ? seg.termcheck.model : ""),
                           seg.termcheck.at])))),
 
-    infoPanel === "route" && React.createElement("div", { className: "row", style: { gap: 8 } },
+    infoPanel === "route" && store.can && store.can.super && React.createElement("div", { className: "row", style: { gap: 8 } },
       React.createElement("span", { className: "badge badge-translated" }, seg.route),
       React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("маршрут обработки (инфо)"))),
     infoPanel === "risk" && React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
@@ -698,7 +698,9 @@ function SegDetail({ seg, project, store, toast, busy, onTranslate, onQA, onChec
       canRepair && React.createElement("button", { className: "mini-btn", onClick: runRepair, disabled: repairBusy,
         title: TR("Переписать перевод по найденным замечаниям и перепроверить") },
         React.createElement(Icon, { name: "repeat", size: 14 }), repairBusy ? TR("Чиним…") : TR("Починить")),
-      React.createElement("button", { className: "mini-btn" + (infoPanel === "route" ? " on" : ""), onClick: () => toggleInfo("route") },
+      /* Маршрут («GPT_REQUIRED», «EXACT_TM») — устройство сервиса и имя
+         поставщика: только администратору сервиса (инвариант 24). */
+      store.can && store.can.super && React.createElement("button", { className: "mini-btn" + (infoPanel === "route" ? " on" : ""), onClick: () => toggleInfo("route") },
         React.createElement(Icon, { name: "target", size: 14 }), "Route"),
       React.createElement("button", { className: "mini-btn" + (infoPanel === "risk" ? " on" : ""), onClick: () => toggleInfo("risk") },
         React.createElement(Icon, { name: "warn", size: 14 }), "Risk"),

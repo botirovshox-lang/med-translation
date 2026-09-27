@@ -158,7 +158,7 @@ function ImpQuote({ file, src, tgt, toast, onSaved, store, draft }) {
         TR("Задайте цену за страницу во вкладке «Организация» — до этого сумму показать нечем.")),
       /* Молчание объясняется: пропавшая строка неотличима от поломки. */
       res.costHidden && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-        TR("Стоимость видит владелец организации.")),
+        TR("Стоимость видит администратор сервиса.")),
       res.counts.repeatBlocks > 0 && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
         TR("Повторов: ") + res.counts.repeatBlocks + TR(" кусков на ") + res.counts.repeatChars.toLocaleString("ru-RU")
         + TR(" знаков. Из объёма они НЕ вычтены — скидку за повторы решает продавец.")),

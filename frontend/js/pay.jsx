@@ -128,8 +128,7 @@ function PayCard({ toast, onPaid }) {
         React.createElement("span", { className: "pay-method-text" },
           React.createElement("b", null, (PAY_METHOD_LABEL[x.id] || (() => x.id))()),
           React.createElement("span", { className: "dim" },
-            (x.online ? TR("онлайн, сразу") : TR("по счёту: подтвердим после поступления"))
-            + " · " + payFmt(x.page, x.currency) + TR(" за стр.")))))),
+            x.online ? TR("онлайн, сразу") : TR("по счёту: подтвердим после поступления")))))),
     meth.note && !meth.online ? React.createElement("div", { className: "dim", style: { whiteSpace: "pre-wrap" } }, meth.note) : null,
     React.createElement("div", { className: "row between row-wrap", style: { gap: 10, alignItems: "center" } },
       React.createElement("div", { style: { fontSize: 16, fontWeight: 700 } },

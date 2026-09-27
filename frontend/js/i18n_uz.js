@@ -489,6 +489,7 @@ window.I18N.registerServer("uz", {
  "Распознавание речи сейчас недоступно: сообщите администратору": "Nutqni tanib olish hozir mavjud emas: administratorga xabar bering",
  "Распознавание этого видео не уместится в лимит расхода организации": "Bu videoni tanib olish tashkilotning xarajat limitiga sig‘maydi",
  "Расход по этому файлу уже дошёл до потолка, назначенного на страницу ($": "Bu fayl bo‘yicha xarajat sahifaga belgilangan chegaraga yetdi ($",
+ "Расход по этому файлу уже дошёл до потолка, назначенного на страницу: поднимите потолок у администратора сервиса.": "Bu fayl bo‘yicha xarajat sahifaga belgilangan chegaraga yetdi: chegarani xizmat administratoridan ko‘tarishni so‘rang.",
  "Регистрацию на эту почту сделали заново с другим паролем. Задайте свой пароль через «Забыли пароль?»": "Bu pochtaga boshqa parol bilan qayta ro‘yxatdan o‘tishgan. O‘z parolingizni «Parolni unutdingizmi?» orqali o‘rnating",
  "Ремонт требует ключ OpenAI": "Ta'mir uchun OpenAI kaliti kerak",
  "Реплики разобраны по времени; обратно выгружается таким же файлом субтитров с прежними таймингами. Разметка внутри реплики (курсив, цвет) в переводе не сохраняется.": "Replikalar vaqt bo‘yicha ajratildi; natija xuddi shunday subtitr fayli sifatida avvalgi vaqt belgilari bilan qaytariladi. Replika ichidagi belgilash (kursiv, rang) tarjimada saqlanmaydi.",

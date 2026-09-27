@@ -315,8 +315,10 @@ function LangPair({ src, tgt }) {
    отказ по смете на старте прогона и калибровка поправки estRatio. Прячем
    показ, а не расчёт — убери расчёт, и тихо исчезли бы оба, а на экране
    ничего бы не изменилось. */
-try { window.HIDE_COST = localStorage.getItem("mcat_hide_cost") === "1"; }
-catch (e) { window.HIDE_COST = false; }
+/* По умолчанию СКРЫТО: деньги видит только администратор сервиса (22а),
+   и чистый браузер до первого ответа сервера не должен показать ни суммы. */
+try { window.HIDE_COST = localStorage.getItem("mcat_hide_cost") !== "0"; }
+catch (e) { window.HIDE_COST = true; }
 function costHidden() { return !!window.HIDE_COST; }
 function fmtCost(v) {
   // Пустая строка, а не «—»: этот ответ склеивается с подписями вида

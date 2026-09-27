@@ -451,5 +451,6 @@
   "Оплата по этому заказу уже началась — дождитесь её конца": "Payment for this order has already started — wait for it to finish",
   "На это видео нужно ": "This video needs ",
   " мин, на балансе ": " min, balance ",
-  " мин: пополните минуты": " min: top up minutes"
+  " мин: пополните минуты": " min: top up minutes",
+  "Расход по этому файлу уже дошёл до потолка, назначенного на страницу: поднимите потолок у администратора сервиса.": "Spending on this file has already reached the per-page cap: ask the service administrator to raise the cap."
 }

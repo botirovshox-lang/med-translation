@@ -6,32 +6,24 @@
     "id": "click",
     "currency": "UZS",
     "online": true,
-    "page": "6350",
-    "minute": "3810",
     "note": ""
    },
    {
     "id": "payme",
     "currency": "UZS",
     "online": true,
-    "page": "6350",
-    "minute": "3810",
     "note": ""
    },
    {
     "id": "card",
     "currency": "USD",
     "online": false,
-    "page": "0.50",
-    "minute": "0.30",
     "note": ""
    },
    {
     "id": "kaspi",
     "currency": "KZT",
     "online": false,
-    "page": "255",
-    "minute": "153",
     "note": ""
    }
   ],
@@ -82,8 +74,8 @@
   },
   "orders": [
    {
-    "id": 1007,
-    "at": "2026-09-26 21:53:00",
+    "id": 1008,
+    "at": "2026-09-27 11:12:55",
     "pages": 7,
     "minutes": 0,
     "amount": "3.50",
@@ -97,23 +89,23 @@
     "note": ""
    },
    {
-    "id": 1006,
-    "at": "2026-09-26 21:52:59",
+    "id": 1007,
+    "at": "2026-09-27 11:12:55",
     "pages": 30,
     "minutes": 0,
     "amount": "7650",
     "currency": "KZT",
     "method": "kaspi",
     "status": "paid",
-    "paidAt": "2026-09-26 21:52:59",
+    "paidAt": "2026-09-27 11:12:55",
     "userName": "trial",
     "online": false,
     "url": null,
     "note": ""
    },
    {
-    "id": 1005,
-    "at": "2026-09-26 21:52:59",
+    "id": 1006,
+    "at": "2026-09-27 11:12:55",
     "pages": 0,
     "minutes": 5,
     "amount": "19050",
@@ -126,22 +118,22 @@
     "url": null
    },
    {
-    "id": 1004,
-    "at": "2026-09-26 21:52:59",
+    "id": 1005,
+    "at": "2026-09-27 11:12:55",
     "pages": 0,
     "minutes": 10,
     "amount": "38100",
     "currency": "UZS",
     "method": "click",
     "status": "paid",
-    "paidAt": "2026-09-26 21:52:59",
+    "paidAt": "2026-09-27 11:12:55",
     "userName": "trial",
     "online": true,
     "url": null
    },
    {
-    "id": 1003,
-    "at": "2026-09-26 21:52:59",
+    "id": 1004,
+    "at": "2026-09-27 11:12:55",
     "pages": 5,
     "minutes": 0,
     "amount": "31750",
@@ -151,11 +143,25 @@
     "paidAt": null,
     "userName": "trial",
     "online": true,
-    "url": "https://checkout.paycom.uz/bT1NSUQ7YWMub3JkZXJfaWQ9MTAwMzthPTMxNzUwMDA7bD1ydQ=="
+    "url": "https://checkout.paycom.uz/bT1NSUQ7YWMub3JkZXJfaWQ9MTAwNDthPTMxNzUwMDA7bD1ydQ=="
+   },
+   {
+    "id": 1003,
+    "at": "2026-09-27 11:12:55",
+    "pages": 5,
+    "minutes": 0,
+    "amount": "31750",
+    "currency": "UZS",
+    "method": "payme",
+    "status": "cancelled",
+    "paidAt": null,
+    "userName": "trial",
+    "online": true,
+    "url": null
    },
    {
     "id": 1002,
-    "at": "2026-09-26 21:52:59",
+    "at": "2026-09-27 11:12:55",
     "pages": 5,
     "minutes": 0,
     "amount": "31750",
@@ -169,14 +175,14 @@
    },
    {
     "id": 1001,
-    "at": "2026-09-26 21:52:59",
+    "at": "2026-09-27 11:12:54",
     "pages": 20,
     "minutes": 0,
     "amount": "127000",
     "currency": "UZS",
     "method": "payme",
     "status": "paid",
-    "paidAt": "2026-09-26 21:52:59",
+    "paidAt": "2026-09-27 11:12:54",
     "userName": "trial",
     "online": true,
     "url": null
@@ -192,13 +198,13 @@
   "ok": true,
   "orders": [
    {
-    "id": 1007,
+    "id": 1008,
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-26 21:53:00",
-    "ts": 1790441580.0033395,
-    "expires": 1790700780.0033395,
+    "at": "2026-09-27 11:12:55",
+    "ts": 1790489575.5888088,
+    "expires": 1790748775.5888088,
     "status": "paid",
     "pages": 7,
     "minutes": 0,
@@ -213,7 +219,7 @@
     },
     "log": [
      {
-      "at": "2026-09-26 21:53:00",
+      "at": "2026-09-27 11:12:55",
       "action": "created",
       "by": 2
      }
@@ -222,13 +228,13 @@
     "tenantName": "TRIAL"
    },
    {
-    "id": 1006,
+    "id": 1007,
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-26 21:52:59",
-    "ts": 1790441579.9386365,
-    "expires": 1790700779.9386365,
+    "at": "2026-09-27 11:12:55",
+    "ts": 1790489575.4959118,
+    "expires": 1790748775.4959118,
     "status": "paid",
     "pages": 30,
     "minutes": 0,
@@ -241,22 +247,22 @@
      "page": "0.5",
      "minute": "0.3"
     },
-    "paidAt": "2026-09-26 21:52:59",
+    "paidAt": "2026-09-27 11:12:55",
     "paidVia": "admin",
     "log": [
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:55",
       "action": "created",
       "by": 2
      },
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:55",
       "action": "confirmed",
       "by": 1,
       "note": "пришло на счёт"
      },
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:55",
       "action": "paid",
       "by": 1,
       "via": "admin"
@@ -266,13 +272,13 @@
     "tenantName": "TRIAL"
    },
    {
-    "id": 1005,
+    "id": 1006,
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-26 21:52:59",
-    "ts": 1790441579.8979926,
-    "expires": 1790700779.8979926,
+    "at": "2026-09-27 11:12:55",
+    "ts": 1790489575.4245746,
+    "expires": 1790748775.4245746,
     "status": "cancelled",
     "pages": 0,
     "minutes": 5,
@@ -292,18 +298,18 @@
     },
     "log": [
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:55",
       "action": "created",
       "by": 2
      },
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:55",
       "action": "click.prepare",
       "by": "human",
       "trans": "556"
      },
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:55",
       "action": "click.failed",
       "by": "human",
       "error": -5017
@@ -313,13 +319,13 @@
     "tenantName": "TRIAL"
    },
    {
-    "id": 1004,
+    "id": 1005,
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-26 21:52:59",
-    "ts": 1790441579.827523,
-    "expires": 1790700779.827523,
+    "at": "2026-09-27 11:12:55",
+    "ts": 1790489575.1893675,
+    "expires": 1790748775.1893675,
     "status": "paid",
     "pages": 0,
     "minutes": 10,
@@ -338,22 +344,22 @@
      "prepared": true,
      "completed": "555"
     },
-    "paidAt": "2026-09-26 21:52:59",
+    "paidAt": "2026-09-27 11:12:55",
     "paidVia": "click",
     "log": [
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:55",
       "action": "created",
       "by": 2
      },
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:55",
       "action": "click.prepare",
       "by": "human",
       "trans": "555"
      },
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:55",
       "action": "paid",
       "by": "human",
       "via": "click"
@@ -363,13 +369,13 @@
     "tenantName": "TRIAL"
    },
    {
-    "id": 1003,
+    "id": 1004,
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-26 21:52:59",
-    "ts": 1790441579.8098378,
-    "expires": 1790700779.8098378,
+    "at": "2026-09-27 11:12:55",
+    "ts": 1790489575.151201,
+    "expires": 1790748775.151201,
     "status": "new",
     "pages": 5,
     "minutes": 0,
@@ -384,9 +390,61 @@
     },
     "log": [
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:55",
       "action": "created",
       "by": 2
+     }
+    ],
+    "applied": false,
+    "tenantName": "TRIAL"
+   },
+   {
+    "id": 1003,
+    "tenant": "trial",
+    "user": 2,
+    "userName": "trial",
+    "at": "2026-09-27 11:12:55",
+    "ts": 1790489575.0834947,
+    "expires": 1790748775.0834947,
+    "status": "cancelled",
+    "pages": 5,
+    "minutes": 0,
+    "method": "payme",
+    "currency": "UZS",
+    "usd": "2.50",
+    "rate": "12700",
+    "amount": "31750",
+    "prices": {
+     "page": "0.5",
+     "minute": "0.3"
+    },
+    "payme": {
+     "id": "tx-5",
+     "time": 1790489574829,
+     "create_time": 1790489575102,
+     "perform_time": 0,
+     "cancel_time": 1790489575135,
+     "state": -1,
+     "reason": 3,
+     "our_id": 1003
+    },
+    "log": [
+     {
+      "at": "2026-09-27 11:12:55",
+      "action": "created",
+      "by": 2
+     },
+     {
+      "at": "2026-09-27 11:12:55",
+      "action": "payme.create",
+      "by": "human",
+      "tx": "tx-5"
+     },
+     {
+      "at": "2026-09-27 11:12:55",
+      "action": "payme.cancel",
+      "by": "human",
+      "reason": 3
      }
     ],
     "applied": false,
@@ -397,9 +455,9 @@
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-26 21:52:59",
-    "ts": 1790441579.768793,
-    "expires": 1790700779.768793,
+    "at": "2026-09-27 11:12:55",
+    "ts": 1790489575.0074804,
+    "expires": 1790748775.0074804,
     "status": "cancelled",
     "pages": 5,
     "minutes": 0,
@@ -414,28 +472,28 @@
     },
     "payme": {
      "id": "tx-3",
-     "time": 1790441579659,
-     "create_time": 1790441579780,
+     "time": 1790489574829,
+     "create_time": 1790489575029,
      "perform_time": 0,
-     "cancel_time": 1790441579789,
+     "cancel_time": 1790489575046,
      "state": -1,
      "reason": 3,
      "our_id": 1002
     },
     "log": [
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:55",
       "action": "created",
       "by": 2
      },
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:55",
       "action": "payme.create",
       "by": "human",
       "tx": "tx-3"
      },
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:55",
       "action": "payme.cancel",
       "by": "human",
       "reason": 3
@@ -449,9 +507,9 @@
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-26 21:52:59",
-    "ts": 1790441579.6210992,
-    "expires": 1790700779.6210992,
+    "at": "2026-09-27 11:12:54",
+    "ts": 1790489574.7601967,
+    "expires": 1790748774.7601967,
     "status": "paid",
     "pages": 20,
     "minutes": 0,
@@ -466,30 +524,30 @@
     },
     "payme": {
      "id": "tx-1",
-     "time": 1790441579659,
-     "create_time": 1790441579664,
-     "perform_time": 1790441579694,
+     "time": 1790489574829,
+     "create_time": 1790489574836,
+     "perform_time": 1790489574888,
      "cancel_time": 0,
      "state": 2,
      "reason": null,
      "our_id": 1001
     },
-    "paidAt": "2026-09-26 21:52:59",
+    "paidAt": "2026-09-27 11:12:54",
     "paidVia": "payme",
     "log": [
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:54",
       "action": "created",
       "by": 2
      },
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:54",
       "action": "payme.create",
       "by": "human",
       "tx": "tx-1"
      },
      {
-      "at": "2026-09-26 21:52:59",
+      "at": "2026-09-27 11:12:54",
       "action": "paid",
       "by": "human",
       "via": "payme"
@@ -561,9 +619,9 @@
  },
  "projectSpend": {
   "ok": true,
-  "from": "2026-09-26",
-  "to": "2026-09-26",
-  "today": "2026-09-26",
+  "from": "2026-09-27",
+  "to": "2026-09-27",
+  "today": "2026-09-27",
   "rows": [
    {
     "tenant": "vid",
@@ -613,7 +671,7 @@
    "minutes": 7.0,
    "projects": 2
   },
-  "since": "2026-09-26",
+  "since": "2026-09-27",
   "utcOffset": 5.0,
   "warn": {
    "usdPerPage": 0.25,

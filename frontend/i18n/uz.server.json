@@ -451,5 +451,6 @@
   "Оплата по этому заказу уже началась — дождитесь её конца": "Bu buyurtma bo'yicha to'lov boshlangan — tugashini kuting",
   "На это видео нужно ": "Bu video uchun kerak: ",
   " мин, на балансе ": " daq, balansda ",
-  " мин: пополните минуты": " daq: daqiqalarni to'ldiring"
+  " мин: пополните минуты": " daq: daqiqalarni to'ldiring",
+  "Расход по этому файлу уже дошёл до потолка, назначенного на страницу: поднимите потолок у администратора сервиса.": "Bu fayl bo‘yicha xarajat sahifaga belgilangan chegaraga yetdi: chegarani xizmat administratoridan ko‘tarishni so‘rang."
 }

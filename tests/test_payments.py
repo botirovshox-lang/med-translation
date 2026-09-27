@@ -104,13 +104,24 @@ r = c.get("/api/pay", headers=H(T))
 d = r.json()
 check(r.status_code == 200 and d["payable"] == {"pages": True, "minutes": True}, "пробная организация покупает страницы и минуты")
 m = {x["id"]: x for x in d["methods"]}
-check(set(m) == {"click", "payme", "card", "kaspi"} and m["click"]["page"] == "6350"
+check(set(m) == {"click", "payme", "card", "kaspi"}
       and m["card"]["currency"] == "USD" and m["kaspi"]["currency"] == "KZT",
-      "цены страницы в валюте каждого способа")
+      "валюта у каждого способа")
+check(not any(k in x for x in m.values() for k in ("page", "minute")),
+      "цены за страницу и минуту владельцу не отдаются — это прайс сервиса (22а)")
 check(not m["payme"]["online"], "без ключей Payme онлайн выключен")
 r = c.post("/api/pay/quote", headers=H(T), json={"pages": 10, "minutes": 10, "method": "payme"})
 q = r.json()["quote"]
-check(q["usd"] == "8.00" and q["amount"] == "101600" and q["currency"] == "UZS", "10 стр. + 10 мин = $8 = 101 600 сум")
+check(q["amount"] == "101600" and q["currency"] == "UZS", "10 стр. + 10 мин = 101 600 сум")
+check(not any(k in q for k in ("usd", "rate", "prices")), "доллары, курс и цены за единицу владельцу не отдаются")
+_sup = dict(next(s for s in main._SESSIONS.values() if s.get("super")), tenant="trial")
+_tok = main.CURRENT_SESSION.set(_sup)
+try:
+    qa = main.pay_quote(main.PayOrderRequest(pages=10, minutes=10, method="payme"))["quote"]
+finally:
+    main.CURRENT_SESSION.reset(_tok)
+check(qa.get("usd") == "8.00" and qa.get("prices"),
+      "администратор сервиса видит расчёт в долларах: 10 стр. + 10 мин = $8")
 for body, code, label in (({"pages": 0, "minutes": 0, "method": "payme"}, 400, "пустой заказ — 400"),
                           ({"pages": -5, "minutes": 0, "method": "payme"}, 400, "отрицательное — 400"),
                           ({"pages": 10 ** 7, "minutes": 0, "method": "payme"}, 400, "огромное — 400"),

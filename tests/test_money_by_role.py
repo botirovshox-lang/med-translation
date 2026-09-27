@@ -166,5 +166,35 @@ finally:
     main.CURRENT_SESSION.reset(tok_ctx)
 check(hidden is True, "_hide_cost() для переводчика — True")
 
+print("\n=== 9. Отказы, журнал, ошибки и публичная дверь без сумм ===")
+st = {"over": True, "spentUsd": 3.21, "limitUsd": 3.0, "calls": 7, "unpriced": 0}
+own_sess, sup_sess = main._SESSIONS[OWN], main._SESSIONS[S]
+body = json.loads(main._limit_402(dict(st), "bureau", own_sess).body)
+check("$" not in body["error"] and "spentUsd" not in json.dumps(body["spend"]),
+      "отказ «лимит исчерпан» владельцу — без долларов")
+body = json.loads(main._limit_402(dict(st), "bureau", sup_sess).body)
+check("$3.21" in body["error"], "администратору сервиса — с суммами")
+check("$" not in main.JOB_BUDGET_402_HIDDEN, "отказ по бюджету файла без сумм есть")
+main.STATE.setdefault("audit", []).append({"at": "x", "action": "tenant.update", "tenant": "bureau",
+                                           "limitUsd": 5, "budgetPerPage": 0.2, "target": "bureau"})
+main.STATE["audit"].append({"at": "x", "action": "pay.config", "tenant": "bureau",
+                            "pricePage": "0.5", "rateUZS": "12700"})
+items = c.get("/api/admin/audit", headers=H(OWN)).json()["items"]
+blob = json.dumps(items, ensure_ascii=False)
+check(any(r.get("action") == "tenant.update" for r in items)
+      and not any(k in blob for k in ("limitUsd", "budgetPerPage", "pricePage", "rateUZS")),
+      "журнал владельца: записи видны, денежных полей в них нет")
+check("trialUsd" not in c.get("/api/auth/signup-info").json(),
+      "публичная дверь регистрации не называет пробный лимит в долларах")
+mid = main.OPENAI_MODELS[0]["id"]
+for sess, want, label in ((main._SESSIONS[TR_], False, "текст ошибки поставщика переводчику — без имени модели"),
+                          (sup_sess, True, "администратору сервиса — как есть")):
+    tok_ctx = main.CURRENT_SESSION.set(sess)
+    try:
+        txt = main._err_public(RuntimeError("The model `%s` does not exist" % mid))
+    finally:
+        main.CURRENT_SESSION.reset(tok_ctx)
+    check((mid in txt) is want, label)
+
 print("\nВСЁ ПРОШЛО" if not fail else "\nПРОВАЛЕНО: %d\n  - %s" % (len(fail), "\n  - ".join(fail)))
 sys.exit(1 if fail else 0)

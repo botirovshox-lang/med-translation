@@ -496,7 +496,7 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
      говорит, что она открыта (/auth/signup-info) — выключенная кнопка,
      ведущая в 403, хуже отсутствующей. */
   const [mode, setMode] = useState("login");   // login | register | verify | forgot | reset
-  const [info, setInfo] = useState({ signup: false, mail: false, brand: authCachedBrand() || "CAT Translator", trialUsd: 0 });
+  const [info, setInfo] = useState({ signup: false, mail: false, brand: authCachedBrand() || "CAT Translator" });
   const [f, setF] = useState({ login: "", password: "", email: "", org: "", name: "", code: "" });
   const [accepted, setAccepted] = useState(false);
   const [err, setErr] = useState("");

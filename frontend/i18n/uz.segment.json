@@ -48,7 +48,7 @@
   "Машина пробовала починить эту строку и откатила свою правку.": "Mashina bu qatorni tuzatib ko'rdi va o'z tuzatishini qaytarib oldi.",
   "Машина уже заходила сюда с тем же вопросом и ничего не добилась.": "Mashina bu yerga xuddi shu savol bilan kelgan va hech narsaga erisha olmagan.",
   "Меняется только эта строка; запись глоссария остаётся. Все сегменты с тем же советом — на «Проверке».": "Faqat shu qator o'zgaradi; lug'at yozuvi qoladi. Xuddi shu maslahatli barcha segmentlar «Tekshiruv»da.",
-  "Модель не ответила или нет ключа OpenAI.": "Model javob bermadi yoki OpenAI kaliti yo'q.",
+  "Проверка сейчас недоступна: попробуйте ещё раз или сообщите администратору.": "Tekshiruv hozir mavjud emas: qayta urinib ko‘ring yoki administratorga xabar bering.",
   "Модель разбирает термины…": "Model atamalarni tahlil qilmoqda…",
   "Надпись на картинке": "Rasmdagi yozuv",
   "Надпись помечена аппаратной — следующий разбор её не заведёт.": "Yozuv apparat yozuvi deb belgilandi — keyingi tahlil uni qo'shmaydi.",

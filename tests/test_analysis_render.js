@@ -70,6 +70,9 @@ global.React = React;
 global.useState = useState; global.useEffect = useEffect; global.useRef = useRef;
 global.useMemo = useMemo; global.useCallback = useCallback;
 global.createContext = createContext; global.useContext = useContext;
+/* Кэш «суммы показывать» — как у администратора сервиса: без него чистый
+   браузер прячет деньги до ответа сервера (22а), а экраны ниже рисуют смету. */
+mem.setItem("mcat_hide_cost", "0");
 global.localStorage = mem; global.sessionStorage = mem;
 global.window = global;
 global.document = { addEventListener() {}, removeEventListener() {}, querySelector() { return null; } };

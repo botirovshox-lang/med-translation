@@ -2798,6 +2798,18 @@ def _strip_project_models(out: dict) -> None:
         out["termlist"] = tl
 
 
+def _err_public(e) -> str:
+    """Текст исключения для ответа браузеру. Ошибка SDK поставщика называет
+    модель («The model `gpt-…` does not exist»), а имена видит только
+    суперпользователь (инвариант 24а). В рабочих потоках сессия доезжает
+    меткой `_GATE_SESSION`; нет её вовсе (поток прогона) — чистим: наружу
+    текст прогона всё равно идёт через `_job_public`."""
+    txt = str(e)
+    sess = CURRENT_SESSION.get() or getattr(_GATE_SESSION, "s", None)
+    sup = sess.get("super") if sess else _actor_is_super()
+    return txt if sup else _text_without_models(txt)
+
+
 def _text_without_models(text: str) -> str:
     """Убрать имена моделей и поставщиков из ГОТОВОГО текста.
 
@@ -3029,6 +3041,9 @@ def _project_budget(tid: str, pid: Optional[int]) -> Optional[dict]:
 
 JOB_BUDGET_402 = ("Расход по этому файлу уже дошёл до потолка, назначенного на страницу "
                   "($%.2f из $%.2f на %s стр.): поднимите потолок у администратора сервиса.")
+# Тот же отказ без сумм — всем, кроме администратора сервиса (инвариант 22а).
+JOB_BUDGET_402_HIDDEN = ("Расход по этому файлу уже дошёл до потолка, назначенного на страницу: "
+                         "поднимите потолок у администратора сервиса.")
 
 
 JOB_STOP_BUDGET = ("Расход по этому файлу дошёл до потолка, назначенного на страницу: "
@@ -4510,7 +4525,7 @@ app = FastAPI(title=APP_BRAND + " API", version="5.6.0",
               docs_url=None, redoc_url=None, openapi_url=None)
 
 
-def _limit_402(st: dict, tenant: Optional[str]) -> JSONResponse:
+def _limit_402(st: dict, tenant: Optional[str], sess: Optional[dict] = None) -> JSONResponse:
     """Отказ «лимит исчерпан» — одним текстом у мидвари (`_PAID`) и у
     обработчиков, чья платность зависит от ТЕЛА запроса (автоодобрение
     со сверкой судьёй): путём их не отличить от бесплатного вызова."""
@@ -4518,12 +4533,16 @@ def _limit_402(st: dict, tenant: Optional[str]) -> JSONResponse:
     # и кончившиеся страницы, а это РАЗНЫЕ предложения клиенту — «поднимите
     # лимит расхода» и «купите пакет страниц».
     _ev("cap.spend402", tenant)
-    if _tenant_simple(tenant):
+    # Суммы — только администратору сервиса (инвариант 22а). У мидвари сессия
+    # ещё не положена в CURRENT_SESSION, поэтому она передаёт её сама.
+    sess = sess if sess is not None else (CURRENT_SESSION.get() or {})
+    if _tenant_simple(tenant) or not sess.get("super"):
         return JSONResponse({"ok": False, "error":
             "Месячный лимит организации исчерпан: обратитесь к администратору. "
             "Бесплатные команды (правка начертания, откаты, пересчёт, экспорт) "
             "работают; лимит сбрасывается 1-го числа.",
-            "spend": _spend_public(st, tenant)}, status_code=402, headers={"X-Pay-Need": "spend"})
+            "spend": {"over": bool(st.get("over")), "hidden": True}},
+            status_code=402, headers={"X-Pay-Need": "spend"})
     return JSONResponse({"ok": False, "error":
         "Месячный лимит расхода организации исчерпан: $%.2f из $%.2f. Бесплатные команды "
         "(правка начертания, откаты, пересчёт, экспорт) работают; лимит сбрасывается "
@@ -4583,7 +4602,7 @@ async def require_token(request: Request, call_next):
         if _is_paid(request.method, path):
             st = _spend_status(sess.get("tenant"))
             if st["over"]:
-                return _limit_402(st, sess.get("tenant"))
+                return _limit_402(st, sess.get("tenant"), sess)
         request.state.session = sess
         tok = CURRENT_SESSION.set(sess)
         # Проект запроса — для учёта расхода по проекту (`_note_usage`):
@@ -5584,7 +5603,9 @@ def signup_info():
     при ненастроенном SMTP."""
     return {"ok": True, "signup": SIGNUP_ENABLED,
             "mail": bool(mailer_mod and mailer_mod.configured()),
-            "brand": APP_BRAND, "trialUsd": SIGNUP_TRIAL_USD,
+            # Пробный лимит расхода в долларах наружу не уходит (22а) — дверь
+            # публичная, а экрану хватает признака `freePages`.
+            "brand": APP_BRAND,
             # Обещание пробного объёма говорит экран регистрации, только
             # когда страницы есть И перевести их есть чем (лимит расхода).
             "freePages": SIGNUP_FREE_PAGES if SIGNUP_TRIAL_USD > 0 else 0,
@@ -6573,7 +6594,16 @@ def admin_audit(request: Request, limit: int = 200, action: str = "", all: bool 
         rows = [{k: v for k, v in r.items() if k not in ("before", "after")}
                 if str(r.get("action") or "").startswith("system.models") else r
                 for r in rows]
+    # Деньги — тоже: правки лимита, бюджета, цен оплаты и суммы смет пишет
+    # суперпользователь, а ложатся они в организацию, где он работает (22а).
+    if _hide_cost():
+        rows = [{k: v for k, v in r.items() if k not in _AUDIT_MONEY_KEYS} for r in rows]
     return {"ok": True, "items": rows}
+
+
+_AUDIT_MONEY_KEYS = frozenset(("limitUsd", "budgetPerPage", "pricePage", "priceMinute", "rateUZS",
+                               "rateKZT", "spendShare", "total", "usd", "cost", "est_cost",
+                               "pricePerPage", "rate"))
 
 
 @app.get("/api/admin/logins")
@@ -12107,14 +12137,15 @@ def pay_state():
     tid = _current_tenant()
     _pay_reconcile(tid)
     cfg = _pay_cfg()
-    pp, pm = _pay_prices(cfg)
     methods = []
     for m in PAY_METHODS:
         if not cfg["methods"].get(m, True):
             continue
         cur = PAY_CURRENCY[m]
+        # Цены страницы и минуты у способа наружу НЕ идут: на карточке
+        # оплаты человек видит только итог «К оплате» за свой заказ, а цены
+        # за единицу — это прайс сервиса, и видит его администратор (22а).
         methods.append({"id": m, "currency": cur, "online": _pay_online(m),
-                        "page": _pay_money(pp, cur, cfg), "minute": _pay_money(pm, cur, cfg),
                         "note": cfg["notes"].get(m) or "" if m in ("card", "kaspi") else ""})
     orders = [_pay_public(o) for o in _pays().pay_list(tid, 20)]
     return {"ok": True, "methods": methods, "packs": {"pages": cfg["pagePacks"], "minutes": cfg["minutePacks"]},
@@ -12125,7 +12156,12 @@ def pay_state():
 
 @app.post("/api/pay/quote")
 def pay_quote(req: PayOrderRequest):
-    return {"ok": True, "quote": _pay_quote(req.pages, req.minutes, req.method, _pay_cfg(), _current_tenant())}
+    q = _pay_quote(req.pages, req.minutes, req.method, _pay_cfg(), _current_tenant())
+    if not _actor_is_super():
+        # Итог в валюте способа — то, что человек заплатит; доллары, курс
+        # и цены за единицу — прайс сервиса, их видит администратор (22а).
+        q = {k: v for k, v in q.items() if k not in ("usd", "rate", "prices")}
+    return {"ok": True, "quote": q}
 
 
 @app.post("/api/pay/orders")
@@ -19456,6 +19492,10 @@ def _segment_for_client(seg: dict, project: Optional[dict] = None) -> dict:
                              "triedModels": _alias_models(out["repair"]["triedModels"])}
         if out.get("provider"):
             out["provider"] = _model_alias(out["provider"])
+        # «GPT_REQUIRED» / «GOOGLE_SAFE» называют поставщика. «EXACT_TM»
+        # и «DUPLICATE» — нет, и браузер по ним пишет «TM» (не модель).
+        if out.get("route") in ("GPT_REQUIRED", "GOOGLE_SAFE"):
+            out.pop("route", None)
     return out
 
 
@@ -19889,7 +19929,7 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
                                      model=mdl_id, literal=True)
         except Exception as e:
             print(f"[backend] backcheck seg#{seg.get('id')}: {e}", file=sys.stderr)
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": _err_public(e)}
 
     if not (back or "").strip():
         return {"ok": False, "error": "Обратный перевод не получен"}
@@ -20136,7 +20176,7 @@ def termcheck_batch(pid: int, req: TermcheckBatchRequest):
                     "trivial": bool(r.get("skipped"))}
         except Exception as e:
             print(f"[backend] termcheck batch seg#{seg['id']}: {e}", file=sys.stderr)
-            return {"pair": pair, "ok": False, "error": str(e)}
+            return {"pair": pair, "ok": False, "error": _err_public(e)}
 
     for res in _run_parallel(order, _tc_one):
         segs = groups[res["pair"]]
@@ -24249,7 +24289,7 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
             # ждёт разрешения человека. Отдельно от «пропущено».
             "held": held,
             "sourceSuspect": suspect, "vetoed": vetoed, "scores": buckets,
-            "cost": round(spent[0], 4),
+            **({} if _hide_cost() else {"cost": round(spent[0], 4)}),
             "stamp": stamp, "samples": samples}
 
 
@@ -24390,7 +24430,7 @@ def term_context(pid: int, req: TermContextRequest = TermContextRequest()):
             # пара не должна ронять всю порцию.
             print("[backend] сверка терминов seg#%s: %s" % (sg.get("id"), e),
                   file=sys.stderr)
-            return sg, {"ok": False, "error": str(e)}
+            return sg, {"ok": False, "error": _err_public(e)}
 
     asked = 0
     for sg, r in _run_parallel(todo, _ask):
@@ -27034,7 +27074,7 @@ def repair_batch(pid: int, req: RepairBatchRequest):
             return {"seg": seg, "res": r}
         except Exception as e:
             print(f"[backend] repair batch seg#{seg['id']}: {e}", file=sys.stderr)
-            return {"seg": seg, "error": str(e)}
+            return {"seg": seg, "error": _err_public(e)}
 
     for out in _run_parallel(targets, _repair_one):
         seg = out["seg"]
@@ -27149,7 +27189,7 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
             return {"pair": pair, "ok": bool(r.get("ok")), "error": r.get("error")}
         except Exception as e:
             print(f"[backend] backcheck batch seg#{seg['id']}: {e}", file=sys.stderr)
-            return {"pair": pair, "ok": False, "error": str(e)}
+            return {"pair": pair, "ok": False, "error": _err_public(e)}
 
     for res in _run_parallel(order, _bc_one):
         segs = groups[res["pair"]]
@@ -27377,7 +27417,7 @@ def batch_checks(pid: int, req: ChecksBatchRequest = ChecksBatchRequest()):
                                                            bc_model=req.bc_model)}
         except Exception as e:
             print(f"[backend] medical QA batch error seg#{seg['id']}: {e}", file=sys.stderr)
-            return {"seg": seg, "error": str(e)}
+            return {"seg": seg, "error": _err_public(e)}
 
     for out in _run_parallel(targets, _qa_one):
         seg = out["seg"]
@@ -32249,6 +32289,8 @@ def create_job(pid: int, req: JobRequest):
     _b = _project_budget(_tenant_of(project), pid)
     if _b and _b["over"]:
         _ev("dead.budget402", _tenant_of(project))
+        if _hide_cost():
+            raise HTTPException(402, JOB_BUDGET_402_HIDDEN)
         raise HTTPException(402, JOB_BUDGET_402 % (_b["usd"], _b["cap"], _b["pages"]))
     est = (req.params or {}).get("est_cost")
     if isinstance(est, (int, float)) and est > 0:

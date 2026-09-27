@@ -48,7 +48,7 @@
   "Машина пробовала починить эту строку и откатила свою правку.": "The machine tried to fix this line and rolled its edit back.",
   "Машина уже заходила сюда с тем же вопросом и ничего не добилась.": "The machine already came here with the same question and got nowhere.",
   "Меняется только эта строка; запись глоссария остаётся. Все сегменты с тем же советом — на «Проверке».": "Only this line changes; the glossary entry stays. All segments with the same advice are on “Check”.",
-  "Модель не ответила или нет ключа OpenAI.": "The model did not answer, or there is no OpenAI key.",
+  "Проверка сейчас недоступна: попробуйте ещё раз или сообщите администратору.": "The check is unavailable right now: try again or tell the administrator.",
   "Модель разбирает термины…": "The model is going through the terms…",
   "Надпись на картинке": "Text on the image",
   "Надпись помечена аппаратной — следующий разбор её не заведёт.": "Marked as device overlay — the next pass will not create it again.",

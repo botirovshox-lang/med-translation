@@ -74,11 +74,11 @@ FONTS = [
     _script_font("noto-sans-myanmar", "Noto Sans Myanmar", "NotoSansMyanmar"),
     _script_font("noto-sans-ethiopic", "Noto Sans Ethiopic", "NotoSansEthiopic"),
     dict(SANS, id="noto-sans-sc", name="Noto Sans SC", regular="NotoSansSC-Regular.otf", bold=None,
-         prefer=["ZH"]),
+         prefer=["ZH"], license="OFL-NotoCJK.txt"),
     dict(SANS, id="noto-sans-jp", name="Noto Sans JP", regular="NotoSansJP-Regular.otf", bold=None,
-         prefer=["JA"]),
+         prefer=["JA"], license="OFL-NotoCJK.txt"),
     dict(SANS, id="noto-sans-kr", name="Noto Sans KR", regular="NotoSansKR-Regular.otf", bold=None,
-         prefer=["KO"]),
+         prefer=["KO"], license="OFL-NotoCJK.txt"),
 ]
 
 

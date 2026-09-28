@@ -28,6 +28,9 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+import bisect
+import unicodedata as _ud
 from pathlib import Path
 from typing import Optional
 
@@ -1513,16 +1516,27 @@ REF_EM = 0.6583
 # после паузы не склеит куски прежней вёрстки с новыми.
 FONT_RULES = 2
 
-_CMAP_CACHE: dict = {"mtime": None, "data": None}
+_CMAP_CACHE: dict = {"mtime": None, "data": None, "seen": 0.0}
+# Какой шрифт цепочки берёт знак: (ids цепочки, знак) → индекс. Спрашивается
+# на КАЖДЫЙ знак каждой реплики, и без памяти сборка документа на полторы
+# тысячи реплик шла секундами (замер критика: 0,01 с → 8,5 с).
+_PICK: dict = {}
 
 
 def _cmaps() -> Optional[dict]:
     """Таблица знаков шрифтов ({id: (начала, концы)}) из fonts.cmap.json —
-    её собирает tools/sub_fonts.py. Нет файла — None: «не знаю», а не «нет»."""
+    её собирает tools/sub_fonts.py. Нет файла — None: «не знаю», а не «нет».
+    Файл сверяется не чаще раза в две секунды: вызов идёт на каждый знак."""
+    now = time.monotonic()
+    if now - _CMAP_CACHE["seen"] < 2.0 and _CMAP_CACHE["mtime"] is not None:
+        return _CMAP_CACHE["data"]
+    _CMAP_CACHE["seen"] = now
     p = FONT_DIR / "fonts.cmap.json"
     try:
         mt = p.stat().st_mtime
     except OSError:
+        _CMAP_CACHE.update(mtime=None, data=None)
+        _PICK.clear()
         return None
     if _CMAP_CACHE["mtime"] != mt:
         try:
@@ -1531,6 +1545,7 @@ def _cmaps() -> Optional[dict]:
         except (OSError, ValueError, TypeError):
             data = None
         _CMAP_CACHE.update(mtime=mt, data=data)
+        _PICK.clear()
     return _CMAP_CACHE["data"]
 
 
@@ -1539,10 +1554,21 @@ def _has(font: dict, cp: int) -> Optional[bool]:
     cm = _cmaps()
     if cm is None or font.get("id") not in cm:
         return None
-    import bisect
     starts, ends = cm[font["id"]]
     i = bisect.bisect_right(starts, cp) - 1
     return i >= 0 and cp <= ends[i]
+
+
+def _pick(chain: list, cp: int, ckey: Optional[tuple] = None) -> dict:
+    """Первый шрифт цепочки, где знак есть (нет нигде — первый): с памятью."""
+    key = (ckey or tuple(f["id"] for f in chain), cp)
+    k = _PICK.get(key)
+    if k is None:
+        k = next((n for n, x in enumerate(chain) if _has(x, cp) is not False), 0)
+        if len(_PICK) > 200000:
+            _PICK.clear()
+        _PICK[key] = k
+    return chain[k]
 
 
 def lang_script(lang) -> str:
@@ -1576,8 +1602,13 @@ def best_font(lang, kind: Optional[str] = None) -> Optional[dict]:
     Noto Sans Hebrew, а не DejaVu). `kind` — облик: к засечкам — засечки."""
     fonts = fonts_catalog().get("fonts") or []
     code = str(lang or "").upper().strip()
-    if not code:
-        return fonts[0] if fonts else None
+    if not code or not lang_script(code):
+        # Язык не назван или каталогу неизвестен — латинский шрифт умолчания,
+        # а не «самый узкий из всех» (им оказался бы арабский).
+        latin = [f for f in fonts if "LATIN" in (f.get("scripts") or [])] or fonts
+        same = [f for f in latin if kind and f.get("kind") == kind]
+        dflt = font_of(STYLE_DEFAULT["font"])
+        return (same or ([dflt] if dflt else []) or latin or [None])[0]
     cands = [f for f in fonts if covers(f, code)]
     if not cands:
         return None
@@ -1809,7 +1840,7 @@ def style_numbers(style: dict, w: int, h: int) -> dict:
 # Строки считаются ТЕМИ ЖЕ файлами шрифтов, что у libass, и так же: жадный
 # перенос по пробелам (у иероглифов — между знаками) в ширину области
 # (libass при WrapStyle 0 выравнивает строки по длине, но их ЧИСЛО то же).
-# Кегль у всех шрифтов один — em в пикселях (`_em_px`); кегль ASS у каждого
+# Кегль у всех шрифтов один — em эталона (`REF_EM`); кегль ASS у каждого
 # шрифта свой (`_ass_fs`), потому что libass меряет его полной высотой шрифта.
 _PIL_FONTS: dict = {}
 _METERS: dict = {}
@@ -1847,11 +1878,6 @@ _SHAPED = {"ARABIC", "SYRIAC", "THAANA", "NKO", "DEVANAGARI", "BENGALI", "GUJARA
            "TELUGU", "KANNADA", "MALAYALAM", "ORIYA", "SINHALA", "KHMER", "MYANMAR", "TIBETAN", "MONGOLIAN"}
 
 
-def _em_px(fs_nom: float) -> int:
-    """Номинальный кегль (доля кадра) → em в пикселях: один на все шрифты."""
-    return max(1, int(round(fs_nom * REF_EM)))
-
-
 def _ass_fs(fs_nom: float, font: Optional[dict]) -> int:
     """Номинальный кегль → кегль ASS ЭТОГО шрифта: libass берёт кегль как
     полную высоту шрифта (winAscent + winDescent), а у арабского и бирманского
@@ -1866,15 +1892,15 @@ def _runs(text: str, chain: list) -> list:
     где он есть. Огласовки, знаки нулевой ширины (ZWJ/ZWNJ, метки
     направления) и пробел остаются в куске своей буквы: оторвать огласовку
     в другой шрифт — сломать сборку слога."""
-    import unicodedata as _ud
     out = []
+    ckey = tuple(f["id"] for f in chain)
     for ch in text:
         cp = ord(ch)
         cat = _ud.category(ch)
         if out and (cat[0] == "M" or cat == "Cf" or (ch.isspace() and _has(out[-1][0], cp) is not False)):
             out[-1][1] += ch
             continue
-        f = next((x for x in chain if _has(x, cp) is not False), chain[0])
+        f = _pick(chain, cp, ckey)
         if out and out[-1][0] is f:
             out[-1][1] += ch
         else:
@@ -1883,21 +1909,24 @@ def _runs(text: str, chain: list) -> list:
 
 
 class _Meter:
-    """Ширина слов цепочкой шрифтов одного em — с памятью: каждое слово
-    меряется ОДИН раз, строка — сумма слов и пробелов. Мерить строку целиком
-    на каждом шаге переноса — квадратичная работа: сотня реплик считалась бы
-    минутами прямо в запросе. Кернинг через пробел ничтожен."""
+    """Ширина слов цепочкой шрифтов — с памятью: каждое слово меряется ОДИН
+    раз, строка — сумма слов и пробелов. Мерить строку целиком на каждом шаге
+    переноса — квадратичная работа: сотня реплик считалась бы минутами прямо
+    в запросе. Кернинг через пробел ничтожен. Каждый шрифт меряется ЕГО em
+    в кадре (`_ass_fs` × emRatio), а не общим: кегль ASS целый, и округление
+    у каждого шрифта своё."""
 
-    def __init__(self, chain: list, px: int, bold: bool):
-        self.chain, self.px, self.bold = chain, px, bold
+    def __init__(self, chain: list, fs_nom: float, bold: bool):
+        self.chain, self.fs, self.bold = chain, fs_nom, bold
         self.words: dict = {}
         self.space = self.w(" ")
 
     def _font(self, f: dict):
+        px = max(1, int(round(_ass_fs(self.fs, f) * float(f.get("emRatio") or REF_EM))))
         if self.bold and f.get("bold"):
-            return _pil_font(FONT_DIR / f["bold"], self.px), 1.0
+            return _pil_font(FONT_DIR / f["bold"], px), 1.0
         # Жирного файла нет — libass дорисует жирность сам: чуть шире.
-        return _pil_font(FONT_DIR / f["regular"], self.px), (1.05 if self.bold else 1.0)
+        return _pil_font(FONT_DIR / f["regular"], px), (1.05 if self.bold else 1.0)
 
     def w(self, word: str) -> float:
         v = self.words.get(word)
@@ -1912,14 +1941,14 @@ class _Meter:
         return v
 
 
-def _meter(chain: list, px: int, bold: bool) -> "_Meter":
-    key = (tuple(f["id"] for f in chain), int(px), bool(bold))
+def _meter(chain: list, fs_nom: float, bold: bool) -> "_Meter":
+    key = (tuple(f["id"] for f in chain), int(fs_nom), bool(bold))
     with _LOCK_FIT:
         m = _METERS.get(key)
         if m is None:
             if len(_METERS) > 64:
                 _METERS.clear()
-            m = _METERS[key] = _Meter(chain, px, bold)
+            m = _METERS[key] = _Meter(chain, int(fs_nom), bold)
     return m
 
 
@@ -1935,16 +1964,25 @@ def _words_of(para: str) -> list:
 _NO_END = set("「『（【〔〈《([")
 
 
+def _cjk_char(ch: str) -> bool:
+    """Знак иероглифического письма: иероглиф, кана, полноширинная форма
+    или знак препинания CJK («。」、»). Хангыль сюда НЕ входит: корейский
+    пишется с пробелами."""
+    cp = ord(ch)
+    return 0x3000 <= cp <= 0x303F or 0xFF00 <= cp <= 0xFFEF or (ch.isalpha() and _letter_script(ch) == "HAN")
+
+
 def _spaceless_word(word: str) -> bool:
     return any(ch.isalpha() and _letter_script(ch) == "HAN" for ch in word)
 
 
 def _tokens(para: str) -> list:
     """Строка → [(кусок, разделитель перед ним)]. Слово — по пробелу; слово
-    иероглифического письма (китайский, японский) режется на знаки — libass
-    переносит его между любыми двумя (libunibreak, UAX 14), и мерка обязана
-    так же. Кинсоку держится склейкой: «。」ー» и маленькая кана не начинают
-    строку, «「（» ею не кончается; латинское слово внутри («COVID-19») целое."""
+    иероглифического письма (китайский, японский) режется на знаки, как его
+    режет перенос (`_hard_wrap`). Кинсоку держится склейкой: «。」ー» и
+    маленькая кана не начинают строку, «「（» ею не кончается; не-иероглифический
+    кусок внутри («COVID-19», «3.5», «A/B») остаётся целым — вместе с дефисом
+    и точкой между его буквами и цифрами."""
     out = []
     for wd in _words_of(para):
         sep = " " if out else ""
@@ -1953,7 +1991,8 @@ def _tokens(para: str) -> list:
             continue
         parts = []
         for t in _char_tokens(wd):
-            if parts and (t[0] in _NO_START or parts[-1][-1] in _NO_END):
+            if parts and (t[0] in _NO_START or parts[-1][-1] in _NO_END
+                          or not (_cjk_char(parts[-1][-1]) or _cjk_char(t[0]))):
                 parts[-1] += t
             else:
                 parts.append(t)
@@ -1962,18 +2001,33 @@ def _tokens(para: str) -> list:
     return out
 
 
+_TOKENS_MEMO: dict = {}
+
+
+def _tokens_memo(para: str) -> tuple:
+    """`_tokens` с памятью: перенос у иероглифов перебирает ширину, и без
+    памяти одна и та же строка резалась на знаки десяток раз."""
+    t = _TOKENS_MEMO.get(para)
+    if t is None:
+        if len(_TOKENS_MEMO) > 20000:
+            _TOKENS_MEMO.clear()
+        t = _TOKENS_MEMO[para] = tuple(_tokens(para))
+    return t
+
+
 def _join_tokens(toks: list) -> str:
     return "".join((sep if k else "") + t for k, (t, sep) in enumerate(toks))
 
 
 def _join_lines(lines: list) -> str:
-    """Строки реплики → одна строка: между иероглифами без пробела, иначе
-    в китайскую фразу встал бы пробел, которого у автора не было."""
+    """Строки реплики → одна строка: на стыке с иероглифом или знаком CJK
+    («。」») — без пробела, иначе в китайскую фразу встал бы пробел, которого
+    у автора не было."""
     out = ""
     for ln in (x.strip() for x in lines):
         if not ln:
             continue
-        if out and not (_spaceless_word(out[-1]) and _spaceless_word(ln[0])):
+        if out and not (_cjk_char(out[-1]) or _cjk_char(ln[0])):
             out += " "
         out += ln
     return out
@@ -1985,7 +2039,7 @@ def wrap_lines(text: str, meter, width: float) -> list:
     out = []
     for para in (text or "").splitlines():
         cur, cw = [], 0.0
-        for tok, sep in _tokens(para):
+        for tok, sep in _tokens_memo(para):
             tw = meter.w(tok)
             cand = cw + (meter.space if cur and sep else 0.0) + tw
             if not cur or cand <= width:
@@ -2003,7 +2057,12 @@ def _fits(lines: list, width: float, max_lines: int) -> bool:
     return len(lines) <= max_lines and all(lw <= width + 0.5 for _l, lw in lines)
 
 
-_PUNCT_END = re.compile(r"[.!?…;:,，、。！？؟،؛۔।॥]$")
+_PUNCT_END = re.compile(r"[.!?…;:,，、。！？]$")
+# Граница части реплики при делении по времени — и знаки препинания других
+# письменностей (арабские «؟ ، ؛ ۔», деванагари «। ॥»). Отдельно от
+# `_PUNCT_END`: тот читает деление на экран, и его правка сдвинула бы
+# `DISPLAY_RULES` у всех видео.
+_PART_END = re.compile(r"[.!?…;:,，、。！？؟،؛۔।॥]$")
 
 
 def _balanced_parts(toks: list, k: int) -> list:
@@ -2016,7 +2075,7 @@ def _balanced_parts(toks: list, k: int) -> list:
     bounds = []
     for i, (t, s) in enumerate(toks[:-1]):
         acc += len(t) + len(s)
-        bounds.append((i + 1, acc, bool(_PUNCT_END.search(t))))
+        bounds.append((i + 1, acc, bool(_PART_END.search(t))))
     for j in range(1, k):
         target = total * j / k
         tol = total / k * 0.2
@@ -2127,7 +2186,7 @@ def fit_cues(cues: list, style: dict, w: int, h: int, lang: Optional[str] = None
     bold = bool(style.get("bold"))
 
     def meter(fs):
-        return _meter(chain, _em_px(fs), bold)
+        return _meter(chain, fs, bold)
 
     def fits_at(fs, text):
         return _fits(wrap_lines(text, meter(fs), width), width, maxl)
@@ -2190,7 +2249,7 @@ def _hard_wrap(e: dict, meter, width: float) -> dict:
     if len(lines) <= 1:
         return e
     n, lo, hi = len(lines), 0.0, float(width)
-    for _k in range(14):
+    for _k in range(10):
         mid = (lo + hi) / 2
         if len(wrap_lines(text, meter, mid)) <= n:
             hi = mid

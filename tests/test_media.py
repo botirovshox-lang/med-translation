@@ -945,6 +945,11 @@ _f = {f["id"]: f for f in r["fonts"]}
 check(r["covered"] and r["style"]["font"] == "noto-sans-sc" and _f["noto-sans-sc"]["with"] == ["noto-sans"]
       and not _f["noto-sans-kr"]["covers"],
       "китайский: свой шрифт по умолчанию, латинская пара к нему, корейский шрифт китайским не числится")
+r = c.get("/api/media/fonts?lang=AR", headers=H(B)).json()
+_f = {f["id"]: f for f in r["fonts"]}
+check(r["rtl"] and _f["noto-serif"]["alt"] == "noto-naskh-arabic" and _f["noto-sans-arabic"]["block"]
+      and not _f["noto-sans"]["block"] and set(_f["noto-sans-arabic"]["with"]) == {"noto-sans"},
+      "арабский: справа налево, замена засечек — засечками, плашка блоком, латинская пара")
 check(media.SUB_METRICS["refEm"] == media.REF_EM == media.font_of("noto-sans")["emRatio"],
       "эталон кегля — em Noto Sans, одно число у сервера и браузера")
 
@@ -1158,10 +1163,21 @@ check(_sty[1] == "Noto Sans Arabic" and int(_sty[2]) == media._ass_fs(_nom, medi
       "сборка: арабский кеглем арабского, латиница — явной сменой шрифта: %s" % _dl)
 _zh_text = "我们今天讨论成人肺结核的治疗方法。「住院」患者的护理COVID-19非常重要，需要换行才能显示完整。"
 _toks = media._tokens(_zh_text)
-check(media._join_tokens(_toks) == _zh_text and ("COVID", "") in _toks
+check(media._join_tokens(_toks) == _zh_text and ("COVID-19", "") in _toks
       and not any(t[0] in media._NO_START for t, _s in _toks[1:])
       and not any(t[-1] in media._NO_END for t, _s in _toks[:-1]),
-      "иероглифы режутся между знаками, «。」» не начинают строку, «「» ею не кончается")
+      "иероглифы режутся между знаками, «。」» не начинают строку, «「» ею не кончается, «COVID-19» целый")
+check(media._join_lines(["今天很好。", "明天也好」", "「他说", "OK"]) == "今天很好。明天也好」「他说OK"
+      and media._join_lines(["오늘은", "좋아요"]) == "오늘은 좋아요" and media._join_lines(["a", "b"]) == "a b",
+      "строки иероглифов склеиваются без пробела (и после «。」»), корейские и латинские — с пробелом")
+check(media.style_clean({}, "XX")["font"] == "noto-sans" and media.style_clean({"font": "noto-serif"}, "XX")["font"]
+      == "noto-serif", "язык, неизвестный каталогу, — латинский шрифт умолчания, а не арабский")
+_many_zh = [{"i": k, "start": k * 4.0, "end": k * 4.0 + 3.5, "text": _zh_text[: 12 + k % 30]} for k in range(1500)]
+_t = time.time()
+media.ass_document(_many_zh, media.style_clean({"boxW": 50, "size": 6}, "ZH"), 1920, 1080, lang="ZH")
+_many_ar = [{"i": k, "start": k * 4.0, "end": k * 4.0 + 3.5, "text": "علاج السل COVID-19 رقم %d" % k} for k in range(1500)]
+media.ass_document(_many_ar, media.style_clean({}, "AR"), 1920, 1080, lang="AR")
+check(time.time() - _t < 8, "полторы тысячи реплик ZH и AR собираются в документ за секунды: %.1f с" % (time.time() - _t))
 _zst = media.style_clean({"boxW": 50, "maxLines": 2, "size": 6}, "ZH")
 _zl = media.wrap_lines(_zh_text, media._meter(media.font_chain(_zst["font"], "ZH"), 40, False), 700)
 check(len(_zl) >= 2 and "".join(l for l, _w in _zl) == _zh_text and all(w_ <= 700.5 for l, w_ in _zl if len(l) > 1),

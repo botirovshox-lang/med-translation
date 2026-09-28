@@ -285,7 +285,7 @@
   {
    "kind": "sans",
    "pair": "noto-sans",
-   "license": "OFL-Noto.txt",
+   "license": "OFL-NotoCJK.txt",
    "id": "noto-sans-sc",
    "name": "Noto Sans SC",
    "regular": "NotoSansSC-Regular.otf",
@@ -306,7 +306,7 @@
   {
    "kind": "sans",
    "pair": "noto-sans",
-   "license": "OFL-Noto.txt",
+   "license": "OFL-NotoCJK.txt",
    "id": "noto-sans-jp",
    "name": "Noto Sans JP",
    "regular": "NotoSansJP-Regular.otf",
@@ -326,7 +326,7 @@
   {
    "kind": "sans",
    "pair": "noto-sans",
-   "license": "OFL-Noto.txt",
+   "license": "OFL-NotoCJK.txt",
    "id": "noto-sans-kr",
    "name": "Noto Sans KR",
    "regular": "NotoSansKR-Regular.otf",

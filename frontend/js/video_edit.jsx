@@ -82,7 +82,10 @@ function vidEnsureFonts(info, style) {
 function vidFitFont(style, info) {
   if (!style || !info || !info.covered) return style;
   const f = (info.fonts || []).find(x => x.id === style.font);
-  return f && f.covers ? style : Object.assign({}, style, { font: (info.style || {}).font || style.font });
+  if (f && f.covers) return style;
+  /* Замену называет сервер (`alt`) — тем же правилом, что сборка: к засечкам
+     засечки (Noto Serif у арабского видео → Noto Naskh Arabic). */
+  return Object.assign({}, style, { font: (f && f.alt) || (info.style || {}).font || style.font });
 }
 
 /* Каталог шрифтов, умолчание стиля, доли кегля и образец текста — с сервера,
@@ -159,7 +162,8 @@ function VidOverlay({ style, text, info, w, h }) {
       boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone" });
     /* У шрифта письменности сборка рисует плашку ОДНИМ блоком на реплику
        (`block`), а не по строке — так же и здесь. */
-    if (font && font.block) span.display = "inline-block";
+    /* Поле у такой плашки — со всех сторон одно (libass, BorderStyle 4). */
+    if (font && font.block) Object.assign(span, { display: "inline-block", padding: pad + "px" });
   } else {
     const ol = Math.max(1, fsAss * (style.bg === "shadow" ? (m.shadowOutline || 0.03) : (m.outline || 0.07)));
     Object.assign(span, { WebkitTextStroke: (2 * ol) + "px " + rgba(1), paintOrder: "stroke fill" });

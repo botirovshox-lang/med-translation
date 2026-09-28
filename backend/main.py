@@ -34891,8 +34891,12 @@ def _media_preview_jpeg(src: Path, video: dict, work: Path, t0: float, t: float,
     if not got:
         return JSONResponse({"ok": False, "error": "Предыдущий кадр ещё готовится — секунду"}, status_code=429)
     name = "p-%s.ass" % secrets.token_hex(6)
+    # В кадре — только реплики у этого момента: мерить и собирать все реплики
+    # проекта ради одного кадра — секунды единственного воркера на каждую
+    # правку стиля (иероглифы переносятся перебором ширины).
+    near = [c for c in cues if c["start"] <= t + 1.0 and c["end"] >= t - 1.0]
     try:
-        (work / name).write_text(media_mod.ass_document(cues, style, w, h, lang=lang), encoding="utf-8")
+        (work / name).write_text(media_mod.ass_document(near, style, w, h, lang=lang), encoding="utf-8")
         jpg = media_mod.preview_frame(src, work, name, t0 + t, t, w, h)
     except media_mod.MediaError as e:
         # Подробности — в журнал: в тексте ffmpeg лежат пути сервера.
@@ -34985,6 +34989,9 @@ def media_fonts(lang: str = ""):
                       "covers": media_mod.covers(f, lang),
                       # плашка одним блоком на реплику — как у сборки (`ass_document`)
                       "block": "LATIN" not in (f.get("scripts") or ["LATIN"]),
+                      # чем заменить этот шрифт, если он не знает букв языка (тот же облик) —
+                      # ровно так решает `style_clean`, чтобы экран и сборка не разошлись
+                      "alt": (media_mod.style_clean({"font": f["id"]}, lang or None) or {}).get("font"),
                       "with": list(dict.fromkeys(x["id"] for x in extra if x and x["id"] != f["id"]))})
     return {"fonts": fonts, "style": media_mod.style_clean(None, lang or None), "metrics": media_mod.SUB_METRICS,
             "limits": {"size": [media_mod.SIZE_MIN, media_mod.SIZE_MAX],

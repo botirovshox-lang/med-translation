@@ -46,20 +46,43 @@ function vidParseTime(str) {
 
 /* Шрифты регистрируются в браузере по одному разу на вкладку — те же файлы,
    что у ffmpeg. Жирное начертание — отдельной семьёй: иначе браузер
-   дорисовал бы жирность сам и предпросмотр разошёлся бы с впечатанным. */
+   дорисовал бы жирность сам и предпросмотр разошёлся бы с впечатанным.
+   У шрифта без жирного файла (иероглифы) жирность дорисовывают и libass,
+   и браузер: семья регистрируется обычным файлом с весом 400, а текст
+   просит 700 — браузер утолщает сам, как libass.
+   Грузится только НУЖНОЕ (`vidEnsureFonts`): выбранный шрифт и те, что
+   сервер назвал к нему (`with`: шрифт языка перевода и латинская пара) —
+   иероглифический шрифт весит 5–8 МБ, и тянуть весь каталог нельзя. */
 const vidFontLoads = {};
 function vidFamily(font, bold) { return "mct-sub-" + (font ? font.id : "x") + (bold ? "-b" : ""); }
-function vidLoadFonts(fonts) {
-  if (!window.FontFace || !document.fonts) return;
+function vidLoadFont(f, b) {
+  if (!f || !window.FontFace || !document.fonts) return;
+  const fam = vidFamily(f, b);
+  if (vidFontLoads[fam]) return;
   const v = (window.BOOT && window.BOOT.v) || "0";
-  (fonts || []).forEach(f => [false, true].forEach(b => {
-    const fam = vidFamily(f, b);
-    if (vidFontLoads[fam]) return;
-    try {
-      const ff = new FontFace(fam, "url(vendor/fonts/sub/" + encodeURIComponent(b ? f.bold : f.regular) + "?v=" + v + ")");
-      vidFontLoads[fam] = ff.load().then(x => { document.fonts.add(x); return true; }).catch(() => false);
-    } catch (e) { vidFontLoads[fam] = Promise.resolve(false); }
-  }));
+  const file = b && f.bold ? f.bold : f.regular;
+  try {
+    const ff = new FontFace(fam, "url(vendor/fonts/sub/" + encodeURIComponent(file) + "?v=" + v + ")",
+      { weight: b && f.bold ? "700" : "400" });
+    vidFontLoads[fam] = ff.load().then(x => { document.fonts.add(x); return true; }).catch(() => false);
+  } catch (e) { vidFontLoads[fam] = Promise.resolve(false); }
+}
+/* Выбранный шрифт и шрифты к нему — в порядке, в каком их берёт сборка. */
+function vidFontChain(info, fid) {
+  const all = (info && info.fonts) || [];
+  const f = all.find(x => x.id === fid) || all[0];
+  if (!f) return [];
+  return [f].concat((f.with || []).map(id => all.find(x => x.id === id)).filter(Boolean));
+}
+function vidEnsureFonts(info, style) {
+  vidFontChain(info, style && style.font).forEach(f => vidLoadFont(f, !!(style && style.bold)));
+}
+/* Шрифт, который знает буквы языка перевода: сохранённый выбор без них
+   (прежний «Noto Sans» у арабского видео) заменяется умолчанием сервера. */
+function vidFitFont(style, info) {
+  if (!style || !info || !info.covered) return style;
+  const f = (info.fonts || []).find(x => x.id === style.font);
+  return f && f.covers ? style : Object.assign({}, style, { font: (info.style || {}).font || style.font });
 }
 
 /* Каталог шрифтов, умолчание стиля, доли кегля и образец текста — с сервера,
@@ -79,7 +102,6 @@ function useVidFonts(lang) {
         setInfo({ failed: true, retry: () => { tries = 0; setInfo(null); go(); } });
         return;
       }
-      vidLoadFonts(r.fonts);
       setInfo(r);
     });
     go();
@@ -115,18 +137,29 @@ function vidHexRgb(hex) {
    и плашка — доли кегля, поля — доли кадра. */
 function VidOverlay({ style, text, info, w, h }) {
   if (!info || !w || !h || !text) return null;
-  const font = (info.fonts || []).find(f => f.id === style.font) || (info.fonts || [])[0];
+  const chain = vidFontChain(info, style.font);
+  const font = chain[0];
+  vidEnsureFonts(info, style);
   const m = info.metrics || {};
+  /* Кегль — один em на все шрифты (`media._em_px`): у сборки кегль ASS
+     пересчитан на каждый шрифт, у браузера em и так общий. Строка у libass —
+     высотой в кегль ASS ВЫБРАННОГО шрифта (winAscent+winDescent). */
   const fsAss = style.size / 100 * Math.min(w, h);
-  const fs = fsAss * (font ? font.emRatio : 0.66);
+  const ref = m.refEm || 0.6583;
+  const fs = fsAss * ref;
+  const lineH = fs / (font ? font.emRatio : ref);
   const edge = (style.color || "").toUpperCase() === "#000000" ? [255, 255, 255] : [0, 0, 0];
   const rgba = (a) => "rgba(" + edge.join(",") + "," + a + ")";
-  const span = { fontFamily: "'" + vidFamily(font, style.bold) + "', sans-serif", fontSize: fs + "px",
-    lineHeight: fsAss + "px", color: style.color, whiteSpace: "pre-wrap", fontWeight: 400 };
+  const span = { fontFamily: chain.map(f => "'" + vidFamily(f, style.bold) + "'").concat(["sans-serif"]).join(", "),
+    fontSize: fs + "px", lineHeight: lineH + "px", color: style.color, whiteSpace: "pre-wrap",
+    fontWeight: style.bold ? 700 : 400 };
   if (style.bg === "box") {
     const pad = Math.max(2, fsAss * (m.boxPad || 0.2));
     Object.assign(span, { background: rgba(1 - (m.boxAlpha || 0.25)), padding: (pad * 0.35) + "px " + pad + "px",
       boxDecorationBreak: "clone", WebkitBoxDecorationBreak: "clone" });
+    /* У шрифта письменности сборка рисует плашку ОДНИМ блоком на реплику
+       (`block`), а не по строке — так же и здесь. */
+    if (font && font.block) span.display = "inline-block";
   } else {
     const ol = Math.max(1, fsAss * (style.bg === "shadow" ? (m.shadowOutline || 0.03) : (m.outline || 0.07)));
     Object.assign(span, { WebkitTextStroke: (2 * ol) + "px " + rgba(1), paintOrder: "stroke fill" });
@@ -149,12 +182,12 @@ function VidOverlay({ style, text, info, w, h }) {
   const frameBox = { position: "absolute", left: (w - areaW) / 2, width: areaW, pointerEvents: "none",
     /* Строка у libass — высотой в кегль ASS (winAscent+winDescent), а не
        в em: рамка той же высоты, что займут строки в кадре. */
-    height: (style.maxLines || 2) * fsAss + 2 * out, border: "1px dashed rgba(255,255,255,0.7)",
+    height: (style.maxLines || 2) * lineH + 2 * out, border: "1px dashed rgba(255,255,255,0.7)",
     outline: "1px dashed rgba(0,0,0,0.5)", borderRadius: 2 };
   frameBox[edgeKey] = style.margin / 100 * h - out;
   return vidE(React.Fragment, null,
     vidE("div", { style: frameBox, "data-sub-area": "1" }),
-    vidE("div", { style: box }, vidE("span", { style: span }, text)));
+    vidE("div", { style: box, dir: info.rtl ? "rtl" : "auto" }, vidE("span", { style: span }, text)));
 }
 
 /* Кнопки-переключатели «одно из»: меньше чтения, чем у списка (инв. 32). */
@@ -172,10 +205,13 @@ function VidStyleForm({ style, onChange, info }) {
   const set = (k, v) => onChange(Object.assign({}, style, { [k]: v }));
   const lim = info.limits || { size: [2.5, 12], margin: [2, 30] };
   const font = (info.fonts || []).find(f => f.id === style.font);
+  /* В списке — только шрифты, знающие буквы языка перевода (сервер знает
+     это по файлам). Нет ни одного — все, с пометкой. */
+  const list = (info.fonts || []).filter(f => !info.covered || f.covers || f.id === style.font);
   return vidE("div", { className: "col", style: { gap: 12 } },
     vidE(Field, { label: TR("Шрифт") },
       vidE(Select, { value: style.font, onChange: (e) => set("font", e.target.value) },
-        (info.fonts || []).map(f => vidE("option", { key: f.id, value: f.id },
+        list.map(f => vidE("option", { key: f.id, value: f.id },
           f.name + (f.covers ? "" : TR(" — нет букв языка перевода")))))),
     font && !font.covers && vidE("div", { style: { fontSize: 12, color: "var(--c-warning)" } },
       TR("В этом шрифте нет букв языка перевода. Выберите другой или проверьте кадр с сервера.")),
@@ -316,7 +352,10 @@ function VideoEditor({ file, meta, onCancel, onDone, toast }) {
   const frame = useVidServerFrame();
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
   useEffect(() => {
-    if (info && !info.failed && !style) { setStyle(Object.assign({}, info.style, meta.style || {})); setSample(info.sample || ""); }
+    if (info && !info.failed && !style) {
+      setStyle(vidFitFont(Object.assign({}, info.style, meta.style || {}), info));
+      setSample(info.sample || "");
+    }
   }, [info]);
   /* Загрузка стартует сразу: пока человек обрезает и выбирает шрифт,
      гигабайты уже едут. Закрыли экран, не отменяя, — загрузка на сервере

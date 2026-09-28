@@ -1477,7 +1477,7 @@ SPLIT_MIN_SEC = 0.8            # часть реплики короче — гл
 # Доли кегля — ОДНИ на сборку и на предпросмотр в браузере (их отдаёт
 # `/api/media/fonts`): вторая копия чисел в .jsx разошлась бы с этой.
 SUB_METRICS = {"outline": 0.07, "shadowOutline": 0.03, "shadow": 0.06, "boxPad": 0.2,
-               "marginLR": 0.06, "boxAlpha": 0.25, "shadowAlpha": 0.45}
+               "marginLR": 0.06, "boxAlpha": 0.25, "shadowAlpha": 0.45, "refEm": 0.6583}
 
 _FONTS_CACHE: dict = {"mtime": None, "data": {"fonts": []}}
 
@@ -1502,6 +1502,107 @@ def fonts_catalog() -> dict:
 
 def font_of(fid) -> Optional[dict]:
     return next((f for f in fonts_catalog().get("fonts") or [] if f.get("id") == fid), None)
+
+
+# Эталон кегля: em Noto Sans. «Размер 5,5%» значит «em как у Noto Sans при
+# 5,5% кадра» у ЛЮБОГО шрифта — иначе смена шрифта меняла бы размер букв,
+# а арабский при том же размере был бы на треть мельче латиницы.
+REF_EM = 0.6583
+# Версия правил вёрстки шрифтами (кегль по em, смена шрифта на кусках
+# без своих букв). Входит в отпечаток кусков сборки в кадр: продолжение
+# после паузы не склеит куски прежней вёрстки с новыми.
+FONT_RULES = 2
+
+_CMAP_CACHE: dict = {"mtime": None, "data": None}
+
+
+def _cmaps() -> Optional[dict]:
+    """Таблица знаков шрифтов ({id: (начала, концы)}) из fonts.cmap.json —
+    её собирает tools/sub_fonts.py. Нет файла — None: «не знаю», а не «нет»."""
+    p = FONT_DIR / "fonts.cmap.json"
+    try:
+        mt = p.stat().st_mtime
+    except OSError:
+        return None
+    if _CMAP_CACHE["mtime"] != mt:
+        try:
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            data = {k: ([a for a, _b in v], [b for _a, b in v]) for k, v in raw.items()}
+        except (OSError, ValueError, TypeError):
+            data = None
+        _CMAP_CACHE.update(mtime=mt, data=data)
+    return _CMAP_CACHE["data"]
+
+
+def _has(font: dict, cp: int) -> Optional[bool]:
+    """Есть ли знак в шрифте. None — таблицы нет (считаем, что есть)."""
+    cm = _cmaps()
+    if cm is None or font.get("id") not in cm:
+        return None
+    import bisect
+    starts, ends = cm[font["id"]]
+    i = bisect.bisect_right(starts, cp) - 1
+    return i >= 0 and cp <= ends[i]
+
+
+def lang_script(lang) -> str:
+    code = str(lang or "").upper().strip()
+    if not code:
+        return ""
+    _n, scripts = _norm_tables()
+    return scripts.get(code) or scripts.get(code.split("-")[0]) or ""
+
+
+def covers(font: Optional[dict], lang) -> bool:
+    """Годится ли шрифт для языка перевода: знает его письменность, а где
+    письменности мало (иероглифы общие у китайского, японского и корейского) —
+    ещё и проходит пробу самого языка (`langs`, считает tools/sub_fonts.py)."""
+    if not font:
+        return False
+    code = str(lang or "").upper().strip()
+    script = lang_script(code)
+    if not script:
+        return True
+    if script not in (font.get("scripts") or []):
+        return False
+    probes = fonts_catalog().get("langProbes") or []
+    return code not in probes or code in (font.get("langs") or [])
+
+
+def best_font(lang, kind: Optional[str] = None) -> Optional[dict]:
+    """Шрифт по умолчанию для языка: сперва тот, что назван для него
+    (`prefer`: японский — Noto Sans JP, а не китайский SC), потом самый
+    «узкий» из годных — шрифт своей письменности сильнее общего (иврит —
+    Noto Sans Hebrew, а не DejaVu). `kind` — облик: к засечкам — засечки."""
+    fonts = fonts_catalog().get("fonts") or []
+    code = str(lang or "").upper().strip()
+    if not code:
+        return fonts[0] if fonts else None
+    cands = [f for f in fonts if covers(f, code)]
+    if not cands:
+        return None
+    pref = [f for f in cands if code and code in (f.get("prefer") or [])]
+    pool = pref or sorted(cands, key=lambda f: len(f.get("scripts") or []))
+    same = [f for f in pool if kind and f.get("kind") == kind]
+    return (same or pool)[0]
+
+
+def font_chain(fid, lang=None) -> list:
+    """Выбранный шрифт и за ним — откуда брать знаки, которых в нём нет:
+    шрифт языка перевода, латинская пара (в шрифтах письменностей нет ни
+    латиницы, ни цифр, ни «?!»), затем весь каталог — тот же облик первым.
+    Одна цепочка на сборку, кадр, мерку строк и предпросмотр в браузере."""
+    fonts = fonts_catalog().get("fonts") or []
+    if not fonts:
+        return []
+    prim = font_of(fid) or best_font(lang) or fonts[0]
+    kind = prim.get("kind")
+    out = [prim]
+    for f in [best_font(lang, kind) if lang else None, font_of(prim.get("pair"))] + \
+            sorted(fonts, key=lambda x: x.get("kind") != kind):
+        if f and all(f is not x for x in out):
+            out.append(f)
+    return out
 
 
 # Образец субтитра на ЯЗЫКЕ ПЕРЕВОДА — для предпросмотра, пока перевода
@@ -1554,14 +1655,21 @@ def _clamp(v, lo: float, hi: float, dflt: float) -> float:
     return round(min(hi, max(lo, x)), 2)
 
 
-def style_clean(raw) -> dict:
+def style_clean(raw, lang: Optional[str] = None) -> dict:
     """Стиль из запроса → проверенный стиль. Неизвестное заменяется
     умолчанием, а не отказом: стиль — оформление, и опечатка в одном поле
     не должна стоить сборки."""
     s = dict(STYLE_DEFAULT)
     raw = raw if isinstance(raw, dict) else {}
-    if font_of(raw.get("font")):
-        s["font"] = raw["font"]
+    want = font_of(raw.get("font"))
+    # Язык перевода известен — шрифт обязан знать его буквы. Шрифт без них
+    # (сохранённый «Noto Sans» у арабского проекта, умолчание) заменяется
+    # шрифтом языка того же облика; нет годного ни одного — остаётся выбор.
+    best = best_font(lang, (want or {}).get("kind")) if lang else None
+    if want and (not best or covers(want, lang)):
+        s["font"] = want["id"]
+    elif best:
+        s["font"] = best["id"]
     elif not font_of(s["font"]):
         fonts = fonts_catalog().get("fonts") or []
         if fonts:
@@ -1672,8 +1780,10 @@ def _ass_time(t: float) -> str:
 def _ass_text(s: str) -> str:
     """Текст реплики для ASS: фигурные скобки — начало команды оформления,
     обратная косая — перевод строки. Ни то, ни другое из перевода клиента
-    командой стать не должно."""
-    s = (s or "").replace("\\", "∖").replace("{", "(").replace("}", ")")
+    командой стать не должно. За обратной косой встаёт WORD JOINER: libass
+    читает «\\N» и «\\h» только вплотную, и косая остаётся косой — той же
+    буквой того же шрифта (прежняя замена на «∖» уводила её в другой шрифт)."""
+    s = (s or "").replace("\\", "\\⁠").replace("{", "(").replace("}", ")")
     return "\\N".join(x.strip() for x in s.splitlines() if x.strip())
 
 
@@ -1696,13 +1806,15 @@ def style_numbers(style: dict, w: int, h: int) -> dict:
 
 
 # ─── Подгонка в безопасную область ───────────────────────────────────
-# Строки считаются ТЕМ ЖЕ файлом шрифта, что у libass, и так же: жадный
-# перенос по пробелам в ширину области (libass при WrapStyle 0 выравнивает
-# строки по длине, но их ЧИСЛО то же). Кегль ASS → em в пикселях через
-# `emRatio` каталога (libass меряет кегль высотой winAscent+winDescent).
+# Строки считаются ТЕМИ ЖЕ файлами шрифтов, что у libass, и так же: жадный
+# перенос по пробелам (у иероглифов — между знаками) в ширину области
+# (libass при WrapStyle 0 выравнивает строки по длине, но их ЧИСЛО то же).
+# Кегль у всех шрифтов один — em в пикселях (`_em_px`); кегль ASS у каждого
+# шрифта свой (`_ass_fs`), потому что libass меряет его полной высотой шрифта.
 _PIL_FONTS: dict = {}
 _METERS: dict = {}
 _LOCK_FIT = __import__("threading").Lock()
+_RAQM: dict = {}
 
 
 def _pil_font(path, px: int):
@@ -1716,35 +1828,98 @@ def _pil_font(path, px: int):
     return f
 
 
+def _raqm() -> bool:
+    """Умеет ли Pillow собирать сложное письмо (raqm: HarfBuzz + FriBiDi).
+    Без него арабская вязь и слоги деванагари меряются несвязанными буквами —
+    шире настоящих, и «не влезло» было бы выдумкой."""
+    if "ok" not in _RAQM:
+        try:
+            from PIL import features
+            _RAQM["ok"] = bool(features.check("raqm"))
+        except Exception:
+            _RAQM["ok"] = False
+    return _RAQM["ok"]
+
+
+# Письменности, где ширина слова зависит от сборки знаков (связное письмо,
+# лигатуры, подписные согласные). Остальные меряются и без raqm.
+_SHAPED = {"ARABIC", "SYRIAC", "THAANA", "NKO", "DEVANAGARI", "BENGALI", "GUJARATI", "GURMUKHI", "TAMIL",
+           "TELUGU", "KANNADA", "MALAYALAM", "ORIYA", "SINHALA", "KHMER", "MYANMAR", "TIBETAN", "MONGOLIAN"}
+
+
+def _em_px(fs_nom: float) -> int:
+    """Номинальный кегль (доля кадра) → em в пикселях: один на все шрифты."""
+    return max(1, int(round(fs_nom * REF_EM)))
+
+
+def _ass_fs(fs_nom: float, font: Optional[dict]) -> int:
+    """Номинальный кегль → кегль ASS ЭТОГО шрифта: libass берёт кегль как
+    полную высоту шрифта (winAscent + winDescent), а у арабского и бирманского
+    она из-за огласовок почти вдвое больше em. Без пересчёта арабские буквы
+    выходили бы на треть мельче латинских при том же «размере»."""
+    em = float((font or {}).get("emRatio") or REF_EM)
+    return max(1, int(round(fs_nom * REF_EM / em)))
+
+
+def _runs(text: str, chain: list) -> list:
+    """Текст → [[шрифт, кусок], …]: каждый знак — первым шрифтом цепочки,
+    где он есть. Огласовки, знаки нулевой ширины (ZWJ/ZWNJ, метки
+    направления) и пробел остаются в куске своей буквы: оторвать огласовку
+    в другой шрифт — сломать сборку слога."""
+    import unicodedata as _ud
+    out = []
+    for ch in text:
+        cp = ord(ch)
+        cat = _ud.category(ch)
+        if out and (cat[0] == "M" or cat == "Cf" or (ch.isspace() and _has(out[-1][0], cp) is not False)):
+            out[-1][1] += ch
+            continue
+        f = next((x for x in chain if _has(x, cp) is not False), chain[0])
+        if out and out[-1][0] is f:
+            out[-1][1] += ch
+        else:
+            out.append([f, ch])
+    return out
+
+
 class _Meter:
-    """Ширина слов одним шрифтом одного кегля — с памятью: каждое слово
+    """Ширина слов цепочкой шрифтов одного em — с памятью: каждое слово
     меряется ОДИН раз, строка — сумма слов и пробелов. Мерить строку целиком
     на каждом шаге переноса — квадратичная работа: сотня реплик считалась бы
     минутами прямо в запросе. Кернинг через пробел ничтожен."""
 
-    def __init__(self, path, px: int, extra: float = 1.0):
-        self.font = _pil_font(path, px)
-        self.extra = extra                      # запас на синтетический жирный
+    def __init__(self, chain: list, px: int, bold: bool):
+        self.chain, self.px, self.bold = chain, px, bold
         self.words: dict = {}
-        self.space = self.font.getlength(" ") * extra
+        self.space = self.w(" ")
+
+    def _font(self, f: dict):
+        if self.bold and f.get("bold"):
+            return _pil_font(FONT_DIR / f["bold"], self.px), 1.0
+        # Жирного файла нет — libass дорисует жирность сам: чуть шире.
+        return _pil_font(FONT_DIR / f["regular"], self.px), (1.05 if self.bold else 1.0)
 
     def w(self, word: str) -> float:
         v = self.words.get(word)
         if v is None:
             if len(self.words) > 20000:
                 self.words.clear()
-            v = self.words[word] = self.font.getlength(word) * self.extra
+            v = 0.0
+            for f, run in _runs(word, self.chain):
+                font, extra = self._font(f)
+                v += font.getlength(run) * extra
+            self.words[word] = v
         return v
 
 
-def _meter(path, px: int, extra: float = 1.0) -> "_Meter":
-    key = (str(path), int(px), extra)
+def _meter(chain: list, px: int, bold: bool) -> "_Meter":
+    key = (tuple(f["id"] for f in chain), int(px), bool(bold))
     with _LOCK_FIT:
         m = _METERS.get(key)
         if m is None:
             if len(_METERS) > 64:
                 _METERS.clear()
-            m = _METERS[key] = _Meter(path, px, extra)
+            m = _METERS[key] = _Meter(chain, px, bold)
     return m
 
 
@@ -1755,23 +1930,72 @@ def _words_of(para: str) -> list:
     return [x for x in re.split(r"[ \t]+", para) if x]
 
 
+# С этих знаков строка не кончается (открывающие скобки и кавычки
+# иероглифического письма): их место — в начале следующей.
+_NO_END = set("「『（【〔〈《([")
+
+
+def _spaceless_word(word: str) -> bool:
+    return any(ch.isalpha() and _letter_script(ch) == "HAN" for ch in word)
+
+
+def _tokens(para: str) -> list:
+    """Строка → [(кусок, разделитель перед ним)]. Слово — по пробелу; слово
+    иероглифического письма (китайский, японский) режется на знаки — libass
+    переносит его между любыми двумя (libunibreak, UAX 14), и мерка обязана
+    так же. Кинсоку держится склейкой: «。」ー» и маленькая кана не начинают
+    строку, «「（» ею не кончается; латинское слово внутри («COVID-19») целое."""
+    out = []
+    for wd in _words_of(para):
+        sep = " " if out else ""
+        if not _spaceless_word(wd):
+            out.append((wd, sep))
+            continue
+        parts = []
+        for t in _char_tokens(wd):
+            if parts and (t[0] in _NO_START or parts[-1][-1] in _NO_END):
+                parts[-1] += t
+            else:
+                parts.append(t)
+        out.append((parts[0], sep))
+        out.extend((p, "") for p in parts[1:])
+    return out
+
+
+def _join_tokens(toks: list) -> str:
+    return "".join((sep if k else "") + t for k, (t, sep) in enumerate(toks))
+
+
+def _join_lines(lines: list) -> str:
+    """Строки реплики → одна строка: между иероглифами без пробела, иначе
+    в китайскую фразу встал бы пробел, которого у автора не было."""
+    out = ""
+    for ln in (x.strip() for x in lines):
+        if not ln:
+            continue
+        if out and not (_spaceless_word(out[-1]) and _spaceless_word(ln[0])):
+            out += " "
+        out += ln
+    return out
+
+
 def wrap_lines(text: str, meter, width: float) -> list:
-    """Жадный перенос по пробелам → [(строка, ширина)]; переводы строк
-    в тексте — жёсткие. Слово шире области остаётся строкой-переростком."""
+    """Жадный перенос → [(строка, ширина)]; переводы строк в тексте —
+    жёсткие. Слово шире области остаётся строкой-переростком."""
     out = []
     for para in (text or "").splitlines():
         cur, cw = [], 0.0
-        for wd in _words_of(para):
-            ww = meter.w(wd)
-            cand = cw + (meter.space if cur else 0.0) + ww
+        for tok, sep in _tokens(para):
+            tw = meter.w(tok)
+            cand = cw + (meter.space if cur and sep else 0.0) + tw
             if not cur or cand <= width:
-                cur.append(wd)
+                cur.append((tok, sep))
                 cw = cand
             else:
-                out.append((" ".join(cur), cw))
-                cur, cw = [wd], ww
+                out.append((_join_tokens(cur), cw))
+                cur, cw = [(tok, sep)], tw
         if cur:
-            out.append((" ".join(cur), cw))
+            out.append((_join_tokens(cur), cw))
     return out
 
 
@@ -1779,20 +2003,20 @@ def _fits(lines: list, width: float, max_lines: int) -> bool:
     return len(lines) <= max_lines and all(lw <= width + 0.5 for _l, lw in lines)
 
 
-_PUNCT_END = re.compile(r"[.!?…;:,，、。！？]$")
+_PUNCT_END = re.compile(r"[.!?…;:,，、。！？؟،؛۔।॥]$")
 
 
-def _balanced_parts(words: list, k: int) -> list:
-    """Слова → k частей РАВНОЙ длины: граница у отметки j/k текста, а в пределах
+def _balanced_parts(toks: list, k: int) -> list:
+    """Куски → k частей РАВНОЙ длины: граница у отметки j/k текста, а в пределах
     пятой части длины части — после знака препинания («…sig‘maydi, | shuning…»).
     Жадный перенос тут не годится: он оставил бы последнее слово одно,
     и такую часть на экране не успеть прочесть."""
-    total = sum(len(w_) + 1 for w_ in words)
+    total = sum(len(t) + len(s) for t, s in toks)
     cuts, pos, acc = [], 0, 0
     bounds = []
-    for i, w_ in enumerate(words[:-1]):
-        acc += len(w_) + 1
-        bounds.append((i + 1, acc, bool(_PUNCT_END.search(w_))))
+    for i, (t, s) in enumerate(toks[:-1]):
+        acc += len(t) + len(s)
+        bounds.append((i + 1, acc, bool(_PUNCT_END.search(t))))
     for j in range(1, k):
         target = total * j / k
         tol = total / k * 0.2
@@ -1803,8 +2027,8 @@ def _balanced_parts(words: list, k: int) -> list:
         best = min(pool, key=lambda b: abs(b[1] - target))
         cuts.append(best[0])
         pos = best[0]
-    edges = [0] + cuts + [len(words)]
-    return [" ".join(words[edges[i]:edges[i + 1]]) for i in range(len(edges) - 1) if edges[i] < edges[i + 1]]
+    edges = [0] + cuts + [len(toks)]
+    return [_join_tokens(toks[edges[i]:edges[i + 1]]) for i in range(len(edges) - 1) if edges[i] < edges[i + 1]]
 
 
 def _split_cue(c: dict, n_lines: int, max_lines: int, fits) -> list:
@@ -1812,10 +2036,10 @@ def _split_cue(c: dict, n_lines: int, max_lines: int, fits) -> list:
     сколько нужно, чтобы каждая уместилась в `max_lines` строк); время —
     пропорционально длине текста части. Если какая-то часть выходит короче
     SPLIT_MIN_SEC, делить нельзя: такую глаз не успевает прочесть."""
-    words = _words_of(" ".join((c.get("text") or "").splitlines()))
+    toks = _tokens(_join_lines((c.get("text") or "").splitlines()))
     need = max(2, -(-n_lines // max_lines))
     for k in range(need, need + 3):
-        groups = _balanced_parts(words, k)
+        groups = _balanced_parts(toks, k)
         if len(groups) == k and all(fits(g) for g in groups):
             break
     else:
@@ -1834,12 +2058,13 @@ def _split_cue(c: dict, n_lines: int, max_lines: int, fits) -> list:
 
 def _letter_script(ch: str) -> str:
     """Письменность буквы по имени в Юникоде («CYRILLIC SMALL LETTER A»
-    → CYRILLIC); иероглифы и слоговые азбуки — к своей записи каталога."""
+    → CYRILLIC); иероглифы, кана и полноширинные формы — к HAN (так их
+    зовёт каталог языков), полуширинный хангыль — к HANGUL."""
     import unicodedata
     name = unicodedata.name(ch, "")
     head = name.split(" ", 1)[0]
-    if head in ("CJK", "HIRAGANA", "KATAKANA", "IDEOGRAPHIC"):
-        return "HAN"
+    if head in ("CJK", "HIRAGANA", "KATAKANA", "IDEOGRAPHIC", "KATAKANA-HIRAGANA", "FULLWIDTH", "HALFWIDTH"):
+        return "HANGUL" if "HANGUL" in name else "HAN"
     return head
 
 
@@ -1853,107 +2078,170 @@ _KNOWN_SCRIPTS = {"LATIN", "CYRILLIC", "GREEK", "ARMENIAN", "GEORGIAN", "HEBREW"
                   "ORIYA", "LAO", "TIBETAN", "MONGOLIAN"}
 
 
-def _covered(texts: list, scripts: set) -> bool:
-    """Все ли буквы реплик — из письменностей, которые шрифт знает. Нет —
-    libass возьмёт системный шрифт с другими размерами, а Pillow меряла бы
-    пустые квадраты: «уместилось» было бы враньём."""
+def _measurable(texts: list, chain: list) -> bool:
+    """Можно ли честно измерить эти реплики этой цепочкой шрифтов.
+    Нет — буква, которой нет НИ в одном шрифте (libass возьмёт системный,
+    с другими размерами, а Pillow меряла бы пустые квадраты), либо сложное
+    письмо без raqm. «Уместилось» без мерки было бы враньём."""
     seen = set()
+    have_cmap = _cmaps() is not None
+    scripts = set()
+    for f in chain:
+        scripts.update(f.get("scripts") or [])
     for t in texts:
         for ch in t:
-            if ch in seen or not ch.isalpha():
+            if ch in seen or not ch.isalnum():
                 continue
             seen.add(ch)
             sc = _letter_script(ch)
-            if sc in _KNOWN_SCRIPTS and sc not in scripts:
+            if sc in _SHAPED and not _raqm():
+                return False
+            if have_cmap:
+                if all(_has(f, ord(ch)) is False for f in chain):
+                    if sc in _KNOWN_SCRIPTS or ch.isdigit():
+                        return False
+            elif sc in _KNOWN_SCRIPTS and sc not in scripts:
                 return False
     return True
 
 
-def fit_cues(cues: list, style: dict, w: int, h: int) -> tuple:
+def fit_cues(cues: list, style: dict, w: int, h: int, lang: Optional[str] = None) -> tuple:
     """(события для ASS, отчёт). Отчёт — номера реплик (`i` у реплики):
     shrunk — уменьшен шрифт, split — разделена по времени, over — не
     уместилась никак (длинное слово, слишком короткая реплика, режим none).
-    Мерить нечем (нет Pillow, нет файла шрифта, буквы письменности, которой
-    в шрифте нет) — события как есть, `measured: False`: «всё поместилось»
-    без мерки было бы враньём."""
+    Мерить нечем (нет Pillow, нет файла шрифта, буквы, которой нет ни в одном
+    шрифте, сложное письмо без raqm) — события как есть, `measured: False`:
+    «всё поместилось» без мерки было бы враньём. `lang` — язык перевода:
+    по нему выбирается шрифт для букв, которых нет в выбранном."""
     rep = {"shrunk": [], "split": [], "over": [], "measured": False}
     cues = list(cues or [])
-    font = font_of(style.get("font")) or {}
-    name, extra = font.get("regular"), 1.0
-    if style.get("bold"):
-        if font.get("bold"):
-            name = font["bold"]
-        else:
-            extra = 1.05                         # libass дорисует жирный сам — шире
-    path = FONT_DIR / name if name else None
-    if not path or not path.exists():
+    chain = font_chain(style.get("font"), lang)
+    if not chain or not all((FONT_DIR / f["regular"]).exists() for f in chain[:1]):
         return cues, rep
-    if font.get("scripts") and not _covered([c.get("text") or "" for c in cues], set(font["scripts"])):
+    if not _measurable([c.get("text") or "" for c in cues], chain):
         return cues, rep
-    try:
-        _pil_font(path, 20)
-    except Exception:
-        return cues, rep
-    rep["measured"] = True
     n = style_numbers(style, w, h)
-    em = float(font.get("emRatio") or 1.0)
     width, base = n["wrapW"], n["fs"]
     maxl, mode = int(style.get("maxLines") or 2), style.get("fit") or "both"
     floor_fs = max(8, int(base * FIT_MIN_SCALE))
+    bold = bool(style.get("bold"))
 
     def meter(fs):
-        return _meter(path, round(fs * em), extra)
+        return _meter(chain, _em_px(fs), bold)
 
     def fits_at(fs, text):
         return _fits(wrap_lines(text, meter(fs), width), width, maxl)
 
-    out = []
-    m0 = meter(base)
-    for c in cues:
-        text = c.get("text") or ""
-        lines = wrap_lines(text, m0, width)
-        if _fits(lines, width, maxl):
-            out.append(c)
-            continue
-        done = False
-        if mode in ("shrink", "both") and fits_at(floor_fs, text):
-            # Крупнейший кегль, при котором влезает, — двоичным поиском.
-            lo, hi = floor_fs, base - 1
-            while lo < hi:
-                mid = (lo + hi + 1) // 2
-                if fits_at(mid, text):
-                    lo = mid
-                else:
-                    hi = mid - 1
-            out.append(dict(c, fs=lo))
-            rep["shrunk"].append(c.get("i"))
-            done = True
-        if not done and mode in ("split", "both"):
-            # Сперва полным кеглем; в режиме «оба» — и уменьшенным: две
-            # части мельче лучше трёх или «не влезло».
-            for fs in ([base, floor_fs] if mode == "both" else [base]):
-                parts = _split_cue(c, len(lines), maxl, lambda g, fs=fs: fits_at(fs, g))
-                if parts:
-                    out.extend(dict(p, fs=fs) if fs != base else p for p in parts)
-                    rep["split"].append(c.get("i"))
-                    done = True
-                    break
-        if not done:
-            out.append(c)
-            rep["over"].append(c.get("i"))
+    try:
+        m0 = meter(base)
+        out = []
+        for c in cues:
+            text = c.get("text") or ""
+            lines = wrap_lines(text, m0, width)
+            if _fits(lines, width, maxl):
+                out.append(c)
+                continue
+            done = False
+            if mode in ("shrink", "both") and fits_at(floor_fs, text):
+                # Крупнейший кегль, при котором влезает, — двоичным поиском.
+                lo, hi = floor_fs, base - 1
+                while lo < hi:
+                    mid = (lo + hi + 1) // 2
+                    if fits_at(mid, text):
+                        lo = mid
+                    else:
+                        hi = mid - 1
+                out.append(dict(c, fs=lo))
+                rep["shrunk"].append(c.get("i"))
+                done = True
+            if not done and mode in ("split", "both"):
+                # Сперва полным кеглем; в режиме «оба» — и уменьшенным: две
+                # части мельче лучше трёх или «не влезло».
+                for fs in ([base, floor_fs] if mode == "both" else [base]):
+                    parts = _split_cue(c, len(lines), maxl, lambda g, fs=fs: fits_at(fs, g))
+                    if parts:
+                        out.extend(dict(p, fs=fs) if fs != base else p for p in parts)
+                        rep["split"].append(c.get("i"))
+                        done = True
+                        break
+            if not done:
+                out.append(c)
+                rep["over"].append(c.get("i"))
+        # libass не переносит строку без пробелов (замер на сервере: китайская
+        # реплика ушла одной строкой за край области) — переносы у иероглифов
+        # ставим сами, там же, где их посчитала мерка.
+        out = [_hard_wrap(e, meter(e.get("fs") or base), width) for e in out]
+    except Exception as e:                       # битый файл шрифта — «не мерили», а не сбой сборки
+        print("[media] мерка субтитров не удалась: %s" % e, file=sys.stderr)
+        return cues, {"shrunk": [], "split": [], "over": [], "measured": False}
+    rep["measured"] = True
     return out, rep
 
 
-def ass_document(cues: list, style: dict, w: int, h: int, fitted: Optional[list] = None) -> str:
+def _hard_wrap(e: dict, meter, width: float) -> dict:
+    """Реплика иероглифического письма → текст с переводами строк: столько
+    строк, сколько даёт перенос в ширину области, и строки РОВНЫЕ — самая
+    узкая ширина, при которой строк не больше (иначе вторая строка из двух
+    знаков). Письмо с пробелами не трогаем: его переносит libass сам."""
+    text = e.get("text") or ""
+    if not _spaceless_word(text):
+        return e
+    lines = wrap_lines(text, meter, width)
+    if len(lines) <= 1:
+        return e
+    n, lo, hi = len(lines), 0.0, float(width)
+    for _k in range(14):
+        mid = (lo + hi) / 2
+        if len(wrap_lines(text, meter, mid)) <= n:
+            hi = mid
+        else:
+            lo = mid
+    return dict(e, text="\n".join(l for l, _w in wrap_lines(text, meter, hi)))
+
+
+def _ass_event_text(s: str, chain: list, fs_nom: float, base_nom: float, rtl: bool = False) -> str:
+    """Текст события: экранирование (`_ass_text`) и смена шрифта на кусках,
+    которых нет в выбранном, — явной командой `{\\fn…\\fs…}`, с кеглем ЭТОГО
+    шрифта. Иначе libass взял бы системный шрифт на своё усмотрение: на
+    сервере это DejaVu или ничего, а мерка строк считала другим.
+    У письма справа налево каждая строка начинается меткой RLM: строка,
+    начатая латиницей или цифрой («COVID-19 …»), иначе читалась бы слева
+    направо, и слово уезжало на другой край (замер на сервере)."""
+    prim = chain[0] if chain else None
+    body = _ass_text(s)
+    if not body:
+        return ""
+    out = []
+    if prim is not None and fs_nom != base_nom:
+        out.append(r"{\fs%d}" % _ass_fs(fs_nom, prim))     # уменьшенный кегль — только этой реплике
+    if not chain:
+        return "".join(out) + body
+    cur = prim
+    for k, line in enumerate(body.split("\\N")):
+        if k:
+            out.append("\\N")
+        if rtl:
+            out.append("‏")
+        for f, run in _runs(line, chain):
+            if f is not cur:
+                out.append(r"{\fn%s\fs%d}" % (f.get("family") or f["name"], _ass_fs(fs_nom, f)))
+                cur = f
+            out.append(run)
+    return "".join(out)
+
+
+def ass_document(cues: list, style: dict, w: int, h: int, fitted: Optional[list] = None,
+                 lang: Optional[str] = None) -> str:
     """Документ ASS: один стиль, по событию на реплику. PlayRes = кадр
     результата, поэтому кегль в пикселях — ровно тот, что посчитан.
     Реплики сперва подгоняются в безопасную область (`fit_cues`); уже
     подогнанные можно передать готовыми (`fitted`), чтобы не мерить дважды."""
     if fitted is None:
-        fitted, _rep = fit_cues(cues, style, w, h)
+        fitted, _rep = fit_cues(cues, style, w, h, lang)
     cues = fitted
-    font = font_of(style.get("font")) or {}
-    family = font.get("family") or "Noto Sans"
+    chain = font_chain(style.get("font"), lang)
+    prim = chain[0] if chain else {}
+    family = prim.get("family") or "Noto Sans"
     n = style_numbers(style, w, h)
     dark = style["color"].upper() in ("#000000",)
     edge = "#FFFFFF" if dark else "#000000"
@@ -1963,6 +2251,17 @@ def ass_document(cues: list, style: dict, w: int, h: int, fitted: Optional[list]
         outc = _ass_color(edge)
         backc = _ass_color(edge, SUB_METRICS["shadowAlpha"])
     align = 8 if style["position"] == "top" else 2
+    # Направление: у письма справа налево — «определи сам» (-1) плюс RLM
+    # в начале строки (`_ass_event_text`). С обычным 1 libass считает строку
+    # идущей слева направо, и «…מבוגרים, 2024.» выходило «2024., …».
+    rtl = bool((sub_norm(lang) or {}).get("rtl")) if lang else False
+    # Плашка у шрифта письменности — ОДНИМ блоком на реплику (BorderStyle 4):
+    # обычная (3) рисуется по каждому куску знаков, и высокие огласовки
+    # арабского и деванагари дают рваный низ, а смена шрифта — ступеньку.
+    # Язык у видео один, поэтому облик плашки в пределах видео одинаков.
+    border = n["border"]
+    if style["bg"] == "box" and prim and "LATIN" not in (prim.get("scripts") or ["LATIN"]):
+        border = 4
     head = [
         "[Script Info]", "ScriptType: v4.00+", "PlayResX: %d" % w, "PlayResY: %d" % h,
         "WrapStyle: 0", "ScaledBorderAndShadow: yes", "YCbCr Matrix: None", "",
@@ -1970,18 +2269,18 @@ def ass_document(cues: list, style: dict, w: int, h: int, fitted: Optional[list]
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding",
-        "Style: Default,%s,%d,%s,%s,%s,%s,%d,0,0,0,100,100,0,0,%d,%d,%d,%d,%d,%d,%d,1" % (
-            family, n["fs"], _ass_color(style["color"]), _ass_color(style["color"]), outc, backc,
-            -1 if style.get("bold") else 0, n["border"], n["outline"], n["shadow"], align,
-            n["marginLR"], n["marginLR"], n["marginV"]),
+        "Style: Default,%s,%d,%s,%s,%s,%s,%d,0,0,0,100,100,0,0,%d,%d,%d,%d,%d,%d,%d,%d" % (
+            family, _ass_fs(n["fs"], prim), _ass_color(style["color"]), _ass_color(style["color"]), outc, backc,
+            -1 if style.get("bold") else 0, border, n["outline"], n["shadow"], align,
+            n["marginLR"], n["marginLR"], n["marginV"], -1 if rtl else 1),
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"]
     ev = []
     for c in sorted(cues or [], key=lambda x: x["start"]):
-        text = _ass_text(c.get("text") or "")
-        if not text or c["end"] <= c["start"]:
+        if c["end"] <= c["start"]:
             continue
-        if c.get("fs"):
-            text = r"{\fs%d}" % int(c["fs"]) + text       # уменьшенный кегль — только этой реплике
+        text = _ass_event_text(c.get("text") or "", chain, c.get("fs") or n["fs"], n["fs"], rtl)
+        if not text:
+            continue
         ev.append("Dialogue: 0,%s,%s,Default,,0,0,0,,%s" % (_ass_time(c["start"]), _ass_time(c["end"]), text))
     return "\n".join(head + ev) + "\n"
 

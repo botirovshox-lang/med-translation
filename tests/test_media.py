@@ -933,13 +933,20 @@ check(sty[15] == "3" and sty[18] == "8" and int(sty[2]) == round(media.SIZE_MAX 
 check(media.burn_eta({"width": 1920, "height": 1080, "fps": 30}, "720", 600)
       < media.burn_eta({"width": 1920, "height": 1080, "fps": 30}, "src", 600), "720p собирается быстрее")
 cat = media.fonts_catalog()["fonts"]
-check(len(cat) >= 3 and all((media.FONT_DIR / f[k]).exists() for f in cat for k in ("regular", "bold")),
-      "у каждого шрифта каталога есть оба файла")
+check(len(cat) >= 3 and all((media.FONT_DIR / f[k]).exists() for f in cat for k in ("regular", "bold") if f.get(k)),
+      "у каждого шрифта каталога лежат его файлы")
 r = c.get("/api/media/fonts?lang=UZ-CYRL", headers=H(B)).json()
-check(r["covered"] and all(f["covers"] for f in r["fonts"]) and "ў" in r["sample"] and r["metrics"]["outline"],
-      "узбекская кириллица покрыта, образец на её буквах")
+_cov = {f["id"] for f in r["fonts"] if f["covers"]}
+check(r["covered"] and {"noto-sans", "dejavu-sans", "noto-serif"} <= _cov and "noto-sans-arabic" not in _cov
+      and "ў" in r["sample"] and r["metrics"]["outline"] and r["style"]["font"] == "noto-sans",
+      "узбекская кириллица покрыта, арабский шрифт ей не предлагается, образец на её буквах")
 r = c.get("/api/media/fonts?lang=ZH", headers=H(B)).json()
-check(not r["covered"], "иероглифов в каталоге нет — экран об этом скажет")
+_f = {f["id"]: f for f in r["fonts"]}
+check(r["covered"] and r["style"]["font"] == "noto-sans-sc" and _f["noto-sans-sc"]["with"] == ["noto-sans"]
+      and not _f["noto-sans-kr"]["covers"],
+      "китайский: свой шрифт по умолчанию, латинская пара к нему, корейский шрифт китайским не числится")
+check(media.SUB_METRICS["refEm"] == media.REF_EM == media.font_of("noto-sans")["emRatio"],
+      "эталон кегля — em Noto Sans, одно число у сервера и браузера")
 
 # Сборка. ffmpeg подменён, всё остальное — настоящий код.
 BURNS = []
@@ -1080,7 +1087,8 @@ check(rep["measured"] and (rep["shrunk"] == [7] or rep["over"] == [7]), "дли�
 if rep["shrunk"]:
     check(media.FIT_MIN_SCALE * base <= ev[0]["fs"] < base, "уменьшен, но не мельче предела: %s из %s" % (ev[0]["fs"], base))
     doc = media.ass_document([{"i": 7, "start": 0, "end": 4, "text": mid}], area, 1920, 1080)
-    check("{\\fs%d}" % ev[0]["fs"] in doc, "уменьшенный кегль — командой только этой реплике")
+    check("{\\fs%d}" % media._ass_fs(ev[0]["fs"], media.font_of("noto-sans")) in doc,
+          "уменьшенный кегль — командой только этой реплике")
 split = dict(area, fit="split")
 ev, rep = media.fit_cues([{"i": 3, "start": 10.0, "end": 16.0, "text": mid}], split, 1920, 1080)
 check(rep["split"] == [3] and len(ev) >= 2 and ev[0]["start"] == 10.0 and ev[-1]["end"] == 16.0
@@ -1094,11 +1102,12 @@ check(rep["over"] == [5] and not ev[0].get("fs"), "режим «только п�
 wide = media.style_numbers(media.style_clean({"boxW": 100, "bg": "box"}), 1920, 1080)
 narrow = media.style_numbers(media.style_clean({"boxW": 50, "bg": "box"}), 1920, 1080)
 check(narrow["wrapW"] < wide["wrapW"] and narrow["marginLR"] >= 480, "ширина области задаёт поля сбоку")
-_m = media._meter(media.FONT_DIR / "NotoSans-Regular.ttf", 30)
+_m = media._meter(media.font_chain("noto-sans"), 30, False)
 check([l for l, _w in media.wrap_lines("300 мг препарата", _m, 90)][0] == "300 мг",
       "неразрывный пробел не рвётся — как у libass")
-_ev, _rep = media.fit_cues([{"i": 1, "start": 0, "end": 3, "text": "字幕将会这样显示" * 10}], area, 1920, 1080)
-check(_rep["measured"] is False and not _rep["over"], "букв нет в шрифте — «мерить нечем», а не выдуманное «влезло»")
+_ev, _rep = media.fit_cues([{"i": 1, "start": 0, "end": 3, "text": "Tekst ᠮᠣᠩᠭᠣᠯ ᠪᠢᠴᠢᠭ"}], area, 1920, 1080)
+check(_rep["measured"] is False and not _rep["over"],
+      "букв нет ни в одном шрифте — «мерить нечем», а не выдуманное «влезло»")
 _ev, _rep = media.fit_cues([{"i": 1, "start": 0, "end": 3, "text": "Subtitrlar koʻrinadi, gʻoyat qulay, maʼlumot"}], area, 1920, 1080)
 check(_rep["measured"] is True, "узбекские «ʻ» и «ʼ» мерку не выключают (боевой проект 12)")
 _words = mid.split()
@@ -1113,6 +1122,84 @@ long_sid = main._project_by_id(pid)["segments"][1]["id"]
 check(r.status_code == 200 and fr["measured"] and fr["over"] >= 1 and long_sid in fr["overIds"],
       "до сборки: какие строки не влезут — номерами строк проекта: %s" % fr)
 check(c.post("/api/projects/%d/media/fit" % pid, headers=H(A), json={}).status_code == 404, "чужому — 404")
+
+print("=== 8г-3. Шрифты письменностей: выбор, смена шрифта на кусках, кегль по em ===")
+_langs = json.loads((Path(media.__file__).parent / "languages.json").read_text(encoding="utf-8"))["languages"]
+_nofont = [l["code"] for l in _langs if not media.covers(media.best_font(l["code"]), l["code"])]
+check(not _nofont, "у КАЖДОГО языка каталога есть шрифт с его буквами: %s" % _nofont)
+_want = {"AR": "noto-sans-arabic", "FA": "noto-sans-arabic", "HE": "noto-sans-hebrew", "ZH": "noto-sans-sc",
+         "JA": "noto-sans-jp", "KO": "noto-sans-kr", "HI": "noto-sans-devanagari", "TH": "noto-sans-thai",
+         "AM": "noto-sans-ethiopic", "MY": "noto-sans-myanmar", "KA": "noto-sans-georgian", "RU": "noto-sans",
+         "UZ": "noto-sans"}
+_got = {k: (media.best_font(k) or {}).get("id") for k in _want}
+check(_got == _want, "шрифт по умолчанию — свой для письменности, японскому — японский: %s" % _got)
+check(media.style_clean({"font": "noto-sans"}, "AR")["font"] == "noto-sans-arabic"
+      and media.style_clean({"font": "noto-serif"}, "AR")["font"] == "noto-naskh-arabic"
+      and media.style_clean({"font": "dejavu-sans"}, "RU")["font"] == "dejavu-sans"
+      and media.style_clean({"font": "noto-sans-arabic"}, "RU")["font"] == "noto-sans",
+      "шрифт без букв языка заменяется шрифтом языка того же облика; годный выбор остаётся")
+_ch = media.font_chain("noto-sans-arabic", "AR")
+_runs = [(f["id"], t) for f, t in media._runs("علاج COVID-19 لدى البالغين؟", _ch)]
+check(("noto-sans", "COVID") in _runs and all(f == "noto-sans-arabic" for f, t in _runs if "علاج" in t or "؟" in t),
+      "латинское слово в арабской строке — латинским шрифтом, арабское — арабским: %s" % _runs)
+_ch_hi = media.font_chain("noto-sans-devanagari", "HI")
+check([f["id"] for f, _t in media._runs("किताब", _ch_hi)] == ["noto-sans-devanagari"],
+      "огласовка не отрывается от согласной в другой шрифт")
+_bad = [f["id"] for f in media.fonts_catalog()["fonts"]
+        if abs(media._ass_fs(80, f) * f["emRatio"] - 80 * media.REF_EM) > 1.0]
+check(not _bad, "кегль ASS пересчитан на шрифт: em букв одинаков у всех шрифтов: %s" % _bad)
+_ar = media.style_clean({"size": 6}, "AR")
+_doc = media.ass_document([{"start": 0, "end": 3, "text": "علاج COVID-19"}], _ar, 1920, 1080, lang="AR")
+_sty = [l for l in _doc.splitlines() if l.startswith("Style:")][0].split(",")
+_nom = media.style_numbers(_ar, 1920, 1080)["fs"]
+_dl = [l for l in _doc.splitlines() if l.startswith("Dialogue:")][0]
+check(_sty[1] == "Noto Sans Arabic" and int(_sty[2]) == media._ass_fs(_nom, media.font_of("noto-sans-arabic")) > _nom
+      and "{\\fnNoto Sans\\fs%d}COVID" % _nom in _dl and "{\\fnNoto Sans Arabic\\fs" in _dl,
+      "сборка: арабский кеглем арабского, латиница — явной сменой шрифта: %s" % _dl)
+_zh_text = "我们今天讨论成人肺结核的治疗方法。「住院」患者的护理COVID-19非常重要，需要换行才能显示完整。"
+_toks = media._tokens(_zh_text)
+check(media._join_tokens(_toks) == _zh_text and ("COVID", "") in _toks
+      and not any(t[0] in media._NO_START for t, _s in _toks[1:])
+      and not any(t[-1] in media._NO_END for t, _s in _toks[:-1]),
+      "иероглифы режутся между знаками, «。」» не начинают строку, «「» ею не кончается")
+_zst = media.style_clean({"boxW": 50, "maxLines": 2, "size": 6}, "ZH")
+_zl = media.wrap_lines(_zh_text, media._meter(media.font_chain(_zst["font"], "ZH"), 40, False), 700)
+check(len(_zl) >= 2 and "".join(l for l, _w in _zl) == _zh_text and all(w_ <= 700.5 for l, w_ in _zl if len(l) > 1),
+      "китайская строка переносится по ширине, без вставленных пробелов: %s" % [l for l, _w in _zl])
+_ev, _rep = media.fit_cues([{"i": 2, "start": 0, "end": 9, "text": _zh_text}],
+                           dict(_zst, maxLines=1, fit="split"), 1920, 1080, "ZH")
+check(_rep["measured"] and _rep["split"] == [2] and "".join(e["text"] for e in _ev) == _zh_text,
+      "китайская реплика делится на части без потери и без лишних пробелов: %s" % [e["text"] for e in _ev])
+_ev, _rep = media.fit_cues([{"i": 3, "start": 0, "end": 3, "text": "علاج السل الرئوي لدى البالغين"}],
+                           _ar, 1920, 1080, "AR")
+check(_rep["measured"] is media._raqm(),
+      "арабская вязь меряется, только если Pillow умеет её собирать (raqm: %s)" % media._raqm())
+_ev, _rep = media.fit_cues([{"i": 4, "start": 0, "end": 3, "text": "오늘은 성인 폐결핵 치료"}],
+                           media.style_clean({}, "KO"), 1920, 1080, "KO")
+check(_rep["measured"] is True, "корейский меряется корейским шрифтом")
+_ev, _rep = media.fit_cues([{"i": 5, "start": 0, "end": 5, "text": _zh_text}],
+                           dict(_zst, maxLines=3, fit="none"), 1920, 1080, "ZH")
+_zlines = _ev[0]["text"].split("\n")
+check(len(_zlines) >= 2 and "".join(_zlines) == _zh_text and max(map(len, _zlines)) - min(map(len, _zlines)) <= 6,
+      "иероглифы libass не переносит — переносы ставим сами, строки ровные: %s" % _zlines)
+_dz = media.ass_document([{"i": 5, "start": 0, "end": 5, "text": _zh_text}], _zst, 1920, 1080, lang="ZH")
+check([l for l in _dz.splitlines() if l.startswith("Dialogue")][0].count("\\N") >= 1,
+      "в документе сборки перенос китайской строки — явный")
+_he = media.ass_document([{"start": 0, "end": 3, "text": "היום נדבר\nעל שחפת, 2024."}],
+                         media.style_clean({"bg": "box"}, "HE"), 1920, 1080, lang="HE")
+_hs = [l for l in _he.splitlines() if l.startswith("Style:")][0].split(",")
+_hd = [l for l in _he.splitlines() if l.startswith("Dialogue")][0].split(",,0,0,0,,", 1)[1]
+check(_hs[-1] == "-1" and _hd.startswith("\u200f") and "\\N\u200f" in _hd,
+      "письмо справа налево: направление «сам», каждая строка с RLM — «2024.» не уедет в начало")
+_ru = media.ass_document([{"start": 0, "end": 3, "text": "Строка"}], media.style_clean({"bg": "box"}, "RU"),
+                         1920, 1080, lang="RU")
+check(_hs[15] == "4" and [l for l in _ru.splitlines() if l.startswith("Style:")][0].split(",")[15] == "3"
+      and [l for l in _ru.splitlines() if l.startswith("Style:")][0].split(",")[-1] == "1",
+      "плашка шрифта письменности — одним блоком, у латиницы и кириллицы — прежняя")
+check("\\N" not in media._ass_text("два \\N") and "\\\u2060N" in media._ass_text("два \\N"),
+      "обратная косая из перевода — косая, а не перевод строки")
+r = c.post("/api/projects/%d/media/style" % pid, headers=H(B), json={"style": {"font": "noto-sans-arabic"}})
+check(r.status_code == 200 and r.json()["style"]["font"] == "noto-sans", "арабский шрифт английскому проекту не сохранится")
 
 print("=== 8д. Обрезка: распознаётся и собирается только отрезок ===")
 dtr = os.urandom(400)

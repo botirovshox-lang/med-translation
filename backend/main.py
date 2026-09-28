@@ -33532,7 +33532,7 @@ def media_upload_finish(token: str, req: Optional[MediaFinish] = None):
         "pages": 0.0, "pagesUnit": "words",
         "importKind": "video" if info.get("video") else "audio",
         "media": dict(_media_public(info, rec), **({"trim": trim} if trim else {}),
-                      **({"style": media_mod.style_clean(req.style)} if req.style else {})),
+                      **({"style": media_mod.style_clean(req.style, rec["tgt"])} if req.style else {})),
         "mediaStatus": "transcribing",
         "segments": [],
     }
@@ -34484,7 +34484,8 @@ def _media_burn(job: dict, project: dict, src: Path, probe: dict, text: str, tr:
     if not video:
         raise RuntimeError("В файле нет видео — скачайте субтитры файлом .srt")
     params = job["params"]
-    style = media_mod.style_clean(params.get("style"))
+    lang = project.get("tgt") or ""
+    style = media_mod.style_clean(params.get("style"), lang)
     quality = params.get("quality") if params.get("quality") in media_mod.BURN_QUALITIES else "src"
     w, h = media_mod.out_size(video, quality)
     fps = media_mod.out_fps(video)
@@ -34496,6 +34497,7 @@ def _media_burn(job: dict, project: dict, src: Path, probe: dict, text: str, tr:
     # то двигает `_media_touch` на каждом заходе, и продолжение после
     # уступки или рестарта выбрасывало бы все готовые куски.
     key = hashlib.sha1(json.dumps([style, quality, w, h, str(fps), t0, span_len, cues, media_mod.DISPLAY_RULES,
+                                   media_mod.FONT_RULES, lang,
                                    src.stat().st_size, (project.get("media") or {}).get("uploaded")],
                                   ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
     bdir = work / ("burn-" + key)
@@ -34505,8 +34507,9 @@ def _media_burn(job: dict, project: dict, src: Path, probe: dict, text: str, tr:
     bdir.mkdir(parents=True, exist_ok=True)
     # Подгонка в безопасную область — один раз: тот же результат уходит
     # и в документ, и в отчёт сборки.
-    fitted, fit_rep = media_mod.fit_cues(cues, style, w, h)
-    (bdir / "subs.ass").write_text(media_mod.ass_document(cues, style, w, h, fitted=fitted), encoding="utf-8")
+    fitted, fit_rep = media_mod.fit_cues(cues, style, w, h, lang)
+    (bdir / "subs.ass").write_text(media_mod.ass_document(cues, style, w, h, fitted=fitted, lang=lang),
+                                   encoding="utf-8")
     plan = media_mod.burn_plan(span_len, fps)
     names = ["seg%04d.mp4" % k for k in range(len(plan))]
     have = lambda n: (bdir / n).exists() and (bdir / n).stat().st_size > 0      # noqa: E731
@@ -34628,7 +34631,7 @@ def media_render(pid: int, req: MediaRenderRequest):
             raise HTTPException(413, "Субтитры в кадр впечатываем в видео до %d мин — обрежьте его "
                                      "или скачайте видео с субтитрами дорожкой" % int(MEDIA_BURN_MAX_MINUTES))
         quality = req.quality if req.quality in media_mod.BURN_QUALITIES else "src"
-        style = media_mod.style_clean(req.style if req.style is not None else m.get("style"))
+        style = media_mod.style_clean(req.style if req.style is not None else m.get("style"), project.get("tgt"))
         video = _media_probe_cached(src).get("video") or m.get("video") or {}
         try:
             _w, h = media_mod.out_size(video, quality)
@@ -34863,7 +34866,7 @@ class MediaPreviewRequest(BaseModel):
 
 
 def _media_preview_jpeg(src: Path, video: dict, work: Path, t0: float, t: float, span_len: float,
-                        style: dict, quality: str, cues: list) -> Response:
+                        style: dict, quality: str, cues: list, lang: str = "") -> Response:
     if not video:
         raise HTTPException(400, "В файле нет видео")
     try:
@@ -34889,7 +34892,7 @@ def _media_preview_jpeg(src: Path, video: dict, work: Path, t0: float, t: float,
         return JSONResponse({"ok": False, "error": "Предыдущий кадр ещё готовится — секунду"}, status_code=429)
     name = "p-%s.ass" % secrets.token_hex(6)
     try:
-        (work / name).write_text(media_mod.ass_document(cues, style, w, h), encoding="utf-8")
+        (work / name).write_text(media_mod.ass_document(cues, style, w, h, lang=lang), encoding="utf-8")
         jpg = media_mod.preview_frame(src, work, name, t0 + t, t, w, h)
     except media_mod.MediaError as e:
         # Подробности — в журнал: в тексте ffmpeg лежат пути сервера.
@@ -34932,8 +34935,9 @@ def media_preview(pid: int, req: MediaPreviewRequest):
         cues = cues + _sample_cue(t, req.text, project.get("tgt") or "")
     video = _media_probe_cached(src).get("video") or m.get("video")
     return _media_preview_jpeg(src, video, _media_dir(pid) / "preview", t0, t, span_len,
-                               media_mod.style_clean(req.style if req.style is not None else m.get("style")),
-                               req.quality, cues)
+                               media_mod.style_clean(req.style if req.style is not None else m.get("style"),
+                                                     project.get("tgt")),
+                               req.quality, cues, project.get("tgt") or "")
 
 
 @app.get("/api/media/upload/{token}/probe")
@@ -34960,8 +34964,8 @@ def media_upload_preview(token: str, req: MediaPreviewRequest):
     dur = float(info.get("duration") or 0.0)
     t = float(req.t or 0.0)
     return _media_preview_jpeg(part, info.get("video"), MEDIA_UPLOAD_DIR / "preview", 0.0, t, dur,
-                               media_mod.style_clean(req.style), req.quality,
-                               _sample_cue(t, req.text, rec.get("tgt") or ""))
+                               media_mod.style_clean(req.style, rec.get("tgt")), req.quality,
+                               _sample_cue(t, req.text, rec.get("tgt") or ""), rec.get("tgt") or "")
 
 
 @app.get("/api/media/fonts")
@@ -34970,12 +34974,19 @@ def media_fonts(lang: str = ""):
     перевода, во сколько раз кегль ASS больше CSS (для предпросмотра
     в браузере), доли обводки и полей (ОДНИ с впечатыванием), умолчание
     стиля и образец текста на языке перевода."""
-    script = (_LANG_BY_CODE.get((lang or "").upper()) or {}).get("script") or ""
-    fonts = [{"id": f["id"], "name": f["name"], "family": f.get("family") or f["name"],
-              "regular": f["regular"], "bold": f["bold"], "emRatio": f.get("emRatio") or 1.0,
-              "covers": (not script) or script in (f.get("scripts") or [])}
-             for f in media_mod.fonts_catalog().get("fonts") or []]
-    return {"fonts": fonts, "style": media_mod.style_clean(None), "metrics": media_mod.SUB_METRICS,
+    # `with` — какие ещё шрифты нужны браузеру к этому, чтобы показать строку
+    # языка перевода как сборка: шрифт языка и латинская пара (цифры, «?!»,
+    # латинские слова). Грузит он только их: иероглифический шрифт — 5–8 МБ.
+    fonts = []
+    for f in media_mod.fonts_catalog().get("fonts") or []:
+        extra = [media_mod.best_font(lang, f.get("kind")) if lang else None, media_mod.font_of(f.get("pair"))]
+        fonts.append({"id": f["id"], "name": f["name"], "family": f.get("family") or f["name"],
+                      "regular": f["regular"], "bold": f.get("bold"), "emRatio": f.get("emRatio") or 1.0,
+                      "covers": media_mod.covers(f, lang),
+                      # плашка одним блоком на реплику — как у сборки (`ass_document`)
+                      "block": "LATIN" not in (f.get("scripts") or ["LATIN"]),
+                      "with": list(dict.fromkeys(x["id"] for x in extra if x and x["id"] != f["id"]))})
+    return {"fonts": fonts, "style": media_mod.style_clean(None, lang or None), "metrics": media_mod.SUB_METRICS,
             "limits": {"size": [media_mod.SIZE_MIN, media_mod.SIZE_MAX],
                        "margin": [media_mod.MARGIN_MIN, media_mod.MARGIN_MAX],
                        "boxW": [media_mod.BOXW_MIN, media_mod.BOXW_MAX],
@@ -34983,7 +34994,8 @@ def media_fonts(lang: str = ""):
                        "minScale": media_mod.FIT_MIN_SCALE, "splitMinSec": media_mod.SPLIT_MIN_SEC},
             "qualities": [{"id": k, "short": v} for k, v in media_mod.BURN_QUALITIES.items()],
             "speed": media_mod.BURN_SPEED, "maxBurnMinutes": int(MEDIA_BURN_MAX_MINUTES),
-            "sample": media_mod.sub_sample(lang), "covered": any(f["covers"] for f in fonts)}
+            "sample": media_mod.sub_sample(lang), "covered": any(f["covers"] for f in fonts),
+            "rtl": bool((media_mod.sub_norm(lang) or {}).get("rtl")) if lang else False}
 
 
 class MediaFitRequest(BaseModel):
@@ -35014,8 +35026,8 @@ def media_fit(pid: int, req: MediaFitRequest):
             cues, _n = _burn_cues(project, text, tr)
         except RuntimeError:
             cues = []
-    style = media_mod.style_clean(req.style if req.style is not None else m.get("style"))
-    _fitted, rep = media_mod.fit_cues(cues, style, w, h)
+    style = media_mod.style_clean(req.style if req.style is not None else m.get("style"), project.get("tgt"))
+    _fitted, rep = media_mod.fit_cues(cues, style, w, h, project.get("tgt"))
     return _fit_public(project, rep, len({c.get("i") for c in cues}))
 
 
@@ -35050,7 +35062,8 @@ def media_burn_info(pid: int):
             pass
     return {"cues": cues, "span": round(span_len, 3), "trim": m.get("trim"), "kept": src is not None,
             "display": list(media_mod.display_size(video)) if video else None,
-            "qualities": q, "hdr": media_mod.is_hdr(video), "style": media_mod.style_clean(m.get("style")),
+            "qualities": q, "hdr": media_mod.is_hdr(video),
+            "style": media_mod.style_clean(m.get("style"), project.get("tgt")),
             "tooLong": span_len > MEDIA_BURN_MAX_MINUTES * 60, "maxBurnMinutes": int(MEDIA_BURN_MAX_MINUTES)}
 
 
@@ -35066,7 +35079,7 @@ def media_style(pid: int, req: MediaStyleRequest):
     if not m:
         raise HTTPException(400, "Это не видео-проект")
     _guard_project_write(pid)
-    m["style"] = media_mod.style_clean(req.style)
+    m["style"] = media_mod.style_clean(req.style, project.get("tgt"))
     save_state(STATE)
     return {"ok": True, "style": m["style"]}
 

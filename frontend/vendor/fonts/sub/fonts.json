@@ -1,5 +1,10 @@
 {
  "_comment": "Собрано tools/sub_fonts.py — руками не править: покрытие письменностей и emRatio считаются по самим файлам шрифтов.",
+ "langProbes": [
+  "JA",
+  "KO",
+  "ZH"
+ ],
  "fonts": [
   {
    "id": "noto-sans",
@@ -7,13 +12,15 @@
    "regular": "NotoSans-Regular.ttf",
    "bold": "NotoSans-Bold.ttf",
    "license": "OFL-Noto.txt",
+   "kind": "sans",
    "emRatio": 0.6583,
    "family": "Noto Sans",
    "scripts": [
     "CYRILLIC",
     "GREEK",
     "LATIN"
-   ]
+   ],
+   "langs": []
   },
   {
    "id": "dejavu-sans",
@@ -21,6 +28,7 @@
    "regular": "DejaVuSans.ttf",
    "bold": "DejaVuSans-Bold.ttf",
    "license": "LICENSE-DejaVu.txt",
+   "kind": "sans",
    "emRatio": 0.8591,
    "family": "DejaVu Sans",
    "scripts": [
@@ -30,7 +38,8 @@
     "GREEK",
     "HEBREW",
     "LATIN"
-   ]
+   ],
+   "langs": []
   },
   {
    "id": "noto-serif",
@@ -38,12 +47,302 @@
    "regular": "NotoSerif-Regular.ttf",
    "bold": "NotoSerif-Bold.ttf",
    "license": "OFL-Noto.txt",
+   "kind": "serif",
    "emRatio": 0.6859,
    "family": "Noto Serif",
    "scripts": [
     "CYRILLIC",
     "GREEK",
     "LATIN"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-arabic",
+   "name": "Noto Sans Arabic",
+   "regular": "NotoSansArabic-Regular.ttf",
+   "bold": "NotoSansArabic-Bold.ttf",
+   "emRatio": 0.461,
+   "family": "Noto Sans Arabic",
+   "scripts": [
+    "ARABIC"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "serif",
+   "pair": "noto-serif",
+   "license": "OFL-Noto.txt",
+   "id": "noto-naskh-arabic",
+   "name": "Noto Naskh Arabic",
+   "regular": "NotoNaskhArabic-Regular.ttf",
+   "bold": "NotoNaskhArabic-Bold.ttf",
+   "emRatio": 0.4904,
+   "family": "Noto Naskh Arabic",
+   "scripts": [
+    "ARABIC"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-hebrew",
+   "name": "Noto Sans Hebrew",
+   "regular": "NotoSansHebrew-Regular.ttf",
+   "bold": "NotoSansHebrew-Bold.ttf",
+   "emRatio": 0.7353,
+   "family": "Noto Sans Hebrew",
+   "scripts": [
+    "HEBREW"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-armenian",
+   "name": "Noto Sans Armenian",
+   "regular": "NotoSansArmenian-Regular.ttf",
+   "bold": "NotoSansArmenian-Bold.ttf",
+   "emRatio": 0.7353,
+   "family": "Noto Sans Armenian",
+   "scripts": [
+    "ARMENIAN"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-georgian",
+   "name": "Noto Sans Georgian",
+   "regular": "NotoSansGeorgian-Regular.ttf",
+   "bold": "NotoSansGeorgian-Bold.ttf",
+   "emRatio": 0.7257,
+   "family": "Noto Sans Georgian",
+   "scripts": [
+    "GEORGIAN"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-devanagari",
+   "name": "Noto Sans Devanagari",
+   "regular": "NotoSansDevanagari-Regular.ttf",
+   "bold": "NotoSansDevanagari-Bold.ttf",
+   "emRatio": 0.5247,
+   "family": "Noto Sans Devanagari",
+   "scripts": [
+    "DEVANAGARI"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-bengali",
+   "name": "Noto Sans Bengali",
+   "regular": "NotoSansBengali-Regular.ttf",
+   "bold": "NotoSansBengali-Bold.ttf",
+   "emRatio": 0.7128,
+   "family": "Noto Sans Bengali",
+   "scripts": [
+    "BENGALI"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-gujarati",
+   "name": "Noto Sans Gujarati",
+   "regular": "NotoSansGujarati-Regular.ttf",
+   "bold": "NotoSansGujarati-Bold.ttf",
+   "emRatio": 0.6739,
+   "family": "Noto Sans Gujarati",
+   "scripts": [
+    "GUJARATI"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-gurmukhi",
+   "name": "Noto Sans Gurmukhi",
+   "regular": "NotoSansGurmukhi-Regular.ttf",
+   "bold": "NotoSansGurmukhi-Bold.ttf",
+   "emRatio": 0.7669,
+   "family": "Noto Sans Gurmukhi",
+   "scripts": [
+    "GURMUKHI"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-tamil",
+   "name": "Noto Sans Tamil",
+   "regular": "NotoSansTamil-Regular.ttf",
+   "bold": "NotoSansTamil-Bold.ttf",
+   "emRatio": 0.8065,
+   "family": "Noto Sans Tamil",
+   "scripts": [
+    "TAMIL"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-telugu",
+   "name": "Noto Sans Telugu",
+   "regular": "NotoSansTelugu-Regular.ttf",
+   "bold": "NotoSansTelugu-Bold.ttf",
+   "emRatio": 0.6766,
+   "family": "Noto Sans Telugu",
+   "scripts": [
+    "TELUGU"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-thai",
+   "name": "Noto Sans Thai",
+   "regular": "NotoSansThai-Regular.ttf",
+   "bold": "NotoSansThai-Bold.ttf",
+   "emRatio": 0.6618,
+   "family": "Noto Sans Thai",
+   "scripts": [
+    "THAI"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-khmer",
+   "name": "Noto Sans Khmer",
+   "regular": "NotoSansKhmer-Regular.ttf",
+   "bold": "NotoSansKhmer-Bold.ttf",
+   "emRatio": 0.5371,
+   "family": "Noto Sans Khmer",
+   "scripts": [
+    "KHMER"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-myanmar",
+   "name": "Noto Sans Myanmar",
+   "regular": "NotoSansMyanmar-Regular.ttf",
+   "bold": "NotoSansMyanmar-Bold.ttf",
+   "emRatio": 0.4579,
+   "family": "Noto Sans Myanmar",
+   "scripts": [
+    "MYANMAR"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-ethiopic",
+   "name": "Noto Sans Ethiopic",
+   "regular": "NotoSansEthiopic-Regular.ttf",
+   "bold": "NotoSansEthiopic-Bold.ttf",
+   "emRatio": 0.7342,
+   "family": "Noto Sans Ethiopic",
+   "scripts": [
+    "ETHIOPIC"
+   ],
+   "langs": []
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-sc",
+   "name": "Noto Sans SC",
+   "regular": "NotoSansSC-Regular.otf",
+   "bold": null,
+   "prefer": [
+    "ZH"
+   ],
+   "emRatio": 0.6906,
+   "family": "Noto Sans SC",
+   "scripts": [
+    "HAN"
+   ],
+   "langs": [
+    "JA",
+    "ZH"
+   ]
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-jp",
+   "name": "Noto Sans JP",
+   "regular": "NotoSansJP-Regular.otf",
+   "bold": null,
+   "prefer": [
+    "JA"
+   ],
+   "emRatio": 0.6906,
+   "family": "Noto Sans JP",
+   "scripts": [
+    "HAN"
+   ],
+   "langs": [
+    "JA"
+   ]
+  },
+  {
+   "kind": "sans",
+   "pair": "noto-sans",
+   "license": "OFL-Noto.txt",
+   "id": "noto-sans-kr",
+   "name": "Noto Sans KR",
+   "regular": "NotoSansKR-Regular.otf",
+   "bold": null,
+   "prefer": [
+    "KO"
+   ],
+   "emRatio": 0.6906,
+   "family": "Noto Sans KR",
+   "scripts": [
+    "HAN",
+    "HANGUL"
+   ],
+   "langs": [
+    "JA",
+    "KO"
    ]
   }
  ]

@@ -1177,7 +1177,7 @@ _t = time.time()
 media.ass_document(_many_zh, media.style_clean({"boxW": 50, "size": 6}, "ZH"), 1920, 1080, lang="ZH")
 _many_ar = [{"i": k, "start": k * 4.0, "end": k * 4.0 + 3.5, "text": "علاج السل COVID-19 رقم %d" % k} for k in range(1500)]
 media.ass_document(_many_ar, media.style_clean({}, "AR"), 1920, 1080, lang="AR")
-check(time.time() - _t < 8, "полторы тысячи реплик ZH и AR собираются в документ за секунды: %.1f с" % (time.time() - _t))
+check(time.time() - _t < 4, "полторы тысячи реплик ZH и AR собираются в документ за секунды: %.1f с" % (time.time() - _t))
 _zst = media.style_clean({"boxW": 50, "maxLines": 2, "size": 6}, "ZH")
 _zl = media.wrap_lines(_zh_text, media._meter(media.font_chain(_zst["font"], "ZH"), 40, False), 700)
 check(len(_zl) >= 2 and "".join(l for l, _w in _zl) == _zh_text and all(w_ <= 700.5 for l, w_ in _zl if len(l) > 1),

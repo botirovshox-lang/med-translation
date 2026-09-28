@@ -1528,7 +1528,7 @@ def _cmaps() -> Optional[dict]:
     её собирает tools/sub_fonts.py. Нет файла — None: «не знаю», а не «нет».
     Файл сверяется не чаще раза в две секунды: вызов идёт на каждый знак."""
     now = time.monotonic()
-    if now - _CMAP_CACHE["seen"] < 2.0 and _CMAP_CACHE["mtime"] is not None:
+    if now - _CMAP_CACHE["seen"] < 2.0:
         return _CMAP_CACHE["data"]
     _CMAP_CACHE["seen"] = now
     p = FONT_DIR / "fonts.cmap.json"
@@ -1961,7 +1961,9 @@ def _words_of(para: str) -> list:
 
 # С этих знаков строка не кончается (открывающие скобки и кавычки
 # иероглифического письма): их место — в начале следующей.
-_NO_END = set("「『（【〔〈《([")
+_NO_END = set("「『（【〔〈《([“‘")
+# Закрывающие кавычки китайского текста строку тоже не начинают.
+_NO_START_WRAP = set("”’")
 
 
 def _cjk_char(ch: str) -> bool:
@@ -1991,7 +1993,7 @@ def _tokens(para: str) -> list:
             continue
         parts = []
         for t in _char_tokens(wd):
-            if parts and (t[0] in _NO_START or parts[-1][-1] in _NO_END
+            if parts and (t[0] in _NO_START or t[0] in _NO_START_WRAP or parts[-1][-1] in _NO_END
                           or not (_cjk_char(parts[-1][-1]) or _cjk_char(t[0]))):
                 parts[-1] += t
             else:

@@ -361,5 +361,21 @@
   "отделение голоса не удалось — соберите заново.": "ovozni ajratib bo‘lmadi — qaytadan yig‘ing.",
   "отделяем голос от музыки": "ovozni musiqadan ajratyapmiz",
   "Озвучка скоро": "Ovoz berish tez orada",
-  "У этого языка нет родного голоса ни у одного движка синтеза — озвучка прозвучит с акцентом.": "Bu til uchun hech bir sintez dvigatelida ona tilidagi ovoz yo‘q — ovoz berish aksent bilan eshitiladi."
+  "У этого языка нет родного голоса ни у одного движка синтеза — озвучка прозвучит с акцентом.": "Bu til uchun hech bir sintez dvigatelida ona tilidagi ovoz yo‘q — ovoz berish aksent bilan eshitiladi.",
+  "Прочитать и текст в кадре — надписи, титры, таблички": "Kadrdagi matnni ham o'qish — yozuvlar, titrlar, lavhalar",
+  "Текст в кадре не прочитан": "Kadrdagi matn o'qilmadi",
+  "Читаем текст в кадре": "Kadrdagi matnni o'qiyapmiz",
+  "Найденные надписи появятся строками перевода — страницу можно закрыть.": "Topilgan yozuvlar tarjima qatorlari bo'lib paydo bo'ladi — sahifani yopish mumkin.",
+  "сейчас недоступно — сообщите администратору": "hozir mavjud emas — administratorga xabar bering",
+  "ролик слишком длинный для чтения кадров": "kadrlarni o'qish uchun video juda uzun",
+  "в файле нет видео": "faylda video yo'q",
+  "исходное видео удалено — загрузите его заново": "asl video o'chirilgan — uni qayta yuklang",
+  "не получилось — попробуйте ещё раз": "bo'lmadi — yana urinib ko'ring",
+  "Переведём надписи на экране и покажем их в субтитрах на том же месте.": "Ekrandagi yozuvlarni tarjima qilib, subtitrlarda o'sha joyda ko'rsatamiz.",
+  "Надписей в строках перевода: ": "Tarjima qatorlaridagi yozuvlar: ",
+  "Текста в кадре не нашлось": "Kadrda matn topilmadi",
+  "Остановлено — можно прочитать снова": "To'xtatildi — qayta o'qish mumkin",
+  "Текст в кадре": "Kadrdagi matn",
+  "Прочитать заново": "Qayta o'qish",
+  "Прочитать": "O'qish"
 }

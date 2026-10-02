@@ -42,10 +42,19 @@ AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".oga", ".opus", ".flac", "
 MEDIA_EXT = VIDEO_EXT | AUDIO_EXT
 
 # Звук для распознавания: моно 16 кГц — ровно то, на чём обучена модель, —
-# mp3 32 кбит/с: 14 МБ на час. Кусок до 10 минут весит ~2,4 МБ, то есть
+# mp3 64 кбит/с: 28 МБ на час. Кусок до 10 минут весит ~4,8 МБ, то есть
 # потолок поставщика в 25 МБ на запрос не достижим ни при каком файле.
+# Было 32 кбит/с: на таком потоке mp3 «звенит» на шипящих и глотает глухие
+# согласные — ровно там, где медицинский термин и акцентная речь отличаются
+# от соседнего слова. Деньги это не меняет (цена — за минуты).
 ASR_RATE = 16000
-ASR_BITRATE = "32k"
+ASR_BITRATE = os.environ.get("ASR_BITRATE", "64k")
+# Тихая запись (петличка, лекция из зала, звук камеры) поднимается ПОСТОЯННЫМ
+# усилением до пика `ASR_PEAK_DB` — не компрессором: тот поднимал бы и шум
+# в паузах, а на усиленной тишине распознавание выдумывает текст. Усиление
+# не больше `ASR_GAIN_MAX_DB`.
+ASR_PEAK_DB = -3.0
+ASR_GAIN_MAX_DB = 20.0
 ASR_CHUNK_SEC = int(os.environ.get("ASR_CHUNK_SEC", "600"))
 ASR_CUT_WINDOW = 90            # искать паузу в ±90 с от целевой границы куска
 
@@ -283,21 +292,62 @@ def extract_audio(src, dst, duration: float, limit_sec: Optional[float] = None,
     выходит в шкале обрезанного видео (ноль = первый кадр результата)."""
     args = (["-ss", "%.3f" % start] if start > 0 else []) + [
         "-i", src, "-map", "0:a:0", "-vn", "-sn", "-dn", "-ac", 1, "-ar", ASR_RATE,
+        # Гул сети и ветер ниже 60 Гц речи не несут, а громкость у mp3 отъедают.
+        "-af", "highpass=f=60",
         "-c:a", "libmp3lame", "-b:a", ASR_BITRATE]
     if limit_sec:
         args += ["-t", "%.3f" % limit_sec]
     run(_ffmpeg(*(args + [dst])), timeout=max(300.0, duration * 0.6))
 
 
+_MEAN_RE = re.compile(r"mean_volume:\s*(-?[\d.]+|-inf) dB")
+_MAX_RE = re.compile(r"max_volume:\s*(-?[\d.]+|-inf) dB")
+
+
+def volume_levels(audio, duration: float) -> Optional[dict]:
+    """{mean, max} в дБ полной шкалы (фильтр volumedetect) или None."""
+    cmd = [_bin("ffmpeg") or "ffmpeg", "-nostdin", "-hide_banner", "-threads", "1", "-i", str(audio),
+           "-af", "volumedetect", "-f", "null", "-"]
+    r = run(cmd, timeout=max(120.0, duration * 0.3))
+    err = (r.stderr or b"").decode("utf-8", "replace")
+    m1, m2 = _MEAN_RE.search(err), _MAX_RE.search(err)
+    if not m1 or not m2 or "inf" in (m1.group(1) + m2.group(1)):
+        return None
+    return {"mean": float(m1.group(1)), "max": float(m2.group(1))}
+
+
+def asr_gain(levels: Optional[dict]) -> float:
+    """Сколько дБ добавить тихой записи (0 — не трогать)."""
+    if not levels:
+        return 0.0
+    g = ASR_PEAK_DB - float(levels["max"])
+    return round(min(ASR_GAIN_MAX_DB, g), 1) if g >= 3.0 else 0.0
+
+
+def apply_gain(audio, dst, gain_db: float, duration: float) -> None:
+    run(_ffmpeg("-i", audio, "-af", "volume=%.1fdB" % gain_db, "-ac", 1, "-ar", ASR_RATE,
+                "-c:a", "libmp3lame", "-b:a", ASR_BITRATE, dst), timeout=max(300.0, duration * 0.6))
+
+
+def silence_floor(levels: Optional[dict], gain_db: float = 0.0) -> float:
+    """Порог паузы от уровня САМОЙ записи: средняя громкость (после усиления)
+    минус 18 дБ, в пределах −50…−30. Жёсткие −35 дБ на шумной записи не
+    находили пауз вовсе (и звук резался посреди слова), а на тихой — считали
+    паузой всю речь."""
+    if not levels:
+        return -35.0
+    return round(max(-50.0, min(-30.0, float(levels["mean"]) + gain_db - 18.0)), 1)
+
+
 _SIL_START = re.compile(r"silence_start:\s*(-?[\d.]+)")
 _SIL_END = re.compile(r"silence_end:\s*(-?[\d.]+)")
 
 
-def silences(audio, duration: float) -> list:
+def silences(audio, duration: float, floor_db: float = -35.0) -> list:
     """[(начало, конец)] пауз — по ним режется звук на куски: разрез посреди
     слова дал бы два обрывка, и модель прочла бы оба неверно."""
     cmd = [_bin("ffmpeg") or "ffmpeg", "-nostdin", "-hide_banner", "-threads", "1", "-i", str(audio),
-           "-af", "silencedetect=n=-35dB:d=0.4", "-f", "null", "-"]
+           "-af", "silencedetect=n=%.1fdB:d=0.4" % floor_db, "-f", "null", "-"]
     r = run(cmd, timeout=max(120.0, duration * 0.3))
     out, start = [], None
     for line in (r.stderr or b"").decode("utf-8", "replace").splitlines():
@@ -347,7 +397,10 @@ def split_audio(audio, points: list, out_dir, duration: float) -> list:
             # остался бы на месте, прошёл проверку «уже есть» и тихо
             # потерял бы хвост речи.
             tmp = out_dir / ("chunk%03d.tmp.mp3" % i)
-            run(_ffmpeg("-ss", "%.3f" % a, "-to", "%.3f" % b, "-i", audio, "-c", "copy", tmp),
+            # Длительность (`-t`), а не конец (`-to`): смысл `-to` зависит от
+            # того, где он стоит относительно `-i` и сброса времени после
+            # `-ss`, а ошибка тут стоила бы повторного распознавания речи.
+            run(_ffmpeg("-ss", "%.3f" % a, "-t", "%.3f" % (b - a), "-i", audio, "-c", "copy", tmp),
                 timeout=120)
             os.replace(str(tmp), str(p))
         res.append((p, a))
@@ -360,15 +413,35 @@ _END_RE = re.compile(r"[.!?…。！？]\s*$")
 _BREAK_RE = re.compile(r"(?<=[.!?…。！？;:,，、])\s+")
 
 
+# Выдумки распознавания, выученные на титрах любительских субтитров: на тишине
+# и музыке whisper уверенно пишет их, хотя никто этого не говорил. Первая
+# группа не бывает речью НИКОГДА (кто сделал субтитры, сайт субтитров);
+# вторая бывает — «Спасибо за просмотр» в конце ролика законно, — и отсеивается,
+# только когда распознавание само сомневается, что это речь.
+_HALLU_ALWAYS = re.compile(
+    r"(субтитр\w*\s+(сделал|созда|подготов|предостав)|редактор субтитров|корректор\s+[А-ЯA-Z]\.|"
+    r"subtitles?\s+(by|made by|created by)|amara\.org|dimatorzok|"
+    r"sottotitoli\s+(creati|a cura)|untertitel\s+(im auftrag|von)|sous-titres?\s+réalisés)", re.I)
+_HALLU_DOUBT = re.compile(
+    r"^\W*(продолжение следует|спасибо за просмотр|thank(s| you) for watching|"
+    r"please subscribe|подпишитесь на канал|дякую за перегляд|продовження буде)\W*$", re.I)
+
+
 def _is_noise_segment(seg: dict) -> bool:
     """Выдумка модели на тишине («Продолжение следует…», «Субтитры сделал…»)
     приходит с высокой вероятностью «речи нет» или с зацикленным текстом.
     Такой кусок репликой не становится."""
+    text = (seg.get("text") or "").strip()
+    if not text:
+        return True
     if (seg.get("no_speech_prob") or 0) > 0.6 and (seg.get("avg_logprob") or 0) < -0.8:
         return True
     if (seg.get("compression_ratio") or 0) > 2.6:
         return True
-    return not (seg.get("text") or "").strip()
+    if _HALLU_ALWAYS.search(text):
+        return True
+    return bool(_HALLU_DOUBT.search(text)) and (
+        (seg.get("no_speech_prob") or 0) >= 0.3 or (seg.get("avg_logprob") or 0) < -0.6)
 
 
 def _split_text(text: str, max_chars: int) -> list:
@@ -411,25 +484,35 @@ def _hint_key(text: str) -> str:
 
 def build_cues(segments: list, words: list, offset: float = 0.0,
                max_sec: float = CUE_MAX_SEC, max_chars: int = CUE_MAX_CHARS,
-               hint: str = "") -> list:
+               hint="", stats: Optional[dict] = None) -> list:
     """Фразы распознавания → реплики субтитров [{start, end, text}]. Фраза
     длиннее `max_sec`/`max_chars` делится по препинанию, а время кусков
     берётся из отметок СЛОВ этой фразы. Смещение куска звука прибавляется.
     Кусок, который целиком повторяет подсказку распознаванию (`hint`) или
-    её бОльшую часть, — это она протекла в ответ на тишине, а не речь: отсеивается."""
-    hk = _hint_key(hint)
+    её бОльшую часть, — это она протекла в ответ на тишине, а не речь: отсеивается.
+    `hint` — строка или список: подсказка из частей (термины проекта +
+    стилевая фраза) протекает и частями, и каждая сверяется сама."""
+    hks = [k for k in (_hint_key(h) for h in ([hint] if isinstance(hint, str) else list(hint or []))) if k]
     cues = []
+    if stats is not None:
+        stats.setdefault("noise", 0)
+        stats.setdefault("leak", 0)
     for seg in segments or []:
         if _is_noise_segment(seg):
+            # Счёт, а не молчание: выброшенная настоящая речь (зацикленное
+            # перечисление, счёт) иначе была бы невидима вовсе.
+            if stats is not None and (seg.get("text") or "").strip():
+                stats["noise"] += 1
             continue
         sk = _hint_key(seg.get("text") or "")
         # Протечка — это подсказка целиком; кусок её (whisper на тишине любит
         # повторять ХВОСТ) — только когда распознавание само сомневается, что
         # это речь. Уверенно распознанная реплика, совпавшая с частью шаблонной
         # подсказки («Давайте продолжим»), — настоящая речь.
-        if hk and sk and sk in hk and (sk == hk or (
-                len(sk) >= 0.25 * len(hk)
-                and ((seg.get("no_speech_prob") or 0) >= 0.2 or (seg.get("avg_logprob") or 0) < -0.7))):
+        doubt = (seg.get("no_speech_prob") or 0) >= 0.2 or (seg.get("avg_logprob") or 0) < -0.7
+        if sk and any(sk in hk and (sk == hk or (len(sk) >= 0.25 * len(hk) and doubt)) for hk in hks):
+            if stats is not None:
+                stats["leak"] += 1
             continue
         s, e = float(seg.get("start") or 0), float(seg.get("end") or 0)
         text = " ".join((seg.get("text") or "").split())
@@ -2197,6 +2280,12 @@ def fit_cues(cues: list, style: dict, w: int, h: int, lang: Optional[str] = None
         m0 = meter(base)
         out = []
         for c in cues:
+            if c.get("box"):
+                # Текст в кадре стоит на месте надписи оригинала (`frame_ass_pos`),
+                # а не в строке субтитров: мерить его шириной области диалога
+                # и делить по времени нельзя — надпись висит целиком.
+                out.append(c)
+                continue
             text = c.get("text") or ""
             lines = wrap_lines(text, m0, width)
             if _fits(lines, width, maxl):
@@ -2231,7 +2320,7 @@ def fit_cues(cues: list, style: dict, w: int, h: int, lang: Optional[str] = None
         # libass не переносит строку без пробелов (замер на сервере: китайская
         # реплика ушла одной строкой за край области) — переносы у иероглифов
         # ставим сами, там же, где их посчитала мерка.
-        out = [_hard_wrap(e, meter(e.get("fs") or base), width) for e in out]
+        out = [e if e.get("box") else _hard_wrap(e, meter(e.get("fs") or base), width) for e in out]
     except Exception as e:                       # битый файл шрифта — «не мерили», а не сбой сборки
         print("[media] мерка субтитров не удалась: %s" % e, file=sys.stderr)
         return cues, {"shrunk": [], "split": [], "over": [], "measured": False}
@@ -2334,6 +2423,14 @@ def ass_document(cues: list, style: dict, w: int, h: int, fitted: Optional[list]
             family, _ass_fs(n["fs"], prim), _ass_color(style["color"]), _ass_color(style["color"]), outc, backc,
             -1 if style.get("bold") else 0, border, n["outline"], n["shadow"], align,
             n["marginLR"], n["marginLR"], n["marginV"], -1 if rtl else 1),
+        # Текст в кадре — всегда ПЛАШКОЙ поверх надписи оригинала, каким бы
+        # ни был фон субтитров: без плашки перевод лёг бы по живым буквам
+        # оригинала, и не читалось бы ни то, ни другое.
+        "Style: Frame,%s,%d,%s,%s,%s,%s,%d,0,0,0,100,100,0,0,3,%d,0,5,%d,%d,0,%d" % (
+            family, _ass_fs(n["fs"], prim), _ass_color(style["color"]), _ass_color(style["color"]),
+            _ass_color(edge, 0.15), _ass_color(edge, 0.15), -1 if style.get("bold") else 0,
+            max(2, int(round(n["fs"] * SUB_METRICS["boxPad"]))), n["marginLR"], n["marginLR"],
+            -1 if rtl else 1),
         "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"]
     ev = []
     for c in sorted(cues or [], key=lambda x: x["start"]):
@@ -2341,6 +2438,12 @@ def ass_document(cues: list, style: dict, w: int, h: int, fitted: Optional[list]
             continue
         text = _ass_event_text(c.get("text") or "", chain, c.get("fs") or n["fs"], n["fs"], rtl)
         if not text:
+            continue
+        if c.get("box"):
+            x, y, ffs = frame_ass_pos(c["box"], w, h, n["fs"], c.get("lineH") or 0.0)
+            ftext = _ass_event_text(c.get("text") or "", chain, ffs, n["fs"], rtl)
+            ev.append(r"Dialogue: 1,%s,%s,Frame,,0,0,0,,{\an5\pos(%d,%d)}%s" % (
+                _ass_time(c["start"]), _ass_time(c["end"]), x, y, ftext))
             continue
         ev.append("Dialogue: 0,%s,%s,Default,,0,0,0,,%s" % (_ass_time(c["start"]), _ass_time(c["end"]), text))
     return "\n".join(head + ev) + "\n"
@@ -2418,6 +2521,290 @@ def preview_frame(src, work_dir, ass_name: str, src_t: float, offset: float,
     if not r.stdout:
         raise MediaError("Кадр не получился — возможно, это место за концом видео")
     return r.stdout
+
+
+# ─── Текст В КАДРЕ (надписи, титры, таблички) ────────────────────────
+# Речь распознаёт звук, а надпись на экране — «Глава 2», имя и должность
+# говорящего, табличка на двери, слайд лекции — звуком не произносится,
+# и зритель на другом языке её не прочтёт. Разбор идёт в три шага, и чистые
+# из них живут здесь (модель зовёт `main._frame_text_run`):
+#   1. кадры — раз в `FRAME_EVERY` с, уменьшенные до `FRAME_SIDE`, кусками
+#      по `FRAME_CHUNK_SEC` (между кусками стоп, выкат и уступка очереди).
+#      Это второе место, где декодируются кадры (первое — субтитры в кадре),
+#      и у него те же предохранители: nice, один поток, таймаут, потолок
+#      длины (`FRAME_MAX_MINUTES`) и включение только по просьбе человека;
+#   2. строки текста в кадре ищет ЛОКАЛЬНЫЙ детектор (`image_text`),
+#      а `FrameTracker` связывает рамки соседних кадров в «появилась —
+#      исчезла»: одна надпись на пять секунд — одно чтение, а не пять;
+#   3. текст читает зрячая модель ОДИН раз на надпись, после чего
+#      `frame_text_cues` склеивает повторы, выбрасывает логотип канала
+#      (висит почти весь ролик) и впечатанные субтитры самой речи — их
+#      текст уже есть в распознавании, и второй раз переводить его нельзя.
+# Место надписи сохраняется долями кадра (`box`): субтитр её перевода
+# встаёт туда же (`frame_place`, `ass_document`), а не в строку диалога.
+FRAME_EVERY = float(os.environ.get("MEDIA_FRAME_EVERY", "1.0"))
+# Длинная сторона кадра для детектора. Выше порога увеличения в `image_text`
+# (1400), иначе каждый кадр смотрелся бы дважды — вдвое дольше.
+FRAME_SIDE = int(os.environ.get("MEDIA_FRAME_SIDE", "1600"))
+FRAME_CHUNK_SEC = float(os.environ.get("MEDIA_FRAME_CHUNK_SEC", "120"))
+FRAME_MAX_MINUTES = float(os.environ.get("MEDIA_FRAME_MAX_MINUTES", "90"))
+# Рамки соседних кадров — одна надпись, если перекрываются хотя бы так…
+FRAME_IOU = 0.5
+# …и содержимое рамки похоже (среднее расхождение нормированной миниатюры,
+# 0..255). Одинаковое место с другим текстом (счётчик, смена слайда) — уже
+# другая надпись. Лишнее дробление чинит склейка по прочитанному тексту.
+FRAME_SIG_MAX = float(os.environ.get("MEDIA_FRAME_SIG_MAX", "32"))
+# Кадр почти не отличается от предыдущего (слайд, статичный план) — строки
+# не ищутся заново, а берутся прежние: детектор — самая дорогая часть.
+FRAME_STILL_DIFF = float(os.environ.get("MEDIA_FRAME_STILL_DIFF", "2.5"))
+# Надпись, пропавшая на один кадр (мигание, перебивка), — та же надпись.
+FRAME_GAP_FRAMES = 1
+# Висит дольше этой доли ролика (и не меньше минуты) — логотип канала,
+# водяной знак, часы в углу, а не текст для перевода.
+FRAME_PERSIST_SHARE = 0.6
+# Короче — не успеют прочесть.
+FRAME_MIN_SEC = 1.5
+_SIG_W, _SIG_H = 48, 12
+
+
+def frame_size(video: dict) -> tuple:
+    """Размер кадра для поиска строк: видимый (поворот, неквадратный пиксель),
+    длинная сторона не больше `FRAME_SIDE`, стороны чётные."""
+    w, h = display_size(video)
+    if not w or not h:
+        raise MediaError("Размер кадра не определяется")
+    k = min(1.0, FRAME_SIDE / float(max(w, h)))
+    return _even(w * k), _even(h * k)
+
+
+def sample_frames(src, out_dir, src_start: float, length: float, w: int, h: int,
+                  every: float = FRAME_EVERY) -> list:
+    """[(секунда от начала куска, путь JPEG)] — кадр раз в `every` секунд.
+    Поворот ffmpeg применяет сам при декодировании, пиксель делается
+    квадратным: рамки выходят в долях кадра, КАК ЕГО ВИДИТ зритель, — той же
+    шкалы, что у впечатывания субтитров. Время кадра k — k·every от начала
+    куска (фильтр fps берёт ближайший настоящий кадр к каждой отметке)."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for old in out_dir.glob("f*.jpg"):
+        old.unlink()
+    args = (["-ss", "%.3f" % src_start] if src_start > 0 else []) + [
+        "-t", "%.3f" % length, "-i", src, "-map", "0:v:0", "-an", "-sn", "-dn",
+        "-vf", "fps=%.6f,scale=%d:%d:flags=bilinear,setsar=1" % (1.0 / every, w, h),
+        "-q:v", 4, out_dir / "f%05d.jpg"]
+    run(_ffmpeg(*args), timeout=max(180.0, length * 3.0))
+    files = sorted(out_dir.glob("f*.jpg"))
+    return [(round(k * every, 3), p) for k, p in enumerate(files) if k * every < length + 1e-6]
+
+
+def _gray(img_bytes: bytes):
+    from PIL import Image
+    import io as _io
+    return Image.open(_io.BytesIO(img_bytes)).convert("L")
+
+
+def still_sig(img_bytes: bytes) -> Optional[list]:
+    """Миниатюра всего кадра 32×18 — сравнить с прежним кадром (`sig_diff`)."""
+    try:
+        return list(_gray(img_bytes).resize((32, 18)).tobytes())
+    except Exception:
+        return None
+
+
+def box_sig(img_bytes: bytes, box_px: list) -> Optional[list]:
+    """Отпечаток содержимого рамки: миниатюра 48×12, нормированная по яркости
+    и контрасту (0..255), — чтобы затемнение сцены не делало ту же надпись
+    «другой», а другой текст на том же месте — «той же»."""
+    try:
+        import numpy as _np
+        g = _gray(img_bytes)
+        x0, y0, x1, y1 = [int(v) for v in box_px]
+        if x1 <= x0 or y1 <= y0:
+            return None
+        a = _np.asarray(g.crop((x0, y0, x1, y1)).resize((_SIG_W, _SIG_H)), dtype=_np.float32)
+        sd = float(a.std()) or 1.0
+        z = _np.clip((a - float(a.mean())) / sd, -2.0, 2.0)
+        return [int(v) for v in _np.round((z + 2.0) * 63.75).ravel()]
+    except Exception:
+        return None
+
+
+def sig_diff(a, b) -> float:
+    """Среднее расхождение двух отпечатков (0..255); нет отпечатка — 255."""
+    if not a or not b or len(a) != len(b):
+        return 255.0
+    return sum(abs(x - y) for x, y in zip(a, b)) / float(len(a))
+
+
+def box_iou(a, b) -> float:
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / ua if ua > 0 else 0.0
+
+
+class FrameTracker:
+    """Рамки кадров → надписи во времени. Кадры подаются по порядку (`feed`);
+    рамка продолжает надпись, если перекрывается с её последней рамкой
+    (`FRAME_IOU`) и похожа содержимым (`FRAME_SIG_MAX`); надпись, не
+    увиденная больше `FRAME_GAP_FRAMES` кадров подряд, закрывается.
+    Образец для чтения — рамка ВТОРОГО кадра (на первом надпись часто ещё
+    проявляется), у надписи в один кадр — первого. Состояние — простой
+    словарь (`dump`): разбор длинного ролика переживает рестарт."""
+
+    def __init__(self, every: float = FRAME_EVERY, state: Optional[dict] = None):
+        self.every = every
+        self.active = list((state or {}).get("active") or [])
+        self.next_id = int((state or {}).get("next") or 1)
+
+    def dump(self) -> dict:
+        return {"active": self.active, "next": self.next_id}
+
+    def feed(self, t: float, blocks: list) -> list:
+        """`blocks` — [{box: доли кадра, sig, …полезная нагрузка}]. Возвращает
+        надписи, закрытые этим кадром."""
+        pairs = []
+        for ti, tr in enumerate(self.active):
+            for bi, b in enumerate(blocks):
+                iou = box_iou(tr["box"], b["box"])
+                if iou >= FRAME_IOU and sig_diff(tr.get("sig"), b.get("sig")) <= FRAME_SIG_MAX:
+                    pairs.append((iou, ti, bi))
+        pairs.sort(key=lambda x: -x[0])
+        used_t, used_b = set(), set()
+        for _iou, ti, bi in pairs:
+            if ti in used_t or bi in used_b:
+                continue
+            used_t.add(ti)
+            used_b.add(bi)
+            tr, b = self.active[ti], blocks[bi]
+            tr["last"] = t
+            tr["n"] += 1
+            tr["box"] = b["box"]
+            tr["sig"] = b.get("sig")
+            if tr["n"] == 2:
+                tr["rep"] = dict(b, t=t)
+        closed, keep = [], []
+        for ti, tr in enumerate(self.active):
+            if ti not in used_t and t - tr["last"] > self.every * (FRAME_GAP_FRAMES + 1) - 1e-6:
+                closed.append(tr)
+            else:
+                keep.append(tr)
+        for bi, b in enumerate(blocks):
+            if bi in used_b:
+                continue
+            keep.append({"id": self.next_id, "first": t, "last": t, "n": 1, "box": b["box"],
+                         "sig": b.get("sig"), "rep": dict(b, t=t)})
+            self.next_id += 1
+        self.active = keep
+        return closed
+
+    def close_all(self) -> list:
+        out, self.active = self.active, []
+        return out
+
+
+def _contained(a: str, b: str) -> float:
+    """Доля текста `a`, найденная в `b` по совпавшим кускам: впечатанный
+    субтитр показывает обычно ЧАСТЬ фразы распознавания."""
+    import difflib
+    if not a or not b:
+        return 0.0
+    m = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    return sum(x.size for x in m.get_matching_blocks()) / float(len(a))
+
+
+def frame_text_cues(events: list, total: float, speech: Optional[list] = None,
+                    every: float = FRAME_EVERY) -> tuple:
+    """Прочитанные надписи → реплики «текст в кадре».
+
+    `events` — [{first, last, box, text, kind, rows?, lineH?}] (kind от
+    модели: text | caption | overlay). Возвращает (реплики [{start, end,
+    text, box, rows, lineH}], счёт отсеянного). Правила:
+      * переводится только kind == "text"; «caption» (субтитры речи)
+        и «overlay» (логотип, часы, интерфейс, водяной знак) — нет;
+      * соседние надписи одного текста в том же месте — одна (детектор
+        дробит надпись на фоне, который двигается);
+      * висящая почти весь ролик — логотип, даже если модель сочла её
+        текстом;
+      * совпавшая с речью в то же время — впечатанный субтитр речи:
+        её перевод и так будет в субтитрах, второй раз — брак;
+      * время — от середины промежутка до первого кадра до середины после
+        последнего, не короче `FRAME_MIN_SEC`."""
+    drop = {"caption": 0, "overlay": 0, "noise": 0, "persistent": 0, "speech": 0}
+    evs = []
+    for e in sorted(events or [], key=lambda x: (x["first"], x["box"][1])):
+        text = " ".join((e.get("text") or "").split())
+        kind = e.get("kind") or "text"
+        if kind in ("caption", "overlay"):
+            drop[kind] += 1
+            continue
+        if sum(1 for ch in text if ch.isalpha()) < 2:
+            drop["noise"] += 1
+            continue
+        evs.append(dict(e, text=text))
+    merged = []
+    for e in evs:
+        k = _hint_key(e["text"])
+        for m in reversed(merged):
+            if (_hint_key(m["text"]) == k and box_iou(m["box"], e["box"]) >= 0.3
+                    and e["first"] - m["last"] <= every * (FRAME_GAP_FRAMES + 1) + 1e-6):
+                m["last"] = max(m["last"], e["last"])
+                break
+        else:
+            merged.append(dict(e))
+    out = []
+    for m in merged:
+        start = max(0.0, m["first"] - every / 2.0)
+        end = m["last"] + every / 2.0
+        if total:
+            end = min(float(total), end)
+        if total and end - start >= max(60.0, FRAME_PERSIST_SHARE * float(total)):
+            drop["persistent"] += 1
+            continue
+        if speech:
+            k = _hint_key(m["text"])
+            said = " ".join(c.get("text") or "" for c in speech
+                            if c["start"] < end + 1.0 and c["end"] > start - 1.0)
+            if len(k) >= 4 and _contained(k, _hint_key(said)) >= 0.7:
+                drop["speech"] += 1
+                continue
+        if end - start < FRAME_MIN_SEC:
+            end = start + FRAME_MIN_SEC
+        out.append({"start": round(start, 3), "end": round(end, 3), "text": m["text"],
+                    "box": [round(float(v), 4) for v in m["box"]],
+                    "rows": int(m.get("rows") or 1), "lineH": round(float(m.get("lineH") or 0.0), 4)})
+    return out, drop
+
+
+def frame_place(box) -> dict:
+    """Где показать перевод надписи в ФАЙЛЕ субтитров: {an, vtt}.
+    `an` — метка «{\\anN}» у .srt (понимают VLC, MPC, mpv и плееры на libass;
+    прочие покажут внизу, как обычный субтитр), `vtt` — настройки реплики
+    WebVTT. Надпись из нижней трети встаёт НАВЕРХ: внизу идёт диалог, и две
+    реплики легли бы друг на друга (так делает и Netflix с «forced narrative»)."""
+    x0, y0, x1, y1 = [float(v) for v in box]
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    col = 0 if cx < 1 / 3.0 else (1 if cx < 2 / 3.0 else 2)
+    if cy < 1 / 3.0:
+        base, line = 7, max(2, int(round(y0 * 100)))
+    elif cy < 2 / 3.0:
+        base, line = 4, int(round(y0 * 100))
+    else:
+        base, line = 7, 5
+    pos = int(round(min(95.0, max(5.0, cx * 100))))
+    return {"an": base + col, "vtt": "line:%d%% position:%d%% align:center" % (min(90, max(0, line)), pos)}
+
+
+def frame_ass_pos(box, w: int, h: int, base_fs: int, line_h: float = 0.0) -> tuple:
+    """(x, y, кегль) перевода надписи в кадре результата: в центре рамки
+    оригинала, кеглем по высоте его строки (не мельче 0,6 и не крупнее 1,3
+    обычного кегля субтитров) — перевод ложится ПОВЕРХ надписи плашкой."""
+    x0, y0, x1, y1 = [float(v) for v in box]
+    fs = base_fs
+    if line_h and line_h > 0:
+        fs = int(round(max(base_fs * 0.6, min(base_fs * 1.3, line_h * h * 1.15))))
+    return int(round((x0 + x1) / 2.0 * w)), int(round((y0 + y1) / 2.0 * h)), max(8, fs)
 
 
 def lang3(code: str) -> str:

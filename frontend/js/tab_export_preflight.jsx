@@ -532,6 +532,34 @@ function expBedWhy(code) {
   }
 }
 
+/* Текст в кадре: надписи, титры, таблички — то, что звуком не произносится.
+   Читает сервер (кадры, поиск строк, зрячая модель), здесь — только итог
+   словами и кнопка. Причину отказа сервер отдаёт КОДОМ (`frameText.why`),
+   подпись даёт браузер. */
+const EXP_FRAME_WHY = {
+  no_engine: TR("сейчас недоступно — сообщите администратору"),
+  no_key: TR("сейчас недоступно — сообщите администратору"),
+  long: TR("ролик слишком длинный для чтения кадров"),
+  no_video: TR("в файле нет видео"),
+  no_source: TR("исходное видео удалено — загрузите его заново"),
+  error: TR("не получилось — попробуйте ещё раз"),
+};
+function ExpFrameTextRow({ ft, onRead, disabled }) {
+  const st = (ft && ft.status) || "";
+  const busyNow = st === "queued" || st === "running";
+  const line = !st ? TR("Переведём надписи на экране и покажем их в субтитрах на том же месте.")
+    : busyNow ? TR("Читаем…")
+    : st === "done" ? (ft.lines > 0 ? TR("Надписей в строках перевода: ") + ft.lines : TR("Текста в кадре не нашлось"))
+    : st === "stopped" ? TR("Остановлено — можно прочитать снова")
+    : (EXP_FRAME_WHY[ft.why] || EXP_FRAME_WHY.error);
+  return React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+    React.createElement("div", null,
+      React.createElement("div", { style: { fontWeight: 500 } }, TR("Текст в кадре")),
+      React.createElement("div", { className: "dim", style: { fontSize: 12 } }, line)),
+    !busyNow && React.createElement(Btn, { variant: st === "done" ? "ghost" : "secondary", size: "sm", icon: "search",
+      disabled, onClick: onRead }, st === "done" ? TR("Прочитать заново") : TR("Прочитать")));
+}
+
 function ExpMediaCard({ project, store, toast }) {
   const pid = project.id;
   const media = project.media || {};
@@ -565,10 +593,14 @@ function ExpMediaCard({ project, store, toast }) {
     const tick = async () => {
       const res = await window.API.safeCall(() => window.API.listJobs(pid));
       if (dead || !res) return;
-      const live = (res.active || []).find(x => x.kind === "mediarender") || null;
+      /* Чтение текста в кадре — такая же фоновая работа над видео: держит
+         кнопки и показывается той же строкой хода. */
+      const live = (res.active || []).find(x => x.kind === "mediarender" || x.kind === "frametext"
+        || (x.kind === "asr" && (x.phase === "frames" || x.phase === "framesRead"))) || null;
       if (jobRef.current && !live) {
         const last = (res.recent || res.jobs || []).find(x => x.id === jobRef.current.id);
-        if (last && last.status === "error") toast.error(TR("Не собрано"), TRS(last.error || ""));
+        if (last && last.status === "error")
+          toast.error(last.kind === "frametext" ? TR("Текст в кадре не прочитан") : TR("Не собрано"), TRS(last.error || ""));
         refresh();
       }
       jobRef.current = live;
@@ -623,6 +655,16 @@ function ExpMediaCard({ project, store, toast }) {
     setProg(null);
     setBusy(false);
   };
+  const readFrames = async () => {
+    setBusy(true);
+    try {
+      const r = await window.API.mediaFrameText(pid);
+      jobRef.current = r.job; setJob(r.job);
+      if (r.project && store.replaceProject) store.replaceProject(r.project);
+      toast.info(TR("Читаем текст в кадре"), TR("Найденные надписи появятся строками перевода — страницу можно закрыть."));
+    } catch (e) { toast.error(TR("Не запущено"), e.message || String(e)); }
+    setBusy(false);
+  };
   const dub = rr.dub || null;
   const burn = rr.burn || null;
   const buildOff = busy || !!job || !ready || !kept || !translated;
@@ -655,6 +697,8 @@ function ExpMediaCard({ project, store, toast }) {
           React.createElement("span", { style: { fontSize: 13, minWidth: 170 } }, TR("Субтитры: оригинал + перевод")),
           React.createElement(Btn, { variant: "secondary", size: "sm", icon: "download", disabled: busy || !ready, onClick: () => subs("srt_bi") }, ".srt"),
           React.createElement(Btn, { variant: "secondary", size: "sm", icon: "download", disabled: busy || !ready, onClick: () => subs("vtt_bi") }, ".vtt"))),
+      media.video && ready && React.createElement(ExpFrameTextRow, { ft: project.frameText, onRead: readFrames,
+        disabled: busy || !!job || !kept }),
       !translated && ready && React.createElement("div", { className: "dim", style: { fontSize: 13 } },
         TR("Строки ещё не переведены — видео и озвучка соберутся после перевода.")),
       /* Сборка идёт в фоне и держит все кнопки — значит, её обязано быть

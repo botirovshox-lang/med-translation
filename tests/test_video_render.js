@@ -180,6 +180,11 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   check(t.indexOf("Строк не больше") !== -1 && t.indexOf("Уменьшить, потом разделить") !== -1 && t.indexOf("Только показать") !== -1,
         "ширина области, число строк и что делать с лишним — в форме");
   console.log("=== 4. «Подтвердить» до конца загрузки ===");
+  /* Текст в кадре — по галочке человека: это время сервера и платное чтение. */
+  const ftBox = find(tree, n => n.type === "label" && texts(n).indexOf("Прочитать и текст в кадре") !== -1)[0];
+  check(!!ftBox, "у видео есть галочка «текст в кадре»");
+  find(ftBox, n => n.type === "input")[0].props.onChange({ target: { checked: true } });
+  tree = draw();
   btn(tree, "Подтвердить и распознать речь").props.onClick();
   tree = draw();
   check(texts(tree).indexOf("Запустим, как только файл загрузится") !== -1 && !finishBody, "ждём файл, «готово» не ушло");
@@ -188,6 +193,7 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   check(finishBody && finishBody.token === "tok" && finishBody.body.trim && finishBody.body.trim.start === 10
         && finishBody.body.trim.end === 125 && finishBody.body.style && finishBody.body.style.font === f0.id,
         "«готово» ушло с обрезкой и стилем: " + JSON.stringify(finishBody && finishBody.body.trim));
+  check(finishBody && finishBody.body.frameText === true, "и с просьбой прочитать текст в кадре");
   check(done && done.id === 77, "проект отдан экрану загрузки");
 
   /* ── 5. Формат, который браузер не показывает ─────────────────── */
@@ -276,6 +282,14 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   tree = draw4(); t = texts(tree);
   check(t.indexOf("Видео с субтитрами в кадре") !== -1 && t.indexOf("Видео с субтитрами дорожкой") !== -1, "два вида видео названы по-разному");
   check(t.indexOf("1280×720") !== -1 && t.indexOf("2 реплик были без перевода") !== -1, "у собранного — кадр и непереведённое");
+  check(t.indexOf("Текст в кадре") !== -1 && !!btn(tree, "Прочитать"), "у готового видео — «Текст в кадре» и кнопка");
+  vp.frameText = { status: "done", lines: 3 };
+  tree = draw4(); t = texts(tree);
+  check(t.indexOf("Надписей в строках перевода: 3") !== -1 && !!btn(tree, "Прочитать заново"), "итог чтения словами");
+  vp.frameText = { status: "skipped", why: "long" };
+  tree = draw4();
+  check(texts(tree).indexOf("ролик слишком длинный для чтения кадров") !== -1, "причина отказа — по коду сервера");
+  delete vp.frameText;
   btn(tree, "Настроить и собрать заново").props.onClick();
   tree = draw4();
   check(texts(tree).indexOf("Субтитры в кадре") !== -1, "кнопка открывает диалог сборки");

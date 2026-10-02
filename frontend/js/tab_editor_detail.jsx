@@ -838,7 +838,7 @@ function SegBoundary({ seg, project, store, toast, onChanged }) {
   const [splitOpen, setSplitOpen] = useState(false);
   const srcRef = useRef(null);
   const tgtRef = useRef(null);
-  if (!seg || (seg.origin && seg.origin.kind === "image")) return null;
+  if (!seg || (seg.origin && (seg.origin.kind === "image" || seg.origin.kind === "frame"))) return null;
   const reload = async () => {
     const fresh = await window.API.getProject(project.id);
     if (fresh && store.replaceProject) store.replaceProject(fresh);

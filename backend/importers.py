@@ -751,11 +751,18 @@ def render_cues(cues: list, ext: str) -> str:
         if not vtt:
             out.append(str(n))
         sep = "." if vtt else ","
-        out.append("%s --> %s" % (_stamp(c["start"], sep), _stamp(c["end"], sep)))
+        # Место реплики (текст в кадре — `media.frame_place`): у .vtt — настройки
+        # после времени, у .srt — метка «{\anN}» в начале первой строки.
+        place = c.get("place") or {}
+        stamp = "%s --> %s" % (_stamp(c["start"], sep), _stamp(c["end"], sep))
+        out.append(stamp + (" " + place["vtt"] if vtt and place.get("vtt") else ""))
         # `screen` — готовые строки экрана (двуязычные субтитры: оригинал,
         # под ним перевод), иначе текст реплики раскладывается сам. Не
         # `lines`: так `cue_list` называет номера строк файла.
-        out.extend([ln for ln in c["screen"] if ln] if c.get("screen") else wrap_cue(c["text"]))
+        lines = [ln for ln in c["screen"] if ln] if c.get("screen") else wrap_cue(c["text"])
+        if not vtt and place.get("an") and lines:
+            lines = ["{\\an%d}%s" % (int(place["an"]), lines[0])] + lines[1:]
+        out.extend(lines)
         out.append("")
     return "\n".join(out)
 

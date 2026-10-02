@@ -428,5 +428,7 @@
   "Перевести остальное": "Qolganini tarjima qilish",
   "Добавлен пробный фрагмент": "Sinov bo'lagi qo'shildi",
   "Документ больше бесплатной страницы: переведём один случайный фрагмент. Остальное — кнопкой «Перевести остальное» после пополнения.": "Hujjat bepul betdan katta: bitta tasodifiy bo'lakni tarjima qilamiz. Qolganini — hisob to'ldirilgach «Qolganini tarjima qilish» tugmasi bilan.",
-  "впечатываем субтитры в кадр": "subtitrlarni kadrga yozyapmiz"
+  "впечатываем субтитры в кадр": "subtitrlarni kadrga yozyapmiz",
+  "ищем текст в кадре": "kadrdagi matnni qidiryapmiz",
+  "читаем текст в кадре": "kadrdagi matnni o'qiyapmiz"
 }

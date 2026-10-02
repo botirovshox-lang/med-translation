@@ -91,7 +91,6 @@
   "не подключён — ключи CLICK_* в окружении": "ulanmagan — CLICK_* kalitlari muhitda",
   " (тестовая касса)": " (test kassa)",
   "не подключён — ключи PAYME_* в окружении": "ulanmagan — PAYME_* kalitlari muhitda",
-  " · карта и Kaspi — по счёту": " · karta va Kaspi — hisob bo'yicha",
   " (есть шаблон ссылки)": " (havola shabloni bor)",
   "Адреса для кабинетов: Click Prepare ": "Kabinetlar uchun manzillar: Click Prepare ",
   "Цена страницы, $": "Sahifa narxi, $",
@@ -193,5 +192,13 @@
   "Функция прогона выключена или её месячный лимит исчерпан: прогон остановлен, сделанное сохранено.": "Ishga tushirish funksiyasi o'chirilgan yoki uning oylik limiti tugagan: ishga tushirish to'xtatildi, bajarilgani saqlandi.",
   "Чтение картинок выключено или его месячный лимит исчерпан: разбор остановлен, прочитанное сохранено.": "Rasmlarni o'qish o'chirilgan yoki uning oylik limiti tugagan: tahlil to'xtatildi, o'qilgani saqlandi.",
   "исправленные термины не разобраны: функция выключена или её лимит исчерпан": "tuzatilgan atamalar tahlil qilinmadi: funksiya o'chirilgan yoki uning limiti tugagan",
-  "Лимит минут действует там, где видео оплачивается минутами (у организации есть кошелёк минут); без кошелька видео идёт страницами и меряется лимитом страниц.": "Daqiqa limiti video daqiqalar bilan to'lanadigan joyda amal qiladi (tashkilotda daqiqalar hamyoni bor); hamyonsiz video sahifalar bilan hisoblanadi va sahifa limiti bilan o'lchanadi."
+  "Лимит минут действует там, где видео оплачивается минутами (у организации есть кошелёк минут); без кошелька видео идёт страницами и меряется лимитом страниц.": "Daqiqa limiti video daqiqalar bilan to'lanadigan joyda amal qiladi (tashkilotda daqiqalar hamyoni bor); hamyonsiz video sahifalar bilan hisoblanadi va sahifa limiti bilan o'lchanadi.",
+  " · карта Visa/Mastercard (Octo): ": " · Visa/Mastercard karta (Octo): ",
+  "подключена": "ulangan",
+  " (тестовый режим)": " (sinov rejimi)",
+  "не подключена — ключи OCTO_* в окружении, пока по счёту": "ulanmagan — OCTO_* kalitlari muhitda, hozircha hisob bo'yicha",
+  " · Kaspi — по счёту": " · Kaspi — hisob bo'yicha",
+  " · Octo (уведомления) ": " · Octo (bildirishnomalar) ",
+  "Платёжная страница не открылась": "To'lov sahifasi ochilmadi",
+  "Нажмите «Оплатить» у заказа ниже через минуту или выберите другой способ.": "Bir daqiqadan so'ng quyidagi buyurtmada «To'lash»ni bosing yoki boshqa usulni tanlang."
 }

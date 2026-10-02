@@ -91,7 +91,6 @@
   "не подключён — ключи CLICK_* в окружении": "not connected — CLICK_* keys in the environment",
   " (тестовая касса)": " (test checkout)",
   "не подключён — ключи PAYME_* в окружении": "not connected — PAYME_* keys in the environment",
-  " · карта и Kaspi — по счёту": " · card and Kaspi — by invoice",
   " (есть шаблон ссылки)": " (link template set)",
   "Адреса для кабинетов: Click Prepare ": "Addresses for merchant dashboards: Click Prepare ",
   "Цена страницы, $": "Page price, $",
@@ -193,5 +192,13 @@
   "Функция прогона выключена или её месячный лимит исчерпан: прогон остановлен, сделанное сохранено.": "A function of this run is turned off or its monthly limit is used up: the run was stopped, the work done is saved.",
   "Чтение картинок выключено или его месячный лимит исчерпан: разбор остановлен, прочитанное сохранено.": "Reading images is turned off or its monthly limit is used up: the analysis was stopped, what was read is saved.",
   "исправленные термины не разобраны: функция выключена или её лимит исчерпан": "corrected terms were not analysed: the function is turned off or its limit is used up",
-  "Лимит минут действует там, где видео оплачивается минутами (у организации есть кошелёк минут); без кошелька видео идёт страницами и меряется лимитом страниц.": "The minutes limit applies where video is paid in minutes (the organization has a minutes wallet); without a wallet video is billed in pages and measured by the pages limit."
+  "Лимит минут действует там, где видео оплачивается минутами (у организации есть кошелёк минут); без кошелька видео идёт страницами и меряется лимитом страниц.": "The minutes limit applies where video is paid in minutes (the organization has a minutes wallet); without a wallet video is billed in pages and measured by the pages limit.",
+  " · карта Visa/Mastercard (Octo): ": " · Visa/Mastercard card (Octo): ",
+  "подключена": "connected",
+  " (тестовый режим)": " (test mode)",
+  "не подключена — ключи OCTO_* в окружении, пока по счёту": "not connected — OCTO_* keys in the environment, invoice for now",
+  " · Kaspi — по счёту": " · Kaspi — by invoice",
+  " · Octo (уведомления) ": " · Octo (notifications) ",
+  "Платёжная страница не открылась": "The payment page did not open",
+  "Нажмите «Оплатить» у заказа ниже через минуту или выберите другой способ.": "Press “Pay” on the order below in a minute, or choose another method."
 }

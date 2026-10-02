@@ -204,12 +204,21 @@ r = main.set_termlist(1, main.TermlistBody(use=True, decisions=[
 check(r["use"] and r["decided"] == 2 and r["counts"]["agreed"] == 1 and r["counts"]["rejected"] == 1,
       "решения записаны, чужой термин пропущен: %s" % r["counts"])
 h1 = main._text_hash("Phthisiology studies pulmonary tuberculosis.")
-p["segments"][1]["target"] = "x"
-p["segments"][1]["review"] = {"v": main.REVIEW_VERSION, "score": 9, "target_hash": main._text_hash("x"),
-                              "source_hash": main._text_hash(p["segments"][1]["source"]), "applied": False}
+# Устаревает ТОЧЕЧНО: только строка, в чьём оригинале стоит термин листа
+# («Фтизиатрия» — в первой); вторая («Туберкулема плотна.») промпта ревизии
+# по терм-листу не имела, и перекупать её вердикт незачем.
+for i in (0, 1):
+    p["segments"][i]["target"] = "x"
+    p["segments"][i]["review"] = {"v": main.REVIEW_VERSION, "score": 9, "target_hash": main._text_hash("x"),
+                                  "source_hash": main._text_hash(p["segments"][i]["source"]), "applied": False}
 r = main.set_termlist(1, main.TermlistBody(use=False))
-check(r["reviewsStale"] == 1 and main._review_stale(p["segments"][1]), "смена состава промпта устаревает ревизию")
+check(r["reviewsStale"] == 1 and main._review_stale(p["segments"][0])
+      and not main._review_stale(p["segments"][1]),
+      "смена состава промпта устаревает ревизию — только у строк с термином")
 r = main.set_termlist(1, main.TermlistBody(use=True))
+for i in (0, 1):
+    p["segments"][i].pop("review", None)
+    p["segments"][i]["target"] = ""
 seg = p["segments"][0]
 seg["docTerms"] = ["Phthisiology"]
 cand = {"src": "Фтизиатрия", "tgt": "Phthisiology", "segments": ["1:1"]}

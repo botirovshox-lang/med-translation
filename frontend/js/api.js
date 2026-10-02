@@ -501,6 +501,7 @@ function onUnauthorized() {
     mediaUploadCancel:  (token)             => call("DELETE", `/media/upload/${token}`),
     /* Распознать речь снова (после остановки или сбоя): готовые куски не платятся. */
     mediaTranscribe: (pid)                  => call("POST", `/projects/${pid}/media/transcribe`, {}),
+    mediaFrameText: (pid)                   => call("POST", `/projects/${pid}/media/frametext`, {}),
     /* Короткая подписанная ссылка: браузер переходит по ней сам, файл
        на гигабайты не идёт через память вкладки. */
     mediaLink:     (pid, what)              => call("GET", `/projects/${pid}/media/link?what=${encodeURIComponent(what)}`),

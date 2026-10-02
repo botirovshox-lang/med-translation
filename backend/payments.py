@@ -1,4 +1,5 @@
-"""Приём оплат: протоколы Click (SHOP API) и Payme (Merchant API), ссылки
+"""Приём оплат: протоколы Click (SHOP API), Payme (Merchant API) и Octo
+(карты Visa/Mastercard, help.octo.uz), ссылки
 на оплату и арифметика сумм. Здесь ТОЛЬКО чистые функции — без STATE, без
 сети и без чтения окружения в момент импорта: состояние заказов и зачисление
 страниц живут в `main.py` (там `_SAVE_LOCK` и единственная дверь пополнения
@@ -163,6 +164,99 @@ def payme_tx_view(tx: dict) -> dict:
     return {"create_time": int(tx.get("create_time") or 0), "perform_time": int(tx.get("perform_time") or 0),
             "cancel_time": int(tx.get("cancel_time") or 0), "transaction": str(tx.get("our_id")),
             "state": int(tx.get("state") or 0), "reason": tx.get("reason")}
+
+
+# ─── Octo (help.octo.uz): карты Visa / Mastercard ───────────────────
+# Устроен наоборот Click и Payme: мы САМИ заводим платёж (`prepare_payment`,
+# ответ — `octo_pay_url`), а Octo шлёт уведомление на `notify_url`. Телу
+# уведомления НЕ верим: Octo сам пишет, что секретом магазина уведомления
+# не подписывает и советует перед сменой статуса спросить его своим ключом
+# (тот же `prepare_payment` с тремя полями). Поэтому уведомление — только
+# повод спросить, а решение принимает ответ на НАШ подписанный запрос.
+OCTO_BASE = "https://secure.octo.uz"
+OCTO_TX_PREFIX = "mct"
+OCTO_PAID = "succeeded"
+OCTO_BUSY = ("wait_user_action", "waiting_for_capture")   # оплата идёт — руками не трогать
+OCTO_DEAD = ("canceled", "cancelled", "failed")
+
+
+def octo_tx_id(order_id: int, attempt: int) -> str:
+    """Номер транзакции у Octo: заказ + попытка. Попытка нужна, потому что
+    ссылка Octo живёт `ttl` минут, а заказ — сутки: истёкшую ссылку
+    заменяет новая транзакция того же заказа."""
+    return "%s-%d-%d" % (OCTO_TX_PREFIX, int(order_id), int(attempt))
+
+
+def octo_order_of(tx: str) -> Optional[int]:
+    parts = str(tx or "").strip().split("-")
+    if len(parts) != 3 or parts[0] != OCTO_TX_PREFIX or not parts[1].isdigit() or not parts[2].isdigit():
+        return None
+    return int(parts[1])
+
+
+def octo_sum(amount, currency: str):
+    """Сумма числом для JSON: сумы целые, доллары — центы."""
+    d = dec(amount)
+    return int(d) if currency == "UZS" else float(d.quantize(Decimal("0.01")))
+
+
+def octo_prepare_body(shop_id: str, secret: str, tx: str, amount, currency: str, init_time: str,
+                      description: str, notify_url: str, return_url: str = "", test: bool = False,
+                      language: str = "ru", ttl: int = 0, methods: tuple = ("bank_card",),
+                      user_data: Optional[dict] = None, basket: Optional[list] = None) -> dict:
+    body = {"octo_shop_id": int(shop_id), "octo_secret": secret, "shop_transaction_id": tx,
+            "auto_capture": True, "test": bool(test), "init_time": init_time,
+            "total_sum": octo_sum(amount, currency), "currency": currency,
+            "description": description[:250], "notify_url": notify_url,
+            "language": language if language in ("ru", "uz", "en") else "ru"}
+    if methods:
+        body["payment_methods"] = [{"method": m} for m in methods]
+    if return_url:
+        body["return_url"] = return_url
+    if ttl:
+        body["ttl"] = int(ttl)
+    if user_data:
+        body["user_data"] = user_data
+    if basket:
+        body["basket"] = basket
+    return body
+
+
+def octo_status_body(shop_id: str, secret: str, tx: str) -> dict:
+    return {"octo_shop_id": int(shop_id), "octo_secret": secret, "shop_transaction_id": tx}
+
+
+def octo_data(resp) -> tuple:
+    """(data, ошибка): ответ Octo — `error == 0` и объект `data`. Поля пока
+    дублируются и на верхнем уровне; Octo обещает оставить только `data`,
+    поэтому читаем `data` и верхний уровень лишь запасным ходом."""
+    if not isinstance(resp, dict):
+        return None, "bad response"
+    try:
+        err = int(resp.get("error", -1))
+    except (TypeError, ValueError):
+        err = -1
+    if err != 0:
+        return None, "%s: %s" % (err, resp.get("errMessage") or resp.get("errorMessage") or "error")
+    data = resp.get("data") if isinstance(resp.get("data"), dict) else resp
+    return data, None
+
+
+def octo_sign_ok(unique_key: str, uuid: str, status: str, signature: str) -> bool:
+    """sha1(unique_key + uuid + status) — ключ выдаёт техподдержка Octo.
+    Только ПРИЗНАК: решение всё равно принимает запрос статуса."""
+    if not unique_key or not signature:
+        return False
+    want = hashlib.sha1((unique_key + str(uuid) + str(status)).encode("utf-8")).hexdigest()
+    return hmac.compare_digest(want.upper().encode(), str(signature).strip().upper().encode())
+
+
+def octo_amount_ok(got, want, currency: str) -> bool:
+    try:
+        q = Decimal("1") if currency == "UZS" else Decimal("0.01")
+        return Decimal(str(got)).quantize(q) == dec(want).quantize(q)
+    except (InvalidOperation, ValueError, TypeError):
+        return False
 
 
 # ─── суммы ───────────────────────────────────────────────────────────

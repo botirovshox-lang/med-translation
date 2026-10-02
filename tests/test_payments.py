@@ -17,6 +17,9 @@
      по словам досписывает ускоренную речь.
   7. Расход по проектам за период: модель + проданные страницы/минуты по дням.
   8. /api/seed не отдаёт настроек оплат; /api/auth/me — внутренностей.
+  5б. Octo (карта Visa/Mastercard): платёж заводим мы, телу уведомления
+     не верим — зачисляет только ответ на наш запрос статуса; чужая сумма
+     не зачисляется; повтор уведомления не зачисляет второй раз.
 
 Ни одного вызова модели, файл состояния не пишется.
 """
@@ -34,7 +37,8 @@ os.environ["AUTHORITY_CORPUS"] = "0"
 os.environ["OPENAI_API_KEY"] = "test-key"
 os.environ["PAY_ORDERS_FILE"] = str(TMP / "pay_orders.json")
 for k in ("CLICK_SERVICE_ID", "CLICK_MERCHANT_ID", "CLICK_SECRET_KEY", "PAYME_MERCHANT_ID", "PAYME_KEY",
-          "PAY_CARD_LINK", "PAYME_IKPU"):
+          "PAY_CARD_LINK", "PAYME_IKPU", "OCTO_SHOP_ID", "OCTO_SECRET", "OCTO_CURRENCY", "OCTO_TEST",
+          "OCTO_UNIQUE_KEY", "OCTO_SPIC", "OCTO_INN", "OCTO_PACKAGE_CODE"):
     os.environ.pop(k, None)
 sys.path.insert(0, "backend")
 import main                                              # noqa: E402
@@ -163,6 +167,20 @@ check(rpc("CheckPerformTransaction", {"amount": amount, "account": {"order_id": 
       "нет заказа — -31050")
 check(rpc("CheckPerformTransaction", {"amount": amount, "account": {"order_id": str(oid)}})["result"]["allow"] is True,
       "CheckPerform — allow")
+check("detail" not in rpc("CheckPerformTransaction", {"amount": amount, "account": {"order_id": str(oid)}})["result"],
+      "без PAYME_IKPU чек не отдаётся")
+os.environ["PAYME_IKPU"] = "10501001001000000"
+det = rpc("CheckPerformTransaction", {"amount": amount, "account": {"order_id": str(oid)}})["result"].get("detail") or {}
+it = (det.get("items") or [{}])[0]
+check(it.get("code") == "10501001001000000" and it.get("price") == amount and it.get("count") == 1,
+      "чек Payme: ИКПУ и вся сумма одной позицией")
+check(it.get("title") == "Доступ к программе перевода: 20 стр.",
+      "позиция чека — доступ к программе, без нулевых минут: %r" % it.get("title"))
+check(main._pay_receipt_title({"pages": 0, "minutes": 7}) == "Доступ к программе перевода: 7 мин видео"
+      and main._pay_receipt_title({"pages": 3, "minutes": 2}, "en")
+      == "Access to translation software: 3 pages, 2 video minutes",
+      "название позиции: только минуты; английское для Octo")
+os.environ.pop("PAYME_IKPU")
 r = c.post("/api/pay/payme", headers=AUTH, content=b"not json")
 check(r.status_code == 200 and r.json()["error"]["code"] == -32700, "мусор в теле — -32700 с HTTP 200")
 now = int(time.time() * 1000)
@@ -294,6 +312,105 @@ check(main._pay_reconcile() == 0 and abs(float(main._tenant_rec("trial")["pagesC
       "второй проход ничего не добавляет")
 aud = [e for e in main.STATE["audit"] if e.get("action") == "pay.paid"]
 check(aud and all(e.get("tenant") == "trial" for e in aud), "запись о платеже — в журнале СВОЕЙ организации")
+
+print("=== 5б. Octo: карта Visa / Mastercard ===")
+check(payments.octo_tx_id(12, 3) == "mct-12-3" and payments.octo_order_of("mct-12-3") == 12
+      and payments.octo_order_of("mct-x-1") is None and payments.octo_order_of("12") is None,
+      "номер транзакции Octo: заказ + попытка, чужой формат — нет заказа")
+sig = hashlib.sha1(b"UKEY" + b"uuid-1" + b"succeeded").hexdigest().upper()
+check(payments.octo_sign_ok("UKEY", "uuid-1", "succeeded", sig)
+      and not payments.octo_sign_ok("UKEY", "uuid-1", "canceled", sig)
+      and not payments.octo_sign_ok("", "uuid-1", "succeeded", sig), "подпись уведомления: sha1(key+uuid+status)")
+check(payments.octo_data({"error": 2, "errMessage": "Wrong secret", "data": None}) == (None, "2: Wrong secret"),
+      "ошибка Octo читается")
+check(payments.octo_amount_ok(31750.0, "31750", "UZS") and not payments.octo_amount_ok(31749, "31750", "UZS")
+      and payments.octo_amount_ok("2.5", "2.50", "USD"), "сумма Octo сверяется числом")
+
+OCTO = {"calls": [], "tx": {}}
+
+
+def fake_octo(path, body):
+    OCTO["calls"].append((path, dict(body)))
+    if body.get("octo_secret") != "SEC":
+        return {"error": 2, "errMessage": "Wrong secret", "data": None}
+    tx = body["shop_transaction_id"]
+    if "total_sum" in body:                       # заведение платежа
+        OCTO["tx"][tx] = {"status": "created", "total_sum": body["total_sum"], "currency": body["currency"],
+                          "uuid": "uuid-" + tx}
+        return {"error": 0, "data": {"shop_transaction_id": tx, "octo_payment_UUID": "uuid-" + tx,
+                                     "status": "created", "octo_pay_url": "https://pay2.octo.uz/pay/uuid-" + tx}}
+    t = OCTO["tx"].get(tx)
+    if not t:
+        return {"error": 5, "errMessage": "not found", "data": None}
+    return {"error": 0, "data": {"shop_transaction_id": tx, "octo_payment_UUID": t["uuid"], "status": t["status"],
+                                 "total_sum": t["total_sum"], "currency": t["currency"]}}
+
+
+main._octo_post = fake_octo
+check(not {x["id"]: x for x in c.get("/api/pay", headers=H(T)).json()["methods"]}["card"]["online"], "без ключей Octo карта — «по счёту»")
+os.environ["OCTO_SHOP_ID"] = "123"
+os.environ["OCTO_SECRET"] = "SEC"
+os.environ["OCTO_TEST"] = "1"
+m = {x["id"]: x for x in c.get("/api/pay", headers=H(T)).json()["methods"]}
+check(m["card"]["online"] and m["card"]["currency"] == "UZS", "с ключами Octo карта онлайн, в сумах")
+r = c.post("/api/pay/orders", headers=H(T), json={"pages": 5, "method": "card"})
+oc = r.json()["order"]
+body = OCTO["calls"][-1][1]
+check(r.status_code == 200 and oc["online"] and oc["url"].startswith("https://pay2.octo.uz/pay/"),
+      "заказ картой: платёж заведён у Octo, ссылка на кассу")
+check(body["test"] is True and body["auto_capture"] is True and body["total_sum"] == 31750
+      and body["currency"] == "UZS" and body["payment_methods"] == [{"method": "bank_card"}]
+      and body["notify_url"].endswith("/api/pay/octo") and body["shop_transaction_id"] == "mct-%d-1" % oc["id"],
+      "запрос prepare_payment: тест, одностадийный, сумма в сумах, Visa/MC, адрес уведомлений")
+tx = body["shop_transaction_id"]
+before = float(main._tenant_rec("trial")["pagesCredit"])
+# Поддельное уведомление «оплачено», а у Octo платёж не оплачен — не зачисляем.
+r = c.post("/api/pay/octo", json={"shop_transaction_id": tx, "octo_payment_UUID": "uuid-" + tx,
+                                  "status": "succeeded", "signature": "X", "total_sum": 31750})
+check(r.status_code == 200 and main._pays().pay_get(oc["id"])["status"] == "new"
+      and abs(float(main._tenant_rec("trial")["pagesCredit"]) - before) < 1e-6,
+      "уведомление «оплачено» без подтверждения Octo не зачисляет")
+OCTO["tx"][tx]["status"] = "wait_user_action"
+c.get("/api/pay/orders/%d" % oc["id"], headers=H(T))
+check(c.post("/api/pay/orders/%d/cancel" % oc["id"], headers=H(T)).status_code == 409
+      and c.post("/api/admin/payments/%d/confirm" % oc["id"], headers=H(A), json={}).status_code == 409,
+      "пока человек вводит код с карты, заказ не отменить и не подтвердить руками")
+OCTO["tx"][tx]["status"] = "succeeded"
+r = c.post("/api/pay/octo", json={"shop_transaction_id": tx, "octo_payment_UUID": "uuid-" + tx, "status": "succeeded"})
+check(r.status_code == 200 and main._pays().pay_get(oc["id"])["status"] == "paid"
+      and abs(float(main._tenant_rec("trial")["pagesCredit"]) - before - 5) < 1e-6,
+      "Octo подтвердил оплату — заказ оплачен, 5 стр. зачислено")
+c.post("/api/pay/octo", json={"shop_transaction_id": tx, "status": "succeeded"})
+check(abs(float(main._tenant_rec("trial")["pagesCredit"]) - before - 5) < 1e-6,
+      "повтор уведомления второй раз не зачисляет")
+check(c.post("/api/pay/octo", json={"shop_transaction_id": "mct-999999-1", "status": "succeeded"}).status_code == 404
+      and c.post("/api/pay/octo", content=b"not json").status_code == 400,
+      "неизвестный заказ — 404, мусор — 400")
+# Оплата не той суммой не зачисляется.
+o3 = c.post("/api/pay/orders", headers=H(T), json={"pages": 5, "method": "card"}).json()["order"]
+tx3 = "mct-%d-1" % o3["id"]
+OCTO["tx"][tx3].update(status="succeeded", total_sum=100)
+before = float(main._tenant_rec("trial")["pagesCredit"])
+r = c.get("/api/pay/orders/%d" % o3["id"], headers=H(T))
+check(r.json()["order"]["status"] == "new" and abs(float(main._tenant_rec("trial")["pagesCredit"]) - before) < 1e-6,
+      "Octo оплачен НЕ той суммой — не зачисляем")
+# Возврат с кассы без уведомления: GET заказа спрашивает статус сам.
+o4 = c.post("/api/pay/orders", headers=H(T), json={"pages": 5, "method": "card"}).json()["order"]
+OCTO["tx"]["mct-%d-1" % o4["id"]]["status"] = "succeeded"
+check(c.get("/api/pay/orders/%d" % o4["id"], headers=H(T)).json()["order"]["status"] == "paid",
+      "возврат с кассы: статус спрошен у Octo, заказ оплачен без уведомления")
+# Сбой при заведении: ссылки нет, GET заказа заводит платёж заново.
+main._octo_post = lambda path, body: {"error": 2, "errMessage": "Wrong secret", "data": None}
+o5 = c.post("/api/pay/orders", headers=H(T), json={"pages": 5, "method": "card"}).json()["order"]
+check(o5["online"] and not o5["url"], "Octo отказал — заказ есть, ссылки нет")
+main._octo_post = fake_octo
+o5 = c.get("/api/pay/orders/%d" % o5["id"], headers=H(T)).json()["order"]
+check(o5["url"] and "mct-%d-2" % o5["id"] in o5["url"], "повторный заход заводит платёж новой попыткой")
+ad = c.get("/api/admin/payments", headers=H(A)).json()
+check(ad["providers"]["octo"] and ad["providers"]["octoTest"] and ad["callbacks"]["octo"].endswith("/api/pay/octo"),
+      "админка знает про Octo и его адрес уведомлений")
+for k in ("OCTO_SHOP_ID", "OCTO_SECRET", "OCTO_TEST"):
+    os.environ.pop(k, None)
 
 print("=== 6. Минуты видео ===")
 media.available = lambda: (True, "")

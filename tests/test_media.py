@@ -438,7 +438,8 @@ def fake_extract(src, dst, duration, limit_sec=None, start=0.0):
 
 
 media.extract_audio = fake_extract
-media.silences = lambda audio, duration: []
+media.silences = lambda audio, duration, floor_db=-35.0: []
+media.volume_levels = lambda audio, duration: None
 
 
 def fake_split(audio, points, out_dir, duration):

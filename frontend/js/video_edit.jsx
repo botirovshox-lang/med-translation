@@ -354,6 +354,10 @@ function VideoEditor({ file, meta, onCancel, onDone, toast }) {
   Object.assign(live.current, { trim, style, dur, onDone, toast });
   const box = useVidBoxSize(boxRef);
   const frame = useVidServerFrame();
+  /* Текст в кадре (надписи, титры, таблички) — по желанию: это время
+     сервера и платное чтение, а в ролике-разговоре надписей может не быть. */
+  const [frameText, setFrameText] = useState(false);
+  live.current.frameText = frameText;
   useEffect(() => () => URL.revokeObjectURL(url), [url]);
   useEffect(() => {
     if (info && !info.failed && !style) {
@@ -371,7 +375,7 @@ function VideoEditor({ file, meta, onCancel, onDone, toast }) {
     if (L.mounted) { setFinishing(true); setFinErr(""); }
     const full = !L.dur || (L.trim.start <= 0.05 && L.trim.end >= L.dur - 0.05);
     window.API.mediaFinish(tok, { trim: full ? null : { start: L.trim.start, end: L.trim.end },
-      style: isAudio ? null : L.style })
+      style: isAudio ? null : L.style, frameText: !isAudio && !!L.frameText })
       .then(project => L.onDone(project, L.mounted))
       .catch(e => {
         L.finishing = false; L.confirmed = false;
@@ -487,6 +491,8 @@ function VideoEditor({ file, meta, onCancel, onDone, toast }) {
               vidE("div", { className: "dim", style: { fontSize: 12 } }, TR("Отправляем файл") + " · " + pct + "%"),
               vidE(ProgressBar, { value: pct })),
       finErr && vidE("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, finErr),
+      !isAudio && vidE(Checkbox, { checked: frameText, onChange: (e) => setFrameText(!!e.target.checked) },
+        TR("Прочитать и текст в кадре — надписи, титры, таблички")),
       vidMinutesLine(dur > 0 ? len : 0)),
     vidE("div", { className: "row", style: { gap: 8 } },
       vidE(Btn, { variant: "ghost", disabled: finishing, onClick: cancel }, TR("Отменить")),

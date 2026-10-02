@@ -92,7 +92,7 @@ check(pub == {"/api/auth/login", "/api/auth/logout", "/api/health",
               "/api/public/survey",
               # Колбэки платёжных систем (инвариант 39): у поставщика нет
               # входа, защита — подписью Click и ключом Payme в обработчике.
-              "/api/pay/click/prepare", "/api/pay/click/complete", "/api/pay/payme"},
+              "/api/pay/click/prepare", "/api/pay/click/complete", "/api/pay/payme", "/api/pay/octo"},
       "публичны только вход, выход, здоровье, двери регистрации, приём анкеты и колбэки оплаты: " + str(sorted(pub)))
 
 print("\n=== 4b. Служебная дверь бота закрыта без токена ===")

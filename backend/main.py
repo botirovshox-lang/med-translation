@@ -1772,6 +1772,81 @@ class _AnthropicChat:
                   usage=usage)
 
 
+# ── Рассуждение моделей OpenAI по шагам ─────────────────────────────────────
+# У gpt-5.6 («api: modern») рассуждение включено по умолчанию и считается
+# выходными токенами — в шесть раз дороже входных. Замер по боевому журналу
+# (28.09.2026): у termcheck 85% выходных токенов — рассуждение, 59% цены шага;
+# ответ при этом — JSON на тридцать токенов. Параметр `reasoning_effort`
+# принимает none | low | medium | high | xhigh («minimal» — 400, проверено).
+#
+# Значение — ПО ШАГУ, и только там, где замер на боевых строках показал, что
+# вердикт не меняется. termcheck на Terra с `none`: согласие с прежними
+# вердиктами 83% при собственном шуме модели 75% (повторный вызов по
+# умолчанию на тех же 124 строках), ложных новых находок столько же, цена
+# вызова −53%. У РЕВИЗИИ рассуждение и есть работа: `none` терял треть правок
+# и почти все «оригинал повреждён» (3 из 20 против 18), `low` занижал оценки
+# годных строк (31 из 40 ≥ 9 против 38) — а на «≥ 9» стоит ручательство.
+# Поэтому ревизия, судья, перевод и ремонт здесь НЕ перечислены: пустое
+# значение — не слать параметр, поведение прежнее. Новый шаг в таблицу — только
+# с замером на тех же строках (scratchpad/measure_effort.py того замера:
+# одиночно по умолчанию, одиночно с effort, сравнение с сохранёнными вердиктами).
+# Окружение перекрывает таблицу: `REASONING_TERMCHECK=low`, `=default` — не слать.
+# Отметка `effort` пишется в запись вердикта (как `batch: N` у ревизии):
+# ранг модели (`_rank_not_weaker`) её не различает, и отделить такие записи
+# потом можно только по ней.
+# Шаг — тот, что назван в `_llm_client(step=)`: у приёмки ремонта внутренний
+# вызов проверки терминов идёт как «termcheck» и получает то же значение —
+# замер делался на одиночных вердиктах, доля откатов ремонта им не мерилась.
+STEP_REASONING = {"termcheck": "none"}
+_REASONING_REJECTED: set = set()      # (модель, значение), которые поставщик отверг
+
+
+def _step_reasoning(step: Optional[str]) -> Optional[str]:
+    if not step:
+        return None
+    env = os.environ.get("REASONING_" + step.upper())
+    if env is not None:
+        env = env.strip().lower()
+        return None if env in ("", "default") else env
+    return STEP_REASONING.get(step)
+
+
+class _OpenAIChat:
+    """Клиент OpenAI под тем же `.chat.completions.create`, что и у
+    `_AnthropicChat`: единственная точка, где к вызову добавляется
+    `reasoning_effort` шага. Ленивый: к клиенту обращается только в момент
+    вызова (тесты подменяют `OpenAI` заглушкой, у которой нет `.chat`).
+    Отверг поставщик параметр (400 с его именем) — вызов повторяется без
+    него, пара «модель + значение» запоминается на процесс: иначе каждый
+    вызов шага стоил бы два запроса, а порция прогона падала бы целиком."""
+
+    def __init__(self, client, entry: dict, step: Optional[str]):
+        self._c, self._m, self._step = client, entry, step
+        self.effort_sent: Optional[str] = None
+        self.chat = _types.SimpleNamespace(completions=_types.SimpleNamespace(create=self.create))
+
+    def create(self, **kw):
+        eff = _step_reasoning(self._step) if self._m.get("api") == "modern" else None
+        if eff and "reasoning_effort" not in kw and (self._m.get("id"), eff) not in _REASONING_REJECTED:
+            try:
+                resp = self._c.chat.completions.create(**dict(kw, reasoning_effort=eff))
+                self.effort_sent = eff
+                return resp
+            except Exception as e:
+                # Отказ — это 400 с именем параметра (у SDK статус в
+                # `status_code`); текст с тем же словом при 5xx/таймауте —
+                # не отказ, и пару им не клеймим. Без лока намеренно: гонка
+                # потоков `_run_parallel` даёт лишь лишний 400.
+                status = getattr(e, "status_code", None)
+                if "reasoning_effort" not in str(e) or status not in (None, 400):
+                    raise
+                _REASONING_REJECTED.add((self._m.get("id"), eff))
+                print("[backend] %s: reasoning_effort=%s отвергнут (%s) — дальше без него"
+                      % (self._m.get("id"), eff, str(e)[:160]), file=sys.stderr)
+        self.effort_sent = None
+        return self._c.chat.completions.create(**kw)
+
+
 _GATE_SESSION = threading.local()     # сессия запроса в потоках `_run_parallel`
 
 
@@ -1815,8 +1890,8 @@ def _llm_client(model, timeout: float = 90, max_retries: int = 1, step: Optional
         return _AnthropicChat(anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"),
                                                   timeout=timeout, max_retries=max_retries), m)
     import openai
-    return openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=timeout,
-                         max_retries=max_retries)
+    return _OpenAIChat(openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=timeout,
+                                     max_retries=max_retries), m, step)
 
 
 # ── Справочник силы моделей ──────────────────────────────────────────────────
@@ -2154,7 +2229,12 @@ def _openai_termcheck(source: str, target: str, src_lang: str, tgt_lang: str,
                 "severity": sev if sev in TERMCHECK_SEVERITY else "major",
                 "why": (f.get("why") or "").strip(),
             })
-        return {"findings": out, "model": mdl["id"]}
+        res = {"findings": out, "model": mdl["id"]}
+        # Отметка рассуждения — в запись (см. STEP_REASONING): ранг модели
+        # её не различает, а отделить такие вердикты потом можно только по ней.
+        if getattr(client, "effort_sent", None):
+            res["effort"] = client.effort_sent
+        return res
     except Exception as e:
         print(f"[backend] termcheck failed: {e}", file=sys.stderr)
         return None
@@ -2854,6 +2934,10 @@ def _verdict_public(v):
     out = v
     if "model" in out:
         out = {**out, "model": _model_alias(out.get("model"))}
+    if "effort" in out:
+        # Режим рассуждения — маркер поставщика (у Claude — из каталога,
+        # у OpenAI «modern» — по шагу): с ним псевдоним читается.
+        out = {k: x for k, x in out.items() if k != "effort"}
     if out.get("triedModels"):
         if out is v:
             out = dict(v)
@@ -3358,6 +3442,7 @@ _FN_PATHS = [
     ("POST", re.compile(r"/api/term-queue/\d+/explain$"), ("terms",)),
     ("POST", re.compile(r"/api/quote/scan$"), ("ocr",)),
     ("POST", re.compile(r"/api/projects/\d+/media/transcribe$"), ("minutes", "speech")),
+    ("POST", re.compile(r"/api/projects/\d+/media/frametext$"), ("ocr",)),
     ("POST", re.compile(r"/api/glossary/audit$"), ("terms",)),
     # Загрузка видео и сборка — НЕ здесь: та же дверь возвращает проекту
     # удалённый исходник и собирает субтитры, а это бесплатно (инвариант 15).
@@ -3544,6 +3629,8 @@ _PAID = [
     # НЕТ: та же дверь возвращает проекту удалённое исходное видео, а это
     # бесплатно (инвариант 15). Рубеж — в обработчике, для нового проекта.
     ("POST", re.compile(r"/api/projects/\d+/media/transcribe$")),
+    # Текст в кадре: зрячая модель читает найденные надписи.
+    ("POST", re.compile(r"/api/projects/\d+/media/frametext$")),
 ]
 
 
@@ -3823,7 +3910,7 @@ def _prev_ctx_usable(s: dict) -> bool:
     tgt = (s.get("target") or "").strip()
     if not tgt or not (s.get("source") or "").strip():
         return False
-    if s.get("status") not in _PREV_CTX_OK or _is_image_seg(s):
+    if s.get("status") not in _PREV_CTX_OK or _anchorless_seg(s):
         return False
     if _confirm_override(s):
         return False
@@ -4685,7 +4772,10 @@ PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/health",
                     # Колбэки платёжных систем. Входа у поставщика нет — защита
                     # ПОДПИСЬЮ (Click: md5 с секретом, Payme: Basic-ключ), а без
                     # ключей в окружении дверь отвечает отказом протокола.
-                    "/api/pay/click/prepare", "/api/pay/click/complete", "/api/pay/payme"}
+                    "/api/pay/click/prepare", "/api/pay/click/complete", "/api/pay/payme",
+                    # Octo: телу уведомления не верим вовсе — оно лишь повод
+                    # спросить статус НАШИМ ключом (`_octo_sync`).
+                    "/api/pay/octo"}
 
 # Служебный токен бота. Бот — ОТДЕЛЬНЫЙ процесс и ходит к нам как обычный
 # клиент, поэтому ему нужен вход. Пароль суперпользователя ему давать нельзя:
@@ -12281,12 +12371,24 @@ def _pay_env(name: str) -> str:
 
 
 def _pay_online(method: str) -> bool:
-    """Онлайн-способ включён, только когда заданы ВСЕ его ключи."""
+    """Онлайн-способ включён, только когда заданы ВСЕ его ключи. Карта
+    Visa/Mastercard онлайн — через Octo; без его ключей она «по счёту»."""
+    if method == "card":
+        return bool(_pay_env("OCTO_SHOP_ID").isdigit() and _pay_env("OCTO_SECRET"))
     if method == "click":
         return bool(_pay_env("CLICK_SERVICE_ID") and _pay_env("CLICK_MERCHANT_ID") and _pay_env("CLICK_SECRET_KEY"))
     if method == "payme":
         return bool(_pay_env("PAYME_MERCHANT_ID") and _pay_env("PAYME_KEY"))
     return False
+
+
+def _pay_currency(method: str) -> str:
+    """Валюта способа. Карта через Octo — в валюте договора с Octo
+    (`OCTO_CURRENCY`: UZS по умолчанию, USD — если у магазина долларовый
+    счёт); «по счёту» — доллары, как было."""
+    if method == "card" and _pay_online("card"):
+        return "USD" if _pay_env("OCTO_CURRENCY").upper() == "USD" else "UZS"
+    return PAY_CURRENCY[method]
 
 
 def _pay_cfg() -> dict:
@@ -12361,7 +12463,7 @@ def _pay_quote(pages, minutes, method: str, cfg: dict, tid: str) -> dict:
     usd = payments_mod.price_total(pages, minutes, pp, pm)
     if usd <= 0:
         raise HTTPException(503, "Цены не заданы: сообщите администратору")
-    currency = PAY_CURRENCY[method]
+    currency = _pay_currency(method)
     rate = _pay_rate(cfg, currency)
     if rate is not None and rate <= 0:
         raise HTTPException(503, "Курс валюты не задан: сообщите администратору")
@@ -12393,6 +12495,8 @@ def _pay_link(order: dict) -> Optional[str]:
     if m == "payme" and _pay_online("payme"):
         return payments_mod.payme_link(_pay_env("PAYME_MERCHANT_ID"), order["id"], int(order["amount"]),
                                        _pay_return_url(order["id"]), test=_pay_env("PAYME_TEST") == "1")
+    if m == "card" and _pay_online("card"):
+        return _octo_url(order)
     tpl = _pay_env({"card": "PAY_CARD_LINK", "kaspi": "PAY_KASPI_LINK"}.get(m, ""))
     if tpl and m in ("card", "kaspi"):
         return (tpl.replace("{order}", str(order["id"])).replace("{amount}", str(order["amount"]))
@@ -12405,13 +12509,179 @@ def _pay_public(order: dict) -> dict:
     cfg = _pay_cfg()
     out = {k: order.get(k) for k in ("id", "at", "pages", "minutes", "amount", "currency", "method",
                                       "status", "paidAt", "userName")}
-    out["online"] = order["method"] in ("click", "payme") and _pay_online(order["method"])
+    out["online"] = order["method"] in ("click", "payme", "card") and _pay_online(order["method"])
     out["url"] = _pay_link(order)
-    if order["method"] in ("card", "kaspi"):
+    if order["method"] in ("card", "kaspi") and not out["online"]:
         out["note"] = (cfg["notes"].get(order["method"]) or "")
     if order.get("status") == "new" and time.time() > float(order.get("expires") or 0):
         out["status"] = "expired"
     return out
+
+
+# ── Octo: карты Visa / Mastercard (help.octo.uz) ──
+# Платёж заводим МЫ (`prepare_payment`) и храним в заказе `octo` = {n —
+# попытка, tx, uuid, url, at, ttl, status}. Уведомление Octo и возврат
+# человека с кассы (`/?pay=N` → GET заказа) зовут `_octo_sync`: статус
+# спрашивается запросом с НАШИМ секретом, и только его ответ зачисляет
+# заказ (Octo сам советует так делать — уведомления он секретом магазина
+# не подписывает). Сеть — вне `_PAY_LOCK`: запрос к Octo держал бы замок
+# всех оплат до 15 с.
+OCTO_TTL_MIN = int(os.environ.get("OCTO_TTL_MIN", "60") or 60)
+
+
+def _octo_post(path: str, body: dict) -> dict:
+    """POST в Octo. Тесты подменяют эту функцию — сети в них нет."""
+    import urllib.request
+    base = _pay_env("OCTO_API_BASE") or payments_mod.OCTO_BASE
+    req = urllib.request.Request(base.rstrip("/") + "/" + path.lstrip("/"),
+                                 data=json.dumps(body).encode("utf-8"),
+                                 headers={"Content-Type": "application/json", "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read().decode("utf-8") or "{}")
+
+
+def _octo_url(order: dict) -> Optional[str]:
+    """Действующая ссылка на кассу Octo — или ничего (истекла, отменена)."""
+    oc = order.get("octo") or {}
+    if not oc.get("url") or oc.get("status") in payments_mod.OCTO_DEAD:
+        return None
+    if time.time() > float(oc.get("at") or 0) + 60 * float(oc.get("ttl") or OCTO_TTL_MIN) - 60:
+        return None
+    return oc["url"]
+
+
+def _pay_receipt_title(order: dict, lang: str = "ru") -> str:
+    """Название позиции в фискальном чеке. Продаём ДОСТУП К ПРОГРАММЕ
+    (предоплаченный объём её работы), а не перевод как услугу бюро — так
+    и в ИКПУ: название обязано не спорить с кодом в той же строке чека.
+    Нулевая часть заказа не называется."""
+    pages, minutes = int(order.get("pages") or 0), int(order.get("minutes") or 0)
+    if lang == "en":
+        parts = [p for p in ("%d pages" % pages if pages else "",
+                             "%d video minutes" % minutes if minutes else "") if p]
+        return "Access to translation software: " + ", ".join(parts)
+    parts = [p for p in ("%d стр." % pages if pages else "",
+                         "%d мин видео" % minutes if minutes else "") if p]
+    return "Доступ к программе перевода: " + ", ".join(parts)
+
+
+def _octo_basket(order: dict) -> Optional[list]:
+    """Фискальные данные чека — только если заданы ИКПУ, ИНН и код упаковки
+    (как `PAYME_IKPU`): полу-заполненная корзина получила бы отказ Octo."""
+    spic, inn, pack = _pay_env("OCTO_SPIC"), _pay_env("OCTO_INN"), _pay_env("OCTO_PACKAGE_CODE")
+    if not (spic and inn and pack):
+        return None
+    return [{"position_desc": _pay_receipt_title(order, "en")[:120], "count": 1,
+             "price": payments_mod.octo_sum(order["amount"], order["currency"]),
+             "spic": spic, "inn": inn, "package_code": pack, "nds": 1 if _pay_env("OCTO_VAT") == "1" else 0}]
+
+
+def _octo_prepare(order: dict) -> dict:
+    """Завести у Octo новую транзакцию заказа и запомнить ссылку. Сбой —
+    заказ остаётся без ссылки, причина — в журнале заказа; повтор — GET заказа."""
+    base = (os.environ.get("PUBLIC_BASE_URL") or "").rstrip("/")
+    n = int((order.get("octo") or {}).get("n") or 0) + 1
+    tx = payments_mod.octo_tx_id(order["id"], n)
+    body = payments_mod.octo_prepare_body(
+        _pay_env("OCTO_SHOP_ID"), _pay_env("OCTO_SECRET"), tx, order["amount"], order["currency"],
+        _biz_now().strftime("%Y-%m-%d %H:%M:%S"), "Order %d: access to translation software" % int(order["id"]),
+        base + "/api/pay/octo", _pay_return_url(order["id"]), test=_pay_env("OCTO_TEST") == "1",
+        language=_pay_env("OCTO_LANG") or "ru", ttl=OCTO_TTL_MIN,
+        methods=tuple(x.strip() for x in (_pay_env("OCTO_METHODS") or "bank_card").split(",") if x.strip()),
+        basket=_octo_basket(order))
+    try:
+        data, err = payments_mod.octo_data(_octo_post("prepare_payment", body))
+    except Exception as e:
+        data, err = None, "network: %s" % str(e)[:200]
+    with _PAY_LOCK:
+        cur = _pays().pay_get(order["id"]) or order
+        if data and data.get("octo_pay_url") and cur.get("status") == "new":
+            cur["octo"] = {"n": n, "tx": tx, "uuid": str(data.get("octo_payment_UUID") or ""),
+                           "url": str(data["octo_pay_url"]), "at": time.time(), "ttl": OCTO_TTL_MIN,
+                           "status": str(data.get("status") or "created"),
+                           "test": _pay_env("OCTO_TEST") == "1"}
+            _pay_log(cur, "octo.prepared", tx=tx)
+        else:
+            oc = dict(cur.get("octo") or {})
+            oc["n"] = n
+            cur["octo"] = oc
+            _pay_log(cur, "octo.prepareFailed", tx=tx, error=(err or "no url")[:300])
+            print(f"[backend] Octo: заказ {order['id']} — платёж не заведён: {err}", file=sys.stderr)
+        _pays().pay_put(cur)
+    return cur
+
+
+def _octo_sync(order: dict, tx: Optional[str] = None) -> dict:
+    """Спросить Octo о транзакции заказа (по умолчанию — последней) и
+    поступить по ОТВЕТУ: `succeeded` при совпавших сумме и валюте — оплачен."""
+    oc = order.get("octo") or {}
+    tx = tx or oc.get("tx")
+    if not tx or not _pay_online("card"):
+        return order
+    try:
+        data, err = payments_mod.octo_data(_octo_post("prepare_payment", payments_mod.octo_status_body(
+            _pay_env("OCTO_SHOP_ID"), _pay_env("OCTO_SECRET"), tx)))
+    except Exception as e:
+        data, err = None, "network: %s" % str(e)[:200]
+    if not data:
+        print(f"[backend] Octo: статус {tx} не получен: {err}", file=sys.stderr)
+        return order
+    st = str(data.get("status") or "")
+    uuid = str(data.get("octo_payment_UUID") or "")
+    if st == payments_mod.OCTO_PAID:
+        cur = _pays().pay_get(order["id"]) or order
+        total = data.get("total_sum")
+        cur_got = str(data.get("currency") or order["currency"]).upper()
+        if (total is not None and not payments_mod.octo_amount_ok(total, order["amount"], order["currency"]))                 or cur_got != order["currency"]:
+            with _PAY_LOCK:
+                cur = _pays().pay_get(order["id"]) or order
+                _pay_log(cur, "octo.amountMismatch", tx=tx, got="%s %s" % (total, cur_got))
+                _pays().pay_put(cur)
+            if tg_mod:
+                tg_mod.notify_admin_async("⚠️ Octo: заказ №%d оплачен НЕ той суммой (%s %s против %s %s) — "
+                                          "проверьте в кабинете Octo." % (int(order["id"]), total, cur_got,
+                                                                           order["amount"], order["currency"]))
+            return cur
+        paid_uuid = (cur.get("octo") or {}).get("paidUuid")
+        if cur.get("status") == "paid" and paid_uuid and paid_uuid != uuid:
+            # Две транзакции одного заказа оплачены обе: вторые деньги —
+            # возврат руками в кабинете Octo. Молчать об этом нельзя.
+            if tg_mod:
+                tg_mod.notify_admin_async("⚠️ Octo: заказ №%d оплачен ВТОРОЙ раз (%s) — верните деньги "
+                                          "в кабинете Octo." % (int(order["id"]), uuid))
+            return cur
+        oc2 = dict(cur.get("octo") or {})
+        oc2.update({"status": st, "paidUuid": uuid, "paidTx": tx, "rrn": data.get("rrn"),
+                    "card": data.get("maskedPan"), "vendor": data.get("card_vendor")})
+        return _pay_mark_paid(cur, "octo", octo=oc2)
+    with _PAY_LOCK:
+        cur = _pays().pay_get(order["id"]) or order
+        oc2 = dict(cur.get("octo") or {})
+        if oc2.get("tx") == tx and oc2.get("status") != st:
+            oc2["status"] = st
+            cur["octo"] = oc2
+            _pay_log(cur, "octo.status", tx=tx, status=st)
+            _pays().pay_put(cur)
+    return cur
+
+
+def _octo_ensure(order: dict) -> dict:
+    """Заказ картой ждёт оплаты: узнать судьбу прежней транзакции и, если
+    ссылки нет (сбой при заведении), завести её. Истёкшую ссылку новой
+    не заменяем здесь: страница заказа — не повод плодить транзакции."""
+    if order.get("method") != "card" or not _pay_online("card") or order.get("status") != "new":
+        return order
+    if time.time() > float(order.get("expires") or 0):
+        return order
+    oc = order.get("octo") or {}
+    if oc.get("tx"):
+        order = _octo_sync(order)
+        oc = order.get("octo") or {}
+        if order.get("status") != "new" or _octo_url(order) or oc.get("status") in payments_mod.OCTO_BUSY:
+            return order
+    if int(oc.get("n") or 0) >= 5:
+        return order
+    return _octo_prepare(order)
 
 
 def _pay_log(order: dict, action: str, **extra) -> None:
@@ -12574,7 +12844,7 @@ def pay_state():
     for m in PAY_METHODS:
         if not cfg["methods"].get(m, True):
             continue
-        cur = PAY_CURRENCY[m]
+        cur = _pay_currency(m)
         # Цены страницы и минуты у способа наружу НЕ идут: на карточке
         # оплаты человек видит только итог «К оплате» за свой заказ, а цены
         # за единицу — это прайс сервиса, и видит его администратор (22а).
@@ -12620,6 +12890,8 @@ def pay_order_create(req: PayOrderRequest):
                  **{k: q[k] for k in ("pages", "minutes", "method", "currency", "usd", "rate", "amount", "prices")}}
         _pay_log(order, "created")
         _pays().pay_put(order)
+    if q["method"] == "card" and q["online"]:
+        order = _octo_prepare(order)
     _audit("pay.order", order=oid, pages=q["pages"], minutes=q["minutes"], amount=q["amount"],
            currency=q["currency"], method=q["method"])
     _ev("funnel.payOrder:" + q["method"], tid)
@@ -12633,6 +12905,10 @@ def pay_order_create(req: PayOrderRequest):
 @app.get("/api/pay/orders/{oid}")
 def pay_order_get(oid: int):
     o = _pay_get_own(oid)
+    if o.get("method") == "card" and o.get("status") == "new":
+        # Возврат с кассы Octo: уведомление могло не дойти (тестовый стенд
+        # без публичного адреса) — спросим статус сами.
+        o = _octo_ensure(o)
     if o.get("status") == "paid":
         _pay_reconcile(o["tenant"])
     return {"ok": True, "order": _pay_public(o)}
@@ -12644,7 +12920,8 @@ def pay_order_cancel(oid: int):
         o = _pay_get_own(oid)
         if o.get("status") != "new":
             raise HTTPException(409, "Заказ уже не ждёт оплаты")
-        if (o.get("payme") or {}).get("state") == 1 or (o.get("click") or {}).get("prepared"):
+        if (o.get("payme") or {}).get("state") == 1 or (o.get("click") or {}).get("prepared") \
+                or (o.get("octo") or {}).get("status") in payments_mod.OCTO_BUSY:
             raise HTTPException(409, "Оплата по этому заказу уже началась — дождитесь её конца")
         o["status"] = "cancelled"
         _pay_log(o, "cancelled")
@@ -12700,10 +12977,11 @@ def admin_payments(request: Request, status: str = "", limit: int = 300):
     return {"ok": True, "orders": rows, "totals": totals, "config": _pay_cfg(), "reconciled": fixed,
             "providers": {"click": _pay_online("click"), "payme": _pay_online("payme"),
                           "paymeTest": _pay_env("PAYME_TEST") == "1",
+                          "octo": _pay_online("card"), "octoTest": _pay_env("OCTO_TEST") == "1",
                           "cardLink": bool(_pay_env("PAY_CARD_LINK")), "kaspiLink": bool(_pay_env("PAY_KASPI_LINK"))},
             "callbacks": {"clickPrepare": base + "/api/pay/click/prepare",
                           "clickComplete": base + "/api/pay/click/complete",
-                          "payme": base + "/api/pay/payme"}}
+                          "payme": base + "/api/pay/payme", "octo": base + "/api/pay/octo"}}
 
 
 @app.post("/api/admin/payments/{oid}/confirm")
@@ -12724,7 +13002,8 @@ def admin_payment_confirm(oid: int, req: PayAdminAction, request: Request):
         # Оплата у поставщика ИДЁТ: подтверди руками — и отменённая им потом
         # транзакция оставила бы страницы без денег. Ждём его ответа.
         if o.get("status") == "new" and (pst == 1 or ((o.get("click") or {}).get("prepared")
-                                                      and not (o.get("click") or {}).get("completed"))):
+                                                      and not (o.get("click") or {}).get("completed"))
+                                         or (o.get("octo") or {}).get("status") in payments_mod.OCTO_BUSY):
             raise HTTPException(409, "По заказу идёт оплата у платёжной системы — дождитесь её ответа")
         if o.get("status") == "new":
             _pay_log(o, "confirmed", note=(req.note or "").strip()[:300] or None)
@@ -12746,6 +13025,8 @@ def admin_payment_cancel(oid: int, req: PayAdminAction, request: Request):
                                      "вручную: снимите страницы или минуты в карточке организации")
         if (o.get("payme") or {}).get("state") == 1:
             raise HTTPException(409, "По заказу идёт транзакция Payme — отменить её может только Payme")
+        if (o.get("octo") or {}).get("status") in payments_mod.OCTO_BUSY:
+            raise HTTPException(409, "По заказу идёт оплата у платёжной системы — дождитесь её ответа")
         o["status"] = "cancelled"
         _pay_log(o, "cancelled", note=(req.note or "").strip()[:300] or None)
         _pays().pay_put(o)
@@ -13025,6 +13306,42 @@ async def click_complete(request: Request):
     return JSONResponse(await run_in_threadpool(_click_handle, p, True))
 
 
+def _octo_notify(body: dict) -> dict:
+    tx = str(body.get("shop_transaction_id") or "")
+    oid = payments_mod.octo_order_of(tx)
+    o = _pay_order_for(oid, "card") if oid is not None else None
+    if not o or not _pay_online("card"):
+        return {"ok": False, "error": "order not found"}
+    key = _pay_env("OCTO_UNIQUE_KEY")
+    if key and not payments_mod.octo_sign_ok(key, body.get("octo_payment_UUID", ""), body.get("status", ""),
+                                              body.get("signature", "")):
+        # Подпись — признак, а не рубеж: решает ответ на наш запрос статуса.
+        print(f"[backend] Octo: подпись уведомления по {tx} не сошлась — сверяем статусом", file=sys.stderr)
+    with _PaySession(o["tenant"], "system:octo"):
+        o = _octo_sync(o, tx)
+    return {"ok": True, "status": o.get("status")}
+
+
+@app.post("/api/pay/octo")
+async def octo_callback(request: Request):
+    """Уведомление Octo о смене статуса. Мидварь публичные двери не
+    сопровождает — общие коллекции сверяем сами."""
+    raw = await request.body()
+    try:
+        body = json.loads(raw.decode("utf-8")) if len(raw) <= 65536 else None
+    except (ValueError, UnicodeDecodeError):
+        body = None
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "bad request"}, status_code=400)
+    try:
+        await run_in_threadpool(_sync_shared)
+        out = await run_in_threadpool(_octo_notify, body)
+    except Exception as e:
+        print(f"[backend] уведомление Octo упало: {e}", file=sys.stderr)
+        return JSONResponse({"ok": False, "error": "internal"}, status_code=500)
+    return JSONResponse(out, status_code=200 if out.get("ok") else 404)
+
+
 _PAYME_METHODS = ("CheckPerformTransaction", "CreateTransaction", "PerformTransaction",
                   "CancelTransaction", "CheckTransaction", "GetStatement")
 
@@ -13056,7 +13373,7 @@ def _payme_detail(o: dict) -> Optional[dict]:
     if not ikpu:
         return None
     return {"receipt_type": 0, "items": [{
-        "title": "Перевод: %d стр., %d мин" % (int(o.get("pages") or 0), int(o.get("minutes") or 0)),
+        "title": _pay_receipt_title(o),
         "price": int(o["amount"]) * 100, "count": 1, "code": ikpu,
         "package_code": _pay_env("PAYME_PACKAGE_CODE") or "1", "vat_percent": int(_pay_env("PAYME_VAT") or 0)}]}
 
@@ -13727,9 +14044,10 @@ def _store_original(pid: int, filename: str, content: bytes) -> None:
 
 
 def _text_segments(project: dict) -> list:
-    """Сегменты абзацев — без распознанных на картинках: у тех якорь другой."""
+    """Сегменты абзацев — без распознанных на картинках и в кадре видео:
+    у тех якорь другой."""
     return [s for s in project.get("segments") or []
-            if (s.get("origin") or {}).get("kind") != "image"]
+            if (s.get("origin") or {}).get("kind") not in ("image", "frame")]
 
 
 def _image_segments(project: dict) -> list:
@@ -14162,7 +14480,11 @@ def _reimport_apply(pid: int, parsed: dict, content: bytes, filename: str, title
             new_segments.append(seg)
             for i in idxs:
                 pairs.append([i, seg["id"]])
-        project["segments"] = new_segments
+        # Надписи из кадра видео к файлу субтитров не относятся — их якорь
+        # время и место в кадре, а кадры от замены .srt не меняются. Они
+        # остаются целиком (перевод, подпись) и встают по времени заново.
+        frames = [s for s in project.get("segments") or [] if _is_frame_seg(s)]
+        project["segments"] = new_segments + frames
         project["segSeq"] = max(int(project.get("segSeq") or 0), next_id - 1)
         if debit:
             project["pages"] = all_pages
@@ -14783,6 +15105,18 @@ def _is_image_seg(s: dict) -> bool:
     return (s.get("origin") or {}).get("kind") == "image"
 
 
+def _is_frame_seg(s: dict) -> bool:
+    """Надпись, прочитанная В КАДРЕ видео (`_frame_text_run`): якорь — время
+    и место в кадре, а не реплика хранимого .srt. Склейке и разрезке строк,
+    карте «реплика → сегмент», повторному импорту и озвучке она не подлежит."""
+    return (s.get("origin") or {}).get("kind") == "frame"
+
+
+def _anchorless_seg(s: dict) -> bool:
+    """Строка, у которой нет абзаца исходного файла: с картинки или из кадра."""
+    return (s.get("origin") or {}).get("kind") in ("image", "frame")
+
+
 def _boundary_reset(seg: dict, how: str, parts: list) -> None:
     """Другой оригинал: подпись снята со следом, вердикты сняты, счётчик
     перевода заново — наследство частей."""
@@ -14861,9 +15195,11 @@ def merge_segment_next(pid: int, sid: int):
         if i is None:
             raise HTTPException(404, "Сегмент не найден")
         s1 = segs[i]
-        if _is_image_seg(s1):
+        if _is_frame_seg(s1):
+            raise HTTPException(400, "Надпись из кадра склеивать нельзя: её место — время и место в кадре")
+        if _anchorless_seg(s1):
             raise HTTPException(400, "Строку с картинки склеивать нельзя: её место — рамка на картинке")
-        j = next((k for k in range(i + 1, len(segs)) if not _is_image_seg(segs[k])), None)
+        j = next((k for k in range(i + 1, len(segs)) if not _anchorless_seg(segs[k])), None)
         if j is None:
             raise HTTPException(400, "Это последняя строка файла — склеивать не с чем")
         s2 = segs[j]
@@ -15020,7 +15356,9 @@ def split_segment(pid: int, sid: int, req: SplitSegmentRequest):
         if i is None:
             raise HTTPException(404, "Сегмент не найден")
         s1 = segs[i]
-        if _is_image_seg(s1):
+        if _is_frame_seg(s1):
+            raise HTTPException(400, "Надпись из кадра резать нельзя: её место — время и место в кадре")
+        if _anchorless_seg(s1):
             raise HTTPException(400, "Строку с картинки резать нельзя: её место — рамка на картинке")
         src = s1.get("source") or ""
         ok = 0 < req.at < len(src)
@@ -15109,7 +15447,7 @@ def _map_source_to_segments(units: list, segments: list,
     # рядом с такой же соседней сдвигает окно так, что след теряется.
     # Во-вторых, они раздували знаменатель порога «совпало меньше половины»,
     # и родной файл отклонялся как чужой.
-    segments = [s for s in segments if (s.get("origin") or {}).get("kind") != "image"]
+    segments = [s for s in segments if not _anchorless_seg(s)]
     pairs, matched = [], set()
     j = 0
     for text, idxs in units:
@@ -15164,7 +15502,7 @@ async def attach_source(pid: int, file: UploadFile = File(...), force: bool = Fo
     units = _docx_units(paras, full)
     pairs, matched = _map_source_to_segments(units, project["segments"], full)
     total = len([s for s in project["segments"]
-                 if (s.get("origin") or {}).get("kind") != "image"])
+                 if not _anchorless_seg(s)])
     stats = {"paras": len(paras), "units": len(units),
              "segments": total, "matched": matched, "unmatched": total - matched}
 
@@ -15371,7 +15709,7 @@ def _image_read_parse(raw: str) -> list:
 
 def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
                        domain_id: Optional[str] = None,
-                       model: str = None) -> Optional[list]:
+                       model: str = None, system: Optional[str] = None) -> Optional[list]:
     """Прочитать текст в найденных рамках. Список той же длины, что blocks,
     либо None — вызов не удался.
 
@@ -15415,7 +15753,7 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
     try:
         resp = client.chat.completions.create(
             model=mdl["id"],
-            messages=[{"role": "system", "content": _image_read_system(dom, src_lang)},
+            messages=[{"role": "system", "content": system or _image_read_system(dom, src_lang)},
                       {"role": "user", "content": content}],
             **extra)
         _note_usage("ocr", mdl["id"], resp)
@@ -15449,6 +15787,8 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
             continue
         out[i] = {"text": (item.get("text") or "").strip(),
                   "overlay": bool(item.get("overlay")),
+                  # Вид надписи — у кадра видео (`_frame_read_system`).
+                  "kind": str(item.get("kind") or ""),
                   "model": _dm_public(mdl["id"])}
     return out
 
@@ -19948,6 +20288,8 @@ def _segment_for_client(seg: dict, project: Optional[dict] = None) -> dict:
             "needs_judge": _judge_pending(out)}
     if tc:
         out["termcheck"] = {**tc, "stale": _check_stale(tc, out.get("target") or "")}
+        if _hide_models():
+            out["termcheck"].pop("effort", None)     # маркер поставщика (24а)
     rv = out.get("review")
     if rv:
         # Свежесть считает СЕРВЕР тем же `_review_stale`, что и прогон: он
@@ -20151,7 +20493,11 @@ def _project_for_client(project: dict) -> dict:
     out.pop("cueSpans", None)          # опорные точки показа — дело сервера
     ct = _cue_times(project)
     if ct is not None:
-        out["cueTimes"] = ct
+        # Надписи из кадра в карту реплик не входят — их время лежит на самой
+        # строке (`origin`). Копия словаря: `ct` — кэш `_cue_times`.
+        ft = {str(s["id"]): [s["origin"]["start"], s["origin"]["end"]]
+              for s in project["segments"] if _is_frame_seg(s) and s["origin"].get("start") is not None}
+        out["cueTimes"] = dict(ct, **ft) if ft else ct
     _strip_project_models(out)
     cur = _parse_rules(project.get("importKind") or "")
     out["parseOutdated"] = bool(cur and (project.get("parseRules") or 0) < cur
@@ -20696,6 +21042,8 @@ def _run_segment_termcheck(seg: dict, project: dict, model: Optional[str] = None
         "target_hash": _text_hash(target),
         "at": datetime.now().strftime("%Y-%m-%d %H:%M"),
     }
+    if res.get("effort"):
+        seg["termcheck"]["effort"] = res["effort"]
     if harvest:
         queued += [c["id"] for c in _harvest_if_clean(seg, project)]
     # Жалоба на приказной термин — не приговор записи, а повод переспросить
@@ -20751,11 +21099,49 @@ def termcheck_batch(pid: int, req: TermcheckBatchRequest):
             continue
         candidates.append(seg)
 
+    processed, errors, flagged = [], [], 0
+    # Одинаковая пара «оригинал + перевод» ПО ВСЕМУ ПРОЕКТУ, а не только
+    # внутри порции: составной прогон идёт «через файл» (`_ctx_interleave`),
+    # и повторы одного заголовка попадают в разные порции — на боевой книге
+    # 655 строк из 4751 повторяли пару другой строки и оплачивались заново.
+    # Донор — строка со свежим вердиктом не слабее запрошенного
+    # (`_termcheck_cached`: ранг, `skip`); вердикт не зависит от соседей,
+    # копия равна своему вызову. Копируется только вердикт: кандидаты
+    # в очередь и споры о записи донор уже завёл при своём вызове.
+    # ТОЛЬКО при `skip_cached`: без него заказано «перепроверить всё»
+    # (соло-прогон шага, другая модель), и копия старого вердикта близнеца
+    # была бы ровно тем, от чего заказчик отказался. Проход по книге —
+    # только за парами КАНДИДАТОВ порции (их ≤ 10): предикаты кэша на тысячах
+    # строк на каждую порцию держали бы единственного воркера минутами.
+    donors: dict = {}
+    if req.skip_cached and candidates:
+        wanted = {(_norm_key(sg.get("source")), _norm_key(sg.get("target"))) for sg in candidates}
+        for sg in project["segments"]:
+            pair = (_norm_key(sg.get("source")), _norm_key(sg.get("target")))
+            if (pair in wanted and pair not in donors and sg.get("termcheck")
+                    and (sg.get("target") or "").strip() and _termcheck_cached(sg, mdl_id)):
+                donors[pair] = sg
+    duplicates = 0
+    rest = []
+    for seg in candidates:
+        d = donors.get((_norm_key(seg.get("source")), _norm_key(seg.get("target"))))
+        if d is not None and d is not seg:
+            # Копия несёт `at`/`effort` донора; кандидаты в очередь и споры
+            # о записи (`_note_term_disputes`) донор завёл при своём вызове —
+            # у получателя они не заводятся, как и у копии внутри порции.
+            seg["termcheck"] = json.loads(json.dumps(d["termcheck"]))
+            processed.append(seg["id"])
+            duplicates += 1
+            if seg["termcheck"].get("findings"):
+                flagged += 1
+            continue
+        rest.append(seg)
+    candidates = rest
+
     limit = max(1, min(req.limit, 100))
     remaining_after = max(0, len(candidates) - limit)
     targets = candidates[:limit]
 
-    processed, errors, flagged = [], [], 0
     groups: dict = {}
     order: list = []
     for seg in targets:
@@ -20764,7 +21150,7 @@ def termcheck_batch(pid: int, req: TermcheckBatchRequest):
             groups[pair] = []
             order.append(pair)
         groups[pair].append(seg)
-    duplicates, skipped_trivial = 0, 0
+    skipped_trivial = 0
 
     def _tc_one(pair):
         seg = groups[pair][0]
@@ -24112,7 +24498,7 @@ def _review_stale(seg: dict) -> bool:
     # на месте: `_review_stale` проекта не имеет, а отпечаток стиля живёт
     # на проекте). Ревизор перечитает под новые правила — это платно,
     # и число названо в ответе на смену.
-    if rv.get("styleStale"):
+    if rv.get("styleStale") or rv.get("termlistStale"):
         return True
     src_h = rv.get("source_hash")
     if src_h is not None and src_h != _text_hash((seg.get("source") or "").strip()):
@@ -24264,7 +24650,14 @@ def _openai_review(seg: dict, project: dict, prev_src: str, next_src: str,
                        if str(x).strip()][:6],
             "fixed": (data.get("fixed") or "").strip(),
             "source_suspect": bool(data.get("source_suspect")),
-            "model": _dm_public(mdl["id"]), "cost": cost}
+            # НАСТОЯЩИЙ id, а не `_dm_public`: это уходит в данные сегмента
+            # (`review.model`, а при подстановке — в `provider` через
+            # `_replace_target`), а псевдоним ставит выдача
+            # (`_segment_for_client`). `_dm_public` смотрит на сессию, и в
+            # основном потоке запроса (`_run_parallel` с одной строкой идёт
+            # без пула) в книгу ложился псевдоним — сравнение «проверял тот,
+            # кто писал» переставало работать (инвариант 24а).
+            "model": mdl["id"], "cost": cost}
 
 
 def _review_veto(seg: dict, project: Optional[dict], candidate: str) -> list:
@@ -24337,6 +24730,270 @@ def _review_ask(seg: dict, project: dict, model: Optional[str] = None) -> Option
         print(f"[backend] ревизия seg#{seg.get('id')}: {e}", file=sys.stderr)
         return None
 
+
+
+# ── Ревизия ПАЧКОЙ (реплики субтитров) ─────────────────────────────────
+# Почему ревизия дорогая. Боевой замер (видео №12, AR→UZ, 151 строка,
+# задача 59): 120 вызовов модели ревизии, $0.60 из $0.69 всей проверки.
+# На вызов — около 974 входных токенов, из них ~750 — ОДИН И ТОТ ЖЕ промпт
+# `_review_system`, и ~195 скрытых токенов рассуждения. Реплика короткая,
+# поэтому за инструкцию платили в четыре раза больше, чем за сам текст,
+# а кэш промпта у поставщика не срабатывал: весь запрос короче 1024 токенов.
+#
+# Пачка отдаёт инструкцию ОДИН раз на несколько строк — тот же приём, что
+# у перевода реплик (`CUE_BATCH`). Каждый элемент несёт РОВНО то, что
+# получает одиночный вызов: свои соседи ДО/ПОСЛЕ с их переводом, свои
+# утверждённые термины и терм-лист. Своя обстановка у каждого, а не общая
+# на пачку, потому что в составном прогоне порция идёт «через файл»
+# (`_ctx_interleave`) и строки пачки соседями не являются. Промпт одиночного
+# вызова не тронут ни байтом — пачка дописывает к нему формат.
+#
+# Качество держат четыре рубежа:
+#   • ответ принимается ЦЕЛИКОМ или никак (`_review_batch_answer`: ровно
+#     номера 1..N, оценка — число 0–10), иначе строки спрашиваются по одной;
+#   • совет, ЯВНО более похожий на ЧУЖУЮ строку пачки, чем на свою, не берётся
+#     (`_review_fixed_mine`): эта строка спрашивается отдельно — перепутанный
+#     `fixed` был бы чужим текстом в документе клиента;
+#   • обрезанный ответ (`finish_reason: length`) — не пачка;
+#   • после пачки работают ТЕ ЖЕ бесплатные сверки и коды решений
+#     (`_run_segment_review`), что и после одиночного вызова.
+# Чего пачка НЕ доказала — названо: оценки в пачке могут сдвинуться
+# относительно одиночных (модель невольно сравнивает строки), а от шкалы
+# зависят пороги REVIEW_APPLY_MAX и REVIEW_VOUCH_SCORE. Поэтому выключатель
+# по умолчанию ВЫКЛЮЧЕН, а включается он после замера
+# (`tools/review_batch_ab.py`: пачка против одиночных на одних строках).
+# Вердикт помнит, что вынесен пачкой (`batch: N`), — отделить такие записи
+# можно и потом. REVIEW_VERSION не поднят: вопрос и шкала те же.
+try:
+    REVIEW_BATCH = int(os.environ.get("REVIEW_BATCH", "0"))
+except ValueError:
+    print("[backend] REVIEW_BATCH: не число, пачки выключены", file=sys.stderr)
+    REVIEW_BATCH = 0
+# Потолок текста пачки (оригиналы и переводы строк): длинные реплики,
+# склеенные руками, дали бы ответ длиннее потолка модели.
+REVIEW_BATCH_CHARS = int(os.environ.get("REVIEW_BATCH_CHARS", "3000"))
+
+REVIEW_BATCH_RULES = (
+    "\n\nРЕЖИМ ПАЧКИ. Сообщение пользователя — JSON-массив НЕЗАВИСИМЫХ "
+    "элементов. Каждый элемент — отдельный «этот сегмент» со своей "
+    "обстановкой: {\"n\": номер, \"source\": этот сегмент, \"target\": его "
+    "перевод, \"before\"/\"after\": сегменты ДО и ПОСЛЕ, \"before_tgt\"/"
+    "\"after_tgt\": их перевод (если есть), \"terms\": утверждённые термины, "
+    "\"doclist\": терм-лист документа}.\n"
+    "Оценивай КАЖДЫЙ элемент так, как если бы он был единственным: его "
+    "обстановка — только его собственные before/after. Другие элементы пачки "
+    "обстановкой НЕ являются: не сравнивай их между собой, не подгоняй "
+    "под них и не выравнивай оценки по пачке — шкала у каждого элемента та же, "
+    "что у одиночного сегмента. fixed — исправленный перевод поля target "
+    "ТОЛЬКО этого элемента.\n"
+    "Верни ТОЛЬКО JSON {\"lines\": [...]} — ровно одну запись на КАЖДЫЙ "
+    "элемент, с его n. Формат записи — тот, что описан выше: годится — "
+    "{\"n\": N, \"score\": S}; иначе {\"n\": N, \"score\": S, "
+    "\"source_suspect\": false, \"issues\": [...], \"fixed\": \"...\"}."
+)
+
+
+def _review_batch_answer(raw: str, n: int) -> Optional[dict]:
+    """{номер с 0: вердикт} — ТОЛЬКО если в ответе ровно элементы 1..N,
+    каждый один раз и с оценкой-числом. Иначе None: пачку не берём вовсе.
+    Условие непустоты текста у `_cue_answer` сюда не годится: у годного
+    перевода `issues` и `fixed` законно отсутствуют."""
+    t = re.sub(r"^```[a-zA-Z]*\s*|\s*```$", "", (raw or "").strip()).strip()
+    try:
+        data = json.loads(t)
+    except ValueError:
+        try:
+            data = json.loads(_json_body(t))
+        except ValueError:
+            return None
+    lines = data.get("lines") if isinstance(data, dict) else data
+    if not isinstance(lines, list) or len(lines) != n:
+        return None
+    out = {}
+    for item in lines:
+        if not isinstance(item, dict):
+            return None
+        if isinstance(item.get("score"), bool):
+            return None                        # true — не оценка
+        try:
+            k = int(item.get("n")) - 1
+            score = float(item.get("score"))
+        except (TypeError, ValueError):
+            return None
+        if not (0 <= k < n) or k in out or score != score:    # NaN
+            return None
+        fixed = item.get("fixed")
+        iss = item.get("issues")
+        out[k] = {"score": max(0.0, min(10.0, score)),
+                  "issues": ([str(x).strip() for x in iss if str(x).strip()][:6]
+                             if isinstance(iss, list) else []),
+                  "fixed": fixed.strip() if isinstance(fixed, str) else "",
+                  "source_suspect": bool(item.get("source_suspect"))}
+    return out
+
+
+# На сколько совет должен быть ближе к ЧУЖОЙ строке, чем к своей, чтобы
+# считаться перепутанным. Не «хоть чуть ближе»: реплики одного ролика
+# короткие и делят слова («и», «это», имя героя), и строгое сравнение
+# отправляло бы на повторный платный вызов верные советы.
+REVIEW_MIXUP_MARGIN = 0.15
+
+
+def _review_fixed_mine(fixed: str, own: str, others: list) -> bool:
+    """Совет относится к СВОЕЙ строке: он не ЯВНО ближе к другой строке
+    пачки, чем к своей. Правка — это обычно отредактированный перевод этой
+    же строки, поэтому сходство по знакам (`SequenceMatcher`) с ним выше;
+    перепутанный совет — копия или правка ЧУЖОГО перевода.
+    Цена обратной ошибки — деньги, не качество: у двух строк с одинаковым
+    оригиналом совет, выровнявший перевод под соседа, будет отвергнут, и
+    строку спросят ещё раз по одной.
+    Чего не ловит, сказано честно: совет, переведённый с чужого ОРИГИНАЛА
+    заново, на чужой перевод может и не походить. Такой кандидат держат
+    бесплатные сверки (числа, термины, письмо) — те же, что у одиночного."""
+    import difflib
+    f = (fixed or "").strip().lower()
+    if not f:
+        return True
+    # Буква в букву перевод ДРУГОЙ строки — перепутан, как бы ни были
+    # похожи сами строки (реплики «да», «да-да» отличаются одной буквой).
+    if any(f == (o or "").strip().lower() for o in others):
+        return False
+    mine = difflib.SequenceMatcher(None, f, (own or "").lower()).ratio()
+    return all(difflib.SequenceMatcher(None, f, (o or "").lower()).ratio()
+               <= mine + REVIEW_MIXUP_MARGIN for o in others)
+
+
+def _review_groups(todo: list) -> list:
+    """Строки — поровну по пачкам не больше REVIEW_BATCH (12 → 6+6, а не
+    8+4: хвост платил бы полную инструкцию почти за одну строку) и с потолком
+    по знакам."""
+    import math
+    n = len(todo)
+    k = max(1, math.ceil(n / max(1, REVIEW_BATCH)))
+    size = math.ceil(n / k)
+    groups, cur, chars = [], [], 0
+    for s in todo:
+        c = len(s.get("source") or "") + len(s.get("target") or "")
+        if cur and (len(cur) >= size or chars + c > REVIEW_BATCH_CHARS):
+            groups.append(cur)
+            cur, chars = [], 0
+        cur.append(s)
+        chars += c
+    if cur:
+        groups.append(cur)
+    return groups
+
+
+def _openai_review_batch(segs: list, project: dict,
+                         model: Optional[str] = None) -> tuple:
+    """Одна пачка — один вызов. (вердикты, цена вызова): вердикты — список
+    в порядке `segs` (форма — как у `_openai_review`) с None на месте строки,
+    которую надо спросить отдельно; None целиком — пачка не удалась. Цена
+    отдаётся и у отвергнутой пачки: её оплатили, и отчёт `review_project`
+    (`spent`) обязан её видеть. Своё исключение ловит сама (контракт
+    `_run_parallel`)."""
+    n = len(segs)
+    cost = 0.0
+    try:
+        mdl = _resolve_model(model or _dm("review"))
+        dom = _resolve_domain(project.get("domain"))
+        src_lang, tgt_lang = (_lang_prompt(project.get("src", "RU")),
+                              _lang_prompt(project.get("tgt", "EN")))
+        items = []
+        for i, s in enumerate(segs):
+            src = s.get("source") or ""
+            prev_src, next_src = _neighbours(project, s)
+            prev_tgt, next_tgt = _neighbour_targets(project, s)
+            it = {"n": i + 1, "before": prev_src or "—"}
+            if prev_tgt:
+                it["before_tgt"] = prev_tgt
+            it["source"] = src
+            it["target"] = s.get("target") or ""
+            it["after"] = next_src or "—"
+            if next_tgt:
+                it["after_tgt"] = next_tgt
+            terms = _verified_hits(src, project)
+            if terms:
+                it["terms"] = "; ".join((t.get("src") or "") + " → " + (t.get("tgt") or "")
+                                        for t in terms[:20])
+            doc = _doc_hits(src, project, terms)
+            if doc:
+                it["doclist"] = "; ".join(h["src"] + " → " + h["tgt"] for h in doc)
+            items.append(it)
+        system = _review_system(dom, src_lang, tgt_lang, _prompt_style(project)) \
+            + REVIEW_BATCH_RULES
+        # Потолок ответа — на КАЖДУЮ строку, как у одиночного (2048): иначе
+        # две исправленные строки с рассуждением обрезали бы ответ, и пачку
+        # пришлось бы оплачивать второй раз по одной.
+        # У Claude (`api: anthropic`) ветка та же по величине: шим кладёт
+        # в потолок и рассуждение (`effort`), и 900 одиночного на пачку
+        # обрезали бы ответ.
+        cap = min(16000, 1024 + 1500 * n)
+        extra = ({"max_completion_tokens": cap} if mdl["api"] == "modern"
+                 else {"max_tokens": cap, "temperature": 0})
+        if _provider_of(mdl) != "anthropic":
+            extra["response_format"] = {"type": "json_object"}
+        client = _llm_client(mdl, timeout=180, step="review", max_retries=1)
+        resp = client.chat.completions.create(
+            model=mdl["id"],
+            messages=[{"role": "system", "content": system},
+                      {"role": "user", "content": json.dumps(items, ensure_ascii=False)}],
+            **extra)
+        _note_usage("review", mdl["id"], resp)
+        u = getattr(resp, "usage", None)
+        cost = _usage_cost(mdl["id"], _usage_field(u, "prompt_tokens"),
+                           _usage_field(u, "completion_tokens")) or 0.0
+        if getattr(resp.choices[0], "finish_reason", None) == "length":
+            print(f"[backend] ревизия пачкой ({n}): ответ обрезан — по одной",
+                  file=sys.stderr)
+            return None, cost
+        ans = _review_batch_answer(resp.choices[0].message.content or "", n)
+    except Exception as e:
+        print(f"[backend] ревизия пачкой: {e}", file=sys.stderr)
+        return None, cost
+    if ans is None:
+        print(f"[backend] ревизия пачкой ({n}): ответ не по номерам — по одной",
+              file=sys.stderr)
+        return None, cost
+    targets = [s.get("target") or "" for s in segs]
+    out = []
+    for i in range(n):
+        a = ans[i]
+        if a["fixed"] and not _review_fixed_mine(
+                a["fixed"], targets[i], targets[:i] + targets[i + 1:]):
+            print(f"[backend] ревизия пачкой: совет seg#{segs[i].get('id')} похож "
+                  "на чужую строку — спросим отдельно", file=sys.stderr)
+            out.append(None)
+            continue
+        a.update({"model": mdl["id"], "cost": cost / n, "batch": n})
+        out.append(a)
+    return out, cost
+
+
+def _review_ask_many(todo: list, project: dict, model: Optional[str] = None) -> list:
+    """Вердикты на список строк в его порядке (None — ревизор не ответил).
+    У реплик субтитров — пачками (если включено), у остальных и при любом
+    сбое пачки — по одной, как всегда."""
+    def single(s):
+        return _review_ask(s, project, model)
+    if REVIEW_BATCH < 2 or len(todo) < 2 or not _cue_project(project):
+        return _run_parallel(todo, single)
+    groups = _review_groups(todo)
+    got = _run_parallel(groups, lambda g: (_openai_review_batch(g, project, model)
+                                           if len(g) > 1 else (None, 0.0)))
+    res, lost = [], []
+    for g, (ans, cost) in zip(groups, got):
+        res.extend(ans if ans is not None else [None] * len(g))
+        # Доля оплаченной пачки у строки, которую спросят ещё раз: без неё
+        # сумма `cost` по ответам (отчёт, замер) была бы меньше счёта.
+        lost.extend([cost / len(g)] * len(g))
+    again = [i for i, a in enumerate(res) if a is None]
+    if again:
+        for i, a in zip(again, _run_parallel([todo[i] for i in again], single)):
+            if a is not None:
+                a = dict(a, cost=(a.get("cost") or 0.0) + lost[i])
+            res[i] = a
+    return res
 
 # Знаки, которых у ТЕРМИНА не бывает: скобка, перечисление, косая черта.
 # Пара с ними — строка документа, а не словарная запись: «Распространённость
@@ -24424,6 +25081,10 @@ def _run_segment_review(seg: dict, project: dict, model: Optional[str] = None,
            "v": REVIEW_VERSION, "applied": False, "veto": [],
            "source_hash": _text_hash((seg.get("source") or "").strip()),
            "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+    if res.get("batch"):
+        # Вынесен пачкой — след на записи: если замер покажет сдвиг шкалы,
+        # такие вердикты отделяются без догадок.
+        rec["batch"] = res["batch"]
     veto, why = [], None
     code = None
     if not cand:
@@ -24764,7 +25425,7 @@ def review_project(pid: int, req: ReviewRequest = ReviewRequest()):
     # в 2711 строк заняла бы почти два часа, и всё это время сервис недоступен
     # всем. Порядок ответов сохраняется, поэтому zip с `todo` верен.
     answers = ([None] * len(todo) if req.apply_saved
-               else _run_parallel(todo, lambda s: _review_ask(s, project, req.model)))
+               else _review_ask_many(todo, project, req.model))
     # ПЕРВЫЙ проход — только вердикты, текст не трогаем. Разделение не
     # косметическое: копия для отката обязана лечь на диск ДО первой правки,
     # иначе неудачная запись оставила бы в памяти изменения, откатить которые
@@ -25648,6 +26309,13 @@ def _termlist_active(project: Optional[dict]) -> bool:
     return bool(tl.get("use")) and bool(_termlist_entries(project))
 
 
+def _termlist_visible(project: dict) -> set:
+    """Пары, которые СЕЙЧАС видит промпт: пусто при выключенном листе."""
+    if not _termlist_active(project):
+        return set()
+    return {(e.get("src") or "", e.get("tgt") or "") for e in _termlist_entries(project)}
+
+
 def _termlist_prompt_fp(project: dict) -> str:
     """Отпечаток того, что из терм-листа видит промпт: смена — та же смена
     промпта ревизии, что у стайл-шита."""
@@ -25657,15 +26325,42 @@ def _termlist_prompt_fp(project: dict) -> str:
                                  ensure_ascii=False))
 
 
-def _reviews_mark_stale(project: dict) -> int:
-    """Пометить свежие вердикты ревизии устаревшими (смена промпта: стайл-шит
-    или терм-лист). Число — цена, её называют в ответе."""
+def _reviews_mark_stale(project: dict, terms: Optional[list] = None) -> int:
+    """Пометить свежие вердикты ревизии устаревшими (смена промпта). Число —
+    цена, её называют в ответе.
+
+    Без `terms` — весь файл (стайл-шит: он входит в промпт КАЖДОЙ строки).
+    С `terms` — только строки, в чьём оригинале стоит хоть один из этих
+    терминов: терм-лист входит в промпт ревизии ТОЛЬКО через `_doc_hits`,
+    то есть парами, чей термин есть в ЭТОМ оригинале, и у остальных строк
+    промпт байт в байт прежний — перекупать их вердикт незачем. На боевой
+    книге одно решение по терм-листу перекупало ревизию всех 4751 строк.
+    Совпадение — тем же `_term_match`, что у `_doc_hits`; пометка —
+    надмножество (тот режет вложенные в приказ и потолком), это безопасная
+    сторона. Метка своя (`termlistStale`), а не `styleStale`: разбор состава
+    называет причину словами, и «стайл-шит изменился» про терм-лист врал бы."""
     n = 0
+    flag = "styleStale" if terms is None else "termlistStale"
+    want = [t for t in (terms or []) if (t or "").strip()]
+    if terms is not None and not want:
+        return 0
+    # Язык оригинала — тот же, что у записей листа (`_lang_pair`, с его
+    # умолчаниями): иначе у проекта без `src` стем-поиск молчал бы, и
+    # пометка стала бы ПОДмножеством `_doc_hits`.
+    lang = _src_lang({"lang": _lang_pair(project)})
+    keys_of = {t: _entry_keys(t) for t in want}
     for seg in project.get("segments") or []:
         rv = seg.get("review")
-        if rv and not rv.get("styleStale") and not _review_stale(seg):
-            rv["styleStale"] = True
-            n += 1
+        if not rv or rv.get(flag) or _review_stale(seg):
+            continue
+        if terms is not None:
+            src = seg.get("source") or ""
+            keys = _text_keys(src)
+            if not any(any(k in keys for k in keys_of[t]) and _term_match(t, src, lang)
+                       for t in want):
+                continue
+        rv[flag] = True
+        n += 1
     return n
 
 
@@ -26256,6 +26951,7 @@ def set_termlist(pid: int, req: TermlistBody):
     if not tl:
         raise HTTPException(400, "Терм-лист ещё не собран")
     before = _termlist_prompt_fp(project)
+    before_ents = _termlist_visible(project)
     if req.use is not None:
         tl["use"] = bool(req.use)
     ents = tl.get("entries") or []
@@ -26283,8 +26979,14 @@ def set_termlist(pid: int, req: TermlistBody):
         decided += 1
     _TERMLIST_INDEX.pop(pid, None)
     # Состав промпта изменился — вердикты ревизии устарели, как при смене
-    # стайл-шита; число названо.
-    stale = _reviews_mark_stale(project) if _termlist_prompt_fp(project) != before else 0
+    # стайл-шита; число названо. Но ТОЧЕЧНО: устаревают строки, где стоит
+    # термин ИЗМЕНИВШИХСЯ пар (диф множеств «что видит промпт» до и после:
+    # принятая, отклонённая, вошедшая через `use` или строгую область), а не
+    # весь файл — остальным строкам промпт не менялся.
+    after_ents = _termlist_visible(project)
+    changed = {src for src, _t in (before_ents ^ after_ents)}
+    stale = (_reviews_mark_stale(project, sorted(changed))
+             if _termlist_prompt_fp(project) != before or changed else 0)
     _ANALYSIS_CACHE.pop(pid, None)
     save_state(STATE)
     _audit("termlist.set", project=pid, use=req.use, decided=decided, accept_all=req.accept_all)
@@ -27762,22 +28464,77 @@ def backcheck_batch(pid: int, req: BackcheckBatchRequest):
             continue
         candidates.append(s)
 
+    processed, errors = [], []
+    # Одинаковая пара «оригинал + перевод» ПО ВСЕМУ ПРОЕКТУ (см. termcheck_batch:
+    # порции интерливированы, повторы заголовка лежат в разных порциях).
+    # Донор годен ТЕМ ЖЕ предикатом, что закрывает строку от прогона
+    # (`_backcheck_cached` с судьёй и разрешением этого прогона), и только
+    # когда ни у донора, ни у получателя нет свежего вердикта арбитра: балл
+    # считается с учётом претензий, снятых арбитром ЭТОГО сегмента
+    # (`_hits_for_score`), и копия перенесла бы чужое снятие. Модель донора
+    # сверяется с ПЕРЕВОДЧИКОМ ПОЛУЧАТЕЛЯ: копия от модели-автора текста
+    # была бы тут же недействительна по «проверял тот, кто переводил».
+    # Только при `skip_cached` и только за парами кандидатов порции — см.
+    # termcheck_batch. Оговорка: балл донора мог быть посчитан при СВЕЖЕМ
+    # тогда арбитре донора, чей вердикт с тех пор устарел, — это та же природа
+    # неточности, что у самого донора, и копия её не добавляет.
+    donors: dict = {}
+    if req.skip_cached and candidates:
+        wanted = {(_norm_key(sg.get("source")), _norm_key(sg.get("target"))) for sg in candidates}
+        for sg in project["segments"]:
+            pair = (_norm_key(sg.get("source")), _norm_key(sg.get("target")))
+            bc = sg.get("backcheck") or {}
+            if (pair in wanted and pair not in donors and bc.get("model")
+                    and bc.get("score") is not None and (sg.get("target") or "").strip()
+                    and _backcheck_cached(sg, mdl_id, req.use_judge, req.judge_all)
+                    and _term_context_stale(sg)):
+                donors[pair] = sg
+    duplicates = 0
+    rest = []
+    for seg in candidates:
+        d = donors.get((_norm_key(seg.get("source")), _norm_key(seg.get("target"))))
+        if (d is not None and d is not seg and d["backcheck"].get("model") != seg.get("provider")
+                and _term_context_stale(seg)):
+            seg["backtranslated_ru"] = d.get("backtranslated_ru", "")
+            seg["backcheck"] = json.loads(json.dumps(d["backcheck"]))
+            processed.append(seg["id"])
+            duplicates += 1
+            continue
+        rest.append(seg)
+    candidates = rest
+
     limit = max(1, min(req.limit, 100))
     remaining_after = max(0, len(candidates) - limit)
     targets = candidates[:limit]
 
-    processed, errors = [], []
-    # Одинаковая пара «оригинал + перевод» даёт одинаковый результат: считаем раз,
-    # а сами уникальные пары проверяем параллельно.
+    # Внутри порции — те же пары: считаем раз, уникальные проверяем параллельно.
+    # Копия годна на тех же условиях, что и по проекту: у ведущего и получателя
+    # один переводчик (тогда и модель обратного перевода одна, и правило
+    # «проверял тот, кто переводил» держится у обоих) и ни у кого нет свежего
+    # вердикта арбитра. Иначе — свой вызов, под своим ключом.
+    # Ведущим годится любой близнец без свежего арбитра, чья модель обратного
+    # перевода (`_backcheck_model` — известна ДО вызова) не равна переводчику
+    # получателя; несовместимый близнец открывает свою группу и сам ведёт
+    # следующих — иначе при двух переводчиках в книге каждый повтор платил бы.
     groups: dict = {}
     order: list = []
+    keys_of: dict = {}                     # пара → ключи её групп
     for seg in targets:
         pair = (_norm_key(seg.get("source")), _norm_key(seg.get("target")))
-        if pair not in groups:
-            groups[pair] = []
-            order.append(pair)
-        groups[pair].append(seg)
-    duplicates = 0
+        key = None
+        if _term_context_stale(seg):
+            for k in keys_of.get(pair, ()):
+                lead = groups[k][0]
+                if (_term_context_stale(lead)
+                        and _backcheck_model(lead, req.model) != seg.get("provider")):
+                    key = k
+                    break
+        if key is None:
+            key = pair if pair not in groups else pair + (seg["id"],)
+            groups[key] = []
+            order.append(key)
+            keys_of.setdefault(pair, []).append(key)
+        groups[key].append(seg)
 
     def _bc_one(pair):
         seg = groups[pair][0]
@@ -30987,7 +31744,7 @@ JOB_CHUNKS = {"translate": 10, "backcheck": 10, "termcheck": 10, "medical_qa": 1
               # Порций по сегментам у них нет — цикл свой (`_job_media`), число
               # здесь лишь затем, что `_job_run` читает его до ветвления.
               # Ставит их не `create_job`, а свои двери (`_MEDIA_KINDS`).
-              "asr": 1, "mediarender": 1,
+              "asr": 1, "mediarender": 1, "frametext": 1,
               # Сверка терминов моделью: один вызов на сегмент, порция как
               # у остальных проверок.
               "termaudit": 10,
@@ -31620,6 +32377,8 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
                 run("вопросы ревизии изменились", seg)
             elif rv.get("styleStale"):
                 run("стайл-шит изменился после ревизии", seg)
+            elif rv.get("termlistStale"):
+                run("терм-лист по этой строке изменился после ревизии", seg)
             else:
                 run("перевод изменился после ревизии", seg)
 
@@ -33047,7 +33806,7 @@ _MEDIA_LINK_KEY = (os.environ.get("MEDIA_LINK_SECRET") or "").encode() or secret
 # шли бы через цикл событий единственного воркера. Префикс — internal-location
 # в конфиге nginx, смотрящий на data/media/. Пусто — отдаёт приложение.
 MEDIA_ACCEL_PREFIX = os.environ.get("MEDIA_ACCEL_PREFIX", "").strip()
-_MEDIA_KINDS = {"asr", "mediarender"}
+_MEDIA_KINDS = {"asr", "mediarender", "frametext"}
 # Голоса озвучки. Наружу — нейтральные ярлыки: имя голоса поставщика само
 # называет поставщика (инвариант 24а), а человеку нужно «мужской/женский».
 # f0/m0 — самые живые голоса модели («For best quality, we recommend marin
@@ -33410,6 +34169,7 @@ def _media_span(m: dict) -> tuple:
 class MediaFinish(BaseModel):
     trim: Optional[dict] = None     # {start, end} — из мини-редактора
     style: Optional[dict] = None    # стиль субтитров в кадре, подтверждённый при загрузке
+    frameText: bool = False         # после речи прочитать и текст В КАДРЕ (надписи, титры)
 
 
 @app.post("/api/media/upload/{token}/finish")
@@ -33441,6 +34201,9 @@ def media_upload_finish(token: str, req: Optional[MediaFinish] = None):
         return _media_reattach(rec, part, info)       # бесплатно: модель не зовётся
     _fn_gate("minutes")
     _fn_gate("speech")
+    want_frames = bool(req.frameText and info.get("video"))
+    if want_frames:
+        _fn_gate("ocr")
     trim = _media_trim_clean(req.trim, dur)
     span = (trim["end"] - trim["start"]) if trim else dur
     if span > MEDIA_MAX_MINUTES * 60:
@@ -33538,6 +34301,10 @@ def media_upload_finish(token: str, req: Optional[MediaFinish] = None):
     }
     if limit_sec:
         project["mediaExcerpt"] = {"sec": limit_sec, "of": round(span, 1)}
+    if want_frames:
+        # Прочитает задача распознавания сама, после речи (`_frame_text_safe`):
+        # нет движка или ключа — отметит причину, речь это не задержит.
+        project["frameText"] = {"status": "queued"}
     if folder is not None:
         project["folder"] = folder["id"]
     if wallet["wallet"]:
@@ -33618,12 +34385,17 @@ def _job_media_body(job: dict) -> None:
     try:
         if job["kind"] == "asr":
             _job_asr(job)
+        elif job["kind"] == "frametext":
+            _job_frametext(job)
         else:
             _job_mediarender(job)
     except media_mod.Cancelled:
         # «Отменить»: ffmpeg убит на полуслове; недописанный файл сборки —
         # во временном имени, готовая прежняя сборка не тронута.
         job["status"] = "stopped"
+        p_ = _project_by_id(pid)
+        if p_ is not None and (p_.get("frameText") or {}).get("status") in ("queued", "running"):
+            _frame_text_mark(p_, status="stopped")
     except media_mod.Aborted:
         _job_park(job)               # выкат: ffmpeg убит, задача продолжит после рестарта
         return
@@ -33673,7 +34445,16 @@ def _media_status_fix(project: dict) -> None:
     сверки карточка ждала бы строк вечно. Задача, закончившаяся «готово»,
     не трогается: документ проекта от воркера просто ещё не доехал до API,
     и отметка «сбой» поверх него была бы враньём."""
-    if IS_WORKER or project.get("mediaStatus") != "transcribing":
+    if IS_WORKER:
+        return
+    ft_busy = (project.get("frameText") or {}).get("status") in ("queued", "running")
+    if ft_busy and project.get("mediaStatus") != "transcribing":
+        # Чтение кадров «идёт», а задачи нет: пропала с рестартом или упала
+        # до нашего каркаса. Кнопка «Прочитать» снова должна быть доступна.
+        _refresh_jobs_from_db(force=True)
+        if not _active_job_for(project["id"]):
+            _frame_text_mark(project, status="stopped")
+    if project.get("mediaStatus") != "transcribing":
         return
     pid = project["id"]
     # Зеркало задач у API подтягивается из базы лениво; после рестарта оно
@@ -33713,6 +34494,44 @@ def media_transcribe(pid: int):
     project.pop("mediaError", None)
     save_state(STATE)
     job = _job_enqueue(pid, "asr", [], {"limitSec": ex.get("sec")})
+    return {"ok": True, "job": _job_public(job), "project": _project_for_client(project)}
+
+
+@app.post("/api/projects/{pid}/media/frametext")
+def media_frametext(pid: int):
+    """Прочитать текст В КАДРЕ у готового видео: надписи, титры, таблички,
+    слайды — то, что звуком не произносится. Задача в воркере
+    (`_frame_text_run`): кадры и поиск строк — наш процессор, чтение —
+    зрячая модель, одно на надпись. Повторный запуск не плодит строк
+    и работу человека над прежними надписями не трогает."""
+    project = get_project(pid)
+    m = project.get("media") or {}
+    if not m:
+        raise HTTPException(400, "Это не видео-проект")
+    if not m.get("video"):
+        raise HTTPException(400, "В файле нет видео — читать в кадре нечего")
+    _guard_project_write(pid)
+    if _active_job_for(pid):
+        # И без внешнего воркера: второе чтение поверх идущего заплатило бы
+        # за те же надписи дважды.
+        raise HTTPException(409, "По файлу идёт или ждёт прогон — чтение кадров подождёт его конца")
+    if project.get("mediaStatus") != "ready":
+        raise HTTPException(409, "Сначала дождитесь распознавания речи")
+    if _media_source(project) is None:
+        raise HTTPException(409, "Исходное видео удалено по сроку хранения — загрузите его заново на карточке файла")
+    if image_text is None or not image_text.engine_ready()[0] or not _provider_ready(_dm("ocr")):
+        raise HTTPException(503, "Чтение текста в кадре сейчас недоступно: сообщите администратору")
+    t0, span = _media_span(m)
+    if span > media_mod.FRAME_MAX_MINUTES * 60 and not (project.get("mediaExcerpt") or {}).get("sec"):
+        _ev("cap.media413", _current_tenant())
+        raise HTTPException(413, "Видео длиннее %d мин — текст в кадре читается у роликов короче"
+                            % int(media_mod.FRAME_MAX_MINUTES))
+    st = _spend_status()
+    if st["over"]:
+        return _limit_402(st, _current_tenant())
+    project["frameText"] = {"status": "queued"}
+    save_state(STATE)
+    job = _job_enqueue(pid, "frametext", [], {})
     return {"ok": True, "job": _job_public(job), "project": _project_for_client(project)}
 
 
@@ -33815,10 +34634,58 @@ def _asr_hints() -> dict:
 
 _ASR_SCRIPT_HINT = _asr_hints()
 
+# Термины проекта — в подсказку распознаванию: редкое слово (препарат,
+# фамилия, «пиопневмоторакс») модель без подсказки пишет созвучным обычным,
+# и перевод потом добросовестно переводит ошибку. Берутся только ПРИКАЗНЫЕ
+# записи оригинала: знание этой папки — всегда, общее знание организации —
+# только когда словарь маленький (`ASR_TERMS_ORG_MAX`): из тысячи записей
+# случайные тридцать ролику не помогут, а склонят модель к чужим словам.
+# Подсказка у поставщика ограничена (~224 токена, берётся ХВОСТ), поэтому
+# термины идут первыми, стилевая фраза — последней. `ASR_TERMS=0` выключает.
+ASR_TERMS = os.environ.get("ASR_TERMS", "1") != "0"
+ASR_TERMS_CHARS = 300
+ASR_TERMS_ORG_MAX = 40
+
+
+def _asr_terms(project: dict) -> str:
+    if not ASR_TERMS:
+        return ""
+    try:
+        scope = _project_scope(project)
+        fid = _fid(project["id"])
+        dicts = _folder_dicts(fid)
+        cand = [g for g in STATE.get("glossary") or []
+                if (g.get("tier") or GLOSSARY_TIER_SOFT) == GLOSSARY_TIER_HARD and (g.get("src") or "").strip()
+                and _scope_of(g) == scope and _entry_here(g, fid, dicts)]
+    except Exception as e:
+        print("[backend] термины для распознавания не собраны: %s" % e, file=sys.stderr)
+        return ""
+    own = [g for g in cand if _gproj(g) is not None]
+    org = [g for g in cand if _gproj(g) is None]
+    pick = own + (org if len(org) <= ASR_TERMS_ORG_MAX else [])
+    out, seen, size = [], set(), 0
+    for g in sorted(pick, key=lambda g: (_gproj(g) is None, len(g["src"]))):
+        t = " ".join(g["src"].split())
+        k = t.lower()
+        if k in seen or len(t) > 60:
+            continue
+        if size + len(t) + 2 > ASR_TERMS_CHARS:
+            break
+        seen.add(k)
+        out.append(t)
+        size += len(t) + 2
+    return ", ".join(out)
+
 
 def _job_asr(job: dict) -> None:
     pid = job["project"]
     project = get_project(pid)
+    if project.get("mediaStatus") == "ready":
+        # Речь уже в проекте (задачу отложил выкат или уступка посреди чтения
+        # кадров): распознавать второй раз — платить второй раз.
+        if (project.get("frameText") or {}).get("status") in ("queued", "running"):
+            _frame_text_safe(job, project)
+        return
     src = _media_source(project)
     if src is None:
         raise RuntimeError("Исходное видео не найдено на сервере — загрузите его заново")
@@ -33838,15 +34705,43 @@ def _job_asr(job: dict) -> None:
     audio = d / "audio.mp3"
     job["phase"] = "audio"
     _job_persist(job)
+    levels_path = d / "levels.json"
     if not (audio.exists() and audio.stat().st_size > 0):
         tmp = d / "audio.tmp.mp3"
         media_mod.extract_audio(src, tmp, float(info.get("duration") or dur), limit_sec=limit, start=t0)
+        # Тихая запись — постоянным усилением до пика (`media.asr_gain`):
+        # распознавание на тихом звуке теряет слова, а компрессор поднял бы
+        # и шум пауз, на котором модель выдумывает текст.
+        levels, gain = None, 0.0
+        try:
+            levels = media_mod.volume_levels(tmp, dur)
+            gain = media_mod.asr_gain(levels)
+            if gain:
+                loud = d / "audio.gain.tmp.mp3"
+                media_mod.apply_gain(tmp, loud, gain, dur)
+                os.replace(str(loud), str(tmp))
+        except (media_mod.Cancelled, media_mod.Aborted):
+            raise
+        except media_mod.MediaError as e:
+            # Замер и усиление — улучшение, а не условие: без них звук идёт как есть.
+            print("[backend] job#%s: громкость не выровнена: %s" % (job.get("id"), e), file=sys.stderr)
+            gain = 0.0
+        levels_path.write_text(json.dumps({"levels": levels, "gain": gain}), encoding="utf-8")
         os.replace(str(tmp), str(audio))
-    pauses = media_mod.silences(audio, dur)
+    try:
+        lv = json.loads(levels_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        lv = {}
+    job["counters"]["asrGainDb"] = lv.get("gain") or 0
+    # Порог паузы — от уровня самой записи: жёсткие −35 дБ на шумной записи
+    # не находили пауз, и звук резался посреди слова.
+    pauses = media_mod.silences(audio, dur, media_mod.silence_floor(lv.get("levels"), lv.get("gain") or 0.0))
     chunks = media_mod.split_audio(audio, media_mod.cut_points(dur, pauses), d / "chunks", dur)
     lang = _asr_language(project.get("src") or "")
-    hint = _ASR_SCRIPT_HINT.get((project.get("src") or "").upper())
-    items = [(p, off, lang, hint) for p, off in chunks]
+    style_hint = _ASR_SCRIPT_HINT.get((project.get("src") or "").upper()) or ""
+    terms = _asr_terms(project)
+    hint = ((terms + ". ") if terms else "") + style_hint
+    items = [(p, off, lang, hint or None) for p, off in chunks]
     job["phase"] = "asr"
     job["total"] = len(items)
     job["done"] = sum(1 for p, *_ in items if Path(str(p) + ".json").exists())
@@ -33886,11 +34781,16 @@ def _job_asr(job: dict) -> None:
         raise RuntimeError("Часть звука не распознана (%d из %d кусков) — распознайте снова: %s"
                            % (len(missing), len(items), last_err))
     cues = []
+    dropped: dict = {}
     for p, off, *_ in items:
         data = json.loads(Path(str(p) + ".json").read_text(encoding="utf-8"))
         cues += media_mod.build_cues(data.get("segments") or [], data.get("words") or [], offset=off,
                                      max_sec=media_mod.UNIT_MAX_SEC, max_chars=media_mod.UNIT_MAX_CHARS,
-                                     hint=hint or "")
+                                     hint=[style_hint, terms, hint], stats=dropped)
+    # Сколько выброшено как выдумка на тишине и протечка подсказки — числом:
+    # настоящая речь, попавшая под фильтр, иначе пропадала бы невидимо.
+    job["counters"]["asrNoise"] = dropped.get("noise", 0)
+    job["counters"]["asrLeak"] = dropped.get("leak", 0)
     # Строка проекта — ПРЕДЛОЖЕНИЕ, а не кусок распознавания (инвариант 38,
     # «Строка субтитров — фраза»): на экранные куски её делит выгрузка.
     cues = media_mod.tidy_cues(media_mod.sentence_cues(cues, lang=project.get("src")))
@@ -33900,6 +34800,36 @@ def _job_asr(job: dict) -> None:
     # Звук и куски больше не нужны: текст уже в проекте, а «распознать снова»
     # у готового проекта закрыто. Место на диске общее.
     shutil.rmtree(str(d), ignore_errors=True)
+    if (project.get("frameText") or {}).get("status") in ("queued", "running"):
+        _frame_text_safe(job, project)
+
+
+def _frame_text_safe(job: dict, project: dict) -> None:
+    """Чтение кадров ПОСЛЕ распознавания речи — в той же задаче. Его сбой
+    речь не отменяет: строки уже в проекте, а надписи называются сбоем
+    с причиной и читаются снова кнопкой. Выкат и отмена — как везде."""
+    try:
+        _frame_text_run(job, project)
+    except (media_mod.Cancelled, media_mod.Aborted):
+        raise
+    except Exception as e:
+        print("[backend] job#%s: текст в кадре не прочитан: %s" % (job.get("id"), e), file=sys.stderr)
+        if str(e) == JOB_STOP_PROVIDER_QUOTA:
+            raise
+        _frame_text_mark(project, status="failed", why="error", error=_media_err_text(e))
+
+
+def _job_frametext(job: dict) -> None:
+    """Текст в кадре у готового видео (кнопка): речь не трогаем."""
+    project = get_project(job["project"])
+    _media_touch(project)
+    try:
+        _frame_text_run(job, project)
+    except (media_mod.Cancelled, media_mod.Aborted):
+        raise
+    except Exception as e:
+        _frame_text_mark(project, status="failed", why="error", error=_media_err_text(e))
+        raise
 
 
 def _media_apply_transcript(project: dict, cues: list) -> None:
@@ -33935,6 +34865,351 @@ def _media_apply_transcript(project: dict, cues: list) -> None:
     _store_original(pid, name, srt)
     _media_store_spans(project, cues)
     save_state(STATE)
+
+
+# ─── Текст В КАДРЕ: надписи, титры, таблички (инвариант 38) ─────────
+# Чистые шаги — `media` (кадры, слежение, склейка, место на экране), здесь —
+# задача: кадры кусками, детектор строк, одно чтение зрячей моделью на
+# НАДПИСЬ (а не на кадр) и строки проекта вида `frame`. Каждая строка —
+# обычный сегмент: перевод, проверки, память переводов, заверение — как
+# у любой строки; якорь у неё — время и место в кадре (`origin`), а не
+# реплика .srt, поэтому озвучка её не произносит, а субтитры ставят её
+# перевод туда, где была надпись (`_frame_units`).
+# Включает человек: галочкой при загрузке видео или кнопкой у готового —
+# это CPU общего сервера и платные вызовы, «на всякий случай» их не тратим.
+FRAME_READ_MAX = int(os.environ.get("MEDIA_FRAME_READ_MAX", "400"))   # надписей на ролик
+FRAME_READ_PARALLEL = 4
+FRAME_READ_BLOCKS = 12       # рамок в одном вызове (один кадр — одна картинка)
+
+
+def _frame_read_system(dom: dict, src_lang: str) -> str:
+    """Промпт чтения кадра. Второй вопрос — ВИД надписи — не менее важен
+    первого: субтитры самой речи переводятся по распознаванию, и прочитанные
+    второй раз с экрана они задвоили бы строку; логотип канала, часы и кнопки
+    плеера переводить незачем, а их имена — чужая марка в памяти переводов."""
+    return (
+        "You read text that appears ON SCREEN in a frame of a video (subject area: "
+        + dom["en"] + "). The spoken language of the video is " + _lang_prompt(src_lang) + ".\n"
+        "You are given the whole frame (for context) and then a series of close-up crops, "
+        "one per numbered block.\n\n"
+        "For EVERY block return:\n"
+        '  "text" — exactly what is written in that crop, verbatim, in its original language and '
+        "script. Keep numbers, units and capitalisation. Join several lines into one string with "
+        "spaces; join a word hyphenated at a line break. If you cannot read it, return an empty "
+        "string — never guess, never translate.\n"
+        '  "kind" — "text": on-screen text a viewer needs to understand the video: titles, chapter '
+        "headings, a caption naming the person speaking, signs, slide or whiteboard text, labels "
+        "on charts and diagrams, headlines, on-screen notes. "
+        '"caption": subtitles that transcribe what is being SAID (dialogue subtitles, usually one '
+        "or two lines at the bottom centre). "
+        '"overlay": channel logo, watermark, clock or timestamp, player or app interface, '
+        "social-media handles, subscribe buttons, brand names on products, licence plates, "
+        "incidental background text.\n\n"
+        'Return ONLY JSON: {"blocks": [{"i": 0, "text": "...", "kind": "text"}]}'
+    )
+
+
+def _frame_state_path(d: Path) -> Path:
+    return d / "state.json"
+
+
+def _frame_state_save(d: Path, st: dict) -> None:
+    p = _frame_state_path(d)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(st, ensure_ascii=False), encoding="utf-8")
+    os.replace(str(tmp), str(p))
+
+
+def _frame_keep_rep(d: Path, tr: dict) -> None:
+    """Образец надписи (кадр, по которому её прочтут) — в `reps/`: кадры куска
+    удаляются сразу после разбора (час видео — сотни мегабайт JPEG), а
+    надпись, начатая в этом куске, может закрыться только в следующем."""
+    rep = tr.get("rep") or {}
+    p = Path(rep.get("frame") or "")
+    reps = d / "reps"
+    if not rep.get("frame") or p.parent == reps:
+        return
+    reps.mkdir(parents=True, exist_ok=True)
+    dst = reps / ("%010.3f.jpg" % float(rep.get("t") or 0.0))
+    if not dst.exists() and p.exists():
+        shutil.copyfile(str(p), str(dst))
+    rep["frame"] = str(dst)
+
+
+def _frame_event(tr: dict) -> dict:
+    rep = tr.get("rep") or {}
+    return {"first": tr["first"], "last": tr["last"], "n": tr["n"], "box": tr["box"],
+            "rows": rep.get("rows") or 1, "lineH": rep.get("lineH") or 0.0,
+            "frame": Path(rep.get("frame") or "").name, "px": rep.get("px")}
+
+
+def _frame_blocks(img: bytes, w: int, h: int) -> Optional[list]:
+    """Рамки текста одного кадра (доли кадра + пиксели для кропа), None — не
+    посмотрели. Мельче 1,2% высоты кадра — не текст для зрителя (шум,
+    буквы на далёкой вывеске)."""
+    lines = image_text.detect_lines(img)
+    if lines is None:
+        return None
+    out = []
+    for b in image_text.group_blocks(lines):
+        x0, y0, x1, y1 = b["box"]
+        if (y1 - y0) < 0.012 * h or (x1 - x0) < 0.01 * w:
+            continue
+        out.append({"box": [x0 / float(w), y0 / float(h), x1 / float(w), y1 / float(h)],
+                    "px": [int(x0), int(y0), int(x1), int(y1)],
+                    "rows": int(b.get("rows") or 1), "lineH": float(b.get("lineH") or 0) / float(h),
+                    "sig": media_mod.box_sig(img, b["box"])})
+    return out
+
+
+def _frame_read(item: tuple) -> dict:
+    """Один кадр-образец → прочитанные рамки. Ловит свои ошибки сам."""
+    path, blocks, src_lang, domain, model = item
+    try:
+        img = Path(path).read_bytes()
+        res = _openai_read_image(img, [{"box": b["px"], "lineH": b["lineH"], "rows": b["rows"]}
+                                       for b in blocks],
+                                 src_lang, domain, model,
+                                 system=_frame_read_system(_resolve_domain(domain), src_lang))
+        return {"ok": res is not None, "res": res or []}
+    except Exception as e:
+        _note_provider_error(e)
+        return {"ok": False, "res": [], "error": _media_err_text(e)}
+
+
+def _frame_text_mark(project: dict, **kw) -> None:
+    ft = project.setdefault("frameText", {})
+    ft.update(kw)
+    ft["at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    save_state(STATE)
+
+
+def _frame_text_run(job: dict, project: dict) -> None:
+    """Прочитать текст в кадре и завести по надписи строку проекта.
+
+    Кадры идут кусками по `FRAME_CHUNK_SEC`: состояние слежения и найденные
+    надписи лежат файлом (`frames/state.json`) после каждого куска, а между
+    кусками — стоп, выкат и уступка очереди, как у сборки в кадр. Прочитанное
+    моделью лежит там же (`reads.json`): продолжение за него не платит.
+    Нет движка, ключа или видео, ролик длиннее потолка — отметка с КОДОМ
+    причины (`frameText.why`), а не молчание."""
+    pid = project["id"]
+    every = media_mod.FRAME_EVERY
+    src = _media_source(project)
+    if src is None:
+        return _frame_text_mark(project, status="failed", why="no_source")
+    if image_text is None or not image_text.engine_ready()[0]:
+        return _frame_text_mark(project, status="skipped", why="no_engine")
+    if not _provider_ready(_dm("ocr")):
+        return _frame_text_mark(project, status="skipped", why="no_key")
+    video = media_mod.probe(src).get("video")
+    if not video:
+        return _frame_text_mark(project, status="skipped", why="no_video")
+    t0, span = _media_span(project.get("media") or {})
+    ex = (project.get("mediaExcerpt") or {}).get("sec")
+    if ex:
+        span = min(span, float(ex))       # фрагмент: читаем ровно распознанное
+    if span > media_mod.FRAME_MAX_MINUTES * 60:
+        return _frame_text_mark(project, status="skipped", why="long")
+    w, h = media_mod.frame_size(video)
+    d = _media_dir(pid) / "frames"
+    d.mkdir(parents=True, exist_ok=True)
+    try:
+        st = json.loads(_frame_state_path(d).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        st = None
+    geo = [w, h, every, round(t0, 3), round(span, 3)]
+    if not st or st.get("geo") != geo:
+        # Другая обрезка, другой размер или шаг — прежнее слежение не годится.
+        shutil.rmtree(str(d), ignore_errors=True)
+        d.mkdir(parents=True, exist_ok=True)
+        st = {"geo": geo, "chunk": 0, "tracker": None, "events": [], "still": None, "prev": None}
+    ch = media_mod.FRAME_CHUNK_SEC
+    chunks = max(1, int(math.ceil(span / ch)))
+    tracker = media_mod.FrameTracker(every, st.get("tracker"))
+    job["phase"] = "frames"
+    job["total"], job["done"] = chunks, min(st["chunk"], chunks)
+    _job_persist(job)
+    _frame_text_mark(project, status="running")
+    first = True
+    while st["chunk"] < chunks:
+        if not first:
+            if _SHUTDOWN.is_set():
+                return _job_park(job)
+            if _job_should_stop():
+                job["status"] = "stopped"
+                return _frame_text_mark(project, status="stopped")
+            if _job_should_yield(job):
+                return _job_yield(job, [])
+        first = False
+        a = st["chunk"] * ch
+        cur = d / "cur"
+        frames = media_mod.sample_frames(src, cur, t0 + a, min(ch, span - a), w, h, every)
+        for t_rel, path in frames:
+            img = path.read_bytes()
+            sig = media_mod.still_sig(img)
+            if st.get("prev") is not None and media_mod.sig_diff(sig, st.get("still")) <= media_mod.FRAME_STILL_DIFF:
+                blocks = st["prev"]           # тот же кадр — строки прежние, детектор не зовём
+            else:
+                blocks = _frame_blocks(img, w, h)
+                if blocks is None:
+                    # Посмотреть не удалось — это «не знаю», а не «надписи
+                    # исчезли»: прежние рамки держим, кадр называем числом.
+                    st["blind"] = int(st.get("blind") or 0) + 1
+                    blocks = st.get("prev") or []
+                else:
+                    st["still"], st["prev"] = sig, blocks
+            closed = tracker.feed(round(a + t_rel, 3), [dict(b, frame=str(path)) for b in blocks])
+            for tr in tracker.active + closed:
+                _frame_keep_rep(d, tr)
+            st["events"] += [_frame_event(tr) for tr in closed]
+        shutil.rmtree(str(cur), ignore_errors=True)
+        st["chunk"] += 1
+        st["tracker"] = tracker.dump()
+        _frame_state_save(d, st)
+        job["done"] = st["chunk"]
+        _job_persist(job)
+    if st.get("tracker") is not None:
+        st["events"] += [_frame_event(tr) for tr in tracker.close_all()]
+        st["tracker"] = None
+        _frame_state_save(d, st)
+    image_text.release_engine()           # сотни мегабайт — не держать в воркере
+
+    # Чтение: надпись, висящая почти весь ролик, — логотип; её не читаем
+    # вовсе (деньги). Остальные — самые долгие первыми, до потолка.
+    evs, persistent = [], 0
+    for e in st["events"]:
+        if e["last"] - e["first"] + every >= max(60.0, media_mod.FRAME_PERSIST_SHARE * span):
+            persistent += 1
+        else:
+            evs.append(e)
+    evs.sort(key=lambda e: -(e["last"] - e["first"]))
+    capped = max(0, len(evs) - FRAME_READ_MAX)
+    evs = evs[:FRAME_READ_MAX]
+    reads_path = d / "reads.json"
+    try:
+        reads = json.loads(reads_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        reads = {}
+
+    def rkey(e):
+        return "%s|%s" % (e["frame"], ",".join(str(v) for v in (e.get("px") or [])))
+    by_frame: dict = {}
+    for e in evs:
+        if rkey(e) not in reads:
+            by_frame.setdefault(e["frame"], []).append(e)
+    items = []
+    for name, group in sorted(by_frame.items()):
+        for k in range(0, len(group), FRAME_READ_BLOCKS):
+            part = group[k:k + FRAME_READ_BLOCKS]
+            items.append((str(d / "reps" / name), part, project.get("src") or "RU",
+                          project.get("domain"), _dm("ocr")))
+    job["phase"] = "framesRead"
+    job["total"], job["done"] = len(items), 0
+    _job_persist(job)
+    first, failed = True, 0
+    while items:
+        if not first:
+            if _SHUTDOWN.is_set():
+                return _job_park(job)
+            if _job_should_stop():
+                job["status"] = "stopped"
+                return _frame_text_mark(project, status="stopped")
+            if _job_money_stop(job):
+                return _frame_text_mark(project, status="stopped", why=job.get("stopReason") or "limit")
+            if _job_should_yield(job):
+                return _job_yield(job, [])
+        first = False
+        batch, items = items[:FRAME_READ_PARALLEL], items[FRAME_READ_PARALLEL:]
+        out = _run_parallel(batch, _frame_read)
+        for it, r in zip(batch, out):
+            if not r.get("ok"):
+                failed += 1
+                err = r.get("error") or ""
+                if err and _is_quota_error(err):
+                    raise RuntimeError(JOB_STOP_PROVIDER_QUOTA)
+                continue
+            for e, got in zip(it[1], r.get("res") or []):
+                if got is not None:
+                    reads[rkey(e)] = {"text": got.get("text") or "", "kind": got.get("kind") or "text"}
+        tmp = reads_path.with_name(reads_path.name + ".tmp")
+        tmp.write_text(json.dumps(reads, ensure_ascii=False), encoding="utf-8")
+        os.replace(str(tmp), str(reads_path))
+        job["done"] += len(batch)
+        _job_persist(job)
+    read_evs = []
+    for e in evs:
+        got = reads.get(rkey(e))
+        if got is not None:
+            read_evs.append(dict(e, text=got["text"], kind=got["kind"]))
+    speech = []
+    orig = _orig_existing(pid)
+    if orig is not None:
+        try:
+            speech = [c for c in importers.cue_list(textcount._decode(orig.read_bytes())[0])
+                      if c.get("start") is not None]
+        except Exception:
+            speech = []
+    cues, drop = media_mod.frame_text_cues(read_evs, span, speech, every)
+    drop["persistent"] += persistent
+    added = _frame_text_apply(project, cues)
+    _frame_text_mark(project, status="done", why="", found=len(st["events"]), read=len(read_evs),
+                     added=added, lines=len(cues), unread=failed, capped=capped, drop=drop,
+                     blind=int(st.get("blind") or 0))
+    job["counters"]["frameText"] = len(cues)
+    job["phase"] = None
+    shutil.rmtree(str(d), ignore_errors=True)
+
+
+def _frame_text_apply(project: dict, cues: list) -> int:
+    """Надписи → строки проекта вида `frame`, по времени среди строк речи.
+    Повторный разбор не плодит строк: надпись с тем же текстом около того же
+    времени — та же строка (перевод и подпись при ней). Прежняя надпись,
+    которой новый разбор не нашёл, уходит — если в ней нет работы человека
+    (`_human_text`); такую не трогаем. Возвращает число новых строк."""
+    old = [s for s in project.get("segments") or [] if _is_frame_seg(s)]
+    rest = [s for s in project.get("segments") or [] if not _is_frame_seg(s)]
+    used, keep, added = set(), [], 0
+    for c in cues:
+        k = _match_key(c["text"])
+        hit = next((s for s in old if s["id"] not in used and _match_key(s.get("source")) == k
+                    and abs(float(s["origin"].get("start") or 0) - c["start"]) <= 2.0), None)
+        origin = {"kind": "frame", "start": c["start"], "end": c["end"], "box": c["box"],
+                  "rows": c.get("rows") or 1, "lineH": c.get("lineH") or 0.0}
+        if hit is not None:
+            used.add(hit["id"])
+            hit["origin"] = origin
+            keep.append(hit)
+            continue
+        seg = _new_segment(_next_seg_id(project), c["text"])
+        seg["origin"] = origin
+        keep.append(seg)
+        added += 1
+    keep += [s for s in old if s["id"] not in used and _human_text(s)]
+    # По времени среди строк речи: перевод видит соседей по смыслу, а таблица —
+    # надпись рядом с тем, что в это время говорят.
+    times = _cue_times(project) or {}
+    keep.sort(key=lambda s: float(s["origin"].get("start") or 0))
+    merged, j = [], 0
+    for s in rest:
+        t = (times.get(str(s["id"])) or [None])[0]
+        while j < len(keep) and t is not None and float(keep[j]["origin"].get("start") or 0) < t:
+            merged.append(keep[j])
+            j += 1
+        merged.append(s)
+    merged += keep[j:]
+    project["segments"] = merged
+    # Страницы: текст надписей — такой же текст для перевода, как речь.
+    # Прибавляется к объёму речи, списывает API высшей точкой (`_book_image_pages`).
+    card = _pricing_of(_tenant_of(project))
+    fp = _pages_exact([s.get("source") or "" for s in keep], project.get("src") or "RU", card) if keep else 0.0
+    prev = float(project.get("framePages") or 0.0)
+    project["mediaPages"] = round(max(0.0, float(project.get("mediaPages") or 0.0) - prev) + fp, 3)
+    project["framePages"] = round(fp, 3)
+    project["pages"] = round(max(0.0, float(project.get("pages") or 0.0) - prev) + fp, 3)
+    _PROJECTS_VER[0] += 1
+    save_state(STATE)
+    return added
 
 
 def _cue_key(start) -> str:
@@ -33989,8 +35264,40 @@ def _media_screen(project: dict, text: str, tr: dict, translated_only: bool = Tr
     на экран она идёт частями по правилам показа (`media.display_cues`).
     Одна точка на все выходы — дорожку, кадр, выгрузку .srt/.vtt: разойдись
     они, скачанный файл показывал бы не то, что впечатано в видео."""
-    return media_mod.display_cues(_media_units(project, text, tr, translated_only, with_src),
-                                  lang=project.get("tgt"), src_lang=project.get("src"))
+    speech = media_mod.display_cues(_media_units(project, text, tr, translated_only, with_src),
+                                    lang=project.get("tgt"), src_lang=project.get("src"))
+    frames = _frame_units(project, translated_only, with_src)
+    if not frames:
+        return speech
+    return sorted(speech + frames, key=lambda c: (c["start"], 1 if c.get("box") else 0))
+
+
+def _frame_units(project: dict, translated_only: bool = True, with_src: bool = False) -> list:
+    """Надписи из кадра (`_frame_text_run`) — экранными кусками рядом с речью.
+    Делить их по правилам речи нельзя: надпись висит в кадре целиком, и её
+    перевод тоже. Номер `i` — МИНУС номер строки проекта: у реплик .srt он
+    неотрицательный, и отчёт подгонки (`_cue_seg_ids`) их не спутает. `box`
+    (доли кадра) — место надписи: туда встаёт перевод (`media.frame_place`,
+    `media.ass_document`). `tr` — переведена ли: у реплик речи это знает
+    карта `tr`, а надписи в неё не входят."""
+    out = []
+    for s in project.get("segments") or []:
+        if not _is_frame_seg(s):
+            continue
+        o = s.get("origin") or {}
+        if o.get("start") is None or o.get("end") is None or not o.get("box"):
+            continue
+        tgt = (s.get("target") or "").strip()
+        if translated_only and not tgt:
+            continue
+        u = {"start": float(o["start"]), "end": float(o["end"]), "text": tgt or (s.get("source") or ""),
+             "i": -int(s["id"]), "lang": project.get("tgt") if tgt else project.get("src"),
+             "box": list(o["box"]), "rows": int(o.get("rows") or 1), "lineH": float(o.get("lineH") or 0.0),
+             "tr": bool(tgt)}
+        if with_src:
+            u["src"] = s.get("source") or ""
+        out.append(u)
+    return out
 
 
 def _media_srt(project: dict, text: str, tr: dict, shift: float = 0.0, bi: bool = False) -> list:
@@ -34000,13 +35307,16 @@ def _media_srt(project: dict, text: str, tr: dict, shift: float = 0.0, bi: bool 
     Двуязычные — оригинал своим языком, под ним перевод своим."""
     out = []
     for c in _media_screen(project, text, tr, translated_only=False, with_src=bi):
-        done = c["i"] in tr
+        done = c["tr"] if c.get("box") else c["i"] in tr
         if bi:
             screen = (media_mod.screen_lines(c.get("src") or "", project.get("src"))
                       + (media_mod.screen_lines(c["text"], project.get("tgt")) if done else []))
         else:
             screen = media_mod.screen_lines(c["text"], c.get("lang"))
-        out.append({"start": c["start"] + shift, "end": c["end"] + shift, "text": c["text"], "screen": screen})
+        cue = {"start": c["start"] + shift, "end": c["end"] + shift, "text": c["text"], "screen": screen}
+        if c.get("box"):
+            cue["place"] = media_mod.frame_place(c["box"])     # текст в кадре — на своём месте
+        out.append(cue)
     return out
 
 
@@ -34458,7 +35768,9 @@ def _cue_seg_ids(project: dict, idxs: list) -> list:
     if not data:
         return []
     seg_of = {int(idx): [int(x) for x in sids] for idx, sids in _para_groups(data)}
-    return sorted({sid for i in idxs if i is not None for sid in seg_of.get(int(i), [])})
+    # Отрицательный номер — надпись из кадра (`_frame_units`): это сам номер строки.
+    return sorted({sid for i in idxs if i is not None
+                   for sid in ([-int(i)] if int(i) < 0 else seg_of.get(int(i), []))})
 
 
 def _fit_public(project: dict, rep: dict, total: int) -> dict:
@@ -35057,7 +36369,7 @@ def media_burn_info(pid: int):
             text, tr, _d = _media_translations(project)
             # Экранные части, как в кадре: переход «к следующей» в предпросмотре
             # идёт по тому, что зритель увидит, а не по строкам-фразам.
-            cues = [{"start": c["start"], "end": c["end"], "tr": c["i"] in tr}
+            cues = [{"start": c["start"], "end": c["end"], "tr": c["tr"] if c.get("box") else c["i"] in tr}
                     for c in _media_screen(project, text, tr, translated_only=False)]
         except RuntimeError:
             cues = []

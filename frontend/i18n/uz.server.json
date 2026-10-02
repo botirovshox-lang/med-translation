@@ -458,5 +458,12 @@
   "Функция прогона выключена или её месячный лимит исчерпан: прогон остановлен, сделанное сохранено.": "Ishga tushirish funksiyasi o'chirilgan yoki uning oylik limiti tugagan: ishga tushirish to'xtatildi, bajarilgani saqlandi.",
   "Цены и лимиты — только суперпользователю": "Narxlar va limitlar — faqat superfoydalanuvchiga",
   ": функция выключена или её лимит исчерпан": ": funksiya o'chirilgan yoki uning limiti tugagan",
-  "Озвучка скоро будет доступна": "Ovoz berish tez orada ishga tushadi"
+  "Озвучка скоро будет доступна": "Ovoz berish tez orada ishga tushadi",
+  "Надпись из кадра склеивать нельзя: её место — время и место в кадре": "Kadrdagi yozuvni birlashtirib bo'lmaydi: uning o'rni — kadrdagi vaqt va joy",
+  "Надпись из кадра резать нельзя: её место — время и место в кадре": "Kadrdagi yozuvni bo'lib bo'lmaydi: uning o'rni — kadrdagi vaqt va joy",
+  "В файле нет видео — читать в кадре нечего": "Faylda video yo'q — kadrda o'qiydigan narsa yo'q",
+  "По файлу идёт или ждёт прогон — чтение кадров подождёт его конца": "Fayl bo'yicha jarayon ketmoqda yoki navbatda — kadrlarni o'qish uning tugashini kutadi",
+  "Сначала дождитесь распознавания речи": "Avval nutq tanib olinishini kuting",
+  "Чтение текста в кадре сейчас недоступно: сообщите администратору": "Kadrdagi matnni o'qish hozir mavjud emas: administratorga xabar bering",
+  " мин — текст в кадре читается у роликов короче": " daqiqadan uzun — kadrdagi matn qisqaroq videolarda o'qiladi"
 }

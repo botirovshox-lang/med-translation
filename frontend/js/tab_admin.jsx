@@ -1748,10 +1748,12 @@ function AdminPayments({ toast }) {
       React.createElement("div", { style: { fontSize: 13 } },
         "Click: " + (pv.click ? TR("подключён") : TR("не подключён — ключи CLICK_* в окружении"))
         + " · Payme: " + (pv.payme ? TR("подключён") + (pv.paymeTest ? TR(" (тестовая касса)") : "") : TR("не подключён — ключи PAYME_* в окружении"))
-        + TR(" · карта и Kaspi — по счёту") + (pv.cardLink || pv.kaspiLink ? TR(" (есть шаблон ссылки)") : "")),
+        + TR(" · карта Visa/Mastercard (Octo): ") + (pv.octo ? TR("подключена") + (pv.octoTest ? TR(" (тестовый режим)") : "")
+          : TR("не подключена — ключи OCTO_* в окружении, пока по счёту"))
+        + TR(" · Kaspi — по счёту") + (pv.cardLink || pv.kaspiLink ? TR(" (есть шаблон ссылки)") : "")),
       React.createElement("div", { className: "dim", style: { fontSize: 12, wordBreak: "break-all" } },
         TR("Адреса для кабинетов: Click Prepare ") + (cb.clickPrepare || "—") + TR(" · Complete ") + (cb.clickComplete || "—")
-        + TR(" · Payme ") + (cb.payme || "—")),
+        + TR(" · Payme ") + (cb.payme || "—") + TR(" · Octo (уведомления) ") + (cb.octo || "—")),
       React.createElement("div", { className: "dim", style: { fontSize: 13 } },
         TR("Цены страницы и минуты, курсы и пакеты — на вкладке «Цены».")),
       React.createElement("div", { className: "row row-wrap", style: { gap: 12 } },

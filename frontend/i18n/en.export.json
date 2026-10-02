@@ -361,5 +361,21 @@
   "отделение голоса не удалось — соберите заново.": "voice separation failed — build again.",
   "отделяем голос от музыки": "separating the voice from the music",
   "Озвучка скоро": "Dubbing coming soon",
-  "У этого языка нет родного голоса ни у одного движка синтеза — озвучка прозвучит с акцентом.": "No speech engine has a native voice for this language — the dub will sound accented."
+  "У этого языка нет родного голоса ни у одного движка синтеза — озвучка прозвучит с акцентом.": "No speech engine has a native voice for this language — the dub will sound accented.",
+  "Прочитать и текст в кадре — надписи, титры, таблички": "Also read on-screen text — captions, titles, signs",
+  "Текст в кадре не прочитан": "On-screen text was not read",
+  "Читаем текст в кадре": "Reading on-screen text",
+  "Найденные надписи появятся строками перевода — страницу можно закрыть.": "Text found on screen will appear as translation lines — you can close this page.",
+  "сейчас недоступно — сообщите администратору": "unavailable right now — tell the administrator",
+  "ролик слишком длинный для чтения кадров": "the video is too long for reading frames",
+  "в файле нет видео": "the file has no video",
+  "исходное видео удалено — загрузите его заново": "the original video was deleted — upload it again",
+  "не получилось — попробуйте ещё раз": "didn't work — try again",
+  "Переведём надписи на экране и покажем их в субтитрах на том же месте.": "We'll translate the text on screen and show it in the subtitles in the same place.",
+  "Надписей в строках перевода: ": "On-screen texts in translation lines: ",
+  "Текста в кадре не нашлось": "No text found on screen",
+  "Остановлено — можно прочитать снова": "Stopped — you can read again",
+  "Текст в кадре": "On-screen text",
+  "Прочитать заново": "Read again",
+  "Прочитать": "Read"
 }

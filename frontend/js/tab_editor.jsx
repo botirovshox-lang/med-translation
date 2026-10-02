@@ -3835,6 +3835,12 @@ function SegRow({ seg, selected, busy, checked, onCheck, onSelect, onTranslate, 
       seg.origin && seg.origin.kind === "image" && React.createElement("span", {
         title: TR("Распознано на картинке: номер выдан при заведении, место в таблице — по документу"),
         style: { marginLeft: 4, opacity: 0.7, verticalAlign: "middle", display: "inline-block" } },
+        React.createElement(Icon, { name: "image", size: 12 })),
+      /* Надпись, прочитанная В КАДРЕ видео: не речь, а текст на экране —
+         её перевод встанет в субтитрах на место надписи. */
+      seg.origin && seg.origin.kind === "frame" && React.createElement("span", {
+        title: TR("Текст в кадре: надпись на экране, а не речь — перевод встанет на её место"),
+        style: { marginLeft: 4, opacity: 0.7, verticalAlign: "middle", display: "inline-block" } },
         React.createElement(Icon, { name: "image", size: 12 }))),
     /* Колонка «Время» — только у субтитров (`cue` не undefined); у строки без
        реплики (склеена руками поперёк, распознана с картинки) — прочерк. */

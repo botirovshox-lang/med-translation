@@ -598,8 +598,11 @@ function MediaJobLine({ job }) {
     : ph === "mix" ? TR("сводим звук")
     : ph === "mux" ? TR("собираем видео")
     : ph === "burn" ? TR("впечатываем субтитры в кадр")
+    : ph === "frames" ? TR("ищем текст в кадре")
+    : ph === "framesRead" ? TR("читаем текст в кадре")
     : TR("готовим");
-  const counted = total > 1 && (ph === "asr" || ph === "tts" || ph === "separate" || ph === "burn") && !queued;
+  const counted = total > 1 && (ph === "asr" || ph === "tts" || ph === "separate" || ph === "burn"
+    || ph === "frames" || ph === "framesRead") && !queued;
   const text = queued
     ? (done > 0 ? TR("продолжу сразу после чужой порции")
                 : TR("идёт другой прогон, начну сразу после него"))

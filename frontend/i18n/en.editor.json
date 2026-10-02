@@ -558,5 +558,6 @@
   "Проверить термины": "Check terms",
   "Выбрано шагов: ": "Steps selected: ",
   "Вернуть как было": "Restore the default",
-  " строк. Проверка идёт отдельной кнопкой.": " lines. The check has its own button."
+  " строк. Проверка идёт отдельной кнопкой.": " lines. The check has its own button.",
+  "Текст в кадре: надпись на экране, а не речь — перевод встанет на её место": "On-screen text: a caption on screen, not speech — the translation will take its place"
 }

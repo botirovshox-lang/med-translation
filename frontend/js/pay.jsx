@@ -80,6 +80,8 @@ function PayCard({ toast, onPaid }) {
       setDone(o);
       reload();
       if (o.url && o.online) { window.location.assign(o.url); return; }
+      if (o.online && !o.url) toast.error(TR("Платёжная страница не открылась"),
+        TR("Нажмите «Оплатить» у заказа ниже через минуту или выберите другой способ."));
       if (o.url) window.open(o.url, "_blank", "noopener");
     } catch (e) { toast.error(TR("Заказ не создан"), e.message || String(e)); }
     setBusy(false);

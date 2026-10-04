@@ -1,0 +1,1615 @@
+<!doctype html>
+<html lang="ru" class="nojs">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SimpleTranslate: перевод на любой язык в один клик</title>
+<meta name="description" content="Книги, научные статьи, документы и видео с субтитрами. Загрузите файл, выберите язык и нажмите «Перевести».">
+<meta name="robots" content="noindex, follow">
+<link rel="canonical" href="https://click.simpletranslate.me/start/">
+<meta name="theme-color" content="#F2F5FA">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Crect width=%2264%22 height=%2264%22 rx=%2216%22 fill=%22%230A5CF0%22/%3E%3Crect x=%2216%22 y=%2219%22 width=%2232%22 height=%225%22 rx=%222.5%22 fill=%22%23fff%22/%3E%3Crect x=%2216%22 y=%2230%22 width=%2232%22 height=%225%22 rx=%222.5%22 fill=%22%23fff%22/%3E%3Crect x=%2216%22 y=%2241%22 width=%2232%22 height=%225%22 rx=%222.5%22 fill=%22%232EE6D0%22/%3E%3C/svg%3E">
+<meta property="og:title" content="SimpleTranslate: перевод на любой язык в один клик">
+<meta property="og:description" content="Книги, научные статьи, документы и видео с субтитрами.">
+<meta property="og:image" content="https://click.simpletranslate.me/og.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500&family=Manrope:wght@400;500;700;800&family=Unbounded:wght@500;600&display=swap" rel="stylesheet">
+<style>
+/* МАКЕТ страницы «Перевод в один клик» (будущий адрес: click.simpletranslate.me/start/).
+   Только облик и поведение: кнопка «Перевести» показывает окно-заглушку
+   вместо перехода в редактор (MOCK = true в скрипте). Всё, что нужно для
+   боевого выката, в design/start/BACKLOG.md. Отзывы и примеры работ придуманы
+   для макета и помечены на странице как образцы (правило лендинга в CLAUDE.md). Языки (73) вписаны разово
+   из backend/languages.json; места под будущие кадры помечены IMG-SLOT. */
+:root {
+  --canvas: #F2F5FA; --panel: #FBFCFE; --line: #DAE2EE; --line-2: #C5D0E0;
+  --ink: #0B1324; --ink-2: #44516A; --ink-3: #6A778F;
+  --accent: #0A5CF0; --accent-h: #0848C2; --accent-m: #E2ECFE;
+  --glow: #16C9B4; --ok: #0B8F63; --ok-m: #E2F5EE; --warn: #B42318;
+  --r: 22px; --r-lg: 30px;
+  --shadow: 0 1px 2px rgba(11,19,36,.05), 0 18px 48px -18px rgba(11,19,36,.22);
+  --fd: "Unbounded", "Segoe UI", system-ui, sans-serif;
+  --fb: "Manrope", "Segoe UI", system-ui, sans-serif;
+  --fm: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  --ease: cubic-bezier(.2,.7,.2,1);
+}
+*, *::before, *::after { box-sizing: border-box; }
+html, body { overflow-x: clip; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--canvas); color: var(--ink);
+  font: 400 19px/1.55 var(--fb); -webkit-font-smoothing: antialiased;
+}
+img, svg, canvas { display: block; max-width: 100%; }
+a { color: inherit; }
+button, select, input { font: inherit; color: inherit; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; border-radius: 10px; }
+.vh { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.wrap { width: min(1200px, 100% - 40px); margin-inline: auto; }
+
+/* Фоновый слой: две мягкие волны света, круг за 90 секунд. */
+.env { position: fixed; inset: 0; z-index: -1; pointer-events: none; overflow: hidden; }
+.env::before, .env::after {
+  content: ""; position: absolute; width: 70vmax; height: 70vmax; border-radius: 50%;
+  filter: blur(80px); opacity: .55; animation: drift 90s linear infinite;
+}
+.env::before { background: radial-gradient(circle, rgba(10,92,240,.18), transparent 62%); top: -30vmax; right: -20vmax; }
+.env::after { background: radial-gradient(circle, rgba(22,201,180,.16), transparent 60%); bottom: -35vmax; left: -25vmax; animation-duration: 120s; animation-direction: reverse; }
+.env i {
+  position: absolute; inset: 0;
+  background-image: radial-gradient(rgba(11,19,36,.07) 1px, transparent 1.2px);
+  background-size: 26px 26px;
+  -webkit-mask-image: radial-gradient(ellipse at 50% 0%, #000 0%, transparent 70%);
+  mask-image: radial-gradient(ellipse at 50% 0%, #000 0%, transparent 70%);
+}
+@keyframes drift { to { transform: rotate(360deg) translateX(6vmax); } }
+
+/* Шапка */
+.top { position: sticky; top: 0; z-index: 20; transition: background .4s var(--ease), box-shadow .4s var(--ease); }
+.top.scrolled { background: rgba(242,245,250,.82); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 1px 0 var(--line); }
+.top .wrap { display: flex; align-items: center; gap: 16px; min-height: 76px; }
+.brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font: 600 19px var(--fd); letter-spacing: -.01em; }
+.brand img { width: 34px; height: 34px; border-radius: 10px; }
+.top .sp { flex: 1; }
+.langs { display: flex; gap: 2px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; }
+.langs button {
+  border: 0; background: none; cursor: pointer; min-height: 40px; padding: 0 14px;
+  border-radius: 999px; font-weight: 700; font-size: 15px; color: var(--ink-2);
+}
+.langs button[aria-pressed="true"] { background: var(--ink); color: #fff; }
+.btn-ghost {
+  display: inline-flex; align-items: center; min-height: 48px; padding: 0 20px; border-radius: 999px;
+  border: 1.5px solid var(--line-2); text-decoration: none; font-weight: 700; font-size: 16px;
+  background: var(--panel); transition: border-color .2s, transform .2s var(--ease);
+}
+.btn-ghost:hover { border-color: var(--ink); }
+
+/* Первый экран */
+.hero { padding: clamp(24px, 4vh, 56px) 0 clamp(36px, 6vh, 64px); }
+.hero .wrap {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 560px);
+  grid-template-areas: "text form" "demo form"; column-gap: clamp(32px, 5vw, 80px); align-items: start;
+}
+.h-text { grid-area: text; padding-top: clamp(8px, 3vh, 36px); }
+.h-form { grid-area: form; position: relative; }
+.h-demo { grid-area: demo; position: relative; height: 440px; }
+h1 { font: 600 clamp(36px, 4.4vw, 66px)/1.05 var(--fd); letter-spacing: -.025em; margin: 0 0 18px; }
+h1 .a { display: block; color: var(--accent); }
+.lead { font-size: clamp(19px, 1.6vw, 22px); color: var(--ink-2); margin: 0 0 34px; max-width: 34ch; }
+
+/* Форма */
+.tr { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: clamp(18px, 2.4vw, 28px); box-shadow: var(--shadow); position: relative; z-index: 1; }
+.tr.pulse { animation: pulse 1.4s var(--ease); }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(10,92,240,.45), var(--shadow); } 100% { box-shadow: 0 0 0 22px rgba(10,92,240,0), var(--shadow); } }
+.step { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 18px; margin: 0 0 12px; }
+.step b { font: 500 13px var(--fm); color: var(--accent); background: var(--accent-m); border-radius: 8px; padding: 4px 8px; }
+.drop {
+  display: flex; align-items: center; gap: 18px; min-height: 132px; padding: 20px 22px; cursor: pointer;
+  border: 2px dashed var(--line-2); border-radius: var(--r); background: var(--canvas);
+  transition: border-color .2s, background .2s, transform .25s var(--ease);
+}
+.drop:hover, .drop:focus-within { border-color: var(--accent); }
+.drop.drag { border-color: var(--accent); background: var(--accent-m); transform: scale(1.01); }
+.drop.has { border-style: solid; border-color: var(--ok); background: var(--ok-m); }
+.drop .ic { flex: none; width: 64px; height: 64px; border-radius: 18px; background: var(--panel); border: 1px solid var(--line); display: grid; place-items: center; color: var(--accent); }
+.drop.has .ic { color: var(--ok); border-color: rgba(11,143,99,.3); }
+.drop .t { display: block; font-weight: 800; font-size: 21px; line-height: 1.25; overflow-wrap: anywhere; }
+.drop .s { display: block; color: var(--ink-2); font-size: 17px; margin-top: 2px; }
+.drop .f { display: block; color: var(--ink-3); font-size: 15px; margin-top: 6px; }
+.drop .ok-ic, .drop.has .up-ic { display: none; }
+.drop.has .ok-ic { display: block; }
+.gap { height: 22px; }
+.chips { display: flex; flex-wrap: wrap; gap: 10px; }
+.chip {
+  min-height: 52px; padding: 0 18px; border-radius: 999px; cursor: pointer;
+  border: 1.5px solid var(--line-2); background: var(--panel); font-weight: 700; font-size: 18px;
+  transition: border-color .2s, background .2s, color .2s, transform .2s var(--ease);
+}
+.chip:hover { border-color: var(--ink); }
+.chip:active { transform: scale(.97); }
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.other { position: relative; display: inline-flex; }
+.other select {
+  appearance: none; -webkit-appearance: none; min-height: 52px; padding: 0 44px 0 18px; border-radius: 999px; cursor: pointer;
+  border: 1.5px dashed var(--line-2); background: var(--panel); font-weight: 700; font-size: 18px; max-width: 260px;
+}
+.other.on select { border-style: solid; border-color: var(--accent); background: var(--accent); color: #fff; }
+.other.need select, .chips.need .chip { border-color: var(--warn); }
+.other svg { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); pointer-events: none; }
+.other.on svg { color: #fff; }
+.src { margin-top: 16px; font-size: 16px; color: var(--ink-2); display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.src b { color: var(--ink); }
+.linkbtn { border: 0; background: none; padding: 6px 2px; cursor: pointer; color: var(--accent); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; font-size: 16px; }
+.src select { min-height: 46px; border-radius: 12px; border: 1.5px solid var(--line-2); background: var(--panel); padding: 0 12px; font-weight: 700; font-size: 17px; }
+.go {
+  margin-top: 22px; width: 100%; min-height: 68px; border: 0; border-radius: 20px; cursor: pointer;
+  background: var(--accent); color: #fff; font: 800 22px var(--fb); letter-spacing: .01em;
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  box-shadow: 0 14px 30px -12px rgba(10,92,240,.7); transition: background .2s, transform .2s var(--ease);
+}
+.go:hover { background: var(--accent-h); }
+.go:active { transform: translateY(1px) scale(.995); }
+.go[disabled] { opacity: .75; cursor: progress; }
+.go svg { transition: transform .3s var(--ease); }
+.go:hover svg { transform: translateX(4px); }
+.free { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 14px 0 0; color: var(--ink-2); font-size: 16px; font-weight: 500; }
+.free svg { color: var(--ok); }
+.err { margin: 14px 0 0; padding: 12px 16px; border-radius: 14px; background: #FDECEA; color: var(--warn); font-weight: 700; font-size: 17px; }
+.err.busy { background: var(--accent-m); color: var(--accent-h); }
+
+/* Живая сцена: глобус языков за формой и карточка, которую «луч» переводит. */
+#globe { position: absolute; z-index: 0; left: 50%; top: -34px; width: 500px; height: 500px; max-width: none; transform: translateX(-50%); pointer-events: none; }
+.h-demo .doc { position: absolute; left: 0; right: 0; bottom: 0; margin-inline: auto; }
+.doc {
+  position: relative; width: min(520px, 100%);
+  background: rgba(251,252,254,.86); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--line); border-radius: var(--r-lg); box-shadow: var(--shadow); padding: 22px 24px 26px;
+}
+.doc-h { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.doc-h .fi { width: 40px; height: 48px; flex: none; border-radius: 8px; background: var(--accent-m); color: var(--accent); display: grid; place-items: center; font: 500 11px var(--fm); }
+.doc-h .nm { min-width: 0; }
+.doc-h .nm b { display: block; font-weight: 800; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.doc-h .nm span { font: 500 12px var(--fm); color: var(--ink-3); letter-spacing: .06em; text-transform: uppercase; }
+.pair { margin-left: auto; flex: none; display: flex; align-items: center; gap: 6px; font: 500 14px var(--fm); background: var(--ink); color: #fff; border-radius: 999px; padding: 6px 12px; }
+.pair svg { opacity: .7; }
+.txt { position: relative; display: grid; font-size: 20px; line-height: 1.5; font-weight: 500; min-height: 4.5em; }
+.txt > p { grid-area: 1 / 1; margin: 0; }
+.txt .n { clip-path: inset(0 0 100% 0); }
+.txt.run .n { clip-path: inset(0 0 0 0); transition: clip-path 1.1s linear; }
+.txt.run .o { opacity: .18; transition: opacity 1.1s linear; }
+.beam { position: absolute; left: -14px; right: -14px; top: 0; height: 2px; border-radius: 2px; background: var(--glow); opacity: 0; box-shadow: 0 0 12px 2px rgba(22,201,180,.75), 0 0 34px 6px rgba(22,201,180,.35); }
+.txt.run .beam { opacity: 1; top: 100%; transition: top 1.1s linear, opacity .2s; }
+.keep { margin-top: 14px; display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-3); font-weight: 500; }
+.keep i { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.num { background: rgba(22,201,180,.16); border-radius: 6px; padding: 0 3px; }
+
+/* Разделы */
+section { padding: clamp(80px, 11vh, 140px) 0; }
+.h2 { font: 600 clamp(32px, 4.2vw, 58px)/1.08 var(--fd); letter-spacing: -.02em; margin: 0 0 clamp(36px, 6vh, 64px); max-width: 18ch; }
+.sub { color: var(--ink-2); font-size: 20px; margin: -40px 0 48px; max-width: 40ch; }
+
+/* Что переводим: четыре плитки разного размера */
+.tiles { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 22px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 22px; box-shadow: 0 1px 2px rgba(11,19,36,.04); display: flex; flex-direction: column; overflow: hidden; }
+.tile:nth-child(1) { grid-column: span 7; } .tile:nth-child(2) { grid-column: span 5; }
+.tile:nth-child(3) { grid-column: span 5; } .tile:nth-child(4) { grid-column: span 7; }
+.stage { position: relative; height: 270px; border-radius: 20px; background: var(--canvas); display: grid; place-items: center; overflow: hidden; }
+.tile h3 { font: 600 26px/1.15 var(--fd); margin: 22px 4px 6px; letter-spacing: -.01em; }
+.tile p { margin: 0 4px 4px; color: var(--ink-2); font-size: 18px; }
+.cyc { transition: opacity .45s var(--ease), transform .45s var(--ease); display: inline-block; }
+.cyc.out { opacity: 0; transform: translateY(8px); }
+.bar { height: 9px; border-radius: 9px; background: var(--line); margin-top: 11px; }
+/* книга */
+.book { display: flex; width: min(430px, 88%); height: 200px; filter: drop-shadow(0 18px 22px rgba(11,19,36,.16)); }
+.book > div { flex: 1; background: #fff; padding: 22px 20px; }
+.book > div:first-child { border-radius: 14px 4px 4px 14px; background: linear-gradient(90deg, #fff 80%, #EEF1F6); }
+.book > div:last-child { border-radius: 4px 14px 14px 4px; background: linear-gradient(270deg, #fff 80%, #EEF1F6); }
+.book h4 { margin: 0 0 8px; font: 600 17px var(--fd); color: var(--ink); }
+/* статья */
+.paper { width: min(300px, 80%); background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 16px 28px -14px rgba(11,19,36,.3); }
+.paper h4 { margin: 0 0 10px; font: 600 16px var(--fd); }
+.paper .row { display: flex; align-items: flex-end; gap: 14px; margin-top: 14px; }
+.formula { font: italic 600 26px/1 Georgia, "Times New Roman", serif; color: var(--ink); }
+.formula sup { font-size: 15px; }
+.chart { display: flex; align-items: flex-end; gap: 5px; height: 44px; margin-left: auto; }
+.chart i { width: 10px; border-radius: 3px; background: var(--accent-m); }
+.chart i:nth-child(3) { background: var(--accent); }
+/* видео */
+.video { position: relative; width: min(400px, 90%); aspect-ratio: 16 / 9; border-radius: 14px; overflow: hidden; box-shadow: 0 18px 30px -14px rgba(11,19,36,.45);
+  background: radial-gradient(circle at 72% 38%, #FFD7A1 0 7%, rgba(255,190,120,.55) 8%, transparent 30%), linear-gradient(180deg, #1B2B6B 0%, #3651C9 46%, #F2A27B 100%); }
+.video::before { content: ""; position: absolute; left: -10%; right: -10%; bottom: -30%; height: 70%; border-radius: 50% 50% 0 0; background: #13204F; }
+.video::after { content: ""; position: absolute; left: 30%; right: -30%; bottom: -36%; height: 64%; border-radius: 50% 50% 0 0; background: #0D173A; }
+.play { position: absolute; z-index: 2; inset: 0; margin: auto; width: 54px; height: 54px; border-radius: 50%; background: rgba(255,255,255,.92); display: grid; place-items: center; color: var(--ink); }
+.subt { position: absolute; z-index: 2; left: 50%; bottom: 10%; transform: translateX(-50%); background: rgba(8,12,24,.72); color: #fff; font-weight: 700; font-size: 17px; padding: 6px 14px; border-radius: 8px; white-space: nowrap; }
+/* скан */
+.scan { position: relative; width: min(330px, 78%); background: #FFFDF7; border-radius: 6px; padding: 22px 22px 26px; transform: rotate(-3deg); box-shadow: 0 18px 30px -16px rgba(11,19,36,.4); overflow: hidden; }
+.scan h4 { margin: 0 0 6px; font: 600 18px var(--fd); text-align: center; }
+.scan .bar { background: #E6E1D3; }
+.stamp { position: absolute; right: 18px; bottom: 16px; width: 58px; height: 58px; border-radius: 50%; border: 3px solid rgba(10,92,240,.45); }
+.sweep { position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--glow); box-shadow: 0 0 14px 3px rgba(22,201,180,.6); animation: sweep 3.2s ease-in-out infinite; }
+@keyframes sweep { 0% { top: 4%; } 50% { top: 94%; } 100% { top: 4%; } }
+
+/* Языки */
+.big { display: flex; align-items: baseline; gap: 18px; margin: 0 0 40px; }
+.big b { font: 600 clamp(96px, 15vw, 200px)/.9 var(--fd); letter-spacing: -.04em; }
+.big span { font: 600 clamp(24px, 3vw, 40px) var(--fd); color: var(--ink-2); }
+.marq { overflow: hidden; -webkit-mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent); mask-image: linear-gradient(90deg, transparent, #000 8%, #000 92%, transparent); padding: 6px 0; }
+.marq + .marq { margin-top: 14px; }
+.track { display: flex; gap: 12px; width: max-content; animation: slide 110s linear infinite; }
+.marq.rev .track { animation-direction: reverse; animation-duration: 130s; }
+.marq:hover .track, .marq:focus-within .track { animation-play-state: paused; }
+@keyframes slide { to { transform: translateX(-50%); } }
+.lchip { min-height: 56px; padding: 0 24px; border-radius: 999px; border: 1.5px solid var(--line); background: var(--panel); font-weight: 700; font-size: 20px; cursor: pointer; white-space: nowrap; transition: border-color .2s, background .2s, color .2s; }
+.lchip:hover, .lchip:focus-visible { border-color: var(--accent); color: var(--accent); }
+
+/* Шаги */
+.steps { position: relative; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; }
+.steps svg.line { position: absolute; left: 6%; right: 6%; top: 44px; width: 88%; height: 4px; overflow: visible; }
+.steps svg.line path { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 8; fill: none; stroke-dashoffset: 1200; transition: stroke-dashoffset 2.4s var(--ease); }
+.steps.in svg.line path { stroke-dashoffset: 0; }
+.st { position: relative; text-align: center; }
+.st .o { width: 88px; height: 88px; margin: 0 auto 24px; border-radius: 50%; background: var(--panel); border: 1.5px solid var(--line); display: grid; place-items: center; color: var(--accent); box-shadow: var(--shadow); position: relative; z-index: 1; }
+.st .o b { position: absolute; top: -6px; right: -6px; width: 32px; height: 32px; border-radius: 50%; background: var(--ink); color: #fff; font: 600 15px/32px var(--fd); }
+.st h3 { font: 600 24px var(--fd); margin: 0 0 6px; }
+.st p { margin: 0 auto; color: var(--ink-2); font-size: 18px; max-width: 22ch; }
+
+/* Что вы получите: список строк, а не колонки */
+.gets { display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); gap: clamp(28px, 6vw, 96px); align-items: start; }
+.gets-l { position: sticky; top: 100px; }
+.gets-l .h2 { margin-bottom: 0; }
+.get { display: flex; gap: 24px; padding: 30px 0; border-top: 1px solid var(--line); }
+.get:last-child { border-bottom: 1px solid var(--line); }
+.get .o { flex: none; width: 76px; height: 76px; border-radius: 22px; background: var(--accent-m); color: var(--accent); display: grid; place-items: center; }
+.get h3 { font: 600 25px/1.2 var(--fd); margin: 6px 0 6px; }
+.get p { margin: 0; color: var(--ink-2); font-size: 19px; max-width: 36ch; }
+
+/* Финальный призыв */
+.cta { position: relative; overflow: hidden; border-radius: 36px; background: var(--ink); color: #fff; text-align: center; padding: clamp(64px, 10vw, 120px) 24px; }
+.cta::before { content: ""; position: absolute; inset: -40% -10% auto; height: 120%; background: radial-gradient(circle at 50% 0%, rgba(10,92,240,.55), transparent 60%); }
+.cta::after { content: ""; position: absolute; inset: 0; background-image: radial-gradient(rgba(255,255,255,.12) 1px, transparent 1.2px); background-size: 24px 24px; -webkit-mask-image: radial-gradient(ellipse at 50% 100%, #000, transparent 70%); mask-image: radial-gradient(ellipse at 50% 100%, #000, transparent 70%); }
+.cta > * { position: relative; z-index: 1; }
+.cta h2 { font: 600 clamp(32px, 5vw, 64px)/1.06 var(--fd); letter-spacing: -.02em; margin: 0 auto 34px; max-width: 16ch; }
+.cta .go { width: auto; display: inline-flex; padding: 0 40px; margin: 0; }
+.cta .free { color: rgba(255,255,255,.8); }
+.cta .free svg { color: #6EE7B7; }
+
+footer { padding: 56px 0 calc(48px + env(safe-area-inset-bottom)); color: var(--ink-2); font-size: 16px; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: 14px 28px; align-items: center; }
+footer a { text-decoration: none; font-weight: 600; }
+footer a:hover { color: var(--accent); }
+footer .sp { flex: 1; }
+
+/* Полоса доверия под первым экраном */
+.trust-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; box-shadow: 0 1px 2px rgba(11,19,36,.04); }
+.tr-i { display: flex; align-items: center; gap: 14px; padding: 22px 24px; background: var(--panel); font-weight: 700; font-size: 17px; line-height: 1.3; }
+.tr-i .o { flex: none; width: 46px; height: 46px; border-radius: 14px; background: var(--accent-m); color: var(--accent); display: grid; place-items: center; }
+
+/* Примеры работ: вкладки и сцена */
+.ex-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px 32px; flex-wrap: wrap; margin-bottom: 34px; }
+.ex-head .h2 { margin: 0; }
+.ex-head p { margin: 8px 0 0; color: var(--ink-2); font-size: 20px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 26px; }
+.tab { display: inline-flex; align-items: center; gap: 10px; min-height: 54px; padding: 0 22px; border: 0; border-radius: 20px; background: none; font-weight: 800; font-size: 18px; color: var(--ink-2); cursor: pointer; transition: background .25s, color .25s; }
+.tab:hover { color: var(--ink); }
+.tab[aria-selected="true"] { background: var(--ink); color: #fff; }
+.ex-stage { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 36px; box-shadow: var(--shadow); padding: clamp(18px, 3vw, 40px); overflow: hidden; }
+.ex-stage::before { content: ""; position: absolute; inset: 0; background-image: radial-gradient(rgba(11,19,36,.06) 1px, transparent 1.2px); background-size: 22px 22px; pointer-events: none; }
+.sample { position: absolute; top: 18px; right: 18px; z-index: 6; font: 500 12px var(--fm); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); border: 1px dashed var(--line-2); border-radius: 999px; padding: 6px 12px; background: var(--panel); }
+.pane { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; min-height: 560px; }
+.pane[hidden] { display: none; }
+.ctrls { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 10px; }
+.ctrls .lbl { font-weight: 700; color: var(--ink-2); margin-right: 4px; }
+.mini { min-height: 48px; padding: 0 18px; border-radius: 999px; border: 1.5px solid var(--line-2); background: var(--panel); font-weight: 700; font-size: 17px; cursor: pointer; transition: border-color .2s, background .2s, color .2s; }
+.mini:hover { border-color: var(--ink); }
+.mini[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.act { min-height: 56px; padding: 0 26px; border: 0; border-radius: 16px; background: var(--ink); color: #fff; font-weight: 800; font-size: 18px; cursor: pointer; display: inline-flex; align-items: center; gap: 10px; transition: background .2s, transform .2s var(--ease); }
+.act:hover { background: #1D2942; }
+.act:active { transform: scale(.98); }
+.act[disabled] { opacity: .6; cursor: progress; }
+
+/* Книга в 3D: обложка и лист поворачиваются вокруг корешка */
+.b3d { --w: min(250px, 40vw); --h: calc(var(--w) * 1.36); position: relative; width: 100%; height: calc(var(--h) + 70px); display: grid; place-items: center; perspective: 2200px; cursor: pointer; }
+.b3d-sh { position: absolute; left: 50%; bottom: 8px; width: calc(var(--w) * 1.9); height: 34px; transform: translateX(-50%); border-radius: 50%; background: radial-gradient(closest-side, rgba(11,19,36,.28), transparent); filter: blur(4px); }
+.book3 { position: relative; width: calc(var(--w) * 2); height: var(--h); transform-style: preserve-3d; transform: rotateX(var(--rx, 14deg)) rotateY(var(--ry, -18deg)) translateX(calc(var(--w) * -.5)); transition: transform 1s var(--ease); }
+.book3.open { transform: rotateX(18deg) rotateY(0deg) translateX(0); }
+.pg, .face { position: absolute; top: 0; width: var(--w); height: var(--h); overflow: hidden; }
+.pg.r { left: var(--w); background: linear-gradient(270deg, #fff 82%, #EDF1F6); border-radius: 2px 10px 10px 2px; box-shadow: 3px 0 0 #E9EEF5, 6px 0 0 #DCE3EE; transform: translateZ(0); }
+.leaf { position: absolute; top: 0; left: var(--w); width: var(--w); height: var(--h); transform-origin: left center; transform-style: preserve-3d; transition: transform 1.1s var(--ease); }
+.leaf.l1 { transform: rotateY(0deg) translateZ(2px); }
+.leaf.l1.flipped { transform: rotateY(-180deg) translateZ(2px); }
+.leaf.cv { transform: rotateY(0deg) translateZ(4px); }
+.leaf.cv.flipped { transform: rotateY(-180deg) translateZ(4px); }
+.face { left: 0; backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+.face.back { transform: rotateY(180deg); }
+.paperf { background: linear-gradient(270deg, #fff 82%, #EDF1F6); border-radius: 2px 10px 10px 2px; }
+.paperf.back { background: linear-gradient(90deg, #fff 82%, #EDF1F6); border-radius: 10px 2px 2px 10px; }
+.pgc { position: absolute; inset: 0; padding: calc(var(--w) * .11) calc(var(--w) * .1); font-size: calc(var(--w) * .062); line-height: 1.55; color: var(--ink); }
+.pgc h5 { margin: 0 0 .9em; font: 600 1.15em/1.3 var(--fd); }
+.pgc p { margin: 0; }
+.pgc .pn { position: absolute; bottom: calc(var(--w) * .07); left: 0; right: 0; text-align: center; font: 500 .8em var(--fm); color: var(--ink-3); }
+.cover { background: linear-gradient(155deg, #0A5CF0 0%, #0B1324 72%); color: #fff; border-radius: 3px 12px 12px 3px; box-shadow: inset 7px 0 12px rgba(0,0,0,.28); }
+.cover .pgc { display: flex; flex-direction: column; justify-content: space-between; color: #fff; }
+.cover .ct { font: 600 1.7em/1.15 var(--fd); }
+.cover .cs { font: 500 .8em var(--fm); letter-spacing: .1em; text-transform: uppercase; opacity: .7; }
+.cover .cl { height: 3px; width: 46%; margin-top: .8em; border-radius: 3px; background: #2EE6D0; box-shadow: 0 0 12px rgba(46,230,208,.8); }
+
+/* Статья: шторка «оригинал | перевод» */
+.ba { --x: 50%; position: relative; width: min(500px, 100%); aspect-ratio: .8; border-radius: 14px; overflow: hidden; background: #fff; box-shadow: 0 26px 54px -26px rgba(11,19,36,.45); user-select: none; -webkit-user-select: none; touch-action: pan-y; cursor: ew-resize; }
+.lay { position: absolute; inset: 0; padding: 7% 8%; font-size: clamp(9px, 1.25vw, 14px); line-height: 1.5; background: #fff; }
+.lay.t { clip-path: inset(0 0 0 var(--x)); background: #FCFDFF; }
+.lay .j { font: 500 .8em var(--fm); color: var(--ink-3); letter-spacing: .04em; border-bottom: 1px solid var(--line); padding-bottom: .7em; margin-bottom: 1.2em; }
+.lay h5 { margin: 0 0 .3em; font: 600 1.55em/1.2 var(--fd); }
+.lay .au { color: var(--ink-2); margin-bottom: 1.1em; }
+.lay .abs { background: var(--canvas); border-radius: 8px; padding: .8em 1em; margin-bottom: 1.2em; }
+.lay .abs b { display: block; font-size: .8em; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); margin-bottom: .2em; }
+.lay .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2em; align-items: start; }
+.lay table { width: 100%; border-collapse: collapse; font-size: .92em; }
+.lay th, .lay td { text-align: left; padding: .35em .3em; border-bottom: 1px solid var(--line); }
+.lay th { font-weight: 800; }
+.lay figure { margin: 0; }
+.lay figcaption { font-size: .82em; color: var(--ink-2); margin-top: .4em; }
+.lay .bars i { display: block; height: .55em; border-radius: .55em; background: var(--line); margin-top: .65em; }
+.lay .bars { margin-top: 1.1em; }
+.ba-h { position: absolute; z-index: 3; top: 0; bottom: 0; left: var(--x); width: 3px; margin-left: -1.5px; background: var(--accent); border: 0; padding: 0; cursor: ew-resize; }
+.ba-h::after { content: ""; position: absolute; top: 50%; left: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px; border-radius: 50%; background: var(--accent); box-shadow: 0 6px 18px rgba(10,92,240,.45); }
+.ba-h svg { position: absolute; z-index: 1; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; }
+.ba-tag { position: absolute; z-index: 2; top: 12px; font: 500 11px var(--fm); letter-spacing: .08em; text-transform: uppercase; background: rgba(11,19,36,.78); color: #fff; padding: 5px 9px; border-radius: 8px; transition: opacity .2s; }
+.ba-tag.o { left: 12px; }
+.ba-tag.t { right: 12px; background: var(--accent); }
+
+/* Видео с субтитрами */
+.player { width: min(780px, 100%); border-radius: 20px; overflow: hidden; background: #0B1324; box-shadow: 0 30px 60px -28px rgba(11,19,36,.6); }
+.screen { position: relative; aspect-ratio: 16 / 9; overflow: hidden; background: linear-gradient(180deg, #16245E 0%, #3D58D6 52%, #F2A57E 100%); }
+.world { position: absolute; inset: -6%; animation: pan 12s linear infinite alternate; animation-play-state: paused; }
+.player.playing .world, .player.playing .cloud { animation-play-state: running; }
+@keyframes pan { from { transform: translateX(0) scale(1.02); } to { transform: translateX(-4%) scale(1.08); } }
+.sun { position: absolute; left: 62%; top: 30%; width: 13%; aspect-ratio: 1; border-radius: 50%; background: radial-gradient(circle, #FFE3B8 40%, rgba(255,200,140,.5) 60%, transparent 72%); }
+.mt { position: absolute; left: 0; right: 0; bottom: 0; }
+.mt.a { height: 62%; background: #2A3A86; clip-path: polygon(0 100%, 0 58%, 14% 30%, 26% 52%, 40% 14%, 55% 46%, 68% 24%, 82% 50%, 100% 28%, 100% 100%); }
+.mt.b { height: 46%; background: #1A2660; clip-path: polygon(0 100%, 0 40%, 20% 62%, 34% 30%, 50% 58%, 64% 36%, 80% 64%, 100% 40%, 100% 100%); }
+.mt.c { height: 24%; background: #0E1638; clip-path: polygon(0 100%, 0 46%, 30% 70%, 58% 40%, 80% 66%, 100% 50%, 100% 100%); }
+.cloud { position: absolute; height: 7%; border-radius: 99px; background: rgba(255,255,255,.55); filter: blur(2px); animation: cloud 12s linear infinite alternate; animation-play-state: paused; }
+@keyframes cloud { from { transform: translateX(0); } to { transform: translateX(60px); } }
+.bigplay { position: absolute; z-index: 3; inset: 0; margin: auto; width: 84px; height: 84px; border-radius: 50%; border: 0; background: rgba(255,255,255,.94); color: var(--ink); display: grid; place-items: center; cursor: pointer; box-shadow: 0 10px 30px rgba(0,0,0,.3); transition: opacity .3s, transform .3s var(--ease); }
+.player.playing .bigplay { opacity: 0; transform: scale(.8); pointer-events: none; }
+.subs { position: absolute; z-index: 2; left: 6%; right: 6%; bottom: 7%; text-align: center; }
+.subs p { margin: 0; }
+.subs span { background: rgba(6,10,22,.8); color: #fff; font-weight: 700; font-size: clamp(14px, 2.1vw, 23px); line-height: 1.5; padding: 3px 12px; border-radius: 6px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.subs span:empty { display: none; }
+.subs .s2 { margin-bottom: 6px; }
+.subs .s2 span { font-size: clamp(11px, 1.5vw, 16px); font-weight: 600; opacity: .85; }
+.pbar { display: flex; align-items: center; gap: 14px; padding: 12px 16px; color: #fff; }
+.pbar button { flex: none; width: 46px; height: 46px; border-radius: 12px; border: 0; background: rgba(255,255,255,.12); color: #fff; display: grid; place-items: center; cursor: pointer; }
+.pbar .tm { font: 500 14px var(--fm); opacity: .85; min-width: 92px; text-align: right; }
+.prog { position: relative; flex: 1; height: 10px; border-radius: 10px; background: rgba(255,255,255,.14); cursor: pointer; }
+.prog .seg { position: absolute; top: 0; bottom: 0; border-radius: 10px; background: rgba(255,255,255,.22); }
+.prog .seg.on { background: #2EE6D0; }
+.prog .fill { position: absolute; left: 0; top: -3px; width: 4px; height: 16px; border-radius: 4px; background: #fff; box-shadow: 0 0 10px rgba(255,255,255,.6); }
+
+/* Фото таблички: чтение и перевод на месте */
+.desk { position: relative; width: min(620px, 100%); aspect-ratio: 4 / 3; border-radius: 20px; overflow: hidden; background: radial-gradient(circle at 30% 20%, #D9C6AB, #B79E80 70%); box-shadow: 0 26px 54px -26px rgba(11,19,36,.45); }
+.desk::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(92deg, rgba(255,255,255,.05) 0 2px, transparent 2px 9px); pointer-events: none; }
+.sign { position: absolute; z-index: 1; left: 50%; top: 50%; width: 62%; transform: translate(-50%, -50%) rotate(-3.5deg); background: #FFFCF4; border-radius: 4px; padding: 6% 7% 5%; box-shadow: 0 18px 30px -12px rgba(0,0,0,.35); font-size: clamp(11px, 1.55vw, 17px); }
+.sign .mh { text-align: center; font: 600 1.5em/1.2 Georgia, "Times New Roman", serif; letter-spacing: .08em; margin-bottom: .7em; }
+.sign .ln { display: flex; align-items: baseline; gap: .5em; margin: .5em 0; }
+.sign .nm { font-weight: 700; }
+.sign .dots { flex: 1; min-width: 1em; border-bottom: 2px dotted #C9BFA8; transform: translateY(-.25em); }
+.sign .pr { font-weight: 700; font-variant-numeric: tabular-nums; }
+.sign .ft { margin-top: .9em; text-align: center; font-size: .85em; color: #8A7F6A; }
+.sign .mh, .sign .ln, .sign .ft { padding: .1em .3em; border-radius: 5px; outline: 2px dashed transparent; outline-offset: 2px; transition: outline-color .3s, background .4s; }
+.sign .t { display: none; }
+.desk.done .sign .o { display: none; }
+.desk.done .sign .t { display: inline; }
+.desk.boxes .sign .mh, .desk.boxes .sign .ln, .desk.boxes .sign .ft { outline-color: rgba(10,92,240,.55); }
+.desk.done .sign .mh, .desk.done .sign .ln, .desk.done .sign .ft { background: rgba(46,230,208,.16); }
+.sbeam { position: absolute; z-index: 2; left: 0; right: 0; top: 0; height: 3px; background: #2EE6D0; box-shadow: 0 0 16px 4px rgba(46,230,208,.7); opacity: 0; }
+.desk.run .sbeam { animation: sbeam 1.2s linear forwards; }
+@keyframes sbeam { 0% { top: 0; opacity: 1; } 95% { opacity: 1; } 100% { top: 100%; opacity: 0; } }
+
+/* Проверка цифр: короткий интерактивный пример */
+.chk { margin-top: 30px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 24px; box-shadow: var(--shadow); }
+.chk .r { padding: 12px 0; border-top: 1px solid var(--line); }
+.chk .r:first-child { border-top: 0; padding-top: 0; }
+.chk .k { display: block; font: 500 12px var(--fm); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 4px; }
+.chk .v { font-size: 19px; font-weight: 600; }
+.chk mark { background: none; color: inherit; border-radius: 6px; padding: 0 3px; transition: background .3s, color .3s; }
+.chk.on .m-ok { background: rgba(46,230,208,.28); }
+.chk.on .m-bad { background: #FDECEA; color: var(--warn); text-decoration: line-through; }
+.chk .found { display: none; margin-top: 6px; color: var(--warn); font-weight: 700; font-size: 16px; }
+.chk.on .found { display: block; }
+.chk .fx { display: none; }
+.chk.fixed .fx { display: block; }
+.chk .fx mark { background: var(--ok-m); color: var(--ok); }
+.chk .fx .ok { color: var(--ok); font-weight: 700; font-size: 16px; margin-left: 8px; }
+.chk .act { margin-top: 16px; width: 100%; justify-content: center; }
+
+/* Отзывы: места под настоящие фото и тексты */
+.rev-head { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 16px 28px; margin-bottom: 34px; }
+.rev-head .h2 { margin: 0; }
+.rev-note { font: 500 13px var(--fm); color: var(--ink-3); border: 1px dashed var(--line-2); border-radius: 999px; padding: 8px 14px; }
+.revs { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr) minmax(0, 1fr); gap: 22px; }
+.rev { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 26px; display: flex; flex-direction: column; gap: 20px; }
+.rev q { quotes: "«" "»"; font: 600 21px/1.45 var(--fb); flex: 1; }
+html[lang="en"] .rev q { quotes: "“" "”"; }
+.who { display: flex; align-items: center; gap: 14px; }
+.ph { flex: none; width: 58px; height: 58px; border-radius: 50%; display: grid; place-items: center; overflow: hidden; font: 600 19px var(--fd); letter-spacing: .02em; }
+.ph.c1 { background: #E2ECFE; color: #0A5CF0; }
+.ph.c2 { background: #E2F5EE; color: #0B8F63; }
+.ph.c3 { background: #FDEFE2; color: #B4580F; }
+.vthumb .vi { font: 600 clamp(64px, 9vw, 120px)/1 var(--fd); color: rgba(10,92,240,.22); letter-spacing: .02em; }
+.who b { display: block; font-weight: 800; }
+.who span span { color: var(--ink-2); font-size: 16px; }
+.vthumb { position: relative; aspect-ratio: 4 / 3; border-radius: 18px; overflow: hidden; background: linear-gradient(160deg, #DCE5F7, #B9C9EC); display: grid; place-items: center; color: rgba(11,19,36,.22); }
+.vthumb .pl { position: absolute; inset: 0; margin: auto; width: 68px; height: 68px; border-radius: 50%; background: rgba(255,255,255,.95); color: var(--ink); display: grid; place-items: center; box-shadow: 0 10px 26px rgba(11,19,36,.25); }
+.vthumb .lb { position: absolute; left: 14px; bottom: 14px; font: 500 12px var(--fm); letter-spacing: .06em; text-transform: uppercase; background: rgba(11,19,36,.75); color: #fff; border-radius: 8px; padding: 5px 9px; }
+
+/* Лёгкий 3D-наклон сцен на плитках (только мышью) */
+.stage .book, .stage .paper, .stage .video { transform: perspective(900px) rotateX(var(--tx, 0deg)) rotateY(var(--ty, 0deg)); transition: transform .5s var(--ease); }
+.stage .scan { transform: perspective(900px) rotateX(var(--tx, 0deg)) rotateY(var(--ty, 0deg)) rotate(-3deg); transition: transform .5s var(--ease); }
+
+/* Окно-заглушка макета вместо перехода в редактор */
+.mock { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 20px; background: rgba(11,19,36,.42); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+.mock[hidden] { display: none; }
+.mock .box { width: min(520px, 100%); background: var(--panel); border-radius: 30px; padding: 34px 30px 30px; box-shadow: 0 30px 80px -20px rgba(11,19,36,.5); text-align: center; animation: pop .4s var(--ease); }
+@keyframes pop { from { opacity: 0; transform: translateY(14px) scale(.98); } }
+.mock .win { width: 190px; margin: 0 auto 22px; border-radius: 14px; border: 1px solid var(--line); background: var(--canvas); overflow: hidden; }
+.mock .win i { display: block; height: 22px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.mock .win div { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px; }
+.mock .win b { height: 8px; border-radius: 8px; background: var(--line); }
+.mock .win b:nth-child(even) { background: var(--accent); opacity: .55; }
+.mock h3 { font: 600 26px/1.2 var(--fd); margin: 0 0 12px; }
+.mock .mf { font-weight: 800; font-size: 19px; margin: 0 0 6px; overflow-wrap: anywhere; }
+.mock .mp { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; color: var(--ink-2); margin: 0 0 18px; }
+.mock .mn { color: var(--ink-3); font-size: 16px; margin: 0 0 24px; }
+.mock .go { margin: 0; }
+
+/* Появление: только когда скрипт работает, иначе всё видно сразу. */
+.js .rv { opacity: 0; transform: translateY(22px); transition: opacity .9s var(--ease), transform .9s var(--ease); transition-delay: var(--d, 0s); }
+.js .rv.in { opacity: 1; transform: none; }
+
+@media (max-width: 1020px) {
+  .hero .wrap { grid-template-columns: minmax(0, 1fr); grid-template-areas: "text" "form" "demo"; row-gap: 0; }
+  .h-demo { margin-top: 36px; }
+  .gets { grid-template-columns: 1fr; }
+  .gets-l { position: static; }
+}
+@media (max-width: 820px) {
+  .tile:nth-child(n) { grid-column: span 12; }
+  .steps { grid-template-columns: 1fr; gap: 44px; }
+  .steps svg.line { display: none; }
+}
+@media (max-width: 640px) {
+  body { font-size: 18px; }
+  .wrap { width: calc(100% - 32px); }
+  .top .wrap { min-height: 64px; gap: 10px; }
+  .top #login { display: none; }
+  .brand span { display: none; }
+  .langs button { padding: 0 10px; font-size: 14px; }
+  .btn-ghost { min-height: 44px; padding: 0 14px; font-size: 15px; }
+  .drop { flex-direction: column; text-align: center; min-height: 170px; }
+  .chip, .other select { font-size: 17px; }
+  .go { font-size: 21px; }
+  .doc { padding: 18px; }
+  .h-demo { height: 400px; }
+  #globe { width: 420px; height: 420px; top: -20px; }
+  .txt { font-size: 18px; }
+  .stage { height: 230px; }
+  .sub { margin-top: -26px; }
+  .get { flex-direction: column; gap: 14px; }
+  .cta { border-radius: 26px; }
+  .cta .go { width: 100%; padding: 0 20px; }
+}
+@media (max-width: 1020px) {
+  .trust-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .revs { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .revs .rev:first-child { grid-column: span 2; }
+}
+@media (max-width: 640px) {
+  .trust-row { grid-template-columns: minmax(0, 1fr); }
+  .tr-i { padding: 16px 18px; }
+  .tabs { width: 100%; }
+  .tab { flex: 1 1 40%; justify-content: center; padding: 0 12px; }
+  .pane { min-height: 0; padding-top: 38px; }
+  .revs { grid-template-columns: minmax(0, 1fr); }
+  .revs .rev:first-child { grid-column: auto; }
+  .rev q { font-size: 19px; }
+  .pbar .tm { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  .js .rv { opacity: 1; transform: none; }
+  .marq { -webkit-mask-image: none; mask-image: none; }
+  .track { width: auto; flex-wrap: wrap; }
+  .track [aria-hidden="true"] { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="env" aria-hidden="true"><i></i></div>
+
+<header class="top" id="top">
+  <div class="wrap">
+    <a class="brand" href="https://click.simpletranslate.me/"><svg width="34" height="34" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#0A5CF0"/><rect x="16" y="19" width="32" height="5" rx="2.5" fill="#fff"/><rect x="16" y="30" width="32" height="5" rx="2.5" fill="#fff"/><rect x="16" y="41" width="32" height="5" rx="2.5" fill="#2EE6D0"/></svg><span>SimpleTranslate</span></a>
+    <div class="sp"></div>
+    <div class="langs" role="group" aria-label="Язык страницы" data-ta="aria-label:pageLang">
+      <button type="button" data-lang="ru" lang="ru" aria-pressed="true">Русский</button>
+      <button type="button" data-lang="uz" lang="uz" aria-pressed="false">O‘zbekcha</button>
+      <button type="button" data-lang="en" lang="en" aria-pressed="false">English</button>
+    </div>
+    <a class="btn-ghost" id="login" href="https://simpletranslate.me/" data-t="login">Войти</a>
+  </div>
+</header>
+
+<main>
+  <div class="hero">
+    <div class="wrap">
+      <div class="h-text">
+        <h1 class="rv" style="--d:.05s"><span data-t="h1a">Переведём на любой язык.</span> <span class="a" data-t="h1b">В один клик.</span></h1>
+        <p class="lead rv" style="--d:.1s" data-t="lead">Книги, научные статьи, документы и видео с субтитрами.</p>
+      </div>
+      <div class="h-form">
+
+        <form class="tr rv" style="--d:.15s" id="tr" action="https://simpletranslate.me/" method="get" novalidate>
+          <p class="step"><b>01</b><span data-t="step1">Ваш файл</span></p>
+          <label class="drop" id="tr-drop" for="tr-file">
+            <input class="vh" type="file" id="tr-file" accept=".docx,.xlsx,.pptx,.odt,.ods,.odp,.pdf,.txt,.md,.markdown,.csv,.tsv,.html,.htm,.xml,.json,.rtf,.srt,.vtt,.po,.yml,.yaml,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.gif,.mp4,.m4v,.mov,.mkv,.webm,.avi,.wmv,.flv,.mpg,.mpeg,.ts,.mts,.m2ts,.3gp,.ogv,.mp3,.wav,.m4a,.aac,.ogg,.oga,.opus,.flac,.wma,.amr">
+            <span class="ic" aria-hidden="true">
+              <svg class="up-ic" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m6 10 6-6 6 6"/><path d="M4 20h16"/></svg>
+              <svg class="ok-ic" width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>
+            </span>
+            <span>
+              <span class="t" id="tr-name" data-t="dropT">Перетащите файл сюда</span>
+              <span class="s" id="tr-hint" data-t="dropS">или нажмите, чтобы выбрать</span>
+              <span class="f" data-t="dropF">Документы до 32 МБ, видео до 2,5 ГБ</span>
+            </span>
+          </label>
+
+          <div class="gap"></div>
+          <p class="step" id="tgt-label"><b>02</b><span data-t="step2">На какой язык?</span></p>
+          <div class="chips" id="chips" role="group" aria-labelledby="tgt-label">
+            <!-- кнопки частых языков ставит скрипт: у каждой страницы свои -->
+            <span class="other" id="other">
+              <select id="tr-tgt" name="tgt" aria-label="Другой язык" data-ta="aria-label:other">
+                <option value="" data-t="other">Другой язык</option>
+              </select>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+            </span>
+          </div>
+
+          <div class="src" id="src-row">
+            <span data-t="srcLabel">Язык файла:</span> <b id="src-name">Русский</b>
+            <button type="button" class="linkbtn" id="src-edit" data-t="srcChange">изменить</button>
+            <select id="tr-src" name="src" hidden aria-label="Язык файла" data-ta="aria-label:srcLabel"></select>
+          </div>
+
+          <button type="submit" class="go" id="tr-go"><span data-t="go">Перевести</span>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+          </button>
+          <p class="err" id="tr-err" role="alert" hidden></p>
+          <p class="free"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg><span data-t="free">Первая страница бесплатно</span></p>
+        </form>
+      </div>
+
+      <div class="h-demo rv" style="--d:.2s" aria-hidden="true">
+        <canvas id="globe" width="500" height="500"></canvas>
+        <div class="doc">
+          <div class="doc-h">
+            <span class="fi">PDF</span>
+            <span class="nm"><b id="doc-name" data-t="docName">Научная статья</b><span data-t="docKind">Живой пример</span></span>
+            <span class="pair"><span id="pair-a">RU</span><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg><span id="pair-b">EN</span></span>
+          </div>
+          <div class="txt" id="txt"><p class="o" id="t-old" dir="auto"></p><p class="n" id="t-new" dir="auto"></p><span class="beam"></span></div>
+          <div class="keep"><i></i><span data-t="keep">Цифры и единицы на месте</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="trust">
+    <div class="wrap">
+      <div class="trust-row rv">
+        <div class="tr-i"><span class="o"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12v9H4v-9"/><path d="M2 7h20v5H2z"/><path d="M12 22V7"/><path d="M12 7H7.5a2.5 2.5 0 0 1 0-5C11 2 12 7 12 7z"/><path d="M12 7h4.5a2.5 2.5 0 0 0 0-5C13 2 12 7 12 7z"/></svg></span><span data-t="tr1">Первая страница бесплатно</span></div>
+        <div class="tr-i"><span class="o"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span><span data-t="tr2">Ваш файл закрыт от других</span></div>
+        <div class="tr-i"><span class="o"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3h7l5 5v13H7z"/><path d="M14 3v5h5"/><path d="M10 13h6M10 17h6"/></svg></span><span data-t="tr3">Без подписки: платите за страницы</span></div>
+        <div class="tr-i"><span class="o"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg></span><span data-t="tr4">Цифры сверяем автоматически</span></div>
+      </div>
+    </div>
+  </div>
+
+  <section id="what">
+    <div class="wrap">
+      <h2 class="h2 rv" data-t="whatH">Что переводим</h2>
+      <div class="tiles">
+        <article class="tile rv">
+          <!-- IMG-SLOT: tile-book. Сюда можно поставить кадр вместо сцены кодом. -->
+          <div class="stage" aria-hidden="true">
+            <div class="book">
+              <div><h4><span class="cyc" data-cyc="book">Глава 1</span></h4><div class="bar" style="width:92%"></div><div class="bar" style="width:80%"></div><div class="bar" style="width:88%"></div><div class="bar" style="width:64%"></div><div class="bar" style="width:84%"></div></div>
+              <div><div class="bar" style="width:86%;margin-top:4px"></div><div class="bar" style="width:94%"></div><div class="bar" style="width:72%"></div><div class="bar" style="width:90%"></div><div class="bar" style="width:58%"></div><div class="bar" style="width:80%"></div></div>
+            </div>
+          </div>
+          <h3 data-t="t1">Книги</h3><p data-t="t1s">Целиком, главу за главой</p>
+        </article>
+        <article class="tile rv" style="--d:.08s">
+          <!-- IMG-SLOT: tile-article -->
+          <div class="stage" aria-hidden="true">
+            <div class="paper"><h4><span class="cyc" data-cyc="paper">Результаты</span></h4><div class="bar" style="width:96%"></div><div class="bar" style="width:74%"></div>
+              <div class="row"><span class="formula">E = mc<sup>2</sup></span><span class="chart"><i style="height:40%"></i><i style="height:62%"></i><i style="height:100%"></i><i style="height:76%"></i></span></div>
+            </div>
+          </div>
+          <h3 data-t="t2">Научные статьи</h3><p data-t="t2s">Формулы и цифры на месте</p>
+        </article>
+        <article class="tile rv">
+          <!-- IMG-SLOT: tile-video -->
+          <div class="stage" aria-hidden="true">
+            <div class="video"><span class="play"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg></span><span class="subt"><span class="cyc" data-cyc="video" dir="auto">Добро пожаловать!</span></span></div>
+          </div>
+          <h3 data-t="t3">Видео</h3><p data-t="t3s">С готовыми субтитрами</p>
+        </article>
+        <article class="tile rv" style="--d:.08s">
+          <!-- IMG-SLOT: tile-scan -->
+          <div class="stage" aria-hidden="true">
+            <div class="scan"><h4><span class="cyc" data-cyc="scan" dir="auto">Справка</span></h4><div class="bar" style="width:90%"></div><div class="bar" style="width:76%"></div><div class="bar" style="width:84%"></div><div class="bar" style="width:52%"></div><span class="stamp"></span><span class="sweep"></span></div>
+          </div>
+          <h3 data-t="t4">Сканы и фото</h3><p data-t="t4s">Прочитаем даже текст на картинке</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="examples">
+    <div class="wrap">
+      <div class="ex-head">
+        <div><h2 class="h2 rv" data-t="exH">Примеры работ</h2><p class="rv" data-t="exSub">Нажимайте и смотрите.</p></div>
+        <div class="tabs rv" role="tablist" aria-label="Примеры работ" data-ta="aria-label:exH">
+          <button type="button" class="tab" role="tab" id="tab-book" data-k="book" aria-controls="pane-book"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z"/><path d="M4 19V5"/></svg><span data-t="tabBook">Книга</span></button>
+          <button type="button" class="tab" role="tab" id="tab-paper" data-k="paper" aria-controls="pane-paper"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h3"/></svg><span data-t="tabPaper">Статья</span></button>
+          <button type="button" class="tab" role="tab" id="tab-video" data-k="video" aria-controls="pane-video"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M7 15h6"/></svg><span data-t="tabVideo">Видео</span></button>
+          <button type="button" class="tab" role="tab" id="tab-scan" data-k="scan" aria-controls="pane-scan"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2M20 16v2a2 2 0 0 1-2 2h-2M8 20H6a2 2 0 0 1-2-2v-2"/><path d="M8 12h8"/></svg><span data-t="tabScan">Фото</span></button>
+        </div>
+      </div>
+      <div class="ex-stage rv">
+        <span class="sample" data-t="sample">Образец</span>
+
+        <div class="pane" id="pane-book" data-k="book" role="tabpanel" aria-labelledby="tab-book">
+          <div class="b3d" id="b3d">
+            <div class="b3d-sh"></div>
+            <div class="book3" id="book3">
+              <div class="pg r"><div class="pgc" id="bk-t2"></div></div>
+              <div class="leaf l1" id="leaf1"><div class="face paperf"><div class="pgc" id="bk-t1"></div></div><div class="face paperf back"><div class="pgc" id="bk-o2"></div></div></div>
+              <div class="leaf cv" id="cover"><div class="face cover"><div class="pgc"><span class="cs" data-t="sample">Образец</span><div><div class="ct">Дорога домой</div><div class="cl"></div></div><span class="cs">SimpleTranslate</span></div></div><div class="face paperf back"><div class="pgc" id="bk-o1"></div></div></div>
+            </div>
+          </div>
+          <button type="button" class="act" id="bk-btn"><span data-t="bookOpen">Открыть книгу</span></button>
+          <div class="ctrls"><span class="lbl" data-t="langInto">Перевод на:</span><span class="ctrls" id="bk-langs"></span></div>
+        </div>
+
+        <div class="pane" id="pane-paper" data-k="paper" role="tabpanel" aria-labelledby="tab-paper" hidden>
+          <div class="ba" id="ba">
+            <div class="lay o" id="ba-o"></div>
+            <div class="lay t" id="ba-t"></div>
+            <span class="ba-tag o" data-t="baOrig">Оригинал</span><span class="ba-tag t" data-t="baTr">Перевод</span>
+            <button type="button" class="ba-h" id="ba-h" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" aria-label="Потяните ползунок" data-ta="aria-label:baHint"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6-6 6 6 6"/><path d="m15 6 6 6-6 6"/></svg></button>
+          </div>
+          <div class="ctrls"><button type="button" class="mini" data-ba="100" data-t="baOrig">Оригинал</button><button type="button" class="mini" data-ba="50" aria-pressed="true" data-t="baBoth">Сравнить</button><button type="button" class="mini" data-ba="0" data-t="baTr">Перевод</button></div>
+          <div class="ctrls"><span class="lbl" data-t="langInto">Перевод на:</span><span class="ctrls" id="ba-langs"></span></div>
+        </div>
+
+        <div class="pane" id="pane-video" data-k="video" role="tabpanel" aria-labelledby="tab-video" hidden>
+          <div class="player" id="player">
+            <div class="screen">
+              <div class="world"><div class="sun"></div><span class="cloud" style="left:12%;top:16%;width:16%"></span><span class="cloud" style="left:52%;top:10%;width:11%"></span><div class="mt a"></div><div class="mt b"></div><div class="mt c"></div></div>
+              <div class="subs"><p class="s2" id="sub2" hidden><span></span></p><p class="s1" id="sub1"><span></span></p></div>
+              <button type="button" class="bigplay" id="vp-big" aria-label="Смотреть" data-ta="aria-label:play"><svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg></button>
+            </div>
+            <div class="pbar">
+              <button type="button" id="vp-btn" aria-label="Смотреть" data-ta="aria-label:play"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path id="vp-path" d="M8 5.5v13l11-6.5z"/></svg></button>
+              <div class="prog" id="prog"><i class="fill" id="fill"></i></div>
+              <span class="tm" id="vp-tm">0:00 / 0:12</span>
+            </div>
+          </div>
+          <div class="ctrls"><span class="lbl" data-t="vidSubs">Субтитры:</span><span class="ctrls" id="vp-langs"></span><button type="button" class="mini" id="vp-both" aria-pressed="false" data-t="vidBoth">Два языка</button></div>
+        </div>
+
+        <div class="pane" id="pane-scan" data-k="scan" role="tabpanel" aria-labelledby="tab-scan" hidden>
+          <!-- IMG-SLOT: scan-photo. Настоящее фото таблички вместо нарисованной. -->
+          <div class="desk" id="desk"><div class="sign" id="sign"></div><span class="sbeam"></span></div>
+          <button type="button" class="act" id="sc-btn"><span data-t="scanGo">Прочитать и перевести</span></button>
+          <div class="ctrls"><span class="lbl" data-t="langInto">Перевод на:</span><span class="ctrls" id="sc-langs"></span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="langs">
+    <div class="wrap">
+      <h2 class="h2 rv" data-t="langsH">Любой язык мира</h2>
+      <div class="big rv"><b id="count">73</b><span data-t="langsN">языка</span></div>
+      <p class="sub rv" data-t="langsSub">Нажмите на нужный, и начнём.</p>
+    </div>
+    <div class="marq rv"><div class="track" id="row1"></div></div>
+    <div class="marq rev rv"><div class="track" id="row2"></div></div>
+  </section>
+
+  <section id="how">
+    <div class="wrap">
+      <h2 class="h2 rv" data-t="howH">Три шага</h2>
+      <div class="steps" id="steps">
+        <svg class="line" viewBox="0 0 1000 4" preserveAspectRatio="none" aria-hidden="true"><path d="M0 2H1000"/></svg>
+        <div class="st rv"><div class="o"><b>1</b><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4"/><path d="m6 10 6-6 6 6"/><path d="M4 20h16"/></svg></div><h3 data-t="s1">Загрузите файл</h3><p data-t="s1s">Документ, книгу или видео</p></div>
+        <div class="st rv" style="--d:.12s"><div class="o"><b>2</b><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18"/></svg></div><h3 data-t="s2">Выберите язык</h3><p data-t="s2s">Любой из списка</p></div>
+        <div class="st rv" style="--d:.24s"><div class="o"><b>3</b><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v12"/><path d="m6 10 6 6 6-6"/><path d="M4 20h16"/></svg></div><h3 data-t="s3">Скачайте перевод</h3><p data-t="s3s">В том же виде, что и оригинал</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="gets">
+    <div class="wrap gets">
+      <div class="gets-l">
+        <h2 class="h2 rv" data-t="getsH">Что вы получите</h2>
+        <div class="chk rv" id="chk">
+          <div class="r"><span class="k" data-t="chkO">Оригинал</span><div class="v" lang="ru">Принимать по <mark class="m-ok">300 мг</mark> 2 раза в день.</div></div>
+          <div class="r"><span class="k" data-t="chkRaw">Перевод без проверки</span><div class="v" lang="en">Take <mark class="m-bad">30 mg</mark> twice a day.</div><div class="found" data-t="chkFound">В оригинале 300, а не 30</div></div>
+          <div class="r fx"><span class="k" data-t="chkFix">После проверки</span><div class="v"><span lang="en">Take <mark>300 mg</mark> twice a day.</span><span class="ok" data-t="chkOk">Исправлено</span></div></div>
+          <button type="button" class="act" id="chk-btn"><span data-t="chkBtn">Проверить цифры</span></button>
+        </div>
+      </div>
+      <div>
+        <div class="get rv"><span class="o"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></span><div><h3 data-t="g1">Вид как в оригинале</h3><p data-t="g1s">Таблицы, картинки и шрифты на своих местах.</p></div></div>
+        <div class="get rv"><span class="o"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h4M6 5v4"/><path d="M14 7h6"/><path d="M4 17h6"/><path d="m15 14 4 4M19 14l-4 4"/></svg></span><div><h3 data-t="g2">Цифры сверены</h3><p data-t="g2s">Каждое число и единицу сверяем с оригиналом.</p></div></div>
+        <div class="get rv"><span class="o"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h11a3 3 0 0 1 3 3v11H7a3 3 0 0 1-3-3z"/><path d="M8 9h6M8 13h6"/><path d="m15 19 2.5-2.5L20 19"/></svg></span><div><h3 data-t="g3">Термины едины</h3><p data-t="g3s">Одно слово переводится одинаково на всех страницах.</p></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="reviews">
+    <div class="wrap">
+      <div class="rev-head"><h2 class="h2 rv" data-t="revH">Что говорят о нас</h2><span class="rev-note rv" data-t="revNote">Образцы. Заменим на настоящие отзывы.</span></div>
+      <div class="revs">
+        <article class="rev rv">
+          <!-- IMG-SLOT: review-video-1. Кадр настоящего видеоотзыва, с письменного согласия человека. -->
+          <div class="vthumb"><span class="vi" aria-hidden="true" data-t="rev3i">АЛ</span><span class="pl"><svg width="26" height="26" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg></span><span class="lb" data-t="rev3">Видеоотзыв</span></div>
+          <div class="who"><span class="ph c1" aria-hidden="true" data-t="rev3i">АЛ</span><span><b data-t="rev3n">Анна Ли</b><span data-t="rev3r">Переводчик, Ташкент</span></span></div>
+        </article>
+        <article class="rev rv" style="--d:.08s">
+          <!-- IMG-SLOT: review-photo-2 -->
+          <q data-t="rev1">Перевела учебник на 300 страниц за один день. Таблицы остались на месте.</q>
+          <div class="who"><span class="ph c2" aria-hidden="true" data-t="rev1i">ДК</span><span><b data-t="rev1n">Дилноза Каримова</b><span data-t="rev1r">Доцент, Самарканд</span></span></div>
+        </article>
+        <article class="rev rv" style="--d:.16s">
+          <!-- IMG-SLOT: review-photo-3 -->
+          <q data-t="rev2">Субтитры к лекции на трёх языках. Студенты наконец всё понимают.</q>
+          <div class="who"><span class="ph c3" aria-hidden="true" data-t="rev2i">РЮ</span><span><b data-t="rev2n">Рустам Юсупов</b><span data-t="rev2r">Методист, Бухара</span></span></div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section id="go" style="padding-top:0">
+    <div class="wrap">
+      <div class="cta rv">
+        <h2 data-t="ctaH">Попробуйте на своём файле</h2>
+        <button type="button" class="go" id="cta-go"><span data-t="ctaBtn">Перевести файл</span>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5"/><path d="m6 11 6-6 6 6"/></svg>
+        </button>
+        <p class="free"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg><span data-t="free">Первая страница бесплатно</span></p>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <a class="brand" href="https://click.simpletranslate.me/"><svg width="28" height="28" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#0A5CF0"/><rect x="16" y="19" width="32" height="5" rx="2.5" fill="#fff"/><rect x="16" y="30" width="32" height="5" rx="2.5" fill="#fff"/><rect x="16" y="41" width="32" height="5" rx="2.5" fill="#2EE6D0"/></svg><span>SimpleTranslate</span></a>
+    <div class="sp"></div>
+    <a href="https://click.simpletranslate.me/" data-t="about">О сервисе</a>
+    <a href="https://simpletranslate.me/terms" data-t="terms">Оферта</a>
+    <a href="https://simpletranslate.me/privacy" data-t="privacy">Персональные данные</a>
+    <a href="https://simpletranslate.me/" id="login2" data-t="login">Войти</a>
+  </div>
+</footer>
+
+<div class="mock" id="mock" role="dialog" aria-modal="true" aria-labelledby="mock-h" hidden>
+  <div class="box">
+    <div class="win" aria-hidden="true"><i></i><div><b></b><b></b><b></b><b></b><b></b><b></b></div></div>
+    <h3 id="mock-h" data-t="mockH">Открываем редактор</h3>
+    <p class="mf" id="mock-file"></p>
+    <p class="mp"><span id="mock-src"></span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg><span id="mock-tgt"></span></p>
+    <p class="mn" data-t="mockNote">Это макет. На сайте файл сразу откроется в редакторе с выбранными языками.</p>
+    <button type="button" class="go" id="mock-close" data-t="mockClose">Понятно</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var root = document.documentElement;
+  root.classList.remove("nojs"); root.classList.add("js");
+  var APP = "https://simpletranslate.me";
+  /* Макет: «Перевести» открывает окно-заглушку, файл никуда не уходит.
+     Боевая передача (фрейм /handoff) ниже уже написана и выключена этим
+     флагом; включение и проверка: пункт 1 в design/start/BACKLOG.md. */
+  var MOCK = true;
+  /* Потолки те же, что у frontend/js/handoff.js: больший файл приложение
+     не примет, и честнее сказать это здесь, чем после входа. */
+  var MAX_DOC = 32 * 1024 * 1024, MAX_MEDIA = 2.5 * 1024 * 1024 * 1024;
+  var MEDIA_RE = /\.(mp4|m4v|mov|mkv|webm|avi|wmv|flv|mpg|mpeg|ts|mts|m2ts|3gp|ogv|mp3|wav|m4a|aac|ogg|oga|opus|flac|wma|amr)$/i;
+  var REDUCE = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)");
+  function reduced() { return !!(REDUCE && REDUCE.matches); }
+
+  /* Каталог языков сервиса: [код, название на нём самом]. Подставляет сборщик. */
+  var LANGS = [["AF","Afrikaans"],["AM","አማርኛ"],["AR","العربية"],["AZ","Azərbaycan dili"],["BE","Беларуская"],["BG","Български"],["BN","বাংলা"],["BS","Bosanski"],["CA","Català"],["CS","Čeština"],["CY","Cymraeg"],["DA","Dansk"],["DE","Deutsch"],["EL","Ελληνικά"],["EN","English"],["ES","Español"],["ET","Eesti"],["EU","Euskara"],["FA","فارسی"],["FI","Suomi"],["FR","Français"],["GA","Gaeilge"],["GL","Galego"],["GU","ગુજરાતી"],["HE","עברית"],["HI","हिन्दी"],["HR","Hrvatski"],["HU","Magyar"],["HY","Հայերեն"],["ID","Bahasa Indonesia"],["IS","Íslenska"],["IT","Italiano"],["JA","日本語"],["KA","ქართული"],["KK","Қазақша"],["KM","ខ្មែរ"],["KO","한국어"],["KY","Кыргызча"],["LA","Latina"],["LT","Lietuvių"],["LV","Latviešu"],["MK","Македонски"],["MN","Монгол"],["MS","Bahasa Melayu"],["MT","Malti"],["MY","မြန်မာ"],["NE","नेपाली"],["NL","Nederlands"],["NO","Norsk"],["PA","ਪੰਜਾਬੀ"],["PL","Polski"],["PS","پښتو"],["PT","Português"],["RO","Română"],["RU","Русский"],["SK","Slovenčina"],["SL","Slovenščina"],["SQ","Shqip"],["SR","Српски"],["SV","Svenska"],["SW","Kiswahili"],["TA","தமிழ்"],["TE","తెలుగు"],["TG","Тоҷикӣ"],["TH","ไทย"],["TK","Türkmençe"],["TR","Türkçe"],["UK","Українська"],["UR","اردو"],["UZ","Oʻzbekcha (lotin)"],["UZ-CYRL","Ўзбекча (кирилл)"],["VI","Tiếng Việt"],["ZH","中文"]];
+  var NATIVE = {}; LANGS.forEach(function (x) { NATIVE[x[0]] = x[1]; });
+
+  var UI = {
+    ru: {
+      title: "SimpleTranslate: перевод на любой язык в один клик",
+      pageLang: "Язык страницы", login: "Войти",
+      h1a: "Переведём на любой язык.", h1b: "В один клик.",
+      lead: "Книги, научные статьи, документы и видео с субтитрами.",
+      step1: "Ваш файл", dropT: "Перетащите файл сюда", dropS: "или нажмите, чтобы выбрать", dropTt: "Выберите файл", dropSt: "Нажмите здесь",
+      dropF: "Документы до 32 МБ, видео до 2,5 ГБ", change: "Нажмите, чтобы заменить",
+      step2: "На какой язык?", other: "Другой язык", popular: "Частые", all: "Все языки",
+      srcLabel: "Язык файла:", srcChange: "изменить", go: "Перевести", free: "Первая страница бесплатно",
+      eTgt: "Выберите, на какой язык переводить.", eSame: "Язык файла и язык перевода совпадают.",
+      eBig: "Файл слишком большой: документы до 32 МБ, видео до 2,5 ГБ.", eBusy: "Открываем редактор…",
+      docName: "Научная статья", docKind: "Живой пример", keep: "Цифры и единицы на месте",
+      whatH: "Что переводим", t1: "Книги", t1s: "Целиком, главу за главой", t2: "Научные статьи", t2s: "Формулы и цифры на месте",
+      t3: "Видео", t3s: "С готовыми субтитрами", t4: "Сканы и фото", t4s: "Прочитаем даже текст на картинке",
+      langsH: "Любой язык мира", langsN: "языка", langsSub: "Нажмите на нужный, и начнём.",
+      howH: "Три шага", s1: "Загрузите файл", s1s: "Документ, книгу или видео", s2: "Выберите язык", s2s: "Любой из списка",
+      s3: "Скачайте перевод", s3s: "В том же виде, что и оригинал",
+      getsH: "Что вы получите", g1: "Вид как в оригинале", g1s: "Таблицы, картинки и шрифты на своих местах.",
+      g2: "Цифры сверены", g2s: "Каждое число и единицу сверяем с оригиналом.",
+      g3: "Термины едины", g3s: "Одно слово переводится одинаково на всех страницах.",
+      ctaH: "Попробуйте на своём файле", ctaBtn: "Перевести файл",
+      about: "О сервисе", terms: "Оферта", privacy: "Персональные данные",
+      mockH: "Открываем редактор", mockNoFile: "Файл выберете в редакторе", mockClose: "Понятно",
+      mockNote: "Это макет. На сайте файл сразу откроется в редакторе с выбранными языками.",
+      tr1: "Первая страница бесплатно", tr2: "Ваш файл закрыт от других", tr3: "Без подписки: платите за страницы", tr4: "Цифры сверяем автоматически", exH: "Примеры работ", exSub: "Нажимайте и смотрите.", sample: "Образец", tabBook: "Книга", tabPaper: "Статья", tabVideo: "Видео", tabScan: "Фото", bookOpen: "Открыть книгу", bookNext: "Перелистнуть", bookClose: "Закрыть книгу", langInto: "Перевод на:", baOrig: "Оригинал", baTr: "Перевод", baBoth: "Сравнить", baHint: "Потяните ползунок", vidSubs: "Субтитры:", vidBoth: "Два языка", play: "Смотреть", pause: "Пауза", scanGo: "Прочитать и перевести", scanBack: "Показать оригинал", chkO: "Оригинал", chkRaw: "Перевод без проверки", chkFix: "После проверки", chkFound: "В оригинале 300, а не 30", chkOk: "Исправлено", chkBtn: "Проверить цифры", chkAgain: "Ещё раз", revH: "Что говорят о нас", revNote: "Образцы. Заменим на настоящие отзывы.", rev1n: "Дилноза Каримова", rev1i: "ДК", rev2n: "Рустам Юсупов", rev2i: "РЮ", rev3n: "Анна Ли", rev3i: "АЛ", rev1: "Перевела учебник на 300 страниц за один день. Таблицы остались на месте.", rev1r: "Доцент, Самарканд", rev2: "Субтитры к лекции на трёх языках. Студенты наконец всё понимают.", rev2r: "Методист, Бухара", rev3: "Видеоотзыв", rev3r: "Переводчик, Ташкент"
+    },
+    uz: {
+      title: "SimpleTranslate: istalgan tilga bir bosishda tarjima",
+      pageLang: "Sahifa tili", login: "Kirish",
+      h1a: "Istalgan tilga tarjima qilamiz.", h1b: "Bir bosishda.",
+      lead: "Kitoblar, ilmiy maqolalar, hujjatlar va subtitrli videolar.",
+      step1: "Faylingiz", dropT: "Faylni shu yerga torting", dropS: "yoki tanlash uchun bosing", dropTt: "Faylni tanlang", dropSt: "Shu yerni bosing",
+      dropF: "Hujjatlar 32 MB gacha, video 2,5 GB gacha", change: "Almashtirish uchun bosing",
+      step2: "Qaysi tilga?", other: "Boshqa til", popular: "Ko‘p so‘raladigan", all: "Barcha tillar",
+      srcLabel: "Fayl tili:", srcChange: "o‘zgartirish", go: "Tarjima qilish", free: "Birinchi bet bepul",
+      eTgt: "Qaysi tilga tarjima qilishni tanlang.", eSame: "Fayl tili va tarjima tili bir xil.",
+      eBig: "Fayl juda katta: hujjatlar 32 MB gacha, video 2,5 GB gacha.", eBusy: "Muharrir ochilmoqda…",
+      docName: "Ilmiy maqola", docKind: "Jonli misol", keep: "Raqamlar va birliklar joyida",
+      whatH: "Nimani tarjima qilamiz", t1: "Kitoblar", t1s: "To‘liq, bobma-bob", t2: "Ilmiy maqolalar", t2s: "Formulalar va raqamlar joyida",
+      t3: "Video", t3s: "Tayyor subtitrlar bilan", t4: "Skan va rasmlar", t4s: "Rasmdagi matnni ham o‘qiymiz",
+      langsH: "Dunyoning istalgan tili", langsN: "til", langsSub: "Keraklisini bosing va boshlaymiz.",
+      howH: "Uch qadam", s1: "Faylni yuklang", s1s: "Hujjat, kitob yoki video", s2: "Tilni tanlang", s2s: "Ro‘yxatdagi istalgani",
+      s3: "Tarjimani yuklab oling", s3s: "Asl nusxadagi ko‘rinishda",
+      getsH: "Siz nimaga ega bo‘lasiz", g1: "Asl nusxadagi ko‘rinish", g1s: "Jadvallar, rasmlar va shriftlar o‘z joyida.",
+      g2: "Raqamlar tekshirilgan", g2s: "Har bir son va birlikni asl nusxa bilan solishtiramiz.",
+      g3: "Atamalar bir xil", g3s: "Bitta so‘z barcha betlarda bir xil tarjima qilinadi.",
+      ctaH: "O‘z faylingizda sinab ko‘ring", ctaBtn: "Faylni tarjima qilish",
+      about: "Xizmat haqida", terms: "Oferta", privacy: "Shaxsiy ma'lumotlar",
+      mockH: "Muharrir ochilmoqda", mockNoFile: "Faylni muharrirda tanlaysiz", mockClose: "Tushunarli",
+      mockNote: "Bu maket. Saytda fayl tanlangan tillar bilan darhol muharrirda ochiladi.",
+      tr1: "Birinchi bet bepul", tr2: "Faylingiz boshqalardan yopiq", tr3: "Obunasiz: faqat betlar uchun to‘lov", tr4: "Raqamlar avtomatik tekshiriladi", exH: "Ishlarimizdan namunalar", exSub: "Bosing va ko‘ring.", sample: "Namuna", tabBook: "Kitob", tabPaper: "Maqola", tabVideo: "Video", tabScan: "Rasm", bookOpen: "Kitobni ochish", bookNext: "Varaqlash", bookClose: "Kitobni yopish", langInto: "Tarjima tili:", baOrig: "Asl nusxa", baTr: "Tarjima", baBoth: "Solishtirish", baHint: "Slayderni torting", vidSubs: "Subtitrlar:", vidBoth: "Ikki til", play: "Ko‘rish", pause: "Pauza", scanGo: "O‘qish va tarjima qilish", scanBack: "Asl nusxani ko‘rsatish", chkO: "Asl nusxa", chkRaw: "Tekshiruvsiz tarjima", chkFix: "Tekshiruvdan keyin", chkFound: "Asl nusxada 30 emas, 300", chkOk: "Tuzatildi", chkBtn: "Raqamlarni tekshirish", chkAgain: "Yana bir bor", revH: "Biz haqimizda fikrlar", revNote: "Namunalar. Haqiqiy fikrlar bilan almashtiramiz.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "300 betlik darslikni bir kunda tarjima qildim. Jadvallar joyida qoldi.", rev1r: "Dotsent, Samarqand", rev2: "Ma’ruzaga uch tilda subtitrlar. Talabalar endi hammasini tushunishadi.", rev2r: "Metodist, Buxoro", rev3: "Video fikr", rev3r: "Tarjimon, Toshkent"
+    },
+    en: {
+      title: "SimpleTranslate: translate into any language in one click",
+      pageLang: "Page language", login: "Log in",
+      h1a: "We translate into any language.", h1b: "In one click.",
+      lead: "Books, research papers, documents and videos with subtitles.",
+      step1: "Your file", dropT: "Drop your file here", dropS: "or click to choose one", dropTt: "Choose a file", dropSt: "Tap here",
+      dropF: "Documents up to 32 MB, video up to 2.5 GB", change: "Click to replace",
+      step2: "Into which language?", other: "Another language", popular: "Popular", all: "All languages",
+      srcLabel: "File language:", srcChange: "change", go: "Translate", free: "First page free",
+      eTgt: "Choose the language to translate into.", eSame: "The file language and the target language are the same.",
+      eBig: "The file is too large: documents up to 32 MB, video up to 2.5 GB.", eBusy: "Opening the editor…",
+      docName: "Research paper", docKind: "Live example", keep: "Numbers and units stay put",
+      whatH: "What we translate", t1: "Books", t1s: "Whole books, chapter by chapter", t2: "Research papers", t2s: "Formulas and figures stay put",
+      t3: "Video", t3s: "With ready subtitles", t4: "Scans and photos", t4s: "We read text in pictures too",
+      langsH: "Any language in the world", langsN: "languages", langsSub: "Tap the one you need to begin.",
+      howH: "Three steps", s1: "Upload a file", s1s: "A document, a book or a video", s2: "Pick a language", s2s: "Any one from the list",
+      s3: "Download the translation", s3s: "Looking just like the original",
+      getsH: "What you get", g1: "The original layout", g1s: "Tables, pictures and fonts stay where they were.",
+      g2: "Every figure checked", g2s: "We check every number and unit against the original.",
+      g3: "Consistent terms", g3s: "One word is translated the same way on every page.",
+      ctaH: "Try it on your own file", ctaBtn: "Translate a file",
+      about: "About", terms: "Terms", privacy: "Privacy",
+      mockH: "Opening the editor", mockNoFile: "You will pick the file in the editor", mockClose: "Got it",
+      mockNote: "This is a mockup. On the live site, the file opens in the editor right away with the languages you picked.",
+      tr1: "First page free", tr2: "Your file stays private", tr3: "No subscription: pay per page", tr4: "Numbers checked automatically", exH: "Examples of our work", exSub: "Tap and see.", sample: "Sample", tabBook: "Book", tabPaper: "Paper", tabVideo: "Video", tabScan: "Photo", bookOpen: "Open the book", bookNext: "Turn the page", bookClose: "Close the book", langInto: "Translated into:", baOrig: "Original", baTr: "Translation", baBoth: "Compare", baHint: "Drag the slider", vidSubs: "Subtitles:", vidBoth: "Two languages", play: "Play", pause: "Pause", scanGo: "Read and translate", scanBack: "Show the original", chkO: "Original", chkRaw: "Unchecked translation", chkFix: "After the check", chkFound: "The original says 300, not 30", chkOk: "Fixed", chkBtn: "Check the numbers", chkAgain: "Once more", revH: "What people say", revNote: "Samples. We will replace them with real reviews.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "I translated a 300-page textbook in one day. The tables stayed in place.", rev1r: "Associate professor, Samarkand", rev2: "Lecture subtitles in three languages. Students finally understand everything.", rev2r: "Curriculum specialist, Bukhara", rev3: "Video review", rev3r: "Translator, Tashkent"
+    }
+  };
+  var PAGE_SRC = { ru: "RU", uz: "UZ", en: "EN" };
+  var POPULAR = { ru: ["EN", "UZ", "TR", "DE", "ZH", "AR"], uz: ["RU", "EN", "TR", "DE", "ZH", "AR"], en: ["RU", "UZ", "ES", "FR", "DE", "ZH"] };
+
+  /* Живой пример. Числа во всех строках одни и те же: карточка обещает
+     «цифры на месте», и строка без них была бы враньём. */
+  var DEMO = {
+    RU: "Результаты: у 87% участников давление снизилось на 12 мм рт. ст. за 6 недель.",
+    EN: "Results: in 87% of participants, blood pressure fell by 12 mmHg within 6 weeks.",
+    UZ: "Natijalar: ishtirokchilarning 87% ida qon bosimi 6 hafta ichida 12 mm sim. ust. ga pasaydi.",
+    "UZ-CYRL": "Натижалар: иштирокчиларнинг 87% ида қон босими 6 ҳафта ичида 12 мм сим. уст. га пасайди.",
+    DE: "Ergebnisse: Bei 87 % der Teilnehmenden sank der Blutdruck innerhalb von 6 Wochen um 12 mmHg.",
+    TR: "Sonuçlar: Katılımcıların %87'sinde kan basıncı 6 hafta içinde 12 mmHg düştü.",
+    ES: "Resultados: en el 87 % de los participantes, la presión arterial bajó 12 mmHg en 6 semanas.",
+    FR: "Résultats : chez 87 % des participants, la tension artérielle a baissé de 12 mmHg en 6 semaines.",
+    ZH: "结果：87% 的参与者在 6 周内血压下降了 12 mmHg。",
+    JA: "結果：参加者の87%で、6週間のうちに血圧が12 mmHg低下した。",
+    KO: "결과: 참가자의 87%에서 6주 만에 혈압이 12 mmHg 낮아졌다.",
+    AR: "النتائج: انخفض ضغط الدم لدى 87% من المشاركين بمقدار 12 ملم زئبقي خلال 6 أسابيع.",
+    HI: "परिणाम: 87% प्रतिभागियों में 6 सप्ताह में रक्तचाप 12 mmHg कम हुआ।"
+  };
+  var CYC = {
+    book: { RU: "Глава 1", EN: "Chapter 1", UZ: "1-bob", DE: "Kapitel 1", ZH: "第一章", TR: "Bölüm 1", ES: "Capítulo 1", FR: "Chapitre 1", KO: "제1장", JA: "第1章", AR: "الفصل 1", HI: "अध्याय 1" },
+    paper: { RU: "Результаты", EN: "Results", UZ: "Natijalar", DE: "Ergebnisse", ZH: "结果", TR: "Sonuçlar", ES: "Resultados", FR: "Résultats", KO: "결과", JA: "結果", AR: "النتائج", HI: "परिणाम" },
+    video: { RU: "Добро пожаловать!", EN: "Welcome!", UZ: "Xush kelibsiz!", DE: "Willkommen!", ZH: "欢迎！", TR: "Hoş geldiniz!", ES: "¡Bienvenidos!", FR: "Bienvenue !", KO: "환영합니다!", JA: "ようこそ！", AR: "أهلاً وسهلاً!", HI: "स्वागत है!" },
+    scan: { RU: "Справка", EN: "Certificate", UZ: "Ma'lumotnoma", DE: "Bescheinigung", ZH: "证明", TR: "Belge", ES: "Certificado", FR: "Attestation", KO: "증명서", JA: "証明書", AR: "شهادة", HI: "प्रमाणपत्र" }
+  };
+  var CYC_ORDER = ["RU", "EN", "UZ", "DE", "ZH", "AR", "TR", "ES", "KO", "FR", "JA", "HI"];
+
+  var $ = function (id) { return document.getElementById(id); };
+  var form = $("tr"), fileIn = $("tr-file"), drop = $("tr-drop"), nameEl = $("tr-name"), hintEl = $("tr-hint");
+  var srcSel = $("tr-src"), tgtSel = $("tr-tgt"), chipsEl = $("chips"), otherEl = $("other");
+  var errEl = $("tr-err"), goBtn = $("tr-go");
+  var lang = "ru", picked = null, frame = null, frameReady = null, srcTouched = false, errKey = "";
+
+  function t(k) { return (UI[lang] && UI[lang][k]) || UI.ru[k] || ""; }
+  /* На телефоне перетаскивать нечем: там зона файла говорит «Выберите файл». */
+  var TOUCH = !!(window.matchMedia && window.matchMedia("(pointer: coarse) and (hover: none)").matches);
+  function key(k) { return TOUCH && (k === "dropT" || k === "dropS") ? k + "t" : k; }
+  function say(key) {
+    errKey = key || "";
+    errEl.classList.toggle("busy", key === "eBusy");
+    if (!key) { errEl.hidden = true; errEl.textContent = ""; return; }
+    errEl.textContent = t(key); errEl.hidden = false;
+  }
+  function fmtSize(b) {
+    var u = lang === "ru" ? ["КБ", "МБ", "ГБ"] : ["KB", "MB", "GB"];
+    if (b >= 1073741824) return (b / 1073741824).toFixed(1).replace(".", lang === "en" ? "." : ",") + " " + u[2];
+    if (b >= 1048576) return (b / 1048576).toFixed(1).replace(".", lang === "en" ? "." : ",") + " " + u[1];
+    return Math.max(1, Math.round(b / 1024)) + " " + u[0];
+  }
+
+  /* ---------- Язык страницы ---------- */
+  function pickLang() {
+    var q = (new URLSearchParams(location.search).get("lang") || "").toLowerCase();
+    if (UI[q]) return q;
+    try { var s = localStorage.getItem("mct-start-lang"); if (UI[s]) return s; } catch (e) { /* хранилище закрыто */ }
+    var nav = (navigator.languages || [navigator.language || ""]).join(",").toLowerCase();
+    if (/(^|,)uz/.test(nav)) return "uz";
+    if (/(^|,)(ru|be|kk|ky|tg|uk)/.test(nav)) return "ru";
+    return /(^|,)en/.test(nav) ? "en" : "ru";
+  }
+  function fillOptions(sel, first, popular) {
+    var keep = sel.value;
+    sel.innerHTML = "";
+    if (first) { var o0 = document.createElement("option"); o0.value = ""; o0.textContent = first; sel.appendChild(o0); }
+    function add(group, codes) {
+      var g = document.createElement("optgroup"); g.label = group;
+      codes.forEach(function (c) { if (!NATIVE[c]) return; var o = document.createElement("option"); o.value = c; o.lang = c.toLowerCase(); o.textContent = NATIVE[c]; g.appendChild(o); });
+      sel.appendChild(g);
+    }
+    var top = popular.filter(function (c) { return NATIVE[c]; });
+    var rest = LANGS.map(function (x) { return x[0]; }).filter(function (c) { return top.indexOf(c) < 0; })
+      .sort(function (a, b) { return NATIVE[a].localeCompare(NATIVE[b]); });
+    add(t("popular"), top); add(t("all"), rest);
+    if (keep) sel.value = keep;
+  }
+  function renderChips() {
+    [].slice.call(chipsEl.querySelectorAll(".chip")).forEach(function (b) { b.remove(); });
+    POPULAR[lang].forEach(function (c) {
+      if (!NATIVE[c]) return;
+      var b = document.createElement("button");
+      b.type = "button"; b.className = "chip"; b.lang = c.toLowerCase(); b.setAttribute("data-code", c);
+      b.textContent = NATIVE[c];
+      b.addEventListener("click", function () { setTarget(c, true); });
+      chipsEl.insertBefore(b, otherEl);
+    });
+    syncTarget();
+  }
+  function applyLang(l, save) {
+    lang = UI[l] ? l : "ru";
+    root.lang = lang;
+    document.title = t("title");
+    [].slice.call(document.querySelectorAll("[data-t]")).forEach(function (el) {
+      if (el.id === "tr-name" && picked) return;
+      if (el.id === "tr-hint" && picked) { el.textContent = fmtSize(picked.size) + " · " + t("change"); return; }
+      if (el.id === "doc-name" && picked) return;
+      el.textContent = t(key(el.getAttribute("data-t")));
+    });
+    [].slice.call(document.querySelectorAll("[data-ta]")).forEach(function (el) {
+      var p = el.getAttribute("data-ta").split(":"); el.setAttribute(p[0], t(p[1]));
+    });
+    [].slice.call(document.querySelectorAll(".langs button")).forEach(function (b) {
+      b.setAttribute("aria-pressed", b.getAttribute("data-lang") === lang ? "true" : "false");
+    });
+    var loginUrl = APP + "/?lang=" + lang;
+    $("login").href = loginUrl; $("login2").href = loginUrl;
+    fillOptions(tgtSel, t("other"), POPULAR[lang]);
+    fillOptions(srcSel, "", POPULAR[lang].concat([PAGE_SRC[lang]]));
+    if (!srcTouched) srcSel.value = PAGE_SRC[lang];
+    $("src-name").textContent = NATIVE[srcSel.value] || srcSel.value;
+    renderChips();
+    if (errKey) say(errKey);
+    if (save) { try { localStorage.setItem("mct-start-lang", lang); } catch (e) { /* хранилище закрыто */ } }
+    demoReset();
+  }
+  [].slice.call(document.querySelectorAll(".langs button")).forEach(function (b) {
+    b.addEventListener("click", function () { applyLang(b.getAttribute("data-lang"), true); });
+  });
+
+  /* ---------- Выбор языка перевода ---------- */
+  function syncTarget() {
+    var v = tgtSel.value;
+    var onChip = false;
+    [].slice.call(chipsEl.querySelectorAll(".chip")).forEach(function (b) {
+      var on = b.getAttribute("data-code") === v; if (on) onChip = true;
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    otherEl.classList.toggle("on", !!v && !onChip);
+    chipsEl.classList.remove("need"); otherEl.classList.remove("need");
+  }
+  function setTarget(code, fromUser) {
+    if (!NATIVE[code]) return;
+    if (code === srcSel.value) {
+      /* Нажали язык файла: значит файл на другом языке, меняем их местами. */
+      var alt = PAGE_SRC[lang] !== code ? PAGE_SRC[lang] : (code === "EN" ? "RU" : "EN");
+      srcSel.value = alt; srcTouched = true; $("src-name").textContent = NATIVE[alt];
+    }
+    tgtSel.value = code; syncTarget();
+    if (errKey === "eTgt" || errKey === "eSame") say("");
+    if (fromUser) demoTo(code);
+  }
+  tgtSel.addEventListener("change", function () { syncTarget(); if (tgtSel.value) setTarget(tgtSel.value, true); });
+  $("src-edit").addEventListener("click", function () {
+    srcSel.hidden = false; $("src-edit").hidden = true; $("src-name").hidden = true; srcSel.focus();
+  });
+  srcSel.addEventListener("change", function () {
+    srcTouched = true; $("src-name").textContent = NATIVE[srcSel.value] || srcSel.value;
+    if (errKey === "eSame") say(""); demoReset();
+  });
+
+  /* ---------- Файл ---------- */
+  function limitFor(name) { return MEDIA_RE.test(name || "") ? MAX_MEDIA : MAX_DOC; }
+  function ensureFrame() {
+    if (frameReady) return frameReady;
+    frameReady = new Promise(function (ok) {
+      frame = document.createElement("iframe");
+      frame.src = APP + "/handoff";
+      frame.title = "handoff"; frame.tabIndex = -1; frame.setAttribute("aria-hidden", "true");
+      frame.style.cssText = "position:absolute;width:1px;height:1px;border:0;left:-9999px;top:0";
+      frame.onload = function () { ok(true); };
+      frame.onerror = function () { ok(false); };
+      document.body.appendChild(frame);
+      setTimeout(function () { ok(false); }, 8000);
+    });
+    return frameReady;
+  }
+  function handoff(file, src, tgt) {
+    return ensureFrame().then(function (loaded) {
+      if (!loaded || !frame.contentWindow) return false;
+      return new Promise(function (ok) {
+        var done = false;
+        function fin(v) { if (done) return; done = true; window.removeEventListener("message", on); ok(v); }
+        function on(ev) {
+          if (ev.origin !== APP || ev.source !== frame.contentWindow) return;
+          fin(!!(ev.data && ev.data.type === "mct-handoff-ok"));
+        }
+        window.addEventListener("message", on);
+        try { frame.contentWindow.postMessage({ type: "mct-handoff", file: file, src: src, tgt: tgt }, APP); }
+        catch (e) { fin(false); }
+        /* Большое видео кладётся в хранилище браузера дольше документа. */
+        setTimeout(function () { fin(false); }, MEDIA_RE.test(file.name) ? 60000 : 6000);
+      });
+    });
+  }
+  function pick(f) {
+    if (!f) return;
+    if (f.size > limitFor(f.name)) { picked = null; drop.classList.remove("has"); say("eBig"); return; }
+    picked = f; say("");
+    nameEl.textContent = f.name;
+    hintEl.textContent = fmtSize(f.size) + " · " + t("change");
+    drop.classList.add("has");
+    $("doc-name").textContent = f.name;
+    $("doc-name").parentNode.parentNode.querySelector(".fi").textContent = (f.name.split(".").pop() || "").slice(0, 4).toUpperCase();
+    if (!MOCK) ensureFrame();
+  }
+  fileIn.addEventListener("change", function () { pick(fileIn.files && fileIn.files[0]); });
+  ["dragenter", "dragover"].forEach(function (ev) {
+    drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("drag"); });
+  });
+  ["dragleave", "drop"].forEach(function (ev) {
+    drop.addEventListener(ev, function () { drop.classList.remove("drag"); });
+  });
+  drop.addEventListener("drop", function (e) {
+    e.preventDefault();
+    pick(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
+  });
+  /* Файл, брошенный мимо зоны, браузер открыл бы вместо страницы. */
+  ["dragover", "drop"].forEach(function (ev) {
+    window.addEventListener(ev, function (e) {
+      if (drop.contains(e.target)) return;
+      e.preventDefault();
+      if (ev === "drop") pick(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
+    });
+  });
+  /* Кнопка «Назад» из приложения возвращает страницу из кэша вместе
+     с погашенной кнопкой: без этого второй попытки не было бы. */
+  window.addEventListener("pageshow", function () { goBtn.disabled = false; if (errKey === "eBusy") say(""); });
+  form.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var src = srcSel.value, tgt = tgtSel.value;
+    if (!tgt) { say("eTgt"); chipsEl.classList.add("need"); otherEl.classList.add("need"); var c = chipsEl.querySelector(".chip"); if (c) c.focus(); return; }
+    if (src === tgt) { say("eSame"); return; }
+    /* Всё, что пришло в адресе (метка приглашения, utm), едет дальше. */
+    var q = new URLSearchParams(location.search);
+    q.set("start", "translate"); q.set("src", src); q.set("tgt", tgt); q.set("lang", lang);
+    var url = APP + "/?" + q.toString();
+    if (MOCK) { showMock(src, tgt); return; }
+    if (!picked) { location.href = url; return; }
+    goBtn.disabled = true; say("eBusy");
+    handoff(picked, src, tgt).then(function () { location.href = url; });
+  });
+  var mock = $("mock"), mockBack = null;
+  function showMock(src, tgt) {
+    $("mock-file").textContent = picked ? picked.name : t("mockNoFile");
+    $("mock-src").textContent = NATIVE[src] || src; $("mock-tgt").textContent = NATIVE[tgt] || tgt;
+    mockBack = document.activeElement; mock.hidden = false; $("mock-close").focus();
+  }
+  function hideMock() { mock.hidden = true; if (mockBack && mockBack.focus) mockBack.focus(); }
+  $("mock-close").addEventListener("click", hideMock);
+  mock.addEventListener("click", function (e) { if (e.target === mock) hideMock(); });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && !mock.hidden) hideMock(); });
+  function toForm() {
+    var top = form.getBoundingClientRect().top + window.scrollY - 90;
+    window.scrollTo({ top: Math.max(0, top), behavior: reduced() ? "auto" : "smooth" });
+    form.classList.remove("pulse"); void form.offsetWidth; form.classList.add("pulse");
+  }
+  $("cta-go").addEventListener("click", function () { toForm(); setTimeout(function () { (picked ? goBtn : fileIn).focus({ preventScroll: true }); }, reduced() ? 0 : 650); });
+
+  /* ---------- Живой пример: луч переписывает строку ---------- */
+  var txt = $("txt"), tOld = $("t-old"), tNew = $("t-new"), pairA = $("pair-a"), pairB = $("pair-b");
+  /* demoGen: сброс (смена языка страницы) посреди прохода луча не даёт
+     старому таймеру дописать пустоту поверх нового текста. */
+  var demoCur = "RU", demoTimer = 0, demoBusy = false, demoQueue = null, demoIdx = 0, demoGen = 0, sceneVisible = true;
+  function mark(s) {
+    var esc = s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+    return esc.replace(/(\d+(?:[.,]\d+)?\s?%?)/g, '<span class="num">$1</span>');
+  }
+  function demoSrc() { return DEMO[srcSel.value] ? srcSel.value : "RU"; }
+  function demoReset() {
+    clearTimeout(demoTimer); demoBusy = false; demoQueue = null; demoGen++;
+    demoCur = demoSrc(); txt.classList.remove("run");
+    tOld.innerHTML = mark(DEMO[demoCur]); tNew.innerHTML = "";
+    pairA.textContent = demoCur; pairB.textContent = demoCur;
+    demoIdx = 0; demoSchedule(900);
+  }
+  function demoNextCode() {
+    var list = CYC_ORDER.filter(function (c) { return c !== demoCur && DEMO[c]; });
+    var c = list[demoIdx % list.length]; demoIdx++; return c;
+  }
+  function demoTo(code) {
+    if (!DEMO[code] || code === demoCur) return;
+    if (demoBusy) { demoQueue = code; return; }
+    clearTimeout(demoTimer); demoBusy = true;
+    pairA.textContent = demoCur; pairB.textContent = code;
+    tNew.innerHTML = mark(DEMO[code]);
+    if (reduced()) { finish(); return; }
+    void txt.offsetWidth; txt.classList.add("run");
+    var gen = demoGen;
+    setTimeout(function () { if (gen === demoGen) finish(); }, 1150);
+    function finish() {
+      tOld.innerHTML = tNew.innerHTML; tNew.innerHTML = ""; txt.classList.remove("run");
+      demoCur = code; demoBusy = false;
+      if (demoQueue) { var q = demoQueue; demoQueue = null; demoTo(q); return; }
+      demoSchedule(tgtSel.value === code ? 6000 : 3200);
+    }
+  }
+  function demoSchedule(ms) {
+    clearTimeout(demoTimer);
+    if (reduced()) return;
+    demoTimer = setTimeout(function () {
+      if (!sceneVisible || document.hidden) { demoSchedule(1500); return; }
+      demoTo(demoNextCode());
+    }, ms);
+  }
+
+  /* ---------- Плитки: заголовки меняют язык по кругу ---------- */
+  var cycEls = [].slice.call(document.querySelectorAll("[data-cyc]")), cycI = 0;
+  function cycTick() {
+    if (reduced() || document.hidden) return;
+    cycI = (cycI + 1) % CYC_ORDER.length;
+    var code = CYC_ORDER[cycI];
+    cycEls.forEach(function (el, k) {
+      setTimeout(function () {
+        el.classList.add("out");
+        setTimeout(function () {
+          var v = CYC[el.getAttribute("data-cyc")][code];
+          if (v) { el.textContent = v; el.lang = code.toLowerCase(); }
+          el.classList.remove("out");
+        }, 450);
+      }, k * 160);
+    });
+  }
+  setInterval(cycTick, 2800);
+
+  /* ---------- Языки: две ленты, нажатие выбирает язык перевода ---------- */
+  function fillRow(el, codes) {
+    function chip(c, hidden) {
+      var b = document.createElement("button");
+      b.type = "button"; b.className = "lchip"; b.lang = c.toLowerCase(); b.textContent = NATIVE[c];
+      if (hidden) { b.setAttribute("aria-hidden", "true"); b.tabIndex = -1; }
+      b.addEventListener("click", function () { setTarget(c, true); toForm(); });
+      return b;
+    }
+    codes.forEach(function (c) { el.appendChild(chip(c, false)); });
+    codes.forEach(function (c) { el.appendChild(chip(c, true)); });
+  }
+  (function () {
+    var codes = LANGS.map(function (x) { return x[0]; });
+    var half = Math.ceil(codes.length / 2);
+    fillRow($("row1"), codes.slice(0, half)); fillRow($("row2"), codes.slice(half));
+  })();
+
+  /* ---------- Глобус языков (холст) ---------- */
+  (function () {
+    var cv = $("globe"); if (!cv || !cv.getContext) return;
+    var ctx = cv.getContext("2d"), N = 640, pts = [], W = 0, H = 0, R = 0, rot = 0, raf = 0, last = 0;
+    var LABELS = ["English", "Русский", "O‘zbekcha", "中文", "العربية", "Español", "Deutsch", "Türkçe", "Français", "日本語", "한국어", "हिन्दी", "Қазақша", "Português", "Italiano", "Bahasa"];
+    var ga = Math.PI * (3 - Math.sqrt(5));
+    for (var i = 0; i < N; i++) {
+      var y = 1 - (i / (N - 1)) * 2, r = Math.sqrt(1 - y * y), th = ga * i;
+      pts.push([Math.cos(th) * r, y, Math.sin(th) * r]);
+    }
+    var lab = LABELS.map(function (s, k) { return { s: s, p: pts[Math.floor((k + 0.5) * N / LABELS.length)] }; });
+    function size() {
+      var d = Math.min(window.devicePixelRatio || 1, 2), rect = cv.getBoundingClientRect();
+      W = Math.max(200, rect.width); H = Math.max(200, rect.height);
+      cv.width = Math.round(W * d); cv.height = Math.round(H * d); ctx.setTransform(d, 0, 0, d, 0, 0);
+      R = Math.min(W, H) * 0.42;
+    }
+    function proj(p) {
+      var cs = Math.cos(rot), sn = Math.sin(rot), x = p[0] * cs + p[2] * sn, z = -p[0] * sn + p[2] * cs, y = p[1];
+      var tl = 0.32, y2 = y * Math.cos(tl) - z * Math.sin(tl), z2 = y * Math.sin(tl) + z * Math.cos(tl);
+      return [W / 2 + x * R, H / 2 + y2 * R, z2];
+    }
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+      var g = ctx.createRadialGradient(W / 2, H / 2, R * 0.2, W / 2, H / 2, R * 1.15);
+      g.addColorStop(0, "rgba(10,92,240,0.07)"); g.addColorStop(1, "rgba(10,92,240,0)");
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(W / 2, H / 2, R * 1.15, 0, Math.PI * 2); ctx.fill();
+      for (var i = 0; i < pts.length; i++) {
+        var q = proj(pts[i]), front = (q[2] + 1) / 2;
+        ctx.fillStyle = q[2] > 0 ? "rgba(10,92,240," + (0.18 + front * 0.55).toFixed(3) + ")" : "rgba(11,19,36," + (0.05 + front * 0.12).toFixed(3) + ")";
+        ctx.beginPath(); ctx.arc(q[0], q[1], 0.7 + front * 1.5, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      lab.forEach(function (l) {
+        var q = proj(l.p); if (q[2] < 0.12) return;
+        var a = Math.min(1, (q[2] - 0.12) * 2.2);
+        ctx.font = "700 " + Math.round(12 + q[2] * 5) + "px Manrope, 'Segoe UI', sans-serif";
+        var w = ctx.measureText(l.s).width + 18;
+        ctx.fillStyle = "rgba(251,252,254," + (0.9 * a).toFixed(3) + ")";
+        ctx.strokeStyle = "rgba(197,208,224," + a.toFixed(3) + ")";
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(q[0] - w / 2, q[1] - 13, w, 26, 13); else ctx.rect(q[0] - w / 2, q[1] - 13, w, 26);
+        ctx.fill(); ctx.stroke();
+        ctx.fillStyle = "rgba(11,19,36," + a.toFixed(3) + ")";
+        ctx.fillText(l.s, q[0], q[1] + 1);
+      });
+    }
+    function loop(ts) {
+      raf = 0;
+      if (!sceneVisible || document.hidden || reduced()) return;
+      if (ts - last > 33) { rot += 0.0042 * Math.min(3, (ts - last) / 33 || 1); last = ts; draw(); }
+      raf = requestAnimationFrame(loop);
+    }
+    function start() { if (!raf && !reduced()) { last = 0; raf = requestAnimationFrame(loop); } }
+    size(); draw();
+    window.addEventListener("resize", function () { size(); draw(); });
+    document.addEventListener("visibilitychange", start);
+    if (REDUCE && REDUCE.addEventListener) REDUCE.addEventListener("change", function () { draw(); start(); demoReset(); });
+    if ("IntersectionObserver" in window) {
+      new IntersectionObserver(function (es) { sceneVisible = es[0].isIntersecting; if (sceneVisible) start(); }, { rootMargin: "80px" }).observe(cv);
+    }
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(draw);
+    start();
+  })();
+
+  /* ---------- Примеры работ ---------- */
+  var FINE = !!(window.matchMedia && window.matchMedia("(hover: hover) and (pointer: fine)").matches);
+  function esc(v) { return String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+  function isRtl(c) { return c === "AR"; }
+  function chipRow(box, codes, cur, onPick) {
+    box.innerHTML = "";
+    codes.forEach(function (c) {
+      var b = document.createElement("button");
+      b.type = "button"; b.className = "mini"; b.lang = c.toLowerCase();
+      b.textContent = NATIVE[c] || c; b.setAttribute("aria-pressed", c === cur ? "true" : "false");
+      b.addEventListener("click", function () {
+        [].forEach.call(box.children, function (x) { x.setAttribute("aria-pressed", x === b ? "true" : "false"); });
+        onPick(c);
+      });
+      box.appendChild(b);
+    });
+  }
+  function onceVisible(el, fn) {
+    if (!("IntersectionObserver" in window)) { fn(); return; }
+    var ob = new IntersectionObserver(function (es) { if (es[0].isIntersecting) { ob.disconnect(); fn(); } }, { threshold: 0.35 });
+    ob.observe(el);
+  }
+  function setKey(btn, k) { var sp = btn.querySelector("span"); sp.setAttribute("data-t", k); sp.textContent = t(k); }
+
+  var vid = null, exShow = {};
+  var exTabs = [].slice.call(document.querySelectorAll(".tab"));
+  var exPanes = [].slice.call(document.querySelectorAll(".pane"));
+  function showTab(k, focus) {
+    exTabs.forEach(function (b) {
+      var on = b.getAttribute("data-k") === k;
+      b.setAttribute("aria-selected", on ? "true" : "false"); b.tabIndex = on ? 0 : -1;
+      if (on && focus) b.focus();
+    });
+    exPanes.forEach(function (p) { p.hidden = p.getAttribute("data-k") !== k; });
+    if (k !== "video" && vid) vid.pause();
+    if (exShow[k]) exShow[k]();
+  }
+  exTabs.forEach(function (b, i) {
+    b.addEventListener("click", function () { showTab(b.getAttribute("data-k")); });
+    b.addEventListener("keydown", function (e) {
+      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+      e.preventDefault();
+      var n = exTabs[(i + (e.key === "ArrowRight" ? 1 : exTabs.length - 1)) % exTabs.length];
+      showTab(n.getAttribute("data-k"), true);
+    });
+  });
+
+  /* Книга: слева оригинал, справа перевод; листается кнопкой и нажатием на книгу. */
+  var BOOK = {
+    RU: { t: "Глава 1. Дорога домой", p1: "Поезд пришёл в 7:40. Анна взяла чемодан и вышла на перрон. До дома оставалось 12 километров.", p2: "Автобус ушёл в 8:15, а следующий был только через 40 минут. Анна улыбнулась и пошла пешком." },
+    EN: { t: "Chapter 1. The Way Home", p1: "The train arrived at 7:40. Anna took her suitcase and stepped onto the platform. Home was still 12 kilometres away.", p2: "The bus had left at 8:15, and the next one was 40 minutes away. Anna smiled and set off on foot." },
+    UZ: { t: "1-bob. Uyga yo‘l", p1: "Poyezd soat 7:40 da keldi. Anna chamadonini olib, perronga tushdi. Uygacha yana 12 kilometr bor edi.", p2: "Avtobus 8:15 da jo‘nab ketgan, keyingisini esa 40 daqiqa kutish kerak edi. Anna jilmaydi va piyoda yo‘lga tushdi." },
+    ZH: { t: "第一章 回家的路", p1: "火车7:40到站。安娜提起行李箱，走上站台。离家还有12公里。", p2: "公交车8:15已经开走，下一班要等40分钟。安娜笑了笑，步行出发了。" },
+    AR: { t: "الفصل 1. طريق العودة", p1: "وصل القطار في الساعة 7:40. أخذت آنا حقيبتها ونزلت إلى الرصيف. كان البيت لا يزال على بُعد 12 كيلومترًا.", p2: "كانت الحافلة قد غادرت في الساعة 8:15، والتالية بعد 40 دقيقة. ابتسمت آنا ومضت سيرًا على الأقدام." }
+  };
+  var book3 = $("book3"), leaf1 = $("leaf1"), cover = $("cover"), bkBtn = $("bk-btn"), b3d = $("b3d");
+  var bkPage = 0, bkLang = "EN", bkTouched = false;
+  function pgHtml(d, which, num) {
+    return (which === 1 ? "<h5>" + esc(d.t) + "</h5>" : "") + "<p>" + mark(which === 1 ? d.p1 : d.p2) + "</p><span class=\"pn\">" + num + "</span>";
+  }
+  function bkRender() {
+    var o = BOOK.RU, tl = BOOK[bkLang];
+    $("bk-o1").innerHTML = pgHtml(o, 1, 1); $("bk-o2").innerHTML = pgHtml(o, 2, 2);
+    $("bk-t1").innerHTML = pgHtml(tl, 1, 1); $("bk-t2").innerHTML = pgHtml(tl, 2, 2);
+    ["bk-t1", "bk-t2"].forEach(function (id) { $(id).dir = isRtl(bkLang) ? "rtl" : "ltr"; $(id).lang = bkLang.toLowerCase(); });
+  }
+  function bkSet(n) {
+    bkPage = n;
+    cover.classList.toggle("flipped", n >= 1); leaf1.classList.toggle("flipped", n >= 2); book3.classList.toggle("open", n >= 1);
+    setKey(bkBtn, n === 0 ? "bookOpen" : n === 1 ? "bookNext" : "bookClose");
+  }
+  function bkStep() { bkTouched = true; bkSet((bkPage + 1) % 3); }
+  bkBtn.addEventListener("click", bkStep);
+  b3d.addEventListener("click", bkStep);
+  chipRow($("bk-langs"), ["EN", "UZ", "ZH", "AR"], bkLang, function (c) { bkLang = c; bkRender(); if (bkPage === 0) { bkTouched = true; bkSet(1); } });
+  if (FINE) {
+    b3d.addEventListener("pointermove", function (e) {
+      if (bkPage !== 0 || reduced()) return;
+      var r = b3d.getBoundingClientRect(), x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+      book3.style.setProperty("--ry", (-32 + x * 28).toFixed(1) + "deg");
+      book3.style.setProperty("--rx", (22 - y * 16).toFixed(1) + "deg");
+    });
+    b3d.addEventListener("pointerleave", function () { book3.style.removeProperty("--ry"); book3.style.removeProperty("--rx"); });
+  }
+  exShow.book = function () { onceVisible(b3d, function () { setTimeout(function () { if (!bkTouched && bkPage === 0) bkSet(1); }, reduced() ? 0 : 900); }); };
+  bkRender(); bkSet(0);
+
+  /* Статья: шторка между оригиналом и переводом; кнопки для тех, кто не тянет. */
+  var PAPER = {
+    RU: { j: "Научный вестник · 2025 · № 3", title: "Сон и память у студентов", au: "А. Каримова, Б. Юсупов", absH: "Аннотация", abs: "Студенты, которые спали 8 часов, запомнили на 21% больше.", th: ["Группа", "Сон, ч", "Тест"], cap: "Рис. 1. Результаты теста" },
+    EN: { j: "Science Bulletin · 2025 · No. 3", title: "Sleep and memory in students", au: "A. Karimova, B. Yusupov", absH: "Abstract", abs: "Students who slept 8 hours remembered 21% more.", th: ["Group", "Sleep, h", "Test"], cap: "Fig. 1. Test results" },
+    UZ: { j: "Ilmiy axborotnoma · 2025 · 3-son", title: "Talabalarda uyqu va xotira", au: "A. Karimova, B. Yusupov", absH: "Annotatsiya", abs: "8 soat uxlagan talabalar 21% ko‘proq eslab qolishdi.", th: ["Guruh", "Uyqu, soat", "Test"], cap: "1-rasm. Test natijalari" }
+  };
+  var ROWS = [["A", "8", "92%"], ["B", "5", "71%"]];
+  var FIG = '<svg viewBox="0 0 120 72" width="100%" aria-hidden="true"><line x1="6" y1="66" x2="116" y2="66" stroke="#DAE2EE" stroke-width="2"/><rect x="22" y="10" width="30" height="56" rx="4" fill="#0A5CF0"/><rect x="70" y="23" width="30" height="43" rx="4" fill="#C9D8FB"/></svg>';
+  function layHtml(d) {
+    return '<div class="j">' + esc(d.j) + '</div><h5>' + esc(d.title) + '</h5><div class="au">' + esc(d.au) + '</div>'
+      + '<div class="abs"><b>' + esc(d.absH) + '</b>' + mark(d.abs) + '</div>'
+      + '<div class="row2"><table><tr>' + d.th.map(function (h) { return "<th>" + esc(h) + "</th>"; }).join("") + '</tr>'
+      + ROWS.map(function (r) { return "<tr>" + r.map(function (c) { return "<td>" + mark(c) + "</td>"; }).join("") + "</tr>"; }).join("")
+      + '</table><figure>' + FIG + '<figcaption>' + esc(d.cap) + '</figcaption></figure></div>'
+      + '<div class="bars"><i style="width:96%"></i><i style="width:88%"></i><i style="width:92%"></i><i style="width:64%"></i><i style="width:84%"></i></div>';
+  }
+  var ba = $("ba"), baH = $("ba-h"), baX = 50, baLang = "EN", baTween = 0, baTouched = false, baDrag = false;
+  var baTagO = ba.querySelector(".ba-tag.o"), baTagT = ba.querySelector(".ba-tag.t");
+  function baRender() { $("ba-o").innerHTML = layHtml(PAPER.RU); $("ba-t").innerHTML = layHtml(PAPER[baLang]); $("ba-t").lang = baLang.toLowerCase(); }
+  function baSet(v) {
+    baX = Math.max(0, Math.min(100, v));
+    ba.style.setProperty("--x", baX + "%"); baH.setAttribute("aria-valuenow", String(Math.round(baX)));
+    baTagO.style.opacity = baX < 10 ? "0" : "1"; baTagT.style.opacity = baX > 90 ? "0" : "1";
+  }
+  function baTo(v, ms, done) {
+    cancelAnimationFrame(baTween);
+    if (reduced() || !ms) { baSet(v); if (done) done(); return; }
+    var from = baX, t0 = 0;
+    function step(ts) {
+      if (!t0) t0 = ts;
+      var k = Math.min(1, (ts - t0) / ms), e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+      baSet(from + (v - from) * e);
+      if (k < 1) baTween = requestAnimationFrame(step); else if (done) done();
+    }
+    baTween = requestAnimationFrame(step);
+  }
+  function baPress(v) { [].forEach.call(document.querySelectorAll("[data-ba]"), function (b) { b.setAttribute("aria-pressed", String(+b.getAttribute("data-ba") === v)); }); }
+  function baMove(e) { var r = ba.getBoundingClientRect(); baSet((e.clientX - r.left) / r.width * 100); }
+  ba.addEventListener("pointerdown", function (e) { baDrag = true; baTouched = true; cancelAnimationFrame(baTween); try { ba.setPointerCapture(e.pointerId); } catch (x) { /* старый браузер */ } baMove(e); baPress(-1); });
+  ba.addEventListener("pointermove", function (e) { if (baDrag) baMove(e); });
+  ["pointerup", "pointercancel"].forEach(function (ev) { ba.addEventListener(ev, function () { baDrag = false; }); });
+  baH.addEventListener("keydown", function (e) {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault(); baTouched = true; baSet(baX + (e.key === "ArrowRight" ? 5 : -5)); baPress(-1);
+  });
+  [].forEach.call(document.querySelectorAll("[data-ba]"), function (b) {
+    b.addEventListener("click", function () { baTouched = true; var v = +b.getAttribute("data-ba"); baPress(v); baTo(v, 650); });
+  });
+  chipRow($("ba-langs"), ["EN", "UZ"], baLang, function (c) { baLang = c; baRender(); });
+  exShow.paper = function () {
+    onceVisible(ba, function () {
+      if (baTouched) return;
+      baTo(18, 900, function () { if (!baTouched) baTo(82, 1300, function () { if (!baTouched) baTo(50, 800); }); });
+    });
+  };
+  baRender(); baSet(50);
+
+  /* Видео: субтитры по времени, язык меняется на лету, можно два языка сразу. */
+  var CUES = [[0, 3], [3, 6.5], [6.5, 9.5], [9.5, 12]], VLEN = 12;
+  var SUBS = {
+    RU: ["Добрый вечер! Сегодня расскажем о горах.", "Эти вершины выше 4000 метров.", "Подъём занимает 3 дня.", "Спасибо, что смотрите!"],
+    EN: ["Good evening! Today we'll talk about mountains.", "These peaks are over 4000 metres high.", "The climb takes 3 days.", "Thanks for watching!"],
+    UZ: ["Xayrli kech! Bugun tog‘lar haqida so‘zlab beramiz.", "Bu cho‘qqilar 4000 metrdan baland.", "Cho‘qqiga chiqish 3 kun davom etadi.", "Tomosha qilganingiz uchun rahmat!"],
+    ZH: ["晚上好！今天我们来聊聊山。", "这些山峰海拔超过4000米。", "登顶需要3天。", "感谢收看！"],
+    AR: ["مساء الخير! سنتحدث اليوم عن الجبال.", "يزيد ارتفاع هذه القمم على 4000 متر.", "يستغرق الصعود 3 أيام.", "شكرًا على المشاهدة!"]
+  };
+  var player = $("player"), prog = $("prog"), fill = $("fill");
+  var vpLang = "EN", vpBoth = false, vpT = 0.5, vpLast = 0, vpRaf = 0, vpPlaying = false, vpCue = -2, vpTouched = false, vpVisible = false;
+  CUES.forEach(function (c) {
+    var sg = document.createElement("i"); sg.className = "seg";
+    sg.style.left = (c[0] / VLEN * 100) + "%"; sg.style.width = ((c[1] - c[0]) / VLEN * 100 - 0.8) + "%";
+    prog.insertBefore(sg, fill);
+  });
+  var segs = [].slice.call(prog.querySelectorAll(".seg"));
+  function fmtT(x) { x = Math.floor(x); return "0:" + (x < 10 ? "0" : "") + x; }
+  function vpDraw(force) {
+    var i = -1;
+    CUES.forEach(function (c, k) { if (vpT >= c[0] && vpT < c[1]) i = k; });
+    fill.style.left = "calc(" + (vpT / VLEN * 100).toFixed(2) + "% - 2px)";
+    $("vp-tm").textContent = fmtT(vpT) + " / " + fmtT(VLEN);
+    if (i === vpCue && !force) return;
+    vpCue = i;
+    segs.forEach(function (sg, k) { sg.classList.toggle("on", k === i); });
+    var s1 = $("sub1"), s2 = $("sub2");
+    s1.querySelector("span").textContent = i >= 0 ? SUBS[vpLang][i] : "";
+    s1.dir = isRtl(vpLang) ? "rtl" : "ltr"; s1.lang = vpLang.toLowerCase();
+    var both = vpBoth && vpLang !== "RU" && i >= 0;
+    s2.hidden = !both;
+    if (both) s2.querySelector("span").textContent = SUBS.RU[i];
+  }
+  function vpLoop(ts) {
+    vpRaf = 0;
+    if (!vpPlaying) return;
+    if (vpLast) vpT = (vpT + Math.min(0.1, (ts - vpLast) / 1000)) % VLEN;
+    vpLast = ts; vpDraw(false);
+    vpRaf = requestAnimationFrame(vpLoop);
+  }
+  var PLAY = "M8 5.5v13l11-6.5z", PAUSE = "M7 5h3.5v14H7zM13.5 5H17v14h-3.5z";
+  vid = {
+    play: function () {
+      if (vpPlaying) return;
+      vpPlaying = true; vpLast = 0; player.classList.add("playing");
+      $("vp-path").setAttribute("d", PAUSE); $("vp-btn").setAttribute("aria-label", t("pause"));
+      if (!vpRaf) vpRaf = requestAnimationFrame(vpLoop);
+    },
+    pause: function () {
+      vpPlaying = false; player.classList.remove("playing");
+      $("vp-path").setAttribute("d", PLAY); $("vp-btn").setAttribute("aria-label", t("play"));
+    }
+  };
+  $("vp-big").addEventListener("click", function () { vpTouched = true; vid.play(); });
+  $("vp-btn").addEventListener("click", function () { vpTouched = true; if (vpPlaying) vid.pause(); else vid.play(); });
+  prog.addEventListener("click", function (e) {
+    var r = prog.getBoundingClientRect();
+    vpT = Math.max(0, Math.min(VLEN - 0.01, (e.clientX - r.left) / r.width * VLEN)); vpDraw(true);
+  });
+  chipRow($("vp-langs"), ["RU", "EN", "UZ", "ZH", "AR"], vpLang, function (c) { vpLang = c; vpDraw(true); });
+  $("vp-both").addEventListener("click", function () { vpBoth = !vpBoth; this.setAttribute("aria-pressed", String(vpBoth)); vpDraw(true); });
+  if ("IntersectionObserver" in window) {
+    new IntersectionObserver(function (es) {
+      vpVisible = es[0].isIntersecting;
+      if (!vpVisible) vid.pause();
+      else if (!vpTouched && !reduced() && !$("pane-video").hidden) vid.play();
+    }, { threshold: 0.5 }).observe(player);
+  }
+  document.addEventListener("visibilitychange", function () { if (document.hidden) vid.pause(); });
+  exShow.video = function () { vpDraw(true); };
+  vpDraw(true);
+
+  /* Фото таблички: луч читает строки, рамки находят текст, перевод встаёт на место. */
+  var SIGN = {
+    RU: { h: "ИНФОРМАЦИЯ", it: [["Завтрак", "7:00–10:00"], ["Бассейн", "3 этаж"], ["Выезд", "до 12:00"], ["Ресепшн", "24/7"]], ft: "Хорошего отдыха!" },
+    EN: { h: "INFORMATION", it: [["Breakfast", "7:00–10:00"], ["Pool", "3rd floor"], ["Check-out", "by 12:00"], ["Reception", "24/7"]], ft: "Enjoy your stay!" },
+    UZ: { h: "MA’LUMOT", it: [["Nonushta", "7:00–10:00"], ["Basseyn", "3-qavat"], ["Chiqish", "12:00 gacha"], ["Qabulxona", "24/7"]], ft: "Yaxshi dam oling!" },
+    ZH: { h: "须知", it: [["早餐", "7:00–10:00"], ["游泳池", "3楼"], ["退房", "12:00前"], ["前台", "24/7"]], ft: "祝您入住愉快！" },
+    AR: { h: "معلومات", it: [["الإفطار", "7:00–10:00"], ["المسبح", "الطابق 3"], ["المغادرة", "قبل 12:00"], ["الاستقبال", "24/7"]], ft: "نتمنى لكم إقامة سعيدة!" }
+  };
+  var desk = $("desk"), scBtn = $("sc-btn"), scLang = "EN", scState = 0, scTimers = [], scTouched = false;
+  function two(o, tl, rtl) { return '<span class="o">' + esc(o) + '</span><span class="t"' + (rtl ? ' dir="rtl"' : "") + ">" + esc(tl) + "</span>"; }
+  function scRender() {
+    var o = SIGN.RU, tl = SIGN[scLang], r = isRtl(scLang);
+    var h = '<div class="mh">' + two(o.h, tl.h, r) + "</div>";
+    o.it.forEach(function (row, i) {
+      h += '<div class="ln"><span class="nm">' + two(row[0], tl.it[i][0], r) + '</span><i class="dots"></i><span class="pr">' + two(row[1], tl.it[i][1], r) + "</span></div>";
+    });
+    $("sign").innerHTML = h + '<div class="ft">' + two(o.ft, tl.ft, r) + "</div>";
+  }
+  function scSet(st) {
+    scTimers.forEach(clearTimeout); scTimers = [];
+    scState = st;
+    desk.classList.remove("run", "boxes", "done");
+    setKey(scBtn, st === 2 ? "scanBack" : "scanGo");
+    scBtn.disabled = st === 1;
+    if (st === 1) {
+      if (reduced()) { scSet(2); return; }
+      void desk.offsetWidth; desk.classList.add("run");
+      scTimers.push(setTimeout(function () { desk.classList.add("boxes"); }, 650));
+      scTimers.push(setTimeout(function () { scSet(2); }, 1600));
+    }
+    if (st === 2) desk.classList.add("done");
+  }
+  scBtn.addEventListener("click", function () { scTouched = true; scSet(scState === 2 ? 0 : 1); });
+  chipRow($("sc-langs"), ["EN", "UZ", "ZH", "AR"], scLang, function (c) { scTouched = true; scLang = c; scRender(); if (scState !== 2) scSet(1); });
+  exShow.scan = function () { onceVisible(desk, function () { setTimeout(function () { if (!scTouched && scState === 0) scSet(1); }, reduced() ? 0 : 700); }); };
+  scRender(); scSet(0);
+
+  showTab("book");
+
+  /* ---------- «Проверить цифры» ---------- */
+  var chk = $("chk"), chkBtn = $("chk-btn"), chkSt = 0, chkTm = 0;
+  function chkSet(st) {
+    clearTimeout(chkTm); chkSt = st;
+    chk.classList.toggle("on", st >= 1); chk.classList.toggle("fixed", st >= 2);
+    setKey(chkBtn, st === 2 ? "chkAgain" : "chkBtn");
+    if (st === 1) chkTm = setTimeout(function () { chkSet(2); }, reduced() ? 0 : 1100);
+  }
+  chkBtn.addEventListener("click", function () { chkSet(chkSt === 2 ? 0 : 1); });
+
+  /* ---------- 3D-наклон сцен на плитках (только мышью) ---------- */
+  if (FINE) {
+    [].forEach.call(document.querySelectorAll(".stage"), function (st) {
+      st.addEventListener("pointermove", function (e) {
+        if (reduced()) return;
+        var r = st.getBoundingClientRect(), x = (e.clientX - r.left) / r.width - 0.5, y = (e.clientY - r.top) / r.height - 0.5;
+        st.style.setProperty("--ty", (x * 16).toFixed(1) + "deg"); st.style.setProperty("--tx", (-y * 12).toFixed(1) + "deg");
+      });
+      st.addEventListener("pointerleave", function () { st.style.removeProperty("--ty"); st.style.removeProperty("--tx"); });
+    });
+  }
+
+  /* ---------- Появление разделов и шапка ---------- */
+  var top = $("top");
+  function onScroll() { top.classList.toggle("scrolled", window.scrollY > 8); }
+  window.addEventListener("scroll", onScroll, { passive: true }); onScroll();
+  var rv = [].slice.call(document.querySelectorAll(".rv")).concat([$("steps")]);
+  if ("IntersectionObserver" in window && !reduced()) {
+    var io = new IntersectionObserver(function (es) {
+      es.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } });
+    }, { rootMargin: "0px 0px -8% 0px", threshold: 0.08 });
+    rv.forEach(function (el) { io.observe(el); });
+  } else { rv.forEach(function (el) { el.classList.add("in"); }); }
+
+  applyLang(pickLang(), false);
+})();
+</script>
+</body>
+</html>

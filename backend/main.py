@@ -13294,16 +13294,40 @@ def _click_handle(p: dict, complete: bool) -> dict:
     return pm.click_answer(p, pm.CLICK_OK, merchant_confirm_id=int(o["id"]))
 
 
+_CLICK_LOG_KEYS = ("click_trans_id", "service_id", "click_paydoc_id", "merchant_trans_id",
+                   "merchant_prepare_id", "amount", "action", "error", "error_note", "sign_time")
+
+
+def _click_log(request: Request, p: dict, ans: dict, complete: bool) -> None:
+    """Строка журнала на КАЖДЫЙ колбэк Click — запрос и наш ответ (их просит
+    поддержка Click при разборе платежа). Журнал заказа (`_pay_log`) пишет
+    только то, что дошло до заказа: отказы по подписи, сумме и номеру он
+    не видит. Подпись и секрет в строку не идут."""
+    try:
+        req = {k: str(p.get(k))[:80] for k in _CLICK_LOG_KEYS if p.get(k) not in (None, "")}
+        out = {k: ans.get(k) for k in ("error", "error_note", "merchant_prepare_id", "merchant_confirm_id")
+               if ans.get(k) is not None}
+        print("[pay] click.%s ip=%s req=%s ans=%s" % ("complete" if complete else "prepare",
+              _client_ip(request), json.dumps(req, ensure_ascii=False), json.dumps(out, ensure_ascii=False)),
+              file=sys.stderr)
+    except Exception:
+        pass
+
+
 @app.post("/api/pay/click/prepare")
 async def click_prepare(request: Request):
     p = dict(await request.form())
-    return JSONResponse(await run_in_threadpool(_click_handle, p, False))
+    ans = await run_in_threadpool(_click_handle, p, False)
+    _click_log(request, p, ans, False)
+    return JSONResponse(ans)
 
 
 @app.post("/api/pay/click/complete")
 async def click_complete(request: Request):
     p = dict(await request.form())
-    return JSONResponse(await run_in_threadpool(_click_handle, p, True))
+    ans = await run_in_threadpool(_click_handle, p, True)
+    _click_log(request, p, ans, True)
+    return JSONResponse(ans)
 
 
 def _octo_notify(body: dict) -> dict:

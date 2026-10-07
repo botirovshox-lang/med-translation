@@ -280,5 +280,17 @@ b["issued"] = 2
 c.post("/api/admin/testing/batches/%s" % b["id"], json={"limit": 1}, headers=H)
 check(b["limit"] == 2, "лимит ниже выданного не опускается")
 
+print("\n=== 10. Согласие называет всех получателей текста по ключам ===")
+_old = os.environ.pop("ANTHROPIC_API_KEY", None)
+page = survey.form_page("apply", "ru")
+check("OpenAI, США" in page and "Anthropic" not in page and "{providers}" not in page,
+      "без ключа Anthropic — только OpenAI")
+os.environ["ANTHROPIC_API_KEY"] = "test"
+check("Anthropic, США" in survey.form_page("apply", "ru"), "с ключом — названа и Anthropic")
+check("Anthropic, AQSh" in survey.form_page("apply", "uz"), "по-узбекски — своим словом")
+os.environ.pop("ANTHROPIC_API_KEY")
+if _old is not None:
+    os.environ["ANTHROPIC_API_KEY"] = _old
+
 print("\n" + ("ПРОВАЛЕНО: " + "; ".join(fail) if fail else "ВСЁ ПРОШЛО"))
 sys.exit(1 if fail else 0)

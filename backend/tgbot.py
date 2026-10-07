@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backend import tg                                    # noqa: E402
+from backend import legal                                 # noqa: E402
 
 DATA = Path(__file__).resolve().parent / "data"
 STATE_FILE = DATA / "tg_state.json"
@@ -68,7 +69,7 @@ T = {
         # была бы пустой формой — человек «согласился» с тем, чего не видел.
         "terms": "Пользуясь доступом, вы принимаете оферту %(terms)s и политику обработки "
                  "персональных данных %(privacy)s.\n\nКоротко о главном: текст ваших документов "
-                 "уходит на обработку поставщику языковых моделей (OpenAI, США) — не загружайте "
+                 "уходит на обработку поставщику языковых моделей (%(providers)s) — не загружайте "
                  "то, что нельзя туда отправлять.",
         "again": "Доступ у вас уже есть — вот он ещё раз. 🙂",
         "full": "Спасибо за интерес! 🙏 Места в этом наборе закончились. Я записал вас "
@@ -108,7 +109,7 @@ T = {
         "links": "📋 Anketa (3 daqiqa): %(apply)s\n📖 Bir sahifalik yo'riqnoma: %(guide)s",
         "terms": "Kirishdan foydalanib, siz ofertani %(terms)s va shaxsiy ma'lumotlarni qayta "
                  "ishlash siyosatini %(privacy)s qabul qilasiz.\n\nQisqacha eng muhimi: "
-                 "hujjatlaringiz matni til modellari yetkazib beruvchisiga (OpenAI, AQSh) qayta "
+                 "hujjatlaringiz matni til modellari yetkazib beruvchisiga (%(providers)s) qayta "
                  "ishlashga ketadi — u yerga yuborib bo'lmaydigan narsani yuklamang.",
         "again": "Kirish ma'lumotlaringiz allaqachon bor — mana yana bir bor. 🙂",
         "full": "Qiziqishingiz uchun rahmat! 🙏 Bu to'plamda joylar tugadi. Sizni navbatga "
@@ -210,7 +211,9 @@ def links(lang: str, chat_id) -> dict:
             "apply": tg.link("/t/apply?lang=%s&ref=%s" % (lang, ref)),
             "debrief": tg.link("/t/debrief?lang=%s&ref=%s" % (lang, ref)),
             "guide": tg.link("/t/guide?lang=%s" % lang),
-            "terms": tg.link("/terms"), "privacy": tg.link("/privacy")}
+            "terms": tg.link("/terms"), "privacy": tg.link("/privacy"),
+            # Кому уходит текст — по ключам окружения, тем же списком, что в политике.
+            "providers": legal.model_providers(lang)}
 
 
 # ─────────────────────────────────────────────────────────────────────

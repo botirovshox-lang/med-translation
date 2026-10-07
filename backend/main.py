@@ -4195,7 +4195,9 @@ def _openai_translate(text: str, src: str, tgt: str,
     system = _translate_system(src, tgt, gloss_hits, tm_context, literal, domain, mdl,
                                prev_src, next_src, "" if literal else style,
                                None if literal else prev_pairs)
-    extra = ({"max_completion_tokens": 4096} if mdl["api"] == "modern"
+    # Рассуждение «modern»-моделей тратит тот же бюджет, что и ответ: на длинном
+    # абзаце 4096 токенов кончались посреди перевода.
+    extra = ({"max_completion_tokens": 8192} if mdl["api"] == "modern"
              else {"max_tokens": 1024, "temperature": 0.1})
     resp = client.chat.completions.create(
         model=mdl["id"],
@@ -4209,6 +4211,13 @@ def _openai_translate(text: str, src: str, tgt: str,
     # заказывают его двое (back-check и Medical QA), и складывать их расход
     # в одну корзину значит потерять, кто из них сколько стоит.
     _note_usage(step or ("backcheck" if literal else "translate"), mdl["id"], resp)
+    # Оборванный ответ — не перевод (инвариант 4): записанный, он выглядел бы
+    # готовым текстом без конца фразы. Пусто — «модель не вернула перевод»
+    # у всех вызывающих, сегмент не трогается.
+    if getattr(resp.choices[0], "finish_reason", None) == "length":
+        print(f"[backend] ответ модели {mdl['id']} оборван по длине — перевод не записан",
+              file=sys.stderr)
+        return ""
     return (resp.choices[0].message.content or "").strip()
 
 # ─────────────────────────────────────────────────────────────────────

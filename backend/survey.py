@@ -422,8 +422,8 @@ APPLY = {
          "uz": "Sinov oxirida 10–15 daqiqa gaplashishga tayyorman"},
         {"k": "data", "req": 1,
          "ru": "Понимаю, что текст документа уходит на обработку поставщику языковых моделей "
-               "(OpenAI, США), и не буду загружать то, что нельзя туда отправлять",
-         "uz": "Hujjat matni til modellari yetkazib beruvchisiga (OpenAI, AQSh) qayta ishlashga "
+               "({providers}), и не буду загружать то, что нельзя туда отправлять",
+         "uz": "Hujjat matni til modellari yetkazib beruvchisiga ({providers}) qayta ishlashga "
                "ketishini tushunaman va u yerga yuborib bo'lmaydigan narsani yuklamayman"},
     ],
 }
@@ -728,7 +728,7 @@ def summary_text(rec: dict, url: str = "") -> str:
     cons = rec.get("consent") or {}
     if form.get("consent"):
         out.append("")
-        for c in form["consent"]:
+        for c in _consent(form):
             out.append(("[x] " if cons.get(c["k"]) else "[ ] ") + str(c.get(lang) or c.get("ru")))
     if url:
         out.append("")
@@ -1021,6 +1021,28 @@ def _js(value) -> str:
     return out
 
 
+
+def _consent(form: dict) -> list:
+    """Галочки согласия с подставленными получателями текста: список берётся
+    у `legal.model_providers` — там же, где у политики, — иначе анкета
+    называла бы одного поставщика, а текст уходил бы двоим."""
+    out = []
+    for c in form.get("consent") or []:
+        d = dict(c)
+        for lang in ("ru", "uz", "en"):
+            if isinstance(d.get(lang), str):
+                d[lang] = d[lang].replace("{providers}", _providers(lang))
+        out.append(d)
+    return out
+
+
+def _providers(lang: str) -> str:
+    try:
+        import legal
+    except ImportError:                     # импорт как пакета (tools, тесты)
+        from backend import legal
+    return legal.model_providers(lang)
+
 def form_page(form_id: str, lang: str = "uz", pre: dict = None) -> str:
     """Страница опроса. `pre` — то, что уже известно про человека (Telegram
     из бота, метка приглашения): подставить это лучше, чем спрашивать второй
@@ -1029,7 +1051,7 @@ def form_page(form_id: str, lang: str = "uz", pre: dict = None) -> str:
     lang = _lang(lang)
     T = form["T"][lang]
     payload = {"id": form["id"], "T": form["T"], "questions": form["questions"],
-               "consent": form.get("consent") or [], "who": bool(form.get("who"))}
+               "consent": _consent(form), "who": bool(form.get("who"))}
     script = (FORM_JS
               .replace("__FORM__", _js(payload))
               .replace("__LANG__", _js(lang))
@@ -1072,7 +1094,7 @@ def answers_page(rec: dict, lang: str = "") -> str:
         chk = "".join(
             '<div class="chk%s"><span class="tick"></span><span>%s</span></div>'
             % (" on" if cons.get(c["k"]) else "", html.escape(str(c.get(lang) or c.get("ru"))))
-            for c in form["consent"])
+            for c in _consent(form))
         parts.append('<section class="consent">%s</section>' % chk)
     parts.append("</main></div>")
     return _shell(T["title"], "".join(parts), "", lang)

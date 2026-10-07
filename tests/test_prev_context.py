@@ -226,5 +226,19 @@ check(r["text"] == "Contract between two companies." and r["by"] == "human" and 
 r = main.set_project_brief(1, main.BriefBody(text=""))
 check(r["off"] and not r["text"], "пустой текст — справка выключена")
 
+# Оборванный по длине ответ — не перевод (инвариант 4): пусто, а не полфразы.
+_orig = FakeClient._create
+CUT_KW = {}
+def _cut(self, model=None, messages=None, **kw):
+    r = FakeResp("The patient was admitted with")
+    r.choices[0].finish_reason = "length"
+    CUT_KW.update(kw)
+    return r
+FakeClient._create = _cut
+check(main._openai_translate("Длинный абзац.", "RU", "EN", model="gpt-5.6-terra") == "",
+      "оборванный ответ — пусто, а не полфразы")
+check(CUT_KW.get("max_completion_tokens") == 8192, "бюджет modern-модели с запасом на рассуждение")
+FakeClient._create = _orig
+
 print("\nИТОГ: " + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛОВ: %d" % len(fail)))
 sys.exit(1 if fail else 0)

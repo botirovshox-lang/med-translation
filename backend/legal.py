@@ -55,21 +55,33 @@ def _brand() -> str:
     return html.escape((os.environ.get("APP_BRAND") or "CAT Translator").strip())
 
 
-def _model_provider() -> str:
-    """Кому уходит текст документов. Явное MODEL_PROVIDER_NAME сильнее всего;
-    иначе — список по ключам, заданным в окружении: второй поставщик (Anthropic)
-    назван, как только у сервиса есть его ключ, — молчать о трансграничной
-    передаче второму получателю нельзя."""
+# Получатель текста → (ключ окружения, имя по языкам). OpenAI — всегда:
+# без него сервис не переводит вовсе.
+_PROVIDERS = [
+    (None, {"ru": "OpenAI, США", "uz": "OpenAI, AQSh", "en": "OpenAI, USA"}),
+    ("ANTHROPIC_API_KEY", {"ru": "Anthropic, США", "uz": "Anthropic, AQSh",
+                           "en": "Anthropic, USA"}),
+    # Озвучка видео: текст перевода уходит синтезу речи Microsoft.
+    ("AZURE_SPEECH_KEY", {"ru": "Microsoft (Azure Speech), США — синтез речи",
+                          "uz": "Microsoft (Azure Speech), AQSh — nutq sintezi",
+                          "en": "Microsoft (Azure Speech), USA — speech synthesis"}),
+]
+
+
+def model_providers(lang: str = "ru") -> str:
+    """Кому уходит текст документов — ОДНО место на политику, анкету и бота.
+    Явное MODEL_PROVIDER_NAME сильнее всего; иначе — список по ключам,
+    заданным в окружении: второй поставщик назван, как только у сервиса есть
+    его ключ, — молчать о трансграничной передаче второму получателю нельзя."""
     named = (os.environ.get("MODEL_PROVIDER_NAME") or "").strip()
     if named:
         return named
-    out = ["OpenAI, США"]
-    if (os.environ.get("ANTHROPIC_API_KEY") or "").strip():
-        out.append("Anthropic, США")
-    if (os.environ.get("AZURE_SPEECH_KEY") or "").strip():
-        # Озвучка видео: текст перевода уходит синтезу речи Microsoft.
-        out.append("Microsoft (Azure Speech), США — синтез речи")
-    return "; ".join(out)
+    return "; ".join(names.get(lang) or names["ru"] for key, names in _PROVIDERS
+                     if key is None or (os.environ.get(key) or "").strip())
+
+
+def _model_provider() -> str:
+    return model_providers("ru")
 
 
 def terms_html() -> str:

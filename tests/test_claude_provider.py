@@ -50,9 +50,17 @@ REPLY = {"text": '{"findings": []}', "stop": "end_turn",
 CROSS = {}          # термин → ответ второй модели
 
 
+def _sys(kw):
+    """Текст верхнего system: шим шлёт его блоком с пометкой кэша."""
+    s = kw.get("system")
+    if isinstance(s, list):
+        return "".join(b.get("text", "") for b in s)
+    return s or ""
+
+
 def _reply(kw):
     body = kw["messages"][0]["content"]
-    if isinstance(body, str) and body.startswith("[1] ") and "CONVENTIONS" not in (kw.get("system") or ""):
+    if isinstance(body, str) and body.startswith("[1] ") and "CONVENTIONS" not in _sys(kw):
         # Кросс-проверка: отвечаем по списку терминов из тела запроса.
         out = []
         for line in body.split("\n"):
@@ -119,8 +127,8 @@ kw = CALLS[-1]
 check(CLIENTS[-1].get("api_key") == "sk-ant-test" and CLIENTS[-1].get("timeout") == 90
       and CLIENTS[-1].get("max_retries") == 1, "клиент: ключ Anthropic, таймаут и повторы места вызова")
 check(kw["model"] == "claude-sonnet-5", "модель доехала")
-check(isinstance(kw.get("system"), str) and "terminology reviewer" in kw["system"],
-      "system-сообщение — в верхний system")
+check(isinstance(kw.get("system"), list) and "terminology reviewer" in _sys(kw),
+      "system-сообщение — в верхний system, блоком")
 check([m["role"] for m in kw["messages"]] == ["user"], "в messages только user")
 check(not ({"temperature", "top_p", "seed", "response_format", "max_completion_tokens"} & set(kw))
       and "temperature" not in (kw.get("extra_body") or {}), "сэмплинг и параметры OpenAI не шлются")
@@ -131,7 +139,9 @@ check(res and res["model"] == "claude-sonnet-5" and res["findings"][0]["suggesti
 st = main._USAGE_TOTAL["steps"].get("termcheck") or {}
 check(st.get("in") == 130 and st.get("out") == 50 and st.get("cached_in") == 20,
       "usage: вход = 100 + чтение 20 + запись 10 кэша, выход 50: %s" % st)
-want = 130 / 1e6 * 2.00 + 50 / 1e6 * 10.00
+# Вход по цене каталога, чтение кэша 0.1 цены входа, запись 1.25 (поля
+# cacheRead/cacheWrite модели): 100 + 20·0.1 + 10·1.25 токенов по $2/M.
+want = (100 + 20 * 0.1 + 10 * 1.25) / 1e6 * 2.00 + 50 / 1e6 * 10.00
 check(abs(st.get("cost", 0) - round(want, 6)) < 1e-9, "цена из каталога: %s ≈ %s" % (st.get("cost"), want))
 check(not OPENAI_CALLS, "к OpenAI не ходили")
 

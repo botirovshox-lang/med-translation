@@ -2065,6 +2065,7 @@ window.I18N.register("uz", {
  "Строка #": "Qator #",
  "Строка вырастает до ": "Qator ",
  "Строка разрезана": "Satr bo'lindi",
+ "Строка списка литературы переведена, но в ней разошлись числа — год, том или страницы.": "Adabiyotlar ro'yxatidagi satr tarjima qilingan, lekin undagi raqamlar — yil, tom yoki sahifalar — mos kelmayapti.",
  "Строка считается новой — переведите её заново.": "Qator yangi hisoblanadi — uni qaytadan tarjima qiling.",
  "Строки без цены не сохранятся: ноль — это не цена, а «не задана».": "Narxsiz qatorlar saqlanmaydi: nol — bu narx emas, bu «belgilanmagan».",
  "Строки ещё не переведены — видео и озвучка соберутся после перевода.": "Satrlar hali tarjima qilinmagan — video va ovozli tarjima tarjimadan keyin yig‘iladi.",

@@ -962,8 +962,11 @@ function TabEditor({ store, toast }) {
     return next;
   });
   // Кандидаты back-check до отбора по группам «чем уже проверено»
+  // `s.ref` — строка списка литературы (признак считает сервер, `_refs_of`):
+  // платные проверки её не берут, и смета одиночной кнопки не должна её
+  // считать — иначе под кнопкой одно число, а задача делает другое.
   const bcCandidate = (s, idSet) =>
-    (s.target || "").trim() &&
+    !s.ref && (s.target || "").trim() &&
     !(bcSkipConfirmed && s.status === "confirmed") &&
     (!idSet || idSet.has(s.id));
 
@@ -2063,7 +2066,7 @@ function TabEditor({ store, toast }) {
   // ── Проверка терминологии: группы «что уже прогонялось» ──────────
   // Ключ разделяет не только «проверено/нет», но и «с замечаниями/без»:
   // после правок обычно нужно перепрогнать именно те, где замечания были.
-  const tcCandidate = (s, idSet) => !!(s.target && s.target.trim()) && (!idSet || idSet.has(s.id));
+  const tcCandidate = (s, idSet) => !s.ref && !!(s.target && s.target.trim()) && (!idSet || idSet.has(s.id));
 
   const tcGroupLabel = (key) => {
     if (key === "none") return TR("ещё не проверялся");
@@ -2154,6 +2157,7 @@ function TabEditor({ store, toast }) {
   const rpHumanText = (s) => s.status === "confirmed" || !!s.handWritten;
   const rpCandidate = (s, idSet) => {
     if (idSet && !idSet.has(s.id)) return false;
+    if (s.ref) return false;          // список литературы ремонт не берёт
     // Работа человека — только по явной галочке, и ровно по тому же правилу,
     // что на сервере. Без этой строки счётчик и смета считали работу, которую
     // прогон молча пропускал (skipped_confirmed), — числа под кнопкой врали.
@@ -2331,7 +2335,7 @@ function TabEditor({ store, toast }) {
   const transSolo = pickTargets(project.segments);
   const confirmedInScope = project.segments.filter(s => s.status === "confirmed"
     && (s.target || "").trim() && (!currentIdSet || currentIdSet.has(s.id))).length;
-  const qaSolo = project.segments.filter(s => s.target && s.target.trim()
+  const qaSolo = project.segments.filter(s => !s.ref && s.target && s.target.trim()
     && ["translated", "qa", "review", "confirmed"].includes(s.status)
     && (!currentIdSet || currentIdSet.has(s.id)));
   const stepPlan = (k) => planByStep[k] || null;
@@ -2342,7 +2346,7 @@ function TabEditor({ store, toast }) {
       key: "translate", label: FULL_STEP_LABELS.translate, hint: TR("только те, что ещё не переведены"),
       modelId: gptModel, onModel: pickGptModel, plan: stepPlan("translate"),
       planEst: planEstOf("translate", stepModel("translate", gptModelInfo)),
-      soloEst: estimateRun("translate", transSolo.targets, stepModel("translate", gptModelInfo)),
+      soloEst: estimateRun("translate", transSolo.targets.filter(s => s.ref !== "keep"), stepModel("translate", gptModelInfo)),
       onSolo: askRunBatch, onStop: stopJob,
       running: batchRun && batchRun.engine === "translate"
         && !(job && job.params && job.params.via === "impact") ? batchRun : null,

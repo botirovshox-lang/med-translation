@@ -260,7 +260,7 @@ print("=== 9. Замечания критика закрыты в коде ===")
 free_line = [l for l in src_main.splitlines() if "_free = lambda d:" in l]
 free_block = src_main[src_main.index("_free = lambda d:"):src_main.index("_free = lambda d:") + 200]
 check('d.get("alphabet", 0)' in free_block, "приёмка ремонта: алфавит в сумме бесплатных находок (заход только по письму принимается)")
-check("_repair_score_vetoed(seg, project)" in src_main and "_segment_for_client(s, project)" in src_main,
+check("_repair_score_vetoed(seg, project)" in src_main and "_segment_for_client(s, project" in src_main,
       "кандидат наследства сверяется по паре языков ПРОЕКТА, а не RU→EN")
 _var = src_main[src_main.index("The user does NOT speak {tgt_lang}") - 400:src_main.index("The user does NOT speak {tgt_lang}")]
 check("_lang_prompt(src_lang), _lang_prompt(tgt_lang)" in _var, "разбор вариантов очереди называет язык именем")

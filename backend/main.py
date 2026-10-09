@@ -1463,6 +1463,34 @@ LANGUAGES = _load_languages()
 _LANG_BY_CODE = {l["code"]: l for l in LANGUAGES}
 
 
+def _load_script_borrows() -> dict:
+    """`scriptBorrows` из languages.json: письменность → какие письменности
+    текст на ней законно оставляет как есть (см. `_comment` там же)."""
+    try:
+        with open(ROOT / "backend" / "languages.json", encoding="utf-8") as f:
+            raw = json.load(f).get("scriptBorrows") or {}
+        return {str(k).upper(): frozenset(str(x).upper() for x in (v or ()))
+                for k, v in raw.items()}
+    except Exception as e:
+        print(f"[backend] WARN: scriptBorrows не прочитан: {e}", file=sys.stderr)
+        return {}
+
+
+_SCRIPT_BORROWS = _load_script_borrows()
+
+
+def _script_borrows(script: str) -> frozenset:
+    """Какие письменности текст на `script` законно оставляет как есть.
+    Нет записи — никаких: правило без замера не применяется (закон
+    `DOMAIN_RULES`: нет правил — молчим, а не угадываем)."""
+    return _SCRIPT_BORROWS.get((script or "").upper(), frozenset())
+
+
+def _lang_script(code: str) -> str:
+    """Письменность языка из каталога («CYRILLIC», «LATIN»…) или ""."""
+    return ((_LANG_BY_CODE.get((code or "").strip().upper()) or {}).get("script") or "").upper()
+
+
 def _lang_prompt(code: str) -> str:
     """Как язык называется МОДЕЛИ в промптах.
 
@@ -1610,9 +1638,13 @@ OPENAI_MODELS = [
     # (ответ JSON, перевод абзаца). Сэмплинг (temperature) эти две модели
     # отвергают 400 — _AnthropicChat его не шлёт. "sampling" — модель его
     # принимает (Haiku 4.5), и тогда temperature места вызова доезжает как есть.
-    {"id": "claude-opus-5",   "label": "Claude Opus 5",    "in": 5.00, "out": 25.00, "api": "anthropic", "effort": "low", "note": "Anthropic, флагман"},
-    {"id": "claude-sonnet-5", "label": "Claude Sonnet 5",  "in": 2.00, "out": 10.00, "api": "anthropic", "effort": "low", "note": "Anthropic, баланс качества и цены"},
-    {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "in": 1.00, "out": 5.00, "api": "anthropic", "sampling": True, "note": "Anthropic, быстрая"},
+    # "cacheRead"/"cacheWrite" — цена ЧТЕНИЯ и ЗАПИСИ кэша промпта долей цены
+    # входа (у Anthropic 0.1 и 1.25 при пятиминутном кэше — та же страница
+    # цен). Поле ДАННЫХ модели, а не правило поставщика в коде: у модели без
+    # него кэш считается по полной цене входа (`_usage_cost`), как и раньше.
+    {"id": "claude-opus-5",   "label": "Claude Opus 5",    "in": 5.00, "out": 25.00, "api": "anthropic", "effort": "low", "cacheRead": 0.1, "cacheWrite": 1.25, "note": "Anthropic, флагман"},
+    {"id": "claude-sonnet-5", "label": "Claude Sonnet 5",  "in": 2.00, "out": 10.00, "api": "anthropic", "effort": "low", "cacheRead": 0.1, "cacheWrite": 1.25, "note": "Anthropic, баланс качества и цены"},
+    {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "in": 1.00, "out": 5.00, "api": "anthropic", "sampling": True, "cacheRead": 0.1, "cacheWrite": 1.25, "note": "Anthropic, быстрая"},
 ]
 DEFAULT_OPENAI_MODEL = "gpt-4o"
 
@@ -1701,6 +1733,36 @@ def _json_body(text: str) -> str:
     return t[lo:hi + 1] if 0 <= lo < hi else t
 
 
+# Системный текст, уже уходивший модели недавно (`_anthropic_cache_mark`).
+_ANTH_SYS_SEEN: dict = {}
+_ANTH_SYS_LOCK = threading.Lock()
+# Кэш промпта у Anthropic живёт 5 минут с последнего обращения; запас — на сеть.
+ANTHROPIC_CACHE_TTL = 270
+
+
+def _anthropic_cache_mark(model: str, system: str) -> bool:
+    """Помечать ли системный блок для кэша.
+
+    Запись в кэш стоит 1.25 цены входа, чтение — 0.1, и выгода есть только
+    у текста, который ПОВТОРИТСЯ. Повторяется он не у всех шагов: у ревизии,
+    ремонта, termcheck системный блок — правила и стиль документа, одни
+    байты на всю книгу; у перевода и арбитра в нём термины, соседи
+    и прежние пары ЭТОЙ строки, и каждая пометка была бы надбавкой без
+    единого чтения. Список шагов здесь не пишется: правило смотрит на сам
+    текст — помечается тот, что уже уходил этой модели за последние
+    ANTHROPIC_CACHE_TTL секунд. Цена правила — один вызов без пометки
+    на каждый новый текст (первая строка прогона)."""
+    key = hashlib.sha1((model + "\0" + system).encode("utf-8")).hexdigest()
+    now = time.time()
+    with _ANTH_SYS_LOCK:
+        last = _ANTH_SYS_SEEN.get(key)
+        _ANTH_SYS_SEEN[key] = now
+        if len(_ANTH_SYS_SEEN) > 4000:
+            for k in [k for k, t in _ANTH_SYS_SEEN.items() if now - t > ANTHROPIC_CACHE_TTL]:
+                _ANTH_SYS_SEEN.pop(k, None)
+    return last is not None and now - last <= ANTHROPIC_CACHE_TTL
+
+
 class _AnthropicChat:
     """Клиент Anthropic под видом `openai.OpenAI`: `.chat.completions.create`
     принимает то же, что шлют места вызова, и отдаёт ответ в форме OpenAI
@@ -1709,8 +1771,8 @@ class _AnthropicChat:
     и `_note_usage` не знают, какой поставщик ответил.
 
     prompt_tokens = вход + чтение кэша + запись кэша: все три — входные токены,
-    за которые выставлен счёт, и учёт считает их по цене входа каталога (так
-    же, как кэш OpenAI — без скидки, см. `_usage_cost`)."""
+    за которые выставлен счёт; чтение и запись кэша учёт считает по долям
+    цены входа из каталога (`cacheRead`/`cacheWrite`, см. `_usage_cost`)."""
 
     def __init__(self, client, entry: dict):
         self._client, self._m = client, entry
@@ -1734,7 +1796,16 @@ class _AnthropicChat:
         limit = int(kw.get("max_completion_tokens") or kw.get("max_tokens") or 1024)
         args = {"model": model, "max_tokens": limit, "messages": conv}
         if system:
-            args["system"] = system
+            # Кэш промпта (`_anthropic_cache_mark`): блок помечается, если тот
+            # же текст уже уходил этой модели недавно — у ревизии, ремонта,
+            # termcheck это правила и стиль документа, одни байты на всю книгу.
+            # Префикс короче минимума модели просто не кэшируется (без ошибки),
+            # так что правило не зависит ни от модели, ни от языка. Модель
+            # получает те же байты с пометкой и без — качество не меняется.
+            block = {"type": "text", "text": system}
+            if _anthropic_cache_mark(model, system):
+                block["cache_control"] = {"type": "ephemeral"}
+            args["system"] = [block]
         if self._m.get("effort"):
             args["max_tokens"] = max(limit * 2, ANTHROPIC_THINKING_MIN_TOKENS)
             args["output_config"] = {"effort": self._m["effort"]}
@@ -1750,7 +1821,7 @@ class _AnthropicChat:
         NS = _types.SimpleNamespace
         usage = NS(prompt_tokens=tin + cr + cw, completion_tokens=tout,
                    total_tokens=tin + cr + cw + tout,
-                   prompt_tokens_details=NS(cached_tokens=cr),
+                   prompt_tokens_details=NS(cached_tokens=cr, cache_write_tokens=cw),
                    completion_tokens_details=NS(reasoning_tokens=0))
         if stop == "refusal":
             # Отказ — сбой вызова, а не пустой перевод: место вызова обязано
@@ -2355,21 +2426,51 @@ _USAGE_TOTAL: dict = _usage_zero()
 
 def _model_price(mid: Optional[str]) -> Optional[dict]:
     m = _MODELS_BY_ID.get(mid or "")
-    return {"in": m["in"], "out": m["out"]} if m else AUX_MODEL_PRICES.get(mid or "")
+    if not m:
+        return AUX_MODEL_PRICES.get(mid or "")
+    p = {"in": m["in"], "out": m["out"]}
+    for k in ("cacheRead", "cacheWrite"):
+        if m.get(k) is not None:
+            p[k] = m[k]
+    return p
 
 
-def _usage_cost(mid: Optional[str], tin: int, tout: int) -> Optional[float]:
+def _usage_cost(mid: Optional[str], tin: int, tout: int,
+                cached: int = 0, written: int = 0) -> Optional[float]:
     """None — «цена неизвестна», а не ноль. Считать неизвестное нулём значит
     показать расход меньше настоящего — ровно то враньё, ради которого учёт
     и заводится. Такие вызовы считаются отдельно (unpriced).
 
-    Скидка на кэшированный вход не применяется: её цены в каталоге нет,
-    а выдумывать цену нельзя. Значит, цифра завышена ровно на неё — насколько,
-    видно по cached_in рядом."""
+    `tin` — ВЕСЬ вход, включая прочитанное из кэша (`cached`) и записанное
+    в него (`written`). Их цена — доля цены входа из каталога (`cacheRead`,
+    `cacheWrite`); у модели без этих полей скидка и надбавка не применяются:
+    их цены в каталоге нет, а выдумывать цену нельзя. Тогда цифра завышена
+    ровно на скидку — насколько, видно по cached_in рядом."""
     p = _model_price(mid)
     if not p:
         return None
-    return tin / 1e6 * p["in"] + tout / 1e6 * p["out"]
+    cached = max(0, min(int(cached or 0), tin))
+    written = max(0, min(int(written or 0), tin - cached))
+    rd, wr = p.get("cacheRead"), p.get("cacheWrite")
+    plain = tin - (cached if rd is not None else 0) - (written if wr is not None else 0)
+    cost = plain / 1e6 * p["in"] + tout / 1e6 * p["out"]
+    if rd is not None:
+        cost += cached / 1e6 * p["in"] * rd
+    if wr is not None:
+        cost += written / 1e6 * p["in"] * wr
+    return cost
+
+
+def _resp_cost(mid: Optional[str], resp) -> Optional[float]:
+    """Цена одного ответа — тем же расчётом, что у `_note_usage`. Места
+    вызова, которым нужна цена своего вызова (отчёт ревизии), берут её
+    здесь: без кэша они завышали бы её против того, что легло в учёт."""
+    u = getattr(resp, "usage", None) if not isinstance(resp, dict) else resp.get("usage")
+    det = _usage_part(u, "prompt_tokens_details")
+    return _usage_cost(mid, _usage_field(u, "prompt_tokens"),
+                       _usage_field(u, "completion_tokens"),
+                       _usage_field(det, "cached_tokens"),
+                       _usage_field(det, "cache_write_tokens"))
 
 
 def _usage_field(obj, name: str) -> int:
@@ -2832,7 +2933,7 @@ def _hide_models() -> bool:
 # Считается от СПИСКА КАТАЛОГА, а не от хеша: хеш от id — это тот же id,
 # только подобранный по словарю из десятка известных имён за секунду.
 # Номер в каталоге такого словаря не даёт.
-_ALIAS_SKIP = ("skip", "tm", "google")   # НЕ модели: служебные ответы
+_ALIAS_SKIP = ("skip", "tm", "google", "keep")   # НЕ модели: служебные ответы
 
 
 def _model_alias(mid) -> Optional[str]:
@@ -3013,6 +3114,13 @@ def _models_public() -> list:
                           else "plain")
             row.pop("effort", None)
             row.pop("sampling", None)
+        # Доли цены кэша (`cacheRead`/`cacheWrite`) — сразу и деньги (22а),
+        # и маркер поставщика (24а): сегодня они стоят только у моделей
+        # Anthropic. Смете браузера они не нужны вовсе — кэш учитывает
+        # фактический расход на сервере, — поэтому снимаются под ЛЮБЫМ рубежом.
+        if hide_m or hide_c:
+            row.pop("cacheRead", None)
+            row.pop("cacheWrite", None)
         if hide_c:
             row.pop("in", None)
             row.pop("out", None)
@@ -3646,11 +3754,13 @@ def _note_usage(step: str, model_id: str, resp) -> None:
             return
         tin = _usage_field(u, "prompt_tokens")
         tout = _usage_field(u, "completion_tokens")
-        cached = _usage_field(_usage_part(u, "prompt_tokens_details"), "cached_tokens")
+        det = _usage_part(u, "prompt_tokens_details")
+        cached = _usage_field(det, "cached_tokens")
+        written = _usage_field(det, "cache_write_tokens")
         think = _usage_field(_usage_part(u, "completion_tokens_details"), "reasoning_tokens")
         if not (tin or tout):
             return
-        cost = _usage_cost(model_id, tin, tout)
+        cost = _usage_cost(model_id, tin, tout, cached, written)
         _note_cost(step, model_id, tin, cached, tout, think, cost)
     except Exception as e:
         print(f"[backend] учёт расхода не сработал ({step}/{model_id}): {e}", file=sys.stderr)
@@ -3911,6 +4021,9 @@ def _prev_ctx_usable(s: dict) -> bool:
     if not tgt or not (s.get("source") or "").strip():
         return False
     if s.get("status") not in _PREV_CTX_OK or _anchorless_seg(s):
+        return False
+    # Строка литературы «как в оригинале» — не образец перевода.
+    if s.get("route") == ROUTE_KEEP_SOURCE:
         return False
     if _confirm_override(s):
         return False
@@ -9718,7 +9831,8 @@ def fetch_segments(pid: int, req: SegmentsFetchRequest):
     каждые несколько секунд — это мегабайты трафика и подвисающая таблица."""
     project = get_project(pid)
     wanted = set(req.ids[:1000])
-    return {"ok": True, "segments": [_segment_for_client(s, project) for s in list(project["segments"])
+    _rs = _refs_of(project)
+    return {"ok": True, "segments": [_segment_for_client(s, project, _rs) for s in list(project["segments"])
                                      if s.get("id") in wanted]}
 
 
@@ -9797,9 +9911,12 @@ def glossary_impact(pid: int, refresh: bool = False):
         return cached[1]
     by_term: dict = {}
     seg_ids, confirmed_ids, case_ids, term_ids = set(), set(), set(), set()
+    # Список литературы глоссарию не подчиняется: «Diabetes Care» при приказе
+    # «Diabetes → диабет» иначе стал бы нарушением, ремонтом и «Применить к N».
+    _refs = _refs_of(project)["all"]
     for seg in project["segments"]:
         target = (seg.get("target") or "").strip()
-        if not target:
+        if not target or seg["id"] in _refs:
             continue
         hits = _verified_hits(seg.get("source", ""), project)
         # Регистр приказных терминов считаем ЗДЕСЬ же, по тем же самым hits:
@@ -10009,7 +10126,7 @@ def _analysis_row(s: dict, gloss_bad: bool, min_score: int,
         _sc = _bc.get("score")
         if _lex_blind(s.get("source") or ""):
             row["unjudgedBlind"] = True
-        elif _sc is not None and _sc > JUDGE_ZONE[1]:
+        elif _sc is not None and _sc > JUDGE_ZONE[1] and not _judge_waived(s, _sc):
             row["unverified"] = True
     # Расширенная зона (judge_all=True): прогон с разрешением спросит
     # судью и здесь. Свежесть проверяется отдельно — _judge_pending про
@@ -10294,6 +10411,17 @@ def project_analysis(pid: int, refresh: bool = False):
     # на которые сервис недоступен всем.
     rows_prev = _ANALYSIS_ROWS.get(pid) or {}
     rows_new: dict = {}
+    # Список литературы с текстом — «проверять нечего»: платные проверки его
+    # не берут (`_REFS_SKIP_KINDS`), и находки прежних прогонов по нему (балл,
+    # латиница, фамилии) корзину не держат. Пустая строка литературы — работа
+    # прогона, как любая непереведённая: её заполнит перевод-шаг.
+    _refs = _refs_of(project)
+    refs_all = _refs["all"]
+    refs_done: set = set()
+    # Переведённая (не оставленная) строка литературы с разошедшимися числами —
+    # год, том, страницы. Модель портит именно их, бесплатная сверка это
+    # видит, а ремонт литературу не берёт: значит это вопрос человеку.
+    refs_numbers: set = set()
     for s in project["segments"]:
         sid = s["id"]
         key = (seg_fp.get(sid), sid in gloss_bad, pol["backcheck_min"], _terms_in_run(project))
@@ -10306,6 +10434,15 @@ def project_analysis(pid: int, refresh: bool = False):
         rows_new[sid] = (key, row)
         if row["untranslated"]:
             untranslated.append(sid)
+            continue
+        if sid in refs_all:
+            refs_done.add(sid)
+            # Любую строку литературы с текстом МОДЕЛИ — и «переводить»,
+            # и «как в оригинале», которую прежние прогоны успели перевести.
+            if not _kept_source(s) and _ref_numbers_bad(s, project):
+                refs_numbers.add(sid)
+            else:
+                nothing_to_check.append(sid)
             continue
         if row["withdrawn"]:
             withdrawn.append(sid)
@@ -10485,6 +10622,18 @@ def project_analysis(pid: int, refresh: bool = False):
     # Разнобой по документу — один раз: он нужен и корзинам «под ключ»,
     # и списку todo.consistency, а считается кэшированным проходом.
     consist_pairs = _consistency_of(project)
+    # Литература проверкам не подлежит — и вопросы по ней, пришедшие мимо
+    # `_analysis_row` (споры, вердикты арбитра, забракованные слова,
+    # разнобой), не держат ни корзину, ни список вопросов.
+    if refs_done:
+        for _lst in (disputed, ctx_wrong):
+            for _d in _lst:
+                _d["segments"] = [i for i in _d["segments"] if i not in refs_done]
+        disputed = [d for d in disputed if d["segments"]]
+        ctx_wrong = [d for d in ctx_wrong if d["segments"]]
+        stale_findings = [i for i in stale_findings if i not in refs_done]
+        consist_pairs = [dict(p, segments=[i for i in p["segments"] if i not in refs_done])
+                         for p in consist_pairs]
 
     # ── Три корзины «под ключ»: готово / возьмёт прогон / нужен человек ──
     # Пользователю, которому нужен перевод под ключ, экран обязан отвечать
@@ -10605,6 +10754,14 @@ def project_analysis(pid: int, refresh: bool = False):
     # пропуск. Объективные находки (override_ids) остаются машине: их ремонт
     # берёт и без разрешения, обещание честное.
     machine_set -= (confirmed_ids - override_ids)
+    # Списки, пришедшие мимо `_analysis_row` (споры, разнобой, отчёт
+    # глоссария), литературу знать не обязаны — снимаем её здесь, в одном
+    # месте, вместе с причинами вопроса.
+    human_set -= refs_done
+    machine_set -= refs_done
+    for _i in refs_done:
+        human_why.pop(_i, None)
+    _ask("refNumbers", refs_numbers)
 
     _order = [s["id"] for s in project["segments"]]
     ready_set = set(_order) - human_set - machine_set
@@ -20202,6 +20359,43 @@ def _hard_mark_trusted(bc: dict) -> bool:
                             for h in BACKCHECK_OBJECTIVE_REASONS))
 
 
+# Балл back-check, начиная с которого ручательство ревизии делает судью
+# лишним (`_judge_waived`). По умолчанию — порог донора глоссария (90):
+# ниже него лежат все серьёзные вердикты судьи боевых замеров. 0 выключает
+# правило без выката.
+JUDGE_WAIVE_MIN = float(os.environ.get("JUDGE_WAIVE_MIN", "90"))
+
+
+def _judge_waived(seg: dict, score) -> bool:
+    """Судья не нужен: смысл ЭТОГО перевода уже прочитал тот, кто читает
+    пару целиком, и поручился за него, а детерминированный балл высокий.
+
+    Судья читает оригинал и ОБРАТНЫЙ перевод — косвенную меру. Ревизия
+    читает оригинал и САМ перевод, и её оценка ≥ REVIEW_VOUCH_SCORE уже
+    ручается за строку (`_review_vouches`: тот же закон «прямое чтение пары
+    сильнее косвенной меры», что у `_arbiter_settled`). Третье мнение там,
+    где два независимых сигнала согласны, не находило ничего: замер на
+    EN→RU (проект 14, 09.10.2026) — 0 серьёзных вердиктов из 158 при балле
+    ≥ 90, все 32 major/critical лежат ниже. Правило не знает ни языка,
+    ни модели: оно стоит на двух уже посчитанных признаках строки.
+
+    Чего НЕ снимает: низкий балл (там судья и находит), короткий оригинал
+    (`_lex_blind` — балл там не измерение, судья единственная мера),
+    устаревшую или откаченную ревизию, вето и подозрение на оригинал
+    (их отсекает сам `_review_vouches`). Жёсткую отметку тоже не трогает —
+    её судья не вправе отменить и так."""
+    if JUDGE_WAIVE_MIN <= 0 or score is None:
+        return False
+    try:
+        if float(score) < JUDGE_WAIVE_MIN:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if _lex_blind(seg.get("source") or ""):
+        return False
+    return _review_vouches(seg)
+
+
 def _judge_pending(seg: dict, above: bool = False) -> bool:
     """Судья ещё не смотрел на ЭТОТ перевод, и его вердикт что-то изменит.
 
@@ -20238,7 +20432,12 @@ def _judge_pending(seg: dict, above: bool = False) -> bool:
     if bc.get("judge_skipped") == "hard" and _hard_mark_trusted(bc):
         return False
     lo, hi = _judge_zone(seg.get("source") or "", above)
-    return lo <= score <= hi
+    if not lo <= score <= hi:
+        return False
+    # Ручательство ревизии делает вердикт судьи лишним — и в обычной зоне,
+    # и в расширенной (`judge_all`): ОДИН предикат на прогон, разбор состава
+    # и признак `needs_judge` браузеру.
+    return not _judge_waived(seg, score)
 
 
 def _backcheck_cached(seg: dict, mdl_id: str, use_judge: bool,
@@ -20282,14 +20481,29 @@ def _backcheck_cached(seg: dict, mdl_id: str, use_judge: bool,
     return not _judge_pending(seg, judge_all)
 
 
-def _segment_for_client(seg: dict, project: Optional[dict] = None) -> dict:
+def _segment_for_client(seg: dict, project: Optional[dict] = None,
+                        refs: Optional[dict] = None) -> dict:
     """Сегмент с производными признаками stale/tried. Хеши считаются здесь:
     браузеру sha1 не пересчитать, а без них он не отличит устаревшую проверку
-    от актуальной."""
+    от актуальной.
+
+    `refs` — готовый `_refs_of(project)` для выдачи проекта целиком: считать
+    его на каждую строку значило бы обходить проект столько раз, сколько
+    в нём строк."""
     try:
         out = dict(seg)
     except RuntimeError:
         out = dict(seg)          # правка из фонового потока длится микросекунды
+    # Строка списка литературы (`_refs_of`): одиночные кнопки проверок
+    # браузер собирает сам, и без признака их смета считала бы строки,
+    # которые задача не возьмёт (`_REFS_SKIP_KINDS`). Правило не повторяется
+    # в .jsx — признак считает сервер.
+    if project is not None:
+        _rs = refs if refs is not None else _refs_of(project)
+        if seg.get("id") in _rs["keep"]:
+            out["ref"] = "keep"
+        elif seg.get("id") in _rs["translate"]:
+            out["ref"] = "translate"
     # Имена ответственных — для карточки: в сегменте лежит идентификатор
     # (`confirmedBy`, `editedBy`), а списка пользователей браузеру не дают.
     # Работа человека без подписи: по ней стоит рубеж пакетов, и повторять
@@ -20522,7 +20736,8 @@ def _project_for_client(project: dict) -> dict:
     `parseOutdated` — файл нарезан прежними правилами разбора, и хранимый
     исходник позволяет пересобрать его строки (`/resegment`). `cueTimes` —
     тайминги реплик у проекта-субтитров (колонка в редакторе)."""
-    out = {**project, "segments": [_segment_for_client(s, project) for s in list(project["segments"])]}
+    _rs = _refs_of(project)
+    out = {**project, "segments": [_segment_for_client(s, project, _rs) for s in list(project["segments"])]}
     out.pop("cueSpans", None)          # опорные точки показа — дело сервера
     ct = _cue_times(project)
     if ct is not None:
@@ -20947,6 +21162,11 @@ def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None
             # найдено детерминированно. Судья такую находку отменить не может —
             # его вердикт ничего не изменит, а вызов стоит денег.
             judge_skipped = "hard"
+        elif _judge_waived(seg, res["score"]):
+            # Ревизия прочитала пару целиком и поручилась, балл высокий —
+            # третье мнение не нужно (`_judge_waived`). Отметка законная:
+            # `_judge_pending` пересчитывает то же правило, а не верит ей.
+            judge_skipped = "review"
         else:
             verdict = _openai_judge(source_text, back, judge_model,
                                     project.get("domain"), project.get("src", "RU"))
@@ -21798,6 +22018,69 @@ def _dominant_script(text: str) -> str:
     return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
 
+_WORD_EDGE = "()[]{}.,;:!?«»\"'“”„‘’<>"
+_SENT_END = ".!?:;…"
+
+
+def _borrowed_names(src: str, s_script: str, t_script: str) -> tuple:
+    """Слова оригинала, которые перевод на письменности `t_script` вправе
+    оставить буква в букву, — пара множеств (любые места, середина фразы).
+
+    Заимствование — свойство ПИСЬМЕННОСТИ перевода (`_script_borrows`,
+    данные languages.json), а не языка в коде: кириллический медицинский
+    текст законно пишет латиницей «витамин D», UKPDS, HbA1c и названия
+    журналов, а английский текст «МБТ» кириллицей не пишет никогда —
+    там это брак, ради которого проверку и заводили. Нет записи — пусто."""
+    if s_script not in _script_borrows(t_script):
+        return frozenset(), frozenset()
+    every, mid = set(), set()
+    toks = src.split()
+    # Заголовок с заглавной у каждого слова («Diagnosis And Treatment»):
+    # там заглавная посреди фразы ничего не говорит об имени.
+    caps = sum(1 for tk in toks if tk.strip(_WORD_EDGE)[:1].isupper())
+    title_case = len(toks) >= 3 and caps * 2 > len(toks)
+    prev = ""
+    for tok in toks:
+        w = tok.strip(_WORD_EDGE)
+        if w:
+            every.add(w)
+            if prev and prev[-1] not in _SENT_END and not title_case:
+                mid.add(w)
+        prev = tok
+    return frozenset(every), frozenset(mid)
+
+
+def _name_like(word: str, every: frozenset, mid: frozenset) -> bool:
+    """Слово буквы оригинала — имя, обозначение или сокращение, оставленное
+    законно: стоит в оригинале буква в букву и выглядит как имя.
+
+    Признаки только ФОРМЫ слова, без словаря языка: две заглавные или буква
+    с цифрой (UKPDS, HbA1c, SGLT2), одиночная буква, у которой нет двойника
+    в другом алфавите (D — да; C, A, P — нет: кириллическая «С» в «Гепатит С»
+    английского текста — брак, и отличить её глазами нельзя), слово
+    с заглавной ПОСРЕДИ фразы оригинала (Diabetes Care, Leicester). Строчное
+    слово («to», «day», «metformin») исключением не бывает никогда: так
+    выглядит и непереведённый кусок, и утечка рассуждений модели в текст."""
+    w = word.strip(_WORD_EDGE)
+    if not w or w not in every:
+        return False
+    letters = [c for c in w if c.isalpha()]
+    if not letters:
+        return False
+    if len(letters) == 1:
+        c = letters[0]
+        return c not in _HOMOGLYPH_LAT and c not in _HOMOGLYPH_CYR
+    if any(c.isdigit() for c in w):
+        return True
+    ups = sum(1 for c in letters if c.isupper())
+    # Две заглавные — сокращение (UKPDS) или смешанное обозначение (HbA1c),
+    # но не длинное слово капсом: «INTRODUCTION», оставленное буква в букву, —
+    # непереведённый заголовок (длина — та же мера, что у правил регистра).
+    if ups >= 2 and (len(letters) <= CASE_ACRONYM_MAX or ups < len(letters)):
+        return True
+    return letters[0].isupper() and w in mid
+
+
 def _script_misses(seg: dict) -> list:
     """Буквы письменности ОРИГИНАЛА, оставшиеся в переводе."""
     src = (seg.get("source") or "").strip()
@@ -21808,10 +22091,13 @@ def _script_misses(seg: dict) -> list:
     t_script = _dominant_script(tgt)
     if not s_script or not t_script or s_script == t_script:
         return []
+    every, mid = _borrowed_names(src, s_script, t_script)
     bad, seen = [], set()
     for word in tgt.split():
         if any(_script_of(c) == s_script for c in word) and word not in seen:
             seen.add(word)
+            if every and _name_like(word, every, mid):
+                continue
             bad.append(word.strip("()[].,;:«»\"'"))
     if not bad:
         return []
@@ -21823,6 +22109,192 @@ def _script_misses(seg: dict) -> list:
                      + s_script.lower() + "): "
                      + ", ".join("«" + w + "»" for w in bad[:6])
                      + (" и ещё " + str(len(bad) - 6) if len(bad) > 6 else "")}]
+
+
+# ── Список литературы ─────────────────────────────────────────────────
+# Треть научной статьи бывает списком литературы: «Sports Med 2022;52:1919–1938
+# 97.Poon ET-C, Li H-Y…». Гонять его через ревизию, обратный перевод, судью,
+# проверку терминов и ремонт значит платить за то, где проверять нечего,
+# а ремонт там упирается в фамилии и названия журналов и откатывается
+# (замер EN→RU, проект 14: 36% знаков файла, 43% всех ремонтов).
+#
+# Детектор СТРУКТУРНЫЙ и не знает ни одного слова какого-либо языка: год;
+# том(выпуск):страницы, «том(выпуск), страницы», «год. – Аб. 12» (ГОСТ —
+# любое сокращение из 1–4 букв), DOI 10.xxxx/, PMID/ISBN/ISSN, список
+# инициалов «Фамилия АБ,». Строка «сильная», если цитат две и больше
+# с плотностью, либо цитата и два списка инициалов, либо короткая строка,
+# состоящая из цитаты. Литературой считается только ЗОНА — кластер из
+# REFS_ZONE_MIN сильных строк с разрывами не больше REFS_ZONE_GAP: одиночная
+# цитата посреди абзаца («см. Diabetes Care 2019;42:731») остаётся текстом,
+# потому что абзац, оставленный без перевода по ошибке, хуже любой переплаты.
+# Внутри зоны строка без единого признака ссылки (заголовок «Funding»
+# посреди зоны) литературой не считается, если только её не зажимают
+# с обеих сторон строки-ссылки (обрывок названия статьи между двумя
+# частями одной записи). Замер: на RU→EN 2692, RU→UZ-CYRL 4751/4764,
+# AR→UZ, ZH→RU, RU→AR — ноль срабатываний; EN→RU — зона 893–1481.
+#
+# Что с ними делать — решают ДАННЫЕ письменностей (`scriptBorrows`), а не
+# язык в коде. Письмо строки совпадает с письмом перевода или законно в нём
+# заимствуется — «как в оригинале» (`keep`): ISO 690 и ГОСТ 7.0.100 велят
+# давать описание источника на языке и письме источника. Иначе (кириллица
+# в английском тексте, иероглифы в любом латинском) — `translate`: такое
+# описание в документе — брак, и строку переводит модель. В ОБОИХ случаях
+# строки литературы не идут в платные проверки: там нет ни смысла,
+# ни терминов, а числа и год сверяет бесплатная проверка.
+REFS_RULES = 1
+REFS_ZONE_MIN = int(os.environ.get("REFS_ZONE_MIN", "5"))
+REFS_ZONE_GAP = int(os.environ.get("REFS_ZONE_GAP", "8"))
+ROUTE_KEEP_SOURCE = "KEEP_SOURCE"
+PROVIDER_KEEP = "keep"
+_REF_YEAR = r"(?:1[6-9]\d\d|20\d\d)"
+_REF_PAT = {
+    "vanc": re.compile(_REF_YEAR + r"[a-z]?\s*;\s*\d+\s*(?:\([^)]{1,20}\))?\s*:\s*[^\W\d_]?\d+"),
+    "apa": re.compile(r"\b\d{1,4}\s*\(\s*\d{1,4}\s*\)\s*,\s*[^\W\d_]?\d+\s*[–—-]\s*[^\W\d_]?\d+"),
+    "gost": re.compile(_REF_YEAR + r"\s*\.?\s*[–—-]\s*[^\W\d_]{1,4}\.\s*\d"),
+    "doi": re.compile(r"\b10\.\d{4,9}/\S+"),
+    "id": re.compile(r"\b(?:PMID|PMCID|ISBN|ISSN)\b"),
+}
+_REF_INITIALS = re.compile(
+    r"[^\W\d_][^\W\d_'’-]+(?:-[^\W\d_]+)?\s+(?:[^\W\d_]{1,3}(?:-[^\W\d_])?\.?\s*){1,3}[,.;]")
+_REF_WEAK = (
+    re.compile(r"^\s*\[?\d{1,4}[.\]]\s?[^\W\d_]"),          # «30.Blumenthal», «[12] …»
+    re.compile(r"\b[^\W\d_]?\d+\s*[–—-]\s*[^\W\d_]?\d+\b"),   # страницы «S132–S149»
+    re.compile(r"https?://\S+|\bwww\.\S+"),
+    re.compile(r"\b" + _REF_YEAR + r"\b"),
+)
+_REFS_CACHE: dict = {}
+
+
+def _ref_initials(s: str) -> int:
+    return sum(1 for m in _REF_INITIALS.finditer(s)
+               if any(c.isupper() for c in m.group(0)[1:]))
+
+
+def _ref_strong(s: str) -> bool:
+    """Строка — запись списка литературы по одной своей форме."""
+    s = (s or "").strip()
+    if not s:
+        return False
+    hits = {k: len(p.findall(s)) for k, p in _REF_PAT.items()}
+    cites = sum(hits.values())
+    if not cites:
+        return False
+    body = hits["vanc"] + hits["apa"] + hits["gost"]
+    dens = cites * 400.0 / max(len(s), 80)
+    if cites >= 2 and dens >= 0.8:
+        return True
+    if body and len(s) <= 600 and _ref_initials(s) >= 2:
+        return True
+    return bool(body and len(s) <= 300 and dens >= 2.0)
+
+
+def _ref_weak(s: str) -> bool:
+    """Хоть один признак ссылки — для строк ВНУТРИ зоны."""
+    s = (s or "").strip()
+    if not s:
+        return False
+    if _ref_strong(s) or _ref_initials(s) or any(p.search(s) for p in _REF_PAT.values()):
+        return True
+    return any(p.search(s) for p in _REF_WEAK)
+
+
+def _refs_of(project: Optional[dict]) -> dict:
+    """Строки списка литературы проекта: {"all", "keep", "translate"} —
+    множества номеров. Считается по ПРОЕКТУ, а не хранится на сегменте:
+    зона зависит от соседей, и признак на строке устаревал бы от склейки,
+    разрезки, правки оригинала и замены файла. Кэш по содержимому
+    оригиналов, языку перевода и версии правил."""
+    empty = {"all": frozenset(), "keep": frozenset(), "translate": frozenset()}
+    if not project:
+        return empty
+    segs = project.get("segments") or []
+    tgt_script = _lang_script(project.get("tgt") or "")
+    fp = hash((REFS_RULES, REFS_ZONE_MIN, REFS_ZONE_GAP, tgt_script,
+               tuple((sg.get("id"), sg.get("source") or "") for sg in segs)))
+    got = _REFS_CACHE.get(project.get("id"))
+    if got and got[0] == fp:
+        return got[1]
+    # Сегменты картинок и надписей в кадре — не текст документа: в зону
+    # они не входят и её не рвут.
+    text_segs = [sg for sg in segs if not sg.get("origin")]
+    strong = [_ref_strong(sg.get("source") or "") for sg in text_segs]
+    zone = [False] * len(text_segs)
+    clusters: list = []
+    for i, st in enumerate(strong):
+        if not st:
+            continue
+        if clusters and i - clusters[-1][-1] <= REFS_ZONE_GAP:
+            clusters[-1].append(i)
+        else:
+            clusters.append([i])
+    for c in clusters:
+        if len(c) >= REFS_ZONE_MIN:
+            for t in range(c[0], c[-1] + 1):
+                zone[t] = True
+    weak = [zone[i] and (strong[i] or _ref_weak(sg.get("source") or ""))
+            for i, sg in enumerate(text_segs)]
+    keep, trans = set(), set()
+    borrow = _script_borrows(tgt_script)
+    for i, sg in enumerate(text_segs):
+        if not zone[i]:
+            continue
+        if not weak[i]:
+            # Обрывок записи, зажатый ссылками с обеих сторон, — часть записи;
+            # иначе это не ссылка (заголовок, «Funding»), и её переводят.
+            if not (0 < i < len(text_segs) - 1 and weak[i - 1] and weak[i + 1]):
+                continue
+        sc = _dominant_script(sg.get("source") or "")
+        if not sc or not tgt_script or sc == tgt_script or sc in borrow:
+            keep.add(sg["id"])
+        else:
+            trans.add(sg["id"])
+    out = {"all": frozenset(keep | trans), "keep": frozenset(keep),
+           "translate": frozenset(trans)}
+    _REFS_CACHE[project.get("id")] = (fp, out)
+    return out
+
+
+_REF_NUM_CACHE: dict = {}
+# Из объективных находок у записи литературы смысл имеют только числа
+# и единицы: «отрицание» и «сторона» в переведённом НАЗВАНИИ статьи дали бы
+# ложные вопросы человеку.
+_REF_NUMBER_TYPES = frozenset(("number_unit_dosage_mismatch", "unit_mismatch"))
+
+
+def _ref_numbers_bad(seg: dict, project: Optional[dict]) -> bool:
+    """В переведённой строке литературы разошлись числа (год, том, страницы):
+    объективная находка бесплатной сверки — по паре языков ПРОЕКТА.
+    Кэш по тексту пары: /analysis пересчитывается после каждой правки,
+    а строк литературы в статье сотни."""
+    if not checks_mod:
+        return False
+    key = ((project or {}).get("src"), (project or {}).get("tgt"),
+           (project or {}).get("domain"), seg.get("source") or "", seg.get("target") or "")
+    got = _REF_NUM_CACHE.get(key)
+    if got is not None:
+        return got
+    if len(_REF_NUM_CACHE) > 20000:
+        _REF_NUM_CACHE.clear()
+    try:
+        issues = checks_mod.deterministic_issues(
+            seg.get("source") or "", seg.get("target") or "",
+            domain=_rules_domain_of(project),
+            src_lang=(project or {}).get("src") or "RU",
+            tgt_lang=(project or {}).get("tgt") or "EN") or []
+    except Exception as e:                                      # pragma: no cover
+        print(f"[backend] сверка строки литературы seg#{seg.get('id')}: {e}", file=sys.stderr)
+        return False
+    got = any(i.get("type") in _REF_NUMBER_TYPES for i in issues)
+    _REF_NUM_CACHE[key] = got
+    return got
+
+
+def _kept_source(seg: dict) -> bool:
+    """Строка стоит «как в оригинале» по правилу литературы, а не переведена:
+    маршрут KEEP_SOURCE и текст буква в букву равен оригиналу. Правка руками
+    признак снимает сама — текст уже не равен оригиналу."""
+    return (seg.get("route") == ROUTE_KEEP_SOURCE
+            and (seg.get("target") or "").strip() == (seg.get("source") or "").strip())
 
 
 # Транслитерация вместо перевода аббревиатуры.
@@ -22226,7 +22698,8 @@ def _alphabet_ids(project: Optional[dict]) -> set:
     got = _ALPHA_IDS_CACHE.get(project.get("id"))
     if got and got[0] == fp:
         return set(got[1])
-    ids = {sg["id"] for sg in segs if _alphabet_misses(sg, project)}
+    _refs = _refs_of(project)["all"]
+    ids = {sg["id"] for sg in segs if sg["id"] not in _refs and _alphabet_misses(sg, project)}
     _ALPHA_IDS_CACHE[project.get("id")] = (fp, frozenset(ids))
     return ids
 
@@ -23767,6 +24240,13 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         # Зовём судью там, где он участвовал в прежней оценке: лишний вызов
         # только на таких сегментах, зато сравнение честное.
         judge_after = use_judge or bool(bc_before and bc_before.get("judged"))
+        # Прежний балл сложился БЕЗ судьи по ручательству ревизии. После правки
+        # ручательство устарело (текст другой), и судья пришёл бы только
+        # к новому тексту — вердикт против сырого измерения, та самая
+        # асимметрия, что откатывала верные правки. Ни с одной стороны.
+        if bc_before and bc_before.get("judge_skipped") == "review" \
+                and not bc_before.get("judged"):
+            judge_after = False
         # `judge_all` обязан доехать и сюда — по той же причине, по которой
         # заведён `judge_after`. Прежний балл в прогоне с разрешением мог
         # сложиться с участием судьи ВЫШЕ обычной зоны (JUDGE_CAP опускает
@@ -24666,9 +25146,7 @@ def _openai_review(seg: dict, project: dict, prev_src: str, next_src: str,
         # Цена ЭТОГО вызова — для отчёта запроса. Разностью процессного
         # счётчика её брать нельзя: он общий на процесс, и фоновый прогон
         # добавил бы в отчёт ревизии свой расход.
-        u = getattr(resp, "usage", None)
-        cost = _usage_cost(mdl["id"], _usage_field(u, "prompt_tokens"),
-                           _usage_field(u, "completion_tokens")) or 0.0
+        cost = _resp_cost(mdl["id"], resp) or 0.0
         raw = (resp.choices[0].message.content or "").strip()
         m = re.search(r"\{.*\}", raw, re.S)
         if not m:
@@ -24973,9 +25451,7 @@ def _openai_review_batch(segs: list, project: dict,
                       {"role": "user", "content": json.dumps(items, ensure_ascii=False)}],
             **extra)
         _note_usage("review", mdl["id"], resp)
-        u = getattr(resp, "usage", None)
-        cost = _usage_cost(mdl["id"], _usage_field(u, "prompt_tokens"),
-                           _usage_field(u, "completion_tokens")) or 0.0
+        cost = _resp_cost(mdl["id"], resp) or 0.0
         if getattr(resp.choices[0], "finish_reason", None) == "length":
             print(f"[backend] ревизия пачкой ({n}): ответ обрезан — по одной",
                   file=sys.stderr)
@@ -29222,9 +29698,12 @@ def _mt_before(seg: dict) -> bool:
     и счётчик (`_RESET_ON_SOURCE_CHANGE`, tools/resegment_project.py):
     другая строка — законный первый перевод, а прежний текст остаётся
     подсказкой в `prevTarget`."""
+    # Строка списка литературы, поставленная «как в оригинале», моделью не
+    # переводилась: её первый перевод (если правило письменностей поменяют)
+    # законно первый, и предел перевода заново он не съедает.
     return (bool(seg.get("mtDone")) or int(seg.get("retranslations") or 0) > 0
             or (seg.get("provider") or "") in _MODELS_BY_ID
-            or bool((seg.get("target") or "").strip()))
+            or (bool((seg.get("target") or "").strip()) and not _kept_source(seg)))
 
 
 def _retranslate_blocked(seg: dict, limit: Optional[int]) -> bool:
@@ -29351,6 +29830,10 @@ def batch_translate(pid: int, req: BatchRequest):
             # текст в близнецов — значит размножить брак.
             if not t0 or s0.get("status") not in ("translated", "qa", "review", "confirmed"):
                 continue
+            # Литература «как в оригинале» не переведена — донором перевода
+            # для строки с тем же оригиналом вне списка она не годится.
+            if s0.get("route") == ROUTE_KEEP_SOURCE:
+                continue
             key0 = _norm_key(s0.get("source"))
             prev = done_by_src.get(key0)
             # Донором становится лучший, а не первый по порядку: заверенный
@@ -29374,6 +29857,15 @@ def batch_translate(pid: int, req: BatchRequest):
     # ветки, а не только `force`: стёртая строка снова «не переведена»
     # и шла бы прогоном без счёта. Бесплатное (память, повтор готового —
     # без `force`) пределом не режется: модель его не переводит.
+    # Список литературы «как в оригинале» (`_refs_of`): модель не нужна —
+    # текст встаёт буква в букву. Только в ПУСТЫЕ строки и не в работу
+    # человека: перевод, уже стоящий в строке, этим правилом не стирается.
+    _keep = _refs_of(project)["keep"]
+    kept = [s for s in all_targets if s["id"] in _keep
+            and not (s.get("target") or "").strip() and not _human_text(s)]
+    if kept:
+        _kept_ids = {s["id"] for s in kept}
+        all_targets = [s for s in all_targets if s["id"] not in _kept_ids]
     rt_limit = _retranslate_limit()
     skipped_limit = [s["id"] for s in all_targets if _retranslate_blocked(s, rt_limit)
                      and (req.force or not _free(s))]
@@ -29387,6 +29879,15 @@ def batch_translate(pid: int, req: BatchRequest):
         # ключа вырождается в посегментные ошибки, и составной прогон принимает
         # их за «порция целиком провалилась» вместо «шаг недоступен».
         raise HTTPException(503, _no_key_text(req.model, "Перевод требует ключ OpenAI"))
+    # Литература «как в оригинале» — после проверки ключа: отказ 503 не должен
+    # оставлять в памяти правки, которые запишет чужое сохранение.
+    for s in kept:
+        s["target"] = s.get("source") or ""
+        s["status"] = "translated"
+        s["route"] = ROUTE_KEEP_SOURCE
+        s["provider"] = PROVIDER_KEEP
+        s.pop("docTerms", None)
+        s.pop("ctxFrom", None)
     # Потолок на порцию: один HTTP-запрос не должен жить дольше proxy_read_timeout (1800s)
     # в nginx. При ~5-6 с на сегмент 100 штук — это ~10 минут, с большим запасом.
     limit = max(1, min(req.limit, 100))
@@ -29610,11 +30111,14 @@ def batch_translate(pid: int, req: BatchRequest):
             _ctx_mark(sg, [{"id": x} for x in (res.get("ctxFrom") or [])])
             translated.append(sg["id"])
         dup_hits_count += len(segs) - 1
+    translated.extend(s["id"] for s in kept)
     save_state(STATE)
     return {
         "ok": True,
         "translated": translated,
         "count": len(translated),
+        # Строки списка литературы, поставленные как в оригинале, без модели.
+        "kept_source": len(kept),
         "remaining": remaining_after,
         "errors": errors,
         "tm_hits": tm_hits_count,
@@ -32231,7 +32735,8 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
                # шагов, а именно число: она идёт раньше всех, кто описывает
                # текст, и переписанные сегменты обесценят их проверки. Ноль —
                # значит и говорить не о чем (повторный прогон).
-               review_takes: int = 0) -> dict:
+               review_takes: int = 0,
+               refs: Optional[dict] = None) -> dict:
     """Разбор одного шага: кого возьмёт, кого не возьмёт и почему.
 
     will_translate — сегменты, которые переведёт этот же прогон. Сейчас у них
@@ -32239,6 +32744,11 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
     будут переведены. Без них разбор непереведённого проекта показывал бы цену
     одного перевода, хотя платить придётся и за все проверки поверх него."""
     ids, runs, skips = [], {}, {}
+    # Работа без вызова модели (список литературы «как в оригинале»): в задачу
+    # она идёт (`run_plan` кладёт её в объединение), а в смету — нет.
+    free: list = []
+    if refs is None:
+        refs = _refs_of(project)
 
     def run(reason, seg):
         ids.append(seg["id"])
@@ -32298,6 +32808,16 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
     for seg in scope:
         target = (seg.get("target") or "").strip()
         pending = seg["id"] in will_translate and not target
+
+        if seg["id"] in refs["all"]:
+            if step != "translate":
+                skip("список литературы — проверять нечего")
+                continue
+            if (seg["id"] in refs["keep"] and _needs_translation(seg)
+                    and not target and not _human_text(seg)):
+                free.append(seg["id"])
+                skip("список литературы — встанет как в оригинале, без модели")
+                continue
 
         if step == "translate":
             # Предикат общий с самим пакетом — см. _needs_translation.
@@ -32540,7 +33060,7 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
     return {"step": step, "label": FULL_STEP_LABELS[step],
             "model": _model_alias(mdl_id) if hide else mdl_id,
             "modelLabel": None if hide else (_model_label(mdl_id) if mdl_id else None),
-            "ids": ids, "count": len(ids), "note": note,
+            "ids": ids, "count": len(ids), "note": note, "free": free,
             "runs": fmt(runs), "skips": fmt(skips)}
 
 
@@ -32645,13 +33165,14 @@ def run_plan(pid: int, req: RunPlanRequest):
     term_ids = set(impact["termSegments"]) if (impact and "termaudit" in steps) else set()
     # Ревизию разбираем ПЕРВОЙ: её число нужно остальным шагам, чтобы честно
     # сказать, сколько работы она им создаст. Второй раз её не считаем.
+    refs = _refs_of(project)
     rv_plan = (_plan_step(project, "review", params, scope, will_translate,
-                          gloss_ids, term_ids, consist_ids)
+                          gloss_ids, term_ids, consist_ids, refs=refs)
                if "review" in steps else None)
     rv_takes = rv_plan["count"] if rv_plan else 0
     plans = [(rv_plan if st == "review" else
               _plan_step(project, st, params, scope, will_translate, gloss_ids,
-                         term_ids, consist_ids, rv_takes))
+                         term_ids, consist_ids, rv_takes, refs=refs))
              for st in steps]
     # Объединение — в порядке ДОКУМЕНТА, а не в порядке шагов: порции идут по
     # этому списку, и прогон должен двигаться по тексту сверху вниз, а не
@@ -32659,6 +33180,9 @@ def run_plan(pid: int, req: RunPlanRequest):
     seen: set = set()
     for p in plans:
         seen.update(p["ids"])
+        # Бесплатная работа (литература «как в оригинале») — в задачу, иначе
+        # прогон её не увидит, и корзина «доделаю сама» не осушится никогда.
+        seen.update(p.get("free") or ())
     ids = [s["id"] for s in scope if s["id"] in seen]
     return {"steps": plans, "ids": ids, "total": len(ids), "scope": len(scope),
             # Состав по умолчанию — всегда, какие бы шаги ни спросили: по нему
@@ -33024,8 +33548,22 @@ def _job_chunk_full(pid: int, chunk: list, params: dict) -> dict:
     return out
 
 
+# Виды задач, которые ПРОВЕРЯЮТ или ПЕРЕПИСЫВАЮТ готовый текст: строки
+# списка литературы они не берут (`_refs_of`) — ни в составном прогоне,
+# ни отдельным шагом. Одно место на оба пути: разбор состава (`_plan_step`)
+# читает то же множество, и смета с работой не расходятся.
+_REFS_SKIP_KINDS = frozenset(("review", "backcheck", "termcheck", "termaudit",
+                              "repair", "medical_qa", "apply_terms"))
+
+
 def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
     """Одна порция. Возвращает счётчики, которые нарастают в прогрессе."""
+    if kind in _REFS_SKIP_KINDS:
+        _refs = _refs_of(_project_by_id(pid))["all"]
+        if _refs:
+            chunk = [i for i in chunk if i not in _refs]
+            if not chunk:
+                return {"done": 0}
     n = len(chunk)
     if kind == "full":
         return _job_chunk_full(pid, chunk, params)
@@ -33055,6 +33593,7 @@ def _job_chunk(kind: str, pid: int, chunk: list, params: dict) -> dict:
             force=bool(params.get("force", True)), model=params.get("model"),
             include_confirmed=bool(params.get("include_confirmed"))))
         return {"done": r["count"], "tm_hits": r.get("tm_hits", 0),
+                "kept_source": r.get("kept_source", 0),
                 "duplicates": r.get("duplicates", 0), "errors": len(r.get("errors", [])),
                 "why": _first_error(r), "skipped_confirmed": len(r.get("skipped_confirmed", [])),
                 # Перевод заново выше предела организации (`_retranslate_limit`).

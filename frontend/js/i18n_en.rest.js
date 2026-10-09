@@ -2065,6 +2065,7 @@ window.I18N.register("en", {
  "Строка #": "Line #",
  "Строка вырастает до ": "The line grows to ",
  "Строка разрезана": "Line split",
+ "Строка списка литературы переведена, но в ней разошлись числа — год, том или страницы.": "This reference-list line was translated, but its numbers do not match — year, volume or pages.",
  "Строка считается новой — переведите её заново.": "The line counts as new — translate it again.",
  "Строки без цены не сохранятся: ноль — это не цена, а «не задана».": "Rows without a price will not be saved: zero is not a price, it means “not set”.",
  "Строки ещё не переведены — видео и озвучка соберутся после перевода.": "The lines are not translated yet — the video and voice-over can be built after translation.",

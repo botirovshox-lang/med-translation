@@ -902,6 +902,18 @@ function TabExport({ store, toast }) {
            + (st.img_untranslated ? TR(" · надписей без перевода: ") + st.img_untranslated : "")
            + (imgLost ? TR(" · надписей не попало в файл: ") + imgLost : ""))
         : (result.file + TR(" — загрузка началась.")));
+      // Проверка готового файла: что на листах осталось на языке оригинала
+      // (считает сервер; законно оставленное — числа, ссылки, слова, которые
+      // переводчик сам оставил, — не считается). Молчать об этом нельзя:
+      // иначе брак увидит заказчик.
+      const lo = st.leftover;
+      if (lo && (lo.count || lo.figuresUnread)) {
+        toast.warning(TR("В файле остался текст на языке оригинала"),
+          (lo.count ? TR("Мест: ") + lo.count : "")
+          + (lo.samples && lo.samples.length ? " — " + lo.samples.slice(0, 3).join(" · ") : "")
+          + (lo.figuresUnread ? TR(" · рисунков с непрочитанными надписями: ") + lo.figuresUnread
+             + TR(" (раздел «Надписи на картинках» ниже)") : ""));
+      }
     } else {
       toast.error(TR("Экспорт не выполнен"), (result && result.error) || TR("Сервер недоступен или вернул ошибку."));
     }
@@ -973,7 +985,9 @@ function TabExport({ store, toast }) {
             !allFmt && !store.expert && formats.length > 1 && React.createElement("div", null,
               React.createElement(Btn, { variant: "ghost", size: "sm", icon: "chevD", "aria-expanded": false, onClick: () => setAllFmt(true) }, TR("Другой формат")))),
           React.createElement("p", { className: "hint", style: { marginTop: 10 } },
-            srcDoc && fmt !== "docx_layout"
+            // «С нуля» — только то, что и правда собирается заново: PDF
+            // и «исходный вид» при приложенном исходнике держат вёрстку.
+            srcDoc && (fmt === "docx" || fmt === "xlsx")
               ? TR("К проекту приложен исходник — «DOCX 1в1» сохранит его оформление. Выбранный сейчас формат соберёт документ с нуля.")
               : TR("«DOCX 1в1» сохраняет оформление оригинала. Остальные форматы собираются с нуля."))
         ),

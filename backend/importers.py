@@ -152,6 +152,80 @@ def _exif_upright(im):
         return im
 
 
+FIG_TAG = "medcat-fig"
+
+
+def tag_figure(data: bytes, page: int, frac) -> bytes:
+    """Вырезка рисунка из PDF — с меткой, ОТКУДА она на листе:
+    «страница x0 y0 x1 y1» (доли листа от левого верхнего угла).
+
+    По ней выгрузка «как в оригинале» кладёт перевод надписей рисунка
+    (их читает разбор «Надписи на картинках») на то же место страницы,
+    а разбор не заводит сегменты для текста, который уже есть в текстовом
+    слое поверх рисунка. Вписывается БЕЗ перекодирования: блок tEXt у PNG,
+    комментарий (COM) у JPEG — пиксели те же, байты другие."""
+    import struct
+    import zlib
+    note = ("%d %s" % (int(page), " ".join("%.5f" % float(v) for v in frac))).encode("latin-1")
+    try:
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            body = FIG_TAG.encode("latin-1") + b"\x00" + note
+            chunk = (struct.pack(">I", len(body)) + b"tEXt" + body
+                     + struct.pack(">I", zlib.crc32(b"tEXt" + body) & 0xFFFFFFFF))
+            end_ihdr = 8 + 8 + struct.unpack(">I", data[8:12])[0] + 4
+            return data[:end_ihdr] + chunk + data[end_ihdr:]
+        if data[:2] == b"\xff\xd8":
+            com = (FIG_TAG + " ").encode("latin-1") + note
+            return data[:2] + b"\xff\xfe" + struct.pack(">H", len(com) + 2) + com + data[2:]
+    except Exception:
+        pass
+    return data
+
+
+def untag_figure(blob: bytes) -> bytes:
+    """Байты вырезки БЕЗ метки `tag_figure` — для сравнения с картинкой,
+    записанной до появления меток (пиксели у них те же)."""
+    import struct
+    try:
+        if blob[:8] == b"\x89PNG\r\n\x1a\n":
+            pos, out = 8, [blob[:8]]
+            while pos + 8 <= len(blob):
+                n = struct.unpack(">I", blob[pos:pos + 4])[0]
+                kind = blob[pos + 4:pos + 8]
+                chunk = blob[pos:pos + 12 + n]
+                if not (kind == b"tEXt" and chunk[8:8 + len(FIG_TAG) + 1] == FIG_TAG.encode() + b"\x00"):
+                    out.append(chunk)
+                pos += 12 + n
+            return b"".join(out)
+        if blob[:4] == b"\xff\xd8\xff\xfe":
+            n = struct.unpack(">H", blob[4:6])[0]
+            if blob[6:6 + len(FIG_TAG) + 1] == (FIG_TAG + " ").encode():
+                return blob[:2] + blob[4 + n:]
+    except Exception:
+        pass
+    return blob
+
+
+def figure_tag(blob: bytes):
+    """(страница, x0, y0, x1, y1) — метка вырезки рисунка, либо None."""
+    try:
+        from PIL import Image  # type: ignore
+        im = Image.open(io.BytesIO(blob))
+        v = (im.info or {}).get(FIG_TAG)
+        if v is None:
+            c = (im.info or {}).get("comment")
+            if isinstance(c, bytes):
+                c = c.decode("latin-1", "ignore")
+            if isinstance(c, str) and c.startswith(FIG_TAG + " "):
+                v = c[len(FIG_TAG) + 1:]
+        if not v:
+            return None
+        p = v.split()
+        return (int(p[0]),) + tuple(float(x) for x in p[1:5])
+    except Exception:
+        return None
+
+
 def _png_with_index(im, index: int) -> bytes:
     """PNG с номером кадра в метаданных. python-docx ДЕДУПЛИЦИРУЕТ картинки
     по sha1: две одинаковые страницы скана (пустые обороты — норма) дали бы
@@ -273,7 +347,41 @@ def images_from_docx(docx_bytes: bytes) -> list:
     return out
 
 
-def images_to_file(images: list, ext: str) -> bytes:
+def _images_to_pdf(images: list, page_w_pt: "float | None") -> "bytes | None":
+    """Скан-PDF из страниц — ПО ОДНОЙ (reportlab), а не все разом в памяти:
+    книга в 378 страниц-картинок, раскрытых Pillow целиком, — гигабайты
+    в единственном воркере. JPEG кладётся как есть. Нет reportlab — None,
+    и собирает Pillow, как прежде."""
+    try:
+        from PIL import Image  # type: ignore
+        from reportlab.pdfgen import canvas
+        from reportlab.lib.utils import ImageReader
+    except ImportError:
+        return None
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf)
+    n = 0
+    for _n, b in images:
+        if not b:
+            continue
+        with Image.open(io.BytesIO(b)) as im:
+            w, h = im.size
+        if page_w_pt and page_w_pt > 0:
+            dpi = max(1.0, w / (page_w_pt / 72.0))
+        else:
+            dpi = max(72.0, w / 8.27)              # ширина A4 в дюймах
+        pw, ph = w * 72.0 / dpi, h * 72.0 / dpi
+        c.setPageSize((pw, ph))
+        c.drawImage(ImageReader(io.BytesIO(b)), 0, 0, pw, ph)
+        c.showPage()
+        n += 1
+    if not n:
+        raise textcount.Unsupported("В выгрузке нет ни одной картинки")
+    c.save()
+    return buf.getvalue()
+
+
+def images_to_file(images: list, ext: str, page_w_pt: "float | None" = None) -> bytes:
     """Картинки → файл исходного вида: одна картинка — как есть (перекодируется
     в исходное расширение), многостраничный TIFF — обратно многостраничным
     (режим кадра сохраняется: 1-битный факс не раздувается в RGB), скан-PDF —
@@ -281,6 +389,10 @@ def images_to_file(images: list, ext: str) -> bytes:
     слоя у скана не было — нет и здесь."""
     from PIL import Image  # type: ignore
     ext = (ext or "").lower()
+    if ext == ".pdf":
+        got = _images_to_pdf(images, page_w_pt)
+        if got is not None:
+            return got
     frames = [Image.open(io.BytesIO(b)) for _n, b in images if b]
     if not frames:
         raise textcount.Unsupported("В выгрузке нет ни одной картинки")
@@ -289,7 +401,12 @@ def images_to_file(images: list, ext: str) -> bytes:
     out = io.BytesIO()
     if ext == ".pdf":
         pages = [im.convert("RGB") if im.mode not in ("RGB", "L") else im for im in frames]
-        dpi = max(72.0, pages[0].size[0] / 8.27)        # ширина A4 в дюймах
+        # Ширина листа — как у ОРИГИНАЛА (`page_w_pt`, пункты), иначе A4:
+        # выгрузка «как в оригинале» обязана держать и формат листа.
+        if page_w_pt and page_w_pt > 0:
+            dpi = max(1.0, pages[0].size[0] / (page_w_pt / 72.0))
+        else:
+            dpi = max(72.0, pages[0].size[0] / 8.27)    # ширина A4 в дюймах
         pages[0].save(out, format="PDF", save_all=True, append_images=pages[1:], resolution=dpi)
         return out.getvalue()
     if ext in (".tif", ".tiff"):
@@ -948,6 +1065,7 @@ def mixed_to_docx(items: list, page_images: dict, figures: "dict | None" = None)
             data = figures.get((it[1], tuple(it[2])))
             if not data:
                 continue
+            data = tag_figure(data, it[1], it[2])
             try:
                 # Своей шириной, а не во всю полосу: рисунок в книге бывает
                 # с ладонь, и растянутый на страницу он врал бы о вёрстке.
@@ -1081,6 +1199,14 @@ def pdf_to_docx(content: bytes) -> tuple:
         # печатает его перевод на каждой странице, где он был.
         note += (" Колонтитулы (%d) вынесены отдельными абзацами: переводятся "
                  "один раз и встают на каждую свою страницу." % r["headParagraphs"])
+    if r.get("rotatedLines"):
+        note += (" Повёрнутых строк и строк по дуге (подписи в схемах, повёрнутые "
+                 "таблицы): %d — переводятся и печатаются по своему пути." % r["rotatedLines"])
+    if res.get("unplaced"):
+        # Видимая строка, которой некуда встать, — на листе останется
+        # оригиналом; молчать об этом нельзя (выгрузка назовёт её ещё раз).
+        note += (" Строк без места на листе: %d — переводятся, но в PDF «как "
+                 "в оригинале» остаются на языке оригинала." % len(res["unplaced"]))
     if n_fig:
         note += " Рисунков перенесено в документ: %d." % n_fig
     if n_fig_lost > 0:
@@ -1093,10 +1219,13 @@ def pdf_to_docx(content: bytes) -> tuple:
     if n_text_fallback > 0:
         note += (" Страниц с ненадёжным слоем без картинки страницы оставлено текстом "
                  "как есть: %d." % n_text_fallback)
-    note += (" Надписи внутри картинок не разобраны. Обратно выгружается PDF, "
+    note += (" Надписи внутри картинок не разобраны. Обратно выгружается тот же PDF "
+             "с переводом на месте оригинала." if built["layout"] else
+             " Надписи внутри картинок не разобраны. Обратно выгружается PDF, "
              "собранный из документа Word.")
     return (docx_bytes, "pdf", note, n_img,
-            {"boxes": built["layout"], "pages": res.get("pageBoxes") or []})
+            {"boxes": built["layout"], "pages": res.get("pageBoxes") or [],
+             "unplaced": res.get("unplaced") or []})
 
 
 def to_docx(filename: str, content: bytes) -> dict:

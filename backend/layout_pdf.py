@@ -76,13 +76,19 @@ except ImportError:                                  # pragma: no cover
 # есть письменность целевого языка (узбекская кириллица, казахская, любая
 # другая). Берём первый найденный из списка — на сервере это DejaVu,
 # он лежит рядом с LibreOffice.
+# Свои шрифты из репозитория (Noto — те же, что у субтитров видео): они
+# есть на сервере ВСЕГДА, в них латиница, кириллица (с узбекской, казахской,
+# таджикской) и греческий, и они уже DejaVu — ближе к гарнитурам книг.
+_REPO_FONTS = str(Path(__file__).resolve().parent.parent / "frontend" / "vendor" / "fonts" / "sub")
 FONT_CANDIDATES = {
     "": [os.environ.get("LAYOUT_FONT", ""),
+         _REPO_FONTS + "/NotoSerif-Regular.ttf",
          "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
          "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
          "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
          "C:/Windows/Fonts/times.ttf", "C:/Windows/Fonts/arial.ttf"],
     "b": [os.environ.get("LAYOUT_FONT_BOLD", ""),
+          _REPO_FONTS + "/NotoSerif-Bold.ttf",
           "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
           "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
           "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
@@ -96,6 +102,56 @@ FONT_CANDIDATES = {
            "/usr/share/fonts/truetype/liberation/LiberationSerif-BoldItalic.ttf",
            "C:/Windows/Fonts/timesbi.ttf", "C:/Windows/Fonts/arialbi.ttf"],
 }
+# Гарнитура перевода — ТА ЖЕ, что у оригинала: рубленая там, где абзац
+# набран рубленым (Helvetica, DIN, Calibri), моноширинная — у кода. Семейство
+# узнаёт разбор PDF по имени шрифта (`pdfpages_worker._family`), а печатаем
+# мы своим файлом той же гарнитуры: шрифт оригинала встроен подмножеством —
+# в нём только буквы ЕГО языка, и перевод вышел бы квадратами. Нет файла
+# семейства — печатается шрифтом с засечками (`FONT_CANDIDATES`), как прежде.
+FAMILY_CANDIDATES = {
+    "sans": {
+        "": [os.environ.get("LAYOUT_FONT_SANS", ""),
+             _REPO_FONTS + "/NotoSans-Regular.ttf",
+             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+             "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+             "C:/Windows/Fonts/arial.ttf"],
+        "b": [os.environ.get("LAYOUT_FONT_SANS_BOLD", ""),
+              _REPO_FONTS + "/NotoSans-Bold.ttf",
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+              "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+              "C:/Windows/Fonts/arialbd.ttf"],
+        "i": [os.environ.get("LAYOUT_FONT_SANS_ITALIC", ""),
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",
+              "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf",
+              "C:/Windows/Fonts/ariali.ttf"],
+        "bi": [os.environ.get("LAYOUT_FONT_SANS_BOLDITALIC", ""),
+               "/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf",
+               "/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf",
+               "C:/Windows/Fonts/arialbi.ttf"],
+    },
+    "mono": {
+        "": [os.environ.get("LAYOUT_FONT_MONO", ""),
+             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+             "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+             "C:/Windows/Fonts/cour.ttf"],
+        "b": ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+              "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+              "C:/Windows/Fonts/courbd.ttf"],
+        "i": ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Oblique.ttf",
+              "/usr/share/fonts/truetype/liberation/LiberationMono-Italic.ttf",
+              "C:/Windows/Fonts/couri.ttf"],
+        "bi": ["/usr/share/fonts/truetype/dejavu/DejaVuSansMono-BoldOblique.ttf",
+               "/usr/share/fonts/truetype/liberation/LiberationMono-BoldItalic.ttf",
+               "C:/Windows/Fonts/courbi.ttf"],
+    },
+}
+# Запасной шрифт — DejaVu из репозитория: в нём армянский, грузинский,
+# греческий и вся кириллица, которых нет в Noto Sans/Serif. Он стоит
+# ПОСЛЕДНИМ: выбирается, только когда первые не знают букв перевода
+# (`font_path(chars=)`). Только обычный и полужирный — курсив из них
+# дорисует печать.
+_REPO_FALLBACK = {"": [_REPO_FONTS + "/DejaVuSans.ttf"],
+                  "b": [_REPO_FONTS + "/DejaVuSans-Bold.ttf"]}
 FONT_NAME = "LayoutBody"
 
 # Насколько уменьшать кегль за шаг и докуда. Ниже — нечитаемо, и честный
@@ -113,7 +169,11 @@ MIN_SIZE_PT = 5.0
 # прежние 36 точек на дюйм — это полпикселя на типографский пункт, и хвост
 # оригинала в три знака (`еда`) на нём почти не виден. Все страницы разом
 # держать в памяти нельзя: книга в 378 страниц — это сотни мегабайт.
-SAMPLE_DPI = int(os.environ.get("LAYOUT_SAMPLE_DPI", "72"))
+# 144, а не 72: по странице меряется ещё цвет краски, а на 72 сглаживание
+# размывает строку мелкого кегля так, что чёрный читается серым.
+SAMPLE_DPI = int(os.environ.get("LAYOUT_SAMPLE_DPI", "144"))
+# Потолок одного снимка страницы, мегапикселей (≈8 байт на пиксель в пике).
+SAMPLE_MAX_MPX = float(os.environ.get("LAYOUT_SAMPLE_MAX_MPX", "12"))
 # Запас закраски вокруг рамки, в долях кегля: засечки и выносные элементы
 # выходят за базовые линии, а рамка считалась по ним.
 PAD_SHARE = 0.18
@@ -136,6 +196,11 @@ INK_EXPAND_MAX = float(os.environ.get("LAYOUT_INK_EXPAND_MAX", "140"))
 # Какой пробел считать настоящим (в долях кегля): пробел между словами уже
 # него, межколонник — шире. Ошибка в меньшую сторону оставляет хвост
 # оригинала, в большую — заезжает в соседнюю колонку.
+# Насколько краска строки может уйти за конец, посчитанный по метрикам
+# шрифта (в кеглях): штрих скана шире метрики, но не на слово.
+# Докуда уменьшать кегль надписи по дуге (у неё нет следующей строки).
+CURVE_MIN_SHARE = float(os.environ.get("LAYOUT_CURVE_MIN_SIZE", "0.4"))
+INK_EXACT_SLACK = float(os.environ.get("LAYOUT_INK_EXACT_SLACK", "0.6"))
 INK_GAP_SHARE = float(os.environ.get("LAYOUT_INK_GAP", "0.9"))
 # Докуда раздвигать ВЛЕВО, в кеглях (см. `_ink_box`).
 INK_LEFT_PT = float(os.environ.get("LAYOUT_INK_LEFT", "1.5"))
@@ -143,6 +208,15 @@ INK_LEFT_PT = float(os.environ.get("LAYOUT_INK_LEFT", "1.5"))
 INK_DARK = float(os.environ.get("LAYOUT_INK_DARK", "0.82"))
 # Ниже этой яркости бумага считается тёмной, и перевод печатается светлым.
 DARK_PAPER = float(os.environ.get("LAYOUT_DARK_PAPER", "0.45"))
+# На сколько полос режется закраска ОДНОЙ строки (у строк своё место — см.
+# `slots`): строка короткая, и десяти полос ей не нужно.
+SLOT_STRIPS = 3
+# Насколько можно СУЗИТЬ начертание по горизонтали, прежде чем уменьшать
+# кегль. Наш шрифт (DejaVu) шире гарнитур оригинала (Helvetica, DIN
+# Condensed), и без сужения почти каждый абзац уходил мельче оригинала —
+# высота букв менялась там, где хватило бы ширины. Узкое начертание —
+# обычный приём вёрстки; ниже 80% буквы читаются сплющенными.
+HSCALE_MIN = float(os.environ.get("LAYOUT_HSCALE_MIN", "0.85"))
 
 
 class NotAvailable(Exception):
@@ -150,14 +224,52 @@ class NotAvailable(Exception):
     отсутствие возможности, и отвечать на неё надо словами."""
 
 
-def font_path(style: str = "") -> str:
+_CMAPS: dict = {}
+
+
+def _cmap(path: str) -> set:
+    """Знаки, которые есть в файле шрифта (кэш по пути)."""
+    if path not in _CMAPS:
+        try:
+            from reportlab.pdfbase.ttfonts import TTFontFile
+            _CMAPS[path] = set(TTFontFile(path).charToGlyph)
+        except Exception:
+            _CMAPS[path] = set()
+    return _CMAPS[path]
+
+
+def _covers(path: str, chars) -> bool:
+    """Знает ли шрифт буквы перевода (без `GLYPH_MISS_MAX` редких знаков)."""
+    if not chars:
+        return True
+    have = _cmap(path)
+    return sum(1 for ch in chars if ord(ch) not in have) <= GLYPH_MISS_MAX
+
+
+def font_path(style: str = "", family: str = "", chars=None) -> str:
     """Файл шрифта под начертание. Нет своего файла — берём обычный:
     напечатать светлым вместо курсива честнее, чем не напечатать вовсе
-    (на боевом сервере из DejaVu Serif есть обычный и полужирный)."""
-    for p in FONT_CANDIDATES.get(style or "", []):
-        if p and Path(p).exists():
+    (на боевом сервере из DejaVu Serif есть обычный и полужирный).
+
+    `family` — «sans» / «mono»: своё семейство; нет у него ни одного файла —
+    пусто, и вызывающий берёт шрифт с засечками.
+
+    `chars` — буквы перевода: берётся первый файл, который их ЗНАЕТ. Noto
+    из репозитория стоит первым (уже DejaVu), но армянского и грузинского
+    в нём нет — тогда выбирается запасной DejaVu, а не пустые квадраты."""
+    table = FAMILY_CANDIDATES.get(family or "") if family else FONT_CANDIDATES
+    if table is None:
+        table = FONT_CANDIDATES
+    for p in (table.get(style or "", []) + _REPO_FALLBACK.get(style or "", [])):
+        if p and Path(p).exists() and _covers(p, chars):
             return p
-    return "" if not style else font_path("b" if style == "bi" else "")
+    if style:
+        return font_path("b" if style == "bi" else "", family, chars)
+    if chars:
+        # Букв перевода не знает НИ ОДИН файл — берём первый, как прежде:
+        # отказ словами скажет сверка глифов (`_missing_glyphs`).
+        return font_path(style, family, None)
+    return ""
 
 
 def available() -> tuple:
@@ -176,21 +288,673 @@ def available() -> tuple:
     return True, ""
 
 
-def _register_fonts() -> dict:
-    """{начертание: имя шрифта}. Одно и то же имя у двух начертаний
-    законно: файла может не быть, и тогда начертание просто совпадает."""
+def _register_fonts(chars=None) -> dict:
+    """{начертание: имя шрифта} — шрифт с засечками, и {«семейство|начертание»:
+    имя} — рубленый и моноширинный. Одно и то же имя у двух начертаний
+    законно: файла может не быть, и тогда начертание просто совпадает.
+    `chars` — буквы перевода: файл выбирается тот, что их знает."""
+    import hashlib
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
     out = {}
-    for style in ("", "b", "i", "bi"):
-        path = font_path(style)
-        if not path:
-            continue
-        name = FONT_NAME + (style or "R")
-        if name not in pdfmetrics.getRegisteredFontNames():
-            pdfmetrics.registerFont(TTFont(name, path))
-        out[style] = name
+    for fam in ("",) + tuple(FAMILY_CANDIDATES):
+        for style in ("", "b", "i", "bi"):
+            path = font_path(style, fam, chars)
+            if not path:
+                continue
+            # Имя шрифта в reportlab — на весь процесс; один и тот же файл —
+            # одно имя, другой файл (другие буквы перевода) — другое.
+            name = (FONT_NAME + (fam.capitalize()) + (style or "R")
+                    + hashlib.sha1(path.encode("utf-8")).hexdigest()[:6])
+            if name not in pdfmetrics.getRegisteredFontNames():
+                try:
+                    pdfmetrics.registerFont(TTFont(name, path))
+                except Exception:
+                    if fam:
+                        continue            # своего семейства нет — засечки
+                    raise
+            out[(fam + "|" + style) if fam else style] = name
+            # Какое начертание файл даёт НА ДЕЛЕ: курсива у шрифта может
+            # не быть, и тогда под именем курсива лежит прямой — наклон
+            # дорисует печать (`_synth`).
+            table = FAMILY_CANDIDATES.get(fam) or FONT_CANDIDATES
+            real = next((st for st in (style, "b", "i", "")
+                         if path in ((table.get(st) or []) + _REPO_FALLBACK.get(st, []))), "")
+            out["@" + name] = real
     return out
+
+
+def _synth(fonts: dict, name: str, style: str) -> str:
+    """Чего из просимого начертания у файла шрифта нет («b», «i», «bi»):
+    его печать дорисует — наклоном (курсив) и обводкой (полужирный).
+    Так поступает любая программа вёрстки, когда начертания нет:
+    прямой текст на месте курсива оригинала — это уже не 1в1."""
+    real = fonts.get("@" + name, style)
+    return "".join(ch for ch in "bi" if ch in (style or "") and ch not in real)
+
+
+def _font_for(fonts: dict, box: dict) -> str:
+    """Шрифт рамки: семейство оригинала и его начертание; чего нет — то
+    ближайшее, что есть (то же семейство обычным, затем засечки)."""
+    style = box.get("style") or ""
+    fam = box.get("fam") or ""
+    if fam in FAMILY_CANDIDATES:
+        name = fonts.get(fam + "|" + style) or fonts.get(fam + "|")
+        if name:
+            return name
+    return fonts.get(style) or fonts[""]
+
+
+def _slot_paper(sample, box: dict, pad: float, n: int, x0f=None, x1f=None) -> list:
+    """Цвет бумаги под строкой полосами — САМЫЙ ЧАСТЫЙ тон полосы.
+
+    Светлый процентиль (`_strip_colors`) верен для тёмного текста на светлой
+    бумаге, и только для него: у белой надписи на цветной плашке схемы он
+    брал сами буквы, и вместо плашки ложилась светлая заплатка. Самый
+    частый тон — фон при любой полярности: буквы занимают меньшую часть
+    строки, а их сглаженные края размазаны по многим тонам. Без numpy —
+    прежний процентиль."""
+    try:
+        import numpy as np
+    except ImportError:
+        return _strip_colors(sample, box, pad, n, x0f, x1f)
+    if not sample:
+        return [(1.0, 1.0, 1.0)] * n
+    im, scale, cb, gray = sample
+    W, H = im.size
+    bx0 = box["x0"] if x0f is None else x0f
+    bx1 = box["x1"] if x1f is None else x1f
+    x0, x1 = (bx0 - pad - cb[0]) * scale, (bx1 + pad - cb[0]) * scale
+    y0 = int(max(0, H - (box["top"] + pad - cb[1]) * scale))
+    y1 = int(min(H, H - (box["bottom"] - pad - cb[1]) * scale))
+    gx0, gx1 = max(0, int(x0)), min(W, max(int(x0) + 1, int(x1) + 1))
+    if gx1 - gx0 < 1 or y1 - y0 < 1:
+        return _strip_colors(sample, box, pad, n, x0f, x1f)
+    rgb = np.asarray(im.crop((gx0, y0, gx1, y1)), dtype=np.uint8)[:, :, :3]
+    lum = np.asarray(gray.crop((gx0, y0, gx1, y1)), dtype=np.uint8)
+    step = max(1.0, (x1 - x0) / n)
+    out = []
+    for k in range(n):
+        a = max(0, int(x0 + k * step) - gx0)
+        b = min(rgb.shape[1], max(a + 1, int(x0 + (k + 1) * step) + 1 - gx0))
+        lu = lum[:, a:b].reshape(-1)
+        if not len(lu):
+            out.append(out[-1] if out else (1.0, 1.0, 1.0))
+            continue
+        bins = (lu // 16).astype(np.int16)
+        # Тон фона — по КРАЯМ полосы (выше прописных и ниже базовой линии):
+        # там букв почти нет. Жирная белая надпись на цветном кольце схемы
+        # занимает больше половины своей клетки, и самый частый тон всей
+        # полосы оказывался цветом букв — ложилась светлая заплатка.
+        hh = lum.shape[0]
+        e = max(1, hh // 4)
+        if box.get("edge") == "cols" and b - a >= 4:
+            # Буква стоит ВЕРТИКАЛЬНО (крутой участок дуги): над и под ней —
+            # соседние буквы, а фон — слева и справа.
+            ew = max(1, (b - a) // 4)
+            edge = np.concatenate([lum[:, a:a + ew].reshape(-1), lum[:, b - ew:b].reshape(-1)])
+        elif hh >= 4:
+            edge = np.concatenate([lum[:e, a:b].reshape(-1), lum[hh - e:, a:b].reshape(-1)])
+        else:
+            edge = lu
+        ebins = (edge // 16).astype(np.int16)
+        ecount = np.bincount(ebins, minlength=16)
+        mode = int(ecount.argmax())
+        full = np.bincount(bins, minlength=16)
+        # Тон краёв — фон, только если он и во всей полосе не редкость:
+        # рамка ссылки (синий прямоугольник вокруг адреса) лежит ровно по
+        # краям строки, и заливка выходила синей плашкой.
+        if ecount[mode] < 0.15 * len(ebins) or full[max(0, mode - 1):mode + 2].sum() < 0.3 * len(bins):
+            mode = int(full.argmax())
+        sel = np.abs(bins - mode) <= 1
+        col = np.median(rgb[:, a:b].reshape(-1, 3)[sel], axis=0) / 255.0
+        out.append(tuple(float(v) for v in col))
+    return out
+
+
+def _ink_color(sample, box: dict, pad: float, paper: float, either: bool = False):
+    """Цвет КРАСКИ оригинала под рамкой — (r, g, b) в долях, либо None.
+
+    Заголовок, набранный синим, и подпись серым — это вёрстка не меньше,
+    чем кегль: перевод чёрным поверх них читался бы чужим текстом. Берём
+    пиксели темнее бумаги (порог `INK_DARK`, как у раздвижки по краске),
+    из них — самую тёмную ЧЕТВЕРТЬ: края букв сглажены и тянут цвет
+    к бумаге, а у мелкого кегля сглажен почти весь штрих (на половине
+    чёрный текст читался серым). Медиана по каналам — сам цвет. Нечего
+    мерить — None, и печать чёрным, как прежде.
+
+    `either` — краска бывает и СВЕТЛЕЕ бумаги (белая надпись на цветной
+    плашке схемы): берётся та сторона, где пикселей больше, и её крайняя
+    четверть (самая светлая — у светлой краски).
+
+    Полужирного по краске здесь НЕ ищем, и это замер, а не лень: толщина
+    штриха на мелком кегле упирается в размер пикселя, и обычный текст
+    в 4 пт выходил «жирнее» полужирного заголовка — вышел бы ложный жирный.
+    Начертание даёт только имя шрифта."""
+    if not sample:
+        return None
+    im, scale, cb, gray = sample
+    W, H = im.size
+    x0 = int(max(0, (box["x0"] - cb[0]) * scale))
+    x1 = int(min(W, (box["x1"] - cb[0]) * scale + 1))
+    y0 = int(max(0, H - (box["top"] - cb[1]) * scale))
+    y1 = int(min(H, H - (box["bottom"] - cb[1]) * scale + 1))
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return None
+    dark = INK_DARK * paper * 255.0
+    try:
+        import numpy as np
+        g = np.asarray(gray.crop((x0, y0, x1, y1)), dtype=np.float32)
+        rgb = np.asarray(im.crop((x0, y0, x1, y1)), dtype=np.float32)
+        mask = g < dark
+        light = False
+        if either:
+            lmask = g > paper * 255.0 + 0.25 * 255.0
+            if int(lmask.sum()) > int(mask.sum()):
+                mask, light = lmask, True
+        if int(mask.sum()) < 8:
+            return None
+        lum = g[mask]
+        pix = rgb[mask][:, :3]
+        # Оттенок — тот, которого в краске БОЛЬШЕ: синие рамки ссылок
+        # и цветные значки темнее серого текста, и самая тёмная четверть
+        # без этого выбора красила бы строку авторов синим. Серая краска
+        # (без цвета) — своя группа; цветная — по корзинам оттенка.
+        chroma = pix.max(axis=1) - pix.min(axis=1)
+        neutral = chroma < 48
+        if int(neutral.sum()) * 2 >= len(pix):
+            sel = neutral
+        else:
+            r_, g_, b_ = pix[:, 0], pix[:, 1], pix[:, 2]
+            hue = np.floor(((np.degrees(np.arctan2(np.sqrt(3.0) * (g_ - b_), 2 * r_ - g_ - b_))
+                             + 360.0) % 360.0) / 30.0).astype(np.int16)
+            hue[neutral] = -1
+            vals, counts = np.unique(hue[~neutral], return_counts=True)
+            sel = hue == vals[int(np.argmax(counts))]
+        sub = lum[sel]
+        # На мелком кегле штрих тоньше пикселя замера, и сглаживание
+        # осветляет почти весь штрих: чёрная подпись в 4 пт на длинной
+        # странице (замер там мельче — потолок мегапикселей) выходила
+        # серой. Чем меньше пикселей на кегль, тем уже крайняя доля.
+        px = float(box.get("size") or 10.0) * scale
+        q = 25.0 if px >= 14 else (10.0 if px >= 8 else 5.0)
+        keep = (sub >= np.percentile(sub, 100 - q)) if light else (sub <= np.percentile(sub, q))
+        col = np.median(pix[sel][keep], axis=0) / 255.0
+        return tuple(float(v) for v in col[:3])
+    except ImportError:
+        pass
+    except Exception:
+        return None
+    try:
+        gpx = list(gray.crop((x0, y0, x1, y1)).getdata())
+        cpx = list(im.crop((x0, y0, x1, y1)).getdata())
+    except Exception:
+        return None
+    ink = sorted((v, c) for v, c in zip(gpx, cpx) if v < dark)
+    if len(ink) < 8:
+        return None
+    part = [c for _v, c in ink[:max(1, len(ink) // 4)]]
+    return tuple(sorted(c[ch] for c in part)[len(part) // 2] / 255.0 for ch in range(3))
+
+
+def _slot_boxes(b: dict) -> list:
+    """Места строк абзаца на этой странице — рамками той же формы, что
+    у абзаца: {x0, x1, top, bottom, size} плюс базовая линия, начало
+    строки и её начертание. Пусто — у рамки мест нет (раскладка, записанная
+    до них, надпись с картинки), и она идёт прежней дорогой — прямоугольником."""
+    if b.get("image") or not b.get("slots"):
+        return []
+    out = []
+    for sl in b["slots"]:
+        try:
+            x0, y, x1, sz = (float(v) for v in sl[:4])
+        except Exception:
+            return []
+        sz = sz if sz > 0 else float(b.get("size") or 10.0)
+        if len(sl) > 8 and isinstance(sl[8], dict) and sl[8].get("pts"):
+            sd = _rot_slot(sl[8], sz)
+            if sd:
+                sd.update({"style": (sl[4] if len(sl) > 4 else "") or "", "page": b["page"],
+                           "n": int(sl[6]) if len(sl) > 6 and sl[6] else 0,
+                           "color": _color_of(sl[8].get("color"))})
+                out.append(sd)
+            continue
+        xl = sl[5] if len(sl) > 5 else None
+        out.append({"x0": x0, "x1": max(x1, x0 + 0.5 * sz), "top": y + 0.85 * sz,
+                    "bottom": y - 0.25 * sz, "size": sz, "y": y, "x": x0,
+                    "xl": float(xl) if xl is not None else None,
+                    "n": int(sl[6]) if len(sl) > 6 and sl[6] else 0,
+                    "exact": bool(sl[7]) if len(sl) > 7 else False,
+                    "style": (sl[4] if len(sl) > 4 else "") or "", "page": b["page"],
+                    "color": _color_of(sl[9] if len(sl) > 9 else None)})
+    return out
+
+
+def _color_of(v):
+    """Цвет краски строки, записанный разбором из самого PDF, — (r, g, b)
+    либо None («не знаем», тогда меряем по странице)."""
+    try:
+        if v is None or len(v) != 3:
+            return None
+        return tuple(min(1.0, max(0.0, float(t))) for t in v)
+    except Exception:
+        return None
+
+
+def _rot_slot(rot: dict, size: float) -> "dict | None":
+    """Место ПОВЁРНУТОЙ строки в своей системе координат: x — вдоль пути
+    от его начала (0 … длина пути), y — от базовой линии. Прямая строка —
+    начало и угол (`ox`, `oy`, `a`); дуга — узлы пути с накопленной длиной
+    (`nodes`): перевод пойдёт по ним буква за буквой. `bbox` — прямоугольник
+    на листе, по нему меряются бумага и краска."""
+    import math
+    pts = rot.get("pts") or []
+    end = rot.get("end") or (pts[-1][:2] if pts else None)
+    if not pts or not end:
+        return None
+    nodes = [(float(p[0]), float(p[1])) for p in pts] + [(float(end[0]), float(end[1]))]
+    cum = [0.0]
+    for (x0, y0), (x1, y1) in zip(nodes, nodes[1:]):
+        cum.append(cum[-1] + math.hypot(x1 - x0, y1 - y0))
+    length = max(cum[-1], 0.5 * size)
+    xs, ys = [n[0] for n in nodes], [n[1] for n in nodes]
+    m = 1.1 * size
+    return {"rot": rot, "curved": bool(rot.get("curved")), "nodes": nodes, "cum": cum,
+            "ox": nodes[0][0], "oy": nodes[0][1], "a": float(pts[0][2]),
+            "x": 0.0, "x0": 0.0, "x1": length, "y": 0.0, "top": 0.85 * size,
+            "bottom": -0.25 * size, "size": size, "xl": None, "exact": False,
+            "bbox": {"x0": min(xs) - m, "x1": max(xs) + m, "top": max(ys) + m,
+                     "bottom": min(ys) - m, "size": size}}
+
+
+def _path_at(sd: dict, s: float) -> tuple:
+    """(x, y, угол°) точки пути на расстоянии s от начала; за концом —
+    продолжение последнего отрезка."""
+    import math
+    nodes, cum = sd["nodes"], sd["cum"]
+    k = 0
+    while k < len(cum) - 2 and cum[k + 1] < s:
+        k += 1
+    (x0, y0), (x1, y1) = nodes[k], nodes[k + 1]
+    seg = (cum[k + 1] - cum[k]) or 1e-6
+    t = (s - cum[k]) / seg
+    ang = math.degrees(math.atan2(y1 - y0, x1 - x0)) if seg > 1e-5 else sd["a"]
+    return x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, ang
+
+
+def _arc_cells(sd: dict) -> list:
+    """Клетки букв дуги на листе (рамки для замера бумаги и краски): квадрат
+    вокруг СЕРЕДИНЫ буквы — от узла на полшага вдоль пути и на треть кегля
+    вверх по нормали, — а не прямоугольник вправо-вверх от узла: на крутом
+    участке кольца тот уходил за кольцо и мерил соседний цвет."""
+    import math
+    out = []
+    size = sd["size"]
+    nodes, cum = sd["nodes"], sd["cum"]
+    for k in range(len(nodes) - 1):
+        adv = max(cum[k + 1] - cum[k], 0.3 * size)
+        _x, _y, ang = _path_at(sd, cum[k] + 1e-3)
+        a = math.radians(ang)
+        cx = nodes[k][0] + 0.5 * adv * math.cos(a) - 0.33 * size * math.sin(a)
+        cy = nodes[k][1] + 0.5 * adv * math.sin(a) + 0.33 * size * math.cos(a)
+        # Габарит буквы под её углом плюс поля в четверть кегля: края клетки
+        # обязаны выйти за букву на фон.
+        ca, sa = abs(math.cos(a)), abs(math.sin(a))
+        adv_ = max(adv, 0.6 * size)
+        hw = 0.5 * (ca * adv_ + sa * size) + 0.25 * size
+        hh = 0.5 * (sa * adv_ + ca * size) + 0.25 * size
+        out.append({"x0": cx - hw, "x1": cx + hw, "top": cy + hh,
+                    "bottom": cy - hh, "size": size,
+                    "edge": "cols" if abs(math.sin(a)) > 0.7 else "rows"})
+    return out
+
+
+def _fill_rot(c, sd: dict, colors: list, pad: float) -> None:
+    """Закраска повёрнутой строки: прямой — одним повёрнутым прямоугольником,
+    дуги — по букве (у каждой свой угол и свой цвет фона под ней)."""
+    size = sd["size"]
+    if not sd["curved"]:
+        c.saveState()
+        c.translate(sd["ox"], sd["oy"])
+        c.rotate(sd["a"])
+        c.setFillColorRGB(*(colors[0] if colors else (1, 1, 1)))
+        c.rect(-pad, -0.25 * size - pad, sd["x1"] + 2 * pad, 1.1 * size + 2 * pad, stroke=0, fill=1)
+        c.restoreState()
+        return
+    cols = sd.get("_cfill") or []
+    nodes, cum = sd["nodes"], sd["cum"]
+    for k in range(len(nodes) - 1):
+        x, y, ang = _path_at(sd, cum[k] + 1e-3)
+        adv = cum[k + 1] - cum[k]
+        c.saveState()
+        c.translate(nodes[k][0], nodes[k][1])
+        c.rotate(ang)
+        c.setFillColorRGB(*(cols[k] if k < len(cols) else (colors[0] if colors else (1, 1, 1))))
+        c.rect(-pad, -0.25 * size - pad, adv + 2 * pad, 1.1 * size + 2 * pad, stroke=0, fill=1)
+        c.restoreState()
+
+
+def _draw_rot(c, sd: dict, lines: list, size: float, font: str, hsc: float, sw, align: str,
+              raster=None, color=(0, 0, 0)) -> None:
+    """Перевод повёрнутой строки: прямой — в повёрнутой системе координат,
+    дуги — по букве вдоль пути (по центру своего участка: подпись на кольце
+    схемы выключена по центру дуги)."""
+    if not sd["curved"]:
+        c.saveState()
+        c.translate(sd["ox"], sd["oy"])
+        c.rotate(sd["a"])
+        for k, ln in enumerate(lines):
+            if not ln:
+                continue
+            w = sw(ln, font, size) * hsc
+            x = (sd["x1"] - w) / 2.0 if align == "center" else 0.0
+            if raster is not None:
+                raster.put(c, x, -k * 1.2 * size, ln, size, color, hsc, sd.get("style") or "",
+                           sd.get("_rtl"))
+                continue
+            to = c.beginText(x, -k * 1.2 * size)
+            to.setFont(font, size)
+            if hsc < 0.999:
+                to.setHorizScale(hsc * 100.0)
+            to.textOut(ln)
+            c.drawText(to)
+        c.restoreState()
+        return
+    text = " ".join(x for x in lines if x)
+    if not text:
+        return
+    if raster is not None and (_shaped_script({0: text}) or raster.rtl(text)):
+        # Буква за буквой нельзя: арабица и иврит вышли бы задом наперёд
+        # и несвязанными, огласовки индийских письменностей — отдельно от
+        # своих букв. Такая надпись печатается целиком по ХОРДЕ дуги.
+        import math
+        (x0_, y0_), (x1_, y1_) = sd["nodes"][0], sd["nodes"][-1]
+        chord = math.hypot(x1_ - x0_, y1_ - y0_) or sd["x1"]
+        w = sw(text, font, size) * hsc
+        sz = max(size * CURVE_MIN_SHARE, size * min(1.0, chord / w)) if w > 0 else size
+        w = sw(text, font, sz) * hsc
+        c.saveState()
+        c.translate(x0_, y0_)
+        c.rotate(math.degrees(math.atan2(y1_ - y0_, x1_ - x0_)))
+        raster.put(c, max(0.0, (chord - w) / 2.0), 0, text, sz, color, hsc, sd.get("style") or "")
+        c.restoreState()
+        return
+    total = sw(text, font, size) * hsc
+    if total > sd["x1"] > 0:
+        # У дуги нет «следующей строки»: что не влезло, ушло бы по
+        # продолжению пути за конец кольца. Кегль уменьшается до длины
+        # дуги, не ниже `CURVE_MIN_SHARE`.
+        size = max(size * CURVE_MIN_SHARE, size * sd["x1"] / total)
+        total = sw(text, font, size) * hsc
+    s = max(0.0, (sd["x1"] - total) / 2.0)
+    for ch in text:
+        adv = sw(ch, font, size) * hsc
+        x, y, ang = _path_at(sd, s + adv / 2.0)
+        # Буква ставится началом, а угол — по середине её участка пути.
+        bx, by, _a = _path_at(sd, s)
+        c.saveState()
+        c.translate(bx, by)
+        c.rotate(ang)
+        if raster is not None:
+            raster.put(c, 0, 0, ch, size, color, hsc, sd.get("style") or "")
+            c.restoreState()
+            s += adv
+            continue
+        to = c.beginText(0, 0)
+        to.setFont(font, size)
+        if hsc < 0.999:
+            to.setHorizScale(hsc * 100.0)
+        to.textOut(ch)
+        c.drawText(to)
+        c.restoreState()
+        s += adv
+
+
+def _neighbour_limits(slots: list) -> None:
+    """Правый рубеж каждой строки: начало БЛИЖАЙШЕЙ строки текстового слоя
+    справа на той же высоте (`lim`). Конец строки — оценка, и у заголовка
+    в одну строку-кусок она уезжала в соседнюю колонку (промежуток 14 пт
+    при кегле 15 — меньше порога пробела у `_ink_end`): закраска стирала
+    колонку авторов. Где начинается соседняя строка, PDF знает точно —
+    дальше неё строка не тянется. Считается по ВСЕМ строкам страницы,
+    в том числе без перевода: чужая колонка остаётся оригиналом, и стирать
+    её нельзя тем более. Без numpy — рубежа нет, как прежде."""
+    if len(slots) < 2:
+        return
+    try:
+        import numpy as np
+    except ImportError:
+        return
+    x0 = np.array([sl["x"] for sl in slots], dtype=np.float64)
+    lo = np.array([sl["y"] - 0.2 * sl["size"] for sl in slots], dtype=np.float64)
+    hi = np.array([sl["y"] + 0.7 * sl["size"] for sl in slots], dtype=np.float64)
+    for k, sl in enumerate(slots):
+        m = (x0 > sl["x"] + 0.5 * sl["size"]) & (lo < hi[k]) & (hi > lo[k])
+        if m.any():
+            sl["lim"] = float(x0[m].min())
+
+
+def _slot_align(slots: list) -> str:
+    """«left» / «center» / «right» — как стояли строки оригинала. Подписи
+    в схеме и заголовки бывают выключены по центру, и перевод, начатый
+    от левого края, съезжал бы с места. Решают края САМИХ строк: левые
+    края гуляют, а середины совпадают — центр; совпадают правые — вправо.
+    Одна строка — влево: решать не по чему."""
+    if len(slots) < 2:
+        return "left"
+    size = statistics.median(sl["size"] for sl in slots) or 1.0
+
+    def spread(vals):
+        return max(vals) - min(vals)
+    lefts = spread([sl["x"] for sl in slots])
+    if lefts <= 1.0 * size:
+        return "left"
+    # Отступ первой строки или висячий отступ выключенного по формату
+    # абзаца: все строки, кроме первой, с одного края, первая — на несколько
+    # кеглей правее или левее, правые края совпадают. Это «влево» с отступом,
+    # а не «вправо»: иначе короткая последняя строка перевода уехала бы
+    # к правому полю.
+    xs = [sl["x"] for sl in slots]
+    full = slots[:-1] if len(slots) >= 3 else slots
+    if (spread(xs[1:]) <= 1.0 * size and abs(xs[0] - min(xs[1:])) <= 4.0 * size
+            and spread([sl["x1"] for sl in full]) <= 1.0 * size):
+        return "left"
+    if spread([(sl["x"] + sl["x1"]) / 2.0 for sl in slots]) <= 0.5 * lefts:
+        return "center"
+    if spread([sl["x1"] for sl in slots]) <= 0.5 * lefts:
+        return "right"
+    return "left"
+
+
+def _scattered(slots: list) -> bool:
+    """Места абзаца — не колонка строк, а РАЗБРОС по странице: подписи
+    в схеме, куски инфографики, склеенные разбором в один абзац. Признаки:
+    кегль строк расходится больше чем на треть, строка уходит ВВЕРХ чаще
+    одного раза (одна — законный переход в следующую колонку) или между
+    соседними строками зазор в три строки и больше."""
+    if len(slots) < 2:
+        return False
+    sizes = [sl["size"] for sl in slots]
+    if max(sizes) > 1.35 * max(1.0, min(sizes)):
+        return True
+    ups = 0
+    for a, b in zip(slots, slots[1:]):
+        if a["page"] != b["page"]:
+            continue
+        lead = 1.2 * max(a["size"], b["size"])
+        dy = a["y"] - b["y"]
+        if dy < -0.3 * lead:
+            ups += 1
+        elif dy > 3.0 * lead:
+            # Большой зазор в ТОЙ ЖЕ колонке (абзац, разорванный рисунком) —
+            # не разброс: кегль у его строк обязан остаться одним.
+            s_ = max(a["size"], b["size"])
+            same_col = (abs(a["x"] - b["x"]) <= 1.0 * s_
+                        and min(a["x1"], b["x1"]) - max(a["x"], b["x"])
+                        >= 0.5 * min(a["x1"] - a["x"], b["x1"] - b["x"]))
+            if not same_col:
+                return True
+    return ups > 1
+
+
+def _graphemes(text: str) -> list:
+    """Знаки письма без пробелов — с огласовками, вирамой и соединителями
+    при своей букве (резать между ними нельзя, `_cut_point`)."""
+    out: list = []
+    for k, ch in enumerate(text):
+        if out and k and _cut_point(text, k) != k:
+            out[-1] += ch
+        else:
+            out.append(ch)
+    return out
+
+
+def _spread(text: str, slots: list, sw, font_of, nospace: bool = False) -> tuple:
+    """([строка на место], [множитель кегля], [сужение]) для РАЗБРОСАННОГО
+    абзаца (`_scattered`).
+
+    Жадное заполнение по порядку уводило слова не в свои блоки: подпись
+    «24 HOURS» получала середину чужого абзаца крупным кеглем. Здесь каждое
+    место получает долю перевода ПО ДОЛЕ ОРИГИНАЛА в нём (знаков `n`), то
+    есть подпись остаётся у своего блока, — и каждое место ужимается само:
+    у подписей схемы кегли и так разные. Мест без счёта знаков — делим
+    поровну."""
+    words = (text or "").split()
+    sep = " "
+    if nospace and len(words) < len(slots):
+        # Письмо без пробелов: слова не выделить — делим по знакам.
+        words, sep = _graphemes("".join(words)), ""
+    n = len(slots)
+    weights = [max(1, sl.get("n") or 0) for sl in slots]
+    total_w = float(sum(weights))
+    total_t = float(sum(len(w) + 1 for w in words)) or 1.0
+    lines = [[] for _ in range(n)]
+    j, done, cum = 0, 0.0, weights[0] / total_w * total_t
+    for w in words:
+        # Слово уходит в следующее место, когда его СЕРЕДИНА перешла долю
+        # текущего места (и места ещё есть).
+        while j < n - 1 and done + (len(w) + 1) / 2.0 > cum:
+            j += 1
+            cum += weights[j] / total_w * total_t
+        lines[j].append(w)
+        done += len(w) + 1
+    out, fs, hss = [], [], []
+    for sl, ws in zip(slots, lines):
+        line = sep.join(ws)
+        out.append(line)
+        width = max(1.0, sl["x1"] - sl["x0"])
+        need = sw(line, font_of(sl), sl["size"]) if line else 0.0
+        if need <= width:
+            fs.append(1.0)
+            hss.append(1.0)
+        elif need * HSCALE_MIN <= width:
+            fs.append(1.0)
+            hss.append(width / need)
+        else:
+            hss.append(HSCALE_MIN)
+            fs.append(max(MIN_SIZE_SHARE, width / (need * HSCALE_MIN)))
+    return out, fs, hss
+
+
+def _cut_point(word: str, n: int) -> int:
+    """Граница разреза слова не посреди БУКВЫ: огласовка, знак ударения,
+    вирама и соединитель остаются со своей буквой."""
+    import unicodedata
+    while 1 < n < len(word) and (unicodedata.category(word[n]).startswith("M")
+                                 or word[n] in "\u200c\u200d"
+                                 or "VIRAMA" in unicodedata.name(word[n - 1], "")):
+        n -= 1
+    return max(1, n)
+
+
+def _fit_slots(text: str, slots: list, sw, font_of, align: str, split_ok: bool = False) -> tuple:
+    """([строка на каждое место], множитель кегля, не влезшие слова,
+    сужение по горизонтали).
+
+    Перевод встаёт в МЕСТА строк оригинала по порядку: каждая строка — своей
+    ширины, своего кегля и на своей базовой линии. Не влез — кегль всех строк
+    абзаца уменьшается одним множителем (разный кегль у строк одного абзаца
+    читается как брак), не ниже `MIN_SIZE_SHARE`; что не влезло и тогда —
+    печатается строками под последним местом, а не теряется. До кегля
+    сужается начертание (`HSCALE_MIN`): высота букв — часть вёрстки."""
+    words0 = (text or "").split()
+    hs = [1.0]
+
+    def lay(f, split=False):
+        words = list(words0)
+        out, k, ok = [], 0, True
+        for sl in slots:
+            font, size = font_of(sl), max(1.0, sl["size"] * f)
+            width = sl["x1"] - (sl["x"] if align == "left" else sl["x0"])
+            cur = ""
+            while k < len(words):
+                probe = (cur + " " + words[k]) if cur else words[k]
+                if sw(probe, font, size) * hs[0] <= width:
+                    cur, k = probe, k + 1
+                elif not cur:
+                    w_ = words[k]
+                    if split and len(w_) > 1:
+                        # Слово длиннее строки и на самом мелком кегле (адрес,
+                        # составное слово, текст без пробелов): режем по
+                        # знакам, остаток — следующей строкой. Не влезший
+                        # хвост хуже разрезанного слова.
+                        n = len(w_) - 1
+                        while n > 1 and sw(w_[:n], font, size) * hs[0] > width:
+                            n -= 1
+                        n = _cut_point(w_, n)
+                        cur = w_[:n]
+                        words[k] = w_[n:]
+                        break
+                    # Переносов по слогам мы не умеем — ставим как есть,
+                    # но кегль ещё поищем.
+                    cur, k, ok = w_, k + 1, False
+                    break
+                else:
+                    break
+            out.append(cur)
+        return out, words[k:], ok and k >= len(words)
+
+    # Письмо без пробелов (`split_ok`) режется по знакам на ЛЮБОМ кегле:
+    # иначе вся строка вставала в первое место (не влезло ни одно «слово»),
+    # остальные пустели, и кегль падал до самого мелкого.
+    lines, rest, fits = lay(1.0, split_ok)
+    if fits:
+        return lines, 1.0, [], 1.0
+    # Сперва — сужение при прежнем кегле.
+    hs[0] = HSCALE_MIN
+    got, _rest, ok = lay(1.0, split_ok)
+    if ok:
+        lo, hi, best = HSCALE_MIN, 1.0, got     # lo влезает, hi — нет
+        for _ in range(6):
+            mid = (lo + hi) / 2.0
+            hs[0] = mid
+            got, _rest, ok = lay(1.0, split_ok)
+            if ok:
+                lo, best = mid, got
+            else:
+                hi = mid
+        return best, 1.0, [], lo
+    # Сужения мало — уменьшаем и кегль, при самом узком начертании.
+    hs[0] = HSCALE_MIN
+    lo_lines, lo_rest, lo_fits = lay(MIN_SIZE_SHARE, split_ok)
+    if not lo_fits:
+        if split_ok or len(words0) < len(slots):
+            # Слов меньше, чем строк, — текст без пробелов (или почти):
+            # режем по знакам, иначе всё встало бы в первую строку, а
+            # остальные остались бы пустыми. Подпись из одного слова не
+            # режем: целое слово, вылезшее вправо, читается лучше обрубков.
+            lo_lines, lo_rest, _ok = lay(MIN_SIZE_SHARE, split=True)
+        return lo_lines, MIN_SIZE_SHARE, lo_rest, HSCALE_MIN
+    lo, hi = MIN_SIZE_SHARE, 1.0                # lo влезает, hi — нет
+    best = (lo_lines, lo)
+    for _ in range(8):
+        mid = (lo + hi) / 2.0
+        got, _rest, ok = lay(mid, split_ok)
+        if ok:
+            lo, best = mid, (got, mid)
+        else:
+            hi = mid
+    return best[0], best[1], [], HSCALE_MIN
 
 
 def _wrap(text: str, width: float, size: float, indent: float, sw, font: str) -> list:
@@ -307,8 +1071,19 @@ class _Sampler:
                     cb = [float(v) for v in page.get_cropbox()]
                 except Exception:
                     cb = [0.0, 0.0, 0.0, 0.0]
-                im = page.render(scale=self.scale).to_pil().convert("RGB")
-                sample = (im, self.scale, cb, im.convert("L"))
+                # Потолок площади: MediaBox бывает до 14 400 пт, и при 144
+                # точках на дюйм это сотни мегапикселей в памяти единственного
+                # воркера. Масштаб — на страницу; читатели берут его из снимка.
+                scale = self.scale
+                try:
+                    pw, ph = page.get_size()
+                    px = (pw * scale) * (ph * scale)
+                    if SAMPLE_MAX_MPX > 0 and px > SAMPLE_MAX_MPX * 1e6:
+                        scale *= (SAMPLE_MAX_MPX * 1e6 / px) ** 0.5
+                except Exception:
+                    pass
+                im = page.render(scale=max(0.05, scale)).to_pil().convert("RGB")
+                sample = (im, max(0.05, scale), cb, im.convert("L"))
                 page.close()
             except Exception:
                 sample = None
@@ -405,7 +1180,11 @@ def _ink_box(sample, box: dict, pad: float, paper: float) -> tuple:
     # от заголовка в книге стоит рисованная виньетка (пчела в рамке),
     # и щедрая раздвижка закрашивала её половину. Хватает одного знака:
     # больше там взяться нечему.
-    mins = _col_mins(gray, left - min(limit, INK_LEFT_PT * size * scale), left, y0, y1)
+    # У строки с началом и концом по метрикам шрифта (`exact`) начало
+    # известно ТОЧНО: раздвижка влево там — только на погрешность штриха,
+    # иначе заливка срезала значок, стоящий вплотную к подписи схемы.
+    left_pt = (INK_EXACT_SLACK * 0.5 if box.get("exact") else INK_LEFT_PT) * size
+    mins = _col_mins(gray, left - min(limit, left_pt * scale), left, y0, y1)
     run, reach = 0, 0
     for k, v in enumerate(reversed(mins)):
         if v < dark:
@@ -416,6 +1195,65 @@ def _ink_box(sample, box: dict, pad: float, paper: float) -> tuple:
                 break
     x0 = x0 - reach / scale if reach else x0
     return x0, x1
+
+
+def _ink_end(sample, box: dict, paper: float) -> "float | None":
+    """Настоящий конец строки по КРАСКЕ — либо None (мерить нечем).
+
+    Конец строки в текстовом слое — либо посчитан по метрикам шрифта
+    (`exact`, недосчитывает выключку по формату), либо оценён по средней
+    ширине знака (у крупного кегля уезжал за край колонки: заголовок
+    «Management of Type 2 Diabetes,» закрашивал колонку авторов). Идём
+    вправо по краске — от посчитанного конца либо от начала ПОСЛЕДНЕГО
+    куска строки (`xl`, его PDF знает точно) — и останавливаемся на первом
+    настоящем пробеле (`INK_GAP_SHARE` кегля). Строку целиком дальше оценки на потолок
+    раздвижки не тянем: в схеме за подписью стоит рисунок, и краска
+    рисунка — не текст."""
+    xl = box.get("xl")
+    if not sample or xl is None:
+        return None
+    im, scale, cb, gray = sample
+    W, H = im.size
+    size = max(box.get("size") or 10.0, 1.0)
+    y0 = int(max(0, H - (box["top"] - cb[1]) * scale))
+    y1 = int(min(H, H - (box["bottom"] - cb[1]) * scale + 1))
+    if y1 - y0 < 2:
+        return None
+    est = box["x1"]
+    cap = est + min(max(INK_EXPAND_SHARE * (est - box["x0"]), 4 * size), INK_EXPAND_MAX)
+    if box.get("exact"):
+        # Конец по метрикам шрифта считает и сдвиги TJ, и межбуквенный
+        # интервал — дальше него краска строки не уходит больше чем на
+        # знак (у отсканированного текста штрих бывает шире метрики).
+        # Без потолка раздвижка шла по рамке плашки и стрелке схемы
+        # за подписью — заливка цветом рамки выползала на рисунок.
+        cap = min(cap, est + INK_EXACT_SLACK * size)
+    if box.get("lim") is not None:
+        cap = min(cap, box["lim"])
+    # Конец, посчитанный по метрикам шрифта, недосчитывает выключку по
+    # формату (сдвиги внутри TJ), но НЕ пересчитывает: идём от него и дальше
+    # только по краске ВПЛОТНУЮ — хвост слова продолжается без разрыва,
+    # а рамка блока или рисунок за подписью отделены пробелом.
+    origin = est if box.get("exact") else xl
+    start = (origin - cb[0]) * scale
+    mins = _col_mins(gray, start, (cap - cb[0]) * scale, y0, y1)
+    if not mins:
+        return None
+    dark = INK_DARK * paper * 255.0
+    gap = max(1, int(round(INK_GAP_SHARE * size * scale)))
+    run, reach = 0, 0
+    for k, v in enumerate(mins):
+        if v < dark:
+            run, reach = 0, k + 1
+        else:
+            run += 1
+            # От точного конца: пробел сразу — хвоста нет, дальше не идём
+            # (иначе дошли бы до рисунка за подписью).
+            if run >= gap and (reach or box.get("exact")):
+                break
+    if not reach:
+        return est if box.get("exact") else None
+    return max(box["x0"] + 0.5 * size, origin + reach / scale)
 
 
 def _strip_colors(sample, box: dict, pad: float, n: int, x0f=None, x1f=None, q: float = PAPER_Q) -> list:
@@ -438,6 +1276,26 @@ def _strip_colors(sample, box: dict, pad: float, n: int, x0f=None, x1f=None, q: 
     y0 = H - (box["top"] + pad - cb[1]) * scale
     y1 = H - (box["bottom"] - pad - cb[1]) * scale
     step = max(1.0, (x1 - x0) / n)
+    try:
+        import numpy as np
+        gx0, gx1 = max(0, int(x0)), min(W, max(int(x0) + 1, int(x1) + 1))
+        gy0, gy1 = max(0, int(y0)), min(H, max(int(y0) + 1, int(y1)))
+        if gx1 - gx0 >= 1 and gy1 - gy0 >= 1:
+            arr = np.asarray(im.crop((gx0, gy0, gx1, gy1)), dtype=np.uint8)[:, :, :3]
+            out = []
+            for k in range(n):
+                a = max(0, int(x0 + k * step) - gx0)
+                b = min(arr.shape[1], max(a + 1, int(x0 + (k + 1) * step) + 1 - gx0))
+                px = arr[:, a:b].reshape(-1, 3)
+                if not len(px):
+                    out.append(out[-1] if out else (1.0, 1.0, 1.0))
+                    continue
+                srt = np.sort(px, axis=0)
+                row = srt[min(len(srt) - 1, int(q * len(srt)))]
+                out.append(tuple(float(v) / 255.0 for v in row))
+            return out
+    except ImportError:
+        pass
     out = []
     for k in range(n):
         px0, px1 = int(x0 + k * step), int(x0 + (k + 1) * step) + 1
@@ -458,15 +1316,33 @@ def _strip_colors(sample, box: dict, pad: float, n: int, x0f=None, x1f=None, q: 
     return out
 
 
-def _fill_box(c, box: dict, pad: float, colors: list, x0f=None, x1f=None):
+def _overflow_lines(words: list, sd: dict, size: float, sw, font: str, align: str,
+                    hsc: float = 1.0):
+    """Не влезшие слова — строками той же ширины под последним местом:
+    вылезший текст лучше потерянного (инвариант 4)."""
+    width = max(1.0, sd["x1"] - (sd["x"] if align == "left" else sd["x0"]))
+    cur = ""
+    for w in words:
+        probe = (cur + " " + w) if cur else w
+        if cur and sw(probe, font, size) * hsc > width:
+            yield cur
+            cur = w
+        else:
+            cur = probe
+    if cur:
+        yield cur
+
+
+def _fill_box(c, box: dict, pad: float, colors: list, x0f=None, x1f=None, top_pad=None):
     """Закраска рамки полосами. Полосы кладутся с нахлёстом внутрь, но
     НЕ ЗА правый край: вылезший кусок виден на поле прямоугольником.
     `x0f`/`x1f` — края, раздвинутые по краске (`_ink_box`): закрашиваем
     то, что на странице НАПЕЧАТАНО, а не то, что насчитал текстовый слой."""
     bx0 = box["x0"] if x0f is None else x0f
     bx1 = box["x1"] if x1f is None else x1f
+    tp = pad if top_pad is None else top_pad
     x0, y0 = bx0 - pad, box["bottom"] - pad
-    w, h = (bx1 - bx0) + 2 * pad, (box["top"] - box["bottom"]) + 2 * pad
+    w, h = (bx1 - bx0) + 2 * pad, (box["top"] - box["bottom"]) + pad + tp
     n = max(1, len(colors))
     step = w / float(n)
     for k, col in enumerate(colors):
@@ -474,6 +1350,291 @@ def _fill_box(c, box: dict, pad: float, colors: list, x0f=None, x1f=None):
         right = min(x0 + w, left + step * 1.6)
         c.setFillColorRGB(*col)
         c.rect(left, y0, right - left, h, stroke=0, fill=1)
+
+
+def _shaped_script(texts: dict) -> str:
+    """Письменность перевода, которой нужна СБОРКА букв (справа налево,
+    лигатуры, огласовки), — либо «»."""
+    import unicodedata
+    for t in texts.values():
+        for ch in (t or ""):
+            o = ord(ch)
+            if o < 0x0590 or unicodedata.category(ch) == "Cf":
+                continue                # метки направления (RLM, ALM) — не письмо
+            if unicodedata.bidirectional(ch) in ("R", "AL"):
+                return "письмо справа налево"
+            if (0x0900 <= o <= 0x0DFF or 0x0E00 <= o <= 0x0EFF or 0x0F00 <= o <= 0x0FFF
+                    or 0x1000 <= o <= 0x109F or 0x1780 <= o <= 0x17FF):
+                return "письмо со сборкой букв"
+    return ""
+
+
+def _nospace_script(texts: dict) -> bool:
+    """В переводе письмо БЕЗ пробелов между словами (иероглифы, кана,
+    тайское, лаосское, кхмерское, бирманское): строку режем по знакам."""
+    for t in texts.values():
+        for ch in (t or ""):
+            o = ord(ch)
+            if (0x0E00 <= o <= 0x0EFF or 0x1000 <= o <= 0x109F or 0x1780 <= o <= 0x17FF
+                    or 0x3040 <= o <= 0x30FF or 0x3400 <= o <= 0x9FFF or 0xAC00 <= o <= 0xD7AF
+                    or 0xF900 <= o <= 0xFAFF):
+                return True
+    return False
+
+
+class _Raster:
+    """Печать строки КАРТИНКОЙ через Pillow (+ raqm — сборка букв, письмо
+    справа налево) — для письменностей, которые reportlab не собирает
+    (арабица, иврит, индийские, тайское, кхмерское, бирманское) и для
+    шрифтов, которых у reportlab нет (иероглифы — только в OTF/CFF).
+
+    Шрифт — из репозитория (те же Noto, что у субтитров видео), по буквам:
+    у каждого знака свой файл (`runs`) — в шрифтах письменностей Noto нет
+    латиницы и цифр, и «COVID-19» в арабской строке иначе стал бы квадратами.
+    Строка справа налево — куски в обратном порядке, внутри куска порядок
+    и сборку делает raqm."""
+
+    SCALE = 4.0                         # пикселей на пункт (≈ 288 точек на дюйм)
+
+    def __init__(self, chars: set):
+        from PIL import features
+        from fontTools.ttLib import TTFont
+        self.raqm = bool(features.check("raqm"))
+        self.cmaps: dict = {}
+        files = sorted(p for p in Path(_REPO_FONTS).glob("*")
+                       if p.suffix.lower() in (".ttf", ".otf") and "Bold" not in p.name)
+        for p in files:
+            try:
+                self.cmaps[str(p)] = set(TTFont(str(p), lazy=True).getBestCmap() or {})
+            except Exception:
+                continue
+        hard = [ord(ch) for ch in chars if ord(ch) > 0x2FF and not ch.isspace()]
+        self.latin = next((p for p in self.cmaps if p.endswith("NotoSans-Regular.ttf")),
+                          next(iter(self.cmaps), ""))
+        # Основной — тот, что знает больше букв перевода; при равенстве —
+        # шрифт САМОЙ письменности (Noto, у́же по набору знаков): он рисует её
+        # лучше универсального DejaVu.
+        def rank(item):
+            p, cm = item
+            return (sum(1 for o in hard if o in cm), "Noto" in p, -len(cm))
+        self.primary = max(self.cmaps.items(), key=rank)[0] if self.cmaps else self.latin
+        self.missing = sum(1 for o in set(hard) if o not in self.cmaps.get(self.primary, set())
+                           and o not in self.cmaps.get(self.latin, set()))
+        self._fonts: dict = {}
+
+    def _font(self, path: str, size: float, bold: bool = False):
+        from PIL import ImageFont
+        px = max(1, int(round(size * self.SCALE)))
+        bpath = path.replace("-Regular.", "-Bold.") if bold else path
+        if bold and not Path(bpath).exists():
+            bpath = path
+        key = (bpath, px)
+        if key not in self._fonts:
+            eng = ImageFont.Layout.RAQM if self.raqm else ImageFont.Layout.BASIC
+            self._fonts[key] = ImageFont.truetype(bpath, px, layout_engine=eng)
+        return self._fonts[key], bpath != path
+
+    def _path_of(self, ch: str, prev: str) -> str:
+        import unicodedata
+        o = ord(ch)
+        if ch.isspace() or unicodedata.category(ch)[0] in "PZM" and prev:
+            return prev
+        if o in self.cmaps.get(self.primary, set()):
+            return self.primary
+        if o in self.cmaps.get(self.latin, set()):
+            return self.latin
+        return self.primary
+
+    def runs(self, text: str, base_rtl: "bool | None" = None) -> list:
+        """[(файл, кусок, справа-налево)] в ВИДИМОМ порядке слева направо.
+
+        Уровни встраивания — упрощённый алгоритм Юникода (`_bidi_levels`):
+        цифры внутри письма справа налево идут слева направо, нейтральные
+        знаки берут сторону соседей. Строка режется на куски одного уровня
+        и одного шрифта (у каждого знака шрифт, который его знает), куски
+        переставляются по уровням, а внутри куска справа налево порядок
+        и сборку букв делает raqm."""
+        if not text:
+            return []
+        levels = _bidi_levels(text, base_rtl)
+        logical: list = []
+        prev = ""
+        for ch, lv in zip(text, levels):
+            path = self._path_of(ch, prev)
+            prev = path
+            if logical and logical[-1][0] == path and logical[-1][2] == lv:
+                logical[-1][1] += ch
+            else:
+                logical.append([path, ch, lv])
+        top = max(r[2] for r in logical)
+        lo_odd = min((r[2] for r in logical if r[2] % 2), default=top + 1)
+        for k in range(top, lo_odd - 1, -1):
+            i = 0
+            while i < len(logical):
+                if logical[i][2] >= k:
+                    j = i
+                    while j < len(logical) and logical[j][2] >= k:
+                        j += 1
+                    logical[i:j] = logical[i:j][::-1]
+                    i = j
+                else:
+                    i += 1
+        return [(p_, t_, bool(lv % 2)) for p_, t_, lv in logical]
+
+    @staticmethod
+    def rtl(text: str) -> bool:
+        import unicodedata
+        for ch in text:
+            b = unicodedata.bidirectional(ch)
+            if b in ("R", "AL"):
+                return True
+            if b == "L":
+                return False
+        return False
+
+    def _len(self, path, t, size, rtl, bold=False):
+        f, _b = self._font(path, size, bold)
+        kw = {"direction": "rtl" if rtl else "ltr"} if self.raqm else {}
+        return f.getlength(t, **kw)
+
+    def measure(self, text: str, _font=None, size: float = 10.0) -> float:
+        """Ширина строки — ТЕМ ЖЕ файлом, каким она будет нарисована: у
+        полужирного (по имени шрифта reportlab) — Bold-файлом; меряй
+        обычным, а рисуй жирным — строка вылезала бы за своё место."""
+        bold = _font_is_bold(_font)
+        return sum(self._len(p, t, size, r, bold) for p, t, r in self.runs(text)) / self.SCALE
+
+    def put(self, c, x: float, y: float, text: str, size: float, color, hsc: float = 1.0,
+            style: str = "", base_rtl: "bool | None" = None) -> None:
+        from PIL import Image, ImageDraw
+        from reportlab.lib.utils import ImageReader
+        bold = "b" in (style or "")
+        runs = self.runs(text, base_rtl)
+        rgba = tuple(int(round(max(0.0, min(1.0, v)) * 255)) for v in color[:3]) + (255,)
+        cursor = x
+        for path, t, r in runs:
+            f, real_bold = self._font(path, size, bold)
+            kw = {"direction": "rtl" if r else "ltr"} if self.raqm else {}
+            w = f.getlength(t, **kw)
+            asc, desc = f.getmetrics()
+            pad = 2 + int(size * self.SCALE * 0.05)
+            img = Image.new("RGBA", (int(w) + 2 * pad, asc + desc + 2 * pad), (0, 0, 0, 0))
+            stroke = (max(1, int(round(size * self.SCALE * 0.03))) if bold and not real_bold else 0)
+            ImageDraw.Draw(img).text((pad, pad + asc), t, font=f, fill=rgba, anchor="ls",
+                                     stroke_width=stroke, stroke_fill=rgba, **kw)
+            wpt, hpt = img.size[0] / self.SCALE * hsc, img.size[1] / self.SCALE
+            ox, oy = -pad / self.SCALE * hsc, -(desc + pad) / self.SCALE
+            c.saveState()
+            c.translate(cursor, y)
+            if "i" in (style or ""):
+                c.transform(1, 0, 0.21, 1, 0, 0)
+            c.drawImage(ImageReader(img), ox, oy, wpt, hpt, mask="auto")
+            c.restoreState()
+            cursor += w / self.SCALE * hsc
+
+
+def _font_is_bold(name) -> bool:
+    """Полужирное ли начертание просили у шрифта reportlab с этим именем:
+    имя — FONT_NAME + семейство + начертание («R», «b», «i», «bi») + 6 знаков
+    отпечатка файла (`_register_fonts`)."""
+    if not name or not isinstance(name, str) or len(name) < 7:
+        return False
+    st = name[:-6]
+    return st.endswith("b") or st.endswith("bi")
+
+
+def _bidi_levels(text: str, base_rtl: "bool | None" = None) -> list:
+    """Уровни встраивания по упрощённому двунаправленному алгоритму Юникода:
+    сильные L/R(AL), цифры (EN/AN — слева направо внутри письма справа
+    налево), нейтральные — сторона соседей, если она одна, иначе базовая;
+    метки (NSM) — уровень своей буквы. Основа — первый сильный знак строки
+    (либо `base_rtl`). Без встраиваний (LRE/RLO…): в переводе их нет."""
+    import unicodedata
+    cls = [unicodedata.bidirectional(ch) for ch in text]
+    if base_rtl is None:
+        base_rtl = False
+        for c in cls:
+            if c in ("R", "AL"):
+                base_rtl = True
+                break
+            if c == "L":
+                break
+    base = 1 if base_rtl else 0
+    n = len(text)
+    kind = [None] * n                    # "L" | "R" | "N" | "D" (цифра)
+    last_strong = "R" if base else "L"
+    for i, c in enumerate(cls):
+        if c == "L":
+            kind[i] = last_strong = "L"
+        elif c in ("R", "AL"):
+            kind[i] = last_strong = "R"
+        elif c in ("EN", "AN"):
+            kind[i] = "D"
+        elif c == "NSM" and i:
+            kind[i] = kind[i - 1]
+        else:
+            kind[i] = "N"
+    # Цифры: после R — уровень цифр в письме справа налево, иначе как L.
+    strong_before = []
+    s_ = "R" if base else "L"
+    for i in range(n):
+        if kind[i] in ("L", "R"):
+            s_ = kind[i]
+        strong_before.append(s_)
+    lv = [base] * n
+    for i in range(n):
+        k = kind[i]
+        if k == "L":
+            lv[i] = 2 if base else 0
+        elif k == "R":
+            lv[i] = 1
+        elif k == "D":
+            lv[i] = 2 if (base or strong_before[i] == "R") else 0
+    # Нейтральные — по соседям (цифры здесь считаются «R» в окружении R).
+    i = 0
+    while i < n:
+        if kind[i] != "N":
+            i += 1
+            continue
+        j = i
+        while j < n and kind[j] == "N":
+            j += 1
+
+        def side(k_):
+            if k_ is None:
+                return "R" if base else "L"
+            if kind[k_] == "D":
+                return "R" if strong_before[k_] == "R" else "L"
+            return kind[k_]
+        a = side(i - 1 if i > 0 else None)
+        b = side(j if j < n else None)
+        v = (1 if a == "R" else (2 if base else 0)) if a == b else base
+        for t in range(i, j):
+            lv[t] = v
+        i = j
+    return lv
+
+
+def _unsupported_script(texts: dict) -> str:
+    """Письменность перевода, которую печать слоя честно НЕ умеет, — либо «».
+
+    reportlab кладёт глифы по одному, слева направо и без сборки букв:
+    арабица и иврит вышли бы задом наперёд и несвязанными, у индийских,
+    тайского, кхмерского, бирманского и тибетского огласовки встали бы
+    не на свои места. Лучше отказ словами, чем «перевод», который нельзя
+    прочесть (а у формата «PDF» есть запасная дорога — печать Word)."""
+    import unicodedata
+    for t in texts.values():
+        for ch in (t or ""):
+            o = ord(ch)
+            if o < 0x0590:
+                continue
+            if unicodedata.bidirectional(ch) in ("R", "AL"):
+                return "письмо справа налево"
+            if (0x0900 <= o <= 0x0DFF or 0x0E00 <= o <= 0x0EFF or 0x0F00 <= o <= 0x0FFF
+                    or 0x1000 <= o <= 0x109F or 0x1780 <= o <= 0x17FF):
+                return "письмо со сборкой букв (индийские, тайское, кхмерское, бирманское)"
+    return ""
 
 
 def _missing_glyphs(fonts: dict, texts: dict) -> int:
@@ -525,13 +1686,54 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
     from reportlab.pdfgen import canvas
     from reportlab.pdfbase import pdfmetrics
     from pypdf import PdfReader, PdfWriter
-    fonts = _register_fonts()
-    sw = pdfmetrics.stringWidth
     all_texts = dict(texts)
     for k, it in enumerate(extra or []):
         all_texts["x%d" % k] = it.get("text") or ""
+    chars = set()
+    for t in all_texts.values():
+        chars.update(ch for ch in (t or "") if not ch.isspace())
+    fonts = _register_fonts(chars)
+    sw = pdfmetrics.stringWidth
     miss = _missing_glyphs(fonts, all_texts)
-    if miss > GLYPH_MISS_MAX:
+    # Письмо со сборкой букв или знаки, которых нет в шрифтах reportlab
+    # (иероглифы — только в OTF), печатаются картинкой строки (`_Raster`).
+    raster = None
+    shaped = _shaped_script(all_texts)
+    if shaped or miss > GLYPH_MISS_MAX:
+        try:
+            raster = _Raster(chars)
+        except Exception as e:
+            raise NotAvailable("печать письменности перевода недоступна: %s" % e)
+        if shaped and not raster.raqm:
+            raise NotAvailable("%s — нужна сборка букв (raqm), а Pillow собран без неё" % shaped)
+        if raster.missing > GLYPH_MISS_MAX:
+            raise NotAvailable("ни один шрифт не знает %d знаков перевода" % raster.missing)
+        miss = raster.missing
+    sw_vec = sw
+    # Картинкой — только АБЗАЦ, которому это нужно (своя письменность со
+    # сборкой букв, справа налево или знаки, которых нет в шрифте
+    # reportlab). Прежде один знак RLM в одной строке переводил в картинки
+    # всю книгу — тяжелее, без выделения текста и чужой гарнитурой.
+    try:
+        _face = pdfmetrics.getFont(fonts.get("") or FONT_NAME).face
+    except Exception:
+        _face = None
+
+    def needs_raster(t: str) -> bool:
+        if raster is None:
+            return False
+        import unicodedata
+        if _shaped_script({0: "".join(ch for ch in t if unicodedata.category(ch) != "Cf")}):
+            return True
+        if _face is None:
+            return False
+        try:
+            return any(not ch.isspace() and unicodedata.category(ch) != "Cf"
+                       and not _face.charToGlyph.get(ord(ch)) for ch in t)
+        except Exception:
+            return False
+    nospace = _nospace_script(all_texts)
+    if raster is None and miss > GLYPH_MISS_MAX:
         raise NotAvailable("шрифт %s не знает %d знаков перевода — письменность "
                            "целевого языка в нём отсутствует; задайте LAYOUT_FONT"
                            % (os.path.basename(font_path("")), miss))
@@ -543,7 +1745,8 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
              # со страниц-картинок: обе дороги молчали до сих пор, и обе
              # оставляли на готовой книге русские строки.
              "repeated": 0, "repeatBoxes": 0, "imageBoxes": 0,
-             "glyphMiss": miss}
+             "glyphMiss": miss, "sans": 0, "serif": 0, "mono": 0, "inked": 0,
+             "slotParagraphs": 0, "condensed": 0, "scattered": 0, "raster": 0}
 
     # Повёрнутая страница: наш слой лёг бы боком. Оставляем её оригиналом —
     # это честнее испорченной. Решается ДО раскладки: абзац, чья вторая
@@ -572,6 +1775,28 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
     # (страница рисуется и тут же забывается). Меряем ДО раскладки, потому
     # что раздвинутая по краске рамка шире, а в ширину рамки укладывается
     # перевод: померив после, мы разложили бы текст по неверной ширине.
+    # Места строк — у ВСЕХ рамок страницы, и у тех, что без перевода: по ним
+    # считается правый рубеж соседа (`_neighbour_limits`).
+    page_slots: dict = {}
+    for _idx, _t, boxes in jobs:
+        for b in boxes:
+            pg = int(b["page"])
+            if pg in skip:
+                continue
+            b["_slots"] = _slot_boxes(b)
+            # Строка не шире листа: конец — оценка, и за краем листа ей
+            # делать нечего (там поле с чужим текстом).
+            try:
+                right = float(reader.pages[pg].mediabox.right)
+                for sd in b["_slots"]:
+                    if not sd.get("rot"):
+                        sd["x1"] = max(sd["x"] + 0.5 * sd["size"], min(sd["x1"], right))
+            except Exception:
+                pass
+            page_slots.setdefault(pg, []).extend(sd for sd in b["_slots"] if not sd.get("rot"))
+    for sls in page_slots.values():
+        _neighbour_limits(sls)
+
     sampler = _Sampler(pdf_bytes)
     live_boxes: dict = {}
     for idx, text, boxes in jobs:
@@ -590,6 +1815,72 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
         for pg in sorted(live_boxes):
             sample = sampler.page(pg)
             for b in live_boxes[pg]:
+                sbs = b.get("_slots") or []
+                if sbs:
+                    # Строка за строкой: бумага, краска до настоящего пробела,
+                    # цвет и плотность краски — у каждой своя.
+                    for sd in sbs:
+                        pad = PAD_SHARE * max(sd["size"], 1.0)
+                        if sd.get("rot"):
+                            bb = sd["bbox"]
+                            colors = _slot_paper(sample, bb, 0.0, 1)
+                            paper = (sum(colors[0]) / 3.0) if colors else 1.0
+                            sd["_fill"] = (colors, paper, pad)
+                            sd["_ink"] = _ink_color(sample, bb, 0.0, paper, either=True)
+                            if sd.get("color") is not None:
+                                sd["_ink"] = sd["color"]
+                            if sd["curved"]:
+                                # Под каждой буквой дуги — свой фон (кольцо
+                                # схемы переливается цветом), и краска
+                                # меряется В КЛЕТКЕ БУКВЫ, а не по рамке всей
+                                # дуги: та накрывает само кольцо, и «краской»
+                                # выходил цвет кольца — перевод его же цветом
+                                # становился невидим. Клетка — вокруг середины
+                                # буквы с учётом её угла, иначе на крутом
+                                # участке она вылезала за кольцо.
+                                cf, light, dark = [], [], []
+                                for cell in _arc_cells(sd):
+                                    pc = (_slot_paper(sample, cell, 0.0, 1) or [(1, 1, 1)])[0]
+                                    cf.append(pc)
+                                    ik = _ink_color(sample, cell, 0.0, sum(pc) / 3.0, either=True)
+                                    if ik is not None:
+                                        (light if sum(ik) > sum(pc) else dark).append(ik)
+                                sd["_cfill"] = cf
+                                # Краска дуги — одной полярности на всю надпись:
+                                # берём ту сторону (светлее или темнее фона),
+                                # за которую больше букв, и её середину.
+                                inks = light if len(light) > len(dark) else dark
+                                if inks and sd.get("color") is None:
+                                    inks.sort(key=lambda c_: sum(c_))
+                                    sd["_ink"] = inks[len(inks) // 2]
+                            continue
+                        lim = sd.get("lim")
+                        if lim is not None and sd["x1"] > lim - 0.5 * pad:
+                            sd["x1"] = max(sd["x"] + 0.5 * sd["size"], lim - 0.5 * pad)
+                        colors = _slot_paper(sample, sd, pad, SLOT_STRIPS)
+                        paper = (sum(sum(col) / 3.0 for col in colors) / len(colors)
+                                 if colors else 1.0)
+                        # Конец строки — по краске от начала её последнего
+                        # куска (`_ink_end`); слева — прежняя раздвижка.
+                        end = _ink_end(sample, sd, paper)
+                        if end is not None:
+                            sd["x1"] = end
+                        ink = _ink_color(sample, sd, 0.0, paper, either=True)
+                        x0, x1 = _ink_box(sample, sd, pad, paper)
+                        if end is not None:
+                            x1 = end
+                        if lim is not None:
+                            x1 = min(x1, max(sd["x"] + 0.5 * sd["size"], lim - pad))
+                        if x1 - x0 > sd["x1"] - sd["x0"] + 0.5:
+                            colors = _slot_paper(sample, sd, pad, SLOT_STRIPS, x0, x1)
+                        sd["x0"], sd["x1"] = x0, x1
+                        # Цвет букв из самого PDF сильнее замера: на мелком
+                        # кегле сглаживание делает чёрный серым.
+                        if sd.get("color") is not None:
+                            ink = sd["color"]
+                        sd["_fill"], sd["_ink"] = (colors, paper, pad), ink
+                    b["_slots"] = sbs
+                    continue
                 pad = PAD_SHARE * max(b["size"], 1.0)
                 # На бумаге буквы — тёмный хвост, и бумага это высокий процентиль
                 # яркости. На КАРТИНКЕ «бумага» — сама фотография, и высокий
@@ -618,8 +1909,12 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
                 # влево — отступ на столько же вырос, иначе красная строка
                 # оригинала превратилась бы в ровный край.
                 b["indent"] = max(0.0, b.get("indent") or 0.0) + max(0.0, b["x0"] - x0)
+                # Цвет краски меряется по ПРЕЖНЕЙ рамке, до раздвижки: в ней
+                # заведомо стоит сам абзац, а за краем может стоять чужое.
+                ink = None if b.get("image") else _ink_color(sample, b, pad, paper)
                 b["x0"], b["x1"] = x0, x1
                 b["_fill"] = (colors, paper, pad)
+                b["_ink"] = ink
     finally:
         sampler.close()
 
@@ -627,6 +1922,7 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
     # абзац бывает разорван концом страницы, и счёт «на страницу» удваивал
     # и работу в отчёте, и честное число не влезших.
     plan: list = []
+    slot_plan: list = []
     pages_used: set = set()
     for idx, text, boxes in jobs:
         if not text or not boxes:
@@ -649,9 +1945,46 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
         if live[0].get("image"):
             stats["imageBoxes"] += len(live)
         shrunk = over = False
+        use_r = needs_raster(text)
+        psw = raster.measure if use_r else sw_vec
+        prtl = bool(use_r and raster.rtl(text))
+        for b in live:
+            b["_r"], b["_rtl"], b["_sw"] = use_r, prtl, psw
+            for sd in (b.get("_slots") or []):
+                sd["_r"], sd["_rtl"], sd["_sw"] = use_r, prtl, psw
         for grp in groups:
-            font = fonts.get(grp[0].get("style") or "") or fonts[""]
-            size, lead, per_box, fits = _fit(text, grp, sw, font)
+            sds = [sd for b in grp for sd in (b.get("_slots") or [])]
+            if sds:
+                fam = grp[0].get("fam") or ""
+
+                def font_of(sd, fam=fam):
+                    return _font_for(fonts, {"style": sd["style"], "fam": fam})
+                if _scattered(sds):
+                    # Разбросанные подписи — каждой своё, от начала своей
+                    # строки: выключку одной строки по ней не узнать.
+                    align = "left"
+                    lines, fs, hss = _spread(text, sds, psw, font_of, nospace)
+                    rest = []
+                    stats["scattered"] += 1
+                else:
+                    align = _slot_align(sds)
+                    lines, f, rest, hsc = _fit_slots(text, sds, psw, font_of, align, nospace)
+                    fs, hss = [f] * len(sds), [hsc] * len(sds)
+                font = font_of(sds[0])
+                stats["sans" if font.startswith(FONT_NAME + "Sans") else
+                      "mono" if font.startswith(FONT_NAME + "Mono") else "serif"] += 1
+                shrunk = shrunk or min(fs) < 0.999
+                over = over or bool(rest)
+                stats["condensed"] += 1 if min(hss) < 0.999 else 0
+                slot_plan.append((sds, lines, fs, rest, font_of, align, hss))
+                pages_used.update(int(sd["page"]) for sd in sds)
+                continue
+            font = _font_for(fonts, grp[0])
+            # Какой гарнитурой напечатано на деле (а не что просили): нет
+            # рубленого файла — абзац ушёл засечками, и отчёт это скажет.
+            stats["sans" if font.startswith(FONT_NAME + "Sans") else
+                  "mono" if font.startswith(FONT_NAME + "Mono") else "serif"] += 1
+            size, lead, per_box, fits = _fit(text, grp, psw, font)
             shrunk = shrunk or size < max(b["size"] for b in grp) - 0.01
             over = over or not fits
             plan.append((idx, grp, per_box, size, lead, font))
@@ -663,6 +1996,17 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
     # Слой на ВСЕ страницы — одним документом, а не по одному на страницу:
     # reportlab встраивает шрифт в каждый собранный файл, и на книге это
     # 378 копий шрифта, то есть десятки мегабайт из ничего.
+    # Что печатать на странице — одним проходом заранее: перебор всех строк
+    # документа на КАЖДОЙ странице квадратичен по длине книги.
+    here_by: dict = {}
+    for _idx, boxes, per_box, size, lead, font in plan:
+        for n, (b, lines) in enumerate(zip(boxes, per_box)):
+            here_by.setdefault(int(b["page"]), []).append((b, lines, size, lead, font, n))
+    slots_by: dict = {}
+    for sds, lines, fs, rest, font_of, align, hss in slot_plan:
+        for k, (sd, line) in enumerate(zip(sds, lines)):
+            slots_by.setdefault(int(sd["page"]), []).append(
+                (sd, line, fs[k], font_of, align, (k == len(sds) - 1), rest, hss[k]))
     buf = io.BytesIO()
     c = canvas.Canvas(buf)
     order: list = []
@@ -678,10 +2022,17 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
         # колонками, стилизованная обложка), и заливка второй рамки стирала бы
         # уже написанный перевод первой — с отчётом «обе написаны». Тот же
         # закон, что в `image_text.render_target`.
-        here = [(b, lines, size, lead, font, n)
-                for _idx, boxes, per_box, size, lead, font in plan
-                for n, (b, lines) in enumerate(zip(boxes, per_box))
-                if int(b["page"]) == i]
+        here = here_by.get(i, [])
+        here_slots = slots_by.get(i, [])
+        for sd, *_rest in here_slots:
+            colors, _paper, pad = sd["_fill"]
+            if sd.get("rot"):
+                _fill_rot(c, sd, colors, pad)
+                continue
+            # Сверху — почти без поля: прописные кончаются на 0.75–0.8 кегля,
+            # а выше лежат хвосты букв строки над этой (у непереведённого
+            # абзаца при интерлиньяже 1.15 их срезало бы).
+            _fill_box(c, sd, pad, colors, top_pad=min(pad, 0.05 * sd["size"]))
         for b, _lines, _size, _lead, _font, _n in here:
             # Закраска идёт и у ПУСТОЙ рамки: перевод мог целиком влезть
             # в первую половину абзаца, а во второй остался бы оригинал —
@@ -696,12 +2047,95 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
             # Чёрным по тёмному не читается: на обложке и на тёмной плашке
             # перевод печатается светлым. Цвет берётся у самой бумаги под
             # рамкой — там же, где и закраска.
-            c.setFillColorRGB(*((1, 1, 1) if paper < DARK_PAPER else (0, 0, 0)))
+            ink = b.get("_ink")
+            if paper < DARK_PAPER:
+                c.setFillColorRGB(1, 1, 1)
+            elif ink is not None:
+                # Цвет краски оригинала (синий заголовок, серая подпись).
+                c.setFillColorRGB(*ink)
+                stats["inked"] += 1 if n == 0 else 0
+            else:
+                c.setFillColorRGB(0, 0, 0)
             c.setFont(font, size)
             y = b["top"] - 0.85 * size
+            col = ((1, 1, 1) if paper < DARK_PAPER else (ink if ink is not None else (0, 0, 0)))
             for k, line in enumerate(lines):
-                c.drawString(b["x0"] + (b["indent"] if (k == 0 and n == 0) else 0.0), y, line)
+                x_ = b["x0"] + (b["indent"] if (k == 0 and n == 0) else 0.0)
+                if raster is not None and b.get("_r"):
+                    if b.get("_rtl"):
+                        x_ = b["x1"] - raster.measure(line, font, size)
+                    raster.put(c, x_, y, line, size, col, 1.0, b.get("style") or "",
+                               b.get("_rtl"))
+                    stats["raster"] += 1
+                else:
+                    c.drawString(x_, y, line)
                 y -= lead
+        for sd, line, f, font_of, align, last, rest, hsc in here_slots:
+            paper = sd["_fill"][1]
+            ink = sd.get("_ink")
+            size = max(1.0, sd["size"] * f)
+            font = font_of(sd)
+            sw = sd.get("_sw") or sw_vec
+            if sd.get("rot"):
+                c.setFillColorRGB(*(ink if ink is not None else
+                                    ((1, 1, 1) if paper < DARK_PAPER else (0, 0, 0))))
+                more = list(_overflow_lines(rest, sd, size, sw, font, align, hsc)) if last and rest else []
+                _draw_rot(c, sd, [line] + more, size, font, hsc, sw,
+                          "center" if sd["curved"] else align, raster if sd.get("_r") else None,
+                          ink if ink is not None else ((1, 1, 1) if paper < DARK_PAPER else (0, 0, 0)))
+                stats["rotatedSlots"] = stats.get("rotatedSlots", 0) + 1
+                continue
+            if ink is not None:
+                # Цвет краски оригинала — и тёмной, и светлой (белая надпись
+                # на плашке): он сильнее правила «тёмная бумага — белым».
+                c.setFillColorRGB(*ink)
+                stats["inked"] += 1
+            elif paper < DARK_PAPER:
+                c.setFillColorRGB(1, 1, 1)
+            else:
+                c.setFillColorRGB(0, 0, 0)
+            y = sd["y"]
+            for k, ln in enumerate([line] + (list(_overflow_lines(rest, sd, size, sw, font, align, hsc))
+                                             if last and rest else [])):
+                if not ln:
+                    continue
+                w = sw(ln, font, size) * hsc
+                if align == "center":
+                    x = (sd["x0"] + sd["x1"]) / 2.0 - w / 2.0
+                elif align == "right":
+                    x = sd["x1"] - w
+                else:
+                    x = sd["x"]
+                if raster is not None and sd.get("_r"):
+                    if sd.get("_rtl") and align == "left":
+                        x = sd["x1"] - w        # справа налево — от правого края места
+                    raster.put(c, x, y - k * 1.2 * size, ln, size,
+                               ink if ink is not None else
+                               ((1, 1, 1) if paper < DARK_PAPER else (0, 0, 0)),
+                               hsc, sd["style"], sd.get("_rtl"))
+                    stats["raster"] += 1
+                    continue
+                # Tz, Tr, цвет и толщина обводки — состояние, переживающее ET:
+                # без q/Q сужение и «полужирный обводкой» одной строки
+                # перешли бы на все следующие строки страницы.
+                c.saveState()
+                to = c.beginText(x, y - k * 1.2 * size)
+                synth = _synth(fonts, font, sd["style"])
+                if "i" in synth:
+                    # Наклон в 12°: так рисуют курсив, когда его файла нет.
+                    to.setTextTransform(1, 0, 0.21, 1, x, y - k * 1.2 * size)
+                to.setFont(font, size)
+                if hsc < 0.999:
+                    to.setHorizScale(hsc * 100.0)
+                if "b" in synth:
+                    # Обводка тем же цветом — полужирный из прямого.
+                    c.setStrokeColorRGB(*(ink if ink is not None else
+                                          ((1, 1, 1) if paper < DARK_PAPER else (0, 0, 0))))
+                    c.setLineWidth(0.04 * size)
+                    to.setTextRenderMode(2)
+                to.textOut(ln)
+                c.drawText(to)
+                c.restoreState()
         order.append(drawn)
         drawn += 1
         c.showPage()
@@ -710,6 +2144,7 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
     # белой, и число сказано. Считать «всё или ничего» нельзя — часть
     # страниц может не отрисоваться, и отчёт тогда врал бы про остальные.
     stats["nocolor"] = len(sampler.missed & pages_used)
+    stats["slotParagraphs"] = len(slot_plan)
     buf.seek(0)
     overlay = PdfReader(buf)
     writer = PdfWriter()

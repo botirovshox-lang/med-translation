@@ -8308,6 +8308,7 @@ BLOCK_KIND = {
     "dead.exportFormat": "money",
     "dead.writeback": "money",      # просили «как в оригинале», отдали Word
     "dead.pdfLayout503": "fix",
+    "dead.pdfLeftover": "fix",      # в готовом PDF остался текст на языке оригинала
     "dead.slotsDrift400": "fix",
     "dead.images": "loss",
     "dead.scan": "money",
@@ -8600,6 +8601,7 @@ METRICS_BLOCK_TEXT = {
     "dead.exportFormat": "просили формат выгрузки, которого у нас нет",
     "dead.writeback": "просили «как в оригинале», формат этого не умеет — отдали Word",
     "dead.pdfLayout503": "PDF «как в оригинале» не собрался: нет шрифта или библиотеки",
+    "dead.pdfLeftover": "в готовом PDF остался текст на языке оригинала",
     "dead.slotsDrift400": "выгрузка 1в1 отказала: правила разбора файла изменились",
     "dead.images": "чтение надписей с картинок не запустилось",
     "dead.scan": "принесли скан: объём считаем выборкой, а не целиком",
@@ -11511,6 +11513,9 @@ def _store_source_docx(project: dict, content: bytes, filename: str,
     if layout and layout.get("boxes"):
         payload["layout"] = {"boxes": {str(k): v for k, v in layout["boxes"].items()},
                              "pages": layout.get("pages") or [],
+                             # Видимые строки без места (повёрнутые, по дуге): их
+                             # оригинал на листе останется — выгрузка их называет.
+                             "unplaced": layout.get("unplaced") or [],
                              "rules": getattr(importers.pdftext, "RULES_VERSION", None)}
     # Разбор картинок ПЕРЕЖИВАЕТ повторную привязку исходника. Карта абзацев
     # и карта картинок лежат в одном файле, но пишутся из разных мест: пока
@@ -15044,12 +15049,16 @@ def _resegment_plan(project: dict, parsed: dict) -> dict:
             "removedSample": [s.get("source") for s in gone[:5]]}
 
 
-def _docx_media(docx_bytes: bytes) -> dict:
+def _docx_media_sha(docx_bytes: bytes) -> dict:
+    """{часть: отпечаток} картинок пакета — БЕЗ метки места вырезки
+    (`importers.untag_figure`): та же картинка с меткой — та же картинка.
+    (Прежде функция звалась `_docx_media` и молча перекрывалась одноимённой
+    ниже — сравнивались сырые байты, и метка объявляла рисунки другими.)"""
     import zipfile
     try:
         with zipfile.ZipFile(io.BytesIO(docx_bytes)) as z:
-            return {n: hashlib.sha1(z.read(n)).hexdigest() for n in z.namelist()
-                    if n.startswith("word/media/")}
+            return {n: hashlib.sha1(importers.untag_figure(z.read(n))).hexdigest()
+                    for n in z.namelist() if n.startswith("word/media/")}
     except Exception:
         return {}
 
@@ -15071,7 +15080,7 @@ def _resegment_apply(pid: int, parsed: dict, content: bytes, filename: str, pl: 
     keep_fields = {k: project.get(k) for k in ("pages", "pagesUnit")}
     docx_path, _map = _source_paths(pid)
     old_docx = docx_path.read_bytes() if docx_path.exists() else b""
-    images_same = bool(old_docx) and _docx_media(old_docx) == _docx_media(parsed["docx"])
+    images_same = bool(old_docx) and _docx_media_sha(old_docx) == _docx_media_sha(parsed["docx"])
     old_order = list(project.get("segments") or [])
     img_segs = [s for s in old_order if (s.get("origin") or {}).get("kind") == "image"]
     done = _reimport_apply(pid, parsed, content, filename, "", debit=False, read_images=False)
@@ -15779,6 +15788,15 @@ def _docx_media(content: bytes) -> tuple:
 
 
 def _docx_media_part(path, name: str) -> Optional[bytes]:
+    if str(name or "").startswith(PDF_PAGE_PART):
+        try:
+            return _pdf_page_png(int(Path(str(path)).stem.split(".")[0]), _pdf_page_of(name))
+        except Exception:
+            return None
+    return _docx_media_part_raw(path, name)
+
+
+def _docx_media_part_raw(path, name: str) -> Optional[bytes]:
     """Одна картинка из пакета, не читая пакет целиком.
 
     Карточка сегмента спрашивает кроп при каждом открытии, а исходник учебника
@@ -16069,6 +16087,11 @@ def _image_stats(images: list, total: int = 0) -> dict:
         if blocks:
             st["withText"] += 1
         for b in blocks:
+            if b.get("skip") in ("layer", "figure"):
+                # Текст стоит в слое или читается разбором вырезки рисунка:
+                # здесь его не читают никогда — и ждущим он не числится.
+                st["layer"] = st.get("layer", 0) + 1
+                continue
             if "text" not in b:
                 st["unasked"] += 1
                 st["pending"] += 1
@@ -16104,7 +16127,8 @@ def _image_est_tokens(images: list) -> tuple:
     кадр идёт с detail=low и стоит фиксированные 85 токенов."""
     tin = 0
     for im in images:
-        blocks = [b for b in (im.get("blocks") or []) if "text" not in b]
+        blocks = [b for b in (im.get("blocks") or [])
+                  if "text" not in b and b.get("skip") not in ("layer", "figure")]
         if not blocks:
             continue
         tin += 85
@@ -16370,6 +16394,7 @@ def images_local(pid: int, req: ImagesLocalRequest):
                 b["skip"] = "noise"
         rec = {"part": part, "sha": hashlib.sha1(blob).hexdigest(), "blocks": blocks,
                "w": w, "h": h, "paras": anchors.get(part) or []}
+        _mark_layer_blocks(rec, blob, data)
         known[part] = rec
         saved += 1
         anchor = _image_anchor_sid(data, rec["paras"])
@@ -16693,12 +16718,23 @@ def _job_images(job: dict) -> None:
     raster, other = _docx_media(content)
     from docx import Document
     anchors = _docx_image_anchors(Document(io.BytesIO(content)))
+    # PDF: надписи, нарисованные КРИВЫМИ прямо на странице (их нет ни в
+    # текстовом слое, ни в растре рисунка), ищутся на самих страницах.
+    page_names, page_anchors = (([], {}) if job["params"].get("auto")
+                                else _pdf_page_parts(project, data, raster))
+    fig_rects: dict = {}
+    for blob_ in raster.values():
+        t_ = importers.figure_tag(blob_)
+        if t_ is not None:
+            fig_rects.setdefault(t_[0], []).append(t_[1:5])
+    anchors.update(page_anchors)
+    raster = _PageRaster(raster, pid)
     known = {im.get("part"): im for im in (data.get("images") or [])}
     # Порядок обхода — ПО ДОКУМЕНТУ, а не по имени части. Имена сортируются
     # как строки («image1, image10, image100»), и сегменты двух картинок,
     # стоящих между одними и теми же абзацами, вставали бы в списке задом
     # наперёд: читать такой проект человеку.
-    names = sorted(raster, key=lambda n: (min(anchors.get(n) or [10 ** 9]), n))
+    names = sorted(list(raster) + page_names, key=lambda n: (min(anchors.get(n) or [10 ** 9]), n))
     job["total"], job["done"] = len(names), 0
     # Обход идёт с начала и при ВОЗОБНОВЛЕНИИ после уступки: прочитанное
     # берётся из карты бесплатно, но счётчики за него насчитались бы второй
@@ -16772,9 +16808,16 @@ def _job_images(job: dict) -> None:
         for name in batch:
             if job["stop"] and work:
                 break                  # остаток пачки — следующему заходу
-            blob = raster[name]
+            try:
+                blob = raster[name]
+            except KeyError:
+                blob = b""             # страница не отрисовалась — «не знаю», а не обрыв задачи
             sha = hashlib.sha1(blob).hexdigest()
             prev = known.get(name) or {}
+            if prev.get("blocks") is not None and prev.get("sha") != sha and blob \
+                    and _same_image(blob, prev.get("sha")):
+                prev = dict(prev, sha=sha)  # та же картинка, только с меткой места
+                map_dirty = True
             rec = dict(prev) if prev.get("sha") == sha and prev.get("blocks") is not None \
                 else {"part": name, "sha": sha}
             # Якорный абзац — свежий на КАЖДОМ заходе, а не только при обнаружении:
@@ -16802,6 +16845,9 @@ def _job_images(job: dict) -> None:
                     rec["w"], rec["h"] = _PIL.open(io.BytesIO(blob)).size
                 except Exception:
                     rec["w"] = rec["h"] = 0
+                _mark_layer_blocks(rec, blob, data)
+                if name.startswith(PDF_PAGE_PART):
+                    _mark_figure_blocks(rec, blob, fig_rects)
                 rec["paras"] = anchors.get(name) or []
                 job["counters"]["detected"] = job["counters"].get("detected", 0) + 1
                 map_dirty = True
@@ -16816,7 +16862,8 @@ def _job_images(job: dict) -> None:
             for _name, blob, rec in work:
                 if rec.get("unreadable"):
                     continue
-                todo = [i for i, b in enumerate(rec["blocks"]) if "text" not in b]
+                todo = [i for i, b in enumerate(rec["blocks"])
+                        if "text" not in b and b.get("skip") not in ("layer", "figure")]
                 for start in range(0, len(todo), IMAGE_READ_MAX_BLOCKS):
                     tasks.append((blob, rec, todo[start:start + IMAGE_READ_MAX_BLOCKS]))
             if tasks:
@@ -16861,7 +16908,9 @@ def _job_images(job: dict) -> None:
                         b = blocks[i]
                         b["text"] = ans["text"]
                         b["reader"] = ans["model"]
-                        if ans["overlay"]:
+                        if b.get("skip") in ("layer", "figure"):
+                            pass                      # текст слоя или рисунка — не наш блок
+                        elif ans["overlay"]:
                             b["skip"] = "overlay"
                         elif image_text.is_noise(ans["text"]):
                             b["skip"] = "noise"
@@ -30634,6 +30683,8 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
     parts = {str(p.partname).lstrip("/"): p for p in doc.part.package.iter_parts()}
     for im in images:
         name = im.get("part")
+        if str(name or "").startswith(PDF_PAGE_PART):
+            continue                    # надписи кривыми — только в PDF «как в оригинале»
         items = []
         for i, b in enumerate(im.get("blocks") or []):
             if b.get("skip"):
@@ -30669,7 +30720,7 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
         # переживает намеренно, но рамки описывают ТУ картинку. Совпадения нет
         # — не трогаем ничего и говорим числом: перевод, вписанный по чужим
         # координатам, это заплатка посреди снимка.
-        if im.get("sha") and hashlib.sha1(part.blob).hexdigest() != im["sha"]:
+        if im.get("sha") and not _same_image(part.blob, im["sha"]):
             stats["img_stale"] += len(items)
             continue
         stats["img_parts"] += 1
@@ -31014,14 +31065,21 @@ def _pdf_image_boxes(project: dict, data: dict) -> list:
     out: list = []
     skipped: dict = {}
     for im in images:
+        virt = str(im.get("part") or "").startswith(PDF_PAGE_PART)
         part = parts.get(im.get("part"))
-        if part is None or not im.get("w") or not im.get("h"):
+        if (part is None and not virt) or not im.get("w") or not im.get("h"):
             continue
-        if im.get("sha") and hashlib.sha1(part.blob).hexdigest() != im["sha"]:
+        if not virt and im.get("sha") and not _same_image(part.blob, im["sha"]):
             continue
-        page = _png_page_index(part.blob)
-        if page is None:
+        if virt:
+            page, fig = None, (_pdf_page_of(im["part"]), 0.0, 0.0, 1.0, 1.0)
+        else:
+            page = _png_page_index(part.blob)
+            fig = importers.figure_tag(part.blob) if page is None else None
+        if page is None and fig is None:
             continue
+        if fig is not None:
+            page = fig[0]
         w, h = float(im["w"]), float(im["h"])
         for i, b in enumerate(im.get("blocks") or []):
             if b.get("skip"):
@@ -31042,16 +31100,225 @@ def _pdf_image_boxes(project: dict, data: dict) -> list:
                 skipped["vertical"] = skipped.get("vertical", 0) + 1
                 continue
             line_h = float(b.get("lineH") or ((y1 - y0) / rows))
+            fx0, fy0, fx1, fy1 = (fig[1:5] if fig is not None else (0.0, 0.0, 1.0, 1.0))
+            sx_, sy_ = (fx1 - fx0) / w, (fy1 - fy0) / h
             out.append({"text": text, "boxes": [{
                 "page": page, "frac": 1, "image": 1, "style": "", "indent": 0.0,
-                "x0": x0 / w, "x1": x1 / w, "top": y0 / h, "bottom": y1 / h,
-                "size": line_h / h, "lead": ((y1 - y0) / rows) / h}]})
+                "x0": fx0 + x0 * sx_, "x1": fx0 + x1 * sx_,
+                "top": fy0 + y0 * sy_, "bottom": fy0 + y1 * sy_,
+                "size": line_h * sy_, "lead": ((y1 - y0) / rows) * sy_}]})
     out, nested = _drop_nested_labels(out)
     if nested:
         skipped["nested"] = nested
     if skipped:
         print("[backend] PDF 1в1: надписей пропущено %s" % skipped, file=sys.stderr)
     return out
+
+
+# Какая доля блока надписи рисунка должна лежать под строкой текстового слоя,
+# чтобы считать её ТЕМ ЖЕ текстом (подпись слоя поверх растровой схемы).
+LAYER_OVERLAP = 0.3
+
+
+PDF_PAGE_PART = "pdfpage/"
+# Разрешение отрисовки страницы под поиск надписей кривыми.
+PDF_PAGE_DPI = int(os.environ.get("PDF_PAGE_OCR_DPI", "144"))
+
+
+def _same_image(blob: bytes, sha: str) -> bool:
+    """Картинка части — та, чей отпечаток записан в карте: буква в букву либо
+    без метки места вырезки (`importers.tag_figure`). Метка появилась позже
+    карт старых проектов; без этого пересборка по новым правилам объявляла
+    все рисунки другими — разбор надписей платился заново, а их перевод
+    пропадал из выгрузки."""
+    if not sha:
+        return True
+    if hashlib.sha1(blob).hexdigest() == sha:
+        return True
+    try:
+        return hashlib.sha1(importers.untag_figure(blob)).hexdigest() == sha
+    except Exception:
+        return False
+
+
+def _pdf_page_png(pid: int, page: int) -> Optional[bytes]:
+    """Страница хранимого PDF-оригинала картинкой — с меткой «рисунок во весь
+    лист» (`importers.tag_figure`), чтобы надписи с неё шли тем же путём, что
+    надписи вырезок рисунков. Отрисовка под замком pdfium (он не
+    потокобезопасен) и с потолком площади (`textcount._render_scale`)."""
+    orig = _orig_existing(pid)
+    if orig is None or orig.suffix.lower() != ".pdf":
+        return None
+    try:
+        import pypdfium2 as pdfium
+        try:
+            from backend.pdfium_gate import LOCK as PDFIUM_LOCK
+        except ImportError:
+            from pdfium_gate import LOCK as PDFIUM_LOCK
+        with PDFIUM_LOCK:
+            doc = pdfium.PdfDocument(str(orig))
+            try:
+                pg = doc[page]
+                if (pg.get_rotation() or 0) % 360:
+                    pg.close()
+                    return None         # повёрнутую страницу доли листа не опишут
+                mb, cb = pg.get_mediabox(), pg.get_cropbox()
+                try:
+                    scale = textcount._render_scale(pg, PDF_PAGE_DPI)
+                except Exception:
+                    scale = PDF_PAGE_DPI / 72.0
+                im = pg.render(scale=scale).to_pil().convert("RGB")
+                pg.close()
+            finally:
+                doc.close()
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        # Рисуется ВИДИМАЯ часть листа (CropBox), а доли места читаются
+        # от MediaBox (`_pdf_image_boxes`): переводим одно в другое.
+        mw, mh = (mb[2] - mb[0]) or 1.0, (mb[3] - mb[1]) or 1.0
+        frac = [(cb[0] - mb[0]) / mw, (mb[3] - cb[3]) / mh,
+                (cb[2] - mb[0]) / mw, (mb[3] - cb[1]) / mh]
+        return importers.tag_figure(buf.getvalue(), page, frac)
+    except Exception as e:
+        print("[backend] страница %s PDF не отрисовалась: %s" % (page, e), file=sys.stderr)
+        return None
+
+
+class _PageRaster(dict):
+    """Картинки документа плюс страницы PDF «по требованию»: страница
+    рисуется, когда её спросили, и не хранится — книга в сотни страниц
+    целиком в памяти единственного воркера не поместилась бы."""
+
+    def __init__(self, base: dict, pid: int):
+        super().__init__(base)
+        self.pid = pid
+
+    def __missing__(self, key):
+        if str(key).startswith(PDF_PAGE_PART):
+            blob = _pdf_page_png(self.pid, _pdf_page_of(key))
+            if blob is not None:
+                return blob
+        raise KeyError(key)
+
+
+def _pdf_page_of(name: str) -> int:
+    return int(str(name)[len(PDF_PAGE_PART):].split(".")[0])
+
+
+def _pdf_page_parts(project: dict, data: dict, raster: dict) -> tuple:
+    """(имена виртуальных частей-страниц, {имя: якорные абзацы}) для
+    PDF-проекта: страницы, которые в документе не лежат картинкой целиком
+    (скан и ненадёжный слой уже читаются своими картинками)."""
+    if (project.get("importKind") or "") != "pdf" or _orig_existing(project["id"]) is None:
+        return [], {}
+    # Раскладка, записанная до мест строк (`slots`), не даёт отсеять текст
+    # слоя (`_mark_layer_blocks`): страница прочиталась бы целиком — за
+    # деньги и дублем каждого абзаца. Такой проект сперва пересобирается.
+    if not any(b.get("slots") for bs in ((data.get("layout") or {}).get("boxes") or {}).values()
+               for b in (bs or [])):
+        return [], {}
+    whole = set()
+    for blob in raster.values():
+        k = _png_page_index(blob)
+        if k is not None:
+            whole.add(k)
+    lay = (data.get("layout") or {})
+    n_pages = len(lay.get("pages") or [])
+    first_para: dict = {}
+    for key, boxes in (lay.get("boxes") or {}).items():
+        for b in boxes or []:
+            pg = int(b.get("page", -1))
+            first_para[pg] = min(first_para.get(pg, 10 ** 9), int(key))
+    names, anchors = [], {}
+    for pg in range(n_pages):
+        if pg in whole:
+            continue
+        name = "%s%04d.png" % (PDF_PAGE_PART, pg)
+        names.append(name)
+        if pg in first_para:
+            anchors[name] = [first_para[pg]]
+    return names, anchors
+
+
+def _mark_figure_blocks(rec: dict, blob: bytes, fig_rects: dict) -> int:
+    """Блоки СТРАНИЦЫ, лежащие внутри уже вырезанного рисунка, — `skip:
+    "figure"`: их читает разбор самой вырезки, второй раз — деньги и дубль."""
+    fig = importers.figure_tag(blob)
+    if fig is None or not rec.get("w") or not rec.get("h"):
+        return 0
+    page = fig[0]
+    rects = fig_rects.get(page) or []
+    n = 0
+    w, h = float(rec["w"]), float(rec["h"])
+    for b in rec.get("blocks") or []:
+        if b.get("skip"):
+            continue
+        x0, y0, x1, y1 = (float(v) for v in b["box"])
+        fx0, fy0, fx1, fy1 = x0 / w, y0 / h, x1 / w, y1 / h
+        area = max(1e-9, (fx1 - fx0) * (fy1 - fy0))
+        cov = 0.0
+        for rx0, ry0, rx1, ry1 in rects:
+            ix, iy = min(fx1, rx1) - max(fx0, rx0), min(fy1, ry1) - max(fy0, ry0)
+            if ix > 0 and iy > 0:
+                cov += ix * iy
+        if cov / area >= LAYER_OVERLAP:
+            b["skip"] = "figure"
+            n += 1
+    return n
+
+
+def _mark_layer_blocks(rec: dict, blob: bytes, data: dict) -> int:
+    """Блоки надписей ВЫРЕЗКИ РИСУНКА из PDF, под которыми уже лежит строка
+    текстового слоя, — `skip: "layer"`: их текст переводится абзацем слоя,
+    и второй раз его не читаем (деньги) и не заводим (дубль в переводе).
+    Остаются блоки, которых в слое НЕТ, — текст внутри растра схемы
+    («Combined aerobic and resistance training»): ради них и разбор."""
+    fig = importers.figure_tag(blob)
+    lay = (data or {}).get("layout") or {}
+    if fig is None or not rec.get("w") or not rec.get("h"):
+        return 0
+    page, fx0, fy0, fx1, fy1 = fig
+    pb = (lay.get("pages") or [None] * (page + 1))
+    pb = pb[page] if page < len(pb) else None
+    if not pb:
+        return 0
+    px0, py0, px1, py1 = (float(v) for v in pb)
+    pw, ph = px1 - px0, py1 - py0
+    rects = []
+    for boxes in (lay.get("boxes") or {}).values():
+        for b in boxes or []:
+            if int(b.get("page", -1)) != page:
+                continue
+            for sl in b.get("slots") or []:
+                if len(sl) > 8 and isinstance(sl[8], dict):
+                    pts = sl[8].get("pts") or []
+                    xs = [p[0] for p in pts] + [sl[8]["end"][0]]
+                    ys = [p[1] for p in pts] + [sl[8]["end"][1]]
+                    s = float(sl[3] or 1)
+                    rects.append((min(xs) - s, min(ys) - s, max(xs) + s, max(ys) + s))
+                else:
+                    s = float(sl[3] or 1)
+                    rects.append((float(sl[0]), float(sl[1]) - 0.3 * s, float(sl[2]),
+                                  float(sl[1]) + 0.9 * s))
+    n = 0
+    w, h = float(rec["w"]), float(rec["h"])
+    for b in rec.get("blocks") or []:
+        x0, y0, x1, y1 = (float(v) for v in b["box"])
+        bx0 = px0 + (fx0 + x0 / w * (fx1 - fx0)) * pw
+        bx1 = px0 + (fx0 + x1 / w * (fx1 - fx0)) * pw
+        by1 = py1 - (fy0 + y0 / h * (fy1 - fy0)) * ph
+        by0 = py1 - (fy0 + y1 / h * (fy1 - fy0)) * ph
+        area = max(1e-6, (bx1 - bx0) * (by1 - by0))
+        cov = 0.0
+        for rx0, ry0, rx1, ry1 in rects:
+            ix = min(bx1, rx1) - max(bx0, rx0)
+            iy = min(by1, ry1) - max(by0, ry0)
+            if ix > 0 and iy > 0:
+                cov += ix * iy
+        if cov / area >= LAYER_OVERLAP:
+            b["skip"] = "layer"
+            n += 1
+    return n
 
 
 def _drop_nested_labels(items: list) -> tuple:
@@ -31091,6 +31358,85 @@ def _drop_nested_labels(items: list) -> tuple:
     return keep, dropped
 
 
+_LEFTOVER_URL_RE = re.compile(r"(https?://|www\.|doi\.org|\S+@\S+\.\w+|10\.\d{4,}/)", re.I)
+_LEFTOVER_WORD_RE = re.compile(r"[^\W\d_]{2,}")
+LEFTOVER_SAMPLES = 8
+
+
+def _layout_leftovers(project: dict, data: dict, texts: dict, stats: dict) -> dict:
+    """Проверка готового PDF «как в оригинале»: что на листах осталось
+    НА ЯЗЫКЕ ОРИГИНАЛА — {count, untranslated, unplaced, pages, samples}.
+
+    Глазами это ловится только у заказчика, поэтому считает система сама
+    и по своим же данным, без вызова модели: абзацы раскладки без перевода,
+    видимые строки без места (`layout.unplaced`: печать их не перекрыла)
+    и страницы, оставленные оригиналом целиком (повёрнутые).
+
+    Законно оставленное не считается (`_leftover_kept`): строка без букв
+    (числа, формулы), адрес, ссылка, DOI, почта — и строка, ВСЕ слова
+    которой переводчик сам оставил как есть (стоят в переводах проекта:
+    название, латынь, торговая марка, правило «не переводить»)."""
+    by_id = {sg["id"]: sg for sg in project.get("segments") or []}
+    tokens: set = set()
+    for sg in by_id.values():
+        tokens.update(w.lower() for w in _LEFTOVER_WORD_RE.findall(sg.get("target") or ""))
+    paras: list = []
+    try:
+        paras = [t for t, _f in _docx_paragraph_texts(Path(data["path"]).read_bytes())]
+    except Exception:
+        paras = []
+    src_of = {}
+    for idx, sids in _para_groups(data):
+        src_of[int(idx)] = " ".join((by_id.get(sid) or {}).get("source") or "" for sid in sids)
+    out = {"count": 0, "untranslated": 0, "unplaced": 0, "pages": int(stats.get("rotated") or 0),
+           "samples": []}
+
+    def note(kind: str, text: str):
+        text = " ".join((text or "").split())
+        if not text or _leftover_kept(text, tokens):
+            return
+        out[kind] += 1
+        out["count"] += 1
+        if len(out["samples"]) < LEFTOVER_SAMPLES:
+            out["samples"].append(text[:80])
+    tails = {int(x) for x in (data.get("tails") or [])}
+    for key in ((data.get("layout") or {}).get("boxes") or {}):
+        idx = int(key)
+        if idx in tails or (texts.get(idx) or "").strip():
+            continue
+        note("untranslated", src_of.get(idx) or (paras[idx] if 0 <= idx < len(paras) else ""))
+    for it in (data.get("layout") or {}).get("unplaced") or []:
+        note("unplaced", it.get("text") or "")
+    out["count"] += out["pages"]
+    # Рисунки, надписи которых ещё не прочитаны: текст внутри растра схемы
+    # в слое не лежит, и что там на языке оригинала, узнать без чтения
+    # нельзя — называем число, разбор «Надписи на картинках» его закрывает.
+    try:
+        from docx import Document
+        read = {im.get("part") for im in (data.get("images") or []) if im.get("blocks") is not None}
+        doc = Document(str(data["path"]))
+        n_fig = 0
+        for part in doc.part.package.iter_parts():
+            name = str(part.partname).lstrip("/")
+            if "/media/" in name and name not in read and importers.figure_tag(part.blob):
+                n_fig += 1
+        out["figuresUnread"] = n_fig
+    except Exception:
+        out["figuresUnread"] = None
+    return out
+
+
+def _leftover_kept(text: str, tokens: set) -> bool:
+    """Оригинал оставлен законно: без букв, адрес/ссылка, или каждое слово
+    переводчик сам оставил в переводе как есть."""
+    if _LEFTOVER_URL_RE.search(text) and len(_LEFTOVER_WORD_RE.findall(_LEFTOVER_URL_RE.sub(" ", text))) <= 1:
+        return True
+    words = [w.lower() for w in _LEFTOVER_WORD_RE.findall(text)]
+    if not words:
+        return True
+    return all(w in tokens for w in words)
+
+
 def _export_pdf_layout(project: dict, tmp: Path) -> Optional[dict]:
     """PDF «как в оригинале»: слой с переводом поверх исходных страниц.
 
@@ -31118,15 +31464,55 @@ def _export_pdf_layout(project: dict, tmp: Path) -> Optional[dict]:
         _ev("dead.pdfLayout503", _tenant_of(project))
         raise HTTPException(503, "Выгрузка «как в оригинале» для PDF недоступна: %s. "
                                  "Доступен Word-документ и PDF из него" % why)
+    texts = _layout_texts(project, data)
     try:
-        pdf, stats = layout_pdf_mod.build(orig.read_bytes(), layout,
-                                          _layout_texts(project, data),
+        pdf, stats = layout_pdf_mod.build(orig.read_bytes(), layout, texts,
                                           extra=_pdf_image_boxes(project, data))
     except layout_pdf_mod.NotAvailable as e:
         raise HTTPException(503, "Выгрузка «как в оригинале» для PDF не собралась: %s. "
                                  "Доступен Word-документ и PDF из него" % e)
     tmp.write_bytes(pdf)
+    # Проверка готового файла: осталось ли что-то на языке оригинала.
+    try:
+        stats["leftover"] = _layout_leftovers(project, data, texts, stats)
+        if stats["leftover"]["count"]:
+            _ev("dead.pdfLeftover", _tenant_of(project), stats["leftover"]["count"])
+    except Exception as e:
+        print("[backend] проверка остатков оригинала не прошла: %s" % e, file=sys.stderr)
     return dict(stats, original="pdf", layout=True)
+
+
+def _orig_page_width(project: dict) -> Optional[float]:
+    """Ширина первой страницы хранимого PDF-оригинала в пунктах, либо None.
+    По ней страницы скана выгружаются тем же размером, что в оригинале,
+    а не листом A4: «как в оригинале» — это и формат листа."""
+    orig = _orig_existing(project["id"])
+    if orig is None or orig.suffix.lower() != ".pdf":
+        return None
+    try:
+        from pypdf import PdfReader
+        w = float(PdfReader(str(orig)).pages[0].mediabox.width)
+        return w if w > 0 else None
+    except Exception:
+        return None
+
+
+def _export_images_file(project: dict, out: Path, tmp: Path, ext: str) -> dict:
+    """Картинка и скан — перерисованные надписи из выгрузки 1в1, в файл
+    с расширением `ext` (исходным либо .pdf)."""
+    kind = project.get("importKind") or "docx"
+    inner = out.with_name(out.name + ".%s.src.docx" % secrets.token_hex(4))
+    try:
+        stats = _export_docx_layout(project, inner)
+        imgs = importers.images_from_docx(inner.read_bytes())
+    finally:
+        try:
+            inner.unlink()
+        except OSError:
+            pass
+    page_w = _orig_page_width(project) if ext == ".pdf" else None
+    tmp.write_bytes(importers.images_to_file(imgs, ext, page_w_pt=page_w))
+    return dict(stats, original=kind, images=len(imgs))
 
 
 def _export_original(project: dict, out: Path, tmp: Path) -> dict:
@@ -31152,17 +31538,7 @@ def _export_original(project: dict, out: Path, tmp: Path) -> dict:
         shutil.copyfile(str(path), str(tmp))
         return dict(stats, original="pdf", layout=False)
     if kind in ("image", "scan"):
-        inner = out.with_name(out.name + ".%s.src.docx" % secrets.token_hex(4))
-        try:
-            stats = _export_docx_layout(project, inner)
-            imgs = importers.images_from_docx(inner.read_bytes())
-        finally:
-            try:
-                inner.unlink()
-            except OSError:
-                pass
-        tmp.write_bytes(importers.images_to_file(imgs, ext))
-        return dict(stats, original=kind, images=len(imgs))
+        return _export_images_file(project, out, tmp, ext)
     if project.get("media") and ext in (".srt", ".vtt"):
         # Субтитры видео — НАШ файл (распознавание), а строка в нём — фраза:
         # выгружаются экранные куски (`_media_screen`), те же, что в кадре
@@ -31349,7 +31725,38 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
     tmp = out.with_name(out.name + ".tmp")
     stats: dict = {}
     segs = project["segments"]
+    pdf_done = False
     if fmt == "pdf":
+        # PDF у проекта, залитого PDF-ом, сканом или картинкой, — ТЕ ЖЕ
+        # страницы оригинала с переводом на месте, а не печать собранного
+        # Word-документа: у такого проекта Word-документ — ровный поток
+        # абзацев, и его PDF терял вёрстку, гарнитуру, колонки и рисунки
+        # (боевой проект 14: «скачивается как обычный текст»). Нет раскладки
+        # у проекта, залитого до неё, — прежняя дорога ниже, и об этом
+        # говорит `pdfFrom`.
+        kind = project.get("importKind") or "docx"
+        layout_why = None
+        if kind == "pdf":
+            try:
+                got = _export_pdf_layout(project, tmp)
+            except HTTPException as e:
+                # Печать поверх страниц невозможна (письмо, которого нет в
+                # шрифтах, или справа налево) — у формата «PDF» есть запасная
+                # дорога: печать Word-документа. Отказ остаётся только у
+                # «исходного вида», где другой дороги нет; причина — в отчёте.
+                if e.status_code != 503:
+                    raise
+                got, layout_why = None, str(e.detail)
+            if got is not None:
+                stats, pdf_done = dict(got, pdfFrom="original"), True
+        elif kind in ("scan", "image") and project.get("sourceDocx"):
+            got = _export_images_file(project, out, tmp, ".pdf")
+            # Перевод надписи, которую нельзя было вписать в картинку, лёг
+            # ПОДПИСЬЮ под ней — в страницах-картинках его нет. Тогда PDF —
+            # печать Word-документа (там подписи на месте), а не потеря.
+            if not (got.get("img_captioned") or 0):
+                stats, pdf_done = dict(got, pdfFrom="original"), True
+    if fmt == "pdf" and not pdf_done:
         if not topdf_mod:
             raise HTTPException(503, "PDF собирать нечем: модуль конвертера не загружен")
         # Сначала честная выгрузка «как в оригинале», потом конвертация её же.
@@ -31384,6 +31791,10 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
             raise HTTPException(502, str(e))
         tmp.write_bytes(pdf)
         stats = dict(stats or {}, pdfBytes=len(pdf), pdfFrom=base)
+        if layout_why:
+            stats["layoutWhy"] = layout_why
+    elif fmt == "pdf":
+        pass                                # собран выше поверх страниц оригинала
     elif fmt == "original":
         stats = _export_original(project, out, tmp)
     elif fmt == "vtt":

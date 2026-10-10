@@ -37,6 +37,7 @@ from __future__ import annotations
 import bisect
 import difflib
 import functools
+import math
 import re
 import statistics
 import unicodedata
@@ -85,8 +86,16 @@ MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
 # а знак у числа («±0,5», «<5») не снимается с края токена,
 # 6 — рисунки внутри страницы переносятся в документ вырезкой из неё:
 # абзацев это не меняет, но состав документа меняет, и пересобрать
-# прежние проекты надо кнопкой «Чтение файла улучшено».
-RULES_VERSION = 7
+# прежние проекты надо кнопкой «Чтение файла улучшено»,
+# 7 — колонтитулы переводимыми абзацами,
+# 8 — повёрнутая строка (подпись в схеме, повёрнутая таблица) больше
+# не лишает геометрии ВСЮ страницу: она встаёт отдельной вставкой, а
+# остальное идёт по местам; у рамки абзаца — гарнитура (sans/serif/mono),
+# 9 — абзац рвётся там, где следующая строка геометрически его не
+# продолжает (подписи схемы с разных концов листа), строка pypdf с двумя
+# надписями одной базовой линии делится по местам (`split`), невидимый
+# и повёрнутый текст — своими пачками.
+RULES_VERSION = 9
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -740,6 +749,12 @@ def _join_scripts(recs: list, report: dict) -> list:
             prev = pc
         out.append({"t": text, "x0": parts[0]["x0"], "x1": max(p["x1"] for p in parts),
                     "y": base["y"], "s": base["s"],
+                    # Начертание и гарнитура — у основного куска строки: без
+                    # них склеенная строка печаталась бы обычным по умолчанию.
+                    "st": base.get("st") or "", "fam": base.get("fam") or "",
+                    "color": base.get("color"),
+                    "after": [t for p in parts for t in (p.get("after") or [])],
+                    "xl": max((p.get("xl") if p.get("xl") is not None else p["x0"]) for p in parts),
                     "lsp": parts[0].get("lsp", False), "rsp": parts[-1].get("rsp", False)})
     report["scripts"] += joined
     return out
@@ -1059,21 +1074,164 @@ def _fig_crop(f: list, recs: list, figs: list, box: list) -> list:
     return [max(box[0], min(left, f[0])), bot, min(box[2], max(right, f[2])), top]
 
 
-def _geo_page(lines: list, g) -> "list | None":
+# Какая доля строк страницы может быть БЕЗ места, чтобы страница всё равно
+# шла по геометрии. Место теряет повёрнутая строка: подпись вдоль оси схемы,
+# повёрнутая таблица, корешок. Прежде одна такая строка лишала геометрии
+# ВСЮ страницу — а у PDF, склеенного в одну длинную ленту (CamScanner:
+# две страницы по 14 400 пунктов), это весь документ, и выгрузка «как
+# в оригинале» молча становилась потоком абзацев. Больше половины без
+# места — страница повёрнута целиком, и прежняя дорога по строкам честнее.
+GEO_PLACELESS_MAX = 0.5
+
+
+class _RotRun(list):
+    """Пачка повёрнутых строк; `geo` — путь каждой (или None), как `rot`
+    у геометрии страницы (`pdfpages_worker._rot_path`)."""
+
+    def __init__(self, *a):
+        super().__init__(*a)
+        self.geo: list = [None] * len(self)
+
+    def add(self, line: str, geo) -> None:
+        self.append(line)
+        self.geo.append(geo)
+
+
+def _path_text(geo: dict) -> str:
+    """Текст повёрнутой строки по её пути — С ПРОБЕЛАМИ.
+
+    У текста по дуге каждая буква — свой кусок, и pypdf склеивает их без
+    пробелов («COMPLEXPATHOPHYSIOLOGY»): переводить такое нельзя. Пробел
+    стоит там, где зазор между соседними буквами пути заметно больше
+    обычного шага (медиана шага на знак)."""
+    pts = geo.get("pts") or []
+    if not pts or any(len(p) < 6 for p in pts):
+        return ""
+    # Точнее всего — по КОНЦУ предыдущей буквы (оператор знает его по
+    # метрикам): зазор до начала следующей шире четверти кегля — пробел.
+    if all(len(p) > 6 and p[6] for p in pts[:-1]):
+        out = pts[0][5]
+        for a, b in zip(pts, pts[1:]):
+            gap = math.hypot(b[0] - a[6][0], b[1] - a[6][1])
+            if gap > 0.25 * max(a[3], 1.0) and not out.endswith(" "):
+                out += " "
+            out += b[5]
+        return out
+    steps = []
+    for a, b in zip(pts, pts[1:]):
+        steps.append(math.hypot(b[0] - a[0], b[1] - a[1]) / max(1, a[4]))
+    med = sorted(steps)[len(steps) // 2] if steps else 0.0
+    out = pts[0][5]
+    for k, b in enumerate(pts[1:]):
+        if med and steps[k] > 1.6 * med and not out.endswith(" "):
+            out += " "
+        out += b[5]
+    return out
+
+
+def _rot_follows(a: dict, b: dict) -> bool:
+    """Повёрнутая строка b продолжает надпись a: начинается рядом с её концом
+    либо под ней (следующая строка той же повёрнутой таблицы) и под тем же
+    углом."""
+    pa, pb = a.get("pts") or [], b.get("pts") or []
+    if not pa or not pb:
+        return False
+    s = max(pa[0][3], pb[0][3], 1.0)
+    if abs(((pa[-1][2] - pb[0][2]) + 180) % 360 - 180) > 25:
+        return False
+    end = a.get("end") or pa[-1][:2]
+    near_end = math.hypot(pb[0][0] - end[0], pb[0][1] - end[1]) <= 3 * s
+    near_start = math.hypot(pb[0][0] - pa[0][0], pb[0][1] - pa[0][1]) <= 2.5 * s
+    return near_end or near_start
+
+
+class _HiddenRun(list):
+    """Пачка НЕВИДИМЫХ строк (за обрезкой, под закраской): на листе её нет,
+    и в отчёт «осталось на языке оригинала» она не идёт."""
+# Перенос слова в конце строки: дефис, мягкий перенос, «ДЕФИС» Юникода.
+_WORD_BREAK = ("-", SOFT, "‐")
+
+
+def _geo_page(lines: list, g, placeless: "list | None" = None) -> "list | None":
     """Строки страницы с местом: [{t, x0, x1, y, s}] в порядке потока; None —
-    у страницы нет полной геометрии (тогда она идёт прежней дорогой)."""
+    у страницы нет полной геометрии (тогда она идёт прежней дорогой).
+
+    `placeless` — куда сложить строки БЕЗ места (повёрнутые), подряд идущие —
+    одной пачкой: [[строка, …], …]. Не передан — как прежде: одна такая
+    строка, и у страницы геометрии нет."""
     if not isinstance(g, dict):
         return None
     gl = g.get("lines") or []
     if len(gl) != len(lines):
         return None
     recs = []
-    for l, p in zip(lines, gl):
+    runs: list = []
+    run = _RotRun()
+    rot = g.get("rot") or {}
+    hrun: list = []                     # подряд идущие НЕВИДИМЫЕ строки
+    hidden_runs: list = []
+    total = 0
+    # Строка ответа, в которой pypdf склеил РАЗНЫЕ надписи одной базовой
+    # линии (`split` геометрии: [смещение, место] на каждую), — несколько
+    # строк, каждая со своим местом: иначе подпись у левого края вставала
+    # в абзац рамки посреди схемы.
+    split = g.get("split") or {}
+    pairs = []
+    for li, (l, p) in enumerate(zip(lines, gl)):
+        subs = split.get(str(li))
+        if subs and l:
+            offs = [int(sg[0]) for sg in subs] + [len(l)]
+            if all(0 <= offs[k] < offs[k + 1] <= len(l) for k in range(len(subs))) and offs[0] == 0:
+                for k, sg in enumerate(subs):
+                    pairs.append((li, l[offs[k]:offs[k + 1]], sg[1]))
+                continue
+        pairs.append((li, l, p))
+    for li, l, p in pairs:
         t = _tidy(l or "")
         if not t:
             continue
+        if isinstance(p, list) and not p:
+            # Невидимая (за обрезкой, под закраской) — своей пачкой подряд
+            # идущих, в чужой абзац её не вливаем, и в порог «половина без
+            # места» она не входит: порог про повёрнутую страницу, а большой
+            # невидимый слой лишал раскладки видимый текст.
+            if placeless is None:
+                return None
+            if run:
+                runs.append(run)
+                run = _RotRun()
+            hrun.append(l or "")
+            continue
+        if hrun:
+            hidden_runs.append(_HiddenRun(hrun))
+            hrun = []
+        total += 1
         if not p or len(p) < 4:
-            return None                 # строка без места — страница без геометрии
+            if placeless is None:
+                return None             # строка без места — страница без геометрии
+            rg = rot.get(str(li))
+            if run and rg and run.geo and run.geo[-1] and not _rot_follows(run.geo[-1], rg):
+                # Другая надпись (дуга кольца и вертикальная подпись рядом
+                # в потоке) — своей пачкой, а не одним абзацем на двоих.
+                runs.append(run)
+                run = _RotRun()
+            run.add(l or "", rg)
+            continue
+        if run:
+            # Пачка без места ВНУТРИ абзаца (перед ней перенос слова или
+            # следующая строка продолжает со строчной) остаётся В ПОТОКЕ —
+            # сразу за предыдущей строкой, в том же абзаце, без рамки.
+            # Вынутая в конец страницы, она разорвала бы фразу на два
+            # перевода (повёрнутое слово посреди фразы); а страницу целиком
+            # на прежнюю дорогу не уводим: у PDF-«ленты» это весь документ.
+            # Только после ПЕРЕНОСА слова: строчная в начале следующей строки —
+            # слабый признак (подпись оси схемы между строками фразы вливалась
+            # бы в саму фразу).
+            if recs and recs[-1]["t"].rstrip().endswith(_WORD_BREAK):
+                recs[-1].setdefault("after", []).extend(run)
+            else:
+                runs.append(run)
+            run = _RotRun()
         raw = _TAB_RE.sub(" ", l or "")
         # Был ли у сырой строки пробел по краям: `_tidy` его снимает, а при
         # склейке разорванной строки он единственное ТОЧНОЕ свидетельство
@@ -1086,7 +1244,38 @@ def _geo_page(lines: list, g) -> "list | None":
                      # прежним кодом) — «обычное», и это не ложь: мы просто
                      # не знаем.
                      "st": (p[4] if len(p) > 4 else "") or "",
-                     "lsp": raw[:1] == " ", "rsp": raw[-1:] == " "})
+                     # Гарнитура (sans / serif / mono): нет поля — «не знаем»,
+                     # и абзац возьмёт гарнитуру документа.
+                     "fam": (p[5] if len(p) > 5 else "") or "",
+                     # Начало последнего куска строки — точное (x1 — оценка).
+                     "xl": float(p[6]) if len(p) > 6 and p[6] is not None else None,
+                     # Строка ответа pypdf, в которой на деле ДВЕ визуальные
+                     # строки (сноска с надстрочной цифрой): места каждой.
+                     "parts": (p[7] if len(p) > 7 else None) or None,
+                     # Конец строки посчитан по метрикам шрифта, а не оценён.
+                     "exact": bool(p[8]) if len(p) > 8 else False,
+                     # Цвет краски строки из самого PDF (оператор заливки),
+                     # None — не знаем, выгрузка мерит по странице.
+                     "color": p[9] if len(p) > 9 else None,
+                     "lsp": raw[:1] == " ", "rsp": raw[-1:] == " ",
+                     # Номер строки ответа pypdf: части одной строки (`split`)
+                     # колонками друг другу не свидетельствуют.
+                     "li": li})
+    if run:
+        if recs and recs[-1]["t"].rstrip().endswith(_WORD_BREAK):
+            recs[-1].setdefault("after", []).extend(run)
+        else:
+            runs.append(run)
+    if hrun:
+        hidden_runs.append(_HiddenRun(hrun))
+    # В порог идут только строки, которым НЕКУДА встать: повёрнутая строка
+    # с путём печатается по нему и раскладку страницы не портит.
+    lost = (sum(sum(1 for g_ in (getattr(r, "geo", None) or [None] * len(r)) if not g_) for r in runs)
+            + sum(len(r.get("after") or []) for r in recs))
+    if placeless is not None and (lost or runs or hidden_runs):
+        if not recs or lost > GEO_PLACELESS_MAX * max(total, 1):
+            return None
+        placeless.extend(runs + hidden_runs)
     return recs
 
 
@@ -1097,6 +1286,8 @@ def _multi_column(recs: list) -> bool:
     long_ = [r for r in recs if len(r["t"]) >= 15]
     for i, a in enumerate(long_):
         for b in long_[i + 1:]:
+            if a.get("li") is not None and a.get("li") == b.get("li"):
+                continue                # две надписи одной строки pypdf — не колонки
             s = max(a["s"], b["s"], 1.0)
             if abs(a["y"] - b["y"]) < 0.5 * s and abs(a["x0"] - b["x0"]) > 5 * s:
                 return True
@@ -1539,6 +1730,41 @@ def _plain_page_fixes(entries: list, next_gid, hyphenated: set = frozenset(), wo
                     entries[k]["role"], entries[k]["gid"] = "a", gid
 
 
+# Как далеко вниз (в кеглях) может стоять следующая строка того же абзаца:
+# межстрочный — 1.1–1.6 кегля, двойной интервал — до 2.4, дальше — уже
+# не продолжение (отбивку между абзацами решают текстовые правила).
+CONT_DY = 3.0
+# Строка, после которой абзац может перейти наверх СОСЕДНЕЙ колонки, —
+# строка колонки текста (не короче стольких кеглей), а не подпись схемы.
+COLUMN_LINE_MIN = 8.0
+
+
+def _geo_follows(a: dict, b: dict) -> bool:
+    """Строка b геометрически продолжает строку a (оба с местом `geo`):
+    стоит ниже не дальше `CONT_DY` кеглей и пересекается по горизонтали,
+    либо абзац ушёл наверх колонки правее (a — строка колонки текста),
+    либо это другая страница (о ней геометрия не судит)."""
+    ga, gb = a.get("geo"), b.get("geo")
+    if not ga or not gb or ga[0] != gb[0]:
+        return True
+    _p, ax0, ay, ax1, asz = ga[:5]
+    _p, bx0, by, bx1, bsz = gb[:5]
+    size = max(asz or 0.0, bsz or 0.0, 1.0)
+    dy = ay - by
+    overlap = min(ax1, bx1) - max(ax0, bx0)
+    if 0 < dy <= CONT_DY * size and overlap > -0.5 * size:
+        return True
+    if abs(dy) <= 0.3 * size and -0.5 * size <= bx0 - ax1 <= 2.0 * size:
+        return True                     # продолжение той же строки (разорванной)
+    wa = ax1 - ax0
+    if by > ay and wa >= COLUMN_LINE_MIN * size and (
+            bx0 >= ax0 + 0.5 * wa or bx1 <= ax1 - 0.5 * wa):
+        # Переход наверх следующей колонки — правее, а у письма справа
+        # налево (и у вёрстки с колонками в обратном порядке) — левее.
+        return True
+    return False
+
+
 def _assemble(entries: list, median_len: float, src: list = None) -> list:
     """Поток строк с разметкой ролей → строки для `join_lines`: вставки
     и заголовки — отдельными абзацами (пустая строка вокруг), а вставка,
@@ -1581,6 +1807,7 @@ def _assemble(entries: list, median_len: float, src: list = None) -> list:
 
     n = len(entries)
     i = 0
+    last_f = [None]
     while i < n:
         e = entries[i]
         role = e["role"]
@@ -1588,9 +1815,20 @@ def _assemble(entries: list, median_len: float, src: list = None) -> list:
             i += 1
             continue
         if role == "f":
+            # Пока вставка ждёт конца абзаца (`pending`), абзац продолжается
+            # ЗА ней — геометрией его не рвём: строка после вставки и не
+            # обязана стоять под строкой перед ней.
+            if (out and out[-1] and not pending and last_f[0] is not None
+                    and not _geo_follows(last_f[0], e)):
+                # Строка стоит НЕ там, где продолжилась бы предыдущая (под
+                # ней на межстрочный, либо наверху соседней колонки): это
+                # другая надпись, хоть поток pypdf и ставит её следом.
+                # У схемы так склеивались подписи с разных концов листа.
+                put("", None)
             if pending and (para_ends(out[-1] if out else "", e["t"]) or waited[0] >= DEFER_MAX_LINES):
                 release()
             put(e["t"], e)
+            last_f[0] = e if e.get("geo") else None
             if pending:
                 waited[0] += 1
             i += 1
@@ -1599,6 +1837,8 @@ def _assemble(entries: list, median_len: float, src: list = None) -> list:
         while j < n and entries[j]["role"] == role and entries[j]["gid"] == e["gid"]:
             j += 1
         block = entries[i:j]
+        if role != "f":
+            last_f[0] = None            # заголовок/вставка: судить не по чему
         if role == "a":
             k = j
             while k < n and entries[k]["role"] in ("a", "page"):
@@ -1782,7 +2022,18 @@ def _base_style(laid: dict) -> str:
     return tally.most_common(1)[0][0] if tally else ""
 
 
-def _para_boxes(entries: list, base: str = "") -> "list | None":
+def _base_family(laid: dict) -> str:
+    """Гарнитура, которой набран сам документ: ею печатается абзац, у строк
+    которого гарнитура не узнана (символьный шрифт, имя без гарнитуры)."""
+    tally = Counter()
+    for pg in laid.values():
+        for r in pg.get("recs") or []:
+            if r.get("fam"):
+                tally[r["fam"]] += max(1, len((r.get("t") or "").strip()))
+    return tally.most_common(1)[0][0] if tally else ""
+
+
+def _para_boxes(entries: list, base: str = "", base_fam: str = "") -> "list | None":
     """Рамки абзаца на страницах: [{page, x0, y0, x1, y1, size, lead, indent}].
 
     Абзац бывает разорван концом страницы, поэтому рамок несколько — по одной
@@ -1792,17 +2043,71 @@ def _para_boxes(entries: list, base: str = "") -> "list | None":
     «как в оригинале» такой абзац не трогает, а не гадает его место."""
     by_page: dict = {}
     for e in entries:
+        rg_ = (e or {}).get("rgeo")
+        if rg_ and not (e or {}).get("geo"):
+            # Повёрнутая строка: рамка — по её пути, место — с путём (поле 8),
+            # печать ставит перевод повёрнутым или вдоль дуги.
+            pg, rgeo = rg_
+            pts = rgeo.get("pts") or []
+            if not pts:
+                continue
+            xs = [p_[0] for p_ in pts] + [rgeo["end"][0]]
+            ys = [p_[1] for p_ in pts] + [rgeo["end"][1]]
+            sz = statistics.median([p_[3] for p_ in pts]) or 1.0
+            b = by_page.setdefault(pg, {"page": pg, "x0": min(xs), "y0": min(ys), "x1": max(xs),
+                                        "y1": max(ys), "sizes": [], "ys": [], "first": min(xs),
+                                        "st": Counter(), "fam": Counter()})
+            n_ = max(1, len((e.get("t") or "").strip()))
+            b["st"][rgeo.get("st") or ""] += n_
+            if rgeo.get("fam"):
+                b["fam"][rgeo["fam"]] += n_
+            b["x0"], b["x1"] = min(b["x0"], min(xs)), max(b["x1"], max(xs))
+            b["y0"], b["y1"] = min(b["y0"], min(ys)), max(b["y1"], max(ys))
+            b["sizes"].append(sz)
+            b.setdefault("slots", []).append([round(min(xs), 1), round(pts[0][1], 1),
+                                              round(max(xs), 1), round(sz, 2),
+                                              _rel_style(rgeo.get("st") or "", base), None,
+                                              n_, 0, rgeo])
+            continue
         g = (e or {}).get("geo")
         if not g or len(g) < 6:
             continue
-        pg, x0, y, x1, sz, st = g
+        pg, x0, y, x1, sz, st = g[:6]
+        fam = g[6] if len(g) > 6 else ""
+        xl = g[7] if len(g) > 7 else None
+        parts = g[8] if len(g) > 8 else None
+        exact = 1 if (len(g) > 9 and g[9]) else 0
+        color = g[10] if len(g) > 10 else None
         b = by_page.setdefault(pg, {"page": pg, "x0": x0, "y0": y, "x1": x1, "y1": y,
-                                    "sizes": [], "ys": [], "first": x0, "st": Counter()})
+                                    "sizes": [], "ys": [], "first": x0, "st": Counter(),
+                                    "fam": Counter()})
         b["st"][st or ""] += max(1, len((e.get("t") or "").strip()))
+        if fam:
+            b["fam"][fam] += max(1, len((e.get("t") or "").strip()))
         b["x0"], b["x1"] = min(b["x0"], x0), max(b["x1"], x1)
         b["y0"], b["y1"] = min(b["y0"], y), max(b["y1"], y)
         b["sizes"].append(sz or 0.0)
         b["ys"].append(y)
+        # Место САМОЙ строки: [x0, базовая, x1, кегль, начертание]. Рамка
+        # вокруг всех строк абзаца — прямоугольник, и у подписей схемы,
+        # разнесённых по рисунку, он накрывал сам рисунок: выгрузка
+        # закрашивала инфографику целиком. Строки — ровно та площадь,
+        # где стоял текст; по ним закрашивается и печатается перевод.
+        rel = _rel_style(st or "", base)
+        # Последнее поле места — сколько знаков ОРИГИНАЛА в нём стояло:
+        # по нему перевод раздаётся подписям схемы (`layout_pdf._spread`).
+        if parts:
+            for part in parts:
+                px0, py, psz, px1, pxl = part[:5]
+                b.setdefault("slots", []).append([px0, py, max(px1, px0), psz, rel, pxl,
+                                                  part[5] if len(part) > 5 else 0, 0, None, color])
+        else:
+            b.setdefault("slots", []).append([round(x0, 1), round(y, 1), round(max(x1, x0), 1),
+                                              round(sz or 0.0, 2), rel,
+                                              round(xl, 1) if xl is not None else None,
+                                              len((e.get("t") or "").strip()), exact,
+                                              # 8 — путь повёрнутой строки, 9 — цвет краски
+                                              None, color])
     if not by_page:
         return None
     out = []
@@ -1820,7 +2125,9 @@ def _para_boxes(entries: list, base: str = "") -> "list | None":
                     "bottom": round(b["y0"] - 0.25 * size, 1),
                     "size": round(size, 2), "lead": round(lead, 2),
                     "style": _rel_style(b["st"].most_common(1)[0][0] if b["st"] else "", base),
-                    "indent": round(b["first"] - b["x0"], 1), "lines": len(b["ys"])})
+                    "fam": (b["fam"].most_common(1)[0][0] if b["fam"] else base_fam) or "",
+                    "indent": round(b["first"] - b["x0"], 1), "lines": len(b["ys"]),
+                    "slots": b.get("slots") or []})
     return out
 
 
@@ -1834,10 +2141,11 @@ def _head_hit(hits: list, band: str, clusters: dict, text: str, rec: dict, page:
     и та же надпись сверху и снизу — два разных места на листе."""
     c = clusters["exact"].get(text) if clusters else None
     hits.append(((band, c["rep"] if c else text), text,
-                 (page, rec["x0"], rec["y"], rec["x1"], rec["s"], rec.get("st") or "")))
+                 (page, rec["x0"], rec["y"], rec["x1"], rec["s"], rec.get("st") or "",
+                  rec.get("fam") or "", rec.get("xl"))))
 
 
-def _head_paragraphs(hits: list, base: str = "") -> list:
+def _head_paragraphs(hits: list, base: str = "", base_fam: str = "") -> list:
     """Колонтитулы книги — [(текст, рамки)], по одной записи на РАЗНУЮ надпись.
 
     ЗАЧЕМ. Бегущий заголовок снимается со страницы правилами полосы и в текст
@@ -1870,7 +2178,7 @@ def _head_paragraphs(hits: list, base: str = "") -> list:
         text = g["texts"].most_common(1)[0][0]
         if not _frame_candidate(text):
             continue
-        boxes = _para_boxes([{"geo": x, "t": text} for x in g["geo"].values()], base)
+        boxes = _para_boxes([{"geo": x, "t": text} for x in g["geo"].values()], base, base_fam)
         if not boxes:
             continue
         for b in boxes:
@@ -1901,10 +2209,12 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
 
     # Проход 1: страницы с геометрией — строки на своих местах, без мусора.
     laid: dict = {}
+    unplaced: list = []         # видимые строки без места: {page, text}
     for i, ls in enumerate(pages):
         if i in unreliable:
             continue
-        recs = _geo_page(ls, geom[i])
+        placeless: list = []
+        recs = _geo_page(ls, geom[i], placeless)
         if recs is None:
             continue
         kept = []
@@ -1913,6 +2223,12 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
             if c:
                 r["t"] = c
                 kept.append(r)
+            elif r.get("after"):
+                # Строка ушла в мусор — её «хвост без места» к предыдущей.
+                if kept:
+                    kept[-1].setdefault("after", []).extend(r["after"])
+                else:
+                    placeless.append(list(r["after"]))
         # Дробь, степень и химический индекс — обратно в свою строку, ДО
         # всего остального: по местам строк считаются поля, колонки, роли
         # и украшения, и разорванная надвое строка врала бы им всем.
@@ -1937,18 +2253,46 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                 report["ornaments"] += 1
             deco.append(d)
         if deco:
+            for d in deco:
+                if d.get("after"):
+                    placeless.append(d["after"])
             kept = [r for r in kept if not any(r is d for d in deco)]
         multi = _multi_column(kept)
         if not multi:
             kept = _reading_order(kept)
         st = _page_stats(kept)
         top, bottom = _bands(kept, st)
-        laid[i] = {"recs": kept, "st": st, "top": top, "bottom": bottom, "multi": multi}
+        # Строки без места (повёрнутые) — через ту же чистку мусора, что
+        # и остальные; их пачки встают вставками в конце страницы (ниже).
+        loose = []
+        for run in placeless:
+            geos = getattr(run, "geo", None) or [None] * len(run)
+            got = _RotRun()
+            for l, rg in zip(run, geos):
+                # Повёрнутая строка с путём — текст по пути, с пробелами.
+                c = _clean_line(_tidy((_path_text(rg) if rg else "") or l), report)
+                if c:
+                    got.add(c, rg)
+            if got:
+                loose.append(got)
+                report["placelessLines"] += len(got)
+                if not isinstance(run, _HiddenRun):
+                    # Видимая строка без пути: её оригинал на листе ОСТАНЕТСЯ —
+                    # это пишется, и выгрузка называет такие строки (проверка
+                    # «осталось на языке оригинала»). Строка с путём печатается
+                    # повёрнутой или по дуге.
+                    left = [t for t, rg in zip(got, got.geo) if not rg]
+                    if left:
+                        unplaced.append({"page": i, "text": " ".join(left)})
+                    report["rotatedLines"] += sum(1 for rg in got.geo if rg)
+        laid[i] = {"recs": kept, "st": st, "top": top, "bottom": bottom, "multi": multi,
+                   "loose": loose}
 
     _fix_labels(laid, words, report)
     # Начертание документа — до разбора страниц: по нему считается, что
     # в книге выделено, а что просто её основной текст.
     base_style = _base_style(laid)
+    base_fam = _base_family(laid)
 
     # Проход 2: колонтитулы по месту и повтору — нечётко, потому что
     # распознаватель читает их на каждой странице заново.
@@ -2010,7 +2354,7 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
             spans: list = []
             paras = join_lines(buf_lines, hyphenated, median_len, report, spans=spans)
             paras = restore_dropcaps(paras, words, report)
-            boxes = [_para_boxes(src[a:b + 1], base_style) if a is not None else None
+            boxes = [_para_boxes(src[a:b + 1], base_style, base_fam) if a is not None else None
                      for a, b in spans]
             for para, place in zip(paras, boxes):
                 if not para:
@@ -2122,6 +2466,9 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                     break
                 drop.add(k)
         body = [r for k, r in enumerate(recs) if k not in drop]
+        lost_after = [c_ for k, r in enumerate(recs) if k in drop for t in (r.get("after") or [])
+                      for c_ in [_clean_line(_tidy(t), report)] if c_]
+        unplaced.extend({"page": i, "text": t} for t in lost_after)
         roles = ([("f", None)] * len(body) if pg["multi"]
                  else _geo_roles(body, pg["st"], geom[i], next_gid))
         # Рисунок встаёт в поток на своё место — перед первой строкой, что
@@ -2154,17 +2501,36 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                 report["insetLines" if role == "a" else "headingLines"] += 1
             entries.append({"role": role, "gid": gid, "t": r["t"],
                             # Место строки — для выгрузки «как в оригинале».
-                            "geo": (i, r["x0"], r["y"], r["x1"], r["s"], r.get("st") or "")})
+                            "geo": (i, r["x0"], r["y"], r["x1"], r["s"], r.get("st") or "",
+                                    r.get("fam") or "", r.get("xl"), r.get("parts"),
+                                    r.get("exact"), r.get("color"))})
+            for t_ in r.get("after") or []:
+                c_ = _clean_line(_tidy(t_), report)
+                if c_:
+                    report["placelessLines"] += 1
+                    unplaced.append({"page": i, "text": c_})
+                    entries.append({"role": role, "gid": gid, "t": c_})
+        # Строки без места — пачками, вставками в конце страницы: гадать
+        # их место нечем, а терять их текст нельзя. Рамки у них нет, и
+        # выгрузка «как в оригинале» их не трогает — на странице они
+        # остаются оригиналом, как и были.
+        for run in (pg.get("loose") or []) + ([lost_after] if lost_after else []):
+            g_ = next_gid()
+            for t_, rg in zip(run, getattr(run, "geo", None) or [None] * len(run)):
+                e_ = {"role": "a", "gid": g_, "t": t_}
+                if rg:
+                    e_["rgeo"] = (i, rg)    # путь повёрнутой строки — для печати
+                entries.append(e_)
     flush_lines()
     # Колонтитулы — ПОСЛЕ текста: они относятся ко всей книге, а не к месту
     # в ней, и вставленные в поток разорвали бы абзац на своей странице.
-    for text, boxes in _head_paragraphs(head_hits, base_style):
+    for text, boxes in _head_paragraphs(head_hits, base_style, base_fam):
         items.append(("p", text, boxes))
         layout.append(boxes)
         report["headParagraphs"] += 1
     report["imagePages"] = len(unreliable)
     report["paragraphs"] = sum(1 for it in items if it[0] == "p")
     return {"items": items, "imagePages": sorted(unreliable), "report": dict(report),
-            "layout": layout, "pageBoxes": [((g or {}).get("box") if isinstance(g, dict) else None)
+            "layout": layout, "unplaced": unplaced, "pageBoxes": [((g or {}).get("box") if isinstance(g, dict) else None)
                                             for g in geom],
             "heads": sorted(heads | feet | geo_heads | geo_feet)}

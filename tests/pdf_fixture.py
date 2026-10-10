@@ -13,10 +13,33 @@ import io
 # ─── Сборщик PDF ─────────────────────────────────────────────────────
 
 
+def _hexify(raw: str, code: dict) -> str:
+    """«{HEX:текст:HEX}» в сырой операции — коды знаков по карте шрифта."""
+    out, pos = "", 0
+    while True:
+        a = raw.find("{HEX:", pos)
+        if a < 0:
+            return out + raw[pos:]
+        b = raw.find(":HEX}", a)
+        out += raw[pos:a] + "<" + "".join("%02X" % code[c] for c in raw[a + 5:b]) + ">"
+        pos = b + 5
+
+
 def make_pdf(pages: list, size=(400, 600)) -> bytes:
-    """pages: [[("t", x, y, кегль, текст) | ("re", x, y, w, h) | ("img", x, y, w, h)], …]
+    """pages: [[("t", x, y, кегль, текст) | ("re", x, y, w, h) | ("img", x, y, w, h)
+    | ("raw", "операции PDF; текст — {HEX:…:HEX}")], …]
     — операции в ПОРЯДКЕ ПОТОКА. Текст — однобайтовыми кодами по карте ToUnicode."""
-    chars = sorted({c for p in pages for op in p if op[0] == "t" for c in op[4]} - {" "})
+    chars = {c for p in pages for op in p if op[0] == "t" for c in op[4]}
+    for p in pages:
+        for op in p:
+            if op[0] == "raw":
+                raw, pos = op[1], 0
+                while "{HEX:" in raw[pos:]:
+                    a = raw.find("{HEX:", pos)
+                    b = raw.find(":HEX}", a)
+                    chars |= set(raw[a + 5:b])
+                    pos = b + 5
+    chars = sorted(chars - {" "})
     assert len(chars) < 220, "слишком много разных знаков для однобайтовой карты"
     code = {" ": 0x20}
     nxt = 0x21
@@ -63,6 +86,10 @@ def make_pdf(pages: list, size=(400, 600)) -> bytes:
             elif op[0] == "img":
                 _i, x, y, w, h = op
                 ops.append("q %g 0 0 %g %g %g cm /Im1 Do Q" % (w, h, x, y))
+            elif op[0] == "raw":
+                # Сырые операции страницы: обрезка, закраска, повёрнутый
+                # текст. Знаки текста — из того же словаря, что у "t".
+                ops.append(_hexify(op[1], code))
         stream = "\n".join(ops).encode("latin-1")
         cid = add(b"<< /Length %d >>\nstream\n" % len(stream) + stream + b"\nendstream")
         pid = add(("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 %d %d] /Contents %d 0 R "

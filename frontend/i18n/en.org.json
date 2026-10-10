@@ -568,5 +568,6 @@
   "пробные страницы при регистрации": "trial pages on sign-up",
   "пробный фрагмент: списан он, объём файла — отдельно": "trial excerpt: only it was charged, the file size is shown separately",
   "раз пробному клиенту перевели фрагмент большого документа — он ждёт весь": "times a trial customer got an excerpt of a large document — they want all of it",
-  "озвучек собрано приглушением: голос оригинала слышен под переводом": "dubs built with ducking only: the original voice is audible under the translation"
+  "озвучек собрано приглушением: голос оригинала слышен под переводом": "dubs built with ducking only: the original voice is audible under the translation",
+  "раз в готовом PDF остался текст на языке оригинала": "times source-language text remained in a finished PDF"
 }

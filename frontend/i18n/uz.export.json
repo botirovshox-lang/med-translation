@@ -377,5 +377,9 @@
   "Остановлено — можно прочитать снова": "To'xtatildi — qayta o'qish mumkin",
   "Текст в кадре": "Kadrdagi matn",
   "Прочитать заново": "Qayta o'qish",
-  "Прочитать": "O'qish"
+  "Прочитать": "O'qish",
+  "В файле остался текст на языке оригинала": "Faylda asl tildagi matn qolgan",
+  "Мест: ": "Joylar: ",
+  " · рисунков с непрочитанными надписями: ": " · yozuvlari o‘qilmagan rasmlar: ",
+  " (раздел «Надписи на картинках» ниже)": " (quyidagi «Rasmlardagi yozuvlar» bo‘limi)"
 }

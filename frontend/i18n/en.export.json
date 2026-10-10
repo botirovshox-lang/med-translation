@@ -377,5 +377,9 @@
   "Остановлено — можно прочитать снова": "Stopped — you can read again",
   "Текст в кадре": "On-screen text",
   "Прочитать заново": "Read again",
-  "Прочитать": "Read"
+  "Прочитать": "Read",
+  "В файле остался текст на языке оригинала": "Source-language text remains in the file",
+  "Мест: ": "Places: ",
+  " · рисунков с непрочитанными надписями: ": " · figures with unread labels: ",
+  " (раздел «Надписи на картинках» ниже)": " (see “Text in images” below)"
 }

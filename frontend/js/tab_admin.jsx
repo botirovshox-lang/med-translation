@@ -1167,6 +1167,7 @@ function oppBlockText(code) {
     case "dead.exportFormat": return TR("раз просили формат выгрузки, которого у нас нет");
     case "dead.writeback": return TR("раз просили «как в оригинале», а формат этого не умеет — отдали Word");
     case "dead.pdfLayout503": return TR("раз PDF «как в оригинале» не собрался: нет шрифта или библиотеки на сервере");
+    case "dead.pdfLeftover": return TR("раз в готовом PDF остался текст на языке оригинала");
     case "dead.slotsDrift400": return TR("раз выгрузка 1в1 отказала: правила разбора файла изменились с момента загрузки");
     case "dead.images": return TR("раз чтение надписей с картинок не запустилось");
     case "dead.scan": return TR("раз принесли скан: объём мы считаем выборкой, а не целиком");

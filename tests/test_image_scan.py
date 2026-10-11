@@ -536,8 +536,10 @@ src_raster, _o = main._docx_media(docx_path.read_bytes())
 seg = [s for s in project["segments"] if (s.get("origin") or {}).get("kind") == "image"][0]
 seg["target"] = "Fig. 1. Diagram of the lungs"
 
-# А эту рамку кладём на фотошум руками: перерисовать там нельзя, и перевод
-# обязан уйти подписью под картинкой, а не заплаткой поверх снимка.
+# А эту рамку кладём на фотошум руками. Прежде перевод уходил ПОДПИСЬЮ под
+# картинкой; по решению владельца (11.10.2026) подписей под рисунками нет:
+# перевод встаёт В САМУ картинку — плашкой цвета фона, если букв на шуме
+# не выделить, — и подпись в документ не дописывается.
 data = main._load_source_map(1)
 noisy = [im for im in data["images"] if not im.get("blocks")][0]
 nid = max(s["id"] for s in project["segments"]) + 1
@@ -548,23 +550,20 @@ noisy["blocks"] = [{"box": [20, 20, 480, 60], "rows": 1, "conf": 0.9, "flat": 0.
 main._save_source_map(1, data)
 
 path, stats = main._generate_export(project, "docx_layout")
-check(stats["img_repainted"] == 1, "надпись на белом фоне перерисована: %s" % stats["img_repainted"])
-check(stats["img_captioned"] == 1 and stats["img_flat"] == 1,
-      "надпись на снимке ушла подписью, причина названа: %s"
-      % {k: stats[k] for k in ("img_captioned", "img_flat")})
+check(stats["img_repainted"] == 2, "обе надписи перерисованы в картинку: %s" % stats["img_repainted"])
+check(stats["img_captioned"] == 0,
+      "подписи под картинкой нет: %s" % {k: stats[k] for k in ("img_captioned", "img_flat")})
 
 out_raster, _o2 = main._docx_media(path.read_bytes())
 changed = [n for n in src_raster
            if hashlib.sha1(src_raster[n]).hexdigest()
            != hashlib.sha1(out_raster.get(n, b"")).hexdigest()]
-check(len(changed) == 1, "заменена ровно одна картинка, остальные байт в байт: %s" % changed)
+check(len(changed) == 2, "заменены ровно те картинки, где надписи, остальные байт в байт: %s" % changed)
 check(hashlib.sha1(docx_path.read_bytes()).hexdigest() == before,
       "исходник на диске не тронут — перерисовка живёт только в копии")
 
 texts = [p.text for p in Document(str(path)).paragraphs]
-check("Caption on the photograph" in texts, "подпись дописана в документ")
-check(texts.index("Caption on the photograph") > texts.index("Текст перед рисунком."),
-      "подпись стоит после своей картинки, а не в начале документа")
+check("Caption on the photograph" not in texts, "перевод надписи не продублирован подписью в тексте")
 
 # Подменённая картинка не перерисовывается. Карта переживает повторную
 # привязку исходника намеренно, но рамки описывают ТУ картинку: перевод,
@@ -576,7 +575,8 @@ keep_sha = mine["sha"]
 mine["sha"] = "0" * 40
 main._save_source_map(1, data)
 _p3, stats3 = main._generate_export(project, "docx_layout")
-check(stats3["img_stale"] >= 1 and stats3["img_repainted"] == 0,
+# Перерисована ровно одна — надпись на снимке (плашкой), а не подменённая.
+check(stats3["img_stale"] >= 1 and stats3["img_repainted"] == 1,
       "картинка разошлась с картой — не трогаем и говорим числом: %s"
       % {k: stats3[k] for k in ("img_stale", "img_repainted")})
 mine["sha"] = keep_sha
@@ -599,7 +599,7 @@ main._job_images(new_job(dry_run=False))
 seg = [s for s in project["segments"] if (s.get("origin") or {}).get("kind") == "image"][0]
 seg["target"] = ""
 _p2, stats2 = main._generate_export(project, "docx_layout")
-check(stats2["img_untranslated"] == 1 and stats2["img_repainted"] == 0,
+check(stats2["img_untranslated"] == 1 and stats2["img_repainted"] == 1,
       "непереведённая надпись остаётся на языке оригинала и посчитана: %s"
       % {k: stats2[k] for k in ("img_untranslated", "img_repainted")})
 

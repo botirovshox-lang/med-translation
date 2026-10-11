@@ -313,8 +313,10 @@ check(pair_ink >= alone_ink,
 print("\n── отказы ──")
 ph = Image.fromarray(noise.repeat(4, axis=0)[:200, :400])
 new2, rep2 = it.render_target(png(ph), [{"box": BOX, "text": "Anything"}])
-check(new2 is None and rep2[0]["why"] == "flat",
-      "на пёстром фоне не перерисовываем и причину называем")
+# Пёстрый фон без выделимых букв: перевод — плашкой цвета фона в самой
+# картинке (подписей под рисунками больше нет, решение владельца 11.10.2026).
+check(new2 is not None and rep2[0]["ok"] and not rep2[0].get("paint"),
+      "на пёстром фоне перевод встаёт плашкой в картинку, а не подписью: %s" % rep2[0])
 new3, rep3 = it.render_target(src, [{"box": BOX, "text": "   "}])
 check(new3 is None and rep3[0]["why"] == "empty",
       "пустой перевод оставляет оригинал на месте")

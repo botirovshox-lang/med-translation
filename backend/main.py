@@ -11263,6 +11263,7 @@ def get_project_detail(pid: int):
     _media_status_fix(project)
     _book_image_pages(project)
     _auto_reseg_kick(project)
+    _auto_relayer_kick(project)
     return _json_bytes(_project_for_client(project), "project %s" % pid, t0)
 
 
@@ -15609,6 +15610,72 @@ def _auto_resegment(pid: int, tenant: str, claimed: bool = False) -> Optional[st
             _AUTO_RESEG_BUSY.discard(pid)
 
 
+_RELAYER_SEEN: dict = {}          # pid → время правки карты, при котором ответ «не нужно»
+
+
+def _relayer_due(project: dict) -> bool:
+    """У PDF-проекта есть надписи, сверенные со слоем по прежнему правилу
+    (целым блоком), и среди них — многострочные блоки, отсеянные как слой.
+    Ответ «не нужно» помнится до правки карты: открытие файла — горячий
+    путь единственного воркера, а карта книги весит мегабайты."""
+    if (project.get("importKind") or "") != "pdf" or project.get("relayerAsked") == LAYER_RULE:
+        return False
+    if not project.get("sourceDocx"):
+        return False
+    try:
+        mt = _source_paths(project["id"])[1].stat().st_mtime
+    except OSError:
+        return False
+    if _RELAYER_SEEN.get(project["id"]) == mt:
+        return False
+    data = _load_source_map(project["id"])
+    due = _relayer_due_in(data)
+    if not due:
+        _RELAYER_SEEN[project["id"]] = mt
+    return due
+
+
+def _relayer_due_in(data: "dict | None") -> bool:
+    for rec in (data or {}).get("images") or []:
+        if int(rec.get("layerRule") or 1) >= LAYER_RULE:
+            continue
+        page = str(rec.get("part") or "").startswith(PDF_PAGE_PART)
+        if any(int(b.get("rows") or 1) > 1 and not b.get("layerSplit")
+               and (b.get("skip") == "layer" or (page and "text" in b and not b.get("skip")))
+               for b in rec.get("blocks") or []):
+            return True
+    return False
+
+
+def _auto_relayer_kick(project: dict) -> None:
+    """Открыли PDF-проект, прочитанный прежним правилом сверки со слоем, —
+    поставить разбор надписей сам (без кнопки, тот же закон, что у
+    авточтения): строки ищутся локально, платно читаются только новые.
+    Один раз на версию правила (`relayerAsked`)."""
+    if IS_WORKER or not _SERVING[0] or os.environ.get("AUTO_READ_IMAGES", "1") == "0":
+        return
+    try:
+        if not _relayer_due(project):
+            return
+        pid = project["id"]
+        if _active_job_for(pid) or _job_busy(pid, "images"):
+            return
+        # Пересборка по новым правилам идёт сама (`_auto_reseg_kick`) и пишет
+        # ту же карту — разбор надписей встанет после неё, при следующем
+        # открытии: два писателя одной карты потеряли бы работу одного.
+        with _AUTO_RESEG_LOCK:
+            if pid in _AUTO_RESEG_BUSY:
+                return
+        if _reseg_due(project):
+            return
+        if _auto_read_images(project, "pdf") is not None:
+            project["relayerAsked"] = LAYER_RULE
+            save_state(STATE)
+    except Exception as e:
+        print("[backend] построчная сверка слоя проекта %s не поставлена: %s"
+              % (project.get("id"), e), file=sys.stderr)
+
+
 def _auto_reseg_kick(project: dict) -> None:
     """Открыли файл, нарезанный прежними правилами, — пересобрать фоном.
     Номер занимается ДО запуска потока: ответ на этот же запрос уже говорит
@@ -17257,6 +17324,13 @@ def _job_images(job: dict) -> None:
                     _mark_figure_blocks(rec, blob, fig_rects)
                 rec["paras"] = anchors.get(name) or []
                 job["counters"]["detected"] = job["counters"].get("detected", 0) + 1
+                map_dirty = True
+            elif int(rec.get("layerRule") or 1) < LAYER_RULE and blob:
+                # Прочитано по прежнему правилу сверки со слоем — строки,
+                # потерянные вместе с блоком слоя, находятся заново.
+                job["phase"] = "detect"
+                if _relayer_old(rec, blob, data, fig_rects):
+                    job["counters"]["relayered"] = job["counters"].get("relayered", 0) + 1
                 map_dirty = True
             work.append((name, blob, rec))
         pos += len(work)
@@ -31136,7 +31210,10 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
             items.append({"box": b["box"], "text": target, "align": b.get("align"),
                           # Высота строки и число строк: по ним считаются поля
                           # рамки и решается, нужно ли увеличивать картинку.
-                          "lineH": b.get("lineH"), "rows": b.get("rows")})
+                          "lineH": b.get("lineH"), "rows": b.get("rows"),
+                          # Исходный текст: по нему меряется кегль букв
+                          # (заглавные или строчные, `text_paint.measure`).
+                          "src": (seg.get("source") or "").strip()})
         if not items:
             continue
         part = parts.get(name)
@@ -31424,7 +31501,23 @@ def _original_ext(project: dict) -> str:
     return ext or ".txt"
 
 
-def _layout_texts(project: dict, data: dict) -> dict:
+_SAME_DROP = dict.fromkeys(map(ord, "­​‌‍⁠﻿"))
+
+
+def _same_as_source(target: str, source: str) -> bool:
+    """Перевод буква в букву совпадает с оригиналом: список литературы,
+    название журнала, число, адрес. Сравнение строгое — NFKC (лигатуры
+    «ﬁ»), без мягких переносов и невидимых разделителей, пробелы свёрнуты;
+    пунктуация, кавычки и цифры НЕ нормализуются: «1.5» → «1,5» и «"» → «»»
+    — это правка перевода, и её надо напечатать."""
+    import unicodedata
+    def norm(t):
+        return " ".join(unicodedata.normalize("NFKC", t or "").translate(_SAME_DROP).split())
+    a = norm(target)
+    return bool(a) and a == norm(source)
+
+
+def _layout_texts(project: dict, data: dict, same: "set | None" = None) -> dict:
     """{номер абзаца: перевод} для выгрузки PDF «как в оригинале».
 
     Правила те же, что у .docx (`_export_docx_layout`): абзац без перевода
@@ -31441,6 +31534,17 @@ def _layout_texts(project: dict, data: dict) -> dict:
             continue
         targets = [(x.get("target") or "").strip() for x in parts]
         if not all(targets):
+            continue
+        # Перевод = оригиналу (литература, название журнала, числа): абзац
+        # НЕ печатается вовсе — на листе остаются пиксели оригинала, а не их
+        # перепечатка нашим шрифтом по нашим местам строк (на списке
+        # литературы проекта 14 это давало кашу из съехавших номеров).
+        # Сравнивается весь абзац; в `written` он не попадает — иначе хвост
+        # склейки стёрся бы, а голова осталась бы без его текста.
+        if _same_as_source(" ".join(targets),
+                           " ".join((x.get("source") or "").strip() for x in parts)):
+            if same is not None:
+                same.add(int(idx))
             continue
         texts[int(idx)] = " ".join(targets)
         written.update(sids)
@@ -31462,6 +31566,50 @@ def _png_page_index(blob: bytes) -> Optional[int]:
         return int(v) if v is not None else None
     except Exception:
         return None
+
+
+_LAYER_WORD_RE = re.compile(r"[^\W\d_]{3,}", re.UNICODE)
+# Какая доля слов блока картинки должна стоять в тексте слоя той же страницы,
+# чтобы считать блок повтором слоя.
+LAYER_DUP_SHARE = float(os.environ.get("LAYER_DUP_SHARE", "0.3"))
+
+
+def _layer_words_by_page(data: dict, by_id: dict) -> dict:
+    """{страница: [(рамка строки слоя в точках, слова её абзаца)]} — только
+    НАПЕЧАТАННЫЕ строки (у которых есть место на листе)."""
+    src_of: dict = {}
+    for idx, sids in _para_groups(data):
+        src_of[int(idx)] = " ".join((by_id.get(sid) or {}).get("source") or "" for sid in sids)
+    out: dict = {}
+    for key, boxes in ((data.get("layout") or {}).get("boxes") or {}).items():
+        words = {w.lower() for w in _LAYER_WORD_RE.findall(src_of.get(int(key), ""))}
+        if not words:
+            continue
+        for b in boxes or []:
+            for sl in b.get("slots") or []:
+                try:
+                    x0, y, x1, s = (float(v) for v in sl[:4])
+                except Exception:
+                    continue
+                out.setdefault(int(b.get("page", -1)), []).append(
+                    ((x0, y - 0.3 * s, x1, y + 0.9 * s), words))
+    return out
+
+
+def _dup_of_layer(src: str, near: list, rect: "tuple | None") -> bool:
+    """Блок картинки повторяет строки слоя, стоящие ПОД НИМ (по месту): слова
+    той же страницы в другом месте (подпись к рисунку) повтором не считаются."""
+    mine = [w.lower() for w in _LAYER_WORD_RE.findall(src or "")]
+    if len(mine) < 3 or not near or rect is None:
+        return False
+    bx0, by0, bx1, by1 = rect
+    words: set = set()
+    for (x0, y0, x1, y1), ws in near:
+        if min(bx1, x1) - max(bx0, x0) > 0 and min(by1, y1) - max(by0, y0) > 0:
+            words |= ws
+    if not words:
+        return False
+    return sum(1 for w in mine if w in words) >= LAYER_DUP_SHARE * len(mine)
 
 
 def _pdf_image_boxes(project: dict, data: dict) -> list:
@@ -31492,6 +31640,7 @@ def _pdf_image_boxes(project: dict, data: dict) -> list:
     out: list = []
     skipped: dict = {}
     vk = _virt_key(data)
+    layer_words = _layer_words_by_page(data, by_id)
     for im in images:
         virt = str(im.get("part") or "").startswith(PDF_PAGE_PART)
         if virt and im.get("vk") != vk:
@@ -31521,6 +31670,24 @@ def _pdf_image_boxes(project: dict, data: dict) -> list:
             text = ((seg or {}).get("target") or "").strip()
             if not text:
                 continue
+            rect_pt = None
+            pgs = (data.get("layout") or {}).get("pages") or []
+            if fig is not None and 0 <= page < len(pgs) and pgs[page]:
+                px0_, py0_, px1_, py1_ = (float(v) for v in pgs[page])
+                fx0_, fy0_, fx1_, fy1_ = fig[1:5]
+                sxp, syp = (fx1_ - fx0_) / w, (fy1_ - fy0_) / h
+                bx = b["box"]
+                rect_pt = (px0_ + (fx0_ + bx[0] * sxp) * (px1_ - px0_),
+                           py1_ - (fy0_ + bx[3] * syp) * (py1_ - py0_),
+                           px0_ + (fx0_ + bx[2] * sxp) * (px1_ - px0_),
+                           py1_ - (fy0_ + bx[1] * syp) * (py1_ - py0_))
+            if _dup_of_layer((seg or {}).get("source") or "", layer_words.get(page) or [], rect_pt):
+                # Блок разбора картинки повторяет текст СЛОЯ этой страницы
+                # (детектор накрыл столбец схемы, где подписи — текстом PDF):
+                # его перевод уже печатает абзац слоя, второй раз — двойной
+                # текст поверх рисунка (проект 14, стр. 19).
+                skipped["layerDup"] = skipped.get("layerDup", 0) + 1
+                continue
             x0, y0, x1, y1 = b["box"]
             rows = max(1, int(b.get("rows") or 1))
             if x1 > x0 and rows <= 1 and (y1 - y0) >= (x1 - x0) * image_text.IMG_VERT_RATIO:
@@ -31537,6 +31704,11 @@ def _pdf_image_boxes(project: dict, data: dict) -> list:
             sx_, sy_ = (fx1 - fx0) / w, (fy1 - fy0) / h
             out.append({"text": text, "boxes": [{
                 "page": page, "frac": 1, "image": 1, "style": "", "indent": 0.0,
+                # Исходный текст, число строк и выключка надписи — по ним печать
+                # меряет кегль букв и ставит перевод как стоял оригинал
+                # (`layout_pdf._paint_measure`).
+                "src": ((seg or {}).get("source") or "").strip(), "rows": rows,
+                "align": b.get("align") or "left",
                 "x0": fx0 + x0 * sx_, "x1": fx0 + x1 * sx_,
                 "top": fy0 + y0 * sy_, "bottom": fy0 + y1 * sy_,
                 "size": line_h * sy_, "lead": ((y1 - y0) / rows) * sy_}]})
@@ -31706,7 +31878,39 @@ def _mark_figure_blocks(rec: dict, blob: bytes, fig_rects: dict) -> int:
     return n
 
 
-def _mark_layer_blocks(rec: dict, blob: bytes, data: dict) -> int:
+# Версия правила сверки надписей с текстовым слоем. 2 — построчно: блок,
+# где часть строк в слое, а часть нарисована кривыми («Self-efficacy» между
+# пунктами слоя; «VLED and formula meal replacement…» в таблице проекта 14),
+# прежде отсеивался ЦЕЛИКОМ, и кривые строки не переводились никогда.
+LAYER_RULE = 2
+
+
+def _split_uncovered(b: dict, line_boxes: list, covered: list, parent: int) -> list:
+    """Строки блока, которых нет в слое, — новыми блоками (по подряд идущим):
+    их и прочитает модель. Блок, где все строки в слое, сюда не попадает."""
+    out, run = [], []
+    for lb, cov in zip(line_boxes, covered):
+        if not cov:
+            run.append(lb)
+            continue
+        if run:
+            out.append(run)
+            run = []
+    if run:
+        out.append(run)
+    res = []
+    for r in out:
+        x0, y0 = min(v[0] for v in r), min(v[1] for v in r)
+        x1, y1 = max(v[2] for v in r), max(v[3] for v in r)
+        lh = sum(v[3] - v[1] for v in r) / float(len(r))
+        res.append({"box": [int(x0), int(y0), int(x1), int(y1)], "rows": len(r),
+                    "lineH": int(round(lh)), "conf": b.get("conf"), "flat": b.get("flat"),
+                    "align": b.get("align") or "left", "lineBoxes": r, "from": parent})
+    return res
+
+
+def _mark_layer_blocks(rec: dict, blob: bytes, data: dict, only: "set | None" = None,
+                       line_boxes: "dict | None" = None) -> int:
     """Блоки надписей ВЫРЕЗКИ РИСУНКА из PDF, под которыми уже лежит строка
     текстового слоя, — `skip: "layer"`: их текст переводится абзацем слоя,
     и второй раз его не читаем (деньги) и не заводим (дубль в переводе).
@@ -31741,7 +31945,51 @@ def _mark_layer_blocks(rec: dict, blob: bytes, data: dict) -> int:
                                   float(sl[1]) + 0.9 * s))
     n = 0
     w, h = float(rec["w"]), float(rec["h"])
-    for b in rec.get("blocks") or []:
+
+    def to_pt(box):
+        x0, y0, x1, y1 = (float(v) for v in box)
+        return (px0 + (fx0 + x0 / w * (fx1 - fx0)) * pw, py1 - (fy0 + y1 / h * (fy1 - fy0)) * ph,
+                px0 + (fx0 + x1 / w * (fx1 - fx0)) * pw, py1 - (fy0 + y0 / h * (fy1 - fy0)) * ph)
+
+    def share(box):
+        bx0, by0, bx1, by1 = to_pt(box)
+        area = max(1e-6, (bx1 - bx0) * (by1 - by0))
+        cov = 0.0
+        for rx0, ry0, rx1, ry1 in rects:
+            ix = min(bx1, rx1) - max(bx0, rx0)
+            iy = min(by1, ry1) - max(by0, ry0)
+            if ix > 0 and iy > 0:
+                cov += ix * iy
+        return cov / area
+
+    added: list = []
+    blocks = rec.get("blocks") or []
+    for bi, b in enumerate(blocks):
+        if only is not None and bi not in only:
+            continue
+        lbs = (line_boxes or {}).get(bi) or b.get("lineBoxes") or []
+        # Прочитанный блок сверяется построчно только при пересверке
+        # (`_relayer_old`, `only`): при свежем разборе текста у блока нет.
+        if len(lbs) > 1 and ("text" not in b or only is not None):
+            # Построчно: строки, которых в слое нет, — своими блоками.
+            covered = [share(lb) >= LAYER_OVERLAP for lb in lbs]
+            if any(covered) and not all(covered):
+                added.extend(_split_uncovered(b, lbs, covered, bi))
+                b["skip"] = "layer"
+                b["layerSplit"] = 1
+                n += 1
+                continue
+            if all(covered):
+                b["skip"] = "layer"
+                n += 1
+                continue
+            # Ни одной строки в слое: блок читается целиком (прежнее правило
+            # по площади могло отсеять его за чужую строку, задевшую край).
+            if b.get("skip") == "layer":
+                b.pop("skip", None)
+            continue
+        if only is not None:
+            continue
         x0, y0, x1, y1 = (float(v) for v in b["box"])
         bx0 = px0 + (fx0 + x0 / w * (fx1 - fx0)) * pw
         bx1 = px0 + (fx0 + x1 / w * (fx1 - fx0)) * pw
@@ -31782,7 +32030,107 @@ def _mark_layer_blocks(rec: dict, blob: bytes, data: dict) -> int:
                 continue
         b["skip"] = "layer"
         n += 1
+    # Новые блоки — В КОНЕЦ списка: по номеру блока сегмент находит свою
+    # надпись (`_image_seg_of`), и сдвиг номеров оторвал бы готовый перевод.
+    if added:
+        if only is None:
+            # Свежий разбор (сегментов ещё нет): строка встаёт РЯДОМ со своим
+            # блоком — в редакторе она идёт в порядке чтения, а не в конце.
+            kids: dict = {}
+            for nb in added:
+                kids.setdefault(nb["from"], []).append(nb)
+            out = []
+            for bi, b in enumerate(blocks):
+                out.append(b)
+                out.extend(kids.get(bi, []))
+            for nb in out:
+                nb.pop("from", None)
+            rec["blocks"] = out
+        else:
+            # Прочитанная прежде запись: номер блока — связь с сегментом,
+            # новые блоки — только В КОНЕЦ.
+            rec["blocks"] = blocks + added
+    rec["layerRule"] = LAYER_RULE
     return n
+
+
+def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict) -> int:
+    """Запись, сверенная со слоем по прежнему правилу (целым блоком), —
+    сверить построчно. Строки блоков `skip: layer` ищет заново ЛОКАЛЬНЫЙ
+    детектор (бесплатно); существующие блоки и их номера не меняются,
+    новые (строки вне слоя) дописываются в конец и будут прочитаны. Строка,
+    которая уже лежит в другом блоке, второй раз не заводится. Ответ —
+    сколько блоков добавлено."""
+    blocks = rec.get("blocks") or []
+    # Пересверяются многострочные блоки, отсеянные как слой целиком, И
+    # прочитанные многострочные блоки СТРАНИЦЫ: детектор собирал в них
+    # столбец схемы целиком, часть строк которого — текст слоя (дубль),
+    # а часть — растр (только их и надо было читать; проект 14, стр. 19).
+    todo = {i for i, b in enumerate(blocks)
+            if int(b.get("rows") or 1) > 1 and not b.get("layerSplit")
+            and (b.get("skip") == "layer"
+                 or ("text" in b and not b.get("skip")
+                     and str(rec.get("part") or "").startswith(PDF_PAGE_PART)))}
+    if not todo or not blob or image_text is None:
+        rec["layerRule"] = LAYER_RULE
+        return 0
+    # Детектор — по ВЫРЕЗКАМ этих блоков, а не по всей странице: страница
+    # книги — минута процессора единственного воркера, блок — доли секунды.
+    try:
+        from PIL import Image as _PIL
+        page_im = _PIL.open(io.BytesIO(blob)).convert("RGB")
+    except Exception:
+        page_im = None
+    lbs: dict = {}
+    for i in todo:
+        x0, y0, x1, y1 = (int(v) for v in blocks[i]["box"])
+        if page_im is None:
+            break
+        pad = int(max(4, 0.6 * float(blocks[i].get("lineH") or 10)))
+        cx0, cy0 = max(0, x0 - pad), max(0, y0 - pad)
+        cx1, cy1 = min(page_im.size[0], x1 + pad), min(page_im.size[1], y1 + pad)
+        if cx1 - cx0 < 4 or cy1 - cy0 < 4:
+            continue
+        buf = io.BytesIO()
+        page_im.crop((cx0, cy0, cx1, cy1)).save(buf, "PNG")
+        try:
+            lines = image_text.detect_lines(buf.getvalue()) or []
+        except Exception:
+            lines = []
+        got = []
+        for ln in lines:
+            lx0, ly0, lx1, ly1 = ln["box"]
+            lx0, lx1, ly0, ly1 = lx0 + cx0, lx1 + cx0, ly0 + cy0, ly1 + cy0
+            mx, my = (lx0 + lx1) / 2.0, (ly0 + ly1) / 2.0
+            if x0 - 2 <= mx <= x1 + 2 and y0 - 2 <= my <= y1 + 2:
+                got.append([int(lx0), int(ly0), int(lx1), int(ly1)])
+        if len(got) > 1:
+            lbs[i] = sorted(got, key=lambda v: v[1])
+    before = len(blocks)
+    _mark_layer_blocks(rec, blob, data, only=set(lbs), line_boxes=lbs)
+    new = rec.get("blocks") or []
+    # Дубль: строка уже лежит в другом (несброшенном) блоке.
+    keep = new[:before]
+    for nb in new[before:]:
+        bx0, by0, bx1, by1 = nb["box"]
+        area = max(1, (bx1 - bx0) * (by1 - by0))
+        dup = False
+        for ob in keep:
+            if ob.get("skip"):
+                continue
+            ox0, oy0, ox1, oy1 = ob["box"]
+            ix, iy = min(bx1, ox1) - max(bx0, ox0), min(by1, oy1) - max(by0, oy0)
+            if ix > 0 and iy > 0 and ix * iy >= 0.5 * area:
+                dup = True
+                break
+        if not dup:
+            keep.append(nb)
+    rec["blocks"] = keep
+    if str(rec.get("part") or "").startswith(PDF_PAGE_PART) and len(keep) > before:
+        sub = {"blocks": keep[before:], "w": rec.get("w"), "h": rec.get("h")}
+        _mark_figure_blocks(sub, blob, fig_rects)
+    rec["layerRule"] = LAYER_RULE
+    return len(keep) - before
 
 
 def _drop_nested_labels(items: list) -> tuple:
@@ -31827,7 +32175,8 @@ _LEFTOVER_WORD_RE = re.compile(r"[^\W\d_]{2,}")
 LEFTOVER_SAMPLES = 8
 
 
-def _layout_leftovers(project: dict, data: dict, texts: dict, stats: dict) -> dict:
+def _layout_leftovers(project: dict, data: dict, texts: dict, stats: dict,
+                      same: "set | None" = None) -> dict:
     """Проверка готового PDF «как в оригинале»: что на листах осталось
     НА ЯЗЫКЕ ОРИГИНАЛА — {count, untranslated, unplaced, pages, samples}.
 
@@ -31866,6 +32215,9 @@ def _layout_leftovers(project: dict, data: dict, texts: dict, stats: dict) -> di
     tails = {int(x) for x in (data.get("tails") or [])}
     for key in ((data.get("layout") or {}).get("boxes") or {}):
         idx = int(key)
+        # Совпавший с оригиналом абзац (`same`) проверяется наравне со всеми:
+        # законно оставленное снимает `_leftover_kept` (слова есть в переводах),
+        # а скопированный моделью абзац на языке оригинала обязан посчитаться.
         if idx in tails or (texts.get(idx) or "").strip():
             continue
         note("untranslated", src_of.get(idx) or (paras[idx] if 0 <= idx < len(paras) else ""))
@@ -31928,10 +32280,17 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
         _ev("dead.pdfLayout503", _tenant_of(project))
         raise HTTPException(503, "Выгрузка «как в оригинале» для PDF недоступна: %s. "
                                  "Доступен Word-документ и PDF из него" % why)
-    texts = _layout_texts(project, data)
+    same: set = set()
+    texts = _layout_texts(project, data, same)
+    # Исходный текст абзацев — по нему печать меряет ширину начертания
+    # оригинала (`layout_pdf._width_ratio`).
+    by_id = {s_["id"]: s_ for s_ in project.get("segments") or []}
+    sources = {int(idx): " ".join((by_id.get(sid) or {}).get("source") or "" for sid in sids)
+               for idx, sids in _para_groups(data)}
     try:
         pdf, stats = layout_pdf_mod.build(work, layout, texts,
-                                          extra=_pdf_image_boxes(project, data))
+                                          extra=_pdf_image_boxes(project, data),
+                                          lang=project.get("tgt"), sources=sources)
     except layout_pdf_mod.NotAvailable as e:
         raise HTTPException(503, "Выгрузка «как в оригинале» для PDF не собралась: %s. "
                                  "Доступен Word-документ и PDF из него" % e)
@@ -31957,7 +32316,8 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
     tmp.write_bytes(pdf)
     # Проверка готового файла: осталось ли что-то на языке оригинала.
     try:
-        stats["leftover"] = _layout_leftovers(project, data, texts, stats)
+        stats["identical"] = len(same)
+        stats["leftover"] = _layout_leftovers(project, data, texts, stats, same)
         if stats["leftover"]["count"]:
             _ev("dead.pdfLeftover", _tenant_of(project), stats["leftover"]["count"])
     except Exception as e:

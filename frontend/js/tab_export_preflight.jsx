@@ -792,11 +792,24 @@ window.ExpMediaCard = ExpMediaCard;
 /* Проверка вёрстки готового PDF: легла ли каждая строка перевода на своё
    место. Сборка сама ужимает строку, налезшую на соседа; что не удалось —
    называется здесь, с кнопкой к этим строкам. */
+/* Самопроверка размера (`layout_pdf._size_report`): где перевод лёг заметно
+   мельче оригинала. Одна строка словами человека, без внутренних названий. */
+function ExpSmallText({ report }) {
+  const share = report.small || 0;
+  if (share < 0.05 || !(report.smallPages || []).length) return null;
+  return React.createElement("div", { style: { marginTop: 6, fontSize: 13, color: "var(--muted)" } },
+    TR("Перевод длиннее оригинала, и на части страниц он напечатан заметно мельче: ") + Math.round(share * 100)
+      + TR("% текста, страницы: ") + report.smallPages.slice(0, 8).join(", ")
+      + TR(". Сократить перевод этих мест — и шрифт станет ближе к оригиналу."));
+}
+
 function ExpLayoutReport({ report, store }) {
   if (!report.collisions) {
-    return React.createElement("div", { className: "row", style: { gap: 8, marginTop: 12, fontSize: 13 } },
-      React.createElement(Icon, { name: "checkCircle", size: 16, style: { color: "var(--c-success)" } }),
-      React.createElement("span", null, TR("Проверка вёрстки: перевод нигде не наезжает на соседний текст.")));
+    return React.createElement("div", null,
+      React.createElement("div", { className: "row", style: { gap: 8, marginTop: 12, fontSize: 13 } },
+        React.createElement(Icon, { name: "checkCircle", size: 16, style: { color: "var(--c-success)" } }),
+        React.createElement("span", null, TR("Проверка вёрстки: перевод нигде не наезжает на соседний текст."))),
+      React.createElement(ExpSmallText, { report }));
   }
   return React.createElement("div", { className: "row between row-wrap", style: { gap: 8, marginTop: 12, fontSize: 13 } },
     React.createElement("span", { style: { color: "var(--c-warning)" } },
@@ -958,7 +971,8 @@ function TabExport({ store, toast }) {
       }
       const st = result.stats || {};
       setLayoutReport(st.layout ? { collisions: st.collisions || 0, pages: st.collisionPages || [],
-                                    segs: st.collisionSegs || [] } : null);
+                                    segs: st.collisionSegs || [], small: st.smallShare || 0,
+                                    smallPages: st.smallPages || [] } : null);
       // Про 1в1 говорим не «готово», а что именно легло в файл: сколько абзацев
       // переведено, сколько осталось на языке оригинала и в скольких границу
       // выделения пришлось ставить по доле длины, а не по знаку препинания.

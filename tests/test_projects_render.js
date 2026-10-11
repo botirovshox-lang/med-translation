@@ -140,22 +140,34 @@ console.log("\n[2] Открытая папка: файлы, добавление
   check(t.includes("Приложение 1") && t.includes("Приложение 2"), "оба файла на месте");
   check((t.match(/Переводить/g) || []).length === 2, "у каждого файла кнопка «Переводить»");
   check(t.includes("вернём в том же виде"), "файл с исходником помечен");
-  check(t.includes("Добавить файл") && t.includes("Добавить в проект"), "блок добавления файла есть");
+  check(t.includes("Добавить ещё файл") && t.includes("Выбрать файл"), "блок добавления файла есть, с кнопкой «Выбрать файл»");
+  check(!t.includes("Добавить в проект"), "пока файл не выбран, погашенной «Добавить в проект» нет");
+  check(t.indexOf("Переводить") < t.indexOf("Добавить ещё файл") && t.indexOf("Добавить ещё файл") < t.indexOf("Словари проекта"),
+        "порядок: файлы с «Переводить» → добавить файл → словари");
   check(t.includes("Словари проекта"), "блок словарей есть");
   const first = t.indexOf("Словарь договора"), second = t.indexOf("Старый словарь", t.indexOf("Словари проекта"));
-  check(first >= 0 && second > first, "порядок словарей — как в папке (первый — словарь договора)");
-  check(t.includes("сюда пишутся новые слова"), "первый словарь помечен как место новых слов");
-  check(t.includes("Удалить проект"), "владельцу есть удаление проекта");
+  check(first >= 0 && second > first, "свёрнутые словари называют подключённые по порядку (первый — словарь договора)");
+  check(t.includes("Настроить") && !t.includes("сюда пишутся новые слова"), "словари свёрнуты, настройка — по кнопке");
+  check(t.includes("Удалить проект") && t.lastIndexOf("Удалить проект") > t.indexOf("Словари проекта"), "владельцу есть удаление проекта — внизу экрана");
   check(!t.includes("Пока подключены все словари"), "у папки со списком нет предупреждения «все»");
   check(find(tree, n => n.type === "input" && n.props.type === "file").length === 1, "поле выбора файла одно");
+
+  /* Раскрытые словари: ImpFolderDicts — хуки picked, dirty, busy, open. */
+  hooks = []; hooks[3] = true; hookIdx = 0;
+  const dt = texts(ImpFolderDicts({ folder: folders[0], store: makeStore(), toast })).join(" | ");
+  const a = dt.indexOf("Словарь договора"), b = dt.indexOf("Старый словарь");
+  check(a >= 0 && b > a, "раскрытые: порядок словарей — как в папке");
+  check(dt.includes("сюда пишутся новые слова"), "первый словарь помечен как место новых слов");
 }
 
 console.log("\n[3] Папка без списка словарей — честно «подключены все»");
 {
   hooks = []; hookIdx = 0;
-  const tree = TabImport({ store: makeStore({ viewFolder: 101 }), toast });
-  const t = texts(tree).join(" | ");
-  check(t.includes("Пока подключены все словари"), "предупреждение показано");
+  let t = texts(TabImport({ store: makeStore({ viewFolder: 101 }), toast })).join(" | ");
+  check(t.includes("все словари"), "свёрнутые: сказано «все словари»");
+  hooks = []; hooks[3] = true; hookIdx = 0;
+  t = texts(ImpFolderDicts({ folder: folders[1], store: makeStore(), toast })).join(" | ");
+  check(t.includes("Пока подключены все словари"), "раскрытые: предупреждение показано");
   check(t.includes("Словарь договора") && t.includes("Старый словарь"), "все словари организации перечислены отмеченными");
 }
 

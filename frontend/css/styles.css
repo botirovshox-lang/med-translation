@@ -1804,6 +1804,36 @@ body { overflow-wrap: break-word; }
    один вопрос про язык и одна кнопка. */
 .first-file { display: flex; flex-direction: column; gap: 14px; max-width: 640px; margin: 0 auto; }
 .dropzone.dropzone-big { padding: 44px 20px; }
+/* Открытый проект (tab_import.jsx: ImpFolderView). Три главных места —
+   «Переводить», «Проверить строки», «Добавить файл» — видны с первого
+   взгляда: файлы слева шире, добавление справа; ниже 980 px — столбиком.
+   Цветов своих нет: только токены облика. */
+.imp-work { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: var(--sp-md); align-items: start; }
+.imp-work.is-empty { grid-template-columns: minmax(0, 640px); justify-content: center; }
+.imp-files { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.imp-file { display: flex; flex-direction: column; gap: 14px; }
+.imp-file-title { display: flex; align-items: center; gap: 8px; min-width: 0; font-weight: 600; font-size: 17px; letter-spacing: -.2px; }
+.imp-file-title > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.imp-tip { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px; border-radius: var(--r-md); background: var(--c-primary-soft); }
+.imp-tip-ic { color: var(--c-primary); flex: 0 0 auto; margin-top: 1px; }
+.imp-tip-t { font-weight: 600; font-size: 14.5px; }
+.imp-tip p { margin: 3px 0 12px; font-size: 13.5px; line-height: 1.45; color: var(--text); }
+.imp-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.imp-more { font-size: 12.5px; }
+.imp-more summary { cursor: pointer; color: var(--text-3); width: max-content; max-width: 100%; padding: 6px 0; }
+.imp-more summary:hover { color: var(--text); }
+.imp-more > div { margin-top: 6px; line-height: 1.45; }
+.imp-add { display: flex; flex-direction: column; gap: 12px; }
+.imp-add .dropzone { background: var(--card); }
+.imp-add .dropzone .btn { pointer-events: none; }
+.imp-dicts-min { display: flex; align-items: center; gap: 12px; }
+.imp-danger { display: flex; justify-content: flex-end; margin-top: var(--sp-lg); padding-top: var(--sp-md); border-top: 1px solid var(--border); }
+@media (max-width: 980px) { .imp-work { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 640px) {
+  .imp-actions .btn-primary { flex: 1 1 100%; }
+  .imp-tip .btn { width: 100%; }
+  .imp-danger { justify-content: center; }
+}
 /* Текст только для читалки экрана: номер шага и «пройден» (app.jsx). */
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }

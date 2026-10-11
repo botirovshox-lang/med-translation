@@ -534,17 +534,31 @@ function ImpFolderView({ folder, store, toast, meta }) {
             impFolderPairs(folder, st.files).map(([s, t]) => React.createElement(LangPair, { key: s + t, src: s, tgt: t })),
             React.createElement(Badge, null, impDomainLabel(meta, folder.domain)),
             React.createElement(Badge, { icon: "file" }, st.files.length + " " + impPlural(st.files.length, TR("файл"), TR("файла"), TR("файлов"))),
-            st.total > 0 && React.createElement(Badge, { icon: "check" }, TR("готово ") + st.pct + "%"))),
-        canOwner && React.createElement(Btn, { variant: "ghost", size: "sm", icon: "trash", onClick: () => setConfirmDelete(true) }, TR("Удалить проект")))),
+            st.total > 0 && React.createElement(Badge, { icon: "check" }, TR("готово ") + st.pct + "%"))))),
 
+    /* Главное — наверху и рядом: слева файлы с кнопкой «Переводить»,
+       справа «Добавить файл». Сетки в три узкие колонки больше нет: в ней
+       карточка файла была шириной в треть экрана, и кнопки терялись среди
+       подписей. Пустой проект — одна зона добавления по центру. */
     React.createElement("div", { className: "section" },
-      React.createElement("h2", { className: "section-title" }, TR("Файлы")),
-      React.createElement("div", { className: "grid grid-3" },
-        st.files.map(p => React.createElement(ImpFileCard, { key: p.id, project: p, store, toast })),
-        React.createElement(ImpAddFile, { folder, store, toast, meta }))),
+      st.files.length
+        ? React.createElement("div", { className: "imp-work" },
+            React.createElement("div", { className: "imp-files" },
+              React.createElement("h2", { className: "section-title", style: { margin: 0 } }, TR("Файлы")),
+              st.files.map(p => React.createElement(ImpFileCard, { key: p.id, project: p, store, toast }))),
+            React.createElement(ImpAddFile, { folder, store, toast, meta, more: true }))
+        : React.createElement("div", { className: "imp-work is-empty" },
+            React.createElement(ImpAddFile, { folder, store, toast, meta }))),
 
+    /* Словари — настройка, а не работа: свёрнуты, видно только, какие
+       подключены (инвариант 32: не показываем настройку без работы). */
     React.createElement("div", { className: "section" },
       React.createElement(ImpFolderDicts, { folder, store, toast })),
+
+    /* Удаление — внизу и тихо: рядом с названием его нажимали бы
+       по ошибке, а отката у него нет. */
+    canOwner && React.createElement("div", { className: "imp-danger" },
+      React.createElement(Btn, { variant: "danger-ghost", size: "sm", icon: "trash", onClick: () => setConfirmDelete(true) }, TR("Удалить проект"))),
 
     confirmDelete && React.createElement(Modal, {
       title: TR("Удалить проект?"), icon: "trash", onClose: () => setConfirmDelete(false),
@@ -672,11 +686,16 @@ function ImpFileCard({ project, store, toast }) {
     setBusy(false);
   };
   return React.createElement(React.Fragment, null,
-    React.createElement("div", { className: "card card-pad card-hover", style: { display: "flex", flexDirection: "column", gap: 12 } },
+    /* Карточка читается сверху вниз ровно в том порядке, в каком человек
+       действует: что за файл → совет перед переводом (если есть) → сколько
+       готово → «Переводить». Техническая пометка импорта — под «Подробнее»:
+       её читают, когда что-то не так, а не каждый раз. */
+    React.createElement("div", { className: "card card-pad imp-file" },
       React.createElement("div", { className: "row between", style: { alignItems: "flex-start", gap: 8 } },
-        React.createElement("div", { style: { minWidth: 0, fontWeight: 600, fontSize: 15, letterSpacing: "-.2px", overflow: "hidden", textOverflow: "ellipsis" } },
-          React.createElement(Icon, { name: pictures ? "image" : "file", size: 14, style: { verticalAlign: "-2px", marginRight: 6, color: "var(--c-primary)" } }), project.title),
-        React.createElement(IconBtn, { icon: "trash", label: TR("Удалить файл"), sm: true, onClick: (e) => { e.stopPropagation(); setConfirmDelete(true); } })),
+        React.createElement("div", { className: "imp-file-title" },
+          React.createElement(Icon, { name: pictures ? "image" : "file", size: 18, style: { color: "var(--c-primary)", flex: "0 0 auto" } }),
+          React.createElement("span", null, project.title)),
+        React.createElement(IconBtn, { icon: "trash", label: TR("Удалить файл"), onClick: (e) => { e.stopPropagation(); setConfirmDelete(true); } })),
       React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
         React.createElement(LangPair, { src: project.src, tgt: project.tgt }),
         React.createElement(Badge, { icon: "list" }, total + " " + impPlural(total, TR("строка"), TR("строки"), TR("строк"))),
@@ -689,15 +708,19 @@ function ImpFileCard({ project, store, toast }) {
         sameShape && !media && React.createElement(Badge, { icon: "checkCircle" }, TR("вернём в том же виде")),
         project.sourceDocx && project.writeback === false && React.createElement(Badge, { icon: "file" }, TR("вернём как Word")),
         project.reimport && React.createElement(Badge, { icon: "repeat" }, TR("обновлён ") + project.reimport.at)),
-      project.importNote && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TRS(project.importNote)),
       project.trialExcerpt && typeof TrialExcerptBar === "function"
         && React.createElement(TrialExcerptBar, { store, project, toast }),
-      project.parseOutdated && React.createElement("div", { className: "row between row-wrap",
-          style: { gap: 8, padding: "8px 10px", borderRadius: 8, background: "var(--c-primary-soft)", fontSize: 13 } },
-        React.createElement("span", null, TR("Чтение файла улучшено: строки можно собрать заново — точнее по абзацам и страницам.")),
-        React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", disabled: busy, onClick: checkReseg }, TR("Проверить строки"))),
+      /* Совет стоит ДО прогресса и кнопки «Переводить»: пересобрать строки
+         разумно перед переводом, а не после. Кнопка — обычного размера
+         с рамкой: заметна, но главной («Переводить») не спорит. */
+      project.parseOutdated && React.createElement("div", { className: "imp-tip" },
+        React.createElement(Icon, { name: "repeat", size: 18, className: "imp-tip-ic" }),
+        React.createElement("div", { style: { minWidth: 0 } },
+          React.createElement("div", { className: "imp-tip-t" }, TR("Совет перед переводом")),
+          React.createElement("p", null, TR("Чтение файла улучшено: строки можно собрать заново — точнее по абзацам и страницам.")),
+          React.createElement(Btn, { variant: "secondary", icon: "repeat", disabled: busy, onClick: checkReseg }, TR("Проверить строки")))),
       media && (transcribing || project.mediaStatus === "failed" || project.mediaNoSpeech)
-        ? React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+        ? React.createElement("div", { className: "dim", style: { fontSize: 13.5 } },
             transcribing
               ? (imgJob ? React.createElement(MediaJobLine, { job: imgJob })
                         : React.createElement(React.Fragment, null, React.createElement(Spinner, null), " ", TR("Распознаём речь — строки появятся сами.")))
@@ -714,7 +737,7 @@ function ImpFileCard({ project, store, toast }) {
                     } }, TR("Распознать снова")))
                 : TR("Речи в файле не найдено."))
       : pictures
-        ? React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+        ? React.createElement("div", { className: "dim", style: { fontSize: 13.5 } },
             reading ? (imgJob ? React.createElement(ImagesJobLine, { job: imgJob })
                               : React.createElement(React.Fragment, null, React.createElement(Spinner, null), " ", TR("Читаем текст с картинок — строки появятся сами.")))
                     : project.imagesSkipped === "limit"
@@ -723,18 +746,23 @@ function ImpFileCard({ project, store, toast }) {
                         ? TR("Текст сам не прочитался: чтение сейчас недоступно.")
                         : TR("Текст на картинках ещё не прочитан."))
         : React.createElement("div", null,
-            React.createElement("div", { className: "row between", style: { fontSize: 12, marginBottom: 6 } },
+            React.createElement("div", { className: "row between", style: { fontSize: 13, marginBottom: 6, gap: 8 } },
               React.createElement("span", { className: "muted" }, TR("Готово")),
-              React.createElement("span", { style: { fontWeight: 600 } }, pct + "%")),
+              React.createElement("span", null,
+                React.createElement("span", { className: "dim" }, done + TR(" из ") + total + " · "),
+                React.createElement("b", null, pct + "%"))),
             React.createElement(ProgressBar, { value: pct })),
-      React.createElement("div", { className: "row", style: { gap: 8, flexWrap: "wrap" } },
+      React.createElement("div", { className: "imp-actions" },
         pictures && !reading
           /* Ведёт в «Перевод»: там у файла-картинки стоит панель чтения,
              и прочитанные строки появляются в той же таблице. */
-          ? React.createElement(Btn, { variant: "primary", size: "sm", icon: "image", onClick: () => store.openProject(project.id) }, TR("Прочитать текст с картинок"))
-          : React.createElement(Btn, { variant: "primary", size: "sm", icon: "edit", onClick: () => store.openProject(project.id) }, TR("Переводить")),
-        React.createElement(Btn, { variant: "ghost", size: "sm", icon: "download", onClick: () => { store.openProject(project.id); store.go("export"); } }, TR("Скачать")),
-        project.reimport && React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", disabled: busy, onClick: undoReimport }, TR("Вернуть прежнюю версию")))),
+          ? React.createElement(Btn, { variant: "primary", size: "lg", icon: "image", onClick: () => store.openProject(project.id) }, TR("Прочитать текст с картинок"))
+          : React.createElement(Btn, { variant: "primary", size: "lg", icon: "edit", onClick: () => store.openProject(project.id) }, TR("Переводить")),
+        React.createElement(Btn, { variant: "ghost", size: "lg", icon: "download", onClick: () => { store.openProject(project.id); store.go("export"); } }, TR("Скачать")),
+        project.reimport && React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", disabled: busy, onClick: undoReimport }, TR("Вернуть прежнюю версию"))),
+      project.importNote && React.createElement("details", { className: "imp-more" },
+        React.createElement("summary", null, TR("Подробнее о файле")),
+        React.createElement("div", { className: "dim" }, TRS(project.importNote)))),
     reseg && React.createElement(Modal, {
       title: TR("Собрать строки заново?"), icon: "repeat", onClose: () => setReseg(null),
       footer: React.createElement(React.Fragment, null,
@@ -769,7 +797,7 @@ function ImpFileCard({ project, store, toast }) {
    заказе). Сначала ПРОБА (сервер, бесплатно): тот же файл уже есть? похож
    на новую версию файла проекта? Тогда человек выбирает — обновить прежний
    файл (перевод неизменившихся строк остаётся) или положить новым. */
-function ImpAddFile({ folder, store, toast, meta }) {
+function ImpAddFile({ folder, store, toast, meta, more }) {
   const draft = impDraft(folder.id);
   const [dragging, setDragging] = useState(false);
   const [file, setFile] = useState(draft.file || null);
@@ -949,10 +977,19 @@ function ImpAddFile({ folder, store, toast, meta }) {
   };
   const exact = probe && probe.exact && probe.exact[0];
   const similar = probe && probe.similar && probe.similar[0];
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
-    React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Добавить файл")),
+  /* Заголовок — словами действия, а не тихой подписью: зона добавления —
+     одно из трёх главных мест экрана. «Выбрать файл» нарисована кнопкой
+     ВНУТРИ зоны (сама зона и есть кнопка): «перетащите» понятно не всем,
+     а нажать на кнопку умеет каждый. */
+  /* Заголовок над рамкой, как у «Файлы» слева: колонки начинаются на одной
+     высоте. */
+  return React.createElement("div", { className: "imp-files" },
+    React.createElement("h2", { className: "section-title", style: { margin: 0 } }, more ? TR("Добавить ещё файл") : TR("Добавить файл")),
+    /* Без карточки вокруг: у пунктирной зоны своя рамка, и рамка в рамке —
+       лишний слой, который глаз должен разобрать. */
+    React.createElement("div", { className: "imp-add" },
     React.createElement("div", {
-      className: "dropzone" + (dragging ? " drag" : ""), style: { padding: 18 },
+      className: "dropzone" + (dragging ? " drag" : ""), style: { padding: 22 },
       onDragOver: (e) => { e.preventDefault(); setDragging(true); }, onDragLeave: () => setDragging(false), onDrop,
       onClick: () => fileRef.current && fileRef.current.click(), role: "button", tabIndex: 0,
       onKeyDown: (e) => { if (e.key === "Enter") fileRef.current.click(); } },
@@ -964,8 +1001,10 @@ function ImpAddFile({ folder, store, toast, meta }) {
             React.createElement("div", { className: "dim", style: { marginTop: 2, fontSize: 12 } }, file.size + TR(" · нажмите, чтобы заменить")))
         : React.createElement("div", null,
             React.createElement(Icon, { name: "upload", size: 28, className: "dz-ic" }),
-            React.createElement("div", { style: { fontWeight: 500, fontSize: 14 } }, TR("Перетащите файл сюда")),
-            React.createElement("div", { className: "dim", style: { marginTop: 2, fontSize: 12 } }, TR("Word, Excel, PowerPoint, PDF, HTML, текст, картинка, видео или звук")))),
+            React.createElement("div", null,
+              React.createElement("span", { className: "btn btn-secondary btn-lg", "aria-hidden": "true" }, TR("Выбрать файл"))),
+            React.createElement("div", { style: { marginTop: 10, fontSize: 13.5 } }, TR("или перетащите его сюда")),
+            React.createElement("div", { className: "dim", style: { marginTop: 4, fontSize: 12 } }, TR("Word, Excel, PowerPoint, PDF, HTML, текст, картинка, видео или звук")))),
     probing && React.createElement("div", { className: "col", style: { gap: 4 } },
       React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TR("Смотрим, что за файл…")),
       React.createElement(ImpProgress, { p: prog })),
@@ -991,13 +1030,15 @@ function ImpAddFile({ folder, store, toast, meta }) {
       React.createElement(Field, { label: TR("С какого языка") }, React.createElement(Select, { value: src, onChange: (e) => changePair(e.target.value, tgt) }, impLangOptions(meta.langs))),
       React.createElement(Field, { label: TR("На какой язык") }, React.createElement(Select, { value: tgt, onChange: (e) => changePair(src, e.target.value) }, impLangOptions(meta.langs)))),
     file && !exact && src === tgt && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, TR("Язык оригинала и язык перевода совпадают.")),
-    !exact && !similar && React.createElement(Btn, { variant: "primary", icon: busy ? null : "plus", disabled: !file || busy || probing || src === tgt, onClick: () => create() },
+    /* Кнопка появляется, когда есть что добавлять: погашенная «Добавить»
+       под пустой зоной читалась как сломанная. */
+    file && !exact && !similar && React.createElement(Btn, { variant: "primary", size: "lg", className: "btn-block", icon: busy ? null : "plus", disabled: busy || probing || src === tgt, onClick: () => create() },
       busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), TR("Загружаем…"))
         : isMedia ? TR("Дальше: обрезка и субтитры") : TR("Добавить в проект")),
     busy && React.createElement(ImpProgress, { p: prog }),
     vidFile && React.createElement(VideoEditor, { file: vidFile, toast, onCancel: () => setVidFile(null), onDone: mediaDone,
       meta: { title: title || vidFile.name.replace(/[.][^.]+$/, ""), src, tgt, domain: folder.domain, folder: folder.id } }),
-    file && !exact && !isMedia && React.createElement(ImpQuote, { file, src, tgt, toast, store, draft }));
+    file && !exact && !isMedia && React.createElement(ImpQuote, { file, src, tgt, toast, store, draft })));
 }
 
 /* Словари проекта: какие подключены и куда пишутся новые слова.
@@ -1008,6 +1049,10 @@ function ImpFolderDicts({ folder, store, toast }) {
   const [picked, setPicked] = useState(current === null ? all.map(d => d.id) : current);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
+  /* Свёрнуто по умолчанию: словари — настройка, а работа на этом экране —
+     файлы. Свёрнутый блок всё равно говорит, ЧТО подключено. Хук последним:
+     тест адресует хуки по номеру. */
+  const [open, setOpen] = useState(false);
   /* Список словарей организации приезжает позже первого кадра, а папка
      может смениться: отмеченные пересчитываются по папке и по списку. */
   useEffect(() => {
@@ -1041,12 +1086,22 @@ function ImpFolderDicts({ folder, store, toast }) {
     } catch (e) { toast.error(TR("Словарь не создан"), e.message || String(e)); }
     setBusy(false);
   };
+  const titleOf = (id) => (all.find(x => x.id === id) || {}).title || id;
+  const summary = current === null ? TR("все словари")
+    : picked.length ? picked.map(titleOf).join(", ") : TR("без словарей");
+  if (!open && !dirty) return React.createElement("div", { className: "card card-pad imp-dicts-min" },
+    React.createElement(Icon, { name: "book", size: 18, style: { color: "var(--text-3)", flex: "0 0 auto" } }),
+    React.createElement("div", { style: { minWidth: 0, flex: 1 } },
+      React.createElement("div", { style: { fontWeight: 600, fontSize: 14 } }, TR("Словари проекта")),
+      React.createElement("div", { className: "dim", style: { fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, summary)),
+    React.createElement(Btn, { variant: "secondary", size: "sm", icon: "settings", onClick: () => setOpen(true) }, TR("Настроить")));
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
     React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
       React.createElement("h2", { className: "section-title", style: { margin: 0 } }, TR("Словари проекта")),
       React.createElement("div", { className: "row", style: { gap: 8 } },
         React.createElement(Btn, { variant: "ghost", size: "sm", icon: "plus", disabled: busy, onClick: addNew }, TR("Новый словарь")),
-        dirty && React.createElement(Btn, { variant: "primary", size: "sm", icon: "check", disabled: busy, onClick: () => save(picked) }, TR("Сохранить")))),
+        dirty && React.createElement(Btn, { variant: "primary", size: "sm", icon: "check", disabled: busy, onClick: () => save(picked) }, TR("Сохранить")),
+        !dirty && React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setOpen(false) }, TR("Свернуть")))),
     React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 13 } },
       TR("Отмеченные словари подсказывают перевод слов в этом проекте. Новые слова проекта попадают в первый словарь списка.")),
     current === null && React.createElement("div", { className: "dim", style: { fontSize: 12 } },

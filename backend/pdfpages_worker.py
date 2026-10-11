@@ -368,7 +368,10 @@ def page_lines(page) -> tuple:
             name = str(name).lower()
         except Exception:
             return ""
-        return ("b" if "bold" in name or "black" in name or "heavy" in name else "") +                ("i" if "italic" in name or "oblique" in name else "")
+        # «c» — узкое начертание (Condensed, Narrow, Compressed): перевод
+        # печатается тоже сжатым, иначе рядом с узкими подписями оригинала
+        # он выглядит другим шрифтом.
+        return ("b" if "bold" in name or "black" in name or "heavy" in name else "") +                ("i" if "italic" in name or "oblique" in name else "") +                ("c" if any(w in name for w in ("cond", "narrow", "compress")) else "")
 
     meta: dict = {}                     # (начертание, гарнитура) по шрифту
 
@@ -555,7 +558,15 @@ def page_lines(page) -> tuple:
             cm = _mmul([float(v) for v in cm], fmats[-1])
         try:
             x, y = _xy(cm, tm[4], tm[5])
-            sy = abs(tm[3] * cm[3]) or abs(tm[0] * cm[0]) or 1.0
+            import math
+            vx = tm[2] * cm[0] + tm[3] * cm[2]
+            vy = tm[2] * cm[1] + tm[3] * cm[3]
+            # Кегль — длина «вертикали» знака на листе. Прежняя формула
+            # (диагональ матриц) у текста, повёрнутого ДВАЖДЫ (повёрнутая
+            # таблица на странице, поставленной прямо `pdf_panels`), давала
+            # ноль и запасной 1.0: строки таблицы рвались на абзацы-строки.
+            # Где диагональ не ноль, ответ прежний буква в букву.
+            sy = abs(tm[3] * cm[3]) or math.hypot(vx, vy) or abs(tm[0] * cm[0]) or 1.0
             # Повёрнута — по направлению БАЗОВОЙ ЛИНИИ (матрица текста × cm),
             # а не по наклону: наклон (`Tm 1 0 0.21 1`) — это синтетический
             # курсив Word/Chrome, строка стоит ровно, и вынимать её из абзаца
@@ -568,9 +579,6 @@ def page_lines(page) -> tuple:
                                               and box[1] - 1 <= y <= box[3] + 1)
             state["seq"] += 1
             st_, fam_ = style_family(fd)
-            import math
-            vx = tm[2] * cm[0] + tm[3] * cm[2]
-            vy = tm[2] * cm[1] + tm[3] * cm[3]
             tr = state["tr"] % 8
             chunks.append((text or "", x, y, float(fs or 0) * sy, rot, st_, fam_,
                            hidden, state["seq"], font_key(fd) if fd is not None else None,
@@ -990,6 +998,8 @@ def _geometry(lines, out, chunks, figs, rects, page, op_ends=(), op_recs=()):
         ratios.append((b[1] - a[1]) / (len(a[0]) * a[3]))
     ratios = [r for r in ratios if 0.2 < r < 1.2]
     cw = statistics.median(ratios) if len(ratios) >= 3 else _CHAR_W
+    ends = _ends_index(op_ends)
+    cols = _col_starts(text, owner, starts, chunks, cw, ends)
     geo_lines = []
     rot_paths: dict = {}
     splits: dict = {}
@@ -1018,7 +1028,7 @@ def _geometry(lines, out, chunks, figs, rects, page, op_ends=(), op_recs=()):
             if body and all(chunks[k][4] for k in body):
                 rot_paths[len(geo_lines) - 1] = _rot_path(body, chunks, cw, op_ends, op_recs)
             continue
-        groups = _h_groups(body, chunks, cw)
+        groups = _h_groups(body, chunks, cw, cols, ends)
         if len(groups) > 1:
             # pypdf склеил в одну строку ДВЕ надписи одной базовой линии
             # с разных концов листа («making» в рамке посреди схемы
@@ -1062,31 +1072,149 @@ def _geometry(lines, out, chunks, figs, rects, page, op_ends=(), op_recs=()):
 SPLIT_GAP = 3.0
 
 
-def _h_groups(body: list, chunks: list, cw: float) -> list:
+# Начало колонки таблицы: зазор перед куском от этой доли кегля, и с того же
+# места (в этом допуске, пт) начинаются куски ещё хотя бы одной строки.
+COL_GAP = 0.5
+COL_TOL = 1.5
+
+
+def _ends_index(op_ends) -> dict:
+    """{(x, y) начала оператора, округлённые: конец его краски} — у прямых
+    операторов. Конец куска по ширине знака — оценка, и у узкой колонки
+    таблицы она съедала зазор до соседней ячейки целиком."""
+    out: dict = {}
+    for o in op_ends or ():
+        if len(o) > 5 and not o[5]:
+            continue
+        k = (int(round(o[0])), int(round(o[1])))
+        out[k] = max(out.get(k, o[2]), o[2])
+    return out
+
+
+def _chunk_end(c, cw: float, ends: dict) -> float:
+    """Конец краски куска: по оператору, начатому в его точке, иначе оценка."""
+    est = c[1] + len(c[0].strip()) * cw * max(c[3] or 1.0, 1.0)
+    if ends:
+        x, y = int(round(c[1])), int(round(c[2]))
+        for dx in (0, -1, 1):
+            for dy in (0, -1, 1):
+                e = ends.get((x + dx, y + dy))
+                if e is not None and e > c[1]:
+                    return min(est, e) if est > c[1] else e
+    return est
+
+
+def _col_starts(text: str, owner: list, starts: list, chunks: list, cw: float,
+                ends: "dict | None" = None) -> list:
+    """Иксы, с которых начинаются куски после заметного зазора хотя бы
+    в ДВУХ строках страницы, — начала колонок таблицы. Ячейки таблицы стоят
+    теснее, чем `SPLIT_GAP` кеглей (у боевой таблицы 1.7–2.4 кегля), и без
+    этого соседние ячейки одной строки сливались в одну надпись; совпадение
+    начала с другой строкой отличает колонку от широкого пробела в тексте."""
+    seen: list = []
+    pos = 0
+    # Конец уже пройденного — ПО БАЗОВОЙ ЛИНИИ и через границу строк pypdf:
+    # строку таблицы он рвёт на несколько строк ответа (между ними — вторая
+    # строка соседней ячейки), и первая ячейка такой строки иначе не
+    # считалась бы стоящей после зазора.
+    lines_end: list = []                # [[y, конец], …]
+    for li, raw in enumerate(text.splitlines(keepends=True)):
+        a, b = pos, pos + len(raw)
+        pos = b
+        ks = [k for k in sorted(set(owner[a:b])) if starts[k] >= a and chunks[k][0].strip()
+              and chunks[k][1] is not None and not chunks[k][4]]
+        for k in ks:
+            c = chunks[k]
+            sz = max(c[3] or 1.0, 1.0)
+            row = next((r for r in lines_end if abs(r[0] - c[2]) <= 0.5 * sz), None)
+            end = _chunk_end(c, cw, ends)
+            if row is None:
+                lines_end.append([c[2], end])
+                continue
+            if c[1] < row[1] - 0.5 * sz:
+                row[1] = end                # поток вернулся влево — другая строка
+                continue
+            if c[1] - row[1] >= COL_GAP * sz:
+                seen.append((c[1], id(row)))
+            row[1] = max(row[1], end)
+    # Строка таблицы — та, где таких начал хотя бы два (три ячейки и больше
+    # на одной линии): одиночный широкий пробел в строке текста колонкой
+    # не свидетельствует, сколько бы строк его ни повторили.
+    per_row = Counter(r for _x, r in seen)
+    seen = sorted(t for t in seen if per_row[t[1]] >= 2)
+    out = []
+    i = 0
+    while i < len(seen):
+        j = i
+        while j + 1 < len(seen) and seen[j + 1][0] - seen[i][0] <= COL_TOL:
+            j += 1
+        if len({r for _x, r in seen[i:j + 1]}) >= 2:
+            out.append(seen[i][0])
+        i = j + 1
+    return out
+
+
+def _h_groups(body: list, chunks: list, cw: float, cols=(), ends=None) -> list:
     """Куски строки (номера по порядку потока), разбитые на РАЗНЫЕ надписи
     одной базовой линии: следующий кусок отделён от уже собранной части
     зазором больше `SPLIT_GAP` кеглей — справа от её конца или слева от её
-    начала (поток вернулся назад через пол-листа). Куски другой базовой
-    линии (надстрочник, вторая строка сноски) — дело `_line_parts`, здесь
-    они остаются в своей части. Часть без единой буквы отдельной не
-    становится."""
+    начала (поток вернулся назад через пол-листа), — либо стоит в начале
+    колонки таблицы (`_col_starts`) после зазора больше `COL_GAP`. Куски
+    другой базовой линии (надстрочник, вторая строка сноски) — дело
+    `_line_parts`, здесь они остаются в своей части.
+
+    Часть без единой буквы (маркер «•») отдельной не становится — но
+    приклеивается к СЛЕДУЮЩЕЙ части, если стоит у неё вплотную, а не
+    к предыдущей: маркер списка в ячейке таблицы начинает свою ячейку."""
     groups = [[body[0]]]
     c0 = chunks[body[0]]
     size = max(c0[3] or 1.0, 1.0)
     y = c0[2]
     gx0 = c0[1]
     gx1 = c0[1] + len(c0[0].strip()) * cw * size
+    gx1c = _chunk_end(c0, cw, ends)
+    weak = [not any(ch.isalpha() for ch in c0[0])]
     for k in body[1:]:
         c = chunks[k]
         sz = max(c[3] or size, 1.0)
         cx1 = c[1] + len(c[0].strip()) * cw * sz
         gap = SPLIT_GAP * max(size, sz)
-        if abs(c[2] - y) <= 0.5 * size and (c[1] > gx1 + gap or cx1 + gap < gx0)                 and any(ch.isalpha() for ch in c[0])                 and any(ch.isalpha() for kk in groups[-1] for ch in chunks[kk][0]):
-            groups.append([k])
-            gx0, gx1 = c[1], cx1
-            continue
+        same = abs(c[2] - y) <= 0.5 * size
+        far = c[1] > gx1c + gap or cx1 + gap < gx0
+        # Колонка таблицы — по ТОЧНОМУ концу краски, где он известен.
+        col = (c[1] > gx1c + COL_GAP * max(size, sz)
+               and any(abs(c[1] - x) <= COL_TOL for x in cols))
+        has_alpha = any(ch.isalpha() for ch in c[0])
+        if same and (far or col):
+            if not has_alpha:
+                groups.append([k])
+                weak.append(True)
+                gx0, gx1, gx1c = c[1], cx1, _chunk_end(c, cw, ends)
+                continue
+            if any(ch.isalpha() for kk in groups[-1] for ch in chunks[kk][0]):
+                groups.append([k])
+                weak.append(False)
+                gx0, gx1, gx1c = c[1], cx1, _chunk_end(c, cw, ends)
+                continue
+            if weak[-1] and len(groups) > 1:
+                # Маркер без букв стоял далеко от СЛЕДУЮЩЕГО куска —
+                # он принадлежит предыдущей части.
+                groups[-2].extend(groups.pop())
+                weak.pop()
+                groups.append([k])
+                weak.append(False)
+                gx0, gx1, gx1c = c[1], cx1, _chunk_end(c, cw, ends)
+                continue
         groups[-1].append(k)
+        if has_alpha:
+            weak[-1] = False
         gx0, gx1 = min(gx0, c[1]), max(gx1, cx1)
+        gx1c = max(gx1c, _chunk_end(c, cw, ends))
+    if len(groups) > 1 and weak[-1]:
+        groups[-2].extend(groups.pop())
+        weak.pop()
+    if len(groups) > 1 and weak[0]:
+        groups[1][:0] = groups.pop(0)
     return groups
 
 

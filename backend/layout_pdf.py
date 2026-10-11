@@ -204,6 +204,7 @@ INK_EXACT_SLACK = float(os.environ.get("LAYOUT_INK_EXACT_SLACK", "0.6"))
 INK_GAP_SHARE = float(os.environ.get("LAYOUT_INK_GAP", "0.9"))
 # Докуда раздвигать ВЛЕВО, в кеглях (см. `_ink_box`).
 INK_LEFT_PT = float(os.environ.get("LAYOUT_INK_LEFT", "1.5"))
+INK_INNER_SHARE = float(os.environ.get("LAYOUT_INK_INNER", "0.75"))
 # Насколько темнее бумаги считать краской.
 INK_DARK = float(os.environ.get("LAYOUT_INK_DARK", "0.82"))
 # Ниже этой яркости бумага считается тёмной, и перевод печатается светлым.
@@ -217,6 +218,8 @@ SLOT_STRIPS = 3
 # высота букв менялась там, где хватило бы ширины. Узкое начертание —
 # обычный приём вёрстки; ниже 80% буквы читаются сплющенными.
 HSCALE_MIN = float(os.environ.get("LAYOUT_HSCALE_MIN", "0.85"))
+# Узкое начертание оригинала (Condensed): перевод сжат с самого начала.
+HSCALE_COND = float(os.environ.get("LAYOUT_HSCALE_COND", "0.82"))
 
 
 class NotAvailable(Exception):
@@ -333,10 +336,17 @@ def _synth(fonts: dict, name: str, style: str) -> str:
     return "".join(ch for ch in "bi" if ch in (style or "") and ch not in real)
 
 
+def _face_style(style: str) -> str:
+    """Начертание для выбора ФАЙЛА шрифта: «b», «i», «bi». Флаг узкого
+    начертания «c» — про сжатие (`HSCALE_COND`), а не про файл: с ним
+    «bc» не находился и полужирный дорисовывался обводкой."""
+    return "".join(ch for ch in "bi" if ch in (style or ""))
+
+
 def _font_for(fonts: dict, box: dict) -> str:
     """Шрифт рамки: семейство оригинала и его начертание; чего нет — то
     ближайшее, что есть (то же семейство обычным, затем засечки)."""
-    style = box.get("style") or ""
+    style = _face_style(box.get("style") or "")
     fam = box.get("fam") or ""
     if fam in FAMILY_CANDIDATES:
         name = fonts.get(fam + "|" + style) or fonts.get(fam + "|")
@@ -729,7 +739,12 @@ def _neighbour_limits(slots: list) -> None:
     lo = np.array([sl["y"] - 0.2 * sl["size"] for sl in slots], dtype=np.float64)
     hi = np.array([sl["y"] + 0.7 * sl["size"] for sl in slots], dtype=np.float64)
     for k, sl in enumerate(slots):
-        m = (x0 > sl["x"] + 0.5 * sl["size"]) & (lo < hi[k]) & (hi > lo[k])
+        # Перекрытие по высоте — заметное, а не касание: у подписи с тесным
+        # интерлиньяжем (межстрочный меньше кегля) полосы соседних строк
+        # касаются, и строка ниже, выключенная по центру, «обрезала» верхнюю —
+        # хвост оригинала оставался рядом с переводом.
+        ov = np.minimum(hi, hi[k]) - np.maximum(lo, lo[k])
+        m = (x0 > sl["x"] + 0.5 * sl["size"]) & (ov > 0.3 * sl["size"])
         if m.any():
             sl["lim"] = float(x0[m].min())
 
@@ -867,25 +882,53 @@ def _cut_point(word: str, n: int) -> int:
     return max(1, n)
 
 
-def _fit_slots(text: str, slots: list, sw, font_of, align: str, split_ok: bool = False) -> tuple:
+def _slot_width(sl: dict, align: str, wide: bool) -> float:
+    """Ширина места строки: своя — или с запасом свободной бумаги
+    (`room0`/`room1`, `_free_room`) в сторону, куда строка растёт по выключке."""
+    x0 = sl["x"] if align == "left" else sl["x0"]
+    x1 = sl["x1"]
+    if wide:
+        r0, r1 = sl.get("room0", sl["x0"]), sl.get("room1", sl["x1"])
+        if align == "left":
+            x1 = max(x1, r1)
+        elif align == "right":
+            x0 = min(x0, r0)
+        else:
+            e = max(0.0, min(r1 - x1, x0 - r0))
+            x0, x1 = x0 - e, x1 + e
+    return x1 - x0
+
+
+def _fit_slots(text: str, slots: list, sw, font_of, align: str, split_ok: bool = False,
+               cap: float = 1.0, floor: "float | None" = None) -> tuple:
     """([строка на каждое место], множитель кегля, не влезшие слова,
     сужение по горизонтали).
 
     Перевод встаёт в МЕСТА строк оригинала по порядку: каждая строка — своей
-    ширины, своего кегля и на своей базовой линии. Не влез — кегль всех строк
-    абзаца уменьшается одним множителем (разный кегль у строк одного абзаца
-    читается как брак), не ниже `MIN_SIZE_SHARE`; что не влезло и тогда —
-    печатается строками под последним местом, а не теряется. До кегля
-    сужается начертание (`HSCALE_MIN`): высота букв — часть вёрстки."""
-    words0 = (text or "").split()
-    hs = [1.0]
+    ширины, своего кегля и на своей базовой линии. Не влез — сперва строка
+    получает СВОБОДНУЮ бумагу рядом (`room0`/`room1`: у подписи в схеме
+    справа часто пусто, и ужимать её до двух пунктов незачем), потом
+    сужается начертание (`HSCALE_MIN`), потом кегль всех строк абзаца
+    уменьшается одним множителем (разный кегль у строк одного абзаца
+    читается как брак), не ниже `floor` (`MIN_SIZE_SHARE`); что не влезло
+    и тогда — печатается строками под последним местом, а не теряется.
 
-    def lay(f, split=False):
+    `cap` — кегль не крупнее этой доли: общий кегль КЛАССА надписей
+    (`_harmonize`) — у соседних надписей одного стиля он один."""
+    words0 = (text or "").split()
+    # Узкое начертание оригинала («c», DIN Condensed и соседи) — перевод
+    # сжат с самого начала, у всех таких строк одинаково.
+    h0 = HSCALE_COND if any("c" in (sl.get("style") or "") for sl in slots) else 1.0
+    hs = [h0]
+    floor = MIN_SIZE_SHARE if floor is None else floor
+    cap = max(floor, min(1.0, cap))
+
+    def lay(f, split=False, wide=False):
         words = list(words0)
         out, k, ok = [], 0, True
         for sl in slots:
             font, size = font_of(sl), max(1.0, sl["size"] * f)
-            width = sl["x1"] - (sl["x"] if align == "left" else sl["x0"])
+            width = _slot_width(sl, align, wide)
             cur = ""
             while k < len(words):
                 probe = (cur + " " + words[k]) if cur else words[k]
@@ -917,44 +960,241 @@ def _fit_slots(text: str, slots: list, sw, font_of, align: str, split_ok: bool =
     # Письмо без пробелов (`split_ok`) режется по знакам на ЛЮБОМ кегле:
     # иначе вся строка вставала в первое место (не влезло ни одно «слово»),
     # остальные пустели, и кегль падал до самого мелкого.
-    lines, rest, fits = lay(1.0, split_ok)
+    lines, rest, fits = lay(cap, split_ok)
     if fits:
-        return lines, 1.0, [], 1.0
+        return lines, cap, [], h0
+    # Запас бумаги — только подписи (короткий абзац узких строк): у колонки
+    # текста книги справа ПОЛЕ страницы, и абзац, не влезший в строки, ушёл
+    # бы на поля вместо того, чтобы сжаться.
+    label = len(slots) <= FREE_MAX_LINES and all(
+        (sl["x1"] - sl["x0"]) <= FREE_MAX_WIDTH * sl.get("_pw", 1e9) for sl in slots)
+    wide = label and any(sl.get("room1", sl["x1"]) > sl["x1"] + 0.5
+                         or sl.get("room0", sl["x0"]) < sl["x0"] - 0.5 for sl in slots)
+    if wide:
+        lines, rest, fits = lay(cap, split_ok, True)
+        if fits:
+            return lines, cap, [], h0
     # Сперва — сужение при прежнем кегле.
-    hs[0] = HSCALE_MIN
-    got, _rest, ok = lay(1.0, split_ok)
+    hmin = h0 * HSCALE_MIN
+    hs[0] = hmin
+    got, _rest, ok = lay(cap, split_ok, wide)
     if ok:
-        lo, hi, best = HSCALE_MIN, 1.0, got     # lo влезает, hi — нет
+        lo, hi, best = hmin, h0, got            # lo влезает, hi — нет
         for _ in range(6):
             mid = (lo + hi) / 2.0
             hs[0] = mid
-            got, _rest, ok = lay(1.0, split_ok)
+            got, _rest, ok = lay(cap, split_ok, wide)
             if ok:
                 lo, best = mid, got
             else:
                 hi = mid
-        return best, 1.0, [], lo
+        return best, cap, [], lo
     # Сужения мало — уменьшаем и кегль, при самом узком начертании.
-    hs[0] = HSCALE_MIN
-    lo_lines, lo_rest, lo_fits = lay(MIN_SIZE_SHARE, split_ok)
+    hs[0] = hmin
+    lo_lines, lo_rest, lo_fits = lay(floor, split_ok, wide)
     if not lo_fits:
         if split_ok or len(words0) < len(slots):
             # Слов меньше, чем строк, — текст без пробелов (или почти):
             # режем по знакам, иначе всё встало бы в первую строку, а
             # остальные остались бы пустыми. Подпись из одного слова не
             # режем: целое слово, вылезшее вправо, читается лучше обрубков.
-            lo_lines, lo_rest, _ok = lay(MIN_SIZE_SHARE, split=True)
-        return lo_lines, MIN_SIZE_SHARE, lo_rest, HSCALE_MIN
-    lo, hi = MIN_SIZE_SHARE, 1.0                # lo влезает, hi — нет
+            lo_lines, lo_rest, _ok = lay(floor, True, wide)
+        return lo_lines, floor, lo_rest, hmin
+    lo, hi = floor, cap                         # lo влезает, hi — нет
     best = (lo_lines, lo)
     for _ in range(8):
         mid = (lo + hi) / 2.0
-        got, _rest, ok = lay(mid, split_ok)
+        got, _rest, ok = lay(mid, split_ok, wide)
         if ok:
             lo, best = mid, (got, mid)
         else:
             hi = mid
-    return best[0], best[1], [], HSCALE_MIN
+    return best[0], best[1], [], hmin
+
+
+# Общий кегль класса надписей (`_harmonize`): класс от стольких абзацев,
+# кегль — такой квантиль нужных им множителей.
+HARMONY_MIN = int(os.environ.get("LAYOUT_HARMONY_MIN", "3"))
+HARMONY_Q = float(os.environ.get("LAYOUT_HARMONY_Q", "0.25"))
+HARMONY_FLOOR = float(os.environ.get("LAYOUT_HARMONY_FLOOR", "0.6"))
+HARMONY_Q_MIN = int(os.environ.get("LAYOUT_HARMONY_Q_MIN", "8"))
+# Пол кегля, до которого ужимается абзац, налезший на чужой текст.
+FLOOR_HARD = float(os.environ.get("LAYOUT_FLOOR_HARD", "0.4"))
+
+
+def _refit(slot_plan: list, slot_meta: list, i: int, cap: float = 1.0,
+           floor: "float | None" = None, wide: bool = True) -> None:
+    sds, _lines, _fs, _rest, font_of, align, _hss = slot_plan[i]
+    m = slot_meta[i]
+    if not wide:
+        for sd in sds:
+            sd.pop("room0", None)
+            sd.pop("room1", None)
+    lines, f, rest, hsc = _fit_slots(m["text"], sds, m["sw"], font_of, align, m["nospace"],
+                                     cap=cap, floor=floor)
+    slot_plan[i] = (sds, lines, [f] * len(sds), rest, font_of, align, [hsc] * len(sds))
+
+
+def _harmonize(slot_plan: list, slot_meta: list, stats: dict) -> None:
+    """Один кегль у надписей ОДНОГО стиля на странице.
+
+    Каждый абзац ужимался сам, и соседние надписи инфографики одного стиля
+    выходили 4.2 и 2.3 пт, а абзац колонки — мельче соседних: на глаз это
+    брак набора. Класс — гарнитура, начертание и кегль ОРИГИНАЛА; кегль
+    класса — нижний квартиль того, что нужно его абзацам (`HARMONY_Q`):
+    большинство влезает при нём, кто влезал крупнее — становится им, а кому
+    нужно ещё мельче (выброс), ужимается сам и называется числом
+    (`harmonyOutliers`)."""
+    classes: dict = {}
+    for i, (sds, _l, fs, _r, _fo, _a, _h) in enumerate(slot_plan):
+        m = slot_meta[i]
+        if m["scattered"] or any(sd.get("rot") for sd in sds):
+            continue
+        # Класс — В ПРЕДЕЛАХ СТРАНИЦЫ: подпись в таблице и подпись в схеме
+        # соседней страницы одного кегля оригинала, но глазами их рядом не
+        # сравнивают, а общий квартиль ужимал бы короткие ячейки таблицы
+        # («Метформин») под тесноту чужой инфографики.
+        key = (int(sds[0]["page"]), m["fam"], _face_style(sds[0].get("style") or ""),
+               "c" in (sds[0].get("style") or ""), round(sds[0]["size"] * 2) / 2.0)
+        classes.setdefault(key, []).append(i)
+    changed = outliers = 0
+    for idxs in classes.values():
+        if len(idxs) < HARMONY_MIN:
+            continue
+        fv = sorted(slot_plan[i][2][0] for i in idxs)
+        # Не мельче `HARMONY_FLOOR`: класс не тянется вниз за горсткой
+        # абзацев, которым тесно, — они ужимаются сами и называются числом.
+        # У маленького класса квартиль — это его минимум (один тесный абзац
+        # ужал бы всю страницу), поэтому там — медиана.
+        q = HARMONY_Q if len(fv) >= HARMONY_Q_MIN else 0.5
+        target = max(fv[int(q * (len(fv) - 1))], HARMONY_FLOOR)
+        for i in idxs:
+            f = slot_plan[i][2][0]
+            if f > target + 0.02:
+                _refit(slot_plan, slot_meta, i, cap=target)
+                changed += 1
+            elif f < target - 0.02:
+                outliers += 1
+    stats["harmonized"] = changed
+    stats["harmonyOutliers"] = outliers
+
+
+def _entry_rects(entry: tuple, sw) -> list:
+    """Прямоугольники НАПЕЧАТАННЫХ строк абзаца: [(стр., x0, y0, x1, y1, кегль,
+    вылез ли за своё место)] — по тем же правилам, что печать."""
+    sds, lines, fs, rest, font_of, align, hss = entry
+    out = []
+    for k, (sd, line) in enumerate(zip(sds, lines)):
+        if sd.get("rot"):
+            continue
+        last = k == len(sds) - 1
+        size = max(1.0, sd["size"] * fs[k])
+        font = font_of(sd)
+        more = list(_overflow_lines(rest, sd, size, sw, font, align, hss[k])) if last and rest else []
+        for j, ln in enumerate([line] + more):
+            if not ln:
+                continue
+            w = sw(ln, font, size) * hss[k]
+            if align == "center":
+                x = (sd["x0"] + sd["x1"]) / 2.0 - w / 2.0
+            elif align == "right":
+                x = sd["x1"] - w
+            else:
+                x = sd["x"]
+            y = sd["y"] - j * 1.2 * size
+            grown = j > 0 or x + w > sd["x1"] + 0.5 or x < sd["x0"] - 0.5
+            out.append((int(sd["page"]), x, y - 0.25 * size, x + w, y + 0.85 * size, size, grown))
+    return out
+
+
+def _overlap(a: tuple, b: tuple) -> bool:
+    s = min(a[5], b[5])
+    ix = min(a[3], b[3]) - max(a[1], b[1])
+    iy = min(a[4], b[4]) - max(a[2], b[2])
+    return ix > 0.25 * s and iy > 0.3 * min(a[4] - a[2], b[4] - b[2])
+
+
+def _resolve_collisions(slot_plan: list, slot_meta: list, jobs: list,
+                        reader, skip: set, stats: dict) -> None:
+    """Проверка наложений ДО печати — и починка.
+
+    Строка перевода, вылезшая за своё место (на свободную бумагу или хвостом
+    под последней строкой), не вправе лечь на чужой текст: на перевод соседа,
+    на оставленный оригинал (абзац без перевода) или за край листа. Нашли —
+    абзац теряет запас бумаги, потом ужимается до `FLOOR_HARD`; не помогло —
+    наложение остаётся и НАЗЫВАЕТСЯ (`collisions`, страницы, абзацы): сборка
+    не вправе отчитаться «готово», не сказав о нём. Наложения, которые были
+    в самом оригинале (обе строки на своих местах), не наши и не считаются."""
+    fixed: list = []                    # чужие прямоугольники: оставленный оригинал
+    for key, text, boxes in jobs:
+        if text:
+            continue
+        for b in boxes or []:
+            if int(b["page"]) in skip:
+                continue
+            for sd in b.get("_slots") or []:
+                if sd.get("rot"):
+                    continue
+                fixed.append(((int(sd["page"]), sd["x0"], sd["y"] - 0.25 * sd["size"], sd["x1"],
+                               sd["y"] + 0.85 * sd["size"], sd["size"], False), ("o", key)))
+    edges = {}
+    for i, page in enumerate(reader.pages):
+        try:
+            mb = page.mediabox
+            edges[i] = (float(mb.left), float(mb.bottom), float(mb.right), float(mb.top))
+        except Exception:
+            pass
+
+    def find():
+        rects = list(fixed)
+        for i, entry in enumerate(slot_plan):
+            rects.extend((r, ("s", i)) for r in _entry_rects(entry, slot_meta[i]["sw"]))
+        by_page: dict = {}
+        for r, who in rects:
+            by_page.setdefault(r[0], []).append((r, who))
+        hits = []
+        for pg, items in by_page.items():
+            items.sort(key=lambda t: t[0][2])
+            e = edges.get(pg)
+            for k, (a, wa) in enumerate(items):
+                if e and a[6] and (a[1] < e[0] - 0.5 or a[3] > e[2] + 0.5 or a[2] < e[1] - 0.5):
+                    hits.append((pg, wa, ("edge", pg)))
+                for b, wb in items[k + 1:]:
+                    if b[2] >= a[4]:
+                        break
+                    if wa == wb or not (a[6] or b[6]):
+                        continue
+                    if _overlap(a, b):
+                        hits.append((pg, wa if a[6] else wb, wb if a[6] else wa))
+        return hits
+
+    fixed_n = 0
+    for _round in range(3):
+        hits = find()
+        # Разбросанные подписи (`_spread`) раскладываются по ДОЛЕ оригинала
+        # в каждом месте — последовательная укладка `_fit_slots` раздала бы
+        # им чужой текст; их не переукладываем, а называем.
+        todo = {who[1] for _pg, who, _other in hits
+                if who[0] == "s" and not slot_meta[who[1]]["scattered"]}
+        if not todo:
+            break
+        for i in todo:
+            sds = slot_plan[i][0]
+            f = slot_plan[i][2][0]
+            if any("room0" in sd or "room1" in sd for sd in sds):
+                _refit(slot_plan, slot_meta, i, cap=f, wide=False)
+            elif slot_plan[i][3] or f > FLOOR_HARD:
+                _refit(slot_plan, slot_meta, i, cap=f, floor=FLOOR_HARD, wide=False)
+        fixed_n += len(todo)
+    hits = find()
+    paras = sorted({slot_meta[who[1]]["idx"] for _pg, who, _o in hits if who[0] == "s"},
+                   key=lambda v: str(v))
+    stats["collisionFixed"] = fixed_n
+    stats["collisions"] = len(paras)
+    stats["collisionPages"] = sorted({pg + 1 for pg, _w, _o in hits})[:50]
+    stats["collisionParas"] = paras[:200]
+    stats["grown"] = sum(1 for i, entry in enumerate(slot_plan)
+                         if any(r[6] for r in _entry_rects(entry, slot_meta[i]["sw"])))
 
 
 def _wrap(text: str, width: float, size: float, indent: float, sw, font: str) -> list:
@@ -1133,6 +1373,44 @@ def _col_mins(gray, x0: int, x1: int, y0: int, y1: int) -> list:
         return out
 
 
+LIGHT_INK = 60.0                 # светлее тёмной бумаги на столько — светлая краска
+INV_PAPER = 0.7                  # бумага темнее этого — на ней бывает светлая краска
+
+
+def _ink_cols(gray, x0, x1, y0, y1, paper: float) -> list:
+    """Столбцы полосы для поиска КРАСКИ: самый тёмный пиксель, а на тёмной
+    бумаге (`INV_PAPER`: цветная плашка) столбец со светлой краской (белый заголовок на
+    красной плашке) считается краской тоже — ноль. Иначе конец светлой
+    строки не находился, и хвост оригинала оставался рядом с переводом."""
+    mins = _col_mins(gray, x0, x1, y0, y1)
+    if paper >= INV_PAPER or not mins:
+        return mins
+    light = paper * 255.0 + LIGHT_INK
+    maxs = _col_maxs(gray, x0, x1, y0, y1)
+    return [0 if u > light else v for v, u in zip(mins, maxs)]
+
+
+def _col_maxs(gray, x0: int, x1: int, y0: int, y1: int) -> list:
+    """Самый светлый пиксель каждого столбца полосы — граница цветной плашки."""
+    x0, x1 = max(0, int(x0)), min(gray.size[0], int(x1))
+    y0, y1 = max(0, int(y0)), min(gray.size[1], int(y1))
+    w, h = x1 - x0, y1 - y0
+    if w < 1 or h < 1:
+        return []
+    data = gray.crop((x0, y0, x1, y1)).tobytes()
+    try:
+        import numpy as np
+        return np.frombuffer(data, dtype=np.uint8).reshape(h, w).max(axis=0).tolist()
+    except Exception:
+        out = [0] * w
+        for r in range(h):
+            row = data[r * w:(r + 1) * w]
+            for c in range(w):
+                if row[c] > out[c]:
+                    out[c] = row[c]
+        return out
+
+
 def _ink_box(sample, box: dict, pad: float, paper: float) -> tuple:
     """(x0, x1) закраски, раздвинутые по КРАСКЕ страницы.
 
@@ -1164,7 +1442,7 @@ def _ink_box(sample, box: dict, pad: float, paper: float) -> tuple:
     left = (x0 - pad - cb[0]) * scale
     right = (x1 + pad - cb[0]) * scale
     # Вправо: столбцы от правого края наружу.
-    mins = _col_mins(gray, right, right + limit, y0, y1)
+    mins = _ink_cols(gray, right, right + limit, y0, y1, paper)
     run, reach = 0, 0
     for k, v in enumerate(mins):
         if v < dark:
@@ -1184,7 +1462,7 @@ def _ink_box(sample, box: dict, pad: float, paper: float) -> tuple:
     # известно ТОЧНО: раздвижка влево там — только на погрешность штриха,
     # иначе заливка срезала значок, стоящий вплотную к подписи схемы.
     left_pt = (INK_EXACT_SLACK * 0.5 if box.get("exact") else INK_LEFT_PT) * size
-    mins = _col_mins(gray, left - min(limit, left_pt * scale), left, y0, y1)
+    mins = _ink_cols(gray, left - min(limit, left_pt * scale), left, y0, y1, paper)
     run, reach = 0, 0
     for k, v in enumerate(reversed(mins)):
         if v < dark:
@@ -1195,6 +1473,69 @@ def _ink_box(sample, box: dict, pad: float, paper: float) -> tuple:
                 break
     x0 = x0 - reach / scale if reach else x0
     return x0, x1
+
+
+# Свободная бумага рядом со строкой: перевод может зайти на неё, если
+# не влез в свою ширину (`_fit_slots`). Отступ от чужой краски — столько
+# кеглей, запас не меньше столько кеглей, растём не больше чем на ширину
+# самой строки.
+FREE_MARGIN = float(os.environ.get("LAYOUT_FREE_MARGIN", "2.0"))
+FREE_MIN = float(os.environ.get("LAYOUT_FREE_MIN", "1.5"))
+FREE_MAX_SHARE = float(os.environ.get("LAYOUT_FREE_MAX_SHARE", "1.0"))
+FREE_MAX_LINES = int(os.environ.get("LAYOUT_FREE_MAX_LINES", "3"))
+FREE_MAX_WIDTH = float(os.environ.get("LAYOUT_FREE_MAX_WIDTH", "0.35"))
+FREE_PAPER_DELTA = 12.0          # светлее бумаги на столько (из 255) — уже другой фон
+
+
+def _free_room(sample, sd: dict, paper: float) -> None:
+    """`room1` / `room0` у места строки — докуда справа и слева от неё
+    ЧИСТАЯ бумага (ни краски, ни смены фона) в полосе строки, с отступом
+    `FREE_MARGIN` кеглей от первой чужой краски.
+
+    Зачем. Перевод длиннее оригинала, а место строки в инфографике — ровно
+    длина английской подписи; прежде такая подпись ужималась до половины
+    кегля, и соседние надписи одного стиля выходили разного размера. Рядом
+    при этом обычно пусто. Колонку текста это не трогает: в межколоннике
+    места меньше, чем `FREE_MARGIN` + `FREE_MIN` кеглей."""
+    if not sample:
+        return
+    im, scale, cb, gray = sample
+    W, H = im.size
+    sd["_pw"] = max(1.0, cb[2] - cb[0])
+    size = max(sd.get("size") or 10.0, 1.0)
+    y0 = int(max(0, H - (sd["y"] + 1.0 * size - cb[1]) * scale))
+    y1 = int(min(H, H - (sd["y"] - 0.35 * size - cb[1]) * scale + 1))
+    if y1 - y0 < 2:
+        return
+    dark = INK_DARK * paper * 255.0
+    margin = FREE_MARGIN * size
+    grow = max(FREE_MAX_SHARE * (sd["x1"] - sd["x0"]), 4.0 * size)
+    right_cap = cb[2] - margin
+    if sd.get("lim") is not None:
+        right_cap = min(right_cap, sd["lim"] - margin)
+    right_cap = min(right_cap, sd["x1"] + grow + margin)
+    light = min(255.0, paper * 255.0 + FREE_PAPER_DELTA)
+    start = (sd["x1"] + 0.3 * size - cb[0]) * scale
+    mins = _col_mins(gray, start, (right_cap + margin - cb[0]) * scale, y0, y1)
+    maxs = _col_maxs(gray, start, (right_cap + margin - cb[0]) * scale, y0, y1)
+    # Конец свободного места — краска ИЛИ смена фона: светлая надпись на
+    # цветной плашке не вправе выйти за плашку на белую бумагу (её там не
+    # видно), и тёмная — на чужую плашку.
+    hit = next((k for k, (v, u) in enumerate(zip(mins, maxs)) if v < dark or u > light), None)
+    free_to = sd["x1"] + 0.3 * size + (len(mins) if hit is None else hit) / scale - margin
+    free_to = min(free_to, right_cap)
+    if free_to - sd["x1"] >= FREE_MIN * size:
+        sd["room1"] = free_to
+    left_cap = max(cb[0] + margin, sd["x0"] - grow - margin)
+    end = (sd["x0"] - 0.3 * size - cb[0]) * scale
+    mins = _col_mins(gray, (left_cap - margin - cb[0]) * scale, end, y0, y1)
+    maxs = _col_maxs(gray, (left_cap - margin - cb[0]) * scale, end, y0, y1)
+    hit = next((k for k, (v, u) in enumerate(zip(reversed(mins), reversed(maxs)))
+                if v < dark or u > light), None)
+    free_from = sd["x0"] - 0.3 * size - (len(mins) if hit is None else hit) / scale + margin
+    free_from = max(free_from, left_cap)
+    if sd["x0"] - free_from >= FREE_MIN * size:
+        sd["room0"] = free_from
 
 
 def _ink_end(sample, box: dict, paper: float) -> "float | None":
@@ -1236,12 +1577,18 @@ def _ink_end(sample, box: dict, paper: float) -> "float | None":
     # а рамка блока или рисунок за подписью отделены пробелом.
     origin = est if box.get("exact") else xl
     start = (origin - cb[0]) * scale
-    mins = _col_mins(gray, start, (cap - cb[0]) * scale, y0, y1)
+    mins = _ink_cols(gray, start, (cap - cb[0]) * scale, y0, y1, paper)
     if not mins:
         return None
     dark = INK_DARK * paper * 255.0
     gap = max(1, int(round(INK_GAP_SHARE * size * scale)))
     run, reach = 0, 0
+    # Широкий пробел ВНУТРИ строки («4  Consensus Report»: номер страницы
+    # и колонтитул одним куском) — ещё не конец: от начала строки пробел
+    # останавливает поиск, только когда пройдено больше `INK_INNER_SHARE`
+    # оценки её длины. Иначе место строки кончалось на «4», и перевод шёл
+    # хвостом под колонтитул, а сам колонтитул оставался незакрашенным.
+    inner = 0 if box.get("exact") else int(INK_INNER_SHARE * max(0.0, est - origin) * scale)
     for k, v in enumerate(mins):
         if v < dark:
             run, reach = 0, k + 1
@@ -1249,7 +1596,7 @@ def _ink_end(sample, box: dict, paper: float) -> "float | None":
             run += 1
             # От точного конца: пробел сразу — хвоста нет, дальше не идём
             # (иначе дошли бы до рисунка за подписью).
-            if run >= gap and (reach or box.get("exact")):
+            if run >= gap and (reach or box.get("exact")) and k >= inner:
                 break
     if not reach:
         return est if box.get("exact") else None
@@ -1874,6 +2221,7 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
                         if x1 - x0 > sd["x1"] - sd["x0"] + 0.5:
                             colors = _slot_paper(sample, sd, pad, SLOT_STRIPS, x0, x1)
                         sd["x0"], sd["x1"] = x0, x1
+                        _free_room(sample, sd, paper)
                         # Цвет букв из самого PDF сильнее замера: на мелком
                         # кегле сглаживание делает чёрный серым.
                         if sd.get("color") is not None:
@@ -1923,6 +2271,7 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
     # и работу в отчёте, и честное число не влезших.
     plan: list = []
     slot_plan: list = []
+    slot_meta: list = []
     pages_used: set = set()
     for idx, text, boxes in jobs:
         if not text or not boxes:
@@ -1952,14 +2301,23 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
             b["_r"], b["_rtl"], b["_sw"] = use_r, prtl, psw
             for sd in (b.get("_slots") or []):
                 sd["_r"], sd["_rtl"], sd["_sw"] = use_r, prtl, psw
+        text0 = text
         for grp in groups:
+            text = text0
+            num = grp[0].get("num") if len(grp) == 1 else None
+            if num and len(num) == 2:
+                # Колонтитул с номером страницы: в общий перевод — номер ЭТОЙ
+                # страницы (`pdftext._head_paragraphs`).
+                import re as _re
+                text = _re.sub(r"(?<!\d)%s(?!\d)" % _re.escape(str(num[0])), str(num[1]), text, count=1)
             sds = [sd for b in grp for sd in (b.get("_slots") or [])]
             if sds:
                 fam = grp[0].get("fam") or ""
 
                 def font_of(sd, fam=fam):
                     return _font_for(fonts, {"style": sd["style"], "fam": fam})
-                if _scattered(sds):
+                scat = _scattered(sds)
+                if scat:
                     # Разбросанные подписи — каждой своё, от начала своей
                     # строки: выключку одной строки по ней не узнать.
                     align = "left"
@@ -1977,6 +2335,8 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
                 over = over or bool(rest)
                 stats["condensed"] += 1 if min(hss) < 0.999 else 0
                 slot_plan.append((sds, lines, fs, rest, font_of, align, hss))
+                slot_meta.append({"idx": idx, "text": text, "sw": psw, "nospace": nospace,
+                                  "scattered": scat, "fam": fam})
                 pages_used.update(int(sd["page"]) for sd in sds)
                 continue
             font = _font_for(fonts, grp[0])
@@ -1991,6 +2351,11 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
             pages_used.update(int(b["page"]) for b in grp)
         stats["shrunk"] += 1 if shrunk else 0
         stats["overflow"] += 1 if over else 0
+
+    # По готовой раскладке, ДО печати: общий кегль у надписей одного стиля
+    # и проверка, не легла ли строка перевода на чужой текст.
+    _harmonize(slot_plan, slot_meta, stats)
+    _resolve_collisions(slot_plan, slot_meta, jobs, reader, skip, stats)
 
 
     # Слой на ВСЕ страницы — одним документом, а не по одному на страницу:

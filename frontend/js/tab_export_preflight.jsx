@@ -786,6 +786,71 @@ function ExpMediaCard({ project, store, toast }) {
 }
 window.ExpMediaCard = ExpMediaCard;
 
+/* Как разложить PDF, который прислали «лентой» (страницы журнала подряд
+   внутри двух-трёх длинных листов, см. backend/pdf_panels.py). Выбор —
+   картинкой: «длинный лист» и «стопка страниц» понятны без слов. */
+/* Проверка вёрстки готового PDF: легла ли каждая строка перевода на своё
+   место. Сборка сама ужимает строку, налезшую на соседа; что не удалось —
+   называется здесь, с кнопкой к этим строкам. */
+function ExpLayoutReport({ report, store }) {
+  if (!report.collisions) {
+    return React.createElement("div", { className: "row", style: { gap: 8, marginTop: 12, fontSize: 13 } },
+      React.createElement(Icon, { name: "checkCircle", size: 16, style: { color: "var(--c-success)" } }),
+      React.createElement("span", null, TR("Проверка вёрстки: перевод нигде не наезжает на соседний текст.")));
+  }
+  return React.createElement("div", { className: "row between row-wrap", style: { gap: 8, marginTop: 12, fontSize: 13 } },
+    React.createElement("span", { style: { color: "var(--c-warning)" } },
+      TR("Перевод не уместился и наезжает на соседний текст: строк — ") + report.collisions
+        + (report.pages.length ? TR(" (страницы: ") + report.pages.slice(0, 10).join(", ") + ")" : "")
+        + TR(". Сократите перевод этих строк и соберите заново.")),
+    report.segs.length > 0 && React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => {
+      store.setSegmentFilter(report.segs, { label: TR("Наезжают на соседний текст") });
+      store.go("editor"); } }, TR("Показать строки")));
+}
+
+function ExpSheetIcon({ kind }) {
+  const box = { stroke: "currentColor", fill: "var(--bg)", strokeWidth: 1.2 };
+  const line = (x, y, w, k) => React.createElement("line",
+    { key: k, x1: x, y1: y, x2: x + w, y2: y, stroke: "currentColor", strokeWidth: 0.8, opacity: 0.55 });
+  if (kind === "original") {
+    const kids = [React.createElement("rect", Object.assign({ key: "r", x: 14, y: 2, width: 14, height: 52, rx: 1.5 }, box))];
+    for (let i = 0; i < 9; i++) kids.push(line(17, 7 + i * 5.3, 8, "l" + i));
+    return React.createElement("svg", { width: 42, height: 56, viewBox: "0 0 42 56", "aria-hidden": true }, kids);
+  }
+  const kids = [];
+  [[10, 8], [6, 4], [2, 0]].forEach(([x, y], k) => {
+    kids.push(React.createElement("rect", Object.assign({ key: "r" + k, x: x + 2, y: y + 2, width: 26, height: 34, rx: 1.5 }, box)));
+  });
+  for (let i = 0; i < 5; i++) kids.push(line(8, 10 + i * 5, 18, "l" + i));
+  return React.createElement("svg", { width: 42, height: 56, viewBox: "0 0 42 46", "aria-hidden": true }, kids);
+}
+
+function ExpSheetsPick({ info, value, onChange }) {
+  const opts = [
+    ["pages", TR("По страницам: ") + info.pages + TR(" стр."),
+     TR("Удобно читать и печатать.")
+       + (info.rotated ? " " + TR("Страницы, лежавшие боком, поставлены прямо: ") + info.rotated + "." : "")],
+    ["original", TR("Как в файле: длинных листов — ") + info.sheets,
+     TR("Как прислали: все страницы подряд на длинных листах.")],
+  ];
+  return React.createElement("div", { className: "col", style: { gap: 8, marginTop: 16 } },
+    React.createElement("div", { style: { fontWeight: 500 } }, TR("Как разложить страницы PDF")),
+    React.createElement("div", { className: "dim", style: { fontSize: 13 } },
+      TR("Файл прислан длинными листами: в каждом подряд стоят страницы документа.")),
+    React.createElement("div", { className: "grid", style: { gridTemplateColumns: "repeat(auto-fit, minmax(min(240px, 100%), 1fr))", gap: 10 } },
+      opts.map(([v, t, d]) => React.createElement("label", {
+        key: v, className: "card card-pad row",
+        style: { gap: 12, cursor: "pointer", borderColor: value === v ? "var(--c-primary)" : "var(--border)",
+                 boxShadow: value === v ? "0 0 0 3px var(--ring)" : "none" },
+        onClick: () => onChange(v) },
+        React.createElement(Radio, { name: "sheets", checked: value === v, onChange: () => onChange(v) }),
+        React.createElement("span", { style: { color: "var(--c-primary)", flex: "none" } },
+          React.createElement(ExpSheetIcon, { kind: v })),
+        React.createElement("div", null,
+          React.createElement("div", { style: { fontWeight: 500 } }, t),
+          React.createElement("div", { className: "dim", style: { fontSize: 13 } }, d))))));
+}
+
 function TabExport({ store, toast }) {
   const project = store.activeProject;
   /* Формат по умолчанию решает приложенный исходник. Приложить его и значит
@@ -803,6 +868,15 @@ function TabExport({ store, toast }) {
     return p.sourceDocx ? "docx_layout" : "docx";
   });
   const [opts, setOpts] = useState({ source: true });
+  /* Листы PDF-«ленты»: по умолчанию — обычными страницами (так читают
+     и печатают); «как в файле» — длинными листами, как прислали. */
+  const [sheets, setSheets] = useState("pages");
+  /* Отчёт последней сборки PDF «как в оригинале»: наложения строк. */
+  const [layoutReport, setLayoutReport] = useState(null);
+  /* Отчёт и выбор листов — про ЭТОТ проект: экран при смене проекта не
+     пересоздаётся, и отчёт прежнего проекта остался бы на чужом. */
+  const curPid = store.activeProject && store.activeProject.id;
+  useEffect(() => { setLayoutReport(null); setSheets("pages"); }, [curPid]);
   const [busy, setBusy] = useState(false);
   const [attaching, setAttaching] = useState(false);
   /* Умеет ли ЭТОТ сервер собирать PDF. Спрашиваем каталог, а не гадаем:
@@ -869,7 +943,7 @@ function TabExport({ store, toast }) {
         && !confirm(untranslated + TR(" строк ещё не переведены и останутся на языке оригинала. Всё равно скачать?"))) return;
     setBusy(true);
     let result = null;
-    if (window.API) result = await window.API.safeCall(() => window.API.exportProject(project.id, fmt, opts.source));
+    if (window.API) result = await window.API.safeCall(() => window.API.exportProject(project.id, fmt, opts.source, sheets));
     setBusy(false);
     if (result && result.ok && result.url) {
       // Реальное скачивание: бэкенд собирает файл и отдаёт по result.url.
@@ -883,6 +957,8 @@ function TabExport({ store, toast }) {
         store.setExportHistory(h => [{ project: project.id, file: result.file, when: new Date().toISOString().slice(0,16).replace("T"," "), size: result.size || "" }, ...h]);
       }
       const st = result.stats || {};
+      setLayoutReport(st.layout ? { collisions: st.collisions || 0, pages: st.collisionPages || [],
+                                    segs: st.collisionSegs || [] } : null);
       // Про 1в1 говорим не «готово», а что именно легло в файл: сколько абзацев
       // переведено, сколько осталось на языке оригинала и в скольких границу
       // выделения пришлось ставить по доле длины, а не по знаку препинания.
@@ -989,7 +1065,10 @@ function TabExport({ store, toast }) {
             // и «исходный вид» при приложенном исходнике держат вёрстку.
             srcDoc && (fmt === "docx" || fmt === "xlsx")
               ? TR("К проекту приложен исходник — «DOCX 1в1» сохранит его оформление. Выбранный сейчас формат соберёт документ с нуля.")
-              : TR("«DOCX 1в1» сохраняет оформление оригинала. Остальные форматы собираются с нуля."))
+              : TR("«DOCX 1в1» сохраняет оформление оригинала. Остальные форматы собираются с нуля.")),
+          project.pdfSheets && (fmt === "original" || fmt === "pdf")
+            && React.createElement(ExpSheetsPick, { info: project.pdfSheets, value: sheets, onChange: setSheets }),
+          layoutReport && React.createElement(ExpLayoutReport, { report: layoutReport, store })
         ),
         !project.media && React.createElement("div", null,
           React.createElement("h2", { className: "section-title" }, TR("Ваш файл")),

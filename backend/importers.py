@@ -58,9 +58,11 @@ from typing import Optional
 try:
     import textcount
     import pdftext
+    import pdf_panels
 except ImportError:                                   # pragma: no cover
     from . import textcount                            # type: ignore
     from . import pdftext                              # type: ignore
+    from . import pdf_panels                           # type: ignore
 
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
 # Что принимаем. Смета умеет то же плюс .pdf; картинки — только здесь.
@@ -1129,6 +1131,18 @@ def pdf_to_docx(content: bytes) -> tuple:
     страница с ненадёжным слоем — картинкой под чтение зрячей моделью;
     скан целиком → картинки страниц."""
     notes: list = []
+    # «Лента» сканер-приложения (страницы журнала подряд внутри листа
+    # в 14 400 пт) — сперва в обычные страницы: весь разбор ниже постраничный
+    # (см. backend/pdf_panels.py). Обычный PDF не меняется ни на байт.
+    virt = None
+    try:
+        textcount.progress("pages")
+        vv = pdf_panels.virtualize(content)
+    except Exception:
+        vv = None
+    if vv is not None:
+        content, virt = vv
+    virt_note = _virt_note(virt)
     try:
         pages, geoms = textcount._pdf_pages_geom(content, notes)
     except textcount.Scan as s:
@@ -1140,7 +1154,7 @@ def pdf_to_docx(content: bytes) -> tuple:
             raise textcount.Unsupported("PDF-скан без извлекаемых картинок страниц — "
                                         "распечатайте его в PNG/JPG постранично")
         return (scan_pages_to_docx(imgs), "scan",
-                "PDF без текстового слоя: %d страниц положены картинками; текст с них "
+                virt_note + "PDF без текстового слоя: %d страниц положены картинками; текст с них "
                 "читается автоматически. Обратно выгружается PDF из страниц с переведёнными "
                 "надписями." % len(imgs), len(imgs), None)
     textcount.progress("clean")
@@ -1191,7 +1205,7 @@ def pdf_to_docx(content: bytes) -> tuple:
         # Дробь, степень, индекс: распознаватель отдаёт их отдельной «строкой»,
         # и без склейки числитель уезжал в начало абзаца.
         removed.append("собрано дробей и индексов %d" % r["scripts"])
-    note = ("PDF: текст взят из текстового слоя, строки склеены в абзацы"
+    note = virt_note + ("PDF: текст взят из текстового слоя, строки склеены в абзацы"
             + ("; снято: " + ", ".join(removed) if removed else "") + ".")
     if r.get("headParagraphs"):
         # Колонтитул снят СО СТРАНИЦЫ, но не выброшен: он стоит отдельным
@@ -1225,7 +1239,24 @@ def pdf_to_docx(content: bytes) -> tuple:
              "собранный из документа Word.")
     return (docx_bytes, "pdf", note, n_img,
             {"boxes": built["layout"], "pages": res.get("pageBoxes") or [],
-             "unplaced": res.get("unplaced") or []})
+             "unplaced": res.get("unplaced") or [], "virt": virt})
+
+
+def _virt_note(virt) -> str:
+    """Что сделано с «лентой» — словами, первой фразой примечания импорта."""
+    if not virt:
+        return ""
+    n, src = len(virt.get("pages") or []), len(virt.get("src") or [])
+    rot = sum(1 for p in virt.get("pages") or [] if p.get("rot"))
+    whole = len(virt.get("whole") or [])
+    out = ("Длинные листы файла (%d) разобраны на обычные страницы: %d." % (src, n))
+    if rot:
+        out += " Страниц, лежавших боком, поставлено прямо: %d." % rot
+    if whole:
+        # Кусок листа, который не удалось отделить от соседей, взял весь
+        # лист целиком: верно, но тяжелее — называем числом.
+        out += " Страниц, собранных из листа целиком: %d." % whole
+    return out + " "
 
 
 def to_docx(filename: str, content: bytes) -> dict:

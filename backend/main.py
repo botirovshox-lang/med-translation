@@ -11689,6 +11689,12 @@ def _store_source_docx(project: dict, content: bytes, filename: str,
                              # оригинал на листе останется — выгрузка их называет.
                              "unplaced": layout.get("unplaced") or [],
                              "rules": getattr(importers.pdftext, "RULES_VERSION", None)}
+        # План «ленты» (`pdf_panels`): номера страниц и рамки раскладки —
+        # это номера и координаты ВИРТУАЛЬНЫХ страниц, и собрать их заново
+        # можно только по этому плану (см. `_pdf_work_bytes`).
+        if layout.get("virt"):
+            payload["layout"]["virt"] = layout["virt"]
+    _note_virt(project, (layout or {}).get("virt") if layout and layout.get("boxes") else None)
     # Разбор картинок ПЕРЕЖИВАЕТ повторную привязку исходника. Карта абзацев
     # и карта картинок лежат в одном файле, но пишутся из разных мест: пока
     # эта запись их не сохраняла, нажатие «Заменить» в карточке исходника
@@ -11713,6 +11719,42 @@ def _store_source_docx(project: dict, content: bytes, filename: str,
             "segments": len({p[1] for p in pairs})}
     project["sourceDocx"] = mark
     return mark
+
+
+def _note_virt(project: dict, virt: Optional[dict]) -> None:
+    """Сводка «ленты» на самом проекте — для экрана выгрузки (выбор листов),
+    без чтения карты исходника на каждый показ."""
+    if virt:
+        project["pdfSheets"] = {"sheets": len(virt.get("src") or []),
+                                "pages": len(virt.get("pages") or []),
+                                "rotated": sum(1 for p_ in virt.get("pages") or [] if p_.get("rot"))}
+    else:
+        project.pop("pdfSheets", None)
+
+
+def _pdf_work_bytes(pid: int, data: Optional[dict] = None) -> Optional[bytes]:
+    """PDF, по которому записана раскладка проекта: хранимый оригинал либо,
+    у «ленты», виртуальный PDF, собранный по плану из раскладки
+    (`pdf_panels.compose_plan`). Номер страницы раскладки адресует именно его:
+    выгрузка, отрисовка страницы под чтение надписей — всё берёт отсюда.
+    None — оригинала нет или виртуальный не собрался."""
+    orig = _orig_existing(pid)
+    if orig is None or orig.suffix.lower() != ".pdf":
+        return None
+    if data is None:
+        data = _load_source_map(pid) or {}
+    virt = ((data or {}).get("layout") or {}).get("virt")
+    raw = orig.read_bytes()
+    if not virt:
+        return raw
+    return importers.pdf_panels.compose_plan(raw, virt)
+
+
+def _virt_key(data: Optional[dict]) -> Optional[str]:
+    virt = ((data or {}).get("layout") or {}).get("virt")
+    if not virt:
+        return None
+    return importers.pdf_panels.plan_key(virt)
 
 
 def _load_source_map(pid: int) -> Optional[dict]:
@@ -16992,6 +17034,10 @@ def _job_images(job: dict) -> None:
                 map_dirty = True
             rec = dict(prev) if prev.get("sha") == sha and prev.get("blocks") is not None \
                 else {"part": name, "sha": sha}
+            if name.startswith(PDF_PAGE_PART):
+                # Номер страницы без плана «ленты» ничего не значит: разбор
+                # помечается отпечатком плана (`_pdf_image_boxes` сверяет).
+                rec["vk"] = _virt_key(data)
             # Якорный абзац — свежий на КАЖДОМ заходе, а не только при обнаружении:
             # после замены файла запись переносится, а номера абзацев в новом
             # документе другие — по старым восстановление сажало бы строку не туда.
@@ -30397,6 +30443,9 @@ def run_preflight(pid: int):
 class ExportRequest(BaseModel):
     format: str          # "docx" | "docx_layout" | "xlsx" | "pdf"
     source: bool = True  # включить колонку с оригиналом
+    # Листы PDF «ленты» (`pdf_panels`): "pages" — обычными страницами,
+    # "original" — как в файле, длинными листами.
+    sheets: str = "pages"
 
 EXPORT_DIR = DATA_DIR / "exports"   # внутри ReadWritePaths systemd-юнита
 
@@ -31236,8 +31285,14 @@ def _pdf_image_boxes(project: dict, data: dict) -> list:
     by_id = {s["id"]: s for s in project.get("segments") or []}
     out: list = []
     skipped: dict = {}
+    vk = _virt_key(data)
     for im in images:
         virt = str(im.get("part") or "").startswith(PDF_PAGE_PART)
+        if virt and im.get("vk") != vk:
+            # Разбор страницы сделан по ДРУГИМ страницам (лист до разбивки
+            # «ленты» или другой план): его рамки легли бы не на то место.
+            skipped["oldPages"] = skipped.get("oldPages", 0) + 1
+            continue
         part = parts.get(im.get("part"))
         if (part is None and not virt) or not im.get("w") or not im.get("h"):
             continue
@@ -31290,6 +31345,10 @@ def _pdf_image_boxes(project: dict, data: dict) -> list:
 # Какая доля блока надписи рисунка должна лежать под строкой текстового слоя,
 # чтобы считать её ТЕМ ЖЕ текстом (подпись слоя поверх растровой схемы).
 LAYER_OVERLAP = 0.3
+# Строка наполовину слоем: покрыто меньше этой доли — блок обрезается до
+# непокрытого края, если остаётся не меньше стольких высот строки.
+LAYER_TRIM_MAX = 0.8
+LAYER_TRIM_MIN = 1.5
 
 
 PDF_PAGE_PART = "pdfpage/"
@@ -31318,8 +31377,10 @@ def _pdf_page_png(pid: int, page: int) -> Optional[bytes]:
     лист» (`importers.tag_figure`), чтобы надписи с неё шли тем же путём, что
     надписи вырезок рисунков. Отрисовка под замком pdfium (он не
     потокобезопасен) и с потолком площади (`textcount._render_scale`)."""
-    orig = _orig_existing(pid)
-    if orig is None or orig.suffix.lower() != ".pdf":
+    # Страница раскладки — страница PDF, по которому раскладка записана:
+    # у «ленты» это виртуальный PDF (`_pdf_work_bytes`), а не лист оригинала.
+    work = _pdf_work_bytes(pid)
+    if work is None:
         return None
     try:
         import pypdfium2 as pdfium
@@ -31328,7 +31389,7 @@ def _pdf_page_png(pid: int, page: int) -> Optional[bytes]:
         except ImportError:
             from pdfium_gate import LOCK as PDFIUM_LOCK
         with PDFIUM_LOCK:
-            doc = pdfium.PdfDocument(str(orig))
+            doc = pdfium.PdfDocument(work)
             try:
                 pg = doc[page]
                 if (pg.get_rotation() or 0) % 360:
@@ -31482,14 +31543,39 @@ def _mark_layer_blocks(rec: dict, blob: bytes, data: dict) -> int:
         by0 = py1 - (fy0 + y1 / h * (fy1 - fy0)) * ph
         area = max(1e-6, (bx1 - bx0) * (by1 - by0))
         cov = 0.0
+        span = None                     # покрытое слоем по горизонтали
         for rx0, ry0, rx1, ry1 in rects:
             ix = min(bx1, rx1) - max(bx0, rx0)
             iy = min(by1, ry1) - max(by0, ry0)
             if ix > 0 and iy > 0:
                 cov += ix * iy
-        if cov / area >= LAYER_OVERLAP:
-            b["skip"] = "layer"
-            n += 1
+                if iy >= 0.5 * (by1 - by0):
+                    lo_, hi_ = max(bx0, rx0), min(bx1, rx1)
+                    span = (lo_, hi_) if span is None else (min(span[0], lo_), max(span[1], hi_))
+        if cov / area < LAYER_OVERLAP:
+            continue
+        # Строка наполовину слоем, наполовину кривыми («Optimize» в слое,
+        # «quality of life» — контурами): блок обрезается до НЕпокрытой части
+        # с края, а не отсеивается целиком — иначе кривая половина оставалась
+        # бы оригиналом на готовом листе.
+        rows = int(b.get("rows") or 1)
+        lh = by1 - by0
+        # Блок, уже прочитанный целиком (чтение в браузере отдаёт текст
+        # строки вместе с рамкой), не обрезаем: слово слоя напечаталось бы
+        # дважды — абзацем слоя и в обрезанной рамке.
+        if rows <= 1 and span is not None and cov / area < LAYER_TRIM_MAX and "text" not in b:
+            nb0, nb1 = bx0, bx1
+            if span[0] <= bx0 + 0.5 * lh:
+                nb0 = span[1] + 0.2 * lh
+            elif span[1] >= bx1 - 0.5 * lh:
+                nb1 = span[0] - 0.2 * lh
+            if (nb0, nb1) != (bx0, bx1) and nb1 - nb0 >= LAYER_TRIM_MIN * lh:
+                to_px = lambda v: ((v - px0) / pw - fx0) / max(fx1 - fx0, 1e-9) * w  # noqa: E731
+                b["box"] = [round(to_px(nb0)), b["box"][1], round(to_px(nb1)), b["box"][3]]
+                b["trim"] = "layer"
+                continue
+        b["skip"] = "layer"
+        n += 1
     return n
 
 
@@ -31609,7 +31695,7 @@ def _leftover_kept(text: str, tokens: set) -> bool:
     return all(w in tokens for w in words)
 
 
-def _export_pdf_layout(project: dict, tmp: Path) -> Optional[dict]:
+def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optional[dict]:
     """PDF «как в оригинале»: слой с переводом поверх исходных страниц.
 
     None — у ЭТОГО проекта такой выгрузки нет: раскладку пишет разбор файла,
@@ -31628,8 +31714,8 @@ def _export_pdf_layout(project: dict, tmp: Path) -> Optional[dict]:
     layout = (data or {}).get("layout") or {}
     if not layout.get("boxes"):
         return None
-    orig = _orig_existing(project["id"])
-    if orig is None:
+    work = _pdf_work_bytes(project["id"], data)
+    if work is None:
         return None
     ok, why = layout_pdf_mod.available()
     if not ok:
@@ -31638,11 +31724,30 @@ def _export_pdf_layout(project: dict, tmp: Path) -> Optional[dict]:
                                  "Доступен Word-документ и PDF из него" % why)
     texts = _layout_texts(project, data)
     try:
-        pdf, stats = layout_pdf_mod.build(orig.read_bytes(), layout, texts,
+        pdf, stats = layout_pdf_mod.build(work, layout, texts,
                                           extra=_pdf_image_boxes(project, data))
     except layout_pdf_mod.NotAvailable as e:
         raise HTTPException(503, "Выгрузка «как в оригинале» для PDF не собралась: %s. "
                                  "Доступен Word-документ и PDF из него" % e)
+    # Наложения, найденные сборкой (`layout_pdf._resolve_collisions`), —
+    # номерами СТРОК проекта: экран выгрузки ведёт к ним кнопкой.
+    paras = [p_ for p_ in (stats.get("collisionParas") or []) if isinstance(p_, int)]
+    if paras:
+        p2s: dict = {}
+        for pa, sid in data.get("pairs") or []:
+            p2s.setdefault(int(pa), []).append(sid)
+        stats["collisionSegs"] = sorted({sid for pa in paras for sid in p2s.get(pa, [])})[:300]
+    stats.pop("collisionParas", None)
+    virt = layout.get("virt")
+    if virt:
+        # «Лента»: перевод печатался по обычным страницам. Человек выбрал
+        # «как в файле» — страницы обратно в длинные листы, каждая на своё
+        # место и под своим углом (`pdf_panels.unsplit`).
+        stats["sheets"] = "original" if sheets == "original" else "pages"
+        stats["pagesOut"] = len(virt.get("pages") or [])
+        stats["sheetsIn"] = len(virt.get("src") or [])
+        if sheets == "original":
+            pdf = importers.pdf_panels.unsplit(pdf, virt)
     tmp.write_bytes(pdf)
     # Проверка готового файла: осталось ли что-то на языке оригинала.
     try:
@@ -31687,7 +31792,7 @@ def _export_images_file(project: dict, out: Path, tmp: Path, ext: str) -> dict:
     return dict(stats, original=kind, images=len(imgs))
 
 
-def _export_original(project: dict, out: Path, tmp: Path) -> dict:
+def _export_original(project: dict, out: Path, tmp: Path, sheets: str = "pages") -> dict:
     """Перевод В ТОМ ЖЕ формате, что залили (см. backend/importers.py):
     .docx — «как в оригинале»; PDF с текстом — PDF из него; картинка и скан —
     перерисованные надписи из выгрузки 1в1; xlsx/pptx/html/csv/txt — обратная
@@ -31703,7 +31808,7 @@ def _export_original(project: dict, out: Path, tmp: Path) -> dict:
         # Word-документ, как раньше, и говорим об этом в отчёте (`layout`).
         # А «есть раскладка, но нечем собрать» — это 503 из `_export_pdf_layout`,
         # а не тихая подмена одного другим.
-        stats = _export_pdf_layout(project, tmp)
+        stats = _export_pdf_layout(project, tmp, sheets)
         if stats is not None:
             return stats
         path, stats = _generate_export(project, "pdf")
@@ -31873,7 +31978,8 @@ def _export_path(project: dict, fmt: str) -> Path:
     return folder / (_safe_filename(project["title"] + tail) + "." + ext)
 
 
-def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tuple:
+def _generate_export(project: dict, fmt: str, include_source: bool = True,
+                     sheets: str = "pages") -> tuple:
     """Собирает реальный файл экспорта и отчёт о том, что в него попало.
     Раньше экспорт был фиктивным — файл не создавался вовсе, только запись
     в историю."""
@@ -31910,7 +32016,7 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
         layout_why = None
         if kind == "pdf":
             try:
-                got = _export_pdf_layout(project, tmp)
+                got = _export_pdf_layout(project, tmp, sheets)
             except HTTPException as e:
                 # Печать поверх страниц невозможна (письмо, которого нет в
                 # шрифтах, или справа налево) — у формата «PDF» есть запасная
@@ -31968,13 +32074,13 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True) -> tu
     elif fmt == "pdf":
         pass                                # собран выше поверх страниц оригинала
     elif fmt == "original":
-        stats = _export_original(project, out, tmp)
+        stats = _export_original(project, out, tmp, sheets)
     elif fmt == "vtt":
         if _original_ext(project) not in (".srt", ".vtt"):
             raise HTTPException(400, "Формат VTT есть только у субтитров и видео")
         inner = out.with_name(out.name + ".%s.sub" % secrets.token_hex(4))
         try:
-            stats = _export_original(project, out, inner)
+            stats = _export_original(project, out, inner, sheets)
             sub, _enc = textcount._decode(inner.read_bytes())
         finally:
             try:
@@ -32044,7 +32150,8 @@ def export_project(pid: int, req: ExportRequest):
         return {"ok": False,
                 "error": f"Формат {fmt.upper()} пока не поддерживается — выберите DOCX или Excel."}
     try:
-        path, stats = _generate_export(project, fmt, include_source=req.source)
+        path, stats = _generate_export(project, fmt, include_source=req.source,
+                                       sheets="original" if req.sheets == "original" else "pages")
     except ImportError as e:
         return {"ok": False, "error": f"На сервере нет библиотеки для {fmt.upper()}: {e}"}
     except HTTPException as e:

@@ -87,7 +87,7 @@ for (const f of ["i18n.js", "ui.jsx", "tab_export_preflight.jsx"]) {
 
 const toast = { info() {}, warning() {}, error() {}, success() {} };
 
-function render(sourceDocx, can) {
+function render(sourceDocx, can, extra) {
   hooks.length = 0;
   hookIdx = 0;
   const project = {
@@ -101,6 +101,7 @@ function render(sourceDocx, can) {
     ],
   };
   if (sourceDocx) project.sourceDocx = sourceDocx;
+  Object.assign(project, extra || {});
   const storeStub = {
     activeProject: project, projects: [project], exportHistory: [],
     // Имя модели и её выбор — устройство (modelsShown в ui.jsx): по умолчанию
@@ -205,6 +206,17 @@ check(bare.indexOf("Оригинал рядом с переводом") !== -1,
       "у простого текста (docx) галочка оригинала есть");
 check(withSrc.indexOf("Оригинал рядом с переводом") === -1,
       "у «как оригинал» её нет — этот формат оригинала рядом не кладёт");
+
+// ── PDF «лентой»: выбор листов с картинками (backend/pdf_panels.py) ──
+const ribbon = render({ file: "scan.pdf", at: "", paras: 10, segments: 3 }, null,
+  { importKind: "pdf", fileName: "scan.pdf", pdfSheets: { sheets: 2, pages: 46, rotated: 6 } });
+check(ribbon.indexOf("Как разложить страницы PDF") !== -1, "у ленты есть выбор листов");
+check(ribbon.indexOf("46") !== -1 && ribbon.indexOf("Как в файле") !== -1,
+      "варианты названы словами и числом страниц");
+check(ribbon.indexOf("поставлены прямо") !== -1, "сказано, что страницы боком поставлены прямо");
+const plainPdf = render({ file: "a.pdf", at: "", paras: 10, segments: 3 }, null,
+  { importKind: "pdf", fileName: "a.pdf" });
+check(plainPdf.indexOf("Как разложить страницы PDF") === -1, "у обычного PDF выбора листов нет");
 
 console.log("\n" + (fail.length ? "ПРОВАЛЕНО: " + fail.join("; ") : "ВСЁ ПРОШЛО"));
 process.exit(fail.length ? 1 : 0);

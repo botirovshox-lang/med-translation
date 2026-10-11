@@ -381,5 +381,17 @@
   "В файле остался текст на языке оригинала": "Source-language text remains in the file",
   "Мест: ": "Places: ",
   " · рисунков с непрочитанными надписями: ": " · figures with unread labels: ",
-  " (раздел «Надписи на картинках» ниже)": " (see “Text in images” below)"
+  " (раздел «Надписи на картинках» ниже)": " (see “Text in images” below)",
+  "По страницам: ": "As pages: ",
+  "Удобно читать и печатать.": "Easy to read and print.",
+  "Страницы, лежавшие боком, поставлены прямо: ": "Pages that lay sideways are turned upright: ",
+  "Как в файле: длинных листов — ": "As in the file: long sheets — ",
+  "Как прислали: все страницы подряд на длинных листах.": "As sent: all pages one after another on long sheets.",
+  "Как разложить страницы PDF": "How to lay out the PDF pages",
+  "Файл прислан длинными листами: в каждом подряд стоят страницы документа.": "The file came as long sheets: each one holds the document's pages in a row.",
+  "Проверка вёрстки: перевод нигде не наезжает на соседний текст.": "Layout check: the translation does not run into neighbouring text anywhere.",
+  "Перевод не уместился и наезжает на соседний текст: строк — ": "The translation did not fit and runs into neighbouring text: lines — ",
+  " (страницы: ": " (pages: ",
+  ". Сократите перевод этих строк и соберите заново.": ". Shorten the translation of these lines and build again.",
+  "Наезжают на соседний текст": "Run into neighbouring text"
 }

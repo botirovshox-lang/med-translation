@@ -381,5 +381,17 @@
   "В файле остался текст на языке оригинала": "Faylda asl tildagi matn qolgan",
   "Мест: ": "Joylar: ",
   " · рисунков с непрочитанными надписями: ": " · yozuvlari o‘qilmagan rasmlar: ",
-  " (раздел «Надписи на картинках» ниже)": " (quyidagi «Rasmlardagi yozuvlar» bo‘limi)"
+  " (раздел «Надписи на картинках» ниже)": " (quyidagi «Rasmlardagi yozuvlar» bo‘limi)",
+  "По страницам: ": "Sahifalar bo‘yicha: ",
+  "Удобно читать и печатать.": "O‘qish va chop etish uchun qulay.",
+  "Страницы, лежавшие боком, поставлены прямо: ": "Yonboshlab turgan sahifalar to‘g‘rilandi: ",
+  "Как в файле: длинных листов — ": "Fayldagidek: uzun varaqlar — ",
+  "Как прислали: все страницы подряд на длинных листах.": "Yuborilganidek: barcha sahifalar uzun varaqlarda ketma-ket.",
+  "Как разложить страницы PDF": "PDF sahifalarini qanday joylashtirish",
+  "Файл прислан длинными листами: в каждом подряд стоят страницы документа.": "Fayl uzun varaqlarda yuborilgan: har birida hujjat sahifalari ketma-ket turibdi.",
+  "Проверка вёрстки: перевод нигде не наезжает на соседний текст.": "Sahifa tekshiruvi: tarjima hech qayerda qo‘shni matn ustiga chiqmaydi.",
+  "Перевод не уместился и наезжает на соседний текст: строк — ": "Tarjima sig‘madi va qo‘shni matn ustiga chiqyapti: qatorlar — ",
+  " (страницы: ": " (sahifalar: ",
+  ". Сократите перевод этих строк и соберите заново.": ". Bu qatorlar tarjimasini qisqartiring va qayta yig‘ing.",
+  "Наезжают на соседний текст": "Qo‘shni matn ustiga chiqadi"
 }

@@ -95,7 +95,7 @@ MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
 # продолжает (подписи схемы с разных концов листа), строка pypdf с двумя
 # надписями одной базовой линии делится по местам (`split`), невидимый
 # и повёрнутый текст — своими пачками.
-RULES_VERSION = 9
+RULES_VERSION = 10
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -1316,6 +1316,185 @@ def _multi_column(recs: list) -> bool:
     return hi - lo >= 0.5 * span > 0
 
 
+# Таблица: строк, в которых не меньше стольких ячеек, и не меньше стольких
+# таких строк. Три колонки бывают у обычного текста (колонки страницы), четыре
+# и больше на одной высоте — у таблицы.
+TABLE_MIN_CELLS = 4
+TABLE_MIN_ROWS = 3
+TABLE_CELL_SHARE = 0.35      # ячейка уже такой доли ширины текста страницы
+TABLE_COL_TOL = 4.0          # начала ячеек одной колонки — в этом допуске, пт
+TABLE_COL_MERGE = 2.5        # начала ближе стольких кеглей — одна колонка
+TABLE_CELL_MEDIAN = 0.2      # средняя (медиана) ячейка строки таблицы — уже такой доли
+
+
+def _table_streams(recs: list, report: Counter) -> "list | None":
+    """Записи страницы, где есть ТАБЛИЦА, — в порядке «колонка за колонкой».
+
+    pypdf отдаёт таблицу построчно: строка таблицы — это ячейки всех колонок
+    подряд, а вторая строка многострочной ячейки идёт после ячеек соседей.
+    Абзацы же собираются по соседству в потоке (`_geo_follows`), и ячейка
+    «Neutral (potential / for modest loss)» склеивалась с соседней колонкой,
+    а длинная ячейка «Clinical considerations» рвалась на абзацы по строке.
+    Колонкой за колонкой строки одной ячейки идут подряд, а ячейки разных
+    строк таблицы разделяет межстрочный зазор — абзацы складываются сами.
+
+    None — таблицы нет (порядок не трогаем). Таблицей считается не меньше
+    `TABLE_MIN_ROWS` строк по `TABLE_MIN_CELLS` узких ячеек на одной высоте."""
+    if len(recs) < TABLE_MIN_CELLS * TABLE_MIN_ROWS:
+        return None
+    x_lo = min(r["x0"] for r in recs)
+    x_hi = max(r["x1"] for r in recs)
+    width = max(1.0, x_hi - x_lo)
+    rows: list = []
+    for r in sorted(recs, key=lambda r: -r["y"]):
+        if rows and abs(rows[-1][0]["y"] - r["y"]) < 0.3 * max(r["s"], 1.0):
+            rows[-1].append(r)
+        else:
+            rows.append([r])
+    table_rows = []
+    for row in rows:
+        cells = sorted(row, key=lambda r: r["x0"])
+        if len(cells) < TABLE_MIN_CELLS:
+            continue
+        if any(c["x1"] - c["x0"] > TABLE_CELL_SHARE * width for c in cells):
+            continue
+        # Колонки текста страницы — тоже «ячейки на одной высоте», но широкие
+        # (треть листа); у таблицы ячейка типичной строки узкая.
+        if statistics.median(c["x1"] - c["x0"] for c in cells) > TABLE_CELL_MEDIAN * width:
+            continue
+        if any(b["x0"] < a["x1"] for a, b in zip(cells, cells[1:])):
+            continue                    # ячейки строки не налезают друг на друга
+        table_rows.append(cells)
+    if len(table_rows) < TABLE_MIN_ROWS:
+        return None
+    # Начала колонок — начала ячеек, повторённые хотя бы в двух строках.
+    # Начала ближе `TABLE_COL_MERGE` кеглей — одна колонка: маркер «•»
+    # и текст после него, висячий отступ второй строки ячейки, шапка,
+    # выключенная по центру. Ячейка уже двух с половиной кеглей не бывает.
+    body_s = max(1.0, statistics.median(c["s"] for row in table_rows for c in row))
+    xs = sorted(c["x0"] for row in table_rows for c in row)
+    groups_x: list = []
+    for x in xs:
+        if groups_x and x - groups_x[-1][-1] <= TABLE_COL_MERGE * body_s:
+            groups_x[-1].append(x)
+        else:
+            groups_x.append([x])
+    cols = [g[0] for g in groups_x if len(g) >= 2]
+    if len(cols) < TABLE_MIN_CELLS:
+        return None
+
+    def col_of(r):
+        k = 0
+        for i, x in enumerate(cols):
+            if x <= r["x0"] + TABLE_COL_TOL:
+                k = i
+        return k
+    top = max(c["y"] for c in table_rows[0])
+    low = min(c["y"] for c in table_rows[-1])
+    lead = 3.0 * max(1.0, statistics.median(c["s"] for row in table_rows for c in row))
+
+    def in_col(r):
+        k = col_of(r)
+        return -TABLE_COL_TOL <= r["x0"] - cols[k] <= TABLE_COL_MERGE * body_s
+    # Таблица продолжается ниже последней строки, пока под ней идут строки,
+    # начатые в одной из колонок, без зазора больше трёх кеглей (длинная
+    # ячейка последней строки); строка не с начала колонки («Продолжение
+    # на с. 6» у правого края) — уже не таблица.
+    prev = low
+    for r in sorted((r for r in recs if r["y"] < low), key=lambda r: -r["y"]):
+        if prev - r["y"] > lead or not in_col(r):
+            break
+        low = prev = r["y"]
+    # И выше первой: шапка из нескольких строк («Effects on / cardiovascular
+    # outcomes») — узкие строки с зазором не больше трёх кеглей.
+    prev = top
+    for r in sorted((r for r in recs if r["y"] > top), key=lambda r: r["y"]):
+        if r["y"] - prev > lead or r["x1"] - r["x0"] > TABLE_CELL_SHARE * width:
+            break
+        top = prev = r["y"]
+    top += 0.1
+    ids = {id(r) for r in recs if low - 0.1 <= r["y"] <= top}
+    block = [r for r in recs if id(r) in ids]
+    if len(block) < TABLE_MIN_CELLS * TABLE_MIN_ROWS:
+        return None
+    tid = report["tables"] = report.get("tables", 0) + 1
+    # Строки таблицы — по ПЕРВОЙ колонке: где в ней начата ячейка, там
+    # начата строка таблицы. Ячейка одной колонки из другой строки таблицы —
+    # другой абзац, даже если стоит вплотную (шапка «Heart failure» над
+    # «Neutral» первой строки).
+    row_tops = sorted({round(r["y"], 1) for r in block if col_of(r) == 0}, reverse=True)
+    # Первую границу не ставим: у шапки ячейка первой колонки прижата к НИЗУ
+    # («Medication» на одной линии с «of CKD»), и граница по ней разрезала бы
+    # многострочные ячейки шапки. Строки данных прижаты к верху.
+    row_tops = row_tops[1:]
+    for r in block:
+        band = sum(1 for y in row_tops if y >= r["y"] - 0.3 * max(r["s"], 1.0))
+        r["tcol"] = (tid, col_of(r), band)
+    order = sorted(block, key=lambda r: (r["tcol"][1], -r["y"], r["x0"]))
+    rest = [r for r in recs if id(r) not in ids]
+    # Остальное на странице (заголовок таблицы, колонтитул, текст под ней) —
+    # обычным порядком чтения, если это не колонки; таблица встаёт по высоте.
+    if not _multi_column(rest):
+        rest = _reading_order(rest)
+    first = next((i for i, r in enumerate(rest) if r["y"] < top - 0.1), len(rest))
+    report["tableCells"] += len(block)
+    return rest[:first] + order + rest[first:]
+
+
+def _mark_icon_bullets(recs: list, figs: list) -> None:
+    """Строка, перед которой слева стоит МАЛЕНЬКАЯ картинка на её высоте
+    (галочка, восклицательный знак списка в инфографике), — пункт списка:
+    `bul`, с неё начинается абзац (`_geo_follows`). Без этого пункты,
+    идущие подряд с обычным интервалом, склеивались в один абзац, и перевод
+    второго вставал в место первого."""
+    small = []
+    for f in figs or []:
+        try:
+            x0, y0, x1, y1 = (float(v) for v in f[:4])
+        except (TypeError, ValueError):
+            continue
+        small.append((x0, y0, x1, y1))
+    if not small:
+        return
+    for r in recs:
+        s = max(r.get("s") or 1.0, 1.0)
+        lo, hi = r["y"] - 0.3 * s, r["y"] + 0.9 * s
+        for x0, y0, x1, y1 in small:
+            if not (0.3 * s <= x1 - x0 <= 2.5 * s and 0.3 * s <= y1 - y0 <= 2.5 * s):
+                continue
+            if r["x0"] - 2.5 * s <= x1 <= r["x0"] + 0.3 * s and min(hi, y1) - max(lo, y0) > 0.3 * s:
+                r["bul"] = True
+                break
+
+
+def _size_leads(recs: list) -> dict:
+    """{кегль, округлённый до 0.5: обычный межстрочный строк этого кегля} —
+    медиана зазора между соседними строками одной колонки."""
+    by: dict = {}
+    srt = sorted(recs, key=lambda r: (round(r["x0"]), -r["y"]))
+    for a, b in zip(srt, srt[1:]):
+        s = max(a["s"], 1.0)
+        if abs(a["s"] - b["s"]) > 0.15 * s or abs(a["x0"] - b["x0"]) > 1.0 * s:
+            continue
+        dy = a["y"] - b["y"]
+        if 0.8 * s <= dy <= 3.0 * s:
+            by.setdefault(round(a["s"] * 2) / 2.0, []).append(dy)
+    return {k: statistics.median(v) for k, v in by.items() if len(v) >= 3}
+
+
+def _lead_for(pg: dict, size: float) -> "float | None":
+    """Межстрочный строк этого кегля на странице; не набралось замеров —
+    межстрочный страницы, но не меньше 1.25 кегля: у заголовка в две строки
+    своего замера нет, а межстрочный страницы с мелкими подписями схемы
+    рвал бы его на абзацы-строки."""
+    leads = pg.get("leads") or {}
+    got = leads.get(round(size * 2) / 2.0)
+    if got is not None:
+        return got
+    st_lead = (pg.get("st") or {}).get("lead") or 0.0
+    return max(st_lead, 1.25 * size)
+
+
 def _reading_order(recs: list) -> list:
     """Сверху вниз, в строке одной высоты — слева направо."""
     out = sorted(recs, key=lambda r: -r["y"])
@@ -1734,6 +1913,9 @@ def _plain_page_fixes(entries: list, next_gid, hyphenated: set = frozenset(), wo
 # межстрочный — 1.1–1.6 кегля, двойной интервал — до 2.4, дальше — уже
 # не продолжение (отбивку между абзацами решают текстовые правила).
 CONT_DY = 3.0
+# Зазор больше стольких «обычных межстрочных» перед строкой с заглавной —
+# пропущенная строка, то есть новый абзац (`_geo_follows`).
+GAP_BREAK = 1.6
 # Строка, после которой абзац может перейти наверх СОСЕДНЕЙ колонки, —
 # строка колонки текста (не короче стольких кеглей), а не подпись схемы.
 COLUMN_LINE_MIN = 8.0
@@ -1747,17 +1929,39 @@ def _geo_follows(a: dict, b: dict) -> bool:
     ga, gb = a.get("geo"), b.get("geo")
     if not ga or not gb or ga[0] != gb[0]:
         return True
+    if (a.get("tcol") or b.get("tcol")) and a.get("tcol") != b.get("tcol"):
+        return False                    # другая колонка таблицы — другая ячейка
+    if b.get("bul"):
+        return False                    # значок пункта списка — новый абзац
     _p, ax0, ay, ax1, asz = ga[:5]
     _p, bx0, by, bx1, bsz = gb[:5]
     size = max(asz or 0.0, bsz or 0.0, 1.0)
     dy = ay - by
     overlap = min(ax1, bx1) - max(ax0, bx0)
     if 0 < dy <= CONT_DY * size and overlap > -0.5 * size:
+        # Пропуск строки перед строкой с заглавной — новый пункт, а не
+        # продолжение: в инфографике между пунктами списка стоит строка,
+        # набранная кривыми (в текстовом слое её нет), и два пункта
+        # склеивались в один абзац, а перевод второго вставал в место первого.
+        # Мерка — обычный межстрочный ЭТОГО кегля на странице (`_size_leads`):
+        # у подписей инфографики он свой, у текста с двойным интервалом —
+        # свой, и разрыва по одной заглавной там не будет.
+        plead = b.get("plead") or a.get("plead") or 0.0
+        base = plead if plead > 0 else 1.3 * size
+        tb = (b.get("t") or "").lstrip()
+        ta = (a.get("t") or "").rstrip()
+        if (dy > GAP_BREAK * base and tb[:1] and (tb[:1].isupper() or tb[:1].isdigit()
+                                                  or tb[:1] in "•▪●◦–—-")
+                and not ta.endswith(("-", SOFT, ",", "‐"))):
+            return False
         return True
     if abs(dy) <= 0.3 * size and -0.5 * size <= bx0 - ax1 <= 2.0 * size:
         return True                     # продолжение той же строки (разорванной)
     wa = ax1 - ax0
-    if by > ay and wa >= COLUMN_LINE_MIN * size and (
+    # Наверх соседней колонки — ЗАМЕТНО выше (на строку и больше): две
+    # надписи одной высоты («IMPROVING DETECTION…» и «MEDICAL NUTRITION
+    # THERAPY» с разных концов схемы) колонкой друг другу не служат.
+    if by > ay + 1.0 * size and wa >= COLUMN_LINE_MIN * size and (
             bx0 >= ax0 + 0.5 * wa or bx1 <= ax1 - 0.5 * wa):
         # Переход наверх следующей колонки — правее, а у письма справа
         # налево (и у вёрстки с колонками в обратном порядке) — левее.
@@ -2004,7 +2208,7 @@ def _fix_labels(laid: dict, words: Counter, report: Counter) -> None:
 def _rel_style(style: str, base: str) -> str:
     """Начертание строки против основного: выделением считается только то,
     чего в основном нет. Светлее основного текста не бывает — «обычное»."""
-    return ("b" if "b" in style and "b" not in base else "") +            ("i" if "i" in style and "i" not in base else "")
+    return ("b" if "b" in style and "b" not in base else "") +            ("i" if "i" in style and "i" not in base else "") +            ("c" if "c" in style else "")
 
 
 def _base_style(laid: dict) -> str:
@@ -2165,11 +2369,12 @@ def _head_paragraphs(hits: list, base: str = "", base_fam: str = "") -> list:
     Иначе в книгу поехали бы обрывки, за которые человеку платить."""
     groups: dict = {}
     for key, text, geo in hits:
-        g = groups.setdefault(key, {"texts": Counter(), "geo": {}})
+        g = groups.setdefault(key, {"texts": Counter(), "geo": {}, "own": {}})
         g["texts"][text] += 1
         # По одной рамке на страницу: тот же колонтитул сверху и снизу одной
         # страницы слился бы в рамку во весь лист, и закраска съела бы текст.
         g["geo"].setdefault(geo[0], geo)
+        g["own"].setdefault(geo[0], text)
     out = []
     for key in sorted(groups, key=lambda k: (str(k[0]), str(k[1]))):
         g = groups[key]
@@ -2181,10 +2386,28 @@ def _head_paragraphs(hits: list, base: str = "", base_fam: str = "") -> list:
         boxes = _para_boxes([{"geo": x, "t": text} for x in g["geo"].values()], base, base_fam)
         if not boxes:
             continue
+        rep_num = _head_number(text)
         for b in boxes:
             b["repeat"] = 1
+            # Номер страницы в колонтитуле («4 Consensus Report», «Davies and
+            # Associates 5») у каждой страницы СВОЙ, а перевод надписи один:
+            # выгрузка подставит в него номер своей страницы (`num`).
+            own = _head_number(g["own"].get(b["page"], ""))
+            if rep_num and own and own != rep_num:
+                b["num"] = [rep_num, own]
         out.append((text, boxes))
     return out
+
+
+_HEAD_NUM_RE = re.compile(r"^\s*(\d{1,4})\s+\S|\S\s+(\d{1,4})\s*$")
+
+
+def _head_number(text: str) -> str:
+    """Номер страницы в начале или конце колонтитула — или пусто."""
+    m = _HEAD_NUM_RE.search(text or "")
+    if not m:
+        return ""
+    return m.group(1) or m.group(2) or ""
 
 
 def clean(pages: list, geom: "list | None" = None) -> dict:
@@ -2229,6 +2452,7 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                     kept[-1].setdefault("after", []).extend(r["after"])
                 else:
                     placeless.append(list(r["after"]))
+        _mark_icon_bullets(kept, (geom[i] or {}).get("figs") or [])
         # Дробь, степень и химический индекс — обратно в свою строку, ДО
         # всего остального: по местам строк считаются поля, колонки, роли
         # и украшения, и разорванная надвое строка врала бы им всем.
@@ -2257,7 +2481,10 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                 if d.get("after"):
                     placeless.append(d["after"])
             kept = [r for r in kept if not any(r is d for d in deco)]
-        multi = _multi_column(kept)
+        tabled = _table_streams(kept, report)
+        if tabled is not None:
+            kept = tabled
+        multi = tabled is not None or _multi_column(kept)
         if not multi:
             kept = _reading_order(kept)
         st = _page_stats(kept)
@@ -2286,7 +2513,7 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                         unplaced.append({"page": i, "text": " ".join(left)})
                     report["rotatedLines"] += sum(1 for rg in got.geo if rg)
         laid[i] = {"recs": kept, "st": st, "top": top, "bottom": bottom, "multi": multi,
-                   "loose": loose}
+                   "loose": loose, "leads": _size_leads(kept)}
 
     _fix_labels(laid, words, report)
     # Начертание документа — до разбора страниц: по нему считается, что
@@ -2503,7 +2730,15 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                             # Место строки — для выгрузки «как в оригинале».
                             "geo": (i, r["x0"], r["y"], r["x1"], r["s"], r.get("st") or "",
                                     r.get("fam") or "", r.get("xl"), r.get("parts"),
-                                    r.get("exact"), r.get("color"))})
+                                    r.get("exact"), r.get("color")),
+                            # Колонка таблицы (`_table_streams`): абзац из одной
+                            # колонки в другую не переходит.
+                            "tcol": r.get("tcol"),
+                            # Обычный межстрочный страницы — мерка «пропуска
+                            # строки» между пунктами списка (`_geo_follows`).
+                            "plead": _lead_for(pg, r["s"]),
+                            # Пункт списка со значком-картинкой — начало абзаца.
+                            "bul": bool(r.get("bul"))})
             for t_ in r.get("after") or []:
                 c_ = _clean_line(_tidy(t_), report)
                 if c_:

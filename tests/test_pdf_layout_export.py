@@ -646,6 +646,14 @@ check(_mn._mark_layer_blocks(_rec, _tagged, _data) == 1 and _rec["blocks"][0].ge
       "блок рисунка под строкой текстового слоя — не читается; блок только в растре — читается: %s"
       % [b_.get("skip") for b_ in _rec["blocks"]])
 check(_imp.figure_tag(_tagged)[0] == 0, "вырезка рисунка помнит страницу и место")
+# Строка наполовину слоем («Optimize» в слое), наполовину кривыми («quality
+# of life»): блок обрезается до непокрытой части, а не отсеивается целиком.
+_rec2 = {"w": 200, "h": 100, "blocks": [{"box": [10, 10, 190, 30]}]}
+_data2 = {"layout": {"pages": [[0, 0, 400, 600]],
+                     "boxes": {"0": [{"page": 0, "slots": [[2, 575, 90, 16, "", 2, 8, 1]]}]}}}
+check(_mn._mark_layer_blocks(_rec2, _tagged, _data2) == 0 and _rec2["blocks"][0].get("trim") == "layer"
+      and _rec2["blocks"][0]["box"][0] > 60 and _rec2["blocks"][0]["box"][2] == 190,
+      "строка наполовину слоем — блок обрезан до кривой части: %s" % _rec2["blocks"][0])
 
 print("=== 12и. Надписи кривыми на странице: страница — картинкой в разборе надписей ===")
 import tempfile as _tf

@@ -465,5 +465,9 @@
   "По файлу идёт или ждёт прогон — чтение кадров подождёт его конца": "A run is in progress or queued for this file — reading frames will wait for it to finish",
   "Сначала дождитесь распознавания речи": "Wait for speech recognition to finish first",
   "Чтение текста в кадре сейчас недоступно: сообщите администратору": "Reading on-screen text is unavailable right now: tell the administrator",
-  " мин — текст в кадре читается у роликов короче": " min — on-screen text is read only in shorter videos"
+  " мин — текст в кадре читается у роликов короче": " min — on-screen text is read only in shorter videos",
+  "Длинные листы файла (": "The file's long sheets (",
+  ") разобраны на обычные страницы: ": ") were split into ordinary pages: ",
+  " Страниц, лежавших боком, поставлено прямо: ": " Pages that lay sideways turned upright: ",
+  " Страниц, собранных из листа целиком: ": " Pages built from the whole sheet: "
 }

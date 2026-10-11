@@ -1602,7 +1602,7 @@ function spendPreset(key, today) {
   const y = d.getUTCFullYear(), m = d.getUTCMonth();
   const iso = (dt) => dt.toISOString().slice(0, 10);
   const dow = (d.getUTCDay() + 6) % 7;                 // понедельник — 0
-  if (key === "today") return [today, today];
+  if (key === "today" || key === "day") return [today, today];
   if (key === "yesterday") return [spendDay(today, -1), spendDay(today, -1)];
   if (key === "week") return [spendDay(today, -dow), today];
   if (key === "lastweek") return [spendDay(today, -dow - 7), spendDay(today, -dow - 1)];
@@ -1612,10 +1612,81 @@ function spendPreset(key, today) {
   if (key === "year") return [iso(new Date(Date.UTC(y, 0, 1))), today];
   return null;
 }
-const SPEND_PRESETS = [["today", () => TR("Сегодня")], ["yesterday", () => TR("Вчера")],
+const SPEND_PRESETS = [["today", () => TR("Сегодня")], ["yesterday", () => TR("Вчера")], ["day", () => TR("Дата")],
   ["week", () => TR("Эта неделя")], ["lastweek", () => TR("Прошлая неделя")],
   ["month", () => TR("Этот месяц")], ["lastmonth", () => TR("Прошлый месяц")],
   ["quarter", () => TR("Квартал")], ["year", () => TR("Год")], ["custom", () => TR("Период")]];
+
+/* Токены — коротко: на книге их миллионы, и полное число не читается. */
+function spendTok(n) {
+  n = Number(n) || 0;
+  return n >= 1e6 ? (n / 1e6).toFixed(2) + "M" : n >= 1e4 ? Math.round(n / 1e3) + "k"
+    : n >= 1e3 ? (n / 1e3).toFixed(1) + "k" : String(n);
+}
+const spendDayOk = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v || "");
+
+/* Фактический расход ОДНОГО файла за период: по моделям и по дням, с токенами
+   — то, что ответил поставщик, а не смета. Открывается нажатием на строку. */
+function AdminSpendDetail({ row, from, to, onClose }) {
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    setD(null); setErr("");
+    window.API.projectSpendDetail(row.tenant, row.project, from, to)
+      .then(r => setD(r)).catch(e => setErr(e.message || String(e)));
+  }, [row.tenant, row.project, from, to]);
+  const th = (list) => React.createElement("thead", null, React.createElement("tr", null,
+    list.map((h, i) => React.createElement("th", { key: i }, h))));
+  const tokCells = (x) => [
+    React.createElement("td", { key: "c" }, x.calls),
+    React.createElement("td", { key: "i" }, spendTok(x.tin)),
+    React.createElement("td", { key: "k", className: "dim" }, x.cached ? spendTok(x.cached) : "—"),
+    React.createElement("td", { key: "o" }, spendTok(x.tout)),
+    React.createElement("td", { key: "t", className: "dim" }, x.think ? spendTok(x.think) : "—"),
+    React.createElement("td", { key: "u" }, React.createElement("strong", null, adminUsd(x.usd)),
+      x.unpriced ? React.createElement("span", { className: "dim" }, TR(" · без цены ") + x.unpriced) : null)];
+  const TOK = [TR("Вызовов"), TR("Вход, токенов"), TR("из кэша"), TR("Выход"), TR("Рассуждение"), "$"];
+  const title = row.project === 0 ? TR("вне проекта (очередь терминов, сметы)")
+    : row.deleted ? TR("удалён · №") + row.project : (row.projectName || "№" + row.project);
+  const tot = (d && d.total) || {};
+  const gap = d && d.stepsUsd != null && d.stepsUsd - (tot.usd || 0) > 0.00005;
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
+    React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+      React.createElement("div", null,
+        React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Фактический расход файла")),
+        React.createElement("strong", null, title),
+        React.createElement("span", { className: "dim" }, " · " + (row.tenantName || row.tenant) + " · "
+          + (from === to ? from : from + " — " + to))),
+      React.createElement(Btn, { size: "sm", onClick: onClose }, TR("Закрыть"))),
+    err ? React.createElement("div", { className: "dim" }, err) : null,
+    !d ? (err ? null : React.createElement("div", { className: "dim", style: { fontSize: 13 } }, TR("Загружаем…")))
+    : !(d.rows || []).length
+      ? React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } },
+          d.modelsSince ? TR("За период вызовов модели по этому файлу не записано. Учёт по моделям ведётся с ") + d.modelsSince + "."
+                        : TR("Учёт по моделям ещё пуст: он начинается с выката и пишется с каждым вызовом."))
+      : React.createElement(React.Fragment, null,
+          React.createElement("div", { className: "row row-wrap", style: { gap: 10 } },
+            React.createElement(AdminStat, { label: TR("Расход на модели"), value: adminUsd(tot.usd) }),
+            React.createElement(AdminStat, { label: TR("Вызовов"), value: tot.calls }),
+            React.createElement(AdminStat, { label: TR("Вход, токенов"), value: spendTok(tot.tin) }),
+            React.createElement(AdminStat, { label: TR("Выход, токенов"), value: spendTok(tot.tout) })),
+          gap ? React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+            TR("По шагам за период записано ") + adminUsd(d.stepsUsd) + TR(", по моделям — ") + adminUsd(tot.usd)
+            + TR(": учёт по моделям ведётся с ") + (d.modelsSince || "—") + TR(", более ранние вызовы в нём не видны.")) : null,
+          React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("По моделям")),
+          React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
+            th([TR("Модель")].concat(TOK)),
+            React.createElement("tbody", null, (d.models || []).map(m => React.createElement("tr", { key: m.id },
+              React.createElement("td", { title: m.id }, m.label || m.id), ...tokCells(m)))))),
+          React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("По дням")),
+          React.createElement("div", { className: "tbl-fit", style: { maxHeight: 420, overflow: "auto" } },
+            React.createElement("table", { className: "tbl" },
+              th([TR("День"), TR("Модель"), TR("Шаг")].concat(TOK)),
+              React.createElement("tbody", null, (d.rows || []).map((r, i) => React.createElement("tr", { key: i },
+                React.createElement("td", null, r.day),
+                React.createElement("td", { title: r.model }, r.label || r.model),
+                React.createElement("td", { className: "dim" }, adminStepLabel(r.step)), ...tokCells(r))))))));
+}
 
 function AdminProjectSpend() {
   const [d, setD] = useState(null);
@@ -1623,13 +1694,15 @@ function AdminProjectSpend() {
   const [range, setRange] = useState(["", ""]);
   const [tenant, setTenant] = useState("");
   const [err, setErr] = useState("");
+  const [open, setOpen] = useState(null);        // «организация:проект» раскрытого файла
   const load = (from, to) => window.API.projectSpend(from, to)
-    .then(r => { setD(r); setRange([r.from, r.to]); setErr(""); })
+    .then(r => { setD(r); setRange([r.from, r.to]); setErr(""); setOpen(null); })
     .catch(e => setErr(e.message || String(e)));
   useEffect(() => { load("", ""); }, []);
   const pick = (key) => {
     setPreset(key);
     if (key === "custom" || !d) return;
+    if (key === "day") { setRange([range[0], range[0]]); return; }
     const r = spendPreset(key, d.today);
     if (r) load(r[0], r[1]);
   };
@@ -1653,6 +1726,9 @@ function AdminProjectSpend() {
       SPEND_PRESETS.map(([k, l]) => React.createElement("button", { key: k, role: "tab", "aria-pressed": preset === k,
         "aria-selected": preset === k, onClick: () => pick(k) }, l()))),
     React.createElement("div", { className: "row row-wrap", style: { gap: 8, alignItems: "flex-end" } },
+      preset === "day" && React.createElement(Field, { label: TR("Дата") },
+        React.createElement(Input, { type: "date", value: range[0], max: d ? d.today : undefined,
+          onChange: (e) => { const v = e.target.value; setRange([v, v]); if (spendDayOk(v)) load(v, v); } })),
       preset === "custom" && React.createElement(Field, { label: TR("С") },
         React.createElement(Input, { type: "date", value: range[0], onChange: (e) => setRange([e.target.value, range[1]]) })),
       preset === "custom" && React.createElement(Field, { label: TR("По") },
@@ -1669,6 +1745,7 @@ function AdminProjectSpend() {
         React.createElement("div", { className: "dim", style: { fontSize: 12 } },
           d.from + " — " + d.to + TR(" (дни по времени сервиса, UTC+") + d.utcOffset + ")"
           + (d.since ? TR(" · учёт по дням ведётся с ") + d.since : TR(" · учёт по дням ещё пуст"))
+          + (d.modelsSince ? TR(" · по моделям — с ") + d.modelsSince : "")
           + TR(". Себестоимость — за всю жизнь проекта: расход и списание одного файла ложатся в разные дни.")),
         React.createElement("div", { className: "row row-wrap", style: { gap: 10 } },
           React.createElement(AdminStat, { label: TR("Расход на модели"), value: adminUsd(tot.usd) }),
@@ -1680,13 +1757,19 @@ function AdminProjectSpend() {
         : React.createElement("div", { className: "tbl-fit", style: { maxHeight: 520, overflow: "auto" } },
             React.createElement("table", { className: "tbl" },
               React.createElement("thead", null, React.createElement("tr", null,
-                [TR("Организация"), TR("Файл"), TR("Вид"), TR("$ за период"), TR("Вызовов"), TR("Шаги"),
+                [TR("Организация"), TR("Файл"), TR("Вид"), TR("$ за период"), TR("Вызовов"), TR("Шаги"), TR("Модели"),
                  TR("Стр. продано"), TR("Мин продано"), TR("Себестоимость")].map((h, i) => React.createElement("th", { key: i }, h)))),
               React.createElement("tbody", null, rows.map((r, i) => {
                 const l = life(r);
                 const steps = Object.entries(r.steps || {}).slice(0, 3)
                   .map(([k, v]) => adminStepLabel(k) + " " + adminUsd(v)).join(" · ");
-                return React.createElement("tr", { key: i },
+                const models = (r.models || []).slice(0, 2)
+                  .map(m => (m.label || m.id) + " " + adminUsd(m.usd)).join(" · ")
+                  + ((r.models || []).length > 2 ? " …" : "");
+                const key = r.tenant + ":" + r.project;
+                return React.createElement("tr", { key: i, onClick: () => setOpen(open === key ? null : key),
+                    style: { cursor: "pointer", background: open === key ? "var(--c-hover, rgba(0,0,0,.04))" : undefined },
+                    title: TR("Нажмите — расход файла по моделям и дням") },
                   React.createElement("td", null, r.tenantName || r.tenant),
                   React.createElement("td", { className: r.deleted || r.project === 0 ? "dim" : undefined }, name(r)),
                   React.createElement("td", { className: "dim" }, kind(r)),
@@ -1694,11 +1777,16 @@ function AdminProjectSpend() {
                     r.unpriced ? React.createElement("span", { className: "dim" }, TR(" · без цены ") + r.unpriced) : null),
                   React.createElement("td", null, r.calls),
                   React.createElement("td", { className: "dim", style: { fontSize: 12 } }, steps || "—"),
+                  React.createElement("td", { className: "dim", style: { fontSize: 12 } }, models || "—"),
                   React.createElement("td", null, r.pages ? r.pages : "—"),
                   React.createElement("td", null, r.minutes ? r.minutes : "—"),
                   React.createElement("td", { style: l.hot ? { color: "var(--c-danger)", fontWeight: 600 } : null,
                     title: l.hot ? TR("себестоимость выше половины цены продажи") : undefined }, l.v));
-              }))))));
+              })))),
+        (() => {
+          const r = open && rows.find(x => x.tenant + ":" + x.project === open);
+          return r ? React.createElement(AdminSpendDetail, { row: r, from: d.from, to: d.to, onClose: () => setOpen(null) }) : null;
+        })()));
 }
 
 /* ── Оплаты: заказы, подтверждение «по счёту», способы оплаты ─────── */

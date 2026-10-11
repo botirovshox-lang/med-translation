@@ -374,6 +374,7 @@ function onUnauthorized() {
     adminPrices:   (scope, id)              => call("GET",    `/admin/prices?scope=${encodeURIComponent(scope || "all")}&id=${encodeURIComponent(id || "")}`),
     adminPriceSet: (body)                   => call("POST",   "/admin/prices", body),
     projectSpend:  (from, to)               => call("GET",    `/admin/project-spend?from=${encodeURIComponent(from || "")}&to=${encodeURIComponent(to || "")}`),
+    projectSpendDetail: (tenant, project, from, to) => call("GET", `/admin/project-spend/detail?tenant=${encodeURIComponent(tenant || "")}&project=${encodeURIComponent(project || 0)}&from=${encodeURIComponent(from || "")}&to=${encodeURIComponent(to || "")}`),
     referralCfg:   ()                       => call("GET",    "/admin/referral"),
     referralSave:  (body)                   => call("POST",   "/admin/referral", body),
     userDelete:    (uid)                    => call("DELETE", `/admin/users/${uid}`),

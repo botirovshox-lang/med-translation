@@ -75,7 +75,7 @@
   "orders": [
    {
     "id": 1012,
-    "at": "2026-09-29 16:48:40",
+    "at": "2026-10-11 12:50:27",
     "pages": 5,
     "minutes": 0,
     "amount": "31750",
@@ -90,14 +90,14 @@
    },
    {
     "id": 1011,
-    "at": "2026-09-29 16:48:40",
+    "at": "2026-10-11 12:50:27",
     "pages": 5,
     "minutes": 0,
     "amount": "31750",
     "currency": "UZS",
     "method": "card",
     "status": "paid",
-    "paidAt": "2026-09-29 16:48:40",
+    "paidAt": "2026-10-11 12:50:27",
     "userName": "trial",
     "online": false,
     "url": null,
@@ -105,7 +105,7 @@
    },
    {
     "id": 1010,
-    "at": "2026-09-29 16:48:40",
+    "at": "2026-10-11 12:50:27",
     "pages": 5,
     "minutes": 0,
     "amount": "31750",
@@ -120,14 +120,14 @@
    },
    {
     "id": 1009,
-    "at": "2026-09-29 16:48:40",
+    "at": "2026-10-11 12:50:26",
     "pages": 5,
     "minutes": 0,
     "amount": "31750",
     "currency": "UZS",
     "method": "card",
     "status": "paid",
-    "paidAt": "2026-09-29 16:48:40",
+    "paidAt": "2026-10-11 12:50:26",
     "userName": "trial",
     "online": false,
     "url": null,
@@ -135,7 +135,7 @@
    },
    {
     "id": 1008,
-    "at": "2026-09-29 16:48:40",
+    "at": "2026-10-11 12:50:26",
     "pages": 7,
     "minutes": 0,
     "amount": "3.50",
@@ -150,14 +150,14 @@
    },
    {
     "id": 1007,
-    "at": "2026-09-29 16:48:40",
+    "at": "2026-10-11 12:50:26",
     "pages": 30,
     "minutes": 0,
     "amount": "7650",
     "currency": "KZT",
     "method": "kaspi",
     "status": "paid",
-    "paidAt": "2026-09-29 16:48:40",
+    "paidAt": "2026-10-11 12:50:26",
     "userName": "trial",
     "online": false,
     "url": null,
@@ -165,7 +165,7 @@
    },
    {
     "id": 1006,
-    "at": "2026-09-29 16:48:40",
+    "at": "2026-10-11 12:50:26",
     "pages": 0,
     "minutes": 5,
     "amount": "19050",
@@ -179,21 +179,21 @@
    },
    {
     "id": 1005,
-    "at": "2026-09-29 16:48:40",
+    "at": "2026-10-11 12:50:26",
     "pages": 0,
     "minutes": 10,
     "amount": "38100",
     "currency": "UZS",
     "method": "click",
     "status": "paid",
-    "paidAt": "2026-09-29 16:48:40",
+    "paidAt": "2026-10-11 12:50:26",
     "userName": "trial",
     "online": true,
     "url": null
    },
    {
     "id": 1004,
-    "at": "2026-09-29 16:48:40",
+    "at": "2026-10-11 12:50:26",
     "pages": 5,
     "minutes": 0,
     "amount": "31750",
@@ -207,7 +207,7 @@
    },
    {
     "id": 1003,
-    "at": "2026-09-29 16:48:40",
+    "at": "2026-10-11 12:50:26",
     "pages": 5,
     "minutes": 0,
     "amount": "31750",
@@ -221,7 +221,7 @@
    },
    {
     "id": 1002,
-    "at": "2026-09-29 16:48:40",
+    "at": "2026-10-11 12:50:26",
     "pages": 5,
     "minutes": 0,
     "amount": "31750",
@@ -235,14 +235,14 @@
    },
    {
     "id": 1001,
-    "at": "2026-09-29 16:48:39",
+    "at": "2026-10-11 12:50:25",
     "pages": 20,
     "minutes": 0,
     "amount": "127000",
     "currency": "UZS",
     "method": "payme",
     "status": "paid",
-    "paidAt": "2026-09-29 16:48:39",
+    "paidAt": "2026-10-11 12:50:26",
     "userName": "trial",
     "online": true,
     "url": null
@@ -262,9 +262,9 @@
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-29 16:48:40",
-    "ts": 1790682520.4983237,
-    "expires": 1790941720.4983237,
+    "at": "2026-10-11 12:50:27",
+    "ts": 1791705027.228609,
+    "expires": 1791964227.228609,
     "status": "new",
     "pages": 5,
     "minutes": 0,
@@ -282,26 +282,26 @@
      "tx": "mct-1012-2",
      "uuid": "uuid-mct-1012-2",
      "url": "https://pay2.octo.uz/pay/uuid-mct-1012-2",
-     "at": 1790682520.524697,
+     "at": 1791705027.2665875,
      "ttl": 60,
      "status": "created",
      "test": true
     },
     "log": [
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:27",
       "action": "created",
       "by": 2
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:27",
       "action": "octo.prepareFailed",
       "by": 2,
       "tx": "mct-1012-1",
       "error": "2: Wrong secret"
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:27",
       "action": "octo.prepared",
       "by": 2,
       "tx": "mct-1012-2"
@@ -315,9 +315,9 @@
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-29 16:48:40",
-    "ts": 1790682520.4662664,
-    "expires": 1790941720.4662664,
+    "at": "2026-10-11 12:50:27",
+    "ts": 1791705027.1427963,
+    "expires": 1791964227.1427963,
     "status": "paid",
     "pages": 5,
     "minutes": 0,
@@ -335,7 +335,7 @@
      "tx": "mct-1011-1",
      "uuid": "uuid-mct-1011-1",
      "url": "https://pay2.octo.uz/pay/uuid-mct-1011-1",
-     "at": 1790682520.4750519,
+     "at": 1791705027.1596534,
      "ttl": 60,
      "status": "succeeded",
      "test": true,
@@ -345,22 +345,22 @@
      "card": null,
      "vendor": null
     },
-    "paidAt": "2026-09-29 16:48:40",
+    "paidAt": "2026-10-11 12:50:27",
     "paidVia": "octo",
     "log": [
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:27",
       "action": "created",
       "by": 2
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:27",
       "action": "octo.prepared",
       "by": 2,
       "tx": "mct-1011-1"
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:27",
       "action": "paid",
       "by": 2,
       "via": "octo"
@@ -374,9 +374,9 @@
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-29 16:48:40",
-    "ts": 1790682520.437674,
-    "expires": 1790941720.437674,
+    "at": "2026-10-11 12:50:27",
+    "ts": 1791705027.007098,
+    "expires": 1791964227.007098,
     "status": "new",
     "pages": 5,
     "minutes": 0,
@@ -394,25 +394,25 @@
      "tx": "mct-1010-1",
      "uuid": "uuid-mct-1010-1",
      "url": "https://pay2.octo.uz/pay/uuid-mct-1010-1",
-     "at": 1790682520.4463942,
+     "at": 1791705027.0208974,
      "ttl": 60,
      "status": "created",
      "test": true
     },
     "log": [
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:27",
       "action": "created",
       "by": 2
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:27",
       "action": "octo.prepared",
       "by": 2,
       "tx": "mct-1010-1"
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:27",
       "action": "octo.amountMismatch",
       "by": 2,
       "tx": "mct-1010-1",
@@ -427,9 +427,9 @@
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-29 16:48:40",
-    "ts": 1790682520.3546717,
-    "expires": 1790941720.3546717,
+    "at": "2026-10-11 12:50:26",
+    "ts": 1791705026.850381,
+    "expires": 1791964226.850381,
     "status": "paid",
     "pages": 5,
     "minutes": 0,
@@ -447,7 +447,7 @@
      "tx": "mct-1009-1",
      "uuid": "uuid-mct-1009-1",
      "url": "https://pay2.octo.uz/pay/uuid-mct-1009-1",
-     "at": 1790682520.3605638,
+     "at": 1791705026.863947,
      "ttl": 60,
      "status": "succeeded",
      "test": true,
@@ -457,29 +457,29 @@
      "card": null,
      "vendor": null
     },
-    "paidAt": "2026-09-29 16:48:40",
+    "paidAt": "2026-10-11 12:50:26",
     "paidVia": "octo",
     "log": [
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "created",
       "by": 2
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "octo.prepared",
       "by": 2,
       "tx": "mct-1009-1"
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "octo.status",
       "by": 2,
       "tx": "mct-1009-1",
       "status": "wait_user_action"
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "paid",
       "by": "human",
       "via": "octo"
@@ -493,9 +493,9 @@
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-29 16:48:40",
-    "ts": 1790682520.310827,
-    "expires": 1790941720.310827,
+    "at": "2026-10-11 12:50:26",
+    "ts": 1791705026.7900393,
+    "expires": 1791964226.7900393,
     "status": "paid",
     "pages": 7,
     "minutes": 0,
@@ -510,7 +510,7 @@
     },
     "log": [
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "created",
       "by": 2
      }
@@ -523,9 +523,9 @@
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-29 16:48:40",
-    "ts": 1790682520.2516,
-    "expires": 1790941720.2516,
+    "at": "2026-10-11 12:50:26",
+    "ts": 1791705026.6276708,
+    "expires": 1791964226.6276708,
     "status": "paid",
     "pages": 30,
     "minutes": 0,
@@ -538,22 +538,22 @@
      "page": "0.5",
      "minute": "0.3"
     },
-    "paidAt": "2026-09-29 16:48:40",
+    "paidAt": "2026-10-11 12:50:26",
     "paidVia": "admin",
     "log": [
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "created",
       "by": 2
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "confirmed",
       "by": 1,
       "note": "пришло на счёт"
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "paid",
       "by": 1,
       "via": "admin"
@@ -567,9 +567,9 @@
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-29 16:48:40",
-    "ts": 1790682520.2052217,
-    "expires": 1790941720.2052217,
+    "at": "2026-10-11 12:50:26",
+    "ts": 1791705026.5289853,
+    "expires": 1791964226.5289853,
     "status": "cancelled",
     "pages": 0,
     "minutes": 5,
@@ -589,18 +589,18 @@
     },
     "log": [
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "created",
       "by": 2
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "click.prepare",
       "by": "human",
       "trans": "556"
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "click.failed",
       "by": "human",
       "error": -5017
@@ -614,9 +614,9 @@
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-29 16:48:40",
-    "ts": 1790682520.1296496,
-    "expires": 1790941720.1296496,
+    "at": "2026-10-11 12:50:26",
+    "ts": 1791705026.367491,
+    "expires": 1791964226.367491,
     "status": "paid",
     "pages": 0,
     "minutes": 10,
@@ -635,22 +635,22 @@
      "prepared": true,
      "completed": "555"
     },
-    "paidAt": "2026-09-29 16:48:40",
+    "paidAt": "2026-10-11 12:50:26",
     "paidVia": "click",
     "log": [
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "created",
       "by": 2
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "click.prepare",
       "by": "human",
       "trans": "555"
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "paid",
       "by": "human",
       "via": "click"
@@ -664,9 +664,9 @@
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-29 16:48:40",
-    "ts": 1790682520.1107602,
-    "expires": 1790941720.1107602,
+    "at": "2026-10-11 12:50:26",
+    "ts": 1791705026.3277853,
+    "expires": 1791964226.3277853,
     "status": "new",
     "pages": 5,
     "minutes": 0,
@@ -681,7 +681,7 @@
     },
     "log": [
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "created",
       "by": 2
      }
@@ -694,9 +694,9 @@
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-29 16:48:40",
-    "ts": 1790682520.0608354,
-    "expires": 1790941720.0608354,
+    "at": "2026-10-11 12:50:26",
+    "ts": 1791705026.262344,
+    "expires": 1791964226.262344,
     "status": "cancelled",
     "pages": 5,
     "minutes": 0,
@@ -711,28 +711,28 @@
     },
     "payme": {
      "id": "tx-5",
-     "time": 1790682519925,
-     "create_time": 1790682520081,
+     "time": 1791705025871,
+     "create_time": 1791705026282,
      "perform_time": 0,
-     "cancel_time": 1790682520102,
+     "cancel_time": 1791705026310,
      "state": -1,
      "reason": 3,
      "our_id": 1003
     },
     "log": [
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "created",
       "by": 2
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "payme.create",
       "by": "human",
       "tx": "tx-5"
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "payme.cancel",
       "by": "human",
       "reason": 3
@@ -746,9 +746,9 @@
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-29 16:48:40",
-    "ts": 1790682520.0115466,
-    "expires": 1790941720.0115466,
+    "at": "2026-10-11 12:50:26",
+    "ts": 1791705026.16996,
+    "expires": 1791964226.16996,
     "status": "cancelled",
     "pages": 5,
     "minutes": 0,
@@ -763,28 +763,28 @@
     },
     "payme": {
      "id": "tx-3",
-     "time": 1790682519925,
-     "create_time": 1790682520028,
+     "time": 1791705025871,
+     "create_time": 1791705026198,
      "perform_time": 0,
-     "cancel_time": 1790682520038,
+     "cancel_time": 1791705026214,
      "state": -1,
      "reason": 3,
      "our_id": 1002
     },
     "log": [
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "created",
       "by": 2
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "payme.create",
       "by": "human",
       "tx": "tx-3"
      },
      {
-      "at": "2026-09-29 16:48:40",
+      "at": "2026-10-11 12:50:26",
       "action": "payme.cancel",
       "by": "human",
       "reason": 3
@@ -798,9 +798,9 @@
     "tenant": "trial",
     "user": 2,
     "userName": "trial",
-    "at": "2026-09-29 16:48:39",
-    "ts": 1790682519.8801057,
-    "expires": 1790941719.8801057,
+    "at": "2026-10-11 12:50:25",
+    "ts": 1791705025.7556188,
+    "expires": 1791964225.7556188,
     "status": "paid",
     "pages": 20,
     "minutes": 0,
@@ -815,30 +815,30 @@
     },
     "payme": {
      "id": "tx-1",
-     "time": 1790682519925,
-     "create_time": 1790682519929,
-     "perform_time": 1790682519957,
+     "time": 1791705025871,
+     "create_time": 1791705025905,
+     "perform_time": 1791705026031,
      "cancel_time": 0,
      "state": 2,
      "reason": null,
      "our_id": 1001
     },
-    "paidAt": "2026-09-29 16:48:39",
+    "paidAt": "2026-10-11 12:50:26",
     "paidVia": "payme",
     "log": [
      {
-      "at": "2026-09-29 16:48:39",
+      "at": "2026-10-11 12:50:25",
       "action": "created",
       "by": 2
      },
      {
-      "at": "2026-09-29 16:48:39",
+      "at": "2026-10-11 12:50:25",
       "action": "payme.create",
       "by": "human",
       "tx": "tx-1"
      },
      {
-      "at": "2026-09-29 16:48:39",
+      "at": "2026-10-11 12:50:26",
       "action": "paid",
       "by": "human",
       "via": "payme"
@@ -913,9 +913,9 @@
  },
  "projectSpend": {
   "ok": true,
-  "from": "2026-09-29",
-  "to": "2026-09-29",
-  "today": "2026-09-29",
+  "from": "2026-10-11",
+  "to": "2026-10-11",
+  "today": "2026-10-11",
   "rows": [
    {
     "tenant": "vid",
@@ -931,6 +931,13 @@
      "translate": 0.25,
      "backcheck": 0.05
     },
+    "models": [
+     {
+      "id": "gpt-x",
+      "label": "gpt-x",
+      "usd": 0.3
+     }
+    ],
     "pages": 0.0,
     "minutes": 5.0,
     "days": 1,
@@ -949,6 +956,7 @@
     "calls": 0,
     "unpriced": 0,
     "steps": {},
+    "models": [],
     "pages": 0.0,
     "minutes": 2.0,
     "days": 1,
@@ -965,11 +973,88 @@
    "minutes": 7.0,
    "projects": 2
   },
-  "since": "2026-09-29",
+  "since": "2026-10-11",
+  "modelsSince": "2026-10-11",
   "utcOffset": 5.0,
   "warn": {
    "usdPerPage": 0.25,
    "usdPerMin": 0.15
   }
+ },
+ "projectSpendDetail": {
+  "ok": true,
+  "from": "2026-10-11",
+  "to": "2026-10-11",
+  "today": "2026-10-11",
+  "tenant": "vid",
+  "tenantName": "VID",
+  "project": 2,
+  "projectName": "v125",
+  "deleted": false,
+  "rows": [
+   {
+    "calls": 1,
+    "tin": 100,
+    "cached": 0,
+    "tout": 50,
+    "think": 0,
+    "unpriced": 0,
+    "day": "2026-10-11",
+    "model": "gpt-x",
+    "label": "gpt-x",
+    "step": "translate",
+    "usd": 0.25
+   },
+   {
+    "calls": 1,
+    "tin": 100,
+    "cached": 0,
+    "tout": 50,
+    "think": 0,
+    "unpriced": 0,
+    "day": "2026-10-11",
+    "model": "gpt-x",
+    "label": "gpt-x",
+    "step": "backcheck",
+    "usd": 0.05
+   }
+  ],
+  "models": [
+   {
+    "calls": 2,
+    "tin": 200,
+    "cached": 0,
+    "tout": 100,
+    "think": 0,
+    "unpriced": 0,
+    "usd": 0.3,
+    "id": "gpt-x",
+    "label": "gpt-x"
+   }
+  ],
+  "days": [
+   {
+    "calls": 2,
+    "tin": 200,
+    "cached": 0,
+    "tout": 100,
+    "think": 0,
+    "unpriced": 0,
+    "usd": 0.3,
+    "day": "2026-10-11"
+   }
+  ],
+  "total": {
+   "calls": 2,
+   "tin": 200,
+   "cached": 0,
+   "tout": 100,
+   "think": 0,
+   "unpriced": 0,
+   "usd": 0.3
+  },
+  "stepsUsd": 0.3,
+  "modelsSince": "2026-10-11",
+  "utcOffset": 5.0
  }
 }

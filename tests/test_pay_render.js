@@ -175,6 +175,24 @@ check(t.indexOf("$ за период") !== -1 && t.indexOf("Мин продан�
 check(t.indexOf("учёт по дням ведётся с") !== -1, "сказано, с какого дня ведётся учёт");
 check(clean(draw(AdminProjectSpend, {}, { 0: { ok: true }, 1: "today", 2: ["", ""], 3: "", 4: "" })),
       "ответ без строк экран не роняет");
+check(t.indexOf("Модели") !== -1 && t.indexOf("по моделям — с") !== -1, "колонка «Модели» и начало учёта по моделям");
+t = draw(AdminProjectSpend, {}, { 0: ps, 1: "day", 2: [ps.from, ps.to], 3: "", 4: "" });
+check(t.indexOf("Дата") !== -1, "пресет «Дата» — расход за один день");
+// Хуки: 0–5 — экран (5 — раскрытый файл), 6–7 — раскрытие (ответ, ошибка).
+const pr = ps.rows.find(r => r.project !== 0) || ps.rows[0];
+const PD = FX.projectSpendDetail;
+t = draw(AdminProjectSpend, {}, { 0: ps, 1: "today", 2: [ps.from, ps.to], 3: "", 4: "",
+  5: pr.tenant + ":" + pr.project, 6: PD, 7: "" });
+check(clean(t), "раскрытый файл: без undefined и NaN");
+check(t.indexOf("Фактический расход файла") !== -1 && t.indexOf("По моделям") !== -1 && t.indexOf("По дням") !== -1,
+      "раскрытый файл: расход по моделям и по дням");
+check(t.indexOf("Вход, токенов") !== -1 && t.indexOf("Рассуждение") !== -1 && t.indexOf(PD.rows[0].day) !== -1,
+      "токены и дата в разбивке");
+t = draw(AdminProjectSpend, {}, { 0: ps, 1: "today", 2: [ps.from, ps.to], 3: "", 4: "",
+  5: pr.tenant + ":" + pr.project, 6: Object.assign({}, PD, { rows: [], models: [], days: [] }), 7: "" });
+check(t.indexOf("Учёт по моделям ведётся с") !== -1, "пусто за дату — сказано, с какого дня учёт");
+check(clean(draw(AdminProjectSpend, {}, { 0: ps, 1: "today", 2: [ps.from, ps.to], 3: "", 4: "",
+  5: pr.tenant + ":" + pr.project, 6: { ok: true }, 7: "" })), "ответ раскрытия без ключей экран не роняет");
 const P = (k) => spendPreset(k, "2026-09-26").join("..");       // суббота
 check(P("today") === "2026-09-26..2026-09-26" && P("yesterday") === "2026-09-25..2026-09-25", "сегодня / вчера");
 check(P("week") === "2026-09-21..2026-09-26" && P("lastweek") === "2026-09-14..2026-09-20", "неделя с понедельника");

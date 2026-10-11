@@ -484,6 +484,23 @@ r = c.get("/api/admin/project-spend?from=2020-01-01&to=2020-01-02", headers=H(A)
 check(r.json()["rows"] == [], "за другой период — пусто")
 check(c.get("/api/admin/project-spend", headers=H(V)).status_code == 403, "владельцу — 403")
 check(d.get("since") == day, "с какого дня ведётся учёт")
+check(row and [m["id"] for m in row["models"]] == ["gpt-x"] and abs(row["models"][0]["usd"] - 0.30) < 1e-9,
+      "в строке проекта — расход по моделям")
+check(d.get("modelsSince") == day, "с какого дня ведётся учёт по моделям")
+r = c.get("/api/admin/project-spend/detail?tenant=vid&project=%d&from=%s&to=%s" % (P["id"], day, day),
+          headers=H(A))
+dd = r.json()
+check(r.status_code == 200 and dd["total"]["calls"] == 2 and dd["total"]["tin"] == 200
+      and dd["total"]["tout"] == 100 and abs(dd["total"]["usd"] - 0.30) < 1e-9,
+      "расход файла за день: вызовы, токены и деньги — из ответа модели")
+check([(x["step"], x["model"], x["calls"]) for x in sorted(dd["rows"], key=lambda x: x["step"])]
+      == [("backcheck", "gpt-x", 1), ("translate", "gpt-x", 1)], "разбивка: день × модель × шаг")
+check(len(dd["days"]) == 1 and dd["days"][0]["day"] == day and abs(dd["stepsUsd"] - 0.30) < 1e-9,
+      "итог по дням и сверка с расходом по шагам")
+check(c.get("/api/admin/project-spend/detail?tenant=vid&project=%d&from=2020-01-01&to=2020-01-02" % P["id"],
+            headers=H(A)).json()["rows"] == [], "за другую дату — пусто")
+check(c.get("/api/admin/project-spend/detail?tenant=vid&project=%d" % P["id"], headers=H(V)).status_code == 403,
+      "расход файла по моделям владельцу — 403")
 
 print("=== 8. Что не уезжает наружу ===")
 seed = c.get("/api/seed", headers=H(T)).json()
@@ -505,7 +522,9 @@ fx_path = Path("tests/fixtures/pay_payloads.json")
 os.environ["PAYME_KEY"] = "KEY"
 live = {"pay": c.get("/api/pay", headers=H(T)).json(),
         "adminPayments": c.get("/api/admin/payments", headers=H(A)).json(),
-        "projectSpend": c.get("/api/admin/project-spend?from=%s&to=%s" % (day, day), headers=H(A)).json()}
+        "projectSpend": c.get("/api/admin/project-spend?from=%s&to=%s" % (day, day), headers=H(A)).json(),
+        "projectSpendDetail": c.get("/api/admin/project-spend/detail?tenant=vid&project=%d&from=%s&to=%s"
+                                    % (P["id"], day, day), headers=H(A)).json()}
 
 
 def shape(v):

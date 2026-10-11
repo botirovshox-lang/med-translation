@@ -249,6 +249,19 @@ class PgStore:
         " pages DOUBLE PRECISION NOT NULL DEFAULT 0,"
         " minutes DOUBLE PRECISION NOT NULL DEFAULT 0,"
         " PRIMARY KEY (day, tenant, project, step))",
+        # То же «проект × день», но с МОДЕЛЬЮ и токенами: какой моделью
+        # и сколько токенов потратил файл в конкретный день. Своей таблицей,
+        # а не новой колонкой ключа `project_daily`: смена первичного ключа
+        # у живой таблицы — миграция боевых денег ради справочника.
+        "CREATE TABLE IF NOT EXISTS project_model_daily ("
+        " day TEXT NOT NULL, tenant TEXT NOT NULL, project INTEGER NOT NULL,"
+        " step TEXT NOT NULL, model TEXT NOT NULL,"
+        " calls BIGINT NOT NULL DEFAULT 0, tin BIGINT NOT NULL DEFAULT 0,"
+        " cached BIGINT NOT NULL DEFAULT 0, tout BIGINT NOT NULL DEFAULT 0,"
+        " think BIGINT NOT NULL DEFAULT 0, usd DOUBLE PRECISION NOT NULL DEFAULT 0,"
+        " unpriced BIGINT NOT NULL DEFAULT 0,"
+        " PRIMARY KEY (day, tenant, project, step, model))",
+        "CREATE INDEX IF NOT EXISTS project_model_daily_day ON project_model_daily (day)",
         # Заказы на оплату — СВОЕЙ таблицей с прямой записью, а не документом
         # STATE: `save_state` глотает ошибки, и колбэк платёжной системы
         # услышал бы «зачислено» про заказ, которого в базе нет. Здесь сбой
@@ -756,6 +769,52 @@ class PgStore:
     def project_daily_min_day(self) -> Optional[str]:
         with self._cursor() as cur:
             cur.execute("SELECT min(day) FROM project_daily")
+            got = cur.fetchone()
+        return got[0] if got else None
+
+    # ── расход по проекту, дню и МОДЕЛИ ──
+    _PMD_COLS = ("calls", "tin", "cached", "tout", "think", "usd", "unpriced")
+
+    def add_project_model_daily(self, rows: list) -> None:
+        """Пачка приращений ОДНИМ запросом (буфер сливается вместе с `project_daily`)."""
+        if not rows:
+            return
+        vals, args = [], []
+        for r in rows:
+            vals.append("(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)")
+            args.extend((r["day"], r["tenant"], int(r["project"]), r["step"], r["model"],
+                         int(r.get("calls") or 0), int(r.get("tin") or 0), int(r.get("cached") or 0),
+                         int(r.get("tout") or 0), int(r.get("think") or 0), float(r.get("usd") or 0),
+                         int(r.get("unpriced") or 0)))
+        with self._cursor() as cur:
+            cur.execute(
+                "INSERT INTO project_model_daily (day, tenant, project, step, model, calls, tin,"
+                " cached, tout, think, usd, unpriced) VALUES " + ", ".join(vals) +
+                " ON CONFLICT (day, tenant, project, step, model) DO UPDATE SET " +
+                ", ".join("%s = project_model_daily.%s + EXCLUDED.%s" % (c, c, c) for c in self._PMD_COLS),
+                args)
+
+    def project_model_daily_rows(self, day_from: str, day_to: str, tenant: Optional[str] = None,
+                                 project: Optional[int] = None) -> list:
+        q = ("SELECT day, tenant, project, step, model, calls, tin, cached, tout, think, usd, unpriced"
+             " FROM project_model_daily WHERE day >= %s AND day <= %s")
+        args: list = [day_from, day_to]
+        if tenant is not None:
+            q += " AND tenant = %s"
+            args.append(tenant)
+        if project is not None:
+            q += " AND project = %s"
+            args.append(int(project))
+        with self._cursor() as cur:
+            cur.execute(q, args)
+            got = cur.fetchall()
+        return [{"day": r[0], "tenant": r[1], "project": int(r[2]), "step": r[3], "model": r[4],
+                 "calls": int(r[5]), "tin": int(r[6]), "cached": int(r[7]), "tout": int(r[8]),
+                 "think": int(r[9]), "usd": float(r[10]), "unpriced": int(r[11])} for r in got]
+
+    def project_model_daily_min_day(self) -> Optional[str]:
+        with self._cursor() as cur:
+            cur.execute("SELECT min(day) FROM project_model_daily")
             got = cur.fetchone()
         return got[0] if got else None
 

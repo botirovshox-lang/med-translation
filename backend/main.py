@@ -2709,6 +2709,8 @@ def _ledger_min_day() -> Optional[str]:
 # сервера (UTC): «сегодня» в админке и в журнале — один и тот же день, иначе
 # работа с полуночи до пяти утра уезжала бы во «вчера».
 PROJECT_DAILY_KEY = "projectDaily"       # файловое хранилище: {"день|орг|проект|шаг": счётчики}
+# То же с моделью и токенами: {"день|орг|проект|шаг|модель": счётчики}.
+PROJECT_MODEL_DAILY_KEY = "projectModelDaily"
 PROJECT_DAILY_FILE_DAYS = 400            # сколько дней держит state.json без базы
 BUSINESS_UTC_OFFSET = float(os.environ.get("BUSINESS_UTC_OFFSET", "5") or 0)
 
@@ -2743,11 +2745,36 @@ def _pd_bump(tenant: str, pid: int, step: str, usd: float = 0.0, calls: int = 0,
         v[4] += float(minutes or 0)
 
 
-def _proj_daily_add(step: str, cost: Optional[float]) -> None:
-    """Расход вызова модели — на «проект × день × шаг». Справочник: сбой вызов не роняет."""
+# Расход по МОДЕЛИ: «проект × день × шаг × модель» с токенами. Отдельный
+# буфер, а не новое измерение `_PD_BUF`: тот несёт и проданное (`@sold`),
+# у которого модели нет. Сливается тем же `_proj_daily_flush`.
+_PM_BUF: dict = {}
+_PM_N = 7                                  # calls, tin, cached, tout, think, usd, unpriced
+
+
+def _pm_bump(tenant: str, pid: int, step: str, model: str, tin: int, cached: int, tout: int,
+             think: int, cost: Optional[float]) -> None:
+    key = (_biz_day(), tenant or DEFAULT_TENANT, int(pid or 0), step or "?", model or "?")
+    with _PD_LOCK:
+        v = _PM_BUF.setdefault(key, [0, 0, 0, 0, 0, 0.0, 0])
+        v[0] += 1
+        v[1] += int(tin or 0)
+        v[2] += int(cached or 0)
+        v[3] += int(tout or 0)
+        v[4] += int(think or 0)
+        v[5] += float(cost or 0)
+        v[6] += 0 if cost is not None else 1
+
+
+def _proj_daily_add(step: str, cost: Optional[float], model: str = "?", tin: int = 0,
+                    cached: int = 0, tout: int = 0, think: int = 0) -> None:
+    """Расход вызова модели — на «проект × день × шаг» и на «… × модель»
+    с токенами. Справочник: сбой вызов не роняет."""
     try:
-        _pd_bump(_current_tenant(), _usage_project() or 0, step, usd=float(cost or 0), calls=1,
+        tenant, pid = _current_tenant(), _usage_project() or 0
+        _pd_bump(tenant, pid, step, usd=float(cost or 0), calls=1,
                  unpriced=0 if cost is not None else 1)
+        _pm_bump(tenant, pid, step, model, tin, cached, tout, think, cost)
     except Exception as e:
         print(f"[backend] расход проекта по дням не записан ({step}): {e}", file=sys.stderr)
 
@@ -2765,7 +2792,7 @@ def _proj_daily_sold(tenant: str, pid, pages: float = 0.0, minutes: float = 0.0)
 
 
 def _pd_due(now: float) -> bool:
-    return bool(_PD_BUF) and now - _PD_LAST["t"] >= PROJECT_DAILY_FLUSH_EVERY
+    return bool(_PD_BUF or _PM_BUF) and now - _PD_LAST["t"] >= PROJECT_DAILY_FLUSH_EVERY
 
 
 def _proj_daily_flush(force: bool = False) -> None:
@@ -2775,7 +2802,10 @@ def _proj_daily_flush(force: bool = False) -> None:
         with _PD_LOCK:
             buf = dict(_PD_BUF)
             _PD_BUF.clear()
+            mbuf = dict(_PM_BUF)
+            _PM_BUF.clear()
             _PD_LAST["t"] = time.time()
+        _proj_model_flush(mbuf)
         if not buf:
             return
         rows = [{"day": d, "tenant": t, "project": p, "step": st, "usd": round(v[0], 6), "calls": v[1],
@@ -2795,6 +2825,72 @@ def _proj_daily_flush(force: bool = False) -> None:
             print(f"[backend] расход по дням не записан: {e}", file=sys.stderr)
     except Exception as e:
         print(f"[backend] слив расхода по дням не удался: {e}", file=sys.stderr)
+
+
+def _proj_model_flush(mbuf: dict) -> None:
+    """Слив буфера «× модель». Не записалось — строки возвращаются в буфер."""
+    if not mbuf:
+        return
+    rows = [{"day": d, "tenant": t, "project": p, "step": st, "model": m, "calls": v[0], "tin": v[1],
+             "cached": v[2], "tout": v[3], "think": v[4], "usd": round(v[5], 6), "unpriced": v[6]}
+            for (d, t, p, st, m), v in mbuf.items()]
+    try:
+        if STORE.kind == "pg":
+            STORE.add_project_model_daily(rows)
+        else:
+            _proj_model_file_add(rows)
+    except Exception as e:
+        with _PD_LOCK:
+            for k, v in mbuf.items():
+                cur = _PM_BUF.setdefault(k, [0, 0, 0, 0, 0, 0.0, 0])
+                for n in range(_PM_N):
+                    cur[n] += v[n]
+        print(f"[backend] расход по моделям не записан: {e}", file=sys.stderr)
+
+
+def _proj_model_file_add(rows: list) -> None:
+    with _SAVE_LOCK:
+        led = STATE.setdefault(PROJECT_MODEL_DAILY_KEY, {})
+        for r in rows:
+            d = led.setdefault("|".join((r["day"], r["tenant"], str(r["project"]), r["step"], r["model"])),
+                               {"calls": 0, "tin": 0, "cached": 0, "tout": 0, "think": 0,
+                                "usd": 0.0, "unpriced": 0})
+            for k in ("calls", "tin", "cached", "tout", "think", "unpriced"):
+                d[k] = int(d.get(k) or 0) + int(r[k])
+            d["usd"] = round(float(d.get("usd") or 0) + r["usd"], 6)
+        edge = (_biz_now() - timedelta(days=PROJECT_DAILY_FILE_DAYS)).strftime("%Y-%m-%d")
+        if led and min(k.split("|", 1)[0] for k in led) < edge:
+            for k in [k for k in led if k.split("|", 1)[0] < edge]:
+                led.pop(k, None)
+
+
+def _proj_model_rows(day_from: str, day_to: str, tenant: Optional[str] = None,
+                     project: Optional[int] = None) -> list:
+    _proj_daily_flush(force=True)
+    if STORE.kind == "pg":
+        return STORE.project_model_daily_rows(day_from, day_to, tenant, project)
+    out = []
+    for key, v in list((STATE.get(PROJECT_MODEL_DAILY_KEY) or {}).items()):
+        # Модель — последняя: у дня, организации, проекта и шага «|» не бывает.
+        parts = key.split("|")
+        if len(parts) < 5 or not (day_from <= parts[0] <= day_to):
+            continue
+        try:
+            pid = int(parts[2])
+        except ValueError:
+            continue
+        if (tenant is not None and parts[1] != tenant) or (project is not None and pid != int(project)):
+            continue
+        out.append(dict(v, day=parts[0], tenant=parts[1], project=pid, step=parts[3],
+                        model="|".join(parts[4:])))
+    return out
+
+
+def _proj_model_min_day() -> Optional[str]:
+    if STORE.kind == "pg":
+        return STORE.project_model_daily_min_day()
+    days = [k.split("|", 1)[0] for k in (STATE.get(PROJECT_MODEL_DAILY_KEY) or {})]
+    return min(days) if days else None
 
 
 def _proj_daily_file_add(rows: list) -> None:
@@ -3778,7 +3874,7 @@ def _note_cost(step: str, model_id: str, tin: int, cached: int, tout: int, think
                 _usage_add(bucket, step, model_id, tin, cached, tout, think, cost)
         _spend_add(_current_tenant(), cost)
         _proj_spend_add(_current_tenant(), _usage_project(), cost, calls=1)
-        _proj_daily_add(step, cost)
+        _proj_daily_add(step, cost, model_id, tin, cached, tout, think)
         _ledger_add(step, model_id, tin, cached, tout, think, cost)
         try:
             _fn_spend_bump(_current_tenant() or DEFAULT_TENANT, _current_uid(), step, cost)
@@ -7381,6 +7477,18 @@ def admin_project_spend(request: Request, date_from: str = Query("", alias="from
         x["calls"] += int(r.get("calls") or 0)
         x["unpriced"] += int(r.get("unpriced") or 0)
         x["steps"][r["step"]] = round(x["steps"].get(r["step"], 0.0) + float(r.get("usd") or 0), 6)
+    # Какими моделями потрачено — из счётчика «× модель». Он моложе
+    # `project_daily` (`modelsSince`), поэтому у старых дней моделей нет,
+    # а сумма по моделям бывает меньше суммы по шагам — это сказано на экране.
+    try:
+        by_model = _proj_model_rows(d_from, d_to)
+    except Exception as e:
+        print(f"[backend] расход по моделям не прочитан: {e}", file=sys.stderr)
+        by_model = []
+    for r in by_model:
+        x = row(r["tenant"], int(r["project"]))
+        m = x.setdefault("models", {})
+        m[r["model"]] = round(m.get(r["model"], 0.0) + float(r.get("usd") or 0), 6)
     tnames = {t.get("id"): (t.get("name") or t.get("id")) for t in _tenants()}
     live = {(_tenant_of(p), p["id"]): p for p in STATE.get("projects") or []}
     life = {(r["tenant"], r["project"]): r for r in _proj_spend_rows(None)}
@@ -7403,6 +7511,8 @@ def admin_project_spend(request: Request, date_from: str = Query("", alias="from
             "deleted": pid != 0 and p is None, "kind": kind,
             "usd": round(x["usd"], 4), "calls": x["calls"], "unpriced": x["unpriced"],
             "steps": dict(sorted(x["steps"].items(), key=lambda kv: -kv[1])),
+            "models": [{"id": k, "label": _model_label(k), "usd": round(v, 4)}
+                       for k, v in sorted((x.get("models") or {}).items(), key=lambda kv: -kv[1])],
             "pages": round(x["pages"], 2), "minutes": round(x["minutes"], 2),
             "days": len(x["days"]),
             # Себестоимость за ВСЮ жизнь проекта — см. докстроку.
@@ -7416,8 +7526,70 @@ def admin_project_spend(request: Request, date_from: str = Query("", alias="from
              "minutes": round(sum(r["minutes"] for r in out), 2),
              "projects": sum(1 for r in out if r["project"] != 0)}
     return {"ok": True, "from": d_from, "to": d_to, "today": today, "rows": out, "total": total,
-            "since": _proj_daily_min_day(), "utcOffset": BUSINESS_UTC_OFFSET,
-            "warn": _pay_warn_thresholds()}
+            "since": _proj_daily_min_day(), "modelsSince": _proj_model_min_day(),
+            "utcOffset": BUSINESS_UTC_OFFSET, "warn": _pay_warn_thresholds()}
+
+
+@app.get("/api/admin/project-spend/detail")
+def admin_project_spend_detail(request: Request, tenant: str = Query(...), project: int = Query(...),
+                               date_from: str = Query("", alias="from"),
+                               date_to: str = Query("", alias="to")):
+    """Фактический расход ОДНОГО файла за период: по дням, моделям и шагам,
+    с токенами (вход, из них из кэша, выход, рассуждение) — то, что ответил
+    поставщик модели (`_note_usage`), а не наша смета. Суперпользователю:
+    это наши деньги и настоящие имена моделей (инварианты 22а, 24а).
+
+    Номер проекта и организация — параметрами запроса, а не путём: проект
+    может быть удалён (деньги остаются), а чужая организация здесь законна —
+    это админка сервиса, а не дверь `get_project`."""
+    if not _is_super(request):
+        raise HTTPException(403, "Расход по проектам — только суперпользователю")
+    today = _biz_day()
+    d_to = date_to if _DAY_RX.match(date_to or "") else today
+    d_from = date_from if _DAY_RX.match(date_from or "") else d_to
+    if d_from > d_to:
+        d_from, d_to = d_to, d_from
+    try:
+        got = _proj_model_rows(d_from, d_to, tenant, int(project))
+    except Exception as e:
+        print(f"[backend] расход по моделям не прочитан: {e}", file=sys.stderr)
+        got = []
+    keys = ("calls", "tin", "cached", "tout", "think", "unpriced")
+
+    def zero() -> dict:
+        return dict({k: 0 for k in keys}, usd=0.0)
+
+    def add(dst: dict, r: dict) -> None:
+        for k in keys:
+            dst[k] += int(r.get(k) or 0)
+        dst["usd"] = round(dst["usd"] + float(r.get("usd") or 0), 6)
+
+    rows, models, days, total = [], {}, {}, zero()
+    for r in sorted(got, key=lambda r: (r["day"], -float(r.get("usd") or 0), r["model"], r["step"])):
+        rows.append(dict({k: int(r.get(k) or 0) for k in keys}, day=r["day"], model=r["model"],
+                         label=_model_label(r["model"]), step=r["step"], usd=round(float(r.get("usd") or 0), 6)))
+        add(models.setdefault(r["model"], dict(zero(), id=r["model"], label=_model_label(r["model"]))), r)
+        add(days.setdefault(r["day"], dict(zero(), day=r["day"])), r)
+        add(total, r)
+    # Расход за период по шагам из `project_daily` — для сверки: дни до
+    # появления счётчика «× модель» в нём есть, а здесь — нет.
+    try:
+        steps_usd = round(sum(float(r.get("usd") or 0) for r in _proj_daily_rows(d_from, d_to)
+                              if r["tenant"] == tenant and int(r["project"]) == int(project)
+                              and r["step"] != "@sold"), 6)
+    except Exception:
+        steps_usd = None
+    p = next((x for x in STATE.get("projects") or []
+              if x.get("id") == int(project) and _tenant_of(x) == tenant), None)
+    tnames = {t.get("id"): (t.get("name") or t.get("id")) for t in _tenants()}
+    return {"ok": True, "from": d_from, "to": d_to, "today": today,
+            "tenant": tenant, "tenantName": tnames.get(tenant, tenant), "project": int(project),
+            "projectName": (p.get("title") or p.get("fileName") or "") if p else None,
+            "deleted": int(project) != 0 and p is None,
+            "rows": rows, "models": sorted(models.values(), key=lambda m: -m["usd"]),
+            "days": sorted(days.values(), key=lambda d: d["day"]), "total": total,
+            "stepsUsd": steps_usd, "modelsSince": _proj_model_min_day(),
+            "utcOffset": BUSINESS_UTC_OFFSET}
 
 
 _DOMAIN_FIELDS =("label", "en", "expert", "terminology", "extract", "examples")

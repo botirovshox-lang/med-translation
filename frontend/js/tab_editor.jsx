@@ -2576,23 +2576,37 @@ function TabEditor({ store, toast }) {
     /* Сервер уже читает картинку сам (авточтение при загрузке) — второй
        задачи не ставим, а цепляем перевод к этой. */
     if (job && job.kind === "images") {
-      ED_PIC_CHAIN[project.id] = { job: job.id, phase: "reading" };
+      ED_PIC_CHAIN[project.id] = { job: job.id, phase: "reading", at: Date.now() };
       setPicTick(t => t + 1);
       toast.info(TR("Читаю текст с картинки"), TR("Потом сразу переведу. Вкладку можно закрыть — работа идёт на сервере."));
       return;
     }
     if (job) { toast.warning(TR("Прогон уже идёт"), TR("Дождитесь окончания или остановите текущий.")); return; }
+    delete ED_PIC_CHAIN[project.id];    // прежняя сцепка ждала разбора — эта её заменяет
     let res = null;
     try {
       res = await window.API.createJob(project.id, "images", [],
         { dry_run: false, ocr_model: null, est_cost: 0 });
     } catch (e) { toast.error(TR("Не удалось запустить"), (e && e.message) || TR("Сервер не принял задачу.")); return; }
     if (!res || !res.ok) { toast.error(TR("Не удалось запустить"), TR("Сервер не принял задачу.")); return; }
-    ED_PIC_CHAIN[project.id] = { job: res.job.id, phase: "reading" };
+    ED_PIC_CHAIN[project.id] = { job: res.job.id, phase: "reading", at: Date.now() };
     setJob(res.job);
     toast.info(TR("Читаю текст с картинки"), TR("Потом сразу переведу. Вкладку можно закрыть — работа идёт на сервере."));
   };
   const runFullJob = async () => {
+    /* Сервер сам читает надписи на картинках (авточтение при загрузке):
+       «Перевести» не ждёт и не ругается, а встаёт ВСЛЕД за чтением —
+       строки с картинок попадут в тот же перевод (`EdChainRunner`). */
+    if (job && job.kind === "images") {
+      ED_PIC_CHAIN[project.id] = { job: job.id, phase: "reading", at: Date.now() };
+      setPicTick(t => t + 1);
+      toast.info(TR("Сначала дочитаю надписи на картинках"),
+        TR("Потом сразу переведу. Вкладку можно закрыть — работа идёт на сервере."));
+      return;
+    }
+    /* Человек нажал сам, пока сцепка ждала разбора, — её прогон и есть этот,
+       второй по его окончании не нужен. */
+    delete ED_PIC_CHAIN[project.id];
     const steps = FULL_STEP_KEYS.filter(k => pickedFull.has(k));
     if (!steps.length) { toast.warning(TR("Не выбрано ни одного шага"), TR("Отметьте хотя бы один.")); return; }
     // Состав, посчитанный сервером, запоминаем ДО запуска: через секунду
@@ -2794,7 +2808,8 @@ function TabEditor({ store, toast }) {
       tkSum && project.segments.length > 0 && React.createElement(EditorHomeSummary, { sum: tkSum, store, toast,
         onDrill: drillBucket, bucket: activeFilter ? bucket : null,
         running: job && job.kind === "full" ? job : null, onRun: runFullJob, onStop: stopJob,
-        disabled: !!job, scopeSize: fullRunIds.length, est: fullEst,
+        disabled: !!job && (job.kind !== "images" || edChainOn(project.id, job)),
+        scopeSize: fullRunIds.length, est: fullEst,
         // Шаги отмечены в свёртке не все — кнопка сделает только их, и это
         // обязано быть видно у самой кнопки, а не только в свёрнутой таблице.
         partialSteps: stepsChanged ? fullSteps.size : 0,
@@ -2817,7 +2832,16 @@ function TabEditor({ store, toast }) {
          появляется в той же таблице, отдельного экрана нет. */
       edIsPicture(project) && React.createElement(EdPictureCard, { project, job, toast,
         onTranslate: readAndTranslate, onRunFull: runFullJob, tick: picTick,
-        planReady: !!runPlan && !planBusy, planCount: fullRunIds.length }),
+        planReady: !!runPlan && !planBusy, planCount: fullRunIds.length,
+        planSegs: runPlan ? runPlan.projectSegments : null }),
+      /* Сцепка «дочитать надписи → перевести» — у ЛЮБОГО файла: своим
+         компонентом (хуки после раннего выхода редактора ставить нельзя). */
+      React.createElement(EdChainRunner, { project, job, toast, onRunFull: runFullJob, tick: picTick,
+        planReady: !!runPlan && !planBusy, planCount: fullRunIds.length,
+        planSegs: runPlan ? runPlan.projectSegments : null, seenJob: lastJobId.current }),
+      job && job.kind === "images" && edChainOn(project.id, job) && !edIsPicture(project)
+        && React.createElement("div", { className: "hint", style: { margin: "4px 0 8px" } },
+          TR("Дочитываю надписи на картинках — перевод начнётся сам.")),
       /* Строк нет — запускать нечего: «Всё уже сделано» на пустом файле
          читалось как «готово», хотя не сделано ничего. */
       project.segments.length > 0 && React.createElement("div", { className: "run-decks",
@@ -2836,7 +2860,7 @@ function TabEditor({ store, toast }) {
           rvConfirmed: rvConfirmed, rvConfirmedCount: confirmedInScope,
           rvAskConfirmed: rvAskConfirmed,
           fixConfirmed: rpFixConfirmed, fixConfirmedCount: rpConfirmedWaiting,
-          models: gptModels, disabled: !!job,
+          models: gptModels, disabled: !!job && (job.kind !== "images" || edChainOn(project.id, job)),
           /* Два РАЗНЫХ рубежа, и путать их нельзя. Устройство прогона (шаги,
              модели, состав) — системному администратору: выбирать модель
              человеку, который не знает целевого языка, нечем, а ошибка стоит
@@ -3898,6 +3922,47 @@ function edIsPicture(p) { return !!p && (p.importKind === "image" || p.importKin
    Вне компонента: вкладка размонтируется при переключении, а сцепка обязана
    дожить до конца чтения. На window — чтобы её видели и рендер-тесты. */
 const ED_PIC_CHAIN = window.__edPicChain || (window.__edPicChain = {});
+/* Перевод прицеплен именно к ЭТОЙ задаче чтения: отметка от прошлой
+   задачи (её конец экран не видел) кнопки не гасит. */
+function edChainOn(pid, job) { const ch = ED_PIC_CHAIN[pid]; return !!ch && !!job && ch.job === job.id; }
+
+/* Сцепка «прочитать надписи → перевести»: строки забраны (phase "pulled",
+   ставит опрос редактора) — строк нет → сказать; есть → дождаться разбора
+   состава ПОД них (старый отвёл бы прогону прежний список) и запустить
+   перевод. Нечего переводить — сцепка снимается молча. Одно место на файл-
+   картинку и на любой файл, где «Перевести» нажали во время авточтения. */
+function EdChainRunner({ project, job, toast, onRunFull, tick, planReady, planCount, planSegs, seenJob }) {
+  const pid = project.id;
+  const nSeg = project.segments.length;
+  useEffect(() => {
+    const ch = ED_PIC_CHAIN[pid];
+    if (!ch || job) return;
+    /* Чтение кончилось, пока вкладка была закрыта: опрос ЭТОГО экрана задачу
+       не видел (`seenJob` — задача, за которой он следит) и «pulled» не
+       поставит. Свою задачу экран доводит сам: снимает её только после того,
+       как строки забраны, — иначе сцепка сработала бы по допрогонному разбору. */
+    if (ch.phase === "reading") {
+      if (ch.job === seenJob || Date.now() - (ch.at || 0) < 5000) return;
+      ch.phase = "pulled";
+    }
+    if (ch.phase !== "pulled") return;
+    /* Чтение остановили или оно упало — платный перевод само не начинаем. */
+    if (ch.ok === false) { delete ED_PIC_CHAIN[pid]; return; }
+    /* Разбор обязан быть посчитан ПОД нынешние строки: старый (до чтения)
+       отвёл бы прогону прежний список, и строки с картинок остались бы
+       непереведёнными. Число строк сервера = число строк таблицы. Проверка
+       стоит ДО «строк нет»: в устаревшей копии их может не быть вовсе. */
+    if (!planReady || (planSegs != null && planSegs !== nSeg)) return;
+    if (!nSeg) {
+      delete ED_PIC_CHAIN[pid];
+      if (toast) toast.warning(TR("Текст не прочитан"), TR("С картинки не пришло ни одной строки. Если причина не названа выше — попробуйте ещё раз."));
+      return;
+    }
+    delete ED_PIC_CHAIN[pid];
+    if (planCount > 0 && onRunFull) onRunFull();
+  }, [pid, tick, !!job, nSeg, planReady, planCount, planSegs, seenJob]);
+  return null;
+}
 
 /* Плитка файла-картинки над таблицей: что внутри картинки — числами,
    и ОДНА кнопка «Перевести», пока строк нет. Строки есть — дальше обычная
@@ -3913,24 +3978,8 @@ function EdPictureCard({ project, job, toast, onTranslate, onRunFull, tick, plan
     window.API.safeCall(() => window.API.imagesReport(pid)).then(r => { if (!dead) setRep(r || null); });
     return () => { dead = true; };
   }, [pid, nSeg, !!job]);
-  /* Сцепка: строки забраны (phase "pulled", ставит опрос редактора) —
-     строк нет → сказать; есть → дождаться разбора состава ПОД них (старый,
-     на 0 строк, отвёл бы прогону пустой список) и запустить перевод. */
-  useEffect(() => {
-    const ch = ED_PIC_CHAIN[pid];
-    if (!ch || ch.phase !== "pulled" || job) return;
-    if (!nSeg) {
-      delete ED_PIC_CHAIN[pid];
-      if (toast) toast.warning(TR("Текст не прочитан"), TR("С картинки не пришло ни одной строки. Если причина не названа выше — попробуйте ещё раз."));
-      return;
-    }
-    if (planReady && planCount > 0) {
-      delete ED_PIC_CHAIN[pid];
-      if (onRunFull) onRunFull();
-    }
-  }, [pid, tick, !!job, nSeg, planReady, planCount]);
   const st = (rep && rep.stats) || null;
-  const armed = !!ED_PIC_CHAIN[pid];
+  const armed = edChainOn(pid, job);
   const reading = !!job && job.kind === "images";
   /* Идёт чтение, а перевод к нему ещё не прицеплен — кнопка доступна:
      нажатие цепляет перевод к идущему чтению. */

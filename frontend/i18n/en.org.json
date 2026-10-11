@@ -570,5 +570,11 @@
   "раз пробному клиенту перевели фрагмент большого документа — он ждёт весь": "times a trial customer got an excerpt of a large document — they want all of it",
   "озвучек собрано приглушением: голос оригинала слышен под переводом": "dubs built with ducking only: the original voice is audible under the translation",
   "раз в готовом PDF остался текст на языке оригинала": "times source-language text remained in a finished PDF",
-  "Ищем страницы внутри длинных листов": "Finding the pages inside the long sheets"
+  "Ищем страницы внутри длинных листов": "Finding the pages inside the long sheets",
+  "Перечитываем файл": "Re-reading the file",
+  "Чтение файлов улучшено — строки обновятся сами, нажимать ничего не нужно.": "File reading has improved — the lines will update by themselves, nothing to click.",
+  "Чтение файла улучшено, но строки с вашей работой (заверенные, набранные или склеенные вручную: ": "File reading has improved, but lines with your work (confirmed, typed or merged by hand: ",
+  ") сами не пересобираем. Посмотрите, что изменится, и решите.": ") are not rebuilt automatically. See what would change and decide.",
+  "Файл перечитан по улучшенным правилам: обновлено строк — ": "The file was re-read with the improved rules: lines updated — ",
+  ". Их переведёт «Перевести»; прежний текст — в подсказке у строки.": ". «Translate» will translate them; the previous text is in the hint next to the line."
 }

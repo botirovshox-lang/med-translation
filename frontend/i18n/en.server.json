@@ -469,5 +469,6 @@
   "Длинные листы файла (": "The file's long sheets (",
   ") разобраны на обычные страницы: ": ") were split into ordinary pages: ",
   " Страниц, лежавших боком, поставлено прямо: ": " Pages that lay sideways turned upright: ",
-  " Страниц, собранных из листа целиком: ": " Pages built from the whole sheet: "
+  " Страниц, собранных из листа целиком: ": " Pages built from the whole sheet: ",
+  "Файл перечитывается по улучшенным правилам разбора — это займёт минуту-другую. Нажмите «Перевести» чуть позже": "The file is being re-read with improved parsing rules — this takes a minute or two. Press «Translate» a little later"
 }

@@ -559,5 +559,7 @@
   "Выбрано шагов: ": "Tanlangan bosqichlar: ",
   "Вернуть как было": "Avvalgidek qaytarish",
   " строк. Проверка идёт отдельной кнопкой.": " ta satr. Tekshiruv alohida tugma bilan boshlanadi.",
-  "Текст в кадре: надпись на экране, а не речь — перевод встанет на её место": "Kadrdagi matn: nutq emas, ekrandagi yozuv — tarjima uning o'rniga qo'yiladi"
+  "Текст в кадре: надпись на экране, а не речь — перевод встанет на её место": "Kadrdagi matn: nutq emas, ekrandagi yozuv — tarjima uning o'rniga qo'yiladi",
+  "Сначала дочитаю надписи на картинках": "Avval rasmlardagi yozuvlarni o‘qib bo‘laman",
+  "Дочитываю надписи на картинках — перевод начнётся сам.": "Rasmlardagi yozuvlarni o‘qib bo‘lyapman — tarjima o‘zi boshlanadi."
 }

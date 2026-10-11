@@ -664,6 +664,14 @@ function ImpFileCard({ project, store, toast }) {
     const fresh = await window.API.getProject(project.id);
     if (fresh) store.replaceProject(fresh);
   };
+  /* Файл перечитывается САМ (`autoResegRunning`, сервер пересобирает строки
+     фоном, когда правила разбора улучшились): карточка спрашивает проект,
+     пока пересборка не кончится, — новые строки появятся без нажатий. */
+  useEffect(() => {
+    if (!project.autoResegRunning || !window.API) return;
+    const id = setInterval(() => { refreshProject(); }, 8000);
+    return () => clearInterval(id);
+  }, [project.id, !!project.autoResegRunning]);
   const checkReseg = async () => {
     setBusy(true);
     try {
@@ -714,12 +722,28 @@ function ImpFileCard({ project, store, toast }) {
       /* Совет стоит ДО прогресса и кнопки «Переводить»: пересобрать строки
          разумно перед переводом, а не после. Кнопка — обычного размера
          с рамкой: заметна, но главной («Переводить») не спорит. */
-      project.parseOutdated && React.createElement("div", { className: "imp-tip" },
+      /* Строки пересобираются САМИ, когда мы улучшили чтение файлов: кнопка
+         остаётся, только если пересборка остановилась перед вашей работой. */
+      project.autoResegRunning && React.createElement("div", { className: "imp-tip" },
+        React.createElement(Spinner, null),
+        React.createElement("div", { style: { minWidth: 0 } },
+          React.createElement("div", { className: "imp-tip-t" }, TR("Перечитываем файл")),
+          React.createElement("p", null, TR("Чтение файлов улучшено — строки обновятся сами, нажимать ничего не нужно.")))),
+      project.parseOutdated && !project.autoResegRunning && React.createElement("div", { className: "imp-tip" },
         React.createElement(Icon, { name: "repeat", size: 18, className: "imp-tip-ic" }),
         React.createElement("div", { style: { minWidth: 0 } },
           React.createElement("div", { className: "imp-tip-t" }, TR("Совет перед переводом")),
-          React.createElement("p", null, TR("Чтение файла улучшено: строки можно собрать заново — точнее по абзацам и страницам.")),
+          React.createElement("p", null, (project.autoReseg && project.autoReseg.result === "held" && project.autoReseg.human)
+            ? TR("Чтение файла улучшено, но строки с вашей работой (заверенные, набранные или склеенные вручную: ")
+              + project.autoReseg.human + TR(") сами не пересобираем. Посмотрите, что изменится, и решите.")
+            : TR("Чтение файла улучшено: строки можно собрать заново — точнее по абзацам и страницам.")),
           React.createElement(Btn, { variant: "secondary", icon: "repeat", disabled: busy, onClick: checkReseg }, TR("Проверить строки")))),
+      project.autoReseg && project.autoReseg.result === "applied" && !project.parseOutdated
+        && (project.autoReseg.changed || project.autoReseg.new) > 0
+        && React.createElement("div", { className: "hint", style: { fontSize: 13 } },
+          TR("Файл перечитан по улучшенным правилам: обновлено строк — ")
+            + ((project.autoReseg.changed || 0) + (project.autoReseg.new || 0))
+            + TR(". Их переведёт «Перевести»; прежний текст — в подсказке у строки.")),
       media && (transcribing || project.mediaStatus === "failed" || project.mediaNoSpeech)
         ? React.createElement("div", { className: "dim", style: { fontSize: 13.5 } },
             transcribing

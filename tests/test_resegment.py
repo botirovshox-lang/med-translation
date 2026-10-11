@@ -170,6 +170,49 @@ r = c.post("/api/projects/%d/reimport/%s/undo" % (pid, j["stamp"]), headers=H(A)
 check(r.status_code == 200 and live(pid).get("parseRules") == pdftext.RULES_VERSION - 1,
       "откат возвращает и прежнюю отметку правил: %s" % r.status_code)
 
+print("=== 4c. Пересборка САМА, когда правила улучшились (_auto_resegment) ===")
+ten = main._tenant_of(live(pid))
+check((live(pid).get("autoReseg") or {}).get("result") == "undone",
+      "откат пересборки кнопкой (4b) записан решением человека")
+live(pid).pop("autoReseg", None)            # как будто правила подняли ещё раз
+g = c.get("/api/projects/%d" % pid, headers=H(A)).json()
+check(g.get("autoResegRunning") is False, "без поднятого сервера (тесты) фоном ничего не запускается")
+check(main._reseg_due(live(pid)), "файл прежних правил — пересборка положена")
+for s_ in live(pid)["segments"]:            # перевод машины, без подписи человека
+    s_["status"] = "translated"
+    s_.pop("confirmedBy", None)
+res = main._auto_resegment(pid, ten)
+p = live(pid)
+check(res == "applied" and p.get("parseRules") == pdftext.RULES_VERSION
+      and (p.get("autoReseg") or {}).get("result") == "applied" and any(s.get("prevTarget") for s in p["segments"]),
+      "машинный перевод — пересобрано само, прежний текст подсказкой: %s" % p.get("autoReseg"))
+check(not main._reseg_due(p) and main._auto_resegment(pid, ten) is None, "второй раз не запускается")
+stamp = (p.get("resegment") or {}).get("stamp")
+r = c.post("/api/projects/%d/reimport/%s/undo" % (pid, stamp), headers=H(A))
+check(r.status_code == 200 and live(pid).get("parseRules") == pdftext.RULES_VERSION - 1, "откат: %s" % r.status_code)
+check((live(pid).get("autoReseg") or {}).get("result") == "undone" and not main._reseg_due(live(pid)),
+      "откат — решение человека: сами больше не пересобираем")
+live(pid).pop("autoReseg", None)
+for s_ in live(pid)["segments"]:
+    s_["status"], s_["confirmedBy"] = "confirmed", "human"
+res = main._auto_resegment(pid, ten)
+p = live(pid)
+check(res == "held" and (p.get("autoReseg") or {}).get("human", 0) > 0
+      and p.get("parseRules") == pdftext.RULES_VERSION - 1,
+      "работа человека — сами не пересобираем, ждём решения: %s" % p.get("autoReseg"))
+g = c.get("/api/projects/%d" % pid, headers=H(A)).json()
+check(g.get("parseOutdated") is True and g.get("autoResegRunning") is False,
+      "после остановки перед работой человека — прежняя кнопка на карточке")
+check(main._auto_resegment(pid, ten) is None, "попытка одна на версию правил")
+for s_ in live(pid)["segments"]:
+    s_["status"] = "translated"
+    s_.pop("confirmedBy", None)
+live(pid).pop("autoReseg", None)
+main._AUTO_RESEG_BUSY.add(pid)
+r = c.post("/api/projects/%d/jobs" % pid, headers=H(A), json={"kind": "translate", "segment_ids": []})
+main._AUTO_RESEG_BUSY.discard(pid)
+check(r.status_code == 409, "пока файл перечитывается, прогон не ставится: %s" % r.status_code)
+
 print("=== 5. Исходник ===")
 for f in main.SOURCE_DIR.glob("%d.orig.*" % pid):
     f.unlink()

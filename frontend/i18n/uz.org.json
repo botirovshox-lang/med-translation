@@ -570,5 +570,11 @@
   "раз пробному клиенту перевели фрагмент большого документа — он ждёт весь": "marta sinov mijoziga katta hujjatdan bo'lak tarjima qilindi — u butunini kutmoqda",
   "озвучек собрано приглушением: голос оригинала слышен под переводом": "ta ovoz berish faqat pasaytirish bilan yig‘ildi: asl ovoz tarjima ostida eshitiladi",
   "раз в готовом PDF остался текст на языке оригинала": "marta tayyor PDF da asl tildagi matn qoldi",
-  "Ищем страницы внутри длинных листов": "Uzun varaqlar ichidan sahifalarni qidiryapmiz"
+  "Ищем страницы внутри длинных листов": "Uzun varaqlar ichidan sahifalarni qidiryapmiz",
+  "Перечитываем файл": "Faylni qayta o‘qiyapmiz",
+  "Чтение файлов улучшено — строки обновятся сами, нажимать ничего не нужно.": "Fayllarni o‘qish yaxshilandi — qatorlar o‘zi yangilanadi, hech narsa bosish shart emas.",
+  "Чтение файла улучшено, но строки с вашей работой (заверенные, набранные или склеенные вручную: ": "Faylni o‘qish yaxshilandi, lekin sizning ishingiz bor qatorlarni (tasdiqlangan, qo‘lda yozilgan yoki birlashtirilgan: ",
+  ") сами не пересобираем. Посмотрите, что изменится, и решите.": ") o‘zimiz qayta yig‘maymiz. Nima o‘zgarishini ko‘ring va qaror qiling.",
+  "Файл перечитан по улучшенным правилам: обновлено строк — ": "Fayl yaxshilangan qoidalar bo‘yicha qayta o‘qildi: yangilangan qatorlar — ",
+  ". Их переведёт «Перевести»; прежний текст — в подсказке у строки.": ". Ularni «Tarjima qilish» tarjima qiladi; avvalgi matn — qator yonidagi maslahatda."
 }

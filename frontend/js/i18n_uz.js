@@ -575,6 +575,7 @@ window.I18N.registerServer("uz", {
  "Файл на ": "Fayl ",
  "Файл не читается как видео или звук": "Fayl video yoki audio sifatida o‘qilmayapti",
  "Файл переведён не фрагментом — дописывать нечего": "Fayl bo'lak bilan tarjima qilinmagan — qo'shadigan narsa yo'q",
+ "Файл перечитывается по улучшенным правилам разбора — это займёт минуту-другую. Нажмите «Перевести» чуть позже": "Fayl yaxshilangan qoidalar bo‘yicha qayta o‘qilmoqda — bir-ikki daqiqa oladi. «Tarjima qilish»ni birozdan keyin bosing",
  "Файл после склейки заменялся или пересобирался — вернуть строки нельзя": "Birlashtirishdan keyin fayl almashtirilgan yoki qayta yig'ilgan — satrlarni qaytarib bo'lmaydi",
  "Файл пуст": "Fayl bo'sh",
  "Файл пустой": "Fayl bo'sh",

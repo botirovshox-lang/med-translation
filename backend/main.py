@@ -6093,6 +6093,10 @@ def _guard_project_write(pid: int) -> None:
     """Пока прогон идёт в ОТДЕЛЬНОМ процессе, проект принадлежит ему: правка
     из API писала бы тот же документ и затирала работу прогона (или он — её).
     В одном процессе, как раньше, правки и прогон сериализует сам процесс."""
+    if pid in _AUTO_RESEG_BUSY and not getattr(_AUTO_RESEG_SELF, "on", False):
+        # Файл перечитывается по новым правилам (`_auto_resegment`): правка
+        # старой строки сейчас ушла бы в `prevTarget` у пересобранной.
+        raise HTTPException(409, AUTO_RESEG_BUSY_409)
     if not EXTERNAL_WORKER or IS_WORKER:
         return
     jid = _active_job_for(pid)
@@ -11258,6 +11262,7 @@ def get_project_detail(pid: int):
     project = get_project(pid)
     _media_status_fix(project)
     _book_image_pages(project)
+    _auto_reseg_kick(project)
     return _json_bytes(_project_for_client(project), "project %s" % pid, t0)
 
 
@@ -15021,6 +15026,7 @@ def undo_reimport(pid: int, stamp: str, force: bool = False):
                                  "эту работу. Подтвердите откат явно." % len(touched))
     with _SAVE_LOCK:
         project = get_project(pid)
+        was_reseg = (project.get("resegment") or {}).get("stamp") == stamp
         # Счёт перевода заново у строки НЕ откатывается: снимок хранит его
         # таким, каким он был ДО замены, и «заменить тем же файлом →
         # перевести трижды → откатить» обнулял бы предел без конца
@@ -15042,6 +15048,13 @@ def undo_reimport(pid: int, stamp: str, force: bool = False):
                 project.pop(k, None)
             else:
                 project[k] = v
+        # Откат пересборки — решение человека: под эти же правила разбора
+        # сами пересобирать больше не будем (`_auto_resegment`), иначе
+        # следующее открытие файла вернуло бы то, от чего он отказался.
+        cur_rules = _parse_rules(project.get("importKind") or "")
+        if was_reseg and cur_rules and (project.get("parseRules") or 0) < cur_rules:
+            project["autoReseg"] = {"rules": cur_rules, "result": "undone",
+                                    "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
         _PROJECTS_VER[0] += 1
         save_state(STATE)
     docx_path, map_path = _source_paths(pid)
@@ -15441,6 +15454,182 @@ async def resegment_project(pid: int, req: ResegmentRequest):
         return out
     out.update(await run_in_threadpool(_resegment_apply, pid, parsed, content, filename, pl))
     return out
+
+
+# ─── Пересборка строк САМА, когда правила разбора улучшились ─────────
+# Решение владельца сервиса (11.10.2026): человеку остаются «Перевести»
+# и «Скачать». Мы улучшили чтение файлов — файл перечитывается сам, когда
+# человек его открывает, без кнопки «Чтение файла улучшено». Законы:
+#   * чужую РАБОТУ машина не трогает: строка, которую человек заверил или
+#     набрал руками (`_human_text`) — текстовая или с картинки, — склеивал,
+#     разрезал или чей оригинал правил, изменилась бы — пересборка НЕ
+#     ставится, а ждёт человека (`autoReseg.result = "held"`, на карточке
+#     прежняя кнопка с причиной);
+#   * проверка «есть ли работа человека» и запись идут ОДНИМ куском под
+#     `_SAVE_LOCK` (RLock): правка, заверение или откат, пришедшие, пока
+#     файл разбирался, иначе ушли бы в `prevTarget` молча; на время
+#     пересборки правки проекта отвечают 409 (`_guard_project_write`);
+#   * машинный перевод изменившихся строк уходит в `prevTarget` (как у
+#     кнопки), сами строки становятся новыми — их переведёт «Перевести»;
+#   * идёт прогон или ждёт задача — не трогаем, попробуем при следующем
+#     открытии; пока идёт пересборка, новые прогоны отвечают 409 словами;
+#   * попытка — ОДНА на версию правил (`autoReseg.rules`), включая «не из
+#     чего»: файл не разбирается заново на каждом открытии; откат
+#     пересборки — решение человека (`undone`), сами её не повторяем;
+#   * только по открытию файла человеком: спящие проекты не трогаются, и
+#     выкат правил не разбирает книги всех организаций разом;
+#   * после пересборки PDF надписи на картинках читаются сами.
+AUTO_RESEGMENT = os.environ.get("AUTO_RESEGMENT", "1") != "0"
+_AUTO_RESEG_BUSY: set = set()
+_AUTO_RESEG_LOCK = threading.Lock()
+_AUTO_RESEG_SELF = threading.local()     # поток самой пересборки — мимо 409
+AUTO_RESEG_BUSY_409 = ("Файл перечитывается по улучшенным правилам разбора — это займёт "
+                       "минуту-другую. Нажмите «Перевести» чуть позже")
+_SERVING = [False]          # сервер поднят (startup): тесты модуль импортируют без него
+
+
+def _reseg_due(project: dict) -> bool:
+    """Нарезан прежними правилами, пересобрать есть из чего, и автоматическая
+    попытка под нынешние правила ещё не делалась."""
+    cur = _parse_rules(project.get("importKind") or "")
+    if not cur or (project.get("parseRules") or 0) >= cur:
+        return False
+    if (project.get("autoReseg") or {}).get("rules") == cur:
+        return False
+    return (_resegment_has_source(project) and not project.get("trialExcerpt")
+            and _resegment_stored_trusted(project))
+
+
+def _reseg_human(project: dict, pl: dict, images_same: bool) -> int:
+    """Сколько строк с РАБОТОЙ человека пересборка изменила бы: заверенные
+    и набранные руками среди изменившихся и исчезнувших; строки с картинок,
+    если картинки документа другие (они уходят в копию целиком); плюс все
+    ручные границы и правки оригинала (пересборка их не узнаёт)."""
+    touched = [s for olds in pl["changed"].values() for s in olds] + list(pl["gone"] or [])
+    n = sum(1 for s in touched if _human_text(s)) + int(pl["counts"].get("manualEdits") or 0)
+    if not images_same:
+        n += sum(1 for s in _image_segments(project) if _human_text(s))
+    return n
+
+
+def _auto_reseg_mark(pid: int, mark: dict) -> None:
+    with _SAVE_LOCK:
+        try:
+            project = get_project(pid)
+        except HTTPException:
+            return
+        project["autoReseg"] = mark
+        _PROJECTS_VER[0] += 1
+        save_state(STATE)
+
+
+def _auto_resegment(pid: int, tenant: str, claimed: bool = False) -> Optional[str]:
+    """Одна пересборка (фоновый поток). Ответ — исход кодом либо None
+    (не время: идёт прогон, проекта нет). `claimed` — номер уже занят
+    в `_AUTO_RESEG_BUSY` тем, кто запустил поток."""
+    if not claimed:
+        with _AUTO_RESEG_LOCK:
+            if pid in _AUTO_RESEG_BUSY:
+                return None
+            _AUTO_RESEG_BUSY.add(pid)
+    _JOB_TENANT.id = tenant
+    _AUTO_RESEG_SELF.on = True
+    try:
+        with _PaySession(tenant, "system:auto-resegment"):
+            try:
+                project = get_project(pid)
+            except HTTPException:
+                return None
+            if not _reseg_due(project) or _active_job_for(pid) or _job_busy(pid, "images"):
+                return None
+            cur = _parse_rules(project.get("importKind") or "")
+            mark = {"rules": cur, "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+            try:
+                src = _resegment_source(project)
+                if src is None:
+                    mark["result"] = "nosource"
+                    _auto_reseg_mark(pid, mark)
+                    return "nosource"
+                filename, content = src
+                parsed = _resegment_parse(filename, content)
+                if not parsed["units"]:
+                    mark["result"] = "empty"
+                    _auto_reseg_mark(pid, mark)
+                    return "empty"
+                docx_path, _map = _source_paths(pid)
+                old_docx = docx_path.read_bytes() if docx_path.exists() else b""
+                images_same = bool(old_docx) and _docx_media_sha(old_docx) == _docx_media_sha(parsed["docx"])
+                # План, проверка работы человека и запись — ОДНИМ куском.
+                with _SAVE_LOCK:
+                    project = get_project(pid)
+                    if not _reseg_due(project) or _active_job_for(pid) or _job_busy(pid, "images"):
+                        return None         # пока разбирали — встал прогон или откат
+                    _resegment_same_file(project, parsed["sha"])
+                    pl = _resegment_plan(project, parsed)
+                    c = pl["counts"]
+                    if not (c["changed"] or c["new"] or c["removed"]):
+                        project["parseRules"] = parsed.get("parseRules")
+                        project["autoReseg"] = dict(mark, result="same")
+                        _PROJECTS_VER[0] += 1
+                        save_state(STATE)
+                        return "same"
+                    human = _reseg_human(project, pl, images_same)
+                    if human:
+                        project["autoReseg"] = dict(mark, result="held", human=human)
+                        _PROJECTS_VER[0] += 1
+                        save_state(STATE)
+                        return "held"
+                    _resegment_apply(pid, parsed, content, filename, pl)
+                    project = get_project(pid)
+                    project["autoReseg"] = dict(mark, result="applied", changed=c["changed"],
+                                                new=c["new"], removed=c["removed"], kept=c["kept"])
+                    _PROJECTS_VER[0] += 1
+                    save_state(STATE)
+                try:
+                    _auto_read_images(project, parsed["kind"], parsed.get("imagePages") or 0)
+                    save_state(STATE)
+                except Exception as e:
+                    print("[backend] авточтение после пересборки %s: %s" % (pid, e), file=sys.stderr)
+                return "applied"
+            except HTTPException as e:
+                if e.status_code == 409 and e.detail != RESEG_OTHER_FILE_409:
+                    return None             # прогон или правка успели встать — позже
+                mark.update(result="held", why="file" if e.status_code == 409 else "error")
+                _auto_reseg_mark(pid, mark)
+                return "held"
+            except Exception as e:
+                print("[backend] автопересборка проекта %s не удалась: %s" % (pid, e), file=sys.stderr)
+                mark["result"] = "error"
+                _auto_reseg_mark(pid, mark)
+                return "error"
+    finally:
+        _JOB_TENANT.id = None
+        _AUTO_RESEG_SELF.on = False
+        with _AUTO_RESEG_LOCK:
+            _AUTO_RESEG_BUSY.discard(pid)
+
+
+def _auto_reseg_kick(project: dict) -> None:
+    """Открыли файл, нарезанный прежними правилами, — пересобрать фоном.
+    Номер занимается ДО запуска потока: ответ на этот же запрос уже говорит
+    «перечитываем», и повторное открытие второго разбора не начинает."""
+    if not AUTO_RESEGMENT or IS_WORKER or not _SERVING[0] or not _reseg_due(project):
+        return
+    pid = project["id"]
+    if _active_job_for(pid) or _job_busy(pid, "images"):
+        return
+    with _AUTO_RESEG_LOCK:
+        if pid in _AUTO_RESEG_BUSY:
+            return
+        _AUTO_RESEG_BUSY.add(pid)
+    threading.Thread(target=_auto_resegment, args=(pid, _tenant_of(project), True),
+                     daemon=True, name="auto-reseg-%s" % pid).start()
+
+
+@app.on_event("startup")
+def _auto_reseg_on_startup():
+    if not IS_WORKER:
+        _SERVING[0] = True
 
 
 # ─── Границы строк руками: склеить со следующей, разрезать, разъединить ─
@@ -16934,7 +17123,7 @@ def _job_images(job: dict) -> None:
     anchors = _docx_image_anchors(Document(io.BytesIO(content)))
     # PDF: надписи, нарисованные КРИВЫМИ прямо на странице (их нет ни в
     # текстовом слое, ни в растре рисунка), ищутся на самих страницах.
-    page_names, page_anchors = (([], {}) if job["params"].get("auto")
+    page_names, page_anchors = (([], {}) if job["params"].get("auto") and not job["params"].get("pages")
                                 else _pdf_page_parts(project, data, raster))
     fig_rects: dict = {}
     for blob_ in raster.values():
@@ -17082,6 +17271,16 @@ def _job_images(job: dict) -> None:
                     continue
                 todo = [i for i, b in enumerate(rec["blocks"])
                         if "text" not in b and b.get("skip") not in ("layer", "figure")]
+                if job["params"].get("auto"):
+                    # Авточтение при загрузке — с потолком на задачу (а задача
+                    # авточтения ставится только загрузкой, заменой и
+                    # пересборкой файла): дальше — книга из сотен рисунков —
+                    # читает кнопка на «Скачать», где названа цена. Прочитанное
+                    # помнится по отпечатку и второй раз не спрашивается.
+                    # Здесь место РЕЗЕРВИРУЕТСЯ; не отвеченное возвращается ниже.
+                    room = AUTO_READ_MAX_BLOCKS - int(job["counters"].get("autoAsked") or 0)
+                    todo = todo[:max(0, room)]
+                    job["counters"]["autoAsked"] = int(job["counters"].get("autoAsked") or 0) + len(todo)
                 for start in range(0, len(todo), IMAGE_READ_MAX_BLOCKS):
                     tasks.append((blob, rec, todo[start:start + IMAGE_READ_MAX_BLOCKS]))
             if tasks:
@@ -17110,6 +17309,10 @@ def _job_images(job: dict) -> None:
                     # не вернулись после пересборки, хотя её текст был прочитан
                     # и переведён месяцем раньше.
                     quota = True
+                if job["params"].get("auto"):
+                    back = sum(len(t[2]) for t, a in zip(tasks, answers) if a is None or a == "stopped")
+                    if back:
+                        job["counters"]["autoAsked"] = max(0, int(job["counters"].get("autoAsked") or 0) - back)
                 for (_blob, rec, part_idx), got in zip(tasks, answers):
                     if got == "stopped":
                         continue               # не спрашивали — останется на следующий заход
@@ -21018,6 +21221,9 @@ def _project_for_client(project: dict) -> dict:
     out["parseOutdated"] = bool(cur and (project.get("parseRules") or 0) < cur
                                 and _resegment_has_source(project) and not project.get("trialExcerpt")
                                 and _resegment_stored_trusted(project))
+    # Пересборка идёт сама (`_auto_resegment`): кнопка нужна, только когда
+    # она остановилась перед работой человека или не удалась.
+    out["autoResegRunning"] = project["id"] in _AUTO_RESEG_BUSY
     return out
 
 
@@ -34879,6 +35085,10 @@ def create_job(pid: int, req: JobRequest):
     дальше страница может быть закрыта, сервер доведёт работу до конца."""
     _audit("job.create", project=pid, kind=req.kind)
     project = get_project(pid)              # 404, если проекта нет
+    if pid in _AUTO_RESEG_BUSY:
+        # Файл перечитывается по новым правилам: прогон по старым строкам
+        # сейчас перевёл бы то, что через минуту станет другим.
+        raise HTTPException(409, AUTO_RESEG_BUSY_409)
     if req.kind == "images":
         _trial_guard(project, TRIAL_IMAGES_409)
     if req.kind not in JOB_KINDS or req.kind in _MEDIA_KINDS:
@@ -37695,27 +37905,47 @@ def _docx_media_count(docx_bytes: bytes) -> int:
 
 
 def _auto_read_images(project: dict, kind: str, image_pages: int = 0) -> Optional[int]:
-    """Текст с картинок читается САМ при загрузке файла — задачей `images`
-    (платно, зрячей моделью), а не по кнопке: человек кладёт скан и ждёт
-    строк, а не ищет, где их включить.
+    """Текст с картинок читается САМ при загрузке файла — задачей `images`,
+    а не по кнопке: человеку остаётся «Перевести» и «Скачать» (решение
+    владельца сервиса 11.10.2026).
 
-    У КАРТИНКИ и СКАНА: там текста без чтения нет вовсе, и запирать
-    на время задачи нечего. И у PDF с текстовым слоем, часть страниц которого
-    (обложка, титул) легла картинками из-за ненадёжного слоя (`pdftext`):
-    цена названа — до конца задачи правки проекта отвечают 409, а задача
-    ждёт своей очереди (инвариант 21). У .docx с растром чтение остаётся кнопкой
-    со сметой на экране «Скачать»: книга со 158 картинками (логотипы,
-    рентген) стоила бы вызова зрячей модели на каждую загрузку, а идущая
-    задача запирает правки проекта (`_guard_project_write`).
-    Нет ключа или исчерпан лимит — задача НЕ ставится, а причина уходит
-    кодом (`imagesSkipped`: `no_key` | `limit`), иначе каждая загрузка
-    на исчерпанном лимите глушилась бы на первой картинке. Отметка
+    Какой файл — такое чтение:
+      * картинка и скан — всё, текста без чтения там нет вовсе;
+      * PDF с текстовым слоем — вырезки рисунков И сами страницы
+        (`pages`): надписи, нарисованные КРИВЫМИ (подписи схем, заголовки
+        инфографики), в слое отсутствуют. Строки ищет локальный детектор
+        (бесплатно), а зрячая модель читает только то, чего в слое нет
+        (`_mark_layer_blocks`): у обычной книги это ноль вызовов;
+      * .docx — его картинки (прочитанное помнится по отпечатку, повторная
+        загрузка того же рисунка не платит).
+    Цена названа: пока идёт задача, правки проекта отвечают 409, а «Перевести»,
+    нажатое в это время, встаёт следом за чтением (браузер сцепляет, см.
+    `ED_PIC_CHAIN`) — новые строки с картинок попадают в тот же перевод.
+    Нет ключа, движка, исчерпан лимит, пробный фрагмент — задача НЕ
+    ставится, причина уходит кодом (`imagesSkipped`). Отметка
     `imagesReading` — для карточки файла, снимается по концу задачи."""
-    # PDF с текстовым слоем, у которого часть страниц (обложка, титул) легла
-    # картинками из-за ненадёжного слоя (`pdftext`), — тот же случай: текста
-    # с этих страниц без чтения нет, и запирать на время задачи нечего.
-    if kind not in ("image", "scan") and not image_pages:
+    if os.environ.get("AUTO_READ_IMAGES", "1") == "0" and kind not in ("image", "scan"):
         return None
+    pages = kind == "pdf"
+    if kind == "docx" and not _docx_has_pictures(project["id"]):
+        return None
+    if kind not in ("image", "scan", "pdf", "docx") and not image_pages:
+        return None
+    if project.get("trialExcerpt"):
+        return None                     # пробный фрагмент: остаток файла даром не читаем
+    trec = _tenant_rec(_tenant_of(project)) or {}
+    if kind in ("pdf", "docx") and trec.get("trial"):
+        # Пробная организация: её пробный лимит — на ПЕРЕВОД первой страницы,
+        # логотипы и подписи схем его съели бы раньше, чем она нажмёт «Перевести».
+        return None
+    if kind in ("pdf", "docx"):
+        try:
+            engine_ok = image_text is not None and image_text.engine_ready()[0]
+        except Exception:
+            engine_ok = False
+        if not engine_ok:
+            project["imagesSkipped"] = "no_engine"
+            return None
     if image_text is None or not _provider_ready(_dm("ocr")):
         project["imagesSkipped"] = "no_key"
         _ev("dead.images:no_key", _tenant_of(project))
@@ -37726,7 +37956,8 @@ def _auto_read_images(project: dict, kind: str, image_pages: int = 0) -> Optiona
         return None
     try:
         job = _job_enqueue(project["id"], "images", [],
-                           {"dry_run": False, "ocr_model": None, "est_cost": 0, "auto": True})
+                           {"dry_run": False, "ocr_model": None, "est_cost": 0, "auto": True,
+                            "pages": pages})
     except Exception as e:
         print("[backend] авточтение картинок проекта %s не поставлено: %s" % (project.get("id"), e),
               file=sys.stderr)
@@ -37736,6 +37967,22 @@ def _auto_read_images(project: dict, kind: str, image_pages: int = 0) -> Optiona
     project.pop("imagesSkipped", None)
     project["imagesReading"] = job["id"]
     return job["id"]
+
+
+AUTO_READ_MAX_BLOCKS = int(os.environ.get("AUTO_READ_MAX_BLOCKS", "400"))
+
+
+def _docx_has_pictures(pid: int) -> bool:
+    """Есть ли в исходнике проекта растровые картинки (word/media)."""
+    import zipfile
+    docx_path, _map = _source_paths(pid)
+    try:
+        with zipfile.ZipFile(str(docx_path)) as z:
+            return any(n.startswith("word/media/") and n.rsplit(".", 1)[-1].lower()
+                       in ("png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "webp")
+                       for n in z.namelist())
+    except Exception:
+        return False
 
 
 @app.get("/api/usage")

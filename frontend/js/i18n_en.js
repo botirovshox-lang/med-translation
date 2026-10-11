@@ -575,6 +575,7 @@ window.I18N.registerServer("en", {
  "Файл на ": "A file of ",
  "Файл не читается как видео или звук": "The file cannot be read as video or audio",
  "Файл переведён не фрагментом — дописывать нечего": "The file is not a trial excerpt: there is nothing to add",
+ "Файл перечитывается по улучшенным правилам разбора — это займёт минуту-другую. Нажмите «Перевести» чуть позже": "The file is being re-read with improved parsing rules — this takes a minute or two. Press «Translate» a little later",
  "Файл после склейки заменялся или пересобирался — вернуть строки нельзя": "The file was replaced or rebuilt after the join — the lines cannot be restored",
  "Файл пуст": "The file is empty",
  "Файл пустой": "The file is empty",

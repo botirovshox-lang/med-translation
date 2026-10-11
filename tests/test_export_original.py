@@ -248,7 +248,10 @@ _d = _Doc(); _d.add_paragraph("Текст"); _d.add_picture(io.BytesIO(b.getvalu
 _b = io.BytesIO(); _d.save(_b)
 n_before = len(calls)
 r = upload("withpic.docx", _b.getvalue())
-check(r.status_code == 200 and len(calls) == n_before and not r.json().get("imagesReading"), ".docx с растром задачу сам не ставит")
+check(r.status_code == 200 and len(calls) == n_before + 1 and calls[-1][1] == "images"
+      and calls[-1][2].get("auto") and calls[-1][2].get("pages") is False,
+      ".docx с растром — надписи читаются сами при загрузке (решение 11.10.2026)")
+n_before = len(calls)
 tenant = main._tenant_rec("default")
 tenant["limitUsd"] = 0.01; tenant.setdefault("spend", {})
 main._spend_add("default", 5.0) if hasattr(main, "_spend_add") else None

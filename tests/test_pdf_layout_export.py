@@ -655,6 +655,38 @@ check(_mn._mark_layer_blocks(_rec2, _tagged, _data2) == 0 and _rec2["blocks"][0]
       and _rec2["blocks"][0]["box"][0] > 60 and _rec2["blocks"][0]["box"][2] == 190,
       "строка наполовину слоем — блок обрезан до кривой части: %s" % _rec2["blocks"][0])
 
+print("=== 12з2. Надписи на картинках читаются САМИ при загрузке ===")
+_calls = []
+_saved = (_mn._job_enqueue, _mn._provider_ready, _mn._spend_status, _mn.image_text.engine_ready,
+          _mn._docx_has_pictures)
+try:
+    _mn._job_enqueue = lambda pid, kind, ids, params: (_calls.append((pid, kind, params)) or {"id": 77})
+    _mn._provider_ready = lambda m: True
+    _mn._spend_status = lambda t: {"over": False}
+    _mn.image_text.engine_ready = lambda: (True, "")
+    _pr = {"id": 31, "tenant": "default"}
+    check(_mn._auto_read_images(_pr, "pdf") == 77 and _calls[-1][1] == "images"
+          and _calls[-1][2].get("pages") is True and _pr.get("imagesReading") == 77,
+          "PDF с текстом — чтение ставится само, вместе со страницами (надписи кривыми)")
+    _pr2 = {"id": 32, "tenant": "default", "trialExcerpt": {"pages": 1}}
+    n0 = len(_calls)
+    check(_mn._auto_read_images(_pr2, "pdf") is None and len(_calls) == n0,
+          "пробный фрагмент — остаток файла даром не читаем")
+    _mn._docx_has_pictures = lambda pid: False
+    check(_mn._auto_read_images({"id": 33, "tenant": "default"}, "docx") is None,
+          ".docx без картинок — задачи нет")
+    _mn._docx_has_pictures = lambda pid: True
+    _pr4 = {"id": 34, "tenant": "default"}
+    check(_mn._auto_read_images(_pr4, "docx") == 77 and _calls[-1][2].get("pages") is False,
+          ".docx с картинками — чтение ставится само")
+    _mn.image_text.engine_ready = lambda: (False, "нет движка")
+    _pr5 = {"id": 35, "tenant": "default"}
+    check(_mn._auto_read_images(_pr5, "pdf") is None and _pr5.get("imagesSkipped") == "no_engine",
+          "нет движка поиска строк — причина кодом, а не тишина")
+finally:
+    (_mn._job_enqueue, _mn._provider_ready, _mn._spend_status, _mn.image_text.engine_ready,
+     _mn._docx_has_pictures) = _saved
+
 print("=== 12и. Надписи кривыми на странице: страница — картинкой в разборе надписей ===")
 import tempfile as _tf
 _tmpd = Path(_tf.mkdtemp(prefix="medcat-pages-"))

@@ -469,5 +469,6 @@
   "Длинные листы файла (": "Faylning uzun varaqlari (",
   ") разобраны на обычные страницы: ": ") oddiy sahifalarga ajratildi: ",
   " Страниц, лежавших боком, поставлено прямо: ": " Yonboshlab turgan sahifalar to‘g‘rilandi: ",
-  " Страниц, собранных из листа целиком: ": " Varaqdan butunligicha yig‘ilgan sahifalar: "
+  " Страниц, собранных из листа целиком: ": " Varaqdan butunligicha yig‘ilgan sahifalar: ",
+  "Файл перечитывается по улучшенным правилам разбора — это займёт минуту-другую. Нажмите «Перевести» чуть позже": "Fayl yaxshilangan qoidalar bo‘yicha qayta o‘qilmoqda — bir-ikki daqiqa oladi. «Tarjima qilish»ni birozdan keyin bosing"
 }

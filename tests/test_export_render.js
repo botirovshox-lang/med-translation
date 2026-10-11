@@ -218,5 +218,18 @@ const plainPdf = render({ file: "a.pdf", at: "", paras: 10, segments: 3 }, null,
   { importKind: "pdf", fileName: "a.pdf" });
 check(plainPdf.indexOf("Как разложить страницы PDF") === -1, "у обычного PDF выбора листов нет");
 
+// ── Ход разбора картинок: стадии словами и числами, без «0 из 0» ──
+const ip = window.imagesProgress;
+const p0 = ip({ total: 0, done: 0, counters: {} });
+check(p0.value === null && p0.text.indexOf("0 из 0") === -1, "в начале — «готовлю», полоса без числа: " + p0.text);
+const p1 = ip({ phase: "check", total: 47, done: 0, counters: { checkPages: 46, checked: 12, found: 7 } });
+check(p1.text.indexOf("12 из 46") !== -1 && p1.text.indexOf("7") !== -1 && p1.value === 26,
+      "проверка страниц: сколько проверено и сколько новых строк нашлось: " + p1.text);
+const p2 = ip({ phase: "detect", total: 47, done: 3, counters: { detectPages: 6, detectDone: 2, toRead: 37 } });
+check(p2.text.indexOf("2 из 6") !== -1 && p2.text.indexOf("37") !== -1,
+      "первый поиск строк называет число страниц и сколько строк добавится: " + p2.text);
+const p3 = ip({ phase: "read", total: 47, done: 10, counters: { toRead: 37, read: 5 } });
+check(p3.text.indexOf("5 из 37") !== -1 && p3.value === 14, "чтение — строки, а не картинки: " + p3.text);
+
 console.log("\n" + (fail.length ? "ПРОВАЛЕНО: " + fail.join("; ") : "ВСЁ ПРОШЛО"));
 process.exit(fail.length ? 1 : 0);

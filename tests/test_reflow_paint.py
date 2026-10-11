@@ -342,6 +342,62 @@ else:
     check("помощи" in txt and "Выбор" in txt, "первое и последнее слово перевода напечатаны")
     check("smallShare" in st and "smallPages" in st, "самопроверка размера в отчёте сборки")
 
+print("=== 11. Пересверка не оставляет сирот и не трогает работу человека ===")
+IMG = {"kind": "image", "part": "pdfpage/0000.png"}
+proj = {"segments": [{"id": 1, "source": "a", "target": "машина", "origin": dict(IMG, block=0)},
+                     {"id": 2, "source": "b", "target": "человек", "status": "confirmed",
+                      "confirmedBy": "u1", "origin": dict(IMG, block=1)},
+                     {"id": 9, "source": "абзац текста", "target": "чужой"}]}
+rec3 = {"part": "pdfpage/0000.png", "blocks": [{"rows": 3, "text": "a", "seg": 1},
+                                                {"rows": 3, "text": "b", "seg": 2}]}
+seen = {}
+
+
+def fake_relayer(rec, blob, data, fig, protect=None):
+    seen["protect"] = set(protect or ())
+    for i, b in enumerate(rec["blocks"]):
+        if i not in seen["protect"]:
+            b["skip"] = "layer"
+    rec["blocks"].append({"rows": 1, "box": [0, 0, 1, 1]})
+    return 1
+
+
+orig_rel = main._relayer_old
+main._relayer_old = fake_relayer
+try:
+    got, dropped = main._relayer_rec(rec3, b"x", {}, {}, proj, False)
+    check(seen["protect"] == {1}, "подписанный человеком блок защищён: %s" % seen["protect"])
+    check(dropped == 1 and [s["id"] for s in proj["segments"]] == [2, 9] and "seg" not in rec3["blocks"][0],
+          "машинный сегмент ушедшего в слой блока снят, а не висит сиротой")
+    rec4 = {"part": "pdfpage/0001.png", "blocks": [{"rows": 3, "text": "c", "seg": 2}]}
+    main._relayer_rec(rec4, b"x", {}, {}, proj, True)
+    check(seen["protect"] == {0} and rec4["blocks"][0].get("seg") == 2,
+          "сухой прогон сегменты не снимает")
+    # Номер переиспользован: блок картинки помнит seg 9, а это абзац текста.
+    rec6 = {"part": "pdfpage/0003.png", "blocks": [{"rows": 3, "text": "d", "seg": 9}]}
+    _, dr6 = main._relayer_rec(rec6, b"x", {}, {}, proj, False)
+    check(dr6 == 0 and any(s["id"] == 9 for s in proj["segments"]),
+          "чужой сегмент с тем же номером не снят — сегмент подтверждает себя якорем")
+finally:
+    main._relayer_old = orig_rel
+proj7 = {"segments": [{"id": 4, "source": "x", "target": "y",
+                      "origin": {"kind": "image", "part": "pdfpage/0004.png", "block": 0}}]}
+rec7 = {"part": "pdfpage/0004.png", "blocks": [{"rows": 3, "skip": "layer", "layerSplit": 1, "seg": 4},
+                                                {"rows": 1, "box": [0, 0, 1, 1]}]}
+check(main._retire_orphans(rec7, proj7) == 1 and not proj7["segments"] and "seg" not in rec7["blocks"][0],
+      "сирота прежней пересверки снят без отрисовки")
+check(main._page_rec_trusted({"blocks": [], "vk": None, "src": "A"}, {}, "A", None),
+      "страница того же файла и плана — своя, как бы её ни отрисовал pdfium")
+check(not main._page_rec_trusted({"blocks": [], "vk": None, "src": "A"}, {}, "B", None),
+      "после замены файла — чужая")
+check(main._page_rec_trusted({"blocks": []}, {"at": "2026-10-11 14:14", "imagesAt": "2026-10-11 15:00"}, "B", None)
+      and not main._page_rec_trusted({"blocks": []}, {"at": "2026-10-11 16:00", "imagesAt": "2026-10-11 15:00"},
+                                     "B", None),
+      "запись без отпечатка: своя, если разбор шёл после привязки файла")
+rec5 = {"part": "pdfpage/0002.png", "blocks": [{"rows": 3, "skip": "layer", "box": [0, 0, 9, 9]}]}
+check(main._relayer_old(rec5, b"not an image", {}, {}) == 0 and "layerRule" not in rec5,
+      "картинка не открылась — правило не отмечено, пересверка повторится")
+
 print()
 print("ИТОГ: %s" % ("всё в порядке" if not fail else "%d провал(ов)" % len(fail)))
 sys.exit(1 if fail else 0)

@@ -315,6 +315,41 @@ def _areas(bands: list, mask, bg_local, pitch: float) -> list:
     return out
 
 
+def ink_lines(rgb, rows: int = 1, line_h: float = 0.0) -> list:
+    """Строки надписи по ПИКСЕЛЯМ, без детектора: полосы маски букв по
+    вертикали, в полосе — куски, разделённые пробелом шире 1.2 высоты строки
+    (две ячейки схемы рядом — два куска). [[x0, y0, x1, y1]] в точках вырезки.
+    Детектор строк — полминуты на страницу у единственного воркера; здесь —
+    доли секунды, а большего пересверке со слоем не нужно: что в блоке текст,
+    уже известно."""
+    if np is None or cv2 is None:
+        return []
+    try:
+        m = measure(rgb, "", max(1, rows), line_h)
+    except Exception:
+        return []
+    mask = m.get("mask")
+    if mask is None or not mask.any():
+        return []
+    out = []
+    for a, b in _bands(mask):
+        band_h = b - a + 1
+        cols = mask[a:b + 1].any(axis=0)
+        xs = np.nonzero(cols)[0]
+        if not len(xs):
+            continue
+        gap_max = max(3, int(1.2 * band_h))
+        start = prev = int(xs[0])
+        for x in xs[1:]:
+            x = int(x)
+            if x - prev > gap_max:
+                out.append([start, a, prev + 1, b + 1])
+                start = x
+            prev = x
+        out.append([start, a, prev + 1, b + 1])
+    return out
+
+
 def split_text(text: str, weights: list) -> list:
     """Перевод — по участкам: сперва по его собственным переносам строк
     (пункт, заголовок ячейки), иначе по словам; доля каждого участка — его

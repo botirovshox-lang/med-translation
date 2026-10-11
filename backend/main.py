@@ -17206,6 +17206,99 @@ def _job_images(job: dict) -> None:
     # наперёд: читать такой проект человеку.
     names = sorted(list(raster) + page_names, key=lambda n: (min(anchors.get(n) or [10 ** 9]), n))
     job["total"], job["done"] = len(names), 0
+    vk_now = _virt_key(data)
+    # ПЕРЕСВЕРКА со слоем — отдельным быстрым проходом ДО чтения: строки
+    # ищутся по пикселям (секунды на страницу), и человек сразу видит, сколько
+    # новых строк найдено и будет прочитано, а не «0 из 0» на полчаса.
+    def stopping() -> bool:
+        # `_job_should_stop` у внешнего воркера читает стоп-флаг из базы
+        # (кнопка «Остановить» пишет его туда) и заодно сохраняет ход;
+        # голый `job["stop"]` кнопку не слышал до конца задачи.
+        return bool(job.get("stop")) or _job_should_stop()
+
+    rel = [n for n in names if (known.get(n) or {}).get("blocks") is not None
+           and int((known.get(n) or {}).get("layerRule") or 1) < LAYER_RULE]
+    # Отпечаток ОРИГИНАЛА: у обычного PDF плана «ленты» нет (`vk` = None),
+    # и без него страница чужого файла после замены сошла бы за разобранную.
+    src_sha = project.get("sourceSha")
+
+    def _pending(rec_):
+        return [i for i, b in enumerate(rec_.get("blocks") or [])
+                if "text" not in b and b.get("skip") not in ("layer", "figure", "overlay", "noise")]
+
+    def _needs_detect(n) -> bool:
+        rec_ = known.get(n) or {}
+        if rec_.get("blocks") is None or rec_.get("unreadable"):
+            return True
+        if str(n).startswith(PDF_PAGE_PART):
+            return not _page_rec_trusted(rec_, data, src_sha, vk_now)
+        try:
+            blob_ = raster[n]
+        except KeyError:
+            return False
+        return hashlib.sha1(blob_).hexdigest() != rec_.get("sha") \
+            and not _same_image(blob_, rec_.get("sha"))
+    # Сколько картинок впервые ищут строки — это самая долгая часть
+    # (до минуты на страницу книги), и человек должен знать её размер заранее.
+    need_det = {n for n in names if _needs_detect(n)}
+    job["counters"]["detectPages"] = len(need_det)
+    job["counters"]["detectDone"] = 0
+    job["counters"]["checkPages"] = len(rel)
+    job["counters"]["checked"] = 0
+    job["counters"]["found"] = 0
+    job["phase"] = "check" if rel else "prepare"
+    _job_persist(job)
+    t_persist = time.time()
+    dropped_segs = 0
+    if not dry:
+        for rec_ in known.values():
+            dropped_segs += _retire_orphans(rec_, project)
+    for n in rel:
+        if stopping() or _SHUTDOWN.is_set():
+            break
+        rec_ = known[n]
+        if n in need_det:
+            blob_ = b""                 # страницу разберут заново — пересверять нечего
+        elif not _relayer_todo(rec_):
+            blob_ = b""
+            rec_["layerRule"] = LAYER_RULE   # пересверять нечего — и рисовать незачем
+        else:
+            try:
+                blob_ = raster[n]
+            except KeyError:
+                blob_ = b""
+        if blob_:
+            before_ = len(_pending(rec_))
+            got_, drop_ = _relayer_rec(rec_, blob_, data, fig_rects, project, dry)
+            if got_:
+                job["counters"]["relayered"] = job["counters"].get("relayered", 0) + 1
+                # Новые строки — те, что пойдут в чтение (без рисунков и слоя).
+                job["counters"]["found"] += max(0, len(_pending(rec_)) - before_)
+            dropped_segs += drop_
+        job["counters"]["checked"] += 1
+        if time.time() - t_persist > 2.0:
+            _job_persist(job)
+            t_persist = time.time()
+    if rel or dropped_segs:
+        data["images"] = [known.get(im.get("part"), im) for im in (data.get("images") or [])]
+        _save_source_map(pid, data)
+    if dropped_segs:
+        job["counters"]["segmentsRetired"] = dropped_segs
+        save_state(STATE)
+
+    def _read_left(recs) -> int:
+        # Сколько ещё прочитать — по записям, которые чтение возьмёт; у авто-
+        # чтения — не больше оставшегося места под потолком задачи.
+        left = sum(len(_pending(r)) for r in recs if r and r.get("blocks") is not None
+                   and not r.get("unreadable"))
+        if job["params"].get("auto"):
+            left = min(left, max(0, AUTO_READ_MAX_BLOCKS - int(job["counters"].get("autoAsked") or 0)))
+        return left
+    job["counters"]["read"] = 0
+    job["counters"]["toRead"] = 0 if dry else _read_left(
+        [known[n] for n in names if n in known and n not in need_det])
+    job["phase"] = "prepare"
+    _job_persist(job)
     # Обход идёт с начала и при ВОЗОБНОВЛЕНИИ после уступки: прочитанное
     # берётся из карты бесплатно, но счётчики за него насчитались бы второй
     # раз. Поэтому они не накапливаются между заходами, а считаются заново
@@ -17245,7 +17338,7 @@ def _job_images(job: dict) -> None:
     domain_id = project.get("domain")
     pos = 0
     while pos < len(names):
-        if job["stop"]:
+        if stopping():
             job["status"] = "stopped"
             break
         if _SHUTDOWN.is_set():
@@ -17276,14 +17369,44 @@ def _job_images(job: dict) -> None:
         # (имя, картинка, запись); у нечитаемой — запись с `unreadable`.
         work = []
         for name in batch:
-            if job["stop"] and work:
+            if work and stopping():
                 break                  # остаток пачки — следующему заходу
+            prev = known.get(name) or {}
+            if name in need_det:
+                job["counters"]["detectDone"] = job["counters"].get("detectDone", 0) + 1
+            page_ok = str(name).startswith(PDF_PAGE_PART) and _page_rec_trusted(prev, data, src_sha, vk_now)
+            if (page_ok and int(prev.get("layerRule") or 1) >= LAYER_RULE
+                    and not _pending(prev)):
+                # Страница уже разобрана (тем же файлом — `src`), читать на ней
+                # нечего: отрисовывать её (секунды на страницу у книги) незачем —
+                # сегменты по ней заводятся из карты.
+                rec = dict(prev)
+                if src_sha and rec.get("src") != src_sha:
+                    rec["src"] = src_sha
+                    map_dirty = True
+                if anchors.get(name) and rec.get("paras") != anchors.get(name):
+                    rec["paras"] = anchors.get(name) or []
+                    map_dirty = True
+                work.append((name, b"", rec))
+                continue
             try:
                 blob = raster[name]
             except KeyError:
                 blob = b""             # страница не отрисовалась — «не знаю», а не обрыв задачи
+            if not blob and prev.get("blocks") is not None:
+                # Разбор уже есть, а картинка сейчас не отрисовалась: пустой
+                # отпечаток объявил бы её ДРУГОЙ картинкой, и прочитанное
+                # (оплаченное) заменилось бы пометкой «не читается».
+                rec = dict(prev)
+                if anchors.get(name) and rec.get("paras") != anchors.get(name):
+                    rec["paras"] = anchors.get(name) or []
+                    map_dirty = True
+                work.append((name, b"", rec))
+                continue
             sha = hashlib.sha1(blob).hexdigest()
-            prev = known.get(name) or {}
+            if page_ok and prev.get("sha") != sha:
+                prev = dict(prev, sha=sha)  # та же страница того же файла, другая отрисовка
+                map_dirty = True
             if prev.get("blocks") is not None and prev.get("sha") != sha and blob \
                     and _same_image(blob, prev.get("sha")):
                 prev = dict(prev, sha=sha)  # та же картинка, только с меткой места
@@ -17292,8 +17415,12 @@ def _job_images(job: dict) -> None:
                 else {"part": name, "sha": sha}
             if name.startswith(PDF_PAGE_PART):
                 # Номер страницы без плана «ленты» ничего не значит: разбор
-                # помечается отпечатком плана (`_pdf_image_boxes` сверяет).
+                # помечается отпечатком плана (`_pdf_image_boxes` сверяет)
+                # и отпечатком оригинала (сверяет быстрый пропуск выше).
                 rec["vk"] = _virt_key(data)
+                if src_sha and rec.get("src") != src_sha:
+                    rec["src"] = src_sha
+                    map_dirty = True
             # Якорный абзац — свежий на КАЖДОМ заходе, а не только при обнаружении:
             # после замены файла запись переносится, а номера абзацев в новом
             # документе другие — по старым восстановление сажало бы строку не туда.
@@ -17302,6 +17429,7 @@ def _job_images(job: dict) -> None:
                 map_dirty = True
             if rec.get("blocks") is None:
                 job["phase"] = "detect"
+                _job_persist(job)      # поиск строк — до минуты на страницу: ход виден сразу
                 lines = image_text.detect_lines(blob)
                 if lines is None:
                     # Битый файл, незнакомый формат, векторный метафайл. Это «не
@@ -17328,12 +17456,22 @@ def _job_images(job: dict) -> None:
             elif int(rec.get("layerRule") or 1) < LAYER_RULE and blob:
                 # Прочитано по прежнему правилу сверки со слоем — строки,
                 # потерянные вместе с блоком слоя, находятся заново.
-                job["phase"] = "detect"
-                if _relayer_old(rec, blob, data, fig_rects):
+                got_, drop_ = _relayer_rec(rec, blob, data, fig_rects, project, dry)
+                if got_:
                     job["counters"]["relayered"] = job["counters"].get("relayered", 0) + 1
+                    job["counters"]["found"] = job["counters"].get("found", 0) + got_
+                if drop_:
+                    job["counters"]["segmentsRetired"] = job["counters"].get("segmentsRetired", 0) + drop_
+                    segs_dirty = True
                 map_dirty = True
             work.append((name, blob, rec))
         pos += len(work)
+        if not dry:
+            # Поиск строк и пересверка в этой пачке могли добавить строк к
+            # чтению: «из скольких» пересчитывается, а не застывает на старте.
+            rest = [known.get(n) for n in names[pos:] if n not in need_det]
+            job["counters"]["toRead"] = int(job["counters"].get("read") or 0) + _read_left(
+                [r for _n, b_, r in work if b_] + rest)
 
         # 2. ЧТЕНИЕ — разом на всю пачку. Спрашиваем только про блоки, о которых
         # ещё не спрашивали: разбор кэширован по sha картинки, и повторный
@@ -17341,8 +17479,8 @@ def _job_images(job: dict) -> None:
         if not dry and not job["stop"]:
             tasks = []
             for _name, blob, rec in work:
-                if rec.get("unreadable"):
-                    continue
+                if rec.get("unreadable") or not blob:
+                    continue               # без картинки читать нечего — блоки ждут следующего захода
                 todo = [i for i, b in enumerate(rec["blocks"])
                         if "text" not in b and b.get("skip") not in ("layer", "figure")]
                 if job["params"].get("auto"):
@@ -17402,6 +17540,7 @@ def _job_images(job: dict) -> None:
                             continue
                         b = blocks[i]
                         b["text"] = ans["text"]
+                        job["counters"]["read"] = job["counters"].get("read", 0) + 1
                         b["reader"] = ans["model"]
                         if b.get("skip") in ("layer", "figure"):
                             pass                      # текст слоя или рисунка — не наш блок
@@ -17458,6 +17597,9 @@ def _job_images(job: dict) -> None:
         if segs_dirty:
             save_state(STATE)
             segs_dirty = False
+        # Ход — в базу после КАЖДОЙ пачки: у внешнего воркера экран читает
+        # его оттуда, и без этого полоса стояла на «0 из 0» до конца задачи.
+        _job_persist(job)
         if quota:
             flush()
             _job_quota_stop(job)
@@ -31734,6 +31876,26 @@ PDF_PAGE_PART = "pdfpage/"
 PDF_PAGE_DPI = int(os.environ.get("PDF_PAGE_OCR_DPI", "144"))
 
 
+def _page_rec_trusted(prev: dict, data: dict, src_sha: Optional[str], vk_now) -> bool:
+    """Разбор СТРАНИЦЫ PDF принадлежит нынешнему файлу — без отрисовки.
+
+    Отпечаток отрисованной страницы этим признаком не годится: те же байты
+    PDF другой сборкой pdfium (выкат, обновление пакета) рисуются в другой
+    PNG, и каждая страница объявлялась бы новой — полный поиск строк заново
+    (до минуты на страницу) и платное чтение уже прочитанного (замер на копии
+    проекта 14: 46 страниц, 30 минут). Страница — это номер в ТОМ ЖЕ файле
+    по ТОМУ ЖЕ плану страниц: `vk` (план «ленты») и `src` (отпечаток
+    оригинала). У записи до `src` — доверие, если разбор картинок шёл ПОСЛЕ
+    привязки нынешнего файла (`imagesAt` ≥ `at`): замена файла переносит
+    старую карту с прежним `imagesAt`, и та окажется раньше."""
+    if prev.get("blocks") is None or prev.get("unreadable") or prev.get("vk") != vk_now:
+        return False
+    if prev.get("src"):
+        return bool(src_sha) and prev.get("src") == src_sha
+    at, img_at = (data or {}).get("at"), (data or {}).get("imagesAt")
+    return bool(at and img_at and str(img_at) >= str(at))
+
+
 def _same_image(blob: bytes, sha: str) -> bool:
     """Картинка части — та, чей отпечаток записан в карте: буква в букву либо
     без метки места вырезки (`importers.tag_figure`). Метка появилась позже
@@ -32054,7 +32216,8 @@ def _mark_layer_blocks(rec: dict, blob: bytes, data: dict, only: "set | None" = 
     return n
 
 
-def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict) -> int:
+def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict,
+                 protect: "set | None" = None) -> int:
     """Запись, сверенная со слоем по прежнему правилу (целым блоком), —
     сверить построчно. Строки блоков `skip: layer` ищет заново ЛОКАЛЬНЫЙ
     детектор (бесплатно); существующие блоки и их номера не меняются,
@@ -32066,11 +32229,9 @@ def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict) -> int:
     # прочитанные многострочные блоки СТРАНИЦЫ: детектор собирал в них
     # столбец схемы целиком, часть строк которого — текст слоя (дубль),
     # а часть — растр (только их и надо было читать; проект 14, стр. 19).
-    todo = {i for i, b in enumerate(blocks)
-            if int(b.get("rows") or 1) > 1 and not b.get("layerSplit")
-            and (b.get("skip") == "layer"
-                 or ("text" in b and not b.get("skip")
-                     and str(rec.get("part") or "").startswith(PDF_PAGE_PART)))}
+    # `protect` — блоки, чей сегмент трогать нельзя (работа человека, сухой
+    # прогон): их пересверка оставила бы сегмент сиротой.
+    todo = _relayer_todo(rec) - set(protect or ())
     if not todo or not blob or image_text is None:
         rec["layerRule"] = LAYER_RULE
         return 0
@@ -32081,22 +32242,42 @@ def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict) -> int:
         page_im = _PIL.open(io.BytesIO(blob)).convert("RGB")
     except Exception:
         page_im = None
+    if page_im is None:
+        # Картинка не открылась — «не знаю»: отметка правила ушла бы
+        # вместе с несделанной пересверкой, и второй раз её не позвали бы.
+        return 0
     lbs: dict = {}
     for i in todo:
         x0, y0, x1, y1 = (int(v) for v in blocks[i]["box"])
-        if page_im is None:
-            break
         pad = int(max(4, 0.6 * float(blocks[i].get("lineH") or 10)))
         cx0, cy0 = max(0, x0 - pad), max(0, y0 - pad)
         cx1, cy1 = min(page_im.size[0], x1 + pad), min(page_im.size[1], y1 + pad)
         if cx1 - cx0 < 4 or cy1 - cy0 < 4:
             continue
-        buf = io.BytesIO()
-        page_im.crop((cx0, cy0, cx1, cy1)).save(buf, "PNG")
+        crop_im = page_im.crop((cx0, cy0, cx1, cy1))
+        lines = []
         try:
-            lines = image_text.detect_lines(buf.getvalue()) or []
-        except Exception:
-            lines = []
+            # Строки — по пикселям (`text_paint.ink_lines`): детектор строк на
+            # каждой вырезке стоил минуты на страницу, а что в блоке текст,
+            # уже известно. Нет OpenCV — прежний детектор.
+            from backend import text_paint as _tp_
+        except ImportError:
+            try:
+                import text_paint as _tp_
+            except ImportError:
+                _tp_ = None
+        if _tp_ is not None and _tp_.available():
+            import numpy as _np_
+            lines = [{"box": bx} for bx in _tp_.ink_lines(
+                _np_.asarray(crop_im), int(blocks[i].get("rows") or 1),
+                float(blocks[i].get("lineH") or 0))]
+        else:
+            buf = io.BytesIO()
+            crop_im.save(buf, "PNG")
+            try:
+                lines = image_text.detect_lines(buf.getvalue()) or []
+            except Exception:
+                lines = []
         got = []
         for ln in lines:
             lx0, ly0, lx1, ly1 = ln["box"]
@@ -32105,7 +32286,11 @@ def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict) -> int:
             if x0 - 2 <= mx <= x1 + 2 and y0 - 2 <= my <= y1 + 2:
                 got.append([int(lx0), int(ly0), int(lx1), int(ly1)])
         if len(got) > 1:
-            lbs[i] = sorted(got, key=lambda v: v[1])
+            # По строке, ВНУТРИ строки — слева направо: куски одной строки
+            # (две ячейки схемы рядом) идут подряд, и непокрытые по краям
+            # покрытого слоем куска не склеятся через него в один блок.
+            row_h = max(1, int(float(blocks[i].get("lineH") or 10) / 2))
+            lbs[i] = sorted(got, key=lambda v: (v[1] // row_h, v[0]))
     before = len(blocks)
     _mark_layer_blocks(rec, blob, data, only=set(lbs), line_boxes=lbs)
     new = rec.get("blocks") or []
@@ -32124,6 +32309,7 @@ def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict) -> int:
                 dup = True
                 break
         if not dup:
+            nb.pop("from", None)
             keep.append(nb)
     rec["blocks"] = keep
     if str(rec.get("part") or "").startswith(PDF_PAGE_PART) and len(keep) > before:
@@ -32131,6 +32317,74 @@ def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict) -> int:
         _mark_figure_blocks(sub, blob, fig_rects)
     rec["layerRule"] = LAYER_RULE
     return len(keep) - before
+
+
+def _relayer_todo(rec: dict) -> set:
+    """Блоки записи, которые пересверка со слоем возьмёт: многострочные,
+    отсеянные как слой целиком, и прочитанные многострочные блоки страницы.
+    Пусто — пересверять нечего, и страницу незачем даже отрисовывать."""
+    return {i for i, b in enumerate(rec.get("blocks") or [])
+            if int(b.get("rows") or 1) > 1 and not b.get("layerSplit")
+            and (b.get("skip") == "layer"
+                 or ("text" in b and not b.get("skip")
+                     and str(rec.get("part") or "").startswith(PDF_PAGE_PART)))}
+
+
+def _retire_orphans(rec: dict, project: dict) -> int:
+    """Сироты прежней пересверки: блок разрезан со слоем (`layerSplit`,
+    `skip: layer`) и больше не печатается, а его МАШИННЫЙ сегмент остался
+    в проекте. Снимаем без отрисовки; сегмент с работой человека не трогаем
+    (его судьбу решает человек — `images/restore`). Ответ — сколько снято."""
+    by_id = {s["id"]: s for s in project.get("segments") or []}
+    n = 0
+    for i, b in enumerate(rec.get("blocks") or []):
+        if b.get("skip") != "layer" or not b.get("layerSplit") or b.get("seg") is None:
+            continue
+        seg = _image_seg_of(by_id, b, rec.get("part"), i)
+        if seg is not None and _human_text(seg):
+            continue
+        b.pop("seg", None)
+        if seg is not None and seg in project["segments"]:
+            project["segments"].remove(seg)
+            n += 1
+    return n
+
+
+def _relayer_rec(rec: dict, blob: bytes, data: dict, fig_rects: dict,
+                 project: dict, dry: bool) -> tuple:
+    """Пересверка записи со слоем вместе с её СЕГМЕНТАМИ: (новых блоков,
+    снятых сегментов). Блок, ушедший в слой при разрезке, больше не
+    печатается и не переводится — его машинный сегмент снимается (иначе он
+    висел бы сиротой: оплаченный перевод, которого нет в выгрузке, и вдвое
+    оплаченный текст рядом со строками-наследниками). Сегмент с работой
+    человека (`_human_text`) и любой сегмент в сухом прогоне блок защищают:
+    такой блок не пересверяется вовсе."""
+    by_id = {s["id"]: s for s in project.get("segments") or []}
+    part = rec.get("part")
+    protect = set()
+    for i, b in enumerate(rec.get("blocks") or []):
+        if b.get("seg") is None:
+            continue
+        # Сегмент — только подтвердивший себя якорем (`_image_seg_of`): номера
+        # переиспользуются, и по голому номеру сняли бы чужую строку текста.
+        seg = _image_seg_of(by_id, b, part, i)
+        if dry or (seg is not None and _human_text(seg)):
+            protect.add(i)
+    was_layer = {i for i, b in enumerate(rec.get("blocks") or []) if b.get("skip") == "layer"}
+    added = _relayer_old(rec, blob, data, fig_rects, protect=protect)
+    dropped = 0
+    if dry:
+        return added, 0
+    for i, b in enumerate(rec.get("blocks") or []):
+        # Снимаем только то, что ЭТА пересверка увела в слой, и не защищённое.
+        if i in protect or i in was_layer or b.get("skip") != "layer" or b.get("seg") is None:
+            continue
+        seg = _image_seg_of(by_id, b, part, i)
+        b.pop("seg", None)
+        if seg is not None and seg in project["segments"]:
+            project["segments"].remove(seg)
+            dropped += 1
+    return added, dropped
 
 
 def _drop_nested_labels(items: list) -> tuple:

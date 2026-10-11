@@ -565,21 +565,49 @@ function modelRoleConflicts(eff, label) {
    Числа — сервера: картинка N из M и чем занят (`job.phase`: ищет строки
    или читает надписи). Задача в очереди номера не показывает и время
    не выдумывает (инвариант 24); уступившая — уже работает. */
+/* Ход разбора картинок словами человека — ОДНО место на полосу редактора
+   и на строку карточки файла. Стадии называет сервер (`job.phase`), числа —
+   его счётчики: проверка страниц («checked из checkPages», сколько новых
+   строк нашлось), первый поиск строк («detected из detectPages» — до минуты
+   на страницу, поэтому размер этой работы виден заранее), чтение («read из
+   toRead» — столько строк и встанет в перевод). Знаменателя нет — полоса
+   бежит без числа (value: null): «0 из 0» читалось как «зависло», а
+   выдуманное число было бы враньём. */
+function imagesProgress(job) {
+  const c = job.counters || {};
+  const n = v => Number(v) || 0;
+  const pct = (a, b) => Math.min(100, Math.round(n(a) / Math.max(1, n(b)) * 100));
+  const more = n(c.toRead) ? TR(" · добавится строк: до ") + n(c.toRead) : "";
+  if (job.phase === "check" && n(c.checkPages))
+    return { text: TR("Проверяю страницы: ") + n(c.checked) + TR(" из ") + n(c.checkPages)
+        + (n(c.found) ? TR(" · нашла новых строк: ") + n(c.found) : ""),
+      value: pct(c.checked, c.checkPages) };
+  if (job.phase === "detect" && n(c.detectPages))
+    return { text: TR("Ищу строки на страницах: ") + Math.min(n(c.detectDone), n(c.detectPages))
+        + TR(" из ") + n(c.detectPages) + TR(" · до минуты на страницу") + more,
+      value: pct(c.detectDone, c.detectPages) };
+  if (job.phase === "read" && n(c.toRead))
+    return { text: TR("Читаю новые строки: ") + Math.min(n(c.read), n(c.toRead)) + TR(" из ") + n(c.toRead),
+      value: pct(c.read, c.toRead) };
+  if (n(job.total) && (job.phase || n(job.done)))
+    return { text: TR("Раскладываю строки по тексту: ") + n(job.done) + TR(" из ") + n(job.total) + more,
+      value: pct(job.done, job.total) };
+  return { text: TR("Готовлю страницы…"), value: null };
+}
+
 function ImagesJobLine({ job }) {
-  const total = job.total || 0, done = job.done || 0;
+  const done = job.done || 0;
   const queued = job.status === "queued";
-  const what = job.phase === "read" ? TR("читаем надписи")
-    : job.phase === "detect" ? TR("ищем строки на картинках") : "";
+  const pr = imagesProgress(job);
   const text = queued
     ? (done > 0 ? TR("продолжу сразу после чужой порции")
                 : TR("идёт другой прогон, начну сразу после него"))
-    : total ? TR("картинка ") + done + TR(" из ") + total + (what ? " · " + what : "")
-    : TR("готовим картинки");
+    : pr.text;
   return React.createElement("div", { className: "col", style: { gap: 6 } },
     React.createElement("div", { className: "row", style: { gap: 8, fontSize: 13 } },
       React.createElement(Spinner, null), React.createElement("span", null, text)),
-    total && !queued
-      ? React.createElement(ProgressBar, { value: Math.round(done / total * 100) })
+    pr.value != null && !queued
+      ? React.createElement(ProgressBar, { value: pr.value })
       : React.createElement("div", { className: "pbar pbar-indet" }, React.createElement("span", null)));
 }
 
@@ -616,7 +644,7 @@ function MediaJobLine({ job }) {
 }
 
 Object.assign(window, {
-  ImagesJobLine, MediaJobLine,
+  ImagesJobLine, MediaJobLine, imagesProgress,
   Icon, Btn, IconBtn, StatusBadge, Badge, STATUS_META,
   Field, Input, Textarea, Select, SearchInput, Checkbox, Radio, Switch,
   Expander, Modal, ToastProvider, useToast,

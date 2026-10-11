@@ -3311,7 +3311,11 @@ const RUN_PLAIN = { full: TR("Перевожу и проверяю…"), transla
 const RUN_LINES = { full: 1, translate: 1, apply_terms: 1 };
 function RunStrip({ job, steps, onStop, plain }) {
   const spend = spendOf(job);
-  const pct = Math.round(job.done / Math.max(1, job.total) * 100);
+  /* У чтения картинок «N из M» — картинки, а стадии у него разные (проверка
+     страниц, поиск строк, чтение): ход словами и числами даёт
+     `imagesProgress`, общий с карточкой файла. */
+  const img = job.kind === "images" ? imagesProgress(job) : null;
+  const pct = img ? img.value : Math.round(job.done / Math.max(1, job.total) * 100);
   /* Место в очереди считает СЕРВЕР (`queuePos`/`queueAhead`): исполнитель
      один на всех, и задачи ходят по кругу — уступая друг другу между
      порциями. Придуманное браузером число было бы враньём: он не видит ни
@@ -3340,14 +3344,18 @@ function RunStrip({ job, steps, onStop, plain }) {
         plain && RUN_PLAIN[job.kind] && !job.stopping && job.status !== "queued"
           ? React.createElement("span", null, RUN_PLAIN[job.kind])
           : React.createElement("span", null, (JOB_LABELS[job.kind] || job.kind) + " — " + phase),
-        React.createElement("span", { className: "rs-num" }, job.done + TR(" из ") + job.total
-          + (plain && RUN_LINES[job.kind] ? TR(" строк") : "")),
+        img
+          ? (job.status !== "queued" && React.createElement("span", { className: "rs-num" }, img.text))
+          : React.createElement("span", { className: "rs-num" }, job.done + TR(" из ") + job.total
+              + (plain && RUN_LINES[job.kind] ? TR(" строк") : "")),
         spend && !costHidden() && React.createElement("span", { className: "rs-num", title: spendTitle(spend) },
           TR("потрачено ") + fmtCost(spend.cost)
           + (spend.est != null ? TR(" из ≈ ") + fmtCost(spend.est) : "")),
         React.createElement("span", { className: "dim", style: { fontWeight: 500, fontSize: 11.5 } },
           TR("вкладку можно закрыть — прогон продолжится"))),
-      React.createElement(ProgressBar, { value: pct })),
+      pct == null
+        ? React.createElement("div", { className: "pbar pbar-indet" }, React.createElement("span", null))
+        : React.createElement(ProgressBar, { value: pct })),
     React.createElement(Btn, { variant: "ghost", size: "sm", onClick: onStop, disabled: !!job.stopping },
       job.stopping ? TR("Останавливаем…") : TR("Остановить")),
 

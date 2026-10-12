@@ -192,6 +192,39 @@ keep, n = main._drop_nested_labels([par, k1])
 check(n == 1 and par in keep and k1 not in keep,
       "наследник покрывает часть — печатается родитель")
 
+keep, n = main._drop_nested_labels([lab_("Все о медолечении России", "All about bee therapy Russia",
+                                         0.1, 0.1, 0.5, 0.3, rows=2),
+                                    lab_("о медолечении России", "about bee therapy Russia",
+                                         0.15, 0.1, 0.5, 0.2)])
+check(n == 1 and keep[0]["text"].startswith("Все"),
+      "обложка: один вложенный повтор снимается, а не родитель")
+
+print("=== 9. Находки критика: абзац через страницу, литература, запасной ход ===")
+pg0 = column(3, y=700, page=0)
+pg1 = column(3, y=700, page=1)
+sp, sm = plan_of([(pg0 + pg1, " ".join(WORDS * 2))])
+st = {}
+layout_pdf._stories(sp, sm, st, None)
+got_w = " ".join(x for x in sp[0][1] if x).split()
+check(len(got_w) == len(WORDS) * 2 and {v["page"] for v in sp[0][0]} == {0, 1},
+      "абзац, разорванный страницей, собран из обеих историй — все слова, обе страницы")
+pr2 = {"id": 993, "src": "EN", "tgt": "RU", "segments": [
+    {"id": 300 + k, "source": t, "target": "перевод %d" % k} for k, t in enumerate([
+        "1. Measure BP, HR and ECG in all patients.",
+        "Patients with resistant hypertension need review.",
+        "References"])] + refs[4:]}
+z2 = main._refs_of(pr2)
+check(not ({300, 301, 302} & set(z2["keep"])), "нумерованный пункт текста перед списком — не литература")
+hd = [slot(40, 700, 230, size=7.0, style="bi")]
+bd = [slot(232, 700, 240)] + [slot(40, 700 - 12 * k, 240) for k in range(1, 6)]
+sp, sm = plan_of([(hd, "Очень длинный заголовок в подбор, который занимает всю строку колонки."),
+                  (bd, " ".join(WORDS))])
+layout_pdf._stories(sp, sm, {}, None)
+hl, b1 = sp[0][0][-1], sp[1][0][0]
+hw = SW(sp[0][1][-1], FONT, hl["size"] * sp[0][2][-1]) * sp[0][6][-1]
+check(b1["y"] <= hl["y"] - 5.0 or (abs(b1["y"] - hl["y"]) < 0.01 and b1["x"] >= hl["x"] + hw),
+      "места за заголовком нет — тело со следующей строки, а не поверх")
+
 print()
 print("ИТОГ: %s" % ("всё в порядке" if not fail else "%d провал(ов)" % len(fail)))
 sys.exit(1 if fail else 0)

@@ -1865,7 +1865,7 @@ def _stories(slot_plan: list, slot_meta: list, stats: dict, page_slots: "dict | 
                 sd["size"] = msize
         runs = [[merged[k] for k in r] for r in _runs(merged)]
         styles = [sd.get("style") or "" for sd in orig]
-        info[i] = {"runs": runs, "msize": msize,
+        info[i] = {"runs": runs, "msize": msize, "h0": _h0_of(orig),
                    "major": max(set(styles), key=styles.count),
                    "text_like": any(len(r) >= 2 for r in runs),
                    "nlines": len(_vis_lines(orig))}
@@ -1904,7 +1904,7 @@ def _stories(slot_plan: list, slot_meta: list, stats: dict, page_slots: "dict | 
         off1 = max(0.0, statistics.median(offs)) if offs else 0.0
         for j, (pg, g) in enumerate(by_pg):
             head = inf["nlines"] <= 3 and "b" in inf["major"]
-            pieces.append({"off0": off0, "off1": off1, "head": head,
+            pieces.append({"off0": off0, "off1": off1, "head": head, "h0": inf["h0"],
                            "i": i, "page": pg, "runs": g, "boxes": _story_piece_boxes(g),
                            "words": words[bounds[j]:bounds[j + 1]], "cont": j > 0,
                            "msize": inf["msize"], "major": inf["major"], "nlines": inf["nlines"],
@@ -2018,6 +2018,10 @@ def _stories(slot_plan: list, slot_meta: list, stats: dict, page_slots: "dict | 
                     gap = None
                     if pi > 0 and lks[pi - 1] == "v":
                         gap = pcs[pi - 1]["boxes"][-1]["bot"] - p["boxes"][0]["top"]
+                        if gap < 0.5 * pitch_p:
+                            # Та же строка (заголовок в подбор, место за
+                            # которым кончилось) или выше — следующая строка.
+                            gap = None
                     y_ = y - (gap or last_pitch or pitch_p) * f
                 else:
                     y_ = y - pitch_p * f
@@ -2076,7 +2080,7 @@ def _stories(slot_plan: list, slot_meta: list, stats: dict, page_slots: "dict | 
                 font = fo(v)
                 swf = meta["sw"]
                 size = max(1.0, v["size"] * f)
-                h0 = v.get("_h0", 1.0)
+                h0 = p["h0"]
                 hs = max(HSCALE_FLOOR, h0 * hs_k)
                 align = slot_plan[p["i"]][5]
                 width = (v["x1"] - v["x"]) / max(hs, 0.01)
@@ -2183,55 +2187,83 @@ def _stories(slot_plan: list, slot_meta: list, stats: dict, page_slots: "dict | 
                 pick = s_i
                 break
         caps[key] = pick
-    took = outl = 0
-    stories: list = []
+    # Сначала решаем, КТО идёт историями, потом применяем: абзац,
+    # разорванный страницей, лежит в двух историях (через страницу история
+    # не идёт), и его строки собираются из ОБЕИХ. Не сложилась хоть одна —
+    # весь абзац остаётся прежней дороге, а с ним и истории, где он есть
+    # (иначе одна страница абзаца вышла бы пустой: закраска — по всем его
+    # местам, а печать — по половине).
+    outl = 0
+    res: dict = {}
     for c, ch in enumerate(chains):
         if lims[c] is None:
             continue
         s_i = max(lims[c], caps.get(klass[c], lims[c]))
         got = best_at(ch, STORY_STEPS[s_i])
-        if got is None:
-            continue
-        if s_i > caps.get(klass[c], s_i):
-            outl += 1
-        _story_apply(ch, got, STORY_STEPS[s_i], slot_plan, slot_meta, len(stories))
-        stories.append({"chain": ch, "step": s_i})
-        took += 1
-    stats["stories"] = took
+        if got is not None:
+            res[c] = {"chain": ch, "step": s_i, "got": got}
+            if s_i > caps.get(klass[c], s_i):
+                outl += 1
+    bad: set = set()
+    changed = True
+    while changed:
+        changed = False
+        for c, ch in enumerate(chains):
+            pis = {p["i"] for p in ch[0]}
+            if c in res and pis & bad:
+                del res[c]
+                changed = True
+            if c not in res and not pis <= bad:
+                bad |= pis
+                changed = True
+    stories = res
+    by_par: dict = {}
+    for c in sorted(stories):
+        for p in stories[c]["chain"][0]:
+            by_par.setdefault(p["i"], [])
+            if c not in by_par[p["i"]]:
+                by_par[p["i"]].append(c)
+
+    def assemble(pars) -> None:
+        for i in pars:
+            vs, lines, fs, hss = [], [], [], []
+            for c in by_par[i]:
+                st_ = stories[c]
+                f = STORY_STEPS[st_["step"]]
+                _hk, out = st_["got"]
+                for k, p in enumerate(st_["chain"][0]):
+                    if p["i"] != i:
+                        continue
+                    vs.extend(out[k][0])
+                    lines.extend(out[k][1])
+                    fs.extend([f] * len(out[k][0]))
+                    hss.extend(v.get("_hs", 1.0) for v in out[k][0])
+            if not vs:
+                vs, lines, fs, hss = [dict(slot_meta[i]["orig"][0], _v=True)], [""], [1.0], [1.0]
+            e = slot_plan[i]
+            slot_plan[i] = (vs, lines, fs, [], e[4], e[5], hss)
+            slot_meta[i]["story"] = set(by_par[i])
+            slot_meta[i].pop("framed", None)
+    assemble(list(by_par))
+    stats["stories"] = len(stories)
     stats["storyOutliers"] = outl
     stats["storySteps"] = {"%s/%s/%.1f" % (k[0] or "-", k[1] or "r", k[2]): STORY_STEPS[v]
                            for k, v in sorted(caps.items(), key=lambda t: str(t[0]))[:12]}
 
     def relay(sid: int) -> bool:
-        """Наложение у истории: вся история — ступенью ниже."""
-        st_ = stories[sid]
+        """Наложение у истории: вся история — ступенью ниже, и абзацы,
+        где она есть, собираются заново (со строками других их историй)."""
+        st_ = stories.get(sid)
+        if st_ is None:
+            return False
         for s_i in range(st_["step"] + 1, len(STORY_STEPS)):
             got = best_at(st_["chain"], STORY_STEPS[s_i])
             if got is not None:
-                st_["step"] = s_i
-                _story_apply(st_["chain"], got, STORY_STEPS[s_i], slot_plan, slot_meta, sid)
+                st_["step"], st_["got"] = s_i, got
+                assemble({p["i"] for p in st_["chain"][0]})
                 return True
         return False
     stats["_story_relay"] = relay
-
-
-def _story_apply(chain, got, f, slot_plan, slot_meta, sid) -> None:
-    pcs, _lks = chain
-    hk, out = got
-    per: dict = {}
-    for k, p in enumerate(pcs):
-        vs, lines = out[k]
-        per.setdefault(p["i"], ([], []))
-        per[p["i"]][0].extend(vs)
-        per[p["i"]][1].extend(lines)
-    for i, (vs, lines) in per.items():
-        if not vs:
-            vs, lines = [dict(slot_meta[i]["orig"][0], _v=True)], [""]
-        e = slot_plan[i]
-        slot_plan[i] = (vs, lines, [f] * len(vs), [], e[4], e[5],
-                        [v.get("_hs", 1.0) for v in vs])
-        slot_meta[i]["story"] = sid
-        slot_meta[i].pop("framed", None)
 
 
 # Общий кегль класса надписей (`_harmonize`): класс от стольких абзацев,
@@ -2297,7 +2329,8 @@ def _harmonize(slot_plan: list, slot_meta: list, stats: dict) -> None:
         # четверть нужного (самый мелкий тянул вниз всю таблицу из-за одной
         # тесной ячейки), не мельче `HARMONY_FLOOR`; кому нужно ещё мельче —
         # выброс, называется числом.
-        target = max(fv[int(HARMONY_Q * (len(fv) - 1))], HARMONY_FLOOR)
+        q = HARMONY_Q if len(fv) >= HARMONY_Q_MIN else 0.5
+        target = max(fv[int(q * (len(fv) - 1))], HARMONY_FLOOR)
         for i in idxs:
             f = slot_plan[i][2][0]
             if f > target + 0.02:
@@ -2414,7 +2447,8 @@ def _entry_rects(entry: tuple, sw) -> list:
             # строка на чужом тексте — наше, даже в пределах своего абзаца
             # (Л11: прежде такие наложения не считались вовсе).
             moved = grown or bool(sd.get("_v"))
-            out.append((int(sd["page"]), x, y - 0.25 * size, x + w, y + 0.85 * size, size, moved))
+            out.append((int(sd["page"]), x, y - 0.25 * size, x + w, y + 0.85 * size, size, moved,
+                        grown))
     return out
 
 
@@ -2438,9 +2472,10 @@ def _resolve_collisions(slot_plan: list, slot_meta: list, jobs: list,
     не вправе отчитаться «готово», не сказав о нём. Наложения, которые были
     в самом оригинале (обе строки на своих местах), не наши и не считаются."""
     fixed: list = []                    # чужие прямоугольники: оставленный оригинал
+    erased = {m["idx"] for m in slot_meta if m.get("erase")}
     for key, text, boxes in jobs:
-        if text:
-            continue
+        if text or key in erased:
+            continue                    # стираемый абзац — не препятствие
         for b in boxes or []:
             if int(b["page"]) in skip:
                 continue
@@ -2516,13 +2551,14 @@ def _resolve_collisions(slot_plan: list, slot_meta: list, jobs: list,
         relay = stats.get("_story_relay")
         done_s: set = set()
         for i in list(todo):
-            sid = slot_meta[i].get("story")
-            if sid is None:
+            sids = slot_meta[i].get("story")
+            if not sids:
                 continue
             todo.discard(i)
-            if sid not in done_s and relay is not None:
-                done_s.add(sid)
-                relay(sid)
+            for sid in sids:
+                if sid not in done_s and relay is not None:
+                    done_s.add(sid)
+                    relay(sid)
         for i in todo:
             sds = slot_plan[i][0]
             f = slot_plan[i][2][0]
@@ -2542,7 +2578,7 @@ def _resolve_collisions(slot_plan: list, slot_meta: list, jobs: list,
     stats["collisionPages"] = sorted({pg + 1 for pg, _w, _o in hits})[:50]
     stats["collisionParas"] = paras[:200]
     stats["grown"] = sum(1 for i, entry in enumerate(slot_plan)
-                         if any(r[6] for r in _entry_rects(entry, slot_meta[i]["sw"])))
+                         if any(r[7] for r in _entry_rects(entry, slot_meta[i]["sw"])))
 
 
 def _wrap(text: str, width: float, size: float, indent: float, sw, font: str) -> list:
@@ -4107,6 +4143,7 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
                 slot_meta.append({"idx": idx, "text": "", "sw": sw_vec, "nospace": nospace,
                                   "scattered": True, "fam": "", "hy": None, "orig": orig,
                                   "just": False, "erase": True})
+                pages_used.update(int(sd["page"]) for sd in orig)
             continue
         if not text or not boxes:
             continue

@@ -22934,8 +22934,12 @@ def _refs_of(project: Optional[dict]) -> dict:
             # Иначе запись №1 и записи на стыке кластеров оставались
             # переведёнными посреди списка «как в оригинале» (проект 14).
             def _rec(k):
+                # Начало записи: номер и список авторов — два «Фамилия АБ,»
+                # и больше либо «et al.». Нумерованный пункт текста
+                # («1. Measure BP, HR and ECG») под это не подходит.
                 s_ = text_segs[k].get("source") or ""
-                return bool(_REF_WEAK[0].search(s_) and _ref_initials(s_))
+                return bool(_REF_WEAK[0].search(s_)
+                            and (_ref_initials(s_) >= 2 or re.search(r"\bet al\b", s_)))
             k, last = start - 1, start
             while k >= 0 and last - k <= REFS_ZONE_GAP:
                 if _rec(k):
@@ -31715,7 +31719,8 @@ def _original_ext(project: dict) -> str:
 _URLISH = re.compile(
     r"(?i)^(?:[a-z][a-z0-9+.-]*://|www\.|doi:|10\.\d{4,9}/)"   # схема, www, DOI
     r"|^[\w.+-]+@[\w-]+(?:\.[\w-]+)+$"                         # e-mail
-    r"|^[A-Za-z][\w-]*(?:\.[\w-]+)*\.(?-i:[a-z]{2,6})(?:/|$)"      # домен(.org/…)
+    r"|^[A-Za-z][\w-]+(?:\.[\w-]+)*\.(?-i:[a-z]{2,6})/"            # домен с путём (xy.org/…; «E.coli/» — нет)
+    r"|^[A-Za-z][\w-]{2,}(?:\.[\w-]+)*\.(?-i:org|com|net|edu|gov|int|info|io|eu|ru|uz|kz|uk|de|fr)$"
     r"|^\.[a-z]{2,6}/")                                        # хвост адреса «.io/pu93h»
 _URL_EDGE = "()[]<>«»\"'“”‘’,;:!?"
 
@@ -32125,6 +32130,7 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None) -> l
                 # текст поверх рисунка (проект 14, стр. 19).
                 skipped["layerDup"] = skipped.get("layerDup", 0) + 1
                 continue
+            er_cand: set = set()
             if erase is not None and rect_pt is not None:
                 # Кусок строки, лежащий ТЕКСТОМ внутри надписи, нарисованной
                 # кривыми («vs.» посреди строки таблицы, стр. 10): перевод
@@ -32140,7 +32146,7 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None) -> l
                     area = max(1e-6, (rx1 - rx0) * (ry1 - ry0))
                     if inside >= 0.8 * area and any(bw[k:k + len(pw)] == pw
                                                     for k in range(len(bw) - len(pw) + 1)):
-                        erase.add(pidx)
+                        er_cand.add(pidx)
             x0, y0, x1, y1 = b["box"]
             rows = max(1, int(b.get("rows") or 1))
             if x1 > x0 and rows <= 1 and (y1 - y0) >= (x1 - x0) * image_text.IMG_VERT_RATIO:
@@ -32155,7 +32161,9 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None) -> l
             line_h = float(b.get("lineH") or ((y1 - y0) / rows))
             fx0, fy0, fx1, fy1 = (fig[1:5] if fig is not None else (0.0, 0.0, 1.0, 1.0))
             sx_, sy_ = (fx1 - fx0) / w, (fy1 - fy0) / h
-            out.append({"text": text, "boxes": [{
+            # Стирание куска слоя — только у надписи, которая будет напечатана:
+            # отсеянная ниже (вложенный повтор) его перевод уже не несёт.
+            out.append({"text": text, "_erase": er_cand, "boxes": [{
                 "page": page, "frac": 1, "image": 1, "style": "", "indent": 0.0,
                 "fam": "sans", "onFig": 1 if on_fig else 0,
                 # Исходный текст, число строк и выключка надписи — по ним печать
@@ -32169,6 +32177,10 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None) -> l
     out, nested = _drop_nested_labels(out)
     if nested:
         skipped["nested"] = nested
+    for it in out:
+        if erase is not None:
+            erase |= it.get("_erase") or set()
+        it.pop("_erase", None)
     if skipped:
         print("[backend] PDF 1в1: надписей пропущено %s" % skipped, file=sys.stderr)
     return out
@@ -32751,7 +32763,8 @@ def _drop_nested_labels(items: list) -> tuple:
         o = (items[par].get("boxes") or [{}])[0]
         pw = words(o.get("src"))
         cw = {w for c in ch for w in words(((items[c].get("boxes") or [{}])[0]).get("src"))}
-        if (int(o.get("rows") or 1) >= 2 and pw
+        if (int(o.get("rows") or 1) >= 2 and len(ch) >= 2 and pw
+                and all(int(((items[c].get("boxes") or [{}])[0]).get("rows") or 1) == 1 for c in ch)
                 and sum(1 for w in pw if w in cw) >= 0.8 * len(pw)):
             drop.add(par)               # строки-наследники покрывают родителя
         else:
@@ -32760,7 +32773,7 @@ def _drop_nested_labels(items: list) -> tuple:
     return keep, len(drop)
 
 
-_LEFTOVER_URL_RE = re.compile(r"(https?://|www\.|doi\.org|\S+@\S+\.\w+|10\.\d{4,}/)", re.I)
+_LEFTOVER_URL_RE = re.compile(r"(https?://|www\.|doi\.org|\S+@\S+\.\w+|\b10\.\d{4,}/)", re.I)
 _LEFTOVER_WORD_RE = re.compile(r"[^\W\d_]{2,}")
 LEFTOVER_SAMPLES = 8
 

@@ -1270,6 +1270,21 @@ def _hyph_split(word: str, hy, room: float, w_of) -> "tuple | None":
         for p in sorted(cuts, reverse=True):
             if w_of(word[:p]) <= room:
                 return word[:p], word[p:]
+    # Перечень через косую черту («показатели/липиды/артериальное») рвётся
+    # ПОСЛЕ черты: одно такое «слово» шире строки тянуло кегль всей подписи
+    # к полу (стр. 31). Только между частями из букв от трёх знаков: «и/или»,
+    # «mg/kg», «TB/HIV», даты и адреса косой чертой не рвутся.
+    if ("/" in word and not any(ch.isdigit() for ch in word) and "://" not in word
+            and not word.lower().startswith("www.")):
+        parts = word.split("/")
+        if len(parts) >= 2 and all(sum(ch.isalpha() for ch in p_) >= 3 for p_ in parts):
+            cuts, acc = [], 0
+            for p_ in parts[:-1]:
+                acc += len(p_) + 1
+                cuts.append(acc)
+            for p in sorted(cuts, reverse=True):
+                if w_of(word[:p]) <= room:
+                    return word[:p], word[p:]
     if hy is None:
         return None
     core = word.rstrip(_HYPH_TAIL)
@@ -1878,9 +1893,11 @@ def _story_link(A: dict, B: dict, page_slots: "dict | None") -> "str | None":
     ov = min(ra["x1"], rb["x1"]) - max(ra["x0"], rb["x0"])
     dy = ra["bot"] - rb["top"]
     if (ov >= 0.6 * min(ra["x1"] - ra["x0"], rb["x1"] - rb["x0"])
-            and abs(ra["x0"] - rb["x0"]) <= 3.0 * s
+            and abs(ra["x0"] - rb["x0"]) <= STORY_V_X0 * s
             and 0.5 * min(ra["pitch"], rb["pitch"]) <= dy <= FRAME_LINK_MAX * ra["pitch"]
-            and not _blocked(A["runs"][-1], B["runs"][0], page_slots)):
+            and not _blocked(A["runs"][-1], B["runs"][0], page_slots)
+            and not _drawn_between(la, fb)
+            and not _cells(A, B, page_slots)):
         return "v"
     wa, wb = ra["x1"] - ra["x0"], rb["x1"] - rb["x0"]
     # Колонка ТЕКСТА: широкая (от 12 кеглей) и в несколько строк с обеих
@@ -1892,6 +1909,53 @@ def _story_link(A: dict, B: dict, page_slots: "dict | None") -> "str | None":
             and (rb["x0"] >= ra["x1"] - 0.5 * s or rb["x1"] <= ra["x0"] + 0.5 * s)):
         return "c"
     return None
+
+
+# Допуск левого края у куска ниже в той же колонке, в кеглях: пункты списка
+# с отступом под заголовком (стр. 31, отступ 2 кегля) — уже не та колонка,
+# и сцепленные с заголовком они съезжали влево на значки.
+STORY_V_X0 = float(os.environ.get("LAYOUT_STORY_V_X0", "1.5"))
+
+
+def _drawn_between(la: dict, fb: dict) -> bool:
+    """Между последней строкой `A` и первой строкой `B` что-то нарисовано
+    (`_drawn_below`): линия, строка картинки, рамка, другой фон."""
+    d = la.get("_drawn")
+    if d is None:
+        return False
+    s = max(la["size"], fb["size"], 1.0)
+    gap = (la["y"] - 0.3 * la["size"]) - (fb["y"] + 0.9 * fb["size"])
+    return d < gap - 0.2 * s
+
+
+def _row_mates(sl: dict, page_slots: "dict | None") -> bool:
+    """У строки на той же высоте есть соседка слева или справа (не
+    перекрывается по x, ближе 15 кеглей): это строка ТАБЛИЦЫ или ряда плашек."""
+    s = max(sl["size"], 1.0)
+    for o in (page_slots or {}).get(int(sl.get("page", -1)), []) if isinstance(page_slots, dict) else []:
+        if o is sl or o.get("rot") or abs(o["y"] - sl["y"]) > 0.3 * s:
+            continue
+        if min(o["x1"], sl["x1"]) - max(o["x"], sl["x"]) > 0:
+            continue
+        if min(abs(o["x"] - sl["x1"]), abs(sl["x"] - o["x1"])) <= 15.0 * s:
+            return True
+    return False
+
+
+def _cells(A: dict, B: dict, page_slots: "dict | None") -> bool:
+    """Два ОДНОСТРОЧНЫХ узких куска друг под другом, и у обоих в том же ряду
+    стоят соседи: это ячейки таблицы (или ряд плашек схемы), а не колонка
+    текста. Шапка «MACE» и ячейка «Potential benefit» под ней сцеплялись,
+    и перевод ячейки уезжал в шапку (стр. 6). Одинокая подпись из двух
+    строк (соседей в ряду нет) остаётся сцепленной."""
+    if A["nlines"] != 1 or B["nlines"] != 1:
+        return False
+    ra, rb = A["boxes"][-1], B["boxes"][0]
+    s = max(A["msize"], B["msize"], 1.0)
+    if (ra["x1"] - ra["x0"]) >= 12.0 * s or (rb["x1"] - rb["x0"]) >= 12.0 * s:
+        return False
+    la, fb = A["runs"][-1][-1], B["runs"][0][0]
+    return _row_mates(la, page_slots) and _row_mates(fb, page_slots)
 
 
 def _story_join(A: dict, B: dict) -> bool:
@@ -2951,6 +3015,47 @@ def _paint_arc(c, arc: dict, text: str, font: str, size: float, h0: float,
         cur += s * a / rb
 
 
+# Надписи по дугам ОДНОЙ фигуры (общий центр, близкий кегль оригинала)
+# печатаются близким кеглем: каждая ужималась сама по длине своей дуги, и
+# короткий перевод («СОН») выходил вдвое крупнее длинного («ПОТООТДЕЛЕНИЕ»)
+# на соседней дуге того же кольца (стр. 12). Мельче своей подгонки дуга не
+# становится больше, чем до этой доли, — иначе самая тесная тянула бы все
+# к полу. `LAYOUT_ARC_HARMONY=0` выключает.
+ARC_HARMONY = os.environ.get("LAYOUT_ARC_HARMONY", "1") != "0"
+ARC_HARMONY_KEEP = float(os.environ.get("LAYOUT_ARC_HARMONY_KEEP", "0.85"))
+
+
+def _harmonize_arcs(img_plan: list, stats: dict) -> None:
+    if not ARC_HARMONY:
+        return
+    arcs = [e for e in img_plan if (e.get("b") or {}).get("_paint", {}).get("arc")]
+    done = 0
+    # Множители — по СНИМКУ до правки: иначе дуга, уменьшенная раньше в цикле,
+    # тянула бы следующие ещё ниже, и итог зависел бы от порядка.
+    f0 = {id(e): e["f"] for e in arcs}
+    for e in arcs:
+        a, em = e["b"]["_paint"]["arc"], max(2.0, e["b"]["_paint"]["em"])
+        grp = []
+        for o in arcs:
+            oa, oem = o["b"]["_paint"]["arc"], max(2.0, o["b"]["_paint"]["em"])
+            if int(o["b"].get("page", -1)) != int(e["b"].get("page", -1)):
+                continue
+            r = max(a["r"], oa["r"], 1.0)
+            if (abs(oa["cx"] - a["cx"]) <= 0.35 * r and abs(oa["cy"] - a["cy"]) <= 0.35 * r
+                    and 0.8 <= oem / em <= 1.25):
+                grp.append(o)
+        if len(grp) < 2:
+            continue
+        low = min(f0[id(o)] for o in grp)
+        if f0[id(e)] > low + 0.02:
+            nf = max(low, ARC_HARMONY_KEEP * f0[id(e)])
+            if nf < e["f"]:
+                e["f"], e["size"], e["step"] = nf, em * nf, em * nf
+                done += 1
+    if done:
+        stats["arcHarmonized"] = done
+
+
 def _sw_of(t: str, font: str, size: float) -> float:
     from reportlab.pdfbase import pdfmetrics
     return pdfmetrics.stringWidth(t, font, size)
@@ -3359,6 +3464,97 @@ def _free_below(sample, rs: list, paper: float) -> None:
     free = hit / scale - FREE_BELOW_GAP * pitch
     if free >= 0.5 * pitch:
         last["below"] = round(min(free, FREE_BELOW_LINES * pitch), 2)
+
+
+# История страницы не переходит через НАРИСОВАННОЕ между абзацами (линия-
+# разделитель, строка, которая есть только в картинке, рамка ячейки, смена
+# фона): поднятый над ним абзац лёг бы поверх («зачёркнутые» Благодарности,
+# стр. 33; пункты поверх растровых строк таблицы, стр. 10). `LAYOUT_STORY_INK=0`
+# выключает без выката.
+STORY_INK = os.environ.get("LAYOUT_STORY_INK", "1") != "0"
+# Линия: краска на такой доле ширины колонки в одном ряду пикселей.
+DRAWN_LINE_SHARE = 0.6
+# Текст или рисунок: полоса краски от такой доли кегля высотой, в каждом
+# ряду которой краска занимает не меньше такой доли ширины.
+DRAWN_BAND_H = 0.35
+DRAWN_BAND_W = 0.08
+
+
+def _drawn_below(sample, rs: list, paper: float, page_slots: "list | None") -> None:
+    """`_drawn` у последнего места колонки — через сколько пунктов под ней
+    начинается НАРИСОВАННОЕ (не буквы строк текстового слоя): линия на всю
+    колонку, полоса краски (строка, которой нет в слое; рисунок) или смена
+    фона. Буквы строк слоя (и самой колонки, и соседних) вырезаются по их
+    рамкам — следующий абзац колонки «нарисованным» не считается. Ничего
+    до досягаемости — поля нет."""
+    if not STORY_INK or not sample or not rs:
+        return
+    im, scale, cb, gray = sample
+    W, H = im.size
+    last = rs[-1]
+    size = max(max(sl["size"] for sl in rs), 1.0)
+    pitch = (statistics.median(a["y"] - b["y"] for a, b in zip(rs, rs[1:]))
+             if len(rs) >= 2 else 1.2 * size)
+    x0 = min(sl["x0"] for sl in rs)
+    x1 = max(sl["x1"] for sl in rs)
+    top = last["y"] - 0.3 * size
+    bot = max(cb[1], top - (FRAME_LINK_MAX + 0.5) * pitch)
+    px0, px1 = max(0, int((x0 - cb[0]) * scale)), min(W, int((x1 - cb[0]) * scale) + 1)
+    py0 = int(max(0, H - (top - cb[1]) * scale))
+    py1 = int(min(H, H - (bot - cb[1]) * scale))
+    if py1 - py0 < 2 or px1 - px0 < 4:
+        return
+    try:
+        import numpy as np
+        a = np.asarray(gray.crop((px0, py0, px1, py1)), dtype=np.int16)
+    except Exception:
+        return
+    dark = INK_DARK * paper * 255.0
+    light = min(255.0, paper * 255.0 + FREE_PAPER_DELTA)
+    ink = (a < dark) | (a > light)
+    known = np.zeros_like(ink)
+    for sd in page_slots or []:
+        if sd.get("rot"):
+            continue
+        sx0 = int((sd.get("x0", sd["x"]) - cb[0]) * scale) - px0
+        # Конец строки — оценка: хвост её краски за `x1` тоже буквы.
+        sx1 = int((sd["x1"] + 1.5 * sd["size"] - cb[0]) * scale) + 1 - px0
+        sy0 = int(H - (sd["y"] + 1.0 * sd["size"] - cb[1]) * scale) - py0
+        sy1 = int(H - (sd["y"] - 0.35 * sd["size"] - cb[1]) * scale) + 1 - py0
+        if sx1 <= 0 or sy1 <= 0 or sx0 >= ink.shape[1] or sy0 >= ink.shape[0]:
+            continue
+        known[max(0, sy0):max(0, sy1), max(0, sx0):max(0, sx1)] = True
+    ink &= ~known
+    line = ink.mean(axis=1) >= DRAWN_LINE_SHARE
+    # Тень у корешка и тёмный край скана — краска, ПРИЛЕГАЮЩАЯ к краю
+    # области сплошной полосой столбцов: для полосы «нарисованного» она
+    # не в счёт (линию через всю колонку это не трогает — она выше).
+    # Признак тени — столбец, закрашенный почти НА ВСЮ высоту области:
+    # строка текста у края колонки так не выглядит.
+    cols = ink.mean(axis=0) >= 0.8
+    band_ink = ink.copy()
+    k0 = 0
+    while k0 < len(cols) and cols[k0]:
+        k0 += 1
+    k1 = len(cols)
+    while k1 > k0 and cols[k1 - 1]:
+        k1 -= 1
+    band_ink[:, :k0] = False
+    band_ink[:, k1:] = False
+    band = band_ink.mean(axis=1) >= DRAWN_BAND_W
+    need = max(1, int(DRAWN_BAND_H * size * scale))
+    hit = None
+    run = 0
+    for k in range(ink.shape[0]):
+        if line[k]:
+            hit = k
+            break
+        run = run + 1 if band[k] else 0
+        if run >= need:
+            hit = k - run + 1
+            break
+    if hit is not None:
+        last["_drawn"] = round(hit / scale, 2)
 
 
 # Сплошная краска (доля высоты строки) шире стольких кеглей — графика.
@@ -4213,6 +4409,7 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
                         rs = [sbs[k] for k in run]
                         if not rs[-1].get("rot"):
                             _free_below(sample, rs, rs[-1]["_fill"][1])
+                            _drawn_below(sample, rs, rs[-1]["_fill"][1], page_slots.get(pg))
                     b["_slots"] = sbs
                     continue
                 if b.get("image") and _paint_measure(sampler, b):
@@ -4428,6 +4625,7 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
     # и проверка, не легла ли строка перевода на чужой текст.
     _stories(slot_plan, slot_meta, stats, page_slots)
     _harmonize(slot_plan, slot_meta, stats)
+    _harmonize_arcs(img_plan, stats)
     _flow_groups(slot_plan, slot_meta, stats, sw_vec, page_slots)
     _resolve_collisions(slot_plan, slot_meta, jobs, reader, skip, stats, img_plan, plan)
     _size_report(slot_plan, slot_meta, plan, stats)

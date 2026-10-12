@@ -38,6 +38,7 @@ import bisect
 import difflib
 import functools
 import math
+import os
 import re
 import statistics
 import unicodedata
@@ -95,7 +96,7 @@ MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
 # продолжает (подписи схемы с разных концов листа), строка pypdf с двумя
 # надписями одной базовой линии делится по местам (`split`), невидимый
 # и повёрнутый текст — своими пачками.
-RULES_VERSION = 11
+RULES_VERSION = 12
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -2106,6 +2107,99 @@ def _geo_follows(a: dict, b: dict) -> bool:
     return False
 
 
+# Подпись плашки КАПСОМ из двух строк, разорванная в потоке строками
+# соседних плашек («HEALTHY LIFESTYLE» … «BEHAVIORS», «DIABETES SELF-» …
+# «MANAGEMENT EDUCATION», стр. 19): строки одной оси, одного кегля и
+# начертания, вплотную друг под другом, между ними на листе ничего нет.
+# Переведённые порознь, они давали «ЗДОРОВЫЙ ОБРАЗ ЖИЗНИ ПОВЕДЕНИЕ»
+# и висячий дефис «ДИАБЕТА-».
+LABEL_JOIN_DY = 1.6          # шаг строк, в кеглях
+LABEL_JOIN_AXIS = 0.6        # центр или левый край расходятся не больше, в кеглях
+LABEL_JOIN_LOOK = 6          # на сколько абзацев вперёд искать продолжение
+LABEL_JOIN_MAX_LINES = 2     # у каждой части строк не больше
+LABEL_JOIN_MIN_LETTERS = 6   # у каждой части букв не меньше
+# `PDF_LABEL_JOIN=0` — без склейки (откат без выката; RULES_VERSION то же).
+LABEL_JOIN = os.environ.get("PDF_LABEL_JOIN", "1") != "0"
+
+
+def _label_geo(group: "list | None") -> "list | None":
+    if not group:
+        return None
+    gs = [e.get("geo") for e in group if e]
+    if not gs or any(not g or len(g) < 6 for g in gs):
+        return None
+    if len({g[0] for g in gs}) != 1 or len(gs) > LABEL_JOIN_MAX_LINES:
+        return None
+    return gs
+
+
+def _caps_label(text: str) -> bool:
+    """Часть подписи плашки: капсом и не короче `LABEL_JOIN_MIN_LETTERS`
+    букв — столбец сокращений таблицы («ВИЧ» / «СПИД») не склеивается."""
+    letters = [ch for ch in text if ch.isalpha()]
+    return len(letters) >= LABEL_JOIN_MIN_LETTERS and all(ch.isupper() for ch in letters)
+
+
+def _merge_label_lines(paras: list, groups: list, all_entries: list, words, report) -> tuple:
+    if not LABEL_JOIN:
+        return paras, groups
+    paras, groups = list(paras), list(groups)
+    i = 0
+    while i < len(paras):
+        ga = _label_geo(groups[i])
+        if ga is None or not paras[i] or not _caps_label(paras[i]) or (
+                paras[i].rstrip()[-1:] in ".!?:;"):
+            i += 1
+            continue
+        la = min(ga, key=lambda g: g[2])                      # нижняя строка A
+        size = max(la[4] or 0.0, 1.0)
+        hit = None
+        for j in range(i + 1, min(len(paras), i + 1 + LABEL_JOIN_LOOK)):
+            gb = _label_geo(groups[j])
+            if gb is None or not paras[j] or not _caps_label(paras[j]):
+                continue
+            fb = max(gb, key=lambda g: g[2])                  # верхняя строка B
+            if fb[0] != la[0] or (fb[5] or "") != (la[5] or ""):
+                continue
+            if abs((fb[4] or 0) - (la[4] or 0)) > 0.05 * size:
+                continue
+            dy = la[2] - fb[2]
+            if not (0 < dy <= LABEL_JOIN_DY * size):
+                continue
+            ca, cb = (la[1] + la[3]) / 2.0, (fb[1] + fb[3]) / 2.0
+            if not (abs(ca - cb) <= LABEL_JOIN_AXIS * size or abs(la[1] - fb[1]) <= LABEL_JOIN_AXIS * size):
+                continue
+            ov = min(la[3], fb[3]) - max(la[1], fb[1])
+            if ov < 0.5 * min(la[3] - la[1], fb[3] - fb[1]):
+                continue
+            x0, x1 = min(la[1], fb[1]), max(la[3], fb[3])
+            mine = {id(e) for e in groups[i] + groups[j] if e}
+            between = any(
+                e.get("geo") and id(e) not in mine and e["geo"][0] == la[0]
+                and fb[2] - 0.2 * size < e["geo"][2] < la[2] + 0.2 * size
+                and min(x1, e["geo"][3]) - max(x0, e["geo"][1]) > 0
+                for e in all_entries)
+            if between:
+                continue
+            hit = j
+            break
+        if hit is None:
+            i += 1
+            continue
+        a, b = paras[i].rstrip(), paras[hit].lstrip()
+        if a.endswith(("-", SOFT, "‐")) and b[:1].isalpha():
+            # Перенос слова снимается, составное слово («SELF-MANAGEMENT»)
+            # сохраняет свой дефис; пробела на стыке нет в обоих случаях.
+            joined = (a.rstrip("-" + SOFT + "‐") if _joins_to_word(a, b, words) else a) + b
+        else:
+            joined = a + " " + b
+        paras[i] = joined
+        groups[i] = groups[i] + groups[hit]
+        del paras[hit], groups[hit]
+        report["labelJoined"] += 1
+    return paras, groups
+
+
 def _assemble(entries: list, median_len: float, src: list = None) -> list:
     """Поток строк с разметкой ролей → строки для `join_lines`: вставки
     и заголовки — отдельными абзацами (пустая строка вокруг), а вставка,
@@ -2126,8 +2220,16 @@ def _assemble(entries: list, median_len: float, src: list = None) -> list:
 
     def emit(block):
         put("", None)
+        prev = None
         for e in block:
+            if prev is not None and _apart(prev, e):
+                # Две строки вставки или заголовка, которые по горизонтали
+                # не пересекаются и стоят не на одной линии, — разные надписи
+                # («PROGRAMS THAT ADDRESS:» и «24-H PHYSICAL» с разных концов
+                # схемы, стр. 4): блоком одной роли их склеивал поток.
+                put("", None)
             put(e["t"], e)
+            prev = e
         put("", None)
 
     def release():
@@ -2195,6 +2297,16 @@ def _assemble(entries: list, median_len: float, src: list = None) -> list:
         i = j
     release()
     return out
+
+
+def _apart(a: dict, b: dict) -> bool:
+    ga, gb = a.get("geo"), b.get("geo")
+    if not ga or not gb or ga[0] != gb[0]:
+        return False
+    size = max(ga[4] or 0.0, gb[4] or 0.0, 1.0)
+    if abs(ga[2] - gb[2]) <= 0.3 * size:
+        return False                     # та же строка, разорванная
+    return min(ga[3], gb[3]) - max(ga[1], gb[1]) < -0.5 * size
 
 
 _PARAGRAPH_NO_RE = re.compile(r"^§+\s*\d{1,4}[.)]?$")
@@ -2728,8 +2840,10 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
             spans: list = []
             paras = join_lines(buf_lines, hyphenated, median_len, report, spans=spans)
             paras = restore_dropcaps(paras, words, report)
-            boxes = [_para_boxes(src[a:b + 1], base_style, base_fam) if a is not None else None
-                     for a, b in spans]
+            groups = [src[a:b + 1] if a is not None else None for a, b in spans]
+            paras, groups = _merge_label_lines(paras, groups, [e for e in src if e], words, report)
+            boxes = [_para_boxes(g_, base_style, base_fam) if g_ is not None else None
+                     for g_ in groups]
             for para, place in zip(paras, boxes):
                 if not para:
                     continue

@@ -1070,6 +1070,9 @@ def _geometry(lines, out, chunks, figs, rects, page, op_ends=(), op_recs=()):
 # уже другая надпись: межсловный пробел — четверть кегля, табуляция
 # в таблице — пара кеглей, а подписи схемы разнесены на десятки.
 SPLIT_GAP = 3.0
+# Куски РАЗНЫХ базовых линий одной строки pypdf, разделённые по горизонтали
+# хотя бы таким зазором (в кеглях), — разные надписи (`_h_groups`).
+V_SPLIT_GAP = 1.0
 
 
 # Начало колонки таблицы: зазор перед куском от этой доли кегля, и с того же
@@ -1185,6 +1188,20 @@ def _h_groups(body: list, chunks: list, cw: float, cols=(), ends=None) -> list:
         col = (c[1] > gx1c + COL_GAP * max(size, sz)
                and any(abs(c[1] - x) <= COL_TOL for x in cols))
         has_alpha = any(ch.isalpha() for ch in c[0])
+        if (not same and has_alpha and len(c[0].strip()) > 3 and sz >= 0.85 * size
+                and (c[1] > gx1c + V_SPLIT_GAP * sz or cx1 + V_SPLIT_GAP * sz < gx0)
+                and any(ch.isalpha() for kk in groups[-1] for ch in chunks[kk][0])):
+            # Другая базовая линия И по горизонтали не пересекается с уже
+            # собранной частью: это ДРУГАЯ надпись, которую pypdf склеил
+            # в одну строку («PROGRAMS THAT ADDRESS:» в рамке справа
+            # и «24-H PHYSICAL» у левого края ниже, стр. 4). Надстрочник
+            # (короткий мелкий кусок) и вторая строка сноски (она под первой,
+            # то есть пересекается с ней) остаются делом `_line_parts`.
+            groups.append([k])
+            weak.append(False)
+            size, y = sz, c[2]
+            gx0, gx1, gx1c = c[1], cx1, _chunk_end(c, cw, ends)
+            continue
         if same and (far or col):
             if not has_alpha:
                 groups.append([k])

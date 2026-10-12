@@ -4263,6 +4263,11 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         f"   Natural {tgt} wording instead of a word-for-word calque is expected; new meaning is not.\n"
         "   Style-sheet and language conventions below (register, spelling, abbreviations) are\n"
         "   form, not meaning — apply them.\n"
+        # Варианты через косую черту («ШАГАНИЕ / ШАГОВЫЙ РЕФЛЕКС») — не
+        # перевод, а нерешённый выбор: на печать он уходил целиком (проект 14).
+        # Черта, стоящая в оригинале, остаётся — запрещены только СВОИ варианты.
+        "10. Give ONE translation. Never offer alternatives separated by a slash (\"A / B\")\n"
+        "   unless the SOURCE itself has that slash; choose the variant that fits this place.\n"
         )
         # Стайл-шит документа (`_style_block`) — только в обычный перевод,
         # никогда в обратный: тот обязан ОТРАЖАТЬ текст, а не причёсывать его.
@@ -23926,6 +23931,7 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     # обязан откатиться.
     items = (_gloss_misses(seg, project) + _consist_misses(seg, project)
              + _case_misses(seg) + _script_misses(seg) + _dup_misses(seg)
+             + _variant_misses(seg)
              # Письмо и алфавит ЯЗЫКА ПЕРЕВОДА (латиница вместо узбекской
              # кириллицы): с проектом — находка, без проекта — доезжает
              # списком `_alphabet_ids`, как разнобой.
@@ -24340,6 +24346,8 @@ def _repair_system(dom: dict, src_lang: str, tgt_lang: str, style: str = "") -> 
         "   actually uses, or spell the term out if it has none. NEVER render a source\n"
         "   abbreviation letter by letter in the target script — an issue saying that an\n"
         "   abbreviation was changed does NOT ask you to do that.\n"
+        "10. Give ONE translation. Never offer alternatives separated by a slash (\"A / B\")\n"
+        "   unless the SOURCE itself has that slash; choose the variant that fits this place.\n"
         + ("\n" + style if style else "")
         + ("\n" + conv if conv else "")
     )
@@ -24537,6 +24545,32 @@ def _adjacent_repeat(text: str) -> list:
                 seen.update(range(i, i + 2 * n))
                 out.append((" ".join(w[i:i + n]), n))
     return out
+
+
+_VARIANTS_RE = re.compile(r"(\S+(?:\s+\S+){0,3}?)\s+/\s+(\S+(?:\s+\S+){0,3})")
+
+
+def _variant_misses(seg: dict) -> list:
+    """Перевод отдаёт ВАРИАНТЫ через « / » там, где у оригинала косой черты
+    нет: «ШАГАНИЕ / ШАГОВЫЙ РЕФЛЕКС», «бригады / команды». Это не перевод,
+    а нерешённый выбор модели, и на печать он уходил целиком (проект 14,
+    подписи схемы «5 С»). Бесплатная и детерминированная, от языка и области
+    не зависит; косая черта, стоящая в оригинале (дозировки, «и/или»,
+    дроби, перечни через «/»), находкой не считается — проверка смотрит,
+    есть ли «/» в оригинале вообще. Слитная черта без пробелов («и/или»)
+    не ловится намеренно: это законное написание."""
+    tgt = seg.get("target") or ""
+    if " / " not in tgt or "/" in (seg.get("source") or ""):
+        return []
+    out = []
+    for m in _VARIANTS_RE.finditer(tgt):
+        out.append({"kind": "variants",
+                    "text": "в переводе варианты через « / » вместо одного: «" + m.group(0)
+                            + "» — оставь один вариант, верный по смыслу в этом месте"})
+        if len(out) >= 3:
+            break
+    return out or [{"kind": "variants",
+                    "text": "в переводе варианты через « / » вместо одного — оставь один"}]
 
 
 def _dup_misses(seg: dict) -> list:
@@ -24862,6 +24896,8 @@ def _repair_scores(seg: dict, project: Optional[dict] = None,
         # (morbidity)» на боевом #128 откатывалась и клеймилась `tried`.
         # Бесплатно, как всё в этой группе.
         "self_dup": len(_dup_misses(seg)),
+        # Варианты через « / » вместо одного перевода — бесплатно, по тексту.
+        "variants": len(_variant_misses(seg)),
         # Регистр приказных терминов: бесплатно, но глоссарий нужен — с
         # project=None считается нулём, как и `gloss` рядом.
         "term_case": len(_term_case_misses(seg, project)),
@@ -24950,7 +24986,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # хуже» засчитало бы успехом любой переписанный текст. Мерить тут есть чем
     # и это бесплатно — сама находка детерминированная, поэтому спрашиваем
     # прямо: убавилось ли расхождений по регистру.
-    had_free = any(f["kind"] in ("case", "script", "term_case", "dup") for f in findings)
+    had_free = any(f["kind"] in ("case", "script", "term_case", "dup", "variants") for f in findings)
     only_free = had_free and not had_bc and not had_tc
     # Доказательство, сильнее ли находка заверения, снимаем ДО правки: после
     # перепроверки back-check описывает уже НОВЫЙ текст, и находки на старом
@@ -25346,7 +25382,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # принимался бы никогда — сумма 0 → 0 читалась бы как «не сняла ничего»,
     # верная правка откатывалась, а сегмент запирался клеймом захода.
     _free = lambda d: (d["case"] + d["script"] + d["term_case"] + d["dup"] + d["self_dup"]
-                       + d.get("alphabet", 0))
+                       + d.get("alphabet", 0) + d.get("variants", 0))
     if only_free and _free(after) >= _free(before):
         better = False
         why.append("правка не сняла ни регистра, ни чужого письма, ни самоповтора: "
@@ -25614,7 +25650,7 @@ REVIEW_APPLY_LABEL = ("%g" % REVIEW_APPLY_MAX)
 # нет намеренно: первый меряет не то, вторые потребовали бы вызовов модели,
 # ради отказа от которых шаг и заведён.
 REVIEW_FREE_KEYS = ("gloss", "case", "script", "dup", "self_dup", "term_case",
-                    "doc", "translit", "alphabet")
+                    "doc", "translit", "alphabet", "variants")
 # Оценка, ниже которой сегмент зовёт человека, даже если правки не было.
 # Отдельно от REVIEW_APPLY_MAX намеренно: тот отвечает на вопрос «когда машина
 # правит сама», а этот — «когда звать человека», и двигают их по разным
@@ -25713,6 +25749,7 @@ REVIEW_VETO_LABELS = {
     "term_case": "приказных терминов не в начертании оригинала больше",
     "translit": "сокращений передано побуквенно больше",
     "alphabet": "букв вне письма языка перевода больше",
+    "variants": "вариантов через косую черту больше",
     "hard": "расхождение чисел, единиц или отрицания",
 }
 
@@ -32056,8 +32093,8 @@ _ERASE_WORD_RE = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
 
 
 def _layer_paras_by_page(data: dict, by_id: dict) -> dict:
-    """{страница: [(номер абзаца, рамка его строк на этой странице, слова)]} —
-    только напечатанные строки слоя (с местом)."""
+    """{страница: [(номер абзаца, рамка его строк на этой странице, слова,
+    исходный текст)]} — только напечатанные строки слоя (с местом)."""
     out: dict = {}
     for idx, sids in _para_groups(data):
         src = " ".join((by_id.get(sid) or {}).get("source") or "" for sid in sids)
@@ -32076,11 +32113,74 @@ def _layer_paras_by_page(data: dict, by_id: dict) -> dict:
             if rs:
                 out.setdefault(int(b.get("page", -1)), []).append(
                     (int(idx), (min(r[0] for r in rs), min(r[1] for r in rs),
-                                max(r[2] for r in rs), max(r[3] for r in rs)), words))
+                                max(r[2] for r in rs), max(r[3] for r in rs)), words, src))
     return out
 
 
-def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None) -> list:
+# Лигатуры, которые слой отдаёт одним знаком: сверка «тот же текст» идёт
+# по буквам, и «ﬃ» против «ffi» — одно и то же.
+_LIGATURES = {"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi",
+              "ﬄ": "ffl", "ﬅ": "st", "ﬆ": "st"}
+# Сколько знаков куска слоя должно стоять в тексте надписи подряд (самым
+# длинным совпадением), чтобы считать кусок частью надписи. «a!ect»
+# (слой без таблицы знаков отдаёт лигатуру ff восклицательным знаком)
+# против «affect» — «ect» из «aect», три из четырёх.
+LAYER_PIECE_SHARE = float(os.environ.get("LAYER_PIECE_SHARE", "0.7"))
+# Кусок слоя длиннее стольких слов надписью не поглощается — это уже текст.
+LAYER_PIECE_WORDS = 8
+# Блок «тот же текст, что слой под ним»: сходство букв (у коротких, до
+# LAYER_SAME_SHORT знаков, — только равенство: «Eye» и «Eyes» — разное).
+LAYER_SAME_RATIO = 0.9
+LAYER_SAME_SHORT = 8
+
+
+def _alnum(text: str) -> str:
+    """Буквы и цифры строки в нижнем регистре, лигатуры — раскрыты."""
+    t = (text or "").lower()
+    for k, v in _LIGATURES.items():
+        t = t.replace(k, v)
+    return "".join(ch for ch in t if ch.isalnum())
+
+
+def _piece_in(piece: str, text: str) -> bool:
+    """Кусок слоя — часть текста надписи: самое длинное совпадение подряд
+    не короче `LAYER_PIECE_SHARE` его букв. Нечётко нарочно: слой рваный
+    (лигатуры знаками препинания), а место уже проверено по рамке."""
+    a, b = _alnum(piece), _alnum(text)
+    if not a or not b:
+        return False
+    if a in b:
+        return True
+    if len(a) < 5:
+        # Короткий кусок нечётко совпадёт с чем угодно — только его буквы
+        # ПО ПОРЯДКУ в окне чуть длиннее его самого («aect» в «affect»:
+        # выпавшая лигатура), а не самое длинное совпадение где угодно.
+        n = len(a) + 3
+        for k in range(len(b)):
+            if b[k] != a[0]:
+                continue
+            it = iter(b[k:k + n])
+            if all(ch in it for ch in a):
+                return True
+        return False
+    import difflib
+    m = difflib.SequenceMatcher(None, a, b, autojunk=False).find_longest_match(0, len(a), 0, len(b))
+    return m.size >= LAYER_PIECE_SHARE * len(a)
+
+
+def _same_text(a: str, b: str) -> bool:
+    """Надпись картинки и слой под ней — один и тот же текст."""
+    x, y = _alnum(a), _alnum(b)
+    if not x or not y:
+        return False
+    if min(len(x), len(y)) < LAYER_SAME_SHORT:
+        return x == y
+    import difflib
+    return difflib.SequenceMatcher(None, x, y, autojunk=False).ratio() >= LAYER_SAME_RATIO
+
+
+def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
+                     printed: "dict | None" = None) -> list:
     """Надписи со страниц-КАРТИНОК — рамками для выгрузки PDF «как в оригинале».
 
     Обложка и страницы с негодным текстовым слоем кладутся в документ
@@ -32109,7 +32209,7 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None) -> l
     skipped: dict = {}
     vk = _virt_key(data)
     layer_words = _layer_words_by_page(data, by_id)
-    layer_paras = _layer_paras_by_page(data, by_id) if erase is not None else {}
+    layer_paras = _layer_paras_by_page(data, by_id)
     for im in images:
         virt = str(im.get("part") or "").startswith(PDF_PAGE_PART)
         if virt and im.get("vk") != vk:
@@ -32161,6 +32261,26 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None) -> l
                 # текст поверх рисунка (проект 14, стр. 19).
                 skipped["layerDup"] = skipped.get("layerDup", 0) + 1
                 continue
+            inside: list = []
+            if rect_pt is not None:
+                bx0, by0, bx1, by1 = rect_pt
+                for pidx, (rx0, ry0, rx1, ry1), pw, psrc in layer_paras.get(page) or []:
+                    ov = (max(0.0, min(bx1, rx1) - max(bx0, rx0))
+                          * max(0.0, min(by1, ry1) - max(by0, ry0)))
+                    if ov >= 0.8 * max(1e-6, (rx1 - rx0) * (ry1 - ry0)):
+                        inside.append((pidx, (rx0, ry0, rx1, ry1), pw, psrc))
+            if inside and printed is not None and all((printed.get(p_[0]) or "").strip()
+                                                      for p_ in inside):
+                # Надпись картинки — ТОТ ЖЕ текст, что абзацы слоя, лежащие
+                # в ней, и все они печатаются: слой точнее по месту и кеглю
+                # (рамка блока захватывает и значок рядом — «Eye» у значка
+                # глаза печатался кеглем в полстроки поверх «Глаз» слоя,
+                # стр. 4). Без перевода у слоя блок остаётся: иначе надпись
+                # пропала бы совсем.
+                srcs = " ".join(p_[3] for p_ in sorted(inside, key=lambda p_: (-p_[1][3], p_[1][0])))
+                if _same_text((seg or {}).get("source") or "", srcs):
+                    skipped["layerSame"] = skipped.get("layerSame", 0) + 1
+                    continue
             er_cand: set = set()
             if erase is not None and rect_pt is not None:
                 # Кусок строки, лежащий ТЕКСТОМ внутри надписи, нарисованной
@@ -32168,15 +32288,16 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None) -> l
                 # надписи его уже содержит, печать абзаца слоя дала бы второй
                 # раз «по сравнению с» поверх. Такой абзац только стирается
                 # (`build`: пустой перевод — закраска без печати).
-                bw = [w.lower() for w in _ERASE_WORD_RE.findall((seg or {}).get("source") or "")]
-                bx0, by0, bx1, by1 = rect_pt
-                for pidx, (rx0, ry0, rx1, ry1), pw in layer_paras.get(page) or []:
-                    if not pw or len(pw) > 4 or len(bw) < len(pw) + 2:
+                # Сверка по БУКВАМ, а не по словам: слой рваный — «a!ect»
+                # (лигатура ff знаком «!»), «(e.g.,» (ни одного слова от двух
+                # букв), и прежняя сверка словами пропускала их: слово слоя
+                # печаталось второй раз поверх перевода надписи (стр. 19).
+                # Место проверено выше (кусок ВНУТРИ рамки надписи на 80%).
+                bsrc = (seg or {}).get("source") or ""
+                for pidx, _r, pw, psrc in inside:
+                    if len(pw) > LAYER_PIECE_WORDS or len(_alnum(psrc)) >= len(_alnum(bsrc)):
                         continue
-                    inside = (min(bx1, rx1) - max(bx0, rx0)) * (min(by1, ry1) - max(by0, ry0))
-                    area = max(1e-6, (rx1 - rx0) * (ry1 - ry0))
-                    if inside >= 0.8 * area and any(bw[k:k + len(pw)] == pw
-                                                    for k in range(len(bw) - len(pw) + 1)):
+                    if _piece_in(psrc, bsrc):
                         er_cand.add(pidx)
             x0, y0, x1, y1 = b["box"]
             rows = max(1, int(b.get("rows") or 1))
@@ -32925,7 +33046,7 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
     same: set = set()
     texts = _layout_texts(project, data, same)
     erase: set = set()
-    extra = _pdf_image_boxes(project, data, erase)
+    extra = _pdf_image_boxes(project, data, erase, texts)
     for pidx in erase:
         texts[pidx] = ""
     # Исходный текст абзацев — по нему печать меряет ширину начертания

@@ -24276,6 +24276,16 @@ def _repair_system(dom: dict, src_lang: str, tgt_lang: str, style: str = "") -> 
     )
 
 
+def _note_leak(candidate: str, source: str, before: str) -> bool:
+    """В ответе модели пустая строка-разделитель абзацев, которой нет ни
+    в оригинале, ни в прежнем переводе: так выглядит служебная заметка
+    («Also need to fix…»), приклеенная к тексту. Сегмент — один абзац,
+    и абзацу взяться неоткуда."""
+    gap = re.compile(r"\n[ \t]*\n")
+    return bool(gap.search(candidate or "")) and not gap.search(source or "") \
+        and not gap.search(before or "")
+
+
 def _openai_repair(seg: dict, project: dict, findings: list, model: Optional[str]) -> Optional[str]:
     dom = _resolve_domain(project.get("domain"))
     mdl = _resolve_model(model or _dm("repair"))
@@ -24895,6 +24905,16 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     new_target = _openai_repair(seg, project, findings, model)
     if not new_target:
         return {"ok": False, "error": "Модель не вернула исправленный текст"}
+    # Служебная заметка модели перед текстом. Промпт велит «только текст»,
+    # но 12.10.2026 Claude Sonnet 5 вернул на RU→UZ «Also need to fix
+    # apostrophes (o‘ -> oʻ) per conventions.» + пустая строка + перевод,
+    # и правка прошла: латиница у узбекского своя, проверки письма молчат,
+    # балл и термины не изменились. Заметка уехала в выгрузку картинки.
+    # Признак не зависит от языка: в ответе появился пустой абзац, которого
+    # нет ни в оригинале, ни в прежнем переводе. Заход не засчитываем —
+    # следующий спросит заново; угадывать, какой абзац настоящий, нельзя.
+    if _note_leak(new_target, seg.get("source") or "", old_target):
+        return {"ok": False, "error": "Модель вернула вместе с текстом свою заметку — правка не принята"}
     # Начертание правим САМИ и бесплатно, до всякой оценки. Модель приносит
     # верный термин не в том регистре, и правка откатывалась расхождением
     # по регистру — 18 заходов на боевом проекте, каждый оплаченный. Сочинять
@@ -38568,6 +38588,11 @@ def _auto_read_images(project: dict, kind: str, image_pages: int = 0) -> Optiona
         project["imagesSkipped"] = "limit"
         _ev("dead.images:limit", _tenant_of(project))
         return None
+    # Отметку исходника (`sourceDocx`) вызывающий только что поставил в памяти,
+    # а внешний воркер берёт задачу сразу и читает проект из БАЗЫ: без записи
+    # здесь он видел проект без исходника и падал «искать текст не в чем»
+    # (12.10.2026: обе статьи PDF при загрузке, задачи 82 и 83).
+    save_state(STATE)
     try:
         job = _job_enqueue(project["id"], "images", [],
                            {"dry_run": False, "ocr_model": None, "est_cost": 0, "auto": True,

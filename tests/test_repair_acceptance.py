@@ -368,6 +368,25 @@ r2 = main._run_segment_repair(seg2, proj2)
 check(r2.get("applied") is True, "верная правка принимается")
 check(seg2["target"] == "Prevalence (morbidity)", "и стоит в сегменте")
 
+# ─────────── 9. Заметка модели перед текстом ───────────
+print("=== 9. Служебная заметка модели в ответе ремонта ===")
+# Боевой случай 12.10.2026 (RU→UZ, Claude Sonnet 5): ответ ремонта начинался
+# строкой «Also need to fix apostrophes (o‘ -> oʻ) per conventions.» и пустой
+# строкой; правка прошла и заметка уехала в выгрузку картинки.
+LEAK = ("Also need to fix apostrophes (o‘ -> oʻ) per conventions.\n\n"
+        "dublyangan oʻt oldirish tizimi, karbyurator – 4 kamerali (Nikki).")
+check(main._note_leak(LEAK, "дублированная система зажигания", "ikki martalik o‘t oldirish tizimi"),
+      "пустой абзац, которого нет ни в оригинале, ни в прежнем тексте, — заметка")
+check(not main._note_leak("Строка один.\n\nСтрока два.", "Абзац.\n\nЕщё абзац.", ""),
+      "абзацы, которые есть в оригинале, заметкой не считаются")
+seg = seg_of(SRC62, "DS – drug susceptibility")
+proj = project_of([seg])
+stub(LEAK, [])
+r = main._run_segment_repair(seg, proj)
+check(r.get("ok") is False and seg["target"] == "DS – drug susceptibility",
+      "ответ с заметкой не принят, текст сегмента прежний")
+check(not (seg.get("repair") or {}).get("tried"), "заход не засчитан — следующий спросит заново")
+
 print()
 print("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail))
 sys.exit(1 if fail else 0)

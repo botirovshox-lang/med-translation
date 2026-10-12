@@ -546,16 +546,18 @@ def _detect_boxes(eng, arr, k: int) -> list:
         kw["box_thresh"] = float(IMG_BOX_THRESH)
     if IMG_DET_ONLY:
         kw.update(use_det=True, use_cls=False, use_rec=False)
+    elif IMG_WEAK_CONF < IMG_MIN_CONF:
+        # Движок сам выбрасывает строки с уверенностью чтения ниже 0.5 — ДО нас,
+        # и правило «строка внутри столбца» ниже их иначе не увидело бы.
+        kw["text_score"] = IMG_WEAK_CONF
     res, _elapse = eng(arr, **kw) if kw else eng(arr)
     if IMG_DET_ONLY:
         _warn_if_read_anyway(res)
-    out, bad = [], 0
+    out, weak, bad = [], [], 0
     for item in (res or []):
         pts, score = _unpack(item)
         if pts is None:
             bad += 1
-            continue
-        if score is not None and score < IMG_MIN_CONF:
             continue
         xs = [p[0] for p in pts]
         ys = [p[1] for p in pts]
@@ -563,9 +565,13 @@ def _detect_boxes(eng, arr, k: int) -> list:
                int(max(xs) / k), int(max(ys) / k)]
         if box[2] - box[0] < 4 or box[3] - box[1] < 4:
             continue
-        out.append({"box": box,
-                    "conf": round(score, 3) if score is not None else None,
-                    "flat": 0.0})
+        rec = {"box": box, "conf": round(score, 3) if score is not None else None, "flat": 0.0}
+        if score is not None and score < IMG_MIN_CONF:
+            if score >= IMG_WEAK_CONF:
+                weak.append(rec)
+            continue
+        out.append(rec)
+    out += [w for w in weak if _in_column(w["box"], out)]
     # Движок ответил, а разобрать не вышло НИ ОДНОЙ записи — это смена формы
     # ответа (другая версия пакета), а не картинка без надписей. Разница
     # несущая: пустой список объявит картинку прочитанной навсегда, и платное
@@ -573,6 +579,41 @@ def _detect_boxes(eng, arr, k: int) -> list:
     if bad and not out:
         raise EngineAnswer("ответ движка не разобран: %d записей" % bad)
     return out
+
+
+# Строка, которую распознавалка движка прочла неуверенно, но которая стоит
+# ВНУТРИ столбца текста. Распознавалка знает китайский и английский, и чистую
+# кириллицу оценивает низко: 12.10.2026 на фото музейной таблички строка
+# «электронная цифровая» получила 0.43 и пропала между «два аккумулятора,» и
+# «дублированная система зажигания» — её перевода не было ни на одном языке,
+# а русская строка осталась посреди переведённой картинки. Порог 0.6 не
+# трогаем: чтение движка — бесплатный фильтр мусора (замер в CLAUDE.md,
+# «Движок ищет строки»). Мусор и обрывок рисунка в ровный столбец не встают,
+# поэтому слабую строку берём, только если ПРЯМО над ней и прямо под ней
+# стоят уверенные строки той же высоты и с тем же левым краем. Найденное
+# прежним разбором остаётся найденным: правило только добавляет.
+IMG_WEAK_CONF = float(os.environ.get("IMG_WEAK_CONF", "0.3"))
+
+
+def _in_column(box: list, strong: list) -> bool:
+    h = box[3] - box[1]
+    if h <= 0:
+        return False
+
+    def kin(o):
+        oh = o[3] - o[1]
+        return abs(oh - h) <= 0.3 * h and abs(o[0] - box[0]) <= 1.5 * h
+
+    above = below = False
+    for s in strong:
+        o = s["box"]
+        if not kin(o):
+            continue
+        if 0 <= box[1] - o[3] <= 0.8 * h:
+            above = True
+        if 0 <= o[1] - box[3] <= 0.8 * h:
+            below = True
+    return above and below
 
 
 _DET_ONLY_WARNED = False

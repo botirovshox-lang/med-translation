@@ -119,10 +119,22 @@ check([round(p["f"], 3) for p in plan2] == [0.5, 0.85, 0.765],
       "итог не зависит от порядка обхода (по снимку): %s" % [p["f"] for p in plan2])
 
 print("=== 3. Разбор: строки плашки, две надписи в одной строке pypdf ===")
-P = [("t", 145, 343.0, 4.3, "HEALTHY LIFESTYLE"), ("t", 204, 343.0, 4.3, "DIABETES SELF-"),
-     ("t", 255, 343.0, 4.3, "ADDRESS SOCIAL DETERMINANTS"),
-     ("t", 153, 337.8, 4.3, "BEHAVIORS"), ("t", 195, 337.8, 4.3, "MANAGEMENT EDUCATION"),
-     ("t", 267, 337.8, 4.3, "OF HEALTH (SDOH)")]
+def _bt(x, y, sz, t):
+    """Надпись отдельным текстовым блоком, как в боевом файле: pypdf до 6.18
+    отдаёт у второго куска одного блока координаты нулями, и тест мерил бы
+    версию pypdf, а не правило."""
+    return ("raw", "BT /F1 %s Tf 1 0 0 1 %s %s Tm {HEX:%s:HEX} Tj ET" % (sz, x, y, t))
+
+
+# Плашки — каждая в своём ряду: в боевом файле три плашки стоят в одном
+# ряду, и pypdf до 6.18 склеивает такой ряд в одну строку с координатами
+# второго куска нулями — тест мерил бы версию pypdf. Ряд из трёх плашек
+# проверен на всей книге проекта 14 обеими версиями (5 изменений, все целевые).
+# Строки одной плашки по-прежнему идут в потоке ВПЕРЕМЕШКУ с чужими.
+P = [_bt(145, 343.0, 4.3, "HEALTHY LIFESTYLE"), _bt(204, 300.0, 4.3, "DIABETES SELF-"),
+     _bt(255, 260.0, 4.3, "ADDRESS SOCIAL DETERMINANTS"),
+     _bt(153, 337.8, 4.3, "BEHAVIORS"), _bt(195, 294.8, 4.3, "MANAGEMENT EDUCATION"),
+     _bt(267, 254.8, 4.3, "OF HEALTH (SDOH)")]
 pdf = make_pdf([P])
 pg, gm = textcount._pdf_pages_geom(pdf, [])
 paras = [it[1] for it in pdftext.clean(pg, geom=gm)["items"] if it[0] == "p"]
@@ -144,10 +156,17 @@ p3 = make_pdf([P3])
 pg3_, gm3_ = textcount._pdf_pages_geom(p3, [])
 paras3_ = [it[1] for it in pdftext.clean(pg3_, geom=gm3_)["items"] if it[0] == "p"]
 check("HIV AIDS" not in paras3_, "сокращения в столбик не склеиваются: %s" % paras3_)
+from collections import Counter as _C
+ea = {"geo": [0, 145.0, 343.0, 183.8, 4.3, ""], "t": "HEALTHY LIFESTYLE"}
+eo = {"geo": [0, 204.0, 343.0, 235.5, 4.3, ""], "t": "DIABETES SELF-"}
+eb = {"geo": [0, 153.3, 337.8, 175.4, 4.3, ""], "t": "BEHAVIORS"}
+args = (["HEALTHY LIFESTYLE", "DIABETES SELF-", "BEHAVIORS"], [[ea], [eo], [eb]], [ea, eo, eb], _C())
+on_p, _g = pdftext._merge_label_lines(*args, _C())
 pdftext.LABEL_JOIN = False
-off = [it[1] for it in pdftext.clean(pg, geom=gm)["items"] if it[0] == "p"]
+off_p, _g = pdftext._merge_label_lines(*args, _C())
 pdftext.LABEL_JOIN = True
-check("HEALTHY LIFESTYLE BEHAVIORS" not in off, "PDF_LABEL_JOIN=0 выключает склейку")
+check("HEALTHY LIFESTYLE BEHAVIORS" in on_p and "HEALTHY LIFESTYLE BEHAVIORS" not in off_p,
+      "склейка строк плашки через поток; PDF_LABEL_JOIN=0 её выключает: %s / %s" % (on_p, off_p))
 
 # Отдельными кусками потока, как в боевом файле (pypdf склеивает их в одну строку).
 R = [("t", 172, 340.8, 5.5, "PROGRAMS THAT ADDRESS:"), ("t", 55.6, 336.6, 5.5, "24-H PHYSICAL")]

@@ -573,13 +573,56 @@ def _slot_boxes(b: dict) -> list:
                 out.append(sd)
             continue
         xl = sl[5] if len(sl) > 5 else None
-        out.append({"x0": x0, "x1": max(x1, x0 + 0.5 * sz), "top": y + 0.85 * sz,
-                    "bottom": y - 0.25 * sz, "size": sz, "y": y, "x": x0,
-                    "xl": float(xl) if xl is not None else None,
-                    "n": int(sl[6]) if len(sl) > 6 and sl[6] else 0,
-                    "exact": bool(sl[7]) if len(sl) > 7 else False,
-                    "style": (sl[4] if len(sl) > 4 else "") or "", "page": b["page"],
-                    "color": _color_of(sl[9] if len(sl) > 9 else None)})
+        base = {"x0": x0, "x1": max(x1, x0 + 0.5 * sz), "top": y + 0.85 * sz,
+                "bottom": y - 0.25 * sz, "size": sz, "y": y, "x": x0,
+                "xl": float(xl) if xl is not None else None,
+                "n": int(sl[6]) if len(sl) > 6 and sl[6] else 0,
+                "exact": bool(sl[7]) if len(sl) > 7 else False,
+                "style": (sl[4] if len(sl) > 4 else "") or "", "page": b["page"],
+                "color": _color_of(sl[9] if len(sl) > 9 else None)}
+        out.extend(_gap_pieces(base, sl[10] if len(sl) > 10 else None))
+    return out
+
+
+def _gap_pieces(sd: dict, gaps) -> list:
+    """Место строки с РАЗРЫВАМИ (поле 10, `pdfpages_worker._line_gaps`) —
+    куски между разрывами, каждый своим местом. В разрыве строки слоя
+    по слою пусто, а на листе там стоит то, чего в слое нет: надпись
+    картинки, значок, графика. Сплошное место закрашивало и печатало
+    перевод поверх неё (проект 14, стр. 10: «Благоприятное влияние на
+    гемоглобин A» с картинки и «• 1c, снижение массы тела…» слоя одна
+    поверх другой). Знаки оригинала (`n`) делятся по ширине кусков;
+    начало последнего куска (`xl`) и точный конец — у последнего."""
+    if not gaps:
+        return [sd]
+    cuts = []
+    for g in gaps:
+        try:
+            g0, g1 = float(g[0]), float(g[1])
+        except Exception:
+            return [sd]
+        if sd["x0"] < g0 < g1 < sd["x1"]:
+            cuts.append((g0, g1))
+    if not cuts:
+        return [sd]
+    cuts.sort()
+    spans, at = [], sd["x0"]
+    for g0, g1 in cuts:
+        spans.append((at, g0))
+        at = g1
+    spans.append((at, sd["x1"]))
+    total = sum(max(0.0, b_ - a_) for a_, b_ in spans) or 1.0
+    out = []
+    for k, (a_, b_) in enumerate(spans):
+        last = k == len(spans) - 1
+        p = dict(sd)
+        p.update({"x0": a_, "x": a_, "x1": max(b_, a_ + 0.5 * sd["size"]),
+                  "n": int(round(sd["n"] * max(0.0, b_ - a_) / total)) if sd["n"] else 0,
+                  "xl": sd["xl"] if last else None, "exact": sd["exact"] if last else False,
+                  # Сторона, где разрыв, — не свободная бумага: там стоит то,
+                  # чего нет в слое, и расти туда кусок не вправе (`_slot_width`).
+                  "_gapL": a_ if k > 0 else None, "_gapR": b_ if not last else None})
+        out.append(p)
     return out
 
 
@@ -1091,6 +1134,14 @@ def _slot_width(sl: dict, align: str, wide: bool) -> float:
     (`room0`/`room1`, `_free_room`) в сторону, куда строка растёт по выключке."""
     x0 = sl["x"] if align == "left" else sl["x0"]
     x1 = sl["x1"]
+    if sl.get("_gapL") is not None or sl.get("_gapR") is not None:
+        # Кусок строки между разрывами (`_gap_pieces`) растёт только
+        # в сторону, где разрыва нет.
+        if wide and sl.get("_gapR") is None:
+            x1 = max(x1, sl.get("room1", x1))
+        if wide and sl.get("_gapL") is None and align != "left":
+            x0 = min(x0, sl.get("room0", x0))
+        return x1 - x0
     if wide and sl.get("_span"):
         # Однострочной подписи, которой тесно, — вся свободная бумага с обеих
         # сторон (`_span`), а не только со стороны выключки.
@@ -1145,6 +1196,10 @@ def _fit_slots(text: str, slots: list, sw, font_of, align: str, split_ok: bool =
                 probe = (cur + " " + words[k]) if cur else words[k]
                 if sw(probe, font, size) * hs[0] <= width:
                     cur, k = probe, k + 1
+                elif not cur and sl.get("_gapR") is not None and width < 1.5 * size:
+                    # Крошечный кусок перед разрывом (маркер «•»), а слово
+                    # не маркер: остаётся пустым, а не ужимает весь абзац.
+                    break
                 elif not cur:
                     w_ = words[k]
                     if split and len(w_) > 1:
@@ -1188,7 +1243,7 @@ def _fit_slots(text: str, slots: list, sw, font_of, align: str, split_ok: bool =
         # слева 18 пт бумаги) — строка растёт в свободную сторону, а печать
         # ставит её как можно ближе к центру своего места (`_span_x`).
         if (label and wide and LABEL_SPAN and not sl.get("rot") and not sl.get("_r")
-                and len(slots) == 1):
+                and len(slots) == 1 and sl.get("_gapL") is None and sl.get("_gapR") is None):
             lo, hi = sl.get("room0", sl["x0"]), sl.get("room1", sl["x1"])
             if hi - lo > _slot_width(sl, align, True) + 0.5:
                 sl["_span"] = (lo, hi)
@@ -1486,6 +1541,8 @@ def _lay_flow(words0: list, slots: list, f: float, hs: float, font_of, sw, align
             if nw <= width:
                 cur = (cur + " " + words[k]) if cur else words[k]
                 cw, k = nw, k + 1
+            elif not cur and sl.get("_gapR") is not None and width * hs < 1.5 * size:
+                break                   # крошечный кусок перед разрывом (`_fit_slots`)
             elif not cur:
                 w_ = words[k]
                 if split and len(w_) > 1:
@@ -3414,6 +3471,13 @@ FREE_MAX_SHARE = float(os.environ.get("LAYOUT_FREE_MAX_SHARE", "1.0"))
 FREE_MAX_LINES = int(os.environ.get("LAYOUT_FREE_MAX_LINES", "1"))
 FREE_MAX_WIDTH = float(os.environ.get("LAYOUT_FREE_MAX_WIDTH", "0.35"))
 FREE_PAPER_DELTA = 12.0          # светлее бумаги на столько (из 255) — уже другой фон
+# Ровная смена тона — край плашки: светло-серая плашка (245) на белом листе
+# (255) отличается меньше `FREE_PAPER_DELTA`, и подпись плашки росла за неё
+# на поле листа (проект 14, стр. 12). Смена на столько и держится
+# `FREE_STEP_RUN` столбцов подряд — конец свободного места. Ошибка в эту
+# сторону только запрещает рост: подпись ужмётся, как до запаса бумаги.
+FREE_STEP_DELTA = float(os.environ.get("LAYOUT_FREE_STEP", "6"))
+FREE_STEP_RUN = 3
 
 
 def _free_room(sample, sd: dict, paper: float) -> None:
@@ -3452,7 +3516,7 @@ def _free_room(sample, sd: dict, paper: float) -> None:
     # Конец свободного места — краска ИЛИ смена фона: светлая надпись на
     # цветной плашке не вправе выйти за плашку на белую бумагу (её там не
     # видно), и тёмная — на чужую плашку.
-    hit = next((k for k, (v, u) in enumerate(zip(mins, maxs)) if v < dark or u > light), None)
+    hit = _room_hit(mins, maxs, dark, light, paper)
     free_to = sd["x1"] + 0.3 * size + (len(mins) if hit is None else hit) / scale - margin
     free_to = min(free_to, right_cap)
     if free_to - sd["x1"] >= FREE_MIN * size:
@@ -3461,12 +3525,31 @@ def _free_room(sample, sd: dict, paper: float) -> None:
     end = (sd["x0"] - 0.3 * size - cb[0]) * scale
     mins = _col_mins(gray, (left_cap - margin - cb[0]) * scale, end, y0, y1)
     maxs = _col_maxs(gray, (left_cap - margin - cb[0]) * scale, end, y0, y1)
-    hit = next((k for k, (v, u) in enumerate(zip(reversed(mins), reversed(maxs)))
-                if v < dark or u > light), None)
+    hit = _room_hit(list(reversed(mins)), list(reversed(maxs)), dark, light, paper)
     free_from = sd["x0"] - 0.3 * size - (len(mins) if hit is None else hit) / scale + margin
     free_from = max(free_from, left_cap)
     if sd["x0"] - free_from >= FREE_MIN * size:
         sd["room0"] = free_from
+
+
+def _room_hit(mins: list, maxs: list, dark: float, light: float, paper: float) -> "int | None":
+    """Первый столбец, где свободная бумага кончается: краска, заметно более
+    светлый фон — или РОВНАЯ смена тона (`FREE_STEP_DELTA`, не меньше
+    `FREE_STEP_RUN` столбцов подряд: край плашки, рамка)."""
+    mid = [(float(v) + float(u)) / 2.0 for v, u in zip(mins, maxs)]
+    for k, (v, u) in enumerate(zip(mins, maxs)):
+        if v < dark or u > light:
+            return k
+        # Край — РЕЗКИЙ скачок (в пределах двух столбцов), после которого
+        # новый тон держится: плавный градиент фона инфографики меняется
+        # по доле единицы на столбец и краем не считается (он «уходил»
+        # от бумаги постепенно, и подписи схемы теряли запас — стр. 4).
+        if FREE_STEP_DELTA > 0 and k >= 2 and k + FREE_STEP_RUN <= len(mid):
+            ref = mid[k - 2]
+            if abs(mid[k] - ref) >= FREE_STEP_DELTA and all(
+                    abs(mid[k + j] - ref) >= FREE_STEP_DELTA for j in range(FREE_STEP_RUN)):
+                return k
+    return None
 
 
 def _free_below(sample, rs: list, paper: float) -> None:
@@ -4444,6 +4527,14 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
                             x1 = end
                         if lim is not None:
                             x1 = min(x1, max(sd["x"] + 0.5 * sd["size"], lim - pad))
+                        if sd.get("_gapR") is not None:
+                            # Правее разрыва краска — чужая (надпись картинки
+                            # в разрыве строки слоя, `_gap_pieces`): конец куска
+                            # известен точно, и раздвигать его туда нельзя.
+                            # До замера бумаги: иначе цвет мерился бы в разрыве.
+                            x1 = min(x1, max(sd["x"] + 0.5 * sd["size"], sd["_gapR"]))
+                        if sd.get("_gapL") is not None:
+                            x0 = max(x0, min(sd["x"], sd["_gapL"]))
                         if x1 - x0 > sd["x1"] - sd["x0"] + 0.5:
                             colors = _slot_paper(sample, sd, pad, SLOT_STRIPS, x0, x1)
                         sd["x0"], sd["x1"] = x0, x1

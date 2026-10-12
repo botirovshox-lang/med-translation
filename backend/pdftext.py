@@ -96,7 +96,7 @@ MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
 # продолжает (подписи схемы с разных концов листа), строка pypdf с двумя
 # надписями одной базовой линии делится по местам (`split`), невидимый
 # и повёрнутый текст — своими пачками.
-RULES_VERSION = 13
+RULES_VERSION = 14
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -1203,11 +1203,28 @@ ROT_COL_MIN_CELLS = 3        # кусков строки на столбцах �
 ROT_COL_GAP = 0.5
 ROT_COL_TOL = 1.0
 ROT_COL_SPLIT = os.environ.get("PDF_ROT_COLS", "1") != "0"
+# Повёрнутая прямая строка, путь которой идёт НАЗАД или рвётся пропуском
+# шире `ROT_GAP_SPLIT` кеглей, — это несколько надписей одной базовой
+# линии: pypdf склеивает ячейки шапки повёрнутой таблицы из разных её мест
+# («administration | Cost | Clinical considerations | MACE | Heart failure»,
+# проект 14, стр. 9), и перевод печатался одной строкой за край таблицы.
+ROT_GAP_SPLIT = float(os.environ.get("PDF_ROT_GAP", "3.0"))
 
 
 def _along(p: list) -> float:
     a = math.radians(float(p[2] or 0.0))
     return float(p[0]) * math.cos(a) + float(p[1]) * math.sin(a)
+
+
+def _rot_piece_end(p: list) -> float:
+    """Конец куска повёрнутой строки вдоль пути: записанный разбором
+    (седьмое поле — точка конца), иначе оценка по числу знаков."""
+    if len(p) > 6 and p[6]:
+        try:
+            return _along([p[6][0], p[6][1], p[2]])
+        except Exception:
+            pass
+    return _along(p) + 0.5 * max(float(p[3] or 1.0), 1.0) * len(str(p[5] or ""))
 
 
 def _rot_columns(rot: dict) -> dict:
@@ -1237,16 +1254,25 @@ def _rot_cells(line: str, rg: dict, cols: dict) -> list:
     ang = int(round(float(pts[0][2] or 0) / 5.0)) * 5
     starts = cols.get(ang) or []
     on_col = lambda v: any(abs(v - c_) <= ROT_COL_TOL for c_ in starts)  # noqa: E731
-    if sum(1 for p_ in pts if on_col(_along(p_))) < ROT_COL_MIN_CELLS:
-        return [(line, rg)]
+    table = sum(1 for p_ in pts if on_col(_along(p_))) >= ROT_COL_MIN_CELLS
+    # Письмо справа налево идёт по пути назад законно — шаг назад там
+    # не граница надписей.
+    rtl = any(unicodedata.bidirectional(ch) in ("R", "AL") for ch in line)
     cut = []
     for k in range(1, len(pts)):
         a_, b_ = pts[k - 1], pts[k]
         size = max(float(a_[3] or 1.0), 1.0)
-        end_a = _along(a_) + 0.5 * size * len(str(a_[5] or ""))
-        if (on_col(_along(b_)) and on_col(_along(a_))
+        size2 = max(size, float(b_[3] or 1.0))
+        end_a = _rot_piece_end(a_)
+        if (table and on_col(_along(b_)) and on_col(_along(a_))
                 and _along(b_) - end_a >= ROT_COL_GAP * size
                 and any(ch.isalnum() for ch in str(a_[5] or ""))):
+            cut.append(k)
+        elif ROT_GAP_SPLIT > 0 and ((not rtl and _along(b_) < _along(a_) - 0.5 * size2)
+                                    or (len(a_) > 6 and a_[6]
+                                        and _along(b_) - end_a >= ROT_GAP_SPLIT * size2)):
+            # Пропуск — только по ЗАПИСАННОМУ концу куска: оценка по числу
+            # знаков у узкого и широкого шрифта врёт на кегли.
             cut.append(k)
     if not cut:
         return [(line, rg)]
@@ -1268,10 +1294,13 @@ def _rot_cells(line: str, rg: dict, cols: dict) -> list:
         sub["pts"] = pts[a:b]
         if b < len(pts):
             last = pts[b - 1]
-            ang_r = math.radians(float(last[2] or 0.0))
-            ln_ = 0.5 * max(float(last[3] or 1.0), 1.0) * len(str(last[5] or ""))
-            sub["end"] = [round(float(last[0]) + ln_ * math.cos(ang_r), 2),
-                          round(float(last[1]) + ln_ * math.sin(ang_r), 2)]
+            if len(last) > 6 and last[6]:
+                sub["end"] = [round(float(last[6][0]), 2), round(float(last[6][1]), 2)]
+            else:
+                ang_r = math.radians(float(last[2] or 0.0))
+                ln_ = 0.5 * max(float(last[3] or 1.0), 1.0) * len(str(last[5] or ""))
+                sub["end"] = [round(float(last[0]) + ln_ * math.cos(ang_r), 2),
+                              round(float(last[1]) + ln_ * math.sin(ang_r), 2)]
         out.append((line[lo:hi], sub))
     return out
 
@@ -1308,6 +1337,43 @@ def _rot_cell_host(cell_runs: list, rg: dict):
         starts = [_along(p_) for p_ in run_.geo[0]["pts"]]
         if (any(abs(v - pos) <= ROT_COL_TOL for v in starts)
                 and 0 < abs(across(last) - across(pts[0])) <= 2.5 * size):
+            return run_
+    return None
+
+
+def _rot_centered_host(cands: list, rg: dict, cols: "dict | None" = None):
+    """Пачка, которую продолжает повёрнутая надпись `rg`: та начата строчной
+    или скобкой, стоит на соседней строке (не дальше 2.5 кегля поперёк пути),
+    под тем же углом, и её отрезок вдоль пути и отрезок последней строки пачки
+    перекрываются на половину меньшего — ячейка, выключенная по центру,
+    чьи строки начинаются в разных местах. Иначе None."""
+    pts = rg.get("pts") if rg else None
+    if not pts or rg.get("curved"):
+        return None
+    head = str(pts[0][5] or "").lstrip()
+    if not head or not (head[0].islower() or head[0] in "([{"):
+        return None
+    a0 = float(pts[0][2] or 0.0)
+    ar = math.radians(a0)
+    across = lambda p_: -float(p_[0]) * math.sin(ar) + float(p_[1]) * math.cos(ar)  # noqa: E731
+    size = max(float(pts[0][3] or 1.0), 1.0)
+    lo, hi = _along(pts[0]), _rot_piece_end(pts[-1])
+    # Значение столбца ДАННЫХ («(95% CI)» под «0.8») — не продолжение
+    # ячейки: оно стоит на начале столбца (`_rot_columns`).
+    starts = (cols or {}).get(int(round(a0 / 5.0)) * 5) or []
+    if any(abs(lo - c_) <= ROT_COL_TOL for c_ in starts):
+        return None
+    for run_ in cands:
+        g_ = run_.geo[-1] if run_.geo else None
+        gp = (g_ or {}).get("pts") if isinstance(g_, dict) else None
+        if not gp or g_.get("curved") or abs(float(gp[0][2] or 0.0) - a0) > 5.0:
+            continue
+        glo, ghi = _along(gp[0]), _rot_piece_end(gp[-1])
+        if abs(glo - lo) <= ROT_COL_TOL:
+            continue                    # одно начало — это `_rot_cell_host`, не центр
+        ov = min(hi, ghi) - max(lo, glo)
+        if (ov >= 0.5 * max(1e-6, min(hi - lo, ghi - glo))
+                and 0 < abs(across(gp[0]) - across(pts[0])) <= 2.5 * size):
             return run_
     return None
 
@@ -1430,10 +1496,18 @@ def _geo_page(lines: list, g, placeless: "list | None" = None) -> "list | None":
             cells = _rot_cells(l or "", rg, rot_cols) if rg else [(l or "", rg)]
             if len(cells) > 1:
                 # Ряд повёрнутой таблицы: каждая ячейка — своя пачка (свой абзац).
+                # Ячейка, продолжающая надпись строки выше (двухстрочная
+                # ячейка шапки, выключенная по центру: «Route of» /
+                # «administration»), — в её абзац (`_rot_centered_host`).
+                prev = ([run] if run else []) + list(cell_runs)
                 if run:
                     runs.append(run)
                 cell_runs = []
                 for t_, g_ in cells:
+                    host_ = _rot_centered_host(prev, g_, rot_cols)
+                    if host_ is not None:
+                        host_.add(t_, g_)
+                        continue
                     run = _RotRun()
                     run.add(t_, g_)
                     runs.append(run)

@@ -17530,7 +17530,11 @@ def _job_images(job: dict) -> None:
                     rec["w"] = rec["h"] = 0
                 _mark_layer_blocks(rec, blob, data)
                 if name.startswith(PDF_PAGE_PART):
-                    _mark_figure_blocks(rec, blob, fig_rects)
+                    fig_new_: list = []
+                    _mark_figure_blocks(rec, blob, fig_rects, added=fig_new_)
+                    if fig_new_:
+                        # Строки за краем рисунка — со слоем, как все.
+                        _mark_layer_blocks(rec, blob, data, only=set(fig_new_))
                 rec["paras"] = anchors.get(name) or []
                 job["counters"]["detected"] = job["counters"].get("detected", 0) + 1
                 map_dirty = True
@@ -32132,6 +32136,33 @@ def _layer_words_by_page(data: dict, by_id: dict) -> dict:
     return out
 
 
+def _holds_layer_pieces(src: str, paras: list, rect: "tuple | None") -> bool:
+    """Надпись картинки СОДЕРЖИТ строки слоя, а не повторяет их: каждый абзац
+    слоя, задевающий её рамку, лежит в ней (≥ 80% площади) и его текст —
+    кусок её текста, и сверх них в надписи есть свои слова. Так выглядит
+    строка, где начало — текстом PDF, а продолжение — кривыми («WHERE?:»
+    слоем и «Everyday settings» рукописным шрифтом, проект 14, стр. 12):
+    печатается надпись целиком, кусок слоя под ней стирается (`erase`)."""
+    if rect is None or not paras:
+        return False
+    bx0, by0, bx1, by1 = rect
+    hit = []
+    for _pidx, (rx0, ry0, rx1, ry1), pw, psrc in paras:
+        ix, iy = min(bx1, rx1) - max(bx0, rx0), min(by1, ry1) - max(by0, ry0)
+        if ix <= 0 or iy <= 0:
+            continue
+        # Те же условия, что у стирания куска (`_pdf_image_boxes`, `er_cand`):
+        # исключение из повтора без стирания дало бы двойную печать.
+        if (ix * iy < 0.8 * max(1e-6, (rx1 - rx0) * (ry1 - ry0)) or len(pw) > LAYER_PIECE_WORDS
+                or len(_alnum(psrc)) >= len(_alnum(src)) or not _piece_in(psrc, src)):
+            return False
+        hit.append(psrc)
+    if not hit:
+        return False
+    rest = len(_alnum(src)) - sum(len(_alnum(h)) for h in hit)
+    return rest >= 0.3 * max(1, len(_alnum(src)))
+
+
 def _dup_of_layer(src: str, near: list, rect: "tuple | None") -> bool:
     """Блок картинки повторяет строки слоя, стоящие ПОД НИМ (по месту): слова
     той же страницы в другом месте (подпись к рисунку) повтором не считаются."""
@@ -32315,7 +32346,10 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
                            py1_ - (fy0_ + bx[3] * syp) * (py1_ - py0_),
                            px0_ + (fx0_ + bx[2] * sxp) * (px1_ - px0_),
                            py1_ - (fy0_ + bx[1] * syp) * (py1_ - py0_))
-            if _dup_of_layer((seg or {}).get("source") or "", layer_words.get(page) or [], rect_pt):
+            if (_dup_of_layer((seg or {}).get("source") or "", layer_words.get(page) or [], rect_pt)
+                    and not (erase is not None
+                             and _holds_layer_pieces((seg or {}).get("source") or "",
+                                                     layer_paras.get(page) or [], rect_pt))):
                 # Блок разбора картинки повторяет текст СЛОЯ этой страницы
                 # (детектор накрыл столбец схемы, где подписи — текстом PDF):
                 # его перевод уже печатает абзац слоя, второй раз — двойной
@@ -32361,6 +32395,17 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
                     if _piece_in(psrc, bsrc):
                         er_cand.add(pidx)
             x0, y0, x1, y1 = b["box"]
+            if er_cand and rect_pt is not None and fig is not None and int(b.get("rows") or 1) <= 1:
+                # Надпись НАЧИНАЕТСЯ куском слоя («WHERE?:» и дальше кривыми
+                # «Everyday settings»): где начинается текст, слой знает точно,
+                # а рамка строки детектора захватывает и значок слева —
+                # стирание размазывало его (проект 14, стр. 12).
+                bal = _alnum(bsrc).lower()
+                for pidx, (rx0, _ry0, _rx1, _ry1), _pw, psrc in inside:
+                    if pidx in er_cand and bal.startswith(_alnum(psrc).lower()):
+                        pxl = ((rx0 - px0_) / max(1e-6, px1_ - px0_) - fig[1]) / max(1e-9, sxp)
+                        if x0 < pxl < x1:
+                            x0 = int(pxl)
             rows = max(1, int(b.get("rows") or 1))
             if x1 > x0 and rows <= 1 and (y1 - y0) >= (x1 - x0) * image_text.IMG_VERT_RATIO:
                 # Надпись в оригинале шла СВЕРХУ ВНИЗ (корешок книги, подпись
@@ -32550,9 +32595,19 @@ def _pdf_page_parts(project: dict, data: dict, raster: dict) -> tuple:
     return names, anchors
 
 
-def _mark_figure_blocks(rec: dict, blob: bytes, fig_rects: dict) -> int:
+def _mark_figure_blocks(rec: dict, blob: bytes, fig_rects: dict, only: "set | None" = None,
+                        line_boxes: "dict | None" = None, added: "list | None" = None) -> int:
     """Блоки СТРАНИЦЫ, лежащие внутри уже вырезанного рисунка, — `skip:
-    "figure"`: их читает разбор самой вырезки, второй раз — деньги и дубль."""
+    "figure"`: их читает разбор самой вырезки, второй раз — деньги и дубль.
+
+    Сверка ПОСТРОЧНАЯ (правило 4, тот же закон, что у слоя): детектор
+    собирает в один блок столбец страницы целиком, и блок, лежащий в рисунке
+    большей частью, уносил с собой строки ЗА краем рисунка — их не читал
+    никто (проект 14, стр. 12: заголовок «WHERE?: Everyday settings» под
+    вырезкой рисунка остался английским). Строки вне рисунка уходят своими
+    блоками (`_split_uncovered`); номера новых блоков — в `added`.
+    `only` — пересверка: блоки, уже отсеянные как рисунок, сверяются заново
+    по строкам `line_boxes`."""
     fig = importers.figure_tag(blob)
     if fig is None or not rec.get("w") or not rec.get("h"):
         return 0
@@ -32560,10 +32615,9 @@ def _mark_figure_blocks(rec: dict, blob: bytes, fig_rects: dict) -> int:
     rects = fig_rects.get(page) or []
     n = 0
     w, h = float(rec["w"]), float(rec["h"])
-    for b in rec.get("blocks") or []:
-        if b.get("skip"):
-            continue
-        x0, y0, x1, y1 = (float(v) for v in b["box"])
+
+    def cov_of(box):
+        x0, y0, x1, y1 = (float(v) for v in box)
         fx0, fy0, fx1, fy1 = x0 / w, y0 / h, x1 / w, y1 / h
         area = max(1e-9, (fx1 - fx0) * (fy1 - fy0))
         cov = 0.0
@@ -32571,17 +32625,53 @@ def _mark_figure_blocks(rec: dict, blob: bytes, fig_rects: dict) -> int:
             ix, iy = min(fx1, rx1) - max(fx0, rx0), min(fy1, ry1) - max(fy0, ry0)
             if ix > 0 and iy > 0:
                 cov += ix * iy
-        if cov / area >= LAYER_OVERLAP:
-            b["skip"] = "figure"
+        return cov / area
+
+    blocks = rec.get("blocks") or []
+    for bi in range(len(blocks)):
+        b = blocks[bi]
+        if only is not None:
+            if bi not in only or b.get("skip") not in (None, "figure") or b.get("figSplit"):
+                continue
+        elif b.get("skip"):
+            continue
+        if cov_of(b["box"]) < LAYER_OVERLAP:
+            continue
+        if b.get("skip") != "figure":
             n += 1
+        b["skip"] = "figure"
+        lbs = (line_boxes or {}).get(bi) or b.get("lineBoxes") or []
+        if len(lbs) < 2 or "text" in b and only is None:
+            continue
+        covered = [cov_of(lb) >= LAYER_OVERLAP for lb in lbs]
+        if all(covered) or not any(covered):
+            continue
+        b["figSplit"] = 1
+        for nb in _split_uncovered(b, lbs, covered, bi):
+            nb.pop("from", None)
+            blocks.append(nb)
+            if added is not None:
+                added.append(len(blocks) - 1)
+    rec["blocks"] = blocks
     return n
+
+
+def _figure_rows(rec: dict) -> set:
+    """Пересверка правила 4: многострочные блоки СТРАНИЦЫ, отсеянные
+    как рисунок целиком, — только у записей, сверенных раньше правила 4."""
+    if int(rec.get("layerRule") or 1) >= 4 or not str(rec.get("part") or "").startswith(PDF_PAGE_PART):
+        return set()
+    return {i for i, b in enumerate(rec.get("blocks") or [])
+            if b.get("skip") == "figure" and int(b.get("rows") or 1) > 1 and not b.get("figSplit")}
 
 
 # Версия правила сверки надписей с текстовым слоем. 2 — построчно: блок,
 # где часть строк в слое, а часть нарисована кривыми («Self-efficacy» между
 # пунктами слоя; «VLED and formula meal replacement…» в таблице проекта 14),
 # прежде отсеивался ЦЕЛИКОМ, и кривые строки не переводились никогда.
-LAYER_RULE = 3
+# 4 — блок, отсеянный как рисунок, сверяется с вырезкой ПОСТРОЧНО
+# (`_mark_figure_blocks`): строки за краем рисунка читаются своими блоками.
+LAYER_RULE = 4
 # Сверка со слоем знает РАЗРЫВЫ строки слоя (правило 3): `LAYER_GAPS=0` —
 # прежняя сверка цельным прямоугольником строки.
 LAYER_GAPS = os.environ.get("LAYER_GAPS", "1") != "0"
@@ -32910,6 +33000,17 @@ def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict,
             # покрытого слоем куска не склеятся через него в один блок.
             row_h = max(1, int(float(blocks[i].get("lineH") or 10) / 2))
             lbs[i] = sorted(got, key=lambda v: (v[1] // row_h, v[0]))
+    # Блоки, отсеянные как рисунок (правило 4): строки за краем вырезки —
+    # своими блоками, и уже они сверяются со слоем.
+    figs = {i for i in lbs if blocks[i].get("skip") == "figure"}
+    fig_new: list = []
+    if figs:
+        _mark_figure_blocks(rec, blob, fig_rects, only=figs, line_boxes=lbs, added=fig_new)
+        blocks = rec.get("blocks") or []
+        for i in fig_new:
+            lbs[i] = blocks[i].get("lineBoxes") or []
+        for i in figs:
+            lbs.pop(i, None)
     before = len(blocks)
     _mark_layer_blocks(rec, blob, data, only=set(lbs), line_boxes=lbs)
     new = rec.get("blocks") or []
@@ -32925,7 +33026,9 @@ def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict,
             # Родитель, отсеянный как слой, накрывает свои строки — не в счёт;
             # строка же с решением («шум», «надпечатка» — модели или человека)
             # уже разобрана: завести её заново значило бы платно читать то же.
-            if ob.get("skip") == "layer":
+            # Отсеянный как РИСУНОК — тоже: его строки в рисунке читает
+            # вырезка, а за краем рисунка (правило 4) — как раз эта строка.
+            if ob.get("skip") in ("layer", "figure"):
                 continue
             ox0, oy0, ox1, oy1 = ob["box"]
             ix, iy = min(bx1, ox1) - max(bx0, ox0), min(by1, oy1) - max(by0, oy0)
@@ -32939,8 +33042,11 @@ def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict,
     if str(rec.get("part") or "").startswith(PDF_PAGE_PART) and len(keep) > before:
         sub = {"blocks": keep[before:], "w": rec.get("w"), "h": rec.get("h")}
         _mark_figure_blocks(sub, blob, fig_rects)
+        # Строки за краем рисунка (`_mark_figure_blocks` дописывает их в конец).
+        keep = keep[:before] + sub["blocks"]
+        rec["blocks"] = keep
     rec["layerRule"] = LAYER_RULE
-    return len(keep) - before
+    return len(keep) - before + len(fig_new)
 
 
 def _relayer_todo(rec: dict, data: "dict | None" = None) -> set:
@@ -32948,7 +33054,7 @@ def _relayer_todo(rec: dict, data: "dict | None" = None) -> set:
     отсеянные как слой целиком, прочитанные многострочные блоки страницы и
     (правило 3) отсеянные блоки, лежащие на РАЗРЫВЕ строки слоя.
     Пусто — пересверять нечего, и страницу незачем даже отрисовывать."""
-    return _relayer_rows(rec) | _gap_blocks(rec, data)
+    return _relayer_rows(rec) | _gap_blocks(rec, data) | _figure_rows(rec)
 
 
 def _relayer_rows(rec: dict) -> set:

@@ -143,15 +143,23 @@ def _stem(mask) -> float:
     return float(runs[len(runs) // 2])
 
 
-def measure(rgb, src: str = "", rows: int = 1, line_h: float = 0.0, inner=None) -> dict:
+def measure(rgb, src: str = "", rows: int = 1, line_h: float = 0.0, inner=None,
+            plate=None) -> dict:
     """Измерить надпись на вырезке `rgb` (H×W×3, uint8). Ответ:
     {mask, bg (цвет), ink (цвет), flat, bands, em (кегль в точках снимка),
     pitch, bold, angle (градусы, против часовой; 0 — горизонталь), elong,
-    found (есть ли буквы)}."""
+    found (есть ли буквы)}. `plate` — (область, цвет) плашки, на которой
+    стоят буквы (`_plate_of`): фон тогда — её цвет, а не размытая вырезка."""
     h, w = rgb.shape[:2]
     lh = float(line_h or (h / max(1, rows)))
     k = _odd(0.6 * lh)
-    bg_local = cv2.medianBlur(rgb, k) if min(h, w) > k else rgb.copy()
+    if plate is not None:
+        region, pcol = plate
+        bg_local = rgb.copy()
+        bg_local[region] = np.array(pcol, dtype=np.uint8)
+    else:
+        region = None
+        bg_local = cv2.medianBlur(rgb, k) if min(h, w) > k else rgb.copy()
     diff = np.abs(rgb.astype(np.int16) - bg_local.astype(np.int16)).max(axis=2)
     mask = diff > INK_DIFF
     # Буквы надписи — ОДНОГО цвета: ядро самых далёких от фона точек даёт
@@ -280,9 +288,26 @@ def measure(rgb, src: str = "", rows: int = 1, line_h: float = 0.0, inner=None) 
                          and letter >= max(LETTER_MIN_PX, LETTER_MIN_SHARE * base)
                          and lettery >= LETTER_SHARE_MIN)}
     bgp = bg_local[~mask] if (~mask).any() else bg_local.reshape(-1, 3)
+    if region is not None:
+        # Фон букв на плашке — сама плашка, а не бумага вокруг неё.
+        bgp = rgb[region & ~mask] if (region & ~mask).any() else bgp
     bg = np.median(bgp.reshape(-1, 3), axis=0)
     out["bg"] = tuple(int(v) for v in bg)
     out["flat"] = bool(float(bgp.reshape(-1, 3).astype(np.float32).std(axis=0).max()) <= FLAT_STD)
+    if not out["found"] and plate is None and rows <= 1:
+        # Светлые буквы на ПЛАШКЕ уже окна размытия (лента дуги, полоса
+        # заголовка): размытый фон — смесь плашки и бумаги, и «краской»
+        # оказывается сама плашка, а буквы — её дырками. Тогда плашка и есть
+        # фон: буквы — точки внутри неё, отличные от её цвета
+        # (проект 14, стр. 10: «MEDITERRANEAN DIET» белым по синей дуге).
+        pl = _plate_of(rgb, lab, st, keep, lim, n)
+        if pl is not None:
+            alt = measure(rgb, src, rows, line_h, inner, plate=pl)
+            # Буквы на плашке — КОНТРАСТНЫ ей (белое по синему); крапины
+            # на ровном участке фотографии (небо, кожа) — нет.
+            if alt.get("found") and max(abs(int(a_) - int(b_)) for a_, b_ in
+                                        zip(alt.get("ink") or (0, 0, 0), pl[1])) >= PLATE_CONTRAST:
+                return alt
     if not out["found"]:
         out.update(ink=(0, 0, 0) if bg.mean() > 127 else (255, 255, 255), bands=[],
                    em=lh * 0.8, pitch=lh, bold=False, angle=0.0, elong=1.0)
@@ -339,6 +364,43 @@ def measure(rgb, src: str = "", rows: int = 1, line_h: float = 0.0, inner=None) 
     out["bold"] = bool(em > 0 and _stem(mask) / em >= BOLD_STEM)
     out["areas"] = _areas(bands, mask, bg_local, out["pitch"])
     return out
+
+
+# Плашка под буквами: крупная ровная область маски, занимающая не меньше
+# этой доли вырезки, с разбросом цвета не больше `PLATE_FLAT`.
+PLATE_MIN_SHARE = 0.12
+PLATE_FLAT = 18.0
+PLATE_CONTRAST = 90             # краска букв против плашки, по каналу из 255
+
+
+def _plate_of(rgb, lab, st, keep, lim: float, n: int):
+    """(область, цвет) ровной плашки, в которой буквы — дырки, либо None.
+    Плашка — самая крупная область маски БОЛЬШЕ буквы (`lim`); область —
+    она же, закрытая по размеру буквы (дырки-буквы залиты) и поджатая
+    на кайму сглаживания; цвет — медиана её сердцевины."""
+    h, w = rgb.shape[:2]
+    best, area = 0, 0
+    for k_ in range(1, n):
+        if not keep[k_]:
+            continue
+        if max(st[k_, cv2.CC_STAT_WIDTH], st[k_, cv2.CC_STAT_HEIGHT]) <= lim:
+            continue
+        if st[k_, cv2.CC_STAT_AREA] > area:
+            best, area = k_, int(st[k_, cv2.CC_STAT_AREA])
+    if not best or area < PLATE_MIN_SHARE * h * w:
+        return None
+    comp = (lab == best).astype(np.uint8)
+    core = cv2.erode(comp, np.ones((3, 3), np.uint8), iterations=2).astype(bool)
+    px = rgb[core] if core.any() else rgb[comp.astype(bool)]
+    if not len(px) or float(px.astype(np.float32).std(axis=0).max()) > PLATE_FLAT:
+        return None
+    kk = _odd(0.6 * lim)
+    closed = cv2.morphologyEx(comp, cv2.MORPH_CLOSE, np.ones((kk, kk), np.uint8))
+    region = cv2.erode(closed, np.ones((3, 3), np.uint8), iterations=2).astype(bool)
+    if not region.any():
+        return None
+    col = tuple(int(v) for v in np.median(px.reshape(-1, 3), axis=0))
+    return region, col
 
 
 def _areas(bands: list, mask, bg_local, pitch: float) -> list:

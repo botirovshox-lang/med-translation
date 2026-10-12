@@ -339,6 +339,125 @@ print("=== П5. Капс — свой класс кегля ===")
 check(layout_pdf._caps_text("ДИНАМИЧЕСКОЕ НАБЛЮДЕНИЕ") and not layout_pdf._caps_text("Почка")
       and not layout_pdf._caps_text("ССЗ"), "заголовок капсом — свой стиль; сокращение — нет")
 
+print("=== Р1. Светлые буквы на плашке уже окна размытия ===")
+band = _I.new("RGB", (240, 110), "white"); dr = _D.Draw(band)
+# Синяя лента наискось по белой бумаге, белые буквы на ней (дуга схемы).
+dr.polygon([(0, 70), (240, 20), (240, 62), (0, 108)], fill=(20, 80, 130))
+_f2 = _F.truetype(os.path.join("frontend", "vendor", "fonts", "sub", "NotoSans-Bold.ttf"), 26)
+lbl = _I.new("RGBA", (220, 40), (0, 0, 0, 0)); _D.Draw(lbl).text((4, 2), "MEDITERRANEAN DIET", fill=(255, 255, 255, 255), font=_f2)
+lbl = lbl.rotate(11.5, expand=True, resample=_I.BICUBIC)
+band.paste(lbl, (6, 26), lbl)
+band_np = np.asarray(band.resize((120, 55), _I.LANCZOS))
+mb = tp.measure(band_np, "MEDITERRANEAN DIET", 1, 41.0)
+check(mb["found"] and max(mb["bg"]) < 160, "буквы найдены, фон — цвет плашки, а не бумаги: %s %s" % (mb["found"], mb.get("bg")))
+er_, al_ = tp.erase(band_np, mb)
+check(int(np.asarray(al_).max()) > 0, "стирание идёт по буквам")
+sky = _I.new("RGB", (240, 110), (150, 190, 225)); _sd = _D.Draw(sky)
+for _k in range(40):
+    _x, _y = (_k * 37) % 230, (_k * 53) % 100
+    _sd.ellipse([_x, _y, _x + 3, _y + 3], fill=(165, 200, 230))
+check(not tp.measure(np.asarray(sky.resize((120, 55))), "SKY", 1, 41.0)["found"],
+      "ровное небо фотографии с крапинами — не плашка с буквами")
+plain_np = np.asarray(_I.new("RGB", (120, 55), (240, 240, 240)))
+check(not tp.measure(plain_np, "X", 1, 20.0)["found"], "пустая вырезка — по-прежнему «букв нет»")
+
+print("=== Р2. Разрыв строки слоя — препятствие при печати ===")
+sd0 = {"x0": 114.6, "x1": 235.3, "x": 114.6, "y": 136.8, "size": 5.48, "xl": 163.2, "n": 48,
+       "exact": True, "style": "", "page": 0, "color": None}
+pcs = layout_pdf._gap_pieces(dict(sd0), [[116.9, 160.8]])
+check(len(pcs) == 2 and pcs[0]["x1"] <= 117.5 and pcs[1]["x"] == 160.8
+      and pcs[1]["xl"] == 163.2 and pcs[0]["xl"] is None and pcs[0]["_gapR"] and pcs[1]["_gapL"],
+      "место режется по разрыву, начало последнего куска — у последнего: %s"
+      % [(p_["x"], p_["x1"]) for p_ in pcs])
+check(len(layout_pdf._gap_pieces(dict(sd0), None)) == 1, "без разрывов — одно место")
+pcs[0]["room1"] = 160.0
+check(abs(layout_pdf._slot_width(pcs[0], "left", True) - (pcs[0]["x1"] - pcs[0]["x"])) < 1e-6,
+      "кусок не растёт в сторону своего разрыва (там надпись картинки)")
+pcs[1]["room1"] = 300.0
+check(layout_pdf._slot_width(pcs[1], "left", True) > pcs[1]["x1"] - pcs[1]["x"],
+      "в сторону без разрыва — растёт, как прежде")
+ln_, f_g, _rg_, _hg = layout_pdf._fit_slots("• 1с, снижение массы тела", [dict(pcs[0], room1=None), dict(pcs[1])],
+                                            _pm.stringWidth, lambda s_: fnt, "left")
+check(ln_[0] == "•" and "снижение" in ln_[1], "маркер — в своём куске, текст — после разрыва: %s" % ln_)
+
+print("=== Р3. Край светлой плашки — конец свободной бумаги ===")
+mins_ = [245] * 20 + [233] + [255] * 30
+maxs_ = [245] * 20 + [245] + [255] * 30
+check(layout_pdf._room_hit(mins_, maxs_, 150.0, min(255.0, 245 + 12.0), 245 / 255.0) == 20,
+      "смена тона на 10 из 255 (плашка 245 на листе 255) — конец места")
+check(layout_pdf._room_hit([245] * 40, [245] * 40, 150.0, 257.0, 245 / 255.0) is None, "ровная плашка — место свободно")
+grad = [245 - 0.4 * k for k in range(60)]
+check(layout_pdf._room_hit(grad, grad, 150.0, 257.0, 245 / 255.0) is None,
+      "плавный градиент фона инфографики — не край (стр. 4)")
+_rn = np.random.default_rng(5)
+nmin = [245 - 5 + int(v) for v in _rn.integers(-1, 2, 60)]
+nmax = [245 + 5 + int(v) for v in _rn.integers(-1, 2, 60)]
+check(layout_pdf._room_hit(nmin, nmax, 150.0, 257.0, 245 / 255.0) is None,
+      "шум скана ±5 на каждом столбце — не край")
+nz = [245 + (7 if k % 2 else 0) for k in range(40)]
+check(layout_pdf._room_hit(nz, nz, 150.0, 257.0, 245 / 255.0) is None,
+      "одиночные выбросы шума (не подряд) места не обрывают")
+
+print("=== Р4. Блок в рисунке сверяется построчно: строка за краем читается ===")
+_b2 = io.BytesIO(); _I.new("RGB", (400, 600), "white").save(_b2, format="PNG")
+blob_f = importers.tag_figure(_b2.getvalue(), 0, [0.0, 0.0, 1.0, 1.0])
+recf = {"w": 400, "h": 600, "part": "pdfpage/0000.png",
+        "blocks": [{"box": [20, 100, 300, 330], "rows": 4, "lineH": 12,
+                    "lineBoxes": [[20, 100, 300, 112], [20, 150, 300, 162], [20, 200, 300, 212],
+                                  [20, 300, 200, 312]]}]}
+fr = {0: [(0.0, 0.0, 1.0, 0.45)]}            # рисунок — верх листа до y=270 точек
+newf: list = []
+main._mark_figure_blocks(recf, blob_f, fr, added=newf)
+check(recf["blocks"][0].get("skip") == "figure" and len(newf) == 1
+      and recf["blocks"][newf[0]]["box"] == [20, 300, 200, 312] and not recf["blocks"][newf[0]].get("skip"),
+      "строка под рисунком — свой блок: %s" % [b_.get("box") for b_ in recf["blocks"]])
+recf2 = {"w": 400, "h": 600, "part": "pdfpage/0000.png",
+         "blocks": [{"box": [20, 100, 300, 212], "rows": 3, "lineH": 12,
+                     "lineBoxes": [[20, 100, 300, 112], [20, 150, 300, 162], [20, 200, 300, 212]]}]}
+main._mark_figure_blocks(recf2, blob_f, fr)
+check(len(recf2["blocks"]) == 1 and recf2["blocks"][0].get("skip") == "figure", "блок целиком в рисунке — как прежде")
+old_ = {"part": "pdfpage/0000.png", "layerRule": 3,
+        "blocks": [{"box": [20, 100, 300, 330], "rows": 4, "skip": "figure"}, {"box": [1, 1, 5, 5], "rows": 1, "skip": "figure"}]}
+check(main._figure_rows(old_) == {0}, "запись правила 3 — пересверка многострочных блоков рисунка")
+check(main._figure_rows(dict(old_, layerRule=4)) == set() and main.LAYER_RULE >= 4, "правило 4 — уже сверено")
+
+print("=== Р5. Надпись, содержащая кусок слоя, — не повтор слоя ===")
+paras_ = [(561, (70.7, 144.6, 85.2, 150.6), ["where"], "WHERE?:")]
+check(main._holds_layer_pieces("WHERE?: Everyday settings", paras_, (65.0, 145.2, 121.0, 151.8)),
+      "«WHERE?:» слоем + «Everyday settings» кривыми — надпись целиком")
+check(not main._holds_layer_pieces("WHERE?:", paras_, (65.0, 145.2, 121.0, 151.8)),
+      "надпись ровно из куска слоя — повтор (печатает слой)")
+check(not main._holds_layer_pieces("WHERE?: Everyday settings", paras_, (75.0, 145.2, 121.0, 151.8)),
+      "кусок слоя не внутри рамки — правило не применяется")
+
+print("=== Р6. Повёрнутая строка: путь назад и широкий пропуск — разные надписи ===")
+hdr = {"pts": [[75.5, 369.7, 90.0, 4.2, 14, "administration", [75.5, 394.6]],
+               [75.5, 410.8, 90.0, 4.2, 4, "Cost", [75.5, 418.3]],
+               [75.5, 443.4, 90.0, 4.2, 22, "Clinical considerations", [75.5, 481.9]],
+               [75.5, 166.9, 90.0, 4.2, 4, "MACE", [75.5, 177.2]],
+               [73.6, 177.2, 90.0, 2.8, 1, "a", [73.6, 178.7]]],
+       "end": [73.6, 178.7], "curved": False}
+hc = pdftext._rot_cells("administration Cost Clinical considerations MACE a", hdr, {})
+check([c_[0].strip() for c_ in hc] == ["administration", "Cost", "Clinical considerations", "MACE a"],
+      "шапка: ячейки по пропускам и по шагу назад, надстрочный «a» — с MACE: %s" % [c_[0] for c_ in hc])
+sent = {"pts": [[75.5, 100.0, 90.0, 4.2, 5, "Short", [75.5, 110.0]], [75.5, 111.0, 90.0, 4.2, 6, "phrase", [75.5, 124.0]]],
+        "end": [75.5, 124.0], "curved": False}
+check(len(pdftext._rot_cells("Short phrase", sent, {})) == 1, "обычная повёрнутая фраза не режется")
+top = pdftext._RotRun(); top.add("Route of", {"pts": [[69.2, 374.7, 90.0, 4.2, 8, "Route of", [69.2, 389.7]]],
+                                            "end": [69.2, 389.7], "curved": False})
+check(pdftext._rot_centered_host([top], hc[0][1]) is top, "двухстрочная ячейка по центру — один абзац")
+check(pdftext._rot_centered_host([top], hc[1][1]) is None, "соседняя ячейка (с заглавной, в стороне) — нет")
+dat = pdftext._RotRun(); dat.add("0.8", {"pts": [[70.0, 300.0, 90.0, 4.2, 3, "0.8", [70.0, 306.0]]],
+                                         "end": [70.0, 306.0], "curved": False})
+ci = {"pts": [[75.0, 298.0, 90.0, 4.2, 8, "(95% CI)", [75.0, 314.0]]], "end": [75.0, 314.0], "curved": False}
+check(pdftext._rot_centered_host([dat], ci, {90: [298.0]}) is None,
+      "значение столбца данных под числом — не продолжение ячейки")
+rtl = {"pts": [[75.5, 300.0, 90.0, 4.2, 4, "\u05e9\u05dc\u05d5\u05dd", [75.5, 310.0]],
+               [75.5, 280.0, 90.0, 4.2, 4, "\u05e2\u05d5\u05dc\u05dd", [75.5, 290.0]]],
+       "end": [75.5, 290.0], "curved": False}
+check(len(pdftext._rot_cells("\u05e9\u05dc\u05d5\u05dd \u05e2\u05d5\u05dc\u05dd", rtl, {})) == 1,
+      "письмо справа налево — шаг назад не разрез")
+
 print(("ALL OK" if not fail else "FAILED: %d" % len(fail)))
 for f in fail:
     print(" -", f)

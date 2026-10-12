@@ -225,6 +225,25 @@ hw = SW(sp[0][1][-1], FONT, hl["size"] * sp[0][2][-1]) * sp[0][6][-1]
 check(b1["y"] <= hl["y"] - 5.0 or (abs(b1["y"] - hl["y"]) < 0.01 and b1["x"] >= hl["x"] + hw),
       "места за заголовком нет — тело со следующей строки, а не поверх")
 
+print("=== 10. Проект 14, 12.10: маркер, заголовок за потоком, названия статей ===")
+check(layout_pdf._with_bullet("Сахарный диабет", [{"bullet": "•"}]) == "• Сахарный диабет",
+      "маркер пункта, снятый разбором, печатается перед переводом")
+check(layout_pdf._with_bullet("• Уже с маркером", [{"bullet": "•"}]) == "• Уже с маркером"
+      and layout_pdf._with_bullet("Без", [{}]) == "Без", "маркер не задваивается и не выдумывается")
+bd = column(5, y=700)
+hd = [slot(40, 634, 120, size=11.0, style="b")]       # вплотную под колонкой, как стр. 34
+sp, sm = plan_of([(bd, " ".join(WORDS[:12])), (hd, "Литература")])
+layout_pdf._stories(sp, sm, {}, None)
+check(abs(sp[1][0][0]["y"] - 634) < 0.01,
+      "заголовок в конце потока остаётся на своём месте, а не прилипает к ужатому тексту")
+refs3 = list(refs[:6]) + [
+    {"id": 400, "source": "FIDELIO-DKD and FIGARO-DKD Investigators.", "target": "Исследователи FIDELIO-DKD."},
+    {"id": 401, "source": "Finerenone and clinical outcomes in CKD by frailty index: FIDELITY post hoc analysis.",
+     "target": "Финеренон и клинические исходы."}] + list(refs[6:])
+z3 = main._refs_of({"id": 994, "src": "EN", "tgt": "RU", "segments": refs3})
+check({400, 401} <= set(z3["keep"]),
+      "две строки без признаков ссылки, зажатые записями, — часть записи (печать оригиналом)")
+
 print()
 print("ИТОГ: %s" % ("всё в порядке" if not fail else "%d провал(ов)" % len(fail)))
 sys.exit(1 if fail else 0)

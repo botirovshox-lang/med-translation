@@ -707,6 +707,12 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .tbl .col-id { width: 56px; color: var(--text-4); font-size: 11.5px; font-variant-numeric: tabular-nums; font-weight: 400; padding-top: 13px; }
 .tbl .src-cell { color: var(--text); line-height: 1.42; }
 .tbl .tgt-cell { color: var(--text-2); line-height: 1.42; }
+/* Оригинал и перевод делят ширину поровну, а строка без пробелов рвётся
+   где угодно. Таблица считает колонки по НАИМЕНЬШЕЙ ширине содержимого,
+   и `break-word` у body её не уменьшает: строка вида «/uni0056/uni0069…»
+   или текст вразрядку из PDF распирали «Как было» на весь экран, а перевод
+   сжимался в полоску по слову в строке. `anywhere` — уменьшает. */
+.tbl .src-cell, .tbl .tgt-cell { width: 44%; overflow-wrap: anywhere; }
 .tbl .tgt-empty { color: var(--text-4); font-style: italic; }
 /* термин в глоссарии кликабелен: ведёт в редактор с фильтром */
 .linklike { background: none; border: 0; padding: 0; font: inherit; color: var(--c-primary);
@@ -1535,6 +1541,7 @@ body { overflow-wrap: break-word; }
   .editor-body .tbl tbody tr.row-checked { background: color-mix(in srgb, var(--c-primary) 8%, transparent); }
   .editor-body .tbl tbody tr.row-checked td { background: none !important; }
   .editor-body .tbl tbody td { display: block; padding: 0; border: 0; }
+  .editor-body .tbl tbody td.src-cell, .editor-body .tbl tbody td.tgt-cell { width: auto; }
   /* Место каждой ячейки названо явно, все шесть: при смешанном размещении
      (часть ячеек со своей строкой, часть — самотёком) браузер ставит
      оставшиеся куда придётся, и порядок зависел бы от того, какая ячейка

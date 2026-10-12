@@ -1940,6 +1940,19 @@ def _stories(slot_plan: list, slot_meta: list, stats: dict, page_slots: "dict | 
     # Цепочка из двух и больше кусков (пункты одной ячейки таблицы, строки
     # списка в плашке) — тоже история: им тесно порознь, а вместе они
     # делят место ячейки.
+    # Заголовок В КОНЦЕ цепочки остаётся на своём месте: за ним в потоке
+    # нет ничего, а его текст — то, что идёт ПОСЛЕ на листе (список
+    # литературы, который печатается оригиналом, таблица, рисунок). Втянутый
+    # в историю, он вставал сразу за ужатым текстом выше и отрывался от
+    # своего списка пустой полосой (проект 14, стр. 34: «Литература»).
+    trimmed = []
+    for c, l in chains:
+        c, l = list(c), list(l)
+        while len(c) >= 2 and c[-1]["head"] and c[-1]["first_piece"] and c[-1]["last_piece"]:
+            c.pop()
+            l.pop()
+        trimmed.append((c, l))
+    chains = trimmed
     chains = [(c, l) for c, l in chains if len(c) >= 2 or any(p["text_like"] for p in c)]
     # Абзац, все куски которого не в истории, — прежний; абзац, у которого
     # история взяла только часть кусков (вторая страница — надпись), тоже
@@ -3809,6 +3822,20 @@ def _missing_glyphs(fonts: dict, texts: dict) -> int:
     return miss
 
 
+def _with_bullet(text: str, boxes: list) -> str:
+    """Маркер пункта списка («•»), который разбор снял с первой строки
+    оригинала (`pdftext` → рамка `bullet`), — перед переводом: его место
+    в первой строке абзаца уже есть (висячий отступ), а без него пункты
+    печатались голыми абзацами со сдвигом. В текст сегмента маркер не
+    входит намеренно — иначе каждый пункт ушёл бы в перевод заново."""
+    if not text:
+        return text
+    b = next((x.get("bullet") for x in boxes or [] if isinstance(x, dict) and x.get("bullet")), None)
+    if not b or text.lstrip()[:1] in "•▪◦●■♦–—-":
+        return text
+    return b + " " + text
+
+
 def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = None,
           lang: "str | None" = None, sources: "dict | None" = None) -> tuple:
     """(PDF, отчёт).
@@ -3905,7 +3932,7 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
         except Exception:
             pass
 
-    jobs = [(int(key), (texts.get(int(key)) or "").strip(), boxes)
+    jobs = [(int(key), _with_bullet((texts.get(int(key)) or "").strip(), boxes), boxes)
             for key, boxes in (layout.get("boxes") or {}).items()]
     jobs += [("x%d" % k, (it.get("text") or "").strip(), it.get("boxes") or [])
              for k, it in enumerate(extra or [])]

@@ -16100,7 +16100,17 @@ _SOURCE_LOOKAHEAD = 50   # насколько далеко вперёд ищем
 
 
 def _match_key(text: str) -> str:
-    return re.sub(r'\s+', ' ', (text or "")).strip().lower()
+    # Имя глифа («/uni2265») и сам знак («≥») — один текст: разбор PDF
+    # научился декодировать имена глифов (pdftext `_glyph_names`), и без
+    # этого пересборка строк объявила бы «другими» абзацы, чей перевод
+    # модель уже восстановила верно, — и сбросила бы их в «новые» за деньги.
+    text = text or ""
+    if "/u" in text:
+        try:
+            text = importers.pdftext._glyph_names(text)
+        except Exception:
+            pass
+    return re.sub(r'\s+', ' ', text).strip().lower()
 
 
 def _map_source_to_segments(units: list, segments: list,
@@ -22892,6 +22902,10 @@ def _ref_weak(s: str) -> bool:
     return any(p.search(s) for p in _REF_WEAK)
 
 
+REFS_RUN_MAX = 3
+_REF_NEW_REC = re.compile(r"\d{1,4}\.\s?\S")
+
+
 def _refs_of(project: Optional[dict]) -> dict:
     """Строки списка литературы проекта: {"all", "keep", "translate"} —
     множества номеров. Считается по ПРОЕКТУ, а не хранится на сегменте:
@@ -22903,7 +22917,7 @@ def _refs_of(project: Optional[dict]) -> dict:
         return empty
     segs = project.get("segments") or []
     tgt_script = _lang_script(project.get("tgt") or "")
-    fp = hash((REFS_RULES, REFS_ZONE_MIN, REFS_ZONE_GAP, tgt_script,
+    fp = hash((REFS_RULES, REFS_ZONE_MIN, REFS_ZONE_GAP, REFS_RUN_MAX, tgt_script,
                tuple((sg.get("id"), sg.get("source") or "") for sg in segs)))
     got = _REFS_CACHE.get(project.get("id"))
     if got and got[0] == fp:
@@ -22968,7 +22982,24 @@ def _refs_of(project: Optional[dict]) -> dict:
         if not weak[i]:
             # Обрывок записи, зажатый ссылками с обеих сторон, — часть записи;
             # иначе это не ссылка (заголовок, «Funding»), и её переводят.
-            if not (0 < i < len(text_segs) - 1 and weak[i - 1] and weak[i + 1]):
+            # Зажатый — серией до REFS_RUN_MAX строк: «FIDELIO-DKD and FIGARO-DKD
+            # Investigators.» + название статьи — две строки без признаков
+            # ссылки, и по одной они не были зажаты ни с какой стороны;
+            # перевод названия печатался посреди списка «как в оригинале»
+            # (проект 14, записи 4, 309, 382).
+            a_, b_ = i, i
+            while a_ > 0 and zone[a_ - 1] and not weak[a_ - 1] and i - a_ < REFS_RUN_MAX:
+                a_ -= 1
+            while b_ < len(text_segs) - 1 and zone[b_ + 1] and not weak[b_ + 1] and b_ - i < REFS_RUN_MAX:
+                b_ += 1
+            if not (b_ - a_ + 1 <= REFS_RUN_MAX and 0 < a_ and b_ < len(text_segs) - 1
+                    and weak[a_ - 1] and weak[b_ + 1]):
+                continue
+            # Серия из двух строк и больше — обрывок записи, только если за
+            # ней идёт ХВОСТ той же записи («CMAJ 2020;192:E901–E906»),
+            # а не начало новой нумерованной: «Funding statement» + фраза
+            # между записями 5 и 6 — вставной блок, и его переводят.
+            if b_ > a_ and _REF_NEW_REC.match((text_segs[b_ + 1].get("source") or "").lstrip()):
                 continue
         sc = _dominant_script(sg.get("source") or "")
         if not sc or not tgt_script or sc == tgt_script or sc in borrow:

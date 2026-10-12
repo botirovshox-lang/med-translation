@@ -214,6 +214,65 @@ t = time.time(); pdftext.clean(ls, geom=gs); distinct = time.time() - t
 check(distinct < 3 * same + 2, "своя строка в полосе на каждой странице: %.1f с против %.1f с с одним колонтитулом"
       % (distinct, same))
 
+print("=== M. Маркер «•», подзаголовок по начертанию, DOI, имена глифов, разрядка ===")
+
+
+def page_st(lines, box=(0, 0, 400, 600)):
+    """lines: [(текст, x0, y, кегль, x1, начертание)]."""
+    return ([l[0] for l in lines],
+            {"lines": [[l[1], l[2], l[3], l[4], l[5]] for l in lines], "box": list(box),
+             "rects": [], "figs": []})
+
+
+ITEM2 = ("•Earlier use of therapy must be accompanied by explicit counseling", 40, 492, 10, 340, "")
+pm = page_st([
+    ("Consensus Recommendations", 40, 540, 9, 200, "b"),
+    ("•Early-onset type 2 diabetes is associated with faster glycemic", 40, 528, 10, 340, ""),
+    ("deterioration and earlier onset of complications, thus early", 50, 516, 10, 340, ""),
+    ("deployment of inhibitors should be prioritized.", 50, 504, 10, 300, ""),
+    ITEM2,
+    ("in women of reproductive potential regarding contraception.", 50, 480, 10, 320, ""),
+    ("Age: Older People With Diabetes", 40, 456, 8, 220, "bi"),
+    ("Informed decisions regarding treatment of older adults with", 40, 444, 10, 340, ""),
+    ("diabetes are limited by the historical underrepresentation.", 40, 432, 10, 330, ""),
+    ("Hypercortisolism.Hypercortisolism may", 40, 408, 8, 340, "bi"),
+    ("be associated with hyperglycemia and should be considered.", 40, 396, 10, 330, ""),
+    ("BMI /uni226530 kg/m2 and /uni03B2-cell function were measured.", 40, 372, 10, 330, ""),
+    ("P.T.  s e r v e s  o r  h a s  s e r v e d  o n  t h e  b o a r d", 40, 348, 10, 330, ""),
+])
+resm = pdftext.clean([pm[0]], geom=[pm[1]])
+itm = [it for it in resm["items"] if it[0] == "p"]
+Pm = [it[1] for it in itm]
+check("Consensus Recommendations" in Pm, "подзаголовок (полужирный, свой кегль) — отдельный абзац")
+check("Age: Older People With Diabetes" in Pm, "подзаголовок с двоеточием внутри — отдельный абзац")
+check(any(p.startswith("Hypercortisolism.Hypercortisolism may be associated") for p in Pm),
+      "вводный заголовок в строке текста абзац НЕ рвёт")
+bul = [(it[1][:12], (it[2] or [{}])[0].get("bullet")) for it in itm if it[1].startswith(("Early", "Earlier"))]
+check(len(bul) == 2 and all(b == "•" for _t, b in bul), "оба пункта — свои абзацы, маркер «•» на рамке: %r" % bul)
+check(not any("•" in p for p in Pm), "в тексте абзаца маркера нет — сегменты прежние")
+check(any("BMI ≥30 kg/m2 and β-cell" in p for p in Pm), "имена глифов /uniXXXX → знаки")
+check(any("P.T. serves or has served on the board" in " ".join(p.split()) for p in Pm),
+      "разрядка строчными собрана в слова по двойному пробелу")
+check(pdftext._unspace("AH O L I S T I CA N T I C I P A T O R Y  I N T E G R A T E DC A R E")
+      == "A HOLISTIC ANTICIPATORY INTEGRATED CARE", "разрядка прописными: стык слов «AH»")
+check(pdftext._unspace("I II III IV V VI VII VIII IX X") == "I II III IV V VI VII VIII IX X",
+      "римские номера — не разрядка")
+for row in ("1 2 3 4 5 6 7 8 9", "Table 1 2 3 4 5 6 7 8 9 10", "A B C D E F G H I J",
+            "X Y Z 1 2 3 4 5 6 7 8 9 of text"):
+    check(pdftext._unspace(row) == row, "ряд чисел или перечень букв — не разрядка: %r" % row)
+check(pdftext._glyph_names("see https://x.org/uni0041/a") == "see https://x.org/uni0041/a",
+      "адрес с «/uni0041» внутри — не глиф")
+pd = page_st([
+    ("Management of Type 2 Diabetes, a Consensus Report", 30, 460, 15, 250, ""),
+    ("https://doi.org/10.2337/dci26-0141", 30, 440, 6, 130, "i"),
+    ("Melanie J. Davies, Vanita R. Aroda, Mandeep Bajaj,", 266, 470, 6, 370, "i"),
+    ("Nuha A. ElSayed, Francesco Giorgino, Jennifer Green", 266, 462, 6, 370, "i"),
+])
+Pd = [it[1] for it in pdftext.clean([pd[0]], geom=[pd[1]])["items"] if it[0] == "p"]
+check(not any("dci26-0141" in p and "Melanie" in p for p in Pd)
+      and any(p.startswith("Melanie J. Davies") for p in Pd),
+      "строка-DOI колонкой авторов не продолжается: %r" % Pd)
+
 print()
 if fail:
     print("FAILED: %d" % len(fail))

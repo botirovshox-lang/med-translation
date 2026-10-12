@@ -95,7 +95,7 @@ MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
 # продолжает (подписи схемы с разных концов листа), строка pypdf с двумя
 # надписями одной базовой линии делится по местам (`split`), невидимый
 # и повёрнутый текст — своими пачками.
-RULES_VERSION = 10
+RULES_VERSION = 11
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -109,6 +109,95 @@ _NUM_LINE_RE = re.compile(
 _ORNAMENT_CHARS = set("*■□▪▫♦◆●○•◦✦✧✶✷※~^|<>#$&@\\{}¥±§©®")
 _UNDERSCORE_RE = re.compile(r"_{3,}")
 _WS_RE = re.compile(r"[ \t ]+")
+# Имя глифа вместо буквы: у шрифта без таблицы ToUnicode pypdf отдаёт
+# «/uni0056/uni0069…» — «Vi…». Боевой проект 14: «View Online Article»
+# стоял в строке именами глифов, а «BMI /uni226530 kg/m2» терял знак «≥»
+# — то есть менялся СМЫСЛ, а не только вид. Только форма `uniXXXX` (Adobe
+# Glyph List) и никогда внутри адреса: «…/uni1234/…» в ссылке — путь,
+# а не глиф.
+_GLYPH_NAME_RE = re.compile(r"/uni([0-9A-Fa-f]{4})")
+_URLISH_RE = re.compile(r"://|^www\.", re.IGNORECASE)
+
+
+def _glyph_names(line: str) -> str:
+    if "/uni" not in line:
+        return line
+
+    def one(m):
+        ch = chr(int(m.group(1), 16))
+        if ch.isspace():
+            return " "
+        return ch if ch.isprintable() else m.group(0)
+
+    def tok(m):
+        t = m.group(0)
+        return t if _URLISH_RE.search(t) else _GLYPH_NAME_RE.sub(one, t)
+    return re.sub(r"\S+", tok, line)
+
+
+# Текст ВРАЗРЯДКУ (межбуквенный интервал Tc: заголовок инфографики,
+# выключенная по ширине строка): pypdf ставит пробел между КАЖДОЙ буквой.
+# Граница слов при этом видна: внутри слова пробел одиночный, между
+# словами — двойной («s e r v e s  o r  h a s»), а у прописных стык слов
+# бывает и вовсе без пробела — две буквы токеном («AH O L I S T I C» =
+# «A» + «HOLISTIC»). Серия из LETTERSPACE_MIN токенов, почти сплошь
+# одиночных знаков, собирается обратно по этим двум признакам. Проект 14:
+# «P.T. s e r v e s o r h a s …» шло в сегмент и перевод вразрядку,
+# а таблица редактора распиралась строкой без единого места переноса.
+LETTERSPACE_MIN = 8
+LETTERSPACE_SINGLES = 0.75
+_LS_TOK_RE = re.compile(r"\S+")
+
+
+def _unspace(line: str) -> str:
+    if line.count(" ") < LETTERSPACE_MIN:
+        return line
+    toks = [(m.start(), m.end(), m.group(0)) for m in _LS_TOK_RE.finditer(line)]
+    if len(toks) < LETTERSPACE_MIN:
+        return line
+    out = []                      # (начало, конец, текст) готовых кусков
+    k = 0
+    while k < len(toks):
+        j = k
+        while j < len(toks) and len(toks[j][2]) <= 2:
+            j += 1
+        run = toks[k:j]
+        # Буквы, а не цифры: «1 2 3 4 5 6 7 8 9» — шапка таблицы, шкала,
+        # и склеить её значит испортить числа. И признак слов обязан БЫТЬ
+        # (двойной пробел либо стык двух прописных): «A B C D E F G H» —
+        # перечень, а не разрядка. Цифра внутри серии («TYPE 2») — её часть.
+        singles = sum(1 for t in run if len(t[2]) == 1 and t[2].isalpha())
+        alpha = sum(1 for t in run if any(c.isalpha() for c in t[2]))
+        marks = any(b[0] - a[1] >= 2 for a, b in zip(run, run[1:])) or any(
+            len(t[2]) == 2 and t[2].isalpha() and t[2].isupper() for t in run)
+        if (len(run) >= LETTERSPACE_MIN and singles >= LETTERSPACE_SINGLES * len(run)
+                and alpha >= 0.9 * len(run) and marks):
+            word = run[0][2]
+            if len(word) == 2 and word.isalpha() and word.isupper():
+                word = word[0] + " " + word[1]
+            for (s0, e0, t0), (s1, e1, t1) in zip(run, run[1:]):
+                gap = s1 - e0
+                piece = t1
+                if len(t1) == 2 and t1.isalpha() and t1.isupper():
+                    piece = t1[0] + " " + t1[1]      # стык слов без пробела
+                word += (" " if gap >= 2 else "") + piece
+            out.append((run[0][0], run[-1][1], word))
+            k = j
+        else:
+            out.append(toks[k])
+            k += 1
+    res, pos = "", 0
+    for s0, e0, t0 in out:
+        res += line[pos:s0] + t0
+        pos = e0
+    return res + line[pos:]
+
+
+# Маркер пункта списка, прилипший к первому слову («•Early-onset»): чистка
+# мусора снимает его вместе со всеми украшениями, и пункт печатался без
+# маркера. Знак запоминается на абзаце (`bulch` → рамка `bullet`), а текст
+# сегмента остаётся прежним — перевод заново не нужен.
+_TEXT_BULLET_RE = re.compile(r"^\s*([•▪◦●■♦])\s*(?=\S)")
 _BULLET_RE = re.compile(r"^(?:[♦•■▪●○◦✓✔–—-]|\d{1,3}[.)]|[a-zа-яё][.)])\s+\S")
 # Конец абзаца по знаку — как у прежней склейки в importers.
 _END_RE = re.compile(r"[.!?…:;»”\")\]]\s*$")
@@ -548,6 +637,9 @@ def _math_token(t: str) -> bool:
 
 def _clean_line(line: str, report: dict):
     """Строка без мусора распознавания либо None, если она вся мусор."""
+    # Имена глифов и разрядка — ЗДЕСЬ, после раскладки: части строки
+    # (`split`) режутся по смещениям в сыром тексте ответа pypdf.
+    line = _unspace(_glyph_names(line))
     if _is_ornament(line):
         report["ornaments"] += 1
         return None
@@ -1921,6 +2013,44 @@ GAP_BREAK = 1.6
 COLUMN_LINE_MIN = 8.0
 
 
+_URL_LINE_RE = re.compile(r"^(?:https?://|doi:|www\.)\S+$", re.IGNORECASE)
+# Подзаголовок кончается там, где строка ВЫДЕЛЕННОГО начертания (полужирный,
+# курсив) другого кегля сменяется обычным текстом. Проект 14: «Consensus
+# Recommendations» (b, 5.95) и «Age: Older People With Diabetes» (bi, 5.25)
+# над текстом кеглем 6.65 склеивались с первой строкой абзаца — заголовок
+# печатался внутри фразы. Кегль обязателен: строка тела, начатая курсивным
+# словом, того же кегля, и рвать её нельзя. Вводный заголовок в строке
+# текста («Hypercortisolism.Hypercortisolism may …») — не конец: после
+# точки в той же строке продолжается фраза.
+HEAD_SIZE_DIFF = 0.05
+HEAD_MAX_CHARS = 120         # строка заголовка не длиннее строки колонки
+
+
+def _heading_ends(a: dict, b: dict) -> bool:
+    ga, gb = a.get("geo"), b.get("geo")
+    if not ga or not gb or len(ga) < 6 or len(gb) < 6:
+        return False
+    sa, sb = (ga[5] or ""), (gb[5] or "")
+    if not sa or sb or not set(sa) & set("bi"):
+        return False
+    za, zb = ga[4] or 0.0, gb[4] or 0.0
+    if not za or not zb or abs(za - zb) <= HEAD_SIZE_DIFF * max(za, zb):
+        return False
+    ta = (a.get("t") or "").strip()
+    if not ta or len(ta) > HEAD_MAX_CHARS or ta.endswith(("-", SOFT, ",", "‐")):
+        return False
+    # «Age: Older People With Diabetes» — двоеточие ВНУТРИ заголовка; вводный
+    # заголовок отличает точка, за которой в строке идёт текст
+    # («Thiazolidinediones.Thiazolidinediones»). Следующая строка со строчной
+    # буквы или скобки — продолжение фразы, а не новый абзац.
+    if re.search(r"[.!?]\s*[^\W\d_]", ta):
+        return False
+    tb = (b.get("t") or "").lstrip()
+    if tb[:1] and (tb[:1].islower() or tb[:1] in "([{"):
+        return False
+    return True
+
+
 def _geo_follows(a: dict, b: dict) -> bool:
     """Строка b геометрически продолжает строку a (оба с местом `geo`):
     стоит ниже не дальше `CONT_DY` кеглей и пересекается по горизонтали,
@@ -1937,6 +2067,13 @@ def _geo_follows(a: dict, b: dict) -> bool:
     _p, bx0, by, bx1, bsz = gb[:5]
     size = max(asz or 0.0, bsz or 0.0, 1.0)
     dy = ay - by
+    if _heading_ends(a, b):
+        return False
+    if _URL_LINE_RE.match((a.get("t") or "").strip()) and by > ay + 1.0 * size:
+        # Строка-адрес («https://doi.org/…» под заголовком статьи) колонкой
+        # не продолжается: иначе в неё вклеивалась колонка авторов справа,
+        # и имя первого автора печаталось после DOI (проект 14, стр. 1).
+        return False
     overlap = min(ax1, bx1) - max(ax0, bx0)
     if 0 < dy <= CONT_DY * size and overlap > -0.5 * size:
         # Пропуск строки перед строкой с заглавной — новый пункт, а не
@@ -2246,6 +2383,11 @@ def _para_boxes(entries: list, base: str = "", base_fam: str = "") -> "list | No
     None — у абзаца нет геометрии (страница разбиралась по строкам): выгрузка
     «как в оригинале» такой абзац не трогает, а не гадает его место."""
     by_page: dict = {}
+    # Маркер пункта, снятый чисткой с первой строки (`bulch`), — на рамку
+    # её страницы: выгрузка печатает его перед переводом (`layout_pdf`).
+    first = next((e for e in entries if (e or {}).get("geo") or (e or {}).get("rgeo")), None)
+    bullet = (first or {}).get("bulch") if (first or {}).get("geo") else None
+    bullet_pg = first["geo"][0] if bullet else None
     for e in entries:
         rg_ = (e or {}).get("rgeo")
         if rg_ and not (e or {}).get("geo"):
@@ -2332,6 +2474,8 @@ def _para_boxes(entries: list, base: str = "", base_fam: str = "") -> "list | No
                     "fam": (b["fam"].most_common(1)[0][0] if b["fam"] else base_fam) or "",
                     "indent": round(b["first"] - b["x0"], 1), "lines": len(b["ys"]),
                     "slots": b.get("slots") or []})
+        if bullet and pg == bullet_pg:
+            out[-1]["bullet"] = bullet
     return out
 
 
@@ -2442,8 +2586,11 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
             continue
         kept = []
         for r in recs:
+            mb = _TEXT_BULLET_RE.match(r["t"] or "")
             c = _clean_line(r["t"], report)
             if c:
+                if mb and not c.startswith(mb.group(1)):
+                    r["bul"], r["bulch"] = True, mb.group(1)
                 r["t"] = c
                 kept.append(r)
             elif r.get("after"):
@@ -2738,7 +2885,8 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                             # строки» между пунктами списка (`_geo_follows`).
                             "plead": _lead_for(pg, r["s"]),
                             # Пункт списка со значком-картинкой — начало абзаца.
-                            "bul": bool(r.get("bul"))})
+                            "bul": bool(r.get("bul")),
+                            "bulch": r.get("bulch")})
             for t_ in r.get("after") or []:
                 c_ = _clean_line(_tidy(t_), report)
                 if c_:

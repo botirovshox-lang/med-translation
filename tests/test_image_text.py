@@ -499,6 +499,22 @@ check([573, 847, 1003, 887] in _got and [100, 100, 160, 140] not in _got,
 check(it.IMG_DET_ONLY or _e.kw.get("text_score") == it.IMG_WEAK_CONF,
       "движку передан нижний порог чтения — иначе он выбросил бы строку сам")
 
+print("\n── иероглифы: шрифт и перенос ──")
+# 12.10.2026 китайский перевод таблички рисовался DejaVu — квадратиками, а
+# фраза без пробелов была одним «словом», и кегль падал до нечитаемого.
+_zh = "配备瓦兹-411转子活塞发动机的瓦兹-21059汽车"
+_fz = it._paint_font(False, _zh)
+check(_fz is not None and it._font_covers(_fz, _zh), "шрифт перевода знает иероглифы: %s" % _fz)
+check(it._paint_font(False, "Hello world").endswith("NotoSans-Regular.ttf"), "латиница — прежний Noto Sans")
+check(it._cjk_units("2002年维修。") == ["2002", "年", "维", "修。"],
+      "латиница и цифры — один кусок, «。» строку не начинает: %s" % it._cjk_units("2002年维修。"))
+check(it._split_cjk(len, "Hello", 3) is None, "латинское слово иероглифным правилом не режется")
+_dr = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+_fnt = ImageFont.truetype(_fz, 20)
+_rows = it._wrap(_dr, _zh * 2, _fnt, 200, split=False)
+check(len(_rows) > 1 and all(_dr.textlength(r, font=_fnt) <= 200 for r in _rows),
+      "китайская фраза переносится между знаками и не выходит за рамку: %d строк" % len(_rows))
+
 print("\n── движок поиска строк ──")
 ready, why = it.engine_ready()
 if ready:

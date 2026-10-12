@@ -1082,6 +1082,42 @@ def _fill_and_ink(arr, box) -> tuple:
             tuple(int(round(v)) for v in ink))
 
 
+# Письмо без пробелов между словами: иероглифы, кана, хангыль. Строку там
+# можно переносить между любыми двумя знаками — кроме знаков, которыми строка
+# не начинается (кинсоку: «。、」）» и т. п.).
+_CJK_RE = re.compile("[⺀-鿿豈-﫿가-힯　-〿＀-￯]")
+_NO_LINE_START = set("。、，．・：；？！）」』】〕〉》ー,.!?;:)%")
+
+
+def _cjk_units(word: str) -> list:
+    """Слово как список кусков, между которыми можно перенести строку: каждый
+    иероглиф — свой кусок, латиница и цифры внутри («2002年») — одним куском,
+    знак, которым строка не начинается, приклеен к предыдущему."""
+    out = []
+    for ch in word:
+        if out and (ch in _NO_LINE_START or not (_CJK_RE.match(ch) or _CJK_RE.match(out[-1][-1]))):
+            out[-1] += ch
+        else:
+            out.append(ch)
+    return out
+
+
+def _split_cjk(measure, word: str, room: float):
+    """(часть, остаток) — самое длинное начало слова в иероглифах, что влезает
+    в `room`; None — слово не из иероглифов или не влезает ни один кусок."""
+    if not _CJK_RE.search(word or ""):
+        return None
+    units = _cjk_units(word)
+    if len(units) < 2:
+        return None
+    k = 0
+    while k < len(units) - 1 and measure("".join(units[:k + 1])) <= room:
+        k += 1
+    if k == 0:
+        return None
+    return "".join(units[:k]), "".join(units[k:])
+
+
 def _wrap(draw, text: str, font, width: float, split: bool = True) -> list:
     """Перевод по строкам рамки. Слово длиннее строки (длинный термин, ссылка)
     режется посимвольно: иначе оно молча вылезет за рамку.
@@ -1094,6 +1130,18 @@ def _wrap(draw, text: str, font, width: float, split: bool = True) -> list:
     lines, cur = [], ""
     for word in (text or "").split():
         probe = (cur + " " + word).strip()
+        if draw.textlength(probe, font=font) > width:
+            # Иероглифы переносятся между знаками: без этого китайская фраза —
+            # одно «слово», и кегль падал до нечитаемого (строка на всю рамку).
+            room = width - (draw.textlength(cur + " ", font=font) if cur else 0)
+            sp = _split_cjk(lambda t: draw.textlength(t, font=font), word, room)
+            while sp:
+                lines.append((cur + " " + sp[0]) if cur else sp[0])
+                cur, word = "", sp[1]
+                if draw.textlength(word, font=font) <= width:
+                    break
+                sp = _split_cjk(lambda t: draw.textlength(t, font=font), word, width)
+            probe = (cur + " " + word).strip()
         if draw.textlength(probe, font=font) <= width or not cur:
             cur = probe
         else:
@@ -1206,13 +1254,36 @@ def _font_covers(path: str, text: str) -> bool:
     return all(ord(ch) in have for ch in text if not ch.isspace())
 
 
+# Шрифты письменностей, которых нет в Noto Sans и DejaVu. Иероглифы — в порядке
+# «китайский, японский, корейский»: общие иероглифы знают все три, а кана
+# и хангыль — только свой, поэтому первый, кто знает ВСЕ буквы, и есть нужный.
+_SCRIPT_FONTS = ("NotoSansSC-Regular.otf", "NotoSansJP-Regular.otf", "NotoSansKR-Regular.otf",
+                 "NotoSansArabic", "NotoSansHebrew", "NotoSansArmenian", "NotoSansGeorgian",
+                 "NotoSansDevanagari", "NotoSansBengali", "NotoSansGujarati", "NotoSansGurmukhi",
+                 "NotoSansTamil", "NotoSansTelugu", "NotoSansThai", "NotoSansKhmer",
+                 "NotoSansMyanmar", "NotoSansEthiopic")
+
+
 def _paint_font(bold: bool, text: str = "") -> Optional[str]:
-    """Рубленый шрифт перевода надписи — тот же Noto Sans, что у выгрузки PDF,
-    если он знает буквы перевода; иначе DejaVu (армянский, грузинский…)."""
+    """Рубленый шрифт перевода надписи — первый, что знает ВСЕ его буквы:
+    Noto Sans (как у выгрузки PDF), DejaVu, затем шрифты письменностей из
+    `frontend/vendor/fonts/sub`. 12.10.2026 китайский перевод таблички
+    рисовался DejaVu — квадратиками вместо каждого иероглифа, а отчёт
+    говорил «написано»."""
     p = _SANS / ("NotoSans-Bold.ttf" if bold else "NotoSans-Regular.ttf")
     if p.exists() and _font_covers(str(p), text):
         return str(p)
-    return font_path(bold)
+    d = font_path(bold)
+    if d and _font_covers(d, text):
+        return d
+    for name in _SCRIPT_FONTS:
+        cands = [name] if "." in name else [name + ("-Bold.ttf" if bold else "-Regular.ttf"),
+                                            name + "-Regular.ttf"]
+        for c in cands:
+            f = _SANS / c
+            if f.exists() and _font_covers(str(f), text):
+                return str(f)
+    return d
 
 
 def _paint_plan(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
@@ -1273,6 +1344,8 @@ def _paint_plan(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         size = em
         while size > 0.45 * em and mw(one, size) > width:
             size *= 0.96
+        if mw(one, size) > width * 1.05:
+            return None                 # длиннее дуги и на полу — плашкой, прежней дорогой
         lines, step = [one], size
     elif m["angle"]:
         width = math.hypot(x1 - x0, y1 - y0) * k * 0.92
@@ -1280,6 +1353,11 @@ def _paint_plan(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         size = em
         while size > 0.45 * em and mw(one, size) > width:
             size *= 0.96
+        # Наклонная надпись пишется ОДНОЙ строкой. Не влезла и на полу —
+        # строка вылезла бы за рамку, а то и за край картинки (замер на
+        # китайском переводе длинного блока) — значит плашкой.
+        if mw(one, size) > width * 1.05:
+            return None
         lines, step = [one], size
     else:
         bands = m["bands"]
@@ -1296,7 +1374,9 @@ def _paint_plan(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         for (top, bot, rows_k), chunk in zip(spans, chunks):
             height = max(bot - top, em)
             size, step, lines = tp.fit_lines(chunk, w, height + 0.3 * em, em,
-                                             max(m["pitch"] * k, em * 1.05), mw, None, 0.45, rows_k)
+                                             max(m["pitch"] * k, em * 1.05), mw,
+                                             lambda wd, room, sz: _split_cjk(lambda t: mw(t, sz), wd, room),
+                                             0.45, rows_k)
             if lines and (len(lines) - 1) * step + 0.95 * size > height + 0.6 * em:
                 return None             # не влезло и мельче — плашкой, прежней дорогой
             parts.append({"top": top, "bot": bot, "lines": lines, "size": size, "step": step,
@@ -1495,7 +1575,7 @@ def render_target(img_bytes: bytes, items: list) -> tuple:
         fill, ink = _fill_and_ink(arr, pbox)
         sbox = [v * k for v in pbox]
         bw, bh = sbox[2] - sbox[0], sbox[3] - sbox[1]
-        font, rows, step, size = _fit(draw, text, fpath, bw, bh, max(6, int(bh)))
+        font, rows, step, size = _fit(draw, text, _paint_font(False, text) or fpath, bw, bh, max(6, int(bh)))
         if font is None or size < IMG_FONT_MIN_PX * k:
             # Влезть-то влезет, но читать будет нечего. Такой блок уходит
             # подписью под картинкой — это честнее нечитаемой строки.

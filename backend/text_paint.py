@@ -78,6 +78,11 @@ LETTER_MIN_PX = 5
 # Остаток фона вокруг букв (75-й процентиль отличия от своей медианы),
 # выше которого это текстура/шум, а не фон надписи.
 TEXTURE_MAX = float(os.environ.get("PAINT_TEXTURE_MAX", "28"))
+# Область краски крупнее буквы во столько раз (по большей стороне) — графика
+# рядом с надписью (край кольца, стрелка), в замер пестроты фона не идёт.
+TEXTURE_BIG_SHARE = float(os.environ.get("PAINT_TEXTURE_BIG", "2.5"))   # 0 — выключить
+TEXTURE_BIG_MAX = 0.35
+TEXTURE_BIG_FLAT = 18.0      # разброс цвета области (по каналу) — не больше: заливка
 # Доля рамки под маской, выше которой это не буквы, а пёстрый фон.
 MASK_MAX_COVER = float(os.environ.get("PAINT_MASK_MAX_COVER", "0.45"))
 # Насколько (по самому далёкому каналу) точка буквы может отличаться от цвета
@@ -220,7 +225,53 @@ def measure(rgb, src: str = "", rows: int = 1, line_h: float = 0.0, inner=None) 
     # Фон вокруг букв гладкий относительно своей медианы (даже у фотографии);
     # у шума и мелкой текстуры остаток огромный — там надписи не разобрать,
     # и стирать «буквы» значило бы портить картинку.
-    rest = diff[~mask] if (~mask).any() else diff.reshape(-1)
+    # Из замера вынуты КРУПНЫЕ области краски, не похожие на буквы (край
+    # кольца схемы, стрелка, плашка рядом — с каймой): они не фон под
+    # буквами, а соседняя графика, и «STRENGTHENING» под краем розового
+    # кольца отбраковывалось как пёстрое (проект 14, стр. 12). Мелкие
+    # крупинки шума фотографии остаются в замере — их и ловит порог.
+    nonfg = ~mask
+    if letter and TEXTURE_BIG_SHARE > 0:
+        raw = (diff > INK_DIFF) & ~mask
+        n2, lab2, st2, _c2 = cv2.connectedComponentsWithStats(raw.astype(np.uint8), 8)
+        big = np.zeros(n2, dtype=bool)
+        if n2 > 1:
+            dims = np.maximum(st2[1:, cv2.CC_STAT_WIDTH], st2[1:, cv2.CC_STAT_HEIGHT])
+            L2, T2 = st2[1:, cv2.CC_STAT_LEFT], st2[1:, cv2.CC_STAT_TOP]
+            R2, B2 = L2 + st2[1:, cv2.CC_STAT_WIDTH], T2 + st2[1:, cv2.CC_STAT_HEIGHT]
+            # Только ВХОДЯЩАЯ в вырезку снаружи графика — выходит за рамку
+            # самой надписи (`inner`; без неё — подходит к краю вырезки):
+            # предмет на фотографии ВНУТРИ рамки надписи — это фон под ней,
+            # и вынуть его из замера значило бы закрасить фотографию.
+            if inner is not None:
+                ix0, iy0, ix1, iy1 = inner
+                touch = (L2 < ix0) | (T2 < iy0) | (R2 > ix1) | (B2 > iy1)
+            else:
+                e_ = max(2, int(0.1 * min(h, w)))
+                touch = (L2 <= e_) | (T2 <= e_) | (R2 >= w - e_) | (B2 >= h - e_)
+            big[1:] = (dims >= TEXTURE_BIG_SHARE * letter) & touch
+            # И только РОВНОГО цвета (кольцо, плашка, стрелка — заливка):
+            # предмет фотографии, даже выходящий за рамку, пёстрый внутри.
+            # Разброс — по ВНУТРЕННОСТИ области (кайма сглаживания — смесь
+            # с фоном, её разброс велик и у ровной заливки).
+            # В область попадает и бумага рядом (её отличие от размытого фона
+            # велико у края заливки) — меряется только сама краска области.
+            paper_ = np.median(rgb.reshape(-1, 3), axis=0).astype(np.int16)
+            for i_ in np.nonzero(big)[0]:
+                core_ = cv2.erode((lab2 == i_).astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+                sel_ = core_ if core_.any() else (lab2 == i_)
+                px_ = rgb[sel_].astype(np.int16)
+                px_ = px_[np.abs(px_ - paper_).max(axis=1) > INK_DIFF]
+                if len(px_) and float(px_.astype(np.float32).std(axis=0).max()) > TEXTURE_BIG_FLAT:
+                    big[i_] = False
+        if big.any():
+            k_ = _odd(max(3.0, 0.3 * letter))
+            grown = cv2.dilate(big[lab2].astype(np.uint8), np.ones((k_, k_), np.uint8)).astype(bool)
+            # Вынуть можно не больше `TEXTURE_BIG_MAX` фона: иначе судили бы
+            # по клочку, а не по фону.
+            if (nonfg & grown).sum() <= TEXTURE_BIG_MAX * nonfg.sum():
+                nonfg = nonfg & ~grown
+    rest = diff[nonfg] if nonfg.any() else diff.reshape(-1)
     texture = float(np.percentile(rest, 75)) if rest.size else 0.0
     out = {"mask": mask, "cover": round(cover, 3), "lettery": round(lettery, 2),
            "texture": round(texture, 1),

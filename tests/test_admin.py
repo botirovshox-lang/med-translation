@@ -133,7 +133,11 @@ main.STATE["runCosts"] = [
 check(c.get("/api/admin/runs?all=1", headers=H(O)).status_code == 403,
       "прогоны всех организаций — только суперпользователю")
 own = c.get("/api/admin/runs", headers=H(O)).json()
-check(len(own["runs"]) == 1 and own["runs"][0]["tenant"] == "acme", "владелец видит только свои прогоны")
+# Инвариант 22а: суммы расхода видит ТОЛЬКО администратор сервиса — владелец
+# организации получает пустой список с пометкой «скрыто», а не свои прогоны
+# (прежняя проверка «владелец видит свои» описывала правило до 22а).
+check(own.get("hidden") is True and own["runs"] == [] and own.get("totalUsd") is None,
+      "владельцу прогоны с суммами не отдаются (22а)")
 allr = c.get("/api/admin/runs?all=1", headers=H(S)).json()
 check(len(allr["runs"]) == 2, "суперпользователь видит все")
 # Поле называется `shownUsd`, а не `totalUsd`: строки урезаны `limit`,

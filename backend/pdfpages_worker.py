@@ -845,7 +845,8 @@ def _exact_ends(geo_lines: list, op_ends) -> None:
     rows = [(k, g) for k, g in enumerate(geo_lines) if g]
     for k, g in rows:
         keys = g[9] if len(g) > 9 else set()
-        g[:] = g[:9] + [g[10] if len(g) > 10 else None]      # 9 — цвет краски
+        # 9 — цвет краски, 10 — разрывы строки (`_line_gaps`).
+        g[:] = g[:9] + [g[10] if len(g) > 10 else None, g[11] if len(g) > 11 else None]
         if not op_ends or not keys:
             continue
         x0, y, size, xl = g[0], g[1], max(g[2], 1.0), g[6]
@@ -1043,11 +1044,11 @@ def _geometry(lines, out, chunks, figs, rects, page, op_ends=(), op_recs=()):
                 lo = a if gi == 0 else starts[grp[0]]
                 hi = starts[groups[gi + 1][0]] if gi + 1 < len(groups) else b
                 sub_ks = [k for k in ks if lo <= starts[k] < hi]
-                subs.append([lo - a, _line_geo(sub_ks, grp, chunks, starts, lo, cw)])
+                subs.append([lo - a, _line_geo(sub_ks, grp, chunks, starts, lo, cw, ends)])
             geo_lines.append(subs[0][1])
             splits[len(geo_lines) - 1] = subs
             continue
-        geo_lines.append(_line_geo(ks, body, chunks, starts, a, cw))
+        geo_lines.append(_line_geo(ks, body, chunks, starts, a, cw, ends))
     # Одна строка ответа — одна строка геометрии; иначе смысла в ней нет.
     if len(geo_lines) != len(lines):
         return None
@@ -1235,7 +1236,8 @@ def _h_groups(body: list, chunks: list, cw: float, cols=(), ends=None) -> list:
     return groups
 
 
-def _line_geo(ks: list, body: list, chunks: list, starts: list, a: int, cw: float) -> list:
+def _line_geo(ks: list, body: list, chunks: list, starts: list, a: int, cw: float,
+              ends: "dict | None" = None) -> list:
     """Геометрия одной строки по её кускам (см. `page_lines`)."""
     first = chunks[body[0]]
     x0, y, size = first[1], first[2], first[3]
@@ -1269,9 +1271,42 @@ def _line_geo(ks: list, body: list, chunks: list, starts: list, a: int, cw: floa
     # x1 — оценка по средней ширине знака и у крупного кегля уезжает
     # в соседнюю колонку; xl — где начался последний кусок, это PDF
     # знает точно. От него выгрузка ищет настоящий конец по краске.
+    parts = _line_parts(body, chunks, size, cw)
     return [round(x0, 1), round(y, 1), round(size, 2), round(x1, 1), style, family,
-            round(xl, 1), _line_parts(body, chunks, size, cw), False, keys,
-            _chunk_color(body, chunks)]
+            round(xl, 1), parts, False, keys,
+            _chunk_color(body, chunks),
+            None if parts else _line_gaps(body, chunks, size, cw, ends)]
+
+
+# Разрыв ВНУТРИ строки слоя (кегли): между двумя кусками одной базовой линии
+# пусто по слою, а в картинке там может стоять текст, которого слоя нет
+# («• [Beneficial effect on HbA] 1c, body weight…», проект 14, стр. 10).
+# По точному концу куска (оператор показа) — от `LINE_GAP_EXACT`, по оценке
+# средней шириной знака — от `LINE_GAP_EST`: оценка ошибается, и выключка по
+# ширине и табуляция дают законные широкие пробелы.
+LINE_GAP_EXACT = 2.5
+LINE_GAP_EST = 4.0
+
+
+def _line_gaps(body: list, chunks: list, size: float, cw: float, ends) -> "list | None":
+    """[[конец куска, начало следующего], …] — разрывы строки, либо None."""
+    pcs = []
+    for k in body:
+        c = chunks[k]
+        if c[1] is None or not c[0].strip() or abs(c[2] - chunks[body[0]][2]) > 0.5 * max(size, 1.0):
+            continue
+        exact = False
+        if ends:
+            x_, y_ = int(round(c[1])), int(round(c[2]))
+            exact = any(ends.get((x_ + dx, y_ + dy)) is not None for dx in (0, -1, 1) for dy in (0, -1, 1))
+        pcs.append((c[1], _chunk_end(c, cw, ends), exact))
+    pcs.sort()
+    out = []
+    for (ax, ae, aex), (bx, _be, _bex) in zip(pcs, pcs[1:]):
+        need = (LINE_GAP_EXACT if aex else LINE_GAP_EST) * max(size, 1.0)
+        if bx - ae >= need:
+            out.append([round(ae, 1), round(bx, 1)])
+    return out or None
 
 
 def _chunk_color(body: list, chunks: list):

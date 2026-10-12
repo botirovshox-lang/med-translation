@@ -15579,6 +15579,13 @@ def _auto_resegment(pid: int, tenant: str, claimed: bool = False) -> Optional[st
                     pl = _resegment_plan(project, parsed)
                     c = pl["counts"]
                     if not (c["changed"] or c["new"] or c["removed"]):
+                        # Абзацы те же — но разбор новых правил несёт новые
+                        # ПОЛЯ места строки (разрывы, поле 10): без них правило
+                        # сверки надписей 3 до проекта не дошло бы никогда.
+                        try:
+                            _merge_layout_fields(pid, parsed.get("layout"))
+                        except Exception as e:
+                            print("[backend] перенос разрывов строк в карту: %s" % e, file=sys.stderr)
                         project["parseRules"] = parsed.get("parseRules")
                         project["autoReseg"] = dict(mark, result="same")
                         _PROJECTS_VER[0] += 1
@@ -15650,6 +15657,10 @@ def _relayer_due_in(data: "dict | None") -> bool:
         if int(rec.get("layerRule") or 1) >= LAYER_RULE:
             continue
         page = str(rec.get("part") or "").startswith(PDF_PAGE_PART)
+        if _gap_blocks(rec, data):
+            return True
+        if int(rec.get("layerRule") or 1) >= 2:
+            continue                    # построчно сверена — ждёт только разрывов
         if any(int(b.get("rows") or 1) > 1 and not b.get("layerSplit")
                and (b.get("skip") == "layer" or (page and "text" in b and not b.get("skip")))
                for b in rec.get("blocks") or []):
@@ -16323,6 +16334,56 @@ def _docx_image_anchors(doc) -> dict:
                 name = str(rel.target_part.partname).lstrip("/")
                 out.setdefault(name, []).append(idx)
     return out
+
+
+def _merge_layout_fields(pid: int, new_layout: "dict | None") -> int:
+    """Поле 10 места строки (разрывы) из НОВОЙ раскладки — в карту проекта,
+    у которой абзацы те же («same» пересборки). Переносится только туда, где
+    место строки совпало по геометрии (начало, базовая, конец ±0.6 пт):
+    номера абзацев одни, но доверять номеру без сверки места нельзя.
+    Ответ — сколько мест дополнено (0 — карта не переписывается)."""
+    data = _load_source_map(pid)
+    if not data or not new_layout:
+        return 0
+    old_boxes = (data.get("layout") or {}).get("boxes") or {}
+    n = skipped = 0
+    for key, nboxes in (new_layout.get("boxes") or {}).items():
+        obs = old_boxes.get(str(key)) or []
+        if len(obs) != len(nboxes or []):
+            skipped += sum(1 for b_ in nboxes or [] for sl in b_.get("slots") or []
+                           if len(sl) > 10 and sl[10])
+            continue
+        for ob, nb in zip(obs, nboxes or []):
+            if ob.get("page") != nb.get("page") or len(ob.get("slots") or []) != len(nb.get("slots") or []):
+                skipped += sum(1 for sl in nb.get("slots") or [] if len(sl) > 10 and sl[10])
+                continue
+            for os_, ns_ in zip(ob.get("slots") or [], nb.get("slots") or []):
+                if len(ns_) <= 10 or not ns_[10] or (len(os_) > 10 and os_[10] == ns_[10]):
+                    continue
+                if len(os_) > 8 and isinstance(os_[8], dict):
+                    continue
+                try:
+                    same = all(abs(float(os_[k]) - float(ns_[k])) <= 0.6 for k in (0, 1, 2))
+                except Exception:
+                    same = False
+                if not same:
+                    skipped += 1
+                    continue
+                while len(os_) < 10:
+                    os_.append(None)
+                if len(os_) == 10:
+                    os_.append(ns_[10])
+                else:
+                    os_[10] = ns_[10]
+                n += 1
+    if n:
+        _save_source_map(pid, data)
+    if n or skipped:
+        # Пропущенные разрывы — громко: без них правило сверки надписей 3
+        # по этим строкам молчит, и «всё сделано» было бы неправдой.
+        print("[backend] разрывы строк в карту проекта %s: перенесено %d, не сошлось место у %d"
+              % (pid, n, skipped), file=sys.stderr)
+    return n
 
 
 def _save_source_map(pid: int, data: dict) -> None:
@@ -17279,7 +17340,7 @@ def _job_images(job: dict) -> None:
         rec_ = known[n]
         if n in need_det:
             blob_ = b""                 # страницу разберут заново — пересверять нечего
-        elif not _relayer_todo(rec_):
+        elif not _relayer_todo(rec_, data):
             blob_ = b""
             rec_["layerRule"] = LAYER_RULE   # пересверять нечего — и рисовать незачем
         else:
@@ -32520,14 +32581,26 @@ def _mark_figure_blocks(rec: dict, blob: bytes, fig_rects: dict) -> int:
 # где часть строк в слое, а часть нарисована кривыми («Self-efficacy» между
 # пунктами слоя; «VLED and formula meal replacement…» в таблице проекта 14),
 # прежде отсеивался ЦЕЛИКОМ, и кривые строки не переводились никогда.
-LAYER_RULE = 2
+LAYER_RULE = 3
+# Сверка со слоем знает РАЗРЫВЫ строки слоя (правило 3): `LAYER_GAPS=0` —
+# прежняя сверка цельным прямоугольником строки.
+LAYER_GAPS = os.environ.get("LAYER_GAPS", "1") != "0"
 
 
-def _split_uncovered(b: dict, line_boxes: list, covered: list, parent: int) -> list:
+def _split_uncovered(b: dict, line_boxes: list, covered: list, parent: int,
+                     alone: "set | None" = None) -> list:
     """Строки блока, которых нет в слое, — новыми блоками (по подряд идущим):
-    их и прочитает модель. Блок, где все строки в слое, сюда не попадает."""
+    их и прочитает модель. Блок, где все строки в слое, сюда не попадает.
+    `alone` — строки, обрезанные до куска на разрыве слоя: своим блоком,
+    склеенная с соседней строкой рамка снова накрыла бы текст слоя."""
     out, run = [], []
-    for lb, cov in zip(line_boxes, covered):
+    for k_, (lb, cov) in enumerate(zip(line_boxes, covered)):
+        if not cov and k_ in (alone or ()):
+            if run:
+                out.append(run)
+                run = []
+            out.append([lb, "gap"])
+            continue
         if not cov:
             run.append(lb)
             continue
@@ -32538,12 +32611,17 @@ def _split_uncovered(b: dict, line_boxes: list, covered: list, parent: int) -> l
         out.append(run)
     res = []
     for r in out:
+        gap = bool(r) and r[-1] == "gap"
+        if gap:
+            r = r[:-1]
         x0, y0 = min(v[0] for v in r), min(v[1] for v in r)
         x1, y1 = max(v[2] for v in r), max(v[3] for v in r)
         lh = sum(v[3] - v[1] for v in r) / float(len(r))
         res.append({"box": [int(x0), int(y0), int(x1), int(y1)], "rows": len(r),
                     "lineH": int(round(lh)), "conf": b.get("conf"), "flat": b.get("flat"),
                     "align": b.get("align") or "left", "lineBoxes": r, "from": parent})
+        if gap:
+            res[-1]["gap"] = 1
     return res
 
 
@@ -32566,6 +32644,7 @@ def _mark_layer_blocks(rec: dict, blob: bytes, data: dict, only: "set | None" = 
     px0, py0, px1, py1 = (float(v) for v in pb)
     pw, ph = px1 - px0, py1 - py0
     rects = []
+    gap_rects = []
     for boxes in (lay.get("boxes") or {}).values():
         for b in boxes or []:
             if int(b.get("page", -1)) != page:
@@ -32579,10 +32658,46 @@ def _mark_layer_blocks(rec: dict, blob: bytes, data: dict, only: "set | None" = 
                     rects.append((min(xs) - s, min(ys) - s, max(xs) + s, max(ys) + s))
                 else:
                     s = float(sl[3] or 1)
-                    rects.append((float(sl[0]), float(sl[1]) - 0.3 * s, float(sl[2]),
-                                  float(sl[1]) + 0.9 * s))
+                    # Строка слоя режется по своим РАЗРЫВАМ (поле 10, `pdftext`):
+                    # между кусками по слою пусто, и надпись картинки в этом
+                    # промежутке слоем не покрыта (проект 14, стр. 10:
+                    # «• [Beneficial effect on HbA] 1c, body weight…»).
+                    xs_ = [float(sl[0])]
+                    for g_ in ((sl[10] if len(sl) > 10 else None) or []) if LAYER_GAPS else []:
+                        xs_ += [float(g_[0]), float(g_[1])]
+                        gap_rects.append((float(g_[0]), float(sl[1]) - 0.3 * s, float(g_[1]),
+                                          float(sl[1]) + 0.9 * s))
+                    xs_.append(float(sl[2]))
+                    for k_ in range(0, len(xs_) - 1, 2):
+                        if xs_[k_ + 1] > xs_[k_]:
+                            rects.append((xs_[k_], float(sl[1]) - 0.3 * s, xs_[k_ + 1],
+                                          float(sl[1]) + 0.9 * s))
     n = 0
     w, h = float(rec["w"]), float(rec["h"])
+
+    def uncovered(bx0, by0, bx1, by1):
+        """Самый длинный отрезок по x внутри рамки, где слоя нет (строки
+        слоя, перекрывающие рамку по высоте наполовину), — (от, до) или None."""
+        cov_ = sorted((max(bx0, rx0), min(bx1, rx1)) for rx0, ry0, rx1, ry1 in rects
+                      if min(bx1, rx1) > max(bx0, rx0)
+                      and min(by1, ry1) - max(by0, ry0) >= 0.5 * (by1 - by0))
+        best, cur = None, bx0
+        for a_, b_ in cov_ + [(bx1, bx1)]:
+            if a_ > cur and (best is None or a_ - cur > best[1] - best[0]):
+                best = (cur, a_)
+            cur = max(cur, b_)
+        if best is None:
+            return None
+        # Только кусок НА РАЗРЫВЕ строки слоя: конец строки слоя — оценка, и
+        # «непокрытый хвост» у края чаще всего тот же текст слоя (его чтение
+        # было бы платным дублем). Разрыв же записан по кускам строки.
+        if not any(min(best[1], gx1) - max(best[0], gx0) >= 0.5 * (best[1] - best[0])
+                   and min(by1, gy1) > max(by0, gy0) for gx0, gy0, gx1, gy1 in gap_rects):
+            return None
+        return best
+
+    def to_px_x(v):
+        return ((v - px0) / pw - fx0) / max(fx1 - fx0, 1e-9) * w
 
     def to_pt(box):
         x0, y0, x1, y1 = (float(v) for v in box)
@@ -32608,11 +32723,27 @@ def _mark_layer_blocks(rec: dict, blob: bytes, data: dict, only: "set | None" = 
         lbs = (line_boxes or {}).get(bi) or b.get("lineBoxes") or []
         # Прочитанный блок сверяется построчно только при пересверке
         # (`_relayer_old`, `only`): при свежем разборе текста у блока нет.
-        if len(lbs) > 1 and ("text" not in b or only is not None):
+        if (len(lbs) > 1 or (lbs and only is not None)) and ("text" not in b or only is not None):
             # Построчно: строки, которых в слое нет, — своими блоками.
-            covered = [share(lb) >= LAYER_OVERLAP for lb in lbs]
+            covered = []
+            trimmed: set = set()
+            for li_, lb in enumerate(lbs):
+                sh_ = share(lb)
+                if LAYER_OVERLAP <= sh_ < LAYER_TRIM_MAX:
+                    # Строка покрыта слоем НЕ целиком: непокрытый кусок (с края
+                    # или в середине — разрыв строки слоя) — своей строкой.
+                    bx0, by0, bx1, by1 = to_pt(lb)
+                    run_ = uncovered(bx0, by0, bx1, by1)
+                    if run_ and run_[1] - run_[0] >= LAYER_TRIM_MIN * (by1 - by0):
+                        lbs = list(lbs)
+                        lbs[li_] = [int(round(to_px_x(run_[0] + 0.2 * (by1 - by0)))), lb[1],
+                                    int(round(to_px_x(run_[1] - 0.2 * (by1 - by0)))), lb[3]]
+                        covered.append(False)
+                        trimmed.add(li_)
+                        continue
+                covered.append(sh_ >= LAYER_OVERLAP)
             if any(covered) and not all(covered):
-                added.extend(_split_uncovered(b, lbs, covered, bi))
+                added.extend(_split_uncovered(b, lbs, covered, bi, trimmed))
                 b["skip"] = "layer"
                 b["layerSplit"] = 1
                 n += 1
@@ -32657,7 +32788,14 @@ def _mark_layer_blocks(rec: dict, blob: bytes, data: dict, only: "set | None" = 
         # дважды — абзацем слоя и в обрезанной рамке.
         if rows <= 1 and span is not None and cov / area < LAYER_TRIM_MAX and "text" not in b:
             nb0, nb1 = bx0, bx1
-            if span[0] <= bx0 + 0.5 * lh:
+            run_ = uncovered(bx0, by0, bx1, by1) if LAYER_GAPS else None
+            if run_ is not None:
+                # Самый длинный непокрытый отрезок — с края или в середине
+                # (разрыв строки слоя): не только «половина слоем, половина
+                # кривыми», но и «маркер слоем, текст кривыми, хвост слоем».
+                nb0 = run_[0] + (0.2 * lh if run_[0] > bx0 else 0.0)
+                nb1 = run_[1] - (0.2 * lh if run_[1] < bx1 else 0.0)
+            elif span[0] <= bx0 + 0.5 * lh:
                 nb0 = span[1] + 0.2 * lh
             elif span[1] >= bx1 - 0.5 * lh:
                 nb1 = span[0] - 0.2 * lh
@@ -32707,7 +32845,12 @@ def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict,
     # а часть — растр (только их и надо было читать; проект 14, стр. 19).
     # `protect` — блоки, чей сегмент трогать нельзя (работа человека, сухой
     # прогон): их пересверка оставила бы сегмент сиротой.
-    todo = _relayer_todo(rec) - set(protect or ())
+    todo = _relayer_todo(rec, data) - set(protect or ())
+    # Блоки, взятые на пересверку ТОЛЬКО из-за разрыва строки слоя (правило 3):
+    # их прочие строки уже разобраны прежним правилом — добавляется лишь
+    # кусок на разрыве, иначе пересверка заново заводила бы (и платно
+    # читала) строки, решённые раньше.
+    gap_only = _gap_blocks(rec, data) - _relayer_rows(rec)
     if not todo or not blob or image_text is None:
         rec["layerRule"] = LAYER_RULE
         return 0
@@ -32761,7 +32904,7 @@ def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict,
             mx, my = (lx0 + lx1) / 2.0, (ly0 + ly1) / 2.0
             if x0 - 2 <= mx <= x1 + 2 and y0 - 2 <= my <= y1 + 2:
                 got.append([int(lx0), int(ly0), int(lx1), int(ly1)])
-        if len(got) > 1:
+        if len(got) > 1 or (got and int(blocks[i].get("rows") or 1) <= 1):
             # По строке, ВНУТРИ строки — слева направо: куски одной строки
             # (две ячейки схемы рядом) идут подряд, и непокрытые по краям
             # покрытого слоем куска не склеятся через него в один блок.
@@ -32773,11 +32916,16 @@ def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict,
     # Дубль: строка уже лежит в другом (несброшенном) блоке.
     keep = new[:before]
     for nb in new[before:]:
+        if nb.get("from") in gap_only and not nb.get("gap"):
+            continue
         bx0, by0, bx1, by1 = nb["box"]
         area = max(1, (bx1 - bx0) * (by1 - by0))
         dup = False
         for ob in keep:
-            if ob.get("skip"):
+            # Родитель, отсеянный как слой, накрывает свои строки — не в счёт;
+            # строка же с решением («шум», «надпечатка» — модели или человека)
+            # уже разобрана: завести её заново значило бы платно читать то же.
+            if ob.get("skip") == "layer":
                 continue
             ox0, oy0, ox1, oy1 = ob["box"]
             ix, iy = min(bx1, ox1) - max(bx0, ox0), min(by1, oy1) - max(by0, oy0)
@@ -32795,15 +32943,81 @@ def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict,
     return len(keep) - before
 
 
-def _relayer_todo(rec: dict) -> set:
+def _relayer_todo(rec: dict, data: "dict | None" = None) -> set:
     """Блоки записи, которые пересверка со слоем возьмёт: многострочные,
-    отсеянные как слой целиком, и прочитанные многострочные блоки страницы.
+    отсеянные как слой целиком, прочитанные многострочные блоки страницы и
+    (правило 3) отсеянные блоки, лежащие на РАЗРЫВЕ строки слоя.
     Пусто — пересверять нечего, и страницу незачем даже отрисовывать."""
+    return _relayer_rows(rec) | _gap_blocks(rec, data)
+
+
+def _relayer_rows(rec: dict) -> set:
+    """Построчная пересверка правила 2 — только у записей, сверенных ещё по
+    правилу 1: запись правила 2 её уже прошла, и повтор заново решал бы
+    решённое (и платно читал бы)."""
+    if int(rec.get("layerRule") or 1) >= 2:
+        return set()
     return {i for i, b in enumerate(rec.get("blocks") or [])
             if int(b.get("rows") or 1) > 1 and not b.get("layerSplit")
             and (b.get("skip") == "layer"
                  or ("text" in b and not b.get("skip")
                      and str(rec.get("part") or "").startswith(PDF_PAGE_PART)))}
+
+
+_GAP_INDEX: list = [(None, {})]          # [(раскладка, {страница: [рамки разрывов]})]
+
+
+def _gap_index(lay: dict) -> dict:
+    """{страница: [рамки разрывов строк слоя]} — один обход карты на
+    раскладку: `_gap_blocks` зовут на каждую запись картинок при открытии
+    проекта, и обход всех мест книги на каждую давал миллионы итераций."""
+    cached = _GAP_INDEX[0]               # кортеж целиком: поток видит пару, а не половину
+    if cached[0] is lay:
+        return cached[1]
+    idx: dict = {}
+    for boxes in (lay.get("boxes") or {}).values():
+        for b in boxes or []:
+            for sl in b.get("slots") or []:
+                if len(sl) > 10 and sl[10] and not isinstance(sl[8], dict):
+                    s_ = float(sl[3] or 1)
+                    for g_ in sl[10]:
+                        idx.setdefault(int(b.get("page", -1)), []).append(
+                            (float(g_[0]), float(sl[1]) - 0.3 * s_, float(g_[1]),
+                             float(sl[1]) + 0.9 * s_))
+    _GAP_INDEX[0] = (lay, idx)
+    return idx
+
+
+def _gap_blocks(rec: dict, data: "dict | None") -> set:
+    """Отсеянные как слой блоки СТРАНИЦЫ, которые пересекают разрыв строки
+    слоя (поле 10 места, `pdftext`): там по слою пусто, и часть надписи
+    могла быть отсеяна зря. Только у карты, где разрывы записаны (разбор
+    по правилам 13+): у старой карты разрывов нет — и пересверять нечем."""
+    if not LAYER_GAPS or not data or not str(rec.get("part") or "").startswith(PDF_PAGE_PART):
+        return set()
+    if not rec.get("w") or not rec.get("h"):
+        return set()
+    lay = data.get("layout") or {}
+    page = _pdf_page_of(rec["part"])
+    pgs = lay.get("pages") or []
+    if page is None or not (0 <= page < len(pgs)) or not pgs[page]:
+        return set()
+    px0, py0, px1, py1 = (float(v) for v in pgs[page])
+    gaps = _gap_index(lay).get(page)
+    if not gaps:
+        return set()
+    w, h = float(rec["w"]), float(rec["h"])
+    out = set()
+    for i, b in enumerate(rec.get("blocks") or []):
+        if b.get("skip") != "layer" or not b.get("box"):
+            continue
+        x0, y0, x1, y1 = (float(v) for v in b["box"])
+        bx0, bx1 = px0 + x0 / w * (px1 - px0), px0 + x1 / w * (px1 - px0)
+        by0, by1 = py1 - y1 / h * (py1 - py0), py1 - y0 / h * (py1 - py0)
+        if any(min(bx1, gx1) > max(bx0, gx0) and min(by1, gy1) > max(by0, gy0)
+               for gx0, gy0, gx1, gy1 in gaps):
+            out.add(i)
+    return out
 
 
 def _retire_orphans(rec: dict, project: dict) -> int:

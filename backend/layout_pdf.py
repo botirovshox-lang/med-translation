@@ -1072,11 +1072,29 @@ def _cut_point(word: str, n: int) -> int:
     return max(1, n)
 
 
+# `LAYOUT_LABEL_SPAN=0` — подпись растёт только в сторону своей выключки.
+LABEL_SPAN = os.environ.get("LAYOUT_LABEL_SPAN", "1") != "0"
+
+
+def _span_x(sd: dict, w: float, x: float) -> float:
+    """Начало строки шире своего места у подписи со свободной бумагой
+    с обеих сторон (`_span`): по центру места, но в пределах бумаги."""
+    sp = sd.get("_span")
+    if not sp or w <= (sd["x1"] - sd["x0"]) + 0.5:
+        return x
+    cx = (sd["x0"] + sd["x1"]) / 2.0
+    return min(max(cx - w / 2.0, sp[0]), sp[1] - w)
+
+
 def _slot_width(sl: dict, align: str, wide: bool) -> float:
     """Ширина места строки: своя — или с запасом свободной бумаги
     (`room0`/`room1`, `_free_room`) в сторону, куда строка растёт по выключке."""
     x0 = sl["x"] if align == "left" else sl["x0"]
     x1 = sl["x1"]
+    if wide and sl.get("_span"):
+        # Однострочной подписи, которой тесно, — вся свободная бумага с обеих
+        # сторон (`_span`), а не только со стороны выключки.
+        return sl["_span"][1] - sl["_span"][0]
     if wide:
         r0, r1 = sl.get("room0", sl["x0"]), sl.get("room1", sl["x1"])
         if align == "left":
@@ -1112,6 +1130,9 @@ def _fit_slots(text: str, slots: list, sw, font_of, align: str, split_ok: bool =
     hs = [h0]
     floor = MIN_SIZE_SHARE if floor is None else floor
     cap = max(floor, min(1.0, cap))
+
+    for sl in slots:
+        sl.pop("_span", None)            # от прошлой укладки этого места
 
     def lay(f, split=False, wide=False):
         words = list(words0)
@@ -1161,6 +1182,16 @@ def _fit_slots(text: str, slots: list, sw, font_of, align: str, split_ok: bool =
         (sl["x1"] - sl["x0"]) <= FREE_MAX_WIDTH * sl.get("_pw", 1e9) for sl in slots)
     wide = label and any(sl.get("room1", sl["x1"]) > sl["x1"] + 0.5
                          or sl.get("room0", sl["x0"]) < sl["x0"] - 0.5 for sl in slots)
+    for sl in slots:
+        # Узкая ячейка таблицы, подпись схемы: со стороны выключки места нет,
+        # а с другой есть («Эффективность» в шапке, стр. 6: справа сосед,
+        # слева 18 пт бумаги) — строка растёт в свободную сторону, а печать
+        # ставит её как можно ближе к центру своего места (`_span_x`).
+        if (label and wide and LABEL_SPAN and not sl.get("rot") and not sl.get("_r")
+                and len(slots) == 1):
+            lo, hi = sl.get("room0", sl["x0"]), sl.get("room1", sl["x1"])
+            if hi - lo > _slot_width(sl, align, True) + 0.5:
+                sl["_span"] = (lo, hi)
     if wide:
         lines, rest, fits = lay(cap, split_ok, True)
         if fits:
@@ -2588,6 +2619,8 @@ def _entry_rects(entry: tuple, sw) -> list:
                 x = sd["x1"] - w
             else:
                 x = sd["x"]
+            if j == 0:
+                x = _span_x(sd, w, x)
             y = sd["y"] - j * 1.2 * size
             grown = (j > 0 or x + w > sd["x1"] + 0.5 or x < sd["x0"] - 0.5
                      or bool(sd.get("_grown")))
@@ -4769,6 +4802,8 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
                     x = sd["x1"] - w
                 else:
                     x = sd["x"]
+                if k == 0:
+                    x = _span_x(sd, w, x)
                 if raster is not None and sd.get("_r"):
                     if sd.get("_rtl") and align == "left":
                         x = sd["x1"] - w        # справа налево — от правого края места

@@ -96,7 +96,7 @@ MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
 # продолжает (подписи схемы с разных концов листа), строка pypdf с двумя
 # надписями одной базовой линии делится по местам (`split`), невидимый
 # и повёрнутый текст — своими пачками.
-RULES_VERSION = 12
+RULES_VERSION = 13
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -1190,6 +1190,128 @@ class _RotRun(list):
         self.geo.append(geo)
 
 
+# Повёрнутая ТАБЛИЦА: ряд таблицы боком pypdf отдаёт одной строкой
+# («Increased risk Neutral • No dose adjustment», проект 14, стр. 9), и
+# перевод склеивал значения разных столбцов. Граница ячейки — кусок, начало
+# которого вдоль пути совпадает с началами кусков в `ROT_COL_LINES` других
+# повёрнутых строк того же угла (столбец; в строке таких кусков от трёх),
+# у предыдущего куска начало тоже
+# на столбце, и зазор между ними — от `ROT_COL_GAP` кегля. Маркер списка
+# с висячим отступом («•» и текст) зазора не даёт — не режется.
+ROT_COL_LINES = 3            # строк (включая свою) с тем же началом
+ROT_COL_MIN_CELLS = 3        # кусков строки на столбцах — ряд таблицы
+ROT_COL_GAP = 0.5
+ROT_COL_TOL = 1.0
+ROT_COL_SPLIT = os.environ.get("PDF_ROT_COLS", "1") != "0"
+
+
+def _along(p: list) -> float:
+    a = math.radians(float(p[2] or 0.0))
+    return float(p[0]) * math.cos(a) + float(p[1]) * math.sin(a)
+
+
+def _rot_columns(rot: dict) -> dict:
+    """{угол (до 5°): [начала столбцов вдоль пути]} по прямым повёрнутым
+    строкам страницы: начало, встреченное в `ROT_COL_LINES`+ строках."""
+    per: dict = {}
+    for rg in rot.values():
+        if not rg or rg.get("curved") or len(rg.get("pts") or []) < 1:
+            continue
+        ang = int(round(float(rg["pts"][0][2] or 0) / 5.0)) * 5
+        per.setdefault(ang, []).append([_along(p_) for p_ in rg["pts"]])
+    out = {}
+    for ang, lines in per.items():
+        cands = sorted({round(v) for ln in lines for v in ln})
+        out[ang] = [c_ for c_ in cands
+                    if sum(1 for ln in lines if any(abs(v - c_) <= ROT_COL_TOL for v in ln))
+                    >= ROT_COL_LINES]
+    return out
+
+
+def _rot_cells(line: str, rg: dict, cols: dict) -> list:
+    """[(кусок строки, путь)] — повёрнутая строка, разрезанная по столбцам
+    таблицы; одна часть — строка как есть."""
+    pts = rg.get("pts") or []
+    if not ROT_COL_SPLIT or rg.get("curved") or len(pts) < 2:
+        return [(line, rg)]
+    ang = int(round(float(pts[0][2] or 0) / 5.0)) * 5
+    starts = cols.get(ang) or []
+    on_col = lambda v: any(abs(v - c_) <= ROT_COL_TOL for c_ in starts)  # noqa: E731
+    if sum(1 for p_ in pts if on_col(_along(p_))) < ROT_COL_MIN_CELLS:
+        return [(line, rg)]
+    cut = []
+    for k in range(1, len(pts)):
+        a_, b_ = pts[k - 1], pts[k]
+        size = max(float(a_[3] or 1.0), 1.0)
+        end_a = _along(a_) + 0.5 * size * len(str(a_[5] or ""))
+        if (on_col(_along(b_)) and on_col(_along(a_))
+                and _along(b_) - end_a >= ROT_COL_GAP * size
+                and any(ch.isalnum() for ch in str(a_[5] or ""))):
+            cut.append(k)
+    if not cut:
+        return [(line, rg)]
+    # Смещения кусков в строке: текст строки не меняется, режутся места.
+    offs, pos = [], 0
+    for p_ in pts:
+        t_ = str(p_[5] or "")
+        j = line.find(t_, pos) if t_ else pos
+        if j < 0:
+            return [(line, rg)]
+        offs.append(j)
+        pos = j + len(t_)
+    out = []
+    bounds = [0] + cut + [len(pts)]
+    for a, b in zip(bounds, bounds[1:]):
+        lo = 0 if a == 0 else offs[a]
+        hi = len(line) if b == len(pts) else offs[b]
+        sub = dict(rg)
+        sub["pts"] = pts[a:b]
+        if b < len(pts):
+            last = pts[b - 1]
+            ang_r = math.radians(float(last[2] or 0.0))
+            ln_ = 0.5 * max(float(last[3] or 1.0), 1.0) * len(str(last[5] or ""))
+            sub["end"] = [round(float(last[0]) + ln_ * math.cos(ang_r), 2),
+                          round(float(last[1]) + ln_ * math.sin(ang_r), 2)]
+        out.append((line[lo:hi], sub))
+    return out
+
+
+def _rot_cell_host(cell_runs: list, rg: dict):
+    """Ячейка последнего ряда повёрнутой таблицы, которую продолжает строка
+    `rg`: строка начата строчной или скобкой, тот же угол, начало строки —
+    на начале куска первой строки ячейки (±`ROT_COL_TOL`),
+    и строка стоит рядом с последней строкой ячейки (не дальше 2.5 кегля
+    поперёк пути). Иначе None."""
+    pts = rg.get("pts") or []
+    if not pts or rg.get("curved"):
+        return None
+    # Продолжение фразы начинается строчной или скобкой («required»,
+    # «(pioglitazone…»); строка с заглавной — уже ДРУГОЕ значение того же
+    # столбца в следующем ряду (ряд из одной ячейки в ячейки не режется).
+    head = str(pts[0][5] or "").lstrip()
+    if not head or not (head[0].islower() or head[0] in "([{"):
+        return None
+    a0 = float(pts[0][2] or 0.0)
+    pos = _along(pts[0])
+    ar = math.radians(a0)
+    across = lambda p_: -float(p_[0]) * math.sin(ar) + float(p_[1]) * math.cos(ar)  # noqa: E731
+    size = max(float(pts[0][3] or 1.0), 1.0)
+    for run_ in cell_runs:
+        g_ = run_.geo[-1] if run_.geo else None
+        if not g_ or not g_.get("pts"):
+            continue
+        last = g_["pts"][0]
+        if abs(float(last[2] or 0.0) - a0) > 5.0:
+            continue
+        # Начало любого куска первой строки ячейки: у пункта с маркером
+        # продолжение выровнено по тексту после «•» (висячий отступ).
+        starts = [_along(p_) for p_ in run_.geo[0]["pts"]]
+        if (any(abs(v - pos) <= ROT_COL_TOL for v in starts)
+                and 0 < abs(across(last) - across(pts[0])) <= 2.5 * size):
+            return run_
+    return None
+
+
 def _path_text(geo: dict) -> str:
     """Текст повёрнутой строки по её пути — С ПРОБЕЛАМИ.
 
@@ -1261,6 +1383,8 @@ def _geo_page(lines: list, g, placeless: "list | None" = None) -> "list | None":
     runs: list = []
     run = _RotRun()
     rot = g.get("rot") or {}
+    rot_cols = _rot_columns(rot) if rot else {}
+    cell_runs: list = []                # ячейки последнего ряда повёрнутой таблицы
     hrun: list = []                     # подряд идущие НЕВИДИМЫЕ строки
     hidden_runs: list = []
     total = 0
@@ -1303,6 +1427,27 @@ def _geo_page(lines: list, g, placeless: "list | None" = None) -> "list | None":
             if placeless is None:
                 return None             # строка без места — страница без геометрии
             rg = rot.get(str(li))
+            cells = _rot_cells(l or "", rg, rot_cols) if rg else [(l or "", rg)]
+            if len(cells) > 1:
+                # Ряд повёрнутой таблицы: каждая ячейка — своя пачка (свой абзац).
+                if run:
+                    runs.append(run)
+                cell_runs = []
+                for t_, g_ in cells:
+                    run = _RotRun()
+                    run.add(t_, g_)
+                    runs.append(run)
+                    cell_runs.append(run)
+                run = _RotRun()
+                continue
+            host = _rot_cell_host(cell_runs, rg) if (rg and cell_runs) else None
+            if host is not None:
+                # Продолжение текста ячейки следующей повёрнутой строкой
+                # («Generally not» / «recommended in…»): в её же абзац.
+                host.add(l or "", rg)
+                continue
+            if rg and not rg.get("curved"):
+                cell_runs = []
             if run and rg and run.geo and run.geo[-1] and not _rot_follows(run.geo[-1], rg):
                 # Другая надпись (дуга кольца и вертикальная подпись рядом
                 # в потоке) — своей пачкой, а не одним абзацем на двоих.
@@ -1350,6 +1495,9 @@ def _geo_page(lines: list, g, placeless: "list | None" = None) -> "list | None":
                      # Цвет краски строки из самого PDF (оператор заливки),
                      # None — не знаем, выгрузка мерит по странице.
                      "color": p[9] if len(p) > 9 else None,
+                     # Разрывы строки: [[конец куска, начало следующего]] —
+                     # там, где по слою пусто (в картинке там бывает текст).
+                     "gaps": p[10] if len(p) > 10 else None,
                      "lsp": raw[:1] == " ", "rsp": raw[-1:] == " ",
                      # Номер строки ответа pypdf: части одной строки (`split`)
                      # колонками друг другу не свидетельствуют.
@@ -2536,6 +2684,7 @@ def _para_boxes(entries: list, base: str = "", base_fam: str = "") -> "list | No
         parts = g[8] if len(g) > 8 else None
         exact = 1 if (len(g) > 9 and g[9]) else 0
         color = g[10] if len(g) > 10 else None
+        gaps = g[11] if len(g) > 11 else None
         b = by_page.setdefault(pg, {"page": pg, "x0": x0, "y0": y, "x1": x1, "y1": y,
                                     "sizes": [], "ys": [], "first": x0, "st": Counter(),
                                     "fam": Counter()})
@@ -2558,14 +2707,16 @@ def _para_boxes(entries: list, base: str = "", base_fam: str = "") -> "list | No
             for part in parts:
                 px0, py, psz, px1, pxl = part[:5]
                 b.setdefault("slots", []).append([px0, py, max(px1, px0), psz, rel, pxl,
-                                                  part[5] if len(part) > 5 else 0, 0, None, color])
+                                                  part[5] if len(part) > 5 else 0, 0, None, color,
+                                                  None])
         else:
             b.setdefault("slots", []).append([round(x0, 1), round(y, 1), round(max(x1, x0), 1),
                                               round(sz or 0.0, 2), rel,
                                               round(xl, 1) if xl is not None else None,
                                               len((e.get("t") or "").strip()), exact,
-                                              # 8 — путь повёрнутой строки, 9 — цвет краски
-                                              None, color])
+                                              # 8 — путь повёрнутой строки, 9 — цвет краски,
+                                              # 10 — разрывы строки (сверка надписей со слоем)
+                                              None, color, gaps])
     if not by_page:
         return None
     out = []
@@ -2991,7 +3142,7 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                             # Место строки — для выгрузки «как в оригинале».
                             "geo": (i, r["x0"], r["y"], r["x1"], r["s"], r.get("st") or "",
                                     r.get("fam") or "", r.get("xl"), r.get("parts"),
-                                    r.get("exact"), r.get("color")),
+                                    r.get("exact"), r.get("color"), r.get("gaps")),
                             # Колонка таблицы (`_table_streams`): абзац из одной
                             # колонки в другую не переходит.
                             "tcol": r.get("tcol"),

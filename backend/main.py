@@ -31600,7 +31600,7 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
         if not all(targets):
             stats["untranslated"] += 1
             continue
-        target = " ".join(targets)
+        target = _join_targets(targets, [(x.get("source") or "") for x in parts])
         slots, full, dropped = _para_slots(all_p[idx], qn)
         if not slots:
             # Весь текст абзаца лежит в поле или скрыт — вписывать некуда.
@@ -31774,6 +31774,26 @@ def _keep_verbatim(source: str, target: str) -> str:
     return out
 
 
+def _glue_urls(source: str, target: str) -> str:
+    """Адрес, разорванный ПЕРЕНОСОМ СТРОКИ оригинала («…/10.17605/osf» |
+    «.io/pu93h»): разбор склеил строки пробелом, и в переводе стоят две
+    нерабочие ссылки. Пара «адрес + пробел + хвост с точки или косой» в
+    оригинале — значит и в переводе пробела там нет."""
+    if not source or not target:
+        return target
+    toks = _url_tokens(source)
+    out = target
+    for _a, b, u in toks:
+        m = re.match(r"\s+([./][A-Za-z0-9][\w./%?=&#-]*)", source[b:])
+        if not m:
+            continue
+        tail = m.group(1).rstrip(".")
+        pair = u + " " + tail
+        if pair in out:
+            out = out.replace(pair, u + tail)
+    return out
+
+
 _ABBR_SRC = re.compile(r"\(([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\)")
 _ABBR_TGT = re.compile(r"\(([^\s()]{2,12})\)")
 ABBR_MIN_SHARE = 0.66
@@ -31855,7 +31875,7 @@ def _print_by_id(project: dict) -> dict:
             if s["id"] in keep:
                 nt = src
             else:
-                nt = _abbr_apply(src, _keep_verbatim(src, t), amap)
+                nt = _abbr_apply(src, _glue_urls(src, _keep_verbatim(src, t)), amap)
             if nt != t:
                 s = dict(s, target=nt, _printFix=True)
         out[s["id"]] = s
@@ -31876,6 +31896,23 @@ def _same_as_source(target: str, source: str) -> bool:
         return " ".join(unicodedata.normalize("NFKC", t or "").translate(_SAME_DROP).split())
     a = norm(target)
     return bool(a) and a == norm(source)
+
+
+def _join_targets(targets: list, sources: list) -> str:
+    """Переводы строк одного абзаца — через пробел, КРОМЕ адреса, который
+    строка оригинала разорвала («…/10.17605/osf» | «.io/pu93h. Publications…»):
+    там пробел сделал бы из одной ссылки две нерабочие."""
+    out = ""
+    for k, t in enumerate(targets):
+        if k and out:
+            ps, ns = (sources[k - 1] or "").rstrip(), (sources[k] or "").lstrip()
+            toks = _url_tokens(ps)
+            glued = (toks and toks[-1][1] == len(ps) and ns[:1] in "./"
+                     and not ns.startswith(". ") and out.rstrip().endswith(toks[-1][2][-3:]))
+            out = out + ("" if glued else " ") + t
+        else:
+            out = t
+    return out
 
 
 def _layout_texts(project: dict, data: dict, same: "set | None" = None) -> dict:
@@ -31907,7 +31944,7 @@ def _layout_texts(project: dict, data: dict, same: "set | None" = None) -> dict:
             if same is not None:
                 same.add(int(idx))
             continue
-        texts[int(idx)] = " ".join(targets)
+        texts[int(idx)] = _join_targets(targets, [(x.get("source") or "") for x in parts])
         written.update(sids)
     for idx, sids in [g for g in groups if g[0] in tails]:
         if all(sid in written for sid in sids):

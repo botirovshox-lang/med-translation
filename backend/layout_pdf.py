@@ -61,6 +61,7 @@ Word, а печать этого документа даёт ровный пот
 
 import io
 import os
+import sys
 import statistics
 from pathlib import Path
 
@@ -788,34 +789,89 @@ def _neighbour_limits(slots: list) -> None:
             sl["lim"] = float(x0[m].min())
 
 
+def _vis_lines(slots: list) -> list:
+    """ВИДИМЫЕ строки абзаца: места одной базовой линии (±0.3 кегля), стоящие
+    вплотную (зазор не больше 1.5 кегля), — одна строка. pypdf режет строку
+    на два места на ссылке, смене шрифта, широком пробеле выключки
+    («…ратио» | «(377–384)»), и решать о выключке по кускам нельзя: кусок
+    в конце строки выглядит «строкой, прижатой вправо». Зазор шире —
+    две надписи (ячейки таблицы, колонки) и не сливаются (Л1)."""
+    out: list = []
+    for sl in slots:
+        if sl.get("rot"):
+            continue
+        if out:
+            ln = out[-1]
+            s = max(ln["size"], sl["size"], 1.0)
+            if (ln["page"] == sl["page"] and abs(ln["y"] - sl["y"]) <= 0.3 * s
+                    and -0.5 * s <= sl["x"] - ln["x1"] <= 1.5 * s):
+                ln["x1"] = max(ln["x1"], sl["x1"])
+                continue
+        out.append({"x": sl["x"], "x1": sl["x1"], "y": sl["y"],
+                    "size": sl["size"], "page": sl["page"]})
+    return out
+
+
+def _merge_line_slots(slots: list) -> list:
+    """Места одной ВИДИМОЙ строки (`_vis_lines`) — одним местом: копия
+    первого куска с концом последнего. Для перевёрстки строка — это строка:
+    кусок «osf.io/pu93h» на той же базовой, что и начало строки, `_runs`
+    принимал за новую колонку, и её область начиналась с ТОЙ ЖЕ высоты —
+    перевод печатался строкой поверх строки (проект 14, стр. 3)."""
+    out: list = []
+    for sl in slots:
+        if out and not sl.get("rot") and not out[-1].get("rot"):
+            pv = out[-1]
+            s_ = max(pv["size"], sl["size"], 1.0)
+            if (pv["page"] == sl["page"] and abs(pv["y"] - sl["y"]) <= 0.3 * s_
+                    and -0.5 * s_ <= sl["x"] - pv["x1"] <= 1.5 * s_):
+                pv["x1"] = max(pv["x1"], sl["x1"])
+                pv["x0"] = min(pv["x0"], sl["x0"])
+                continue
+        out.append(dict(sl))
+    return out
+
+
 def _slot_align(slots: list) -> str:
     """«left» / «center» / «right» — как стояли строки оригинала. Подписи
     в схеме и заголовки бывают выключены по центру, и перевод, начатый
-    от левого края, съезжал бы с места. Решают края САМИХ строк: левые
-    края гуляют, а середины совпадают — центр; совпадают правые — вправо.
-    Одна строка — влево: решать не по чему."""
-    if len(slots) < 2:
+    от левого края, съезжал бы с места. Решают края ВИДИМЫХ строк
+    (`_vis_lines`): левые края гуляют, а середины совпадают — центр;
+    совпадают правые — вправо. Одна строка — влево: решать не по чему.
+
+    Первая строка в решение о «вправо» не входит: отступ красной строки
+    и ЗАГОЛОВОК В ПОДБОР («Hypercortisolism. Hypercortisolism may be…» —
+    тело начинается за заголовком, на 50 пт правее остальных строк)
+    делали выключенный по формату абзац «прижатым вправо», и строки
+    колонки печатались рваным левым краем (проект 14, стр. 17)."""
+    ls = _vis_lines(slots)
+    if len(ls) < 2:
         return "left"
-    size = statistics.median(sl["size"] for sl in slots) or 1.0
+    size = statistics.median(ln["size"] for ln in ls) or 1.0
 
     def spread(vals):
         return max(vals) - min(vals)
-    lefts = spread([sl["x"] for sl in slots])
+    xs = [ln["x"] for ln in ls]
+    lefts = spread(xs)
     if lefts <= 1.0 * size:
         return "left"
-    # Отступ первой строки или висячий отступ выключенного по формату
-    # абзаца: все строки, кроме первой, с одного края, первая — на несколько
-    # кеглей правее или левее, правые края совпадают. Это «влево» с отступом,
-    # а не «вправо»: иначе короткая последняя строка перевода уехала бы
-    # к правому полю.
-    xs = [sl["x"] for sl in slots]
-    full = slots[:-1] if len(slots) >= 3 else slots
-    if (spread(xs[1:]) <= 1.0 * size and abs(xs[0] - min(xs[1:])) <= 4.0 * size
-            and spread([sl["x1"] for sl in full]) <= 1.0 * size):
-        return "left"
-    if spread([(sl["x"] + sl["x1"]) / 2.0 for sl in slots]) <= 0.5 * lefts:
+    # Середины всех строк совпадают, а последняя строка (короче прочих)
+    # стоит не от общего левого края — центрированная подпись. Отступ
+    # красной строки сюда не попадает: у него последняя строка от края.
+    if (spread([(ln["x"] + ln["x1"]) / 2.0 for ln in ls]) <= 0.4 * size
+            and (len(ls) == 2 or ls[-1]["x"] - min(xs[1:-1]) > 1.0 * size)):
         return "center"
-    if spread([sl["x1"] for sl in slots]) <= 0.5 * lefts:
+    # Отступ первой строки, висячий отступ и заголовок в подбор: все строки,
+    # кроме первой, с одного края — это «влево», какой бы ни была первая.
+    if len(ls) >= 3 and spread(xs[1:]) <= 1.0 * size:
+        return "left"
+    full = ls[:-1] if len(ls) >= 3 else ls
+    if (len(ls) == 2 and abs(xs[0] - xs[1]) <= 4.0 * size
+            and spread([ln["x1"] for ln in full]) <= 1.0 * size):
+        return "left"
+    if spread([(ln["x"] + ln["x1"]) / 2.0 for ln in ls]) <= 0.5 * lefts:
+        return "center"
+    if spread([ln["x1"] for ln in ls]) <= 0.5 * lefts:
         return "right"
     return "left"
 
@@ -1180,16 +1236,31 @@ def _justified(slots: list) -> bool:
     в общий правый край, левые (кроме отступа первой) — в общий левый.
     Без выключки перевод колонки книги выходит рваным справа рядом с ровными
     колонками оригинала — это видно с первого взгляда на разворот."""
-    flat = [sl for sl in slots if not sl.get("rot")]
-    if len(flat) < 3:
-        return False
-    size = statistics.median(sl["size"] for sl in flat) or 1.0
-    body = flat[:-1]
-    rights = [sl["x1"] for sl in body]
-    lefts = [sl["x"] for sl in body[1:]]
-    return (max(rights) - min(rights) <= 0.6 * size and lefts
-            and max(lefts) - min(lefts) <= 0.6 * size
-            and (max(rights) - min(lefts)) >= 12.0 * size)
+    # По ВИДИМЫМ строкам и по каждой колонке абзаца отдельно: абзац,
+    # перешедший в соседнюю колонку, имеет два правых края, и общая мерка
+    # объявляла его «не по ширине» (Л1).
+    runs: list = []
+    for ln in _vis_lines(slots):
+        if runs:
+            pv = runs[-1][-1]
+            s = max(pv["size"], ln["size"], 1.0)
+            if pv["page"] == ln["page"] and 0.5 * s <= pv["y"] - ln["y"] <= 2.6 * s \
+                    and abs(pv["x"] - ln["x"]) <= 12.0 * s:
+                runs[-1].append(ln)
+                continue
+        runs.append([ln])
+    verdicts = []
+    for rs in runs:
+        if len(rs) < 3:
+            continue
+        size = statistics.median(ln["size"] for ln in rs) or 1.0
+        body = rs[:-1]
+        rights = [ln["x1"] for ln in body]
+        lefts = [ln["x"] for ln in body[1:]]
+        verdicts.append(bool(max(rights) - min(rights) <= 0.6 * size and lefts
+                             and max(lefts) - min(lefts) <= 0.6 * size
+                             and (max(rights) - min(lefts)) >= 12.0 * size))
+    return bool(verdicts) and all(verdicts)
 
 
 def _regrid(slots: list, runs: list, f: float, ls: float = 1.0) -> list:
@@ -1231,10 +1302,17 @@ def _regrid(slots: list, runs: list, f: float, ls: float = 1.0) -> list:
         # («Self-efficacy:») не должно делать жирной всю вторую строку.
         styles = [sl.get("style") or "" for sl in rs]
         major = max(set(styles), key=styles.count)
+        # Кегль новой строки — БОЛЬШИНСТВА строк колонки (Л2): строка,
+        # начатая заголовком в подбор («Colchicine.» 5.2 пт при теле 6.7),
+        # несёт кегль заголовка, и вся первая строка перевода выходила мелкой.
+        sizes = [round(sl["size"], 1) for sl in rs]
+        msize = max(set(sizes), key=lambda v_: (sizes.count(v_), v_))
         lims = [sl["lim"] for sl in rs if sl.get("lim") is not None]
         for k in range(n):
             t = rs[min(k, len(rs) - 1)]
             v = dict(t)
+            if abs(v["size"] - msize) > 0.05 and len(rs) >= 2:
+                v["size"] = msize
             if k >= len(rs) or (k > 0 and (t.get("style") or "") != major):
                 v["style"] = major
             v["y"] = y0 - k * pitch * f * ls
@@ -1317,9 +1395,11 @@ def _fit_flow(text: str, slots: list, sw, font_of, align: str, split_ok: bool = 
     lines, f, rest, hs = _fit_slots(text, slots, sw, font_of, align, split_ok, cap, floor)
     if (not rest and f >= cap - 0.005) or any(sl.get("rot") for sl in slots):
         return slots, lines, f, rest, hs
+    orig_slots = slots
+    slots = _merge_line_slots(slots)
     runs = _runs(slots)
     if not any(len(r) >= 2 or (slots[r[-1]].get("below") or 0) > 0 for r in runs):
-        return slots, lines, f, rest, hs
+        return orig_slots, lines, f, rest, hs
     floor = MIN_SIZE_SHARE if floor is None else floor
     cap = max(floor, min(1.0, cap))
     h0 = _h0_of(slots)
@@ -1360,7 +1440,7 @@ def _fit_flow(text: str, slots: list, sw, font_of, align: str, split_ok: bool = 
         if best[0] >= cap - 0.005:
             break
     if best is None:
-        return slots, lines, f, rest, hs
+        return orig_slots, lines, f, rest, hs
     ff, hmin, vs, got, ls = best
     ls_[0] = ls
     # Сужение — наименьшее, при котором этот кегль ещё влезает.
@@ -1381,7 +1461,7 @@ def _fit_flow(text: str, slots: list, sw, font_of, align: str, split_ok: bool = 
     # кегле перевёрстка держит интерлиньяж кегля, а не пустые полосы.
     if rest or _fit_score(ff, lo) + FLOW_GAIN_MIN >= _fit_score(f, hs):
         return vs, got, ff, [], lo
-    return slots, lines, f, rest, hs
+    return orig_slots, lines, f, rest, hs
 
 
 # Текстовая рамка (`_flow_groups`): соседние абзацы ОДНОЙ колонки — пункты
@@ -1451,7 +1531,8 @@ def _flow_groups(slot_plan: list, slot_meta: list, stats: dict, sw_default,
     for i in range(n):
         m = slot_meta[i]
         orig = m.get("orig") or []
-        ok = (orig and not m["scattered"] and not any(sd.get("rot") for sd in orig)
+        ok = (orig and not m["scattered"] and m.get("story") is None
+              and not any(sd.get("rot") for sd in orig)
               and not any(sd.get("_r") for sd in orig) and not slot_plan[i][3])
         elig.append(bool(ok))
     runs_of = [[[slot_meta[i]["orig"][k] for k in r] for r in _runs(slot_meta[i]["orig"])]
@@ -1503,7 +1584,9 @@ def _flow_group(g: list, slot_plan: list, slot_meta: list, runs_of: dict) -> boo
         styles = [sd.get("style") or "" for sd in rs_all]
         major = max(set(styles), key=styles.count)
         pitch = _run_box(runs_of[i][0])["pitch"]
-        paras.append({"i": i, "words": (m["text"] or "").split(), "first": rs_all[0],
+        sizes = [round(sd["size"], 1) for sd in rs_all]
+        paras.append({"msize": max(set(sizes), key=lambda v_: (sizes.count(v_), v_)),
+                      "i": i, "words": (m["text"] or "").split(), "first": rs_all[0],
                       "rest_t": next((sd for sd in rs_all[1:] if (sd.get("style") or "") == major),
                                      rs_all[0]),
                       "pitch": pitch, "major": major, "font_of": slot_plan[i][4],
@@ -1550,6 +1633,7 @@ def _flow_group(g: list, slot_plan: list, slot_meta: list, runs_of: dict) -> boo
                     break
                 t = p["first"] if line_no == 0 else p["rest_t"]
                 v = dict(t)
+                v["size"] = p["msize"]          # Л2: кегль большинства строк
                 if line_no > 0:
                     v["style"] = p["major"]
                 v.pop("room0", None)
@@ -1650,6 +1734,476 @@ def _flow_group(g: list, slot_plan: list, slot_meta: list, runs_of: dict) -> boo
     return True
 
 
+# ── История страницы (Л3–Л5 в docs/rules/pdf-reading.md) ────────────────
+# Прежде каждый абзац колонки подбирался САМ: свой кегль (0.85–0.92),
+# свой интерлиньяж, своя выключка, — и колонка книги выглядела набранной
+# разными шрифтами (проект 14: у основного текста 77% знаков не тем кеглем,
+# что у большинства). Наборщик делает иначе, и так делаем мы:
+#  * абзацы СТРАНИЦЫ текут подряд по колонкам (связь «ниже в той же колонке»,
+#    «переход наверх соседней колонки», «заголовок в подбор на той же строке»),
+#    и тесноту одного абзаца забирает пустота под соседним;
+#  * через страницу история не идёт: абзац, разорванный страницей, — два
+#    куска, слова делятся по доле его строк на каждой странице;
+#  * кегль — СТУПЕНЯМИ (`STORY_STEPS`), и у класса стиля документа (гарнитура,
+#    начертание, кегль оригинала) потолок один — нижняя четверть того, что
+#    нужно его историям: три четверти текста одним кеглем, остальные —
+#    ступенью-двумя ниже, а не каждый своим числом.
+STORY_STEPS = (1.0, 0.94, 0.88, 0.82, 0.76, 0.70, 0.64, 0.58, 0.52, 0.46)
+STORY_HS = (1.0, 0.95, 0.9, 0.85)          # × ширина начертания класса (`_h0_of`)
+STORY_Q = float(os.environ.get("LAYOUT_STORY_Q", "0.25"))
+STORY_HEAD_MAX = 2.0                       # заголовок крупнее тела не больше чем в столько раз
+STORY_COL_W = (0.85, 1.18)                 # колонка-продолжение той же ширины
+
+
+def _story_piece_boxes(runs: list) -> list:
+    return [dict(_run_box(rs), n=len(rs)) for rs in runs]
+
+
+def _story_link(A: dict, B: dict, page_slots: "dict | None") -> "str | None":
+    """Как кусок `B` продолжает кусок `A` той же страницы: «inline» —
+    заголовок в подбор (B начинается на последней строке A, правее её конца,
+    а вторая строка B возвращается к левому краю колонки A — у ячеек таблицы
+    она возвращается под свою ячейку, и они не сцепятся); «v» — ниже в той
+    же колонке; «c» — наверх соседней колонки той же ширины. Иначе None."""
+    if A["page"] != B["page"]:
+        return None
+    ra, rb = A["boxes"][-1], B["boxes"][0]
+    la, fb = A["runs"][-1][-1], B["runs"][0][0]
+    s = max(la["size"], fb["size"], 1.0)
+    if (abs(la["y"] - fb["y"]) <= 0.3 * s and -0.5 * s <= fb["x"] - la["x1"] <= 1.5 * s
+            and len(B["runs"][0]) >= 2
+            and abs(B["runs"][0][1]["x"] - ra["x0"]) <= 1.0 * s):
+        return "inline"
+    sa, sb = A["msize"], B["msize"]
+    big, small = max(sa, sb), max(1.0, min(sa, sb))
+    if big > 1.25 * small:
+        # Разный кегль сцепляется только через ЗАГОЛОВОК (крупный и короткий);
+        # мелкий абзац под телом — сноска, подпись, врезка: не история.
+        # Заголовок — КОРОТКИЙ из двух: крупнее тела либо мельче, но
+        # выделенный (полужирный/курсив: «Other Considerations» 5.2 при
+        # теле 6.7). Короткий мелкий обычного начертания — сноска.
+        head = A if A["nlines"] <= B["nlines"] else B
+        if big > STORY_HEAD_MAX * small or head["nlines"] > 3:
+            return None
+        if head["msize"] < max(sa, sb) - 0.05 and not any(c in head["major"] for c in "bi"):
+            return None
+    ov = min(ra["x1"], rb["x1"]) - max(ra["x0"], rb["x0"])
+    dy = ra["bot"] - rb["top"]
+    if (ov >= 0.6 * min(ra["x1"] - ra["x0"], rb["x1"] - rb["x0"])
+            and abs(ra["x0"] - rb["x0"]) <= 3.0 * s
+            and 0.5 * min(ra["pitch"], rb["pitch"]) <= dy <= FRAME_LINK_MAX * ra["pitch"]
+            and not _blocked(A["runs"][-1], B["runs"][0], page_slots)):
+        return "v"
+    wa, wb = ra["x1"] - ra["x0"], rb["x1"] - rb["x0"]
+    if (big <= 1.25 * small and wa >= 8.0 * s and STORY_COL_W[0] <= wb / max(wa, 1.0) <= STORY_COL_W[1]
+            and rb["top"] > ra["bot"] + ra["pitch"]
+            and (rb["x0"] >= ra["x1"] - 0.5 * s or rb["x1"] <= ra["x0"] + 0.5 * s)):
+        return "c"
+    return None
+
+
+def _story_join(A: dict, B: dict) -> bool:
+    """`B` — та же фраза, что `A`, разорванная разбором на два абзаца
+    («…антагонисты рецепторов (АМКР)» | «(спиронолактон и эплеренон)…»):
+    последняя строка `A` в оригинале ПОЛНАЯ (до края колонки), текст `A`
+    не кончается знаком конца фразы, у `B` нет отступа, кегль и начертание
+    те же. Тогда `B` продолжает строку `A`, а не начинается с новой —
+    иначе посреди фразы короткая строка и «новый абзац»."""
+    if not A["words"] or not B["words"] or B.get("off0", 0.0) > 0.5 * B["msize"]:
+        return False
+    if abs(A["msize"] - B["msize"]) > 0.05 or A["major"] != B["major"]:
+        return False
+    if A["words"][-1][-1:] in ".!?:;…»”\"" or A["nlines"] < 2:
+        return False
+    la = A["runs"][-1][-1]
+    col = A["boxes"][-1]
+    return la["x1"] >= col["x1"] - 1.5 * A["msize"]
+
+
+def _stories(slot_plan: list, slot_meta: list, stats: dict, page_slots: "dict | None") -> None:
+    """Перевёрстка текста историями страниц (см. шапку раздела). Берёт
+    абзацы-текст (колонка из двух строк и больше либо сцепленные с таким),
+    не разброс, не повёрнутые, не растр. Абзац, у которого история не
+    сложилась (слово шире строки, не влез и на нижней ступени), остаётся
+    с прежней раскладкой."""
+    n = len(slot_plan)
+    info: dict = {}
+    for i in range(n):
+        m = slot_meta[i]
+        orig = m.get("orig") or []
+        if (not orig or m["scattered"] or any(sd.get("rot") for sd in orig)
+                or any(sd.get("_r") for sd in orig) or m.get("nospace")):
+            continue
+        merged = _merge_line_slots(orig)
+        sizes = [round(sd["size"], 1) for sd in orig]
+        msize = max(set(sizes), key=lambda v_: (sizes.count(v_), v_))
+        # Кегль строки pypdf — кегль ПЕРВОГО её куска: строка, начатая
+        # заголовком в подбор («Colchicine.» 5.25 при теле 6.65), «мельче»
+        # остальных, и колонка строк рвалась на ней (`_runs`), а шаг строки
+        # считался по ней одной. Для перевёрстки строка абзаца — кегля абзаца.
+        for sd in merged:
+            if 0.7 * msize <= sd["size"] <= 1.43 * msize:
+                sd["size"] = msize
+        runs = [[merged[k] for k in r] for r in _runs(merged)]
+        styles = [sd.get("style") or "" for sd in orig]
+        info[i] = {"runs": runs, "msize": msize,
+                   "major": max(set(styles), key=styles.count),
+                   "text_like": any(len(r) >= 2 for r in runs),
+                   "nlines": len(_vis_lines(orig))}
+    # Куски по страницам: слова абзаца делятся по доле его строк (в знаках
+    # ширины) на каждой странице.
+    pieces: list = []
+    for i in range(n):
+        if i not in info:
+            pieces.append(None)
+            continue
+        inf = info[i]
+        by_pg: list = []
+        for rs in inf["runs"]:
+            if by_pg and by_pg[-1][0] == rs[0]["page"]:
+                by_pg[-1][1].append(rs)
+            else:
+                by_pg.append((rs[0]["page"], [rs]))
+        words = (slot_meta[i]["text"] or "").split()
+        caps = [sum(max(0.0, sd["x1"] - sd["x"]) / max(sd["size"], 1.0) for rs in g for sd in rs)
+                for _pg, g in by_pg]
+        tot = sum(caps) or 1.0
+        lens = [len(w) + 1 for w in words]
+        tot_l = sum(lens) or 1
+        cut, acc, k = [], 0.0, 0
+        for c in caps[:-1]:
+            acc += c / tot
+            while k < len(words) and sum(lens[:k + 1]) <= acc * tot_l:
+                k += 1
+            cut.append(k)
+        bounds = [0] + cut + [len(words)]
+        bx0 = _run_box(inf["runs"][0])
+        off0 = max(0.0, inf["runs"][0][0]["x"] - bx0["x0"])
+        offs = [min(sd["x"] for sd in rs[1:]) - _run_box(rs)["x0"] for rs in inf["runs"] if len(rs) > 1]
+        off1 = max(0.0, statistics.median(offs)) if offs else 0.0
+        for j, (pg, g) in enumerate(by_pg):
+            head = inf["nlines"] <= 3 and "b" in inf["major"]
+            pieces.append({"off0": off0, "off1": off1, "head": head,
+                           "i": i, "page": pg, "runs": g, "boxes": _story_piece_boxes(g),
+                           "words": words[bounds[j]:bounds[j + 1]], "cont": j > 0,
+                           "msize": inf["msize"], "major": inf["major"], "nlines": inf["nlines"],
+                           "text_like": inf["text_like"], "first_piece": j == 0,
+                           "last_piece": j == len(by_pg) - 1})
+    # Цепочки: подряд идущие куски, сцепленные `_story_link`.
+    chains: list = []
+    cur: list = []
+    links: list = []
+    for pc in pieces:
+        if pc is None:
+            if cur:
+                chains.append((cur, links))
+            cur, links = [], []
+            continue
+        lk = _story_link(cur[-1], pc, page_slots) if cur else None
+        if lk in ("v", "c") and _story_join(cur[-1], pc):
+            lk = "inline"
+        if cur and lk:
+            cur.append(pc)
+            links.append(lk)
+            if lk == "inline":
+                pc["inl"] = True
+        else:
+            if cur:
+                chains.append((cur, links))
+            cur, links = [pc], []
+    if cur:
+        chains.append((cur, links))
+    # История — только там, где есть текст: одиночная надпись в одну строку
+    # остаётся прежней дороге (`_fit_slots` с запасом бумаги вбок).
+    chains = [(c, l) for c, l in chains if any(p["text_like"] for p in c)]
+    # Абзац, все куски которого не в истории, — прежний; абзац, у которого
+    # история взяла только часть кусков (вторая страница — надпись), тоже
+    # прежний: разрезать его раскладку на две дороги нельзя.
+    cnt: dict = {}
+    for c, _l in chains:
+        for p in c:
+            cnt[p["i"]] = cnt.get(p["i"], 0) + 1
+    total: dict = {}
+    for p in pieces:
+        if p is not None:
+            total[p["i"]] = total.get(p["i"], 0) + 1
+    partial = {i for i in cnt if cnt[i] != total[i]}
+    if partial:
+        keep_ch = []
+        for c, l in chains:
+            if any(p["i"] in partial for p in c):
+                continue
+            keep_ch.append((c, l))
+        chains = keep_ch
+
+    wcache: dict = {}
+
+    def w_of(font, size, w, swf):
+        d = wcache.setdefault((id(swf), font), {})
+        v = d.get(w)
+        if v is None:
+            v = d[w] = swf(w, font, 1000.0)
+        return v * size / 1000.0
+
+    def lay(chain, f, hs_k):
+        pcs, lks = chain
+        # Области: колонки кусков по порядку; «v» и «inline» — та же область.
+        regions: list = []
+        for k, p in enumerate(pcs):
+            for r_k, (rs, bx) in enumerate(zip(p["runs"], p["boxes"])):
+                pv = regions[-1]["members"][-1][1] if regions else None
+                same_col = (pv is not None and r_k > 0 and pv["page"] == bx["page"]
+                            and abs(pv["x0"] - bx["x0"]) <= 1.5 * bx["size"]
+                            and 0.0 <= pv["bot"] - bx["top"] <= FRAME_LINK_MAX * pv["pitch"])
+                if regions and ((r_k == 0 and k > 0 and lks[k - 1] in ("v", "inline")) or same_col):
+                    reg = regions[-1]
+                    reg["members"].append((k, bx))
+                    reg["bot"] = min(reg["bot"], bx["bot"])
+                    reg["below"] = bx["below"]
+                else:
+                    regions.append({"page": bx["page"], "top": bx["top"], "bot": bx["bot"],
+                                    "below": bx["below"], "members": [(k, bx)]})
+        for reg in regions:
+            full = [b_ for _k, b_ in reg["members"] if b_["n"] >= 2] or [b_ for _k, b_ in reg["members"]]
+            reg["col"] = {"x0": min(b_["x0"] for b_ in full), "x1": max(b_["x1"] for b_ in full),
+                          "page": reg["page"]}
+        out = {k: ([], []) for k in range(len(pcs))}
+        pi = 0
+        words = list(pcs[0]["words"])
+        line_no = 0
+        prev_end = None                 # (y, x конца напечатанного, x1 строки, кегль)
+        for reg in regions:
+            y = None
+            last_pitch = None
+            while pi < len(pcs):
+                p = pcs[pi]
+                meta = slot_meta[p["i"]]
+                inline = line_no == 0 and pi > 0 and lks[pi - 1] == "inline" and prev_end is not None
+                pitch_p = p["boxes"][0]["pitch"]
+                if inline:
+                    y_ = prev_end[0]
+                elif y is None:
+                    y_ = reg["top"]
+                elif line_no == 0:
+                    gap = None
+                    if pi > 0 and lks[pi - 1] == "v":
+                        gap = pcs[pi - 1]["boxes"][-1]["bot"] - p["boxes"][0]["top"]
+                    y_ = y - (gap or last_pitch or pitch_p) * f
+                else:
+                    y_ = y - pitch_p * f
+                if y_ < reg["bot"] - reg["below"] - 1e-6:
+                    break
+                # Заголовок не остаётся последней строкой колонки: держится
+                # со следующей строкой (короткий крупный абзац перед телом).
+                if (line_no == 0 and not inline and pi + 1 < len(pcs) and p["nlines"] <= 2
+                        and (p["msize"] > 1.1 * pcs[pi + 1]["msize"] or "b" in p["major"])
+                        and "b" not in pcs[pi + 1]["major"]
+                        and y_ - pcs[pi + 1]["boxes"][0]["pitch"] * f * 1.5
+                        < reg["bot"] - reg["below"] - 1e-6
+                        and reg is not regions[-1]):
+                    break
+                tmpl = p["runs"][0][0] if (line_no == 0 and not p["cont"]) else (
+                    next((sd for rs in p["runs"] for sd in rs[1:]
+                          if (sd.get("style") or "") == p["major"]), p["runs"][0][0]))
+                v = dict(tmpl)
+                v["size"] = p["msize"]
+                # Строка — одним начертанием: первая строка абзаца, начатая
+                # заголовком в подбор («Consensus recommendations» полужирным),
+                # не печатается целиком полужирной (Л2).
+                if line_no > 0 or p["cont"] or p["nlines"] >= 3:
+                    v["style"] = p["major"]
+                v.pop("room0", None)
+                v.pop("room1", None)
+                v["y"] = y_
+                # Ширина строки — колонки области: своя рамка абзаца, если
+                # он сам стоит в этой области строкой колонки (вложенная
+                # цитата, пункт списка уже); иначе — полные строки области.
+                # По высоте оригинала не выбираем: история сдвигает текст,
+                # и строка попадала в рамку заголовка (ширина «Other
+                # Considerations» — 50 пт) — перенос через слово.
+                own = [b_ for k_, b_ in reg["members"] if k_ == pi and b_["n"] >= 2]
+                bx = own[0] if own else reg["col"]
+                if inline:
+                    v["x"] = prev_end[1] + w_of(meta_font(pcs[pi - 1], v), v["size"] * f, " ",
+                                                slot_meta[pcs[pi - 1]["i"]]["sw"]) * hs_k
+                    v["x1"] = max(prev_end[2], bx["x1"])
+                elif line_no == 0 and not p["cont"]:
+                    # Отступ первой строки — от края колонки, где строка
+                    # встала: абзац уезжает по истории в другую колонку.
+                    v["x"] = bx["x0"] + (0.0 if p.get("inl") else p["off0"])
+                    v["x1"] = bx["x1"]
+                else:
+                    v["x"] = bx["x0"] + p["off1"]
+                    v["x1"] = bx["x1"]
+                v["x0"] = min(bx["x0"], v["x"])
+                ys = [sd["y"] for rs in p["runs"] for sd in rs]
+                v["_grown"] = not (min(ys) - 0.2 * p["msize"] <= y_ <= max(ys) + 0.2 * p["msize"])
+                v["top"], v["bottom"] = y_ + 0.85 * v["size"], y_ - 0.25 * v["size"]
+                v["page"] = reg["page"]
+                v["_v"] = True
+                v["_story"] = True
+                fo = slot_plan[p["i"]][4]
+                font = fo(v)
+                swf = meta["sw"]
+                size = max(1.0, v["size"] * f)
+                h0 = v.get("_h0", 1.0)
+                hs = max(HSCALE_FLOOR, h0 * hs_k)
+                align = slot_plan[p["i"]][5]
+                width = (v["x1"] - v["x"]) / max(hs, 0.01)
+                if inline and width < 3.0 * size:
+                    # Места за заголовком не осталось — тело с новой строки.
+                    lks = list(lks)
+                    lks[pi - 1] = "v"
+                    y = prev_end[0]
+                    continue
+                cur, cw = "", 0.0
+                spw = w_of(font, size, " ", swf)
+                while words:
+                    w = words[0]
+                    ww = w_of(font, size, w, swf)
+                    nw = (cw + spw + ww) if cur else ww
+                    if nw <= width:
+                        cur = (cur + " " + w) if cur else w
+                        cw = nw
+                        words.pop(0)
+                        continue
+                    hp = _hyph_split(w, None if p["head"] else meta.get("hy"),
+                                     width - (cw + spw if cur else 0.0),
+                                     lambda s_, font=font, size=size, swf=swf: w_of(font, size, s_, swf))
+                    if hp:
+                        cur = (cur + " " + hp[0]) if cur else hp[0]
+                        words[0] = hp[1]
+                    elif not cur:
+                        _why[:] = ["word", w, round(width, 1), p["i"]]
+                        return None             # слово шире строки
+                    break
+                v["_hs"] = hs
+                out[pi][0].append(v)
+                out[pi][1].append(cur)
+                prev_end = (y_, v["x"] + cw * hs, v["x1"], size)
+                y = y_
+                last_pitch = pitch_p
+                line_no += 1
+                if not words:
+                    pi += 1
+                    line_no = 0
+                    if pi < len(pcs):
+                        words = list(pcs[pi]["words"])
+            if pi >= len(pcs):
+                break
+        if pi < len(pcs):
+            _why[:] = ["left", pi, len(words), len(regions)]
+            return None
+        return out
+
+    _why: list = []
+
+    def meta_font(p, v):
+        return slot_plan[p["i"]][4](dict(v, style=p["major"]))
+
+    def best_at(chain, f):
+        for hk in STORY_HS:
+            got = lay(chain, f, hk)
+            if got is not None:
+                return hk, got
+        return None
+
+    def max_step(chain, cap_i=0):
+        """Номер самой крупной ступени, на которой история укладывается."""
+        lo, hi = cap_i, len(STORY_STEPS) - 1
+        if best_at(chain, STORY_STEPS[hi]) is None:
+            return None
+        if best_at(chain, STORY_STEPS[lo]) is not None:
+            return lo
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if best_at(chain, STORY_STEPS[mid]) is not None:
+                hi = mid
+            else:
+                lo = mid
+        return hi
+
+    # Первый проход: предел каждой истории. Класс — по знакам: гарнитура,
+    # начертание и кегль оригинала основной части истории.
+    lims, klass, weight = [], [], []
+    for ch in chains:
+        lims.append(max_step(ch))
+        if os.environ.get("LAYOUT_DEBUG"):
+            print("[story]", [(slot_meta[p["i"]]["idx"], p["page"], len(p["words"])) for p in ch[0]],
+                  ch[1], "lim", lims[-1], _why if lims[-1] is None else "", file=sys.stderr)
+        cnt_c: dict = {}
+        for p in ch[0]:
+            key = (slot_meta[p["i"]]["fam"], _face_style(p["major"]), round(p["msize"] * 2) / 2.0)
+            cnt_c[key] = cnt_c.get(key, 0) + sum(len(w) + 1 for w in p["words"])
+        klass.append(max(cnt_c.items(), key=lambda t: t[1])[0] if cnt_c else None)
+        weight.append(sum(cnt_c.values()))
+    # Потолок класса — нижняя четверть пределов (взвешенно по знакам).
+    caps: dict = {}
+    for key in set(klass):
+        vals = sorted((lims[c], weight[c]) for c in range(len(chains))
+                      if klass[c] == key and lims[c] is not None)
+        if not vals:
+            continue
+        tot = sum(w for _s, w in vals)
+        acc, pick = 0, vals[-1][0]
+        # Самая крупная ступень, которую держат (1 − Q) знаков класса.
+        for s_i, w in vals:
+            acc += w
+            if acc >= (1.0 - STORY_Q) * tot:
+                pick = s_i
+                break
+        caps[key] = pick
+    took = outl = 0
+    stories: list = []
+    for c, ch in enumerate(chains):
+        if lims[c] is None:
+            continue
+        s_i = max(lims[c], caps.get(klass[c], lims[c]))
+        got = best_at(ch, STORY_STEPS[s_i])
+        if got is None:
+            continue
+        if s_i > caps.get(klass[c], s_i):
+            outl += 1
+        _story_apply(ch, got, STORY_STEPS[s_i], slot_plan, slot_meta, len(stories))
+        stories.append({"chain": ch, "step": s_i})
+        took += 1
+    stats["stories"] = took
+    stats["storyOutliers"] = outl
+    stats["storySteps"] = {"%s/%s/%.1f" % (k[0] or "-", k[1] or "r", k[2]): STORY_STEPS[v]
+                           for k, v in sorted(caps.items(), key=lambda t: str(t[0]))[:12]}
+
+    def relay(sid: int) -> bool:
+        """Наложение у истории: вся история — ступенью ниже."""
+        st_ = stories[sid]
+        for s_i in range(st_["step"] + 1, len(STORY_STEPS)):
+            got = best_at(st_["chain"], STORY_STEPS[s_i])
+            if got is not None:
+                st_["step"] = s_i
+                _story_apply(st_["chain"], got, STORY_STEPS[s_i], slot_plan, slot_meta, sid)
+                return True
+        return False
+    stats["_story_relay"] = relay
+
+
+def _story_apply(chain, got, f, slot_plan, slot_meta, sid) -> None:
+    pcs, _lks = chain
+    hk, out = got
+    per: dict = {}
+    for k, p in enumerate(pcs):
+        vs, lines = out[k]
+        per.setdefault(p["i"], ([], []))
+        per[p["i"]][0].extend(vs)
+        per[p["i"]][1].extend(lines)
+    for i, (vs, lines) in per.items():
+        if not vs:
+            vs, lines = [dict(slot_meta[i]["orig"][0], _v=True)], [""]
+        e = slot_plan[i]
+        slot_plan[i] = (vs, lines, [f] * len(vs), [], e[4], e[5],
+                        [v.get("_hs", 1.0) for v in vs])
+        slot_meta[i]["story"] = sid
+        slot_meta[i].pop("framed", None)
+
+
 # Общий кегль класса надписей (`_harmonize`): класс от стольких абзацев,
 # кегль — такой квантиль нужных им множителей.
 HARMONY_MIN = int(os.environ.get("LAYOUT_HARMONY_MIN", "3"))
@@ -1691,7 +2245,7 @@ def _harmonize(slot_plan: list, slot_meta: list, stats: dict) -> None:
     classes: dict = {}
     for i, (sds, _l, fs, _r, _fo, _a, _h) in enumerate(slot_plan):
         m = slot_meta[i]
-        if m["scattered"] or any(sd.get("rot") for sd in sds):
+        if m["scattered"] or any(sd.get("rot") for sd in sds) or m.get("story") is not None:
             continue
         # Класс — В ПРЕДЕЛАХ СТРАНИЦЫ: подпись в таблице и подпись в схеме
         # соседней страницы одного кегля оригинала, но глазами их рядом не
@@ -1763,6 +2317,34 @@ def _size_report(slot_plan: list, slot_meta: list, plan: list, stats: dict) -> N
         if acc >= tot / 2.0:
             med = f
             break
+    # Разброс кегля ВНУТРИ класса стиля (Л11): «один стиль — один кегль»
+    # меряется числом, а не глазом. Класс — гарнитура, начертание, кегль
+    # оригинала; по каждому — доля знаков, напечатанных НЕ кеглем класса
+    # (модой, шаг 0.02), и размах множителя.
+    cls: dict = {}
+    for i, (sds, _l, fs, _r, _fo, _a, _h) in enumerate(slot_plan):
+        if not sds or any(sd.get("rot") for sd in sds) or slot_meta[i]["scattered"]:
+            continue
+        o = slot_meta[i].get("orig") or sds
+        key = "%s/%s/%.1f" % (slot_meta[i]["fam"] or "-", _face_style(o[0].get("style") or "") or "r",
+                              round(o[0]["size"] * 2) / 2.0)
+        cls.setdefault(key, []).append((round((min(fs) if fs else 1.0) / 0.02) * 0.02,
+                                        len(slot_meta[i]["text"] or "")))
+    rep = []
+    for key, vals in cls.items():
+        n = sum(c for _f, c in vals)
+        by: dict = {}
+        for f_, c in vals:
+            by[f_] = by.get(f_, 0) + c
+        mode = max(by.items(), key=lambda t: t[1])[0]
+        off = sum(c for f_, c in vals if abs(f_ - mode) > 0.011)
+        rep.append((n, key, round(mode, 2), round(off / n, 3) if n else 0.0,
+                    round(min(f_ for f_, _c in vals), 2), round(max(f_ for f_, _c in vals), 2)))
+    rep.sort(reverse=True)
+    stats["fClasses"] = [{"cls": k, "chars": n, "mode": m, "offShare": o, "min": lo, "max": hi}
+                         for n, k, m, o, lo, hi in rep[:8]]
+    tot_c = sum(r[0] for r in rep)
+    stats["fOffShare"] = round(sum(r[0] * r[3] for r in rep) / tot_c, 3) if tot_c else 0.0
     stats["sizeMedian"] = round(med, 3)
     stats["smallShare"] = round(small / tot, 4) if tot else 0.0
     stats["smallPages"] = [p for p, _n in sorted(per_page.items(), key=lambda t: -t[1])][:20]
@@ -1793,7 +2375,13 @@ def _entry_rects(entry: tuple, sw) -> list:
             y = sd["y"] - j * 1.2 * size
             grown = (j > 0 or x + w > sd["x1"] + 0.5 or x < sd["x0"] - 0.5
                      or bool(sd.get("_grown")))
-            out.append((int(sd["page"]), x, y - 0.25 * size, x + w, y + 0.85 * size, size, grown))
+            # Седьмое поле — «строка стоит не на месте оригинала»: вылезла
+            # или перевёрстана (`_v`). Наложение двух строк, обе на своих
+            # местах, было в самом оригинале и не наше; перевёрстанная
+            # строка на чужом тексте — наше, даже в пределах своего абзаца
+            # (Л11: прежде такие наложения не считались вовсе).
+            moved = grown or bool(sd.get("_v"))
+            out.append((int(sd["page"]), x, y - 0.25 * size, x + w, y + 0.85 * size, size, moved))
     return out
 
 
@@ -1805,7 +2393,8 @@ def _overlap(a: tuple, b: tuple) -> bool:
 
 
 def _resolve_collisions(slot_plan: list, slot_meta: list, jobs: list,
-                        reader, skip: set, stats: dict) -> None:
+                        reader, skip: set, stats: dict, img_plan: "list | None" = None,
+                        plan: "list | None" = None) -> None:
     """Проверка наложений ДО печати — и починка.
 
     Строка перевода, вылезшая за своё место (на свободную бумагу или хвостом
@@ -1835,8 +2424,21 @@ def _resolve_collisions(slot_plan: list, slot_meta: list, jobs: list,
         except Exception:
             pass
 
+    # Надписи картинок (`img_plan`) и рамки без мест строк (`plan`) тоже
+    # печатают текст: их прямоугольники участвуют в счёте наложений, хотя
+    # переуложить их здесь нельзя — только назвать.
+    others: list = []
+    for k, ent in enumerate(img_plan or []):
+        b = ent["b"]
+        others.append(((int(b["page"]), b["x0"], b["bottom"], b["x1"], b["top"],
+                        max(1.0, b.get("size") or 1.0), True), ("i", k)))
+    for k, (_idx, grp, _pb, size, _lead, _font) in enumerate(plan or []):
+        for b in grp:
+            others.append(((int(b["page"]), b["x0"], b["bottom"], b["x1"], b["top"],
+                            max(1.0, size), True), ("p", k)))
+
     def find():
-        rects = list(fixed)
+        rects = list(fixed) + others
         for i, entry in enumerate(slot_plan):
             rects.extend((r, ("s", i)) for r in _entry_rects(entry, slot_meta[i]["sw"]))
         by_page: dict = {}
@@ -1854,6 +2456,8 @@ def _resolve_collisions(slot_plan: list, slot_meta: list, jobs: list,
                         break
                     if wa == wb or not (a[6] or b[6]):
                         continue
+                    if wa[0] in "ip" and wb[0] in "ip":
+                        continue        # надпись на надписи картинки — не наш счёт
                     if _overlap(a, b):
                         hits.append((pg, wa if a[6] else wb, wb if a[6] else wa))
         return hits
@@ -1875,6 +2479,17 @@ def _resolve_collisions(slot_plan: list, slot_meta: list, jobs: list,
             slot_meta[i].pop("framed", None)
         if not todo:
             break
+        # История страницы (`_stories`) укладывается целиком: ступенью ниже.
+        relay = stats.get("_story_relay")
+        done_s: set = set()
+        for i in list(todo):
+            sid = slot_meta[i].get("story")
+            if sid is None:
+                continue
+            todo.discard(i)
+            if sid not in done_s and relay is not None:
+                done_s.add(sid)
+                relay(sid)
         for i in todo:
             sds = slot_plan[i][0]
             f = slot_plan[i][2][0]
@@ -1884,10 +2499,13 @@ def _resolve_collisions(slot_plan: list, slot_meta: list, jobs: list,
                 _refit(slot_plan, slot_meta, i, cap=f, floor=FLOOR_HARD, wide=False)
         fixed_n += len(todo)
     hits = find()
-    paras = sorted({slot_meta[who[1]]["idx"] for _pg, who, _o in hits if who[0] == "s"},
+    paras = sorted({slot_meta[who[1]]["idx"] for _pg, who, _o in hits if who[0] == "s"}
+                   | {slot_meta[o[1]]["idx"] for _pg, _w, o in hits if o and o[0] == "s"},
                    key=lambda v: str(v))
+    stats["collisionImages"] = len({who for _pg, who, _o in hits if who[0] in "ip"}
+                                   | {o for _pg, _w, o in hits if o and o[0] in "ip"})
     stats["collisionFixed"] = fixed_n
-    stats["collisions"] = len(paras)
+    stats["collisions"] = len(paras) + stats["collisionImages"]
     stats["collisionPages"] = sorted({pg + 1 for pg, _w, _o in hits})[:50]
     stats["collisionParas"] = paras[:200]
     stats["grown"] = sum(1 for i, entry in enumerate(slot_plan)
@@ -2739,6 +3357,10 @@ def _strip_colors(sample, box: dict, pad: float, n: int, x0f=None, x1f=None, q: 
 # Шире этого (в кеглях) пробел выключки не делается: «реки» пробелов хуже
 # рваного края — строка остаётся влево.
 JUSTIFY_MAX_GAP = float(os.environ.get("LAYOUT_JUSTIFY_MAX_GAP", "0.75"))
+# В истории страницы колонка выключена по ширине целиком: строка «рваная»
+# посреди ровной колонки заметнее широкого пробела (слово-число «(220,222–225).»
+# не переносится). Предел пробела там шире.
+JUSTIFY_MAX_GAP_FLOW = float(os.environ.get("LAYOUT_JUSTIFY_MAX_GAP_FLOW", "1.6"))
 
 
 def _justify_gaps(line: str, sd: dict, size: float, sw, font: str, hsc: float,
@@ -2752,7 +3374,8 @@ def _justify_gaps(line: str, sd: dict, size: float, sw, font: str, hsc: float,
     width = (sd["x1"] - sd["x"]) / max(hsc, 0.01)
     used = sum(sw(w, font, size) for w in words)
     gap = (width - used) / float(len(words) - 1)
-    if gap <= sw(" ", font, size) * 1.001 or gap > JUSTIFY_MAX_GAP * size:
+    lim = JUSTIFY_MAX_GAP_FLOW if sd.get("_story") else JUSTIFY_MAX_GAP
+    if gap <= sw(" ", font, size) * 1.001 or gap > lim * size:
         return None
     return gap
 
@@ -3508,10 +4131,12 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
 
     # По готовой раскладке, ДО печати: общий кегль у надписей одного стиля
     # и проверка, не легла ли строка перевода на чужой текст.
+    _stories(slot_plan, slot_meta, stats, page_slots)
     _harmonize(slot_plan, slot_meta, stats)
     _flow_groups(slot_plan, slot_meta, stats, sw_vec, page_slots)
-    _resolve_collisions(slot_plan, slot_meta, jobs, reader, skip, stats)
+    _resolve_collisions(slot_plan, slot_meta, jobs, reader, skip, stats, img_plan, plan)
     _size_report(slot_plan, slot_meta, plan, stats)
+    stats.pop("_story_relay", None)
 
 
     # Слой на ВСЕ страницы — одним документом, а не по одному на страницу:

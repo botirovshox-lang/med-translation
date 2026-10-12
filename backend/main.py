@@ -4232,7 +4232,8 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         "   and not as a look-alike character.\n"
         "4. NEVER use parenthetical alternatives: NOT 'biologic(al)', NOT 'cell(s)'. Choose ONE correct form.\n"
         "5. NEVER list multiple synonyms separated by semicolons for the same concept.\n"
-        "6. Preserve all numbers and punctuation exactly as in the source.\n"
+        "6. Preserve all numbers and punctuation exactly as in the source. Copy web addresses,\n"
+        "   DOIs and e-mail addresses character for character — never translate or transliterate them.\n"
         f"7. An abbreviation is TRANSLATED, not transliterated. Use the abbreviation {tgt}\n"
         "   actually uses for that term; keep it unchanged only if both languages write it\n"
         f"   the same way; if {tgt} has no accepted abbreviation, spell the term out. NEVER\n"
@@ -4427,7 +4428,11 @@ def _openai_translate(text: str, src: str, tgt: str,
         print(f"[backend] ответ модели {mdl['id']} оборван по длине — перевод не записан",
               file=sys.stderr)
         return ""
-    return (resp.choices[0].message.content or "").strip()
+    out = (resp.choices[0].message.content or "").strip()
+    # Адрес из оригинала — буква в букву, даже если модель его переписала
+    # своими буквами («хттпс://дои.орг/…», проект 14): ссылка в переводе
+    # обязана работать. Обратный перевод (`literal`) не трогаем — он мера.
+    return out if literal else _keep_verbatim(text, out)
 
 # ─────────────────────────────────────────────────────────────────────
 # Аутентификация
@@ -22830,7 +22835,7 @@ def _script_misses(seg: dict) -> list:
 # описание в документе — брак, и строку переводит модель. В ОБОИХ случаях
 # строки литературы не идут в платные проверки: там нет ни смысла,
 # ни терминов, а числа и год сверяет бесплатная проверка.
-REFS_RULES = 1
+REFS_RULES = 2
 REFS_ZONE_MIN = int(os.environ.get("REFS_ZONE_MIN", "5"))
 REFS_ZONE_GAP = int(os.environ.get("REFS_ZONE_GAP", "8"))
 ROUTE_KEEP_SOURCE = "KEEP_SOURCE"
@@ -22908,6 +22913,7 @@ def _refs_of(project: Optional[dict]) -> dict:
     text_segs = [sg for sg in segs if not sg.get("origin")]
     strong = [_ref_strong(sg.get("source") or "") for sg in text_segs]
     zone = [False] * len(text_segs)
+    forced: set = set()
     clusters: list = []
     for i, st in enumerate(strong):
         if not st:
@@ -22918,9 +22924,36 @@ def _refs_of(project: Optional[dict]) -> dict:
             clusters.append([i])
     for c in clusters:
         if len(c) >= REFS_ZONE_MIN:
-            for t in range(c[0], c[-1] + 1):
+            start, end = c[0], c[-1]
+            # Запись списка разорвана на строки, и ни одна из них одна
+            # «сильной» не выходит («1.Gattrell WT, Logullo P, …» / «ACCORD
+            # (…):» / «… modified Delphi.» — год и страницы ушли в начало
+            # следующей строки). Зона тянется к НАЧАЛАМ нумерованных записей
+            # с инициалами, цепочкой с шагом не больше REFS_ZONE_GAP строк:
+            # назад — до первой записи, вперёд — до последней и её хвоста.
+            # Иначе запись №1 и записи на стыке кластеров оставались
+            # переведёнными посреди списка «как в оригинале» (проект 14).
+            def _rec(k):
+                s_ = text_segs[k].get("source") or ""
+                return bool(_REF_WEAK[0].search(s_) and _ref_initials(s_))
+            k, last = start - 1, start
+            while k >= 0 and last - k <= REFS_ZONE_GAP:
+                if _rec(k):
+                    start = last = k
+                k -= 1
+            k, last = end + 1, end
+            while k < len(text_segs) and k - last <= REFS_ZONE_GAP:
+                if _rec(k):
+                    end = last = k
+                k += 1
+            while end + 1 < len(text_segs) and end + 1 - last <= REFS_ZONE_GAP                     and _ref_weak(text_segs[end + 1].get("source") or ""):
+                end += 1
+            # Строки между началом записи и кластером — та же запись
+            # (название статьи без единого признака ссылки).
+            forced.update(range(start, c[0]))
+            for t in range(start, end + 1):
                 zone[t] = True
-    weak = [zone[i] and (strong[i] or _ref_weak(sg.get("source") or ""))
+    weak = [zone[i] and (i in forced or strong[i] or _ref_weak(sg.get("source") or ""))
             for i, sg in enumerate(text_segs)]
     keep, trans = set(), set()
     borrow = _script_borrows(tgt_script)
@@ -31521,7 +31554,7 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
                                  "(%s против %s) — приложите файл заново"
                                  % (len(all_p), data.get("paras")))
 
-    by_id = {s["id"]: s for s in project["segments"]}
+    by_id = _print_by_id(project)
     stats = {"paragraphs": len(all_p), "written": 0, "untranslated": 0,
              "noslot": 0, "mismatch": 0, "inline": 0, "approx": 0,
              "trimmed": 0, "lost": 0,
@@ -31663,6 +31696,172 @@ def _original_ext(project: dict) -> str:
     return ext or ".txt"
 
 
+# ── Текст к печати (Л10 в docs/rules/pdf-reading.md) ─────────────────────
+# Выгрузка НЕ меняет перевод в проекте, но три вещи печатает по правилу
+# документа, а не по слову модели — иначе в готовом файле разнобой, который
+# человек видит с первого взгляда, а исправлять его строкой за строкой некому:
+#  1) зона списка литературы (`_refs_of` → keep) — оригиналом, если в строке
+#     МАШИННЫЙ перевод (переведено до правила «как в оригинале»): описание
+#     источника даётся на его языке (ISO 690, ГОСТ 7.0.100), и полсписка
+#     английским, полсписка транслитом («Гатрелл У. Т.») — брак;
+#  2) адрес (URL, DOI, e-mail, домен с путём) — буква в букву: модель пишет
+#     «хттпс://дои.орг/10.17605/осф», и ссылка перестаёт работать;
+#  3) аббревиатура — так, как документ сам её определил («Low-energy
+#     ketogenic diet (LEKD)» → «… (НЭКД)»): метка схемы «LEKD», оставленная
+#     латиницей, «VLEKD» → «ВЛЕКД» калькой и «VLED» → «ВНЭД (очень …)»
+#     расшифровкой — три разных ответа на один вопрос в одном документе.
+# Работа человека (`_human_text`) не трогается ни одним из правил.
+_URLISH = re.compile(
+    r"(?i)^(?:[a-z][a-z0-9+.-]*://|www\.|doi:|10\.\d{4,9}/)"   # схема, www, DOI
+    r"|^[\w.+-]+@[\w-]+(?:\.[\w-]+)+$"                         # e-mail
+    r"|^[A-Za-z][\w-]*(?:\.[\w-]+)*\.(?-i:[a-z]{2,6})(?:/|$)"      # домен(.org/…)
+    r"|^\.[a-z]{2,6}/")                                        # хвост адреса «.io/pu93h»
+_URL_EDGE = "()[]<>«»\"'“”‘’,;:!?"
+
+
+def _url_tokens(text: str) -> list:
+    """Адреса в тексте: [(начало, конец, токен)] — токен без обрамляющей
+    пунктуации (точка в конце — конец предложения, а не адреса)."""
+    out = []
+    for m in re.finditer(r"\S+", text or ""):
+        tok = m.group(0)
+        a, b = 0, len(tok)
+        while a < b and tok[a] in _URL_EDGE:
+            a += 1
+        while b > a and (tok[b - 1] in _URL_EDGE or tok[b - 1] == "."):
+            b -= 1
+        core = tok[a:b]
+        if len(core) >= 4 and _URLISH.search(core) and re.search(r"[A-Za-z]", core):
+            out.append((m.start() + a, m.start() + b, core))
+    return out
+
+
+def _url_skel(s: str) -> str:
+    return re.sub(r"[^\W\d_]", "", s)
+
+
+def _keep_verbatim(source: str, target: str) -> str:
+    """Адрес из оригинала, переписанный моделью чужими буквами, — обратно
+    буква в букву. Узнаётся по СКЕЛЕТУ (цифры и знаки «://./»), совпавшему
+    с адресом оригинала, и по нелатинской букве в нём: калька адреса
+    («хттпс://дои.орг/10.17605/осф»). Адрес, стоящий в переводе как есть,
+    не трогается; совпадения нет — не трогается тоже (лучше оставить, чем
+    подменить чужой токен)."""
+    if not source or not target:
+        return target
+    want = [t for _a, _b, t in _url_tokens(source) if t not in target]
+    if not want:
+        return target
+    out = target
+    for u in want:
+        sk = _url_skel(u)
+        if len(sk) < 2:
+            continue
+        for m in re.finditer(r"\S+", out):
+            tok = m.group(0)
+            a, b = 0, len(tok)
+            while a < b and tok[a] in _URL_EDGE:
+                a += 1
+            while b > a and (tok[b - 1] in _URL_EDGE or tok[b - 1] == "."):
+                b -= 1
+            core = tok[a:b]
+            if (core and _url_skel(core) == sk and re.search(r"[^\W\d_]", core)
+                    and any(ch.isalpha() and not ch.isascii() for ch in core)
+                    and 0.5 <= len(core) / max(1, len(u)) <= 2.0):
+                s0 = m.start() + a
+                out = out[:s0] + u + out[s0 + len(core):]
+                break
+    return out
+
+
+_ABBR_SRC = re.compile(r"\(([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\)")
+_ABBR_TGT = re.compile(r"\(([^\s()]{2,12})\)")
+ABBR_MIN_SHARE = 0.66
+
+
+def _abbr_like(s: str) -> bool:
+    """Сокращение: 2–12 знаков, из них ≥2 прописных букв, и строчных
+    не больше одной («HbA1c» — да, «Diet» — нет)."""
+    letters = [ch for ch in s if ch.isalpha()]
+    return (2 <= len(s) <= 12 and sum(1 for ch in letters if ch.isupper()) >= 2
+            and sum(1 for ch in letters if ch.islower()) <= 1)
+
+
+def _abbr_map(project: dict) -> dict:
+    """{ABBR: как документ её переводит} — по определениям «Термин (ABBR)»
+    в парах «оригинал → перевод». Пара берётся, только когда скобок
+    с сокращением в оригинале и в переводе поровну (порядок сохранён);
+    ответ — у вариантов, набравших не меньше `ABBR_MIN_SHARE` голосов.
+    Перевод «как есть» (TRE → TRE) — тоже ответ: тогда трогать нечего."""
+    votes: dict = {}
+    for s in project.get("segments") or []:
+        src, tgt = s.get("source") or "", (s.get("target") or "").strip()
+        if not tgt:
+            continue
+        a = [m.group(1) for m in _ABBR_SRC.finditer(src) if _abbr_like(m.group(1))]
+        if not a:
+            continue
+        b = [m.group(1) for m in _ABBR_TGT.finditer(tgt) if _abbr_like(m.group(1))]
+        if len(a) != len(b):
+            continue
+        for x, y in zip(a, b):
+            votes.setdefault(x, {}).setdefault(y, 0)
+            votes[x][y] += 1
+    out = {}
+    for x, vs in votes.items():
+        y, n = max(vs.items(), key=lambda t: (t[1], t[0]))
+        if n >= ABBR_MIN_SHARE * sum(vs.values()):
+            out[x] = y
+    return out
+
+
+def _abbr_apply(source: str, target: str, amap: dict) -> str:
+    """Метка-сокращение по определению документа: оригинал строки — САМО
+    сокращение (метка схемы «LEKD», «• VLED»), и перевод целиком становится
+    ответом документа — калька «ВЛЕКД», расшифровка «ВНЭД (очень …)» и
+    оставленная латиница «LEKD» тоже. Сокращение ВНУТРИ фразы не трогается:
+    латиница в русском медицинском тексте бывает законной (HbA1c), а замена
+    в сплошном тексте — уже правка перевода, а не печати."""
+    if not amap or not target:
+        return target
+    # Только ведущий маркер и хвостовая точка/двоеточие: «GLP-1–» (обрывок
+    # «GLP-1–based») — не метка, а кусок составного слова.
+    core = re.sub(r"^[\s•·*]+", "", source).rstrip().rstrip(".,:;")
+    if core in amap and amap[core] != core:
+        lead = re.match(r"^[\s•·*]*", target).group(0)
+        tail = re.search(r"[.,:;]*$", target.rstrip()).group(0)
+        return lead + amap[core] + tail
+    return target
+
+
+def _print_by_id(project: dict) -> dict:
+    """{номер: сегмент} для ВЫГРУЗКИ — те же записи, но у строк, к которым
+    применилось правило печати (литература, адрес, сокращение), — копия
+    с исправленным `target`. Сам проект не меняется."""
+    segs = project.get("segments") or []
+    try:
+        keep = _refs_of(project)["keep"]
+    except Exception:
+        keep = frozenset()
+    try:
+        amap = _abbr_map(project)
+    except Exception:
+        amap = {}
+    out: dict = {}
+    for s in segs:
+        t = s.get("target") or ""
+        if t.strip() and not _human_text(s):
+            src = s.get("source") or ""
+            if s["id"] in keep:
+                nt = src
+            else:
+                nt = _abbr_apply(src, _keep_verbatim(src, t), amap)
+            if nt != t:
+                s = dict(s, target=nt, _printFix=True)
+        out[s["id"]] = s
+    return out
+
+
 _SAME_DROP = dict.fromkeys(map(ord, "­​‌‍⁠﻿"))
 
 
@@ -31686,7 +31885,7 @@ def _layout_texts(project: dict, data: dict, same: "set | None" = None) -> dict:
     не трогается вовсе (останется оригиналом), склеенные руками строки
     отдают свой перевод абзацу головы, а абзац-хвост очищается — но только
     когда голова записана."""
-    by_id = {s["id"]: s for s in project.get("segments") or []}
+    by_id = _print_by_id(project)
     tails = {int(x) for x in (data.get("tails") or [])}
     texts, written = {}, set()
     groups = _para_groups(data)
@@ -31798,7 +31997,7 @@ def _pdf_image_boxes(project: dict, data: dict) -> list:
     except Exception:
         return []
     parts = {str(p.partname).lstrip("/"): p for p in doc.part.package.iter_parts()}
-    by_id = {s["id"]: s for s in project.get("segments") or []}
+    by_id = _print_by_id(project)
     out: list = []
     skipped: dict = {}
     vk = _virt_key(data)
@@ -32687,7 +32886,7 @@ def _export_original(project: dict, out: Path, tmp: Path, sheets: str = "pages")
             raise HTTPException(400, "Разбор этого формата изменился с момента загрузки — "
                                      "выгрузка в исходном виде разложила бы переводы не по тем "
                                      "местам. Скачайте Word-документ или загрузите файл заново")
-    by_id = {s["id"]: s for s in project.get("segments") or []}
+    by_id = _print_by_id(project)
     tr: dict = {}
     # Слот, который делят строки после ручной разрезки, получает склейку их
     # переводов — только когда переведены все части (склейки у этих

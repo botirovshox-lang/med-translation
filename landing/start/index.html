@@ -19,8 +19,9 @@
 /* МАКЕТ страницы «Перевод в один клик» (будущий адрес: click.simpletranslate.me/start/).
    Только облик и поведение: кнопка «Перевести» показывает окно-заглушку
    вместо перехода в редактор (MOCK = true в скрипте). Всё, что нужно для
-   боевого выката, в design/start/BACKLOG.md. Отзывы и примеры работ придуманы
-   для макета и помечены на странице как образцы (правило лендинга в CLAUDE.md). Языки (73) вписаны разово
+   боевого выката, в design/start/BACKLOG.md. Примеры работ — настоящие: источники
+   из общественного достояния и CC, переведены боевой системой (design/start/BACKLOG.md, п. 9).
+   Отзывы придуманы для макета и помечены на странице как образцы (правило лендинга в CLAUDE.md). Языки (73) вписаны разово
    из backend/languages.json; места под будущие кадры помечены IMG-SLOT. */
 :root {
   --canvas: #F2F5FA; --panel: #FBFCFE; --line: #DAE2EE; --line-2: #C5D0E0;
@@ -227,6 +228,9 @@ section { padding: clamp(80px, 11vh, 140px) 0; }
 .scan h4 { margin: 0 0 6px; font: 600 18px var(--fd); text-align: center; }
 .scan .bar { background: #E6E1D3; }
 .stamp { position: absolute; right: 18px; bottom: 16px; width: 58px; height: 58px; border-radius: 50%; border: 3px solid rgba(10,92,240,.45); }
+.stage.shot img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.stage.shot .tag { position: absolute; z-index: 2; left: 14px; bottom: 14px; max-width: calc(100% - 28px); background: rgba(8,12,24,.76); color: #fff; font-weight: 700; font-size: 16px; padding: 6px 12px; border-radius: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage.shot .subt { bottom: 12%; max-width: 90%; overflow: hidden; text-overflow: ellipsis; }
 .sweep { position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--glow); box-shadow: 0 0 14px 3px rgba(22,201,180,.6); animation: sweep 3.2s ease-in-out infinite; }
 @keyframes sweep { 0% { top: 4%; } 50% { top: 94%; } 100% { top: 4%; } }
 
@@ -298,6 +302,8 @@ footer .sp { flex: 1; }
 .sample { position: absolute; top: 18px; right: 18px; z-index: 6; font: 500 12px var(--fm); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); border: 1px dashed var(--line-2); border-radius: 999px; padding: 6px 12px; background: var(--panel); }
 .pane { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px; min-height: 560px; }
 .pane[hidden] { display: none; }
+.credits { position: relative; z-index: 1; margin: 26px auto 0; max-width: 820px; font-size: 13px; line-height: 1.55; color: var(--ink-3); text-align: center; }
+.credits a { color: inherit; }
 .ctrls { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 10px; }
 .ctrls .lbl { font-weight: 700; color: var(--ink-2); margin-right: 4px; }
 .mini { min-height: 48px; padding: 0 18px; border-radius: 999px; border: 1.5px solid var(--line-2); background: var(--panel); font-weight: 700; font-size: 17px; cursor: pointer; transition: border-color .2s, background .2s, color .2s; }
@@ -335,11 +341,11 @@ footer .sp { flex: 1; }
 .cover .cl { height: 3px; width: 46%; margin-top: .8em; border-radius: 3px; background: #2EE6D0; box-shadow: 0 0 12px rgba(46,230,208,.8); }
 
 /* Статья: шторка «оригинал | перевод» */
-.ba { --x: 50%; position: relative; width: min(500px, 100%); aspect-ratio: .8; border-radius: 14px; overflow: hidden; background: #fff; box-shadow: 0 26px 54px -26px rgba(11,19,36,.45); user-select: none; -webkit-user-select: none; touch-action: pan-y; cursor: ew-resize; }
+.ba { --x: 50%; position: relative; width: min(520px, 100%); aspect-ratio: .74; border-radius: 14px; overflow: hidden; background: #fff; box-shadow: 0 26px 54px -26px rgba(11,19,36,.45); user-select: none; -webkit-user-select: none; touch-action: pan-y; cursor: ew-resize; }
 .lay { position: absolute; inset: 0; padding: 7% 8%; font-size: clamp(9px, 1.25vw, 14px); line-height: 1.5; background: #fff; }
 .lay.t { clip-path: inset(0 0 0 var(--x)); background: #FCFDFF; }
 .lay .j { font: 500 .8em var(--fm); color: var(--ink-3); letter-spacing: .04em; border-bottom: 1px solid var(--line); padding-bottom: .7em; margin-bottom: 1.2em; }
-.lay h5 { margin: 0 0 .3em; font: 600 1.55em/1.2 var(--fd); }
+.lay h5 { margin: 0 0 .3em; font: 600 1.25em/1.2 var(--fd); }
 .lay .au { color: var(--ink-2); margin-bottom: 1.1em; }
 .lay .abs { background: var(--canvas); border-radius: 8px; padding: .8em 1em; margin-bottom: 1.2em; }
 .lay .abs b { display: block; font-size: .8em; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); margin-bottom: .2em; }
@@ -348,6 +354,9 @@ footer .sp { flex: 1; }
 .lay th, .lay td { text-align: left; padding: .35em .3em; border-bottom: 1px solid var(--line); }
 .lay th { font-weight: 800; }
 .lay figure { margin: 0; }
+.lay figure img { display: block; width: 100%; height: auto; }
+.lay .intro b { display: block; font-size: .8em; letter-spacing: .06em; margin-bottom: .3em; }
+.lay .intro { font-size: .92em; }
 .lay figcaption { font-size: .82em; color: var(--ink-2); margin-top: .4em; }
 .lay .bars i { display: block; height: .55em; border-radius: .55em; background: var(--line); margin-top: .65em; }
 .lay .bars { margin-top: 1.1em; }
@@ -361,6 +370,7 @@ footer .sp { flex: 1; }
 /* Видео с субтитрами */
 .player { width: min(780px, 100%); border-radius: 20px; overflow: hidden; background: #0B1324; box-shadow: 0 30px 60px -28px rgba(11,19,36,.6); }
 .screen { position: relative; aspect-ratio: 16 / 9; overflow: hidden; background: linear-gradient(180deg, #16245E 0%, #3D58D6 52%, #F2A57E 100%); }
+.screen video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
 .world { position: absolute; inset: -6%; animation: pan 12s linear infinite alternate; animation-play-state: paused; }
 .player.playing .world, .player.playing .cloud { animation-play-state: running; }
 @keyframes pan { from { transform: translateX(0) scale(1.02); } to { transform: translateX(-4%) scale(1.08); } }
@@ -388,21 +398,10 @@ footer .sp { flex: 1; }
 .prog .fill { position: absolute; left: 0; top: -3px; width: 4px; height: 16px; border-radius: 4px; background: #fff; box-shadow: 0 0 10px rgba(255,255,255,.6); }
 
 /* Фото таблички: чтение и перевод на месте */
-.desk { position: relative; width: min(620px, 100%); aspect-ratio: 4 / 3; border-radius: 20px; overflow: hidden; background: radial-gradient(circle at 30% 20%, #D9C6AB, #B79E80 70%); box-shadow: 0 26px 54px -26px rgba(11,19,36,.45); }
-.desk::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(92deg, rgba(255,255,255,.05) 0 2px, transparent 2px 9px); pointer-events: none; }
-.sign { position: absolute; z-index: 1; left: 50%; top: 50%; width: 62%; transform: translate(-50%, -50%) rotate(-3.5deg); background: #FFFCF4; border-radius: 4px; padding: 6% 7% 5%; box-shadow: 0 18px 30px -12px rgba(0,0,0,.35); font-size: clamp(11px, 1.55vw, 17px); }
-.sign .mh { text-align: center; font: 600 1.5em/1.2 Georgia, "Times New Roman", serif; letter-spacing: .08em; margin-bottom: .7em; }
-.sign .ln { display: flex; align-items: baseline; gap: .5em; margin: .5em 0; }
-.sign .nm { font-weight: 700; }
-.sign .dots { flex: 1; min-width: 1em; border-bottom: 2px dotted #C9BFA8; transform: translateY(-.25em); }
-.sign .pr { font-weight: 700; font-variant-numeric: tabular-nums; }
-.sign .ft { margin-top: .9em; text-align: center; font-size: .85em; color: #8A7F6A; }
-.sign .mh, .sign .ln, .sign .ft { padding: .1em .3em; border-radius: 5px; outline: 2px dashed transparent; outline-offset: 2px; transition: outline-color .3s, background .4s; }
-.sign .t { display: none; }
-.desk.done .sign .o { display: none; }
-.desk.done .sign .t { display: inline; }
-.desk.boxes .sign .mh, .desk.boxes .sign .ln, .desk.boxes .sign .ft { outline-color: rgba(10,92,240,.55); }
-.desk.done .sign .mh, .desk.done .sign .ln, .desk.done .sign .ft { background: rgba(46,230,208,.16); }
+.desk { position: relative; width: min(560px, 100%); aspect-ratio: 1000 / 991; border-radius: 20px; overflow: hidden; background: #DDE6E1; box-shadow: 0 26px 54px -26px rgba(11,19,36,.45); }
+.desk img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.desk .sc-t { opacity: 0; transition: opacity .7s var(--ease); }
+.desk.done .sc-t { opacity: 1; }
 .sbeam { position: absolute; z-index: 2; left: 0; right: 0; top: 0; height: 3px; background: #2EE6D0; box-shadow: 0 0 16px 4px rgba(46,230,208,.7); opacity: 0; }
 .desk.run .sbeam { animation: sbeam 1.2s linear forwards; }
 @keyframes sbeam { 0% { top: 0; opacity: 1; } 95% { opacity: 1; } 100% { top: 100%; opacity: 0; } }
@@ -622,36 +621,19 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       <h2 class="h2 rv" data-t="whatH">Что переводим</h2>
       <div class="tiles">
         <article class="tile rv">
-          <!-- IMG-SLOT: tile-book. Сюда можно поставить кадр вместо сцены кодом. -->
-          <div class="stage" aria-hidden="true">
-            <div class="book">
-              <div><h4><span class="cyc" data-cyc="book">Глава 1</span></h4><div class="bar" style="width:92%"></div><div class="bar" style="width:80%"></div><div class="bar" style="width:88%"></div><div class="bar" style="width:64%"></div><div class="bar" style="width:84%"></div></div>
-              <div><div class="bar" style="width:86%;margin-top:4px"></div><div class="bar" style="width:94%"></div><div class="bar" style="width:72%"></div><div class="bar" style="width:90%"></div><div class="bar" style="width:58%"></div><div class="bar" style="width:80%"></div></div>
-            </div>
-          </div>
+          <div class="stage shot" aria-hidden="true"><img src="media/tile-book.webp" width="900" height="704" alt="" loading="lazy" decoding="async"><span class="tag"><span class="cyc" data-cyc="book">Толстый и тонкий</span></span></div>
           <h3 data-t="t1">Книги</h3><p data-t="t1s">Целиком, главу за главой</p>
         </article>
         <article class="tile rv" style="--d:.08s">
-          <!-- IMG-SLOT: tile-article -->
-          <div class="stage" aria-hidden="true">
-            <div class="paper"><h4><span class="cyc" data-cyc="paper">Результаты</span></h4><div class="bar" style="width:96%"></div><div class="bar" style="width:74%"></div>
-              <div class="row"><span class="formula">E = mc<sup>2</sup></span><span class="chart"><i style="height:40%"></i><i style="height:62%"></i><i style="height:100%"></i><i style="height:76%"></i></span></div>
-            </div>
-          </div>
+          <div class="stage shot" aria-hidden="true"><img src="media/tile-article.webp" width="900" height="598" alt="" loading="lazy" decoding="async" style="object-position:top"><span class="tag"><span class="cyc" data-cyc="paper" dir="auto">Sleep and grades</span></span></div>
           <h3 data-t="t2">Научные статьи</h3><p data-t="t2s">Формулы и цифры на месте</p>
         </article>
         <article class="tile rv">
-          <!-- IMG-SLOT: tile-video -->
-          <div class="stage" aria-hidden="true">
-            <div class="video"><span class="play"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg></span><span class="subt"><span class="cyc" data-cyc="video" dir="auto">Добро пожаловать!</span></span></div>
-          </div>
+          <div class="stage shot" aria-hidden="true"><img src="media/tile-video.webp" width="900" height="506" alt="" loading="lazy" decoding="async"><span class="play"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg></span><span class="subt"><span class="cyc" data-cyc="video" dir="auto">High above our planet</span></span></div>
           <h3 data-t="t3">Видео</h3><p data-t="t3s">С готовыми субтитрами</p>
         </article>
         <article class="tile rv" style="--d:.08s">
-          <!-- IMG-SLOT: tile-scan -->
-          <div class="stage" aria-hidden="true">
-            <div class="scan"><h4><span class="cyc" data-cyc="scan" dir="auto">Справка</span></h4><div class="bar" style="width:90%"></div><div class="bar" style="width:76%"></div><div class="bar" style="width:84%"></div><div class="bar" style="width:52%"></div><span class="stamp"></span><span class="sweep"></span></div>
-          </div>
+          <div class="stage shot" aria-hidden="true"><img src="media/tile-scan.webp" width="900" height="892" alt="" loading="lazy" decoding="async" style="object-position:50% 30%"><span class="sweep"></span><span class="tag"><span class="cyc" data-cyc="scan" dir="auto">Автомобиль ВАЗ-21059</span></span></div>
           <h3 data-t="t4">Сканы и фото</h3><p data-t="t4s">Прочитаем даже текст на картинке</p>
         </article>
       </div>
@@ -678,7 +660,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
             <div class="book3" id="book3">
               <div class="pg r"><div class="pgc" id="bk-t2"></div></div>
               <div class="leaf l1" id="leaf1"><div class="face paperf"><div class="pgc" id="bk-t1"></div></div><div class="face paperf back"><div class="pgc" id="bk-o2"></div></div></div>
-              <div class="leaf cv" id="cover"><div class="face cover"><div class="pgc"><span class="cs" data-t="sample">Образец</span><div><div class="ct">Дорога домой</div><div class="cl"></div></div><span class="cs">SimpleTranslate</span></div></div><div class="face paperf back"><div class="pgc" id="bk-o1"></div></div></div>
+              <div class="leaf cv" id="cover"><div class="face cover"><div class="pgc"><span class="cs">А. П. Чехов</span><div><div class="ct">Толстый и тонкий</div><div class="cl"></div></div><span class="cs">1883</span></div></div><div class="face paperf back"><div class="pgc" id="bk-o1"></div></div></div>
             </div>
           </div>
           <button type="button" class="act" id="bk-btn"><span data-t="bookOpen">Открыть книгу</span></button>
@@ -699,25 +681,25 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
         <div class="pane" id="pane-video" data-k="video" role="tabpanel" aria-labelledby="tab-video" hidden>
           <div class="player" id="player">
             <div class="screen">
-              <div class="world"><div class="sun"></div><span class="cloud" style="left:12%;top:16%;width:16%"></span><span class="cloud" style="left:52%;top:10%;width:11%"></span><div class="mt a"></div><div class="mt b"></div><div class="mt c"></div></div>
+              <video id="vp-v" src="media/zero-gravity-coffee.mp4" poster="media/video-poster.webp" width="960" height="540" muted playsinline preload="none"></video>
               <div class="subs"><p class="s2" id="sub2" hidden><span></span></p><p class="s1" id="sub1"><span></span></p></div>
               <button type="button" class="bigplay" id="vp-big" aria-label="Смотреть" data-ta="aria-label:play"><svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg></button>
             </div>
             <div class="pbar">
               <button type="button" id="vp-btn" aria-label="Смотреть" data-ta="aria-label:play"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path id="vp-path" d="M8 5.5v13l11-6.5z"/></svg></button>
               <div class="prog" id="prog"><i class="fill" id="fill"></i></div>
-              <span class="tm" id="vp-tm">0:00 / 0:12</span>
+              <span class="tm" id="vp-tm">0:00 / 0:25</span>
             </div>
           </div>
           <div class="ctrls"><span class="lbl" data-t="vidSubs">Субтитры:</span><span class="ctrls" id="vp-langs"></span><button type="button" class="mini" id="vp-both" aria-pressed="false" data-t="vidBoth">Два языка</button></div>
         </div>
 
         <div class="pane" id="pane-scan" data-k="scan" role="tabpanel" aria-labelledby="tab-scan" hidden>
-          <!-- IMG-SLOT: scan-photo. Настоящее фото таблички вместо нарисованной. -->
-          <div class="desk" id="desk"><div class="sign" id="sign"></div><span class="sbeam"></span></div>
+          <div class="desk" id="desk"><img class="sc-o" src="media/sign-ru.webp" width="1000" height="991" alt="Табличка в музее, оригинал" data-ta="alt:scAltO"><img class="sc-t" id="sc-t" src="media/sign-en.webp" width="1000" height="991" alt="" loading="lazy"><span class="sbeam"></span></div>
           <button type="button" class="act" id="sc-btn"><span data-t="scanGo">Прочитать и перевести</span></button>
           <div class="ctrls"><span class="lbl" data-t="langInto">Перевод на:</span><span class="ctrls" id="sc-langs"></span></div>
         </div>
+        <p class="credits" data-th="credits"></p>
       </div>
     </div>
   </section>
@@ -867,7 +849,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       about: "О сервисе", terms: "Оферта", privacy: "Персональные данные",
       mockH: "Открываем редактор", mockNoFile: "Файл выберете в редакторе", mockClose: "Понятно",
       mockNote: "Это макет. На сайте файл сразу откроется в редакторе с выбранными языками.",
-      tr1: "Первая страница бесплатно", tr2: "Ваш файл закрыт от других", tr3: "Без подписки: платите за страницы", tr4: "Цифры сверяем автоматически", exH: "Примеры работ", exSub: "Нажимайте и смотрите.", sample: "Образец", tabBook: "Книга", tabPaper: "Статья", tabVideo: "Видео", tabScan: "Фото", bookOpen: "Открыть книгу", bookNext: "Перелистнуть", bookClose: "Закрыть книгу", langInto: "Перевод на:", baOrig: "Оригинал", baTr: "Перевод", baBoth: "Сравнить", baHint: "Потяните ползунок", vidSubs: "Субтитры:", vidBoth: "Два языка", play: "Смотреть", pause: "Пауза", scanGo: "Прочитать и перевести", scanBack: "Показать оригинал", chkO: "Оригинал", chkRaw: "Перевод без проверки", chkFix: "После проверки", chkFound: "В оригинале 300, а не 30", chkOk: "Исправлено", chkBtn: "Проверить цифры", chkAgain: "Ещё раз", revH: "Что говорят о нас", revNote: "Образцы. Заменим на настоящие отзывы.", rev1n: "Дилноза Каримова", rev1i: "ДК", rev2n: "Рустам Юсупов", rev2i: "РЮ", rev3n: "Анна Ли", rev3i: "АЛ", rev1: "Перевела учебник на 300 страниц за один день. Таблицы остались на месте.", rev1r: "Доцент, Самарканд", rev2: "Субтитры к лекции на трёх языках. Студенты наконец всё понимают.", rev2r: "Методист, Бухара", rev3: "Видеоотзыв", rev3r: "Переводчик, Ташкент"
+      tr1: "Первая страница бесплатно", tr2: "Ваш файл закрыт от других", tr3: "Без подписки: платите за страницы", tr4: "Цифры сверяем автоматически", exH: "Примеры работ", exSub: "Нажимайте и смотрите.", sample: "Настоящий перевод", tabBook: "Книга", tabPaper: "Статья", tabVideo: "Видео", tabScan: "Фото", bookOpen: "Открыть книгу", bookNext: "Перелистнуть", bookClose: "Закрыть книгу", langInto: "Перевод на:", baOrig: "Оригинал", baTr: "Перевод", baBoth: "Сравнить", baHint: "Потяните ползунок", vidSubs: "Субтитры:", vidBoth: "Два языка", play: "Смотреть", pause: "Пауза", scanGo: "Прочитать и перевести", scanBack: "Показать оригинал", chkO: "Оригинал", chkRaw: "Перевод без проверки", chkFix: "После проверки", chkFound: "В оригинале 300, а не 30", chkOk: "Исправлено", chkBtn: "Проверить цифры", chkAgain: "Ещё раз", revH: "Что говорят о нас", revNote: "Образцы. Заменим на настоящие отзывы.", rev1n: "Дилноза Каримова", rev1i: "ДК", rev2n: "Рустам Юсупов", rev2i: "РЮ", rev3n: "Анна Ли", rev3i: "АЛ", rev1: "Перевела учебник на 300 страниц за один день. Таблицы остались на месте.", rev1r: "Доцент, Самарканд", rev2: "Субтитры к лекции на трёх языках. Студенты наконец всё понимают.", rev2r: "Методист, Бухара", rev3: "Видеоотзыв", rev3r: "Переводчик, Ташкент", scAltO: "Табличка в музее, оригинал", scAltT: "Та же табличка, перевод:", credits: "Все примеры переведены нашим сервисом. Источники: А. П. Чехов, «Толстый и тонкий» (1883) и фото разворота «Пёстрых рассказов» (1886) — общественное достояние, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Статья: K. Okano и др., npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, лицензия <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; показан фрагмент с переводом. Видео: NASA ScienceCasts, «The Zero Gravity Coffee Cup», фрагмент 25 с, общественное достояние; NASA не связано с сервисом. Фото таблички: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0."
     },
     uz: {
       title: "SimpleTranslate: istalgan tilga bir bosishda tarjima",
@@ -893,7 +875,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       about: "Xizmat haqida", terms: "Oferta", privacy: "Shaxsiy ma'lumotlar",
       mockH: "Muharrir ochilmoqda", mockNoFile: "Faylni muharrirda tanlaysiz", mockClose: "Tushunarli",
       mockNote: "Bu maket. Saytda fayl tanlangan tillar bilan darhol muharrirda ochiladi.",
-      tr1: "Birinchi bet bepul", tr2: "Faylingiz boshqalardan yopiq", tr3: "Obunasiz: faqat betlar uchun to‘lov", tr4: "Raqamlar avtomatik tekshiriladi", exH: "Ishlarimizdan namunalar", exSub: "Bosing va ko‘ring.", sample: "Namuna", tabBook: "Kitob", tabPaper: "Maqola", tabVideo: "Video", tabScan: "Rasm", bookOpen: "Kitobni ochish", bookNext: "Varaqlash", bookClose: "Kitobni yopish", langInto: "Tarjima tili:", baOrig: "Asl nusxa", baTr: "Tarjima", baBoth: "Solishtirish", baHint: "Slayderni torting", vidSubs: "Subtitrlar:", vidBoth: "Ikki til", play: "Ko‘rish", pause: "Pauza", scanGo: "O‘qish va tarjima qilish", scanBack: "Asl nusxani ko‘rsatish", chkO: "Asl nusxa", chkRaw: "Tekshiruvsiz tarjima", chkFix: "Tekshiruvdan keyin", chkFound: "Asl nusxada 30 emas, 300", chkOk: "Tuzatildi", chkBtn: "Raqamlarni tekshirish", chkAgain: "Yana bir bor", revH: "Biz haqimizda fikrlar", revNote: "Namunalar. Haqiqiy fikrlar bilan almashtiramiz.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "300 betlik darslikni bir kunda tarjima qildim. Jadvallar joyida qoldi.", rev1r: "Dotsent, Samarqand", rev2: "Ma’ruzaga uch tilda subtitrlar. Talabalar endi hammasini tushunishadi.", rev2r: "Metodist, Buxoro", rev3: "Video fikr", rev3r: "Tarjimon, Toshkent"
+      tr1: "Birinchi bet bepul", tr2: "Faylingiz boshqalardan yopiq", tr3: "Obunasiz: faqat betlar uchun to‘lov", tr4: "Raqamlar avtomatik tekshiriladi", exH: "Ishlarimizdan namunalar", exSub: "Bosing va ko‘ring.", sample: "Haqiqiy tarjima", tabBook: "Kitob", tabPaper: "Maqola", tabVideo: "Video", tabScan: "Rasm", bookOpen: "Kitobni ochish", bookNext: "Varaqlash", bookClose: "Kitobni yopish", langInto: "Tarjima tili:", baOrig: "Asl nusxa", baTr: "Tarjima", baBoth: "Solishtirish", baHint: "Slayderni torting", vidSubs: "Subtitrlar:", vidBoth: "Ikki til", play: "Ko‘rish", pause: "Pauza", scanGo: "O‘qish va tarjima qilish", scanBack: "Asl nusxani ko‘rsatish", chkO: "Asl nusxa", chkRaw: "Tekshiruvsiz tarjima", chkFix: "Tekshiruvdan keyin", chkFound: "Asl nusxada 30 emas, 300", chkOk: "Tuzatildi", chkBtn: "Raqamlarni tekshirish", chkAgain: "Yana bir bor", revH: "Biz haqimizda fikrlar", revNote: "Namunalar. Haqiqiy fikrlar bilan almashtiramiz.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "300 betlik darslikni bir kunda tarjima qildim. Jadvallar joyida qoldi.", rev1r: "Dotsent, Samarqand", rev2: "Ma’ruzaga uch tilda subtitrlar. Talabalar endi hammasini tushunishadi.", rev2r: "Metodist, Buxoro", rev3: "Video fikr", rev3r: "Tarjimon, Toshkent", scAltO: "Muzeydagi lavha, asl nusxa", scAltT: "Oʻsha lavha, tarjima:", credits: "Barcha misollarni xizmatimiz tarjima qilgan. Manbalar: A. P. Chexov, «Semiz va ozgʻin» (1883) va «Rang-barang hikoyalar» (1886) kitobi sahifalari surati — jamoat mulki, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Maqola: K. Okano va boshq., npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, litsenziya <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; tarjimasi bilan parcha koʻrsatilgan. Video: NASA ScienceCasts, «The Zero Gravity Coffee Cup», 25 soniyalik parcha, jamoat mulki; NASA xizmatga aloqador emas. Lavha surati: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0."
     },
     en: {
       title: "SimpleTranslate: translate into any language in one click",
@@ -919,7 +901,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       about: "About", terms: "Terms", privacy: "Privacy",
       mockH: "Opening the editor", mockNoFile: "You will pick the file in the editor", mockClose: "Got it",
       mockNote: "This is a mockup. On the live site, the file opens in the editor right away with the languages you picked.",
-      tr1: "First page free", tr2: "Your file stays private", tr3: "No subscription: pay per page", tr4: "Numbers checked automatically", exH: "Examples of our work", exSub: "Tap and see.", sample: "Sample", tabBook: "Book", tabPaper: "Paper", tabVideo: "Video", tabScan: "Photo", bookOpen: "Open the book", bookNext: "Turn the page", bookClose: "Close the book", langInto: "Translated into:", baOrig: "Original", baTr: "Translation", baBoth: "Compare", baHint: "Drag the slider", vidSubs: "Subtitles:", vidBoth: "Two languages", play: "Play", pause: "Pause", scanGo: "Read and translate", scanBack: "Show the original", chkO: "Original", chkRaw: "Unchecked translation", chkFix: "After the check", chkFound: "The original says 300, not 30", chkOk: "Fixed", chkBtn: "Check the numbers", chkAgain: "Once more", revH: "What people say", revNote: "Samples. We will replace them with real reviews.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "I translated a 300-page textbook in one day. The tables stayed in place.", rev1r: "Associate professor, Samarkand", rev2: "Lecture subtitles in three languages. Students finally understand everything.", rev2r: "Curriculum specialist, Bukhara", rev3: "Video review", rev3r: "Translator, Tashkent"
+      tr1: "First page free", tr2: "Your file stays private", tr3: "No subscription: pay per page", tr4: "Numbers checked automatically", exH: "Examples of our work", exSub: "Tap and see.", sample: "Real translation", tabBook: "Book", tabPaper: "Paper", tabVideo: "Video", tabScan: "Photo", bookOpen: "Open the book", bookNext: "Turn the page", bookClose: "Close the book", langInto: "Translated into:", baOrig: "Original", baTr: "Translation", baBoth: "Compare", baHint: "Drag the slider", vidSubs: "Subtitles:", vidBoth: "Two languages", play: "Play", pause: "Pause", scanGo: "Read and translate", scanBack: "Show the original", chkO: "Original", chkRaw: "Unchecked translation", chkFix: "After the check", chkFound: "The original says 300, not 30", chkOk: "Fixed", chkBtn: "Check the numbers", chkAgain: "Once more", revH: "What people say", revNote: "Samples. We will replace them with real reviews.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "I translated a 300-page textbook in one day. The tables stayed in place.", rev1r: "Associate professor, Samarkand", rev2: "Lecture subtitles in three languages. Students finally understand everything.", rev2r: "Curriculum specialist, Bukhara", rev3: "Video review", rev3r: "Translator, Tashkent", scAltO: "A museum sign, original", scAltT: "The same sign, translated into", credits: "Every example was translated by our service. Sources: A. P. Chekhov, “The Fat and the Thin” (1883), and a photo of a spread from “Motley Stories” (1886) — public domain, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Paper: K. Okano et al., npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, licensed <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; an excerpt is shown with its translation. Video: NASA ScienceCasts, “The Zero Gravity Coffee Cup”, a 25-second excerpt, public domain; NASA is not affiliated with the service. Sign photo: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0."
     }
   };
   var PAGE_SRC = { ru: "RU", uz: "UZ", en: "EN" };
@@ -942,12 +924,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     AR: "النتائج: انخفض ضغط الدم لدى 87% من المشاركين بمقدار 12 ملم زئبقي خلال 6 أسابيع.",
     HI: "परिणाम: 87% प्रतिभागियों में 6 सप्ताह में रक्तचाप 12 mmHg कम हुआ।"
   };
-  var CYC = {
-    book: { RU: "Глава 1", EN: "Chapter 1", UZ: "1-bob", DE: "Kapitel 1", ZH: "第一章", TR: "Bölüm 1", ES: "Capítulo 1", FR: "Chapitre 1", KO: "제1장", JA: "第1章", AR: "الفصل 1", HI: "अध्याय 1" },
-    paper: { RU: "Результаты", EN: "Results", UZ: "Natijalar", DE: "Ergebnisse", ZH: "结果", TR: "Sonuçlar", ES: "Resultados", FR: "Résultats", KO: "결과", JA: "結果", AR: "النتائج", HI: "परिणाम" },
-    video: { RU: "Добро пожаловать!", EN: "Welcome!", UZ: "Xush kelibsiz!", DE: "Willkommen!", ZH: "欢迎！", TR: "Hoş geldiniz!", ES: "¡Bienvenidos!", FR: "Bienvenue !", KO: "환영합니다!", JA: "ようこそ！", AR: "أهلاً وسهلاً!", HI: "स्वागत है!" },
-    scan: { RU: "Справка", EN: "Certificate", UZ: "Ma'lumotnoma", DE: "Bescheinigung", ZH: "证明", TR: "Belge", ES: "Certificado", FR: "Attestation", KO: "증명서", JA: "証明書", AR: "شهادة", HI: "प्रमाणपत्र" }
-  };
+  var CYC = {"book": {"RU": "Толстый и тонкий", "EN": "The Fat Man and the Thin Man", "UZ": "Semiz va ozgʻin", "ZH": "胖子和瘦子", "AR": "البدين والنحيل"}, "paper": {"EN": "Sleep quality, duration, and consistency are associated with better academic performance in college students", "RU": "Качество, продолжительность и регулярность сна связаны с лучшей академической успеваемостью студентов колледжей", "UZ": "Uyqu sifati, davomiyligi va muntazamligi oliy taʼlim talabalarida yaxshiroq akademik koʻrsatkichlar bilan bogʻliq"}, "video": {"EN": "There is no up and no down.", "RU": "Нет ни верха, ни низа.", "UZ": "Yuqori ham yoʻq, past ham yoʻq.", "ZH": "没有上下之分。", "AR": "لا يوجد أعلى ولا أسفل."}, "scan": {"RU": "Эксплуатация: 1993-2004гг.", "EN": "Service life: 1993-2004.", "UZ": "Foydalanish: 1993-2004-yillar", "ZH": "使用期限：1993-2004年。", "AR": "الاستخدام: 1993-2004م."}};
   var CYC_ORDER = ["RU", "EN", "UZ", "DE", "ZH", "AR", "TR", "ES", "KO", "FR", "JA", "HI"];
 
   var $ = function (id) { return document.getElementById(id); };
@@ -1020,6 +997,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       if (el.id === "doc-name" && picked) return;
       el.textContent = t(key(el.getAttribute("data-t")));
     });
+    [].slice.call(document.querySelectorAll("[data-th]")).forEach(function (el) { el.innerHTML = t(el.getAttribute("data-th")); });
     [].slice.call(document.querySelectorAll("[data-ta]")).forEach(function (el) {
       var p = el.getAttribute("data-ta").split(":"); el.setAttribute(p[0], t(p[1]));
     });
@@ -1218,17 +1196,17 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   }
 
   /* ---------- Плитки: заголовки меняют язык по кругу ---------- */
+  /* Каждая плитка ходит по СВОИМ языкам: перевод есть не на все. */
   var cycEls = [].slice.call(document.querySelectorAll("[data-cyc]")), cycI = 0;
   function cycTick() {
     if (reduced() || document.hidden) return;
-    cycI = (cycI + 1) % CYC_ORDER.length;
-    var code = CYC_ORDER[cycI];
+    cycI++;
     cycEls.forEach(function (el, k) {
+      var d = CYC[el.getAttribute("data-cyc")], codes = Object.keys(d), code = codes[cycI % codes.length];
       setTimeout(function () {
         el.classList.add("out");
         setTimeout(function () {
-          var v = CYC[el.getAttribute("data-cyc")][code];
-          if (v) { el.textContent = v; el.lang = code.toLowerCase(); }
+          el.textContent = d[code]; el.lang = code.toLowerCase(); el.dir = code === "AR" ? "rtl" : "ltr";
           el.classList.remove("out");
         }, 450);
       }, k * 160);
@@ -1320,6 +1298,9 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   })();
 
   /* ---------- Примеры работ ---------- */
+  /* Язык примеров по умолчанию — язык страницы. Сам язык ставится позже
+     (applyLang в конце скрипта), поэтому спрашиваем его здесь же. */
+  var LANG0 = pickLang();
   var FINE = !!(window.matchMedia && window.matchMedia("(hover: hover) and (pointer: fine)").matches);
   function esc(v) { return String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
   function isRtl(c) { return c === "AR"; }
@@ -1367,15 +1348,9 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   });
 
   /* Книга: слева оригинал, справа перевод; листается кнопкой и нажатием на книгу. */
-  var BOOK = {
-    RU: { t: "Глава 1. Дорога домой", p1: "Поезд пришёл в 7:40. Анна взяла чемодан и вышла на перрон. До дома оставалось 12 километров.", p2: "Автобус ушёл в 8:15, а следующий был только через 40 минут. Анна улыбнулась и пошла пешком." },
-    EN: { t: "Chapter 1. The Way Home", p1: "The train arrived at 7:40. Anna took her suitcase and stepped onto the platform. Home was still 12 kilometres away.", p2: "The bus had left at 8:15, and the next one was 40 minutes away. Anna smiled and set off on foot." },
-    UZ: { t: "1-bob. Uyga yo‘l", p1: "Poyezd soat 7:40 da keldi. Anna chamadonini olib, perronga tushdi. Uygacha yana 12 kilometr bor edi.", p2: "Avtobus 8:15 da jo‘nab ketgan, keyingisini esa 40 daqiqa kutish kerak edi. Anna jilmaydi va piyoda yo‘lga tushdi." },
-    ZH: { t: "第一章 回家的路", p1: "火车7:40到站。安娜提起行李箱，走上站台。离家还有12公里。", p2: "公交车8:15已经开走，下一班要等40分钟。安娜笑了笑，步行出发了。" },
-    AR: { t: "الفصل 1. طريق العودة", p1: "وصل القطار في الساعة 7:40. أخذت آنا حقيبتها ونزلت إلى الرصيف. كان البيت لا يزال على بُعد 12 كيلومترًا.", p2: "كانت الحافلة قد غادرت في الساعة 8:15، والتالية بعد 40 دقيقة. ابتسمت آنا ومضت سيرًا على الأقدام." }
-  };
+  var BOOK = {"RU": {"t": "Толстый и тонкий", "p1": "На вокзале Николаевской железной дороги встретились два приятеля: один толстый, другой тонкий. Толстый только что пообедал на вокзале, и губы его, подернутые маслом, лоснились, как спелые вишни.", "p2": "Тонкий же только что вышел из вагона и был навьючен чемоданами, узлами и картонками. Пахло от него ветчиной и кофейной гущей."}, "EN": {"t": "The Fat Man and the Thin Man", "p1": "At the Nikolayev Railway station, two old friends met: one fat, the other thin. The fat one had just had lunch at the station, and his lips, slick with butter, gleamed like ripe cherries.", "p2": "The thin man had just stepped out of the train carriage and was laden with suitcases, bundles and cardboard boxes. He smelled of ham and coffee grounds."}, "UZ": {"t": "Semiz va ozgʻin", "p1": "Nikolayev temir yoʻli vokzalida ikki doʻst uchrashdi: biri semiz, boshqasi oriq. Semiz hozirgina vokzalda tushlik qilgan, yogʻ qoplagan lablari pishgan gilosdek yaltirar edi.", "p2": "Ozgʻin esa vagondan endigina chiqib, chamadonlar, tugunlar va karton qutilar bilan yuklangan edi. Undan dudlangan choʻchqa goʻshti va qahva quyqasi hidi kelardi."}, "ZH": {"t": "胖子和瘦子", "p1": "在尼古拉铁路的车站，两个朋友相遇了：一个胖，一个瘦。胖子刚在车站吃过午饭，他那沾着油的嘴唇油光发亮，像熟透的樱桃。", "p2": "瘦子刚从车厢里出来，身上挂满了皮箱、包袱和纸盒。他身上散发着火腿和咖啡渣的气味。"}, "AR": {"t": "البدين والنحيل", "p1": "في محطة سكة حديد نيكولايف، التقى صديقان: أحدهما بدين، والآخر نحيف. كان البدين قد تناول الغداء لتوّه في المحطة، وكانت شفتاه المغشّاتان بالزيت تلمعان كالكرز الناضج.", "p2": "أما النحيل فقد خرج لتوّه من العربة، وكان مثقلاً بالحقائب والصرر والعلب الكرتونية. وكانت تفوح منه رائحة لحم الخنزير وتفل القهوة."}};
   var book3 = $("book3"), leaf1 = $("leaf1"), cover = $("cover"), bkBtn = $("bk-btn"), b3d = $("b3d");
-  var bkPage = 0, bkLang = "EN", bkTouched = false;
+  var bkPage = 0, bkLang = LANG0 === "uz" ? "UZ" : "EN", bkTouched = false;
   function pgHtml(d, which, num) {
     return (which === 1 ? "<h5>" + esc(d.t) + "</h5>" : "") + "<p>" + mark(which === 1 ? d.p1 : d.p2) + "</p><span class=\"pn\">" + num + "</span>";
   }
@@ -1407,24 +1382,17 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   bkRender(); bkSet(0);
 
   /* Статья: шторка между оригиналом и переводом; кнопки для тех, кто не тянет. */
-  var PAPER = {
-    RU: { j: "Научный вестник · 2025 · № 3", title: "Сон и память у студентов", au: "А. Каримова, Б. Юсупов", absH: "Аннотация", abs: "Студенты, которые спали 8 часов, запомнили на 21% больше.", th: ["Группа", "Сон, ч", "Тест"], cap: "Рис. 1. Результаты теста" },
-    EN: { j: "Science Bulletin · 2025 · No. 3", title: "Sleep and memory in students", au: "A. Karimova, B. Yusupov", absH: "Abstract", abs: "Students who slept 8 hours remembered 21% more.", th: ["Group", "Sleep, h", "Test"], cap: "Fig. 1. Test results" },
-    UZ: { j: "Ilmiy axborotnoma · 2025 · 3-son", title: "Talabalarda uyqu va xotira", au: "A. Karimova, B. Yusupov", absH: "Annotatsiya", abs: "8 soat uxlagan talabalar 21% ko‘proq eslab qolishdi.", th: ["Guruh", "Uyqu, soat", "Test"], cap: "1-rasm. Test natijalari" }
-  };
-  var ROWS = [["A", "8", "92%"], ["B", "5", "71%"]];
-  var FIG = '<svg viewBox="0 0 120 72" width="100%" aria-hidden="true"><line x1="6" y1="66" x2="116" y2="66" stroke="#DAE2EE" stroke-width="2"/><rect x="22" y="10" width="30" height="56" rx="4" fill="#0A5CF0"/><rect x="70" y="23" width="30" height="43" rx="4" fill="#C9D8FB"/></svg>';
+  var PAPER = {"EN": {"j": "npj Science of Learning · 2019 · 4:16", "title": "Sleep quality, duration, and consistency are associated with better academic performance in college students", "au": "Kana Okano, Jakub R. Kaczmarzyk, Neha Dave, John D. E. Gabrieli and Jeffrey C. Grossman", "absH": "Abstract", "abs": "Overall, better quality, longer duration, and greater consistency of sleep correlated with better grades. … Sleep measures accounted for nearly 25% of the variance in academic performance.", "introH": "INTRODUCTION", "intro": "The relationship between sleep and cognitive function has been a topic of interest for over a century.", "cap": "Fig. 1 Correlations between sleep measures and overall score."}, "RU": {"j": "npj Science of Learning · 2019 · 4:16", "title": "Качество, продолжительность и регулярность сна связаны с лучшей академической успеваемостью студентов колледжей", "au": "Кана Окано, Якуб Р. Качмаржик, Неха Даве, Джон Д. Э. Габриэли и Джеффри К. Гроссман", "absH": "Аннотация", "abs": "В целом более высокое качество, большая продолжительность и большая регулярность сна коррелировали с более высокими оценками. … На показатели сна приходилось почти 25% дисперсии академической успеваемости.", "introH": "ВВЕДЕНИЕ", "intro": "Связь между сном и когнитивными функциями представляет интерес уже более столетия.", "cap": "Рис. 1 Корреляции между показателями сна и общим баллом."}, "UZ": {"j": "npj Science of Learning · 2019 · 4:16", "title": "Uyqu sifati, davomiyligi va muntazamligi oliy taʼlim talabalarida yaxshiroq akademik koʻrsatkichlar bilan bogʻliq", "au": "Kana Okano, Jakub R. Kaczmarzyk, Neha Dave, John D. E. Gabrieli va Jeffrey C. Grossman", "absH": "Annotatsiya", "abs": "Umuman olganda, uyquning yaxshiroq sifati, uzoqroq davomiyligi va yuqoriroq muntazamligi yaxshiroq baholar bilan bogʻliq edi. … Uyqu koʻrsatkichlari oʻquvdagi natijalar tafovutining qariyb 25% ini izohladi.", "introH": "KIRISH", "intro": "Uyqu va kognitiv funksiya o‘rtasidagi munosabat bir asrdan ortiq vaqt davomida qiziqish mavzusi bo‘lib kelgan.", "cap": "1-Rasm. Uyqu koʻrsatkichlari va umumiy ball oʻrtasidagi korrelyatsiyalar."}};
+  var FIG = '<img src="media/paper-fig1.webp" width="640" height="464" alt="" loading="lazy">';
   function layHtml(d) {
     return '<div class="j">' + esc(d.j) + '</div><h5>' + esc(d.title) + '</h5><div class="au">' + esc(d.au) + '</div>'
       + '<div class="abs"><b>' + esc(d.absH) + '</b>' + mark(d.abs) + '</div>'
-      + '<div class="row2"><table><tr>' + d.th.map(function (h) { return "<th>" + esc(h) + "</th>"; }).join("") + '</tr>'
-      + ROWS.map(function (r) { return "<tr>" + r.map(function (c) { return "<td>" + mark(c) + "</td>"; }).join("") + "</tr>"; }).join("")
-      + '</table><figure>' + FIG + '<figcaption>' + esc(d.cap) + '</figcaption></figure></div>'
-      + '<div class="bars"><i style="width:96%"></i><i style="width:88%"></i><i style="width:92%"></i><i style="width:64%"></i><i style="width:84%"></i></div>';
+      + '<div class="row2"><div class="intro"><b>' + esc(d.introH) + '</b>' + esc(d.intro) + '</div>'
+      + '<figure>' + FIG + '<figcaption>' + esc(d.cap) + '</figcaption></figure></div>';
   }
-  var ba = $("ba"), baH = $("ba-h"), baX = 50, baLang = "EN", baTween = 0, baTouched = false, baDrag = false;
+  var ba = $("ba"), baH = $("ba-h"), baX = 50, baLang = LANG0 === "uz" ? "UZ" : "RU", baTween = 0, baTouched = false, baDrag = false;
   var baTagO = ba.querySelector(".ba-tag.o"), baTagT = ba.querySelector(".ba-tag.t");
-  function baRender() { $("ba-o").innerHTML = layHtml(PAPER.RU); $("ba-t").innerHTML = layHtml(PAPER[baLang]); $("ba-t").lang = baLang.toLowerCase(); }
+  function baRender() { $("ba-o").innerHTML = layHtml(PAPER.EN); $("ba-o").lang = "en"; $("ba-t").innerHTML = layHtml(PAPER[baLang]); $("ba-t").lang = baLang.toLowerCase(); }
   function baSet(v) {
     baX = Math.max(0, Math.min(100, v));
     ba.style.setProperty("--x", baX + "%"); baH.setAttribute("aria-valuenow", String(Math.round(baX)));
@@ -1454,7 +1422,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   [].forEach.call(document.querySelectorAll("[data-ba]"), function (b) {
     b.addEventListener("click", function () { baTouched = true; var v = +b.getAttribute("data-ba"); baPress(v); baTo(v, 650); });
   });
-  chipRow($("ba-langs"), ["EN", "UZ"], baLang, function (c) { baLang = c; baRender(); });
+  chipRow($("ba-langs"), ["RU", "UZ"], baLang, function (c) { baLang = c; baRender(); });
   exShow.paper = function () {
     onceVisible(ba, function () {
       if (baTouched) return;
@@ -1464,16 +1432,10 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   baRender(); baSet(50);
 
   /* Видео: субтитры по времени, язык меняется на лету, можно два языка сразу. */
-  var CUES = [[0, 3], [3, 6.5], [6.5, 9.5], [9.5, 12]], VLEN = 12;
-  var SUBS = {
-    RU: ["Добрый вечер! Сегодня расскажем о горах.", "Эти вершины выше 4000 метров.", "Подъём занимает 3 дня.", "Спасибо, что смотрите!"],
-    EN: ["Good evening! Today we'll talk about mountains.", "These peaks are over 4000 metres high.", "The climb takes 3 days.", "Thanks for watching!"],
-    UZ: ["Xayrli kech! Bugun tog‘lar haqida so‘zlab beramiz.", "Bu cho‘qqilar 4000 metrdan baland.", "Cho‘qqiga chiqish 3 kun davom etadi.", "Tomosha qilganingiz uchun rahmat!"],
-    ZH: ["晚上好！今天我们来聊聊山。", "这些山峰海拔超过4000米。", "登顶需要3天。", "感谢收看！"],
-    AR: ["مساء الخير! سنتحدث اليوم عن الجبال.", "يزيد ارتفاع هذه القمم على 4000 متر.", "يستغرق الصعود 3 أيام.", "شكرًا على المشاهدة!"]
-  };
+  var CUES = [[1.16, 7.78], [8.8, 10.86], [11.62, 13.6], [14.58, 17.28], [18.44, 24.38]], VLEN = 25.4;
+  var SUBS = {"EN": ["High above our planet in the realm of satellites and space stations, the familiar rules of Earth do not apply.", "The midday sky is as black as night.", "There is no up and no down.", "Dropped objects don't fall and hot air doesn't rise.", "Of all the strange things that happen up there, however, it is possible that the strangest happens to coffee."], "RU": ["Высоко над Землёй, среди спутников и станций, привычные земные правила не действуют.", "В полдень небо черно, как ночью.", "Нет ни верха, ни низа.", "Вещи не падают, горячий воздух не поднимается.", "Но из всего странного, что там происходит, самое странное, возможно, случается с кофе."], "UZ": ["Sayyoramiz uzra yoʻldoshlar va kosmik stansiyalarda Yerning odatiy qoidalari amal qilmaydi.", "Peshin osmoni tun kabi qop-qora.", "Yuqori ham yoʻq, past ham yoʻq.", "Tushirilgan jismlar tushmaydi, issiq havo esa koʻtarilmaydi.", "Ammo u yerdagi gʻalati hodisalarning eng gʻalatisi qahva bilan yuz berishi mumkin."], "ZH": ["在卫星和空间站环绕的高空，地球的常规不适用。", "正午天空漆黑如夜。", "没有上下之分。", "掉落的物体不会下落，热空气也不会上升。", "那里怪事虽多，咖啡的遭遇或许最奇特。"], "AR": ["عالياً فوق كوكبنا، في عالم الأقمار الصناعية ومحطات الفضاء، لا تنطبق قواعد الأرض المألوفة.", "سماء الظهيرة سوداء كالليل.", "لا يوجد أعلى ولا أسفل.", "الأشياء التي تُسقط لا تسقط، ولا يصعد الهواء الساخن.", "لكن لعل أغرب ما يحدث هناك يحدث للقهوة."]};
   var player = $("player"), prog = $("prog"), fill = $("fill");
-  var vpLang = "EN", vpBoth = false, vpT = 0.5, vpLast = 0, vpRaf = 0, vpPlaying = false, vpCue = -2, vpTouched = false, vpVisible = false;
+  var vpLang = LANG0 === "uz" ? "UZ" : "RU", vpBoth = false, vpT = 2, vpLast = 0, vpRaf = 0, vpPlaying = false, vpCue = -2, vpTouched = false, vpVisible = false;
   CUES.forEach(function (c) {
     var sg = document.createElement("i"); sg.className = "seg";
     sg.style.left = (c[0] / VLEN * 100) + "%"; sg.style.width = ((c[1] - c[0]) / VLEN * 100 - 0.8) + "%";
@@ -1492,37 +1454,39 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     var s1 = $("sub1"), s2 = $("sub2");
     s1.querySelector("span").textContent = i >= 0 ? SUBS[vpLang][i] : "";
     s1.dir = isRtl(vpLang) ? "rtl" : "ltr"; s1.lang = vpLang.toLowerCase();
-    var both = vpBoth && vpLang !== "RU" && i >= 0;
+    var both = vpBoth && vpLang !== "EN" && i >= 0;
     s2.hidden = !both;
-    if (both) s2.querySelector("span").textContent = SUBS.RU[i];
+    if (both) s2.querySelector("span").textContent = SUBS.EN[i];
   }
-  function vpLoop(ts) {
+  var vv = $("vp-v");
+  function vpLoop() {
     vpRaf = 0;
     if (!vpPlaying) return;
-    if (vpLast) vpT = (vpT + Math.min(0.1, (ts - vpLast) / 1000)) % VLEN;
-    vpLast = ts; vpDraw(false);
+    vpT = vv.currentTime || 0; vpDraw(false);
     vpRaf = requestAnimationFrame(vpLoop);
   }
+  vv.addEventListener("ended", function () { vv.currentTime = 0; if (vpPlaying) { var p = vv.play(); if (p && p.catch) p.catch(function () {}); } });
   var PLAY = "M8 5.5v13l11-6.5z", PAUSE = "M7 5h3.5v14H7zM13.5 5H17v14h-3.5z";
   vid = {
     play: function () {
       if (vpPlaying) return;
-      vpPlaying = true; vpLast = 0; player.classList.add("playing");
+      vpPlaying = true; player.classList.add("playing");
+      var pr = vv.play(); if (pr && pr.catch) pr.catch(function () { vid.pause(); });
       $("vp-path").setAttribute("d", PAUSE); $("vp-btn").setAttribute("aria-label", t("pause"));
       if (!vpRaf) vpRaf = requestAnimationFrame(vpLoop);
     },
     pause: function () {
-      vpPlaying = false; player.classList.remove("playing");
+      vpPlaying = false; vv.pause(); player.classList.remove("playing");
       $("vp-path").setAttribute("d", PLAY); $("vp-btn").setAttribute("aria-label", t("play"));
     }
   };
-  $("vp-big").addEventListener("click", function () { vpTouched = true; vid.play(); });
-  $("vp-btn").addEventListener("click", function () { vpTouched = true; if (vpPlaying) vid.pause(); else vid.play(); });
+  $("vp-big").addEventListener("click", function () { vpTouched = true; vv.muted = false; vid.play(); });
+  $("vp-btn").addEventListener("click", function () { vpTouched = true; vv.muted = false; if (vpPlaying) vid.pause(); else vid.play(); });
   prog.addEventListener("click", function (e) {
     var r = prog.getBoundingClientRect();
-    vpT = Math.max(0, Math.min(VLEN - 0.01, (e.clientX - r.left) / r.width * VLEN)); vpDraw(true);
+    vpT = Math.max(0, Math.min(VLEN - 0.01, (e.clientX - r.left) / r.width * VLEN)); vv.currentTime = vpT; vpDraw(true);
   });
-  chipRow($("vp-langs"), ["RU", "EN", "UZ", "ZH", "AR"], vpLang, function (c) { vpLang = c; vpDraw(true); });
+  chipRow($("vp-langs"), ["EN", "RU", "UZ", "ZH", "AR"], vpLang, function (c) { vpLang = c; vpDraw(true); });
   $("vp-both").addEventListener("click", function () { vpBoth = !vpBoth; this.setAttribute("aria-pressed", String(vpBoth)); vpDraw(true); });
   if ("IntersectionObserver" in window) {
     new IntersectionObserver(function (es) {
@@ -1536,22 +1500,11 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   vpDraw(true);
 
   /* Фото таблички: луч читает строки, рамки находят текст, перевод встаёт на место. */
-  var SIGN = {
-    RU: { h: "ИНФОРМАЦИЯ", it: [["Завтрак", "7:00–10:00"], ["Бассейн", "3 этаж"], ["Выезд", "до 12:00"], ["Ресепшн", "24/7"]], ft: "Хорошего отдыха!" },
-    EN: { h: "INFORMATION", it: [["Breakfast", "7:00–10:00"], ["Pool", "3rd floor"], ["Check-out", "by 12:00"], ["Reception", "24/7"]], ft: "Enjoy your stay!" },
-    UZ: { h: "MA’LUMOT", it: [["Nonushta", "7:00–10:00"], ["Basseyn", "3-qavat"], ["Chiqish", "12:00 gacha"], ["Qabulxona", "24/7"]], ft: "Yaxshi dam oling!" },
-    ZH: { h: "须知", it: [["早餐", "7:00–10:00"], ["游泳池", "3楼"], ["退房", "12:00前"], ["前台", "24/7"]], ft: "祝您入住愉快！" },
-    AR: { h: "معلومات", it: [["الإفطار", "7:00–10:00"], ["المسبح", "الطابق 3"], ["المغادرة", "قبل 12:00"], ["الاستقبال", "24/7"]], ft: "نتمنى لكم إقامة سعيدة!" }
-  };
-  var desk = $("desk"), scBtn = $("sc-btn"), scLang = "EN", scState = 0, scTimers = [], scTouched = false;
-  function two(o, tl, rtl) { return '<span class="o">' + esc(o) + '</span><span class="t"' + (rtl ? ' dir="rtl"' : "") + ">" + esc(tl) + "</span>"; }
+  var desk = $("desk"), scBtn = $("sc-btn"), scLang = LANG0 === "uz" ? "UZ" : "EN", scState = 0, scTimers = [], scTouched = false;
   function scRender() {
-    var o = SIGN.RU, tl = SIGN[scLang], r = isRtl(scLang);
-    var h = '<div class="mh">' + two(o.h, tl.h, r) + "</div>";
-    o.it.forEach(function (row, i) {
-      h += '<div class="ln"><span class="nm">' + two(row[0], tl.it[i][0], r) + '</span><i class="dots"></i><span class="pr">' + two(row[1], tl.it[i][1], r) + "</span></div>";
-    });
-    $("sign").innerHTML = h + '<div class="ft">' + two(o.ft, tl.ft, r) + "</div>";
+    var im = $("sc-t");
+    im.src = "media/sign-" + scLang.toLowerCase() + ".webp";
+    im.alt = t("scAltT") + " " + (NATIVE[scLang] || scLang);
   }
   function scSet(st) {
     scTimers.forEach(clearTimeout); scTimers = [];

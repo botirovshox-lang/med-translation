@@ -335,6 +335,10 @@ noise = _I.fromarray(rng.normal(128, 40, (60, 200, 3)).clip(0, 255).astype("uint
 _D.Draw(noise).text((20, 20), "NOISY", fill=(0, 0, 0))
 check(not tp.measure(np.asarray(noise), "NOISY", 1, 0.0)["found"], "шумная фотография — по-прежнему отказ")
 
+print("=== П5. Капс — свой класс кегля ===")
+check(layout_pdf._caps_text("ДИНАМИЧЕСКОЕ НАБЛЮДЕНИЕ") and not layout_pdf._caps_text("Почка")
+      and not layout_pdf._caps_text("ССЗ"), "заголовок капсом — свой стиль; сокращение — нет")
+
 print(("ALL OK" if not fail else "FAILED: %d" % len(fail)))
 for f in fail:
     print(" -", f)

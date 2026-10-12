@@ -2475,6 +2475,16 @@ def _refit(slot_plan: list, slot_meta: list, i: int, cap: float = 1.0,
     slot_plan[i] = (vs, lines, [f] * len(vs), rest, font_of, align, [hsc] * len(vs))
 
 
+# `LAYOUT_HARMONY_CAPS=0` — капс и строчные в одном классе кегля, как прежде.
+HARMONY_CAPS = os.environ.get("LAYOUT_HARMONY_CAPS", "1") != "0"
+
+
+def _caps_text(text: str) -> bool:
+    """Надпись набрана капсом (от четырёх букв, все заглавные)."""
+    letters = [ch for ch in text if ch.isalpha()]
+    return len(letters) >= 4 and all(ch.isupper() for ch in letters)
+
+
 def _harmonize(slot_plan: list, slot_meta: list, stats: dict) -> None:
     """Один кегль у надписей ОДНОГО стиля на странице.
 
@@ -2494,8 +2504,13 @@ def _harmonize(slot_plan: list, slot_meta: list, stats: dict) -> None:
         # соседней страницы одного кегля оригинала, но глазами их рядом не
         # сравнивают, а общий квартиль ужимал бы короткие ячейки таблицы
         # («Метформин») под тесноту чужой инфографики.
+        # Набор КАПСОМ — свой стиль (заголовок плашки «ДИНАМИЧЕСКОЕ
+        # НАБЛЮДЕНИЕ» рядом с подписями «Глаз», «Почка» того же кегля):
+        # начертание распознаватель отмечает не всегда, и без этого заголовок
+        # ужимался под тесноту подписей (стр. 4).
         key = (int(sds[0]["page"]), m["fam"], _face_style(sds[0].get("style") or ""),
-               "c" in (sds[0].get("style") or ""), round(sds[0]["size"] * 2) / 2.0)
+               "c" in (sds[0].get("style") or ""), round(sds[0]["size"] * 2) / 2.0,
+               _caps_text(m.get("text") or "") if HARMONY_CAPS else False)
         classes.setdefault(key, []).append(i)
     changed = outliers = 0
     for idxs in classes.values():

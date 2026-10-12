@@ -22946,7 +22946,8 @@ def _refs_of(project: Optional[dict]) -> dict:
                 if _rec(k):
                     end = last = k
                 k += 1
-            while end + 1 < len(text_segs) and end + 1 - last <= REFS_ZONE_GAP                     and _ref_weak(text_segs[end + 1].get("source") or ""):
+            while (end + 1 < len(text_segs) and end + 1 - last <= REFS_ZONE_GAP
+                    and _ref_weak(text_segs[end + 1].get("source") or "")):
                 end += 1
             # Строки между началом записи и кластером — та же запись
             # (название статьи без единого признака ссылки).
@@ -31851,6 +31852,9 @@ def _abbr_apply(source: str, target: str, amap: dict) -> str:
         lead = re.match(r"^[\s•·*]*", target).group(0)
         tail = re.search(r"[.,:;]*$", target.rstrip()).group(0)
         return lead + amap[core] + tail
+    # Несколько меток одной строкой («TRE LEKD») НЕ трогаем: это две подписи
+    # на разных дугах, слитые разбором в ОДИН путь, и перевод, отличный от
+    # оригинала, печатался бы по пути через обе дуги с заплаткой (стр. 10).
     return target
 
 
@@ -32010,7 +32014,37 @@ def _dup_of_layer(src: str, near: list, rect: "tuple | None") -> bool:
     return sum(1 for w in mine if w in words) >= LAYER_DUP_SHARE * len(mine)
 
 
-def _pdf_image_boxes(project: dict, data: dict) -> list:
+# Слова для сверки куска слоя с надписью рисунка: от двух букв — «vs.»,
+# «or» посреди строки таблицы тоже куски.
+_ERASE_WORD_RE = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
+
+
+def _layer_paras_by_page(data: dict, by_id: dict) -> dict:
+    """{страница: [(номер абзаца, рамка его строк на этой странице, слова)]} —
+    только напечатанные строки слоя (с местом)."""
+    out: dict = {}
+    for idx, sids in _para_groups(data):
+        src = " ".join((by_id.get(sid) or {}).get("source") or "" for sid in sids)
+        words = [w.lower() for w in _ERASE_WORD_RE.findall(src)]
+        for b in ((data.get("layout") or {}).get("boxes") or {}).get(str(idx)) or []:
+            rs = []
+            for sl in b.get("slots") or []:
+                if len(sl) > 8 and isinstance(sl[8], dict):
+                    rs = []             # повёрнутая или дуговая строка: рамки по x/y у неё нет
+                    break
+                try:
+                    x0, y, x1, sz = (float(v) for v in sl[:4])
+                except Exception:
+                    continue
+                rs.append((x0, y - 0.3 * sz, x1, y + 0.9 * sz))
+            if rs:
+                out.setdefault(int(b.get("page", -1)), []).append(
+                    (int(idx), (min(r[0] for r in rs), min(r[1] for r in rs),
+                                max(r[2] for r in rs), max(r[3] for r in rs)), words))
+    return out
+
+
+def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None) -> list:
     """Надписи со страниц-КАРТИНОК — рамками для выгрузки PDF «как в оригинале».
 
     Обложка и страницы с негодным текстовым слоем кладутся в документ
@@ -32039,6 +32073,7 @@ def _pdf_image_boxes(project: dict, data: dict) -> list:
     skipped: dict = {}
     vk = _virt_key(data)
     layer_words = _layer_words_by_page(data, by_id)
+    layer_paras = _layer_paras_by_page(data, by_id) if erase is not None else {}
     for im in images:
         virt = str(im.get("part") or "").startswith(PDF_PAGE_PART)
         if virt and im.get("vk") != vk:
@@ -32056,6 +32091,10 @@ def _pdf_image_boxes(project: dict, data: dict) -> list:
         else:
             page = _png_page_index(part.blob)
             fig = importers.figure_tag(part.blob) if page is None else None
+        # Надпись ВНУТРИ рисунка страницы с текстом (вырезка рисунка или
+        # страница, разобранная кривыми), а не страница-скан: у неё фон —
+        # схема, и прямоугольная заплатка поверх неё — порча (Л9).
+        on_fig = fig is not None
         if page is None and fig is None:
             continue
         if fig is not None:
@@ -32086,6 +32125,22 @@ def _pdf_image_boxes(project: dict, data: dict) -> list:
                 # текст поверх рисунка (проект 14, стр. 19).
                 skipped["layerDup"] = skipped.get("layerDup", 0) + 1
                 continue
+            if erase is not None and rect_pt is not None:
+                # Кусок строки, лежащий ТЕКСТОМ внутри надписи, нарисованной
+                # кривыми («vs.» посреди строки таблицы, стр. 10): перевод
+                # надписи его уже содержит, печать абзаца слоя дала бы второй
+                # раз «по сравнению с» поверх. Такой абзац только стирается
+                # (`build`: пустой перевод — закраска без печати).
+                bw = [w.lower() for w in _ERASE_WORD_RE.findall((seg or {}).get("source") or "")]
+                bx0, by0, bx1, by1 = rect_pt
+                for pidx, (rx0, ry0, rx1, ry1), pw in layer_paras.get(page) or []:
+                    if not pw or len(pw) > 4 or len(bw) < len(pw) + 2:
+                        continue
+                    inside = (min(bx1, rx1) - max(bx0, rx0)) * (min(by1, ry1) - max(by0, ry0))
+                    area = max(1e-6, (rx1 - rx0) * (ry1 - ry0))
+                    if inside >= 0.8 * area and any(bw[k:k + len(pw)] == pw
+                                                    for k in range(len(bw) - len(pw) + 1)):
+                        erase.add(pidx)
             x0, y0, x1, y1 = b["box"]
             rows = max(1, int(b.get("rows") or 1))
             if x1 > x0 and rows <= 1 and (y1 - y0) >= (x1 - x0) * image_text.IMG_VERT_RATIO:
@@ -32102,6 +32157,7 @@ def _pdf_image_boxes(project: dict, data: dict) -> list:
             sx_, sy_ = (fx1 - fx0) / w, (fy1 - fy0) / h
             out.append({"text": text, "boxes": [{
                 "page": page, "frac": 1, "image": 1, "style": "", "indent": 0.0,
+                "fam": "sans", "onFig": 1 if on_fig else 0,
                 # Исходный текст, число строк и выключка надписи — по ним печать
                 # меряет кегль букв и ставит перевод как стоял оригинал
                 # (`layout_pdf._paint_measure`).
@@ -32653,31 +32709,55 @@ def _drop_nested_labels(items: list) -> tuple:
     текста. В PDF они печатаются поверх ФОТОГРАФИИ, и два перевода
     ложатся друг на друга крест-накрест.
 
-    Правило узкое: рамка лежит ВНУТРИ другой (с допуском в пиксель),
+    Правило узкое: рамка лежит ВНУТРИ другой (не меньше 85% её площади),
     и её текст — часть текста той, большей. Иначе не трогаем: вложенная
-    рамка с ДРУГИМ текстом — это законная подпись внутри схемы."""
-    keep, dropped = [], 0
+    рамка с ДРУГИМ текстом — это законная подпись внутри схемы.
+
+    Кто снимается. Однострочная рамка внутри многострочной, чей текст
+    содержит её текст, — строка, которую пересверка со слоем (К12)
+    выделила из старого блока: старый блок РОДИТЕЛЬ, и печатать надо
+    строки-наследники, а не его (стр. 19: родитель шёл крупным кеглем
+    поверх своих же строк и строк слоя). Иначе — снимается вложенная."""
+    def area(b):
+        return max(1e-9, (b["x1"] - b["x0"]) * (b["bottom"] - b["top"]))
+
+    def inside(b, o):
+        ix = min(b["x1"], o["x1"]) - max(b["x0"], o["x0"])
+        iy = min(b["bottom"], o["bottom"]) - max(b["top"], o["top"])
+        return ix > 0 and iy > 0 and ix * iy >= 0.85 * area(b) and area(o) > area(b)
+
+    def key(it, b):
+        return _norm_key(it.get("text") or ""), _norm_key(b.get("src") or "")
+
+    def words(t_):
+        return [w.lower() for w in _LAYER_WORD_RE.findall(t_ or "")]
+
+    kids: dict = {}                     # родитель → [вложенные с его текстом]
     for i, it in enumerate(items):
         b = (it.get("boxes") or [{}])[0]
-        t = _norm_key((it.get("text") or ""))
-        drop = False
+        t, ts = key(it, b)
         for k, other in enumerate(items):
             if k == i:
                 continue
             o = (other.get("boxes") or [{}])[0]
-            if o.get("page") != b.get("page"):
+            if o.get("page") != b.get("page") or not inside(b, o):
                 continue
-            inside = (o["x0"] - 0.002 <= b["x0"] and b["x1"] <= o["x1"] + 0.002
-                      and o["top"] - 0.002 <= b["top"] and b["bottom"] <= o["bottom"] + 0.002)
-            bigger = (o["x1"] - o["x0"]) * (o["bottom"] - o["top"]) >                      (b["x1"] - b["x0"]) * (b["bottom"] - b["top"])
-            if inside and bigger and t and t in _norm_key(other.get("text") or ""):
-                drop = True
+            ot, os_ = key(other, o)
+            if (t and t in ot) or (ts and ts in os_):
+                kids.setdefault(k, []).append(i)
                 break
-        if drop:
-            dropped += 1
+    drop = set()
+    for par, ch in kids.items():
+        o = (items[par].get("boxes") or [{}])[0]
+        pw = words(o.get("src"))
+        cw = {w for c in ch for w in words(((items[c].get("boxes") or [{}])[0]).get("src"))}
+        if (int(o.get("rows") or 1) >= 2 and pw
+                and sum(1 for w in pw if w in cw) >= 0.8 * len(pw)):
+            drop.add(par)               # строки-наследники покрывают родителя
         else:
-            keep.append(it)
-    return keep, dropped
+            drop.update(ch)
+    keep = [it for n_, it in enumerate(items) if n_ not in drop]
+    return keep, len(drop)
 
 
 _LEFTOVER_URL_RE = re.compile(r"(https?://|www\.|doi\.org|\S+@\S+\.\w+|10\.\d{4,}/)", re.I)
@@ -32699,7 +32779,11 @@ def _layout_leftovers(project: dict, data: dict, texts: dict, stats: dict,
     (числа, формулы), адрес, ссылка, DOI, почта — и строка, ВСЕ слова
     которой переводчик сам оставил как есть (стоят в переводах проекта:
     название, латынь, торговая марка, правило «не переводить»)."""
-    by_id = {sg["id"]: sg for sg in project.get("segments") or []}
+    by_id = _print_by_id(project)
+    try:
+        keep_refs = _refs_of(project)["keep"]
+    except Exception:
+        keep_refs = frozenset()
     tokens: set = set()
     for sg in by_id.values():
         tokens.update(w.lower() for w in _LEFTOVER_WORD_RE.findall(sg.get("target") or ""))
@@ -32709,8 +32793,11 @@ def _layout_leftovers(project: dict, data: dict, texts: dict, stats: dict,
     except Exception:
         paras = []
     src_of = {}
+    refs_paras: set = set()
     for idx, sids in _para_groups(data):
         src_of[int(idx)] = " ".join((by_id.get(sid) or {}).get("source") or "" for sid in sids)
+        if sids and all(sid in keep_refs for sid in sids):
+            refs_paras.add(int(idx))     # литература — на языке оригинала по правилу
     out = {"count": 0, "untranslated": 0, "unplaced": 0, "pages": int(stats.get("rotated") or 0),
            "samples": []}
 
@@ -32728,7 +32815,8 @@ def _layout_leftovers(project: dict, data: dict, texts: dict, stats: dict,
         # Совпавший с оригиналом абзац (`same`) проверяется наравне со всеми:
         # законно оставленное снимает `_leftover_kept` (слова есть в переводах),
         # а скопированный моделью абзац на языке оригинала обязан посчитаться.
-        if idx in tails or (texts.get(idx) or "").strip():
+        if (idx in tails or idx in refs_paras or (texts.get(idx) or "").strip()
+                or (idx in texts and texts.get(idx) == "")):
             continue
         note("untranslated", src_of.get(idx) or (paras[idx] if 0 <= idx < len(paras) else ""))
     for it in (data.get("layout") or {}).get("unplaced") or []:
@@ -32792,6 +32880,10 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
                                  "Доступен Word-документ и PDF из него" % why)
     same: set = set()
     texts = _layout_texts(project, data, same)
+    erase: set = set()
+    extra = _pdf_image_boxes(project, data, erase)
+    for pidx in erase:
+        texts[pidx] = ""
     # Исходный текст абзацев — по нему печать меряет ширину начертания
     # оригинала (`layout_pdf._width_ratio`).
     by_id = {s_["id"]: s_ for s_ in project.get("segments") or []}
@@ -32799,7 +32891,7 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
                for idx, sids in _para_groups(data)}
     try:
         pdf, stats = layout_pdf_mod.build(work, layout, texts,
-                                          extra=_pdf_image_boxes(project, data),
+                                          extra=extra,
                                           lang=project.get("tgt"), sources=sources)
     except layout_pdf_mod.NotAvailable as e:
         raise HTTPException(503, "Выгрузка «как в оригинале» для PDF не собралась: %s. "

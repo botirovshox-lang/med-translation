@@ -623,7 +623,8 @@ if ok:
     he = {k: "טיפול בסוכרת ובקרת הסוכר 2026" for k in lay_c["boxes"]}
     try:
         pdf_h, st_h = layout_pdf.build(PDF12, lay_c, he)
-        check(_ft.check("raqm") and st_h.get("raster", 0) > 0, "иврит напечатан сборкой букв (raqm)")
+        check((_ft.check("raqm") or st_h.get("shaper") == "vector") and st_h.get("raster", 0) > 0,
+              "иврит напечатан сборкой букв (HarfBuzz контурами или raqm): %s" % st_h.get("shaper"))
     except layout_pdf.NotAvailable as e:
         check(not _ft.check("raqm") and "raqm" in str(e),
               "без raqm письмо справа налево — отказ словами, а не каша: %s" % e)

@@ -213,6 +213,9 @@ DARK_PAPER = float(os.environ.get("LAYOUT_DARK_PAPER", "0.45"))
 # На сколько полос режется закраска ОДНОЙ строки (у строк своё место — см.
 # `slots`): строка короткая, и десяти полос ей не нужно.
 SLOT_STRIPS = 3
+# Дорисованная жирность у шрифта без полужирного файла (иероглифы): толщина
+# обводки контура в долях кегля.
+VECTOR_BOLD = float(os.environ.get("LAYOUT_VECTOR_BOLD", "0.045"))
 # Насколько можно СУЗИТЬ начертание по горизонтали, прежде чем уменьшать
 # кегль. Наш шрифт (DejaVu) шире гарнитур оригинала (Helvetica, DIN
 # Condensed), и без сужения почти каждый абзац уходил мельче оригинала —
@@ -988,6 +991,76 @@ def _fit_prefix(word: str, width_of, width: float) -> int:
     return lo
 
 
+# Перенос строки без пробелов по границе ФРАЗЫ (BudouX, Apache-2.0): у
+# японского, китайского и тайского слово пробелом не отделено, и резка
+# «сколько влезло знаков» рвала слово посередине. Граница фразы берётся,
+# если строка от неё заполнена не меньше чем на эту долю — иначе короткая
+# строка с дырой справа хуже переноса посреди слова.
+PHRASE_FILL_MIN = float(os.environ.get("LAYOUT_PHRASE_FILL_MIN", "0.6"))
+_PHRASE_PARSERS: dict = {}
+
+
+def _phrase_parser(word: str):
+    """Модель BudouX по буквам строки: тайское — тайская, кана — японская,
+    иначе иероглифы — китайская (упрощённое письмо). Нет модуля — None."""
+    kind = None
+    for ch in word:
+        o = ord(ch)
+        if 0x0E00 <= o <= 0x0E7F:
+            kind = "th"
+            break
+        if 0x3040 <= o <= 0x30FF:
+            kind = "ja"
+            break
+        if 0x3400 <= o <= 0x9FFF or 0xF900 <= o <= 0xFAFF:
+            kind = kind or "zh"
+    if kind is None:
+        return None
+    if kind not in _PHRASE_PARSERS:
+        try:
+            import budoux
+            _PHRASE_PARSERS[kind] = {"th": budoux.load_default_thai_parser,
+                                     "ja": budoux.load_default_japanese_parser,
+                                     "zh": budoux.load_default_simplified_chinese_parser}[kind]()
+        except Exception:
+            _PHRASE_PARSERS[kind] = None
+    return _PHRASE_PARSERS[kind]
+
+
+_PHRASE_CACHE: dict = {}
+
+
+def _phrase_bounds(word: str) -> list:
+    """Границы фраз внутри строки без пробелов (смещения в знаках)."""
+    got = _PHRASE_CACHE.get(word)
+    if got is None:
+        got = []
+        p = _phrase_parser(word)
+        if p is not None:
+            try:
+                pos = 0
+                for chunk in p.parse(word)[:-1]:
+                    pos += len(chunk)
+                    got.append(pos)
+            except Exception:
+                got = []
+        if len(_PHRASE_CACHE) > 20000:
+            _PHRASE_CACHE.clear()
+        _PHRASE_CACHE[word] = got
+    return got
+
+
+def _break_point(word: str, n: int) -> int:
+    """Где резать строку без пробелов, если влезает `n` знаков: на границе
+    фразы не дальше `n` (и не ближе доли `PHRASE_FILL_MIN`), иначе — как
+    прежде, не посреди буквы (`_cut_point`)."""
+    if 1 < n < len(word):
+        ok = [b for b in _phrase_bounds(word) if PHRASE_FILL_MIN * n <= b <= n]
+        if ok:
+            return ok[-1]
+    return _cut_point(word, n)
+
+
 def _cut_point(word: str, n: int) -> int:
     """Граница разреза слова не посреди БУКВЫ: огласовка, знак ударения,
     вирама и соединитель остаются со своей буквой."""
@@ -1059,7 +1132,7 @@ def _fit_slots(text: str, slots: list, sw, font_of, align: str, split_ok: bool =
                         # знакам, остаток — следующей строкой. Не влезший
                         # хвост хуже разрезанного слова.
                         n = _fit_prefix(w_, lambda t_: sw(t_, font, size) * hs[0], width)
-                        n = _cut_point(w_, n)
+                        n = _break_point(w_, n)
                         cur = w_[:n]
                         words[k] = w_[n:]
                         break
@@ -1371,7 +1444,7 @@ def _lay_flow(words0: list, slots: list, f: float, hs: float, font_of, sw, align
                 w_ = words[k]
                 if split and len(w_) > 1:
                     n = _fit_prefix(w_, lambda t_: sw(t_, font, size), width)
-                    n = _cut_point(w_, n)
+                    n = _break_point(w_, n)
                     cur = w_[:n]
                     words[k] = w_[n:]
                     break
@@ -3557,6 +3630,17 @@ class _Raster:
         from PIL import features
         from fontTools.ttLib import TTFont
         self.raqm = bool(features.check("raqm"))
+        # Контурами (HarfBuzz, `glyph_shaper`) — если есть; картинкой через
+        # Pillow + raqm — запасная дорога (модуля нет или LAYOUT_VECTOR=0).
+        try:
+            import glyph_shaper as _gs
+        except Exception:
+            from backend import glyph_shaper as _gs        # тесты — из корня
+        self.gs = _gs
+        self.vector = bool(_gs.available())
+        self.notdef = 0
+        self._notdef_seen: set = set()
+        self._runs_cache: dict = {}
         self.cmaps: dict = {}
         files = sorted(p for p in Path(_REPO_FONTS).glob("*")
                        if p.suffix.lower() in (".ttf", ".otf") and "Bold" not in p.name)
@@ -3577,6 +3661,14 @@ class _Raster:
         self.primary = max(self.cmaps.items(), key=rank)[0] if self.cmaps else self.latin
         self.missing = sum(1 for o in set(hard) if o not in self.cmaps.get(self.primary, set())
                            and o not in self.cmaps.get(self.latin, set()))
+        if self.vector:
+            # Шрифт, который HarfBuzz не открыл (битый файл, редкий формат), —
+            # не повод ронять выгрузку: печатаем прежней картинкой.
+            try:
+                for p_ in {self.primary, self.latin} - {""}:
+                    _gs.shape(p_, "a", False)
+            except Exception:
+                self.vector = False
         self._fonts: dict = {}
 
     def _font(self, path: str, size: float, bold: bool = False):
@@ -3591,11 +3683,27 @@ class _Raster:
             self._fonts[key] = ImageFont.truetype(bpath, px, layout_engine=eng)
         return self._fonts[key], bpath != path
 
+    @staticmethod
+    def _bold_path(path: str, bold: bool) -> tuple:
+        """(файл, настоящий ли полужирный): у Noto полужирный — соседний
+        файл «-Bold»; нет его (иероглифы) — обычный, жирность дорисуем."""
+        if not bold:
+            return path, False
+        bp = path.replace("-Regular.", "-Bold.")
+        return (bp, True) if bp != path and Path(bp).exists() else (path, False)
+
     def _path_of(self, ch: str, prev: str) -> str:
         import unicodedata
         o = ord(ch)
-        if ch.isspace() or unicodedata.category(ch)[0] in "PZM" and prev:
+        # Пробел и огласовка остаются в куске соседа всегда, знак
+        # препинания — только если шрифт соседа его ЗНАЕТ: в Noto Naskh
+        # Arabic нет скобок, и «(نص)» печаталось квадратами.
+        cat = unicodedata.category(ch)[0]
+        if prev and (ch.isspace() or cat == "M" or cat in "PZ"
+                     and o in self.cmaps.get(prev, set())):
             return prev
+        if ch.isspace():                 # строка начата пробелом — соседа нет
+            return self.primary
         if o in self.cmaps.get(self.primary, set()):
             return self.primary
         if o in self.cmaps.get(self.latin, set()):
@@ -3613,6 +3721,18 @@ class _Raster:
         и сборку букв делает raqm."""
         if not text:
             return []
+        # Укладка меряет одну и ту же строку десятки раз (кегль, сужение,
+        # перевёрстка): раскладка на куски от кегля не зависит — считаем раз.
+        ck = (text, base_rtl)
+        got = self._runs_cache.get(ck)
+        if got is not None:
+            return got
+        if len(self._runs_cache) > 50000:
+            self._runs_cache.clear()
+        got = self._runs_cache[ck] = self._runs(text, base_rtl)
+        return got
+
+    def _runs(self, text: str, base_rtl: "bool | None") -> list:
         levels = _bidi_levels(text, base_rtl)
         logical: list = []
         prev = ""
@@ -3659,6 +3779,9 @@ class _Raster:
         полужирного (по имени шрифта reportlab) — Bold-файлом; меряй
         обычным, а рисуй жирным — строка вылезала бы за своё место."""
         bold = _font_is_bold(_font)
+        if self.vector:
+            return sum(self.gs.width(self._bold_path(p, bold)[0], t, r, size)
+                       for p, t, r in self.runs(text))
         return sum(self._len(p, t, size, r, bold) for p, t, r in self.runs(text)) / self.SCALE
 
     def put(self, c, x: float, y: float, text: str, size: float, color, hsc: float = 1.0,
@@ -3667,6 +3790,38 @@ class _Raster:
         from reportlab.lib.utils import ImageReader
         bold = "b" in (style or "")
         runs = self.runs(text, base_rtl)
+        if self.vector:
+            # Контурами: та же сборка букв, что у raqm (внутри него тот же
+            # HarfBuzz), но без пикселей — чётко на любом масштабе.
+            c.saveState()
+            c.translate(x, y)
+            if "i" in (style or ""):
+                c.transform(1, 0, 0.21, 1, 0, 0)
+            rgb = tuple(max(0.0, min(1.0, float(v))) for v in color[:3])
+            c.setFillColorRGB(*rgb)
+            c.setStrokeColorRGB(*rgb)
+            cursor = 0.0
+            try:
+                # Сборку — ДО рисования: шрифт, который HarfBuzz не открыл,
+                # всплывёт здесь, и строка уйдёт картинкой без двойной печати.
+                for path, t, r in runs:
+                    self.gs.shape(self._bold_path(path, bold)[0], t, r)
+                for path, t, r in runs:
+                    bp, real = self._bold_path(path, bold)
+                    if (bp, t, r) not in self._notdef_seen:
+                        self._notdef_seen.add((bp, t, r))
+                        self.notdef += self.gs.notdef(bp, t, r)
+                    cursor += self.gs.draw(c, cursor, 0.0, bp, t, r, size, hsc,
+                                           VECTOR_BOLD * size if bold and not real else 0.0)
+            except Exception:
+                # Шрифт не открылся у HarfBuzz посреди книги: дальше — картинкой.
+                c.restoreState()
+                if not self.raqm:
+                    raise
+                self.vector = False
+                return self.put(c, x, y, text, size, color, hsc, style, base_rtl)
+            c.restoreState()
+            return
         rgba = tuple(int(round(max(0.0, min(1.0, v)) * 255)) for v in color[:3]) + (255,)
         cursor = x
         for path, t, r in runs:
@@ -3876,8 +4031,9 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
             raster = _Raster(chars)
         except Exception as e:
             raise NotAvailable("печать письменности перевода недоступна: %s" % e)
-        if shaped and not raster.raqm:
-            raise NotAvailable("%s — нужна сборка букв (raqm), а Pillow собран без неё" % shaped)
+        if shaped and not (raster.raqm or raster.vector):
+            raise NotAvailable("%s — нужна сборка букв: нет ни HarfBuzz (uharfbuzz), "
+                               "ни Pillow с raqm" % shaped)
         if raster.missing > GLYPH_MISS_MAX:
             raise NotAvailable("ни один шрифт не знает %d знаков перевода" % raster.missing)
         miss = raster.missing
@@ -4477,6 +4633,11 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
             except Exception as e:
                 raise NotAvailable("слой не лёг на страницу %d: %s" % (i + 1, e))
         writer.add_page(page)
+    if raster is not None:
+        # Чем печатались строки «со сборкой»: контурами (HarfBuzz) или
+        # картинкой (Pillow + raqm), и сколько знаков шрифт так и не собрал.
+        stats["shaper"] = "vector" if raster.vector else "image"
+        stats["notdef"] = raster.notdef
     # Слой поверх страницы пишется несжатым потоком, и на книге это лишние
     # десятки мегабайт: жмём то, что собрали сами.
     try:

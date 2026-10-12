@@ -3222,6 +3222,7 @@ node tests/test_landing_handoff_browser.js                          # форма
 python tools/landing_build.py                                        # лендинг пересобран из landing/src
 .venv/bin/python tests/test_pdf_figures.py                           # рисунки книги доезжают до документа
 .venv/bin/python tests/test_pdf_layout_export.py                     # выгрузка PDF «как в оригинале»
+.venv/bin/python tests/test_glyph_shaper.py                          # вставка любой письменности: HarfBuzz контурами, BudouX
 .venv/bin/python tests/test_pdf_unified.py                           # PDF 1в1: история страницы, один кегль, текст к печати
 .venv/bin/python tests/test_pdf_panels.py                            # «лента» в страницы, таблицы, наложения
 curl -s http://127.0.0.1:8000/api/health
@@ -7450,12 +7451,17 @@ curl -s http://127.0.0.1:8000/api/health
        вертикальной основы в долях em; по картинке страницы его не ищем —
        мелкий кегль упирается в пиксель). Файл шрифта выбирается по БУКВАМ
        перевода (`font_path(chars=)`, запасной DejaVu из репозитория);
-       письмо справа налево и со сборкой букв печатается РАСТРОМ строки
-       (`_Raster`: Pillow + raqm, Noto из `frontend/vendor/fonts/sub`) —
+       письмо справа налево и со сборкой букв печатается КОНТУРАМИ
+       (`_Raster` → `backend/glyph_shaper.py`: сборка HarfBuzz/uharfbuzz,
+       глиф — форма PDF на документ, Noto из `frontend/vendor/fonts/sub`;
+       запасная дорога — картинка Pillow + raqm, `LAYOUT_VECTOR=0`) —
        только абзац, которому это нужно, порядок — упрощённый
        двунаправленный алгоритм Юникода (`_bidi_levels`, основа от абзаца);
-       нет raqm — «исходный вид» 503 словами, формат «PDF» — печать Word
-       (`layoutWhy`). Повёрнутая строка печатается повёрнутой, дуга — по
+       нет ни HarfBuzz, ни raqm — «исходный вид» 503 словами, формат
+       «PDF» — печать Word (`layoutWhy`). Строка без пробелов (японский,
+       китайский, тайский) переносится по границе фразы (BudouX,
+       `_break_point`). Что изучено и почему AGPL-проекты не взяты —
+       `docs/rules/pdf-reading.md`, раздел Н. Повёрнутая строка печатается повёрнутой, дуга — по
        дуге (`_rot_slot`, `_draw_rot`, бумага и краска — в клетке каждой
        буквы). Две надписи одной строки pypdf — два места (`split`), абзац
        рвётся, где следующая строка его геометрически не продолжает

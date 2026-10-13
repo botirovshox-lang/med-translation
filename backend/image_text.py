@@ -1556,7 +1556,28 @@ def _paint_plan(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         return None
     return {"pbox": pbox, "erased": erased, "alpha": alpha, "m": m, "lines": lines,
             "size": size, "step": step, "h0": h0, "font": font_at(size), "k": k,
-            "align": it.get("align") or "left", "parts": parts}
+            "align": _start_align(it.get("align"), it.get("text")), "parts": parts}
+
+
+def _rtl(text: str) -> bool:
+    """Письмо справа налево берёт верх над буквами слева направо."""
+    r = l = 0
+    for ch in text or "":
+        o = ord(ch)
+        if 0x0590 <= o <= 0x08FF or 0xFB1D <= o <= 0xFEFC:
+            r += 1
+        elif ch.isalpha():
+            l += 1
+    return r > l
+
+
+def _start_align(align, text) -> str:
+    """«Влево» — это НАЧАЛО строки. У перевода справа налево (арабский,
+    иврит, фарси) начало строки справа: 13.10.2026 арабский абзац Чехова
+    встал рваным правым краем от левого поля. Центр и «вправо» (колонка
+    чисел) остаются как были."""
+    align = align or "left"
+    return "right" if align == "left" and _rtl(text) else align
 
 
 def _put(big, im, pos) -> None:
@@ -1751,7 +1772,7 @@ def render_target(img_bytes: bytes, items: list) -> tuple:
                            "size": round(size / k, 1)})
             continue
         plan.append({"i": i, "sbox": sbox, "font": font, "rows": rows, "step": step,
-                     "fill": fill, "ink": ink, "align": it.get("align") or "left"})
+                     "fill": fill, "ink": ink, "align": _start_align(it.get("align"), it.get("text"))})
         report.append({"i": i, "ok": True, "size": round(size / k, 1), "rows": len(rows)})
     if not plan and not paint:
         return None, report

@@ -198,8 +198,6 @@ section { padding: clamp(80px, 11vh, 140px) 0; }
 .stage { position: relative; height: 270px; border-radius: 20px; background: var(--canvas); display: grid; place-items: center; overflow: hidden; }
 .tile h3 { font: 600 26px/1.15 var(--fd); margin: 22px 4px 6px; letter-spacing: -.01em; }
 .tile p { margin: 0 4px 4px; color: var(--ink-2); font-size: 18px; }
-.cyc { transition: opacity .45s var(--ease), transform .45s var(--ease); display: inline-block; }
-.cyc.out { opacity: 0; transform: translateY(8px); }
 .bar { height: 9px; border-radius: 9px; background: var(--line); margin-top: 11px; }
 /* книга */
 .book { display: flex; width: min(430px, 88%); height: 200px; filter: drop-shadow(0 18px 22px rgba(11,19,36,.16)); }
@@ -233,6 +231,31 @@ section { padding: clamp(80px, 11vh, 140px) 0; }
 .stage.shot .subt { bottom: 10%; width: 86%; white-space: normal; text-align: center; font-size: 15px; line-height: 1.35; }
 .sweep { position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--glow); box-shadow: 0 0 14px 3px rgba(22,201,180,.6); animation: sweep 3.2s ease-in-out infinite; }
 @keyframes sweep { 0% { top: 4%; } 50% { top: 94%; } 100% { top: 4%; } }
+
+/* Плитки-примеры: язык меняется «сканированием», вёрстка картинки та же */
+.stage.ts { height: 300px; background: #F3F1EA; }
+.stage.ts img { object-position: 50% 0; }
+.tile[data-tile="video"] .stage.ts img { object-position: 50% 50%; }
+/* Страница статьи шире окна плитки: видна целиком, поля — цветом листа. */
+.stage.ts.ts-page { background: #fff; }
+.stage.ts.ts-page img { object-fit: contain; object-position: 50% 50%; }
+.ts .ts-o { z-index: 0; }
+.ts .ts-n { z-index: 1; opacity: 0; clip-path: inset(0 0 100% 0); }
+.ts.ts-run .ts-n { opacity: 1; animation: tsReveal var(--ts-dur, 1.25s) linear forwards; }
+@keyframes tsReveal { from { clip-path: inset(0 0 100% 0); } to { clip-path: inset(0 0 0 0); } }
+.ts-beam { position: absolute; z-index: 3; left: 0; right: 0; top: 0; height: 3px; background: #2EE6D0; box-shadow: 0 0 16px 4px rgba(46,230,208,.7); opacity: 0; pointer-events: none; }
+.ts-beam::before { content: ""; position: absolute; left: 0; right: 0; bottom: 3px; height: 70px; background: linear-gradient(180deg, rgba(46,230,208,0), rgba(46,230,208,.22)); }
+.ts.ts-run .ts-beam { animation: tsBeam var(--ts-dur, 1.25s) linear forwards; }
+@keyframes tsBeam { 0% { top: 0; opacity: 1; } 92% { opacity: 1; } 100% { top: 100%; opacity: 0; } }
+.tl-langs .mini small { font-size: 12px; font-weight: 600; opacity: .75; margin-left: 6px; }
+.ts .subt { transition: opacity .3s var(--ease); }
+.ts .subt.swap { opacity: 0; }
+.tl-langs { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 2px; }
+.tl-langs .mini { min-height: 40px; padding: 0 14px; font-size: 15px; }
+.tl-other { position: relative; display: inline-flex; }
+.tl-other select { appearance: none; -webkit-appearance: none; min-height: 40px; padding: 0 34px 0 14px; border-radius: 999px; border: 1.5px dashed var(--line-2); background: var(--panel); font: inherit; font-weight: 700; font-size: 15px; color: var(--accent); cursor: pointer; max-width: 100%; }
+.tl-other select:hover { border-color: var(--accent); }
+.tl-other::after { content: ""; position: absolute; right: 15px; top: 50%; width: 7px; height: 7px; margin-top: -6px; border-right: 2px solid var(--accent); border-bottom: 2px solid var(--accent); transform: rotate(45deg); pointer-events: none; }
 
 /* Языки */
 .big { display: flex; align-items: baseline; gap: 18px; margin: 0 0 40px; }
@@ -476,6 +499,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
 }
 @media (max-width: 820px) {
   .tile:nth-child(n) { grid-column: span 12; }
+  .stage.ts { height: auto; aspect-ratio: var(--ar); }
   .steps { grid-template-columns: 1fr; gap: 44px; }
   .steps svg.line { display: none; }
 }
@@ -621,21 +645,42 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     <div class="wrap">
       <h2 class="h2 rv" data-t="whatH">Что переводим</h2>
       <div class="tiles">
-        <article class="tile rv">
-          <div class="stage shot" aria-hidden="true"><img src="media/tile-book.webp" width="900" height="704" alt="" loading="lazy" decoding="async"><span class="tag"><span class="cyc" data-cyc="book">Смерть чиновника</span></span></div>
+        <article class="tile rv" data-tile="book" data-src="RU">
+          <div class="stage shot ts" aria-hidden="true" style="--ar:1000/564">
+            <img class="ts-o" src="media/tile-book-ru.webp" width="1000" height="564" alt="" loading="lazy" decoding="async">
+            <img class="ts-n" width="1000" height="564" alt="" decoding="async">
+            <span class="ts-beam" aria-hidden="true"></span>
+          </div>
           <h3 data-t="t1">Книги</h3><p data-t="t1s">Целиком, главу за главой</p>
+          <div class="tl-langs" role="group" aria-label="Перевод на:" data-ta="aria-label:langInto"></div>
         </article>
-        <article class="tile rv" style="--d:.08s">
-          <div class="stage shot" aria-hidden="true"><img src="media/tile-article.webp" width="900" height="598" alt="" loading="lazy" decoding="async" style="object-position:top"><span class="tag"><span class="cyc" data-cyc="paper" dir="auto">INTRODUCTION</span></span></div>
+        <article class="tile rv" data-tile="article" data-src="EN" style="--d:.08s">
+          <div class="stage shot ts ts-page" aria-hidden="true" style="--ar:900/474">
+            <img class="ts-o" src="media/tile-article-en.webp" width="900" height="474" alt="" loading="lazy" decoding="async">
+            <img class="ts-n" width="900" height="474" alt="" decoding="async">
+            <span class="ts-beam" aria-hidden="true"></span>
+          </div>
           <h3 data-t="t2">Научные статьи</h3><p data-t="t2s">Формулы и цифры на месте</p>
+          <div class="tl-langs" role="group" aria-label="Перевод на:" data-ta="aria-label:langInto"></div>
         </article>
-        <article class="tile rv">
-          <div class="stage shot" aria-hidden="true"><img src="media/tile-video.webp" width="900" height="506" alt="" loading="lazy" decoding="async"><span class="play"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg></span><span class="subt"><span class="cyc" data-cyc="video" dir="auto">Of all the strange things that happen up there, however, it is possible that the strangest happens to coffee.</span></span></div>
+        <article class="tile rv" data-tile="video" data-src="EN">
+          <div class="stage shot ts" aria-hidden="true" style="--ar:900/506">
+            <img class="ts-o" src="media/tile-video-en.webp" width="900" height="506" alt="" loading="lazy" decoding="async">
+            <img class="ts-n" width="900" height="506" alt="" decoding="async">
+            <span class="play" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13l11-6.5z"/></svg></span><span class="subt"><span class="ts-sub" lang="en">Of all the strange things that happen up there, however, it is possible that the strangest happens to coffee.</span></span>
+            <span class="ts-beam" aria-hidden="true"></span>
+          </div>
           <h3 data-t="t3">Видео</h3><p data-t="t3s">С готовыми субтитрами</p>
+          <div class="tl-langs" role="group" aria-label="Перевод на:" data-ta="aria-label:langInto"></div>
         </article>
-        <article class="tile rv" style="--d:.08s">
-          <div class="stage shot" aria-hidden="true"><img src="media/tile-scan.webp" width="400" height="584" alt="" loading="lazy" decoding="async" style="object-position:50% 12%"><span class="sweep"></span><span class="tag"><span class="cyc" data-cyc="scan" dir="auto">Пёстрые рассказы</span></span></div>
+        <article class="tile rv" data-tile="scan" data-src="RU" style="--d:.08s">
+          <div class="stage shot ts" aria-hidden="true" style="--ar:1000/456">
+            <img class="ts-o" src="media/tile-scan-ru.webp" width="1000" height="456" alt="" loading="lazy" decoding="async">
+            <img class="ts-n" width="1000" height="456" alt="" decoding="async">
+            <span class="ts-beam" aria-hidden="true"></span>
+          </div>
           <h3 data-t="t4">Сканы и фото</h3><p data-t="t4s">Прочитаем даже текст на картинке</p>
+          <div class="tl-langs" role="group" aria-label="Перевод на:" data-ta="aria-label:langInto"></div>
         </article>
       </div>
     </div>
@@ -850,7 +895,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       about: "О сервисе", terms: "Оферта", privacy: "Персональные данные",
       mockH: "Открываем редактор", mockNoFile: "Файл выберете в редакторе", mockClose: "Понятно",
       mockNote: "Это макет. На сайте файл сразу откроется в редакторе с выбранными языками.",
-      tr1: "Первая страница бесплатно", tr2: "Ваш файл закрыт от других", tr3: "Без подписки: платите за страницы", tr4: "Цифры сверяем автоматически", exH: "Примеры работ", exSub: "Нажимайте и смотрите.", sample: "Настоящий перевод", tabBook: "Книга", tabPaper: "Статья", tabVideo: "Видео", tabScan: "Фото", bookOpen: "Открыть книгу", bookNext: "Перелистнуть", bookClose: "Закрыть книгу", langInto: "Перевод на:", baOrig: "Оригинал", baTr: "Перевод", baBoth: "Сравнить", baHint: "Потяните ползунок", vidSubs: "Субтитры:", vidBoth: "Два языка", play: "Смотреть", pause: "Пауза", scanGo: "Прочитать и перевести", scanBack: "Показать оригинал", chkO: "Оригинал", chkRaw: "Перевод без проверки", chkFix: "После проверки", chkFound: "В оригинале 300, а не 30", chkOk: "Исправлено", chkBtn: "Проверить цифры", chkAgain: "Ещё раз", revH: "Что говорят о нас", revNote: "Образцы. Заменим на настоящие отзывы.", rev1n: "Дилноза Каримова", rev1i: "ДК", rev2n: "Рустам Юсупов", rev2i: "РЮ", rev3n: "Анна Ли", rev3i: "АЛ", rev1: "Перевела учебник на 300 страниц за один день. Таблицы остались на месте.", rev1r: "Доцент, Самарканд", rev2: "Субтитры к лекции на трёх языках. Студенты наконец всё понимают.", rev2r: "Методист, Бухара", rev3: "Видеоотзыв", rev3r: "Переводчик, Ташкент", scAltO: "Табличка в музее, оригинал", scAltT: "Та же табличка, перевод:", credits: "Все примеры переведены нашим сервисом. Источники: А. П. Чехов, «Толстый и тонкий» (1883) и фото разворота и титульного листа «Пёстрых рассказов» (1886, <a href=\"https://commons.wikimedia.org/wiki/File:%D0%A7%D0%B5%D1%85%D0%BE%D0%B2_%D0%90.%D0%9F._%D0%9F%D0%B5%D1%81%D1%82%D1%80%D1%8B%D0%B5_%D1%80%D0%B0%D1%81%D1%81%D0%BA%D0%B0%D0%B7%D1%8B._(1886)._%E2%80%94_%D1%82%D0%B8%D1%82%D1%83%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9_%D0%BB%D0%B8%D1%81%D1%82.jpg\" target=\"_blank\" rel=\"noopener\">титул</a>) — общественное достояние, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Статья: K. Okano и др., «Sleep quality, duration, and consistency are associated with better academic performance in college students», npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, лицензия <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; показан фрагмент с переводом. Видео: NASA ScienceCasts, «The Zero Gravity Coffee Cup», фрагмент 25 с, общественное достояние; NASA не связано с сервисом. Фото таблички: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0."
+      tr1: "Первая страница бесплатно", tr2: "Ваш файл закрыт от других", tr3: "Без подписки: платите за страницы", tr4: "Цифры сверяем автоматически", exH: "Примеры работ", exSub: "Нажимайте и смотрите.", sample: "Настоящий перевод", tabBook: "Книга", tabPaper: "Статья", tabVideo: "Видео", tabScan: "Фото", bookOpen: "Открыть книгу", bookNext: "Перелистнуть", bookClose: "Закрыть книгу", langInto: "Перевод на:", baOrig: "Оригинал", baTr: "Перевод", baBoth: "Сравнить", baHint: "Потяните ползунок", vidSubs: "Субтитры:", vidBoth: "Два языка", play: "Смотреть", pause: "Пауза", scanGo: "Прочитать и перевести", scanBack: "Показать оригинал", chkO: "Оригинал", chkRaw: "Перевод без проверки", chkFix: "После проверки", chkFound: "В оригинале 300, а не 30", chkOk: "Исправлено", chkBtn: "Проверить цифры", chkAgain: "Ещё раз", revH: "Что говорят о нас", revNote: "Образцы. Заменим на настоящие отзывы.", rev1n: "Дилноза Каримова", rev1i: "ДК", rev2n: "Рустам Юсупов", rev2i: "РЮ", rev3n: "Анна Ли", rev3i: "АЛ", rev1: "Перевела учебник на 300 страниц за один день. Таблицы остались на месте.", rev1r: "Доцент, Самарканд", rev2: "Субтитры к лекции на трёх языках. Студенты наконец всё понимают.", rev2r: "Методист, Бухара", rev3: "Видеоотзыв", rev3r: "Переводчик, Ташкент", tlOrig: "оригинал", tlMore: "Другие языки", scAltO: "Табличка в музее, оригинал", scAltT: "Та же табличка, перевод:", credits: "Все примеры переведены нашим сервисом. Источники: А. П. Чехов, «Толстый и тонкий» (1883) и фото разворота «Пёстрых рассказов» (1886) — общественное достояние, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Статья: K. Okano и др., «Sleep quality, duration, and consistency are associated with better academic performance in college students», npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, лицензия <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; показан фрагмент с переводом. Видео: NASA ScienceCasts, «The Zero Gravity Coffee Cup», фрагмент 25 с, общественное достояние; NASA не связано с сервисом. Документ на плитке «Сканы и фото»: справка о подготовке к открытию ВСХВ, 5 мая 1940 г., машинопись, Главархив Москвы, <a href=\"https://commons.wikimedia.org/wiki/File:VSKHV_document_May_1940.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; показан фрагмент с переводом. Фото таблички: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0."
     },
     uz: {
       title: "SimpleTranslate: istalgan tilga bir bosishda tarjima",
@@ -876,7 +921,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       about: "Xizmat haqida", terms: "Oferta", privacy: "Shaxsiy ma'lumotlar",
       mockH: "Muharrir ochilmoqda", mockNoFile: "Faylni muharrirda tanlaysiz", mockClose: "Tushunarli",
       mockNote: "Bu maket. Saytda fayl tanlangan tillar bilan darhol muharrirda ochiladi.",
-      tr1: "Birinchi bet bepul", tr2: "Faylingiz boshqalardan yopiq", tr3: "Obunasiz: faqat betlar uchun to‘lov", tr4: "Raqamlar avtomatik tekshiriladi", exH: "Ishlarimizdan namunalar", exSub: "Bosing va ko‘ring.", sample: "Haqiqiy tarjima", tabBook: "Kitob", tabPaper: "Maqola", tabVideo: "Video", tabScan: "Rasm", bookOpen: "Kitobni ochish", bookNext: "Varaqlash", bookClose: "Kitobni yopish", langInto: "Tarjima tili:", baOrig: "Asl nusxa", baTr: "Tarjima", baBoth: "Solishtirish", baHint: "Slayderni torting", vidSubs: "Subtitrlar:", vidBoth: "Ikki til", play: "Ko‘rish", pause: "Pauza", scanGo: "O‘qish va tarjima qilish", scanBack: "Asl nusxani ko‘rsatish", chkO: "Asl nusxa", chkRaw: "Tekshiruvsiz tarjima", chkFix: "Tekshiruvdan keyin", chkFound: "Asl nusxada 30 emas, 300", chkOk: "Tuzatildi", chkBtn: "Raqamlarni tekshirish", chkAgain: "Yana bir bor", revH: "Biz haqimizda fikrlar", revNote: "Namunalar. Haqiqiy fikrlar bilan almashtiramiz.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "300 betlik darslikni bir kunda tarjima qildim. Jadvallar joyida qoldi.", rev1r: "Dotsent, Samarqand", rev2: "Ma’ruzaga uch tilda subtitrlar. Talabalar endi hammasini tushunishadi.", rev2r: "Metodist, Buxoro", rev3: "Video fikr", rev3r: "Tarjimon, Toshkent", scAltO: "Muzeydagi lavha, asl nusxa", scAltT: "Oʻsha lavha, tarjima:", credits: "Barcha misollarni xizmatimiz tarjima qilgan. Manbalar: A. P. Chexov, «Semiz va ozgʻin» (1883) va «Rang-barang hikoyalar» (1886) kitobi sahifalari va <a href=\"https://commons.wikimedia.org/wiki/File:%D0%A7%D0%B5%D1%85%D0%BE%D0%B2_%D0%90.%D0%9F._%D0%9F%D0%B5%D1%81%D1%82%D1%80%D1%8B%D0%B5_%D1%80%D0%B0%D1%81%D1%81%D0%BA%D0%B0%D0%B7%D1%8B._(1886)._%E2%80%94_%D1%82%D0%B8%D1%82%D1%83%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9_%D0%BB%D0%B8%D1%81%D1%82.jpg\" target=\"_blank\" rel=\"noopener\">titul varagʻi</a> surati — jamoat mulki, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Maqola: K. Okano va boshq., «Sleep quality, duration, and consistency are associated with better academic performance in college students», npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, litsenziya <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; tarjimasi bilan parcha koʻrsatilgan. Video: NASA ScienceCasts, «The Zero Gravity Coffee Cup», 25 soniyalik parcha, jamoat mulki; NASA xizmatga aloqador emas. Lavha surati: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0."
+      tr1: "Birinchi bet bepul", tr2: "Faylingiz boshqalardan yopiq", tr3: "Obunasiz: faqat betlar uchun to‘lov", tr4: "Raqamlar avtomatik tekshiriladi", exH: "Ishlarimizdan namunalar", exSub: "Bosing va ko‘ring.", sample: "Haqiqiy tarjima", tabBook: "Kitob", tabPaper: "Maqola", tabVideo: "Video", tabScan: "Rasm", bookOpen: "Kitobni ochish", bookNext: "Varaqlash", bookClose: "Kitobni yopish", langInto: "Tarjima tili:", baOrig: "Asl nusxa", baTr: "Tarjima", baBoth: "Solishtirish", baHint: "Slayderni torting", vidSubs: "Subtitrlar:", vidBoth: "Ikki til", play: "Ko‘rish", pause: "Pauza", scanGo: "O‘qish va tarjima qilish", scanBack: "Asl nusxani ko‘rsatish", chkO: "Asl nusxa", chkRaw: "Tekshiruvsiz tarjima", chkFix: "Tekshiruvdan keyin", chkFound: "Asl nusxada 30 emas, 300", chkOk: "Tuzatildi", chkBtn: "Raqamlarni tekshirish", chkAgain: "Yana bir bor", revH: "Biz haqimizda fikrlar", revNote: "Namunalar. Haqiqiy fikrlar bilan almashtiramiz.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "300 betlik darslikni bir kunda tarjima qildim. Jadvallar joyida qoldi.", rev1r: "Dotsent, Samarqand", rev2: "Ma’ruzaga uch tilda subtitrlar. Talabalar endi hammasini tushunishadi.", rev2r: "Metodist, Buxoro", rev3: "Video fikr", rev3r: "Tarjimon, Toshkent", tlOrig: "asl nusxa", tlMore: "Boshqa tillar", scAltO: "Muzeydagi lavha, asl nusxa", scAltT: "Oʻsha lavha, tarjima:", credits: "Barcha misollarni xizmatimiz tarjima qilgan. Manbalar: A. P. Chexov, «Semiz va ozgʻin» (1883) va «Rang-barang hikoyalar» (1886) kitobi sahifalari surati — jamoat mulki, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Maqola: K. Okano va boshq., «Sleep quality, duration, and consistency are associated with better academic performance in college students», npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, litsenziya <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; tarjimasi bilan parcha koʻrsatilgan. Video: NASA ScienceCasts, «The Zero Gravity Coffee Cup», 25 soniyalik parcha, jamoat mulki; NASA xizmatga aloqador emas. «Skan va rasmlar» plitkasidagi hujjat: Butunittifoq qishloq xoʻjaligi koʻrgazmasini ochishga tayyorgarlik haqida maʼlumotnoma, 1940-yil 5-may, mashinkada yozilgan, Moskva Bosh arxivi, <a href=\"https://commons.wikimedia.org/wiki/File:VSKHV_document_May_1940.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; tarjimasi bilan parcha koʻrsatilgan. Lavha surati: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0."
     },
     en: {
       title: "SimpleTranslate: translate into any language in one click",
@@ -902,7 +947,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       about: "About", terms: "Terms", privacy: "Privacy",
       mockH: "Opening the editor", mockNoFile: "You will pick the file in the editor", mockClose: "Got it",
       mockNote: "This is a mockup. On the live site, the file opens in the editor right away with the languages you picked.",
-      tr1: "First page free", tr2: "Your file stays private", tr3: "No subscription: pay per page", tr4: "Numbers checked automatically", exH: "Examples of our work", exSub: "Tap and see.", sample: "Real translation", tabBook: "Book", tabPaper: "Paper", tabVideo: "Video", tabScan: "Photo", bookOpen: "Open the book", bookNext: "Turn the page", bookClose: "Close the book", langInto: "Translated into:", baOrig: "Original", baTr: "Translation", baBoth: "Compare", baHint: "Drag the slider", vidSubs: "Subtitles:", vidBoth: "Two languages", play: "Play", pause: "Pause", scanGo: "Read and translate", scanBack: "Show the original", chkO: "Original", chkRaw: "Unchecked translation", chkFix: "After the check", chkFound: "The original says 300, not 30", chkOk: "Fixed", chkBtn: "Check the numbers", chkAgain: "Once more", revH: "What people say", revNote: "Samples. We will replace them with real reviews.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "I translated a 300-page textbook in one day. The tables stayed in place.", rev1r: "Associate professor, Samarkand", rev2: "Lecture subtitles in three languages. Students finally understand everything.", rev2r: "Curriculum specialist, Bukhara", rev3: "Video review", rev3r: "Translator, Tashkent", scAltO: "A museum sign, original", scAltT: "The same sign, translated into", credits: "Every example was translated by our service. Sources: A. P. Chekhov, “The Fat and the Thin” (1883), and photos of a spread and the <a href=\"https://commons.wikimedia.org/wiki/File:%D0%A7%D0%B5%D1%85%D0%BE%D0%B2_%D0%90.%D0%9F._%D0%9F%D0%B5%D1%81%D1%82%D1%80%D1%8B%D0%B5_%D1%80%D0%B0%D1%81%D1%81%D0%BA%D0%B0%D0%B7%D1%8B._(1886)._%E2%80%94_%D1%82%D0%B8%D1%82%D1%83%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9_%D0%BB%D0%B8%D1%81%D1%82.jpg\" target=\"_blank\" rel=\"noopener\">title page</a> of “Motley Stories” (1886) — public domain, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Paper: K. Okano et al., “Sleep quality, duration, and consistency are associated with better academic performance in college students”, npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, licensed <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; an excerpt is shown with its translation. Video: NASA ScienceCasts, “The Zero Gravity Coffee Cup”, a 25-second excerpt, public domain; NASA is not affiliated with the service. Sign photo: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0."
+      tr1: "First page free", tr2: "Your file stays private", tr3: "No subscription: pay per page", tr4: "Numbers checked automatically", exH: "Examples of our work", exSub: "Tap and see.", sample: "Real translation", tabBook: "Book", tabPaper: "Paper", tabVideo: "Video", tabScan: "Photo", bookOpen: "Open the book", bookNext: "Turn the page", bookClose: "Close the book", langInto: "Translated into:", baOrig: "Original", baTr: "Translation", baBoth: "Compare", baHint: "Drag the slider", vidSubs: "Subtitles:", vidBoth: "Two languages", play: "Play", pause: "Pause", scanGo: "Read and translate", scanBack: "Show the original", chkO: "Original", chkRaw: "Unchecked translation", chkFix: "After the check", chkFound: "The original says 300, not 30", chkOk: "Fixed", chkBtn: "Check the numbers", chkAgain: "Once more", revH: "What people say", revNote: "Samples. We will replace them with real reviews.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "I translated a 300-page textbook in one day. The tables stayed in place.", rev1r: "Associate professor, Samarkand", rev2: "Lecture subtitles in three languages. Students finally understand everything.", rev2r: "Curriculum specialist, Bukhara", rev3: "Video review", rev3r: "Translator, Tashkent", tlOrig: "original", tlMore: "Other languages", scAltO: "A museum sign, original", scAltT: "The same sign, translated into", credits: "Every example was translated by our service. Sources: A. P. Chekhov, “The Fat and the Thin” (1883), and a photo of a spread of “Motley Stories” (1886) — public domain, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Paper: K. Okano et al., “Sleep quality, duration, and consistency are associated with better academic performance in college students”, npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, licensed <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; an excerpt is shown with its translation. Video: NASA ScienceCasts, “The Zero Gravity Coffee Cup”, a 25-second excerpt, public domain; NASA is not affiliated with the service. Document on the “Scans and photos” tile: a memo on preparations for opening the All-Union Agricultural Exhibition, 5 May 1940, typewritten, Moscow Main Archive, <a href=\"https://commons.wikimedia.org/wiki/File:VSKHV_document_May_1940.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; an excerpt is shown with its translation. Sign photo: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0."
     }
   };
   var PAGE_SRC = { ru: "RU", uz: "UZ", en: "EN" };
@@ -927,7 +972,6 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       "AR": "إجمالًا، بلغ متوسط مدة نوم المشاركين طوال الفصل الدراسي بأكمله 7 س 8 د.",
       "HI": "कुल मिलाकर, पूरे सेमेस्टर के दौरान प्रतिभागियों की नींद की औसत अवधि 7 घं 8 मि थी।"
   };
-  var CYC = {"book": {"RU": "Смерть чиновника", "EN": "The Death of a Government Official", "UZ": "Amaldorning oʻlimi", "ZH": "官员之死", "AR": "موت موظف حكومي"}, "paper": {"EN": "INTRODUCTION", "RU": "ВВЕДЕНИЕ", "UZ": "KIRISH"}, "video": {"EN": "Of all the strange things that happen up there, however, it is possible that the strangest happens to coffee.", "RU": "Но из всего странного, что там происходит, самое странное, возможно, случается с кофе.", "UZ": "Ammo u yerdagi gʻalati hodisalarning eng gʻalatisi qahva bilan yuz berishi mumkin.", "ZH": "那里怪事虽多，咖啡的遭遇或许最奇特。", "AR": "لكن لعل أغرب ما يحدث هناك يحدث للقهوة."}, "scan": {"RU": "Пёстрые рассказы", "EN": "Motley Stories", "UZ": "Rang-barang hikoyalar", "ZH": "杂色故事集", "AR": "حكايات متنوعة"}};
   var CYC_ORDER = ["RU", "EN", "UZ", "DE", "ZH", "AR", "TR", "ES", "KO", "FR", "JA", "HI"];
 
   var $ = function (id) { return document.getElementById(id); };
@@ -1198,24 +1242,6 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     }, ms);
   }
 
-  /* ---------- Плитки: заголовки меняют язык по кругу ---------- */
-  /* Каждая плитка ходит по СВОИМ языкам: перевод есть не на все. */
-  var cycEls = [].slice.call(document.querySelectorAll("[data-cyc]")), cycI = 0;
-  function cycTick() {
-    if (reduced() || document.hidden) return;
-    cycI++;
-    cycEls.forEach(function (el, k) {
-      var d = CYC[el.getAttribute("data-cyc")], codes = Object.keys(d), code = codes[cycI % codes.length];
-      setTimeout(function () {
-        el.classList.add("out");
-        setTimeout(function () {
-          el.textContent = d[code]; el.lang = code.toLowerCase(); el.dir = code === "AR" ? "rtl" : "ltr";
-          el.classList.remove("out");
-        }, 450);
-      }, k * 160);
-    });
-  }
-  setInterval(cycTick, 2800);
 
   /* ---------- Языки: две ленты, нажатие выбирает язык перевода ---------- */
   function fillRow(el, codes) {
@@ -1448,7 +1474,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
 
   /* Видео: субтитры по времени, язык меняется на лету, можно два языка сразу. */
   var CUES = [[1.16, 7.78], [8.8, 10.86], [11.62, 13.6], [14.58, 17.28], [18.44, 24.38]], VLEN = 25.4;
-  var SUBS = {"EN": ["High above our planet in the realm of satellites and space stations, the familiar rules of Earth do not apply.", "The midday sky is as black as night.", "There is no up and no down.", "Dropped objects don't fall and hot air doesn't rise.", "Of all the strange things that happen up there, however, it is possible that the strangest happens to coffee."], "RU": ["Высоко над Землёй, среди спутников и станций, привычные земные правила не действуют.", "В полдень небо черно, как ночью.", "Нет ни верха, ни низа.", "Вещи не падают, горячий воздух не поднимается.", "Но из всего странного, что там происходит, самое странное, возможно, случается с кофе."], "UZ": ["Sayyoramiz uzra yoʻldoshlar va kosmik stansiyalarda Yerning odatiy qoidalari amal qilmaydi.", "Peshin osmoni tun kabi qop-qora.", "Yuqori ham yoʻq, past ham yoʻq.", "Tushirilgan jismlar tushmaydi, issiq havo esa koʻtarilmaydi.", "Ammo u yerdagi gʻalati hodisalarning eng gʻalatisi qahva bilan yuz berishi mumkin."], "ZH": ["在卫星和空间站环绕的高空，地球的常规不适用。", "正午天空漆黑如夜。", "没有上下之分。", "掉落的物体不会下落，热空气也不会上升。", "那里怪事虽多，咖啡的遭遇或许最奇特。"], "AR": ["عالياً فوق كوكبنا، في عالم الأقمار الصناعية ومحطات الفضاء، لا تنطبق قواعد الأرض المألوفة.", "سماء الظهيرة سوداء كالليل.", "لا يوجد أعلى ولا أسفل.", "الأشياء التي تُسقط لا تسقط، ولا يصعد الهواء الساخن.", "لكن لعل أغرب ما يحدث هناك يحدث للقهوة."]};
+  var SUBS = {"EN": ["High above our planet in the realm of satellites and space stations, the familiar rules of Earth do not apply.", "The midday sky is as black as night.", "There is no up and no down.", "Dropped objects don't fall and hot air doesn't rise.", "Of all the strange things that happen up there, however, it is possible that the strangest happens to coffee."], "RU": ["Высоко над Землёй, среди спутников и станций, привычные земные правила не действуют.", "В полдень небо черно, как ночью.", "Нет ни верха, ни низа.", "Вещи не падают, горячий воздух не поднимается.", "Но из всего странного, что там происходит, самое странное, возможно, случается с кофе."], "UZ": ["Sayyoramiz uzra yoʻldoshlar va kosmik stansiyalarda Yerning odatiy qoidalari amal qilmaydi.", "Peshin osmoni tun kabi qop-qora.", "Yuqori ham yoʻq, past ham yoʻq.", "Tushirilgan jismlar tushmaydi, issiq havo esa koʻtarilmaydi.", "Ammo u yerdagi gʻalati hodisalarning eng gʻalatisi qahva bilan yuz berishi mumkin."], "ZH": ["在卫星和空间站环绕的高空，地球的常规不适用。", "正午天空漆黑如夜。", "没有上下之分。", "掉落的物体不会下落，热空气也不会上升。", "那里怪事虽多，咖啡的遭遇或许最奇特。"], "AR": ["عالياً فوق كوكبنا، في عالم الأقمار الصناعية ومحطات الفضاء، لا تنطبق قواعد الأرض المألوفة.", "سماء الظهيرة سوداء كالليل.", "لا يوجد أعلى ولا أسفل.", "الأشياء التي تُسقط لا تسقط، ولا يصعد الهواء الساخن.", "لكن لعل أغرب ما يحدث هناك يحدث للقهوة."], "KK": ["Ғаламшарымыздан жоғары, серіктер мен ғарыш станциялары әлемінде Жердің таныс заңдары жүрмейді.", "Тал түс аспаны түндей қара.", "Жоғары да, төмен де жоқ.", "Құлаған заттар түспейді, ыстық ауа көтерілмейді.", "Ал ондағы тосын жайттардың ең тосыны кофенің басына түсуі мүмкін."]};
   var player = $("player"), prog = $("prog"), fill = $("fill");
   var vpLang = LANG0 === "uz" ? "UZ" : "RU", vpBoth = false, vpT = 2, vpLast = 0, vpRaf = 0, vpPlaying = false, vpCue = -2, vpTouched = false, vpVisible = false;
   CUES.forEach(function (c) {
@@ -1501,7 +1527,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     var r = prog.getBoundingClientRect();
     vpT = Math.max(0, Math.min(VLEN - 0.01, (e.clientX - r.left) / r.width * VLEN)); vv.currentTime = vpT; vpDraw(true);
   });
-  chipRow($("vp-langs"), ["EN", "RU", "UZ", "ZH", "AR"], vpLang, function (c) { vpLang = c; vpDraw(true); });
+  chipRow($("vp-langs"), ["EN", "RU", "UZ", "ZH", "KK", "AR"], vpLang, function (c) { vpLang = c; vpDraw(true); });
   $("vp-both").addEventListener("click", function () { vpBoth = !vpBoth; this.setAttribute("aria-pressed", String(vpBoth)); vpDraw(true); });
   if ("IntersectionObserver" in window) {
     new IntersectionObserver(function (es) {
@@ -1541,6 +1567,106 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   scRender(); scSet(0);
 
   showTab("book");
+
+  /* ---------- Плитки «Что переводим»: кнопки языков и «сканирование» ----------
+     Картинки перевода — выгрузка «в исходном виде» самой системы
+     (tools/landing_tiles.py): та же вёрстка, текст перерисован на месте. */
+  var TL_LANGS = ["EN", "UZ", "ZH", "KK", "AR"], TL_DUR = 1250;
+  function tlUrl(k, c) { return "media/tile-" + k + "-" + c.toLowerCase() + ".webp"; }
+  function tlReady(img) {
+    if (img.complete && img.naturalWidth) return Promise.resolve();
+    return new Promise(function (ok) {
+      function done() { img.removeEventListener("load", done); img.removeEventListener("error", done); ok(); }
+      img.addEventListener("load", done); img.addEventListener("error", done);
+    });
+  }
+  function tlServiceUrl(src, tgt) {
+    var q = new URLSearchParams(location.search);
+    q.set("start", "translate"); q.set("src", src); q.set("tgt", tgt); q.set("lang", lang);
+    return APP + "/?" + q.toString();
+  }
+  var tiles = [].slice.call(document.querySelectorAll("[data-tile]")).map(function (el, n) {
+    var st = el.querySelector(".ts");
+    var T = { n: n, k: el.getAttribute("data-tile"), src: el.getAttribute("data-src"), el: el, st: st,
+      o: st.querySelector(".ts-o"), nw: st.querySelector(".ts-n"), sub: st.querySelector(".ts-sub"), subBox: st.querySelector(".subt"),
+      want: null, timers: [], touched: false, visible: false, btns: {} };
+    T.cur = T.want = T.src;
+    T.codes = [T.src].concat(TL_LANGS.filter(function (c) { return c !== T.src; }));
+    var box = el.querySelector(".tl-langs");
+    T.codes.forEach(function (c) {
+      var b = document.createElement("button");
+      b.type = "button"; b.className = "mini"; b.lang = c.toLowerCase(); b.textContent = NATIVE[c] || c;
+      if (c === T.src) { var sm = document.createElement("small"); sm.setAttribute("data-t", "tlOrig"); sm.textContent = t("tlOrig"); b.appendChild(sm); }
+      b.setAttribute("aria-pressed", c === T.src ? "true" : "false");
+      b.addEventListener("click", function () { T.touched = true; tlGo(T, c); });
+      box.appendChild(b); T.btns[c] = b;
+    });
+    /* Остальные языки каталога: выбор сразу ведёт в сервис с этой парой. */
+    var wrap = document.createElement("span"); wrap.className = "tl-other";
+    var sel = document.createElement("select"); sel.setAttribute("data-ta", "aria-label:tlMore"); sel.setAttribute("aria-label", t("tlMore"));
+    var o0 = document.createElement("option"); o0.value = ""; o0.setAttribute("data-t", "tlMore"); o0.textContent = t("tlMore"); sel.appendChild(o0);
+    LANGS.map(function (x) { return x[0]; }).filter(function (c) { return T.codes.indexOf(c) < 0; })
+      .sort(function (a, b) { return NATIVE[a].localeCompare(NATIVE[b]); })
+      .forEach(function (c) { var o = document.createElement("option"); o.value = c; o.lang = c.toLowerCase(); o.textContent = NATIVE[c]; sel.appendChild(o); });
+    sel.addEventListener("change", function () { if (sel.value) location.href = tlServiceUrl(T.src, sel.value); });
+    wrap.appendChild(sel); box.appendChild(wrap);
+    return T;
+  });
+  function tlGo(T, c) {
+    if (c === T.want) return;
+    T.timers.forEach(clearTimeout); T.timers = [];
+    T.want = c;
+    T.codes.forEach(function (x) { T.btns[x].setAttribute("aria-pressed", x === c ? "true" : "false"); });
+    var still = reduced();
+    if (T.k === "video") {
+      function swap() {
+        T.sub.textContent = SUBS[c][4]; T.sub.lang = c.toLowerCase(); T.sub.dir = isRtl(c) ? "rtl" : "ltr";
+        T.subBox.classList.remove("swap"); T.cur = c;
+      }
+      if (still) { swap(); return; }
+      T.st.classList.remove("ts-run"); void T.st.offsetWidth; T.st.classList.add("ts-run");
+      T.timers.push(setTimeout(function () { T.subBox.classList.add("swap"); }, TL_DUR * 0.62));
+      T.timers.push(setTimeout(swap, TL_DUR * 0.62 + 300));
+      T.timers.push(setTimeout(function () { T.st.classList.remove("ts-run"); }, TL_DUR + 50));
+      return;
+    }
+    var url = tlUrl(T.k, c);
+    if (still) { T.o.src = url; T.cur = c; return; }
+    T.st.classList.remove("ts-run");
+    T.nw.src = url;
+    tlReady(T.nw).then(function () {
+      if (T.want !== c) return;
+      void T.st.offsetWidth; T.st.classList.add("ts-run");
+      T.timers.push(setTimeout(function () {
+        if (T.want !== c) return;
+        /* Проявившийся слой становится основным — без перезагрузки картинки
+           и без кадра пустоты между ними. */
+        var was = T.o; T.o = T.nw; T.nw = was;
+        T.o.className = "ts-o"; T.nw.className = "ts-n";
+        T.st.classList.remove("ts-run"); T.cur = c;
+      }, TL_DUR + 30));
+    });
+  }
+  /* Пока плитка на экране и её не трогали, языки меняются сами — по очереди
+     с соседями, чтобы сканы не шли все разом. Следующая картинка грузится заранее. */
+  function tlNext(T) { return T.codes[(T.codes.indexOf(T.want) + 1) % T.codes.length]; }
+  function tlPreload(T) { if (T.k !== "video") { var im = new Image(); im.src = tlUrl(T.k, tlNext(T)); } }
+  var tlTick = 0;
+  if ("IntersectionObserver" in window) {
+    var tlOb = new IntersectionObserver(function (es) {
+      es.forEach(function (e) {
+        tiles.forEach(function (T) { if (T.el === e.target) { T.visible = e.isIntersecting; if (T.visible) tlPreload(T); } });
+      });
+    }, { threshold: 0.4 });
+    tiles.forEach(function (T) { tlOb.observe(T.el); });
+    setInterval(function () {
+      if (reduced() || document.hidden) return;
+      var T = tiles[tlTick++ % tiles.length];
+      if (!T.visible || T.touched) return;
+      tlGo(T, tlNext(T));
+      setTimeout(function () { tlPreload(T); }, TL_DUR + 200);
+    }, 1400);
+  }
 
   /* ---------- «Проверить цифры» ---------- */
   var chk = $("chk"), chkBtn = $("chk-btn"), chkSt = 0, chkTm = 0;

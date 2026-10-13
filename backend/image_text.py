@@ -315,6 +315,27 @@ def _text_join(k: dict, l: dict) -> None:
     k["text"] = (a[:-1] + b) if a.endswith("-") and b[:1].islower() else (a + " " + b)
 
 
+# Перенос по дефису, который ЧТЕНИЕ оставило внутри строки: модель склеивает
+# строки блока пробелом и оставляет «экзеку- торъ», хотя промпт просит
+# склеить слово. Дальше это едет в перевод дословно — 13.10.2026 на развороте
+# Чехова «civil ser- vant», «look- ed», «screw- ed up». Снимаем только «буква,
+# дефис, пробел, строчная буква», и не перед союзом: «двух- и трёхкомнатные»,
+# «pre- and post-test» — висячий дефис, а не перенос.
+_HYPHENS = "-" + chr(0x2010) + chr(0x2011) + chr(0xAD)    # дефис, неразрывный, мягкий перенос
+_HYPH_GAP_RE = re.compile(r"(?<=[^\W\d_])[" + _HYPHENS + r"][ \t]+(?=([^\W\d_]+))", re.UNICODE)
+_SUSPENDED = {"и", "или", "либо", "да", "а", "and", "or", "to", "va", "yoki", "hamda", "және", "немесе",
+              "und", "oder", "et", "ou", "y", "o", "e", "ve", "ya"}
+
+
+def dehyphen(text: str) -> str:
+    def rep(m):
+        nxt = m.group(1)
+        if not nxt[:1].islower() or nxt.lower() in _SUSPENDED:
+            return m.group(0)
+        return ""
+    return _HYPH_GAP_RE.sub(rep, text or "")
+
+
 def _block_text(lines: list) -> str:
     """Текст блока — строки сверху вниз. Перенос по дефису снимается: подпись
     под рисунком разбита на «сооб-щения», и без склейки в сегмент уедет
@@ -546,14 +567,16 @@ def _detect_boxes(eng, arr, k: int) -> list:
         kw["box_thresh"] = float(IMG_BOX_THRESH)
     if IMG_DET_ONLY:
         kw.update(use_det=True, use_cls=False, use_rec=False)
-    elif IMG_WEAK_CONF < IMG_MIN_CONF:
+    else:
         # Движок сам выбрасывает строки с уверенностью чтения ниже 0.5 — ДО нас,
-        # и правило «строка внутри столбца» ниже их иначе не увидело бы.
-        kw["text_score"] = IMG_WEAK_CONF
+        # и правила «строка внутри столбца» ниже их иначе не увидели бы. Порог
+        # ноль: строку, которую распознавалка не прочла вовсе, судит геометрия
+        # (`_column_rescue`), а не её уверенность.
+        kw["text_score"] = 0.0
     res, _elapse = eng(arr, **kw) if kw else eng(arr)
     if IMG_DET_ONLY:
         _warn_if_read_anyway(res)
-    out, weak, bad = [], [], 0
+    out, weak, faint, bad = [], [], [], 0
     for item in (res or []):
         pts, score = _unpack(item)
         if pts is None:
@@ -567,11 +590,11 @@ def _detect_boxes(eng, arr, k: int) -> list:
             continue
         rec = {"box": box, "conf": round(score, 3) if score is not None else None, "flat": 0.0}
         if score is not None and score < IMG_MIN_CONF:
-            if score >= IMG_WEAK_CONF:
-                weak.append(rec)
+            (weak if score >= IMG_WEAK_CONF else faint).append(rec)
             continue
         out.append(rec)
     out += [w for w in weak if _in_column(w["box"], out)]
+    out += _column_rescue([w for w in weak if w not in out] + faint, out)
     # Движок ответил, а разобрать не вышло НИ ОДНОЙ записи — это смена формы
     # ответа (другая версия пакета), а не картинка без надписей. Разница
     # несущая: пустой список объявит картинку прочитанной навсегда, и платное
@@ -614,6 +637,50 @@ def _in_column(box: list, strong: list) -> bool:
         if 0 <= o[1] - box[3] <= 0.8 * h:
             below = True
     return above and below
+
+
+# Строка, которой распознавалка движка поставила НОЛЬ, — не обязательно
+# мусор. 13.10.2026 на машинописной справке 1940 г. (лендинг, «Сканы и фото»)
+# три строки из десяти получили 0.0 и пустой текст: латинско-китайская
+# распознавалка не узнала в выцветшей ленте ни одной буквы, и строки пропали —
+# их не перевели, а на переведённой картинке они остались русскими посреди
+# английского. Правило `_in_column` их не спасает: оно берёт только слабые
+# (от `IMG_WEAK_CONF`) и только между ДВУМЯ уверенными, а пропавшие стояли
+# подряд и последними в абзаце. Здесь признак другой — ГЕОМЕТРИЯ столбца:
+# строка той же высоты, выровненная с уверенными строками по левому или
+# правому краю (абзацный отступ ломает левый край, обрыв абзаца — правый),
+# не короче 0.6 их ширины и вплотную к одной из них сверху или снизу. Пятно
+# и обрывок рисунка такой рамки не дают. Цепочкой: спасённая строка сама
+# становится соседом следующей. Только добавляет найденное.
+IMG_COL_WIDTH = float(os.environ.get("IMG_COL_WIDTH", "0.6"))
+
+
+def _column_rescue(cands: list, strong: list) -> list:
+    got: list = []
+    pool = list(strong)
+    changed = True
+    while changed and cands:
+        changed = False
+        for c in list(cands):
+            box = c["box"]
+            h = box[3] - box[1]
+            if h <= 0:
+                cands.remove(c)
+                continue
+            mates = [s["box"] for s in pool
+                     if abs((s["box"][3] - s["box"][1]) - h) <= 0.3 * h
+                     and (abs(s["box"][0] - box[0]) <= h or abs(s["box"][2] - box[2]) <= h)]
+            if len(mates) < 2:
+                continue
+            widths = sorted(m[2] - m[0] for m in mates)
+            if box[2] - box[0] < IMG_COL_WIDTH * widths[len(widths) // 2]:
+                continue
+            if any(0 <= box[1] - m[3] <= 0.8 * h or 0 <= m[1] - box[3] <= 0.8 * h for m in mates):
+                cands.remove(c)
+                got.append(c)
+                pool.append(c)
+                changed = True
+    return got
 
 
 _DET_ONLY_WARNED = False
@@ -885,6 +952,40 @@ def _join_pieces(lines: list) -> list:
     return out
 
 
+# Кусок строки, который детектор отдал ОТДЕЛЬНОЙ рамкой и который не встал
+# ни в одну строку, — а лежит внутри чужого абзаца. 13.10.2026 на развороте
+# «Пёстрых рассказов» (лендинг, «Книги») слово «одинъ» сразу за буквицей
+# получило свою рамку пониже строки, стало блоком из одной строки, модель
+# прочла его «ОДИНЬ», и перевод встал поверх абзаца вторым текстом: «Один»
+# в английском, «奥丁» (бог Óдин) в китайском. Кроп абзаца это слово и так
+# накрывает — абзац прочитан с ним вместе. Блок из одной строки, лежащий
+# в многострочном блоке на `IMG_INNER_COVER` своей площади, — повтор, а не
+# текст. Текст браузерного чтения такой кусок не теряет: он уходит, только
+# если его нет или он уже есть в тексте абзаца.
+IMG_INNER_COVER = float(os.environ.get("IMG_INNER_COVER", "0.7"))
+
+
+def _drop_inner(blocks: list) -> list:
+    def area(b):
+        return max(1, b[2] - b[0]) * max(1, b[3] - b[1])
+
+    def inter(a, b):
+        w = min(a[2], b[2]) - max(a[0], b[0])
+        h = min(a[3], b[3]) - max(a[1], b[1])
+        return max(0, w) * max(0, h)
+
+    out = []
+    for b in blocks:
+        if len(b["lines"]) == 1:
+            own = _text_of(b["lines"][0]).lower()
+            host = next((c for c in blocks if c is not b and len(c["lines"]) >= 2
+                         and inter(b["box"], c["box"]) >= IMG_INNER_COVER * area(b["box"])), None)
+            if host is not None and (not own or own in _block_text(host["lines"]).lower()):
+                continue
+        out.append(b)
+    return out
+
+
 def group_blocks(lines: list) -> list:
     """Строки → блоки. Блок — это то, что человек прочитал бы как один текст:
     та же колонка, тот же кегль, строки идут подряд И ВЫРОВНЕНЫ ПО ОДНОМУ КРАЮ.
@@ -930,6 +1031,7 @@ def group_blocks(lines: list) -> list:
                 break
         if not placed:
             blocks.append({"box": [x0, y0, x1, y1], "lines": [ln], "lineH": h, "bg": ln.get("bg")})
+    blocks = _drop_inner(blocks)
     out = []
     for b in blocks:
         out.append({"box": [int(v) for v in b["box"]], "rows": len(b["lines"]),

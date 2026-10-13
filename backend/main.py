@@ -16544,7 +16544,9 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
             continue
         if not (0 <= i < len(blocks)):
             continue
-        out[i] = {"text": (item.get("text") or "").strip(),
+        # Перенос, оставленный чтением посреди строки, снимается здесь, до
+        # сегмента: иначе он доезжает до перевода («civil ser- vant»).
+        out[i] = {"text": image_text.dehyphen((item.get("text") or "").strip()),
                   "overlay": bool(item.get("overlay")),
                   # Вид надписи — у кадра видео (`_frame_read_system`).
                   "kind": str(item.get("kind") or ""),

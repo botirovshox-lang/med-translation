@@ -66,6 +66,17 @@
   система с этим делает. **Каждая новая находка о том, как читать файл
   клиента, записывается туда правилом** (симптом → причина → правило → код →
   тест) и получает тест: находка без правила повторится на следующем файле.
+- **`docs/rules/export-review.md`** — сверка КАЖДОЙ первой выгрузки нового
+  файла с оригиналом «до/после» (решение владельца 13.10.2026): сервер
+  ставит файл в очередь (`exportReviews`, `/api/admin/export-reviews`,
+  только суперпользователю) и пишет в Telegram; агент **в начале каждой
+  сессии** смотрит очередь (`python tools/export_review.py list`), разбирает
+  файл критиками дизайнера и переводчика, сводит дефекты в виды, делает
+  из них правила (код + тест + `pdf-reading.md`), гоняет регрессию на
+  эталонах (проекты 8, 19, 20, 14) и выкатывает только после «ок» владельца.
+  Платные шаги разбора (перевести строки, появившиеся после пересборки;
+  прочитать надписи) — без вопроса до $1 на файл, дороже — спросить; перевод
+  заново готового ради проверки — нет (инвариант 7).
 - **`med_translation/`** — legacy Streamlit-код; из него используются только модули
   (глоссарий TSV в `assets/glossary/`, `medical_qa`, `tm`, `db`, `pipeline`) через `sys.path` в `main.py`.
 - **`med_translation/CLAUDE.md`** — правила отдельного legacy-подпроекта (TM-билдер из PDF), не про этот бэкенд.
@@ -3222,6 +3233,13 @@ node tests/test_landing_handoff_browser.js                          # форма
 python tools/landing_build.py                                        # лендинг пересобран из landing/src
 .venv/bin/python tests/test_pdf_figures.py                           # рисунки книги доезжают до документа
 .venv/bin/python tests/test_pdf_layout_export.py                     # выгрузка PDF «как в оригинале»
+.venv/bin/python tests/test_pdf_rules_t.py                          # правила Т1–Т9, Т18 (сверка выгрузки 7)
+.venv/bin/python tests/test_pdf_rules_split.py                      # Т10–Т15b: маркеры, значки, хвосты, группы надписей
+.venv/bin/python tests/test_pdf_rules_trans.py                      # Т15–Т17: колонтитулы, двойники, легенды
+.venv/bin/python tests/test_pdf_rules_arcs.py                       # Т19–Т26b: дуги
+.venv/bin/python tests/test_pdf_rules_patch.py                      # Т27–Т32: заплатки, комнаты плашек, краска минус слой
+.venv/bin/python tests/test_pdf_rules_fix.py                        # правки раздела Т по финальным критикам
+.venv/bin/python tests/test_export_review.py                        # очередь сверки первой выгрузки
 .venv/bin/python tests/test_glyph_shaper.py                          # вставка любой письменности: HarfBuzz контурами, BudouX
 .venv/bin/python tests/test_pdf_holes.py                             # один источник, история и нарисованное, плашки, варианты « / »
 .venv/bin/python tests/test_pdf_unified.py                           # PDF 1в1: история страницы, один кегль, текст к печати

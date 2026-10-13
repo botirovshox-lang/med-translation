@@ -62,7 +62,18 @@ ANGLE_MIN = float(os.environ.get("PAINT_ANGLE_MIN", "4.0"))
 ANGLE_BOX_WIDE = float(os.environ.get("PAINT_ANGLE_BOX_WIDE", "4.0"))
 ANGLE_ELONG_ARC = float(os.environ.get("PAINT_ANGLE_ELONG_ARC", "1.8"))
 # Радиус окружности дуги — не больше стольких хорд: дальше это прямая.
-ARC_MAX_R = float(os.environ.get("PAINT_ARC_MAX_R", "3.0"))
+ARC_MAX_R = float(os.environ.get("PAINT_ARC_MAX_R", "5.0"))
+# Дуга по ПОВОРОТУ букв (Т22): цепочка середин букв, подогнанная параболой в
+# системе её главной оси, поворачивается от первой буквы к последней не
+# меньше чем на `ARC_TURN_MIN` градусов, а парабола описывает середины заметно
+# лучше прямой (`ARC_QUAD_RATIO`). Буквы дуги — области размером в
+# `ARC_SIZE_BAND` медианной (обломок кромки кольца, 1-пиксельные полоски
+# в подгонку не идут), сторона не меньше `ARC_MIN_SIDE` медианной.
+ARC_TURN_MIN = float(os.environ.get("PAINT_ARC_TURN_MIN", "12"))
+ARC_QUAD_RATIO = float(os.environ.get("PAINT_ARC_QUAD_RATIO", "0.7"))
+ARC_SIZE_BAND = (0.55, 1.6)
+ARC_MIN_SIDE = 0.3
+ARC_OLD = os.environ.get("PAINT_ARC_OLD", "0") == "1"      # 1 — прежняя проверка дуги
 # Радиус inpaint и расширение маски, точек снимка.
 INPAINT_R = 3
 # Участки блока (`_areas`): фон отличается больше этого (по каналу) или
@@ -89,6 +100,11 @@ MASK_MAX_COVER = float(os.environ.get("PAINT_MASK_MAX_COVER", "0.45"))
 # краски надписи.
 INK_NEAR = float(os.environ.get("PAINT_INK_NEAR", "90"))
 MASK_GROW = 2
+# Т31: у прямой строки буква — по высоте области, а не по её большей стороне.
+LETTER_BY_HEIGHT = os.environ.get("PAINT_LETTER_BY_HEIGHT", "1") != "0"
+# Т29: внутренность толстых букв достраивается в маску стирания.
+ERASE_FILL = os.environ.get("PAINT_ERASE_FILL", "1") != "0"
+ERASE_FILL_HULL = 0.25           # на какую долю строки от краски ищется внутренность буквы
 
 _DESC = set("gjpqyQ,;()[]{}/|рудзфщцДЦЩ")
 # Строчные с выносным вверх (латиница, кириллица, греческий): по ним кегль
@@ -208,9 +224,19 @@ def measure(rgb, src: str = "", rows: int = 1, line_h: float = 0.0, inner=None,
         if not keep[k]:
             continue
         cw, ch = st[k, cv2.CC_STAT_WIDTH], st[k, cv2.CC_STAT_HEIGHT]
-        if max(cw, ch) <= lim and st[k, cv2.CC_STAT_AREA] >= 6:
+        # У прямой строки мера буквы — ВЫСОТА области (Т31): соседние жирные
+        # буквы на мелком кропе слипаются в «слово» шириной больше строки,
+        # и по ширине оно отбрасывалось, а доля «буквенной» краски падала
+        # ниже порога («GOALS OF CARE» обложки: 0.35 при кропе 133 пикселя и
+        # 0.73 при 132 — найдено или нет, решал один пиксель).
+        # Высота — мера буквы, но линейка или подчёркивание во всю рамку
+        # буквой не становится: ширина не больше 8 строк, высота — не тонкая
+        # черта.
+        if ((ch if (flat_line and LETTER_BY_HEIGHT and cw <= 8 * lim and ch >= 0.25 * lim)
+             else max(cw, ch)) <= lim
+                and st[k, cv2.CC_STAT_AREA] >= 6):
             comps.append((st[k, cv2.CC_STAT_LEFT] + cw / 2.0, st[k, cv2.CC_STAT_TOP] + ch / 2.0,
-                          max(cw, ch), ch, st[k, cv2.CC_STAT_AREA]))
+                          max(cw, ch), ch, st[k, cv2.CC_STAT_AREA], k))
     letter = None
     if comps:
         # Высота буквы — верхний дециль: точки, запятые и дефисы мелкие,
@@ -307,6 +333,11 @@ def measure(rgb, src: str = "", rows: int = 1, line_h: float = 0.0, inner=None,
             # на ровном участке фотографии (небо, кожа) — нет.
             if alt.get("found") and max(abs(int(a_) - int(b_)) for a_, b_ in
                                         zip(alt.get("ink") or (0, 0, 0), pl[1])) >= PLATE_CONTRAST:
+                ext = _plate_extend(rgb, pl, alt)
+                if ext is not None:
+                    alt2 = measure(rgb, src, rows, line_h, inner, plate=ext)
+                    if alt2.get("found") and int(alt2["mask"].sum()) >= int(alt["mask"].sum()):
+                        alt = alt2
                 return alt
     if not out["found"]:
         out.update(ink=(0, 0, 0) if bg.mean() > 127 else (255, 255, 255), bands=[],
@@ -351,7 +382,18 @@ def measure(rgb, src: str = "", rows: int = 1, line_h: float = 0.0, inner=None,
     letters = [ch for ch in (src or "") if ch.isalpha()]
     tall = (not letters) or any(ch.isupper() or ch in _TALL for ch in (src or "")) \
         or any(ch.isdigit() for ch in (src or ""))
-    em = letter / (0.73 if tall else 0.53)
+    letter_em = letter
+    if (arc or angle) and not ARC_OLD:
+        # Повёрнутая буква (дуга, подпись под углом): высота по ограничивающему
+        # прямоугольнику завышена (Т22) — у букв под 30° на десятки процентов,
+        # кегль выходил крупнее настоящего, а отношение толщины штриха к нему —
+        # меньше порога «полужирный» (проект 14, стр. 12: «STANDING» — 0.118 при
+        # настоящих 0.132). Мера, не зависящая от поворота, — длинная сторона
+        # наименьшего повёрнутого прямоугольника области.
+        lr = _letter_rot(lab, st, comps)
+        if lr:
+            letter_em = min(letter, lr)
+    em = letter_em / (0.73 if tall else 0.53)
     if flat_line:
         # Кегль не больше высоты строки рамки детектора.
         em = min(em, 1.05 * lh)
@@ -363,7 +405,103 @@ def measure(rgb, src: str = "", rows: int = 1, line_h: float = 0.0, inner=None,
         out["pitch"] = float(max(em * 1.2, lh if rows > 1 else em * 1.2))
     out["bold"] = bool(em > 0 and _stem(mask) / em >= BOLD_STEM)
     out["areas"] = _areas(bands, mask, bg_local, out["pitch"])
+    out["rooms"] = _area_rooms(rgb, mask, bands, out["areas"])
+    out["erase_mask"] = _erase_mask(rgb, mask, np.array(out["ink"], dtype=np.int16),
+                                    np.array(out["bg"], dtype=np.int16), lh)
     return out
+
+
+# Т30. Место перевода — по плашке, а не по рамке блока. Симптом: «ЦЕЛИ
+# ЛЕЧЕНИЯ» в зелёном круге (стр. 4) выходило за круг: белые буквы на белом.
+# Причина: ширину и середину перевода брали у рамки БЛОКА — а она по самой
+# широкой строке («Prevent complications»), и верхней строке круга, где хорда
+# уже, это не годилось. Правило: у каждого участка меряется «комната» —
+# отрезок строки, на котором фон остаётся цветом плашки (отличие по каналу
+# не больше `ROOM_BG_DIFF`), от краски наружу до края плашки; край не найден
+# (фон идёт до края вырезки) — стороны нет. Комната только СУЖАЕТ место.
+ROOM_BG_DIFF = float(os.environ.get("PAINT_ROOM_BG_DIFF", "30"))
+ROOM_ROWS = (0.15, 0.85)         # где в полосе строки меряется комната: у верха и у низа
+
+
+def _area_rooms(rgb, mask, bands: list, areas: list) -> list:
+    """[(левый край | None, правый край | None)] по участкам, в точках вырезки."""
+    if not bands or not areas or rgb.ndim != 3:
+        return [(None, None)] * max(1, len(areas))
+    h, w = mask.shape
+    near = cv2.dilate(mask.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(bool)
+    out = []
+    for a0, a1 in areas:
+        lo, hi = None, None
+        for bi in range(a0, a1 + 1):
+            top, bot = bands[bi]
+            cols = np.nonzero(mask[top:bot + 1].any(axis=0))[0]
+            if not len(cols):
+                continue
+            ix0, ix1 = int(cols.min()), int(cols.max())
+            for fr in ROOM_ROWS:
+                y = int(round(top + fr * (bot - top)))
+                ys = slice(max(0, y - 1), min(h, y + 2))
+                px = rgb[ys].astype(np.float32)
+                free = ~near[ys]
+                cnt = free.sum(axis=0)
+                col = np.where(cnt[:, None] > 0,
+                               (px * free[:, :, None]).sum(axis=0) / np.maximum(cnt, 1)[:, None],
+                               np.nan)
+                inside = col[ix0:ix1 + 1]
+                inside = inside[~np.isnan(inside[:, 0])]
+                if not len(inside):
+                    continue
+                ref = np.median(inside, axis=0)
+                bad = np.nan_to_num(np.abs(col - ref).max(axis=1), nan=0.0) > ROOM_BG_DIFF
+                xl = None
+                for x in range(ix0 - 1, -1, -1):
+                    if bad[x]:
+                        xl = x + 1
+                        break
+                xr = None
+                for x in range(ix1 + 1, w):
+                    if bad[x]:
+                        xr = x
+                        break
+                if xl is not None:
+                    lo = xl if lo is None else max(lo, xl)
+                if xr is not None:
+                    hi = xr if hi is None else min(hi, xr)
+        out.append((lo, hi))
+    return out
+
+
+def _erase_mask(rgb, mask, ink, bg, lh: float):
+    """Маска СТИРАНИЯ: маска букв плюс их внутренность. Симптом: на крупных
+    жирных буквах («GOALS OF CARE» в зелёном круге, стр. 4) в переводе
+    оставались белые «облака» — нестёртая середина букв оригинала. Причина:
+    фон — медиана окна 0.6 строки, а штрих жирной заглавной с ним сравним
+    (8 пикселей при окне 23): внутри буквы медиана равна цвету буквы, отличие
+    нулевое, маска — один контур, и inpaint замазывал контур, оставляя
+    белую середину. Правило (Т29): к маске добавляются пиксели цвета краски
+    (ближе к краске, чем к общему фону), лежащие около маски — не дальше
+    `ERASE_FILL_HULL` строки. Только для стирания: замеры идут по `mask`."""
+    if not ERASE_FILL or not mask.any():
+        return mask
+    near = np.abs(rgb.astype(np.int16) - ink).max(axis=2)
+    far = np.abs(rgb.astype(np.int16) - bg).max(axis=2)
+    k = _odd(ERASE_FILL_HULL * max(lh, 4.0), 3, 41)
+    hull = cv2.dilate(mask.astype(np.uint8), np.ones((k, k), np.uint8)).astype(bool)
+    add = hull & (near <= INK_NEAR) & (near <= far) & ~mask
+    if not add.any():
+        return mask
+    # Достраивается только ВНУТРЕННОСТЬ букв: часть добавки, касающаяся края
+    # вырезки или длиннее полутора строк, — это кант, рамка плашки, кольцо
+    # того же цвета рядом с буквами, и стирать её нельзя (Т27/Т28 бережут
+    # ровно эту графику).
+    n, _lab, st, _c = cv2.connectedComponentsWithStats(add.astype(np.uint8), 8)
+    H, W = add.shape[:2]
+    ok = np.zeros(n, dtype=bool)
+    for i in range(1, n):
+        x, y, w_, h_ = (int(v) for v in st[i, :4])
+        if x > 0 and y > 0 and x + w_ < W and y + h_ < H and max(w_, h_) <= 1.5 * max(lh, 4.0):
+            ok[i] = True
+    return mask | ok[_lab]
 
 
 # Плашка под буквами: крупная ровная область маски, занимающая не меньше
@@ -401,6 +539,62 @@ def _plate_of(rgb, lab, st, keep, lim: float, n: int):
         return None
     col = tuple(int(v) for v in np.median(px.reshape(-1, 3), axis=0))
     return region, col
+
+
+# Край плашки у первой буквы (Т23). Симптом: «MEDITERRANEAN DIET» на синей дуге
+# (проект 14, стр. 10) — перед «З» перевода белая черта: левая ножка «M»
+# осталась нестёртой. Причина: плашка (`_plate_of`) — самая крупная область
+# маски «отличается от размытого фона», а лента шире окна размытия только в
+# своей узкой части; к левому краю она шире, середина ленты там совпадает с
+# размытым фоном, и регион плашки начинался правее первой буквы. Правило: после
+# первого замера регион пополняется точками ЦВЕТА плашки (допуск `PLATE_TOL`),
+# замкнутыми по размеру буквы, но только в полосе в `PLATE_EXT_REACH` буквы
+# от найденных букв — дальше лежит чужая бумага (белая линия под лентой).
+PLATE_TOL = 60
+PLATE_EXT_REACH = 1.0
+
+
+def _plate_extend(rgb, plate, alt):
+    """(регион, цвет) с пополнением у букв либо None, если пополнять нечем."""
+    region, col = plate
+    letter = max(3.0, 0.73 * float(alt.get("em") or 0.0))
+    cls = (np.abs(rgb.astype(np.int16) - np.array(col, dtype=np.int16)).max(axis=2)
+           <= PLATE_TOL).astype(np.uint8)
+    kk = _odd(0.5 * letter)
+    closed = cv2.morphologyEx(cls, cv2.MORPH_CLOSE, np.ones((kk, kk), np.uint8)).astype(bool)
+    rk = _odd(PLATE_EXT_REACH * letter)
+    near = cv2.dilate(alt["mask"].astype(np.uint8), np.ones((rk, rk), np.uint8)).astype(bool)
+    add = closed & near & ~region
+    if not add.any():
+        return None
+    return region | add, col
+
+
+def _letter_rot(lab, st, comps) -> float:
+    """Высота буквы (длинная сторона повёрнутого прямоугольника), верхний
+    квартиль по областям-буквам (обломок буквы и слипшаяся пара длиннее —
+    верхний дециль брал бы их); 0 — измерить нечем."""
+    sizes = [c_[2] for c_ in comps]
+    if len(comps) < 3:
+        return 0.0
+    med = float(np.median(sizes))
+    out = []
+    for c_ in comps:
+        if not (ARC_SIZE_BAND[0] * med <= c_[2] <= ARC_SIZE_BAND[1] * med) or len(c_) < 6:
+            continue
+        k = c_[5]
+        l_, t_ = int(st[k, cv2.CC_STAT_LEFT]), int(st[k, cv2.CC_STAT_TOP])
+        w_, h_ = int(st[k, cv2.CC_STAT_WIDTH]), int(st[k, cv2.CC_STAT_HEIGHT])
+        sub = (lab[t_:t_ + h_, l_:l_ + w_] == k)
+        ys, xs = np.nonzero(sub)
+        if len(xs) < 6:
+            continue
+        (_cx, _cy), (rw, rh), _a = cv2.minAreaRect(np.column_stack([xs, ys]).astype(np.float32))
+        out.append(max(rw, rh))
+    if len(out) < 3:
+        return 0.0
+    out.sort()
+    return float(out[int(round(0.75 * (len(out) - 1)))])
 
 
 def _areas(bands: list, mask, bg_local, pitch: float) -> list:
@@ -489,7 +683,97 @@ def split_text(text: str, weights: list) -> list:
     return [sep.join(p) for p in out]
 
 
+def _chain_turn(P):
+    """(поворот цепочки в градусах, rms прямой, rms параболы, число точек) —
+    парабола по серединам букв в системе главной оси цепочки с отсевом
+    выбросов (2.5 σ); None — точек меньше четырёх."""
+    if len(P) < 4:
+        return None
+    m = P.mean(axis=0)
+    Q = P - m
+    _w, V = np.linalg.eigh(np.cov(Q.T))
+    d = V[:, 1]
+    u = Q @ d
+    v = Q @ np.array([-d[1], d[0]])
+    keep = np.ones(len(u), dtype=bool)
+    for _ in range(3):
+        a2 = np.polyfit(u[keep], v[keep], 2)
+        r2 = v - np.polyval(a2, u)
+        sg = max(float(np.sqrt((r2[keep] ** 2).mean())), 1e-6)
+        k2 = np.abs(r2) <= 2.5 * sg + 1e-9
+        if k2.sum() < 4 or (k2 == keep).all():
+            break
+        keep = k2
+    a1 = np.polyfit(u[keep], v[keep], 1)
+    a2 = np.polyfit(u[keep], v[keep], 2)
+    r1 = v[keep] - np.polyval(a1, u[keep])
+    r2 = v[keep] - np.polyval(a2, u[keep])
+
+    def ang(uu):
+        return math.degrees(math.atan(2.0 * a2[0] * uu + a2[1]))
+    turn = abs(ang(float(u[keep].max())) - ang(float(u[keep].min())))
+    return (turn, float(np.sqrt((r1 ** 2).mean())), float(np.sqrt((r2 ** 2).mean())),
+            int(keep.sum()))
+
+
 def _arc_of(comps: list, letter: float, H: int) -> "dict | None":
+    """Дуга, по которой стоят буквы однострочной надписи (Т22): буквы дуги —
+    области размером около медианной (`ARC_SIZE_BAND`), цепочка их середин
+    поворачивается не меньше чем на `ARC_TURN_MIN` градусов и описывается
+    параболой заметно лучше прямой (`ARC_QUAD_RATIO`); окружность — по тем же
+    буквам с отсевом выбросов. Прежняя проверка (прямая «не хуже дуги», если
+    она в пределах 0.15 буквы; стрелка дуги не меньше трети буквы) отвергала
+    пологую дугу, у которой буквы повёрнуты на 24° (проект 14, стр. 10), а один
+    обломок кромки кольца ломал подгонку у любой дуги (стр. 4, 10). Возвращает
+    те же поля, что прежде: cx, cy, r, t0, t1, up. `PAINT_ARC_OLD=1` — прежнее."""
+    if ARC_OLD:
+        return _arc_of_old(comps, letter, H)
+    if len(comps) < 4:
+        return None
+    med = float(np.median([c_[2] for c_ in comps]))
+    cs = [c_ for c_ in comps if ARC_SIZE_BAND[0] * med <= c_[2] <= ARC_SIZE_BAND[1] * med
+          and min(c_[2], c_[3]) >= ARC_MIN_SIDE * med]
+    if len(cs) < 4:
+        return None
+    P = np.array([[c_[0], H - c_[1]] for c_ in cs], dtype=np.float64)
+    try:
+        ct = _chain_turn(P)
+    except Exception:
+        return None
+    if ct is None or ct[0] < ARC_TURN_MIN or ct[2] > ARC_QUAD_RATIO * ct[1]:
+        return None
+    idx = np.arange(len(P))
+    cx = cy = r = 0.0
+    for _ in range(3):
+        x, y = P[idx, 0], P[idx, 1]
+        try:
+            sol, *_ = np.linalg.lstsq(np.column_stack([x, y, np.ones_like(x)]), x * x + y * y, rcond=None)
+        except Exception:
+            return None
+        cx, cy = sol[0] / 2.0, sol[1] / 2.0
+        r = math.sqrt(max(1e-9, sol[2] + cx * cx + cy * cy))
+        res_all = np.hypot(P[:, 0] - cx, P[:, 1] - cy) - r
+        sg = float(np.sqrt((res_all[idx] ** 2).mean()))
+        new = np.nonzero(np.abs(res_all) <= max(2.5 * sg, 1e-6))[0]
+        if len(new) < 4 or len(new) == len(idx):
+            break
+        idx = new
+    x, y = P[idx, 0], P[idx, 1]
+    res = np.hypot(x - cx, y - cy) - r
+    chord = float(np.hypot(x.max() - x.min(), y.max() - y.min()))
+    if chord <= 0 or float(np.sqrt((res ** 2).mean())) > 0.25 * med:
+        return None
+    if r > ARC_MAX_R * chord or r < 0.4 * chord:
+        return None
+    th = np.arctan2(y - cy, x - cx)
+    order = np.argsort(x)
+    t = np.unwrap(th[order])
+    t0, t1 = float(t[0]), float(t[-1])
+    up = 1 if math.sin((t0 + t1) / 2.0) > 0 else -1
+    return {"cx": float(cx), "cy": float(cy), "r": float(r), "t0": t0, "t1": t1, "up": up}
+
+
+def _arc_of_old(comps: list, letter: float, H: int) -> "dict | None":
     """Дуга, по которой стоят буквы однострочной надписи: окружность через
     середины букв (наименьшие квадраты). Дуга — если букв не меньше четырёх,
     они лежат на окружности (разброс меньше пятой доли буквы), а радиус не
@@ -542,7 +826,7 @@ def erase(rgb, m: dict):
     """(стёртая вырезка, альфа-маска стирания): ровный фон — заливка цветом
     фона, неровный — inpaint по расширенной маске букв. Альфа — расширенная
     маска с мягким краем: вне её картинка не трогается."""
-    mask = m["mask"].astype(np.uint8) * 255
+    mask = m.get("erase_mask", m["mask"]).astype(np.uint8) * 255
     grow = cv2.dilate(mask, np.ones((2 * MASK_GROW + 1, 2 * MASK_GROW + 1), np.uint8))
     if m.get("flat"):
         out = rgb.copy()

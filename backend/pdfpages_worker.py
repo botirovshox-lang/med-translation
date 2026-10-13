@@ -25,6 +25,7 @@ JSON на страницу: [номер, [строки], геометрия|null
 
 import io
 import json
+import os
 import statistics
 from collections import Counter
 import sys
@@ -306,6 +307,10 @@ def page_lines(page) -> tuple:
     figs: list = []
     rects: list = []
     pending: list = []
+    # Т11: границы КОНТУРОВ (path) — значки-маркеры пунктов, нарисованные
+    # линиями, а не картинкой; `ppts` — точки текущего контура на листе.
+    icons: list = []
+    ppts: list = []
     # Обрезка (clip) — прямоугольник, вне которого на странице не видно
     # НИЧЕГО. Текст за ней есть в текстовом слое, но не на листе: у боевого
     # PDF схема лежала дважды — вторая копия, сдвинутая на 23 пт и с иными
@@ -313,6 +318,9 @@ def page_lines(page) -> tuple:
     # её перевод поверх видимой. Следим за прямоугольной обрезкой со
     # стеком q/Q; обрезка кривой — «не знаем», и она ничего не прячет.
     state = {"clip": False, "box": None, "curve": False, "seq": 0, "alpha": 1.0,
+             # Кривая обрезка (Т19): области, путь в разборе, точка пера,
+             # правило заполнения последнего `W`.
+             "clips": (), "subs": [], "cur": None, "eo": False, "npts": 0,
              "tc": 0.0, "tw": 0.0, "tz": 100.0,
              # Цвет заливки (r, g, b) в долях — из операторов g/rg/k/sc/scn;
              # None — пространство, которого мы не понимаем (узор, плашечный
@@ -595,7 +603,7 @@ def page_lines(page) -> tuple:
         try:
             if op == b"q":
                 cstack.append((state["fill"], state["cs"], state["tr"]))
-                stack.append(state["box"])
+                stack.append((state["box"], state["clips"]))
                 astack.append(state["alpha"])
                 tstack.append((state["tc"], state["tw"], state["tz"],
                                state.get("fd"), state.get("fs")))
@@ -603,7 +611,7 @@ def page_lines(page) -> tuple:
             if op == b"Q":
                 if cstack:
                     state["fill"], state["cs"], state["tr"] = cstack.pop()
-                state["box"] = stack.pop() if stack else None
+                state["box"], state["clips"] = stack.pop() if stack else (None, ())
                 state["alpha"] = astack.pop() if astack else 1.0
                 (state["tc"], state["tw"], state["tz"],
                  state["fd"], state["fs"]) = (tstack.pop() if tstack
@@ -675,6 +683,10 @@ def page_lines(page) -> tuple:
                 return
             if op in (b"m", b"l", b"c", b"v", b"y"):
                 state["curve"] = True
+                nums = [_num(a) for a in args]
+                if len(ppts) < _PATH_PTS_MAX and None not in nums:
+                    for k_ in range(0, len(nums) - 1, 2):
+                        ppts.append(_xy(cm, nums[k_], nums[k_ + 1]))
                 return
             if op == b"re" and len(args) >= 4:
                 x, y, w, h = (_num(a) for a in args[:4])
@@ -683,11 +695,19 @@ def page_lines(page) -> tuple:
                 pts = [_xy(cm, x, y), _xy(cm, x + w, y + h)]
                 pending.append([min(p[0] for p in pts), min(p[1] for p in pts),
                                 max(p[0] for p in pts), max(p[1] for p in pts)])
+                if len(ppts) < _PATH_PTS_MAX:
+                    ppts.extend(pts)
             elif op in _CLIP_OPS:
                 state["clip"] = True
             elif op in _PAINT_OPS or op == b"n":
                 if op != b"n" and not state["clip"]:
                     rects.extend(pending)
+                    if ppts and len(icons) < _ICONS_MAX:
+                        ic = [min(p_[0] for p_ in ppts), min(p_[1] for p_ in ppts),
+                              max(p_[0] for p_ in ppts), max(p_[1] for p_ in ppts)]
+                        if (ICON_MIN <= ic[2] - ic[0] <= ICON_MAX_PT
+                                and ICON_MIN <= ic[3] - ic[1] <= ICON_MAX_PT):
+                            icons.append(ic)
                     if (op not in (b"S", b"s") and state["alpha"] >= 0.99   # обводка не закрывает
                             and not forms):     # у формы своя система координат — не знаем
                         state["seq"] += 1
@@ -701,6 +721,7 @@ def page_lines(page) -> tuple:
                                 min(clip[2], box[2]), min(clip[3], box[3])]
                     state["box"] = clip
                 pending.clear()
+                ppts.clear()
                 state["clip"] = False
                 state["curve"] = False
             elif op == b"Do" and args:
@@ -714,7 +735,8 @@ def page_lines(page) -> tuple:
                     forms.append((state["box"], state["alpha"], state["tc"], state["tw"],
                                   state["tz"], state.get("fd"), state.get("fs"),
                                   len(stack), len(astack), len(tstack),
-                                  (state["fill"], state["cs"], state["tr"]), len(cstack)))
+                                  (state["fill"], state["cs"], state["tr"]), len(cstack),
+                                  state["clips"]))
                     r_ = obj.get("/Resources")
                     r_ = r_.get_object() if hasattr(r_, "get_object") else r_
                     res_stack.append(r_ if r_ is not None else res_now())
@@ -756,7 +778,8 @@ def page_lines(page) -> tuple:
                 if fmats:
                     ftext[-1] += t_
             (state["box"], state["alpha"], state["tc"], state["tw"], state["tz"],
-             state["fd"], state["fs"], n1, n2, n3, col_, n4) = forms.pop()
+             state["fd"], state["fs"], n1, n2, n3, col_, n4, clips_) = forms.pop()
+            state["clips"] = clips_
             state["fill"], state["cs"], state["tr"] = col_
             del cstack[n4:]
             del stack[n1:]
@@ -766,6 +789,7 @@ def page_lines(page) -> tuple:
                 res_stack.pop()
             state["clip"], state["curve"] = False, False
             pending.clear()
+            ppts.clear()
         except Exception:
             pass
 
@@ -778,15 +802,88 @@ def page_lines(page) -> tuple:
     lines = out.splitlines()
     try:
         marked = _mark_covered(chunks, covers)
-        geom = _geometry(lines, out, marked, figs, rects, page, op_ends, op_recs)
+        used = marked
+        geom = _geometry(lines, out, marked, figs, rects, page, op_ends, op_recs, icons)
         if geom is None and dups:
             # Текст формы пришёл дважды: изнутри (точки на своих местах)
             # и повтором в точке формы. Без повтора куски сложатся в ответ.
-            geom = _geometry(lines, out, [c for k, c in enumerate(marked) if k not in dups],
-                             figs, rects, page, op_ends, op_recs)
+            used = [c for k, c in enumerate(marked) if k not in dups]
+            geom = _geometry(lines, out, used, figs, rects, page, op_ends, op_recs, icons)
+        if geom is not None:
+            lines = _script_marks(lines, used)
     except Exception:
         geom = None
     return lines, geom
+
+
+# Над- и подстрочные знаки куском МЕЛЬЧЕ и выше/ниже строки (Т9): сноска
+# «MACEᵃ», степень «m²», индекс «B₁₂». pypdf склеивает такой кусок со словом
+# без пометки, и «MACEa» модель читала буквой слова («событияа» кириллицей),
+# а «1,73 м2» печаталось обычной цифрой. Замена один к одному — длина строки
+# та же, смещения геометрии верны. Буквы — только одиночная сноска a–e
+# в надстрочном: «HbA1c» с подстрочным «1c» (у «c» нет подстрочной формы)
+# остаётся как есть.
+_SUP = dict(zip("0123456789+-=()abcde", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᵃᵇᶜᵈᵉ"))
+_SUB = dict(zip("0123456789+-=()", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎"))
+SCRIPT_SIZE_MAX = 0.8                # кегль куска не больше этой доли соседа
+SCRIPT_RISE = (0.1, 0.9)            # сдвиг базовой линии в долях кегля соседа
+SCRIPT_GAP = 0.6                     # кусок вплотную: не дальше доли кегля
+
+
+def _is_script(c, prev) -> bool:
+    """Кусок `c` — над- или подстрочный знак при слове `prev`."""
+    if prev is None or prev[1] is None or prev[4]:
+        return False
+    t, pt = c[0], prev[0]
+    core = t.strip()
+    if not (1 <= len(core) <= 3) or t != t.lstrip() or "\n" in t or pt != pt.rstrip():
+        return False
+    if not (pt[-1:].isalnum() or pt[-1:] in ")]"):
+        return False
+    ps, cs = float(prev[3] or 0.0), float(c[3] or 0.0)
+    if ps <= 0 or not (0 < cs <= SCRIPT_SIZE_MAX * ps):
+        return False
+    dy = float(c[2]) - float(prev[2])
+    if not (SCRIPT_RISE[0] * ps <= abs(dy) <= SCRIPT_RISE[1] * ps):
+        return False
+    est_end = float(prev[1]) + 0.55 * ps * len(pt)
+    if float(c[1]) < float(prev[1]) or float(c[1]) - est_end > SCRIPT_GAP * ps:
+        return False
+    table = _SUP if dy > 0 else _SUB
+    letters = [ch for ch in core if ch.isalpha()]
+    return all(ch in table for ch in core) and (not letters or (dy > 0 and len(core) == 1))
+
+
+def _script_marks(lines: list, chunks: list) -> list:
+    text = "".join(c[0] for c in chunks)
+    if text.splitlines() != lines:
+        return lines
+    chars = list(text)
+    pos = 0
+    prev = None                         # кусок-слово, к которому прижат знак
+    changed = False
+    for c in chunks:
+        t = c[0]
+        a = pos
+        pos += len(t)
+        if c[1] is None or c[4] or not t.strip():
+            if "\n" in t:
+                prev = None
+            continue
+        if _is_script(c, prev):
+            table = _SUP if float(c[2]) > float(prev[2]) else _SUB
+            for i in range(a, a + len(t)):
+                if chars[i] in table:
+                    chars[i] = table[chars[i]]
+                    changed = True
+            continue                    # сосед следующего куска — прежнее слово
+        prev = c
+        if "\n" in t:
+            prev = None
+    if not changed:
+        return lines
+    out = "".join(chars).splitlines()
+    return out if len(out) == len(lines) else lines
 
 
 def _mark_covered(chunks: list, covers: list) -> list:
@@ -820,6 +917,14 @@ def _mark_covered(chunks: list, covers: list) -> list:
         m = ((seq > ss[:, None])
              & (box[None, :, 0] + 1 <= xs[:, None]) & (xs[:, None] <= box[None, :, 2] - 1)
              & (box[None, :, 1] + 1 <= ys[:, None]) & (ys[:, None] <= box[None, :, 3] - 1))
+        if CURVE_CLIP:
+            # Заливка под кривой обрезкой (Т19) красит только то, что внутри
+            # неё: начало куска вне области — кусок не накрыт.
+            for j, c in enumerate(part):
+                if len(c) > 2 and c[2]:
+                    for r_ in np.nonzero(m[:, j])[0]:
+                        if not _in_clips(float(xs[r_]), float(ys[r_]), c[2]):
+                            m[r_, j] = False
         hit |= m.any(axis=1)
     if not hit.any():
         return chunks
@@ -829,6 +934,12 @@ def _mark_covered(chunks: list, covers: list) -> list:
             c = out[i]
             out[i] = c[:7] + (True,) + c[8:]
     return out
+
+
+EXACT_CHAIN_GAP = 0.6
+# Над- и подстрочный знак стоит выше или ниже базовой до 0.6 кегля — цепочку
+# он не рвёт (у статьи 19 ссылка «7,8» поднята на 0.43 кегля).
+EXACT_CHAIN_RISE = 0.6
 
 
 def _exact_ends(geo_lines: list, op_ends) -> None:
@@ -865,9 +976,131 @@ def _exact_ends(geo_lines: list, op_ends) -> None:
             if (abs(sy - y) <= 0.3 * size and x0 - 0.5 <= sx <= xl + 0.5
                     and (lim is None or sx < lim - 0.5) and key in keys):
                 best = ex if best is None else max(best, ex)
+        # Строка продолжается и ЗА началом последнего куска: надстрочная
+        # ссылка посреди строки («…memory.⁷,⁸ These effects have been»,
+        # статья 19) — свой оператор, и pypdf кладёт ссылку и текст после неё
+        # в один кусок; текст после ссылки — следующий оператор правее `xl`,
+        # и конец строки вставал на ссылке — хвост оригинала не закрашивался
+        # и проступал сквозь перевод. Оператор той же базовой линии и того же
+        # шрифта, начатый ВПЛОТНУЮ к уже принятому (зазор не больше
+        # межсловного, `EXACT_CHAIN_GAP` кегля), — тоже эта строка; чужой текст
+        # той же линии стоит дальше и не цепляется.
+        if best is not None:
+            grown = True
+            while grown:
+                grown = False
+                for o in op_ends:
+                    sx, sy, ex, key = o[:4]
+                    if len(o) > 5 and not o[5]:
+                        continue
+                    if (ex > best and best - 0.5 <= sx <= best + EXACT_CHAIN_GAP * size
+                            and abs(sy - y) <= EXACT_CHAIN_RISE * size and key in keys
+                            and (lim is None or ex <= lim)):
+                        best, grown = ex, True
         if best is not None and best >= xl and (lim is None or best <= lim):
             g[3] = round(best, 1)
             g[8] = True
+
+
+# Кривая обрезка и заливка поверх текста (Т19). Симптом: подписи по дуге
+# (проект 14: «ACROSS LIFE COURSE» стр. 4 и 1, «STANDING», «STEPPING»,
+# «STRENGTHENING» стр. 12) стояли в слое ровно под видимой надписью, но
+# числились скрытыми («за обрезкой, под закраской»): печатала их только
+# дорога картинок. Причина: заливка `re f` ПОЗЖЕ текста считается накрывшей весь
+# свой прямоугольник, а красится она под кривой обрезкой (`m l … h W n` —
+# сегмент кольца схемы) и на метку не ложится. Правило: кривая обрезка
+# запоминается как область (многоугольники пути с разложенными кривыми
+# Безье, правило нулевого числа витков либо чёт-нечёт у `W*`), стек q/Q
+# и формы её хранят, а заливка накрывает кусок текста, только если его
+# начало лежит и в прямоугольнике, и во всех областях обрезки. Область
+# длиннее `CLIP_POINTS_MAX` точек и обрезка внутри формы — «не знаем»,
+# как прежде.
+# ПО УМОЛЧАНИЮ ВЫКЛЮЧЕНО (`PDF_CURVE_CLIP=1` — включить): правило раскрывает слой,
+# который прежний разбор считал скрытым, — на проекте 14 это 7 подписей-дуг и 36
+# строк слоя (стр. 12: нижние панели, стр. 19: ячейки схемы), сегодня их
+# печатает дорога картинок. Блок картинки, повторяющий слой, отсеивается
+# (`main._dup_of_layer`), но только от трёх слов и только строки с местом без
+# пути: у одно-двухсловной дуги («STANDING», «STEPPING») отсева нет, и подпись
+# печаталась дважды — слоем и картинкой (замер: стр. 12 проекта 14). Включать
+# вместе с отсевом дуг в `_dup_of_layer` / `_layer_paras_by_page`.
+# Сбор пути обрезки (операторы m/l/c/v/y/re в `vo`) в эту сборку НЕ внесён:
+# он пересёкся со сбором контуров-значков (Т11) и ждёт отдельной проверки на
+# живой выгрузке (двойная печать слоя и надписи картинки). Флаг выключен
+# жёстко, чтобы включение окружением не обещало того, чего код не делает.
+CURVE_CLIP = False
+CLIP_POINTS_MAX = 6000
+_BEZ_STEPS = 8
+
+
+def _bezier(p0, p1, p2, p3, n: int = _BEZ_STEPS) -> list:
+    """Точки кривой Безье без начальной."""
+    out = []
+    for i in range(1, n + 1):
+        t = i / float(n)
+        u = 1.0 - t
+        out.append((u ** 3 * p0[0] + 3 * u * u * t * p1[0] + 3 * u * t * t * p2[0] + t ** 3 * p3[0],
+                    u ** 3 * p0[1] + 3 * u * u * t * p1[1] + 3 * u * t * t * p2[1] + t ** 3 * p3[1]))
+    return out
+
+
+def _in_region(x: float, y: float, region) -> bool:
+    """Точка внутри области обрезки (многоугольники, чёт-нечёт или ненулевое
+    число витков)."""
+    polys, evenodd = region
+    wn = 0
+    cross = 0
+    for poly in polys:
+        n = len(poly)
+        if n < 3:
+            continue
+        x0, y0 = poly[-1]
+        for x1, y1 in poly:
+            if (y0 <= y) != (y1 <= y):
+                xi = x0 + (y - y0) * (x1 - x0) / (y1 - y0)
+                if xi > x:
+                    cross += 1
+                    wn += 1 if y1 > y0 else -1
+            x0, y0 = x1, y1
+    return (cross % 2 == 1) if evenodd else (wn != 0)
+
+
+def _in_clips(x: float, y: float, clips) -> bool:
+    return all(_in_region(x, y, r) for r in clips or ())
+
+
+# Вершина дуги (Т20). Симптом: «MEDITERRANEAN DIET» на синей дуге стр. 10
+# оставалась строкой БЕЗ ПУТИ («осталось на языке оригинала ×4») и склеивалась
+# в один абзац с соседними дугами. Причина: у дуги, нарисованной по кольцу,
+# последняя буква стоит на вершине под углом ровно 0° (у 23 соседних — от 23.8°
+# до 1.4°), у неё `rot` ложь, и путь строился только «если повёрнуты ВСЕ куски».
+# Правило: строка с четырьмя и более кусками, где повёрнуты не меньше
+# `ROT_APEX_SHARE` из них, а неповёрнутые лежат в пределах разброса углов
+# повёрнутых (± `ROT_APEX_TOL`°), — повёрнута целиком. Обычная горизонтальная
+# строка (повёрнутых нет) и строка таблицы боком (угол неповёрнутого — 0°,
+# повёрнутых — 90°) не задеваются. `PDF_ROT_APEX=0` — без правила.
+ROT_APEX_SHARE = 0.7
+ROT_APEX_TOL = 6.0
+ROT_APEX = os.environ.get("PDF_ROT_APEX", "1") != "0"
+
+
+def _rotated_line(body: list, chunks: list) -> bool:
+    """Строка повёрнута целиком: повёрнуты все её куски либо (Т20) все, кроме
+    вершины дуги — куска с углом внутри разброса углов остальных."""
+    rot = [bool(chunks[k][4]) for k in body]
+    if all(rot):
+        return True
+    if not ROT_APEX or len(body) < 4 or sum(rot) < ROT_APEX_SHARE * len(body):
+        return False
+    try:
+        ref = float(chunks[next(k for k in body if chunks[k][4])][10])
+
+        def rel(k):
+            return ((float(chunks[k][10]) - ref + 180.0) % 360.0) - 180.0
+        spread = [rel(k) for k in body if chunks[k][4]]
+        lo, hi = min(spread) - ROT_APEX_TOL, max(spread) + ROT_APEX_TOL
+        return all(lo <= rel(k) <= hi for k in body if not chunks[k][4])
+    except Exception:
+        return False
 
 
 def _rot_path(body: list, chunks: list, cw: float, op_ends, op_recs=()) -> "dict | None":
@@ -979,7 +1212,7 @@ def _line_parts(body: list, chunks: list, size: float, cw: float):
              round(g["xl"], 1), g["n"]] for g in groups]
 
 
-def _geometry(lines, out, chunks, figs, rects, page, op_ends=(), op_recs=()):
+def _geometry(lines, out, chunks, figs, rects, page, op_ends=(), op_recs=(), icons=()):
     text = "".join(c[0] for c in chunks)
     if text.splitlines() != lines:
         return None                      # куски не сложились в ответ — не гадаем
@@ -1026,7 +1259,7 @@ def _geometry(lines, out, chunks, figs, rects, page, op_ends=(), op_recs=()):
             # её на листе известен — точки и углы кусков (`rot`): по нему
             # выгрузка печатает перевод повёрнутым или по дуге.
             geo_lines.append(None)
-            if body and all(chunks[k][4] for k in body):
+            if body and _rotated_line(body, chunks):
                 rot_paths[len(geo_lines) - 1] = _rot_path(body, chunks, cw, op_ends, op_recs)
             continue
         groups = _h_groups(body, chunks, cw, cols, ends)
@@ -1062,9 +1295,59 @@ def _geometry(lines, out, chunks, figs, rects, page, op_ends=(), op_recs=()):
     out_ = {"box": r1(box) if box else None, "lines": geo_lines,
             "figs": [r1(f) for f in figs], "rects": [r1(r) for r in rects],
             "rot": {str(k): v for k, v in rot_paths.items() if v}}
+    near = _icons_near(icons, geo_lines + [sg[1] for subs in splits.values() for sg in subs[1:]])
+    if near:
+        out_["icons"] = [r1(i_) for i_ in near]
     if splits:
         out_["split"] = {str(k): [[off, g_] for off, g_ in subs] for k, subs in splits.items()}
     return out_
+
+
+# Т11. Значок-маркер пункта, нарисованный КОНТУРОМ (галочка, шприц, кружок
+# в инфографике): не картинка, поэтому `figs` его не знал, и пункты, идущие
+# подряд с обычным интервалом, склеивались в один абзац (стр. 4 и 31 проекта
+# 14: «Psychological… depression Periodontal health»). Контур в 1.5–14 пт,
+# закрашенный или обведённый, запоминается; в ответ идут только те, что
+# стоят у начала какой-нибудь строки (слева, не дальше 2.6 кегля) — остальное
+# на листе рисунок, и тысячи его мелких контуров отдавать незачем. Решает,
+# маркер это или нет, `pdftext._mark_icon_bullets` (с защитами).
+ICON_MIN = 1.5
+ICON_MAX_PT = 14.0
+_ICONS_MAX = 20000
+_PATH_PTS_MAX = 4000
+
+
+def _icons_near(icons, geo_lines) -> list:
+    out: list = []
+    starts = []
+    for g in geo_lines:
+        if g and len(g) >= 3:
+            try:
+                starts.append((float(g[0]), float(g[1]), max(float(g[2] or 0.0), 1.0)))
+            except (TypeError, ValueError):
+                continue
+    if not starts or not icons:
+        return out
+    # Начала строк по высоте — кандидаты значка берутся бисекцией, а не
+    # перебором всех строк: страница с тысячами контуров (карта, график)
+    # иначе давала миллионы проверок на единственном воркере.
+    import bisect
+    starts.sort(key=lambda t: t[1])
+    ys = [t[1] for t in starts]
+    smax = max(t[2] for t in starts)
+    smin = min(t[2] for t in starts)
+    for ic in icons:
+        w, h = ic[2] - ic[0], ic[3] - ic[1]
+        if not (0.3 * smin <= w <= 2.5 * smax and 0.3 * smin <= h <= 2.5 * smax):
+            continue
+        lo = bisect.bisect_left(ys, ic[1] - 0.9 * smax)
+        hi = bisect.bisect_right(ys, ic[3] + 0.3 * smax)
+        for x0, y, s in starts[lo:hi]:
+            if (x0 - 2.6 * s <= ic[2] <= x0 + 0.3 * s
+                    and min(y + 0.9 * s, ic[3]) - max(y - 0.3 * s, ic[1]) > 0.3 * s):
+                out.append(ic)
+                break
+    return out
 
 
 # Зазор (в кеглях) между кусками ОДНОЙ базовой линии, после которого это
@@ -1093,6 +1376,18 @@ def _ends_index(op_ends) -> dict:
         k = (int(round(o[0])), int(round(o[1])))
         out[k] = max(out.get(k, o[2]), o[2])
     return out
+
+
+def _chunk_end_exact(c, ends: dict):
+    """Точный конец краски куска (по оператору показа текста) либо None."""
+    if ends and c[1] is not None:
+        x, y = int(round(c[1])), int(round(c[2]))
+        for dx in (0, -1, 1):
+            for dy in (0, -1, 1):
+                e = ends.get((x + dx, y + dy))
+                if e is not None and e > c[1]:
+                    return e
+    return None
 
 
 def _chunk_end(c, cw: float, ends: dict) -> float:
@@ -1229,8 +1524,34 @@ def _h_groups(body: list, chunks: list, cw: float, cols=(), ends=None) -> list:
         gx0, gx1 = min(gx0, c[1]), max(gx1, cx1)
         gx1c = max(gx1c, _chunk_end(c, cw, ends))
     if len(groups) > 1 and weak[-1]:
-        groups[-2].extend(groups.pop())
-        weak.pop()
+        # Т10. Маркер без букв и цифр («•») в КОНЦЕ строки, далеко от конца
+        # предыдущей части, — начало СВОЕЙ ячейки (текст которой растр или
+        # в другом месте слоя), а не хвост левой ячейки. Прежде он
+        # приклеивался к ней: слот левой ячейки «• Low-energy diet (LED) •»
+        # тянулся через зазор на правую колонку таблицы, перевод левой
+        # ячейки уезжал туда, а маркер правой стирался закраской (стр. 10
+        # проекта 14, три строки на 46 страниц). Цифры («12» у оглавления)
+        # и близкий знак — по-прежнему хвост строки.
+        lastc = chunks[groups[-1][0]]
+        txt = "".join(chunks[kk][0] for kk in groups[-1])
+        # Конец предыдущей части — ТОЧНЫЙ (по оператору показа), а не оценка:
+        # оценка по ширине знака у узкого шрифта занижена, и тире после
+        # заголовка («Апитоксинотерапия —», кегль 11 и 4) выглядело бы
+        # далёким. Точного конца нет — по-прежнему хвост строки.
+        exact_ends = [_chunk_end_exact(chunks[kk], ends) for kk in groups[-2]]
+        sz_ = max(lastc[3] or 1.0, 1.0)
+        glue = (any(ch.isalnum() for ch in txt) or lastc[1] is None or None in exact_ends)
+        if not glue:
+            gap_ = lastc[1] - max(exact_ends)
+            # Далеко (`SPLIT_GAP`) либо стоит в начале колонки таблицы
+            # (`cols`) после зазора больше `COL_GAP` — так маркер правой
+            # ячейки стоит и тогда, когда левый текст почти дотянул до неё
+            # («Very-low-energy diet (VLED)» — 9 пт зазора при трёх кеглях).
+            glue = not (gap_ >= SPLIT_GAP * sz_
+                        or (gap_ > COL_GAP * sz_ and any(abs(lastc[1] - x) <= COL_TOL for x in cols)))
+        if glue:
+            groups[-2].extend(groups.pop())
+            weak.pop()
     if len(groups) > 1 and weak[0]:
         groups[1][:0] = groups.pop(0)
     return groups

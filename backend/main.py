@@ -902,6 +902,7 @@ def _delete_project_record(pid: int) -> None:
         import shutil
         shutil.rmtree(str(EXPORT_DIR / re.sub(r"[^A-Za-z0-9_-]+", "_", _tenant_of(gone))
                           / str(int(pid))), ignore_errors=True)
+        _export_reviews_forget(pid, _tenant_of(gone))
     # Исходник уходит вместе с проектом. Учебник весит 21 МБ, и оставлять его
     # на диске после удаления значит копить мусор, который никто уже не найдёт:
     # имя файла — номер проекта, а проекта больше нет.
@@ -4229,7 +4230,8 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         + (f"   {dom['examples']}\n" if dom.get("examples") else "") +
         f"3. NEVER mix languages. Output must be 100% {tgt}. Not a single letter of the\n"
         "   source script may survive — not inside numbers, units, formulas or abbreviations,\n"
-        "   and not as a look-alike character.\n"
+        "   and not as a look-alike character. Superscript and subscript marks (ᵃ ᵇ ¹ ² ₂ …)\n"
+        "   are footnote or exponent markers, not letters: copy them unchanged where they stand.\n"
         "4. NEVER use parenthetical alternatives: NOT 'biologic(al)', NOT 'cell(s)'. Choose ONE correct form.\n"
         "5. NEVER list multiple synonyms separated by semicolons for the same concept.\n"
         "6. Preserve all numbers and punctuation exactly as in the source. Copy web addresses,\n"
@@ -11728,7 +11730,7 @@ def _store_source_docx(project: dict, content: bytes, filename: str,
         except Exception as e:
             print("[backend] прежняя карта проекта %s не прочиталась: %s"
                   % (project["id"], e), file=sys.stderr)
-    tmp = map_path.with_name(map_path.name + ".tmp")
+    tmp = map_path.with_name("%s.%d.%d.tmp" % (map_path.name, os.getpid(), threading.get_ident()))
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     os.replace(str(tmp), str(map_path))
     mark = {"file": filename, "at": payload["at"], "paras": paras,
@@ -15627,7 +15629,7 @@ def _auto_resegment(pid: int, tenant: str, claimed: bool = False) -> Optional[st
             _AUTO_RESEG_BUSY.discard(pid)
 
 
-_RELAYER_SEEN: dict = {}          # pid → время правки карты, при котором ответ «не нужно»
+_RELAYER_SEEN: dict = {}          # pid → (время правки карты, ответ «нужна ли пересверка»)
 
 
 def _relayer_due(project: dict) -> bool:
@@ -15643,12 +15645,14 @@ def _relayer_due(project: dict) -> bool:
         mt = _source_paths(project["id"])[1].stat().st_mtime
     except OSError:
         return False
-    if _RELAYER_SEEN.get(project["id"]) == mt:
-        return False
+    seen = _RELAYER_SEEN.get(project["id"])
+    if seen is not None and seen[0] == mt:
+        return seen[1]
     data = _load_source_map(project["id"])
     due = _relayer_due_in(data)
-    if not due:
-        _RELAYER_SEEN[project["id"]] = mt
+    # Помнится и «нужно»: постановка могла не состояться (нет ключа, идёт
+    # задача) — и тогда каждое открытие перечитывало бы карту в мегабайты.
+    _RELAYER_SEEN[project["id"]] = (mt, due)
     return due
 
 
@@ -15657,7 +15661,7 @@ def _relayer_due_in(data: "dict | None") -> bool:
         if int(rec.get("layerRule") or 1) >= LAYER_RULE:
             continue
         page = str(rec.get("part") or "").startswith(PDF_PAGE_PART)
-        if _gap_blocks(rec, data):
+        if _gap_blocks(rec, data) or _residual_due(rec):
             return True
         if int(rec.get("layerRule") or 1) >= 2:
             continue                    # построчно сверена — ждёт только разрывов
@@ -16393,7 +16397,7 @@ def _save_source_map(pid: int, data: dict) -> None:
     неизвестно куда."""
     _docx_path, map_path = _source_paths(pid)
     payload = {k: v for k, v in data.items() if k != "path"}
-    tmp = map_path.with_name(map_path.name + ".tmp")
+    tmp = map_path.with_name("%s.%d.%d.tmp" % (map_path.name, os.getpid(), threading.get_ident()))
     tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     os.replace(str(tmp), str(map_path))
 
@@ -17342,7 +17346,7 @@ def _job_images(job: dict) -> None:
         rec_ = known[n]
         if n in need_det:
             blob_ = b""                 # страницу разберут заново — пересверять нечего
-        elif not _relayer_todo(rec_, data):
+        elif not _relayer_todo(rec_, data) and not _residual_due(rec_):
             blob_ = b""
             rec_["layerRule"] = LAYER_RULE   # пересверять нечего — и рисовать незачем
         else:
@@ -31702,7 +31706,8 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
                                  "(%s против %s) — приложите файл заново"
                                  % (len(all_p), data.get("paras")))
 
-    by_id = _print_by_id(project)
+    _tw_stats: dict = {}
+    by_id = _print_by_id(project, _tw_stats)
     stats = {"paragraphs": len(all_p), "written": 0, "untranslated": 0,
              "noslot": 0, "mismatch": 0, "inline": 0, "approx": 0,
              "trimmed": 0, "lost": 0,
@@ -31801,6 +31806,7 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
     _export_images(doc, data, by_id, qn, stats)
     # ПОСЛЕ всех правок: пересчитывать надо готовый текст, а не промежуточный.
     stats["fields_refreshed"] = _refresh_fields(doc, qn)
+    stats.update(_tw_stats)         # Т16: twinsUnified / twinGroups
     doc.save(str(out))
     return stats
 
@@ -31956,6 +31962,29 @@ def _abbr_like(s: str) -> bool:
             and sum(1 for ch in letters if ch.islower()) <= 1)
 
 
+# Запись легенды: «ABBR, расшифровка» — в начале строки либо после «; » / «. ».
+# Расшифровка — до «;» либо до конца предложения: короткая (до LEGEND_WORDS слов и
+# двух запятых), иначе это не легенда, а предложение, начатое сокращением
+# («MASLD, alongside use of GLP-1–based therapy …, could be considered»).
+LEGEND_WORDS = 16
+_LEGEND_SRC = re.compile(r"(?:^|[;.]\s+)([A-Z][A-Za-z0-9+/\-]{1,11}(?: [A-Z][A-Za-z0-9+/\-]{0,5})?),\s+([^;]+?)(?=;|\.\s|\.$|$)")
+_LEGEND_TGT = re.compile(r"(?:^|[;.]\s+)([^\s,;.()]{2,12}(?: [^\s,;.()]{1,6})?),\s+([^;]+?)(?=;|\.\s|\.$|$)")
+
+
+def _legend_like(s: str) -> bool:
+    """Сокращение легенды: как `_abbr_like`, но строчных до двух («HbA1c»,
+    «MLTCs», «eGFR»)."""
+    letters = [ch for ch in s if ch.isalpha()]
+    return (2 <= len(s) <= 12 and sum(1 for ch in letters if ch.isupper()) >= 2
+            and sum(1 for ch in letters if ch.islower()) <= 2)
+
+
+def _legend_entries(text: str, rx) -> list:
+    return [m.group(1) for m in rx.finditer(text or "")
+            if _legend_like(m.group(1)) and len(m.group(2).split()) <= LEGEND_WORDS
+            and m.group(2).count(",") <= 2]
+
+
 def _abbr_map(project: dict) -> dict:
     """{ABBR: как документ её переводит} — по определениям «Термин (ABBR)»
     в парах «оригинал → перевод». Пара берётся, только когда скобок
@@ -31972,6 +32001,33 @@ def _abbr_map(project: dict) -> dict:
             continue
         b = [m.group(1) for m in _ABBR_TGT.finditer(tgt) if _abbr_like(m.group(1))]
         if len(a) != len(b):
+            continue
+        for x, y in zip(a, b):
+            votes.setdefault(x, {}).setdefault(y, 0)
+            votes[x][y] += 1
+    # Т17. Легенда «TEE, total energy expenditure; TEI, …» — тоже определение,
+    # и самое прямое: автор документа сам назвал сокращение. «Термин (ABBR)»
+    # в скобках встречается не у каждого сокращения («TEE» стоит только в
+    # легенде подписи рисунка), и метка схемы «TEE» получала то «ОЭЗ», то
+    # «ОРЭ», то «СЭЗ». Пары — по порядку записей, и только когда записей в
+    # оригинале и в переводе поровну.
+    for s in project.get("segments") or []:
+        src, tgt = s.get("source") or "", (s.get("target") or "").strip()
+        if not tgt:
+            continue
+        a = _legend_entries(src, _LEGEND_SRC)
+        if not a:
+            continue
+        b = _legend_entries(tgt, _LEGEND_TGT)
+        if len(a) != len(b):
+            continue
+        # Пары идут по порядку записей, и пропавшая в переводе запись при
+        # случайно совпавшем числе записей сдвинула бы все пары. Сдвиг выдают
+        # цифры и длина: «T2D → СД2» несёт ту же цифру, сокращение не короче
+        # половины и не длиннее двух с половиной оригинала. Одна пара не
+        # сходится — вся легенда этого сегмента не голосует.
+        if not all(re.sub(r"\D", "", x) == re.sub(r"\D", "", y)
+                   and 0.5 <= len(y) / max(1, len(x)) <= 2.5 for x, y in zip(a, b)):
             continue
         for x, y in zip(a, b):
             votes.setdefault(x, {}).setdefault(y, 0)
@@ -32006,11 +32062,193 @@ def _abbr_apply(source: str, target: str, amap: dict) -> str:
     return target
 
 
-def _print_by_id(project: dict) -> dict:
-    """{номер: сегмент} для ВЫГРУЗКИ — те же записи, но у строк, к которым
-    применилось правило печати (литература, адрес, сокращение), — копия
-    с исправленным `target`. Сам проект не меняется."""
+# ─── Т16. Одинаковые надписи печатаются одним переводом ──────────────
+# Симптом (проект 14): одна и та же подпись инфографики на обложке и на стр. 4
+# печатается по-разному («STEPPING» → «ХОДЬБА» / «СТЕППИНГ» / «ШАГАНИЕ / ШАГОВЫЙ
+# РЕФЛЕКС»; «PEOPLE WITH T2D OFTEN LIVE WITH OR» → бессмыслица на одной из двух
+# копий), колонтитул «N Consensus Report» — то «доклад», то «отчёт».
+# Причина: перевод копируется донором один раз, но дальше ревизия, ремонт и
+# арбитр правят КАЖДУЮ копию отдельно, глядя на её соседей, и никто не рассылает
+# исправленное двойнику; а шаблоны с числом по краю («6 Consensus Report»,
+# «18 Consensus Report») — РАЗНЫЕ исходники, и дедупликация по точной строке
+# их не видит. Правило: при ПЕЧАТИ одинаковое печатается одним переводом.
+# Данные проекта не меняются — так человек видит расхождение в таблице и вправе
+# решить сам; лечится печать (как `_abbr_apply`).
+#  (а) двойники — тот же исходник И те же исходники соседей (у ячеек таблицы
+#      соседи — шапки колонок, и «High» под «Cost» и под «Efficacy» двойниками
+#      не станут: у них своё согласование в роде);
+#  (б) шаблон — короткая строка с числом в начале или в конце, у которой остальные
+#      слова названия (с заглавной) и рядом с числом нет согласуемого слова
+#      («5 days» → «5 дней»/«2 дня» шаблоном не считается); от `TWIN_TPL_MIN` строк.
+# Эталон: заверенный человеком > набранный человеком > большинство машинных >
+# донор (меньший id). Тексты людей между собой не унифицируются. Субтитры и
+# литература «как в оригинале» не участвуют.
+TWIN_TPL_MIN = 3
+TWIN_TPL_WORDS = 6
+_TWIN_SENT = "\u0001"
+
+
+def _twin_defects(source: str, text: str) -> int:
+    """Чужие варианты и скобки, которых нет в оригинале: «Проверка/пересмотр
+    тактики (пациента)», «Общий (разделяемый) механизм» — ровно то, что промпт
+    перевода запрещает (правила 4 и 10). При равенстве голосов эталоном
+    становится текст без них."""
+    return (max(0, (text or "").count("/") - (source or "").count("/"))
+            + max(0, (text or "").count("(") - (source or "").count("(")))
+
+
+def _twin_canon(items: list):
+    """items — [(сегмент, текст)]; текст эталона или None. Правило приоритета
+    одно на оба вида групп."""
+    by_id = sorted(items, key=lambda it: it[0]["id"])
+    for pred in (lambda sg: sg.get("status") == "confirmed",
+                 lambda sg: _hand_written(sg)):
+        hit = [it for it in by_id if pred(it[0])]
+        if hit:
+            return hit[0][1]
+    mech = [it for it in by_id if not _human_text(it[0])]
+    if not mech:
+        return None
+    votes: dict = {}
+    for sg, t in mech:
+        votes.setdefault(t, []).append(sg["id"])
+    # Большинство; при равенстве — меньше чужих вариантов и скобок; затем донор
+    # (меньший id).
+    src = by_id[0][0].get("source") or ""
+    return max(votes.items(),
+               key=lambda kv: (len(kv[1]), -_twin_defects(src, kv[0].replace(_TWIN_SENT, "")), -min(kv[1])))[0]
+
+
+def _tpl_of(source: str):
+    """(ключ шаблона, число) или None: короткая строка-название с числом по краю."""
+    toks = (source or "").split()
+    if not 2 <= len(toks) <= TWIN_TPL_WORDS:
+        return None
+    pos = [i for i, t in enumerate(toks) if re.fullmatch(r"\d{1,4}", t)]
+    if len(pos) != 1 or pos[0] not in (0, len(toks) - 1):
+        return None
+    k = pos[0]
+    rest = toks[:k] + toks[k + 1:]
+    # Число в начале и ОДНО слово после («5 Cases», «3 Doses») — счёт
+    # предметов: перевод согласует слово с числом («5 случаев», «1 случай»),
+    # и единая форма испортила бы падеж. Название с числом в начале — от двух
+    # слов («8 Consensus Report»).
+    if k == 0 and len(rest) < 2:
+        return None
+    if any(ch.isdigit() for t in rest for ch in t) or not any(ch.isalpha() for t in rest for ch in t):
+        return None
+    near = toks[k + 1] if k == 0 else toks[k - 1]
+    for t in rest:
+        letters = [ch for ch in t.strip(".,;:()«»\"'") if ch.isalpha()]
+        # Согласуемое слово — строчное слово от четырёх букв («days») или
+        # от трёх рядом с числом: у названия слова с заглавной, а сокращения
+        # («p.», «on», «mg») коротки.
+        if letters and not letters[0].isupper() and (len(letters) >= 4 or (t is near and len(letters) >= 3)):
+            return None
+    return ("S" if k == 0 else "E") + "|" + " ".join(rest).lower().replace("ё", "е"), toks[k]
+
+
+def _tpl_side(masked: str) -> str:
+    """Где стоит число в переводе с маской: в начале, в конце или внутри."""
+    t = masked.strip(" \t.,:;!?-–—()[]«»\"'")
+    if t.startswith(_TWIN_SENT):
+        return "S"
+    if t.endswith(_TWIN_SENT):
+        return "E"
+    return "M"
+
+
+def _twin_unify(project: dict) -> tuple:
+    """({id: единый текст для печати}, число групп, где что-то изменилось).
+    Данные проекта не трогает."""
     segs = project.get("segments") or []
+    if not segs or _cue_project(project):
+        return {}, 0
+
+    def usable(sg):
+        return (bool((sg.get("target") or "").strip()) and bool((sg.get("source") or "").strip())
+                and sg.get("route") != ROUTE_KEEP_SOURCE and sg.get("status") not in ("new", "failed"))
+
+    def nb(k):
+        return _norm_key(segs[k].get("source"))[:NEIGHBOUR_CHARS] if 0 <= k < len(segs) else ""
+
+    cur = {sg["id"]: (sg.get("target") or "").strip() for sg in segs}
+    changed: set = set()
+    groups = 0
+    # (а) двойники
+    tw: dict = {}
+    for k, sg in enumerate(segs):
+        if usable(sg):
+            tw.setdefault((_norm_key(sg["source"]), nb(k - 1), nb(k + 1)), []).append(sg)
+    for mem in tw.values():
+        if len(mem) < 2 or len({cur[x["id"]] for x in mem}) < 2:
+            continue
+        canon = _twin_canon([(x, cur[x["id"]]) for x in mem])
+        if canon is None:
+            continue
+        hit = False
+        for x in mem:
+            if not _human_text(x) and cur[x["id"]] != canon:
+                cur[x["id"]] = canon
+                changed.add(x["id"])
+                hit = True
+        groups += 1 if hit else 0
+    # (б) шаблоны с числом по краю
+    tp: dict = {}
+    for sg in segs:
+        if usable(sg):
+            t = _tpl_of(" ".join((sg.get("source") or "").split()))
+            if t:
+                tp.setdefault(t[0], []).append((sg, t[1]))
+    for mem in tp.values():
+        if len(mem) < TWIN_TPL_MIN or len({" ".join((x["source"] or "").split()) for x, _n in mem}) < 2:
+            continue
+        masked = []
+        for sg, num in mem:
+            t = cur[sg["id"]]
+            hits = list(re.finditer(r"(?<!\d)%s(?!\d)" % re.escape(num), t))
+            if len(hits) == 1:
+                m = hits[0]
+                masked.append((sg, num, t[:m.start()] + _TWIN_SENT + t[m.end():]))
+        if len(masked) < 2:
+            continue
+        canon = _twin_canon([(sg, mt) for sg, _n, mt in masked])
+        if canon is None:
+            continue
+        hit = False
+        for sg, num, mt in masked:
+            if _human_text(sg) or mt == canon:
+                continue
+            # Место числа — свойство языка перевода, а не формулировки:
+            # «15-расм» и «Расм 15» не приводятся друг к другу (книга 8,
+            # стр. 247: верное узбекское «15-расм» стало бы «Расм 15»).
+            # Правится только слово вокруг числа на том же месте.
+            if _tpl_side(mt) != _tpl_side(canon):
+                continue
+            cur[sg["id"]] = canon.replace(_TWIN_SENT, num)
+            changed.add(sg["id"])
+            hit = True
+        groups += 1 if hit else 0
+    return {i: cur[i] for i in changed}, groups
+
+
+def _print_by_id(project: dict, stats: "dict | None" = None) -> dict:
+    """{номер: сегмент} для ВЫГРУЗКИ — те же записи, но у строк, к которым
+    применилось правило печати (двойники и шаблоны — Т16, литература, адрес,
+    сокращение), — копия с исправленным `target`. Сам проект не меняется.
+    `stats` — если передать, в него лягут `twinsUnified` и `twinGroups`."""
+    segs = project.get("segments") or []
+    try:
+        uni, ngroups = _twin_unify(project)
+    except Exception as e:
+        print("[backend] двойники при печати не сверены: %s" % e, file=sys.stderr)
+        uni, ngroups = {}, 0
+        if stats is not None:
+            # Сбой — не «двойников нет»: в отчёте выгрузки это видно отдельно.
+            stats["twinsError"] = 1
+    if stats is not None:
+        stats["twinsUnified"] = len(uni)
+        stats["twinGroups"] = ngroups
     try:
         keep = _refs_of(project)["keep"]
     except Exception:
@@ -32027,7 +32265,7 @@ def _print_by_id(project: dict) -> dict:
             if s["id"] in keep:
                 nt = src
             else:
-                nt = _abbr_apply(src, _glue_urls(src, _keep_verbatim(src, t)), amap)
+                nt = _abbr_apply(src, _glue_urls(src, _keep_verbatim(src, uni.get(s["id"], t))), amap)
             if nt != t:
                 s = dict(s, target=nt, _printFix=True)
         out[s["id"]] = s
@@ -32219,6 +32457,41 @@ def _layer_paras_by_page(data: dict, by_id: dict) -> dict:
     return out
 
 
+# Надпись картинки поверх дуги слоя (Т26b). Симптом: после того как у «MEDITERRANEAN
+# DIET» появился путь в слое (Т20), подпись печаталась ДВАЖДЫ — слоем и блоком
+# картинки («СРЕДИЗЕМНОМОРСКАЯ ДИЕТА» двумя слоями на стр. 10). Причина: отсев
+# `layerDup` требует от блока три слова и строку слоя с рамкой по x/y, а
+# `layerSame` берёт абзацы без повёрнутых мест — у подписи-дуги из одного-двух
+# слов («STANDING», «MEDITERRANEAN DIET») не годится ни то, ни другое. Правило:
+# блок, чей оригинал — тот же текст, что абзац слоя с ДУГОЙ или повёрнутой
+# строкой, и рамка которого лежит на пути этой строки (не меньше
+# `LAYER_ARC_SHARE` меньшей из двух площадей), не печатается, если абзац слоя
+# напечатан (у него есть перевод): слой точнее по месту, кеглю и цвету.
+LAYER_ARC_SHARE = float(os.environ.get("LAYER_ARC_SHARE", "0.4"))
+
+
+def _layer_arcs_by_page(data: dict, by_id: dict) -> dict:
+    """{страница: [(номер абзаца, рамка пути строки в точках с полем в кегль,
+    исходный текст)]} — абзацы слоя, у которых место — дуга или повёрнутая строка."""
+    out: dict = {}
+    for idx, sids in _para_groups(data):
+        src = " ".join((by_id.get(sid) or {}).get("source") or "" for sid in sids)
+        for b in ((data.get("layout") or {}).get("boxes") or {}).get(str(idx)) or []:
+            for sl in b.get("slots") or []:
+                if not (len(sl) > 8 and isinstance(sl[8], dict) and sl[8].get("pts")):
+                    continue
+                try:
+                    pts = sl[8]["pts"]
+                    xs = [float(p_[0]) for p_ in pts] + [float(sl[8]["end"][0])]
+                    ys = [float(p_[1]) for p_ in pts] + [float(sl[8]["end"][1])]
+                    sz = float(sl[3] or 1.0)
+                except Exception:
+                    continue
+                out.setdefault(int(b.get("page", -1)), []).append(
+                    (int(idx), (min(xs) - sz, min(ys) - sz, max(xs) + sz, max(ys) + sz), src))
+    return out
+
+
 # Лигатуры, которые слой отдаёт одним знаком: сверка «тот же текст» идёт
 # по буквам, и «ﬃ» против «ffi» — одно и то же.
 _LIGATURES = {"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi",
@@ -32312,6 +32585,7 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
     vk = _virt_key(data)
     layer_words = _layer_words_by_page(data, by_id)
     layer_paras = _layer_paras_by_page(data, by_id)
+    layer_arcs = _layer_arcs_by_page(data, by_id)
     for im in images:
         virt = str(im.get("part") or "").startswith(PDF_PAGE_PART)
         if virt and im.get("vk") != vk:
@@ -32366,6 +32640,21 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
                 # текст поверх рисунка (проект 14, стр. 19).
                 skipped["layerDup"] = skipped.get("layerDup", 0) + 1
                 continue
+            if rect_pt is not None and printed is not None and layer_arcs.get(page):
+                bx0, by0, bx1, by1 = rect_pt
+                barea = max(1e-6, (bx1 - bx0) * (by1 - by0))
+                arc_dup = False
+                for aidx, (rx0, ry0, rx1, ry1), asrc in layer_arcs[page]:
+                    ov = (max(0.0, min(bx1, rx1) - max(bx0, rx0))
+                          * max(0.0, min(by1, ry1) - max(by0, ry0)))
+                    if (ov >= LAYER_ARC_SHARE * min(barea, max(1e-6, (rx1 - rx0) * (ry1 - ry0)))
+                            and (printed.get(aidx) or "").strip()
+                            and _same_text((seg or {}).get("source") or "", asrc)):
+                        arc_dup = True
+                        break
+                if arc_dup:
+                    skipped["layerArc"] = skipped.get("layerArc", 0) + 1
+                    continue
             inside: list = []
             if rect_pt is not None:
                 bx0, by0, bx1, by1 = rect_pt
@@ -32657,7 +32946,7 @@ def _mark_figure_blocks(rec: dict, blob: bytes, fig_rects: dict, only: "set | No
         if all(covered) or not any(covered):
             continue
         b["figSplit"] = 1
-        for nb in _split_uncovered(b, lbs, covered, bi):
+        for nb in _split_uncovered(b, lbs, covered, bi, None, _blob_arr(blob)):
             nb.pop("from", None)
             blocks.append(nb)
             if added is not None:
@@ -32681,18 +32970,454 @@ def _figure_rows(rec: dict) -> set:
 # прежде отсеивался ЦЕЛИКОМ, и кривые строки не переводились никогда.
 # 4 — блок, отсеянный как рисунок, сверяется с вырезкой ПОСТРОЧНО
 # (`_mark_figure_blocks`): строки за краем рисунка читаются своими блоками.
-LAYER_RULE = 4
+# 5 — «краска минус слой» (Т32): рамка дуговой строки слоя — по глифам, а не
+# по рамке всей дуги (она накрывала середину круга: на обложке стр. 1 строки
+# «Prevent complications» и «Optimize quality of life» считались слоем и не
+# читались); непокрытое за ТОЧНЫМ концом строки слоя — своя надпись; остаток
+# краски вне слоя и вне уже заведённых блоков (`_layer_residual_add`) — новые
+# блоки («Office –» кривыми в строке слоя, стр. 12; «To avoid» и «3–6 months)»
+# кривыми над и под строками слоя, стр. 19). Записи правила 4 пересверяются
+# при открытии проекта (остаток — бесплатно по пикселям; читается только то,
+# что нашлось).
+LAYER_RULE = 5
 # Сверка со слоем знает РАЗРЫВЫ строки слоя (правило 3): `LAYER_GAPS=0` —
 # прежняя сверка цельным прямоугольником строки.
 LAYER_GAPS = os.environ.get("LAYER_GAPS", "1") != "0"
+# Т32: дуговая строка слоя — рамки глифов; хвост после точного конца — надпись;
+# остаток краски — блоки. Каждое выключается отдельно.
+LAYER_ARC_GLYPHS = os.environ.get("LAYER_ARC_GLYPHS", "1") != "0"
+LAYER_EXACT_TAIL = os.environ.get("LAYER_EXACT_TAIL", "1") != "0"
+LAYER_RESIDUAL = os.environ.get("LAYER_RESIDUAL", "1") != "0"
+# Остаток краски: не больше блоков на страницу (больше — «шумная схема», и ни
+# один не заводится); буквоподобных частей в блоке — не меньше; ширина группы
+# — не меньше стольких её высот; доля краски в рамке группы — не меньше.
+RESIDUAL_MAX_PAGE = int(os.environ.get("RESIDUAL_MAX_PAGE", "6"))
+RESIDUAL_LETTERS = 3
+RESIDUAL_WIDE = 2.0
+RESIDUAL_FILL = 0.12
+RESIDUAL_PATTERN = 0.15          # разброс ширин частей группы меньше — узор (пунктир), не слова
+RESIDUAL_TOUCH = 0.3             # краска вплотную над/под группой гуще — рисунок, не строка
+RESIDUAL_COVER = 0.08            # краски в рамке группы не меньше (`text_paint.measure`, `cover`)
+RESIDUAL_INK = 70.0              # яркость краски группы и соседней строки слоя — не дальше
+RESIDUAL_CONTRAST = 0.85         # контраст краски группы к фону — не меньше этой доли контраста соседней строки слоя
+RESIDUAL_COMPS_MAX = 2000        # частей краски в вырезке больше — шум (фото), не строки
+RESIDUAL_BG = 60.0               # фон группы и соседней строки слоя — яркость не дальше
+
+
+def _layer_rects(lay: dict, page: int) -> tuple:
+    """(рамки строк слоя, рамки их разрывов, рамки ТОЧНЫХ концов строк,
+    рамки строк с оценённым концом) страницы — в точках. Рамка дуговой или
+    повёрнутой строки — по ГЛИФАМ (Т32): рамка всей дуги накрывала середину
+    круга, и надпись внутри считалась «слоем». Строка слоя режется по своим
+    разрывам (поле 10): между кусками по слою пусто."""
+    rects, gap_rects, exact_rects, est_rects = [], [], [], []
+    for boxes in (lay.get("boxes") or {}).values():
+        for b in boxes or []:
+            if int(b.get("page", -1)) != page:
+                continue
+            for sl in b.get("slots") or []:
+                if len(sl) > 8 and isinstance(sl[8], dict):
+                    pts = sl[8].get("pts") or []
+                    s = float(sl[3] or 1)
+                    if LAYER_ARC_GLYPHS and len(pts) >= 2:
+                        for p_ in pts:
+                            try:
+                                x_, y_ = float(p_[0]), float(p_[1])
+                                e_ = p_[6] if len(p_) > 6 and p_[6] else (x_, y_)
+                                x2_, y2_ = float(e_[0]), float(e_[1])
+                            except (TypeError, ValueError, IndexError):
+                                continue
+                            m_ = 0.55 * s
+                            rects.append((min(x_, x2_) - m_, min(y_, y2_) - m_,
+                                          max(x_, x2_) + m_, max(y_, y2_) + m_))
+                        continue
+                    xs = [p[0] for p in pts] + [sl[8]["end"][0]]
+                    ys = [p[1] for p in pts] + [sl[8]["end"][1]]
+                    rects.append((min(xs) - s, min(ys) - s, max(xs) + s, max(ys) + s))
+                else:
+                    s = float(sl[3] or 1)
+                    # Строка слоя режется по своим РАЗРЫВАМ (поле 10, `pdftext`):
+                    # между кусками по слою пусто, и надпись картинки в этом
+                    # промежутке слоем не покрыта (проект 14, стр. 10:
+                    # «• [Beneficial effect on HbA] 1c, body weight…»).
+                    xs_ = [float(sl[0])]
+                    for g_ in ((sl[10] if len(sl) > 10 else None) or []) if LAYER_GAPS else []:
+                        xs_ += [float(g_[0]), float(g_[1])]
+                        gap_rects.append((float(g_[0]), float(sl[1]) - 0.3 * s, float(g_[1]),
+                                          float(sl[1]) + 0.9 * s))
+                    xs_.append(float(sl[2]))
+                    exact = bool(sl[7]) if len(sl) > 7 else False
+                    last = len(xs_) - 2
+                    for k_ in range(0, len(xs_) - 1, 2):
+                        if xs_[k_ + 1] > xs_[k_]:
+                            r_ = (xs_[k_], float(sl[1]) - 0.3 * s, xs_[k_ + 1], float(sl[1]) + 0.9 * s)
+                            rects.append(r_)
+                            if k_ == last:
+                                (exact_rects if exact else est_rects).append(r_)
+    return rects, gap_rects, exact_rects, est_rects
+
+
+def _residual_groups(rgb, cells: list, taken: list, rois: list) -> list:
+    """Остаток краски вне слоя: [(x0, y0, x1, y1, номер вырезки)] в пикселях
+    `rgb`. `cells` — клетки строк слоя, `taken` — рамки уже заведённых блоков
+    (и отсеянных: их текст ведут они), `rois` — [(x0, y0, x1, y1, высота
+    строки)]: вырезка берёт блок слоя с запасом (строка за краем блока —
+    «To avoid» над строками слоя, стр. 19). Краска вырезки (отличие от
+    медианы фона, как у `text_paint`) минус клетки слоя минус занятые рамки;
+    остаток — буквоподобные части (высота — доля строки), собранные в ряд.
+    Группа — не меньше `RESIDUAL_LETTERS` частей, шире `RESIDUAL_WIDE` своих
+    высот и не пустая (`RESIDUAL_FILL`): тире, пунктир, маркеры и значки
+    группами не становятся."""
+    try:
+        import numpy as np
+        import cv2
+        try:
+            from backend import text_paint as tp
+        except ImportError:
+            import text_paint as tp
+    except ImportError:
+        return []
+    H, W = rgb.shape[:2]
+    out: list = []
+    for ri, (rx0, ry0, rx1, ry1, lh) in enumerate(rois):
+        lh = max(6.0, float(lh))
+        x0, y0 = max(0, int(rx0)), max(0, int(ry0))
+        x1, y1 = min(W, int(rx1)), min(H, int(ry1))
+        if x1 - x0 < 8 or y1 - y0 < 6:
+            continue
+        crop = rgb[y0:y1, x0:x1]
+        k = tp._odd(0.6 * lh)
+        if min(crop.shape[:2]) <= k:
+            continue
+        diff = np.abs(crop.astype(np.int16) - cv2.medianBlur(crop, k).astype(np.int16)).max(axis=2)
+        ink = diff > tp.INK_DIFF
+        grow = max(1, int(round(0.15 * lh)))
+        for boxes, g in ((cells, grow), (taken, 2)):
+            for bx0, by0, bx1, by1 in boxes:
+                a, b_ = int(bx0 - g - x0), int(by0 - g - y0)
+                c_, d_ = int(bx1 + g - x0) + 1, int(by1 + g - y0) + 1
+                if c_ <= 0 or d_ <= 0 or a >= ink.shape[1] or b_ >= ink.shape[0]:
+                    continue
+                ink[max(0, b_):max(0, d_), max(0, a):max(0, c_)] = False
+        n, _lab, st, _c = cv2.connectedComponentsWithStats(ink.astype(np.uint8), 8)
+        hl = 0.62 * lh                               # высота буквы — доля высоты строки
+        comps, small = [], []
+        for i in range(1, n):
+            cw, ch, ar = int(st[i, 2]), int(st[i, 3]), int(st[i, 4])
+            if ar >= 3 and 0.4 * hl <= ch <= 1.9 * hl and cw <= 3.0 * lh:
+                comps.append((int(st[i, 0]), int(st[i, 1]), cw, ch, ar))
+            if ar >= 2 and ch <= 1.9 * hl:
+                small.append((int(st[i, 0]), int(st[i, 1]), cw, ch))
+        if len(comps) > RESIDUAL_COMPS_MAX:
+            continue                # шумная вырезка (фото, растр) — не строки
+        comps.sort(key=lambda c: c[1] + c[3] / 2.0)
+        rows: list = []
+        for c in comps:
+            cy = c[1] + c[3] / 2.0
+            for r in rows:
+                if abs(cy - r["cy"]) <= 0.6 * lh:
+                    r["items"].append(c)
+                    r["sy"] += cy
+                    r["cy"] = r["sy"] / len(r["items"])
+                    break
+            else:
+                rows.append({"cy": cy, "sy": cy, "items": [c]})
+        for r in rows:
+            items = sorted(r["items"], key=lambda c: c[0])
+            groups, cur = [], [items[0]]
+            for c in items[1:]:
+                if c[0] - (cur[-1][0] + cur[-1][2]) <= 1.3 * lh:
+                    cur.append(c)
+                else:
+                    groups.append(cur)
+                    cur = [c]
+            groups.append(cur)
+            for g in groups:
+                if len(g) < RESIDUAL_LETTERS:
+                    continue
+                gx0, gx1 = min(c[0] for c in g), max(c[0] + c[2] for c in g)
+                gy0, gy1 = min(c[1] for c in g), max(c[1] + c[3] for c in g)
+                gw, gh = gx1 - gx0, gy1 - gy0
+                if gw < RESIDUAL_WIDE * gh or sum(c[4] for c in g) < RESIDUAL_FILL * gw * gh:
+                    continue
+                # Ряд одинаковых частей (пунктирная рамка, маркеры, модули кода) —
+                # узор, а не слова: у букв ширина разная.
+                if len(g) >= 4:
+                    ws = np.array([c[2] for c in g], dtype=np.float32)
+                    hs_ = np.array([c[3] for c in g], dtype=np.float32)
+                    if ws.std() / max(1.0, ws.mean()) < RESIDUAL_PATTERN and hs_.std() / max(1.0, hs_.mean()) < 2 * RESIDUAL_PATTERN:
+                        continue
+                # Тире, точка, скобка рядом с буквами группы — её же краска
+                # («Office –»): мелкие части, не прошедшие по высоте.
+                for cx_, cy_, cw_, ch_ in small:
+                    if (cy_ + ch_ >= gy0 - 0.3 * lh and cy_ <= gy1 + 0.3 * lh
+                            and min(abs(cx_ - gx1), abs(cx_ + cw_ - gx0)) <= 0.8 * lh
+                            and (cx_ >= gx1 or cx_ + cw_ <= gx0)):
+                        gx0, gx1 = min(gx0, cx_), max(gx1, cx_ + cw_)
+                gw = gx1 - gx0
+                # Сплошная краска вплотную над или под группой — не строка, а
+                # рисунок (QR-код, штриховка, значок: у строки между строками
+                # пустой промежуток): по краске ближайших 0.3 её высоты.
+                band = max(1, int(round(0.3 * gh)))
+                above = ink[max(0, gy0 - band):gy0, gx0:gx1]
+                below = ink[gy1:min(ink.shape[0], gy1 + band), gx0:gx1]
+                if (above.size and above.mean() >= RESIDUAL_TOUCH) or (below.size and below.mean() >= RESIDUAL_TOUCH):
+                    continue
+                gx, gy = x0 + gx0, y0 + gy0
+                if not _residual_looks_like_text(rgb, (gx, gy, x0 + gx1, y0 + gy1), lh, cells, taken):
+                    continue
+                out.append((gx, gy, x0 + gx1, y0 + gy1, ri))
+                if len(out) > 3 * RESIDUAL_MAX_PAGE:
+                    return out          # и так «шумная схема» — дальше не меряем
+    # Одна группа из двух вырезок (соседние блоки слоя накрывают одно место) — одна.
+    keep: list = []
+    for g in sorted(out, key=lambda v: -((v[2] - v[0]) * (v[3] - v[1]))):
+        a = max(1, (g[2] - g[0]) * (g[3] - g[1]))
+        if any(min(g[2], o[2]) - max(g[0], o[0]) > 0 and min(g[3], o[3]) - max(g[1], o[1]) > 0
+               and (min(g[2], o[2]) - max(g[0], o[0])) * (min(g[3], o[3]) - max(g[1], o[1])) >= 0.5 * a
+               for o in keep):
+            continue
+        keep.append(g)
+    return keep
+
+
+def _layer_residual_add_marked(rec: dict, blob: bytes, data: dict, fig_rects: dict,
+                               protect: "set | None" = None) -> int:
+    """`_layer_residual_add` и сверка новых блоков с вырезанными рисунками
+    страницы: строка внутри рисунка читается его записью, а не этой (правило 4).
+    Ответ — сколько новых блоков осталось."""
+    before = len(rec.get("blocks") or [])
+    got = _layer_residual_add(rec, blob, data, protect)
+    if got and str(rec.get("part") or "").startswith(PDF_PAGE_PART):
+        sub = {"blocks": (rec.get("blocks") or [])[before:], "w": rec.get("w"), "h": rec.get("h")}
+        _mark_figure_blocks(sub, blob, fig_rects)
+        rec["blocks"] = (rec.get("blocks") or [])[:before] + sub["blocks"]
+        got = sum(1 for b in rec["blocks"][before:] if not b.get("skip"))
+    return got
+
+
+def _residual_looks_like_text(rgb, box, lh: float, cells: list, taken: list) -> bool:
+    """Группа остатка — надпись, а не рисунок: (а) не обрывок блока, который
+    уже заведён (рамка блока тесна — «d with» справа от «Scanne» штампа
+    CamScanner, стр. 26): рядом по строке нет занятой рамки; (б) фон ровный и
+    краска не редкая (`text_paint.measure`: `texture`, `cover` — значки и
+    иллюстрации пёстрые, левая часть логотипа — нет); (в) рядом есть строка
+    слоя с тем же фоном и той же полярностью (светлые буквы на тёмном или
+    наоборот) и краской близкой яркости: «To avoid» белым на синем рядом со
+    строками белым на синем, а логотип белым на красном над чёрным заголовком
+    и серый штамп CamScanner рядом с чёрной колонкой — нет."""
+    try:
+        import numpy as np
+        try:
+            from backend import text_paint as tp
+        except ImportError:
+            import text_paint as tp
+    except ImportError:
+        return True
+    gx0, gy0, gx1, gy1 = box
+    gh = max(1.0, gy1 - gy0)
+    for tx0, ty0, tx1, ty1 in taken:
+        if min(gy1, ty1) - max(gy0, ty0) >= 0.5 * gh and (
+                min(abs(gx0 - tx1), abs(tx0 - gx1)) <= 1.0 * gh or (tx0 <= gx1 and tx1 >= gx0)):
+            return False
+    H, W = rgb.shape[:2]
+    pad = max(2, int(0.4 * gh))
+    cx0, cy0, cx1, cy1 = max(0, int(gx0) - pad), max(0, int(gy0) - pad), min(W, int(gx1) + pad), min(H, int(gy1) + pad)
+    crop = rgb[cy0:cy1, cx0:cx1]
+    if crop.shape[0] < 4 or crop.shape[1] < 4:
+        return False
+    m = tp.measure(crop, "", 1, float(crop.shape[0]))
+    if m["texture"] > tp.TEXTURE_MAX or m["cover"] < RESIDUAL_COVER:
+        return False
+
+    def look(a):
+        lum = a.astype(np.float32) @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
+        b = float(np.median(lum))
+        hi, lo = float(np.percentile(lum, 98)), float(np.percentile(lum, 2))
+        pol = 1 if hi - b > b - lo else -1
+        return b, pol, (hi if pol > 0 else lo)
+    bg_g, pol_g, ink_g = look(crop)
+    best = None
+    for qx0, qy0, qx1, qy1 in cells:
+        ch = max(1.0, qy1 - qy0)
+        if ch > 2.5 * lh or ch > 3.0 * (qx1 - qx0):
+            continue                    # клетка не строки: рамка повёрнутого текста, поле
+        dy = max(0.0, max(qy0 - gy1, gy0 - qy1))
+        dx = max(0.0, max(qx0 - gx1, gx0 - qx1))
+        if dy <= 1.6 * ch and dx <= 4.0 * ch and (best is None or dy + dx < best[0]):
+            best = (dy + dx, (qx0, qy0, qx1, qy1))
+    if best is None:
+        return False
+    qx0, qy0, qx1, qy1 = (int(max(0, v)) for v in best[1])
+    cell = rgb[qy0:min(H, qy1 + 1), qx0:min(W, qx1 + 1)]
+    if cell.shape[0] < 3 or cell.shape[1] < 3:
+        return True
+    bg_c, pol_c, ink_c = look(cell)
+    # Краска группы не бледнее краски соседней строки слоя (серый штамп рядом с
+    # чёрной колонкой — бледнее на четверть и больше).
+    return (pol_c == pol_g and abs(bg_c - bg_g) <= RESIDUAL_BG and abs(ink_c - ink_g) <= RESIDUAL_INK
+            and abs(ink_g - bg_g) >= RESIDUAL_CONTRAST * abs(ink_c - bg_c))
+
+
+def _residual_due(rec: dict) -> bool:
+    """Запись СТРАНИЦЫ, сверенная со слоем до правила 5, имеет блоки слоя —
+    значит, рядом мог остаться текст кривыми (Т32)."""
+    return bool(LAYER_RESIDUAL and int(rec.get("layerRule") or 1) < 5
+                and str(rec.get("part") or "").startswith(PDF_PAGE_PART)
+                and any(b.get("skip") == "layer" for b in rec.get("blocks") or []))
+
+
+def _layer_residual_add(rec: dict, blob: bytes, data: dict, protect: "set | None" = None) -> int:
+    """Остаток краски вне слоя — новыми блоками в КОНЕЦ записи (номер блока —
+    связь с сегментом); их прочитает и переведёт обычный разбор. Ответ — сколько
+    заведено. Бесплатно: пиксели вырезок блоков слоя.
+
+    Симптом (проект 14): слой несёт часть строки, остальное — кривыми, и эта
+    часть оставалась языком оригинала: «Office –» в строке слоя (стр. 12),
+    «To avoid» и «3–6 months)» над и под строками слоя в круге (стр. 19),
+    «quality of life» после слова «Optimize» слоем (стр. 1, 4). Причина:
+    «что в слое» решалось по ПЛОЩАДИ рамок детектора, а рамка сливает строки.
+    Правило (Т32): краска минус клетки слоя минус занятые блоки (`_residual_groups`);
+    группа, чья ширина не меньше 0.6 соседней по строке клетки слоя, берёт эту
+    клетку в рамку — фраза «Optimize quality of life» читается и переводится
+    целиком, а слой под ней стирается (`_holds_layer_pieces`); короткая метка
+    рядом с длинной строкой слоя («Office –») остаётся своей рамкой."""
+    if not LAYER_RESIDUAL or not blob or not rec.get("w") or not rec.get("h"):
+        return 0
+    fig = importers.figure_tag(blob)
+    if fig is None:
+        return 0
+    page, fx0, fy0, fx1, fy1 = fig
+    pgs = ((data or {}).get("layout") or {}).get("pages") or []
+    if not (0 <= page < len(pgs)) or not pgs[page]:
+        return 0
+    px0, py0, px1, py1 = (float(v) for v in pgs[page])
+    pw, ph = px1 - px0, py1 - py0
+    if pw <= 0 or ph <= 0 or fx1 <= fx0 or fy1 <= fy0:
+        return 0
+    w, h = float(rec["w"]), float(rec["h"])
+    rects, _gap, _exact, est = _layer_rects((data or {}).get("layout") or {}, page)
+    blocks = rec.get("blocks") or []
+    if not rects or not any(b.get("skip") == "layer" for b in blocks):
+        return 0
+    # Концы строк слоя на странице в большинстве ОЦЕНЕНЫ (скан с невидимым
+    # слоем распознавания, шрифт без ширин) — клетка слоя не совпадает с
+    # буквами, и хвост книжной строки, не накрытый оценкой, выглядел бы
+    # «потерянным текстом»: его прочитали бы платно и напечатали дважды.
+    # Без точных концов остаток не ищется вовсе.
+    if len(est) * 2 > len(rects):
+        rec["residualSkipped"] = "est"
+        return 0
+
+    def px_x(v):
+        return ((v - px0) / pw - fx0) / max(fx1 - fx0, 1e-9) * w
+
+    def px_y(v):
+        return ((py1 - v) / ph - fy0) / max(fy1 - fy0, 1e-9) * h
+    est_set = {tuple(r) for r in est}
+    cells = []
+    for r in rects:
+        c = [px_x(r[0]), px_y(r[3]), px_x(r[2]), px_y(r[1])]
+        if tuple(r) in est_set:
+            # Конец строки слоя — оценка: перекрытие вправо с запасом.
+            c[2] += max(0.25 * (c[2] - c[0]), 1.5 * (c[3] - c[1]))
+        cells.append(c)
+    # Заняты блоки, которые ведут свои надписи; блок, отсеянный как рисунок, —
+    # нет: его рамка — по всем строкам рисунка и накрывает строки слоя рядом
+    # («Office –» внутри рамки 20 строк, стр. 12); что лежит в самом рисунке,
+    # отсеет `_mark_figure_blocks` (вызывающий).
+    taken = [[float(v) for v in b["box"]] for b in blocks
+             if b.get("box") and b.get("skip") not in ("layer", "figure")]
+    rois, parents = [], []
+    for i, b in enumerate(blocks):
+        if b.get("skip") != "layer" or not b.get("box"):
+            continue
+        x0, y0, x1, y1 = (float(v) for v in b["box"])
+        # Строка — по клеткам слоя в блоке: рамка детектора сливает строки, и
+        # его `lineH` для круга с мелким текстом (4 пт) вдвое выше строки.
+        hs = sorted(c[3] - c[1] for c in cells
+                    if min(c[3], y1) - max(c[1], y0) > 0 and min(c[2], x1) - max(c[0], x0) > 0)
+        lh = hs[len(hs) // 2] if hs else float(b.get("lineH") or max(6.0, (y1 - y0) / max(1, int(b.get("rows") or 1))))
+        lh = max(6.0, lh)
+        rois.append((x0 - 0.5 * lh, y0 - 1.3 * lh, x1 + 0.5 * lh, y1 + 1.3 * lh, lh))
+        parents.append(i)
+    try:
+        from PIL import Image as _PIL
+        import numpy as _np
+        rgb = _np.asarray(_PIL.open(io.BytesIO(blob)).convert("RGB"))
+    except Exception:
+        return 0
+    groups = _residual_groups(rgb, cells, taken, rois)
+    if not groups or len(groups) > RESIDUAL_MAX_PAGE:
+        # Много «остатка» на странице — шумная схема, а не потерянные строки.
+        if groups:
+            rec["residualSkipped"] = len(groups)
+        return 0
+    added = []
+    for gx0, gy0, gx1, gy1, ri in groups:
+        gh = gy1 - gy0
+        # Соседняя по строке клетка слоя — в рамку, если группа не мельче 0.6 её
+        # ширины (по буквам это не меньше 0.3 собственного текста надписи).
+        for cx0, cy0, cx1, cy1 in cells:
+            if min(gy1, cy1) - max(gy0, cy0) < 0.5 * gh or cx1 <= cx0:
+                continue
+            if cx1 <= gx0 or cx0 >= gx1:
+                gap = min(abs(gx0 - cx1), abs(cx0 - gx1))
+                if gap <= 0.8 * gh and (gx1 - gx0) >= 0.6 * (cx1 - cx0):
+                    gx0, gx1 = min(gx0, cx0), max(gx1, cx1)
+        par = blocks[parents[ri]] if ri < len(parents) else {}
+        # Рамка не ниже строки слоя рядом (высота буквы на мелком кропе — часть
+        # строки): читающий берёт поле от высоты строки, и тонкая рамка резала бы буквы.
+        lh_ = rois[ri][4] if ri < len(rois) else gh
+        if gh < lh_:
+            gy0, gy1 = gy0 - (lh_ - gh) / 2.0, gy1 + (lh_ - gh) / 2.0
+            gh = lh_
+        box = [int(gx0), int(max(0, gy0)), int(gx1), int(gy1)]
+        added.append({"box": box, "rows": 1, "lineH": int(round(max(gh, 1))),
+                      "conf": par.get("conf"), "flat": par.get("flat"), "align": "left",
+                      "lineBoxes": [box], "residual": 1})
+    if added:
+        rec["blocks"] = blocks + added
+    return len(added)
+
+
+_BLOB_ARR: list = [None, None]
+
+
+def _blob_arr(blob: bytes):
+    """Пиксели картинки (RGB, numpy) — для фона и разделителей строк; None,
+    если нечем или не вышло (сверка идёт по одной геометрии). Последняя
+    картинка помнится: сверка зовёт это на каждый блок страницы."""
+    key = (id(blob), len(blob))
+    if _BLOB_ARR[0] == key:
+        return _BLOB_ARR[1]
+    arr = None
+    try:
+        import numpy as _np
+        im = image_text._open(blob)
+        arr = _np.asarray(im.convert("RGB"))
+        if arr.size > 30_000_000:
+            arr = None
+    except Exception:
+        arr = None
+    _BLOB_ARR[:] = [key, arr]
+    return arr
 
 
 def _split_uncovered(b: dict, line_boxes: list, covered: list, parent: int,
-                     alone: "set | None" = None) -> list:
-    """Строки блока, которых нет в слое, — новыми блоками (по подряд идущим):
-    их и прочитает модель. Блок, где все строки в слое, сюда не попадает.
+                     alone: "set | None" = None, arr=None) -> list:
+    """Строки блока, которых нет в слое, — новыми блоками: их и прочитает
+    модель. Блок, где все строки в слое, сюда не попадает.
     `alone` — строки, обрезанные до куска на разрыве слоя: своим блоком,
-    склеенная с соседней строкой рамка снова накрыла бы текст слоя."""
+    склеенная с соседней строкой рамка снова накрыла бы текст слоя.
+
+    Т14. Подряд идущие непокрытые строки НЕ сливаются в один блок молча:
+    они пересобираются теми же условиями, что при поиске строк (колонка,
+    кегль, выравнивание, зазор), плюс фон и линия-разделитель между
+    строками (`image_text.regroup_boxes`). Прежде три плашки рядом на
+    стр. 19 («Consider medication…» | «Consider metabolic surgery» |
+    «When choosing…») и две полосы («High» | «Intermediate») становились
+    одним блоком — одним абзацем перевода поперёк границ."""
     out, run = [], []
     for k_, (lb, cov) in enumerate(zip(line_boxes, covered)):
         if not cov and k_ in (alone or ()):
@@ -32714,15 +33439,17 @@ def _split_uncovered(b: dict, line_boxes: list, covered: list, parent: int,
         gap = bool(r) and r[-1] == "gap"
         if gap:
             r = r[:-1]
-        x0, y0 = min(v[0] for v in r), min(v[1] for v in r)
-        x1, y1 = max(v[2] for v in r), max(v[3] for v in r)
-        lh = sum(v[3] - v[1] for v in r) / float(len(r))
-        res.append({"box": [int(x0), int(y0), int(x1), int(y1)], "rows": len(r),
-                    "lineH": int(round(lh)), "conf": b.get("conf"), "flat": b.get("flat"),
-                    "align": _blk_align({"lineBoxes": r, "align": b.get("align")}),
-                    "lineBoxes": r, "from": parent})
-        if gap:
-            res[-1]["gap"] = 1
+        parts = [r] if (gap or len(r) < 2) else image_text.regroup_boxes(r, arr)
+        for r in parts:
+            x0, y0 = min(v[0] for v in r), min(v[1] for v in r)
+            x1, y1 = max(v[2] for v in r), max(v[3] for v in r)
+            lh = sum(v[3] - v[1] for v in r) / float(len(r))
+            res.append({"box": [int(x0), int(y0), int(x1), int(y1)], "rows": len(r),
+                        "lineH": int(round(lh)), "conf": b.get("conf"), "flat": b.get("flat"),
+                        "align": _blk_align({"lineBoxes": r, "align": b.get("align")}),
+                        "lineBoxes": r, "from": parent})
+            if gap:
+                res[-1]["gap"] = 1
     return res
 
 
@@ -32744,35 +33471,7 @@ def _mark_layer_blocks(rec: dict, blob: bytes, data: dict, only: "set | None" = 
         return 0
     px0, py0, px1, py1 = (float(v) for v in pb)
     pw, ph = px1 - px0, py1 - py0
-    rects = []
-    gap_rects = []
-    for boxes in (lay.get("boxes") or {}).values():
-        for b in boxes or []:
-            if int(b.get("page", -1)) != page:
-                continue
-            for sl in b.get("slots") or []:
-                if len(sl) > 8 and isinstance(sl[8], dict):
-                    pts = sl[8].get("pts") or []
-                    xs = [p[0] for p in pts] + [sl[8]["end"][0]]
-                    ys = [p[1] for p in pts] + [sl[8]["end"][1]]
-                    s = float(sl[3] or 1)
-                    rects.append((min(xs) - s, min(ys) - s, max(xs) + s, max(ys) + s))
-                else:
-                    s = float(sl[3] or 1)
-                    # Строка слоя режется по своим РАЗРЫВАМ (поле 10, `pdftext`):
-                    # между кусками по слою пусто, и надпись картинки в этом
-                    # промежутке слоем не покрыта (проект 14, стр. 10:
-                    # «• [Beneficial effect on HbA] 1c, body weight…»).
-                    xs_ = [float(sl[0])]
-                    for g_ in ((sl[10] if len(sl) > 10 else None) or []) if LAYER_GAPS else []:
-                        xs_ += [float(g_[0]), float(g_[1])]
-                        gap_rects.append((float(g_[0]), float(sl[1]) - 0.3 * s, float(g_[1]),
-                                          float(sl[1]) + 0.9 * s))
-                    xs_.append(float(sl[2]))
-                    for k_ in range(0, len(xs_) - 1, 2):
-                        if xs_[k_ + 1] > xs_[k_]:
-                            rects.append((xs_[k_], float(sl[1]) - 0.3 * s, xs_[k_ + 1],
-                                          float(sl[1]) + 0.9 * s))
+    rects, gap_rects, exact_rects, _est_rects = _layer_rects(lay, page)
     n = 0
     w, h = float(rec["w"]), float(rec["h"])
 
@@ -32794,6 +33493,13 @@ def _mark_layer_blocks(rec: dict, blob: bytes, data: dict, only: "set | None" = 
         # было бы платным дублем). Разрыв же записан по кускам строки.
         if not any(min(best[1], gx1) - max(best[0], gx0) >= 0.5 * (best[1] - best[0])
                    and min(by1, gy1) > max(by0, gy0) for gx0, gy0, gx1, gy1 in gap_rects):
+            # Т32: конец ТОЧНОЙ строки слоя (по метрикам шрифта) — не оценка:
+            # непокрытое сразу за ним — другая надпись («Optimize» слоем и
+            # «quality of life» кривыми, стр. 1 и 4), а не её хвост.
+            if LAYER_EXACT_TAIL and any(
+                    abs(best[0] - ex1) <= 0.5 and min(by1, ey1) - max(by0, ey0) >= 0.5 * (by1 - by0)
+                    for _ex0, ey0, ex1, ey1 in exact_rects):
+                return best
             return None
         return best
 
@@ -32844,7 +33550,7 @@ def _mark_layer_blocks(rec: dict, blob: bytes, data: dict, only: "set | None" = 
                         continue
                 covered.append(sh_ >= LAYER_OVERLAP)
             if any(covered) and not all(covered):
-                added.extend(_split_uncovered(b, lbs, covered, bi, trimmed))
+                added.extend(_split_uncovered(b, lbs, covered, bi, trimmed, _blob_arr(blob)))
                 b["skip"] = "layer"
                 b["layerSplit"] = 1
                 n += 1
@@ -32927,6 +33633,8 @@ def _mark_layer_blocks(rec: dict, blob: bytes, data: dict, only: "set | None" = 
             # Прочитанная прежде запись: номер блока — связь с сегментом,
             # новые блоки — только В КОНЕЦ.
             rec["blocks"] = blocks + added
+    if only is None and LAYER_RESIDUAL:
+        n += _layer_residual_add(rec, blob, data)
     rec["layerRule"] = LAYER_RULE
     return n
 
@@ -32952,9 +33660,19 @@ def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict,
     # кусок на разрыве, иначе пересверка заново заводила бы (и платно
     # читала) строки, решённые раньше.
     gap_only = _gap_blocks(rec, data) - _relayer_rows(rec)
-    if not todo or not blob or image_text is None:
+    # Правило 5 (Т32): остаток краски вне слоя — отдельный бесплатный проход
+    # по пикселям, строки блоков слоя заново не ищутся.
+    resid = _residual_due(rec) and bool(blob)
+    if not todo and resid:
+        added_res = _layer_residual_add_marked(rec, blob, data, fig_rects, protect)
         rec["layerRule"] = LAYER_RULE
-        return 0
+        return added_res
+    if not todo or not blob or image_text is None:
+        # Остаток краски детектора не требует: без движка строк он всё
+        # равно делается, иначе отметка правила закрыла бы его навсегда.
+        added_res = _layer_residual_add_marked(rec, blob, data, fig_rects, protect) if resid else 0
+        rec["layerRule"] = LAYER_RULE
+        return added_res
     # Детектор — по ВЫРЕЗКАМ этих блоков, а не по всей странице: страница
     # книги — минута процессора единственного воркера, блок — доли секунды.
     try:
@@ -33056,8 +33774,9 @@ def _relayer_old(rec: dict, blob: bytes, data: dict, fig_rects: dict,
         # Строки за краем рисунка (`_mark_figure_blocks` дописывает их в конец).
         keep = keep[:before] + sub["blocks"]
         rec["blocks"] = keep
+    added_res = _layer_residual_add_marked(rec, blob, data, fig_rects, protect) if resid else 0
     rec["layerRule"] = LAYER_RULE
-    return len(keep) - before + len(fig_new)
+    return len(keep) - before + len(fig_new) + added_res
 
 
 def _relayer_todo(rec: dict, data: "dict | None" = None) -> set:
@@ -33412,6 +34131,11 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
         if sheets == "original":
             pdf = importers.pdf_panels.unsplit(pdf, virt)
     tmp.write_bytes(pdf)
+    # Т16: сколько надписей напечатано единым переводом (двойники и шаблоны с числом).
+    try:
+        _print_by_id(project, stats)
+    except Exception as e:
+        print("[backend] twinsUnified: %s" % e, file=sys.stderr)
     # Проверка готового файла: осталось ли что-то на языке оригинала.
     try:
         stats["identical"] = len(same)
@@ -33558,6 +34282,10 @@ def _export_rows(project: dict, include_source: bool) -> tuple:
     head = ([h["n"]] + ([h["start"], h["end"]] if times is not None else [])
             + ([h["src"]] if include_source else []) + [h["tgt"]])
     rows = []
+    try:
+        uni = _twin_unify(project)[0]          # Т16: те же единые тексты, что в 1в1
+    except Exception:
+        uni = {}
     for i, s in enumerate(project["segments"], 1):
         row = [i]
         if times is not None:
@@ -33565,7 +34293,7 @@ def _export_rows(project: dict, include_source: bool) -> tuple:
             row += ([importers._stamp(t[0], ","), importers._stamp(t[1], ",")] if t else ["", ""])
         if include_source:
             row.append(s.get("source", ""))
-        row.append(s.get("target", ""))
+        row.append(uni.get(s["id"], s.get("target", "")))
         rows.append(row)
     return head, rows
 
@@ -33612,9 +34340,13 @@ def _export_docx_plain(project: dict, tmp, include_source: bool = True) -> dict:
             for c, v in zip(table.add_row().cells, r):
                 c.text = str(v)
     else:
+        try:
+            uni = _twin_unify(project)[0]
+        except Exception:
+            uni = {}
         for s in segs:
             if s.get("target"):
-                doc.add_paragraph(s["target"])
+                doc.add_paragraph(uni.get(s["id"], s["target"]))
     doc.save(str(tmp))
     return {}
 
@@ -33798,6 +34530,102 @@ def _generate_export(project: dict, fmt: str, include_source: bool = True,
     os.replace(str(tmp), str(out))
     return out, stats
 
+# ─── Сверка первой выгрузки нового файла ────────────────────────────
+# Решение владельца сервиса 13.10.2026: каждая ПЕРВАЯ выгрузка нового файла
+# сверяется с оригиналом «до/после», а найденные дефекты становятся правилами
+# для всех проектов и языков (порядок — docs/rules/export-review.md, делает
+# агент-разработчик: `tools/export_review.py`). Сервер только ставит файл
+# в очередь и зовёт владельца; сама сверка — работа вне сервиса. Ключ
+# `exportReviews` в `/api/seed` не уходит (там белый список): в очереди
+# названия файлов чужих организаций.
+EXPORT_REVIEW_MAX = 300
+EXPORT_REVIEW_STATUSES = ("pending", "done", "skipped")
+
+
+def _export_review_note(project: dict, fmt: str, path: Path) -> None:
+    """Первая выгрузка ЭТОГО файла — строка очереди и сообщение владельцу.
+    Файл — номер проекта и отпечаток исходника (`sourceSha`): повторная
+    выгрузка того же файла очередь не пополняет, а замена файла другим —
+    пополняет. Сбой учёта выгрузке не мешает."""
+    try:
+        sha = project.get("sourceSha") or ""
+        title = project.get("title") or project.get("fileName") or ""
+        with _SAVE_LOCK:
+            q = STATE.setdefault("exportReviews", [])
+            if any(r.get("project") == project.get("id") and (r.get("sha") or "") == sha for r in q):
+                return
+            # Файл, выгруженный ДО появления очереди, — не новый: история
+            # выгрузок (без только что добавленной записи) его уже знает.
+            seen = [e for e in (STATE.get("exportHistory") or [])[1:]
+                    if e.get("project") == project.get("id") and _tenant_of(e) == _tenant_of(project)]
+            if seen and not q_has_project(q, project.get("id")):
+                q.insert(0, {"id": _next_review_id(q), "tenant": _tenant_of(project),
+                             "project": project.get("id"), "sha": sha, "status": "skipped",
+                             "note": "выгружался до очереди", "title": title, "file": path.name,
+                             "format": fmt, "at": datetime.now().strftime("%Y-%m-%d %H:%M")})
+                del q[EXPORT_REVIEW_MAX:]
+                return
+            q.insert(0, {"id": _next_review_id(q), "tenant": _tenant_of(project), "project": project.get("id"),
+                         "title": title, "file": path.name, "format": fmt, "sha": sha,
+                         "src": project.get("src"), "tgt": project.get("tgt"),
+                         "at": datetime.now().strftime("%Y-%m-%d %H:%M"), "status": "pending"})
+            del q[EXPORT_REVIEW_MAX:]
+        tg_mod.notify_admin_async(
+            "🔎 Новый файл выгружен впервые — ждёт сверки «до/после»: проект %s «%s» "
+            "(%s→%s, %s). Очередь: python tools/export_review.py list"
+            % (project.get("id"), title[:80], project.get("src") or "?", project.get("tgt") or "?", fmt))
+    except Exception as e:
+        print("[backend] очередь сверки выгрузки: %s" % e, file=sys.stderr)
+
+
+def _next_review_id(q: list) -> int:
+    return max((int(r.get("id") or 0) for r in q), default=0) + 1
+
+
+def q_has_project(q: list, pid) -> bool:
+    return any(r.get("project") == pid for r in q)
+
+
+def _export_reviews_forget(pid: int, tenant: str) -> None:
+    """Удалённый проект уходит из очереди сверки: номер проекта
+    переиспользуется (`max + 1`), и чужая строка закрыла бы новый файл."""
+    q = STATE.get("exportReviews")
+    if q:
+        STATE["exportReviews"] = [r for r in q if not (r.get("project") == pid and r.get("tenant") == tenant)]
+
+
+@app.get("/api/admin/export-reviews")
+def export_reviews(request: Request, status: str = "pending"):
+    """Очередь сверки первых выгрузок — только суперпользователю."""
+    _super_or_403(request)
+    q = STATE.get("exportReviews") or []
+    items = [r for r in q if not status or r.get("status") == status]
+    return {"items": items, "total": len(q),
+            "pending": sum(1 for r in q if r.get("status") == "pending")}
+
+
+class ExportReviewPatch(BaseModel):
+    status: str
+    note: str = ""
+    report: str = ""
+
+
+@app.post("/api/admin/export-reviews/{rid}")
+def export_review_set(rid: int, req: ExportReviewPatch, request: Request):
+    """Отметка сверки: done (разобрано, ссылка на отчёт), skipped (не нужно)."""
+    me = _super_or_403(request)
+    if req.status not in EXPORT_REVIEW_STATUSES:
+        raise HTTPException(400, "Неизвестное состояние сверки")
+    for r in STATE.get("exportReviews") or []:
+        if int(r.get("id") or 0) == rid:
+            r.update({"status": req.status, "note": (req.note or "")[:4000],
+                      "report": (req.report or "")[:500], "by": me.get("id"),
+                      "doneAt": datetime.now().strftime("%Y-%m-%d %H:%M")})
+            save_state(STATE)
+            return {"ok": True, "item": r}
+    raise HTTPException(404, "Нет такой строки очереди")
+
+
 @app.post("/api/projects/{pid}/export")
 def export_project(pid: int, req: ExportRequest):
     _audit("project.export", project=pid, format=getattr(req, "format", None))
@@ -33843,6 +34671,7 @@ def export_project(pid: int, req: ExportRequest):
         "size": f"{size_kb} КБ",
     })
     STATE["exportHistory"] = STATE["exportHistory"][:50]
+    _export_review_note(project, fmt, path)
     save_state(STATE)
     return {"ok": True, "file": path.name, "size": f"{size_kb} КБ", "stats": stats,
             "url": f"/api/projects/{pid}/export/download?format={fmt}&source={1 if req.source else 0}"}

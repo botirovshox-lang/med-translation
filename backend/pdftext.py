@@ -95,8 +95,12 @@ MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
 # 9 — абзац рвётся там, где следующая строка геометрически его не
 # продолжает (подписи схемы с разных концов листа), строка pypdf с двумя
 # надписями одной базовой линии делится по местам (`split`), невидимый
-# и повёрнутый текст — своими пачками.
-RULES_VERSION = 14
+# и повёрнутый текст — своими пачками. Дальше версии — в разделах
+# docs/rules/pdf-reading.md; 15 — раздел С: строки таблицы (Т6), знаки
+# сравнения и сноски (Т7), капс «MLTCs» (Т8), над- и подстрочные знаки
+# Юникодом (Т9), колонтитул по месту на листе, в том числе повёрнутый (Т15),
+# и правила того же раздела, сделанные следом.
+RULES_VERSION = 15
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -202,6 +206,9 @@ _TEXT_BULLET_RE = re.compile(r"^\s*([•▪◦●■♦])\s*(?=\S)")
 _BULLET_RE = re.compile(r"^(?:[♦•■▪●○◦✓✔–—-]|\d{1,3}[.)]|[a-zа-яё][.)])\s+\S")
 # Конец абзаца по знаку — как у прежней склейки в importers.
 _END_RE = re.compile(r"[.!?…:;»”\")\]]\s*$")
+# Вторая строка ячейки первой колонки таблицы — не дальше стольких кеглей
+# от первой (`_table_streams`, Т6).
+TABLE_CONT_LEAD = 2.5
 PARA_MAX = 1200
 
 # Пороги ненадёжного слоя. Медиана мусора по боевой книге — 0 %, 95-й
@@ -391,7 +398,8 @@ def _is_noise_line(line: str) -> bool:
     if _PARAGRAPH_NO_RE.match(line.strip()):
         return False                    # «§ 5» — номер параграфа, а не знак мусора
     if any(c in _ORNAMENT_CHARS for c in line):
-        return True
+        # Знак сравнения при числе («<7%», «≥ 150») — условие, а не мусор (Т7).
+        return not (any(c.isdigit() for c in line) and re.search(r"[<>±~]\s?\d", line))
     if any(c.isdigit() for c in line) and _NUM_LINE_RE.match(line):
         return False
     kinds = [_token_kind(t) for t in toks]
@@ -601,6 +609,11 @@ _HYPHEN_DUP_RE = re.compile(r"([^\W\d_][-‐‑])\s+[-‐‑]\s*$")
 _MATH_MARKS = frozenset("*^")
 _MATH_NEAR_RE = re.compile(r"[*^](?=[0-9/])|(?<=[0-9/])[*^]")
 _ORN_STR = "".join(_ORNAMENT_CHARS)
+# Знаки, которые на КРАЮ слова не снимаются (`_clean_line`, Т7): сравнение
+# перед словом или числом и знаки сноски.
+_CMP_KEEP = "<>±~"
+_CMP_TOKENS = frozenset(("<", ">", "±", "~", "<=", ">=", "≤", "≥"))
+_NOTE_KEEP = "*§"
 # Знак, который Юникод считает математическим, а книга — почти никогда:
 # «|» в отсканированной книге это граница таблицы, а не модуль числа.
 # Замер на боевой книге: «|» встречается 4 раза, и все четыре — обрывки.
@@ -670,9 +683,34 @@ def _clean_line(line: str, report: dict):
         if _math_token(t):
             toks.append(t)             # «*/», «2*» — повреждённый знак, а не украшение
             continue
+        if t == "&" and toks and k + 1 < len(split):
+            toks.append(t)             # «Merck Sharp & Dohme» — союз, не мусор (Т7)
+            continue
+        if t in _CMP_TOKENS and k + 1 < len(split) and re.match(r"[\d.,]", split[k + 1]):
+            toks.append(t)             # «p < 0.05», «BMI > 30» — условие (Т7)
+            continue
         if not core and all(c in _ORNAMENT_CHARS for c in t):
             if t.startswith(("•", "♦", "■", "●")) and len(t) == 1 and not toks:
                 toks.append(t)         # маркер списка в начале строки
+            continue
+        if core and core != t:
+            # Т7: знак сравнения ПЕРЕД словом или числом («and <TEE», «>65
+            # лет») — смысл, а не украшение: снятый, он молча переворачивал
+            # условие («и ОРЭ» вместо «и <ОРЭ», стр. 10). Обёрнутое парой
+            # («<308>») — разметка, её снимаем, как прежде. Знак сноски
+            # («therapy§», «§Includes», «risk*») — ссылка на подстрочное
+            # примечание, и без него связь текста с легендой рисунка пропадала.
+            lead = t[:len(t) - len(t.lstrip(_ORN_STR))]
+            tail = t[len(t.rstrip(_ORN_STR)):]
+            wrapped = (lead[:1], tail[-1:]) in (("<", ">"), ("{", "}"))
+            keep_l = "" if wrapped else "".join(
+                c for c in lead if (c in _CMP_KEEP and len(core) >= 2) or c in _NOTE_KEEP)
+            keep_t = "" if wrapped else "".join(c for c in tail if c in _NOTE_KEEP)
+            if "*" in keep_t and k + 1 < len(split) and split[k + 1][:1].islower():
+                # «живота* выпадение» — посреди фразы перед строчной это
+                # неверно прочитанная запятая скана, а не сноска (книга 8).
+                keep_t = keep_t.replace("*", "")
+            toks.append(keep_l + core + keep_t)
             continue
         toks.append(core or t)          # «^лучше» → «лучше»
     out = " ".join(toks).strip()
@@ -732,6 +770,30 @@ def _hgap(a: dict, b: dict) -> float:
     if a["x0"] >= b["x1"]:
         return a["x0"] - b["x1"]
     return -1.0
+
+
+# Над- и подстрочный кусок, притянутый к строке, пишется знаками Юникода
+# (Т9, как `pdfpages_worker._script_marks` для кусков одной строки pypdf):
+# «м²», «H₂O». Дробь («1/3» — числитель и знаменатель у косой черты) остаётся
+# цифрами: «¹/₃» читается хуже и иначе ищется. Буква — только одиночная
+# надстрочная (сноска «ᵃ»).
+_SUP_MAP = dict(zip("0123456789+-=()abcde", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᵃᵇᶜᵈᵉ"))
+_SUB_MAP = dict(zip("0123456789+-=()", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎"))
+
+
+def _script_text(pc: dict, base: dict, before: str, after: str) -> str:
+    t = pc["t"]
+    if pc is base or pc["s"] > SCRIPT_SIZE_SHARE * base["s"] or not t.strip():
+        return t
+    if before.rstrip().endswith("/") or after.lstrip().startswith("/"):
+        return t                        # дробь
+    core = t.strip()
+    table = _SUP_MAP if pc["y"] > base["y"] else _SUB_MAP
+    letters = [ch for ch in core if ch.isalpha()]
+    if len(core) > 3 or not all(ch in table for ch in core) or (
+            letters and (table is _SUB_MAP or len(core) > 1)):
+        return t
+    return "".join(table.get(ch, ch) for ch in t)
 
 
 def _join_scripts(recs: list, report: dict) -> list:
@@ -831,14 +893,15 @@ def _join_scripts(recs: list, report: dict) -> list:
         base = max(parts, key=lambda r: r["s"])
         text = parts[0]["t"]
         prev = parts[0]
-        for pc in parts[1:]:
+        for k_, pc in enumerate(parts[1:], 1):
             # Пробел — по зазору, и мерка берётся у КРУПНОГО куска: межсловный
             # пробел это примерно четверть его кегля. Мерка по мелкому объявила
             # бы пробелом стык «1» и «/3», то есть саму дробь.
             step = SCRIPT_SPACE_SHARE * max(prev["s"], pc["s"], 1.0)
             if (prev.get("rsp") or pc.get("lsp") or pc["x0"] - prev["x1"] >= step)                     and not text.endswith(" ") and not pc["t"].startswith(" "):
                 text += " "
-            text += pc["t"]
+            nxt = parts[k_ + 1]["t"] if k_ + 1 < len(parts) else ""
+            text += _script_text(pc, base, text, nxt)
             prev = pc
         out.append({"t": text, "x0": parts[0]["x0"], "x1": max(p["x1"] for p in parts),
                     "y": base["y"], "s": base["s"],
@@ -1211,6 +1274,17 @@ ROT_COL_SPLIT = os.environ.get("PDF_ROT_COLS", "1") != "0"
 ROT_GAP_SPLIT = float(os.environ.get("PDF_ROT_GAP", "3.0"))
 
 
+# Строка без пути не склеивается с соседними дугами (Т21). Симптом: три дуги
+# кольца — «LOW-ENERGYDIETS», «MEDITERRANEANDIET» (без пути, см. Т20) и
+# «KETOGENICDIETS» — вышли ОДНИМ абзацем, и перевод всего абзаца раздавался по
+# двум местам: на дуге «KETOGENIC DIETS» стояло «Средиземноморская ди…»
+# (проект 14, стр. 10, 1, 4, 19). Причина: проверка `_rot_follows` требует путь
+# у обеих строк и молча пропускалась, когда пути не было у одной. Правило:
+# строка с путём и строка без пути — разные пачки; подряд идущие строки
+# без пути остаются вместе, как прежде. `PDF_ROT_NOPATH_SPLIT=0` — прежнее.
+ROT_NOPATH_SPLIT = os.environ.get("PDF_ROT_NOPATH_SPLIT", "1") != "0"
+
+
 def _along(p: list) -> float:
     a = math.radians(float(p[2] or 0.0))
     return float(p[0]) * math.cos(a) + float(p[1]) * math.sin(a)
@@ -1378,6 +1452,39 @@ def _rot_centered_host(cands: list, rg: dict, cols: "dict | None" = None):
     return None
 
 
+# Пробел в тексте дуги (Т25). Симптом: «Including:nationaldiabetesstrategy;
+# nationalreimbursementpolicy» (стр. 31), «COMPLEXPATHOPHYSIOLOGY» — перевод
+# получал текст без пробелов и копировал «:» и «;» вплотную к слову
+# («Включая:национальную»). Причина: пробел ставился при зазоре шире ЧЕТВЕРТИ
+# кегля, а между словами дуги стоит обычный пробел шрифта — 0.17–0.24 кегля
+# (Calibri 0.226, DIN Condensed 0.176), внутри слова зазор 0.01–0.03: порог
+# был недостижим. Правило: пробел — зазор шире `PATH_GAP_EM` кегля и шире
+# `PATH_GAP_MEDIAN` медианных зазоров этой же строки (букворазрядка: пробел
+# заметно шире межбуквенного зазора); у мелкой подписи (кегль меньше
+# `PATH_GAP_MIN_SIZE` — миниатюра рисунка на обложке, координаты округлены
+# до сотых пункта) — прежний порог. `PDF_PATH_GAP=0` — прежнее правило.
+PATH_GAP_EM = 0.12
+PATH_GAP_MEDIAN = 2.2
+PATH_GAP_MIN_SIZE = 3.0
+PATH_GAP_OLD = 0.25
+PATH_GAP_ON = os.environ.get("PDF_PATH_GAP", "1") != "0"
+_PATH_OPEN = "([{«“‘<"
+_PATH_CLOSE = ")]}»”’.,;:!?%"
+
+
+def _path_gap(gaps: list, size: float, letters: bool = True) -> float:
+    """Порог зазора (в кеглях), от которого между буквами дуги стоит пробел.
+    Никогда не строже прежнего (`PATH_GAP_OLD`): правило только ДОБАВЛЯЕТ пробелы
+    там, где зазор уже слова, но уже четверти кегля. У строки из КУСКОВ-слов
+    (повёрнутая таблица: «Increased risk» | «Neutral» | «•») зазоры — между
+    словами, их медиана — не межбуквенный шаг, и правило не действует: на
+    таблице стр. 9 проекта 14 пробелы пропали бы, а с ними и маркер пункта."""
+    if not PATH_GAP_ON or not letters or size < PATH_GAP_MIN_SIZE or not gaps:
+        return PATH_GAP_OLD
+    med = sorted(gaps)[len(gaps) // 2]
+    return min(PATH_GAP_OLD, max(PATH_GAP_EM, PATH_GAP_MEDIAN * med))
+
+
 def _path_text(geo: dict) -> str:
     """Текст повёрнутой строки по её пути — С ПРОБЕЛАМИ.
 
@@ -1389,12 +1496,17 @@ def _path_text(geo: dict) -> str:
     if not pts or any(len(p) < 6 for p in pts):
         return ""
     # Точнее всего — по КОНЦУ предыдущей буквы (оператор знает его по
-    # метрикам): зазор до начала следующей шире четверти кегля — пробел.
+    # метрикам): зазор до начала следующей шире порога — пробел (`_path_gap`).
     if all(len(p) > 6 and p[6] for p in pts[:-1]):
+        gaps = [math.hypot(b[0] - a[6][0], b[1] - a[6][1]) / max(a[3], 1.0)
+                for a, b in zip(pts, pts[1:])]
+        thr = _path_gap(gaps, statistics.median([p[3] for p in pts]),
+                        statistics.median([len((p[5] or "").strip()) for p in pts]) <= 1.5)
         out = pts[0][5]
-        for a, b in zip(pts, pts[1:]):
-            gap = math.hypot(b[0] - a[6][0], b[1] - a[6][1])
-            if gap > 0.25 * max(a[3], 1.0) and not out.endswith(" "):
+        for gap, b in zip(gaps, pts[1:]):
+            first = (b[5] or " ").lstrip()[:1]
+            if (gap > thr and not out.endswith(" ") and out[-1:] not in _PATH_OPEN
+                    and first not in _PATH_CLOSE):
                 out += " "
             out += b[5]
         return out
@@ -1522,7 +1634,11 @@ def _geo_page(lines: list, g, placeless: "list | None" = None) -> "list | None":
                 continue
             if rg and not rg.get("curved"):
                 cell_runs = []
-            if run and rg and run.geo and run.geo[-1] and not _rot_follows(run.geo[-1], rg):
+            if run and run.geo and (
+                    (rg and run.geo[-1] and not _rot_follows(run.geo[-1], rg))
+                    # Строка без пути (Т21): проверить, продолжает ли она
+                    # соседнюю, нечем, и склеивать её с ней нельзя.
+                    or (ROT_NOPATH_SPLIT and bool(run.geo[-1]) != bool(rg))):
                 # Другая надпись (дуга кольца и вертикальная подпись рядом
                 # в потоке) — своей пачкой, а не одним абзацем на двоих.
                 runs.append(run)
@@ -1737,7 +1853,49 @@ def _table_streams(recs: list, report: Counter) -> "list | None":
     # начата строка таблицы. Ячейка одной колонки из другой строки таблицы —
     # другой абзац, даже если стоит вплотную (шапка «Heart failure» над
     # «Neutral» первой строки).
-    row_tops = sorted({round(r["y"], 1) for r in block if col_of(r) == 0}, reverse=True)
+    # Границы — только от строк первой колонки, начинающих ЯЧЕЙКУ (Т6):
+    # а) не выше первой строки таблицы: узкий заголовок «Table 1—Continued»
+    #    над шапкой попадал в блок, «съедал» первую границу, и граница
+    #    вставала по «Medication» — шапка «Dosing/use | considerations»
+    #    резалась на два абзаца и переводилась кусками («Дозирование-
+    #    применение соображения», «Путь введение», стр. 7–8);
+    # б) вторая строка ячейки первой колонки («Dual GLP-1/GIP | agonists»:
+    #    строчная, шаг до `TABLE_CONT_LEAD` кеглей, выше нет конца фразы) —
+    #    продолжение, а не новая строка таблицы: иначе граница по ней резала
+    #    ячейки ВСЕХ колонок («Benefit for kidney end | points in CVOTs»).
+    first_y = max(c["y"] for c in table_rows[0]) + 0.5
+
+    def cont_of(o):
+        """Строка `o` продолжает ячейку своей колонки: строчная, близко под
+        предыдущей строкой той же колонки, у которой нет конца фразы."""
+        if not o["t"][:1].islower():
+            return False
+        k = col_of(o)
+        up = [u for u in block if u is not o and col_of(u) == k and u["y"] > o["y"]
+              and u["y"] - o["y"] <= TABLE_CONT_LEAD * max(o["s"], 1.0)]
+        return bool(up) and not _END_RE.search(min(up, key=lambda u: u["y"])["t"])
+
+    def mates(r):
+        """Сколько других колонок НАЧИНАЮТ ячейку на высоте строки `r`
+        (продолжение чужой ячейки — не начало)."""
+        s_ = max(r["s"], 1.0)
+        return sum(1 for o in block if o is not r and col_of(o) != 0
+                   and abs(o["y"] - r["y"]) <= 0.3 * s_ and not cont_of(o))
+    row_tops: list = []
+    prev_c0 = None
+    # Выше первой строки таблицы отбрасывается только ОДИНОКАЯ строка первой
+    # колонки (заголовок «Table 1—Continued»): строка с соседями по ряду —
+    # строка таблицы, пусть и редкая (прайс: «Решётка радиатора | 650 000»).
+    c0 = [r for r in block if col_of(r) == 0 and (r["y"] <= first_y or mates(r) > 0)]
+    for r in sorted(c0, key=lambda r: -r["y"]):
+        # Продолжение ячейки — только если на этой высоте ни одна другая
+        # колонка не начинает ячейку: строчный столбец с тесным шагом
+        # («metformin / insulin / aspirin») — это строки таблицы.
+        cont = (prev_c0 is not None and 0 < prev_c0["y"] - r["y"] <= TABLE_CONT_LEAD * max(r["s"], 1.0)
+                and r["t"][:1].islower() and not _END_RE.search(prev_c0["t"]) and mates(r) == 0)
+        if not cont and (not row_tops or round(r["y"], 1) != row_tops[-1]):
+            row_tops.append(round(r["y"], 1))
+        prev_c0 = r
     # Первую границу не ставим: у шапки ячейка первой колонки прижата к НИЗУ
     # («Medication» на одной линии с «of CKD»), и граница по ней разрезала бы
     # многострочные ячейки шапки. Строки данных прижаты к верху.
@@ -1756,30 +1914,98 @@ def _table_streams(recs: list, report: Counter) -> "list | None":
     return rest[:first] + order + rest[first:]
 
 
-def _mark_icon_bullets(recs: list, figs: list) -> None:
+# Т11. Значок-КОНТУР (path: галочка, шприц, кружок в инфографике) — тот же
+# маркер пункта, что и картинка, но менее надёжный: на листе мелких контуров
+# тысячи (цифры ссылок «(51)» синим, стрелки-коннекторы, буквы кривыми), и
+# без защит абзацы текстовых страниц рвались посреди фразы (замер на книге
+# в 46 страниц: 37 абзацев → 81, 44 ложных на стр. 11–30). Три защиты:
+#  1) значок вплотную к строке — не дальше `ICON_REACH` кегля (у картинки
+#     прежние 2.5): значок пункта стоит в одном шаге от текста, а цифра
+#     ссылки соседней колонки — в полутора-двух;
+#  2) значок не стоит у конца ЧУЖОЙ строки на той же базовой линии (это
+#     кривые знаки её текста, а не маркер);
+#  3) пункт начинается не со строчной буквы: строка, продолжающая фразу
+#     («complications including:»), абзац не начинает, что бы ни стояло слева.
+ICON_REACH = 1.5
+
+
+def icon_backdrop(boxes: list) -> list:
+    """Значки без ФОНА: прямоугольники одной ширины и одного x, стоящие
+    столбиком ВПЛОТНУЮ (зазор меньше 5% высоты, либо внахлёст), — это
+    полосы заливки под строками (серый фон аннотации статьи нарисован
+    полосой на каждую строку), а не маркеры списка. Маркеры пунктов
+    отделены друг от друга межстрочным зазором. Без этого каждая строка
+    аннотации считалась пунктом (статья 19, сверка выгрузки 13.10)."""
+    cols: dict = {}
+    for k, b in enumerate(boxes):
+        x0, y0, x1, y1 = (float(v) for v in b[:4])
+        cols.setdefault((round(x0), round(x1)), []).append((y0, y1, k))
+    stacked = set()
+    for (cx0, cx1), items in cols.items():
+        # Соседние ключи (округление разрезало колонку) — тот же столбик.
+        for dx0 in (-1, 0, 1):
+            for dx1 in (-1, 0, 1):
+                if (dx0 or dx1) and (cx0 + dx0, cx1 + dx1) in cols:
+                    items = items + cols[(cx0 + dx0, cx1 + dx1)]
+        items = sorted(items)
+        if any(ka != kb and b0 - a1 < 0.05 * max(min(a1 - a0, b1 - b0), 1e-6)
+               for (a0, a1, ka), (b0, b1, kb) in zip(items, items[1:])):
+            # Хоть две полосы колонки вплотную — фон вся колонка: последняя
+            # полоса аннотации стоит через отступ абзаца (строка цитаты под
+            # аннотацией статьи 19) и в одиночку неотличима от маркера.
+            stacked.update(k for _a, _b, k in items)
+    return [b for k, b in enumerate(boxes) if k not in stacked]
+
+
+def _mark_icon_bullets(recs: list, figs: list, icons: "list | None" = None) -> None:
     """Строка, перед которой слева стоит МАЛЕНЬКАЯ картинка на её высоте
     (галочка, восклицательный знак списка в инфографике), — пункт списка:
     `bul`, с неё начинается абзац (`_geo_follows`). Без этого пункты,
     идущие подряд с обычным интервалом, склеивались в один абзац, и перевод
-    второго вставал в место первого."""
+    второго вставал в место первого. То же — значок-контур (`icons`,
+    `pdfpages_worker`, Т11), но с защитами (см. `ICON_REACH`)."""
     small = []
     for f in figs or []:
         try:
             x0, y0, x1, y1 = (float(v) for v in f[:4])
         except (TypeError, ValueError):
             continue
-        small.append((x0, y0, x1, y1))
+        small.append((x0, y0, x1, y1, False))
+    for f in icon_backdrop([f for f in (icons or []) if len(f) >= 4]):
+        try:
+            x0, y0, x1, y1 = (float(v) for v in f[:4])
+        except (TypeError, ValueError):
+            continue
+        small.append((x0, y0, x1, y1, True))
     if not small:
         return
     for r in recs:
         s = max(r.get("s") or 1.0, 1.0)
         lo, hi = r["y"] - 0.3 * s, r["y"] + 0.9 * s
-        for x0, y0, x1, y1 in small:
+        for x0, y0, x1, y1, vec in small:
             if not (0.3 * s <= x1 - x0 <= 2.5 * s and 0.3 * s <= y1 - y0 <= 2.5 * s):
                 continue
-            if r["x0"] - 2.5 * s <= x1 <= r["x0"] + 0.3 * s and min(hi, y1) - max(lo, y0) > 0.3 * s:
-                r["bul"] = True
-                break
+            reach = ICON_REACH if vec else 2.5
+            if not (r["x0"] - reach * s <= x1 <= r["x0"] + 0.3 * s and min(hi, y1) - max(lo, y0) > 0.3 * s):
+                continue
+            if vec:
+                t_ = (r.get("t") or "").lstrip()
+                if not t_:
+                    continue
+                # Строчная в начале — не запрет сама по себе (пункты на
+                # русском и немецком часто строчные): запрет, только когда
+                # строка выше в той же колонке вплотную и не кончила фразу —
+                # тогда это продолжение, а контур рядом чужой.
+                if t_[0].islower():
+                    up = [o for o in recs if o is not r and 0 < o["y"] - r["y"] <= 1.6 * s
+                          and min(o["x1"], r["x1"]) - max(o["x0"], r["x0"]) > 0]
+                    if up and not _END_RE.search(max(up, key=lambda o: -o["y"]).get("t") or ""):
+                        continue
+                if any(o is not r and abs(o["y"] - r["y"]) <= 0.4 * s and o["x0"] < x0
+                       and o["x1"] >= x0 - 1.0 * s for o in recs):
+                    continue
+            r["bul"] = True
+            break
 
 
 def _size_leads(recs: list) -> dict:
@@ -1875,8 +2101,31 @@ def _bands(recs: list, st: dict) -> tuple:
         if nxt is None or abs(recs[grp[-1]]["y"] - recs[nxt]["y"]) < GEO_BAND_GAP * st["lead"]:
             return []
         return grp
-    idx = list(range(len(recs)))
-    return band(idx, HEAD_WINDOW), band(idx[::-1], FOOT_WINDOW)
+    # Т15. Полоса — это МЕСТО на листе, а не номер строки в потоке pypdf.
+    # Прежде `idx` шёл в порядке списка: на двухколонной странице поток клал
+    # колонтитул В КОНЕЦ (и он становился «нижней» полосой, ключ ('b', …)),
+    # на странице с таблицей порядок шёл по высоте (он становился «верхней»,
+    # ключ ('t', …) с одной страницей — меньше HEAD_MIN_PAGES), а на странице,
+    # где колонтитул лежал посреди потока (проект 14, стр. 26), он не попадал
+    # ни в одну полосу и оставался ТЕЛОМ — отдельным абзацем с отдельным
+    # переводом («8 Consensus Report» → «отчет», «18 …» → «отчёт»). Порядок
+    # по высоте (при равной — слева направо) не зависит от того, как
+    # распознаватель выложил поток.
+    idx = sorted(range(len(recs)), key=lambda k: (-recs[k]["y"], recs[k]["x0"]))
+    top, bottom = band(idx, HEAD_WINDOW), band(idx[::-1], FOOT_WINDOW)
+    # Прежний счёт — по порядку потока — остаётся запасным ТАМ, где высота
+    # полосы не дала: скан с задвоенным слоем распознавания (одна и та же
+    # строка колонтитула дважды с разницей в пять пунктов, книга 8) складывает
+    # у верха четыре строки, а окно — три; поток же ставил две нужные первыми.
+    # Строки, уже попавшие в другую полосу по высоте, запасным ходом не берутся:
+    # иначе колонтитул оказался бы и сверху, и снизу.
+    if not top or not bottom:
+        lin = list(range(len(recs)))
+        if not top:
+            top = [k for k in band(lin, HEAD_WINDOW) if k not in bottom]
+        if not bottom:
+            bottom = [k for k in band(lin[::-1], FOOT_WINDOW) if k not in top]
+    return top, bottom
 
 
 # Кандидатов в колонтитул, встреченных пока по разу, нечётко сравниваем
@@ -1923,7 +2172,11 @@ def _cluster_reps(cl: dict) -> set:
     return {c["rep"] for c in cl["list"] if len(c["pages"]) >= HEAD_MIN_PAGES}
 
 
-def _cluster_hit(cl: dict, text: str, size: float) -> bool:
+def _cluster_find(cl: dict, text: str, size: float) -> "dict | None":
+    """Кластер колонтитула, к которому относится строка, — или None.
+    Нужен и тому, кто спрашивает «да/нет» (`_cluster_hit`), и тому, кому нужен
+    КЛЮЧ группы (представитель кластера): повёрнутый колонтитул встаёт в ту же
+    группу, что и прямые (Т15)."""
     own = cl["exact"].get(text)             # строка уже в кластере — сравнивать незачем
     for c in [own] + [x for x in _cluster_near(cl, text) if x is not own]:
         if c is None or len(c["pages"]) < HEAD_MIN_PAGES:
@@ -1931,8 +2184,58 @@ def _cluster_hit(cl: dict, text: str, size: float) -> bool:
         if c is own or c["rep"] == text or _similar_enough(c["rep"], text):
             med = statistics.median(c["sizes"])
             if not med or abs(size - med) <= 0.25 * med:
-                return True
-    return False
+                return c
+    return None
+
+
+def _cluster_hit(cl: dict, text: str, size: float) -> bool:
+    return _cluster_find(cl, text, size) is not None
+
+
+# Т15. Повёрнутый колонтитул. Страница журнала, снятая боком (таблица на весь
+# лист), хранит колонтитул вертикальной строкой у ПРАВОГО края; она идёт
+# «бесхозной» повёрнутой строкой (`loose`) и сверок колонтитулов не проходила:
+# «6 Consensus Report» на стр. 7, «18 …» на стр. 19, «30 …» на стр. 31
+# становились телом — три отдельных сегмента, три отдельных перевода
+# («доклад» / «отчёт»). Теперь такая строка у края листа сверяется с теми же
+# кластерами (и с кластером повёрнутых строк — книга, где боком ВСЕ страницы)
+# и уходит в тот же головной абзац, что прямые. Край — доля короткой стороны
+# листа: подпись схемы посреди листа колонтитулом не бывает.
+HEAD_ROT_EDGE = 0.08
+
+
+def _rot_on_edge(rg: dict, box) -> bool:
+    pts = (rg or {}).get("pts") or []
+    if not pts or not box or len(box) < 4 or rg.get("curved"):
+        return False
+    xs = [p_[0] for p_ in pts] + [rg["end"][0]]
+    ys = [p_[1] for p_ in pts] + [rg["end"][1]]
+    m = HEAD_ROT_EDGE * min(box[2] - box[0], box[3] - box[1])
+    return (min(xs) - box[0] <= m or box[2] - max(xs) <= m
+            or min(ys) - box[1] <= m or box[3] - max(ys) <= m)
+
+
+# Т15. Записка «Продолжение на с. 8» в конце страницы-таблицы — не начало
+# абзаца и не конец чужого: после снятия колонтитула следующей страницы она
+# оказывалась РЯДОМ с её первой строкой (строчной) и склеивалась с ней
+# («Continued on p. 8 agonist tirzepatide…»). Узнаётся по форме, без слов
+# языка: короткая строка с заглавной, без знака конца, оканчивающаяся
+# сокращением со страницей («p. 8», «с. 8», «S. 8», «стр. 8»).
+_PAGE_REF_RE = re.compile(r"(?:^|\s)\w{1,5}\.\s?\d{1,4}\s*$")
+PAGE_NOTE_WORDS = 6
+
+
+def _page_note(line: str, median_len: float = 0.0) -> bool:
+    t = (line or "").strip()
+    if not t or not (t[0].isupper() or t[0].isdigit()):
+        return False
+    if _END_RE.search(t) or t.endswith(("-", SOFT, "‐")):
+        return False
+    if len(t.split()) > PAGE_NOTE_WORDS:
+        return False
+    if median_len and len(t) >= HEADING_LEN_SHARE * median_len:
+        return False
+    return bool(_PAGE_REF_RE.search(t))
 
 
 def _frame_candidate(t: str) -> bool:
@@ -2358,6 +2661,11 @@ def _label_geo(group: "list | None") -> "list | None":
 def _caps_label(text: str) -> bool:
     """Часть подписи плашки: капсом и не короче `LABEL_JOIN_MIN_LETTERS`
     букв — столбец сокращений таблицы («ВИЧ» / «СПИД») не склеивается."""
+    # Строчная «s» множественного числа после прописной — всё ещё капс
+    # (Т8): «DEVELOP MLTCs», «RCTs», «RAs». Без этого подпись плашки
+    # «PEOPLE WITH T2D OFTEN LIVE WITH OR | DEVELOP MLTCs» рвалась на два
+    # сегмента, и перевод кусками выходил бессмыслицей (стр. 4).
+    text = re.sub(r"(?<=[A-Z])s(?![A-Za-z])", "", text)
     letters = [ch for ch in text if ch.isalpha()]
     return len(letters) >= LABEL_JOIN_MIN_LETTERS and all(ch.isupper() for ch in letters)
 
@@ -2473,13 +2781,19 @@ def _assemble(entries: list, median_len: float, src: list = None) -> list:
     n = len(entries)
     i = 0
     last_f = [None]
+    boundary = [False]                 # только что прошли границу страницы
     while i < n:
         e = entries[i]
         role = e["role"]
         if role == "page":
+            boundary[0] = True
             i += 1
             continue
+        if (role == "f" and boundary[0] and out and out[-1] and not pending
+                and _page_note(out[-1], median_len)):
+            put("", None)              # Т15: записка «Continued on p. N» абзац не продолжает
         if role == "f":
+            boundary[0] = False
             # Пока вставка ждёт конца абзаца (`pending`), абзац продолжается
             # ЗА ней — геометрией его не рвём: строка после вставки и не
             # обязана стоять под строкой перед ней.
@@ -2509,8 +2823,9 @@ def _assemble(entries: list, median_len: float, src: list = None) -> list:
             while k < n and entries[k]["role"] in ("a", "page"):
                 k += 1
             cont = k < n and entries[k]["role"] == "f" and _starts_lower(entries[k]["t"])
-            if out and out[-1] and _open_end(out[-1]) and cont:
-                pending.append(block)
+            if (out and out[-1] and _open_end(out[-1]) and cont
+                    and not _page_note(out[-1], median_len)):
+                pending.append(block)      # (Т15: записка «Continued on p. N» абзац не держит открытым)
             else:
                 emit(block)
         else:                                      # заголовок: абзац до него кончился
@@ -2864,7 +3179,11 @@ def _head_paragraphs(hits: list, base: str = "", base_fam: str = "") -> list:
         text = g["texts"].most_common(1)[0][0]
         if not _frame_candidate(text):
             continue
-        boxes = _para_boxes([{"geo": x, "t": text} for x in g["geo"].values()], base, base_fam)
+        # Т15: у повёрнутого колонтитула место — путь строки (`rgeo`), а не
+        # прямая рамка: перевод встаёт по тому же пути, вдоль правого края.
+        boxes = _para_boxes([({"rgeo": (x[0], x[2]), "t": text} if len(x) == 3 and x[1] == "ROT"
+                              else {"geo": x, "t": text}) for x in g["geo"].values()],
+                            base, base_fam)
         if not boxes:
             continue
         rep_num = _head_number(text)
@@ -2936,7 +3255,8 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                     kept[-1].setdefault("after", []).extend(r["after"])
                 else:
                     placeless.append(list(r["after"]))
-        _mark_icon_bullets(kept, (geom[i] or {}).get("figs") or [])
+        _mark_icon_bullets(kept, (geom[i] or {}).get("figs") or [],
+                           (geom[i] or {}).get("icons") or [])
         # Дробь, степень и химический индекс — обратно в свою строку, ДО
         # всего остального: по местам строк считаются поля, колонки, роли
         # и украшения, и разорванная надвое строка врала бы им всем.
@@ -3018,8 +3338,19 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
             t = _norm_line(pg["recs"][k]["t"])
             if _frame_candidate(t):
                 _cluster_add(fc, t, i, pg["recs"][k]["s"])
+    # Т15: повёрнутые строки у края листа — свой кластер: книга, где боком
+    # лежат ВСЕ страницы, прямых колонтитулов не имеет вовсе.
+    rc = _clusters()
+    for i, pg in laid.items():
+        box_i = (geom[i] or {}).get("box") if isinstance(geom[i], dict) else None
+        for run in pg.get("loose") or []:
+            for t_, rg in zip(run, getattr(run, "geo", None) or [None] * len(run)):
+                t_n = _norm_line(t_)
+                if rg and _frame_candidate(t_n) and _rot_on_edge(rg, box_i):
+                    _cluster_add(rc, t_n, i, rg["pts"][0][3])
     geo_heads = _cluster_reps(hc)
     geo_feet = _cluster_reps(fc)
+    geo_rot = _cluster_reps(rc)
     # Высота, на которой в нижней полосе стоят номера страниц: одинокая
     # короткая строка там же — номер, распознанный с ошибкой («зов» вместо
     # «308» кеглем 15 на боевой стр. 303): иначе крупный кегль делал его
@@ -3041,6 +3372,18 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
         t = _norm_line(r["t"])
         return (num_band is not None and 2 <= len(t) <= 4 and len(t.split()) == 1
                 and num_band[0] <= r["y"] <= num_band[1])
+
+    def head_find(t: str, size: float):
+        """Т15: (полоса, представитель) известного колонтитула — для повёрнутой
+        строки: сверка с кластерами верха, низа и повёрнутых строк; ключ группы —
+        представитель кластера, как у прямых (одна надпись на всю книгу)."""
+        for nm, cl in (("t", hc), ("b", fc), ("t", rc)):
+            c = _cluster_find(cl, t, size)
+            if c is not None:
+                return nm, c["rep"]
+        if _in_frame(t, heads | geo_heads | feet | geo_feet | geo_rot):
+            return "t", t
+        return None
 
     gid_box = [0]
 
@@ -3158,10 +3501,23 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
         # и нижний колонтитул, узнанный ПО МЕСТУ (`geo_feet`): последняя
         # строка текста, повторённая на нескольких страницах, по одному
         # счёту строк выглядит нижним колонтитулом, а она — текст.
-        for bname, order, known, clusters in (("t", range(len(recs)), heads | geo_heads, hc),
-                                              ("b", range(len(recs) - 1, -1, -1), geo_feet, fc)):
-            for n_, k in enumerate(order):
-                if n_ >= HEAD_WINDOW:
+        # Т15: порядок — по высоте на листе, а не по номеру в потоке.
+        by_y = sorted(range(len(recs)), key=lambda k: (-recs[k]["y"], recs[k]["x0"]))
+        for bname, order, known, clusters in (("t", by_y, heads | geo_heads, hc),
+                                              ("b", by_y[::-1], geo_feet, fc)):
+            seen_f = set()
+            n_ = 0
+            for k in order:
+                # Т15: окно — три РАЗНЫЕ строки. Скан с задвоенным слоем
+                # распознавания даёт колонтитул дважды («Апитоксинотерапия —»,
+                # «Апитоксинотерапия  —», «лечение …», «лечение …»), и повтор
+                # окна не занимает — иначе вторая строка колонтитула оставалась
+                # на странице телом.
+                f_ = _fold(_norm_line(recs[k]["t"]))
+                if f_ not in seen_f:
+                    seen_f.add(f_)
+                    n_ += 1
+                if n_ > HEAD_WINDOW:
                     break
                 if k in drop:
                     continue
@@ -3236,7 +3592,24 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
         # их место нечем, а терять их текст нельзя. Рамки у них нет, и
         # выгрузка «как в оригинале» их не трогает — на странице они
         # остаются оригиналом, как и были.
-        for run in (pg.get("loose") or []) + ([lost_after] if lost_after else []):
+        loose_keep = []
+        box_p = (geom[i] or {}).get("box") if isinstance(geom[i], dict) else None
+        for run in (pg.get("loose") or []):
+            keep_run = _RotRun()
+            for t_, rg in zip(run, getattr(run, "geo", None) or [None] * len(run)):
+                t_n = _norm_line(t_)
+                found = (head_find(t_n, rg["pts"][0][3])
+                         if rg and _frame_candidate(t_n) and _rot_on_edge(rg, box_p) else None)
+                if found:
+                    # Т15: повёрнутый колонтитул — в ту же группу, что прямые.
+                    report["runningHeads"] += 1
+                    report["rotatedHeads"] += 1
+                    head_hits.append(((found[0], found[1]), t_n, (i, "ROT", rg)))
+                else:
+                    keep_run.add(t_, rg)
+            if keep_run:
+                loose_keep.append(keep_run)
+        for run in loose_keep + ([lost_after] if lost_after else []):
             g_ = next_gid()
             for t_, rg in zip(run, getattr(run, "geo", None) or [None] * len(run)):
                 e_ = {"role": "a", "gid": g_, "t": t_}

@@ -430,9 +430,14 @@ def _bg_of(arr, box) -> Optional[list]:
     try:
         h, w = arr.shape[:2]
         x0, y0, x1, y1 = (int(v) for v in box)
-        pad = max(1, int(0.15 * (y1 - y0)))
-        top = arr[max(0, y0 - pad):max(0, y0 - 1), max(0, x0):min(w, x1)]
-        bot = arr[min(h, y1 + 1):min(h, y1 + pad), max(0, x0):min(w, x1)]
+        # Т14: поле — не меньше BG_PAD_MIN пикселей и срез без «-1». Прежнее
+        # `max(1, 0.15·h)` с срезом `[y0-pad : y0-1]` у строки ниже 14 пикселей
+        # давало ПУСТУЮ полосу, фон был None, а None в `group_blocks` значит
+        # «тот же фон»: у мелкого текста инфографики (стр. 19 проекта 14 —
+        # 36 строк из 105) плашки и полосы не различались вовсе.
+        pad = max(BG_PAD_MIN, int(0.15 * (y1 - y0)))
+        top = arr[max(0, y0 - pad):max(0, y0), max(0, x0):min(w, x1)]
+        bot = arr[min(h, y1):min(h, y1 + pad), max(0, x0):min(w, x1)]
         px = _np.concatenate([top.reshape(-1, arr.shape[-1]), bot.reshape(-1, arr.shape[-1])])
         if len(px) < 4:
             return None
@@ -444,6 +449,91 @@ def _bg_of(arr, box) -> Optional[list]:
 # Насколько (по самому далёкому каналу) могут различаться фоны строк одного
 # блока: дальше — это разные плашки схемы.
 IMG_BG_SAME = int(os.environ.get("IMG_BG_SAME", "40"))
+BG_PAD_MIN = 3
+
+# Т14. Разделитель между строками: тонкая сплошная линия ДРУГОГО тона
+# (светлая между полосами таблицы, рамка плашки) поперёк общей ширины двух
+# строк. Фон полос «High» и «Intermediate» на стр. 19 различается на 18 из
+# 255 — меньше порога `IMG_BG_SAME`, а строки внутри одной полосы дают 14, —
+# отличает полосы только белая линия в 1–2 пикселя между ними.
+DIV_DELTA = int(os.environ.get("IMG_DIV_DELTA", "14"))
+DIV_SHARE = 0.7
+
+
+def divider_between(arr, a, b) -> bool:
+    """Есть ли между строкой `a` (выше) и строкой `b` строка пикселей
+    сплошного тона, отличного от фона ОБЕИХ (на 14+ из 255) поперёк ВНУТРЕННИХ
+    80% их общей ширины. Рамки — [x0, y0, x1, y1] в пикселях. Нет общей
+    ширины, нет numpy, любой сбой — False («разделителя не нашли»)."""
+    try:
+        h, w = arr.shape[:2]
+        xl, xr = max(a[0], b[0]), min(a[2], b[2])
+        if xr - xl < 6:
+            return False
+        m = int(0.1 * (xr - xl))
+        xl, xr = max(0, xl + m), min(w, xr - m)
+        y0 = max(0, min(a[3], b[1]) - 1)
+        y1 = min(h, max(a[3], b[1]) + 2)
+        if y1 <= y0 or xr <= xl:
+            return False
+
+        def med(y):
+            return _np.median(arr[max(0, min(h - 1, y)), xl:xr].astype(int), axis=0)
+        up, dn = med(a[3] - 1), med(b[1] + 1)
+        best = 0
+        for y in range(y0, y1):
+            row = arr[y, xl:xr].astype(int)
+            mrow = _np.median(row, axis=0)
+            if float(_np.mean(_np.abs(row - mrow).max(axis=1) <= 10)) < DIV_SHARE:
+                continue
+            d2 = min(float(_np.abs(mrow - up).max()), float(_np.abs(mrow - dn).max()))
+            best = max(best, d2)
+        return best >= DIV_DELTA
+    except Exception:
+        return False
+
+
+def regroup_boxes(boxes: list, arr=None) -> list:
+    """Рамки строк → группы-блоки теми же условиями, что `group_blocks`
+    (колонка, кегль, выравнивание, зазор), плюс фон и разделитель между
+    строками, когда есть картинка `arr`. Для строк, оставшихся от блока
+    после сверки со слоем (`main._split_uncovered`): прежде подряд идущие
+    непокрытые строки шли одним блоком, и три плашки рядом («Consider
+    medication…» | «Consider metabolic surgery» | «When choosing…», стр. 19)
+    переводились одним абзацем. Т14."""
+    blocks: list = []
+    for ln in sorted((list(b) for b in boxes), key=lambda b: (b[1], b[0])):
+        x0, y0, x1, y1 = ln
+        h = max(1, y1 - y0)
+        placed = False
+        for b in blocks:
+            bx0, by0, bx1, by1 = b["box"]
+            over = min(x1, bx1) - max(x0, bx0)
+            narrow = max(1, min(x1 - x0, bx1 - bx0))
+            same_size = 0.6 <= h / max(1, b["lineH"]) <= 1.7
+            gap = y0 - by1
+            tol = max(4.0, max(h, b["lineH"]))
+            aligned = (abs(x0 - bx0) <= tol or abs(x1 - bx1) <= tol
+                       or abs((x0 + x1) / 2 - (bx0 + bx1) / 2) <= tol)
+            if not (over > 0.35 * narrow and same_size and aligned
+                    and -0.4 * h <= gap <= 1.0 * max(h, b["lineH"])):
+                continue
+            if arr is not None:
+                last = b["lines"][-1]
+                bg = (_bg_of(arr, last), _bg_of(arr, ln))
+                if (bg[0] is not None and bg[1] is not None
+                        and max(abs(p_ - q_) for p_, q_ in zip(bg[0], bg[1])) > IMG_BG_SAME):
+                    continue
+                if divider_between(arr, last, ln):
+                    continue
+            b["box"] = [min(bx0, x0), min(by0, y0), max(bx1, x1), max(by1, y1)]
+            b["lines"].append(ln)
+            b["lineH"] = (b["lineH"] * (len(b["lines"]) - 1) + h) / len(b["lines"])
+            placed = True
+            break
+        if not placed:
+            blocks.append({"box": [x0, y0, x1, y1], "lines": [ln], "lineH": h})
+    return [b["lines"] for b in blocks]
 
 
 def detect_lines(img_bytes: bytes) -> Optional[list]:
@@ -496,14 +586,44 @@ def detect_lines(img_bytes: bytes) -> Optional[list]:
     # поверх картинки. Померив куски порознь, мы поручились бы за место,
     # которого не смотрели, — и заливка стёрла бы попавшую в зазор графику.
     out = _join_pieces(_dedupe_boxes(found))
+    # Плоскость фона считаем по ИСХОДНОЙ картинке: увеличение сглаживает
+    # пиксели, и снимок сошёл бы за ровный фон, на который можно писать.
+    return _finish_lines(arr, out)
+
+
+# Сколько строк выше смотреть в поисках соседа над строкой (Т14): строки
+# отсортированы по верху, и сосед той же колонки стоит недалеко в списке.
+DIV_LOOKBACK = 60
+
+
+def _finish_lines(arr, out: list) -> list:
+    """Общий конец разбора строк — и своего (`detect_lines`), и чужого
+    (`lines_from`, чтение в браузере): плоскость, фон, порядок и разделители.
+    Одна функция на оба пути — иначе блоки по чужим строкам собирались бы
+    иначе, чем по своим."""
     for l in out:
-        # Плоскость фона считаем по ИСХОДНОЙ картинке: увеличение сглаживает
-        # пиксели, и снимок сошёл бы за ровный фон, на который можно писать.
         l["flat"] = round(flatness(arr, l["box"]), 3)
         bg = _bg_of(arr, l["box"])
         if bg is not None:
             l["bg"] = bg
     out.sort(key=lambda l: (l["box"][1], l["box"][0]))
+    # Т14: для каждой строки — ближайшая выше (в той же колонке), от
+    # которой её отделяет линия-разделитель. Окно — `DIV_LOOKBACK` строк
+    # выше, а не отказ на плотной странице.
+    for j, l in enumerate(out):
+        x0, y0, x1, y1 = l["box"]
+        h = max(1, y1 - y0)
+        for i in range(j - 1, max(-1, j - 1 - DIV_LOOKBACK), -1):
+            a = out[i]["box"]
+            if y0 - a[3] > 1.0 * h + 4:
+                continue
+            if min(x1, a[2]) - max(x0, a[0]) <= 0.35 * max(1, min(x1 - x0, a[2] - a[0])):
+                continue
+            if a[3] > y0 + 0.4 * h:
+                continue
+            if divider_between(arr, a, l["box"]):
+                l["divFrom"] = list(a)
+            break
     return out
 
 
@@ -549,10 +669,7 @@ def lines_from(img_bytes: bytes, raw: list) -> Optional[list]:
             continue
         lines.append({"box": [x0, y0, x1, y1], "conf": conf, "flat": 0.0,
                       "text": str(r.get("text") or "")})
-    out = _join_pieces(_dedupe_boxes(lines))
-    for l in out:
-        l["flat"] = round(flatness(arr, l["box"]), 3)
-    out.sort(key=lambda l: (l["box"][1], l["box"][0]))
+    out = _finish_lines(arr, _join_pieces(_dedupe_boxes(lines)))
     return out, w, h
 
 
@@ -1088,7 +1205,10 @@ def group_blocks(lines: list) -> list:
             bgs = b.get("bg"), ln.get("bg")
             same_bg = (bgs[0] is None or bgs[1] is None
                        or max(abs(p - q) for p, q in zip(bgs[0], bgs[1])) <= IMG_BG_SAME)
-            if (over > 0.35 * narrow and same_size and aligned and same_bg
+            # Т14: тонкая линия-разделитель между строкой и строкой блока
+            # выше (`detect_lines` → `divFrom`) — граница плашек и полос.
+            cut = bool(ln.get("divFrom")) and any(l_["box"] == ln["divFrom"] for l_ in b["lines"])
+            if (over > 0.35 * narrow and same_size and aligned and same_bg and not cut
                     and -0.4 * h <= gap <= 1.0 * max(h, b["lineH"])):
                 b["box"] = [min(bx0, x0), min(by0, y0), max(bx1, x1), max(by1, y1)]
                 b["lines"].append(ln)

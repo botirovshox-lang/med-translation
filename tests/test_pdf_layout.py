@@ -179,8 +179,8 @@ _res = pdftext.clean([_lines], geom=[_geom])
 _pp = paras_of(_res)
 check(any("по 1/3 стакана" in x for x in _pp), "дробь собрана обратно: %s" % _pp[6:])
 check(not any(x.startswith("1 ") for x in _pp), "числитель не уехал в начало абзаца")
-check(any("H2O" in x and "в м2 измеряют" in x for x in _pp),
-      "химический индекс и степень — тоже: %s" % _pp[-1:])
+check(any("H₂O" in x and "в м² измеряют" in x for x in _pp),
+      "химический индекс и степень — тоже, знаками Юникода (Т9): %s" % _pp[-1:])
 check(_res["report"].get("scripts") == 2, "и всё снятое названо числом: %s" % _res["report"].get("scripts"))
 
 # Обрывок рисунка у края страницы («Ш», «ж») приклеивать НЕЛЬЗЯ: он тоже

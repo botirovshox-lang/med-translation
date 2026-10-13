@@ -235,8 +235,13 @@ def _contains_any(text, terms):
     return any(_has_exact_term(text, term) for term in terms)
 
 
+# Над- и подстрочные цифры («m²», «B₁₂») — те же числа, что и обычные:
+# разбор PDF пишет их знаками Юникода (Т9), а перевод может написать «м2».
+_SCRIPT_DIGITS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆₇₈₉", "01234567890123456789")
+
+
 def _extract_numbers(text):
-    return re.findall(r"\d+(?:[.,]\d+)?", text or "")
+    return re.findall(r"\d+(?:[.,]\d+)?", (text or "").translate(_SCRIPT_DIGITS))
 
 
 def _extract_units(text):

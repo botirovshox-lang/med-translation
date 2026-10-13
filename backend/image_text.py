@@ -786,6 +786,43 @@ def _spread(vals: list) -> float:
     return (sum((v - m) ** 2 for v in vals) / len(vals)) ** 0.5
 
 
+# Абзац из трёх строк и больше выравнивается по ДОЛЕ строк, держащих край,
+# а не по разбросу всех краёв. 13.10.2026 (лендинг): выключенный по ширине
+# абзац Чехова с буквицей получил «вправо» — отступ первой строки за буквицей
+# раздул разброс левого края, — а машинопись с двумя абзацными отступами
+# получила «по центру»; перевод встал рваным левым краем. Правило: первая
+# строка не судит левый край (отступ, буквица), последняя — правый (короткая
+# концовка); край «держится», если строка в пределах половины высоты строки
+# от медианы. Держатся оба края — «влево»: это выключка по ширине, а рисовать
+# её мы умеем только от левого края. Ничья с серединой — центр. Ни один край
+# не держится на 70 % строк (надписи аппарата на снимке) — прежний замер
+# разбросом, как и у блока из двух строк: там нет ни отступа, ни концовки.
+def _align_para(lines: list) -> str:
+    ls = sorted(lines, key=lambda l: (l["box"][1], l["box"][0]))
+    hs = sorted(l["box"][3] - l["box"][1] for l in ls)
+    tol = max(4.0, 0.5 * hs[len(hs) // 2])
+
+    def hold(vals):
+        med = sorted(vals)[len(vals) // 2]
+        return sum(1 for v in vals if abs(v - med) <= tol) / len(vals)
+
+    a_l = hold([l["box"][0] for l in ls[1:]])
+    a_r = hold([l["box"][2] for l in ls[:-1]])
+    a_m = hold([(l["box"][0] + l["box"][2]) / 2 for l in ls])
+    if a_l >= 0.7 and a_r >= 0.7:
+        return "left"                      # выключка по ширине
+    best = max(a_l, a_r, a_m)
+    if best < 0.7:
+        return _align_spread(lines)        # ни один край не держится — прежний замер
+    if [a_l, a_r, a_m].count(best) > 1 and not (a_m == best and a_l < best and a_r < best):
+        # Ничья: у коротких строк середина держится не хуже края, и доля
+        # краёв не различает. Решает прежний замер разбросом.
+        return _align_spread(lines)
+    if a_m == best:
+        return "center"
+    return "left" if a_l == best else "right"
+
+
 def _align_of(lines: list) -> str:
     """Как выключены строки блока: влево, по центру или вправо.
 
@@ -794,6 +831,24 @@ def _align_of(lines: list) -> str:
     Смотрим, какой из трёх краёв держится ровнее остальных."""
     if len(lines) < 2:
         return "left"
+    if len(lines) >= 3:
+        return _align_para(lines)
+    return _align_spread(lines)
+
+
+def block_align(b: dict) -> str:
+    """Выключка блока для РИСОВАНИЯ — по его рамкам строк, а не по записи
+    в карте. Запись делается при чтении и с правилами не меняется: после
+    правки `_align_of` (13.10.2026) уже прочитанные картинки иначе рисовались
+    бы прежним выравниванием до нового платного чтения. Рамок нет (карты
+    старше `lineBoxes`) — то, что записано."""
+    lb = [x for x in (b.get("lineBoxes") or []) if isinstance(x, (list, tuple)) and len(x) >= 4]
+    if len(lb) >= 2:
+        return _align_of([{"box": list(x[:4])} for x in lb])
+    return b.get("align") or "left"
+
+
+def _align_spread(lines: list) -> str:
     lefts = _spread([l["box"][0] for l in lines])
     rights = _spread([l["box"][2] for l in lines])
     mids = _spread([(l["box"][0] + l["box"][2]) / 2 for l in lines])

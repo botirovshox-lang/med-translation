@@ -31497,6 +31497,14 @@ def _image_caption(p_elem, text: str, qn):
     return new_p
 
 
+def _blk_align(b: dict) -> str:
+    """Выключка блока картинки для рисования — по рамкам строк
+    (`image_text.block_align`); без модуля — то, что записано в карте."""
+    if image_text is None:
+        return b.get("align") or "left"
+    return image_text.block_align(b)
+
+
 def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
     """Перевод, вписанный обратно в картинки.
 
@@ -31542,7 +31550,7 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
                 # её «пока что» значило бы выбросить текст совсем.
                 stats["img_untranslated"] += 1
                 continue
-            items.append({"box": b["box"], "text": target, "align": b.get("align"),
+            items.append({"box": b["box"], "text": target, "align": _blk_align(b),
                           # Высота строки и число строк: по ним считаются поля
                           # рамки и решается, нужно ли увеличивать картинку.
                           "lineH": b.get("lineH"), "rows": b.get("rows"),
@@ -32430,7 +32438,7 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
                 # меряет кегль букв и ставит перевод как стоял оригинал
                 # (`layout_pdf._paint_measure`).
                 "src": ((seg or {}).get("source") or "").strip(), "rows": rows,
-                "align": b.get("align") or "left",
+                "align": _blk_align(b),
                 "x0": fx0 + x0 * sx_, "x1": fx0 + x1 * sx_,
                 "top": fy0 + y0 * sy_, "bottom": fy0 + y1 * sy_,
                 "size": line_h * sy_, "lead": ((y1 - y0) / rows) * sy_}]})
@@ -32711,7 +32719,8 @@ def _split_uncovered(b: dict, line_boxes: list, covered: list, parent: int,
         lh = sum(v[3] - v[1] for v in r) / float(len(r))
         res.append({"box": [int(x0), int(y0), int(x1), int(y1)], "rows": len(r),
                     "lineH": int(round(lh)), "conf": b.get("conf"), "flat": b.get("flat"),
-                    "align": b.get("align") or "left", "lineBoxes": r, "from": parent})
+                    "align": _blk_align({"lineBoxes": r, "align": b.get("align")}),
+                    "lineBoxes": r, "from": parent})
         if gap:
             res[-1]["gap"] = 1
     return res

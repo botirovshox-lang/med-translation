@@ -1636,6 +1636,8 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     T.nw.src = url;
     tlReady(T.nw).then(function () {
       if (T.want !== c) return;
+      /* Картинки нет — не сканируем в пустоту: язык остаётся прежним. */
+      if (!T.nw.naturalWidth) { T.want = T.cur; T.codes.forEach(function (x) { T.btns[x].setAttribute("aria-pressed", x === T.cur ? "true" : "false"); }); return; }
       void T.st.offsetWidth; T.st.classList.add("ts-run");
       T.timers.push(setTimeout(function () {
         if (T.want !== c) return;

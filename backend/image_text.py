@@ -322,7 +322,7 @@ def _text_join(k: dict, l: dict) -> None:
 # дефис, пробел, строчная буква», и не перед союзом: «двух- и трёхкомнатные»,
 # «pre- and post-test» — висячий дефис, а не перенос.
 _HYPHENS = "-" + chr(0x2010) + chr(0x2011) + chr(0xAD)    # дефис, неразрывный, мягкий перенос
-_HYPH_GAP_RE = re.compile(r"(?<=[^\W\d_])[" + _HYPHENS + r"][ \t]+(?=([^\W\d_]+))", re.UNICODE)
+_HYPH_GAP_RE = re.compile(r"(?<=[^\W\d_])[" + _HYPHENS + r"]\s+(?=([^\W\d_]+))", re.UNICODE)
 _SUSPENDED = {"и", "или", "либо", "да", "а", "and", "or", "to", "va", "yoki", "hamda", "және", "немесе",
               "und", "oder", "et", "ou", "y", "o", "e", "ve", "ya"}
 
@@ -334,6 +334,17 @@ def dehyphen(text: str) -> str:
             return m.group(0)
         return ""
     return _HYPH_GAP_RE.sub(rep, text or "")
+
+
+def read_clean(text: str) -> str:
+    """Текст блока из ЧТЕНИЯ: перенос снят, разрывы строк — пробелы.
+
+    Блок — один абзац (`group_blocks`), и промпт просит склеить строки,
+    но модель отдаёт их через перевод строки: 13.10.2026 на развороте Чехова
+    «экзеку-⏎торъ» доехал до перевода дефисом посреди китайской фразы, а
+    разрывы оригинала стали жёсткими разрывами перевода."""
+    t = dehyphen(text or "")
+    return re.sub(r"[ \t]*\r?\n[ \t]*", " ", t).strip()
 
 
 def _block_text(lines: list) -> str:

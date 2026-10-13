@@ -22,7 +22,10 @@ from pathlib import Path
 
 BASE = "http://127.0.0.1:8000"
 ROOT = Path("/root/landing-media")
-ROUND = 2
+ROUND = 3
+# Что перечитывать в этом заходе (None — всё). Третий заход — только книга:
+# правило С3 стало снимать перенос и через разрыв строки.
+ONLY = ("book",)
 IN = ROOT / "in" / "tiles"
 OUT = ROOT / "out" / ("tiles-%d" % ROUND if ROUND > 1 else "tiles")
 OUT.mkdir(parents=True, exist_ok=True)
@@ -132,6 +135,8 @@ def main():
     jobs += [("scan", "scan.jpg", "RU", t, "Лендинг · плитка: справка ВСХВ 1940 (CC BY, Главархив)")
              for t in ("EN", "UZ", "ZH", "KK", "AR")]
     for kind, fn, s, t, title in jobs:
+        if ONLY and kind not in ONLY:
+            continue
         k = "%s:%s" % (kind, t)
         if k in P:
             continue

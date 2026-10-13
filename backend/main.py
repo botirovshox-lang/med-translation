@@ -16546,7 +16546,7 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
             continue
         # Перенос, оставленный чтением посреди строки, снимается здесь, до
         # сегмента: иначе он доезжает до перевода («civil ser- vant»).
-        out[i] = {"text": image_text.dehyphen((item.get("text") or "").strip()),
+        out[i] = {"text": image_text.read_clean(item.get("text") or ""),
                   "overlay": bool(item.get("overlay")),
                   # Вид надписи — у кадра видео (`_frame_read_system`).
                   "kind": str(item.get("kind") or ""),

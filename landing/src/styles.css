@@ -375,6 +375,9 @@
   footer a { text-decoration: none; }
   footer a:hover { color: var(--ink); }
   footer .links { display: flex; gap: 22px; }
+  footer .pay-logos { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  footer .pay-logos > span { margin-right: 6px; }
+  footer .pay-logos svg { display: block; }
 
   /* ---- After demo ---- */
   .after-demo { display: grid; gap: 20px; margin-top: 28px; max-width: 44rem; color: var(--muted); }

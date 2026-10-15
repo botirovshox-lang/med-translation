@@ -1,5 +1,5 @@
 /* ============================================================
-   Знаки способов оплаты: Visa, Mastercard, Click, Payme, Kaspi.
+   Знаки способов оплаты: Uzcard, Humo, Visa, Mastercard, Click, Payme, Kaspi.
    Инлайн-SVG, без внешних файлов и шрифтов: чужой хост на экране оплаты —
    это чужая авария в нашей кассе (тот же закон, что у React в vendor/).
    Знаки упрощённые — цвет и начертание марки, а не её точная копия; этого
@@ -49,9 +49,20 @@ function PayIconKaspi() {
       fontSize: 16, fontWeight: 800, fill: "#fff" }, "Kaspi")], "Kaspi", "#F14635");
 }
 
-/* Способ → знаки. У карты два знака: Visa и Mastercard — один способ. */
+function PayIconUzcard() {
+  return payIconSvg([
+    React.createElement("text", { key: "t", x: 32, y: 25, textAnchor: "middle", fontFamily: PAY_FONT,
+      fontSize: 13, fontWeight: 800, fill: "#fff" }, "UZCARD")], "Uzcard", "#1B3F8F");
+}
+function PayIconHumo() {
+  return payIconSvg([
+    React.createElement("text", { key: "t", x: 32, y: 26, textAnchor: "middle", fontFamily: PAY_FONT,
+      fontSize: 16, fontWeight: 800, fill: "#fff" }, "HUMO")], "Humo", "#00A36C");
+}
+
+/* Способ → знаки. У карты четыре знака — один способ (шлюз банка-эквайера). */
 const PAY_METHOD_ICONS = {
-  card: [PayIconVisa, PayIconMastercard],
+  card: [PayIconUzcard, PayIconHumo, PayIconVisa, PayIconMastercard],
   click: [PayIconClick],
   payme: [PayIconPayme],
   kaspi: [PayIconKaspi],
@@ -66,7 +77,7 @@ function PayMethodIcons({ method }) {
 /* Полоса знаков для подвала «Мы принимаем». */
 function PayAcceptStrip() {
   return React.createElement("div", { className: "row row-wrap pay-strip", style: { gap: 8, alignItems: "center" } },
-    [PayIconVisa, PayIconMastercard, PayIconClick, PayIconPayme, PayIconKaspi].map((C, i) =>
+    [PayIconUzcard, PayIconHumo, PayIconVisa, PayIconMastercard, PayIconClick, PayIconPayme, PayIconKaspi].map((C, i) =>
       React.createElement(C, { key: i })));
 }
 

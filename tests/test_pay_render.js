@@ -91,12 +91,26 @@ function draw(Comp, props, preset) {
 const clean = (t) => t.indexOf("undefined") === -1 && t.indexOf("NaN") === -1;
 
 console.log("=== 1. Карточка оплаты ===");
-// Хуки PayCard: 0 st, 1 pages, 2 minutes, 3 method, 4 quote, 5 qErr, 6 busy, 7 done.
+// Хуки PayCard: 0 st, 1 pages, 2 minutes, 3 method, 4 quote, 5 qErr, 6 busy, 7 done, 8 agree.
 const pay = FX.pay;
 let t = draw(PayCard, { toast }, { 0: pay, 1: 10, 2: 5, 3: "payme",
   4: { amount: "101600", currency: "UZS" }, 5: "", 6: false, 7: null });
 check(clean(t), "без undefined и NaN");
-for (const brand of ["Visa", "Mastercard", "Click", "Payme", "Kaspi"])
+check(t.indexOf("публичной оферты") !== -1, "согласие с офертой стоит у кнопки оплаты");
+{
+  const btn = (tree) => { let b = null; (function w(n) { if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) return n.forEach(w);
+    if (n.props && n.props.onClick && (n.children || []).join("") === "Оплатить" && !n.props.href) b = b || n;
+    (n.children || []).forEach(w); })(tree); return b; };
+  const preset = { 0: pay, 1: 10, 2: 5, 3: "payme", 4: { amount: "101600", currency: "UZS" }, 5: "", 6: false, 7: null };
+  hooks.length = 0; hookIdx = 0; Object.assign(hooks, preset);
+  const off = btn(React.createElement(PayCard, { toast }));
+  hooks.length = 0; hookIdx = 0; Object.assign(hooks, preset, { 8: true });
+  const on = btn(React.createElement(PayCard, { toast }));
+  check(off && off.props.disabled === true, "без галочки оферты «Оплатить» погашена");
+  check(on && !on.props.disabled, "с галочкой оферты «Оплатить» доступна");
+}
+for (const brand of ["Uzcard", "Humo", "Visa", "Mastercard", "Click", "Payme", "Kaspi"])
   check(t.indexOf("[" + brand + "]") !== -1, "знак " + brand + " на экране");
 check(t.indexOf("К оплате: 101 600 сум") !== -1, "сумма к оплате с разрядами и валютой");
 check(t.indexOf("6 350 сум") === -1 && t.indexOf("за стр.") === -1, "цены за страницу у способа нет — только итог к оплате");

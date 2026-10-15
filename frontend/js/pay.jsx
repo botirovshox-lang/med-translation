@@ -18,7 +18,7 @@ function payFmt(amount, cur) {
 }
 
 const PAY_METHOD_LABEL = {
-  card: () => TR("Карта Visa / Mastercard"),
+  card: () => TR("Карта Uzcard / Humo / Visa / Mastercard"),
   click: () => "Click",
   payme: () => "Payme",
   kaspi: () => "Kaspi",
@@ -39,6 +39,10 @@ function PayCard({ toast, onPaid }) {
   const [qErr, setQErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(null);
+  /* Согласие с офертой ДО перехода к оплате — требование банка-эквайера
+     (Октобанк, «Процедура подключения», п. IV.7). Не запоминается: это
+     акцепт конкретного заказа, а не настройка. */
+  const [agree, setAgree] = useState(false);
   const ref = useRef(null);
   const reload = () => window.API.safeCall(() => window.API.payState()).then(r => {
     if (!r || !r.ok) return;
@@ -137,8 +141,14 @@ function PayCard({ toast, onPaid }) {
         quote ? TR("К оплате: ") + payFmt(quote.amount, quote.currency)
           : React.createElement("span", { className: "dim", style: { fontWeight: 400, fontSize: 13 } },
               qErr || TR("Выберите, сколько страниц или минут покупаете"))),
-      React.createElement(Btn, { variant: "primary", disabled: !quote || busy, onClick: pay },
+      React.createElement(Btn, { variant: "primary", disabled: !quote || busy || !agree, onClick: pay },
         busy ? TR("Создаём заказ…") : TR("Оплатить"))),
+    React.createElement("label", { className: "row", style: { gap: 8, alignItems: "flex-start", fontSize: 13 } },
+      React.createElement("input", { type: "checkbox", checked: agree, style: { marginTop: 3 },
+        onChange: (e) => setAgree(e.target.checked) }),
+      React.createElement("span", null, TR("Я ознакомлен(а) и принимаю условия "),
+        React.createElement("a", { href: "/terms", target: "_blank", rel: "noopener" }, TR("публичной оферты")),
+        TR(", включая порядок оплаты и возврата средств"))),
     done && !done.online ? React.createElement("div", { className: "pay-done" },
       TR("Заявка №") + done.id + TR(" принята: ") + payFmt(done.amount, done.currency) + ". "
       + (done.url ? TR("Ссылка на оплату открыта в новой вкладке.") : TR("Мы пришлём ссылку или реквизиты для оплаты."))

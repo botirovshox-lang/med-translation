@@ -18,7 +18,7 @@ function payFmt(amount, cur) {
 }
 
 const PAY_METHOD_LABEL = {
-  card: () => TR("Карта Uzcard / Humo / Visa / Mastercard"),
+  card: () => TR("Банковская карта"),
   click: () => "Click",
   payme: () => "Payme",
   kaspi: () => "Kaspi",
@@ -130,12 +130,18 @@ function PayCard({ toast, onPaid }) {
       methods.map(x => React.createElement("label", { key: x.id, className: "pay-method" + (method === x.id ? " is-on" : "") },
         React.createElement("input", { type: "radio", name: "pay-method", value: x.id, checked: method === x.id,
           onChange: () => setMethod(x.id) }),
-        React.createElement(PayMethodIcons, { method: x.id }),
         React.createElement("span", { className: "pay-method-text" },
+          React.createElement(PayMethodIcons, { method: x.id }),
           React.createElement("b", null, (PAY_METHOD_LABEL[x.id] || (() => x.id))()),
           React.createElement("span", { className: "dim" },
             x.online ? TR("онлайн, сразу") : TR("по счёту: подтвердим после поступления")))))),
     meth.note && !meth.online ? React.createElement("div", { className: "dim", style: { whiteSpace: "pre-wrap" } }, meth.note) : null,
+    React.createElement("label", { className: "row", style: { gap: 8, alignItems: "flex-start", fontSize: 13 } },
+      React.createElement("input", { type: "checkbox", checked: agree, style: { marginTop: 3 },
+        onChange: (e) => setAgree(e.target.checked) }),
+      React.createElement("span", null, TR("Я ознакомлен(а) и принимаю условия "),
+        React.createElement("a", { href: "/terms", target: "_blank", rel: "noopener" }, TR("публичной оферты")),
+        TR(", включая порядок оплаты и возврата средств"))),
     React.createElement("div", { className: "row between row-wrap", style: { gap: 10, alignItems: "center" } },
       React.createElement("div", { style: { fontSize: 16, fontWeight: 700 } },
         quote ? TR("К оплате: ") + payFmt(quote.amount, quote.currency)
@@ -143,12 +149,6 @@ function PayCard({ toast, onPaid }) {
               qErr || TR("Выберите, сколько страниц или минут покупаете"))),
       React.createElement(Btn, { variant: "primary", disabled: !quote || busy || !agree, onClick: pay },
         busy ? TR("Создаём заказ…") : TR("Оплатить"))),
-    React.createElement("label", { className: "row", style: { gap: 8, alignItems: "flex-start", fontSize: 13 } },
-      React.createElement("input", { type: "checkbox", checked: agree, style: { marginTop: 3 },
-        onChange: (e) => setAgree(e.target.checked) }),
-      React.createElement("span", null, TR("Я ознакомлен(а) и принимаю условия "),
-        React.createElement("a", { href: "/terms", target: "_blank", rel: "noopener" }, TR("публичной оферты")),
-        TR(", включая порядок оплаты и возврата средств"))),
     done && !done.online ? React.createElement("div", { className: "pay-done" },
       TR("Заявка №") + done.id + TR(" принята: ") + payFmt(done.amount, done.currency) + ". "
       + (done.url ? TR("Ссылка на оплату открыта в новой вкладке.") : TR("Мы пришлём ссылку или реквизиты для оплаты."))

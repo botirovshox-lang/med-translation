@@ -1,64 +1,22 @@
 /* ============================================================
    Знаки способов оплаты: Uzcard, Humo, Visa, Mastercard, Click, Payme, Kaspi.
-   Инлайн-SVG, без внешних файлов и шрифтов: чужой хост на экране оплаты —
-   это чужая авария в нашей кассе (тот же закон, что у React в vendor/).
-   Знаки упрощённые — цвет и начертание марки, а не её точная копия; этого
-   хватает, чтобы человек узнал свой способ, и не требует файлов от банков.
+   ОФИЦИАЛЬНЫЕ логотипы, файлами в vendor/paylogos/ (откуда взят каждый —
+   SOURCES.txt рядом): банк-эквайер требует действующие знаки платёжных
+   систем, а нарисованные «по мотивам» ими не являются. Свой хост, не чужой:
+   чужой хост на экране оплаты — чужая авария в нашей кассе.
    ============================================================ */
-function payIconSvg(children, label, bg) {
-  return React.createElement("svg", {
-    viewBox: "0 0 64 40", width: 56, height: 35, role: "img", "aria-label": label,
-    style: { display: "block", borderRadius: 6, background: bg || "#fff",
-             boxShadow: "inset 0 0 0 1px rgba(0,0,0,.12)" } },
-    React.createElement("title", null, label), ...children);
+function payIcon(file, label) {
+  return React.createElement("span", { className: "pay-logo", title: label },
+    React.createElement("img", { src: "vendor/paylogos/" + file, alt: label, "aria-label": label,
+      loading: "lazy", decoding: "async" }));
 }
-const PAY_FONT = "Arial, Helvetica, sans-serif";
-
-function PayIconVisa() {
-  return payIconSvg([
-    React.createElement("text", { key: "t", x: 32, y: 26, textAnchor: "middle", fontFamily: PAY_FONT,
-      fontSize: 17, fontWeight: 900, fontStyle: "italic", fill: "#1A1F71", letterSpacing: 0.5 }, "VISA"),
-    React.createElement("rect", { key: "b", x: 14, y: 29, width: 36, height: 2.4, fill: "#F7B600" })], "Visa");
-}
-function PayIconMastercard() {
-  return payIconSvg([
-    React.createElement("circle", { key: "r", cx: 26, cy: 18, r: 11, fill: "#EB001B" }),
-    React.createElement("circle", { key: "y", cx: 38, cy: 18, r: 11, fill: "#F79E1B" }),
-    React.createElement("path", { key: "o", fill: "#FF5F00",
-      d: "M32 8.8a11 11 0 0 1 0 18.4a11 11 0 0 1 0-18.4Z" }),
-    React.createElement("text", { key: "t", x: 32, y: 36.5, textAnchor: "middle", fontFamily: PAY_FONT,
-      fontSize: 5.6, fontWeight: 700, fill: "#231F20" }, "mastercard")], "Mastercard");
-}
-function PayIconClick() {
-  return payIconSvg([
-    React.createElement("circle", { key: "c", cx: 15, cy: 20, r: 7.5, fill: "none", stroke: "#fff", strokeWidth: 3 }),
-    React.createElement("circle", { key: "d", cx: 15, cy: 20, r: 2.4, fill: "#fff" }),
-    React.createElement("text", { key: "t", x: 40, y: 25.5, textAnchor: "middle", fontFamily: PAY_FONT,
-      fontSize: 15, fontWeight: 700, fill: "#fff" }, "click")], "Click", "#0073FF");
-}
-function PayIconPayme() {
-  return payIconSvg([
-    React.createElement("text", { key: "t", x: 32, y: 25.5, textAnchor: "middle", fontFamily: PAY_FONT,
-      fontSize: 16, fontWeight: 800 },
-      React.createElement("tspan", { fill: "#33CCCC" }, "pay"),
-      React.createElement("tspan", { fill: "#fff" }, "me"))], "Payme", "#0E2A3B");
-}
-function PayIconKaspi() {
-  return payIconSvg([
-    React.createElement("text", { key: "t", x: 32, y: 25.5, textAnchor: "middle", fontFamily: PAY_FONT,
-      fontSize: 16, fontWeight: 800, fill: "#fff" }, "Kaspi")], "Kaspi", "#F14635");
-}
-
-function PayIconUzcard() {
-  return payIconSvg([
-    React.createElement("text", { key: "t", x: 32, y: 25, textAnchor: "middle", fontFamily: PAY_FONT,
-      fontSize: 13, fontWeight: 800, fill: "#fff" }, "UZCARD")], "Uzcard", "#1B3F8F");
-}
-function PayIconHumo() {
-  return payIconSvg([
-    React.createElement("text", { key: "t", x: 32, y: 26, textAnchor: "middle", fontFamily: PAY_FONT,
-      fontSize: 16, fontWeight: 800, fill: "#fff" }, "HUMO")], "Humo", "#00A36C");
-}
+function PayIconUzcard() { return payIcon("uzcard.svg", "Uzcard"); }
+function PayIconHumo() { return payIcon("humo.png", "Humo"); }
+function PayIconVisa() { return payIcon("visa.svg", "Visa"); }
+function PayIconMastercard() { return payIcon("mastercard.svg", "Mastercard"); }
+function PayIconClick() { return payIcon("click.svg", "Click"); }
+function PayIconPayme() { return payIcon("payme.png", "Payme"); }
+function PayIconKaspi() { return payIcon("kaspi.svg", "Kaspi"); }
 
 /* Способ → знаки. У карты четыре знака — один способ (шлюз банка-эквайера). */
 const PAY_METHOD_ICONS = {
@@ -70,7 +28,7 @@ const PAY_METHOD_ICONS = {
 
 function PayMethodIcons({ method }) {
   const list = PAY_METHOD_ICONS[method] || [];
-  return React.createElement("span", { className: "row", style: { gap: 6 }, "aria-hidden": false },
+  return React.createElement("span", { className: "row row-wrap", style: { gap: 6 } },
     list.map((C, i) => React.createElement(C, { key: i })));
 }
 

@@ -1238,10 +1238,15 @@ def _rhythm_merge(blocks: list) -> list:
             bgs = cur.get("bg"), b.get("bg")
             same_bg = (bgs[0] is None or bgs[1] is None
                        or max(abs(p - q) for p, q in zip(bgs[0], bgs[1])) <= IMG_BG_SAME)
-            if gap <= med * IMG_RHYTHM_SLACK and same_bg:
+            # Короткая строка заканчивает абзац (хвост, заголовок, подпись):
+            # к ней следующая не приклеивается.
+            last = max(cur["lines"], key=lambda l: l["box"][1])["box"]
+            open_end = (last[2] - last[0]) >= IMG_RHYTHM_WIDE * max(1, last[3] - last[1])
+            if gap <= med * IMG_RHYTHM_SLACK and same_bg and open_end:
                 cx = cur["box"]
                 cur = {"box": [min(cx[0], b["box"][0]), cx[1], max(cx[2], b["box"][2]), b["box"][3]],
                        "lines": cur["lines"] + b["lines"], "bg": cur.get("bg"),
+                       "src": (cur.get("src") or []) + (b.get("src") or []),
                        "lineH": ((cur["lineH"] * len(cur["lines"]) + b["lineH"] * len(b["lines"]))
                                  / (len(cur["lines"]) + len(b["lines"])))}
             else:
@@ -1249,6 +1254,32 @@ def _rhythm_merge(blocks: list) -> list:
                 cur = b
         out.append(cur)
     return out
+
+
+# Версия правил сборки блоков. Запись картинки помнит, какой версией собраны
+# её блоки (`groupRule`); прежняя — значит разбор картинок перегруппирует
+# их сам (`regroup_plan`, `main._regroup_rec`). 2 — ритм колонки (16.10.2026).
+IMG_GROUP_RULE = 2
+
+
+def regroup_plan(blocks: list) -> list:
+    """Какие СОХРАНЁННЫЕ блоки картинки склеились бы по нынешним правилам:
+    список групп номеров (каждая — по порядку строк, длиной от двух).
+
+    Только склейка, и только по ритму колонки: детектор заново не зовётся
+    (строки лежат в `lineBoxes`), блоки не режутся, отсеянные (`skip`)
+    не участвуют. Так прочитанный текст переиспользуется склейкой, а не
+    покупается вторым чтением."""
+    inner = []
+    for i, b in enumerate(blocks or []):
+        if b.get("skip") or not b.get("box"):
+            continue
+        lbs = b.get("lineBoxes") or [b["box"]]
+        inner.append({"box": list(b["box"]), "lineH": float(b.get("lineH") or
+                                                          (b["box"][3] - b["box"][1]) / max(1, len(lbs))),
+                      "lines": [{"box": list(lb)} for lb in lbs], "bg": None, "src": [i]})
+    return [sorted(g["src"], key=lambda k: blocks[k]["box"][1])
+            for g in _rhythm_merge(inner) if len(g.get("src") or []) > 1]
 
 
 def group_blocks(lines: list) -> list:

@@ -11329,6 +11329,7 @@ def get_project_detail(pid: int):
     _book_image_pages(project)
     _auto_reseg_kick(project)
     _auto_relayer_kick(project)
+    _auto_regroup_kick(project)
     return _json_bytes(_project_for_client(project), "project %s" % pid, t0)
 
 
@@ -15773,6 +15774,58 @@ def _auto_relayer_kick(project: dict) -> None:
               % (project.get("id"), e), file=sys.stderr)
 
 
+_REGROUP_SEEN: dict = {}          # pid → (время правки карты, «нужна ли перегруппировка»)
+
+
+def _regroup_due(project: dict) -> bool:
+    """Есть картинка, блоки которой собраны прежними правилами и склеятся
+    по нынешним (`image_text.regroup_plan`). Ответ помнится до правки карты:
+    открытие файла — горячий путь единственного воркера."""
+    if image_text is None or not project.get("sourceDocx") \
+            or project.get("regroupAsked") == image_text.IMG_GROUP_RULE:
+        return False
+    try:
+        mt = _source_paths(project["id"])[1].stat().st_mtime
+    except OSError:
+        return False
+    seen = _REGROUP_SEEN.get(project["id"])
+    if seen is not None and seen[0] == mt:
+        return seen[1]
+    data = _load_source_map(project["id"]) or {}
+    due = any(int(rec.get("groupRule") or 1) < image_text.IMG_GROUP_RULE
+              and rec.get("blocks") and image_text.regroup_plan(rec["blocks"])
+              for rec in data.get("images") or [])
+    _REGROUP_SEEN[project["id"]] = (mt, due)
+    return due
+
+
+def _auto_regroup_kick(project: dict) -> None:
+    """Открыли файл, картинки которого собраны в блоки прежними правилами, —
+    поставить разбор картинок сам (без кнопки). Детектор не зовётся, текст
+    склеивается из прочитанного: платно читаются только блоки, которых
+    не прочли. Один раз на версию правил (`regroupAsked`)."""
+    if IS_WORKER or not _SERVING[0]:
+        return
+    try:
+        if not _regroup_due(project):
+            return
+        pid = project["id"]
+        if _active_job_for(pid) or _job_busy(pid, "images"):
+            return
+        with _AUTO_RESEG_LOCK:
+            if pid in _AUTO_RESEG_BUSY:
+                return
+        if _reseg_due(project):
+            return                      # пересборка пишет ту же карту — после неё
+        kind = project.get("importKind") or "docx"
+        if _auto_read_images(project, kind if kind in ("image", "scan", "pdf") else "docx") is not None:
+            project["regroupAsked"] = image_text.IMG_GROUP_RULE
+            save_state(STATE)
+    except Exception as e:
+        print("[backend] перегруппировка надписей проекта %s не поставлена: %s"
+              % (project.get("id"), e), file=sys.stderr)
+
+
 def _auto_reseg_kick(project: dict) -> None:
     """Открыли файл, нарезанный прежними правилами, — пересобрать фоном.
     Номер занимается ДО запуска потока: ответ на этот же запрос уже говорит
@@ -16632,6 +16685,80 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
                   "kind": str(item.get("kind") or ""),
                   "model": _dm_public(mdl["id"])}
     return out
+
+
+def _regroup_rec(rec: dict, project: dict, dry: bool) -> int:
+    """Перегруппировать сохранённые блоки картинки по нынешним правилам
+    (`image_text.regroup_plan`). Ответ — сколько новых блоков склеено.
+
+    * Склейка, а не новый разбор: детектор не зовётся, прочитанный текст
+      склеивается (перенос «доме-/нах.» снимает `read_clean`); блок без
+      текста оставляет склейку без текста — её прочитает обычный шаг чтения.
+    * Сегменты склеенных блоков снимаются (их перевод — обрывки фразы),
+      новый сегмент заведёт шаг «сегменты». Если среди них есть работа
+      человека (`_human_text`) — картинка НЕ трогается и помечается
+      `groupHeld`: машина не выбрасывает набранное и заверенное.
+    * Номера блоков меняются, поэтому якоря уцелевших сегментов
+      (`origin.block`) переписываются вместе с ними — иначе перевод
+      отвязался бы и молча выпал из выгрузки.
+    * Отметка `groupRule` ставится в любом исходе: второй заход не нужен."""
+    blocks = rec.get("blocks") or []
+    groups = image_text.regroup_plan(blocks)
+    part = rec.get("part")
+    by_id = {s["id"]: s for s in project.get("segments") or []}
+    if not groups:
+        rec["groupRule"] = image_text.IMG_GROUP_RULE
+        return 0
+    merged_ids = {i for g in groups for i in g}
+    olds = {i: _image_seg_of(by_id, blocks[i], part, i) for i in merged_ids}
+    held = sum(1 for s in olds.values() if s is not None and _human_text(s))
+    if held:
+        rec["groupRule"] = image_text.IMG_GROUP_RULE
+        rec["groupHeld"] = held
+        return 0
+    if dry:
+        return len(groups)
+    keep = {i: _image_seg_of(by_id, b, part, i) for i, b in enumerate(blocks) if i not in merged_ids}
+    new_blocks = []
+    for i, b in enumerate(blocks):
+        if i not in merged_ids:
+            nb = dict(b)
+            nb["_old"] = i
+            new_blocks.append(nb)
+    for g in groups:
+        parts = [blocks[i] for i in g]
+        lbs = [lb for b in parts for lb in (b.get("lineBoxes") or [b["box"]])]
+        rows = sum(int(b.get("rows") or 1) for b in parts)
+        nb = {"box": [min(b["box"][0] for b in parts), min(b["box"][1] for b in parts),
+                      max(b["box"][2] for b in parts), max(b["box"][3] for b in parts)],
+              "rows": rows,
+              "lineH": int(round(sum(float(b.get("lineH") or 0) * int(b.get("rows") or 1)
+                                     for b in parts) / max(1, rows))),
+              "conf": min((b.get("conf") for b in parts if b.get("conf") is not None), default=None),
+              "flat": min(float(b.get("flat") or 0) for b in parts),
+              "align": image_text._align_of([{"box": lb} for lb in lbs]),
+              "lineBoxes": lbs, "regrouped": len(parts)}
+        if all("text" in b for b in parts):
+            nb["text"] = image_text.read_clean(" ".join((b.get("text") or "").strip() for b in parts))
+            for k in ("reader",):
+                if parts[0].get(k):
+                    nb[k] = parts[0][k]
+        if any(b.get("hand") for b in parts):
+            nb["hand"] = True
+        new_blocks.append(nb)
+    new_blocks.sort(key=lambda b: (b["box"][1], b["box"][0]))
+    for j, nb in enumerate(new_blocks):
+        oi = nb.pop("_old", None)
+        seg = keep.get(oi) if oi is not None else None
+        if seg is not None:
+            seg["origin"] = dict(seg.get("origin") or {}, block=j)
+    for s in olds.values():
+        if s is not None and s in project["segments"]:
+            project["segments"].remove(s)
+    rec["blocks"] = new_blocks
+    rec["groupRule"] = image_text.IMG_GROUP_RULE
+    rec.pop("groupHeld", None)
+    return len(groups)
 
 
 def _image_seg_of(by_id: dict, block: dict, part: str, i: int) -> Optional[dict]:
@@ -17535,6 +17662,16 @@ def _job_images(job: dict) -> None:
             if work and stopping():
                 break                  # остаток пачки — следующему заходу
             prev = known.get(name) or {}
+            if prev.get("blocks") is not None and int(prev.get("groupRule") or 1) < image_text.IMG_GROUP_RULE:
+                # Собрано прежними правилами блоков — склеить по нынешним
+                # (рукопись через строку, правило «У» в docs/rules/pdf-reading.md).
+                # Отрисовка не нужна: строки лежат в `lineBoxes`.
+                prev = dict(prev)
+                n_ = _regroup_rec(prev, project, dry)
+                if n_:
+                    job["counters"]["regrouped"] = job["counters"].get("regrouped", 0) + n_
+                    segs_dirty = True
+                map_dirty = True
             if name in need_det:
                 job["counters"]["detectDone"] = job["counters"].get("detectDone", 0) + 1
             page_ok = str(name).startswith(PDF_PAGE_PART) and _page_rec_trusted(prev, data, src_sha, vk_now)
@@ -17605,6 +17742,7 @@ def _job_images(job: dict) -> None:
                     continue
                 rec.pop("unreadable", None)
                 rec["blocks"] = image_text.group_blocks(lines)
+                rec["groupRule"] = image_text.IMG_GROUP_RULE
                 try:
                     from PIL import Image as _PIL
                     rec["w"], rec["h"] = _PIL.open(io.BytesIO(blob)).size

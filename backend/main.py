@@ -11938,7 +11938,13 @@ def _image_pages_of(p: dict, card: dict) -> float:
         # не списывался бы НИКОГДА (разбор 24.09.2026). Старые проекты без
         # `pages` сюда не попадают: их сегменты уже сосчитаны строкой `init`.
         return 0.0
-    texts = [sg.get("source") or "" for sg in p.get("segments") or []
+    # Текст — ПРОЧИТАННЫЙ моделью (`sourceEdited.from`), а не нынешний:
+    # дописанное человеком в строку картинки меряет правка руками
+    # (`_hand_pages_*`, с допуском и потолком), и посчитай его здесь — те же
+    # слова списались бы второй раз, без допуска, то есть даже исправление
+    # опечатки распознавания стоило бы страниц (разбор 16.10.2026).
+    texts = [(sg.get("sourceEdited") or {}).get("from") or sg.get("source") or ""
+             for sg in p.get("segments") or []
              if (sg.get("origin") or {}).get("kind") == "image"]
     return _pages_exact(texts, p.get("src") or "RU", card) if texts else 0.0
 

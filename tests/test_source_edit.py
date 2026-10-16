@@ -259,6 +259,12 @@ r = c.post("/api/segments/%d/%d/source" % (pid, ids[3]), headers=H(A),
            json={"source": _old3 + " рии"})
 check(r.status_code == 200 and live(pid)["segments"][3]["source"].endswith(" рии"),
       "надпись с картинки правится человеком, как любая строка (16.10.2026): %s" % r.status_code)
+_p = dict(live(pid), pages=1.0)
+_card = main._pricing_of(main._tenant_of(_p))
+_seg3 = live(pid)["segments"][3]
+_was = main._image_pages_of(dict(_p, segments=[dict(_seg3, source=_seg3["sourceEdited"]["from"], sourceEdited=None)]), _card)
+check(abs(main._image_pages_of(dict(_p, segments=[_seg3]), _card) - _was) < 1e-9,
+      "дописанное в строку картинки не считается вторым разом как «текст с картинок»")
 live(pid)["segments"][3].pop("origin")
 r = c.post("/api/segments/%d/%d/source" % (pid + 999, ids[3]), headers=H(A), json={"source": "текст"})
 check(r.status_code == 404, "чужой (несуществующий) проект — 404, а не 403: %s" % r.status_code)

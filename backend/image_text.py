@@ -2310,6 +2310,41 @@ def _put_justified(big, layer, ln: str, font, h0: float, xa: float, xb: float, y
     return True
 
 
+def _cut_patch(arr, pm: dict, others: list, w: int, h: int) -> Optional[dict]:
+    """Х8: буква, разрезанная краем вырезки (буквица выше рамки блока), —
+    стирается целиком. Заплатка шире вырезки или None — продолжать нечего."""
+    tp = _tp()
+    if tp is None:
+        return None
+    seed = pm["alpha"] > 0
+    x0, y0, x1, y1 = pm["pbox"]
+    sides = tp.cut_sides(seed)
+    sides = (sides[0] and x0 > 0, sides[1] and y0 > 0, sides[2] and x1 < w, sides[3] and y1 < h)
+    if not any(sides):
+        return None
+    it = pm["it"]
+    lh = float(it.get("lineH") or 0) or float((pm.get("geo") or {}).get("pitch") or 0) or pm["em"] / pm["k"]
+    R = int(round(tp.CUT_REACH * lh))
+    ex = _clip((x0 - (R if sides[0] else 0), y0 - (R if sides[1] else 0),
+                x1 + (R if sides[2] else 0), y1 + (R if sides[3] else 0)), w, h)
+    rgb = _np.ascontiguousarray(_visible(arr[ex[1]:ex[3], ex[0]:ex[2]])[..., :3].astype(_np.uint8))
+    sd = _np.zeros(rgb.shape[:2], bool)
+    sd[y0 - ex[1]:y1 - ex[1], x0 - ex[0]:x1 - ex[0]] = seed
+    inner = (x0 - ex[0], y0 - ex[1], x1 - ex[0], y1 - ex[1])
+    foreign = [(o[0] - ex[0], o[1] - ex[1], o[2] - ex[0], o[3] - ex[1]) for o in others]
+    add = tp.continuation_mask(rgb, sd, inner, lh, foreign)
+    if add is None:
+        return None
+    mask = sd | add
+    m2 = {"erase_mask": mask, "mask": mask, "flat": False, "pitch": lh, "em": 0.8 * lh,
+          "bg": tuple(int(v) for v in _np.median(rgb[~mask], axis=0))}
+    try:
+        er, al = tp.erase(rgb, m2)
+    except Exception:
+        return None
+    return {"box": ex, "erased": er, "alpha": al}
+
+
 def _refuse(items: list, why: str) -> tuple:
     return None, [{"i": i, "ok": False, "why": why} for i in range(len(items))]
 
@@ -2459,6 +2494,7 @@ def render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = Non
             continue
         if pp is not None:
             pp["i"] = i
+            pp["patch"] = _cut_patch(arr, pm, others_of(i), w, h)
             paint.append(pp)
             r = {"i": i, "ok": True, "size": round(float(pp["size"]) / k, 1),
                  "rows": len(pp["lines"]), "paint": 1}
@@ -2516,7 +2552,6 @@ def render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = Non
     if not plan and not paint:
         return None, report
 
-    # Сперва ВСЕ стирания и заливки, потом ВСЕ надписи.
     for p in paint:
         x0, y0, x1, y1 = p["pbox"]
         er = Image.fromarray(p["erased"]).convert(big.mode if big.mode in ("RGB", "RGBA") else "RGB")
@@ -2527,6 +2562,22 @@ def render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = Non
         if er.mode == "RGBA":
             er.putalpha(255)
         big.paste(er, (x0 * k, y0 * k), al)
+    # Заплатка буквы, разрезанной краем вырезки (Х8), — ПОСЛЕ стирания
+    # блока: она стирает букву целиком одним проходом, и шва по краю
+    # вырезки нет.
+    for p in paint:
+        pt_ = p.get("patch")
+        if not pt_:
+            continue
+        ex = pt_["box"]
+        er = Image.fromarray(pt_["erased"]).convert(big.mode if big.mode in ("RGB", "RGBA") else "RGB")
+        al = Image.fromarray(pt_["alpha"])
+        if k > 1:
+            er = er.resize(((ex[2] - ex[0]) * k, (ex[3] - ex[1]) * k), Image.LANCZOS)
+            al = al.resize(((ex[2] - ex[0]) * k, (ex[3] - ex[1]) * k), Image.LANCZOS)
+        if er.mode == "RGBA":
+            er.putalpha(255)
+        big.paste(er, (ex[0] * k, ex[1] * k), al)
     # Сперва ВСЕ заливки, потом ВСЕ надписи. Рамки соседних блоков законно
     # пересекаются, и заливка второго стирала бы уже написанный перевод
     # первого — с отчётом «оба написаны».

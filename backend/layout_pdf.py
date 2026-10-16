@@ -3337,6 +3337,39 @@ def _paint_measure(sampler, b: dict) -> bool:
     from PIL import Image
     buf = io.BytesIO()
     Image.fromarray(np.dstack([out, alpha]), "RGBA").save(buf, "PNG")
+    patch = None
+    if any(tp.cut_sides(alpha > 0)):
+        # Х8: буква, разрезанная краем вырезки (буквица выше рамки), —
+        # целиком: вторая вырезка шире на `CUT_REACH` строки, продолжение
+        # краски стирается одним проходом с буквой.
+        try:
+            pad2 = pad + tp.CUT_REACH * line_pt
+            got2 = sampler.crop(int(b["page"]), b["x0"] - pad2, b["bottom"] - pad2,
+                                b["x1"] + pad2, b["top"] + pad2, scale)
+            if got2:
+                im2, (dx0, dy0, dx1, dy1) = got2
+                rgb2 = np.asarray(im2)[..., :3]
+                H2, W2 = rgb2.shape[:2]
+                ox, oy = int(round((cx0 - dx0) * scale)), int(round((dy1 - cy1) * scale))
+                h1, w1 = alpha.shape[:2]
+                sd = np.zeros((H2, W2), bool)
+                hh, ww = max(0, min(h1, H2 - oy)), max(0, min(w1, W2 - ox))
+                if hh and ww and ox >= 0 and oy >= 0:
+                    sd[oy:oy + hh, ox:ox + ww] = alpha[:hh, :ww] > 0
+                    add = tp.continuation_mask(rgb2, sd, (ox, oy, ox + w1, oy + h1),
+                                               line_pt * scale)
+                    if add is not None:
+                        mk = sd | add
+                        m2 = {"erase_mask": mk, "mask": mk, "flat": False,
+                              "pitch": line_pt * scale, "em": 0.8 * line_pt * scale,
+                              "bg": tuple(int(v) for v in np.median(rgb2[~mk], axis=0)),
+                              "ink": m["ink"]}
+                        out2, al2 = tp.erase(np.ascontiguousarray(rgb2), m2)
+                        b2 = io.BytesIO()
+                        Image.fromarray(np.dstack([out2, al2]), "RGBA").save(b2, "PNG")
+                        patch = (b2.getvalue(), (dx0, dy0, dx1, dy1))
+        except Exception:
+            patch = None
     bands = [((cy1 - a / scale), (cy1 - (bb + 1) / scale)) for a, bb in m["bands"]]
     areas = m.get("areas") or [[0, max(0, len(bands) - 1)]]
     area_ink = [float(m["mask"][m["bands"][a0][0]:m["bands"][a1][1] + 1].sum()) if m["bands"] else 1.0
@@ -3362,6 +3395,7 @@ def _paint_measure(sampler, b: dict) -> bool:
               (cx0 + hi / scale) if hi is not None else None)
              for lo, hi in (m.get("rooms") or [])]
     b["_paint"] = {"png": buf.getvalue(), "rect": (cx0, cy0, cx1, cy1), "em": em_pt,
+                   "patch": patch,
                    "rooms": rooms,
                    "pitch": m["pitch"] / scale, "ink": tuple(v / 255.0 for v in m["ink"]),
                    "bold": m["bold"], "angle": m["angle"], "bands": bands, "inkw": ink_w,
@@ -3586,6 +3620,10 @@ def _paint_fill(c, ent: dict) -> None:
     pt = ent["b"]["_paint"]
     x0, y0, x1, y1 = pt["rect"]
     c.drawImage(ImageReader(io.BytesIO(pt["png"])), x0, y0, x1 - x0, y1 - y0, mask="auto")
+    if pt.get("patch"):
+        # Х8: разрезанная краем буква — целиком, поверх стирания блока.
+        png2, (a0, b0, a1, b1) = pt["patch"]
+        c.drawImage(ImageReader(io.BytesIO(png2)), a0, b0, a1 - a0, b1 - b0, mask="auto")
 
 
 # На сколько перевод вправе выйти за длину дуги оригинала, прежде чем

@@ -337,6 +337,48 @@ check("type" in layout_pdf.FAMILY_CANDIDATES and
       layout_pdf.FAMILY_CANDIDATES["type"][""][1].endswith("LiberationMono-Regular.ttf"),
       "путь PDF: машинопись — отдельное семейство, код («mono») не тронут")
 
+print("\n── Х8. буква, разрезанная краем вырезки, — целиком ──")
+pg = Image.new("RGB", (900, 420), (240, 240, 238))
+dp = ImageDraw.Draw(pg)
+fser = ImageFont.truetype("frontend/vendor/fonts/sub/NotoSerif-Regular.ttf", 34)
+dp.text((520, 30), "Чужая строка", font=fser, fill=(30, 30, 30))       # другая надпись выше
+fcap = ImageFont.truetype("frontend/vendor/fonts/sub/NotoSerif-Bold.ttf", 150)
+dp.text((60, 60), "В", font=fcap, fill=(25, 25, 25))                   # буквица выше строк
+cap_bb = dp.textbbox((60, 60), "В", font=fcap)
+lbs8 = []
+for k_ in range(4):
+    x_ = 180 if k_ < 2 else 60
+    t_ = "один прекрасный вечер, не менее" if k_ < 2 else "прекрасный экзекутор Иван Дмитрич"
+    dp.text((x_, 170 + k_ * 50), t_, font=fser, fill=(25, 25, 25))
+    lbs8.append(list(dp.textbbox((x_, 170 + k_ * 50), t_, font=fser)))
+box8 = [min(b[0] for b in lbs8) - 0, min(b[1] for b in lbs8), max(b[2] for b in lbs8), max(b[3] for b in lbs8)]
+box8[0] = cap_bb[0]                                                    # буквица — в рамке слева
+other8 = list(dp.textbbox((520, 30), "Чужая строка", font=fser))
+b8 = io.BytesIO()
+pg.save(b8, "PNG")
+out8, rep8 = it.render_target(b8.getvalue(), [{"box": box8, "text": "One fine evening " * 8, "rows": 4,
+                                               "lineH": 40, "lineBoxes": lbs8, "align": "left",
+                                               "src": "Вь один прекрасный вечер не менее " * 3}],
+                              obstacles=[other8])
+check(out8 is not None and rep8[0].get("ok"), "блок с буквицей вписан: %s" % rep8)
+if out8 is not None:
+    r8 = np.asarray(Image.open(io.BytesIO(out8)).convert("L")).astype(int)
+    above = r8[cap_bb[1]:box8[1] - 12, cap_bb[0]:cap_bb[2]]            # часть буквицы выше рамки
+    check(above.size and above.min() > 200, "верх буквицы над рамкой стёрт (мин. %d)" % (above.min() if above.size else -1))
+    o8 = np.asarray(pg.convert("L")).astype(int)
+    keep8 = np.abs(r8[other8[1]:other8[3], other8[0]:other8[2]] - o8[other8[1]:other8[3], other8[0]:other8[2]]).max()
+    check(keep8 < 10, "чужая строка выше не тронута (разница %d)" % keep8)
+sd0 = np.zeros((60, 60), bool)
+sd0[20:40, 0:5] = True
+check(tp.cut_sides(sd0) == (True, False, False, False), "край, задетый стёртым, узнан")
+rgb0 = np.full((80, 80, 3), 240, np.uint8)
+rgb0[5:75, 70:73] = 20                                                # длинная вертикальная линия-рамка
+seed0 = np.zeros((80, 80), bool)
+seed0[30:40, 60:70] = True
+rgb0[30:40, 60:70] = 20
+add0 = tp.continuation_mask(rgb0, seed0, (20, 20, 71, 60), 8.0)
+check(add0 is None or not add0[5:15, 70:73].any(), "линия-рамка выше CUT_MAX строк не стирается")
+
 print()
 if fail:
     print("ПРОВАЛЕНО: %d" % len(fail))

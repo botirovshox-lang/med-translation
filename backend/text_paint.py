@@ -46,6 +46,8 @@ except Exception:                                   # pragma: no cover
 # На сколько (из 255, по самому далёкому каналу) точка отличается от своего
 # фона, чтобы считаться буквой.
 INK_DIFF = float(os.environ.get("PAINT_INK_DIFF", "48"))
+# Х8: доля области у края вырезки внутри рамки надписи, с которой она своя.
+OWN_SHARE = float(os.environ.get("PAINT_OWN_SHARE", "0.35"))
 # Ровный фон: разброс фона под рамкой не больше этого — заливка, а не inpaint.
 FLAT_STD = float(os.environ.get("PAINT_FLAT_STD", "6"))
 # Толщина штриха в долях кегля, с которой надпись считается полужирной
@@ -78,6 +80,10 @@ ARC_OLD = os.environ.get("PAINT_ARC_OLD", "0") == "1"      # 1 — прежня�
 INPAINT_R = 3
 WEAK_INK = float(os.environ.get("PAINT_WEAK_INK", "0.35"))
 WEAK_REACH = int(os.environ.get("PAINT_WEAK_REACH", "4"))
+HALO_FAR = float(os.environ.get("PAINT_HALO_FAR", "0.5"))
+HALO_MIN = float(os.environ.get("PAINT_HALO_MIN", "4"))
+HALO_K = float(os.environ.get("PAINT_HALO_K", "3"))
+HALO_REACH = float(os.environ.get("PAINT_HALO_REACH", "0.25"))
 # Х5: насколько местный тон бумаги вправе отойти от цвета фона (по каналу).
 FLAT_LOCAL_MAX = float(os.environ.get("PAINT_FLAT_LOCAL_MAX", "18"))
 # Участки блока (`_areas`): фон отличается больше этого (по каналу) или
@@ -211,6 +217,14 @@ def measure(rgb, src: str = "", rows: int = 1, line_h: float = 0.0, inner=None,
             ix0, iy0, ix1, iy1 = inner
             cxs, cys = (L_ + R_) / 2.0, (T_ + B_) / 2.0
             outside = (cxs < ix0) | (cxs > ix1) | (cys < iy0) | (cys > iy1)
+            # Х8: своя и та, что заметной частью лежит в рамке (буквица,
+            # выходящая выше строк блока): её продолжение за краем вырезки
+            # стирает `continuation_mask`, а чужая строка в рамку не заходит.
+            a0, b0 = max(0, int(iy0)), min(h, int(math.ceil(iy1)))
+            c0, d0 = max(0, int(ix0)), min(w, int(math.ceil(ix1)))
+            if b0 > a0 and d0 > c0:
+                in_cnt = np.bincount(lab[a0:b0, c0:d0].ravel(), minlength=n)[1:]
+                outside &= in_cnt < OWN_SHARE * st[1:, cv2.CC_STAT_AREA]
             edge = edge & outside
         keep[1:] &= ~(edge & small)
     mask = keep[lab]
@@ -853,6 +867,25 @@ def erase(rgb, m: dict):
             weak = np.abs(rgb.astype(np.int16) - bgl.astype(np.int16)).max(axis=2) > WEAK_INK * INK_DIFF
             reach = cv2.dilate(mask, np.ones((2 * WEAK_REACH + 1, 2 * WEAK_REACH + 1), np.uint8)) > 0
             grow = np.where(weak & reach, 255, grow).astype(np.uint8)
+            # Бледный ореол (Х5а): порог — от шума САМОЙ бумаги, а не доля
+            # порога букв. Бумага — точки дальше `HALO_FAR` строки от маски;
+            # её уровень и разброс (MAD); краска в сторону цвета букв темнее
+            # (светлее) уровня больше max(`HALO_MIN`, `HALO_K` разбросов)
+            # и не дальше `HALO_REACH` строки от маски — стирается. На шумном
+            # фото порог поднимается сам; бледные края завитка буквицы
+            # (на 6–12 единиц темнее бумаги) иначе оставались серым пятном.
+            g = rgb.astype(np.float32).mean(axis=2)
+            kf = _odd(HALO_FAR * lh, 3, 151)
+            far = cv2.dilate(grow, np.ones((kf, kf), np.uint8)) == 0
+            if far.sum() >= 50:
+                lvl = float(np.median(g[far]))
+                noise = 1.4826 * float(np.median(np.abs(g[far] - lvl)))
+                thr = max(HALO_MIN, HALO_K * noise)
+                inkg = float(np.mean(m.get("ink") or (0, 0, 0)))
+                halo = (lvl - g > thr) if inkg < lvl else (g - lvl > thr)
+                kr = _odd(2 * HALO_REACH * lh, 3, 61)
+                near_ = cv2.dilate(grow, np.ones((kr, kr), np.uint8)) > 0
+                grow = np.where(halo & near_, 255, grow).astype(np.uint8)
     if m.get("flat"):
         # Х5. «Ровный» фон заливается МЕСТНЫМ тоном бумаги (среднее известных
         # точек окрестности), а не одним цветом: у скана бумага зернистая
@@ -1659,3 +1692,90 @@ def para_breaks(text: str, shares: list) -> str:
 
 
 PARA_BREAK_REACH = float(os.environ.get("PAINT_PARA_BREAK_REACH", "0.15"))
+
+
+# Х8. Буква, разрезанная краем вырезки, стирается целиком. Симптом: у Чехова
+# буквица «В» выходит вверх за рамку блока, и стирание резало её по краю
+# вырезки — верхняя половина с завитком оставалась над переводом. Правило:
+# если стёртое касается края вырезки, краска за краем, СВЯЗАННАЯ со стёртым
+# (та же связная область), стирается тоже — не дальше `CUT_REACH` строк;
+# мелкие области рядом с ней (завитки, точки орнамента, не крупнее
+# `CUT_SAT` строки) — вместе с ней. Не стирается: область выше или шире
+# `CUT_MAX` строк (рамка, линия таблицы, рисунок) и область, лежащая за
+# краем больше чем на `CUT_FOREIGN` долю в рамке ЧУЖОЙ надписи.
+CUT_REACH = float(os.environ.get("PAINT_CUT_REACH", "4"))
+CUT_MAX = float(os.environ.get("PAINT_CUT_MAX", "4"))
+CUT_SAT = float(os.environ.get("PAINT_CUT_SAT", "0.8"))
+CUT_FOREIGN = float(os.environ.get("PAINT_CUT_FOREIGN", "0.3"))
+
+
+def cut_sides(seed) -> tuple:
+    """Какие края вырезки задевает стёртое: (лево, верх, право, низ)."""
+    if seed is None or not seed.any():
+        return (False, False, False, False)
+    return (bool(seed[:, 0].any()), bool(seed[0, :].any()),
+            bool(seed[:, -1].any()), bool(seed[-1, :].any()))
+
+
+def continuation_mask(rgb, seed, inner, lh: float, foreign=()):
+    """Продолжение разрезанных букв за краем прежней вырезки (Х8).
+    `rgb` — расширенная вырезка; `seed` — стёртое в её координатах; `inner` —
+    прежняя вырезка (x0, y0, x1, y1) в них же; `foreign` — рамки чужих
+    надписей. Маска добавки (bool) или None — продолжать нечего."""
+    if np is None or cv2 is None or seed is None or not seed.any():
+        return None
+    H, W = seed.shape
+    lh = max(6.0, float(lh or 0))
+    k_ = _odd(1.2 * lh, 3, 151)
+    if min(H, W) <= k_:
+        return None
+    # Фон — максимум (у светлого текста на тёмном — минимум) окрестности шире
+    # штриха: у толстой буквицы медиана окна внутри штриха сама тёмная, и
+    # середина штриха краской не считалась — стирался только контур.
+    g = rgb[..., :3].astype(np.float32).mean(axis=2)
+    dark = float(g[seed].mean()) < float(np.median(g[~seed])) if (~seed).any() else True
+    ker = np.ones((k_, k_), np.uint8)
+    bg = cv2.dilate(g, ker) if dark else cv2.erode(g, ker)
+    ink = ((bg - g) if dark else (g - bg)) > INK_DIFF
+    n, lab, st, _c = cv2.connectedComponentsWithStats(ink.astype(np.uint8), 8)
+    if n <= 1:
+        return None
+    x0, y0, x1, y1 = [int(round(v)) for v in inner]
+    inside = np.zeros((H, W), bool)
+    inside[max(0, y0):max(0, y1), max(0, x0):max(0, x1)] = True
+    fr = np.zeros((H, W), bool)
+    for f in foreign or ():
+        a, b, c, d = [int(round(v)) for v in f[:4]]
+        fr[max(0, b):max(0, d), max(0, a):max(0, c)] = True
+    near = cv2.dilate(seed.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+    keep = np.zeros((H, W), bool)
+
+    def ok_comp(c_, big):
+        h_, w_ = st[c_, cv2.CC_STAT_HEIGHT], st[c_, cv2.CC_STAT_WIDTH]
+        lim = (CUT_MAX if big else CUT_SAT) * lh
+        if h_ > lim or w_ > lim:
+            return None
+        comp = lab == c_
+        out = comp & ~inside
+        if not out.any():
+            return None
+        if (out & fr).sum() > CUT_FOREIGN * out.sum():
+            return None
+        return comp
+    for c_ in np.unique(lab[near & ink]):
+        if c_ == 0:
+            continue
+        comp = ok_comp(c_, True)
+        if comp is not None:
+            keep |= comp
+    if not keep.any():
+        return None
+    r_ = max(3, int(0.15 * lh))
+    ring = cv2.dilate(keep.astype(np.uint8), np.ones((2 * r_ + 1, 2 * r_ + 1), np.uint8)) > 0
+    for c_ in np.unique(lab[ring & ink & ~keep]):
+        if c_ == 0:
+            continue
+        comp = ok_comp(c_, False)
+        if comp is not None:
+            keep |= comp
+    return keep

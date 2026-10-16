@@ -163,8 +163,14 @@ else:
 
     def unerased(fill_on):
         tp.ERASE_FILL = fill_on
+        # Страж проверяет правило Т29 в одиночку: слабую краску и ореол
+        # (Х5а) на это время выключаем — они тоже подбирают середину.
+        weak, hmin = tp.WEAK_INK, tp.HALO_MIN
+        if not fill_on:
+            tp.WEAK_INK, tp.HALO_MIN = 0.0, 1e9
         m = tp.measure(rgb29, "OF CARE", 1, 30.0)
         er, _al = tp.erase(rgb29, m)
+        tp.WEAK_INK, tp.HALO_MIN = weak, hmin
         res = np.abs(er.astype(int) - grad29(200, 70).astype(int)).max(axis=2)
         return m["found"], float((res[letters] > 60).mean())
     f1, u1 = unerased(True)

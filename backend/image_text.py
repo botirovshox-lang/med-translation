@@ -586,6 +586,9 @@ def detect_lines(img_bytes: bytes) -> Optional[list]:
     # поверх картинки. Померив куски порознь, мы поручились бы за место,
     # которого не смотрели, — и заливка стёрла бы попавшую в зазор графику.
     out = _join_pieces(_dedupe_boxes(found))
+    # Строки, пропущенные детектором в ровной колонке (рукопись), — по краске.
+    for gb in rhythm_gaps(arr, [l["box"] for l in out]):
+        out.append({"box": gb, "conf": None, "gap": 1})
     # Плоскость фона считаем по ИСХОДНОЙ картинке: увеличение сглаживает
     # пиксели, и снимок сошёл бы за ровный фон, на который можно писать.
     return _finish_lines(arr, out)
@@ -1186,7 +1189,7 @@ IMG_RHYTHM_WIDE = float(os.environ.get("IMG_RHYTHM_WIDE", "8"))   # × высо�
 IMG_RHYTHM_WIDE_SHARE = float(os.environ.get("IMG_RHYTHM_WIDE_SHARE", "0.6"))
 IMG_RHYTHM_SLACK = float(os.environ.get("IMG_RHYTHM_SLACK", "1.35"))
 IMG_RHYTHM_GAP_MAX = float(os.environ.get("IMG_RHYTHM_GAP_MAX", "4"))   # цепочка колонки, × высоты строки
-IMG_RHYTHM_SIZE = float(os.environ.get("IMG_RHYTHM_SIZE", "0.3"))          # разброс кегля
+IMG_RHYTHM_SIZE = float(os.environ.get("IMG_RHYTHM_SIZE", "0.4"))          # разброс высоты строки: у хвоста без выносных букв («нах.») рамка ниже на треть
 
 
 def _rhythm_merge(blocks: list) -> list:
@@ -1223,7 +1226,9 @@ def _rhythm_merge(blocks: list) -> list:
         if len(ch) < 2 or len(lines) < IMG_RHYTHM_MIN_LINES:
             out.extend(ch)
             continue
-        gaps = [max(0, b_["box"][1] - a_["box"][3]) for a_, b_ in zip(lines, lines[1:])]
+        # Шаг — от верха до верха строки, а не зазор между рамками: у рукописи
+        # высота рамки пляшет от выносных букв, и зазор вдвое неровнее шага.
+        gaps = [max(0, b_["box"][1] - a_["box"][1]) for a_, b_ in zip(lines, lines[1:])]
         gs = sorted(gaps)
         med = gs[len(gs) // 2]
         mad = sorted(abs(g - med) for g in gaps)[len(gaps) // 2]
@@ -1234,7 +1239,7 @@ def _rhythm_merge(blocks: list) -> list:
             continue
         cur = ch[0]
         for b in ch[1:]:
-            gap = b["box"][1] - cur["box"][3]
+            gap = b["box"][1] - max(l["box"][1] for l in cur["lines"])
             bgs = cur.get("bg"), b.get("bg")
             same_bg = (bgs[0] is None or bgs[1] is None
                        or max(abs(p - q) for p, q in zip(bgs[0], bgs[1])) <= IMG_BG_SAME)
@@ -1256,10 +1261,115 @@ def _rhythm_merge(blocks: list) -> list:
     return out
 
 
+# Пропущенная строка в ровном ритме колонки (конспект RU→EN, 16.10.2026):
+# детектор печатного текста на рукописи не увидел три строки из восемнадцати,
+# и их не было ни в одном блоке — ни в переводе, ни в выгрузке. Колонка с
+# ровным шагом (`IMG_RHYTHM_*`) знает, где должна стоять строка: шаг между
+# соседними строками ≈ k шагов — значит пропущено k−1 мест. Место становится
+# строкой, только если в нём есть КРАСКА: пиксели темнее фона места больше
+# чем на `IMG_GAP_INK_DELTA` яркости (клетка и линейка тетради светлее,
+# чернила — темнее), её доля не меньше `IMG_GAP_INK_SHARE` и она тянется
+# по ширине не меньше `IMG_RHYTHM_WIDE` высот строки. Пустая строка между
+# абзацами краски не содержит и строкой не становится.
+IMG_GAP_INK_DELTA = float(os.environ.get("IMG_GAP_INK_DELTA", "70"))
+IMG_GAP_INK_SHARE = float(os.environ.get("IMG_GAP_INK_SHARE", "0.02"))
+IMG_GAP_STEP = float(os.environ.get("IMG_GAP_STEP", "1.7"))      # × шага: с этого — пропуск
+# Краска места обязана быть СТРОКОЙ, а не куском рисунка или таблицы: место
+# не накрывает найденную строку больше чем на `IMG_GAP_OVERLAP` своей площади,
+# а полосы бумаги сразу над и под местом почти чисты (краски там меньше
+# `IMG_GAP_EDGE` доли от краски места) — рисунок тянется за край места.
+IMG_GAP_OVERLAP = float(os.environ.get("IMG_GAP_OVERLAP", "0.2"))
+IMG_GAP_EDGE = float(os.environ.get("IMG_GAP_EDGE", "0.5"))
+
+
+def gap_slots(boxes: list) -> list:
+    """Места, где в ровной колонке должна стоять строка, а её нет:
+    [(x0, y0, x1, y1, высота строки)]. Только геометрия, картинка не нужна —
+    по этому ответу решают, стоит ли вообще отрисовывать страницу."""
+    if len(boxes) < IMG_RHYTHM_MIN_LINES:
+        return []
+    chains: list = []
+    for b in sorted((list(x) for x in boxes), key=lambda b: b[1]):
+        h = float(b[3] - b[1])
+        home = None
+        for ch in chains:
+            lx0 = min(c[0] for c in ch)
+            lx1 = max(c[2] for c in ch)
+            last = ch[-1]
+            narrow = max(1, min(b[2] - b[0], lx1 - lx0))
+            lh = max(1.0, h, last[3] - last[1])
+            if (min(b[2], lx1) - max(b[0], lx0) > 0.7 * narrow and b[1] >= last[3]
+                    and abs(h - (last[3] - last[1])) <= IMG_RHYTHM_SIZE * lh):
+                home = ch
+                break
+        if home is None:
+            chains.append([b])
+        else:
+            home.append(b)
+    out = []
+    for ch in chains:
+        if len(ch) < IMG_RHYTHM_MIN_LINES:
+            continue
+        steps = [b_[1] - a_[1] for a_, b_ in zip(ch, ch[1:])]
+        st = sorted(steps)
+        pitch = st[len(st) // 2]
+        mad = sorted(abs(x - pitch) for x in steps)[len(steps) // 2]
+        if pitch <= 0 or mad > IMG_RHYTHM_MAD * pitch:
+            continue
+        lh = sorted(c[3] - c[1] for c in ch)[len(ch) // 2]
+        cx0, cx1 = min(c[0] for c in ch), max(c[2] for c in ch)
+        for a_, x in zip(ch, steps):
+            if x < IMG_GAP_STEP * pitch:
+                continue
+            for j in range(1, int(round(x / pitch))):
+                y0 = a_[1] + j * pitch
+                slot = (cx0, y0, cx1, y0 + lh)
+                area = max(1.0, (cx1 - cx0) * lh)
+                if any(max(0, min(slot[2], b[2]) - max(slot[0], b[0]))
+                       * max(0, min(slot[3], b[3]) - max(slot[1], b[1])) > IMG_GAP_OVERLAP * area
+                       for b in boxes):
+                    continue                    # место занято найденной строкой
+                out.append((cx0, y0, cx1, y0 + lh, lh))
+    return out
+
+
+def rhythm_gaps(arr, boxes: list) -> list:
+    """Рамки строк, пропущенных детектором в ровной колонке: [[x0,y0,x1,y1]].
+    Место из `gap_slots` — строка, только если в нём есть краска."""
+    slots = gap_slots(boxes)
+    if _np is None or arr is None or not slots:
+        return []
+    H, W = arr.shape[:2]
+    lum = arr[..., :3].astype(_np.float32) @ _np.array([0.299, 0.587, 0.114], dtype=_np.float32)
+    out = []
+    for x0, y0, x1, y1, lh in slots:
+        x0, y0, x1, y1 = max(0, int(x0)), max(0, int(y0)), min(W, int(x1)), min(H, int(y1))
+        if y1 - y0 < 4 or x1 - x0 < 8:
+            continue
+        band = lum[y0:y1, x0:x1]
+        bg = float(_np.median(band))
+        ink = band < bg - IMG_GAP_INK_DELTA
+        share = float(ink.mean())
+        if share < IMG_GAP_INK_SHARE:
+            continue
+        e = max(2, int(0.25 * lh))
+        edges = [lum[max(0, y0 - e):max(0, y0 - e // 3), x0:x1],
+                 lum[min(H, y1 + e // 3):min(H, y1 + e), x0:x1]]
+        if any(st.size and float((st < bg - IMG_GAP_INK_DELTA).mean()) > IMG_GAP_EDGE * share
+               for st in edges):
+            continue                            # краска тянется за место — рисунок, не строка
+        cols = _np.where(ink.any(axis=0))[0]
+        if cols.size == 0 or (cols[-1] - cols[0]) < IMG_RHYTHM_WIDE * lh:
+            continue
+        out.append([x0 + int(cols[0]), y0, x0 + int(cols[-1]) + 1, y1])
+    return out
+
+
 # Версия правил сборки блоков. Запись картинки помнит, какой версией собраны
 # её блоки (`groupRule`); прежняя — значит разбор картинок перегруппирует
-# их сам (`regroup_plan`, `main._regroup_rec`). 2 — ритм колонки (16.10.2026).
-IMG_GROUP_RULE = 2
+# их сам (`regroup_plan`, `main._regroup_rec`). 2 — ритм колонки, 3 — строки,
+# пропущенные детектором в ритме (`rhythm_gaps`), оба 16.10.2026.
+IMG_GROUP_RULE = 3
 
 
 def regroup_plan(blocks: list) -> list:

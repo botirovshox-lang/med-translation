@@ -608,7 +608,6 @@ window.I18N.registerServer("uz", {
  "Это действие доступно только владельцу организации": "Bu amal faqat tashkilot egasiga ochiq",
  "Это домашняя организация человека — её состав правится на экране «Организация»": "Bu odamning uy tashkiloti — uning tarkibi «Tashkilot» ekranida tahrirlanadi",
  "Это другое видео: длительность ": "Bu boshqa video: davomiyligi ",
- "Это надпись с картинки: её текст правится разбором картинок, а не здесь": "Bu rasmdagi yozuv: uning matni rasmlarni tahlil qilish orqali to‘g‘rilanadi, bu yerda emas",
  "Это последний владелец организации: сначала назначьте другого": "Bu tashkilotning oxirgi egasi: avval boshqasini tayinlang",
  "Это последняя строка файла — склеивать не с чем": "Bu faylning oxirgi satri — birlashtiradigan narsa yo'q",
  "Этот прогон не уместится в лимит организации: выберите ": "Bu ishlov tashkilot limitiga sig'maydi: ",

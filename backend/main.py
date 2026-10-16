@@ -15793,7 +15793,7 @@ def _regroup_due(project: dict) -> bool:
         return seen[1]
     data = _load_source_map(project["id"]) or {}
     due = any(int(rec.get("groupRule") or 1) < image_text.IMG_GROUP_RULE
-              and rec.get("blocks") and image_text.regroup_plan(rec["blocks"])
+              and rec.get("blocks") and _regroup_wants(rec)
               for rec in data.get("images") or [])
     _REGROUP_SEEN[project["id"]] = (mt, due)
     return due
@@ -16687,7 +16687,84 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
     return out
 
 
-def _regroup_rec(rec: dict, project: dict, dry: bool) -> int:
+def _image_block_text(project: dict, seg: dict, text: str) -> bool:
+    """Текст, вписанный человеком в строку с картинки, — в её блок карты
+    (`text`, след `textBy: human`). Без этого карта помнила бы прочитанное
+    моделью: перегруппировка склеила бы абзац из ошибки, а сверка надписей
+    сравнивала бы с ней."""
+    o = seg.get("origin") or {}
+    if o.get("kind") != "image" or not project.get("sourceDocx"):
+        return False
+    data = _load_source_map(project["id"])
+    if not data:
+        return False
+    for im in data.get("images") or []:
+        if im.get("part") != o.get("part"):
+            continue
+        blocks = im.get("blocks") or []
+        i = o.get("block")
+        if isinstance(i, int) and 0 <= i < len(blocks) and blocks[i].get("seg") == seg["id"]:
+            blocks[i]["text"] = text
+            blocks[i]["textBy"] = "human"
+            _save_source_map(project["id"], data)
+            return True
+    return False
+
+
+def _gap_boxes(rec: dict) -> list:
+    """Рамки строк для поиска пропусков — ВСЕ, включая отсеянные: строка
+    слоя PDF или надпечатка тоже занимает своё место в колонке, и её место
+    пропуском не считается."""
+    return [lb for b in rec.get("blocks") or []
+            for lb in (b.get("lineBoxes") or [b.get("box")]) if lb]
+
+
+def _gaps_allowed(rec: dict) -> bool:
+    """Пропуски ищутся там, где их делает детектор, — на РУКОПИСИ
+    (`_hand_image`), и не на странице PDF со слоем текста: там строки слоя
+    читаются слоем, и найденная «строка» стала бы вторым чтением и второй
+    печатью того же текста. Печатную книгу правило не трогает вовсе:
+    граница абзацев в ней — тот же двойной шаг, и каждая страница
+    отрисовывалась бы зря."""
+    if any(b.get("skip") == "layer" for b in rec.get("blocks") or []):
+        return False
+    return _hand_image(rec)
+
+
+def _regroup_wants(rec: dict) -> bool:
+    """Есть что делать перегруппировке: блоки склеятся по ритму колонки
+    или на рукописи есть место пропущенной строки (`image_text.gap_slots`).
+    Только геометрия — отрисовывать картинку ради ответа не нужно."""
+    blocks = rec.get("blocks") or []
+    if image_text.regroup_plan(blocks):
+        return True
+    return _gaps_allowed(rec) and bool(image_text.gap_slots(_gap_boxes(rec)))
+
+
+def _regroup_gaps(rec: dict, blob: bytes) -> int:
+    """Строки, пропущенные детектором в ровной колонке, — новыми блоками
+    в конец записи (их прочитает обычный шаг чтения). Ответ — сколько."""
+    if not blob or not _gaps_allowed(rec):
+        return 0
+    blocks = rec.get("blocks") or []
+    boxes = _gap_boxes(rec)
+    try:
+        from PIL import Image as _PIL
+        import numpy as _np
+        arr = _np.asarray(_PIL.open(io.BytesIO(blob)).convert("RGB"))
+    except Exception:
+        return 0
+    added = []
+    for gb in image_text.rhythm_gaps(arr, boxes):
+        added.append({"box": gb, "rows": 1, "lineH": int(gb[3] - gb[1]), "conf": None,
+                      "flat": round(image_text.flatness(arr, gb), 3), "align": "left",
+                      "lineBoxes": [gb], "gap": 1})
+    if added:
+        rec["blocks"] = blocks + added
+    return len(added)
+
+
+def _regroup_rec(rec: dict, project: dict, dry: bool, blob: bytes = b"") -> int:
     """Перегруппировать сохранённые блоки картинки по нынешним правилам
     (`image_text.regroup_plan`). Ответ — сколько новых блоков склеено.
 
@@ -16701,21 +16778,44 @@ def _regroup_rec(rec: dict, project: dict, dry: bool) -> int:
     * Номера блоков меняются, поэтому якоря уцелевших сегментов
       (`origin.block`) переписываются вместе с ними — иначе перевод
       отвязался бы и молча выпал из выгрузки.
-    * Отметка `groupRule` ставится в любом исходе: второй заход не нужен."""
+    * На рукописи (`_gaps_allowed`) сперва ищутся строки, пропущенные
+      детектором (`_regroup_gaps`): их место в ритме колонки известно.
+    * Отметка `groupRule` ставится в любом исходе, кроме «картинки нет,
+      а пропуск возможен»: «не знаю» отметкой «сделано» не становится.
+    Ответ — склеено групп плюс найдено строк."""
+    if int(rec.get("groupRule") or 1) < 3 and _gaps_allowed(rec) \
+            and image_text.gap_slots(_gap_boxes(rec)):
+        if not blob:
+            return 0                    # картинки нет — «не знаю», правило не ставим
+        if dry:
+            return 1
+    n_gaps = 0 if dry else _regroup_gaps(rec, blob)
     blocks = rec.get("blocks") or []
     groups = image_text.regroup_plan(blocks)
     part = rec.get("part")
     by_id = {s["id"]: s for s in project.get("segments") or []}
-    if not groups:
+    if not groups and not n_gaps:
         rec["groupRule"] = image_text.IMG_GROUP_RULE
         return 0
     merged_ids = {i for g in groups for i in g}
     olds = {i: _image_seg_of(by_id, blocks[i], part, i) for i in merged_ids}
+    # Работа человека: перевод или подпись — склейка снесла бы её; текст
+    # оригинала, вписанный им, склейку переживает (уходит в текст абзаца),
+    # кроме группы с непрочитанной строкой — её дочитает модель, и абзац
+    # был бы прочитан заново поверх его правки.
     held = sum(1 for s in olds.values() if s is not None and _human_text(s))
+    for g in groups:
+        if any(blocks[i].get("textBy") == "human" for i in g) \
+                and any("text" not in blocks[i] for i in g):
+            held += 1
     if held:
-        rec["groupRule"] = image_text.IMG_GROUP_RULE
+        groups, merged_ids = [], set()
         rec["groupHeld"] = held
-        return 0
+        if not n_gaps:
+            rec["groupRule"] = image_text.IMG_GROUP_RULE
+            return 0
+    else:
+        rec.pop("groupHeld", None)
     if dry:
         return len(groups)
     keep = {i: _image_seg_of(by_id, b, part, i) for i, b in enumerate(blocks) if i not in merged_ids}
@@ -16745,6 +16845,8 @@ def _regroup_rec(rec: dict, project: dict, dry: bool) -> int:
                     nb[k] = parts[0][k]
         if any(b.get("hand") for b in parts):
             nb["hand"] = True
+        if any(b.get("textBy") == "human" for b in parts):
+            nb["textBy"] = "human"
         new_blocks.append(nb)
     new_blocks.sort(key=lambda b: (b["box"][1], b["box"][0]))
     for j, nb in enumerate(new_blocks):
@@ -16757,8 +16859,7 @@ def _regroup_rec(rec: dict, project: dict, dry: bool) -> int:
             project["segments"].remove(s)
     rec["blocks"] = new_blocks
     rec["groupRule"] = image_text.IMG_GROUP_RULE
-    rec.pop("groupHeld", None)
-    return len(groups)
+    return len(groups) + n_gaps
 
 
 def _image_seg_of(by_id: dict, block: dict, part: str, i: int) -> Optional[dict]:
@@ -17662,21 +17763,15 @@ def _job_images(job: dict) -> None:
             if work and stopping():
                 break                  # остаток пачки — следующему заходу
             prev = known.get(name) or {}
-            if prev.get("blocks") is not None and int(prev.get("groupRule") or 1) < image_text.IMG_GROUP_RULE:
-                # Собрано прежними правилами блоков — склеить по нынешним
-                # (рукопись через строку, правило «У» в docs/rules/pdf-reading.md).
-                # Отрисовка не нужна: строки лежат в `lineBoxes`.
-                prev = dict(prev)
-                n_ = _regroup_rec(prev, project, dry)
-                if n_:
-                    job["counters"]["regrouped"] = job["counters"].get("regrouped", 0) + n_
-                    segs_dirty = True
+            if prev.get("blocks") is not None and int(prev.get("groupRule") or 1) < image_text.IMG_GROUP_RULE                     and not _regroup_wants(prev):
+                prev = dict(prev, groupRule=image_text.IMG_GROUP_RULE)  # склеивать нечего
                 map_dirty = True
             if name in need_det:
                 job["counters"]["detectDone"] = job["counters"].get("detectDone", 0) + 1
             page_ok = str(name).startswith(PDF_PAGE_PART) and _page_rec_trusted(prev, data, src_sha, vk_now)
             if (page_ok and int(prev.get("layerRule") or 1) >= LAYER_RULE
-                    and not _pending(prev)):
+                    and not _pending(prev)
+                    and int(prev.get("groupRule") or 1) >= image_text.IMG_GROUP_RULE):
                 # Страница уже разобрана (тем же файлом — `src`), читать на ней
                 # нечего: отрисовывать её (секунды на страницу у книги) незачем —
                 # сегменты по ней заводятся из карты.
@@ -17726,6 +17821,15 @@ def _job_images(job: dict) -> None:
             # документе другие — по старым восстановление сажало бы строку не туда.
             if rec.get("blocks") is not None and anchors.get(name) and rec.get("paras") != anchors.get(name):
                 rec["paras"] = anchors.get(name) or []
+                map_dirty = True
+            if rec.get("blocks") is not None and int(rec.get("groupRule") or 1) < image_text.IMG_GROUP_RULE:
+                # Собрано прежними правилами блоков — дополнить строками,
+                # пропущенными детектором, и склеить по ритму колонки
+                # (правило «У» в docs/rules/pdf-reading.md).
+                n_ = _regroup_rec(rec, project, dry, blob)
+                if n_:
+                    job["counters"]["regrouped"] = job["counters"].get("regrouped", 0) + n_
+                    segs_dirty = True
                 map_dirty = True
             if rec.get("blocks") is None:
                 job["phase"] = "detect"
@@ -30572,8 +30676,15 @@ def edit_segment_source(pid: int, sid: int, req: SegmentSourceRequest):
         # узнают повторный импорт и привязка исходника. Считаем до чистки:
         # в режиме «другая строка» след снимается вместе с вердиктами.
         prev_from = (seg.get("sourceEdited") or {}).get("from")
-        if _is_image_seg(seg):
-            raise HTTPException(400, "Это надпись с картинки: её текст правится разбором картинок, а не здесь")
+        # Надпись с картинки правится ТАК ЖЕ: распознавание рукописи и скана
+        # ошибается («ры» вместо «рии», конспект 16.10.2026), и вписать
+        # верное может только человек, глядя на кусок картинки в карточке.
+        # Текст уходит и в блок картинки (`_image_block_text`): по нему
+        # перегруппировка склеивает абзац, и второе чтение его не перепишет.
+        is_img = _is_image_seg(seg)
+        if is_img and _job_busy(pid, "images"):
+            raise HTTPException(409, "Идёт разбор картинок — дождитесь конца "
+                                     "или остановите его")
         old = seg.get("source") or ""
         ratio = _source_similarity(old, new)
         mode = "fix" if ratio >= SOURCE_EDIT_KEEP else "new"
@@ -30648,6 +30759,8 @@ def edit_segment_source(pid: int, sid: int, req: SegmentSourceRequest):
         _IMPACT_CACHE.pop(pid, None)
         _CONSIST_CACHE.pop(pid, None)
         save_state(STATE)
+        if is_img:
+            _image_block_text(project, seg, new)
     if tenants_touched:
         _tenants_changed()
     _audit("segment.source", project=pid, segment=sid, mode=mode,

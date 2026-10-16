@@ -17,7 +17,7 @@
      а снятая подпись оставляет след (инвариант 14);
   4) правленую строку узнаёт тот же файл: повторный импорт не объявляет её
      исчезнувшей и не списывает за неё страницы;
-  5) чужой проект — 404 (инвариант 11), сегмент картинки — 400;
+  5) чужой проект — 404 (инвариант 11), сегмент картинки правится, как любой;
   6) повреждённая формула названа сама (`checks.broken_math`) и уходит
      человеку — в ту же корзину, где «повреждён сам оригинал».
 """
@@ -254,8 +254,11 @@ print("=== 5. Двери закрыты ===")
 r = c.post("/api/segments/%d/%d/source" % (pid, ids[3]), headers=H(A), json={"source": "   "})
 check(r.status_code == 400, "пустой оригинал — 400: %s" % r.status_code)
 live(pid)["segments"][3]["origin"] = {"kind": "image", "part": "word/media/i1.png", "block": 0}
-r = c.post("/api/segments/%d/%d/source" % (pid, ids[3]), headers=H(A), json={"source": "надпись"})
-check(r.status_code == 400, "надпись с картинки правится разбором картинок — 400: %s" % r.status_code)
+_old3 = live(pid)["segments"][3]["source"]
+r = c.post("/api/segments/%d/%d/source" % (pid, ids[3]), headers=H(A),
+           json={"source": _old3 + " рии"})
+check(r.status_code == 200 and live(pid)["segments"][3]["source"].endswith(" рии"),
+      "надпись с картинки правится человеком, как любая строка (16.10.2026): %s" % r.status_code)
 live(pid)["segments"][3].pop("origin")
 r = c.post("/api/segments/%d/%d/source" % (pid + 999, ids[3]), headers=H(A), json={"source": "текст"})
 check(r.status_code == 404, "чужой (несуществующий) проект — 404, а не 403: %s" % r.status_code)

@@ -113,6 +113,64 @@ check(main._regroup_rec(rec3, proj3, dry=False) == 0 and rec3.get("groupHeld") =
       "заверенный обрывок — картинка оставлена, причина названа")
 check(rec3["blocks"] == before and len(proj3["segments"]) == 7, "ни блоки, ни сегменты не тронуты")
 
+print("\n── строка, пропущенная детектором ──")
+# Синтетическая тетрадь: светлая клетка, тёмные строки через одну позицию,
+# одна строка абзаца нарисована, но детектор её «не видел», и одна позиция
+# пустая (граница абзацев).
+import numpy as np                                            # noqa: E402
+from PIL import Image, ImageDraw                              # noqa: E402
+import io as _io                                              # noqa: E402
+W, Hh = 800, 1000
+img = Image.new("RGB", (W, Hh), (238, 238, 240))
+dr = ImageDraw.Draw(img)
+for x in range(0, W, 25):
+    dr.line([(x, 0), (x, Hh)], fill=(200, 205, 215))
+for y in range(0, Hh, 25):
+    dr.line([(0, y), (W, y)], fill=(200, 205, 215))
+tops = [40 + k * 60 for k in range(12)]
+empty = 6                                     # пустая позиция между абзацами
+missed = 9                                    # строка с краской, которую «не нашли»
+for k, t in enumerate(tops):
+    if k == empty:
+        continue
+    for x in range(60, 740, 14):
+        dr.rectangle([x, t + 8, x + 9, t + 30], fill=(40, 40, 50))
+found = [[60, t, 740, t + 36] for k, t in enumerate(tops) if k not in (empty, missed)]
+gaps = image_text.rhythm_gaps(np.asarray(img), found)
+check(len(gaps) == 1 and abs(gaps[0][1] - tops[missed]) <= 6,
+      "строка с краской найдена на своём месте, пустая позиция — нет: %s" % gaps)
+check(image_text.rhythm_gaps(np.asarray(img), found[:4]) == [], "мало строк — правило молчит")
+
+buf = _io.BytesIO()
+img.save(buf, "PNG")
+rec5 = {"part": "word/media/image9.png",
+        "blocks": [dict(blk(t, 60, 740, "строка %d" % k), lineBoxes=[[60, t, 740, t + 36]],
+                        box=[60, t, 740, t + 36], lineH=36, hand=True)
+                   for k, t in enumerate(tops) if k not in (empty, missed)]}
+proj5 = {"id": 5, "segments": []}
+main._regroup_rec(rec5, proj5, dry=False, blob=buf.getvalue())
+rows = sorted(b["rows"] for b in rec5["blocks"])
+check(rows == [5, 6], "абзацы собраны вместе с найденной строкой: %s" % rows)
+second = max(rec5["blocks"], key=lambda b: b["box"][1])
+check("text" not in second, "абзац с непрочитанной строкой ждёт чтения целиком")
+printed = {"part": "p", "blocks": [dict(b, hand=False) for b in rec5["blocks"]]}
+check(not main._gaps_allowed(printed), "печатная страница — пропуски не ищутся")
+layer = {"part": "p", "blocks": [dict(b) for b in rec5["blocks"]] + [{"box": [0, 0, 5, 5], "skip": "layer"}]}
+check(not main._gaps_allowed(layer), "страница PDF со слоем — пропуски не ищутся")
+
+print("\n── текст, исправленный человеком, — в блок картинки ──")
+src_dir = main.SOURCE_DIR
+import tempfile, pathlib                                      # noqa: E402
+main.SOURCE_DIR = pathlib.Path(tempfile.mkdtemp())
+(main.SOURCE_DIR / "77.docx").write_bytes(b"x")
+pj = {"id": 77, "sourceDocx": {"at": "x"}, "segments": [
+    {"id": 3, "source": "ры не имеют", "origin": {"kind": "image", "part": "p", "block": 0}}]}
+main._save_source_map(77, {"images": [{"part": "p", "blocks": [{"box": [0, 0, 9, 9], "seg": 3, "text": "ры не имеют"}]}]})
+check(main._image_block_text(pj, pj["segments"][0], "рии не имеют"), "блок найден по якорю")
+b0 = main._load_source_map(77)["images"][0]["blocks"][0]
+check(b0["text"] == "рии не имеют" and b0["textBy"] == "human", "текст и след человека в карте")
+main.SOURCE_DIR = src_dir
+
 print("\n── сухой заход ничего не пишет ──")
 rec4 = page(TEXTS)
 proj4 = project_for(rec4)

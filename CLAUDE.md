@@ -3230,6 +3230,8 @@ node tests/test_pay_render.js                                        # экра�
 .venv/bin/python tests/test_tts_engines.py                          # синтез: маршрут по языку, Azure, письмо, ошибки
 .venv/bin/python tests/test_landing.py                               # лендинг: три языка, hreflang, линза, форма, 404
 node tests/test_landing_handoff_browser.js                          # форма лендинга → файл в приложении, НАСТОЯЩИЙ Chrome
+node tests/test_start_photo_browser.js                              # карусель «Фото» на /start/: слайды, языки, картинки
+.venv/bin/python tests/test_hand_paint.py                            # перевод в фото абзаца: разделы Ф и Х справочника PDF
 python tools/landing_build.py                                        # лендинг пересобран из landing/src
 .venv/bin/python tests/test_pdf_figures.py                           # рисунки книги доезжают до документа
 .venv/bin/python tests/test_pdf_layout_export.py                     # выгрузка PDF «как в оригинале»

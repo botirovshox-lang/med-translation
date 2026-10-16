@@ -422,7 +422,18 @@ footer .sp { flex: 1; }
 .prog .fill { position: absolute; left: 0; top: -3px; width: 4px; height: 16px; border-radius: 4px; background: #fff; box-shadow: 0 0 10px rgba(255,255,255,.6); }
 
 /* Фото таблички: чтение и перевод на месте */
-.desk { position: relative; width: min(560px, 100%); aspect-ratio: 1000 / 991; border-radius: 20px; overflow: hidden; background: #DDE6E1; box-shadow: 0 26px 54px -26px rgba(11,19,36,.45); }
+.desk { position: relative; width: min(var(--dw, 560px), 100%); aspect-ratio: var(--ar, 1000 / 991); border-radius: 20px; overflow: hidden; background: #DDE6E1; box-shadow: 0 26px 54px -26px rgba(11,19,36,.45); touch-action: pan-y; }
+/* Карусель «Фото»: исходник и его переводы, слайд за слайдом. */
+.sc-car { display: flex; align-items: center; justify-content: center; gap: 12px; width: min(720px, 100%); }
+.sc-cap { flex: 1; text-align: center; font-weight: 800; font-size: 18px; color: var(--ink); min-height: 1.4em; }
+.sc-cap .sc-n { font-weight: 600; color: var(--ink-2); white-space: pre; }
+.sc-nav { flex: none; width: 48px; height: 48px; border-radius: 50%; border: 2px solid var(--line, #D5DCE3); background: #fff; color: var(--ink); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: border-color .2s, transform .2s var(--ease); }
+.sc-nav:hover { border-color: var(--ink); }
+.sc-nav:active { transform: scale(.94); }
+.sc-dots { display: flex; gap: 10px; justify-content: center; }
+.sc-dots button { width: 12px; height: 12px; padding: 0; border-radius: 50%; border: 0; background: #C9D2DA; cursor: pointer; }
+.sc-dots button[aria-current="true"] { background: var(--accent); width: 28px; border-radius: 6px; }
+@media (max-width: 640px) { .sc-cap { font-size: 16px; } .sc-nav { width: 44px; height: 44px; } }
 .desk img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .desk .sc-t { opacity: 0; transition: opacity .7s var(--ease); }
 .desk.done .sc-t { opacity: 1; }
@@ -741,7 +752,13 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
         </div>
 
         <div class="pane" id="pane-scan" data-k="scan" role="tabpanel" aria-labelledby="tab-scan" hidden>
-          <div class="desk" id="desk"><img class="sc-o" src="media/sign-ru.webp" width="1000" height="991" alt="Табличка в музее, оригинал" data-ta="alt:scAltO"><img class="sc-t" id="sc-t" src="media/sign-en.webp" width="1000" height="991" alt="" loading="lazy"><span class="sbeam"></span></div>
+          <div class="sc-car" role="group" aria-roledescription="carousel">
+            <button type="button" class="sc-nav" id="sc-prev" data-ta="aria-label:scPrev" aria-label="Предыдущее фото"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button>
+            <span class="sc-cap" id="sc-cap" aria-live="polite"></span>
+            <button type="button" class="sc-nav" id="sc-next" data-ta="aria-label:scNext" aria-label="Следующее фото"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+          </div>
+          <div class="desk" id="desk"><img class="sc-o" id="sc-o" src="media/sign-ru.webp" width="1000" height="991" alt="Табличка в музее, оригинал" data-ta="alt:scAltO"><img class="sc-t" id="sc-t" src="media/sign-en.webp" width="1000" height="991" alt="" loading="lazy"><span class="sbeam"></span></div>
+          <div class="sc-dots" id="sc-dots"></div>
           <button type="button" class="act" id="sc-btn"><span data-t="scanGo">Прочитать и перевести</span></button>
           <div class="ctrls"><span class="lbl" data-t="langInto">Перевод на:</span><span class="ctrls" id="sc-langs"></span></div>
         </div>
@@ -895,7 +912,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       about: "О сервисе", terms: "Оферта", privacy: "Персональные данные",
       mockH: "Открываем редактор", mockNoFile: "Файл выберете в редакторе", mockClose: "Понятно",
       mockNote: "Это макет. На сайте файл сразу откроется в редакторе с выбранными языками.",
-      tr1: "Первая страница бесплатно", tr2: "Ваш файл закрыт от других", tr3: "Без подписки: платите за страницы", tr4: "Цифры сверяем автоматически", exH: "Примеры работ", exSub: "Нажимайте и смотрите.", sample: "Настоящий перевод", tabBook: "Книга", tabPaper: "Статья", tabVideo: "Видео", tabScan: "Фото", bookOpen: "Открыть книгу", bookNext: "Перелистнуть", bookClose: "Закрыть книгу", langInto: "Перевод на:", baOrig: "Оригинал", baTr: "Перевод", baBoth: "Сравнить", baHint: "Потяните ползунок", vidSubs: "Субтитры:", vidBoth: "Два языка", play: "Смотреть", pause: "Пауза", scanGo: "Прочитать и перевести", scanBack: "Показать оригинал", chkO: "Оригинал", chkRaw: "Перевод без проверки", chkFix: "После проверки", chkFound: "В оригинале 300, а не 30", chkOk: "Исправлено", chkBtn: "Проверить цифры", chkAgain: "Ещё раз", revH: "Что говорят о нас", revNote: "Образцы. Заменим на настоящие отзывы.", rev1n: "Дилноза Каримова", rev1i: "ДК", rev2n: "Рустам Юсупов", rev2i: "РЮ", rev3n: "Анна Ли", rev3i: "АЛ", rev1: "Перевела учебник на 300 страниц за один день. Таблицы остались на месте.", rev1r: "Доцент, Самарканд", rev2: "Субтитры к лекции на трёх языках. Студенты наконец всё понимают.", rev2r: "Методист, Бухара", rev3: "Видеоотзыв", rev3r: "Переводчик, Ташкент", tlOrig: "оригинал", tlMore: "Другие языки", scAltO: "Табличка в музее, оригинал", scAltT: "Та же табличка, перевод:", credits: "Все примеры переведены нашим сервисом. Источники: А. П. Чехов, «Толстый и тонкий» (1883) и фото разворота «Пёстрых рассказов» (1886) — общественное достояние, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Статья: K. Okano и др., «Sleep quality, duration, and consistency are associated with better academic performance in college students», npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, лицензия <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; показан фрагмент с переводом. Видео: NASA ScienceCasts, «The Zero Gravity Coffee Cup», фрагмент 25 с, общественное достояние; NASA не связано с сервисом. Документ на плитке «Сканы и фото»: справка о подготовке к открытию ВСХВ, 5 мая 1940 г., машинопись, Главархив Москвы, <a href=\"https://commons.wikimedia.org/wiki/File:VSKHV_document_May_1940.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; показан фрагмент с переводом. Фото таблички: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0."
+      tr1: "Первая страница бесплатно", tr2: "Ваш файл закрыт от других", tr3: "Без подписки: платите за страницы", tr4: "Цифры сверяем автоматически", exH: "Примеры работ", exSub: "Нажимайте и смотрите.", sample: "Настоящий перевод", tabBook: "Книга", tabPaper: "Статья", tabVideo: "Видео", tabScan: "Фото", bookOpen: "Открыть книгу", bookNext: "Перелистнуть", bookClose: "Закрыть книгу", langInto: "Перевод на:", baOrig: "Оригинал", baTr: "Перевод", baBoth: "Сравнить", baHint: "Потяните ползунок", vidSubs: "Субтитры:", vidBoth: "Два языка", play: "Смотреть", pause: "Пауза", scanGo: "Прочитать и перевести", scanBack: "Показать оригинал", chkO: "Оригинал", chkRaw: "Перевод без проверки", chkFix: "После проверки", chkFound: "В оригинале 300, а не 30", chkOk: "Исправлено", chkBtn: "Проверить цифры", chkAgain: "Ещё раз", revH: "Что говорят о нас", revNote: "Образцы. Заменим на настоящие отзывы.", rev1n: "Дилноза Каримова", rev1i: "ДК", rev2n: "Рустам Юсупов", rev2i: "РЮ", rev3n: "Анна Ли", rev3i: "АЛ", rev1: "Перевела учебник на 300 страниц за один день. Таблицы остались на месте.", rev1r: "Доцент, Самарканд", rev2: "Субтитры к лекции на трёх языках. Студенты наконец всё понимают.", rev2r: "Методист, Бухара", rev3: "Видеоотзыв", rev3r: "Переводчик, Ташкент", tlOrig: "оригинал", tlMore: "Другие языки", scAltO: "Табличка в музее, оригинал", scAltT: "Та же табличка, перевод:", scCapSign: "Табличка в музее", scCapNote: "Конспект от руки", scCapTyped: "Машинопись, 1940 г.", scCapBook: "Книга, 1886 г.", scCapPaper: "Научная статья", scPrev: "Предыдущее фото", scNext: "Следующее фото", credits: "Все примеры переведены нашим сервисом. Источники: А. П. Чехов, «Толстый и тонкий» (1883) и фото разворота «Пёстрых рассказов» (1886) — общественное достояние, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Статья: K. Okano и др., «Sleep quality, duration, and consistency are associated with better academic performance in college students», npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, лицензия <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; показан фрагмент с переводом. Видео: NASA ScienceCasts, «The Zero Gravity Coffee Cup», фрагмент 25 с, общественное достояние; NASA не связано с сервисом. Документ на плитке «Сканы и фото»: справка о подготовке к открытию ВСХВ, 5 мая 1940 г., машинопись, Главархив Москвы, <a href=\"https://commons.wikimedia.org/wiki/File:VSKHV_document_May_1940.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; показан фрагмент с переводом. Фото таблички: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0."
     },
     uz: {
       title: "SimpleTranslate: istalgan tilga bir bosishda tarjima",
@@ -921,7 +938,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       about: "Xizmat haqida", terms: "Oferta", privacy: "Shaxsiy ma'lumotlar",
       mockH: "Muharrir ochilmoqda", mockNoFile: "Faylni muharrirda tanlaysiz", mockClose: "Tushunarli",
       mockNote: "Bu maket. Saytda fayl tanlangan tillar bilan darhol muharrirda ochiladi.",
-      tr1: "Birinchi bet bepul", tr2: "Faylingiz boshqalardan yopiq", tr3: "Obunasiz: faqat betlar uchun to‘lov", tr4: "Raqamlar avtomatik tekshiriladi", exH: "Ishlarimizdan namunalar", exSub: "Bosing va ko‘ring.", sample: "Haqiqiy tarjima", tabBook: "Kitob", tabPaper: "Maqola", tabVideo: "Video", tabScan: "Rasm", bookOpen: "Kitobni ochish", bookNext: "Varaqlash", bookClose: "Kitobni yopish", langInto: "Tarjima tili:", baOrig: "Asl nusxa", baTr: "Tarjima", baBoth: "Solishtirish", baHint: "Slayderni torting", vidSubs: "Subtitrlar:", vidBoth: "Ikki til", play: "Ko‘rish", pause: "Pauza", scanGo: "O‘qish va tarjima qilish", scanBack: "Asl nusxani ko‘rsatish", chkO: "Asl nusxa", chkRaw: "Tekshiruvsiz tarjima", chkFix: "Tekshiruvdan keyin", chkFound: "Asl nusxada 30 emas, 300", chkOk: "Tuzatildi", chkBtn: "Raqamlarni tekshirish", chkAgain: "Yana bir bor", revH: "Biz haqimizda fikrlar", revNote: "Namunalar. Haqiqiy fikrlar bilan almashtiramiz.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "300 betlik darslikni bir kunda tarjima qildim. Jadvallar joyida qoldi.", rev1r: "Dotsent, Samarqand", rev2: "Ma’ruzaga uch tilda subtitrlar. Talabalar endi hammasini tushunishadi.", rev2r: "Metodist, Buxoro", rev3: "Video fikr", rev3r: "Tarjimon, Toshkent", tlOrig: "asl nusxa", tlMore: "Boshqa tillar", scAltO: "Muzeydagi lavha, asl nusxa", scAltT: "Oʻsha lavha, tarjima:", credits: "Barcha misollarni xizmatimiz tarjima qilgan. Manbalar: A. P. Chexov, «Semiz va ozgʻin» (1883) va «Rang-barang hikoyalar» (1886) kitobi sahifalari surati — jamoat mulki, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Maqola: K. Okano va boshq., «Sleep quality, duration, and consistency are associated with better academic performance in college students», npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, litsenziya <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; tarjimasi bilan parcha koʻrsatilgan. Video: NASA ScienceCasts, «The Zero Gravity Coffee Cup», 25 soniyalik parcha, jamoat mulki; NASA xizmatga aloqador emas. «Skan va rasmlar» plitkasidagi hujjat: Butunittifoq qishloq xoʻjaligi koʻrgazmasini ochishga tayyorgarlik haqida maʼlumotnoma, 1940-yil 5-may, mashinkada yozilgan, Moskva Bosh arxivi, <a href=\"https://commons.wikimedia.org/wiki/File:VSKHV_document_May_1940.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; tarjimasi bilan parcha koʻrsatilgan. Lavha surati: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0."
+      tr1: "Birinchi bet bepul", tr2: "Faylingiz boshqalardan yopiq", tr3: "Obunasiz: faqat betlar uchun to‘lov", tr4: "Raqamlar avtomatik tekshiriladi", exH: "Ishlarimizdan namunalar", exSub: "Bosing va ko‘ring.", sample: "Haqiqiy tarjima", tabBook: "Kitob", tabPaper: "Maqola", tabVideo: "Video", tabScan: "Rasm", bookOpen: "Kitobni ochish", bookNext: "Varaqlash", bookClose: "Kitobni yopish", langInto: "Tarjima tili:", baOrig: "Asl nusxa", baTr: "Tarjima", baBoth: "Solishtirish", baHint: "Slayderni torting", vidSubs: "Subtitrlar:", vidBoth: "Ikki til", play: "Ko‘rish", pause: "Pauza", scanGo: "O‘qish va tarjima qilish", scanBack: "Asl nusxani ko‘rsatish", chkO: "Asl nusxa", chkRaw: "Tekshiruvsiz tarjima", chkFix: "Tekshiruvdan keyin", chkFound: "Asl nusxada 30 emas, 300", chkOk: "Tuzatildi", chkBtn: "Raqamlarni tekshirish", chkAgain: "Yana bir bor", revH: "Biz haqimizda fikrlar", revNote: "Namunalar. Haqiqiy fikrlar bilan almashtiramiz.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "300 betlik darslikni bir kunda tarjima qildim. Jadvallar joyida qoldi.", rev1r: "Dotsent, Samarqand", rev2: "Ma’ruzaga uch tilda subtitrlar. Talabalar endi hammasini tushunishadi.", rev2r: "Metodist, Buxoro", rev3: "Video fikr", rev3r: "Tarjimon, Toshkent", tlOrig: "asl nusxa", tlMore: "Boshqa tillar", scAltO: "Muzeydagi lavha, asl nusxa", scAltT: "Oʻsha lavha, tarjima:", scCapSign: "Muzeydagi lavha", scCapNote: "Qoʻlda yozilgan konspekt", scCapTyped: "Mashinkada yozilgan hujjat, 1940", scCapBook: "Kitob, 1886", scCapPaper: "Ilmiy maqola", scPrev: "Oldingi rasm", scNext: "Keyingi rasm", credits: "Barcha misollarni xizmatimiz tarjima qilgan. Manbalar: A. P. Chexov, «Semiz va ozgʻin» (1883) va «Rang-barang hikoyalar» (1886) kitobi sahifalari surati — jamoat mulki, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Maqola: K. Okano va boshq., «Sleep quality, duration, and consistency are associated with better academic performance in college students», npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, litsenziya <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; tarjimasi bilan parcha koʻrsatilgan. Video: NASA ScienceCasts, «The Zero Gravity Coffee Cup», 25 soniyalik parcha, jamoat mulki; NASA xizmatga aloqador emas. «Skan va rasmlar» plitkasidagi hujjat: Butunittifoq qishloq xoʻjaligi koʻrgazmasini ochishga tayyorgarlik haqida maʼlumotnoma, 1940-yil 5-may, mashinkada yozilgan, Moskva Bosh arxivi, <a href=\"https://commons.wikimedia.org/wiki/File:VSKHV_document_May_1940.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; tarjimasi bilan parcha koʻrsatilgan. Lavha surati: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0."
     },
     en: {
       title: "SimpleTranslate: translate into any language in one click",
@@ -947,7 +964,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       about: "About", terms: "Terms", privacy: "Privacy",
       mockH: "Opening the editor", mockNoFile: "You will pick the file in the editor", mockClose: "Got it",
       mockNote: "This is a mockup. On the live site, the file opens in the editor right away with the languages you picked.",
-      tr1: "First page free", tr2: "Your file stays private", tr3: "No subscription: pay per page", tr4: "Numbers checked automatically", exH: "Examples of our work", exSub: "Tap and see.", sample: "Real translation", tabBook: "Book", tabPaper: "Paper", tabVideo: "Video", tabScan: "Photo", bookOpen: "Open the book", bookNext: "Turn the page", bookClose: "Close the book", langInto: "Translated into:", baOrig: "Original", baTr: "Translation", baBoth: "Compare", baHint: "Drag the slider", vidSubs: "Subtitles:", vidBoth: "Two languages", play: "Play", pause: "Pause", scanGo: "Read and translate", scanBack: "Show the original", chkO: "Original", chkRaw: "Unchecked translation", chkFix: "After the check", chkFound: "The original says 300, not 30", chkOk: "Fixed", chkBtn: "Check the numbers", chkAgain: "Once more", revH: "What people say", revNote: "Samples. We will replace them with real reviews.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "I translated a 300-page textbook in one day. The tables stayed in place.", rev1r: "Associate professor, Samarkand", rev2: "Lecture subtitles in three languages. Students finally understand everything.", rev2r: "Curriculum specialist, Bukhara", rev3: "Video review", rev3r: "Translator, Tashkent", tlOrig: "original", tlMore: "Other languages", scAltO: "A museum sign, original", scAltT: "The same sign, translated into", credits: "Every example was translated by our service. Sources: A. P. Chekhov, “The Fat and the Thin” (1883), and a photo of a spread of “Motley Stories” (1886) — public domain, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Paper: K. Okano et al., “Sleep quality, duration, and consistency are associated with better academic performance in college students”, npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, licensed <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; an excerpt is shown with its translation. Video: NASA ScienceCasts, “The Zero Gravity Coffee Cup”, a 25-second excerpt, public domain; NASA is not affiliated with the service. Document on the “Scans and photos” tile: a memo on preparations for opening the All-Union Agricultural Exhibition, 5 May 1940, typewritten, Moscow Main Archive, <a href=\"https://commons.wikimedia.org/wiki/File:VSKHV_document_May_1940.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; an excerpt is shown with its translation. Sign photo: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0."
+      tr1: "First page free", tr2: "Your file stays private", tr3: "No subscription: pay per page", tr4: "Numbers checked automatically", exH: "Examples of our work", exSub: "Tap and see.", sample: "Real translation", tabBook: "Book", tabPaper: "Paper", tabVideo: "Video", tabScan: "Photo", bookOpen: "Open the book", bookNext: "Turn the page", bookClose: "Close the book", langInto: "Translated into:", baOrig: "Original", baTr: "Translation", baBoth: "Compare", baHint: "Drag the slider", vidSubs: "Subtitles:", vidBoth: "Two languages", play: "Play", pause: "Pause", scanGo: "Read and translate", scanBack: "Show the original", chkO: "Original", chkRaw: "Unchecked translation", chkFix: "After the check", chkFound: "The original says 300, not 30", chkOk: "Fixed", chkBtn: "Check the numbers", chkAgain: "Once more", revH: "What people say", revNote: "Samples. We will replace them with real reviews.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "I translated a 300-page textbook in one day. The tables stayed in place.", rev1r: "Associate professor, Samarkand", rev2: "Lecture subtitles in three languages. Students finally understand everything.", rev2r: "Curriculum specialist, Bukhara", rev3: "Video review", rev3r: "Translator, Tashkent", tlOrig: "original", tlMore: "Other languages", scAltO: "A museum sign, original", scAltT: "The same sign, translated into", scCapSign: "Museum sign", scCapNote: "Handwritten notes", scCapTyped: "Typewritten memo, 1940", scCapBook: "Book, 1886", scCapPaper: "Research paper", scPrev: "Previous photo", scNext: "Next photo", credits: "Every example was translated by our service. Sources: A. P. Chekhov, “The Fat and the Thin” (1883), and a photo of a spread of “Motley Stories” (1886) — public domain, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Paper: K. Okano et al., “Sleep quality, duration, and consistency are associated with better academic performance in college students”, npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, licensed <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; an excerpt is shown with its translation. Video: NASA ScienceCasts, “The Zero Gravity Coffee Cup”, a 25-second excerpt, public domain; NASA is not affiliated with the service. Document on the “Scans and photos” tile: a memo on preparations for opening the All-Union Agricultural Exhibition, 5 May 1940, typewritten, Moscow Main Archive, <a href=\"https://commons.wikimedia.org/wiki/File:VSKHV_document_May_1940.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; an excerpt is shown with its translation. Sign photo: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0."
     }
   };
   var PAGE_SRC = { ru: "RU", uz: "UZ", en: "EN" };
@@ -1034,6 +1051,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     });
     syncTarget();
   }
+  var langHooks = [];
   function applyLang(l, save) {
     lang = UI[l] ? l : "ru";
     root.lang = lang;
@@ -1061,6 +1079,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     if (errKey) say(errKey);
     if (save) { try { localStorage.setItem("mct-start-lang", lang); } catch (e) { /* хранилище закрыто */ } }
     demoReset();
+    langHooks.forEach(function (f) { f(); });
   }
   [].slice.call(document.querySelectorAll(".langs button")).forEach(function (b) {
     b.addEventListener("click", function () { applyLang(b.getAttribute("data-lang"), true); });
@@ -1541,11 +1560,40 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   vpDraw(true);
 
   /* Фото таблички: луч читает строки, рамки находят текст, перевод встаёт на место. */
+  /* Карусель: слайд — исходник и его переводы. Картинки — перерисовка самой
+     системы (tools/landing_photo.py), у таблички — прежние sign-*.webp. */
+  var SC_SLIDES = [
+    { k: "sign", f: "sign-", o: "ru", w: 1000, h: 991, langs: ["EN", "UZ", "ZH", "AR"], cap: "scCapSign" },
+    { k: "note", f: "ph-note-", o: "ru", w: 791, h: 1047, langs: ["EN"], cap: "scCapNote" },
+    { k: "typed", f: "ph-typed-", o: "ru", w: 1000, h: 456, langs: ["EN", "UZ", "ZH", "KK", "AR"], cap: "scCapTyped" },
+    { k: "book", f: "ph-book-", o: "ru", w: 1000, h: 564, langs: ["EN", "UZ", "ZH", "KK", "AR"], cap: "scCapBook" },
+    { k: "paper", f: "ph-paper-", o: "en", w: 1000, h: 527, langs: ["UZ", "ZH", "KK", "AR"], cap: "scCapPaper" }
+  ];
+  var scI = 0;
   var desk = $("desk"), scBtn = $("sc-btn"), scLang = LANG0 === "uz" ? "UZ" : "EN", scState = 0, scTimers = [], scTouched = false;
   function scRender() {
-    var im = $("sc-t");
-    im.src = "media/sign-" + scLang.toLowerCase() + ".webp";
-    im.alt = t("scAltT") + " " + (NATIVE[scLang] || scLang);
+    var s = SC_SLIDES[scI], im = $("sc-t");
+    if (s.langs.indexOf(scLang) < 0) scLang = s.langs.indexOf(LANG0 === "uz" ? "UZ" : "EN") >= 0 ? (LANG0 === "uz" ? "UZ" : "EN") : s.langs[0];
+    im.src = "media/" + s.f + scLang.toLowerCase() + ".webp";
+    im.alt = t(s.cap) + " — " + t("baTr") + ": " + (NATIVE[scLang] || scLang);
+  }
+  function scSlide(i) {
+    scI = (i + SC_SLIDES.length) % SC_SLIDES.length;
+    var s = SC_SLIDES[scI], o = $("sc-o");
+    o.src = "media/" + s.f + s.o + ".webp";
+    o.width = s.w; o.height = s.h; $("sc-t").width = s.w; $("sc-t").height = s.h;
+    o.alt = t(s.cap) + " — " + t("baOrig");
+    o.removeAttribute("data-ta");
+    desk.style.setProperty("--ar", s.w + " / " + s.h);
+    /* Портретное фото не выше 70% экрана: иначе кнопки уезжают вниз. */
+    desk.style.setProperty("--dw", "min(" + (s.w >= s.h ? 720 : 560) + "px, calc(70vh * " + (s.w / s.h).toFixed(3) + "))");
+    $("sc-cap").innerHTML = "";
+    var cs = document.createElement("span"); cs.setAttribute("data-t", s.cap); cs.textContent = t(s.cap);
+    var cn = document.createElement("span"); cn.className = "sc-n"; cn.textContent = "  ·  " + (scI + 1) + " / " + SC_SLIDES.length;
+    $("sc-cap").appendChild(cs); $("sc-cap").appendChild(cn);
+    [].forEach.call($("sc-dots").children, function (d, j) { d.setAttribute("aria-current", j === scI ? "true" : "false"); });
+    scRender();
+    chipRow($("sc-langs"), s.langs, scLang, function (c) { scTouched = true; scLang = c; scRender(); if (scState !== 2) scSet(1); });
   }
   function scSet(st) {
     scTimers.forEach(clearTimeout); scTimers = [];
@@ -1562,9 +1610,26 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     if (st === 2) desk.classList.add("done");
   }
   scBtn.addEventListener("click", function () { scTouched = true; scSet(scState === 2 ? 0 : 1); });
-  chipRow($("sc-langs"), ["EN", "UZ", "ZH", "AR"], scLang, function (c) { scTouched = true; scLang = c; scRender(); if (scState !== 2) scSet(1); });
+  SC_SLIDES.forEach(function (s, j) {
+    var d = document.createElement("button");
+    d.type = "button"; d.setAttribute("data-ta", "aria-label:" + s.cap); d.setAttribute("aria-label", t(s.cap));
+    d.addEventListener("click", function () { scTouched = true; scSlide(j); scSet(1); });
+    $("sc-dots").appendChild(d);
+  });
+  function scGo(dlt) { scTouched = true; scSlide(scI + dlt); scSet(1); }
+  $("sc-prev").addEventListener("click", function () { scGo(-1); });
+  $("sc-next").addEventListener("click", function () { scGo(1); });
+  /* Свайп по фото на телефоне — следующий или предыдущий слайд. */
+  var scX = null;
+  desk.addEventListener("touchstart", function (e) { scX = e.touches[0].clientX; }, { passive: true });
+  desk.addEventListener("touchend", function (e) {
+    if (scX === null) return;
+    var dx = e.changedTouches[0].clientX - scX; scX = null;
+    if (Math.abs(dx) > 50) scGo(dx < 0 ? 1 : -1);
+  }, { passive: true });
+  langHooks.push(function () { scSlide(scI); });
   exShow.scan = function () { onceVisible(desk, function () { setTimeout(function () { if (!scTouched && scState === 0) scSet(1); }, reduced() ? 0 : 700); }); };
-  scRender(); scSet(0);
+  scSlide(0); scSet(0);
 
   showTab("book");
 

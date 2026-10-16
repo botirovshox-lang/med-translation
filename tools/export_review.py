@@ -167,6 +167,17 @@ def cmd_pages(a):
     print("пары страниц: %s (слева оригинал, справа выгрузка)" % pairs)
 
 
+def _bash() -> str:
+    """bash для обёртки. На Windows «bash» в PATH — заглушка WSL (без
+    дистрибутива она падает), поэтому сперва Git Bash."""
+    if os.name == "nt":
+        for c in (os.environ.get("MEDCAT_BASH", ""), "C:/Program Files/Git/bin/bash.exe",
+                  "C:/Program Files (x86)/Git/bin/bash.exe"):
+            if c and os.path.exists(c):
+                return c
+    return "bash"
+
+
 def _mark(a, status):
     script = """import json, urllib.request
 env = dict(l.strip().split("=", 1) for l in open("/etc/medcat/env", encoding="utf-8")
@@ -185,7 +196,7 @@ print(call("POST", "/api/admin/export-reviews/%d", %s, tok))
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as f:
         f.write(script)
     try:
-        subprocess.run(["bash", str(ROOT / "tools" / "prod_run.sh"), f.name], check=True)
+        subprocess.run([_bash(), str(ROOT / "tools" / "prod_run.sh"), f.name], check=True)
     finally:
         os.unlink(f.name)
 

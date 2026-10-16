@@ -76,6 +76,10 @@ ARC_MIN_SIDE = 0.3
 ARC_OLD = os.environ.get("PAINT_ARC_OLD", "0") == "1"      # 1 — прежняя проверка дуги
 # Радиус inpaint и расширение маски, точек снимка.
 INPAINT_R = 3
+WEAK_INK = float(os.environ.get("PAINT_WEAK_INK", "0.35"))
+WEAK_REACH = int(os.environ.get("PAINT_WEAK_REACH", "4"))
+# Х5: насколько местный тон бумаги вправе отойти от цвета фона (по каналу).
+FLAT_LOCAL_MAX = float(os.environ.get("PAINT_FLAT_LOCAL_MAX", "18"))
 # Участки блока (`_areas`): фон отличается больше этого (по каналу) или
 # разрыв между строками больше стольких шагов строки.
 AREA_BG_DIFF = float(os.environ.get("PAINT_AREA_BG_DIFF", "30"))
@@ -823,22 +827,55 @@ def _arc_of_old(comps: list, letter: float, H: int) -> "dict | None":
 
 
 def erase(rgb, m: dict):
-    """(стёртая вырезка, альфа-маска стирания): ровный фон — заливка цветом
-    фона, неровный — inpaint по расширенной маске букв. Альфа — расширенная
-    маска с мягким краем: вне её картинка не трогается."""
+    """(стёртая вырезка, альфа-маска стирания): ровный фон — заливка местным
+    тоном бумаги, бумага с узором — модель «освещение × узор» (Ф6), прочий
+    неровный — inpaint по расширенной маске букв. Альфа — расширенная маска
+    с мягким краем снаружи: вне её картинка не трогается."""
     mask = m.get("erase_mask", m["mask"]).astype(np.uint8) * 255
     grow = cv2.dilate(mask, np.ones((2 * MASK_GROW + 1, 2 * MASK_GROW + 1), np.uint8))
-    if m.get("flat"):
-        out = rgb.copy()
-        out[grow > 0] = np.array(m["bg"], dtype=np.uint8)
-    else:
-        out = cv2.inpaint(np.ascontiguousarray(rgb), grow, INPAINT_R, cv2.INPAINT_TELEA)
-        lh = float(m.get("pitch") or 0) or 1.25 * float(m.get("em") or 0)
+    lh = float(m.get("pitch") or 0) or 1.25 * float(m.get("em") or 0) or 20.0
+    if not m.get("flat"):
         per = _paper_periodic(rgb, grow > 0, lh, float(m.get("em") or 0))
         if per is not None:
             m["eraseHow"] = "periodic"
-            out = np.where((grow > 0)[..., None], per, out).astype(np.uint8)
-    alpha = cv2.GaussianBlur(grow, (3, 3), 0)
+            alpha = cv2.GaussianBlur(cv2.dilate(grow, np.ones((3, 3), np.uint8)), (3, 3), 0)
+            return per, alpha
+    if WEAK_INK > 0:
+        # Х5а. Слабая краска у букв — волосяные штрихи, засечки, сглаживание:
+        # отличие от фона ниже порога маски, и после стирания они оставались
+        # серым контуром слова. Стирается то, что отличается от фона больше
+        # `WEAK_INK` порога и лежит не дальше `WEAK_REACH` точек от маски.
+        # У бумаги с узором не нужно (и вредно — захватило бы линии клетки):
+        # там стёртое восстанавливает модель выше.
+        k_ = _odd(0.6 * lh, 3, 61)
+        if min(rgb.shape[:2]) > k_:
+            bgl = cv2.medianBlur(np.ascontiguousarray(rgb), k_)
+            weak = np.abs(rgb.astype(np.int16) - bgl.astype(np.int16)).max(axis=2) > WEAK_INK * INK_DIFF
+            reach = cv2.dilate(mask, np.ones((2 * WEAK_REACH + 1, 2 * WEAK_REACH + 1), np.uint8)) > 0
+            grow = np.where(weak & reach, 255, grow).astype(np.uint8)
+    if m.get("flat"):
+        # Х5. «Ровный» фон заливается МЕСТНЫМ тоном бумаги (среднее известных
+        # точек окрестности), а не одним цветом: у скана бумага зернистая
+        # и пятнистая, и один цвет оставлял след в форме стёртых букв.
+        # Где местный тон далёк от цвета фона (край плашки) — цвет фона.
+        out = rgb.copy()
+        bgc = np.array(m["bg"], dtype=np.float32)
+        known = (grow == 0).astype(np.float32)
+        kk = _odd(1.2 * lh, 9, 151)
+        den = cv2.blur(known, (kk, kk))[..., None]
+        loc = cv2.blur(rgb.astype(np.float32) * known[..., None], (kk, kk)) / np.maximum(den, 1e-3)
+        far = (np.abs(loc - bgc).max(axis=2, keepdims=True) > FLAT_LOCAL_MAX) | (den < 0.05)
+        fill = np.where(far, bgc, loc)
+        sel = grow > 0
+        out[sel] = np.clip(fill[sel], 0, 255).astype(np.uint8)
+    else:
+        out = cv2.inpaint(np.ascontiguousarray(rgb), grow, INPAINT_R, cv2.INPAINT_TELEA)
+    out = _tone_match(out, rgb, grow > 0)
+    # Х5. Мягкий край альфы — СНАРУЖИ маски, на нетронутых точках: размытие
+    # по самой маске смешивало крайние пиксели стёртого с оригиналом, и по
+    # контуру букв оставался серый ободок (след заголовка Чехова рядом
+    # с узким переводом). Вне маски стёртая вырезка равна оригиналу.
+    alpha = cv2.GaussianBlur(cv2.dilate(grow, np.ones((3, 3), np.uint8)), (3, 3), 0)
     return out, alpha
 
 
@@ -857,6 +894,44 @@ def erase(rgb, m: dict):
 # только если на кольце известных точек вокруг дыры она предсказывает бумагу
 # заметно лучше ровного тона (`PERIOD_GAIN`): ложный период (таблица, ткань)
 # этот экзамен не сдаёт, и стирание остаётся прежним.
+# Х5. Тон стёртого — по бумаге вокруг. Восстановление тянет тон от самого
+# края дыры, и стёртые буквы выходили на несколько единиц светлее (или темнее)
+# бумаги: на увеличении силуэт заголовка читался. Каждая область дыры
+# сдвигается на разницу средних: кольцо нетронутой бумаги (от 2 до 6 точек
+# снаружи) против самой области; сдвиг больше `TONE_MAX` не делается — там
+# дыра на границе разных фонов.
+TONE_MAX = float(os.environ.get("PAINT_TONE_MAX", "12"))
+
+
+def _tone_match(out, rgb, hole):
+    if np is None or cv2 is None or not hole.any():
+        return out
+    h8 = hole.astype(np.uint8)
+    n, lab = cv2.connectedComponents(cv2.dilate(h8, np.ones((3, 3), np.uint8)), connectivity=8)
+    if n <= 1:
+        return out
+    near = cv2.dilate(h8, np.ones((5, 5), np.uint8)) > 0
+    far = cv2.dilate(h8, np.ones((13, 13), np.uint8)) > 0
+    ring = far & ~near
+    # Номер области у кольца — от ближайшей области (кольцо касается её).
+    lab_r = cv2.dilate(lab.astype(np.float32), np.ones((13, 13), np.uint8)).astype(np.int32)
+    o = out.astype(np.float32)
+    res = out.copy()
+    for c in range(o.shape[2]):
+        sum_h = np.bincount(lab[hole], weights=o[..., c][hole], minlength=n)
+        cnt_h = np.bincount(lab[hole], minlength=n)
+        sum_r = np.bincount(lab_r[ring], weights=rgb[..., c][ring].astype(np.float32), minlength=n)
+        cnt_r = np.bincount(lab_r[ring], minlength=n)
+        with np.errstate(all="ignore"):
+            d = np.where((cnt_h > 0) & (cnt_r >= 8), sum_r / np.maximum(cnt_r, 1) - sum_h / np.maximum(cnt_h, 1), 0.0)
+        d[np.abs(d) > TONE_MAX] = 0.0
+        d[0] = 0.0
+        ch = res[..., c].astype(np.float32)
+        ch[hole] += d[lab[hole]]
+        res[..., c] = np.clip(ch, 0, 255).astype(np.uint8)
+    return res
+
+
 PERIOD_PEAK = float(os.environ.get("PAINT_PERIOD_PEAK", "0.25"))
 PERIOD_GAIN = float(os.environ.get("PAINT_PERIOD_GAIN", "0.75"))
 PERIOD_K = 6                     # сколько точек той же фазы берётся в медиану
@@ -1180,9 +1255,16 @@ def line_geometry(line_boxes, mask=None, em: float = 0.0) -> "dict | None":
         # из начал строк, чтобы ни одна строка не вышла за поле оригинала.
         indent = 0.0
         left = min(left, lbs[0][0])
+    heads = para_heads(lbs, indent, left, em)
     return {"bases": bases, "base0": base0, "pitch": pitch, "regular": bool(regular),
             "left": left, "right": right, "indent": float(indent), "rows": len(lbs),
-            "top": min(b[1] for b in lbs), "bottom": max(b[3] for b in lbs)}
+            "top": min(b[1] for b in lbs), "bottom": max(b[3] for b in lbs),
+            # Х3: первые строки абзацев внутри блока и доля исходника до них.
+            "heads": heads,
+            "shares": [sum(b[2] - b[0] for b in lbs[:h]) / max(1e-6, sum(b[2] - b[0] for b in lbs))
+                       for h in heads],
+            # Х2: выключка по краям строк (None — решить нечем).
+            "align": geometry_align(lbs, heads, em)}
 
 
 # Ф2. Почерк не сжимается по ширине. Кегль надписи меряется по высоте
@@ -1209,20 +1291,26 @@ def calibrate(em: float, inkw: float, ours: float, hand: bool = False,
 
 
 def _wrap_rhythm(words: list, width: float, size: float, measure_w, split_word,
-                 first_indent: float, force: bool = False) -> "list | None":
+                 first_indent: float, force: bool = False,
+                 heads_out: "list | None" = None) -> "list | None":
     """Строки перевода при кегле `size`; первая строка короче на отступ.
     Слово шире строки — None, а с `force` — своей строкой (выйдет за край,
     и это назовёт `over`): пустой ответ на непустой текст стёр бы оригинал
     и не написал ничего."""
     lines, cur, ws = [], "", list(words)
+    heads = [0]
     while ws:
         w = ws[0]
-        room_w = width - (first_indent if not lines and first_indent > 0 else 0.0)
+        # Отступ — у первой строки КАЖДОГО абзаца (Х3), не только блока.
+        head = len(lines) == heads[-1]
+        room_w = width - (first_indent if head and first_indent > 0 else 0.0)
         if w == "\n":
             ws.pop(0)
             if cur:
                 lines.append(cur)
                 cur = ""
+            if lines and heads[-1] != len(lines):
+                heads.append(len(lines))
             continue
         probe = (cur + " " + w) if cur else w
         if measure_w(probe, size) <= room_w:
@@ -1247,6 +1335,8 @@ def _wrap_rhythm(words: list, width: float, size: float, measure_w, split_word,
         cur = ""
     if cur:
         lines.append(cur)
+    if heads_out is not None:
+        heads_out[:] = [h for h in heads if h < len(lines)]
     return lines
 
 
@@ -1306,6 +1396,22 @@ def fit_rhythm(text: str, width: float, em: float, step: float, rows: int, extra
     st = step * FIT_HARD / FIT_FLOOR
     g = _wrap_rhythm(words, width, em * FIT_HARD, measure_w, split_word, first_indent, True)
     return em * FIT_HARD, st, g, True
+
+
+def rhythm_heads(text: str, width: float, size: float, measure_w, split_word=None,
+                 first_indent: float = 0.0) -> list:
+    """Номера первых строк абзацев в раскладке `fit_rhythm` при кегле `size`
+    (та же раскладка — она детерминирована)."""
+    words = []
+    for k, part in enumerate((text or "").split("\n")):
+        if k and words and words[-1] != "\n":
+            words.append("\n")
+        words.extend(part.split())
+    while words and words[-1] == "\n":
+        words.pop()
+    heads: list = []
+    _wrap_rhythm(words, width, size, measure_w, split_word, first_indent, True, heads)
+    return heads or [0]
 
 
 # Ф4. Один кегль и один шаг на страницу. Абзацы одного семейства с близким
@@ -1407,3 +1513,149 @@ def font_stem(path: str) -> float:
             v = 0.0
         _STEM_CACHE[path] = v
     return _STEM_CACHE[path]
+
+
+# ── Раздел Х: машинопись, выключка, абзацы внутри блока (16.10.2026) ─────
+
+# Х1. Машинопись — шаг знака постоянный: середины букв строки ложатся на
+# сетку шага знака. Шаг — ширина строк ÷ число знаков исходника (кегль для
+# этого не нужен, а он у машинописи и почерка меряется хуже всего); мера —
+# лучшая по шагам около него фазовая согласованность середин «букв» (связных
+# столбцов краски). Замер на плитках лендинга: машинопись 1940 г. 0.65,
+# наборная книга 1886 г. 0.40, статья 0.24–0.30, случайный уровень ~0.15;
+# у слитного почерка «букв» в строке мало — мерить нечем (None).
+MONO_COH = float(os.environ.get("PAINT_MONO_COH", "0.55"))
+
+
+def mono_score(mask, line_boxes, src_len: int) -> "float | None":
+    """Похожесть на машинопись 0..1 или None — мерить нечем."""
+    if np is None or mask is None or not line_boxes or not src_len:
+        return None
+    H, W = mask.shape[:2]
+    lbs = [lb[:4] for lb in line_boxes]
+    adv = sum(max(0.0, lb[2] - lb[0]) for lb in lbs) / float(src_len)
+    if adv < 3:
+        return None
+    vals = []
+    for x0, y0, x1, y1 in lbs:
+        a, b = max(0, int(y0)), min(H, int(math.ceil(y1)))
+        c, d = max(0, int(x0)), min(W, int(math.ceil(x1)))
+        if b - a < 3 or d - c < 3:
+            continue
+        col = mask[a:b, c:d].any(axis=0).astype(np.int8)
+        dif = np.diff(np.concatenate(([0], col, [0])))
+        st, en = np.where(dif == 1)[0], np.where(dif == -1)[0]
+        ctr = (st + en) / 2.0
+        if len(ctr) < 12:
+            continue
+        best = 0.0
+        for P in np.linspace(0.8 * adv, 1.25 * adv, 40):
+            best = max(best, float(abs(np.exp(2j * np.pi * ctr / P).mean())))
+        vals.append(best)
+    if len(vals) < 2:
+        return None
+    return float(np.median(vals))
+
+
+# Х2. Выключка — по краям строк оригинала, а не по слову модели о блоке:
+# машинопись 1940 г. (левый край ровный, правый рваный) печаталась по центру.
+# Левый край ровный (разброс начал ≤ `ALIGN_MAD` кегля, без первых строк
+# абзацев) и правый ровный (без последних строк абзацев) — по ширине; только
+# левый — влево; только правый — вправо; ровные середины — по центру.
+ALIGN_MAD = float(os.environ.get("PAINT_ALIGN_MAD", "0.4"))
+# По ширине — только при правом крае ровнее этого (доля кегля): у почерка
+# правый край «ровный на глаз» (0.14 кегля у конспекта), у набранной книги —
+# 0.05; выключать почерк по ширине — значит растянуть слова, как никто
+# не пишет.
+JUSTIFY_MAD = float(os.environ.get("PAINT_JUSTIFY_MAD", "0.1"))
+
+
+def _mad(v):
+    if not len(v):
+        return float("inf")
+    a = np.asarray(v, dtype=float)
+    return float(np.median(np.abs(a - np.median(a))))
+
+
+def geometry_align(lbs: list, heads: list, em: float) -> "str | None":
+    """Выключка абзаца по рамкам строк (начало строки — уже по краске) или
+    None — строк мало, решить нечем. `heads` — номера первых строк абзацев."""
+    n = len(lbs)
+    if n < 3 or not em:
+        return None
+    hs = set(heads) | {0}
+    ends = {h - 1 for h in hs if h > 0} | {n - 1}
+    lefts = [lbs[i][0] for i in range(n) if i not in hs]
+    rights = [lbs[i][2] for i in range(n) if i not in ends]
+    mids = [(lbs[i][0] + lbs[i][2]) / 2.0 for i in range(n) if i not in ends]
+    tol = ALIGN_MAD * em
+    l_ok = len(lefts) >= 2 and _mad(lefts) <= tol
+    r_ok = len(rights) >= 2 and _mad(rights) <= tol
+    if l_ok and r_ok and _mad(rights) <= JUSTIFY_MAD * em:
+        return "justify"
+    if l_ok and r_ok:
+        return "left"
+    if l_ok:
+        return "left"
+    if r_ok:
+        return "right"
+    if len(mids) >= 2 and _mad(mids) <= tol:
+        return "center"
+    return None
+
+
+# Х3. Абзац внутри блока. Блок машинописи нёс два абзаца, и перевод вставал
+# сплошным текстом: красной строки второго не было. Первая строка абзаца —
+# строка (не первая), начатая с того же отступа, что и первая строка блока
+# (или с отступом не меньше `INDENT_MIN`, если у первой его нет), при ровном
+# левом крае остальных.
+def para_heads(lbs: list, indent: float, left: float, em: float) -> list:
+    """Номера строк (кроме первой), с которых начинаются абзацы."""
+    if not em or len(lbs) < 3:
+        return []
+    out = []
+    for i in range(1, len(lbs)):
+        off = lbs[i][0] - left
+        if indent > 0:
+            if abs(off - indent) <= 0.6 * em and off >= INDENT_MIN * em:
+                out.append(i)
+        elif INDENT_MIN * em <= off <= INDENT_MAX * em:
+            out.append(i)
+    return out
+
+
+_SENT_END = None
+
+
+def para_breaks(text: str, shares: list) -> str:
+    """Разрывы абзацев в переводе: на долях `shares` (0..1 — доля текста
+    оригинала до начала абзаца) — у ближайшего конца предложения не дальше
+    `PARA_BREAK_REACH` доли текста. Нет такого — разрыва нет: делить
+    предложение пополам хуже, чем не разделить абзацы."""
+    import re
+    global _SENT_END
+    if _SENT_END is None:
+        _SENT_END = re.compile(r"[.!?…。！？؟]+[\"»”’)\]]*(?=\s)")
+    if not text or "\n" in text or not shares:
+        return text
+    ends = [m_.end() for m_ in _SENT_END.finditer(text)]
+    if not ends:
+        return text
+    n = len(text)
+    cuts = []
+    for sh in shares:
+        want = sh * n
+        best = min(ends, key=lambda e: abs(e - want))
+        if abs(best - want) <= PARA_BREAK_REACH * n and best not in cuts and 0 < best < n:
+            cuts.append(best)
+    if not cuts:
+        return text
+    out, prev = [], 0
+    for c in sorted(cuts):
+        out.append(text[prev:c].strip())
+        prev = c
+    out.append(text[prev:].strip())
+    return "\n".join(p for p in out if p)
+
+
+PARA_BREAK_REACH = float(os.environ.get("PAINT_PARA_BREAK_REACH", "0.15"))

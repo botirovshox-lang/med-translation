@@ -160,6 +160,13 @@ FAMILY_CANDIDATES = {
     "hand": {
         "": list(_print_fonts().HAND_FONTS),
     },
+    # Машинопись на странице-картинке (Х1): шрифт с метрикой Courier, общий
+    # список с перерисовкой картинки (`print_fonts`). Не «mono»: тот печатает
+    # код из PDF, и менять ему гарнитуру нельзя.
+    "type": {
+        "": list(_print_fonts().MONO_FONTS),
+        "b": list(_print_fonts().MONO_BOLD),
+    },
     "mono": {
         "": [os.environ.get("LAYOUT_FONT_MONO", ""),
              "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
@@ -3365,6 +3372,12 @@ def _paint_measure(sampler, b: dict) -> bool:
     # у перерисовки картинки (`text_paint.line_geometry`), в пикселях вырезки,
     # и обратно в точки страницы.
     lns = b.get("lines") or []
+    if lns and b.get("fam") != "hand" and not m["angle"] and not m.get("arc") and len(lns) >= 2:
+        loc0 = [[(l_[0] - cx0) * scale, (cy1 - l_[1]) * scale, (l_[2] - cx0) * scale,
+                 (cy1 - l_[3]) * scale] for l_ in lns]
+        sc_ = tp.mono_score(m["mask"], loc0, len(" ".join((b.get("src") or "").split())))
+        if sc_ is not None and sc_ >= tp.MONO_COH:
+            b["fam"] = "type"               # Х1: машинопись
     if not m["angle"] and not m.get("arc") and rows >= 2 and len(lns) == rows:
         loc = [[(l_[0] - cx0) * scale, (cy1 - l_[1]) * scale, (l_[2] - cx0) * scale,
                 (cy1 - l_[3]) * scale] for l_ in lns]
@@ -3381,9 +3394,11 @@ def _paint_measure(sampler, b: dict) -> bool:
                         iw += (cols[-1] - cols[0] + 1) / scale
             b["_paint"]["geo"] = {"base0": cy1 - g["base0"] / scale, "pitch": g["pitch"] / scale,
                                   "left": cx0 + g["left"] / scale, "right": cx0 + g["right"] / scale,
-                                  "indent": g["indent"] / scale, "rows": g["rows"]}
+                                  "indent": g["indent"] / scale, "rows": g["rows"],
+                                  "align": g.get("align"), "heads": g.get("heads") or [],
+                                  "shares": g.get("shares") or []}
             b["_paint"]["inkw"] = iw
-    if b.get("fam") == "hand":
+    if b.get("fam") in ("hand", "type"):
         b["_paint"]["stem"] = tp._stem(m["mask"]) / scale
     arc = m.get("arc")
     if arc:
@@ -3462,12 +3477,19 @@ def _paint_plan(b: dict, text: str, fonts: dict, sw, hyph) -> "dict | None":
         if hyph is not None:
             def split_(w_, room, s_):
                 return _hyph_split(w_, hyph, room, lambda x_: mw_(x_, s_))
-        align = b.get("align") or "left"
+        if geo.get("heads") and "\n" not in text:
+            text = tp.para_breaks(text, geo["shares"])      # Х3
+        align = geo.get("align") or b.get("align") or "left"    # Х2
+        if hand and align == "justify":
+            align = "left"                  # почерк по ширине не выключается
         indent = geo["indent"] if align in ("left", "justify") else 0.0
 
         def relay(size_, fixed=True):
             return tp.fit_rhythm(text, geo["right"] - geo["left"], size_, geo["pitch"],
                                  geo["rows"], 0, mw_, split_, indent, fixed)
+
+        def heads_at(size_):
+            return tp.rhythm_heads(text, geo["right"] - geo["left"], size_, mw_, split_, indent)
         size, step, lines, over = relay(em, False)
         if lines and not over:
             stroke = 0.0
@@ -3478,8 +3500,9 @@ def _paint_plan(b: dict, text: str, fonts: dict, sw, hyph) -> "dict | None":
                 "f": size / max(1e-6, em), "over": over, "align": align, "em": em,
                     "parts": [{"bases": [geo["base0"] - i * step for i in range(len(lines))],
                                "L": geo["left"], "R": geo["right"], "indent": indent,
-                               "lines": lines, "size": size, "step": step}],
-                    "stroke": stroke, "_relay": relay}
+                               "lines": lines, "size": size, "step": step,
+                               "heads": heads_at(size), "justify": align == "justify"}],
+                    "stroke": stroke, "_relay": relay, "_heads": heads_at}
         # Не влезло в строки оригинала — прежняя дорога ниже (рамка абзаца).
     if pt.get("arc"):
         a = pt["arc"]
@@ -3648,7 +3671,8 @@ def _harmonize_paint_rhythm(img_plan: list, stats: dict) -> None:
                 geo = e["b"]["_paint"]["geo"]
                 e.update(size=size, step=step, lines=lines, f=size / max(1e-6, e["em"]))
                 e["parts"][0].update(size=size, step=step, lines=lines,
-                                     bases=[geo["base0"] - i * step for i in range(len(lines))])
+                                     bases=[geo["base0"] - i * step for i in range(len(lines))],
+                                     heads=e["_heads"](size))
                 stats["paintEven"] = stats.get("paintEven", 0) + 1
 
 
@@ -3780,9 +3804,13 @@ def _sw_of(t: str, font: str, size: float) -> float:
 
 
 def _paint_line(c, ln: str, x: float, y: float, font: str, size: float, h0: float,
-                synth_b: bool) -> None:
+                synth_b: bool, word_space: float = 0.0) -> None:
     to = c.beginText(x, y)
     to.setFont(font, size)
+    if word_space > 0:
+        # Выключка по ширине (Х2): Tw задаётся в единицах до горизонтального
+        # сжатия, поэтому делится на него.
+        to.setWordSpace(word_space / max(h0, 1e-6))
     if h0 < 0.999:
         to.setHorizScale(h0 * 100.0)
     if synth_b:
@@ -3832,17 +3860,26 @@ def _paint_text(c, ent: dict, fonts: dict) -> None:
             c.setLineWidth(2.0 * ent["stroke"] if ent.get("stroke") else 0.04 * size)
         p_lines = part["lines"]
         if part.get("bases"):
-            # Строка — на своей базовой линии (Ф1), первая — с отступом.
+            # Строка — на своей базовой линии (Ф1); первая строка каждого
+            # абзаца — с отступом (Х3); по ширине — кроме последней (Х2).
+            heads = set(part.get("heads") or [0])
             for n_, ln in enumerate(p_lines):
                 w = _sw_of(ln, font, size) * h0
                 lft, rgt = part["L"], part["R"]
+                ind = (part.get("indent") or 0.0) if n_ in heads else 0.0
+                ws = 0.0
+                last = n_ == len(p_lines) - 1 or (n_ + 1) in heads
+                if part.get("justify") and not last and ln.count(" "):
+                    ws = (rgt - lft - ind - w) / ln.count(" ")
+                    if ws < 0 or ws > 2.0 * _sw_of(" ", font, size) * h0 * 1.5:
+                        ws = 0.0
                 if ent["align"] == "center":
                     x = (lft + rgt) / 2.0 - w / 2.0
                 elif ent["align"] == "right":
                     x = rgt - w
                 else:
-                    x = lft + ((part.get("indent") or 0.0) if n_ == 0 else 0.0)
-                _paint_line(c, ln, x, part["bases"][n_], font, size, h0, synth_b)
+                    x = lft + ind
+                _paint_line(c, ln, x, part["bases"][n_], font, size, h0, synth_b, ws)
             continue
         block_h = (len(p_lines) - 1) * step + 0.72 * size
         avail = part["top"] - part["bot"]

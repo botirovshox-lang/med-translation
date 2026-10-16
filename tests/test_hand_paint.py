@@ -247,6 +247,96 @@ check(not layout_pdf._font_has(hn, "ўқ漢"), "покрытие исходни�
 lps = open("backend/layout_pdf.py", encoding="utf-8").read()
 check('"b" if (pt["bold"] and not hand)' in lps, "рукопись с толстым пером — не жирный гротеск")
 
+print("\n── Х1. машинопись узнаётся по шагу знака ──")
+def typed_page(path, txt_lines, size=28):
+    im_ = Image.new("RGB", (1000, 60 * len(txt_lines) + 40), (238, 238, 232))
+    d_ = ImageDraw.Draw(im_)
+    f_ = ImageFont.truetype(path, size)
+    lbx = []
+    for k_, t_ in enumerate(txt_lines):
+        d_.text((40, 30 + k_ * 60), t_, font=f_, fill=(40, 40, 40))
+        lbx.append(list(d_.textbbox((40, 30 + k_ * 60), t_, font=f_)))
+    return im_, lbx
+TL = ["The plan provided for the completion in all pavilions",
+      "of plastering work and of painting work of asphalt and",
+      "of crushed stone surfacing and the laying of the lines",
+      "of water supply and sewerage networks of drains and of"]
+mono_path = print_fonts.family_files("type")[0]
+for path, want in ((mono_path, True), ("frontend/vendor/fonts/sub/NotoSerif-Regular.ttf", False),
+                   ("frontend/vendor/fonts/sub/NotoSans-Regular.ttf", False)):
+    im_, lbx = typed_page(path, TL)
+    a_ = np.asarray(im_.convert("L")) < 150
+    sc = tp.mono_score(a_, lbx, len(" ".join(TL)))
+    check(sc is not None and ((sc >= tp.MONO_COH) == want),
+          "%s: машинопись=%s (мера %.2f)" % (os.path.basename(path), want, sc or -1))
+check(print_fonts.family_files("type") and print_fonts.family_files("type")[0].endswith("LiberationMono-Regular.ttf"),
+      "машинописный шрифт лежит в репозитории")
+check(it._paint_font(False, "Rejada barcha oʻz", "type").endswith("LiberationMono-Regular.ttf"),
+      "машинописный шрифт знает узбекские буквы")
+check(it._paint_font(False, "Sleep quality", "serif").endswith("NotoSerif-Regular.ttf"), "засечки — Noto Serif")
+im_, lbx = typed_page(mono_path, TL + ["of other works."])
+buf_t = io.BytesIO()
+im_.save(buf_t, "PNG")
+box_t = [min(b[0] for b in lbx), min(b[1] for b in lbx), max(b[2] for b in lbx), max(b[3] for b in lbx)]
+_, rep_t = it.render_target(buf_t.getvalue(), [{"box": box_t, "text": " ".join(["Rejada barcha"] * 18),
+                                                "rows": len(lbx), "lineH": 30, "lineBoxes": lbx,
+                                                "src": " ".join(TL + ["of other works."]), "align": "center"}])
+check(rep_t and rep_t[0].get("fam") == "type", "страница машинописи печатается машинописным шрифтом: %s" % rep_t)
+
+print("\n── Х2. выключка по краям строк ──")
+L = lambda x0, x1, n=5: [[x0, 10 + i * 40, x1, 40 + i * 40] for i in range(n)]       # noqa: E731
+check(tp.geometry_align(L(100, 900), [], 30) == "justify", "оба края ровные — по ширине")
+rag = [[100, 10 + i * 40, 900 - (i * 37) % 120, 40 + i * 40] for i in range(5)]
+check(tp.geometry_align(rag, [], 30) == "left", "правый край рваный — влево")
+hand_like = [[100, 10 + i * 40, 900 - [0, 8, -6, 14, 3][i], 40 + i * 40] for i in range(5)]
+check(tp.geometry_align(hand_like, [], 40) == "left", "правый край «ровный на глаз» (почерк) — не по ширине")
+right = [[100 + (i * 37) % 120, 10 + i * 40, 900, 40 + i * 40] for i in range(5)]
+check(tp.geometry_align(right, [], 30) == "right", "левый край рваный, правый ровный — вправо")
+ctr = [[100 + d, 10 + i * 40, 900 - d, 40 + i * 40] for i, d in enumerate((0, 60, 20, 90, 40))]
+check(tp.geometry_align(ctr, [], 30) == "center", "ровные середины — по центру")
+
+print("\n── Х3. абзац внутри блока ──")
+blk = [[140, 0, 900, 30]] + [[80, 40 * i, 900, 40 * i + 30] for i in range(1, 6)] \
+    + [[140, 240, 900, 270]] + [[80, 40 * i, 900, 40 * i + 30] for i in range(7, 10)]
+g4 = tp.line_geometry(blk, None, 30)
+check(g4 and g4["heads"] == [6], "строка с той же красной строкой — новый абзац: %s" % (g4 and g4["heads"]))
+check(g4 and abs(g4["shares"][0] - 0.6) < 0.05, "доля исходника до абзаца: %s" % (g4 and g4["shares"]))
+t2 = "First sentence here. Second one is longer here. Third sentence ends. Fourth closes it all."
+br = tp.para_breaks(t2, [0.5])
+check(br.count("\n") == 1 and br.split("\n")[0].endswith(".") , "разрыв — на конце предложения: %r" % br)
+check(tp.para_breaks("no sentence end anywhere in this text at all", [0.5]) .count("\n") == 0,
+      "конца предложения рядом нет — разрыва нет")
+lines_ = tp.fit_rhythm("aaa bbb ccc\nddd eee fff", 200, 20.0, 30.0, 6, 0, mw, first_indent=60)[2]
+hh = tp.rhythm_heads("aaa bbb ccc\nddd eee fff", 200, 20.0, mw, None, 60)
+check(len(hh) == 2 and lines_[hh[1]].startswith("ddd"), "отступ у первой строки каждого абзаца: %s %s" % (lines_, hh))
+
+print("\n── Х5. стирание без следа ──")
+rng2 = np.random.RandomState(1)
+paper = (238 + rng2.randint(-3, 4, (120, 600, 1))).repeat(3, 2).astype(np.uint8)
+img5 = Image.fromarray(paper.copy())
+ImageDraw.Draw(img5).text((20, 30), "СМЕРТЬ ЧИНОВНИКА", font=ImageFont.truetype(
+    "frontend/vendor/fonts/sub/NotoSerif-Regular.ttf", 48), fill=(30, 30, 30))
+rgb5 = np.asarray(img5)
+m5 = tp.measure(rgb5, "СМЕРТЬ ЧИНОВНИКА", 1, 60.0)
+er5, al5 = tp.erase(rgb5, m5)
+blend = (er5.astype(float) * (al5[..., None] / 255.0) + rgb5.astype(float) * (1 - al5[..., None] / 255.0))
+diff5 = np.abs(blend.mean(2) - paper.mean(2))
+check(diff5.max() < 40 and np.percentile(diff5, 99.5) < 12,
+      "буквы стёрты без серого контура: макс %.0f, 99.5%% %.1f" % (diff5.max(), np.percentile(diff5, 99.5)))
+inside = al5 > 0
+check(abs(er5[inside].mean() - paper[inside].mean()) < 3, "тон стёртого — как у бумаги вокруг")
+
+print("\n── Х7. дефис рукописного шрифта ──")
+check(it._short_hyphen(hf[0]), "у рукописного шрифта дефис короткий — печатается тире")
+check(not it._short_hyphen("frontend/vendor/fonts/sub/NotoSans-Regular.ttf"), "у Noto Sans — дефис как есть")
+
+print("\n── Х6. засечки от чтения, семейства в PDF ──")
+check('"serif"   —' in src and '"serif": bool(item.get("serif"))' in src, "чтение отвечает «засечки»")
+check('("serif" if b.get("serif") else "")' in src, "выгрузка картинки берёт засечки по признаку")
+check("type" in layout_pdf.FAMILY_CANDIDATES and
+      layout_pdf.FAMILY_CANDIDATES["type"][""][1].endswith("LiberationMono-Regular.ttf"),
+      "путь PDF: машинопись — отдельное семейство, код («mono») не тронут")
+
 print()
 if fail:
     print("ПРОВАЛЕНО: %d" % len(fail))

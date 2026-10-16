@@ -21,6 +21,35 @@ REPO_FONTS = str(Path(__file__).resolve().parent.parent / "frontend" / "vendor" 
 HAND_FONTS = [os.environ.get("LAYOUT_FONT_HAND", ""), REPO_FONTS + "/MarckScript-Regular.ttf"]
 
 
+# Машинопись (Х1): Liberation Mono (OFL, метрика Courier — машинописный вид),
+# латиница, кириллица, греческий, узбекские буквы.
+MONO_FONTS = [os.environ.get("LAYOUT_FONT_MONO", ""), REPO_FONTS + "/LiberationMono-Regular.ttf",
+              "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+              "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "C:/Windows/Fonts/cour.ttf"]
+MONO_BOLD = [REPO_FONTS + "/LiberationMono-Bold.ttf",
+             "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+             "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf", "C:/Windows/Fonts/courbd.ttf"]
+# Засечки (Х6): заголовок статьи с засечками печатался гротеском.
+SERIF_FONTS = [REPO_FONTS + "/NotoSerif-Regular.ttf"]
+SERIF_BOLD = [REPO_FONTS + "/NotoSerif-Bold.ttf"]
+
+
+def _exist(lst) -> list:
+    return [p for p in lst if p and Path(p).exists()]
+
+
 def hand_font_files() -> list:
     """Существующие файлы рукописного семейства, по порядку предпочтения."""
-    return [p for p in HAND_FONTS if p and Path(p).exists()]
+    return _exist(HAND_FONTS)
+
+
+def family_files(fam: str, bold: bool = False) -> list:
+    """Файлы семейства надписи («hand», «type», «serif») по порядку; пусто —
+    семейство не своё (рубленый по умолчанию)."""
+    if fam == "hand":
+        return _exist(HAND_FONTS)
+    if fam == "type":
+        return _exist((MONO_BOLD if bold else []) + MONO_FONTS)
+    if fam == "serif":
+        return _exist((SERIF_BOLD if bold else []) + SERIF_FONTS)
+    return []

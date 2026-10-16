@@ -16578,8 +16578,12 @@ def _image_read_system(dom: dict, src_lang: str) -> str:
         "scanner settings, ruler marks, menu items, watermark, file name. "
         "Otherwise false.\n"
         '  "hand"    — true if the text is WRITTEN BY HAND (pen, pencil, marker), '
-        "false if it is printed or typed.\n\n"
-        'Return ONLY JSON: {"blocks": [{"i": 0, "text": "...", "overlay": false, "hand": false}]}'
+        "false if it is printed or typed.\n"
+        '  "serif"   — true if the text is PRINTED in a serif typeface (letters with '
+        "small strokes at the ends, like Times or a book face), false otherwise "
+        "(sans-serif, handwriting, typewriter).\n\n"
+        'Return ONLY JSON: {"blocks": [{"i": 0, "text": "...", "overlay": false, "hand": false, '
+        '"serif": false}]}'
     )
 
 
@@ -16698,6 +16702,8 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
                   "overlay": bool(item.get("overlay")),
                   # Рукопись: по ней печать берёт рукописный шрифт (`_hand_image`).
                   "hand": bool(item.get("hand")),
+                  # Засечки (Х6): по ним печать берёт шрифт с засечками.
+                  "serif": bool(item.get("serif")),
                   # Вид надписи — у кадра видео (`_frame_read_system`).
                   "kind": str(item.get("kind") or ""),
                   "model": _dm_public(mdl["id"])}
@@ -17972,6 +17978,10 @@ def _job_images(job: dict) -> None:
                             b["hand"] = True
                         else:
                             b.pop("hand", None)
+                        if ans.get("serif"):
+                            b["serif"] = True
+                        else:
+                            b.pop("serif", None)
                         if b.get("skip") in ("layer", "figure"):
                             pass                      # текст слоя или рисунка — не наш блок
                         elif ans["overlay"]:
@@ -31915,7 +31925,11 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
                           # рамки и решается, нужно ли увеличивать картинку.
                           "lineH": b.get("lineH"), "rows": b.get("rows"),
                           # Рамки строк: базы, шаг и отступ абзаца (Ф1).
-                          "lineBoxes": b.get("lineBoxes"), "fam": im_fam,
+                          "lineBoxes": b.get("lineBoxes"),
+                          # Семейство: рукопись — на всю страницу; иначе
+                          # засечки по признаку чтения (Х6), машинопись узнаёт
+                          # печать по пикселям (Х1).
+                          "fam": im_fam or ("serif" if b.get("serif") else ""),
                           # Исходный текст: по нему меряется кегль букв
                           # (заглавные или строчные, `text_paint.measure`).
                           "src": (seg.get("source") or "").strip()})
@@ -33111,7 +33125,8 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
             # отсеянная ниже (вложенный повтор) его перевод уже не несёт.
             out.append({"text": text, "_erase": er_cand, "boxes": [{
                 "page": page, "frac": 1, "image": 1, "style": "", "indent": 0.0,
-                "fam": im_fam, "onFig": 1 if on_fig else 0,
+                "fam": im_fam if im_fam == "hand" else ("" if b.get("serif") else "sans"),
+                "onFig": 1 if on_fig else 0,
                 # Исходный текст, число строк и выключка надписи — по ним печать
                 # меряет кегль букв и ставит перевод как стоял оригинал
                 # (`layout_pdf._paint_measure`).

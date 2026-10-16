@@ -1799,10 +1799,9 @@ def _paint_font(bold: bool, text: str = "", fam: str = "") -> Optional[str]:
     письменностей из `frontend/vendor/fonts/sub`. 12.10.2026 китайский перевод
     таблички рисовался DejaVu — квадратиками вместо каждого иероглифа, а отчёт
     говорил «написано»."""
-    if fam == "hand":
-        for p in _pf().hand_font_files():
-            if _font_covers(p, text):
-                return p
+    for p in _pf().family_files(fam, bold):
+        if _font_covers(p, text):
+            return p
     p = _SANS / ("NotoSans-Bold.ttf" if bold else "NotoSans-Regular.ttf")
     if p.exists() and _font_covers(str(p), text):
         return str(p)
@@ -1843,6 +1842,13 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         m["bands"] = []
     fam = it.get("fam") or ""
     text = it.get("text") or ""
+    lbs = it.get("lineBoxes") or []
+    if fam != "hand" and len(lbs) >= 2 and not m["angle"] and not m.get("arc"):
+        # Х1: машинопись — машинописным шрифтом (шаг знака постоянный).
+        sc = tp.mono_score(m["mask"], [[lb[0] - x0, lb[1] - y0, lb[2] - x0, lb[3] - y0]
+                                       for lb in lbs], len(" ".join((it.get("src") or "").split())))
+        if sc is not None and sc >= tp.MONO_COH:
+            fam = "type"
     fpath = _paint_font(m["bold"], text, fam)
     if not fpath:
         return None
@@ -1856,7 +1862,6 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         return cache[key]
 
     geo = None
-    lbs = it.get("lineBoxes") or []
     if not m["angle"] and not m.get("arc") and rows >= 2 and len(lbs) == rows:
         loc = [[lb[0] - x0, lb[1] - y0, lb[2] - x0, lb[3] - y0] for lb in lbs]
         g = tp.line_geometry(loc, m["mask"], m["em"])
@@ -1890,9 +1895,16 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         # Ширине краски верим только по рамкам строк: полосы маски у почерка
         # слиты и раздроблены, и кегль по ним выходил вдвое мельче.
         em, h0 = tp.calibrate(em, inkw, ours, hand=(fam == "hand" and geo is not None), hmin=0.74)
-    stem = tp._stem(m["mask"]) * k if fam == "hand" else 0.0
+    # Толщина штриха (Ф7) — у почерка и у машинописи: шрифт тоньше ручки
+    # и удара литеры.
+    stem = tp._stem(m["mask"]) * k if fam in ("hand", "type") else 0.0
+    # Х2: выключка — по краям строк оригинала, если они её говорят.
+    align = (geo or {}).get("align") or it.get("align") or "left"
+    if fam == "hand" and align == "justify":
+        align = "left"                      # почерк по ширине не выключается
     return {"m": m, "erased": erased, "alpha": alpha, "fpath": fpath, "font_at": font_at,
             "em": em, "h0": h0, "geo": geo, "k": k, "pbox": pbox, "it": it, "fam": fam,
+            "align": align,
             "ink": m["ink"], "stem": stem,
             "handFallback": fam == "hand" and fpath not in _pf().hand_font_files()}
 
@@ -1942,9 +1954,15 @@ def _paint_layout(pm: dict, draw, em: Optional[float] = None, step: Optional[flo
         # базовых линиях оригинала тем же шагом, первая — с отступом
         # оригинала; длинный перевод идёт в свободные строки ниже, потом
         # мельче буквами при том же шаге, и только потом теснее.
-        align = _start_align(it.get("align"), text)
+        if geo.get("heads") and "\n" not in text:
+            # Х3: абзацы внутри блока — разрыв на конце предложения.
+            text = tp.para_breaks(text, geo["shares"])
+        rtl = _rtl(text)
+        align = pm.get("align") or "left"
+        align = _start_align(align, text)
         left, right = geo["left"] * k, geo["right"] * k
-        indent = geo["indent"] * k if align in ("left", "justify") else 0.0
+        # Отступ — у начала строки: у письма справа налево — справа (Х4).
+        indent = geo["indent"] * k if (align in ("left", "justify") or (rtl and align == "right")) else 0.0
         st0 = (step or geo["pitch"]) * k
         size, step_, lines, over = tp.fit_rhythm(
             text, right - left, em, st0, geo["rows"], extra, mw,
@@ -1956,9 +1974,12 @@ def _paint_layout(pm: dict, draw, em: Optional[float] = None, step: Optional[flo
             # плашка), а не строки поверх соседнего абзаца.
             return _paint_layout(dict(pm, geo=None), draw)
         base0 = geo["base0"] * k
+        heads = tp.rhythm_heads(text, right - left, size, mw,
+                                lambda wd, room, sz: _split_cjk(lambda t: mw(t, sz), wd, room), indent)
         parts = [{"bases": [base0 + i * step_ for i in range(len(lines))], "x0": left,
                   "x1": right, "indent": indent, "lines": lines, "size": size,
-                  "step": step_, "font": font_at(size)}]
+                  "step": step_, "font": font_at(size), "heads": heads, "rtl": rtl,
+                  "justify": align == "justify"}]
     else:
         bands = m["bands"]
         areas = m.get("areas") or []
@@ -1996,8 +2017,9 @@ def _paint_layout(pm: dict, draw, em: Optional[float] = None, step: Optional[flo
     if pm.get("stem") and not m.get("arc") and not m["angle"]:
         stroke = tp.stroke_for(pm["stem"], tp.font_stem(pm["fpath"]), size)
     return {"pbox": pm["pbox"], "stroke": stroke, "erased": pm["erased"],
+            "dash": pm.get("fam") == "hand" and _short_hyphen(pm["fpath"]),
             "alpha": pm["alpha"], "m": m, "lines": lines, "size": size, "step": step_, "h0": h0, "font": font_at(size),
-            "k": k, "align": _start_align(it.get("align"), text), "parts": parts,
+            "k": k, "align": _start_align(pm.get("align") or it.get("align"), text), "parts": parts,
             "ink": pm.get("ink") or m["ink"], "over": bool(over)}
 
 
@@ -2149,6 +2171,9 @@ def _paint_put(big, p: dict) -> None:
     def layer(txt, f_=None, s_=None):
         f_ = f_ or font
         s_ = s_ or size
+        if p.get("dash"):
+            # Х7: дефис рукописного шрифта слишком мал — тире (только печать).
+            txt = txt.replace("-", "\u2013")
         bb = f_.getbbox(txt, stroke_width=sw)
         wl, hl = max(1, bb[2] - min(0, bb[0]) + 2 + sw), max(1, int(s_ * 1.4) + 2 * sw)
         im = Image.new("RGBA", (wl, hl), (0, 0, 0, 0))
@@ -2198,16 +2223,27 @@ def _paint_put(big, p: dict) -> None:
         font, size, step = part["font"], part["size"], part["step"]
         asc = font.getmetrics()[0]
         if "bases" in part:
-            # Строка — на своей базовой линии (Ф1), первая — с отступом.
+            # Строка — на своей базовой линии (Ф1); первая строка КАЖДОГО
+            # абзаца — с отступом (Х3), у письма справа налево — справа (Х4);
+            # по ширине — все строки абзаца, кроме последней (Х2).
+            heads = set(part.get("heads") or [0])
+            nl = len(part["lines"])
             for n_, ln in enumerate(part["lines"]):
+                ind = part["indent"] if n_ in heads else 0.0
+                y_ = y0 * k + part["bases"][n_] - asc - sw
+                last = n_ == nl - 1 or (n_ + 1) in heads
+                if part.get("justify") and not last and _put_justified(
+                        big, layer, ln, font, h0, x0 * k + part["x0"] + (0 if part.get("rtl") else ind),
+                        x0 * k + part["x1"] - (ind if part.get("rtl") else 0), y_, sw, part.get("rtl")):
+                    continue
                 g = layer(ln, font, size)
                 if p["align"] == "center":
                     x = x0 * k + (part["x0"] + part["x1"]) / 2.0 - g.size[0] / 2.0
-                elif p["align"] == "right":
-                    x = x0 * k + part["x1"] - g.size[0]
+                elif p["align"] == "right" or (part.get("justify") and part.get("rtl")):
+                    x = x0 * k + part["x1"] - g.size[0] - (ind if part.get("rtl") else 0.0)
                 else:
-                    x = x0 * k + part["x0"] + (part["indent"] if n_ == 0 else 0.0)
-                _put(big, g, (x - sw, y0 * k + part["bases"][n_] - asc - sw))
+                    x = x0 * k + part["x0"] + ind
+                _put(big, g, (x - sw, y_))
             continue
         top, bot = y0 * k + part["top"], y0 * k + part["bot"]
         block_h = (len(part["lines"]) - 1) * step + size * 0.95
@@ -2222,6 +2258,56 @@ def _paint_put(big, p: dict) -> None:
                 x = x0 * k
             _put(big, g, (x - sw, y - sw))
             y += step
+
+
+_DASH_CACHE: dict = {}
+
+
+def _short_hyphen(path: str) -> bool:
+    """Х7: дефис шрифта короче 0.25 кегля, а тире в нём есть и не длиннее
+    0.45 кегля — при печати дефис заменяется тире (у Marck Script дефис —
+    косая черточка в 0.2 кегля, и «free-living» читалось «freeliving»)."""
+    if path not in _DASH_CACHE:
+        ok = False
+        try:
+            f = ImageFont.truetype(path, 100)
+            ok = (f.getlength("-") < 25 and _font_covers(path, "\u2013")
+                  and f.getlength("\u2013") <= 45)
+        except Exception:
+            ok = False
+        _DASH_CACHE[path] = ok
+    return _DASH_CACHE[path]
+
+
+# Х2: выключка по ширине — промежутки между словами растягиваются; шире
+# `IMG_JUSTIFY_MAX` обычного пробела — строка остаётся невыключенной
+# (дыры в строке хуже рваного края). Письмо без пробелов — не растягиваем.
+IMG_JUSTIFY_MAX = float(os.environ.get("IMG_JUSTIFY_MAX", "3"))
+
+
+def _put_justified(big, layer, ln: str, font, h0: float, xa: float, xb: float, y: float,
+                   sw: int, rtl: bool) -> bool:
+    words = ln.split(" ")
+    if len(words) < 2:
+        return False
+    ims = [layer(w_) for w_ in words]
+    total = sum(im.size[0] - 2 for im in ims)
+    gap = ((xb - xa) - total) / (len(words) - 1)
+    space = font.getlength(" ") * h0
+    if gap <= 0 or gap > IMG_JUSTIFY_MAX * max(1.0, space):
+        return False
+    if rtl:
+        x = xb
+        for im in ims:
+            x -= im.size[0] - 2
+            _put(big, im, (x - sw, y))
+            x -= gap
+    else:
+        x = xa
+        for im in ims:
+            _put(big, im, (x - sw, y))
+            x += im.size[0] - 2 + gap
+    return True
 
 
 def _refuse(items: list, why: str) -> tuple:
@@ -2380,6 +2466,8 @@ def render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = Non
                 r["over"] = 1           # строк больше, чем места: сказано числом
             if i in even:
                 r["even"] = 1
+            if pm.get("fam"):
+                r["fam"] = pm["fam"]    # чем напечатано: рукопись, машинопись, засечки
             if pm.get("handFallback"):
                 r["handFallback"] = 1   # рукописного файла с этими буквами нет
             if pm["m"].get("eraseHow"):

@@ -1814,7 +1814,11 @@ class _AnthropicChat:
             # В типизированных параметрах SDK 1.x temperature нет (новые
             # модели его отвергают), а Haiku 4.5 принимает — телом запроса.
             args["extra_body"] = {"temperature": kw["temperature"]}
-        resp = self._client.messages.create(**args)
+        try:
+            resp = self._client.messages.create(**args)
+        except Exception as e:
+            _note_quota(e)
+            raise
         stop = getattr(resp, "stop_reason", None)
         u = getattr(resp, "usage", None)
         tin, tout = _usage_field(u, "input_tokens"), _usage_field(u, "output_tokens")
@@ -1905,6 +1909,7 @@ class _OpenAIChat:
                 self.effort_sent = eff
                 return resp
             except Exception as e:
+                _note_quota(e)
                 # Отказ — это 400 с именем параметра (у SDK статус в
                 # `status_code`); текст с тем же словом при 5xx/таймауте —
                 # не отказ, и пару им не клеймим. Без лока намеренно: гонка
@@ -1916,7 +1921,11 @@ class _OpenAIChat:
                 print("[backend] %s: reasoning_effort=%s отвергнут (%s) — дальше без него"
                       % (self._m.get("id"), eff, str(e)[:160]), file=sys.stderr)
         self.effort_sent = None
-        return self._c.chat.completions.create(**kw)
+        try:
+            return self._c.chat.completions.create(**kw)
+        except Exception as e:
+            _note_quota(e)
+            raise
 
 
 _GATE_SESSION = threading.local()     # сессия запроса в потоках `_run_parallel`
@@ -3103,7 +3112,7 @@ def _err_public(e) -> str:
     txt = str(e)
     sess = CURRENT_SESSION.get() or getattr(_GATE_SESSION, "s", None)
     sup = sess.get("super") if sess else _actor_is_super()
-    return txt if sup else _text_without_models(txt)
+    return txt if sup else _text_without_models(_provider_fault_public(txt))
 
 
 def _text_without_models(text: str) -> str:
@@ -3745,6 +3754,22 @@ _QUOTA_MARKERS = ("insufficient_quota", "exceeded your current quota", "billing_
 JOB_STOP_PROVIDER_QUOTA = ("У поставщика моделей закончился баланс сервиса: прогон остановлен, "
                            "сделанное сохранено")
 _PROVIDER_ERR = {"text": "", "at": 0.0}
+# Что видит человек вместо «нет баланса у поставщика» (решение владельца
+# 09.10.2026). Баланс у поставщика — устройство и деньги СЕРВИСА, а не
+# клиента: ни сделать с этим, ни понять это клиент не может, а слова «у нас
+# кончились деньги» продают сервис хуже, чем «обратитесь в поддержку».
+# Подробности видит только суперпользователь (рубеж `_hide_models`), ему же
+# уходит сообщение в Telegram (`_job_quota_stop`).
+PROVIDER_FAULT_PUBLIC = "Ошибка на стороне провайдера. Обратитесь в поддержку"
+
+
+def _provider_fault_public(text):
+    """Текст ошибки для НЕ-суперпользователя: пустой счёт поставщика —
+    одной постоянной фразой (ключ `TRS()`), всё прочее — как было."""
+    t = str(text or "")
+    if t == JOB_STOP_PROVIDER_QUOTA or _is_quota_error(t):
+        return PROVIDER_FAULT_PUBLIC
+    return text
 
 
 def _is_quota_error(text) -> bool:
@@ -3779,6 +3804,30 @@ def _note_provider_error(e) -> None:
     # читает и сессию, и поток прогона (`_JOB_TENANT`), — иначе всё
     # уезжало бы в «default», то есть отчёт владельцу врал бы.
     _ev("provider." + _provider_err_kind(_PROVIDER_ERR["text"]))
+
+
+# Пустой счёт, замеченный В ВЫЗОВЕ МОДЕЛИ, — по проекту прогона. Пишут его
+# обёртки клиентов (`_AnthropicChat`, `_OpenAIChat`) — единственная точка,
+# через которую идут все вызовы чата, поэтому шаг, проглотивший исключение
+# и ответивший «модель не ответила» (ревизия, termcheck, арбитр, ремонт,
+# судья), пустой счёт больше не прячет. Ключ — проект (`_JOB_PROJECT`), а не
+# процесс: общее окно `_PROVIDER_ERR` перезаписывает последний писавший поток
+# (ошибка разбора ответа, сеть, чужая организация), и по нему прогон на другом
+# поставщике остановился бы как «нет баланса».
+_QUOTA_SEEN: dict = {}
+
+
+def _note_quota(e) -> None:
+    if not _is_quota_error(e):
+        return
+    now = time.time()
+    _PROVIDER_ERR["text"], _PROVIDER_ERR["at"] = str(e)[:500], now
+    _QUOTA_SEEN[getattr(_JOB_PROJECT, "id", None)] = now
+
+
+def _quota_seen_since(pid, t0: float) -> bool:
+    """За время шага (с `t0`) вызов модели этого прогона получил «нет баланса»."""
+    return _QUOTA_SEEN.get(pid, 0.0) >= t0
 
 
 def _quota_recent(window: float = 120.0) -> bool:
@@ -9389,7 +9438,11 @@ async def quote_file(request: Request, file: UploadFile = File(...),
                                                                     else "картинок"))
     q = _quote_of(m["counts"], src, tgt, card, "file", m["notes"])
     saved = None
-    if save:
+    # Смета без цены (`costHidden` — деньги не показываем) в историю не идёт:
+    # история смет — оферты, а у такой записи нет ни цены, ни итога, и её
+    # всё равно не покажут тому, кто считал (инвариант 22а). Прежде здесь
+    # падал `_quote_save` на `rate: None` — 500 вместо сметы у владельца.
+    if save and not q.get("costHidden"):
         # Отпечаток содержимого, а не имя файла: «договор.docx» бывает разным,
         # и по имени повторный расчёт того же файла не опознать.
         sha = hashlib.sha256(content).hexdigest()[:16]
@@ -9548,7 +9601,7 @@ async def quote_scan(request: Request, file: UploadFile = File(...),
     except (textcount.Unsupported, textcount.NotAvailable, textcount.TooBig) as e:
         raise _count_error(e)
     saved = None
-    if save:
+    if save and not q.get("costHidden"):
         sha = hashlib.sha256(content).hexdigest()[:16]
         saved = _quote_save(q, file.filename or "", "pdf-scan", sha)
     return {"ok": True, "file": file.filename or "", "kind": "pdf-scan", **q, "saved": saved}
@@ -14028,6 +14081,25 @@ class _DuplicateUpload(Exception):
 async def _duplicate_upload_response(request: Request, exc: _DuplicateUpload):
     return JSONResponse({"detail": DUPLICATE_UPLOAD_MSG, "code": "duplicate",
                          "project": exc.project}, status_code=409)
+
+
+from starlette.exceptions import HTTPException as _StarletteHTTPException
+from fastapi.exception_handlers import http_exception_handler as _default_http_handler
+
+
+@app.exception_handler(_StarletteHTTPException)
+async def _http_error_response(request: Request, exc: _StarletteHTTPException):
+    """Отказ с сырым текстом поставщика о пустом счёте («credit balance is
+    too low», «insufficient_quota») — одной фразой для всех, кроме
+    суперпользователя. Одиночные кнопки складывают `str(e)` в `detail`
+    в двух десятках мест, и чистить каждое — значит однажды забыть
+    двадцать первое; здесь же проходят ВСЕ отказы. Сессия запроса уже
+    известна (мидлварь входа — снаружи обработчика)."""
+    if isinstance(exc.detail, str) and _hide_models():
+        pub = _provider_fault_public(exc.detail)
+        if pub != exc.detail:
+            exc = _StarletteHTTPException(exc.status_code, pub, getattr(exc, "headers", None))
+    return await _default_http_handler(request, exc)
 
 
 # ─── Пробный фрагмент ────────────────────────────────────────────────
@@ -36636,7 +36708,11 @@ def _job_public(job: dict) -> dict:
         # не ловит: имя вычислено ДО выдачи и сохранено. Поэтому чистим
         # здесь — по тому же списку имён, что и везде.
         if out.get("error"):
-            out["error"] = _text_without_models(str(out["error"]))
+            out["error"] = _text_without_models(str(_provider_fault_public(out["error"])))
+        # Причина порции (`why`) несёт сырой текст поставщика — тот же рубеж.
+        if isinstance(out.get("counters"), dict) and out["counters"].get("why"):
+            out["counters"] = dict(out["counters"],
+                                   why=_provider_fault_public(out["counters"]["why"]))
         if out.get("usage"):
             out["usage"] = {k: v for k, v in out["usage"].items()
                             if k not in ("models", "steps")}
@@ -36723,6 +36799,7 @@ def _job_chunk_full(pid: int, chunk: list, params: dict) -> dict:
             # Свежую проверку второй раз не оплачиваем — за состав отвечает
             # отбор сегментов, а не повторный вызов модели.
             sub["skip_cached"] = True
+        t_step = time.time()
         try:
             r = _job_chunk(st, pid, chunk, sub)
         except HTTPException as e:
@@ -36730,12 +36807,23 @@ def _job_chunk_full(pid: int, chunk: list, params: dict) -> dict:
                 blocked.append("%s: %s" % (FULL_STEP_LABELS[st], e.detail))
                 continue
             raise
+        # Пустой счёт — свойство аккаунта, а не строки: хватит ОДНОГО такого
+        # ответа за шаг. Ждать «упала вся порция» нельзя — шаги берут часть
+        # строк (ревизия — неспрошенные, ремонт — с находками), а судья и
+        # перепроверка ремонта ошибкой шага не считаются вовсе: прогон шёл бы
+        # до конца, оплачивая модели, чья работа тут же выбрасывается.
+        if _quota_seen_since(pid, t_step):
+            raise _ProviderQuota("шаг «%s»: %s" % (FULL_STEP_LABELS[st], _PROVIDER_ERR["text"]))
         if r.get("done", 0) == 0 and r.get("errors", 0) >= len(chunk):
             # Называем ПРИЧИНУ, а не только симптом. «Порция завершилась
             # ошибкой» человек прочтёт как поломку программы и полезет
             # в настройки, тогда как на деле у аккаунта кончились деньги или
             # отозван ключ — и это видно только в журнале сервера.
             why = r.get("why") or ""
+            # Пустой счёт у поставщика — не ошибка шага, а остановка прогона
+            # (`_job_run` ловит `_ProviderQuota`): повторять порцию бессмысленно.
+            if _is_quota_error(why):
+                raise _ProviderQuota("шаг «%s»: %s" % (FULL_STEP_LABELS[st], why))
             raise RuntimeError("порция целиком завершилась ошибкой на шаге «%s»%s"
                                % (FULL_STEP_LABELS[st], (": " + why) if why else ""))
         ran.append(st)
@@ -37064,15 +37152,24 @@ def _job_run(job: dict):
         job["recent"] = chunk          # клиент подтянет только эти сегменты
         last_err = None
         for attempt in range(JOB_CHUNK_RETRIES + 1):
+            t_chunk = time.time()
             try:
                 counters = _job_chunk(kind, pid, chunk, job["params"])
+                # Пустой счёт за эту порцию — стоп, сколько бы строк ни прошло:
+                # ремонт, «применить термины» и back-check с судьёй глотают
+                # ошибку проверки (правка откатывается, судья «не ответил»)
+                # и иначе платили бы модели ремонта на каждой строке впустую.
+                if _quota_seen_since(pid, t_chunk):
+                    raise _ProviderQuota(counters.get("why") or _PROVIDER_ERR["text"])
                 # Порция, где не прошло НИЧЕГО, — это не «выполнено»: так выглядит
                 # мёртвый ключ или упавший провайдер. Пакетные эндпоинты глотают
                 # ошибку каждого сегмента по отдельности, и без этой проверки
                 # прогон рапортовал бы «готово» с нулевым результатом.
                 if counters.get("done", 0) == 0 and counters.get("errors", 0) >= len(chunk):
-                    if _is_quota_error(counters.get("why")) or _quota_recent():
-                        raise _ProviderQuota(counters.get("why"))
+                    # Отметка — этого проекта и с начала этой порции: общее окно
+                    # процесса остановило бы прогон по чужой ошибке.
+                    if _is_quota_error(counters.get("why")) or _quota_seen_since(pid, t_chunk):
+                        raise _ProviderQuota(counters.get("why") or _PROVIDER_ERR["text"])
                     # С причиной от провайдера: «проверьте ключи и связь» звучит
                     # одинаково и для кончившихся денег, и для отозванного ключа,
                     # и для оборванной сети — а действия у них разные.
@@ -38223,7 +38320,7 @@ def _media_stop_text(job: dict) -> str:
     if why == "budget":
         return "Распознавание остановлено: потолок расхода на этот файл"
     if why == "provider_quota":
-        return "Распознавание остановлено: у поставщика моделей закончился баланс сервиса"
+        return PROVIDER_FAULT_PUBLIC
     return "Распознавание остановлено"
 
 

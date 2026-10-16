@@ -385,7 +385,7 @@
   "Термины": "Atamalar",
   "Термины уходят в глоссарий, затем сегменты чинятся по ним. Вкладку можно закрыть.": "Atamalar lug'atga ketadi, so'ng segmentlar ularga qarab tuzatiladi. Oynani yopish mumkin.",
   "Три корзины": "Uchta savat",
-  "У сервиса закончился баланс у поставщика моделей: прогон остановлен, сделанное сохранено. Мы уже знаем об этом; остальные сегменты возьмёт следующий прогон, когда баланс пополнят.": "Xizmatning model yetkazib beruvchidagi balansi tugadi: ishlov to'xtatildi, bajarilgan saqlandi. Biz bundan xabardormiz; qolgan segmentlarni balans to'ldirilgach keyingi ishlov oladi.",
+  "Ошибка на стороне провайдера. Обратитесь в поддержку": "Provayder tomonida xatolik. Qo‘llab-quvvatlash xizmatiga murojaat qiling",
   "Уже подтверждено кем-то — перезапись только по явной команде: ": "Kimdir allaqachon tasdiqlagan — qayta yozish faqat aniq buyruq bilan: ",
   "Устройство прогона: шаги, модели, смета": "Ishning tuzilishi: qadamlar, modellar, smeta",
   "Файлов пока нет": "Hozircha fayllar yo'q",

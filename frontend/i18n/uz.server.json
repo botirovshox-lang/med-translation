@@ -414,7 +414,7 @@
   "Реплики разобраны по времени; обратно выгружается таким же файлом субтитров с прежними таймингами. Разметка внутри реплики (курсив, цвет) в переводе не сохраняется.": "Replikalar vaqt bo‘yicha ajratildi; natija xuddi shunday subtitr fayli sifatida avvalgi vaqt belgilari bilan qaytariladi. Replika ichidagi belgilash (kursiv, rang) tarjimada saqlanmaydi.",
   "Распознавание остановлено: исчерпан лимит расхода организации": "Tanib olish to‘xtatildi: tashkilotning xarajat limiti tugadi",
   "Распознавание остановлено: потолок расхода на этот файл": "Tanib olish to‘xtatildi: bu fayl uchun xarajat chegarasi",
-  "Распознавание остановлено: у поставщика моделей закончился баланс сервиса": "Tanib olish to‘xtatildi: model yetkazib beruvchisida xizmat balansi tugadi",
+  "Ошибка на стороне провайдера. Обратитесь в поддержку": "Provayder tomonida xatolik. Qo‘llab-quvvatlash xizmatiga murojaat qiling",
   "Распознавание остановлено": "Tanib olish to‘xtatildi",
   "Распознавание не завершилось": "Tanib olish yakunlanmadi",
   "Речь уже распознана": "Nutq allaqachon tanilgan",

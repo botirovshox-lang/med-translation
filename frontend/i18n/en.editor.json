@@ -385,7 +385,7 @@
   "Термины": "Terms",
   "Термины уходят в глоссарий, затем сегменты чинятся по ним. Вкладку можно закрыть.": "The terms go into the glossary, then the segments are fixed from them. You can close the tab.",
   "Три корзины": "Three baskets",
-  "У сервиса закончился баланс у поставщика моделей: прогон остановлен, сделанное сохранено. Мы уже знаем об этом; остальные сегменты возьмёт следующий прогон, когда баланс пополнят.": "The service's balance with the model provider has run out: the run was stopped, completed work is saved. We already know about it; the next run will pick up the remaining segments once the balance is topped up.",
+  "Ошибка на стороне провайдера. Обратитесь в поддержку": "Error on the provider's side. Please contact support",
   "Уже подтверждено кем-то — перезапись только по явной команде: ": "Already confirmed by someone — overwriting only on an explicit command: ",
   "Устройство прогона: шаги, модели, смета": "How the run works: steps, models, estimate",
   "Файлов пока нет": "There are no files yet",

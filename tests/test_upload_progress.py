@@ -188,6 +188,155 @@ check(main._quota_recent(), "последняя ошибка поставщик�
 main._PROVIDER_ERR["at"] = 0.0
 check(not main._quota_recent(), "старая ошибка поставщика не останавливает новые прогоны")
 
+print("=== 6. Составной прогон: пустой счёт на шаге ревизии — тоже стоп ===")
+# Боевой случай 09.10.2026: ревизию перевели на модель Anthropic с нулевым
+# балансом. Ревизия глотала исключение, а составной прогон не спрашивал
+# «пустой ли счёт» — три повтора порции и «ревизор не ответил». Ошибку
+# поставщика отмечает ОБЁРТКА клиента (`_OpenAIChat`/`_AnthropicChat`) —
+# здесь она настоящая, подменён только SDK под ней.
+ANTH = ("Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', "
+        "'message': 'Your credit balance is too low to access the Anthropic API.'}}")
+
+
+class _SDK:
+    def __init__(self, err):
+        self.err = err
+        self.chat = type("C", (), {"completions": type("X", (), {"create": self.create})()})()
+
+    def create(self, **kw):
+        raise RuntimeError(self.err)
+
+
+orig_client = main._llm_client
+
+
+def run_full(err, asked, steps=("translate", "review"), jid=992, project=None):
+    """Составной прогон из двух порций; ревизия спрашивает `asked` строк порции."""
+    calls = []
+    main._PROVIDER_ERR["at"] = 0.0
+    main._QUOTA_SEEN.clear()
+
+    def _chunk_full(kind, p, chunk, params):
+        if kind == "full":
+            return orig_chunk(kind, p, chunk, params)
+        calls.append(kind)
+        if kind == "review":
+            for sid in chunk[:asked]:
+                main._openai_review({"id": sid, "source": "a", "target": "b"},
+                                    {"id": p, "src": "RU", "tgt": "EN"}, "", "", [])
+            return {"done": 0, "errors": asked, "why": "ревизор не ответил"}
+        return {"done": len(chunk)}
+
+    main._llm_client = lambda *a, **k: main._OpenAIChat(_SDK(err), {"id": "m", "api": "plain"}, "review")
+    main._job_chunk = _chunk_full
+    main.time.sleep = lambda s: None
+    ids = list(range(1, 11))
+    job = {"id": jid, "kind": "full", "project": project or pid, "status": "queued", "tenant": "acme",
+           "total": len(ids), "done": 0, "counters": {}, "error": None,
+           "params": {"steps": list(steps)}, "ids": ids,
+           "stop": False, "recent": [], "created": "", "started": None, "finished": None}
+    try:
+        main._job_execute(job)
+    finally:
+        main._job_chunk, main.time.sleep, main._llm_client = orig_chunk, orig_sleep, orig_client
+    return job, calls
+
+
+job, calls = run_full(ANTH, asked=10)
+check(job["status"] == "stopped" and job.get("stopReason") == "provider_quota",
+      "остановлен с кодом provider_quota: %s/%s" % (job["status"], job.get("stopReason")))
+check(calls.count("review") == 1, "порция не повторялась: ревизия звана %d раз" % calls.count("review"))
+
+# Ревизия спросила ДВЕ строки из десяти (остальные уже проверены) — счёт пуст
+# всё равно: ждать «упала вся порция» значило бы идти до конца книги впустую.
+job, calls = run_full(ANTH, asked=2)
+check(job["status"] == "stopped" and job.get("stopReason") == "provider_quota",
+      "упала часть строк — всё равно стоп: %s/%s" % (job["status"], job.get("stopReason")))
+
+# Сеть, а не баланс: прежние три повтора и error, никакого «нет баланса».
+job, calls = run_full("Connection reset by peer", asked=10)
+check(job["status"] == "error" and job.get("stopReason") is None,
+      "сбой сети пустым счётом не считается: %s/%s" % (job["status"], job.get("stopReason")))
+
+# Отдельный прогон (ремонт): строки «прошли» — правка откатилась, — а
+# перепроверка упёрлась в пустой счёт. Стоп после первой же порции.
+main._QUOTA_SEEN.clear()
+rcalls = []
+
+
+def _chunk_repair(kind, p, chunk, params):
+    rcalls.append(kind)
+    main._JOB_PROJECT.id = p
+    main._note_quota(RuntimeError(ANTH))
+    return {"done": len(chunk), "errors": 0}
+
+
+main._job_chunk = _chunk_repair
+main.time.sleep = lambda s: None
+ids = list(range(1, 3 * main.JOB_CHUNKS["repair"] + 1))
+job = {"id": 993, "kind": "repair", "project": pid, "status": "queued", "tenant": "acme",
+       "total": len(ids), "done": 0, "counters": {}, "error": None, "params": {}, "ids": ids,
+       "stop": False, "recent": [], "created": "", "started": None, "finished": None}
+try:
+    main._job_execute(job)
+finally:
+    main._job_chunk, main.time.sleep = orig_chunk, orig_sleep
+check(job.get("stopReason") == "provider_quota" and len(rcalls) == 1,
+      "отдельный ремонт: стоп после первой порции (%s, порций %d)" % (job.get("stopReason"), len(rcalls)))
+
+# Чужой проект упёрся в пустой счёт минуту назад — НАШ прогон, упавший по сети,
+# не объявляется «нет баланса» (прежнее общее окно процесса так и делало).
+main._QUOTA_SEEN.clear()
+main._JOB_PROJECT.id = 4242
+main._note_quota(RuntimeError(ANTH))
+check(main._quota_recent() and not main._quota_seen_since(pid, 1.0)
+      and main._quota_seen_since(4242, 1.0),
+      "отметка лежит на чужом проекте, а не на нашем")
+main._JOB_PROJECT.id = None
+main._PROVIDER_ERR["at"] = 0.0
+main._QUOTA_SEEN.clear()
+
+print("=== 7. Человеку — «Ошибка на стороне провайдера», подробности — суперу ===")
+# Решение владельца 09.10.2026: баланс у поставщика — дело сервиса, клиенту
+# показывается одна фраза. Суперпользователь видит текст поставщика.
+stopped = {"id": 994, "kind": "full", "status": "stopped", "stopReason": "provider_quota",
+           "error": main.JOB_STOP_PROVIDER_QUOTA, "counters": {"why": ANTH}, "params": {}}
+
+
+def as_who(tok, fn):
+    t = main.CURRENT_SESSION.set(main._SESSIONS[tok])
+    try:
+        return fn()
+    finally:
+        main.CURRENT_SESSION.reset(t)
+
+
+pub = as_who(B, lambda: main._job_public(stopped))
+check(pub["error"] == main.PROVIDER_FAULT_PUBLIC and pub["counters"]["why"] == main.PROVIDER_FAULT_PUBLIC,
+      "владелец: ошибка и причина порции — одной фразой: %r" % pub["error"])
+sup = as_who(A, lambda: main._job_public(stopped))
+check(sup["error"] == main.JOB_STOP_PROVIDER_QUOTA and "credit balance" in sup["counters"]["why"],
+      "суперпользователь видит подробности")
+check(as_who(B, lambda: main._err_public(RuntimeError(ANTH))) == main.PROVIDER_FAULT_PUBLIC
+      and as_who(B, lambda: main._err_public(RuntimeError("Connection reset"))) == "Connection reset",
+      "ответ одиночной кнопки: пустой счёт — фразой, прочее — как было")
+
+
+@main.app.get("/api/_test_quota_refusal")
+def _test_quota_refusal():
+    raise main.HTTPException(502, ANTH)
+
+
+r = c.get("/api/_test_quota_refusal", headers=H(B))
+check(r.status_code == 502 and r.json()["detail"] == main.PROVIDER_FAULT_PUBLIC,
+      "отказ сервера владельцу — фразой: %s %s" % (r.status_code, r.text[:80]))
+r = c.get("/api/_test_quota_refusal", headers=H(A))
+check(r.status_code == 502 and "credit balance" in r.json()["detail"], "отказ суперу — как был")
+r = c.get("/api/_test_quota_refusal")
+check(r.status_code == 401, "прочие отказы обработчик не трогает: без входа — 401")
+check(main._media_stop_text({"stopReason": "provider_quota"}) == main.PROVIDER_FAULT_PUBLIC,
+      "распознавание видео — та же фраза")
+
 print()
 if fail:
     print("ПРОВАЛЕНО: %d" % len(fail))

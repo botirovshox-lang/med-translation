@@ -123,7 +123,7 @@
   "Те же картинки, таблицы и вид. Даже надписи на картинках переведены": "The same images, tables and look. Even the labels on images are translated",
   "Тот же документ «как оригинал», собранный в PDF: вёрстка, картинки и колонтитулы на месте": "The same document “as the original”, built as a PDF: layout, images and headers are in place",
   "Тот же файл, переведены только тексты; числа, формулы и структура на месте": "The same file with only the texts translated; numbers, formulas and structure are in place",
-  "У сервиса закончился баланс у поставщика моделей: разбор остановлен, прочитанное сохранено. Мы уже знаем об этом; продолжить можно, когда баланс пополнят.": "The service's balance with the model provider has run out: parsing was stopped, what was read is saved. We already know about it; you can continue once the balance is topped up.",
+  "Ошибка на стороне провайдера. Обратитесь в поддержку": "Error on the provider's side. Please contact support",
   "У этих надписей под текстом однородный фон, поэтому при экспорте «1в1» ": "These labels have a uniform background underneath, so on a “1:1” export ",
   "Убрать и забыть прочитанное": "Remove and forget what was read",
   "Убрать сегменты": "Remove the segments",

@@ -414,7 +414,7 @@
   "Реплики разобраны по времени; обратно выгружается таким же файлом субтитров с прежними таймингами. Разметка внутри реплики (курсив, цвет) в переводе не сохраняется.": "Lines are split by timing; the result comes back as the same subtitle file with the original timings. Markup inside a line (italics, colour) is not kept in the translation.",
   "Распознавание остановлено: исчерпан лимит расхода организации": "Recognition stopped: the organisation's spending limit is exhausted",
   "Распознавание остановлено: потолок расхода на этот файл": "Recognition stopped: the spending cap for this file",
-  "Распознавание остановлено: у поставщика моделей закончился баланс сервиса": "Recognition stopped: the service balance at the model provider ran out",
+  "Ошибка на стороне провайдера. Обратитесь в поддержку": "Error on the provider's side. Please contact support",
   "Распознавание остановлено": "Recognition stopped",
   "Распознавание не завершилось": "Recognition did not finish",
   "Речь уже распознана": "Speech has already been recognised",

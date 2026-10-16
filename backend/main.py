@@ -16434,8 +16434,10 @@ def _image_read_system(dom: dict, src_lang: str) -> str:
         '  "overlay" — true if this is NOT text of the document but a label '
         "burnt in by equipment or software: patient name, examination date, "
         "scanner settings, ruler marks, menu items, watermark, file name. "
-        "Otherwise false.\n\n"
-        'Return ONLY JSON: {"blocks": [{"i": 0, "text": "...", "overlay": false}]}'
+        "Otherwise false.\n"
+        '  "hand"    — true if the text is WRITTEN BY HAND (pen, pencil, marker), '
+        "false if it is printed or typed.\n\n"
+        'Return ONLY JSON: {"blocks": [{"i": 0, "text": "...", "overlay": false, "hand": false}]}'
     )
 
 
@@ -16552,6 +16554,8 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
         # сегмента: иначе он доезжает до перевода («civil ser- vant»).
         out[i] = {"text": image_text.read_clean(item.get("text") or ""),
                   "overlay": bool(item.get("overlay")),
+                  # Рукопись: по ней печать берёт рукописный шрифт (`_hand_image`).
+                  "hand": bool(item.get("hand")),
                   # Вид надписи — у кадра видео (`_frame_read_system`).
                   "kind": str(item.get("kind") or ""),
                   "model": _dm_public(mdl["id"])}
@@ -17633,6 +17637,10 @@ def _job_images(job: dict) -> None:
                         b["text"] = ans["text"]
                         job["counters"]["read"] = job["counters"].get("read", 0) + 1
                         b["reader"] = ans["model"]
+                        if ans.get("hand"):
+                            b["hand"] = True
+                        else:
+                            b.pop("hand", None)
                         if b.get("skip") in ("layer", "figure"):
                             pass                      # текст слоя или рисунка — не наш блок
                         elif ans["overlay"]:
@@ -32554,6 +32562,27 @@ def _same_text(a: str, b: str) -> bool:
     return difflib.SequenceMatcher(None, x, y, autojunk=False).ratio() >= LAYER_SAME_RATIO
 
 
+# Рукопись — свойство СТРАНИЦЫ, а не блока: признак `hand` ставит модель
+# чтения на каждый блок, и решай мы по блоку — на одной странице конспекта
+# соседние абзацы печатались бы то рукописным, то рубленым шрифтом. Страница
+# рукописная, когда рукописью помечено не меньше `IMG_HAND_SHARE` площади
+# её текстовых блоков. Нет признака (прочитано до его появления) — печатный.
+IMG_HAND_SHARE = float(os.environ.get("IMG_HAND_SHARE", "0.5"))
+
+
+def _hand_image(im: dict) -> bool:
+    tot = hand = 0.0
+    for b in im.get("blocks") or []:
+        if b.get("skip") or not b.get("box"):
+            continue
+        x0, y0, x1, y1 = b["box"]
+        a = max(0, x1 - x0) * max(0, y1 - y0)
+        tot += a
+        if b.get("hand"):
+            hand += a
+    return tot > 0 and hand >= IMG_HAND_SHARE * tot
+
+
 def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
                      printed: "dict | None" = None) -> list:
     """Надписи со страниц-КАРТИНОК — рамками для выгрузки PDF «как в оригинале».
@@ -32612,6 +32641,7 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
         if fig is not None:
             page = fig[0]
         w, h = float(im["w"]), float(im["h"])
+        im_fam = "hand" if _hand_image(im) else "sans"
         for i, b in enumerate(im.get("blocks") or []):
             if b.get("skip"):
                 continue
@@ -32722,7 +32752,7 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
             # отсеянная ниже (вложенный повтор) его перевод уже не несёт.
             out.append({"text": text, "_erase": er_cand, "boxes": [{
                 "page": page, "frac": 1, "image": 1, "style": "", "indent": 0.0,
-                "fam": "sans", "onFig": 1 if on_fig else 0,
+                "fam": im_fam, "onFig": 1 if on_fig else 0,
                 # Исходный текст, число строк и выключка надписи — по ним печать
                 # меряет кегль букв и ставит перевод как стоял оригинал
                 # (`layout_pdf._paint_measure`).

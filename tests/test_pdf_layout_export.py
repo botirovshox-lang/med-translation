@@ -803,6 +803,40 @@ _end = _rot[0]["end"] if _rot else None
 check(_end and abs(_end[0] - 300) < 1 and abs(_end[1] - (100 + len("Всего случаев болезни") * 5.0)) < 1.5,
       "повёрнутая строка из двух Tj — путь до конца второго: %s" % (_end,))
 
+print("\n── 13. рукопись: шрифт и один кегль на странице ──")
+_hp = layout_pdf.font_path("", "hand", "Bacteria cells")
+check(_hp.endswith("MarckScript-Regular.ttf"), "рукописный шрифт для латиницы: %s" % _hp)
+check(layout_pdf.font_path("", "hand", "Бактерия") .endswith("MarckScript-Regular.ttf"),
+      "рукописный шрифт знает кириллицу")
+_uz = layout_pdf.font_path("", "hand", "qoʻshimcha oʻzbek gʻoya ўқ ғҳ")
+check(not _uz.endswith("MarckScript-Regular.ttf"),
+      "узбекских букв в рукописном нет — запасной шрифт, а не квадраты: %s" % _uz)
+check(os.path.exists("frontend/vendor/fonts/sub/OFL-MarckScript.txt"), "лицензия шрифта рядом")
+
+
+def _pb(em, fam="hand"):
+    return {"fam": fam, "_paint": {"em": em, "arc": None, "angle": 0}}
+
+
+_pg = [_pb(10.0), _pb(11.0), _pb(12.0), _pb(30.0)]
+check(layout_pdf._page_em_even(_pg) == 3 and [b["_paint"]["em"] for b in _pg] == [12.0, 12.0, 12.0, 30.0],
+      "три близких кегля — один кегль, заголовок вне полосы не трогается")
+_sc = [_pb(8.0), _pb(14.0)]
+check(layout_pdf._page_em_even(_sc) == 0, "два блока — схема, правило молчит")
+
+import importlib.util as _iu  # noqa: E402
+_src = open("backend/main.py", encoding="utf-8").read()
+check('"hand": bool(item.get("hand"))' in _src and "_hand_image(im)" in _src,
+      "признак рукописи доезжает от чтения до печати")
+_ns: dict = {"os": os}
+_code = _src[_src.index("IMG_HAND_SHARE ="):_src.index("def _pdf_image_boxes")]
+exec(_code, _ns)
+_im = {"blocks": [{"box": [0, 0, 100, 100], "hand": True}, {"box": [0, 200, 50, 250]},
+                  {"box": [0, 300, 900, 900], "skip": "overlay"}]}
+check(_ns["_hand_image"](_im), "страница с рукописью по площади — рукописная")
+_im["blocks"][0].pop("hand")
+check(not _ns["_hand_image"](_im), "без признака — печатная (закон миграции)")
+
 print(("ALL OK" if not fail else "FAILED: %d" % len(fail)))
 for f in fail:
     print(" -", f)

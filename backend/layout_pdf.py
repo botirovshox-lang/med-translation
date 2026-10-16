@@ -143,6 +143,13 @@ FAMILY_CANDIDATES = {
         "": [_REPO_FONTS + "/NotoSans-ExtraCondensed.ttf"],
         "b": [_REPO_FONTS + "/NotoSans-ExtraCondensedBold.ttf"],
     },
+    # Рукопись (страница помечена моделью чтения, `main._hand_image`): конспект
+    # от руки печатался рубленым гротеском — перевод выглядел наклейкой.
+    # Marck Script (OFL) знает латиницу и кириллицу; узбекских ў қ ғ ҳ ʻ в нём
+    # нет — тогда `font_path(chars=)` берёт запасной DejaVu, а не квадраты.
+    "hand": {
+        "": [os.environ.get("LAYOUT_FONT_HAND", ""), _REPO_FONTS + "/MarckScript-Regular.ttf"],
+    },
     "mono": {
         "": [os.environ.get("LAYOUT_FONT_MONO", ""),
              "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
@@ -3348,13 +3355,44 @@ def _paint_measure(sampler, b: dict) -> bool:
     return True
 
 
+# Один кегль на текстовую страницу-картинку. Кегль надписи меряется по краске
+# КАЖДОГО блока, и у конспекта от руки соседние абзацы выходили разного
+# размера — замер почерка пляшет сильнее, чем сам почерк. Правило включается,
+# только когда на странице не меньше `PAINT_EVEN_MIN` блоков одного семейства
+# с кеглем в пределах `PAINT_EVEN_SPREAD` от медианы: у схемы кегли подписей
+# разные намеренно, и туда правило не лезет. Блок вне полосы не трогается;
+# не влезет в рамку — ужмётся сам (`fit_lines`).
+PAINT_EVEN_MIN = int(os.environ.get("LAYOUT_PAINT_EVEN_MIN", "3"))
+PAINT_EVEN_SPREAD = float(os.environ.get("LAYOUT_PAINT_EVEN_SPREAD", "0.25"))
+
+
+def _page_em_even(boxes: list) -> int:
+    by_fam: dict = {}
+    for b in boxes:
+        pt = b["_paint"]
+        if pt.get("arc") or pt.get("angle") or not pt.get("em"):
+            continue
+        by_fam.setdefault(b.get("fam") or "", []).append(b)
+    done = 0
+    for grp in by_fam.values():
+        ems = sorted(b["_paint"]["em"] for b in grp)
+        med = ems[len(ems) // 2]
+        band = [b for b in grp if abs(b["_paint"]["em"] - med) <= PAINT_EVEN_SPREAD * med]
+        if len(band) < PAINT_EVEN_MIN:
+            continue
+        for b in band:
+            b["_paint"]["em"] = med
+            done += 1
+    return done
+
+
 def _paint_plan(b: dict, text: str, fonts: dict, sw, hyph) -> "dict | None":
     """Раскладка перевода надписи с рисунка: кегль — измеренный кегль
     оригинала (не высота рамки детектора), строки — в ширину надписи и в
     высоту её строк (с переносами), ужатие — только если не влезает.
     Ширина начертания — как у оригинала (ширина краски ÷ знаков)."""
     pt = b["_paint"]
-    font = _font_for(fonts, {"style": "b" if pt["bold"] else "", "fam": "sans"})
+    font = _font_for(fonts, {"style": "b" if pt["bold"] else "", "fam": b.get("fam") or "sans"})
     em = max(2.0, pt["em"])
     src = " ".join((b.get("src") or "").split())
     h0 = 1.0
@@ -5438,6 +5476,8 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
                 page_slots.get(pg, []), sampler.icons(pg))
     finally:
         sampler.close()
+    for pg in live_boxes:
+        _page_em_even([b for b in live_boxes[pg] if b.get("_paint")])
 
     # Раскладка считается ПО АБЗАЦУ, один раз, а не на каждой его странице:
     # абзац бывает разорван концом страницы, и счёт «на страницу» удваивал

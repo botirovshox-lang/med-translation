@@ -1169,6 +1169,88 @@ def _drop_inner(blocks: list) -> list:
     return out
 
 
+# Ритм строк колонки (рукопись в клетку, текст через строку). Основное правило
+# склеивает строки с зазором не больше высоты строки, а конспект пишут через
+# клеточку: зазор почти равен строке, край рваный, у абзаца красная строка —
+# и абзац рассыпался на блоки по строкам, каждый переводился обрывком, а часть
+# обрывков оставалась русской (конспект RU→EN, 16.10.2026: 4 строки из 18).
+# Склеиваем, только когда колонка ДОКАЗЫВАЕТ, что это сплошной текст: не меньше
+# `IMG_RHYTHM_MIN_LINES` строк одного кегля, зазоры ровные (разброс ≤
+# `IMG_RHYTHM_MAD` медианы), большинство строк длинные (не короче
+# `IMG_RHYTHM_WIDE` высот строки — то есть полтора десятка знаков) — у формы, оглавления и подписей схемы строки короткие
+# и неровные, и правило молчит. Склеивается зазор до медиана × `IMG_RHYTHM_SLACK`:
+# пустая строка между абзацами вдвое больше и абзацы не сливает.
+IMG_RHYTHM_MIN_LINES = int(os.environ.get("IMG_RHYTHM_MIN_LINES", "6"))
+IMG_RHYTHM_MAD = float(os.environ.get("IMG_RHYTHM_MAD", "0.35"))
+IMG_RHYTHM_WIDE = float(os.environ.get("IMG_RHYTHM_WIDE", "8"))   # × высоты строки
+IMG_RHYTHM_WIDE_SHARE = float(os.environ.get("IMG_RHYTHM_WIDE_SHARE", "0.6"))
+IMG_RHYTHM_SLACK = float(os.environ.get("IMG_RHYTHM_SLACK", "1.35"))
+IMG_RHYTHM_GAP_MAX = float(os.environ.get("IMG_RHYTHM_GAP_MAX", "4"))   # цепочка колонки, × высоты строки
+IMG_RHYTHM_SIZE = float(os.environ.get("IMG_RHYTHM_SIZE", "0.3"))          # разброс кегля
+
+
+def _rhythm_merge(blocks: list) -> list:
+    """Склейка блоков одной колонки с ровным ритмом строк (см. `IMG_RHYTHM_*`).
+    Порядок и состав строк не меняются — только их раскладка по блокам."""
+    if len(blocks) < 2:
+        return blocks
+    order = sorted(blocks, key=lambda b: b["box"][1])
+    chains: list = []
+    for b in order:
+        x0, y0, x1, y1 = b["box"]
+        home = None
+        for ch in chains:
+            # Колонка — вся цепочка, а не последний блок: короткий хвост
+            # абзаца («нах.») не должен рвать её перед красной строкой.
+            last = ch[-1]
+            lx0 = min(c["box"][0] for c in ch)
+            lx1 = max(c["box"][2] for c in ch)
+            ly1 = last["box"][3]
+            narrow = max(1, min(x1 - x0, lx1 - lx0))
+            over = min(x1, lx1) - max(x0, lx0)
+            lh = max(1.0, max(b["lineH"], last["lineH"]))
+            if (over > 0.7 * narrow and 0 <= y0 - ly1 <= IMG_RHYTHM_GAP_MAX * lh
+                    and abs(b["lineH"] - last["lineH"]) <= IMG_RHYTHM_SIZE * lh):
+                home = ch
+                break
+        if home is None:
+            chains.append([b])
+        else:
+            home.append(b)
+    out = []
+    for ch in chains:
+        lines = sorted((l for b in ch for l in b["lines"]), key=lambda l: l["box"][1])
+        if len(ch) < 2 or len(lines) < IMG_RHYTHM_MIN_LINES:
+            out.extend(ch)
+            continue
+        gaps = [max(0, b_["box"][1] - a_["box"][3]) for a_, b_ in zip(lines, lines[1:])]
+        gs = sorted(gaps)
+        med = gs[len(gs) // 2]
+        mad = sorted(abs(g - med) for g in gaps)[len(gaps) // 2]
+        wide = sum(1 for l in lines if (l["box"][2] - l["box"][0])
+                   >= IMG_RHYTHM_WIDE * max(1, l["box"][3] - l["box"][1]))
+        if med <= 0 or mad > IMG_RHYTHM_MAD * med or wide < IMG_RHYTHM_WIDE_SHARE * len(lines):
+            out.extend(ch)
+            continue
+        cur = ch[0]
+        for b in ch[1:]:
+            gap = b["box"][1] - cur["box"][3]
+            bgs = cur.get("bg"), b.get("bg")
+            same_bg = (bgs[0] is None or bgs[1] is None
+                       or max(abs(p - q) for p, q in zip(bgs[0], bgs[1])) <= IMG_BG_SAME)
+            if gap <= med * IMG_RHYTHM_SLACK and same_bg:
+                cx = cur["box"]
+                cur = {"box": [min(cx[0], b["box"][0]), cx[1], max(cx[2], b["box"][2]), b["box"][3]],
+                       "lines": cur["lines"] + b["lines"], "bg": cur.get("bg"),
+                       "lineH": ((cur["lineH"] * len(cur["lines"]) + b["lineH"] * len(b["lines"]))
+                                 / (len(cur["lines"]) + len(b["lines"])))}
+            else:
+                out.append(cur)
+                cur = b
+        out.append(cur)
+    return out
+
+
 def group_blocks(lines: list) -> list:
     """Строки → блоки. Блок — это то, что человек прочитал бы как один текст:
     та же колонка, тот же кегль, строки идут подряд И ВЫРОВНЕНЫ ПО ОДНОМУ КРАЮ.
@@ -1217,7 +1299,7 @@ def group_blocks(lines: list) -> list:
                 break
         if not placed:
             blocks.append({"box": [x0, y0, x1, y1], "lines": [ln], "lineH": h, "bg": ln.get("bg")})
-    blocks = _drop_inner(blocks)
+    blocks = _drop_inner(_rhythm_merge(blocks))
     out = []
     for b in blocks:
         out.append({"box": [int(v) for v in b["box"]], "rows": len(b["lines"]),

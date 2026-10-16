@@ -585,6 +585,30 @@ _rows = it._wrap(_dr, _zh * 2, _fnt, 200, split=False)
 check(len(_rows) > 1 and all(_dr.textlength(r, font=_fnt) <= 200 for r in _rows),
       "китайская фраза переносится между знаками и не выходит за рамку: %d строк" % len(_rows))
 
+print("\n── рукопись через строку: ритм колонки ──")
+# Конспект RU→EN (16.10.2026): строки высотой 30 через зазор 40 (через
+# клеточку), левый край пляшет, у абзаца красная строка, последняя строка —
+# короткий хвост «нах.». Прежнее правило резало абзац на блоки по строкам.
+def para(y, n, indent=60):
+    out = []
+    for k in range(n):
+        x0 = 40 + (indent if k == 0 else (k * 7) % 13)
+        x1 = 160 if k == n - 1 else 760 - (k * 11) % 25
+        out.append(line(x0, y + k * 70, x1, y + k * 70 + 30))
+    return out
+
+
+hw = para(40, 6) + para(40 + 6 * 70 + 80, 5)
+hb = it.group_blocks(hw)
+check(sorted(b["rows"] for b in hb) == [5, 6],
+      "абзацы рукописи через строку — два блока, а не одиннадцать: %s"
+      % sorted(b["rows"] for b in hb))
+# Форма: шесть коротких полей одной колонки с ровным шагом — не текст.
+form = [line(40, 40 + k * 70, 40 + 90 + (k % 3) * 40, 70 + k * 70) for k in range(6)]
+check(len(it.group_blocks(form)) == 6, "поля формы с ровным шагом не слипаются")
+# Мало строк — ритм не доказан, правило молчит.
+check(len(it.group_blocks(para(40, 3))) == 3, "три строки — ритм не доказан, блоки прежние")
+
 print("\n── движок поиска строк ──")
 ready, why = it.engine_ready()
 if ready:
